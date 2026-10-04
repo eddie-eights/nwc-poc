@@ -1738,9 +1738,9 @@ check("DEPLOY_ENV_KEYS に 9 つの *_AZ_NUM と、止めるために読む ENDP
       and 'NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"\nflag_value NETWORK_PERIMETER\n' in up and "flag_value ENDPOINTS_MULTI_AZ" not in up)
 # AZ_NUM の検査を up.sh から切り出して動かす（何も作る前に止まる・注意を出す）
 _azblk = up[up.index('case "${ENDPOINTS_MULTI_AZ:-}" in'):up.index('if [ -z "$NETWORK_PERIMETER" ]; then echo "NETWORK_PERIMETER=0')]
-def _aznum(**env):
+def _aznum(**env):   # 既定は graph も analytics も作らない回（PIPELINE=0 と同じ）。graph-status の待ちの注意を見るときは SKIP_GRAPH="" と SKIP_ANALYTICS="" を渡す
     r = subprocess.run(["bash", "-uc", 'die() { echo "DIE: $*"; exit 1; }\n' + _azblk + 'echo "OUT: ' + " ".join("$" + k for k in _AZ_KEYS) + '"'],
-                       capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env})
+                       capture_output=True, text=True, env={"PATH": os.environ["PATH"], "SKIP_GRAPH": "1", "SKIP_ANALYTICS": "1", **env})
     return r.stdout.strip() or r.stderr
 check("AZ_NUM: 書かなければ ENDPOINTS 1 / MSK 2 / ほか 1（Runtime も 1）で、注意は出ない（既定の MSK の 2 は数えない）",
       _aznum() == "OUT: 1 2 1 1 1 1 1 1 1")
@@ -1790,6 +1790,41 @@ check("書いたキーが ENDPOINTS_AZ_NUM より大きいと注意を 1 行出�
       and _aznum(NEPTUNE_AZ_NUM="3", ENDPOINTS_AZ_NUM="2").startswith("注意: NEPTUNE_AZ_NUM=3 に対して ENDPOINTS_AZ_NUM=2。")
       and _aznum(MSK_AZ_NUM="2").startswith("注意: MSK_AZ_NUM=2 に対して")
       and "注意" not in _aznum(LAMBDA_AZ_NUM="1"))
+# グラフの状態の Lambda（graph-status）の待ちの上限が timeout を超える ENDPOINTS_AZ_NUM で注意を出す（2026-10-05 のユーザー決定）。
+# 上限は graph/status_handler.py の FIREHOSE_CONFIG・RETRY_WAITS・NEPTUNE_CONFIG と sync.tf の timeout から計算し、up.sh の数と比べる
+_sh_vals = {n.targets[0].id: n.value for n in ast.parse(open(os.path.join(ROOT, "graph", "status_handler.py"), encoding="utf-8").read()).body
+            if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)}
+_fhc, _npc = ({k.arg: ast.literal_eval(k.value) for k in _sh_vals[c].keywords} for c in ("FIREHOSE_CONFIG", "NEPTUNE_CONFIG"))
+_rwaits = ast.literal_eval(_sh_vals["RETRY_WAITS"])
+_gs_timeout = int(re.search(r'resource "aws_lambda_function" "status" \{\n(?:  .*\n)*?  timeout\s*=\s*(\d+)',
+                            open(os.path.join(ROOT, "terraform", "pipeline", "graph", "sync.tf"), encoding="utf-8").read()).group(1))
+def _gs_wait(n, firehose=True):   # n = エンドポイントの IP の数（AZ ごとに 1 つ）。接続の待ちは IP ごとにかかる
+    nep = _npc["retries"]["total_max_attempts"] * (n * _npc["connect_timeout"] + _npc["read_timeout"]) + 1   # 再試行の前の待ちは 1 秒まで
+    fh = (1 + len(_rwaits)) * _fhc["retries"]["total_max_attempts"] * (n * _fhc["connect_timeout"] + _fhc["read_timeout"]) + sum(_rwaits)
+    return round(nep + (fh if firehose else 0), 1)
+_GS_ON = {"SKIP_GRAPH": "", "SKIP_ANALYTICS": ""}
+_gs = {n: _aznum(ENDPOINTS_AZ_NUM=str(n), **_GS_ON) for n in (1, 2, 3)}
+check(f"graph-status: 待ちの上限（status_handler.py と sync.tf から {_gs_wait(1)} / {_gs_wait(2)} / {_gs_wait(3)} 秒）が timeout の {_gs_timeout} 秒を超えるのは "
+      "ENDPOINTS_AZ_NUM=3 だけで、up.sh はそのときだけ注意を 1 行出して進む（秒は計算と同じ）",
+      _gs_timeout == 60 and [n for n in (1, 2, 3) if _gs_wait(n) > _gs_timeout] == [3]
+      and all((_gs[n].count("注意:") == 1) == (_gs_wait(n) > _gs_timeout) for n in (1, 2, 3))
+      and _gs[3].startswith("注意: ENDPOINTS_AZ_NUM=3 だと、グラフの状態の Lambda（graph-status）がエンドポイントに届かないときに待つ時間の上限が "
+                            f"{_gs_wait(3)} 秒（")
+      and f"Lambda の timeout の {_gs_timeout} 秒を超える。" in _gs[3] and "止めずに進む" in _gs[3]
+      and _gs[3].endswith("OUT: 3 2 1 1 1 1 1 1 1") and len(_gs[3].splitlines()) == 2)
+check("graph-status: 既定（ENDPOINTS_AZ_NUM=1）と 2 では注意を出さない",
+      _aznum(**_GS_ON) == "OUT: 1 2 1 1 1 1 1 1 1" and _gs[1] == "OUT: 1 2 1 1 1 1 1 1 1" and _gs[2] == "OUT: 2 2 1 1 1 1 1 1 1")
+check("graph-status: graph を作らない回（PIPELINE=0 / SKIP_GRAPH）と、analytics が無く Firehose に送らない回（Neptune だけで 3 AZ でも "
+      f"{_gs_wait(3, firehose=False)} 秒）は 3 でも出さない",
+      _gs_wait(3, firehose=False) <= _gs_timeout
+      and _aznum(ENDPOINTS_AZ_NUM="3") == "OUT: 3 2 1 1 1 1 1 1 1"
+      and _aznum(ENDPOINTS_AZ_NUM="3", SKIP_ANALYTICS="") == "OUT: 3 2 1 1 1 1 1 1 1"
+      and _aznum(ENDPOINTS_AZ_NUM="3", SKIP_GRAPH="") == "OUT: 3 2 1 1 1 1 1 1 1")
+check("graph-status: RUNTIME_AZ_NUM=3 で ENDPOINTS_AZ_NUM を 3 に上げたときも、上げた数で注意を出す",
+      (lambda o: len(o) == 3 and o[0].startswith("RUNTIME_AZ_NUM=3 に合わせて ENDPOINTS_AZ_NUM を 1 から 3 に上げる（")
+       and o[1].startswith("注意: ENDPOINTS_AZ_NUM=3 だと、グラフの状態の Lambda") and o[2] == "OUT: 3 2 3 1 1 1 1 1 1")(_aznum(RUNTIME_AZ_NUM="3", **_GS_ON).splitlines()))
+check("graph-status: up.sh と deploy.env.example の ENDPOINTS_AZ_NUM の説明に、3 で注意が出ることを書く（上限の秒は計算と同じ）",
+      all(f"待つ時間の上限（{_gs_wait(3)} 秒）が timeout の {_gs_timeout} 秒を超える" in t for t in (_red_up, _red_env)))
 check("AZ_NUM の検査は deploy.env を読んだあと、aws を呼ぶ前・費用の目安より前（何も作る前）",
       up.index("\nload_deploy_env\n") < up.index(_azblk) < up.index("command -v aws >/dev/null") < up.index("COST_CENTS=2\n"))
 check("各ルートに *_AZ_NUM を -var で渡す",

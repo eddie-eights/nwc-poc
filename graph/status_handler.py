@@ -20,8 +20,8 @@ alerts_from_message が捨てた通知（device_id か kind が無い・status �
 ALERT_DROPPED としてログに出す。行を組めない通知（starts_at が 9999 年を超えるなど、rules.alert_event が例外になるもの）も行にせず、
 1 件ずつ ALERT_DROPPED の WARNING に出して Neptune には書く（その 1 件のせいでほかの通知の行と Neptune を落とさない）。ALERT_STREAM が空なら行を組まない。
 行は Neptune より先に送る。呼び出しの全部の通知の行を組んで Firehose に送り、そのあと通知ごとに Neptune に書く（行は通知だけから組み、
-Neptune の結果を入れないので、先に送れる）。Firehose に使うのは長くても 22 秒ほど（FIREHOSE_CONFIG と RETRY_WAITS）なので、Neptune が遅くても
-応答しなくても、Lambda の timeout（60 秒）の前に履歴は残る。
+Neptune の結果を入れないので、先に送れる）。Firehose に使うのは長くても 22 秒ほど（FIREHOSE_CONFIG と RETRY_WAITS。エンドポイントが 3 つの AZ にあれば
+28 秒ほど）なので、Neptune が遅くても応答しなくても、Lambda の timeout（60 秒）の前に履歴は残る。
 status の正しさを履歴の完全さより優先する（design.md の決定 6）。Firehose は Lambda の中で合わせて 3 回まで送り直し、それでも届かなかった
 行は 1 行ずつ JSON のまま ERROR で ALERT_EVENT_LOST としてログに書いて、例外にせず Neptune に進む（例外にすると、Firehose が止まっている
 あいだ通知のたびに Neptune の書き込みまでやり直しになる。欠けた行は CloudWatch Logs Insights で `filter @message like /ALERT_EVENT_LOST/`
@@ -51,11 +51,14 @@ RETRY_WAITS = (0.2, 0.4)   # Firehose の送り直しの前に待つ秒数。1 �
 # Firehose のクライアントは botocore の再試行を切り、早めにあきらめる。既定（5 回まで・接続の待ちが 60 秒）のままだと、エンドポイントに
 # 届かないとき 1 回目の呼び出しだけで Lambda の timeout を使い切り、残った行を ERROR に書く前に（Neptune にも書かずに）タイムアウトする。
 # 3 回でも 3 ×（接続 2 秒 + 読み 3 秒）+ 待ち 0.6 秒 = 15.6 秒に収まり、60 秒のうち 44 秒は Neptune に残る。接続の待ちはエンドポイントの
-# IP ごとにかかるので、エンドポイントが 2 つの AZ にあるとき（endpoints_az_num = 2）は 3 ×（2 × 2 + 3）+ 0.6 = 21.6 秒、残りは 38 秒
+# IP ごとにかかるので、エンドポイントが 2 つの AZ にあるとき（endpoints_az_num = 2）は 3 ×（2 × 2 + 3）+ 0.6 = 21.6 秒、残りは 38 秒。
+# 3 つの AZ なら 3 ×（3 × 2 + 3）+ 0.6 = 27.6 秒
 FIREHOSE_CONFIG = Config(connect_timeout=2, read_timeout=3, retries={"total_max_attempts": 1, "mode": "standard"})
 # Neptune のクライアントもこの Lambda では待ちを短くし、試すのは 2 回まで（使い回した接続が向こうで切れていた（keep-alive の切れ）
 # ときを 1 回は救う。1 回の呼び出しは長くて 2 ×（接続 3 秒 + 読み 10 秒）+ 再試行の前の待ち 1 秒 = 27 秒、エンドポイントが 2 つの AZ に
-# あれば 2 ×（2 × 3 + 10）+ 1 = 33 秒。Firehose の 21.6 秒と足しても 60 秒に収まるのは問い合わせ 1 回まで。通知 1 件は 1〜5 回問い合わせる）。agent/graph.py の既定
+# あれば 2 ×（2 × 3 + 10）+ 1 = 33 秒。Firehose の 21.6 秒と足しても 60 秒に収まるのは問い合わせ 1 回まで。通知 1 件は 1〜5 回問い合わせる。
+# 3 つの AZ なら 2 ×（3 × 3 + 10）+ 1 = 39 秒で、Firehose の 27.6 秒と足すと 66.6 秒になり、問い合わせ 1 回でも 60 秒を超える。
+# そのときは ops/up.sh が注意を出す（2026-10-05 のユーザー決定。timeout とここの待ちは変えない））。agent/graph.py の既定
 # （接続 10 秒・読み 60 秒・3 回まで）はエージェントと up.sh が使うので変えず、graph._cache に入れて差し替える
 NEPTUNE_CONFIG = Config(connect_timeout=3, read_timeout=10, retries={"total_max_attempts": 2, "mode": "standard"})
 _cache = {"firehose": None, "neptune": None}   # toolkit._clients とは分ける（toolkit.client("firehose") が先に既定の設定で作ったものを拾わない）
