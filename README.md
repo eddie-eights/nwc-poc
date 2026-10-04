@@ -99,21 +99,21 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 
 専用の画面は無く、コンソールの各サービスのページで見る。コンソールの右上のリージョンを東京にする。
 
-| 見たいもの | サービス | リソース名 | コンソールでの行き方 |
-|---|---|---|---|
-| エージェント | Bedrock AgentCore | Runtime `<owner>_nwc_poc_agent`、Gateway `<prefix>-tools`（`WORKFLOW=1`） | Amazon Bedrock AgentCore → Agent Runtime / Gateways |
-| ガードレール、手順書の検索 | Bedrock | ガードレール `<prefix>-guardrail`、ナレッジベース `<prefix>-kb`（`CREATE_KB=1`） | Amazon Bedrock → ガードレール / ナレッジベース |
-| Kafka | MSK | クラスター `<prefix>-stream` | Amazon MSK → クラスター → `<prefix>-stream`（トピックの中身は見られない。モニタリングと設定だけ） |
-| Spark のジョブ | EMR Serverless | アプリケーション `<prefix>-spark` | Amazon EMR → EMR Serverless → EMR Studio を開く → アプリケーション → `<prefix>-spark` → ジョブ実行 → 「Spark UI」 |
-| 生データの表 | S3 Tables | テーブルバケット `<prefix>-tables`、名前空間 `netops` | Amazon S3 → テーブルバケット → `<prefix>-tables`（中身を引くのは Athena。カタログ `s3tablescatalog`） |
-| ログの検索先 | OpenSearch Serverless | コレクション `<prefix>-logs`（KB は `<prefix>-kb`） | Amazon OpenSearch Service → サーバーレス → コレクション。**OpenSearch Dashboards は開けない**（コレクションは VPC エンドポイントからだけ届く）。中身は Grafana で見る |
-| メトリクス | Managed Service for Prometheus | ワークスペース（エイリアス `<prefix>-metrics`） | Amazon Prometheus → ワークスペース。グラフの画面は無いので Grafana で見る |
-| トポロジのグラフ | Neptune | クラスター `<prefix>-graph` | Amazon Neptune → クラスター。グラフを見る画面は無いので、Web の「トポロジ」タブで見る |
-| Nautobot の DB | RDS | インスタンス `<prefix>-nautobot` | Amazon RDS → データベース |
-| コンテナ | ECS | クラスター `<prefix>-telegraf` / `<prefix>-analytics`（Grafana・Splunk）/ `<prefix>-nautobot` / `<prefix>-workflow` | Amazon ECS → クラスター → サービス → タスク → 「ログ」 |
-| アラートの流れ | SNS / SQS / Lambda | トピック `<prefix>-alerts`、キュー `<prefix>-anomalies`（と `-dlq`）、関数 `<prefix>-graph-status` / `<prefix>-tools` / `<prefix>-kb-index` | Amazon SNS → トピック、Amazon SQS → キュー、AWS Lambda → 関数 → 「モニタリング」 |
-| ログ | CloudWatch Logs | `/ecs/<prefix>-{telegraf,grafana,splunk,nautobot,workflow}`、`/aws/emr-serverless/<prefix>`、`/aws/lambda/<prefix>-*`、`/<prefix>/msk`、`/<prefix>/vpc-flow-logs` | CloudWatch → ロググループ → `<prefix>` で絞る |
-| EC2（Web、lab） | EC2 / Systems Manager | `<prefix>-web`、`<prefix>-lab` | EC2 → インスタンス。中に入るのは Systems Manager → セッションマネージャー（画面は無い。シェルだけ） |
+| 見たいもの | サービス | コンソールでの行き方 |
+|---|---|---|
+| エージェント | Bedrock AgentCore | Amazon Bedrock AgentCore → Agent Runtime / Gateways |
+| ガードレール、手順書の検索 | Bedrock | Amazon Bedrock → ガードレール / ナレッジベース |
+| Kafka | MSK | Amazon MSK → クラスター → `<prefix>-stream`（トピックの中身は見られない。モニタリングと設定だけ） |
+| Spark のジョブ | EMR Serverless | Amazon EMR → EMR Serverless → EMR Studio を開く → アプリケーション → `<prefix>-spark` → ジョブ実行 → 「Spark UI」 |
+| 生データの表 | S3 Tables | Amazon S3 → テーブルバケット → `<prefix>-tables`（中身を引くのは Athena。カタログ `s3tablescatalog`） |
+| ログの検索先 | OpenSearch Serverless | Amazon OpenSearch Service → サーバーレス → コレクション。**OpenSearch Dashboards は開けない**（コレクションは VPC エンドポイントからだけ届く）。中身は Grafana で見る |
+| メトリクス | Managed Service for Prometheus | Amazon Prometheus → ワークスペース。グラフの画面は無いので Grafana で見る |
+| トポロジのグラフ | Neptune | Amazon Neptune → クラスター。グラフを見る画面は無いので、Web の「トポロジ」タブで見る |
+| Nautobot の DB | RDS | Amazon RDS → データベース |
+| コンテナ | ECS | Amazon ECS → クラスター → サービス → タスク → 「ログ」 |
+| アラートの流れ | SNS / SQS / Lambda | Amazon SNS → トピック、Amazon SQS → キュー、AWS Lambda → 関数 → 「モニタリング」 |
+| ログ | CloudWatch Logs | CloudWatch → ロググループ → `<prefix>` で絞る |
+| EC2（Web、lab） | EC2 / Systems Manager | EC2 → インスタンス。中に入るのは Systems Manager → セッションマネージャー（画面は無い。シェルだけ） |
 
 ## よく使うキー
 
