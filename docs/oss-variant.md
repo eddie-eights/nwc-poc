@@ -26,7 +26,7 @@
 | Kafka | MSK | Apache Kafka（KRaft）を ECS に 3 台。データは EFS |
 | ストリーム処理 | EMR Serverless（Spark） | Apache Spark を ECS に（格納先ごとに 1 タスク） |
 | 生データの表 | S3 Tables（Iceberg） | 変えない（マネージドのまま） |
-| ログの検索 | OpenSearch Serverless | OpenSearch を ECS に 3 台、レプリカ 1。データは EFS。候補として VictoriaLogs を残す |
+| ログの検索 | OpenSearch Serverless | OpenSearch を ECS に 3 台（データ 2 台でレプリカ 1、まとめ役だけの小さい 1 台）。データは EFS。候補として VictoriaLogs を残す |
 | メトリクス | Amazon Managed Service for Prometheus | VictoriaMetrics のクラスターを ECS に（vminsert 1、vmselect 1、vmstorage 3、複製数 2）。データは EFS |
 | トポロジのグラフ | Neptune Analytics（openCypher。中心性と連結成分は `neptune.algo.*`） | Neo4j Community Edition を ECS に 1 台。アルゴリズムは GDS（動かなければ NetworkX） |
 | Nautobot の DB | RDS | 変えない（マネージドのまま） |

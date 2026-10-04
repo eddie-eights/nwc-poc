@@ -18,7 +18,7 @@ main(fable-5.1) / effort: high
 |---|---|---|---|---|
 | MSK | Apache Kafka（KRaft） | 3 台。どの台も broker と controller を兼ねる | EFS | セキュリティグループだけ |
 | EMR Serverless | Apache Spark | 1 コンテナ（ジョブごとに 1 タスク） | なし（checkpoint は S3） | タスクロール |
-| OpenSearch Serverless | OpenSearch | 3 台。どの台も全部の役を兼ねる。レプリカ 1 | EFS | パスワード（SSM の SecureString） |
+| OpenSearch Serverless | OpenSearch | データを持つ 2 台（レプリカ 1）と、まとめ役（cluster manager）だけの小さい 1 台 | データの 2 台は EFS。まとめ役はタスクの一時領域 | パスワード（SSM の SecureString） |
 | Amazon Managed Service for Prometheus | VictoriaMetrics（クラスター） | vminsert 1、vmselect 1、vmstorage 3、複製数 2 | EFS | セキュリティグループだけ |
 | Neptune Analytics | Neo4j Community Edition | 1 台 | タスクの一時領域 | パスワード（SSM の SecureString） |
 
@@ -45,7 +45,7 @@ flowchart LR
   T["Telegraf"] -->|"9092"| K["Kafka<br/>3 台（KRaft）"]
   K --> S["Spark<br/>格納先ごとに 1 タスク"]
   S --> I["S3 Tables<br/>（変えない）"]
-  S -->|"_bulk 9200"| O["OpenSearch<br/>3 台"]
+  S -->|"_bulk 9200"| O["OpenSearch<br/>データ 2 台 + まとめ役 1 台"]
   S -->|"remote write 8480"| VI["vminsert"]
   VI --> VS["vmstorage<br/>3 台、複製数 2"]
   VQ["vmselect"] --> VS
@@ -61,7 +61,7 @@ flowchart LR
 |---|---|---|---|---|
 | Kafka | 3（AZ ごとに 1） | `apache/kafka:4.3.1` | 9092（クライアント）、9093（controller） | `kafka-1`、`kafka-2`、`kafka-3` |
 | Spark | 格納先の数（いまのジョブと同じ分け方） | `apache/spark:3.5.9` に jar とスクリプトを足して自前でビルド | なし | なし |
-| OpenSearch | 3（AZ ごとに 1） | `opensearchproject/opensearch:3.9.0` | 9200、9300（ノード間） | `opensearch-1`〜`3` と、まとめの `opensearch` |
+| OpenSearch | 3（AZ ごとに 1）。データ 2、まとめ役だけ 1 | `opensearchproject/opensearch:3.9.0` | 9200、9300（ノード間） | `opensearch-1`、`opensearch-2`（データ）、`opensearch-cm`（まとめ役）と、データの 2 台をまとめた `opensearch` |
 | vminsert | 1 | `victoriametrics/vminsert:v1.153.0-cluster` | 8480 | `vminsert` |
 | vmselect | 1 | `victoriametrics/vmselect:v1.153.0-cluster` | 8481 | `vmselect` |
 | vmstorage | 3（AZ ごとに 1） | `victoriametrics/vmstorage:v1.153.0-cluster` | 8400、8401、8482 | `vmstorage-1`〜`3` |
@@ -69,6 +69,8 @@ flowchart LR
 
 - **台ごとに ECS のサービスを分ける（Kafka、OpenSearch、vmstorage）。**
   どの台も「自分の番号」と「自分の EFS のアクセスポイント」を持つ。1 つのサービスで 3 タスクにすると、番号と置き場をタスクごとに固定できない。
+- **OpenSearch は、データ 2 台とまとめ役 1 台に分ける（2026-10-04 のユーザーの決定）。**
+  レプリカ 1 なら、データを持つ台は 2 台で足りる。まとめ役の選挙には過半数の票が要り、2 台では 1 台止まると選べない。3 台目は票のためだけに置くので、データを持たない小さいタスクにする（EFS も要らない）。データの台が 1 台止まっているあいだは、複製が無い。
 - **3 台のものは AZ をまたいで置く。**
   2 つ目と 3 つ目の AZ のサブネットは `feat/az-num` が入れる。EFS のマウントターゲットも 3 つの AZ に作る。
 - **Spark のバージョンは 3.5 系。**
@@ -87,6 +89,7 @@ flowchart LR
 | Kafka | `CLUSTER_ID` | 3 台で同じ値（`ops/up.sh` が 1 回だけ作って SSM に置く） |
 | OpenSearch | `discovery.seed_hosts` | 3 台の名前 |
 | OpenSearch | `cluster.initial_cluster_manager_nodes` | 3 台のノード名 |
+| OpenSearch | `node.roles` | データの 2 台は既定（全部の役）。まとめ役の 1 台は `cluster_manager` だけ |
 | OpenSearch | index のレプリカ | 1 |
 | OpenSearch | `node.store.allow_mmap` | `false`（Fargate は `vm.max_map_count` を変えられないため。未確認） |
 | vminsert | `-storageNode`、`-replicationFactor` | 3 台の `vmstorage-N:8400`、2 |
@@ -161,6 +164,7 @@ oss/
 | 推測 | 確かめ方 |
 |---|---|
 | OpenSearch 3.9.0 が `node.store.allow_mmap=false` で、`vm.max_map_count` を上げずに 3 台のクラスターになる | 手元で `vm.max_map_count` を既定のままにして起こす |
+| まとめ役だけの台（`node.roles: [cluster_manager]`）を足すと、どの 1 台を止めても選挙ができる | 手元で 3 台を 1 台ずつ止める |
 | GDS のプラグインが Neo4j Community Edition の上で動き、`gds.degree`、`gds.closeness`、`gds.wcc` が呼べる | 手元で lab のトポロジを入れて呼ぶ |
 | GDS の結果が、Neptune の `neptune.algo.*` の結果と同じ並びになる | 同じトポロジで比べる（数値は一致しなくてよい。順位と島の数を見る） |
 | `apache/spark:3.5.9` に iceberg-spark-runtime と s3-tables-catalog を足せば、S3 Tables に書ける | 手元からは AWS の認証が要る。AWS での確認に回す |
@@ -172,7 +176,7 @@ oss/
 | ファイル | 変更 |
 |---|---|
 | `oss/terraform/pipeline/stream/` | Kafka の 3 サービス、タスク定義、Cloud Map、EFS のアクセスポイント。Telegraf はいまと同じ |
-| `oss/terraform/pipeline/analytics/` | EFS（ファイルシステム、3 つの AZ のマウントターゲット）、OpenSearch の 3 サービス、VictoriaMetrics の 5 サービス、Spark のサービス、Grafana（データソースが違う）、Splunk（いまと同じ） |
+| `oss/terraform/pipeline/analytics/` | EFS（ファイルシステム、3 つの AZ のマウントターゲット）、OpenSearch の 3 サービス（データ 2、まとめ役 1）、VictoriaMetrics の 5 サービス、Spark のサービス、Grafana（データソースが違う）、Splunk（いまと同じ） |
 | `oss/terraform/pipeline/graph/` | Neo4j のサービス。status の Lambda はいまと同じコードで、環境変数が違う |
 | `oss/terraform/` のほかのルート | `terraform/` の同じファイルへのシンボリックリンク |
 | `terraform/` の各ルートの `locals.tf`、`variables.tf` | 接頭辞の末尾を変数にする（既定は `nwc-poc`）。Neptune、MSK、AMP の output を読む箇所を「あるほうを使う」にする |
@@ -211,7 +215,7 @@ oss/
 ### 手元のコンテナ（実装者が実行する）
 
 1. Kafka 3 台: トピックを複製数 3 で作り、1 台を止めても、書いた 1000 件が全部読める。
-2. OpenSearch 3 台: `_cluster/health` が `green`、ノード数 3。1 台を止めると `yellow` になり、入れた 1000 件が全部検索できる。
+2. OpenSearch 3 台: `_cluster/health` が `green`、ノード数 3。データの台を 1 台止めると `yellow` になり、入れた 1000 件が全部検索できる。まとめ役だけの台を止めても `green` のまま検索できる。
 3. VictoriaMetrics: vmstorage を 1 台止めても、入れた系列が全部読め、結果に `"isPartial":false` が返る。
 4. Neo4j: `seed_graph.py` と同じトポロジを入れ、`centrality` が degree、closeness、component を返す。島の数は 1。
 5. Spark: compose の Kafka から読み、OpenSearch と vminsert に書ける。
