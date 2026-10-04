@@ -96,7 +96,9 @@ def _query(by_id: str = "", device_id: str = "", status: str = "", limit: int = 
     workgroup, catalog, namespace, table = settings
     params = [v for v in (by_id, device_id, status) if v]
     sql = proposals_sql(catalog, namespace, table, by_id=bool(by_id), by_device=bool(device_id), by_status=bool(status), limit=limit)
-    cells_list, error = toolkit.athena_rows(sql, workgroup, params, max_rows=limit, timeout=TIMEOUT, poll=POLL)
+    # proposal_id のために広い検査で渡す。device_id は list_proposals が ATHENA_PARAM_RE で、status は QUERYABLE で先に確かめている
+    cells_list, error = toolkit.athena_rows(sql, workgroup, params, max_rows=limit, timeout=TIMEOUT, poll=POLL,
+                                            param_re=toolkit.ATHENA_TEXT_RE)
     if error:
         return [], error
     return [_row(cells) for cells in cells_list], ""
@@ -118,7 +120,7 @@ def list_proposals(status: str = "pending", limit: int = 50, device_id: str = ""
 def get_proposal(proposal_id: str) -> dict:
     """1 件だけ引く（画面の承認タブが、詳細を出すときと決める直前に使う）。無い・読めない・未配備なら空の辞書"""
     proposal_id = str(proposal_id or "").strip()
-    if not proposal_id or not toolkit.ATHENA_PARAM_RE.match(proposal_id):
+    if not proposal_id or not toolkit.ATHENA_TEXT_RE.match(proposal_id):
         return {}
     items, error = _query(by_id=proposal_id, limit=1)
     return items[0] if items and not error else {}
@@ -135,8 +137,8 @@ def decide(proposal_id: str, decision: str, decided_by: str = "web") -> dict:
     proposal_id = str(proposal_id or "").strip()
     if not proposal_id:
         return {"error": "proposal_id が空"}
-    if not toolkit.ATHENA_PARAM_RE.match(proposal_id):
-        return {"error": "proposal_id に使えない文字がある（英数字と . _ : / # ? - だけ）"}
+    if not toolkit.ATHENA_TEXT_RE.match(proposal_id):
+        return {"error": "proposal_id に使えない文字がある（' と制御文字。長さは 1000 文字まで）"}
     items, error = _query(by_id=proposal_id, limit=1)
     if error:
         return {"error": f"修復案を読めない: {error}"}
@@ -148,7 +150,7 @@ def decide(proposal_id: str, decision: str, decided_by: str = "web") -> dict:
     try:
         toolkit.client("sqs").send_message(QueueUrl=queue_url, MessageBody=json.dumps(body, ensure_ascii=False))
     except (ClientError, BotoCoreError) as e:
-        return {"error": f"送れない: {str(e)[:200]}"}
+        return {"error": f"送れない: {toolkit.brief_error(e)}"}
     return {"proposal_id": proposal_id, "status": "sent", "decision": decision, "decided_by": decided_by, "sent_at": now}
 
 

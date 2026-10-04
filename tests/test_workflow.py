@@ -631,6 +631,35 @@ for n in web_srcs:
 uploaded = set(re.search(r"for f in ([\w ]+); do", main_out).group(1).split())
 check(f"main の upload_web_command は Web が import する agent のモジュールを全部上げる（足りない: {sorted(web_shared - uploaded)}）",
       web_shared and not (web_shared - uploaded))
+# 上の検査は web/*.py の import しか見ない。agent のモジュールどうしの import（proposals → evidence など）と、
+# import のときに boto3 のクライアントを作ること（Web の EC2 は修復案を配備していなくても起動する）は、上げる分だけを別のディレクトリに写して確かめる
+import shutil as _sh, subprocess as _wsp, tempfile as _tf  # noqa: E402,E401
+_wd = _tf.mkdtemp()
+for _m in uploaded:
+    _sh.copy(os.path.join(ROOT, "agent", _m + ".py"), _wd)
+_sh.copytree(os.path.join(ROOT, "agent", "data"), os.path.join(_wd, "data"))
+_child = r'''
+import sys, types
+made = []
+def _no(*a, **k):
+    made.append(a)
+    raise RuntimeError("boto3 のクライアントを import のときに作った")
+boto3 = types.ModuleType("boto3"); boto3.client = boto3.Session = _no
+botocore = types.ModuleType("botocore"); exc = types.ModuleType("botocore.exceptions"); cfg = types.ModuleType("botocore.config")
+class ClientError(Exception): pass
+class BotoCoreError(Exception): pass
+exc.ClientError, exc.BotoCoreError, cfg.Config = ClientError, BotoCoreError, (lambda **k: k)
+sys.modules.update({"boto3": boto3, "botocore": botocore, "botocore.exceptions": exc, "botocore.config": cfg})
+sys.path.insert(0, sys.argv[1])
+import proposals, toolkit, topology, graph
+print("RESULT", sorted(m for m in ("evidence", "app", "mcp_client") if m in sys.modules), made,
+      proposals.list_proposals() == {"error": proposals.NOT_DEPLOYED, "proposals": []})
+'''
+_wr = _wsp.run([sys.executable, "-I", "-c", _child, _wd], capture_output=True, text=True, cwd=_wd, env={"PATH": os.environ.get("PATH", "")}, timeout=60)
+_sh.rmtree(_wd, ignore_errors=True)
+check(f"Web に上げる agent のモジュール（{' '.join(sorted(uploaded))}）だけで proposals を import でき、import で boto3 のクライアントを作らず、"
+      f"設定が無ければ NOT_DEPLOYED を返す（evidence などは読まない）: {(_wr.stdout + _wr.stderr).strip()[-300:]}",
+      _wr.returncode == 0 and "RESULT [] [] True" in _wr.stdout)
 
 # ---- ops
 up = read("ops", "up.sh"); down = read("ops", "down.sh"); chk = read("ops", "check.sh")
