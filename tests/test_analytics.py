@@ -351,7 +351,16 @@ check("OpenSearch は _bulk に aoss の SigV4、Prometheus は remote write に
 # select の各行は「….alias("列")」か、そのままの列名「F.col("topic")」
 block = src.split("rows = parsed.select(")[1].split(").where(")[0]
 aliases = [a or b for a, b in re.findall(r'(?:\.alias\("([a-z_]+)"\)|^\s*F\.col\("([a-z_]+)"\)),\s*$', block, re.M)]
-check("スクリプトの列は tables.tf の列と同じ順", aliases == TABLE_COLUMNS)
+ADDED_COLUMNS = ["event_id", "kafka_topic", "kafka_partition", "kafka_offset"]
+check("スクリプトの列は tables.tf の列と同じ順で、そのあとに event_id / kafka_topic / kafka_partition / kafka_offset（ジョブが ALTER TABLE で足す列）",
+      aliases == TABLE_COLUMNS + ADDED_COLUMNS)
+check("tables.tf の schema には足す列を書かない（schema を変えるとテーブルを作り直して行が消える）。コメントで ICEBERG_ADDED_COLUMNS を指す",
+      not any(c in [f[0] for f in fields] for c in ADDED_COLUMNS) and "ICEBERG_ADDED_COLUMNS" in open(os.path.join(TF_DIR, "tables.tf"), encoding="utf-8").read())
+_parsed = src.split("parsed = raw.select(")[1].split("rows = parsed.select(")[0]
+check("event_id は from_json の前の value（binary のまま。cast しない）の SHA-256 の 16 進（F.sha2(…, 256)）、Kafka の partition / offset もここで取る",
+      'F.sha2(F.col("value"), 256).alias("event_id")' in _parsed and 'F.col("partition").alias("kafka_partition")' in _parsed
+      and 'F.col("offset").alias("kafka_offset")' in _parsed and "sha2(F.col(\"value\").cast" not in src)
+check("重複は落とさない（.dropDuplicates( を呼ばない。落とすのは読む側）", ".dropDuplicates(" not in src and ".dropDuplicatesWithinWatermark(" not in src)
 check("timestamp が無い行は捨てる", '.where(F.col("ts").isNotNull())' in src)
 check("tags / fields は JSON 文字列のまま", 'F.to_json(F.col("m.tags")).alias("tags_json")' in src and 'F.to_json(F.col("m.fields")).alias("fields_json")' in src)
 
@@ -807,11 +816,19 @@ class _Reader:
 
 
 class _Spark:
-    def __init__(self): self.readers = []
+    """readStream は option を覚え、table(名前).schema.fields は have の列、sql は文を覚える（ensure_iceberg_columns 用）"""
+    def __init__(self, have=None):
+        self.readers, self.sqls, self.tables = [], [], []
+        self.have = list(TABLE_COLUMNS if have is None else have)
     @property
     def readStream(self):
         self.readers.append(_Reader())
         return self.readers[-1]
+    def table(self, name):
+        self.tables.append(name)
+        cols = [type("F", (), {"name": n})() for n in self.have]
+        return type("T", (), {"schema": type("Sc", (), {"fields": cols})()})()
+    def sql(self, q): self.sqls.append(q)
 
 
 import types as _types
@@ -824,7 +841,7 @@ _b4 = base + ["--sinks", "iceberg,splunk,opensearch,prometheus", "--iceberg-tabl
               "--prometheus-url", "https://p/api/v1/remote_write", "--opensearch-endpoint", "https://o"]
 def _reads(*extra):
     """4 つの格納先で build し、格納先ごとに Kafka の読み取りに付いた maxOffsetsPerTrigger（無ければ None）を返す"""
-    sp, args = _Spark(), mod.parse_args(_b4 + list(extra))
+    sp, args = _Spark(TABLE_COLUMNS + ADDED_COLUMNS), mod.parse_args(_b4 + list(extra))
     mod.build(sp, args)
     assert len(sp.readers) == len(args.sinks) and all(
         r.opts["subscribe"] == mod.sink_topics(s, args.metric_topics, args.log_topics) for s, r in zip(args.sinks, sp.readers))
@@ -842,6 +859,16 @@ try:
     _r_splunk = _reads("--max-offsets-per-trigger", "10000", "--max-offsets-per-trigger-by-sink", "splunk=2000")
     _r_prom0 = _reads("--max-offsets-per-trigger-by-sink", "prometheus=0")
     _r_mixed = _reads("--max-offsets-per-trigger", "0", "--max-offsets-per-trigger-by-sink", "opensearch=300,iceberg=50000")
+    # 起動時の ALTER: iceberg のクエリを組む前に足す（iceberg_query が呼ばれた時点の sql の数を覚える）
+    _alter_rec = []
+    mod.iceberg_query = lambda rows, table, checkpoint: _alter_rec.append(len(_sp_old.sqls)) or "iceberg"
+    _sp_old = _Spark()
+    _alter_out = _stderr(lambda: mod.build(_sp_old, mod.parse_args(_b4)))[1]
+    _alter_at = _alter_rec[:]  # 次の build でも呼ばれるので、ここまでの分を残す
+    _sp_new = _Spark(TABLE_COLUMNS + ADDED_COLUMNS)
+    _new_out = _stderr(lambda: mod.build(_sp_new, mod.parse_args(_b4)))[1]
+    _sp_http = _Spark()
+    mod.build(_sp_http, mod.parse_args(base + ["--sinks", "opensearch,prometheus", "--prometheus-url", "https://p/api/v1/remote_write", "--opensearch-endpoint", "https://o"]))
 finally:
     for _k, _v in _saved_mods.items():
         if _v is None:
@@ -862,6 +889,21 @@ check("build prometheus=0: Prometheus のクエリだけ付かず、同じジョ
 check("build 共通 0 + opensearch=300,iceberg=50000: 書いた格納先だけ付き、ほかは付かない",
       _r_mixed == {"iceberg": "50000", "splunk": None, "opensearch": "300", "prometheus": None})
 check("main は格納先ごとの上限（0 なら上限なし）を起動時のログに出す", "1 回 {max_offsets(args, s) or '上限なし'} 件まで" in src)
+check("build iceberg: 列の足りない表（tables.tf の 8 列）には iceberg のクエリを組む前に ALTER TABLE を 1 回出し、足した列をログに出す",
+      _sp_old.tables == ["s3tables.netops.snmp_metrics"] and _alter_at == [1]
+      and _sp_old.sqls == ["ALTER TABLE s3tables.netops.snmp_metrics ADD COLUMNS (event_id string, kafka_topic string, kafka_partition int, kafka_offset bigint)"]
+      and "iceberg: s3tables.netops.snmp_metrics に列 event_id, kafka_topic, kafka_partition, kafka_offset を足した（いまある行は null）" in _alter_out)
+check("build iceberg: 列がそろっていれば ALTER も列のログも出さない（2 回目の起動から）", _sp_new.sqls == [] and "を足した" not in _new_out)
+check("build: iceberg が無ければ表を見ない（HTTP の格納先のジョブは S3 Tables に触らない）", _sp_http.tables == [] and _sp_http.sqls == [])
+check("ICEBERG_ADDED_COLUMNS は event_id string / kafka_topic string / kafka_partition int / kafka_offset bigint（Kafka の partition は int、offset は long）",
+      mod.ICEBERG_ADDED_COLUMNS == (("event_id", "string"), ("kafka_topic", "string"), ("kafka_partition", "int"), ("kafka_offset", "bigint"))
+      and [n for n, _ in mod.ICEBERG_ADDED_COLUMNS] == ADDED_COLUMNS)
+_sp_part = _Spark(TABLE_COLUMNS + ["event_id", "kafka_topic"])
+check("ensure_iceberg_columns: 一部だけあれば無い列だけを順に足して名前を返す",
+      mod.ensure_iceberg_columns(_sp_part, "c.n.t") == ["kafka_partition", "kafka_offset"]
+      and _sp_part.sqls == ["ALTER TABLE c.n.t ADD COLUMNS (kafka_partition int, kafka_offset bigint)"])
+_sp_all = _Spark(TABLE_COLUMNS + ADDED_COLUMNS)
+check("ensure_iceberg_columns: 全部あれば何もしない（空のリスト）", mod.ensure_iceberg_columns(_sp_all, "c.n.t") == [] and _sp_all.sqls == [])
 
 def read_varint(b, i):
     n = shift = 0
@@ -941,6 +983,57 @@ check("row_to_record: ts は epoch 秒、tags は辞書、壊れた JSON は空�
       r["ts"] == 1700000000.0 and r["tags"] == {"a": "b"} and r["fields"] == {} and r["topic"] == "traps")
 check("row_to_record: naive な datetime は UTC とみなす", mod.row_to_record({"ts": dt.datetime(2023, 11, 14, 22, 13, 20)})["ts"] == 1700000000.0)
 check("_number: 数値の文字列は float、それ以外は None", mod._number("1.5") == 1.5 and mod._number("up") is None and mod._number(None) is None and mod._number(False) == 0.0)
+
+# ---- 一意の番号 event_id と Kafka の位置（2026-10-04）: 同じ value なら Splunk と OpenSearch の本文で同じ、1 バイト違えば違う。Prometheus には出ない
+import hashlib
+def _kafka_row(value, offset, partition=0, topic="metrics"):
+    """Kafka の 1 メッセージを read_rows と同じ列の行にする（event_id は F.sha2(value, 256) と同じ SHA-256 の 16 進。from_json は json.loads で代える）"""
+    m = json.loads(value)
+    return {"ts": dt.datetime.fromtimestamp(m["timestamp"], dt.timezone.utc), "topic": topic, "measurement": m["name"],
+            "agent_host": m["tags"].get("agent_host"), "host": m["tags"].get("host"),
+            "tags_json": json.dumps(m["tags"]), "fields_json": json.dumps(m["fields"]),
+            "event_id": hashlib.sha256(value).hexdigest(), "kafka_topic": topic, "kafka_partition": partition, "kafka_offset": offset}
+_val = b'{"fields":{"ifInOctets":123,"ifOperStatus":1},"name":"interface","tags":{"agent_host":"r1","host":"h","ifName":"Gi0/1"},"timestamp":1700000000}'
+_val1 = _val.replace(b'"ifInOctets":123', b'"ifInOctets":124')
+check("（前提）1 バイトだけ違う value", len(_val1) == len(_val) and sum(a != b for a, b in zip(_val, _val1)) == 1)
+# 同じ value が 2 回（Telegraf が Kafka に入れ直した = 別の offset）と、1 バイト違う value が 1 回
+_recs = [mod.row_to_record(_kafka_row(_val, 10)), mod.row_to_record(_kafka_row(_val, 11, partition=1)), mod.row_to_record(_kafka_row(_val1, 12))]
+check("row_to_record: event_id / kafka_topic / kafka_partition / kafka_offset をそのまま運ぶ（無ければ None）",
+      _recs[1]["event_id"] == hashlib.sha256(_val).hexdigest() and _recs[1]["kafka_topic"] == "metrics"
+      and _recs[1]["kafka_partition"] == 1 and _recs[1]["kafka_offset"] == 11
+      and all(r[k] is None for k in ADDED_COLUMNS))
+_bodies = {}
+_orig_sig = mod.sigv4_headers
+mod.sigv4_headers = lambda method, url, body, service, region, headers: dict(headers)
+mod.http_post = lambda url, body, headers, context=None: (_bodies.setdefault(url, []).append(body), (200, '{"errors":false}'))[1]
+try:
+    mod.make_splunk_sender("https://s:8088", "tok")(_recs)
+    mod.make_opensearch_sender("https://o", "snmp-logs", "ap-northeast-1")(_recs)
+    mod.make_prometheus_sender("https://p/api/v1/remote_write", "ap-northeast-1")(_recs)
+finally:
+    mod.http_post, mod.sigv4_headers = _orig_post, _orig_sig
+_sp_ev = [json.loads(x)["event"] for x in _bodies["https://s:8088/services/collector/event"][0].decode().split("\n")]
+_os_doc = [json.loads(x) for x in _bodies["https://o/snmp-logs/_bulk"][0].decode().splitlines()[1::2]]
+_eid = hashlib.sha256(_val).hexdigest()
+check("event_id は value の SHA-256 の 16 進 64 文字（小文字）", re.fullmatch(r"[0-9a-f]{64}", _eid) is not None)
+for _name, _got_ev in (("Splunk の event", _sp_ev), ("OpenSearch のドキュメント", _os_doc)):
+    check(f"{_name}: 同じ value の 2 行は event_id が同じ（offset が違っても）、1 バイト違う value は違う",
+          len(_got_ev) == 3 and _got_ev[0]["event_id"] == _got_ev[1]["event_id"] == _eid and _got_ev[2]["event_id"] != _eid
+          and _got_ev[2]["event_id"] == hashlib.sha256(_val1).hexdigest())
+    check(f"{_name}: Kafka の位置（kafka_topic / kafka_partition / kafka_offset）を元のメッセージを追うために入れる",
+          [(e["kafka_topic"], e["kafka_partition"], e["kafka_offset"]) for e in _got_ev] == [("metrics", 0, 10), ("metrics", 1, 11), ("metrics", 0, 12)])
+check("Splunk の event: tags / fields は今のまま（保存済みサーチの spath が読む tags.* / fields.* は変わらない）",
+      _sp_ev[0]["tags"]["ifName"] == "Gi0/1" and _sp_ev[0]["fields"] == {"ifInOctets": 123, "ifOperStatus": 1}
+      and not any(k.startswith(("event_id", "kafka_")) for e in _sp_ev for k in list(e["tags"]) + list(e["fields"])))
+_prom_raw = b"".join(snappy_decompress(b) for b in _bodies["https://p/api/v1/remote_write"])
+_prom_labels = [decode_fields(v) for _n1, _w1, ts in decode_fields(_prom_raw) for n, w, v in decode_fields(ts) if n == 1]
+check("Prometheus の remote write: 本文に event_id / kafka_ / 番号の値が無い（ラベルは tags と __name__ だけ）",
+      len(_prom_labels) > 0 and b"event_id" not in _prom_raw and b"kafka_" not in _prom_raw
+      and _eid.encode() not in _prom_raw and hashlib.sha256(_val1).hexdigest().encode() not in _prom_raw
+      and {l[0][2] for l in _prom_labels} == {b"__name__", b"agent_host", b"host", b"ifName"})
+check("prometheus_series: ラベルの名前に event_id / kafka_* が出ない（1 サンプルごとに別の系列にしない）",
+      all(not n.startswith(("event_id", "kafka_")) for l, _, _ in mod.prometheus_series(_recs) for n, _ in l)
+      and len({tuple(l) for l, _, _ in mod.prometheus_series(_recs[:2])}) == 2)
 
 # ---- ops/up.sh / ops/down.sh / ops/check.sh / deploy.env.example とのつながり
 check("up.sh は 6 本の jar を置く", len(re.findall(r'^\s*"\$MAVEN/', up, re.M)) == 6)
