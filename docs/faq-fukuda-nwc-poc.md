@@ -753,6 +753,32 @@ Lambda から書く経路は 2 案あった。
 - **1 つのクエリが止まったら、ジョブごと終わらせる。** EMR Serverless が起こし直し、どのクエリも checkpoint の続きから読むので、データは落ちない。
 - ジョブは Terraform のリソースではなく、`ops/up.sh` が `start-job-run` で起こす。
 
+### Q. Kafka のパーティションが 4 つあるとしたら、Spark で分散して購読させたい場合は Spark のコンテナを 4 つにすればいい？
+
+**A. ジョブを 4 つに増やすのではなく、1 つのジョブの executor（働き手のコンテナ）を増やす。** パーティション 4 つなら、executor のコアを合わせて 4 つ以上にすれば、4 つを同時に読む。
+
+Spark の読み方は、Kafka のふつうのコンシューマーグループと違う。
+
+| | Kafka のふつうのコンシューマー | Spark Structured Streaming |
+|---|---|---|
+| 分け方 | 同じグループのプロセスを増やすと、Kafka がパーティションを配り直す | driver が「このパーティションのここからここまで」を決め、executor のタスクに配る |
+| 並列の単位 | プロセス 1 つがパーティションを受け持つ | パーティション 1 つがタスク 1 つ。タスクは executor のコアの数だけ同時に走る |
+| 増やすもの | コンシューマーのプロセス | executor の数かコアの数 |
+
+- **ジョブを 4 つ起こすのは間違い。** checkpoint を分けると 4 つとも全部のパーティションを読み、同じ行が 4 回書かれる。checkpoint を共有すると壊れる。
+- **パーティションの数が並列の上限。** パーティション 4 つに executor を 8 コア付けても、同時に読むのは 4 つまで（`minPartitions` で 1 つをさらに割ることはできる）。
+
+この PoC のいまの設定:
+
+| 項目 | 値 | 場所 |
+|---|---|---|
+| トピックのパーティション | 2 | `terraform/pipeline/stream/msk.tf` の `num.partitions` |
+| executor | 1 つ、1 コア、固定（自動で増やさない） | `terraform/pipeline/analytics/outputs.tf` の `spark.executor.instances` ほか |
+
+- つまり、いまは分散して読んでいない。タスクは 1 つずつ順に走る。PoC の量では足りている。
+- 増やすなら `spark.executor.instances` か `spark.executor.cores` を上げ、EMR Serverless の上限（`max_cpu` / `max_memory`）も合わせる。
+- **読むのを並列にしても、書くほうは並列にならない格納先がある。** OpenSearch、Prometheus、Splunk への送信は、行を driver に集めて（`collect`）から driver が 1 本で送っている（`http_query`）。executor を増やして速くなるのは S3 Tables（Iceberg）への書き込みだけ。量が増えたら、送信を executor の側でやる形（`foreachPartition`）に直す必要がある。
+
 ### Q. Grafana は OpenSearch と Prometheus をデータソースにしてる？
 
 **A. その 2 つ。** 定義は `grafana/provisioning/datasources/`。
