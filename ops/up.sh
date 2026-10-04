@@ -84,7 +84,7 @@
 # ---- デバッグ用（ふだんは書かない） ----
 #   NETWORK_PERIMETER=0     AccessDenied の切り分け。VPC の外からの AWS の API を拒む Deny（terraform/base/core の perimeter.tf）を外す。既定 1
 #   TF_VERBOSE=1            terraform の失敗・遅さの切り分け。出力を全部画面に出す（既定は進みと結果だけ。全文は ops/logs/tf-<ルート>-apply.log）
-# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* / SNMP_POLL / NO_DASHBOARD_PORTFORWARD / NETWORK_PERIMETER / ENDPOINTS_MULTI_AZ は 1 / 0 のほか true / false、yes / no でも書ける（ops/down.sh の KEEP_ECR は 1 か 0 だけ）。
+# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* / SNMP_POLL / NO_DASHBOARD_PORTFORWARD / NETWORK_PERIMETER / ENDPOINTS_MULTI_AZ / TF_VERBOSE は 1 / 0 のほか true / false、yes / no でも書ける（ops/down.sh の KEEP_ECR は 1 か 0 だけ）。
 #
 # 利用者への権限は人に渡す作業なので入れていない（docs/deploy.md の「利用者に画面を渡す」）。
 set -euo pipefail
@@ -276,6 +276,8 @@ trap on_exit EXIT
 log "0. 設定と道具と認証を確かめる"
 load_deploy_env
 resolve_name_prefix  # OWNER（必須。terraform の -var owner にそのまま渡す。下の tf_apply_only）と接頭辞 PREFIX=<owner>-nwc-poc
+# terraform の出力を絞るか（ops/deploy-env.sh の tf_logged）。TF_VERBOSE=0 / false / no を空にそろえる（そろえないと、0 を書いても「空でない」で全部出してしまう）
+flag_value TF_VERBOSE
 log "   デプロイする人の名前: ${OWNER}（リソース名の接頭辞と Project タグは ${PREFIX}）"
 IMAGE_TAG="${IMAGE_TAG:-v1}"
 LOCAL_PORT="${LOCAL_PORT:-8080}"
