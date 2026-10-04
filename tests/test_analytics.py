@@ -1303,6 +1303,45 @@ check("up.sh の WORKFLOW=1 は SKIP_ANALYTICS があれば止まる（Grafana /
 check("up.sh は SKIP_GRAPH=1 でも analytics を作る（Spark は Neptune に書かない。2026-10-02）", "analytics は graph が要る" not in up)
 check("up.sh は PIPELINE=0 なら lab / stream / analytics / graph を全部飛ばす",
       re.search(r'else\n\s*SKIP_LAB=1; SKIP_STREAM=1; SKIP_ANALYTICS=1; SKIP_GRAPH=1\n', up) is not None)
+# NO_PORTFORWARD は 2026-10-04 に NO_DASHBOARD_PORTFORWARD へ名前を変えた。前の名前が残っていれば止まる
+_pfblk = up[up.index('[ -z "${NO_PORTFORWARD:-}" ] || die'):up.index("flag_value NO_DASHBOARD_PORTFORWARD\n") + len("flag_value NO_DASHBOARD_PORTFORWARD\n")]
+def _pf(**env):
+    r = subprocess.run(["bash", "-c", _pre + _pfblk + 'echo "OUT: ${NO_DASHBOARD_PORTFORWARD:-0}"'], capture_output=True, text=True,
+                       env={"PATH": os.environ["PATH"], **env})
+    return r.stdout.strip().splitlines()[-1] if r.stdout.strip() else r.stderr
+def _pf_file(text, **env):  # deploy.env から読ませる（ops/deploy-env.sh の load_deploy_env を通す）
+    d = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(d, "deploy.env"), "w") as f:
+            f.write(text)
+        r = subprocess.run(["bash", "-c", '. "$DENV"\n' + 'log() { echo "LOG: $*"; }\ndie() { echo "DIE: $*"; exit 1; }\nload_deploy_env >/dev/null\n'
+                            + _pfblk + 'echo "OUT: ${NO_DASHBOARD_PORTFORWARD:-0}"'], capture_output=True, text=True,
+                           env={"PATH": os.environ["PATH"], "DENV": os.path.join(ROOT, "ops", "deploy-env.sh"), "DEPLOY_ENV_FILE": os.path.join(d, "deploy.env"), **env})
+        return r.stdout.strip().splitlines()[-1] if r.stdout.strip() else r.stderr
+    finally:
+        shutil.rmtree(d)
+check("NO_DASHBOARD_PORTFORWARD は 1 / 0（true / yes も）で、既定 0（ポートフォワーディングを開く）",
+      _pf() == "OUT: 0" and _pf(NO_DASHBOARD_PORTFORWARD="1") == "OUT: 1" and _pf(NO_DASHBOARD_PORTFORWARD="yes") == "OUT: 1"
+      and _pf(NO_DASHBOARD_PORTFORWARD="0") == "OUT: 0")
+check("前の名前 NO_PORTFORWARD が環境変数にあれば、0 でも止まって書き換え方を出す（何も作る前）",
+      _pf(NO_PORTFORWARD="1") == "DIE: NO_PORTFORWARD は NO_DASHBOARD_PORTFORWARD に変わった（2026-10-04。意味は同じで、1 なら最後の Web へのポートフォワーディングを開かずに終わる）。"
+      "deploy.env と環境変数の NO_PORTFORWARD=1 を NO_DASHBOARD_PORTFORWARD=1 に書き換える。まだ何も作っていない"
+      and "NO_PORTFORWARD=0 を NO_DASHBOARD_PORTFORWARD=0 に書き換える" in _pf(NO_PORTFORWARD="0")
+      and _pf(NO_PORTFORWARD="1", NO_DASHBOARD_PORTFORWARD="1").startswith("DIE: NO_PORTFORWARD は NO_DASHBOARD_PORTFORWARD に変わった")
+      and up.index('[ -z "${NO_PORTFORWARD:-}" ] || die') < up.index("CALLER_ARN=$(aws sts get-caller-identity"))
+check("前の deploy.env の NO_PORTFORWARD は読めて（知らないキーで止まらず）止まる。空の値は書いていないのと同じ。新しい名前は deploy.env から読める",
+      _pf_file("OWNER=a\nNO_PORTFORWARD=1\n").startswith("DIE: NO_PORTFORWARD は NO_DASHBOARD_PORTFORWARD に変わった")
+      and _pf_file("OWNER=a\nNO_PORTFORWARD=\n") == "OUT: 0" and _pf_file("OWNER=a\nNO_DASHBOARD_PORTFORWARD=1\n") == "OUT: 1")
+check("up.sh は NO_DASHBOARD_PORTFORWARD で Session Manager plugin の検査と最後のポートフォワーディングを飛ばし、NO_PORTFORWARD は止めるためだけに見る",
+      'if [ -z "$NO_DASHBOARD_PORTFORWARD" ]; then\n  command -v session-manager-plugin' in up and "開かないなら NO_DASHBOARD_PORTFORWARD=1）" in up
+      and 'if [ -n "$NO_DASHBOARD_PORTFORWARD" ]; then exit 0; fi\nlog "10. ポートフォワーディング' in up
+      and [l for l in up.split("set -euo pipefail", 1)[1].splitlines() if re.search(r"(?<![A-Z_])NO_PORTFORWARD(?![A-Z_])", l) and not l.startswith("#")]
+      == [l for l in up.splitlines() if l.startswith('[ -z "${NO_PORTFORWARD:-}" ] || die')]
+      and "flag_value NO_PORTFORWARD" not in up)
+check("deploy.env.example は NO_DASHBOARD_PORTFORWARD を書き、前の名前のキーの行は無い。deploy-env.sh は両方を読めるキーに持つ",
+      re.search(r"^#NO_DASHBOARD_PORTFORWARD=1$", env_example, re.M) is not None and re.search(r"^#?\s*NO_PORTFORWARD=", env_example, re.M) is None
+      and all(re.search(rf"(?<![A-Z_]){k}(?![A-Z_])", open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read().split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1])
+              for k in ("NO_DASHBOARD_PORTFORWARD", "NO_PORTFORWARD")))
 # iceberg を外しても、証跡があるのでテーブルバケット・namespace・カタログはいつも作る。生データの snmp_metrics だけ外す
 check('resource "aws_s3tables_table" "snmp_metrics" は sink_iceberg の count',
       re.search(r'resource "aws_s3tables_table" "snmp_metrics" \{\n  count = local\.sink_iceberg \? 1 : 0\n', tf) is not None)

@@ -78,10 +78,10 @@
 #   MAX_OFFSETS_PER_TRIGGER_ICEBERG / _SPLUNK / _OPENSEARCH / _PROMETHEUS
 #                           その格納先のクエリだけ上の値を上書きする（0 でそのクエリだけ上限なし）。既定は空で、上の値を使う
 #   LOCAL_PORT              PC 側のポート。既定 8080
-#   NO_PORTFORWARD=1        ポートフォワーディングを開かずに終わる
+#   NO_DASHBOARD_PORTFORWARD=1  最後の Web へのポートフォワーディング（手順 10）を開かずに終わる（2026-10-04 に NO_PORTFORWARD から名前を変えた。前の名前が残っていると止まる）
 #   TF_VERBOSE=1            terraform の出力を全部画面に出す（既定は進みと結果だけ。全文は ops/logs/tf-<ルート>-apply.log）
 #   AWS_PROFILE / AWS_CA_BUNDLE  AWS CLI と terraform がそのまま読む
-# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* / SNMP_POLL / NO_PORTFORWARD / NETWORK_PERIMETER / ENDPOINTS_MULTI_AZ は 1 / 0 のほか true / false、yes / no でも書ける（ops/down.sh の KEEP_ECR は 1 か 0 だけ）。
+# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* / SNMP_POLL / NO_DASHBOARD_PORTFORWARD / NETWORK_PERIMETER / ENDPOINTS_MULTI_AZ は 1 / 0 のほか true / false、yes / no でも書ける（ops/down.sh の KEEP_ECR は 1 か 0 だけ）。
 #
 # 利用者への権限は人に渡す作業なので入れていない（docs/deploy.md の「利用者に画面を渡す」）。
 set -euo pipefail
@@ -366,7 +366,10 @@ for v in MAX_OFFSETS_PER_TRIGGER MAX_OFFSETS_PER_TRIGGER_ICEBERG MAX_OFFSETS_PER
   case "$val" in *[!0-9]* | 0?* | ??????????*) die "$v は 0 以上の整数（0 で上限なし。9 桁まで、先頭に 0 を付けない）: $val。まだ何も作っていない" ;; esac
   [ "$v" = MAX_OFFSETS_PER_TRIGGER ] || MAX_OFFSETS_BY_SINK="$MAX_OFFSETS_BY_SINK${MAX_OFFSETS_BY_SINK:+,}$(printf '%s' "${v#MAX_OFFSETS_PER_TRIGGER_}" | tr 'A-Z' 'a-z')=$val"
 done
-flag_value SKIP_LAB; flag_value SKIP_STREAM; flag_value SKIP_ANALYTICS; flag_value SKIP_GRAPH; flag_value NO_PORTFORWARD
+# NO_PORTFORWARD は 2026-10-04 に NO_DASHBOARD_PORTFORWARD へ名前を変えた。前の deploy.env か環境変数に残っていると、
+# 黙って無視すれば開かないつもりのポートフォワーディングを開いて止まらないので、書き換えてもらう
+[ -z "${NO_PORTFORWARD:-}" ] || die "NO_PORTFORWARD は NO_DASHBOARD_PORTFORWARD に変わった（2026-10-04。意味は同じで、1 なら最後の Web へのポートフォワーディングを開かずに終わる）。deploy.env と環境変数の NO_PORTFORWARD=${NO_PORTFORWARD} を NO_DASHBOARD_PORTFORWARD=${NO_PORTFORWARD} に書き換える。まだ何も作っていない"
+flag_value SKIP_LAB; flag_value SKIP_STREAM; flag_value SKIP_ANALYTICS; flag_value SKIP_GRAPH; flag_value NO_DASHBOARD_PORTFORWARD
 # stream の Telegraf の syslog の形式。既定は本番の Cisco に合わせた RFC3164（stream の変数の既定と同じ）
 SYSLOG_STANDARD="${SYSLOG_STANDARD:-RFC3164}"
 case "$SYSLOG_STANDARD" in RFC3164 | RFC5424) ;; *) die "SYSLOG_STANDARD は RFC3164 か RFC5424（大文字）: $SYSLOG_STANDARD。まだ何も作っていない" ;; esac
@@ -451,8 +454,8 @@ if [ -n "$NEED_DOCKER" ]; then
   docker buildx version >/dev/null 2>&1 || die "docker buildx が無い（Ubuntu の docker.io には入っていない。docs/setup.md「Terraform を打つ PC 側」）"
 fi
 # 最後のポートフォワーディング（手順 10）で要る。40〜60 分かけた後で落ちないよう、ここで見る
-if [ -z "$NO_PORTFORWARD" ]; then
-  command -v session-manager-plugin >/dev/null || die "Session Manager plugin が無い（手順 10 のポートフォワーディングに使う。docs/setup.md「Terraform を打つ PC 側」。開かないなら NO_PORTFORWARD=1）"
+if [ -z "$NO_DASHBOARD_PORTFORWARD" ]; then
+  command -v session-manager-plugin >/dev/null || die "Session Manager plugin が無い（手順 10 のポートフォワーディングに使う。docs/setup.md「Terraform を打つ PC 側」。開かないなら NO_DASHBOARD_PORTFORWARD=1）"
 fi
 CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text) || die "認証が通っていない（aws configure か aws login で入り直す）"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -1232,7 +1235,7 @@ fi
 if [ -n "$LAB_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$LAB_WARN"; fi
 if [ -n "$NAUTOBOT_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$NAUTOBOT_WARN"; fi
 printf '\033[1;33m%s\033[0m\n' "$COST_NOTE"
-if [ -n "$NO_PORTFORWARD" ]; then exit 0; fi
+if [ -n "$NO_DASHBOARD_PORTFORWARD" ]; then exit 0; fi
 log "10. ポートフォワーディング（http://localhost:$LOCAL_PORT/ 。Ctrl+C で閉じる）"
 trap - EXIT
 if [ -n "$TF_AWS_CONFIG" ]; then rm -f "$TF_AWS_CONFIG"; fi
