@@ -773,11 +773,33 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 | 項目 | 値 | 場所 |
 |---|---|---|
 | トピックのパーティション | 2 | `terraform/pipeline/stream/msk.tf` の `num.partitions` |
-| executor | 1 つ、1 コア、固定（自動で増やさない） | `terraform/pipeline/analytics/outputs.tf` の `spark.executor.instances` ほか |
+| executor | 2 つ、それぞれ 1 コア、固定（自動で増やさない）。2026-10-04 に 1 → 2 にした。driver と合わせて 3 vCPU | `terraform/pipeline/analytics/outputs.tf` の `spark.executor.instances` ほか |
 
-- つまり、いまは分散して読んでいない。タスクは 1 つずつ順に走る。PoC の量では足りている。
+- つまり、いまはパーティション 2 つを executor 2 つで同時に読んでいる（AWS では未確認）。
 - 増やすなら `spark.executor.instances` か `spark.executor.cores` を上げ、EMR Serverless の上限（`max_cpu` / `max_memory`）も合わせる。
 - **読むのを並列にしても、書くほうは並列にならない格納先がある。** OpenSearch、Prometheus、Splunk への送信は、行を driver に集めて（`collect`）から driver が 1 本で送っている（`http_query`）。executor を増やして速くなるのは S3 Tables（Iceberg）への書き込みだけ。量が増えたら、送信を executor の側でやる形（`foreachPartition`）に直す必要がある。
+
+### Q. executor を 2 つにしたら Kafka からの読み取りは 2 つに分かれる。送信はまた別に並列化が要るの？
+
+**A. 要る。読み取りは 2 つに分かれるが、OpenSearch、Prometheus、Splunk への送信は driver が 1 本でやっているので、そこは executor を増やしても並列にならない。** 「どこで動くか」がコードの書き方で決まるため。
+
+1 回のバッチ（60 秒ごと）は、次の 3 段で進む。
+
+| 段 | やること | 動く場所 | executor 2 つで並列になるか |
+|---|---|---|---|
+| 1. 読む | Kafka のパーティションからレコードを取る | executor（パーティション 1 つにタスク 1 つ） | なる |
+| 2. 変換する | JSON を解いて列にする、絞り込む | executor（読んだのと同じタスク） | なる |
+| 3. 書く | 格納先へ送る | 格納先ごとに違う（下の表） | 格納先による |
+
+| 格納先 | 書き方 | 動く場所 | 並列 |
+|---|---|---|---|
+| S3 Tables（Iceberg） | Spark の書き込み機能にそのまま渡す | executor がそれぞれファイルを書く | なる |
+| OpenSearch、Prometheus、Splunk | `collect()` で全部の行を driver に集め、driver が HTTP で順に送る（`http_query`） | driver（1 つ、1 コア） | ならない |
+
+- **`collect()` が境目。** executor が読んで変換した行を、driver の 1 か所に集める命令。集めたあとの処理は driver のふつうの Python で、1 本で動く。
+- **だから HTTP の格納先では、2 つに分かれて読んだものが、送る手前で 1 本に合流する。** 読むのと変換は速くなるが、送るのは速くならない。
+- **並列に送るには、送る処理を executor の側に移す。** `collect()` をやめ、`foreachPartition` でパーティションごとに executor が自分で HTTP を送る形に書き直す。そうすると executor の数だけ同時に送る。
+- **いま直していない理由。** PoC の量（機器 10 台ほど、60 秒ごと）なら driver 1 本で間に合っている。driver で送るほうが、失敗したときの再送とログが 1 か所で済んで単純。量が増えて 1 回のバッチが 60 秒で終わらなくなったら直す。
 
 ### Q. S3 以外の格納先は、VictoriaMetrics みたいにクラスター化できないの？
 
