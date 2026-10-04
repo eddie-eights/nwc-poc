@@ -17,11 +17,11 @@ main(opus-5.5) / effort: high（cycle-design の既定は xhigh だが、セッ�
 ### 合意した決定（経緯は design-log.md の Round 0）
 
 1. 1 行は、届いたアラートの通知 1 件。Lambda の側では重複を落とさない。Grafana の 4 時間ごとの送り直しも、Grafana と Splunk の両方から来た分も、そのまま行にする。開いた・閉じたの組み合わせは読む側で作る。
-2. 対象はすべての kind（link_down / bgp_down / isis_down / trap）。Neptune では無視した通知（device_id が無いなど）も記録する。
+2. 対象はすべての kind（link_down / bgp_down / isis_down / trap）。Neptune に該当する頂点が無くて無視した通知も記録する。ただし `device_id` か `kind` が無い通知と、status が firing / resolved でない通知は記録しない（`alerts_from_message` が落とす。anomaly_id を作れないため）。落としたときはログに WARNING を出す。Grafana と Splunk のルールはどちらも必ず付けるので、普段は起きない。
 3. `ops/down.sh` で履歴が消えてよい。テーブルは proposal_events と同じテーブルバケットに置く。
 4. このサイクルで Athena まで作り、エージェントの `query_history` を alert_events につなぐ。
 5. テーブル名は `alert_events`。
-6. Neptune への書き込みも Firehose への送信も、両方必ず 1 回試す。どちらかが失敗したら最後に例外を投げ、Lambda の非同期のやり直し（2 回）に任せる。やり直しで履歴が二重に入った分は、読むときに event_id で落とす。
+6. status の正しさを履歴の完全さより優先する。Neptune への書き込みが失敗したら最後に例外を投げ、Lambda の非同期のやり直し（2 回）に任せる。Firehose への送信の失敗では例外を投げない。Lambda の中で 3 回まで送り直し、それでも残った行はログに ERROR として行の中身ごと書いて終わる（欠けた分はログから戻せる）。やり直しで履歴が二重に入った分は、読むときに event_id で落とす。
 7. `s3tablescatalog`（Glue の S3 Tables 連携。アカウントとリージョンに 1 つ）は、無ければ `ops/up.sh` が作る。down.sh では消さない（ほかの OWNER の環境と共有しているため）。
 8. `query_history` は通知の行をそのまま返す。event_id で重複を落とし、新しい順に最大 50 件。
 9. 技術的な前提として次をユーザーと確認済み:
@@ -55,8 +55,10 @@ Splunk の通知。splunk/netops_alerts/bin/netops_sns.py:6 と :106 から引�
 
 - `graph/status_handler.py` の `handler` が、alert ごとに `apply` で Neptune に書く。例外は捕まえて覚えておき、ほかの alert の処理は続ける。
 - 処理した通知の行は 1 回の呼び出し分をまとめ、環境変数 `ALERT_STREAM` が空でなければ `firehose.put_record_batch` で 1 回送る（500 件以下）。
-  - `FailedPutCount > 0` か例外のときは、Firehose が失敗したと見なす。
-  - 最後に、Neptune と Firehose のどちらかが失敗していれば RuntimeError を投げる。
+  - `FailedPutCount > 0` のときは失敗した行だけを、例外のときは全部の行を送り直す。試すのは合わせて 3 回まで（あいだは 0.2 秒、0.4 秒）。
+  - 3 回目のあとも残った行は、1 行ずつ JSON のままログに ERROR で書く。例外は投げない。
+  - 最後に、Neptune への書き込みが 1 件でも失敗していれば RuntimeError を投げる。Firehose の失敗だけでは投げない（投げると、Firehose が止まっているあいだ、通知のたびに Neptune への書き込みまでやり直しになる）。
+  - `alerts_from_message` が落とした通知（`device_id` か `kind` が無い、status が firing / resolved でない）は、落とした件数をログに WARNING で書く（`alerts` の要素の数と、返ってきた数の差）。行にはしない。
   - `ALERT_STREAM` が空なら Firehose には何も送らない。いまの動きと同じ。
 - 行の形（列名は小文字。Iceberg V2 で、Firehose が Parquet にする）。列の定義は `workflow/rules.py` に `ALERT_EVENT_COLUMNS` として置く。PROPOSAL_EVENT_COLUMNS と同じ作りで、tables.tf のテストが突き合わせる:
   - `event_id` string: `<anomaly_id>#<source>#<status>#<starts_at>`（starts_at は epoch 秒の整数）
@@ -152,9 +154,10 @@ Splunk の通知。splunk/netops_alerts/bin/netops_sns.py:6 と :106 から引�
 ## 実装ステップ（エンジニアセッションに頼む）
 
 1. rules.py に `ALERT_EVENT_COLUMNS` と `alert_event()` を足し、単体テストを書く。
-2. status_handler.py: 両方を試し、最後に例外を投げる。Firehose は fake boto3 でテストする:
+2. status_handler.py: 両方を試し、Neptune が失敗したときだけ最後に例外を投げる。Firehose は fake boto3 でテストする:
    - 送る件数
-   - FailedPutCount が出たら例外
+   - FailedPutCount が出たら失敗した行だけを送り直し、3 回で止めてログに書く（例外は投げない）
+   - device_id か kind が無い通知は WARNING を出し、行にしない
    - ALERT_STREAM が空なら送らない
    - Neptune が失敗しても Firehose には送る
 3. analytics の tables.tf と history.tf と outputs。base/core の perimeter と validation。
@@ -175,8 +178,11 @@ Splunk の通知。splunk/netops_alerts/bin/netops_sns.py:6 と :106 から引�
 - status_handler のテストで次を確かめる:
   - Grafana の firing と resolved を 1 通ずつ（starts_at が同じ）入れると、Firehose に 2 行が届く。event_id は `dc1-leaf-01#link_down#ethernet-1/1#grafana#firing#1790000000` と `…#resolved#1790000000`。
   - 同じ通知をもう 1 回入れると、同じ event_id で届く。
-  - device_id が `?` の通知も 1 行届く。Neptune の結果は ignored。
+  - Neptune に頂点が無い機器の通知も 1 行届く。Neptune の結果は ignored。
+  - device_id が無い通知は、put_record_batch に渡らず、ログに WARNING が 1 行出る。
   - fake の neptunedata が例外を投げても put_record_batch は呼ばれ、handler は RuntimeError を投げる。
+  - fake の firehose が毎回例外を投げると、put_record_batch は 3 回呼ばれ、ログに ERROR が行の数だけ出て、handler は例外を投げずに返る。
+  - fake の firehose が 1 回目に 2 行のうち 1 行を失敗で返すと、2 回目は失敗した 1 行だけを送る。
 - `python3 tests/test_app.py`:
   - query_history は環境変数が無ければ `rows == []` で、「未配備」の文言を返す。
   - fake の athena が渡す SQL に `row_number() OVER (PARTITION BY event_id` と `LIMIT 50` が入る。device_id は ExecutionParameters で渡り、SQL の文字列には現れない。
@@ -193,7 +199,7 @@ Splunk の通知。splunk/netops_alerts/bin/netops_sns.py:6 と :106 から引�
 2. **Firehose → S3 Tables と Athena → S3 Tables が IAM だけで通るかは、AWS で試していない。** Lake Formation が IAM 任せのモードで、AllowFullTableExternalDataAccess を付けている前提。通らなければ `lakeformation:GetDataAccess` を足すか、Lake Formation で許可を出す。
 3. **閉域の Deny が効くかもまだ確かめていない。** Firehose のロールを例外にしたのでテーブルバケットのポリシーは通るはず。tools Lambda の IAM 側の Deny（s3tables:*）は、Athena が呼び手に代わって出す呼び出し（aws:ViaAWSService）には効かない前提。外れたら Athena の分を例外にするか、tools Lambda の IAM 側で調整する。
 4. **`s3tablescatalog` はアカウントで共有し、消さない。** ほかの OWNER がすでに別の設定（Lake Formation の管理など）で作っていたら、そのまま使うことになり、権限の前提が崩れる。up.sh は既存の catalog の設定を表示して、違えば警告する。
-5. **down.sh の順番。** analytics（ストリームとテーブル）を消してから graph を消すまでのあいだ、Lambda の Firehose への送信は失敗し、やり直しになる。片付けの途中なので害は無いが、ログに ERROR が出る。
+5. **down.sh の順番。** analytics（ストリームとテーブル）を消してから graph を消すまでのあいだ、Lambda の Firehose への送信は失敗し、行はログに残る。up.sh で graph が analytics より先にできるあいだも同じ。どちらも status の更新は止まらない。ログに ERROR が出る。
 6. **starts_at の意味が Grafana と Splunk で違う。** 列はそのまま持つ。読む人とエージェントのために docs とツールの説明に書く。
 7. **料金。** VPC エンドポイントが 2 本増える（各 1.4 セント/時 × AZ）。Firehose は取り込んだ GB あたりの課金で、PoC の量なら小さい。Athena はスキャン量の課金で、上限を付ける。
 8. **Terraform の provider 6.64.0 での書き方。** `iceberg_configuration` の `catalog_arn` と、Athena の `managed_query_results_configuration` は、バイナリに文字列があることまでは確かめた。引数の形は実装時に `terraform validate` で確かめる。
