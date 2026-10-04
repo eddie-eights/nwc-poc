@@ -556,3 +556,19 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 
 - Job は Nautobot のプロセスの中で動くので、API を通さずに台帳を扱える。
 - Job が動くきっかけは 4 つ: 画面のボタン、スケジュール、API、台帳の変更（JobHook）。この PoC は JobHook（`netops-sync`）と、起動時の 1 回。
+
+### Q. Nautobot はもともと Web・データベース・Job・Celery・Redis がセットになったもの？ 今回新しく足したわけではない？
+
+**A. この構成は Nautobot の標準で、今回足したものではない。** ただし全部が 1 つのイメージに入っているわけではなく、PostgreSQL と Redis は Nautobot が「必ず要る」と決めている外の部品で、使う側が用意する。
+
+| 部品 | もともとか | この PoC での用意 |
+|---|---|---|
+| Web / API、Job の仕組み、Celery worker | Nautobot 本体（公式イメージに入っている。worker は同じイメージを別のコマンドで起こす） | 公式イメージ 3.2.6 をそのまま使う |
+| PostgreSQL | Nautobot の必須の部品（本体には入っていない） | RDS |
+| Redis | Nautobot の必須の部品（本体には入っていない） | 同じタスクの中の Redis コンテナ |
+
+今回足したのは、Nautobot の上で動く中身だけ。
+
+- Job のコード（`nautobot/jobs/netops_jobs.py`）と、台帳とトポロジの対応付け・同期（`nautobot/netops/nb_map.py` / `nb_sync.py`）
+- 起動時の用意（`nautobot/netops/bootstrap.py`: 管理者、custom field、最初の seed、Job の有効化と JobHook）
+- 公式イメージに boto3 と上のファイルを足す `nautobot/Dockerfile`
