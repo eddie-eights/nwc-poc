@@ -9,7 +9,7 @@
 #   WORKFLOW          Temporal での実行。workflow（Temporal on ECS Fargate のワーカー + AgentCore Gateway（MCP）+ SNS → SQS）。
 #                     Grafana / Splunk のアラートが SNS → SQS で届き、エージェントが Neptune / OpenSearch / Prometheus を見て原因を調べて修復案を出し、
 #                     Web の「承認」タブで人が承認すると Temporal が lab で直す。AGENT と PIPELINE（lab / stream / analytics / graph）と、
-#                     アラートの送り手（SINK_SPLUNK=1、または Grafana と SINK_PROMETHEUS と SNMP_POLL=1）が要る
+#                     link_down のアラートの送り手（SINK_SPLUNK=1、または Grafana と SINK_PROMETHEUS と SNMP_POLL=1。既定ではどちらもある）が要る
 # 毎日全部消す運用向け。何度打っても同じ状態に収束する（できているものは Terraform が差分なしで飛ばし、ECR にあるタグはビルドしない）。
 # あとから別の機能を 1 にして打ち直せば、その機能だけ足される（土台と他の機能は作り直さない）。
 # Terraform の state はこの PC の展開したフォルダの中（terraform/<ルート>/terraform.tfstate）に置く。消すのは ops/down.sh。
@@ -32,7 +32,7 @@
 #   AGENT=1                 agent での分析（既定 1）。terraform/agent を作る
 #   PIPELINE=1              データパイプライン（既定 0）。lab / stream / analytics / graph を作る（SKIP_* で減らせる）
 #   WORKFLOW=1              Temporal での実行（既定 0）。workflow を作る。AGENT と PIPELINE が要り、SKIP_LAB / SKIP_STREAM / SKIP_ANALYTICS / SKIP_GRAPH は書けない。
-#                           アラートの送り手も要る（SINK_SPLUNK=1、または GRAFANA と SINK_PROMETHEUS と SNMP_POLL=1。既定のままでは送り手が無いので止まる）
+#                           link_down のアラートの送り手も要る（SINK_SPLUNK=1、または GRAFANA と SINK_PROMETHEUS と SNMP_POLL=1。既定ではどちらもある。両方 0 にすると止まる）
 #   CREATE_KB=1             AGENT=1 で Knowledge Base も作る（既定 0。+$0.37/h = OpenSearch Serverless の OCU $0.33 + 土台の VPC エンドポイント $0.03（SINK_OPENSEARCH と共用）
 #                           + bedrock-agent-runtime のエンドポイント $0.01）。コレクションは公開せず、そのエンドポイントと Bedrock からだけ届く
 #   SKIP_LAB=1              PIPELINE=1 で lab を作らない（stream は lab が要るので SKIP_STREAM=1 も要る）
@@ -42,22 +42,22 @@
 #                           analytics の Spark の格納先を 1 つずつ外す（既定は 3 つとも 1。0 にするとリソースごと作らない。1 つ以上は要る）。
 #                           SINK_S3 = 全トピック → S3 Tables（Iceberg）、SINK_OPENSEARCH = traps と logs（機器の syslog）→ OpenSearch Serverless、
 #                           SINK_PROMETHEUS = metrics と gnmi → Amazon Managed Service for Prometheus。terraform/pipeline/analytics の var.sinks（iceberg / opensearch / prometheus / splunk）に組んで渡す。
-#   SINK_SPLUNK=1           4 本目の格納先: 全トピック → Splunk の HTTP Event Collector（既定 0）。
+#   SINK_SPLUNK=0           4 本目の格納先: 全トピック → Splunk の HTTP Event Collector を作らない（既定 1 = 作る）。
 #                           Splunk Enterprise（公式イメージ・試用ライセンス）を analytics の ECS で立てて VPC の中で送る（+$0.12/h。
 #                           起動時に Splunk のライセンスと Splunk General Terms に同意する。index はタスクと一緒に消える）。
-#                           イメージは公式イメージに検知のアプリ（splunk/netops_alerts。trap と gNMI の BGP / IS-IS を保存済みサーチで見て SNS へ出す）を足したもの。管理者のパスワードと HEC の token は
+#                           イメージは公式イメージに検知のアプリ（splunk/netops_alerts。SNMP のポーリング・trap・gNMI の BGP / IS-IS を保存済みサーチで見て SNS へ出す）を足したもの。管理者のパスワードと HEC の token は
 #                           手順 7-4 で SSM の SecureString に作る（値は出さない。見るコマンドを最後に出す）。SPLUNK_INDEX（既定は空 = token の既定の index）は任意。
 #                           AWS の外の Splunk へ NAT Gateway で送る道は 2026-09-28 にやめた（VPC から AWS の外へ出る経路は作らない）
 #   GRAFANA=0               analytics に Grafana OSS（ECS。Prometheus と OpenSearch を見る。+$0.02/h）を作らない（既定 1。SINK_PROMETHEUS か SINK_OPENSEARCH があるときだけ作る）。
-#                           SINK_PROMETHEUS があればアラートルール（IF の ifOperStatus → link_down）も入り、SNS へ出す（grafana/provisioning/alerting）。
-#                           ifOperStatus は SNMP のポーリングの値なので、SNMP_POLL=1 でなければルールは発火しない。
+#                           アラートルールも入り、SNS へ出す（grafana/provisioning/alerting。SINK_PROMETHEUS があれば link_down / bgp_down / isis_down、
+#                           SINK_OPENSEARCH があれば trap）。link_down が見る ifOperStatus は SNMP のポーリングの値なので、SNMP_POLL=0 では link_down は発火しない。
 #                           web の EC2 を踏み台にした SSM のポートフォワードで開く（コマンドは最後に出る）
 #   SYSLOG_STANDARD         stream の Telegraf が受ける機器の syslog の形式。RFC3164（既定。本番の Cisco IOS の BSD 形式）か RFC5424。
 #                           lab の SR Linux は RFC 5424 で送る（ops/lab-common.sh の LAB_SYSLOG_STANDARD）ので、lab のログの項目まで見るなら RFC5424。
 #                           デバッグ用の EC2（ops/lab-debug.sh。up.sh とは別に作る）の Telegraf はこの値を使わず、lab/lab.sh の LOG_STANDARD（RFC5424）
-#   SNMP_POLL=1             stream の Telegraf で SNMP もポーリングする（10 秒ごとに ifTable → metrics トピック）。既定 0 で、SNMP は trap だけ受ける。
-#                           Grafana のアラートルール link_down と IF のグラフ、エージェントの IF のメトリクスはこのポーリングを見るので、0 では空になる
-#                           （IF の up / down は SINK_SPLUNK=1 の Splunk が trap から link_down を出す）。stream の変数 snmp_poll に渡す
+#   SNMP_POLL=0             stream の Telegraf で SNMP をポーリングしない（既定 1 = 10 秒ごとに ifTable → metrics トピック。0 なら SNMP は trap だけ受ける）。
+#                           Grafana のアラートルール link_down、Splunk の保存済みサーチ netops_poll、IF のグラフ、エージェントの IF のメトリクスはこのポーリングを見るので、
+#                           0 では空になる（IF の up / down は Splunk が trap からだけ出す）。stream の変数 snmp_poll に渡す
 #   （Nautobot）            PIPELINE=1 なら Nautobot（terraform/pipeline/nautobot。ECS Fargate の web + Celery worker + Redis と、RDS の PostgreSQL。+$0.13/h と ecs のエンドポイント）を**いつも作る**（切り替える変数は無い）。
 #                           機器の一覧とケーブルの正を Nautobot にする。最初だけ lab の定義から入り、あとは Nautobot で機器・Service（gnmi / snmp）・ケーブルを変えるたびに、
 #                           Job が Telegraf の取りにいく側（dialin）の機器の一覧（SSM）を書き換えてサービスを作り直し、Neptune の物理層を openCypher で合わせる。
@@ -272,10 +272,10 @@ IMAGE_TAG="${IMAGE_TAG:-v1}"
 LOCAL_PORT="${LOCAL_PORT:-8080}"
 # analytics の Spark の格納先。SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS を 1 / 0 で書く（既定は 3 つとも 1）。
 # 0 にした格納先は Spark が書かないだけでなく、リソースも作らない。
-# SINK_SPLUNK（既定 0）は Splunk の HEC に送る 4 本目。analytics の ECS に Splunk を立てる（SPLUNK_ON_ECS）
+# SINK_SPLUNK（既定 1）は Splunk の HEC に送る 4 本目。analytics の ECS に Splunk を立てる（SPLUNK_ON_ECS）
 # terraform/pipeline/analytics の var.sinks（list）に渡すので、["iceberg","opensearch"] の形に組む（SINKS_TF）
 SINK_S3="${SINK_S3:-1}"; SINK_OPENSEARCH="${SINK_OPENSEARCH:-1}"; SINK_PROMETHEUS="${SINK_PROMETHEUS:-1}"
-SINK_SPLUNK="${SINK_SPLUNK:-0}"; SPLUNK_INDEX="${SPLUNK_INDEX:-}"
+SINK_SPLUNK="${SINK_SPLUNK:-1}"; SPLUNK_INDEX="${SPLUNK_INDEX:-}"
 flag_value SINK_S3; flag_value SINK_OPENSEARCH; flag_value SINK_PROMETHEUS; flag_value SINK_SPLUNK
 SINKS=""
 if [ -n "$SINK_S3" ]; then SINKS="iceberg"; fi
@@ -291,8 +291,8 @@ flag_value SKIP_LAB; flag_value SKIP_STREAM; flag_value SKIP_ANALYTICS; flag_val
 # stream の Telegraf の syslog の形式。既定は本番の Cisco に合わせた RFC3164（stream の変数の既定と同じ）
 SYSLOG_STANDARD="${SYSLOG_STANDARD:-RFC3164}"
 case "$SYSLOG_STANDARD" in RFC3164 | RFC5424) ;; *) die "SYSLOG_STANDARD は RFC3164 か RFC5424（大文字）: $SYSLOG_STANDARD。まだ何も作っていない" ;; esac
-# stream の Telegraf の SNMP のポーリング。既定 0（trap だけ受ける。stream の変数 snmp_poll の既定と同じ）
-flag_value SNMP_POLL
+# stream の Telegraf の SNMP のポーリング。既定 1（stream の変数 snmp_poll の既定と同じ）。0 なら trap だけ受ける
+SNMP_POLL="${SNMP_POLL:-1}"; flag_value SNMP_POLL
 # どの機能を作るか（既定は土台 + AGENT）
 AGENT="${AGENT:-1}"
 flag_value AGENT; flag_value PIPELINE; flag_value WORKFLOW; flag_value CREATE_KB
@@ -335,16 +335,22 @@ if [ -n "$PIPELINE" ] && { [ -z "$SKIP_STREAM" ] || [ -z "$SKIP_GRAPH" ]; }; the
 GRAFANA="${GRAFANA:-1}"; flag_value GRAFANA
 if [ -n "$SKIP_ANALYTICS" ] || { [ -z "$SINK_PROMETHEUS" ] && [ -z "$SINK_OPENSEARCH" ]; }; then GRAFANA=""; fi
 if [ -n "$SKIP_ANALYTICS" ]; then SPLUNK_ON_ECS=""; fi
-# アラート（SNS のトピック <接頭辞>-alerts）の送り手。Grafana のアラートルールは Prometheus のメトリクスを見るので SINK_PROMETHEUS が要る
-# （grafana/start.sh は PROMETHEUS_URL があるときだけルールを入れる）。ルール link_down が見る ifOperStatus は SNMP のポーリングの値なので、
-# SNMP_POLL=1 でなければ発火しない（送り手に数えず、sns のエンドポイントも足さない）。Splunk は保存済みサーチが trap と gNMI を見る
-GRAFANA_ALERTS=""
-if [ -n "$GRAFANA" ] && [ -n "$SINK_PROMETHEUS" ] && [ -n "$SNMP_POLL" ]; then GRAFANA_ALERTS=1; fi
-if [ -n "$WORKFLOW" ] && [ -z "$GRAFANA_ALERTS$SPLUNK_ON_ECS" ]; then
-  die "WORKFLOW はアラートの送り手が要る（ワークフローを起こすのは Grafana か Splunk のアラート）。SINK_SPLUNK=1 にする（trap と gNMI から検知する）か、GRAFANA と SINK_PROMETHEUS を 1 のまま SNMP_POLL=1 にする（SNMP のポーリングから検知する）。まだ何も作っていない"
+# アラート（SNS のトピック <接頭辞>-alerts）の送り手。Grafana は格納先があるほうのルールを入れる（grafana/start.sh。Prometheus なら link_down / bgp_down /
+# isis_down、OpenSearch なら trap）ので、作ればいつも送り手（sns のエンドポイントを足す）。Splunk は保存済みサーチがポーリング・trap・gNMI を見る。
+# ワークフローを起こすのは link_down だけ（workflow/rules.py の START_KINDS）。Grafana の link_down は SNMP のポーリングの ifOperStatus（Prometheus）を
+# 見るので SINK_PROMETHEUS と SNMP_POLL が要る。Splunk は linkDown の trap からも出す
+LINK_DOWN_SENDERS=""
+if [ -n "$GRAFANA" ] && [ -n "$SINK_PROMETHEUS" ] && [ -n "$SNMP_POLL" ]; then LINK_DOWN_SENDERS="grafana"; fi
+if [ -n "$SPLUNK_ON_ECS" ]; then LINK_DOWN_SENDERS="$LINK_DOWN_SENDERS${LINK_DOWN_SENDERS:+,}splunk"; fi
+if [ -n "$WORKFLOW" ] && [ -z "$LINK_DOWN_SENDERS" ]; then
+  die "WORKFLOW はアラートの送り手が要る（ワークフローを起こすのは link_down のアラート）。SINK_SPLUNK=1（既定）にする（trap とポーリングから検知する）か、GRAFANA と SINK_PROMETHEUS と SNMP_POLL を 1（既定）にする（ポーリングから検知する）。まだ何も作っていない"
 fi
-if [ -n "$GRAFANA" ] && [ -n "$SINK_PROMETHEUS" ] && [ -z "$SNMP_POLL" ] && [ -z "$SPLUNK_ON_ECS" ]; then
-  echo "注意: SNMP_POLL=0（既定）なので Grafana のアラートルール link_down は発火せず、IF の up / down を知らせるものが無い。trap から知らせるなら SINK_SPLUNK=1、ポーリングで知らせるなら SNMP_POLL=1"
+if [ -n "$GRAFANA" ] && [ -n "$SINK_PROMETHEUS" ] && [ -z "$SNMP_POLL" ]; then
+  if [ -n "$SPLUNK_ON_ECS" ]; then
+    echo "注意: SNMP_POLL=0 なので Grafana のアラートルール link_down と Splunk の netops_poll は発火しない（見る ifOperStatus はポーリングの値）。IF の up / down は Splunk が trap からだけ知らせる"
+  else
+    echo "注意: SNMP_POLL=0 なので Grafana のアラートルール link_down は発火せず、IF の up / down を知らせるものが無い。ポーリングで知らせるなら SNMP_POLL=1、trap から知らせるなら SINK_SPLUNK=1"
+  fi
 fi
 if [ -z "$AGENT" ] && [ -n "$CREATE_KB" ]; then
   echo "AGENT=0 なので CREATE_KB は効かない（Knowledge Base は agent の一部）"
@@ -435,7 +441,7 @@ for r in $ROOTS; do endpoints_for "$r"; done
 if [ -n "$AGENT" ] && [ -n "$CREATE_KB" ]; then add_endpoints bedrock-agent-runtime; fi   # KB の Retrieve
 if [ -z "$SKIP_ANALYTICS" ] && [ -n "$SINK_PROMETHEUS" ]; then add_endpoints aps-workspaces; fi   # remote write とツールと Grafana の query
 if [ -n "$GRAFANA$SPLUNK_ON_ECS" ]; then add_endpoints ecr.api ecr.dkr; fi   # analytics の ECS（Grafana / Splunk）のイメージ。secrets は ssm
-if [ -n "$GRAFANA_ALERTS$SPLUNK_ON_ECS" ]; then add_endpoints sns; fi   # Grafana / Splunk のタスクがアラートを SNS のトピックへ publish する
+if [ -n "$GRAFANA$SPLUNK_ON_ECS" ]; then add_endpoints sns; fi   # Grafana / Splunk のタスクがアラートを SNS のトピックへ publish する（Grafana はいつもルールを持つ）
 endpoint_count() { set -- $ENDPOINTS; echo $#; }
 if [ -n "$ENDPOINTS_MULTI_AZ" ]; then ENDPOINT_AZS=2; else ENDPOINT_AZS=1; fi
 echo "インターフェース型エンドポイント（$(endpoint_count) 本 × ${ENDPOINT_AZS} AZ）: $ENDPOINTS"
@@ -783,7 +789,7 @@ if [ -z "$SKIP_STREAM" ]; then
     echo "Telegraf の SNMP: trap を受け、ポーリングもする（SNMP_POLL=1）。ポーリング先: $SNMP_AGENTS"
   else
     SNMP_POLL_TF=false
-    echo "Telegraf の SNMP: trap だけ受ける（ポーリングしない。する場合は SNMP_POLL=1）"
+    echo "Telegraf の SNMP: trap だけ受ける（SNMP_POLL=0。ポーリングもするなら SNMP_POLL=1 か、deploy.env から消す）"
   fi
   echo "Telegraf の gNMI の購読先: $GNMI_TARGETS"
   # syslog の形式は SYSLOG_STANDARD（既定は本番の Cisco の RFC3164）。lab の SR Linux は ops/lab-common.sh の LAB_SYSLOG_STANDARD（RFC5424）で送る

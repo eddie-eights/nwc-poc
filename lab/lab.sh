@@ -231,7 +231,7 @@ case "${1:-}" in
     case "${2:-status}" in
       run)
         # ポーリング先と gNMI の購読先は stream と同じく lab の定義から作る（ops/up.sh が stream の変数に渡すのと同じ lab_topology.py）。
-        # SNMP のポーリングは stream と同じく既定で止める（trap だけ）。見るときは `sudo SNMP_POLL=1 lab telegraf run`（起動時の systemd は既定の 0 で起こす）
+        # SNMP のポーリングはこの EC2 では既定で止める（trap だけ。stream は既定でする）。見るときは `sudo SNMP_POLL=1 lab telegraf run`（起動時の systemd は既定の 0 で起こす）
         agents=$(python3 lab_topology.py . --snmp-agents)
         gnmi=$(python3 lab_topology.py . --gnmi-targets)
         docker image inspect "$TELEGRAF_IMAGE" >/dev/null 2>&1 || "$SELF" pull

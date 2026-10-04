@@ -644,8 +644,8 @@ for jar in ("spark-sql-kafka-0-10_2.12", "spark-token-provider-kafka-0-10_2.12",
 check("up.sh の SPARK_VERSION は emr_release_label の Spark（3.5.6）", re.search(r'^SPARK_VERSION=3\.5\.6$', up, re.M) is not None
       and "7.13.0 = Spark 3.5.6" in tf)
 check("up.sh のスクリプトは spark/snmp_sinks.py", re.search(r'^SPARK_SCRIPT=spark/snmp_sinks\.py$', up, re.M) is not None and "snmp_to_iceberg" not in up)
-check("up.sh は SINK_SPLUNK（既定 0）と SPLUNK_INDEX を読み、splunk なら ECS の Splunk の token を SSM に作ってから渡す（値は読まない）。外の Splunk の変数は渡さない",
-      re.search(r'^SINK_SPLUNK="\$\{SINK_SPLUNK:-0\}"; SPLUNK_INDEX="\$\{SPLUNK_INDEX:-\}"$', up, re.M) is not None
+check("up.sh は SINK_SPLUNK（既定 1）と SPLUNK_INDEX を読み、splunk なら ECS の Splunk の token を SSM に作ってから渡す（値は読まない）。外の Splunk の変数は渡さない",
+      re.search(r'^SINK_SPLUNK="\$\{SINK_SPLUNK:-1\}"; SPLUNK_INDEX="\$\{SPLUNK_INDEX:-\}"$', up, re.M) is not None
       and "get-parameter" not in up and "splunk_hec_url=" not in up and "splunk_skip_tls_verify" not in up and "SPLUNK_TOKEN_PARAM" not in up
       and 'ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX")' in up
       and up.index('ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]"') < up.index('ensure_secret "/$PREFIX/splunk/hec-token"') < up.index('tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"'))
@@ -698,26 +698,31 @@ check("AGENT は bedrock-runtime / bedrock-agentcore / ecr / logs を足し、KB
       and _endpoints("base/ecr base/core agent", AGENT="1", CREATE_KB="1").startswith("OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs bedrock-agent-runtime | 8"))
 _ALL = "base/ecr base/core agent pipeline/lab pipeline/stream pipeline/analytics pipeline/graph workflow"
 check("全部なら 14 本で重複しない（ecr / logs / s3tables / bedrock-agentcore は 1 本ずつ。graph は Neptune Analytics の neptune-graph-data）、ENDPOINTS_MULTI_AZ=1 で 2 AZ。events は無く、アラートの送り手がいれば sns",
-      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1", GRAFANA="1", GRAFANA_ALERTS="1", ENDPOINTS_MULTI_AZ="1")
+      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1", GRAFANA="1", ENDPOINTS_MULTI_AZ="1")
       == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs s3tables neptune-graph-data sqs bedrock-agentcore.gateway bedrock-agent-runtime aps-workspaces sns | 14 | 2")
-check("sns のエンドポイントは Grafana のアラートか Splunk があるときだけ（どちらも無ければ 13 本。Splunk だけでも足す）",
+check("sns のエンドポイントは Grafana か Splunk があるときだけ（Grafana はいつもアラートルールを持つ。どちらも無ければ 13 本。Splunk だけでも足す）",
       _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1").endswith("aps-workspaces | 13 | 1")
       and _endpoints("base/ecr base/core pipeline/lab pipeline/stream pipeline/analytics", SPLUNK_ON_ECS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr logs s3tables sns | 7 | 1"
       and "events" not in _epblk.replace("events の", ""))
-# 送り手の決め方（GRAFANA_ALERTS）と「WORKFLOW は送り手が要る」も切り出して動かす
-_sndblk = up[up.index('GRAFANA_ALERTS=""'):up.index('if [ -z "$AGENT" ] && [ -n "$CREATE_KB" ]; then')]
+# link_down の送り手の決め方（LINK_DOWN_SENDERS）と「WORKFLOW は送り手が要る」も切り出して動かす（ワークフローを起こすのは link_down だけ）
+_sndblk = up[up.index('LINK_DOWN_SENDERS=""'):up.index('if [ -z "$AGENT" ] && [ -n "$CREATE_KB" ]; then')]
 def _senders(**env):
-    r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $1"; exit 1; }\n' + _sndblk + 'echo "OUT: ${GRAFANA_ALERTS:-0}"'],
+    r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $1"; exit 1; }\n' + _sndblk + 'echo "OUT: ${LINK_DOWN_SENDERS:-none}"'],
                        capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env})
     return r.stdout.strip().splitlines()[-1][:40] if r.stdout.strip() else r.stderr
-check("Grafana のアラートは GRAFANA と SINK_PROMETHEUS と SNMP_POLL があるときだけ（ルールは Prometheus の、SNMP のポーリングの ifOperStatus を見る）",
-      _senders(GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: 1" and _senders(GRAFANA="1", SINK_PROMETHEUS="1") == "OUT: 0"
-      and _senders(GRAFANA="1", SNMP_POLL="1") == "OUT: 0" and _senders(SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: 0")
-check("up.sh の WORKFLOW=1 はアラートの送り手（Grafana のアラートか Splunk）が 1 つも無ければ、何も作る前に止まる（既定の SNMP_POLL=0 では Grafana は数えない）",
+check("Grafana が link_down の送り手になるのは GRAFANA と SINK_PROMETHEUS と SNMP_POLL があるときだけ（link_down はポーリングの ifOperStatus を見る）。Splunk は SPLUNK_ON_ECS で",
+      _senders(GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: grafana" and _senders(GRAFANA="1", SINK_PROMETHEUS="1") == "OUT: none"
+      and _senders(GRAFANA="1", SNMP_POLL="1") == "OUT: none" and _senders(SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: none"
+      and _senders(SPLUNK_ON_ECS="1") == "OUT: splunk" and _senders(GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1", SPLUNK_ON_ECS="1") == "OUT: grafana,splunk")
+check("up.sh の WORKFLOW=1 は link_down の送り手（Grafana か Splunk）が 1 つも無ければ、何も作る前に止まる（SNMP_POLL=0 では Grafana は数えない）",
       _senders(WORKFLOW="1", GRAFANA="1").startswith("DIE: WORKFLOW はアラートの送り手が要る") and _senders(WORKFLOW="1").startswith("DIE: WORKFLOW はアラートの送り手が要る")
       and _senders(WORKFLOW="1", GRAFANA="1", SINK_PROMETHEUS="1").startswith("DIE: WORKFLOW はアラートの送り手が要る")
-      and _senders(WORKFLOW="1", GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: 1" and _senders(WORKFLOW="1", SPLUNK_ON_ECS="1") == "OUT: 0"
+      and _senders(WORKFLOW="1", GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: grafana" and _senders(WORKFLOW="1", SPLUNK_ON_ECS="1") == "OUT: splunk"
       and up.index('die "WORKFLOW はアラートの送り手が要る') < up.index("ENDPOINTS=\"\""))
+_r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $1"; exit 1; }\n' + _sndblk], capture_output=True, text=True,
+                    env={"PATH": os.environ["PATH"], "GRAFANA": "1", "SINK_PROMETHEUS": "1", "SPLUNK_ON_ECS": "1"})
+check("SNMP_POLL=0 で Grafana の link_down が黙るときは注意を出す（Splunk があれば trap からだけ知らせると言う）",
+      "注意: SNMP_POLL=0 なので Grafana のアラートルール link_down と Splunk の netops_poll は発火しない" in _r.stdout)
 check("up.sh は base/core に interface_endpoints / network_perimeter / endpoints_multi_az を渡し、state に残るルートの分も足す",
       'MAIN_VARS+=(-var "interface_endpoints=[' in up and 'MAIN_VARS+=(-var "network_perimeter=' in up and 'MAIN_VARS+=(-var "endpoints_multi_az=' in up
       and re.search(r'if has_resources "\$r"; then\n\s*endpoints_for "\$r"', up) is not None
@@ -745,11 +750,12 @@ def _sinks(**env):
     r = subprocess.run(["bash", "-c", _pre + _blk + 'echo "OUT: $SINKS | $SINKS_TF"'], capture_output=True, text=True,
                        env={"PATH": os.environ["PATH"], **env})
     return r.returncode, r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
-check("SINK_* が無ければ 3 つ全部", _sinks() == (0, 'OUT: iceberg,opensearch,prometheus | "iceberg","opensearch","prometheus"'))
-check("SINK_OPENSEARCH=0 で opensearch だけ外れる", _sinks(SINK_OPENSEARCH="0") == (0, 'OUT: iceberg,prometheus | "iceberg","prometheus"'))
-check("SINK_S3=0 SINK_PROMETHEUS=no で opensearch だけ残る", _sinks(SINK_S3="0", SINK_PROMETHEUS="no") == (0, 'OUT: opensearch | "opensearch"'))
-check("SINK_S3=false で S3 Tables が外れる", _sinks(SINK_S3="false") == (0, 'OUT: opensearch,prometheus | "opensearch","prometheus"'))
-_rc, _out = _sinks(SINK_S3="0", SINK_OPENSEARCH="0", SINK_PROMETHEUS="0")
+check("SINK_* が無ければ 4 つ全部（Splunk も既定 1。cycle 002）", _sinks() == (0, 'OUT: iceberg,opensearch,prometheus,splunk | "iceberg","opensearch","prometheus","splunk"'))
+check("SINK_OPENSEARCH=0 で opensearch だけ外れる", _sinks(SINK_OPENSEARCH="0") == (0, 'OUT: iceberg,prometheus,splunk | "iceberg","prometheus","splunk"'))
+check("SINK_S3=0 SINK_PROMETHEUS=no SINK_SPLUNK=0 で opensearch だけ残る", _sinks(SINK_S3="0", SINK_PROMETHEUS="no", SINK_SPLUNK="0") == (0, 'OUT: opensearch | "opensearch"'))
+check("SINK_S3=false で S3 Tables が外れる", _sinks(SINK_S3="false") == (0, 'OUT: opensearch,prometheus,splunk | "opensearch","prometheus","splunk"'))
+check("SINK_SPLUNK=0 で splunk だけ外れる", _sinks(SINK_SPLUNK="0") == (0, 'OUT: iceberg,opensearch,prometheus | "iceberg","opensearch","prometheus"'))
+_rc, _out = _sinks(SINK_S3="0", SINK_OPENSEARCH="0", SINK_PROMETHEUS="0", SINK_SPLUNK="0")
 check("SINK_* が全部 0 なら止まる", _rc == 1 and "全部 0" in _out)
 _rc, _out = _sinks(SINK_S3="2")
 check("SINK_S3=2 は止まる", _rc == 1 and "SINK_S3 は 1 か 0" in _out)
@@ -762,7 +768,14 @@ def _ecs(**env):
     return r.returncode, r.stdout.strip().splitlines()
 check("SINK_SPLUNK=1 なら splunk が入り、Splunk を ECS で立てる（SPLUNK_ON_ECS=1）",
       _ecs(SINK_SPLUNK="1") == (0, ['OUT: iceberg,opensearch,prometheus,splunk | "iceberg","opensearch","prometheus","splunk"', "ECS: 1"]))
-check("SINK_SPLUNK=0 なら SPLUNK_ON_ECS は立たない", _ecs()[1][-1] == "ECS:")
+check("SINK_SPLUNK が無ければ（既定 1）Splunk を ECS で立て、SINK_SPLUNK=0 なら立てない", _ecs()[1][-1] == "ECS: 1" and _ecs(SINK_SPLUNK="0")[1][-1] == "ECS:")
+# 既定（deploy.env に何も書かない）で WORKFLOW=1 にすると、link_down の送り手は Grafana と Splunk の両方になる（設計の検証。cycle 002）
+_defblk = (_blk + up[up.index('SNMP_POLL="${SNMP_POLL:-1}"'):].split("\n", 1)[0] + "\n"
+           + up[up.index('GRAFANA="${GRAFANA:-1}"'):up.index('if [ -z "$AGENT" ] && [ -n "$CREATE_KB" ]; then')])
+_r = subprocess.run(["bash", "-c", _pre + _defblk + 'echo "OUT: ${LINK_DOWN_SENDERS:-none} | $SINKS"'], capture_output=True, text=True,
+                    env={"PATH": os.environ["PATH"], "WORKFLOW": "1"})
+check("既定のまま WORKFLOW=1 なら送り手は grafana,splunk、格納先は 4 つ（SNMP_POLL も SINK_SPLUNK も既定 1）",
+      _r.returncode == 0 and _r.stdout.strip().splitlines()[-1] == "OUT: grafana,splunk | iceberg,opensearch,prometheus,splunk")
 _rc, _out = _sinks(SINK_SPLUNK="1", SPLUNK_HEC_URL="https://s:8088")
 check("SPLUNK_HEC_URL（2026-09-28 にやめた外の Splunk）が書いてあれば、黙って ECS の Splunk に替えずに止まる", _rc == 1 and "SPLUNK_HEC_URL は 2026-09-28 から使わない" in _out)
 _rc, _out = _sinks(SPLUNK_HEC_URL="https://s:8088")
@@ -770,7 +783,7 @@ check("SPLUNK_HEC_URL は SINK_SPLUNK=0 でも止まる（deploy.env から消�
 check("SPLUNK_SKIP_TLS_VERIFY は使わない（書いてあれば注意だけ）", "for k in ADMIN_ARN OPENSEARCH_CACERT_FILE SPLUNK_SKIP_TLS_VERIFY; do" in up)
 check("deploy-env.sh は SINK_* を読めるキーに持つ",
       all(re.search(rf'(?<![A-Z_]){k}(?![A-Z_])', open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read()) for k in ("SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "SPLUNK_HEC_URL", "SPLUNK_INDEX", "SPLUNK_SKIP_TLS_VERIFY")))
-check("deploy.env.example は SINK_SPLUNK=0 を既定にし、SPLUNK_HEC_URL / SPLUNK_SKIP_TLS_VERIFY を書かない（2026-09-28 にやめた）",
+check("deploy.env.example は SINK_SPLUNK を既定 1 にし（例は #SINK_SPLUNK=0）、SPLUNK_HEC_URL / SPLUNK_SKIP_TLS_VERIFY を書かない（2026-09-28 にやめた）",
       re.search(r"^#SINK_SPLUNK=0$", open(ENV_EXAMPLE, encoding="utf-8").read(), re.M) is not None
       and "SPLUNK_HEC_URL" not in open(ENV_EXAMPLE, encoding="utf-8").read() and "SPLUNK_SKIP_TLS_VERIFY" not in open(ENV_EXAMPLE, encoding="utf-8").read())
 check("MSK Connect の Splunk は書いていない（2026-09-26 に Spark から書くことにした）",

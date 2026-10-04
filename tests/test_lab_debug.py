@@ -248,18 +248,20 @@ tpl = read("telegraf", "telegraf.conf.in")
 check("telegraf.conf.in の出力の区間は telegraf.sh の SINKS と同じ名前で、開きと閉じが対になる",
       sorted(re.findall(r"^# >>> sink (\w+)", tpl, re.M)) == sorted(re.findall(r"^# <<< sink (\w+)", tpl, re.M))
       == sorted(re.search(r'^SINKS="([^"]*)"', tg_sh, re.M).group(1).split()))
-# SNMP のポーリングは既定で止める（trap だけ。2026-10-04 ユーザー決定）。SNMP_POLL=1 で inputs.snmp を残す
+# SNMP のポーリングは既定でする（cycle 002。Grafana の link_down と Splunk の netops_poll が見る）。SNMP_POLL=0 で inputs.snmp を消す（trap だけ）
 _poll, out_poll, _ = render("stdout", SNMP_POLL="1")
 _snmp_blk = tpl.split("# >>> snmp_poll", 1)[1].split("# <<< snmp_poll", 1)[0] if "# >>> snmp_poll" in tpl else ""
 check("telegraf.conf.in の inputs.snmp（ポーリング）は「>>> snmp_poll」〜「<<< snmp_poll」の 1 区間に丸ごと入り、trap / gNMI / syslog は外にある",
       tpl.count("# >>> snmp_poll") == 1 and tpl.count("# <<< snmp_poll") == 1 and "[[inputs.snmp]]" in _snmp_blk and "agents = [__SNMP_AGENTS__]" in _snmp_blk
       and tpl.count("[[inputs.snmp]]") == 1 and tpl.count("agents = [__SNMP_AGENTS__]") == 1
       and not any(w in _snmp_blk for w in ("[[inputs.snmp_trap]]", "[[inputs.gnmi]]", "[[inputs.syslog]]", "[[outputs.")))
-check("SNMP_POLL の既定は 0: kafka でも stdout でも inputs.snmp が無く、trap / gNMI / syslog は残る（ログは snmp poll: off）",
-      sh_const(tg_sh, "SNMP_POLL") == "${SNMP_POLL:-0}"
-      and all("snmp" not in c["inputs"] and len(c["inputs"]["snmp_trap"]) == 1 and len(c["inputs"]["gnmi"]) == 2 and len(c["inputs"]["syslog"]) == 1
-              for c in (kafka, stdout_conf))
-      and "snmp poll: off" in out)
+_nopoll, out_nopoll, _ = render("stdout", SNMP_POLL="0")
+check("SNMP_POLL の既定は 1: kafka でも stdout でも inputs.snmp がある。SNMP_POLL=0 なら inputs.snmp が無く、trap / gNMI / syslog は残る（ログは snmp poll: off）",
+      sh_const(tg_sh, "SNMP_POLL") == "${SNMP_POLL:-1}"
+      and all(len(c["inputs"]["snmp"]) == 1 for c in (kafka, stdout_conf)) and "snmp poll: off" not in out
+      and _nopoll is not None and "snmp" not in _nopoll["inputs"] and len(_nopoll["inputs"]["snmp_trap"]) == 1
+      and len(_nopoll["inputs"]["gnmi"]) == 2 and len(_nopoll["inputs"]["syslog"]) == 1
+      and "snmp poll: off" in out_nopoll)
 check("gNMI は 2 つ（状態と lab の性能メトリクス）で、どちらも GNMI_TARGETS を宛先にする。MDT の受け口（57000/tcp）と Starlark の変換は kafka でも stdout でも入る",
       all([g["addresses"] for g in c["inputs"]["gnmi"]] == [["203.0.113.11:57400"]] * 2
           and c["inputs"]["cisco_telemetry_mdt"] == [{"transport": "grpc", "service_address": ":57000", "tags": {"collector": "mdt"}}]
@@ -273,9 +275,9 @@ check("SNMP_POLL=1 は inputs.snmp を残し、agents を SNMP_AGENTS で埋め�
       _poll is not None and _poll["inputs"]["snmp"][0]["agents"] == ["udp://203.0.113.11:161", "udp://203.0.113.12:161"]
       and _poll["inputs"]["snmp"][0]["name"] == "system" and _poll["inputs"]["snmp"][0]["table"][0]["name"] == "interface"
       and len(_poll["inputs"]["snmp_trap"]) == 1 and "snmp poll: \"udp://203.0.113.11:161\"" in out_poll)
-check("SNMP_AGENTS を見るのは SNMP_POLL=1 のときだけ（無いか形が違えば止まる）。SNMP_POLL は 0 か 1 だけ",
-      render("stdout", SNMP_AGENTS="")[0] is not None and render("stdout", SNMP_AGENTS="bad")[0] is not None
-      and render("stdout", SNMP_POLL="1", SNMP_AGENTS="")[0] is None and render("stdout", SNMP_POLL="1", SNMP_AGENTS="bad")[0] is None
+check("SNMP_AGENTS を見るのは SNMP_POLL=1（既定）のときだけ（無いか形が違えば止まる）。SNMP_POLL は 0 か 1 だけ",
+      render("stdout", SNMP_POLL="0", SNMP_AGENTS="")[0] is not None and render("stdout", SNMP_POLL="0", SNMP_AGENTS="bad")[0] is not None
+      and render("stdout", SNMP_AGENTS="")[0] is None and render("stdout", SNMP_POLL="1", SNMP_AGENTS="")[0] is None and render("stdout", SNMP_POLL="1", SNMP_AGENTS="bad")[0] is None
       and render("stdout", SNMP_POLL="0")[0] is not None and render("stdout", SNMP_POLL="yes")[0] is None and render("stdout", SNMP_POLL="true")[0] is None)
 def _tg_test(cmd="test", **extra):  # 描いた設定に入力が無ければ、telegraf を呼ぶ前に分かる言葉で止まる（手元に telegraf は無くてよい）
     with tempfile.TemporaryDirectory() as d:
@@ -283,7 +285,7 @@ def _tg_test(cmd="test", **extra):  # 描いた設定に入力が無ければ、
                "TELEGRAF_CONF": os.path.join(d, "telegraf.conf"), "AWS_REGION": "ap-northeast-1", "SINK": "stdout",
                "GNMI_TARGETS": '"203.0.113.11:57400"', "GNMI_USERNAME": "u", "GNMI_PASSWORD": "p", **extra}
         return subprocess.run(["bash", os.path.join(ROOT, "telegraf", "telegraf.sh"), cmd], capture_output=True, text=True, env=env)
-_t = _tg_test()
+_t = _tg_test(SNMP_POLL="0")
 check("tg test はポーリングを止めている（SNMP_POLL=0）と、SNMP_POLL=1 で起こし直すよう言って止まる",
       _t.returncode == 1 and "SNMP_POLL=1" in _t.stderr and "telegraf: command not found" not in _t.stderr)
 
@@ -321,7 +323,7 @@ check("telegraf.conf.in は機器の認証情報を持たず、${GNMI_USERNAME} 
       and _poll["inputs"]["snmp"][0]["community"] == "${SNMP_COMMUNITY}")
 check("取りにいく入力があるとき（all / dialin）は GNMI_USERNAME / GNMI_PASSWORD が無ければ止まり、SNMP_COMMUNITY は SNMP_POLL=1 のときだけ要る。dialout はどれも要らない",
       render("stdout", GNMI_USERNAME="")[0] is None and render("stdout", GNMI_PASSWORD="")[0] is None
-      and render("stdout", SNMP_COMMUNITY="")[0] is not None and render("stdout", SNMP_POLL="1", SNMP_COMMUNITY="")[0] is None
+      and render("stdout", SNMP_POLL="0", SNMP_COMMUNITY="")[0] is not None and render("stdout", SNMP_COMMUNITY="")[0] is None
       and render(None, KAFKA_BROKERS="b-1.example:9098", TELEGRAF_ROLE="dialin", GNMI_PASSWORD="")[0] is None
       and render(None, KAFKA_BROKERS="b-1.example:9098", TELEGRAF_ROLE="dialout", GNMI_USERNAME="", GNMI_PASSWORD="", SNMP_COMMUNITY="")[0] is not None)
 check("lab の認証情報（containerlab の既定）は lab.sh と lab-common.sh で同じで、lab.sh telegraf run が Telegraf に渡す",

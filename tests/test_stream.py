@@ -45,13 +45,14 @@ with open(SRC, encoding="utf-8") as f:
 # 2026-10-02: Spark の検知（detect のクエリ・Neptune の anomaly の頂点・S3 Tables の anomaly_events・EventBridge への put_events）をやめた。
 # 検知は Grafana のアラートルール（ポーリング）と Splunk の保存済みサーチ（trap と gNMI）が行い、SNS のトピックへ publish する
 _code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#")).split('"""', 2)[2]   # 先頭の docstring とコメント行を除いたコード
-check("Spark のジョブに検知の引数（--neptune-endpoint / --anomaly-events-table / --device-map / --event-bus / --event-source）は無い",
-      not any(f'"--{a}"' in src for a in ("neptune-endpoint", "anomaly-events-table", "anomaly-table", "device-map", "event-bus", "event-source")))
+# --device-map は cycle 002 で機器名（sysName）を足すために戻した（検知には使わない。test_analytics が見る）
+check("Spark のジョブに検知の引数（--neptune-endpoint / --anomaly-events-table / --event-bus / --event-source）は無い",
+      not any(f'"--{a}"' in src for a in ("neptune-endpoint", "anomaly-events-table", "anomaly-table", "event-bus", "event-source")))
 check("Spark のジョブは Neptune にも EventBridge にも触らず、boto3 を読むのは SSM の HEC token だけ",
       not any(w in _code for w in ("put_events", "gremlin", "neptune", "anomaly", '"detect"', 'client("events")', 'client("dynamodb")'))
       and re.findall(r'boto3\.client\("(\w+)"', _code) == ["ssm"])
-check("検知の関数と定数（events / device / parse_device_map / NeptuneAnomalies / make_detect_sender / EVENT_SOURCE / TRAP_TTL）はもう無い",
-      not any(hasattr(mod, n) for n in ("events", "device", "parse_device_map", "anomaly_key", "anomaly_detail", "NeptuneAnomalies", "make_detect_sender",
+check("検知の関数と定数（events / device / NeptuneAnomalies / make_detect_sender / EVENT_SOURCE / TRAP_TTL）はもう無い（parse_device_map は cycle 002 で機器名を足すために戻した）",
+      not any(hasattr(mod, n) for n in ("events", "device", "anomaly_key", "anomaly_detail", "NeptuneAnomalies", "make_detect_sender",
                                         "make_history_writer", "gremlin_literal", "graphson", "EVENT_SOURCE", "EVENT_DETAIL_TYPE", "TRAP_TTL", "ANOMALY_EVENT_COLUMNS")))
 BASE = ["--bootstrap", "b", "--checkpoint", "c", "--sinks", "iceberg", "--iceberg-table", "cat.ns.t"]
 check("格納先は iceberg / opensearch / prometheus / splunk の 4 つで、マイクロバッチは 60 秒（アラートが届くまでの遅れの一部）",
@@ -195,15 +196,15 @@ check("syslog の形式は stream の syslog_standard（既定 RFC3164 = 本番�
       and "case \"$SYSLOG_STANDARD\" in RFC3164 | RFC5424) ;;" in _up
       and re.search(r"\bSYSLOG_STANDARD\b", _read("ops", "deploy-env.sh").split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1]) is not None
       and re.search(r"^#SYSLOG_STANDARD=RFC5424$", _read("deploy.env.example"), re.M) is not None and re.search(r"^LAB_SYSLOG_STANDARD=RFC5424\b", _read("ops", "lab-common.sh"), re.M) is not None)
-check("SNMP のポーリングは既定で止める（trap だけ。2026-10-04 ユーザー決定）: stream の snmp_poll（bool、既定 false）→ タスクの SNMP_POLL（1 / 0）→ telegraf.sh が「>>> snmp_poll」の区間を残すか消す。"
-      "up.sh は deploy.env の SNMP_POLL（既定 0）を渡す",
-      re.search(r'variable "snmp_poll" \{[^}]*type\s*=\s*bool[^}]*default\s*=\s*false', _read("terraform", "pipeline", "stream", "variables.tf")) is not None
+check("SNMP のポーリングは既定でする（cycle 002。Grafana の link_down と Splunk の netops_poll が見る）: stream の snmp_poll（bool、既定 true）→ タスクの SNMP_POLL（1 / 0）→ "
+      "telegraf.sh が「>>> snmp_poll」の区間を残すか消す。up.sh は deploy.env の SNMP_POLL（既定 1）を渡す",
+      re.search(r'variable "snmp_poll" \{[^}]*type\s*=\s*bool[^}]*default\s*=\s*true', _read("terraform", "pipeline", "stream", "variables.tf")) is not None
       and '{ name = "SNMP_POLL", value = var.snmp_poll ? "1" : "0" }' in stream_tg
-      and re.search(r"^SNMP_POLL=\$\{SNMP_POLL:-0\}$", tgsh, re.M) is not None and '/^# >>> snmp_poll/,/^# <<< snmp_poll/d' in tgsh
+      and re.search(r"^SNMP_POLL=\$\{SNMP_POLL:-1\}$", tgsh, re.M) is not None and '/^# >>> snmp_poll/,/^# <<< snmp_poll/d' in tgsh
       and re.search(r"^# >>> snmp_poll[\s\S]*?^\[\[inputs\.snmp\]\][\s\S]*?^# <<< snmp_poll", tele, re.M) is not None
-      and "flag_value SNMP_POLL" in _up and '-var "snmp_poll=$SNMP_POLL_TF"' in _up
+      and 'SNMP_POLL="${SNMP_POLL:-1}"; flag_value SNMP_POLL' in _up and '-var "snmp_poll=$SNMP_POLL_TF"' in _up
       and re.search(r"\bSNMP_POLL\b", _read("ops", "deploy-env.sh").split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1]) is not None
-      and re.search(r"^#SNMP_POLL=1$", _read("deploy.env.example"), re.M) is not None)
+      and re.search(r"^#SNMP_POLL=0$", _read("deploy.env.example"), re.M) is not None)
 check("Telegraf に入るコマンドの既定は tg gnmi（tg test はポーリングを止めていると何も取らない）",
       "--command 'tg gnmi'" in _read("terraform", "pipeline", "stream", "outputs.tf"))
 check("up.sh は lab の定義からポーリング先と gNMI の購読先を作り、stream の snmp_agents / gnmi_targets に渡す（S3 には置かない）",
