@@ -45,7 +45,7 @@ flowchart LR
   WORKER -->|"① 一覧を書き換え"| SSM["SSM のパラメータ<br/>gnmi-targets / snmp-agents"]
   WORKER -->|"① サービスを作り直す"| DIALIN["Telegraf dialin（ECS）"]
   SSM -.->|"起動時に読む"| DIALIN
-  WORKER -->|"② Gremlin（差分）"| NEP[("Neptune<br/>物理層")]
+  WORKER -->|"② openCypher（差分）"| NEP[("Neptune<br/>物理層")]
 ```
 
 | リソース | 名前 | 中身 |
@@ -80,7 +80,7 @@ LB は無い。閉域なので、画面は Web の EC2 を踏み台にしたポ�
 | `netops/nb_sync.py` | 同期の本体。台帳を読む → ① Telegraf の一覧（SSM）と dialin の作り直し → ② Neptune の物理層 |
 | `netops/nb_map.py` | 台帳とトポロジの対応付け（Nautobot に依らない純粋な関数。`tests/test_nautobot.py` が検査する） |
 | `netops/bootstrap.py` | web の起動時に 1 回走る用意（下の 4） |
-| `Dockerfile` | 公式イメージに上のファイルと `agent/graph.py`（Neptune へ Gremlin で書く関数）、`lab_seed.json` を足す |
+| `Dockerfile` | 公式イメージに上のファイルと `agent/graph.py`（Neptune へ openCypher で書く関数）、`lab_seed.json` を足す |
 
 ## 4. 起動してから同期するまで
 
@@ -163,7 +163,7 @@ sequenceDiagram
   U->>W: リンクを追加 / 削除
   W->>N: インタフェースが無ければ作る → ケーブルを作る / 消す（トークン）
   N->>J: 変更を検知して Job を積む
-  J->>G: 物理層の差分を Gremlin で書く
+  J->>G: 物理層の差分を openCypher で書く
   U->>W: 再読み込み（数秒〜十数秒あと）
   W->>G: トポロジを読む
 ```

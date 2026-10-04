@@ -79,8 +79,8 @@ check("EMR / Grafana / Splunk は土台の spark / grafana / splunk の SG を�
 
 _sg_keys = re.search(r'security_groups = \{(.*?)\n  \}', _sg_tf, re.S)
 _sg_keys = set(re.findall(r'^\s+(\w+)\s+=\s+"', _sg_keys.group(1), re.M)) if _sg_keys else set()
-SG_KEYS = {"web", "lab", "telegraf_dialout", "telegraf_dialin", "telegraf_dialout_nlb", "msk", "spark", "grafana", "splunk", "neptune", "nautobot", "nautobot_db", "lambda", "workflow", "runtime"}
-check(f"土台の SG はワークロードごとの 15 個と endpoints（{sorted(_sg_keys)}）",
+SG_KEYS = {"web", "lab", "telegraf_dialout", "telegraf_dialin", "telegraf_dialout_nlb", "msk", "spark", "grafana", "splunk", "nautobot", "nautobot_db", "lambda", "workflow", "runtime"}
+check(f"土台の SG はワークロードごとの 14 個と endpoints（{sorted(_sg_keys)}）",
       _sg_keys == SG_KEYS and re.findall(r'resource "aws_security_group" "(\w+)"', _core) == ["workload", "endpoints"]
       and re.search(r'resource "aws_security_group" "workload" \{\n\s*for_each = local\.security_groups', _sg_tf) is not None)
 # 通信の表を読む（from = sg の行は aws_api_clients に展開する）
@@ -91,9 +91,9 @@ for _m in re.finditer(r'\{ from = ("?\w+"?), to = "(\w+)", protocol = "(\w+)", p
     for _from in (_clients if _m.group(1) == "sg" else [_m.group(1).strip('"')]):
         _flows.add((_from, _m.group(2), _m.group(3), int(_m.group(4)), int(_m.group(5) or _m.group(4)), _m.group(6) or ""))
 EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_dialout", "telegraf_dialin", "spark", "grafana", "splunk", "nautobot", "lambda", "workflow", "runtime") for t in ("endpoints", "s3")} | {
-    # Nautobot（terraform/pipeline/nautobot。2026-10-04）: Job が Neptune に物理層を書き、画面は Web の EC2 からのポートフォワード、DB は RDS
-    ("nautobot", "neptune", "tcp", 8182, 8182, ""), ("web", "nautobot", "tcp", 8080, 8080, ""), ("nautobot", "nautobot_db", "tcp", 5432, 5432, ""),
-    *((c, "neptune", "tcp", 8182, 8182, "") for c in ("web", "runtime", "lambda", "workflow")),   # spark は 2026-10-02 に外した（検知をやめた）
+    # Nautobot（terraform/pipeline/nautobot。2026-10-04）: 画面は Web の EC2 からのポートフォワード、DB は RDS。
+    # Neptune は Neptune Analytics にしたので SG が無く、行も無い（neptune-graph-data のエンドポイントの 443 で届く。2026-10-04）
+    ("web", "nautobot", "tcp", 8080, 8080, ""), ("nautobot", "nautobot_db", "tcp", 5432, 5432, ""),
     ("web", "grafana", "tcp", 3000, 3000, ""), ("web", "splunk", "tcp", 8000, 8000, ""), ("web", "workflow", "tcp", 8233, 8233, ""),
     ("telegraf_dialout", "msk", "tcp", 9098, 9098, ""), ("telegraf_dialin", "msk", "tcp", 9098, 9098, ""), ("spark", "msk", "tcp", 9098, 9098, ""), ("msk", "msk", "tcp", 9092, 9098, ""),
     ("spark", "spark", "tcp", 0, 65535, ""), ("spark", "splunk", "tcp", 8088, 8088, ""),
@@ -626,7 +626,7 @@ check("perimeter.tf: aws:SourceVpc がこの VPC でなく、AWS のサービス
       re.search(r'StringNotEqualsIfExists\s*=\s*\{\s*"aws:SourceVpc"\s*=\s*aws_vpc\.this\.id,\s*"aws:CalledViaLast"\s*=\s*"s3tables\.amazonaws\.com"\s*\}', _perim) is not None
       and re.search(r'BoolIfExists\s*=\s*\{\s*"aws:ViaAWSService"\s*=\s*"false"\s*\}', _perim) is not None
       and all(f'"{a}"' in _perim for a in ("s3:*", "s3tables:*", "sqs:*", "ssm:*", "bedrock:*", "sns:*", "aps:*", "bedrock-agentcore:InvokeAgentRuntime")) and '"events:*"' not in _perim
-      and "neptune-db" not in _perim.split("perimeter_denied_actions")[1].split("]")[0] and "kafka-cluster" not in _perim.split("perimeter_denied_actions")[1].split("]")[0])
+      and "neptune-" not in _perim.split("perimeter_denied_actions = [")[1].split("]")[0] and "kafka-cluster" not in _perim.split("perimeter_denied_actions = [")[1].split("]")[0])
 check("perimeter.tf: ポリシーはいつも作り、NETWORK_PERIMETER=0 では何も拒まない中身にする（他のルートが付けたままでも base/core の apply が落ちない）",
       re.search(r'resource "aws_iam_policy" "network_perimeter" \{\n\s*name', _perim) is not None
       and 'var.network_perimeter ? aws_iam_policy.network_perimeter.arn : ""' in _core)
@@ -646,11 +646,11 @@ check("AGENT は bedrock-runtime / bedrock-agentcore / ecr / logs を足し、KB
       _endpoints("base/ecr base/core agent", AGENT="1") == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs | 7 | 1"
       and _endpoints("base/ecr base/core agent", AGENT="1", CREATE_KB="1").startswith("OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs bedrock-agent-runtime | 8"))
 _ALL = "base/ecr base/core agent pipeline/lab pipeline/stream pipeline/analytics pipeline/graph workflow"
-check("全部なら 13 本で重複しない（ecr / logs / s3tables / bedrock-agentcore は 1 本ずつ）、ENDPOINTS_MULTI_AZ=1 で 2 AZ。events は無く、アラートの送り手がいれば sns",
+check("全部なら 14 本で重複しない（ecr / logs / s3tables / bedrock-agentcore は 1 本ずつ。graph は Neptune Analytics の neptune-graph-data）、ENDPOINTS_MULTI_AZ=1 で 2 AZ。events は無く、アラートの送り手がいれば sns",
       _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1", GRAFANA="1", GRAFANA_ALERTS="1", ENDPOINTS_MULTI_AZ="1")
-      == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs s3tables sqs bedrock-agentcore.gateway bedrock-agent-runtime aps-workspaces sns | 13 | 2")
-check("sns のエンドポイントは Grafana のアラートか Splunk があるときだけ（どちらも無ければ 12 本。Splunk だけでも足す）",
-      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1").endswith("aps-workspaces | 12 | 1")
+      == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs s3tables neptune-graph-data sqs bedrock-agentcore.gateway bedrock-agent-runtime aps-workspaces sns | 14 | 2")
+check("sns のエンドポイントは Grafana のアラートか Splunk があるときだけ（どちらも無ければ 13 本。Splunk だけでも足す）",
+      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1").endswith("aps-workspaces | 13 | 1")
       and _endpoints("base/ecr base/core pipeline/lab pipeline/stream pipeline/analytics", SPLUNK_ON_ECS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr logs s3tables sns | 7 | 1"
       and "events" not in _epblk.replace("events の", ""))
 # 送り手の決め方（GRAFANA_ALERTS）と「WORKFLOW は送り手が要る」も切り出して動かす

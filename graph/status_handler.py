@@ -9,7 +9,7 @@ Neptune の機器と回線の動的な状態（property status）を書く。設
 
 メッセージの形は workflow/rules.py の alerts_from_message が読む（ワーカーの starter と同じ読み手。zip に rules.py として同梱する）。
 1 通に何件か入っていることがある（Grafana はグループごとに 1 通）。同じ障害を Grafana と Splunk の両方が知らせても、書くのは同じ値なので害は無い。
-zip には agent/graph.py も同梱する（Gremlin の組み立てと boto3 の neptunedata はそちら）。エンドポイントは環境変数 NEPTUNE_ENDPOINT。
+zip には agent/graph.py も同梱する（openCypher の組み立てと boto3 の neptune-graph はそちら）。グラフの ID は環境変数 NEPTUNE_GRAPH_ID。
 トポロジに無い機器やインタフェースは捨てずに「未登録」の頂点として Neptune に残し（graph.set_status）、WARNING で UNREGISTERED を
 ログに出す（登録漏れの印。CloudWatch Logs Insights で `filter @message like /UNREGISTERED/` と探す。lab に足した機器は
 ops/sync-graph.sh --replace で登録すると、未登録の頂点は置き換わる）。

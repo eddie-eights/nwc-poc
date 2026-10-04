@@ -4,7 +4,7 @@
 # 作成・承認・却下・適用・確認は 1 行ずつ S3 Tables の proposal_events（terraform/pipeline/analytics の tables.tf）に残る。
 # 以前は DynamoDB のテーブルだった（2026-09-24 に Neptune と S3 Tables に寄せた）。
 #
-# Neptune の読み書きは terraform/pipeline/graph の access.tf が Runtime と web の両方に付ける（neptune-db は頂点のラベル単位で
+# Neptune の読み書きは terraform/pipeline/graph の access.tf が Runtime と web の両方に付ける（neptune-graph は頂点のラベル単位で
 # 絞れない）。なので「チャットからは承認できない」（HITL）は IAM ではなくコードで守る: agent/proposals.py の decide を呼ぶのは web の承認タブだけで、
 # チャットのツール（TOOL_SPECS）には decide が無い。
 

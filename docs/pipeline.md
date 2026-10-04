@@ -279,7 +279,7 @@ flowchart LR
   W["Web の「トポロジ」タブ<br/>リンクの追加・削除"] -->|"REST API（トークン）"| U
   U["Nautobot<br/>機器 / Service / ケーブル"] -->|"JobHook（変更のたび）<br/>または手で Job"| J["Job<br/>nautobot/jobs/netops_jobs.py"]
   J -->|"SSM の一覧を書き換え<br/>ECS のサービスを作り直す"| T["Telegraf dialin<br/>gNMI / SNMP を取りにいく"]
-  J -->|"Gremlin（差分）"| N["Neptune の物理層<br/>device / interface / 回線"]
+  J -->|"openCypher（差分）"| N["Neptune の物理層<br/>device / interface / 回線"]
 ```
 
 | Nautobot | 反映先 |
@@ -293,7 +293,7 @@ flowchart LR
 - シークレット（Django の SECRET_KEY、admin のパスワード、DB のパスワード、Web が使う API のトークン）は `ops/up.sh` が SSM の SecureString `/<prefix>/nautobot/{secret-key,admin-password,db-password,api-token}` に乱数で作る。タスクは ECS の secrets で受け、RDS には Terraform の write-only の引数で渡す（state に載らない）。
 - 最初の起動で、DB が空なら lab の定義（イメージに入れた `lab_seed.json`）から機器・インタフェース・IP・Service・ケーブルを入れ、Job 2 つ（「Telegraf と Neptune に同期」「変更のたびに…」）と JobHook `netops-sync` を有効にして 1 回同期する（`nautobot/netops/bootstrap.py`。2 回目からは足りないものだけ）。
 - Telegraf の一覧は、変わったときだけ書き換えて取りにいく側のサービスを作り直す（購読が数十秒切れる）。Service を持つ機器が 1 台も無くなる変更は書かない（Telegraf が起動できなくなるので、警告だけ）。
-- Neptune へは `agent/graph.py` の `sync_physical()` が Gremlin で差分を書く。`status`（アラートが書く）と IP 層・EVPN/BGP 層は触らない。IP 層から上は Nautobot に無いので、lab の定義からだけ入る（`ops/sync-graph.sh`）。
+- Neptune へは `agent/graph.py` の `sync_physical()` が openCypher で差分を書く。`status`（アラートが書く）と IP 層・EVPN/BGP 層は触らない。IP 層から上は Nautobot に無いので、lab の定義からだけ入る（`ops/sync-graph.sh`）。
 - Web の「トポロジ」タブのリンクの追加・削除は、Nautobot があるあいだ Nautobot の REST API に書く（`web/nautobot_api.py`。無いインタフェースは作り、ケーブルを作る・消す）。Neptune には JobHook の Job が数秒〜十数秒あとに反映するので、画面は「再読み込み」で確かめる。API のユーザーは `netops-web`（起動時に `bootstrap.py` が SSM の `api-token` と同じ値のトークンで作る。JobHook が出るように superuser）。種別（fabric / l2 / lag）は画面で選んだものではなく両端の Role と LAG から決まる。機器の追加・削除は Nautobot の画面でする。「静的データを投入」は Nautobot があるあいだ使えない。
 - JobHook は Device / Interface / Cable / IPAddress / Service / Location / Role の作成・変更・削除で出る。IP をインタフェースに付け替えただけのように JobHook が出ない変更のあとは、画面の Jobs → 「Telegraf と Neptune に同期」を手で打つ。
 - JobHook は、変更した人に Job を実行する権限が無いと出ない（管理者は出る）。権限を絞ったユーザーを作るなら、Job `netops_jobs.SyncOnChange` の実行も許す。

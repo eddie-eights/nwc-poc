@@ -9,7 +9,8 @@
 #   - AWS のサービス自身（aws:PrincipalIsAWSService: SNS → SQS）とサービスが呼び手の代わりに出すリクエスト（aws:ViaAWSService）
 #   - サービスがロールを引き受けて自分の側から来るもの（Bedrock の KB が docs/ を読む <prefix>-kb）
 # IAM 側で拒む API は、VPC エンドポイントを通るものだけにする。logs / ecr / ec2 / kms / sts / xray はサービスがロールの認証情報で
-# 自分の側から呼ぶ（Lambda のログ、Runtime のイメージ取得）ので入れない。neptune-db / kafka-cluster は VPC の中にしか無く、aoss はネットワークポリシーで閉じている。
+# 自分の側から呼ぶ（Lambda のログ、Runtime のイメージ取得）ので入れない。kafka-cluster は VPC の中にしか無く、aoss はネットワークポリシーで、neptune-graph はグラフの public_connectivity = false で閉じている
+# （neptune-graph のリクエストに aws:SourceVpc が付くかは確かめていないので、Deny には入れない）。
 # S3 Tables の Iceberg REST（/iceberg）は s3tables が呼び手の代わりに中で出す呼び出しに元の VPC を引き継がないので、
 # aws:CalledViaLast = s3tables.amazonaws.com も外す（AWS の S3 Tables と VPC エンドポイントの文書の例と同じ）。
 # AMP のワークスペースのリソースポリシーは Prometheus 互換の API の共有用で Deny と aws:SourceVpc が効くか確かめられないので、IAM 側だけで止める。

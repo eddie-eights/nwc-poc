@@ -1,6 +1,6 @@
-# nwc-poc - PIPELINE graph root module. One Neptune cluster (IAM auth, one db.t4g.medium instance) holds the network topology
-# (device vertices, link edges, their dynamic status) and the repair proposals of terraform/workflow. The chat runtime and the web read it through boto3 neptunedata (Gremlin); the web can also edit it.
-# Without this root module both fall back to the static data in agent/data/. Costs about 0.12 USD per hour while it exists - destroy it the same day.
+# nwc-poc - PIPELINE graph root module. One Neptune Analytics graph (IAM auth, 16 m-NCU, no public endpoint) holds the network topology
+# (device vertices, link edges, their dynamic status) and the repair proposals of terraform/workflow. The chat runtime and the web read it through boto3 neptune-graph (openCypher); the web can also edit it.
+# Without this root module both fall back to the static data in agent/data/. Costs about 0.58 USD per hour while it exists (16 m-NCU, Tokyo) - destroy it the same day.
 
 # リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、
 # 1 つの AWS アカウントを何人かで使っても、自分の名前で自分のリソースを探せる
@@ -36,7 +36,6 @@ locals {
   vpc_id     = data.terraform_remote_state.main.outputs.vpc_id
   subnet_ids = data.terraform_remote_state.main.outputs.runtime_subnet_ids
   # SG は古い state の destroy でも評価できるように try（空のまま apply に進まないよう remote_state の postcondition で止める）
-  neptune_sg_id   = try(data.terraform_remote_state.main.outputs.security_group_ids["neptune"], "")
   lambda_sg_id    = try(data.terraform_remote_state.main.outputs.security_group_ids["lambda"], "") # sync.tf の status Lambda
   reader_role_ids = toset([data.terraform_remote_state.main.outputs.runtime_role_name, data.terraform_remote_state.main.outputs.web_role_name])
   # アラートの SNS トピック（terraform/base/core の alerts.tf）。sync.tf の status Lambda が購読する。古い state なら空で、購読の precondition が止める

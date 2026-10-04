@@ -6,7 +6,7 @@
 # the alerts themselves are not stored here (2026-10-02; until then the Spark job put AnomalyOpened / AnomalyResolved on EventBridge).
 # The static topology itself comes from lab/ (ops/up.sh 7-3b and ops/sync-graph.sh seed it through the web EC2) - not from here.
 # Cost: the subscription is free, the Lambda is a few invocations per alert (free tier), nothing else
-# (Neptune is in the VPC; the Lambda service writes its logs without going through the VPC).
+# (the Lambda reaches Neptune Analytics through the neptune-graph-data interface endpoint of terraform/base/core; the Lambda service writes its logs without going through the VPC).
 
 data "archive_file" "status" {
   type        = "zip"
@@ -67,12 +67,12 @@ data "aws_iam_policy_document" "status" {
     resources = ["*"]
   }
 
-  # status を書き換える property('status', ...) は既存の値の削除を伴うので、Neptune は DeleteDataViaQuery も要る
-  # （無いと ExecuteGremlinQuery が AccessDeniedException になり、アラートがトポロジに反映されない。2026-09-18 実機）
+  # status の書き換え（SET）と「未登録」の頂点の片付け（DELETE / REMOVE）。Neptune Database のときは property の上書きにも
+  # DeleteDataViaQuery が要った（2026-09-18 実機）。Neptune Analytics で SET だけなら Write で足りるかは未確認なので、3 つとも付ける
   statement {
-    sid       = "Gremlin"
-    actions   = ["neptune-db:ReadDataViaQuery", "neptune-db:WriteDataViaQuery", "neptune-db:DeleteDataViaQuery", "neptune-db:GetQueryStatus"]
-    resources = ["arn:${local.partition}:neptune-db:${var.region}:${local.account_id}:${aws_neptune_cluster.graph.cluster_resource_id}/*"]
+    sid       = "OpenCypher"
+    actions   = ["neptune-graph:ReadDataViaQuery", "neptune-graph:WriteDataViaQuery", "neptune-graph:DeleteDataViaQuery", "neptune-graph:GetQueryStatus"]
+    resources = [aws_neptunegraph_graph.graph.arn]
   }
 }
 
@@ -98,7 +98,8 @@ resource "aws_lambda_function" "status" {
   timeout          = 30
   memory_size      = 128
 
-  # Neptune と同じサブネット、SG は terraform/base/core の lambda（Neptune の 8182 へ出られる。SSM は引かない。エンドポイントは環境変数で渡す）
+  # VPC の中に置く（グラフは公開していないので、土台の neptune-graph-data のエンドポイントからしか届かない）。SG は terraform/base/core の lambda
+  # （エンドポイントの 443 へ出られる。SSM は引かない。グラフの ID は環境変数で渡す）
   vpc_config {
     subnet_ids         = local.subnet_ids
     security_group_ids = [local.lambda_sg_id]
@@ -106,11 +107,11 @@ resource "aws_lambda_function" "status" {
 
   environment {
     variables = {
-      NEPTUNE_ENDPOINT = "${aws_neptune_cluster.graph.endpoint}:${aws_neptune_cluster.graph.port}" # graph.py はこれがあれば SSM を引かない
+      NEPTUNE_GRAPH_ID = aws_neptunegraph_graph.graph.id # graph.py はこれがあれば SSM を引かない
     }
   }
 
-  depends_on = [aws_cloudwatch_log_group.status, aws_iam_role_policy.status, aws_neptune_cluster_instance.graph]
+  depends_on = [aws_cloudwatch_log_group.status, aws_iam_role_policy.status]
 }
 
 # SNS は Lambda を非同期で呼ぶ。Lambda の側の失敗は Lambda が 2 回まで再試行し、SNS の側の配信の失敗は SNS が再試行する

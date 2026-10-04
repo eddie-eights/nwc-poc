@@ -21,7 +21,7 @@ AWS の API へは全部 VPC エンドポイントから行き、この VPC を�
 
 - **拒まないもの**: apply した人（`terraform` を打つ PC は VPC の外なので。PoC の割り切り）、AWS のサービス自身（`aws:PrincipalIsAWSService`）とサービスが代わりに呼ぶもの（`aws:ViaAWSService`。SNS → SQS / Lambda、Bedrock → S3 など）、KB のロール `<prefix>-kb`（取り込みは Bedrock のサービス側で動く）。
 - S3 Tables の Iceberg REST は、S3 Tables が裏で呼ぶ API に元の VPC が付かないので `aws:CalledViaLast = s3tables.amazonaws.com` を外してある。
-- Neptune と MSK の IAM 認証にはこの条件キーが無いので Deny に入れない（どちらも VPC の中にしか口が無い）。Prometheus のワークスペースはリソースポリシーの Deny を確かめていないので IAM の側だけ。
+- MSK の IAM 認証にはこの条件キーが無いので Deny に入れない（VPC の中にしか口が無い）。Neptune Analytics（`neptune-graph`）も Deny に入れていない（リクエストに `aws:SourceVpc` が付くか未確認。グラフは `public_connectivity = false` で、公開の口が無い）。Prometheus のワークスペースはリソースポリシーの Deny を確かめていないので IAM の側だけ。
 - apply する人が替わったら、その人が `ops/up.sh` を打ち直す（外すプリンシパルが入れ替わる）。前の人の設定のままバケットに入れないときは [troubleshooting.md](../troubleshooting.md) の「閉域」。
 - 本番では、apply も VPC の中（CI のランナーなど）から打ち、外す人を無くす。AWS の外（Splunk Cloud など）へ送る必要が出て NAT Gateway を足すなら、出る先を Network Firewall のドメインの許可リストで絞る（この PoC には無い）。
 
@@ -32,7 +32,6 @@ AWS の API へは全部 VPC エンドポイントから行き、この VPC を�
 | 送る側 | 受ける側 | ポート | 何のため |
 |---|---|---|---|
 | web / lab / telegraf_dialout / telegraf_dialin / spark / grafana / splunk / nautobot / lambda / workflow / runtime | endpoints / S3（プレフィックスリスト） | 443/tcp | AWS の API（インターフェース型）と S3（gateway 型。ECR のレイヤーと dnf も） |
-| web / runtime / spark / lambda / workflow | neptune | 8182/tcp | Gremlin（Neptune は IAM 認証） |
 | web | grafana / splunk / workflow | 3000 / 8000 / 8233（tcp） | SSM のポートフォワーディング（Grafana / Splunk Web / Temporal UI） |
 | telegraf_dialout / telegraf_dialin / spark | msk | 9098/tcp | Kafka（IAM 認証） |
 | msk | msk | 9092〜9098/tcp | ブローカー同士 |
@@ -42,6 +41,8 @@ AWS の API へは全部 VPC エンドポイントから行き、この VPC を�
 | lab の管理ネットワーク（203.0.113.0/24） | telegraf_dialout_nlb | 162/udp、5140/udp | 機器の trap と syslog（lab の EC2 が DNAT するので送り元は機器の IP のまま） |
 | `MDT_SOURCE_CIDRS` の CIDR（既定は空で行が無い） | telegraf_dialout_nlb | 57000/tcp | 本番の Cisco の MDT の dial-out（[collection.md](../collection.md)）。`0.0.0.0/0` は変数の検査で拒む |
 | telegraf_dialin | lab の管理ネットワーク | 161/udp、57400/tcp | Telegraf の取りにいく側からの SNMP のポーリング（`SNMP_POLL=1` のときだけ使う。SG は既定でも開けておく）と gNMI（VPC のルートで lab の EC2 へ） |
+
+Neptune Analytics に SG は無い（2026-10-04 に Neptune Database から置き換えた）。VPC の中の口を持たず、インターフェース型エンドポイント `neptune-graph-data`（443、SigV4。表の 1 行目）で openCypher を送る。
 
 - lab の EC2 が転送する流れは、SG が見る IP が lab の EC2 ではなく機器の管理 IP になる。そこで、相手の ENI の IP が見える側だけを SG の参照で書き（lab の送信は telegraf_dialout_nlb へ、lab の受信は telegraf_dialin から）、反対側は管理ネットワークの CIDR で書く。
 - 開けていないもの: Temporal の gRPC 7233（ワーカーは同じタスクの `localhost`。Temporal も `127.0.0.1` だけで待つ）と Splunk の管理 API 8089。インターネットからの受信は、SG の前に経路が無い。

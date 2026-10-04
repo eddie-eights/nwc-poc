@@ -56,14 +56,14 @@ data "aws_iam_policy_document" "task" {
     resources = [aws_sqs_queue.anomalies.arn]
   }
 
-  # 修復案の頂点を読み書きする（workflow/awsio.py の gremlin）
+  # 修復案の頂点を読み書きする（workflow/awsio.py の cypher）
   statement {
     sid = "Neptune"
     actions = [
-      "neptune-db:ReadDataViaQuery",
-      "neptune-db:WriteDataViaQuery",
-      "neptune-db:DeleteDataViaQuery",
-      "neptune-db:GetQueryStatus",
+      "neptune-graph:ReadDataViaQuery",
+      "neptune-graph:WriteDataViaQuery",
+      "neptune-graph:DeleteDataViaQuery",
+      "neptune-graph:GetQueryStatus",
     ]
     resources = [local.neptune_data_arn]
   }

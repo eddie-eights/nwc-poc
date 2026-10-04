@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------- network
 # タスクの SG は terraform/base/core の workflow。受信は Web の EC2 からの Temporal UI の 8233（SSM のポートフォワーディング。docs/workflow.md
-# 「Temporal UI を開く」）だけ、送信は Neptune の 8182 とエンドポイントと S3 の 443（security_groups.tf の通信の表）。
+# 「Temporal UI を開く」）だけ、送信はエンドポイント（Neptune Analytics もここ）と S3 の 443（security_groups.tf の通信の表）。
 # Temporal の gRPC（7233）はタスクの中の localhost だけで待つ（ワーカーは同じタスク。下の --ip 127.0.0.1）。
 # ECR / logs / SSM / AgentCore / SQS / s3tables へは terraform/base/core のインターフェース型エンドポイント（ops/up.sh が WORKFLOW のときに作らせる）を通る。
 # 2026-09-26 まではここにタスクの SG と 7 本のルールがあった（7c42b0f）
@@ -66,7 +66,7 @@ resource "aws_ecs_task_definition" "workflow" {
         { name = "AWS_REGION", value = var.region },
         { name = "PARAM_PREFIX", value = local.param_prefix },
         { name = "ANOMALY_QUEUE_URL", value = aws_sqs_queue.anomalies.url },
-        { name = "NEPTUNE_ENDPOINT", value = local.neptune_endpoint },
+        { name = "NEPTUNE_GRAPH_ID", value = local.neptune_graph_id },
         { name = "AUDIT_TABLE_BUCKET_ARN", value = local.audit_bucket_arn },
         { name = "AUDIT_NAMESPACE", value = local.audit_namespace },
         { name = "PROPOSAL_EVENTS_TABLE", value = local.proposal_events_table_name },
@@ -97,8 +97,8 @@ resource "aws_ecs_task_definition" "workflow" {
       error_message = "terraform/agent の state から agent_runtime_arn が読めない。terraform/agent を先に apply する（deploy.env の AGENT=1）。"
     }
     precondition {
-      condition     = local.neptune_endpoint != "" && local.neptune_data_arn != ""
-      error_message = "terraform/pipeline/graph の state から cluster_endpoint / cluster_resource_id が読めない。修復案の「いま」は Neptune にあるので、terraform/pipeline/graph を先に apply する（2026-09-24 から）。"
+      condition     = local.neptune_graph_id != "" && local.neptune_data_arn != ""
+      error_message = "terraform/pipeline/graph の state から graph_id / graph_arn が読めない。修復案の「いま」は Neptune にあるので、terraform/pipeline/graph を先に apply する（2026-09-24 から）。"
     }
     precondition {
       condition     = local.audit_bucket_arn != "" && local.audit_namespace != "" && local.proposal_events_table_name != ""

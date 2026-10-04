@@ -206,7 +206,7 @@ destroy_lambda_root agent "$PREFIX-kb-index" ${AGENT_VARS[@]+"${AGENT_VARS[@]}"}
 log "3-2. 土台（terraform/base/core。VPC / Web の EC2 / バケット（中身ごと消える）/ ロール）"
 # Runtime の ENI（種類 agentic_ai。AWS 側の所有で、自分では外せない）は Runtime を消したあとも最大 8 時間残り、その間はサブネットと
 # runtime の SG（terraform/base/core の security_groups.tf）が DependencyViolation で消えない（terraform は 20 分待ってから落ちる）。
-# runtime の SG を参照するルール（endpoints と neptune の受信、runtime 自身の送信）は別のリソースなので一緒に消え、ほかの SG は消せる。
+# runtime の SG を参照するルール（endpoints の受信、runtime 自身の送信）は別のリソースなので一緒に消え、ほかの SG は消せる。
 # 残っているあいだは、それ以外だけを消して先へ進む（2026-09-28 より前の state なら NAT Gateway・EIP・IGW も。時間課金があるのでこのとき消す）。
 # 残る VPC・サブネット・SG に時間課金は無く、次の ops/up.sh はそのまま使い回す
 MAIN_LEFT=0

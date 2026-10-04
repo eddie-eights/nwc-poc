@@ -129,6 +129,19 @@
     }
   },
   {
+    "name": "centrality",
+    "description": "機器の中心性と、つながりの島（Neptune Analytics のグラフアルゴリズム）。degree = 付いている回線の数、closeness = ほかの全機器への近さ（大きいほど中心にあり、落ちたときに影響が広い）、component = 回線でつながっている島の番号。components が 2 以上なら、どの回線でも届かない機器の組がある。「どの機器が要か」「単一障害点になりそうな機器は」「ネットワークが分断していないか」に使う。devices は closeness の大きい順",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "description": "件数（既定 10、最大 50）"
+        }
+      }
+    }
+  },
+  {
     "name": "search_logs",
     "description": "監視ログ（SNMP trap など）を機器名で検索する。異常の原因を調べるとき、その機器で直前に何が起きたかを見るのに使う。",
     "inputSchema": {

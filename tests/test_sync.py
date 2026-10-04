@@ -251,15 +251,28 @@ check("EventBridge のルールは無く、土台（base/core）のトピック 
       and 'alerts_topic_arn = try(data.terraform_remote_state.main.outputs.alerts_topic_arn, "")' in _loc)
 check("古い土台（alerts_topic_arn の出力が無い）では、購読の precondition が plan を止める（空の ARN で apply して API のエラーにしない）",
       'condition     = local.alerts_topic_arn != ""' in tf and "depends_on = [aws_lambda_permission.status]" in tf)
-check("Lambda は VPC の中で NEPTUNE_ENDPOINT を環境変数で持ち、ロググループは retention 付き",
-      "vpc_config" in tf and "NEPTUNE_ENDPOINT = " in tf and "retention_in_days = var.log_retention_days" in tf)
-check("Lambda と Neptune は base/core の lambda / neptune の SG を使い、graph は SG もルールも作らない（lambda から neptune の 8182 は土台の通信の表。2026-09-29）",
+check("Lambda は VPC の中で NEPTUNE_GRAPH_ID を環境変数で持ち、ロググループは retention 付き",
+      "vpc_config" in tf and "NEPTUNE_GRAPH_ID = aws_neptunegraph_graph.graph.id" in tf and "NEPTUNE_ENDPOINT" not in tf and "retention_in_days = var.log_retention_days" in tf)
+_nep = read("terraform", "pipeline", "graph", "neptune.tf")
+_core_sg = read("terraform", "base", "core", "security_groups.tf")
+check("グラフは Neptune Analytics（公開しない・レプリカ無し）で、ID を SSM の neptune-graph-id に書く。Neptune Database のクラスタはもう無い（2026-10-04）",
+      re.search(r'resource "aws_neptunegraph_graph" "graph" \{', _nep) is not None and "public_connectivity = false" in _nep and "replica_count       = 0" in _nep
+      and "provisioned_memory  = var.provisioned_memory" in _nep and 'name        = "/${local.name_prefix}/neptune-graph-id"' in _nep
+      and "aws_neptune_cluster" not in _nep + tf and not os.path.exists(os.path.join(ROOT, "terraform", "pipeline", "graph", "network.tf")))
+check("Lambda は base/core の lambda の SG を使い、graph は SG もルールも作らない。Neptune へは土台の neptune-graph-data のエンドポイント（443）で届くので、neptune の SG と 8182 の行は無い",
       "security_group_ids = [local.lambda_sg_id]" in tf and "aws_vpc_security_group_egress_rule" not in tf and "aws_vpc_security_group_ingress_rule" not in tf
-      and "vpc_security_group_ids              = [local.neptune_sg_id]" in read("terraform", "pipeline", "graph", "neptune.tf")
-      and re.search(r'\{ from = "lambda", to = "neptune", protocol = "tcp", port = 8182,', read("terraform", "base", "core", "security_groups.tf")) is not None)
-# property('status', ...) は既存値の削除を伴うので Delete も要る（無いと AccessDenied で検知がトポロジに映らない。2026-09-18 実機）
-check("Lambda のロールは neptune-db の Read / Write / Delete（Gremlin だけ、他のサービスは持たない）",
-      all(f'"neptune-db:{a}DataViaQuery"' in tf for a in ("Read", "Write", "Delete")) and "neptune-db:*" not in tf)
+      and "neptune_sg_id" not in _loc + _nep and 'to = "neptune"' not in _core_sg and "port = 8182" not in _core_sg
+      and '"neptune-graph-data"' in read("terraform", "base", "core", "variables.tf")
+      and "pipeline/graph) add_endpoints neptune-graph-data ;;" in read("ops", "up.sh"))
+check("Lambda のロールは neptune-graph の Read / Write / Delete をこのグラフにだけ（他のサービスは持たない）",
+      all(f'"neptune-graph:{a}DataViaQuery"' in tf for a in ("Read", "Write", "Delete")) and "neptune-graph:*" not in tf and "neptune-db" not in tf
+      and "resources = [aws_neptunegraph_graph.graph.arn]" in tf)
+_acc = read("terraform", "pipeline", "graph", "access.tf")
+check("Runtime と Web のロールにも neptune-graph の読み書きをこのグラフにだけ付ける",
+      all(f'"neptune-graph:{a}DataViaQuery"' in _acc for a in ("Read", "Write", "Delete")) and "Resource = aws_neptunegraph_graph.graph.arn" in _acc and "neptune-db" not in _acc)
 check("SNS から Lambda を呼ぶ permission（呼べるのは土台のトピックだけ）", 'principal     = "sns.amazonaws.com"' in tf and "source_arn    = local.alerts_topic_arn" in tf)
-check("variables.tf に log_retention_days", 'variable "log_retention_days"' in read("terraform", "pipeline", "graph", "variables.tf"))
+_var = read("terraform", "pipeline", "graph", "variables.tf")
+check("variables.tf に log_retention_days と provisioned_memory（既定 16 m-NCU）。Neptune Database の instance_class / engine_version は無い",
+      'variable "log_retention_days"' in _var and re.search(r'variable "provisioned_memory" \{[^}]*default     = 16', _var) is not None
+      and "instance_class" not in _var and "engine_version" not in _var)
 print(f"通過 {passed} / 失敗 0")

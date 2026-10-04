@@ -9,17 +9,16 @@ resource "aws_iam_role_policy" "graph_access" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "Gremlin"
+        Sid    = "OpenCypher"
         Effect = "Allow"
         Action = [
-          "neptune-db:ReadDataViaQuery",
-          "neptune-db:WriteDataViaQuery",
-          "neptune-db:DeleteDataViaQuery",
-          "neptune-db:GetEngineStatus",
-          "neptune-db:GetQueryStatus",
-          "neptune-db:CancelQuery",
+          "neptune-graph:ReadDataViaQuery",
+          "neptune-graph:WriteDataViaQuery",
+          "neptune-graph:DeleteDataViaQuery",
+          "neptune-graph:GetQueryStatus",
+          "neptune-graph:CancelQuery",
         ]
-        Resource = "arn:${local.partition}:neptune-db:${var.region}:${local.account_id}:${aws_neptune_cluster.graph.cluster_resource_id}/*"
+        Resource = aws_neptunegraph_graph.graph.arn
       },
       {
         Sid      = "Parameters"
@@ -29,6 +28,4 @@ resource "aws_iam_role_policy" "graph_access" {
       },
     ]
   })
-
-  depends_on = [aws_neptune_cluster_instance.graph]
 }

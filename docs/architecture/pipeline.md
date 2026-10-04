@@ -2,7 +2,7 @@
 
 ← [構成](README.md)
 
-`terraform/pipeline`（`PIPELINE=1`）。lab（`lab/`）、stream（MSK と Telegraf）、analytics（Spark・格納先・Grafana・Splunk）、graph（Neptune と status の Lambda）の 4 ルート。使い方は [pipeline.md](../pipeline.md)、機器から集めるデータと集め方の方針は [collection.md](../collection.md)。
+`terraform/pipeline`（`PIPELINE=1`）。lab（`lab/`）、stream（MSK と Telegraf）、analytics（Spark・格納先・Grafana・Splunk）、graph（Neptune Analytics のグラフと status の Lambda）の 4 ルート。使い方は [pipeline.md](../pipeline.md)、機器から集めるデータと集め方の方針は [collection.md](../collection.md)。
 
 ```mermaid
 flowchart LR
@@ -27,4 +27,4 @@ flowchart LR
 - telemetry と性能メトリクスは、本番の Cisco から MDT の dial-out で受ける方針。受け口は Telegraf の `inputs.cisco_telemetry_mdt`（NLB の 57000/tcp → `mdt` トピック、生のまま）で、送ってよい機器は `MDT_SOURCE_CIDRS`（既定は空）。lab の SR Linux は MDT を送れないので gNMI で取り、Telegraf の中で共通の形（`device_cpu` / `device_memory` / `if_stats` / `sessions` / `circuits`）に変えて `metrics` トピックへ出す（[collection.md](../collection.md)）。
 - Grafana と ECS の Splunk は analytics の ECS クラスタ `<prefix>-analytics` のタスクで、Cloud Map の `grafana.<prefix>.internal:3000` / `splunk.<prefix>.internal` で引く。LB は無く、PC からは Web の EC2 を踏み台にした SSM のポートフォワード（`AWS-StartPortForwardingSessionToRemoteHost`）で開く。
 - 異常を見つけるのは Grafana と Splunk（2026-10-02 に Spark の検知をやめた。Spark は格納先へ流すだけ）。どちらも同じ形の JSON を SNS のトピック `<prefix>-alerts`（土台）へ publish し、トピックが graph の Lambda（Neptune の `status`）と workflow の SQS（ワークフローの起動と解消）へ配る。アラートを 1 か所に集めるのは、同じ障害を別の送り手が知らせても 1 つの異常にまとめる（相関）ため。分担と遅れは [pipeline.md](../pipeline.md) の「アラート」。
-- Neptune に置くのはトポロジ（と、その動的な `status`）と修復案だけ。異常の頂点と S3 Tables の `anomaly_events` はやめ、障害の履歴の置き場は決めていない（[data-stores.md](../data-stores.md)）。
+- Neptune（2026-10-04 から Neptune Analytics。問い合わせは openCypher、口は VPC エンドポイント `neptune-graph-data`。**AWS では未確認**）に置くのはトポロジ（と、その動的な `status`）と修復案だけ。異常の頂点と S3 Tables の `anomaly_events` はやめ、障害の履歴の置き場は決めていない（[data-stores.md](../data-stores.md)）。

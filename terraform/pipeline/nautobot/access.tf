@@ -75,11 +75,11 @@ resource "aws_iam_role_policy" "task" {
         Resource = ["arn:${local.partition}:ecs:${var.region}:${local.account_id}:service/${local.telegraf_cluster}/${local.telegraf_service}"]
       },
       {
-        on       = local.neptune_resource_id != ""
-        Sid      = "NeptuneGremlin"
+        on       = local.neptune_graph_arn != ""
+        Sid      = "NeptuneOpenCypher"
         Effect   = "Allow"
-        Action   = ["neptune-db:ReadDataViaQuery", "neptune-db:WriteDataViaQuery", "neptune-db:DeleteDataViaQuery", "neptune-db:GetEngineStatus", "neptune-db:GetQueryStatus", "neptune-db:CancelQuery"]
-        Resource = ["arn:${local.partition}:neptune-db:${var.region}:${local.account_id}:${local.neptune_resource_id}/*"]
+        Action   = ["neptune-graph:ReadDataViaQuery", "neptune-graph:WriteDataViaQuery", "neptune-graph:DeleteDataViaQuery", "neptune-graph:GetQueryStatus", "neptune-graph:CancelQuery"]
+        Resource = [local.neptune_graph_arn]
       },
     ] : { Sid = s.Sid, Effect = s.Effect, Action = s.Action, Resource = s.Resource } if s.on]
   })

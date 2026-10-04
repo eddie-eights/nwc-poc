@@ -1,16 +1,16 @@
-output "cluster_endpoint" {
-  description = "Writer endpoint (host). Port is 8182."
-  value       = aws_neptune_cluster.graph.endpoint
+output "graph_id" {
+  description = "Neptune Analytics graph id (g-xxxxxxxxxx). The workloads pass it to boto3 neptune-graph execute_query as graphIdentifier (env NEPTUNE_GRAPH_ID)."
+  value       = aws_neptunegraph_graph.graph.id
 }
 
-output "cluster_resource_id" {
-  description = "Used in the neptune-db IAM resource ARN"
-  value       = aws_neptune_cluster.graph.cluster_resource_id
+output "graph_arn" {
+  description = "Used as the Resource of the neptune-graph IAM statements (terraform/pipeline/nautobot, terraform/workflow)"
+  value       = aws_neptunegraph_graph.graph.arn
 }
 
-output "endpoint_parameter_name" {
+output "graph_id_parameter_name" {
   description = "SSM parameter the runtime and the web read at start"
-  value       = aws_ssm_parameter.endpoint.name
+  value       = aws_ssm_parameter.graph_id.name
 }
 
 output "next_step" {

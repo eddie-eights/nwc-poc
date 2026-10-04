@@ -188,7 +188,7 @@ check("lab_seed.json はリポジトリに置かない（毎回 lab の定義か
 check("Job が import するモジュールが PYTHONPATH の先にそろう", "PYTHONPATH=/opt/nautobot/netops" in docker
       and all(os.path.exists(os.path.join(ROOT, *p)) for p in (("nautobot", "netops", "nb_sync.py"), ("nautobot", "netops", "bootstrap.py"), ("agent", "graph.py"), ("agent", "toolkit.py"))))
 envs = set(re.findall(r'os\.environ\.get\("([A-Z_]+)"', read("nautobot", "netops", "nb_sync.py")))
-check("nb_sync が読む環境変数を Terraform がコンテナに渡す", envs and all(e in nb_tf for e in envs | {"NEPTUNE_ENDPOINT"}))
+check("nb_sync が読む環境変数を Terraform がコンテナに渡す", envs and all(e in nb_tf for e in envs | {"NEPTUNE_GRAPH_ID"}) and "NEPTUNE_ENDPOINT" not in nb_tf)
 check("シークレットは SSM の SecureString から（タスク定義の secrets と RDS の write-only）。Terraform の変数に値を持たない",
       all(s in nb_tf for s in ("NAUTOBOT_SECRET_KEY", "NAUTOBOT_DB_PASSWORD", "NAUTOBOT_SUPERUSER_PASSWORD", "NAUTOBOT_API_TOKEN"))
       and "password_wo " in tf["database.tf"].replace("=", " =").replace("  ", " ") and 'ephemeral "aws_ssm_parameter"' in tf["database.tf"]

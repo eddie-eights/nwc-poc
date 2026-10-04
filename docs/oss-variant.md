@@ -26,7 +26,7 @@
 | 生データの表 | S3 Tables（Iceberg） | 未定 |
 | ログの検索 | OpenSearch Serverless | 未定 |
 | メトリクス | Amazon Managed Service for Prometheus | 未定 |
-| トポロジのグラフ | Neptune | 未定 |
+| トポロジのグラフ | Neptune Analytics（openCypher。中心性と連結成分は `neptune.algo.*`） | 未定（アルゴリズムは NetworkX などで置き換える） |
 | Nautobot の DB | RDS | 未定 |
 | コンテナの実行 | ECS Fargate | 未定 |
 | アラートの配送 | SNS、SQS、Lambda | 未定 |
@@ -42,3 +42,10 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
 - **マネージドに固有の機能は避けずに使う。**「マネージドでできること」を調べるのが目的なので、OSS へ移しやすいように機能を削ることはしない。
 - **固有の機能に頼った箇所は、どこで何に頼ったかを docs に書く。**OSS 版で同じことができるか、何で代えるかを比べる材料になる。
 - **費用と手間は、分かった時点で記録する。**時間課金は [README](../README.md) の「作るもの」と [deploy.md](deploy.md)、はまった点は [troubleshooting.md](troubleshooting.md)。
+
+## マネージドに固有の機能に頼った箇所
+
+| 箇所 | 頼ったもの | OSS 版で比べること |
+|---|---|---|
+| エージェントのツール `centrality`（[agent/graph.py](../agent/graph.py) の `centrality()`） | Neptune Analytics のグラフアルゴリズム `neptune.algo.degree` / `closenessCentrality` / `wcc`（openCypher の `CALL`） | グラフ DB の側で計算できるか、NetworkX などへ読み出して計算するか。機器が増えたときの計算時間 |
+| グラフへの問い合わせ全部（[agent/graph.py](../agent/graph.py) の `query()`、[workflow/awsio.py](../workflow/awsio.py) の `cypher()`） | boto3 の `neptune-graph` の `execute_query`（SigV4、VPC エンドポイント `neptune-graph-data`）。頂点の id は Neptune の `~id` | openCypher は OSS のグラフ DB でも使えるものがある。クライアント（Bolt など）と、id の持ち方・認証を差し替える |

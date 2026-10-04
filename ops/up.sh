@@ -60,7 +60,7 @@
 #                           （IF の up / down は SINK_SPLUNK=1 の Splunk が trap から link_down を出す）。stream の変数 snmp_poll に渡す
 #   （Nautobot）            PIPELINE=1 なら Nautobot（terraform/pipeline/nautobot。ECS Fargate の web + Celery worker + Redis と、RDS の PostgreSQL。+$0.13/h と ecs のエンドポイント）を**いつも作る**（切り替える変数は無い）。
 #                           機器の一覧とケーブルの正を Nautobot にする。最初だけ lab の定義から入り、あとは Nautobot で機器・Service（gnmi / snmp）・ケーブルを変えるたびに、
-#                           Job が Telegraf の取りにいく側（dialin）の機器の一覧（SSM）を書き換えてサービスを作り直し、Neptune の物理層を Gremlin で合わせる。
+#                           Job が Telegraf の取りにいく側（dialin）の機器の一覧（SSM）を書き換えてサービスを作り直し、Neptune の物理層を openCypher で合わせる。
 #                           Job の書き先が要るので、SKIP_STREAM と SKIP_GRAPH の両方があるときだけ作らない。管理者のパスワード・SECRET_KEY・DB のパスワードは SSM の SecureString に作る（値は出さない）。
 #                           web の EC2 を踏み台にした SSM のポートフォワードで開く（コマンドは最後に出る）。ops/down.sh で DB ごと消える（編集した内容は残らない）。
 #                           デバッグ用の EC2（ops/lab-debug.sh）は Nautobot を使わず、今までどおり lab の定義の一覧
@@ -243,7 +243,7 @@ with open(path, "w", encoding="utf-8") as f:
   echo "$name を作った（値は出さない）"
 }
 nautobot_context() {  # nautobot_context <空のディレクトリ>  Nautobot のイメージのビルドの context を集める（nautobot/Dockerfile の頭の説明）
-  # nautobot/ の中身に、Neptune へ Gremlin で書く agent/graph.py と agent/toolkit.py、最初の seed にする lab の定義を足す。
+  # nautobot/ の中身に、Neptune Analytics へ openCypher で書く agent/graph.py と agent/toolkit.py、最初の seed にする lab の定義を足す。
   # タグはこのディレクトリの中身から作る（dir_tag）ので、graph.py や lab の定義を変えてもイメージが作り直される
   cp -R nautobot/. "$1/" && cp agent/graph.py agent/toolkit.py "$1/" || return 1
   find "$1" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null
@@ -422,7 +422,9 @@ endpoints_for() {  # endpoints_for <ルート>  そのルートが呼ぶ AWS の
     pipeline/stream) add_endpoints ecr.api ecr.dkr logs ;;
     # Spark: S3 Tables の API、ドライバのログ（MSK は VPC の中で、S3 は gateway）
     pipeline/analytics) add_endpoints s3tables logs ;;
-    # Nautobot（ECS）: イメージとログ。Job が Telegraf の dialin のサービスを作り直すのに ecs の API を呼ぶ（SSM は土台の分。RDS と Neptune は VPC の中）
+    # Neptune Analytics のデータ API（openCypher のクエリ）。グラフは公開しないので、Web / Runtime / Lambda / ワーカー / Nautobot はここからしか届かない
+    pipeline/graph) add_endpoints neptune-graph-data ;;
+    # Nautobot（ECS）: イメージとログ。Job が Telegraf の dialin のサービスを作り直すのに ecs の API を呼ぶ（SSM は土台の分。RDS は VPC の中で、Neptune は graph の分）
     pipeline/nautobot) add_endpoints ecr.api ecr.dkr logs ecs ;;
     # ワーカー: SQS（アラートは SNS → SQS で届く。SNS からの配信はエンドポイントを通らない）、S3 Tables（修復案の証跡）、ECR、ログ、Runtime、Gateway
     workflow) add_endpoints sqs s3tables ecr.api ecr.dkr logs bedrock-agentcore bedrock-agentcore.gateway ;;
@@ -445,7 +447,8 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 #   + CREATE_KB なら 33（OpenSearch Serverless の OCU）、
 # OpenSearch Serverless の VPC エンドポイント = 3（1.4 × 2 AZ。公表単価からで Price List API では確かめていない。
 #   KB と logs のコレクションを公開しないために作り、両方で 1 本を共用する。NEED_AOSS のときだけ）、
-# lab = 17（EC2 の t4g.xlarge 17.28。2026-10-04 に公開の料金ファイルで確認。それまでの 9 は t4g.large の単価だった）、graph = 14、stream = 57 + Telegraf 5（Fargate ARM 0.25 vCPU / 0.5 GB で 1.2 のタスクが 2 つ（受ける側と取りにいく側。2026-10-04 に分けた）と内部 NLB 2.43。
+# lab = 17（EC2 の t4g.xlarge 17.28。2026-10-04 に公開の料金ファイルで確認。それまでの 9 は t4g.large の単価だった）、graph = 58（Neptune Analytics の 16 m-NCU で 58.1。2026-10-04 に料金のページで確認。Price List API では確かめていない。
+#   2026-10-04 までの Neptune Database の db.t4g.medium は 14 だった）、stream = 57 + Telegraf 5（Fargate ARM 0.25 vCPU / 0.5 GB で 1.2 のタスクが 2 つ（受ける側と取りにいく側。2026-10-04 に分けた）と内部 NLB 2.43。
 #   NLB は 2026-09-28 から。どちらも公表単価からで、Price List API では確かめていない）、
 # analytics = 14（ストリーミングのジョブが動いている間の EMR Serverless の 2 vCPU。単価は 2026-09-17 に確認。
 #   S3 Tables のテーブルは無料）
@@ -462,7 +465,7 @@ COST_CENTS=2
 COST_CENTS=$((COST_CENTS + ($(endpoint_count) * 14 * ENDPOINT_AZS + 5) / 10))
 if [ -n "$AGENT" ] && [ -n "$CREATE_KB" ]; then COST_CENTS=$((COST_CENTS + 33)); fi
 if [ -z "$SKIP_LAB" ]; then COST_CENTS=$((COST_CENTS + 17)); fi
-if [ -z "$SKIP_GRAPH" ]; then COST_CENTS=$((COST_CENTS + 14)); fi
+if [ -z "$SKIP_GRAPH" ]; then COST_CENTS=$((COST_CENTS + 58)); fi
 if [ -z "$SKIP_STREAM" ]; then
   # MSK は kafka.m5.large × 2 で 0.542（Kafka 4 は t3.small を受け付けない。2026-09-18）
   COST_CENTS=$((COST_CENTS + 57))
@@ -638,9 +641,9 @@ INSTANCE_ID=$(tf base/core output -raw web_instance_id)
 KB_BUCKET=$(tf base/core output -raw kb_bucket_name)
 echo "INSTANCE_ID=$INSTANCE_ID KB_BUCKET=$KB_BUCKET"
 
-# graph は base/core の state しか読まないので、ここで裏で始めて待ち時間を重ねる（Neptune は 10〜15 分）
+# graph は base/core の state しか読まないので、ここで裏で始めて待ち時間を重ねる（Neptune Analytics のグラフは作るのに数分〜十数分。実測はまだ無い）
 if [ -z "$SKIP_GRAPH" ]; then
-  log "3-2. graph（Neptune）の apply を裏で始める（10〜15 分。待たずに次へ進む）"
+  log "3-2. graph（Neptune Analytics）の apply を裏で始める（数分〜十数分。待たずに次へ進む）"
   mkdir -p ops/logs
   tf_init pipeline/graph   # init は前で済ませる（provider のキャッシュを 2 つの init で同時に触らない）
   ( tf_apply_only pipeline/graph ) >"$GRAPH_LOG" 2>&1 &
@@ -969,7 +972,7 @@ fi
 
 # ---- 8-3. Web ---------------------------------------------------------------------
 if [ -z "$SKIP_STREAM" ] || [ -z "$SKIP_GRAPH" ] || [ -n "$NAUTOBOT" ]; then
-  log "8-3. Web を再起動する（起動時に SSM から Neptune のエンドポイントと Nautobot の有無を読むため）"
+  log "8-3. Web を再起動する（起動時に SSM から Neptune のグラフの ID と Nautobot の有無を読むため）"
   run_on_instance "$INSTANCE_ID" "systemctl restart $PREFIX-web.service; $WEB_ACTIVE"
   echo "Web が動いている"
 fi

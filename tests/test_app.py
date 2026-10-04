@@ -94,7 +94,7 @@ r = app.invoke({"prompt": "%BGP-5-ADJCHANGE が出た"})
 rk = state["calls"][0][1]; ck = state["calls"][1][1]
 check("RERANK_MODEL_ARN が無ければリランクなしで HYBRID と件数だけ渡す", rk["retrievalConfiguration"]["vectorSearchConfiguration"] == {"numberOfResults": 3, "overrideSearchType": "HYBRID"} and rk["knowledgeBaseId"] == "KB12345678")
 check("Converse に guardrailConfig", ck["guardrailConfig"] == {"guardrailIdentifier": "gr123", "guardrailVersion": "1"})
-check("Converse にトポロジの 8 ツール + 証拠の 3 ツール + 修復案の履歴（異常一覧 list_anomalies は 2026-10-02 にやめた）", [t["toolSpec"]["name"] for t in ck["toolConfig"]["tools"]] == ["list_devices", "neighbors", "blast_radius", "root_cause", "what_if", "topology_graph", "layers", "recent_changes", "search_logs", "query_metrics", "query_history", "list_proposals"])
+check("Converse にトポロジの 9 ツール + 証拠の 3 ツール + 修復案の履歴（異常一覧 list_anomalies は 2026-10-02 にやめた）", [t["toolSpec"]["name"] for t in ck["toolConfig"]["tools"]] == ["list_devices", "neighbors", "blast_radius", "root_cause", "what_if", "topology_graph", "layers", "recent_changes", "centrality", "search_logs", "query_metrics", "query_history", "list_proposals"])
 last = ck["messages"][-1]
 check("質問は guardContent、資料は text", last["content"][1] == {"guardContent": {"text": {"text": "%BGP-5-ADJCHANGE が出た"}}} and "<documents>" in last["content"][0]["text"] and 'source="interface-errors.md"' in last["content"][0]["text"])
 check("初回は messages 1 件", len(ck["messages"]) == 1)
@@ -256,6 +256,21 @@ check("recent_changes は機器で絞れる（device_id が同じか、名前に
       [c["object_type"] for c in t.recent_changes("dc1-leaf-02")["changes"]] == ["cable"] and t.recent_changes("dc1-spine-02")["count"] == 0
       and t.recent_changes(limit=1)["count"] == 1)
 t.graph.configured, t.graph.list_records = _cfg, _lr
+# ---- 中心性（Neptune Analytics のアルゴリズム。2026-10-04）
+check("centrality は Neptune Analytics が無ければ案内を返す", "Neptune Analytics" in t.centrality()["error"] and t.centrality()["devices"] == [])
+_cfg, _ce = t.graph.configured, getattr(t.graph, "centrality")
+t.graph.configured = lambda: True
+_lim = []
+t.graph.centrality = lambda limit=10: _lim.append(limit) or {"devices": [{"device_id": "dc1-spine-01", "degree": 4, "closeness": 0.8, "component": 1}], "device_count": 6, "components": 1}
+ce = t.centrality(limit=999)
+check("centrality は graph.centrality の結果に note を添え、limit を 1〜50 に収める",
+      _lim == [50] and ce["devices"][0]["device_id"] == "dc1-spine-01" and ce["components"] == 1 and "note" in ce and t.centrality(limit=0) and _lim == [50, 1])
+check("run_tool は centrality に振り分ける", t.TOOLS["centrality"] is t.centrality and "centrality" in app.SYSTEM_PROMPT)
+def _boom(limit=10):
+    raise t.BotoCoreError()
+t.graph.centrality = _boom
+check("centrality は読めなければ error を返す（例外にしない）", "計算できない" in t.centrality()["error"])
+t.graph.configured, t.graph.centrality = _cfg, _ce
 _devs = [dict(d, maintenance=(d["device_id"] == "dc1-spine-01")) for d in t.DEVICES]
 t.DEVICES, t.NODES, t.LINKS, t.ADJ = t._build(_devs, [dict(l, status="DOWN") if t.link_id(l) == MAIN else l for l in t.LINKS])
 t.DEVICE_BY_ID = t.NODES
@@ -278,7 +293,7 @@ check("system prompt はいまの異常 → status、履歴 → list_proposals�
       and "承認や却下はあなたにはできません" in app.SYSTEM_PROMPT and "まず root_cause で" in app.SYSTEM_PROMPT and "what_if で" in app.SYSTEM_PROMPT and "recent_changes" in app.SYSTEM_PROMPT and "maintenance" in app.SYSTEM_PROMPT and "list_anomalies" not in app.SYSTEM_PROMPT and "status=all" not in app.SYSTEM_PROMPT)
 # プロンプトに無いツール名を書くと、モデルは無いツールを呼ぼうとして unknown tool が返る（2026-10-02 に layers を list_layers と書いた）
 _tool_names = {s["toolSpec"]["name"] for s in app.TOOL_SPECS}
-_mentioned = set(re.findall(r"\b(?:list|query|search)_[a-z_]+\b|\brecent_changes\b|\b(?:neighbors|blast_radius|root_cause|what_if|topology_graph|layers)\b", app.SYSTEM_PROMPT))
+_mentioned = set(re.findall(r"\b(?:list|query|search)_[a-z_]+\b|\b(?:recent_changes|centrality)\b|\b(?:neighbors|blast_radius|root_cause|what_if|topology_graph|layers)\b", app.SYSTEM_PROMPT))
 check(f"system prompt に出てくるツール名は全部 TOOL_SPECS にある（無い: {sorted(_mentioned - _tool_names)}）", _mentioned and not (_mentioned - _tool_names))
 
 # ---- ツールの往復

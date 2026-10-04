@@ -18,30 +18,19 @@ variable "owner" {
 }
 
 # ---------------------------------------------------------------- neptune
-variable "instance_class" {
-  description = "db.t4g.medium is the smallest Neptune class (about 0.11 USD per hour in Tokyo - price not yet verified with the pricing API)."
-  type        = string
-  default     = "db.t4g.medium"
+variable "provisioned_memory" {
+  description = "Memory of the Neptune Analytics graph in m-NCU (1 m-NCU = 1 GiB). 16 is the smallest and costs about 0.58 USD per hour in Tokyo (checked 2026-10-04). The lab topology is tens of vertices; raise it when the device count grows (changing it resizes the graph in place)."
+  type        = number
+  default     = 16
 
   validation {
-    condition     = contains(["db.t4g.medium", "db.r6g.large"], var.instance_class)
-    error_message = "instance_class must be db.t4g.medium or db.r6g.large."
-  }
-}
-
-variable "engine_version" {
-  description = "Neptune engine version (1.4.8.0 checked 2026-09-15). Fails at apply time if the region does not offer it."
-  type        = string
-  default     = "1.4.8.0"
-
-  validation {
-    condition     = can(regex("^[0-9]+([.][0-9]+){2,3}$", var.engine_version))
-    error_message = "engine_version must look like 1.4.8.0."
+    condition     = contains([16, 32, 64, 128, 256], var.provisioned_memory)
+    error_message = "provisioned_memory must be one of 16, 32, 64, 128, 256."
   }
 }
 
 variable "deletion_protection" {
-  description = "Keep false so terraform destroy can delete the cluster the same day."
+  description = "Keep false so terraform destroy can delete the graph the same day."
   type        = bool
   default     = false
 }

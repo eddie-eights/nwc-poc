@@ -21,7 +21,7 @@ flowchart LR
 ```
 
 - temporal（`start-dev`、データは SQLite）と worker は、ECS Fargate の 1 タスクに入っている。Temporal の履歴はタスクと一緒に消える。
-- Web と worker は修復案の頂点の `status` だけでやり取りする。承認・却下は `pending` のときだけ書ける（`has('status','pending')` と書き込みが 1 本の Gremlin）。
+- Web と worker は修復案の頂点の `status` だけでやり取りする。承認・却下は `pending` のときだけ書ける（`WHERE n.status = 'pending'` と `SET` が 1 本の openCypher）。
 - 作成・承認・却下・時間切れ・適用・確認は、worker が S3 Tables の `proposal_events` に 1 行ずつ足す（`event_id` = `<proposal_id>#<event>`。再試行で二重に入ることがあるので、集計では `event_id` で落とす）。承認・却下の行は worker が頂点の変化を拾ったときに書くので、worker が止まっていると遅れて入る。
 - 修復案には事前チェックが付く（`precheck`。「承認」タブの詳細に出る）。worker がその処置をいまの Neptune のトポロジに重ね、孤立する機器と冗長が切れる機器（残りの回線が 1 本）を出す。処置がグラフをどう変えるかは `workflow/rules.py` の `ACTION_CHANGES`。いまの処置は回線を上げる `heal-main` と見るだけの `check` なので、警告（注意・危険）は出ない。落とす処置を足したときに効く。同じ計算をチャットから `what_if` で引ける。
 - 承認・却下はチャットのツールに出していない。Neptune の IAM は頂点ごとに絞れないので、この線はコードで引いている。

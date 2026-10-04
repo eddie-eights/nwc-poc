@@ -433,6 +433,23 @@ def recent_changes(device_id: str = "", limit: int = 20) -> dict:
             "note": "Nautobot（機器と回線の正）での変更だけ。機器に直接打った設定変更は入らない（ログを search_logs で見る）"}
 
 
+CENTRALITY_NOT_DEPLOYED = "中心性は Neptune Analytics のグラフアルゴリズムで計算する。グラフ（terraform/pipeline/graph）がまだ無い"
+
+
+def centrality(limit: int = 10) -> dict:
+    """機器の中心性（次数・近接）と、つながりの島（弱連結成分）。計算は Neptune Analytics の neptune.algo.*（graph.centrality）。
+    静的データでは計算しない（OSS 版では NetworkX などに置き換える。docs/oss-variant.md）"""
+    if not graph.configured():
+        return {"error": CENTRALITY_NOT_DEPLOYED, "devices": []}
+    limit = max(1, min(int(limit), 50))
+    try:
+        out = graph.centrality(limit)
+    except (ClientError, BotoCoreError) as e:
+        return {"error": f"中心性を計算できない: {str(e)[:200]}", "devices": []}
+    out["note"] = "degree は回線の数、closeness は大きいほど中心、component は島の番号。components が 2 以上なら分断している"
+    return out
+
+
 def interfaces(device_id: str) -> list[str]:
     """device_id のインタフェース名（Web の編集画面の選択肢）。Neptune に lab の定義から入れた一覧があればそれと、
     つながるリンクに出てくるその機器側の名前（静的データには一覧が無いので、いま使われているものだけ）"""
@@ -512,7 +529,14 @@ TOOL_SPECS = [
             "limit": {"type": "integer", "description": "件数（既定 20、最大 50）"},
         }}},
     }},
+    {"toolSpec": {
+        "name": "centrality",
+        "description": "機器の中心性と、つながりの島（Neptune Analytics のグラフアルゴリズム）。degree = 付いている回線の数、closeness = ほかの全機器への近さ（大きいほど中心にあり、落ちたときに影響が広い）、component = 回線でつながっている島の番号。components が 2 以上なら、どの回線でも届かない機器の組がある。「どの機器が要か」「単一障害点になりそうな機器は」「ネットワークが分断していないか」に使う。devices は closeness の大きい順",
+        "inputSchema": {"json": {"type": "object", "properties": {
+            "limit": {"type": "integer", "description": "件数（既定 10、最大 50）"},
+        }}},
+    }},
 ]
-TOOLS = {"list_devices": list_devices, "neighbors": neighbors, "blast_radius": blast_radius, "root_cause": root_cause, "what_if": what_if, "topology_graph": topology_graph, "layers": layers, "recent_changes": recent_changes}
+TOOLS = {"list_devices": list_devices, "neighbors": neighbors, "blast_radius": blast_radius, "root_cause": root_cause, "what_if": what_if, "topology_graph": topology_graph, "layers": layers, "recent_changes": recent_changes, "centrality": centrality}
 # ツールを呼ぶ前に reload()（TTL を過ぎていれば Neptune を読み直す。画面での編集が次の質問に効く）
 run_tool = toolkit.runner(TOOLS, before=reload)
