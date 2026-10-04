@@ -5,7 +5,7 @@ Splunk のアラートアクション（splunk/netops_alerts/bin/netops_sns.py�
 イメージ（splunk/Dockerfile・entrypoint.sh、grafana/start.sh）と ops/up.sh・ops/check.sh がその配線を持つこと。
 受け手の側は tests/test_workflow.py（SQS → ワークフロー）と tests/test_sync.py（Lambda → Neptune の status）。
 実行は uv run --group dev python tests/test_alerts.py（boto3 が無くても通る。あれば手元の偽の SNS へ本物の boto3 で publish して確かめる）"""
-import ast, contextlib, csv, glob, gzip, http.server, importlib.util, io, json, os, re, subprocess, sys, tempfile, threading, urllib.parse
+import ast, contextlib, csv, glob, gzip, http.server, importlib.util, io, json, os, re, signal, subprocess, sys, tempfile, threading, time, urllib.parse
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, os.path.join(ROOT, "workflow"))
@@ -123,9 +123,12 @@ with tempfile.TemporaryDirectory() as tmp:
           sns.load_env(ENVF, environ={"AWS_REGION": "us-east-1", "OTHER": "x"})["AWS_REGION"] == "us-east-1"
           and "OTHER" not in sns.load_env(ENVF, environ={"OTHER": "x"})
           and sns.load_env(os.path.join(tmp, "none"), environ={"ALERTS_TOPIC_ARN": TOPIC}) == {"ALERTS_TOPIC_ARN": TOPIC})
+    up_stub = os.path.join(tmp, "upstream.sh")   # 上流の入口（/sbin/entrypoint.sh）の代わり
+    with open(up_stub, "w", encoding="utf-8") as f:
+        f.write('echo "upstream $*"\n')
     stub_role = os.path.join(tmp, "entrypoint-role.sh")
     with open(stub_role, "w", encoding="utf-8") as f:
-        f.write(ep.replace("sudo -n -u splunk rm -rf ", "echo removed ").replace('exec /sbin/entrypoint.sh "$@"', 'echo "upstream $*"'))
+        f.write(ep.replace("sudo -n -u splunk rm -rf ", "echo removed ").replace("/sbin/entrypoint.sh", f"bash {up_stub}"))
     roles = {}
     for role in (None, "splunk_standalone", "splunk_search_head", "splunk_cluster_master", "splunk_indexer"):
         r = subprocess.run(["bash", stub_role, "start-service"], capture_output=True, text=True,
@@ -136,6 +139,69 @@ with tempfile.TemporaryDirectory() as tmp:
           all(roles[k] == (0, ["upstream start-service"]) for k in (None, "splunk_standalone", "splunk_search_head"))
           and all(roles[k] == (0, ["removed /opt/splunk-etc/apps/netops_alerts", "upstream start-service"]) for k in ("splunk_cluster_master", "splunk_indexer"))
           and ep.count("sudo -n -u splunk rm -rf /opt/splunk-etc/apps/netops_alerts") == 1)
+
+    # indexer は止められると splunk offline を打ってから、上流の入口へ SIGTERM を回す（「Splunk をクラスターにする（004）」のリスク 11）
+    up_term = os.path.join(tmp, "upstream-term.sh")   # 上流の入口と同じく、SIGTERM で teardown（splunk stop）して終わる
+    with open(up_term, "w", encoding="utf-8") as f:
+        f.write('trap \'echo "upstream teardown"; kill $s; exit 0\' TERM\necho "upstream $*"\nsleep 30 &\ns=$!\nwait $s\n')
+    fake_args = os.path.join(tmp, "offline.args")
+    fake = os.path.join(tmp, "fake-splunk")   # sudo -n -u splunk /opt/splunk/bin/splunk の代わり。引数をファイルに書き、FAKE_SLEEP 秒かけて FAKE_RC で終わる
+    with open(fake, "w", encoding="utf-8") as f:
+        f.write(f'#!/bin/bash\nprintf "%s\\n" "$@" > {fake_args}\necho "fake offline"\nsleep "${{FAKE_SLEEP:-0}}"\nexit "${{FAKE_RC:-0}}"\n')
+    bindir = os.path.join(tmp, "bin")   # GNU の timeout（コンテナにはある。macOS には無い）と同じ約束: 打ち切ったら 124
+    os.makedirs(bindir, exist_ok=True)
+    with open(os.path.join(bindir, "timeout"), "w", encoding="utf-8") as f:
+        f.write(f"#!{sys.executable}\nimport subprocess, sys\ntry:\n    sys.exit(subprocess.run(sys.argv[2:], timeout=float(sys.argv[1])).returncode)\n"
+                "except subprocess.TimeoutExpired:\n    sys.exit(124)\n")
+    for x in (fake, os.path.join(bindir, "timeout")):
+        os.chmod(x, 0o755)
+
+    def term_run(role, offline_timeout=None, **env):
+        """入口を走らせ、上流の入口が起きたら SIGTERM を送る。(終了コード, 出力の行, 秒)"""
+        script, out = os.path.join(tmp, "entrypoint-term.sh"), os.path.join(tmp, "term.out")
+        s = ep.replace("sudo -n -u splunk rm -rf ", "echo removed ").replace("sudo -n -u splunk /opt/splunk/bin/splunk", fake).replace("/sbin/entrypoint.sh", f"bash {up_term}")
+        if offline_timeout:
+            s = re.sub(r"\nOFFLINE_TIMEOUT=\d+\n", f"\nOFFLINE_TIMEOUT={offline_timeout}\n", s)
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(s)
+        if os.path.exists(fake_args):
+            os.remove(fake_args)
+        t0 = time.time()
+        with open(out, "w", encoding="utf-8") as fo:
+            p = subprocess.Popen(["bash", script, "start-service"], stdout=fo, stderr=subprocess.STDOUT,
+                                 env={"PATH": bindir + os.pathsep + os.environ["PATH"], "NETOPS_ALERTS_ENV": os.path.join(tmp, "term.env"),
+                                      "SPLUNK_ROLE": role, "SPLUNK_PASSWORD": "pw-not-printed", **env})
+        while "upstream start-service" not in read(out) and time.time() - t0 < 10:
+            time.sleep(0.05)
+        p.send_signal(signal.SIGTERM)
+        rc = p.wait(timeout=20)
+        return rc, read(out).splitlines(), time.time() - t0
+
+    rc, lines, _ = term_run("splunk_indexer")
+    args = read(fake_args).splitlines() if os.path.exists(fake_args) else []
+    check("indexer: SIGTERM で splunk offline を splunk ユーザーで打ち（admin で認証）、終わったら上流の入口へ SIGTERM を回して teardown させる。"
+          "かかった秒数を nwc-offline の行に出し、パスワードは出さない",
+          rc == 0 and lines[:4] == ["removed /opt/splunk-etc/apps/netops_alerts", "upstream start-service", "nwc-offline: start", "fake offline"]
+          and re.fullmatch(r"nwc-offline: rc=0 [01]s", lines[4]) is not None and lines[5:] == ["upstream teardown"]
+          and args == ["offline", "-auth", "admin:pw-not-printed"] and not any("pw-not-printed" in l for l in lines)
+          and 'timeout "$OFFLINE_TIMEOUT" sudo -n -u splunk /opt/splunk/bin/splunk offline -auth "admin:${SPLUNK_PASSWORD:-}" < /dev/null' in ep)
+    rc, lines, sec = term_run("splunk_indexer", offline_timeout=1, FAKE_SLEEP="30")
+    check("indexer: offline が OFFLINE_TIMEOUT 秒で終わらなければ打ち切り（124）、それでも上流の入口へ SIGTERM を回す",
+          rc == 0 and lines[2:4] == ["nwc-offline: start", "fake offline"] and re.fullmatch(r"nwc-offline: rc=124 [123]s", lines[4]) is not None
+          and lines[5:] == ["upstream teardown"] and sec < 10)
+    rc, lines, _ = term_run("splunk_indexer", FAKE_RC="22")
+    check("indexer: offline が失敗しても（splunkd がまだ起きていないなど）上流の入口へ SIGTERM を回して止まる",
+          rc == 0 and lines[2:4] == ["nwc-offline: start", "fake offline"] and re.fullmatch(r"nwc-offline: rc=22 [01]s", lines[4]) is not None
+          and lines[5:] == ["upstream teardown"])
+    roles = {r: term_run(r) for r in ("splunk_search_head", "splunk_cluster_master", "splunk_standalone")}
+    check("indexer 以外（search head・manager・standalone）は今までどおり上流の入口へ exec し、SIGTERM は上流がそのまま受ける（offline は打たない）",
+          all(rc == 0 and lines[-2:] == ["upstream start-service", "upstream teardown"] and not any("nwc-offline" in l for l in lines)
+              for rc, lines, _ in roles.values()) and not os.path.exists(fake_args))
+    stf_idx = read("terraform", "pipeline", "analytics", "splunk.tf").split('resource "aws_ecs_task_definition" "splunk_idx"', 1)[1].split("\nresource ", 1)[0]
+    stop_timeout = int(re.search(r"\n    stopTimeout = (\d+)\n", stf_idx).group(1))
+    offline_timeout = int(re.search(r"\nOFFLINE_TIMEOUT=(\d+)\n", ep).group(1))
+    check("offline を打ち切る秒数と、そのあとの splunk stop（手元で 47 秒）が、indexer のタスクの stopTimeout（splunk.tf。Fargate の上限 120 秒）に収まる",
+          stop_timeout == 120 and offline_timeout + 47 <= stop_timeout)
 
     # ---- SNS へ publish（boto3）
     check("リージョンはトピックの ARN から取る（ARN で分からないときだけ AWS_REGION）",
