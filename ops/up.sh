@@ -61,6 +61,10 @@
 #   SNMP_POLL=0             stream の Telegraf で SNMP をポーリングしない（既定 1 = 10 秒ごとに ifTable → metrics トピック。0 なら SNMP は trap だけ受ける）。
 #                           Grafana のアラートルール link_down、Splunk の保存済みサーチ netops_poll、IF のグラフ、エージェントの IF のメトリクスはこのポーリングを見るので、
 #                           0 では空になる（IF の up / down は STORES の splunk の Splunk が trap からだけ出す）。stream の変数 snmp_poll に渡す
+#   （Kafbat UI）           stream を作る回は Kafbat UI（Kafka の画面。ECS Fargate ARM 0.5 vCPU / 1 GB のタスク 1 つ。+$0.02/h）を**いつも作る**（切り替える変数は無い。2026-10-05）。
+#                           トピック・メッセージ・consumer group を見られ、トピックの追加・設定の変更・削除もできる（見るだけではない）。MSK へはタスクロールの IAM 認証。
+#                           web の EC2 を踏み台にした SSM のポートフォワードで http://localhost:8082/ を開き、ユーザー admin でログインする
+#                           （コマンドとパスワードを出すコマンドは最後に出る。パスワードは SSM の SecureString に作る）
 #   （Nautobot）            PIPELINE=1 なら Nautobot（terraform/pipeline/nautobot。ECS Fargate の web + Celery worker + Redis と、RDS の PostgreSQL。+$0.13/h と ecs のエンドポイント）を**いつも作る**（切り替える変数は無い）。
 #                           機器の一覧とケーブルの正を Nautobot にする。最初だけ lab の定義から入り、あとは Nautobot で機器・Service（gnmi / snmp）・ケーブルを変えるたびに、
 #                           Job が Telegraf の取りにいく側（dialin）の機器の一覧（SSM）を書き換えてサービスを作り直し、Neptune の物理層を openCypher で合わせる。
@@ -128,6 +132,8 @@ SPLUNK_VERSION=10.4.3   # splunk/splunk は amd64 だけ（ECS のタスクは X
 # Nautobot と、同じタスクで動かす Redis。nautobot/Dockerfile の ARG と terraform/pipeline/nautobot の redis_image_tag の既定値に合わせてある
 NAUTOBOT_VERSION=3.2.6
 REDIS_TAG=7.4.2-alpine
+# Kafbat UI（stream の ECS。ghcr.io/kafbat/kafka-ui を同じタグで ECR に写す）。terraform/pipeline/stream の kafka_ui_image_tag の既定値に合わせてある
+KAFKA_UI_TAG=v1.5.0
 # analytics の Spark ジョブに足す jar（Maven Central。2026-09-17 に 6 本とも取れることを確認）。EMR Serverless 7.13.0 の Spark 3.5.6 に合わせてある。
 # terraform/pipeline/analytics の emr_release_label を変えるときは spark-sql-kafka とその依存（kafka-clients / commons-pool2 は spark-sql-kafka の pom の版）も変える
 JARS_DIR=jars
@@ -694,7 +700,9 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 #   2026-10-04 までの Neptune Database の db.t4g.medium は 14 だった。レプリカも同じ単価なので × NEPTUNE_AZ_NUM）、
 #   stream = MSK 57（ブローカー 2 台。MSK_AZ_NUM=3 で 1 台 27 を足す）+ Telegraf 5（Fargate ARM 0.25 vCPU / 0.5 GB で 1.2 のタスクが、受ける側 1 つと
 #   取りにいく側 TELEGRAF_AZ_NUM 個（2026-10-04 に分けた）と内部 NLB 2.43。
-#   NLB は 2026-09-28 から。どちらも公表単価からで、Price List API では確かめていない）、
+#   NLB は 2026-09-28 から。どちらも公表単価からで、Price List API では確かめていない）
+#   + Kafbat UI の 2（Fargate ARM 0.5 vCPU / 1 GB で 2.5。Grafana と同じ大きさ。公表単価からで、Price List API では確かめていない。
+#   Cloud Map の名前空間の Route 53 のホストゾーンは月 $0.50 で入れていない）、
 # analytics = Spark のジョブ 1 つにつき 21（ストリーミングのジョブが動いている間の EMR Serverless の 3 vCPU（driver 1 + executor 2。1 vCPU のワーカー 1 台で約 7）。単価は 2026-09-17 に確認。
 #   executor は 2026-10-04 に 1 → 2（Kafka のパーティション 2 つを並列に読む）。ジョブは 2026-10-04 に格納先で 3 つに分けた（7-5）:
 #   STORES の s3 で sinks-s3iceberg、splunk で sinks-splunk、grafana で sinks-grafana（名前は 7-5 の job_name）。3 つとも動けば 63。
@@ -720,6 +728,7 @@ if [ -z "$SKIP_STREAM" ]; then
   # MSK は kafka.m5.large × 2 で 0.542（Kafka 4 は t3.small を受け付けない。2026-09-18）。3 AZ ならブローカーが 1 台増える
   COST_CENTS=$((COST_CENTS + 57 + 27 * (MSK_AZ_NUM - 2)))
   COST_CENTS=$((COST_CENTS + (12 * (1 + TELEGRAF_AZ_NUM) + 24 + 5) / 10))   # Telegraf（Fargate のタスク 1 + TELEGRAF_AZ_NUM 個と NLB）
+  COST_CENTS=$((COST_CENTS + 2))   # Kafbat UI（Fargate のタスク 1）
 fi
 if [ -z "$SKIP_ANALYTICS" ]; then
   # Spark のジョブ（1 つ 21。格納先で 3 つ）
@@ -765,7 +774,7 @@ TEMPORAL_TAG=1.9.1   # terraform/workflow の temporal_image_tag の既定値。
 
 # ---- 2. イメージ ----------------------------------------------------------------
 log "2. イメージ（ECR に無いタグだけ作る）"
-NEED_AGENT=""; NEED_LAB=""; NEED_WORKER=""; NEED_TEMPORAL=""; NEED_TELEGRAF=""; NEED_GRAFANA=""; NEED_SPLUNK=""; NEED_NAUTOBOT=""; NEED_REDIS=""
+NEED_AGENT=""; NEED_LAB=""; NEED_WORKER=""; NEED_TEMPORAL=""; NEED_TELEGRAF=""; NEED_GRAFANA=""; NEED_SPLUNK=""; NEED_NAUTOBOT=""; NEED_REDIS=""; NEED_KAFKA_UI=""
 # telegraf / grafana / splunk は Dockerfile のあるディレクトリの中身からタグを作る（中身を変えれば次の ops/up.sh が作り直す）
 TELEGRAF_TAG=""; GRAFANA_TAG=""; SPLUNK_TAG=""; NAUTOBOT_TAG=""
 if [ -n "$AGENT" ]; then
@@ -782,6 +791,7 @@ fi
 if [ -z "$SKIP_STREAM" ]; then
   TELEGRAF_TAG=$(telegraf_tag) || die "telegraf/ のタグを作れなかった"
   if ecr_has "$PREFIX-telegraf" "$TELEGRAF_TAG"; then echo "telegraf:$TELEGRAF_TAG はある"; else NEED_TELEGRAF=1; fi
+  if ecr_has "$PREFIX-kafka-ui" "$KAFKA_UI_TAG"; then echo "kafka-ui:$KAFKA_UI_TAG はある"; else NEED_KAFKA_UI=1; fi
 fi
 if [ -n "$GRAFANA" ]; then
   GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" grafana) || die "grafana/ のタグを作れなかった"
@@ -798,7 +808,7 @@ if [ -n "$NAUTOBOT" ]; then
   if ecr_has "$PREFIX-nautobot" "$NAUTOBOT_TAG"; then echo "nautobot:$NAUTOBOT_TAG はある"; else NEED_NAUTOBOT=1; fi
   if ecr_has "$PREFIX-redis" "$REDIS_TAG"; then echo "redis:$REDIS_TAG はある"; else NEED_REDIS=1; fi
 fi
-if [ -z "$NEED_AGENT$NEED_LAB$NEED_WORKER$NEED_TEMPORAL$NEED_TELEGRAF$NEED_GRAFANA$NEED_SPLUNK$NEED_NAUTOBOT$NEED_REDIS" ]; then
+if [ -z "$NEED_AGENT$NEED_LAB$NEED_WORKER$NEED_TEMPORAL$NEED_TELEGRAF$NEED_GRAFANA$NEED_SPLUNK$NEED_NAUTOBOT$NEED_REDIS$NEED_KAFKA_UI" ]; then
   echo "作るイメージは無い"
 else
   docker info >/dev/null 2>&1 || die "dockerd に接続できない（WSL なら sudo service docker start。docs/setup.md「Terraform を打つ PC 側」）"
@@ -845,6 +855,10 @@ else
   if [ -n "$NEED_REDIS" ]; then
     # Nautobot のタスクの中で動かす Redis（キャッシュと Celery のブローカー）。Fargate は VPC の中から ECR しか引けないのでミラーする
     mirror_image "redis:$REDIS_TAG" "$REG/$PREFIX-redis:$REDIS_TAG" || die "redis のイメージを ECR に置けなかった"
+  fi
+  if [ -n "$NEED_KAFKA_UI" ]; then
+    # Kafbat UI（stream の ECS）。Fargate は VPC の中から ECR しか引けないのでミラーする（展開して約 640 MB）
+    mirror_image "ghcr.io/kafbat/kafka-ui:$KAFKA_UI_TAG" "$REG/$PREFIX-kafka-ui:$KAFKA_UI_TAG" || die "kafka-ui のイメージを ECR に置けなかった"
   fi
 fi
 
@@ -1063,7 +1077,9 @@ if [ -z "$SKIP_STREAM" ]; then
   # Terraform が書くのは最初の値（上の lab の一覧。Nautobot の最初の seed も lab なので同じ）だけ
   DIALIN_FROM_NAUTOBOT=true
   echo "Telegraf の取りにいく側の機器の一覧: Nautobot の Job が書く（上の一覧は最初の値）"
-  tf_apply pipeline/stream -var "telegraf_image_tag=$TELEGRAF_TAG" -var "snmp_agents=$SNMP_AGENTS" -var "gnmi_targets=$GNMI_TARGETS" \
+  # Kafbat UI（stream を作る回はいつも作る）。ログインの admin のパスワードは SSM の SecureString（タスクは ECS の secrets で受ける）
+  ensure_secret "/$PREFIX/kafka-ui/admin-password" password "Kafbat UI admin password (created by ops/up.sh)"
+  tf_apply pipeline/stream -var "telegraf_image_tag=$TELEGRAF_TAG" -var "kafka_ui_image_tag=$KAFKA_UI_TAG" -var "snmp_agents=$SNMP_AGENTS" -var "gnmi_targets=$GNMI_TARGETS" \
     -var "syslog_standard=$SYSLOG_STANDARD" -var "snmp_poll=$SNMP_POLL_TF" -var "dialin_targets_from_nautobot=$DIALIN_FROM_NAUTOBOT" \
     -var "msk_az_num=$MSK_AZ_NUM" -var "telegraf_az_num=$TELEGRAF_AZ_NUM"
 fi
@@ -1423,6 +1439,11 @@ if [ -n "$NAUTOBOT" ]; then
   echo "Nautobot（http://localhost:8081/ 。ユーザー admin）を開くポートフォワード（web の EC2 を踏み台にする）と admin のパスワード:"
   tf pipeline/nautobot output -raw port_forward_command; echo
   tf pipeline/nautobot output -raw password_command; echo
+fi
+if [ -z "$SKIP_STREAM" ]; then
+  echo "Kafbat UI（http://localhost:8082/ 。ユーザー admin）を開くポートフォワード（web の EC2 を踏み台にする）と admin のパスワード:"
+  tf pipeline/stream output -raw kafka_ui_port_forward_command; echo
+  tf pipeline/stream output -raw kafka_ui_password_command; echo
 fi
 if [ -n "$LAB_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$LAB_WARN"; fi
 if [ -n "$NAUTOBOT_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$NAUTOBOT_WARN"; fi

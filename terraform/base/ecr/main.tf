@@ -12,9 +12,9 @@ locals {
 locals {
   lab_repositories      = var.create_lab_repositories ? toset(["srlinux", "multitool"]) : toset([])
   workflow_repositories = var.create_workflow_repositories ? toset(["worker", "temporal"]) : toset([])
-  # ECS で動かすパイプラインの 5 つ（Telegraf は pipeline/stream、Grafana と Splunk は pipeline/analytics、Nautobot とその Redis は pipeline/nautobot）。
+  # ECS で動かすパイプラインの 6 つ（Telegraf と Kafbat UI は pipeline/stream、Grafana と Splunk は pipeline/analytics、Nautobot とその Redis は pipeline/nautobot）。
   # リポジトリに時間課金は無いので、いつも作る
-  pipeline_repositories = toset(["telegraf", "grafana", "splunk", "nautobot", "redis"])
+  pipeline_repositories = toset(["telegraf", "kafka-ui", "grafana", "splunk", "nautobot", "redis"])
 }
 
 resource "aws_ecr_repository" "agent" {
