@@ -886,6 +886,11 @@ if [ -z "$SKIP_ANALYTICS" ]; then
   log "7-4. analytics（terraform/pipeline/analytics。EMR Serverless と格納先: ${SINKS}。数分）"
   # ドライバーのログは CloudWatch Logs へ出す（terraform/base/core の logs のエンドポイントで届く）
   ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]")
+  # device map（別名=機器名,...）は lab の定義から作る。trap と gNMI のレコードには sysName が無いので、送り元の IP から機器名を引く。
+  # Splunk のアラートアクション（タスクの環境変数 DEVICE_MAP。変わればタスクが入れ替わる）と、Spark のジョブ（--device-map。
+  # prometheus / opensearch に sysName を足して Grafana のルールが機器名で出せるようにする）の両方が使う
+  DEVICE_MAP=$("${PY[@]}" lab/lab_topology.py lab --device-map) || die "lab/lab_topology.py が lab の定義から device map を作れなかった"
+  ANALYTICS_VARS+=(-var "device_map=$DEVICE_MAP")
   if [ -n "$GRAFANA" ]; then
     # Grafana の admin のパスワードは SSM に乱数で作る（Terraform の state に載せない。タスクが起動時に実行ロールで読む）
     ensure_secret "/$PREFIX/grafana/admin-password" password "Grafana admin password (created by ops/up.sh)"
@@ -895,12 +900,9 @@ if [ -z "$SKIP_ANALYTICS" ]; then
     # Splunk を ECS で立てる。管理者のパスワードと HEC の token は SSM に乱数で作る（token は Splunk が GUID の形を求める）。
     # Splunk のタスクが起動時に読んで設定し、Spark のジョブも同じ token を読む
     echo "Splunk Enterprise（splunk/splunk:$SPLUNK_VERSION・試用ライセンス）を立てる。Splunk のライセンスと Splunk General Terms に同意して起動する"
-    # 検知の device map（別名=機器名,...）も lab の定義から作る。trap と gNMI のイベントには sysName が無いので、
-    # Splunk のアラートアクションが送り元の IP から機器名を引くのに要る（タスクの環境変数 DEVICE_MAP。変わればタスクが入れ替わる）
-    DEVICE_MAP=$("${PY[@]}" lab/lab_topology.py lab --device-map) || die "lab/lab_topology.py が lab の定義から device map を作れなかった"
     ensure_secret "/$PREFIX/splunk/admin-password" password "Splunk admin password (created by ops/up.sh)"
     ensure_secret "/$PREFIX/splunk/hec-token" uuid "Splunk HEC token (created by ops/up.sh)"
-    ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX" -var "device_map=$DEVICE_MAP")
+    ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX")
   fi
   tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"
   APP_ID=$(tf pipeline/analytics output -raw application_id); echo "APP_ID=$APP_ID"

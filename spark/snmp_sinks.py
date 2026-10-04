@@ -22,9 +22,12 @@ Telegraf の JSON 出力（outputs.kafka の data_format = "json"、json_timesta
 （機器やメトリクスが増えてもテーブルの列を変えないため。terraform/pipeline/analytics/tables.tf の列と同じ）。
 
 異常の検知はここではしない（2026-10-02 にやめた。detect のクエリと Neptune の anomaly 頂点、S3 Tables の anomaly_events、EventBridge への put_events を消した）。
-検知と相関は格納先の側でする: Grafana のアラートルール（AMP の ifOperStatus。grafana/provisioning/alerting）と Splunk の保存済みサーチ
-（trap・gNMI の BGP / IS-IS。splunk/netops_alerts）が SNS のトピック <接頭辞>-alerts に出し、ワークフロー（SQS）と
-トポロジの status（graph の Lambda）がそれを受ける。
+検知と相関は格納先の側でする: Grafana のアラートルール（AMP のポーリングの ifOperStatus と gNMI の BGP / IS-IS、OpenSearch の trap。
+grafana/provisioning/alerting）と Splunk の保存済みサーチ（ポーリング・trap・gNMI の BGP / IS-IS。splunk/netops_alerts）が同じ 4 種類を
+SNS のトピック <接頭辞>-alerts に出し、ワークフロー（SQS）とトポロジの status（graph の Lambda）がそれを受ける（cycle 002 で両方に揃えた）。
+そのために格納先に合わせた整形だけはここでする（Telegraf・Kafka・S3 Tables の生データと Splunk へ送るものは変えない）:
+  prometheus  文字列の状態を 1 / 0 の系列にする（STATE_FIELDS。bgp_neighbor の session_state → session_up、isis_interface の oper_state → oper_up）
+  prometheus / opensearch  sysName の無いレコード（gNMI と trap。source が機器の管理 IP）に、--device-map で引いた機器名を sysName として足す
 
 HTTP の送信は driver でまとめて行う（マイクロバッチを collect する。PoC の量（機器数台、10 秒間隔）なら 1 分に数百行）。
 量が増えたら foreachPartition に移す。remote write の protobuf と snappy は外部ライブラリ無しで組む
@@ -52,6 +55,12 @@ OPENSEARCH_INDEX = "snmp-logs"
 METRIC_PREFIX = "snmp"
 SPLUNK_HEC_PATH = "/services/collector/event"   # HEC の JSON イベントの入口（--splunk-hec-url に無ければ足す）
 SPLUNK_SOURCETYPE_PREFIX = "netops"             # sourcetype は netops:<トピック>（netops:metrics / netops:traps / netops:logs）
+# 文字列の状態 → 1 / 0（Prometheus は数値しか持てない。Grafana の bgp_down / isis_down のルールが読む）。
+# (measurement, field) → (系列の field 名, 1 になる値)。値は大文字小文字を見ない。表に無い文字列の field は今までどおり捨てる
+STATE_FIELDS = {
+    ("bgp_neighbor", "session_state"): ("session_up", "established"),
+    ("isis_interface", "oper_state"): ("oper_up", "up"),
+}
 
 
 # ---------------------------------------------------------------- 引数
@@ -71,6 +80,8 @@ def parse_args(argv):
     p.add_argument("--splunk-token-parameter", default="", help="splunk: HEC の token を入れた SSM の SecureString の名前（/<接頭辞>/splunk/hec-token。値は起動時に読み、ログに出さない）")
     p.add_argument("--splunk-index", default="", help="splunk: イベントを入れる index（空なら token の既定の index）")
     p.add_argument("--splunk-skip-verify", action="store_true", help="splunk: HEC の TLS 証明書を検証しない（自己署名の Splunk Enterprise の検証用。既定は検証する）")
+    p.add_argument("--device-map", default="", help="prometheus / opensearch: sysName の無いレコードの source（機器の管理 IP）を機器名に引く表"
+                                                     "（別名=機器名,…。Splunk の DEVICE_MAP と同じ。lab/lab_topology.py --device-map。空なら足さない）")
     args = p.parse_args(argv)
     args.sinks = [s.strip() for s in args.sinks.split(",") if s.strip()]
     bad = [s for s in args.sinks if s not in SINKS]
@@ -175,6 +186,25 @@ def _loads(s):
     return v if isinstance(v, dict) else {}
 
 
+def parse_device_map(text):
+    """"203.0.113.31=dc1-leaf-01,…" → {別名（小文字）: 機器名}。= の無い要素は捨てる（splunk/netops_alerts/bin/netops_sns.py の parse_device_map と同じ読み方）"""
+    out = {}
+    for p in (text or "").split(","):
+        k, sep, v = p.partition("=")
+        if sep and k.strip() and v.strip():
+            out[k.strip().lower()] = v.strip()
+    return out
+
+
+def with_sysname(tags, devmap):
+    """sysName の無い tags に、source を device map で引いた機器名を sysName として足した写しを返す。
+    sysName があるとき（ポーリングと syslog）と、表に無いときはそのまま（同じ dict）"""
+    if not devmap or tags.get("sysName") not in (None, ""):
+        return tags
+    name = devmap.get(str(tags.get("source") or "").strip().lower())
+    return dict(tags, sysName=name) if name else tags
+
+
 def _number(v):
     """field の値を数値にする。数値でなければ None（文字列の field は Prometheus に入れない）"""
     if isinstance(v, bool):
@@ -232,8 +262,9 @@ def log(msg):
 
 
 # ---------------------------------------------------------------- opensearch（_bulk）
-def opensearch_docs(records):
-    """_bulk の本文（action 行と document 行の対）。fields の値は数値なら数値にする（TIMESERIES 型はドキュメント ID を付けない）"""
+def opensearch_docs(records, devmap=None):
+    """_bulk の本文（action 行と document 行の対）。fields の値は数値なら数値にする（TIMESERIES 型はドキュメント ID を付けない）。
+    sysName の無いレコード（trap）は devmap で機器名を足す（Grafana の trap のルールが tags.sysName ごとに数える）"""
     lines = []
     for r in records:
         doc = {
@@ -242,7 +273,7 @@ def opensearch_docs(records):
             "measurement": r["measurement"],
             "agent_host": r.get("agent_host"),
             "host": r.get("host"),
-            "tags": r["tags"],
+            "tags": with_sysname(r["tags"], devmap),
             "fields": {k: (_number(v) if _number(v) is not None else v) for k, v in r["fields"].items()},
         }
         lines.append('{"index":{}}')
@@ -250,11 +281,11 @@ def opensearch_docs(records):
     return lines
 
 
-def make_opensearch_sender(endpoint, index, region):
+def make_opensearch_sender(endpoint, index, region, devmap=None):
     url = endpoint.rstrip("/") + f"/{index}/_bulk"
 
     def send(records):
-        lines = opensearch_docs(records)
+        lines = opensearch_docs(records, devmap)
         for i in range(0, len(lines), BULK_SIZE * 2):
             body = ("\n".join(lines[i:i + BULK_SIZE * 2]) + "\n").encode("utf-8")
             headers = sigv4_headers("POST", url, body, "aoss", region, {"Content-Type": "application/x-ndjson"})
@@ -369,13 +400,14 @@ def label_name(tag):
     return name
 
 
-def prometheus_series(records):
+def prometheus_series(records, devmap=None):
     """数値の field を 1 系列 1 サンプルにする。[(labels(sorted list of (name, value)), value, ms), …]
+    文字列の状態は STATE_FIELDS の表で 1 / 0 の field に変える。sysName の無いレコード（gNMI）は devmap で機器名を足す。
     トピックでは絞らない（prometheus のクエリは --metric-topics だけを購読している）"""
     out = []
     for r in records:
         base = {}
-        for k, v in r["tags"].items():
+        for k, v in with_sysname(r["tags"], devmap).items():
             if v is None or v == "":
                 continue
             base[label_name(k)] = str(v)
@@ -383,7 +415,10 @@ def prometheus_series(records):
         for f, v in r["fields"].items():
             num = _number(v)
             if num is None:
-                continue
+                state = STATE_FIELDS.get((r["measurement"], f))
+                if state is None or not isinstance(v, str):
+                    continue
+                f, num = state[0], 1.0 if v.strip().lower() == state[1] else 0.0
             labels = dict(base)
             labels["__name__"] = metric_name(r["measurement"] or "unknown", f)
             out.append((sorted(labels.items()), num, ms))
@@ -449,7 +484,7 @@ def snappy_compress(data, chunk=65536):
     return bytes(out)
 
 
-def make_prometheus_sender(url, region):
+def make_prometheus_sender(url, region, devmap=None):
     headers = {
         "Content-Type": "application/x-protobuf",
         "Content-Encoding": "snappy",
@@ -457,7 +492,7 @@ def make_prometheus_sender(url, region):
     }
 
     def send(records):
-        series = prometheus_series(records)
+        series = prometheus_series(records, devmap)
         for i in range(0, len(series), BULK_SIZE):
             body = snappy_compress(encode_write_request(series[i:i + BULK_SIZE]))
             signed = sigv4_headers("POST", url, body, "aps", region, headers)
@@ -549,14 +584,15 @@ def ensure_topics(spark, bootstrap, topics):
 def build(spark, args):
     """引数の格納先ぶんのストリーミングクエリを起こして返す"""
     queries = []
+    devmap = parse_device_map(args.device_map)
     for s in args.sinks:
         rows = read_rows(spark, args.bootstrap, sink_topics(s, args.metric_topics, args.log_topics))
         if s == "iceberg":
             queries.append(iceberg_query(rows, args.iceberg_table, args.checkpoint))
         elif s == "opensearch":
-            queries.append(http_query(rows, s, args.checkpoint, make_opensearch_sender(args.opensearch_endpoint, args.opensearch_index, args.region)))
+            queries.append(http_query(rows, s, args.checkpoint, make_opensearch_sender(args.opensearch_endpoint, args.opensearch_index, args.region, devmap)))
         elif s == "prometheus":
-            queries.append(http_query(rows, s, args.checkpoint, make_prometheus_sender(args.prometheus_url, args.region)))
+            queries.append(http_query(rows, s, args.checkpoint, make_prometheus_sender(args.prometheus_url, args.region, devmap)))
         elif s == "splunk":
             # token は起動時に 1 回だけ読む（driver の中に置く。ログにも引数にも出ない）。読めなければジョブが起動で落ち、原因が stderr に出る
             token = read_ssm_parameter(args.splunk_token_parameter, args.region)

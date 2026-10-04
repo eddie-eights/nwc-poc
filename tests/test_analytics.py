@@ -3,7 +3,7 @@ terraform/pipeline/analytics が main と stream の state を読み、S3 Tables
 Spark のスクリプトが Kafka（MSK の IAM 認証）を格納先ごとに読んで Iceberg / OpenSearch Serverless / Prometheus に流すこと、
 テーブルの列がスクリプトと一致すること、remote write の protobuf と snappy が手で復号できることを見る。
 実行は python3 tests/test_analytics.py（依存は無い。pyspark も botocore も要らない。スクリプトは import するが pyspark は関数の中で読む）。"""
-import ast, importlib.util, io, json, os, re, ssl, struct, sys
+import ast, importlib.util, inspect, io, json, os, re, ssl, struct, sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 SRC = os.path.join(ROOT, "spark", "snmp_sinks.py")
@@ -267,8 +267,8 @@ args_block = re.search(r'entryPointArguments\s*=\s*concat\((.*?)\n\s*\)\n', tf, 
 check("job_driver の引数は concat（共通 + 格納先ごとの for-if）", args_block is not None)
 for a in ("--bootstrap", "--checkpoint", "--sinks", "--region", "--metric-topics", "--log-topics"):
     check(f"job_driver の共通の引数に {a}", f'"{a}"' in args_block.group(1))
-check("job_driver に検知の引数（--neptune-endpoint / --anomaly-events-table / --device-map / --event-bus）は無く、スクリプトが受ける引数だけを渡す",
-      not any(a in tf for a in ('"--neptune-endpoint"', '"--anomaly-events-table"', '"--device-map"', '"--event-bus"', '"--event-source"'))
+check("job_driver に検知の引数（--neptune-endpoint / --anomaly-events-table / --event-bus）は無く、スクリプトが受ける引数だけを渡す",
+      not any(a in tf for a in ('"--neptune-endpoint"', '"--anomaly-events-table"', '"--event-bus"', '"--event-source"'))
       and set(re.findall(r'"(--[a-z-]+)"', args_block.group(1))) <= set(re.findall(r'add_argument\("(--[a-z-]+)"', src)))
 check("job_driver の格納先の引数は選んだときだけ（for a in [...] : a if local.sink_*）",
       re.search(r'\["--iceberg-table",\s*local\.iceberg_table\] : a if local\.sink_iceberg', args_block.group(1)) is not None
@@ -276,6 +276,8 @@ check("job_driver の格納先の引数は選んだときだけ（for a in [...]
       and re.search(r'\["--prometheus-url",\s*local\.prometheus_remote_write_url\] : a if local\.sink_prometheus', args_block.group(1)) is not None
       and re.search(r'\["--splunk-hec-url",\s*local\.splunk_hec_url,\s*"--splunk-token-parameter",\s*local\.splunk_token_parameter,\s*"--splunk-index",\s*var\.splunk_index\] : a if local\.sink_splunk', args_block.group(1)) is not None
       and re.search(r'\["--splunk-skip-verify"\] : a if local\.sink_splunk && local\.splunk_skip_tls_verify', args_block.group(1)) is not None)
+check("job_driver は device map が空でなく prometheus か opensearch があるときだけ --device-map を渡す（cycle 002。sysName の無い gNMI と trap に機器名を足す）",
+      re.search(r'\["--device-map",\s*var\.device_map\] : a if var\.device_map != "" && \(local\.sink_prometheus \|\| local\.sink_opensearch\)', args_block.group(1)) is not None)
 check("job_driver の引数に token の値は無い（SSM のパラメータ名だけ）", "hec-token" not in args_block.group(1) and "splunk_hec_token" not in args_block.group(1))
 check("--sinks は var.sinks をカンマでつなぐ", 'join(",", var.sinks)' in args_block.group(1))
 check("--checkpoint は s3://<バケット>/analytics/checkpoint/<MSK の uuid>/（MSK を作り直したら checkpoint も新しく。格納先ごとに下を切るのはスクリプト）",
@@ -294,8 +296,8 @@ check("ドライバーのログは CloudWatch、EMR の managed storage は使�
 tree = ast.parse(src, SRC)
 funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
 check("parse_args / sink_topics / read_rows / build / main がある", {"parse_args", "sink_topics", "read_rows", "build", "main"} <= set(funcs))
-check("検知の関数（parse_device_map / device / events / anomaly_key / make_detect_sender）はもう無い（検知は Grafana と Splunk。2026-10-02）",
-      not ({"parse_device_map", "device", "events", "anomaly_key", "anomaly_detail", "make_detect_sender"} & set(funcs)))
+check("検知の関数（device / events / anomaly_key / make_detect_sender）はもう無い（検知は Grafana と Splunk。2026-10-02。parse_device_map は cycle 002 で sysName を足すのに戻した）",
+      not ({"device", "events", "anomaly_key", "anomaly_detail", "make_detect_sender"} & set(funcs)) and {"parse_device_map", "with_sysname"} <= set(funcs))
 check("DynamoDB を使わない（2026-09-24）", "dynamodb" not in tf.lower() and "anomaly_table_name" not in tf)
 check("runtime role に Neptune と EventBridge の許可は無い（Spark は格納先に書くだけ）",
       "neptune-db" not in tf and "events:PutEvents" not in tf and "event_bus" not in tf and "NeptuneAnomalies" not in tf)
@@ -407,6 +409,39 @@ check("prometheus_series: 数値の field だけ（文字列は落とす、bool 
       and sorted(dict(l)["__name__"] for l, _, _ in series) == ["snmp_interface_flag", "snmp_interface_ifInOctets", "snmp_interface_ifOperStatus"])
 check("prometheus_series: トピックでは絞らない（購読で絞っている）", len(mod.prometheus_series([dict(rec, topic="cpu")])) == 3)
 check("prometheus_series: labels は名前順のリスト（Prometheus はソート済みを要求する）", all(l == sorted(l) for l, _, _ in series))
+# cycle 002: gNMI の BGP / IS-IS の文字列の状態を 1 / 0 にし、sysName の無いレコードに device map で機器名を足す
+_dm = mod.parse_device_map(" 203.0.113.31 = dc1-leaf-01 ,203.0.113.32=dc1-leaf-02,bad,=x,y=")
+check("parse_device_map: 別名=機器名,… を {別名（小文字）: 機器名}。= の無い要素と空の側は捨てる",
+      _dm == {"203.0.113.31": "dc1-leaf-01", "203.0.113.32": "dc1-leaf-02"} and mod.parse_device_map("") == {} and mod.parse_device_map(None) == {}
+      and mod.parse_device_map("Leaf1=dc1-leaf-01") == {"leaf1": "dc1-leaf-01"})
+_t = {"source": "203.0.113.31", "peer_address": "10.255.0.1"}
+check("with_sysname: sysName が無ければ source を引いて足した写し。表に無い・sysName がある・表が空ならそのまま",
+      mod.with_sysname(_t, _dm) == dict(_t, sysName="dc1-leaf-01") and "sysName" not in _t
+      and mod.with_sysname({"source": "203.0.113.99"}, _dm) == {"source": "203.0.113.99"}
+      and mod.with_sysname({"source": "203.0.113.31", "sysName": "x"}, _dm)["sysName"] == "x"
+      and mod.with_sysname({"source": "203.0.113.31", "sysName": ""}, _dm)["sysName"] == "dc1-leaf-01"
+      and mod.with_sysname(_t, {}) is _t and mod.with_sysname(_t, None) is _t
+      and mod.with_sysname({"source": " 203.0.113.31 "}, _dm)["sysName"] == "dc1-leaf-01")
+def _gnmi(meas, field, value, **tags):
+    return {"ts": 1700000000.0, "topic": "gnmi", "measurement": meas, "agent_host": "", "host": "h", "tags": dict({"source": "203.0.113.31"}, **tags), "fields": {field: value}}
+_bgp = mod.prometheus_series([_gnmi("bgp_neighbor", "session_state", "established", peer_address="10.255.0.1"),
+                              _gnmi("bgp_neighbor", "session_state", "active", peer_address="10.255.0.2")], _dm)
+check("prometheus_series: bgp_neighbor の session_state は snmp_bgp_neighbor_session_up（established が 1、ほかは 0）で、sysName が機器名",
+      [(dict(l)["__name__"], dict(l)["peer_address"], v) for l, v, _ in _bgp]
+      == [("snmp_bgp_neighbor_session_up", "10.255.0.1", 1.0), ("snmp_bgp_neighbor_session_up", "10.255.0.2", 0.0)]
+      and all(dict(l)["sysName"] == "dc1-leaf-01" and dict(l)["source"] == "203.0.113.31" for l, _, _ in _bgp))
+_isis = mod.prometheus_series([_gnmi("isis_interface", "oper_state", v, interface_name="ethernet-1/1.0") for v in ("up", "DOWN", " Up ")], _dm)
+check("prometheus_series: isis_interface の oper_state は snmp_isis_interface_oper_up（up が 1、ほかは 0。大文字小文字と前後の空白は見ない）",
+      [(dict(l)["__name__"], v) for l, v, _ in _isis] == [("snmp_isis_interface_oper_up", 1.0), ("snmp_isis_interface_oper_up", 0.0), ("snmp_isis_interface_oper_up", 1.0)]
+      and all(dict(l)["interface_name"] == "ethernet-1/1.0" for l, _, _ in _isis))
+check("prometheus_series: 表に無い文字列の field（ほかの measurement の session_state、evpn_es の oper_state）は系列にならない",
+      mod.prometheus_series([_gnmi("evpn_es", "oper_state", "up"), _gnmi("isis_interface", "session_state", "up"), _gnmi("bgp_neighbor", "oper_state", "up")], _dm) == [])
+check("prometheus_series: 表の field でも文字列でなければ表を引かない（数値はそのまま）",
+      [(dict(l)["__name__"], v) for l, v, _ in mod.prometheus_series([_gnmi("bgp_neighbor", "session_state", 6)], _dm)] == [("snmp_bgp_neighbor_session_state", 6.0)])
+check("prometheus_series: 表に無い IP では sysName を足さない。devmap を渡さなければ今までどおり",
+      all("sysName" not in dict(l) for l, _, _ in mod.prometheus_series([_gnmi("bgp_neighbor", "session_state", "established", source="203.0.113.99")], _dm))
+      and all("sysName" not in dict(l) for l, _, _ in mod.prometheus_series([_gnmi("bgp_neighbor", "session_state", "established")]))
+      and mod.prometheus_series([rec], _dm) == series)
 
 # ---- トピックを起動時に作る（無いトピックを購読すると offset 読みで落ちる。2026-09-27）
 check("all_topics: 格納先が読むトピックの和（重複なし、引数の順）",
@@ -577,6 +612,22 @@ check("opensearch_docs: action 行と document 行の対、@timestamp は ISO �
       and json.loads(docs[1])["@timestamp"] == "2023-11-14T22:13:20.500000Z"
       and json.loads(docs[1])["fields"] == {"ifInOctets": 123.0, "ifOperStatus": 1.0, "descr": "up", "flag": 1.0}
       and json.loads(docs[1])["tags"]["ifName"] == "Gi0/1")
+_trap = {"ts": 1700000000.0, "topic": "traps", "measurement": "snmp_trap", "agent_host": "", "host": "h",
+         "tags": {"source": "203.0.113.31", "oid": ".1.3.6.1.6.3.1.1.5.3", "name": "linkDown"}, "fields": {"sysUpTimeInstance": 1}}
+_tdocs = mod.opensearch_docs([_trap, dict(_trap, tags=dict(_trap["tags"], source="203.0.113.99"))], mod.parse_device_map("203.0.113.31=dc1-leaf-01"))
+check("opensearch_docs: sysName の無い snmp_trap は tags.sysName に機器名が入る。表に無い IP では足さない。元のレコードは変えない",
+      json.loads(_tdocs[1])["tags"] == dict(_trap["tags"], sysName="dc1-leaf-01") and "sysName" not in json.loads(_tdocs[3])["tags"]
+      and "sysName" not in _trap["tags"])
+check("opensearch_docs: devmap を渡さなければ今までどおり（ポーリングの sysName は変えない）",
+      "sysName" not in json.loads(mod.opensearch_docs([_trap])[1])["tags"] and mod.opensearch_docs([rec], mod.parse_device_map("203.0.113.31=x")) == docs
+      and json.loads(mod.opensearch_docs([dict(_trap, tags={"source": "203.0.113.31", "sysName": "x"})], mod.parse_device_map("203.0.113.31=dc1-leaf-01"))[1])["tags"]["sysName"] == "x")
+check("splunk_events は device map を受けず、sysName を足さない（Splunk のアラートアクションが DEVICE_MAP で引く。cycle 002 でも出力は変えない）",
+      list(inspect.signature(mod.splunk_events).parameters) == ["records", "index"]
+      and "sysName" not in json.loads(mod.splunk_events([_trap])[0])["event"]["tags"])
+check("build は device map を prometheus と opensearch の sender にだけ渡す",
+      "devmap = parse_device_map(args.device_map)" in src
+      and re.search(r'make_prometheus_sender\([^)]*devmap\)', src) is not None and re.search(r'make_opensearch_sender\([^)]*devmap\)', src) is not None
+      and re.search(r'make_splunk_sender\([^)]*devmap', src) is None)
 
 import datetime as dt
 r = mod.row_to_record({"ts": dt.datetime(2023, 11, 14, 22, 13, 20, tzinfo=dt.timezone.utc), "topic": "traps", "measurement": "snmp_trap",
@@ -596,14 +647,14 @@ check("up.sh のスクリプトは spark/snmp_sinks.py", re.search(r'^SPARK_SCRI
 check("up.sh は SINK_SPLUNK（既定 0）と SPLUNK_INDEX を読み、splunk なら ECS の Splunk の token を SSM に作ってから渡す（値は読まない）。外の Splunk の変数は渡さない",
       re.search(r'^SINK_SPLUNK="\$\{SINK_SPLUNK:-0\}"; SPLUNK_INDEX="\$\{SPLUNK_INDEX:-\}"$', up, re.M) is not None
       and "get-parameter" not in up and "splunk_hec_url=" not in up and "splunk_skip_tls_verify" not in up and "SPLUNK_TOKEN_PARAM" not in up
-      and 'ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX" -var "device_map=$DEVICE_MAP")' in up
+      and 'ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX")' in up
       and up.index('ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]"') < up.index('ensure_secret "/$PREFIX/splunk/hec-token"') < up.index('tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"'))
 check("up.sh は SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS（既定 1）を terraform/pipeline/analytics の sinks に組んで渡す",
       re.search(r'^SINK_S3="\$\{SINK_S3:-1\}"; SINK_OPENSEARCH="\$\{SINK_OPENSEARCH:-1\}"; SINK_PROMETHEUS="\$\{SINK_PROMETHEUS:-1\}"$', up, re.M) is not None
       and 'ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]")' in up and 'tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"' in up)
-check("up.sh は Splunk を立てるときだけ device map を lab の定義から作って渡す（lab/lab_topology.py --device-map。trap と gNMI には sysName が無い）",
-      re.search(r'if \[ -n "\$SPLUNK_ON_ECS" \]; then\n[\s\S]*?DEVICE_MAP=\$\("\$\{PY\[@\]\}" lab/lab_topology\.py lab --device-map\) \|\| die [^\n]*\n[\s\S]*?-var "device_map=\$DEVICE_MAP"\)\n  fi\n  tf_apply pipeline/analytics', up) is not None
-      and up.count("lab_topology.py lab --device-map") == 1)
+check("up.sh は SINK_SPLUNK に関わらず device map を lab の定義から作って渡す（lab/lab_topology.py --device-map。trap と gNMI には sysName が無い。Splunk の DEVICE_MAP と Spark の --device-map。cycle 002）",
+      re.search(r'  ANALYTICS_VARS=\(-var "sinks=\[\$SINKS_TF\]"\)\n(?:  #[^\n]*\n)*  DEVICE_MAP=\$\("\$\{PY\[@\]\}" lab/lab_topology\.py lab --device-map\) \|\| die [^\n]*\n  ANALYTICS_VARS\+=\(-var "device_map=\$DEVICE_MAP"\)\n  if \[ -n "\$GRAFANA" \]', up) is not None
+      and up.count("lab_topology.py lab --device-map") == 1 and up.count('-var "device_map=$DEVICE_MAP"') == 1)
 check("up.sh は AGENT=0 でも CloudWatch へのログを切らない（CloudWatch Logs へは土台の logs のエンドポイントで届く）",
       "cloudwatch_logging=false" not in up and re.search(r'variable "cloudwatch_logging" \{[^}]*default\s*=\s*true', tf) is not None)
 # 2026-09-26〜28 は NAT Gateway だけで AWS の API に出ていた。2026-09-28 に閉域（エンドポイント + aws:SourceVpc の Deny）にした

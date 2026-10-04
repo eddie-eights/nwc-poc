@@ -49,6 +49,8 @@ output "job_driver_json" {
         # token の値は渡さない（SSM のパラメータ名だけ。ジョブが起動時に読む）
         [for a in ["--splunk-hec-url", local.splunk_hec_url, "--splunk-token-parameter", local.splunk_token_parameter, "--splunk-index", var.splunk_index] : a if local.sink_splunk],
         [for a in ["--splunk-skip-verify"] : a if local.sink_splunk && local.splunk_skip_tls_verify],
+        # prometheus / opensearch で sysName の無いレコード（gNMI と trap）に機器名を足す表（Splunk のタスクの DEVICE_MAP と同じ値）
+        [for a in ["--device-map", var.device_map] : a if var.device_map != "" && (local.sink_prometheus || local.sink_opensearch)],
       )
       # Iceberg のカタログの設定はいつも渡す（カタログは最初に使うときに開くので、iceberg を選ばなければ S3 Tables の API を呼ばない）
       sparkSubmitParameters = join(" ", concat(
