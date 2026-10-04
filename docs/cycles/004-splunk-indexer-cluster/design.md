@@ -157,7 +157,13 @@ flowchart LR
     - manager に問い合わせられないときは、unhealthy にしない（manager が落ちただけで search head まで入れ替えない）。
   - B. `ops/up.sh` の全タスク待ちのあとに、同じ突き合わせを 1 回行う。食い違っていたら、止めて理由を出す。
 - **やらない案。**
-  indexer の GUID を台ごとに固定する（`instance.cfg` を書く）。同じ GUID の台が入れ替わったときの Splunk の動きが読めない。
+  indexer の GUID を台ごとに固定する（`instance.cfg` を書く）。2026-10-04 に手元の Docker の 4 台で確かめて、不合格だった。
+  - 401 は直らない。原因は GUID ではなく、search head が同じ host:port の peer に鍵（`distServerKeys` の `trusted.pem`）を送り直さないこと。15 分待っても 401 のまま。
+  - データが消える。bucket の ID に GUID が入るので、空の新しい台の bucket と古い台の bucket の ID がぶつかる。manager は空の新しい台を正として、ほかの台にある古いコピーを切り詰めるか捨てる。
+  - いまは直る入れ替えまで壊れる。別の IP で入れ替わったとき、GUID を固定しなければ 73 秒で RF / SF が戻る。固定すると manager が参加を断り続け（`A clustered bucket cannot be re-added as standalone`）、25 分たっても戻らない。その台が受けた 174 件は消えた。
+  - 同じ GUID の台が 2 台同時にいると、manager は新しい台を断る（`already registered and UP`）。それでもコンテナは healthy になるので、ECS は古い台を止めてしまう。
+  - A の突き合わせが効かなくなる。入れ替わっても GUID が同じなので、見分けられない。
+  - GUID を入れること自体はできる（入口で `/opt/splunk-etc/instance.cfg` に書けば、上流の Ansible のあとも残る）。
 - **残る弱さ。**
   A が効くまでの約 5 分と、search head が入れ替わっている数分は、アラートが落ちる。あとから出し直す仕組みは、このサイクルでは作らない。
 

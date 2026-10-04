@@ -48,6 +48,21 @@
 - `indexes.conf` は書かない、`SPLUNK_INDEXER_URL` は付けない、indexer に `stopTimeout = 120`、SG に 9997 を足す。
 - 004 とは別に切り出すもの: 存在しない index 宛ての HEC が 200 を返して捨てられる件、`tests/check_splunk_image.py` が Docker の volume を残す件。
 
+## 2026-10-04 案 C（GUID を台ごとに固定）を手元で確かめた
+
+ユーザーの指示（「C ができれば簡単だよね、検証して」）で、エンジニアが手元の Docker の 4 台で確かめた。結果は不合格。A と B のままにする。
+
+| # | 確かめたこと | 結果 | 見えたこと |
+|---|---|---|---|
+| 1 | 同じ IP・同じ GUID で入れ替え | 不合格 | 15 分たっても 401。新しい台の `distServerKeys` が空。新しく入れた 100 件は 0 件、link down の通知も出ない。もとの 1000 件が黙って 500 件に減った（その間 manager は RF / SF を met と表示） |
+| 2 | 同じ GUID・別の IP | 不合格 | manager が参加を断る行が 25 分で 33 回。RF / SF は NO のまま。参加前に受けた 174 件は消えた。search head の件数は 2〜3 倍に重複 |
+| 3 | manager の側（空の台が同じ GUID で来る） | 不合格 | bucket の ID がぶつかり、空の新しい台が勝って、ほかの台の古いコピーが切り詰められた |
+| 4 | 同じ GUID の 2 台が同時に動く | 不合格 | manager は新しい台を断り続けるが、コンテナは healthy。古い台を先に止めても、3 と同じ衝突が起きた。RF / SF は 8 分 NO のままで、hot bucket を手で roll して戻った |
+| 5 | GUID を入れる | 合格 | 入口で `/opt/splunk-etc/instance.cfg` に書けば残る。値は AZ の番号から作る uuid5 で足りる |
+
+- 未確認: ECS で、新しいタスクがクラスターに入る前に HEC を受けるか。受けない場合に、別の IP で main の衝突が起きないか。待ち行列が詰まった台が `stopTimeout` 120 で SIGKILL になるまでの動き。
+- 分かったこと: 401 の原因は GUID ではなく鍵。search head に peer を登録し直させる処置（A の入れ替え）が要るのは、C を入れても同じ。
+
 ## 却下した案
 
 | 案 | やめた理由 |
