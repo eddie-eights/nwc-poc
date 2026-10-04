@@ -10,6 +10,9 @@ nwc-poc の作業中に質問したことと、その答えをまとめた。答
 - [6. SNMP のポーリングを既定で止めた](#6-snmp-のポーリングを既定で止めた)
 - [7. Nautobot（機器の一覧とケーブルの正）](#7-nautobot機器の一覧とケーブルの正)
 - [8. Neptune Database と Neptune Analytics](#8-neptune-database-と-neptune-analytics)
+- [9. 障害の情報をどこに残すか](#9-障害の情報をどこに残すか)
+- [10. データの流し先とテーブル](#10-データの流し先とテーブル)
+- [11. Neptune に置くもの](#11-neptune-に置くもの)
 
 ---
 
@@ -633,3 +636,187 @@ Database に戻すのは、次のどれかに当てはまったとき:
 - Gremlin や SPARQL が要る
 
 何をどこに置いているかは [data-stores.md](data-stores.md)。
+
+---
+
+## 9. 障害の情報をどこに残すか
+
+2026-10-04 に聞いたこと。ここでの結論が「アラートの履歴を残す（Cycle 001）」の設計になった（[設計](cycles/001-alert-history-firehose/design.md)。実装は main に入る前）。
+
+### Q. いまネットワークの障害情報はどこに書いてる？
+
+**A. 障害の履歴（開いた・閉じた）を書いている場所は、聞いた時点では無かった。** 2026-10-02 に検知を Spark から Grafana と Splunk に移したとき、それまでの置き場（Neptune の頂点 `anomaly` と S3 Tables の `anomaly_events`）をやめ、新しい置き場を決めていなかった。
+
+| 知りたいこと | どこで見るか | 補足 |
+|---|---|---|
+| いま何が落ちているか | Neptune の機器・IF・層の頂点の `status`。Web の「トポロジ」タブ | Lambda graph-status がアラートを受けて書き換える。前の状態は残らない |
+| アラートが出た・消えた履歴 | Grafana と Splunk のアラートの履歴 | ECS のタスクを止めると消える |
+| 1 回の障害で何をしたか | S3 Tables の `proposal_events`（作成・承認・適用・確認を 1 行ずつ） | 修復案を作らなかった障害は残らない |
+| 機器から来た生データ | S3 Tables の生データのテーブル | 読む側（Athena）は聞いた時点では未配備 |
+
+- `proposal_events` は修復案の流れの記録で、障害の記録ではない。
+- `ops/down.sh` はテーブルバケットごと消すので、履歴も消える。
+
+### Q. 障害情報は S3 に持っておくのは適切？
+
+**A. 履歴の置き場としては適切。「いま開いている障害」の一覧には使わない。**
+
+向いている理由:
+
+- **追記するだけの記録だから。** 開いた・閉じたは、書いたら書き換えない。`proposal_events` と同じ使い方になる。
+- **量が少ない。** 1 回の障害で数行。費用はほぼ掛からない。
+- **生データと合わせて集計できる。** 同じ場所にあるので、「この機器で月に何回落ちたか」「障害の前後のメトリクス」を SQL で出せる。
+- **方針に合う。** Neptune にはトポロジと `status` だけを置く。
+
+向いていないところと対処:
+
+| 弱いところ | 中身 | 対処 |
+|---|---|---|
+| 「いま開いている障害」を見る | 1 行を書き換えるのが苦手。開いた行と閉じた行を突き合わせないと分からない | Neptune の `status` と、Grafana / Splunk のアラートの状態で見る |
+| 読む手段 | Athena が要る | 「アラートの履歴を残す（Cycle 001）」で Athena まで作る |
+| Lambda から書きにくい | PyIceberg と pyarrow は Lambda の素の zip には重い。同時に何本も動くと、同じテーブルへの書き込みがぶつかる | Lambda は Firehose に送るだけにし、Firehose がまとめて書く |
+| 環境を壊すと消える | `ops/down.sh` がテーブルバケットごと消す | PoC のあいだは消えてよいと決めた |
+
+Lambda から書く経路は 2 案あった。
+
+| 案 | 中身 | 判断 |
+|---|---|---|
+| Data Firehose → S3 Tables | Lambda は Firehose に 1 件ずつ送るだけ | **採った。** 生データの流れ（Spark）が止まっていても履歴が残る |
+| MSK の新しいトピック → Spark → S3 Tables | Spark のいまの書き込みに乗る。新しいサービスは要らない | 採らない。Spark が止まっているあいだは書かれない |
+
+### Q. worker（Temporal）からのほうが、複数のソースから障害情報を取得したあとに整形して S3 に書ける？ 同じ情報を agent に渡せば情報源が揃う？
+
+**A. どちらもできる。ただし、ワークフローの中で書くと障害の一部しか残らないので、書く場所を 2 つに分ける。**
+
+- **集めて書くのはできる。** worker はすでに Neptune を読み、PyIceberg で S3 Tables に追記している。ログ（OpenSearch）、メトリクス（Prometheus）、Nautobot の変更履歴を取る処理は `agent/evidence.py` にあり、worker から呼べる。足りないのは worker の IAM とエンドポイントの環境変数。
+- **ワークフローは全部の障害を見ていない。** 起こすのは `link_down` だけ。保守中の機器の通知、重複、閉じたあとに届いた解消は捨てている。
+- **情報源は、聞いた時点では揃っていない。** エージェントに渡しているのはアラートの 5 項目（機器、種類、対象、内容、発生時刻）だけで、証拠はエージェントが自分のツールで取り直している。何を見て判断したかは残らない。
+
+揃えるには、ワークフローの `investigate` の前に証拠を集めるアクティビティ（`collect_evidence`）を置き、集めたものを S3 に書いて、同じものをプロンプトに入れる。気を付ける点:
+
+| 点 | 中身 |
+|---|---|
+| ツールで取り直す余地 | 「まず渡した証拠で判断し、足りないときだけツールを使う」と指示し、使ったツールの呼び出しも記録する |
+| 大きさ | Temporal でアクティビティのあいだに渡すデータには上限がある（既定で 1 件 2MB）。本体は S3 に置き、id と要約だけを受け渡す |
+| ログの遅れ | OpenSearch に入るのが遅れることがある。集めた時刻を証拠と一緒に残す |
+
+`collect_evidence` は別のサイクルでやる（まだ設計していない）。
+
+### Q. Temporal が障害情報を S3 に記載するのは良くない？
+
+**A. 悪くはない。Temporal に任せるのは「証拠を集めて整形する部分」までで、「開いた・閉じた」の記録は任せない。**
+
+| 記録 | 書く担当 | 理由 |
+|---|---|---|
+| 開いた・閉じた（全部のアラート） | Lambda graph-status | SNS から全種類のアラートを受けていて、パイプライン（`PIPELINE=1`）と一緒にいつも作られる。Temporal の有無に左右されない |
+| 整形した証拠と、エージェントの判断 | Temporal（アクティビティ） | 何か所かに取りにいき、失敗したら再試行する処理は Temporal が得意。集めて、同じものをエージェントに渡すまでを 1 か所でやれる |
+
+「開いた・閉じた」を Temporal に任せない理由:
+
+1. **記録が修復の仕組みに縛られる。** SQS と worker は `WORKFLOW=1` のときしか作られない。検知は Temporal が無くても動くのに、履歴だけが残ったり残らなかったりする。
+2. **ワークフローが全部の障害を見ていない。** 上の Q のとおり。
+3. **この PoC の Temporal は消える前提。** データはタスクの中の SQLite で、タスクが入れ替わると走っていたワークフローが消える。「開いた」は書けても「閉じた」を書く担当がいなくなる。
+
+2 つの記録は、異常の id（`<device_id>#<kind>#<target>`）と発生時刻でつなぐ。
+
+---
+
+## 10. データの流し先とテーブル
+
+### Q. ログ形式は OpenSearch、メトリクスは Prometheus に流してるよね？
+
+**A. 合っている。** Spark が MSK のトピックを種類で振り分けている。
+
+| 流し先 | 入るトピック | 中身 |
+|---|---|---|
+| OpenSearch（インデックス `snmp-logs`） | traps / logs | trap と syslog |
+| Prometheus | metrics / gnmi / mdt | メトリクスの時系列 |
+| S3 Tables の生データのテーブル | 5 つ全部 | 正本 |
+| Splunk（`SINK_SPLUNK=1` のときだけ） | 5 つ全部 | 比較用 |
+
+構成図は [architecture/pipeline.md](architecture/pipeline.md)。
+
+### Q. Grafana は OpenSearch と Prometheus をデータソースにしてる？
+
+**A. その 2 つ。** 定義は `grafana/provisioning/datasources/`。
+
+| データソース | 接続先 | 入っているもの | 使い道 |
+|---|---|---|---|
+| Prometheus (AMP)。既定 | Amazon Managed Service for Prometheus | metrics / gnmi / mdt | ダッシュボード `metrics.json` と、アラートルール `link_down` |
+| OpenSearch (logs) | OpenSearch Serverless の logs コレクション | traps / logs | ダッシュボード `logs.json` |
+
+- 聞いた時点（2026-10-04）では、アラートは Prometheus だけを見ている。OpenSearch のログで発火するルールは無く、trap や BGP / IS-IS の落ちは Splunk が検知する。これを両方で揃えるのが「Splunk と Grafana のアラートを比べる（Cycle 002）」。
+- S3 Tables は Grafana のデータソースではない。
+- どちらも認証はタスクロールの SigV4 で、VPC エンドポイント経由。
+
+### Q. snmp_metrics って何？
+
+**A. 機器から来た生データを、全部そのまま溜めておく S3 Tables（Iceberg）のテーブル。**
+
+- **入るもの。** MSK の 5 つのトピック（metrics / gnmi / mdt / traps / logs）の全部。Spark が up か down かを判断せず、行をそのまま追記する。どのトピックから来た行かは `topic` 列で分かる。
+- **役割。** メトリクスとログの履歴の正本。OpenSearch と Prometheus は検索やグラフのための写し。
+- **作られる条件。** `SINK_S3` が有効なときだけ。
+- **名前。** SNMP のメトリクスだけではないので、`raw_telemetry` に改名すると決めた（ブランチ `rename-raw-telemetry` に実装済み。main にはまだ入っていない）。
+
+### Q. S3 Tables には 1 つのテーブルしかない？ メトリクスもログも 1 つの同じテーブル？
+
+**A. テーブルは 1 つではない。ただし生データに限れば、メトリクスもログも同じ 1 つのテーブルに入る。**
+
+| 中身 | テーブル名 | 書く人 | 状態 |
+|---|---|---|---|
+| 機器から来た生データ（metrics / gnmi / mdt / traps / logs の全部） | `snmp_metrics`（`raw_telemetry` に改名予定） | Spark | `SINK_S3` が有効なときだけ作る |
+| 修復案の証跡（作成・承認・却下・適用・確認） | `proposal_events` | Temporal の worker | いつも作る |
+| アラートの通知の履歴（発火と解消） | `alert_events` | Lambda graph-status（Firehose 経由） | 「アラートの履歴を残す（Cycle 001）」で実装中 |
+
+生データのテーブルの列は 8 つ（`terraform/pipeline/analytics/tables.tf`）。
+
+- `ts`、`ingested_at`: 時刻
+- `topic`: どのトピックから来たか。メトリクスとログはこの列で見分ける
+- `measurement`、`agent_host`、`host`: Telegraf が付ける名前と送り元
+- `tags_json`、`fields_json`: 中身。JSON の文字列のまま
+
+メトリクスとログでは項目がまったく違うので、項目ごとの列は作らず、JSON の文字列 2 列に丸ごと入れている。読むときは `topic` で絞ってから JSON を取り出す。
+
+何をどこに置いているかの全体は [data-stores.md](data-stores.md)。
+
+---
+
+## 11. Neptune に置くもの
+
+### Q. Neptune には修復案は書かないよね？ status 更新だけよね？
+
+**A. 聞いた時点（2026-10-04）の実装では、修復案も Neptune に書いている。これをやめて status だけにすると決めた。**
+
+いまの実装で Neptune に入るもの:
+
+| 入るもの | 書く人 | 読む人 |
+|---|---|---|
+| トポロジの `status` | Lambda graph-status | Web、エージェント |
+| 修復案の「いま」（頂点 `proposal`。pending → approved …） | worker、Web の承認タブ | worker、Web の承認タブ、エージェント |
+
+- 修復案の履歴は別で、S3 Tables の `proposal_events` に worker が 1 段ごとに追記している。同じ内容を 2 か所に書いている状態。
+- 「修復案を S3 Tables にまとめる（Cycle 003）」で、修復案は `proposal_events` だけに置き、Neptune はトポロジと `status` だけにする（[設計](cycles/003-proposals-in-s3tables/design.md)。実装はまだ）。Web の承認は SQS で worker に届け、読むのは Athena。
+
+### Q. Neptune Analytics で分析するときに障害情報や修復案も必要になるなら、プロパティとして入れたほうがいい？
+
+**A. いまは入れない。正は S3 Tables に置き、グラフの分析で必要になったときに、S3 Tables から「写し」として Neptune に載せる。** そのときはプロパティでなく、機器や回線に辺でつないだ頂点にする。
+
+- **プロパティに向くのは「いまの値が 1 つ」のものだけ。** 機器や回線の `status` がそれ。障害や修復案は 1 つの機器に何件も積み重なるので、プロパティには収まらない。
+- **いまの修復案の頂点は、グラフとして使われていない。** 辺が 1 本も無く、id で引いて書き換えるだけ。S3 Tables に移しても分析で失うものは無い。
+- **Neptune Analytics は、あとからデータを載せて分析する作り。** S3 のファイルを一括で読み込めるので、履歴が要る分析をやるときに、その期間の分だけ載せればよい。
+
+| 分析 | 要るもの | いま足りているか |
+|---|---|---|
+| この障害で影響を受ける機器はどれか | トポロジ + いまの `status` | 足りている |
+| link → IS-IS → BGP を 1 つの障害にまとめる | トポロジ + いまの `status` | 足りている |
+| 隣の機器で過去に似た障害があったか | トポロジ + 障害の履歴 | 履歴を頂点として載せる必要がある |
+| この処置は過去にこの構成で効いたか | トポロジ + 修復案の履歴 | 同上 |
+
+件数や期間の集計だけなら Athena で足り、Neptune は要らない。
+
+| | 正は S3 Tables、必要なときに写しを載せる | 最初から Neptune にも書く |
+|---|---|---|
+| メリット | 書く場所が 1 つ。食い違わない。Neptune が止まっても修復が止まらない | 分析をすぐ始められる |
+| デメリット | 分析の前に読み込みの手順が 1 つ要る | 二重に書く。使うか分からない分析のために複雑さが残る |
+
+Database と Analytics の使い分けは [8 章](#8-neptune-database-と-neptune-analytics)。
