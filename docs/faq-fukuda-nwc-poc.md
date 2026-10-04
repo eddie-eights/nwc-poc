@@ -1790,6 +1790,43 @@ Community Edition にクラスターが無いことは、2026-10-04 に Neo4j �
 
 - https://kafka.apache.org/41/operations/kraft/ （2026-10-04 に確認）
 
+### Q. MSK にも Kafbat UI みたいな GUI はある？
+
+**結論**
+
+- ある。MSK のコンソールに、トピックの一覧、パーティションの情報、トピックの作成・変更・削除が入っている（MSK の topic の API をコンソールから呼ぶ形）。
+- ただし Kafbat UI より狭い。メッセージの中身を見る、メッセージを送る、コンシューマーの遅れ（lag）を一覧で見る、はコンソールの topic の機能には無い（lag は CloudWatch のメトリクスで見る）。
+- MSK に Kafbat UI をつなぐこともできる（IAM 認証に対応している）。
+
+**比べる**
+
+| できること | MSK のコンソール | Kafbat UI |
+|---|---|---|
+| ブローカーの一覧と状態 | できる | できる |
+| トピックの一覧、パーティションの情報 | できる | できる |
+| トピックの作成・変更・削除 | できる | できる |
+| メッセージの中身を見る、送る | できない | できる |
+| コンシューマーの遅れ（lag） | CloudWatch のメトリクスで見る | 画面で一覧できる |
+| 時系列のグラフ、アラート | CloudWatch | 無い |
+| 置くもの | 何も要らない | コンテナ 1 つ |
+
+**条件（MSK のコンソールの topic の機能）**
+
+- MSK Provisioned だけ（Serverless は不可）。Kafka 3.6.0 以上。クラスターが `ACTIVE`。
+- IAM の権限が要る（`kafka-cluster:Connect`、`DescribeTopic`、`CreateTopic` など）。
+- 表示は約 1 分ごとに更新される（変えた直後は古い）。
+
+**このプロジェクトでは**
+
+- マネージド版の MSK は Provisioned で IAM 認証なので、条件に合うはず（コンソールで開いたことは無い。未確認）。
+- OSS 版（「マネージドを OSS に置き換えた環境を作る（005）」）には Kafbat UI を置く。マネージド版には置かない（比べる対象なので、MSK はコンソールと CloudWatch で見る）。
+- マネージド版にも Kafbat UI を置きたくなったら、`SASL_SSL` と `AWS_MSK_IAM` の設定と、タスクロールへの `kafka-cluster:*` の権限が要る。
+
+**出典**（2026-10-05 に確認）
+
+- https://docs.aws.amazon.com/msk/latest/developerguide/msk-topic-operations-information.html
+- https://ui.docs.kafbat.io/configuration/authentication/for-kafka/aws-iam.md
+
 ### Q. OpenSearch は、レプリカと合わせて 2 台じゃダメ？
 
 データの複製だけなら 2 台で足りる。ただ、1 台止まってもクラスターが動き続けるには、まとめ役（cluster manager）の票が 3 つ要る。OSS 版（005）は「データ 2 台 + まとめ役だけの小さい 1 台」にする（2026-10-04 に決めた）。
