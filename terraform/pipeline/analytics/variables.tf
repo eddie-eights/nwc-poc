@@ -49,16 +49,17 @@ variable "table_name" {
   }
 }
 
+# ops/up.sh は EMR_MAX_CPU / EMR_MAX_MEMORY（同じ値）を渡し、アプリの上限が変わるときは apply の前にジョブとアプリを止める（動いているアプリは更新できない）
 variable "max_cpu" {
-  description = "Upper bound of vCPU the application may use at once (EMR Serverless maximumCapacity). The streaming job asks for 2 (driver 1 + executor 1)"
+  description = "Upper bound of vCPU the application may use at once (EMR Serverless maximumCapacity). The streaming jobs (up to 3: sinks-s3iceberg / sinks-splunk / sinks-grafana) ask for 3 each (driver 1 + executor 2), 9 in all"
   type        = string
-  default     = "4 vCPU"
+  default     = "12 vCPU"
 }
 
 variable "max_memory" {
-  description = "Upper bound of memory the application may use at once"
+  description = "Upper bound of memory the application may use at once (4 GB per vCPU of max_cpu)"
   type        = string
-  default     = "16 GB"
+  default     = "48 GB"
 }
 
 variable "idle_timeout_minutes" {
@@ -87,6 +88,39 @@ variable "sinks" {
   validation {
     condition     = length(var.sinks) > 0 && length(setsubtract(var.sinks, ["iceberg", "opensearch", "prometheus", "splunk"])) == 0
     error_message = "sinks は iceberg / opensearch / prometheus / splunk のリスト（1 つ以上）。"
+  }
+}
+
+variable "http_send" {
+  description = "Where the Spark job sends to the HTTP sinks (opensearch / prometheus / splunk): driver = collect each micro-batch and send from the driver, executor = foreachPartition, each executor sends its own partitions. ops/up.sh passes HTTP_SEND. The job gets --http-send only when it is executor, so the default leaves the job arguments as they were"
+  type        = string
+  default     = "driver"
+
+  validation {
+    condition     = contains(["driver", "executor"], var.http_send)
+    error_message = "http_send は driver か executor。"
+  }
+}
+
+variable "max_offsets_per_trigger" {
+  description = "Most Kafka records one streaming query reads per trigger (60 s), summed over the partitions (Spark maxOffsetsPerTrigger). 0 = no limit. Every job gets --max-offsets-per-trigger. ops/up.sh passes MAX_OFFSETS_PER_TRIGGER"
+  type        = number
+  default     = 10000
+
+  validation {
+    condition     = var.max_offsets_per_trigger >= 0 && floor(var.max_offsets_per_trigger) == var.max_offsets_per_trigger
+    error_message = "max_offsets_per_trigger は 0 以上の整数（0 で上限なし）。"
+  }
+}
+
+variable "max_offsets_per_trigger_by_sink" {
+  description = "Per-sink override of max_offsets_per_trigger (keys iceberg / opensearch / prometheus / splunk; 0 = no limit for that sink's query). Sinks not in the map use max_offsets_per_trigger. A job gets --max-offsets-per-trigger-by-sink only for its own sinks. ops/up.sh passes MAX_OFFSETS_PER_TRIGGER_<SINK>"
+  type        = map(number)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for k, v in var.max_offsets_per_trigger_by_sink : contains(["iceberg", "opensearch", "prometheus", "splunk"], k) && v >= 0 && floor(v) == v])
+    error_message = "max_offsets_per_trigger_by_sink のキーは iceberg / opensearch / prometheus / splunk、値は 0 以上の整数（0 でその格納先だけ上限なし）。"
   }
 }
 
@@ -154,7 +188,7 @@ variable "splunk_ephemeral_storage_gib" {
 
 # ---------------------------------------------------------------- grafana (grafana.tf)
 variable "create_grafana" {
-  description = "Run Grafana OSS on ECS (grafana.tf) with the Prometheus workspace and the OpenSearch logs collection as data sources. Opened through an SSM port forward via the web EC2. ops/up.sh sets it with GRAFANA=1. Needs prometheus or opensearch in sinks"
+  description = "Run Grafana OSS on ECS (grafana.tf) with the Prometheus workspace and the OpenSearch logs collection as data sources. Opened through an SSM port forward via the web EC2. ops/up.sh sets it whenever STORES in deploy.env has grafana. Needs prometheus or opensearch in sinks"
   type        = bool
   default     = false
 }

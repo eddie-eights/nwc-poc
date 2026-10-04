@@ -1,8 +1,8 @@
 #!/bin/sh
 # Grafana のコンテナ（grafana/Dockerfile）の入口。選んだ格納先のデータソースとダッシュボード、アラートの定義だけを /tmp に並べてから、上流の /run.sh を起こす。
 # ECS のタスク定義の環境変数（terraform/pipeline/analytics の grafana.tf）:
-#   PROMETHEUS_URL    AMP のワークスペース（https://aps-workspaces.<region>.amazonaws.com/workspaces/<id>）。空なら Prometheus を出さない（SINK_PROMETHEUS=0）
-#   OPENSEARCH_URL    logs コレクションのエンドポイント。空なら OpenSearch を出さない（SINK_OPENSEARCH=0）
+#   PROMETHEUS_URL    AMP のワークスペース（https://aps-workspaces.<region>.amazonaws.com/workspaces/<id>）。空なら Prometheus を出さない（STORES に grafana が無い）
+#   OPENSEARCH_URL    logs コレクションのエンドポイント。空なら OpenSearch を出さない（STORES に grafana が無い）
 #   OPENSEARCH_INDEX  ログの index（spark/snmp_sinks.py の OPENSEARCH_INDEX）
 #   ALERTS_TOPIC_ARN  アラートを publish する SNS のトピック（terraform/base/core の alerts.tf）。これがあるときだけアラートの定義（provisioning/alerting）を
 #                     並べる: 送り先（netops.yaml）と、データソースがあるほうのルール（netops-prometheus.yaml / netops-opensearch.yaml）

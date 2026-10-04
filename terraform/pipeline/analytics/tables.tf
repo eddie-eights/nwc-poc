@@ -4,7 +4,11 @@
 # 列は Telegraf の JSON（{"fields":{…},"name":"…","tags":{…},"timestamp":秒}）をそのまま持つ。
 # tags と fields は JSON 文字列のまま入れる（機器やメトリクスが増えても列を変えないため。列の型は Iceberg のプリミティブだけ）
 # テーブルバケットと namespace はいつも作る（証跡の proposal_events が入る。2026-09-24）。
-# 生データの snmp_metrics だけは var.sinks に iceberg があるときだけ作る（deploy.env の SINK_S3。格納先は 1 つずつ 1 / 0 で選べる）
+# 生データの snmp_metrics だけは var.sinks に iceberg があるときだけ作る（deploy.env の STORES の s3）
+# snmp_metrics の一意の番号と Kafka の位置の列（event_id / kafka_topic / kafka_partition / kafka_offset。2026-10-04）はここに書かない:
+# aws_s3tables_table は metadata の schema を変えるとテーブルを作り直す（RequiresReplace）ので、いまある行が消える。
+# 列は Spark の iceberg のジョブが起動時に ALTER TABLE ADD COLUMNS で後ろに足す（spark/snmp_sinks.py の ICEBERG_ADDED_COLUMNS）。
+# provider はメタデータを読み直さないので、足した列で plan に差分は出ない
 resource "aws_s3tables_table_bucket" "tables" {
   name = local.table_bucket
 }

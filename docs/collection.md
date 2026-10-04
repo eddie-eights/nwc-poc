@@ -21,7 +21,7 @@
 | 種類 | 既定で取れるか | 経路 |
 |---|---|---|
 | syslog | 取れる | 機器 → 5140/udp → NLB → Telegraf → `logs`。既定の `SYSLOG_STANDARD=RFC3164` は本番の Cisco 向けで、lab の SR Linux（RFC5424）のログは崩れる（[deploy.md](deploy.md)） |
-| SNMP trap | 取れる | 機器 → 162/udp → NLB → Telegraf → `traps`。異常として上げるのは Splunk（`SINK_SPLUNK=1`）だけ |
+| SNMP trap | 取れる | 機器 → 162/udp → NLB → Telegraf → `traps`。異常として上げるのは Splunk（`STORES` の `splunk`）だけ |
 | telemetry | 一部 | Telegraf → 機器の gNMI（57400/tcp）で BGP / IS-IS / EVPN / MAC の状態を `gnmi` トピックへ。本番の MDT の受け口（57000/tcp → `mdt` トピック）はあるが、送ってよい機器（`MDT_SOURCE_CIDRS`）が既定で空なので何も届かない |
 | 性能メトリクス | lab だけ | lab の SR Linux から gNMI で CPU・メモリ・IF のカウンタと速度・MAC テーブルの数（セッションの代替）・収容回線数の代替を購読し、Telegraf の中で共通の形（下の「共通の形（仮）」）に変えて `metrics` トピックへ（2026-10-04。実機の lab では未確認）。本番の MDT は受け口だけで、共通の形への変換はまだ無い（`mdt` トピックに生のまま）。SNMP のポーリングは既定で止めている（`SNMP_POLL=0`）。`SNMP_POLL=1` でも IF の 32 ビットカウンタとエラー数だけ |
 

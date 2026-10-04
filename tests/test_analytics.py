@@ -3,7 +3,7 @@ terraform/pipeline/analytics が main と stream の state を読み、S3 Tables
 Spark のスクリプトが Kafka（MSK の IAM 認証）を格納先ごとに読んで Iceberg / OpenSearch Serverless / Prometheus に流すこと、
 テーブルの列がスクリプトと一致すること、remote write の protobuf と snappy が手で復号できることを見る。
 実行は python3 tests/test_analytics.py（依存は無い。pyspark も botocore も要らない。スクリプトは import するが pyspark は関数の中で読む）。"""
-import ast, importlib.util, inspect, io, json, os, re, ssl, struct, sys
+import ast, importlib.util, inspect, io, json, os, re, ssl, struct, sys, zlib
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 SRC = os.path.join(ROOT, "spark", "snmp_sinks.py")
@@ -253,7 +253,7 @@ check("remote write の URL は prometheus_endpoint + api/v1/remote_write",
       re.search(r'prometheus_remote_write_url\s*=\s*local\.sink_prometheus \? "\$\{aws_prometheus_workspace\.metrics\[0\]\.prometheus_endpoint\}api/v1/remote_write" : ""', tf) is not None)
 
 # ---- output（ops/up.sh がそのまま使う）
-for out in ("application_id", "runtime_role_arn", "table_identifier", "job_driver_json", "configuration_overrides_json", "list_job_runs_command", "list_tables_command",
+for out in ("application_id", "runtime_role_arn", "table_identifier", "job_driver_json_iceberg", "job_driver_json_splunk", "job_driver_json_http", "configuration_overrides_json", "list_job_runs_command", "list_tables_command",
             "sinks", "opensearch_collection_endpoint", "prometheus_workspace_id", "prometheus_remote_write_url", "prometheus_query_url",
             "table_bucket_arn", "table_namespace", "proposal_events_table_name", "proposal_events_table_arn",
             "opensearch_collection_name", "opensearch_collection_arn", "opensearch_index", "prometheus_workspace_arn",
@@ -270,24 +270,36 @@ for a in ("--bootstrap", "--checkpoint", "--sinks", "--region", "--metric-topics
 check("job_driver に検知の引数（--neptune-endpoint / --anomaly-events-table / --event-bus）は無く、スクリプトが受ける引数だけを渡す",
       not any(a in tf for a in ('"--neptune-endpoint"', '"--anomaly-events-table"', '"--event-bus"', '"--event-source"'))
       and set(re.findall(r'"(--[a-z-]+)"', args_block.group(1))) <= set(re.findall(r'add_argument\("(--[a-z-]+)"', src)))
-check("job_driver の格納先の引数は選んだときだけ（for a in [...] : a if local.sink_*）",
-      re.search(r'\["--iceberg-table",\s*local\.iceberg_table\] : a if local\.sink_iceberg', args_block.group(1)) is not None
-      and re.search(r'\["--opensearch-endpoint",\s*local\.opensearch_endpoint,\s*"--opensearch-index",\s*local\.opensearch_index\] : a if local\.sink_opensearch', args_block.group(1)) is not None
-      and re.search(r'\["--prometheus-url",\s*local\.prometheus_remote_write_url\] : a if local\.sink_prometheus', args_block.group(1)) is not None
-      and re.search(r'\["--splunk-hec-url",\s*local\.splunk_hec_url,\s*"--splunk-token-parameter",\s*local\.splunk_token_parameter,\s*"--splunk-index",\s*var\.splunk_index\] : a if local\.sink_splunk', args_block.group(1)) is not None
-      and re.search(r'\["--splunk-skip-verify"\] : a if local\.sink_splunk && local\.splunk_skip_tls_verify', args_block.group(1)) is not None)
-check("job_driver は device map が空でなく prometheus か opensearch があるときだけ --device-map を渡す（cycle 002。sysName の無い gNMI と trap に機器名を足す）",
-      re.search(r'\["--device-map",\s*var\.device_map\] : a if var\.device_map != "" && \(local\.sink_prometheus \|\| local\.sink_opensearch\)', args_block.group(1)) is not None)
+check("job_driver の格納先の引数は、そのジョブの格納先にあるときだけ（for a in [...] : a if contains(sinks, ...)）",
+      re.search(r'\["--iceberg-table",\s*local\.iceberg_table\] : a if contains\(sinks, "iceberg"\)', args_block.group(1)) is not None
+      and re.search(r'\["--opensearch-endpoint",\s*local\.opensearch_endpoint,\s*"--opensearch-index",\s*local\.opensearch_index\] : a if contains\(sinks, "opensearch"\)', args_block.group(1)) is not None
+      and re.search(r'\["--prometheus-url",\s*local\.prometheus_remote_write_url\] : a if contains\(sinks, "prometheus"\)', args_block.group(1)) is not None
+      and re.search(r'\["--splunk-hec-url",\s*local\.splunk_hec_url,\s*"--splunk-token-parameter",\s*local\.splunk_token_parameter,\s*"--splunk-index",\s*var\.splunk_index\] : a if contains\(sinks, "splunk"\)', args_block.group(1)) is not None
+      and re.search(r'\["--splunk-skip-verify"\] : a if contains\(sinks, "splunk"\) && local\.splunk_skip_tls_verify', args_block.group(1)) is not None
+      and "local.sink_" not in args_block.group(1))
+check("job_driver は device map が空でなく、そのジョブに prometheus か opensearch があるときだけ --device-map を渡す（cycle 002。sysName の無い gNMI と trap に機器名を足す）",
+      re.search(r'\["--device-map",\s*var\.device_map\] : a if var\.device_map != "" && \(contains\(sinks, "prometheus"\) \|\| contains\(sinks, "opensearch"\)\)', args_block.group(1)) is not None)
 check("job_driver の引数に token の値は無い（SSM のパラメータ名だけ）", "hec-token" not in args_block.group(1) and "splunk_hec_token" not in args_block.group(1))
-check("--sinks は var.sinks をカンマでつなぐ", 'join(",", var.sinks)' in args_block.group(1))
+check("--sinks はそのジョブの格納先（var.sinks にあるものだけ）をカンマでつなぐ", '"--sinks", join(",", sinks)' in args_block.group(1) and "var.sinks" not in args_block.group(1))
 check("--checkpoint は s3://<バケット>/analytics/checkpoint/<MSK の uuid>/（MSK を作り直したら checkpoint も新しく。格納先ごとに下を切るのはスクリプト）",
       '"--checkpoint", local.checkpoint_uri' in args_block.group(1)
       and re.search(r'msk_cluster_uuid\s*=\s*try\(element\(split\("/", local\.msk_cluster_arn\), 2\)', tf) is not None
       and re.search(r'checkpoint_uri\s*=\s*"s3://\$\{local\.bucket\}/\$\{local\.checkpoint\}/\$\{local\.msk_cluster_uuid\}/"', tf) is not None)
 check("job_driver は jars を s3://<バケット>/analytics/jars/ から読む", "spark.jars=s3://${local.bucket}/${local.jars_prefix}/*.jar" in tf
       and re.search(r'jars_prefix\s*=\s*"\$\{local\.s3_prefix\}/jars"', tf) is not None and re.search(r's3_prefix\s*=\s*"analytics"', tf) is not None)
-check("ジョブは 2 vCPU（driver 1 + executor 1、動的割り当て無し）",
-      "spark.driver.cores=1" in tf and "spark.executor.cores=1" in tf and "spark.executor.instances=1" in tf and "spark.dynamicAllocation.enabled=false" in tf)
+check("ジョブは 1 つ 3 vCPU（driver 1 + executor 2。Kafka のパーティション 2 つを並列に読む。動的割り当て無し）。sparkSubmitParameters は 3 つのジョブで共通",
+      "spark.driver.cores=1" in tf and "spark.executor.cores=1" in tf and "spark.executor.instances=2" in tf and "spark.dynamicAllocation.enabled=false" in tf
+      and tf.count("spark.executor.instances=") == 1 and tf.count("sparkSubmitParameters") == 1)
+check("max_cpu は 12 vCPU（3 つのジョブで 9 vCPU）、max_memory は 48 GB（vCPU あたり 4 GB）",
+      re.search(r'variable "max_cpu" \{[^}]*default\s*=\s*"12 vCPU"', tf) is not None
+      and re.search(r'variable "max_memory" \{[^}]*default\s*=\s*"48 GB"', tf) is not None
+      and re.search(r'maximum_capacity \{\s*cpu\s*=\s*var\.max_cpu\s*memory\s*=\s*var\.max_memory', tf) is not None)
+check("ジョブは格納先で 3 つ（iceberg / splunk / http = opensearch と prometheus）。var.sinks に無い格納先は外し、空のジョブの job_driver は空文字",
+      re.search(r'spark_jobs = \{ for job, sinks in \{ iceberg = \["iceberg"\], splunk = \["splunk"\], http = \["opensearch", "prometheus"\] \} :\s*'
+                r'job => \[for s in sinks : s if contains\(var\.sinks, s\)\] \}', tf) is not None
+      and re.search(r'job_drivers = \{ for job, sinks in local\.spark_jobs : job => length\(sinks\) == 0 \? "" : jsonencode\(', tf) is not None
+      and all(re.search(r'output "job_driver_json_' + j + r'" \{[^}]*value\s*=\s*local\.job_drivers\["' + j + r'"\]', tf) for j in ("iceberg", "splunk", "http"))
+      and re.search(r'^output "job_driver_json" ', tf, re.M) is None)
 check("ドライバーのログは CloudWatch、EMR の managed storage は使わない",
       re.search(r'cloudWatchLoggingConfiguration\s*=\s*\{\s*enabled\s*=\s*var\.cloudwatch_logging', tf) is not None
       and re.search(r'managedPersistenceMonitoringConfiguration\s*=\s*\{\s*enabled\s*=\s*false', tf) is not None)
@@ -330,7 +342,9 @@ check("Iceberg に append で書き、toTable で名前を渡す", '.writeStream
 check("checkpoint は格納先ごと（iceberg/ と <name>/）", '.option("checkpointLocation", checkpoint + "iceberg/")' in src
       and '.option("checkpointLocation", checkpoint + name + "/")' in src)
 check("60 秒ごとのマイクロバッチ", re.search(r'^TRIGGER\s*=\s*"60 seconds"', src, re.M) is not None and src.count("processingTime=TRIGGER") == 2)
-check("HTTP の格納先は foreachBatch で driver から送る", ".foreachBatch(each_batch)" in src and "batch_df.collect()" in src)
+check("HTTP の格納先は foreachBatch で、既定は driver が collect して送り、--http-send executor なら foreachPartition で executor が送る",
+      '.foreachBatch({"driver": each_batch, "executor": each_batch_on_executors}[http_send])' in src and "batch_df.collect()" in src
+      and "batch_df.foreachPartition(" in src)
 check("SigV4 は botocore（EMR の実行ロールの認証情報）", "from botocore.auth import SigV4Auth" in src and "from botocore.awsrequest import AWSRequest" in src and 'h["x-amz-content-sha256"] = hashlib.sha256(body).hexdigest()' in src)
 check("OpenSearch は _bulk に aoss の SigV4、Prometheus は remote write に aps の SigV4",
       re.search(r'sigv4_headers\("POST", url, body, "aoss", region', src) is not None
@@ -339,7 +353,16 @@ check("OpenSearch は _bulk に aoss の SigV4、Prometheus は remote write に
 # select の各行は「….alias("列")」か、そのままの列名「F.col("topic")」
 block = src.split("rows = parsed.select(")[1].split(").where(")[0]
 aliases = [a or b for a, b in re.findall(r'(?:\.alias\("([a-z_]+)"\)|^\s*F\.col\("([a-z_]+)"\)),\s*$', block, re.M)]
-check("スクリプトの列は tables.tf の列と同じ順", aliases == TABLE_COLUMNS)
+ADDED_COLUMNS = ["event_id", "kafka_topic", "kafka_partition", "kafka_offset"]
+check("スクリプトの列は tables.tf の列と同じ順で、そのあとに event_id / kafka_topic / kafka_partition / kafka_offset（ジョブが ALTER TABLE で足す列）",
+      aliases == TABLE_COLUMNS + ADDED_COLUMNS)
+check("tables.tf の schema には足す列を書かない（schema を変えるとテーブルを作り直して行が消える）。コメントで ICEBERG_ADDED_COLUMNS を指す",
+      not any(c in [f[0] for f in fields] for c in ADDED_COLUMNS) and "ICEBERG_ADDED_COLUMNS" in open(os.path.join(TF_DIR, "tables.tf"), encoding="utf-8").read())
+_parsed = src.split("parsed = raw.select(")[1].split("rows = parsed.select(")[0]
+check("event_id は from_json の前の value（binary のまま。cast しない）の SHA-256 の 16 進（F.sha2(…, 256)）、Kafka の partition / offset もここで取る",
+      'F.sha2(F.col("value"), 256).alias("event_id")' in _parsed and 'F.col("partition").alias("kafka_partition")' in _parsed
+      and 'F.col("offset").alias("kafka_offset")' in _parsed and "sha2(F.col(\"value\").cast" not in src)
+check("重複は落とさない（.dropDuplicates( を呼ばない。落とすのは読む側）", ".dropDuplicates(" not in src and ".dropDuplicatesWithinWatermark(" not in src)
 check("timestamp が無い行は捨てる", '.where(F.col("ts").isNotNull())' in src)
 check("tags / fields は JSON 文字列のまま", 'F.to_json(F.col("m.tags")).alias("tags_json")' in src and 'F.to_json(F.col("m.fields")).alias("fields_json")' in src)
 
@@ -532,25 +555,400 @@ _orig_post = mod.http_post
 mod.http_post = lambda url, body, headers, context=None: (_posts.append((url, body, headers, context)), (200, "ok"))[1]
 try:
     _send = mod.make_splunk_sender("https://s:8088/", "tok", "netops")
-    _send([rec] * (mod.BULK_SIZE + 1))
+    _ok_dropped = _send([rec] * (mod.BULK_SIZE + 1))
 finally:
     mod.http_post = _orig_post
 check("make_splunk_sender: HEC の URL に Authorization: Splunk <token> で POST し、BULK_SIZE ごとに分ける、TLS は既定で検証（context 無し）",
       len(_posts) == 2 and all(u == "https://s:8088/services/collector/event" for u, _, _, _ in _posts)
       and all(h["Authorization"] == "Splunk tok" and h["Content-Type"] == "application/json" for _, _, h, _ in _posts)
       and _posts[0][1].count(b"\n") == mod.BULK_SIZE - 1 and _posts[1][1].count(b"\n") == 0
-      and all(c is None for _, _, _, c in _posts))
+      and all(c is None for _, _, _, c in _posts) and _ok_dropped == 0)
 check("make_splunk_sender: skip_verify なら検証しない SSL context を渡す", (lambda: (
     setattr(mod, "http_post", lambda url, body, headers, context=None: (_posts.append((url, body, headers, context)), (200, "ok"))[1]),
     _posts.clear(), mod.make_splunk_sender("https://s:8088", "tok", skip_verify=True)([rec]), setattr(mod, "http_post", _orig_post),
     len(_posts) == 1 and _posts[0][3] is not None and _posts[0][3].verify_mode == ssl.CERT_NONE))()[-1])
-check("make_splunk_sender: HEC が 4xx を返したらそのまとまりを捨てて続ける（例外にしない。ジョブを止めない）", (lambda: (
-    setattr(mod, "http_post", lambda url, body, headers, context=None: (400, '{"text":"Invalid token"}')),
-    mod.make_splunk_sender("https://s:8088", "tok")([rec]), setattr(mod, "http_post", _orig_post), True))()[-1])
+mod.http_post = lambda url, body, headers, context=None: (400, '{"text":"Invalid token"}')
+try:
+    _dropped = mod.make_splunk_sender("https://s:8088", "tok")([rec] * 3)
+finally:
+    mod.http_post = _orig_post
+check("make_splunk_sender: HEC が 4xx を返したらそのまとまりを捨てて続け（例外にしない。ジョブを止めない）、捨てた件数を返す", _dropped == 3)
 check("build: splunk は起動時に SSM から token を読み（WithDecryption）、make_splunk_sender で http_query に流す",
       re.search(r'elif s == "splunk":\s*\n(\s*#[^\n]*\n)*\s*token = read_ssm_parameter\(args\.splunk_token_parameter, args\.region\)\s*\n\s*queries\.append\(http_query\(rows, s, args\.checkpoint, make_splunk_sender\(args\.splunk_hec_url, token, args\.splunk_index, args\.splunk_skip_verify\)\)\)', src) is not None
       and re.search(r'def read_ssm_parameter\(name, region\):[\s\S]*?get_parameter\(Name=name, WithDecryption=True\)', src) is not None)
 check("http_post は context（SSL）を urlopen に渡せる", re.search(r'def http_post\(url, body, headers, context=None\)', src) is not None and "context=context" in src)
+
+# ---- HTTP の格納先へ送る所（--http-send。既定 driver = collect して driver が送る、executor = foreachPartition で executor が送る。2026-10-04）
+import subprocess
+check("HTTP_SEND は driver / executor", mod.HTTP_SEND == ("driver", "executor"))
+_sp = ["--sinks", "prometheus", "--prometheus-url", "https://p/api/v1/remote_write"]
+check("parse_args: --http-send の既定は driver（引数を渡さなければ今のまま）", mod.parse_args(base + _sp).http_send == "driver")
+check("parse_args: --http-send executor を受ける", mod.parse_args(base + _sp + ["--http-send", "executor"]).http_send == "executor")
+check("parse_args: --http-send は driver / executor だけ（大文字、他の値、空は 2）",
+      all(parse_error(base + _sp + ["--http-send", v]) == 2 for v in ("foo", "Executor", "DRIVER", "")))
+check("variable http_send は既定 driver で、driver / executor だけ通す",
+      re.search(r'variable "http_send" \{\s*description[^\n]*\n\s*type\s*=\s*string\s*\n\s*default\s*=\s*"driver"\s*\n\s*validation \{\s*\n'
+                r'\s*condition\s*=\s*contains\(\["driver", "executor"\], var\.http_send\)', tf) is not None)
+check("job_driver は executor のときだけ --http-send を渡す（既定の driver ではジョブの引数が変わらず、up.sh が起こし直さない）。iceberg のジョブには渡さない",
+      re.search(r'\[for a in \["--http-send",\s*var\.http_send\] : a if var\.http_send != "driver" && job != "iceberg"\]', args_block.group(1)) is not None)
+check("up.sh は HTTP_SEND（既定 driver）を何かを作る前に確かめ、http_send で analytics に渡す",
+      'HTTP_SEND="${HTTP_SEND:-driver}"' in up
+      and up.index('case "$HTTP_SEND" in driver | executor) ;;') < up.index("\ntf_apply base/ecr")
+      and '\n  tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}" -var "http_send=$HTTP_SEND"   #' in up)
+# HTTP_SEND の判定の 2 行を up.sh から切り出して、bash で実際に動かす
+_hsblk = "\n".join(up[up.index('HTTP_SEND="${HTTP_SEND:-driver}"'):].split("\n")[:2]) + "\n"
+def _http_send(**env):
+    r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $*"; exit 1; }\n' + _hsblk + 'echo "OUT: $HTTP_SEND"'], capture_output=True, text=True,
+                       env={"PATH": os.environ["PATH"], **env})
+    return r.returncode, r.stdout.strip()
+check("HTTP_SEND が無いか空なら driver、driver / executor はそのまま",
+      _http_send() == (0, "OUT: driver") and _http_send(HTTP_SEND="") == (0, "OUT: driver")
+      and _http_send(HTTP_SEND="driver") == (0, "OUT: driver") and _http_send(HTTP_SEND="executor") == (0, "OUT: executor"))
+check("HTTP_SEND が driver / executor 以外（大文字、1、他の値）なら止まる",
+      all(_http_send(HTTP_SEND=v)[0] == 1 and "HTTP_SEND は driver か executor" in _http_send(HTTP_SEND=v)[1] for v in ("Executor", "DRIVER", "1", "both")))
+check("deploy-env.sh は HTTP_SEND を読めるキーに持ち、deploy.env.example は既定の #HTTP_SEND=driver を書く",
+      re.search(r'(?<![A-Z_])HTTP_SEND(?![A-Z_])', open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read()) is not None
+      and re.search(r"^#HTTP_SEND=driver$", env_example, re.M) is not None)
+
+def _row(ts, v=1):
+    """Spark の Row の代わり（row_to_record は asDict が無ければ dict(row) で読む）"""
+    return {"ts": ts, "topic": "metrics", "measurement": "interface", "agent_host": "r1", "host": "h",
+            "tags_json": '{"agent_host":"r1","ifName":"Gi0/1"}', "fields_json": json.dumps({"ifInOctets": v})}
+
+def _stderr(fn):
+    """fn() を呼んで (戻り値, stderr) を返す"""
+    saved = sys.stderr
+    sys.stderr = io.StringIO()
+    try:
+        return fn(), sys.stderr.getvalue()
+    finally:
+        sys.stderr = saved
+
+check("partition_id: pyspark が無いかタスクの外なら -1", mod.partition_id() == -1)
+_got = []
+_n, _err = _stderr(lambda: mod.send_partition("prometheus", _got.append, 7, iter([_row(3.0), _row(1.0), _row(2.0)])))
+check("send_partition: 行のイテレータを row_to_record にし、ts の順に並べて sender に 1 回で渡し、(行数, 捨てた数) を返す（sender が None を返せば 0）",
+      _n == (3, 0) and len(_got) == 1 and [r["ts"] for r in _got[0]] == [1.0, 2.0, 3.0] and _got[0][0]["fields"] == {"ifInOctets": 1})
+check("send_partition: パーティションごとに batch / partition / 行数をログに出す", "[snmp_sinks] prometheus: batch 7 partition -1 で 3 行を送った" in _err)
+_got.clear()
+_n, _err = _stderr(lambda: mod.send_partition("prometheus", _got.append, 7, iter([])))
+check("send_partition: 空のパーティションは送らず、ログも出さず (0, 0)", _n == (0, 0) and _got == [] and _err == "")
+
+# executor で Prometheus に送る: BULK_SIZE ごとのまとまり、4xx は捨てて続ける、ts の順（http_post と SigV4 は差し替える）
+_posts = []
+_seen = []
+_orig_sig, _orig_series = mod.sigv4_headers, mod.prometheus_series
+mod.sigv4_headers = lambda method, url, body, service, region, headers: dict(headers, Authorization=f"AWS4-HMAC-SHA256 {service} {region}")
+mod.prometheus_series = lambda records, *a: (_seen.append([r["ts"] for r in records]), _orig_series(records, *a))[1]
+mod.http_post = lambda url, body, headers, context=None: (_posts.append((url, body, headers)), (400, b"out of order sample") if len(_posts) == 1 else (200, b""))[1]
+try:
+    _rows = [_row(1700000000.0 + i, i) for i in range(mod.BULK_SIZE + 1)][::-1]
+    _n, _err = _stderr(lambda: mod.send_partition("prometheus", mod.make_prometheus_sender("https://p/api/v1/remote_write", "ap-northeast-1"), 1, iter(_rows)))
+finally:
+    mod.http_post, mod.sigv4_headers, mod.prometheus_series = _orig_post, _orig_sig, _orig_series
+check("send_partition + prometheus: 並べてから系列にし、BULK_SIZE サンプルごとに aps の SigV4 で remote write に送る",
+      _n == (mod.BULK_SIZE + 1, mod.BULK_SIZE) and _seen == [sorted(1700000000.0 + i for i in range(mod.BULK_SIZE + 1))]
+      and len(_posts) == 2 and all(u == "https://p/api/v1/remote_write" and h["Authorization"] == "AWS4-HMAC-SHA256 aps ap-northeast-1"
+                                   and h["Content-Encoding"] == "snappy" for u, _, h in _posts))
+check("send_partition + prometheus: 400 のまとまりは捨てて次を送り（例外にしない。タスクを落とさない）、捨てたサンプルの数をログに出して返す",
+      f"prometheus: remote write が 400 を返した。{mod.BULK_SIZE} サンプルを捨てる" in _err
+      and f"partition -1 で {mod.BULK_SIZE + 1} 行を送り、{mod.BULK_SIZE} サンプルを捨てた（4xx など）" in _err)
+
+# executor で Splunk に送る: token は executor が送るたびに SSM から読む（driver から運ばない）
+_ssm = []
+_orig_ssm = mod.read_ssm_parameter
+mod.read_ssm_parameter = lambda name, region: (_ssm.append((name, region)), "tok-from-ssm")[1]
+mod.http_post = lambda url, body, headers, context=None: (_posts.append((url, body, headers, context)), (403, b'{"text":"Invalid token","code":4}'))[1]
+_posts.clear()
+try:
+    _send = mod.make_splunk_sender_on_executor("https://s:8088", "/p/splunk/hec-token", "ap-northeast-1", "netops", True)
+    _ssm_at_make = list(_ssm)
+    _cells = [c.cell_contents for c in (_send.__closure__ or ())]
+    _n, _err = _stderr(lambda: mod.send_partition("splunk", _send, 3, iter([_row(2.0), _row(1.0)])))
+finally:
+    mod.http_post, mod.read_ssm_parameter = _orig_post, _orig_ssm
+check("make_splunk_sender_on_executor: 作るときは SSM を読まず、持つのは URL / パラメータ名 / region / index / skip_verify の文字列と bool だけ（token も SSL の context も executor へ運ばない）",
+      _ssm_at_make == [] and sorted(map(repr, _cells)) == sorted(map(repr, ["https://s:8088", "/p/splunk/hec-token", "ap-northeast-1", "netops", True])))
+check("make_splunk_sender_on_executor: 送るときに SSM から token を読み、Authorization: Splunk <token> で HEC に送る。index と skip_verify（検証しない context）も今の sender と同じ",
+      _ssm == [("/p/splunk/hec-token", "ap-northeast-1")] and len(_posts) == 1 and _posts[0][0] == "https://s:8088/services/collector/event"
+      and _posts[0][2]["Authorization"] == "Splunk tok-from-ssm" and _posts[0][3] is not None and _posts[0][3].verify_mode == ssl.CERT_NONE
+      and [json.loads(x)["time"] for x in _posts[0][1].decode().split("\n")] == [1.0, 2.0] and json.loads(_posts[0][1].decode().split("\n")[0])["index"] == "netops")
+check("make_splunk_sender_on_executor: 4xx は捨てて続け（例外にしない）、ログに token の値を出さない",
+      _n == (2, 2) and "splunk: HEC が 403 を返した" in _err and "partition -1 で 2 行を送り、2 件を捨てた（4xx など）" in _err and "tok-from-ssm" not in _err)
+check("executor へ運ぶ opensearch / prometheus の sender が持つのは文字列と辞書（と None）だけ（pickle できないものを持たない）",
+      all(isinstance(c.cell_contents, (str, dict, type(None))) for f in (mod.make_opensearch_sender("https://o", "snmp-logs", "ap-northeast-1"),
+                                                             mod.make_prometheus_sender("https://p/api/v1/remote_write", "ap-northeast-1"))
+          for c in (f.__closure__ or ())))
+
+# opensearch の sender: 4xx のまとまりと、_bulk の応答で入らなかった（errors）ドキュメントを捨てた数として返す
+_os_res = json.dumps({"errors": True, "items": [{"index": {"status": 400, "error": {"type": "mapper_parsing_exception"}}},
+                                                 {"index": {"status": 201}}, {"index": {"status": 400, "error": {"type": "x"}}}]})
+mod.sigv4_headers = lambda method, url, body, service, region, headers: dict(headers)
+mod.http_post = lambda url, body, headers, context=None: (_posts.append(url), (400, b"bad") if len(_posts) == 1 else (200, _os_res.encode()))[1]
+_posts.clear()
+try:
+    _dropped, _err = _stderr(lambda: mod.make_opensearch_sender("https://o", "snmp-logs", "ap-northeast-1")([rec] * (mod.BULK_SIZE + 3)))
+finally:
+    mod.http_post, mod.sigv4_headers = _orig_post, _orig_sig
+check("make_opensearch_sender: 4xx のまとまり（BULK_SIZE 件）と、応答の errors で入らなかった 2 件を、捨てた数として返す",
+      len(_posts) == 2 and _dropped == mod.BULK_SIZE + 2 and "opensearch: 2 件が入らなかった" in _err)
+
+# http_query を Spark 無しで動かす（writeStream の鎖と、マイクロバッチの DataFrame を差し替える）
+class _Writer:
+    def __init__(self): self.calls = []
+    def __getattr__(self, k): return lambda *a, **kw: (self.calls.append((k, a)), self)[1]
+
+
+class _Rows:
+    def __init__(self): self.writeStream = _Writer()
+
+
+class _Acc:
+    def __init__(self, v): self.value = v
+    def add(self, n): self.value += n
+
+
+class _ExecutorBatch:
+    """foreachPartition はパーティションごとに行のイテレータで f を呼ぶ。collect は呼ばれたら落とす。
+    repartition(n, 列…) は列の値が同じ行を同じパーティションに集め直す（Spark のハッシュ分割の代わり。どこに入るかは crc32）"""
+    def __init__(self, parts, repartitioned=None):
+        self.parts = parts
+        self.repartitioned = repartitioned
+        self.rdd = type("RDD", (), {"getNumPartitions": lambda _self: len(parts)})()
+        self.sparkSession = type("SS", (), {"sparkContext": type("SC", (), {"accumulator": staticmethod(lambda v: _Acc(v))})()})()
+    def collect(self): raise AssertionError("executor の分岐で collect が呼ばれた")
+    def repartition(self, n, *cols):
+        out = [[] for _ in range(n)]
+        for p in self.parts:
+            for r in p:
+                out[zlib.crc32(json.dumps([r[c] for c in cols]).encode()) % n].append(r)
+        return _ExecutorBatch(out, (n,) + cols)
+    def foreachPartition(self, f):
+        for p in self.parts:
+            f(iter(p))
+
+
+class _DriverBatch:
+    def __init__(self, rows): self.rows = rows
+    def collect(self): return self.rows
+    def foreachPartition(self, f): raise AssertionError("driver の分岐で foreachPartition が呼ばれた")
+
+
+def _query(*http_send, name="prometheus", sender=None):
+    r = _Rows()
+    mod.http_query(r, name, "s3://b/analytics/checkpoint/u/", sender or _got.append, *http_send)
+    return r.writeStream.calls
+
+
+def _row_s(ts, port):
+    """系列（ifName）を変えた行"""
+    return dict(_row(ts), tags_json=json.dumps({"agent_host": "r1", "ifName": port}, separators=(",", ":")))
+
+
+_got.clear()
+_calls = _query("executor", name="opensearch")
+_fb = [a[0] for k, a in _calls if k == "foreachBatch"][0]
+_b = _ExecutorBatch([[_row(3.0), _row(1.0)], [], [_row(2.0)]])
+_b.repartition = lambda *a: (_ for _ in ()).throw(AssertionError("opensearch で repartition が呼ばれた"))
+_, _err = _stderr(lambda: _fb(_b, 5))
+check("http_query executor（opensearch）: collect せず、分け直さずに foreachPartition でパーティションごとに sender を呼ぶ（中は ts の順、空のパーティションは呼ばない）",
+      [[r["ts"] for r in c] for c in _got] == [[1.0, 3.0], [2.0]])
+check("http_query executor: 送った行数を accumulator で driver に戻してログに出す", "[snmp_sinks] opensearch: batch 5 で 3 行を executor から送った" in _err)
+# prometheus: Kafka の 2 つのパーティションに同じ系列（Gi0/1 と Gi0/2）が時刻の前後したまま散らばっている
+_got.clear()
+_calls = _query("executor")
+_fb = [a[0] for k, a in _calls if k == "foreachBatch"][0]
+_seen_b = []
+_orig_rep = _ExecutorBatch.repartition
+_ExecutorBatch.repartition = lambda self, n, *cols: (_seen_b.append((n,) + cols), _orig_rep(self, n, *cols))[1]
+try:
+    _, _err = _stderr(lambda: _fb(_ExecutorBatch([[_row_s(3.0, "Gi0/1"), _row_s(1.0, "Gi0/2")], [_row_s(1.0, "Gi0/1"), _row_s(2.0, "Gi0/2")],
+                                                  [_row_s(2.0, "Gi0/1")]]), 8))
+finally:
+    _ExecutorBatch.repartition = _orig_rep
+_by_series = {}
+for _c in _got:
+    for _r in _c:
+        _by_series.setdefault(_r["tags"]["ifName"], set()).add(id(_c))
+check("http_query executor（prometheus）: 送る前に measurement と tags_json で、元のパーティション数のまま分け直す",
+      _seen_b == [(3, "measurement", "tags_json")] and tuple(mod.SERIES_COLUMNS) == ("measurement", "tags_json"))
+check("http_query executor（prometheus）: 同じ系列の行は 1 回の sender にまとまり、ts の順に並ぶ（2 つのタスクが別々に送らない）",
+      all(len(v) == 1 for v in _by_series.values()) and set(_by_series) == {"Gi0/1", "Gi0/2"}
+      and all([r["ts"] for r in c] == sorted(r["ts"] for r in c) for c in _got)
+      and sorted(r["ts"] for c in _got for r in c if r["tags"]["ifName"] == "Gi0/1") == [1.0, 2.0, 3.0]
+      and "prometheus: batch 8 で 5 行を executor から送った" in _err)
+# 4xx で捨てた数: sender が返した数を accumulator で driver に戻し、driver のログに出す
+_fb = [a[0] for k, a in _query("executor", sender=lambda recs: 2) if k == "foreachBatch"][0]
+_, _err = _stderr(lambda: _fb(_ExecutorBatch([[_row(3.0), _row(1.0)], [], [_row(2.0)]]), 5))
+check("http_query executor: 4xx などで捨てた数も accumulator で driver に戻し、driver のログ（CloudWatch Logs）に出す",
+      "[snmp_sinks] prometheus: batch 5 で 3 行を executor から送り、2 サンプルを捨てた（4xx など）。理由は executor の stderr（S3 の logs）" in _err)
+_fb = [a[0] for k, a in _query("driver", name="splunk", sender=lambda recs: 1) if k == "foreachBatch"][0]
+_, _err = _stderr(lambda: _fb(_DriverBatch([_row(3.0), _row(1.0)]), 6))
+check("http_query driver: 捨てた数もログに出す（splunk / opensearch は件）", "[snmp_sinks] splunk: batch 6 で 2 行を送り、1 件を捨てた（4xx など）" in _err)
+check("http_query executor: クエリの名前、checkpoint、トリガーは driver のときと同じ",
+      _calls[0] == ("queryName", ("prometheus",)) and ("option", ("checkpointLocation", "s3://b/analytics/checkpoint/u/prometheus/")) in _calls
+      and [k for k, _ in _calls] == [k for k, _ in _query()])
+for _hs in ((), ("driver",)):
+    _got.clear()
+    _fb = [a[0] for k, a in _query(*_hs) if k == "foreachBatch"][0]
+    _, _err = _stderr(lambda: _fb(_DriverBatch([_row(3.0), _row(1.0)]), 6))
+    check(f"http_query {'既定' if not _hs else 'driver'}: collect して ts の順に並べ、1 回で sender に渡す",
+          [[r["ts"] for r in c] for c in _got] == [[1.0, 3.0]] and "[snmp_sinks] prometheus: batch 6 で 2 行を送った" in _err)
+_inner = {n.name: n for n in ast.walk(funcs["http_query"]) if isinstance(n, ast.FunctionDef)}
+_attrs = lambda f: {n.attr for n in ast.walk(f) if isinstance(n, ast.Attribute)} | {n.id for n in ast.walk(f) if isinstance(n, ast.Name)}
+check("executor の分岐（each_batch_on_executors と send_partition）は行を driver に集めない（collect / toPandas / toLocalIterator / take / head を呼ばない）",
+      not ({"collect", "toPandas", "toLocalIterator", "take", "head"} & (_attrs(_inner["each_batch_on_executors"]) | _attrs(funcs["send_partition"])))
+      and "foreachPartition" in _attrs(_inner["each_batch_on_executors"]) and "collect" in _attrs(_inner["each_batch"]))
+
+# build: どの HTTP の格納先にも http_send を渡す。splunk は executor のとき token を持たない sender にする
+_hq = []
+_orig_build = (mod.read_rows, mod.read_ssm_parameter, mod.http_query)
+mod.read_rows = lambda spark, bootstrap, topics, *a: _Rows()
+mod.read_ssm_parameter = lambda name, region: (_ssm.append(name), "tok-from-ssm")[1]
+mod.http_query = lambda rows, name, checkpoint, sender, http_send="driver": (_hq.append((name, sender, http_send)), name)[1]
+_ba = base + ["--sinks", "splunk,prometheus,opensearch", "--splunk-hec-url", "https://s:8088", "--splunk-token-parameter", "/p/t",
+              "--prometheus-url", "https://p/api/v1/remote_write", "--opensearch-endpoint", "https://o"]
+try:
+    _ssm.clear()
+    mod.build(None, mod.parse_args(_ba + ["--http-send", "executor"]))
+    _exec, _ssm_exec = list(_hq), list(_ssm)
+    _hq.clear(), _ssm.clear()
+    mod.build(None, mod.parse_args(_ba))
+    _drv, _ssm_drv = list(_hq), list(_ssm)
+finally:
+    mod.read_rows, mod.read_ssm_parameter, mod.http_query = _orig_build
+check("build executor: splunk / prometheus / opensearch に executor を渡す。splunk は起動時に SSM を 1 回読んで確かめる（読めなければ起動で落ちる）が、sender は token を持たない",
+      [(n, h) for n, _, h in _exec] == [("splunk", "executor"), ("prometheus", "executor"), ("opensearch", "executor")] and _ssm_exec == ["/p/t"]
+      and "tok-from-ssm" not in repr([c.cell_contents for c in (_exec[0][1].__closure__ or ())]))
+check("build driver（既定）: 今のまま（splunk は起動時に読んだ token を持つ sender、http_send は driver）",
+      [(n, h) for n, _, h in _drv] == [("splunk", "driver"), ("prometheus", "driver"), ("opensearch", "driver")] and _ssm_drv == ["/p/t"]
+      and "Splunk tok-from-ssm" in repr([c.cell_contents for c in (_drv[0][1].__closure__ or ())]))
+check("main は HTTP の送信先（driver / executor）を起動時のログに出す", '+ f"。HTTP の送信: {args.http_send}"' in src)
+
+# ---- Kafka の 1 回のトリガーに 1 つのクエリが読む件数の上限（--max-offsets-per-trigger と格納先ごとの --max-offsets-per-trigger-by-sink。2026-10-04）
+check("MAX_OFFSETS_PER_TRIGGER は 10000", mod.MAX_OFFSETS_PER_TRIGGER == 10000)
+_a = mod.parse_args(base + _sp)
+check("parse_args: 上限の既定は 10000、格納先ごとの値は無し（どの格納先も 10000）",
+      _a.max_offsets_per_trigger == 10000 and _a.max_offsets_per_trigger_by_sink == {}
+      and all(mod.max_offsets(_a, s) == 10000 for s in mod.SINKS))
+check("parse_args: --max-offsets-per-trigger 0（上限なし）と 2500 を受ける",
+      mod.parse_args(base + _sp + ["--max-offsets-per-trigger", "0"]).max_offsets_per_trigger == 0
+      and mod.parse_args(base + _sp + ["--max-offsets-per-trigger", "2500"]).max_offsets_per_trigger == 2500)
+_a = mod.parse_args(base + _sp + ["--max-offsets-per-trigger-by-sink", "splunk=2000, prometheus = 5000,opensearch=0,"])
+check("parse_args: --max-offsets-per-trigger-by-sink は <格納先>=<件数> のカンマ区切り（空白と空の項目は無視）。書いた格納先だけ上書きし、0 はその格納先だけ上限なし",
+      _a.max_offsets_per_trigger_by_sink == {"splunk": 2000, "prometheus": 5000, "opensearch": 0}
+      and [mod.max_offsets(_a, s) for s in ("iceberg", "splunk", "prometheus", "opensearch")] == [10000, 2000, 5000, 0])
+_a = mod.parse_args(base + _sp + ["--max-offsets-per-trigger", "0", "--max-offsets-per-trigger-by-sink", "splunk=5"])
+check("max_offsets: 共通 0 でも格納先ごとの値があればそれを使う", mod.max_offsets(_a, "splunk") == 5 and mod.max_offsets(_a, "iceberg") == 0)
+check("parse_args: 上限は 0 以上の整数だけ（負、小数、文字、空は 2）",
+      all(parse_error(base + _sp + ["--max-offsets-per-trigger", v]) == 2 for v in ("-1", "1.5", "abc", "", "1e4")))
+check("parse_args: 格納先ごとの値は知っている格納先と 0 以上の整数だけ（s3 は名前が違う、= が無い、負、小数、大文字は 2）",
+      all(parse_error(base + _sp + ["--max-offsets-per-trigger-by-sink", v]) == 2
+          for v in ("s3=1", "splunk", "splunk=-2", "splunk=1.5", "Splunk=1", "=5", "splunk=", "splunk=1,s3=2")))
+
+# read_rows と build を本当に動かす（pyspark の functions / types は何でも受ける偽物、spark.readStream は option を覚える偽物）
+class _Any:
+    def __getattr__(self, k): return self
+    def __call__(self, *a, **kw): return self
+    def __getitem__(self, k): return self
+
+
+class _Reader:
+    def __init__(self): self.opts = {}
+    def format(self, f): return self
+    def option(self, k, v): self.opts[k] = v; return self
+    def load(self): return _Any()
+
+
+class _Spark:
+    """readStream は option を覚え、table(名前).schema.fields は have の列、sql は文を覚える（ensure_iceberg_columns 用）"""
+    def __init__(self, have=None):
+        self.readers, self.sqls, self.tables = [], [], []
+        self.have = list(TABLE_COLUMNS if have is None else have)
+    @property
+    def readStream(self):
+        self.readers.append(_Reader())
+        return self.readers[-1]
+    def table(self, name):
+        self.tables.append(name)
+        cols = [type("F", (), {"name": n})() for n in self.have]
+        return type("T", (), {"schema": type("Sc", (), {"fields": cols})()})()
+    def sql(self, q): self.sqls.append(q)
+
+
+import types as _types
+_fake_sql = _types.ModuleType("pyspark.sql")
+_fake_sql.functions, _fake_sql.types = _Any(), _Any()
+_saved_mods = {k: sys.modules.get(k) for k in ("pyspark", "pyspark.sql")}
+_orig_mo = (mod.iceberg_query, mod.http_query, mod.read_ssm_parameter)
+_b4 = base + ["--sinks", "iceberg,splunk,opensearch,prometheus", "--iceberg-table", "s3tables.netops.snmp_metrics",
+              "--splunk-hec-url", "https://s:8088", "--splunk-token-parameter", "/p/t",
+              "--prometheus-url", "https://p/api/v1/remote_write", "--opensearch-endpoint", "https://o"]
+def _reads(*extra):
+    """4 つの格納先で build し、格納先ごとに Kafka の読み取りに付いた maxOffsetsPerTrigger（無ければ None）を返す"""
+    sp, args = _Spark(TABLE_COLUMNS + ADDED_COLUMNS), mod.parse_args(_b4 + list(extra))
+    mod.build(sp, args)
+    assert len(sp.readers) == len(args.sinks) and all(
+        r.opts["subscribe"] == mod.sink_topics(s, args.metric_topics, args.log_topics) for s, r in zip(args.sinks, sp.readers))
+    return {s: r.opts.get("maxOffsetsPerTrigger") for s, r in zip(args.sinks, sp.readers)}
+sys.modules["pyspark"], sys.modules["pyspark.sql"] = _types.ModuleType("pyspark"), _fake_sql
+mod.iceberg_query = lambda rows, table, checkpoint: "iceberg"
+mod.http_query = lambda rows, name, checkpoint, sender, http_send="driver": name
+mod.read_ssm_parameter = lambda name, region: "tok-from-ssm"
+try:
+    _sp1 = _Spark()
+    mod.read_rows(_sp1, "b:9098", "metrics")
+    _r_default_arg = _sp1.readers[0].opts
+    _r_def = _reads()
+    _r_zero = _reads("--max-offsets-per-trigger", "0")
+    _r_splunk = _reads("--max-offsets-per-trigger", "10000", "--max-offsets-per-trigger-by-sink", "splunk=2000")
+    _r_prom0 = _reads("--max-offsets-per-trigger-by-sink", "prometheus=0")
+    _r_mixed = _reads("--max-offsets-per-trigger", "0", "--max-offsets-per-trigger-by-sink", "opensearch=300,iceberg=50000")
+    # 起動時の ALTER: iceberg のクエリを組む前に足す（iceberg_query が呼ばれた時点の sql の数を覚える）
+    _alter_rec = []
+    mod.iceberg_query = lambda rows, table, checkpoint: _alter_rec.append(len(_sp_old.sqls)) or "iceberg"
+    _sp_old = _Spark()
+    _alter_out = _stderr(lambda: mod.build(_sp_old, mod.parse_args(_b4)))[1]
+    _alter_at = _alter_rec[:]  # 次の build でも呼ばれるので、ここまでの分を残す
+    _sp_new = _Spark(TABLE_COLUMNS + ADDED_COLUMNS)
+    _new_out = _stderr(lambda: mod.build(_sp_new, mod.parse_args(_b4)))[1]
+    _sp_http = _Spark()
+    mod.build(_sp_http, mod.parse_args(base + ["--sinks", "opensearch,prometheus", "--prometheus-url", "https://p/api/v1/remote_write", "--opensearch-endpoint", "https://o"]))
+finally:
+    for _k, _v in _saved_mods.items():
+        if _v is None:
+            sys.modules.pop(_k, None)
+        else:
+            sys.modules[_k] = _v
+    mod.iceberg_query, mod.http_query, mod.read_ssm_parameter = _orig_mo
+check("read_rows: 4 つ目を渡さなければ maxOffsetsPerTrigger を付けない（ほかの option は今のまま）",
+      "maxOffsetsPerTrigger" not in _r_default_arg and _r_default_arg["startingOffsets"] == "earliest" and _r_default_arg["subscribe"] == "metrics")
+check("build 既定: どのクエリの Kafka の読み取りにも maxOffsetsPerTrigger 10000 が付く",
+      _r_def == {"iceberg": "10000", "splunk": "10000", "opensearch": "10000", "prometheus": "10000"})
+check("build --max-offsets-per-trigger 0: どのクエリにも maxOffsetsPerTrigger が付かない",
+      _r_zero == {"iceberg": None, "splunk": None, "opensearch": None, "prometheus": None})
+check("build 共通 10000 + splunk=2000: Splunk のクエリは 2000、ほかは 10000",
+      _r_splunk == {"iceberg": "10000", "splunk": "2000", "opensearch": "10000", "prometheus": "10000"})
+check("build prometheus=0: Prometheus のクエリだけ付かず、同じジョブの OpenSearch は 10000（クエリが別なので別の値が効く）",
+      _r_prom0 == {"iceberg": "10000", "splunk": "10000", "opensearch": "10000", "prometheus": None})
+check("build 共通 0 + opensearch=300,iceberg=50000: 書いた格納先だけ付き、ほかは付かない",
+      _r_mixed == {"iceberg": "50000", "splunk": None, "opensearch": "300", "prometheus": None})
+check("main は格納先ごとの上限（0 なら上限なし）を起動時のログに出す", "1 回 {max_offsets(args, s) or '上限なし'} 件まで" in src)
+check("build iceberg: 列の足りない表（tables.tf の 8 列）には iceberg のクエリを組む前に ALTER TABLE を 1 回出し、足した列をログに出す",
+      _sp_old.tables == ["s3tables.netops.snmp_metrics"] and _alter_at == [1]
+      and _sp_old.sqls == ["ALTER TABLE s3tables.netops.snmp_metrics ADD COLUMNS (event_id string, kafka_topic string, kafka_partition int, kafka_offset bigint)"]
+      and "iceberg: s3tables.netops.snmp_metrics に列 event_id, kafka_topic, kafka_partition, kafka_offset を足した（いまある行は null）" in _alter_out)
+check("build iceberg: 列がそろっていれば ALTER も列のログも出さない（2 回目の起動から）", _sp_new.sqls == [] and "を足した" not in _new_out)
+check("build: iceberg が無ければ表を見ない（HTTP の格納先のジョブは S3 Tables に触らない）", _sp_http.tables == [] and _sp_http.sqls == [])
+check("ICEBERG_ADDED_COLUMNS は event_id string / kafka_topic string / kafka_partition int / kafka_offset bigint（Kafka の partition は int、offset は long）",
+      mod.ICEBERG_ADDED_COLUMNS == (("event_id", "string"), ("kafka_topic", "string"), ("kafka_partition", "int"), ("kafka_offset", "bigint"))
+      and [n for n, _ in mod.ICEBERG_ADDED_COLUMNS] == ADDED_COLUMNS)
+_sp_part = _Spark(TABLE_COLUMNS + ["event_id", "kafka_topic"])
+check("ensure_iceberg_columns: 一部だけあれば無い列だけを順に足して名前を返す",
+      mod.ensure_iceberg_columns(_sp_part, "c.n.t") == ["kafka_partition", "kafka_offset"]
+      and _sp_part.sqls == ["ALTER TABLE c.n.t ADD COLUMNS (kafka_partition int, kafka_offset bigint)"])
+_sp_all = _Spark(TABLE_COLUMNS + ADDED_COLUMNS)
+check("ensure_iceberg_columns: 全部あれば何もしない（空のリスト）", mod.ensure_iceberg_columns(_sp_all, "c.n.t") == [] and _sp_all.sqls == [])
 
 def read_varint(b, i):
     n = shift = 0
@@ -648,6 +1046,57 @@ check("row_to_record: ts は epoch 秒、tags は辞書、壊れた JSON は空�
 check("row_to_record: naive な datetime は UTC とみなす", mod.row_to_record({"ts": dt.datetime(2023, 11, 14, 22, 13, 20)})["ts"] == 1700000000.0)
 check("_number: 数値の文字列は float、それ以外は None", mod._number("1.5") == 1.5 and mod._number("up") is None and mod._number(None) is None and mod._number(False) == 0.0)
 
+# ---- 一意の番号 event_id と Kafka の位置（2026-10-04）: 同じ value なら Splunk と OpenSearch の本文で同じ、1 バイト違えば違う。Prometheus には出ない
+import hashlib
+def _kafka_row(value, offset, partition=0, topic="metrics"):
+    """Kafka の 1 メッセージを read_rows と同じ列の行にする（event_id は F.sha2(value, 256) と同じ SHA-256 の 16 進。from_json は json.loads で代える）"""
+    m = json.loads(value)
+    return {"ts": dt.datetime.fromtimestamp(m["timestamp"], dt.timezone.utc), "topic": topic, "measurement": m["name"],
+            "agent_host": m["tags"].get("agent_host"), "host": m["tags"].get("host"),
+            "tags_json": json.dumps(m["tags"]), "fields_json": json.dumps(m["fields"]),
+            "event_id": hashlib.sha256(value).hexdigest(), "kafka_topic": topic, "kafka_partition": partition, "kafka_offset": offset}
+_val = b'{"fields":{"ifInOctets":123,"ifOperStatus":1},"name":"interface","tags":{"agent_host":"r1","host":"h","ifName":"Gi0/1"},"timestamp":1700000000}'
+_val1 = _val.replace(b'"ifInOctets":123', b'"ifInOctets":124')
+check("（前提）1 バイトだけ違う value", len(_val1) == len(_val) and sum(a != b for a, b in zip(_val, _val1)) == 1)
+# 同じ value が 2 回（Telegraf が Kafka に入れ直した = 別の offset）と、1 バイト違う value が 1 回
+_recs = [mod.row_to_record(_kafka_row(_val, 10)), mod.row_to_record(_kafka_row(_val, 11, partition=1)), mod.row_to_record(_kafka_row(_val1, 12))]
+check("row_to_record: event_id / kafka_topic / kafka_partition / kafka_offset をそのまま運ぶ（無ければ None）",
+      _recs[1]["event_id"] == hashlib.sha256(_val).hexdigest() and _recs[1]["kafka_topic"] == "metrics"
+      and _recs[1]["kafka_partition"] == 1 and _recs[1]["kafka_offset"] == 11
+      and all(r[k] is None for k in ADDED_COLUMNS))
+_bodies = {}
+_orig_sig = mod.sigv4_headers
+mod.sigv4_headers = lambda method, url, body, service, region, headers: dict(headers)
+mod.http_post = lambda url, body, headers, context=None: (_bodies.setdefault(url, []).append(body), (200, '{"errors":false}'))[1]
+try:
+    mod.make_splunk_sender("https://s:8088", "tok")(_recs)
+    mod.make_opensearch_sender("https://o", "snmp-logs", "ap-northeast-1")(_recs)
+    mod.make_prometheus_sender("https://p/api/v1/remote_write", "ap-northeast-1")(_recs)
+finally:
+    mod.http_post, mod.sigv4_headers = _orig_post, _orig_sig
+_sp_ev = [json.loads(x)["event"] for x in _bodies["https://s:8088/services/collector/event"][0].decode().split("\n")]
+_os_doc = [json.loads(x) for x in _bodies["https://o/snmp-logs/_bulk"][0].decode().splitlines()[1::2]]
+_eid = hashlib.sha256(_val).hexdigest()
+check("event_id は value の SHA-256 の 16 進 64 文字（小文字）", re.fullmatch(r"[0-9a-f]{64}", _eid) is not None)
+for _name, _got_ev in (("Splunk の event", _sp_ev), ("OpenSearch のドキュメント", _os_doc)):
+    check(f"{_name}: 同じ value の 2 行は event_id が同じ（offset が違っても）、1 バイト違う value は違う",
+          len(_got_ev) == 3 and _got_ev[0]["event_id"] == _got_ev[1]["event_id"] == _eid and _got_ev[2]["event_id"] != _eid
+          and _got_ev[2]["event_id"] == hashlib.sha256(_val1).hexdigest())
+    check(f"{_name}: Kafka の位置（kafka_topic / kafka_partition / kafka_offset）を元のメッセージを追うために入れる",
+          [(e["kafka_topic"], e["kafka_partition"], e["kafka_offset"]) for e in _got_ev] == [("metrics", 0, 10), ("metrics", 1, 11), ("metrics", 0, 12)])
+check("Splunk の event: tags / fields は今のまま（保存済みサーチの spath が読む tags.* / fields.* は変わらない）",
+      _sp_ev[0]["tags"]["ifName"] == "Gi0/1" and _sp_ev[0]["fields"] == {"ifInOctets": 123, "ifOperStatus": 1}
+      and not any(k.startswith(("event_id", "kafka_")) for e in _sp_ev for k in list(e["tags"]) + list(e["fields"])))
+_prom_raw = b"".join(snappy_decompress(b) for b in _bodies["https://p/api/v1/remote_write"])
+_prom_labels = [decode_fields(v) for _n1, _w1, ts in decode_fields(_prom_raw) for n, w, v in decode_fields(ts) if n == 1]
+check("Prometheus の remote write: 本文に event_id / kafka_ / 番号の値が無い（ラベルは tags と __name__ だけ）",
+      len(_prom_labels) > 0 and b"event_id" not in _prom_raw and b"kafka_" not in _prom_raw
+      and _eid.encode() not in _prom_raw and hashlib.sha256(_val1).hexdigest().encode() not in _prom_raw
+      and {l[0][2] for l in _prom_labels} == {b"__name__", b"agent_host", b"host", b"ifName"})
+check("prometheus_series: ラベルの名前に event_id / kafka_* が出ない（1 サンプルごとに別の系列にしない）",
+      all(not n.startswith(("event_id", "kafka_")) for l, _, _ in mod.prometheus_series(_recs) for n, _ in l)
+      and len({tuple(l) for l, _, _ in mod.prometheus_series(_recs[:2])}) == 2)
+
 # ---- ops/up.sh / ops/down.sh / ops/check.sh / deploy.env.example とのつながり
 check("up.sh は 6 本の jar を置く", len(re.findall(r'^\s*"\$MAVEN/', up, re.M)) == 6)
 for jar in ("spark-sql-kafka-0-10_2.12", "spark-token-provider-kafka-0-10_2.12", "kafka-clients", "commons-pool2", "aws-msk-iam-auth", "s3-tables-catalog-for-iceberg-runtime"):
@@ -655,16 +1104,17 @@ for jar in ("spark-sql-kafka-0-10_2.12", "spark-token-provider-kafka-0-10_2.12",
 check("up.sh の SPARK_VERSION は emr_release_label の Spark（3.5.6）", re.search(r'^SPARK_VERSION=3\.5\.6$', up, re.M) is not None
       and "7.13.0 = Spark 3.5.6" in tf)
 check("up.sh のスクリプトは spark/snmp_sinks.py", re.search(r'^SPARK_SCRIPT=spark/snmp_sinks\.py$', up, re.M) is not None and "snmp_to_iceberg" not in up)
-check("up.sh は SINK_SPLUNK（既定 1）と SPLUNK_INDEX を読み、splunk なら ECS の Splunk の token を SSM に作ってから渡す（値は読まない）。外の Splunk の変数は渡さない",
-      re.search(r'^SINK_SPLUNK="\$\{SINK_SPLUNK:-1\}"; SPLUNK_INDEX="\$\{SPLUNK_INDEX:-\}"$', up, re.M) is not None
+check("up.sh は SPLUNK_INDEX（既定は空）を読み、STORES に splunk があれば（既定）ECS の Splunk の token を SSM に作ってから渡す（値は読まない）。外の Splunk の変数は渡さない",
+      re.search(r'^SPLUNK_INDEX="\$\{SPLUNK_INDEX:-\}"$', up, re.M) is not None
       and "get-parameter" not in up and "splunk_hec_url=" not in up and "splunk_skip_tls_verify" not in up and "SPLUNK_TOKEN_PARAM" not in up
       and 'ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX")' in up
       and up.index('ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]"') < up.index('ensure_secret "/$PREFIX/splunk/hec-token"') < up.index('tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"'))
-check("up.sh は SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS（既定 1）を terraform/pipeline/analytics の sinks に組んで渡す",
-      re.search(r'^SINK_S3="\$\{SINK_S3:-1\}"; SINK_OPENSEARCH="\$\{SINK_OPENSEARCH:-1\}"; SINK_PROMETHEUS="\$\{SINK_PROMETHEUS:-1\}"$', up, re.M) is not None
-      and 'ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]")' in up and 'tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"' in up)
-check("up.sh は SINK_SPLUNK に関わらず device map を lab の定義から作って渡す（lab/lab_topology.py --device-map。trap と gNMI には sysName が無い。Splunk の DEVICE_MAP と Spark の --device-map。cycle 002）",
-      re.search(r'  ANALYTICS_VARS=\(-var "sinks=\[\$SINKS_TF\]"\)\n(?:  #[^\n]*\n)*  DEVICE_MAP=\$\("\$\{PY\[@\]\}" lab/lab_topology\.py lab --device-map\) \|\| die [^\n]*\n  ANALYTICS_VARS\+=\(-var "device_map=\$DEVICE_MAP"\)\n  if \[ -n "\$GRAFANA" \]', up) is not None
+check("up.sh は STORES（既定 s3,grafana,splunk）から導いた格納先を terraform/pipeline/analytics の sinks に組んで渡す",
+      re.search(r'^if \[ -z "\$\{STORES:-\}" \]; then STORES=s3,grafana,splunk; STORES_DEFAULT=1; fi$', up, re.M) is not None
+      and re.search(r'^SINK_S3="\$STORE_S3"; SINK_OPENSEARCH="\$STORE_GRAFANA"; SINK_PROMETHEUS="\$STORE_GRAFANA"; SINK_SPLUNK="\$STORE_SPLUNK"$', up, re.M) is not None
+      and 'ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]" ' in up and 'tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"' in up)
+check("up.sh は STORES の splunk に関わらず device map を lab の定義から作って渡す（lab/lab_topology.py --device-map。trap と gNMI には sysName が無い。Splunk の DEVICE_MAP と Spark の --device-map。cycle 002）",
+      re.search(r'  ANALYTICS_VARS=\(-var "sinks=\[\$SINKS_TF\]" [^\n]*\n(?:  #[^\n]*\n)*  DEVICE_MAP=\$\("\$\{PY\[@\]\}" lab/lab_topology\.py lab --device-map\) \|\| die [^\n]*\n  ANALYTICS_VARS\+=\(-var "device_map=\$DEVICE_MAP"\)\n  if \[ -n "\$GRAFANA" \]', up) is not None
       and up.count("lab_topology.py lab --device-map") == 1 and up.count('-var "device_map=$DEVICE_MAP"') == 1)
 check("up.sh は AGENT=0 でも CloudWatch へのログを切らない（CloudWatch Logs へは土台の logs のエンドポイントで届く）",
       "cloudwatch_logging=false" not in up and re.search(r'variable "cloudwatch_logging" \{[^}]*default\s*=\s*true', tf) is not None)
@@ -721,7 +1171,7 @@ def _senders(**env):
     r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $1"; exit 1; }\n' + _sndblk + 'echo "OUT: ${LINK_DOWN_SENDERS:-none}"'],
                        capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env})
     return r.stdout.strip().splitlines()[-1][:40] if r.stdout.strip() else r.stderr
-check("Grafana が link_down の送り手になるのは GRAFANA と SINK_PROMETHEUS と SNMP_POLL があるときだけ（link_down はポーリングの ifOperStatus を見る）。Splunk は SPLUNK_ON_ECS で",
+check("Grafana が link_down の送り手になるのは（STORES の grafana から導いた）GRAFANA と SINK_PROMETHEUS と SNMP_POLL があるときだけ（link_down はポーリングの ifOperStatus を見る）。Splunk は SPLUNK_ON_ECS（STORES の splunk）で",
       _senders(GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: grafana" and _senders(GRAFANA="1", SINK_PROMETHEUS="1") == "OUT: none"
       and _senders(GRAFANA="1", SNMP_POLL="1") == "OUT: none" and _senders(SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: none"
       and _senders(SPLUNK_ON_ECS="1") == "OUT: splunk" and _senders(GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1", SPLUNK_ON_ECS="1") == "OUT: grafana,splunk")
@@ -751,65 +1201,170 @@ check("lab.sh は containerlab の版の確かめ（GitHub へ出る）をしな
 check("up.sh / deploy-env.sh に共用のエンドポイントと CLIENT_CIDR の扱いは無い",
       not any(k in up for k in ("SHARED_ENDPOINTS", "create_shared_endpoints", 'aws_vpc_endpoint.runtime["ecr-api"]', "CLIENT_CIDR"))
       and "CLIENT_CIDR" not in open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read())
-# SINK_* の判定ブロックを up.sh から切り出して、bash で実際に動かす（die と flag_value は up.sh / deploy-env.sh と同じ意味の最小版）
+# 格納先（STORES）の判定ブロックを up.sh から切り出して、bash で実際に動かす（die と flag_value は up.sh / deploy-env.sh と同じ意味の最小版）。
+# 前のキー（SINK_* / GRAFANA）の検査 → STORES の読み取り → SINKS_TF までと、導いた GRAFANA と格納先のログの行
 import subprocess
-_blk = up[up.index('SINK_S3="${SINK_S3:-1}"'):up.index('SINKS_TF="\\"$(printf')]
+_blk = up[up.index('OLD_STORE_KEYS=""'):up.index('SINKS_TF="\\"$(printf')]
 _blk += up[up.index('SINKS_TF="\\"$(printf'):].split("\n", 1)[0] + "\n"
+_g3 = up[up.index('GRAFANA=""\nif [ -z "$SKIP_ANALYTICS" ]'):up.index("# アラート（SNS のトピック")]
 _pre = ('die() { echo "DIE: $*"; exit 1; }\n'
         'flag_value() { local name="$1" v; v="${!name:-}"; case "$v" in 1|true|yes) printf -v "$name" %s 1 ;; ""|0|false|no) printf -v "$name" %s "" ;; *) die "$name は 1 か 0" ;; esac; }\n')
-def _sinks(**env):
-    r = subprocess.run(["bash", "-c", _pre + _blk + 'echo "OUT: $SINKS | $SINKS_TF"'], capture_output=True, text=True,
+_ST_OUT = 'echo "OUT: $SINKS | G=${GRAFANA:-0} ECS=${SPLUNK_ON_ECS:-0}"'
+def _stores(tail=_ST_OUT, **env):
+    r = subprocess.run(["bash", "-c", _pre + 'log() { echo "LOG: $*"; }\n' + _blk + _g3 + tail], capture_output=True, text=True,
                        env={"PATH": os.environ["PATH"], **env})
-    return r.returncode, r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
-check("SINK_* が無ければ 4 つ全部（Splunk も既定 1。cycle 002）", _sinks() == (0, 'OUT: iceberg,opensearch,prometheus,splunk | "iceberg","opensearch","prometheus","splunk"'))
-check("SINK_OPENSEARCH=0 で opensearch だけ外れる", _sinks(SINK_OPENSEARCH="0") == (0, 'OUT: iceberg,prometheus,splunk | "iceberg","prometheus","splunk"'))
-check("SINK_S3=0 SINK_PROMETHEUS=no SINK_SPLUNK=0 で opensearch だけ残る", _sinks(SINK_S3="0", SINK_PROMETHEUS="no", SINK_SPLUNK="0") == (0, 'OUT: opensearch | "opensearch"'))
-check("SINK_S3=false で S3 Tables が外れる", _sinks(SINK_S3="false") == (0, 'OUT: opensearch,prometheus,splunk | "opensearch","prometheus","splunk"'))
-check("SINK_SPLUNK=0 で splunk だけ外れる", _sinks(SINK_SPLUNK="0") == (0, 'OUT: iceberg,opensearch,prometheus | "iceberg","opensearch","prometheus"'))
-_rc, _out = _sinks(SINK_S3="0", SINK_OPENSEARCH="0", SINK_PROMETHEUS="0", SINK_SPLUNK="0")
-check("SINK_* が全部 0 なら止まる", _rc == 1 and "全部 0" in _out)
-_rc, _out = _sinks(SINK_S3="2")
-check("SINK_S3=2 は止まる", _rc == 1 and "SINK_S3 は 1 か 0" in _out)
-check("SINK_SPLUNK=1 で splunk が 4 つ目に足される", _sinks(SINK_SPLUNK="1")
-      == (0, 'OUT: iceberg,opensearch,prometheus,splunk | "iceberg","opensearch","prometheus","splunk"'))
-check("SINK_SPLUNK=1 だけでも 1 つ以上になる", _sinks(SINK_S3="0", SINK_OPENSEARCH="0", SINK_PROMETHEUS="0", SINK_SPLUNK="1") == (0, 'OUT: splunk | "splunk"'))
-_ECS = 'echo "OUT: $SINKS | $SINKS_TF"; echo "ECS: $SPLUNK_ON_ECS"'
-def _ecs(**env):
-    r = subprocess.run(["bash", "-c", _pre + _blk + _ECS], capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env})
-    return r.returncode, r.stdout.strip().splitlines()
-check("SINK_SPLUNK=1 なら splunk が入り、Splunk を ECS で立てる（SPLUNK_ON_ECS=1）",
-      _ecs(SINK_SPLUNK="1") == (0, ['OUT: iceberg,opensearch,prometheus,splunk | "iceberg","opensearch","prometheus","splunk"', "ECS: 1"]))
-check("SINK_SPLUNK が無ければ（既定 1）Splunk を ECS で立て、SINK_SPLUNK=0 なら立てない", _ecs()[1][-1] == "ECS: 1" and _ecs(SINK_SPLUNK="0")[1][-1] == "ECS:")
-# 既定（deploy.env に何も書かない）で WORKFLOW=1 にすると、link_down の送り手は Grafana と Splunk の両方になる（設計の検証。cycle 002）
-_defblk = (_blk + up[up.index('SNMP_POLL="${SNMP_POLL:-1}"'):].split("\n", 1)[0] + "\n"
-           + up[up.index('GRAFANA="${GRAFANA:-1}"'):up.index('if [ -z "$AGENT" ] && [ -n "$CREATE_KB" ]; then')])
-_r = subprocess.run(["bash", "-c", _pre + _defblk + 'echo "OUT: ${LINK_DOWN_SENDERS:-none} | $SINKS"'], capture_output=True, text=True,
-                    env={"PATH": os.environ["PATH"], "WORKFLOW": "1"})
-check("既定のまま WORKFLOW=1 なら送り手は grafana,splunk、格納先は 4 つ（SNMP_POLL も SINK_SPLUNK も既定 1）",
-      _r.returncode == 0 and _r.stdout.strip().splitlines()[-1] == "OUT: grafana,splunk | iceberg,opensearch,prometheus,splunk")
-_rc, _out = _sinks(SINK_SPLUNK="1", SPLUNK_HEC_URL="https://s:8088")
-check("SPLUNK_HEC_URL（2026-09-28 にやめた外の Splunk）が書いてあれば、黙って ECS の Splunk に替えずに止まる", _rc == 1 and "SPLUNK_HEC_URL は 2026-09-28 から使わない" in _out)
-_rc, _out = _sinks(SPLUNK_HEC_URL="https://s:8088")
-check("SPLUNK_HEC_URL は SINK_SPLUNK=0 でも止まる（deploy.env から消してもらう）", _rc == 1 and "deploy.env から消す" in _out)
+    return r.returncode, r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "", r.stdout
+check("STORES は deploy.env を読んだあと、前のキーの検査のすぐ後で読み、Grafana・WORKFLOW の送り手・費用の検査の前に格納先の変数へ写す",
+      up.index("load_deploy_env\n") < up.index('OLD_STORE_KEYS=""') < up.index('STORES_DEFAULT=""') < up.index('SINKS_TF="\\"$(printf')
+      < up.index('GRAFANA=""\nif [ -z "$SKIP_ANALYTICS" ]') < up.index('die "WORKFLOW はアラートの送り手が要る') < up.index("COST_CENTS=2\n"))
+check("up.sh は SINK_* / GRAFANA をスイッチとして読まない（既定値・flag_value・STORES とのぶつかりの検査が無い）",
+      not any(k in up for k in ('SINK_S3="${SINK_S3:-1}"', 'SINK_SPLUNK="${SINK_SPLUNK:-0}"', "flag_value SINK_", 'GRAFANA="${GRAFANA:-1}"',
+                                "flag_value GRAFANA", 'case "${GRAFANA:-}" in', "を一緒に書いている", "SINK_SPLUNK が全部 0")))
+check("STORES が無ければ既定の s3,grafana,splunk（S3 Tables と OpenSearch・Prometheus・Grafana と Splunk。splunk は cycle 002 で既定に入れた）。空も既定",
+      _stores()[:2] == (0, "OUT: iceberg,opensearch,prometheus,splunk | G=1 ECS=1") and _stores(STORES="")[:2] == _stores()[:2])
+check("STORES=s3,grafana,splunk で 4 つの格納先がそろい、Grafana も ECS の Splunk も作る",
+      _stores(STORES="s3,grafana,splunk")[:2] == (0, "OUT: iceberg,opensearch,prometheus,splunk | G=1 ECS=1")
+      and _stores('echo "OUT: $SINKS_TF"', STORES="s3,grafana,splunk")[1] == 'OUT: "iceberg","opensearch","prometheus","splunk"')
+check("STORES は書かなかったまとまりを作らない（s3 / grafana / splunk のそれぞれ 1 つだけ）",
+      _stores(STORES="s3")[:2] == (0, "OUT: iceberg | G=0 ECS=0")
+      and _stores(STORES="grafana")[:2] == (0, "OUT: opensearch,prometheus | G=1 ECS=0")
+      and _stores(STORES="splunk")[:2] == (0, "OUT: splunk | G=0 ECS=1")
+      and _stores(STORES="s3,splunk")[:2] == (0, "OUT: iceberg,splunk | G=0 ECS=1")
+      and _stores('echo "OUT: $SINKS_TF"', STORES="s3")[1] == 'OUT: "iceberg"')
+check("STORES の順番・重複・前後の空白は問わない",
+      _stores(STORES="splunk, s3 ,s3")[:2] == _stores(STORES="s3,splunk")[:2]
+      and _stores(STORES="grafana,s3,grafana")[:2] == _stores(STORES="s3,grafana")[:2])
+check("格納先のログはいつも 1 行出す（STORES の値、既定かどうか、有効なまとまり。SKIP_ANALYTICS ならどれも作らないと書く）",
+      _stores()[2].count("LOG:") == 1
+      and "LOG:    格納先（STORES=s3,grafana,splunk。既定）: s3（S3 Tables） grafana（OpenSearch・Prometheus・Grafana） splunk（Splunk）\n" in _stores()[2]
+      and "LOG:    格納先（STORES=splunk,s3）: s3（S3 Tables） splunk（Splunk）\n" in _stores(STORES="splunk,s3")[2]
+      and "LOG:    格納先（STORES=grafana）: grafana（OpenSearch・Prometheus・Grafana）。analytics を作らないので、どれも作らない\n"
+      in _stores(STORES="grafana", SKIP_ANALYTICS="1")[2])
+check("STORES の知らない名前は止まり、使える名前を出す（大文字や空白区切りも知らない名前）",
+      all(_stores(STORES=v)[0] == 1 and "使えるのは s3 / grafana / splunk" in _stores(STORES=v)[1] for v in ("s3,elastic", "S3", "s3 grafana", "opensearch"))
+      and "STORES の「elastic」は無いまとまり" in _stores(STORES="s3,elastic")[1])
+check("STORES の空の要素は止まる（s3,,grafana / 末尾や先頭のカンマ / 空白だけ）",
+      all(_stores(STORES=v)[0] == 1 and "STORES に空の要素がある" in _stores(STORES=v)[1] for v in ("s3,,grafana", "s3,", ",s3", " ", "s3, ,splunk")))
+_rc, _out, _ = _stores(STORES="splunk", SPLUNK_HEC_URL="https://s:8088")
+_rc2, _out2, _ = _stores(STORES="s3", SPLUNK_HEC_URL="https://s:8088")
+check("SPLUNK_HEC_URL（2026-09-28 にやめた外の Splunk）が書いてあれば、STORES に splunk が無くても、黙って ECS の Splunk に替えずに止まる",
+      _rc == 1 and "SPLUNK_HEC_URL は 2026-09-28 から使わない" in _out and _rc2 == 1 and "deploy.env から消す" in _out2)
 check("SPLUNK_SKIP_TLS_VERIFY は使わない（書いてあれば注意だけ）", "for k in ADMIN_ARN OPENSEARCH_CACERT_FILE SPLUNK_SKIP_TLS_VERIFY; do" in up)
-check("deploy-env.sh は SINK_* を読めるキーに持つ",
-      all(re.search(rf'(?<![A-Z_]){k}(?![A-Z_])', open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read()) for k in ("SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "SPLUNK_HEC_URL", "SPLUNK_INDEX", "SPLUNK_SKIP_TLS_VERIFY")))
-check("deploy.env.example は SINK_SPLUNK を既定 1 にし（例は #SINK_SPLUNK=0）、SPLUNK_HEC_URL / SPLUNK_SKIP_TLS_VERIFY を書かない（2026-09-28 にやめた）",
-      re.search(r"^#SINK_SPLUNK=0$", open(ENV_EXAMPLE, encoding="utf-8").read(), re.M) is not None
-      and "SPLUNK_HEC_URL" not in open(ENV_EXAMPLE, encoding="utf-8").read() and "SPLUNK_SKIP_TLS_VERIFY" not in open(ENV_EXAMPLE, encoding="utf-8").read())
+_denv_src = open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read()
+check("deploy-env.sh は STORES と、なくした SINK_* / GRAFANA を読めるキーに持つ（前の deploy.env で知らないキーとして止めず、up.sh が書き換え方を出す）",
+      all(re.search(rf'(?<![A-Z_]){k}(?![A-Z_])', _denv_src.split("DEPLOY_ENV_KEYS=")[1].split('"')[1])
+          for k in ("STORES", "SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA", "SPLUNK_HEC_URL", "SPLUNK_INDEX", "SPLUNK_SKIP_TLS_VERIFY")))
+# なくしたキー（SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK / GRAFANA）が残っていれば、当たる STORES を出して止まる
+_OLD_WHAT = "はなくなった（2026-10-04 から格納先は STORES だけで選ぶ。s3 / grafana / splunk をカンマで並べ、既定は s3,grafana,splunk）。"
+def _old(**env):
+    rc, last, out = _stores(**env)
+    return last if rc == 1 else f"rc={rc} {last}"
+check("SINK_S3=0 は STORES=grafana と書くと言って止まる（どのキーを消すか、まだ何も作っていないことも言う）",
+      _old(SINK_S3="0") == "DIE: SINK_S3 " + _OLD_WHAT + "いまの値（SINK_S3=0）は STORES=grafana と書く。deploy.env と環境変数から SINK_S3 を消す。まだ何も作っていない")
+check("前の既定（SINK_SPLUNK は 0）と同じ GRAFANA=1 は STORES=s3,grafana と書くと言う（いまの既定は splunk も入るので、既定とは言わない）。yes / no / false も 1 / 0 と同じに読む",
+      _old(GRAFANA="1").endswith("いまの値（GRAFANA=1）は STORES=s3,grafana と書く。deploy.env と環境変数から GRAFANA を消す。まだ何も作っていない")
+      and "は STORES=s3,grafana と書く" in _old(SINK_SPLUNK="no") and "は STORES=grafana と書く" in _old(SINK_S3="no")
+      and "は STORES=grafana と書く" in _old(SINK_S3="false"))
+check("SINK_OPENSEARCH=0 と SINK_PROMETHEUS=0 は STORES=s3、SINK_* が全部 0 で SINK_SPLUNK=1 なら STORES=splunk。キーは / で並べる",
+      _old(SINK_OPENSEARCH="0", SINK_PROMETHEUS="0") == "DIE: SINK_OPENSEARCH / SINK_PROMETHEUS " + _OLD_WHAT
+      + "いまの値（SINK_OPENSEARCH=0 SINK_PROMETHEUS=0）は STORES=s3 と書く。deploy.env と環境変数から SINK_OPENSEARCH / SINK_PROMETHEUS を消す。まだ何も作っていない"
+      and "は STORES=splunk と書く" in _old(SINK_S3="0", SINK_OPENSEARCH="0", SINK_PROMETHEUS="0", SINK_SPLUNK="1"))
+check("いまの既定と同じ値（SINK_SPLUNK=1 など。3 つとも作る）も止まり、STORES を書かないときの既定と同じと言う",
+      all("は STORES=s3,grafana,splunk と同じ（STORES を書かないときの既定）。" in _old(**e) and _old(**e).endswith("まだ何も作っていない")
+          for e in ({"SINK_SPLUNK": "1"}, {"SINK_S3": "1", "SINK_SPLUNK": "yes"}, {"GRAFANA": "true", "SINK_SPLUNK": "1"})))
+check("格納先が 1 つも残らない値は、STORES では書けないので analytics ごと作らない SKIP_ANALYTICS=1 を出す",
+      "は格納先が 1 つも無く、STORES ではそう書けない（空なら既定の s3,grafana,splunk）。analytics ごと要らないなら SKIP_ANALYTICS=1 を書く。"
+      in _old(SINK_S3="0", SINK_OPENSEARCH="0", SINK_PROMETHEUS="0"))
+check("GRAFANA=0（Grafana を作らずに OpenSearch / Prometheus を作る）はもう選べないと言い、近い 2 つの STORES を出す",
+      _old(GRAFANA="0") == "DIE: GRAFANA " + _OLD_WHAT + "いまの値（GRAFANA=0）は Grafana を作らずに OpenSearch か Prometheus を作る組み合わせで、"
+      "その組み合わせはもう選べない（OpenSearch・Prometheus・Grafana は STORES の grafana でまとめて作るか作らないか）。"
+      "近いのは STORES=s3,grafana（3 つとも作る）か、STORES=s3（3 つとも作らない）。deploy.env と環境変数から GRAFANA を消す。まだ何も作っていない")
+check("Prometheus だけ・OpenSearch だけも選べないと言う。STORES の grafana を外すと格納先が残らないときは SKIP_ANALYTICS=1 を出す",
+      "は Prometheus だけを作る（OpenSearch は作らない）組み合わせで、その組み合わせはもう選べない" in _old(SINK_OPENSEARCH="0")
+      and "は OpenSearch だけを作る（Prometheus は作らない）組み合わせで" in _old(SINK_PROMETHEUS="0")
+      and "近いのは STORES=s3,grafana,splunk（3 つとも作る）か、STORES=s3,splunk（3 つとも作らない）" in _old(SINK_PROMETHEUS="0", SINK_SPLUNK="1")
+      and "近いのは STORES=grafana（3 つとも作る）か、格納先が残らないので analytics ごと作らない SKIP_ANALYTICS=1。" in _old(SINK_S3="0", GRAFANA="0")
+      and _old(SINK_S3="0", GRAFANA="0").startswith("DIE: SINK_S3 / GRAFANA はなくなった"))
+check("なくしたキーに 1 / 0 以外が書いてあれば、当たる STORES を決められないと言って止まる",
+      "いまの値の SINK_S3=2 GRAFANA=x は 1 / 0 でないので、当たる STORES を決められない。" in _old(SINK_S3="2", GRAFANA="x"))
+check("STORES と一緒になくしたキーが書いてあっても止まり、消せば STORES が効くと言う",
+      _old(STORES="s3", SINK_S3="1").endswith("deploy.env と環境変数から SINK_S3 を消す（STORES=s3 も書いてあるので、消せばそちらが効く）。まだ何も作っていない")
+      and all(_stores(STORES="splunk", **{k: "0"})[0] == 1 for k in ("SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA")))
+check("なくしたキーの空の値（SINK_S3= / GRAFANA=）は書いていないのと同じ（deploy.env の空の値と同じ扱い）",
+      _stores(STORES="s3", SINK_S3="", GRAFANA="")[:2] == (0, "OUT: iceberg | G=0 ECS=0") and _stores(SINK_SPLUNK="")[:2] == _stores()[:2])
+check("STORES で選んだあとも今の検査が効く（grafana だけでは SNMP_POLL=1 でないと WORKFLOW の送り手が無く止まる。splunk なら通る）",
+      _stores(_sndblk + _ST_OUT, STORES="s3,grafana", WORKFLOW="1", SNMP_POLL="")[1].startswith("DIE: WORKFLOW はアラートの送り手が要る")
+      and _stores(_sndblk + _ST_OUT, STORES="s3,grafana", WORKFLOW="1", SNMP_POLL="1")[:2] == (0, "OUT: iceberg,opensearch,prometheus | G=1 ECS=0")
+      and _stores(_sndblk + _ST_OUT, STORES="splunk", WORKFLOW="1")[:2] == (0, "OUT: splunk | G=0 ECS=1"))
+# 既定（deploy.env に何も書かない）で WORKFLOW=1 にすると、link_down の送り手は Grafana と Splunk の両方になる（設計の検証。cycle 002）
+_snmp_line = up[up.index('SNMP_POLL="${SNMP_POLL:-1}"'):].split("\n", 1)[0] + "\n"
+check("既定のまま WORKFLOW=1 なら送り手は grafana,splunk、格納先は 4 つ（STORES は s3,grafana,splunk、SNMP_POLL は 1 が既定）",
+      _stores(_snmp_line + _sndblk + 'echo "OUT: ${LINK_DOWN_SENDERS:-none} | $SINKS"', WORKFLOW="1")[:2]
+      == (0, "OUT: grafana,splunk | iceberg,opensearch,prometheus,splunk"))
+check("SKIP_ANALYTICS=1 なら STORES に grafana / splunk があっても Grafana と ECS の Splunk は作らない",
+      _stores(STORES="grafana,splunk", SKIP_ANALYTICS="1")[:2] == (0, "OUT: opensearch,prometheus,splunk | G=0 ECS=0"))
+import shutil, tempfile
+def _stores_file(text, **env):  # deploy.env から読ませる（ops/deploy-env.sh の load_deploy_env を通す）
+    d = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(d, "deploy.env"), "w") as f:
+            f.write(text)
+        r = subprocess.run(["bash", "-c", '. "$DENV"\n' + 'log() { echo "LOG: $*"; }\ndie() { echo "DIE: $*"; exit 1; }\nload_deploy_env >/dev/null\n'
+                            + _blk + _g3 + _ST_OUT], capture_output=True, text=True,
+                           env={"PATH": os.environ["PATH"], "DENV": os.path.join(ROOT, "ops", "deploy-env.sh"), "DEPLOY_ENV_FILE": os.path.join(d, "deploy.env"), **env})
+        return r.returncode, r.stdout.strip().splitlines()[-1] if r.stdout.strip() else r.stderr
+    finally:
+        shutil.rmtree(d)
+check("deploy.env の STORES を読む（値の後ろのコメントも外す）。STORES= の空は既定",
+      _stores_file("OWNER=a\nSTORES=grafana  # コメント\n") == (0, "OUT: opensearch,prometheus | G=1 ECS=0")
+      and _stores_file("OWNER=a\nSTORES=\n") == (0, "OUT: iceberg,opensearch,prometheus,splunk | G=1 ECS=1"))
+check("前の deploy.env の SINK_* / GRAFANA は読めて（知らないキーで止まらず）、up.sh が当たる STORES を出して止まる。環境変数でも同じ。空の値は書いていないのと同じ",
+      _stores_file("OWNER=a\nGRAFANA=0\n")[1].startswith("DIE: GRAFANA はなくなった")
+      and _stores_file("OWNER=a\nSINK_SPLUNK=1\n")[1].endswith("は STORES=s3,grafana,splunk と同じ（STORES を書かないときの既定）。deploy.env と環境変数から SINK_SPLUNK を消す。まだ何も作っていない")
+      and "（STORES=s3 も書いてあるので、消せばそちらが効く）" in _stores_file("OWNER=a\nSTORES=s3\nSINK_S3=1\n")[1]
+      and _stores_file("OWNER=a\nSTORES=splunk\n", SINK_S3="0")[1].startswith("DIE: SINK_S3 はなくなった")
+      and _stores_file("OWNER=a\nSTORES=s3\nSINK_S3=\nGRAFANA=\n") == (0, "OUT: iceberg | G=0 ECS=0"))
+_envx = open(ENV_EXAMPLE, encoding="utf-8").read()
+_envx_st = _envx[_envx.index("# analytics の格納先を 3 つのまとまりで選ぶ"):_envx.index("#STORES=s3,grafana,splunk")]
+check("deploy.env.example は STORES を既定の s3,grafana,splunk で書き、その前にまとまりごとの中身・外すと無くなるもの・費用と、外すとデータごと消えることを書く",
+      re.search(r"^#STORES=s3,grafana,splunk$", _envx, re.M) is not None and _envx.count("#STORES=") == 1
+      and all(re.search(rf"^#   {g} +全トピック|^#   {g} +traps と logs", _envx_st, re.M) for g in ("s3", "grafana", "splunk"))
+      and all(k in _envx_st for k in ("**既定は s3,grafana,splunk = 3 つとも**", "+$0.21/h", "約 +$0.62/h", "約 +$0.34/h", "データごと消える",
+                                      "SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK / GRAFANA は 2026-10-04 になくした"))
+      and _envx_st.count("#            外すと") == 3)
+check("deploy.env.example に SINK_* / GRAFANA のキーの行は無い。SPLUNK_INDEX は STORES のあとに空で書く。SPLUNK_HEC_URL / SPLUNK_SKIP_TLS_VERIFY も書かない（2026-09-28 にやめた）",
+      re.search(r"^#?\s*(SINK_[A-Z0-9]+|GRAFANA|SINKS)=", _envx, re.M) is None
+      and re.search(r"^#SPLUNK_INDEX=$", _envx, re.M) is not None and _envx.index("#STORES=s3,grafana,splunk") < _envx.index("#SPLUNK_INDEX=")
+      and "SPLUNK_HEC_URL" not in _envx and "SPLUNK_SKIP_TLS_VERIFY" not in _envx)
 check("MSK Connect の Splunk は書いていない（2026-09-26 に Spark から書くことにした）",
       "MSK Connect で後回し" not in tf and "MSK Connect で後回し" not in src and "MSK Connect で後回し" not in up)
-check("up.sh は analytics を stream の後に apply し、job を STREAMING で起こす（名前は snmp-sinks）",
-      up.index("tf_apply pipeline/stream") < up.index("tf_apply pipeline/analytics") < up.index("--name snmp-sinks --mode STREAMING"))
-check("up.sh は analytics に 14 セント（EMR だけ。エンドポイントは無い）と opensearch の OCU を足し、prometheus は足さず、opensearch は analytics を作るときだけ OCU の注意を出す",
-      re.search(r'COST_CENTS=\$\(\(COST_CENTS \+ 14\)\)\n\s*if \[ -n "\$SINK_OPENSEARCH" \]; then COST_CENTS=\$\(\(COST_CENTS \+ 33\)\); fi', up) is not None
-      and '"$SINK_PROMETHEUS" ]; then COST_CENTS' not in up and "COST_CENTS=2\n" in up
+check("up.sh は analytics を stream の後に apply し、ジョブを格納先ごとに STREAMING で起こす（名前は job_name の sinks-s3iceberg / sinks-splunk / sinks-grafana。snmp は付けない）",
+      up.index("tf_apply pipeline/stream") < up.index("tf_apply pipeline/analytics") < up.index('--name "$NAME" --mode STREAMING')
+      and "--name snmp-sinks" not in up and '--name "snmp-sinks' not in up and 'for JOB in iceberg splunk http; do' in up
+      and 'JOB_DRIVER=$(tf pipeline/analytics output -raw "job_driver_json_$JOB")' in up)
+_jn = up[up.index("  job_name() {"):up.index("\n  }\n", up.index("  job_name() {")) + 5]
+def _job_name(key):
+    r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $*"; exit 1; }\n' + _jn + f'job_name "{key}"'], capture_output=True, text=True)
+    return r.stdout.strip()
+check("up.sh: ジョブのキーからジョブ名を引くのは job_name の 1 か所（iceberg → sinks-s3iceberg、splunk → sinks-splunk、http → sinks-grafana。知らないキーは止まる）",
+      [_job_name(k) for k in ("iceberg", "splunk", "http")] == ["sinks-s3iceberg", "sinks-splunk", "sinks-grafana"]
+      and _job_name("opensearch").startswith("DIE: job_name: 知らないジョブのキー")
+      and up.count("job_name() {") == 1 and up.index("  job_name() {") < up.index('log "7-5.')
+      and '"sinks-$JOB"' not in up and re.search(r"(?<!snmp-)sinks-(iceberg|http)", up) is None
+      and up.count('NAME=$(job_name "$JOB")') == 2 and 'WAIT_NAMES="${WAIT_NAMES}$(job_name "$JOB") "' in up)
+check("up.sh は analytics に Spark のジョブ 1 つにつき 21 セント（S3 / Splunk / OpenSearch か Prometheus）と opensearch の OCU を足し、opensearch は analytics を作るときだけ OCU の注意を出す",
+      'if [ -n "$SINK_S3" ]; then COST_CENTS=$((COST_CENTS + 21)); fi\n  if [ -n "$SINK_SPLUNK" ]; then COST_CENTS=$((COST_CENTS + 21)); fi\n'
+      '  if [ -n "$SINK_OPENSEARCH$SINK_PROMETHEUS" ]; then COST_CENTS=$((COST_CENTS + 21)); fi\n' in up
+      and up.count("COST_CENTS + 21") == 3 and "COST_CENTS=2\n" in up
       and re.search(r'\*,opensearch,\*\) if \[ -z "\$SKIP_ANALYTICS" \]; then printf', up) is not None)
-check("up.sh は同じ SpecHash のジョブが動いていれば起こさない", "--states SUBMITTED PENDING SCHEDULED RUNNING" in up
-      and "jobRun.tags.SpecHash" in up and 'if [ "$spec" != "$JOB_SPEC" ]; then STALE=' in up)
-check("up.sh は SpecHash が違うジョブを cancel してから、SpecHash のタグを付けて起こし直す（スクリプトや引数の変更を反映する）",
-      re.search(r'cancel-job-run[\s\S]*--name snmp-sinks --mode STREAMING[\s\S]*--tags "[^"]*SpecHash=\$JOB_SPEC"', up) is not None)
+check("up.sh はジョブごとに同じ SpecHash のものが動いていれば起こさない", "--states SUBMITTED PENDING SCHEDULED RUNNING QUEUED --query 'jobRuns[].[name,id]'" in up
+      and "jobRun.tags.SpecHash" in up and 'if [ -z "$KEEP" ] && [ "$spec" = "$JOB_SPEC" ]; then KEEP="$id"; else STALE="$STALE $id"; fi' in up)
+check("up.sh は SpecHash が違うジョブを cancel し、止まるのを待ってから、SpecHash のタグを付けて起こし直す（スクリプトや引数の変更を反映する）",
+      re.search(r'cancel-job-run[\s\S]*CANCELLING[\s\S]*--name "\$NAME" --mode STREAMING[\s\S]*--tags "[^"]*SpecHash=\$JOB_SPEC"', up) is not None)
 check("up.sh は PIPELINE=1 で SKIP_STREAM=1 なら analytics も飛ばす", re.search(r'SKIP_STREAM=1 なので analytics も作らない[^\n]*\n\s*SKIP_ANALYTICS=1', up) is not None)
+check("down.sh は名前で絞らずに動いているジョブを全部 cancel する（sinks-s3iceberg / sinks-splunk / sinks-grafana も、古い名前の snmp-sinks / snmp-sinks-<キー> も止まる）",
+      re.search(r"list-job-runs [^\n]*\\\n\s*--states SUBMITTED PENDING SCHEDULED RUNNING QUEUED --query 'jobRuns\[\]\.id'", down) is not None
+      and "jobRuns[?name" not in down and "sinks-" not in down and "snmp-sinks" not in down)
 check("down.sh は job を cancel → stop-application → destroy analytics → destroy graph の順",
       down.index("cancel-job-run") < down.index("stop-application") < down.index("destroy_root pipeline/analytics") < down.index("destroy_lambda_root pipeline/graph") < down.index("destroy_root pipeline/stream"))
 # .py は名指しで並べず find で全部見る（名指しだとファイルを足したときに構文検査から漏れる）
@@ -821,9 +1376,119 @@ check("up.sh の WORKFLOW=1 は SKIP_ANALYTICS があれば止まる（Grafana /
 check("up.sh は SKIP_GRAPH=1 でも analytics を作る（Spark は Neptune に書かない。2026-10-02）", "analytics は graph が要る" not in up)
 check("up.sh は PIPELINE=0 なら lab / stream / analytics / graph を全部飛ばす",
       re.search(r'else\n\s*SKIP_LAB=1; SKIP_STREAM=1; SKIP_ANALYTICS=1; SKIP_GRAPH=1\n', up) is not None)
-check("deploy.env.example に SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS の行がある（既定 1）。カンマ区切りの SINKS は使わない",
-      all(re.search(rf'^#{k}=1$', env_example, re.M) is not None for k in ("SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS"))
-      and re.search(r'^#?\s*SINKS=', env_example, re.M) is None)
+# lab は単独で外せる（2026-10-04 まで、SKIP_LAB=1 で stream を作ると止まっていた）。WORKFLOW と PIPELINE の判定を切り出して動かす
+_skblk = up[up.index('if [ -n "$WORKFLOW" ]; then\n  if [ -z "$AGENT" ]'):up.index("# Nautobot（terraform/pipeline/nautobot）は機器の一覧とケーブルの正")]
+def _skip(**env):
+    r = subprocess.run(["bash", "-c", _pre + "flag_value SKIP_LAB; flag_value SKIP_STREAM; flag_value SKIP_ANALYTICS; flag_value SKIP_GRAPH\n" + _skblk
+                        + 'echo "OUT: L=${SKIP_LAB:-0} S=${SKIP_STREAM:-0} A=${SKIP_ANALYTICS:-0} G=${SKIP_GRAPH:-0}"'], capture_output=True, text=True,
+                       env={"PATH": os.environ["PATH"], **env})
+    return r.stdout.strip()
+check("up.sh は PIPELINE=1 で SKIP_LAB=1 だけなら止まらず、lab 以外を作る（Telegraf の取りにいく側が届かないことを言う）",
+      _skip(PIPELINE="1", SKIP_LAB="1").endswith("OUT: L=1 S=0 A=0 G=0") and "SKIP_LAB=1 なので lab は作らない" in _skip(PIPELINE="1", SKIP_LAB="1")
+      and "タスクは落ちない" in _skip(PIPELINE="1", SKIP_LAB="1") and "DIE" not in _skip(PIPELINE="1", SKIP_LAB="1")
+      and "stream は lab が要る" not in up)
+check("up.sh は SKIP_LAB=1 でも stream を作らないなら lab の注意を出さず、lab を作るときも出さない",
+      "lab は作らない" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1") and "lab は作らない" not in _skip(PIPELINE="1")
+      and _skip(PIPELINE="1") == "OUT: L=0 S=0 A=0 G=0")
+check("up.sh は lab が無く MDT_SOURCE_CIDRS も空で stream を作るなら「この stream には何も届かない」と注意を出して続ける",
+      "この stream には何も届かない" in _skip(PIPELINE="1", SKIP_LAB="1") and _skip(PIPELINE="1", SKIP_LAB="1").endswith("OUT: L=1 S=0 A=0 G=0")
+      and "何も届かない" not in _skip(PIPELINE="1", SKIP_LAB="1", MDT_SOURCE_CIDRS="10.10.0.0/16")
+      and "何も届かない" not in _skip(PIPELINE="1", MDT_SOURCE_CIDRS="") and "何も届かない" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1"))
+check("up.sh の「土台だけになる」は SKIP_LAB と SKIP_STREAM と SKIP_GRAPH が全部あるときだけ（lab と graph だけ外しても stream は作る）",
+      "土台だけになる" in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1", SKIP_GRAPH="1")
+      and _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1", SKIP_GRAPH="1").endswith("OUT: L=1 S=1 A=1 G=1")
+      and "土台だけ" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_GRAPH="1")
+      and _skip(PIPELINE="1", SKIP_LAB="1", SKIP_GRAPH="1").endswith("OUT: L=1 S=0 A=0 G=1")
+      and "土台だけ" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1"))
+check("up.sh の WORKFLOW=1 は SKIP_LAB=1 を受け付けないまま",
+      "DIE: WORKFLOW は lab と stream と analytics と graph が要る" in _skip(WORKFLOW="1", AGENT="1", PIPELINE="1", SKIP_LAB="1")
+      and "DIE" not in _skip(WORKFLOW="1", AGENT="1", PIPELINE="1"))
+check("up.sh は lab が無ければ lab の syslog の注意・7-3b のトポロジの投入・lab の費用・転送・最後の lab の案内を飛ばす",
+      'if [ -z "$SKIP_LAB" ] && [ "$SYSLOG_STANDARD" != "$LAB_SYSLOG_STANDARD" ]; then' in up
+      and re.search(r'\n  if \[ -z "\$SKIP_LAB" \]; then\n    log "7-3b\.[^\n]*\n(    [^\n]*\n)*?    LAB_TOPOLOGY_B64=[^\n]*\n    run_on_instance [^\n]*LAB_TOPOLOGY_B64[^\n]*\n  else\n', up) is not None
+      and up.count("LAB_TOPOLOGY_B64=$(") == 1
+      and 'if [ -z "$SKIP_LAB" ]; then COST_CENTS=$((COST_CENTS + 17)); fi' in up
+      and re.search(r'LAB_VARS=\(-var forward_to_telegraf=false\)\nif \[ -z "\$SKIP_LAB" \]; then\n', up) is not None
+      and re.search(r'\nif \[ -n "\$LAB_INSTANCE_ID" \]; then\n  echo "lab に入るコマンド:"', up) is not None
+      and re.search(r'\nif \[ -n "\$LAB_INSTANCE_ID" \]; then\n  # lab の EC2 の中を見る', up) is not None)
+check("up.sh と deploy.env.example の SKIP_LAB の説明は、SKIP_STREAM=1 が要るとも止まるとも言わない",
+      "stream は lab が要るので SKIP_STREAM=1 も要る" not in up
+      and re.search(r"^#SKIP_LAB=1 [^\n]*\n#\s+#[^\n]*Nautobot の Job が書く物理層だけ", env_example, re.M) is not None
+      and "しないと止まる" not in env_example and "タスクは落ちない" in env_example)
+# NO_PORTFORWARD は 2026-10-04 に NO_DASHBOARD_PORTFORWARD へ名前を変えた。前の名前が残っていれば止まる
+_pfblk = up[up.index('[ -z "${NO_PORTFORWARD:-}" ] || die'):up.index("flag_value NO_DASHBOARD_PORTFORWARD\n") + len("flag_value NO_DASHBOARD_PORTFORWARD\n")]
+def _pf(**env):
+    r = subprocess.run(["bash", "-c", _pre + _pfblk + 'echo "OUT: ${NO_DASHBOARD_PORTFORWARD:-0}"'], capture_output=True, text=True,
+                       env={"PATH": os.environ["PATH"], **env})
+    return r.stdout.strip().splitlines()[-1] if r.stdout.strip() else r.stderr
+def _pf_file(text, **env):  # deploy.env から読ませる（ops/deploy-env.sh の load_deploy_env を通す）
+    d = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(d, "deploy.env"), "w") as f:
+            f.write(text)
+        r = subprocess.run(["bash", "-c", '. "$DENV"\n' + 'log() { echo "LOG: $*"; }\ndie() { echo "DIE: $*"; exit 1; }\nload_deploy_env >/dev/null\n'
+                            + _pfblk + 'echo "OUT: ${NO_DASHBOARD_PORTFORWARD:-0}"'], capture_output=True, text=True,
+                           env={"PATH": os.environ["PATH"], "DENV": os.path.join(ROOT, "ops", "deploy-env.sh"), "DEPLOY_ENV_FILE": os.path.join(d, "deploy.env"), **env})
+        return r.stdout.strip().splitlines()[-1] if r.stdout.strip() else r.stderr
+    finally:
+        shutil.rmtree(d)
+check("NO_DASHBOARD_PORTFORWARD は 1 / 0（true / yes も）で、既定 0（ポートフォワーディングを開く）",
+      _pf() == "OUT: 0" and _pf(NO_DASHBOARD_PORTFORWARD="1") == "OUT: 1" and _pf(NO_DASHBOARD_PORTFORWARD="yes") == "OUT: 1"
+      and _pf(NO_DASHBOARD_PORTFORWARD="0") == "OUT: 0")
+check("前の名前 NO_PORTFORWARD が環境変数にあれば、0 でも止まって書き換え方を出す（何も作る前）",
+      _pf(NO_PORTFORWARD="1") == "DIE: NO_PORTFORWARD は NO_DASHBOARD_PORTFORWARD に変わった（2026-10-04。意味は同じで、1 なら最後の Web へのポートフォワーディングを開かずに終わる）。"
+      "deploy.env と環境変数の NO_PORTFORWARD=1 を NO_DASHBOARD_PORTFORWARD=1 に書き換える。まだ何も作っていない"
+      and "NO_PORTFORWARD=0 を NO_DASHBOARD_PORTFORWARD=0 に書き換える" in _pf(NO_PORTFORWARD="0")
+      and _pf(NO_PORTFORWARD="1", NO_DASHBOARD_PORTFORWARD="1").startswith("DIE: NO_PORTFORWARD は NO_DASHBOARD_PORTFORWARD に変わった")
+      and up.index('[ -z "${NO_PORTFORWARD:-}" ] || die') < up.index("CALLER_ARN=$(aws sts get-caller-identity"))
+check("前の deploy.env の NO_PORTFORWARD は読めて（知らないキーで止まらず）止まる。空の値は書いていないのと同じ。新しい名前は deploy.env から読める",
+      _pf_file("OWNER=a\nNO_PORTFORWARD=1\n").startswith("DIE: NO_PORTFORWARD は NO_DASHBOARD_PORTFORWARD に変わった")
+      and _pf_file("OWNER=a\nNO_PORTFORWARD=\n") == "OUT: 0" and _pf_file("OWNER=a\nNO_DASHBOARD_PORTFORWARD=1\n") == "OUT: 1")
+check("up.sh は NO_DASHBOARD_PORTFORWARD で Session Manager plugin の検査と最後のポートフォワーディングを飛ばし、NO_PORTFORWARD は止めるためだけに見る",
+      'if [ -z "$NO_DASHBOARD_PORTFORWARD" ]; then\n  command -v session-manager-plugin' in up and "開かないなら NO_DASHBOARD_PORTFORWARD=1）" in up
+      and 'if [ -n "$NO_DASHBOARD_PORTFORWARD" ]; then exit 0; fi\nlog "10. ポートフォワーディング' in up
+      and [l for l in up.split("set -euo pipefail", 1)[1].splitlines() if re.search(r"(?<![A-Z_])NO_PORTFORWARD(?![A-Z_])", l) and not l.startswith("#")]
+      == [l for l in up.splitlines() if l.startswith('[ -z "${NO_PORTFORWARD:-}" ] || die')]
+      and "flag_value NO_PORTFORWARD" not in up)
+check("deploy.env.example は NO_DASHBOARD_PORTFORWARD を書き、前の名前のキーの行は無い。deploy-env.sh は両方を読めるキーに持つ",
+      re.search(r"^#NO_DASHBOARD_PORTFORWARD=1$", env_example, re.M) is not None and re.search(r"^#?\s*NO_PORTFORWARD=", env_example, re.M) is None
+      and all(re.search(rf"(?<![A-Z_]){k}(?![A-Z_])", open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read().split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1])
+              for k in ("NO_DASHBOARD_PORTFORWARD", "NO_PORTFORWARD")))
+# ふだん書かないキーは deploy.env.example と up.sh のヘッダーの最後の 2 節（冗長化用 → デバッグ用）にまとめる（2026-10-04）。並べ替えただけで、読み方と既定は変えない
+_RED_H = "# ---- 冗長化用（既定はどれも 1 AZ / 1 台。本番の形を試すときに書く） ----"
+_DBG_H = "# ---- デバッグ用（ふだんは書かない） ----"
+def _key_sections(text, key_re):  # 見出しで ふだん / 冗長化用 / デバッグ用 に切り、各節に出てくるキーの名前を出てくる順に返す
+    if text.count(_RED_H) != 1 or text.count(_DBG_H) != 1 or text.index(_RED_H) > text.index(_DBG_H):
+        return None
+    a, b = text.index(_RED_H), text.index(_DBG_H)
+    return [re.findall(key_re, t, re.M) for t in (text[:a], text[a:b], text[b:])]
+_env_secs = _key_sections(env_example, r"^#?([A-Z][A-Z0-9_]*)=")
+_up_hdr = up[up.index("# 設定できるキー（"):up.index("# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* /")]
+_up_secs = _key_sections(_up_hdr, r"^#   ([A-Z][A-Z0-9_]*)")
+check("deploy.env.example と up.sh のヘッダーは、冗長化用の節に ENDPOINTS_MULTI_AZ、最後のデバッグ用の節に NETWORK_PERIMETER と TF_VERBOSE だけを置く",
+      _env_secs is not None and _env_secs[1:] == [["ENDPOINTS_MULTI_AZ"], ["NETWORK_PERIMETER", "TF_VERBOSE"]]
+      and _up_secs is not None and _up_secs[1:] == [["ENDPOINTS_MULTI_AZ"], ["NETWORK_PERIMETER", "TF_VERBOSE"]]
+      and not any(k in _env_secs[0] or k in _up_secs[0] for k in ("ENDPOINTS_MULTI_AZ", "NETWORK_PERIMETER", "TF_VERBOSE")))
+check("切り分けに使わないキー（HTTP_SEND / MAX_OFFSETS_PER_TRIGGER* / KEEP_ECR / NO_DASHBOARD_PORTFORWARD / LOCAL_PORT / IMAGE_TAG / AWS_*）はふだんの節のまま",
+      _env_secs is not None and _up_secs is not None
+      and all(k in _env_secs[0] for k in ("HTTP_SEND", "MAX_OFFSETS_PER_TRIGGER", "MAX_OFFSETS_PER_TRIGGER_ICEBERG", "MAX_OFFSETS_PER_TRIGGER_SPLUNK",
+                                          "MAX_OFFSETS_PER_TRIGGER_OPENSEARCH", "MAX_OFFSETS_PER_TRIGGER_PROMETHEUS", "KEEP_ECR",
+                                          "NO_DASHBOARD_PORTFORWARD", "LOCAL_PORT", "IMAGE_TAG", "AWS_PROFILE", "AWS_CA_BUNDLE"))
+      and all(k in _up_secs[0] for k in ("HTTP_SEND", "MAX_OFFSETS_PER_TRIGGER", "NO_DASHBOARD_PORTFORWARD", "LOCAL_PORT", "IMAGE_TAG", "AWS_PROFILE")))
+check("deploy.env.example のキーの行は 1 つのキーにつき 1 行で、デバッグ用の節がファイルの最後（後ろにキーの行も別の節も無い）",
+      (lambda ks: len(ks) == len(set(ks)))(re.findall(r"^#?([A-Z][A-Z0-9_]*)=", env_example, re.M))
+      and env_example.rstrip("\n").endswith("#TF_VERBOSE=0") and "# ---- " not in env_example[env_example.index(_DBG_H) + len(_DBG_H):])
+check("デバッグ用のキーは、それぞれ何の切り分けに使うかを 1 行目に書き、見本の値は既定の逆（NETWORK_PERIMETER=0）か既定（TF_VERBOSE=0）のまま",
+      re.search(r"^# AccessDenied の切り分け: [^\n]*\n(?:#[^\n]*\n)*?#NETWORK_PERIMETER=0$", env_example, re.M) is not None
+      and re.search(r"^# terraform の失敗・遅さの切り分け: [^\n]*\n(?:#[^\n]*\n)*?#TF_VERBOSE=0$", env_example, re.M) is not None
+      and re.search(r"^#   NETWORK_PERIMETER=0 +AccessDenied の切り分け。", _up_hdr, re.M) is not None
+      and re.search(r"^#   TF_VERBOSE=1 +terraform の失敗・遅さの切り分け。", _up_hdr, re.M) is not None
+      and re.search(r"^#ENDPOINTS_MULTI_AZ=1$", env_example, re.M) is not None)
+check("節を分けても読めるキーは同じ（deploy-env.sh の DEPLOY_ENV_KEYS に 3 つとも残る）で、up.sh の既定も同じ（NETWORK_PERIMETER 1、ENDPOINTS_MULTI_AZ 0）",
+      all(re.search(rf"(?<![A-Z_]){k}(?![A-Z_])", open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read().split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1])
+          for k in ("ENDPOINTS_MULTI_AZ", "NETWORK_PERIMETER", "TF_VERBOSE"))
+      and 'NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"\nflag_value NETWORK_PERIMETER; flag_value ENDPOINTS_MULTI_AZ\n' in up
+      and 'if [ -n "$ENDPOINTS_MULTI_AZ" ]; then ENDPOINT_AZS=2; else ENDPOINT_AZS=1; fi' in up)
 # iceberg を外しても、証跡があるのでテーブルバケット・namespace・カタログはいつも作る。生データの snmp_metrics だけ外す
 check('resource "aws_s3tables_table" "snmp_metrics" は sink_iceberg の count',
       re.search(r'resource "aws_s3tables_table" "snmp_metrics" \{\n  count = local\.sink_iceberg \? 1 : 0\n', tf) is not None)
@@ -838,4 +1503,392 @@ check("実行ロールの S3TablesCatalog は iceberg を選んだときだけ�
 
 # outputs の JSON が本当に JSON になる形か（jsonencode の中身の構造を軽く見る）
 check("job_driver_json は sparkSubmit の 3 キー", all(k in tf for k in ("entryPoint ", "entryPointArguments", "sparkSubmitParameters")))
+# ---- Spark のジョブを格納先で 3 つに分けた（2026-10-04）。outputs.tf の for-if を Python で評価してジョブごとの引数を組み、スクリプトの parse_args に通す
+_jobs_def = {j: [x.strip(' "') for x in v.split(",")] for j, v in
+             re.findall(r'(\w+) = \[([^\]]*)\]', re.search(r'spark_jobs = \{ for job, sinks in \{(.*?)\} :', tf).group(1))}
+check("spark_jobs: iceberg / splunk / http（opensearch と prometheus）", _jobs_def == {"iceberg": ["iceberg"], "splunk": ["splunk"], "http": ["opensearch", "prometheus"]})
+_VALS = {"local.bootstrap": "b:9098", "local.checkpoint_uri": "s3://bucket/analytics/checkpoint/u/", "var.region": "ap-northeast-1",
+         "local.metric_topics": "metrics,gnmi", "local.log_topics": "traps,logs", "local.iceberg_table": "s3tables.netops.snmp_metrics",
+         "local.opensearch_endpoint": "https://c.aoss.amazonaws.com", "local.opensearch_index": "snmp-logs",
+         "local.prometheus_remote_write_url": "https://aps/api/v1/remote_write", "local.splunk_hec_url": "https://splunk.p.internal:8088",
+         "local.splunk_token_parameter": "/p/splunk/hec-token", "var.splunk_index": ""}
+_args_body = "\n".join(l for l in args_block.group(1).splitlines() if not l.strip().startswith("#"))
+def _job_args(job, var_sinks, http_send="driver", max_offsets=10000, by_sink=None, device_map=""):
+    """var.sinks / var.http_send / var.max_offsets_per_trigger / var.max_offsets_per_trigger_by_sink / var.device_map のときに job の entryPointArguments になるもの
+    （そのジョブの格納先が無ければ None = job_driver は空文字）。local.max_offsets_by_job は locals.tf と同じ組み方を Python でする"""
+    sinks = [s for s in _jobs_def[job] if s in var_sinks]
+    if not sinks:
+        return None
+    by_sink = by_sink or {}
+    by_job = ",".join(f"{s}={by_sink[s]}" for s in sinks if s in by_sink)
+    def val(tok):
+        if tok.startswith('"'):
+            return tok.strip('"')
+        if tok == 'join(",", sinks)':
+            return ",".join(sinks)
+        if tok == "local.max_offsets_by_job[job]":
+            return by_job
+        if tok == "tostring(var.max_offsets_per_trigger)":
+            return str(max_offsets)
+        if tok == "var.device_map":
+            return device_map
+        return http_send if tok == "var.http_send" else _VALS[tok]
+    toks = r'"[^"]*"|join\(",", sinks\)|local\.max_offsets_by_job\[job\]|tostring\(var\.max_offsets_per_trigger\)|[a-z_]+\.[a-z_]+'
+    out = [val(t) for t in re.findall(toks, _args_body.split("[for a in")[0])]
+    for items, cond in re.findall(r'^\s*\[for a in \[(.*)\] : a if (.*)\],?\s*$', _args_body, re.M):
+        py = re.sub(r'contains\(sinks, "(\w+)"\)', r'("\1" in sinks)', cond).replace("&&", "and").replace("||", "or")
+        py = py.replace("var.http_send", "http_send").replace("local.splunk_skip_tls_verify", "True").replace("local.max_offsets_by_job[job]", "by_job").replace("var.device_map", "device_map")
+        if eval(py, {}, {"sinks": sinks, "job": job, "http_send": http_send, "by_job": by_job, "device_map": device_map}):
+            out += [val(t) for t in re.findall(toks, items)]
+    return out
+check("_job_args は outputs.tf の for-if を全部読む（1 行に 1 つ。読めない書き方が増えたら数が合わなくなる）",
+      len(re.findall(r'^\s*\[for a in \[(.*)\] : a if (.*)\],?\s*$', _args_body, re.M)) == _args_body.count("[for a in"))
+_COMMON = {"--bootstrap", "--checkpoint", "--sinks", "--region", "--metric-topics", "--log-topics", "--max-offsets-per-trigger"}
+_ALL4 = ["iceberg", "opensearch", "prometheus", "splunk"]
+_flags = lambda argv: set(a for a in argv if a.startswith("--"))
+_val = lambda argv, k: argv[argv.index(k) + 1]
+_ji, _js, _jh = (_job_args(j, _ALL4) for j in ("iceberg", "splunk", "http"))
+check("iceberg のジョブ: --sinks iceberg と --iceberg-table だけ（ほかの格納先の引数は無い）",
+      _val(_ji, "--sinks") == "iceberg" and _flags(_ji) == _COMMON | {"--iceberg-table"})
+check("splunk のジョブ: --sinks splunk と Splunk の引数だけ（token は SSM のパラメータ名）",
+      _val(_js, "--sinks") == "splunk" and _flags(_js) == _COMMON | {"--splunk-hec-url", "--splunk-token-parameter", "--splunk-index", "--splunk-skip-verify"}
+      and _val(_js, "--splunk-token-parameter") == "/p/splunk/hec-token")
+check("http のジョブ: --sinks opensearch,prometheus と両方の引数だけ",
+      _val(_jh, "--sinks") == "opensearch,prometheus" and _flags(_jh) == _COMMON | {"--opensearch-endpoint", "--opensearch-index", "--prometheus-url"})
+check("3 つのジョブは同じ --checkpoint の親を渡す（格納先ごとの下のディレクトリはスクリプトが切るので、分けても checkpoint のパスは変わらない）",
+      {_val(j, "--checkpoint") for j in (_ji, _js, _jh)} == {"s3://bucket/analytics/checkpoint/u/"})
+_pa = [mod.parse_args(j) for j in (_ji, _js, _jh)]
+check("どのジョブの引数もスクリプトの parse_args を通る（格納先に要る引数がそろう）",
+      [a.sinks for a in _pa] == [["iceberg"], ["splunk"], ["opensearch", "prometheus"]] and all(a.http_send == "driver" for a in _pa))
+_ex = {j: _job_args(j, _ALL4, "executor") for j in ("iceberg", "splunk", "http")}
+check("http_send=executor: splunk と http のジョブにだけ --http-send executor を渡す（iceberg は HTTP で送らない）",
+      "--http-send" not in _ex["iceberg"] and _val(_ex["splunk"], "--http-send") == "executor" and _val(_ex["http"], "--http-send") == "executor"
+      and mod.parse_args(_ex["http"]).http_send == "executor" and mod.parse_args(_ex["iceberg"]).http_send == "driver")
+check("格納先を減らす: iceberg と prometheus だけなら splunk のジョブは無く、http のジョブは prometheus だけ（OpenSearch の引数も無い）",
+      _job_args("splunk", ["iceberg", "prometheus"]) is None
+      and _val(_job_args("http", ["iceberg", "prometheus"]), "--sinks") == "prometheus"
+      and _flags(_job_args("http", ["iceberg", "prometheus"])) == _COMMON | {"--prometheus-url"})
+check("格納先を減らす: splunk だけなら iceberg と http のジョブは無い。opensearch だけなら http のジョブは opensearch だけ",
+      _job_args("iceberg", ["splunk"]) is None and _job_args("http", ["splunk"]) is None and _job_args("splunk", ["splunk"]) is not None
+      and mod.parse_args(_job_args("http", ["opensearch"])).sinks == ["opensearch"])
+check("既定: どのジョブにも --max-offsets-per-trigger 10000 を渡し、--max-offsets-per-trigger-by-sink は渡さない",
+      all(_val(j, "--max-offsets-per-trigger") == "10000" and "--max-offsets-per-trigger-by-sink" not in j for j in (_ji, _js, _jh))
+      and all(mod.max_offsets(a, s) == 10000 for a in _pa for s in a.sinks))
+_mo = {j: _job_args(j, _ALL4, by_sink={"splunk": 2000}) for j in ("iceberg", "splunk", "http")}
+check("splunk=2000: splunk のジョブにだけ --max-offsets-per-trigger-by-sink splunk=2000 を渡す（ほかのジョブの引数は既定と同じで、up.sh は splunk だけ起こし直す）",
+      _val(_mo["splunk"], "--max-offsets-per-trigger-by-sink") == "splunk=2000"
+      and _mo["iceberg"] == _ji and _mo["http"] == _jh and mod.max_offsets(mod.parse_args(_mo["splunk"]), "splunk") == 2000)
+_mo = {j: _job_args(j, _ALL4, by_sink={"prometheus": 5000, "opensearch": 0, "iceberg": 50000}) for j in ("iceberg", "splunk", "http")}
+_mh = mod.parse_args(_mo["http"])
+check("prometheus=5000, opensearch=0, iceberg=50000: http のジョブは opensearch=0,prometheus=5000、iceberg のジョブは iceberg=50000、splunk のジョブは渡さない",
+      _val(_mo["http"], "--max-offsets-per-trigger-by-sink") == "opensearch=0,prometheus=5000"
+      and _val(_mo["iceberg"], "--max-offsets-per-trigger-by-sink") == "iceberg=50000" and _mo["splunk"] == _js
+      and [mod.max_offsets(_mh, s) for s in _mh.sinks] == [0, 5000])
+check("格納先ごとの値は、その格納先を選んでいなければ渡さない（opensearch を外して opensearch=5 を書いても、http のジョブは prometheus だけで引数は変わらない）",
+      _job_args("http", ["prometheus"], by_sink={"opensearch": 5}) == _job_args("http", ["prometheus"]))
+check("共通 0: どのジョブにも --max-offsets-per-trigger 0 を渡し、スクリプトは上限なしになる",
+      all(_val(_job_args(j, _ALL4, max_offsets=0), "--max-offsets-per-trigger") == "0" and mod.parse_args(_job_args(j, _ALL4, max_offsets=0)).max_offsets_per_trigger == 0
+          for j in ("iceberg", "splunk", "http")))
+_dmap = "203.0.113.31=dc1-leaf-01,203.0.113.21=dc1-spine-01"
+_dj = {j: _job_args(j, _ALL4, device_map=_dmap) for j in ("iceberg", "splunk", "http")}
+check("device map があれば http のジョブ（opensearch / prometheus）にだけ --device-map を渡し、スクリプトはそれを読む。iceberg と splunk のジョブ、device map が空のときは渡さない（cycle 002）",
+      _val(_dj["http"], "--device-map") == _dmap and mod.parse_args(_dj["http"]).device_map == _dmap
+      and _dj["iceberg"] == _ji and _dj["splunk"] == _js and "--device-map" not in _jh
+      and _val(_job_args("http", ["prometheus"], device_map=_dmap), "--device-map") == _dmap)
+check("variable max_offsets_per_trigger は number で既定 10000、0 以上の整数だけ通す",
+      re.search(r'variable "max_offsets_per_trigger" \{\s*description[^\n]*\n\s*type\s*=\s*number\s*\n\s*default\s*=\s*10000\s*\n\s*validation \{\s*\n'
+                r'\s*condition\s*=\s*var\.max_offsets_per_trigger >= 0 && floor\(var\.max_offsets_per_trigger\) == var\.max_offsets_per_trigger\n', tf) is not None)
+check("variable max_offsets_per_trigger_by_sink は map(number) で既定 {}、キーは 4 つの格納先、値は 0 以上の整数だけ通す",
+      re.search(r'variable "max_offsets_per_trigger_by_sink" \{\s*description[^\n]*\n\s*type\s*=\s*map\(number\)\s*\n\s*default\s*=\s*\{\}\s*\n\s*validation \{\s*\n'
+                r'\s*condition\s*=\s*alltrue\(\[for k, v in var\.max_offsets_per_trigger_by_sink : contains\(\["iceberg", "opensearch", "prometheus", "splunk"\], k\) && v >= 0 && floor\(v\) == v\]\)', tf) is not None)
+check("locals の max_offsets_by_job は、ジョブの格納先のうち値のあるものだけを <格納先>=<件数> にしてカンマでつなぐ（_job_args と同じ組み方）",
+      re.search(r'max_offsets_by_job = \{ for job, sinks in local\.spark_jobs :\s*\n\s*job => join\(",", \[for s in sinks : "\$\{s\}=\$\{var\.max_offsets_per_trigger_by_sink\[s\]\}" if contains\(keys\(var\.max_offsets_per_trigger_by_sink\), s\)\]\) \}', tf) is not None)
+check("job_driver は --max-offsets-per-trigger をいつも渡し、--max-offsets-per-trigger-by-sink はそのジョブの分があるときだけ渡す",
+      '["--max-offsets-per-trigger", tostring(var.max_offsets_per_trigger)],' in args_block.group(1)
+      and '[for a in ["--max-offsets-per-trigger-by-sink", local.max_offsets_by_job[job]] : a if local.max_offsets_by_job[job] != ""],' in args_block.group(1))
+
+# up.sh の上限の判定を切り出して、bash で実際に動かす
+_moblk = up[up.index('MAX_OFFSETS_PER_TRIGGER="${MAX_OFFSETS_PER_TRIGGER:-10000}"'):]
+_moblk = _moblk[:_moblk.index("\ndone\n") + len("\ndone\n")]
+def _up_offsets(**env):
+    r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $*"; exit 1; }\n' + _moblk + 'echo "OUT: $MAX_OFFSETS_PER_TRIGGER {$MAX_OFFSETS_BY_SINK}"'],
+                       capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env})
+    return r.returncode, r.stdout.strip()
+check("up.sh: 何も書かなければ共通 10000、格納先ごとは {}（空の値は書かなかったのと同じ）",
+      _up_offsets() == (0, "OUT: 10000 {}") and _up_offsets(MAX_OFFSETS_PER_TRIGGER="", MAX_OFFSETS_PER_TRIGGER_SPLUNK="") == (0, "OUT: 10000 {}"))
+check("up.sh: 共通 0 はそのまま 0（上限なし）",  _up_offsets(MAX_OFFSETS_PER_TRIGGER="0") == (0, "OUT: 0 {}"))
+check("up.sh: MAX_OFFSETS_PER_TRIGGER_SPLUNK=2000 は {splunk=2000}",
+      _up_offsets(MAX_OFFSETS_PER_TRIGGER_SPLUNK="2000") == (0, "OUT: 10000 {splunk=2000}"))
+check("up.sh: 4 つの格納先の名前は小文字にして HCL の map にする（0 もそのまま渡す）",
+      _up_offsets(MAX_OFFSETS_PER_TRIGGER="20000", MAX_OFFSETS_PER_TRIGGER_ICEBERG="50000", MAX_OFFSETS_PER_TRIGGER_SPLUNK="2000",
+                  MAX_OFFSETS_PER_TRIGGER_OPENSEARCH="0", MAX_OFFSETS_PER_TRIGGER_PROMETHEUS="5000")
+      == (0, "OUT: 20000 {iceberg=50000,splunk=2000,opensearch=0,prometheus=5000}"))
+check("up.sh: 共通も格納先ごとも、負・小数・文字・先頭の 0・10 桁・空白入りなら何かを作る前に止まる（どの変数かを言う）",
+      all((lambda r: r[0] == 1 and f"DIE: {k} は 0 以上の整数" in r[1])(_up_offsets(**{k: v}))
+          for k in ("MAX_OFFSETS_PER_TRIGGER", "MAX_OFFSETS_PER_TRIGGER_ICEBERG", "MAX_OFFSETS_PER_TRIGGER_SPLUNK",
+                    "MAX_OFFSETS_PER_TRIGGER_OPENSEARCH", "MAX_OFFSETS_PER_TRIGGER_PROMETHEUS")
+          for v in ("-1", "1.5", "abc", "010", "1234567890", " 5", "1e4")))
+check("up.sh: 上限の判定は何かを作る前にあり、analytics に max_offsets_per_trigger と max_offsets_per_trigger_by_sink を渡す",
+      up.index('MAX_OFFSETS_PER_TRIGGER="${MAX_OFFSETS_PER_TRIGGER:-10000}"') < up.index("\ntf_apply base/ecr")
+      and 'ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]" -var "max_offsets_per_trigger=$MAX_OFFSETS_PER_TRIGGER" -var "max_offsets_per_trigger_by_sink={$MAX_OFFSETS_BY_SINK}")' in up)
+_mo_keys = ["MAX_OFFSETS_PER_TRIGGER"] + [f"MAX_OFFSETS_PER_TRIGGER_{s}" for s in ("ICEBERG", "SPLUNK", "OPENSEARCH", "PROMETHEUS")]
+_denv = open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read()
+check("deploy-env.sh は上限の 5 つのキーを読めるキーに持つ",
+      all(re.search(r'(?<![A-Z_])' + k + r'(?![A-Z_])', _denv) for k in _mo_keys))
+check("deploy.env.example は #MAX_OFFSETS_PER_TRIGGER=10000 と、格納先ごとの 4 つを空で書く",
+      re.search(r"^#MAX_OFFSETS_PER_TRIGGER=10000$", env_example, re.M) is not None
+      and all(re.search(rf"^#{k}=$", env_example, re.M) for k in _mo_keys[1:]))
+_docs = {n: open(os.path.join(ROOT, *n.split("/")), encoding="utf-8").read() for n in ("README.md", "docs/deploy.md")}
+check("README と docs/deploy.md のキーの表に MAX_OFFSETS_PER_TRIGGER と格納先ごとの値がある",
+      all(re.search(r"^\| `MAX_OFFSETS_PER_TRIGGER` \|", d, re.M) and "MAX_OFFSETS_PER_TRIGGER_ICEBERG" in d for d in _docs.values()))
+
+# 費用の analytics の部分を up.sh から切り出して動かす（Spark のジョブ 1 つ 21。3 つで 63）
+_costblk = up[up.index('if [ -z "$SKIP_ANALYTICS" ]; then\n  # Spark のジョブ'):up.index('if [ -n "$NAUTOBOT" ]; then COST_CENTS')]
+def _cost(**env):
+    base_env = {k: "" for k in ("SKIP_ANALYTICS", "SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA", "SPLUNK_ON_ECS")}
+    r = subprocess.run(["bash", "-uc", "COST_CENTS=0\n" + _costblk + 'echo "OUT: $COST_CENTS"'], capture_output=True, text=True,
+                       env={"PATH": os.environ["PATH"], **base_env, **env})
+    return int(r.stdout.split("OUT: ")[1]) if "OUT: " in r.stdout else r.stderr
+check("費用: Spark のジョブは S3 / Splunk / OpenSearch か Prometheus で 1 つずつ 21（3 つで 63）",
+      _cost(SINK_S3="1") == 21 and _cost(SINK_PROMETHEUS="1") == 21 and _cost(SINK_S3="1", SINK_PROMETHEUS="1") == 42
+      and _cost(SINK_S3="1", SINK_SPLUNK="1", SINK_PROMETHEUS="1") == 63)
+check("費用: OpenSearch と Prometheus は 1 つのジョブ（OpenSearch の OCU 33 は別）。Splunk は ECS の 12 も足す。SKIP_ANALYTICS なら 0",
+      _cost(SINK_OPENSEARCH="1", SINK_PROMETHEUS="1") == 21 + 33 and _cost(SINK_SPLUNK="1", SPLUNK_ON_ECS="1") == 21 + 12
+      and _cost(SINK_S3="1", SINK_OPENSEARCH="1", SINK_PROMETHEUS="1", SINK_SPLUNK="1", SPLUNK_ON_ECS="1", GRAFANA="1") == 63 + 33 + 12 + 2
+      and _cost(SKIP_ANALYTICS="1", SINK_S3="1", SINK_SPLUNK="1", SINK_PROMETHEUS="1") == 0)
+_COST_TAIL = "COST_CENTS=0\n" + _costblk + 'echo "OUT: $COST_CENTS"'
+check("費用の Grafana の 2 は導いた値で数える（STORES=grafana なら 21 + 33 + 2、STORES=s3 なら Grafana は無く 21、3 つとも入れると 63 + 33 + 12 + 2）",
+      _stores(_COST_TAIL, STORES="grafana")[:2] == (0, "OUT: 56") and _stores(_COST_TAIL, STORES="s3")[:2] == (0, "OUT: 21")
+      and _stores(_COST_TAIL, STORES="s3,grafana,splunk")[:2] == (0, "OUT: 110"))
+
+# 7-5 を up.sh から切り出し、偽の aws（状態を JSON に持ち、呼ばれた順を記録する）で動かす
+import copy, hashlib, shutil, tempfile
+_e75 = up.index("\n  fi\n", up.index('echo "起動に 2〜5 分。')) + len("\n  fi\n")
+_b75 = up[up.index("  job_name() {"):_e75]
+_FAKE_AWS = "#!" + sys.executable + r'''
+import json, os, sys
+st_path = os.environ["FAKE_STATE"]
+st = json.load(open(st_path))
+a = sys.argv[1:]
+opt = lambda k: a[a.index(k) + 1]
+def opts(k):
+    i, out = a.index(k) + 1, []
+    while i < len(a) and not a[i].startswith("--"):
+        out.append(a[i]); i += 1
+    return out
+cmd = a[1]
+if cmd == "list-job-runs":  # 呼ばれるたびに時間が進む: 止めている途中のものは left 回で止まる
+    for r in st["runs"]:
+        if r["state"] == "CANCELLING":
+            r["left"] -= 1
+            if r["left"] <= 0:
+                r["state"] = "CANCELLED"
+    hits = [r for r in st["runs"] if r["state"] in opts("--states")]
+    st["log"].append("list " + " ".join(f'{r["name"]}:{r["id"]}:{r["state"]}' for r in hits))
+    assert opt("--query") == "jobRuns[].[name,id]", opt("--query")
+    print("\n".join(f'{r["name"]}\t{r["id"]}' for r in hits))
+elif cmd == "get-job-run":
+    print(next(r for r in st["runs"] if r["id"] == opt("--job-run-id")).get("spec") or "None")
+elif cmd == "cancel-job-run":
+    r = next(r for r in st["runs"] if r["id"] == opt("--job-run-id"))
+    r["state"], r["left"] = "CANCELLING", st["cancel_delay"]
+    st["log"].append(f'cancel {r["name"]}:{r["id"]}')
+elif cmd == "start-job-run":  # 同じ checkpoint を使うジョブ（同じ名前、古い名前の snmp-sinks-<キー>、全部を書いていた snmp-sinks）がまだ動いて（止めて）いれば CONFLICT
+    name, tags = opt("--name"), dict(t.split("=", 1) for t in opt("--tags").split(","))
+    old = {"sinks-s3iceberg": "snmp-sinks-iceberg", "sinks-splunk": "snmp-sinks-splunk", "sinks-grafana": "snmp-sinks-http"}[name]
+    busy = [r for r in st["runs"] if r["state"] != "CANCELLED" and r["name"] in (name, old, "snmp-sinks")]
+    rid = f'j{len(st["runs"]) + 1}'
+    st["runs"].append({"id": rid, "name": name, "state": "SUBMITTED", "spec": tags["SpecHash"], "driver": opt("--job-driver")})
+    st["log"].append(f"start {name}" + (" CONFLICT" if busy else "") + f' {opt("--mode")}')
+    print(rid)
+else:
+    sys.exit("unknown " + cmd)
+json.dump(st, open(st_path, "w"))
+'''
+_OVR = '{"o":1}'
+def _spec(driver):
+    h = hashlib.sha256(open(SRC, "rb").read()); h.update(driver.encode()); h.update(_OVR.encode())
+    return h.hexdigest()[:16]
+def _run75(runs, drivers, cancel_delay=2):
+    d = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(d, "aws"), "w") as f:
+            f.write(_FAKE_AWS)
+        os.chmod(os.path.join(d, "aws"), 0o755)
+        state = os.path.join(d, "state.json")
+        with open(state, "w") as f:
+            json.dump({"runs": copy.deepcopy(runs), "log": [], "cancel_delay": cancel_delay}, f)
+        pre = (f'set -euo pipefail\nREGION=r; APP_ID=app; PREFIX=p; OWNER=o; SPARK_SCRIPT="{SRC}"; PY=("{sys.executable}")\n'
+               'die() { echo "DIE: $*"; exit 1; }\nlog() { echo "LOG: $*"; }\nsleep() { :; }\n'
+               "tf() { case \"$4\" in configuration_overrides_json) printf %s '" + _OVR + "' ;; "
+               'job_driver_json_*) v="DRV_${4#job_driver_json_}"; printf %s "${!v:-}" ;; runtime_role_arn) echo arn:role ;; '
+               'list_job_runs_command) echo LIST ;; *) echo "tf? $*" >&2; exit 9 ;; esac; }\n')
+        r = subprocess.run(["bash", "-c", pre + _b75], capture_output=True, text=True,
+                           env={"PATH": d + os.pathsep + os.environ["PATH"], "FAKE_STATE": state, **{f"DRV_{k}": v for k, v in drivers.items()}})
+        with open(state) as f:
+            st = json.load(f)
+        return r.returncode, r.stdout + r.stderr, st
+    finally:
+        shutil.rmtree(d)
+_acts = lambda st: [l for l in st["log"] if l.startswith(("cancel", "start"))]
+_D = {"iceberg": '{"j":"iceberg"}', "splunk": "", "http": '{"j":"http"}'}
+_rc, _out, _st = _run75([{"id": "old", "name": "snmp-sinks", "state": "RUNNING", "spec": "x"}], _D, cancel_delay=3)
+_i = _st["log"].index("cancel snmp-sinks:old")
+check("7-5（移行）: 1 つにまとめていた頃の snmp-sinks を cancel し、止まる（CANCELLED）まで待ってから sinks-s3iceberg と sinks-grafana を起こす（splunk は格納先が無いので起こさない）",
+      _rc == 0 and _acts(_st) == ["cancel snmp-sinks:old", "start sinks-s3iceberg STREAMING", "start sinks-grafana STREAMING"]
+      and any("snmp-sinks:old:CANCELLING" in l for l in _st["log"][_i:]) and "古い名前のジョブ snmp-sinks（old）を止める" in _out)
+check("7-5（移行）: 新しいジョブには自分の job_driver と SpecHash（スクリプト + その job_driver + overrides）を付ける",
+      {r["name"]: (r["spec"], r["driver"]) for r in _st["runs"] if r["name"] != "snmp-sinks"}
+      == {"sinks-s3iceberg": (_spec(_D["iceberg"]), _D["iceberg"]), "sinks-grafana": (_spec(_D["http"]), _D["http"])})
+_old3 = [{"id": "oi", "name": "snmp-sinks-iceberg", "state": "RUNNING", "spec": _spec(_D["iceberg"])},
+         {"id": "oh", "name": "snmp-sinks-http", "state": "QUEUED", "spec": _spec(_D["http"])},
+         {"id": "os", "name": "snmp-sinks-splunk", "state": "RUNNING", "spec": "s"}]
+_rc, _out, _st = _run75(_old3, _D, cancel_delay=3)
+_i = max(_st["log"].index(f"cancel {n}") for n in ("snmp-sinks-iceberg:oi", "snmp-sinks-http:oh", "snmp-sinks-splunk:os"))
+check("7-5（改名）: snmp-sinks-<キー> は SpecHash が同じでも古い名前として 3 つとも cancel し、止まってから sinks-s3iceberg と sinks-grafana を起こす（CONFLICT しない）",
+      _rc == 0 and sorted(_acts(_st)[:3]) == ["cancel snmp-sinks-http:oh", "cancel snmp-sinks-iceberg:oi", "cancel snmp-sinks-splunk:os"]
+      and _acts(_st)[3:] == ["start sinks-s3iceberg STREAMING", "start sinks-grafana STREAMING"]
+      and any("snmp-sinks-iceberg:oi:CANCELLING" in l for l in _st["log"][_i:])
+      and all(f"古い名前のジョブ {n}を止める" in _out for n in ("snmp-sinks-iceberg（oi）", "snmp-sinks-http（oh）", "snmp-sinks-splunk（os）")))
+_now = [{"id": "a", "name": "sinks-s3iceberg", "state": "RUNNING", "spec": _spec(_D["iceberg"])},
+        {"id": "b", "name": "sinks-grafana", "state": "RUNNING", "spec": _spec(_D["http"])}]
+_rc, _out, _st = _run75(_now + [{"id": "oh", "name": "snmp-sinks-http", "state": "CANCELLED", "spec": "x"}], _D)
+check("7-5: どのジョブも SpecHash が同じなら何も止めず、何も起こさない（止まった古い名前のジョブは見ない。sinks-grafana を snmp-sinks-http と取り違えない）",
+      _rc == 0 and _acts(_st) == [] and _out.count("同じスクリプトと引数で動いている") == 2 and "古い名前" not in _out)
+_rc, _out, _st = _run75(_now + [{"id": "oh", "name": "snmp-sinks-http", "state": "RUNNING", "spec": _spec(_D["http"])}], _D)
+check("7-5: 新しい名前が動いていても古い名前のジョブ（snmp-sinks-http）が動いていれば止める。起こすジョブが無いので待たない",
+      _rc == 0 and _acts(_st) == ["cancel snmp-sinks-http:oh"] and _out.count("同じスクリプトと引数で動いている") == 2
+      and "古い名前のジョブ snmp-sinks-http（oh）を止める" in _out)
+_rc, _out, _st = _run75(_now, dict(_D, http='{"j":"http","new":1}'))
+check("7-5: 引数が変わったジョブ（http）だけ止めて起こし直し、iceberg はそのまま",
+      _rc == 0 and _acts(_st) == ["cancel sinks-grafana:b", "start sinks-grafana STREAMING"])
+_rc, _out, _st = _run75(_now + [{"id": "c", "name": "sinks-splunk", "state": "RUNNING", "spec": "s"}], _D)
+check("7-5: 格納先が無くなったジョブ（STORES から splunk を外した）は止めるだけで起こさない",
+      _rc == 0 and _acts(_st) == ["cancel sinks-splunk:c"] and "sinks-splunk（c）は格納先が無くなったので止める" in _out)
+_rc, _out, _st = _run75(_now + [{"id": "d", "name": "sinks-s3iceberg", "state": "RUNNING", "spec": _spec(_D["iceberg"])}], _D)
+check("7-5: 同じ名前のジョブが 2 つ動いていれば 1 つだけ残して止め、起こし直さない（同じ checkpoint を 2 つで使わない）",
+      _rc == 0 and _acts(_st) == ["cancel sinks-s3iceberg:d"])
+_rc, _out, _st = _run75([{"id": "e", "name": "sinks-s3iceberg", "state": "CANCELLING", "left": 3, "spec": "x"}], dict(_D, http=""))
+_rc2, _out2, _st2 = _run75([{"id": "e", "name": "snmp-sinks-iceberg", "state": "CANCELLING", "left": 3, "spec": "x"}], dict(_D, http=""))
+check("7-5: 前の up.sh が止めきれなかった（CANCELLING の）同じ名前か古い名前のジョブがあれば、止まるまで待ってから起こす",
+      _rc == 0 and _acts(_st) == ["start sinks-s3iceberg STREAMING"] and any("sinks-s3iceberg:e:CANCELLING" in l for l in _st["log"])
+      and _rc2 == 0 and _acts(_st2) == ["start sinks-s3iceberg STREAMING"] and any("snmp-sinks-iceberg:e:CANCELLING" in l for l in _st2["log"]))
+_rc, _out, _st = _run75([{"id": "old", "name": "snmp-sinks", "state": "RUNNING", "spec": "x"}], _D, cancel_delay=1000)
+_rc2, _out2, _st2 = _run75([{"id": "oh", "name": "snmp-sinks-http", "state": "RUNNING", "spec": "x"}], _D, cancel_delay=1000)
+check("7-5: 古い名前のジョブ（snmp-sinks / snmp-sinks-http）が 3 分たっても止まらなければ、新しいジョブを起こさずに止まる",
+      _rc == 1 and "DIE: Spark のジョブ（old）が 3 分たっても止まらない" in _out and _acts(_st) == ["cancel snmp-sinks:old"]
+      and _rc2 == 1 and "DIE: Spark のジョブ（oh）が 3 分たっても止まらない" in _out2 and _acts(_st2) == ["cancel snmp-sinks-http:oh"])
+_rc, _out, _st = _run75([{"id": "q", "name": "sinks-grafana", "state": "QUEUED", "spec": "x"}], dict(_D, iceberg=""))
+check("7-5: 待っている（QUEUED の）ジョブも動いているものとして扱い、SpecHash が違えば止めてから起こす",
+      _rc == 0 and _acts(_st) == ["cancel sinks-grafana:q", "start sinks-grafana STREAMING"])
+# 7-4 の前の「上限が変わるときだけジョブとアプリを止める」を up.sh から切り出し、偽の aws（アプリの状態も持つ）で動かす
+_b74 = up[up.index("  # EMR Serverless のアプリの上限（maximum_capacity。"):up.index('  tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"')]
+_tfv = open(os.path.join(ROOT, "terraform", "pipeline", "analytics", "variables.tf"), encoding="utf-8").read()
+_m_cpu = re.search(r'variable "max_cpu" \{[^}]*default\s*=\s*"([^"]+)"', _tfv)
+_m_mem = re.search(r'variable "max_memory" \{[^}]*default\s*=\s*"([^"]+)"', _tfv)
+check("up.sh の EMR_MAX_CPU / EMR_MAX_MEMORY は variables.tf の max_cpu / max_memory の既定値と同じで、tf_apply の前に止める判断がある",
+      f'EMR_MAX_CPU="{_m_cpu.group(1)}"; EMR_MAX_MEMORY="{_m_mem.group(1)}"' in _b74
+      and 'ANALYTICS_VARS+=(-var "max_cpu=$EMR_MAX_CPU" -var "max_memory=$EMR_MAX_MEMORY")' in _b74
+      and up.index("ANALYTICS_VARS=(-var") < up.index(_b74) < up.index('tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"'))
+_FAKE_AWS74 = "#!" + sys.executable + r"""
+import json, os, sys
+st_path = os.environ["FAKE_STATE"]
+st = json.load(open(st_path))
+a = sys.argv[1:]
+opt = lambda k: a[a.index(k) + 1]
+def opts(k):
+    i, out = a.index(k) + 1, []
+    while i < len(a) and not a[i].startswith("--"):
+        out.append(a[i]); i += 1
+    return out
+cmd, app = a[1], st["app"]
+if cmd == "get-application":
+    if app is None:
+        sys.exit("ResourceNotFoundException")
+    q = opt("--query")
+    if q == "application.[state,maximumCapacity.cpu,maximumCapacity.memory]":
+        print("\t".join([app["state"], app["cpu"], app["memory"]]))
+    else:
+        assert q == "application.state", q
+        if app["state"] == "STOPPING":
+            app["left"] -= 1
+            if app["left"] <= 0:
+                app["state"] = "STOPPED"
+        print(app["state"])
+elif cmd == "list-job-runs":  # 呼ばれるたびに時間が進む: 止めている途中のものは left 回で止まる
+    for r in st["runs"]:
+        if r["state"] == "CANCELLING":
+            r["left"] -= 1
+            if r["left"] <= 0:
+                r["state"] = "CANCELLED"
+    assert opt("--query") == "jobRuns[].id", opt("--query")
+    hits = [r for r in st["runs"] if r["state"] in opts("--states")]
+    st["log"].append("list " + " ".join(f'{r["id"]}:{r["state"]}' for r in hits))
+    print("\t".join(r["id"] for r in hits))
+elif cmd == "cancel-job-run":
+    r = next(r for r in st["runs"] if r["id"] == opt("--job-run-id"))
+    r["state"], r["left"] = "CANCELLING", st["cancel_delay"]
+    st["log"].append(f'cancel {r["id"]}')
+elif cmd == "stop-application":  # ジョブが残っていれば断る（実物も止まらない）
+    if any(r["state"] not in ("CANCELLED", "SUCCESS", "FAILED") for r in st["runs"]):
+        st["log"].append("stop REFUSED")
+        json.dump(st, open(st_path, "w"))
+        sys.exit("ValidationException: jobs are running")
+    st["log"].append("stop")
+    if app["state"] == "STARTED":
+        app["state"], app["left"] = "STOPPING", st["stop_delay"]
+else:
+    sys.exit("unknown " + cmd)
+json.dump(st, open(st_path, "w"))
+"""
+def _run74(app, runs=(), cancel_delay=2, stop_delay=2, state_file=True):
+    d = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(d, "aws"), "w") as f:
+            f.write(_FAKE_AWS74)
+        os.chmod(os.path.join(d, "aws"), 0o755)
+        if state_file:
+            os.makedirs(os.path.join(d, "terraform", "pipeline", "analytics"))
+            open(os.path.join(d, "terraform", "pipeline", "analytics", "terraform.tfstate"), "w").close()
+        state = os.path.join(d, "state.json")
+        with open(state, "w") as f:
+            json.dump({"app": copy.deepcopy(app), "runs": copy.deepcopy(list(runs)), "log": [],
+                       "cancel_delay": cancel_delay, "stop_delay": stop_delay}, f)
+        pre = ('set -euo pipefail\nREGION=r; ANALYTICS_VARS=(-var x=1)\n'
+               'die() { echo "DIE: $*"; exit 1; }\nsleep() { :; }\ntf_init() { :; }\nhas_resources() { return 0; }\n'
+               'tf() { case "$4" in application_id) echo app ;; list_job_runs_command) echo LIST ;; *) echo "tf? $*" >&2; exit 9 ;; esac; }\n')
+        r = subprocess.run(["bash", "-c", pre + _b74 + '\nprintf "VARS:%s\\n" "${ANALYTICS_VARS[@]}"'], capture_output=True, text=True, cwd=d,
+                           env={"PATH": d + os.pathsep + os.environ["PATH"], "FAKE_STATE": state})
+        with open(state) as f:
+            st = json.load(f)
+        return r.returncode, r.stdout + r.stderr, st
+    finally:
+        shutil.rmtree(d)
+_acts74 = lambda st: [l for l in st["log"] if l.startswith(("cancel", "stop"))]
+_old_app = {"state": "STARTED", "cpu": "4 vCPU", "memory": "16 GB"}
+_runs74 = [{"id": "a", "name": "snmp-sinks", "state": "RUNNING"}, {"id": "b", "name": "sinks-grafana", "state": "QUEUED"},
+           {"id": "c", "name": "sinks-s3iceberg", "state": "SUCCESS"}]
+_rc, _out, _st = _run74(_old_app, _runs74, cancel_delay=3)
+check("7-4 の前（上限が変わる）: 動いている・待っている（QUEUED）ジョブを全部 cancel し、止まってから stop-application、STOPPED を待つ",
+      _rc == 0 and _acts74(_st) == ["cancel a", "cancel b", "stop"] and _st["app"]["state"] == "STOPPED"
+      and all(r["state"] in ("CANCELLED", "SUCCESS") for r in _st["runs"])
+      and "上限を 4 vCPU / 16 GB から 12 vCPU / 48 GB に変える。アプリが STARTED なので" in _out and "アプリ（app）を止めた" in _out
+      and "VARS:max_cpu=12 vCPU" in _out and "VARS:max_memory=48 GB" in _out)
+_rc, _out, _st = _run74(dict(_old_app, cpu="12 vCPU", memory="48 GB"), _runs74)
+_rc2, _out2, _st2 = _run74(dict(_old_app, cpu="12vCPU", memory="48 gb"), _runs74)
+check("7-4 の前（上限が変わらない）: ジョブもアプリも止めない（空白と大文字小文字の違いは同じとみる）",
+      _rc == 0 and _acts74(_st) == [] and "上限を" not in _out and _rc2 == 0 and _acts74(_st2) == [] and _st2["app"]["state"] == "STARTED")
+_rc, _out, _st = _run74(_old_app, _runs74, cancel_delay=1000)
+check("7-4 の前（ジョブが止まらない）: 3 分待って止まり、stop-application も tf_apply もしない",
+      _rc == 1 and "DIE: 上限を変える前に止めた Spark のジョブ（a\tb）が 3 分たっても止まらない" in _out
+      and _acts74(_st) == ["cancel a", "cancel b"] and _st["app"]["state"] == "STARTED")
+_rc, _out, _st = _run74(_old_app, _runs74, stop_delay=1000)
+check("7-4 の前（アプリが止まらない）: 3 分待って止まる（STOPPING のまま tf_apply に進まない）",
+      _rc == 1 and "DIE: EMR Serverless のアプリ（app）が 3 分たっても止まらない（STOPPING）" in _out and _acts74(_st)[-1] == "stop")
+_rc, _out, _st = _run74(dict(_old_app, state="STOPPED"), [])
+_rc2, _out2, _st2 = _run74(None, [])
+_rc3, _out3, _st3 = _run74(_old_app, _runs74, state_file=False)
+check("7-4 の前: アプリが止まっていれば上限が変わっても何も止めない。アプリが無いか state が無ければ何もしない（terraform に任せる）",
+      _rc == 0 and _acts74(_st) == [] and not any(l.startswith("list") for l in _st["log"]) and "（アプリは STOPPED）" in _out
+      and _rc2 == 0 and _st2["log"] == [] and _rc3 == 0 and _st3["log"] == [] and _st3["app"]["state"] == "STARTED")
 print(f"通過 {passed} / 失敗 0")

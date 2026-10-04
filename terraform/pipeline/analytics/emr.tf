@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------- EMR Serverless (Spark)
 # アプリケーションは器だけで、ジョブが動いていなければ課金されない（pre-initialized capacity は持たない）。
-# ストリーミングのジョブは ops/up.sh が start-job-run で起こす（Terraform にジョブのリソースは無い。手打ちは output の job_driver_json / configuration_overrides_json）。
+# ストリーミングのジョブは ops/up.sh が start-job-run で起こす（Terraform にジョブのリソースは無い。ジョブは格納先で 3 つ。手打ちは output の job_driver_json_<iceberg|splunk|http> / configuration_overrides_json）。
 # arm64 なのは lab / web の EC2 と同じ理由（単価が x86 より約 20% 低い）
 resource "aws_emrserverless_application" "spark" {
   name          = "${local.name_prefix}-spark"

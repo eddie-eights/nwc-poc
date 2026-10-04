@@ -33,24 +33,29 @@ output "jars_s3_prefix" {
   value       = "s3://${local.bucket}/${local.jars_prefix}/"
 }
 
-# start-job-run の引数。ops/up.sh はこの出力をそのまま --job-driver に渡す（手順 7-5）
-output "job_driver_json" {
-  description = "jobDriver for start-job-run (script, sinks and their endpoints, jars, catalog)"
-  value = jsonencode({
+# start-job-run の引数。Spark のジョブは格納先で 3 つ（local.spark_jobs: iceberg / splunk / http = opensearch と prometheus）。
+# ops/up.sh はジョブごとにこの出力をそのまま --job-driver に渡す（手順 7-5）。そのジョブの格納先が var.sinks に無ければ空文字で、ジョブを起こさない
+locals {
+  job_drivers = { for job, sinks in local.spark_jobs : job => length(sinks) == 0 ? "" : jsonencode({
     sparkSubmit = {
       entryPoint = "s3://${local.bucket}/${local.script_key}"
       # 「cond ? [..] : []」は両辺の型が揃わず validate が落ちるので for … if で絞る
       entryPointArguments = concat(
-        ["--bootstrap", local.bootstrap, "--checkpoint", local.checkpoint_uri, "--sinks", join(",", var.sinks), "--region", var.region,
+        ["--bootstrap", local.bootstrap, "--checkpoint", local.checkpoint_uri, "--sinks", join(",", sinks), "--region", var.region,
         "--metric-topics", local.metric_topics, "--log-topics", local.log_topics],
-        [for a in ["--iceberg-table", local.iceberg_table] : a if local.sink_iceberg],
-        [for a in ["--opensearch-endpoint", local.opensearch_endpoint, "--opensearch-index", local.opensearch_index] : a if local.sink_opensearch],
-        [for a in ["--prometheus-url", local.prometheus_remote_write_url] : a if local.sink_prometheus],
+        # Kafka の 1 回のトリガーに 1 つのクエリが読む件数の上限。共通の値はどのジョブにも渡し、格納先ごとの値はそのジョブの格納先の分だけ渡す
+        ["--max-offsets-per-trigger", tostring(var.max_offsets_per_trigger)],
+        [for a in ["--max-offsets-per-trigger-by-sink", local.max_offsets_by_job[job]] : a if local.max_offsets_by_job[job] != ""],
+        # HTTP の格納先へ送る所。既定の driver では渡さない（ジョブの引数が変わらず、ops/up.sh が起こし直さない）。iceberg のジョブには要らない
+        [for a in ["--http-send", var.http_send] : a if var.http_send != "driver" && job != "iceberg"],
+        [for a in ["--iceberg-table", local.iceberg_table] : a if contains(sinks, "iceberg")],
+        [for a in ["--opensearch-endpoint", local.opensearch_endpoint, "--opensearch-index", local.opensearch_index] : a if contains(sinks, "opensearch")],
+        [for a in ["--prometheus-url", local.prometheus_remote_write_url] : a if contains(sinks, "prometheus")],
         # token の値は渡さない（SSM のパラメータ名だけ。ジョブが起動時に読む）
-        [for a in ["--splunk-hec-url", local.splunk_hec_url, "--splunk-token-parameter", local.splunk_token_parameter, "--splunk-index", var.splunk_index] : a if local.sink_splunk],
-        [for a in ["--splunk-skip-verify"] : a if local.sink_splunk && local.splunk_skip_tls_verify],
+        [for a in ["--splunk-hec-url", local.splunk_hec_url, "--splunk-token-parameter", local.splunk_token_parameter, "--splunk-index", var.splunk_index] : a if contains(sinks, "splunk")],
+        [for a in ["--splunk-skip-verify"] : a if contains(sinks, "splunk") && local.splunk_skip_tls_verify],
         # prometheus / opensearch で sysName の無いレコード（gNMI と trap）に機器名を足す表（Splunk のタスクの DEVICE_MAP と同じ値）
-        [for a in ["--device-map", var.device_map] : a if var.device_map != "" && (local.sink_prometheus || local.sink_opensearch)],
+        [for a in ["--device-map", var.device_map] : a if var.device_map != "" && (contains(sinks, "prometheus") || contains(sinks, "opensearch"))],
       )
       # Iceberg のカタログの設定はいつも渡す（カタログは最初に使うときに開くので、iceberg を選ばなければ S3 Tables の API を呼ばない）
       sparkSubmitParameters = join(" ", concat(
@@ -63,11 +68,26 @@ output "job_driver_json" {
           "--conf spark.driver.memory=2g",
           "--conf spark.executor.cores=1",
           "--conf spark.executor.memory=2g",
-          "--conf spark.executor.instances=1",
+          "--conf spark.executor.instances=2",
         "--conf spark.dynamicAllocation.enabled=false"],
       ))
     }
-  })
+  }) }
+}
+
+output "job_driver_json_iceberg" {
+  description = "jobDriver of the job sinks-s3iceberg (all topics to S3 Tables). Empty unless sinks has iceberg"
+  value       = local.job_drivers["iceberg"]
+}
+
+output "job_driver_json_splunk" {
+  description = "jobDriver of the job sinks-splunk (all topics to the Splunk HEC). Empty unless sinks has splunk"
+  value       = local.job_drivers["splunk"]
+}
+
+output "job_driver_json_http" {
+  description = "jobDriver of the job sinks-grafana (log topics to OpenSearch, metric topics to Prometheus; only those in sinks). Empty unless sinks has opensearch or prometheus"
+  value       = local.job_drivers["http"]
 }
 
 output "configuration_overrides_json" {

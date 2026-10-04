@@ -101,7 +101,7 @@ variable "syslog_standard" {
 }
 
 variable "snmp_poll" {
-  description = "Whether Telegraf polls SNMP (inputs.snmp, ifTable every 10 seconds) and writes it to the metrics topic. On by default: the Grafana rule link_down and the Splunk saved search netops_poll read the polled ifOperStatus. With false, SNMP comes in as traps only and link down is seen only by the Splunk saved search on traps. ops/up.sh passes SNMP_POLL from deploy.env. Becomes SNMP_POLL (1 / 0) of the task."
+  description = "Whether Telegraf polls SNMP (inputs.snmp, ifTable every 10 seconds) and writes it to the metrics topic. On by default: the Grafana rule link_down and the Splunk saved search netops_poll read the polled ifOperStatus. With false, SNMP comes in as traps only and link down is seen only by the Splunk saved search on traps (splunk in STORES of deploy.env). ops/up.sh passes SNMP_POLL from deploy.env. Becomes SNMP_POLL (1 / 0) of the task."
   type        = bool
   default     = true
 }

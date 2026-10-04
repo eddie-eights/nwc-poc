@@ -45,7 +45,7 @@
 # >>> role dialin（telegraf.sh render が TELEGRAF_ROLE=dialout のとき消す）
 # >>> snmp_poll（telegraf.sh render が SNMP_POLL=1（既定）のときだけ残す。0 なら消す）
 # ---- ポーリング。agents は監視対象（CE）の管理 IP（SR Linux の mgmt0。SNMP v2c の community は環境変数 SNMP_COMMUNITY。lab は containerlab が全ノードに入れる public）。lab の EC2 を経由する（上の注記）
-# 止めると Grafana のルール link_down と Splunk の保存済みサーチ netops_poll（ifOperStatus を見る）は発火しない。IF の up / down は trap（Splunk の保存済みサーチ。SINK_SPLUNK=1）だけで見る
+# 止めると Grafana のルール link_down と Splunk の保存済みサーチ netops_poll（ifOperStatus を見る）は発火しない。IF の up / down は trap（Splunk の保存済みサーチ。deploy.env の STORES に splunk）だけで見る
 [[inputs.snmp]]
   agents = [__SNMP_AGENTS__]
   version = 2
