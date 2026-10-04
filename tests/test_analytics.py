@@ -151,8 +151,8 @@ check("VPC フローログのロール: 信頼は自アカウントの vpc-flow-
 
 # ---- S3 Tables のテーブル（列はスクリプトと同じでなければ append が落ちる）
 TABLE_COLUMNS = ["ts", "topic", "measurement", "agent_host", "host", "tags_json", "fields_json", "ingested_at"]
-schema = re.search(r'resource "aws_s3tables_table" "snmp_metrics"(.*?)\n\}\n', tf, re.S)
-check("aws_s3tables_table snmp_metrics がある", schema is not None)
+schema = re.search(r'resource "aws_s3tables_table" "raw_telemetry"(.*?)\n\}\n', tf, re.S)
+check("aws_s3tables_table raw_telemetry がある", schema is not None)
 fields = re.findall(r'field\s*\{\s*name\s*=\s*"([a-z_]+)"\s*type\s*=\s*"([a-z]+)"\s*required\s*=\s*(true|false)', schema.group(1))
 check("テーブルの列は ts / topic / measurement / agent_host / host / tags_json / fields_json / ingested_at の順", [f[0] for f in fields] == TABLE_COLUMNS)
 coltypes = dict((f[0], f[1]) for f in fields)
@@ -163,7 +163,10 @@ check("format は ICEBERG", re.search(r'format\s*=\s*"ICEBERG"', schema.group(1)
 check("namespace とテーブル名はアンダースコアだけ（ハイフン不可）",
       re.search(r'variable "namespace"[\s\S]*?regex\("\^\[a-z0-9\]\[a-z0-9_\]', tf, re.S) is not None
       and re.search(r'variable "table_name"[\s\S]*?regex\("\^\[a-z0-9\]\[a-z0-9_\]', tf, re.S) is not None)
-check("既定のテーブル名は snmp_metrics", re.search(r'variable "table_name"[\s\S]*?default\s*=\s*"snmp_metrics"', tf, re.M) is not None)
+check("既定のテーブル名は raw_telemetry（2026-10-04 に snmp_metrics から改名）", re.search(r'variable "table_name"[\s\S]*?default\s*=\s*"raw_telemetry"', tf, re.M) is not None)
+check("snmp_metrics から raw_telemetry へ moved で state を引き継ぐ（ほかに snmp_metrics の名前は残らない）",
+      re.search(r'moved \{\n  from = aws_s3tables_table\.snmp_metrics\n  to   = aws_s3tables_table\.raw_telemetry\n\}', tf) is not None
+      and tf.count("snmp_metrics") == 2)
 
 # ---- EMR Serverless（器だけ。ジョブは ops/up.sh が起こす）
 check("EMR Serverless は spark / ARM64", re.search(r'aws_emrserverless_application" "spark"[\s\S]*?type\s*=\s*"spark"[\s\S]*?architecture\s*=\s*"ARM64"', tf, re.S) is not None)
@@ -322,8 +325,8 @@ check("証跡のテーブル proposal_events をいつも作り（count 無し�
       _blk is not None and "count" not in _blk.group(1) and "required = true" not in _blk.group(1).replace(" ", "").replace("required=true", "required = true"))
 check("proposal_events の列と順は workflow/rules.py の PROPOSAL_EVENT_COLUMNS と同じ",
       re.findall(r'name\s*=\s*"(\w+)"\s*\n\s*type\s*=\s*"(\w+)"', _blk.group(1)) == [tuple(c) for c in _pec])
-check("異常の履歴のテーブル anomaly_events は無い（S3 Tables のテーブルは snmp_metrics と proposal_events と alert_events だけ）",
-      re.findall(r'resource "aws_s3tables_table" "(\w+)"', tf) == ["snmp_metrics", "proposal_events", "alert_events"] and '"anomaly_events' not in tf and "anomaly_events_table" not in tf
+check("異常の履歴のテーブル anomaly_events は無い（S3 Tables のテーブルは raw_telemetry と proposal_events と alert_events だけ）",
+      re.findall(r'resource "aws_s3tables_table" "(\w+)"', tf) == ["raw_telemetry", "proposal_events", "alert_events"] and '"anomaly_events' not in tf and "anomaly_events_table" not in tf
       and "ANOMALY_EVENT_COLUMNS" not in src)
 # アラートの通知の履歴（2026-10-04）。書くのは graph の status の Lambda → Firehose（history.tf）、読むのは query_history（Athena）
 _aec = next(ast.literal_eval(n.value) for n in _rules_tree.body if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "ALERT_EVENT_COLUMNS")
@@ -878,7 +881,7 @@ _fake_sql = _types.ModuleType("pyspark.sql")
 _fake_sql.functions, _fake_sql.types = _Any(), _Any()
 _saved_mods = {k: sys.modules.get(k) for k in ("pyspark", "pyspark.sql")}
 _orig_mo = (mod.iceberg_query, mod.http_query, mod.read_ssm_parameter)
-_b4 = base + ["--sinks", "iceberg,splunk,opensearch,prometheus", "--iceberg-table", "s3tables.netops.snmp_metrics",
+_b4 = base + ["--sinks", "iceberg,splunk,opensearch,prometheus", "--iceberg-table", "s3tables.netops.raw_telemetry",
               "--splunk-hec-url", "https://s:8088", "--splunk-token-parameter", "/p/t",
               "--prometheus-url", "https://p/api/v1/remote_write", "--opensearch-endpoint", "https://o"]
 def _reads(*extra):
@@ -932,9 +935,9 @@ check("build 共通 0 + opensearch=300,iceberg=50000: 書いた格納先だけ�
       _r_mixed == {"iceberg": "50000", "splunk": None, "opensearch": "300", "prometheus": None})
 check("main は格納先ごとの上限（0 なら上限なし）を起動時のログに出す", "1 回 {max_offsets(args, s) or '上限なし'} 件まで" in src)
 check("build iceberg: 列の足りない表（tables.tf の 8 列）には iceberg のクエリを組む前に ALTER TABLE を 1 回出し、足した列をログに出す",
-      _sp_old.tables == ["s3tables.netops.snmp_metrics"] and _alter_at == [1]
-      and _sp_old.sqls == ["ALTER TABLE s3tables.netops.snmp_metrics ADD COLUMNS (event_id string, kafka_topic string, kafka_partition int, kafka_offset bigint)"]
-      and "iceberg: s3tables.netops.snmp_metrics に列 event_id, kafka_topic, kafka_partition, kafka_offset を足した（いまある行は null）" in _alter_out)
+      _sp_old.tables == ["s3tables.netops.raw_telemetry"] and _alter_at == [1]
+      and _sp_old.sqls == ["ALTER TABLE s3tables.netops.raw_telemetry ADD COLUMNS (event_id string, kafka_topic string, kafka_partition int, kafka_offset bigint)"]
+      and "iceberg: s3tables.netops.raw_telemetry に列 event_id, kafka_topic, kafka_partition, kafka_offset を足した（いまある行は null）" in _alter_out)
 check("build iceberg: 列がそろっていれば ALTER も列のログも出さない（2 回目の起動から）", _sp_new.sqls == [] and "を足した" not in _new_out)
 check("build: iceberg が無ければ表を見ない（HTTP の格納先のジョブは S3 Tables に触らない）", _sp_http.tables == [] and _sp_http.sqls == [])
 check("ICEBERG_ADDED_COLUMNS は event_id string / kafka_topic string / kafka_partition int / kafka_offset bigint（Kafka の partition は int、offset は long）",
@@ -1521,9 +1524,9 @@ check("節を分けても読めるキーは同じ（deploy-env.sh の DEPLOY_ENV
           for k in ("ENDPOINTS_MULTI_AZ", "NETWORK_PERIMETER", "TF_VERBOSE"))
       and 'NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"\nflag_value NETWORK_PERIMETER; flag_value ENDPOINTS_MULTI_AZ\n' in up
       and 'if [ -n "$ENDPOINTS_MULTI_AZ" ]; then ENDPOINT_AZS=2; else ENDPOINT_AZS=1; fi' in up)
-# iceberg を外しても、証跡があるのでテーブルバケット・namespace・カタログはいつも作る。生データの snmp_metrics だけ外す
-check('resource "aws_s3tables_table" "snmp_metrics" は sink_iceberg の count',
-      re.search(r'resource "aws_s3tables_table" "snmp_metrics" \{\n  count = local\.sink_iceberg \? 1 : 0\n', tf) is not None)
+# iceberg を外しても、証跡があるのでテーブルバケット・namespace・カタログはいつも作る。生データの raw_telemetry だけ外す
+check('resource "aws_s3tables_table" "raw_telemetry" は sink_iceberg の count',
+      re.search(r'resource "aws_s3tables_table" "raw_telemetry" \{\n  count = local\.sink_iceberg \? 1 : 0\n', tf) is not None)
 for _res in ('resource "aws_s3tables_table_bucket" "tables"', 'resource "aws_s3tables_namespace" "netops"'):
     check(f"{_res} はいつも作る（count 無し）", re.search(re.escape(_res) + r' \{\n  count', tf) is None and _res in tf)
 check("count を外したバケット・namespace は moved で state の [0] を引き継ぐ（作り直さない）",
@@ -1540,7 +1543,7 @@ _jobs_def = {j: [x.strip(' "') for x in v.split(",")] for j, v in
              re.findall(r'(\w+) = \[([^\]]*)\]', re.search(r'spark_jobs = \{ for job, sinks in \{(.*?)\} :', tf).group(1))}
 check("spark_jobs: iceberg / splunk / http（opensearch と prometheus）", _jobs_def == {"iceberg": ["iceberg"], "splunk": ["splunk"], "http": ["opensearch", "prometheus"]})
 _VALS = {"local.bootstrap": "b:9098", "local.checkpoint_uri": "s3://bucket/analytics/checkpoint/u/", "var.region": "ap-northeast-1",
-         "local.metric_topics": "metrics,gnmi", "local.log_topics": "traps,logs", "local.iceberg_table": "s3tables.netops.snmp_metrics",
+         "local.metric_topics": "metrics,gnmi", "local.log_topics": "traps,logs", "local.iceberg_table": "s3tables.netops.raw_telemetry",
          "local.opensearch_endpoint": "https://c.aoss.amazonaws.com", "local.opensearch_index": "snmp-logs",
          "local.prometheus_remote_write_url": "https://aps/api/v1/remote_write", "local.splunk_hec_url": "https://splunk.p.internal:8088",
          "local.splunk_token_parameter": "/p/splunk/hec-token", "var.splunk_index": ""}

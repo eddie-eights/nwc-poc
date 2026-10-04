@@ -1003,14 +1003,14 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 - S3 Tables は Grafana のデータソースではない。
 - どちらも認証はタスクロールの SigV4 で、VPC エンドポイント経由。
 
-### Q. snmp_metrics って何？
+### Q. raw_telemetry（旧 snmp_metrics）って何？
 
 **A. 機器から来た生データを、全部そのまま溜めておく S3 Tables（Iceberg）のテーブル。**
 
 - **入るもの。** MSK の 5 つのトピック（metrics / gnmi / mdt / traps / logs）の全部。Spark が up か down かを判断せず、行をそのまま追記する。どのトピックから来た行かは `topic` 列で分かる。
 - **役割。** メトリクスとログの履歴の正本。OpenSearch と Prometheus は検索やグラフのための写し。
 - **作られる条件。** `STORES` に `s3` があるときだけ。
-- **名前。** SNMP のメトリクスだけではないので、`raw_telemetry` に改名すると決めた（ブランチ `rename-raw-telemetry` に実装済み。main にはまだ入っていない）。
+- **名前。** SNMP のメトリクスだけではないので、2026-10-04 に `snmp_metrics` から `raw_telemetry` に改名した。
 
 ### Q. S3 Tables には 1 つのテーブルしかない？ メトリクスもログも 1 つの同じテーブル？
 
@@ -1018,7 +1018,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 | 中身 | テーブル名 | 書く人 | 状態 |
 |---|---|---|---|
-| 機器から来た生データ（metrics / gnmi / mdt / traps / logs の全部） | `snmp_metrics`（`raw_telemetry` に改名予定） | Spark | `STORES` に `s3` があるときだけ作る |
+| 機器から来た生データ（metrics / gnmi / mdt / traps / logs の全部） | `raw_telemetry`（旧 `snmp_metrics`） | Spark | `STORES` に `s3` があるときだけ作る |
 | 修復案の証跡（作成・承認・却下・適用・確認） | `proposal_events` | Temporal の worker | いつも作る |
 | アラートの通知の履歴（発火と解消） | `alert_events` | Lambda graph-status（Firehose 経由） | 「アラートの履歴を残す（Cycle 001）」で実装中 |
 

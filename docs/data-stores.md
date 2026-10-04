@@ -12,7 +12,7 @@
 
 | データ | 置き場 | 書く | 読む |
 |---|---|---|---|
-| 生データの履歴（metrics / gnmi / mdt / traps / logs の全部） | S3 Tables（Iceberg）`snmp_metrics` | Spark の `iceberg` | まだ読む側が無い（`query_history` が読むのは下の `alert_events`） |
+| 生データの履歴（metrics / gnmi / mdt / traps / logs の全部） | S3 Tables（Iceberg）`raw_telemetry` | Spark の `iceberg` | まだ読む側が無い（`query_history` が読むのは下の `alert_events`） |
 | 異常の「いま」 | 置かない。機器・回線・層の `status`（下の 2 行）と、Grafana / Splunk のアラートの状態で見る | — | — |
 | 障害の履歴（アラートの通知 1 件が 1 行。発火と解消） | S3 Tables `alert_events` | Lambda `graph-status` → Firehose（60 秒ごとにまとめて追記） | エージェントの `query_history`（Athena） |
 | 修復案の「いま」（pending → approved …） | Neptune の頂点 `proposal`（id は `<anomaly_id>#<first_seen>`） | worker、Web の承認タブ | worker、Web の承認タブ、エージェントの `list_proposals` |
@@ -28,7 +28,7 @@
 ```mermaid
 flowchart LR
   MSK["MSK<br/>metrics / gnmi / mdt / traps / logs"] --> SPARK["Spark<br/>EMR Serverless"]
-  SPARK -->|"全部 append"| ICE["S3 Tables<br/>snmp_metrics"]
+  SPARK -->|"全部 append"| ICE["S3 Tables<br/>raw_telemetry"]
   SPARK --> PROM["Prometheus"] --> GRAF["Grafana<br/>アラートルール"]
   SPARK -.->|"STORES の splunk"| SPL["Splunk<br/>保存済みサーチ"]
   GRAF -->|"firing / resolved"| SNS["SNS<br/>prefix-alerts"]
@@ -47,7 +47,7 @@ flowchart LR
 `sudo lab fail-main` でアクセス側 Leaf の fabric（`dc1-leaf-01 ethernet-1/1`）を落としたときの流れ（送り手が Grafana の構成。`STORES` は既定の `s3,grafana` のまま、`SNMP_POLL=1` にしたとき）。既定の `SNMP_POLL=0` ではポーリングをしないので 1〜3 が起きず、`STORES` に `splunk` が無い（既定）ままならアラートは出ない。`STORES` に `splunk` があれば、1〜3 の代わりに linkDown の trap が `traps` に載り、Splunk の保存済みサーチが同じ id の `link_down` を SNS に出す（4 から先は同じ）。
 
 1. **ポーリング（10 秒ごと）:** Telegraf が `ifOperStatus=down` を拾い、MSK の `metrics` に出す。
-2. **Spark:** `iceberg` が行をそのまま `snmp_metrics` に追記し、`prometheus` が同じ値を Prometheus に書く。どちらも up か down かを判断しない。
+2. **Spark:** `iceberg` が行をそのまま `raw_telemetry` に追記し、`prometheus` が同じ値を Prometheus に書く。どちらも up か down かを判断しない。
 3. **Grafana:** ルール `link_down` が 30 秒ごとに `ifOperStatus` を見て、down の IF を `firing` として SNS のトピック `<prefix>-alerts` に出す。異常の id は `dc1-leaf-01#link_down#ethernet-1/1`。ここでは頂点も行も書かない。
 4. **Lambda `graph-status`:** SNS から受け取り、Neptune の IF の頂点の `status` を `DOWN` にする。`STORES` に `splunk` があれば、同じ回線の IS-IS の隣接が Splunk の `isis_down`（gNMI）で届き、頂点 `dc1-leaf-01#isis#ethernet-1/1.0` も `DOWN` になる。同じ通知を Firehose にも送り、60 秒ほどで `alert_events` に `firing` の行が入る（event_id は `<anomaly_id>#<source>#<status>#<starts_at の epoch 秒>`）。
 5. **worker:** SQS から受け取り、異常ごとに Temporal のワークフロー `investigate-<anomaly_id>` を起こす。
@@ -65,7 +65,7 @@ flowchart LR
 | S3 Tables（Iceberg） | 大量の追記と、後からの集計。安い | Spark の append、worker の PyIceberg の append、Firehose の Iceberg 宛て、Athena の SELECT |
 
 - **「いま」と証跡を分ける:** 頂点は書き換わるので、それだけでは「いつ誰が承認したか」が後から追えない。変わるたびに S3 Tables に 1 行足し、上書きしない。
-- **Web と Iceberg:** Web は Iceberg を読まない。読むのはエージェントの `query_history`（Athena のワークグループ `<prefix>-history` で `alert_events` だけ）。`snmp_metrics` と `proposal_events` はまだ書くだけの状態。
+- **Web と Iceberg:** Web は Iceberg を読まない。読むのはエージェントの `query_history`（Athena のワークグループ `<prefix>-history` で `alert_events` だけ）。`raw_telemetry` と `proposal_events` はまだ書くだけの状態。
 
 ### 4. 気を付けること
 
@@ -76,7 +76,7 @@ flowchart LR
 - **`alert_events` の `starts_at` は送り手で意味が違う:** Grafana は発火した時刻で、`resolved` の行も発火の時刻を持ったまま来る。Splunk は保存済みサーチの `latest(_time)` で、その状態を最後に見た時刻（`resolved` なら戻った時刻）。いつ届いたかは `received_at`（Lambda が受けた時刻）で見る。
 - **worker が止まっているあいだの承認:** Web で承認した事実は頂点にあるが、`proposal_events` の `approved` の行は worker が拾ったときに書く。worker が起きないまま時間が過ぎると、証跡に承認が残らない。Temporal の履歴はタスクと一緒に消える。
 - **`ops/down.sh` は証跡も消す:** テーブルバケットごと消えるので、`proposal_events` も `alert_events` も残らない。残したいときは消す前に書き出す。
-- **`STORES` に `s3` が無くてもテーブルバケットはできる:** 証跡の置き場なのでいつも作る（生データの `snmp_metrics` だけが `STORES` の `s3` に従う）。
+- **`STORES` に `s3` が無くてもテーブルバケットはできる:** 証跡の置き場なのでいつも作る（生データの `raw_telemetry` だけが `STORES` の `s3` に従う）。
 
 ### 5. 経緯: DynamoDB をやめた（2026-09-24）
 
