@@ -15,6 +15,8 @@
 | [pipeline.md](pipeline.md) | `pipeline/`（`PIPELINE=1`） | lab → Telegraf → MSK → Spark → 格納先、Grafana と Splunk のアラート、Neptune のトポロジ |
 | [workflow.md](workflow.md) | `workflow/`（`WORKFLOW=1`） | アラート（SNS → SQS）→ Temporal の調査・承認・修復、Gateway（MCP） |
 
+リソースごとの知見（使い方、つながり、はまりどころ、制約）は [resources/README.md](resources/README.md)。
+
 使い方は別のファイル: パイプラインは [pipeline.md](../pipeline.md)、機器から集めるデータは [collection.md](../collection.md)、承認の流れは [workflow.md](../workflow.md)、データの置き場は [data-stores.md](../data-stores.md)。
 
 ## どのファイルがどこで動くか
