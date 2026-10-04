@@ -72,17 +72,19 @@
 #   VPC_CIDR                terraform/base/core の vpc_cidr（社内と重なるとき）
 #   MDT_SOURCE_CIDRS        Cisco の MDT（dial-out。tcp 57000）を stream の Telegraf の NLB へ送ってよい機器の CIDR（カンマで。例 10.10.0.0/16,10.20.0.0/16）。
 #                           terraform/base/core の mdt_source_cidrs。既定は空で、どこからも受けない（lab の SR Linux は MDT を送れない）
-#   NETWORK_PERIMETER=0     VPC の外からの AWS の API を拒む Deny（terraform/base/core の perimeter.tf）を外す。既定 1。切り分けのときだけ
-#   ENDPOINTS_MULTI_AZ=1    インターフェース型エンドポイントを 2 AZ に置く（本番の形。費用は倍）。既定 0 でサブネット a だけ
 #   HTTP_SEND=executor      analytics の Spark のジョブが HTTP の格納先（opensearch / prometheus / splunk）へ executor から送る（foreachPartition）。既定 driver（driver に集めて送る）
 #   MAX_OFFSETS_PER_TRIGGER Spark の 1 つのクエリが Kafka の 1 回のトリガー（60 秒）に読む件数の上限（全パーティションの合計。maxOffsetsPerTrigger）。既定 10000、0 で上限なし
 #   MAX_OFFSETS_PER_TRIGGER_ICEBERG / _SPLUNK / _OPENSEARCH / _PROMETHEUS
 #                           その格納先のクエリだけ上の値を上書きする（0 でそのクエリだけ上限なし）。既定は空で、上の値を使う
 #   LOCAL_PORT              PC 側のポート。既定 8080
 #   NO_DASHBOARD_PORTFORWARD=1  最後の Web へのポートフォワーディング（手順 10）を開かずに終わる（2026-10-04 に NO_PORTFORWARD から名前を変えた。前の名前が残っていると止まる）
-#   TF_VERBOSE=1            terraform の出力を全部画面に出す（既定は進みと結果だけ。全文は ops/logs/tf-<ルート>-apply.log）
 #   AWS_PROFILE / AWS_CA_BUNDLE  AWS CLI と terraform がそのまま読む
-# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* / SNMP_POLL / NO_DASHBOARD_PORTFORWARD / NETWORK_PERIMETER / ENDPOINTS_MULTI_AZ は 1 / 0 のほか true / false、yes / no でも書ける（ops/down.sh の KEEP_ECR は 1 か 0 だけ）。
+# ---- 冗長化用（既定はどれも 1 AZ / 1 台。本番の形を試すときに書く） ----
+#   ENDPOINTS_MULTI_AZ=1    インターフェース型エンドポイントを 2 AZ に置く（本番の形。エンドポイントの費用は倍）。既定 0 でサブネット a だけ
+# ---- デバッグ用（ふだんは書かない） ----
+#   NETWORK_PERIMETER=0     AccessDenied の切り分け。VPC の外からの AWS の API を拒む Deny（terraform/base/core の perimeter.tf）を外す。既定 1
+#   TF_VERBOSE=1            terraform の失敗・遅さの切り分け。出力を全部画面に出す（既定は進みと結果だけ。全文は ops/logs/tf-<ルート>-apply.log）
+# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* / SNMP_POLL / NO_DASHBOARD_PORTFORWARD / NETWORK_PERIMETER / ENDPOINTS_MULTI_AZ / TF_VERBOSE は 1 / 0 のほか true / false、yes / no でも書ける（ops/down.sh の KEEP_ECR は 1 か 0 だけ）。
 #
 # 利用者への権限は人に渡す作業なので入れていない（docs/deploy.md の「利用者に画面を渡す」）。
 set -euo pipefail
@@ -274,6 +276,8 @@ trap on_exit EXIT
 log "0. 設定と道具と認証を確かめる"
 load_deploy_env
 resolve_name_prefix  # OWNER（必須。terraform の -var owner にそのまま渡す。下の tf_apply_only）と接頭辞 PREFIX=<owner>-nwc-poc
+# terraform の出力を絞るか（ops/deploy-env.sh の tf_logged）。TF_VERBOSE=0 / false / no を空にそろえる（そろえないと、0 を書いても「空でない」で全部出してしまう）
+flag_value TF_VERBOSE
 log "   デプロイする人の名前: ${OWNER}（リソース名の接頭辞と Project タグは ${PREFIX}）"
 IMAGE_TAG="${IMAGE_TAG:-v1}"
 LOCAL_PORT="${LOCAL_PORT:-8080}"
@@ -395,6 +399,10 @@ fi
 if [ -n "$PIPELINE" ]; then
   if [ -n "$SKIP_LAB" ] && [ -z "$SKIP_STREAM" ]; then
     echo "SKIP_LAB=1 なので lab は作らない。stream の Telegraf の取りにいく側は lab の定義の機器を探しに行き、届かないので gNMI / SNMP のエラーをログに出して繋ぎ直し続ける（タスクは落ちない）。受ける側（trap / syslog / MDT）は送り手がいなければ何も来ない"
+    # trap と syslog を NLB へ送れるのは lab の管理ネットワーク（lab の EC2 の DNAT）だけ、MDT は MDT_SOURCE_CIDRS だけ（terraform/base/core の security_groups.tf）
+    if [ -z "${MDT_SOURCE_CIDRS:-}" ]; then
+      printf '\033[1;33m%s\033[0m\n' "注意: lab が無く MDT_SOURCE_CIDRS も空なので、この stream には何も届かない（trap と syslog は lab の EC2 からしか来ず、MDT を送ってよい機器も無い）。届けるなら SKIP_LAB を外すか、MDT_SOURCE_CIDRS に機器の CIDR を書く"
+    fi
   fi
   if [ -n "$SKIP_STREAM" ] && [ -z "$SKIP_ANALYTICS" ]; then
     echo "SKIP_STREAM=1 なので analytics も作らない（読む Kafka が無い）"

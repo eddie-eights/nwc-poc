@@ -1317,6 +1317,10 @@ check("up.sh は PIPELINE=1 で SKIP_LAB=1 だけなら止まらず、lab 以外
 check("up.sh は SKIP_LAB=1 でも stream を作らないなら lab の注意を出さず、lab を作るときも出さない",
       "lab は作らない" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1") and "lab は作らない" not in _skip(PIPELINE="1")
       and _skip(PIPELINE="1") == "OUT: L=0 S=0 A=0 G=0")
+check("up.sh は lab が無く MDT_SOURCE_CIDRS も空で stream を作るなら「この stream には何も届かない」と注意を出して続ける",
+      "この stream には何も届かない" in _skip(PIPELINE="1", SKIP_LAB="1") and _skip(PIPELINE="1", SKIP_LAB="1").endswith("OUT: L=1 S=0 A=0 G=0")
+      and "何も届かない" not in _skip(PIPELINE="1", SKIP_LAB="1", MDT_SOURCE_CIDRS="10.10.0.0/16")
+      and "何も届かない" not in _skip(PIPELINE="1", MDT_SOURCE_CIDRS="") and "何も届かない" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1"))
 check("up.sh の「土台だけになる」は SKIP_LAB と SKIP_STREAM と SKIP_GRAPH が全部あるときだけ（lab と graph だけ外しても stream は作る）",
       "土台だけになる" in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1", SKIP_GRAPH="1")
       and _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1", SKIP_GRAPH="1").endswith("OUT: L=1 S=1 A=1 G=1")
@@ -1377,6 +1381,41 @@ check("deploy.env.example は NO_DASHBOARD_PORTFORWARD を書き、前の名前�
       re.search(r"^#NO_DASHBOARD_PORTFORWARD=1$", env_example, re.M) is not None and re.search(r"^#?\s*NO_PORTFORWARD=", env_example, re.M) is None
       and all(re.search(rf"(?<![A-Z_]){k}(?![A-Z_])", open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read().split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1])
               for k in ("NO_DASHBOARD_PORTFORWARD", "NO_PORTFORWARD")))
+# ふだん書かないキーは deploy.env.example と up.sh のヘッダーの最後の 2 節（冗長化用 → デバッグ用）にまとめる（2026-10-04）。並べ替えただけで、読み方と既定は変えない
+_RED_H = "# ---- 冗長化用（既定はどれも 1 AZ / 1 台。本番の形を試すときに書く） ----"
+_DBG_H = "# ---- デバッグ用（ふだんは書かない） ----"
+def _key_sections(text, key_re):  # 見出しで ふだん / 冗長化用 / デバッグ用 に切り、各節に出てくるキーの名前を出てくる順に返す
+    if text.count(_RED_H) != 1 or text.count(_DBG_H) != 1 or text.index(_RED_H) > text.index(_DBG_H):
+        return None
+    a, b = text.index(_RED_H), text.index(_DBG_H)
+    return [re.findall(key_re, t, re.M) for t in (text[:a], text[a:b], text[b:])]
+_env_secs = _key_sections(env_example, r"^#?([A-Z][A-Z0-9_]*)=")
+_up_hdr = up[up.index("# 設定できるキー（"):up.index("# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* /")]
+_up_secs = _key_sections(_up_hdr, r"^#   ([A-Z][A-Z0-9_]*)")
+check("deploy.env.example と up.sh のヘッダーは、冗長化用の節に ENDPOINTS_MULTI_AZ、最後のデバッグ用の節に NETWORK_PERIMETER と TF_VERBOSE だけを置く",
+      _env_secs is not None and _env_secs[1:] == [["ENDPOINTS_MULTI_AZ"], ["NETWORK_PERIMETER", "TF_VERBOSE"]]
+      and _up_secs is not None and _up_secs[1:] == [["ENDPOINTS_MULTI_AZ"], ["NETWORK_PERIMETER", "TF_VERBOSE"]]
+      and not any(k in _env_secs[0] or k in _up_secs[0] for k in ("ENDPOINTS_MULTI_AZ", "NETWORK_PERIMETER", "TF_VERBOSE")))
+check("切り分けに使わないキー（HTTP_SEND / MAX_OFFSETS_PER_TRIGGER* / KEEP_ECR / NO_DASHBOARD_PORTFORWARD / LOCAL_PORT / IMAGE_TAG / AWS_*）はふだんの節のまま",
+      _env_secs is not None and _up_secs is not None
+      and all(k in _env_secs[0] for k in ("HTTP_SEND", "MAX_OFFSETS_PER_TRIGGER", "MAX_OFFSETS_PER_TRIGGER_ICEBERG", "MAX_OFFSETS_PER_TRIGGER_SPLUNK",
+                                          "MAX_OFFSETS_PER_TRIGGER_OPENSEARCH", "MAX_OFFSETS_PER_TRIGGER_PROMETHEUS", "KEEP_ECR",
+                                          "NO_DASHBOARD_PORTFORWARD", "LOCAL_PORT", "IMAGE_TAG", "AWS_PROFILE", "AWS_CA_BUNDLE"))
+      and all(k in _up_secs[0] for k in ("HTTP_SEND", "MAX_OFFSETS_PER_TRIGGER", "NO_DASHBOARD_PORTFORWARD", "LOCAL_PORT", "IMAGE_TAG", "AWS_PROFILE")))
+check("deploy.env.example のキーの行は 1 つのキーにつき 1 行で、デバッグ用の節がファイルの最後（後ろにキーの行も別の節も無い）",
+      (lambda ks: len(ks) == len(set(ks)))(re.findall(r"^#?([A-Z][A-Z0-9_]*)=", env_example, re.M))
+      and env_example.rstrip("\n").endswith("#TF_VERBOSE=0") and "# ---- " not in env_example[env_example.index(_DBG_H) + len(_DBG_H):])
+check("デバッグ用のキーは、それぞれ何の切り分けに使うかを 1 行目に書き、見本の値は既定の逆（NETWORK_PERIMETER=0）か既定（TF_VERBOSE=0）のまま",
+      re.search(r"^# AccessDenied の切り分け: [^\n]*\n(?:#[^\n]*\n)*?#NETWORK_PERIMETER=0$", env_example, re.M) is not None
+      and re.search(r"^# terraform の失敗・遅さの切り分け: [^\n]*\n(?:#[^\n]*\n)*?#TF_VERBOSE=0$", env_example, re.M) is not None
+      and re.search(r"^#   NETWORK_PERIMETER=0 +AccessDenied の切り分け。", _up_hdr, re.M) is not None
+      and re.search(r"^#   TF_VERBOSE=1 +terraform の失敗・遅さの切り分け。", _up_hdr, re.M) is not None
+      and re.search(r"^#ENDPOINTS_MULTI_AZ=1$", env_example, re.M) is not None)
+check("節を分けても読めるキーは同じ（deploy-env.sh の DEPLOY_ENV_KEYS に 3 つとも残る）で、up.sh の既定も同じ（NETWORK_PERIMETER 1、ENDPOINTS_MULTI_AZ 0）",
+      all(re.search(rf"(?<![A-Z_]){k}(?![A-Z_])", open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read().split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1])
+          for k in ("ENDPOINTS_MULTI_AZ", "NETWORK_PERIMETER", "TF_VERBOSE"))
+      and 'NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"\nflag_value NETWORK_PERIMETER; flag_value ENDPOINTS_MULTI_AZ\n' in up
+      and 'if [ -n "$ENDPOINTS_MULTI_AZ" ]; then ENDPOINT_AZS=2; else ENDPOINT_AZS=1; fi' in up)
 # iceberg を外しても、証跡があるのでテーブルバケット・namespace・カタログはいつも作る。生データの snmp_metrics だけ外す
 check('resource "aws_s3tables_table" "snmp_metrics" は sink_iceberg の count',
       re.search(r'resource "aws_s3tables_table" "snmp_metrics" \{\n  count = local\.sink_iceberg \? 1 : 0\n', tf) is not None)

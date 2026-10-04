@@ -139,6 +139,8 @@ destroy_lambda_root() {  # destroy_lambda_root <ルート> <VPC の中の Lambda
 log "0. 設定と道具と認証"
 load_deploy_env
 resolve_name_prefix  # OWNER と接頭辞 PREFIX。作ったときの ops/up.sh と同じ値でないと、Terraform が別のリソースを消しにいく（deploy.env を変えずに打つ）
+# terraform の出力を絞るか（ops/deploy-env.sh の tf_logged）。TF_VERBOSE=0 / false / no を空にそろえる（そろえないと、0 を書いても「空でない」で全部出してしまう）
+flag_value TF_VERBOSE
 KEEP_ECR="${KEEP_ECR:-0}"
 case "$KEEP_ECR" in
   0) echo "KEEP_ECR=0: ECR もイメージごと消す（残すなら KEEP_ECR=1）" ;;
