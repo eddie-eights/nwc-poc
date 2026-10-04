@@ -101,7 +101,7 @@ flowchart LR
 
   | 列 | 型 | 中身 |
   |---|---|---|
-  | event_id | string | `<proposal_id>#<event>`（今のまま。再試行の重複を落とす鍵）。`ignored` の行だけは `<proposal_id>#ignored#<decided_at の epoch 秒>#<decided_by>` |
+  | event_id | string | `<proposal_id>#<event>`（今のまま。再試行の重複を落とす鍵）。`ignored` の行だけは `<proposal_id>#ignored#<decision>#<decided_at の epoch 秒>#<decided_by>`（`decision` は効かなかった決定の種類 approved / rejected。同じ人が同じ秒に承認と却下を送っても、別の行として残る） |
   | proposal_id | string | `<anomaly_id>#<first_seen>` |
   | anomaly_id | string | |
   | seq | **int** | 修復案の中の順番。created が 1、以後 1 ずつ増える |
@@ -165,7 +165,11 @@ flowchart LR
 - **効かなかった決定は `ignored` の行として残す**（2026-10-05。2 人が数秒差で却下と承認を押すと、キューは順番を守らないので、先に届いたほうが効く。負けたほうが何も残らないのを避ける）。
   - 残すのは「もう決定を持っているときに届いた、中身の違う決定」だけ。効いた決定と `decision`・`decided_by`・`decided_at` が全部同じもの（SQS の重複配達）は残さない。`proposal_id` が違うものも残さない。
   - 行の作り: `event` は `ignored`、`seq` は次の番号、`status` とほかの項目（効いた決定の `decided_by` / `decided_at` を含む）は直前の行と同じ。`detail` に「却下（<名前>、<時刻>）が届いたが、先に承認が決まっていた」の形で、効かなかった決定を書く。
-  - `status` は変わらないので、「いま」の読み方（`seq` が最大の行）と画面はそのまま。画面の履歴には 1 行増える。
+  - 「いま」は `seq` が最大の行の `status` で読む。`ignored` の行が最後に来ると、その行の `event`・`detail`・`event_time` は `ignored` のものになるが、`status` は変わらない。「いま」を `event` で読まない。画面の履歴には 1 行増える（画面が「いま」に `detail` を出しているかは未確認）。
+  - 書くタイミング: 「打つ・確かめる」を先にする。`ignored` の行は、`applied` / `failed` の行のあと、解消の通知を待っているあいだ、閉じる前のどこかで書く（決定の行の直後に書くと、書き終わるまで lab への適用が最大で約 195 秒待たされる）。そのため `seq` の順は届いた順と合わない。届いた時刻は `detail` で読む。
+  - `ignored` にした決定がもう一度届いたとき（重複配達）も、行は増やさない。
+  - `ignored` の行を書けなかったとき（再試行を使い切った）は、worker のログに warning を出して捨てる。ワークフローは止めない。
+  - 別の修復案への決定が届いたときは、行にせず worker のログに 1 行出す。
   - 順番そのものは変えない（標準キュー、先着 1 回のまま）。FIFO キューにする案と、却下を承認より優先する案は採らない（経緯は design-log.md）。
   - ワークフローが終わったあとに届いた決定（`NOT_FOUND` で pending でない）は、行にしない。worker のログに 1 行出す。
   - 承認待ちが決定なしで終わったあと（`expired` / `obsolete`）に届いた決定も、行にしない。worker のログに 1 行出す（2026-10-05）。ワークフローは解消の通知を待って最長 24 時間残るので、そのあいだに決定が届くことがある。この決定を「効いた決定」として控えない（控えると、次に届いた決定に「先に承認が決まっていた」という誤った `ignored` の行が付く）。`ignored` の行を書くのは、効いた決定（approved / rejected）があるときだけ。
@@ -292,6 +296,8 @@ flowchart LR
 8. **実装は cycle 001 と 002 のあと。** `workflow/`、`agent/evidence.py`、`terraform/workflow/`、`ops/up.sh`、`tests/` が重なる。
 9. **配備の順番。** テーブルを作り直してから worker を入れ替えるまでのあいだ、古い worker が 12 列で書くと、追記は成功し、`seq` と `first_seen` が null の行が入る（エンジニアが手元で再現。2026-10-05）。その行は「いま」には選ばれないが（null は 0 として扱い、Athena の DESC も null を最後に置く）、空欄の多い修復案として一覧に出る。up.sh の 1 回の中で両方が替わることを確かめる。**`proposal_events` を作り直すと ARN が変わる。analytics を作り直したら workflow も apply し直す**（しないと、Web とツールが古い ARN を指して AccessDenied になる。エンジニアがコードを読んだ結果で、AWS では未確認）。
 11. **`'` を含む `target` の修復案は決められない。** `proposal_id` は Athena のパラメータとして渡すので、`'` と制御文字を含むものは検査で弾く。Splunk の `target` が自由文（ifDescr）に落ち、そこに `'` があると、修復案は作られるが詳細を引けず、承認できないまま `expired` になる。
+12. **`ignored` の行の数に上限が無い。** 効いた決定のあとに、別の秒に押すたびに行が 1 つ増え、Temporal の履歴も増える。押せるのは Web に入れる人だけなので、PoC では受け入れる。
+13. **古い版のワークフローの履歴を、新しい版の worker で再生すると壊れる。** いまは worker のタスクが入れ替わると履歴ごと消えるので起きない。Temporal の履歴を永続化するときは `workflow.patched` が要る。
 10. **承認タブは 30 秒ごとに `list_proposals` を呼ぶ。** 開いているブラウザ 1 つにつき、30 秒に 1 回 Athena のクエリが走る（1 日開きっぱなしで約 2,880 回、エンジニアの見積もりで約 $0.14/日、応答は 1〜3 秒。AWS では未確認）。このサイクルでは変えない。気になるなら、間隔を延ばすか、結果を短い時間だけ持つ。
 
 <!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261004-cycle-003-proposals-in-s3tables-design.html -->
