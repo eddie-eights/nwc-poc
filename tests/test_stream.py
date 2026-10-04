@@ -58,7 +58,7 @@ BASE = ["--bootstrap", "b", "--checkpoint", "c", "--sinks", "iceberg", "--iceber
 check("格納先は iceberg / opensearch / prometheus / splunk の 4 つで、マイクロバッチは 60 秒（アラートが届くまでの遅れの一部）",
       mod.SINKS == ("iceberg", "opensearch", "prometheus", "splunk") and mod.TRIGGER == "60 seconds" and mod.parse_args(BASE).sinks == ["iceberg"])
 check("空のマイクロバッチでは sender を呼ばない（検知の見回りのための例外は無くなった）",
-      re.search(r"\n\s*if records:\n\s*sender\(records\)", src) is not None and 'name == "detect"' not in src)
+      re.search(r"\n\s*if records:\n\s*dropped = sender\(records\)", src) is not None and 'name == "detect"' not in src)
 
 
 # ---- ログの経路: SR Linux の system logging remote-server（udp）→ lab の EC2（203.0.113.1:5140 を Telegraf の NLB へ DNAT）→ Telegraf（ECS）の inputs.syslog

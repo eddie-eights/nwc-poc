@@ -2,7 +2,7 @@
 
 ← [構成](README.md)
 
-`terraform/agent`（`AGENT=1`。既定）。AgentCore Runtime、ガードレール、KB（`CREATE_KB=1` のときだけ）。
+`terraform/agent`（`AGENT=1`。既定は `0`）。AgentCore Runtime、ガードレール、KB（`CREATE_KB=1` のときだけ）。
 
 ## チャットの経路
 
