@@ -21,4 +21,33 @@ case "${SPLUNK_ROLE:-splunk_standalone}" in
   splunk_standalone|splunk_search_head) ;;
   *) sudo -n -u splunk rm -rf /opt/splunk-etc/apps/netops_alerts ;;
 esac
+# クラスターの indexer は、止められる（ECS・docker stop の SIGTERM）と先に splunk offline を打つ。manager が bucket の primary を残りの indexer へ
+# 付け替えてから splunkd が止まるので、search head の検索が欠けない（「Splunk をクラスターにする（004）」のリスク 11。いきなり止めると、manager が
+# 次の世代を約 5 分確定できず、search head は止まった indexer を primary に持つ古い世代のまま 0 件を返す）。そのため indexer だけは上流の入口を
+# exec せず子として起こし、SIGTERM をここで受ける。手元では offline は 45〜47 秒で終わった（付け替えと世代の確定は最初の数秒で、残りは splunkd が
+# 止まる時間）。OFFLINE_TIMEOUT 秒で終わらなければ打ち切る。どちらでも最後に上流の入口へ SIGTERM を回し、いつもどおり splunk stop させる（offline で
+# 止まっていればすぐ終わる）。ECS の stopTimeout は 120 秒（splunk.tf）で、過ぎると SIGKILL。打ち切ったあとの splunk stop（手元で 47 秒）も収まる値にする。
+# admin のパスワードは offline の引数で渡す（CLI は標準入力から読まない。見えるのはこのコンテナの中の ps だけ）
+OFFLINE_TIMEOUT=60
+if [ "${SPLUNK_ROLE:-}" = splunk_indexer ]; then
+  child=""
+  on_term() {
+    trap '' TERM INT
+    local t0=$SECONDS rc=0
+    echo "nwc-offline: start"
+    timeout "$OFFLINE_TIMEOUT" sudo -n -u splunk /opt/splunk/bin/splunk offline -auth "admin:${SPLUNK_PASSWORD:-}" < /dev/null || rc=$?
+    echo "nwc-offline: rc=$rc $((SECONDS - t0))s"
+    [ -n "$child" ] || exit 143
+    kill -TERM "$child" 2> /dev/null || true
+    rc=0
+    wait "$child" || rc=$?
+    exit "$rc"
+  }
+  trap on_term TERM INT
+  /sbin/entrypoint.sh "$@" &
+  child=$!
+  rc=0
+  wait "$child" || rc=$?
+  exit "$rc"
+fi
 exec /sbin/entrypoint.sh "$@"

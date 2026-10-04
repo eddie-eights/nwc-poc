@@ -292,7 +292,8 @@ resource "aws_ecs_task_definition" "splunk_idx" {
       { name = "SPLUNK_GENERAL_TERMS", value = "--accept-sgt-current-at-splunk-com" },
       { name = "SPLUNK_ROLE", value = "splunk_indexer" },
     ], local.splunk_cluster_environment)
-    # 止まるまでに手元で 47 秒かかった（Fargate の既定 30 秒では途中で強制終了になる）
+    # 止まるまでに手元で 47 秒かかった（Fargate の既定 30 秒では途中で強制終了になる）。入口（splunk/entrypoint.sh）が先に splunk offline を
+    # 打つようにしてからは 57〜58 秒（offline が 45〜47 秒）。offline を打ち切る秒数（OFFLINE_TIMEOUT）とあわせて test_alerts が検査する
     stopTimeout = 120
     logConfiguration = {
       logDriver = "awslogs"
