@@ -860,7 +860,16 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
   - 遅い格納先のせいで、ほかの格納先のバッチが 60 秒に収まらない。
   - 格納先ごとに必要な executor の数が大きく違う（たとえば S3 Tables は 8、Splunk は 1）。
 - **分け方の第一歩は 2 つ。** 「正本の S3 Tables」と「それ以外（OpenSearch、Prometheus、Splunk）」に分けるのが効果が大きい。正本が、ほかの格納先の不調に巻き込まれなくなる。
-- **この PoC では分けない。** 量が少なく、driver を増やす費用のほうが目立つ。スクリプトは `--sinks` で格納先を選べるので、分けるときは同じスクリプトを `--sinks iceberg` と `--sinks opensearch,prometheus,splunk` で 2 つ起こせばよい（checkpoint は格納先ごとに分かれているので、そのまま続きから読む。未確認）。
+- **この PoC では 3 つに分けることにした（2026-10-04 に決定。実装はこれから）。** 分け方は「S3 Tables」「Splunk」「OpenSearch + Prometheus」。
+
+| ジョブ | 格納先 | 分ける理由 | executor |
+|---|---|---|---|
+| 1 | S3 Tables（Iceberg） | 正本。ほかの不調に巻き込ませない。書き込みが並列になるのはここだけ | 2 |
+| 2 | Splunk | 比較用で、自前の 1 台なので一番止まりやすい。止まっても、ほかを起こし直さない | 1 |
+| 3 | OpenSearch + Prometheus | どちらもマネージドで、Grafana のアラートの元。まとめて driver を 1 つ節約する | 1 |
+
+  - 費用は 3 vCPU → 7 vCPU（driver 3 + executor 4）で、約 +$0.28/h の見込み。EMR Serverless の上限（`max_cpu`）も 4 → 8 vCPU に上げる。
+  - スクリプトは `--sinks` で格納先を選べ、checkpoint は格納先ごとに分かれているので、同じスクリプトを 3 つ起こす形にする。
 
 ### Q. S3 以外の格納先は、VictoriaMetrics みたいにクラスター化できないの？
 
