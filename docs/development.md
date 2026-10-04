@@ -31,7 +31,7 @@ uv sync --group dev --group web
 bash ops/check.sh
 ```
 
-`web` のグループ（gradio・pandas・boto3）も入れるのは、`test_nautobot` が Web の画面のモジュールを読むため。最後の行が `すべて通過` なら健全。中身は `terraform fmt`、9 ルートの `terraform validate`、`bash -n`、`tests/` の 10 本（`test_app` 104 項目、`test_graph` 74、`test_stream` 60、`test_sync` 94、`test_analytics` 271、`test_workflow` 272、`test_alerts` 89、`test_kb_index` 7、`test_lab_debug` 75、`test_nautobot` 58）。途中で落ちたらそこで止まる。
+`web` のグループ（gradio・pandas・boto3）も入れるのは、`test_nautobot` が Web の画面のモジュールを読むため。最後の行が `すべて通過` なら健全。中身は `terraform fmt`、9 ルートの `terraform validate`、`bash -n`、`tests/` の 10 本（`test_app` 104 項目、`test_graph` 74、`test_stream` 60、`test_sync` 95、`test_analytics` 421、`test_workflow` 278、`test_alerts` 89、`test_kb_index` 7、`test_lab_debug` 75、`test_nautobot` 58）。途中で落ちたらそこで止まる。
 
 ## Web を手元で動かす
 

@@ -937,3 +937,129 @@ git status 行数（注入前と同じはず）: 11
 - 結論の変わったところ: 反対弁護人の前は「Must なし」だった。#1 で、決定 1 の順番が「行を組めない 1 件でメッセージ全体の Neptune が落ちる」退行を持ち込むと分かり、直した。決定 1 の「ALERT_DROPPED の扱いは変えない」は、組めない 1 件を ALERT_DROPPED に寄せることで守った（形の合わない通知と同じ WARNING）。
 - 部分的な真実: Firehose の上限は IP の数で変わる（15.6 / 21.6 秒）。status は「遅れる」だけでなく、やり直しで古い値に戻りうる（リスク 9〜11）。AWS で put_record_batch 1 回と Neptune Analytics の 1 回の問い合わせにかかる時間は測っていない。読みの待ちが受信ごとであることの穴（細切れの応答）は残る。
 - 残り: Must なし。S2（`_epoch` の 1e400）は前からあるもので設計側に回す。7a〜7c の Nit は最終報告。
+
+## Round 5
+
+実装モデル: opus-5.5 / effort: high
+
+cold review（Must なし、Should S-1〜S-4、Nit）を受けた勉強用の依頼で、同じブランチに積んだ。main を merge し、S-1 と S-2 を直し、S-4 と S-3・Nit を書いた。push と main への merge は勉強用がする。
+
+### 実装した内容
+
+- S-1: `workflow/rules.py:192` の `_epoch` で OverflowError も捕まえて 0 にする。`starts_at` が `1e400` / `"inf"` の通知で `alerts_from_message` が呼び出しごと落ち、Firehose にも Neptune にも 1 件も書かず、非同期のやり直しも同じく落ちていた（Round 4 の #S2）。直したあとは、`starts_at` 無し（event_id の末尾 `#0`、列は空）の行になる。
+- S-2: `ops/up.sh:786` で、graph の `alert_history=true` を `analytics_on`（`:529`。今回作るか、state に残っている）で決める。前は `SKIP_ANALYTICS` だけで決めていたので、`SKIP_ANALYTICS=1` で analytics を残したまま graph を作り直すと履歴が止まっていた。
+- S-2 で見つけた、前からあった食い違い（Round 1 の片付け 10 を置き換える）:
+  - `endpoints_for` は手順 3 より前に走るので、`ANALYTICS_LEFT`（`:752`）はまだ分からない。
+  - そのため、今回作る graph / workflow の `kinesis-firehose` / `athena` のエンドポイントが付いていなかった。workflow の Athena の環境変数はエンドポイント無しで付いていた。
+  - 手順 3 のループのあとで、`ANALYTICS_LEFT` なら今回作るルートの `endpoints_for` をもう一度回す（`:759`）。
+- S-4: `starts_at` の無い通知は別の発生でも 1 行にまとまる。design.md のリスク 12 と data-stores.md に書いた（コードは変えない）。送り手は 2 つとも `starts_at` を付けることを確かめた（Grafana は `$a.StartsAt.Unix`、Splunk は `latest(_time)`。読んだだけ）。
+- S-3 と Nit: 次の 4 点を design.md のリスク 13 に書いた。最初の up.sh が通ってから絞る。
+  - Firehose のロールの S3Tables / Glue の権限が広い。
+  - workflow の HistoryCatalog の Glue の権限が広い。
+  - trust に `aws:SourceArn` が無い。
+  - `lakeformation:GetDataAccess` は要ると分かったときだけ足す。
+
+### main の merge と衝突の解き方
+
+| commit | 取り込んだ main | 衝突と解き方 |
+| :--- | :--- | :--- |
+| `eb31804` | `2c02791`（event_id の実装 `f319c17` と docs） | README.md、deploy.env.example、docs/deploy.md、ops/up.sh。どれも両方を残した。費用は up.sh の式を両方の版で走らせて取り直し、WORKFLOW の athena の書き漏らし（$0.08 → $0.09）も直した |
+| `0eeb924` | `6d40944`（FAQ の 1 AZ の項） | なし |
+| `5bb809f` | `4f76fe2`（feat/sinks-stores: STORES、AGENT の既定 0、NO_DASHBOARD_PORTFORWARD、SKIP_LAB を単独で） | 衝突は deploy.env.example の 2 か所だけ。文言は main の版を取り、費用だけこのブランチの分（`kinesis-firehose` / `athena`）を足した。docs/deploy.md の SKIP_STREAM / SKIP_ANALYTICS の数字も同じ式に合わせた |
+| `cff9226` | `4d6246a`（冗長化用・デバッグ用の節、TF_VERBOSE=0 の直し、MDT の注意） | なし。費用の式は変わらない |
+
+`5bb809f` の費用は、main の up.sh の式とこの merge の式を、丸める前（0.1 セント単位）で同じ設定に当てて取り直した。main の式で出した値は、main の deploy.env.example の数字と一致する。
+
+| 設定 | main | merge 後 |
+| :--- | ---: | ---: |
+| PIPELINE（STORES 既定） | $2.45 | $2.46 |
+| PIPELINE、STORES=s3 | $1.84 | $1.86 |
+| SKIP_STREAM | -$1.45 | -$1.46 |
+| SKIP_ANALYTICS（KB あり） | -$0.83（-$0.80） | -$0.84（-$0.81） |
+| WORKFLOW | $0.08 | $0.09 |
+
+main で STORES に揃っていない次の 2 つは、この merge では直していない（main 側の作業）。
+- README.md の SINK_* / GRAFANA の文言と、PIPELINE の $2.37。
+- docs/deploy.md の SINK_* / GRAFANA の行と、AGENT の既定 1。
+
+`alert_events` は `terraform/pipeline/analytics/history.tf` で `var.sinks` によらず作る（count も for_each も無い。grep で確かめた）。そのため STORES から s3 を外しても、履歴は残る。
+
+### 変更ファイル一覧（merge を除く）
+
+| ファイル | 変更 |
+| :--- | :--- |
+| `workflow/rules.py` | S-1 |
+| `ops/up.sh` | S-2（`:529` の `analytics_on`、`:759` の足し直し、`:786` の graph の変数。行は `cff9226` のもの） |
+| `tests/test_sync.py` | S-1 の項目（`:387-394`）。S-2 の項目は、up.sh を bash で切り出して動かす形（`_graph_vars`、`:575-`）に替えた。94 → 95 項目 |
+| `terraform/pipeline/analytics/history.tf`、`graph/sync.tf`、`graph/variables.tf` | コメントと description の文言だけ（「analytics がある回（今回作るか、state に残っている）」） |
+| `docs/cycles/001-alert-history-firehose/design.md` | 書く側の文言を `analytics_on` に、手順 3 のあとの足し直し、リスク 12・13 |
+| `docs/pipeline.md`、`docs/deploy.md`、`docs/data-stores.md` | S-2 の文言、S-4 |
+| `docs/cycles/001-alert-history-firehose/build.md` | Round 4 の「読めない扱いで捨てる」を直した。Round 1 の片付け 10 に Round 5 の注記。この節 |
+| `docs/development.md` | test_sync 95、test_analytics 421、test_workflow 278（main の merge で増えた分を含む） |
+| `docs/cycles/001-alert-history-firehose/build-r5-check.log` | 最後の編集のあとの `bash ops/check.sh` の全文 |
+
+### 検証（最後の編集のあとに取り直した出力）
+
+`bash ops/check.sh` の全文は [build-r5-check.log](build-r5-check.log) にある（1428 行、exit 0）。以下はその抜粋で、行は書き換えていない。
+
+```
+== 1. terraform fmt -check -recursive terraform
+差分なし
+
+== 2. 9 つのルートの validate
+terraform/base/ecr  OK
+terraform/base/core  OK
+terraform/agent  OK
+terraform/pipeline/lab  OK
+terraform/pipeline/stream  OK
+terraform/pipeline/analytics  OK
+terraform/pipeline/graph  OK
+terraform/pipeline/nautobot  OK
+terraform/workflow  OK
+
+== 3. ops スクリプトの構文
+構文エラーなし
+```
+```
+通過 104 / 失敗 0     (test_app)
+通過 74 / 失敗 0      (test_graph)
+通過 60 / 失敗 0      (test_stream)
+通過 95 / 失敗 0      (test_sync)
+通過 421 / 失敗 0     (test_analytics)
+通過 278 / 失敗 0     (test_workflow)
+通過 89 / 失敗 0      (test_alerts)
+通過 7 / 失敗 0       (test_kb_index)
+通過 75 / 失敗 0      (test_lab_debug)
+58 項目すべて通過     (test_nautobot)
+すべて通過
+```
+
+括弧のファイル名は、貼るときに足した。
+
+S-1 と S-2 の項目（build-r5-check.log の 409 行と 434 行）:
+
+```
+ok starts_at が無限大（1e400 / "inf"）の通知も落とさず、starts_at 無し（event_id の末尾 #0、列は空）の行にして 3 件とも送り、Neptune に書く
+ok up.sh は analytics がある回（今回作るか、state に残っている）に graph に -var alert_history=true を渡し、そのときは kinesis-firehose も足す。SKIP_ANALYTICS=1 で analytics が残っていれば、今回作る graph / workflow にも kinesis-firehose / athena を足す（残ったルートのループのあとで graph の変数を決める）
+```
+
+### セルフレビュー
+
+実装モデル（自分）: opus-5.5 / effort high。cold review の指摘を直すラウンドなので、反対弁護人は走らせていない。
+
+退行の注入: `cff9226` の上で、`mutate_r5.py` が直した 3 か所を Round 4 までの形に戻す。そのたびに test_sync を走らせ、走らせたあとは元に戻す。
+
+```
+S1 _epoch で OverflowError を捕まえない（Round 4 までの形）: test_sync exit 1 / 通過 68 件で停止 / AssertionError: starts_at が無限大（1e400 / "inf"）の通知も落とさず、starts_at 無し（event_id の末尾 #0、列は空）の行にして 3 件とも送り、Neptune に書く
+S2a graph の変数を SKIP_ANALYTICS だけで決める（Round 4 までの形）: test_sync exit 1 / 通過 93 件で停止 / AssertionError: up.sh は analytics がある回（今回作るか、state に残っている）に graph に -var alert_history=true を渡し、そのときは kinesis-firehose も足す。SKIP_ANALYTICS=1 で analytics が残っていれば、今回作る graph / workflow にも kinesis-firehose / athena を足す（残ったルー
+S2b 残った analytics を見つけても、今回作る graph / workflow の履歴のエンドポイントを足さない: test_sync exit 1 / 通過 93 件で停止 / AssertionError: up.sh は analytics がある回（今回作るか、state に残っている）に graph に -var alert_history=true を渡し、そのときは kinesis-firehose も足す。SKIP_ANALYTICS=1 で analytics が残っていれば、今回作る graph / workflow にも kinesis-firehose / athena を足す（残ったルー
+git status 行数（注入前と同じはず）: 0
+```
+
+問題なしとした観点:
+
+- merge で S-2 の行が消えていない。merge 後の up.sh を grep し、`analytics_on`、`:759`、`:786` を確かめた。上の S2a / S2b でも落ちる。
+- 衝突の印が残っていない。`git grep -n -E '^(<<<<<<<|=======|>>>>>>>)( |$)'` が 0 件だった。
+- 費用: 上の表のとおり、main の式は main の数字と一致する。merge 後の差は、`kinesis-firehose` と `athena` のエンドポイント（1 本 $0.014）の分だけ。
+
+残り（直していない）: S-3 と Nit は design.md のリスク 13 に書いた。main の README と docs/deploy.md が STORES に揃っていない件は、main 側に回す。
