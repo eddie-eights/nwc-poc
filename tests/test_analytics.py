@@ -1168,6 +1168,77 @@ check("SPLUNK_HEC_URL は SINK_SPLUNK=0 でも止まる（deploy.env から消�
 check("SPLUNK_SKIP_TLS_VERIFY は使わない（書いてあれば注意だけ）", "for k in ADMIN_ARN OPENSEARCH_CACERT_FILE SPLUNK_SKIP_TLS_VERIFY; do" in up)
 check("deploy-env.sh は SINK_* を読めるキーに持つ",
       all(re.search(rf'(?<![A-Z_]){k}(?![A-Z_])', open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read()) for k in ("SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "SPLUNK_HEC_URL", "SPLUNK_INDEX", "SPLUNK_SKIP_TLS_VERIFY")))
+# STORES（格納先の 3 つのまとまり）を SINK_* の判定・Grafana・送り手の判定と一緒に切り出して動かす
+_stblk = up[up.index('STORES="${STORES:-}"'):up.index('SINK_S3="${SINK_S3:-1}"')]
+_g3 = "\n".join(up[up.index('GRAFANA="${GRAFANA:-1}"; flag_value GRAFANA'):].split("\n")[:3]) + "\n"
+_ST_OUT = 'echo "OUT: $SINKS | G=${GRAFANA:-0} ECS=${SPLUNK_ON_ECS:-0}"'
+def _stores(tail=_ST_OUT, **env):
+    r = subprocess.run(["bash", "-c", _pre + 'log() { echo "LOG: $*"; }\n' + _stblk + _blk + _g3 + tail], capture_output=True, text=True,
+                       env={"PATH": os.environ["PATH"], **env})
+    return r.returncode, r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "", r.stdout
+check("STORES は SINK_* の既定値の前で、格納先が無い・WORKFLOW の送り手・費用の検査の前に 5 つの変数へ写す",
+      up.index('STORES="${STORES:-}"') < up.index('SINK_S3="${SINK_S3:-1}"') < up.index('die "SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK が全部 0')
+      < up.index('GRAFANA="${GRAFANA:-1}"') < up.index('die "WORKFLOW はアラートの送り手が要る') < up.index("COST_CENTS=2\n")
+      and up.index('STORES="${STORES:-}"') > up.index("load_deploy_env\n"))
+check("STORES が空か無ければ今までどおり（5 つの変数と既定値で決め、まとまりのログも出さない）",
+      _stores()[:2] == (0, "OUT: iceberg,opensearch,prometheus | G=1 ECS=0") and _stores(STORES="")[:2] == _stores()[:2]
+      and _stores(SINK_S3="0", SINK_SPLUNK="1", GRAFANA="0")[:2] == (0, "OUT: opensearch,prometheus,splunk | G=0 ECS=1")
+      and "STORES" not in _stores()[2])
+check("STORES=s3,grafana,splunk で 5 つとも 1",
+      _stores(STORES="s3,grafana,splunk")[:2] == (0, "OUT: iceberg,opensearch,prometheus,splunk | G=1 ECS=1"))
+check("STORES は書かなかったまとまりの変数を 0 にする（s3 / grafana / splunk のそれぞれ 1 つだけ）",
+      _stores(STORES="s3")[:2] == (0, "OUT: iceberg | G=0 ECS=0")
+      and _stores(STORES="grafana")[:2] == (0, "OUT: opensearch,prometheus | G=1 ECS=0")
+      and _stores(STORES="splunk")[:2] == (0, "OUT: splunk | G=0 ECS=1")
+      and _stores(STORES="s3,splunk")[:2] == (0, "OUT: iceberg,splunk | G=0 ECS=1"))
+check("STORES の順番・重複・前後の空白は問わない",
+      _stores(STORES="splunk, s3 ,s3")[:2] == _stores(STORES="s3,splunk")[:2]
+      and _stores(STORES="grafana,s3,grafana")[:2] == _stores(STORES="s3,grafana")[:2])
+check("STORES は有効なまとまりと、写した 5 つの値を 1 行ログに出す",
+      "LOG:    格納先のまとまり（STORES）: s3 splunk（SINK_S3=1 SINK_OPENSEARCH=0 SINK_PROMETHEUS=0 GRAFANA=0 SINK_SPLUNK=1）" in _stores(STORES="splunk,s3")[2]
+      and _stores(STORES="splunk,s3")[2].count("LOG:") == 1)
+_rc, _last, _ = _stores(STORES="s3", SINK_S3="1")
+_rc2, _last2, _ = _stores(STORES="grafana", SINK_SPLUNK="0", GRAFANA="1", SINK_PROMETHEUS="no")
+check("STORES と SINK_* / GRAFANA を一緒に書くと、ぶつかった変数を名指しして止まる（0 を書いても止まる）",
+      _rc == 1 and _last.startswith("DIE: STORES と SINK_S3 を一緒に書いている")
+      and _rc2 == 1 and _last2.startswith("DIE: STORES と SINK_PROMETHEUS SINK_SPLUNK GRAFANA を一緒に書いている")
+      and all(_stores(STORES="s3", **{k: "0"})[0] == 1 for k in ("SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA")))
+check("STORES と一緒でも、空の SINK_* / GRAFANA は書いていないのと同じ（deploy.env の空の値と同じ扱い）",
+      _stores(STORES="s3", SINK_S3="", GRAFANA="")[:2] == (0, "OUT: iceberg | G=0 ECS=0"))
+check("STORES の知らない名前は止まり、使える名前を出す（大文字や空白区切りも知らない名前）",
+      all(_stores(STORES=v)[0] == 1 and "使えるのは s3 / grafana / splunk" in _stores(STORES=v)[1] for v in ("s3,elastic", "S3", "s3 grafana", "opensearch"))
+      and "STORES の「elastic」は無いまとまり" in _stores(STORES="s3,elastic")[1])
+check("STORES の空の要素は止まる（s3,,grafana / 末尾や先頭のカンマ / 空白だけ）",
+      all(_stores(STORES=v)[0] == 1 and "STORES に空の要素がある" in _stores(STORES=v)[1] for v in ("s3,,grafana", "s3,", ",s3", " ", "s3, ,splunk")))
+check("STORES で写したあとも今の検査が効く（grafana を外すと WORKFLOW の送り手が無く止まる。splunk なら通る）",
+      _stores(_sndblk + _ST_OUT, STORES="s3,grafana", WORKFLOW="1", SNMP_POLL="")[1].startswith("DIE: WORKFLOW はアラートの送り手が要る")
+      and _stores(_sndblk + _ST_OUT, STORES="s3,grafana", WORKFLOW="1", SNMP_POLL="1")[:2] == (0, "OUT: iceberg,opensearch,prometheus | G=1 ECS=0")
+      and _stores(_sndblk + _ST_OUT, STORES="splunk", WORKFLOW="1")[:2] == (0, "OUT: splunk | G=0 ECS=1"))
+check("STORES と SKIP_ANALYTICS の関係は今のまま（grafana を書いても SKIP_ANALYTICS=1 なら Grafana と ECS の Splunk は作らない）",
+      _stores(STORES="grafana,splunk", SKIP_ANALYTICS="1")[:2] == (0, "OUT: opensearch,prometheus,splunk | G=0 ECS=0"))
+import shutil, tempfile
+def _stores_file(text, **env):  # deploy.env から読ませる（ops/deploy-env.sh の load_deploy_env を通す）
+    d = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(d, "deploy.env"), "w") as f:
+            f.write(text)
+        r = subprocess.run(["bash", "-c", '. "$DENV"\n' + 'log() { echo "LOG: $*"; }\ndie() { echo "DIE: $*"; exit 1; }\nload_deploy_env >/dev/null\n'
+                            + _stblk + _blk + _g3 + _ST_OUT], capture_output=True, text=True,
+                           env={"PATH": os.environ["PATH"], "DENV": os.path.join(ROOT, "ops", "deploy-env.sh"), "DEPLOY_ENV_FILE": os.path.join(d, "deploy.env"), **env})
+        return r.returncode, r.stdout.strip().splitlines()[-1] if r.stdout.strip() else r.stderr
+    finally:
+        shutil.rmtree(d)
+check("deploy.env の STORES を読み、同じファイルの SINK_* とぶつかれば止まる。空の値（SINK_S3=）は書いていないのと同じ",
+      _stores_file("OWNER=a\nSTORES=grafana  # コメント\n") == (0, "OUT: opensearch,prometheus | G=1 ECS=0")
+      and _stores_file("OWNER=a\nSTORES=s3\nSINK_SPLUNK=1\n")[1].startswith("DIE: STORES と SINK_SPLUNK を一緒に書いている")
+      and _stores_file("OWNER=a\nSTORES=s3\nSINK_S3=\n") == (0, "OUT: iceberg | G=0 ECS=0")
+      and _stores_file("OWNER=a\nSINK_S3=0\n", STORES="splunk")[1].startswith("DIE: STORES と SINK_S3 を一緒に書いている"))
+_envx = open(ENV_EXAMPLE, encoding="utf-8").read()
+check("deploy.env.example は STORES を空で書き、5 つの変数の説明の前に、まとまりの中身と外すとデータごと消えることを書く",
+      re.search(r"^#STORES=$", _envx, re.M) is not None
+      and _envx.index("#STORES=") < _envx.index("# analytics の Spark の格納先を 1 つずつ") < _envx.index("#SINK_S3=1")
+      and all(k in _envx[:_envx.index("#STORES=")] for k in ("s3 ", "grafana ", "splunk ", "データごと消える"))
+      and re.search(r"(?<![A-Z_])STORES(?![A-Z_])", open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read()) is not None)
 check("deploy.env.example は SINK_SPLUNK=0 を既定にし、SPLUNK_HEC_URL / SPLUNK_SKIP_TLS_VERIFY を書かない（2026-09-28 にやめた）",
       re.search(r"^#SINK_SPLUNK=0$", open(ENV_EXAMPLE, encoding="utf-8").read(), re.M) is not None
       and "SPLUNK_HEC_URL" not in open(ENV_EXAMPLE, encoding="utf-8").read() and "SPLUNK_SKIP_TLS_VERIFY" not in open(ENV_EXAMPLE, encoding="utf-8").read())

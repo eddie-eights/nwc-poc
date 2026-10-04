@@ -38,6 +38,10 @@
 #   SKIP_LAB=1              PIPELINE=1 で lab を作らない（stream は lab が要るので SKIP_STREAM=1 も要る）
 #   SKIP_STREAM=1           PIPELINE=1 で stream と analytics（stream の Kafka を読む）を作らない
 #   SKIP_ANALYTICS=1        PIPELINE=1 で analytics（Spark → S3 Tables / OpenSearch / Prometheus / Splunk と、検知する Grafana / Splunk）を作らない
+#   STORES=s3,grafana,splunk
+#                           格納先を 3 つのまとまりで選ぶ（カンマで並べる。順番と重複は問わない）。s3 = SINK_S3、grafana = SINK_PROMETHEUS + SINK_OPENSEARCH + GRAFANA、
+#                           splunk = SINK_SPLUNK。書かなかったまとまりは 0 になる（前に作っていればその格納先はデータごと消える）。
+#                           空なら下の 5 つの変数で決める（既定）。下の 5 つと一緒には書けない（止まる）
 #   SINK_S3=0 / SINK_OPENSEARCH=0 / SINK_PROMETHEUS=0
 #                           analytics の Spark の格納先を 1 つずつ外す（既定は 3 つとも 1。0 にするとリソースごと作らない。1 つ以上は要る）。
 #                           SINK_S3 = 全トピック → S3 Tables（Iceberg）、SINK_OPENSEARCH = traps と logs（機器の syslog）→ OpenSearch Serverless、
@@ -274,6 +278,37 @@ resolve_name_prefix  # OWNER（必須。terraform の -var owner にそのまま
 log "   デプロイする人の名前: ${OWNER}（リソース名の接頭辞と Project タグは ${PREFIX}）"
 IMAGE_TAG="${IMAGE_TAG:-v1}"
 LOCAL_PORT="${LOCAL_PORT:-8080}"
+# 格納先を 3 つのまとまりで選ぶ（STORES=s3,grafana,splunk の形。カンマで並べ、順番と重複は問わない）。書いたまとまりの変数を 1、
+# 書かなかったまとまりの変数を 0 にしてから、下の SINK_* と GRAFANA の検査（格納先が無い・WORKFLOW の送り手・費用など）にそのまま通す。
+#   s3      = SINK_S3（S3 Tables。Athena はサイクル 001「アラートの履歴を残す」が main に入ったらここに足す）
+#   grafana = SINK_PROMETHEUS + SINK_OPENSEARCH + GRAFANA
+#   splunk  = SINK_SPLUNK
+# 空なら今までどおり 5 つの変数（と既定値）で決める。STORES と 5 つの変数を一緒に書くとどちらが効くか決められないので止まる
+# （「書いた」は変数が空でないこと。deploy.env の空の値は書いていないのと同じ（ops/deploy-env.sh）なのに合わせる）
+STORES="${STORES:-}"
+if [ -n "$STORES" ]; then
+  STORES_CONFLICT=""
+  for v in SINK_S3 SINK_OPENSEARCH SINK_PROMETHEUS SINK_SPLUNK GRAFANA; do
+    if [ -n "${!v:-}" ]; then STORES_CONFLICT="$STORES_CONFLICT $v"; fi
+  done
+  [ -z "$STORES_CONFLICT" ] || die "STORES と${STORES_CONFLICT} を一緒に書いている（どちらが効くか決められない）。STORES を使うなら${STORES_CONFLICT} を deploy.env と環境変数から消す。まだ何も作っていない"
+  STORE_S3=""; STORE_GRAFANA=""; STORE_SPLUNK=""
+  rest="$STORES,"
+  while [ -n "$rest" ]; do
+    item="${rest%%,*}"; rest="${rest#*,}"
+    item="${item#"${item%%[![:space:]]*}"}"; item="${item%"${item##*[![:space:]]}"}"
+    case "$item" in
+      s3) STORE_S3=1 ;;
+      grafana) STORE_GRAFANA=1 ;;
+      splunk) STORE_SPLUNK=1 ;;
+      '') die "STORES に空の要素がある（いまは「${STORES}」）。使えるのは s3 / grafana / splunk で、カンマで並べる。まだ何も作っていない" ;;
+      *) die "STORES の「${item}」は無いまとまり（いまは「${STORES}」）。使えるのは s3 / grafana / splunk で、カンマで並べる。まだ何も作っていない" ;;
+    esac
+  done
+  SINK_S3="${STORE_S3:-0}"; SINK_SPLUNK="${STORE_SPLUNK:-0}"
+  SINK_PROMETHEUS="${STORE_GRAFANA:-0}"; SINK_OPENSEARCH="${STORE_GRAFANA:-0}"; GRAFANA="${STORE_GRAFANA:-0}"
+  log "   格納先のまとまり（STORES）:${STORE_S3:+ s3}${STORE_GRAFANA:+ grafana}${STORE_SPLUNK:+ splunk}（SINK_S3=$SINK_S3 SINK_OPENSEARCH=$SINK_OPENSEARCH SINK_PROMETHEUS=$SINK_PROMETHEUS GRAFANA=$GRAFANA SINK_SPLUNK=$SINK_SPLUNK）"
+fi
 # analytics の Spark の格納先。SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS を 1 / 0 で書く（既定は 3 つとも 1）。
 # 0 にした格納先は Spark が書かないだけでなく、リソースも作らない。
 # SINK_SPLUNK（既定 0）は Splunk の HEC に送る 4 本目。analytics の ECS に Splunk を立てる（SPLUNK_ON_ECS）
