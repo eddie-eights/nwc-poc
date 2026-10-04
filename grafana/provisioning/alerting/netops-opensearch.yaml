@@ -3,8 +3,8 @@
 # 文書は spark/snmp_sinks.py の opensearch_docs が書く {"@timestamp", "topic", "measurement", "tags": {…}, "fields": {…}}。index に mapping は置いておらず
 # （動的 mapping）、文字列は text と .keyword の両方になるので、完全一致と集計は .keyword で書く。
 # trap の tags.oid は ".1.3.6.1.…" の形（Telegraf 1.40 に net-snmp の snmptrap で送って実測。MIB が無いので tags.name は "iso.3.6.1.…" になるが使わない）。
-# 機器名の tags.sysName は trap 自身は持たず、Spark が device map（送り元の IP = tags.source → 機器名）で足す。対応表に無い機器の trap は集計に出ない
-# （Splunk は IP のまま出す）
+# 機器名の tags.sysName は trap 自身は持たず、Spark が device map（送り元の IP = tags.source → 機器名）で足す。対応表に無い機器（と device map が空のとき）は
+# 送り元の IP をそのまま tags.sysName に入れる（Splunk の coalesce('tags.sysName', …, 'tags.source') と同じく IP で出る。入れないと terms の集計に出ない）
 apiVersion: 1
 
 groups:

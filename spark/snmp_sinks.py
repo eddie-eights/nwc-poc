@@ -28,6 +28,7 @@ SNS のトピック <接頭辞>-alerts に出し、ワークフロー（SQS）�
 そのために格納先に合わせた整形だけはここでする（Telegraf・Kafka・S3 Tables の生データと Splunk へ送るものは変えない）:
   prometheus  文字列の状態を 1 / 0 の系列にする（STATE_FIELDS。bgp_neighbor の session_state → session_up、isis_interface の oper_state → oper_up）
   prometheus / opensearch  sysName の無いレコード（gNMI と trap。source が機器の管理 IP）に、--device-map で引いた機器名を sysName として足す
+                           （opensearch は表に無い機器でも source の IP をそのまま sysName にする。Grafana の trap のルールが tags.sysName で束ねるため）
 
 HTTP の送信は driver でまとめて行う（マイクロバッチを collect する。PoC の量（機器数台、10 秒間隔）なら 1 分に数百行）。
 量が増えたら foreachPartition に移す。remote write の protobuf と snappy は外部ライブラリ無しで組む
@@ -81,7 +82,8 @@ def parse_args(argv):
     p.add_argument("--splunk-index", default="", help="splunk: イベントを入れる index（空なら token の既定の index）")
     p.add_argument("--splunk-skip-verify", action="store_true", help="splunk: HEC の TLS 証明書を検証しない（自己署名の Splunk Enterprise の検証用。既定は検証する）")
     p.add_argument("--device-map", default="", help="prometheus / opensearch: sysName の無いレコードの source（機器の管理 IP）を機器名に引く表"
-                                                     "（別名=機器名,…。Splunk の DEVICE_MAP と同じ。lab/lab_topology.py --device-map。空なら足さない）")
+                                                     "（別名=機器名,…。Splunk の DEVICE_MAP と同じ。lab/lab_topology.py --device-map。"
+                                                     "表に無いとき prometheus は足さず、opensearch は source をそのまま sysName にする）")
     args = p.parse_args(argv)
     args.sinks = [s.strip() for s in args.sinks.split(",") if s.strip()]
     bad = [s for s in args.sinks if s not in SINKS]
@@ -196,12 +198,14 @@ def parse_device_map(text):
     return out
 
 
-def with_sysname(tags, devmap):
+def with_sysname(tags, devmap, fallback_source=False):
     """sysName の無い tags に、source を device map で引いた機器名を sysName として足した写しを返す。
-    sysName があるとき（ポーリングと syslog）と、表に無いときはそのまま（同じ dict）"""
-    if not devmap or tags.get("sysName") not in (None, ""):
+    sysName があるとき（ポーリングと syslog）と、表に無いときはそのまま（同じ dict）。
+    fallback_source なら、表に無い（表が空のときも）source はそのまま sysName にする（Splunk の coalesce('tags.sysName', …, 'tags.source') と同じ機器になる）"""
+    if tags.get("sysName") not in (None, ""):
         return tags
-    name = devmap.get(str(tags.get("source") or "").strip().lower())
+    source = str(tags.get("source") or "").strip()
+    name = (devmap or {}).get(source.lower()) or (source if fallback_source else "")
     return dict(tags, sysName=name) if name else tags
 
 
@@ -264,7 +268,8 @@ def log(msg):
 # ---------------------------------------------------------------- opensearch（_bulk）
 def opensearch_docs(records, devmap=None):
     """_bulk の本文（action 行と document 行の対）。fields の値は数値なら数値にする（TIMESERIES 型はドキュメント ID を付けない）。
-    sysName の無いレコード（trap）は devmap で機器名を足す（Grafana の trap のルールが tags.sysName ごとに数える）"""
+    sysName の無いレコード（trap）は devmap で機器名を足し、表に無ければ source（送り元の IP）を sysName にする
+    （Grafana の trap のルールが tags.sysName ごとに数えるので、無いと集計に出ない。2026-10-04 のレビュー）"""
     lines = []
     for r in records:
         doc = {
@@ -273,7 +278,7 @@ def opensearch_docs(records, devmap=None):
             "measurement": r["measurement"],
             "agent_host": r.get("agent_host"),
             "host": r.get("host"),
-            "tags": with_sysname(r["tags"], devmap),
+            "tags": with_sysname(r["tags"], devmap, fallback_source=True),
             "fields": {k: (_number(v) if _number(v) is not None else v) for k, v in r["fields"].items()},
         }
         lines.append('{"index":{}}')
@@ -403,7 +408,8 @@ def label_name(tag):
 def prometheus_series(records, devmap=None):
     """数値の field を 1 系列 1 サンプルにする。[(labels(sorted list of (name, value)), value, ms), …]
     文字列の状態は STATE_FIELDS の表で 1 / 0 の field に変える。sysName の無いレコード（gNMI）は devmap で機器名を足す。
-    トピックでは絞らない（prometheus のクエリは --metric-topics だけを購読している）"""
+    トピックでは絞らない（prometheus のクエリは --metric-topics だけを購読している）。
+    時刻の順に並べて返す（同じ時刻なら元の順）。1 バッチに同じ系列のサンプル（on_change の続けての変化）が逆順で入ると、AMP が out-of-order で拒むため"""
     out = []
     for r in records:
         base = {}
@@ -422,7 +428,7 @@ def prometheus_series(records, devmap=None):
             labels = dict(base)
             labels["__name__"] = metric_name(r["measurement"] or "unknown", f)
             out.append((sorted(labels.items()), num, ms))
-    return out
+    return sorted(out, key=lambda s: s[2])
 
 
 # protobuf の手組み（prometheus.WriteRequest。フィールド番号は prometheus/prompb/remote.proto と types.proto）

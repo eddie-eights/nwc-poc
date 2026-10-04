@@ -409,6 +409,9 @@ check("prometheus_series: 数値の field だけ（文字列は落とす、bool 
       and sorted(dict(l)["__name__"] for l, _, _ in series) == ["snmp_interface_flag", "snmp_interface_ifInOctets", "snmp_interface_ifOperStatus"])
 check("prometheus_series: トピックでは絞らない（購読で絞っている）", len(mod.prometheus_series([dict(rec, topic="cpu")])) == 3)
 check("prometheus_series: labels は名前順のリスト（Prometheus はソート済みを要求する）", all(l == sorted(l) for l, _, _ in series))
+_ord = mod.prometheus_series([dict(rec, ts=1700000002.0, fields={"a": 2}), dict(rec, ts=1700000001.0, fields={"a": 1, "b": 1}), dict(rec, ts=1700000002.0, fields={"a": 3})])
+check("prometheus_series: サンプルは時刻の順（同じ系列が 1 バッチに逆順で来ても AMP が out-of-order で拒まない）。同じ時刻なら元の順",
+      [(dict(l)["__name__"][-1], v, ms) for l, v, ms in _ord] == [("a", 1.0, 1700000001000), ("b", 1.0, 1700000001000), ("a", 2.0, 1700000002000), ("a", 3.0, 1700000002000)])
 # cycle 002: gNMI の BGP / IS-IS の文字列の状態を 1 / 0 にし、sysName の無いレコードに device map で機器名を足す
 _dm = mod.parse_device_map(" 203.0.113.31 = dc1-leaf-01 ,203.0.113.32=dc1-leaf-02,bad,=x,y=")
 check("parse_device_map: 別名=機器名,… を {別名（小文字）: 機器名}。= の無い要素と空の側は捨てる",
@@ -422,6 +425,13 @@ check("with_sysname: sysName が無ければ source を引いて足した写し�
       and mod.with_sysname({"source": "203.0.113.31", "sysName": ""}, _dm)["sysName"] == "dc1-leaf-01"
       and mod.with_sysname(_t, {}) is _t and mod.with_sysname(_t, None) is _t
       and mod.with_sysname({"source": " 203.0.113.31 "}, _dm)["sysName"] == "dc1-leaf-01")
+check("with_sysname(fallback_source=True): 表に無い（表が空・無いときも）source はそのまま sysName にする。source も無ければそのまま",
+      mod.with_sysname({"source": " 203.0.113.99 "}, _dm, fallback_source=True) == {"source": " 203.0.113.99 ", "sysName": "203.0.113.99"}
+      and mod.with_sysname(_t, {}, fallback_source=True) == dict(_t, sysName="203.0.113.31")
+      and mod.with_sysname(_t, None, fallback_source=True) == dict(_t, sysName="203.0.113.31")
+      and mod.with_sysname(_t, _dm, fallback_source=True)["sysName"] == "dc1-leaf-01"
+      and mod.with_sysname({"source": "203.0.113.31", "sysName": "x"}, _dm, fallback_source=True)["sysName"] == "x"
+      and mod.with_sysname({"agent_host": "r1"}, _dm, fallback_source=True) == {"agent_host": "r1"} and "sysName" not in _t)
 def _gnmi(meas, field, value, **tags):
     return {"ts": 1700000000.0, "topic": "gnmi", "measurement": meas, "agent_host": "", "host": "h", "tags": dict({"source": "203.0.113.31"}, **tags), "fields": {field: value}}
 _bgp = mod.prometheus_series([_gnmi("bgp_neighbor", "session_state", "established", peer_address="10.255.0.1"),
@@ -615,11 +625,12 @@ check("opensearch_docs: action 行と document 行の対、@timestamp は ISO �
 _trap = {"ts": 1700000000.0, "topic": "traps", "measurement": "snmp_trap", "agent_host": "", "host": "h",
          "tags": {"source": "203.0.113.31", "oid": ".1.3.6.1.6.3.1.1.5.3", "name": "linkDown"}, "fields": {"sysUpTimeInstance": 1}}
 _tdocs = mod.opensearch_docs([_trap, dict(_trap, tags=dict(_trap["tags"], source="203.0.113.99"))], mod.parse_device_map("203.0.113.31=dc1-leaf-01"))
-check("opensearch_docs: sysName の無い snmp_trap は tags.sysName に機器名が入る。表に無い IP では足さない。元のレコードは変えない",
-      json.loads(_tdocs[1])["tags"] == dict(_trap["tags"], sysName="dc1-leaf-01") and "sysName" not in json.loads(_tdocs[3])["tags"]
+check("opensearch_docs: sysName の無い snmp_trap は tags.sysName に機器名が入る。表に無い IP では IP をそのまま入れる（Grafana の trap のルールの集計に出す）。元のレコードは変えない",
+      json.loads(_tdocs[1])["tags"] == dict(_trap["tags"], sysName="dc1-leaf-01")
+      and json.loads(_tdocs[3])["tags"] == dict(_trap["tags"], source="203.0.113.99", sysName="203.0.113.99")
       and "sysName" not in _trap["tags"])
-check("opensearch_docs: devmap を渡さなければ今までどおり（ポーリングの sysName は変えない）",
-      "sysName" not in json.loads(mod.opensearch_docs([_trap])[1])["tags"] and mod.opensearch_docs([rec], mod.parse_device_map("203.0.113.31=x")) == docs
+check("opensearch_docs: devmap を渡さなくても sysName の無い trap は source を入れる。sysName のあるレコード（ポーリング）と source の無いレコードは変えない",
+      json.loads(mod.opensearch_docs([_trap])[1])["tags"]["sysName"] == "203.0.113.31" and mod.opensearch_docs([rec], mod.parse_device_map("203.0.113.31=x")) == docs
       and json.loads(mod.opensearch_docs([dict(_trap, tags={"source": "203.0.113.31", "sysName": "x"})], mod.parse_device_map("203.0.113.31=dc1-leaf-01"))[1])["tags"]["sysName"] == "x")
 check("splunk_events は device map を受けず、sysName を足さない（Splunk のアラートアクションが DEVICE_MAP で引く。cycle 002 でも出力は変えない）",
       list(inspect.signature(mod.splunk_events).parameters) == ["records", "index"]
