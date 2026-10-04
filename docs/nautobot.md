@@ -21,7 +21,7 @@ Nautobot で機器・インタフェース・ケーブルを変えると、Nauto
 | | Nautobot | Neptune |
 |---|---|---|
 | 持つもの | あるべき姿（台帳）: 機器、インタフェース、IP、Service、ケーブル | いまの姿（グラフ）: 台帳の写し + アラートで変わる `status` + IP 層 / EVPN・BGP 層 + 修復案 |
-| 変える人 | 人（画面）か、外のシステム（API） | Job、Lambda、ワークフロー（人は直接変えない） |
+| 変える人 | 人（Nautobot の画面、Web の「トポロジ」タブ）か、外のシステム（API） | Job、Lambda、ワークフロー（人は直接変えない） |
 | 読む人 | 運用者、Job | AI エージェント、Web の「トポロジ」タブ |
 | 得意なこと | 入力の検査、変更の履歴、権限 | つながりをたどる（隣、影響の範囲、層をまたぐ紐づけ） |
 
@@ -39,6 +39,7 @@ flowchart LR
     WEB -->|"Job を積む"| REDIS --> WORKER
   end
   EC2 --> WEB
+  EC2 -->|"「トポロジ」タブのリンクの編集<br/>REST API（トークン）"| WEB
   WEB --- DB[("RDS PostgreSQL<br/>db.t4g.micro<br/>台帳")]
   WORKER --- DB
   WORKER -->|"① 一覧を書き換え"| SSM["SSM のパラメータ<br/>gnmi-targets / snmp-agents"]
@@ -54,7 +55,7 @@ flowchart LR
 | SG | `<prefix>-nautobot` / `<prefix>-nautobot-db` | 画面へは Web の EC2 からだけ。DB へはタスクからだけ |
 | 名前解決 | `nautobot.<prefix>-nautobot.internal:8080` | VPC の中の URL（SSM `/<prefix>/nautobot/url` にも書く） |
 | ログ | `/ecs/<prefix>-nautobot` | ストリームは `web/`（migrate・bootstrap・画面）、`worker/`（Job）、`redis/` |
-| シークレット | SSM の SecureString `/<prefix>/nautobot/{secret-key,admin-password,db-password}` | `ops/up.sh` が乱数で作る。タスクは ECS の secrets で受ける |
+| シークレット | SSM の SecureString `/<prefix>/nautobot/{secret-key,admin-password,db-password,api-token}` | `ops/up.sh` が乱数で作る。タスクは ECS の secrets で受ける |
 | イメージ | ECR `<prefix>-nautobot` | 公式イメージ `networktocode/nautobot:3.2.6-py3.12` に boto3 と下の「足したもの」を入れたもの |
 
 LB は無い。閉域なので、画面は Web の EC2 を踏み台にしたポートフォワードで開く。費用は約 $0.14/h。
@@ -146,6 +147,31 @@ Role の名前は `leaf` / `leafsw` / `spine` / `host` / `upstream` を使う（
 terraform -chdir=terraform/pipeline/nautobot output -raw exec_command   # web コンテナのシェル（ECS Exec）。中で nautobot-server nbshell
 ```
 
+### Web の「トポロジ」タブから回線を変える
+
+運用管理者の Web（Gradio）の「トポロジ」タブ →「リンクを編集」でも回線を足す・消すことができる。書き先は Neptune ではなく Nautobot。
+
+```mermaid
+sequenceDiagram
+  participant U as 運用者（Web の「トポロジ」タブ）
+  participant W as Web の EC2（web/nautobot_api.py）
+  participant N as Nautobot（REST API）
+  participant J as Job（JobHook netops-sync）
+  participant G as Neptune
+  U->>W: リンクを追加 / 削除
+  W->>N: インタフェースが無ければ作る → ケーブルを作る / 消す（トークン）
+  N->>J: 変更を検知して Job を積む
+  J->>G: 物理層の差分を Gremlin で書く
+  U->>W: 再読み込み（数秒〜十数秒あと）
+  W->>G: トポロジを読む
+```
+
+- トークンは SSM の SecureString `/<prefix>/nautobot/api-token`（`ops/up.sh` が作る）。Nautobot の側は起動時に `bootstrap.py` が同じ値でユーザー `netops-web` のトークンを作る。
+- 種別（fabric / l2 / lag）は画面で選んだものではなく、両端の機器の Role と LAG から Job が決める。役割（primary / secondary）と帯域はケーブルの custom field に入る。
+- 片方のインタフェースにもうケーブルがあれば追加は断られる（先にそのリンクを消す）。削除はケーブルだけを消し、インタフェースは残る。
+- 画面にあるのはリンクの追加・削除だけ。機器・Service・IP は Nautobot の画面で変える。
+- 「静的データを投入」は Nautobot があるあいだ使えない（Job が物理層を Nautobot の中身に戻すため）。
+
 ## 6. Neptune と組み合わせた使いどころ
 
 ### (1) 機器を監視に入れる
@@ -196,7 +222,7 @@ Neptune に書くものは 4 つあり、書き手が分かれている。Nautob
 | `status` | Lambda `<prefix>-graph-status` | アラート（SNS） |
 | 修復案 | ワークフローと Web | エージェントの調査と人の承認 |
 
-Web の「トポロジ」タブからの機器・回線の編集は止めてある（SSM `/<prefix>/nautobot/url` があるあいだ）。編集は Nautobot でする。
+Web の「トポロジ」タブのリンクの追加・削除は、Neptune ではなく Nautobot に書く（SSM `/<prefix>/nautobot/url` があるあいだ。5 章）。Web が Neptune の物理層を直接書くことはない。
 
 ## 8. 押さえておくこと
 
@@ -206,4 +232,4 @@ Web の「トポロジ」タブからの機器・回線の編集は止めてあ�
 - 一括で変えると、変更 1 件ごとに Job が走り、一覧が変わるたびに dialin が作り直される。大きく変えるときは JobHook `netops-sync` を止めてから変え、最後に手で Job を打つ。
 - `ops/sync-graph.sh --replace` は lab の定義で上書きする。Nautobot で足したものは、Job を打つまで Neptune から消える。
 - デバッグ用の EC2（`ops/lab-debug.sh`）は Nautobot を使わない。
-- AWS で確かめたのは、起動・seed・Job と JobHook の登録・起動時の同期まで。Nautobot での変更 → JobHook → SSM / dialin / Neptune と、Web の編集の停止は、まだ AWS では確かめていない（手元のテスト `tests/test_nautobot.py` だけ）。
+- AWS で確かめたのは、起動・seed・Job と JobHook の登録・起動時の同期まで。Nautobot での変更 → JobHook → SSM / dialin / Neptune と、Web からの Nautobot への書き込みは、まだ AWS では確かめていない（手元のテスト `tests/test_nautobot.py` と、手元の Docker で起こした Nautobot 3.2.6 への REST API だけ）。

@@ -65,6 +65,7 @@ locals {
     { name = "NAUTOBOT_SECRET_KEY", valueFrom = local.secret_arns["secret-key"] },
     { name = "NAUTOBOT_DB_PASSWORD", valueFrom = local.secret_arns["db-password"] },
     { name = "NAUTOBOT_SUPERUSER_PASSWORD", valueFrom = local.secret_arns["admin-password"] },
+    { name = "NAUTOBOT_API_TOKEN", valueFrom = local.secret_arns["api-token"] },
   ]
   nautobot_log = { for c in ["web", "worker", "redis"] : c => {
     logDriver = "awslogs"
@@ -129,7 +130,7 @@ resource "aws_ecs_task_definition" "nautobot" {
       command          = ["nautobot-server", "celery", "worker", "--loglevel", "INFO", "--concurrency", "2"]
       dependsOn        = [{ containerName = "web", condition = "HEALTHY" }]
       environment      = concat(local.nautobot_environment, [{ name = "NAUTOBOT_DOCKER_SKIP_INIT", value = "true" }])
-      secrets          = [for s in local.nautobot_secrets : s if s.name != "NAUTOBOT_SUPERUSER_PASSWORD"] # 管理者のパスワードは web の bootstrap だけが使う
+      secrets          = [for s in local.nautobot_secrets : s if !contains(["NAUTOBOT_SUPERUSER_PASSWORD", "NAUTOBOT_API_TOKEN"], s.name)] # 管理者のパスワードと API のトークンは web の bootstrap だけが使う
       logConfiguration = local.nautobot_log["worker"]
     },
   ])
@@ -171,7 +172,7 @@ resource "aws_ecs_service" "nautobot" {
   ]
 }
 
-# Web（web/topology_view.py）がここを見て、トポロジの「Neptune で編集」を止める（Nautobot が正のあいだ、物理層は Nautobot で編集する）
+# Web（web/topology_view.py）がここを見て、トポロジのリンクの編集の書き先を Nautobot の REST API にする（Nautobot が正。Neptune には JobHook の Job が反映する）
 resource "aws_ssm_parameter" "url" {
   name        = "/${local.name_prefix}/nautobot/url"
   description = "URL of Nautobot inside the VPC. While it exists the web UI sends topology edits to Nautobot."

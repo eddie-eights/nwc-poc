@@ -570,5 +570,25 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 今回足したのは、Nautobot の上で動く中身だけ。
 
 - Job のコード（`nautobot/jobs/netops_jobs.py`）と、台帳とトポロジの対応付け・同期（`nautobot/netops/nb_map.py` / `nb_sync.py`）
-- 起動時の用意（`nautobot/netops/bootstrap.py`: 管理者、custom field、最初の seed、Job の有効化と JobHook）
+- 起動時の用意（`nautobot/netops/bootstrap.py`: 管理者、API のユーザー、custom field、最初の seed、Job の有効化と JobHook）
 - 公式イメージに boto3 と上のファイルを足す `nautobot/Dockerfile`
+
+### Q. 運用管理者ダッシュボードの Web から機器の変更ができたと思うけど、その変更先を Nautobot にして、変更を検知した Nautobot の Job が Neptune に書きにいく、という構成でいいのでは？
+
+**A. その構成にした。** Web の「トポロジ」タブのリンクの追加・削除は Nautobot の REST API に書き、Nautobot の JobHook が呼ぶ Job が Neptune の物理層（と Telegraf の一覧）に反映する。Web が Neptune の物理層を直接書くことは無くなった。
+
+```mermaid
+flowchart LR
+  W["Web の「トポロジ」タブ<br/>リンクの追加・削除"] -->|"REST API"| NB["Nautobot（台帳）"]
+  NB -->|"JobHook → Job"| N["Neptune の物理層"]
+  N -->|"再読み込み"| W
+```
+
+- 前は、Nautobot があるあいだ Web の編集を止めていた（Web が Neptune に書いても、次の同期で Nautobot の中身に戻るため）。書き先を Nautobot にすれば、正が 1 か所のまま Web からも変えられる。
+- Web の画面にあるのはリンク（ケーブル）の追加・削除だけ。機器の追加・削除は前から画面に無く、Nautobot の画面でする。
+- 反映は数秒〜十数秒あと（Job が走ってから）。画面の「再読み込み」で確かめる。
+- 種別（fabric / l2 / lag）は Web で選んだものではなく、両端の機器の Role と LAG から決まる。
+- 「静的データを投入」は Nautobot があるあいだ使えない（Job が Nautobot の中身に戻すため）。
+- Web が使う API のトークンは SSM の SecureString（`/<prefix>/nautobot/api-token`）。
+
+詳しくは [nautobot.md](nautobot.md) の 5 章。

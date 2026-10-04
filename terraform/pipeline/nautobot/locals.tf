@@ -100,6 +100,7 @@ locals {
     secret-key     = "/${local.name_prefix}/nautobot/secret-key"     # Django の SECRET_KEY
     admin-password = "/${local.name_prefix}/nautobot/admin-password" # 画面の管理者（nautobot/netops/bootstrap.py が作る）
     db-password    = "/${local.name_prefix}/nautobot/db-password"    # RDS のマスターユーザー
+    api-token      = "/${local.name_prefix}/nautobot/api-token"      # Web（web/nautobot_api.py）が REST API に使うトークン（bootstrap.py が同じ値で作る）
   }
   secret_arns = { for k, v in local.secret_parameters : k => "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${v}" }
 }

@@ -3,6 +3,8 @@
 
   1. 管理者: NAUTOBOT_SUPERUSER_NAME / NAUTOBOT_SUPERUSER_PASSWORD（SSM の SecureString を ECS が渡す）で作り、パスワードを合わせる。
      上流の NAUTOBOT_CREATE_SUPERUSER は API トークンも要るので使わない
+  1b. API のユーザー: NAUTOBOT_API_TOKEN（SSM の SecureString）があれば、ユーザー NAUTOBOT_API_USER（既定 netops-web）とそのトークンを作る。
+      Web の「トポロジ」タブ（web/nautobot_api.py）がこのトークンでケーブルを作る・消す。JobHook は変更者に Job の実行権限が要るので superuser にする
   2. custom field: Device の asn、Cable の link_role / bandwidth_mbps（nb_map.py の対応付けが読む）
   3. 最初の seed: 機器が 1 台も無いときだけ、イメージに入れた lab の定義（lab_seed.json = lab/lab_topology.py の出力）から
      Location / Role / Device / Interface / IPAddress / Service / Cable を作る。あとは Nautobot が正で、lab を変えてもここは入れ直さない
@@ -53,6 +55,22 @@ def superuser():
     user.set_password(password)
     user.save()
     log.info("管理者 %s を%s", name, "作った" if created else "合わせた")
+
+
+def api_user():
+    name, key = os.environ.get("NAUTOBOT_API_USER", "netops-web"), os.environ.get("NAUTOBOT_API_TOKEN", "")
+    if not key:
+        log.warning("NAUTOBOT_API_TOKEN が無い。API のユーザーは作らない（Web からのリンクの編集は使えない）")
+        return
+    from nautobot.users.models import Token
+    user, created = get_user_model().objects.get_or_create(username=name)
+    user.is_superuser = user.is_staff = user.is_active = True
+    if created:
+        user.set_unusable_password()   # 画面からは入れない。API のトークンだけ
+    user.save()
+    Token.objects.filter(user=user).exclude(key=key).delete()   # SSM の値を作り直したら古いトークンは消す
+    Token.objects.get_or_create(user=user, key=key, defaults={"description": "web/nautobot_api.py (created by netops bootstrap)"})
+    log.info("API のユーザー %s とトークンを%s", name, "作った" if created else "合わせた")
 
 
 def custom_fields():
@@ -142,7 +160,7 @@ def first_sync():
 
 if __name__ == "__main__":
     steps_skip = set()
-    for step in (superuser, custom_fields, seed, jobs, first_sync):
+    for step in (superuser, api_user, custom_fields, seed, jobs, first_sync):
         if step in steps_skip:
             log.warning("%s は飛ばす（seed が失敗した）", step.__name__)
             continue

@@ -2,7 +2,8 @@
 
 元データはエージェントと同じ topology.py（Neptune があればそこから、無ければ data/ の静的データ）。
 Neptune のときだけリンクの追加・削除と静的データからの投入ができる。lab（terraform/pipeline/lab）には触らない。
-Nautobot（terraform/pipeline/nautobot）があるあいだは Nautobot が物理層の正なので、ここからは編集させない（Nautobot の Job が上書きする）。
+Nautobot（terraform/pipeline/nautobot）があるあいだは Nautobot が物理層の正なので、リンクの追加・削除は Nautobot の REST API に書く
+（nautobot_api.py。Nautobot の JobHook の Job が Neptune の物理層と Telegraf の一覧に反映する）。静的データの投入は止める（Job が上書きする）。
 app.py が画面を組むのに要る選択肢は can_edit() / device_choices() / link_choices() で渡す。
 """
 
@@ -15,6 +16,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from config import log
 
 import graph  # config が sys.path を通したあとで読む（agent/graph.py）
+import nautobot_api
 import toolkit
 import topology
 
@@ -23,26 +25,31 @@ ROLE_LABEL = {"upstream": "上流 VM", "leafsw": "Leaf-SW（上流側）", "spin
 DOWN_COLOR = "#c62828"
 
 
-# terraform/pipeline/nautobot が SSM の <PARAM_PREFIX>/nautobot/url に置く。あれば Nautobot が機器と回線の正
-NAUTOBOT_URL = toolkit.Param("NAUTOBOT_URL", "nautobot/url")
-NAUTOBOT_MSG = "機器と回線は Nautobot で編集します（Nautobot の Job が Neptune の物理層と Telegraf の機器の一覧に反映する）。この画面からは編集できません。"
+NAUTOBOT_NOTE = ("リンクの追加・削除は **Nautobot** に書きます（機器と回線の正は Nautobot。Nautobot の Job が Neptune の物理層と Telegraf の機器の一覧に反映する）。"
+                 "種別は Nautobot では両端の機器の役割と LAG から決まるので、ここで選んだ種別は使われません。機器の追加・削除は Nautobot の画面で行います。")
+NAUTOBOT_SEED_MSG = "Nautobot があるあいだは静的データを投入できません（Nautobot の Job が物理層を Nautobot の中身に戻す）。機器と回線は Nautobot で直します。"
 
 
 def nautobot_managed() -> bool:
-    """Nautobot が配備されている（物理層は Nautobot の Job が合わせるので、ここで変えても次の同期で戻る）"""
-    return bool(NAUTOBOT_URL.value())
+    """Nautobot が配備されている（SSM の <PARAM_PREFIX>/nautobot/url がある）。物理層の正は Nautobot で、編集は Nautobot に書く"""
+    return nautobot_api.configured()
 
 
 def can_edit() -> bool:
-    """Neptune が配備されていて、Nautobot が無ければ編集できる（それ以外は編集のボタンを押せなくする）"""
+    """リンクの追加・削除ができる（Neptune が配備されている。書き先は Nautobot があれば Nautobot、無ければ Neptune）"""
+    return graph.configured()
+
+
+def can_seed() -> bool:
+    """静的データを Neptune に投入できる（Nautobot が無いときだけ。あると Job が上書きする）"""
     return graph.configured() and not nautobot_managed()
 
 
 def edit_note() -> str:
-    """編集の欄の頭に出す案内。編集できるなら空"""
+    """編集の欄の頭に出す案内。Neptune に直接書けるなら空"""
     if not graph.configured():
         return "Neptune は未配備。terraform/pipeline/graph を apply して Web を再起動すると使えます。"
-    return NAUTOBOT_MSG if nautobot_managed() else ""
+    return NAUTOBOT_NOTE if nautobot_managed() else ""
 
 
 def device_choices() -> list:
@@ -191,7 +198,7 @@ def interface_choices(device):
     return gr.update(choices=topology.interfaces(device) if device else [], value=None)
 
 
-# ---------------------------------------------------------------- 編集（Neptune があるときだけ）
+# ---------------------------------------------------------------- 編集（Neptune があるときだけ。Nautobot があれば書き先は Nautobot）
 def _graph_call(fn, *args, a="", b=""):
     """Neptune の編集。結果のメッセージと、描き直した図・表・選択肢を返す"""
     if not graph.configured():
@@ -205,30 +212,43 @@ def _graph_call(fn, *args, a="", b=""):
     return msg, *refresh_topology(a, b)
 
 
+def _nautobot_call(fn, *args, a="", b=""):
+    """Nautobot の編集。Neptune には Nautobot の Job が書くので、返す図と表はまだ変わっていないことがある（案内に書く）"""
+    try:
+        r = fn(*args)
+    except nautobot_api.NautobotError as e:
+        log.error("nautobot write failed: %s", str(e)[:500])
+        return f"Nautobot の更新に失敗: {e}", *refresh_topology(a, b)
+    except (KeyError, ValueError, TypeError) as e:
+        log.error("nautobot write failed: %s", str(e)[:500])
+        return f"Nautobot の更新に失敗: {str(e)[:200]}", *refresh_topology(a, b)
+    return ", ".join(f"{k}: {v}" for k, v in r.items()) + f"。{nautobot_api.SYNC_NOTE}", *refresh_topology(a, b)
+
+
 def seed_graph(a, b):
     if nautobot_managed():   # ボタンは押せなくしてあるが、画面を開いたあとに Nautobot ができた場合もここで止める
-        return NAUTOBOT_MSG, *refresh_topology(a, b)
+        return NAUTOBOT_SEED_MSG, *refresh_topology(a, b)
     return _graph_call(lambda: graph.seed(*topology.load_static(), topology.load_static_layers()), a=a, b=b)
 
 
 def add_link(a, a_if, b, b_if, kind, role, bw):
     a, a_if, b, b_if = (str(x or "").strip() for x in (a, a_if, b, b_if))
-    if nautobot_managed():
-        return NAUTOBOT_MSG, *refresh_topology(a, b)
     if not (a and b):
         return "機器 A と機器 B を選んでください", *refresh_topology(a, b)
     if a == b:
         return "機器 A と機器 B が同じです", *refresh_topology(a, b)
     if not (a_if and b_if):
         return "両端のインタフェース名を選ぶか入力してください（例 ethernet-1/3）", *refresh_topology(a, b)
+    if nautobot_managed():   # kind は渡さない（Nautobot の Job が両端の役割と LAG から決める）
+        return _nautobot_call(nautobot_api.add_link, a, a_if, b, b_if, role or "", int(bw) if bw else None, a=a, b=b)
     return _graph_call(graph.add_link, a, a_if, b, b_if, kind, role or "", int(bw) if bw else None, a=a, b=b)
 
 
 def remove_link(sel, a, b):
     """sel は削除用 Dropdown の値 "a|a_if|b"（topology.link_choices）"""
-    if nautobot_managed():
-        return NAUTOBOT_MSG, *refresh_topology(a, b)
     if not sel or str(sel).count("|") != 2:
         return "削除するリンクを一覧から選んでください", *refresh_topology(a, b)
     la, a_if, lb = str(sel).split("|", 2)
+    if nautobot_managed():
+        return _nautobot_call(nautobot_api.remove_link, la, a_if, lb, a=a, b=b)
     return _graph_call(graph.remove_link, la, lb, a_if, a=a, b=b)

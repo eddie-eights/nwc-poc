@@ -88,12 +88,14 @@ class Param:
     どのモジュールも同じ手順で読むためのもの。どちらも無ければ空文字を返し、呼ぶ側はそれを見て
     「まだ配備されていない」と案内する（その機能をまだ作っていない構成でも落ちないため）。
     引けなかったときは ttl 秒のあいだ SSM を引き直さない（まだ無いものを毎回叩かない）。
+    decrypt=True は SecureString（ops/up.sh が作るトークンなど）を読むとき。値はログに出さない。
     """
 
-    def __init__(self, env: str, param: str, ttl: int = TTL):
+    def __init__(self, env: str, param: str, ttl: int = TTL, decrypt: bool = False):
         self.env = env
         self.param = param
         self.ttl = ttl
+        self.decrypt = decrypt
         self.cached = ""  # 一度引けた値。プロセスが終わるまで使う
         self.checked = 0.0  # 最後に SSM を引いた時刻
 
@@ -105,7 +107,8 @@ class Param:
             return self.cached
         self.checked = time.time()
         try:
-            self.cached = client("ssm").get_parameter(Name=f"{PARAM_PREFIX}/{self.param}")["Parameter"]["Value"]
+            extra = {"WithDecryption": True} if self.decrypt else {}
+            self.cached = client("ssm").get_parameter(Name=f"{PARAM_PREFIX}/{self.param}", **extra)["Parameter"]["Value"]
         except (ClientError, BotoCoreError):
             self.cached = ""
         return self.cached

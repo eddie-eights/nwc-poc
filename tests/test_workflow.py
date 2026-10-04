@@ -465,8 +465,8 @@ check("terraform/base/ecr は worker / temporal のリポジトリを作る", '"
 # ---- web（app.py は画面の組み立てだけ。タブの中身は分けてある）
 web = read("web", "app.py")
 web_srcs = sorted(n for n in os.listdir(os.path.join(ROOT, "web")) if n.endswith(".py"))
-check("web は app / config / chat / topology_view / incident_view に分かれる",
-      set(web_srcs) == {"app.py", "config.py", "chat.py", "topology_view.py", "incident_view.py"})
+check("web は app / config / chat / topology_view / incident_view / nautobot_api に分かれる",
+      set(web_srcs) == {"app.py", "config.py", "chat.py", "topology_view.py", "incident_view.py", "nautobot_api.py"})
 # user_data は $APP/src/app.py の 1 行目で置き間違いを見るので、app.py の import gradio は行頭のまま動かさない
 check("app.py には行頭の import gradio がある（user_data の置き間違い検出が見ている）",
       re.search(r"^import gradio as gr$", web, re.M) is not None

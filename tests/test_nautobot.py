@@ -1,7 +1,7 @@
 """Nautobot 連携（nautobot/、terraform/pipeline/nautobot、ops/up.sh が PIPELINE=1 でいつも作る）の模擬テスト。AWS にも Nautobot にも触れない。
 - 対応付け（nautobot/netops/nb_map.py）: lab の定義 → seed_plan → Nautobot → to_graph / targets と一周すると、lab と同じ機器・回線・Telegraf の一覧に戻る
 - 同期（nb_sync.push_targets）: 変わったときだけ SSM を書いて dialin を作り直す。空の一覧は書かない
-- Web: Nautobot があるあいだは画面からの Neptune の編集を止める（web/topology_view.py）
+- Web: Nautobot があるあいだは、リンクの追加・削除を Nautobot の REST API に書く（web/topology_view.py、web/nautobot_api.py）。静的データの投入は止める
 - 配線: Dockerfile・Terraform・ops/up.sh・ops/down.sh の名前と順序がそろっている
 実行は uv run --group dev python tests/test_nautobot.py。"""
 import json, logging, os, re, subprocess, sys
@@ -166,15 +166,15 @@ check("Job が import するモジュールが PYTHONPATH の先にそろう", "
 envs = set(re.findall(r'os\.environ\.get\("([A-Z_]+)"', read("nautobot", "netops", "nb_sync.py")))
 check("nb_sync が読む環境変数を Terraform がコンテナに渡す", envs and all(e in nb_tf for e in envs | {"NEPTUNE_ENDPOINT"}))
 check("シークレットは SSM の SecureString から（タスク定義の secrets と RDS の write-only）。Terraform の変数に値を持たない",
-      all(s in nb_tf for s in ("NAUTOBOT_SECRET_KEY", "NAUTOBOT_DB_PASSWORD", "NAUTOBOT_SUPERUSER_PASSWORD"))
+      all(s in nb_tf for s in ("NAUTOBOT_SECRET_KEY", "NAUTOBOT_DB_PASSWORD", "NAUTOBOT_SUPERUSER_PASSWORD", "NAUTOBOT_API_TOKEN"))
       and "password_wo " in tf["database.tf"].replace("=", " =").replace("  ", " ") and 'ephemeral "aws_ssm_parameter"' in tf["database.tf"]
       and not re.search(r"sensitive\s*=\s*true", tf["variables.tf"]))
 names = set(re.findall(r'ensure_secret "/\$PREFIX/nautobot/([a-z-]+)"', up))
-check("ops/up.sh が作る SSM のシークレット = Terraform が読む名前", names == {"secret-key", "admin-password", "db-password"}
+check("ops/up.sh が作る SSM のシークレット = Terraform が読む名前", names == {"secret-key", "admin-password", "db-password", "api-token"}
       and all(f'"{n}"' in all_tf for n in names))
 check("SG とロールは base/core の nautobot / nautobot_db を使う", '"nautobot"' in all_tf and "nautobot_db" in all_tf)
 check("Web が Nautobot の有無を読むパラメータ（<接頭辞>/nautobot/url）を Terraform が置く",
-      "/nautobot/url" in nb_tf and 'toolkit.Param("NAUTOBOT_URL", "nautobot/url")' in read("web", "topology_view.py"))
+      "/nautobot/url" in nb_tf and 'toolkit.Param("NAUTOBOT_URL", "nautobot/url")' in read("web", "nautobot_api.py"))
 order = [m.start() for m in (re.search(p, down, re.M) for p in (r"^destroy_root pipeline/analytics", r"^destroy_root pipeline/nautobot",
                                                            r"^destroy_lambda_root pipeline/graph", r"^destroy_root pipeline/stream")) for m in [m] if m]
 check("ops/down.sh は nautobot を graph と stream より先に消す（state を読む相手が残っているうちに）", len(order) == 4 and order == sorted(order))
@@ -201,12 +201,43 @@ called = []
 tv.refresh_topology = lambda a, b: ("fig", "info")
 tv._graph_call = lambda *a, **k: (called.append(a) or ("done", "fig", "info"))
 graph.configured = lambda: True
-tv.NAUTOBOT_URL.value = lambda: ""
-check("Web: Nautobot が無ければ今までどおり編集できる", tv.can_edit() and tv.edit_note() == "" and tv.seed_graph("a", "b")[0] == "done" and len(called) == 1)
-tv.NAUTOBOT_URL.value = lambda: "http://nautobot.example:8080"
-r = [tv.seed_graph("a", "b"), tv.add_link("x", "e1", "y", "e1", "l2", "", ""), tv.remove_link("x|e1|y", "a", "b")]
-check("Web: Nautobot があれば編集のボタンを止め、呼ばれても Neptune に書かずに案内を返す",
-      not tv.can_edit() and tv.edit_note() == tv.NAUTOBOT_MSG and len(called) == 1 and all(x[0] == tv.NAUTOBOT_MSG for x in r))
+import nautobot_api as nb
+nb.URL.value = lambda: ""
+check("Web: Nautobot が無ければ今までどおり Neptune を編集できる", tv.can_edit() and tv.can_seed() and tv.edit_note() == "" and tv.seed_graph("a", "b")[0] == "done"
+      and tv.add_link("x", "e1", "y", "e1", "l2", "", "")[0] == "done" and len(called) == 2)
+nb.URL.value = lambda: "http://nautobot.example:8080"
+nb.TOKEN.value = lambda: "t" * 40
+http, state = [], {"cable": None}
+def fake_call(method, path, query=None, body=None):   # Nautobot の REST API の代わり（形は 3.2.6 で確かめたもの）
+    http.append((method, path, query, body))
+    if method == "GET":
+        if query["name"] == "new0":
+            return {"results": []}
+        return {"results": [{"id": f'{query["device"]}:{query["name"]}', "cable": state["cable"], "cable_peer": {"device": {"name": "y"}}}]}
+    return {"id": "c1"} if path == "dcim/cables/" else {"id": f'{body["device"]["name"]}:{body["name"]}', "cable": None} if method == "POST" else {}
+nb._call = fake_call
+r = tv.seed_graph("a", "b")
+check("Web: Nautobot があれば静的データの投入は止める（Job が上書きするので）", tv.can_edit() and not tv.can_seed() and tv.edit_note() == tv.NAUTOBOT_NOTE
+      and r[0] == tv.NAUTOBOT_SEED_MSG and len(called) == 2 and not http)
+r = tv.add_link("x", "new0", "y", "e1", "l2", "primary", 1000)
+posts = [h for h in http if h[0] == "POST"]
+check("Web: Nautobot があればリンクの追加は Nautobot に書く（無いインタフェースを作ってからケーブル。Neptune には書かない）",
+      len(called) == 2 and "Nautobot に追加" in r[0] and nb.SYNC_NOTE in r[0] and [h[1] for h in posts] == ["dcim/interfaces/", "dcim/cables/"]
+      and posts[0][3] == {"device": {"name": "x"}, "name": "new0", "type": "1000base-t", "status": "Active"}
+      and posts[1][3] == {"termination_a_type": "dcim.interface", "termination_a_id": "x:new0", "termination_b_type": "dcim.interface", "termination_b_id": "y:e1",
+                          "status": "Connected", "custom_fields": {"link_role": "primary", "bandwidth_mbps": 1000}})
+state["cable"] = {"id": "c9"}
+http.clear()
+r = [tv.add_link("x", "e1", "y", "e1", "l2", "", ""), tv.remove_link("x|e1|z", "a", "b"), tv.remove_link("x|e1|y", "a", "b")]
+check("Web: ケーブルのあるインタフェースには足さず、削除は相手の機器を確かめてからケーブルだけ消す",
+      "もうケーブルがある" in r[0][0] and "y（z ではない）" in r[1][0] and "Nautobot から削除" in r[2][0] and len(called) == 2
+      and [h[:2] for h in http if h[0] != "GET"] == [("DELETE", "dcim/cables/c9/")])
+check("Web: トークンは SecureString として読み（decrypt）、API のユーザーは bootstrap が同じ環境変数から作る",
+      nb.TOKEN.decrypt and nb.TOKEN.param == "nautobot/api-token" and not tv.toolkit.Param("X", "y").decrypt
+      and '{"WithDecryption": True} if self.decrypt else {}' in read("agent", "toolkit.py")
+      and 'os.environ.get("NAUTOBOT_API_TOKEN", "")' in read("nautobot", "netops", "bootstrap.py") and "api_user, custom_fields" in read("nautobot", "netops", "bootstrap.py")
+      and 'ensure_secret "/$PREFIX/nautobot/api-token" token' in up and "secrets.token_hex(20)" in up)
+check("API のトークンは worker のコンテナには渡さない", '!contains(["NAUTOBOT_SUPERUSER_PASSWORD", "NAUTOBOT_API_TOKEN"], s.name)' in nb_tf)
 graph.configured = lambda: False
 check("Web: Neptune が無いときの案内は今までどおり", "未配備" in tv.edit_note())
 

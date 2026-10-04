@@ -192,7 +192,7 @@ ssm_run() {  # ssm_run <インスタンス ID> <コマンド…>  cloud-init（u
 run_on_instance() {  # run_on_instance <インスタンス ID> <コマンド…>  ssm_run の失敗で止まる版
   ssm_run "$@" || die "インスタンス $1 の上のコマンドが失敗した（上の出力）"
 }
-ensure_secret() {  # ensure_secret <SSM のパラメータ名> <password|uuid> <説明>  無ければ乱数の SecureString を作る。値は画面にもログにも出さない
+ensure_secret() {  # ensure_secret <SSM のパラメータ名> <password|uuid|token> <説明>  無ければ乱数の SecureString を作る。値は画面にもログにも出さない
   local name="$1" kind="$2" desc="$3" type
   type=$(aws ssm describe-parameters --region "$REGION" --parameter-filters "Key=Name,Values=$name" \
     --query 'Parameters[0].Type' --output text 2>/dev/null || echo "")
@@ -208,7 +208,7 @@ ensure_secret() {  # ensure_secret <SSM のパラメータ名> <password|uuid> <
   input=$(umask 077; mktemp "${TMPDIR:-/tmp}/nwc-secret.XXXXXX") || die "一時ファイルを作れなかった"
   "${PY[@]}" -c 'import json, secrets, sys, uuid
 name, kind, desc, prefix, owner, path = sys.argv[1:]
-value = str(uuid.uuid4()) if kind == "uuid" else secrets.token_urlsafe(24)
+value = str(uuid.uuid4()) if kind == "uuid" else secrets.token_hex(20) if kind == "token" else secrets.token_urlsafe(24)  # token = Nautobot の API トークン（40 桁の 16 進）
 with open(path, "w", encoding="utf-8") as f:
     json.dump({"Name": name, "Type": "SecureString", "Value": value, "Description": desc,
                "Tags": [{"Key": "ManagedBy", "Value": "ops/up.sh"}, {"Key": "Project", "Value": prefix}, {"Key": "owner", "Value": owner}]}, f)' \
@@ -863,6 +863,8 @@ if [ -n "$NAUTOBOT" ]; then
   ensure_secret "/$PREFIX/nautobot/secret-key" password "Nautobot SECRET_KEY (created by ops/up.sh)"
   ensure_secret "/$PREFIX/nautobot/admin-password" password "Nautobot admin password (created by ops/up.sh)"
   ensure_secret "/$PREFIX/nautobot/db-password" password "Nautobot database password (created by ops/up.sh)"
+  # Web の「トポロジ」タブがリンクの追加・削除を Nautobot の REST API に書くためのトークン（bootstrap.py が同じ値でユーザー netops-web のトークンを作る）
+  ensure_secret "/$PREFIX/nautobot/api-token" token "Nautobot API token of the web UI (created by ops/up.sh)"
   tf_apply pipeline/nautobot -var "nautobot_image_tag=$NAUTOBOT_TAG" -var "redis_image_tag=$REDIS_TAG"
   echo "Nautobot の Job の書き先: $(tf pipeline/nautobot output -json sync_targets)"
   NB_CLUSTER=$(tf pipeline/nautobot output -raw cluster_name); NB_SERVICE=$(tf pipeline/nautobot output -raw service_name)

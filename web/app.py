@@ -38,13 +38,14 @@ with gr.Blocks(title=f"{TITLE} チャット") as demo:
         topo_table = gr.Dataframe(tv.device_table(), interactive=False, label="機器")
         layer_table = gr.Dataframe(tv.layer_table(), interactive=False, label="IP 層と EVPN・BGP 層（IS-IS の隣接 / iBGP EVPN のセッション / EVI / Ethernet Segment。下の層の ID で物理層とつながる。gNMI の検知で DOWN になる）")
         topo_refresh = gr.Button("再読み込み")
-        with gr.Accordion("Neptune で編集（terraform/pipeline/graph がある間だけ。Nautobot があれば Nautobot で編集する）", open=False):
+        with gr.Accordion("リンクを編集（terraform/pipeline/graph がある間だけ。Nautobot があれば Nautobot に書き、Nautobot の Job が Neptune に反映する）", open=False):
             edit_msg = gr.Markdown(tv.edit_note())
             gr.Markdown("**静的データを投入** = Neptune の中身をいったん全部消して、`agent/data/` の 8 台・12 本（と IP 層・EVPN 層）に戻す（初回と、編集をやり直したいとき）。"
                         "機器の追加・削除はこの画面にはないので `agent/data/` を直して投入し直す。リンクは下で 1 本ずつ足す・消す。"
-                        "変えた内容はエージェントの次の質問から効く。")
+                        "変えた内容はエージェントの次の質問から効く。"
+                        "Nautobot があるあいだは投入は使えず、リンクの追加・削除は Nautobot に書く（数秒〜十数秒あとに Neptune に出る）。")
             with gr.Row():
-                seed_btn = gr.Button("静的データを投入（Neptune を消して 8 台・12 本に戻す）", interactive=tv.can_edit())
+                seed_btn = gr.Button("静的データを投入（Neptune を消して 8 台・12 本に戻す）", interactive=tv.can_seed())
             gr.Markdown("#### リンクを追加")
             with gr.Row():
                 la = gr.Dropdown(tv.device_choices(), value=None, label="機器 A", scale=2)
@@ -55,7 +56,7 @@ with gr.Blocks(title=f"{TITLE} チャット") as demo:
                                   info="機器 B を選ぶと使用中の名前が出る。新しい名前も打てる")
             with gr.Row():
                 lkind = gr.Dropdown([("fabric（Spine - Leaf）", "fabric"), ("lag（VM - Leaf の LACP）", "lag"), ("l2", "l2"), ("mgmt（管理）", "mgmt")],
-                                    value="fabric", label="種別")
+                                    value="fabric", label="種別", info="Nautobot があるときは使われない（両端の役割と LAG から決まる）")
                 lrole = gr.Dropdown([("なし", ""), ("primary（主回線。図は実線）", "primary"), ("secondary（副回線。図は破線）", "secondary")],
                                     value="", label="役割")
                 lbw = gr.Number(label="帯域 Mbps", precision=0, info="空でもよい。1000 以上は図で太線")
