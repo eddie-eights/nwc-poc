@@ -157,6 +157,7 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | [pipeline.md](docs/pipeline.md) | lab、Telegraf、デバッグ用の EC2（`ops/lab-debug.sh`）、Spark、Grafana と Splunk のアラート、Neptune のトポロジの使い方 |
 | [nautobot.md](docs/nautobot.md) | Nautobot: コンテナと部品の構成、起動から同期まで、使い方、Neptune と組み合わせた使いどころ |
 | [workflow.md](docs/workflow.md) | 承認の流れと Temporal UI |
+| [alert-comparison.md](docs/alert-comparison.md) | Splunk と Grafana のアラートを比べる: 4 種類のアラートを両方で書けたか、障害を入れる手順、遅れと取りこぼしを出す Athena のクエリ、結果（未実施） |
 | [troubleshooting.md](docs/troubleshooting.md) | うまくいかないとき |
 | [oss-variant.md](docs/oss-variant.md) | 方針: いまはできる限り AWS マネージドで作り、最終的にはマネージドの部分を OSS にした版も別に作る。その目的（マネージドでできて OSS でできないこと、費用、メンテナンス性の比較）と、いまマネージドにしている部分の一覧 |
 | [development.md](docs/development.md) | 手元のテスト、変更するときの決まり、Web を手元で動かす |
