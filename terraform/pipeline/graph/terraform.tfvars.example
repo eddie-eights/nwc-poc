@@ -11,3 +11,5 @@
 # instance_class      = "db.t4g.medium"
 # engine_version      = "1.4.8.0"
 # deletion_protection = false
+# neptune_az_num      = 1                # 1-3 (replica_count = neptune_az_num - 1). ops/up.sh passes NEPTUNE_AZ_NUM
+# lambda_az_num       = 1                # 1-3, the status Lambda. ops/up.sh passes LAMBDA_AZ_NUM

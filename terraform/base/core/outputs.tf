@@ -19,9 +19,9 @@ output "vpc_id" {
   value       = aws_vpc.this.id
 }
 
-output "runtime_subnet_ids" {
-  description = "Read by terraform/agent (runtime ENIs), terraform/pipeline/stream (MSK brokers, Telegraf task and NLB), terraform/pipeline/graph (status Lambda), terraform/pipeline/analytics (EMR, Grafana / Splunk tasks) and terraform/workflow (Fargate, Lambda)"
-  value       = [aws_subnet.a.id, aws_subnet.b.id]
+output "subnet_ids" {
+  description = "Private subnets a, b, c in this order. Each root takes the first <resource>_az_num of them: terraform/agent (runtime ENIs, KB index Lambda), terraform/pipeline/stream (MSK brokers, Telegraf dialout tasks and NLB), terraform/pipeline/graph (status Lambda), terraform/pipeline/analytics (EMR), terraform/pipeline/nautobot (DB subnet group) and terraform/workflow (tools Lambda). Replaced runtime_subnet_ids (a, b) on 2026-10-04"
+  value       = local.subnet_ids
 }
 
 output "instance_subnet_id" {

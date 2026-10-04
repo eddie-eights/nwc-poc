@@ -30,13 +30,24 @@ variable "kafka_version" {
 }
 
 variable "broker_instance_type" {
-  description = "Smallest Standard broker that Kafka 4.x (KRaft) accepts. kafka.t3.small is rejected by CreateCluster with 4.1.x.kraft (Unsupported InstanceType, seen 2026-09-18); it is only for 3.x. kafka.m5.large is 0.271 USD per hour per broker in Tokyo, so 0.542 for the 2 brokers (Price List API, 2026-09-18)."
+  description = "Smallest Standard broker that Kafka 4.x (KRaft) accepts. kafka.t3.small is rejected by CreateCluster with 4.1.x.kraft (Unsupported InstanceType, seen 2026-09-18); it is only for 3.x. kafka.m5.large is 0.271 USD per hour per broker in Tokyo, so 0.542 for 2 brokers and 0.813 for 3 (msk_az_num; Price List API, 2026-09-18)."
   type        = string
   default     = "kafka.m5.large"
 
   validation {
     condition     = contains(["kafka.m5.large", "kafka.m7g.large"], var.broker_instance_type)
     error_message = "broker_instance_type must be kafka.m5.large or kafka.m7g.large (Kafka 4.x does not accept kafka.t3.small)."
+  }
+}
+
+variable "msk_az_num" {
+  description = "Number of AZs (subnets a, b, c of terraform/base/core from the front) of the MSK cluster, one broker per AZ. 2 or 3; 1 is not possible because MSK takes client subnets in two or three AZs only (Amazon MSK API Reference, Clusters, BrokerNodeGroupInfo.clientSubnets: https://docs.aws.amazon.com/msk/1.0/apireference/clusters.html, checked 2026-10-04). 2 keeps replication factor 2 / min.insync.replicas 1, 3 uses 3 / 2. Each broker is about 0.271 USD/h (kafka.m5.large). Changing it on a live cluster recreates the cluster (the topics are lost). ops/up.sh passes MSK_AZ_NUM."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = contains([2, 3], var.msk_az_num)
+    error_message = "msk_az_num must be 2 or 3 (MSK puts its brokers in two or three AZs; one AZ is not possible)."
   }
 }
 
@@ -104,6 +115,17 @@ variable "snmp_poll" {
   description = "Whether Telegraf polls SNMP (inputs.snmp, ifTable every 10 seconds) and writes it to the metrics topic. On by default: the Grafana rule link_down and the Splunk saved search netops_poll read the polled ifOperStatus. With false, SNMP comes in as traps only and link down is seen only by the Splunk saved search on traps (splunk in STORES of deploy.env). ops/up.sh passes SNMP_POLL from deploy.env. Becomes SNMP_POLL (1 / 0) of the task."
   type        = bool
   default     = true
+}
+
+variable "telegraf_az_num" {
+  description = "Number of AZs (subnets a, b, c from the front) of the Telegraf dial-out side: the NLB subnets and the number of dial-out tasks (one per AZ). 1, 2 or 3. The dial-in task stays one in subnet a (two would poll and subscribe twice). SSM /<prefix>/telegraf-address stays the NLB address in subnet a (the lab DNATs to it); real devices should send to output telegraf_dialout_dns_name. With 2 or 3 the NLB balances across zones, so subnet a's address still reaches the tasks in b / c. ops/up.sh passes TELEGRAF_AZ_NUM."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2, 3], var.telegraf_az_num)
+    error_message = "telegraf_az_num must be 1, 2 or 3."
+  }
 }
 
 variable "telegraf_task_cpu" {

@@ -45,7 +45,7 @@ check("main の state をローカルから読む", re.search(r'data "terraform_
       and '"${path.module}/../../base/core/terraform.tfstate"' in tf)
 check("stream の state をローカルから読む", re.search(r'data "terraform_remote_state" "stream"[\s\S]*?backend\s*=\s*"local"', tf, re.S) is not None
       and '"${path.module}/../stream/terraform.tfstate"' in tf)
-for out in ("vpc_id", "runtime_subnet_ids", "security_group_ids", "opensearch_vpc_endpoint_id", "kb_bucket_name"):
+for out in ("vpc_id", "subnet_ids", "security_group_ids", "opensearch_vpc_endpoint_id", "kb_bucket_name"):
     check(f"main の output {out} を使う", f"data.terraform_remote_state.main.outputs.{out}" in tf)
 for out in ("msk_cluster_arn", "bootstrap_brokers"):
     check(f"stream の output {out} を try で読む（無ければ precondition で止める）",
@@ -58,7 +58,7 @@ check("アラートのトピックの ARN は main の state から try で読�
 check("stream が無いときは「terraform/pipeline/stream を先に apply する」と出る",
       re.search(r'precondition\s*\{[\s\S]*?msk_cluster_arn\s*!=\s*""[\s\S]*?terraform/pipeline/stream を先に apply する', tf, re.S) is not None)
 # main / stream の outputs.tf に本当にその output があるか
-for root, outs in (("base/core", ("vpc_id", "runtime_subnet_ids", "security_group_ids", "opensearch_vpc_endpoint_id", "kb_bucket_name", "alerts_topic_arn")),
+for root, outs in (("base/core", ("vpc_id", "subnet_ids", "security_group_ids", "opensearch_vpc_endpoint_id", "kb_bucket_name", "alerts_topic_arn")),
                    ("pipeline/stream", ("msk_cluster_arn", "bootstrap_brokers"))):
     with open(os.path.join(ROOT, "terraform", root, "outputs.tf"), encoding="utf-8") as f:
         other = f.read()
@@ -1159,7 +1159,7 @@ check("up.sh は STORES（既定 s3,grafana,splunk）から導いた格納先を
       and re.search(r'^SINK_S3="\$STORE_S3"; SINK_OPENSEARCH="\$STORE_GRAFANA"; SINK_PROMETHEUS="\$STORE_GRAFANA"; SINK_SPLUNK="\$STORE_SPLUNK"$', up, re.M) is not None
       and 'ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]" ' in up and 'tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"' in up)
 check("up.sh は STORES の splunk に関わらず device map を lab の定義から作って渡す（lab/lab_topology.py --device-map。trap と gNMI には sysName が無い。Splunk の DEVICE_MAP と Spark の --device-map。cycle 002）",
-      re.search(r'  ANALYTICS_VARS=\(-var "sinks=\[\$SINKS_TF\]" [^\n]*\n(?:  ensure_s3tables_catalog [^\n]*\n)?(?:  #[^\n]*\n)*  DEVICE_MAP=\$\("\$\{PY\[@\]\}" lab/lab_topology\.py lab --device-map\) \|\| die [^\n]*\n  ANALYTICS_VARS\+=\(-var "device_map=\$DEVICE_MAP"\)\n  if \[ -n "\$GRAFANA" \]', up) is not None
+      re.search(r'  ANALYTICS_VARS=\(-var "sinks=\[\$SINKS_TF\]" [^\n]*\n(?:  ANALYTICS_VARS\+=\(-var "opensearch_az_num=\$OPENSEARCH_AZ_NUM"\)\n)?(?:  ensure_s3tables_catalog [^\n]*\n)?(?:  #[^\n]*\n)*  DEVICE_MAP=\$\("\$\{PY\[@\]\}" lab/lab_topology\.py lab --device-map\) \|\| die [^\n]*\n  ANALYTICS_VARS\+=\(-var "device_map=\$DEVICE_MAP"\)\n  if \[ -n "\$GRAFANA" \]', up) is not None
       and up.count("lab_topology.py lab --device-map") == 1 and up.count('-var "device_map=$DEVICE_MAP"') == 1)
 check("up.sh は AGENT=0 でも CloudWatch へのログを切らない（CloudWatch Logs へは土台の logs のエンドポイントで届く）",
       "cloudwatch_logging=false" not in up and re.search(r'variable "cloudwatch_logging" \{[^}]*default\s*=\s*true', tf) is not None)
@@ -1176,7 +1176,96 @@ check("インターフェース型エンドポイントは var.interface_endpoin
       and re.search(r'Sid\s*=\s*"OwnAccountOnly"[\s\S]*?"aws:PrincipalAccount"\s*=\s*local\.account_id', _ifep.group(1)) is not None
       and re.search(r'variable "interface_endpoints"[\s\S]*?default\s*=\s*\["ssm", "ssmmessages"\]', _core) is not None
       and re.search(r'subnet_ids\s*=\s*local\.endpoint_subnet_ids', _ifep.group(1)) is not None
-      and re.search(r'endpoint_subnet_ids\s*=\s*var\.endpoints_multi_az \? \[aws_subnet\.a\.id, aws_subnet\.b\.id\] : \[aws_subnet\.a\.id\]', _core) is not None)
+      and re.search(r'endpoint_subnet_ids\s*=\s*slice\(local\.subnet_ids, 0, var\.endpoints_az_num\)', _core) is not None)
+# 2026-10-04: AZ の数はリソースごとに <リソース>_az_num で選ぶ。base/core はサブネット a / b / c をいつも作り、outputs.subnet_ids で順に渡す
+_az_c = re.search(r'variable "az_id_c" \{(.*?)\n\}', _core, re.S)
+check("base/core はサブネット c も作り（a / b と別の AZ ID。既定 apne1-az2）、subnet_ids = [a, b, c] を output する。endpoints_multi_az と runtime_subnet_ids は無い",
+      'resource "aws_subnet" "c"' in _core and 'resource "aws_route_table_association" "c"' in _core
+      and re.search(r'subnet_ids\s*=\s*\[aws_subnet\.a\.id, aws_subnet\.b\.id, aws_subnet\.c\.id\]', _core) is not None
+      and re.search(r'output "subnet_ids" \{[^}]*value\s*=\s*local\.subnet_ids', _core) is not None
+      and _az_c is not None and 'default     = "apne1-az2"' in _az_c.group(1)
+      and "var.az_id_c != var.az_id_a" in _az_c.group(1) and "var.az_id_c != var.az_id_b" in _az_c.group(1)
+      and "endpoints_multi_az" not in _core and 'output "runtime_subnet_ids"' not in _core)
+_aoss_ep = re.search(r'resource "aws_opensearchserverless_vpc_endpoint" "aoss" \{(.*?)\n\}', _core, re.S)
+check("OpenSearch Serverless の VPC エンドポイントも ENDPOINTS_AZ_NUM に従う（2026-10-04 までは a / b の 2 つで固定）",
+      _aoss_ep is not None and re.search(r'subnet_ids\s*=\s*local\.endpoint_subnet_ids', _aoss_ep.group(1)) is not None)
+# 各ルートの <リソース>_az_num。既定と使える値は ops/up.sh の検査（az_num）と同じ
+_AZ_VARS = {  # (ルート, 変数): (既定, 使える値)
+    ("base/core", "endpoints_az_num"): (1, [1, 2, 3]), ("pipeline/stream", "msk_az_num"): (2, [2, 3]),
+    ("pipeline/stream", "telegraf_az_num"): (1, [1, 2, 3]), ("agent", "runtime_az_num"): (2, [2, 3]),
+    ("agent", "lambda_az_num"): (1, [1, 2, 3]), ("agent", "opensearch_az_num"): (1, [1, 2]),
+    ("pipeline/analytics", "emr_az_num"): (1, [1, 2, 3]), ("pipeline/analytics", "opensearch_az_num"): (1, [1, 2]),
+    ("pipeline/graph", "neptune_az_num"): (1, [1, 2, 3]), ("pipeline/graph", "lambda_az_num"): (1, [1, 2, 3]),
+    ("pipeline/nautobot", "nautobot_db_az_num"): (1, [1, 2]), ("workflow", "lambda_az_num"): (1, [1, 2, 3]),
+}
+def _root_tf(root):
+    d = os.path.join(ROOT, "terraform", *root.split("/"))
+    return "".join(open(os.path.join(d, n), encoding="utf-8").read() for n in sorted(os.listdir(d)) if n.endswith(".tf"))
+def _az_var_ok(root, name, default, allowed):
+    m = re.search(r'variable "' + name + r'" \{(.*?)\n\}', _root_tf(root), re.S)
+    return (m is not None and re.search(r"default\s*=\s*" + str(default) + r"\n", m.group(1)) is not None
+            and f"contains([{', '.join(map(str, allowed))}], var.{name})" in m.group(1))
+check("各ルートの <リソース>_az_num は既定と使える値が決めたとおり（MSK と Runtime は既定 2 で 1 を受け付けない。OpenSearch と Nautobot の DB は 2 まで）",
+      all(_az_var_ok(r, n, d, a) for (r, n), (d, a) in _AZ_VARS.items()))
+_AZ_USES = {
+    "agent": (r"subnets\s*=\s*slice\(local\.subnet_ids, 0, var\.runtime_az_num\)", r"subnet_ids\s*=\s*slice\(local\.subnet_ids, 0, var\.lambda_az_num\)",
+              r'standby_replicas\s*=\s*var\.opensearch_az_num == 2 \? "ENABLED" : "DISABLED"'),
+    "pipeline/stream": (r"broker_subnet_ids\s*=\s*slice\(local\.subnet_ids, 0, var\.msk_az_num\)", r"number_of_broker_nodes\s*=\s*var\.msk_az_num\n",
+                        r"default\.replication\.factor=\$\{var\.msk_az_num\}\n", r"min\.insync\.replicas=\$\{var\.msk_az_num - 1\}\n",
+                        r"telegraf_dialout_subnet_ids\s*=\s*slice\(local\.subnet_ids, 0, var\.telegraf_az_num\)", r"desired_count\s*=\s*var\.telegraf_az_num\n"),
+    "pipeline/analytics": (r"subnet_ids\s*=\s*slice\(local\.subnet_ids, 0, var\.emr_az_num\)", r'standby_replicas\s*=\s*var\.opensearch_az_num == 2 \? "ENABLED" : "DISABLED"'),
+    "pipeline/graph": (r"replica_count\s*=\s*var\.neptune_az_num - 1\n", r"subnet_ids\s*=\s*slice\(local\.subnet_ids, 0, var\.lambda_az_num\)"),
+    "pipeline/nautobot": (r"multi_az\s*=\s*var\.nautobot_db_az_num == 2\n", r"subnet_ids\s*=\s*data\.terraform_remote_state\.main\.outputs\.subnet_ids\n"),
+    "workflow": (r"subnet_ids\s*=\s*slice\(local\.subnet_ids, 0, var\.lambda_az_num\)",),
+}
+check("各ルートは base/core の subnet_ids の先頭から AZ_NUM 個を使う（MSK は複製 = AZ_NUM、min.insync = AZ_NUM - 1。Neptune のレプリカ = AZ_NUM - 1。RDS は 2 で Multi-AZ）",
+      all(all(re.search(u, _root_tf(r)) for u in us) for r, us in _AZ_USES.items())
+      and not any("runtime_subnet_ids" in _root_tf(r) for r in _AZ_USES))
+# 注意書き（範囲の制限と、ENDPOINTS_AZ_NUM がほかより小さいとき）は、変数の description・リソースのそば・ops/up.sh の検査の 3 か所に
+# 出典の URL と確認日を残す（2026-10-04 のユーザー指示）。AWS で試していないことは「未確認」/ "not tried" と書く
+_AZ_SRC = {  # (ルート, 変数, リソースのファイル): 出典の URL
+    ("pipeline/stream", "msk_az_num", "msk.tf"): "https://docs.aws.amazon.com/msk/1.0/apireference/clusters.html",
+    ("agent", "runtime_az_num", "runtime.tf"): "https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html",
+    ("agent", "opensearch_az_num", "kb.tf"): "https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-opensearchserverless-collection.html",
+    ("pipeline/analytics", "opensearch_az_num", "sinks.tf"): "https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-opensearchserverless-collection.html",
+    ("pipeline/nautobot", "nautobot_db_az_num", "database.tf"): "https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/multi-az-db-clusters-concepts.html",
+    ("base/core", "endpoints_az_num", "endpoints.tf"): "https://docs.aws.amazon.com/vpc/latest/privatelink/privatelink-access-aws-services.html",
+    ("pipeline/graph", "neptune_az_num", "neptune.tf"): "https://docs.aws.amazon.com/neptune-analytics/latest/apiref/API_CreateGraph.html",
+}
+def _az_src_ok(root, name, fname, url):
+    m = re.search(r'variable "' + name + r'" \{\n\s*description\s*=\s*"([^"\n]*)"', _root_tf(root))
+    res = open(os.path.join(ROOT, "terraform", *root.split("/"), fname), encoding="utf-8").read()
+    return (m is not None and url in m.group(1) and "checked 2026-10-04" in m.group(1)
+            and re.search(r"^\s*#.*" + re.escape(url), res, re.M) is not None and "2026-10-04 確認" in res
+            and re.search(r"^#.*" + re.escape(url), up, re.M) is not None)
+check("注意書きの付く *_az_num（MSK / Runtime / OpenSearch 2 か所 / Nautobot の DB / エンドポイント / Neptune）は、description とリソースのそばと up.sh の検査に出典の URL と確認日がある",
+      all(_az_src_ok(r, n, f, u) for (r, n, f), u in _AZ_SRC.items()))
+check("確かめ切れていないことは「未確認」と書く（Runtime の 1 サブネット、OpenSearch のスタンバイの AZ と OCU、エンドポイントの AZ 障害の振る舞い）。"
+      "Runtime の 1 を拒むのは AWS の制約ではなくユーザーの決定と書く",
+      "1 つで作るのは AWS で未確認" in _root_tf("agent") and "not tried on AWS" in _root_tf("agent")
+      and "not by AWS" in _root_tf("agent") and "AWS の制約ではなくユーザーの決定" in _root_tf("agent")
+      and all("（未確認）" in _root_tf(r) and "unverified" in _root_tf(r) for r in ("agent", "pipeline/analytics"))
+      and "AZ が落ちたときの振る舞いは AWS で未確認" in _root_tf("base/core") and "not tried on AWS" in _root_tf("base/core")
+      and all(w in up for w in ("1 つで作るのは AWS で未確認", "「最小 OCU が倍」は今の Developer Guide に見つけられなかった（未確認）",
+                                "AZ が落ちたときの振る舞いは AWS で未確認")))
+_SINGLE = {  # (ルート, リソースの見出し): 理由に書く言葉
+    ("base/core", 'resource "aws_instance" "web"'): "SSM のポートフォワード",
+    ("pipeline/lab", 'resource "aws_instance" "lab"'): "containerlab の 1 台の中に全部の機器",
+    ("pipeline/analytics", 'resource "aws_ecs_service" "grafana"'): "https://grafana.com/docs/grafana/latest/alerting/set-up/configure-high-availability/",
+    ("pipeline/nautobot", 'resource "aws_ecs_service" "nautobot"'): "Redis と Celery のワーカーが同じタスク",
+    ("workflow", 'resource "aws_ecs_service" "workflow"'): "Temporal の開発用サーバー",
+    ("pipeline/stream", 'resource "aws_ecs_service" "telegraf_dialin"'): "TELEGRAF_AZ_NUM に従わない理由",
+}
+def _single_ok(root, head, word):
+    t = _root_tf(root)
+    i = t.find(head)
+    if i < 0:
+        return False
+    j = t.find("\n}\n", i)
+    near = t[max(0, t.rfind("\n\n", 0, i)):j]  # 見出しの直前のコメントから、そのリソースの終わりまで
+    return word in near and ("AWS では未確認（2026-10-04）" in near or "2026-10-04 確認" in near)
+check("1 台でしか成り立たないリソース（Web / lab / Grafana / Nautobot / workflow / Telegraf の dialin）のそばに、AZ の数のキーを作らない理由と確かめ方（出典か「未確認」）を書く",
+      all(_single_ok(r, h, w) for (r, h), w in _SINGLE.items()))
 # ---- 閉域の Deny（terraform/base/core/perimeter.tf と、analytics が付けるもの）
 _perim = open(os.path.join(ROOT, "terraform", "base", "core", "perimeter.tf"), encoding="utf-8").read()
 check("perimeter.tf: aws:SourceVpc がこの VPC でなく、AWS のサービス経由でもない呼び出しを拒む（S3 Tables が裏で呼ぶ分は外す）",
@@ -1194,25 +1283,25 @@ check("analytics: EMR のロールに perimeter を付け、テーブルバケ�
 # up.sh のエンドポイントの選び方を切り出して bash で動かす
 _epblk = up[up.index('ENDPOINTS=""'):up.index('echo "インターフェース型エンドポイント')]
 def _endpoints(roots, **env):
-    r = subprocess.run(["bash", "-c", f'ROOTS="{roots}"\n' + _epblk + 'echo "OUT: $ENDPOINTS | $(endpoint_count) | $ENDPOINT_AZS"'],
+    r = subprocess.run(["bash", "-c", f'ROOTS="{roots}"\n' + _epblk + 'echo "OUT: $ENDPOINTS | $(endpoint_count)"'],
                        capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env})
     return r.stdout.strip().splitlines()[-1] if r.stdout.strip() else r.stderr
 import subprocess
-check("土台だけなら ssm / ssmmessages の 2 本", _endpoints("base/ecr base/core") == "OUT: ssm ssmmessages | 2 | 1")
+check("土台だけなら ssm / ssmmessages の 2 本", _endpoints("base/ecr base/core") == "OUT: ssm ssmmessages | 2")
 check("AGENT は bedrock-runtime / bedrock-agentcore / ecr / logs を足し、KB で bedrock-agent-runtime",
-      _endpoints("base/ecr base/core agent", AGENT="1") == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs | 7 | 1"
+      _endpoints("base/ecr base/core agent", AGENT="1") == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs | 7"
       and _endpoints("base/ecr base/core agent", AGENT="1", CREATE_KB="1").startswith("OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs bedrock-agent-runtime | 8"))
 _ALL = "base/ecr base/core agent pipeline/lab pipeline/stream pipeline/analytics pipeline/graph workflow"
-check("全部なら 16 本で重複しない（ecr / logs / s3tables / bedrock-agentcore は 1 本ずつ。graph は Neptune Analytics の neptune-graph-data）、ENDPOINTS_MULTI_AZ=1 で 2 AZ。events は無く、アラートの送り手がいれば sns",
-      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1", GRAFANA="1", ENDPOINTS_MULTI_AZ="1")
-      == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs s3tables neptune-graph-data kinesis-firehose sqs bedrock-agentcore.gateway athena bedrock-agent-runtime aps-workspaces sns | 16 | 2")
+check("全部なら 16 本で重複しない（ecr / logs / s3tables / bedrock-agentcore は 1 本ずつ。graph は Neptune Analytics の neptune-graph-data）。events は無く、アラートの送り手がいれば sns",
+      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1", GRAFANA="1")
+      == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs s3tables neptune-graph-data kinesis-firehose sqs bedrock-agentcore.gateway athena bedrock-agent-runtime aps-workspaces sns | 16")
 check("sns のエンドポイントは Grafana か Splunk があるときだけ（Grafana はいつもアラートルールを持つ。どちらも無ければ 15 本。Splunk だけでも足す）",
-      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1").endswith("aps-workspaces | 15 | 1")
-      and _endpoints("base/ecr base/core pipeline/lab pipeline/stream pipeline/analytics", SPLUNK_ON_ECS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr logs s3tables sns | 7 | 1"
+      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1").endswith("aps-workspaces | 15")
+      and _endpoints("base/ecr base/core pipeline/lab pipeline/stream pipeline/analytics", SPLUNK_ON_ECS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr logs s3tables sns | 7"
       and "events" not in _epblk.replace("events の", ""))
 check("kinesis-firehose（graph の履歴）と athena（workflow の query_history）は analytics を作る回か、analytics が state に残っているときだけ",
-      _endpoints("base/ecr base/core pipeline/lab pipeline/graph", SKIP_ANALYTICS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr neptune-graph-data | 5 | 1"
-      and _endpoints("base/ecr base/core pipeline/lab pipeline/analytics pipeline/graph") == "OUT: ssm ssmmessages ecr.api ecr.dkr s3tables logs neptune-graph-data kinesis-firehose | 8 | 1"
+      _endpoints("base/ecr base/core pipeline/lab pipeline/graph", SKIP_ANALYTICS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr neptune-graph-data | 5"
+      and _endpoints("base/ecr base/core pipeline/lab pipeline/analytics pipeline/graph") == "OUT: ssm ssmmessages ecr.api ecr.dkr s3tables logs neptune-graph-data kinesis-firehose | 8"
       and subprocess.run(["bash", "-c", 'ROOTS="base/ecr base/core"\n' + _epblk + 'ANALYTICS_LEFT=1; endpoints_for pipeline/graph; endpoints_for workflow; echo "OUT: $ENDPOINTS"'],
                          capture_output=True, text=True, env={"PATH": os.environ["PATH"], "SKIP_ANALYTICS": "1"}).stdout.strip().splitlines()[-1]
       == "OUT: ssm ssmmessages neptune-graph-data kinesis-firehose sqs s3tables ecr.api ecr.dkr logs bedrock-agentcore bedrock-agentcore.gateway athena")
@@ -1292,12 +1381,14 @@ _r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $1"; exit 1; }\n' + _sndb
                     env={"PATH": os.environ["PATH"], "GRAFANA": "1", "SINK_PROMETHEUS": "1", "SPLUNK_ON_ECS": "1"})
 check("SNMP_POLL=0 で Grafana の link_down が黙るときは注意を出す（Splunk があれば trap からだけ知らせると言う）",
       "注意: SNMP_POLL=0 なので Grafana のアラートルール link_down と Splunk の netops_poll は発火しない" in _r.stdout)
-check("up.sh は base/core に interface_endpoints / network_perimeter / endpoints_multi_az を渡し、state に残るルートの分も足す",
-      'MAIN_VARS+=(-var "interface_endpoints=[' in up and 'MAIN_VARS+=(-var "network_perimeter=' in up and 'MAIN_VARS+=(-var "endpoints_multi_az=' in up
+check("up.sh は base/core に interface_endpoints / network_perimeter / endpoints_az_num を渡し、state に残るルートの分も足す",
+      'MAIN_VARS+=(-var "interface_endpoints=[' in up and 'MAIN_VARS+=(-var "network_perimeter=' in up
+      and 'MAIN_VARS+=(-var "endpoints_az_num=$ENDPOINTS_AZ_NUM")' in up and "endpoints_multi_az" not in up
       and re.search(r'if has_resources "\$r"; then\n\s*endpoints_for "\$r"', up) is not None
       and 'NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"' in up
       and all(k in open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read() for k in ("NETWORK_PERIMETER", "ENDPOINTS_MULTI_AZ")))
-check("費用の目安にエンドポイント（1 本 1.4 セント × AZ）を足す", "COST_CENTS=$((COST_CENTS + ($(endpoint_count) * 14 * ENDPOINT_AZS + 5) / 10))" in up)
+check("費用の目安にエンドポイント（1 本 1.4 セント × ENDPOINTS_AZ_NUM）を足す",
+      "COST_CENTS=$((COST_CENTS + ($(endpoint_count) * 14 * ENDPOINTS_AZ_NUM + 5) / 10))" in up and "ENDPOINT_AZS" not in up)
 check("NAT Gateway / IGW / EIP / パブリックサブネット / 既定ルートは作らない（2026-09-28。VPC から AWS の外へ出る経路が無い）。up.sh も create_nat_gateway を渡さない",
       not any(f'resource "{t}"' in _core for t in ("aws_nat_gateway", "aws_internet_gateway", "aws_eip", "aws_route"))
       and 'resource "aws_subnet" "public"' not in _core and "create_nat_gateway" not in _core and 'output "nat_gateway"' not in _core
@@ -1437,9 +1528,32 @@ _envx_st = _envx[_envx.index("# analytics の格納先を 3 つのまとまり�
 check("deploy.env.example は STORES を既定の s3,grafana,splunk で書き、その前にまとまりごとの中身・外すと無くなるもの・費用と、外すとデータごと消えることを書く",
       re.search(r"^#STORES=s3,grafana,splunk$", _envx, re.M) is not None and _envx.count("#STORES=") == 1
       and all(re.search(rf"^#   {g} +全トピック|^#   {g} +traps と logs", _envx_st, re.M) for g in ("s3", "grafana", "splunk"))
-      and all(k in _envx_st for k in ("**既定は s3,grafana,splunk = 3 つとも**", "+$0.21/h", "約 +$0.62/h", "約 +$0.34/h", "データごと消える",
+      and all(k in _envx_st for k in ("**既定は s3,grafana,splunk = 3 つとも**", "+$0.21/h", "約 +$0.60/h", "約 +$0.34/h", "データごと消える",
                                       "SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK / GRAFANA は 2026-10-04 になくした"))
-      and _envx_st.count("#            外すと") == 3)
+      and _envx_st.count("#            外すと") == 3
+      and "OpenSearch Serverless の $0.01 と、aps-workspaces と sns の $0.014 ずつ" in _envx_st)
+# deploy.env.example の PIPELINE=1 の金額を、up.sh のエンドポイントの選び方と費用の目安を切り出して出した値と比べる（*_AZ_NUM は既定。
+# OpenSearch Serverless の VPC エンドポイントは 2026-10-04 から ENDPOINTS_AZ_NUM に従うので、既定の 1 AZ で $0.01）
+_fullcost = up[up.index("# ここを変えたら README"):up.index("COST_NOTE=$(")]
+def _pipeline_cents(stores="s3,grafana,splunk", skip=()):
+    sk = set(skip) | ({"analytics"} if "stream" in skip else set())   # stream を作らなければ analytics も作らない
+    st = set(stores.split(","))
+    an = "analytics" not in sk
+    roots = "base/ecr base/core " + " ".join(f"pipeline/{r}" for r in ("lab", "stream", "analytics", "graph") if r not in sk) + " pipeline/nautobot"
+    env = {"PATH": os.environ["PATH"], "PIPELINE": "1", "NAUTOBOT": "1", "SNMP_POLL": "1",
+           **{f"SKIP_{r.upper()}": "1" if r in sk else "" for r in ("lab", "stream", "analytics", "graph")},
+           "SINK_S3": "1" if "s3" in st else "", "SINK_OPENSEARCH": "1" if "grafana" in st else "", "SINK_PROMETHEUS": "1" if "grafana" in st else "",
+           "SINK_SPLUNK": "1" if "splunk" in st else "", "GRAFANA": "1" if an and "grafana" in st else "", "SPLUNK_ON_ECS": "1" if an and "splunk" in st else "",
+           "ENDPOINTS_AZ_NUM": "1", "MSK_AZ_NUM": "2", "TELEGRAF_AZ_NUM": "1", "NEPTUNE_AZ_NUM": "1", "OPENSEARCH_AZ_NUM": "1", "NAUTOBOT_DB_AZ_NUM": "1"}
+    r = subprocess.run(["bash", "-c", f'ROOTS="{roots}"\n' + _epblk + _fullcost + 'echo "OUT: $COST_CENTS"'], capture_output=True, text=True, env=env)
+    return int(r.stdout.split("OUT: ")[1]) if "OUT: " in r.stdout else r.stderr
+_usd = lambda c: f"${c // 100}.{c % 100:02d}/h"
+_pc = _pipeline_cents()
+check("deploy.env.example の PIPELINE=1 の金額（既定の STORES / STORES=s3 / SKIP_STREAM / SKIP_ANALYTICS で下がる分）が up.sh の費用の目安と同じ",
+      isinstance(_pc, int)
+      and f"約 {_usd(_pc)}（STORES が既定の s3,grafana,splunk のとき。STORES=s3 なら約 {_usd(_pipeline_cents('s3'))}" in _envx
+      and re.search(rf"^#SKIP_STREAM=1 .*約 {re.escape(_usd(_pc - _pipeline_cents(skip=('stream',))))} 下がる（STORES が既定のとき）", _envx, re.M) is not None
+      and re.search(rf"^#SKIP_ANALYTICS=1 .*約 {re.escape(_usd(_pc - _pipeline_cents(skip=('analytics',))))} 下がる（STORES が既定のとき）", _envx, re.M) is not None)
 check("deploy.env.example に SINK_* / GRAFANA のキーの行は無い。SPLUNK_INDEX は STORES のあとに空で書く。SPLUNK_HEC_URL / SPLUNK_SKIP_TLS_VERIFY も書かない（2026-09-28 にやめた）",
       re.search(r"^#?\s*(SINK_[A-Z0-9]+|GRAFANA|SINKS)=", _envx, re.M) is None
       and re.search(r"^#SPLUNK_INDEX=$", _envx, re.M) is not None and _envx.index("#STORES=s3,grafana,splunk") < _envx.index("#SPLUNK_INDEX=")
@@ -1563,7 +1677,7 @@ check("deploy.env.example は NO_DASHBOARD_PORTFORWARD を書き、前の名前�
       and all(re.search(rf"(?<![A-Z_]){k}(?![A-Z_])", open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read().split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1])
               for k in ("NO_DASHBOARD_PORTFORWARD", "NO_PORTFORWARD")))
 # ふだん書かないキーは deploy.env.example と up.sh のヘッダーの最後の 2 節（冗長化用 → デバッグ用）にまとめる（2026-10-04）。並べ替えただけで、読み方と既定は変えない
-_RED_H = "# ---- 冗長化用（既定はどれも 1 AZ / 1 台。本番の形を試すときに書く） ----"
+_RED_H = "# ---- 冗長化用（既定は 1 AZ。MSK と Runtime だけ既定 2 AZ。本番の形を試すときに書く） ----"
 _DBG_H = "# ---- デバッグ用（ふだんは書かない） ----"
 def _key_sections(text, key_re):  # 見出しで ふだん / 冗長化用 / デバッグ用 に切り、各節に出てくるキーの名前を出てくる順に返す
     if text.count(_RED_H) != 1 or text.count(_DBG_H) != 1 or text.index(_RED_H) > text.index(_DBG_H):
@@ -1573,10 +1687,25 @@ def _key_sections(text, key_re):  # 見出しで ふだん / 冗長化用 / デ�
 _env_secs = _key_sections(env_example, r"^#?([A-Z][A-Z0-9_]*)=")
 _up_hdr = up[up.index("# 設定できるキー（"):up.index("# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* /")]
 _up_secs = _key_sections(_up_hdr, r"^#   ([A-Z][A-Z0-9_]*)")
-check("deploy.env.example と up.sh のヘッダーは、冗長化用の節に ENDPOINTS_MULTI_AZ、最後のデバッグ用の節に NETWORK_PERIMETER と TF_VERBOSE だけを置く",
-      _env_secs is not None and _env_secs[1:] == [["ENDPOINTS_MULTI_AZ"], ["NETWORK_PERIMETER", "TF_VERBOSE"]]
-      and _up_secs is not None and _up_secs[1:] == [["ENDPOINTS_MULTI_AZ"], ["NETWORK_PERIMETER", "TF_VERBOSE"]]
-      and not any(k in _env_secs[0] or k in _up_secs[0] for k in ("ENDPOINTS_MULTI_AZ", "NETWORK_PERIMETER", "TF_VERBOSE")))
+_AZ_KEYS = ["ENDPOINTS_AZ_NUM", "MSK_AZ_NUM", "RUNTIME_AZ_NUM", "EMR_AZ_NUM", "LAMBDA_AZ_NUM", "NEPTUNE_AZ_NUM", "OPENSEARCH_AZ_NUM",
+            "NAUTOBOT_DB_AZ_NUM", "TELEGRAF_AZ_NUM"]
+check("deploy.env.example と up.sh のヘッダーは、冗長化用の節に 9 つの *_AZ_NUM、最後のデバッグ用の節に NETWORK_PERIMETER と TF_VERBOSE だけを置く（ENDPOINTS_MULTI_AZ のキーの行は無い）",
+      _env_secs is not None and _env_secs[1:] == [_AZ_KEYS, ["NETWORK_PERIMETER", "TF_VERBOSE"]]
+      and _up_secs is not None and _up_secs[1:] == [_AZ_KEYS, ["NETWORK_PERIMETER", "TF_VERBOSE"]]
+      and not any(k in _env_secs[0] or k in _up_secs[0] for k in _AZ_KEYS + ["ENDPOINTS_MULTI_AZ", "NETWORK_PERIMETER", "TF_VERBOSE"]))
+_red_env = env_example[env_example.index(_RED_H):env_example.index(_DBG_H)]
+_red_up = _up_hdr[_up_hdr.index(_RED_H):_up_hdr.index(_DBG_H)]
+check("冗長化用の節: MSK と Runtime は「1 にはできない」を理由つきで書き、1 台でしか成り立たない 5 つ（Web / lab / Grafana / Nautobot / workflow）も理由つきで 1 行ずつ。"
+      "Splunk はそこに入れず、「Splunk をクラスターにする（004）」で SPLUNK_AZ_NUM として足すと 1 行（キーの行は無い）",
+      all("**1 にはできない**（MSK はブローカーを 2 か 3 の AZ にしか置けない）" in t and "**1 にはできない**（AWS の文書が高可用性のため 2 AZ 以上を勧めている" in t
+          and "1 台でしか成り立たないのでキーを作らないもの" in t
+          and all(re.search(r"^#\s+" + w + r"（[^\n]+）、?$", t, re.M) for w in ("Web の EC2", "lab の EC2", "Grafana", "Nautobot", "workflow"))
+          and not re.search(r"^#\s+Splunk（", t, re.M)
+          and re.search(r"^#\s+キーがまだ無いもの: Splunk（[^\n]+）。[^\n]*「Splunk をクラスターにする（004）」で SPLUNK_AZ_NUM として足す$", t, re.M)
+          and "SPLUNK_AZ_NUM=" not in t
+          for t in (_red_env, _red_up))
+      and all(re.search(r"^#" + k + r"=[23]$", _red_env, re.M) for k in _AZ_KEYS)
+      and all(re.search(r"^#   " + k + "=" + d + r" ", _red_up, re.M) for k, d in zip(_AZ_KEYS, "122111111")))
 check("切り分けに使わないキー（HTTP_SEND / MAX_OFFSETS_PER_TRIGGER* / KEEP_ECR / NO_DASHBOARD_PORTFORWARD / LOCAL_PORT / IMAGE_TAG / AWS_*）はふだんの節のまま",
       _env_secs is not None and _up_secs is not None
       and all(k in _env_secs[0] for k in ("HTTP_SEND", "MAX_OFFSETS_PER_TRIGGER", "MAX_OFFSETS_PER_TRIGGER_ICEBERG", "MAX_OFFSETS_PER_TRIGGER_SPLUNK",
@@ -1591,12 +1720,82 @@ check("デバッグ用のキーは、それぞれ何の切り分けに使うか�
       and re.search(r"^# terraform の失敗・遅さの切り分け: [^\n]*\n(?:#[^\n]*\n)*?#TF_VERBOSE=0$", env_example, re.M) is not None
       and re.search(r"^#   NETWORK_PERIMETER=0 +AccessDenied の切り分け。", _up_hdr, re.M) is not None
       and re.search(r"^#   TF_VERBOSE=1 +terraform の失敗・遅さの切り分け。", _up_hdr, re.M) is not None
-      and re.search(r"^#ENDPOINTS_MULTI_AZ=1$", env_example, re.M) is not None)
-check("節を分けても読めるキーは同じ（deploy-env.sh の DEPLOY_ENV_KEYS に 3 つとも残る）で、up.sh の既定も同じ（NETWORK_PERIMETER 1、ENDPOINTS_MULTI_AZ 0）",
+      and re.search(r"^#ENDPOINTS_MULTI_AZ=", env_example, re.M) is None)
+check("DEPLOY_ENV_KEYS に 9 つの *_AZ_NUM と、止めるために読む ENDPOINTS_MULTI_AZ、NETWORK_PERIMETER / TF_VERBOSE がある。up.sh の NETWORK_PERIMETER の既定は 1 のまま",
       all(re.search(rf"(?<![A-Z_]){k}(?![A-Z_])", open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read().split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1])
-          for k in ("ENDPOINTS_MULTI_AZ", "NETWORK_PERIMETER", "TF_VERBOSE"))
-      and 'NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"\nflag_value NETWORK_PERIMETER; flag_value ENDPOINTS_MULTI_AZ\n' in up
-      and 'if [ -n "$ENDPOINTS_MULTI_AZ" ]; then ENDPOINT_AZS=2; else ENDPOINT_AZS=1; fi' in up)
+          for k in _AZ_KEYS + ["ENDPOINTS_MULTI_AZ", "NETWORK_PERIMETER", "TF_VERBOSE"])
+      and 'NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"\nflag_value NETWORK_PERIMETER\n' in up and "flag_value ENDPOINTS_MULTI_AZ" not in up)
+# AZ_NUM の検査を up.sh から切り出して動かす（何も作る前に止まる・注意を出す）
+_azblk = up[up.index('case "${ENDPOINTS_MULTI_AZ:-}" in'):up.index('if [ -z "$NETWORK_PERIMETER" ]; then echo "NETWORK_PERIMETER=0')]
+def _aznum(**env):
+    r = subprocess.run(["bash", "-uc", 'die() { echo "DIE: $*"; exit 1; }\n' + _azblk + 'echo "OUT: ' + " ".join("$" + k for k in _AZ_KEYS) + '"'],
+                       capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env})
+    return r.stdout.strip() or r.stderr
+check("AZ_NUM: 書かなければ ENDPOINTS 1 / MSK 2 / Runtime 2 / ほか 1 で、注意は出ない（既定の MSK と Runtime の 2 は数えない）",
+      _aznum() == "OUT: 1 2 2 1 1 1 1 1 1")
+check("AZ_NUM: 範囲の中はそのまま使い、先頭の 0 は外す（08 も 8 進数にしない）",
+      _aznum(ENDPOINTS_AZ_NUM="3", MSK_AZ_NUM="3", RUNTIME_AZ_NUM="3", EMR_AZ_NUM="3", LAMBDA_AZ_NUM="3", NEPTUNE_AZ_NUM="3",
+             OPENSEARCH_AZ_NUM="2", NAUTOBOT_DB_AZ_NUM="2", TELEGRAF_AZ_NUM="3") == "OUT: 3 3 3 3 3 3 2 2 3"
+      and _aznum(ENDPOINTS_AZ_NUM="02") == "OUT: 2 2 2 1 1 1 1 1 1"
+      and _aznum(ENDPOINTS_AZ_NUM="08").startswith("DIE: ENDPOINTS_AZ_NUM=8 は書けない。1〜3 で書く"))
+_AZ_RANGE = {"ENDPOINTS_AZ_NUM": (1, 3), "MSK_AZ_NUM": (2, 3), "RUNTIME_AZ_NUM": (2, 3), "EMR_AZ_NUM": (1, 3), "LAMBDA_AZ_NUM": (1, 3),
+             "NEPTUNE_AZ_NUM": (1, 3), "OPENSEARCH_AZ_NUM": (1, 2), "NAUTOBOT_DB_AZ_NUM": (1, 2), "TELEGRAF_AZ_NUM": (1, 3)}
+check("AZ_NUM: 範囲の外（下限 - 1 と上限 + 1）は範囲を出して「まだ何も作っていない」で止まる。範囲と既定は terraform の変数と同じ",
+      all(_aznum(**{k: str(v)}).startswith(f"DIE: {k}={v} は書けない。{lo}〜{hi} で書く（") and _aznum(**{k: str(v)}).endswith("まだ何も作っていない")
+          for k, (lo, hi) in _AZ_RANGE.items() for v in (lo - 1, hi + 1))
+      and all(_AZ_RANGE[k.upper()] == (min(a), max(a)) and _aznum().split()[1 + _AZ_KEYS.index(k.upper())] == str(d)
+              for (_r, k), (d, a) in _AZ_VARS.items()))
+check("AZ_NUM: MSK と Runtime の 1 は理由つきで止まる",
+      "MSK はブローカーを 2 か 3 の AZ にしか置けない" in _aznum(MSK_AZ_NUM="1")
+      and "AWS の文書の勧めに合わせて 2 AZ 以上" in _aznum(RUNTIME_AZ_NUM="1"))
+check("AZ_NUM: 数でない値（two / -1 / 1.5 / 空白入り）は止まる",
+      all(_aznum(LAMBDA_AZ_NUM=v).startswith(f"DIE: LAMBDA_AZ_NUM は 1〜3 の数で書く（いまは LAMBDA_AZ_NUM={v}）") for v in ("two", "-1", "1.5", "1 2")))
+check("ENDPOINTS_MULTI_AZ が残っていると止まる（1 / true / yes は ENDPOINTS_AZ_NUM=2 に書き換え、0 / false / no は消す）",
+      all(_aznum(ENDPOINTS_MULTI_AZ=v).startswith("DIE: ") and "を ENDPOINTS_AZ_NUM=2 と書き換える。まだ何も作っていない" in _aznum(ENDPOINTS_MULTI_AZ=v)
+          for v in ("1", "true", "yes"))
+      and all(_aznum(ENDPOINTS_MULTI_AZ=v).startswith("DIE: ") and "既定（ENDPOINTS_AZ_NUM=1）と同じなので、deploy.env と環境変数から消す" in _aznum(ENDPOINTS_MULTI_AZ=v)
+              for v in ("0", "false", "no")))
+_w = _aznum(NEPTUNE_AZ_NUM="2", TELEGRAF_AZ_NUM="3")
+check("書いたキーが ENDPOINTS_AZ_NUM より大きいと注意を 1 行出して進む（そろえれば出ない。書いた MSK の 2 も数える）",
+      _w.count("注意:") == 1 and _w.startswith("注意: NEPTUNE_AZ_NUM=2 TELEGRAF_AZ_NUM=3 に対して ENDPOINTS_AZ_NUM=1。") and _w.endswith("OUT: 1 2 2 1 1 2 1 1 3")
+      and _aznum(NEPTUNE_AZ_NUM="2", ENDPOINTS_AZ_NUM="2") == "OUT: 2 2 2 1 1 2 1 1 1"
+      and _aznum(NEPTUNE_AZ_NUM="3", ENDPOINTS_AZ_NUM="2").startswith("注意: NEPTUNE_AZ_NUM=3 に対して ENDPOINTS_AZ_NUM=2。")
+      and _aznum(MSK_AZ_NUM="2").startswith("注意: MSK_AZ_NUM=2 に対して")
+      and "注意" not in _aznum(LAMBDA_AZ_NUM="1"))
+check("AZ_NUM の検査は deploy.env を読んだあと、aws を呼ぶ前・費用の目安より前（何も作る前）",
+      up.index("\nload_deploy_env\n") < up.index(_azblk) < up.index("command -v aws >/dev/null") < up.index("COST_CENTS=2\n"))
+check("各ルートに *_AZ_NUM を -var で渡す",
+      'GRAPH_VARS=(-var "neptune_az_num=$NEPTUNE_AZ_NUM" -var "lambda_az_num=$LAMBDA_AZ_NUM")\n  if analytics_on; then GRAPH_VARS+=(-var alert_history=true); fi\n'
+      '  ( tf_apply_only pipeline/graph "${GRAPH_VARS[@]}" )' in up
+      and re.search(r'tf_apply pipeline/nautobot [^\n]*-var "nautobot_db_az_num=\$NAUTOBOT_DB_AZ_NUM"\n', up) is not None
+      and re.search(r'tf_apply workflow [^\n]*-var "lambda_az_num=\$LAMBDA_AZ_NUM"\n', up) is not None
+      and re.search(r'tf_apply pipeline/stream (?:[^\n]*\\\n)+\s*-var "msk_az_num=\$MSK_AZ_NUM" -var "telegraf_az_num=\$TELEGRAF_AZ_NUM"\n', up) is not None
+      and 'AGENT_VARS=(-var "agent_image_tag=$IMAGE_TAG" -var "runtime_az_num=$RUNTIME_AZ_NUM" -var "lambda_az_num=$LAMBDA_AZ_NUM" -var "opensearch_az_num=$OPENSEARCH_AZ_NUM")' in up
+      and 'ANALYTICS_VARS+=(-var "opensearch_az_num=$OPENSEARCH_AZ_NUM")' in up and '-var "emr_az_num=$EMR_AZ_NUM")' in up)
+# 費用の目安の全体を切り出して AZ_NUM ごとに動かす（endpoint_count は 2 本に固定。機能は全部切ってから 1 つずつ入れる）
+_costall = up[up.index("COST_CENTS=2\n"):up.index("COST_NOTE=$(printf")]
+_COST_OFF = {k: "" for k in ("AGENT", "CREATE_KB", "SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA",
+                             "SPLUNK_ON_ECS", "NAUTOBOT", "WORKFLOW")}
+_COST_OFF.update(SKIP_LAB="1", SKIP_GRAPH="1", SKIP_STREAM="1", SKIP_ANALYTICS="1", **dict(zip(_AZ_KEYS, "122111111")))
+def _costaz(**env):
+    r = subprocess.run(["bash", "-uc", "endpoint_count() { echo 2; }\n" + _costall + 'echo "OUT: $COST_CENTS"'], capture_output=True, text=True,
+                       env={"PATH": os.environ["PATH"], **_COST_OFF, **env})
+    return int(r.stdout.split("OUT: ")[1]) if "OUT: " in r.stdout else r.stderr
+check("費用: エンドポイントは 1.4 × 本数 × ENDPOINTS_AZ_NUM（2 本で 1 AZ 3、3 AZ 8）",
+      _costaz() == 2 + 3 and _costaz(ENDPOINTS_AZ_NUM="3") == 2 + 8)
+check("費用: MSK は 2 AZ で 57、3 AZ で +27。Telegraf は受ける側のタスクが AZ ごとに増える（1 AZ 5、3 AZ 7）",
+      _costaz(SKIP_STREAM="") == 5 + 57 + 5 and _costaz(SKIP_STREAM="", MSK_AZ_NUM="3") == 5 + 84 + 5
+      and _costaz(SKIP_STREAM="", TELEGRAF_AZ_NUM="3") == 5 + 57 + 7)
+check("費用: Neptune は 58 × NEPTUNE_AZ_NUM、Nautobot は Multi-AZ で 13 → 16",
+      _costaz(SKIP_GRAPH="") == 5 + 58 and _costaz(SKIP_GRAPH="", NEPTUNE_AZ_NUM="3") == 5 + 174
+      and _costaz(NAUTOBOT="1") == 5 + 13 and _costaz(NAUTOBOT="1", NAUTOBOT_DB_AZ_NUM="2") == 5 + 16)
+check("費用: OpenSearch の OCU は 33 × OPENSEARCH_AZ_NUM（KB も logs も）、OpenSearch Serverless のエンドポイントは 1.4 × ENDPOINTS_AZ_NUM（1 AZ 1、2 AZ 3）",
+      _costaz(AGENT="1", CREATE_KB="1") == 5 + 33 + 1 and _costaz(AGENT="1", CREATE_KB="1", OPENSEARCH_AZ_NUM="2") == 5 + 66 + 1
+      and _costaz(AGENT="1", CREATE_KB="1", ENDPOINTS_AZ_NUM="2") == 2 + 6 + 33 + 3
+      and _costaz(SKIP_ANALYTICS="", SINK_OPENSEARCH="1", OPENSEARCH_AZ_NUM="2") == 5 + 21 + 66 + 1)
+check("費用: EMR / Lambda / Runtime の AZ_NUM では変わらない。AZ をまたぐ転送料は入れず、AZ_NUM を書いたときに 1 行出す",
+      _costaz(EMR_AZ_NUM="3", LAMBDA_AZ_NUM="3", RUNTIME_AZ_NUM="3") == _costaz()
+      and 'if [ -n "$AZ_NUM_SET" ]; then echo "AZ をまたぐ転送料（' in up)
 # iceberg を外しても、証跡があるのでテーブルバケット・namespace・カタログはいつも作る。生データの raw_telemetry だけ外す
 check('resource "aws_s3tables_table" "raw_telemetry" は sink_iceberg の count',
       re.search(r'resource "aws_s3tables_table" "raw_telemetry" \{\n  count = local\.sink_iceberg \? 1 : 0\n', tf) is not None)
@@ -1754,6 +1953,7 @@ check("README と docs/deploy.md のキーの表に MAX_OFFSETS_PER_TRIGGER と�
 _costblk = up[up.index('if [ -z "$SKIP_ANALYTICS" ]; then\n  # Spark のジョブ'):up.index('if [ -n "$NAUTOBOT" ]; then COST_CENTS')]
 def _cost(**env):
     base_env = {k: "" for k in ("SKIP_ANALYTICS", "SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA", "SPLUNK_ON_ECS")}
+    base_env["OPENSEARCH_AZ_NUM"] = "1"
     r = subprocess.run(["bash", "-uc", "COST_CENTS=0\n" + _costblk + 'echo "OUT: $COST_CENTS"'], capture_output=True, text=True,
                        env={"PATH": os.environ["PATH"], **base_env, **env})
     return int(r.stdout.split("OUT: ")[1]) if "OUT: " in r.stdout else r.stderr
@@ -1764,7 +1964,7 @@ check("費用: OpenSearch と Prometheus は 1 つのジョブ（OpenSearch の 
       _cost(SINK_OPENSEARCH="1", SINK_PROMETHEUS="1") == 21 + 33 and _cost(SINK_SPLUNK="1", SPLUNK_ON_ECS="1") == 21 + 12
       and _cost(SINK_S3="1", SINK_OPENSEARCH="1", SINK_PROMETHEUS="1", SINK_SPLUNK="1", SPLUNK_ON_ECS="1", GRAFANA="1") == 63 + 33 + 12 + 2
       and _cost(SKIP_ANALYTICS="1", SINK_S3="1", SINK_SPLUNK="1", SINK_PROMETHEUS="1") == 0)
-_COST_TAIL = "COST_CENTS=0\n" + _costblk + 'echo "OUT: $COST_CENTS"'
+_COST_TAIL = "COST_CENTS=0\nOPENSEARCH_AZ_NUM=1\n" + _costblk + 'echo "OUT: $COST_CENTS"'
 check("費用の Grafana の 2 は導いた値で数える（STORES=grafana なら 21 + 33 + 2、STORES=s3 なら Grafana は無く 21、3 つとも入れると 63 + 33 + 12 + 2）",
       _stores(_COST_TAIL, STORES="grafana")[:2] == (0, "OUT: 56") and _stores(_COST_TAIL, STORES="s3")[:2] == (0, "OUT: 21")
       and _stores(_COST_TAIL, STORES="s3,grafana,splunk")[:2] == (0, "OUT: 110"))
@@ -1896,7 +2096,7 @@ _m_cpu = re.search(r'variable "max_cpu" \{[^}]*default\s*=\s*"([^"]+)"', _tfv)
 _m_mem = re.search(r'variable "max_memory" \{[^}]*default\s*=\s*"([^"]+)"', _tfv)
 check("up.sh の EMR_MAX_CPU / EMR_MAX_MEMORY は variables.tf の max_cpu / max_memory の既定値と同じで、tf_apply の前に止める判断がある",
       f'EMR_MAX_CPU="{_m_cpu.group(1)}"; EMR_MAX_MEMORY="{_m_mem.group(1)}"' in _b74
-      and 'ANALYTICS_VARS+=(-var "max_cpu=$EMR_MAX_CPU" -var "max_memory=$EMR_MAX_MEMORY")' in _b74
+      and 'ANALYTICS_VARS+=(-var "max_cpu=$EMR_MAX_CPU" -var "max_memory=$EMR_MAX_MEMORY" -var "emr_az_num=$EMR_AZ_NUM")' in _b74
       and up.index("ANALYTICS_VARS=(-var") < up.index(_b74) < up.index('tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"'))
 _FAKE_AWS74 = "#!" + sys.executable + r"""
 import json, os, sys
@@ -1914,8 +2114,8 @@ if cmd == "get-application":
     if app is None:
         sys.exit("ResourceNotFoundException")
     q = opt("--query")
-    if q == "application.[state,maximumCapacity.cpu,maximumCapacity.memory]":
-        print("\t".join([app["state"], app["cpu"], app["memory"]]))
+    if q == "application.[state,maximumCapacity.cpu,maximumCapacity.memory,length(networkConfiguration.subnetIds || `[]`)]":
+        print("\t".join([app["state"], app["cpu"], app["memory"], str(app.get("subnets", 1))]))
     else:
         assert q == "application.state", q
         if app["state"] == "STOPPING":
@@ -1949,7 +2149,7 @@ else:
     sys.exit("unknown " + cmd)
 json.dump(st, open(st_path, "w"))
 """
-def _run74(app, runs=(), cancel_delay=2, stop_delay=2, state_file=True):
+def _run74(app, runs=(), cancel_delay=2, stop_delay=2, state_file=True, emr_az_num=1):
     d = tempfile.mkdtemp()
     try:
         with open(os.path.join(d, "aws"), "w") as f:
@@ -1962,7 +2162,7 @@ def _run74(app, runs=(), cancel_delay=2, stop_delay=2, state_file=True):
         with open(state, "w") as f:
             json.dump({"app": copy.deepcopy(app), "runs": copy.deepcopy(list(runs)), "log": [],
                        "cancel_delay": cancel_delay, "stop_delay": stop_delay}, f)
-        pre = ('set -euo pipefail\nREGION=r; ANALYTICS_VARS=(-var x=1)\n'
+        pre = (f'set -euo pipefail\nREGION=r; ANALYTICS_VARS=(-var x=1); EMR_AZ_NUM={emr_az_num}\n'
                'die() { echo "DIE: $*"; exit 1; }\nsleep() { :; }\ntf_init() { :; }\nhas_resources() { return 0; }\n'
                'tf() { case "$4" in application_id) echo app ;; list_job_runs_command) echo LIST ;; *) echo "tf? $*" >&2; exit 9 ;; esac; }\n')
         r = subprocess.run(["bash", "-c", pre + _b74 + '\nprintf "VARS:%s\\n" "${ANALYTICS_VARS[@]}"'], capture_output=True, text=True, cwd=d,
@@ -1988,7 +2188,7 @@ check("7-4 の前（上限が変わらない）: ジョブもアプリも止め�
       _rc == 0 and _acts74(_st) == [] and "上限を" not in _out and _rc2 == 0 and _acts74(_st2) == [] and _st2["app"]["state"] == "STARTED")
 _rc, _out, _st = _run74(_old_app, _runs74, cancel_delay=1000)
 check("7-4 の前（ジョブが止まらない）: 3 分待って止まり、stop-application も tf_apply もしない",
-      _rc == 1 and "DIE: 上限を変える前に止めた Spark のジョブ（a\tb）が 3 分たっても止まらない" in _out
+      _rc == 1 and "DIE: アプリの設定を変える前に止めた Spark のジョブ（a\tb）が 3 分たっても止まらない" in _out
       and _acts74(_st) == ["cancel a", "cancel b"] and _st["app"]["state"] == "STARTED")
 _rc, _out, _st = _run74(_old_app, _runs74, stop_delay=1000)
 check("7-4 の前（アプリが止まらない）: 3 分待って止まる（STOPPING のまま tf_apply に進まない）",
@@ -1999,4 +2199,15 @@ _rc3, _out3, _st3 = _run74(_old_app, _runs74, state_file=False)
 check("7-4 の前: アプリが止まっていれば上限が変わっても何も止めない。アプリが無いか state が無ければ何もしない（terraform に任せる）",
       _rc == 0 and _acts74(_st) == [] and not any(l.startswith("list") for l in _st["log"]) and "（アプリは STOPPED）" in _out
       and _rc2 == 0 and _st2["log"] == [] and _rc3 == 0 and _st3["log"] == [] and _st3["app"]["state"] == "STARTED")
+_new_app = dict(_old_app, cpu="12 vCPU", memory="48 GB")
+_rc, _out, _st = _run74(dict(_new_app, subnets=2), _runs74)
+_rc2, _out2, _st2 = _run74(dict(_new_app, subnets=3), _runs74, emr_az_num=3)
+check("7-4 の前（EMR_AZ_NUM でサブネットの数が変わる。2026-10-04 までの 2 つ → 既定 1 つも）: 上限が同じでもジョブとアプリを止める。同じ数なら止めない",
+      _rc == 0 and _acts74(_st) == ["cancel a", "cancel b", "stop"] and _st["app"]["state"] == "STOPPED"
+      and "EMR Serverless のアプリのサブネットを 2 つから 1 つに変える。アプリが STARTED なので" in _out and "上限を" not in _out
+      and "VARS:emr_az_num=1" in _out and _rc2 == 0 and _acts74(_st2) == [] and "VARS:emr_az_num=3" in _out2)
+_rc, _out, _st = _run74(dict(_old_app, subnets=2), _runs74)
+check("7-4 の前（上限もサブネットの数も変わる）: 1 回だけ止めて、両方を 1 行で出す",
+      _rc == 0 and _acts74(_st) == ["cancel a", "cancel b", "stop"]
+      and "EMR Serverless のアプリの上限を 4 vCPU / 16 GB から 12 vCPU / 48 GB に、サブネットを 2 つから 1 つに変える。" in _out)
 print(f"通過 {passed} / 失敗 0")

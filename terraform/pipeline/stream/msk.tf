@@ -1,13 +1,15 @@
 # ---------------------------------------------------------------- MSK
 # KRaft モード（var.kafka_version の末尾の .kraft）。ZooKeeper のノードは無く、メタデータは MSK が持つコントローラーに載る（追加料金なし）
+# 複製の数はブローカーの数（var.msk_az_num）。min.insync.replicas はその 1 つ下: 2 台なら 1（1 台止まっても acks=all で書ける）、
+# 3 台なら 2（1 台止まっても書け、書いたものは 2 台にある）
 resource "aws_msk_configuration" "stream" {
   name           = "${local.name_prefix}-stream"
   kafka_versions = [var.kafka_version]
 
   server_properties = <<-EOT
     auto.create.topics.enable=true
-    default.replication.factor=2
-    min.insync.replicas=1
+    default.replication.factor=${var.msk_az_num}
+    min.insync.replicas=${var.msk_az_num - 1}
     num.partitions=2
     log.retention.hours=24
   EOT
@@ -21,9 +23,12 @@ resource "aws_cloudwatch_log_group" "msk" {
 resource "aws_msk_cluster" "stream" {
   cluster_name           = "${local.name_prefix}-stream"
   kafka_version          = var.kafka_version
-  number_of_broker_nodes = 2
+  number_of_broker_nodes = var.msk_az_num
 
   broker_node_group_info {
+    # client_subnets: 1 AZ（1 台）にはできない。clientSubnets は別々の AZ のサブネットを 2 つか 3 つ（us-west-1 だけ 2 つ）しか受け付けない。
+    # 出典: Amazon MSK API Reference「Clusters」の BrokerNodeGroupInfo.clientSubnets
+    # （https://docs.aws.amazon.com/msk/1.0/apireference/clusters.html、2026-10-04 確認）。AWS で 1 つを渡して試したことは無い（未確認）
     instance_type   = var.broker_instance_type
     client_subnets  = local.broker_subnet_ids
     security_groups = [local.msk_sg_id]

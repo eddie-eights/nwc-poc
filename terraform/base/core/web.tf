@@ -63,6 +63,9 @@ resource "aws_iam_instance_profile" "web" {
 
 # user_data を変えると Terraform はインスタンスを作り直す（user_data_replace_on_change）。
 # 先頭の cloud-config で起動のたびにスクリプトを流すので、S3 の web/ を置き直して再起動すれば画面も更新される
+# 1 台だけ（サブネット a）。AZ の数のキー（*_AZ_NUM）を作らない理由: SSM のポートフォワード（ops/up.sh の手順 10）は 1 台のインスタンス ID を
+# 名指しでつなぐので、2 台にしても a の AZ が止まったときに切り替える先（ロードバランサーや名前）が無い。
+# コードから確かめた理由で、AWS では未確認（2026-10-04）
 resource "aws_instance" "web" {
   ami                         = data.aws_ssm_parameter.al2023.insecure_value
   instance_type               = var.instance_type

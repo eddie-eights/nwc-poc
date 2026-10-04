@@ -1,9 +1,11 @@
 # ---------------------------------------------------------------- VPC
 # この root module が VPC ごと作り、destroy すると VPC ごと消える（消し忘れを残さない）。
-# ワークロードは private subnet a / b に置き、AWS の API へは endpoints.tf のエンドポイントだけを通る。インターネットへの経路は無い
+# ワークロードは private subnet a / b / c に置き、AWS の API へは endpoints.tf のエンドポイントだけを通る。インターネットへの経路は無い
 # （IGW も NAT Gateway も public subnet も作らない。受信の経路も無い）。
 # 2026-09-26〜28 は NAT Gateway があった（AWS の API もそこから出ていた）。2026-09-28 にエンドポイントと aws:SourceVpc の Deny に戻し、
 # 同日のユーザー決定で NAT をやめた（Splunk も ECS で VPC の中に立て、AWS の外へは送らない）
+# サブネットはスイッチ無しでいつも 3 つ（a / b / c。2026-10-04 のユーザー決定）。サブネットそのものは無料で、
+# 何 AZ に置くかは各ルートの <リソース>_az_num（ops/up.sh の「冗長化用」）が outputs の subnet_ids の先頭から選ぶ
 resource "aws_vpc" "this" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
@@ -30,6 +32,20 @@ resource "aws_subnet" "b" {
   tags = { Name = "${local.name_prefix}-private-b" }
 }
 
+resource "aws_subnet" "c" {
+  vpc_id                  = aws_vpc.this.id
+  availability_zone_id    = var.az_id_c
+  cidr_block              = cidrsubnet(var.vpc_cidr, 8, 2)
+  map_public_ip_on_launch = false
+
+  tags = { Name = "${local.name_prefix}-private-c" }
+}
+
+# 先頭から n 個を取ると n AZ になる並び（endpoints.tf と outputs の subnet_ids）
+locals {
+  subnet_ids = [aws_subnet.a.id, aws_subnet.b.id, aws_subnet.c.id]
+}
+
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.this.id
 
@@ -43,5 +59,10 @@ resource "aws_route_table_association" "a" {
 
 resource "aws_route_table_association" "b" {
   subnet_id      = aws_subnet.b.id
+  route_table_id = aws_route_table.private.id
+}
+
+resource "aws_route_table_association" "c" {
+  subnet_id      = aws_subnet.c.id
   route_table_id = aws_route_table.private.id
 }

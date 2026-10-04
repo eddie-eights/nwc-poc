@@ -10,7 +10,10 @@ resource "aws_neptunegraph_graph" "graph" {
   graph_name          = "${local.name_prefix}-graph"
   provisioned_memory  = var.provisioned_memory
   public_connectivity = false
-  replica_count       = 0 # その日に消す使い捨て。レプリカは同じ m-NCU の料金がもう 1 つ分かかる
+  # 既定 0（その日に消す使い捨て）。var.neptune_az_num - 1 個のレプリカを置く。レプリカは 1 つごとに同じ m-NCU の料金がかかる。
+  # replicaCount は 0〜2（ほかの AZ のレプリカの数）なので AZ は 3 まで（Neptune Analytics API Reference「CreateGraph」、
+  # https://docs.aws.amazon.com/neptune-analytics/latest/apiref/API_CreateGraph.html、2026-10-04 確認）
+  replica_count       = var.neptune_az_num - 1
   deletion_protection = var.deletion_protection
 }
 

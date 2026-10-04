@@ -42,8 +42,9 @@ locals {
   account_id = data.aws_caller_identity.current.account_id
   partition  = data.aws_partition.current.partition
 
-  vpc_id     = data.terraform_remote_state.main.outputs.vpc_id
-  subnet_ids = data.terraform_remote_state.main.outputs.runtime_subnet_ids
+  vpc_id = data.terraform_remote_state.main.outputs.vpc_id
+  # サブネット a / b / c（この順）。各リソースは先頭から <リソース>_az_num 個を使う
+  subnet_ids = data.terraform_remote_state.main.outputs.subnet_ids
   # SG は古い state の destroy でも評価できるように try（空のまま apply に進まないよう remote_state の postcondition で止める）
   telegraf_dialout_sg_id     = try(data.terraform_remote_state.main.outputs.security_group_ids["telegraf_dialout"], "")
   telegraf_dialin_sg_id      = try(data.terraform_remote_state.main.outputs.security_group_ids["telegraf_dialin"], "")
@@ -51,13 +52,15 @@ locals {
   msk_sg_id                  = try(data.terraform_remote_state.main.outputs.security_group_ids["msk"], "")
   reader_role_names          = toset([data.terraform_remote_state.main.outputs.runtime_role_name, data.terraform_remote_state.main.outputs.web_role_name])
 
-  # Telegraf のタスク（2 つとも）と NLB はサブネット a（lab の EC2 と Web の EC2 と同じ）
-  telegraf_subnet_id = data.terraform_remote_state.main.outputs.instance_subnet_id
+  # Telegraf の dialin のタスクと、dialout の NLB の lab 向けのアドレスはサブネット a（lab の EC2 と Web の EC2 と同じ）。
+  # dialout の NLB とタスクは var.telegraf_az_num の AZ（a から）
+  telegraf_subnet_id          = data.terraform_remote_state.main.outputs.instance_subnet_id
+  telegraf_dialout_subnet_ids = slice(local.subnet_ids, 0, var.telegraf_az_num)
   # terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
   perimeter_policy_arn = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
 
-  # ブローカー 2 台 = サブネット 2 つ（terraform/base/core の Runtime サブネット）
-  broker_subnet_ids = slice(local.subnet_ids, 0, 2)
+  # 1 AZ に 1 台（ブローカーの数 = サブネットの数 = var.msk_az_num）
+  broker_subnet_ids = slice(local.subnet_ids, 0, var.msk_az_num)
 
   # arn:aws:kafka:<region>:<account>:cluster/<name>/<uuid> → topic/<name>/<uuid>/*
   topic_arns = "${replace(aws_msk_cluster.stream.arn, ":cluster/", ":topic/")}/*"

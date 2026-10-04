@@ -78,10 +78,15 @@ resource "aws_opensearchserverless_access_policy" "logs" {
 resource "aws_opensearchserverless_collection" "logs" {
   count = local.sink_opensearch ? 1 : 0
 
-  name             = local.logs_collection
-  type             = "TIMESERIES"
-  description      = "${local.name_prefix} SNMP traps and logs from the Spark job"
-  standby_replicas = "DISABLED"
+  name        = local.logs_collection
+  type        = "TIMESERIES"
+  description = "${local.name_prefix} SNMP traps and logs from the Spark job"
+  # var.opensearch_az_num が 2 なら別の AZ に控えを置く（ENABLED）。変えるとコレクションを作り直す（索引済みのログは消える）。
+  # 「別の AZ に控え」「最小 OCU が倍」は今の OpenSearch Service Developer Guide に書かれているのを見つけられなかった（未確認）。
+  # 3 にはできない: StandbyReplicas は ENABLED / DISABLED の 2 値だけで、コレクションには AZ やサブネットの指定が無い。変えると作り直し
+  # （CloudFormation のリファレンス「AWS::OpenSearchServerless::Collection」の StandbyReplicas、
+  #   https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-opensearchserverless-collection.html、2026-10-04 確認）
+  standby_replicas = var.opensearch_az_num == 2 ? "ENABLED" : "DISABLED"
 
   tags = { Name = local.logs_collection }
 

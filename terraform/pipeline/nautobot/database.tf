@@ -1,6 +1,7 @@
 # ---------------------------------------------------------------- PostgreSQL (RDS)
 # Nautobot の DB。1 台・バックアップ無し・最後のスナップショット無しで、ops/down.sh で消える（Nautobot で編集した内容も一緒に消え、
-# 次の ops/up.sh でまた lab の定義から入る）。VPC の中の nautobot の SG からしか届かない（terraform/base/core の security_groups.tf）
+# 次の ops/up.sh でまた lab の定義から入る）。VPC の中の nautobot の SG からしか届かない（terraform/base/core の security_groups.tf）。
+# var.nautobot_db_az_num が 2 なら Multi-AZ（別の AZ に同期の控え）
 
 resource "aws_db_subnet_group" "nautobot" {
   name       = "${local.name_prefix}-nautobot"
@@ -31,7 +32,13 @@ resource "aws_db_instance" "nautobot" {
   db_subnet_group_name   = aws_db_subnet_group.nautobot.name
   vpc_security_group_ids = [local.nautobot_db_sg_id]
   publicly_accessible    = false
-  multi_az               = false
+
+  # 2 = Multi-AZ の DB インスタンス（待機系 1 台。読めない）。3 AZ にはここではできない: 3 AZ は Multi-AZ DB クラスター
+  # （書き込み 1 台 + 読める待機系 2 台）で、別のリソース（aws_rds_cluster）。しかも使えるクラスに db.t4g.micro が無い
+  # （db.m6gd / r6gd などのローカル NVMe 付きだけ）。出典: Amazon RDS User Guide
+  # 「Configuring and managing a Multi-AZ deployment for Amazon RDS」（https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html）と
+  # 「Multi-AZ DB cluster deployments for Amazon RDS」（https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/multi-az-db-clusters-concepts.html）、2026-10-04 確認
+  multi_az = var.nautobot_db_az_num == 2
 
   backup_retention_period    = 0
   skip_final_snapshot        = true

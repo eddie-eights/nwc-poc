@@ -150,7 +150,9 @@ resource "aws_ecs_service" "nautobot" {
   desired_count   = 1
   launch_type     = "FARGATE"
 
-  # 1 タスクだけ。入れ替えのときは古い方を止めてから新しい方を起こす（Redis がタスクの中にあるので、2 つ並ぶとロックもキューも別々になる）
+  # 1 タスクだけ。入れ替えのときは古い方を止めてから新しい方を起こす（Redis がタスクの中にあるので、2 つ並ぶとロックもキューも別々になる）。
+  # AZ の数のキー（*_AZ_NUM）を作らない理由も同じ: Redis と Celery のワーカーが同じタスクにあるので、2 つにするとキャッシュ・ロック・ジョブのキューが
+  # タスクごとに分かれる（DB の RDS だけは NAUTOBOT_DB_AZ_NUM で 2 AZ にできる）。コードから確かめた理由で、AWS では未確認（2026-10-04）
   deployment_minimum_healthy_percent = 0
   deployment_maximum_percent         = 100
   enable_execute_command             = true # aws ecs execute-command で中に入る（nautobot-server nbshell など。outputs.tf）

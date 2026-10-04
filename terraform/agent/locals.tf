@@ -46,8 +46,9 @@ locals {
   account_id = data.aws_caller_identity.current.account_id
   partition  = data.aws_partition.current.partition
 
-  vpc_id     = data.terraform_remote_state.main.outputs.vpc_id
-  subnet_ids = data.terraform_remote_state.main.outputs.runtime_subnet_ids
+  vpc_id = data.terraform_remote_state.main.outputs.vpc_id
+  # サブネット a / b / c（この順）。Runtime は先頭から var.runtime_az_num 個、KB の索引の Lambda は var.lambda_az_num 個を使う
+  subnet_ids = data.terraform_remote_state.main.outputs.subnet_ids
   # SG は古い state の destroy でも評価できるように try（空のまま apply に進まないよう remote_state の postcondition で止める）
   runtime_sg_id     = try(data.terraform_remote_state.main.outputs.security_group_ids["runtime"], "")
   lambda_sg_id      = try(data.terraform_remote_state.main.outputs.security_group_ids["lambda"], "") # kb.tf の索引を作る Lambda

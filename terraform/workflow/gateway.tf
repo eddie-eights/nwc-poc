@@ -227,9 +227,9 @@ resource "aws_lambda_function" "tools" {
   timeout          = 60
   memory_size      = 256
 
-  # VPC の中（サブネット a）。SG は terraform/base/core の lambda
+  # VPC の中（var.lambda_az_num の AZ。既定はサブネット a だけ）。SG は terraform/base/core の lambda
   vpc_config {
-    subnet_ids         = [local.subnet_id]
+    subnet_ids         = slice(local.subnet_ids, 0, var.lambda_az_num)
     security_group_ids = [local.lambda_sg_id]
   }
 
