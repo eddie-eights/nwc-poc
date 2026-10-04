@@ -7,7 +7,7 @@ first_seen（異常の発生時刻）, status（pending → approved / rejected�
 obsolete（承認のあいだに異常が閉じた・開き直したので打たなかった））,
 cause, action（heal-main / check / none）, command, precheck / precheck_verdict（処置を打つ前の孤立・冗長切れのチェック）, reason, agent_response, workflow_id,
 created_at / updated_at / decided_at（epoch 秒）, decided_by, apply_output, verify_note。
-承認・却下は status = pending のときだけ通る（has('status','pending') と property が 1 本の Gremlin）。ワーカーは Temporal のシグナルではなく、
+承認・却下は status = pending のときだけ通る（WHERE n.status = 'pending' と SET が 1 本の openCypher）。ワーカーは Temporal のシグナルではなく、
 この頂点の status をポーリングして進む（画面と Temporal を直接つながない）。作成・承認・却下・適用・確認の履歴はワーカーが
 S3 Tables の proposal_events に 1 行ずつ残す（workflow/worker.py。画面は S3 Tables に触らない）。
 
@@ -36,7 +36,7 @@ def _decorate(p: dict) -> dict:
 
 
 def list_proposals(status: str = "pending", limit: int = 50, device_id: str = "") -> dict:
-    """status の修復案を新しい順に（updated_at）。status が all なら全部。device_id があればその機器だけ（Gremlin の中で絞る）"""
+    """status の修復案を新しい順に（updated_at）。status が all なら全部。device_id があればその機器だけ（クエリの中で絞る）"""
     if not graph.configured():
         return {"error": NOT_DEPLOYED, "proposals": []}
     status = status if status in QUERYABLE else "pending"

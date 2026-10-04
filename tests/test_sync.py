@@ -216,18 +216,34 @@ check("Neptune に書けなければ最後に RuntimeError で落とす（Lambda
 
 # ---- アラートの通知の履歴（Firehose → S3 Tables の alert_events。ALERT_STREAM が空なら送らない）
 class FakeFirehose:
+    """put_record_batch の偽物。calls は例外の回も数える。fails は呼び出しごとの届かない行の番号の集合（先頭から使う）、boom は毎回投げる例外"""
     def __init__(self):
-        self.batches, self.fail, self.boom = [], 0, None
+        self.batches, self.fails, self.boom, self.calls = [], [], None, 0
     def put_record_batch(self, DeliveryStreamName, Records):
+        self.calls += 1
         if self.boom:
             raise self.boom
-        self.batches.append((DeliveryStreamName, [json.loads(r["Data"].decode()) for r in Records]))
-        return {"FailedPutCount": self.fail, "RequestResponses": [{"ErrorCode": "ServiceUnavailableException"}] * self.fail + [{"RecordId": "r"}] * (len(Records) - self.fail)}
+        rows = [json.loads(r["Data"].decode()) for r in Records]
+        self.batches.append((DeliveryStreamName, rows))
+        bad = self.fails.pop(0) if self.fails else set()
+        return {"FailedPutCount": len(bad), "RequestResponses": [
+            {"ErrorCode": "ServiceUnavailableException", "ErrorMessage": "slow down"} if i in bad else {"RecordId": f"r{i}"} for i in range(len(rows))]}
 
 
 fh = FakeFirehose()
-_saved_fh = h.toolkit._clients.get("firehose")
-h.toolkit._clients["firehose"] = fh
+h._cache["firehose"] = fh
+waits = []
+_saved_time = h.time
+h.time = types.SimpleNamespace(time=_saved_time.time, sleep=waits.append)   # 送り直しの待ちを数えるだけにする（time モジュールそのものは替えない）
+import logging
+class _Cap(logging.Handler):
+    def __init__(self):
+        super().__init__(); self.records = []
+    def emit(self, record):
+        self.records.append(record)
+    def at(self, level):
+        return [r for r in self.records if r.levelno == level]
+cap = _Cap(); h.log.addHandler(cap)
 fake_graph.set_status = lambda dev, ifn="", status="DOWN", only_if="": (calls.append((dev, ifn, status) + ((only_if,) if only_if else ())) or {"updated": 1})
 os.environ.pop("ALERT_STREAM", None)
 h.handler(ev("firing", device_id="dc1-leaf-01", kind="link_down", target="ethernet-1/1", starts_at=1790000000))
@@ -251,58 +267,109 @@ n = len(calls)
 r = h.handler(ev("firing", device_id="?", kind="trap", target="?", starts_at=1790000000))
 check("Neptune で無視した通知（機器の無いもの）も履歴には 1 行送る",
       len(fh.batches) == 3 and len(fh.batches[2][1]) == 1 and fh.batches[2][1][0]["device_id"] == "?" and "ignored" in r[0] and len(calls) == n)
+check("送り切れたら待たず、ERROR も出さない", waits == [] and cap.at(logging.ERROR) == [])
+# ---- Firehose の失敗（design.md の決定 6: Firehose の失敗では落とさない。届かなかった行だけを合わせて 3 回まで送り直し、残りは 1 行ずつ ERROR）
 fake_graph.set_status = _boom
+c = fh.calls
 try:
     h.handler(pair); raised = ""
 except RuntimeError as e:
     raised = str(e)
-check("Neptune に書けなくても Firehose には送り、最後に RuntimeError（片方が落ちても両方を 1 回ずつ試す）",
-      len(fh.batches) == 4 and len(fh.batches[3][1]) == 2 and "neptune" in raised and "firehose" not in raised)
+check("Neptune に書けなくても Firehose には送り（put_record_batch は呼ばれる）、Neptune の失敗だけで最後に RuntimeError",
+      fh.calls == c + 1 and len(fh.batches[-1][1]) == 2 and "neptune" in raised and "OSError: neptune unreachable" in raised and "firehose" not in raised.lower())
 fake_graph.set_status = lambda dev, ifn="", status="DOWN", only_if="": (calls.append((dev, ifn, status) + ((only_if,) if only_if else ())) or {"updated": 1})
-fh.fail = 1
-n = len(calls)
-try:
-    h.handler(pair); raised = ""
-except RuntimeError as e:
-    raised = str(e)
-check("FailedPutCount が 0 でなければ RuntimeError（Neptune は書いたうえで）",
-      "firehose: FailedPutCount 1 / 2" in raised and "ServiceUnavailableException" in raised and len(calls) == n + 2)
-fh.fail, fh.boom = 0, OSError("firehose unreachable")
-n = len(calls)
-try:
-    h.handler(pair); raised = ""
-except RuntimeError as e:
-    raised = str(e)
-check("Firehose の呼び出しが例外でも Neptune は書き、最後に RuntimeError", "firehose: OSError: firehose unreachable" in raised and len(calls) == n + 2)
-fh.boom = None
+fh.fails, c, n = [{1}], fh.calls, len(calls)
+cap.records.clear()   # 上の Neptune の失敗は log.exception（ERROR）で出ている
+r = h.handler(pair)
+check("1 回目に 2 行中 1 行（2 行目）が届かなければ、2 回目はその 1 行だけを送る。0.2 秒待ち、例外にも ERROR にもしない",
+      fh.calls == c + 2 and [len(b[1]) for b in fh.batches[-2:]] == [2, 1] and fh.batches[-1][1][0]["event_id"] == _ids[1]
+      and waits == [0.2] and r == [{"updated": 1}] * 2 and len(calls) == n + 2 and cap.at(logging.ERROR) == [])
+fh.boom, c, n = OSError("firehose unreachable"), fh.calls, len(calls)
+waits.clear()
+r = h.handler(pair)
+lost = cap.at(logging.ERROR)
+check("Firehose が毎回例外なら put_record_batch は 3 回、待ちは 0.2 秒と 0.4 秒、行ごとに ERROR を 1 つ出して例外にしない（Neptune は書く）",
+      fh.calls == c + 3 and waits == [0.2, 0.4] and r == [{"updated": 1}] * 2 and len(calls) == n + 2 and len(lost) == 2)
+check("ERROR は ALERT_EVENT_LOST のあとに行の JSON そのまま（Logs Insights で拾って戻せる）",
+      all(x.getMessage().startswith("ALERT_EVENT_LOST {") for x in lost)
+      and [json.loads(x.getMessage().split(" ", 1)[1])["event_id"] for x in lost] == _ids
+      and all(list(json.loads(x.getMessage().split(" ", 1)[1])) == [n for n, _ in h.rules.ALERT_EVENT_COLUMNS] for x in lost))
+fh.boom, fh.fails, c = None, [{0, 1}, {1}, {1}], fh.calls
+waits.clear(); cap.records.clear()
+h.handler(pair)
+lost = cap.at(logging.ERROR)
+check("3 回目まで届かなかった行だけを ERROR にする（届いた行は出さない）",
+      fh.calls == c + 3 and [len(b[1]) for b in fh.batches[-3:]] == [2, 2, 1] and len(lost) == 1 and _ids[1] in lost[0].getMessage())
+
+
+class _ShortAnswer(FakeFirehose):
+    """FailedPutCount はあるのに RequestResponses の数が Records と合わない応答"""
+    def put_record_batch(self, DeliveryStreamName, Records):
+        r = super().put_record_batch(DeliveryStreamName, Records)
+        return dict(r, RequestResponses=r["RequestResponses"][:1]) if r["FailedPutCount"] else r
+
+
+short = _ShortAnswer()
+short.fails = [{0}]   # 返る 1 件は 1 行目の失敗。数の合わない応答を順に当てると 1 行目だけを送り直してしまう
+h._cache["firehose"] = short
+waits.clear(); cap.records.clear()
+h.handler(pair)
+check("RequestResponses の数が合わなければどの行が落ちたか分からないので、全部を送り直す",
+      [len(b[1]) for b in short.batches] == [2, 2] and waits == [0.2] and cap.at(logging.ERROR) == [])
+h._cache["firehose"] = fh
 _many = {"Records": [{"Sns": {"Message": json.dumps({"source": "splunk", "alerts": [
     {"status": "firing", "device_id": f"dc1-leaf-{i:02d}", "kind": "link_down", "target": "ethernet-1/1", "starts_at": 1790000000} for i in range(50)]})}}] * 11}
 fh.batches.clear()
 h.handler(_many)
 check("1 回の呼び出しで 500 件を超えたら put_record_batch を 500 件ずつに分ける（API の上限）", [len(b[1]) for b in fh.batches] == [500, 50])
-fh.batches.clear()
-os.environ.pop("ALERT_STREAM", None)
-if _saved_fh is None:
-    h.toolkit._clients.pop("firehose", None)
-else:
-    h.toolkit._clients["firehose"] = _saved_fh
-import logging
-class _Cap(logging.Handler):
-    def __init__(self):
-        super().__init__(); self.records = []
-    def emit(self, record):
-        self.records.append(record)
-cap = _Cap(); h.log.addHandler(cap)
+# ---- 捨てた通知（design.md の決定 2: alerts_from_message が捨てたものは行にせず、件数を WARNING に 1 回）
+fh.batches.clear(); cap.records.clear()
+c = fh.calls
+h.handler(ev("firing", kind="link_down", target="eth1", starts_at=1790000000))
+warns = cap.at(logging.WARNING)
+check("device_id の無いアラートは put_record_batch に送らず、WARNING を 1 回（ALERT_DROPPED と件数）",
+      fh.calls == c and len(warns) == 1 and "ALERT_DROPPED" in warns[0].getMessage() and "1 件" in warns[0].getMessage())
+cap.records.clear()
+h.handler({"Records": [{"Sns": {"Message": json.dumps({"source": "grafana", "alerts": [
+    {"status": "firing", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "eth1", "starts_at": 1790000000},
+    {"status": "firing", "device_id": "dc1-leaf-01", "target": "eth1"},
+    {"status": "pending", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "eth1"}, "x"]})}}]})
+warns = cap.at(logging.WARNING)
+check("形の合わない要素（kind が無い・status が pending・dict でない）は数えて WARNING 1 回に、正しい 1 件だけ行にする",
+      [len(b[1]) for b in fh.batches] == [1] and fh.batches[0][1][0]["kind"] == "link_down"
+      and len(warns) == 1 and "ALERT_DROPPED" in warns[0].getMessage() and "3 件" in warns[0].getMessage())
 fake_graph.set_status = lambda dev, ifn="", status="DOWN", only_if="": (calls.append((dev, ifn, status) + ((only_if,) if only_if else ())) or {"updated": 0, "unregistered": True})
+fh.batches.clear()
 h.handler(ev("firing", device_id="zz-ce-09", kind="link_down", target="eth1"))
 check("未登録の機器・IF の異常は WARNING で UNREGISTERED をログに出す", calls[-1] == ("zz-ce-09", "eth1", "DOWN")
       and cap.records[-1].levelno == logging.WARNING and "UNREGISTERED" in cap.records[-1].getMessage())
+check("未登録の機器の通知も履歴には 1 行送る", [len(b[1]) for b in fh.batches] == [1] and fh.batches[0][1][0]["device_id"] == "zz-ce-09")
 fake_graph.set_status = lambda dev, ifn="", status="DOWN", only_if="": (calls.append((dev, ifn, status) + ((only_if,) if only_if else ())) or {"updated": 1})
 h.handler(ev("resolved", device_id="dc1-leaf-01", kind="link_down", target="eth1"))
 check("登録済みなら INFO（どの送り手のどのアラートかをログに残す）", cap.records[-1].levelno == logging.INFO and '"source": "grafana"' in cap.records[-1].getMessage())
+cap.records.clear()
 h.handler({"Records": [{"Sns": {"Message": "not json"}}]})
-check("読めないメッセージは WARNING でログに出す", cap.records[-1].levelno == logging.WARNING and "読めない" in cap.records[-1].getMessage())
+check("読めないメッセージは WARNING でログに出す（ALERT_DROPPED ではない）",
+      len(cap.records) == 1 and cap.records[-1].levelno == logging.WARNING and "読めない" in cap.records[-1].getMessage()
+      and "ALERT_DROPPED" not in cap.records[-1].getMessage())
 h.log.removeHandler(cap)
+h.time = _saved_time
+# 送る経路が FIREHOSE_CONFIG のクライアントを使うか（偽物を置き場に入れるだけだと、toolkit.client("firehose") に替えても通ってしまう）
+_saved_boto3, _made, _fh2 = h.boto3, [], FakeFirehose()
+h.boto3 = types.SimpleNamespace(client=lambda service, **kw: _made.append((service, kw)) or _fh2)   # 資格情報を探しに行かない
+h._cache["firehose"] = None
+h.toolkit._clients.pop("firehose", None)
+h.handler(pair); h.handler(pair)
+_cfg = h.FIREHOSE_CONFIG
+_timeout = int(re.search(r"^\s*timeout\s*=\s*(\d+)", read("terraform", "pipeline", "graph", "sync.tf"), re.M).group(1))
+check(f"Firehose へは FIREHOSE_CONFIG で 1 つだけ作ったクライアントで送り、botocore の再試行を切る（1 回）。3 回の接続と読みの待ち + 送り直しの待ちが Lambda の timeout（{_timeout} 秒）に収まる",
+      _made == [("firehose", {"region_name": h.toolkit.REGION, "config": _cfg})] and [len(b[1]) for b in _fh2.batches] == [2, 2]
+      and "firehose" not in h.toolkit._clients and _cfg.retries.get("total_max_attempts") == 1
+      and 3 * (_cfg.connect_timeout + _cfg.read_timeout) + sum(h.RETRY_WAITS) < _timeout)
+h.boto3 = _saved_boto3
+h._cache["firehose"] = None
+fh.batches.clear()
+os.environ.pop("ALERT_STREAM", None)
 
 # ---- terraform/pipeline/graph の配線
 tf = read("terraform", "pipeline", "graph", "sync.tf")
@@ -312,11 +379,12 @@ check("sync.tf は status_handler.py を index.py、agent/graph.py を graph.py 
 zipped = set(re.findall(r'filename = "(\w+)\.py"', tf))
 needed = {m for m in re.findall(r"^import (\w+)$", read("agent", "graph.py"), re.M) if os.path.exists(os.path.join(ROOT, "agent", m + ".py"))}
 check(f"status.zip は graph.py が import する agent/ のモジュールを全部入れる（足りない: {sorted(needed - zipped)}）", needed and not (needed - zipped))
-# status_handler.py と rules.py が import するのは、zip の中のモジュールと標準ライブラリだけ（Lambda の実行環境に無いものを読むと起動で落ちる）
+# status_handler.py と rules.py が import するのは、zip の中のモジュールと標準ライブラリだけ（Lambda の実行環境に無いものを読むと起動で落ちる）。
+# boto3 / botocore は Lambda の Python のランタイムに入っている（zip の toolkit.py も読む）
 _imports = lambda text: set(re.findall(r"^(?:import|from) (\w+)", text, re.M))
-check("status.zip は workflow/rules.py を rules.py で入れ、status_handler.py と rules.py は zip の中と標準ライブラリしか import しない",
+check("status.zip は workflow/rules.py を rules.py で入れ、status_handler.py と rules.py は zip の中と標準ライブラリ（と boto3）しか import しない",
       'workflow/rules.py")' in tf and "rules" in zipped
-      and _imports(read("graph", "status_handler.py")) - zipped <= {"json", "logging", "os", "time"}
+      and _imports(read("graph", "status_handler.py")) - zipped <= {"json", "logging", "os", "time", "boto3", "botocore"}
       and _imports(read("workflow", "rules.py")) <= {"json", "re", "datetime"})
 _loc = read("terraform", "pipeline", "graph", "locals.tf")
 check("EventBridge のルールは無く、土台（base/core）のトピック <接頭辞>-alerts を Lambda が購読する（接頭辞ごとのトピックなので他の人のアラートを拾わない）",
@@ -325,21 +393,33 @@ check("EventBridge のルールは無く、土台（base/core）のトピック 
       and 'alerts_topic_arn = try(data.terraform_remote_state.main.outputs.alerts_topic_arn, "")' in _loc)
 check("古い土台（alerts_topic_arn の出力が無い）では、購読の precondition が plan を止める（空の ARN で apply して API のエラーにしない）",
       'condition     = local.alerts_topic_arn != ""' in tf and "depends_on = [aws_lambda_permission.status]" in tf)
-check("Lambda は VPC の中で NEPTUNE_ENDPOINT を環境変数で持ち、ロググループは retention 付き",
-      "vpc_config" in tf and "NEPTUNE_ENDPOINT = " in tf and "retention_in_days = var.log_retention_days" in tf)
-check("Lambda と Neptune は base/core の lambda / neptune の SG を使い、graph は SG もルールも作らない（lambda から neptune の 8182 は土台の通信の表。2026-09-29）",
+check("Lambda は VPC の中で NEPTUNE_GRAPH_ID を環境変数で持ち、ロググループは retention 付き",
+      "vpc_config" in tf and "NEPTUNE_GRAPH_ID = aws_neptunegraph_graph.graph.id" in tf and "NEPTUNE_ENDPOINT" not in tf and "retention_in_days = var.log_retention_days" in tf)
+_nep = read("terraform", "pipeline", "graph", "neptune.tf")
+_core_sg = read("terraform", "base", "core", "security_groups.tf")
+check("グラフは Neptune Analytics（公開しない・レプリカ無し）で、ID を SSM の neptune-graph-id に書く。Neptune Database のクラスタはもう無い（2026-10-04）",
+      re.search(r'resource "aws_neptunegraph_graph" "graph" \{', _nep) is not None and "public_connectivity = false" in _nep and "replica_count       = 0" in _nep
+      and "provisioned_memory  = var.provisioned_memory" in _nep and 'name        = "/${local.name_prefix}/neptune-graph-id"' in _nep
+      and "aws_neptune_cluster" not in _nep + tf and not os.path.exists(os.path.join(ROOT, "terraform", "pipeline", "graph", "network.tf")))
+check("Lambda は base/core の lambda の SG を使い、graph は SG もルールも作らない。Neptune へは土台の neptune-graph-data のエンドポイント（443）で届くので、neptune の SG と 8182 の行は無い",
       "security_group_ids = [local.lambda_sg_id]" in tf and "aws_vpc_security_group_egress_rule" not in tf and "aws_vpc_security_group_ingress_rule" not in tf
-      and "vpc_security_group_ids              = [local.neptune_sg_id]" in read("terraform", "pipeline", "graph", "neptune.tf")
-      and re.search(r'\{ from = "lambda", to = "neptune", protocol = "tcp", port = 8182,', read("terraform", "base", "core", "security_groups.tf")) is not None)
-# property('status', ...) は既存値の削除を伴うので Delete も要る（無いと AccessDenied で検知がトポロジに映らない。2026-09-18 実機）
-check("Lambda のロールは neptune-db の Read / Write / Delete（Gremlin だけ、他のサービスは持たない）",
-      all(f'"neptune-db:{a}DataViaQuery"' in tf for a in ("Read", "Write", "Delete")) and "neptune-db:*" not in tf)
+      and "neptune_sg_id" not in _loc + _nep and 'to = "neptune"' not in _core_sg and "port = 8182" not in _core_sg
+      and '"neptune-graph-data"' in read("terraform", "base", "core", "variables.tf")
+      and "pipeline/graph) add_endpoints neptune-graph-data\n" in read("ops", "up.sh") and read("ops", "up.sh").count("    pipeline/graph)") == 1)
+check("Lambda のロールは neptune-graph の Read / Write / Delete をこのグラフにだけ（他のサービスは持たない）",
+      all(f'"neptune-graph:{a}DataViaQuery"' in tf for a in ("Read", "Write", "Delete")) and "neptune-graph:*" not in tf and "neptune-db" not in tf
+      and "resources = [aws_neptunegraph_graph.graph.arn]" in tf)
+_acc = read("terraform", "pipeline", "graph", "access.tf")
+check("Runtime と Web のロールにも neptune-graph の読み書きをこのグラフにだけ付ける",
+      all(f'"neptune-graph:{a}DataViaQuery"' in _acc for a in ("Read", "Write", "Delete")) and "Resource = aws_neptunegraph_graph.graph.arn" in _acc and "neptune-db" not in _acc)
 check("SNS から Lambda を呼ぶ permission（呼べるのは土台のトピックだけ）", 'principal     = "sns.amazonaws.com"' in tf and "source_arn    = local.alerts_topic_arn" in tf)
-check("variables.tf に log_retention_days", 'variable "log_retention_days"' in read("terraform", "pipeline", "graph", "variables.tf"))
+_var = read("terraform", "pipeline", "graph", "variables.tf")
+check("variables.tf に log_retention_days と provisioned_memory（既定 16 m-NCU）。Neptune Database の instance_class / engine_version は無い",
+      'variable "log_retention_days"' in _var and re.search(r'variable "provisioned_memory" \{[^}]*default     = 16', _var) is not None
+      and "instance_class" not in _var and "engine_version" not in _var)
 # アラートの通知の履歴: alert_history = false なら ALERT_STREAM は空で firehose の権限も無い。true なら送り先の 1 本だけ
-_gv = read("terraform", "pipeline", "graph", "variables.tf")
 check("variables.tf の alert_history は bool で既定 false（analytics を作らない回は送らない）",
-      re.search(r'variable "alert_history" \{[^}]*type\s*=\s*bool\s*default\s*=\s*false', _gv) is not None)
+      re.search(r'variable "alert_history" \{[^}]*type\s*=\s*bool\s*default\s*=\s*false', _var) is not None)
 check("alert_history が false なら ALERT_STREAM は空、true なら <接頭辞>-alert-events（analytics の Firehose と同じ名前）",
       'ALERT_STREAM     = var.alert_history ? local.alert_stream : ""' in tf and 'alert_stream = "${local.name_prefix}-alert-events"' in tf
       and 'name        = "${local.name_prefix}-alert-events"' in read("terraform", "pipeline", "analytics", "history.tf"))

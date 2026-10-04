@@ -3,7 +3,7 @@
 - 同期（nb_sync.push_targets）: 変わったときだけ SSM を書いて dialin を作り直す。空の一覧は書かない
 - Web: Nautobot があるあいだは、リンクの追加・削除を Nautobot の REST API に書く（web/topology_view.py、web/nautobot_api.py）。静的データの投入は止める
 - 配線: Dockerfile・Terraform・ops/up.sh・ops/down.sh の名前と順序がそろっている
-実行は uv run --group dev python tests/test_nautobot.py。"""
+実行は uv run --group dev --group web python tests/test_nautobot.py（web/topology_view.py が gradio と pandas を読む）。"""
 import json, logging, os, re, subprocess, sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -188,7 +188,7 @@ check("lab_seed.json はリポジトリに置かない（毎回 lab の定義か
 check("Job が import するモジュールが PYTHONPATH の先にそろう", "PYTHONPATH=/opt/nautobot/netops" in docker
       and all(os.path.exists(os.path.join(ROOT, *p)) for p in (("nautobot", "netops", "nb_sync.py"), ("nautobot", "netops", "bootstrap.py"), ("agent", "graph.py"), ("agent", "toolkit.py"))))
 envs = set(re.findall(r'os\.environ\.get\("([A-Z_]+)"', read("nautobot", "netops", "nb_sync.py")))
-check("nb_sync が読む環境変数を Terraform がコンテナに渡す", envs and all(e in nb_tf for e in envs | {"NEPTUNE_ENDPOINT"}))
+check("nb_sync が読む環境変数を Terraform がコンテナに渡す", envs and all(e in nb_tf for e in envs | {"NEPTUNE_GRAPH_ID"}) and "NEPTUNE_ENDPOINT" not in nb_tf)
 check("シークレットは SSM の SecureString から（タスク定義の secrets と RDS の write-only）。Terraform の変数に値を持たない",
       all(s in nb_tf for s in ("NAUTOBOT_SECRET_KEY", "NAUTOBOT_DB_PASSWORD", "NAUTOBOT_SUPERUSER_PASSWORD", "NAUTOBOT_API_TOKEN"))
       and "password_wo " in tf["database.tf"].replace("=", " =").replace("  ", " ") and 'ephemeral "aws_ssm_parameter"' in tf["database.tf"]

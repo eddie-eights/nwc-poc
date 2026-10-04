@@ -24,14 +24,14 @@
 AWS に触らずに、Terraform の構文検査と模擬テストを打てる。**変更したら、まずこれを打つ。**
 
 ```bash
-uv sync --group dev
+uv sync --group dev --group web
 ```
 
 ```bash
 bash ops/check.sh
 ```
 
-最後の行が `すべて通過` なら健全。中身は `terraform fmt`、9 ルートの `terraform validate`、`bash -n`、`tests/` の 10 本（`test_app` 100 項目、`test_graph` 59、`test_stream` 44、`test_sync` 73、`test_analytics` 271、`test_workflow` 270、`test_alerts` 89、`test_kb_index` 7、`test_lab_debug` 66、`test_nautobot` 58）。途中で落ちたらそこで止まる。
+`web` のグループ（gradio・pandas・boto3）も入れるのは、`test_nautobot` が Web の画面のモジュールを読むため。最後の行が `すべて通過` なら健全。中身は `terraform fmt`、9 ルートの `terraform validate`、`bash -n`、`tests/` の 10 本（`test_app` 104 項目、`test_graph` 73、`test_stream` 60、`test_sync` 83、`test_analytics` 271、`test_workflow` 272、`test_alerts` 89、`test_kb_index` 7、`test_lab_debug` 75、`test_nautobot` 58）。途中で落ちたらそこで止まる。
 
 ## Web を手元で動かす
 

@@ -3,7 +3,7 @@
 
   1. 機器の一覧: Service（gnmi / snmp）を持つ機器から作った文字列が SSM の今の値と違うときだけ書き換え、dialin のサービスを作り直す
      （ECS は起動時に secrets を読むので、書き換えただけでは反映されない）。空の一覧は書かない（Telegraf が起動できなくなる）
-  2. Neptune: graph.sync_physical()（Gremlin）で物理層だけを差分で合わせる。status と上の層は残る。機器が 1 台も無いときは触らない（全部消えるので）
+  2. Neptune: graph.sync_physical()（openCypher）で物理層だけを差分で合わせる。status と上の層は残る。機器が 1 台も無いときは触らない（全部消えるので）
      機器の Status が Maintenance なら maintenance = true を付ける（保守中。ワークフローが起こさない）
   3. 変更履歴: 直近の ObjectChange（誰が・いつ・何を・どう変えたか）を graph.sync_changes() で label change の頂点に写す（エージェントの recent_changes）
 
@@ -12,7 +12,7 @@
 環境変数（terraform/pipeline/nautobot がコンテナに渡す）:
   DIALIN_GNMI_PARAMETER / DIALIN_SNMP_PARAMETER   一覧を書く SSM のパラメータ名（terraform/pipeline/stream の出力）。空なら 1 を飛ばす
   TELEGRAF_CLUSTER / TELEGRAF_DIALIN_SERVICE     作り直す ECS のサービス
-  NEPTUNE_ENDPOINT                               <host>:8182。空なら 2 を飛ばす
+  NEPTUNE_GRAPH_ID                               Neptune Analytics のグラフの ID（g-xxxxxxxxxx）。空なら 2 を飛ばす
 """
 import os
 
@@ -118,7 +118,7 @@ def sync(log, force_redeploy: bool = False) -> dict:
                 out["neptune"] = graph.sync_physical(devices, links)
                 log.info("Neptune の物理層を合わせた: %s", out["neptune"])
             else:
-                log.warning("NEPTUNE_ENDPOINT が無い。Neptune は触らない")
+                log.warning("NEPTUNE_GRAPH_ID が無い。Neptune は触らない")
         except Exception as e:
             errors.append(f"Neptune: {e}")
         try:

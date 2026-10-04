@@ -3,7 +3,7 @@ AWS にも Temporal にも触れない。temporalio と boto3 を差し替えて
 許可リスト・アラート（SNS → SQS）の読み取りと起こす判定 = rules）と AWS 呼び出しの形（awsio）、ワークフローと starter の振る舞い（worker）、
 proposals.decide の条件、mcp_client の応答の読み取り、
 tools.json と Python の TOOL_SPECS の一致、Terraform と ops スクリプトのつながりを見る。実行は python3 tests/test_workflow.py（依存は無い）。"""
-import ast, contextlib, json, os, re, sys, types
+import ast, contextlib, io, json, os, re, sys, types
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 TF_DIR = os.path.join(ROOT, "terraform", "workflow")
@@ -27,7 +27,12 @@ class ClientError(Exception):
         self.response = {"Error": {"Code": code, "Message": msg}}
 class BotoCoreError(Exception):
     pass
-fake = {"execute_gremlin_query": {"result": {"data": []}}, "get_parameter": ClientError("ParameterNotFound")}
+def cyrows(*r):
+    """Neptune Analytics の execute_query の答え（payload は読み切りのストリームなので、呼ばれるたびに作る）"""
+    return lambda **kw: {"payload": io.BytesIO(json.dumps({"results": list(r)}).encode())}
+def vertex(vid, **props):
+    return {"~id": vid, "~entityType": "node", "~labels": ["proposal"], "~properties": props}
+fake = {"execute_query": cyrows(), "get_parameter": ClientError("ParameterNotFound")}
 clients = []  # boto3.client に渡した (name, kw)
 class FakeClient:
     def __init__(self, name):
@@ -38,6 +43,8 @@ class FakeClient:
             r = fake.get(op)
             if isinstance(r, Exception):
                 raise r
+            if callable(r):
+                return r(**kw)
             return r if r is not None else {}
         return call
 boto3 = types.ModuleType("boto3")
@@ -89,7 +96,7 @@ sys.modules.update({"temporalio": t_root, "temporalio.activity": t_activity, "te
                     "temporalio.client": t_client, "temporalio.common": t_common, "temporalio.exceptions": t_exc,
                     "temporalio.worker": t_worker, "temporalio.service": t_service})
 
-os.environ.update({"NEPTUNE_ENDPOINT": "nep:8182", "AUDIT_TABLE_BUCKET_ARN": "arn:aws:s3tables:ap-northeast-1:123456789012:bucket/audit",
+os.environ.update({"NEPTUNE_GRAPH_ID": "g-abc1234567", "AUDIT_TABLE_BUCKET_ARN": "arn:aws:s3tables:ap-northeast-1:123456789012:bucket/audit",
                    "AUDIT_NAMESPACE": "netops", "AGENT_RUNTIME_ARN": "arn:aws:bedrock-agentcore:ap-northeast-1:123456789012:runtime/x",
                    "LAB_INSTANCE_ID": "i-0123456789abcdef0", "PARAM_PREFIX": ""})
 sys.path.insert(0, os.path.join(ROOT, "workflow"))
@@ -128,17 +135,18 @@ check("check は何も変えないので問題なし、none は空", rules.prech
 check("対象の回線がグラフに無ければ「確認できず」", rules.precheck("heal-main", _pd, _pl[1:])["verdict"] == "unknown" and "【確認できず】" in rules.precheck("heal-main", _pd, _pl[1:])["text"])
 check("対応表に無い処置は「確認できず」", rules.precheck("reboot", _pd, _pl)["verdict"] == "unknown")
 _g = []
-def _fake_gremlin(q):
+def _fake_cypher(q, **params):
     _g.append(q)
-    if "hasLabel('device')" in q:
-        return [{"id": "dc1-leaf-01", "label": "device", "status": "ALARM", "maintenance": True}, {"id": "dc1-spine-01", "label": "device"}]
-    return [{"id": "e1", "label": "link", "OUT": {"id": "dc1-leaf-01", "label": "device"}, "IN": {"id": "dc1-spine-01", "label": "device"}, "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}]
-_gs, awsio.gremlin = awsio.gremlin, _fake_gremlin
+    if "(n:device)" in q:
+        return [{"id": "dc1-leaf-01", "status": "ALARM", "maintenance": True}, {"id": "dc1-spine-01", "status": None, "maintenance": None}]
+    return [{"a": "dc1-leaf-01", "b": "dc1-spine-01", "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}]
+_gs, awsio.cypher = awsio.cypher, _fake_cypher
 check("awsio.read_topology は機器（id・status・maintenance）と回線（両端・IF・status）を読む",
       awsio.read_topology() == ([{"device_id": "dc1-leaf-01", "status": "ALARM", "maintenance": True}, {"device_id": "dc1-spine-01", "status": None, "maintenance": False}],
                                 [{"a": "dc1-leaf-01", "b": "dc1-spine-01", "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}])
-      and len(_g) == 2)
-awsio.gremlin = _gs
+      and _g == ["MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance",
+                 "MATCH (a)-[l:link]->(b) RETURN id(a) AS a, id(b) AS b, l.a_if AS a_if, l.b_if AS b_if, l.status AS status"])
+awsio.cypher = _gs
 _ask, _rt = awsio.ask_agent, awsio.read_topology
 awsio.ask_agent = lambda prompt: '{"cause": "c", "action": "heal-main", "reason": "r"}'
 awsio.read_topology = lambda: (_pd, _pl)
@@ -209,6 +217,11 @@ check("機器名は小文字の短い名前に（IPv4 はそのまま）、statu
       and _many[1]["anomaly_id"] == "172.20.20.99#trap#.1.3.6.1.4.1.1" and len(_many[2]["detail"]) == 1000
       and all(a["source"] == "splunk" for a in _many))
 check("形の合わない要素（機器か種類が無い・status が firing / resolved でない・dict でない）は捨てる", len(_many) == 3)
+_many_body = json.dumps({"source": "splunk", "alerts": [_alert, {**_alert, "device_id": ""}, "x"]})
+check("alert_count は alerts の要素を形にかかわらず数える（alerts_from_message との差が捨てた件数。封筒も開け、読めない本文は 0）",
+      rules.alert_count(_many_body) == 3 and len(rules.alerts_from_message(_many_body)) == 1
+      and rules.alert_count(json.dumps({"Type": "Notification", "Message": _many_body})) == 3
+      and rules.alert_count("garbage") == 0 and rules.alert_count(None) == 0 and rules.alert_count(json.dumps({"alerts": "x"})) == 0)
 # 送り手 2 つ（Grafana のテンプレートと Splunk のアラートアクション）が同じ形で publish しているか
 _sns_py = read("splunk", "netops_alerts", "bin", "netops_sns.py")
 _gf_yaml = read("grafana", "provisioning", "alerting", "netops.yaml")
@@ -220,46 +233,46 @@ check("rules.py は標準ライブラリ（json / re / datetime）しか読ま�
       set(re.findall(r"^(?:import|from) (\w+)", read("workflow", "rules.py"), re.M)) == {"json", "re", "datetime"})
 
 # ---- workflow/awsio.py の AWS 呼び出し（差し替えで記録）
-gq = lambda: [kw["gremlinQuery"] for n, op, kw in calls if op == "execute_gremlin_query"]
-check("Gremlin の文字列は ' と \\ をエスケープし、改行・制御文字は \\n / \\uXXXX にする（Neptune は生の改行を受けない）",
-      awsio._q("a'b\\c") == "'a\\'b\\\\c'" and awsio._q("x\ny\tz\x01") == "'x\\ny\\tz\\u0001'"
-      and awsio._q(3) == "3" and awsio._q(True) == "true")
-check("GraphSON の型付き値（g:List / g:Map）を素の値に戻す",
-      awsio._un({"@type": "g:List", "@value": [{"@type": "g:Map", "@value": ["a", {"@type": "g:Int64", "@value": 1}]}]}) == [{"a": 1}])
+gq = lambda: [kw["queryString"] for n, op, kw in calls if op == "execute_query"]
+gp = lambda: [kw.get("parameters", {}) for n, op, kw in calls if op == "execute_query"]
+check("Gremlin の組み立て（_q / _un / gremlin）はもう無い（値は openCypher のパラメータで渡すので、エスケープが要らない）",
+      not any(hasattr(awsio, n) for n in ("_q", "_un", "gremlin", "NEPTUNE_ENDPOINT")) and "execute_gremlin_query" not in read("workflow", "awsio.py"))
 calls.clear(); clients.clear()
-fake["execute_gremlin_query"] = {"result": {"data": [{"id": "p1", "label": "proposal", "status": "pending", "first_seen": 1}]}}
-check("read_proposal は Neptune（label proposal）から 1 件読み、id を proposal_id にする",
+fake["execute_query"] = cyrows({"n": vertex("p1", status="pending", first_seen=1, _writer="abc")})
+check("read_proposal は Neptune Analytics（label proposal）から 1 件読み、id を proposal_id にする（作るときの目印 _writer は出さない）",
       awsio.read_proposal("p1") == {"proposal_id": "p1", "status": "pending", "first_seen": 1}
-      and gq()[-1] == "g.V('p1').hasLabel('proposal').elementMap()"
-      and clients[-1][0] == "neptunedata" and clients[-1][1]["endpoint_url"] == "https://nep:8182")
+      and gq()[-1] == "MATCH (n:proposal) WHERE id(n) = $id RETURN n" and gp()[-1] == {"id": "p1"}
+      and calls[-1][2]["graphIdentifier"] == "g-abc1234567" and calls[-1][2]["language"] == "OPEN_CYPHER"
+      and clients[-1][0] == "neptune-graph" and "endpoint_url" not in clients[-1][1])
 # Neptune はトポロジ（と修復案）だけにする（2026-10-02）。異常の「いま」は Temporal のワークフローとシグナルが持つ
 check("awsio は異常の頂点（label anomaly）を読まない",
-      not hasattr(awsio, "read_anomaly") and not hasattr(awsio, "list_open_anomalies") and "hasLabel('anomaly')" not in read("workflow", "awsio.py"))
-fake["execute_gremlin_query"] = {"result": {"data": []}}
+      not hasattr(awsio, "read_anomaly") and not hasattr(awsio, "list_open_anomalies") and ":anomaly" not in read("workflow", "awsio.py"))
+fake["execute_query"] = cyrows()
 check("read_proposal は無ければ {}", awsio.read_proposal("p1") == {})
 calls.clear()
-awsio.update_proposal("p1", {"status": "applied", "apply_output": "ok\nline2"})
-q = gq()[-1]
-check("update_proposal は property(single, …) で status / apply_output / updated_at を書く（改行はエスケープ）",
-      q.startswith("g.V('p1').hasLabel('proposal').property(single,'status','applied')") and "property(single,'apply_output','ok\\nline2')" in q
-      and "property(single,'updated_at'," in q and q.endswith(".id()") and "has('status'" not in q)
+fake["execute_query"] = cyrows({"id": "p1"})
+awsio.update_proposal("p1", {"status": "applied", "apply_output": "ok\nline2", "skip": None})
+check("update_proposal は status / apply_output / updated_at を 1 つの map で書く（改行もそのままパラメータで渡る）",
+      gq()[-1] == "MATCH (n:proposal) WHERE id(n) = $id SET n += $fields RETURN id(n) AS id" and gp()[-1]["id"] == "p1"
+      and set(gp()[-1]["fields"]) == {"status", "apply_output", "updated_at"} and gp()[-1]["fields"]["apply_output"] == "ok\nline2" and "only" not in gp()[-1])
 awsio.update_proposal("p1", {"status": "approved"}, "pending")
-check("update_proposal(only_status) は has('status', …) を同じ 1 本の Gremlin に入れる（読んでから書くあいだに割り込まれない）",
-      gq()[-1].startswith("g.V('p1').hasLabel('proposal').has('status','pending').property(single,"))
+check("update_proposal(only_status) は status の条件を同じ 1 本のクエリに入れる（読んでから書くあいだに割り込まれない）",
+      gq()[-1] == "MATCH (n:proposal) WHERE id(n) = $id AND n.status = $only SET n += $fields RETURN id(n) AS id" and gp()[-1]["only"] == "pending")
+fake["execute_query"] = cyrows()
 check("書けなければ（空の結果）False", awsio.update_proposal("p1", {"status": "approved"}, "pending") is False)
 calls.clear()
-awsio.write_proposal({"proposal_id": "p1", "status": "pending", "first_seen": 1, "nothing": None, "empty": ""})
-q = gq()[-1]
-check("write_proposal は None と空文字を落とし、無ければ作ってから property(single, …) で書く",
-      q.startswith("g.V('p1').fold().coalesce(unfold(),addV('proposal').property(id,'p1'))") and "nothing" not in q and "'empty'" not in q
-      and "property(single,'first_seen',1)" in q)
-fake["execute_gremlin_query"] = {"result": {"data": [True]}}
-check("write_proposal(only_new) は無いときだけ作る（作れたら True）",
+awsio.write_proposal({"proposal_id": "p1", "status": "pending", "first_seen": 1, "nothing": None, "empty": "", "extra": {"a": 1}})
+check("write_proposal は None と空文字を落とし、無ければ作って property を map で書く（スカラーでない値は文字列に）",
+      gq()[-1] == "MERGE (n:proposal {`~id`: $id}) SET n += $props"
+      and gp()[-1] == {"id": "p1", "props": {"status": "pending", "first_seen": 1, "extra": "{'a': 1}"}})
+fake["execute_query"] = lambda **kw: cyrows({"w": kw["parameters"]["token"]})()
+check("write_proposal(only_new) は無いときだけ作る（作るときだけ書く目印が自分のものなら True）",
       awsio.write_proposal({"proposal_id": "p1", "status": "pending"}, True) is True
-      and gq()[-1].startswith("g.V('p1').fold().coalesce(unfold().constant(false),addV('proposal').property(id,'p1')"))
-fake["execute_gremlin_query"] = {"result": {"data": [False]}}
+      and gq()[-1] == "MERGE (n:proposal {`~id`: $id}) ON CREATE SET n += $props, n._writer = $token RETURN n._writer AS w"
+      and gp()[-1]["props"] == {"status": "pending"} and len(gp()[-1]["token"]) == 32)
+fake["execute_query"] = cyrows({"w": "someone-else"})
 check("既にあれば例外にせず False（人が決めた status を pending に戻さない）", awsio.write_proposal({"proposal_id": "p1"}, True) is False)
-fake["execute_gremlin_query"] = {"result": {"data": []}}
+fake["execute_query"] = cyrows()
 # 証跡（S3 Tables の proposal_events）
 cp = awsio.catalog_properties()
 check("PyIceberg は S3 Tables の Iceberg REST に SigV4（署名名 s3tables）でつなぐ",
@@ -333,40 +346,39 @@ check("異常の頂点を見るアクティビティ（get_anomaly / still_open 
 
 # ---- proposals.py（Neptune の label proposal。agent/graph.py の list_records / get_record / update_record 経由）
 calls.clear()
-fake["execute_gremlin_query"] = {"result": {"data": ["p1"]}}
+fake["execute_query"] = cyrows({"id": "p1"})
 r = proposals.decide("p1", "approved", "web")
-q = gq()[-1]
-check("承認は pending のときだけ書く 1 本の Gremlin（has と property が同じ文）",
-      r["status"] == "approved" and q.startswith("g.V('p1').hasLabel('proposal').has('status','pending').property(single,'status','approved')")
-      and "property(single,'decided_by','web')" in q and "property(single,'decided_at'," in q)
-fake["execute_gremlin_query"] = {"result": {"data": []}}
+check("承認は pending のときだけ書く 1 本のクエリ（条件と書き込みが同じ文）",
+      r["status"] == "approved" and gq()[-1] == "MATCH (n:`proposal`) WHERE id(n) = $id AND n.status = $only SET n += $fields RETURN id(n) AS id"
+      and gp()[-1]["only"] == "pending" and gp()[-1]["fields"]["status"] == "approved" and gp()[-1]["fields"]["decided_by"] == "web" and "decided_at" in gp()[-1]["fields"])
+fake["execute_query"] = cyrows()
 check("pending でなければエラーの文で返す（例外にしない）", "pending ではない" in proposals.decide("p1", "rejected")["error"])
 check("approved / rejected 以外は弾く", "error" in proposals.decide("p1", "applied"))
 check("proposal_id が空なら弾く", "error" in proposals.decide("", "approved"))
-fake["execute_gremlin_query"] = {"result": {"data": [{"id": "p1", "label": "proposal", "status": "pending", "created_at": 1700000000}]}}
+fake["execute_query"] = cyrows({"n": vertex("p1", status="pending", created_at=1700000000)})
 r = proposals.list_proposals("pending")
 check("一覧は status で絞って updated_at の新しい順に読み、JST の列を足す",
       r["count"] == 1 and r["proposals"][0]["proposal_id"] == "p1" and r["proposals"][0]["created_at_jst"].startswith("2023-11-15")
-      and "has('status','pending')" in gq()[-1] and "order().by('updated_at',desc)" in gq()[-1])
+      and "WHERE n.status = $status" in gq()[-1] and gp()[-1] == {"status": "pending"} and "ORDER BY n.`updated_at` DESC" in gq()[-1])
 proposals.list_proposals("all")
-check("all は status で絞らない", "has('status'" not in gq()[-1])
-check("get_proposal は 1 件", proposals.get_proposal("p1")["proposal_id"] == "p1" and gq()[-1] == "g.V('p1').hasLabel('proposal').elementMap()")
-os.environ["NEPTUNE_ENDPOINT"] = ""
-proposals.graph.ENDPOINT.cached = ""
+check("all は status で絞らない", "WHERE" not in gq()[-1] and gp()[-1] == {})
+check("get_proposal は 1 件", proposals.get_proposal("p1")["proposal_id"] == "p1" and gq()[-1] == "MATCH (n:`proposal`) WHERE id(n) = $id RETURN n")
+os.environ["NEPTUNE_GRAPH_ID"] = ""
+proposals.graph.GRAPH_ID.cached = ""
 check("Neptune が無ければ案内だけ返す", "terraform/pipeline/graph" in proposals.list_proposals()["error"] and "error" in proposals.decide("p1", "approved")
       and proposals.get_proposal("p1") == {})
-os.environ["NEPTUNE_ENDPOINT"] = "nep:8182"
+os.environ["NEPTUNE_GRAPH_ID"] = "g-abc1234567"
 
 # エージェントのツール（読むだけ。2026-09-18）
 calls.clear()
 r = proposals.run_tool("list_proposals", {})
-check("ツールの既定は all（履歴）", "has('status'" not in gq()[-1] and r["status"] == "all")
+check("ツールの既定は all（履歴）", "n.status" not in gq()[-1] and r["status"] == "all")
 proposals.run_tool("list_proposals", {"device_id": "hq-ce-01"})
-check("device_id は Gremlin の中で絞る（絞ってから limit を数える）",
-      gq()[-1].index("has('device_id','hq-ce-01')") < gq()[-1].index("limit("))
+check("device_id はクエリの中で絞る（絞ってから LIMIT を数える）",
+      gq()[-1].index("n.device_id = $device_id") < gq()[-1].index("LIMIT ") and gp()[-1] == {"device_id": "hq-ce-01"})
 check("承認・却下はツールに出さない（人が画面の承認タブで決める）",
       set(proposals.TOOLS) == {"list_proposals"} and "承認や却下はこのツールではできない" in proposals.TOOL_SPECS[0]["toolSpec"]["description"])
-fake["execute_gremlin_query"] = {"result": {"data": []}}
+fake["execute_query"] = cyrows()
 
 # ---- mcp_client.py
 check("JSON の応答はそのまま", mcp_client.parse_response("application/json", '{"result": {"tools": []}}') == {"result": {"tools": []}})
@@ -384,8 +396,8 @@ check("Gateway に無いツールの call はエラーの辞書", "error" in mcp
 # ---- tools.json と Python の TOOL_SPECS
 tools = json.loads(read("tools", "tools.json"))
 py_specs = {s["toolSpec"]["name"]: s["toolSpec"] for s in topology.TOOL_SPECS + evidence.TOOL_SPECS + proposals.TOOL_SPECS}
-check("tools.json の 12 個は topology / evidence / proposals の TOOL_SPECS と同じ名前（list_anomalies は 2026-10-02 にやめた）",
-      {t["name"] for t in tools} == set(py_specs) and len(tools) == 12 and "list_anomalies" not in py_specs
+check("tools.json の 13 個は topology / evidence / proposals の TOOL_SPECS と同じ名前（list_anomalies は 2026-10-02 にやめた）",
+      {t["name"] for t in tools} == set(py_specs) and len(tools) == 13 and "list_anomalies" not in py_specs
       and not os.path.exists(os.path.join(ROOT, "agent", "anomalies.py")))
 check("evidence のツールは search_logs / query_metrics / query_history", {s["toolSpec"]["name"] for s in evidence.TOOL_SPECS} == {"search_logs", "query_metrics", "query_history"})
 # query_history が読む列と Firehose が書く列（status Lambda の rules.alert_event）がずれると、SELECT が COLUMN_NOT_FOUND で落ちる
@@ -429,8 +441,8 @@ check("agent の出力 agent_runtime_arn を try で読み、無ければ precon
       'output "agent_runtime_arn"' in agent_out and re.search(r'try\(data\.terraform_remote_state\.agent\.outputs\.agent_runtime_arn, ""\)', tf) is not None
       and 'condition     = local.runtime_arn != ""' in tf and "terraform/agent を先に apply" in tf)
 graph_out = read("terraform", "pipeline", "graph", "outputs.tf"); analytics_out = read("terraform", "pipeline", "analytics", "outputs.tf")
-check("graph の出力 cluster_endpoint / cluster_resource_id を読む（SG は土台の security_groups.tf）",
-      all(f'output "{o}"' in graph_out and f"outputs.{o}" in tf for o in ("cluster_endpoint", "cluster_resource_id")) and "neptune_security_group_id" not in tf)
+check("graph の出力 graph_id / graph_arn を読む（Neptune Analytics。届く道は土台の neptune-graph-data のエンドポイント）",
+      all(f'output "{o}"' in graph_out and f"outputs.{o}" in tf for o in ("graph_id", "graph_arn")) and "cluster_endpoint" not in tf and "neptune-db" not in tf)
 check("analytics の出力（テーブルバケット・namespace・proposal_events）を読む",
       all(f'output "{o}"' in analytics_out and f"outputs.{o}" in tf for o in ("table_bucket_arn", "table_namespace", "proposal_events_table_name")))
 check("stream の state は読まない（異常はアラートとして SQS から届く）", "pipeline/stream/terraform.tfstate" not in tf)
@@ -447,7 +459,7 @@ _temporal_ports = re.search(r'name\s*=\s*"temporal"[\s\S]*?portMappings\s*=\s*\[
 check("temporal コンテナの portMappings は UI の 8233 だけ（7233 は出さない。ワーカーは同じタスクの localhost）",
       _temporal_ports is not None and re.findall(r'containerPort\s*=\s*(\d+)', _temporal_ports.group(1)) == ["8233"] and "7233" not in _temporal_ports.group(1))
 check("worker は temporal の後に起き、localhost:7233 につなぐ", '"localhost:7233"' in tf and 'condition = "START"' in tf)
-for env in ("NEPTUNE_ENDPOINT", "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "PROPOSAL_EVENTS_TABLE", "ANOMALY_QUEUE_URL", "AGENT_RUNTIME_ARN", "LAB_INSTANCE_ID", "APPROVAL_TIMEOUT_MINUTES", "VERIFY_TIMEOUT", "HOLD_MINUTES", "PARAM_PREFIX"):
+for env in ("NEPTUNE_GRAPH_ID", "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "PROPOSAL_EVENTS_TABLE", "ANOMALY_QUEUE_URL", "AGENT_RUNTIME_ARN", "LAB_INSTANCE_ID", "APPROVAL_TIMEOUT_MINUTES", "VERIFY_TIMEOUT", "HOLD_MINUTES", "PARAM_PREFIX"):
     check(f"worker の環境変数 {env} を渡す", f'name = "{env}"' in tf or f'name  = "{env}"' in tf or re.search(rf'name\s*=\s*"{env}"', tf) is not None)
 # 渡した名前を worker が読んでいなければ、既定値のまま動いて気づけない
 _env_read = set(re.findall(r'os\.environ\.get\("(\w+)"', read("workflow", "worker.py") + read("workflow", "awsio.py")))
@@ -460,14 +472,14 @@ check("DynamoDB はもう使わない（修復案の「いま」は Neptune、�
       "aws_dynamodb" not in tf and '"dynamodb:' not in tf and "ANOMALY_TABLE" not in tf and "PROPOSAL_TABLE" not in tf)
 task_doc = re.search(r'data "aws_iam_policy_document" "task" \{[\s\S]*?\n\}\n', tf)
 check("タスクロールは Neptune の読み書きと、証跡テーブルの PutTableData / UpdateTableMetadataLocation",
-      task_doc is not None and re.search(r'sid\s*=\s*"Neptune"', task_doc.group(0)) and '"neptune-db:WriteDataViaQuery"' in task_doc.group(0)
+      task_doc is not None and re.search(r'sid\s*=\s*"Neptune"', task_doc.group(0)) and '"neptune-graph:WriteDataViaQuery"' in task_doc.group(0)
       and re.search(r'sid\s*=\s*"AuditTable"', task_doc.group(0)) and '"s3tables:PutTableData"' in task_doc.group(0)
       and '"s3tables:UpdateTableMetadataLocation"' in task_doc.group(0))
 check("タスクと Lambda は土台の workflow / lambda の SG を使い、SG もルールも作らない（ルールは土台の通信の表。2026-09-29）",
       re.search(r'security_groups\s*=\s*\[local\.workflow_sg_id\]', tf) is not None and re.search(r'security_group_ids\s*=\s*\[local\.lambda_sg_id\]', tf) is not None
       and 'resource "aws_security_group"' not in tf and "aws_vpc_security_group_" not in tf and "neptune_sg_id" not in tf)
 check("graph と analytics が無ければ precondition で止まる（ワーカーが起きてから Neptune / 証跡に届かず落ちるより先に）",
-      'local.neptune_endpoint != ""' in tf and 'local.audit_bucket_arn != ""' in tf and 'local.proposal_events_table_name != ""' in tf)
+      'local.neptune_graph_id != ""' in tf and 'local.audit_bucket_arn != ""' in tf and 'local.proposal_events_table_name != ""' in tf)
 check("Runtime と Web のロールに Gateway の権限を足す", 'for_each = local.reader_role_names' in tf and '"bedrock-agentcore:InvokeGateway"' in tf)
 # 承認・却下を書けるのはコードの上では web だけ（decide はツールにしない）。Neptune の IAM は頂点ごとに絞れないので、線はコードで引く
 check("修復案を決める専用の IAM（decide_access）はもう無い", "decide_access" not in tf)
@@ -517,7 +529,7 @@ check("query_history の IAM は analytics があるときだけ（dynamic）で
 neptune_read =re.search(r'sid\s*=\s*"NeptuneRead"[\s\S]*?\n  \}', tf)  # ステートメント 1 つぶん（terraform fmt の桁揃えに依存しないよう粗く取る）
 check("tools Lambda のロールの Neptune は読むだけ（WriteDataViaQuery は付けない）",
       neptune_read is not None and "WriteDataViaQuery" not in neptune_read.group(0) and "DeleteDataViaQuery" not in neptune_read.group(0)
-      and "neptune-db:ReadDataViaQuery" in neptune_read.group(0))
+      and "neptune-graph:ReadDataViaQuery" in neptune_read.group(0))
 check("tools Lambda のロールに aoss:APIAccessAll と aps:QueryMetrics、コレクションの data access policy",
       '"aoss:APIAccessAll"' in tf and '"aps:QueryMetrics"' in tf and 'resource "aws_opensearchserverless_access_policy" "tools"' in tf)
 check("SQS（anomalies）は土台の SNS トピックを raw message delivery で購読し、DLQ は 5 回で（購読の配信失敗も同じ DLQ へ）",
@@ -604,7 +616,7 @@ check("up.sh の WORKFLOW=1 はアラートの送り手（Grafana のアラー�
 check("starter は SQS を 20 秒の long polling で待ち、ANOMALY_QUEUE_URL が無ければ起動で止まる（表を見る経路はもう無い）",
       all(hasattr(awsio, f) for f in ("receive_messages", "delete_message"))
       and "WaitTimeSeconds=20" in read("workflow", "awsio.py")
-      and re.search(r'for k in \("ANOMALY_QUEUE_URL", "NEPTUNE_ENDPOINT", "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "AGENT_RUNTIME_ARN"\):\n\s*if not getattr\(awsio, k\):\n\s*raise SystemExit',
+      and re.search(r'for k in \("ANOMALY_QUEUE_URL", "NEPTUNE_GRAPH_ID", "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "AGENT_RUNTIME_ARN"\):\n\s*if not getattr\(awsio, k\):\n\s*raise SystemExit',
                     read("workflow", "worker.py")) is not None)
 check("up.sh は workflow ルートを足し、費用に 5 セント足す（Fargate だけ。sqs のエンドポイントは無くなった）", 'ROOTS="$ROOTS workflow"' in up and 'COST_CENTS=$((COST_CENTS + 5))' in up)
 check("up.sh は worker を buildx でビルドし、temporalio/temporal を ECR にミラーする",

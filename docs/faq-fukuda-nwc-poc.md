@@ -486,7 +486,7 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 | 書くもの | 書き手 |
 |---|---|
 | 全層（物理 / IP / EVPN・BGP）の最初の投入 | `ops/up.sh` の手順 7-3b（`lab/lab_topology.py` の出力を `ops/seed_graph.py` が入れる） |
-| 物理層（機器・IF・回線）の差分 | Nautobot の Job（`nb_sync.sync` → `agent/graph.py` の `sync_physical()`。Gremlin） |
+| 物理層（機器・IF・回線）の差分 | Nautobot の Job（`nb_sync.sync` → `agent/graph.py` の `sync_physical()`。openCypher） |
 | `status`（アラートで変わる） | graph の Lambda（`graph/status_handler.py`） |
 | 修復案 | ワークフローと Web |
 

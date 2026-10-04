@@ -20,7 +20,7 @@ output "vpc_id" {
 }
 
 output "runtime_subnet_ids" {
-  description = "Read by terraform/agent (runtime ENIs), terraform/pipeline/stream (MSK brokers, Telegraf task and NLB), terraform/pipeline/graph (Neptune subnet group), terraform/pipeline/analytics (EMR, Grafana / Splunk tasks) and terraform/workflow (Fargate, Lambda)"
+  description = "Read by terraform/agent (runtime ENIs), terraform/pipeline/stream (MSK brokers, Telegraf task and NLB), terraform/pipeline/graph (status Lambda), terraform/pipeline/analytics (EMR, Grafana / Splunk tasks) and terraform/workflow (Fargate, Lambda)"
   value       = [aws_subnet.a.id, aws_subnet.b.id]
 }
 
@@ -40,7 +40,7 @@ output "vpc_cidr" {
 }
 
 output "security_group_ids" {
-  description = "SG of each workload (security_groups.tf), keyed web / lab / telegraf_dialout / telegraf_dialin / telegraf_dialout_nlb / msk / spark / grafana / splunk / neptune / nautobot / nautobot_db / lambda / workflow / runtime / endpoints. Read by terraform/agent (runtime, lambda), terraform/pipeline/lab (lab), terraform/pipeline/stream (telegraf_dialout, telegraf_dialin, telegraf_dialout_nlb, msk), terraform/pipeline/nautobot (nautobot, nautobot_db), terraform/pipeline/graph (neptune, lambda), terraform/pipeline/analytics (spark, grafana, splunk) and terraform/workflow (workflow, lambda)"
+  description = "SG of each workload (security_groups.tf), keyed web / lab / telegraf_dialout / telegraf_dialin / telegraf_dialout_nlb / msk / spark / grafana / splunk / nautobot / nautobot_db / lambda / workflow / runtime / endpoints. Read by terraform/agent (runtime, lambda), terraform/pipeline/lab (lab), terraform/pipeline/stream (telegraf_dialout, telegraf_dialin, telegraf_dialout_nlb, msk), terraform/pipeline/nautobot (nautobot, nautobot_db), terraform/pipeline/graph (lambda), terraform/pipeline/analytics (spark, grafana, splunk) and terraform/workflow (workflow, lambda)"
   value       = local.sg_ids
 }
 

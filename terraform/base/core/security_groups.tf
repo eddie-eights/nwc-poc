@@ -3,7 +3,7 @@
 # 表に無い通信は受信も送信も通らない（aws_security_group は作るときに既定の全許可の送信ルールを消す）。
 # SG もルールもここ（土台）にまとめる。相手の SG を参照するルールを 1 か所で書くためで、ほかのルートは outputs.security_group_ids から
 # 自分の SG を読んで付けるだけ（ルールは作らない）。SG とルールに時間課金は無いので、機能を作らないときもそろえて作る。
-# 相手の絞り込みは SG と IAM の両方で行う（MSK / Neptune は IAM 認証、S3 / ECR / Bedrock はロールのポリシーと perimeter.tf の VPC の外を拒む Deny）。
+# 相手の絞り込みは SG と IAM の両方で行う（MSK / Neptune Analytics は IAM 認証、S3 / ECR / Bedrock はロールのポリシーと perimeter.tf の VPC の外を拒む Deny）。
 # DNS（VPC の +2）・IMDS・ECS のタスクメタデータ・Time Sync は SG の対象外なので表に無い。インターネットからの受信は SG 以前に経路が無い（vpc.tf）。
 # EMR Serverless は 0.0.0.0/0 の受信ルールがある SG を拒むが、表に CIDR の受信は lab の管理ネットワークと MDT の送り元（var.mdt_source_cidrs。
 # NLB の SG だけ。0.0.0.0/0 は変数の検査で拒む）しか無い。
@@ -24,7 +24,6 @@ locals {
     spark                = "EMR Serverless workers (terraform/pipeline/analytics)"
     grafana              = "Grafana ECS task (terraform/pipeline/analytics)"
     splunk               = "Splunk ECS task (terraform/pipeline/analytics)"
-    neptune              = "Neptune (terraform/pipeline/graph)"
     nautobot             = "Nautobot ECS task - web, celery worker and redis (terraform/pipeline/nautobot)"
     nautobot_db          = "Nautobot PostgreSQL on RDS (terraform/pipeline/nautobot)"
     lambda               = "Lambda in the VPC - graph status, MCP tools, knowledge base index"
@@ -53,12 +52,8 @@ locals {
       { from = sg, to = "s3", protocol = "tcp", port = 443, why = "S3 through the gateway endpoint" },
     ]],
     [
-      # Gremlin（Neptune は IAM 認証）。無いと ops/up.sh の seed_graph.py が接続の待ちで止まる（2026-09-17）
-      { from = "web", to = "neptune", protocol = "tcp", port = 8182, why = "Gremlin - topology view and seed_graph.py" },
-      { from = "runtime", to = "neptune", protocol = "tcp", port = 8182, why = "Gremlin - agent tools" },
-      { from = "lambda", to = "neptune", protocol = "tcp", port = 8182, why = "Gremlin - graph status and MCP tools" },
-      { from = "workflow", to = "neptune", protocol = "tcp", port = 8182, why = "Gremlin - workflow activities" },
-      { from = "nautobot", to = "neptune", protocol = "tcp", port = 8182, why = "Gremlin - Nautobot job writes the physical topology" },
+      # Neptune Analytics（terraform/pipeline/graph）は VPC の中に ENI を持たない。web / runtime / lambda / workflow / nautobot は上の endpoints の 443
+      # （neptune-graph-data のエンドポイント）で届くので、ここに行は無い（2026-10-04 までは Neptune Database の SG と 8182 の 5 行があった）
 
       # SSM のポートフォワーディング（利用者の PC → ssmmessages → Web の EC2 の SSM Agent → タスク）
       { from = "web", to = "grafana", protocol = "tcp", port = 3000, why = "Grafana UI through SSM port forwarding" },

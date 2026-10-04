@@ -33,13 +33,13 @@ flowchart LR
 |---|---|---|
 | 土台（必ず） | VPC、SSM のエンドポイント 2 本、Web の EC2、S3、ECR | 約 $0.05/h |
 | `AGENT=1`（既定） | チャット（Runtime + ガードレール）。`CREATE_KB=1` で手順書の検索も | 約 $0.07/h（エンドポイント 5 本。ほかは質問ごとのモデル料金だけ。KB は +$0.37/h） |
-| `PIPELINE=1` | lab → Telegraf（ECS）→ MSK → Spark → S3 Tables / OpenSearch / Prometheus（`SINK_SPLUNK=1` で Splunk にも）、Grafana（`GRAFANA=1`。既定）と Splunk のアラート → SNS、Neptune のトポロジ（アラートで status が変わる）、Nautobot（機器の一覧とケーブルの正。いつも立つ） | 約 $1.63/h（うち Nautobot が $0.14/h。ECS の Splunk は +$0.12/h） |
+| `PIPELINE=1` | lab → Telegraf（ECS）→ MSK → Spark → S3 Tables / OpenSearch / Prometheus（`SINK_SPLUNK=1` で Splunk にも）、Grafana（`GRAFANA=1`。既定）と Splunk のアラート → SNS、Neptune のトポロジ（アラートで status が変わる）、Nautobot（機器の一覧とケーブルの正。いつも立つ） | 約 $2.08/h（うち Neptune Analytics が $0.58/h、Nautobot が $0.14/h。ECS の Splunk は +$0.12/h） |
 | `WORKFLOW=1` | アラート（SNS → SQS）で Temporal を起こし、調査 → 承認 → 修復。AGENT と PIPELINE と、アラートの送り手（Grafana か Splunk）が要る | 約 $0.08/h |
 
 インターフェース型エンドポイントは 1 本 $0.014/h（1 AZ。`ENDPOINTS_MULTI_AZ=1` で 2 AZ にすると倍）で、作る機能が呼ぶ API の分だけ `ops/up.sh` が選ぶ（上の金額に入れてある。同じサービスは機能をまたいで 1 本）。
 OpenSearch Serverless のコレクション（KB と logs）も公開せず、VPC エンドポイント 1 本（$0.03/h。両方作っても 1 本）からだけ届く。
 
-全部で約 $1.83/h（KB・Splunk を除く）。**1 か月置くと約 $1,320（約 20 万円）になるので、使い終わったら当日中に消す。**
+全部で約 $2.28/h（KB・Splunk を除く）。**1 か月置くと約 $1,640（約 25 万円）になるので、使い終わったら当日中に消す。**
 
 デバッグ用の EC2（lab + Telegraf を 1 台。Telegraf の出力は標準出力。MSK / ECS を作らずに機器と Telegraf の設定を確かめる）は `deploy.env` の機能ではなく、`ops/lab-debug.sh up` / `down` だけで作る・消す CloudFormation のスタック。自分の VPC・エンドポイント 4 本・バケット・ECR を持ち、`ops/up.sh` / `ops/down.sh` とは別（`ops/down.sh` では消えない）。待機は約 $0.23/h（[pipeline.md](docs/pipeline.md)）。
 
@@ -110,7 +110,7 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | 生データの表 | S3 Tables | Amazon S3 → テーブルバケット → `<prefix>-tables`（中身を引くのは Athena。カタログ `s3tablescatalog`） |
 | ログの検索先 | OpenSearch Serverless | Amazon OpenSearch Service → サーバーレス → コレクション。**OpenSearch Dashboards は開けない**（コレクションは VPC エンドポイントからだけ届く）。中身は Grafana で見る |
 | メトリクス | Managed Service for Prometheus | Amazon Prometheus → ワークスペース。グラフの画面は無いので Grafana で見る |
-| トポロジのグラフ | Neptune | Amazon Neptune → クラスター。グラフを見る画面は無いので、Web の「トポロジ」タブで見る |
+| トポロジのグラフ | Neptune Analytics | Amazon Neptune → Analytics → グラフ。グラフを見る画面は無いので、Web の「トポロジ」タブで見る |
 | Nautobot の DB | RDS | Amazon RDS → データベース |
 | コンテナ | ECS | Amazon ECS → クラスター → サービス → タスク → 「ログ」 |
 | アラートの流れ | SNS / SQS / Lambda | Amazon SNS → トピック、Amazon SQS → キュー、AWS Lambda → 関数 → 「モニタリング」 |
@@ -152,4 +152,4 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | [oss-variant.md](docs/oss-variant.md) | 方針: いまはできる限り AWS マネージドで作り、最終的にはマネージドの部分を OSS にした版も別に作る。その目的（マネージドでできて OSS でできないこと、費用、メンテナンス性の比較）と、いまマネージドにしている部分の一覧 |
 | [development.md](docs/development.md) | 手元のテスト、変更するときの決まり、Web を手元で動かす |
 | [faq-fukuda-nwc-poc.md](docs/faq-fukuda-nwc-poc.md) | 学習 FAQ: 作業中に質問したことと答え（syslog の基本、lab を `local7` にした理由、デバッグ用の EC2、本番の Cisco から送るとき、Nautobot） |
-| [data-stores.md](docs/data-stores.md) | 勉強会メモ: データの置き場（Neptune にトポロジと修復案の「いま」、S3 Tables に証跡。障害の履歴の置き場は未定）と DynamoDB をやめた理由、コンテナイメージの役目と arm64 に揃える理由（Splunk だけ x86）、Neptune の基礎（Aurora との関係、AZ 冗長、トポロジをグラフにする意味）、MSK のブートストラップサーバーと、Telegraf・Spark がそれをどう受け取るか（`msk-bootstrap` を残す理由） |
+| [data-stores.md](docs/data-stores.md) | 勉強会メモ: データの置き場（Neptune にトポロジと修復案の「いま」、S3 Tables に証跡。障害の履歴の置き場は未定）と DynamoDB をやめた理由、コンテナイメージの役目と arm64 に揃える理由（Splunk だけ x86）、Neptune Analytics の基礎（Neptune Database との違い、AZ 冗長、トポロジをグラフにする意味）、MSK のブートストラップサーバーと、Telegraf・Spark がそれをどう受け取るか（`msk-bootstrap` を残す理由） |

@@ -41,7 +41,7 @@
 | `grafana/` | Grafana の `Dockerfile` と provisioning（データソース、ダッシュボード、アラート（`alerting/netops.yaml`）。analytics の ECS のタスクで動く） |
 | `splunk/` | Splunk の `Dockerfile`（公式イメージ + 検知のアプリ）と、アプリ `netops_alerts`（保存済みサーチと、SNS へ publish するアラートアクション。analytics の ECS のタスクで動く） |
 | `nautobot/` | Nautobot の `Dockerfile`（公式イメージ + boto3）、Job（`jobs/netops_jobs.py`）と、その中身（`netops/`。対応付け `nb_map.py`、同期 `nb_sync.py`、起動時の `bootstrap.py`）。`PIPELINE=1` ならいつも ECS で動く |
-| `graph/` | アラート（SNS）を受けて Neptune の `status` を書く Lambda |
+| `graph/` | アラート（SNS）を受けて Neptune（Neptune Analytics）の `status` を書く Lambda |
 | `kb-docs/` | ナレッジベースに入れる手順書 |
 | `ops/` | `up.sh` / `down.sh` / `check.sh` など |
 | `tests/` | 模擬テスト（AWS を呼ばない） |
@@ -56,7 +56,7 @@ terraform/
 │   ├── lab/         containerlab の EC2（stream を作るときは Telegraf への転送も）
 │   ├── stream/      MSK / Telegraf（ECS Fargate + 内部 NLB）
 │   ├── analytics/   EMR Serverless / S3 Tables / OpenSearch / Prometheus / Grafana と Splunk（ECS Fargate）
-│   └── graph/       Neptune / status の Lambda（SNS の購読）
+│   └── graph/       Neptune Analytics のグラフ / status の Lambda（SNS の購読）
 └── workflow/      WORKFLOW=1  Temporal on ECS / Gateway（MCP）/ SQS（SNS の購読）
 ```
 

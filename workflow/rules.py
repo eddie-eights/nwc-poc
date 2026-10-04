@@ -193,21 +193,35 @@ def _epoch(v) -> int:
         return 0
 
 
+def _payload(body: str) -> dict | None:
+    """メッセージ本文の JSON（{"source", "alerts": [...]}）。読めない・alerts が list でなければ None。SNS の封筒は開ける"""
+    try:
+        data = json.loads(body or "")
+    except ValueError:
+        return None
+    if isinstance(data, dict) and data.get("Type") == "Notification" and isinstance(data.get("Message"), str):
+        try:
+            data = json.loads(data["Message"])
+        except ValueError:
+            return None
+    if not isinstance(data, dict) or not isinstance(data.get("alerts"), list):
+        return None
+    return data
+
+
+def alert_count(body: str) -> int:
+    """本文の alerts に入っている要素の数（形の合わないものも数える）。alerts_from_message の戻りの長さとの差が、捨てた件数"""
+    data = _payload(body)
+    return len(data["alerts"]) if data else 0
+
+
 def alerts_from_message(body: str, now: int = 0) -> list:
     """SQS のメッセージ本文（SNS に publish された JSON そのまま。購読は raw message delivery）からアラートの list を取る。
     1 件 = {anomaly_id, device_id, kind, target, detail, status, first_seen, source}。first_seen は starts_at（無ければ now）。
     読めない本文は []、形の合わない要素（機器か種類が無い・status が firing / resolved でない）は捨てる。
     raw でない配り方（{"Type": "Notification", "Message": "…"} の封筒）でも中身を読む"""
-    try:
-        data = json.loads(body or "")
-    except ValueError:
-        return []
-    if isinstance(data, dict) and data.get("Type") == "Notification" and isinstance(data.get("Message"), str):
-        try:
-            data = json.loads(data["Message"])
-        except ValueError:
-            return []
-    if not isinstance(data, dict) or not isinstance(data.get("alerts"), list):
+    data = _payload(body)
+    if data is None:
         return []
     out = []
     for a in data["alerts"]:

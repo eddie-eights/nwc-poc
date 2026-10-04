@@ -20,7 +20,7 @@ output "url" {
 
 output "sync_targets" {
   description = "What the NetOps job writes: telegraf (the dial-in targets in SSM) and / or neptune. Empty when neither stream nor graph is there."
-  value       = compact([local.dialin_from_nautobot ? "telegraf" : "", local.neptune_endpoint != "" ? "neptune" : ""])
+  value       = compact([local.dialin_from_nautobot ? "telegraf" : "", local.neptune_graph_id != "" ? "neptune" : ""])
 }
 
 output "port_forward_command" {

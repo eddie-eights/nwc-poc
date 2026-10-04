@@ -3,13 +3,13 @@
 worker.py のアクティビティは全部このファイルの関数を asyncio.to_thread で呼ぶ。
 Temporal のワークフロー（決定的でないといけない）から直接呼ぶものは 1 つも無い。
 
-  Neptune    修復案の「いま」（label proposal）を読み書きする（異常の頂点は 2026-10-02 にやめた。発生と解消は Temporal が持つ）
+  Neptune    Neptune Analytics。修復案の「いま」（label proposal）を openCypher で読み書きする（異常の頂点は 2026-10-02 にやめた。発生と解消は Temporal が持つ）
   S3 Tables  修復案の証跡（proposal_events）に追記する（PyIceberg。作成・承認・却下・適用・確認を 1 行ずつ）
   AgentCore  Runtime を invoke して原因分析を答えさせる
   SSM        lab EC2 に Run Command で 1 行打つ
   SQS        Grafana / Splunk のアラート（SNS → SQS）を long polling で受け取る
 
-以前は異常も修復案も DynamoDB だった（2026-09-24 に Neptune と S3 Tables に寄せた）。
+以前は異常も修復案も DynamoDB だった（2026-09-24 に Neptune と S3 Tables に寄せた。2026-10-04 に Neptune を Neptune Analytics に替えた）。
 
 boto3 / pyiceberg / pyarrow は import せず、呼ばれたときに関数の中で読む。Temporal のワークフローサンドボックスが
 このモジュールを再 import するときに重い依存を引きずらないようにするため。
@@ -22,7 +22,7 @@ import time
 import uuid
 
 ANOMALY_QUEUE_URL = os.environ.get("ANOMALY_QUEUE_URL", "")  # terraform/workflow の events.tf（SNS のトピックを購読するキュー）
-NEPTUNE_ENDPOINT = os.environ.get("NEPTUNE_ENDPOINT", "")    # host:8182（terraform/pipeline/graph）
+NEPTUNE_GRAPH_ID = os.environ.get("NEPTUNE_GRAPH_ID", "")    # Neptune Analytics のグラフの ID（g-xxxxxxxxxx。terraform/pipeline/graph）
 AUDIT_TABLE_BUCKET_ARN = os.environ.get("AUDIT_TABLE_BUCKET_ARN", "")  # terraform/pipeline/analytics の S3 Tables のバケット
 AUDIT_NAMESPACE = os.environ.get("AUDIT_NAMESPACE", "")
 PROPOSAL_EVENTS_TABLE = os.environ.get("PROPOSAL_EVENTS_TABLE", "proposal_events")
@@ -49,93 +49,69 @@ def _agent_config():
     return Config(read_timeout=150, connect_timeout=10, retries={"max_attempts": 1})
 
 
-# ---------------------------------------------------------------- Neptune（修復案の「いま」）
-_ESCAPES = {"\\": "\\\\", "'": "\\'", "\n": "\\n", "\r": "\\r", "\t": "\\t"}
-
-
-def _q(v) -> str:
-    """Gremlin のリテラル（agent/graph.py の _q と同じ）。Neptune の文字列の Gremlin は生の改行や制御文字を受け付けないので
-    \\n / \\uXXXX に直す（エージェントの答えの本文に何が入っても壊れない）"""
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    if isinstance(v, (int, float)):
-        return str(v)
-    return "'" + "".join(_ESCAPES.get(ch) or ("\\u%04x" % ord(ch) if ord(ch) < 0x20 or ord(ch) == 0x7F else ch) for ch in str(v)) + "'"
-
-
-def _un(v):
-    """GraphSON 3 の型付き値を素の Python に（agent/graph.py の _un と同じ）"""
-    if isinstance(v, dict) and "@type" in v:
-        t, val = v["@type"], v.get("@value")
-        if t in ("g:List", "g:Set"):
-            return [_un(x) for x in val]
-        if t == "g:Map":
-            it = iter(val)
-            return {_un(k): _un(x) for k, x in zip(it, it)}
-        return _un(val)
-    if isinstance(v, dict):
-        return {k: _un(x) for k, x in v.items()}
-    if isinstance(v, list):
-        return [_un(x) for x in v]
-    return v
-
-
-def gremlin(q: str) -> list:
-    """neptunedata で Gremlin を 1 本打ち、結果の list を返す（IAM 認証の署名は boto3 が付ける）。クライアントは使い回す"""
+# ---------------------------------------------------------------- Neptune Analytics（修復案の「いま」）
+def cypher(q: str, **params) -> list:
+    """neptune-graph で openCypher を 1 本打ち、結果の行（dict）の list を返す（IAM 認証の署名は boto3 が付ける）。クライアントは使い回す。
+    値は全部パラメータで渡す（エージェントの答えの本文に何が入ってもクエリは壊れない）。agent/graph.py の query と同じ"""
     if "neptune" not in _cache:
         from botocore.config import Config
 
-        _cache["neptune"] = _boto("neptunedata", Config(connect_timeout=10, read_timeout=60, retries={"max_attempts": 2}),
-                                  endpoint_url=f"https://{NEPTUNE_ENDPOINT}")
-    res = _un(_cache["neptune"].execute_gremlin_query(gremlinQuery=q).get("result"))
-    data = res.get("data", []) if isinstance(res, dict) else res
-    return data if isinstance(data, list) else ([] if data is None else [data])
+        _cache["neptune"] = _boto("neptune-graph", Config(connect_timeout=10, read_timeout=60, retries={"max_attempts": 2}))
+    kw = {"parameters": params} if params else {}
+    res = _cache["neptune"].execute_query(graphIdentifier=NEPTUNE_GRAPH_ID, queryString=q, language="OPEN_CYPHER", **kw)
+    return json.loads(res["payload"].read()).get("results", [])
 
 
-def _item(m: dict, key: str) -> dict:
-    """elementMap() の 1 件を、id を key（proposal_id）に置き換えた dict にする"""
-    d = {k: v for k, v in m.items() if k not in ("id", "label")}
-    d[key] = m.get("id")
+def _item(n: dict, key: str) -> dict:
+    """頂点 1 件（{~id, ~labels, ~properties}）を、id を key（proposal_id）に置き換えた dict にする。_writer は write_proposal の目印なので出さない"""
+    d = {k: v for k, v in (n.get("~properties") or {}).items() if k != "_writer"}
+    d[key] = n.get("~id")
     return d
 
 
-def _props(fields: dict) -> str:
-    """property(single, …) の並び。Neptune の既定は set（同じ key に値が増える）なので single を付ける。None と空文字は書かない"""
-    return "".join(f".property(single,{_q(k)},{_q(v)})" for k, v in fields.items() if v is not None and v != "")
+def _props(fields: dict) -> dict:
+    """頂点に書く property の map。None と空文字は書かない。property の値はスカラーだけなので、それ以外は文字列にする"""
+    return {k: (v if isinstance(v, (str, int, float, bool)) else str(v)) for k, v in fields.items() if v is not None and v != ""}
 
 
 def read_proposal(proposal_id: str) -> dict:
-    rows = gremlin(f"g.V({_q(proposal_id)}).hasLabel('proposal').elementMap()")
-    return _item(rows[0], "proposal_id") if rows else {}
+    rows = cypher("MATCH (n:proposal) WHERE id(n) = $id RETURN n", id=proposal_id)
+    return _item(rows[0]["n"], "proposal_id") if rows else {}
 
 
 def write_proposal(item: dict, only_new: bool = False) -> bool:
-    """修復案の頂点を書く。only_new なら同じ proposal_id が無いときだけ作り、あれば書かずに False（人が決めた status を pending に戻さない）"""
-    pid = _q(item["proposal_id"])
+    """修復案の頂点を書く。only_new なら同じ proposal_id が無いときだけ作り、あれば書かずに False（人が決めた status を pending に戻さない）。
+    「自分が作ったか」は、作るときだけ書く目印（_writer）が自分のものかで見分ける（MERGE 1 本なので、同時に 2 つ来ても作るのは片方）"""
     props = _props({k: v for k, v in item.items() if k != "proposal_id"})
     if only_new:
-        res = gremlin(f"g.V({pid}).fold().coalesce(unfold().constant(false),addV('proposal').property(id,{pid}){props}.constant(true))")
-        return bool(res and res[0] is True)
-    gremlin(f"g.V({pid}).fold().coalesce(unfold(),addV('proposal').property(id,{pid})){props}.id()")
+        token = uuid.uuid4().hex
+        rows = cypher("MERGE (n:proposal {`~id`: $id}) ON CREATE SET n += $props, n._writer = $token RETURN n._writer AS w",
+                      id=item["proposal_id"], props=props, token=token)
+        return bool(rows and rows[0].get("w") == token)
+    cypher("MERGE (n:proposal {`~id`: $id}) SET n += $props", id=item["proposal_id"], props=props)
     return True
 
 
 def update_proposal(proposal_id: str, fields: dict, only_status: str | None = None) -> bool:
-    """修復案の頂点の fields を書き換える（updated_at は今）。only_status なら status がその値のときだけ書く。書けたら True"""
-    cond = f".has('status',{_q(only_status)})" if only_status else ""
-    props = _props({**fields, "updated_at": int(time.time())})
-    return bool(gremlin(f"g.V({_q(proposal_id)}).hasLabel('proposal'){cond}{props}.id()"))
-
+    """修復案の頂点の fields を書き換える（updated_at は今）。only_status なら status がその値のときだけ書く
+    （条件と書き込みが 1 本のクエリなので、読んでから書くあいだに割り込まれない）。書けたら True"""
+    cond, params = ("", {})
+    if only_status:
+        cond, params = " AND n.status = $only", {"only": only_status}
+    rows = cypher(f"MATCH (n:proposal) WHERE id(n) = $id{cond} SET n += $fields RETURN id(n) AS id",
+                  id=proposal_id, fields=_props({**fields, "updated_at": int(time.time())}), **params)
+    return bool(rows)
 
 
 def read_topology() -> tuple[list, list]:
     """(devices, links)。事前チェック（rules.precheck）と保守中の判定（rules.maintenance_hold）に渡す形だけ読む:
     機器は id・status・maintenance、回線は両端の機器・IF と status"""
-    devices = [{"device_id": m.get("id"), "status": m.get("status"), "maintenance": bool(m.get("maintenance"))}
-               for m in gremlin("g.V().hasLabel('device').elementMap('status','maintenance')")]
-    links = [{"a": (m.get("OUT") or {}).get("id"), "b": (m.get("IN") or {}).get("id"), "a_if": m.get("a_if"), "b_if": m.get("b_if"),
-              "status": m.get("status")} for m in gremlin("g.E().hasLabel('link').elementMap('a_if','b_if','status')")]
+    devices = [{"device_id": r.get("id"), "status": r.get("status"), "maintenance": bool(r.get("maintenance"))}
+               for r in cypher("MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance")]
+    links = [{k: r.get(k) for k in ("a", "b", "a_if", "b_if", "status")}
+             for r in cypher("MATCH (a)-[l:link]->(b) RETURN id(a) AS a, id(b) AS b, l.a_if AS a_if, l.b_if AS b_if, l.status AS status")]
     return devices, links
+
 
 # ---------------------------------------------------------------- S3 Tables（修復案の証跡）
 def catalog_properties() -> dict:

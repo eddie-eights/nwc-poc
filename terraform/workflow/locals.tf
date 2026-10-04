@@ -103,10 +103,8 @@ locals {
   lab_instance_id = try(data.terraform_remote_state.lab.outputs.lab_instance_id, "")
 
   # Neptune（修復案の「いま」）。graph が無ければ空で、ecs.tf の precondition が「graph を先に」と出す
-  neptune_resource_id = try(data.terraform_remote_state.graph.outputs.cluster_resource_id, "")
-  neptune_host        = try(data.terraform_remote_state.graph.outputs.cluster_endpoint, "")
-  neptune_endpoint    = local.neptune_host == "" ? "" : "${local.neptune_host}:8182"
-  neptune_data_arn    = local.neptune_resource_id == "" ? "" : "arn:${local.partition}:neptune-db:${var.region}:${local.account_id}:${local.neptune_resource_id}/*"
+  neptune_graph_id = try(data.terraform_remote_state.graph.outputs.graph_id, "")
+  neptune_data_arn = try(data.terraform_remote_state.graph.outputs.graph_arn, "")
 
   # 修復案の証跡（S3 Tables の proposal_events）。analytics が無ければ空で、ecs.tf の precondition が「analytics を先に」と出す
   audit_bucket_arn           = try(data.terraform_remote_state.analytics.outputs.table_bucket_arn, "")

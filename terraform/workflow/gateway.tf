@@ -78,7 +78,7 @@ data "aws_iam_policy_document" "tools" {
     resources = ["*"]
   }
 
-  # Neptune のエンドポイント（terraform/pipeline/graph）を SSM から引く
+  # Neptune Analytics のグラフの ID（terraform/pipeline/graph）を SSM から引く
   statement {
     sid       = "Parameters"
     actions   = ["ssm:GetParameter"]
@@ -90,7 +90,7 @@ data "aws_iam_policy_document" "tools" {
     for_each = local.neptune_data_arn != "" ? [1] : []
     content {
       sid       = "NeptuneRead"
-      actions   = ["neptune-db:ReadDataViaQuery", "neptune-db:GetQueryStatus"]
+      actions   = ["neptune-graph:ReadDataViaQuery", "neptune-graph:GetQueryStatus"]
       resources = [local.neptune_data_arn]
     }
   }
@@ -162,7 +162,7 @@ data "aws_iam_policy_document" "tools" {
 }
 
 # ---------------------------------------------------------------- tools Lambda network (subnet a of terraform/base/core)
-# Lambda の SG は terraform/base/core の lambda（Neptune の 8182 とエンドポイントの 443 へ出られる）。aoss / SSM / aps へは terraform/base/core の
+# Lambda の SG は terraform/base/core の lambda（エンドポイントの 443 へ出られる。Neptune Analytics もそこ）。aoss / SSM / aps へは terraform/base/core の
 # VPC エンドポイントを通る（ログは Lambda のサービスが書く）。
 # 2026-09-26 まではここに tools の SG と 4 本のルールがあった（7c42b0f）
 
@@ -235,7 +235,7 @@ resource "aws_lambda_function" "tools" {
 
   environment {
     variables = {
-      PARAM_PREFIX         = local.param_prefix # graph.py が <prefix>/neptune-endpoint を引く（無ければ data/ の静的トポロジ）
+      PARAM_PREFIX         = local.param_prefix # graph.py が <prefix>/neptune-graph-id を引く（無ければ data/ の静的トポロジ）
       OPENSEARCH_ENDPOINT  = local.opensearch_endpoint
       OPENSEARCH_INDEX     = local.opensearch_index
       PROMETHEUS_QUERY_URL = local.prometheus_query_url

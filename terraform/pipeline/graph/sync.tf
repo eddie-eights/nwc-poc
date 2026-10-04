@@ -9,8 +9,8 @@
 # (2026-10-04). The Lambda reaches Firehose through the kinesis-firehose interface endpoint of terraform/base/core.
 # The static topology itself comes from lab/ (ops/up.sh 7-3b and ops/sync-graph.sh seed it through the web EC2) - not from here.
 # Cost: the subscription is free, the Lambda is a few invocations per alert (free tier), nothing else
-# (Neptune is in the VPC; the Lambda service writes its logs without going through the VPC). The Firehose stream and its endpoint are
-# counted in terraform/pipeline/analytics and terraform/base/core.
+# (the Lambda reaches Neptune Analytics through the neptune-graph-data interface endpoint of terraform/base/core; the Lambda service writes its logs without going through the VPC).
+# The Firehose stream and its endpoint are counted in terraform/pipeline/analytics and terraform/base/core.
 
 locals {
   alert_stream = "${local.name_prefix}-alert-events" # terraform/pipeline/analytics/history.tf の aws_kinesis_firehose_delivery_stream.alert_events と同じ名前
@@ -75,12 +75,12 @@ data "aws_iam_policy_document" "status" {
     resources = ["*"]
   }
 
-  # status を書き換える property('status', ...) は既存の値の削除を伴うので、Neptune は DeleteDataViaQuery も要る
-  # （無いと ExecuteGremlinQuery が AccessDeniedException になり、アラートがトポロジに反映されない。2026-09-18 実機）
+  # status の書き換え（SET）と「未登録」の頂点の片付け（DELETE / REMOVE）。Neptune Database のときは property の上書きにも
+  # DeleteDataViaQuery が要った（2026-09-18 実機）。Neptune Analytics で SET だけなら Write で足りるかは未確認なので、3 つとも付ける
   statement {
-    sid       = "Gremlin"
-    actions   = ["neptune-db:ReadDataViaQuery", "neptune-db:WriteDataViaQuery", "neptune-db:DeleteDataViaQuery", "neptune-db:GetQueryStatus"]
-    resources = ["arn:${local.partition}:neptune-db:${var.region}:${local.account_id}:${aws_neptune_cluster.graph.cluster_resource_id}/*"]
+    sid       = "OpenCypher"
+    actions   = ["neptune-graph:ReadDataViaQuery", "neptune-graph:WriteDataViaQuery", "neptune-graph:DeleteDataViaQuery", "neptune-graph:GetQueryStatus"]
+    resources = [aws_neptunegraph_graph.graph.arn]
   }
 
   # アラートの通知の履歴（alert_history = true のときだけ）。送り先は terraform/pipeline/analytics の Firehose 1 本だけ
@@ -101,7 +101,7 @@ resource "aws_iam_role_policy" "status" {
 }
 
 # terraform/base/core の perimeter.tf の Deny。firehose（履歴）は kinesis-firehose のエンドポイントを通る。
-# ログと ENI は Lambda のサービスがこのロールで出し、neptune-db は VPC の中にしか無いので、Deny の対象に入っていない
+# ログと ENI は Lambda のサービスがこのロールで出し、neptune-graph はグラフの public_connectivity = false で閉じているので、Deny の対象に入っていない
 resource "aws_iam_role_policy_attachment" "status_perimeter" {
   count = local.perimeter_policy_arn != "" ? 1 : 0
 
@@ -125,7 +125,8 @@ resource "aws_lambda_function" "status" {
   timeout          = 30
   memory_size      = 128
 
-  # Neptune と同じサブネット、SG は terraform/base/core の lambda（Neptune の 8182 へ出られる。SSM は引かない。エンドポイントは環境変数で渡す）
+  # VPC の中に置く（グラフは公開していないので、土台の neptune-graph-data のエンドポイントからしか届かない）。SG は terraform/base/core の lambda
+  # （エンドポイントの 443 へ出られる。SSM は引かない。グラフの ID は環境変数で渡す）
   vpc_config {
     subnet_ids         = local.subnet_ids
     security_group_ids = [local.lambda_sg_id]
@@ -133,12 +134,12 @@ resource "aws_lambda_function" "status" {
 
   environment {
     variables = {
-      NEPTUNE_ENDPOINT = "${aws_neptune_cluster.graph.endpoint}:${aws_neptune_cluster.graph.port}" # graph.py はこれがあれば SSM を引かない
-      ALERT_STREAM     = var.alert_history ? local.alert_stream : ""                               # 空なら status_handler.py は履歴を送らない
+      NEPTUNE_GRAPH_ID = aws_neptunegraph_graph.graph.id             # graph.py はこれがあれば SSM を引かない
+      ALERT_STREAM     = var.alert_history ? local.alert_stream : "" # 空なら status_handler.py は履歴を送らない
     }
   }
 
-  depends_on = [aws_cloudwatch_log_group.status, aws_iam_role_policy.status, aws_neptune_cluster_instance.graph]
+  depends_on = [aws_cloudwatch_log_group.status, aws_iam_role_policy.status]
 }
 
 # SNS は Lambda を非同期で呼ぶ。Lambda の側の失敗は Lambda が 2 回まで再試行し、SNS の側の配信の失敗は SNS が再試行する

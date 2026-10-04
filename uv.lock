@@ -91,6 +91,7 @@ dependencies = [
     { name = "jmespath" },
     { name = "s3transfer" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/d5/0f/a1d691e9c51ae5dce5a7394e550d7e36a995494e1c2795ce210d3520b257/boto3-1.43.94.tar.gz", hash = "sha256:aa832d88e85035cebb83f04700c65623328b88fe828ff7ed9539483bd9d608c5", size = 112663, upload-time = "2026-09-14T20:10:05.902Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ab/7a/046ba99f6bac067e73272930ba806f2860c50495b8f271f5fb2363f69d2b/boto3-1.43.94-py3-none-any.whl", hash = "sha256:2534bf331acd2f448b9cf8317f4eed453c65d9e0b7de254e77c99d390ac57aec", size = 140023, upload-time = "2026-09-14T20:10:03.395Z" },
 ]
@@ -195,31 +196,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/00/78/f34251dadb8f3921264a1d9b8946f5e542014ee2614b285261b4e40e6775/fsspec-2026.7.0.tar.gz", hash = "sha256:c803c40f4cf860b49dea58ee3e1c33cb9c790520e233537e1340049f89b82a88", size = 317040, upload-time = "2026-07-28T16:34:51.052Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fd/3c/6a2bf344106328fd04963664a60b9bb6496fc25df8e962fcdc1367285fb9/fsspec-2026.7.0-py3-none-any.whl", hash = "sha256:b57ddbafedfaef7018c1ecab32aa200a9d7ca26b77965f64e48b70061249d279", size = 206583, upload-time = "2026-07-28T16:34:49.538Z" },
-]
-
-[[package]]
-name = "nwc-poc"
-version = "0.0.0"
-source = { virtual = "." }
-
-[package.dev-dependencies]
-dev = [
-    { name = "pyyaml" },
-]
-web = [
-    { name = "boto3" },
-    { name = "gradio" },
-    { name = "pyyaml" },
-]
-
-[package.metadata]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pyyaml", specifier = ">=6.0" }]
-web = [
-    { name = "boto3", specifier = ">=1.40,<2" },
-    { name = "gradio", specifier = "==5.50.0" },
-    { name = "pyyaml", specifier = ">=6.0,<7" },
 ]
 
 [[package]]
@@ -457,6 +433,35 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/41/ee/38e785e88a4045f6ad1d1f2808dcdfafdca48c760260c0587bf171e29fc9/numpy-2.5.3-cp313-cp313-win32.whl", hash = "sha256:1c80eabb4035ecf4ca9cd49cde8a9fdd69a729e63e6474887d1523ade7aa277f", size = 6129003, upload-time = "2026-09-06T16:25:23.664Z" },
     { url = "https://files.pythonhosted.org/packages/f3/ec/100f2b1794ede74a9b3d7ec6b9736927f56713414c1dfe19ab6c383494bf/numpy-2.5.3-cp313-cp313-win_amd64.whl", hash = "sha256:71cad2b2a7451ab79d8f5e71b453485b6775963d5cf794179144a7463fe6e8ec", size = 12560965, upload-time = "2026-09-06T16:25:26.602Z" },
     { url = "https://files.pythonhosted.org/packages/80/b1/7dc825ca94c12acebbce4c37caa5e198695eb31424bc579679f32b1bb49d/numpy-2.5.3-cp313-cp313-win_arm64.whl", hash = "sha256:8e4dd766076855b5ff7ea52fa5f07ce26286726e0f8bff446b7739d02e6ea204", size = 10482343, upload-time = "2026-09-06T16:25:29.772Z" },
+]
+
+[[package]]
+name = "nwc-poc"
+version = "0.0.0"
+source = { virtual = "." }
+
+[package.dev-dependencies]
+dev = [
+    { name = "boto3" },
+    { name = "pyyaml" },
+]
+web = [
+    { name = "boto3" },
+    { name = "gradio" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "boto3", specifier = ">=1.40,<2" },
+    { name = "pyyaml", specifier = ">=6.0" },
+]
+web = [
+    { name = "boto3", specifier = ">=1.40,<2" },
+    { name = "gradio", specifier = "==5.50.0" },
+    { name = "pyyaml", specifier = ">=6.0,<7" },
 ]
 
 [[package]]

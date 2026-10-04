@@ -9,20 +9,29 @@ Neptune の機器と回線の動的な状態（property status）を書く。設
 
 メッセージの形は workflow/rules.py の alerts_from_message が読む（ワーカーの starter と同じ読み手。zip に rules.py として同梱する）。
 1 通に何件か入っていることがある（Grafana はグループごとに 1 通）。同じ障害を Grafana と Splunk の両方が知らせても、書くのは同じ値なので害は無い。
-zip には agent/graph.py も同梱する（Gremlin の組み立てと boto3 の neptunedata はそちら）。エンドポイントは環境変数 NEPTUNE_ENDPOINT。
+zip には agent/graph.py も同梱する（openCypher の組み立てと boto3 の neptune-graph はそちら）。グラフの ID は環境変数 NEPTUNE_GRAPH_ID。
 トポロジに無い機器やインタフェースは捨てずに「未登録」の頂点として Neptune に残し（graph.set_status）、WARNING で UNREGISTERED を
 ログに出す（登録漏れの印。CloudWatch Logs Insights で `filter @message like /UNREGISTERED/` と探す。lab に足した機器は
 ops/sync-graph.sh --replace で登録すると、未登録の頂点は置き換わる）。
 
 届いた通知は 1 件 1 行で、アラートの履歴（S3 Tables の alert_events）にも Firehose で送る（環境変数 ALERT_STREAM。空なら送らない。
 terraform/pipeline/graph の alert_history）。行は rules.alert_event が組み、Neptune で無視した通知（機器の無いものなど）も送る。
-Neptune と Firehose は片方が落ちても両方を 1 回ずつ試し、どちらかが失敗していれば最後に例外で落とす（Lambda の非同期の再試行に任せる。
-Neptune の書き込みは繰り返して害が無く、履歴に二重に入った行は読む側が event_id で落とす）。
+alerts_from_message が捨てた通知（device_id か kind が無い・status が firing / resolved でない）は行にせず、件数を WARNING で
+ALERT_DROPPED としてログに出す。
+status の正しさを履歴の完全さより優先する（design.md の決定 6）。Neptune と Firehose は片方がエラーを返しても両方を試し、
+Neptune への書き込みが 1 件でも失敗したときだけ最後に例外で落とす（Lambda の非同期の再試行に任せる。履歴に二重に入った行は読む側が
+event_id で落とす）。Firehose は Lambda の中で合わせて 3 回まで送り直し、それでも届かなかった行は 1 行ずつ JSON のまま ERROR で
+ALERT_EVENT_LOST としてログに書いて終わる（例外にすると、Firehose が止まっているあいだ通知のたびに Neptune の書き込みまでやり直しになる。
+欠けた行は CloudWatch Logs Insights で `filter @message like /ALERT_EVENT_LOST/` と探して戻せる）。
+Neptune が応答しないまま Lambda の timeout を使い切ると、Firehose に送る前に落ちて行もログも残らない（Neptune を先に書くので）。
 """
 import json
 import logging
 import os
 import time
+
+import boto3
+from botocore.config import Config
 
 import graph
 import rules
@@ -34,6 +43,11 @@ log.setLevel(logging.INFO)
 STATUS_OF = {"firing": "DOWN", "resolved": "UP"}
 LAYER_KIND = {"bgp_down": "bgp", "isis_down": "isis"}   # アラートの kind → graph.set_layer_status の kind（頂点の id の真ん中）
 BATCH = 500   # put_record_batch の 1 回の上限（件数）。SNS の 1 通は多くて 50 件（Splunk）なので、ふつうは 1 回で済む
+RETRY_WAITS = (0.2, 0.4)   # Firehose の送り直しの前に待つ秒数。1 回目と合わせて 3 回まで試す
+# Firehose のクライアントは botocore の再試行を切り、早めにあきらめる。既定（5 回まで・接続の待ちが 60 秒）のままだと、エンドポイントに
+# 届かないとき 1 回目の呼び出しだけで Lambda の 30 秒を使い切り、残った行を ERROR に書く前にタイムアウトする。3 回でも 15 秒あまりに収まる
+FIREHOSE_CONFIG = Config(connect_timeout=2, read_timeout=3, retries={"total_max_attempts": 1, "mode": "standard"})
+_cache = {"firehose": None}   # toolkit._clients とは分ける（toolkit.client("firehose") が先に既定の設定で作ったものを拾わない）
 
 
 def apply(alert: dict) -> dict:
@@ -59,35 +73,63 @@ def apply(alert: dict) -> dict:
     return graph.set_status(device_id, "", "UP", only_if="ALARM")
 
 
-def send_history(stream: str, rows: list) -> str:
-    """alert_events の行を Firehose に送る。戻り値は失敗の説明（全部届けば空）。FailedPutCount が 0 でなければ失敗"""
-    failed = []
+def _firehose():
+    """Firehose のクライアント（FIREHOSE_CONFIG で 1 つだけ作る）"""
+    if _cache["firehose"] is None:
+        _cache["firehose"] = boto3.client("firehose", region_name=toolkit.REGION, config=FIREHOSE_CONFIG)
+    return _cache["firehose"]
+
+
+def _put(stream: str, rows: list) -> list:
+    """put_record_batch を 1 回。戻り値は届かなかった行（FailedPutCount が 0 なら空、例外なら全部）"""
+    try:
+        r = _firehose().put_record_batch(
+            DeliveryStreamName=stream, Records=[{"Data": json.dumps(row, ensure_ascii=False).encode()} for row in rows])
+    except Exception as e:  # noqa: BLE001 - 何で落ちても全部を送り直す
+        log.warning("Firehose %s に送れなかった（%d 件）: %s: %s", stream, len(rows), type(e).__name__, e)
+        return rows
+    if not r.get("FailedPutCount"):
+        return []
+    answers = r.get("RequestResponses") or []
+    # RequestResponses は Records と同じ順で 1 件ずつ返り、失敗した分にだけ ErrorCode が付く。数が合わなければ全部を送り直す
+    failed = [row for row, x in zip(rows, answers) if x.get("ErrorCode")] if len(answers) == len(rows) else []
+    codes = sorted({x.get("ErrorCode") for x in answers if x.get("ErrorCode")})
+    log.warning("Firehose %s に %d / %d 件が届かなかった: %s", stream, r["FailedPutCount"], len(rows), codes)
+    return failed or rows
+
+
+def send_history(stream: str, rows: list) -> int:
+    """alert_events の行を Firehose に送る（500 件ずつ）。届かなかった行だけを、1 回目と合わせて 3 回まで送り直す。
+    それでも残った行は 1 行ずつ JSON のまま ERROR でログに書き、例外は投げない。戻り値は届かなかった行の数"""
+    lost = 0
     for i in range(0, len(rows), BATCH):
-        chunk = rows[i:i + BATCH]
-        try:
-            r = toolkit.client("firehose").put_record_batch(
-                DeliveryStreamName=stream, Records=[{"Data": json.dumps(row, ensure_ascii=False).encode()} for row in chunk])
-        except Exception as e:  # noqa: BLE001 - 何で落ちても Neptune の結果と合わせて最後に例外にする
-            log.exception("Firehose %s に送れなかった（%d 件）", stream, len(chunk))
-            failed.append(f"{type(e).__name__}: {e}")
-            continue
-        if r.get("FailedPutCount"):
-            codes = sorted({x.get("ErrorCode") for x in r.get("RequestResponses") or [] if x.get("ErrorCode")})
-            log.error("Firehose %s に %d / %d 件が届かなかった: %s", stream, r["FailedPutCount"], len(chunk), codes)
-            failed.append(f"FailedPutCount {r['FailedPutCount']} / {len(chunk)} {codes}")
-    return "; ".join(failed)
+        left = _put(stream, rows[i:i + BATCH])
+        for wait in RETRY_WAITS:
+            if not left:
+                break
+            time.sleep(wait)
+            left = _put(stream, left)
+        for row in left:
+            log.error("ALERT_EVENT_LOST %s", json.dumps(row, ensure_ascii=False))
+        lost += len(left)
+    return lost
 
 
 def handler(event, context=None):
     """SNS からの呼び出し（Records[].Sns.Message）。Neptune への書き込みと Firehose への送信を両方試し、
-    どちらかが失敗していれば最後に RuntimeError で落として Lambda の非同期の再試行に任せる"""
+    Neptune への書き込みが失敗していれば最後に RuntimeError で落として Lambda の非同期の再試行に任せる（Firehose の失敗では落とさない）"""
     results, rows, errors = [], [], []
     received_at = time.time()
     for rec in event.get("Records") or []:
         message = (rec.get("Sns") or {}).get("Message", "")
         alerts = rules.alerts_from_message(message)
-        if not alerts:
+        dropped = rules.alert_count(message) - len(alerts)
+        if dropped:
+            log.warning("ALERT_DROPPED device_id か kind が無い、または status が firing / resolved でない通知を %d 件捨てた（履歴にも残らない）: %s",
+                        dropped, str(message)[:300])
+        elif not alerts:
             log.warning("読めないメッセージ（捨てる）: %s", str(message)[:300])
+        if not alerts:
             continue
         for a in alerts:
             rows.append(rules.alert_event(a, received_at))
@@ -105,9 +147,7 @@ def handler(event, context=None):
             results.append(r)
     stream = os.environ.get("ALERT_STREAM", "")
     if rows and stream:
-        failed = send_history(stream, rows)
-        if failed:
-            errors.append(f"firehose: {failed}")
+        send_history(stream, rows)
     if errors:
         raise RuntimeError("; ".join(errors)[:2000])
     return results

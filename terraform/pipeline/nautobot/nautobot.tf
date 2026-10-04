@@ -54,7 +54,7 @@ locals {
     { name = "NAUTOBOT_SUPERUSER_NAME", value = var.admin_user },
     { name = "AWS_REGION", value = var.region },
     # Job の書き先（nautobot/netops/nb_sync.py）。空ならその片方を飛ばす
-    { name = "NEPTUNE_ENDPOINT", value = local.neptune_endpoint },
+    { name = "NEPTUNE_GRAPH_ID", value = local.neptune_graph_id },
     { name = "DIALIN_GNMI_PARAMETER", value = lookup(local.dialin_parameters, "gnmi-targets", "") },
     { name = "DIALIN_SNMP_PARAMETER", value = lookup(local.dialin_parameters, "snmp-agents", "") },
     { name = "TELEGRAF_CLUSTER", value = local.telegraf_cluster },

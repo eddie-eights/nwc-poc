@@ -184,7 +184,10 @@ terraform -chdir=terraform/pipeline/analytics output -raw splunk_password_comman
 
 - 書くのは graph の Lambda `<prefix>-graph-status`。Neptune に書いたあと、同じ呼び出しの通知を Firehose `<prefix>-alert-events` へ `PutRecordBatch` で送る（500 件ずつ）。Firehose が 60 秒（か 1 MiB）ごとにまとめて Iceberg に追記する。Neptune で無視した通知（機器名の無いものなど）も行にする。
 - `ops/up.sh` は analytics を作る回（`SKIP_ANALYTICS` が空）にだけ graph の変数 `alert_history = true` を渡す。そのときだけ Lambda の環境変数 `ALERT_STREAM` と `firehose:PutRecordBatch`（そのストリームだけ）が付く。graph は analytics より先に apply するが、ストリームの名前が固定なので待たない。
-- Neptune と Firehose はどちらも必ず 1 回試し、どちらかが失敗すると Lambda は最後に例外を投げる（非同期のやり直しが 2 回）。やり直しで同じ通知が二重に入るので、読むときは `event_id`（`<anomaly_id>#<source>#<status>#<starts_at の epoch 秒>`）で落とす。
+- Neptune と Firehose は片方がエラーを返しても両方を試す。Lambda が最後に例外を投げる（非同期のやり直しが 2 回）のは Neptune への書き込みが失敗したときだけで、やり直しで同じ通知が二重に入るので、読むときは `event_id`（`<anomaly_id>#<source>#<status>#<starts_at の epoch 秒>`）で落とす。
+- ただし Neptune が応答しないまま Lambda の timeout（30 秒）を使い切ると、Firehose に送る前に落ちる。そのときは行も `ALERT_EVENT_LOST` も残らず、ロググループには `Task timed out` だけが出る（Neptune のクライアントは接続 10 秒 × 3 回まで試すので、届かなければ 1 件目で 30 秒を超える）。
+- Firehose の失敗では落とさない（`status` の正しさを履歴より優先する）。届かなかった行だけを、0.2 秒・0.4 秒おいて合わせて 3 回まで送り直し、それでも残った行は 1 行ずつ JSON のまま `ALERT_EVENT_LOST` の ERROR でロググループ `/aws/lambda/<prefix>-graph-status` に書く。探すのは CloudWatch Logs Insights の `filter @message like /ALERT_EVENT_LOST/`。
+- 形の合わない通知（`device_id` か `kind` が無い・`status` が firing / resolved でない）は行にしない。捨てた件数を `ALERT_DROPPED` の WARNING で同じロググループに出す。
 - Lambda は重複を落とさない。Grafana の 4 時間ごとの送り直しも、Grafana と Splunk の両方から来た分も行になる。
 - `starts_at` は送り手で意味が違う。Grafana は発火した時刻で、`resolved` の行も発火の時刻のまま。Splunk は保存済みサーチの `latest(_time)` で、その状態を最後に見た時刻（`resolved` なら戻った時刻）。`received_at` は Lambda が受けた時刻。
 - 書けなかった行は土台のバケットの `firehose-errors/alert_events/` に落ちる。Firehose のログはロググループ `/aws/kinesisfirehose/<prefix>-alert-events`。
@@ -303,7 +306,7 @@ flowchart LR
   W["Web の「トポロジ」タブ<br/>リンクの追加・削除"] -->|"REST API（トークン）"| U
   U["Nautobot<br/>機器 / Service / ケーブル"] -->|"JobHook（変更のたび）<br/>または手で Job"| J["Job<br/>nautobot/jobs/netops_jobs.py"]
   J -->|"SSM の一覧を書き換え<br/>ECS のサービスを作り直す"| T["Telegraf dialin<br/>gNMI / SNMP を取りにいく"]
-  J -->|"Gremlin（差分）"| N["Neptune の物理層<br/>device / interface / 回線"]
+  J -->|"openCypher（差分）"| N["Neptune の物理層<br/>device / interface / 回線"]
 ```
 
 | Nautobot | 反映先 |
@@ -317,7 +320,7 @@ flowchart LR
 - シークレット（Django の SECRET_KEY、admin のパスワード、DB のパスワード、Web が使う API のトークン）は `ops/up.sh` が SSM の SecureString `/<prefix>/nautobot/{secret-key,admin-password,db-password,api-token}` に乱数で作る。タスクは ECS の secrets で受け、RDS には Terraform の write-only の引数で渡す（state に載らない）。
 - 最初の起動で、DB が空なら lab の定義（イメージに入れた `lab_seed.json`）から機器・インタフェース・IP・Service・ケーブルを入れ、Job 2 つ（「Telegraf と Neptune に同期」「変更のたびに…」）と JobHook `netops-sync` を有効にして 1 回同期する（`nautobot/netops/bootstrap.py`。2 回目からは足りないものだけ）。
 - Telegraf の一覧は、変わったときだけ書き換えて取りにいく側のサービスを作り直す（購読が数十秒切れる）。Service を持つ機器が 1 台も無くなる変更は書かない（Telegraf が起動できなくなるので、警告だけ）。
-- Neptune へは `agent/graph.py` の `sync_physical()` が Gremlin で差分を書く。`status`（アラートが書く）と IP 層・EVPN/BGP 層は触らない。IP 層から上は Nautobot に無いので、lab の定義からだけ入る（`ops/sync-graph.sh`）。
+- Neptune へは `agent/graph.py` の `sync_physical()` が openCypher で差分を書く。`status`（アラートが書く）と IP 層・EVPN/BGP 層は触らない。IP 層から上は Nautobot に無いので、lab の定義からだけ入る（`ops/sync-graph.sh`）。
 - Web の「トポロジ」タブのリンクの追加・削除は、Nautobot があるあいだ Nautobot の REST API に書く（`web/nautobot_api.py`。無いインタフェースは作り、ケーブルを作る・消す）。Neptune には JobHook の Job が数秒〜十数秒あとに反映するので、画面は「再読み込み」で確かめる。API のユーザーは `netops-web`（起動時に `bootstrap.py` が SSM の `api-token` と同じ値のトークンで作る。JobHook が出るように superuser）。種別（fabric / l2 / lag）は画面で選んだものではなく両端の Role と LAG から決まる。機器の追加・削除は Nautobot の画面でする。「静的データを投入」は Nautobot があるあいだ使えない。
 - JobHook は Device / Interface / Cable / IPAddress / Service / Location / Role の作成・変更・削除で出る。IP をインタフェースに付け替えただけのように JobHook が出ない変更のあとは、画面の Jobs → 「Telegraf と Neptune に同期」を手で打つ。
 - JobHook は、変更した人に Job を実行する権限が無いと出ない（管理者は出る）。権限を絞ったユーザーを作るなら、Job `netops_jobs.SyncOnChange` の実行も許す。

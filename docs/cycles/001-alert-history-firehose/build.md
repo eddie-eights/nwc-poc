@@ -252,3 +252,218 @@ exit 0
 - 結論の変わったところ: 「閉域の Deny は s3tables:* で足りる」→「Athena と Firehose を経由する読み書きは別に止める」。「Neptune の書き込みは繰り返して害が無い」→「やり直しの合間に後の通知が来ると古い値に戻る」。
 - 部分的な真実: #1 #2 の直しは、Athena の呼び出しが athena のエンドポイントを通り aws:SourceVpc が付くこと、Athena が代わりに出す呼び出しに aws:ViaAWSService=true が付くことを前提にしている。どちらも AWS では未確認。外れると query_history は「Athena を呼べない」で止まる（読めない側に倒れる）。
 - 残り: #3 #6 #9 は設計の決定 2 と 6 に原因があるので差し戻す。決定 6 はユーザーと合意したもので、変えるかどうかはユーザーが決める。main は 6655fe2 に進み、status_handler.py / up.sh / perimeter.tf / gateway.tf / tests など 20 本以上が重なる。cycle 003（修復案を S3 Tables と Athena で読む）とも Athena の作りが重なる。
+
+## Round 2
+
+実装モデル: opus-5.5 / effort: high
+
+worktree とブランチは Round 1 と同じ。main `9823ea6`（design.md の決定 2 と 6 の直し）を先に merge し、そのうえで直した。依頼は「直してから merge」だったが、main の status_handler.py と test_sync.py が大きく変わっていたので順を入れ替えた。merge のあとの中身は同じになる。merge と Round 2 は 1 つの commit にした。
+
+### 実装した内容
+
+design.md（`9823ea6`）の決定 2 と 6、「書く側」の :56-62、実装ステップ 2、検証方法の status_handler の 7 項目。
+
+### 変更ファイル一覧
+
+| ファイル | 変更 |
+| :--- | :--- |
+| `graph/status_handler.py` | `send_history` は 500 件ずつ送り、届かなかった行だけを合わせて 3 回まで送り直す（0.2 秒と 0.4 秒待つ）。残った行は 1 行ずつ `ALERT_EVENT_LOST <行の JSON>` を ERROR で書き、例外にしない。`_put` は FailedPutCount なら ErrorCode の付いた行を返し、RequestResponses の数が合わないときと例外のときは全部を返す。`FIREHOSE_CONFIG`（botocore の再試行なし、接続 2 秒、読み 3 秒）のクライアントは専用の `_cache` に置く。`handler` は `ALERT_DROPPED` の WARNING に件数を出し、Neptune の失敗のときだけ RuntimeError |
+| `workflow/rules.py` | `_payload`（alerts_from_message の封筒の開け方を切り出した）、`alert_count`（alerts の要素の数） |
+| `tests/test_sync.py` | 検証方法の 7 項目に加え、送り直しの境界（RequestResponses、500 件、3 回目まで、ERROR の書式）、形の合わない要素、読めないメッセージ、FIREHOSE_CONFIG を検査。73 → 83 項目 |
+| `tests/test_workflow.py` | alert_count |
+| `docs/pipeline.md`、`data-stores.md`、`troubleshooting.md`、`development.md` | 決定 6 の動き、`ALERT_EVENT_LOST` と `ALERT_DROPPED` の探し方、Neptune が応答しないときは何も残らないこと、テストの項目数 |
+| merge で両側が変えた 22 本 | `agent/app.py`、`docs/architecture/{agent,core,pipeline}.md`、`docs/{data-stores,deploy,development,pipeline}.md`、`graph/status_handler.py`、`ops/up.sh`、`terraform/base/core/{perimeter,variables}.tf`、`terraform/pipeline/graph/{locals,sync,variables}.tf`、`terraform/workflow/{gateway,locals}.tf`、`tests/test_{analytics,app,sync,workflow}.py`、`tools/tools.json` |
+
+### 設計からの逸脱と残るリスク
+
+- 検証方法の「fake の neptunedata」は `graph.set_status` を例外にする偽物で代えた。main は Neptune Analytics（neptune-graph）に移っていて、neptunedata は呼ばない。
+- 検証方法の「Neptune の結果は ignored」は、main では `unregistered` が返る（未登録の頂点を作る）。テストは「未登録の機器の通知も履歴には 1 行送る」で見ている（設計の文言の直しは設計側の仕事）。
+- `FIREHOSE_CONFIG` と専用の `_cache` は設計に無い。botocore の既定（再試行あり、接続の待ち 60 秒）だと、1 回目の呼び出しだけで Lambda の 30 秒を使い切り、ERROR を書く前に落ちる（下の retry_probe）。
+- 送り直しは 500 件の塊ごとに 3 回まで（設計の「1 回送る（500 件以下）」は Round 1 から 500 件ずつに分けている）。
+- 全部捨てた本文（`alerts` の要素はあるが 1 件も読めない）は `ALERT_DROPPED` だけを出し、「読めないメッセージ」は出さない（WARNING は 1 回）。
+- `{"alerts": []}` は「読めないメッセージ」になる（捨てた通知は 0 件）。
+- 決定 6 の「Firehose に送れなくてもログから戻せる」は、Neptune がエラーを返すときだけ成り立つ。Neptune が応答しないと、Lambda の timeout が先に来て行もログも残らない（セルフレビュー #1。差し戻し）。
+
+### 検証（最後の編集のあとに取り直した出力）
+
+`bash ops/check.sh` の全文は [build-r2-check.log](build-r2-check.log)（1259 行、exit 0）。以下はその抜粋で、行は書き換えていない。
+
+```
+== 1. terraform fmt -check -recursive terraform
+差分なし
+
+== 2. 9 つのルートの validate
+terraform/base/ecr  OK
+terraform/base/core  OK
+terraform/agent  OK
+terraform/pipeline/lab  OK
+terraform/pipeline/stream  OK
+terraform/pipeline/analytics  OK
+terraform/pipeline/graph  OK
+terraform/pipeline/nautobot  OK
+terraform/workflow  OK
+
+== 3. ops スクリプトの構文
+構文エラーなし
+
+== 4. 模擬テスト
+通過 104 / 失敗 0     (test_app)
+通過 73 / 失敗 0      (test_graph)
+通過 60 / 失敗 0      (test_stream)
+通過 83 / 失敗 0      (test_sync)
+通過 271 / 失敗 0     (test_analytics)
+通過 272 / 失敗 0     (test_workflow)
+通過 89 / 失敗 0      (test_alerts)
+通過 7 / 失敗 0       (test_kb_index)
+通過 75 / 失敗 0      (test_lab_debug)
+58 項目すべて通過     (test_nautobot)
+すべて通過
+```
+
+（括弧のファイル名は貼るときに足した。ログ中の Traceback は、例外の経路を確かめるテストが意図して出しているもの。）
+
+merge した main（`9823ea6`）の項目数: app 83、graph 73、stream 60、sync 61、analytics 250、workflow 263、alerts 89、kb_index 7、lab_debug 75、nautobot 58（docs/development.md の main の版）。
+
+#### design.md の検証方法と出力
+
+1. `python3 tests/test_analytics.py`: テーブルの集合、alert_events の列、エンドポイントの本数
+   ```
+   ok 異常の履歴のテーブル anomaly_events は無い（S3 Tables のテーブルは snmp_metrics と proposal_events と alert_events だけ）
+   ok alert_events をいつも作り（count 無し）、列はどれも required = false
+   ok alert_events の列と順は workflow/rules.py の ALERT_EVENT_COLUMNS と同じ
+   ok 全部なら 16 本で重複しない（ecr / logs / s3tables / bedrock-agentcore は 1 本ずつ。graph は Neptune Analytics の neptune-graph-data）、ENDPOINTS_MULTI_AZ=1 で 2 AZ。events は無く、アラートの送り手がいれば sns
+   ok sns のエンドポイントは Grafana のアラートか Splunk があるときだけ（どちらも無ければ 15 本。Splunk だけでも足す）
+   ok kinesis-firehose（graph の履歴）と athena（workflow の query_history）は analytics を作る回か、analytics が state に残っているときだけ
+   通過 271 / 失敗 0
+   ```
+   設計の「13 → 15 本」は main `76dbcb6` の数え方。main `9823ea6` は全部で 14 本（どちらも無ければ 13 本）なので、2 本足して 16 本（15 本）。
+2. `python3 tests/test_sync.py`: alert_history の false と true
+   ```
+   ok variables.tf の alert_history は bool で既定 false（analytics を作らない回は送らない）
+   ok alert_history が false なら ALERT_STREAM は空、true なら <接頭辞>-alert-events（analytics の Firehose と同じ名前）
+   ok firehose の権限は alert_history が true のときだけで、PutRecordBatch を <接頭辞>-alert-events の ARN だけに
+   ok up.sh は analytics を作る回（SKIP_ANALYTICS が空）だけ graph に -var alert_history=true を渡す
+   ok graph-status のロールにも閉域の Deny を付ける（firehose を持つので、VPC の外から履歴の行を書かせない）。NETWORK_PERIMETER=0 か古い土台なら付けない
+   通過 83 / 失敗 0
+   ```
+3. status_handler（test_sync の中）: 設計の 7 項目は 387〜399 行、ほかは足した境界の検査
+   ```
+   ok Neptune に書けなければ最後に RuntimeError で落とす（Lambda の非同期の再試行に任せる。書き込みは繰り返して害が無い）
+   ok ALERT_STREAM が空なら Firehose に送らない（alert_history=false の配備）
+   ok Grafana の firing と resolved（starts_at は同じ）は 1 回の put_record_batch に 2 行、event_id は status で分かれる
+   ok 行の列は rules.ALERT_EVENT_COLUMNS と同じ、時刻は ISO 8601 の UTC（starts_at は通知のまま、received_at は受けた時刻）
+   ok 同じ通知をもう一度受けても Lambda では落とさず、同じ event_id の行をまた送る（重複は読む側が event_id で落とす）
+   ok Neptune で無視した通知（機器の無いもの）も履歴には 1 行送る
+   ok 送り切れたら待たず、ERROR も出さない
+   ok Neptune に書けなくても Firehose には送り（put_record_batch は呼ばれる）、Neptune の失敗だけで最後に RuntimeError
+   ok 1 回目に 2 行中 1 行（2 行目）が届かなければ、2 回目はその 1 行だけを送る。0.2 秒待ち、例外にも ERROR にもしない
+   ok Firehose が毎回例外なら put_record_batch は 3 回、待ちは 0.2 秒と 0.4 秒、行ごとに ERROR を 1 つ出して例外にしない（Neptune は書く）
+   ok ERROR は ALERT_EVENT_LOST のあとに行の JSON そのまま（Logs Insights で拾って戻せる）
+   ok 3 回目まで届かなかった行だけを ERROR にする（届いた行は出さない）
+   ok RequestResponses の数が合わなければどの行が落ちたか分からないので、全部を送り直す
+   ok 1 回の呼び出しで 500 件を超えたら put_record_batch を 500 件ずつに分ける（API の上限）
+   ok device_id の無いアラートは put_record_batch に送らず、WARNING を 1 回（ALERT_DROPPED と件数）
+   ok 形の合わない要素（kind が無い・status が pending・dict でない）は数えて WARNING 1 回に、正しい 1 件だけ行にする
+   ok 未登録の機器・IF の異常は WARNING で UNREGISTERED をログに出す
+   ok 未登録の機器の通知も履歴には 1 行送る
+   ok 登録済みなら INFO（どの送り手のどのアラートかをログに残す）
+   ok 読めないメッセージは WARNING でログに出す（ALERT_DROPPED ではない）
+   ok Firehose へは FIREHOSE_CONFIG で 1 つだけ作ったクライアントで送り、botocore の再試行を切る（1 回）。3 回の接続と読みの待ち + 送り直しの待ちが Lambda の timeout（30 秒）に収まる
+   ```
+   alert_count（test_workflow の中）:
+   ```
+   ok alert_count は alerts の要素を形にかかわらず数える（alerts_from_message との差が捨てた件数。封筒も開け、読めない本文は 0）
+   通過 272 / 失敗 0
+   ```
+4. `python3 tests/test_app.py`: 未配備、SQL、ExecutionParameters
+   ```
+   ok query_history は環境変数が無ければ rows == [] で「未配備」を返し、Athena を呼ばない
+   ok query_history の SQL は event_id で重複を落とし（row_number() OVER (PARTITION BY event_id）、新しい順に LIMIT 50
+   ok query_history は "<catalog>"."<namespace>"."<table>" を読み、10 列を ALERT_EVENT_COLUMNS の順で選ぶ
+   ok device_id は ExecutionParameters（'…' で囲んだ文字列の式）で渡り、SQL の文字列には現れない
+   通過 104 / 失敗 0
+   ```
+5. AWS 1〜5（catalog、Firehose → Athena の件数、時刻の読み、firehose-errors、エージェントの回答）: **未実行**（ユーザーが `ops/up.sh` を打つ）。
+
+### セルフレビュー
+
+- 自分: opus-5.5 / effort high（スキルの既定は xhigh。セッションの effort を変えられなかった）
+- 反対弁護人: Agent（general-purpose、model opus）1 回。design.md と build.md のパス、変更ファイル、方針、不安な箇所（時間の予算、テストが送る経路を縛っているか、merge の解き方）、それまでの結論を渡し、読み取り専用で頼んだ。返ってきたあとの `git status --porcelain -uall` は自分の変更だけで、増えたファイルは無かった。
+- 入力は design.md（`9823ea6`）と worktree のコード。
+
+#### 指摘と片付け
+
+| # | 分類 | 観点 | 場所 | 破綻シナリオ | 確かめたもの | 片付け |
+| :-- | :-- | :-- | :-- | :-- | :-- | :-- |
+| 1 | Must | data loss / 設計整合性 | `graph/status_handler.py:132-150`、`agent/graph.py:58-66`、`terraform/pipeline/graph/sync.tf:125` | Neptune が応答しない（閉域のエンドポイントや SG の誤り、Neptune の停止）と、graph.py のクライアント（接続 10 秒、legacy の max_attempts=2 で 3 回）が 1 件目で 30 秒を超える。Neptune を先に書くので send_history に着く前に Lambda が timeout し、行も `ALERT_EVENT_LOST` も残らない。非同期のやり直し 2 回も同じ。決定 6 の「欠けた分はログから戻せる」が成り立たない | `hang_probe.py`（下）: Neptune への送信 3 回、handler 全体 31.5 秒、put_record_batch に着いたのは 31.5 秒後 | **差し戻し**。原因は「Neptune を先に書く」順と、Neptune のクライアントの待ち時間が設計の時間の予算に入っていないこと。docs（pipeline.md、data-stores.md、troubleshooting.md、docstring）は「Neptune がエラーを返すときは両方を試す。応答しないと何も残らない（`Task timed out` だけ）」に直した |
+| 2 | Should | data loss | 同上 | Neptune が遅い（1 件 数秒）× 1 通 50 件（Splunk）なら、Neptune が落ちていなくても 30 秒を超え、Firehose が止まっていればさらに 15 秒 | 計算だけ（実測していない） | **差し戻し**（#1 と同じ時間の予算の問題） |
+| 3 | Should | missing tests | `tests/test_sync.py`（FIREHOSE_CONFIG の検査）、`graph/status_handler.py:76-80` | 送る経路を `toolkit.client("firehose")`（既定の設定）に替えても、偽物を置き場に入れるテストは通った。置き場が toolkit と共有で、先に toolkit が既定の設定で作ると FIREHOSE_CONFIG が効かない | 反対弁護人が注入して 83/0 を確認 | 直した: 専用の `_cache`、検査は boto3.client を差し替えて呼ばれた引数を見る。注入 R18 R19 で落ちる（下） |
+| 4 | Nit | docs | `docs/troubleshooting.md:79` | `ALERT_EVENT_LOST` が 0 件なら全部入ったと読める（#1 の timeout は何も出さない） | 読んだだけ | 直した: `Task timed out` も見るように書いた |
+| 5 | Nit | ログ | `graph/status_handler.py:128-131` | `ALERT_DROPPED` の文言が dict でない要素に触れない。`{"alerts": []}` は「読めない」と出る | 読んだだけ | 最終報告 |
+| 6 | Nit | 設計整合性 | design.md:181 | 「Neptune の結果は ignored」は main では `unregistered` | test_sync の「未登録の機器の通知も履歴には 1 行送る」 | 最終報告（設計の文言） |
+| 7 | Nit | correctness | `workflow/rules.py` の alert_event | starts_at の無い通知は event_id の末尾が `#0`（Round 1 #8 と同じ） | Round 1 の da_probe | 最終報告 |
+| 8 | Nit | 保守性 | `agent/graph.py:60` のコメント、`tests/test_sync.py` の項目名 | graph.py の「再試行 1 回」は実際は 3 回試す（neptune_probe）。test_sync の「書き込みは繰り返して害が無い」は Round 1 #3 で崩れている。どちらも main から来たもの | `neptune_probe.py`（下）、`git grep` で main にあることを確認 | 最終報告（範囲外） |
+| 9 | Should | runtime | `graph/status_handler.py:47-49` | 自分で見つけた。boto3 の既定（legacy、5 回、接続 60 秒）だと、Firehose に届かないときに 1 回目の呼び出しで 30 秒を使い切り、ERROR を書く前に timeout する | `retry_probe.py`（下）: 既定は 5 回 10.5 秒（接続 1 秒に縮めて） | 直した: FIREHOSE_CONFIG。`lost_probe.py` で 3 回、6.6 秒、ERROR 3 件 |
+| 10 | Should | missing tests | `tests/test_sync.py`（_ShortAnswer） | RequestResponses が Records より短いときに、zip で拾うと落ちた行を取りこぼす。そこを縛る検査が弱かった | 注入 R15 | 直した: 偽物の返す RequestResponses を変えて検査を強めた（下で R15 が落ちる） |
+
+注入（Round 2 の検査。`mutate3.py`。毎回元に戻した）:
+```
+R1 送り直しをしない（1 回で終わる）: test_sync exit 1 / AssertionError: 1 回目に 2 行中 1 行（2 行目）が届かなければ、2 回目はその 1 行だけを送る。0.2 秒待ち、例外にも ERROR にもしない
+R2 送り直しを 1 回だけにする（合わせて 2 回）: test_sync exit 1 / AssertionError: Firehose が毎回例外なら put_record_batch は 3 回、待ちは 0.2 秒と 0.4 秒、行ごとに ERROR を 1 つ出して例外にしない（Neptune は書く）
+R3 一部失敗でも全部を送り直す: test_sync exit 1 / AssertionError: 1 回目に 2 行中 1 行（2 行目）が届かなければ、2 回目はその 1 行だけを送る。0.2 秒待ち、例外にも ERROR にもしない
+R4 Firehose の失敗で例外にする: test_sync exit 1 / RuntimeError: firehose
+R5 残った行を ERROR に書かない: test_sync exit 1 / AssertionError: Firehose が毎回例外なら put_record_batch は 3 回、待ちは 0.2 秒と 0.4 秒、行ごとに ERROR を 1 つ出して例外にしない（Neptune は書く）
+R6 残った行をまとめて ERROR 1 つにする: test_sync exit 1 / AssertionError: Firehose が毎回例外なら put_record_batch は 3 回、待ちは 0.2 秒と 0.4 秒、行ごとに ERROR を 1 つ出して例外にしない（Neptune は書く）
+R7 捨てた件数の WARNING を出さない: test_sync exit 1 / AssertionError: device_id の無いアラートは put_record_batch に送らず、WARNING を 1 回（ALERT_DROPPED と件数）
+R8 捨てた件数を数えず、全部捨てたときだけ読めないと出す: test_sync exit 1 / AssertionError: device_id の無いアラートは put_record_batch に送らず、WARNING を 1 回（ALERT_DROPPED と件数）
+R9 捨てた通知も WARNING と読めないの 2 回出す: test_sync exit 1 / AssertionError: device_id の無いアラートは put_record_batch に送らず、WARNING を 1 回（ALERT_DROPPED と件数）
+R10 Neptune の失敗で Firehose を飛ばす: test_sync exit 1 / AssertionError: Neptune に書けなくても Firehose には送り（put_record_batch は呼ばれる）、Neptune の失敗だけで最後に RuntimeError
+R11 Neptune の失敗でも例外にしない: test_sync exit 1 / AssertionError: Neptune に書けなければ最後に RuntimeError で落とす（Lambda の非同期の再試行に任せる。書き込みは繰り返して害が無い）
+R12 botocore の再試行を残す: test_sync exit 1 / AssertionError: Firehose へは FIREHOSE_CONFIG で 1 つだけ作ったクライアントで送り、botocore の再試行を切る（1 回）。3 回の接続と読みの待ち + 送り直しの待ちが Lambda の timeout（30 秒）に収まる
+R13 接続の待ちを既定の 60 秒にする: test_sync exit 1 / AssertionError: Firehose へは FIREHOSE_CONFIG で 1 つだけ作ったクライアントで送り、botocore の再試行を切る（1 回）。3 回の接続と読みの待ち + 送り直しの待ちが Lambda の timeout（30 秒）に収まる
+R14 クライアントに設定を渡さない: test_sync exit 1 / AssertionError: Firehose へは FIREHOSE_CONFIG で 1 つだけ作ったクライアントで送り、botocore の再試行を切る（1 回）。3 回の接続と読みの待ち + 送り直しの待ちが Lambda の timeout（30 秒）に収まる
+R15 RequestResponses の数が合わなくても zip で拾う: test_sync exit 1 / AssertionError: RequestResponses の数が合わなければどの行が落ちたか分からないので、全部を送り直す
+R16 alert_count が dict の要素だけ数える: test_workflow exit 1 / AssertionError: alert_count は alerts の要素を形にかかわらず数える（alerts_from_message との差が捨てた件数。封筒も開け、読めない本文は 0）
+R17 alert_count が封筒を開けない: test_workflow exit 1 / AssertionError: alert_count は alerts の要素を形にかかわらず数える（alerts_from_message との差が捨てた件数。封筒も開け、読めない本文は 0）
+R18 送る経路が toolkit.client（既定の設定）を使う: test_sync exit 1 / AssertionError: Grafana の firing と resolved（starts_at は同じ）は 1 回の put_record_batch に 2 行、event_id は status で分かれる
+R19 クライアントの置き場を toolkit._clients と共有する: test_sync exit 1 / AssertionError: Firehose へは FIREHOSE_CONFIG で 1 つだけ作ったクライアントで送り、botocore の再試行を切る（1 回）。3 回の接続と読みの待ち + 送り直しの待ちが Lambda の timeout（30 秒）に収まる
+git status 行数（注入前と同じはず）: 69
+```
+（69 は merge 中の M / A / D と build-r2-check.log の数で、注入の前も 69。）
+
+本物の botocore を、つながらないアドレス（10.255.255.1 と 192.0.2.1）に向けた実測。AWS には触れていない:
+```
+# retry_probe.py（#9。接続の待ちは 1 秒に縮めた）
+botocore 1.43.94
+default: attempts=5 elapsed=10.5s err=ConnectTimeoutError
+total_max_attempts=1: attempts=1 elapsed=1.0s err=ConnectTimeoutError
+
+# lost_probe.py（#9 の直しのあと。FIREHOSE_CONFIG のクライアントで send_history に 3 行）
+HTTP の送信 3 回 / 所要 6.6 秒 / 戻り値 3 / ERROR 3 件
+   ALERT_EVENT_LOST {"event_id": "e0", "device_id": "dc1-leaf-01"}
+   ALERT_EVENT_LOST {"event_id": "e1", "device_id": "dc1-leaf-01"}
+   ALERT_EVENT_LOST {"event_id": "e2", "device_id": "dc1-leaf-01"}
+
+# neptune_probe.py（#8。反対弁護人が書いたもの。接続の待ちは 1 秒に縮めた）
+graph.py と同じ max_attempts=2 (legacy) attempts 3 elapsed 1.8 EndpointConnectionError
+status_handler の FIREHOSE_CONFIG と同じ total_max_attempts=1 attempts 1 elapsed 0.0 EndpointConnectionError
+
+# hang_probe.py（#1。handler に graph.py と同じ Config の neptune-graph のクライアントを入れ、Firehose は偽物。Traceback は省いた）
+handler の例外: RuntimeError neptune {"source": "", "status": "firing", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1"}: C
+Neptune への HTTP 送信 3 回 / handler 全体 31.5 秒 / put_record_batch に着いた時刻 [31.535162925720215]
+Lambda の timeout 30 秒を 超える
+```
+
+#### 問題なしとした観点
+
+- WARNING のあと ERROR の順（決定 2 と 6 のログの出し方）: design.md:58-61 と handler を突き合わせた（読んだだけ）。
+- `_put` の `failed or rows`: ErrorCode の付いた行が拾えないときは全部を送り直すので、起きうるのは重複だけで、欠けは出ない。重複は読む側が event_id で落とす（test_app の row_number の検査と Round 1 の注入 M10）。
+- alert_count が数えるもの: design.md:61「`alerts` の要素の数と、返ってきた数の差」と同じ。注入 R16 R17。
+- ログの大きさ: 行の detail は 1000 文字以下、SNS の 1 通は 256 KB 以下なので、1 行ずつの ERROR は CloudWatch Logs のイベントの上限（256 KB）に収まる（読んだだけ）。
+- merge の解き方: 両側が変えた 22 本は check.sh で fmt、validate、10 本のテストが通る（上の全文）。up.sh の重なった分岐は 1 つにした（Round 2 の作業中に見つけて直した）。
+
+#### ジンテーゼ（反対弁護人のあと）
+
+- 結論の変わったところ: 「FIREHOSE_CONFIG で、Firehose が止まっても ERROR は timeout の前に書ける」→「Neptune がすぐ返すときだけ書ける」。docs の「Neptune が落ちても Firehose には送る」→「Neptune がエラーを返すときだけ。応答しないと何も残らない」。
+- 部分的な真実: #2 は計算だけで実測していない。Neptune Analytics が実際にどのくらいで返すかは AWS で測るまで分からない。
+- 残り: #1 #2 は設計の順（Neptune を先に書く）と時間の予算に原因があるので差し戻す。直し方の候補は 3 つ。(a) graph-status の Lambda で使う Neptune のクライアントの待ちを短くし、`context.get_remaining_time_in_millis()` を見て残りが少なければ Neptune を打ち切って Firehose に回す。(b) Firehose を先に送る。(c) Lambda の timeout を延ばす。cold review には出さない。

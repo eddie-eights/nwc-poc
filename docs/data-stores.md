@@ -61,7 +61,7 @@ flowchart LR
 
 | 置き場 | 向いていること | この PoC で使っている機能 |
 |---|---|---|
-| Neptune | つながりをたどる。頂点 1 つの「いま」を書き換える | 隣接と影響範囲（`blast_radius`）の探索。`has('status','pending').property(single, …)` を 1 本の Gremlin にした条件付き更新（人が決めた status を上書きしない） |
+| Neptune | つながりをたどる。頂点 1 つの「いま」を書き換える | 隣接と影響範囲（`blast_radius`）の探索。`MATCH … WHERE n.status = 'pending' SET …` を 1 本の openCypher にした条件付き更新（人が決めた status を上書きしない） |
 | S3 Tables（Iceberg） | 大量の追記と、後からの集計。安い | Spark の append、worker の PyIceberg の append、Firehose の Iceberg 宛て、Athena の SELECT |
 
 - **「いま」と証跡を分ける:** 頂点は書き換わるので、それだけでは「いつ誰が承認したか」が後から追えない。変わるたびに S3 Tables に 1 行足し、上書きしない。
@@ -71,7 +71,8 @@ flowchart LR
 
 - **Neptune が止まっても検知は止まらない:** 見つけるのは Grafana と Splunk で、Neptune を読まない。止まるのは `status` の更新（Lambda）、修復案の読み書き（worker と Web の承認タブ）、トポロジのツール。そのあいだのアラートは SQS に残り、worker が 5 回受け取っても処理できなければ DLQ へ行く。
 - **承認・却下を書けるのはコードの上だけ:** Neptune の IAM は頂点ごとに絞れず、Runtime と Web のロールはどちらも書ける。チャットから決めさせないのは、`decide` をツールに出していないから（HITL の線はコードで引いている）。
-- **証跡は二重に入ることがある:** Spark の読み直しやアクティビティの再試行で同じ行がもう一度入る。`alert_events` も、Lambda が Neptune か Firehose のどちらかで失敗するとやり直し（最大 2 回）で同じ通知を送り直す。集計するときは `event_id` で重複を落とす（`query_history` はそうしている）。
+- **証跡は二重に入ることがある:** Spark の読み直しやアクティビティの再試行で同じ行がもう一度入る。`alert_events` も、Lambda が Neptune への書き込みで失敗するとやり直し（最大 2 回）で同じ通知を送り直す。集計するときは `event_id` で重複を落とす（`query_history` はそうしている）。
+- **`alert_events` は欠けることがある:** Firehose に 3 回送っても届かなかった行は、Lambda を落とさずに `ALERT_EVENT_LOST` の ERROR でログに残すだけ（`status` の正しさを優先する。[pipeline.md](pipeline.md) の「アラートの履歴」）。`device_id` か `kind` の無い通知も行にしない（`ALERT_DROPPED` の WARNING）。Neptune が応答せずに Lambda が timeout した呼び出しの通知は、行にもログにも残らない（`Task timed out` だけ）。
 - **`alert_events` の `starts_at` は送り手で意味が違う:** Grafana は発火した時刻で、`resolved` の行も発火の時刻を持ったまま来る。Splunk は保存済みサーチの `latest(_time)` で、その状態を最後に見た時刻（`resolved` なら戻った時刻）。いつ届いたかは `received_at`（Lambda が受けた時刻）で見る。
 - **worker が止まっているあいだの承認:** Web で承認した事実は頂点にあるが、`proposal_events` の `approved` の行は worker が拾ったときに書く。worker が起きないまま時間が過ぎると、証跡に承認が残らない。Temporal の履歴はタスクと一緒に消える。
 - **`ops/down.sh` は証跡も消す:** テーブルバケットごと消えるので、`proposal_events` も `alert_events` も残らない。残したいときは消す前に書き出す。
@@ -89,7 +90,7 @@ flowchart LR
 
 1. **異常の「いま」:** Neptune の頂点 `anomaly`。`detect` が Neptune に書く。
 2. **障害の履歴:** `detect` が S3 Tables の `anomaly_events` に追記する。
-3. **修復案:** Neptune の頂点 `proposal`。条件付き書き込みは Gremlin の `fold().coalesce(unfold(), addV(...))` と `has('status','pending')` で置き換えた。
+3. **修復案:** Neptune の頂点 `proposal`。条件付き書き込みはグラフの問い合わせ 1 本（当時は Gremlin の `fold().coalesce(unfold(), addV(...))` と `has('status','pending')`。2026-10-04 からは openCypher の `MERGE` と `WHERE n.status = 'pending'`）で置き換えた。
 4. **修復案の証跡:** worker が S3 Tables の `proposal_events` に 1 段ごとに追記する。
 
 **2026-10-02: 異常の頂点と `anomaly_events` をやめた。** 検知とアラートの相関を Grafana と Splunk に寄せ、Spark の `detect`（上の 1 と 2、EventBridge への発火）を消した。Neptune にはネットワークトポロジの情報だけを置く方針で、機器・回線・層の動的な `status` はトポロジに含める。修復案（上の 3 と 4）はこの方針から外れるが、置き場を決めるまでそのまま動かしている。
@@ -103,7 +104,7 @@ flowchart LR
 | 障害の履歴 | 無い | `anomaly_events` | 未定（Grafana / Splunk のアラートの履歴） | `alert_events`（アラートの通知 1 件が 1 行） |
 | 修復案の証跡 | 無い（1 行を上書き） | `proposal_events` | 同じ | 同じ |
 | 費用 | DynamoDB は放置中ほぼ $0 | ほとんど変わらない（S3 Tables の小さな追記だけ） | 同じ | VPC エンドポイントが 2 本増える。Firehose と Athena は量に比例で、PoC では小さい |
-| Neptune が止まったとき | トポロジだけ見えない | 検知の書き込みも異常一覧も止まる | `status` の更新と修復案が止まる（検知は止まらない） | 同じ（`alert_events` への送信は続く。Lambda のやり直しで二重に入る） |
+| Neptune が止まったとき | トポロジだけ見えない | 検知の書き込みも異常一覧も止まる | `status` の更新と修復案が止まる（検知は止まらない） | 同じ（Neptune がエラーを返すなら `alert_events` への送信は続き、Lambda のやり直しで二重に入る。応答しないまま Lambda が timeout すると行は残らない） |
 
 ### 6. コードの入口
 
@@ -115,7 +116,7 @@ flowchart LR
 | 障害の履歴の書き込みと読み出し（Firehose、Athena のワークグループ） | [terraform/pipeline/analytics/history.tf](../terraform/pipeline/analytics/history.tf)、[graph/status_handler.py](../graph/status_handler.py) の `send_history`、[agent/evidence.py](../agent/evidence.py) の `query_history` |
 | 履歴の 1 行の形 | [workflow/rules.py](../workflow/rules.py) の `alert_event` |
 | 修復案の頂点と証跡（Terraform 側の説明と IAM） | [terraform/workflow/proposals.tf](../terraform/workflow/proposals.tf)、[terraform/workflow/iam.tf](../terraform/workflow/iam.tf) |
-| worker の読み書き（Gremlin と PyIceberg） | [workflow/awsio.py](../workflow/awsio.py) |
+| worker の読み書き（openCypher と PyIceberg） | [workflow/awsio.py](../workflow/awsio.py) |
 | 証跡の 1 行の形 | [workflow/rules.py](../workflow/rules.py) の `proposal_event` |
 | Web とエージェントの読み書き | [agent/graph.py](../agent/graph.py) の `list_records` / `get_record` / `update_record` |
 | Neptune の機器・回線・層の status | [graph/status_handler.py](../graph/status_handler.py) |
@@ -184,40 +185,34 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 
 ## Neptune の基礎
 
-Neptune そのものの仕組みと、この PoC での使い方の関係。2026-09-25 に AWS のドキュメント（[クラスターとインスタンス](https://docs.aws.amazon.com/neptune/latest/userguide/feature-overview-db-clusters.html)、[ストレージ](https://docs.aws.amazon.com/neptune/latest/userguide/feature-overview-storage.html)、[耐障害性](https://docs.aws.amazon.com/neptune/latest/userguide/backup-restore-overview-fault-tolerance.html)、[上限](https://docs.aws.amazon.com/neptune/latest/userguide/limits.html)）とこのリポジトリのコードで確かめた内容。料金は目安で、料金ページでは確かめていない。
+Neptune そのものの仕組みと、この PoC での使い方の関係。2026-10-04 に Neptune Database から Neptune Analytics へ置き換えた（機器が増えたときにグラフ全体の分析を使えるようにしておく）。**置き換えたあと AWS では一度も動かしていない。** 料金は料金ページの値で、Price List API では確かめていない。
 
 ### 11. Neptune とは
 
 AWS が運用を持つグラフデータベース。データを頂点と辺で持ち、「A とつながっているものを、さらにその先まで」たどる問い合わせが得意。表の JOIN を何段も重ねずに済む。
 
-| | Neptune Database（この PoC が使う） | Neptune Analytics（使っていない） |
+| | Neptune Database（2026-10-04 まで） | Neptune Analytics（この PoC が使う） |
 |---|---|---|
-| 向き | 少しずつ読み書きする普段の処理 | グラフ全体の分析 |
-| 仕組み | Aurora と同じ系統のストレージに置く | メモリに載せて計算する |
-| 得意なこと | 頂点 1 つの更新、近くのつながりをたどる | PageRank、コミュニティ検出、最短経路、ベクトル検索 |
-| VPC | 要る | 要らない |
+| 向き | 少しずつ読み書きする普段の処理 | グラフ全体の分析。頂点 1 つの読み書きもできる |
+| 仕組み | Aurora と同じ系統のストレージに置く | メモリに載せて計算する（容量は m-NCU で決める） |
+| 得意なこと | 頂点 1 つの更新、近くのつながりをたどる | 中心性、連結成分、経路探索、ベクトル検索 |
+| 問い合わせ | Gremlin / openCypher / SPARQL | openCypher だけ |
+| 口 | VPC の中のクラスターエンドポイント（8182） | AWS の API（`neptune-graph`）。VPC からはインターフェース型エンドポイント `neptune-graph-data` |
 
-- **問い合わせの言語は 3 つ:** Gremlin（手順としてたどり方を書く。この PoC はこれ）、openCypher（`MATCH (a)-[:LINK]->(b)` のように形を描く）、SPARQL（RDF 用）。Gremlin と openCypher は同じプロパティグラフに使える。
+- **問い合わせは openCypher:** `MATCH (a)-[:link]-(b)` のように形を描く。boto3 の `neptune-graph` クライアントの `execute_query` に文字列とパラメータを渡す（[agent/graph.py](../agent/graph.py) の `query()`）。2026-10-04 までは Gremlin だった。
+- **グラフアルゴリズム:** `CALL neptune.algo.degree(...)` のように openCypher から呼ぶ。この PoC は次数中心性・近接中心性・弱連結成分を `centrality` ツールで使う。媒介中心性は無い。OSS 版では別の道具に置き換える箇所（[oss-variant.md](oss-variant.md)）。
 - **向いていない:** 表の集計（SQL が無い）、単純なキーと値、時系列、全文検索。
-- **費用:** 無料枠は無く、動いているあいだずっと時間で課金される。Serverless でもゼロまでは縮まない。この PoC の `db.t4g.medium` 1 台で約 $0.11/h（[variables.tf](../terraform/pipeline/graph/variables.tf) の説明にある値で、料金 API では未確認）。
+- **費用:** 無料枠は無く、動いているあいだずっと時間で課金される。最小の 16 m-NCU で約 $0.58/h（東京。Neptune Database の `db.t4g.medium` は約 $0.14/h と数えていた）。大きさは [variables.tf](../terraform/pipeline/graph/variables.tf) の `provisioned_memory`。
 
-### 12. 実体は Aurora か、AZ 冗長か
+### 12. AZ 冗長か
 
-**ストレージは Aurora と同じ系統、エンジンは Neptune 独自のグラフエンジン。** MySQL や PostgreSQL ではないので SQL は使えない。クラスター・プライマリ・読み取りレプリカ・エンドポイントの考え方は Aurora とほぼ同じ。
-
-| 部分 | 冗長化 |
-|---|---|
-| ストレージ（クラスターボリューム） | 何もしなくても 3 つの AZ に複製される。AZ が 1 つ落ちてもデータは失われない |
-| インスタンス | 書き込みを受けるプライマリは 1 つだけ。読み取りレプリカを最大 15 台足せる。別の AZ にレプリカがあれば、プライマリが落ちたときに昇格して、通常 120 秒以内（60 秒以内のことも多い）に戻る。レプリカが無いと、プライマリを作り直すまで使えない |
-
-この PoC は [neptune.tf](../terraform/pipeline/graph/neptune.tf) で `db.t4g.medium` を 1 台だけ作り、レプリカは無い。**データは AZ 障害でも残るが、サービスはインスタンスの AZ が落ちると作り直すまで止まる**（4 のとおり、止まると `status` の更新と修復案の読み書きも止まる）。その日に消す使い捨てなので費用を優先している。止めたくないなら別の AZ にレプリカを 1 台足す（インスタンス代はほぼ 2 倍）。
+グラフはメモリに載っており、レプリカ（`replica_count`）を足すと別の AZ に待機系を持てる（レプリカの分も同じ単価がかかる）。この PoC は [neptune.tf](../terraform/pipeline/graph/neptune.tf) で `replica_count = 0`。**障害が起きるとグラフが戻るまで止まる**（4 のとおり、止まると `status` の更新と修復案の読み書きも止まる）。その日に消す使い捨てなので費用を優先している。
 
 ### 13. グラフはいくつ作れるか
 
-- **Neptune Database は 1 クラスター = 1 グラフ。** 1 つのクラスターの中に名前付きの別のグラフを並べる機能は無い（RDF の名前付きグラフは別）。分けたいときは、同じグラフの中でラベルで分けるか、クラスターを分ける（クラスターごとにインスタンス代がかかる）。
-- **この PoC はラベルで分けている:** `device` / `interface` と上の層の `ip_interface` / `bgp_session` など、`proposal` は同じグラフの中にある。ラベルはいくつ増やしてもよく、同じグラフにあるから辺でつなげる。
-- **頂点と辺の数に上限は無く、上限はストレージの大きさ:** 1 クラスター最大 128 TiB。増えて効いてくるのは、全件を引く問い合わせ（`g.V().hasLabel('proposal')` など）の遅さと、ストレージ・I/O の料金。
-- Neptune Analytics は「グラフ 1 つ = リソース 1 つ」で、グラフごとに課金される。アカウントあたりの数の上限は Service Quotas で確かめる。
+- **Neptune Analytics は「グラフ 1 つ = リソース 1 つ」** で、グラフごとに課金される。アカウントあたりの数の上限は Service Quotas で確かめる。
+- **この PoC はグラフ 1 つをラベルで分けている:** `device` / `interface` と上の層の `ip_interface` / `bgp_session` など、`proposal` と `change` は同じグラフの中にある。ラベルはいくつ増やしてもよく、同じグラフにあるから辺でつなげる。
+- **上限はメモリの大きさ（m-NCU）:** 頂点と辺が増えたら `provisioned_memory` を上げる（16 / 32 / 64 / 128 / 256）。16 m-NCU でこの PoC のグラフが足りるかは未確認。
 
 ### 14. トポロジをグラフにする意味
 
@@ -247,7 +242,7 @@ flowchart LR
 - **再発のパターン:** 「この Spine につながる回線で過去 30 日に何回落ちたか、毎回同じ修復案で直ったか」。
 - **エージェントへの材料集め:** 障害から、つながる機器・同時刻の別の障害・過去に効いた修復案をたどって渡す（GraphRAG と同じ考え方）。
 
-**グラフにしても得をしない問い:** 月の件数、機器ごとのランキング、時系列（表と Athena が向く）。障害 1 件の長いログ（S3 に置き、頂点には場所だけ持たせる）。似た障害のベクトル検索は Neptune Database ではできない（Neptune Analytics か Knowledge Bases が要る）。
+**グラフにしても得をしない問い:** 月の件数、機器ごとのランキング、時系列（表と Athena が向く）。障害 1 件の長いログ（S3 に置き、頂点には場所だけ持たせる）。似た障害のベクトル検索は、Neptune Analytics にベクトル検索があるが使っていない（手順書の検索は Knowledge Bases と OpenSearch Serverless）。
 
 **この PoC では:** 8 台のラボで単発の回線断が中心なので、効いているのは影響範囲だけ。複数機器の同時障害（Spine 障害で配下の Leaf がまとめて落ちる）を扱うか、エージェントに原因の推定までさせるなら、辺を張る価値が出る。障害の履歴の置き場を決めるときは、この案（Neptune に発生ごとの頂点）と、表（S3 Tables）や Splunk に置く案を比べる。Neptune にはトポロジだけを置く方針（5）とぶつかるので、辺を張るなら方針から見直すことになる。
 
