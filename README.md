@@ -33,13 +33,13 @@ flowchart LR
 |---|---|---|
 | 土台（必ず） | VPC、SSM のエンドポイント 2 本、Web の EC2、S3、ECR | 約 $0.05/h |
 | `AGENT=1`（既定） | チャット（Runtime + ガードレール）。`CREATE_KB=1` で手順書の検索も | 約 $0.07/h（エンドポイント 5 本。ほかは質問ごとのモデル料金だけ。KB は +$0.37/h） |
-| `PIPELINE=1` | lab → Telegraf（ECS）→ MSK → Spark → S3 Tables / OpenSearch / Prometheus（`SINK_SPLUNK=1` で Splunk にも）、Grafana（`GRAFANA=1`。既定）と Splunk のアラート → SNS、Neptune のトポロジ（アラートで status が変わる）、Nautobot（機器の一覧とケーブルの正。いつも立つ） | 約 $2.16/h（うち Neptune Analytics が $0.58/h、Nautobot が $0.14/h。ECS の Splunk は +$0.12/h） |
-| `WORKFLOW=1` | アラート（SNS → SQS）で Temporal を起こし、調査 → 承認 → 修復。AGENT と PIPELINE と、アラートの送り手（Grafana か Splunk）が要る | 約 $0.08/h |
+| `PIPELINE=1` | lab → Telegraf（ECS）→ MSK → Spark → S3 Tables / OpenSearch / Prometheus（`SINK_SPLUNK=1` で Splunk にも）、Grafana（`GRAFANA=1`。既定）と Splunk のアラート → SNS、Neptune のトポロジ（アラートで status が変わる）、Nautobot（機器の一覧とケーブルの正。いつも立つ） | 約 $2.37/h（うち Neptune Analytics が $0.58/h、Nautobot が $0.14/h。Splunk は +$0.33/h（ECS の Splunk $0.12 と Spark のジョブ $0.21）） |
+| `WORKFLOW=1` | アラート（SNS → SQS）で Temporal を起こし、調査 → 承認 → 修復。AGENT と PIPELINE と、アラートの送り手（Grafana か Splunk）が要る | 約 $0.09/h |
 
 インターフェース型エンドポイントは 1 本 $0.014/h（1 AZ。`ENDPOINTS_MULTI_AZ=1` で 2 AZ にすると倍）で、作る機能が呼ぶ API の分だけ `ops/up.sh` が選ぶ（上の金額に入れてある。同じサービスは機能をまたいで 1 本）。
 OpenSearch Serverless のコレクション（KB と logs）も公開せず、VPC エンドポイント 1 本（$0.03/h。両方作っても 1 本）からだけ届く。
 
-全部で約 $2.28/h（KB・Splunk を除く）。**1 か月置くと約 $1,640（約 25 万円）になるので、使い終わったら当日中に消す。**
+全部で約 $2.49/h（KB・Splunk を除く）。**1 か月置くと約 $1,790（約 27 万円）になるので、使い終わったら当日中に消す。**
 
 デバッグ用の EC2（lab + Telegraf を 1 台。Telegraf の出力は標準出力。MSK / ECS を作らずに機器と Telegraf の設定を確かめる）は `deploy.env` の機能ではなく、`ops/lab-debug.sh up` / `down` だけで作る・消す CloudFormation のスタック。自分の VPC・エンドポイント 4 本・バケット・ECR を持ち、`ops/up.sh` / `ops/down.sh` とは別（`ops/down.sh` では消えない）。待機は約 $0.23/h（[pipeline.md](docs/pipeline.md)）。
 
@@ -60,6 +60,8 @@ unzip ~/nwc-poc-main.zip -d ~ && cd ~/nwc-poc-main
 ```bash
 cp deploy.env.example deploy.env
 ```
+
+   手で書くファイルはこの `deploy.env` だけ。`terraform/<ルート>/terraform.tfvars.example` と `.env.example` は写さなくてよい（terraform を手で打つとき、Web を手元で動かすときにだけ使う。[docs/development.md](docs/development.md)）。
 
 5. 作る。終わると `http://localhost:8080` へのポートフォワーディングが開く。
 
@@ -125,6 +127,8 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | `AGENT` / `PIPELINE` / `WORKFLOW` / `CREATE_KB` | 作る機能 |
 | `SKIP_LAB` / `SKIP_STREAM` / `SKIP_ANALYTICS` / `SKIP_GRAPH` | PIPELINE の一部を外す |
 | `IMAGE_TAG` | `agent/` や `workflow/` を変えたら `v2` などに上げる |
+| `HTTP_SEND` | Spark が HTTP の格納先（OpenSearch / Prometheus / Splunk）へ送る所。既定 `driver`。量が増えたら `executor`（費用は変わらない） |
+| `MAX_OFFSETS_PER_TRIGGER` | Spark の 1 つのクエリが Kafka の 1 回のトリガー（60 秒）に読む件数の上限（全パーティションの合計）。既定 `10000`、`0` で上限なし。格納先ごとに `MAX_OFFSETS_PER_TRIGGER_ICEBERG` / `_SPLUNK` / `_OPENSEARCH` / `_PROMETHEUS` で上書きできる（既定は空 = 共通の値） |
 | `SYSLOG_STANDARD` | stream の Telegraf が受ける syslog の形式。既定 `RFC3164`（本番の Cisco IOS）。lab の SR Linux のログまで見るなら `RFC5424` |
 | `KEEP_ECR` | `1` で `ops/down.sh` が ECR を残す |
 

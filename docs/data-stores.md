@@ -281,3 +281,50 @@ Telegraf・Spark が「どのブローカーにつなぐか」をどう知るか
 | Spark（EMR Serverless） | [terraform/pipeline/analytics](../terraform/pipeline/analytics) が stream の state の `bootstrap_brokers` を読み、ジョブの引数 `--bootstrap` で渡す（[spark/snmp_sinks.py](../spark/snmp_sinks.py)） | ジョブは起動のたびに引数をもらえるので、パラメータストアを引く必要が無い |
 
 **確かめ方。** ロググループ `/ecs/<prefix>-telegraf` に「`/tmp/telegraf.conf を作った（role: … / sink: kafka / brokers: …）`」が出ていれば `render` は通っている。ECS Exec で取りにいく側のタスクに入って（[pipeline.md](pipeline.md) の「Telegraf に入る」）`tg gnmi` を打つと gNMI の購読を 20 秒だけ受けて標準出力に出す（MSK には送らない）ので、機器との疎通と MSK との疎通を切り分けられる。`SNMP_POLL=1` のタスクなら `tg test` でポーリングを 1 回まわして同じように見られる（既定の `0` では「止めてある」と出して終わる）。MSK 側は、Kafka の `WriteData` が拒まれればログに出る。
+
+## 届け方の保証（どの区間で、失うか、重複するか）
+
+**結論: 入口（機器 → Telegraf）は失うことがあり、そこから先はどの区間も「少なくとも 1 回」（at-least-once）。失わない代わりに、重複がありうる。重複は、上書きのできる格納先では起きず、できない格納先（Splunk、OpenSearch）では読む側で落とす。**
+
+言葉の意味。
+
+| 言葉 | 意味 |
+|---|---|
+| 多くて 1 回（at-most-once） | 送り直さない。失うことがある。重複はしない |
+| 少なくとも 1 回（at-least-once） | 届いたと分かるまで送り直す。失わない。重複がありうる |
+| ちょうど 1 回（exactly-once） | 失わず、重複もしない。送り直しても、受ける側が同じものを 1 つにまとめられるときだけ成り立つ |
+
+### データの経路（機器 → 格納先）
+
+| 区間 | 保証 | 失う場面 | 重複する場面 |
+|---|---|---|---|
+| 機器 → Telegraf（SNMP のポーリング、gNMI、trap、syslog） | 多くて 1 回 | trap と syslog は UDP で、届かなければそれきり。ポーリングは失敗した回が抜ける。Telegraf が止まっているあいだの分 | 無い |
+| Telegraf → Kafka（MSK） | 少なくとも 1 回 | Telegraf の手元のバッファがあふれた分。`required_acks = 1` なので、受け取ったリーダーが複製の前に落ちた分 | 返事が届かず送り直した分。失敗したまとまりを次の回に送り直した分 |
+| Kafka → Spark | 少なくとも 1 回 | 無い（checkpoint の offset から読み直す）。Kafka の保存期間を過ぎた分は読めない | マイクロバッチのやり直しで、同じ offset をもう一度読む |
+| Spark → S3 Tables（Iceberg） | ちょうど 1 回 | 無い | 無い（バッチの番号で、同じバッチは 1 回しか確定しない）。Telegraf が Kafka に 2 回入れた分は、2 行になる |
+| Spark → Prometheus | 少なくとも 1 回で送り、結果はちょうど 1 回 | 4xx で断られたサンプルは捨てる（時刻が戻ったもの、古すぎるもの）。数は driver のログに出る | 無い（同じ系列と時刻は 1 つ） |
+| Spark → OpenSearch | 少なくとも 1 回 | 4xx で断られたドキュメントは捨てる | やり直しの分が残る（TIMESERIES 型は ID を付けられない） |
+| Spark → Splunk（HEC） | 少なくとも 1 回 | 4xx で断られたイベントは捨てる | やり直しの分が残る（HEC は来たものを全部入れる） |
+
+- **Spark が送り直す範囲。**
+  `HTTP_SEND=driver` ではマイクロバッチ全体。`executor` では失敗したパーティション（タスク）。5xx と接続の失敗は送り直し、4xx は送り直しても通らないので捨てる。
+- **Telegraf と Kafka のあいだの重複検知（idempotent producer）は使っていない。**
+  使っても、Telegraf がまとまりごと送り直す分は防げない。
+
+### アラートの経路（格納先 → 修復）
+
+| 区間 | 保証 | 失う場面 | 重複する場面 | 重複の扱い |
+|---|---|---|---|---|
+| Splunk の保存済みサーチ → SNS | 少なくとも 1 回に近い | publish を 3 回試して失敗した分（ERROR をログに出す） | 同じイベントが別の分に 2 回 index に入ると、次の回のサーチがもう一度出す | 下流でまとまる（下の行） |
+| Grafana → SNS | 少なくとも 1 回 | 通知の失敗は Grafana が送り直す | 発火中は 4 時間ごとに送り直す | 下流でまとまる |
+| SNS → Lambda graph-status | 少なくとも 1 回 | やり直し（2 回）を使い切った分 | Lambda が失敗してやり直した分 | Neptune の status は上書きなので、同じ値を 2 回書いても変わらない |
+| Lambda → Firehose → S3 Tables の `alert_events`（アラートの履歴。001 で入る） | 少なくとも 1 回 | 3 回送って届かなかった行（ERROR に行の中身を書く） | やり直しの分、上流から同じ通知が 2 回来た分 | 読むときに `event_id`（異常、送り手、状態、starts_at）で 1 行にまとめる |
+| SNS → SQS → worker → Temporal | 少なくとも 1 回 | 5 回受け取っても処理できなかった分は DLQ へ | 処理が 120 秒を超えると、もう一度受け取る | ワークフローの ID が同じなら、Temporal が二重の起動を弾く |
+| worker → S3 Tables の `proposal_events` | 少なくとも 1 回 | — | アクティビティの再試行の分 | 読むときに `event_id`（修復案の id と出来事）でまとめる |
+
+- **同じアラートが 2 回 SNS に出ても、障害の履歴は二重にならない。**
+  starts_at は、サーチを回した時刻ではなく、元のイベントの時刻から取っている。同じイベントから出た通知は `event_id` が同じになり、読むときに 1 行になる。
+- **Splunk の中の重複は、アラートの判定を変えない。**
+  保存済みサーチは「最後の状態」や「状態が変わったか」で判定している。同じイベントが 2 つあっても結果は同じ。
+
+Telegraf のバッファがあふれたときの動き、Kafka の `required_acks = 1` で失う場面、Grafana の送り直しの間隔は、記憶と設定の読み取りから書いた。AWS で障害を起こして確かめてはいない。Splunk の保存済みサーチの行は、cycle 002（Splunk と Grafana のアラートを比べる）が入ったあとの形。
