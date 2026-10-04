@@ -286,5 +286,12 @@ manager と search head を小さくできるかは、手元の確認のあと�
 9. **起動が長くなる。**
    全部のタスクが manager → indexer → search head の順に揃うまで待つ。`ops/up.sh` の待ちを 20 分のままで足りるかは未確認。
 10. **AWS では何も確かめていない。**
+11. **indexer を入れ替えた直後にもう 1 台が止まると、検索が約 6 分、黙って 0 件になる（手元で 3 回中 3 回再現。2026-10-05）。**
+    - 何が起きるか: 止める台に、まだ複製先の無い hot の bucket（`_internal` など）があると、manager が新しい世代を確定できない（`commitGenerationFailure`、理由は Bucket primacy not met）。search head は古い世代のまま、止まった台を primary として見続ける。manager が再試行して確定するのは、止まった台を Stopped にしてから 300 秒後（`commit_retry_time` の既定）。
+    - データは消えない。残った台に直接検索すると全部ある。約 6 分で自分で戻る。
+    - そのあいだ、アラートの検索は「成功、0 件」で終わる。出るのは job の WARN 1 つ（peer has status=Down）だけで、アラートは黙って出ない。
+    - ECS が 1 台ずつ入れ替えるとき（イメージやタスク定義の変更）と同じ流れ。根はリスク 4 と同じで、ECS が見るのはコンテナの HEALTHY だけ。
+    - 起きるかどうかはタイミングで決まる（別の流れの再現では 6 回中 0 回）。入れ替えたあと待ってから止めても防げるとは言えない（hot の bucket は作られ続ける。未確認）。
+    - PoC では受け入れる。手当ての候補は、止める前に `splunk offline` で primary を移す（未検証）、`commit_retry_time` を下げて窓を縮める、の 2 つ。入れるかは手元の確認を見て決める。
 
 <!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261004-cycle-004-splunk-indexer-cluster-design.html -->
