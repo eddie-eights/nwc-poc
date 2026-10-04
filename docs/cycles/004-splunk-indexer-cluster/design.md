@@ -286,12 +286,15 @@ manager と search head を小さくできるかは、手元の確認のあと�
 9. **起動が長くなる。**
    全部のタスクが manager → indexer → search head の順に揃うまで待つ。`ops/up.sh` の待ちを 20 分のままで足りるかは未確認。
 10. **AWS では何も確かめていない。**
-11. **indexer を入れ替えた直後にもう 1 台が止まると、検索が約 6 分、黙って 0 件になる（手元で 3 回中 3 回再現。2026-10-05）。**
-    - 何が起きるか: 止める台に、まだ複製先の無い hot の bucket（`_internal` など）があると、manager が新しい世代を確定できない（`commitGenerationFailure`、理由は Bucket primacy not met）。search head は古い世代のまま、止まった台を primary として見続ける。manager が再試行して確定するのは、止まった台を Stopped にしてから 300 秒後（`commit_retry_time` の既定）。
+11. **indexer がいきなり止まると、検索が約 6 分、黙って 0 件になることがある（手当てを入れた。2026-10-05）。**
+    - 何が起きるか: 止まる台に、まだ複製先の無い hot の bucket（`_internal` など）があると、manager が新しい世代を確定できない（`commitGenerationFailure`、理由は Bucket primacy not met）。search head は古い世代のまま、止まった台を primary として見続ける。manager が再試行して確定するのは、止まった台を Stopped にしてから 300 秒後（`commit_retry_time` の既定）。
     - データは消えない。残った台に直接検索すると全部ある。約 6 分で自分で戻る。
     - そのあいだ、アラートの検索は「成功、0 件」で終わる。出るのは job の WARN 1 つ（peer has status=Down）だけで、アラートは黙って出ない。
-    - ECS が 1 台ずつ入れ替えるとき（イメージやタスク定義の変更）と同じ流れ。根はリスク 4 と同じで、ECS が見るのはコンテナの HEALTHY だけ。
-    - 起きるかどうかはタイミングで決まる（別の流れの再現では 6 回中 0 回）。入れ替えたあと待ってから止めても防げるとは言えない（hot の bucket は作られ続ける。未確認）。
-    - PoC では受け入れる。手当ての候補は、止める前に `splunk offline` で primary を移す（未検証）、`commit_retry_time` を下げて窓を縮める、の 2 つ。入れるかは手元の確認を見て決める。
+    - 手当て: indexer は SIGTERM を受けたら、先に `splunk offline` を打つ（`splunk/entrypoint.sh`）。manager が primary を残りの台へ付け替えてから止まる。手元の Docker で、入れ替えた直後にもう 1 台を止める流れを 3 回走らせ、3 回とも 0 件の時間は出なかった（手当ての前は 3 回中 3 回）。offline は 45〜47 秒、止まるまで全体で 57〜59 秒で、`stopTimeout` の 120 秒に収まる。60 秒で終わらなければ打ち切って、いつもどおり止める。
+    - 残るもの:
+      - 手当てが効くのは、SIGTERM で止まるとき（ECS のタスクの停止と入れ替え）だけ。落ちたときや SIGKILL のときは走らないので、予期しない停止では今も起きうる。
+      - admin のパスワードを `splunk offline` の引数で渡す（CLI が標準入力から読まない）。見えるのは、そのコンテナの中の `ps` だけ。
+      - 止めている最中（約 58 秒）の検索は見ていない。見たのは止め終えた直後から。
+      - ECS では測っていない（手元の Docker だけ）。
 
 <!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261004-cycle-004-splunk-indexer-cluster-design.html -->
