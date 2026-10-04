@@ -61,6 +61,8 @@ unzip ~/nwc-poc-main.zip -d ~ && cd ~/nwc-poc-main
 cp deploy.env.example deploy.env
 ```
 
+   手で書くファイルはこの `deploy.env` だけ。`terraform/<ルート>/terraform.tfvars.example` と `.env.example` は写さなくてよい（terraform を手で打つとき、Web を手元で動かすときにだけ使う。[docs/development.md](docs/development.md)）。
+
 5. 作る。終わると `http://localhost:8080` へのポートフォワーディングが開く。
 
 ```bash

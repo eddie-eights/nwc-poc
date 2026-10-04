@@ -8,6 +8,13 @@
 
 `cp deploy.env.example deploy.env` で写して書く。**`OWNER` だけ必須。**
 
+クローンしたあとに手で書くファイルは `deploy.env` だけ。ほかの見本は、次のときにだけ使う。
+
+| 見本 | 使うとき | `ops/up.sh` で作るとき |
+|---|---|---|
+| `terraform/<ルート>/terraform.tfvars.example` | terraform を手で打ち、変数の既定を変えるとき | 要らない。`ops/up.sh` が `deploy.env` の値を `-var` で渡す（`-var` は tfvars より強いので、同じ変数を tfvars に書いても効かない） |
+| `.env.example` | Web を手元で動かすとき（[development.md](development.md)） | 要らない。AWS の上では terraform が値を渡す |
+
 | キー | 意味 |
 |---|---|
 | `OWNER` | 自分の名前。英小文字で始まる 14 文字まで（英小文字・数字・ハイフン。ハイフンは連続させず末尾に置かない）。**作ったあとで変えない**（変えるなら先に `ops/down.sh`） |
