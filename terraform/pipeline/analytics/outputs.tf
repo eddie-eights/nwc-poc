@@ -43,6 +43,9 @@ locals {
       entryPointArguments = concat(
         ["--bootstrap", local.bootstrap, "--checkpoint", local.checkpoint_uri, "--sinks", join(",", sinks), "--region", var.region,
         "--metric-topics", local.metric_topics, "--log-topics", local.log_topics],
+        # Kafka の 1 回のトリガーに 1 つのクエリが読む件数の上限。共通の値はどのジョブにも渡し、格納先ごとの値はそのジョブの格納先の分だけ渡す
+        ["--max-offsets-per-trigger", tostring(var.max_offsets_per_trigger)],
+        [for a in ["--max-offsets-per-trigger-by-sink", local.max_offsets_by_job[job]] : a if local.max_offsets_by_job[job] != ""],
         # HTTP の格納先へ送る所。既定の driver では渡さない（ジョブの引数が変わらず、ops/up.sh が起こし直さない）。iceberg のジョブには要らない
         [for a in ["--http-send", var.http_send] : a if var.http_send != "driver" && job != "iceberg"],
         [for a in ["--iceberg-table", local.iceberg_table] : a if contains(sinks, "iceberg")],

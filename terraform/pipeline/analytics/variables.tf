@@ -101,6 +101,28 @@ variable "http_send" {
   }
 }
 
+variable "max_offsets_per_trigger" {
+  description = "Most Kafka records one streaming query reads per trigger (60 s), summed over the partitions (Spark maxOffsetsPerTrigger). 0 = no limit. Every job gets --max-offsets-per-trigger. ops/up.sh passes MAX_OFFSETS_PER_TRIGGER"
+  type        = number
+  default     = 10000
+
+  validation {
+    condition     = var.max_offsets_per_trigger >= 0 && floor(var.max_offsets_per_trigger) == var.max_offsets_per_trigger
+    error_message = "max_offsets_per_trigger は 0 以上の整数（0 で上限なし）。"
+  }
+}
+
+variable "max_offsets_per_trigger_by_sink" {
+  description = "Per-sink override of max_offsets_per_trigger (keys iceberg / opensearch / prometheus / splunk; 0 = no limit for that sink's query). Sinks not in the map use max_offsets_per_trigger. A job gets --max-offsets-per-trigger-by-sink only for its own sinks. ops/up.sh passes MAX_OFFSETS_PER_TRIGGER_<SINK>"
+  type        = map(number)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for k, v in var.max_offsets_per_trigger_by_sink : contains(["iceberg", "opensearch", "prometheus", "splunk"], k) && v >= 0 && floor(v) == v])
+    error_message = "max_offsets_per_trigger_by_sink のキーは iceberg / opensearch / prometheus / splunk、値は 0 以上の整数（0 でその格納先だけ上限なし）。"
+  }
+}
+
 # ---------------------------------------------------------------- splunk (only when sinks has splunk)
 variable "splunk_hec_token_parameter" {
   description = "Name of the SSM SecureString parameter that holds the HEC token. The job reads it at start with the runtime role (ssm:GetParameter through the ssm endpoint of terraform/base/core); Terraform never reads the value. Empty = /<prefix>/splunk/hec-token. ops/up.sh generates it and the Splunk task on ECS makes the HEC token from it"

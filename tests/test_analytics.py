@@ -685,7 +685,7 @@ check("executor の分岐（each_batch_on_executors と send_partition）は行�
 # build: どの HTTP の格納先にも http_send を渡す。splunk は executor のとき token を持たない sender にする
 _hq = []
 _orig_build = (mod.read_rows, mod.read_ssm_parameter, mod.http_query)
-mod.read_rows = lambda spark, bootstrap, topics: _Rows()
+mod.read_rows = lambda spark, bootstrap, topics, *a: _Rows()
 mod.read_ssm_parameter = lambda name, region: (_ssm.append(name), "tok-from-ssm")[1]
 mod.http_query = lambda rows, name, checkpoint, sender, http_send="driver": (_hq.append((name, sender, http_send)), name)[1]
 _ba = base + ["--sinks", "splunk,prometheus,opensearch", "--splunk-hec-url", "https://s:8088", "--splunk-token-parameter", "/p/t",
@@ -706,6 +706,98 @@ check("build driver（既定）: 今のまま（splunk は起動時に読んだ 
       [(n, h) for n, _, h in _drv] == [("splunk", "driver"), ("prometheus", "driver"), ("opensearch", "driver")] and _ssm_drv == ["/p/t"]
       and "Splunk tok-from-ssm" in repr([c.cell_contents for c in (_drv[0][1].__closure__ or ())]))
 check("main は HTTP の送信先（driver / executor）を起動時のログに出す", '+ f"。HTTP の送信: {args.http_send}"' in src)
+
+# ---- Kafka の 1 回のトリガーに 1 つのクエリが読む件数の上限（--max-offsets-per-trigger と格納先ごとの --max-offsets-per-trigger-by-sink。2026-10-04）
+check("MAX_OFFSETS_PER_TRIGGER は 10000", mod.MAX_OFFSETS_PER_TRIGGER == 10000)
+_a = mod.parse_args(base + _sp)
+check("parse_args: 上限の既定は 10000、格納先ごとの値は無し（どの格納先も 10000）",
+      _a.max_offsets_per_trigger == 10000 and _a.max_offsets_per_trigger_by_sink == {}
+      and all(mod.max_offsets(_a, s) == 10000 for s in mod.SINKS))
+check("parse_args: --max-offsets-per-trigger 0（上限なし）と 2500 を受ける",
+      mod.parse_args(base + _sp + ["--max-offsets-per-trigger", "0"]).max_offsets_per_trigger == 0
+      and mod.parse_args(base + _sp + ["--max-offsets-per-trigger", "2500"]).max_offsets_per_trigger == 2500)
+_a = mod.parse_args(base + _sp + ["--max-offsets-per-trigger-by-sink", "splunk=2000, prometheus = 5000,opensearch=0,"])
+check("parse_args: --max-offsets-per-trigger-by-sink は <格納先>=<件数> のカンマ区切り（空白と空の項目は無視）。書いた格納先だけ上書きし、0 はその格納先だけ上限なし",
+      _a.max_offsets_per_trigger_by_sink == {"splunk": 2000, "prometheus": 5000, "opensearch": 0}
+      and [mod.max_offsets(_a, s) for s in ("iceberg", "splunk", "prometheus", "opensearch")] == [10000, 2000, 5000, 0])
+_a = mod.parse_args(base + _sp + ["--max-offsets-per-trigger", "0", "--max-offsets-per-trigger-by-sink", "splunk=5"])
+check("max_offsets: 共通 0 でも格納先ごとの値があればそれを使う", mod.max_offsets(_a, "splunk") == 5 and mod.max_offsets(_a, "iceberg") == 0)
+check("parse_args: 上限は 0 以上の整数だけ（負、小数、文字、空は 2）",
+      all(parse_error(base + _sp + ["--max-offsets-per-trigger", v]) == 2 for v in ("-1", "1.5", "abc", "", "1e4")))
+check("parse_args: 格納先ごとの値は知っている格納先と 0 以上の整数だけ（s3 は名前が違う、= が無い、負、小数、大文字は 2）",
+      all(parse_error(base + _sp + ["--max-offsets-per-trigger-by-sink", v]) == 2
+          for v in ("s3=1", "splunk", "splunk=-2", "splunk=1.5", "Splunk=1", "=5", "splunk=", "splunk=1,s3=2")))
+
+# read_rows と build を本当に動かす（pyspark の functions / types は何でも受ける偽物、spark.readStream は option を覚える偽物）
+class _Any:
+    def __getattr__(self, k): return self
+    def __call__(self, *a, **kw): return self
+    def __getitem__(self, k): return self
+
+
+class _Reader:
+    def __init__(self): self.opts = {}
+    def format(self, f): return self
+    def option(self, k, v): self.opts[k] = v; return self
+    def load(self): return _Any()
+
+
+class _Spark:
+    def __init__(self): self.readers = []
+    @property
+    def readStream(self):
+        self.readers.append(_Reader())
+        return self.readers[-1]
+
+
+import types as _types
+_fake_sql = _types.ModuleType("pyspark.sql")
+_fake_sql.functions, _fake_sql.types = _Any(), _Any()
+_saved_mods = {k: sys.modules.get(k) for k in ("pyspark", "pyspark.sql")}
+_orig_mo = (mod.iceberg_query, mod.http_query, mod.read_ssm_parameter)
+_b4 = base + ["--sinks", "iceberg,splunk,opensearch,prometheus", "--iceberg-table", "s3tables.netops.snmp_metrics",
+              "--splunk-hec-url", "https://s:8088", "--splunk-token-parameter", "/p/t",
+              "--prometheus-url", "https://p/api/v1/remote_write", "--opensearch-endpoint", "https://o"]
+def _reads(*extra):
+    """4 つの格納先で build し、格納先ごとに Kafka の読み取りに付いた maxOffsetsPerTrigger（無ければ None）を返す"""
+    sp, args = _Spark(), mod.parse_args(_b4 + list(extra))
+    mod.build(sp, args)
+    assert len(sp.readers) == len(args.sinks) and all(
+        r.opts["subscribe"] == mod.sink_topics(s, args.metric_topics, args.log_topics) for s, r in zip(args.sinks, sp.readers))
+    return {s: r.opts.get("maxOffsetsPerTrigger") for s, r in zip(args.sinks, sp.readers)}
+sys.modules["pyspark"], sys.modules["pyspark.sql"] = _types.ModuleType("pyspark"), _fake_sql
+mod.iceberg_query = lambda rows, table, checkpoint: "iceberg"
+mod.http_query = lambda rows, name, checkpoint, sender, http_send="driver": name
+mod.read_ssm_parameter = lambda name, region: "tok-from-ssm"
+try:
+    _sp1 = _Spark()
+    mod.read_rows(_sp1, "b:9098", "metrics")
+    _r_default_arg = _sp1.readers[0].opts
+    _r_def = _reads()
+    _r_zero = _reads("--max-offsets-per-trigger", "0")
+    _r_splunk = _reads("--max-offsets-per-trigger", "10000", "--max-offsets-per-trigger-by-sink", "splunk=2000")
+    _r_prom0 = _reads("--max-offsets-per-trigger-by-sink", "prometheus=0")
+    _r_mixed = _reads("--max-offsets-per-trigger", "0", "--max-offsets-per-trigger-by-sink", "opensearch=300,iceberg=50000")
+finally:
+    for _k, _v in _saved_mods.items():
+        if _v is None:
+            sys.modules.pop(_k, None)
+        else:
+            sys.modules[_k] = _v
+    mod.iceberg_query, mod.http_query, mod.read_ssm_parameter = _orig_mo
+check("read_rows: 4 つ目を渡さなければ maxOffsetsPerTrigger を付けない（ほかの option は今のまま）",
+      "maxOffsetsPerTrigger" not in _r_default_arg and _r_default_arg["startingOffsets"] == "earliest" and _r_default_arg["subscribe"] == "metrics")
+check("build 既定: どのクエリの Kafka の読み取りにも maxOffsetsPerTrigger 10000 が付く",
+      _r_def == {"iceberg": "10000", "splunk": "10000", "opensearch": "10000", "prometheus": "10000"})
+check("build --max-offsets-per-trigger 0: どのクエリにも maxOffsetsPerTrigger が付かない",
+      _r_zero == {"iceberg": None, "splunk": None, "opensearch": None, "prometheus": None})
+check("build 共通 10000 + splunk=2000: Splunk のクエリは 2000、ほかは 10000",
+      _r_splunk == {"iceberg": "10000", "splunk": "2000", "opensearch": "10000", "prometheus": "10000"})
+check("build prometheus=0: Prometheus のクエリだけ付かず、同じジョブの OpenSearch は 10000（クエリが別なので別の値が効く）",
+      _r_prom0 == {"iceberg": "10000", "splunk": "10000", "opensearch": "10000", "prometheus": None})
+check("build 共通 0 + opensearch=300,iceberg=50000: 書いた格納先だけ付き、ほかは付かない",
+      _r_mixed == {"iceberg": "50000", "splunk": None, "opensearch": "300", "prometheus": None})
+check("main は格納先ごとの上限（0 なら上限なし）を起動時のログに出す", "1 回 {max_offsets(args, s) or '上限なし'} 件まで" in src)
 
 def read_varint(b, i):
     n = shift = 0
@@ -800,7 +892,7 @@ check("up.sh は SINK_SPLUNK（既定 0）と SPLUNK_INDEX を読み、splunk �
       and up.index('ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]"') < up.index('ensure_secret "/$PREFIX/splunk/hec-token"') < up.index('tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"'))
 check("up.sh は SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS（既定 1）を terraform/pipeline/analytics の sinks に組んで渡す",
       re.search(r'^SINK_S3="\$\{SINK_S3:-1\}"; SINK_OPENSEARCH="\$\{SINK_OPENSEARCH:-1\}"; SINK_PROMETHEUS="\$\{SINK_PROMETHEUS:-1\}"$', up, re.M) is not None
-      and 'ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]")' in up and 'tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"' in up)
+      and 'ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]" ' in up and 'tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"' in up)
 check("up.sh は Splunk を立てるときだけ device map を lab の定義から作って渡す（lab/lab_topology.py --device-map。trap と gNMI には sysName が無い）",
       re.search(r'if \[ -n "\$SPLUNK_ON_ECS" \]; then\n[\s\S]*?DEVICE_MAP=\$\("\$\{PY\[@\]\}" lab/lab_topology\.py lab --device-map\) \|\| die [^\n]*\n[\s\S]*?-var "device_map=\$DEVICE_MAP"\)\n  fi\n  tf_apply pipeline/analytics', up) is not None
       and up.count("lab_topology.py lab --device-map") == 1)
@@ -979,26 +1071,35 @@ _VALS = {"local.bootstrap": "b:9098", "local.checkpoint_uri": "s3://bucket/analy
          "local.prometheus_remote_write_url": "https://aps/api/v1/remote_write", "local.splunk_hec_url": "https://splunk.p.internal:8088",
          "local.splunk_token_parameter": "/p/splunk/hec-token", "var.splunk_index": ""}
 _args_body = "\n".join(l for l in args_block.group(1).splitlines() if not l.strip().startswith("#"))
-def _job_args(job, var_sinks, http_send="driver"):
-    """var.sinks と var.http_send のときに job の entryPointArguments になるもの（そのジョブの格納先が無ければ None = job_driver は空文字）"""
+def _job_args(job, var_sinks, http_send="driver", max_offsets=10000, by_sink=None):
+    """var.sinks / var.http_send / var.max_offsets_per_trigger / var.max_offsets_per_trigger_by_sink のときに job の entryPointArguments になるもの
+    （そのジョブの格納先が無ければ None = job_driver は空文字）。local.max_offsets_by_job は locals.tf と同じ組み方を Python でする"""
     sinks = [s for s in _jobs_def[job] if s in var_sinks]
     if not sinks:
         return None
+    by_sink = by_sink or {}
+    by_job = ",".join(f"{s}={by_sink[s]}" for s in sinks if s in by_sink)
     def val(tok):
         if tok.startswith('"'):
             return tok.strip('"')
         if tok == 'join(",", sinks)':
             return ",".join(sinks)
+        if tok == "local.max_offsets_by_job[job]":
+            return by_job
+        if tok == "tostring(var.max_offsets_per_trigger)":
+            return str(max_offsets)
         return http_send if tok == "var.http_send" else _VALS[tok]
-    toks = r'"[^"]*"|join\(",", sinks\)|[a-z_]+\.[a-z_]+'
+    toks = r'"[^"]*"|join\(",", sinks\)|local\.max_offsets_by_job\[job\]|tostring\(var\.max_offsets_per_trigger\)|[a-z_]+\.[a-z_]+'
     out = [val(t) for t in re.findall(toks, _args_body.split("[for a in")[0])]
-    for items, cond in re.findall(r'\[for a in \[([^\]]*)\] : a if ([^\]]+)\]', _args_body):
+    for items, cond in re.findall(r'^\s*\[for a in \[(.*)\] : a if (.*)\],?\s*$', _args_body, re.M):
         py = re.sub(r'contains\(sinks, "(\w+)"\)', r'("\1" in sinks)', cond).replace("&&", "and").replace("||", "or")
-        py = py.replace("var.http_send", "http_send").replace("local.splunk_skip_tls_verify", "True")
-        if eval(py, {}, {"sinks": sinks, "job": job, "http_send": http_send}):
+        py = py.replace("var.http_send", "http_send").replace("local.splunk_skip_tls_verify", "True").replace("local.max_offsets_by_job[job]", "by_job")
+        if eval(py, {}, {"sinks": sinks, "job": job, "http_send": http_send, "by_job": by_job}):
             out += [val(t) for t in re.findall(toks, items)]
     return out
-_COMMON = {"--bootstrap", "--checkpoint", "--sinks", "--region", "--metric-topics", "--log-topics"}
+check("_job_args は outputs.tf の for-if を全部読む（1 行に 1 つ。読めない書き方が増えたら数が合わなくなる）",
+      len(re.findall(r'^\s*\[for a in \[(.*)\] : a if (.*)\],?\s*$', _args_body, re.M)) == _args_body.count("[for a in"))
+_COMMON = {"--bootstrap", "--checkpoint", "--sinks", "--region", "--metric-topics", "--log-topics", "--max-offsets-per-trigger"}
 _ALL4 = ["iceberg", "opensearch", "prometheus", "splunk"]
 _flags = lambda argv: set(a for a in argv if a.startswith("--"))
 _val = lambda argv, k: argv[argv.index(k) + 1]
@@ -1026,6 +1127,70 @@ check("格納先を減らす: iceberg と prometheus だけなら splunk のジ�
 check("格納先を減らす: splunk だけなら iceberg と http のジョブは無い。opensearch だけなら http のジョブは opensearch だけ",
       _job_args("iceberg", ["splunk"]) is None and _job_args("http", ["splunk"]) is None and _job_args("splunk", ["splunk"]) is not None
       and mod.parse_args(_job_args("http", ["opensearch"])).sinks == ["opensearch"])
+check("既定: どのジョブにも --max-offsets-per-trigger 10000 を渡し、--max-offsets-per-trigger-by-sink は渡さない",
+      all(_val(j, "--max-offsets-per-trigger") == "10000" and "--max-offsets-per-trigger-by-sink" not in j for j in (_ji, _js, _jh))
+      and all(mod.max_offsets(a, s) == 10000 for a in _pa for s in a.sinks))
+_mo = {j: _job_args(j, _ALL4, by_sink={"splunk": 2000}) for j in ("iceberg", "splunk", "http")}
+check("splunk=2000: splunk のジョブにだけ --max-offsets-per-trigger-by-sink splunk=2000 を渡す（ほかのジョブの引数は既定と同じで、up.sh は splunk だけ起こし直す）",
+      _val(_mo["splunk"], "--max-offsets-per-trigger-by-sink") == "splunk=2000"
+      and _mo["iceberg"] == _ji and _mo["http"] == _jh and mod.max_offsets(mod.parse_args(_mo["splunk"]), "splunk") == 2000)
+_mo = {j: _job_args(j, _ALL4, by_sink={"prometheus": 5000, "opensearch": 0, "iceberg": 50000}) for j in ("iceberg", "splunk", "http")}
+_mh = mod.parse_args(_mo["http"])
+check("prometheus=5000, opensearch=0, iceberg=50000: http のジョブは opensearch=0,prometheus=5000、iceberg のジョブは iceberg=50000、splunk のジョブは渡さない",
+      _val(_mo["http"], "--max-offsets-per-trigger-by-sink") == "opensearch=0,prometheus=5000"
+      and _val(_mo["iceberg"], "--max-offsets-per-trigger-by-sink") == "iceberg=50000" and _mo["splunk"] == _js
+      and [mod.max_offsets(_mh, s) for s in _mh.sinks] == [0, 5000])
+check("格納先ごとの値は、その格納先を選んでいなければ渡さない（opensearch を外して opensearch=5 を書いても、http のジョブは prometheus だけで引数は変わらない）",
+      _job_args("http", ["prometheus"], by_sink={"opensearch": 5}) == _job_args("http", ["prometheus"]))
+check("共通 0: どのジョブにも --max-offsets-per-trigger 0 を渡し、スクリプトは上限なしになる",
+      all(_val(_job_args(j, _ALL4, max_offsets=0), "--max-offsets-per-trigger") == "0" and mod.parse_args(_job_args(j, _ALL4, max_offsets=0)).max_offsets_per_trigger == 0
+          for j in ("iceberg", "splunk", "http")))
+check("variable max_offsets_per_trigger は number で既定 10000、0 以上の整数だけ通す",
+      re.search(r'variable "max_offsets_per_trigger" \{\s*description[^\n]*\n\s*type\s*=\s*number\s*\n\s*default\s*=\s*10000\s*\n\s*validation \{\s*\n'
+                r'\s*condition\s*=\s*var\.max_offsets_per_trigger >= 0 && floor\(var\.max_offsets_per_trigger\) == var\.max_offsets_per_trigger\n', tf) is not None)
+check("variable max_offsets_per_trigger_by_sink は map(number) で既定 {}、キーは 4 つの格納先、値は 0 以上の整数だけ通す",
+      re.search(r'variable "max_offsets_per_trigger_by_sink" \{\s*description[^\n]*\n\s*type\s*=\s*map\(number\)\s*\n\s*default\s*=\s*\{\}\s*\n\s*validation \{\s*\n'
+                r'\s*condition\s*=\s*alltrue\(\[for k, v in var\.max_offsets_per_trigger_by_sink : contains\(\["iceberg", "opensearch", "prometheus", "splunk"\], k\) && v >= 0 && floor\(v\) == v\]\)', tf) is not None)
+check("locals の max_offsets_by_job は、ジョブの格納先のうち値のあるものだけを <格納先>=<件数> にしてカンマでつなぐ（_job_args と同じ組み方）",
+      re.search(r'max_offsets_by_job = \{ for job, sinks in local\.spark_jobs :\s*\n\s*job => join\(",", \[for s in sinks : "\$\{s\}=\$\{var\.max_offsets_per_trigger_by_sink\[s\]\}" if contains\(keys\(var\.max_offsets_per_trigger_by_sink\), s\)\]\) \}', tf) is not None)
+check("job_driver は --max-offsets-per-trigger をいつも渡し、--max-offsets-per-trigger-by-sink はそのジョブの分があるときだけ渡す",
+      '["--max-offsets-per-trigger", tostring(var.max_offsets_per_trigger)],' in args_block.group(1)
+      and '[for a in ["--max-offsets-per-trigger-by-sink", local.max_offsets_by_job[job]] : a if local.max_offsets_by_job[job] != ""],' in args_block.group(1))
+
+# up.sh の上限の判定を切り出して、bash で実際に動かす
+_moblk = up[up.index('MAX_OFFSETS_PER_TRIGGER="${MAX_OFFSETS_PER_TRIGGER:-10000}"'):]
+_moblk = _moblk[:_moblk.index("\ndone\n") + len("\ndone\n")]
+def _up_offsets(**env):
+    r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $*"; exit 1; }\n' + _moblk + 'echo "OUT: $MAX_OFFSETS_PER_TRIGGER {$MAX_OFFSETS_BY_SINK}"'],
+                       capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env})
+    return r.returncode, r.stdout.strip()
+check("up.sh: 何も書かなければ共通 10000、格納先ごとは {}（空の値は書かなかったのと同じ）",
+      _up_offsets() == (0, "OUT: 10000 {}") and _up_offsets(MAX_OFFSETS_PER_TRIGGER="", MAX_OFFSETS_PER_TRIGGER_SPLUNK="") == (0, "OUT: 10000 {}"))
+check("up.sh: 共通 0 はそのまま 0（上限なし）",  _up_offsets(MAX_OFFSETS_PER_TRIGGER="0") == (0, "OUT: 0 {}"))
+check("up.sh: MAX_OFFSETS_PER_TRIGGER_SPLUNK=2000 は {splunk=2000}",
+      _up_offsets(MAX_OFFSETS_PER_TRIGGER_SPLUNK="2000") == (0, "OUT: 10000 {splunk=2000}"))
+check("up.sh: 4 つの格納先の名前は小文字にして HCL の map にする（0 もそのまま渡す）",
+      _up_offsets(MAX_OFFSETS_PER_TRIGGER="20000", MAX_OFFSETS_PER_TRIGGER_ICEBERG="50000", MAX_OFFSETS_PER_TRIGGER_SPLUNK="2000",
+                  MAX_OFFSETS_PER_TRIGGER_OPENSEARCH="0", MAX_OFFSETS_PER_TRIGGER_PROMETHEUS="5000")
+      == (0, "OUT: 20000 {iceberg=50000,splunk=2000,opensearch=0,prometheus=5000}"))
+check("up.sh: 共通も格納先ごとも、負・小数・文字・先頭の 0・10 桁・空白入りなら何かを作る前に止まる（どの変数かを言う）",
+      all((lambda r: r[0] == 1 and f"DIE: {k} は 0 以上の整数" in r[1])(_up_offsets(**{k: v}))
+          for k in ("MAX_OFFSETS_PER_TRIGGER", "MAX_OFFSETS_PER_TRIGGER_ICEBERG", "MAX_OFFSETS_PER_TRIGGER_SPLUNK",
+                    "MAX_OFFSETS_PER_TRIGGER_OPENSEARCH", "MAX_OFFSETS_PER_TRIGGER_PROMETHEUS")
+          for v in ("-1", "1.5", "abc", "010", "1234567890", " 5", "1e4")))
+check("up.sh: 上限の判定は何かを作る前にあり、analytics に max_offsets_per_trigger と max_offsets_per_trigger_by_sink を渡す",
+      up.index('MAX_OFFSETS_PER_TRIGGER="${MAX_OFFSETS_PER_TRIGGER:-10000}"') < up.index("\ntf_apply base/ecr")
+      and 'ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]" -var "max_offsets_per_trigger=$MAX_OFFSETS_PER_TRIGGER" -var "max_offsets_per_trigger_by_sink={$MAX_OFFSETS_BY_SINK}")' in up)
+_mo_keys = ["MAX_OFFSETS_PER_TRIGGER"] + [f"MAX_OFFSETS_PER_TRIGGER_{s}" for s in ("ICEBERG", "SPLUNK", "OPENSEARCH", "PROMETHEUS")]
+_denv = open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read()
+check("deploy-env.sh は上限の 5 つのキーを読めるキーに持つ",
+      all(re.search(r'(?<![A-Z_])' + k + r'(?![A-Z_])', _denv) for k in _mo_keys))
+check("deploy.env.example は #MAX_OFFSETS_PER_TRIGGER=10000 と、格納先ごとの 4 つを空で書く",
+      re.search(r"^#MAX_OFFSETS_PER_TRIGGER=10000$", env_example, re.M) is not None
+      and all(re.search(rf"^#{k}=$", env_example, re.M) for k in _mo_keys[1:]))
+_docs = {n: open(os.path.join(ROOT, *n.split("/")), encoding="utf-8").read() for n in ("README.md", "docs/deploy.md")}
+check("README と docs/deploy.md のキーの表に MAX_OFFSETS_PER_TRIGGER と格納先ごとの値がある",
+      all(re.search(r"^\| `MAX_OFFSETS_PER_TRIGGER` \|", d, re.M) and "MAX_OFFSETS_PER_TRIGGER_ICEBERG" in d for d in _docs.values()))
 
 # 費用の analytics の部分を up.sh から切り出して動かす（Spark のジョブ 1 つ 21。3 つで 63）
 _costblk = up[up.index('if [ -z "$SKIP_ANALYTICS" ]; then\n  # Spark のジョブ'):up.index('if [ -n "$NAUTOBOT" ]; then COST_CENTS')]

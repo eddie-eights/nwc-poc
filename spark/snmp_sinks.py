@@ -29,6 +29,9 @@ Telegraf の JSON 出力（outputs.kafka の data_format = "json"、json_timesta
 HTTP の送信は既定で driver でまとめて行う（マイクロバッチを collect する。PoC の量（機器数台、10 秒間隔）なら 1 分に数百行）。
 量が増えたら --http-send executor で foreachPartition に切り替える（集めずに、パーティションごとに executor が送る）。remote write の protobuf と snappy は外部ライブラリ無しで組む
 （EMR Serverless の Python に protobuf / python-snappy は無い。snappy は「全部リテラル」の圧縮で規格上正しい）。
+
+Kafka は 1 回のトリガー（60 秒）に 1 つのクエリが 10000 件まで読む（--max-offsets-per-trigger。格納先ごとに --max-offsets-per-trigger-by-sink で変えられ、0 で上限なし）。
+止めていたジョブを起こし直した直後や最初に earliest から読むときに、溜まった分を 1 回で読んで driver のメモリ（2g）に collect しないため。
 """
 import argparse
 import datetime as dt
@@ -45,6 +48,10 @@ METRIC_TOPICS = "metrics,gnmi,mdt"   # metrics = Telegraf の inputs.snmp と la
 LOG_TOPICS = "traps,logs"   # traps = Telegraf の inputs.snmp_trap、logs = inputs.syslog（機器の syslog。measurement は device_log）
 SINKS = ("iceberg", "opensearch", "prometheus", "splunk")
 HTTP_SEND = ("driver", "executor")   # HTTP の格納先（opensearch / prometheus / splunk）へ送る所。--http-send（既定 driver）
+# Kafka の 1 回のトリガーに 1 つのクエリが読む件数の上限（全パーティションの合計。Spark の maxOffsetsPerTrigger）。0 なら付けない（上限なし）。
+# ふだんの 1 回分（60 秒）より十分大きくして、いつもは何も抑えない。効くのは止めていたジョブを起こし直した直後と、最初に earliest から読むとき
+# （HTTP の格納先は既定で 1 回分を driver（2g）に collect するので、その量を抑える）。--max-offsets-per-trigger と、格納先ごとの --max-offsets-per-trigger-by-sink
+MAX_OFFSETS_PER_TRIGGER = 10000
 TRIGGER = "60 seconds"
 HTTP_TIMEOUT = 30
 HTTP_RETRIES = 3        # 5xx と接続エラーだけ打ち直す。4xx は捨ててログに出す（古すぎるサンプルなどは何度打っても通らない）
@@ -63,6 +70,10 @@ def parse_args(argv):
     p.add_argument("--sinks", required=True, help="格納先（カンマ区切り。iceberg / opensearch / prometheus / splunk）")
     p.add_argument("--http-send", choices=HTTP_SEND, default="driver", help="HTTP の格納先へ送る所。driver = マイクロバッチを collect して driver が送る（既定）、"
                                                                          "executor = foreachPartition でパーティションごとに executor が送る")
+    p.add_argument("--max-offsets-per-trigger", type=offsets_limit, default=MAX_OFFSETS_PER_TRIGGER,
+                   help=f"Kafka の 1 回のトリガーに 1 つのクエリが読む件数の上限（全パーティションの合計。既定 {MAX_OFFSETS_PER_TRIGGER}。0 で上限なし）")
+    p.add_argument("--max-offsets-per-trigger-by-sink", type=offsets_by_sink, default={},
+                   help="格納先ごとの上限（<格納先>=<件数> のカンマ区切り。例 splunk=2000,prometheus=5000。書いた格納先だけ --max-offsets-per-trigger より優先し、0 はその格納先だけ上限なし）")
     p.add_argument("--region", default="ap-northeast-1", help="SigV4 のリージョン")
     p.add_argument("--metric-topics", default=METRIC_TOPICS, help="メトリクスのトピック（カンマ区切り。iceberg と prometheus が読む）")
     p.add_argument("--log-topics", default=LOG_TOPICS, help="ログのトピック（カンマ区切り。iceberg と opensearch が読む）")
@@ -94,6 +105,31 @@ def parse_args(argv):
     return args
 
 
+def offsets_limit(text):
+    """--max-offsets-per-trigger の値: 0 以上の整数（0 = 上限なし）"""
+    if not re.fullmatch(r"\d+", text.strip()):
+        raise argparse.ArgumentTypeError(f"0 以上の整数（0 で上限なし）: {text!r}")
+    return int(text)
+
+
+def offsets_by_sink(text):
+    """--max-offsets-per-trigger-by-sink の値（splunk=2000,prometheus=5000）を {格納先: 件数} にする。空なら {}"""
+    out = {}
+    for item in (i.strip() for i in text.split(",")):
+        if not item:
+            continue
+        sink, eq, value = item.partition("=")
+        if not eq or sink.strip() not in SINKS:
+            raise argparse.ArgumentTypeError(f"<格納先>=<件数> のカンマ区切り（格納先は {', '.join(SINKS)}）: {item!r}")
+        out[sink.strip()] = offsets_limit(value)
+    return out
+
+
+def max_offsets(args, sink):
+    """その格納先のクエリの maxOffsetsPerTrigger（格納先ごとの値があればそれ、無ければ共通の値。0 = 付けない）"""
+    return args.max_offsets_per_trigger_by_sink.get(sink, args.max_offsets_per_trigger)
+
+
 def sink_topics(sink, metric_topics, log_topics):
     """格納先が購読する Kafka のトピック（カンマ区切り）。iceberg / splunk は全部、prometheus はメトリクス、opensearch はログ"""
     if sink in ("iceberg", "splunk"):
@@ -106,8 +142,9 @@ def sink_topics(sink, metric_topics, log_topics):
 
 
 # ---------------------------------------------------------------- 行の形（Kafka → 列）
-def read_rows(spark, bootstrap, topics):
-    """Kafka の topics（カンマ区切り）を読んで tables.tf の列にした DataFrame を返す（テストでは start せずに中身だけ見る）"""
+def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
+    """Kafka の topics（カンマ区切り）を読んで tables.tf の列にした DataFrame を返す（テストでは start せずに中身だけ見る）。
+    max_offsets_per_trigger が 0 でなければ、1 回のトリガーに読む件数をそこで抑える（Kafka の maxOffsetsPerTrigger）"""
     from pyspark.sql import functions as F
     from pyspark.sql import types as T
 
@@ -118,7 +155,7 @@ def read_rows(spark, bootstrap, topics):
         T.StructField("tags", T.MapType(T.StringType(), T.StringType())),
         T.StructField("fields", T.MapType(T.StringType(), T.StringType())),
     ])
-    raw = (
+    reader = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", bootstrap)
         .option("subscribe", topics)
@@ -128,8 +165,10 @@ def read_rows(spark, bootstrap, topics):
         .option("kafka.sasl.mechanism", "AWS_MSK_IAM")
         .option("kafka.sasl.jaas.config", "software.amazon.msk.auth.iam.IAMLoginModule required;")
         .option("kafka.sasl.client.callback.handler.class", "software.amazon.msk.auth.iam.IAMClientCallbackHandler")
-        .load()
     )
+    if max_offsets_per_trigger:
+        reader = reader.option("maxOffsetsPerTrigger", str(max_offsets_per_trigger))
+    raw = reader.load()
     parsed = raw.select(
         F.col("topic"),
         F.from_json(F.col("value").cast("string"), schema).alias("m"),
@@ -589,7 +628,7 @@ def build(spark, args):
     """引数の格納先ぶんのストリーミングクエリを起こして返す"""
     queries = []
     for s in args.sinks:
-        rows = read_rows(spark, args.bootstrap, sink_topics(s, args.metric_topics, args.log_topics))
+        rows = read_rows(spark, args.bootstrap, sink_topics(s, args.metric_topics, args.log_topics), max_offsets(args, s))
         if s == "iceberg":
             queries.append(iceberg_query(rows, args.iceberg_table, args.checkpoint))
         elif s == "opensearch":
@@ -616,7 +655,8 @@ def main(argv):
     made = ensure_topics(spark, args.bootstrap, all_topics(args))
     log("トピック: " + ", ".join(all_topics(args)) + (f"（作った: {', '.join(made)}）" if made else "（全部あった）"))
     queries = build(spark, args)
-    log("格納先: " + ", ".join(f"{s}({sink_topics(s, args.metric_topics, args.log_topics)})" for s in args.sinks) + f"。HTTP の送信: {args.http_send}")
+    log("格納先: " + ", ".join(f"{s}({sink_topics(s, args.metric_topics, args.log_topics)}。1 回 {max_offsets(args, s) or '上限なし'} 件まで)" for s in args.sinks)
+        + f"。HTTP の送信: {args.http_send}")
     # どれか 1 つでもクエリが止まったら、残りも止めて 1 で終わる。EMR Serverless の STREAMING モードがジョブごと起こし直し、
     # 止まったクエリも checkpoint の続きから読み直す（データは落ちない）。以前は他が動いているあいだ ERROR を出すだけでジョブが RUNNING のまま残り、
     # 一時的な失敗（HTTP の 5xx が HTTP_RETRIES 回続いた、S3 Tables の書き込みの失敗）で止まったクエリが二度と戻らなかった。

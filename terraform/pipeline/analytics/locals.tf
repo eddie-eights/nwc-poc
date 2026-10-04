@@ -113,6 +113,9 @@ locals {
   # Spark のジョブは格納先で 3 つに分ける（ジョブ名 snmp-sinks-<キー>。ops/up.sh が起こす）。var.sinks に無い格納先は外し、空になったジョブは起こさない
   spark_jobs = { for job, sinks in { iceberg = ["iceberg"], splunk = ["splunk"], http = ["opensearch", "prometheus"] } :
   job => [for s in sinks : s if contains(var.sinks, s)] }
+  # 格納先ごとの Kafka の読み取りの上限を、ジョブごとにそのジョブの格納先の分だけ「splunk=2000」「opensearch=0,prometheus=5000」の形にする（無ければ空で、引数を渡さない）
+  max_offsets_by_job = { for job, sinks in local.spark_jobs :
+  job => join(",", [for s in sinks : "${s}=${var.max_offsets_per_trigger_by_sink[s]}" if contains(keys(var.max_offsets_per_trigger_by_sink), s)]) }
 
   # splunk: Splunk Enterprise をここの ECS で立てる（splunk.tf。HEC は VPC の中の splunk.<名前空間>:8088）。
   # AWS の外の Splunk（NAT Gateway から出る）は 2026-09-28 にやめた（NAT を作らない）
