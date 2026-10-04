@@ -168,6 +168,7 @@ flowchart LR
   - `status` は変わらないので、「いま」の読み方（`seq` が最大の行）と画面はそのまま。画面の履歴には 1 行増える。
   - 順番そのものは変えない（標準キュー、先着 1 回のまま）。FIFO キューにする案と、却下を承認より優先する案は採らない（経緯は design-log.md）。
   - ワークフローが終わったあとに届いた決定（`NOT_FOUND` で pending でない）は、行にしない。worker のログに 1 行出す。
+  - 承認待ちが決定なしで終わったあと（`expired` / `obsolete`）に届いた決定も、行にしない。worker のログに 1 行出す（2026-10-05）。ワークフローは解消の通知を待って最長 24 時間残るので、そのあいだに決定が届くことがある。この決定を「効いた決定」として控えない（控えると、次に届いた決定に「先に承認が決まっていた」という誤った `ignored` の行が付く）。`ignored` の行を書くのは、効いた決定（approved / rejected）があるときだけ。
 - ワークフローが走っていないとき（`NOT_FOUND`）:
   - `latest_proposal` が pending なら、`expired` の行を starter が足す（`verify_note` は「決定が届いたが、ワークフローがもう無い」）。worker のタスクが入れ替わって Temporal の履歴が消えた修復案が、承認待ちのまま残らないようにする。
   - pending でなければ何もしない。
@@ -261,6 +262,7 @@ flowchart LR
   - アラートのキューから来た `{"type":"decision",…}` は、シグナルを送らずに捨てる。
   - 同じ `anomaly_id` で `proposal_id` の違う pending があるとき、`put_proposal` が `expired` の行を 1 つ足してから `created` を足す。
   - Terraform: `decisions` のキューに SNS の購読が無く、`sqs:SendMessage` が付くのは Web のロールだけ（Runtime のロールに無い）。
+  - ワークフロー（テスト環境）: 時間切れ（`expired`）のあとに承認を送り、続けて別の名前の却下を送っても、行は増えない（`ignored` の行も付かない）。
   - ワークフロー（テスト環境）: 承認のあとに別の名前の却下を送ると、`ignored` の行が 1 つ増え、`status` は変わらず、`detail` に却下した人の名前が入る。同じ承認をもう一度送っても行は増えない。
   - ワークフロー（テスト環境）: `proposal_id` の違うシグナルを送っても待ち続ける。合うシグナルを 2 回（approved、rejected の順）送ると、結果は approved で、行の `decided_by` は 1 回目の名前。
   - `audit_rows` が `seq` を int、`decided_at` の None を None にする。
