@@ -1,7 +1,7 @@
 """Kafka（MSK、IAM 認証）のトピックを読み、選んだ格納先に流し続ける Spark Structured Streaming のジョブ（Kafka の 4 分岐）。
 
 EMR Serverless の上で動く（terraform/pipeline/analytics）。起動は ops/up.sh の a-3（start-job-run）で、引数は terraform/pipeline/analytics の
-output job_driver_json が組み立てる（--bootstrap / --checkpoint / --sinks と、格納先ごとの --iceberg-table などの値）。
+output job_driver_json_<iceberg|splunk|http> が組み立てる（--bootstrap / --checkpoint / --sinks と、格納先ごとの --iceberg-table などの値）。
 Kafka と S3 Tables の jar、カタログの設定は spark-submit の --conf で渡す。
 
 格納先は 4 つ（--sinks にカンマ区切り）:
@@ -26,9 +26,12 @@ Telegraf の JSON 出力（outputs.kafka の data_format = "json"、json_timesta
 （trap・gNMI の BGP / IS-IS。splunk/netops_alerts）が SNS のトピック <接頭辞>-alerts に出し、ワークフロー（SQS）と
 トポロジの status（graph の Lambda）がそれを受ける。
 
-HTTP の送信は driver でまとめて行う（マイクロバッチを collect する。PoC の量（機器数台、10 秒間隔）なら 1 分に数百行）。
-量が増えたら foreachPartition に移す。remote write の protobuf と snappy は外部ライブラリ無しで組む
+HTTP の送信は既定で driver でまとめて行う（マイクロバッチを collect する。PoC の量（機器数台、10 秒間隔）なら 1 分に数百行）。
+量が増えたら --http-send executor で foreachPartition に切り替える（集めずに、パーティションごとに executor が送る）。remote write の protobuf と snappy は外部ライブラリ無しで組む
 （EMR Serverless の Python に protobuf / python-snappy は無い。snappy は「全部リテラル」の圧縮で規格上正しい）。
+
+Kafka は 1 回のトリガー（60 秒）に 1 つのクエリが 10000 件まで読む（--max-offsets-per-trigger。格納先ごとに --max-offsets-per-trigger-by-sink で変えられ、0 で上限なし）。
+止めていたジョブを起こし直した直後や最初に earliest から読むときに、溜まった分を 1 回で読んで driver のメモリ（2g）に collect しないため。
 """
 import argparse
 import datetime as dt
@@ -44,6 +47,11 @@ import urllib.request
 METRIC_TOPICS = "metrics,gnmi,mdt"   # metrics = Telegraf の inputs.snmp と lab の gNMI を変えた共通の形、gnmi = inputs.gnmi、mdt = inputs.cisco_telemetry_mdt（telegraf/telegraf.conf.in。Telegraf（ECS）で動く）
 LOG_TOPICS = "traps,logs"   # traps = Telegraf の inputs.snmp_trap、logs = inputs.syslog（機器の syslog。measurement は device_log）
 SINKS = ("iceberg", "opensearch", "prometheus", "splunk")
+HTTP_SEND = ("driver", "executor")   # HTTP の格納先（opensearch / prometheus / splunk）へ送る所。--http-send（既定 driver）
+# Kafka の 1 回のトリガーに 1 つのクエリが読む件数の上限（全パーティションの合計。Spark の maxOffsetsPerTrigger）。0 なら付けない（上限なし）。
+# ふだんの 1 回分（60 秒）より十分大きくして、いつもは何も抑えない。効くのは止めていたジョブを起こし直した直後と、最初に earliest から読むとき
+# （HTTP の格納先は既定で 1 回分を driver（2g）に collect するので、その量を抑える）。--max-offsets-per-trigger と、格納先ごとの --max-offsets-per-trigger-by-sink
+MAX_OFFSETS_PER_TRIGGER = 10000
 TRIGGER = "60 seconds"
 HTTP_TIMEOUT = 30
 HTTP_RETRIES = 3        # 5xx と接続エラーだけ打ち直す。4xx は捨ててログに出す（古すぎるサンプルなどは何度打っても通らない）
@@ -60,6 +68,12 @@ def parse_args(argv):
     p.add_argument("--bootstrap", required=True, help="MSK の bootstrap servers（SASL/IAM、9098）")
     p.add_argument("--checkpoint", required=True, help="checkpoint の親（s3://<バケット>/analytics/checkpoint/。格納先ごとに下にディレクトリを切る）")
     p.add_argument("--sinks", required=True, help="格納先（カンマ区切り。iceberg / opensearch / prometheus / splunk）")
+    p.add_argument("--http-send", choices=HTTP_SEND, default="driver", help="HTTP の格納先へ送る所。driver = マイクロバッチを collect して driver が送る（既定）、"
+                                                                         "executor = foreachPartition でパーティションごとに executor が送る")
+    p.add_argument("--max-offsets-per-trigger", type=offsets_limit, default=MAX_OFFSETS_PER_TRIGGER,
+                   help=f"Kafka の 1 回のトリガーに 1 つのクエリが読む件数の上限（全パーティションの合計。既定 {MAX_OFFSETS_PER_TRIGGER}。0 で上限なし）")
+    p.add_argument("--max-offsets-per-trigger-by-sink", type=offsets_by_sink, default={},
+                   help="格納先ごとの上限（<格納先>=<件数> のカンマ区切り。例 splunk=2000,prometheus=5000。書いた格納先だけ --max-offsets-per-trigger より優先し、0 はその格納先だけ上限なし）")
     p.add_argument("--region", default="ap-northeast-1", help="SigV4 のリージョン")
     p.add_argument("--metric-topics", default=METRIC_TOPICS, help="メトリクスのトピック（カンマ区切り。iceberg と prometheus が読む）")
     p.add_argument("--log-topics", default=LOG_TOPICS, help="ログのトピック（カンマ区切り。iceberg と opensearch が読む）")
@@ -91,6 +105,31 @@ def parse_args(argv):
     return args
 
 
+def offsets_limit(text):
+    """--max-offsets-per-trigger の値: 0 以上の整数（0 = 上限なし）"""
+    if not re.fullmatch(r"\d+", text.strip()):
+        raise argparse.ArgumentTypeError(f"0 以上の整数（0 で上限なし）: {text!r}")
+    return int(text)
+
+
+def offsets_by_sink(text):
+    """--max-offsets-per-trigger-by-sink の値（splunk=2000,prometheus=5000）を {格納先: 件数} にする。空なら {}"""
+    out = {}
+    for item in (i.strip() for i in text.split(",")):
+        if not item:
+            continue
+        sink, eq, value = item.partition("=")
+        if not eq or sink.strip() not in SINKS:
+            raise argparse.ArgumentTypeError(f"<格納先>=<件数> のカンマ区切り（格納先は {', '.join(SINKS)}）: {item!r}")
+        out[sink.strip()] = offsets_limit(value)
+    return out
+
+
+def max_offsets(args, sink):
+    """その格納先のクエリの maxOffsetsPerTrigger（格納先ごとの値があればそれ、無ければ共通の値。0 = 付けない）"""
+    return args.max_offsets_per_trigger_by_sink.get(sink, args.max_offsets_per_trigger)
+
+
 def sink_topics(sink, metric_topics, log_topics):
     """格納先が購読する Kafka のトピック（カンマ区切り）。iceberg / splunk は全部、prometheus はメトリクス、opensearch はログ"""
     if sink in ("iceberg", "splunk"):
@@ -103,8 +142,9 @@ def sink_topics(sink, metric_topics, log_topics):
 
 
 # ---------------------------------------------------------------- 行の形（Kafka → 列）
-def read_rows(spark, bootstrap, topics):
-    """Kafka の topics（カンマ区切り）を読んで tables.tf の列にした DataFrame を返す（テストでは start せずに中身だけ見る）"""
+def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
+    """Kafka の topics（カンマ区切り）を読んで tables.tf の列にした DataFrame を返す（テストでは start せずに中身だけ見る）。
+    max_offsets_per_trigger が 0 でなければ、1 回のトリガーに読む件数をそこで抑える（Kafka の maxOffsetsPerTrigger）"""
     from pyspark.sql import functions as F
     from pyspark.sql import types as T
 
@@ -115,7 +155,7 @@ def read_rows(spark, bootstrap, topics):
         T.StructField("tags", T.MapType(T.StringType(), T.StringType())),
         T.StructField("fields", T.MapType(T.StringType(), T.StringType())),
     ])
-    raw = (
+    reader = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", bootstrap)
         .option("subscribe", topics)
@@ -125,8 +165,10 @@ def read_rows(spark, bootstrap, topics):
         .option("kafka.sasl.mechanism", "AWS_MSK_IAM")
         .option("kafka.sasl.jaas.config", "software.amazon.msk.auth.iam.IAMLoginModule required;")
         .option("kafka.sasl.client.callback.handler.class", "software.amazon.msk.auth.iam.IAMClientCallbackHandler")
-        .load()
     )
+    if max_offsets_per_trigger:
+        reader = reader.option("maxOffsetsPerTrigger", str(max_offsets_per_trigger))
+    raw = reader.load()
     parsed = raw.select(
         F.col("topic"),
         F.from_json(F.col("value").cast("string"), schema).alias("m"),
@@ -254,13 +296,16 @@ def make_opensearch_sender(endpoint, index, region):
     url = endpoint.rstrip("/") + f"/{index}/_bulk"
 
     def send(records):
+        """送り、入らなかった（捨てた）ドキュメントの数を返す"""
         lines = opensearch_docs(records)
+        dropped = 0
         for i in range(0, len(lines), BULK_SIZE * 2):
             body = ("\n".join(lines[i:i + BULK_SIZE * 2]) + "\n").encode("utf-8")
             headers = sigv4_headers("POST", url, body, "aoss", region, {"Content-Type": "application/x-ndjson"})
             status, text = http_post(url, body, headers)
             if status >= 400:
                 log(f"opensearch: _bulk が {status} を返した。{len(lines[i:i + BULK_SIZE * 2]) // 2} 件を捨てる: {text[:200]!r}")
+                dropped += len(lines[i:i + BULK_SIZE * 2]) // 2
                 continue
             try:
                 res = json.loads(text)
@@ -269,6 +314,8 @@ def make_opensearch_sender(endpoint, index, region):
             if res.get("errors"):
                 failed = [it["index"] for it in res.get("items", []) if it.get("index", {}).get("error")]
                 log(f"opensearch: {len(failed)} 件が入らなかった（最初の 1 件: {json.dumps(failed[0], ensure_ascii=False)[:200] if failed else ''}）")
+                dropped += len(failed)
+        return dropped
     return send
 
 
@@ -336,7 +383,9 @@ def make_splunk_sender(url, token, index="", skip_verify=False):
         context = ssl._create_unverified_context()  # noqa: S323 - 自己署名の Splunk Enterprise の検証用。既定は検証する
 
     def send(records):
+        """送り、捨てたイベントの数を返す"""
         lines = splunk_events(records, index)
+        dropped = 0
         for i in range(0, len(lines), BULK_SIZE):
             body = "\n".join(lines[i:i + BULK_SIZE]).encode("utf-8")
             status, text = http_post(url, body, headers, context)
@@ -344,6 +393,16 @@ def make_splunk_sender(url, token, index="", skip_verify=False):
                 # 400 は本文の形（time や event が無い）、401 / 403 は token（無効・無効化・index の許可が無い）。打ち直しても通らないので捨てる。
                 # token の値は出さない（Splunk の応答にも入っていない）
                 log(f"splunk: HEC が {status} を返した。{len(lines[i:i + BULK_SIZE])} 件を捨てる: {text[:200]!r}")
+                dropped += len(lines[i:i + BULK_SIZE])
+        return dropped
+    return send
+
+
+def make_splunk_sender_on_executor(url, token_parameter, region, index="", skip_verify=False):
+    """--http-send executor の splunk の sender。token は driver から運ばず（Spark のタスクに載せない）、送るたびに executor が SSM から読む。
+    送り方（BULK_SIZE ごと、4xx は捨てる、TLS）は make_splunk_sender のまま。持つのは文字列と bool だけ（executor へ pickle で運ぶ）"""
+    def send(records):
+        return make_splunk_sender(url, read_ssm_parameter(token_parameter, region), index, skip_verify)(records)
     return send
 
 
@@ -457,7 +516,9 @@ def make_prometheus_sender(url, region):
     }
 
     def send(records):
+        """送り、捨てたサンプルの数を返す"""
         series = prometheus_series(records)
+        dropped = 0
         for i in range(0, len(series), BULK_SIZE):
             body = snappy_compress(encode_write_request(series[i:i + BULK_SIZE]))
             signed = sigv4_headers("POST", url, body, "aps", region, headers)
@@ -465,21 +526,78 @@ def make_prometheus_sender(url, region):
             if status >= 400:
                 # 400 は out-of-order か古すぎるサンプル（startingOffsets=earliest で最初に流れる古い分など）。打ち直しても通らないので捨てる
                 log(f"prometheus: remote write が {status} を返した。{len(series[i:i + BULK_SIZE])} サンプルを捨てる: {text[:200]!r}")
+                dropped += len(series[i:i + BULK_SIZE])
+        return dropped
     return send
 
 
 # ---------------------------------------------------------------- クエリの組み立て
-def http_query(rows, name, checkpoint, sender):
-    """マイクロバッチごとに driver で collect して sender に渡す foreachBatch のクエリ"""
+def partition_id():
+    """executor のタスクのパーティション番号（pyspark が無いか、タスクの外なら -1）"""
+    try:
+        from pyspark import TaskContext
+    except ImportError:
+        return -1
+    ctx = TaskContext.get()
+    return ctx.partitionId() if ctx else -1
+
+
+def sent_message(name, rows, dropped, where=""):
+    """「N 行を送った」のログの文。捨てた数（4xx など。prometheus はサンプル、opensearch / splunk は件）があれば足す"""
+    if not dropped:
+        return f"{rows} 行を{where}送った"
+    return f"{rows} 行を{where}送り、{dropped} {'サンプル' if name == 'prometheus' else '件'}を捨てた（4xx など）"
+
+
+def send_partition(name, sender, batch_id, rows):
+    """--http-send executor: 1 パーティションの行を executor で sender に渡し、(送った行数, 捨てた数) を返す（foreachPartition から呼ぶ。pyspark が無くても動く）。
+    ts の順に並べてから送る（Prometheus は系列ごとに時刻が戻るサンプルを拒む。並べられるのはパーティションの中だけなので、
+    prometheus は http_query が先に系列でパーティションを分け直す）"""
+    records = sorted((row_to_record(r) for r in rows), key=lambda r: r["ts"])
+    dropped = 0
+    if records:
+        dropped = sender(records) or 0
+        log(f"{name}: batch {batch_id} partition {partition_id()} で {sent_message(name, len(records), dropped)}")
+    return len(records), dropped
+
+
+# Prometheus の系列は measurement（と field）と tags で決まる。Telegraf は Kafka のキーを付けないので、同じ系列の行が Kafka の
+# どのパーティションにも入る。--http-send executor でそのまま foreachPartition にすると、同じ系列を 2 つのタスクが時刻の前後したまま
+# 別々に送り、後から届いた古いサンプルを Prometheus が拒む。送る前にこの列でパーティションを分け直し、同じ系列を 1 つのタスクに集める
+# （tags_json は Telegraf がキーを並べて出す JSON をそのまま to_json したもの）
+SERIES_COLUMNS = ("measurement", "tags_json")
+
+
+def http_query(rows, name, checkpoint, sender, http_send="driver"):
+    """マイクロバッチごとに driver で collect して sender に渡す foreachBatch のクエリ。
+    http_send が executor なら collect せず、foreachPartition でパーティションごとに executor が sender で送る（sender は pickle で executor へ運ぶ）"""
     def each_batch(batch_df, batch_id):
-        records = [row_to_record(r) for r in batch_df.collect()]
+        # ts の順に並べてから送る（Kafka のパーティションをまたぐと時刻が前後する。Prometheus は系列ごとに時刻が戻るサンプルを拒む）
+        records = sorted((row_to_record(r) for r in batch_df.collect()), key=lambda r: r["ts"])
         if records:
-            sender(records)
-            log(f"{name}: batch {batch_id} で {len(records)} 行を送った")
+            dropped = sender(records) or 0
+            log(f"{name}: batch {batch_id} で {sent_message(name, len(records), dropped)}")
+
+    def each_batch_on_executors(batch_df, batch_id):
+        # 行は driver に集めない。送った行数と捨てた数だけ accumulator で戻し、driver のログ（CloudWatch Logs）にも出す
+        # （executor の stderr は S3 の logs にしか出ない。捨てた理由はそちら）
+        if name == "prometheus":
+            batch_df = batch_df.repartition(max(1, batch_df.rdd.getNumPartitions()), *SERIES_COLUMNS)
+        sc = batch_df.sparkSession.sparkContext
+        sent, dropped = sc.accumulator(0), sc.accumulator(0)
+
+        def run(part):
+            n, d = send_partition(name, sender, batch_id, part)
+            sent.add(n)
+            dropped.add(d)
+        batch_df.foreachPartition(run)
+        if sent.value:
+            log(f"{name}: batch {batch_id} で {sent_message(name, sent.value, dropped.value, ' executor から')}"
+                + ("。理由は executor の stderr（S3 の logs）" if dropped.value else ""))
 
     return (
         rows.writeStream.queryName(name)
-        .foreachBatch(each_batch)
+        .foreachBatch({"driver": each_batch, "executor": each_batch_on_executors}[http_send])
         .option("checkpointLocation", checkpoint + name + "/")
         .trigger(processingTime=TRIGGER)
         .start()
@@ -550,13 +668,18 @@ def build(spark, args):
     """引数の格納先ぶんのストリーミングクエリを起こして返す"""
     queries = []
     for s in args.sinks:
-        rows = read_rows(spark, args.bootstrap, sink_topics(s, args.metric_topics, args.log_topics))
+        rows = read_rows(spark, args.bootstrap, sink_topics(s, args.metric_topics, args.log_topics), max_offsets(args, s))
         if s == "iceberg":
             queries.append(iceberg_query(rows, args.iceberg_table, args.checkpoint))
         elif s == "opensearch":
-            queries.append(http_query(rows, s, args.checkpoint, make_opensearch_sender(args.opensearch_endpoint, args.opensearch_index, args.region)))
+            queries.append(http_query(rows, s, args.checkpoint, make_opensearch_sender(args.opensearch_endpoint, args.opensearch_index, args.region), args.http_send))
         elif s == "prometheus":
-            queries.append(http_query(rows, s, args.checkpoint, make_prometheus_sender(args.prometheus_url, args.region)))
+            queries.append(http_query(rows, s, args.checkpoint, make_prometheus_sender(args.prometheus_url, args.region), args.http_send))
+        elif s == "splunk" and args.http_send == "executor":
+            # 起動時に読めるかだけ確かめる（読めなければ driver のときと同じく起動で落ちる）。値は捨て、executor が送るたびに SSM から読み直す
+            read_ssm_parameter(args.splunk_token_parameter, args.region)
+            queries.append(http_query(rows, s, args.checkpoint, make_splunk_sender_on_executor(
+                args.splunk_hec_url, args.splunk_token_parameter, args.region, args.splunk_index, args.splunk_skip_verify), args.http_send))
         elif s == "splunk":
             # token は起動時に 1 回だけ読む（driver の中に置く。ログにも引数にも出ない）。読めなければジョブが起動で落ち、原因が stderr に出る
             token = read_ssm_parameter(args.splunk_token_parameter, args.region)
@@ -572,7 +695,8 @@ def main(argv):
     made = ensure_topics(spark, args.bootstrap, all_topics(args))
     log("トピック: " + ", ".join(all_topics(args)) + (f"（作った: {', '.join(made)}）" if made else "（全部あった）"))
     queries = build(spark, args)
-    log("格納先: " + ", ".join(f"{s}({sink_topics(s, args.metric_topics, args.log_topics)})" for s in args.sinks))
+    log("格納先: " + ", ".join(f"{s}({sink_topics(s, args.metric_topics, args.log_topics)}。1 回 {max_offsets(args, s) or '上限なし'} 件まで)" for s in args.sinks)
+        + f"。HTTP の送信: {args.http_send}")
     # どれか 1 つでもクエリが止まったら、残りも止めて 1 で終わる。EMR Serverless の STREAMING モードがジョブごと起こし直し、
     # 止まったクエリも checkpoint の続きから読み直す（データは落ちない）。以前は他が動いているあいだ ERROR を出すだけでジョブが RUNNING のまま残り、
     # 一時的な失敗（HTTP の 5xx が HTTP_RETRIES 回続いた、S3 Tables の書き込みの失敗）で止まったクエリが二度と戻らなかった。
