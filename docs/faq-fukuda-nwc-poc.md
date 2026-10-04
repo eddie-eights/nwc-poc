@@ -1626,3 +1626,72 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 
 - https://github.com/prometheus/prometheus/blob/v3.15.0/docs/storage.md
 - https://prometheus.io/docs/introduction/faq/
+
+### Q. Prometheus の代わりに VictoriaMetrics のクラスターにすると、何が変わる？
+
+**A. 結論**
+
+クラスターを組めて、EFS にも公式に置ける。Prometheus の remote write と問い合わせの API をそのまま受けるので、書く側（Spark）と読む側（Grafana、エージェント）は送り先の URL を替えるだけで済む見込み。OSS 版（005）はこれに替える（2026-10-04 のユーザーの決定）。
+
+2026-10-04 に公式ドキュメントと Docker Hub で確かめた。AWS では動かしていない。
+
+**構成**
+
+| 部品 | 役割 | ポート |
+|---|---|---|
+| vminsert | 書き込みを受け、vmstorage に振り分ける | 8480 |
+| vmstorage | データを持つ。互いを知らず、データも共有しない | 8400（vminsert から）、8401（vmselect から） |
+| vmselect | 問い合わせを受け、全部の vmstorage から集める | 8481 |
+
+**Prometheus との違い**
+
+| | Prometheus | VictoriaMetrics（クラスター版） |
+|---|---|---|
+| クラスター | 組めない | 組める（部品ごとに台数を増やせる） |
+| EFS | 非対応と明記 | 「Amazon EFS などの NFS に置ける」と明記 |
+| 書き込みの URL | `/api/v1/write` | `http://<vminsert>:8480/insert/0/prometheus/api/v1/write` |
+| 問い合わせの URL | `/api/v1/query` | `http://<vmselect>:8481/select/0/prometheus/api/v1/query` |
+| 複製 | なし | `-replicationFactor=N`。vmstorage が 2N−1 台以上要る。公式は、複製より「複製つきの丈夫なディスクに任せる」ほうを勧めている |
+| 台数を増やしたとき | － | 新しいデータだけが新しい台にも分かれる。古いデータは動かない |
+| ライセンス | Apache 2.0 | Apache 2.0（vmstorage の自動発見などは有償版だけ） |
+
+イメージは `victoriametrics/vminsert`、`vmselect`、`vmstorage` の `v1.153.0-cluster`（2026-09-28、arm64 あり）。
+
+**未確認**
+
+- 時刻の順が前後したサンプルを受けるか（Spark は並べ替えてから送っている）。
+- URL の `0` はテナントの番号。認証は OSS 版には無く、付けるなら別の部品（vmauth）が要る。
+
+**出典**
+
+- https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/
+- https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/
+
+### Q. OpenSearch は、クラスターにできる？
+
+**A. 結論**
+
+できる。OpenSearch は最初からクラスターを前提に作られていて、1 台で動かすほうが特別な設定（`discovery.type=single-node`）になる。
+
+2026-10-04 に公式ドキュメントで確かめた。
+
+| 項目 | 中身 |
+|---|---|
+| ノードの役割 | cluster manager（全体の状態を管理）、data（データを持ち、検索する）、coordinating（要求を振り分けて結果をまとめる）。1 台が複数の役割を兼ねられる |
+| 本番の勧め | 専用の cluster manager を 3 台、3 つの AZ に分ける（過半数を失わないため） |
+| 仲間の見つけ方 | `discovery.seed_hosts` に候補を並べ、最初の起動だけ `cluster.initial_cluster_manager_nodes` を渡す |
+| データの複製 | インデックスごとにレプリカの数を決める。shard allocation awareness で、本体とレプリカを別の AZ に置ける |
+
+**4 つの OSS を並べると**
+
+| OSS | クラスター | EFS |
+|---|---|---|
+| Kafka | 組める（KRaft） | 記述が見つからない |
+| OpenSearch | 組める | 記述が見つからない |
+| VictoriaMetrics | 組める | 置けると明記 |
+| Prometheus | 組めない | 非対応と明記 |
+| Neo4j（Community） | 組めない（クラスターは Enterprise だけ） | NFS は非対応と明記 |
+
+**出典**
+
+- https://docs.opensearch.org/latest/tuning-your-cluster/
