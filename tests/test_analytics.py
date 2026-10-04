@@ -1192,7 +1192,7 @@ check("OpenSearch Serverless の VPC エンドポイントも ENDPOINTS_AZ_NUM �
 # 各ルートの <リソース>_az_num。既定と使える値は ops/up.sh の検査（az_num）と同じ
 _AZ_VARS = {  # (ルート, 変数): (既定, 使える値)
     ("base/core", "endpoints_az_num"): (1, [1, 2, 3]), ("pipeline/stream", "msk_az_num"): (2, [2, 3]),
-    ("pipeline/stream", "telegraf_az_num"): (1, [1, 2, 3]), ("agent", "runtime_az_num"): (2, [2, 3]),
+    ("pipeline/stream", "telegraf_az_num"): (1, [1, 2, 3]), ("agent", "runtime_az_num"): (1, [1, 2, 3]),
     ("agent", "lambda_az_num"): (1, [1, 2, 3]), ("agent", "opensearch_az_num"): (1, [1, 2]),
     ("pipeline/analytics", "emr_az_num"): (1, [1, 2, 3]), ("pipeline/analytics", "opensearch_az_num"): (1, [1, 2]),
     ("pipeline/graph", "neptune_az_num"): (1, [1, 2, 3]), ("pipeline/graph", "lambda_az_num"): (1, [1, 2, 3]),
@@ -1205,7 +1205,7 @@ def _az_var_ok(root, name, default, allowed):
     m = re.search(r'variable "' + name + r'" \{(.*?)\n\}', _root_tf(root), re.S)
     return (m is not None and re.search(r"default\s*=\s*" + str(default) + r"\n", m.group(1)) is not None
             and f"contains([{', '.join(map(str, allowed))}], var.{name})" in m.group(1))
-check("各ルートの <リソース>_az_num は既定と使える値が決めたとおり（MSK と Runtime は既定 2 で 1 を受け付けない。OpenSearch と Nautobot の DB は 2 まで）",
+check("各ルートの <リソース>_az_num は既定と使える値が決めたとおり（MSK は既定 2 で 1 を受け付けない。Runtime は既定 1。OpenSearch と Nautobot の DB は 2 まで）",
       all(_az_var_ok(r, n, d, a) for (r, n), (d, a) in _AZ_VARS.items()))
 _AZ_USES = {
     "agent": (r"subnets\s*=\s*slice\(local\.subnet_ids, 0, var\.runtime_az_num\)", r"subnet_ids\s*=\s*slice\(local\.subnet_ids, 0, var\.lambda_az_num\)",
@@ -1222,7 +1222,8 @@ check("各ルートは base/core の subnet_ids の先頭から AZ_NUM 個を使
       all(all(re.search(u, _root_tf(r)) for u in us) for r, us in _AZ_USES.items())
       and not any("runtime_subnet_ids" in _root_tf(r) for r in _AZ_USES))
 # 注意書き（範囲の制限と、ENDPOINTS_AZ_NUM がほかより小さいとき）は、変数の description・リソースのそば・ops/up.sh の検査の 3 か所に
-# 出典の URL と確認日を残す（2026-10-04 のユーザー指示）。AWS で試していないことは「未確認」/ "not tried" と書く
+# 出典の URL と確認日を残す（2026-10-04 のユーザー指示）。AWS で試していないことは「未確認」/ "not tried" と書く。
+# 確認日は 2026-10-04。Runtime だけは既定を 1 にしたとき（2026-10-05）に確かめ直した
 _AZ_SRC = {  # (ルート, 変数, リソースのファイル): 出典の URL
     ("pipeline/stream", "msk_az_num", "msk.tf"): "https://docs.aws.amazon.com/msk/1.0/apireference/clusters.html",
     ("agent", "runtime_az_num", "runtime.tf"): "https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html",
@@ -1233,21 +1234,29 @@ _AZ_SRC = {  # (ルート, 変数, リソースのファイル): 出典の URL
     ("pipeline/graph", "neptune_az_num", "neptune.tf"): "https://docs.aws.amazon.com/neptune-analytics/latest/apiref/API_CreateGraph.html",
 }
 def _az_src_ok(root, name, fname, url):
+    day = "2026-10-05" if name == "runtime_az_num" else "2026-10-04"
     m = re.search(r'variable "' + name + r'" \{\n\s*description\s*=\s*"([^"\n]*)"', _root_tf(root))
     res = open(os.path.join(ROOT, "terraform", *root.split("/"), fname), encoding="utf-8").read()
-    return (m is not None and url in m.group(1) and "checked 2026-10-04" in m.group(1)
-            and re.search(r"^\s*#.*" + re.escape(url), res, re.M) is not None and "2026-10-04 確認" in res
+    return (m is not None and url in m.group(1) and f"checked {day}" in m.group(1)
+            and re.search(r"^\s*#.*" + re.escape(url), res, re.M) is not None and f"{day} 確認" in res
             and re.search(r"^#.*" + re.escape(url), up, re.M) is not None)
 check("注意書きの付く *_az_num（MSK / Runtime / OpenSearch 2 か所 / Nautobot の DB / エンドポイント / Neptune）は、description とリソースのそばと up.sh の検査に出典の URL と確認日がある",
       all(_az_src_ok(r, n, f, u) for (r, n, f), u in _AZ_SRC.items()))
-check("確かめ切れていないことは「未確認」と書く（Runtime の 1 サブネット、OpenSearch のスタンバイの AZ と OCU、エンドポイントの AZ 障害の振る舞い）。"
-      "Runtime の 1 を拒むのは AWS の制約ではなくユーザーの決定と書く",
-      "1 つで作るのは AWS で未確認" in _root_tf("agent") and "not tried on AWS" in _root_tf("agent")
-      and "not by AWS" in _root_tf("agent") and "AWS の制約ではなくユーザーの決定" in _root_tf("agent")
+check("確かめ切れていないことは「未確認」と書く（Runtime の 1 サブネット、OpenSearch のスタンバイの AZ と OCU、エンドポイントの AZ 障害の振る舞い）",
+      "1 つで作るのは AWS で未確認" in _root_tf("agent") and "One subnet is not tried on AWS" in _root_tf("agent")
       and all("（未確認）" in _root_tf(r) and "unverified" in _root_tf(r) for r in ("agent", "pipeline/analytics"))
       and "AZ が落ちたときの振る舞いは AWS で未確認" in _root_tf("base/core") and "not tried on AWS" in _root_tf("base/core")
       and all(w in up for w in ("1 つで作るのは AWS で未確認", "「最小 OCU が倍」は今の Developer Guide に見つけられなかった（未確認）",
                                 "AZ が落ちたときの振る舞いは AWS で未確認")))
+# Runtime の既定は 1（2026-10-05 のユーザー決定）。前の決定（1 を拒む）の文は残さない
+_faq = open(os.path.join(ROOT, "docs", "faq-fukuda-nwc-poc.md"), encoding="utf-8").read()
+check("Runtime の 1 AZ を拒んでいた前の決定（2026-10-04）の文が、up.sh・deploy.env.example・terraform・FAQ に残っていない",
+      not any(w in t for t in (up, env_example, _root_tf("agent"), _root_tf("base/core"),
+                               open(os.path.join(ROOT, "terraform", "agent", "terraform.tfvars.example"), encoding="utf-8").read(), _faq)
+              for w in ("AWS の制約ではなくユーザーの決定", "not by AWS", "refused on purpose", "kept at two", "2 AZ 以上に置く",
+                        "AWS の文書が高可用性のため 2 AZ 以上を勧めている", "MSK と Runtime だけ", "MSK と Runtime は", "Runtime needs two AZs"))
+      and "既定 1（2026-10-05 のユーザー決定）" in up and "1 つを禁じる記述は無い" in up and "2026-10-05 確認" in up
+      and "1 つを禁じてはいない" in _faq)
 _SINGLE = {  # (ルート, リソースの見出し): 理由に書く言葉
     ("base/core", 'resource "aws_instance" "web"'): "SSM のポートフォワード",
     ("pipeline/lab", 'resource "aws_instance" "lab"'): "containerlab の 1 台の中に全部の機器",
@@ -1677,7 +1686,7 @@ check("deploy.env.example は NO_DASHBOARD_PORTFORWARD を書き、前の名前�
       and all(re.search(rf"(?<![A-Z_]){k}(?![A-Z_])", open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read().split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1])
               for k in ("NO_DASHBOARD_PORTFORWARD", "NO_PORTFORWARD")))
 # ふだん書かないキーは deploy.env.example と up.sh のヘッダーの最後の 2 節（冗長化用 → デバッグ用）にまとめる（2026-10-04）。並べ替えただけで、読み方と既定は変えない
-_RED_H = "# ---- 冗長化用（既定は 1 AZ。MSK と Runtime だけ既定 2 AZ。本番の形を試すときに書く） ----"
+_RED_H = "# ---- 冗長化用（既定は 1 AZ。MSK だけ既定 2 AZ。本番の形を試すときに書く） ----"
 _DBG_H = "# ---- デバッグ用（ふだんは書かない） ----"
 def _key_sections(text, key_re):  # 見出しで ふだん / 冗長化用 / デバッグ用 に切り、各節に出てくるキーの名前を出てくる順に返す
     if text.count(_RED_H) != 1 or text.count(_DBG_H) != 1 or text.index(_RED_H) > text.index(_DBG_H):
@@ -1695,9 +1704,11 @@ check("deploy.env.example と up.sh のヘッダーは、冗長化用の節に 9
       and not any(k in _env_secs[0] or k in _up_secs[0] for k in _AZ_KEYS + ["ENDPOINTS_MULTI_AZ", "NETWORK_PERIMETER", "TF_VERBOSE"]))
 _red_env = env_example[env_example.index(_RED_H):env_example.index(_DBG_H)]
 _red_up = _up_hdr[_up_hdr.index(_RED_H):_up_hdr.index(_DBG_H)]
-check("冗長化用の節: MSK と Runtime は「1 にはできない」を理由つきで書き、1 台でしか成り立たない 5 つ（Web / lab / Grafana / Nautobot / workflow）も理由つきで 1 行ずつ。"
+check("冗長化用の節: MSK だけ「1 にはできない」を理由つきで書き、Runtime は 2 以上でエンドポイントをそろえると書く。"
+      "1 台でしか成り立たない 5 つ（Web / lab / Grafana / Nautobot / workflow）も理由つきで 1 行ずつ。"
       "Splunk はそこに入れず、「Splunk をクラスターにする（004）」で SPLUNK_AZ_NUM として足すと 1 行（キーの行は無い）",
-      all("**1 にはできない**（MSK はブローカーを 2 か 3 の AZ にしか置けない）" in t and "**1 にはできない**（AWS の文書が高可用性のため 2 AZ 以上を勧めている" in t
+      all("**1 にはできない**（MSK はブローカーを 2 か 3 の AZ にしか置けない）" in t and t.count("1 にはできない") == 1
+          and "2 以上にするとエンドポイントも同じ数にそろえる" in t and "これより小さく書いてあれば止まる" in t
           and "1 台でしか成り立たないのでキーを作らないもの" in t
           and all(re.search(r"^#\s+" + w + r"（[^\n]+）、?$", t, re.M) for w in ("Web の EC2", "lab の EC2", "Grafana", "Nautobot", "workflow"))
           and not re.search(r"^#\s+Splunk（", t, re.M)
@@ -1705,7 +1716,7 @@ check("冗長化用の節: MSK と Runtime は「1 にはできない」を理�
           and "SPLUNK_AZ_NUM=" not in t
           for t in (_red_env, _red_up))
       and all(re.search(r"^#" + k + r"=[23]$", _red_env, re.M) for k in _AZ_KEYS)
-      and all(re.search(r"^#   " + k + "=" + d + r" ", _red_up, re.M) for k, d in zip(_AZ_KEYS, "122111111")))
+      and all(re.search(r"^#   " + k + "=" + d + r" ", _red_up, re.M) for k, d in zip(_AZ_KEYS, "121111111")))
 check("切り分けに使わないキー（HTTP_SEND / MAX_OFFSETS_PER_TRIGGER* / KEEP_ECR / NO_DASHBOARD_PORTFORWARD / LOCAL_PORT / IMAGE_TAG / AWS_*）はふだんの節のまま",
       _env_secs is not None and _up_secs is not None
       and all(k in _env_secs[0] for k in ("HTTP_SEND", "MAX_OFFSETS_PER_TRIGGER", "MAX_OFFSETS_PER_TRIGGER_ICEBERG", "MAX_OFFSETS_PER_TRIGGER_SPLUNK",
@@ -1731,23 +1742,40 @@ def _aznum(**env):
     r = subprocess.run(["bash", "-uc", 'die() { echo "DIE: $*"; exit 1; }\n' + _azblk + 'echo "OUT: ' + " ".join("$" + k for k in _AZ_KEYS) + '"'],
                        capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env})
     return r.stdout.strip() or r.stderr
-check("AZ_NUM: 書かなければ ENDPOINTS 1 / MSK 2 / Runtime 2 / ほか 1 で、注意は出ない（既定の MSK と Runtime の 2 は数えない）",
-      _aznum() == "OUT: 1 2 2 1 1 1 1 1 1")
+check("AZ_NUM: 書かなければ ENDPOINTS 1 / MSK 2 / ほか 1（Runtime も 1）で、注意は出ない（既定の MSK の 2 は数えない）",
+      _aznum() == "OUT: 1 2 1 1 1 1 1 1 1")
 check("AZ_NUM: 範囲の中はそのまま使い、先頭の 0 は外す（08 も 8 進数にしない）",
       _aznum(ENDPOINTS_AZ_NUM="3", MSK_AZ_NUM="3", RUNTIME_AZ_NUM="3", EMR_AZ_NUM="3", LAMBDA_AZ_NUM="3", NEPTUNE_AZ_NUM="3",
              OPENSEARCH_AZ_NUM="2", NAUTOBOT_DB_AZ_NUM="2", TELEGRAF_AZ_NUM="3") == "OUT: 3 3 3 3 3 3 2 2 3"
-      and _aznum(ENDPOINTS_AZ_NUM="02") == "OUT: 2 2 2 1 1 1 1 1 1"
+      and _aznum(ENDPOINTS_AZ_NUM="02") == "OUT: 2 2 1 1 1 1 1 1 1"
       and _aznum(ENDPOINTS_AZ_NUM="08").startswith("DIE: ENDPOINTS_AZ_NUM=8 は書けない。1〜3 で書く"))
-_AZ_RANGE = {"ENDPOINTS_AZ_NUM": (1, 3), "MSK_AZ_NUM": (2, 3), "RUNTIME_AZ_NUM": (2, 3), "EMR_AZ_NUM": (1, 3), "LAMBDA_AZ_NUM": (1, 3),
+_AZ_RANGE = {"ENDPOINTS_AZ_NUM": (1, 3), "MSK_AZ_NUM": (2, 3), "RUNTIME_AZ_NUM": (1, 3), "EMR_AZ_NUM": (1, 3), "LAMBDA_AZ_NUM": (1, 3),
              "NEPTUNE_AZ_NUM": (1, 3), "OPENSEARCH_AZ_NUM": (1, 2), "NAUTOBOT_DB_AZ_NUM": (1, 2), "TELEGRAF_AZ_NUM": (1, 3)}
 check("AZ_NUM: 範囲の外（下限 - 1 と上限 + 1）は範囲を出して「まだ何も作っていない」で止まる。範囲と既定は terraform の変数と同じ",
       all(_aznum(**{k: str(v)}).startswith(f"DIE: {k}={v} は書けない。{lo}〜{hi} で書く（") and _aznum(**{k: str(v)}).endswith("まだ何も作っていない")
           for k, (lo, hi) in _AZ_RANGE.items() for v in (lo - 1, hi + 1))
       and all(_AZ_RANGE[k.upper()] == (min(a), max(a)) and _aznum().split()[1 + _AZ_KEYS.index(k.upper())] == str(d)
               for (_r, k), (d, a) in _AZ_VARS.items()))
-check("AZ_NUM: MSK と Runtime の 1 は理由つきで止まる",
+check("AZ_NUM: MSK の 1 は理由つきで止まる。Runtime の 1 は受け付ける（2026-10-05 から既定）",
       "MSK はブローカーを 2 か 3 の AZ にしか置けない" in _aznum(MSK_AZ_NUM="1")
-      and "AWS の文書の勧めに合わせて 2 AZ 以上" in _aznum(RUNTIME_AZ_NUM="1"))
+      and _aznum(RUNTIME_AZ_NUM="1") == "OUT: 1 2 1 1 1 1 1 1 1")
+# Runtime を 2 AZ 以上にするときはエンドポイントもそろえる（2026-10-05 のユーザー決定）
+_rt2 = _aznum(RUNTIME_AZ_NUM="2").splitlines()
+_rt3 = _aznum(RUNTIME_AZ_NUM="3").splitlines()
+check("Runtime: ENDPOINTS_AZ_NUM を書いていなければ Runtime の数まで上げ、上げたこととエンドポイントの費用が増えることを 1 行出す（注意は出ない）",
+      len(_rt2) == 2 and _rt2[0].startswith("RUNTIME_AZ_NUM=2 に合わせて ENDPOINTS_AZ_NUM を 1 から 2 に上げる（") and "エンドポイントの費用" in _rt2[0]
+      and _rt2[1] == "OUT: 2 2 2 1 1 1 1 1 1"
+      and len(_rt3) == 2 and _rt3[0].startswith("RUNTIME_AZ_NUM=3 に合わせて ENDPOINTS_AZ_NUM を 1 から 3 に上げる（") and _rt3[1] == "OUT: 3 2 3 1 1 1 1 1 1"
+      and "  ENDPOINTS_AZ_NUM=$RUNTIME_AZ_NUM\n" in _azblk)
+check("Runtime: ENDPOINTS_AZ_NUM を Runtime より小さく書いてあれば、理由を出して「まだ何も作っていない」で止まる",
+      all(_aznum(RUNTIME_AZ_NUM=r, ENDPOINTS_AZ_NUM=e).startswith(f"DIE: ENDPOINTS_AZ_NUM={e} が RUNTIME_AZ_NUM={r} より小さい。")
+          and "見かけだけになる" in _aznum(RUNTIME_AZ_NUM=r, ENDPOINTS_AZ_NUM=e) and _aznum(RUNTIME_AZ_NUM=r, ENDPOINTS_AZ_NUM=e).endswith("まだ何も作っていない")
+          for r, e in (("2", "1"), ("3", "1"), ("3", "2"))))
+check("Runtime: ENDPOINTS_AZ_NUM が Runtime 以上ならそのまま（何も出さない）。上げたあとも、ほかのキーの注意は上げた数と比べる",
+      _aznum(RUNTIME_AZ_NUM="2", ENDPOINTS_AZ_NUM="2") == "OUT: 2 2 2 1 1 1 1 1 1"
+      and _aznum(RUNTIME_AZ_NUM="2", ENDPOINTS_AZ_NUM="3") == "OUT: 3 2 2 1 1 1 1 1 1"
+      and (lambda o: len(o) == 3 and o[0].startswith("RUNTIME_AZ_NUM=2 に合わせて") and o[1].startswith("注意: NEPTUNE_AZ_NUM=3 に対して ENDPOINTS_AZ_NUM=2。")
+           and o[2] == "OUT: 2 2 2 1 1 3 1 1 1")(_aznum(RUNTIME_AZ_NUM="2", NEPTUNE_AZ_NUM="3").splitlines()))
 check("AZ_NUM: 数でない値（two / -1 / 1.5 / 空白入り）は止まる",
       all(_aznum(LAMBDA_AZ_NUM=v).startswith(f"DIE: LAMBDA_AZ_NUM は 1〜3 の数で書く（いまは LAMBDA_AZ_NUM={v}）") for v in ("two", "-1", "1.5", "1 2")))
 check("ENDPOINTS_MULTI_AZ が残っていると止まる（1 / true / yes は ENDPOINTS_AZ_NUM=2 に書き換え、0 / false / no は消す）",
@@ -1757,8 +1785,8 @@ check("ENDPOINTS_MULTI_AZ が残っていると止まる（1 / true / yes は EN
               for v in ("0", "false", "no")))
 _w = _aznum(NEPTUNE_AZ_NUM="2", TELEGRAF_AZ_NUM="3")
 check("書いたキーが ENDPOINTS_AZ_NUM より大きいと注意を 1 行出して進む（そろえれば出ない。書いた MSK の 2 も数える）",
-      _w.count("注意:") == 1 and _w.startswith("注意: NEPTUNE_AZ_NUM=2 TELEGRAF_AZ_NUM=3 に対して ENDPOINTS_AZ_NUM=1。") and _w.endswith("OUT: 1 2 2 1 1 2 1 1 3")
-      and _aznum(NEPTUNE_AZ_NUM="2", ENDPOINTS_AZ_NUM="2") == "OUT: 2 2 2 1 1 2 1 1 1"
+      _w.count("注意:") == 1 and _w.startswith("注意: NEPTUNE_AZ_NUM=2 TELEGRAF_AZ_NUM=3 に対して ENDPOINTS_AZ_NUM=1。") and _w.endswith("OUT: 1 2 1 1 1 2 1 1 3")
+      and _aznum(NEPTUNE_AZ_NUM="2", ENDPOINTS_AZ_NUM="2") == "OUT: 2 2 1 1 1 2 1 1 1"
       and _aznum(NEPTUNE_AZ_NUM="3", ENDPOINTS_AZ_NUM="2").startswith("注意: NEPTUNE_AZ_NUM=3 に対して ENDPOINTS_AZ_NUM=2。")
       and _aznum(MSK_AZ_NUM="2").startswith("注意: MSK_AZ_NUM=2 に対して")
       and "注意" not in _aznum(LAMBDA_AZ_NUM="1"))
@@ -1776,7 +1804,7 @@ check("各ルートに *_AZ_NUM を -var で渡す",
 _costall = up[up.index("COST_CENTS=2\n"):up.index("COST_NOTE=$(printf")]
 _COST_OFF = {k: "" for k in ("AGENT", "CREATE_KB", "SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA",
                              "SPLUNK_ON_ECS", "NAUTOBOT", "WORKFLOW")}
-_COST_OFF.update(SKIP_LAB="1", SKIP_GRAPH="1", SKIP_STREAM="1", SKIP_ANALYTICS="1", **dict(zip(_AZ_KEYS, "122111111")))
+_COST_OFF.update(SKIP_LAB="1", SKIP_GRAPH="1", SKIP_STREAM="1", SKIP_ANALYTICS="1", **dict(zip(_AZ_KEYS, "121111111")))
 def _costaz(**env):
     r = subprocess.run(["bash", "-uc", "endpoint_count() { echo 2; }\n" + _costall + 'echo "OUT: $COST_CENTS"'], capture_output=True, text=True,
                        env={"PATH": os.environ["PATH"], **_COST_OFF, **env})

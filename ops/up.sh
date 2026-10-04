@@ -79,17 +79,18 @@
 #   LOCAL_PORT              PC 側のポート。既定 8080
 #   NO_DASHBOARD_PORTFORWARD=1  最後の Web へのポートフォワーディング（手順 10）を開かずに終わる（2026-10-04 に NO_PORTFORWARD から名前を変えた。前の名前が残っていると止まる）
 #   AWS_PROFILE / AWS_CA_BUNDLE  AWS CLI と terraform がそのまま読む
-# ---- 冗長化用（既定は 1 AZ。MSK と Runtime だけ既定 2 AZ。本番の形を試すときに書く） ----
+# ---- 冗長化用（既定は 1 AZ。MSK だけ既定 2 AZ。本番の形を試すときに書く） ----
 #   <リソース>_AZ_NUM で、そのリソースを何 AZ に置くかをリソースごとに選ぶ（まとめて切り替えるキーは無い）。base/core はサブネット a / b / c を
 #   いつも作り、各リソースは先頭から AZ_NUM 個を使う。増やした分は下の費用の目安に入る（AZ をまたぐ転送料 $0.01/GB は入らない）。
 #   範囲の外の値は何も作る前に止まる
 #   ENDPOINTS_AZ_NUM=1      インターフェース型エンドポイントと OpenSearch Serverless の VPC エンドポイント。1〜3。エンドポイントの費用が AZ の数の倍。
 #                           ほかのキーを書いて 2 以上にしたのにこれがそれより小さいと注意を出す（エンドポイントの無い AZ が残ると、a の AZ が止まったとき
-#                           b / c のものも AWS の API に届かない）。ENDPOINTS_MULTI_AZ は 2026-10-04 にこれへ変わった（書いてあると止まる）
+#                           b / c のものも AWS の API に届かない）。RUNTIME_AZ_NUM より小さいときだけは注意で済ませない（下の RUNTIME_AZ_NUM）。
+#                           ENDPOINTS_MULTI_AZ は 2026-10-04 にこれへ変わった（書いてあると止まる）
 #   MSK_AZ_NUM=2            MSK のブローカー（1 AZ に 1 台。+$0.27/h ずつ）。2〜3。**1 にはできない**（MSK はブローカーを 2 か 3 の AZ にしか置けない）。
 #                           2 で複製 2 / min.insync.replicas 1、3 で 3 / 2。変えるとクラスタを作り直す（トピックの中身は消える）
-#   RUNTIME_AZ_NUM=2        AgentCore Runtime の ENI。2〜3。**1 にはできない**（AWS の文書が高可用性のため 2 AZ 以上を勧めているので、2 以上に決めた。
-#                           2026-10-04 のユーザー決定。API そのものは 1 サブネットでも受け付ける）。費用は変わらない
+#   RUNTIME_AZ_NUM=1        AgentCore Runtime の ENI。1〜3。Runtime そのものの費用は変わらない。2 以上にするとエンドポイントも同じ数にそろえる:
+#                           ENDPOINTS_AZ_NUM を書いていなければこの数まで上げ（エンドポイントの費用が AZ の数の倍に増える）、これより小さく書いてあれば止まる
 #   EMR_AZ_NUM=1            Spark（EMR Serverless）のジョブが動けるサブネット。1〜3。ジョブは 1 つのサブネットで動き、その AZ が止まれば次は別の AZ で起こせる。
 #                           費用は変わらない。変えるときアプリが動いていれば、ジョブとアプリを止めてから変える（7-5 で起こし直す）
 #   LAMBDA_AZ_NUM=1         VPC の Lambda（KB の索引・グラフの状態・Gateway の tools の 3 つ）。1〜3。費用は変わらない
@@ -504,7 +505,7 @@ fi
 NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"
 flag_value NETWORK_PERIMETER
 # 冗長化用（2026-10-04 のユーザー決定）。<リソース>_AZ_NUM でそのリソースを何 AZ に置くか選ぶ（base/core のサブネット a / b / c の先頭から）。
-# まとめて切り替えるキーは作らない。既定は 1 で、MSK と Runtime だけ 2。値は何も作る前にここで確かめる
+# まとめて切り替えるキーは作らない。既定は 1 で、MSK だけ 2。値は何も作る前にここで確かめる
 case "${ENDPOINTS_MULTI_AZ:-}" in
   '') ;;
   0|false|no) die "ENDPOINTS_MULTI_AZ は ENDPOINTS_AZ_NUM に変わった（2026-10-04。AZ の数で書く）。ENDPOINTS_MULTI_AZ=${ENDPOINTS_MULTI_AZ} は既定（ENDPOINTS_AZ_NUM=1）と同じなので、deploy.env と環境変数から消す。まだ何も作っていない" ;;
@@ -525,11 +526,12 @@ az_num ENDPOINTS_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
 #   MSK: 1 にはできない。clientSubnets は別々の AZ のサブネットを 2 つか 3 つ（us-west-1 だけ 2 つ）しか受け付けない
 #   （Amazon MSK API Reference「Clusters」の BrokerNodeGroupInfo.clientSubnets、https://docs.aws.amazon.com/msk/1.0/apireference/clusters.html）
 az_num MSK_AZ_NUM 2 2 3 "MSK はブローカーを 2 か 3 の AZ にしか置けない。1 AZ にはできない"
-#   Runtime: 1 を拒むのは AWS の制約ではなくユーザーの決定。手引きの Best practices が別々の AZ のプライベートサブネットを 2 つ以上と勧める
-#   （Amazon Bedrock AgentCore Developer Guide「Configure Amazon Bedrock AgentCore Runtime and tools for VPC」、
-#   https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html）。API は 1〜16 個を受け付ける（AgentCore Control API Reference
-#   「VpcConfig」、https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_VpcConfig.html）。1 つで作るのは AWS で未確認
-az_num RUNTIME_AZ_NUM 2 2 3 "AgentCore Runtime は AWS の文書の勧めに合わせて 2 AZ 以上に置く（2026-10-04 のユーザー決定）"
+#   Runtime: 既定 1（2026-10-05 のユーザー決定）。API はサブネットを 1〜16 個受け付ける（AgentCore Control API Reference「VpcConfig」の subnets、
+#   https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_VpcConfig.html）。手引きは Best practices で高可用のために
+#   別々の AZ のサブネットを 2 つ以上と勧めるが、1 つを禁じる記述は無い（Amazon Bedrock AgentCore Developer Guide「Configure Amazon Bedrock
+#   AgentCore Runtime and tools for VPC」、https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html）。どちらも 2026-10-05 確認。
+#   1 つで作るのは AWS で未確認
+az_num RUNTIME_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
 az_num EMR_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
 az_num LAMBDA_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
 #   Neptune: replicaCount は 0〜2（Neptune Analytics API Reference「CreateGraph」、
@@ -546,11 +548,24 @@ az_num OPENSEARCH_AZ_NUM 1 1 2 "OpenSearch Serverless はスタンバイのレ�
 #   deployment for Amazon RDS」、https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html）
 az_num NAUTOBOT_DB_AZ_NUM 1 1 2 "RDS の Multi-AZ（待機系 1 台）が 2。3 は Multi-AZ DB クラスタで、作っていない"
 az_num TELEGRAF_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
+# Runtime を 2 AZ 以上にするときはエンドポイントも同じ数にそろえる（2026-10-05 のユーザー決定）。Runtime の ENI が b / c にあっても、
+# エンドポイントが a にしか無いと a の AZ が止まったときチャットは Bedrock などの AWS の API に届かず、2 AZ が見かけだけになる。
+# ENDPOINTS_AZ_NUM を書いていなければ Runtime の数まで上げ、Runtime より小さく書いてあれば止める（黙って見かけだけの 2 AZ にしない）。
+# AGENT=0 の回でも見る（前の回の Runtime が残っていれば ENI はそのサブネットにある。RUNTIME_AZ_NUM を書いたときだけ効く）
+if [ "$ENDPOINTS_AZ_NUM" -lt "$RUNTIME_AZ_NUM" ]; then
+  case " $AZ_NUM_SET " in
+    *" ENDPOINTS_AZ_NUM "*)
+      die "ENDPOINTS_AZ_NUM=$ENDPOINTS_AZ_NUM が RUNTIME_AZ_NUM=$RUNTIME_AZ_NUM より小さい。エンドポイントがサブネット a から $ENDPOINTS_AZ_NUM つにしか無いと、その AZ が止まったとき Runtime はほかの AZ にいても AWS の API に届かず、$RUNTIME_AZ_NUM AZ が見かけだけになる。ENDPOINTS_AZ_NUM を $RUNTIME_AZ_NUM 以上にする（書かなければ up.sh がそろえる）か、RUNTIME_AZ_NUM を $ENDPOINTS_AZ_NUM にする。まだ何も作っていない" ;;
+  esac
+  echo "RUNTIME_AZ_NUM=$RUNTIME_AZ_NUM に合わせて ENDPOINTS_AZ_NUM を $ENDPOINTS_AZ_NUM から $RUNTIME_AZ_NUM に上げる（Runtime の AZ すべてにエンドポイントを置く。エンドポイントの費用が $RUNTIME_AZ_NUM 倍になり、下の費用の目安に入る）"
+  ENDPOINTS_AZ_NUM=$RUNTIME_AZ_NUM
+fi
 # ENDPOINTS_AZ_NUM がほかより小さいときの注意（止めはしない）: エンドポイントの ENI は置いた AZ にしか無く、ほかの AZ からもその ENI に
 # 解決されるので、その AZ が傷むとほかの AZ のものも AWS の API に届かない。本番は 2 AZ 以上が AWS の勧め（AWS PrivateLink Guide
 # 「Access AWS services through AWS PrivateLink」の Subnets and Availability Zones、
 # https://docs.aws.amazon.com/vpc/latest/privatelink/privatelink-access-aws-services.html）。AZ が落ちたときの振る舞いは AWS で未確認。
-# 比べるのは deploy.env か環境変数に書いたキーだけ（既定の MSK_AZ_NUM=2 / RUNTIME_AZ_NUM=2 と ENDPOINTS_AZ_NUM=1 の組み合わせでは出さない）
+# 比べるのは deploy.env か環境変数に書いたキーだけ（既定の MSK_AZ_NUM=2 と ENDPOINTS_AZ_NUM=1 の組み合わせでは出さない）。
+# RUNTIME_AZ_NUM はすぐ上でそろえたので、ここには出ない
 AZ_NUM_OVER=""
 for k in $AZ_NUM_SET; do
   if [ "$k" != ENDPOINTS_AZ_NUM ] && [ "${!k}" -gt "$ENDPOINTS_AZ_NUM" ]; then AZ_NUM_OVER="$AZ_NUM_OVER $k=${!k}"; fi

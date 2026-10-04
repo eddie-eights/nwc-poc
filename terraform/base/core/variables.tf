@@ -41,7 +41,7 @@ variable "az_id_a" {
 }
 
 variable "az_id_b" {
-  description = "AZ ID of subnet B (MSK needs two AZs; the Runtime is kept at two). Must differ from az_id_a."
+  description = "AZ ID of subnet B (MSK needs two AZs; used by the Runtime when runtime_az_num is 2 or more). Must differ from az_id_a."
   type        = string
   default     = "apne1-az4"
 
