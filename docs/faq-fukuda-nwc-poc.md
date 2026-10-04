@@ -1726,3 +1726,92 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 そのときは Neo4j Enterprise を買うか、マネージド（Neptune）に戻すかの比較になる。これも「マネージドと OSS を比べる」材料になる。
 
 Community Edition にクラスターが無いことは、2026-10-04 に Neo4j の operations manual で確かめた（https://neo4j.com/docs/operations-manual/current/introduction/）。
+
+**決めたこと（2026-10-04）**
+
+「全部 OSS の環境を作る（005）」では Neo4j Community Edition を 1 台で動かす。設計と docs には次の注意書きを入れる。
+
+- クラスターは Enterprise Edition だけの機能で、Community Edition では組めない。
+- だから OSS 版の中で、Neo4j だけは 1 台で動く（Kafka、OpenSearch、VictoriaMetrics はクラスター）。
+- 止まっているあいだは、トポロジの表示と status の更新ができない。データは Nautobot から同期し直せる。
+
+### Q. Kafka を KRaft のクラスターにするには、何台要る？
+
+**A. 結論**
+
+コントローラーを 3 台、ブローカーを 3 台。PoC では 1 台が両方の役を持つ形（combined）にして、合わせて 3 台で足りる。
+
+**理由**
+
+| 項目 | 公式ドキュメントの記述 | この PoC での扱い |
+|---|---|---|
+| コントローラーの台数 | 3 台か 5 台を選ぶ。過半数が生きている必要がある。3 台なら 1 台の故障に耐える | 3 台 |
+| 役の持たせ方 | `process.roles` に `broker`、`controller`、または両方を書く。両方を持つ combined は小さい環境向けで、重要な環境には勧めない | combined で 3 台（台数と費用を抑える）。本番では分けると docs に書く |
+| お互いの見つけ方 | `controller.quorum.bootstrap.servers` に全コントローラーを並べる。`controller.quorum.voters` は古い書き方 | ECS の Service Connect か Cloud Map の名前を並べる |
+| メタデータの置き場 | メモリ 5GB、ディスク 5GB で普通は足りる | EFS に置く |
+
+**背景**
+
+- KRaft は、Kafka が自分でクラスターの管理情報（どのブローカーがいるか、トピックの置き場）を持つ仕組み。以前は ZooKeeper という別のソフトに任せていた。
+- コントローラーがその管理情報を持つ。多数決で動くので奇数台にする。
+- トピックの複製数を 3 にすれば、ブローカー 1 台が止まってもデータは読める。
+
+**まだ確かめていないこと**
+
+- Kafka のデータを EFS（NFS）に置いてよいかは、公式ドキュメントに記述が見つからない。
+- combined の 3 台を ECS の Fargate で 1 台ずつ入れ替えたときに、過半数が保たれるかは AWS で未確認。
+
+**出典**
+
+- https://kafka.apache.org/41/operations/kraft/ （2026-10-04 に確認）
+
+### Q. VictoriaLogs は、OpenSearch の代わりになる？
+
+**A. 結論**
+
+ログの置き場としては代わりになる。ただし検索の書き方が変わるので、読む側のコードとダッシュボードは書き直しになる。いまは OpenSearch のクラスターを第一の案にして、VictoriaLogs は候補として残す。
+
+**VictoriaLogs とは**
+
+VictoriaMetrics と同じ作り手のログ用データベース。ライセンスは Apache 2.0。
+
+**比べる**
+
+| 項目 | OpenSearch（クラスター） | VictoriaLogs（クラスター） |
+|---|---|---|
+| 役の分け方 | cluster manager、data、coordinating | vlinsert（受ける）、vlselect（検索する）、vlstorage（置く）。実行ファイルは 1 つで、フラグで役が決まる |
+| 書き込み | `_bulk` | `/insert/elasticsearch/_bulk`（OpenSearch と同じ形で受ける）。ほかに JSON の行、Loki、OpenTelemetry など |
+| 検索 | OpenSearch の query DSL | LogsQL（独自の言語）。query DSL は使えない |
+| 複製 | レプリカのシャードを別のノードに置ける | vlinsert は複製しない。ノードに振り分けるだけ |
+| 1 台止まったとき | レプリカがあれば検索も書き込みも続く | 書き込みは続く。検索は 502 を返す（欠けた結果を返さないため） |
+| Grafana | 標準のデータソース | プラグイン `victoriametrics-logs-datasource` を入れる |
+| 軽さ | メモリを多く使う。`vm.max_map_count` の設定が要る | 公式は「Elasticsearch よりメモリが最大 30 分の 1、ディスクが最大 15 分の 1」と書いている |
+| ポート | 9200 | 9428 |
+
+**このリポジトリで変わるところ**
+
+| 場所 | OpenSearch のまま | VictoriaLogs にすると |
+|---|---|---|
+| Spark の書き込み | 認証と宛先を変えるだけ | 宛先のパスと、時刻とメッセージの列を教えるパラメーター（`_time_field`、`_msg_field`、`_stream_fields`）を足す |
+| エージェントの証拠集め（`agent/evidence.py`） | ほぼそのまま | 検索を LogsQL に書き直す |
+| Grafana のダッシュボードとアラート | ほぼそのまま | データソースとクエリを書き直す |
+
+**メリットとデメリット（VictoriaLogs にした場合）**
+
+| | 中身 |
+|---|---|
+| メリット | 軽い。Fargate で `vm.max_map_count` に困らない。VictoriaMetrics と作りが同じで覚えることが少ない |
+| デメリット | 検索とダッシュボードを書き直す。AWS 版（OpenSearch Serverless）とコードを共有しにくくなる。複製が無い |
+
+**まだ確かめていないこと**
+
+- VictoriaLogs のデータを EFS に置いてよいか。公式は ext4 を勧めていて、NFS や EFS の記述は見つからない。
+- Grafana のアラートが、このプラグインのデータソースで動くか。公式には vmalert を使う方法が書かれている。
+- 公式の「30 分の 1」「15 分の 1」は作り手の数字で、この PoC では測っていない。
+
+**出典**
+
+- https://docs.victoriametrics.com/victorialogs/
+- https://docs.victoriametrics.com/victorialogs/cluster/
+- https://docs.victoriametrics.com/victorialogs/data-ingestion/
+- https://docs.victoriametrics.com/victorialogs/integrations/grafana/
