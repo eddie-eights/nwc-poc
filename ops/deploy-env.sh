@@ -17,10 +17,14 @@
 # SPLUNK_HEC_URL も同日から使わない（書いてあれば ops/up.sh が止まる。黙って ECS の Splunk に替えないため）
 # LAB_DEBUG は 2026-10-04 から使わない（デバッグ用の EC2 は ops/lab-debug.sh だけで作る・消す）。読むだけ読み、ops/up.sh が注意を出す
 # NAUTOBOT も 2026-10-04 から使わない（Nautobot は PIPELINE=1 ならいつも作る）。同じく読むだけ読み、ops/up.sh が注意を出す
-DEPLOY_ENV_KEYS="OWNER PIPELINE AGENT WORKFLOW CREATE_KB SKIP_LAB SKIP_STREAM SKIP_ANALYTICS SKIP_GRAPH SINK_S3 SINK_OPENSEARCH SINK_PROMETHEUS
+# SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK / GRAFANA も 2026-10-04 から使わない（格納先は STORES だけで選ぶ）。
+# 書けるキーではないが読むだけ読み、ops/up.sh がその値に当たる STORES の書き方を出して止まる（知らないキーとして止めると書き換え方が分からない。
+# 黙って STORES の既定に替えると格納先が変わる）。ops/down.sh は前の deploy.env のまま打てる
+# NO_PORTFORWARD は 2026-10-04 に NO_DASHBOARD_PORTFORWARD へ名前を変えた。同じく読むだけ読み、ops/up.sh が書き換え方を出して止まる
+DEPLOY_ENV_KEYS="OWNER PIPELINE AGENT WORKFLOW CREATE_KB SKIP_LAB SKIP_STREAM SKIP_ANALYTICS SKIP_GRAPH STORES SINK_S3 SINK_OPENSEARCH SINK_PROMETHEUS
 SINK_SPLUNK SPLUNK_HEC_URL SPLUNK_INDEX SPLUNK_SKIP_TLS_VERIFY HTTP_SEND MAX_OFFSETS_PER_TRIGGER MAX_OFFSETS_PER_TRIGGER_ICEBERG
 MAX_OFFSETS_PER_TRIGGER_SPLUNK MAX_OFFSETS_PER_TRIGGER_OPENSEARCH MAX_OFFSETS_PER_TRIGGER_PROMETHEUS GRAFANA NAUTOBOT LAB_DEBUG SYSLOG_STANDARD SNMP_POLL IMAGE_TAG ADMIN_ARN
-VPC_CIDR MDT_SOURCE_CIDRS NETWORK_PERIMETER ENDPOINTS_MULTI_AZ OPENSEARCH_CACERT_FILE LOCAL_PORT NO_PORTFORWARD KEEP_ECR TF_VERBOSE AWS_PROFILE AWS_CA_BUNDLE"
+VPC_CIDR MDT_SOURCE_CIDRS NETWORK_PERIMETER ENDPOINTS_MULTI_AZ OPENSEARCH_CACERT_FILE LOCAL_PORT NO_DASHBOARD_PORTFORWARD NO_PORTFORWARD KEEP_ECR TF_VERBOSE AWS_PROFILE AWS_CA_BUNDLE"
 
 # DEPLOY_ENV_FILE の相対パスを、cd する前の場所から見た絶対パスにする。呼ぶ側が cd の前に打つ
 resolve_deploy_env_file() {
@@ -37,7 +41,7 @@ load_deploy_env() {
   keys=" $(echo $DEPLOY_ENV_KEYS) "  # 改行と連続した空白を 1 つにする
   if [ ! -f "$file" ]; then
     if [ -n "${DEPLOY_ENV_FILE:-}" ]; then die "DEPLOY_ENV_FILE のファイルが無い: $file"; fi
-    echo "deploy.env: 無い（環境変数と既定値で動く。既定は AGENT=1 だけ。ただし OWNER は必須なので、cp deploy.env.example deploy.env で写して書く）"
+    echo "deploy.env: 無い（環境変数と既定値で動く。既定は土台だけ（AGENT / PIPELINE / WORKFLOW は 0）。ただし OWNER は必須なので、cp deploy.env.example deploy.env で写して書く）"
     return 0
   fi
   while IFS= read -r line || [ -n "$line" ]; do

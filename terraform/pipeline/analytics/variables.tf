@@ -51,7 +51,7 @@ variable "table_name" {
 
 # ops/up.sh は EMR_MAX_CPU / EMR_MAX_MEMORY（同じ値）を渡し、アプリの上限が変わるときは apply の前にジョブとアプリを止める（動いているアプリは更新できない）
 variable "max_cpu" {
-  description = "Upper bound of vCPU the application may use at once (EMR Serverless maximumCapacity). The streaming jobs (up to 3: snmp-sinks-iceberg / -splunk / -http) ask for 3 each (driver 1 + executor 2), 9 in all"
+  description = "Upper bound of vCPU the application may use at once (EMR Serverless maximumCapacity). The streaming jobs (up to 3: sinks-s3iceberg / sinks-splunk / sinks-grafana) ask for 3 each (driver 1 + executor 2), 9 in all"
   type        = string
   default     = "12 vCPU"
 }
@@ -188,7 +188,7 @@ variable "splunk_ephemeral_storage_gib" {
 
 # ---------------------------------------------------------------- grafana (grafana.tf)
 variable "create_grafana" {
-  description = "Run Grafana OSS on ECS (grafana.tf) with the Prometheus workspace and the OpenSearch logs collection as data sources. Opened through an SSM port forward via the web EC2. ops/up.sh sets it with GRAFANA=1. Needs prometheus or opensearch in sinks"
+  description = "Run Grafana OSS on ECS (grafana.tf) with the Prometheus workspace and the OpenSearch logs collection as data sources. Opened through an SSM port forward via the web EC2. ops/up.sh sets it whenever STORES in deploy.env has grafana. Needs prometheus or opensearch in sinks"
   type        = bool
   default     = false
 }

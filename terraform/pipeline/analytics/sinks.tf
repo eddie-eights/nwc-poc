@@ -43,7 +43,7 @@ resource "aws_opensearchserverless_security_policy" "logs_network" {
   lifecycle {
     precondition {
       condition     = local.aoss_vpce_id != ""
-      error_message = "terraform/base/core に OpenSearch Serverless の VPC エンドポイントが無い。terraform/base/core を -var create_opensearch_endpoint=true で apply し直す（ops/up.sh は SINK_OPENSEARCH=1 のとき付ける）。"
+      error_message = "terraform/base/core に OpenSearch Serverless の VPC エンドポイントが無い。terraform/base/core を -var create_opensearch_endpoint=true で apply し直す（ops/up.sh は STORES に grafana があるとき付ける）。"
     }
   }
 }
@@ -102,6 +102,6 @@ resource "aws_prometheus_workspace" "metrics" {
   tags = { Name = local.metrics_workspace }
 }
 
-# remote write の API（aps-workspaces）へは terraform/base/core の aps-workspaces のエンドポイントを通る（ops/up.sh が SINK_PROMETHEUS のときに作らせる）。
+# remote write の API（aps-workspaces）へは terraform/base/core の aps-workspaces のエンドポイントを通る（ops/up.sh が STORES に grafana があるときに作らせる）。
 # ワークスペースのリソースポリシーでは VPC の外を拒まない（Prometheus 互換の API の共有用で、Deny と aws:SourceVpc が効くか確かめられない。
 # terraform/base/core の perimeter.tf の IAM 側の Deny だけで止める）

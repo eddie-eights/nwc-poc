@@ -9,14 +9,14 @@
 # namespace         = "netops"
 # table_name        = "snmp_metrics"
 
-# 4 本目の格納先 splunk（Splunk の HTTP Event Collector。ops/up.sh は SINK_SPLUNK=1 で足す）。
+# 4 本目の格納先 splunk（Splunk の HTTP Event Collector。ops/up.sh は deploy.env の STORES に splunk があれば足す）。
 # Splunk Enterprise をここの ECS で立てる（splunk.tf。VPC の中。起動時に Splunk のライセンスと General Terms に同意する）。
 #   管理者のパスワード /<owner>-nwc-poc/splunk/admin-password と HEC の token /<owner>-nwc-poc/splunk/hec-token は ops/up.sh が作る
 # sinks            = ["iceberg", "opensearch", "prometheus", "splunk"]
 # splunk_index     = ""
 # splunk_image_tag = "10.4.3-<hash>"
 
-# Grafana OSS を ECS で（grafana.tf。Prometheus / OpenSearch を見る。ops/up.sh は GRAFANA=1 で渡す）。
+# Grafana OSS を ECS で（grafana.tf。Prometheus / OpenSearch を見る。ops/up.sh は deploy.env の STORES に grafana があれば渡す）。
 # 管理者のパスワード /<owner>-nwc-poc/grafana/admin-password は ops/up.sh が作る
 # create_grafana    = true
 # grafana_image_tag = "13.2.2-<hash>"
