@@ -1188,8 +1188,37 @@ AWS の側は、同じ計算をして値が合うかを見る。合えば通し�
   Splunk のアラートアクション（`netops_sns.py`）は boto3 を使わずに SNS を呼んでいるので、この計算を自分で書いている。boto3 を同梱する形に替えると、このコードは要らなくなる。
 - **ほかにも同じ署名を使っている場所。**
   Spark から OpenSearch Serverless と Amazon Managed Service for Prometheus へ書くとき（サービス名は `aoss` と `aps`）。
+  こちらは最初から、署名の計算を botocore（boto3 の土台のライブラリ）に任せている（`spark/snmp_sinks.py` の `sigv4_headers`）。自分で計算しているのは Splunk のアラートアクションだけ。
+- **Spark が boto3 のクライアント（`boto3.client(...)`）で送っていない理由。**
+  送り先が OpenSearch の `_bulk` と Prometheus の remote write という、それぞれの製品の HTTP の口だから。boto3 にはこの 2 つを呼ぶメソッドが無い。だから「署名だけ botocore に作らせて、HTTP は自分で送る」形になる。
 - **一時的な認証情報のときは、トークンも付ける。**
   ECS のタスクロールや Lambda のロールは、鍵と一緒にセッショントークンを渡す。これを `x-amz-security-token` ヘッダーに入れる。
+
+### Q. AWS のベストプラクティスは、boto3 で書くこと？
+
+**A. 正確には「公式の SDK を使うこと」。Python の公式の SDK が boto3 なので、Python なら boto3 で書くのが勧められる形。署名（SigV4）を自分で書くのは、SDK が使えないときだけ。**
+
+| 場面 | 勧められる形 | この PoC |
+|---|---|---|
+| AWS の API を呼ぶ（SNS の Publish、SSM の GetParameter など） | SDK のクライアント（Python なら `boto3.client(...)`） | Lambda、worker、Spark の SSM はこの形。Splunk のアラートアクションだけが自前の署名で、boto3 に替える |
+| AWS の認証で守られた、製品の HTTP の口を呼ぶ（OpenSearch の `_bulk`、Prometheus の remote write） | SDK の署名の部品だけを使い、HTTP は自分で送る | Spark はこの形（botocore の `SigV4Auth`） |
+| SDK が使えない（言語に SDK が無い、ライブラリを入れられない） | 署名を自分で書く。AWS が手順を公開している | Splunk のアラートアクションの、いまの形 |
+
+SDK を使うと、自分で書かなくて済むもの。
+
+| もの | 自分で書くと |
+|---|---|
+| 署名 | 計算を 1 か所でも間違えると 403。AWS が仕様を足したときに追いかける必要がある |
+| 認証情報の取り出しと更新 | タスクロール、Lambda のロール、プロファイルなど、場所ごとに取り方が違う。期限が切れる前の取り直しも要る |
+| 再試行 | スロットリングや一時的な失敗を、間隔を空けて打ち直す |
+| エンドポイントの決定 | リージョンやサービスごとの URL |
+
+- **デメリットもある。**
+  ライブラリが大きい（boto3 と botocore で数十 MB）。入れられない環境では、同梱する仕掛けが要る。Splunk で最初に自前の署名を選んだのは、このため。
+- **boto3 という名前にこだわる話ではない。**
+  Go なら AWS SDK for Go、Java なら AWS SDK for Java。どの言語でも「公式の SDK を使う」が同じ勧め。
+
+「署名を自分で書くのは SDK が使えないときだけ」は、AWS の署名の文書にある勧めを記憶から書いた。
 
 ## 11. Neptune に置くもの
 
