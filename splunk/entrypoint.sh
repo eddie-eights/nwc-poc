@@ -14,4 +14,11 @@ umask 022
 for k in AWS_REGION ALERTS_TOPIC_ARN DEVICE_MAP AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_ENDPOINT_URL_SNS; do
   printf '%s=%s\n' "$k" "${!k:-}" >> "$ENV_FILE"
 done
+# クラスター（SPLUNK_AZ_NUM が 2 か 3。上流の SPLUNK_ROLE で役割を分ける）のとき、保存済みサーチ（app netops_alerts）は search head だけで動かす。
+# manager と indexer でも動くと、同じアラートが台の数だけ SNS に出る。上流の入口が /opt/splunk-etc を /opt/splunk/etc へ写す前に消す
+# （/opt/splunk-etc は splunk ユーザーのもの。入口は ansible ユーザーで動き、sudo できる）
+case "${SPLUNK_ROLE:-splunk_standalone}" in
+  splunk_standalone|splunk_search_head) ;;
+  *) sudo -n -u splunk rm -rf /opt/splunk-etc/apps/netops_alerts ;;
+esac
 exec /sbin/entrypoint.sh "$@"

@@ -7,7 +7,8 @@
 # DNS（VPC の +2）・IMDS・ECS のタスクメタデータ・Time Sync は SG の対象外なので表に無い。インターネットからの受信は SG 以前に経路が無い（vpc.tf）。
 # EMR Serverless は 0.0.0.0/0 の受信ルールがある SG を拒むが、表に CIDR の受信は lab の管理ネットワークと MDT の送り元（var.mdt_source_cidrs。
 # NLB の SG だけ。0.0.0.0/0 は変数の検査で拒む）しか無い。
-# 開けていないもの: Temporal の gRPC 7233（ワーカーは同じタスクの localhost。terraform/workflow の ecs.tf）、Splunk の管理 API 8089（外から使わない）。
+# 開けていないもの: Temporal の gRPC 7233（ワーカーは同じタスクの localhost。terraform/workflow の ecs.tf）、Splunk の管理 API 8089
+# （開けるのはクラスターの splunk どうしだけ。外から使わない）。
 # 2026-09-26〜09-29 は全部で internal 1 つ（VPC の中は何でも受け、送信は自由）だった。その前（7c42b0f）はルートごとに SG とルールを持っていた。
 # SG の description は変えると作り直しになる（付いている ENI があると消えない）ので、変えるときは down してから
 locals {
@@ -73,6 +74,12 @@ locals {
       # Spark
       { from = "spark", to = "spark", protocol = "tcp", port = 0, to_port = 65535, why = "Driver and executors of one job" },
       { from = "spark", to = "splunk", protocol = "tcp", port = 8088, why = "Splunk HTTP Event Collector - splunk sink" },
+
+      # Splunk のクラスター（terraform/pipeline/analytics の splunk.tf。splunk_az_num が 2 か 3）: manager・indexer・search head が同じ SG。
+      # ここは splunk_az_num を知らないのでいつも作る（1 台のときは相手がいない）
+      { from = "splunk", to = "splunk", protocol = "tcp", port = 8089, why = "Splunk management and search - cluster manager, indexers and search head" },
+      { from = "splunk", to = "splunk", protocol = "tcp", port = 9887, why = "Splunk replication between the indexers" },
+      { from = "splunk", to = "splunk", protocol = "tcp", port = 9997, why = "Splunk forwarding - search head and manager send their internal logs to the indexers" },
 
       # Telegraf の NLB → タスク（terraform/pipeline/stream の telegraf.tf）。NLB が送り元の IP を残しても、タスクの受信は NLB の SG の参照で通る。
       # NLB の送信ルールは転送とヘルスチェックの両方に効く

@@ -97,6 +97,8 @@ EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_
     ("web", "grafana", "tcp", 3000, 3000, ""), ("web", "splunk", "tcp", 8000, 8000, ""), ("web", "workflow", "tcp", 8233, 8233, ""),
     ("telegraf_dialout", "msk", "tcp", 9098, 9098, ""), ("telegraf_dialin", "msk", "tcp", 9098, 9098, ""), ("spark", "msk", "tcp", 9098, 9098, ""), ("msk", "msk", "tcp", 9092, 9098, ""),
     ("spark", "spark", "tcp", 0, 65535, ""), ("spark", "splunk", "tcp", 8088, 8088, ""),
+    # Splunk のクラスター（「Splunk をクラスターにする（004）」）: manager・indexer・search head の間だけ
+    ("splunk", "splunk", "tcp", 8089, 8089, ""), ("splunk", "splunk", "tcp", 9887, 9887, ""), ("splunk", "splunk", "tcp", 9997, 9997, ""),
     ("telegraf_dialout_nlb", "telegraf_dialout", "udp", 1162, 1162, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "udp", 5140, 5140, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "tcp", 57000, 57000, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "tcp", 8080, 8080, ""),
     ("lab_mgmt", "telegraf_dialout_nlb", "udp", 162, 162, ""), ("lab_mgmt", "telegraf_dialout_nlb", "udp", 5140, 5140, ""),
     ("lab", "telegraf_dialout_nlb", "udp", 162, 162, "egress"), ("lab", "telegraf_dialout_nlb", "udp", 5140, 5140, "egress"),
@@ -114,8 +116,8 @@ check("MDT の送り元は変数 mdt_source_cidrs の CIDR から NLB の 57000/
                     r'[\s\S]*?!contains\(var\.mdt_source_cidrs, "0\.0\.0\.0/0"\)', _core_vars) is not None
       and 'MAIN_VARS+=(-var "mdt_source_cidrs=' in open(os.path.join(ROOT, "ops", "up.sh"), encoding="utf-8").read()
       and "MDT_SOURCE_CIDRS" in open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read())
-check("Temporal の gRPC 7233（workflow）と Splunk の管理 API 8089（splunk）は開けず、CIDR のルールは lab の管理ネットワーク・MDT の送り元・endpoints の送信なしだけ（EMR Serverless は 0.0.0.0/0 の inbound を拒否する）",
-      not any(t == "workflow" and p <= 7233 <= q or t == "splunk" and p <= 8089 <= q for _, t, _, p, q, _ in _flows)
+check("Temporal の gRPC 7233（workflow）と Splunk の管理 API 8089（splunk。クラスターの splunk どうしは除く）は開けず、CIDR のルールは lab の管理ネットワーク・MDT の送り元・endpoints の送信なしだけ（EMR Serverless は 0.0.0.0/0 の inbound を拒否する）",
+      not any(t == "workflow" and p <= 7233 <= q or t == "splunk" and f != "splunk" and p <= 8089 <= q for f, t, _, p, q, _ in _flows)
       and sorted(re.findall(r'cidr_ipv4\s*=\s*(.+)', _sg_tf)) == sorted(['each.value.to == "lab_mgmt" ? local.lab_mgmt_cidr : null', 'each.value.from == "lab_mgmt" ? local.lab_mgmt_cidr : each.value.cidr', '"127.0.0.1/32"'])
       and "var.vpc_cidr" not in _sg_tf and "cidr_ipv6" not in _sg_tf)
 check("ルールは表から for_each で作る。送信は from の SG、受信は to の SG で、相手は SG の参照・S3 のプレフィックスリスト・lab の管理ネットワークのどれか 1 つ",
@@ -193,8 +195,8 @@ check("Splunk のリソースは splunk.tf だけで、全部 splunk_on_ecs（si
       all(n == "splunk.tf" for n in tf_files if re.search(r'resource "[^"]*" "splunk', open(os.path.join(TF_DIR, n), encoding="utf-8").read()))
       and len(re.findall(r'^resource "', _splunk_tf, re.M)) == len(re.findall(r'count\s*=\s*local\.splunk_on_ecs\b', _splunk_tf))
       and re.search(r'splunk_on_ecs\s*=\s*local\.sink_splunk\n', tf) is not None)
-check("ECS の Splunk の HEC は Cloud Map の splunk.<prefix>.internal:8088 で、自己署名なので検証しない",
-      re.search(r'splunk_hec_url\s*=\s*"https://splunk\.\$\{local\.service_namespace\}:8088"\n', tf) is not None
+check("ECS の Splunk の HEC は Cloud Map の splunk.<prefix>.internal:8088（クラスターは indexer の splunk-idx）で、自己署名なので検証しない",
+      re.search(r'splunk_hec_url\s*=\s*local\.splunk_cluster \? "https://splunk-idx\.\$\{local\.service_namespace\}:8088" : "https://splunk\.\$\{local\.service_namespace\}:8088"\n', tf) is not None
       and re.search(r'splunk_skip_tls_verify\s*=\s*true\n', tf) is not None)
 check("Splunk のパスワードと HEC の token はタスク定義の secrets（SSM の ARN）で渡し、environment に値を書かない",
       re.search(r'name = "SPLUNK_PASSWORD", valueFrom = local\.splunk_password_arn', _splunk_tf) is not None
@@ -202,6 +204,28 @@ check("Splunk のパスワードと HEC の token はタスク定義の secrets�
       and "--accept-license" in _splunk_tf and "SPLUNK_GENERAL_TERMS" in _splunk_tf)
 check("Splunk のヘルスチェックは checkstate.sh で、startPeriod は上限の 300",
       "/sbin/checkstate.sh" in _splunk_tf and re.search(r'startPeriod\s*=\s*300', _splunk_tf) is not None)
+def _sp_res(kind, name):  # splunk.tf の resource "<kind>" "<name>" の中身（無ければ空）
+    m = re.search(r'resource "' + kind + r'" "' + name + r'" \{(.*?)\n\}', _splunk_tf, re.S)
+    return m.group(1) if m else ""
+check("Splunk のクラスター（splunk_az_num が 2 か 3。「Splunk をクラスターにする（004）」）: 同じイメージを SPLUNK_ROLE で manager（splunk-cm）・"
+      "indexer（splunk-idx。AZ ごとに 1、1 台ずつ入れ替え、止まるまで 120 秒、HEALTHY でなければ DNS から外す）・search head（splunk。突き合わせを足す）に分け、"
+      "合言葉は SSM の idxc-secret。ヘルスチェックの retries は 10",
+      all(f'{{ name = "SPLUNK_ROLE", value = "{r}" }}' in _splunk_tf for r in ("splunk_cluster_master", "splunk_indexer", "splunk_search_head"))
+      and re.search(r'name\s*=\s*"splunk-cm"\n', _sp_res("aws_service_discovery_service", "splunk_cm")) is not None
+      and re.search(r'name\s*=\s*"splunk-idx"\n', _sp_res("aws_service_discovery_service", "splunk_idx")) is not None
+      and "health_check_custom_config {}" in _sp_res("aws_service_discovery_service", "splunk_idx")
+      and re.search(r'deployment_minimum_healthy_percent = 50\n\s*deployment_maximum_percent\s*= 100\n[\s\S]*availability_zone_rebalancing = "DISABLED"',
+                    _sp_res("aws_ecs_service", "splunk_idx")) is not None
+      and re.search(r"stopTimeout = 120\n", _sp_res("aws_ecs_task_definition", "splunk_idx")) is not None
+      and "stopTimeout" not in _sp_res("aws_ecs_task_definition", "splunk_cm")
+      and re.search(r"subnets\s*=\s*\[local\.instance_subnet_id\]", _sp_res("aws_ecs_service", "splunk_cm")) is not None
+      and '"/sbin/checkstate.sh && /sbin/nwc-peers-check.py"' in _sp_res("aws_ecs_task_definition", "splunk")
+      and re.search(r"retries\s*=\s*10\n", _splunk_tf) is not None
+      and 'name = "SPLUNK_IDXC_PASS4SYMMKEY", valueFrom = local.splunk_idxc_secret_arn' in _splunk_tf
+      and 'parameter/${local.name_prefix}/splunk/idxc-secret"' in _splunk_tf
+      and "local.splunk_cluster ? [local.splunk_idxc_secret_arn] : []" in _sp_res("aws_iam_role_policy", "splunk_execution")
+      and 'ensure_secret "/$PREFIX/splunk/idxc-secret" password' in up
+      and re.search(r"SPLUNK_INDEXER_URL|indexes\.conf", _splunk_tf + up) is None)
 check("Grafana は create_grafana（Prometheus か OpenSearch があるとき）だけで、admin のパスワードは secrets",
       re.search(r'create_grafana\s*=\s*var\.create_grafana && \(local\.sink_prometheus \|\| local\.sink_opensearch\)', tf) is not None
       and len(re.findall(r'^resource "', _grafana_tf, re.M)) == len(re.findall(r'count\s*=\s*local\.create_grafana\b', _grafana_tf))
@@ -262,6 +286,7 @@ for out in ("application_id", "runtime_role_arn", "table_identifier", "job_drive
             "alert_events_stream_name", "alert_events_table_name", "alert_events_table_arn", "athena_workgroup", "athena_catalog",
             "opensearch_collection_name", "opensearch_collection_arn", "opensearch_index", "prometheus_workspace_arn",
             "splunk_hec_url", "splunk_token_parameter", "analytics_cluster_name", "splunk_service_name", "splunk_port_forward_command",
+            "splunk_cm_service_name", "splunk_idx_service_name", "splunk_cm_port_forward_command",
             "splunk_password_command", "grafana_service_name", "grafana_port_forward_command", "grafana_password_command"):
     check(f"output {out} がある", re.search(r'^output "' + out + r'"', tf, re.M) is not None)
 check("job_driver は S3 Tables のカタログを spark-submit の --conf で渡す",
@@ -1152,7 +1177,7 @@ check("up.sh のスクリプトは spark/snmp_sinks.py", re.search(r'^SPARK_SCRI
 check("up.sh は SPLUNK_INDEX（既定は空）を読み、STORES に splunk があれば（既定）ECS の Splunk の token を SSM に作ってから渡す（値は読まない）。外の Splunk の変数は渡さない",
       re.search(r'^SPLUNK_INDEX="\$\{SPLUNK_INDEX:-\}"$', up, re.M) is not None
       and "get-parameter" not in up and "splunk_hec_url=" not in up and "splunk_skip_tls_verify" not in up and "SPLUNK_TOKEN_PARAM" not in up
-      and 'ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX")' in up
+      and 'ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX" -var "splunk_az_num=$SPLUNK_AZ_NUM")' in up
       and up.index('ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]"') < up.index('ensure_secret "/$PREFIX/splunk/hec-token"') < up.index('tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"'))
 check("up.sh は STORES（既定 s3,grafana,splunk）から導いた格納先を terraform/pipeline/analytics の sinks に組んで渡す",
       re.search(r'^if \[ -z "\$\{STORES:-\}" \]; then STORES=s3,grafana,splunk; STORES_DEFAULT=1; fi$', up, re.M) is not None
@@ -1195,6 +1220,7 @@ _AZ_VARS = {  # (ルート, 変数): (既定, 使える値)
     ("pipeline/stream", "telegraf_az_num"): (1, [1, 2, 3]), ("agent", "runtime_az_num"): (2, [2, 3]),
     ("agent", "lambda_az_num"): (1, [1, 2, 3]), ("agent", "opensearch_az_num"): (1, [1, 2]),
     ("pipeline/analytics", "emr_az_num"): (1, [1, 2, 3]), ("pipeline/analytics", "opensearch_az_num"): (1, [1, 2]),
+    ("pipeline/analytics", "splunk_az_num"): (1, [1, 2, 3]),
     ("pipeline/graph", "neptune_az_num"): (1, [1, 2, 3]), ("pipeline/graph", "lambda_az_num"): (1, [1, 2, 3]),
     ("pipeline/nautobot", "nautobot_db_az_num"): (1, [1, 2]), ("workflow", "lambda_az_num"): (1, [1, 2, 3]),
 }
@@ -1213,7 +1239,8 @@ _AZ_USES = {
     "pipeline/stream": (r"broker_subnet_ids\s*=\s*slice\(local\.subnet_ids, 0, var\.msk_az_num\)", r"number_of_broker_nodes\s*=\s*var\.msk_az_num\n",
                         r"default\.replication\.factor=\$\{var\.msk_az_num\}\n", r"min\.insync\.replicas=\$\{var\.msk_az_num - 1\}\n",
                         r"telegraf_dialout_subnet_ids\s*=\s*slice\(local\.subnet_ids, 0, var\.telegraf_az_num\)", r"desired_count\s*=\s*var\.telegraf_az_num\n"),
-    "pipeline/analytics": (r"subnet_ids\s*=\s*slice\(local\.subnet_ids, 0, var\.emr_az_num\)", r'standby_replicas\s*=\s*var\.opensearch_az_num == 2 \? "ENABLED" : "DISABLED"'),
+    "pipeline/analytics": (r"subnet_ids\s*=\s*slice\(local\.subnet_ids, 0, var\.emr_az_num\)", r'standby_replicas\s*=\s*var\.opensearch_az_num == 2 \? "ENABLED" : "DISABLED"',
+                           r"subnets\s*=\s*slice\(local\.subnet_ids, 0, var\.splunk_az_num\)", r"desired_count\s*=\s*var\.splunk_az_num\n"),
     "pipeline/graph": (r"replica_count\s*=\s*var\.neptune_az_num - 1\n", r"subnet_ids\s*=\s*slice\(local\.subnet_ids, 0, var\.lambda_az_num\)"),
     "pipeline/nautobot": (r"multi_az\s*=\s*var\.nautobot_db_az_num == 2\n", r"subnet_ids\s*=\s*data\.terraform_remote_state\.main\.outputs\.subnet_ids\n"),
     "workflow": (r"subnet_ids\s*=\s*slice\(local\.subnet_ids, 0, var\.lambda_az_num\)",),
@@ -1393,9 +1420,9 @@ check("NAT Gateway / IGW / EIP / パブリックサブネット / 既定ルー�
       not any(f'resource "{t}"' in _core for t in ("aws_nat_gateway", "aws_internet_gateway", "aws_eip", "aws_route"))
       and 'resource "aws_subnet" "public"' not in _core and "create_nat_gateway" not in _core and 'output "nat_gateway"' not in _core
       and "create_nat_gateway" not in up and "CREATE_NAT" not in up and "nat_gateway" not in tf)
-check("費用の目安: 土台は Web の EC2 の 2 セント（NAT Gateway は無い）。ECS の Splunk は 12、Grafana は 2",
+check("費用の目安: 土台は Web の EC2 の 2 セント（NAT Gateway は無い）。ECS の Splunk はタスク 1 つ 12.3（SPLUNK_TASKS 個）、Grafana は 2",
       "COST_CENTS=2\n" in up and "# NAT Gateway\n" not in up and "COST_CENTS=8" not in up
-      and 'if [ -n "$GRAFANA" ]; then COST_CENTS=$((COST_CENTS + 2)); fi' in up and 'if [ -n "$SPLUNK_ON_ECS" ]; then COST_CENTS=$((COST_CENTS + 12)); fi' in up)
+      and 'if [ -n "$GRAFANA" ]; then COST_CENTS=$((COST_CENTS + 2)); fi' in up and 'if [ -n "$SPLUNK_ON_ECS" ]; then COST_CENTS=$((COST_CENTS + 123 * SPLUNK_TASKS / 10)); fi' in up)
 check("lab.sh は containerlab の版の確かめ（GitHub へ出る）をしない", "export CLAB_VERSION_CHECK=disable" in open(os.path.join(ROOT, "lab", "lab.sh"), encoding="utf-8").read())
 check("up.sh / deploy-env.sh に共用のエンドポイントと CLIENT_CIDR の扱いは無い",
       not any(k in up for k in ("SHARED_ENDPOINTS", "create_shared_endpoints", 'aws_vpc_endpoint.runtime["ecr-api"]', "CLIENT_CIDR"))
@@ -1544,7 +1571,8 @@ def _pipeline_cents(stores="s3,grafana,splunk", skip=()):
            **{f"SKIP_{r.upper()}": "1" if r in sk else "" for r in ("lab", "stream", "analytics", "graph")},
            "SINK_S3": "1" if "s3" in st else "", "SINK_OPENSEARCH": "1" if "grafana" in st else "", "SINK_PROMETHEUS": "1" if "grafana" in st else "",
            "SINK_SPLUNK": "1" if "splunk" in st else "", "GRAFANA": "1" if an and "grafana" in st else "", "SPLUNK_ON_ECS": "1" if an and "splunk" in st else "",
-           "ENDPOINTS_AZ_NUM": "1", "MSK_AZ_NUM": "2", "TELEGRAF_AZ_NUM": "1", "NEPTUNE_AZ_NUM": "1", "OPENSEARCH_AZ_NUM": "1", "NAUTOBOT_DB_AZ_NUM": "1"}
+           "ENDPOINTS_AZ_NUM": "1", "MSK_AZ_NUM": "2", "TELEGRAF_AZ_NUM": "1", "NEPTUNE_AZ_NUM": "1", "OPENSEARCH_AZ_NUM": "1", "NAUTOBOT_DB_AZ_NUM": "1",
+           "SPLUNK_TASKS": "1"}
     r = subprocess.run(["bash", "-c", f'ROOTS="{roots}"\n' + _epblk + _fullcost + 'echo "OUT: $COST_CENTS"'], capture_output=True, text=True, env=env)
     return int(r.stdout.split("OUT: ")[1]) if "OUT: " in r.stdout else r.stderr
 _usd = lambda c: f"${c // 100}.{c % 100:02d}/h"
@@ -1688,24 +1716,23 @@ _env_secs = _key_sections(env_example, r"^#?([A-Z][A-Z0-9_]*)=")
 _up_hdr = up[up.index("# 設定できるキー（"):up.index("# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* /")]
 _up_secs = _key_sections(_up_hdr, r"^#   ([A-Z][A-Z0-9_]*)")
 _AZ_KEYS = ["ENDPOINTS_AZ_NUM", "MSK_AZ_NUM", "RUNTIME_AZ_NUM", "EMR_AZ_NUM", "LAMBDA_AZ_NUM", "NEPTUNE_AZ_NUM", "OPENSEARCH_AZ_NUM",
-            "NAUTOBOT_DB_AZ_NUM", "TELEGRAF_AZ_NUM"]
-check("deploy.env.example と up.sh のヘッダーは、冗長化用の節に 9 つの *_AZ_NUM、最後のデバッグ用の節に NETWORK_PERIMETER と TF_VERBOSE だけを置く（ENDPOINTS_MULTI_AZ のキーの行は無い）",
+            "NAUTOBOT_DB_AZ_NUM", "TELEGRAF_AZ_NUM", "SPLUNK_AZ_NUM"]
+check("deploy.env.example と up.sh のヘッダーは、冗長化用の節に 10 の *_AZ_NUM、最後のデバッグ用の節に NETWORK_PERIMETER と TF_VERBOSE だけを置く（ENDPOINTS_MULTI_AZ のキーの行は無い）",
       _env_secs is not None and _env_secs[1:] == [_AZ_KEYS, ["NETWORK_PERIMETER", "TF_VERBOSE"]]
       and _up_secs is not None and _up_secs[1:] == [_AZ_KEYS, ["NETWORK_PERIMETER", "TF_VERBOSE"]]
       and not any(k in _env_secs[0] or k in _up_secs[0] for k in _AZ_KEYS + ["ENDPOINTS_MULTI_AZ", "NETWORK_PERIMETER", "TF_VERBOSE"]))
 _red_env = env_example[env_example.index(_RED_H):env_example.index(_DBG_H)]
 _red_up = _up_hdr[_up_hdr.index(_RED_H):_up_hdr.index(_DBG_H)]
 check("冗長化用の節: MSK と Runtime は「1 にはできない」を理由つきで書き、1 台でしか成り立たない 5 つ（Web / lab / Grafana / Nautobot / workflow）も理由つきで 1 行ずつ。"
-      "Splunk はそこに入れず、「Splunk をクラスターにする（004）」で SPLUNK_AZ_NUM として足すと 1 行（キーの行は無い）",
+      "Splunk はそこに入れず、「Splunk をクラスターにする（004）」の SPLUNK_AZ_NUM（2 か 3 でクラスター）を書く",
       all("**1 にはできない**（MSK はブローカーを 2 か 3 の AZ にしか置けない）" in t and "**1 にはできない**（AWS の文書が高可用性のため 2 AZ 以上を勧めている" in t
           and "1 台でしか成り立たないのでキーを作らないもの" in t
           and all(re.search(r"^#\s+" + w + r"（[^\n]+）、?$", t, re.M) for w in ("Web の EC2", "lab の EC2", "Grafana", "Nautobot", "workflow"))
-          and not re.search(r"^#\s+Splunk（", t, re.M)
-          and re.search(r"^#\s+キーがまだ無いもの: Splunk（[^\n]+）。[^\n]*「Splunk をクラスターにする（004）」で SPLUNK_AZ_NUM として足す$", t, re.M)
-          and "SPLUNK_AZ_NUM=" not in t
+          and "キーがまだ無いもの" not in t and "「Splunk をクラスターにする（004）」" in t
+          and t.index("SPLUNK_AZ_NUM=") < t.index("1 台でしか成り立たないのでキーを作らないもの")
           for t in (_red_env, _red_up))
       and all(re.search(r"^#" + k + r"=[23]$", _red_env, re.M) for k in _AZ_KEYS)
-      and all(re.search(r"^#   " + k + "=" + d + r" ", _red_up, re.M) for k, d in zip(_AZ_KEYS, "122111111")))
+      and all(re.search(r"^#   " + k + "=" + d + r" ", _red_up, re.M) for k, d in zip(_AZ_KEYS, "1221111111")))
 check("切り分けに使わないキー（HTTP_SEND / MAX_OFFSETS_PER_TRIGGER* / KEEP_ECR / NO_DASHBOARD_PORTFORWARD / LOCAL_PORT / IMAGE_TAG / AWS_*）はふだんの節のまま",
       _env_secs is not None and _up_secs is not None
       and all(k in _env_secs[0] for k in ("HTTP_SEND", "MAX_OFFSETS_PER_TRIGGER", "MAX_OFFSETS_PER_TRIGGER_ICEBERG", "MAX_OFFSETS_PER_TRIGGER_SPLUNK",
@@ -1721,7 +1748,7 @@ check("デバッグ用のキーは、それぞれ何の切り分けに使うか�
       and re.search(r"^#   NETWORK_PERIMETER=0 +AccessDenied の切り分け。", _up_hdr, re.M) is not None
       and re.search(r"^#   TF_VERBOSE=1 +terraform の失敗・遅さの切り分け。", _up_hdr, re.M) is not None
       and re.search(r"^#ENDPOINTS_MULTI_AZ=", env_example, re.M) is None)
-check("DEPLOY_ENV_KEYS に 9 つの *_AZ_NUM と、止めるために読む ENDPOINTS_MULTI_AZ、NETWORK_PERIMETER / TF_VERBOSE がある。up.sh の NETWORK_PERIMETER の既定は 1 のまま",
+check("DEPLOY_ENV_KEYS に 10 の *_AZ_NUM と、止めるために読む ENDPOINTS_MULTI_AZ、NETWORK_PERIMETER / TF_VERBOSE がある。up.sh の NETWORK_PERIMETER の既定は 1 のまま",
       all(re.search(rf"(?<![A-Z_]){k}(?![A-Z_])", open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read().split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1])
           for k in _AZ_KEYS + ["ENDPOINTS_MULTI_AZ", "NETWORK_PERIMETER", "TF_VERBOSE"])
       and 'NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"\nflag_value NETWORK_PERIMETER\n' in up and "flag_value ENDPOINTS_MULTI_AZ" not in up)
@@ -1729,17 +1756,19 @@ check("DEPLOY_ENV_KEYS に 9 つの *_AZ_NUM と、止めるために読む ENDP
 _azblk = up[up.index('case "${ENDPOINTS_MULTI_AZ:-}" in'):up.index('if [ -z "$NETWORK_PERIMETER" ]; then echo "NETWORK_PERIMETER=0')]
 def _aznum(**env):
     r = subprocess.run(["bash", "-uc", 'die() { echo "DIE: $*"; exit 1; }\n' + _azblk + 'echo "OUT: ' + " ".join("$" + k for k in _AZ_KEYS) + '"'],
-                       capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env})
+                       capture_output=True, text=True, env={"PATH": os.environ["PATH"], **_AZ_ENV, **env})
     return r.stdout.strip() or r.stderr
+_AZ_ENV = {"SKIP_ANALYTICS": "", "SPLUNK_ON_ECS": "1", "STORES": "s3,grafana,splunk", "SPLUNK_INDEX": ""}   # SPLUNK_AZ_NUM の組み合わせの検査が見る
 check("AZ_NUM: 書かなければ ENDPOINTS 1 / MSK 2 / Runtime 2 / ほか 1 で、注意は出ない（既定の MSK と Runtime の 2 は数えない）",
-      _aznum() == "OUT: 1 2 2 1 1 1 1 1 1")
+      _aznum() == "OUT: 1 2 2 1 1 1 1 1 1 1")
 check("AZ_NUM: 範囲の中はそのまま使い、先頭の 0 は外す（08 も 8 進数にしない）",
       _aznum(ENDPOINTS_AZ_NUM="3", MSK_AZ_NUM="3", RUNTIME_AZ_NUM="3", EMR_AZ_NUM="3", LAMBDA_AZ_NUM="3", NEPTUNE_AZ_NUM="3",
-             OPENSEARCH_AZ_NUM="2", NAUTOBOT_DB_AZ_NUM="2", TELEGRAF_AZ_NUM="3") == "OUT: 3 3 3 3 3 3 2 2 3"
-      and _aznum(ENDPOINTS_AZ_NUM="02") == "OUT: 2 2 2 1 1 1 1 1 1"
+             OPENSEARCH_AZ_NUM="2", NAUTOBOT_DB_AZ_NUM="2", TELEGRAF_AZ_NUM="3", SPLUNK_AZ_NUM="3") == "OUT: 3 3 3 3 3 3 2 2 3 3"
+      and _aznum(ENDPOINTS_AZ_NUM="02") == "OUT: 2 2 2 1 1 1 1 1 1 1"
       and _aznum(ENDPOINTS_AZ_NUM="08").startswith("DIE: ENDPOINTS_AZ_NUM=8 は書けない。1〜3 で書く"))
 _AZ_RANGE = {"ENDPOINTS_AZ_NUM": (1, 3), "MSK_AZ_NUM": (2, 3), "RUNTIME_AZ_NUM": (2, 3), "EMR_AZ_NUM": (1, 3), "LAMBDA_AZ_NUM": (1, 3),
-             "NEPTUNE_AZ_NUM": (1, 3), "OPENSEARCH_AZ_NUM": (1, 2), "NAUTOBOT_DB_AZ_NUM": (1, 2), "TELEGRAF_AZ_NUM": (1, 3)}
+             "NEPTUNE_AZ_NUM": (1, 3), "OPENSEARCH_AZ_NUM": (1, 2), "NAUTOBOT_DB_AZ_NUM": (1, 2), "TELEGRAF_AZ_NUM": (1, 3),
+             "SPLUNK_AZ_NUM": (1, 3)}
 check("AZ_NUM: 範囲の外（下限 - 1 と上限 + 1）は範囲を出して「まだ何も作っていない」で止まる。範囲と既定は terraform の変数と同じ",
       all(_aznum(**{k: str(v)}).startswith(f"DIE: {k}={v} は書けない。{lo}〜{hi} で書く（") and _aznum(**{k: str(v)}).endswith("まだ何も作っていない")
           for k, (lo, hi) in _AZ_RANGE.items() for v in (lo - 1, hi + 1))
@@ -1750,6 +1779,63 @@ check("AZ_NUM: MSK と Runtime の 1 は理由つきで止まる",
       and "AWS の文書の勧めに合わせて 2 AZ 以上" in _aznum(RUNTIME_AZ_NUM="1"))
 check("AZ_NUM: 数でない値（two / -1 / 1.5 / 空白入り）は止まる",
       all(_aznum(LAMBDA_AZ_NUM=v).startswith(f"DIE: LAMBDA_AZ_NUM は 1〜3 の数で書く（いまは LAMBDA_AZ_NUM={v}）") for v in ("two", "-1", "1.5", "1 2")))
+check("SPLUNK_AZ_NUM: 2 か 3 は STORES に splunk が要り、SPLUNK_INDEX と一緒には書けない（どちらも何も作る前に止まる）。SKIP_ANALYTICS=1 なら見ない。"
+      "Splunk のタスクは 1 か SPLUNK_AZ_NUM + 2",
+      _aznum(SPLUNK_AZ_NUM="2", ENDPOINTS_AZ_NUM="2").endswith("OUT: 2 2 2 1 1 1 1 1 1 2")
+      and _aznum(SPLUNK_AZ_NUM="2", SPLUNK_ON_ECS="", STORES="s3").startswith("DIE: SPLUNK_AZ_NUM=2 は Splunk のクラスターで、STORES に splunk が要る（いまは STORES=s3）")
+      and _aznum(SPLUNK_AZ_NUM="3", SPLUNK_INDEX="netops").startswith("DIE: SPLUNK_AZ_NUM=3（Splunk のクラスター）では index は main だけで、SPLUNK_INDEX は書けない")
+      and _aznum(SPLUNK_AZ_NUM="2", SPLUNK_ON_ECS="", STORES="s3", SPLUNK_INDEX="netops", SKIP_ANALYTICS="1").endswith(" 2")
+      and all(subprocess.run(["bash", "-uc", 'die() { exit 1; }\n' + _azblk + 'echo "$SPLUNK_TASKS"'], capture_output=True, text=True,
+                             env={"PATH": os.environ["PATH"], **_AZ_ENV, "SPLUNK_AZ_NUM": a, "ENDPOINTS_AZ_NUM": "3"}).stdout.strip() == t
+              for a, t in (("", "1"), ("1", "1"), ("2", "4"), ("3", "5"))))
+# クラスターの全タスク待ちのあと（splunk_cluster_check）を切り出し、aws を偽物にして動かす。indexer の AZ の注意（止めない）と、
+# search head の突き合わせの判定の行（CloudWatch Logs）を ok まで待つ・無い / 食い違いなら止まる
+_sccblk = up[up.index("    splunk_cluster_check() {"):up.index("\n    }\n", up.index("    splunk_cluster_check() {")) + 7]
+_scc_aws = r"""aws() {
+  echo "AWS $*" >>"$CALLS"
+  case "$*" in
+    "ecs list-tasks "*"--service-name t-nwc-poc-splunk-idx "*) printf 'arn:aws:ecs:ap-northeast-1:1:task/c/idx1\tarn:aws:ecs:ap-northeast-1:1:task/c/idx2\n' ;;
+    "ecs list-tasks "*"--service-name t-nwc-poc-splunk "*) echo arn:aws:ecs:ap-northeast-1:1:task/c/sh1 ;;
+    "ecs describe-tasks "*"--tasks arn:aws:ecs:ap-northeast-1:1:task/c/idx1 arn:aws:ecs:ap-northeast-1:1:task/c/idx2") printf '%s\n' "$AZS" ;;
+    "logs filter-log-events "*"--log-group-name /ecs/t-nwc-poc-splunk --log-stream-names splunk/splunk/sh1 --filter-pattern \"nwc-peer-check\" "*) printf '%s\n' "$LINES" ;;
+    *) return 254 ;;
+  esac
+}
+sleep() { :; }
+die() { echo "DIE: $*"; exit 1; }
+"""
+_sccdir = tempfile.mkdtemp()
+def _scc(azs, lines, az_num="2"):  # 戻り値は (出力, aws logs を読んだ回数)
+    calls = os.path.join(_sccdir, "calls")
+    open(calls, "w").close()
+    r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + _scc_aws + _sccblk + "splunk_cluster_check t-nwc-poc-splunk t-nwc-poc-splunk-cm t-nwc-poc-splunk-idx\necho END"],
+                       capture_output=True, text=True, env={"PATH": os.environ["PATH"], "CALLS": calls, "AZS": azs, "LINES": "\t".join(lines),
+                                                            "REGION": "ap-northeast-1", "AN_CLUSTER": "c", "PREFIX": "t-nwc-poc", "SPLUNK_AZ_NUM": az_num})
+    return r.stdout + r.stderr, open(calls, encoding="utf-8").read().count("AWS logs filter-log-events")
+_OK2 = ["nwc-peer-check state=ok reason=peers_up:1", "nwc-peer-check state=mismatch reason=lost:idx-b", "nwc-peer-check state=ok reason=peers_up:2"]
+_scc_runs = {"ok": _scc("ap-northeast-1a\tap-northeast-1c", _OK2), "same_az": _scc("ap-northeast-1c\tap-northeast-1c", _OK2),
+             "none": _scc("ap-northeast-1a\tap-northeast-1c", []), "few": _scc("ap-northeast-1a\tap-northeast-1c", _OK2[:1]),
+             "mismatch": _scc("ap-northeast-1a\tap-northeast-1c", _OK2[:2]), "three": _scc("ap-northeast-1a\tap-northeast-1b\tap-northeast-1c", _OK2[:1] + ["nwc-peer-check state=ok reason=peers_up:3"], "3")}
+check("up.sh（クラスター）: 全タスクが HEALTHY になったら splunk_cluster_check に search head・manager・indexer のサービスを渡す。1 台のときは呼ばない",
+      'SP_SERVICES="$SP_SERVICES $(tf pipeline/analytics output -raw splunk_cm_service_name) $(tf pipeline/analytics output -raw splunk_idx_service_name)"' in up
+      and re.search(r'echo "Splunk は起動した"\n\s+if \[ "\$SPLUNK_AZ_NUM" -gt 1 \]; then splunk_cluster_check \$SP_SERVICES; fi\n', up) is not None
+      and up.index("    splunk_cluster_check() {") < up.index('log "7-4b.'))
+check("up.sh（クラスター）: indexer のタスクの AZ が重なっていれば注意を 1 行出して止めずに進む（Fargate の振り分けは保証でない）。重ならなければ出さない",
+      "注意:" not in _scc_runs["ok"][0] and _scc_runs["ok"][0].rstrip().endswith("END")
+      and _scc_runs["same_az"][0].count("注意: indexer のタスクが同じ AZ に 2 台いる（ap-northeast-1c ap-northeast-1c）") == 1 and _scc_runs["same_az"][0].rstrip().endswith("END")
+      and "注意:" not in _scc_runs["three"][0])
+check("up.sh（クラスター）: いまの search head のタスクのログストリーム（splunk/splunk/<タスク ID>）で接頭辞 nwc-peer-check の最新の行を読み、"
+      "state=ok で Up の peer が indexer の数（SPLUNK_AZ_NUM）なら進む（その前の ok や mismatch の行は見ない）",
+      _scc_runs["ok"][1] == 1 and "search head は indexer を全部（2 台）同じ GUID で検索できる（nwc-peer-check state=ok reason=peers_up:2）" in _scc_runs["ok"][0]
+      and _scc_runs["three"][1] == 1 and _scc_runs["three"][0].rstrip().endswith("END"))
+check("up.sh（クラスター）: 判定の行が 1 つも無ければ成功にせず、24 回（15 秒おき、6 分）待ってから「まだ 1 回も突き合わせていない」と言って止まる",
+      _scc_runs["none"][1] == 24 and "END" not in _scc_runs["none"][0]
+      and "DIE: search head のタスク（sh1）は、突き合わせ（splunk/peers_check.py）をまだ 1 回もしていない" in _scc_runs["none"][0])
+check("up.sh（クラスター）: 最新の判定が mismatch、または ok でも Up の peer が indexer の数に足りなければ、6 分待ってから最新の判定を出して止まる",
+      all(_scc_runs[k][1] == 24 and "END" not in _scc_runs[k][0] and "DIE: search head の突き合わせ（splunk/peers_check.py）が 6 分たっても ok（Up の indexer が 2 台）にならない" in _scc_runs[k][0]
+          for k in ("few", "mismatch"))
+      and "最新の判定は「nwc-peer-check state=mismatch reason=lost:idx-b」" in _scc_runs["mismatch"][0]
+      and "最新の判定は「nwc-peer-check state=ok reason=peers_up:1」" in _scc_runs["few"][0])
 check("ENDPOINTS_MULTI_AZ が残っていると止まる（1 / true / yes は ENDPOINTS_AZ_NUM=2 に書き換え、0 / false / no は消す）",
       all(_aznum(ENDPOINTS_MULTI_AZ=v).startswith("DIE: ") and "を ENDPOINTS_AZ_NUM=2 と書き換える。まだ何も作っていない" in _aznum(ENDPOINTS_MULTI_AZ=v)
           for v in ("1", "true", "yes"))
@@ -1757,8 +1843,8 @@ check("ENDPOINTS_MULTI_AZ が残っていると止まる（1 / true / yes は EN
               for v in ("0", "false", "no")))
 _w = _aznum(NEPTUNE_AZ_NUM="2", TELEGRAF_AZ_NUM="3")
 check("書いたキーが ENDPOINTS_AZ_NUM より大きいと注意を 1 行出して進む（そろえれば出ない。書いた MSK の 2 も数える）",
-      _w.count("注意:") == 1 and _w.startswith("注意: NEPTUNE_AZ_NUM=2 TELEGRAF_AZ_NUM=3 に対して ENDPOINTS_AZ_NUM=1。") and _w.endswith("OUT: 1 2 2 1 1 2 1 1 3")
-      and _aznum(NEPTUNE_AZ_NUM="2", ENDPOINTS_AZ_NUM="2") == "OUT: 2 2 2 1 1 2 1 1 1"
+      _w.count("注意:") == 1 and _w.startswith("注意: NEPTUNE_AZ_NUM=2 TELEGRAF_AZ_NUM=3 に対して ENDPOINTS_AZ_NUM=1。") and _w.endswith("OUT: 1 2 2 1 1 2 1 1 3 1")
+      and _aznum(NEPTUNE_AZ_NUM="2", ENDPOINTS_AZ_NUM="2") == "OUT: 2 2 2 1 1 2 1 1 1 1"
       and _aznum(NEPTUNE_AZ_NUM="3", ENDPOINTS_AZ_NUM="2").startswith("注意: NEPTUNE_AZ_NUM=3 に対して ENDPOINTS_AZ_NUM=2。")
       and _aznum(MSK_AZ_NUM="2").startswith("注意: MSK_AZ_NUM=2 に対して")
       and "注意" not in _aznum(LAMBDA_AZ_NUM="1"))
@@ -1776,7 +1862,7 @@ check("各ルートに *_AZ_NUM を -var で渡す",
 _costall = up[up.index("COST_CENTS=2\n"):up.index("COST_NOTE=$(printf")]
 _COST_OFF = {k: "" for k in ("AGENT", "CREATE_KB", "SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA",
                              "SPLUNK_ON_ECS", "NAUTOBOT", "WORKFLOW")}
-_COST_OFF.update(SKIP_LAB="1", SKIP_GRAPH="1", SKIP_STREAM="1", SKIP_ANALYTICS="1", **dict(zip(_AZ_KEYS, "122111111")))
+_COST_OFF.update(SKIP_LAB="1", SKIP_GRAPH="1", SKIP_STREAM="1", SKIP_ANALYTICS="1", **dict(zip(_AZ_KEYS, "1221111111")))
 def _costaz(**env):
     r = subprocess.run(["bash", "-uc", "endpoint_count() { echo 2; }\n" + _costall + 'echo "OUT: $COST_CENTS"'], capture_output=True, text=True,
                        env={"PATH": os.environ["PATH"], **_COST_OFF, **env})
@@ -1953,7 +2039,7 @@ check("README と docs/deploy.md のキーの表に MAX_OFFSETS_PER_TRIGGER と�
 _costblk = up[up.index('if [ -z "$SKIP_ANALYTICS" ]; then\n  # Spark のジョブ'):up.index('if [ -n "$NAUTOBOT" ]; then COST_CENTS')]
 def _cost(**env):
     base_env = {k: "" for k in ("SKIP_ANALYTICS", "SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA", "SPLUNK_ON_ECS")}
-    base_env["OPENSEARCH_AZ_NUM"] = "1"
+    base_env.update(OPENSEARCH_AZ_NUM="1", SPLUNK_TASKS="1")
     r = subprocess.run(["bash", "-uc", "COST_CENTS=0\n" + _costblk + 'echo "OUT: $COST_CENTS"'], capture_output=True, text=True,
                        env={"PATH": os.environ["PATH"], **base_env, **env})
     return int(r.stdout.split("OUT: ")[1]) if "OUT: " in r.stdout else r.stderr
@@ -1964,7 +2050,9 @@ check("費用: OpenSearch と Prometheus は 1 つのジョブ（OpenSearch の 
       _cost(SINK_OPENSEARCH="1", SINK_PROMETHEUS="1") == 21 + 33 and _cost(SINK_SPLUNK="1", SPLUNK_ON_ECS="1") == 21 + 12
       and _cost(SINK_S3="1", SINK_OPENSEARCH="1", SINK_PROMETHEUS="1", SINK_SPLUNK="1", SPLUNK_ON_ECS="1", GRAFANA="1") == 63 + 33 + 12 + 2
       and _cost(SKIP_ANALYTICS="1", SINK_S3="1", SINK_SPLUNK="1", SINK_PROMETHEUS="1") == 0)
-_COST_TAIL = "COST_CENTS=0\nOPENSEARCH_AZ_NUM=1\n" + _costblk + 'echo "OUT: $COST_CENTS"'
+check("費用: Splunk のクラスター（SPLUNK_AZ_NUM が 2 / 3 でタスク 4 / 5）は ECS の Splunk が 49 / 61（タスク 1 つ 12.3）",
+      _cost(SINK_SPLUNK="1", SPLUNK_ON_ECS="1", SPLUNK_TASKS="4") == 21 + 49 and _cost(SINK_SPLUNK="1", SPLUNK_ON_ECS="1", SPLUNK_TASKS="5") == 21 + 61)
+_COST_TAIL = "COST_CENTS=0\nOPENSEARCH_AZ_NUM=1\nSPLUNK_TASKS=1\n" + _costblk + 'echo "OUT: $COST_CENTS"'
 check("費用の Grafana の 2 は導いた値で数える（STORES=grafana なら 21 + 33 + 2、STORES=s3 なら Grafana は無く 21、3 つとも入れると 63 + 33 + 12 + 2）",
       _stores(_COST_TAIL, STORES="grafana")[:2] == (0, "OUT: 56") and _stores(_COST_TAIL, STORES="s3")[:2] == (0, "OUT: 21")
       and _stores(_COST_TAIL, STORES="s3,grafana,splunk")[:2] == (0, "OUT: 110"))
