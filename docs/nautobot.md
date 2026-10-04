@@ -127,7 +127,7 @@ terraform -chdir=terraform/pipeline/nautobot output -raw password_command       
 | Nautobot で変えるもの | 映る先 |
 |---|---|
 | Device の Service `gnmi`（tcp） | Telegraf が gNMI を取りにいく先 `<primary IPv4>:<ポート>` |
-| Device の Service `snmp`（udp） | Telegraf が SNMP を取りにいく先（`SNMP_POLL=1` のとき使う） |
+| Device の Service `snmp`（udp） | Telegraf が SNMP を取りにいく先（`SNMP_POLL=1`（既定）のとき使う） |
 | Device（名前、Location、Role、primary IPv4、custom field `asn`） | Neptune の `device`。Service がどちらかあれば「監視」 |
 | Interface（名前、最初の IP、LAG の親） | Neptune の `interface` |
 | Cable（両端が Interface。custom field `link_role` / `bandwidth_mbps`） | Neptune の回線。種類（fabric / l2 / lag）は両端の Role と LAG から決まる |
