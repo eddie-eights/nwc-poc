@@ -1098,6 +1098,49 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 数字（6 か月、10 GB）と申し込みの流れは記憶から書いた。申し込む前に Splunk のサイトで確かめる。
 
+### Q. Splunk から SNS へは、どうやってアラートを出している？
+
+**A. 毎分走る保存済みサーチが結果を 1 行でも返すと、自作のアラートアクション `netops_sns`（Python のスクリプト）が SNS の Publish API を直接呼ぶ。認証は ECS のタスクロール。**
+
+| 順 | 何が起きるか | どこに書いてあるか |
+|---|---|---|
+| 1 | Spark が HEC でイベントを Splunk に入れる | `spark/snmp_sinks.py` |
+| 2 | 保存済みサーチが毎分走り、直前の 1 分に index に入ったイベントを読む。結果の 1 行がアラート 1 件 | `splunk/netops_alerts/default/savedsearches.conf` |
+| 3 | 結果が 1 行以上あると、Splunk がスクリプトを `--execute` で起こす。結果の CSV の場所を標準入力で渡す | `savedsearches.conf` の `action.netops_sns = 1`、`alert_actions.conf` |
+| 4 | スクリプトが CSV を読み、IP を機器名に直し（`DEVICE_MAP`）、Grafana と同じ形の JSON にする。1 通に最大 50 件 | `splunk/netops_alerts/bin/netops_sns.py` |
+| 5 | タスクロールの一時的な認証情報を取り、SigV4 で署名して、SNS の Publish を HTTPS で呼ぶ。失敗したら 3 回まで試す | 同じファイル |
+| 6 | SNS のトピック `<接頭辞>-alerts` に届く。ここから先は Grafana のアラートと同じ道 | `terraform/base/core` の `alerts.tf` |
+
+保存済みサーチは 3 本ある。
+
+| 名前 | 見るもの | 出すアラート |
+|---|---|---|
+| `netops_gnmi` | gNMI の on_change（BGP のセッション、IS-IS の IF） | `bgp_down`、`isis_down` の firing と resolved |
+| `netops_trap` | SNMP の trap | linkDown は `link_down` の firing、linkUp は resolved。ほかの trap は `trap` の firing |
+| `netops_trap_clear` | 「直った」の知らせが無い trap | 時間が経ったら resolved |
+
+スクリプトを自作している理由は 3 つ。
+
+- **Splunk に SNS へ出すアクションが最初から入っていない。**
+  入っているのはメールと webhook など。
+- **Splunk の Python に boto3 が無く、VPC から PyPI にも出られない。**
+  だから標準ライブラリだけで、署名（SigV4）も自分で計算している。
+- **アクセスキーを置きたくない。**
+  ECS がタスクに渡す一時的な認証情報を使う。タスクロールにできるのは、このトピックへの `sns:Publish` だけ。
+
+知っておくとよいこと。
+
+- **環境変数は、入口のスクリプトがファイルに写している。**
+  splunkd の子プロセス（アラートアクション）は、コンテナの環境変数を引き継がない。`splunk/entrypoint.sh` がトピックの ARN などを `/opt/container_artifact/nwc-alerts.env` に書き、スクリプトがそれを読む。
+- **SNS へは VPC エンドポイントを通る。**
+  閉域なので、インターネットには出ない。
+- **失敗は Splunk のログに残る。**
+  `splunkd.log` の `sendmodalert` の行。Splunk は打ち直さないので、スクリプトの中の 3 回が全部。
+- **「Splunk をクラスターにする（004）」では、この仕組みを search head にだけ置く。**
+  indexer でも動くと、同じアラートが台の数だけ出る。
+
+ここに書いたのは main のいまの状態。「Splunk と Grafana のアラートを比べる（002）」が保存済みサーチを変えている（読み直す幅など）ので、002 が main に入ったら書き直す。
+
 ## 11. Neptune に置くもの
 
 ### Q. Neptune には修復案は書かないよね？ status 更新だけよね？

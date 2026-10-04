@@ -24,7 +24,8 @@ PoC の設計を決めるために、相手に確かめたいことを並べる�
 
 - S3 に全部あるなら、ほかの格納先は「検索とアラートのための写し」と見なせる。消えても S3 から戻せるなら、冗長化は要らないかもしれない。
 - 逆に、止まっている間のアラートの取りこぼしを許せないなら、データの複製だけでなく、検知する側（Splunk の search head、Grafana）の冗長化も要る。
-- 答えによって、「Splunk をクラスターにする（004）」をやるか、どこまでやるかが変わる。
+- 答えによって、「Splunk をクラスターにする（004）」を既定にするか、どこまでやるかが変わる。
+  クラスターを作ること自体は決まった（2026-10-04。既定は 1 台のままで、`SPLUNK_CLUSTER=1` のときだけクラスター）。
 
 ### いまの状態
 
@@ -42,7 +43,7 @@ PoC の設計を決めるために、相手に確かめたいことを並べる�
 
 ### 決まること
 
-- Splunk をクラスターにするか（設計は [cycles/004-splunk-indexer-cluster/design.md](cycles/004-splunk-indexer-cluster/design.md)）。
+- Splunk のクラスターを既定にするか（設計は [cycles/004-splunk-indexer-cluster/design.md](cycles/004-splunk-indexer-cluster/design.md)）。
 - OpenSearch Serverless の予備のレプリカを有効にするか。
 - S3 から格納先へ入れ直す手順を作るか。
 

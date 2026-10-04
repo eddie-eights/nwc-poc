@@ -191,3 +191,5 @@ manager と search head を小さくできるかは、手元の確認のあと�
 9. **起動が長くなる。**
    4 台が manager → indexer → search head の順に揃うまで待つ。`ops/up.sh` の待ちを 20 分のままで足りるかは未確認。
 10. **AWS では何も確かめていない。**
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261004-cycle-004-splunk-indexer-cluster-design.html -->
