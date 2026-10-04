@@ -1,4 +1,4 @@
-# Cycle 001 alert-history-firehose 設計: アラートの通知の履歴を Lambda graph-status → Firehose → S3 Tables（alert_events）に追記し、Athena で読む
+# アラートの履歴を残す（Cycle 001 alert-history-firehose）設計: アラートの通知の履歴を Lambda graph-status → Firehose → S3 Tables（alert_events）に追記し、Athena で読む
 
 main(opus-5.5) / effort: high（cycle-design の既定は xhigh だが、セッションの effort を自分で変えられないため high で設計した）
 

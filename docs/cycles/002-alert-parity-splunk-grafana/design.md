@@ -1,4 +1,4 @@
-# Cycle 002 alert-parity-splunk-grafana 設計: Splunk と Grafana（OpenSearch + Prometheus）で同じアラートを出し、アラートの履歴で比べる
+# Splunk と Grafana のアラートを比べる（Cycle 002 alert-parity-splunk-grafana）設計: Splunk と Grafana（OpenSearch + Prometheus）で同じアラートを出し、アラートの履歴で比べる
 
 main(fable-5.1) / effort: high
 
