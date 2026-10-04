@@ -79,8 +79,8 @@ check("EMR / Grafana / Splunk は土台の spark / grafana / splunk の SG を�
 
 _sg_keys = re.search(r'security_groups = \{(.*?)\n  \}', _sg_tf, re.S)
 _sg_keys = set(re.findall(r'^\s+(\w+)\s+=\s+"', _sg_keys.group(1), re.M)) if _sg_keys else set()
-SG_KEYS = {"web", "lab", "telegraf_dialout", "telegraf_dialin", "telegraf_dialout_nlb", "msk", "spark", "grafana", "splunk", "nautobot", "nautobot_db", "lambda", "workflow", "runtime"}
-check(f"土台の SG はワークロードごとの 14 個と endpoints（{sorted(_sg_keys)}）",
+SG_KEYS = {"web", "lab", "telegraf_dialout", "telegraf_dialin", "telegraf_dialout_nlb", "msk", "spark", "grafana", "splunk", "nautobot", "nautobot_db", "lambda", "workflow", "runtime", "kafka_ui"}
+check(f"土台の SG はワークロードごとの 15 個と endpoints（{sorted(_sg_keys)}）",
       _sg_keys == SG_KEYS and re.findall(r'resource "aws_security_group" "(\w+)"', _core) == ["workload", "endpoints"]
       and re.search(r'resource "aws_security_group" "workload" \{\n\s*for_each = local\.security_groups', _sg_tf) is not None)
 # 通信の表を読む（from = sg の行は aws_api_clients に展開する）
@@ -90,12 +90,14 @@ _flows = set()
 for _m in re.finditer(r'\{ from = ("?\w+"?), to = "(\w+)", protocol = "(\w+)", port = (\d+)(?:, to_port = (\d+))?(?:, only = "(\w+)")?, why = "([^"]*)" \}', _sg_tf):
     for _from in (_clients if _m.group(1) == "sg" else [_m.group(1).strip('"')]):
         _flows.add((_from, _m.group(2), _m.group(3), int(_m.group(4)), int(_m.group(5) or _m.group(4)), _m.group(6) or ""))
-EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_dialout", "telegraf_dialin", "spark", "grafana", "splunk", "nautobot", "lambda", "workflow", "runtime") for t in ("endpoints", "s3")} | {
+EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_dialout", "telegraf_dialin", "spark", "grafana", "splunk", "nautobot", "lambda", "workflow", "runtime", "kafka_ui") for t in ("endpoints", "s3")} | {
     # Nautobot（terraform/pipeline/nautobot。2026-10-04）: 画面は Web の EC2 からのポートフォワード、DB は RDS。
     # Neptune は Neptune Analytics にしたので SG が無く、行も無い（neptune-graph-data のエンドポイントの 443 で届く。2026-10-04）
     ("web", "nautobot", "tcp", 8080, 8080, ""), ("nautobot", "nautobot_db", "tcp", 5432, 5432, ""),
     ("web", "grafana", "tcp", 3000, 3000, ""), ("web", "splunk", "tcp", 8000, 8000, ""), ("web", "workflow", "tcp", 8233, 8233, ""),
     ("telegraf_dialout", "msk", "tcp", 9098, 9098, ""), ("telegraf_dialin", "msk", "tcp", 9098, 9098, ""), ("spark", "msk", "tcp", 9098, 9098, ""), ("msk", "msk", "tcp", 9092, 9098, ""),
+    # Kafbat UI（terraform/pipeline/stream。2026-10-05）: 画面は Web の EC2 からのポートフォワード、MSK へは IAM の 9098
+    ("web", "kafka_ui", "tcp", 8080, 8080, ""), ("kafka_ui", "msk", "tcp", 9098, 9098, ""),
     ("spark", "spark", "tcp", 0, 65535, ""), ("spark", "splunk", "tcp", 8088, 8088, ""),
     ("telegraf_dialout_nlb", "telegraf_dialout", "udp", 1162, 1162, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "udp", 5140, 5140, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "tcp", 57000, 57000, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "tcp", 8080, 8080, ""),
     ("lab_mgmt", "telegraf_dialout_nlb", "udp", 162, 162, ""), ("lab_mgmt", "telegraf_dialout_nlb", "udp", 5140, 5140, ""),
@@ -1549,7 +1551,7 @@ def _pipeline_cents(stores="s3,grafana,splunk", skip=()):
     st = set(stores.split(","))
     an = "analytics" not in sk
     roots = "base/ecr base/core " + " ".join(f"pipeline/{r}" for r in ("lab", "stream", "analytics", "graph") if r not in sk) + " pipeline/nautobot"
-    env = {"PATH": os.environ["PATH"], "PIPELINE": "1", "NAUTOBOT": "1", "SNMP_POLL": "1",
+    env = {"PATH": os.environ["PATH"], "PIPELINE": "1", "NAUTOBOT": "1", "SNMP_POLL": "1", "KAFKA_UI": "" if "stream" in sk else "1",   # KAFKA_UI は既定 1 で、stream を作らない回は空
            **{f"SKIP_{r.upper()}": "1" if r in sk else "" for r in ("lab", "stream", "analytics", "graph")},
            "SINK_S3": "1" if "s3" in st else "", "SINK_OPENSEARCH": "1" if "grafana" in st else "", "SINK_PROMETHEUS": "1" if "grafana" in st else "",
            "SINK_SPLUNK": "1" if "splunk" in st else "", "GRAFANA": "1" if an and "grafana" in st else "", "SPLUNK_ON_ECS": "1" if an and "splunk" in st else "",
@@ -1832,13 +1834,13 @@ check("各ルートに *_AZ_NUM を -var で渡す",
       '  ( tf_apply_only pipeline/graph "${GRAPH_VARS[@]}" )' in up
       and re.search(r'tf_apply pipeline/nautobot [^\n]*-var "nautobot_db_az_num=\$NAUTOBOT_DB_AZ_NUM"\n', up) is not None
       and re.search(r'tf_apply workflow [^\n]*-var "lambda_az_num=\$LAMBDA_AZ_NUM"\n', up) is not None
-      and re.search(r'tf_apply pipeline/stream (?:[^\n]*\\\n)+\s*-var "msk_az_num=\$MSK_AZ_NUM" -var "telegraf_az_num=\$TELEGRAF_AZ_NUM"\n', up) is not None
+      and re.search(r'tf_apply pipeline/stream (?:[^\n]*\\\n)+\s*-var "msk_az_num=\$MSK_AZ_NUM" -var "telegraf_az_num=\$TELEGRAF_AZ_NUM" "\$\{STREAM_KAFKA_UI_VARS\[@\]\}"\n', up) is not None
       and 'AGENT_VARS=(-var "agent_image_tag=$IMAGE_TAG" -var "runtime_az_num=$RUNTIME_AZ_NUM" -var "lambda_az_num=$LAMBDA_AZ_NUM" -var "opensearch_az_num=$OPENSEARCH_AZ_NUM")' in up
       and 'ANALYTICS_VARS+=(-var "opensearch_az_num=$OPENSEARCH_AZ_NUM")' in up and '-var "emr_az_num=$EMR_AZ_NUM")' in up)
 # 費用の目安の全体を切り出して AZ_NUM ごとに動かす（endpoint_count は 2 本に固定。機能は全部切ってから 1 つずつ入れる）
 _costall = up[up.index("COST_CENTS=2\n"):up.index("COST_NOTE=$(printf")]
 _COST_OFF = {k: "" for k in ("AGENT", "CREATE_KB", "SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA",
-                             "SPLUNK_ON_ECS", "NAUTOBOT", "WORKFLOW")}
+                             "SPLUNK_ON_ECS", "NAUTOBOT", "WORKFLOW", "KAFKA_UI")}
 _COST_OFF.update(SKIP_LAB="1", SKIP_GRAPH="1", SKIP_STREAM="1", SKIP_ANALYTICS="1", **dict(zip(_AZ_KEYS, "121111111")))
 def _costaz(**env):
     r = subprocess.run(["bash", "-uc", "endpoint_count() { echo 2; }\n" + _costall + 'echo "OUT: $COST_CENTS"'], capture_output=True, text=True,
@@ -1849,6 +1851,8 @@ check("費用: エンドポイントは 1.4 × 本数 × ENDPOINTS_AZ_NUM（2 �
 check("費用: MSK は 2 AZ で 57、3 AZ で +27。Telegraf は受ける側のタスクが AZ ごとに増える（1 AZ 5、3 AZ 7）",
       _costaz(SKIP_STREAM="") == 5 + 57 + 5 and _costaz(SKIP_STREAM="", MSK_AZ_NUM="3") == 5 + 84 + 5
       and _costaz(SKIP_STREAM="", TELEGRAF_AZ_NUM="3") == 5 + 57 + 7)
+check("費用: Kafbat UI（KAFKA_UI）は stream を作る回だけ 2（Fargate ARM 0.5 vCPU / 1 GB のタスク 1 つ）",
+      _costaz(SKIP_STREAM="", KAFKA_UI="1") == 5 + 57 + 5 + 2 and _costaz(KAFKA_UI="1") == 5)
 check("費用: Neptune は 58 × NEPTUNE_AZ_NUM、Nautobot は Multi-AZ で 13 → 16",
       _costaz(SKIP_GRAPH="") == 5 + 58 and _costaz(SKIP_GRAPH="", NEPTUNE_AZ_NUM="3") == 5 + 174
       and _costaz(NAUTOBOT="1") == 5 + 13 and _costaz(NAUTOBOT="1", NAUTOBOT_DB_AZ_NUM="2") == 5 + 16)

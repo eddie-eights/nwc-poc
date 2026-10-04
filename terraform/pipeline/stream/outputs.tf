@@ -62,3 +62,18 @@ output "telegraf_exec_command" {
   description = "Run on the user's PC (AWS CLI v2 + Session Manager plugin) with TASK_ID of the dial-in task. tg gnmi subscribes for 20 seconds, tg test polls SNMP once (only with snmp_poll = true); neither writes to MSK"
   value       = "aws ecs execute-command --region ${var.region} --cluster ${aws_ecs_cluster.telegraf.name} --task TASK_ID --container telegraf --interactive --command 'tg gnmi'"
 }
+
+output "kafka_ui_service_name" {
+  description = "ECS service of the Kafbat UI task (empty unless create_kafka_ui)"
+  value       = var.create_kafka_ui ? aws_ecs_service.kafka_ui[0].name : ""
+}
+
+output "kafka_ui_port_forward_command" {
+  description = "Open Kafbat UI at http://localhost:8082 through the web EC2 (SSM port forward; user admin, password from kafka_ui_password_command). Local port 8082 because the web uses 8080 and Nautobot 8081. Empty unless create_kafka_ui"
+  value       = var.create_kafka_ui ? "aws ssm start-session --region ${var.region} --target ${local.web_instance_id} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{\"host\":[\"kafka-ui.${local.stream_service_namespace}\"],\"portNumber\":[\"8080\"],\"localPortNumber\":[\"8082\"]}'" : ""
+}
+
+output "kafka_ui_password_command" {
+  description = "Print the Kafbat UI admin password (SSM SecureString created by ops/up.sh). Empty unless create_kafka_ui"
+  value       = var.create_kafka_ui ? "aws ssm get-parameter --region ${var.region} --name ${local.kafka_ui_password_parameter} --with-decryption --query Parameter.Value --output text" : ""
+}

@@ -149,3 +149,54 @@ variable "telegraf_task_memory" {
     error_message = "telegraf_task_memory must be 512, 1024 or 2048."
   }
 }
+
+# ---------------------------------------------------------------- Kafbat UI (kafka_ui.tf)
+variable "create_kafka_ui" {
+  description = "Run Kafbat UI (the Kafka web console, ghcr.io/kafbat/kafka-ui mirrored to ECR) as one ECS task on the Telegraf cluster. Opened through an SSM port forward via the web EC2 (output kafka_ui_port_forward_command), with a login form whose admin password is an SSM SecureString created by ops/up.sh. Not read-only: topics can be created, changed and deleted from the UI. ops/up.sh sets it from KAFKA_UI in deploy.env (default 1)."
+  type        = bool
+  default     = false
+}
+
+variable "kafka_ui_image_tag" {
+  description = "Tag of the Kafbat UI image in the ECR repository <prefix>-kafka-ui. ops/up.sh mirrors ghcr.io/kafbat/kafka-ui:<KAFKA_UI_TAG> with the same tag and passes it."
+  type        = string
+  default     = "v1.5.0"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$", var.kafka_ui_image_tag))
+    error_message = "kafka_ui_image_tag must be a valid ECR tag (letters, digits, _ . -, up to 128 characters)."
+  }
+}
+
+variable "kafka_ui_security_protocol" {
+  description = "How Kafbat UI talks to Kafka. SASL_SSL adds the MSK IAM settings (AWS_MSK_IAM with the task role, port 9098 - this root's MSK). PLAINTEXT adds none, for a Kafka without authentication (the OSS Kafka of cycle 005)."
+  type        = string
+  default     = "SASL_SSL"
+
+  validation {
+    condition     = contains(["SASL_SSL", "PLAINTEXT"], var.kafka_ui_security_protocol)
+    error_message = "kafka_ui_security_protocol must be SASL_SSL (MSK IAM) or PLAINTEXT."
+  }
+}
+
+variable "kafka_ui_task_cpu" {
+  description = "Fargate CPU units of the Kafbat UI task (ARM64). 512 (0.5 vCPU) started in about 14 seconds in a local Docker test limited to 0.5 CPU (2026-10-05)."
+  type        = number
+  default     = 512
+
+  validation {
+    condition     = contains([256, 512, 1024], var.kafka_ui_task_cpu)
+    error_message = "kafka_ui_task_cpu must be 256, 512 or 1024."
+  }
+}
+
+variable "kafka_ui_task_memory" {
+  description = "Fargate memory (MiB) of the Kafbat UI task. Must be a valid pair with kafka_ui_task_cpu. The JVM takes 75% of it (JAVA_OPTS); about 210 MiB was used when idle in a local Docker test (2026-10-05)."
+  type        = number
+  default     = 1024
+
+  validation {
+    condition     = contains([512, 1024, 2048], var.kafka_ui_task_memory)
+    error_message = "kafka_ui_task_memory must be 512, 1024 or 2048."
+  }
+}
