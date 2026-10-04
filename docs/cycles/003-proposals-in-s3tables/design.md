@@ -183,8 +183,8 @@ flowchart LR
 - テーブルは `"<catalog>"."<namespace>"."proposal_events"` の 3 部で書く（`query_history` と同じ）。
 - `proposal_id`（`device#kind#target#epoch` の形）を実行パラメータで渡すときの検査は、`query_history` の `_DEVICE_RE`（`^[A-Za-z0-9._:/#?-]{1,128}$`）をそのまま使えるかを実装で確かめる。`target` の文字と長さで通らないなら、`proposal_id` 用の検査を別に書く。
 - Athena の実行（開始 → 待つ → 止める → 結果）は、いま `agent/evidence.py` の `query_history` の中に直書きされている。これを共通の関数に切り出して、`query_history` と `proposals.py` の両方が使う（切り出しはこのサイクルでやる）。環境変数は同じ `ATHENA_WORKGROUP` / `ATHENA_CATALOG` / `HISTORY_NAMESPACE` に、`PROPOSAL_EVENTS_TABLE` を足す。
-- Runtime のコンテナの中での代替実行（`agent/app.py` が Gateway に届かないとき `list_proposals` をコンテナ内で動かす）では、「まだ配備されていない」が返る。Runtime には Athena の権限も環境変数も付けない（`query_history` と同じ扱い。受け入れる）。
-- 環境変数が無ければ、今と同じく「まだ配備されていない」を返す。
+- Runtime のコンテナの中での代替実行（`agent/app.py` が Gateway に届かないとき `list_proposals` をコンテナ内で動かす）では、「修復案を読めない」というエラーが返る。設定は Web と同じ道（SSM のパラメータ）で渡すので、Runtime も設定は引けるが、Athena の権限が無いので AccessDenied になる。Runtime には Athena の権限を付けない（どちらにしても読めない。受け入れる）。Runtime の `ssm:GetParameter` を名前ごとに絞ることは、このサイクルではやらない。
+- 設定（SSM のパラメータ）が無ければ、今と同じく「まだ配備されていない」を返す。
 - `decide(proposal_id, decision, decided_by)`:
   1. 決定と id を確かめる（今と同じ）。
   2. `get_proposal` で pending かを見る。違えば今と同じ文言で返す（早く気づかせるため。最後に決めるのはワークフロー）。

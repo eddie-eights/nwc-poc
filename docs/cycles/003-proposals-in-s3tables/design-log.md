@@ -61,3 +61,9 @@
 | `graph.list_records` は topology.py が使っている | 消すのは `get_record` と `update_record` だけ |
 | 読んでから書く手順が原子的でない | 並べ方を `seq DESC, event_time DESC` にする |
 | docs の行番号がずれている | 行番号をやめ、節の名前で指す |
+
+## 2026-10-05 Runtime の代替実行で返るもの
+
+- エンジニアの指摘: 「代替実行では『まだ配備されていない』が返る」と「Web の設定は SSM のパラメータで渡す」は両立しない。Runtime も `parameter/<prefix>/*` を読めるので、設定を引けて、Athena の AccessDenied になる。
+- 決めたこと: そのまま受け入れる。代替実行では「修復案を読めない」が返る。IAM には触らない。
+- やらない案: Runtime の `ssm:GetParameter` を使っている名前に絞る。`pipeline/graph/access.tf` と `workflow/proposals.tf` に手が入り、このサイクルの範囲を超える。
