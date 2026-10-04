@@ -439,10 +439,14 @@ def _in_stream_block(marker):
     i = up.index(marker)
     j = up.rindex('\nif [ -z "$SKIP_STREAM" ]; then\n', 0, i)
     return "\nfi\n" not in up[j:i]
-check("スイッチは無い: deploy.env に KAFKA_UI は書けず（DEPLOY_ENV_KEYS に無い）、deploy.env.example にも up.sh にも無い。up.sh の冒頭の説明は「いつも作る」",
-      re.search(r"\bKAFKA_UI\b", denv.split("DEPLOY_ENV_KEYS=")[1].split('"')[1]) is None
-      and re.search(r"\bKAFKA_UI\b", _read("deploy.env.example")) is None and re.search(r"\bKAFKA_UI\b", up) is None
-      and re.search(r"^#   （Kafbat UI）\s+stream を作る回は Kafbat UI[^\n]*\*\*いつも作る\*\*（切り替える変数は無い", up, re.M) is not None)
+# KAFKA_UI というキー（と作る・作らないの変数 create_kafka_ui）がどこにも無い: ops/ のシェル・deploy.env.example・terraform/ の .tf
+_no_switch_files = ["deploy.env.example"] + [os.path.join("ops", n) for n in sorted(os.listdir(os.path.join(ROOT, "ops"))) if n.endswith(".sh")] + [
+    os.path.relpath(os.path.join(d, n), ROOT) for d, _, ns in os.walk(os.path.join(ROOT, "terraform")) if ".terraform" not in d for n in ns if n.endswith(".tf")]
+_has_switch = [p for p in _no_switch_files if re.search(r"\bKAFKA_UI\b|create_kafka_ui", _read(p))]
+check(f"スイッチは無い: KAFKA_UI というキーと create_kafka_ui は ops/ と deploy.env.example と terraform/ のどこにも無い（{_has_switch}）。up.sh の冒頭は「stream に入る」と費用の目安だけ",
+      len(_no_switch_files) > 20 and "ops/deploy-env.sh" in _no_switch_files and _has_switch == []
+      and re.search(r"^#   （Kafbat UI）\s+stream を作る回は Kafbat UI[^\n]*\+\$0\.02/h[^\n]*\*\*いつも作る\*\*（切り替える変数は無い[^\n]*\n#   （", up, re.M) is not None
+      and "Kafbat UI（約 $0.02/h）もいつも入る" in _read("deploy.env.example"))
 check("stream を作る回はいつも作る: イメージを ECR に写し、パスワードを SSM に作り、stream の apply に版を渡し、最後に開き方を出す（どれも SKIP_STREAM が空の if の中）",
       _in_stream_block('  if ecr_has "$PREFIX-kafka-ui" "$KAFKA_UI_TAG"; then')
       and _in_stream_block('  ensure_secret "/$PREFIX/kafka-ui/admin-password" password ')

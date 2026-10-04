@@ -62,9 +62,6 @@
 #                           Grafana のアラートルール link_down、Splunk の保存済みサーチ netops_poll、IF のグラフ、エージェントの IF のメトリクスはこのポーリングを見るので、
 #                           0 では空になる（IF の up / down は STORES の splunk の Splunk が trap からだけ出す）。stream の変数 snmp_poll に渡す
 #   （Kafbat UI）           stream を作る回は Kafbat UI（Kafka の画面。ECS Fargate ARM 0.5 vCPU / 1 GB のタスク 1 つ。+$0.02/h）を**いつも作る**（切り替える変数は無い。2026-10-05）。
-#                           トピック・メッセージ・consumer group を見られ、トピックの追加・設定の変更・削除もできる（見るだけではない）。MSK へはタスクロールの IAM 認証。
-#                           web の EC2 を踏み台にした SSM のポートフォワードで http://localhost:8082/ を開き、ユーザー admin でログインする
-#                           （コマンドとパスワードを出すコマンドは最後に出る。パスワードは SSM の SecureString に作る）
 #   （Nautobot）            PIPELINE=1 なら Nautobot（terraform/pipeline/nautobot。ECS Fargate の web + Celery worker + Redis と、RDS の PostgreSQL。+$0.13/h と ecs のエンドポイント）を**いつも作る**（切り替える変数は無い）。
 #                           機器の一覧とケーブルの正を Nautobot にする。最初だけ lab の定義から入り、あとは Nautobot で機器・Service（gnmi / snmp）・ケーブルを変えるたびに、
 #                           Job が Telegraf の取りにいく側（dialin）の機器の一覧（SSM）を書き換えてサービスを作り直し、Neptune の物理層を openCypher で合わせる。
