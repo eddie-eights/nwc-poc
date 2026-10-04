@@ -28,6 +28,11 @@ output "telegraf_repository_url" {
   value       = aws_ecr_repository.pipeline["telegraf"].repository_url
 }
 
+output "kafka_ui_repository_url" {
+  description = "Push ghcr.io/kafbat/kafka-ui:<KAFKA_UI_TAG of ops/up.sh> (arm64) here with the same tag (step 2, whenever stream is built). terraform/pipeline/stream runs it on ECS."
+  value       = aws_ecr_repository.pipeline["kafka-ui"].repository_url
+}
+
 output "grafana_repository_url" {
   description = "Build grafana/ (arm64) and push it here with tag <Grafana version>-<hash of grafana/> (step 2 of ops/up.sh, when STORES has grafana). terraform/pipeline/analytics runs it on ECS."
   value       = aws_ecr_repository.pipeline["grafana"].repository_url

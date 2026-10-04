@@ -15,6 +15,8 @@
 | [pipeline.md](pipeline.md) | `pipeline/`（`PIPELINE=1`） | lab → Telegraf → MSK → Spark → 格納先、Grafana と Splunk のアラート、Neptune のトポロジ |
 | [workflow.md](workflow.md) | `workflow/`（`WORKFLOW=1`） | アラート（SNS → SQS）→ Temporal の調査・承認・修復、Gateway（MCP） |
 
+リソースごとの知見（使い方、つながり、はまりどころ、制約）は [resources/README.md](resources/README.md)。
+
 使い方は別のファイル: パイプラインは [pipeline.md](../pipeline.md)、機器から集めるデータは [collection.md](../collection.md)、承認の流れは [workflow.md](../workflow.md)、データの置き場は [data-stores.md](../data-stores.md)。
 
 ## どのファイルがどこで動くか
@@ -38,7 +40,7 @@
 | `spark/` | Spark のジョブ（`snmp_sinks.py`。格納先へ流すだけで、検知はしない） |
 | `lab/` | containerlab の構成、SR Linux の設定（`srlinux/*.cli`）、EC2 の支度（`setup.sh`。lab とデバッグ用の EC2 で共通）、Telegraf（ECS）への転送（`lab forward`）、デバッグ用の EC2 の Telegraf（`lab telegraf`） |
 | `telegraf/` | Telegraf の `Dockerfile`、設定（`telegraf.conf.in`）と `tg`（stream の ECS のタスクで動く。デバッグ用の EC2 でも docker で `SINK=stdout`） |
-| `grafana/` | Grafana の `Dockerfile` と provisioning（データソース、ダッシュボード、アラート（`alerting/netops.yaml`）。analytics の ECS のタスクで動く） |
+| `grafana/` | Grafana の `Dockerfile` と provisioning（データソース、ダッシュボード、アラート（`alerting/` の `netops-prometheus.yaml` / `netops-opensearch.yaml` / `netops.yaml`）。analytics の ECS のタスクで動く） |
 | `splunk/` | Splunk の `Dockerfile`（公式イメージ + 検知のアプリ）と、アプリ `netops_alerts`（保存済みサーチと、SNS へ publish するアラートアクション。analytics の ECS のタスクで動く） |
 | `nautobot/` | Nautobot の `Dockerfile`（公式イメージ + boto3）、Job（`jobs/netops_jobs.py`）と、その中身（`netops/`。対応付け `nb_map.py`、同期 `nb_sync.py`、起動時の `bootstrap.py`）。`PIPELINE=1` ならいつも ECS で動く |
 | `graph/` | アラート（SNS）を受けて Neptune（Neptune Analytics）の `status` を書く Lambda |

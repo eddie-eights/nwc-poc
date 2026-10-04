@@ -479,7 +479,7 @@ h.toolkit._clients.pop("firehose", None)
 h.handler(pair); h.handler(pair)
 _cfg, _ncfg = h.FIREHOSE_CONFIG, h.NEPTUNE_CONFIG
 _timeout = int(re.search(r"^\s*timeout\s*=\s*(\d+)", read("terraform", "pipeline", "graph", "sync.tf"), re.M).group(1))
-_ips = 2   # エンドポイントの IP の数。インターフェース型エンドポイントは AZ ごとに 1 つ（endpoints_multi_az = true で 2 つ）で、接続の待ちは IP ごとにかかる
+_ips = 2   # エンドポイントの IP の数。インターフェース型エンドポイントは AZ ごとに 1 つ（endpoints_az_num = 2 で 2 つ）で、接続の待ちは IP ごとにかかる
 _fh_max = 3 * (_ips * _cfg.connect_timeout + _cfg.read_timeout) + sum(h.RETRY_WAITS)   # Firehose に使う時間の上限（3 回の接続と読みの待ち + 送り直しの待ち）
 _nep_max = _ncfg.retries["total_max_attempts"] * (_ips * _ncfg.connect_timeout + _ncfg.read_timeout) + 1   # Neptune 1 回の呼び出しの上限（再試行の前の待ちは 1 秒まで）
 check(f"Firehose へは FIREHOSE_CONFIG で 1 つだけ作ったクライアントで送り、botocore の再試行を切る（1 回）。Firehose に使うのは長くて {_fh_max:.1f} 秒（22 秒未満）",

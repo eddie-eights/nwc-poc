@@ -1260,6 +1260,38 @@ SDK を使うと、自分で書かなくて済むもの。
 
 役割ごとの画面の中身は記憶から書いた。「Splunk をクラスターにする（004）」の実装の最初（手元の 4 台）で確かめる。
 
+### Q. HEC で index を指定しないと、自動で index の名前が付く？
+
+**結論**
+
+- 名前を新しく作るのではなく、HEC の token に決めてある既定の index に入る。このプロジェクトでは `main`。
+- このプロジェクトの既定（`SPLUNK_INDEX` が空）は「指定しない」なので、いつも `main` に入り、問題は起きない。
+- 問題になるのは、存在しない index の名前をわざわざ指定したときだけ。Splunk は index を自動では作らないので、HEC は 200 を返すのに、イベントは捨てられる。
+
+**3 つの場合**
+
+| 送り方 | 入る先 | このプロジェクトで起きるか |
+|---|---|---|
+| index を指定しない | token の既定の index（`main`） | 既定はこれ |
+| ある index を指定する | その index | `SPLUNK_INDEX` に書いて、Splunk 側にも index を作ったとき |
+| 無い index を指定する | どこにも入らない（200 が返り、捨てられる） | `SPLUNK_INDEX` に書き間違えたとき、または index を作り忘れたとき |
+
+**理由**
+
+- Spark（`spark/snmp_sinks.py` の `splunk_events`）は、`SPLUNK_INDEX` が空ならイベントに `index` を入れない。HEC の仕様で、入っていない項目は token に決めた値になる。
+- 無い index 宛てのイベントは、`indexes.conf` の `lastChanceIndex` に行き先を書いておけばそこへ入る。既定は空で、空なら捨てられる（公式の記述）。
+- このプロジェクトは `indexes.conf` を書いていない（004 の決定）ので、`lastChanceIndex` も空のまま。
+
+**いまの扱い**
+
+- 既定では起きないので、そのままにしている。直すなら、`lastChanceIndex = main` を足すか、`ops/up.sh` が `SPLUNK_INDEX` に書かれた index があるかを確かめる。
+- 200 が返って捨てられることは、2026-10-04 に手元のコンテナで見つけた（004 の確認の途中）。AWS の上では未確認。
+
+**出どころ**
+
+- https://help.splunk.com/en/splunk-enterprise/get-started/get-data-in/10.0/get-data-with-http-event-collector/format-events-for-http-event-collector （2026-10-05 に確認）
+- https://help.splunk.com/en/splunk-enterprise/administer/admin-manual/10.0/configuration-file-reference/10.0.0-configuration-file-reference/indexes.conf （`lastChanceIndex`。2026-10-05 に確認）
+
 ### Q. Splunk に同じデータが二重に入るのは、防げる？
 
 **A. 入れるときに完全に防ぐことはできない。HEC には「同じものは 1 回だけ」にする仕組みが無い。やれるのは、二重に入る場面を減らすことと、検索のときに重複を落とせるよう、イベントに一意の番号を持たせること。**
@@ -1549,12 +1581,12 @@ Database と Analytics の使い分けは [8 章](#8-neptune-database-と-neptun
 ### Q. もう 2 AZ に置いてあるものは、1 AZ にできるか
 
 **A. 結論**
-MSK と AgentCore Runtime 以外は 1 AZ にできる。MSK は AWS の決まりで 2 AZ より少なくできない。
+MSK 以外は 1 AZ にできる。MSK は AWS の決まりで 2 AZ より少なくできない。AgentCore Runtime は 2026-10-05 から既定 1 AZ（ユーザー決定）。
 
 | リソース | 1 AZ にできるか | 理由 |
 |---|---|---|
 | MSK | できない | ブローカーを置くサブネットは 2 つ以上の AZ に要る（AWS の決まり）。ブローカーの数も AZ の数の倍数 |
-| AgentCore Runtime | できない（未確認） | `terraform/agent/variables.tf` の説明に「Runtime needs two AZs」とある。AWS の文書では確かめていない |
+| AgentCore Runtime | できる見込み（AWS では未確認） | API はサブネットを 1〜16 個受け付ける（AgentCore Control API Reference「VpcConfig」）。手引き（AgentCore Developer Guide「Configure Amazon Bedrock AgentCore Runtime and tools for VPC」）は高可用のため 2 AZ 以上を勧めるが、1 つを禁じてはいない（どちらも 2026-10-05 確認）。2 AZ にするときは `ops/up.sh` がエンドポイントも同じ数にそろえる（エンドポイントが a にしか無いと 2 AZ が見かけだけになる） |
 | EMR Serverless | できる | サブネットを 1 つだけ渡せばよい。費用は変わらない |
 | Lambda（KB の索引、グラフの状態、tools） | できる | サブネットを 1 つだけ渡せばよい。費用は変わらない |
 | AOSS の VPC エンドポイント | できる見込み（未確認） | 1 サブネットで作れるかは確かめていない。作れれば 1.4 セント/h 減る |
@@ -1789,6 +1821,43 @@ Community Edition にクラスターが無いことは、2026-10-04 に Neo4j �
 **出典**
 
 - https://kafka.apache.org/41/operations/kraft/ （2026-10-04 に確認）
+
+### Q. MSK にも Kafbat UI みたいな GUI はある？
+
+**結論**
+
+- ある。MSK のコンソールに、トピックの一覧、パーティションの情報、トピックの作成・変更・削除が入っている（MSK の topic の API をコンソールから呼ぶ形）。
+- ただし Kafbat UI より狭い。メッセージの中身を見る、メッセージを送る、コンシューマーの遅れ（lag）を一覧で見る、はコンソールの topic の機能には無い（lag は CloudWatch のメトリクスで見る）。
+- MSK に Kafbat UI をつなぐこともできる（IAM 認証に対応している）。
+
+**比べる**
+
+| できること | MSK のコンソール | Kafbat UI |
+|---|---|---|
+| ブローカーの一覧と状態 | できる | できる |
+| トピックの一覧、パーティションの情報 | できる | できる |
+| トピックの作成・変更・削除 | できる | できる |
+| メッセージの中身を見る、送る | できない | できる |
+| コンシューマーの遅れ（lag） | CloudWatch のメトリクスで見る | 画面で一覧できる |
+| 時系列のグラフ、アラート | CloudWatch | 無い |
+| 置くもの | 何も要らない | コンテナ 1 つ |
+
+**条件（MSK のコンソールの topic の機能）**
+
+- MSK Provisioned だけ（Serverless は不可）。Kafka 3.6.0 以上。クラスターが `ACTIVE`。
+- IAM の権限が要る（`kafka-cluster:Connect`、`DescribeTopic`、`CreateTopic` など）。
+- 表示は約 1 分ごとに更新される（変えた直後は古い）。
+
+**このプロジェクトでは**
+
+- マネージド版の MSK は Provisioned で IAM 認証なので、条件に合うはず（コンソールで開いたことは無い。未確認）。
+- OSS 版（「マネージドを OSS に置き換えた環境を作る（005）」）には Kafbat UI を置く。
+- マネージド版の MSK にも Kafbat UI を置く（2026-10-05 のユーザーの決定。実装中）。`SASL_SSL` と `AWS_MSK_IAM` の設定と、タスクロールへの `kafka-cluster:*` の権限で、IAM 認証でつなぐ。
+
+**出典**（2026-10-05 に確認）
+
+- https://docs.aws.amazon.com/msk/latest/developerguide/msk-topic-operations-information.html
+- https://ui.docs.kafbat.io/configuration/authentication/for-kafka/aws-iam.md
 
 ### Q. OpenSearch は、レプリカと合わせて 2 台じゃダメ？
 

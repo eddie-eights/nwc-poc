@@ -50,7 +50,11 @@ locals {
   telegraf_dialin_sg_id      = try(data.terraform_remote_state.main.outputs.security_group_ids["telegraf_dialin"], "")
   telegraf_dialout_nlb_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["telegraf_dialout_nlb"], "")
   msk_sg_id                  = try(data.terraform_remote_state.main.outputs.security_group_ids["msk"], "")
-  reader_role_names          = toset([data.terraform_remote_state.main.outputs.runtime_role_name, data.terraform_remote_state.main.outputs.web_role_name])
+  # Kafbat UI（kafka_ui.tf）。2026-10-05 より前の土台には無いので、kafka_ui.tf の precondition で止める
+  kafka_ui_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["kafka_ui"], "")
+  # Kafbat UI のポートフォワードの踏み台
+  web_instance_id   = try(data.terraform_remote_state.main.outputs.web_instance_id, "")
+  reader_role_names = toset([data.terraform_remote_state.main.outputs.runtime_role_name, data.terraform_remote_state.main.outputs.web_role_name])
 
   # Telegraf の dialin のタスクと、dialout の NLB の lab 向けのアドレスはサブネット a（lab の EC2 と Web の EC2 と同じ）。
   # dialout の NLB とタスクは var.telegraf_az_num の AZ（a から）
@@ -64,4 +68,5 @@ locals {
 
   # arn:aws:kafka:<region>:<account>:cluster/<name>/<uuid> → topic/<name>/<uuid>/*
   topic_arns = "${replace(aws_msk_cluster.stream.arn, ":cluster/", ":topic/")}/*"
+  group_arns = "${replace(aws_msk_cluster.stream.arn, ":cluster/", ":group/")}/*"
 }

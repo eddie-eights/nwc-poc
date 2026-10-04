@@ -49,7 +49,8 @@ resource "aws_opensearchserverless_vpc_endpoint" "aoss" {
 # （https://docs.aws.amazon.com/vpc/latest/privatelink/privatelink-access-aws-services.html）と
 # 「Access an AWS service using an interface VPC endpoint」（https://docs.aws.amazon.com/vpc/latest/privatelink/create-interface-endpoint.html）、
 # 2026-10-04 確認。AZ が落ちたときの振る舞いは AWS で未確認。
-# ENDPOINTS_AZ_NUM を他の <リソース>_AZ_NUM より小さくすると、ops/up.sh が警告（AZ_NUM_OVER）を出す（止めはしない）
+# ENDPOINTS_AZ_NUM を他の <リソース>_AZ_NUM より小さくすると、ops/up.sh が警告（AZ_NUM_OVER）を出す（止めはしない）。
+# RUNTIME_AZ_NUM より小さいときだけは、ENDPOINTS_AZ_NUM を書いていなければ ops/up.sh が上げ、書いてあれば止まる（2026-10-05 のユーザー決定）
 locals {
   endpoint_subnet_ids = slice(local.subnet_ids, 0, var.endpoints_az_num)
 }

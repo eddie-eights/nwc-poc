@@ -21,9 +21,9 @@
 | 種類 | 既定で取れるか | 経路 |
 |---|---|---|
 | syslog | 取れる | 機器 → 5140/udp → NLB → Telegraf → `logs`。既定の `SYSLOG_STANDARD=RFC3164` は本番の Cisco 向けで、lab の SR Linux（RFC5424）のログは崩れる（[deploy.md](deploy.md)） |
-| SNMP trap | 取れる | 機器 → 162/udp → NLB → Telegraf → `traps`。異常として上げるのは Splunk（`STORES` の `splunk`）だけ |
+| SNMP trap | 取れる | 機器 → 162/udp → NLB → Telegraf → `traps`。異常として上げるのは Grafana（`STORES` の `grafana`。link 以外の trap を `trap` として）と Splunk（`STORES` の `splunk`。linkDown / linkUp を `link_down`、ほかを `trap` として）。linkDown / linkUp の trap から `link_down` を出すのは Splunk だけ |
 | telemetry | 一部 | Telegraf → 機器の gNMI（57400/tcp）で BGP / IS-IS / EVPN / MAC の状態を `gnmi` トピックへ。本番の MDT の受け口（57000/tcp → `mdt` トピック）はあるが、送ってよい機器（`MDT_SOURCE_CIDRS`）が既定で空なので何も届かない |
-| 性能メトリクス | lab だけ | lab の SR Linux から gNMI で CPU・メモリ・IF のカウンタと速度・MAC テーブルの数（セッションの代替）・収容回線数の代替を購読し、Telegraf の中で共通の形（下の「共通の形（仮）」）に変えて `metrics` トピックへ（2026-10-04。実機の lab では未確認）。本番の MDT は受け口だけで、共通の形への変換はまだ無い（`mdt` トピックに生のまま）。SNMP のポーリングは既定で止めている（`SNMP_POLL=0`）。`SNMP_POLL=1` でも IF の 32 ビットカウンタとエラー数だけ |
+| 性能メトリクス | lab だけ | lab の SR Linux から gNMI で CPU・メモリ・IF のカウンタと速度・MAC テーブルの数（セッションの代替）・収容回線数の代替を購読し、Telegraf の中で共通の形（下の「共通の形（仮）」）に変えて `metrics` トピックへ（2026-10-04。実機の lab では未確認）。本番の MDT は受け口だけで、共通の形への変換はまだ無い（`mdt` トピックに生のまま）。SNMP のポーリング（`SNMP_POLL=1`。既定）で取るのは IF の状態と 32 ビットカウンタ、エラー数だけ |
 
 trap と syslog では性能の時系列は取れない（届くのはイベントか、しきい値を越えたという知らせだけ）。性能メトリクスにはポーリングか telemetry が要る。
 
@@ -59,7 +59,7 @@ trap と syslog では性能の時系列は取れない（届くのはイベン�
 | サービス | `TELEGRAF_ROLE` | 入力 | 数 | SG |
 |---|---|---|---|---|
 | `<prefix>-telegraf-dialout` | `dialout` | trap・syslog・MDT（NLB の後ろ） | 増やしてよい（いまは 1。入れ替えは新しいタスクが立ってから古いものを止める） | `telegraf_dialout`（NLB から受けるだけ） |
-| `<prefix>-telegraf-dialin` | `dialin` | gNMI の購読、SNMP のポーリング（`SNMP_POLL=1`）、lab の値を共通の形に変える Starlark | 1 に固定（入れ替えは古いものを止めてから。そのあいだ購読が数十秒切れる） | `telegraf_dialin`（受けない。機器の 161/udp・57400/tcp へ出る） |
+| `<prefix>-telegraf-dialin` | `dialin` | gNMI の購読、SNMP のポーリング（`SNMP_POLL=1`。既定）、lab の値を共通の形に変える Starlark | 1 に固定（入れ替えは古いものを止めてから。そのあいだ購読が数十秒切れる） | `telegraf_dialin`（受けない。機器の 161/udp・57400/tcp へ出る） |
 
 Kafka の出力（5 トピック）と health はどちらにもある。Starlark を取りにいく側に置くのは、変える前の `lab_*` を Kafka に載せないので gNMI の入力と同じタスクにいる必要があるから。デバッグ用の EC2 は既定の `all`（両方を 1 つの Telegraf で）。
 

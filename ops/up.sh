@@ -61,6 +61,7 @@
 #   SNMP_POLL=0             stream の Telegraf で SNMP をポーリングしない（既定 1 = 10 秒ごとに ifTable → metrics トピック。0 なら SNMP は trap だけ受ける）。
 #                           Grafana のアラートルール link_down、Splunk の保存済みサーチ netops_poll、IF のグラフ、エージェントの IF のメトリクスはこのポーリングを見るので、
 #                           0 では空になる（IF の up / down は STORES の splunk の Splunk が trap からだけ出す）。stream の変数 snmp_poll に渡す
+#   （Kafbat UI）           stream を作る回は Kafbat UI（Kafka の画面。ECS Fargate ARM 0.5 vCPU / 1 GB のタスク 1 つ。+$0.02/h）を**いつも作る**（切り替える変数は無い。2026-10-05）。
 #   （Nautobot）            PIPELINE=1 なら Nautobot（terraform/pipeline/nautobot。ECS Fargate の web + Celery worker + Redis と、RDS の PostgreSQL。+$0.13/h と ecs のエンドポイント）を**いつも作る**（切り替える変数は無い）。
 #                           機器の一覧とケーブルの正を Nautobot にする。最初だけ lab の定義から入り、あとは Nautobot で機器・Service（gnmi / snmp）・ケーブルを変えるたびに、
 #                           Job が Telegraf の取りにいく側（dialin）の機器の一覧（SSM）を書き換えてサービスを作り直し、Neptune の物理層を openCypher で合わせる。
@@ -79,17 +80,19 @@
 #   LOCAL_PORT              PC 側のポート。既定 8080
 #   NO_DASHBOARD_PORTFORWARD=1  最後の Web へのポートフォワーディング（手順 10）を開かずに終わる（2026-10-04 に NO_PORTFORWARD から名前を変えた。前の名前が残っていると止まる）
 #   AWS_PROFILE / AWS_CA_BUNDLE  AWS CLI と terraform がそのまま読む
-# ---- 冗長化用（既定は 1 AZ。MSK と Runtime だけ既定 2 AZ。本番の形を試すときに書く） ----
+# ---- 冗長化用（既定は 1 AZ。MSK だけ既定 2 AZ。本番の形を試すときに書く） ----
 #   <リソース>_AZ_NUM で、そのリソースを何 AZ に置くかをリソースごとに選ぶ（まとめて切り替えるキーは無い）。base/core はサブネット a / b / c を
 #   いつも作り、各リソースは先頭から AZ_NUM 個を使う。増やした分は下の費用の目安に入る（AZ をまたぐ転送料 $0.01/GB は入らない）。
 #   範囲の外の値は何も作る前に止まる
 #   ENDPOINTS_AZ_NUM=1      インターフェース型エンドポイントと OpenSearch Serverless の VPC エンドポイント。1〜3。エンドポイントの費用が AZ の数の倍。
 #                           ほかのキーを書いて 2 以上にしたのにこれがそれより小さいと注意を出す（エンドポイントの無い AZ が残ると、a の AZ が止まったとき
-#                           b / c のものも AWS の API に届かない）。ENDPOINTS_MULTI_AZ は 2026-10-04 にこれへ変わった（書いてあると止まる）
+#                           b / c のものも AWS の API に届かない）。RUNTIME_AZ_NUM より小さいときだけは注意で済ませない（下の RUNTIME_AZ_NUM）。
+#                           3 にすると、グラフの状態の Lambda がエンドポイントに届かないときに待つ時間の上限（66.6 秒）が timeout の 60 秒を超えるので、注意を出す（graph と analytics を作る回）。
+#                           ENDPOINTS_MULTI_AZ は 2026-10-04 にこれへ変わった（書いてあると止まる）
 #   MSK_AZ_NUM=2            MSK のブローカー（1 AZ に 1 台。+$0.27/h ずつ）。2〜3。**1 にはできない**（MSK はブローカーを 2 か 3 の AZ にしか置けない）。
 #                           2 で複製 2 / min.insync.replicas 1、3 で 3 / 2。変えるとクラスタを作り直す（トピックの中身は消える）
-#   RUNTIME_AZ_NUM=2        AgentCore Runtime の ENI。2〜3。**1 にはできない**（AWS の文書が高可用性のため 2 AZ 以上を勧めているので、2 以上に決めた。
-#                           2026-10-04 のユーザー決定。API そのものは 1 サブネットでも受け付ける）。費用は変わらない
+#   RUNTIME_AZ_NUM=1        AgentCore Runtime の ENI。1〜3。Runtime そのものの費用は変わらない。2 以上にするとエンドポイントも同じ数にそろえる:
+#                           ENDPOINTS_AZ_NUM を書いていなければこの数まで上げ（エンドポイントの費用が AZ の数の倍に増える）、これより小さく書いてあれば止まる
 #   EMR_AZ_NUM=1            Spark（EMR Serverless）のジョブが動けるサブネット。1〜3。ジョブは 1 つのサブネットで動き、その AZ が止まれば次は別の AZ で起こせる。
 #                           費用は変わらない。変えるときアプリが動いていれば、ジョブとアプリを止めてから変える（7-5 で起こし直す）
 #   LAMBDA_AZ_NUM=1         VPC の Lambda（KB の索引・グラフの状態・Gateway の tools の 3 つ）。1〜3。費用は変わらない
@@ -129,6 +132,8 @@ SPLUNK_VERSION=10.4.3   # splunk/splunk は amd64 だけ（ECS のタスクは X
 # Nautobot と、同じタスクで動かす Redis。nautobot/Dockerfile の ARG と terraform/pipeline/nautobot の redis_image_tag の既定値に合わせてある
 NAUTOBOT_VERSION=3.2.6
 REDIS_TAG=7.4.2-alpine
+# Kafbat UI（stream の ECS。ghcr.io/kafbat/kafka-ui を同じタグで ECR に写す）。terraform/pipeline/stream の kafka_ui_image_tag の既定値に合わせてある
+KAFKA_UI_TAG=v1.5.0
 # analytics の Spark ジョブに足す jar（Maven Central。2026-09-17 に 6 本とも取れることを確認）。EMR Serverless 7.13.0 の Spark 3.5.6 に合わせてある。
 # terraform/pipeline/analytics の emr_release_label を変えるときは spark-sql-kafka とその依存（kafka-clients / commons-pool2 は spark-sql-kafka の pom の版）も変える
 JARS_DIR=jars
@@ -507,7 +512,7 @@ fi
 NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"
 flag_value NETWORK_PERIMETER
 # 冗長化用（2026-10-04 のユーザー決定）。<リソース>_AZ_NUM でそのリソースを何 AZ に置くか選ぶ（base/core のサブネット a / b / c の先頭から）。
-# まとめて切り替えるキーは作らない。既定は 1 で、MSK と Runtime だけ 2。値は何も作る前にここで確かめる
+# まとめて切り替えるキーは作らない。既定は 1 で、MSK だけ 2。値は何も作る前にここで確かめる
 case "${ENDPOINTS_MULTI_AZ:-}" in
   '') ;;
   0|false|no) die "ENDPOINTS_MULTI_AZ は ENDPOINTS_AZ_NUM に変わった（2026-10-04。AZ の数で書く）。ENDPOINTS_MULTI_AZ=${ENDPOINTS_MULTI_AZ} は既定（ENDPOINTS_AZ_NUM=1）と同じなので、deploy.env と環境変数から消す。まだ何も作っていない" ;;
@@ -528,11 +533,12 @@ az_num ENDPOINTS_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
 #   MSK: 1 にはできない。clientSubnets は別々の AZ のサブネットを 2 つか 3 つ（us-west-1 だけ 2 つ）しか受け付けない
 #   （Amazon MSK API Reference「Clusters」の BrokerNodeGroupInfo.clientSubnets、https://docs.aws.amazon.com/msk/1.0/apireference/clusters.html）
 az_num MSK_AZ_NUM 2 2 3 "MSK はブローカーを 2 か 3 の AZ にしか置けない。1 AZ にはできない"
-#   Runtime: 1 を拒むのは AWS の制約ではなくユーザーの決定。手引きの Best practices が別々の AZ のプライベートサブネットを 2 つ以上と勧める
-#   （Amazon Bedrock AgentCore Developer Guide「Configure Amazon Bedrock AgentCore Runtime and tools for VPC」、
-#   https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html）。API は 1〜16 個を受け付ける（AgentCore Control API Reference
-#   「VpcConfig」、https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_VpcConfig.html）。1 つで作るのは AWS で未確認
-az_num RUNTIME_AZ_NUM 2 2 3 "AgentCore Runtime は AWS の文書の勧めに合わせて 2 AZ 以上に置く（2026-10-04 のユーザー決定）"
+#   Runtime: 既定 1（2026-10-05 のユーザー決定）。API はサブネットを 1〜16 個受け付ける（AgentCore Control API Reference「VpcConfig」の subnets、
+#   https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_VpcConfig.html）。手引きは Best practices で高可用のために
+#   別々の AZ のサブネットを 2 つ以上と勧めるが、1 つを禁じる記述は無い（Amazon Bedrock AgentCore Developer Guide「Configure Amazon Bedrock
+#   AgentCore Runtime and tools for VPC」、https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html）。どちらも 2026-10-05 確認。
+#   1 つで作るのは AWS で未確認
+az_num RUNTIME_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
 az_num EMR_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
 az_num LAMBDA_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
 #   Neptune: replicaCount は 0〜2（Neptune Analytics API Reference「CreateGraph」、
@@ -558,17 +564,47 @@ if [ "$SPLUNK_AZ_NUM" -gt 1 ] && [ -z "$SKIP_ANALYTICS" ]; then
 fi
 SPLUNK_TASKS=1   # Splunk のタスクの数（費用と 7-4b の待ち）。クラスターは manager 1 + indexer SPLUNK_AZ_NUM + search head 1
 if [ "$SPLUNK_AZ_NUM" -gt 1 ]; then SPLUNK_TASKS=$((SPLUNK_AZ_NUM + 2)); fi
+# Runtime を 2 AZ 以上にするときはエンドポイントも同じ数にそろえる（2026-10-05 のユーザー決定）。Runtime の ENI が b / c にあっても、
+# エンドポイントが a にしか無いと a の AZ が止まったときチャットは Bedrock などの AWS の API に届かず、2 AZ が見かけだけになる。
+# ENDPOINTS_AZ_NUM を書いていなければ Runtime の数まで上げ、Runtime より小さく書いてあれば止める（黙って見かけだけの 2 AZ にしない）。
+# AGENT=0 の回でも見る（前の回の Runtime が残っていれば ENI はそのサブネットにある。RUNTIME_AZ_NUM を書いたときだけ効く）
+if [ "$ENDPOINTS_AZ_NUM" -lt "$RUNTIME_AZ_NUM" ]; then
+  case " $AZ_NUM_SET " in
+    *" ENDPOINTS_AZ_NUM "*)
+      die "ENDPOINTS_AZ_NUM=$ENDPOINTS_AZ_NUM が RUNTIME_AZ_NUM=$RUNTIME_AZ_NUM より小さい。エンドポイントがサブネット a から $ENDPOINTS_AZ_NUM つにしか無いと、その AZ が止まったとき Runtime はほかの AZ にいても AWS の API に届かず、$RUNTIME_AZ_NUM AZ が見かけだけになる。ENDPOINTS_AZ_NUM を $RUNTIME_AZ_NUM 以上にする（書かなければ up.sh がそろえる）か、RUNTIME_AZ_NUM を $ENDPOINTS_AZ_NUM にする。まだ何も作っていない" ;;
+  esac
+  echo "RUNTIME_AZ_NUM=$RUNTIME_AZ_NUM に合わせて ENDPOINTS_AZ_NUM を $ENDPOINTS_AZ_NUM から $RUNTIME_AZ_NUM に上げる（Runtime の AZ すべてにエンドポイントを置く。エンドポイントの費用が $RUNTIME_AZ_NUM 倍になり、下の費用の目安に入る）"
+  ENDPOINTS_AZ_NUM=$RUNTIME_AZ_NUM
+fi
 # ENDPOINTS_AZ_NUM がほかより小さいときの注意（止めはしない）: エンドポイントの ENI は置いた AZ にしか無く、ほかの AZ からもその ENI に
 # 解決されるので、その AZ が傷むとほかの AZ のものも AWS の API に届かない。本番は 2 AZ 以上が AWS の勧め（AWS PrivateLink Guide
 # 「Access AWS services through AWS PrivateLink」の Subnets and Availability Zones、
 # https://docs.aws.amazon.com/vpc/latest/privatelink/privatelink-access-aws-services.html）。AZ が落ちたときの振る舞いは AWS で未確認。
-# 比べるのは deploy.env か環境変数に書いたキーだけ（既定の MSK_AZ_NUM=2 / RUNTIME_AZ_NUM=2 と ENDPOINTS_AZ_NUM=1 の組み合わせでは出さない）
+# 比べるのは deploy.env か環境変数に書いたキーだけ（既定の MSK_AZ_NUM=2 と ENDPOINTS_AZ_NUM=1 の組み合わせでは出さない）。
+# RUNTIME_AZ_NUM はすぐ上でそろえたので、ここには出ない
 AZ_NUM_OVER=""
 for k in $AZ_NUM_SET; do
   if [ "$k" != ENDPOINTS_AZ_NUM ] && [ "${!k}" -gt "$ENDPOINTS_AZ_NUM" ]; then AZ_NUM_OVER="$AZ_NUM_OVER $k=${!k}"; fi
 done
 if [ -n "$AZ_NUM_OVER" ]; then
   echo "注意:${AZ_NUM_OVER} に対して ENDPOINTS_AZ_NUM=$ENDPOINTS_AZ_NUM。エンドポイントはサブネット a から $ENDPOINTS_AZ_NUM つにしか無いので、その AZ が止まると、ほかの AZ に置いたものも AWS の API に届かない（止めずに進む。そろえるなら ENDPOINTS_AZ_NUM も同じ数にする）"
+fi
+# グラフの状態の Lambda（<prefix>-graph-status。terraform/pipeline/graph の sync.tf で timeout 60 秒）が Firehose（アラートの履歴）と Neptune を
+# 待つ時間の上限は、ENDPOINTS_AZ_NUM で伸びる。エンドポイントの IP は AZ ごとに 1 つあり、接続の待ちは IP ごとにかかる（urllib3 は名前の
+# 引けた IP を順に試す）。graph/status_handler.py の FIREHOSE_CONFIG・RETRY_WAITS・NEPTUNE_CONFIG から:
+#   Firehose = 3 回 ×（接続 2 秒 × AZ の数 + 読み 3 秒）+ 送り直しの前の待ち 0.6 秒
+#   Neptune の 1 回の問い合わせ = 2 回 ×（接続 3 秒 × AZ の数 + 読み 10 秒）+ 再試行の前の待ち 1 秒
+#   1 AZ は 15.6 + 27 = 42.6 秒、2 AZ は 21.6 + 33 = 54.6 秒、3 AZ は 27.6 + 39 = 66.6 秒で、3 AZ だけ 60 秒を超える
+# 超えると、エンドポイントに届かないときに Neptune の 1 回目の問い合わせの途中で timeout し、Lambda の非同期のやり直しになる（status が遅れる。
+# 履歴の行は Neptune より先に送るので、それまでに Firehose に届くか ALERT_EVENT_LOST でログに残る）。注意だけ出して進む
+# （2026-10-05 のユーザー決定。Lambda の timeout と待ちの設定は変えない）。graph を作る回だけ見る。Firehose に送るのは analytics がある回だけ
+# （alert_history）。今回は作らない analytics が前の回の state に残っている回（手順 3 の ANALYTICS_LEFT）は、ここではまだ分からないので数えない
+if [ -z "$SKIP_GRAPH" ]; then
+  GRAPH_WAIT=$((20 * (3 * ENDPOINTS_AZ_NUM + 10) + 10))   # 0.1 秒単位。Neptune の 1 回の問い合わせ
+  if [ -z "$SKIP_ANALYTICS" ]; then GRAPH_WAIT=$((GRAPH_WAIT + 30 * (2 * ENDPOINTS_AZ_NUM + 3) + 6)); fi   # + Firehose
+  if [ "$GRAPH_WAIT" -gt 600 ]; then
+    echo "注意: ENDPOINTS_AZ_NUM=$ENDPOINTS_AZ_NUM だと、グラフの状態の Lambda（graph-status）がエンドポイントに届かないときに待つ時間の上限が $((GRAPH_WAIT / 10)).$((GRAPH_WAIT % 10)) 秒（Firehose の履歴 + Neptune の 1 回の問い合わせ。接続の待ちは AZ ごとの IP の数だけかかる）になり、Lambda の timeout の 60 秒を超える。そのときは Neptune に書く途中で切れて非同期のやり直しになり、status が遅れる（止めずに進む。超えないのは ENDPOINTS_AZ_NUM=2 まで）"
+  fi
 fi
 if [ -z "$NETWORK_PERIMETER" ]; then echo "NETWORK_PERIMETER=0: VPC の外からの呼び出しを拒む Deny を外す（エンドポイントは作る。切り分けが済んだら 1 に戻して打ち直す）"; fi
 if [ -z "$AGENT$PIPELINE$WORKFLOW" ]; then
@@ -673,7 +709,9 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 #   2026-10-04 までの Neptune Database の db.t4g.medium は 14 だった。レプリカも同じ単価なので × NEPTUNE_AZ_NUM）、
 #   stream = MSK 57（ブローカー 2 台。MSK_AZ_NUM=3 で 1 台 27 を足す）+ Telegraf 5（Fargate ARM 0.25 vCPU / 0.5 GB で 1.2 のタスクが、受ける側 1 つと
 #   取りにいく側 TELEGRAF_AZ_NUM 個（2026-10-04 に分けた）と内部 NLB 2.43。
-#   NLB は 2026-09-28 から。どちらも公表単価からで、Price List API では確かめていない）、
+#   NLB は 2026-09-28 から。どちらも公表単価からで、Price List API では確かめていない）
+#   + Kafbat UI の 2（Fargate ARM 0.5 vCPU / 1 GB で 2.5。Grafana と同じ大きさ。公表単価からで、Price List API では確かめていない。
+#   Cloud Map の名前空間の Route 53 のホストゾーンは月 $0.50 で入れていない）、
 # analytics = Spark のジョブ 1 つにつき 21（ストリーミングのジョブが動いている間の EMR Serverless の 3 vCPU（driver 1 + executor 2。1 vCPU のワーカー 1 台で約 7）。単価は 2026-09-17 に確認。
 #   executor は 2026-10-04 に 1 → 2（Kafka のパーティション 2 つを並列に読む）。ジョブは 2026-10-04 に格納先で 3 つに分けた（7-5）:
 #   STORES の s3 で sinks-s3iceberg、splunk で sinks-splunk、grafana で sinks-grafana（名前は 7-5 の job_name）。3 つとも動けば 63。
@@ -700,6 +738,7 @@ if [ -z "$SKIP_STREAM" ]; then
   # MSK は kafka.m5.large × 2 で 0.542（Kafka 4 は t3.small を受け付けない。2026-09-18）。3 AZ ならブローカーが 1 台増える
   COST_CENTS=$((COST_CENTS + 57 + 27 * (MSK_AZ_NUM - 2)))
   COST_CENTS=$((COST_CENTS + (12 * (1 + TELEGRAF_AZ_NUM) + 24 + 5) / 10))   # Telegraf（Fargate のタスク 1 + TELEGRAF_AZ_NUM 個と NLB）
+  COST_CENTS=$((COST_CENTS + 2))   # Kafbat UI（Fargate のタスク 1）
 fi
 if [ -z "$SKIP_ANALYTICS" ]; then
   # Spark のジョブ（1 つ 21。格納先で 3 つ）
@@ -745,7 +784,7 @@ TEMPORAL_TAG=1.9.1   # terraform/workflow の temporal_image_tag の既定値。
 
 # ---- 2. イメージ ----------------------------------------------------------------
 log "2. イメージ（ECR に無いタグだけ作る）"
-NEED_AGENT=""; NEED_LAB=""; NEED_WORKER=""; NEED_TEMPORAL=""; NEED_TELEGRAF=""; NEED_GRAFANA=""; NEED_SPLUNK=""; NEED_NAUTOBOT=""; NEED_REDIS=""
+NEED_AGENT=""; NEED_LAB=""; NEED_WORKER=""; NEED_TEMPORAL=""; NEED_TELEGRAF=""; NEED_GRAFANA=""; NEED_SPLUNK=""; NEED_NAUTOBOT=""; NEED_REDIS=""; NEED_KAFKA_UI=""
 # telegraf / grafana / splunk は Dockerfile のあるディレクトリの中身からタグを作る（中身を変えれば次の ops/up.sh が作り直す）
 TELEGRAF_TAG=""; GRAFANA_TAG=""; SPLUNK_TAG=""; NAUTOBOT_TAG=""
 if [ -n "$AGENT" ]; then
@@ -762,6 +801,7 @@ fi
 if [ -z "$SKIP_STREAM" ]; then
   TELEGRAF_TAG=$(telegraf_tag) || die "telegraf/ のタグを作れなかった"
   if ecr_has "$PREFIX-telegraf" "$TELEGRAF_TAG"; then echo "telegraf:$TELEGRAF_TAG はある"; else NEED_TELEGRAF=1; fi
+  if ecr_has "$PREFIX-kafka-ui" "$KAFKA_UI_TAG"; then echo "kafka-ui:$KAFKA_UI_TAG はある"; else NEED_KAFKA_UI=1; fi
 fi
 if [ -n "$GRAFANA" ]; then
   GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" grafana) || die "grafana/ のタグを作れなかった"
@@ -778,7 +818,7 @@ if [ -n "$NAUTOBOT" ]; then
   if ecr_has "$PREFIX-nautobot" "$NAUTOBOT_TAG"; then echo "nautobot:$NAUTOBOT_TAG はある"; else NEED_NAUTOBOT=1; fi
   if ecr_has "$PREFIX-redis" "$REDIS_TAG"; then echo "redis:$REDIS_TAG はある"; else NEED_REDIS=1; fi
 fi
-if [ -z "$NEED_AGENT$NEED_LAB$NEED_WORKER$NEED_TEMPORAL$NEED_TELEGRAF$NEED_GRAFANA$NEED_SPLUNK$NEED_NAUTOBOT$NEED_REDIS" ]; then
+if [ -z "$NEED_AGENT$NEED_LAB$NEED_WORKER$NEED_TEMPORAL$NEED_TELEGRAF$NEED_GRAFANA$NEED_SPLUNK$NEED_NAUTOBOT$NEED_REDIS$NEED_KAFKA_UI" ]; then
   echo "作るイメージは無い"
 else
   docker info >/dev/null 2>&1 || die "dockerd に接続できない（WSL なら sudo service docker start。docs/setup.md「Terraform を打つ PC 側」）"
@@ -825,6 +865,10 @@ else
   if [ -n "$NEED_REDIS" ]; then
     # Nautobot のタスクの中で動かす Redis（キャッシュと Celery のブローカー）。Fargate は VPC の中から ECR しか引けないのでミラーする
     mirror_image "redis:$REDIS_TAG" "$REG/$PREFIX-redis:$REDIS_TAG" || die "redis のイメージを ECR に置けなかった"
+  fi
+  if [ -n "$NEED_KAFKA_UI" ]; then
+    # Kafbat UI（stream の ECS）。Fargate は VPC の中から ECR しか引けないのでミラーする（展開して約 640 MB）
+    mirror_image "ghcr.io/kafbat/kafka-ui:$KAFKA_UI_TAG" "$REG/$PREFIX-kafka-ui:$KAFKA_UI_TAG" || die "kafka-ui のイメージを ECR に置けなかった"
   fi
 fi
 
@@ -1043,7 +1087,9 @@ if [ -z "$SKIP_STREAM" ]; then
   # Terraform が書くのは最初の値（上の lab の一覧。Nautobot の最初の seed も lab なので同じ）だけ
   DIALIN_FROM_NAUTOBOT=true
   echo "Telegraf の取りにいく側の機器の一覧: Nautobot の Job が書く（上の一覧は最初の値）"
-  tf_apply pipeline/stream -var "telegraf_image_tag=$TELEGRAF_TAG" -var "snmp_agents=$SNMP_AGENTS" -var "gnmi_targets=$GNMI_TARGETS" \
+  # Kafbat UI（stream を作る回はいつも作る）。ログインの admin のパスワードは SSM の SecureString（タスクは ECS の secrets で受ける）
+  ensure_secret "/$PREFIX/kafka-ui/admin-password" password "Kafbat UI admin password (created by ops/up.sh)"
+  tf_apply pipeline/stream -var "telegraf_image_tag=$TELEGRAF_TAG" -var "kafka_ui_image_tag=$KAFKA_UI_TAG" -var "snmp_agents=$SNMP_AGENTS" -var "gnmi_targets=$GNMI_TARGETS" \
     -var "syslog_standard=$SYSLOG_STANDARD" -var "snmp_poll=$SNMP_POLL_TF" -var "dialin_targets_from_nautobot=$DIALIN_FROM_NAUTOBOT" \
     -var "msk_az_num=$MSK_AZ_NUM" -var "telegraf_az_num=$TELEGRAF_AZ_NUM"
 fi
@@ -1441,6 +1487,11 @@ if [ -n "$NAUTOBOT" ]; then
   echo "Nautobot（http://localhost:8081/ 。ユーザー admin）を開くポートフォワード（web の EC2 を踏み台にする）と admin のパスワード:"
   tf pipeline/nautobot output -raw port_forward_command; echo
   tf pipeline/nautobot output -raw password_command; echo
+fi
+if [ -z "$SKIP_STREAM" ]; then
+  echo "Kafbat UI（http://localhost:8082/ 。ユーザー admin）を開くポートフォワード（web の EC2 を踏み台にする）と admin のパスワード:"
+  tf pipeline/stream output -raw kafka_ui_port_forward_command; echo
+  tf pipeline/stream output -raw kafka_ui_password_command; echo
 fi
 if [ -n "$LAB_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$LAB_WARN"; fi
 if [ -n "$NAUTOBOT_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$NAUTOBOT_WARN"; fi
