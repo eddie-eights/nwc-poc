@@ -39,4 +39,4 @@ AWS のリソース 1 つにつき 1 ファイル。FAQ、設計の記録、Terr
 |---|---|---|
 | 修復案を S3 Tables にまとめる（003） | S3 Tables、Neptune Analytics、Temporal、SNS・SQS・Lambda | [design.md](../../cycles/003-proposals-in-s3tables/design.md) |
 | Splunk をクラスターにする（004） | Splunk | [design.md](../../cycles/004-splunk-indexer-cluster/design.md) |
-| マネージドを OSS に置き換えた環境を作る（005）と Kafbat UI | MSK、OpenSearch Serverless、Prometheus、Neptune Analytics | [design.md](../../cycles/005-oss-on-ecs/design.md) |
+| マネージドを OSS に置き換えた環境を作る（005） | MSK、OpenSearch Serverless、Prometheus、Neptune Analytics | [design.md](../../cycles/005-oss-on-ecs/design.md) |
