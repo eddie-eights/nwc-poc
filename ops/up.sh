@@ -35,6 +35,9 @@
 #                           アラートの送り手も要る（SINK_SPLUNK=1、または GRAFANA と SINK_PROMETHEUS と SNMP_POLL=1。既定のままでは送り手が無いので止まる）
 #   CREATE_KB=1             AGENT=1 で Knowledge Base も作る（既定 0。+$0.37/h = OpenSearch Serverless の OCU $0.33 + 土台の VPC エンドポイント $0.03（SINK_OPENSEARCH と共用）
 #                           + bedrock-agent-runtime のエンドポイント $0.01）。コレクションは公開せず、そのエンドポイントと Bedrock からだけ届く
+#   KB_GRAPHRAG=1           CREATE_KB=1 の Knowledge Base を GraphRAG にする（既定 0）。ベクトルの置き場が OpenSearch Serverless でなく Neptune Analytics のグラフになり、
+#                           取り込みのときに Bedrock が手順書から実体と関係のグラフを作る（+$0.59/h = 16 m-NCU のグラフ $0.58 + bedrock-agent-runtime のエンドポイント $0.01。
+#                           OpenSearch Serverless の OCU と VPC エンドポイントは要らない）。あとから切り替えると KB は作り直しになる
 #   SKIP_LAB=1              PIPELINE=1 で lab を作らない（stream は lab が要るので SKIP_STREAM=1 も要る）
 #   SKIP_STREAM=1           PIPELINE=1 で stream と analytics（stream の Kafka を読む）を作らない
 #   SKIP_ANALYTICS=1        PIPELINE=1 で analytics（Spark → S3 Tables / OpenSearch / Prometheus / Splunk と、検知する Grafana / Splunk）を作らない
@@ -75,7 +78,7 @@
 #   NO_PORTFORWARD=1        ポートフォワーディングを開かずに終わる
 #   TF_VERBOSE=1            terraform の出力を全部画面に出す（既定は進みと結果だけ。全文は ops/logs/tf-<ルート>-apply.log）
 #   AWS_PROFILE / AWS_CA_BUNDLE  AWS CLI と terraform がそのまま読む
-# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* / SINK_* / GRAFANA / SNMP_POLL / NO_PORTFORWARD / NETWORK_PERIMETER / ENDPOINTS_MULTI_AZ は 1 / 0 のほか true / false、yes / no でも書ける（ops/down.sh の KEEP_ECR は 1 か 0 だけ）。
+# AGENT / PIPELINE / WORKFLOW / CREATE_KB / KB_GRAPHRAG / SKIP_* / SINK_* / GRAFANA / SNMP_POLL / NO_PORTFORWARD / NETWORK_PERIMETER / ENDPOINTS_MULTI_AZ は 1 / 0 のほか true / false、yes / no でも書ける（ops/down.sh の KEEP_ECR は 1 か 0 だけ）。
 #
 # 利用者への権限は人に渡す作業なので入れていない（docs/deploy.md の「利用者に画面を渡す」）。
 set -euo pipefail
@@ -295,7 +298,7 @@ case "$SYSLOG_STANDARD" in RFC3164 | RFC5424) ;; *) die "SYSLOG_STANDARD は RFC
 flag_value SNMP_POLL
 # どの機能を作るか（既定は土台 + AGENT）
 AGENT="${AGENT:-1}"
-flag_value AGENT; flag_value PIPELINE; flag_value WORKFLOW; flag_value CREATE_KB
+flag_value AGENT; flag_value PIPELINE; flag_value WORKFLOW; flag_value CREATE_KB; flag_value KB_GRAPHRAG
 if [ -n "$WORKFLOW" ]; then
   if [ -z "$AGENT" ]; then
     die "WORKFLOW は AGENT が要る（ワーカーがエージェントの Runtime を呼ぶ。terraform/workflow は terraform/agent の state から ARN を読む）。AGENT=1 にする。まだ何も作っていない"
@@ -350,6 +353,10 @@ if [ -z "$AGENT" ] && [ -n "$CREATE_KB" ]; then
   echo "AGENT=0 なので CREATE_KB は効かない（Knowledge Base は agent の一部）"
   CREATE_KB=""
 fi
+if [ -z "$CREATE_KB" ] && [ -n "$KB_GRAPHRAG" ]; then
+  echo "CREATE_KB=0 なので KB_GRAPHRAG は効かない（GraphRAG は Knowledge Base の置き場の切り替え）"
+  KB_GRAPHRAG=""
+fi
 # 閉域（terraform/base/core の endpoints.tf と perimeter.tf）。AWS の API は全部インターフェース型エンドポイントを通し、通らない呼び出しを拒む
 NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"
 flag_value NETWORK_PERIMETER; flag_value ENDPOINTS_MULTI_AZ
@@ -401,7 +408,7 @@ if [ -n "$WORKFLOW" ]; then ROOTS="$ROOTS workflow"; fi
 echo "ACCOUNT_ID=$ACCOUNT_ID"
 echo "CALLER_ARN=$CALLER_ARN"
 echo "IMAGE_TAG=$IMAGE_TAG"
-echo "AGENT=${AGENT:-0} PIPELINE=${PIPELINE:-0} WORKFLOW=${WORKFLOW:-0} CREATE_KB=${CREATE_KB:-0}"
+echo "AGENT=${AGENT:-0} PIPELINE=${PIPELINE:-0} WORKFLOW=${WORKFLOW:-0} CREATE_KB=${CREATE_KB:-0} KB_GRAPHRAG=${KB_GRAPHRAG:-0}"
 echo "作るルート: $ROOTS"
 # インターフェース型エンドポイント（terraform/base/core の var.interface_endpoints）。ルートが呼ぶ AWS の API ごとに 1 本。
 # 手順 3 で、今回作らなくても state にリソースが残っているルートの分を足す（外すとそのルートの呼び出しがどこにも出られず接続のタイムアウトになる）
@@ -442,7 +449,8 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 # インターフェース型エンドポイント = 1 本 1.4 × AZ（ENDPOINTS。土台の ssm / ssmmessages 2 本と、ルートごとの分。同じサービスはルートをまたいで 1 本。
 #   2026-09-26〜28 は NAT Gateway だけで AWS の API へも出ていたが、閉域（aws:SourceVpc で拒む）にするため戻した。データ処理 $0.01/GB は別）、
 # agent = 0（Runtime は使った分だけ）
-#   + CREATE_KB なら 33（OpenSearch Serverless の OCU）、
+#   + CREATE_KB なら 33（OpenSearch Serverless の OCU）。KB_GRAPHRAG なら代わりに 58（Neptune Analytics の 16 m-NCU。東京で $0.581/h。
+#     2026-10-04 に公開の料金ファイルで確認）で、下の OpenSearch Serverless の VPC エンドポイントは KB の分としては要らない、
 # OpenSearch Serverless の VPC エンドポイント = 3（1.4 × 2 AZ。公表単価からで Price List API では確かめていない。
 #   KB と logs のコレクションを公開しないために作り、両方で 1 本を共用する。NEED_AOSS のときだけ）、
 # lab = 17（EC2 の t4g.xlarge 17.28。2026-10-04 に公開の料金ファイルで確認。それまでの 9 は t4g.large の単価だった）、graph = 14、stream = 57 + Telegraf 5（Fargate ARM 0.25 vCPU / 0.5 GB で 1.2 のタスクが 2 つ（受ける側と取りにいく側。2026-10-04 に分けた）と内部 NLB 2.43。
@@ -460,7 +468,9 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 # ここを変えたら README の「作るもの」と docs/deploy.md の金額も変える
 COST_CENTS=2
 COST_CENTS=$((COST_CENTS + ($(endpoint_count) * 14 * ENDPOINT_AZS + 5) / 10))
-if [ -n "$AGENT" ] && [ -n "$CREATE_KB" ]; then COST_CENTS=$((COST_CENTS + 33)); fi
+if [ -n "$AGENT" ] && [ -n "$CREATE_KB" ]; then
+  if [ -n "$KB_GRAPHRAG" ]; then COST_CENTS=$((COST_CENTS + 58)); else COST_CENTS=$((COST_CENTS + 33)); fi
+fi
 if [ -z "$SKIP_LAB" ]; then COST_CENTS=$((COST_CENTS + 17)); fi
 if [ -z "$SKIP_GRAPH" ]; then COST_CENTS=$((COST_CENTS + 14)); fi
 if [ -z "$SKIP_STREAM" ]; then
@@ -476,7 +486,7 @@ if [ -z "$SKIP_ANALYTICS" ]; then
 fi
 if [ -n "$NAUTOBOT" ]; then COST_CENTS=$((COST_CENTS + 13)); fi
 if [ -n "$WORKFLOW" ]; then COST_CENTS=$((COST_CENTS + 5)); fi
-if { [ -n "$AGENT" ] && [ -n "$CREATE_KB" ]; } || { [ -z "$SKIP_ANALYTICS" ] && [ -n "$SINK_OPENSEARCH" ]; }; then COST_CENTS=$((COST_CENTS + 3)); fi
+if { [ -n "$AGENT" ] && [ -n "$CREATE_KB" ] && [ -z "$KB_GRAPHRAG" ]; } || { [ -z "$SKIP_ANALYTICS" ] && [ -n "$SINK_OPENSEARCH" ]; }; then COST_CENTS=$((COST_CENTS + 3)); fi
 COST_NOTE=$(printf '待機だけで約 $%d.%02d/h（約 %d 円/h。チャットの分は別）の時間課金。使い終わったら当日中に ops/down.sh を打つ' \
   $((COST_CENTS / 100)) $((COST_CENTS % 100)) $(((COST_CENTS * 150 + 50) / 100)))
 printf '\033[1;33m%s\033[0m\n' "$COST_NOTE"
@@ -599,7 +609,7 @@ if [ -n "${MDT_SOURCE_CIDRS:-}" ]; then MAIN_VARS+=(-var "mdt_source_cidrs=[\"$(
 # OpenSearch Serverless の VPC エンドポイントは KB と logs のコレクションで 1 本を共用する（どちらも公開しない）。
 # 今回どちらも作らなくても、前に作ったコレクションが state に残っていれば外さない（外すとそのコレクションに届かなくなる）
 NEED_AOSS=""
-if [ -n "$CREATE_KB" ]; then NEED_AOSS=1; fi
+if [ -n "$CREATE_KB" ] && [ -z "$KB_GRAPHRAG" ]; then NEED_AOSS=1; fi   # GraphRAG の KB は Neptune Analytics に置くので要らない
 if [ -z "$SKIP_ANALYTICS" ] && [ -n "$SINK_OPENSEARCH" ]; then NEED_AOSS=1; fi
 for r in agent pipeline/analytics; do
   if [ -z "$NEED_AOSS" ] && [ -f "terraform/$r/terraform.tfstate" ]; then
@@ -651,18 +661,27 @@ fi
 # ---- 3-3. agent ----------------------------------------------------------------
 KB_ID=""; DS_ID=""; LOG_GROUP=""
 if [ -n "$AGENT" ]; then
-  if [ -n "$CREATE_KB" ]; then
+  if [ -n "$KB_GRAPHRAG" ]; then
+    log "3-3. agent（terraform/agent。Runtime + ガードレール + Knowledge Base（GraphRAG）。Neptune Analytics のグラフを作るぶん長い）"
+  elif [ -n "$CREATE_KB" ]; then
     log "3-3. agent（terraform/agent。Runtime + ガードレール + Knowledge Base。初回は 10〜20 分。OpenSearch Serverless の作成が長い）"
   else
     log "3-3. agent（terraform/agent。Runtime + ガードレール + bedrock のエンドポイント。初回は 5〜10 分）"
   fi
   AGENT_VARS=(-var "agent_image_tag=$IMAGE_TAG")
   if [ -n "$CREATE_KB" ];       then AGENT_VARS+=(-var create_knowledge_base=true); fi
+  if [ -n "$KB_GRAPHRAG" ];     then AGENT_VARS+=(-var kb_graphrag=true); fi
   tf_apply agent "${AGENT_VARS[@]}"
   LOG_GROUP=$(tf agent output -raw runtime_log_group_name)
   if [ -n "$CREATE_KB" ]; then
     KB_ID=$(tf agent output -raw knowledge_base_id)
     DS_ID=$(tf agent output -raw data_source_id)
+    if [ -n "$KB_GRAPHRAG" ]; then
+      # GraphRAG のデータソースは terraform/agent/kb_graph.tf が AWS CLI で作るので、ID は名前から引く
+      DS_ID=$(aws bedrock-agent list-data-sources --region "$REGION" --knowledge-base-id "$KB_ID" \
+        --query "dataSourceSummaries[?name=='$(tf agent output -raw data_source_name)'].dataSourceId | [0]" --output text)
+      if [ -z "$DS_ID" ] || [ "$DS_ID" = "None" ]; then die "GraphRAG のデータソースが見つからない。terraform/agent の terraform_data.kb_graph_data_source のログを見る"; fi
+    fi
     echo "KB_ID=$KB_ID DS_ID=$DS_ID"
   fi
   echo "Runtime の ARN は SSM の $(tf agent output -raw runtime_arn_parameter_name) に置いた（Web は 60 秒以内に拾う）"
@@ -692,7 +711,8 @@ if [ -n "$CREATE_KB" ]; then
 log "4-3. 手順書を置いて取り込む（CREATE_KB=1）"
 aws s3 cp --only-show-errors kb-docs/ "s3://$KB_BUCKET/docs/" --recursive --exclude "*" --include "*.md"
 # 索引を作った直後は StartIngestionJob が「no such index」の ValidationException を返す（OpenSearch Serverless 側の反映待ち。
-# 2026-09-17 に索引の置き換えの 2 秒後で実測）。10 秒おきに最大 12 回（2 分）まで打ち直す
+# 2026-09-17 に索引の置き換えの 2 秒後で実測）。10 秒おきに最大 12 回（2 分）まで打ち直す。
+# KB_GRAPHRAG=1 のときは Bedrock がチャンクごとにモデルで実体を抜き出すので、同じ md でも取り込みが長い
 JOB_ID=""
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   JOB_ID=$(aws bedrock-agent start-ingestion-job --region "$REGION" \

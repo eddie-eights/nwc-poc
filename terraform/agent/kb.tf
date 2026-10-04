@@ -1,8 +1,10 @@
 # ---------------------------------------------------------------- knowledge base (S3 -> Titan Embeddings v2 -> OpenSearch Serverless)
 # create_knowledge_base = true のときだけ作る（count）。バケットは terraform/base/core のもの（web/ lab/ stream/ と共用）。
+# ベクトルの置き場は 2 通り: 既定は OpenSearch Serverless（local.kb_aoss。この下からサービスロールの手前まで）、
+# kb_graphrag = true なら Neptune Analytics（local.kb_graph。GraphRAG。kb_graph.tf）。KB とサービスロールは共用する
 # 取り込み元の md は利用者の PC から aws s3 cp で docs/ に置き、start-ingestion-job で取り込む（ops/up.sh の手順 4）
 resource "aws_opensearchserverless_security_policy" "kb_encryption" {
-  count = local.kb ? 1 : 0
+  count = local.kb_aoss ? 1 : 0
 
   name        = local.collection_name
   type        = "encryption"
@@ -21,7 +23,7 @@ resource "aws_opensearchserverless_security_policy" "kb_encryption" {
 # Runtime はコレクションを直接呼ばない（Retrieve を呼ぶと Bedrock が SourceServices の経路でサービス側から検索する）。
 # 取り込み（start-ingestion-job）も Bedrock がこの経路で書く。索引は VPC の中の Lambda（下の kb_index）が作る
 resource "aws_opensearchserverless_security_policy" "kb_network" {
-  count = local.kb ? 1 : 0
+  count = local.kb_aoss ? 1 : 0
 
   name        = local.collection_name
   type        = "network"
@@ -47,7 +49,7 @@ resource "aws_opensearchserverless_security_policy" "kb_network" {
 
 # KB のサービスロールは索引の読み書き、索引を作る Lambda は CreateIndex / DescribeIndex だけ。人（apply した人）の ARN は入れない
 resource "aws_opensearchserverless_access_policy" "kb" {
-  count = local.kb ? 1 : 0
+  count = local.kb_aoss ? 1 : 0
 
   name        = local.collection_name
   type        = "data"
@@ -82,7 +84,7 @@ resource "aws_opensearchserverless_access_policy" "kb" {
 
 # アクセスポリシーも先に作る。反映に 1 分ほどかかるので、コレクションの作成（数分）の間に効かせてからインデックスを作る
 resource "aws_opensearchserverless_collection" "kb" {
-  count = local.kb ? 1 : 0
+  count = local.kb_aoss ? 1 : 0
 
   name        = local.collection_name
   type        = "VECTORSEARCH"
@@ -101,7 +103,7 @@ resource "aws_opensearchserverless_collection" "kb" {
 
 # コレクションが ACTIVE になってもデータアクセスポリシーとエンドポイントの DNS が効くまで少し掛かる
 resource "time_sleep" "kb_collection_ready" {
-  count = local.kb ? 1 : 0
+  count = local.kb_aoss ? 1 : 0
 
   create_duration = "60s"
 
@@ -124,7 +126,7 @@ data "archive_file" "kb_index" {
 }
 
 resource "aws_iam_role" "kb_index" {
-  count = local.kb ? 1 : 0
+  count = local.kb_aoss ? 1 : 0
 
   name        = "${local.name_prefix}-kb-index"
   description = "Lambda that creates the vector index of the ${local.name_prefix} knowledge base from inside the VPC"
@@ -142,7 +144,7 @@ resource "aws_iam_role" "kb_index" {
 }
 
 resource "aws_iam_role_policy" "kb_index" {
-  count = local.kb ? 1 : 0
+  count = local.kb_aoss ? 1 : 0
 
   name = "kb-index"
   role = aws_iam_role.kb_index[0].id
@@ -175,14 +177,14 @@ resource "aws_iam_role_policy" "kb_index" {
 }
 
 resource "aws_cloudwatch_log_group" "kb_index" {
-  count = local.kb ? 1 : 0
+  count = local.kb_aoss ? 1 : 0
 
   name              = "/aws/lambda/${local.name_prefix}-kb-index"
   retention_in_days = 7
 }
 
 resource "aws_lambda_function" "kb_index" {
-  count = local.kb ? 1 : 0
+  count = local.kb_aoss ? 1 : 0
 
   function_name    = "${local.name_prefix}-kb-index"
   description      = "Creates the vector index of the knowledge base collection (called once by terraform apply)"
@@ -208,7 +210,7 @@ resource "aws_lambda_function" "kb_index" {
 # 取り込みのあと Bedrock が id / x-amz-bedrock-kb-* のフィールドを索引に足すが、Lambda は索引があれば触らないので置き換えにならない
 # （2026-09-17 までの opensearch provider では、その差分で毎回 -/+ になって KB のベクトルが消えた）
 resource "aws_lambda_invocation" "kb_index" {
-  count = local.kb ? 1 : 0
+  count = local.kb_aoss ? 1 : 0
 
   function_name = aws_lambda_function.kb_index[0].function_name
 
@@ -331,6 +333,9 @@ resource "aws_iam_role_policy" "kb" {
             StringEquals = { "aws:ResourceAccount" = local.account_id }
           }
         },
+      ],
+      local.kb_graph_statements,
+      [for s in [
         {
           # コレクションの ARN は名前でなく ID で決まり、参照するとアクセスポリシーと循環するのでアカウント内に絞る。
           # 中身に触れるかはデータアクセスポリシー（aws_opensearchserverless_access_policy.kb）が決める
@@ -339,7 +344,7 @@ resource "aws_iam_role_policy" "kb" {
           Action   = "aoss:APIAccessAll"
           Resource = "arn:${local.partition}:aoss:${var.region}:${local.account_id}:collection/*"
         },
-      ],
+      ] : s if local.kb_aoss],
     )
   })
 }
@@ -358,15 +363,31 @@ resource "aws_bedrockagent_knowledge_base" "kb" {
     }
   }
 
+  # 置き場を替えると KB は作り直しになる（ID が変わる。Runtime の KNOWLEDGE_BASE_ID も一緒に変わる）
   storage_configuration {
-    type = "OPENSEARCH_SERVERLESS"
-    opensearch_serverless_configuration {
-      collection_arn    = aws_opensearchserverless_collection.kb[0].arn
-      vector_index_name = local.index_name
-      field_mapping {
-        vector_field   = "bedrock-kb-vector"
-        text_field     = "AMAZON_BEDROCK_TEXT_CHUNK"
-        metadata_field = "AMAZON_BEDROCK_METADATA"
+    type = local.kb_graph ? "NEPTUNE_ANALYTICS" : "OPENSEARCH_SERVERLESS"
+
+    dynamic "opensearch_serverless_configuration" {
+      for_each = local.kb_aoss ? [1] : []
+      content {
+        collection_arn    = aws_opensearchserverless_collection.kb[0].arn
+        vector_index_name = local.index_name
+        field_mapping {
+          vector_field   = "bedrock-kb-vector"
+          text_field     = "AMAZON_BEDROCK_TEXT_CHUNK"
+          metadata_field = "AMAZON_BEDROCK_METADATA"
+        }
+      }
+    }
+
+    dynamic "neptune_analytics_configuration" {
+      for_each = local.kb_graph ? [1] : []
+      content {
+        graph_arn = aws_neptunegraph_graph.kb[0].arn
+        field_mapping {
+          text_field     = "text"
+          metadata_field = "metadata"
+        }
       }
     }
   }
@@ -376,9 +397,10 @@ resource "aws_bedrockagent_knowledge_base" "kb" {
   depends_on = [aws_lambda_invocation.kb_index, aws_iam_role_policy.kb]
 }
 
-# DELETE だと destroy 時にベクトルの削除が走り、コレクションが先に消えると失敗する。RETAIN にしてコレクションごと消す
+# DELETE だと destroy 時にベクトルの削除が走り、コレクションが先に消えると失敗する。RETAIN にしてコレクションごと消す。
+# GraphRAG のデータソースは kb_graph.tf（この provider では作れないので CLI で作る）
 resource "aws_bedrockagent_data_source" "docs" {
-  count = local.kb ? 1 : 0
+  count = local.kb_aoss ? 1 : 0
 
   knowledge_base_id    = aws_bedrockagent_knowledge_base.kb[0].id
   name                 = "${local.name_prefix}-docs"

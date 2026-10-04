@@ -63,6 +63,9 @@ locals {
   perimeter_exempt_principals = try(data.terraform_remote_state.main.outputs.perimeter_exempt_principals, [])
 
   kb = var.create_knowledge_base
+  # ベクトルの置き場: 既定は OpenSearch Serverless（kb.tf）、kb_graphrag なら Neptune Analytics（kb_graph.tf。GraphRAG）
+  kb_graph = local.kb && var.kb_graphrag
+  kb_aoss  = local.kb && !var.kb_graphrag
 
   rerank           = var.rerank_model_id != ""
   rerank_model_arn = local.rerank ? "arn:${local.partition}:bedrock:${var.region}::foundation-model/${var.rerank_model_id}" : ""

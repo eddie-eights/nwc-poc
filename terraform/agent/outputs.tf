@@ -35,8 +35,18 @@ output "knowledge_base_id" {
 }
 
 output "data_source_id" {
-  description = "Data source ID for start-ingestion-job. Empty without create_knowledge_base."
+  description = "Data source ID for start-ingestion-job. Empty without create_knowledge_base, and empty with kb_graphrag (the data source is created with the AWS CLI; look it up by data_source_name)."
   value       = try(aws_bedrockagent_data_source.docs[0].data_source_id, "")
+}
+
+output "data_source_name" {
+  description = "Data source name. With kb_graphrag, ops/up.sh finds the ID with list-data-sources by this name."
+  value       = local.kb_data_source_name
+}
+
+output "kb_graph_id" {
+  description = "Neptune Analytics graph that holds the vectors and the entity graph (kb_graphrag = true). Empty otherwise."
+  value       = try(aws_neptunegraph_graph.kb[0].id, "")
 }
 
 output "collection_endpoint" {
@@ -50,6 +60,6 @@ output "upload_docs_command" {
 }
 
 output "start_ingestion_command" {
-  description = "Run after uploading or changing the files. The knowledge base does not sync by itself. Empty without create_knowledge_base."
-  value       = local.kb ? "aws bedrock-agent start-ingestion-job --region ${var.region} --knowledge-base-id ${aws_bedrockagent_knowledge_base.kb[0].id} --data-source-id ${aws_bedrockagent_data_source.docs[0].data_source_id}" : ""
+  description = "Run after uploading or changing the files. The knowledge base does not sync by itself. Empty without create_knowledge_base and with kb_graphrag (ops/up.sh looks the data source up by name)."
+  value       = local.kb_aoss ? "aws bedrock-agent start-ingestion-job --region ${var.region} --knowledge-base-id ${aws_bedrockagent_knowledge_base.kb[0].id} --data-source-id ${aws_bedrockagent_data_source.docs[0].data_source_id}" : ""
 }

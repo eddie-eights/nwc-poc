@@ -56,7 +56,10 @@ sys.modules.update({"boto3": boto3, "botocore": botocore, "botocore.exceptions":
 
 RERANK_ARN = "arn:aws:bedrock:ap-northeast-1::foundation-model/amazon.rerank-v1:0"
 
-def load(guardrail="gr123", rerank="", kb="KB12345678"):
+def load(guardrail="gr123", rerank="", kb="KB12345678", search_type=None):
+    os.environ.pop("KB_SEARCH_TYPE", None)
+    if search_type:
+        os.environ["KB_SEARCH_TYPE"] = search_type
     os.environ.update({"MODEL_ID": "m", "KNOWLEDGE_BASE_ID": kb, "NUMBER_OF_RESULTS": "3", "GUARDRAIL_VERSION": "1"})
     os.environ["GUARDRAIL_ID"] = guardrail
     os.environ.pop("NUMBER_OF_RERANKED_RESULTS", None)
@@ -149,6 +152,18 @@ state.update(retrieve=RET, converse=ok_converse("a"), calls=[])
 r = app3.invoke({"prompt": "q"})
 rk = state["calls"][0][1]["retrievalConfiguration"]["vectorSearchConfiguration"]
 check("RERANK_MODEL_ARN があれば候補数とリランク設定を渡す", rk == {"numberOfResults": 3, "overrideSearchType": "HYBRID", "rerankingConfiguration": {"type": "BEDROCK_RERANKING_MODEL", "bedrockRerankingConfiguration": {"modelConfiguration": {"modelArn": RERANK_ARN}, "numberOfRerankedResults": 2}}})
+# GraphRAG の KB（terraform/agent の kb_graphrag = true）は KB_SEARCH_TYPE=DEFAULT を受け、検索の種類を指定しない
+app4 = load(rerank=RERANK_ARN, search_type="DEFAULT")
+state.update(retrieve=RET, converse=ok_converse("a"), calls=[])
+r4 = app4.invoke({"prompt": "q"})
+rk4 = state["calls"][0][1]["retrievalConfiguration"]["vectorSearchConfiguration"]
+check("KB_SEARCH_TYPE=DEFAULT（GraphRAG）なら overrideSearchType を渡さず、件数とリランクと参照元は同じ",
+      "overrideSearchType" not in rk4 and rk4["numberOfResults"] == 3 and "rerankingConfiguration" in rk4 and r4["sources"] == ["bgp-neighbor-down.md", "interface-errors.md"])
+app5 = load(search_type="SEMANTIC")
+state.update(retrieve=RET, converse=ok_converse("a"), calls=[])
+app5.invoke({"prompt": "q"})
+check("KB_SEARCH_TYPE=SEMANTIC ならベクトルだけの検索に固定する",
+      state["calls"][0][1]["retrievalConfiguration"]["vectorSearchConfiguration"] == {"numberOfResults": 3, "overrideSearchType": "SEMANTIC"})
 check("リランクありでも参照元の組み立ては同じ", r["sources"] == ["bgp-neighbor-down.md", "interface-errors.md"] and r["status"] == "success")
 
 # ---- トポロジのツール
