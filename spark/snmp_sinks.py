@@ -296,13 +296,16 @@ def make_opensearch_sender(endpoint, index, region):
     url = endpoint.rstrip("/") + f"/{index}/_bulk"
 
     def send(records):
+        """送り、入らなかった（捨てた）ドキュメントの数を返す"""
         lines = opensearch_docs(records)
+        dropped = 0
         for i in range(0, len(lines), BULK_SIZE * 2):
             body = ("\n".join(lines[i:i + BULK_SIZE * 2]) + "\n").encode("utf-8")
             headers = sigv4_headers("POST", url, body, "aoss", region, {"Content-Type": "application/x-ndjson"})
             status, text = http_post(url, body, headers)
             if status >= 400:
                 log(f"opensearch: _bulk が {status} を返した。{len(lines[i:i + BULK_SIZE * 2]) // 2} 件を捨てる: {text[:200]!r}")
+                dropped += len(lines[i:i + BULK_SIZE * 2]) // 2
                 continue
             try:
                 res = json.loads(text)
@@ -311,6 +314,8 @@ def make_opensearch_sender(endpoint, index, region):
             if res.get("errors"):
                 failed = [it["index"] for it in res.get("items", []) if it.get("index", {}).get("error")]
                 log(f"opensearch: {len(failed)} 件が入らなかった（最初の 1 件: {json.dumps(failed[0], ensure_ascii=False)[:200] if failed else ''}）")
+                dropped += len(failed)
+        return dropped
     return send
 
 
@@ -378,7 +383,9 @@ def make_splunk_sender(url, token, index="", skip_verify=False):
         context = ssl._create_unverified_context()  # noqa: S323 - 自己署名の Splunk Enterprise の検証用。既定は検証する
 
     def send(records):
+        """送り、捨てたイベントの数を返す"""
         lines = splunk_events(records, index)
+        dropped = 0
         for i in range(0, len(lines), BULK_SIZE):
             body = "\n".join(lines[i:i + BULK_SIZE]).encode("utf-8")
             status, text = http_post(url, body, headers, context)
@@ -386,6 +393,8 @@ def make_splunk_sender(url, token, index="", skip_verify=False):
                 # 400 は本文の形（time や event が無い）、401 / 403 は token（無効・無効化・index の許可が無い）。打ち直しても通らないので捨てる。
                 # token の値は出さない（Splunk の応答にも入っていない）
                 log(f"splunk: HEC が {status} を返した。{len(lines[i:i + BULK_SIZE])} 件を捨てる: {text[:200]!r}")
+                dropped += len(lines[i:i + BULK_SIZE])
+        return dropped
     return send
 
 
@@ -393,7 +402,7 @@ def make_splunk_sender_on_executor(url, token_parameter, region, index="", skip_
     """--http-send executor の splunk の sender。token は driver から運ばず（Spark のタスクに載せない）、送るたびに executor が SSM から読む。
     送り方（BULK_SIZE ごと、4xx は捨てる、TLS）は make_splunk_sender のまま。持つのは文字列と bool だけ（executor へ pickle で運ぶ）"""
     def send(records):
-        make_splunk_sender(url, read_ssm_parameter(token_parameter, region), index, skip_verify)(records)
+        return make_splunk_sender(url, read_ssm_parameter(token_parameter, region), index, skip_verify)(records)
     return send
 
 
@@ -507,7 +516,9 @@ def make_prometheus_sender(url, region):
     }
 
     def send(records):
+        """送り、捨てたサンプルの数を返す"""
         series = prometheus_series(records)
+        dropped = 0
         for i in range(0, len(series), BULK_SIZE):
             body = snappy_compress(encode_write_request(series[i:i + BULK_SIZE]))
             signed = sigv4_headers("POST", url, body, "aps", region, headers)
@@ -515,6 +526,8 @@ def make_prometheus_sender(url, region):
             if status >= 400:
                 # 400 は out-of-order か古すぎるサンプル（startingOffsets=earliest で最初に流れる古い分など）。打ち直しても通らないので捨てる
                 log(f"prometheus: remote write が {status} を返した。{len(series[i:i + BULK_SIZE])} サンプルを捨てる: {text[:200]!r}")
+                dropped += len(series[i:i + BULK_SIZE])
+        return dropped
     return send
 
 
@@ -529,31 +542,58 @@ def partition_id():
     return ctx.partitionId() if ctx else -1
 
 
+def sent_message(name, rows, dropped, where=""):
+    """「N 行を送った」のログの文。捨てた数（4xx など。prometheus はサンプル、opensearch / splunk は件）があれば足す"""
+    if not dropped:
+        return f"{rows} 行を{where}送った"
+    return f"{rows} 行を{where}送り、{dropped} {'サンプル' if name == 'prometheus' else '件'}を捨てた（4xx など）"
+
+
 def send_partition(name, sender, batch_id, rows):
-    """--http-send executor: 1 パーティションの行を executor で sender に渡し、送った行数を返す（foreachPartition から呼ぶ。pyspark が無くても動く）。
-    ts の順に並べてから送る（Prometheus は系列ごとに時刻が戻るサンプルを拒む。並べられるのはパーティションの中だけ）"""
+    """--http-send executor: 1 パーティションの行を executor で sender に渡し、(送った行数, 捨てた数) を返す（foreachPartition から呼ぶ。pyspark が無くても動く）。
+    ts の順に並べてから送る（Prometheus は系列ごとに時刻が戻るサンプルを拒む。並べられるのはパーティションの中だけなので、
+    prometheus は http_query が先に系列でパーティションを分け直す）"""
     records = sorted((row_to_record(r) for r in rows), key=lambda r: r["ts"])
+    dropped = 0
     if records:
-        sender(records)
-        log(f"{name}: batch {batch_id} partition {partition_id()} で {len(records)} 行を送った")
-    return len(records)
+        dropped = sender(records) or 0
+        log(f"{name}: batch {batch_id} partition {partition_id()} で {sent_message(name, len(records), dropped)}")
+    return len(records), dropped
+
+
+# Prometheus の系列は measurement（と field）と tags で決まる。Telegraf は Kafka のキーを付けないので、同じ系列の行が Kafka の
+# どのパーティションにも入る。--http-send executor でそのまま foreachPartition にすると、同じ系列を 2 つのタスクが時刻の前後したまま
+# 別々に送り、後から届いた古いサンプルを Prometheus が拒む。送る前にこの列でパーティションを分け直し、同じ系列を 1 つのタスクに集める
+# （tags_json は Telegraf がキーを並べて出す JSON をそのまま to_json したもの）
+SERIES_COLUMNS = ("measurement", "tags_json")
 
 
 def http_query(rows, name, checkpoint, sender, http_send="driver"):
     """マイクロバッチごとに driver で collect して sender に渡す foreachBatch のクエリ。
     http_send が executor なら collect せず、foreachPartition でパーティションごとに executor が sender で送る（sender は pickle で executor へ運ぶ）"""
     def each_batch(batch_df, batch_id):
-        records = [row_to_record(r) for r in batch_df.collect()]
+        # ts の順に並べてから送る（Kafka のパーティションをまたぐと時刻が前後する。Prometheus は系列ごとに時刻が戻るサンプルを拒む）
+        records = sorted((row_to_record(r) for r in batch_df.collect()), key=lambda r: r["ts"])
         if records:
-            sender(records)
-            log(f"{name}: batch {batch_id} で {len(records)} 行を送った")
+            dropped = sender(records) or 0
+            log(f"{name}: batch {batch_id} で {sent_message(name, len(records), dropped)}")
 
     def each_batch_on_executors(batch_df, batch_id):
-        # 行は driver に集めない。送った行数だけ accumulator で戻し、driver のログ（CloudWatch Logs）にも出す
-        sent = batch_df.sparkSession.sparkContext.accumulator(0)
-        batch_df.foreachPartition(lambda part: sent.add(send_partition(name, sender, batch_id, part)))
+        # 行は driver に集めない。送った行数と捨てた数だけ accumulator で戻し、driver のログ（CloudWatch Logs）にも出す
+        # （executor の stderr は S3 の logs にしか出ない。捨てた理由はそちら）
+        if name == "prometheus":
+            batch_df = batch_df.repartition(max(1, batch_df.rdd.getNumPartitions()), *SERIES_COLUMNS)
+        sc = batch_df.sparkSession.sparkContext
+        sent, dropped = sc.accumulator(0), sc.accumulator(0)
+
+        def run(part):
+            n, d = send_partition(name, sender, batch_id, part)
+            sent.add(n)
+            dropped.add(d)
+        batch_df.foreachPartition(run)
         if sent.value:
-            log(f"{name}: batch {batch_id} で {sent.value} 行を executor から送った")
+            log(f"{name}: batch {batch_id} で {sent_message(name, sent.value, dropped.value, ' executor から')}"
+                + ("。理由は executor の stderr（S3 の logs）" if dropped.value else ""))
 
     return (
         rows.writeStream.queryName(name)

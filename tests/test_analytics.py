@@ -3,7 +3,7 @@ terraform/pipeline/analytics が main と stream の state を読み、S3 Tables
 Spark のスクリプトが Kafka（MSK の IAM 認証）を格納先ごとに読んで Iceberg / OpenSearch Serverless / Prometheus に流すこと、
 テーブルの列がスクリプトと一致すること、remote write の protobuf と snappy が手で復号できることを見る。
 実行は python3 tests/test_analytics.py（依存は無い。pyspark も botocore も要らない。スクリプトは import するが pyspark は関数の中で読む）。"""
-import ast, importlib.util, io, json, os, re, ssl, struct, sys
+import ast, importlib.util, io, json, os, re, ssl, struct, sys, zlib
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 SRC = os.path.join(ROOT, "spark", "snmp_sinks.py")
@@ -501,21 +501,24 @@ _orig_post = mod.http_post
 mod.http_post = lambda url, body, headers, context=None: (_posts.append((url, body, headers, context)), (200, "ok"))[1]
 try:
     _send = mod.make_splunk_sender("https://s:8088/", "tok", "netops")
-    _send([rec] * (mod.BULK_SIZE + 1))
+    _ok_dropped = _send([rec] * (mod.BULK_SIZE + 1))
 finally:
     mod.http_post = _orig_post
 check("make_splunk_sender: HEC の URL に Authorization: Splunk <token> で POST し、BULK_SIZE ごとに分ける、TLS は既定で検証（context 無し）",
       len(_posts) == 2 and all(u == "https://s:8088/services/collector/event" for u, _, _, _ in _posts)
       and all(h["Authorization"] == "Splunk tok" and h["Content-Type"] == "application/json" for _, _, h, _ in _posts)
       and _posts[0][1].count(b"\n") == mod.BULK_SIZE - 1 and _posts[1][1].count(b"\n") == 0
-      and all(c is None for _, _, _, c in _posts))
+      and all(c is None for _, _, _, c in _posts) and _ok_dropped == 0)
 check("make_splunk_sender: skip_verify なら検証しない SSL context を渡す", (lambda: (
     setattr(mod, "http_post", lambda url, body, headers, context=None: (_posts.append((url, body, headers, context)), (200, "ok"))[1]),
     _posts.clear(), mod.make_splunk_sender("https://s:8088", "tok", skip_verify=True)([rec]), setattr(mod, "http_post", _orig_post),
     len(_posts) == 1 and _posts[0][3] is not None and _posts[0][3].verify_mode == ssl.CERT_NONE))()[-1])
-check("make_splunk_sender: HEC が 4xx を返したらそのまとまりを捨てて続ける（例外にしない。ジョブを止めない）", (lambda: (
-    setattr(mod, "http_post", lambda url, body, headers, context=None: (400, '{"text":"Invalid token"}')),
-    mod.make_splunk_sender("https://s:8088", "tok")([rec]), setattr(mod, "http_post", _orig_post), True))()[-1])
+mod.http_post = lambda url, body, headers, context=None: (400, '{"text":"Invalid token"}')
+try:
+    _dropped = mod.make_splunk_sender("https://s:8088", "tok")([rec] * 3)
+finally:
+    mod.http_post = _orig_post
+check("make_splunk_sender: HEC が 4xx を返したらそのまとまりを捨てて続け（例外にしない。ジョブを止めない）、捨てた件数を返す", _dropped == 3)
 check("build: splunk は起動時に SSM から token を読み（WithDecryption）、make_splunk_sender で http_query に流す",
       re.search(r'elif s == "splunk":\s*\n(\s*#[^\n]*\n)*\s*token = read_ssm_parameter\(args\.splunk_token_parameter, args\.region\)\s*\n\s*queries\.append\(http_query\(rows, s, args\.checkpoint, make_splunk_sender\(args\.splunk_hec_url, token, args\.splunk_index, args\.splunk_skip_verify\)\)\)', src) is not None
       and re.search(r'def read_ssm_parameter\(name, region\):[\s\S]*?get_parameter\(Name=name, WithDecryption=True\)', src) is not None)
@@ -570,12 +573,12 @@ def _stderr(fn):
 check("partition_id: pyspark が無いかタスクの外なら -1", mod.partition_id() == -1)
 _got = []
 _n, _err = _stderr(lambda: mod.send_partition("prometheus", _got.append, 7, iter([_row(3.0), _row(1.0), _row(2.0)])))
-check("send_partition: 行のイテレータを row_to_record にし、ts の順に並べて sender に 1 回で渡し、行数を返す",
-      _n == 3 and len(_got) == 1 and [r["ts"] for r in _got[0]] == [1.0, 2.0, 3.0] and _got[0][0]["fields"] == {"ifInOctets": 1})
+check("send_partition: 行のイテレータを row_to_record にし、ts の順に並べて sender に 1 回で渡し、(行数, 捨てた数) を返す（sender が None を返せば 0）",
+      _n == (3, 0) and len(_got) == 1 and [r["ts"] for r in _got[0]] == [1.0, 2.0, 3.0] and _got[0][0]["fields"] == {"ifInOctets": 1})
 check("send_partition: パーティションごとに batch / partition / 行数をログに出す", "[snmp_sinks] prometheus: batch 7 partition -1 で 3 行を送った" in _err)
 _got.clear()
 _n, _err = _stderr(lambda: mod.send_partition("prometheus", _got.append, 7, iter([])))
-check("send_partition: 空のパーティションは送らず、ログも出さず 0", _n == 0 and _got == [] and _err == "")
+check("send_partition: 空のパーティションは送らず、ログも出さず (0, 0)", _n == (0, 0) and _got == [] and _err == "")
 
 # executor で Prometheus に送る: BULK_SIZE ごとのまとまり、4xx は捨てて続ける、ts の順（http_post と SigV4 は差し替える）
 _posts = []
@@ -590,11 +593,12 @@ try:
 finally:
     mod.http_post, mod.sigv4_headers, mod.prometheus_series = _orig_post, _orig_sig, _orig_series
 check("send_partition + prometheus: 並べてから系列にし、BULK_SIZE サンプルごとに aps の SigV4 で remote write に送る",
-      _n == mod.BULK_SIZE + 1 and _seen == [sorted(1700000000.0 + i for i in range(mod.BULK_SIZE + 1))]
+      _n == (mod.BULK_SIZE + 1, mod.BULK_SIZE) and _seen == [sorted(1700000000.0 + i for i in range(mod.BULK_SIZE + 1))]
       and len(_posts) == 2 and all(u == "https://p/api/v1/remote_write" and h["Authorization"] == "AWS4-HMAC-SHA256 aps ap-northeast-1"
                                    and h["Content-Encoding"] == "snappy" for u, _, h in _posts))
-check("send_partition + prometheus: 400 のまとまりは捨てて次を送る（例外にしない。タスクを落とさない）",
-      f"prometheus: remote write が 400 を返した。{mod.BULK_SIZE} サンプルを捨てる" in _err and "partition -1 で 501 行を送った".replace("501", str(mod.BULK_SIZE + 1)) in _err)
+check("send_partition + prometheus: 400 のまとまりは捨てて次を送り（例外にしない。タスクを落とさない）、捨てたサンプルの数をログに出して返す",
+      f"prometheus: remote write が 400 を返した。{mod.BULK_SIZE} サンプルを捨てる" in _err
+      and f"partition -1 で {mod.BULK_SIZE + 1} 行を送り、{mod.BULK_SIZE} サンプルを捨てた（4xx など）" in _err)
 
 # executor で Splunk に送る: token は executor が送るたびに SSM から読む（driver から運ばない）
 _ssm = []
@@ -616,11 +620,24 @@ check("make_splunk_sender_on_executor: 送るときに SSM から token を読�
       and _posts[0][2]["Authorization"] == "Splunk tok-from-ssm" and _posts[0][3] is not None and _posts[0][3].verify_mode == ssl.CERT_NONE
       and [json.loads(x)["time"] for x in _posts[0][1].decode().split("\n")] == [1.0, 2.0] and json.loads(_posts[0][1].decode().split("\n")[0])["index"] == "netops")
 check("make_splunk_sender_on_executor: 4xx は捨てて続け（例外にしない）、ログに token の値を出さない",
-      _n == 2 and "splunk: HEC が 403 を返した" in _err and "tok-from-ssm" not in _err)
+      _n == (2, 2) and "splunk: HEC が 403 を返した" in _err and "partition -1 で 2 行を送り、2 件を捨てた（4xx など）" in _err and "tok-from-ssm" not in _err)
 check("executor へ運ぶ opensearch / prometheus の sender が持つのは文字列と辞書（と None）だけ（pickle できないものを持たない）",
       all(isinstance(c.cell_contents, (str, dict, type(None))) for f in (mod.make_opensearch_sender("https://o", "snmp-logs", "ap-northeast-1"),
                                                              mod.make_prometheus_sender("https://p/api/v1/remote_write", "ap-northeast-1"))
           for c in (f.__closure__ or ())))
+
+# opensearch の sender: 4xx のまとまりと、_bulk の応答で入らなかった（errors）ドキュメントを捨てた数として返す
+_os_res = json.dumps({"errors": True, "items": [{"index": {"status": 400, "error": {"type": "mapper_parsing_exception"}}},
+                                                 {"index": {"status": 201}}, {"index": {"status": 400, "error": {"type": "x"}}}]})
+mod.sigv4_headers = lambda method, url, body, service, region, headers: dict(headers)
+mod.http_post = lambda url, body, headers, context=None: (_posts.append(url), (400, b"bad") if len(_posts) == 1 else (200, _os_res.encode()))[1]
+_posts.clear()
+try:
+    _dropped, _err = _stderr(lambda: mod.make_opensearch_sender("https://o", "snmp-logs", "ap-northeast-1")([rec] * (mod.BULK_SIZE + 3)))
+finally:
+    mod.http_post, mod.sigv4_headers = _orig_post, _orig_sig
+check("make_opensearch_sender: 4xx のまとまり（BULK_SIZE 件）と、応答の errors で入らなかった 2 件を、捨てた数として返す",
+      len(_posts) == 2 and _dropped == mod.BULK_SIZE + 2 and "opensearch: 2 件が入らなかった" in _err)
 
 # http_query を Spark 無しで動かす（writeStream の鎖と、マイクロバッチの DataFrame を差し替える）
 class _Writer:
@@ -638,11 +655,20 @@ class _Acc:
 
 
 class _ExecutorBatch:
-    """foreachPartition はパーティションごとに行のイテレータで f を呼ぶ。collect は呼ばれたら落とす"""
-    def __init__(self, parts):
+    """foreachPartition はパーティションごとに行のイテレータで f を呼ぶ。collect は呼ばれたら落とす。
+    repartition(n, 列…) は列の値が同じ行を同じパーティションに集め直す（Spark のハッシュ分割の代わり。どこに入るかは crc32）"""
+    def __init__(self, parts, repartitioned=None):
         self.parts = parts
+        self.repartitioned = repartitioned
+        self.rdd = type("RDD", (), {"getNumPartitions": lambda _self: len(parts)})()
         self.sparkSession = type("SS", (), {"sparkContext": type("SC", (), {"accumulator": staticmethod(lambda v: _Acc(v))})()})()
     def collect(self): raise AssertionError("executor の分岐で collect が呼ばれた")
+    def repartition(self, n, *cols):
+        out = [[] for _ in range(n)]
+        for p in self.parts:
+            for r in p:
+                out[zlib.crc32(json.dumps([r[c] for c in cols]).encode()) % n].append(r)
+        return _ExecutorBatch(out, (n,) + cols)
     def foreachPartition(self, f):
         for p in self.parts:
             f(iter(p))
@@ -654,19 +680,57 @@ class _DriverBatch:
     def foreachPartition(self, f): raise AssertionError("driver の分岐で foreachPartition が呼ばれた")
 
 
-def _query(*http_send):
+def _query(*http_send, name="prometheus", sender=None):
     r = _Rows()
-    mod.http_query(r, "prometheus", "s3://b/analytics/checkpoint/u/", _got.append, *http_send)
+    mod.http_query(r, name, "s3://b/analytics/checkpoint/u/", sender or _got.append, *http_send)
     return r.writeStream.calls
 
 
+def _row_s(ts, port):
+    """系列（ifName）を変えた行"""
+    return dict(_row(ts), tags_json=json.dumps({"agent_host": "r1", "ifName": port}, separators=(",", ":")))
+
+
+_got.clear()
+_calls = _query("executor", name="opensearch")
+_fb = [a[0] for k, a in _calls if k == "foreachBatch"][0]
+_b = _ExecutorBatch([[_row(3.0), _row(1.0)], [], [_row(2.0)]])
+_b.repartition = lambda *a: (_ for _ in ()).throw(AssertionError("opensearch で repartition が呼ばれた"))
+_, _err = _stderr(lambda: _fb(_b, 5))
+check("http_query executor（opensearch）: collect せず、分け直さずに foreachPartition でパーティションごとに sender を呼ぶ（中は ts の順、空のパーティションは呼ばない）",
+      [[r["ts"] for r in c] for c in _got] == [[1.0, 3.0], [2.0]])
+check("http_query executor: 送った行数を accumulator で driver に戻してログに出す", "[snmp_sinks] opensearch: batch 5 で 3 行を executor から送った" in _err)
+# prometheus: Kafka の 2 つのパーティションに同じ系列（Gi0/1 と Gi0/2）が時刻の前後したまま散らばっている
 _got.clear()
 _calls = _query("executor")
 _fb = [a[0] for k, a in _calls if k == "foreachBatch"][0]
+_seen_b = []
+_orig_rep = _ExecutorBatch.repartition
+_ExecutorBatch.repartition = lambda self, n, *cols: (_seen_b.append((n,) + cols), _orig_rep(self, n, *cols))[1]
+try:
+    _, _err = _stderr(lambda: _fb(_ExecutorBatch([[_row_s(3.0, "Gi0/1"), _row_s(1.0, "Gi0/2")], [_row_s(1.0, "Gi0/1"), _row_s(2.0, "Gi0/2")],
+                                                  [_row_s(2.0, "Gi0/1")]]), 8))
+finally:
+    _ExecutorBatch.repartition = _orig_rep
+_by_series = {}
+for _c in _got:
+    for _r in _c:
+        _by_series.setdefault(_r["tags"]["ifName"], set()).add(id(_c))
+check("http_query executor（prometheus）: 送る前に measurement と tags_json で、元のパーティション数のまま分け直す",
+      _seen_b == [(3, "measurement", "tags_json")] and tuple(mod.SERIES_COLUMNS) == ("measurement", "tags_json"))
+check("http_query executor（prometheus）: 同じ系列の行は 1 回の sender にまとまり、ts の順に並ぶ（2 つのタスクが別々に送らない）",
+      all(len(v) == 1 for v in _by_series.values()) and set(_by_series) == {"Gi0/1", "Gi0/2"}
+      and all([r["ts"] for r in c] == sorted(r["ts"] for r in c) for c in _got)
+      and sorted(r["ts"] for c in _got for r in c if r["tags"]["ifName"] == "Gi0/1") == [1.0, 2.0, 3.0]
+      and "prometheus: batch 8 で 5 行を executor から送った" in _err)
+# 4xx で捨てた数: sender が返した数を accumulator で driver に戻し、driver のログに出す
+_fb = [a[0] for k, a in _query("executor", sender=lambda recs: 2) if k == "foreachBatch"][0]
 _, _err = _stderr(lambda: _fb(_ExecutorBatch([[_row(3.0), _row(1.0)], [], [_row(2.0)]]), 5))
-check("http_query executor: collect せず foreachPartition でパーティションごとに sender を呼ぶ（中は ts の順、空のパーティションは呼ばない）",
-      [[r["ts"] for r in c] for c in _got] == [[1.0, 3.0], [2.0]])
-check("http_query executor: 送った行数を accumulator で driver に戻してログに出す", "[snmp_sinks] prometheus: batch 5 で 3 行を executor から送った" in _err)
+check("http_query executor: 4xx などで捨てた数も accumulator で driver に戻し、driver のログ（CloudWatch Logs）に出す",
+      "[snmp_sinks] prometheus: batch 5 で 3 行を executor から送り、2 サンプルを捨てた（4xx など）。理由は executor の stderr（S3 の logs）" in _err)
+_fb = [a[0] for k, a in _query("driver", name="splunk", sender=lambda recs: 1) if k == "foreachBatch"][0]
+_, _err = _stderr(lambda: _fb(_DriverBatch([_row(3.0), _row(1.0)]), 6))
+check("http_query driver: 捨てた数もログに出す（splunk / opensearch は件）", "[snmp_sinks] splunk: batch 6 で 2 行を送り、1 件を捨てた（4xx など）" in _err)
 check("http_query executor: クエリの名前、checkpoint、トリガーは driver のときと同じ",
       _calls[0] == ("queryName", ("prometheus",)) and ("option", ("checkpointLocation", "s3://b/analytics/checkpoint/u/prometheus/")) in _calls
       and [k for k, _ in _calls] == [k for k, _ in _query()])
@@ -674,8 +738,8 @@ for _hs in ((), ("driver",)):
     _got.clear()
     _fb = [a[0] for k, a in _query(*_hs) if k == "foreachBatch"][0]
     _, _err = _stderr(lambda: _fb(_DriverBatch([_row(3.0), _row(1.0)]), 6))
-    check(f"http_query {'既定' if not _hs else 'driver'}: collect して 1 回で sender に渡す（今のまま。並べ替えない）",
-          [[r["ts"] for r in c] for c in _got] == [[3.0, 1.0]] and "[snmp_sinks] prometheus: batch 6 で 2 行を送った" in _err)
+    check(f"http_query {'既定' if not _hs else 'driver'}: collect して ts の順に並べ、1 回で sender に渡す",
+          [[r["ts"] for r in c] for c in _got] == [[1.0, 3.0]] and "[snmp_sinks] prometheus: batch 6 で 2 行を送った" in _err)
 _inner = {n.name: n for n in ast.walk(funcs["http_query"]) if isinstance(n, ast.FunctionDef)}
 _attrs = lambda f: {n.attr for n in ast.walk(f) if isinstance(n, ast.Attribute)} | {n.id for n in ast.walk(f) if isinstance(n, ast.Name)}
 check("executor の分岐（each_batch_on_executors と send_partition）は行を driver に集めない（collect / toPandas / toLocalIterator / take / head を呼ばない）",
