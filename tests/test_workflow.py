@@ -622,6 +622,23 @@ check("terraform の出力は tf_logged で絞り、全文を ops/logs に残す
       and re.search(r"^set -e?uo pipefail", down, re.M) is not None)
 # TF_VERBOSE=1 のときログを残さないと、down.sh が DependencyViolation と掴んでいる SG を読めず打ち直しが効かない
 check("tf_logged は TF_VERBOSE=1 の枝でも全文を ops/logs に残す", _envsh[_envsh.index("tf_logged() {"):].count('tee "$logf"') == 2)
+# tf_logged は空かどうかだけを見るので、deploy.env の TF_VERBOSE=0 をそろえずに渡すと全部出してしまう（2026-10-04 に直した）
+def _tfv(text, **env):
+    import subprocess, tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False, encoding="utf-8") as f:
+        f.write(text)
+    e = {k: v for k, v in os.environ.items() if k not in ("TF_VERBOSE", "OWNER")}
+    e.update(env, DEPLOY_ENV_FILE=f.name)
+    r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $*"; exit 1; }; . ops/deploy-env.sh; load_deploy_env >/dev/null; flag_value TF_VERBOSE; '
+                        'if [ -n "$TF_VERBOSE" ]; then echo 全部; else echo 絞る; fi'], cwd=ROOT, env=e, capture_output=True, text=True)
+    os.unlink(f.name)
+    return r.stdout.strip()
+check("up.sh と down.sh は deploy.env を読んだ直後に TF_VERBOSE を 1 / 空にそろえる。0 / false / no と書かないときは絞り、1 / true / yes で全部出す。それ以外は止まる",
+      all(sh.count("\nflag_value TF_VERBOSE\n") == 1 and sh.index("\nresolve_name_prefix  #") < sh.index("\nflag_value TF_VERBOSE\n") < sh.index('\nlog "1. ')
+          for sh in (read("ops", "up.sh"), down))
+      and [_tfv(f"OWNER=a\nTF_VERBOSE={v}\n") for v in ("0", "false", "no", "", "1", "true", "yes")] == ["絞る"] * 4 + ["全部"] * 3
+      and _tfv("OWNER=a\n") == "絞る" and _tfv("OWNER=a\nTF_VERBOSE=1\n", TF_VERBOSE="0") == "絞る"
+      and _tfv("OWNER=a\nTF_VERBOSE=2\n") == "DIE: TF_VERBOSE は 1 か 0（いまは「2」）")
 check("down.sh は 1 ルートが消えなくても止まらず、残りを消してから最後にまとめて出す（止まると後ろの EC2 が動いたまま残る）",
       "FAILED_ROOTS=" in down and 'FAILED_ROOTS="$FAILED_ROOTS $root"' in down
       and re.search(r'if \[ -n "\$FAILED_ROOTS" \]; then[\s\S]*?exit 1', down) is not None
