@@ -29,12 +29,12 @@ output "telegraf_repository_url" {
 }
 
 output "grafana_repository_url" {
-  description = "Build grafana/ (arm64) and push it here with tag <Grafana version>-<hash of grafana/> (step 2 of ops/up.sh, when SINK_PROMETHEUS or SINK_OPENSEARCH is on). terraform/pipeline/analytics runs it on ECS."
+  description = "Build grafana/ (arm64) and push it here with tag <Grafana version>-<hash of grafana/> (step 2 of ops/up.sh, when STORES has grafana). terraform/pipeline/analytics runs it on ECS."
   value       = aws_ecr_repository.pipeline["grafana"].repository_url
 }
 
 output "splunk_repository_url" {
-  description = "ops/up.sh builds splunk/ (splunk/splunk plus the netops_alerts app, amd64 only) and pushes it here as <Splunk version>-<hash of splunk/> (step 2, SINK_SPLUNK=1). terraform/pipeline/analytics runs it on ECS."
+  description = "ops/up.sh builds splunk/ (splunk/splunk plus the netops_alerts app, amd64 only) and pushes it here as <Splunk version>-<hash of splunk/> (step 2, when STORES has splunk). terraform/pipeline/analytics runs it on ECS."
   value       = aws_ecr_repository.pipeline["splunk"].repository_url
 }
 

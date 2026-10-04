@@ -17,8 +17,9 @@
 # SPLUNK_HEC_URL も同日から使わない（書いてあれば ops/up.sh が止まる。黙って ECS の Splunk に替えないため）
 # LAB_DEBUG は 2026-10-04 から使わない（デバッグ用の EC2 は ops/lab-debug.sh だけで作る・消す）。読むだけ読み、ops/up.sh が注意を出す
 # NAUTOBOT も 2026-10-04 から使わない（Nautobot は PIPELINE=1 ならいつも作る）。同じく読むだけ読み、ops/up.sh が注意を出す
-# GRAFANA も 2026-10-04 から使わない（Grafana は SINK_PROMETHEUS か SINK_OPENSEARCH があればいつも作る）。読むだけ読み、ops/up.sh が
-# 0 なら止まり（作らないつもりのまま黙って作らない）、1 なら注意を出す
+# SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK / GRAFANA も 2026-10-04 から使わない（格納先は STORES だけで選ぶ）。
+# 書けるキーではないが読むだけ読み、ops/up.sh がその値に当たる STORES の書き方を出して止まる（知らないキーとして止めると書き換え方が分からない。
+# 黙って STORES の既定に替えると格納先が変わる）。ops/down.sh は前の deploy.env のまま打てる
 DEPLOY_ENV_KEYS="OWNER PIPELINE AGENT WORKFLOW CREATE_KB SKIP_LAB SKIP_STREAM SKIP_ANALYTICS SKIP_GRAPH STORES SINK_S3 SINK_OPENSEARCH SINK_PROMETHEUS
 SINK_SPLUNK SPLUNK_HEC_URL SPLUNK_INDEX SPLUNK_SKIP_TLS_VERIFY HTTP_SEND MAX_OFFSETS_PER_TRIGGER MAX_OFFSETS_PER_TRIGGER_ICEBERG
 MAX_OFFSETS_PER_TRIGGER_SPLUNK MAX_OFFSETS_PER_TRIGGER_OPENSEARCH MAX_OFFSETS_PER_TRIGGER_PROMETHEUS GRAFANA NAUTOBOT LAB_DEBUG SYSLOG_STANDARD SNMP_POLL IMAGE_TAG ADMIN_ARN

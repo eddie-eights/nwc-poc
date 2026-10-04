@@ -6,7 +6,7 @@
 # 2026-10-02 までは Spark の detect が EventBridge に put_events し、ルールが同じ 2 つへ流していた。
 # トピックをここ（土台）に置くのは、送り手（analytics）と受け手（workflow / graph）のどれが先に作られても参照できるようにするため。
 # トピックに時間課金は無い（publish 100 万件/月まで無料）ので、機能を作らないときも作る。
-# 送り手の Grafana / Splunk のタスクは VPC の sns のインターフェース型エンドポイントを通る（ops/up.sh が、Grafana のアラート（SINK_PROMETHEUS と SNMP_POLL）か SINK_SPLUNK があるときに作らせる）
+# 送り手の Grafana / Splunk のタスクは VPC の sns のインターフェース型エンドポイントを通る（ops/up.sh が、Grafana のアラート（STORES の grafana と SNMP_POLL）か STORES の splunk があるときに作らせる）
 resource "aws_sns_topic" "alerts" {
   name = "${local.name_prefix}-alerts"
 

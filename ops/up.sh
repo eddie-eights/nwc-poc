@@ -9,7 +9,7 @@
 #   WORKFLOW          Temporal での実行。workflow（Temporal on ECS Fargate のワーカー + AgentCore Gateway（MCP）+ SNS → SQS）。
 #                     Grafana / Splunk のアラートが SNS → SQS で届き、エージェントが Neptune / OpenSearch / Prometheus を見て原因を調べて修復案を出し、
 #                     Web の「承認」タブで人が承認すると Temporal が lab で直す。AGENT と PIPELINE（lab / stream / analytics / graph）と、
-#                     アラートの送り手（SINK_SPLUNK=1、または Grafana と SINK_PROMETHEUS と SNMP_POLL=1）が要る
+#                     アラートの送り手（STORES の splunk、または STORES の grafana と SNMP_POLL=1）が要る
 # 毎日全部消す運用向け。何度打っても同じ状態に収束する（できているものは Terraform が差分なしで飛ばし、ECR にあるタグはビルドしない）。
 # あとから別の機能を 1 にして打ち直せば、その機能だけ足される（土台と他の機能は作り直さない）。
 # Terraform の state はこの PC の展開したフォルダの中（terraform/<ルート>/terraform.tfstate）に置く。消すのは ops/down.sh。
@@ -32,37 +32,34 @@
 #   AGENT=1                 agent での分析（既定 0）。terraform/agent を作る。Web の「チャット」タブを使うなら書く
 #   PIPELINE=1              データパイプライン（既定 0）。lab / stream / analytics / graph を作る（SKIP_* で減らせる）
 #   WORKFLOW=1              Temporal での実行（既定 0）。workflow を作る。AGENT と PIPELINE が要り、SKIP_LAB / SKIP_STREAM / SKIP_ANALYTICS / SKIP_GRAPH は書けない。
-#                           アラートの送り手も要る（SINK_SPLUNK=1、または SINK_PROMETHEUS と SNMP_POLL=1（Grafana のアラート）。既定のままでは送り手が無いので止まる）
-#   CREATE_KB=1             AGENT=1 で Knowledge Base も作る（既定 0。+$0.37/h = OpenSearch Serverless の OCU $0.33 + 土台の VPC エンドポイント $0.03（SINK_OPENSEARCH と共用）
+#                           アラートの送り手も要る（STORES の splunk、または STORES の grafana と SNMP_POLL=1（Grafana のアラート）。既定のままでは送り手が無いので止まる）
+#   CREATE_KB=1             AGENT=1 で Knowledge Base も作る（既定 0。+$0.37/h = OpenSearch Serverless の OCU $0.33 + 土台の VPC エンドポイント $0.03（STORES の grafana の OpenSearch と共用）
 #                           + bedrock-agent-runtime のエンドポイント $0.01）。コレクションは公開せず、そのエンドポイントと Bedrock からだけ届く
 #   SKIP_LAB=1              PIPELINE=1 で lab を作らない（stream は lab が要るので SKIP_STREAM=1 も要る）
 #   SKIP_STREAM=1           PIPELINE=1 で stream と analytics（stream の Kafka を読む）を作らない
 #   SKIP_ANALYTICS=1        PIPELINE=1 で analytics（Spark → S3 Tables / OpenSearch / Prometheus / Splunk と、検知する Grafana / Splunk）を作らない
 #   STORES=s3,grafana,splunk
-#                           格納先を 3 つのまとまりで選ぶ（カンマで並べる。順番と重複は問わない）。s3 = SINK_S3、grafana = SINK_PROMETHEUS + SINK_OPENSEARCH（と、それを見る Grafana）、
-#                           splunk = SINK_SPLUNK。書かなかったまとまりは 0 になる（前に作っていればその格納先はデータごと消える）。
-#                           空なら下の 4 つの変数で決める（既定）。下の 4 つと一緒には書けない（止まる）
-#   SINK_S3=0 / SINK_OPENSEARCH=0 / SINK_PROMETHEUS=0
-#                           analytics の Spark の格納先を 1 つずつ外す（既定は 3 つとも 1。0 にするとリソースごと作らない。1 つ以上は要る）。
-#                           SINK_S3 = 全トピック → S3 Tables（Iceberg）、SINK_OPENSEARCH = traps と logs（機器の syslog）→ OpenSearch Serverless、
-#                           SINK_PROMETHEUS = metrics と gnmi → Amazon Managed Service for Prometheus。terraform/pipeline/analytics の var.sinks（iceberg / opensearch / prometheus / splunk）に組んで渡す。
-#   SINK_SPLUNK=1           4 本目の格納先: 全トピック → Splunk の HTTP Event Collector（既定 0）。
-#                           Splunk Enterprise（公式イメージ・試用ライセンス）を analytics の ECS で立てて VPC の中で送る（+$0.12/h。
-#                           起動時に Splunk のライセンスと Splunk General Terms に同意する。index はタスクと一緒に消える）。
-#                           イメージは公式イメージに検知のアプリ（splunk/netops_alerts。trap と gNMI の BGP / IS-IS を保存済みサーチで見て SNS へ出す）を足したもの。管理者のパスワードと HEC の token は
-#                           手順 7-4 で SSM の SecureString に作る（値は出さない。見るコマンドを最後に出す）。SPLUNK_INDEX（既定は空 = token の既定の index）は任意。
-#                           AWS の外の Splunk へ NAT Gateway で送る道は 2026-09-28 にやめた（VPC から AWS の外へ出る経路は作らない）
-#   （Grafana）             SINK_PROMETHEUS か SINK_OPENSEARCH があれば analytics に Grafana OSS（ECS。Prometheus と OpenSearch を見る。+$0.02/h）を**いつも作る**
-#                           （切り替える変数は無い。GRAFANA は 2026-10-04 になくし、0 が書いてあれば止まる。作らないなら STORES から grafana を外す）。
-#                           SINK_PROMETHEUS があればアラートルール（IF の ifOperStatus → link_down）も入り、SNS へ出す（grafana/provisioning/alerting）。
-#                           ifOperStatus は SNMP のポーリングの値なので、SNMP_POLL=1 でなければルールは発火しない。
-#                           web の EC2 を踏み台にした SSM のポートフォワードで開く（コマンドは最後に出る）
+#                           analytics の格納先を 3 つのまとまりで選ぶ（カンマで並べる。順番と重複は問わない）。既定は s3,grafana。
+#                           書かなかったまとまりは作らない（前に作っていればその格納先はデータごと消える）。格納先を選ぶのはこれだけ
+#                           （SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK / GRAFANA は 2026-10-04 になくし、書いてあれば止まる）。
+#                             s3      = 全トピック → S3 Tables（Iceberg）
+#                             grafana = traps と logs（機器の syslog）→ OpenSearch Serverless、metrics と gnmi → Amazon Managed Service for Prometheus と、
+#                                       その 2 つを見る Grafana OSS（ECS。+$0.02/h）。Grafana のアラートルール（IF の ifOperStatus → link_down）も入り、
+#                                       SNS へ出す（grafana/provisioning/alerting）。ifOperStatus は SNMP のポーリングの値なので、SNMP_POLL=1 でなければ
+#                                       ルールは発火しない。web の EC2 を踏み台にした SSM のポートフォワードで開く（コマンドは最後に出る）
+#                             splunk  = 全トピック → Splunk の HTTP Event Collector。Splunk Enterprise（公式イメージ・試用ライセンス）を analytics の ECS で
+#                                       立てて VPC の中で送る（+$0.12/h。起動時に Splunk のライセンスと Splunk General Terms に同意する。index はタスクと
+#                                       一緒に消える）。イメージは公式イメージに検知のアプリ（splunk/netops_alerts。trap と gNMI の BGP / IS-IS を保存済み
+#                                       サーチで見て SNS へ出す）を足したもの。管理者のパスワードと HEC の token は手順 7-4 で SSM の SecureString に作る
+#                                       （値は出さない。見るコマンドを最後に出す）。SPLUNK_INDEX（既定は空 = token の既定の index）は任意。
+#                                       AWS の外の Splunk へ NAT Gateway で送る道は 2026-09-28 にやめた（VPC から AWS の外へ出る経路は作らない）
+#                           terraform/pipeline/analytics の var.sinks（iceberg / opensearch / prometheus / splunk）と create_grafana に組んで渡す。
 #   SYSLOG_STANDARD         stream の Telegraf が受ける機器の syslog の形式。RFC3164（既定。本番の Cisco IOS の BSD 形式）か RFC5424。
 #                           lab の SR Linux は RFC 5424 で送る（ops/lab-common.sh の LAB_SYSLOG_STANDARD）ので、lab のログの項目まで見るなら RFC5424。
 #                           デバッグ用の EC2（ops/lab-debug.sh。up.sh とは別に作る）の Telegraf はこの値を使わず、lab/lab.sh の LOG_STANDARD（RFC5424）
 #   SNMP_POLL=1             stream の Telegraf で SNMP もポーリングする（10 秒ごとに ifTable → metrics トピック）。既定 0 で、SNMP は trap だけ受ける。
 #                           Grafana のアラートルール link_down と IF のグラフ、エージェントの IF のメトリクスはこのポーリングを見るので、0 では空になる
-#                           （IF の up / down は SINK_SPLUNK=1 の Splunk が trap から link_down を出す）。stream の変数 snmp_poll に渡す
+#                           （IF の up / down は STORES の splunk の Splunk が trap から link_down を出す）。stream の変数 snmp_poll に渡す
 #   （Nautobot）            PIPELINE=1 なら Nautobot（terraform/pipeline/nautobot。ECS Fargate の web + Celery worker + Redis と、RDS の PostgreSQL。+$0.13/h と ecs のエンドポイント）を**いつも作る**（切り替える変数は無い）。
 #                           機器の一覧とケーブルの正を Nautobot にする。最初だけ lab の定義から入り、あとは Nautobot で機器・Service（gnmi / snmp）・ケーブルを変えるたびに、
 #                           Job が Telegraf の取りにいく側（dialin）の機器の一覧（SSM）を書き換えてサービスを作り直し、Neptune の物理層を openCypher で合わせる。
@@ -84,7 +81,7 @@
 #   NO_PORTFORWARD=1        ポートフォワーディングを開かずに終わる
 #   TF_VERBOSE=1            terraform の出力を全部画面に出す（既定は進みと結果だけ。全文は ops/logs/tf-<ルート>-apply.log）
 #   AWS_PROFILE / AWS_CA_BUNDLE  AWS CLI と terraform がそのまま読む
-# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* / SINK_* / SNMP_POLL / NO_PORTFORWARD / NETWORK_PERIMETER / ENDPOINTS_MULTI_AZ は 1 / 0 のほか true / false、yes / no でも書ける（ops/down.sh の KEEP_ECR は 1 か 0 だけ）。
+# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* / SNMP_POLL / NO_PORTFORWARD / NETWORK_PERIMETER / ENDPOINTS_MULTI_AZ は 1 / 0 のほか true / false、yes / no でも書ける（ops/down.sh の KEEP_ECR は 1 か 0 だけ）。
 #
 # 利用者への権限は人に渡す作業なので入れていない（docs/deploy.md の「利用者に画面を渡す」）。
 set -euo pipefail
@@ -279,60 +276,87 @@ resolve_name_prefix  # OWNER（必須。terraform の -var owner にそのまま
 log "   デプロイする人の名前: ${OWNER}（リソース名の接頭辞と Project タグは ${PREFIX}）"
 IMAGE_TAG="${IMAGE_TAG:-v1}"
 LOCAL_PORT="${LOCAL_PORT:-8080}"
-# 格納先を 3 つのまとまりで選ぶ（STORES=s3,grafana,splunk の形。カンマで並べ、順番と重複は問わない）。書いたまとまりの変数を 1、
-# 書かなかったまとまりの変数を 0 にしてから、下の SINK_* の検査（格納先が無い・Grafana・WORKFLOW の送り手・費用など）にそのまま通す。
-#   s3      = SINK_S3（S3 Tables。Athena はサイクル 001「アラートの履歴を残す」が main に入ったらここに足す）
-#   grafana = SINK_PROMETHEUS + SINK_OPENSEARCH（Grafana はこの 2 つのどちらかがあれば下で作る）
-#   splunk  = SINK_SPLUNK
-# 空なら今までどおり 4 つの変数（と既定値）で決める。STORES と 4 つの変数を一緒に書くとどちらが効くか決められないので止まる
-# （「書いた」は変数が空でないこと。deploy.env の空の値は書いていないのと同じ（ops/deploy-env.sh）なのに合わせる）
-STORES="${STORES:-}"
-if [ -n "$STORES" ]; then
-  STORES_CONFLICT=""
-  for v in SINK_S3 SINK_OPENSEARCH SINK_PROMETHEUS SINK_SPLUNK; do
-    if [ -n "${!v:-}" ]; then STORES_CONFLICT="$STORES_CONFLICT $v"; fi
-  done
-  [ -z "$STORES_CONFLICT" ] || die "STORES と${STORES_CONFLICT} を一緒に書いている（どちらが効くか決められない）。STORES を使うなら${STORES_CONFLICT} を deploy.env と環境変数から消す。まだ何も作っていない"
-  STORE_S3=""; STORE_GRAFANA=""; STORE_SPLUNK=""
-  rest="$STORES,"
-  while [ -n "$rest" ]; do
-    item="${rest%%,*}"; rest="${rest#*,}"
-    item="${item#"${item%%[![:space:]]*}"}"; item="${item%"${item##*[![:space:]]}"}"
-    case "$item" in
-      s3) STORE_S3=1 ;;
-      grafana) STORE_GRAFANA=1 ;;
-      splunk) STORE_SPLUNK=1 ;;
-      '') die "STORES に空の要素がある（いまは「${STORES}」）。使えるのは s3 / grafana / splunk で、カンマで並べる。まだ何も作っていない" ;;
-      *) die "STORES の「${item}」は無いまとまり（いまは「${STORES}」）。使えるのは s3 / grafana / splunk で、カンマで並べる。まだ何も作っていない" ;;
+# 格納先は STORES だけで選ぶ（2026-10-04 から。SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK / GRAFANA はなくした）。
+# 前の deploy.env（か環境変数）にこの 5 つが残っていると、黙って STORES の既定に替わって格納先が変わり、データごと消えることもあるので止め、
+# その値に当たる STORES の書き方を出す。書いていない変数は前の既定（SINK_SPLUNK だけ 0、ほかは 1）で埋めて読む。
+# OpenSearch・Prometheus・Grafana は STORES の grafana でまとめて作る・作らないので、その 3 つがそろわない値は当たる STORES が無い
+OLD_STORE_KEYS=""; OLD_STORE_VALUES=""
+for v in SINK_S3 SINK_OPENSEARCH SINK_PROMETHEUS SINK_SPLUNK GRAFANA; do
+  if [ -n "${!v:-}" ]; then OLD_STORE_KEYS="$OLD_STORE_KEYS $v"; OLD_STORE_VALUES="$OLD_STORE_VALUES $v=${!v}"; fi
+done
+if [ -n "$OLD_STORE_KEYS" ]; then
+  OLD_STORE_KEYS="${OLD_STORE_KEYS# }"; OLD_STORE_KEYS="${OLD_STORE_KEYS// / / }"  # SINK_S3 / GRAFANA の形にする
+  OLD_STORE_WHAT="$OLD_STORE_KEYS はなくなった（2026-10-04 から格納先は STORES だけで選ぶ。s3 / grafana / splunk をカンマで並べ、既定は s3,grafana）"
+  OLD_STORE_HOW="deploy.env と環境変数から $OLD_STORE_KEYS を消す${STORES:+（STORES=${STORES} も書いてあるので、消せばそちらが効く）}。まだ何も作っていない"
+  OLD_STORE_BAD=""
+  for v in SINK_S3 SINK_OPENSEARCH SINK_PROMETHEUS SINK_SPLUNK GRAFANA; do
+    val="${!v:-}"
+    if [ -z "$val" ]; then if [ "$v" = SINK_SPLUNK ]; then val=0; else val=1; fi; fi
+    case "$val" in
+      1|true|yes) printf -v "OLD_$v" '%s' 1 ;;
+      0|false|no) printf -v "OLD_$v" '%s' '' ;;
+      *) OLD_STORE_BAD="$OLD_STORE_BAD $v=${val}" ;;
     esac
   done
-  SINK_S3="${STORE_S3:-0}"; SINK_SPLUNK="${STORE_SPLUNK:-0}"
-  SINK_PROMETHEUS="${STORE_GRAFANA:-0}"; SINK_OPENSEARCH="${STORE_GRAFANA:-0}"
-  log "   格納先のまとまり（STORES）:${STORE_S3:+ s3}${STORE_GRAFANA:+ grafana}${STORE_SPLUNK:+ splunk}（SINK_S3=$SINK_S3 SINK_OPENSEARCH=$SINK_OPENSEARCH SINK_PROMETHEUS=$SINK_PROMETHEUS SINK_SPLUNK=$SINK_SPLUNK）"
+  [ -z "$OLD_STORE_BAD" ] || die "$OLD_STORE_WHAT。いまの値の${OLD_STORE_BAD} は 1 / 0 でないので、当たる STORES を決められない。$OLD_STORE_HOW"
+  OLD_STORES=""
+  if [ -n "$OLD_SINK_S3" ]; then OLD_STORES="s3"; fi
+  OLD_STORES_NO_GRAFANA="$OLD_STORES${OLD_SINK_SPLUNK:+${OLD_STORES:+,}splunk}"
+  OLD_STORES_GRAFANA="$OLD_STORES${OLD_STORES:+,}grafana${OLD_SINK_SPLUNK:+,splunk}"
+  if [ -n "$OLD_SINK_OPENSEARCH$OLD_SINK_PROMETHEUS" ] \
+    && { [ -z "$OLD_SINK_OPENSEARCH" ] || [ -z "$OLD_SINK_PROMETHEUS" ] || [ -z "$OLD_GRAFANA" ]; }; then
+    if [ -z "$OLD_GRAFANA" ]; then OLD_STORE_COMBO="Grafana を作らずに OpenSearch か Prometheus を作る"
+    elif [ -z "$OLD_SINK_OPENSEARCH" ]; then OLD_STORE_COMBO="Prometheus だけを作る（OpenSearch は作らない）"
+    else OLD_STORE_COMBO="OpenSearch だけを作る（Prometheus は作らない）"; fi
+    die "$OLD_STORE_WHAT。いまの値（${OLD_STORE_VALUES# }）は ${OLD_STORE_COMBO}組み合わせで、その組み合わせはもう選べない（OpenSearch・Prometheus・Grafana は STORES の grafana でまとめて作るか作らないか）。近いのは STORES=$OLD_STORES_GRAFANA（3 つとも作る）か、$(if [ -n "$OLD_STORES_NO_GRAFANA" ]; then echo "STORES=$OLD_STORES_NO_GRAFANA（3 つとも作らない）"; else echo "格納先が残らないので analytics ごと作らない SKIP_ANALYTICS=1"; fi)。$OLD_STORE_HOW"
+  fi
+  if [ -n "$OLD_SINK_OPENSEARCH" ]; then OLD_STORES="$OLD_STORES_GRAFANA"; else OLD_STORES="$OLD_STORES_NO_GRAFANA"; fi
+  [ -n "$OLD_STORES" ] || die "$OLD_STORE_WHAT。いまの値（${OLD_STORE_VALUES# }）は格納先が 1 つも無く、STORES ではそう書けない（空なら既定の s3,grafana）。analytics ごと要らないなら SKIP_ANALYTICS=1 を書く。$OLD_STORE_HOW"
+  if [ "$OLD_STORES" = s3,grafana ]; then
+    die "$OLD_STORE_WHAT。いまの値（${OLD_STORE_VALUES# }）は STORES=s3,grafana と同じ（STORES を書かないときの既定）。$OLD_STORE_HOW"
+  fi
+  die "$OLD_STORE_WHAT。いまの値（${OLD_STORE_VALUES# }）は STORES=$OLD_STORES と書く。$OLD_STORE_HOW"
 fi
-# analytics の Spark の格納先。SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS を 1 / 0 で書く（既定は 3 つとも 1）。
-# 0 にした格納先は Spark が書かないだけでなく、リソースも作らない。
-# SINK_SPLUNK（既定 0）は Splunk の HEC に送る 4 本目。analytics の ECS に Splunk を立てる（SPLUNK_ON_ECS）
+# 格納先を 3 つのまとまりで選ぶ（STORES=s3,grafana,splunk の形。カンマで並べ、順番と重複は問わない）。既定は s3,grafana。
+#   s3      = 全トピック → S3 Tables（Iceberg）。Athena はサイクル 001「アラートの履歴を残す」が main に入ったらここに足す
+#   grafana = traps と logs → OpenSearch Serverless、metrics と gnmi → Amazon Managed Service for Prometheus と、その 2 つを見る Grafana（ECS）
+#   splunk  = 全トピック → Splunk の HTTP Event Collector（analytics の ECS に Splunk を立てる。SPLUNK_ON_ECS）
+# 書かなかったまとまりは作らない（前に作っていれば、その格納先はデータごと消える）。空は書いていないのと同じで既定になる
+# （deploy.env の空の値は書いていないのと同じ（ops/deploy-env.sh）なのに合わせる）。
+# 下の SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK は STORES から導いた中の値（1 か空）で、deploy.env には書けない。
 # terraform/pipeline/analytics の var.sinks（list）に渡すので、["iceberg","opensearch"] の形に組む（SINKS_TF）
-SINK_S3="${SINK_S3:-1}"; SINK_OPENSEARCH="${SINK_OPENSEARCH:-1}"; SINK_PROMETHEUS="${SINK_PROMETHEUS:-1}"
-SINK_SPLUNK="${SINK_SPLUNK:-0}"; SPLUNK_INDEX="${SPLUNK_INDEX:-}"
-flag_value SINK_S3; flag_value SINK_OPENSEARCH; flag_value SINK_PROMETHEUS; flag_value SINK_SPLUNK
+STORES_DEFAULT=""
+if [ -z "${STORES:-}" ]; then STORES=s3,grafana; STORES_DEFAULT=1; fi
+STORE_S3=""; STORE_GRAFANA=""; STORE_SPLUNK=""
+rest="$STORES,"
+while [ -n "$rest" ]; do
+  item="${rest%%,*}"; rest="${rest#*,}"
+  item="${item#"${item%%[![:space:]]*}"}"; item="${item%"${item##*[![:space:]]}"}"
+  case "$item" in
+    s3) STORE_S3=1 ;;
+    grafana) STORE_GRAFANA=1 ;;
+    splunk) STORE_SPLUNK=1 ;;
+    '') die "STORES に空の要素がある（いまは「${STORES}」）。使えるのは s3 / grafana / splunk で、カンマで並べる。まだ何も作っていない" ;;
+    *) die "STORES の「${item}」は無いまとまり（いまは「${STORES}」）。使えるのは s3 / grafana / splunk で、カンマで並べる。まだ何も作っていない" ;;
+  esac
+done
+SINK_S3="$STORE_S3"; SINK_OPENSEARCH="$STORE_GRAFANA"; SINK_PROMETHEUS="$STORE_GRAFANA"; SINK_SPLUNK="$STORE_SPLUNK"
+SPLUNK_INDEX="${SPLUNK_INDEX:-}"
 SINKS=""
 if [ -n "$SINK_S3" ]; then SINKS="iceberg"; fi
 if [ -n "$SINK_OPENSEARCH" ]; then SINKS="$SINKS${SINKS:+,}opensearch"; fi
 if [ -n "$SINK_PROMETHEUS" ]; then SINKS="$SINKS${SINKS:+,}prometheus"; fi
 if [ -n "$SINK_SPLUNK" ]; then SINKS="$SINKS${SINKS:+,}splunk"; fi
 # AWS の外の Splunk（NAT Gateway から出る）は 2026-09-28 にやめた。前の deploy.env で黙って ECS の Splunk に替わらないよう止める
-[ -z "${SPLUNK_HEC_URL:-}" ] || die "SPLUNK_HEC_URL は 2026-09-28 から使わない（AWS の外の Splunk には送らず、NAT Gateway も作らない）。deploy.env から消す。SINK_SPLUNK=1 だけなら Splunk を analytics の ECS で立てる。まだ何も作っていない"
+[ -z "${SPLUNK_HEC_URL:-}" ] || die "SPLUNK_HEC_URL は 2026-09-28 から使わない（AWS の外の Splunk には送らず、NAT Gateway も作らない）。deploy.env から消す。STORES に splunk を入れれば Splunk を analytics の ECS で立てる。まだ何も作っていない"
 SPLUNK_ON_ECS="$SINK_SPLUNK"
-[ -n "$SINKS" ] || die "SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK が全部 0。Spark のジョブは格納先が 1 つ以上要る。analytics ごと要らないなら SKIP_ANALYTICS=1。まだ何も作っていない"
 SINKS_TF="\"$(printf '%s' "$SINKS" | sed 's/,/","/g')\""
 # Spark のジョブが HTTP の格納先（opensearch / prometheus / splunk）へ送る所。既定 driver（マイクロバッチを driver に集めて送る）、
 # executor ならパーティションごとに executor が送る（foreachPartition）。terraform/pipeline/analytics の var.http_send に渡す
 HTTP_SEND="${HTTP_SEND:-driver}"
 case "$HTTP_SEND" in driver | executor) ;; *) die "HTTP_SEND は driver か executor（小文字）: $HTTP_SEND。まだ何も作っていない" ;; esac
 # Spark の 1 つのクエリが Kafka の 1 回のトリガー（60 秒）に読む件数の上限（全パーティションの合計。maxOffsetsPerTrigger）。既定 10000、0 で上限なし。
-# MAX_OFFSETS_PER_TRIGGER_<格納先>（格納先は --sinks の呼び名: ICEBERG（SINK_S3）/ SPLUNK / OPENSEARCH / PROMETHEUS）が空でなければ、
+# MAX_OFFSETS_PER_TRIGGER_<格納先>（格納先は --sinks の呼び名: ICEBERG（STORES の s3）/ SPLUNK / OPENSEARCH / PROMETHEUS）が空でなければ、
 # その格納先のクエリだけそちらを使う。terraform/pipeline/analytics の var.max_offsets_per_trigger と var.max_offsets_per_trigger_by_sink に渡す
 MAX_OFFSETS_PER_TRIGGER="${MAX_OFFSETS_PER_TRIGGER:-10000}"
 MAX_OFFSETS_BY_SINK=""   # splunk=2000,prometheus=5000 の形（HCL の map の中身）
@@ -386,28 +410,22 @@ case "${NAUTOBOT:-}" in
 esac
 NAUTOBOT=""
 if [ -n "$PIPELINE" ] && { [ -z "$SKIP_STREAM" ] || [ -z "$SKIP_GRAPH" ]; }; then NAUTOBOT=1; fi
-# Grafana（analytics の ECS）は Prometheus か OpenSearch の格納先があればいつも作る（切り替える変数は無い。GRAFANA は 2026-10-04 になくした）。
-# 前の deploy.env の GRAFANA は読むだけ読む。0 は「作らない」つもりなのに黙って作ると費用が変わるので止め、1 は結果が変わらないので注意だけ出す。
+# Grafana（analytics の ECS）は STORES に grafana があればいつも作る（切り替える変数は無い。GRAFANA は 2026-10-04 になくした）。
 # ここから下の GRAFANA は導いた値（作るなら 1）で、Grafana のアラート・エンドポイント・費用・terraform の create_grafana に使う
-case "${GRAFANA:-}" in
-  '') ;;
-  0|false|no) die "GRAFANA はなくなった（Grafana は SINK_PROMETHEUS か SINK_OPENSEARCH があればいつも作る）。Grafana を作らないなら STORES から grafana を外す（または SINK_PROMETHEUS=0 と SINK_OPENSEARCH=0）。deploy.env と環境変数から GRAFANA を消す。まだ何も作っていない" ;;
-  1|true|yes) echo "注意: GRAFANA はなくなった（Grafana は SINK_PROMETHEUS か SINK_OPENSEARCH があればいつも作る）。deploy.env から消してよい" ;;
-  *) die "GRAFANA はなくなった（いまは「${GRAFANA}」）。Grafana は SINK_PROMETHEUS か SINK_OPENSEARCH があればいつも作る。deploy.env と環境変数から GRAFANA を消す。まだ何も作っていない" ;;
-esac
 GRAFANA=""
 if [ -z "$SKIP_ANALYTICS" ] && { [ -n "$SINK_PROMETHEUS" ] || [ -n "$SINK_OPENSEARCH" ]; }; then GRAFANA=1; fi
 if [ -n "$SKIP_ANALYTICS" ]; then SPLUNK_ON_ECS=""; fi
-# アラート（SNS のトピック <接頭辞>-alerts）の送り手。Grafana のアラートルールは Prometheus のメトリクスを見るので SINK_PROMETHEUS が要る
+log "   格納先（STORES=${STORES}${STORES_DEFAULT:+。既定}）:${STORE_S3:+ s3（S3 Tables）}${STORE_GRAFANA:+ grafana（OpenSearch・Prometheus・Grafana）}${STORE_SPLUNK:+ splunk（Splunk）}${SKIP_ANALYTICS:+。analytics を作らないので、どれも作らない}"
+# アラート（SNS のトピック <接頭辞>-alerts）の送り手。Grafana のアラートルールは Prometheus のメトリクスを見るので SINK_PROMETHEUS（STORES の grafana）が要る
 # （grafana/start.sh は PROMETHEUS_URL があるときだけルールを入れる）。ルール link_down が見る ifOperStatus は SNMP のポーリングの値なので、
 # SNMP_POLL=1 でなければ発火しない（送り手に数えず、sns のエンドポイントも足さない）。Splunk は保存済みサーチが trap と gNMI を見る
 GRAFANA_ALERTS=""
 if [ -n "$GRAFANA" ] && [ -n "$SINK_PROMETHEUS" ] && [ -n "$SNMP_POLL" ]; then GRAFANA_ALERTS=1; fi
 if [ -n "$WORKFLOW" ] && [ -z "$GRAFANA_ALERTS$SPLUNK_ON_ECS" ]; then
-  die "WORKFLOW はアラートの送り手が要る（ワークフローを起こすのは Grafana か Splunk のアラート）。SINK_SPLUNK=1 にする（trap と gNMI から検知する）か、SINK_PROMETHEUS を 1 のまま SNMP_POLL=1 にする（Grafana のアラートルールが SNMP のポーリングから検知する）。まだ何も作っていない"
+  die "WORKFLOW はアラートの送り手が要る（ワークフローを起こすのは Grafana か Splunk のアラート）。STORES に splunk を入れる（trap と gNMI から検知する）か、STORES に grafana を入れたまま SNMP_POLL=1 にする（Grafana のアラートルールが SNMP のポーリングから検知する）。まだ何も作っていない"
 fi
 if [ -n "$GRAFANA" ] && [ -n "$SINK_PROMETHEUS" ] && [ -z "$SNMP_POLL" ] && [ -z "$SPLUNK_ON_ECS" ]; then
-  echo "注意: SNMP_POLL=0（既定）なので Grafana のアラートルール link_down は発火せず、IF の up / down を知らせるものが無い。trap から知らせるなら SINK_SPLUNK=1、ポーリングで知らせるなら SNMP_POLL=1"
+  echo "注意: SNMP_POLL=0（既定）なので Grafana のアラートルール link_down は発火せず、IF の up / down を知らせるものが無い。trap から知らせるなら STORES に splunk を入れ、ポーリングで知らせるなら SNMP_POLL=1"
 fi
 if [ -z "$AGENT" ] && [ -n "$CREATE_KB" ]; then
   echo "AGENT=0 なので CREATE_KB は効かない（Knowledge Base は agent の一部。作るなら AGENT=1 も書く。AGENT の既定は 0）"
@@ -515,13 +533,13 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 #   NLB は 2026-09-28 から。どちらも公表単価からで、Price List API では確かめていない）、
 # analytics = Spark のジョブ 1 つにつき 21（ストリーミングのジョブが動いている間の EMR Serverless の 3 vCPU（driver 1 + executor 2。1 vCPU のワーカー 1 台で約 7）。単価は 2026-09-17 に確認。
 #   executor は 2026-10-04 に 1 → 2（Kafka のパーティション 2 つを並列に読む）。ジョブは 2026-10-04 に格納先で 3 つに分けた（7-5）:
-#   SINK_S3 で sinks-s3iceberg、SINK_SPLUNK で sinks-splunk、SINK_OPENSEARCH か SINK_PROMETHEUS で sinks-grafana（名前は 7-5 の job_name）。3 つとも動けば 63。
+#   STORES の s3 で sinks-s3iceberg、splunk で sinks-splunk、grafana で sinks-grafana（名前は 7-5 の job_name）。3 つとも動けば 63。
 #   S3 Tables のテーブルは無料）
-#   + SINK_PROMETHEUS は 0（取り込みのサンプル課金は別）
-#   + SINK_OPENSEARCH なら 33（logs コレクションの OCU。KB のコレクションと共有されるか確認できていないので最大値で数える。
+#   + STORES の grafana なら、Prometheus は 0（取り込みのサンプル課金は別）
+#     と OpenSearch の 33（logs コレクションの OCU。KB のコレクションと共有されるか確認できていないので最大値で数える。
 #     共有されれば 0 に近づく）
-#   + Grafana（SINK_OPENSEARCH か SINK_PROMETHEUS があれば作る）なら 2（Fargate ARM 0.5 vCPU / 1 GB で 2.5）
-#   + SINK_SPLUNK なら 12（ECS の Splunk。Fargate x86 2 vCPU / 4 GB で 12.3。エフェメラルストレージの 20 GB 超えの分は 0.3 未満。
+#     と Grafana の 2（Fargate ARM 0.5 vCPU / 1 GB で 2.5）
+#   + STORES の splunk なら 12（ECS の Splunk。Fargate x86 2 vCPU / 4 GB で 12.3。エフェメラルストレージの 20 GB 超えの分は 0.3 未満。
 #     Grafana と Splunk の単価も公表単価からで、Price List API では確かめていない）、
 # nautobot = 13（Fargate ARM 2 vCPU / 4 GB のタスク 1 つ 9.9 + RDS の db.t4g.micro 2.5 と gp3 20 GB 0.4。公表単価からで、Price List API では確かめていない）、
 # workflow = 5（Fargate ARM 1 vCPU / 2 GB のタスク 1 つ。Gateway と Lambda と SQS と S3 Tables への追記は使った分だけ。単価は 2026-09-17 に確認）。
@@ -552,7 +570,7 @@ COST_NOTE=$(printf "待機だけで約 \$%d.%02d/h（約 %d 円/h${AGENT:+。チ
   $((COST_CENTS / 100)) $((COST_CENTS % 100)) $(((COST_CENTS * 150 + 50) / 100)))
 printf '\033[1;33m%s\033[0m\n' "$COST_NOTE"
 case ",$SINKS," in
-  *,opensearch,*) if [ -z "$SKIP_ANALYTICS" ]; then printf '\033[1;33m%s\033[0m\n' "SINK_OPENSEARCH=1（既定）: OpenSearch Serverless の logs コレクションを作る。OCU が KB のコレクションと共有されなければ最大 \$0.33/h で、上の目安はそれを含んでいる"; fi ;;
+  *,opensearch,*) if [ -z "$SKIP_ANALYTICS" ]; then printf '\033[1;33m%s\033[0m\n' "STORES の grafana（既定）: OpenSearch Serverless の logs コレクションを作る。OCU が KB のコレクションと共有されなければ最大 \$0.33/h で、上の目安はそれを含んでいる"; fi ;;
 esac
 
 # SG は 2026-09-29 にワークロードごとに分けた（terraform/base/core の security_groups.tf）。それより前の state（全部で共有する internal 1 つ）からは
@@ -1088,7 +1106,7 @@ if [ -z "$SKIP_ANALYTICS" ]; then
     JOB_DRIVER=$(tf pipeline/analytics output -raw "job_driver_json_$JOB")
     NAME=$(job_name "$JOB")
     RUNNING=$(runs_named "$NAME")
-    if [ -z "$JOB_DRIVER" ]; then  # このジョブの格納先が SINK_* で全部 0
+    if [ -z "$JOB_DRIVER" ]; then  # このジョブの格納先のまとまりが STORES に無い
       if [ -n "$RUNNING" ]; then
         echo "$NAME（${RUNNING% }）は格納先が無くなったので止める"
         STOP="$STOP $RUNNING"
