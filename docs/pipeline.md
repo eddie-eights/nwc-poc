@@ -270,6 +270,8 @@ ops/sync-graph.sh --dry-run    # 作った JSON を出すだけ
 
 ## Nautobot（機器の一覧とケーブルの正）
 
+構成（コンテナと部品）、使い方、Neptune と組み合わせた使いどころは [nautobot.md](nautobot.md) にまとめた。ここは反映の決まりと注意。
+
 `PIPELINE=1` なら Nautobot 3.2.6 がいつも立つ（`terraform/pipeline/nautobot`。切り替える変数は無い。`SKIP_STREAM` と `SKIP_GRAPH` の両方があるときだけ作らない）。機器・インタフェース・ケーブルを Nautobot で変えると、Nautobot の Job が次の 2 つに反映する。
 
 ```mermaid
