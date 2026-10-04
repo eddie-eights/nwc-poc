@@ -1,7 +1,7 @@
 """Kafka（MSK、IAM 認証）のトピックを読み、選んだ格納先に流し続ける Spark Structured Streaming のジョブ（Kafka の 4 分岐）。
 
 EMR Serverless の上で動く（terraform/pipeline/analytics）。起動は ops/up.sh の a-3（start-job-run）で、引数は terraform/pipeline/analytics の
-output job_driver_json が組み立てる（--bootstrap / --checkpoint / --sinks と、格納先ごとの --iceberg-table などの値）。
+output job_driver_json_<iceberg|splunk|http> が組み立てる（--bootstrap / --checkpoint / --sinks と、格納先ごとの --iceberg-table などの値）。
 Kafka と S3 Tables の jar、カタログの設定は spark-submit の --conf で渡す。
 
 格納先は 4 つ（--sinks にカンマ区切り）:

@@ -253,7 +253,7 @@ check("remote write の URL は prometheus_endpoint + api/v1/remote_write",
       re.search(r'prometheus_remote_write_url\s*=\s*local\.sink_prometheus \? "\$\{aws_prometheus_workspace\.metrics\[0\]\.prometheus_endpoint\}api/v1/remote_write" : ""', tf) is not None)
 
 # ---- output（ops/up.sh がそのまま使う）
-for out in ("application_id", "runtime_role_arn", "table_identifier", "job_driver_json", "configuration_overrides_json", "list_job_runs_command", "list_tables_command",
+for out in ("application_id", "runtime_role_arn", "table_identifier", "job_driver_json_iceberg", "job_driver_json_splunk", "job_driver_json_http", "configuration_overrides_json", "list_job_runs_command", "list_tables_command",
             "sinks", "opensearch_collection_endpoint", "prometheus_workspace_id", "prometheus_remote_write_url", "prometheus_query_url",
             "table_bucket_arn", "table_namespace", "proposal_events_table_name", "proposal_events_table_arn",
             "opensearch_collection_name", "opensearch_collection_arn", "opensearch_index", "prometheus_workspace_arn",
@@ -270,22 +270,34 @@ for a in ("--bootstrap", "--checkpoint", "--sinks", "--region", "--metric-topics
 check("job_driver に検知の引数（--neptune-endpoint / --anomaly-events-table / --device-map / --event-bus）は無く、スクリプトが受ける引数だけを渡す",
       not any(a in tf for a in ('"--neptune-endpoint"', '"--anomaly-events-table"', '"--device-map"', '"--event-bus"', '"--event-source"'))
       and set(re.findall(r'"(--[a-z-]+)"', args_block.group(1))) <= set(re.findall(r'add_argument\("(--[a-z-]+)"', src)))
-check("job_driver の格納先の引数は選んだときだけ（for a in [...] : a if local.sink_*）",
-      re.search(r'\["--iceberg-table",\s*local\.iceberg_table\] : a if local\.sink_iceberg', args_block.group(1)) is not None
-      and re.search(r'\["--opensearch-endpoint",\s*local\.opensearch_endpoint,\s*"--opensearch-index",\s*local\.opensearch_index\] : a if local\.sink_opensearch', args_block.group(1)) is not None
-      and re.search(r'\["--prometheus-url",\s*local\.prometheus_remote_write_url\] : a if local\.sink_prometheus', args_block.group(1)) is not None
-      and re.search(r'\["--splunk-hec-url",\s*local\.splunk_hec_url,\s*"--splunk-token-parameter",\s*local\.splunk_token_parameter,\s*"--splunk-index",\s*var\.splunk_index\] : a if local\.sink_splunk', args_block.group(1)) is not None
-      and re.search(r'\["--splunk-skip-verify"\] : a if local\.sink_splunk && local\.splunk_skip_tls_verify', args_block.group(1)) is not None)
+check("job_driver の格納先の引数は、そのジョブの格納先にあるときだけ（for a in [...] : a if contains(sinks, ...)）",
+      re.search(r'\["--iceberg-table",\s*local\.iceberg_table\] : a if contains\(sinks, "iceberg"\)', args_block.group(1)) is not None
+      and re.search(r'\["--opensearch-endpoint",\s*local\.opensearch_endpoint,\s*"--opensearch-index",\s*local\.opensearch_index\] : a if contains\(sinks, "opensearch"\)', args_block.group(1)) is not None
+      and re.search(r'\["--prometheus-url",\s*local\.prometheus_remote_write_url\] : a if contains\(sinks, "prometheus"\)', args_block.group(1)) is not None
+      and re.search(r'\["--splunk-hec-url",\s*local\.splunk_hec_url,\s*"--splunk-token-parameter",\s*local\.splunk_token_parameter,\s*"--splunk-index",\s*var\.splunk_index\] : a if contains\(sinks, "splunk"\)', args_block.group(1)) is not None
+      and re.search(r'\["--splunk-skip-verify"\] : a if contains\(sinks, "splunk"\) && local\.splunk_skip_tls_verify', args_block.group(1)) is not None
+      and "local.sink_" not in args_block.group(1))
 check("job_driver の引数に token の値は無い（SSM のパラメータ名だけ）", "hec-token" not in args_block.group(1) and "splunk_hec_token" not in args_block.group(1))
-check("--sinks は var.sinks をカンマでつなぐ", 'join(",", var.sinks)' in args_block.group(1))
+check("--sinks はそのジョブの格納先（var.sinks にあるものだけ）をカンマでつなぐ", '"--sinks", join(",", sinks)' in args_block.group(1) and "var.sinks" not in args_block.group(1))
 check("--checkpoint は s3://<バケット>/analytics/checkpoint/<MSK の uuid>/（MSK を作り直したら checkpoint も新しく。格納先ごとに下を切るのはスクリプト）",
       '"--checkpoint", local.checkpoint_uri' in args_block.group(1)
       and re.search(r'msk_cluster_uuid\s*=\s*try\(element\(split\("/", local\.msk_cluster_arn\), 2\)', tf) is not None
       and re.search(r'checkpoint_uri\s*=\s*"s3://\$\{local\.bucket\}/\$\{local\.checkpoint\}/\$\{local\.msk_cluster_uuid\}/"', tf) is not None)
 check("job_driver は jars を s3://<バケット>/analytics/jars/ から読む", "spark.jars=s3://${local.bucket}/${local.jars_prefix}/*.jar" in tf
       and re.search(r'jars_prefix\s*=\s*"\$\{local\.s3_prefix\}/jars"', tf) is not None and re.search(r's3_prefix\s*=\s*"analytics"', tf) is not None)
-check("ジョブは 3 vCPU（driver 1 + executor 2。Kafka のパーティション 2 つを並列に読む。動的割り当て無し）",
-      "spark.driver.cores=1" in tf and "spark.executor.cores=1" in tf and "spark.executor.instances=2" in tf and "spark.dynamicAllocation.enabled=false" in tf)
+check("ジョブは 1 つ 3 vCPU（driver 1 + executor 2。Kafka のパーティション 2 つを並列に読む。動的割り当て無し）。sparkSubmitParameters は 3 つのジョブで共通",
+      "spark.driver.cores=1" in tf and "spark.executor.cores=1" in tf and "spark.executor.instances=2" in tf and "spark.dynamicAllocation.enabled=false" in tf
+      and tf.count("spark.executor.instances=") == 1 and tf.count("sparkSubmitParameters") == 1)
+check("max_cpu は 12 vCPU（3 つのジョブで 9 vCPU）、max_memory は 48 GB（vCPU あたり 4 GB）",
+      re.search(r'variable "max_cpu" \{[^}]*default\s*=\s*"12 vCPU"', tf) is not None
+      and re.search(r'variable "max_memory" \{[^}]*default\s*=\s*"48 GB"', tf) is not None
+      and re.search(r'maximum_capacity \{\s*cpu\s*=\s*var\.max_cpu\s*memory\s*=\s*var\.max_memory', tf) is not None)
+check("ジョブは格納先で 3 つ（iceberg / splunk / http = opensearch と prometheus）。var.sinks に無い格納先は外し、空のジョブの job_driver は空文字",
+      re.search(r'spark_jobs = \{ for job, sinks in \{ iceberg = \["iceberg"\], splunk = \["splunk"\], http = \["opensearch", "prometheus"\] \} :\s*'
+                r'job => \[for s in sinks : s if contains\(var\.sinks, s\)\] \}', tf) is not None
+      and re.search(r'job_drivers = \{ for job, sinks in local\.spark_jobs : job => length\(sinks\) == 0 \? "" : jsonencode\(', tf) is not None
+      and all(re.search(r'output "job_driver_json_' + j + r'" \{[^}]*value\s*=\s*local\.job_drivers\["' + j + r'"\]', tf) for j in ("iceberg", "splunk", "http"))
+      and re.search(r'^output "job_driver_json" ', tf, re.M) is None)
 check("ドライバーのログは CloudWatch、EMR の managed storage は使わない",
       re.search(r'cloudWatchLoggingConfiguration\s*=\s*\{\s*enabled\s*=\s*var\.cloudwatch_logging', tf) is not None
       and re.search(r'managedPersistenceMonitoringConfiguration\s*=\s*\{\s*enabled\s*=\s*false', tf) is not None)
@@ -520,8 +532,8 @@ check("parse_args: --http-send は driver / executor だけ（大文字、他の
 check("variable http_send は既定 driver で、driver / executor だけ通す",
       re.search(r'variable "http_send" \{\s*description[^\n]*\n\s*type\s*=\s*string\s*\n\s*default\s*=\s*"driver"\s*\n\s*validation \{\s*\n'
                 r'\s*condition\s*=\s*contains\(\["driver", "executor"\], var\.http_send\)', tf) is not None)
-check("job_driver は executor のときだけ --http-send を渡す（既定の driver ではジョブの引数が変わらず、up.sh が起こし直さない）",
-      re.search(r'\[for a in \["--http-send",\s*var\.http_send\] : a if var\.http_send != "driver"\]', args_block.group(1)) is not None)
+check("job_driver は executor のときだけ --http-send を渡す（既定の driver ではジョブの引数が変わらず、up.sh が起こし直さない）。iceberg のジョブには渡さない",
+      re.search(r'\[for a in \["--http-send",\s*var\.http_send\] : a if var\.http_send != "driver" && job != "iceberg"\]', args_block.group(1)) is not None)
 check("up.sh は HTTP_SEND（既定 driver）を何かを作る前に確かめ、http_send で analytics に渡す",
       'HTTP_SEND="${HTTP_SEND:-driver}"' in up
       and up.index('case "$HTTP_SEND" in driver | executor) ;;') < up.index("\ntf_apply base/ecr")
@@ -912,17 +924,23 @@ check("deploy.env.example は SINK_SPLUNK=0 を既定にし、SPLUNK_HEC_URL / S
       and "SPLUNK_HEC_URL" not in open(ENV_EXAMPLE, encoding="utf-8").read() and "SPLUNK_SKIP_TLS_VERIFY" not in open(ENV_EXAMPLE, encoding="utf-8").read())
 check("MSK Connect の Splunk は書いていない（2026-09-26 に Spark から書くことにした）",
       "MSK Connect で後回し" not in tf and "MSK Connect で後回し" not in src and "MSK Connect で後回し" not in up)
-check("up.sh は analytics を stream の後に apply し、job を STREAMING で起こす（名前は snmp-sinks）",
-      up.index("tf_apply pipeline/stream") < up.index("tf_apply pipeline/analytics") < up.index("--name snmp-sinks --mode STREAMING"))
-check("up.sh は analytics に 21 セント（EMR だけ。エンドポイントは無い）と opensearch の OCU を足し、prometheus は足さず、opensearch は analytics を作るときだけ OCU の注意を出す",
-      re.search(r'COST_CENTS=\$\(\(COST_CENTS \+ 21\)\)\n\s*if \[ -n "\$SINK_OPENSEARCH" \]; then COST_CENTS=\$\(\(COST_CENTS \+ 33\)\); fi', up) is not None
-      and '"$SINK_PROMETHEUS" ]; then COST_CENTS' not in up and "COST_CENTS=2\n" in up
+check("up.sh は analytics を stream の後に apply し、ジョブを格納先ごとに STREAMING で起こす（名前は snmp-sinks-<iceberg|splunk|http>）",
+      up.index("tf_apply pipeline/stream") < up.index("tf_apply pipeline/analytics") < up.index('--name "snmp-sinks-$JOB" --mode STREAMING')
+      and "--name snmp-sinks " not in up and 'for JOB in iceberg splunk http; do' in up
+      and 'JOB_DRIVER=$(tf pipeline/analytics output -raw "job_driver_json_$JOB")' in up)
+check("up.sh は analytics に Spark のジョブ 1 つにつき 21 セント（S3 / Splunk / OpenSearch か Prometheus）と opensearch の OCU を足し、opensearch は analytics を作るときだけ OCU の注意を出す",
+      'if [ -n "$SINK_S3" ]; then COST_CENTS=$((COST_CENTS + 21)); fi\n  if [ -n "$SINK_SPLUNK" ]; then COST_CENTS=$((COST_CENTS + 21)); fi\n'
+      '  if [ -n "$SINK_OPENSEARCH$SINK_PROMETHEUS" ]; then COST_CENTS=$((COST_CENTS + 21)); fi\n' in up
+      and up.count("COST_CENTS + 21") == 3 and "COST_CENTS=2\n" in up
       and re.search(r'\*,opensearch,\*\) if \[ -z "\$SKIP_ANALYTICS" \]; then printf', up) is not None)
-check("up.sh は同じ SpecHash のジョブが動いていれば起こさない", "--states SUBMITTED PENDING SCHEDULED RUNNING" in up
-      and "jobRun.tags.SpecHash" in up and 'if [ "$spec" != "$JOB_SPEC" ]; then STALE=' in up)
-check("up.sh は SpecHash が違うジョブを cancel してから、SpecHash のタグを付けて起こし直す（スクリプトや引数の変更を反映する）",
-      re.search(r'cancel-job-run[\s\S]*--name snmp-sinks --mode STREAMING[\s\S]*--tags "[^"]*SpecHash=\$JOB_SPEC"', up) is not None)
+check("up.sh はジョブごとに同じ SpecHash のものが動いていれば起こさない", "--states SUBMITTED PENDING SCHEDULED RUNNING --query 'jobRuns[].[name,id]'" in up
+      and "jobRun.tags.SpecHash" in up and 'if [ -z "$KEEP" ] && [ "$spec" = "$JOB_SPEC" ]; then KEEP="$id"; else STALE="$STALE $id"; fi' in up)
+check("up.sh は SpecHash が違うジョブを cancel し、止まるのを待ってから、SpecHash のタグを付けて起こし直す（スクリプトや引数の変更を反映する）",
+      re.search(r'cancel-job-run[\s\S]*CANCELLING[\s\S]*--name "snmp-sinks-\$JOB" --mode STREAMING[\s\S]*--tags "[^"]*SpecHash=\$JOB_SPEC"', up) is not None)
 check("up.sh は PIPELINE=1 で SKIP_STREAM=1 なら analytics も飛ばす", re.search(r'SKIP_STREAM=1 なので analytics も作らない[^\n]*\n\s*SKIP_ANALYTICS=1', up) is not None)
+check("down.sh は名前で絞らずに動いているジョブを全部 cancel する（snmp-sinks-iceberg / -splunk / -http も、前の snmp-sinks も止まる）",
+      re.search(r"list-job-runs [^\n]*\\\n\s*--states SUBMITTED PENDING SCHEDULED RUNNING --query 'jobRuns\[\]\.id'", down) is not None
+      and "jobRuns[?name" not in down and "snmp-sinks" not in down)
 check("down.sh は job を cancel → stop-application → destroy analytics → destroy graph の順",
       down.index("cancel-job-run") < down.index("stop-application") < down.index("destroy_root pipeline/analytics") < down.index("destroy_lambda_root pipeline/graph") < down.index("destroy_root pipeline/stream"))
 # .py は名指しで並べず find で全部見る（名指しだとファイルを足したときに構文検査から漏れる）
@@ -951,4 +969,175 @@ check("実行ロールの S3TablesCatalog は iceberg を選んだときだけ�
 
 # outputs の JSON が本当に JSON になる形か（jsonencode の中身の構造を軽く見る）
 check("job_driver_json は sparkSubmit の 3 キー", all(k in tf for k in ("entryPoint ", "entryPointArguments", "sparkSubmitParameters")))
+# ---- Spark のジョブを格納先で 3 つに分けた（2026-10-04）。outputs.tf の for-if を Python で評価してジョブごとの引数を組み、スクリプトの parse_args に通す
+_jobs_def = {j: [x.strip(' "') for x in v.split(",")] for j, v in
+             re.findall(r'(\w+) = \[([^\]]*)\]', re.search(r'spark_jobs = \{ for job, sinks in \{(.*?)\} :', tf).group(1))}
+check("spark_jobs: iceberg / splunk / http（opensearch と prometheus）", _jobs_def == {"iceberg": ["iceberg"], "splunk": ["splunk"], "http": ["opensearch", "prometheus"]})
+_VALS = {"local.bootstrap": "b:9098", "local.checkpoint_uri": "s3://bucket/analytics/checkpoint/u/", "var.region": "ap-northeast-1",
+         "local.metric_topics": "metrics,gnmi", "local.log_topics": "traps,logs", "local.iceberg_table": "s3tables.netops.snmp_metrics",
+         "local.opensearch_endpoint": "https://c.aoss.amazonaws.com", "local.opensearch_index": "snmp-logs",
+         "local.prometheus_remote_write_url": "https://aps/api/v1/remote_write", "local.splunk_hec_url": "https://splunk.p.internal:8088",
+         "local.splunk_token_parameter": "/p/splunk/hec-token", "var.splunk_index": ""}
+_args_body = "\n".join(l for l in args_block.group(1).splitlines() if not l.strip().startswith("#"))
+def _job_args(job, var_sinks, http_send="driver"):
+    """var.sinks と var.http_send のときに job の entryPointArguments になるもの（そのジョブの格納先が無ければ None = job_driver は空文字）"""
+    sinks = [s for s in _jobs_def[job] if s in var_sinks]
+    if not sinks:
+        return None
+    def val(tok):
+        if tok.startswith('"'):
+            return tok.strip('"')
+        if tok == 'join(",", sinks)':
+            return ",".join(sinks)
+        return http_send if tok == "var.http_send" else _VALS[tok]
+    toks = r'"[^"]*"|join\(",", sinks\)|[a-z_]+\.[a-z_]+'
+    out = [val(t) for t in re.findall(toks, _args_body.split("[for a in")[0])]
+    for items, cond in re.findall(r'\[for a in \[([^\]]*)\] : a if ([^\]]+)\]', _args_body):
+        py = re.sub(r'contains\(sinks, "(\w+)"\)', r'("\1" in sinks)', cond).replace("&&", "and").replace("||", "or")
+        py = py.replace("var.http_send", "http_send").replace("local.splunk_skip_tls_verify", "True")
+        if eval(py, {}, {"sinks": sinks, "job": job, "http_send": http_send}):
+            out += [val(t) for t in re.findall(toks, items)]
+    return out
+_COMMON = {"--bootstrap", "--checkpoint", "--sinks", "--region", "--metric-topics", "--log-topics"}
+_ALL4 = ["iceberg", "opensearch", "prometheus", "splunk"]
+_flags = lambda argv: set(a for a in argv if a.startswith("--"))
+_val = lambda argv, k: argv[argv.index(k) + 1]
+_ji, _js, _jh = (_job_args(j, _ALL4) for j in ("iceberg", "splunk", "http"))
+check("iceberg のジョブ: --sinks iceberg と --iceberg-table だけ（ほかの格納先の引数は無い）",
+      _val(_ji, "--sinks") == "iceberg" and _flags(_ji) == _COMMON | {"--iceberg-table"})
+check("splunk のジョブ: --sinks splunk と Splunk の引数だけ（token は SSM のパラメータ名）",
+      _val(_js, "--sinks") == "splunk" and _flags(_js) == _COMMON | {"--splunk-hec-url", "--splunk-token-parameter", "--splunk-index", "--splunk-skip-verify"}
+      and _val(_js, "--splunk-token-parameter") == "/p/splunk/hec-token")
+check("http のジョブ: --sinks opensearch,prometheus と両方の引数だけ",
+      _val(_jh, "--sinks") == "opensearch,prometheus" and _flags(_jh) == _COMMON | {"--opensearch-endpoint", "--opensearch-index", "--prometheus-url"})
+check("3 つのジョブは同じ --checkpoint の親を渡す（格納先ごとの下のディレクトリはスクリプトが切るので、分けても checkpoint のパスは変わらない）",
+      {_val(j, "--checkpoint") for j in (_ji, _js, _jh)} == {"s3://bucket/analytics/checkpoint/u/"})
+_pa = [mod.parse_args(j) for j in (_ji, _js, _jh)]
+check("どのジョブの引数もスクリプトの parse_args を通る（格納先に要る引数がそろう）",
+      [a.sinks for a in _pa] == [["iceberg"], ["splunk"], ["opensearch", "prometheus"]] and all(a.http_send == "driver" for a in _pa))
+_ex = {j: _job_args(j, _ALL4, "executor") for j in ("iceberg", "splunk", "http")}
+check("http_send=executor: splunk と http のジョブにだけ --http-send executor を渡す（iceberg は HTTP で送らない）",
+      "--http-send" not in _ex["iceberg"] and _val(_ex["splunk"], "--http-send") == "executor" and _val(_ex["http"], "--http-send") == "executor"
+      and mod.parse_args(_ex["http"]).http_send == "executor" and mod.parse_args(_ex["iceberg"]).http_send == "driver")
+check("格納先を減らす: iceberg と prometheus だけなら splunk のジョブは無く、http のジョブは prometheus だけ（OpenSearch の引数も無い）",
+      _job_args("splunk", ["iceberg", "prometheus"]) is None
+      and _val(_job_args("http", ["iceberg", "prometheus"]), "--sinks") == "prometheus"
+      and _flags(_job_args("http", ["iceberg", "prometheus"])) == _COMMON | {"--prometheus-url"})
+check("格納先を減らす: splunk だけなら iceberg と http のジョブは無い。opensearch だけなら http のジョブは opensearch だけ",
+      _job_args("iceberg", ["splunk"]) is None and _job_args("http", ["splunk"]) is None and _job_args("splunk", ["splunk"]) is not None
+      and mod.parse_args(_job_args("http", ["opensearch"])).sinks == ["opensearch"])
+
+# 費用の analytics の部分を up.sh から切り出して動かす（Spark のジョブ 1 つ 21。3 つで 63）
+_costblk = up[up.index('if [ -z "$SKIP_ANALYTICS" ]; then\n  # Spark のジョブ'):up.index('if [ -n "$NAUTOBOT" ]; then COST_CENTS')]
+def _cost(**env):
+    base_env = {k: "" for k in ("SKIP_ANALYTICS", "SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA", "SPLUNK_ON_ECS")}
+    r = subprocess.run(["bash", "-uc", "COST_CENTS=0\n" + _costblk + 'echo "OUT: $COST_CENTS"'], capture_output=True, text=True,
+                       env={"PATH": os.environ["PATH"], **base_env, **env})
+    return int(r.stdout.split("OUT: ")[1]) if "OUT: " in r.stdout else r.stderr
+check("費用: Spark のジョブは S3 / Splunk / OpenSearch か Prometheus で 1 つずつ 21（3 つで 63）",
+      _cost(SINK_S3="1") == 21 and _cost(SINK_PROMETHEUS="1") == 21 and _cost(SINK_S3="1", SINK_PROMETHEUS="1") == 42
+      and _cost(SINK_S3="1", SINK_SPLUNK="1", SINK_PROMETHEUS="1") == 63)
+check("費用: OpenSearch と Prometheus は 1 つのジョブ（OpenSearch の OCU 33 は別）。Splunk は ECS の 12 も足す。SKIP_ANALYTICS なら 0",
+      _cost(SINK_OPENSEARCH="1", SINK_PROMETHEUS="1") == 21 + 33 and _cost(SINK_SPLUNK="1", SPLUNK_ON_ECS="1") == 21 + 12
+      and _cost(SINK_S3="1", SINK_OPENSEARCH="1", SINK_PROMETHEUS="1", SINK_SPLUNK="1", SPLUNK_ON_ECS="1", GRAFANA="1") == 63 + 33 + 12 + 2
+      and _cost(SKIP_ANALYTICS="1", SINK_S3="1", SINK_SPLUNK="1", SINK_PROMETHEUS="1") == 0)
+
+# 7-5 を up.sh から切り出し、偽の aws（状態を JSON に持ち、呼ばれた順を記録する）で動かす
+import copy, hashlib, shutil, tempfile
+_e75 = up.index("\n  fi\n", up.index('echo "起動に 2〜5 分。')) + len("\n  fi\n")
+_b75 = up[up.index("  JOB_OVERRIDES=$(tf pipeline/analytics output -raw configuration_overrides_json)"):_e75]
+_FAKE_AWS = "#!" + sys.executable + r'''
+import json, os, sys
+st_path = os.environ["FAKE_STATE"]
+st = json.load(open(st_path))
+a = sys.argv[1:]
+opt = lambda k: a[a.index(k) + 1]
+def opts(k):
+    i, out = a.index(k) + 1, []
+    while i < len(a) and not a[i].startswith("--"):
+        out.append(a[i]); i += 1
+    return out
+cmd = a[1]
+if cmd == "list-job-runs":  # 呼ばれるたびに時間が進む: 止めている途中のものは left 回で止まる
+    for r in st["runs"]:
+        if r["state"] == "CANCELLING":
+            r["left"] -= 1
+            if r["left"] <= 0:
+                r["state"] = "CANCELLED"
+    hits = [r for r in st["runs"] if r["state"] in opts("--states")]
+    st["log"].append("list " + " ".join(f'{r["name"]}:{r["id"]}:{r["state"]}' for r in hits))
+    assert opt("--query") == "jobRuns[].[name,id]", opt("--query")
+    print("\n".join(f'{r["name"]}\t{r["id"]}' for r in hits))
+elif cmd == "get-job-run":
+    print(next(r for r in st["runs"] if r["id"] == opt("--job-run-id")).get("spec") or "None")
+elif cmd == "cancel-job-run":
+    r = next(r for r in st["runs"] if r["id"] == opt("--job-run-id"))
+    r["state"], r["left"] = "CANCELLING", st["cancel_delay"]
+    st["log"].append(f'cancel {r["name"]}:{r["id"]}')
+elif cmd == "start-job-run":  # 同じ名前か前の snmp-sinks がまだ動いて（止めて）いれば CONFLICT（同じ checkpoint を 2 つのジョブが使う）
+    name, tags = opt("--name"), dict(t.split("=", 1) for t in opt("--tags").split(","))
+    busy = [r for r in st["runs"] if r["state"] != "CANCELLED" and r["name"] in (name, "snmp-sinks")]
+    rid = f'j{len(st["runs"]) + 1}'
+    st["runs"].append({"id": rid, "name": name, "state": "SUBMITTED", "spec": tags["SpecHash"], "driver": opt("--job-driver")})
+    st["log"].append(f"start {name}" + (" CONFLICT" if busy else "") + f' {opt("--mode")}')
+    print(rid)
+else:
+    sys.exit("unknown " + cmd)
+json.dump(st, open(st_path, "w"))
+'''
+_OVR = '{"o":1}'
+def _spec(driver):
+    h = hashlib.sha256(open(SRC, "rb").read()); h.update(driver.encode()); h.update(_OVR.encode())
+    return h.hexdigest()[:16]
+def _run75(runs, drivers, cancel_delay=2):
+    d = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(d, "aws"), "w") as f:
+            f.write(_FAKE_AWS)
+        os.chmod(os.path.join(d, "aws"), 0o755)
+        state = os.path.join(d, "state.json")
+        with open(state, "w") as f:
+            json.dump({"runs": copy.deepcopy(runs), "log": [], "cancel_delay": cancel_delay}, f)
+        pre = (f'set -euo pipefail\nREGION=r; APP_ID=app; PREFIX=p; OWNER=o; SPARK_SCRIPT="{SRC}"; PY=("{sys.executable}")\n'
+               'die() { echo "DIE: $*"; exit 1; }\nlog() { echo "LOG: $*"; }\nsleep() { :; }\n'
+               "tf() { case \"$4\" in configuration_overrides_json) printf %s '" + _OVR + "' ;; "
+               'job_driver_json_*) v="DRV_${4#job_driver_json_}"; printf %s "${!v:-}" ;; runtime_role_arn) echo arn:role ;; '
+               'list_job_runs_command) echo LIST ;; *) echo "tf? $*" >&2; exit 9 ;; esac; }\n')
+        r = subprocess.run(["bash", "-c", pre + _b75], capture_output=True, text=True,
+                           env={"PATH": d + os.pathsep + os.environ["PATH"], "FAKE_STATE": state, **{f"DRV_{k}": v for k, v in drivers.items()}})
+        with open(state) as f:
+            st = json.load(f)
+        return r.returncode, r.stdout + r.stderr, st
+    finally:
+        shutil.rmtree(d)
+_acts = lambda st: [l for l in st["log"] if l.startswith(("cancel", "start"))]
+_D = {"iceberg": '{"j":"iceberg"}', "splunk": "", "http": '{"j":"http"}'}
+_rc, _out, _st = _run75([{"id": "old", "name": "snmp-sinks", "state": "RUNNING", "spec": "x"}], _D, cancel_delay=3)
+_i = _st["log"].index("cancel snmp-sinks:old")
+check("7-5（移行）: 前の snmp-sinks を cancel し、止まる（CANCELLED）まで待ってから iceberg と http を起こす（splunk は格納先が無いので起こさない）",
+      _rc == 0 and _acts(_st) == ["cancel snmp-sinks:old", "start snmp-sinks-iceberg STREAMING", "start snmp-sinks-http STREAMING"]
+      and any("snmp-sinks:old:CANCELLING" in l for l in _st["log"][_i:]) and "1 つにまとめていた頃のジョブ snmp-sinks（old）を止め" in _out)
+check("7-5（移行）: 新しいジョブには自分の job_driver と SpecHash（スクリプト + その job_driver + overrides）を付ける",
+      {r["name"]: (r["spec"], r["driver"]) for r in _st["runs"] if r["name"] != "snmp-sinks"}
+      == {"snmp-sinks-iceberg": (_spec(_D["iceberg"]), _D["iceberg"]), "snmp-sinks-http": (_spec(_D["http"]), _D["http"])})
+_now = [{"id": "a", "name": "snmp-sinks-iceberg", "state": "RUNNING", "spec": _spec(_D["iceberg"])},
+        {"id": "b", "name": "snmp-sinks-http", "state": "RUNNING", "spec": _spec(_D["http"])}]
+_rc, _out, _st = _run75(_now, _D)
+check("7-5: どのジョブも SpecHash が同じなら何も止めず、何も起こさない",
+      _rc == 0 and _acts(_st) == [] and _out.count("同じスクリプトと引数で動いている") == 2)
+_rc, _out, _st = _run75(_now, dict(_D, http='{"j":"http","new":1}'))
+check("7-5: 引数が変わったジョブ（http）だけ止めて起こし直し、iceberg はそのまま",
+      _rc == 0 and _acts(_st) == ["cancel snmp-sinks-http:b", "start snmp-sinks-http STREAMING"])
+_rc, _out, _st = _run75(_now + [{"id": "c", "name": "snmp-sinks-splunk", "state": "RUNNING", "spec": "s"}], _D)
+check("7-5: 格納先が無くなったジョブ（SINK_SPLUNK=0 にした splunk）は止めるだけで起こさない",
+      _rc == 0 and _acts(_st) == ["cancel snmp-sinks-splunk:c"] and "snmp-sinks-splunk（c）は格納先が無くなったので止める" in _out)
+_rc, _out, _st = _run75(_now + [{"id": "d", "name": "snmp-sinks-iceberg", "state": "RUNNING", "spec": _spec(_D["iceberg"])}], _D)
+check("7-5: 同じ名前のジョブが 2 つ動いていれば 1 つだけ残して止め、起こし直さない（同じ checkpoint を 2 つで使わない）",
+      _rc == 0 and _acts(_st) == ["cancel snmp-sinks-iceberg:d"])
+_rc, _out, _st = _run75([{"id": "e", "name": "snmp-sinks-iceberg", "state": "CANCELLING", "left": 3, "spec": "x"}], dict(_D, http=""))
+check("7-5: 前の up.sh が止めきれなかった（CANCELLING の）同じ名前のジョブがあれば、止まるまで待ってから起こす",
+      _rc == 0 and _acts(_st) == ["start snmp-sinks-iceberg STREAMING"] and any("snmp-sinks-iceberg:e:CANCELLING" in l for l in _st["log"]))
+_rc, _out, _st = _run75([{"id": "old", "name": "snmp-sinks", "state": "RUNNING", "spec": "x"}], _D, cancel_delay=1000)
+check("7-5: 前の snmp-sinks が 3 分たっても止まらなければ、新しいジョブを起こさずに止まる",
+      _rc == 1 and "DIE: Spark のジョブ（old）が 3 分たっても止まらない" in _out and _acts(_st) == ["cancel snmp-sinks:old"])
 print(f"通過 {passed} / 失敗 0")

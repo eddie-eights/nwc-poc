@@ -50,15 +50,15 @@ variable "table_name" {
 }
 
 variable "max_cpu" {
-  description = "Upper bound of vCPU the application may use at once (EMR Serverless maximumCapacity). The streaming job asks for 3 (driver 1 + executor 2)"
+  description = "Upper bound of vCPU the application may use at once (EMR Serverless maximumCapacity). The streaming jobs (up to 3: snmp-sinks-iceberg / -splunk / -http) ask for 3 each (driver 1 + executor 2), 9 in all"
   type        = string
-  default     = "4 vCPU"
+  default     = "12 vCPU"
 }
 
 variable "max_memory" {
-  description = "Upper bound of memory the application may use at once"
+  description = "Upper bound of memory the application may use at once (4 GB per vCPU of max_cpu)"
   type        = string
-  default     = "16 GB"
+  default     = "48 GB"
 }
 
 variable "idle_timeout_minutes" {

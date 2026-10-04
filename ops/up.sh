@@ -455,8 +455,9 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 # lab = 17（EC2 の t4g.xlarge 17.28。2026-10-04 に公開の料金ファイルで確認。それまでの 9 は t4g.large の単価だった）、graph = 58（Neptune Analytics の 16 m-NCU で 58.1。2026-10-04 に料金のページで確認。Price List API では確かめていない。
 #   2026-10-04 までの Neptune Database の db.t4g.medium は 14 だった）、stream = 57 + Telegraf 5（Fargate ARM 0.25 vCPU / 0.5 GB で 1.2 のタスクが 2 つ（受ける側と取りにいく側。2026-10-04 に分けた）と内部 NLB 2.43。
 #   NLB は 2026-09-28 から。どちらも公表単価からで、Price List API では確かめていない）、
-# analytics = 21（ストリーミングのジョブが動いている間の EMR Serverless の 3 vCPU（driver 1 + executor 2。1 vCPU のワーカー 1 台で約 7）。単価は 2026-09-17 に確認。
-#   executor は 2026-10-04 に 1 → 2（Kafka のパーティション 2 つを並列に読む）。
+# analytics = Spark のジョブ 1 つにつき 21（ストリーミングのジョブが動いている間の EMR Serverless の 3 vCPU（driver 1 + executor 2。1 vCPU のワーカー 1 台で約 7）。単価は 2026-09-17 に確認。
+#   executor は 2026-10-04 に 1 → 2（Kafka のパーティション 2 つを並列に読む）。ジョブは 2026-10-04 に格納先で 3 つに分けた（7-5）:
+#   SINK_S3 で snmp-sinks-iceberg、SINK_SPLUNK で snmp-sinks-splunk、SINK_OPENSEARCH か SINK_PROMETHEUS で snmp-sinks-http。3 つとも動けば 63。
 #   S3 Tables のテーブルは無料）
 #   + SINK_PROMETHEUS は 0（取り込みのサンプル課金は別）
 #   + SINK_OPENSEARCH なら 33（logs コレクションの OCU。KB のコレクションと共有されるか確認できていないので最大値で数える。
@@ -478,7 +479,10 @@ if [ -z "$SKIP_STREAM" ]; then
   COST_CENTS=$((COST_CENTS + 5))   # Telegraf（Fargate のタスク 2 つと NLB）
 fi
 if [ -z "$SKIP_ANALYTICS" ]; then
-  COST_CENTS=$((COST_CENTS + 21))
+  # Spark のジョブ（1 つ 21。格納先で 3 つ）
+  if [ -n "$SINK_S3" ]; then COST_CENTS=$((COST_CENTS + 21)); fi
+  if [ -n "$SINK_SPLUNK" ]; then COST_CENTS=$((COST_CENTS + 21)); fi
+  if [ -n "$SINK_OPENSEARCH$SINK_PROMETHEUS" ]; then COST_CENTS=$((COST_CENTS + 21)); fi
   if [ -n "$SINK_OPENSEARCH" ]; then COST_CENTS=$((COST_CENTS + 33)); fi
   if [ -n "$GRAFANA" ]; then COST_CENTS=$((COST_CENTS + 2)); fi
   if [ -n "$SPLUNK_ON_ECS" ]; then COST_CENTS=$((COST_CENTS + 12)); fi
@@ -932,47 +936,83 @@ if [ -z "$SKIP_ANALYTICS" ]; then
       printf '\033[1;33m%s\033[0m\n' "Splunk が 20 分たっても HEALTHY にならない（いまは「${SP_HEALTH:-タスク無し}」）。ロググループ /ecs/$PREFIX-splunk を見る。Spark のジョブはこのまま起こす（届かない間の行は HEC への送信で失敗し、ジョブの再試行に任せる）"
     fi
   fi
-  log "7-5. Spark のストリーミングジョブ（Kafka → ${SINKS}）を起こす（同じスクリプトと引数で動いていれば何もしない）"
-  JOB_DRIVER=$(tf pipeline/analytics output -raw job_driver_json)
+  log "7-5. Spark のストリーミングジョブを格納先ごとに起こす（snmp-sinks-iceberg / -splunk / -http。同じスクリプトと引数で動いていれば何もしない）"
   JOB_OVERRIDES=$(tf pipeline/analytics output -raw configuration_overrides_json)
   # スクリプトと引数（格納先・checkpoint など）のハッシュをジョブのタグ SpecHash に付けておき、動いているジョブと違えば
   # 止めて起こし直す。STREAMING のジョブは起動したときの引数のまま動き続けるので、比べないと格納先を変えても古い引数のまま
-  # （checkpoint から続きを読むので、止めて起こし直してもデータは落ちない）
-  JOB_SPEC=$("${PY[@]}" -c 'import hashlib, sys; h = hashlib.sha256(open(sys.argv[1], "rb").read()); [h.update(a.encode()) for a in sys.argv[2:]]; print(h.hexdigest()[:16])' \
-    "$SPARK_SCRIPT" "$JOB_DRIVER" "$JOB_OVERRIDES")
-  RUNNING=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$APP_ID" \
-    --states SUBMITTED PENDING SCHEDULED RUNNING --query 'jobRuns[].id' --output text)
-  [ "$RUNNING" != None ] || RUNNING=""
-  STALE=""
-  for id in $RUNNING; do
-    spec=$(aws emr-serverless get-job-run --region "$REGION" --application-id "$APP_ID" --job-run-id "$id" --query 'jobRun.tags.SpecHash' --output text 2>/dev/null || echo "")
-    if [ "$spec" != "$JOB_SPEC" ]; then STALE="$STALE $id"; fi
-  done
-  if [ -n "$RUNNING" ] && [ -z "$STALE" ]; then
-    echo "ジョブが同じスクリプトと引数で動いている（${RUNNING}。SpecHash=$JOB_SPEC）"
-  else
-    if [ -n "$STALE" ]; then
-      echo "動いているジョブ（${STALE# }）はスクリプトか引数が違う（今は SpecHash=$JOB_SPEC）。止めて起こし直す"
-      for id in $STALE; do
-        aws emr-serverless cancel-job-run --region "$REGION" --application-id "$APP_ID" --job-run-id "$id" >/dev/null
-      done
-      LEFT=""
-      for i in $(seq 1 36); do  # 止まるまで最大 3 分（同じ checkpoint を 2 つのジョブが読み書きしないよう、止まってから起こす）
-        LEFT=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$APP_ID" \
-          --states SUBMITTED PENDING SCHEDULED RUNNING CANCELLING --query 'jobRuns[].id' --output text)
-        if [ -z "$LEFT" ] || [ "$LEFT" = None ]; then LEFT=""; break; fi
-        sleep 5
-      done
-      [ -z "$LEFT" ] || die "Spark のジョブ（${LEFT}）が 3 分たっても止まらない。$(tf pipeline/analytics output -raw list_job_runs_command) で見て、止まってから打ち直す"
+  # （checkpoint から続きを読むので、止めて起こし直してもデータは落ちない）。ジョブごとに比べ、変わったジョブだけ起こし直す
+  job_spec() {
+    "${PY[@]}" -c 'import hashlib, sys; h = hashlib.sha256(open(sys.argv[1], "rb").read()); [h.update(a.encode()) for a in sys.argv[2:]]; print(h.hexdigest()[:16])' \
+      "$SPARK_SCRIPT" "$1" "$JOB_OVERRIDES"
+  }
+  # 動いている（起動中を含む）ジョブを「名前 id」の行で持ち、名前で id を引く
+  ACTIVE=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$APP_ID" \
+    --states SUBMITTED PENDING SCHEDULED RUNNING --query 'jobRuns[].[name,id]' --output text)
+  runs_named() { printf '%s\n' "$ACTIVE" | awk -v n="$1" '$1 == n {printf "%s ", $2}'; }
+  STOP=""; START=""
+  # 2026-10-04 までは 1 つのジョブ snmp-sinks が全部の格納先へ書いていた。格納先ごとの checkpoint（<checkpoint>/iceberg/ など）は
+  # 新しいジョブがそのまま引き継ぐので、同じ checkpoint を 2 つのジョブが読み書きしないよう、止まってから新しいジョブを起こす
+  OLD=$(runs_named snmp-sinks)
+  if [ -n "$OLD" ]; then
+    echo "1 つにまとめていた頃のジョブ snmp-sinks（${OLD% }）を止め、止まってから格納先ごとのジョブを起こす"
+    STOP="$OLD"
+  fi
+  for JOB in iceberg splunk http; do
+    JOB_DRIVER=$(tf pipeline/analytics output -raw "job_driver_json_$JOB")
+    RUNNING=$(runs_named "snmp-sinks-$JOB")
+    if [ -z "$JOB_DRIVER" ]; then  # このジョブの格納先が SINK_* で全部 0
+      if [ -n "$RUNNING" ]; then
+        echo "snmp-sinks-$JOB（${RUNNING% }）は格納先が無くなったので止める"
+        STOP="$STOP $RUNNING"
+      fi
+      continue
     fi
-    JOB_RUN_ID=$(aws emr-serverless start-job-run --region "$REGION" --application-id "$APP_ID" \
-      --execution-role-arn "$(tf pipeline/analytics output -raw runtime_role_arn)" \
-      --name snmp-sinks --mode STREAMING \
-      --job-driver "$JOB_DRIVER" \
-      --configuration-overrides "$JOB_OVERRIDES" \
-      --tags "Project=$PREFIX,owner=$OWNER,SpecHash=$JOB_SPEC" \
-      --query jobRunId --output text)
-    echo "JOB_RUN_ID=$JOB_RUN_ID （起動に 2〜5 分。様子は: $(tf pipeline/analytics output -raw list_job_runs_command)）"
+    JOB_SPEC=$(job_spec "$JOB_DRIVER")
+    printf -v "JOB_DRIVER_$JOB" '%s' "$JOB_DRIVER"; printf -v "JOB_SPEC_$JOB" '%s' "$JOB_SPEC"
+    KEEP=""; STALE=""
+    for id in $RUNNING; do  # SpecHash が同じものを 1 つだけ残す（同じ名前の 2 つ目は同じ checkpoint を使うので止める）
+      spec=$(aws emr-serverless get-job-run --region "$REGION" --application-id "$APP_ID" --job-run-id "$id" --query 'jobRun.tags.SpecHash' --output text 2>/dev/null || echo "")
+      if [ -z "$KEEP" ] && [ "$spec" = "$JOB_SPEC" ]; then KEEP="$id"; else STALE="$STALE $id"; fi
+    done
+    if [ -n "$STALE" ]; then
+      echo "snmp-sinks-$JOB（${STALE# }）はスクリプトか引数が違う（今は SpecHash=$JOB_SPEC）か 2 つ目なので止める"
+      STOP="$STOP $STALE"
+    fi
+    if [ -n "$KEEP" ]; then
+      echo "snmp-sinks-$JOB は同じスクリプトと引数で動いている（${KEEP}。SpecHash=$JOB_SPEC）"
+    else
+      START="$START $JOB"
+    fi
+  done
+  for id in $STOP; do
+    aws emr-serverless cancel-job-run --region "$REGION" --application-id "$APP_ID" --job-run-id "$id" >/dev/null
+  done
+  if [ -n "$START" ]; then
+    # 起こすジョブと古い snmp-sinks が止まるまで最大 3 分待つ（止めている途中の CANCELLING も待つ。前の up.sh が待ちきれずに終わった分も含む）
+    WAIT_NAMES=" snmp-sinks "
+    for JOB in $START; do WAIT_NAMES="${WAIT_NAMES}snmp-sinks-$JOB "; done
+    LEFT=""
+    for i in $(seq 1 36); do
+      LEFT=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$APP_ID" \
+        --states SUBMITTED PENDING SCHEDULED RUNNING CANCELLING --query 'jobRuns[].[name,id]' --output text \
+        | awk -v names="$WAIT_NAMES" 'index(names, " " $1 " ") {printf "%s ", $2}')
+      [ -n "$LEFT" ] || break
+      sleep 5
+    done
+    [ -z "$LEFT" ] || die "Spark のジョブ（${LEFT% }）が 3 分たっても止まらない。$(tf pipeline/analytics output -raw list_job_runs_command) で見て、止まってから打ち直す"
+    RUNTIME_ROLE=$(tf pipeline/analytics output -raw runtime_role_arn)
+    for JOB in $START; do
+      v="JOB_DRIVER_$JOB"; JOB_DRIVER="${!v}"; v="JOB_SPEC_$JOB"; JOB_SPEC="${!v}"
+      JOB_RUN_ID=$(aws emr-serverless start-job-run --region "$REGION" --application-id "$APP_ID" \
+        --execution-role-arn "$RUNTIME_ROLE" \
+        --name "snmp-sinks-$JOB" --mode STREAMING \
+        --job-driver "$JOB_DRIVER" \
+        --configuration-overrides "$JOB_OVERRIDES" \
+        --tags "Project=$PREFIX,owner=$OWNER,SpecHash=$JOB_SPEC" \
+        --query jobRunId --output text)
+      echo "snmp-sinks-$JOB: JOB_RUN_ID=$JOB_RUN_ID"
+    done
+    echo "起動に 2〜5 分。様子は: $(tf pipeline/analytics output -raw list_job_runs_command)"
   fi
 fi
 

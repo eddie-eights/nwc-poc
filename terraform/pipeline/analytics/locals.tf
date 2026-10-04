@@ -6,7 +6,8 @@
 # Splunk saved searches (logs, traps, telemetry), and both publish the alerts to the SNS topic of terraform/base/core
 # (alerts.tf; terraform/workflow and terraform/pipeline/graph subscribe). Until 2026-10-02 the Spark job detected and put events on EventBridge.
 # The table bucket is the long-term record of the pipeline (raw messages, and proposal_events written by terraform/workflow).
-# Costs about 0.17 USD per hour while the streaming job runs (+ about 0.02 for Grafana, + about 0.12 for the Splunk on ECS) - ops/down.sh cancels the job and destroys this root.
+# Costs about 0.17 USD per hour per streaming job (up to 3, split by sink: iceberg / splunk / opensearch + prometheus) while it runs
+# (+ about 0.02 for Grafana, + about 0.12 for the Splunk on ECS) - ops/down.sh cancels the jobs and destroys this root.
 
 # リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、
 # 1 つの AWS アカウントを何人かで使っても、自分の名前で自分のリソースを探せる
@@ -109,6 +110,9 @@ locals {
   sink_opensearch = contains(var.sinks, "opensearch")
   sink_prometheus = contains(var.sinks, "prometheus")
   sink_splunk     = contains(var.sinks, "splunk")
+  # Spark のジョブは格納先で 3 つに分ける（ジョブ名 snmp-sinks-<キー>。ops/up.sh が起こす）。var.sinks に無い格納先は外し、空になったジョブは起こさない
+  spark_jobs = { for job, sinks in { iceberg = ["iceberg"], splunk = ["splunk"], http = ["opensearch", "prometheus"] } :
+  job => [for s in sinks : s if contains(var.sinks, s)] }
 
   # splunk: Splunk Enterprise をここの ECS で立てる（splunk.tf。HEC は VPC の中の splunk.<名前空間>:8088）。
   # AWS の外の Splunk（NAT Gateway から出る）は 2026-09-28 にやめた（NAT を作らない）
