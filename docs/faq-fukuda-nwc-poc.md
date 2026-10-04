@@ -1695,3 +1695,34 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 **出典**
 
 - https://docs.opensearch.org/latest/tuning-your-cluster/
+
+### Q. Neo4j は、クラスターにする必要がある？
+
+**A. 結論**
+
+この PoC では要らない。1 台で作る。
+
+**理由**
+
+| 理由 | 中身 |
+|---|---|
+| 入っているのが、作り直せるデータだから | Neo4j に置くのは機器、インタフェース、ケーブルのトポロジと、障害の status。元は Nautobot にあり、同期し直せば戻る |
+| 量が小さいから | lab の機器は数台。クラスターで読み取りを分散するほどの負荷が無い |
+| クラスターは OSS 版に無いから | クラスターは Enterprise Edition だけ（有償のライセンス）。Community Edition（GPLv3）では組めない。「全部 OSS」の趣旨から外れる |
+
+**1 台が止まると困ること**
+
+- Web のトポロジのタブが出ない。
+- 障害の status の更新（Lambda graph-status）が失敗する。
+- エージェントが「隣の機器」などトポロジを引けない。
+
+修復案の置き場は「修復案を S3 Tables にまとめる（003）」で S3 Tables に移るので、Neo4j が止まっても修復の流れは進む。ECS のサービスなので、タスクが落ちれば自動で立ち上がり直す。データが一時領域なら、そのあと Nautobot から同期し直す。
+
+**クラスターが要るのは**
+
+- 止まっている数分も許されないとき（本番）。
+- 読み取りの量が 1 台で足りないとき。
+
+そのときは Neo4j Enterprise を買うか、マネージド（Neptune）に戻すかの比較になる。これも「マネージドと OSS を比べる」材料になる。
+
+Community Edition にクラスターが無いことは、2026-10-04 に Neo4j の operations manual で確かめた（https://neo4j.com/docs/operations-manual/current/introduction/）。
