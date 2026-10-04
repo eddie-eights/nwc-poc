@@ -152,13 +152,14 @@ flowchart LR
 - **手当て（こちらで決めた。A と B の両方）。**
   - A. search head のヘルスチェックに突き合わせを足す。manager が「Up」と言っている peer（GUID）が、search head の distributed peers で Down か、GUID が違うなら unhealthy にする。ECS が search head を入れ替える。
     - indexer が本当に落ちているだけのとき（manager も Down と言っている）は、unhealthy にしない。
-    - 1 回の食い違いでは unhealthy にしない。続けて 3 回（healthCheck の `retries`）食い違ったときだけにする。indexer の起動の途中で search head が入れ替わるのを防ぐ。
+    - スクリプトは、食い違うたびに失敗を返す。healthCheck の `retries` は 10 のまま変えないので、続けて 10 回（約 5 分）食い違ったときに ECS が入れ替える。indexer が普通に入ってきたときの食い違いは 1 秒ほどで消える（手元で確認）ので、入れ替えにはならない。
+    - `retries` を 3 に減らさない。突き合わせは起動の確認と同じ healthCheck に入るので、減らすと起動の猶予が 600 秒から 390 秒に縮む（search head の起動は手元で 342 秒）。
     - manager に問い合わせられないときは、unhealthy にしない（manager が落ちただけで search head まで入れ替えない）。
   - B. `ops/up.sh` の全タスク待ちのあとに、同じ突き合わせを 1 回行う。食い違っていたら、止めて理由を出す。
 - **やらない案。**
   indexer の GUID を台ごとに固定する（`instance.cfg` を書く）。同じ GUID の台が入れ替わったときの Splunk の動きが読めない。
 - **残る弱さ。**
-  A が効くまでの数分と、search head が入れ替わっている数分は、アラートが落ちる。あとから出し直す仕組みは、このサイクルでは作らない。
+  A が効くまでの約 5 分と、search head が入れ替わっている数分は、アラートが落ちる。あとから出し直す仕組みは、このサイクルでは作らない。
 
 ## 変更対象ファイル
 
