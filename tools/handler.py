@@ -3,9 +3,10 @@
 Gateway は MCP の tools/call を Lambda の同期呼び出しに変える。event がツールの引数そのもので、
 ツール名は context.client_context.custom["bedrockAgentCoreToolName"] に "<ターゲット名>___<ツール名>" の形で入る。
 中身は agent/topology.py / evidence.py / proposals.py（zip に同梱。Terraform の archive_file が集める）を呼ぶだけ。
-proposals.py は読むだけ（list_proposals）。承認・却下はツールに出していない（人が画面の承認タブで決める）。
+proposals.py は読むだけ（list_proposals。S3 Tables の proposal_events を Athena で読む）。承認・却下はツールに出していない（人が画面の承認タブで決める）。
 2026-09-17 からこの Lambda は VPC の中（terraform/workflow の gateway.tf）。Neptune（PARAM_PREFIX 経由で SSM の neptune-graph-id）、
-OpenSearch Serverless の logs コレクション（OPENSEARCH_ENDPOINT）、Prometheus（PROMETHEUS_QUERY_URL）に届く。
+OpenSearch Serverless の logs コレクション（OPENSEARCH_ENDPOINT）、Prometheus（PROMETHEUS_QUERY_URL）、Athena（ATHENA_WORKGROUP。
+alert_events と proposal_events）に届く。
 graph を配備していなければ topology.py が data/ の静的データに戻る。
 """
 

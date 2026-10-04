@@ -218,12 +218,12 @@ output "alert_events_table_arn" {
 }
 
 output "athena_workgroup" {
-  description = "Athena workgroup the query_history tool of terraform/workflow runs its query in (results in the Athena managed storage)"
+  description = "Athena workgroup the query_history and list_proposals of terraform/workflow and the web approve tab run their queries in (results in the Athena managed storage)"
   value       = aws_athena_workgroup.history.name
 }
 
 output "athena_catalog" {
-  description = "How Athena names the table bucket (s3tablescatalog/<table bucket>). SQL: \"<athena_catalog>\".\"<table_namespace>\".\"alert_events\""
+  description = "How Athena names the table bucket (s3tablescatalog/<table bucket>). SQL: \"<athena_catalog>\".\"<table_namespace>\".\"alert_events\" (or proposal_events)"
   value       = local.athena_catalog
 }
 

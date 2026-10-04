@@ -1,10 +1,11 @@
 """エージェントのツール（topology.py / evidence.py / proposals.py）が共有する小物。
 
-同じコードが何本ものファイルに写してあったのを 1 か所に集めたもの。中身は 4 つ:
+同じコードが何本ものファイルに写してあったのを 1 か所に集めたもの。中身は 5 つ:
 
   runner()              TOOLS（ツール名 → 関数）から run_tool を作る。4 モジュールが同じものを持っていた
   client() / session()  boto3 のクライアントとセッションをプロセスに 1 つだけ作って使い回す
   Param                 「環境変数が先、無ければ SSM」の設定値（Neptune の接続先・Gateway の URL・Runtime の ARN）
+  athena_rows()         Athena でクエリを 1 本打って結果の行を読む（evidence.py の query_history と proposals.py。2026-10-05）
   jst()                 epoch 秒を日本時間の文字列に（proposals.py）
 
 このファイルは 5 か所で動く。AgentCore Runtime のコンテナ（agent/Dockerfile）、tools Lambda の zip
@@ -16,6 +17,7 @@ agent/ のモジュールを増やしたら、この 5 か所の一覧にも足�
 """
 
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -112,6 +114,67 @@ class Param:
         except (ClientError, BotoCoreError):
             self.cached = ""
         return self.cached
+
+
+# ---------------------------------------------------------------- Athena（S3 Tables の alert_events / proposal_events を読む。2026-10-05 に evidence.py から移した）
+# evidence.py ではなくここに置くのは、Web の EC2 に上がる agent のモジュールが toolkit / topology / graph / proposals だけだから
+# （ops/up.sh の upload と terraform/base/core の upload_web_command）。proposals.py が evidence.py を import すると Web で落ちる
+# 実行パラメータ（ExecutionParameters）に渡してよい値。Athena は値を SQL の式として読む（文字列は '…' で囲む）ので、引用符の入らない文字だけを通す。
+# 機器名と proposal_id（<機器>#<種類>#<対象>#<epoch 秒>。対象は ifName / OID / IP）が通る
+ATHENA_PARAM_RE = re.compile(r"^[A-Za-z0-9._:/#?-]{1,128}$")
+# Athena が返す timestamptz の文字列（2026-10-04 07:00:00.000000 UTC）
+_ATHENA_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?\s*(?:UTC|Z|\+00:00)?$")
+
+
+def _athena_wait(athena, qid: str, timeout: float, poll: float):
+    """クエリが終わるまで最大 timeout 秒待つ。終わったら Status、時間切れなら None"""
+    deadline = time.monotonic() + timeout
+    while True:
+        status = athena.get_query_execution(QueryExecutionId=qid)["QueryExecution"]["Status"]
+        if status.get("State") in ("SUCCEEDED", "FAILED", "CANCELLED"):
+            return status
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(poll)
+
+
+def athena_rows(sql: str, workgroup: str, params=(), max_rows: int = 100, timeout: float = 20, poll: float = 0.5,
+                timeout_hint: str = "") -> tuple[list, str]:
+    """Athena で sql を 1 本打ち、(行の list, エラーの文言) を返す。行はセルの値の list（1 行目の列名は除く。NULL は None）。
+    開始 → 終わるまで待つ → timeout 秒で終わらなければ止める → 結果を最大 max_rows 行読む。うまくいけばエラーは空文字。
+    params は SQL の ? に順に入る値（'…' で囲んで ExecutionParameters に渡す）。ATHENA_PARAM_RE に合わない値があれば打たない。
+    結果の置き場はワークグループの管理ストレージ（ResultConfiguration は渡さない）"""
+    params = [str(v) for v in params]
+    if any(not ATHENA_PARAM_RE.match(v) for v in params):
+        return [], "使えない文字がある値は Athena に渡さない（英数字と . _ : / # ? - だけ）"
+    athena = client("athena")
+    req = {"QueryString": sql, "WorkGroup": workgroup}
+    if params:
+        req["ExecutionParameters"] = [f"'{v}'" for v in params]
+    try:
+        qid = athena.start_query_execution(**req)["QueryExecutionId"]
+        status = _athena_wait(athena, qid, timeout, poll)
+        if status is None:
+            try:
+                athena.stop_query_execution(QueryExecutionId=qid)
+            except (ClientError, BotoCoreError):
+                pass
+            return [], f"Athena のクエリが {timeout} 秒で終わらなかったので止めた{timeout_hint}"
+        if status["State"] != "SUCCEEDED":
+            return [], f"Athena のクエリが {status['State']}: {str(status.get('StateChangeReason', ''))[:300]}"
+        result = athena.get_query_results(QueryExecutionId=qid, MaxResults=min(int(max_rows) + 1, 1000))
+    except (ClientError, BotoCoreError) as e:
+        return [], f"Athena を呼べない: {str(e)[:300]}"
+    # 1 行目は列名。NULL のセルは VarCharValue が無い
+    return [[c.get("VarCharValue") for c in r.get("Data", [])] for r in (result.get("ResultSet") or {}).get("Rows", [])[1:]], ""
+
+
+def athena_epoch(ts) -> int:
+    """Athena の timestamptz（UTC）の文字列を epoch 秒に。読めなければ 0"""
+    m = _ATHENA_TS_RE.match(str(ts or "").strip())
+    if not m:
+        return 0
+    return int(datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp())
 
 
 # ---------------------------------------------------------------- 表示

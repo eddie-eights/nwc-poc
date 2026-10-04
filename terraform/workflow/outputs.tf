@@ -18,6 +18,16 @@ output "anomaly_dlq_url" {
   value       = aws_sqs_queue.anomalies_dlq.url
 }
 
+output "decision_queue_url" {
+  description = "SQS queue the web tab sends approvals / rejections to (no SNS subscription; the worker long-polls it and signals the workflow)"
+  value       = aws_sqs_queue.decisions.url
+}
+
+output "decision_dlq_url" {
+  description = "Dead letter queue of the decision queue: decisions the worker received 5 times without deleting (e.g. Temporal unreachable)"
+  value       = aws_sqs_queue.decisions_dlq.url
+}
+
 output "tools_function_name" {
   description = "Tools Lambda behind the gateway (empty when create_gateway is false)"
   value       = try(aws_lambda_function.tools[0].function_name, "")

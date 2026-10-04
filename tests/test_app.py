@@ -286,7 +286,7 @@ check("link_choices の値は remove_link の引数に戻せる", all(v.count("|
 check("異常一覧のモジュールとツールはもう無い（app.run_tool は unknown を返す）",
       not hasattr(app, "anomalies") and "unknown" in app.run_tool("list_anomalies", {"status": "open"})["error"] and app.run_tool("list_devices", {})["count"] == 8)
 check("app.run_tool は layers を topology に振る", app.run_tool("layers", {"device_id": "dc1-leaf-01", "layer": "ip"})["count"] == 5)
-check("app.run_tool は list_proposals を proposals に振る（Neptune 未設定なので案内）", "terraform/workflow" in app.run_tool("list_proposals", {})["error"])
+check("app.run_tool は list_proposals を proposals に振る（Athena の設定が無いので案内）", "terraform/workflow" in app.run_tool("list_proposals", {})["error"])
 # 過去の経緯・修復履歴・状態に答えられるようにした（2026-09-18）。2026-10-02 から「いまの異常」は機器・回線・層の status で答える
 check("system prompt はいまの異常 → status、履歴 → list_proposals、アラートの履歴 → query_history（Grafana / Splunk の通知）、承認はしない、と言う",
       "status（UP 以外）" in app.SYSTEM_PROMPT and "list_proposals" in app.SYSTEM_PROMPT and "アラートの履歴は query_history（Grafana / Splunk" in app.SYSTEM_PROMPT
@@ -418,4 +418,147 @@ check("app.run_tool は query_history を evidence に振る（仕様に無い�
 for k, v in _hist_saved.items():
     setattr(evidence, k, v)
 toolkit._clients.pop("athena", None)
+
+# ---- 修復案（S3 Tables の proposal_events を Athena で読み、承認・却下は決定のキューに送る。2026-10-05）
+import json, proposals  # noqa: E402,E401 - app.py が import した同じモジュール
+_rules_spec = importlib.util.spec_from_file_location("wf_rules", os.path.join(os.path.dirname(__file__), "..", "workflow", "rules.py"))
+wf_rules = importlib.util.module_from_spec(_rules_spec); _rules_spec.loader.exec_module(wf_rules)
+check("proposals.COLUMNS は workflow/rules.py の PROPOSAL_EVENT_COLUMNS と同じ名前・同じ順（列を足したら両方）",
+      proposals.COLUMNS == tuple(n for n, _ in wf_rules.PROPOSAL_EVENT_COLUMNS)
+      and set(proposals.TIME_COLUMNS) == {n for n, t in wf_rules.PROPOSAL_EVENT_COLUMNS if t == "timestamptz"})
+
+class FakeSQS:
+    def __init__(self, error=None):
+        self.error, self.sent = error, []
+    def send_message(self, **kw):
+        self.sent.append(kw)
+        if self.error:
+            raise self.error
+        return {"MessageId": "m1"}
+
+_prop_env = {"ATHENA_WORKGROUP": "nwc-history", "ATHENA_CATALOG": "s3tablescatalog/tb", "HISTORY_NAMESPACE": "netops",
+             "PROPOSAL_EVENTS_TABLE": "proposal_events", "DECISION_QUEUE_URL": "https://sqs.ap-northeast-1.amazonaws.com/123/nwc-decisions"}
+_prop_saved_env = {k: os.environ.get(k) for k in _prop_env}
+for k in _prop_env:
+    os.environ.pop(k, None)
+_prop_poll = proposals.POLL
+toolkit._clients["athena"] = fa = FakeAthena()
+toolkit._clients["sqs"] = fs = FakeSQS()
+check("list_proposals は設定が無ければ {\"error\": NOT_DEPLOYED, \"proposals\": []} で、Athena を呼ばない",
+      proposals.list_proposals() == {"error": proposals.NOT_DEPLOYED, "proposals": []} and fa.calls == [])
+check("decide も設定が無ければ NOT_DEPLOYED で、Athena も SQS も呼ばない",
+      proposals.decide("a#1", "approved", "山田 (web)") == {"error": proposals.NOT_DEPLOYED} and fa.calls == [] and fs.sent == [])
+check("get_proposal は設定が無ければ空の辞書", proposals.get_proposal("a#1") == {} and fa.calls == [])
+os.environ.update(_prop_env)
+proposals.POLL = 0
+
+PID = "dc1-leaf-01#link_down#ethernet-1/1#1790000000"
+def prow(status="pending", seq=1, event="created", pid=PID, **over):
+    """proposal_events の 1 行（COLUMNS の順のセル。Athena の答えと同じく数も文字列、NULL は None）"""
+    r = {"event_id": f"{pid}#{event}", "proposal_id": pid, "anomaly_id": pid.rsplit("#", 1)[0], "seq": str(seq), "event": event, "status": status,
+         "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "first_seen": "2026-09-21 14:13:20.000000 UTC",
+         "source": "grafana", "alert_detail": "ethernet-1/1 is down", "cause": "c", "action": "heal-main", "command": "sudo lab heal-main",
+         "reason": "r", "agent_response": "{}", "precheck": "ok", "precheck_verdict": "ok", "decided_by": None, "decided_at": None,
+         "apply_output": None, "verify_note": None, "detail": "r", "workflow_id": "investigate-x", "run_id": "run-1",
+         "created_at": "2026-09-21 14:14:00.000000 UTC", "event_time": "2026-09-21 14:15:00.123456 UTC", **over}
+    return tuple(r[c] for c in proposals.COLUMNS)
+
+toolkit._clients["athena"] = fa = FakeAthena(rows=[prow(), prow("approved", 2, "approved", pid="dc1-leaf-02#link_down#ethernet-1/2#1790000100",
+                                                                 decided_by="山田 (web)", decided_at="2026-09-21 14:20:00.000000 UTC")])
+r = proposals.list_proposals(status="pending", device_id="dc1-leaf-01")
+_q = fa.started()[0]
+check("list_proposals の SQL は proposal_id ごとに最新の行（seq、同じなら event_time が遅いほう）を選び、status は外側、device_id は内側で絞る",
+      "row_number() OVER (PARTITION BY proposal_id ORDER BY seq DESC, event_time DESC) AS rn" in _q["QueryString"]
+      and 'FROM "s3tablescatalog/tb"."netops"."proposal_events" WHERE device_id = ?)' in _q["QueryString"]
+      and "WHERE rn = 1 AND status = ? ORDER BY event_time DESC LIMIT 50" in _q["QueryString"])
+check("値は ExecutionParameters で device_id → status の順に渡り、SQL の文字列には現れない。ワークグループ指定で打つ",
+      _q["ExecutionParameters"] == ["'dc1-leaf-01'", "'pending'"] and "dc1-leaf-01" not in _q["QueryString"] and "'pending'" not in _q["QueryString"]
+      and _q["WorkGroup"] == "nwc-history" and "ResultConfiguration" not in _q)
+check("list_proposals は 28 列を選ぶ（COLUMNS の順）", _q["QueryString"].startswith("SELECT " + ", ".join(proposals.COLUMNS) + " FROM (SELECT "))
+_p = r["proposals"][0] if r.get("proposals") else {}
+_keys = ("proposal_id", "status", "device_id", "kind", "target", "cause", "action", "command", "reason", "created_at_jst", "updated_at_jst",
+         "decided_by", "apply_output", "verify_note")
+check("list_proposals は今と同じキー（画面とツールが読む 14 個）を返す",
+      r["status"] == "pending" and r["count"] == 2 and all(k in _p for k in _keys))
+check("時刻は epoch 秒と JST（updated_at はその行の event_time）、seq は int、NULL の文字列は空文字、detail はアラートの detail",
+      (_p["created_at"], _p["updated_at"], _p["first_seen"], _p["decided_at"]) == (1790000040, 1790000100, 1790000000, None)
+      and _p["created_at_jst"] == "2026-09-21 23:14:00" and _p["updated_at_jst"] == "2026-09-21 23:15:00" and _p["decided_at_jst"] == ""
+      and _p["seq"] == 1 and _p["decided_by"] == "" and _p["apply_output"] == "" and _p["verify_note"] == ""
+      and _p["detail"] == "ethernet-1/1 is down" and _p["event_detail"] == "r"
+      and r["proposals"][1]["decided_by"] == "山田 (web)" and r["proposals"][1]["decided_at_jst"] == "2026-09-21 23:20:00")
+toolkit._clients["athena"] = fa = FakeAthena()
+r = proposals.list_proposals(status="all", limit=500)
+_q = fa.started()[0]
+check("status が all で機器の指定も無ければ値を渡さず（ExecutionParameters なし）、件数は 100 までに丸める",
+      "ExecutionParameters" not in _q and "?" not in _q["QueryString"] and "LIMIT 100" in _q["QueryString"] and r["count"] == 0)
+toolkit._clients["athena"] = fa = FakeAthena()
+check("知らない status は pending として読む", proposals.list_proposals(status="maybe")["status"] == "pending" and fa.started()[0]["ExecutionParameters"] == ["'pending'"])
+toolkit._clients["athena"] = fa = FakeAthena()
+r = proposals.list_proposals(device_id="x' OR '1'='1")
+check("引用符の入った device_id は Athena に投げずにエラー", "使えない文字" in r["error"] and r["proposals"] == [] and fa.calls == [])
+toolkit._clients["athena"] = fa = FakeAthena(states=("FAILED",), reason="TABLE_NOT_FOUND: proposal_events")
+r = proposals.list_proposals()
+check("Athena が FAILED なら「修復案を読めない」と理由（落ちない）", r["error"].startswith("修復案を読めない") and "TABLE_NOT_FOUND" in r["error"] and r["proposals"] == [])
+toolkit._clients["athena"] = fa = FakeAthena(rows=[prow()])
+_g = proposals.get_proposal(PID)
+_q = fa.started()[0]
+check("get_proposal は proposal_id を内側で絞って 1 件（LIMIT 1）",
+      _g["proposal_id"] == PID and _g["status"] == "pending" and _q["ExecutionParameters"] == [f"'{PID}'"]
+      and "WHERE proposal_id = ?)" in _q["QueryString"] and "LIMIT 1" in _q["QueryString"])
+toolkit._clients["athena"] = fa = FakeAthena()
+check("get_proposal は無ければ空の辞書、使えない文字なら Athena を呼ばずに空", proposals.get_proposal(PID) == {} and proposals.get_proposal("a'b") == {} and len(fa.calls) == 4)
+
+toolkit._clients["athena"] = fa = FakeAthena(rows=[prow()])
+toolkit._clients["sqs"] = fs = FakeSQS()
+r = proposals.decide(PID, "approved", "山田 (web)")
+_body = json.loads(fs.sent[0]["MessageBody"]) if fs.sent else {}
+check("decide は pending を確かめてから、決定のキューに type decision の本文を 1 回送る（行は書かない）",
+      len(fs.sent) == 1 and fs.sent[0]["QueueUrl"] == _prop_env["DECISION_QUEUE_URL"]
+      and {k: _body.get(k) for k in ("type", "proposal_id", "decision", "decided_by")} == {"type": "decision", "proposal_id": PID, "decision": "approved", "decided_by": "山田 (web)"}
+      and isinstance(_body.get("sent_at"), int) and fa.started()[0]["ExecutionParameters"] == [f"'{PID}'"])
+check("decide の返り値は status が sent（まだ approved ではない。行はワーカーがシグナルを受けて足す）",
+      r == {"proposal_id": PID, "status": "sent", "decision": "approved", "decided_by": "山田 (web)", "sent_at": _body["sent_at"]})
+check("送った本文は workflow/rules.py の decision_from_message が読める（同じ形）",
+      wf_rules.decision_from_message(fs.sent[0]["MessageBody"]) == {"proposal_id": PID, "decision": "approved", "decided_by": "山田 (web)", "decided_at": _body["sent_at"]})
+for _st in ("approved", "verified", "expired"):
+    toolkit._clients["athena"] = fa = FakeAthena(rows=[prow(_st, 2, _st)])
+    toolkit._clients["sqs"] = fs = FakeSQS()
+    r = proposals.decide(PID, "rejected", "鈴木 (web)")
+    check(f"pending でない修復案（{_st}）には送らずにエラー", "pending ではない" in r.get("error", "") and fs.sent == [])
+toolkit._clients["athena"] = fa = FakeAthena()
+r = proposals.decide(PID, "approved", "山田 (web)")
+check("修復案が無ければ送らずにエラー", "pending ではない" in r.get("error", "") and fs.sent == [])
+toolkit._clients["athena"] = fa = FakeAthena(rows=[prow()])
+check("decision が approved / rejected 以外（applied・空）なら Athena も SQS も呼ばずにエラー",
+      "decision は" in proposals.decide(PID, "applied")["error"] and "decision は" in proposals.decide(PID, "")["error"] and fa.calls == [] and fs.sent == [])
+check("proposal_id が空・使えない文字なら Athena も SQS も呼ばずにエラー",
+      "空" in proposals.decide("", "approved")["error"] and "使えない文字" in proposals.decide("a'b", "approved")["error"] and fa.calls == [] and fs.sent == [])
+toolkit._clients["athena"] = fa = FakeAthena(states=("FAILED",), reason="AccessDenied")
+check("pending を確かめられない（Athena が FAILED）なら送らずに「修復案を読めない」",
+      proposals.decide(PID, "approved")["error"].startswith("修復案を読めない") and fs.sent == [])
+toolkit._clients["athena"] = fa = FakeAthena(rows=[prow()])
+toolkit._clients["sqs"] = fs = FakeSQS(error=ClientError("AccessDenied"))
+check("SQS に送れなければ「送れない」（落ちない）", proposals.decide(PID, "approved")["error"].startswith("送れない") and len(fs.sent) == 1)
+toolkit._clients["athena"] = fa = FakeAthena(rows=[prow()])
+toolkit._clients["sqs"] = fs = FakeSQS()
+proposals.decide(PID, "rejected", "x" * 100)
+check("decided_by は 64 字で切って送る", json.loads(fs.sent[0]["MessageBody"])["decided_by"] == "x" * 64)
+
+check("チャットのツール（TOOL_SPECS）に decide は無く、list_proposals だけ（承認は画面で人が決める）",
+      [s["toolSpec"]["name"] for s in proposals.TOOL_SPECS] == ["list_proposals"] and set(proposals.TOOLS) == {"list_proposals"}
+      and "unknown" in proposals.run_tool("decide", {"proposal_id": PID, "decision": "approved"})["error"])
+toolkit._clients["athena"] = fa = FakeAthena()
+toolkit._clients["sqs"] = fs = FakeSQS()
+r = app.run_tool("list_proposals", {"device_id": "dc1-leaf-01"})
+check("app.run_tool の list_proposals は status を書かなければ all（履歴）で、決定のキューには触らない",
+      r["status"] == "all" and fa.started()[0]["ExecutionParameters"] == ["'dc1-leaf-01'"] and "status = ?" not in fa.started()[0]["QueryString"] and fs.sent == [])
+check("app.run_tool に decide は無い", "unknown" in app.run_tool("decide", {"proposal_id": PID, "decision": "approved"})["error"] and fs.sent == [])
+proposals.POLL = _prop_poll
+for k, v in _prop_saved_env.items():
+    if v is None:
+        os.environ.pop(k, None)
+    else:
+        os.environ[k] = v
+toolkit._clients.pop("athena", None)
+toolkit._clients.pop("sqs", None)
 print(f"通過 {passed} / 失敗 0")

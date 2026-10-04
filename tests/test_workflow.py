@@ -30,9 +30,7 @@ class BotoCoreError(Exception):
 def cyrows(*r):
     """Neptune Analytics の execute_query の答え（payload は読み切りのストリームなので、呼ばれるたびに作る）"""
     return lambda **kw: {"payload": io.BytesIO(json.dumps({"results": list(r)}).encode())}
-def vertex(vid, **props):
-    return {"~id": vid, "~entityType": "node", "~labels": ["proposal"], "~properties": props}
-fake = {"execute_query": cyrows(), "get_parameter": ClientError("ParameterNotFound")}
+fake ={"execute_query": cyrows(), "get_parameter": ClientError("ParameterNotFound")}
 clients = []  # boto3.client に渡した (name, kw)
 class FakeClient:
     def __init__(self, name):
@@ -237,60 +235,88 @@ gq = lambda: [kw["queryString"] for n, op, kw in calls if op == "execute_query"]
 gp = lambda: [kw.get("parameters", {}) for n, op, kw in calls if op == "execute_query"]
 check("Gremlin の組み立て（_q / _un / gremlin）はもう無い（値は openCypher のパラメータで渡すので、エスケープが要らない）",
       not any(hasattr(awsio, n) for n in ("_q", "_un", "gremlin", "NEPTUNE_ENDPOINT")) and "execute_gremlin_query" not in read("workflow", "awsio.py"))
-calls.clear(); clients.clear()
-fake["execute_query"] = cyrows({"n": vertex("p1", status="pending", first_seen=1, _writer="abc")})
-check("read_proposal は Neptune Analytics（label proposal）から 1 件読み、id を proposal_id にする（作るときの目印 _writer は出さない）",
-      awsio.read_proposal("p1") == {"proposal_id": "p1", "status": "pending", "first_seen": 1}
-      and gq()[-1] == "MATCH (n:proposal) WHERE id(n) = $id RETURN n" and gp()[-1] == {"id": "p1"}
+# 修復案の頂点（label proposal）は 2026-10-05 にやめた。修復案は S3 Tables の proposal_events だけ
+_awsio_src = read("workflow", "awsio.py")
+check("awsio は修復案を Neptune に読み書きしない（read_proposal / write_proposal / update_proposal も :proposal も無い）",
+      not any(hasattr(awsio, n) for n in ("read_proposal", "write_proposal", "update_proposal")) and ":proposal" not in _awsio_src)
+# Neptune はトポロジだけにする（2026-10-02）。異常の「いま」は Temporal のワークフローとシグナルが持つ
+check("awsio は異常の頂点（label anomaly）を読まない",
+      not hasattr(awsio, "read_anomaly") and not hasattr(awsio, "list_open_anomalies") and ":anomaly" not in _awsio_src)
+calls.clear(); clients.clear(); awsio._cache.pop("neptune", None)
+fake["execute_query"] = cyrows({"id": "hq-ce-01", "status": "DOWN", "maintenance": True})
+awsio.read_topology()
+check("Neptune Analytics は neptune-graph の execute_query（openCypher、グラフ ID 指定、endpoint_url なし）で読む",
+      gq()[0] == "MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance"
       and calls[-1][2]["graphIdentifier"] == "g-abc1234567" and calls[-1][2]["language"] == "OPEN_CYPHER"
       and clients[-1][0] == "neptune-graph" and "endpoint_url" not in clients[-1][1])
-# Neptune はトポロジ（と修復案）だけにする（2026-10-02）。異常の「いま」は Temporal のワークフローとシグナルが持つ
-check("awsio は異常の頂点（label anomaly）を読まない",
-      not hasattr(awsio, "read_anomaly") and not hasattr(awsio, "list_open_anomalies") and ":anomaly" not in read("workflow", "awsio.py"))
 fake["execute_query"] = cyrows()
-check("read_proposal は無ければ {}", awsio.read_proposal("p1") == {})
-calls.clear()
-fake["execute_query"] = cyrows({"id": "p1"})
-awsio.update_proposal("p1", {"status": "applied", "apply_output": "ok\nline2", "skip": None})
-check("update_proposal は status / apply_output / updated_at を 1 つの map で書く（改行もそのままパラメータで渡る）",
-      gq()[-1] == "MATCH (n:proposal) WHERE id(n) = $id SET n += $fields RETURN id(n) AS id" and gp()[-1]["id"] == "p1"
-      and set(gp()[-1]["fields"]) == {"status", "apply_output", "updated_at"} and gp()[-1]["fields"]["apply_output"] == "ok\nline2" and "only" not in gp()[-1])
-awsio.update_proposal("p1", {"status": "approved"}, "pending")
-check("update_proposal(only_status) は status の条件を同じ 1 本のクエリに入れる（読んでから書くあいだに割り込まれない）",
-      gq()[-1] == "MATCH (n:proposal) WHERE id(n) = $id AND n.status = $only SET n += $fields RETURN id(n) AS id" and gp()[-1]["only"] == "pending")
-fake["execute_query"] = cyrows()
-check("書けなければ（空の結果）False", awsio.update_proposal("p1", {"status": "approved"}, "pending") is False)
-calls.clear()
-awsio.write_proposal({"proposal_id": "p1", "status": "pending", "first_seen": 1, "nothing": None, "empty": "", "extra": {"a": 1}})
-check("write_proposal は None と空文字を落とし、無ければ作って property を map で書く（スカラーでない値は文字列に）",
-      gq()[-1] == "MERGE (n:proposal {`~id`: $id}) SET n += $props"
-      and gp()[-1] == {"id": "p1", "props": {"status": "pending", "first_seen": 1, "extra": "{'a': 1}"}})
-fake["execute_query"] = lambda **kw: cyrows({"w": kw["parameters"]["token"]})()
-check("write_proposal(only_new) は無いときだけ作る（作るときだけ書く目印が自分のものなら True）",
-      awsio.write_proposal({"proposal_id": "p1", "status": "pending"}, True) is True
-      and gq()[-1] == "MERGE (n:proposal {`~id`: $id}) ON CREATE SET n += $props, n._writer = $token RETURN n._writer AS w"
-      and gp()[-1]["props"] == {"status": "pending"} and len(gp()[-1]["token"]) == 32)
-fake["execute_query"] = cyrows({"w": "someone-else"})
-check("既にあれば例外にせず False（人が決めた status を pending に戻さない）", awsio.write_proposal({"proposal_id": "p1"}, True) is False)
-fake["execute_query"] = cyrows()
+# 修復案の「いま」は proposal_id ごとに seq が最大の行（PyIceberg の scan は差し替え）
+_pid = "hq-ce-01#link_down#eth1#1700000000"
+_scanned, _scan0 = [], awsio._scan
+_srows = [{"proposal_id": _pid, "seq": 1, "status": "pending", "event_time": 10},
+          {"proposal_id": _pid, "seq": 2, "status": "approved", "event_time": 20, "decided_by": "first"},
+          {"proposal_id": _pid, "seq": 2, "status": "approved", "event_time": 21, "decided_by": "retry"},
+          {"proposal_id": "hq-ce-01#link_down#eth1#1600000000", "seq": 4, "status": "verified", "event_time": 5}]
+awsio._scan = lambda column, value: _scanned.append((column, value)) or [r for r in _srows if column != "proposal_id" or r["proposal_id"] == value]
+check("latest_proposal は proposal_id で絞って読み、seq が最大の行（同じ seq なら event_time が遅いほう）を返す。無ければ {}",
+      awsio.latest_proposal(_pid)["decided_by"] == "retry" and _scanned[-1] == ("proposal_id", _pid) and awsio.latest_proposal("x#1") == {})
+check("anomaly_proposals は anomaly_id で絞って読み、修復案ごとの最新の行を返す",
+      {k: v["status"] for k, v in awsio.anomaly_proposals("hq-ce-01#link_down#eth1").items()}
+      == {_pid: "approved", "hq-ce-01#link_down#eth1#1600000000": "verified"} and _scanned[-1] == ("anomaly_id", "hq-ce-01#link_down#eth1"))
+awsio._scan = _scan0
+import datetime as _dt  # noqa: E402
+check("from_table_rows は PyIceberg の datetime を epoch 秒に戻し、ほかはそのまま",
+      awsio.from_table_rows([{"event_time": _dt.datetime(2023, 11, 14, 22, 13, 20, tzinfo=_dt.timezone.utc), "seq": 2, "decided_at": None}])
+      == [{"event_time": 1700000000, "seq": 2, "decided_at": None}])
+check("_scan は値を EqualTo の式で渡す（文字列に埋めない）", "row_filter=EqualTo(column, value)" in _awsio_src)
 # 証跡（S3 Tables の proposal_events）
 cp = awsio.catalog_properties()
 check("PyIceberg は S3 Tables の Iceberg REST に SigV4（署名名 s3tables）でつなぐ",
       cp["type"] == "rest" and cp["uri"] == "https://s3tables.ap-northeast-1.amazonaws.com/iceberg" and cp["rest.signing-name"] == "s3tables"
       and cp["rest.sigv4-enabled"] == "true" and cp["warehouse"] == os.environ["AUDIT_TABLE_BUCKET_ARN"])
-ev = rules.proposal_event("approved", {"proposal_id": "p1", "anomaly_id": "a", "device_id": "hq-ce-01", "decided_by": "山田 (web)"}, 1700000000, "x" * 5000)
-rows = awsio.audit_rows([ev], rules.PROPOSAL_EVENT_COLUMNS)
-check("audit_rows は timestamptz を UTC の datetime に、ほかは文字列にする",
-      rows[0]["event_time"].isoformat() == "2023-11-14T22:13:20+00:00" and rows[0]["decided_by"] == "山田 (web)"
+_item = {"proposal_id": _pid, "anomaly_id": "hq-ce-01#link_down#eth1", "device_id": "hq-ce-01", "kind": "link_down", "target": "eth1",
+         "first_seen": 1700000000, "source": "grafana", "alert_detail": "ifOperStatus down", "cause": "c", "action": "heal-main",
+         "command": "sudo lab heal-main", "reason": "r", "agent_response": "{}", "precheck": "【問題なし】", "precheck_verdict": "ok",
+         "workflow_id": "investigate-hq-ce-01#link_down#eth1", "run_id": "run-1", "created_at": 1700000100}
+created = rules.proposal_event("created", _item, 1700000100)
+check("created の行は 28 列を全部（PROPOSAL_EVENT_COLUMNS の順）持ち、seq が 1、status が pending、decided_at が None",
+      list(created) == [n for n, _ in rules.PROPOSAL_EVENT_COLUMNS] and len(created) == 28 and created["seq"] == 1
+      and created["status"] == "pending" and created["decided_at"] is None and created["event_id"] == f"{_pid}#created")
+appr = rules.proposal_event("approved", created, 1700000200, "", {"decided_by": "山田 (web)", "decided_at": 1700000190})
+check("前の行から approved の行を作ると seq が 2 で、修復案の項目（kind / target / reason / precheck / first_seen / created_at）は同じ",
+      appr["seq"] == 2 and appr["status"] == "approved" and appr["decided_by"] == "山田 (web)" and appr["decided_at"] == 1700000190
+      and all(appr[k] == created[k] for k in ("kind", "target", "reason", "precheck", "first_seen", "created_at", "workflow_id")))
+ev = rules.proposal_event("applied", appr, 1700000300, "x" * 5000)
+rows = awsio.audit_rows([created, ev], rules.PROPOSAL_EVENT_COLUMNS)
+check("audit_rows は timestamptz を UTC の datetime に、seq を int に、None は None のまま、ほかは文字列にする",
+      rows[1]["event_time"].isoformat() == "2023-11-14T22:18:20+00:00" and rows[1]["decided_by"] == "山田 (web)"
+      and rows[0]["seq"] == 1 and rows[1]["seq"] == 3 and isinstance(rows[1]["seq"], int)
+      and rows[0]["decided_at"] is None and rows[1]["decided_at"].isoformat() == "2023-11-14T22:16:30+00:00"
       and list(rows[0]) == [n for n, _ in rules.PROPOSAL_EVENT_COLUMNS])
-check("proposal_event の event_id は <proposal_id>#<event>、created の status は pending、detail は 4000 字で切る",
-      ev["event_id"] == "p1#approved" and ev["status"] == "approved" and len(ev["detail"]) == 4000
-      and rules.proposal_event("created", {"proposal_id": "p1"}, 1)["status"] == "pending")
+check("proposal_event の event_id は <proposal_id>#<event>、seq は前の行の seq + 1、detail は 4000 字で切る",
+      ev["event_id"] == f"{_pid}#applied" and ev["status"] == "applied" and ev["seq"] == 3 and len(ev["detail"]) == 4000)
+check("latest_proposals は seq を数で比べる（文字列の \"10\" と 9）",
+      rules.latest_proposals([{"proposal_id": "p", "seq": "10", "event_time": 1}, {"proposal_id": "p", "seq": 9, "event_time": 2}])["p"]["seq"] == "10")
 try:
     rules.proposal_event("deleted", {}, 1); bad = False
 except ValueError:
     bad = True
 check("知らない出来事は ValueError（証跡の event を増やすときは PROPOSAL_EVENTS に足す）", bad)
+# 決定のキュー（Web の承認タブ → worker）のメッセージ
+def _dm(**k):
+    return json.dumps({"type": "decision", "proposal_id": "a#1", "decision": "approved", "decided_by": "x (web)", "sent_at": 5, **k})
+check("decision_from_message は決定の本文をシグナルの辞書にする（decided_at は sent_at）",
+      rules.decision_from_message(_dm()) == {"proposal_id": "a#1", "decision": "approved", "decided_by": "x (web)", "decided_at": 5})
+check("sent_at が無ければ now、decided_by は 64 字で切る",
+      rules.decision_from_message(_dm(sent_at=None), now=9)["decided_at"] == 9
+      and len(rules.decision_from_message(_dm(decided_by="y" * 100))["decided_by"]) == 64)
+check("decision が approved / rejected でない、proposal_id が空や # の無い形なら None",
+      all(rules.decision_from_message(_dm(**k)) is None for k in ({"decision": "maybe"}, {"decision": "applied"}, {"proposal_id": ""}, {"proposal_id": "nohash"})))
+check("type が decision でない・アラートの JSON・読めない本文は None",
+      rules.decision_from_message(_dm(type="alert")) is None and rules.decision_from_message(_body) is None
+      and rules.decision_from_message("garbage") is None and rules.decision_from_message(None) is None)
+check("anomaly_of は proposal_id の右端の # から後ろを外す、決定の本文はアラートとして読まれない",
+      rules.anomaly_of(_pid) == "hq-ce-01#link_down#eth1" and rules.alerts_from_message(_dm()) == [])
 check("status に出てくる出来事は全部 PROPOSAL_EVENTS にある", set(proposals.STATUSES) - {"pending"} <= set(rules.PROPOSAL_EVENTS))
 check("append_proposal_events は空なら何もしない（pyiceberg を読まない）", awsio.append_proposal_events([], rules.PROPOSAL_EVENT_COLUMNS) is None)
 # アラートの通知の履歴（S3 Tables の alert_events。書くのは graph/status_handler.py）
@@ -333,52 +359,31 @@ check("Runtime が error を返したら例外（Temporal が再試行する）"
 check("worker.py は awsio / rules を imports_passed_through で読む",
       re.search(r"with workflow\.unsafe\.imports_passed_through\(\):\n\s*import awsio\n\s*import rules", read("workflow", "worker.py")) is not None)
 # 2026-10-02: パッチの切り出し位置を誤って定数とアクティビティがまるごと欠けた。temporalio を入れていない環境では import の確認が走らず気づけなかったので、形を見る
-check("worker.py に定数・アクティビティ 6 本・@workflow.defn の付いたワークフロー・シグナル 2 本・starter がそろっている",
-      [f.__name__ for f in worker.ACTIVITIES] == ["investigate", "put_proposal", "get_decision", "record_decision", "set_status", "apply_on_lab"]
-      and all(isinstance(getattr(worker, k), int) for k in ("APPROVAL_TIMEOUT_MINUTES", "VERIFY_TIMEOUT", "DECISION_POLL", "HOLD_MINUTES"))
+check("worker.py に定数・アクティビティ 4 本・@workflow.defn の付いたワークフロー・シグナル 2 本・starter がそろっている",
+      [f.__name__ for f in worker.ACTIVITIES] == ["investigate", "put_proposal", "record_event", "apply_on_lab"]
+      and all(isinstance(getattr(worker, k), int) for k in ("APPROVAL_TIMEOUT_MINUTES", "VERIFY_TIMEOUT", "HOLD_MINUTES"))
       and worker.HOLD_OUTCOMES == ("rejected", "expired", "failed") and worker.TASK_QUEUE and worker.TEMPORAL_ADDRESS == "localhost:7233"
       and re.search(r"^@workflow\.defn\nclass InvestigateAnomaly:", read("workflow", "worker.py"), re.M) is not None
-      and read("workflow", "worker.py").count("@activity.defn\n") == 6
+      and read("workflow", "worker.py").count("@activity.defn\n") == 4
       and len(re.findall(r"^    @workflow\.signal\n    def (decide|resolved)\(", read("workflow", "worker.py"), re.M)) == 2
-      and all(callable(getattr(worker, f)) for f in ("start_for", "resolve_for", "handle_message", "starter_queue", "starter", "connect", "main")))
+      and all(callable(getattr(worker, f)) for f in ("start_for", "resolve_for", "handle_message", "handle_decision", "starter_queue", "starter", "connect", "main")))
 check("異常の頂点を見るアクティビティ（get_anomaly / still_open / anomaly_resolved）と、表を見る starter はもう無い",
       not any(hasattr(worker, f) for f in ("get_anomaly", "still_open", "anomaly_resolved", "starter_table", "POLL_INTERVAL", "VERIFY_ATTEMPTS", "VERIFY_INTERVAL")))
+check("Neptune の修復案を見に行くアクティビティ（get_decision / record_decision / set_status）と、決定を待つ間隔 DECISION_POLL はもう無い（決定はシグナルで届く）",
+      not any(hasattr(worker, f) for f in ("get_decision", "record_decision", "set_status", "DECISION_POLL")))
 
-# ---- proposals.py（Neptune の label proposal。agent/graph.py の list_records / get_record / update_record 経由）
+# ---- proposals.py（S3 Tables の proposal_events を Athena で読み、決定は SQS の決定のキューに送る。Athena と SQS の振る舞いは tests/test_app.py）
+# このテストは Athena の設定も決定のキューの URL も置かない（PARAM_PREFIX が空なので SSM も引かない）
 calls.clear()
-fake["execute_query"] = cyrows({"id": "p1"})
-r = proposals.decide("p1", "approved", "web")
-check("承認は pending のときだけ書く 1 本のクエリ（条件と書き込みが同じ文）",
-      r["status"] == "approved" and gq()[-1] == "MATCH (n:`proposal`) WHERE id(n) = $id AND n.status = $only SET n += $fields RETURN id(n) AS id"
-      and gp()[-1]["only"] == "pending" and gp()[-1]["fields"]["status"] == "approved" and gp()[-1]["fields"]["decided_by"] == "web" and "decided_at" in gp()[-1]["fields"])
-fake["execute_query"] = cyrows()
-check("pending でなければエラーの文で返す（例外にしない）", "pending ではない" in proposals.decide("p1", "rejected")["error"])
-check("approved / rejected 以外は弾く", "error" in proposals.decide("p1", "applied"))
-check("proposal_id が空なら弾く", "error" in proposals.decide("", "approved"))
-fake["execute_query"] = cyrows({"n": vertex("p1", status="pending", created_at=1700000000)})
-r = proposals.list_proposals("pending")
-check("一覧は status で絞って updated_at の新しい順に読み、JST の列を足す",
-      r["count"] == 1 and r["proposals"][0]["proposal_id"] == "p1" and r["proposals"][0]["created_at_jst"].startswith("2023-11-15")
-      and "WHERE n.status = $status" in gq()[-1] and gp()[-1] == {"status": "pending"} and "ORDER BY n.`updated_at` DESC" in gq()[-1])
-proposals.list_proposals("all")
-check("all は status で絞らない", "WHERE" not in gq()[-1] and gp()[-1] == {})
-check("get_proposal は 1 件", proposals.get_proposal("p1")["proposal_id"] == "p1" and gq()[-1] == "MATCH (n:`proposal`) WHERE id(n) = $id RETURN n")
-os.environ["NEPTUNE_GRAPH_ID"] = ""
-proposals.graph.GRAPH_ID.cached = ""
-check("Neptune が無ければ案内だけ返す", "terraform/pipeline/graph" in proposals.list_proposals()["error"] and "error" in proposals.decide("p1", "approved")
-      and proposals.get_proposal("p1") == {})
-os.environ["NEPTUNE_GRAPH_ID"] = "g-abc1234567"
+check("Athena の設定が無ければ一覧・1 件・承認とも「未配備」を返し、AWS を呼ばない（Neptune も見ない）",
+      proposals.list_proposals() == {"error": proposals.NOT_DEPLOYED, "proposals": []} and proposals.get_proposal("a#1") == {}
+      and proposals.decide("a#1", "approved", "web") == {"error": proposals.NOT_DEPLOYED} and calls == [])
+check("proposals.py は Neptune（agent/graph.py）を読まない", "import graph" not in read("agent", "proposals.py") and not hasattr(proposals, "graph"))
 
 # エージェントのツール（読むだけ。2026-09-18）
-calls.clear()
-r = proposals.run_tool("list_proposals", {})
-check("ツールの既定は all（履歴）", "n.status" not in gq()[-1] and r["status"] == "all")
-proposals.run_tool("list_proposals", {"device_id": "hq-ce-01"})
-check("device_id はクエリの中で絞る（絞ってから LIMIT を数える）",
-      gq()[-1].index("n.device_id = $device_id") < gq()[-1].index("LIMIT ") and gp()[-1] == {"device_id": "hq-ce-01"})
+check("ツールも未配備なら案内を返す", proposals.run_tool("list_proposals", {})["error"] == proposals.NOT_DEPLOYED and calls == [])
 check("承認・却下はツールに出さない（人が画面の承認タブで決める）",
       set(proposals.TOOLS) == {"list_proposals"} and "承認や却下はこのツールではできない" in proposals.TOOL_SPECS[0]["toolSpec"]["description"])
-fake["execute_query"] = cyrows()
 
 # ---- mcp_client.py
 check("JSON の応答はそのまま", mcp_client.parse_response("application/json", '{"result": {"tools": []}}') == {"result": {"tools": []}})
@@ -459,7 +464,7 @@ _temporal_ports = re.search(r'name\s*=\s*"temporal"[\s\S]*?portMappings\s*=\s*\[
 check("temporal コンテナの portMappings は UI の 8233 だけ（7233 は出さない。ワーカーは同じタスクの localhost）",
       _temporal_ports is not None and re.findall(r'containerPort\s*=\s*(\d+)', _temporal_ports.group(1)) == ["8233"] and "7233" not in _temporal_ports.group(1))
 check("worker は temporal の後に起き、localhost:7233 につなぐ", '"localhost:7233"' in tf and 'condition = "START"' in tf)
-for env in ("NEPTUNE_GRAPH_ID", "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "PROPOSAL_EVENTS_TABLE", "ANOMALY_QUEUE_URL", "AGENT_RUNTIME_ARN", "LAB_INSTANCE_ID", "APPROVAL_TIMEOUT_MINUTES", "VERIFY_TIMEOUT", "HOLD_MINUTES", "PARAM_PREFIX"):
+for env in ("NEPTUNE_GRAPH_ID", "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "PROPOSAL_EVENTS_TABLE", "ANOMALY_QUEUE_URL", "DECISION_QUEUE_URL", "AGENT_RUNTIME_ARN", "LAB_INSTANCE_ID", "APPROVAL_TIMEOUT_MINUTES", "VERIFY_TIMEOUT", "HOLD_MINUTES", "PARAM_PREFIX"):
     check(f"worker の環境変数 {env} を渡す", f'name = "{env}"' in tf or f'name  = "{env}"' in tf or re.search(rf'name\s*=\s*"{env}"', tf) is not None)
 # 渡した名前を worker が読んでいなければ、既定値のまま動いて気づけない
 _env_read = set(re.findall(r'os\.environ\.get\("(\w+)"', read("workflow", "worker.py") + read("workflow", "awsio.py")))
@@ -468,13 +473,17 @@ check(f"worker のコンテナに渡す環境変数は全部 worker.py / awsio.p
       _env_passed and not (_env_passed - _env_read - {"PARAM_PREFIX"}) and not ({"POLL_INTERVAL", "VERIFY_ATTEMPTS", "VERIFY_INTERVAL"} & _env_passed))
 check("タスクロールは Runtime の InvokeAgentRuntime と lab への ssm:SendCommand（AWS-RunShellScript だけ）",
       '"bedrock-agentcore:InvokeAgentRuntime"' in tf and '"ssm:SendCommand"' in tf and "document/AWS-RunShellScript" in tf)
-check("DynamoDB はもう使わない（修復案の「いま」は Neptune、証跡は S3 Tables）",
+check("DynamoDB はもう使わない（修復案の「いま」は S3 Tables の proposal_events の最新の行）",
       "aws_dynamodb" not in tf and '"dynamodb:' not in tf and "ANOMALY_TABLE" not in tf and "PROPOSAL_TABLE" not in tf)
 task_doc = re.search(r'data "aws_iam_policy_document" "task" \{[\s\S]*?\n\}\n', tf)
-check("タスクロールは Neptune の読み書きと、証跡テーブルの PutTableData / UpdateTableMetadataLocation",
-      task_doc is not None and re.search(r'sid\s*=\s*"Neptune"', task_doc.group(0)) and '"neptune-graph:WriteDataViaQuery"' in task_doc.group(0)
+check("タスクロールは Neptune（トポロジの読み取り）と、修復案のテーブルの PutTableData / UpdateTableMetadataLocation",
+      task_doc is not None and re.search(r'sid\s*=\s*"Neptune"', task_doc.group(0)) and '"neptune-graph:ReadDataViaQuery"' in task_doc.group(0)
       and re.search(r'sid\s*=\s*"AuditTable"', task_doc.group(0)) and '"s3tables:PutTableData"' in task_doc.group(0)
       and '"s3tables:UpdateTableMetadataLocation"' in task_doc.group(0))
+_dq_task = re.search(r'sid\s*=\s*"DecisionQueue"[\s\S]*?\n  \}', task_doc.group(0)) if task_doc else None
+check("タスクロールは決定のキューを受けて消すだけ（ReceiveMessage / DeleteMessage / GetQueueAttributes。送るのは Web）",
+      _dq_task is not None and re.findall(r'"(sqs:\w+)"', _dq_task.group(0)) == ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+      and "resources = [aws_sqs_queue.decisions.arn]" in _dq_task.group(0) and "sqs:SendMessage" not in task_doc.group(0))
 check("タスクと Lambda は土台の workflow / lambda の SG を使い、SG もルールも作らない（ルールは土台の通信の表。2026-09-29）",
       re.search(r'security_groups\s*=\s*\[local\.workflow_sg_id\]', tf) is not None and re.search(r'security_group_ids\s*=\s*\[local\.lambda_sg_id\]', tf) is not None
       and 'resource "aws_security_group"' not in tf and "aws_vpc_security_group_" not in tf and "neptune_sg_id" not in tf)
@@ -502,19 +511,23 @@ check("tools Lambda は VPC の中（Neptune / OpenSearch / Prometheus に届く
 # query_history（アラートの通知の履歴。2026-10-04）。analytics の出力を try で読み、無ければ環境変数も IAM も空
 _tools_env = re.search(r'resource "aws_lambda_function" "tools"[\s\S]*?variables = \{([\s\S]*?)\n    \}', tf)
 _tools_env_keys = set(re.findall(r"^\s*([A-Z_]+)\s*=", _tools_env.group(1), re.M)) if _tools_env else set()
-check("tools Lambda に ATHENA_WORKGROUP / ATHENA_CATALOG / HISTORY_NAMESPACE / ALERT_EVENTS_TABLE を渡す（値は analytics の出力）",
-      {"ATHENA_WORKGROUP", "ATHENA_CATALOG", "HISTORY_NAMESPACE", "ALERT_EVENTS_TABLE"} <= _tools_env_keys
-      and all(f'output "{o}"' in analytics_out and re.search(rf'try\(data\.terraform_remote_state\.analytics\.outputs\.{o}, ""\)', tf) for o in ("athena_workgroup", "athena_catalog", "alert_events_table_name", "alert_events_table_arn"))
-      and 'HISTORY_NAMESPACE  = local.athena_workgroup == "" ? "" : local.audit_namespace' in tf)
+check("tools Lambda に ATHENA_WORKGROUP / ATHENA_CATALOG / HISTORY_NAMESPACE / ALERT_EVENTS_TABLE / PROPOSAL_EVENTS_TABLE を渡す（値は analytics の出力）",
+      {"ATHENA_WORKGROUP", "ATHENA_CATALOG", "HISTORY_NAMESPACE", "ALERT_EVENTS_TABLE", "PROPOSAL_EVENTS_TABLE"} <= _tools_env_keys
+      and all(f'output "{o}"' in analytics_out and re.search(rf'try\(data\.terraform_remote_state\.analytics\.outputs\.{o}, ""\)', tf)
+              for o in ("athena_workgroup", "athena_catalog", "alert_events_table_name", "alert_events_table_arn", "proposal_events_table_name", "proposal_events_table_arn"))
+      and re.search(r'HISTORY_NAMESPACE\s+= local\.athena_workgroup == "" \? "" : local\.audit_namespace', tf) is not None)
 _agent_env_read = set()
 for _m in zipped:
     _agent_env_read |= set(re.findall(r'os\.environ\.get\("(\w+)"', read("agent", _m + ".py")))
+    _agent_env_read |= set(re.findall(r'Param\("(\w+)"', read("agent", _m + ".py")))  # 環境変数が先、無ければ SSM（toolkit.Param）
 check(f"tools Lambda に渡す環境変数は全部 zip のモジュールが読む（読まれない: {sorted(_tools_env_keys - _agent_env_read)}）",
       _tools_env_keys and not (_tools_env_keys - _agent_env_read))
 _hist_stmts = {sid: re.search(rf'sid\s*=\s*"{sid}"[\s\S]*?\n    \}}', tf) for sid in ("HistoryQuery", "HistoryCatalog", "HistoryBucket", "HistoryTable")}
-check("query_history の IAM は analytics があるときだけ（dynamic）で、athena はワークグループ、s3tables のテーブルの読み取りは alert_events だけ（読むだけ）",
-      all(_hist_stmts.values()) and tf.count('for_each = local.athena_workgroup != "" ? [1] : []') == 3
-      and tf.count('for_each = local.alert_events_table_arn != "" ? [1] : []') == 1
+check("履歴の IAM（locals.tf の history_read_statements）は analytics があるときだけで、tools Lambda と Web の EC2 に同じものを付ける。"
+      "athena はワークグループ、s3tables のテーブルの読み取りは alert_events と proposal_events だけ（読むだけ）",
+      all(_hist_stmts.values()) and tf.count("for_each = local.history_read_statements") == 2
+      and "history_table_arns = compact([local.alert_events_table_arn, local.proposal_events_table_arn])" in tf
+      and re.search(r'\] : s if local\.athena_workgroup != "" && length\(compact\(s\.resources\)\) > 0\]', tf) is not None
       and 'alert_events_table_arn  = try(data.terraform_remote_state.analytics.outputs.alert_events_table_arn, "")' in tf
       and re.findall(r'"(athena:\w+)"', _hist_stmts["HistoryQuery"].group(0)) == ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:StopQueryExecution"]
       and "workgroup/${local.athena_workgroup}" in _hist_stmts["HistoryQuery"].group(0)
@@ -523,9 +536,9 @@ check("query_history の IAM は analytics があるときだけ（dynamic）で
       and re.findall(r'"(s3tables:\w+)"', _hist_stmts["HistoryBucket"].group(0)) == ["s3tables:GetTableBucket", "s3tables:GetNamespace"]
       and "resources = [local.audit_bucket_arn]" in _hist_stmts["HistoryBucket"].group(0)
       and re.findall(r'"(s3tables:\w+)"', _hist_stmts["HistoryTable"].group(0)) == ["s3tables:GetTable", "s3tables:GetTableData", "s3tables:GetTableMetadataLocation"]
-      and "resources = [local.alert_events_table_arn]" in _hist_stmts["HistoryTable"].group(0)
+      and "resources = local.history_table_arns" in _hist_stmts["HistoryTable"].group(0)
       and not any("*" == a.split(":")[-1] for s in _hist_stmts.values() for a in re.findall(r'"((?:athena|glue|s3tables):[\w*]+)"', s.group(0))))
-# 修復案は読むだけ（Neptune の読み取りだけ。承認は画面の承認タブで人が決める）
+# トポロジは読むだけ（修復案は Neptune に無く、ツールに承認・却下も無い。承認は画面の承認タブで人が決める）
 neptune_read =re.search(r'sid\s*=\s*"NeptuneRead"[\s\S]*?\n  \}', tf)  # ステートメント 1 つぶん（terraform fmt の桁揃えに依存しないよう粗く取る）
 check("tools Lambda のロールの Neptune は読むだけ（WriteDataViaQuery は付けない）",
       neptune_read is not None and "WriteDataViaQuery" not in neptune_read.group(0) and "DeleteDataViaQuery" not in neptune_read.group(0)
@@ -538,19 +551,37 @@ check("SQS（anomalies）は土台の SNS トピックを raw message delivery �
       and 'resource "aws_sqs_queue" "anomalies"' in tf and 'resource "aws_sqs_queue" "anomalies_dlq"' in tf
       and re.search(r'redrive_policy[\s\S]*?maxReceiveCount\s*=\s*5', tf) is not None
       and "depends_on = [aws_sqs_queue_policy.anomalies, aws_sqs_queue_policy.anomalies_dlq]" in tf)
-check("キュー 2 つのポリシーは sns.amazonaws.com の SendMessage をそのトピックに絞る",
+check("アラートのキュー 2 つのポリシーは sns.amazonaws.com の SendMessage をそのトピックに絞る",
       tf.count('identifiers = ["sns.amazonaws.com"]') == 2 and tf.count("values   = [local.alerts_topic_arn]") == 2 and '"sqs:SendMessage"' in tf)
 check("EventBridge のルールはもう無い（Spark の検知と一緒にやめた。2026-10-02）",
       "aws_cloudwatch_event_" not in tf and "events.amazonaws.com" not in tf and "AnomalyOpened" not in tf)
 check("タスクロールは SQS の ReceiveMessage / DeleteMessage", '"sqs:ReceiveMessage", "sqs:DeleteMessage"' in tf)
+_events_tf = read("terraform", "workflow", "events.tf")
+check("決定のキュー（decisions）と DLQ（5 回）があり、SNS は購読しない（Web が直接送る）",
+      'resource "aws_sqs_queue" "decisions"' in _events_tf and 'resource "aws_sqs_queue" "decisions_dlq"' in _events_tf
+      and re.search(r'resource "aws_sqs_queue" "decisions" \{[\s\S]*?deadLetterTargetArn = aws_sqs_queue\.decisions_dlq\.arn[\s\S]*?maxReceiveCount\s*=\s*5', _events_tf) is not None
+      and "aws_sqs_queue.decisions.arn" not in "".join(re.findall(r'resource "aws_sns_topic_subscription"[\s\S]*?\n\}', tf)))
+_web_doc = re.search(r'data "aws_iam_policy_document" "web_access" \{[\s\S]*?\n\}\n', tf)
+_reader_doc = re.search(r'data "aws_iam_policy_document" "reader_access" \{[\s\S]*?\n\}\n', tf)
+_tools_doc = re.search(r'data "aws_iam_policy_document" "tools" \{[\s\S]*?\n\}\n', tf)
+check("決定のキューに送れる（sqs:SendMessage）のは Web の EC2 のロールだけ（web_access は web_role_name に付ける。Runtime と tools Lambda には付けない = チャットから承認できない）",
+      _web_doc is not None and re.search(r'sid\s*=\s*"DecisionQueue"\s*\n\s*actions\s*=\s*\["sqs:SendMessage"\]\s*\n\s*resources = \[aws_sqs_queue\.decisions\.arn\]', _web_doc.group(0)) is not None
+      and "for_each = local.history_read_statements" in _web_doc.group(0)
+      and re.search(r'resource "aws_iam_role_policy" "web_access" \{[\s\S]*?role\s*=\s*local\.web_role_name', tf) is not None
+      and _reader_doc is not None and "sqs:" not in _reader_doc.group(0) and "athena:" not in _reader_doc.group(0)
+      and _tools_doc is not None and "sqs:" not in _tools_doc.group(0))
+check("Web の設定は SSM（decision-queue-url と、Athena の 4 つは空でないものだけ）",
+      '"${local.param_prefix}/decision-queue-url"' in tf and "value = aws_sqs_queue.decisions.url" in tf
+      and all(f'"{k}"' in tf for k in ("athena-workgroup", "athena-catalog", "history-namespace", "proposal-events-table"))
+      and 'k => v if v != ""' in tf)
 check("workflow はエンドポイントを持たない（SQS / S3 Tables / AgentCore へは土台のインターフェース型エンドポイント。2026-09-28）", 'resource "aws_vpc_endpoint"' not in tf and "create_sqs_endpoint" not in tf)
-check("閉域: 実行ロール・タスクロール・tools Lambda に perimeter を付け、キュー 2 つと Gateway は VPC の外からの呼び出しを拒む",
+check("閉域: 実行ロール・タスクロール・tools Lambda に perimeter を付け、アラートのキュー 2 つ・決定のキュー 2 つ（for_each）と Gateway は VPC の外からの呼び出しを拒む",
       all(f'resource "aws_iam_role_policy_attachment" "{n}"' in tf for n in ("execution_perimeter", "task_perimeter", "tools_perimeter"))
-      and tf.count('sid         = "DenyOutsideVpc"') == 2 and "not_actions = local.sqs_policy_actions" in tf
+      and tf.count('sid         = "DenyOutsideVpc"') == 3 and "not_actions = local.sqs_policy_actions" in tf
       and re.search(r'resource "aws_bedrockagentcore_resource_policy" "gateway"[\s\S]*?"bedrock-agentcore:InvokeGateway"[\s\S]*?aws_bedrockagentcore_gateway\.tools\[0\]\.gateway_arn[\s\S]*?"aws:SourceVpc"', tf) is not None
       and all(v in tf for v in ('"aws:ViaAWSService"', '"aws:PrincipalIsAWSService"', "local.perimeter_exempt_principals")))
-check("output に anomaly_queue_url / anomaly_dlq_url / tools_function_name があり、anomaly_rule_name は無い",
-      all(f'output "{o}"' in tf for o in ("anomaly_queue_url", "anomaly_dlq_url", "tools_function_name")) and "anomaly_rule_name" not in tf)
+check("output に anomaly_queue_url / anomaly_dlq_url / decision_queue_url / decision_dlq_url / tools_function_name があり、anomaly_rule_name は無い",
+      all(f'output "{o}"' in tf for o in ("anomaly_queue_url", "anomaly_dlq_url", "decision_queue_url", "decision_dlq_url", "tools_function_name")) and "anomaly_rule_name" not in tf)
 check("Gateway の URL を SSM の gateway-url に書く", '"${local.param_prefix}/gateway-url"' in tf)
 check("aws_iam_role の description は ASCII だけ",
       all(d.isascii() for d in re.findall(r'resource "aws_iam_role"[\s\S]*?description\s*=\s*"([^"]*)"', tf)))
@@ -584,7 +615,7 @@ incident = read("web", "incident_view.py")
 check("Web のタブはチャット / トポロジ / 承認の 3 つ（異常一覧は無い）",
       re.findall(r'gr\.Tab\("([^"]+)"\)', web) == ["チャット", "トポロジ", "承認"]
       and "anomalies" not in web and "import anomalies" not in incident and "anomaly_table" not in incident)
-check("Web に「承認」タブがあり、名前と「読んだ」のチェックを添えて proposals.decide で approved / rejected を書く",
+check("Web に「承認」タブがあり、名前と「読んだ」のチェックを添えて proposals.decide で approved / rejected を送る",
       'gr.Tab("承認")' in web and 'iv.decide_proposal(i, "approved", s, w, ok), [pr_id, pr_status, pr_who, pr_ok]' in web
       and 'iv.decide_proposal(i, "rejected", s, w, ok), [pr_id, pr_status, pr_who, pr_ok]' in web
       and "pr_id.change(lambda _: False, [pr_id], [pr_ok])" in web
@@ -639,11 +670,13 @@ check("up.sh の WORKFLOW=1 は link_down のアラートの送り手（Grafana 
       re.search(r'if \[ -n "\$WORKFLOW" \] && \[ -z "\$LINK_DOWN_SENDERS" \]; then\n\s*die "WORKFLOW はアラートの送り手が要る', up) is not None
       and up.index('LINK_DOWN_SENDERS=') < up.index('[ -z "$LINK_DOWN_SENDERS" ]'))
 # ---- starter: SQS のメッセージ（SNS のトピックの購読）
-check("starter は SQS を 20 秒の long polling で待ち、ANOMALY_QUEUE_URL が無ければ起動で止まる（表を見る経路はもう無い）",
+check("starter はアラートと決定の 2 つのキューを 20 秒の long polling で待ち、ANOMALY_QUEUE_URL / DECISION_QUEUE_URL が無ければ起動で止まる（表を見る経路はもう無い）",
       all(hasattr(awsio, f) for f in ("receive_messages", "delete_message"))
       and "WaitTimeSeconds=20" in read("workflow", "awsio.py")
-      and re.search(r'for k in \("ANOMALY_QUEUE_URL", "NEPTUNE_GRAPH_ID", "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "AGENT_RUNTIME_ARN"\):\n\s*if not getattr\(awsio, k\):\n\s*raise SystemExit',
-                    read("workflow", "worker.py")) is not None)
+      and re.search(r'for k in \("ANOMALY_QUEUE_URL", "DECISION_QUEUE_URL", "NEPTUNE_GRAPH_ID", "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "AGENT_RUNTIME_ARN"\):\n\s*if not getattr\(awsio, k\):\n\s*raise SystemExit',
+                    read("workflow", "worker.py")) is not None
+      and "starter(client, awsio.ANOMALY_QUEUE_URL, handle_message)" in read("workflow", "worker.py")
+      and "starter(client, awsio.DECISION_QUEUE_URL, handle_decision)" in read("workflow", "worker.py"))
 check("up.sh は workflow ルートを足し、費用に 5 セント足す（Fargate だけ。sqs のエンドポイントは無くなった）", 'ROOTS="$ROOTS workflow"' in up and 'COST_CENTS=$((COST_CENTS + 5))' in up)
 check("up.sh は worker を buildx でビルドし、temporalio/temporal を ECR にミラーする",
       '--push workflow/' in up and 'docker pull --platform linux/arm64 "temporalio/temporal:$TEMPORAL_TAG"' in up and "$PREFIX-temporal:$TEMPORAL_TAG" in up)
@@ -774,26 +807,33 @@ check("lab の状態の照合は 1 つの空白で区切った lab=active contai
       '*" lab=active containers=$LAB_NODES "*)' in up)
 
 # ---- ワーカーの振る舞い（2026-09-24 のレビュー: 承認のあいだに閉じた異常・apply の失敗・SQS の消し方。
-#      2026-10-02 から異常の「いま」は Neptune でなくアラートで届く: 発生は入力の dict、解消はシグナル resolved）
+#      2026-10-02 から異常の「いま」は Neptune でなくアラートで届く: 発生は入力の dict、解消はシグナル resolved。
+#      2026-10-05 から修復案の「いま」は proposal_events の最新の行で、人の判断は決定のキュー → シグナル decide で届く）
 import asyncio, datetime, logging  # noqa: E402
-_saved = {k: getattr(awsio, k) for k in ("read_proposal", "write_proposal", "update_proposal", "append_proposal_events",
-                                         "receive_messages", "delete_message")}
-audited = []  # 証跡（proposal_events）に足した行
-awsio.append_proposal_events = lambda rows, columns: audited.extend(rows)
+_saved = {k: getattr(awsio, k) for k in ("latest_proposal", "anomaly_proposals", "append_proposal_events",
+                                         "receive_messages", "delete_message", "read_topology")}
+appended = []  # 証跡（proposal_events）への append 1 回ぶん（行の list, 列）
+awsio.append_proposal_events = lambda rows, columns: appended.append((list(rows), columns))
 FS = 1700000000
 AID = anomaly["anomaly_id"]
 PID = f"{AID}#{FS}"
+NOW = FS + 600  # ワークフローの now（workflow.now）
+DECIDED = {"proposal_id": PID, "decision": "approved", "decided_by": "山田 (web)", "decided_at": FS + 300}
 
-def run_wf(script, resolve_when=None, signal=""):
+def run_wf(script, resolve_when=None, signals=(), signal_after="put_proposal"):
     """InvestigateAnomaly.run を、アクティビティを script（名前 → 返り値 / 例外 / 関数）に差し替えて回す。(結果, 呼んだアクティビティ, 待った timeout)。
-    resolve_when(名前, 引数) が真を返したアクティビティの直後に、解消のシグナル（resolved）を届ける。signal は走り出す前に届いている decide"""
+    signals は signal_after のアクティビティの直後に届く decide（順に送る）。resolve_when(名前, 引数) が真を返したアクティビティの直後に、
+    解消のシグナル（resolved）を届ける。最後のワークフローは run_wf.wf"""
     seen, waits = [], []
-    wf = worker.InvestigateAnomaly()
+    wf = run_wf.wf = worker.InvestigateAnomaly()
     async def execute_activity(fn, *a, args=None, **opts):
         params = list(args) if args is not None else list(a)
         seen.append((fn.__name__, params, opts))
         r = script[fn.__name__]
         r = r(*params) if callable(r) else r
+        if fn.__name__ == signal_after:
+            for s in signals:
+                wf.decide(s)
         if resolve_when and resolve_when(fn.__name__, params):
             wf.resolved("grafana")
         if isinstance(r, BaseException):
@@ -804,118 +844,137 @@ def run_wf(script, resolve_when=None, signal=""):
         if not fn():
             raise asyncio.TimeoutError
     t_workflow.execute_activity = execute_activity; t_workflow.wait_condition = wait_condition
-    t_workflow.now = datetime.datetime.now; t_workflow.info = lambda: types.SimpleNamespace(workflow_id="wf-1", run_id="run-1")
+    t_workflow.now = lambda: datetime.datetime.fromtimestamp(NOW, datetime.timezone.utc)
+    t_workflow.info = lambda: types.SimpleNamespace(workflow_id="wf-1", run_id="run-1")
     t_workflow.logger = logging.getLogger("wf")
-    if signal:
-        wf.decide(signal)
     return asyncio.run(wf.run(anomaly)), seen, waits
 
 finding = {"cause": "c", "action": "heal-main", "command": "sudo lab heal-main", "reason": "r", "agent_response": "{}"}
-base = {"investigate": finding, "put_proposal": PID, "get_decision": "approved",
-        "record_decision": lambda pid, d, via=False: d, "set_status": None, "apply_on_lab": {"status": "Success", "output": "ok"}}
+CREATED = rules.proposal_event("created", {"proposal_id": PID, "anomaly_id": AID, "device_id": "hq-ce-01", "kind": "link_down", "target": "eth1",
+                                           "first_seen": FS, **finding, "workflow_id": "wf-1", "run_id": "run-1", "created_at": FS + 60}, FS + 60, "r")
+base = {"investigate": finding, "put_proposal": CREATED,
+        "record_event": lambda p, e, f=None: rules.proposal_event(e, p, NOW, "", f), "apply_on_lab": {"status": "Success", "output": "ok"}}
+APPROVAL = datetime.timedelta(minutes=worker.APPROVAL_TIMEOUT_MINUTES)
 VERIFY = datetime.timedelta(seconds=worker.VERIFY_TIMEOUT)
 HOLD = datetime.timedelta(seconds=worker.HOLD_MINUTES * 60)
-POLL = datetime.timedelta(seconds=worker.DECISION_POLL)
-applied = lambda n, p: n == "set_status" and p[1] == "applied"
+resolved_after = lambda name: (lambda n, p: n == name)
+applied = lambda n, p: n == "record_event" and p[1] == "applied"
 names = lambda seen: [n for n, _, _ in seen]
-statuses = lambda seen: [p[1] for n, p, _ in seen if n == "set_status"]
+events = lambda seen: [p[1] for n, p, _ in seen if n == "record_event"]
+ev_args = lambda seen, e: [p for n, p, _ in seen if n == "record_event" and p[1] == e][-1]  # [修復案, 出来事, fields]
 
-res, seen, waits = run_wf(base, applied)
-check("承認→打つ→解消のシグナルが届いたら verified（待つのは VERIFY_TIMEOUT 秒まで。握り直しはしない）",
-      res == "verified" and names(seen) == ["investigate", "put_proposal", "get_decision", "record_decision", "apply_on_lab", "set_status", "set_status"]
-      and statuses(seen) == ["applied", "verified"] and waits == [POLL, VERIFY])
+res, seen, waits = run_wf(base, applied, [DECIDED])
+check("承認のシグナル→打つ→解消のシグナルが届いたら verified（承認は APPROVAL_TIMEOUT_MINUTES 分、確かめは VERIFY_TIMEOUT 秒まで待つ）",
+      res == "verified" and names(seen) == ["investigate", "put_proposal", "record_event", "apply_on_lab", "record_event", "record_event"]
+      and events(seen) == ["approved", "applied", "verified"] and waits == [APPROVAL, VERIFY])
+check("approved の行には、シグナルの decided_by と decided_at（Web が送った時刻）を残す",
+      ev_args(seen, "approved")[2] == {"decided_by": "山田 (web)", "decided_at": FS + 300})
+check("各段は 1 つ前の段が返した行（修復案の辞書）を持ち回る（applied には seq 2 の approved、verified には seq 3 の applied）",
+      ev_args(seen, "approved")[0] == CREATED
+      and (ev_args(seen, "applied")[0]["status"], ev_args(seen, "applied")[0]["seq"], ev_args(seen, "applied")[0]["decided_by"]) == ("approved", 2, "山田 (web)")
+      and (ev_args(seen, "verified")[0]["status"], ev_args(seen, "verified")[0]["seq"]) == ("applied", 3))
 check("investigate にはアラートの dict をそのまま渡し、put_proposal にはワークフローの id と実行の id も渡す",
       seen[0][1] == [anomaly] and seen[1][1] == [anomaly, finding, "wf-1", "run-1"])
 check("investigate の start_to_close は 4 分（AgentCore の読み取り 150 秒 1 回分が収まる）",
       [o for n, _, o in seen if n == "investigate"][0]["start_to_close_timeout"] == datetime.timedelta(minutes=4))
 check("apply_on_lab は 1 回しか打たない（maximum_attempts=1）",
       [o for n, _, o in seen if n == "apply_on_lab"][0]["retry_policy"] == {"maximum_attempts": 1})
-res, seen, waits = run_wf(base)
+res, seen, waits = run_wf(base, signals=[{k: v for k, v in DECIDED.items() if k != "decided_at"}])
+check("シグナルに decided_at が無ければ、ワークフローの now を decided_at にする", ev_args(seen, "approved")[2]["decided_at"] == NOW)
 check("打ったあと VERIFY_TIMEOUT 秒のうちに解消のシグナルが来なければ failed を書き、そのあと解消を待って id を握る（HOLD_MINUTES 分まで）",
-      res == "failed" and statuses(seen) == ["applied", "failed"] and waits == [POLL, VERIFY, HOLD]
-      and "解消の通知が届かない" in [p for n, p, _ in seen if n == "set_status"][-1][2]["verify_note"])
-res, seen, waits = run_wf(base, lambda n, p: n == "put_proposal")
-check("承認を待つ前に解消していれば、判断を読まずに obsolete（握らない）",
-      res == "obsolete" and names(seen) == ["investigate", "put_proposal", "set_status"] and statuses(seen) == ["obsolete"] and waits == [])
-res, seen, waits = run_wf({**base, "get_decision": "pending"}, lambda n, p: n == "get_decision")
-check("承認を待つあいだに解消したら打たずに obsolete",
-      res == "obsolete" and "apply_on_lab" not in names(seen) and "record_decision" not in names(seen) and statuses(seen) == ["obsolete"] and HOLD not in waits)
-res, seen, waits = run_wf(base, lambda n, p: n == "record_decision")
-check("承認と同時に解消していれば、判断は証跡に残して打たずに obsolete",
-      res == "obsolete" and "apply_on_lab" not in names(seen) and "record_decision" in names(seen) and statuses(seen) == ["obsolete"] and HOLD not in waits)
-res, seen, waits = run_wf({**base, "apply_on_lab": ActivityError("activity failed", cause=RuntimeError("SSM に届かない"))})
-st = [p for n, p, _ in seen if n == "set_status"]
+      res == "failed" and events(seen) == ["approved", "applied", "failed"] and waits == [APPROVAL, VERIFY, HOLD]
+      and "解消の通知が届かない" in ev_args(seen, "failed")[2]["verify_note"])
+res, seen, waits = run_wf(base, resolved_after("put_proposal"))
+check("承認を待つあいだに解消したら（決定は無い）打たずに obsolete（approved の行は無い。握らない）",
+      res == "obsolete" and names(seen) == ["investigate", "put_proposal", "record_event"] and events(seen) == ["obsolete"] and waits == [APPROVAL]
+      and "解消したので打たなかった" in ev_args(seen, "obsolete")[2]["verify_note"])
+res, seen, waits = run_wf(base, resolved_after("put_proposal"), [DECIDED])
+check("承認と同時に解消していれば、判断は approved の行に残して打たずに obsolete",
+      res == "obsolete" and "apply_on_lab" not in names(seen) and events(seen) == ["approved", "obsolete"] and HOLD not in waits)
+res, seen, waits = run_wf({**base, "apply_on_lab": ActivityError("activity failed", cause=RuntimeError("SSM に届かない"))}, signals=[DECIDED])
 check("apply_on_lab の失敗（ActivityError）はワークフローを落とさず failed を書く（approved のまま残さない）。確かめは待たず、id は握る",
-      res == "failed" and st[-1][1] == "failed" and "SSM に届かない" in st[-1][2]["apply_output"] and VERIFY not in waits and waits[-1] == HOLD)
-res, seen, waits = run_wf({**base, "apply_on_lab": {"status": "Failed", "output": "exit 1"}})
-check("コマンドが失敗を返したときも failed（確かめは待たない）", res == "failed" and statuses(seen) == ["failed"] and VERIFY not in waits)
-res, seen, waits = run_wf({**base, "get_decision": "rejected"})
-check("却下なら何もしない（判断は record_decision で証跡に残す）。同じ異常の次の通知でもう一度調べないよう id は握る",
-      res == "rejected" and "apply_on_lab" not in names(seen) and "set_status" not in names(seen)
-      and [p for n, p, _ in seen if n == "record_decision"] == [[PID, "rejected", False]] and waits == [POLL, HOLD])
-res, seen, waits = run_wf({**base, "record_decision": "rejected"}, signal="approved")
-check("シグナルで approved が来ても、web が先に rejected を書いていれば（record_decision が返す方）打たない",
-      res == "rejected" and "apply_on_lab" not in names(seen)
-      and [p for n, p, _ in seen if n == "record_decision"] == [[PID, "approved", True]] and "get_decision" not in names(seen))
-res, seen, waits = run_wf(base, applied, signal="approved")
-check("シグナル decide で決まれば頂点を見ずに進む（record_decision に via_signal = True）",
-      res == "verified" and "get_decision" not in names(seen) and [p for n, p, _ in seen if n == "record_decision"] == [[PID, "approved", True]])
-_timeout, worker.APPROVAL_TIMEOUT_MINUTES = worker.APPROVAL_TIMEOUT_MINUTES, 0  # 待たずに時間切れにする
-res, seen, waits = run_wf({**base, "get_decision": "pending"})
-worker.APPROVAL_TIMEOUT_MINUTES = _timeout
-check("時間切れは expired を書く（証跡は set_status が残す）。id は握る", res == "expired" and statuses(seen) == ["expired"] and waits == [HOLD])
-res, seen, waits = run_wf({**base, "investigate": {**finding, "action": "none", "command": ""}}, applied)
+      res == "failed" and events(seen) == ["approved", "failed"] and "SSM に届かない" in ev_args(seen, "failed")[2]["apply_output"]
+      and VERIFY not in waits and waits[-1] == HOLD)
+res, seen, waits = run_wf({**base, "apply_on_lab": {"status": "Failed", "output": "exit 1"}}, signals=[DECIDED])
+check("コマンドが失敗を返したときも failed（確かめは待たない）",
+      res == "failed" and events(seen) == ["approved", "failed"] and ev_args(seen, "failed")[2] == {"apply_output": "Failed: exit 1"} and VERIFY not in waits)
+res, seen, waits = run_wf(base, signals=[{**DECIDED, "decision": "rejected", "decided_by": "鈴木 (web)"}])
+check("却下なら打たない（判断は rejected の行に残す）。同じ異常の次の通知でもう一度調べないよう id は握る",
+      res == "rejected" and "apply_on_lab" not in names(seen) and events(seen) == ["rejected"]
+      and ev_args(seen, "rejected")[2]["decided_by"] == "鈴木 (web)" and waits == [APPROVAL, HOLD])
+res, seen, waits = run_wf(base, applied, [DECIDED, {**DECIDED, "decision": "rejected", "decided_by": "鈴木 (web)"}])
+check("合うシグナルが 2 回（approved、rejected の順）届いたら、効くのは 1 回目（approved、decided_by も 1 回目の名前）",
+      res == "verified" and events(seen) == ["approved", "applied", "verified"] and ev_args(seen, "approved")[2]["decided_by"] == "山田 (web)"
+      and run_wf.wf._decision["decided_by"] == "山田 (web)")
+res, seen, waits = run_wf(base, signals=[{**DECIDED, "proposal_id": f"{AID}#1600000000"}, {**DECIDED, "proposal_id": "other#link_down#eth1#1700000000"}])
+check("proposal_id の違うシグナル（同じ異常の前の発生・別の異常への決定）は無視して待ち続け、時間切れで expired",
+      res == "expired" and run_wf.wf._decision == {} and events(seen) == ["expired"] and waits == [APPROVAL, HOLD])
+res, seen, waits = run_wf(base, applied, [DECIDED], signal_after="investigate")
+check("調査のあいだ（put_proposal の前）に届いた決定も受ける（proposal_id は調査より前に決まる）",
+      res == "verified" and events(seen) == ["approved", "applied", "verified"])
+res, seen, waits = run_wf(base)
+check("時間切れは expired を書く（verify_note に時間切れ）。id は握る",
+      res == "expired" and events(seen) == ["expired"] and "時間切れ" in ev_args(seen, "expired")[2]["verify_note"] and waits == [APPROVAL, HOLD])
+res, seen, waits = run_wf({**base, "investigate": {**finding, "action": "none", "command": ""}}, applied, [DECIDED])
 check("処置なし（action = none）は打たずに applied を書き、解消を待つ",
-      res == "verified" and "apply_on_lab" not in names(seen) and statuses(seen) == ["applied", "verified"]
-      and "処置なし" in [p for n, p, _ in seen if n == "set_status"][0][2]["apply_output"])
-_wf = worker.InvestigateAnomaly(); _wf.decide("bogus")
-check("シグナル decide は approved / rejected 以外を無視する", _wf._decision == "" and (_wf.decide("rejected") or _wf._decision == "rejected"))
+      res == "verified" and "apply_on_lab" not in names(seen) and events(seen) == ["approved", "applied", "verified"]
+      and "処置なし" in ev_args(seen, "applied")[2]["apply_output"])
+_wf = worker.InvestigateAnomaly(); _wf.decide(DECIDED)
+check("走り出す前（proposal_id が決まる前）のシグナル decide は受けない", _wf._decision == {})
+_wf._proposal_id = PID
+for _bad in ("approved", None, {**DECIDED, "decision": "applied"}, {**DECIDED, "decision": ""}, {k: v for k, v in DECIDED.items() if k != "proposal_id"}):
+    _wf.decide(_bad)
+check("シグナル decide は dict で、decision が approved / rejected で、proposal_id が合うものだけを受ける", _wf._decision == {})
+_wf.decide({**DECIDED, "decision": "rejected"}); _wf.decide(DECIDED)
+check("受けた決定は後から来たもので上書きしない（SQS の重複配達・2 回押しても 1 回目）", _wf._decision["decision"] == "rejected")
 
 # アクティビティ（awsio を差し替え）
-written = []
-awsio.write_proposal = lambda item, only_new=False: written.append((item, only_new)) or True
-pid = asyncio.run(worker.put_proposal(anomaly, finding, "wf-1", "run-1"))
-check("put_proposal は <anomaly_id>#<first_seen> を only_new で書き、送り手と detail と実行の id を残して、証跡に created を足す",
-      pid == PID and written[-1][0]["proposal_id"] == pid and written[-1][1] is True
-      and written[-1][0]["workflow_id"] == "wf-1" and written[-1][0]["run_id"] == "run-1"
-      and written[-1][0]["source"] == "grafana" and written[-1][0]["detail"] == "ifOperStatus down" and written[-1][0]["status"] == "pending"
-      and audited[-1]["event_id"] == f"{pid}#created" and audited[-1]["status"] == "pending" and audited[-1]["detail"] == "r")
-awsio.write_proposal = lambda item, only_new=False: False
-awsio.read_proposal = lambda p: {"proposal_id": p, "workflow_id": "wf-1", "run_id": "run-1", "status": "approved"}
-check("既にある修復案がこの実行の書いたもの（書けたあとで再試行）なら、それを使って進む", asyncio.run(worker.put_proposal(anomaly, finding, "wf-1", "run-1")) == pid)
+_old = f"{AID}#1600000000"
+_latest = {}
+awsio.anomaly_proposals = lambda aid: _latest
+appended.clear()
+row = asyncio.run(worker.put_proposal(anomaly, {**finding, "precheck": "pc", "precheck_verdict": "ok"}, "wf-1", "run-1"))
+check("put_proposal は <anomaly_id>#<first_seen> の created の行（pending、seq 1、送り手・アラートの detail・実行の id・事前チェック）を 1 回の append で足し、その行を返す",
+      row["proposal_id"] == PID and row["event_id"] == f"{PID}#created" and row["status"] == "pending" and row["seq"] == 1
+      and row["workflow_id"] == "wf-1" and row["run_id"] == "run-1" and row["source"] == "grafana" and row["alert_detail"] == "ifOperStatus down"
+      and row["detail"] == "r" and row["precheck"] == "pc" and row["precheck_verdict"] == "ok" and row["first_seen"] == FS
+      and appended == [([row], rules.PROPOSAL_EVENT_COLUMNS)])
+_prev_pending = rules.proposal_event("created", {"proposal_id": _old, "anomaly_id": AID, "first_seen": 1600000000, "command": "sudo lab heal-main",
+                                                 "workflow_id": "wf-1", "run_id": "run-0"}, 1600000060)
+_prev_done = {**_prev_pending, "proposal_id": f"{AID}#1500000000", "status": "verified", "seq": 4}
+_latest = {_old: _prev_pending, f"{AID}#1500000000": _prev_done}
+appended.clear()
+row = asyncio.run(worker.put_proposal(anomaly, finding, "wf-1", "run-1"))
+_rows = appended[0][0] if appended else []
+check("同じ異常で proposal_id の違う pending があれば、expired の行（verify_note は新しい修復案ができた）を 1 つ足してから created を足す（同じ append）",
+      len(appended) == 1 and [(r["proposal_id"], r["status"], r["seq"]) for r in _rows] == [(_old, "expired", 2), (PID, "pending", 1)]
+      and _rows[0]["verify_note"] == worker.NEWER_PROPOSAL_NOTE and _rows[0]["detail"] == worker.NEWER_PROPOSAL_NOTE
+      and _rows[0]["command"] == "sudo lab heal-main" and _rows[1] == row)
+_latest = {PID: {**CREATED, "status": "approved", "seq": 2}}
+appended.clear()
+check("同じ proposal_id の行がこの実行の書いたもの（書けたあとで再試行）なら、書かずにその最新の行で進む",
+      asyncio.run(worker.put_proposal(anomaly, finding, "wf-1", "run-1")) == _latest[PID] and appended == [])
 def _put_err(existing):
-    awsio.read_proposal = lambda p: {"proposal_id": p, **existing}
+    global _latest
+    _latest = {PID: {**CREATED, **existing}}
     try:
         asyncio.run(worker.put_proposal(anomaly, finding, "wf-1", "run-1"))
     except ApplicationError as e:
         return e
     return None
 # ワークフローの id は異常ごとなので、同じ id でも前の実行が書いた修復案でありうる
-check("同じワークフロー id でも別の実行（run_id が違う）の修復案なら再試行しない失敗（上書きしない）",
-      (lambda e: e is not None and e.non_retryable)(_put_err({"workflow_id": "wf-1", "run_id": "run-0"})))
-check("別のワークフローの修復案なら再試行しない失敗（上書きしない）",
-      (lambda e: e is not None and e.non_retryable)(_put_err({"workflow_id": "wf-other", "run_id": "run-1"})))
+check("同じワークフロー id でも別の実行（run_id が違う）の修復案なら再試行しない失敗（書かない）",
+      (lambda e: e is not None and e.non_retryable)(_put_err({"workflow_id": "wf-1", "run_id": "run-0"})) and appended == [])
+check("別のワークフローの修復案なら再試行しない失敗（書かない）",
+      (lambda e: e is not None and e.non_retryable)(_put_err({"workflow_id": "wf-other", "run_id": "run-1"})) and appended == [])
+_r2 = asyncio.run(worker.record_event(CREATED, "approved", {"decided_by": "山田 (web)", "decided_at": FS + 300}))
+_r3 = asyncio.run(worker.record_event(_r2, "applied", {"apply_output": "Success: ok"}))
+check("record_event は fields を重ねて seq を 1 進めた行を 1 行ずつ足して返し、detail は apply_output / verify_note（決めた人は後の行にも残る）",
+      [len(r) for r, _ in appended] == [1, 1] and appended[0][0][0] == _r2 and appended[1][0][0] == _r3
+      and (_r2["event_id"], _r2["status"], _r2["seq"], _r2["decided_by"], _r2["detail"]) == (f"{PID}#approved", "approved", 2, "山田 (web)", "")
+      and (_r3["status"], _r3["seq"], _r3["decided_by"], _r3["detail"], _r3["apply_output"]) == ("applied", 3, "山田 (web)", "Success: ok", "Success: ok"))
 
-# 人の判断と状態の移り変わりは、頂点に書いたうえで証跡にも 1 行ずつ残す
-updated = []
-awsio.update_proposal = lambda p, fields, only_status=None: updated.append((p, fields, only_status)) or True
-awsio.read_proposal = lambda p: {"proposal_id": p, "anomaly_id": AID, "status": "approved", "decided_by": "山田 (web)", "command": "sudo lab heal-main"}
-audited.clear()
-check("record_decision（web が決めた）は頂点を書かず、決めた人ごと証跡に残す",
-      asyncio.run(worker.record_decision(pid, "approved")) == "approved" and updated == []
-      and audited[-1]["event_id"] == f"{pid}#approved" and audited[-1]["decided_by"] == "山田 (web)" and audited[-1]["command"] == "sudo lab heal-main")
-awsio.read_proposal = lambda p: {"proposal_id": p, "status": "rejected", "decided_by": "鈴木 (web)"}
-check("シグナルで決めたときは pending のときだけ頂点に書き、効いた方（web が先なら web の判断）を返して残す",
-      asyncio.run(worker.record_decision(pid, "approved", True)) == "rejected"
-      and updated[-1][1]["status"] == "approved" and updated[-1][1]["decided_by"] == "temporal-signal" and updated[-1][2] == "pending"
-      and audited[-1]["event_id"] == f"{pid}#rejected")
-awsio.read_proposal = lambda p: {"proposal_id": p, "status": "applied"}
-asyncio.run(worker.set_status(pid, "applied", {"apply_output": "Success: ok"}))
-check("set_status は頂点を書き、証跡に apply_output を detail として残す",
-      updated[-1] == (pid, {"status": "applied", "apply_output": "Success: ok"}, None)
-      and audited[-1]["event_id"] == f"{pid}#applied" and audited[-1]["detail"] == "Success: ok")
-
-# starter（SQS のメッセージ 1 通ずつ。firing は起こす、resolved は走っているワークフローへシグナル）
+# starter（SQS のメッセージ 1 通ずつ。アラートのキュー: firing は起こす、resolved は走っているワークフローへシグナル。決定のキュー: decide のシグナル）
 class FakeTemporal:
     def __init__(self, exc=None, sig_exc=None):
         self.exc, self.sig_exc, self.started, self.signals = exc, sig_exc, [], []
@@ -935,8 +994,7 @@ def msg(status="firing", kind="link_down", fs=FS, source="grafana", n=1):
     return json.dumps({"source": source, "alerts": [
         {"status": status, "device_id": "hq-ce-01", "kind": kind, "target": f"eth{i + 1}", "detail": "ifOperStatus down", "starts_at": fs} for i in range(n)]})
 WID = f"investigate-{AID}"
-awsio.read_proposal = lambda p: {}
-_rt2 = awsio.read_topology
+awsio.latest_proposal = lambda p: {}
 awsio.read_topology = lambda: ([{"device_id": "hq-ce-01", "status": "DOWN", "maintenance": True}], [])
 tc = FakeTemporal()
 asyncio.run(worker.handle_message(tc, msg()))
@@ -958,35 +1016,81 @@ asyncio.run(worker.handle_message(tc, "garbage"))
 check("link_down 以外（trap / bgp_down / isis_down）と読めない本文は、起こさずシグナルも送らない（例外にもしない = 消す）",
       tc.started == [] and tc.signals == [])
 looked = []
-awsio.read_proposal = lambda p: looked.append(p) or {"proposal_id": p, "first_seen": FS, "status": "failed"}
+awsio.latest_proposal = lambda p: looked.append(p) or {"proposal_id": p, "first_seen": FS, "status": "failed"}
 tc = FakeTemporal()
 asyncio.run(worker.handle_message(tc, msg()))
-check("同じ発生（<anomaly_id>#<first_seen>）の修復案がもうあれば起こさない（閉じたあとで届いた、同じ starts_at の繰り返しの通知）",
+check("同じ発生（<anomaly_id>#<first_seen>）の修復案が proposal_events にもうあれば起こさない（閉じたあとで届いた、同じ starts_at の繰り返しの通知）",
       tc.started == [] and looked == [PID])
-awsio.read_proposal = lambda p: {}
+awsio.latest_proposal = lambda p: {}
 tc = FakeTemporal()
 asyncio.run(worker.handle_message(tc, msg("resolved", source="splunk")))
 check("resolved はそのワークフローへシグナル resolved を送り、起こさない", tc.started == [] and tc.signals == [(WID, "resolved", "splunk")])
-deleted = []
-awsio.delete_message = lambda h: deleted.append(h)
-awsio.receive_messages = lambda: [{"Body": msg("resolved"), "ReceiptHandle": "r0"}]
-asyncio.run(worker.starter_queue(FakeTemporal(sig_exc=RPCError("workflow not found", t_service.RPCStatusCode.NOT_FOUND))))
-check("resolved の相手が走っていない（NOT_FOUND）のは普通のこと（link_down 以外・もう閉じた）なので消す", deleted == ["r0"])
+received, deleted = [], []
+awsio.delete_message = lambda q, h: deleted.append((q, h))
+_inbox = []
+awsio.receive_messages = lambda q: received.append(q) or list(_inbox)
+_dbody = json.dumps({"type": "decision", "proposal_id": PID, "decision": "approved", "decided_by": "山田 (web)", "sent_at": FS + 300})
+_inbox[:] = [{"Body": _dbody, "ReceiptHandle": "d0"}]
+tc = FakeTemporal()
+asyncio.run(worker.starter_queue(tc, "q-alerts", worker.handle_message))
+check("アラートのキューに来た決定（{\"type\":\"decision\",…}）は、シグナルを送らず起こさずに消す（決定は決定のキューからだけ受ける）",
+      tc.started == [] and tc.signals == [] and received == ["q-alerts"] and deleted == [("q-alerts", "d0")])
 deleted.clear()
-asyncio.run(worker.starter_queue(FakeTemporal(sig_exc=RPCError("temporal に届かない", t_service.RPCStatusCode.UNAVAILABLE))))
+_inbox[:] = [{"Body": msg("resolved"), "ReceiptHandle": "r0"}]
+asyncio.run(worker.starter_queue(FakeTemporal(sig_exc=RPCError("workflow not found", t_service.RPCStatusCode.NOT_FOUND)), "q-alerts", worker.handle_message))
+check("resolved の相手が走っていない（NOT_FOUND）のは普通のこと（link_down 以外・もう閉じた）なので消す", deleted == [("q-alerts", "r0")])
+deleted.clear()
+asyncio.run(worker.starter_queue(FakeTemporal(sig_exc=RPCError("temporal に届かない", t_service.RPCStatusCode.UNAVAILABLE)), "q-alerts", worker.handle_message))
 check("それ以外の RPC の失敗は消さずに残す（解消のシグナルを落とすと verify が時間切れで failed になる）", deleted == [])
-awsio.receive_messages = lambda: [{"Body": msg(), "ReceiptHandle": "r1"}]
-asyncio.run(worker.starter_queue(FakeTemporal(WorkflowAlreadyStarted())))
-check("もう起きている（WorkflowAlreadyStartedError = 同じ異常の繰り返し・重複配達）なら消す（残すと DLQ で本物の失敗と混ざる）", deleted == ["r1"])
+_inbox[:] = [{"Body": msg(), "ReceiptHandle": "r1"}]
+asyncio.run(worker.starter_queue(FakeTemporal(WorkflowAlreadyStarted()), "q-alerts", worker.handle_message))
+check("もう起きている（WorkflowAlreadyStartedError = 同じ異常の繰り返し・重複配達）なら消す（残すと DLQ で本物の失敗と混ざる）", deleted == [("q-alerts", "r1")])
 deleted.clear()
-asyncio.run(worker.starter_queue(FakeTemporal(RuntimeError("temporal に届かない"))))
+asyncio.run(worker.starter_queue(FakeTemporal(RuntimeError("temporal に届かない")), "q-alerts", worker.handle_message))
 check("それ以外の失敗は消さずに残す（可視性タイムアウトのあとで配り直し、5 回で DLQ）", deleted == [])
-awsio.read_proposal = lambda p: (_ for _ in ()).throw(OSError("Neptune に届かない"))
-asyncio.run(worker.starter_queue(FakeTemporal()))
-check("Neptune に届かないときも消さない", deleted == [])
-awsio.receive_messages = lambda: [{"Body": "garbage", "ReceiptHandle": "r2"}, {"Body": msg(kind="trap"), "ReceiptHandle": "r3"}]
-asyncio.run(worker.starter_queue(FakeTemporal()))
-check("読めない本文と、起こさない種類のアラートは消す", deleted == ["r2", "r3"])
+awsio.latest_proposal = lambda p: (_ for _ in ()).throw(OSError("S3 Tables に届かない"))
+asyncio.run(worker.starter_queue(FakeTemporal(), "q-alerts", worker.handle_message))
+check("proposal_events を読めないときも消さない", deleted == [])
+awsio.latest_proposal = lambda p: {}
+_inbox[:] = [{"Body": "garbage", "ReceiptHandle": "r2"}, {"Body": msg(kind="trap"), "ReceiptHandle": "r3"}]
+asyncio.run(worker.starter_queue(FakeTemporal(), "q-alerts", worker.handle_message))
+check("読めない本文と、起こさない種類のアラートは消す", deleted == [("q-alerts", "r2"), ("q-alerts", "r3")])
+
+# 決定のキュー（handle_decision）
+deleted.clear(); appended.clear()
+_inbox[:] = [{"Body": _dbody, "ReceiptHandle": "d1"}]
+tc = FakeTemporal()
+asyncio.run(worker.starter_queue(tc, "q-decisions", worker.handle_decision))
+check("決定のキューのメッセージは investigate-<anomaly_id> にシグナル decide（decided_at は Web が送った時刻）を送って消し、行は書かない",
+      tc.signals == [(WID, "decide", {"proposal_id": PID, "decision": "approved", "decided_by": "山田 (web)", "decided_at": FS + 300})]
+      and tc.started == [] and deleted == [("q-decisions", "d1")] and appended == [])
+_nf = lambda: FakeTemporal(sig_exc=RPCError("workflow not found", t_service.RPCStatusCode.NOT_FOUND))
+deleted.clear(); looked.clear()
+awsio.latest_proposal = lambda p: looked.append(p) or {**CREATED}
+asyncio.run(worker.starter_queue(_nf(), "q-decisions", worker.handle_decision))
+_rows = appended[0][0] if appended else []
+check("ワークフローが無い（NOT_FOUND）のに修復案が pending なら、expired の行（verify_note はワークフローがもう無い）を 1 つ足して消す",
+      looked == [PID] and len(appended) == 1 and [(r["proposal_id"], r["status"], r["seq"]) for r in _rows] == [(PID, "expired", 2)]
+      and _rows[0]["verify_note"] == worker.NO_WORKFLOW_NOTE and appended[0][1] == rules.PROPOSAL_EVENT_COLUMNS and deleted == [("q-decisions", "d1")])
+deleted.clear(); appended.clear()
+for _st in ({**CREATED, "status": "approved", "seq": 2}, {}):
+    awsio.latest_proposal = lambda p, _st=_st: _st
+    asyncio.run(worker.starter_queue(_nf(), "q-decisions", worker.handle_decision))
+check("ワークフローが無く、修復案が pending でない（もう決まった・無い）なら何も書かずに消す",
+      appended == [] and deleted == [("q-decisions", "d1")] * 2)
+deleted.clear()
+asyncio.run(worker.starter_queue(FakeTemporal(sig_exc=RPCError("temporal に届かない", t_service.RPCStatusCode.UNAVAILABLE)), "q-decisions", worker.handle_decision))
+check("Temporal に届かない（NOT_FOUND 以外の RPC の失敗）なら消さない（配り直し、直らなければ DLQ）", deleted == [] and appended == [])
+awsio.latest_proposal = lambda p: (_ for _ in ()).throw(OSError("S3 Tables に届かない"))
+asyncio.run(worker.starter_queue(_nf(), "q-decisions", worker.handle_decision))
+check("ワークフローが無く、proposal_events も読めないときは消さない", deleted == [] and appended == [])
+awsio.latest_proposal = lambda p: {}
+_inbox[:] = [{"Body": "garbage", "ReceiptHandle": "d2"}, {"Body": msg(), "ReceiptHandle": "d3"},
+             {"Body": json.dumps({"type": "decision", "proposal_id": PID, "decision": "applied"}), "ReceiptHandle": "d4"}]
+tc = FakeTemporal()
+asyncio.run(worker.starter_queue(tc, "q-decisions", worker.handle_decision))
+check("決定のキューの読めない本文・アラート・approved / rejected 以外の決定は、シグナルを送らず起こさずに消す",
+      tc.signals == [] and tc.started == [] and deleted == [("q-decisions", "d2"), ("q-decisions", "d3"), ("q-decisions", "d4")])
 for k, v in _saved.items():
     setattr(awsio, k, v)
 
@@ -1004,7 +1108,7 @@ for k, v in _prev.items():
     else:
         sys.modules[k] = v
 decided = []
-iv.proposals.decide = lambda pid, d, decided_by="": decided.append((pid, d, decided_by)) or {"proposal_id": pid, "status": d}
+iv.proposals.decide = lambda pid, d, decided_by="": decided.append((pid, d, decided_by)) or {"proposal_id": pid, "status": "sent", "decision": d, "decided_by": decided_by, "sent_at": 1}
 iv.proposals.list_proposals = lambda status="pending", limit=100: {"proposals": [{"proposal_id": "p1", "status": status}]}
 nothing = ("update", {})
 check("名前が無ければ書かない（表と選択もそのまま）",
@@ -1019,7 +1123,7 @@ check("承認のチェックは承認ボタンの真上（同じ Column）にあ
       re.search(r"with gr\.Column\(scale=2\):\n\s+pr_ok = gr\.Checkbox\(label=iv\.APPROVE_CHECK_LABEL.*\n\s+pr_approve = gr\.Button\(", web) is not None
       and "pr_ok.change(iv.approve_button, [pr_ok, pr_who], [pr_approve])" in web
       and "pr_who.change(iv.approve_button, [pr_ok, pr_who], [pr_approve])" in web)
-check("状態は表示だけ日本語で、ラジオの値・一覧に渡す値は英語のまま（Neptune の status と同じ）",
+check("状態は表示だけ日本語で、ラジオの値・一覧に渡す値は英語のまま（proposal_events の status と同じ）",
       set(iv.PROPOSAL_STATUS_JA) == set(proposals.STATUSES) | {"all"} and not hasattr(iv, "ANOMALY_STATUS_JA")
       and ("承認待ち", "pending") in iv.status_choices(iv.PROPOSAL_STATUS_JA)
       and "gr.Radio(iv.status_choices(iv.PROPOSAL_STATUS_JA), value=\"pending\"" in web

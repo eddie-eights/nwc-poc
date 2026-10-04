@@ -550,8 +550,10 @@ check("Lambda のロールは neptune-graph の Read / Write / Delete をこの�
       all(f'"neptune-graph:{a}DataViaQuery"' in tf for a in ("Read", "Write", "Delete")) and "neptune-graph:*" not in tf and "neptune-db" not in tf
       and "resources = [aws_neptunegraph_graph.graph.arn]" in tf)
 _acc = read("terraform", "pipeline", "graph", "access.tf")
-check("Runtime と Web のロールにも neptune-graph の読み書きをこのグラフにだけ付ける",
-      all(f'"neptune-graph:{a}DataViaQuery"' in _acc for a in ("Read", "Write", "Delete")) and "Resource = aws_neptunegraph_graph.graph.arn" in _acc and "neptune-db" not in _acc)
+check("Runtime と Web のロールにも neptune-graph をこのグラフにだけ付ける。書き込み（Write / Delete）は Web だけで、Runtime は読むだけ（2026-10-05）",
+      all(f'"neptune-graph:{a}DataViaQuery"' in _acc for a in ("Read", "Write", "Delete")) and "Resource = aws_neptunegraph_graph.graph.arn" in _acc and "neptune-db" not in _acc
+      and 'each.value == local.graph_writer_role ? ["neptune-graph:WriteDataViaQuery", "neptune-graph:DeleteDataViaQuery"] : []' in _acc
+      and "graph_writer_role = data.terraform_remote_state.main.outputs.web_role_name" in _loc)
 check("SNS から Lambda を呼ぶ permission（呼べるのは土台のトピックだけ）", 'principal     = "sns.amazonaws.com"' in tf and "source_arn    = local.alerts_topic_arn" in tf)
 _var = read("terraform", "pipeline", "graph", "variables.tf")
 check("variables.tf に log_retention_days と provisioned_memory（既定 16 m-NCU）。Neptune Database の instance_class / engine_version は無い",

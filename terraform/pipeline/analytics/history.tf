@@ -148,10 +148,11 @@ resource "aws_kinesis_firehose_delivery_stream" "alert_events" {
   depends_on = [aws_iam_role_policy.alert_firehose]
 }
 
-# query_history（agent/evidence.py）が投げる。クエリの結果は Athena の管理ストレージに置く（結果用のバケットを作らない）
+# query_history（agent/evidence.py）と、修復案の読み取り（agent/proposals.py の list_proposals / get_proposal。Web の承認タブと tools の Lambda。2026-10-05）が投げる。
+# クエリの結果は Athena の管理ストレージに置く（結果用のバケットを作らない）
 resource "aws_athena_workgroup" "history" {
   name          = local.history_workgroup
-  description   = "query_history of the agent - reads alert_events through s3tablescatalog"
+  description   = "query_history and list_proposals of the agent and the web - reads alert_events and proposal_events through s3tablescatalog"
   force_destroy = true
 
   configuration {

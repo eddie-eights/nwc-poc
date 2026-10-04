@@ -11,22 +11,21 @@ PROMETHEUS_QUERY_URL（https://aps-workspaces.<region>.amazonaws.com/workspaces/
 ATHENA_WORKGROUP・ATHENA_CATALOG・HISTORY_NAMESPACE・ALERT_EVENTS_TABLE（terraform/pipeline/analytics の history.tf の出力）。
 どれも無ければ「まだ配備されていない」を返して、PIPELINE の analytics を作っていない構成でも落ちない。
 署名は botocore の SigV4（サービス名 aoss / aps）。requests は使わず urllib で送る（tools Lambda は素の python3.13、依存を増やさない）。
-Athena は boto3 の athena クライアント（python3.13 の Lambda に入っている）。
+Athena は boto3 の athena クライアント（python3.13 の Lambda に入っている）。実行の手順（開始 → 待つ → 止める → 結果）は toolkit.athena_rows
+（agent/proposals.py の修復案の読み取りと共用。2026-10-05）。
 tools Lambda（terraform/workflow）と chat runtime（agent/app.py）の両方から同じものが呼ばれる。
 """
 
 import json
 import os
-import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
 
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import BotoCoreError
 
 import toolkit
 
@@ -109,10 +108,6 @@ HISTORY_NOT_DEPLOYED = ("アラートの履歴（S3 Tables の alert_events を 
 # 列は workflow/rules.py の ALERT_EVENT_COLUMNS と同じ順（tests/test_app.py が突き合わせる）
 HISTORY_COLUMNS = ("event_id", "anomaly_id", "source", "status", "device_id", "kind", "target", "detail", "starts_at", "received_at")
 HISTORY_LIMIT = 50
-# device_id は ExecutionParameters で渡す。Athena は値を SQL の式として読む（文字列は '…' で囲む）ので、引用符の入らない文字だけを通す
-_DEVICE_RE = re.compile(r"^[A-Za-z0-9._:/#?-]{1,128}$")
-# Athena が返す timestamptz の文字列（2026-10-04 07:00:00.000000 UTC）
-_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?\s*(?:UTC|Z|\+00:00)?$")
 
 
 def history_sql(hours: int, by_device: bool) -> str:
@@ -126,22 +121,7 @@ def history_sql(hours: int, by_device: bool) -> str:
 
 def _jst_of(ts) -> str:
     """Athena の timestamptz（UTC）の文字列を日本時間の「2026-10-04 16:00:00」に。読めなければ空文字"""
-    m = _TS_RE.match(str(ts or "").strip())
-    if not m:
-        return ""
-    return toolkit.jst(datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp())
-
-
-def _wait(athena, qid: str):
-    """クエリが終わるまで最大 TIMEOUT 秒待つ。終わったら Status、時間切れなら None"""
-    deadline = time.monotonic() + TIMEOUT
-    while True:
-        status = athena.get_query_execution(QueryExecutionId=qid)["QueryExecution"]["Status"]
-        if status.get("State") in ("SUCCEEDED", "FAILED", "CANCELLED"):
-            return status
-        if time.monotonic() >= deadline:
-            return None
-        time.sleep(POLL)
+    return toolkit.jst(toolkit.athena_epoch(ts))
 
 
 def query_history(device_id: str = "", hours: int = 24) -> dict:
@@ -150,30 +130,14 @@ def query_history(device_id: str = "", hours: int = 24) -> dict:
     hours = max(1, min(int(hours), 720))
     if not (ATHENA_WORKGROUP and ATHENA_CATALOG and HISTORY_NAMESPACE and ALERT_EVENTS_TABLE):
         return {"error": HISTORY_NOT_DEPLOYED, "device_id": device_id, "hours": hours, "rows": []}
-    if device_id and not _DEVICE_RE.match(device_id):
+    if device_id and not toolkit.ATHENA_PARAM_RE.match(device_id):
         return {"error": "device_id に使えない文字がある（英数字と . _ : / # ? - だけ）", "device_id": device_id, "hours": hours, "rows": []}
-    athena = toolkit.client("athena")
-    req = {"QueryString": history_sql(hours, bool(device_id)), "WorkGroup": ATHENA_WORKGROUP}
-    if device_id:
-        req["ExecutionParameters"] = [f"'{device_id}'"]
-    try:
-        qid = athena.start_query_execution(**req)["QueryExecutionId"]
-        status = _wait(athena, qid)
-        if status is None:
-            try:
-                athena.stop_query_execution(QueryExecutionId=qid)
-            except (ClientError, BotoCoreError):
-                pass
-            return {"error": f"Athena のクエリが {TIMEOUT} 秒で終わらなかったので止めた（hours を短くするか device_id で絞る）", "device_id": device_id, "hours": hours, "rows": []}
-        if status["State"] != "SUCCEEDED":
-            return {"error": f"Athena のクエリが {status['State']}: {str(status.get('StateChangeReason', ''))[:300]}", "device_id": device_id, "hours": hours, "rows": []}
-        result = athena.get_query_results(QueryExecutionId=qid, MaxResults=HISTORY_LIMIT + 1)
-    except (ClientError, BotoCoreError) as e:
-        return {"error": f"Athena を呼べない: {str(e)[:300]}", "device_id": device_id, "hours": hours, "rows": []}
-    # 1 行目は列名。NULL のセルは VarCharValue が無い
+    cells_list, error = toolkit.athena_rows(history_sql(hours, bool(device_id)), ATHENA_WORKGROUP, [device_id] if device_id else (),
+                                            max_rows=HISTORY_LIMIT, timeout=TIMEOUT, poll=POLL, timeout_hint="（hours を短くするか device_id で絞る）")
+    if error:
+        return {"error": error, "device_id": device_id, "hours": hours, "rows": []}
     rows = []
-    for r in (result.get("ResultSet") or {}).get("Rows", [])[1:]:
-        cells = [c.get("VarCharValue") for c in r.get("Data", [])]
+    for cells in cells_list:
         row = dict(zip(HISTORY_COLUMNS, cells))
         row["starts_at_jst"], row["received_at_jst"] = _jst_of(row.get("starts_at")), _jst_of(row.get("received_at"))
         rows.append(row)

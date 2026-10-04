@@ -45,7 +45,7 @@ resource "aws_iam_role_policy_attachment" "task_perimeter" {
 # ---------------------------------------------------------------- task role (the worker)
 resource "aws_iam_role" "task" {
   name               = "${local.name_prefix}-workflow-task"
-  description        = "Workflow worker - alert queue, Neptune (proposals), proposal audit table (S3 Tables), chat runtime, SSM Run Command on the lab EC2, ECS Exec"
+  description        = "Workflow worker - alert and decision queues, Neptune (topology), proposal events table (S3 Tables), chat runtime, SSM Run Command on the lab EC2, ECS Exec"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
 }
 
@@ -56,7 +56,15 @@ data "aws_iam_policy_document" "task" {
     resources = [aws_sqs_queue.anomalies.arn]
   }
 
-  # 修復案の頂点を読み書きする（workflow/awsio.py の cypher）
+  # Web の承認・却下（events.tf の decisions）。送るのは Web の EC2 のロールだけ（proposals.tf）
+  statement {
+    sid       = "DecisionQueue"
+    actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+    resources = [aws_sqs_queue.decisions.arn]
+  }
+
+  # トポロジと status を読む（workflow/awsio.py の read_topology。事前チェックと保守中の判定）。
+  # 修復案の頂点は 2026-10-05 にやめたので書き込みはもう使わないが、外すことは cycle 003 の設計に無いので残している
   statement {
     sid = "Neptune"
     actions = [
@@ -68,7 +76,7 @@ data "aws_iam_policy_document" "task" {
     resources = [local.neptune_data_arn]
   }
 
-  # 修復案の証跡を proposal_events に append する（PyIceberg から S3 Tables の Iceberg REST エンドポイント）
+  # 修復案（proposal_events）を読み、append する（PyIceberg から S3 Tables の Iceberg REST エンドポイント）
   statement {
     sid = "AuditTable"
     actions = [

@@ -3,8 +3,8 @@
 # publish alerts to the SNS topic of terraform/base/core; events.tf subscribes an SQS queue to it and the worker starts one workflow per anomaly
 # (and signals it when the alert resolves). The workflow asks the
 # chat runtime (AgentCore) for a cause and a fix (the runtime looks at Neptune / OpenSearch / Prometheus through the MCP tools),
-# writes a proposal to Neptune (label proposal) and one audit row per step to S3 Tables (proposal_events), waits for a human decision (web tab "承認"), applies the fix on the lab EC2 (terraform/pipeline/lab)
-# through SSM Run Command and waits for the resolved alert. Temporal runs on ECS now (EKS later - 2026-09-17 user decision).
+# writes the proposal as one row per step to S3 Tables (proposal_events), waits for a human decision (web tab "承認", sent through the
+# decision queue of events.tf), applies the fix on the lab EC2 (terraform/pipeline/lab) through SSM Run Command and waits for the resolved alert. Temporal runs on ECS now (EKS later - 2026-09-17 user decision).
 # The AgentCore Gateway (MCP) exposes the agent tools through a Lambda in the VPC so the runtime can read Neptune, the logs
 # collection and the metrics workspace over MCP. Costs about 0.05 USD per hour while it exists (Fargate) - destroy it the same day.
 
@@ -18,8 +18,8 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 # VPC / サブネット / SG / ロール名は terraform/base/core、Runtime ARN は terraform/agent、lab EC2 は terraform/pipeline/lab、
-# Neptune（修復案の「いま」）は terraform/pipeline/graph、証跡の S3 Tables と OpenSearch / Prometheus は terraform/pipeline/analytics の state から読む。
-# ワーカーは Neptune と証跡が無いと動かないので graph と analytics は必須（ecs.tf の precondition）
+# Neptune（トポロジと status）は terraform/pipeline/graph、修復案の S3 Tables と OpenSearch / Prometheus は terraform/pipeline/analytics の state から読む。
+# ワーカーは Neptune（事前チェック）と proposal_events が無いと動かないので graph と analytics は必須（ecs.tf の precondition）
 data "terraform_remote_state" "main" {
   backend = "local"
 
@@ -95,29 +95,66 @@ locals {
   # agent が無いとワークフローが原因を聞く先が無い。下の precondition で「agent を先に」と出す
   runtime_arn = try(data.terraform_remote_state.agent.outputs.agent_runtime_arn, "")
 
-  # SSM とゲートウェイを使う 2 つのロール（チャットの Runtime と Web の EC2）。修復案の読み書き（Neptune）は terraform/pipeline/graph の access.tf が付ける
+  # SSM とゲートウェイを使う 2 つのロール（チャットの Runtime と Web の EC2）。Neptune の読み書きは terraform/pipeline/graph の access.tf が付ける。
+  # 決定のキューへの送信と Athena での proposal_events の読み取りは Web だけ（proposals.tf）
   web_role_name     = data.terraform_remote_state.main.outputs.web_role_name
   reader_role_names = toset([data.terraform_remote_state.main.outputs.runtime_role_name, local.web_role_name])
 
-  # lab が無ければ Apply の段は打つ先が無い（ワーカーは proposal を failed にする）
+  # lab が無ければ Apply の段は打つ先が無い（ワーカーは修復案を failed にする）
   lab_instance_id = try(data.terraform_remote_state.lab.outputs.lab_instance_id, "")
 
-  # Neptune（修復案の「いま」）。graph が無ければ空で、ecs.tf の precondition が「graph を先に」と出す
+  # Neptune（トポロジと status。ワーカーの事前チェック）。graph が無ければ空で、ecs.tf の precondition が「graph を先に」と出す
   neptune_graph_id = try(data.terraform_remote_state.graph.outputs.graph_id, "")
   neptune_data_arn = try(data.terraform_remote_state.graph.outputs.graph_arn, "")
 
-  # 修復案の証跡（S3 Tables の proposal_events）。analytics が無ければ空で、ecs.tf の precondition が「analytics を先に」と出す
+  # 修復案（S3 Tables の proposal_events。2026-10-05 から修復案の置き場はここだけ）。analytics が無ければ空で、ecs.tf の precondition が「analytics を先に」と出す
   audit_bucket_arn           = try(data.terraform_remote_state.analytics.outputs.table_bucket_arn, "")
   audit_namespace            = try(data.terraform_remote_state.analytics.outputs.table_namespace, "")
   proposal_events_table_name = try(data.terraform_remote_state.analytics.outputs.proposal_events_table_name, "")
   proposal_events_table_arn  = try(data.terraform_remote_state.analytics.outputs.proposal_events_table_arn, "")
 
-  # アラートの通知の履歴（alert_events。graph の status Lambda → Firehose が書く）を query_history が Athena で読む。
-  # analytics が無いか 2026-10-04 より前の analytics なら空で、ツールは「未配備」を返す
+  # アラートの通知の履歴（alert_events。graph の status Lambda → Firehose が書く）を query_history が、修復案（proposal_events）を
+  # list_proposals と Web の承認タブが Athena で読む。analytics が無いか 2026-10-04 より前の analytics なら空で、ツールと画面は「未配備」を返す
   athena_workgroup        = try(data.terraform_remote_state.analytics.outputs.athena_workgroup, "")
   athena_catalog          = try(data.terraform_remote_state.analytics.outputs.athena_catalog, "")
   alert_events_table_name = try(data.terraform_remote_state.analytics.outputs.alert_events_table_name, "")
   alert_events_table_arn  = try(data.terraform_remote_state.analytics.outputs.alert_events_table_arn, "")
+
+  # Athena で履歴を読む 4 文。tools の Lambda（gateway.tf）と Web の EC2（proposals.tf）に同じものを付ける。
+  # Athena のクエリはワークグループだけで打ち、結果は Athena の管理ストレージ。Athena は呼び手の権限で Glue のカタログ（s3tablescatalog）と
+  # S3 Tables を読む。閉域の Deny（s3tables:*）は Athena が代わりに出す呼び出し（aws:ViaAWSService）には効かない前提
+  # （docs/cycles/001-alert-history-firehose/design.md のリスク 3）。そのぶん VPC の外からの athena:* は閉域の Deny で止め、
+  # 読めるテーブルは alert_events と proposal_events だけにする（raw_telemetry は読ませない）。
+  # テーブルの ARN は名前ではなくテーブルの ID で終わるので、analytics の出力から受ける。ワークグループが無ければ 1 文も付けない
+  history_table_arns = compact([local.alert_events_table_arn, local.proposal_events_table_arn])
+  history_read_statements = [for s in [
+    {
+      sid       = "HistoryQuery"
+      actions   = ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:StopQueryExecution"]
+      resources = ["arn:${local.partition}:athena:${var.region}:${local.account_id}:workgroup/${local.athena_workgroup}"]
+    },
+    {
+      sid     = "HistoryCatalog"
+      actions = ["glue:GetCatalog", "glue:GetDatabase", "glue:GetTable"]
+      resources = [
+        "arn:${local.partition}:glue:${var.region}:${local.account_id}:catalog",
+        "arn:${local.partition}:glue:${var.region}:${local.account_id}:catalog/s3tablescatalog",
+        "arn:${local.partition}:glue:${var.region}:${local.account_id}:catalog/s3tablescatalog/*",
+        "arn:${local.partition}:glue:${var.region}:${local.account_id}:database/*",
+        "arn:${local.partition}:glue:${var.region}:${local.account_id}:table/*/*",
+      ]
+    },
+    {
+      sid       = "HistoryBucket"
+      actions   = ["s3tables:GetTableBucket", "s3tables:GetNamespace"]
+      resources = [local.audit_bucket_arn]
+    },
+    {
+      sid       = "HistoryTable"
+      actions   = ["s3tables:GetTable", "s3tables:GetTableData", "s3tables:GetTableMetadataLocation"]
+      resources = local.history_table_arns
+    },
+  ] : s if local.athena_workgroup != "" && length(compact(s.resources)) > 0]
 
   opensearch_collection_name = try(data.terraform_remote_state.analytics.outputs.opensearch_collection_name, "")
   opensearch_collection_arn  = try(data.terraform_remote_state.analytics.outputs.opensearch_collection_arn, "")

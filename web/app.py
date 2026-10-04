@@ -4,7 +4,7 @@
   config.py         環境変数（.env / systemd）の読み出しと、agent/ のモジュールへのパス通し
   chat.py           「チャット」タブ。質問を AgentCore Runtime に送る
   topology_view.py  「トポロジ」タブ。SVG の図・機器の表・Neptune でのリンク編集
-  incident_view.py  「承認」タブ。Neptune の proposal の頂点
+  incident_view.py  「承認」タブ。S3 Tables の proposal_events（Athena で読む）と、決定のキューへの送信
 
 agent/ の topology.py / graph.py / proposals.py / toolkit.py をそのまま同じディレクトリに置いて import する
 （terraform/base/core の出力 upload_web_command が web/*.py と一緒に S3 へ上げる）。
@@ -79,7 +79,7 @@ with gr.Blocks(title=f"{TITLE} チャット") as demo:
             pr_refresh = gr.Button("更新", scale=1)
         pr_msg = gr.Markdown()
         pr_table = gr.Dataframe(pd.DataFrame(columns=iv.PROPOSAL_COLS), interactive=False, wrap=True, column_widths=iv.PROPOSAL_WIDTHS,
-                                label="修復案（ワーカーが Neptune に書いたもの。長い列は折り返し。全文は下の「詳細」）")
+                                label="修復案（ワーカーが S3 Tables に書いたもの。長い列は折り返し。全文は下の「詳細」）")
         with gr.Row():
             pr_id = gr.Dropdown([], value=None, allow_custom_value=True, scale=4,
                                 label="proposal_id（表の 1 列目。選ぶと下に全文が出る）")
@@ -104,8 +104,8 @@ with gr.Blocks(title=f"{TITLE} チャット") as demo:
         pr_id.change(lambda _: False, [pr_id], [pr_ok])
         pr_ok.change(iv.approve_button, [pr_ok, pr_who], [pr_approve])
         pr_who.change(iv.approve_button, [pr_ok, pr_who], [pr_approve])
-        # 30 秒ごとに描き直す（アラートが status に届くまで 1 分前後、ワーカーの承認待ちが 30 秒おきなので、ボタンを押さなくても追える。
-        # 読むのは Neptune のクエリ 2 回（トポロジ・修復案）で、開いているブラウザの数だけ）。proposal_id の選択はそのまま残す
+        # 30 秒ごとに描き直す（アラートが status に届くまで 1 分前後、承認・却下が行に出るまで数秒〜20 秒なので、ボタンを押さなくても追える。
+        # 読むのは Neptune のクエリ（トポロジ）と Athena のクエリ 1 本（修復案）で、開いているブラウザの数だけ）。proposal_id の選択はそのまま残す
         ticker = gr.Timer(30)
         ticker.tick(tv.redraw_topology, None, [topo_html, topo_table, layer_table])
         ticker.tick(lambda st: iv.proposal_table(st)[:2], [pr_status], [pr_msg, pr_table])
