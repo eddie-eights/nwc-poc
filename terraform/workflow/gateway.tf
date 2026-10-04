@@ -116,7 +116,7 @@ data "aws_iam_policy_document" "tools" {
   # query_history（アラートの通知の履歴）。Athena のクエリはそのワークグループだけで打ち、結果は Athena の管理ストレージ。
   # Athena は呼び手の権限で Glue のカタログ（s3tablescatalog）と S3 Tables を読む。閉域の Deny（s3tables:*）は
   # Athena が代わりに出す呼び出し（aws:ViaAWSService）には効かない前提（docs/cycles/001-alert-history-firehose/design.md のリスク 3）。
-  # そのぶん VPC の外からの athena:* は閉域の Deny で止め、読めるテーブルは alert_events だけにする（proposal_events / snmp_metrics は読ませない）
+  # そのぶん VPC の外からの athena:* は閉域の Deny で止め、読めるテーブルは alert_events だけにする（proposal_events / raw_telemetry は読ませない）
   dynamic "statement" {
     for_each = local.athena_workgroup != "" ? [1] : []
     content {

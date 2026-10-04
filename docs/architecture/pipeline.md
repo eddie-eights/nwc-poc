@@ -11,7 +11,7 @@ flowchart LR
   TGP --> MSK
   TG -.->|"gNMI 購読<br/>（SNMP_POLL=1 なら SNMP ポーリング 10 秒も）"| LAB
   MSK --> SPARK["Spark（EMR Serverless）"]
-  SPARK -->|"全トピック（正本）"| ICE["S3 Tables<br/>snmp_metrics"]
+  SPARK -->|"全トピック（正本）"| ICE["S3 Tables<br/>raw_telemetry"]
   SPARK -->|"traps / logs"| OS["OpenSearch<br/>snmp-logs"]
   SPARK -->|"metrics / gnmi / mdt"| PROM["Prometheus"]
   SPARK -.->|"全トピック（STORES に splunk があるとき）"| SPL["Splunk HEC<br/>analytics の ECS"]

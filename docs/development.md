@@ -31,7 +31,7 @@ uv sync --group dev --group web
 bash ops/check.sh
 ```
 
-`web` のグループ（gradio・pandas・boto3）も入れるのは、`test_nautobot` が Web の画面のモジュールを読むため。最後の行が `すべて通過` なら健全。中身は `terraform fmt`、9 ルートの `terraform validate`、`bash -n`、`tests/` の 10 本（`test_app` 104 項目、`test_graph` 74、`test_stream` 60、`test_sync` 95、`test_analytics` 421、`test_workflow` 278、`test_alerts` 89、`test_kb_index` 7、`test_lab_debug` 75、`test_nautobot` 58）。途中で落ちたらそこで止まる。
+`web` のグループ（gradio・pandas・boto3）も入れるのは、`test_nautobot` が Web の画面のモジュールを読むため。最後の行が `すべて通過` なら健全。中身は `terraform fmt`、9 ルートの `terraform validate`、`bash -n`、`tests/` の 10 本（`test_app` 104 項目、`test_graph` 74、`test_stream` 60、`test_sync` 95、`test_analytics` 422、`test_workflow` 278、`test_alerts` 89、`test_kb_index` 7、`test_lab_debug` 75、`test_nautobot` 58）。途中で落ちたらそこで止まる。
 
 ## Web を手元で動かす
 
@@ -60,7 +60,7 @@ uv run python web/app.py
 - 会話の永続化。履歴は Runtime のセッションの中にだけあり、画面を再読み込みすると消える。
 - Temporal の永続化と UI の認証。履歴はタスクと一緒に消え、UI にはポートフォワーディングでしか届かない。
 - 実機への修復。打てるのは lab の `sudo lab heal-main`（`dc1-leaf-01 ethernet-1/1` の fabric を戻す）と `sudo lab check` だけ。
-- 生データ（`snmp_metrics`）の検索。エージェントの `query_history` が Athena で読むのはアラートの通知の履歴（`alert_events`）だけ。analytics が無ければ案内だけ返す。
+- 生データ（`raw_telemetry`）の検索。エージェントの `query_history` が Athena で読むのはアラートの通知の履歴（`alert_events`）だけ。analytics が無ければ案内だけ返す。
 - Web の画面の中のグラフ。修復案は Neptune の頂点をそのまま表に出す（メトリクスとログのグラフは 2026-09-28 から Grafana（`STORES` の `grafana`）で見る）。
 - Web の異常一覧と、障害の履歴を見る画面。2026-10-02 に検知を Grafana と Splunk へ移したときにやめた（[data-stores.md](data-stores.md) の「5. 経緯」）。いまの異常は「トポロジ」タブの `status`、アラートは Grafana / Splunk の画面で見る。通知の履歴は 2026-10-04 から S3 Tables の `alert_events` に残り、エージェントの `query_history` で引ける。
 - 複数の機器にまたがるアラートの相関。まとめるのは同じ機器・種類・対象のアラートだけ（送り手が違っても異常の id が同じになる）で、「Spine が落ちたので配下の Leaf のアラートを 1 つの障害にする」ようなルールは入れていない。
