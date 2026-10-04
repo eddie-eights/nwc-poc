@@ -297,9 +297,9 @@ check("どのサーチも _raw だけにしてから spath で項目を取る（
 check("どのサーチも最後は table device kind target status detail starts_at（アラートアクションが読む列）",
       all(p[-1] == "table device kind target status detail starts_at" for p in pipes.values())
       and all(re.search(rf"r\.get\(\"{c}\"\)", src) for c in ("device", "kind", "target", "status", "detail", "starts_at")))
-check("窓は索引に入った時刻で切る（直前の 1 分を 10 秒手前にずらして 1 回だけ読む。イベントの時刻の窓 dispatch.earliest_time は広く取る）",
+check("窓は索引に入った時刻で切る（直前の 1 分を 10 秒手前にずらして 1 回だけ読む。ポーリングは前の値としてその前の 10 分も読む。イベントの時刻の窓 dispatch.earliest_time は広く取る）",
       all(pipes[n][0].endswith("_index_earliest=-1m@m-10s _index_latest=@m-10s") and saved[n]["dispatch.earliest_time"] == "-1h" for n in ("netops_gnmi", "netops_trap"))
-      and pipes["netops_poll"][0].endswith("_index_earliest=-2m@m-10s _index_latest=@m-10s") and saved["netops_poll"]["dispatch.earliest_time"] == "-1h"
+      and pipes["netops_poll"][0].endswith("_index_earliest=-11m@m-10s _index_latest=@m-10s") and saved["netops_poll"]["dispatch.earliest_time"] == "-1h"
       and pipes["netops_trap_clear"][0].endswith("_index_earliest=-70m@m-10s _index_latest=@m-10s") and saved["netops_trap_clear"]["dispatch.earliest_time"] == "-3h")
 check("イベントは source で選ぶ（Spark の splunk_events が telegraf:<measurement> を付ける）。index は決め打ちしない（SPLUNK_INDEX で変わる）",
       pipes["netops_poll"][0].startswith('index=* source="telegraf:interface" ')
@@ -310,16 +310,88 @@ DEVICE = "eval device=coalesce('tags.sysName', 'tags.agent_host', 'tags.source')
 check("機器は tags.sysName > tags.agent_host > tags.source（gNMI と trap は IP。アラートアクションが DEVICE_MAP で名前に直す）",
       all(DEVICE in p for p in pipes.values()))
 p = saved["netops_poll"]["search"]
-check("ポーリング: ifOperStatus が 2 なら down（admin-state が disable の IF は down と数えない）。直前の 1 分と今の 1 分の最後の値を比べ、down かどうかが"
-      "変わった IF だけを出す（初めて見る IF は down のときだけ）。target は ifName（linkDown trap と同じ anomaly_id）",
-      "eval target='tags.ifName', oper=tonumber('fields.ifOperStatus'), admin=tonumber('fields.ifAdminStatus')" in p
-      and 'eval down=if(oper==2 AND coalesce(admin, 1)!=2, 1, 0), now_window=if(_indextime >= relative_time(now(), "-1m@m-10s"), 1, 0)' in p
-      and "stats latest(prev_down) as prev_down latest(now_down) as now_down latest(now_admin) as now_admin max(now_time) as starts_at by device target" in p
-      and "where isnotnull(now_down) AND ((isnull(prev_down) AND now_down==1) OR (isnotnull(prev_down) AND prev_down!=now_down))" in p
+check("ポーリング: ifOperStatus が 2 なら down（admin-state が disable の IF は down と数えない）。target は ifName（linkDown trap と同じ anomaly_id）",
+      "eval target='tags.ifName', oper=tonumber('fields.ifOperStatus'), admin=coalesce(tonumber('fields.ifAdminStatus'), 1)" in p
+      and 'eval down=if(oper==2 AND admin!=2, 1, 0), in_now=if(_indextime >= relative_time(now(), "-1m@m-10s"), 1, 0)' in p)
+check("ポーリング: 前 = 今の 1 分より前に入った最後の値、今 = 読んだ 11 分ぶんの最後の値（イベントの時刻で）、starts_at = 今の状態になった時刻",
+      'eval prev_down=if(in_now==0, down, null()), down_time=if(down==1, _time, null()), up_time=if(down==0, _time, null())' in p
+      and "eventstats max(down_time) as last_down max(up_time) as last_up by device target" in p
+      and "eval now_down=if(coalesce(last_down, 0) > coalesce(last_up, 0), 1, 0)" in p
+      and "eval run_time=if(_time > coalesce(if(now_down==1, last_up, last_down), 0), _time, null())" in p
+      and "stats latest(prev_down) as prev_down max(now_down) as now_down max(in_now) as arrived latest(admin) as now_admin min(run_time) as starts_at by device target" in p
       and 'eval kind="link_down", status=if(now_down==1, "firing", "resolved")' in p)
 check("ポーリング: down のまま admin-state を disable にして閉じたときは、detail を is up ではなく is admin down にする",
-      'now_admin=if(now_window==1, coalesce(admin, 1), null())' in p
-      and 'eval detail=target." is ".if(status=="firing", "down", if(now_admin==2, "admin down", "up"))." (splunk: poll)"' in p)
+      'eval detail=target." is ".if(status=="firing", "down", if(now_admin==2, "admin down", "up"))." (splunk: poll)"' in p)
+
+# ---- ポーリングの遷移（SPL は動かせないので、表と参照実装と where の条件を突き合わせる）
+# 前（null = 今の 1 分より前の 10 分に値が無い / 0 / 1）× 今（0 / 1 / null = 今の 1 分に値が入っていない）→ firing / なし（None）/ resolved
+POLL_TABLE = {
+    (None, 0): None, (None, 1): "firing", (None, None): None,
+    (0, 0): None, (0, 1): "firing", (0, None): None,
+    (1, 0): "resolved", (1, 1): None, (1, None): None,
+}
+POLL_BACK = (int(re.search(r"_index_earliest=-(\d+)m@m-10s", pipes["netops_poll"][0]).group(1)) - 1) * 60   # 前として読む秒数（今の 1 分を除く）
+
+
+def poll_ref(events, T, back=POLL_BACK):
+    """netops_poll の参照実装（IF 1 つぶん）。events = [(索引の時刻, イベントの時刻, down 0/1)]、T = その回の窓の終わり（@m-10s）。
+    今の 1 分 = 索引の時刻が [T-60, T)、前 = [T-60-back, T-60)。返すのは (status, starts_at)。出さないときは (None, None)"""
+    seen = [e for e in events if T - 60 - back <= e[0] < T]
+    if not any(e[0] >= T - 60 for e in seen):
+        return None, None
+    prev = [e for e in seen if e[0] < T - 60]
+    prev_down = max(prev, key=lambda e: e[1])[2] if prev else None
+    now_down = max(seen, key=lambda e: e[1])[2]
+    status = "firing" if now_down == 1 and prev_down != 1 else "resolved" if prev_down == 1 and now_down == 0 else None
+    if not status:
+        return None, None
+    changed = max((e[1] for e in seen if e[2] != now_down), default=float("-inf"))
+    return status, min(e[1] for e in seen if e[1] > changed)
+
+
+def poll_runs(events, n, back=POLL_BACK):
+    return [poll_ref(events, 60 * k, back) for k in range(1, n + 1)]
+
+
+def ev(t, down, delay=2):   # Telegraf の時刻 t のポーリング 1 回（delay 秒後に索引に入る）
+    return (t + delay, t, down)
+
+
+check("ポーリングの遷移: 参照実装が表のとおり（前の値は今の 1 分より前に入った最後のもの、今の 1 分に値が無ければ出さない）",
+      all(poll_ref(([(10, 10, pd)] if pd is not None else []) + ([(70, 70, nd)] if nd is not None else []), 120)[0] == want
+          for (pd, nd), want in POLL_TABLE.items()))
+_pw = next(x for x in pipes["netops_poll"] if x.startswith("where arrived"))[len("where "):]
+_py = re.sub(r"isnull\((\w+)\)", r"(\1 is None)", re.sub(r"isnotnull\((\w+)\)", r"(\1 is not None)", _pw)).replace(" AND ", " and ").replace(" OR ", " or ")
+
+
+def poll_spl(prev_down, now):
+    """SPL の where と status を同じ値で評価する。今が null（今の 1 分に値が無い）なら arrived = 0 で、now_down は前の値（前も無ければ 0 と 1 の両方）"""
+    outs = set()
+    for now_down in ([now] if now is not None else [prev_down] if prev_down is not None else [0, 1]):
+        ok = eval(_py, {}, {"arrived": int(now is not None), "prev_down": prev_down, "now_down": now_down})
+        outs.add(("firing" if now_down == 1 else "resolved") if ok else None)
+    return outs
+
+
+check("ポーリングの遷移: SPL の where（と status=if(now_down==1, …)）が表と同じ組み合わせで出す",
+      _pw == "arrived==1 AND ((isnull(prev_down) AND now_down==1) OR (isnotnull(prev_down) AND prev_down!=now_down))"
+      and all(poll_spl(pd, nd) == {want} for (pd, nd), want in POLL_TABLE.items()))
+check("ポーリングの遷移: 参照実装の前の長さは SPL の窓（-11m@m-10s から今の 1 分を除いた 10 分）", POLL_BACK == 600)
+check("ポーリング: 前の 1 分が空（Spark のバッチが境界の前後に揺れた）でも、down が続いている IF の firing を出し直さない",
+      poll_runs([ev(10, 0), ev(70, 1), ev(80, 1), ev(190, 1), ev(250, 1)], 5) == [(None, None), ("firing", 70), (None, None), (None, None), (None, None)])
+check("ポーリング: 前の 1 分が空のあいだに up に戻った IF も resolved を出す（starts_at は up に戻った時刻）",
+      poll_runs([ev(10, 0), ev(70, 1), ev(190, 0), ev(250, 0)], 5) == [(None, None), ("firing", 70), (None, None), ("resolved", 190), (None, None)])
+check("ポーリング: 直前の 1 分だけと比べる形（前の長さ 60 秒）だと、上の 2 つで firing の出し直しと resolved の取りこぼしが起きる（この検査で見分けられる）",
+      poll_runs([ev(10, 0), ev(70, 1), ev(190, 1)], 4, back=60)[3] == ("firing", 190)
+      and poll_runs([ev(10, 0), ev(70, 1), ev(190, 0)], 4, back=60)[3] == (None, None))
+check("ポーリング: starts_at は down になった時刻（1 分に何回 down を読んでも、最初の down。直前に up があればそのあと）",
+      poll_runs([ev(10, 0), ev(65, 0), ev(75, 1), ev(85, 1), ev(95, 1)], 2)[1] == ("firing", 75)
+      and poll_runs([ev(5, 1), ev(15, 1)], 1)[0] == ("firing", 5))
+check("ポーリング: 送り直しの重複（前に入った古い down がもう一度入る）で、up に戻った IF を down にしない",
+      poll_runs([ev(10, 1), ev(70, 0), (130, 10, 1)], 3) == [("firing", 10), ("resolved", 70), (None, None)])
+check("ポーリング: 10 分を超えて値が途切れたあとも down が続いていれば、新しい発生として出し直す（限界。starts_at は途切れたあとの最初の値）",
+      poll_runs([ev(10, 1), ev(70, 1), ev(790, 1)], 14)[13] == ("firing", 790)
+      and poll_runs([ev(10, 1), ev(70, 1), ev(670, 1)], 12)[11] == (None, None))
 SKIP_IF = re.search(r'NOT match\(target, "([^"]+)"\)', p).group(1)
 check("ポーリング: 見ない IF は Grafana の link_down と同じ（ループバック・管理ポート・サブインタフェース）",
       [n for n in ("lo0", "mgmt0", "ethernet-1/1.0", "ethernet-1/1", "ethernet-1/49", "irb0") if not re.search(SKIP_IF, n)] == ["ethernet-1/1", "ethernet-1/49", "irb0"]
