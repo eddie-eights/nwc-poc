@@ -53,3 +53,11 @@
 - Spark は 3.5 系。GDS の jar はイメージに焼き込む。
 - 頂点の id はプロパティ `id` と一意制約で持つ。
 - 接頭辞は `<owner>-nwc-oss`。
+
+## 2026-10-05 Kafka の監視の画面に Kafbat UI を足す
+
+- ユーザーの決定: 「oss の kafka では監視ツールの kafbat を入れたい」。
+- 公式で確かめたこと（2026-10-05）: ライセンスは Apache 2.0。イメージは `ghcr.io/kafbat/kafka-ui`、ポートは 8080。`KAFKA_CLUSTERS_0_READONLY`（既定 false）、`GITHUB_RELEASE_INFO_ENABLED`（既定 true。GitHub の API へ新しい版を見にいく）、`AUTH_TYPE=LOGIN_FORM` と `SPRING_SECURITY_USER_NAME` / `SPRING_SECURITY_USER_PASSWORD`。
+- 設計の役が決めたこと（異論があれば変える）: 1 タスク、見るだけ、ログインあり、GitHub への確認は止める、開き方は Grafana と同じポートフォワード、置き場は `oss/terraform/pipeline/stream/`。
+- 未確認: 版、ARM64 のイメージ、KRaft の表示、`AUTH_TYPE` を書かないときの動き、タスクの大きさ。手元の compose で確かめる。
+- やらないこと: JMX のメトリクスを VictoriaMetrics に入れて Grafana でグラフとアラートにする（Kafbat UI は時系列とアラートを持たない）。

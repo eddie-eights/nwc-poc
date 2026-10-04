@@ -44,6 +44,7 @@ main(fable-5.1) / effort: high
 flowchart LR
   T["Telegraf"] -->|"9092"| K["Kafka<br/>3 台（KRaft）"]
   K --> S["Spark<br/>格納先ごとに 1 タスク"]
+  KU["Kafbat UI<br/>Kafka の監視の画面"] -->|"9092"| K
   S --> I["S3 Tables<br/>（変えない）"]
   S -->|"_bulk 9200"| O["OpenSearch<br/>データ 2 台 + まとめ役 1 台"]
   S -->|"remote write 8480"| VI["vminsert"]
@@ -60,6 +61,7 @@ flowchart LR
 | サービス | タスクの数 | image（ECR に写す） | ポート | Cloud Map の名前 |
 |---|---|---|---|---|
 | Kafka | 3（AZ ごとに 1） | `apache/kafka:4.3.1` | 9092（クライアント）、9093（controller） | `kafka-1`、`kafka-2`、`kafka-3` |
+| Kafbat UI | 1 | `ghcr.io/kafbat/kafka-ui`（版は実装のときに固定する） | 8080 | `kafka-ui` |
 | Spark | 格納先の数（いまのジョブと同じ分け方） | `apache/spark:3.5.9` に jar とスクリプトを足して自前でビルド | なし | なし |
 | OpenSearch | 3（AZ ごとに 1）。データ 2、まとめ役だけ 1 | `opensearchproject/opensearch:3.9.0` | 9200、9300（ノード間） | `opensearch-1`、`opensearch-2`（データ）、`opensearch-cm`（まとめ役）と、データの 2 台をまとめた `opensearch` |
 | vminsert | 1 | `victoriametrics/vminsert:v1.153.0-cluster` | 8480 | `vminsert` |
@@ -69,6 +71,14 @@ flowchart LR
 
 - **台ごとに ECS のサービスを分ける（Kafka、OpenSearch、vmstorage）。**
   どの台も「自分の番号」と「自分の EFS のアクセスポイント」を持つ。1 つのサービスで 3 タスクにすると、番号と置き場をタスクごとに固定できない。
+- **Kafka の監視の画面に Kafbat UI を置く（2026-10-05 のユーザーの決定）。**
+  ブローカー、トピック、メッセージの中身、コンシューマーの遅れ（lag）を画面で見る。ライセンスは Apache 2.0（公式のリポジトリで確認）。MSK のコンソールと CloudWatch の代わりになる。
+  - 1 タスク。状態を持たないので EFS は要らない。Kafka は PLAINTEXT なので、渡すのは `KAFKA_CLUSTERS_0_NAME` と `KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS`（3 台の `kafka-N:9092`）だけ。
+  - 見るだけにする（`KAFKA_CLUSTERS_0_READONLY=true`）。トピックを作るのは up.sh とコードで、画面からは変えない（設計の役の判断）。
+  - ログインを付ける（`AUTH_TYPE=LOGIN_FORM`）。パスワードは Grafana と同じく `oss/ops/up.sh` が SSM の SecureString に作る。
+  - 閉域なので、GitHub へ新しい版を見にいく動きを止める（`GITHUB_RELEASE_INFO_ENABLED=false`。既定は true）。
+  - 開き方は Grafana と同じで、Web の EC2 を踏み台にした SSM のポートフォワード（8080）。LB は置かない。
+  - 時系列のグラフとアラートは持たない。それが要るなら、Kafka の JMX のメトリクスを VictoriaMetrics に入れて Grafana で見る（このサイクルではやらない）。
 - **OpenSearch は、データ 2 台とまとめ役 1 台に分ける（2026-10-04 のユーザーの決定）。**
   レプリカ 1 なら、データを持つ台は 2 台で足りる。まとめ役の選挙には過半数の票が要り、2 台では 1 台止まると選べない。3 台目は票のためだけに置くので、データを持たない小さいタスクにする（EFS も要らない）。データの台が 1 台止まっているあいだは、複製が無い。
 - **3 台のものは AZ をまたいで置く。**
@@ -169,18 +179,19 @@ oss/
 | GDS の結果が、Neptune の `neptune.algo.*` の結果と同じ並びになる | 同じトポロジで比べる（数値は一致しなくてよい。順位と島の数を見る） |
 | `apache/spark:3.5.9` に iceberg-spark-runtime と s3-tables-catalog を足せば、S3 Tables に書ける | 手元からは AWS の認証が要る。AWS での確認に回す |
 | `apache/kafka` のイメージで、3 台の combined が環境変数だけで組める | 手元で 3 台を起こし、1 台を止めて読み書きする |
+| Kafbat UI が KRaft の 3 台を表示でき、ARM64 のイメージがあり、`AUTH_TYPE` を書かないと誰でも開ける | 手元の compose に足して、3 台とトピックと lag が見えることを確かめる。イメージの manifest を見る |
 | VictoriaMetrics が、時刻が前後したサンプル（Spark は ts で並べ替えて送っている）を受ける | 手元で古い時刻のサンプルを送る |
 
 ## 変更対象ファイル
 
 | ファイル | 変更 |
 |---|---|
-| `oss/terraform/pipeline/stream/` | Kafka の 3 サービス、タスク定義、Cloud Map、EFS のアクセスポイント。Telegraf はいまと同じ |
+| `oss/terraform/pipeline/stream/` | Kafka の 3 サービス、タスク定義、Cloud Map、EFS のアクセスポイント。Kafbat UI のサービス（1 タスク、Cloud Map `kafka-ui`）。Telegraf はいまと同じ |
 | `oss/terraform/pipeline/analytics/` | EFS（ファイルシステム、3 つの AZ のマウントターゲット）、OpenSearch の 3 サービス（データ 2、まとめ役 1）、VictoriaMetrics の 5 サービス、Spark のサービス、Grafana（データソースが違う）、Splunk（いまと同じ） |
 | `oss/terraform/pipeline/graph/` | Neo4j のサービス。status の Lambda はいまと同じコードで、環境変数が違う |
 | `oss/terraform/` のほかのルート | `terraform/` の同じファイルへのシンボリックリンク |
 | `terraform/` の各ルートの `locals.tf`、`variables.tf` | 接頭辞の末尾を変数にする（既定は `nwc-poc`）。Neptune、MSK、AMP の output を読む箇所を「あるほうを使う」にする |
-| `terraform/base/core/security_groups.tf` | Kafka、OpenSearch、VictoriaMetrics、Neo4j、EFS（2049）の SG と通信の表 |
+| `terraform/base/core/security_groups.tf` | Kafka、OpenSearch、VictoriaMetrics、Neo4j、EFS（2049）の SG と通信の表。Kafbat UI の SG（Web の EC2 → 8080、Kafbat UI → Kafka の 9092） |
 | `terraform/base/ecr/` | 写す image と自前でビルドする image のリポジトリ |
 | `oss/ops/up.sh`、`oss/ops/down.sh` | OSS 版の作る・消す。image を写す、`CLUSTER_ID` とパスワードの SSM、サービスが HEALTHY になるのを待つ、Neo4j への同期 |
 | `spark/snmp_sinks.py`、`agent/evidence.py`、`agent/graph.py`、`workflow/awsio.py`、`graph/status_handler.py` | 上の「アプリのコードの切り替え」 |
@@ -214,7 +225,7 @@ oss/
 
 ### 手元のコンテナ（実装者が実行する）
 
-1. Kafka 3 台: トピックを複製数 3 で作り、1 台を止めても、書いた 1000 件が全部読める。
+1. Kafka 3 台: トピックを複製数 3 で作り、1 台を止めても、書いた 1000 件が全部読める。Kafbat UI にブローカー 3 台、トピック、コンシューマーの lag が出て、1 台を止めるとブローカーが 2 台に見える。画面からトピックを作れない（見るだけ）。
 2. OpenSearch 3 台: `_cluster/health` が `green`、ノード数 3。データの台を 1 台止めると `yellow` になり、入れた 1000 件が全部検索できる。まとめ役だけの台を止めても `green` のまま検索できる。
 3. VictoriaMetrics: vmstorage を 1 台止めても、入れた系列が全部読め、結果に `"isPartial":false` が返る。
 4. Neo4j: `seed_graph.py` と同じトポロジを入れ、`centrality` が degree、closeness、component を返す。島の数は 1。
@@ -234,13 +245,13 @@ oss/
 2. lab のメトリクスが Grafana に出る。trap が OpenSearch に入る。S3 Tables に行が増える。
 3. lab でリンクを落とすと、アラートが出て、Neo4j の status が変わり、Web のトポロジに出る。
 4. エージェントのツール `centrality`、`search_logs`、`query_metrics` が答えを返す。
-5. Kafka、OpenSearch、vmstorage のタスクを 1 つずつ止めても、2 と 3 が続く。
+5. Kafka、OpenSearch、vmstorage のタスクを 1 つずつ止めても、2 と 3 が続く。Kafbat UI をポートフォワードで開くと、5 つのトピックと Spark のコンシューマーの lag が見える。
 6. Neo4j のタスクを止めると 3 が止まり、起こし直して同期をかけると戻る（注意書きのとおりになること）。
 7. `oss/ops/down.sh` のあと、接頭辞 `<owner>-nwc-oss` のリソースが残っていない。確認が終わったらすぐ消す。
 
 ## 費用
 
-- Fargate のタスクが、置き換えの分だけで 13 個（Kafka 3、OpenSearch 3、VictoriaMetrics 5、Neo4j 1、Spark は格納先の数）増える。
+- Fargate のタスクが、置き換えの分だけで 13 個（Kafka 3、OpenSearch 3、VictoriaMetrics 5、Neo4j 1、Spark は格納先の数）増える。Kafbat UI でもう 1 個増える。
 - マネージド版と並べて立てると、VPC エンドポイント、lab、Nautobot、Web なども 2 つ分になる。
 - EFS は Standard で $0.36 / GB 月。PoC のデータ量では小さい。
 - 時間あたりの合計は、タスクの大きさ（vCPU とメモリ）を手元の確認で決めてから出す。マネージド版（MSK、EMR、AMP、OpenSearch Serverless、Neptune Analytics）の時間課金との比べは、このサイクルの成果物として `docs/oss-variant.md` に書く。
@@ -267,5 +278,7 @@ oss/
    3 台のものは 3 つの AZ を前提にしている。`feat/az-num` が main に入っていることが要る。
 10. **並べて立てたときの上限。**
     VPC、エンドポイント、Fargate の vCPU の上限に当たるかもしれない。AWS での確認の前に Service Quotas を見る。
+11. **Kafbat UI のイメージは GitHub のレジストリ（ghcr.io）にある。**
+    閉域では引けないので、ほかの image と同じく ECR に写す。版、ARM64 の有無、タスクの大きさ（Java。0.5 vCPU / 1 GB を見込む）は未確認で、手元で確かめて決める。
 
 <!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261004-cycle-005-oss-on-ecs-design.html -->
