@@ -1568,21 +1568,33 @@ Fargate をやめて、ECS の EC2（または EC2 そのもの）にボリュ�
 
 使える。ただし「Prometheus と Neo4j は EFS に置けない」という制約は、EKS にしても変わらない。制約の原因は ECS ではなく、EFS が NFS であることだから。
 
-以下は記憶にもとづく内容で、2026-10-04 の時点で公式ドキュメントでは確かめていない。
+2026-10-04 に AWS の公式ドキュメントで確かめた（出典は末尾）。
 
-**EKS での使い方**
+**EKS での置き場**
 
-| 置き場 | 仕組み | 使えるノード |
+| 置き場 | EC2 のノード | Fargate の Pod |
 |---|---|---|
-| EFS | EFS CSI ドライバーを入れ、PersistentVolume として Pod にマウントする。複数の Pod から同時に読み書きできる | EC2 のノードと Fargate |
-| EBS | EBS CSI ドライバーを入れ、StatefulSet の Pod ごとに 1 つずつボリュームを付ける。Pod が入れ替わっても同じボリュームが付き直す | EC2 のノードだけ（Fargate では使えない） |
+| EFS | 使える。EFS CSI ドライバーを入れる | 使える。ドライバーを入れなくても自動でマウントされる。ただし先に作っておいたボリュームだけ（静的プロビジョニング）。動的には作れない |
+| EBS | 使える。EBS CSI ドライバーを入れる（EKS Auto Mode なら入れなくてよい） | 使えない（「You can’t mount Amazon EBS volumes to Fargate Pods」） |
 
 **ECS と比べて変わること**
 
-- EFS は、ECS でも EKS でも同じように使える。向き不向きも同じ（共有するファイルには向く。データベースには向かない）。
-- EBS は、EKS のほうが扱いやすい。StatefulSet が「Pod とボリュームの組」を覚えているので、Pod が入れ替わってもデータが残る。ECS の Fargate では、ボリュームがタスクと一緒に消える。
-- そのかわり EKS は、EC2 のノードとクラスター本体（コントロールプレーンに時間あたりの料金）が要る。
+| | ECS | EKS |
+|---|---|---|
+| EFS | Fargate でも EC2 でも使える | Fargate でも EC2 でも使える |
+| EBS を Fargate で | 使えるが、サービスのタスクに付けたボリュームはタスクが終わると必ず消える。既存のボリュームは付けられない（スナップショットから新しく作ることはできる） | 使えない |
+| EBS を EC2 で残す | EC2 にボリュームを付けたままにする | PersistentVolume として Pod に付く。Pod が入れ替わっても同じボリュームが付き直す（Kubernetes の StatefulSet の動き。AWS のページでは確かめていない） |
+| 本体の料金 | なし | 1 クラスターあたり $0.10/h（標準サポートの版） |
+| Fargate で Arm | 使える（このリポジトリは ARM64） | 使えない |
 
 **このプロジェクトでは**
 
-OSS 版（005）は ECS で作ると決めている。Prometheus と Neo4j を EBS で残したいなら、EKS に替えるより、その 2 つだけ ECS の EC2 に載せるほうが変更が小さい。
+OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate のままでは EBS を使えないので、Prometheus と Neo4j のために EC2 のノードが要る点は同じ。それなら EKS に替えるより、その 2 つだけ ECS の EC2 に載せるほうが変更が小さい。
+
+**出典**
+
+- https://docs.aws.amazon.com/eks/latest/userguide/efs-csi.html
+- https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html
+- https://docs.aws.amazon.com/eks/latest/userguide/fargate.html
+- https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ebs-volumes.html
+- https://aws.amazon.com/eks/pricing/
