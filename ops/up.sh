@@ -395,6 +395,10 @@ fi
 if [ -n "$PIPELINE" ]; then
   if [ -n "$SKIP_LAB" ] && [ -z "$SKIP_STREAM" ]; then
     echo "SKIP_LAB=1 なので lab は作らない。stream の Telegraf の取りにいく側は lab の定義の機器を探しに行き、届かないので gNMI / SNMP のエラーをログに出して繋ぎ直し続ける（タスクは落ちない）。受ける側（trap / syslog / MDT）は送り手がいなければ何も来ない"
+    # trap と syslog を NLB へ送れるのは lab の管理ネットワーク（lab の EC2 の DNAT）だけ、MDT は MDT_SOURCE_CIDRS だけ（terraform/base/core の security_groups.tf）
+    if [ -z "${MDT_SOURCE_CIDRS:-}" ]; then
+      printf '\033[1;33m%s\033[0m\n' "注意: lab が無く MDT_SOURCE_CIDRS も空なので、この stream には何も届かない（trap と syslog は lab の EC2 からしか来ず、MDT を送ってよい機器も無い）。届けるなら SKIP_LAB を外すか、MDT_SOURCE_CIDRS に機器の CIDR を書く"
+    fi
   fi
   if [ -n "$SKIP_STREAM" ] && [ -z "$SKIP_ANALYTICS" ]; then
     echo "SKIP_STREAM=1 なので analytics も作らない（読む Kafka が無い）"

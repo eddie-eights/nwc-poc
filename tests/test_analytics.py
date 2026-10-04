@@ -1317,6 +1317,10 @@ check("up.sh は PIPELINE=1 で SKIP_LAB=1 だけなら止まらず、lab 以外
 check("up.sh は SKIP_LAB=1 でも stream を作らないなら lab の注意を出さず、lab を作るときも出さない",
       "lab は作らない" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1") and "lab は作らない" not in _skip(PIPELINE="1")
       and _skip(PIPELINE="1") == "OUT: L=0 S=0 A=0 G=0")
+check("up.sh は lab が無く MDT_SOURCE_CIDRS も空で stream を作るなら「この stream には何も届かない」と注意を出して続ける",
+      "この stream には何も届かない" in _skip(PIPELINE="1", SKIP_LAB="1") and _skip(PIPELINE="1", SKIP_LAB="1").endswith("OUT: L=1 S=0 A=0 G=0")
+      and "何も届かない" not in _skip(PIPELINE="1", SKIP_LAB="1", MDT_SOURCE_CIDRS="10.10.0.0/16")
+      and "何も届かない" not in _skip(PIPELINE="1", MDT_SOURCE_CIDRS="") and "何も届かない" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1"))
 check("up.sh の「土台だけになる」は SKIP_LAB と SKIP_STREAM と SKIP_GRAPH が全部あるときだけ（lab と graph だけ外しても stream は作る）",
       "土台だけになる" in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1", SKIP_GRAPH="1")
       and _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1", SKIP_GRAPH="1").endswith("OUT: L=1 S=1 A=1 G=1")
