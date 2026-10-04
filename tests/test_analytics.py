@@ -1528,9 +1528,32 @@ _envx_st = _envx[_envx.index("# analytics の格納先を 3 つのまとまり�
 check("deploy.env.example は STORES を既定の s3,grafana,splunk で書き、その前にまとまりごとの中身・外すと無くなるもの・費用と、外すとデータごと消えることを書く",
       re.search(r"^#STORES=s3,grafana,splunk$", _envx, re.M) is not None and _envx.count("#STORES=") == 1
       and all(re.search(rf"^#   {g} +全トピック|^#   {g} +traps と logs", _envx_st, re.M) for g in ("s3", "grafana", "splunk"))
-      and all(k in _envx_st for k in ("**既定は s3,grafana,splunk = 3 つとも**", "+$0.21/h", "約 +$0.62/h", "約 +$0.34/h", "データごと消える",
+      and all(k in _envx_st for k in ("**既定は s3,grafana,splunk = 3 つとも**", "+$0.21/h", "約 +$0.60/h", "約 +$0.34/h", "データごと消える",
                                       "SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK / GRAFANA は 2026-10-04 になくした"))
-      and _envx_st.count("#            外すと") == 3)
+      and _envx_st.count("#            外すと") == 3
+      and "OpenSearch Serverless の $0.01 と、aps-workspaces と sns の $0.014 ずつ" in _envx_st)
+# deploy.env.example の PIPELINE=1 の金額を、up.sh のエンドポイントの選び方と費用の目安を切り出して出した値と比べる（*_AZ_NUM は既定。
+# OpenSearch Serverless の VPC エンドポイントは 2026-10-04 から ENDPOINTS_AZ_NUM に従うので、既定の 1 AZ で $0.01）
+_fullcost = up[up.index("# ここを変えたら README"):up.index("COST_NOTE=$(")]
+def _pipeline_cents(stores="s3,grafana,splunk", skip=()):
+    sk = set(skip) | ({"analytics"} if "stream" in skip else set())   # stream を作らなければ analytics も作らない
+    st = set(stores.split(","))
+    an = "analytics" not in sk
+    roots = "base/ecr base/core " + " ".join(f"pipeline/{r}" for r in ("lab", "stream", "analytics", "graph") if r not in sk) + " pipeline/nautobot"
+    env = {"PATH": os.environ["PATH"], "PIPELINE": "1", "NAUTOBOT": "1", "SNMP_POLL": "1",
+           **{f"SKIP_{r.upper()}": "1" if r in sk else "" for r in ("lab", "stream", "analytics", "graph")},
+           "SINK_S3": "1" if "s3" in st else "", "SINK_OPENSEARCH": "1" if "grafana" in st else "", "SINK_PROMETHEUS": "1" if "grafana" in st else "",
+           "SINK_SPLUNK": "1" if "splunk" in st else "", "GRAFANA": "1" if an and "grafana" in st else "", "SPLUNK_ON_ECS": "1" if an and "splunk" in st else "",
+           "ENDPOINTS_AZ_NUM": "1", "MSK_AZ_NUM": "2", "TELEGRAF_AZ_NUM": "1", "NEPTUNE_AZ_NUM": "1", "OPENSEARCH_AZ_NUM": "1", "NAUTOBOT_DB_AZ_NUM": "1"}
+    r = subprocess.run(["bash", "-c", f'ROOTS="{roots}"\n' + _epblk + _fullcost + 'echo "OUT: $COST_CENTS"'], capture_output=True, text=True, env=env)
+    return int(r.stdout.split("OUT: ")[1]) if "OUT: " in r.stdout else r.stderr
+_usd = lambda c: f"${c // 100}.{c % 100:02d}/h"
+_pc = _pipeline_cents()
+check("deploy.env.example の PIPELINE=1 の金額（既定の STORES / STORES=s3 / SKIP_STREAM / SKIP_ANALYTICS で下がる分）が up.sh の費用の目安と同じ",
+      isinstance(_pc, int)
+      and f"約 {_usd(_pc)}（STORES が既定の s3,grafana,splunk のとき。STORES=s3 なら約 {_usd(_pipeline_cents('s3'))}" in _envx
+      and re.search(rf"^#SKIP_STREAM=1 .*約 {re.escape(_usd(_pc - _pipeline_cents(skip=('stream',))))} 下がる（STORES が既定のとき）", _envx, re.M) is not None
+      and re.search(rf"^#SKIP_ANALYTICS=1 .*約 {re.escape(_usd(_pc - _pipeline_cents(skip=('analytics',))))} 下がる（STORES が既定のとき）", _envx, re.M) is not None)
 check("deploy.env.example に SINK_* / GRAFANA のキーの行は無い。SPLUNK_INDEX は STORES のあとに空で書く。SPLUNK_HEC_URL / SPLUNK_SKIP_TLS_VERIFY も書かない（2026-09-28 にやめた）",
       re.search(r"^#?\s*(SINK_[A-Z0-9]+|GRAFANA|SINKS)=", _envx, re.M) is None
       and re.search(r"^#SPLUNK_INDEX=$", _envx, re.M) is not None and _envx.index("#STORES=s3,grafana,splunk") < _envx.index("#SPLUNK_INDEX=")
