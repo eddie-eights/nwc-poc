@@ -736,6 +736,62 @@ Lambda から書く経路は 2 案あった。
 
 構成図は [architecture/pipeline.md](architecture/pipeline.md)。
 
+### Q. Spark のジョブ、driver、executor、クエリ、タスクは、役割がどう違う？
+
+**A. ジョブは「起こして止める単位」、driver は「段取りを決める 1 つのプロセス」、executor は「実際に手を動かすプロセス」、クエリは「格納先 1 つ分の、止まらずに回り続ける処理」、タスクは「パーティション 1 つ分の作業」。** 外側から順に入れ子になっている。
+
+```mermaid
+flowchart TB
+  subgraph APP["アプリケーション（EMR Serverless。ジョブの入れ物。vCPU の上限を持つ）"]
+    subgraph JOB["ジョブ（スクリプト 1 回の実行。起こす、止める、課金の単位）"]
+      subgraph DRV["driver（1 つ）"]
+        Q1["クエリ: iceberg"]
+        Q2["クエリ: prometheus"]
+        Q3["クエリ: opensearch"]
+      end
+      subgraph E1["executor 1"]
+        T1["タスク: パーティション 0"]
+      end
+      subgraph E2["executor 2"]
+        T2["タスク: パーティション 1"]
+      end
+      DRV -- "60 秒ごとにタスクを配る" --> E1
+      DRV -- "60 秒ごとにタスクを配る" --> E2
+    end
+  end
+```
+
+| 言葉 | 何か | 数を決めるもの | この PoC では |
+|---|---|---|---|
+| アプリケーション | EMR Serverless の入れ物。ジョブを動かす場所で、使える vCPU とメモリの上限を持つ | Terraform で 1 つ作る | 1 つ。上限は `max_cpu` / `max_memory` |
+| ジョブ | スクリプト（`spark/snmp_sinks.py`）を 1 回起こしたもの。driver 1 つと executor いくつかの組。起こす、止める、課金の単位 | `ops/up.sh` が起こす数 | 1 つ（格納先で 3 つに分ける予定） |
+| driver | ジョブに 1 つだけあるプロセス。スクリプトの本体がここで動く。Kafka のどこからどこまでを読むかを決め、タスクに割って executor に配り、checkpoint に進み具合を書く | 必ず 1 つ | 1 コア、2g |
+| executor | driver から配られたタスクを実行するプロセス。Kafka から実際に読み、変換し、書く | `spark.executor.instances` | 2 つ、それぞれ 1 コア |
+| クエリ（streaming query） | 「このトピックを読み、この格納先に書く」を止まらずに繰り返す処理。driver の中で動き、自分の Kafka の購読と checkpoint を持つ | スクリプトが `--sinks` の数だけ作る | 格納先ごとに 1 つ（3 つ。Splunk を入れると 4 つ） |
+| マイクロバッチ | クエリが 1 回の周期で処理する分。「前回の続きから、いまの最新まで」 | トリガーの間隔 | 60 秒ごと |
+| タスク | マイクロバッチを、パーティションごとに割った 1 つ分の作業。executor のコア 1 つが、タスク 1 つを実行する | Kafka のパーティションの数 | 1 回のバッチで、クエリごとに「トピックの数 × 2」 |
+
+**1 回のバッチの流れ（クエリ 1 つ分）**
+
+1. driver が Kafka に「いまの最新はどこか」を聞き、前回の続きからそこまでを、このバッチの範囲に決める。
+2. driver が範囲をパーティションごとのタスクに割り、executor に配る。
+3. executor がタスクを実行する（Kafka から読む、変換する）。
+4. 書く。S3 Tables は executor がそのまま書く。HTTP の格納先は、行を driver に集めて driver が送る（`HTTP_SEND=executor` にすると executor が送る）。
+5. driver が「ここまで済んだ」を checkpoint に書く。
+
+**よく混ざるところ**
+
+| 混ざる言葉 | 違い |
+|---|---|
+| ジョブとクエリ | ジョブはプロセスの組（起こす単位）。クエリはその中で回る処理。1 つのジョブに複数のクエリが同居でき、executor を分け合う。クエリが 1 つ止まると、この PoC のスクリプトはジョブごと終わる |
+| driver と executor | driver は配る側で、データそのものは基本的に触らない（`collect()` で集めたときだけ触る）。executor は触る側 |
+| executor とタスク | executor は働き手、タスクは仕事。executor 2 つ × 1 コアなら、同時に走るタスクは 2 つ。タスクが 10 あれば、2 つずつ順に片付く |
+| EMR の「ジョブ」と Spark の画面の「job」 | この FAQ の「ジョブ」は EMR Serverless の job run（スクリプト 1 回の実行）。Spark の画面（Spark UI）に出る「job」は別物で、1 回のバッチの中の処理のまとまりを指す。Spark UI では job → stage → task と細かくなる |
+
+**分散して読んでいるかの確かめ方**
+
+Spark UI（EMR Serverless のコンソールから開ける）の Executors の画面で、executor 1 と 2 の両方に「完了したタスク」の数が増えていけば、分かれて読んでいる（AWS では未確認）。
+
 ### Q. Spark のジョブは 1 つで、Kafka の購読も 1 つ？
 
 **A. ジョブは 1 つ。Kafka の購読は 1 つではなく、格納先ごとに 1 つずつ（最大 4 つ）。** `spark/snmp_sinks.py` の `build` が、格納先ごとに別のストリーミングクエリを起こしている。
