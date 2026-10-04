@@ -73,7 +73,7 @@ stateDiagram-v2
 ## 試す
 
 1. lab に入り（[pipeline.md](pipeline.md) の「lab に入る」）、`sudo lab fail-main` でアクセス側 Leaf の fabric（`dc1-leaf-01 ethernet-1/1`）を落とす。
-2. 1〜2 分で `link_down` のアラートが出て（`SNMP_POLL=1` なら Grafana の Alerting → Alert rules で Firing、`SINK_SPLUNK=1` なら Splunk の linkDown の trap から。Web の「トポロジ」タブではその回線が `DOWN` になる）、数十秒で「承認」タブに修復案（原因・打つコマンド・理由）が `pending` で並ぶ。
+2. 1〜2 分で `link_down` のアラートが出て（Grafana は Alerting → Alert rules で Firing。Splunk は linkDown の trap とポーリングから出す。どちらも既定で動く。Web の「トポロジ」タブではその回線が `DOWN` になる）、数十秒で「承認」タブに修復案（原因・打つコマンド・理由）が `pending` で並ぶ。
 3. 下の詳細（原因・コマンド・事前チェック・理由）を読み、名前を入れて「詳細を読んだ」にチェックを入れてから「承認して直す」を押すと `approved` → `applied` → `verified` / `failed` と進む（`verified` は、直ったあとの解消の通知が届いてから。1〜2 分）。名前は「決めた人」の列に `<名前> (web)` で残る（Web には認証が無いので、名乗ってもらう）。
 
 ## Temporal UI を開く
