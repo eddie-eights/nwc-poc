@@ -199,7 +199,7 @@ terraform -chdir=terraform/pipeline/analytics output -raw splunk_password_comman
 - 3 本とも毎分動き、「索引に入った時刻」で直前の 1 分を 1 回だけ読む（`_index_earliest` / `_index_latest`。イベントの時刻で切ると、Spark のマイクロバッチで遅れて届いた分を取りこぼす）。スケジューラが遅れても飛ばさない（`realtime_schedule = 0`）。
 - 項目は `fields` で `_raw` だけにしてから `spath` で取る。`props.conf` の `KV_MODE = json` と重ねると全部の項目が同じ値 2 つの多値になり、1 行も出なくなる（10.4.3 で実測）。
 - gNMI と trap のイベントは機器名でなく IP を持つので、アラートアクションがタスクの環境変数 `DEVICE_MAP`（`ops/up.sh` が `lab/lab_topology.py --device-map` で作る）で機器名に直す。直せなかった IP はそのまま `device_id` になり、Neptune では「未登録」の頂点になる。
-- アラートアクションは標準ライブラリだけで SigV4 に署名する（Splunk の Python に boto3 は無く、VPC から PyPI へも出られない）。認証情報は ECS のタスクロール。1 通に 50 件まで、失敗は 3 回まで試す。
+- アラートアクションは標準ライブラリだけで SigV4 に署名する（書いた当時は Splunk の Python に boto3 が無いと思い込んでいた。実際は入っているので、Splunk が持っている boto3 を使う形に替える。実装はこれから）。認証情報は ECS のタスクロール。1 通に 50 件まで、失敗は 3 回まで試す。
 - splunkd はコンテナの環境変数を子プロセスに引き継がないので、`splunk/entrypoint.sh` が要る値（リージョン、トピックの ARN、`DEVICE_MAP`、認証情報の取り出し口の URI）を `/opt/container_artifact/nwc-alerts.env` に写す（鍵そのものは書かない）。
 - Splunkbase の Splunk Add-on for AWS は使っていない。配布物を公開リポジトリに置けず、VPC から Splunkbase へも出られないため。
 - 確かめる（Splunk の画面の検索）:
