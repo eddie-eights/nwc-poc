@@ -1819,8 +1819,8 @@ Community Edition にクラスターが無いことは、2026-10-04 に Neo4j �
 **このプロジェクトでは**
 
 - マネージド版の MSK は Provisioned で IAM 認証なので、条件に合うはず（コンソールで開いたことは無い。未確認）。
-- OSS 版（「マネージドを OSS に置き換えた環境を作る（005）」）には Kafbat UI を置く。マネージド版には置かない（比べる対象なので、MSK はコンソールと CloudWatch で見る）。
-- マネージド版にも Kafbat UI を置きたくなったら、`SASL_SSL` と `AWS_MSK_IAM` の設定と、タスクロールへの `kafka-cluster:*` の権限が要る。
+- OSS 版（「マネージドを OSS に置き換えた環境を作る（005）」）には Kafbat UI を置く。
+- マネージド版の MSK にも Kafbat UI を置く（2026-10-05 のユーザーの決定。実装中）。`SASL_SSL` と `AWS_MSK_IAM` の設定と、タスクロールへの `kafka-cluster:*` の権限で、IAM 認証でつなぐ。
 
 **出典**（2026-10-05 に確認）
 
