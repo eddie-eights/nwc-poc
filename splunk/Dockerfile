@@ -10,6 +10,8 @@ FROM splunk/splunk:${SPLUNK_VERSION}
 
 COPY --chown=splunk:splunk netops_alerts /opt/splunk-etc/apps/netops_alerts
 COPY --chmod=0755 entrypoint.sh /sbin/nwc-entrypoint.sh
+# クラスターの search head のヘルスチェックに足す突き合わせ（peers_check.py の冒頭）
+COPY --chmod=0755 peers_check.py /sbin/nwc-peers-check.py
 
 # ENTRYPOINT を替えると上流の CMD は消えるので書き直す
 ENTRYPOINT ["/sbin/nwc-entrypoint.sh"]
