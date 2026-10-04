@@ -4,7 +4,7 @@
 # Amazon Managed Grafana はサインインに IAM Identity Center か SAML の IdP が要り、このアカウントはどちらも無いので使わない。
 # イメージは grafana/Dockerfile（公式の grafana にデータソースの plugin と provisioning を焼き込んだもの。AWS の外へ出る経路が無いので起動時に plugin を落とせない）。
 # データソースは SigV4（タスクロール）で、Prometheus の API は aps-workspaces、OpenSearch は土台の aoss の VPC エンドポイントを通る。
-# アラート（grafana/provisioning/alerting。Prometheus のメトリクスを見るルール）は SNS のコンタクトポイントから土台のトピック
+# アラート（grafana/provisioning/alerting。Prometheus のメトリクスと OpenSearch の trap を見るルール）は SNS のコンタクトポイントから土台のトピック
 # （terraform/base/core の alerts.tf）へ publish する。これもタスクロールの SigV4 で、sns のエンドポイントを通る。
 # 開き方は output grafana_port_forward_command（web の EC2 を踏み台にした SSM のポートフォワード。PoC 用）。admin のパスワードは
 # ops/up.sh が作る SSM の SecureString（output grafana_password_command）。ダッシュボードは provisioning だけで、UI で変えたものはタスクと一緒に消える
@@ -72,7 +72,7 @@ resource "aws_ecs_task_definition" "grafana" {
         { name = "PROMETHEUS_URL", value = local.grafana_prometheus_url },
         { name = "OPENSEARCH_URL", value = local.opensearch_endpoint },
         { name = "OPENSEARCH_INDEX", value = local.opensearch_index },
-        # アラートの送り先（grafana/start.sh は PROMETHEUS_URL とこれがあるときだけ alerting の provisioning を入れる）
+        # アラートの送り先（grafana/start.sh はこれがあるときだけ alerting の provisioning を入れる。ルールは PROMETHEUS_URL / OPENSEARCH_URL があるほうだけ）
         { name = "ALERTS_TOPIC_ARN", value = local.alerts_topic_arn },
       ]
       secrets = [

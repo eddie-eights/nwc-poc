@@ -23,9 +23,9 @@ ROLES="dialout dialin"
 # inputs.syslog の syslog_standard。形式が違うと best_effort でも項目がきれいに取れない
 SYSLOG_STANDARD=${SYSLOG_STANDARD:-RFC3164}
 SYSLOG_STANDARDS="RFC3164 RFC5424"
-# SNMP のポーリング（inputs.snmp。10 秒ごとに ifTable）。0 = 止める（既定。SNMP は trap だけ受ける）/ 1 = する。
+# SNMP のポーリング（inputs.snmp。10 秒ごとに ifTable）。1 = する（既定）/ 0 = 止める（SNMP は trap だけ受ける）。
 # telegraf.conf.in の「>>> snmp_poll」の区間。stream の snmp_poll（ops/up.sh は deploy.env の SNMP_POLL）が渡す
-SNMP_POLL=${SNMP_POLL:-0}
+SNMP_POLL=${SNMP_POLL:-1}
 # 機器の syslog を受ける UDP のポート（telegraf.conf.in の inputs.syslog と lab/lab.sh の LOG_PORT と同じ）
 LOG_PORT=5140
 # trap を受ける UDP のポート。機器は 162 に送り、NLB が 1162 に向ける（非 root は 1024 未満で待てない）
@@ -37,7 +37,7 @@ render() {
   # ECS のタスク定義の環境変数（terraform/pipeline/stream の telegraf.tf）を埋めて $CONF を作る:
   #   KAFKA_BROKERS  MSK のブローカー（host:9098 をカンマで。IAM 認証の口）。SINK=stdout では要らない
   #   TELEGRAF_ROLE  役割（all / dialout / dialin。既定 all）
-  #   SNMP_POLL      SNMP のポーリングをするか（0 / 1、既定 0 = trap だけ）。stream の snmp_poll
+  #   SNMP_POLL      SNMP のポーリングをするか（1 / 0、既定 1。0 = trap だけ）。stream の snmp_poll
   #   SNMP_AGENTS    ポーリング先（"udp://<IP>:161", ...）。ops/up.sh が lab の定義から作る（lab/lab_topology.py --snmp-agents）。SNMP_POLL=1 のときだけ見る
   #   GNMI_TARGETS   gNMI の購読先（"<IP>:57400", ...）。同じく lab/lab_topology.py --gnmi-targets
   #                  SNMP_AGENTS と GNMI_TARGETS は取りにいく入力のものなので、TELEGRAF_ROLE=dialout では見ない
@@ -111,7 +111,7 @@ case "${1:-run}" in
   test)
     # ポーリングだけ 1 回まわして標準出力に出す（MSK には送らない）。機器に届かないときは lab の EC2 の forward を疑う
     [ -f "$CONF" ] || render
-    need_input snmp "SNMP のポーリングは止めてある（SNMP_POLL=0。既定。SNMP は trap だけ受ける）。ポーリングするなら SNMP_POLL=1 で起こし直す（ops/up.sh なら deploy.env の SNMP_POLL=1）"
+    need_input snmp "SNMP のポーリングは止めてある（SNMP_POLL=0。SNMP は trap だけ受ける）。ポーリングするなら SNMP_POLL=1 で起こし直す（ops/up.sh なら deploy.env の SNMP_POLL=0 を消す）"
     telegraf --config "$CONF" --test --input-filter snmp
     ;;
   gnmi)

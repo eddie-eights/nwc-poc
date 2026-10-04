@@ -4,8 +4,8 @@
 #   PROMETHEUS_URL    AMP のワークスペース（https://aps-workspaces.<region>.amazonaws.com/workspaces/<id>）。空なら Prometheus を出さない（STORES に grafana が無い）
 #   OPENSEARCH_URL    logs コレクションのエンドポイント。空なら OpenSearch を出さない（STORES に grafana が無い）
 #   OPENSEARCH_INDEX  ログの index（spark/snmp_sinks.py の OPENSEARCH_INDEX）
-#   ALERTS_TOPIC_ARN  アラートを publish する SNS のトピック（terraform/base/core の alerts.tf）。ルールは Prometheus を読むので、
-#                     PROMETHEUS_URL とこれの両方があるときだけアラートの定義（provisioning/alerting）を並べる
+#   ALERTS_TOPIC_ARN  アラートを publish する SNS のトピック（terraform/base/core の alerts.tf）。これがあるときだけアラートの定義（provisioning/alerting）を
+#                     並べる: 送り先（netops.yaml）と、データソースがあるほうのルール（netops-prometheus.yaml / netops-opensearch.yaml）
 #   AWS_REGION
 # 管理者のパスワード GF_SECURITY_ADMIN_PASSWORD は ECS が SSM の SecureString から入れる（値はここでもログでも出さない）
 set -eu
@@ -18,12 +18,18 @@ if [ -n "${PROMETHEUS_URL:-}" ]; then
   cp "$SRC/datasources/prometheus.yaml" "$DST/datasources/"
   cp "$SRC/dashboards/metrics.json" /tmp/grafana-dashboards/
   if [ -n "${ALERTS_TOPIC_ARN:-}" ]; then
-    cp "$SRC/alerting/netops.yaml" "$DST/alerting/"
+    cp "$SRC/alerting/netops-prometheus.yaml" "$DST/alerting/"
   fi
 fi
 if [ -n "${OPENSEARCH_URL:-}" ]; then
   cp "$SRC/datasources/opensearch.yaml" "$DST/datasources/"
   cp "$SRC/dashboards/logs.json" /tmp/grafana-dashboards/
+  if [ -n "${ALERTS_TOPIC_ARN:-}" ]; then
+    cp "$SRC/alerting/netops-opensearch.yaml" "$DST/alerting/"
+  fi
+fi
+if [ -n "${ALERTS_TOPIC_ARN:-}" ] && [ -n "${PROMETHEUS_URL:-}${OPENSEARCH_URL:-}" ]; then
+  cp "$SRC/alerting/netops.yaml" "$DST/alerting/"
 fi
 export GF_PATHS_PROVISIONING="$DST"
 echo "provisioning: $(ls "$DST/datasources" /tmp/grafana-dashboards "$DST/alerting" | tr '\n' ' ')"

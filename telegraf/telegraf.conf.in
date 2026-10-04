@@ -1,7 +1,7 @@
 # Telegraf の設定テンプレート。Telegraf のコンテナ（terraform/pipeline/stream の ECS。telegraf/Dockerfile）が起きるとき、telegraf.sh render が
 # タスク定義の環境変数で __KAFKA_BROKERS__ / __AWS_REGION__ / __SNMP_AGENTS__ / __GNMI_TARGETS__ を埋めて /tmp/telegraf.conf に書く。
 # 出力は「>>> sink <名前>」〜「<<< sink <名前>」の区間のうち SINK（kafka = MSK。既定 / stdout = 標準出力。デバッグ用の EC2）の 1 つだけを残す。
-# SNMP のポーリング（「>>> snmp_poll」〜「<<< snmp_poll」の区間）は SNMP_POLL=1 のときだけ残す。既定（0）は消して、SNMP は trap だけ受ける。
+# SNMP のポーリング（「>>> snmp_poll」〜「<<< snmp_poll」の区間）は SNMP_POLL=1（既定）のときだけ残す。0 なら消して、SNMP は trap だけ受ける。
 # 入力は役割で 2 つに分ける（「>>> role <名前>」〜「<<< role <名前>」の区間。telegraf.sh の TELEGRAF_ROLE）:
 #   dialin   こちらから取りにいく。gNMI の購読・SNMP のポーリングと、lab の gNMI を共通の形に変える Starlark。stream の ECS の telegraf-dialin（1 タスク）
 #   dialout  機器から送ってくるものを受ける。trap・syslog・MDT。stream の ECS の telegraf-dialout（NLB の後ろ。台数を増やしても同じものを 2 回書かない）
@@ -31,7 +31,7 @@
 # MIB は入れないので OID は数値で書き、名前を明示する（translator が無くても動く）。trap の varbind 名は数値 OID のまま
 # Kafka に載る（ifName の OID を引くのは Splunk の保存済みサーチ。splunk/netops_alerts）。
 # SR Linux の ifTable は物理ポート全部（未使用の admin-down も）とサブインタフェース（ethernet-1/1.0）を行に出す。落とすのは Grafana のアラートルール
-#（grafana/provisioning/alerting/netops.yaml。ifAdminStatus が down の行と "." を含む名前）。ifDescr は「名前 + description」になるので IF の鍵は ifName にする。
+#（grafana/provisioning/alerting/netops-prometheus.yaml。ifAdminStatus が down の行と "." を含む名前）。ifDescr は「名前 + description」になるので IF の鍵は ifName にする。
 
 [agent]
   interval = "10s"
@@ -43,9 +43,9 @@
   snmp_translator = "gosmi"
 
 # >>> role dialin（telegraf.sh render が TELEGRAF_ROLE=dialout のとき消す）
-# >>> snmp_poll（telegraf.sh render が SNMP_POLL=1 のときだけ残す。既定は消す）
+# >>> snmp_poll（telegraf.sh render が SNMP_POLL=1（既定）のときだけ残す。0 なら消す）
 # ---- ポーリング。agents は監視対象（CE）の管理 IP（SR Linux の mgmt0。SNMP v2c の community は環境変数 SNMP_COMMUNITY。lab は containerlab が全ノードに入れる public）。lab の EC2 を経由する（上の注記）
-# 止めると Grafana のルール link_down（ifOperStatus を見る）は発火しない。IF の up / down は trap（Splunk の保存済みサーチ。deploy.env の STORES に splunk）で見る
+# 止めると Grafana のルール link_down と Splunk の保存済みサーチ netops_poll（ifOperStatus を見る）は発火しない。IF の up / down は trap（Splunk の保存済みサーチ。deploy.env の STORES に splunk）だけで見る
 [[inputs.snmp]]
   agents = [__SNMP_AGENTS__]
   version = 2
@@ -359,7 +359,7 @@
 
 # ---- 生きているかの口。NLB のヘルスチェック（terraform/pipeline/stream の telegraf.tf。HTTP 8080。dialout のタスク）がここを見る。
 # 条件を書かないので、Telegraf が動いていれば 200 を返す。metric は system だけ通す（全部を流し込まない）。
-# ポーリングを止めている（SNMP_POLL=0。既定）と system は来ないが、何も届いていない間は default_status（200）を返すので、ヘルスチェックは通る
+# ポーリングを止めている（SNMP_POLL=0）と system は来ないが、何も届いていない間は default_status（200）を返すので、ヘルスチェックは通る
 [[outputs.health]]
   service_address = "http://:8080"
   namepass = ["system"]
