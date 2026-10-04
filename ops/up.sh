@@ -678,6 +678,9 @@ for r in agent pipeline/lab pipeline/stream pipeline/analytics pipeline/graph pi
     fi
   fi
 done
+# 残った analytics を見つけたら、今回作る graph / workflow の履歴の分（kinesis-firehose / athena）もここで足す。
+# 作るルートの endpoints_for の時点では ANALYTICS_LEFT がまだ分からない。graph の alert_history と workflow の Athena の環境変数は、残った analytics でも付く
+if [ -n "$ANALYTICS_LEFT" ]; then for r in $ROOTS; do endpoints_for "$r"; done; fi
 for pair in 'agent aws_bedrockagent_knowledge_base\.' 'pipeline/analytics aws_prometheus_workspace\.' 'pipeline/analytics aws_ecs_service\.'; do
   r=${pair%% *}
   [ -f "terraform/$r/terraform.tfstate" ] || continue
@@ -702,8 +705,9 @@ if [ -z "$SKIP_GRAPH" ]; then
   log "3-2. graph（Neptune Analytics）の apply を裏で始める（数分〜十数分。待たずに次へ進む）"
   mkdir -p ops/logs
   tf_init pipeline/graph   # init は前で済ませる（provider のキャッシュを 2 つの init で同時に触らない）
-  # analytics を作る回は、status の Lambda がアラートの通知の履歴を analytics の Firehose（名前は固定）に送る
-  if [ -z "$SKIP_ANALYTICS" ]; then GRAPH_VARS=(-var alert_history=true); else GRAPH_VARS=(); fi
+  # analytics がある回（今回作るか、手順 3 で state に残っていると分かった）は、status の Lambda がアラートの通知の履歴を
+  # analytics の Firehose（名前は固定）に送る。kinesis-firehose のエンドポイントを足す条件（analytics_on）と揃える
+  if analytics_on; then GRAPH_VARS=(-var alert_history=true); else GRAPH_VARS=(); fi
   ( tf_apply_only pipeline/graph ${GRAPH_VARS[@]+"${GRAPH_VARS[@]}"} ) >"$GRAPH_LOG" 2>&1 &
   GRAPH_PID=$!
   echo "進み具合: tail -f $GRAPH_LOG"

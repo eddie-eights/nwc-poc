@@ -156,7 +156,7 @@ terraform/workflow  OK
 | 7 | Should | 運用 | `terraform/pipeline/analytics/history.tf` | `firehose-errors/` に落ちても誰も気づかない（アラームが無い） | 読んだだけ | 最終報告（設計に無い） |
 | 8 | Nit | correctness | `workflow/rules.py:305-308` | starts_at の無い通知は event_id の末尾が `0` で、時刻の違う別の通知が query_history で 1 行にまとまる | `da_probe.py`: 1 時間あけた 2 通が `d#trap#x#splunk#firing#0` で同じ | 最終報告。Grafana と Splunk のテンプレートはどちらも starts_at を必ず入れる（design.md:40-45） |
 | 9 | Should | 設計整合性 | `workflow/rules.py` の alerts_from_message（既存）、決定 2 | device_id か kind が空の通知は共有の読み手が落とすので、決定 2「Neptune で無視した通知（device_id が無いなど）も記録する」は `?` の分しか満たさない | `da_probe.py`: device_id 無し → 0 件、kind 無し → 0 件、device_id `?` → 1 件 | **差し戻し**（決定 2 と「読み手は 1 つのまま」がぶつかる） |
-| 10 | Nit | 設計整合性 | `ops/up.sh` の GRAPH_VARS | SKIP_ANALYTICS=1 で analytics が state に残っている回は alert_history=false になり、履歴が止まる（エンドポイントも足さないので食い違いは無い） | `ep_probe.py`: 「graph を作る / analytics は残っている」で履歴のエンドポイント なし / GRAPH_VARS 空 | 最終報告（設計どおり「analytics を作る回だけ」） |
+| 10 | Nit | 設計整合性 | `ops/up.sh` の GRAPH_VARS | SKIP_ANALYTICS=1 で analytics が state に残っている回は alert_history=false になり、履歴が止まる（エンドポイントも足さないので食い違いは無い） | `ep_probe.py`: 「graph を作る / analytics は残っている」で履歴のエンドポイント なし / GRAPH_VARS 空 | 最終報告（設計どおり「analytics を作る回だけ」）。Round 5 で analytics_on に改めた。このとき、今回作る workflow の Athena の環境変数がエンドポイント無しで付く食い違いが前からあったと分かり、合わせて直した |
 | 11 | Nit | security | `history.tf` の trust | Firehose の trust に aws:SourceArn が無い（aws:SourceAccount だけ） | 読んだだけ | 最終報告 |
 | 12 | Nit | 記録 | build.md の逸脱の欄 | 「Athena のパラメータは WHERE 句だけ」は文書と違う | Athena の文書（querying-with-prepared-statements） | 直した |
 | 13 | Should | missing tests | `tests/test_app.py` | 引用符 1 文字だけの device_id を縛るテストが無かった | 注入 M12 | 直した（下で M12 が落ちる） |
@@ -708,7 +708,7 @@ worktree とブランチは Round 1 と同じ（HEAD `26ddf74` の上）。設�
 - 依頼に無いが足したもの: 行を組めない通知の扱い（通知ごとの try）と、`ALERT_STREAM` が空なら行を組まないこと、サロゲートのエスケープ。依頼の決定 1「ALERT_DROPPED の扱いは変えない」の範囲を超えるが、足さないと決定 1 の順番のせいで退行する（#1）。design.md の書く側と検証方法に書いた。
 - Firehose の上限はエンドポイントの IP の数で変わる。1 つなら 15.6 秒、2 つの AZ（`endpoints_multi_az = true`）なら 21.6 秒（#S1）。Neptune 1 回の呼び出しは 27 秒 / 33 秒で、60 秒に収まるのは問い合わせ 1 回まで（決定 2 で、それ以上は非同期のやり直しに任せる）。
 - 読みの待ち（3 秒）は 1 回の受信ごとの上限で、応答が細切れに返り続けると上限が無い。AWS のエンドポイントでは起きない見込みで、確かめていない（design.md のリスクの先頭）。
-- `rules.alerts_from_message` の `_epoch` は `starts_at` が `1e400` だと OverflowError で、そのメッセージは「読めない」扱いで捨てる（Neptune にも書かない）。`4bdd397` からある動きで、このラウンドの変更ではない。設計側で決める（#S2）。
+- `rules.alerts_from_message` の `_epoch` は `starts_at` が `1e400` だと OverflowError を投げ、handler の外まで抜ける（その呼び出しの通知は 1 件も Firehose にも Neptune にも書かず、Lambda の非同期のやり直し 2 回も同じく落ちる）。`4bdd397` からある動きで、このラウンドの変更ではない。設計側で決める（#S2）。（Round 5 で直した。初めは「読めない扱いで捨てる」と書いていたが誤りで、Round 5 で書き直した。）
 
 ### 検証（最後の編集のあとに取り直した出力）
 
@@ -859,7 +859,7 @@ terraform/workflow  OK
 | # | 分類 | 観点 | 場所 | 破綻シナリオ | 確かめたもの | 片付け |
 | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
 | S1 | Should | runtime / docs | `graph/status_handler.py:51-60`、design.md:60、:62 | 接続の待ちはエンドポイントの IP ごとにかかる（TLS の握手も接続の待ちに入る）。2 つの AZ にエンドポイントがあると、Firehose の上限は 15.6 秒でなく 21.6 秒、Neptune 1 回の呼び出しは 27 秒でなく 33 秒。コメントと docs が 1 つの IP を前提にしていた | `multi_ip_r4.py`（上の 4）: IP 2 つで 21.3 秒、送った時刻 [0.0, 7.1, 14.4]。どれも届かない IP 2 つでは 12.6 秒、[0.0, 4.2, 8.6] | 直した: コメント、design.md:60/62、pipeline.md:190。test_sync で 21.6 秒 < 22 秒と、54.6 秒 < 60 秒を検査（R10・R11・R13 で落ちる） |
-| S2 | Should | correctness（前からある） | `workflow/rules.py` の `_epoch`（`4bdd397`） | `starts_at` が `1e400` だと `alerts_from_message` が OverflowError を投げ、メッセージ全体が「読めない」扱いになって Neptune にも書かない | `starts_at_r4.py`（下）: 実際の送り手（Grafana の `.StartsAt.Unix`、Splunk の `latest(_time)`）と空・ゼロ時刻は行を組める。`10000-01-01` と epoch ミリ秒は `alert_event` で ValueError（→ #1）。`1e400` は `alerts_from_message` で OverflowError | 最終報告（設計側で決める。このラウンドの変更ではない） |
+| S2 | Should | correctness（前からある） | `workflow/rules.py` の `_epoch`（`4bdd397`） | `starts_at` が `1e400` だと `alerts_from_message` が OverflowError を投げ、handler の外まで抜けて呼び出しごと失敗する（その呼び出しの通知は 1 件も Firehose にも Neptune にも書かず、非同期のやり直しも同じく落ちる。初めは「読めない扱いで捨てる」と書いていたが誤りで、Round 5 で書き直した） | `starts_at_r4.py`（下）: 実際の送り手（Grafana の `.StartsAt.Unix`、Splunk の `latest(_time)`）と空・ゼロ時刻は行を組める。`10000-01-01` と epoch ミリ秒は `alert_event` で ValueError（→ #1）。`1e400` は `alerts_from_message` で OverflowError | 最終報告（設計側で決める。このラウンドの変更ではない）。Round 5 で直した |
 | 1 | Must | correctness / 退行 | `graph/status_handler.py:162-169` | 行を組む `rules.alert_event` が 1 件でも例外になる（starts_at が epoch ミリ秒で 9999 年を超える、など）と、handler ごと落ちて、そのメッセージの全部の通知が Neptune に書かれない。ALERT_STREAM が空（履歴の無い配備）でも起きる。Round 3 までは Neptune を先に書いていたので起きなかった（決定 1 の順番から来る退行） | `verify_da_r4.py` #1（直す前、要約。生の出力は残していない）: ValueError、Neptune に書いた []、put_record_batch []。直したあとは下 | 直した: 通知ごとの try で、その 1 件だけ ALERT_DROPPED の WARNING。ALERT_STREAM が空なら行を組まない。test_sync に 2 項目（R14・R15 で落ちる） |
 | 2 | Should | data loss | `graph/status_handler.py:101-109` | 通知の文字列に孤立したサロゲート（`\udcff`）があると、`json.dumps(ensure_ascii=False).encode()` が UnicodeEncodeError になり、500 件のバッチが丸ごと届かない。ALERT_EVENT_LOST の ERROR も同じ理由で書けない | `verify_da_r4.py` #2（直す前、要約）: put_record_batch []、ALERT_EVENT_LOST 50 行（書き出せない）。直したあとは下 | 直した: `_dumps` でその行だけ `\u` エスケープ。test_sync に 2 項目（R16・R17 で落ちる） |
 | 3 | Should | docs | status_handler.py の docstring、design.md のリスク 10、`docs/pipeline.md:187` | やり直しは呼び出しの通知を全部流し直す（書けていた通知も）ので、status は「遅れる」だけでなく、あいだに届いた新しい通知の値を古い値に戻しうる（両向き） | 読んだだけ（handler は Records 全部を回す。graph.py の SET は時刻を比べない） | 直した: docstring、リスク 10、pipeline.md |

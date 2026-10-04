@@ -382,6 +382,19 @@ r = h.handler(_odd)
 check("UTF-8 にできない文字を含む行も、ほかの行と同じ 1 回の put_record_batch で送る（その行だけ \\u でエスケープし、読み戻すと同じ値）",
       [[row["device_id"] for row in b[1]] for b in fh.batches] == [["dc1-leaf-01", "dc1-leaf-02", "dc1-leaf-03"]]
       and fh.batches[0][1][1]["detail"] == "\udcff" and waits == [] and cap.at(logging.ERROR) == [] and r == [{"updated": 1}] * 3)
+_inf = {"Records": [{"Sns": {"Message": json.dumps({"source": "splunk", "alerts": [
+    {"status": "firing", "device_id": f"dc1-leaf-0{i}", "kind": "link_down", "target": "ethernet-1/1", "starts_at": s}
+    for i, s in ((1, "__BIG__"), (2, "inf"), (3, 1790000000))]}).replace('"__BIG__"', "1e400")}}]}   # 1 件目は JSON の数 1e400（読むと float の無限大）
+fh.batches.clear(); cap.records.clear()
+n = len(calls)
+try:
+    r = h.handler(_inf)
+except Exception as e:  # noqa: BLE001 - 直す前は alerts_from_message の OverflowError で handler ごと落ちていた
+    r = e
+check("starts_at が無限大（1e400 / \"inf\"）の通知も落とさず、starts_at 無し（event_id の末尾 #0、列は空）の行にして 3 件とも送り、Neptune に書く",
+      r == [{"updated": 1}] * 3 and len(calls) == n + 3 and [len(b[1]) for b in fh.batches] == [3]
+      and [(row["event_id"].rsplit("#", 1)[1], row["starts_at"]) for row in fh.batches[0][1][:2]] == [("0", None), ("0", None)]
+      and cap.at(logging.WARNING) == [])
 
 
 def _utf8(s):
@@ -555,8 +568,25 @@ check("firehose の権限は alert_history が true のときだけで、PutReco
       _ah is not None and 'actions   = ["firehose:PutRecordBatch"]' in _ah.group(1)
       and 'resources = ["arn:${local.partition}:firehose:${var.region}:${local.account_id}:deliverystream/${local.alert_stream}"]' in _ah.group(1)
       and tf.count("firehose:") == 2 and "firehose:*" not in tf)
-check("up.sh は analytics を作る回（SKIP_ANALYTICS が空）だけ graph に -var alert_history=true を渡す",
-      'if [ -z "$SKIP_ANALYTICS" ]; then GRAPH_VARS=(-var alert_history=true); else GRAPH_VARS=(); fi' in up
+# up.sh のエンドポイントの選び方・残ったルートのループ・graph の変数を切り出し、state のファイルだけ置いた一時ディレクトリで bash で動かす（terraform は呼ばない）
+_epb = up[up.index('ENDPOINTS=""'):up.index('echo "インターフェース型エンドポイント')]
+_lfb = up[up.index("for r in agent pipeline/lab pipeline/stream pipeline/analytics pipeline/graph pipeline/nautobot workflow; do"):up.index("for pair in ")]
+_gvb = re.search(r"^  if analytics_on; then GRAPH_VARS=\(-var alert_history=true\); else GRAPH_VARS=\(\); fi$", up, re.M)
+def _graph_vars(roots, left=(), **env):
+    with tempfile.TemporaryDirectory() as d:
+        for r in left:
+            os.makedirs(os.path.join(d, "terraform", r))
+            open(os.path.join(d, "terraform", r, "terraform.tfstate"), "w").close()
+        p = subprocess.run(["bash", "-c", "tf_init() { :; }\nhas_resources() { :; }\n" + f'ROOTS="{roots}"\n' + _epb + _lfb + (_gvb.group(0) if _gvb else "exit 3")
+                            + '\necho "OUT: $ENDPOINTS | GV=${GRAPH_VARS[*]}"'], capture_output=True, text=True, cwd=d, env={"PATH": os.environ["PATH"], **env})
+        return p.stdout.strip().splitlines()[-1] if p.stdout.strip() else p.stderr
+check("up.sh は analytics がある回（今回作るか、state に残っている）に graph に -var alert_history=true を渡し、そのときは kinesis-firehose も足す。"
+      "SKIP_ANALYTICS=1 で analytics が残っていれば、今回作る graph / workflow にも kinesis-firehose / athena を足す（残ったルートのループのあとで graph の変数を決める）",
+      _graph_vars("base/ecr base/core pipeline/graph", SKIP_ANALYTICS="1") == "OUT: ssm ssmmessages neptune-graph-data | GV="
+      and _graph_vars("base/ecr base/core pipeline/analytics pipeline/graph") == "OUT: ssm ssmmessages s3tables logs neptune-graph-data kinesis-firehose | GV=-var alert_history=true"
+      and _graph_vars("base/ecr base/core pipeline/graph workflow", left=("pipeline/analytics",), SKIP_ANALYTICS="1")
+      == "OUT: ssm ssmmessages neptune-graph-data sqs s3tables ecr.api ecr.dkr logs bedrock-agentcore bedrock-agentcore.gateway kinesis-firehose athena | GV=-var alert_history=true"
+      and _gvb is not None and up.index(_lfb) < _gvb.start()
       and '( tf_apply_only pipeline/graph ${GRAPH_VARS[@]+"${GRAPH_VARS[@]}"} )' in up)
 check("graph-status のロールにも閉域の Deny を付ける（firehose を持つので、VPC の外から履歴の行を書かせない）。NETWORK_PERIMETER=0 か古い土台なら付けない",
       re.search(r'resource "aws_iam_role_policy_attachment" "status_perimeter" \{\s*count = local\.perimeter_policy_arn != "" \? 1 : 0\s*'

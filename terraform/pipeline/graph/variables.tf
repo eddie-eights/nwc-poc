@@ -48,7 +48,7 @@ variable "log_retention_days" {
 }
 
 variable "alert_history" {
-  description = "true sends every alert the status Lambda receives to the Firehose stream <prefix>-alert-events of terraform/pipeline/analytics (S3 Tables alert_events). ops/up.sh sets it only when it deploys analytics, so the stream exists."
+  description = "true sends every alert the status Lambda receives to the Firehose stream <prefix>-alert-events of terraform/pipeline/analytics (S3 Tables alert_events). ops/up.sh sets it only when analytics is deployed (in this run or left in its state), so the stream exists."
   type        = bool
   default     = false
 }

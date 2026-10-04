@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------- アラートの通知の履歴: Firehose → S3 Tables（alert_events）→ Athena（2026-10-04）
 # terraform/pipeline/graph の status の Lambda（graph/status_handler.py）が、SNS で受けたアラートの通知を 1 件 1 行で
-# このストリームに put_record_batch する（graph の alert_history = true。ops/up.sh が analytics を作る回にだけ渡す）。
+# このストリームに put_record_batch する（graph の alert_history = true。ops/up.sh が analytics がある回にだけ渡す。今回作るか、state に残っている）。
 # Firehose は 60 秒か 1 MiB ごとに tables.tf の alert_events に追記する（Iceberg。Glue の s3tablescatalog を通す）。
 # s3tablescatalog はアカウントとリージョンに 1 つの Glue のカタログで、無ければ ops/up.sh が作る（down.sh では消さない。docs/deploy.md）。
 # 書けなかった行は土台のバケットの firehose-errors/alert_events/ に落ちる。読むのはエージェントの query_history（agent/evidence.py。

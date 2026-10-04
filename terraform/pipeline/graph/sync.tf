@@ -4,7 +4,7 @@
 # (graph/status_handler.py + agent/graph.py + workflow/rules.py) that sets the property "status" (DOWN / UP, ALARM for other traps) on the
 # link edge or the device vertex. The web draws DOWN in red and the chat tools return it. Neptune holds the topology and this status only -
 # the alerts themselves are not stored here (2026-10-02; until then the Spark job put AnomalyOpened / AnomalyResolved on EventBridge).
-# With alert_history = true (ops/up.sh sets it when it deploys analytics) the same Lambda also sends every alert, one row each, to the
+# With alert_history = true (ops/up.sh sets it when analytics is deployed - in this run or left in its state) the same Lambda also sends every alert, one row each, to the
 # Firehose stream <prefix>-alert-events of terraform/pipeline/analytics (history.tf), which appends it to the S3 Tables table alert_events
 # (2026-10-04). The Lambda reaches Firehose through the kinesis-firehose interface endpoint of terraform/base/core.
 # The static topology itself comes from lab/ (ops/up.sh 7-3b and ops/sync-graph.sh seed it through the web EC2) - not from here.

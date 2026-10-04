@@ -101,7 +101,7 @@ flowchart LR
 
 ## アラートの通知の履歴（Firehose と Athena）
 
-analytics を作る回（`SKIP_ANALYTICS` が空）は、graph の Lambda が受けたアラートの通知を Firehose `<prefix>-alert-events` で S3 Tables の `alert_events` に追記し、エージェントの `query_history` が Athena のワークグループ `<prefix>-history` で読む（2026-10-04。中身は [pipeline.md](pipeline.md) の「アラートの履歴」）。
+analytics がある回（今回作るか、`SKIP_ANALYTICS=1` でも state に残っている）は、graph の Lambda が受けたアラートの通知を Firehose `<prefix>-alert-events` で S3 Tables の `alert_events` に追記し、エージェントの `query_history` が Athena のワークグループ `<prefix>-history` で読む（2026-10-04。中身は [pipeline.md](pipeline.md) の「アラートの履歴」）。
 
 - **Glue のカタログ `s3tablescatalog`:** Firehose と Athena は S3 Tables のテーブルを Glue の S3 Tables 連携のカタログ越しに引く。アカウントとリージョンに 1 つで、ほかの OWNER の環境と共有するので、`ops/up.sh` は手順 7-4 で無いときだけ作り（IAM だけで読み書きできる設定: `IAM_ALLOWED_PRINCIPALS` と `AllowFullTableExternalDataAccess`）、`ops/down.sh` では消さない。もうあって設定が違うときは黄色の注意を出してそのまま使う（ほかの人が Lake Formation で管理していると、Firehose と Athena が `alert_events` に届かないことがある）。
 - **消すとき:** このアカウントとリージョンで、誰も S3 Tables を Athena や Firehose から使っていないことを確かめてから打つ（カタログを消してもテーブルバケットの中身は消えない）。

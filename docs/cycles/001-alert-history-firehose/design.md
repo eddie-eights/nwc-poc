@@ -75,10 +75,11 @@ Splunk の通知。splunk/netops_alerts/bin/netops_sns.py:6 と :106 から引�
   - 行を組み立てる関数 `rules.alert_event(alert, received_at)` は純粋関数にして、テストする。
 - `terraform/pipeline/graph/sync.tf`:
   - 変数 `alert_history`（bool。既定 false）を足す。true のときは Lambda の環境変数に `ALERT_STREAM = "${prefix}-alert-events"` を入れ、IAM に `firehose:PutRecordBatch` を足す（そのストリームの ARN だけ）。
-  - `ops/up.sh` は、analytics を作る回（SKIP_ANALYTICS が空）にだけ `-var alert_history=true` を渡す。graph は analytics より前に apply するが、名前は固定なので analytics の output を待たなくてよい。
+  - `ops/up.sh` は、analytics がある回（今回作るか、state に残っている。up.sh の `analytics_on`）にだけ `-var alert_history=true` を渡す。graph は analytics より前に apply するが、名前は固定なので analytics の output を待たなくてよい（Round 5 で「analytics を作る回（SKIP_ANALYTICS が空）」から改めた。`SKIP_ANALYTICS=1` で analytics を残したまま graph だけ作り直すと、ストリームがあるのに履歴が止まっていた）。
 - `ops/up.sh` の `endpoints_for`:
-  - `pipeline/graph` で、analytics を作る回は `kinesis-firehose` を足す。
-  - `workflow` で、analytics を作る回は `athena` を足す。
+  - `pipeline/graph` で、analytics がある回は `kinesis-firehose` を足す。
+  - `workflow` で、analytics がある回は `athena` を足す。
+  - analytics が state に残っていると分かるのは手順 3 の残ったルートのループのあとなので、そのとき今回作るルートの分をもう一度足す（Round 5）。
   - `terraform/base/core/variables.tf` の validation に `kinesis-firehose` と `athena` を足す。
 
 ### Firehose → S3 Tables（pipeline/analytics と base/core）
@@ -222,5 +223,7 @@ Splunk の通知。splunk/netops_alerts/bin/netops_sns.py:6 と :106 から引�
 9. **Neptune の問い合わせに、サーバ側の時間の上限（`queryTimeoutMilliseconds`）を付けていない。** クライアントが読みの 10 秒であきらめても、Neptune の側ではその問い合わせが走り続け、2 回目の試行や Lambda のやり直しの問い合わせと重なることがある。同じ通知の書き込みどうしなら値は同じだが、走り続けた問い合わせが、あとから届いた別の通知（同じ要素の resolved など）の書き込みより後に効くと、新しい status を古い値に戻す（Round 4 のセルフレビューで足した）。直すなら `agent/graph.py` の execute_query に渡す。このサイクルでは直さない（Round 3）。
 10. **やり直しで、古い通知が新しい通知のあとに書かれることがある。** Neptune への書き込みが失敗した（または途中で timeout した）呼び出しは、Lambda の非同期のやり直しで数分後にもう一度走る。そのあいだに同じ要素の resolved が届いて UP にしていると、やり直した firing が DOWN に戻す。やり直しは呼び出しの通知を全部流し直す（書けていた通知も）ので、逆向き（やり直した古い resolved が、そのあいだに届いた firing の DOWN を UP に戻す）も起きる（Round 4 のセルフレビューで足した）。このサイクルで入った危険ではなく、前からある（このサイクルの前から、Neptune の失敗は例外のまま Lambda のやり直しに任せていた）。直すなら別のサイクル（通知の starts_at を見て、古い通知で新しい status を上書きしない、など）。
 11. **Neptune への書き込みは、Firehose に送り終えるまで待つ（Round 4）。** ふつうは put_record_batch 1 回のぶん（AWS では測っていない）だが、Firehose が止まっているときや送り直しになったときは、1 回の呼び出しごとに長くて 22 秒遅れる。呼び出しごとに Firehose にかかった時間が違う（片方だけ送り直しになった、など）と、同じ要素の 2 つの通知を Neptune に書く順番が、届いた順番と入れ替わることがあり、古い値が残る。リスク 10 と同じ種類の危険で、入れ替わる窓が最大 22 秒広がる。直し方もリスク 10 と同じ（Round 4 のセルフレビューで足した）。
+12. **starts_at の無い通知は、別の回の発生でも 1 行にまとまる。** starts_at が無いか読めない（無限大を含む）と、event_id の末尾が `#0`、列の starts_at が空になる。同じ異常・送り手・状態の別の発生も event_id が同じになり、読むとき（`row_number() OVER (PARTITION BY event_id`）に 1 行になる。いまの送り手（Grafana と Splunk）は starts_at を付けるので起きない見込み。直すなら別のサイクル（starts_at が無いときは received_at を使う、など。ただしやり直しの重複が 1 行にまとまらなくなる）（cold review の S-4 で足した）。
+13. **IAM の権限が広い。まず通すことを優先した。** Firehose のロールの S3 Tables（`history.tf` の `${table_bucket_arn}/table/*`）と Glue（同じファイルの `database/*` と `table/*/*`）、workflow の tools Lambda の `HistoryCatalog`（`terraform/workflow/gateway.tf` の glue の `database/*` と `table/*/*`）は、alert_events とその名前空間だけに絞れる。最初の up.sh で通ったのを確かめてから、実際に呼ばれた ARN（CloudTrail）に合わせて絞る。あわせて、Firehose のロールの trust に `aws:SourceArn`（ストリームの ARN）を足す。リスク 2 の `lakeformation:GetDataAccess` も、要ると分かったときだけ足す（cold review の S-3 と Nit で足した）。
 
 <!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261004-cycle-001-alert-history-firehose-design.html -->

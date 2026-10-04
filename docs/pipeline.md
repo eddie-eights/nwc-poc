@@ -180,10 +180,10 @@ terraform -chdir=terraform/pipeline/analytics output -raw splunk_password_comman
 
 ### アラートの履歴
 
-届いた通知は 1 件ずつ S3 Tables の `alert_events` に残る（2026-10-04 から。analytics を作る回だけ）。
+届いた通知は 1 件ずつ S3 Tables の `alert_events` に残る（2026-10-04 から。analytics がある回だけ）。
 
 - 書くのは graph の Lambda `<prefix>-graph-status`。Neptune に書く前に、同じ呼び出しの全部の通知を Firehose `<prefix>-alert-events` へ `PutRecordBatch` で送る（500 件ずつ）。Firehose が 60 秒（か 1 MiB）ごとにまとめて Iceberg に追記する。Neptune で無視した通知（機器名の無いものなど）も行にする。
-- `ops/up.sh` は analytics を作る回（`SKIP_ANALYTICS` が空）にだけ graph の変数 `alert_history = true` を渡す。そのときだけ Lambda の環境変数 `ALERT_STREAM` と `firehose:PutRecordBatch`（そのストリームだけ）が付く。graph は analytics より先に apply するが、ストリームの名前が固定なので待たない。
+- `ops/up.sh` は analytics がある回（今回作るか、`SKIP_ANALYTICS=1` でも state に残っている）にだけ graph の変数 `alert_history = true` を渡し、graph に `kinesis-firehose`、workflow に `athena` のエンドポイントを足す。そのときだけ Lambda の環境変数 `ALERT_STREAM` と `firehose:PutRecordBatch`（そのストリームだけ）が付く。graph は analytics より先に apply するが、ストリームの名前が固定なので待たない。
 - Neptune と Firehose は片方がエラーを返しても両方を試す。Lambda が最後に例外を投げる（非同期のやり直しが 2 回）のは Neptune への書き込みが失敗したときだけ。Neptune の途中で timeout（60 秒）したときも同じく非同期のやり直しになる。やり直しで同じ通知が二重に入るので、読むときは `event_id`（`<anomaly_id>#<source>#<status>#<starts_at の epoch 秒>`）で落とす。やり直しは書けていた通知も流し直すので、そのあいだに届いた通知の `status` を古い値に戻すことがある（前からある危険。cycle 001 の design.md のリスク 10）。
 - 行は Neptune より先に送る。Neptune が遅くても応答しなくても履歴は残る。`status` は遅れる、または失敗してやり直す。
   - Firehose に使うのは長くて 15.6 秒（下の送り直しを含めて 3 回 ×（接続 2 秒 + 読み 3 秒）+ 待ち 0.6 秒）。60 秒のうち 44 秒は Neptune に残る。

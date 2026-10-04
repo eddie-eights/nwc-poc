@@ -189,7 +189,7 @@ def anomaly_id(device_id: str, kind: str, target: str) -> str:
 def _epoch(v) -> int:
     try:
         return max(int(float(v or 0)), 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):   # OverflowError: 1e400 / "inf" / "Infinity"（float が無限大になる）
         return 0
 
 
