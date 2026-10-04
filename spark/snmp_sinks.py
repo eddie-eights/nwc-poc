@@ -21,6 +21,13 @@ Telegraf の JSON 出力（outputs.kafka の data_format = "json"、json_timesta
 の形。列に分けるのは timestamp / name / agent_host / host だけで、tags と fields は JSON 文字列のまま入れる
 （機器やメトリクスが増えてもテーブルの列を変えないため。terraform/pipeline/analytics/tables.tf の列と同じ）。
 
+どの行にも一意の番号 event_id を付ける: Kafka のメッセージの value（from_json の前のバイト列そのまま）の SHA-256 の 16 進 64 文字（F.sha2）。
+中身から作るので、Spark のやり直しで同じメッセージを送り直しても、Telegraf が同じメッセージを Kafka に 2 回入れても同じ値になり、読む側で重複を落とせる
+（ここでは dropDuplicates しない）。Telegraf の timestamp は秒（json_timestamp_units = "1s"）なので、同じ秒に同じ中身の別の出来事も同じ event_id になる（受け入れる）。
+元のメッセージを追うための Kafka の位置（kafka_topic / kafka_partition / kafka_offset）も別の項目で入れる（送り直しは別の offset になるので、重複の判定には使わない）。
+入れるのは iceberg（列。tables.tf の列のあとに、ジョブが起動時に ALTER TABLE で足す。ICEBERG_ADDED_COLUMNS）、opensearch（ドキュメントの項目）、
+splunk（event の項目）。prometheus には入れない（ラベルにすると 1 サンプルごとに別の系列になる）。
+
 異常の検知はここではしない（2026-10-02 にやめた。detect のクエリと Neptune の anomaly 頂点、S3 Tables の anomaly_events、EventBridge への put_events を消した）。
 検知と相関は格納先の側でする: Grafana のアラートルール（AMP の ifOperStatus。grafana/provisioning/alerting）と Splunk の保存済みサーチ
 （trap・gNMI の BGP / IS-IS。splunk/netops_alerts）が SNS のトピック <接頭辞>-alerts に出し、ワークフロー（SQS）と
@@ -60,6 +67,10 @@ OPENSEARCH_INDEX = "snmp-logs"
 METRIC_PREFIX = "snmp"
 SPLUNK_HEC_PATH = "/services/collector/event"   # HEC の JSON イベントの入口（--splunk-hec-url に無ければ足す）
 SPLUNK_SOURCETYPE_PREFIX = "netops"             # sourcetype は netops:<トピック>（netops:metrics / netops:traps / netops:logs）
+# S3 Tables の表に、ジョブが起動時に足す列（tables.tf の列のあとに、この順。名前と Spark SQL の型）。tables.tf の schema には書かない:
+# aws provider（6.64）の aws_s3tables_table は metadata の schema を変えると表を作り直す（RequiresReplace）ので、いまある行が消える。
+# ALTER TABLE ADD COLUMNS は Iceberg のメタデータだけの変更で、いまある行はこの列が null のまま読める
+ICEBERG_ADDED_COLUMNS = (("event_id", "string"), ("kafka_topic", "string"), ("kafka_partition", "int"), ("kafka_offset", "bigint"))
 
 
 # ---------------------------------------------------------------- 引数
@@ -172,6 +183,10 @@ def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
     parsed = raw.select(
         F.col("topic"),
         F.from_json(F.col("value").cast("string"), schema).alias("m"),
+        # 一意の番号は from_json の前の value（binary のまま）から作る。同じバイト列なら、いつ何度読んでも同じ値（モジュールの docstring）
+        F.sha2(F.col("value"), 256).alias("event_id"),
+        F.col("partition").alias("kafka_partition"),
+        F.col("offset").alias("kafka_offset"),
     )
     rows = parsed.select(
         F.to_timestamp(F.from_unixtime(F.col("m.timestamp"))).alias("ts"),
@@ -182,6 +197,11 @@ def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
         F.to_json(F.col("m.tags")).alias("tags_json"),
         F.to_json(F.col("m.fields")).alias("fields_json"),
         F.current_timestamp().alias("ingested_at"),
+        # ここから ICEBERG_ADDED_COLUMNS（同じ順）
+        F.col("event_id"),
+        F.col("topic").alias("kafka_topic"),
+        F.col("kafka_partition"),
+        F.col("kafka_offset"),
     ).where(F.col("ts").isNotNull())
     return rows
 
@@ -204,7 +224,16 @@ def row_to_record(row):
         "host": d.get("host"),
         "tags": _loads(d.get("tags_json")),
         "fields": _loads(d.get("fields_json")),
+        "event_id": d.get("event_id"),
+        "kafka_topic": d.get("kafka_topic"),
+        "kafka_partition": d.get("kafka_partition"),
+        "kafka_offset": d.get("kafka_offset"),
     }
+
+
+def kafka_ids(r):
+    """一意の番号と Kafka の位置（opensearch のドキュメントと splunk の event に入れる。prometheus には入れない）"""
+    return {k: r.get(k) for k in ("event_id", "kafka_topic", "kafka_partition", "kafka_offset")}
 
 
 def _loads(s):
@@ -275,7 +304,8 @@ def log(msg):
 
 # ---------------------------------------------------------------- opensearch（_bulk）
 def opensearch_docs(records):
-    """_bulk の本文（action 行と document 行の対）。fields の値は数値なら数値にする（TIMESERIES 型はドキュメント ID を付けない）"""
+    """_bulk の本文（action 行と document 行の対）。fields の値は数値なら数値にする。
+    TIMESERIES 型はドキュメント ID を付けられないので、一意の番号 event_id は _id でなくドキュメントの項目にする（Kafka の位置も）"""
     lines = []
     for r in records:
         doc = {
@@ -286,6 +316,7 @@ def opensearch_docs(records):
             "host": r.get("host"),
             "tags": r["tags"],
             "fields": {k: (_number(v) if _number(v) is not None else v) for k, v in r["fields"].items()},
+            **kafka_ids(r),
         }
         lines.append('{"index":{}}')
         lines.append(json.dumps(doc, separators=(",", ":"), ensure_ascii=False))
@@ -345,7 +376,8 @@ def _splunk_value(v):
 
 def splunk_events(records, index=""):
     """HEC の JSON イベント（1 行 1 イベント。HEC は本文に並べた複数のイベントを 1 回で受ける）。
-    time は epoch 秒、host は機器（無ければ Telegraf の agent_host）、sourcetype は netops:<トピック>、event に measurement / tags / fields。
+    time は epoch 秒、host は機器（無ければ Telegraf の agent_host）、sourcetype は netops:<トピック>、event に measurement / tags / fields と
+    一意の番号 event_id、Kafka の位置（kafka_topic / kafka_partition / kafka_offset）。
     fields の数値の文字列は数値にする（Splunk が検索で数として扱えるように）"""
     lines = []
     for r in records:
@@ -360,6 +392,7 @@ def splunk_events(records, index=""):
                 "agent_host": r.get("agent_host"),
                 "tags": r["tags"],
                 "fields": {k: _splunk_value(v) for k, v in r["fields"].items()},
+                **kafka_ids(r),
             },
         }
         if index:
@@ -430,6 +463,7 @@ def label_name(tag):
 
 def prometheus_series(records):
     """数値の field を 1 系列 1 サンプルにする。[(labels(sorted list of (name, value)), value, ms), …]
+    ラベルは tags と __name__ だけ（event_id と Kafka の位置は入れない。入れると 1 サンプルごとに別の系列になる）。
     トピックでは絞らない（prometheus のクエリは --metric-topics だけを購読している）"""
     out = []
     for r in records:
@@ -604,6 +638,17 @@ def http_query(rows, name, checkpoint, sender, http_send="driver"):
     )
 
 
+def ensure_iceberg_columns(spark, table):
+    """表に無い ICEBERG_ADDED_COLUMNS を ALTER TABLE で後ろに足し、足した列の名前を返す（あれば何もしない）。
+    tables.tf の表（2026-10-04 より前に作った表も、いま作る表も）はこの列を持たないので、iceberg のクエリを起こす前に毎回確かめる。
+    いまある行の新しい列は null（元の value はもう無いので、あとから番号を付けられない）"""
+    have = {f.name for f in spark.table(table).schema.fields}
+    missing = [(n, t) for n, t in ICEBERG_ADDED_COLUMNS if n not in have]
+    if missing:
+        spark.sql(f"ALTER TABLE {table} ADD COLUMNS ({', '.join(f'{n} {t}' for n, t in missing)})")
+    return [n for n, _ in missing]
+
+
 def iceberg_query(rows, table, checkpoint):
     return (
         rows.writeStream.queryName("iceberg").format("iceberg")
@@ -670,6 +715,9 @@ def build(spark, args):
     for s in args.sinks:
         rows = read_rows(spark, args.bootstrap, sink_topics(s, args.metric_topics, args.log_topics), max_offsets(args, s))
         if s == "iceberg":
+            added = ensure_iceberg_columns(spark, args.iceberg_table)
+            if added:
+                log(f"iceberg: {args.iceberg_table} に列 {', '.join(added)} を足した（いまある行は null）")
             queries.append(iceberg_query(rows, args.iceberg_table, args.checkpoint))
         elif s == "opensearch":
             queries.append(http_query(rows, s, args.checkpoint, make_opensearch_sender(args.opensearch_endpoint, args.opensearch_index, args.region), args.http_send))
