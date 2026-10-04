@@ -1303,6 +1303,41 @@ check("up.sh の WORKFLOW=1 は SKIP_ANALYTICS があれば止まる（Grafana /
 check("up.sh は SKIP_GRAPH=1 でも analytics を作る（Spark は Neptune に書かない。2026-10-02）", "analytics は graph が要る" not in up)
 check("up.sh は PIPELINE=0 なら lab / stream / analytics / graph を全部飛ばす",
       re.search(r'else\n\s*SKIP_LAB=1; SKIP_STREAM=1; SKIP_ANALYTICS=1; SKIP_GRAPH=1\n', up) is not None)
+# lab は単独で外せる（2026-10-04 まで、SKIP_LAB=1 で stream を作ると止まっていた）。WORKFLOW と PIPELINE の判定を切り出して動かす
+_skblk = up[up.index('if [ -n "$WORKFLOW" ]; then\n  if [ -z "$AGENT" ]'):up.index("# Nautobot（terraform/pipeline/nautobot）は機器の一覧とケーブルの正")]
+def _skip(**env):
+    r = subprocess.run(["bash", "-c", _pre + "flag_value SKIP_LAB; flag_value SKIP_STREAM; flag_value SKIP_ANALYTICS; flag_value SKIP_GRAPH\n" + _skblk
+                        + 'echo "OUT: L=${SKIP_LAB:-0} S=${SKIP_STREAM:-0} A=${SKIP_ANALYTICS:-0} G=${SKIP_GRAPH:-0}"'], capture_output=True, text=True,
+                       env={"PATH": os.environ["PATH"], **env})
+    return r.stdout.strip()
+check("up.sh は PIPELINE=1 で SKIP_LAB=1 だけなら止まらず、lab 以外を作る（Telegraf の取りにいく側が届かないことを言う）",
+      _skip(PIPELINE="1", SKIP_LAB="1").endswith("OUT: L=1 S=0 A=0 G=0") and "SKIP_LAB=1 なので lab は作らない" in _skip(PIPELINE="1", SKIP_LAB="1")
+      and "タスクは落ちない" in _skip(PIPELINE="1", SKIP_LAB="1") and "DIE" not in _skip(PIPELINE="1", SKIP_LAB="1")
+      and "stream は lab が要る" not in up)
+check("up.sh は SKIP_LAB=1 でも stream を作らないなら lab の注意を出さず、lab を作るときも出さない",
+      "lab は作らない" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1") and "lab は作らない" not in _skip(PIPELINE="1")
+      and _skip(PIPELINE="1") == "OUT: L=0 S=0 A=0 G=0")
+check("up.sh の「土台だけになる」は SKIP_LAB と SKIP_STREAM と SKIP_GRAPH が全部あるときだけ（lab と graph だけ外しても stream は作る）",
+      "土台だけになる" in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1", SKIP_GRAPH="1")
+      and _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1", SKIP_GRAPH="1").endswith("OUT: L=1 S=1 A=1 G=1")
+      and "土台だけ" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_GRAPH="1")
+      and _skip(PIPELINE="1", SKIP_LAB="1", SKIP_GRAPH="1").endswith("OUT: L=1 S=0 A=0 G=1")
+      and "土台だけ" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1"))
+check("up.sh の WORKFLOW=1 は SKIP_LAB=1 を受け付けないまま",
+      "DIE: WORKFLOW は lab と stream と analytics と graph が要る" in _skip(WORKFLOW="1", AGENT="1", PIPELINE="1", SKIP_LAB="1")
+      and "DIE" not in _skip(WORKFLOW="1", AGENT="1", PIPELINE="1"))
+check("up.sh は lab が無ければ lab の syslog の注意・7-3b のトポロジの投入・lab の費用・転送・最後の lab の案内を飛ばす",
+      'if [ -z "$SKIP_LAB" ] && [ "$SYSLOG_STANDARD" != "$LAB_SYSLOG_STANDARD" ]; then' in up
+      and re.search(r'\n  if \[ -z "\$SKIP_LAB" \]; then\n    log "7-3b\.[^\n]*\n(    [^\n]*\n)*?    LAB_TOPOLOGY_B64=[^\n]*\n    run_on_instance [^\n]*LAB_TOPOLOGY_B64[^\n]*\n  else\n', up) is not None
+      and up.count("LAB_TOPOLOGY_B64=$(") == 1
+      and 'if [ -z "$SKIP_LAB" ]; then COST_CENTS=$((COST_CENTS + 17)); fi' in up
+      and re.search(r'LAB_VARS=\(-var forward_to_telegraf=false\)\nif \[ -z "\$SKIP_LAB" \]; then\n', up) is not None
+      and re.search(r'\nif \[ -n "\$LAB_INSTANCE_ID" \]; then\n  echo "lab に入るコマンド:"', up) is not None
+      and re.search(r'\nif \[ -n "\$LAB_INSTANCE_ID" \]; then\n  # lab の EC2 の中を見る', up) is not None)
+check("up.sh と deploy.env.example の SKIP_LAB の説明は、SKIP_STREAM=1 が要るとも止まるとも言わない",
+      "stream は lab が要るので SKIP_STREAM=1 も要る" not in up
+      and re.search(r"^#SKIP_LAB=1 [^\n]*\n#\s+#[^\n]*Nautobot の Job が書く物理層だけ", env_example, re.M) is not None
+      and "しないと止まる" not in env_example and "タスクは落ちない" in env_example)
 # NO_PORTFORWARD は 2026-10-04 に NO_DASHBOARD_PORTFORWARD へ名前を変えた。前の名前が残っていれば止まる
 _pfblk = up[up.index('[ -z "${NO_PORTFORWARD:-}" ] || die'):up.index("flag_value NO_DASHBOARD_PORTFORWARD\n") + len("flag_value NO_DASHBOARD_PORTFORWARD\n")]
 def _pf(**env):

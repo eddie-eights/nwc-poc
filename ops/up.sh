@@ -35,7 +35,8 @@
 #                           アラートの送り手も要る（STORES の splunk、または STORES の grafana と SNMP_POLL=1（Grafana のアラート）。既定のままでは送り手が無いので止まる）
 #   CREATE_KB=1             AGENT=1 で Knowledge Base も作る（既定 0。+$0.37/h = OpenSearch Serverless の OCU $0.33 + 土台の VPC エンドポイント $0.03（STORES の grafana の OpenSearch と共用）
 #                           + bedrock-agent-runtime のエンドポイント $0.01）。コレクションは公開せず、そのエンドポイントと Bedrock からだけ届く
-#   SKIP_LAB=1              PIPELINE=1 で lab を作らない（stream は lab が要るので SKIP_STREAM=1 も要る）
+#   SKIP_LAB=1              PIPELINE=1 で lab を作らない（ほかは lab が無くても作れる。stream を作れば Telegraf の取りにいく側は lab の定義の機器を
+#                           探しに行き、届かないのでエラーをログに出して 10 秒ごとに繋ぎ直す（タスクは落ちない）。受ける側は送り手がいなければ何も来ない）
 #   SKIP_STREAM=1           PIPELINE=1 で stream と analytics（stream の Kafka を読む）を作らない
 #   SKIP_ANALYTICS=1        PIPELINE=1 で analytics（Spark → S3 Tables / OpenSearch / Prometheus / Splunk と、検知する Grafana / Splunk）を作らない
 #   STORES=s3,grafana,splunk
@@ -389,15 +390,17 @@ if [ -n "$WORKFLOW" ]; then
     die "WORKFLOW は lab と stream と analytics と graph が要る。SKIP_LAB / SKIP_STREAM / SKIP_ANALYTICS / SKIP_GRAPH を外す。まだ何も作っていない"
   fi
 fi
+# lab は単独で外せる（2026-10-04 まで、stream を作るなら lab も要るとして止めていた）。stream の Telegraf の取りにいく側の機器の一覧は
+# lab が無くても lab の定義（と、それを最初の seed にする Nautobot）から作る
 if [ -n "$PIPELINE" ]; then
   if [ -n "$SKIP_LAB" ] && [ -z "$SKIP_STREAM" ]; then
-    die "stream は lab が要る（Telegraf（stream の ECS）がポーリングするのは lab の機器で、lab の EC2 を通って届く。trap と syslog も lab の EC2 から来る）。SKIP_LAB を外すか SKIP_STREAM=1 も書く。まだ何も作っていない"
+    echo "SKIP_LAB=1 なので lab は作らない。stream の Telegraf の取りにいく側は lab の定義の機器を探しに行き、届かないので gNMI / SNMP のエラーをログに出して繋ぎ直し続ける（タスクは落ちない）。受ける側（trap / syslog / MDT）は送り手がいなければ何も来ない"
   fi
   if [ -n "$SKIP_STREAM" ] && [ -z "$SKIP_ANALYTICS" ]; then
     echo "SKIP_STREAM=1 なので analytics も作らない（読む Kafka が無い）"
     SKIP_ANALYTICS=1
   fi
-  if [ -n "$SKIP_LAB" ] && [ -n "$SKIP_GRAPH" ]; then
+  if [ -n "$SKIP_LAB" ] && [ -n "$SKIP_STREAM" ] && [ -n "$SKIP_GRAPH" ]; then
     echo "SKIP_LAB と SKIP_STREAM と SKIP_GRAPH があるので、PIPELINE=1 でも土台だけになる"
   fi
 else
@@ -877,7 +880,7 @@ if [ -z "$SKIP_STREAM" ]; then
   echo "Telegraf の gNMI の購読先: $GNMI_TARGETS"
   # syslog の形式は SYSLOG_STANDARD（既定は本番の Cisco の RFC3164）。lab の SR Linux は ops/lab-common.sh の LAB_SYSLOG_STANDARD（RFC5424）で送る
   echo "Telegraf の syslog の形式: $SYSLOG_STANDARD"
-  if [ "$SYSLOG_STANDARD" != "$LAB_SYSLOG_STANDARD" ]; then
+  if [ -z "$SKIP_LAB" ] && [ "$SYSLOG_STANDARD" != "$LAB_SYSLOG_STANDARD" ]; then
     echo "注意: lab の SR Linux は $LAB_SYSLOG_STANDARD で送るので、SYSLOG_STANDARD=$SYSLOG_STANDARD では lab のログの項目（ホスト名・本文など）が崩れる。lab のログまで見るなら SYSLOG_STANDARD=$LAB_SYSLOG_STANDARD"
   fi
   # 機器の認証情報は SSM の SecureString に置き、取りにいく側のタスクが ECS の secrets で受ける（Terraform の state に載せない）。
@@ -938,16 +941,21 @@ if [ -n "$GRAPH_PID" ]; then
     die "terraform/pipeline/graph の apply に失敗した（全文: ${GRAPH_LOG}）。直したらもう一度 ops/up.sh"
   fi
   tail -n 3 "$GRAPH_LOG"
-  log "7-3b. Neptune が空なら lab の定義からトポロジを入れる（初期ロード。入っていれば何もしない。入れ直すのは ops/sync-graph.sh --replace）"
-  # lab/lab_topology.py が lab/splab.clab.yml.in と lab/srlinux/*.cli から機器と回線（と IP 層 / EVPN・BGP 層）を作り（手元で打つ）、ops/seed_graph.py を Web の EC2 の上で
-  # Web と同じ環境変数と依存で動かして Neptune に入れる。コマンドに記号を入れないよう、スクリプトもトポロジも base64 で渡す
-  LAB_TOPOLOGY_B64=$("${PY[@]}" lab/lab_topology.py lab | base64 | tr -d '\n') || die "lab/lab_topology.py が lab の定義を読めなかった"
-  run_on_instance "$INSTANCE_ID" "echo $(base64 < ops/seed_graph.py | tr -d '\n') | base64 -d | NAME_PREFIX=$PREFIX LAB_TOPOLOGY_B64=$LAB_TOPOLOGY_B64 /usr/bin/python3.13 -"
+  # lab を作らない（SKIP_LAB=1）なら入れない。Neptune には Nautobot の Job（7-3c）が書く物理層だけが入る
+  if [ -z "$SKIP_LAB" ]; then
+    log "7-3b. Neptune が空なら lab の定義からトポロジを入れる（初期ロード。入っていれば何もしない。入れ直すのは ops/sync-graph.sh --replace）"
+    # lab/lab_topology.py が lab/splab.clab.yml.in と lab/srlinux/*.cli から機器と回線（と IP 層 / EVPN・BGP 層）を作り（手元で打つ）、ops/seed_graph.py を Web の EC2 の上で
+    # Web と同じ環境変数と依存で動かして Neptune に入れる。コマンドに記号を入れないよう、スクリプトもトポロジも base64 で渡す
+    LAB_TOPOLOGY_B64=$("${PY[@]}" lab/lab_topology.py lab | base64 | tr -d '\n') || die "lab/lab_topology.py が lab の定義を読めなかった"
+    run_on_instance "$INSTANCE_ID" "echo $(base64 < ops/seed_graph.py | tr -d '\n') | base64 -d | NAME_PREFIX=$PREFIX LAB_TOPOLOGY_B64=$LAB_TOPOLOGY_B64 /usr/bin/python3.13 -"
+  else
+    echo "7-3b は飛ばす（SKIP_LAB=1。lab の定義からトポロジを入れない）"
+  fi
 fi
 
 # ---- 7-3c. Nautobot -----------------------------------------------------------------
 # stream（dialin の一覧の SSM パラメータとサービス）と graph（Neptune）の state を読むので、その 2 つの後。Neptune には 7-3b で lab の全層が入っていて、
-# Nautobot の Job は物理層だけを Nautobot に合わせる（最初は Nautobot も lab から入るので差分は無い）
+# Nautobot の Job は物理層だけを Nautobot に合わせる（最初は Nautobot も lab から入るので差分は無い。SKIP_LAB=1 なら 7-3b が無く、Job が書く物理層だけになる）
 NAUTOBOT_WARN=""
 if [ -n "$NAUTOBOT" ]; then
   log "7-3c. Nautobot（terraform/pipeline/nautobot。RDS の作成に 5〜10 分、初回の起動（DB の migrate）に 5〜10 分）"
