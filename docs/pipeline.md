@@ -145,6 +145,26 @@ ops/lab-debug.sh down          # バケットを空にしてスタックを消�
 - イメージは土台の ECR（`<prefix>-lab-*` / `<prefix>-telegraf`）と別のリポジトリ（`<prefix>-debug-lab-srlinux` / `-debug-lab-multitool` / `-debug-telegraf`）に置く。SR Linux（約 1 GB）は `ops/up.sh` で置いてあっても、初回の `up` でもう一度 push する。
 - 境界の Deny（`NETWORK_PERIMETER`）は IAM 側だけ（ロールのインライン。terraform/base/core の `perimeter.tf` と同じ Action と条件をこの VPC に向ける）。バケット側は暗号化されていない経路を拒むだけ（中身は公開のソフトと lab の設定）。
 
+## Kafka の画面（Kafbat UI）を開く
+
+stream を作ると、Kafbat UI（`ghcr.io/kafbat/kafka-ui:v1.5.0` を ECR に写したもの）がいつも 1 タスク立つ（`terraform/pipeline/stream/kafka_ui.tf`。切り替えるキーは無く、`SKIP_STREAM=1` のときだけ無い。+$0.02/h）。LB は無いので、Web の EC2 を踏み台にした SSM のポートフォワードで開く。コマンドは `ops/up.sh` の最後に出る。
+
+```bash
+terraform -chdir=terraform/pipeline/stream output -raw kafka_ui_port_forward_command; echo   # 打って http://localhost:8082/ （ユーザー admin）
+terraform -chdir=terraform/pipeline/stream output -raw kafka_ui_password_command; echo       # admin のパスワード（SSM の SecureString）
+```
+
+| できること | 中身 |
+|---|---|
+| 見る | ブローカー、トピックとパーティション、メッセージの中身、コンシューマーグループと遅れ（lag） |
+| 変える | トピックの追加・設定の変更・削除、メッセージの送信（見るだけにはしていない。2026-10-05 のユーザー決定） |
+| できない | コンシューマーグループの変更と削除、ブローカーの設定の変更（タスクロールに付けていない）。時系列のグラフとアラートは Kafbat UI に無い |
+
+- MSK へは IAM 認証（`SASL_SSL` / `AWS_MSK_IAM`、9098）でつなぐ。
+- 手元のポートは 8082（Web が 8080、Nautobot が 8081）。
+- ヘルスチェックの `/actuator/health` は、Kafka に届かなくても UP を返す。タスクが動いていても、MSK につながっているとは限らない。
+- **AWS では未確認**（2026-10-05 時点）: MSK に IAM でつながるか、画面からトピックを足せるか、タスクロールの権限で足りるか、ポートフォワードで `kafka-ui.<接頭辞>-stream.internal` が引けるか。手元の Docker では起動と画面までを確かめた。
+
 ## Grafana と Splunk を開く
 
 どちらも analytics の ECS のタスクで、LB は無い。Web の EC2 を踏み台にした SSM のポートフォワード（`AWS-StartPortForwardingSessionToRemoteHost`）で開く。コマンドは `ops/up.sh` の最後にも出る。

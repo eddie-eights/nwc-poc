@@ -39,7 +39,7 @@ flowchart LR
 インターフェース型エンドポイントは 1 本 $0.014/h（既定の 1 AZ のとき。`ENDPOINTS_AZ_NUM` を 2 / 3 にすると AZ の数の倍）で、作る機能が呼ぶ API の分だけ `ops/up.sh` が選ぶ（上の金額に入れてある。同じサービスは機能をまたいで 1 本）。
 OpenSearch Serverless のコレクション（KB と logs）も公開せず、VPC エンドポイント 1 本（$0.014/h。両方作っても 1 本。これも `ENDPOINTS_AZ_NUM` の数の倍）からだけ届く。
 
-`PIPELINE=1` だけ（`STORES` は既定の `s3,grafana,splunk`）なら、土台と合わせて約 $2.78/h。`STORES=s3` に絞れば約 $1.86/h。**既定のまま 1 か月置くと約 $2,000（約 30 万円）になるので、使い終わったら当日中に消す。**
+`PIPELINE=1` だけ（`STORES` は既定の `s3,grafana,splunk`）なら、土台と合わせて約 $2.80/h。`STORES=s3` に絞れば約 $1.88/h。**既定のまま 1 か月置くと約 $2,000（約 30 万円）になるので、使い終わったら当日中に消す。**
 
 何 AZ に置くかはリソースごとの `*_AZ_NUM` で選ぶ（既定は 1 AZ。MSK だけ 2 AZ。[deploy.md](docs/deploy.md)）。上の金額は既定の AZ の数のときのもの。
 
