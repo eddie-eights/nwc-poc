@@ -1551,7 +1551,7 @@ def _pipeline_cents(stores="s3,grafana,splunk", skip=()):
     st = set(stores.split(","))
     an = "analytics" not in sk
     roots = "base/ecr base/core " + " ".join(f"pipeline/{r}" for r in ("lab", "stream", "analytics", "graph") if r not in sk) + " pipeline/nautobot"
-    env = {"PATH": os.environ["PATH"], "PIPELINE": "1", "NAUTOBOT": "1", "SNMP_POLL": "1", "KAFKA_UI": "" if "stream" in sk else "1",   # KAFKA_UI は既定 1 で、stream を作らない回は空
+    env = {"PATH": os.environ["PATH"], "PIPELINE": "1", "NAUTOBOT": "1", "SNMP_POLL": "1",
            **{f"SKIP_{r.upper()}": "1" if r in sk else "" for r in ("lab", "stream", "analytics", "graph")},
            "SINK_S3": "1" if "s3" in st else "", "SINK_OPENSEARCH": "1" if "grafana" in st else "", "SINK_PROMETHEUS": "1" if "grafana" in st else "",
            "SINK_SPLUNK": "1" if "splunk" in st else "", "GRAFANA": "1" if an and "grafana" in st else "", "SPLUNK_ON_ECS": "1" if an and "splunk" in st else "",
@@ -1834,13 +1834,13 @@ check("各ルートに *_AZ_NUM を -var で渡す",
       '  ( tf_apply_only pipeline/graph "${GRAPH_VARS[@]}" )' in up
       and re.search(r'tf_apply pipeline/nautobot [^\n]*-var "nautobot_db_az_num=\$NAUTOBOT_DB_AZ_NUM"\n', up) is not None
       and re.search(r'tf_apply workflow [^\n]*-var "lambda_az_num=\$LAMBDA_AZ_NUM"\n', up) is not None
-      and re.search(r'tf_apply pipeline/stream (?:[^\n]*\\\n)+\s*-var "msk_az_num=\$MSK_AZ_NUM" -var "telegraf_az_num=\$TELEGRAF_AZ_NUM" "\$\{STREAM_KAFKA_UI_VARS\[@\]\}"\n', up) is not None
+      and re.search(r'tf_apply pipeline/stream (?:[^\n]*\\\n)+\s*-var "msk_az_num=\$MSK_AZ_NUM" -var "telegraf_az_num=\$TELEGRAF_AZ_NUM"\n', up) is not None
       and 'AGENT_VARS=(-var "agent_image_tag=$IMAGE_TAG" -var "runtime_az_num=$RUNTIME_AZ_NUM" -var "lambda_az_num=$LAMBDA_AZ_NUM" -var "opensearch_az_num=$OPENSEARCH_AZ_NUM")' in up
       and 'ANALYTICS_VARS+=(-var "opensearch_az_num=$OPENSEARCH_AZ_NUM")' in up and '-var "emr_az_num=$EMR_AZ_NUM")' in up)
 # 費用の目安の全体を切り出して AZ_NUM ごとに動かす（endpoint_count は 2 本に固定。機能は全部切ってから 1 つずつ入れる）
 _costall = up[up.index("COST_CENTS=2\n"):up.index("COST_NOTE=$(printf")]
 _COST_OFF = {k: "" for k in ("AGENT", "CREATE_KB", "SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA",
-                             "SPLUNK_ON_ECS", "NAUTOBOT", "WORKFLOW", "KAFKA_UI")}
+                             "SPLUNK_ON_ECS", "NAUTOBOT", "WORKFLOW")}
 _COST_OFF.update(SKIP_LAB="1", SKIP_GRAPH="1", SKIP_STREAM="1", SKIP_ANALYTICS="1", **dict(zip(_AZ_KEYS, "121111111")))
 def _costaz(**env):
     r = subprocess.run(["bash", "-uc", "endpoint_count() { echo 2; }\n" + _costall + 'echo "OUT: $COST_CENTS"'], capture_output=True, text=True,
@@ -1848,11 +1848,10 @@ def _costaz(**env):
     return int(r.stdout.split("OUT: ")[1]) if "OUT: " in r.stdout else r.stderr
 check("費用: エンドポイントは 1.4 × 本数 × ENDPOINTS_AZ_NUM（2 本で 1 AZ 3、3 AZ 8）",
       _costaz() == 2 + 3 and _costaz(ENDPOINTS_AZ_NUM="3") == 2 + 8)
-check("費用: MSK は 2 AZ で 57、3 AZ で +27。Telegraf は受ける側のタスクが AZ ごとに増える（1 AZ 5、3 AZ 7）",
-      _costaz(SKIP_STREAM="") == 5 + 57 + 5 and _costaz(SKIP_STREAM="", MSK_AZ_NUM="3") == 5 + 84 + 5
-      and _costaz(SKIP_STREAM="", TELEGRAF_AZ_NUM="3") == 5 + 57 + 7)
-check("費用: Kafbat UI（KAFKA_UI）は stream を作る回だけ 2（Fargate ARM 0.5 vCPU / 1 GB のタスク 1 つ）",
-      _costaz(SKIP_STREAM="", KAFKA_UI="1") == 5 + 57 + 5 + 2 and _costaz(KAFKA_UI="1") == 5)
+check("費用: MSK は 2 AZ で 57、3 AZ で +27。Telegraf は受ける側のタスクが AZ ごとに増える（1 AZ 5、3 AZ 7）。Kafbat UI は stream を作る回はいつも 2",
+      _costaz(SKIP_STREAM="") == 5 + 57 + 5 + 2 and _costaz(SKIP_STREAM="", MSK_AZ_NUM="3") == 5 + 84 + 5 + 2
+      and _costaz(SKIP_STREAM="", TELEGRAF_AZ_NUM="3") == 5 + 57 + 7 + 2
+      and "\n  COST_CENTS=$((COST_CENTS + 2))   # Kafbat UI（Fargate のタスク 1）\nfi\n" in _costall)
 check("費用: Neptune は 58 × NEPTUNE_AZ_NUM、Nautobot は Multi-AZ で 13 → 16",
       _costaz(SKIP_GRAPH="") == 5 + 58 and _costaz(SKIP_GRAPH="", NEPTUNE_AZ_NUM="3") == 5 + 174
       and _costaz(NAUTOBOT="1") == 5 + 13 and _costaz(NAUTOBOT="1", NAUTOBOT_DB_AZ_NUM="2") == 5 + 16)

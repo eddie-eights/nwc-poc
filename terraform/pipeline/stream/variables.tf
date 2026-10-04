@@ -151,12 +151,8 @@ variable "telegraf_task_memory" {
 }
 
 # ---------------------------------------------------------------- Kafbat UI (kafka_ui.tf)
-variable "create_kafka_ui" {
-  description = "Run Kafbat UI (the Kafka web console, ghcr.io/kafbat/kafka-ui mirrored to ECR) as one ECS task on the Telegraf cluster. Opened through an SSM port forward via the web EC2 (output kafka_ui_port_forward_command), with a login form whose admin password is an SSM SecureString created by ops/up.sh. Not read-only: topics can be created, changed and deleted from the UI. ops/up.sh sets it from KAFKA_UI in deploy.env (default 1)."
-  type        = bool
-  default     = false
-}
-
+# Always created with this root (no switch, user decision of 2026-10-05). Opened through an SSM port forward via the web EC2
+# (output kafka_ui_port_forward_command), with a login form whose admin password is an SSM SecureString created by ops/up.sh
 variable "kafka_ui_image_tag" {
   description = "Tag of the Kafbat UI image in the ECR repository <prefix>-kafka-ui. ops/up.sh mirrors ghcr.io/kafbat/kafka-ui:<KAFKA_UI_TAG> with the same tag and passes it."
   type        = string

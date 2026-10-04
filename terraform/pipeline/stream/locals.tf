@@ -50,7 +50,7 @@ locals {
   telegraf_dialin_sg_id      = try(data.terraform_remote_state.main.outputs.security_group_ids["telegraf_dialin"], "")
   telegraf_dialout_nlb_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["telegraf_dialout_nlb"], "")
   msk_sg_id                  = try(data.terraform_remote_state.main.outputs.security_group_ids["msk"], "")
-  # Kafbat UI（kafka_ui.tf）。2026-10-05 より前の土台には無いので、create_kafka_ui のときは kafka_ui.tf の precondition で止める
+  # Kafbat UI（kafka_ui.tf）。2026-10-05 より前の土台には無いので、kafka_ui.tf の precondition で止める
   kafka_ui_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["kafka_ui"], "")
   # Kafbat UI のポートフォワードの踏み台
   web_instance_id   = try(data.terraform_remote_state.main.outputs.web_instance_id, "")

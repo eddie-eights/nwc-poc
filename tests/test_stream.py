@@ -356,23 +356,23 @@ check("circuits: source や name の無いもの、type / oper-state の無い�
                       FakeMetric("lab_if_oper", {"source": S, "name": "ethernet-1/1"}, {"other": "up"})]) == {})
 
 
-# ---- Kafbat UI（terraform/pipeline/stream/kafka_ui.tf。2026-10-05）: MSK の画面。見るだけにせず、画面からトピックを足せる
-import subprocess
-kui = _read("terraform", "pipeline", "stream", "kafka_ui.tf")
+# ---- Kafbat UI（terraform/pipeline/stream/kafka_ui.tf。2026-10-05）: MSK の画面。見るだけにせず、画面からトピックを足せる。stream を作る回はいつも作る
+kui =_read("terraform", "pipeline", "stream", "kafka_ui.tf")
 kui_code = "\n".join(l for l in kui.splitlines() if not l.lstrip().startswith("#"))   # コメントを除いた中身
 stream_vars = _read("terraform", "pipeline", "stream", "variables.tf")
 stream_out = _read("terraform", "pipeline", "stream", "outputs.tf")
 up = _read("ops", "up.sh")
 denv = _read("ops", "deploy-env.sh")
 ecr_tf = _read("terraform", "base", "ecr", "main.tf")
-check("Kafbat UI の資源は全部 create_kafka_ui の count で、create_kafka_ui の既定は false（ops/up.sh が KAFKA_UI から渡す）",
-      len(re.findall(r'^resource "', kui, re.M)) == len(re.findall(r'^resource "[^"]+" "[^"]+" \{\n  count = var\.create_kafka_ui( && [^\n]*)? \? 1 : 0\n', kui, re.M)) == 12
-      and re.search(r'variable "create_kafka_ui" \{[^}]*type\s*=\s*bool[^}]*default\s*=\s*false', stream_vars) is not None)
+check("Kafbat UI の資源 12 個は stream の root にいつもある（切り替える変数は無い。2026-10-05 のユーザー決定。count は閉域の Deny の 2 つが perimeter の有無で使うだけ）",
+      len(re.findall(r'^resource "', kui, re.M)) == 12
+      and re.findall(r'^  count = (.*)$', kui, re.M) == ['local.perimeter_policy_arn != "" ? 1 : 0'] * 2
+      and "create_kafka_ui" not in tf and "[0]" not in kui_code)
 check("Kafbat UI は stream の ECS クラスタの Fargate ARM64 に 1 タスク。Cloud Map の kafka-ui で引き、LB は置かない",
       re.search(r'resource "aws_ecs_service" "kafka_ui" \{[\s\S]*?cluster\s*=\s*aws_ecs_cluster\.telegraf\.id[\s\S]*?desired_count\s*=\s*1\n[\s\S]*?launch_type\s*=\s*"FARGATE"', kui) is not None
       and 'cpu_architecture        = "ARM64"' in kui and 'portMappings = [{ containerPort = 8080, protocol = "tcp" }]' in kui
       and re.search(r'resource "aws_service_discovery_service" "kafka_ui" \{[^}]*name = "kafka-ui"', kui) is not None
-      and "registry_arn = aws_service_discovery_service.kafka_ui[0].arn" in kui
+      and "registry_arn = aws_service_discovery_service.kafka_ui.arn" in kui
       and "load_balancer" not in kui and "aws_lb" not in kui)
 _kenv = kui[kui.index("environment = concat("):kui.index("secrets = [")]
 _ksec = kui[kui.index("secrets = ["):kui.index("healthCheck = {")]
@@ -390,7 +390,7 @@ check("MSK へは IAM 認証（SASL_SSL / AWS_MSK_IAM / IAMClientCallbackHandler
       and '{ name = "KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM", value = "AWS_MSK_IAM" }' in kui
       and '{ name = "KAFKA_CLUSTERS_0_PROPERTIES_SASL_CLIENT_CALLBACK_HANDLER_CLASS", value = "software.amazon.msk.auth.iam.IAMClientCallbackHandler" }' in kui
       and '{ name = "KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG", value = "software.amazon.msk.auth.iam.IAMLoginModule required;" }' in kui
-      and "awsRoleArn" not in kui_code and "sts:" not in kui_code and "task_role_arn            = aws_iam_role.kafka_ui_task[0].arn" in kui)
+      and "awsRoleArn" not in kui_code and "sts:" not in kui_code and "task_role_arn            = aws_iam_role.kafka_ui_task.arn" in kui)
 check("認証の違いは kafka_ui_security_protocol だけで切り替わる（SASL_SSL は IAM のブートストラップと SASL の 3 つ、PLAINTEXT は平文のブートストラップで SASL は無し。cycle 005 の OSS 版で使い回す）",
       re.search(r'variable "kafka_ui_security_protocol" \{[\s\S]*?contains\(\["SASL_SSL", "PLAINTEXT"\], var\.kafka_ui_security_protocol\)', stream_vars) is not None
       and 'kafka_ui_iam               = var.kafka_ui_security_protocol == "SASL_SSL"' in kui
@@ -409,7 +409,7 @@ check("タスクロールは Kafbat UI が使う Kafka の操作だけ（クラ�
       and "Resource = aws_msk_cluster.stream.arn" in _kpol and "Resource = local.topic_arns" in _kpol and "Resource = local.group_arns" in _kpol
       and 'group_arns = "${replace(aws_msk_cluster.stream.arn, ":cluster/", ":group/")}/*"' in _read("terraform", "pipeline", "stream", "locals.tf"))
 check("実行ロールにもタスクロールにも閉域の Deny（perimeter）を付ける（古い土台で ARN が無ければ付けない）",
-      all(re.search(r'resource "aws_iam_role_policy_attachment" "kafka_ui_' + r + r'_perimeter" \{\n  count = var\.create_kafka_ui && local\.perimeter_policy_arn != "" \? 1 : 0\n\n  role\s*=\s*aws_iam_role\.kafka_ui_' + r + r'\[0\]\.name', kui)
+      all(re.search(r'resource "aws_iam_role_policy_attachment" "kafka_ui_' + r + r'_perimeter" \{\n  count = local\.perimeter_policy_arn != "" \? 1 : 0\n\n  role\s*=\s*aws_iam_role\.kafka_ui_' + r + r'\.name', kui)
           for r in ("execution", "task")))
 _sg_rows = core_sg
 _api_clients = re.findall(r'"(\w+)"', re.search(r'aws_api_clients = \[([^\]]*)\]', _sg_rows).group(1))
@@ -423,7 +423,7 @@ check("SG は土台（base/core）の kafka_ui。通信の表に Web の EC2 →
 check("開き方は Grafana と同じ（web の EC2 を踏み台にした SSM のポートフォワード）。PC 側は 8082（Web 8080 と Nautobot 8081 とぶつけない）",
       'AWS-StartPortForwardingSessionToRemoteHost --parameters \'{\\"host\\":[\\"kafka-ui.${local.stream_service_namespace}\\"],\\"portNumber\\":[\\"8080\\"],\\"localPortNumber\\":[\\"8082\\"]}\'' in stream_out
       and "--target ${local.web_instance_id}" in stream_out
-      and re.search(r'if \[ -n "\$KAFKA_UI" \]; then\n  echo "Kafbat UI（http://localhost:8082/[^\n]*\n  tf pipeline/stream output -raw kafka_ui_port_forward_command; echo\n'
+      and re.search(r'\nif \[ -z "\$SKIP_STREAM" \]; then\n  echo "Kafbat UI（http://localhost:8082/[^\n]*\n  tf pipeline/stream output -raw kafka_ui_port_forward_command; echo\n'
                     r'  tf pipeline/stream output -raw kafka_ui_password_command; echo\nfi\n', up) is not None)
 _kui_tag = re.search(r'^KAFKA_UI_TAG=(\S+)$', up, re.M)
 check("イメージは ghcr.io/kafbat/kafka-ui を ECR の <接頭辞>-kafka-ui に写す。版は固定で、up.sh の KAFKA_UI_TAG と kafka_ui_image_tag の既定が同じ",
@@ -434,28 +434,24 @@ check("イメージは ghcr.io/kafbat/kafka-ui を ECR の <接頭辞>-kafka-ui 
       and 'ecr_has "$PREFIX-kafka-ui" "$KAFKA_UI_TAG"' in up and '"kafka_ui_image_tag=$KAFKA_UI_TAG"' in up)
 check("Kafbat UI が呼ぶ AWS の API（ECR・ログ・SSM）は、stream を作る回のエンドポイントで足りる",
       "pipeline/stream) add_endpoints ecr.api ecr.dkr logs ;;" in up and "add_endpoints ssm ssmmessages" in up)
-check("スイッチは deploy.env の KAFKA_UI（DEPLOY_ENV_KEYS と deploy.env.example と up.sh の冒頭の説明にある）",
-      re.search(r"\bKAFKA_UI\b", denv.split("DEPLOY_ENV_KEYS=")[1].split('"')[1]) is not None
-      and re.search(r"^#KAFKA_UI=0$", _read("deploy.env.example"), re.M) is not None
-      and re.search(r"^#   KAFKA_UI=0 ", up, re.M) is not None)
-# KAFKA_UI の既定と SKIP_STREAM、stream の apply に渡す変数を up.sh から切り出して動かす（ensure_secret は名前を出すだけの代わり）
-_kblk = (up[up.index('KAFKA_UI="${KAFKA_UI:-1}"'):].split("\n", 1)[0] + "\n"
-         + up[up.index('if [ -n "$SKIP_STREAM" ]; then KAFKA_UI=""; fi'):].split("\n", 1)[0] + "\n"
-         + up[up.index("  STREAM_KAFKA_UI_VARS=(-var create_kafka_ui=false)"):up.index("  tf_apply pipeline/stream ")])
-def _kafka_ui(**env):
-    r = subprocess.run(["bash", "-c", '. "$DENV"\ndie() { echo "DIE: $*"; exit 1; }\nensure_secret() { echo "SECRET $1"; }\nPREFIX=p\nKAFKA_UI_TAG=vX\n'
-                        + _kblk + 'echo "OUT: ${STREAM_KAFKA_UI_VARS[*]}"'],
-                       capture_output=True, text=True, env={"PATH": os.environ["PATH"], "DENV": os.path.join(ROOT, "ops", "deploy-env.sh"), **env})
-    return r.stdout.strip().splitlines()
-check("KAFKA_UI は既定で作る（パスワードを SSM に作り、create_kafka_ui=true と版を渡す）。KAFKA_UI=0 と SKIP_STREAM=1 では作らない（create_kafka_ui=false でパスワードも作らない）",
-      _kafka_ui() == ["SECRET /p/kafka-ui/admin-password", "OUT: -var create_kafka_ui=true -var kafka_ui_image_tag=vX"]
-      and _kafka_ui(KAFKA_UI="1") == _kafka_ui()
-      and _kafka_ui(KAFKA_UI="0") == ["OUT: -var create_kafka_ui=false"]
-      and _kafka_ui(SKIP_STREAM="1") == ["OUT: -var create_kafka_ui=false"]
-      and _kafka_ui(KAFKA_UI="x")[-1].startswith("DIE:")
-      and up.index('KAFKA_UI="${KAFKA_UI:-1}"') < up.index('if [ -n "$SKIP_STREAM" ]; then KAFKA_UI=""; fi') < up.index("COST_CENTS=2\n") < up.index("STREAM_KAFKA_UI_VARS="))
-check("ops/down.sh は Kafbat UI のパスワード（ManagedBy=ops/up.sh のタグ）も消す。stream の destroy に Kafbat UI の変数は要らない（既定 false でも state のものは消える）",
+# stream を作る回だけ（if [ -z "$SKIP_STREAM" ] の中）にあるか。その if より後ろで、間に閉じる fi が無い
+def _in_stream_block(marker):
+    i = up.index(marker)
+    j = up.rindex('\nif [ -z "$SKIP_STREAM" ]; then\n', 0, i)
+    return "\nfi\n" not in up[j:i]
+check("スイッチは無い: deploy.env に KAFKA_UI は書けず（DEPLOY_ENV_KEYS に無い）、deploy.env.example にも up.sh にも無い。up.sh の冒頭の説明は「いつも作る」",
+      re.search(r"\bKAFKA_UI\b", denv.split("DEPLOY_ENV_KEYS=")[1].split('"')[1]) is None
+      and re.search(r"\bKAFKA_UI\b", _read("deploy.env.example")) is None and re.search(r"\bKAFKA_UI\b", up) is None
+      and re.search(r"^#   （Kafbat UI）\s+stream を作る回は Kafbat UI[^\n]*\*\*いつも作る\*\*（切り替える変数は無い", up, re.M) is not None)
+check("stream を作る回はいつも作る: イメージを ECR に写し、パスワードを SSM に作り、stream の apply に版を渡し、最後に開き方を出す（どれも SKIP_STREAM が空の if の中）",
+      _in_stream_block('  if ecr_has "$PREFIX-kafka-ui" "$KAFKA_UI_TAG"; then')
+      and _in_stream_block('  ensure_secret "/$PREFIX/kafka-ui/admin-password" password ')
+      and _in_stream_block('  tf_apply pipeline/stream ')
+      and up.index('ensure_secret "/$PREFIX/kafka-ui/admin-password"') < up.index("  tf_apply pipeline/stream ")
+      and '-var "kafka_ui_image_tag=$KAFKA_UI_TAG"' in up[up.index("  tf_apply pipeline/stream "):].split("\n", 1)[0]
+      and _in_stream_block('  echo "Kafbat UI（http://localhost:8082/'))
+check("ops/down.sh は Kafbat UI のパスワード（ManagedBy=ops/up.sh のタグ）も消す。stream の destroy に Kafbat UI の変数は要らない",
       "Tags" in up[up.index("ensure_secret() {"):up.index("ensure_secret() {") + 2500] and "Key=tag:ManagedBy,Values=ops/up.sh" in _read("ops", "down.sh")
-      and "create_kafka_ui" not in _read("ops", "down.sh"))
+      and "kafka_ui" not in _read("ops", "down.sh"))
 
 print(f"通過 {passed} / 失敗 0")

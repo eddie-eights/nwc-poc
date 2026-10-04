@@ -28,29 +28,23 @@ locals {
 }
 
 resource "aws_cloudwatch_log_group" "kafka_ui" {
-  count = var.create_kafka_ui ? 1 : 0
-
   name              = local.kafka_ui_log_group
   retention_in_days = var.log_retention_days
 }
 
 resource "aws_service_discovery_private_dns_namespace" "stream" {
-  count = var.create_kafka_ui ? 1 : 0
-
   name        = local.stream_service_namespace
   description = "Kafbat UI of ${local.name_prefix} (terraform/pipeline/stream)"
   vpc         = local.vpc_id
 }
 
 resource "aws_service_discovery_service" "kafka_ui" {
-  count = var.create_kafka_ui ? 1 : 0
-
   name = "kafka-ui"
   # タスクの登録が残っていても destroy できるようにする
   force_destroy = true
 
   dns_config {
-    namespace_id   = aws_service_discovery_private_dns_namespace.stream[0].id
+    namespace_id   = aws_service_discovery_private_dns_namespace.stream.id
     routing_policy = "MULTIVALUE"
 
     dns_records {
@@ -61,15 +55,13 @@ resource "aws_service_discovery_service" "kafka_ui" {
 }
 
 resource "aws_ecs_task_definition" "kafka_ui" {
-  count = var.create_kafka_ui ? 1 : 0
-
   family                   = "${local.name_prefix}-kafka-ui"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = var.kafka_ui_task_cpu
   memory                   = var.kafka_ui_task_memory
-  execution_role_arn       = aws_iam_role.kafka_ui_execution[0].arn
-  task_role_arn            = aws_iam_role.kafka_ui_task[0].arn
+  execution_role_arn       = aws_iam_role.kafka_ui_execution.arn
+  task_role_arn            = aws_iam_role.kafka_ui_task.arn
 
   runtime_platform {
     operating_system_family = "LINUX"
@@ -113,7 +105,7 @@ resource "aws_ecs_task_definition" "kafka_ui" {
       logConfiguration = {
         logDriver = "awslogs"
         options = {
-          awslogs-group         = aws_cloudwatch_log_group.kafka_ui[0].name
+          awslogs-group         = aws_cloudwatch_log_group.kafka_ui.name
           awslogs-region        = var.region
           awslogs-stream-prefix = "kafka-ui"
         }
@@ -134,11 +126,9 @@ resource "aws_ecs_task_definition" "kafka_ui" {
 }
 
 resource "aws_ecs_service" "kafka_ui" {
-  count = var.create_kafka_ui ? 1 : 0
-
   name            = "${local.name_prefix}-kafka-ui"
   cluster         = aws_ecs_cluster.telegraf.id
-  task_definition = aws_ecs_task_definition.kafka_ui[0].arn
+  task_definition = aws_ecs_task_definition.kafka_ui.arn
   desired_count   = 1
   launch_type     = "FARGATE"
 
@@ -153,7 +143,7 @@ resource "aws_ecs_service" "kafka_ui" {
   }
 
   service_registries {
-    registry_arn = aws_service_discovery_service.kafka_ui[0].arn
+    registry_arn = aws_service_discovery_service.kafka_ui.arn
   }
 
   lifecycle {
@@ -172,26 +162,20 @@ resource "aws_ecs_service" "kafka_ui" {
 
 # ---------------------------------------------------------------- IAM
 resource "aws_iam_role" "kafka_ui_execution" {
-  count = var.create_kafka_ui ? 1 : 0
-
   name               = "${local.name_prefix}-kafka-ui-exec"
   description        = "ECS task execution role of the Kafbat UI task (ECR pull, CloudWatch Logs, admin password from SSM)"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
 }
 
 resource "aws_iam_role_policy_attachment" "kafka_ui_execution" {
-  count = var.create_kafka_ui ? 1 : 0
-
-  role       = aws_iam_role.kafka_ui_execution[0].name
+  role       = aws_iam_role.kafka_ui_execution.name
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
 # secrets の SecureString（AWS 管理の aws/ssm キーなので kms:Decrypt は要らない）
 resource "aws_iam_role_policy" "kafka_ui_execution" {
-  count = var.create_kafka_ui ? 1 : 0
-
   name = "${local.name_prefix}-kafka-ui-exec"
-  role = aws_iam_role.kafka_ui_execution[0].name
+  role = aws_iam_role.kafka_ui_execution.name
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -205,8 +189,6 @@ resource "aws_iam_role_policy" "kafka_ui_execution" {
 }
 
 resource "aws_iam_role" "kafka_ui_task" {
-  count = var.create_kafka_ui ? 1 : 0
-
   name               = "${local.name_prefix}-kafka-ui-task"
   description        = "Kafbat UI task - browse the MSK cluster, create / alter / delete topics, read and write messages (MSK IAM)"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
@@ -215,10 +197,8 @@ resource "aws_iam_role" "kafka_ui_task" {
 # Kafbat UI が使う Kafka の操作だけ。ブローカーの設定の変更（AlterClusterDynamicConfiguration）と consumer group の変更・削除（AlterGroup / DeleteGroup）は付けない
 # （画面のその操作は権限エラーになる）。メッセージを読むときの consumer は group を使わない（assign）
 resource "aws_iam_role_policy" "kafka_ui_task" {
-  count = var.create_kafka_ui ? 1 : 0
-
   name = "${local.name_prefix}-kafka-ui-task"
-  role = aws_iam_role.kafka_ui_task[0].name
+  role = aws_iam_role.kafka_ui_task.name
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -263,15 +243,15 @@ resource "aws_iam_role_policy" "kafka_ui_task" {
 
 # terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
 resource "aws_iam_role_policy_attachment" "kafka_ui_execution_perimeter" {
-  count = var.create_kafka_ui && local.perimeter_policy_arn != "" ? 1 : 0
+  count = local.perimeter_policy_arn != "" ? 1 : 0
 
-  role       = aws_iam_role.kafka_ui_execution[0].name
+  role       = aws_iam_role.kafka_ui_execution.name
   policy_arn = local.perimeter_policy_arn
 }
 
 resource "aws_iam_role_policy_attachment" "kafka_ui_task_perimeter" {
-  count = var.create_kafka_ui && local.perimeter_policy_arn != "" ? 1 : 0
+  count = local.perimeter_policy_arn != "" ? 1 : 0
 
-  role       = aws_iam_role.kafka_ui_task[0].name
+  role       = aws_iam_role.kafka_ui_task.name
   policy_arn = local.perimeter_policy_arn
 }

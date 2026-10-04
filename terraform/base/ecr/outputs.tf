@@ -29,7 +29,7 @@ output "telegraf_repository_url" {
 }
 
 output "kafka_ui_repository_url" {
-  description = "Push ghcr.io/kafbat/kafka-ui:<KAFKA_UI_TAG of ops/up.sh> (arm64) here with the same tag (step 2, when stream is built with KAFKA_UI=1). terraform/pipeline/stream runs it on ECS."
+  description = "Push ghcr.io/kafbat/kafka-ui:<KAFKA_UI_TAG of ops/up.sh> (arm64) here with the same tag (step 2, whenever stream is built). terraform/pipeline/stream runs it on ECS."
   value       = aws_ecr_repository.pipeline["kafka-ui"].repository_url
 }
 
