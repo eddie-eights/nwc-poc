@@ -8,7 +8,7 @@ main(fable-5.1) / effort: high
 - ほかの格納先は AWS のマネージドサービスで、複製は AWS の側が持つ（S3 Tables、Amazon Managed Service for Prometheus、OpenSearch Serverless）。
 - やりたいことは 1 つ。**Splunk に格納したデータが冗長化されていること。** 1 台が落ちても、入れたデータを検索できる。
 - 検索の入口（search head）の冗長化と、タスクを全部落としたあとのデータの保持は、このサイクルの目的ではない。
-- AZ をまたぐ配置は、あとから目的に足した（2026-10-04。リソースごとの `<リソース>_AZ_NUM` で冗長化の度合いを選ぶ、というユーザーの決定に合わせた）。indexer を AZ ごとに 1 台ずつ置く。
+- AZ をまたぐ配置は、あとから目的に足した（2026-10-04。リソースごとの `<リソース>_AZ_NUM` で冗長化の度合いを選ぶ、というユーザーの決定に合わせた）。indexer を AZ の数だけ置き、AZ に散らす。
 - 実装を始めるのは、次の 3 つが main に入ってから。
   - 「Splunk と Grafana のアラートを比べる（002）」。保存済みサーチと既定値を変えている。
   - `feat/splunk-boto3`。Splunk のアラートアクションを boto3 に替えている（イメージと入口が重なる）。
@@ -35,7 +35,11 @@ main(fable-5.1) / effort: high
 | 2 | manager 1 + indexer 2 + search head 1 | 4 | 2 | indexer 1 台、または indexer のいる AZ 1 つ |
 | 3 | manager 1 + indexer 3 + search head 1 | 5 | 3 | indexer 2 台、または indexer のいる AZ 2 つ |
 
-- indexer は AZ ごとに 1 台ずつ置く（1 つ目、2 つ目、3 つ目の AZ のサブネット）。
+- indexer は AZ の数だけ置く。1 つのサービスに、1 つ目、2 つ目、3 つ目の AZ のサブネットを渡す。
+  - AZ ごとに 1 台になるかは、Fargate の振り分けに任せる（保証ではない。AWS の文書の言い方は「tries its best to spread」）。
+  - AZ ごとにサービスを分けない。分けると配置は保証できるが、タスク定義が変わったときに全部のサービスが同時に入れ替わり、「1 台ずつ入れ替える」が成り立たない。
+  - AZ の偏りを直す機能（`availability_zone_rebalancing`）は `maximumPercent` 100 と一緒に使えないので、DISABLED と明示する。
+  - `ops/up.sh` は全タスク待ちのあとに、indexer のタスクの AZ を見て、同じ AZ に 2 台いたら注意を出す（止めない）。
 - manager と search head は 1 つ目の AZ に置く。この AZ が落ちると検索とアラートは止まるが、データは残りの indexer にある。ECS が起こし直せば、また検索できる。
 - 組み合わせの検査（`ops/up.sh`）:
   - `STORES` に `splunk` が無いのに `SPLUNK_AZ_NUM` が 2 か 3 → 止める。
@@ -83,8 +87,7 @@ flowchart LR
 ### データが複製されるために要る 3 つのこと
 
 1. **index `main` を複製の対象にする。**
-   Splunk の index は、`indexes.conf` に `repFactor = auto` と書いたものだけが複製される。書かなければ、クラスターにしても複製されない。HEC の token の既定の index は `main` なので、`main` に付ける。`SPLUNK_INDEX` で別の index を使うときは、その index も同じ設定で作る。
-   - 入れ方: cluster manager が indexer に配る設定（manager の `manager-apps/_cluster/local/indexes.conf`）に書く。indexer に同じ `indexes.conf` を配るのが、Splunk の決まった形。
+   Splunk の index は、`repFactor = auto` が付いたものだけが複製される。`main` には、manager の既定の設定で付いている（手元で確認）。`indexes.conf` は自分で書かない。`SPLUNK_INDEX` で別の index を使うときは、その index に同じ設定が要る（このサイクルでは扱わない）。
 2. **indexer 同士と、manager・search head との間のポートを開ける。**
    いまの SG は 8089 を開けていない（terraform/base/core の security_groups.tf の冒頭「開けていないもの: … Splunk の管理 API 8089（外から使わない）」）。`splunk` から `splunk` へ、8089（管理と検索）と 9887（複製）を足す。**いつも作る**（base/core は `SPLUNK_AZ_NUM` を知らない層なので、1 台のときも規則だけはある。同じ SG の中だけの通信で、1 台のときは相手がいない）。9997（forwarder の受け口）も足す。search head と manager は、自分の `_internal` と `_audit` を 9997 で indexer へ送っている（手元で確認）。docs にある `index=_internal` の調べ方は、この転送があるから動く。
 3. **クラスターの合言葉（pass4SymmKey）を 4 つのタスクに同じ値で渡す。**
@@ -123,7 +126,7 @@ flowchart LR
 |---|---|
 | 役割の名前 | `SPLUNK_ROLE` = `splunk_cluster_master` / `splunk_indexer` / `splunk_search_head` |
 | manager の場所 | `SPLUNK_CLUSTER_MASTER_URL` に `splunk-cm.<名前空間>` |
-| 複製の設定 | `SPLUNK_IDXC_SECRET`、`SPLUNK_IDXC_REPLICATION_FACTOR`、`SPLUNK_IDXC_SEARCH_FACTOR` |
+| 複製の設定 | `SPLUNK_IDXC_PASS4SYMMKEY`（10.4.3 の実物の名前。手元で確認。前は `SPLUNK_IDXC_SECRET` と推測していた）、`SPLUNK_IDXC_REPLICATION_FACTOR`、`SPLUNK_IDXC_SEARCH_FACTOR` |
 | 複製のポート | 9887 |
 | indexer の一覧 | manager と search head に `SPLUNK_INDEXER_URL` が要るかもしれない。A レコードが複数ある名前 1 つで足りるかは分からない |
 | 1 台のときの `SPLUNK_INDEX` | 1 台でも効いていないかもしれない（index を作る処理が無く、HEC が 400 を返す、というエンジニアの見立て）。手元で確かめ、本当なら別の小さい修正にする（このサイクルには入れない） |
@@ -155,7 +158,17 @@ flowchart LR
     - スクリプトは、食い違うたびに失敗を返す。healthCheck の `retries` は 10 のまま変えないので、続けて 10 回（約 5 分）食い違ったときに ECS が入れ替える。indexer が普通に入ってきたときの食い違いは 1 秒ほどで消える（手元で確認）ので、入れ替えにはならない。
     - `retries` を 3 に減らさない。突き合わせは起動の確認と同じ healthCheck に入るので、減らすと起動の猶予が 600 秒から 390 秒に縮む（search head の起動は手元で 342 秒）。
     - manager に問い合わせられないときは、unhealthy にしない（manager が落ちただけで search head まで入れ替えない）。
-  - B. `ops/up.sh` の全タスク待ちのあとに、同じ突き合わせを 1 回行う。食い違っていたら、止めて理由を出す。
+  - B. `ops/up.sh` の全タスク待ちのあとに、突き合わせの結果を 1 回確かめる。食い違っていたら、止めて理由を出す。
+    - up.sh から search head の 8089 へは届かない（8089 は外から使わない）。そこで、A のスクリプトが、判定が変わったときに 1 行をコンテナの標準出力（PID 1 の stdout）へ書く。その行は CloudWatch Logs に出る。up.sh はロググループの最新の判定を読む。
+    - IAM もエンドポイントも足さない。A が働いた記録もログに残る。
+    - ヘルスチェックのプロセスから `/proc/1/fd/1` に書けることは、手元で確かめる。書けなければ ECS Exec（`aws ecs execute-command`）で A のスクリプトを 1 回動かす形にする。
+- **新しい indexer が、クラスターに入る前に HEC を受けないようにする。**
+  手元で測ると、起動から 72 秒で HEC が 200 を返し（まだクラスターに入っていない）、146 秒で manager から見て Up、155 秒でヘルスチェック（checkstate）が通る。
+  - `splunk-idx` の Cloud Map に `health_check_custom_config` を付ける。ECS のヘルスチェックが通るまで DNS に載らないので、Spark の HEC は参加済みの indexer にだけ届く。
+  - 例外は、`splunk-idx` の記録が全部 unhealthy のとき（Route 53 は unhealthy の記録も返す）。初回は up.sh が全タスクの HEALTHY を待ってから Spark を起こし、入れ替えは `minimumHealthyPercent` 50 で全台が同時に止まらないので、避けられる。
+  - indexer のヘルスチェックに「manager から見て Up」は入れない。入れると、manager が落ちただけで全部の indexer が unhealthy になり、ECS が全部を止めてデータが消える。
+- **待ち行列が詰まった indexer は、`stopTimeout` 120 秒で止まりきらないことがある。**
+  Fargate の `stopTimeout` は 120 秒が上限で、延ばせない。受け入れる。手元で詰まったのは GUID を固定する案の筋書きのときだけで、普通の停止は 47 秒だった。SIGKILL になったときに失うのは、まだ複製していない受信中の分。
 - **やらない案。**
   indexer の GUID を台ごとに固定する（`instance.cfg` を書く）。2026-10-04 に手元の Docker の 4 台で確かめて、不合格だった。
   - 401 は直らない。原因は GUID ではなく、search head が同じ host:port の peer に鍵（`distServerKeys` の `trusted.pem`）を送り直さないこと。15 分待っても 401 のまま。
@@ -172,10 +185,9 @@ flowchart LR
 | ファイル | 変更 |
 |---|---|
 | `splunk/entrypoint.sh` | 役割が standalone / search head でなければ、app `netops_alerts` を消してから上流の入口を起こす |
-| `splunk/`（新しい設定） | manager が配る `indexes.conf`（`main` に `repFactor = auto`）。置き場所と入れ方は手元の確認で決める |
 | `terraform/pipeline/analytics/splunk.tf` | 変数 `splunk_az_num` が 2 か 3 のとき、manager、indexer（AZ ごとに 1 台。数は `splunk_az_num`）、search head のタスク定義とサービス、Cloud Map の `splunk-cm` と `splunk-idx` を作る。1 のときは今のまま |
 | `terraform/pipeline/analytics/variables.tf`、`locals.tf`、`outputs.tf` | 変数 `splunk_az_num`、HEC の URL の切り替え、サービス名の output（待つ対象が 3 つのサービスの全部のタスクになる）、cluster manager の UI へのポートフォワードのコマンドの output（クラスターのときだけ。`splunk_port_forward_command` と同じ形で、宛先が `splunk-cm`） |
-| `terraform/base/core/security_groups.tf` | `splunk → splunk` の 8089 と 9887（いつも作る） |
+| `terraform/base/core/security_groups.tf` | `splunk → splunk` の 8089、9887、9997（いつも作る） |
 | `ops/up.sh` | `SPLUNK_AZ_NUM`（1 / 2 / 3 の検査と、`STORES`・`SPLUNK_INDEX` との組み合わせの検査）、合言葉の SSM、3 つのサービスの全部のタスクが HEALTHY になるのを待つ、費用の表示 |
 | `deploy.env.example`、deploy-env の許可リスト | `SPLUNK_AZ_NUM`（「冗長化用」のまとまりに置く） |
 | `tests/test_analytics.py` ほか | 下の「検証方法」 |
@@ -225,7 +237,7 @@ manager 1、indexer 2、search head 1 を起こし、HEC でイベントを 1000
   - HEC の URL が `https://splunk-idx.<名前空間>:8088`。
   - SNS へ publish するタスクロールと `DEVICE_MAP` が search head にだけある。
   - 合言葉が `secrets`（SSM）で渡り、`environment` に値が無い。
-- SG に `splunk → splunk` の 8089 と 9887 がある（`splunk_az_num` によらない）。
+- SG に `splunk → splunk` の 8089、9887、9997 がある（`splunk_az_num` によらない）。
 - `ops/up.sh` は、次のとき何も作らずに止まる。
   - `SPLUNK_AZ_NUM` が 1 / 2 / 3 以外。
   - `STORES` に `splunk` が無いのに `SPLUNK_AZ_NUM` が 2 か 3（`SKIP_ANALYTICS=1` のときは止めない）。
@@ -234,7 +246,7 @@ manager 1、indexer 2、search head 1 を起こし、HEC でイベントを 1000
 
 ### AWS（ユーザーが `ops/up.sh` で行う。このサイクルの完了の条件）
 
-- `SPLUNK_AZ_NUM=2` で立て、上の 1〜3 を AWS で確かめる。3 は、ECS で indexer のタスクを 1 つ止めて行う。indexer の 2 つのタスクが別々の AZ にいることも見る。
+- `SPLUNK_AZ_NUM=2` で立て、上の 1〜3 を AWS で確かめる。3 は、ECS で indexer のタスクを 1 つ止めて行う。indexer の 2 つのタスクが別々の AZ にいることも見る（保証ではないので、同じ AZ にいたら up.sh の注意が出ることも合わせて見る）。
 - Grafana と Splunk のアラートが、1 台のときと同じ数だけ届く。
 
 ## 費用
