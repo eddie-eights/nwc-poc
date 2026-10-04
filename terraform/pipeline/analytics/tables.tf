@@ -4,7 +4,7 @@
 # 列は Telegraf の JSON（{"fields":{…},"name":"…","tags":{…},"timestamp":秒}）をそのまま持つ。
 # tags と fields は JSON 文字列のまま入れる（機器やメトリクスが増えても列を変えないため。列の型は Iceberg のプリミティブだけ）
 # テーブルバケットと namespace はいつも作る（証跡の proposal_events が入る。2026-09-24）。
-# 生データの snmp_metrics だけは var.sinks に iceberg があるときだけ作る（deploy.env の SINK_S3。格納先は 1 つずつ 1 / 0 で選べる）
+# 生データの raw_telemetry だけは var.sinks に iceberg があるときだけ作る（deploy.env の SINK_S3。格納先は 1 つずつ 1 / 0 で選べる）
 resource "aws_s3tables_table_bucket" "tables" {
   name = local.table_bucket
 }
@@ -51,7 +51,15 @@ moved {
   to   = aws_s3tables_namespace.netops
 }
 
-resource "aws_s3tables_table" "snmp_metrics" {
+# 2026-10-04 に snmp_metrics から改名した（metrics / gnmi / mdt / traps / logs の全トピックが入るので、SNMP のメトリクスだけに見えない名前に）。
+# moved で state のアドレスを引き継ぐ。テーブルの名前（var.table_name）も変わるので、古いテーブルを残したまま apply すると
+# 作り直し（中身は消える）になるかもしれない（AWS では未確認。この PoC はその日に消すので構わない）
+moved {
+  from = aws_s3tables_table.snmp_metrics
+  to   = aws_s3tables_table.raw_telemetry
+}
+
+resource "aws_s3tables_table" "raw_telemetry" {
   count = local.sink_iceberg ? 1 : 0
 
   name             = var.table_name

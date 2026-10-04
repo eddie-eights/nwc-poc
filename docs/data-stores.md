@@ -12,7 +12,7 @@
 
 | データ | 置き場 | 書く | 読む |
 |---|---|---|---|
-| 生データの履歴（metrics / gnmi / mdt / traps / logs の全部） | S3 Tables（Iceberg）`snmp_metrics` | Spark の `iceberg` | まだ読む側が無い（エージェントの `query_history` は Athena 未配備のため案内だけ返す） |
+| 生データの履歴（metrics / gnmi / mdt / traps / logs の全部） | S3 Tables（Iceberg）`raw_telemetry` | Spark の `iceberg` | まだ読む側が無い（エージェントの `query_history` は Athena 未配備のため案内だけ返す） |
 | 異常の「いま」 | 置かない。機器・回線・層の `status`（下の 2 行）と、Grafana / Splunk のアラートの状態で見る | — | — |
 | 障害の履歴（開いた・閉じた） | **未定**。いまは Grafana / Splunk のアラートの履歴で見る（どちらもタスクと一緒に消える） | — | — |
 | 修復案の「いま」（pending → approved …） | Neptune の頂点 `proposal`（id は `<anomaly_id>#<first_seen>`） | worker、Web の承認タブ | worker、Web の承認タブ、エージェントの `list_proposals` |
@@ -28,7 +28,7 @@
 ```mermaid
 flowchart LR
   MSK["MSK<br/>metrics / gnmi / mdt / traps / logs"] --> SPARK["Spark<br/>EMR Serverless"]
-  SPARK -->|"全部 append"| ICE["S3 Tables<br/>snmp_metrics"]
+  SPARK -->|"全部 append"| ICE["S3 Tables<br/>raw_telemetry"]
   SPARK --> PROM["Prometheus"] --> GRAF["Grafana<br/>アラートルール"]
   SPARK -.->|"SINK_SPLUNK=1"| SPL["Splunk<br/>保存済みサーチ"]
   GRAF -->|"firing / resolved"| SNS["SNS<br/>prefix-alerts"]
@@ -45,7 +45,7 @@ flowchart LR
 `sudo lab fail-main` でアクセス側 Leaf の fabric（`dc1-leaf-01 ethernet-1/1`）を落としたときの流れ（送り手が Grafana の構成。`GRAFANA` / `SINK_PROMETHEUS` は既定の `1` のまま、`SNMP_POLL=1` にしたとき）。既定の `SNMP_POLL=0` ではポーリングをしないので 1〜3 が起きず、`SINK_SPLUNK=0` のままならアラートは出ない。`SINK_SPLUNK=1` なら、1〜3 の代わりに linkDown の trap が `traps` に載り、Splunk の保存済みサーチが同じ id の `link_down` を SNS に出す（4 から先は同じ）。
 
 1. **ポーリング（10 秒ごと）:** Telegraf が `ifOperStatus=down` を拾い、MSK の `metrics` に出す。
-2. **Spark:** `iceberg` が行をそのまま `snmp_metrics` に追記し、`prometheus` が同じ値を Prometheus に書く。どちらも up か down かを判断しない。
+2. **Spark:** `iceberg` が行をそのまま `raw_telemetry` に追記し、`prometheus` が同じ値を Prometheus に書く。どちらも up か down かを判断しない。
 3. **Grafana:** ルール `link_down` が 30 秒ごとに `ifOperStatus` を見て、down の IF を `firing` として SNS のトピック `<prefix>-alerts` に出す。異常の id は `dc1-leaf-01#link_down#ethernet-1/1`。ここでは頂点も行も書かない。
 4. **Lambda `graph-status`:** SNS から受け取り、Neptune の IF の頂点の `status` を `DOWN` にする。`SINK_SPLUNK=1` なら、同じ回線の IS-IS の隣接が Splunk の `isis_down`（gNMI）で届き、頂点 `dc1-leaf-01#isis#ethernet-1/1.0` も `DOWN` になる。
 5. **worker:** SQS から受け取り、異常ごとに Temporal のワークフロー `investigate-<anomaly_id>` を起こす。
@@ -72,7 +72,7 @@ flowchart LR
 - **証跡は二重に入ることがある:** Spark の読み直しやアクティビティの再試行で同じ行がもう一度入る。集計するときは `event_id` で重複を落とす。
 - **worker が止まっているあいだの承認:** Web で承認した事実は頂点にあるが、`proposal_events` の `approved` の行は worker が拾ったときに書く。worker が起きないまま時間が過ぎると、証跡に承認が残らない。Temporal の履歴はタスクと一緒に消える。
 - **`ops/down.sh` は証跡も消す:** テーブルバケットごと消えるので、`proposal_events` も残らない。残したいときは消す前に書き出す。
-- **SINK_S3=0 でもテーブルバケットはできる:** 証跡の置き場なのでいつも作る（生データの `snmp_metrics` だけが SINK_S3 に従う）。
+- **SINK_S3=0 でもテーブルバケットはできる:** 証跡の置き場なのでいつも作る（生データの `raw_telemetry` だけが SINK_S3 に従う）。
 
 ### 5. 経緯: DynamoDB をやめた（2026-09-24）
 

@@ -151,8 +151,8 @@ check("VPC フローログのロール: 信頼は自アカウントの vpc-flow-
 
 # ---- S3 Tables のテーブル（列はスクリプトと同じでなければ append が落ちる）
 TABLE_COLUMNS = ["ts", "topic", "measurement", "agent_host", "host", "tags_json", "fields_json", "ingested_at"]
-schema = re.search(r'resource "aws_s3tables_table" "snmp_metrics"(.*?)\n\}\n', tf, re.S)
-check("aws_s3tables_table snmp_metrics がある", schema is not None)
+schema = re.search(r'resource "aws_s3tables_table" "raw_telemetry"(.*?)\n\}\n', tf, re.S)
+check("aws_s3tables_table raw_telemetry がある", schema is not None)
 fields = re.findall(r'field\s*\{\s*name\s*=\s*"([a-z_]+)"\s*type\s*=\s*"([a-z]+)"\s*required\s*=\s*(true|false)', schema.group(1))
 check("テーブルの列は ts / topic / measurement / agent_host / host / tags_json / fields_json / ingested_at の順", [f[0] for f in fields] == TABLE_COLUMNS)
 coltypes = dict((f[0], f[1]) for f in fields)
@@ -163,7 +163,10 @@ check("format は ICEBERG", re.search(r'format\s*=\s*"ICEBERG"', schema.group(1)
 check("namespace とテーブル名はアンダースコアだけ（ハイフン不可）",
       re.search(r'variable "namespace"[\s\S]*?regex\("\^\[a-z0-9\]\[a-z0-9_\]', tf, re.S) is not None
       and re.search(r'variable "table_name"[\s\S]*?regex\("\^\[a-z0-9\]\[a-z0-9_\]', tf, re.S) is not None)
-check("既定のテーブル名は snmp_metrics", re.search(r'variable "table_name"[\s\S]*?default\s*=\s*"snmp_metrics"', tf, re.M) is not None)
+check("既定のテーブル名は raw_telemetry（2026-10-04 に snmp_metrics から改名）", re.search(r'variable "table_name"[\s\S]*?default\s*=\s*"raw_telemetry"', tf, re.M) is not None)
+check("snmp_metrics から raw_telemetry へ moved で state を引き継ぐ（ほかに snmp_metrics の名前は残らない）",
+      re.search(r'moved \{\n  from = aws_s3tables_table\.snmp_metrics\n  to   = aws_s3tables_table\.raw_telemetry\n\}', tf) is not None
+      and tf.count("snmp_metrics") == 2)
 
 # ---- EMR Serverless（器だけ。ジョブは ops/up.sh が起こす）
 check("EMR Serverless は spark / ARM64", re.search(r'aws_emrserverless_application" "spark"[\s\S]*?type\s*=\s*"spark"[\s\S]*?architecture\s*=\s*"ARM64"', tf, re.S) is not None)
@@ -309,8 +312,8 @@ check("証跡のテーブル proposal_events をいつも作り（count 無し�
       _blk is not None and "count" not in _blk.group(1) and "required = true" not in _blk.group(1).replace(" ", "").replace("required=true", "required = true"))
 check("proposal_events の列と順は workflow/rules.py の PROPOSAL_EVENT_COLUMNS と同じ",
       re.findall(r'name\s*=\s*"(\w+)"\s*\n\s*type\s*=\s*"(\w+)"', _blk.group(1)) == [tuple(c) for c in _pec])
-check("異常の履歴のテーブル anomaly_events は無い（S3 Tables のテーブルは snmp_metrics と proposal_events だけ）",
-      re.findall(r'resource "aws_s3tables_table" "(\w+)"', tf) == ["snmp_metrics", "proposal_events"] and '"anomaly_events' not in tf and "anomaly_events_table" not in tf
+check("異常の履歴のテーブル anomaly_events は無い（S3 Tables のテーブルは raw_telemetry と proposal_events だけ）",
+      re.findall(r'resource "aws_s3tables_table" "(\w+)"', tf) == ["raw_telemetry", "proposal_events"] and '"anomaly_events' not in tf and "anomaly_events_table" not in tf
       and "ANOMALY_EVENT_COLUMNS" not in src)
 check("analytics に events / sns のエンドポイントは無い（SNS へは土台の sns のエンドポイント。ops/up.sh が足す）", 'resource "aws_vpc_endpoint"' not in tf and "events_endpoint_id" not in tf)
 check("build の引数は spark / args（格納先ごとに Kafka を読む）", [a.arg for a in funcs["build"].args.args] == ["spark", "args"])
@@ -749,9 +752,9 @@ check("up.sh は PIPELINE=0 なら lab / stream / analytics / graph を全部飛
 check("deploy.env.example に SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS の行がある（既定 1）。カンマ区切りの SINKS は使わない",
       all(re.search(rf'^#{k}=1$', env_example, re.M) is not None for k in ("SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS"))
       and re.search(r'^#?\s*SINKS=', env_example, re.M) is None)
-# iceberg を外しても、証跡があるのでテーブルバケット・namespace・カタログはいつも作る。生データの snmp_metrics だけ外す
-check('resource "aws_s3tables_table" "snmp_metrics" は sink_iceberg の count',
-      re.search(r'resource "aws_s3tables_table" "snmp_metrics" \{\n  count = local\.sink_iceberg \? 1 : 0\n', tf) is not None)
+# iceberg を外しても、証跡があるのでテーブルバケット・namespace・カタログはいつも作る。生データの raw_telemetry だけ外す
+check('resource "aws_s3tables_table" "raw_telemetry" は sink_iceberg の count',
+      re.search(r'resource "aws_s3tables_table" "raw_telemetry" \{\n  count = local\.sink_iceberg \? 1 : 0\n', tf) is not None)
 for _res in ('resource "aws_s3tables_table_bucket" "tables"', 'resource "aws_s3tables_namespace" "netops"'):
     check(f"{_res} はいつも作る（count 無し）", re.search(re.escape(_res) + r' \{\n  count', tf) is None and _res in tf)
 check("count を外したバケット・namespace は moved で state の [0] を引き継ぐ（作り直さない）",

@@ -15,7 +15,7 @@ output "table_bucket_arn" {
 
 output "table_arn" {
   description = "The Iceberg table the streaming job appends to. Empty unless sinks has iceberg"
-  value       = local.sink_iceberg ? aws_s3tables_table.snmp_metrics[0].arn : ""
+  value       = local.sink_iceberg ? aws_s3tables_table.raw_telemetry[0].arn : ""
 }
 
 output "table_identifier" {
@@ -91,7 +91,7 @@ output "list_job_runs_command" {
 }
 
 output "list_tables_command" {
-  description = "See the tables (snmp_metrics, proposal_events) in S3 Tables"
+  description = "See the tables (raw_telemetry, proposal_events) in S3 Tables"
   value       = "aws s3tables list-tables --region ${var.region} --table-bucket-arn ${local.table_bucket_arn} --namespace ${var.namespace}"
 }
 

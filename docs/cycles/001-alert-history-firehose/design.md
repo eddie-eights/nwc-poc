@@ -166,7 +166,7 @@ Splunk の通知。splunk/netops_alerts/bin/netops_sns.py:6 と :106 から引�
 ## 検証方法（期待出力つき）
 
 - `python3 tests/test_analytics.py`:
-  - S3 Tables のテーブルの集合が `["snmp_metrics", "proposal_events", "alert_events"]` になる。
+  - S3 Tables のテーブルの集合が `["raw_telemetry", "proposal_events", "alert_events"]` になる。
   - alert_events の `(name, type)` の並びが ALERT_EVENT_COLUMNS と一致する。
   - エンドポイントの検査の期待値に、kinesis-firehose と athena が足される（13 本 → 15 本）。
 - `python3 tests/test_sync.py`:
