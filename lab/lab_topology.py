@@ -28,10 +28,10 @@ tests/test_sync.py が確かめる（lab を変えて agent/data を直し忘れ
 SR Linux の interface（lag1 も）、exec でアドレスを振る IF。system0 / lo0 は除く）と、機器を指す別名（aliases。device_id / hostname / 管理 IP /
 全インタフェースとループバックのアドレス。小文字）を付ける。
 検知（Grafana / Splunk のアラート）とトポロジ（Neptune）で機器とインタフェースの名前が合わずに異常がどこにも付かない、を減らすため。
-機器の一覧はここ（lab の定義）1 か所にし、Telegraf のポーリング先と gNMI の接続先、Splunk のアラートアクションの device map（DEVICE_MAP）もここから作る（ops/up.sh）。
+機器の一覧はここ（lab の定義）1 か所にし、Telegraf のポーリング先と gNMI の接続先、device map（Splunk のアラートアクションの DEVICE_MAP と Spark の --device-map）もここから作る（ops/up.sh）。
 
 使い方: python3 lab/lab_topology.py [lab のディレクトリ]  → JSON（{"devices": [...], "links": [...], "layers": {...}}）を標準出力に出す
-        --device-map    Splunk のアラートアクション（splunk/netops_alerts）の DEVICE_MAP（別名=device_id,...。device_id と同じ別名は省く）を出す
+        --device-map    Splunk のアラートアクション（splunk/netops_alerts）の DEVICE_MAP と Spark の --device-map（別名=device_id,...。device_id と同じ別名は省く）を出す
         --snmp-agents   Telegraf の inputs.snmp の agents（監視対象の管理 IP。"udp://<IP>:161", ... の形）を出す
         --gnmi-targets  Telegraf の inputs.gnmi の addresses（監視対象の管理 IP。"<IP>:57400", ... の形）を出す
         --layers        物理層より上（layers）だけを JSON で出す
@@ -385,7 +385,7 @@ def build(topo: dict, cfg: dict) -> tuple[list[dict], list[dict]]:
 
 
 def device_map(devices: list[dict]) -> str:
-    """Splunk のアラートアクションの DEVICE_MAP（別名=device_id,...）。device_id そのものは省く（アラートアクションは引けない名前をそのまま使う）。
+    """Splunk のアラートアクションの DEVICE_MAP と Spark の --device-map（別名=device_id,...）。device_id そのものは省く（どちらも引けない名前はそのまま使う）。
     1 つの別名が 2 台を指していたら止める（どちらの機器か決まらない）"""
     owner = {}
     for d in devices:

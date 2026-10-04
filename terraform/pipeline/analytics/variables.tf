@@ -250,7 +250,7 @@ variable "grafana_task_memory" {
 
 # ---------------------------------------------------------------- alerts (Grafana / Splunk -> SNS topic of terraform/base/core)
 variable "device_map" {
-  description = "alias=device_id,... (management IPs, interface and loopback addresses, hostnames). The Splunk task gets it as DEVICE_MAP and its alert action (splunk/netops_alerts) uses it to name the device when an event has no sysName tag (traps and gNMI carry the management IP). ops/up.sh generates it from the lab definition with lab/lab_topology.py --device-map, so the device list lives in one place. Empty means such alerts keep the raw IP as device_id (they do not match a device in Neptune)."
+  description = "alias=device_id,... (management IPs, interface and loopback addresses, hostnames). Used where a record has no sysName tag (traps and gNMI carry the management IP in source): the Splunk task gets it as DEVICE_MAP for its alert action (splunk/netops_alerts), and the Spark job gets it as --device-map to add sysName to the prometheus and opensearch sinks (the Grafana rules group by sysName). ops/up.sh always generates it from the lab definition with lab/lab_topology.py --device-map, so the device list lives in one place. Empty means such alerts keep the raw IP as device_id (they do not match a device in Neptune). ops/up.sh restarts the streaming job when the arguments change."
   type        = string
   default     = ""
 }

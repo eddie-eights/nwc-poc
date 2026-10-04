@@ -45,3 +45,19 @@
 - **決定のキューを分ける。** 待つループが 2 つになる。エンドポイントと Deny は共用で足りる。
 - **順番を `event_time` で決める。** 秒なので、同じ秒に 2 行入ると順番が決まらない。`seq` を足した。
 - **起動のときに古い pending を掃除する。** 今もある穴で、範囲が広がる。リスクに書いて残した。
+
+## 2026-10-04 実装前の突き合わせ（エンジニア2 が main c117593 と比べた）
+
+設計を直したもの。
+
+| 指摘 | 直し方 |
+|---|---|
+| Web から Neptune の書き込み権限は外せない（up.sh の 7-3b、sync-graph.sh、トポロジタブが Web の EC2 のロールで書く） | 外すのは Runtime だけにした |
+| アラートのキューを共用すると、SNS に publish できる Grafana と Splunk のタスクロールが決定を偽造できる | 決定専用のキュー `<prefix>-decisions` に分けた。前に「待つループが 2 つになる」で退けた案を、この理由で採った。送り手の id（SenderId）で見分ける案は、worker の検査 1 つに安全が掛かるので採らなかった |
+| Temporal の履歴が消えたあと同じ異常がまた発火すると、古い承認待ちが永久に残る | 新しい実行の `put_proposal` が、同じ異常の古い pending に `expired` を足す |
+| 001 に共通の Athena の実行関数は無い（`query_history` に直書き） | このサイクルで切り出す |
+| tools の Lambda の読み取りは `alert_events` だけ | `proposal_events` を足す。Web にも同じ 4 文 |
+| Runtime のコンテナ内の代替実行では読めない | 「まだ配備されていない」を返すことを受け入れる |
+| `graph.list_records` は topology.py が使っている | 消すのは `get_record` と `update_record` だけ |
+| 読んでから書く手順が原子的でない | 並べ方を `seq DESC, event_time DESC` にする |
+| docs の行番号がずれている | 行番号をやめ、節の名前で指す |

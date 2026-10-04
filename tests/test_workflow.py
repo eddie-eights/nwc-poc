@@ -635,9 +635,9 @@ check("deploy-env.sh の読めるキーは機能の 3 つ + CREATE_KB + TF_VERBO
       (lambda keys: all(k in keys for k in ("PIPELINE", "AGENT", "WORKFLOW", "CREATE_KB", "TF_VERBOSE"))
        and not any(k in keys for k in ("PHASE", "SINKS", "WITH_LAB", "WITH_STREAM")))(read("ops", "deploy-env.sh").split('DEPLOY_ENV_KEYS="')[1].split('"')[0].split())
       and not re.search(r'\bPHASE\b|\bWITH_LAB\b|\bWITH_STREAM\b', up))
-check("up.sh の WORKFLOW=1 はアラートの送り手（Grafana のアラートか Splunk）が無ければ止まる",
-      re.search(r'if \[ -n "\$WORKFLOW" \] && \[ -z "\$GRAFANA_ALERTS\$SPLUNK_ON_ECS" \]; then\n\s*die "WORKFLOW はアラートの送り手が要る', up) is not None
-      and up.index('GRAFANA_ALERTS=') < up.index('[ -z "$GRAFANA_ALERTS$SPLUNK_ON_ECS" ]'))
+check("up.sh の WORKFLOW=1 は link_down のアラートの送り手（Grafana か Splunk）が無ければ止まる（ワークフローを起こすのは link_down だけ）",
+      re.search(r'if \[ -n "\$WORKFLOW" \] && \[ -z "\$LINK_DOWN_SENDERS" \]; then\n\s*die "WORKFLOW はアラートの送り手が要る', up) is not None
+      and up.index('LINK_DOWN_SENDERS=') < up.index('[ -z "$LINK_DOWN_SENDERS" ]'))
 # ---- starter: SQS のメッセージ（SNS のトピックの購読）
 check("starter は SQS を 20 秒の long polling で待ち、ANOMALY_QUEUE_URL が無ければ起動で止まる（表を見る経路はもう無い）",
       all(hasattr(awsio, f) for f in ("receive_messages", "delete_message"))

@@ -1431,6 +1431,31 @@ Kafka が持っている番号。
 
 idempotent producer の動き、Telegraf の `idempotent_writes` の設定名、MSK の権限は、記憶から書いた。
 
+### Q. indexer の GUID を台ごとに固定すれば、同じ IP で入れ替わっても search head はそのまま検索できる？
+
+できない。手元の Docker の 4 台で確かめて、直らないうえにデータが消えた（2026-10-04、「Splunk をクラスターにする（004）」）。search head のヘルスチェックで突き合わせる案（A）と、`ops/up.sh` で 1 回確かめる案（B）のままにする。
+
+**理由**
+
+- 401 の原因は GUID ではなく鍵だった。
+  search head は、同じ host:port の peer には鍵（`trusted.pem`）を送り直さない。新しい台は鍵を持っていないので、GUID が同じでも検索を断る。
+- bucket の ID に GUID が入っている。
+  同じ GUID の空の台が来ると、古い台の bucket と ID がぶつかる。manager は空の新しい台を正として、ほかの台にある古いコピーを切り詰めるか捨てる。
+- GUID は「その台の 1 回ぶんの命」を表す名前として使われている。
+  同じ GUID を別の台に使い回すと、manager は「同じ台が戻ってきた」と見なす。中身が空なので、つじつまが合わなくなる。
+
+**比べ**
+
+| | A + B（GUID は固定しない） | C（GUID を台ごとに固定） |
+|---|---|---|
+| 同じ IP で入れ替え | 401 になる。A が約 5 分で search head を入れ替えて直す | 401 のまま。もとの 1000 件が 500 件に減った |
+| 別の IP で入れ替え（ECS の普通の入れ替え） | 73 秒で RF / SF が戻る | manager が参加を断り続ける。25 分たっても戻らない。受けた 174 件が消えた |
+| 古い台と新しい台が同時にいる | 問題なし（別の GUID） | manager が新しい台を断る。コンテナは healthy になるので、ECS は古い台を止める |
+| 入れ替わりの検出 | GUID の違いで分かる | GUID が同じなので分からない |
+| 足すもの | ヘルスチェックのスクリプトと up.sh の確認 | 入口で `instance.cfg` を書く数行（これ自体は動く） |
+
+未確認: どれも手元の Docker での結果で、ECS では確かめていない。
+
 ### Q. Splunk の重複は、ほかに落とす方法は無い？ 同じアラートが SNS に出て、障害の履歴が二重になるのは避けたい
 
 **A. 障害の履歴は二重にならない。Splunk の中に重複が残っても、保存済みサーチの判定は変わらず、もし同じアラートが 2 回 SNS に出ても、履歴を読むときに 1 行にまとまる。Splunk の中の重複そのものを消す方法は、検索で落とす以外に無い。**
@@ -1561,3 +1586,384 @@ Fargate をやめて、ECS の EC2（または EC2 そのもの）にボリュ�
 - Fargate のまま、タスクが入れ替わってもデータが残る。
 - どれも 1 台で、書くのは 1 つのタスクだけ。NFS で問題になりやすい同時書き込みが起きない。
 - 「NFS は勧めない」という注意は、マネージドと OSS を比べるときの材料として残す（自前で持つと、置き場の選び方まで自分の責任になる）。
+
+### Q. EKS だと EFS を使えることはある？
+
+**A. 結論**
+
+使える。ただし「Prometheus と Neo4j は EFS に置けない」という制約は、EKS にしても変わらない。制約の原因は ECS ではなく、EFS が NFS であることだから。
+
+2026-10-04 に AWS の公式ドキュメントで確かめた（出典は末尾）。
+
+**EKS での置き場**
+
+| 置き場 | EC2 のノード | Fargate の Pod |
+|---|---|---|
+| EFS | 使える。EFS CSI ドライバーを入れる | 使える。ドライバーを入れなくても自動でマウントされる。ただし先に作っておいたボリュームだけ（静的プロビジョニング）。動的には作れない |
+| EBS | 使える。EBS CSI ドライバーを入れる（EKS Auto Mode なら入れなくてよい） | 使えない（「You can’t mount Amazon EBS volumes to Fargate Pods」） |
+
+**ECS と比べて変わること**
+
+| | ECS | EKS |
+|---|---|---|
+| EFS | Fargate でも EC2 でも使える | Fargate でも EC2 でも使える |
+| EBS を Fargate で | 使えるが、サービスのタスクに付けたボリュームはタスクが終わると必ず消える。既存のボリュームは付けられない（スナップショットから新しく作ることはできる） | 使えない |
+| EBS を EC2 で残す | EC2 にボリュームを付けたままにする | PersistentVolume として Pod に付く。Pod が入れ替わっても同じボリュームが付き直す（Kubernetes の StatefulSet の動き。AWS のページでは確かめていない） |
+| 本体の料金 | なし | 1 クラスターあたり $0.10/h（標準サポートの版） |
+| Fargate で Arm | 使える（このリポジトリは ARM64） | 使えない |
+
+**このプロジェクトでは**
+
+OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate のままでは EBS を使えないので、Prometheus と Neo4j のために EC2 のノードが要る点は同じ。それなら EKS に替えるより、その 2 つだけ ECS の EC2 に載せるほうが変更が小さい。
+
+**出典**
+
+- https://docs.aws.amazon.com/eks/latest/userguide/efs-csi.html
+- https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html
+- https://docs.aws.amazon.com/eks/latest/userguide/fargate.html
+- https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ebs-volumes.html
+- https://aws.amazon.com/eks/pricing/
+
+### Q. Prometheus は、そもそもクラスターにできない？
+
+**A. 結論**
+
+できない。Prometheus 本体には、複数台でデータを分け合ったり複製したりする仕組みが無い。公式も「ローカルのストレージはクラスター化も複製もされない。1 台のデータベースとして扱うこと」と書いている。
+
+2026-10-04 に公式ドキュメント（v3.15.0 の storage.md と FAQ）で確かめた。
+
+**では、止まらないようにするには**
+
+| やり方 | 中身 | データ |
+|---|---|---|
+| 同じ設定の Prometheus を 2 台以上動かす（公式の答え） | それぞれが同じ対象を別々に集める。互いを知らない | 台ごとに別々に持つ。片方が止まっていた間の分は、その台には無いまま |
+| 外のストレージに書き出す（remote write） | Thanos、Cortex、Mimir など、クラスターを組める別の OSS に送る。重複はそちらで落とす | 外のストレージがまとめて持つ |
+
+アラートが 2 台から二重に出る分は、Alertmanager が 1 つにまとめる（Alertmanager 自体はクラスターを組める）。
+
+**このプロジェクトでは**
+
+- マネージド版の Amazon Managed Service for Prometheus は、この「外のストレージ」を AWS が運用しているもの（中身は Cortex 系。これは記憶にもとづく内容で、今回は確かめていない）。
+- OSS 版（005）の Prometheus は 1 台で作る。Spark が remote write で書き込む形なので、2 台にするなら Spark が両方に書くことになる。そこまではやらない。
+- 「Splunk をクラスターにする（004）」のような台数の切り替えは、Prometheus には作れない。マネージドと OSS を比べるときの材料になる。
+
+**出典**
+
+- https://github.com/prometheus/prometheus/blob/v3.15.0/docs/storage.md
+- https://prometheus.io/docs/introduction/faq/
+
+### Q. Prometheus の代わりに VictoriaMetrics のクラスターにすると、何が変わる？
+
+**A. 結論**
+
+クラスターを組めて、EFS にも公式に置ける。Prometheus の remote write と問い合わせの API をそのまま受けるので、書く側（Spark）と読む側（Grafana、エージェント）は送り先の URL を替えるだけで済む見込み。OSS 版（005）はこれに替える（2026-10-04 のユーザーの決定）。
+
+2026-10-04 に公式ドキュメントと Docker Hub で確かめた。AWS では動かしていない。
+
+**構成**
+
+| 部品 | 役割 | ポート |
+|---|---|---|
+| vminsert | 書き込みを受け、vmstorage に振り分ける | 8480 |
+| vmstorage | データを持つ。互いを知らず、データも共有しない | 8400（vminsert から）、8401（vmselect から） |
+| vmselect | 問い合わせを受け、全部の vmstorage から集める | 8481 |
+
+**Prometheus との違い**
+
+| | Prometheus | VictoriaMetrics（クラスター版） |
+|---|---|---|
+| クラスター | 組めない | 組める（部品ごとに台数を増やせる） |
+| EFS | 非対応と明記 | 「Amazon EFS などの NFS に置ける」と明記 |
+| 書き込みの URL | `/api/v1/write` | `http://<vminsert>:8480/insert/0/prometheus/api/v1/write` |
+| 問い合わせの URL | `/api/v1/query` | `http://<vmselect>:8481/select/0/prometheus/api/v1/query` |
+| 複製 | なし | `-replicationFactor=N`。vmstorage が 2N−1 台以上要る。公式は、複製より「複製つきの丈夫なディスクに任せる」ほうを勧めている |
+| 台数を増やしたとき | － | 新しいデータだけが新しい台にも分かれる。古いデータは動かない |
+| ライセンス | Apache 2.0 | Apache 2.0（vmstorage の自動発見などは有償版だけ） |
+
+イメージは `victoriametrics/vminsert`、`vmselect`、`vmstorage` の `v1.153.0-cluster`（2026-09-28、arm64 あり）。
+
+**未確認**
+
+- 時刻の順が前後したサンプルを受けるか（Spark は並べ替えてから送っている）。
+- URL の `0` はテナントの番号。認証は OSS 版には無く、付けるなら別の部品（vmauth）が要る。
+
+**出典**
+
+- https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/
+- https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/
+
+### Q. OpenSearch は、クラスターにできる？
+
+**A. 結論**
+
+できる。OpenSearch は最初からクラスターを前提に作られていて、1 台で動かすほうが特別な設定（`discovery.type=single-node`）になる。
+
+2026-10-04 に公式ドキュメントで確かめた。
+
+| 項目 | 中身 |
+|---|---|
+| ノードの役割 | cluster manager（全体の状態を管理）、data（データを持ち、検索する）、coordinating（要求を振り分けて結果をまとめる）。1 台が複数の役割を兼ねられる |
+| 本番の勧め | 専用の cluster manager を 3 台、3 つの AZ に分ける（過半数を失わないため） |
+| 仲間の見つけ方 | `discovery.seed_hosts` に候補を並べ、最初の起動だけ `cluster.initial_cluster_manager_nodes` を渡す |
+| データの複製 | インデックスごとにレプリカの数を決める。shard allocation awareness で、本体とレプリカを別の AZ に置ける |
+
+**4 つの OSS を並べると**
+
+| OSS | クラスター | EFS |
+|---|---|---|
+| Kafka | 組める（KRaft） | 記述が見つからない |
+| OpenSearch | 組める | 記述が見つからない |
+| VictoriaMetrics | 組める | 置けると明記 |
+| Prometheus | 組めない | 非対応と明記 |
+| Neo4j（Community） | 組めない（クラスターは Enterprise だけ） | NFS は非対応と明記 |
+
+**出典**
+
+- https://docs.opensearch.org/latest/tuning-your-cluster/
+
+### Q. Neo4j は、クラスターにする必要がある？
+
+**A. 結論**
+
+この PoC では要らない。1 台で作る。
+
+**理由**
+
+| 理由 | 中身 |
+|---|---|
+| 入っているのが、作り直せるデータだから | Neo4j に置くのは機器、インタフェース、ケーブルのトポロジと、障害の status。元は Nautobot にあり、同期し直せば戻る |
+| 量が小さいから | lab の機器は数台。クラスターで読み取りを分散するほどの負荷が無い |
+| クラスターは OSS 版に無いから | クラスターは Enterprise Edition だけ（有償のライセンス）。Community Edition（GPLv3）では組めない。有償の契約が要るので、PoC では使わない |
+
+**1 台が止まると困ること**
+
+- Web のトポロジのタブが出ない。
+- 障害の status の更新（Lambda graph-status）が失敗する。
+- エージェントが「隣の機器」などトポロジを引けない。
+
+修復案の置き場は「修復案を S3 Tables にまとめる（003）」で S3 Tables に移るので、Neo4j が止まっても修復の流れは進む。ECS のサービスなので、タスクが落ちれば自動で立ち上がり直す。データが一時領域なら、そのあと Nautobot から同期し直す。
+
+**クラスターが要るのは**
+
+- 止まっている数分も許されないとき（本番）。
+- 読み取りの量が 1 台で足りないとき。
+
+そのときは Neo4j Enterprise を買うか、マネージド（Neptune）に戻すかの比較になる。これも「マネージドと OSS を比べる」材料になる。
+
+Community Edition にクラスターが無いことは、2026-10-04 に Neo4j の operations manual で確かめた（https://neo4j.com/docs/operations-manual/current/introduction/）。
+
+**決めたこと（2026-10-04）**
+
+「マネージドを OSS に置き換えた環境を作る（005）」では Neo4j Community Edition を 1 台で動かす。設計と docs には次の注意書きを入れる。
+
+- クラスターは Enterprise Edition だけの機能で、Community Edition では組めない。
+- だから OSS 版の中で、Neo4j だけは 1 台で動く（Kafka、OpenSearch、VictoriaMetrics はクラスター）。
+- 止まっているあいだは、トポロジの表示と status の更新ができない。データは Nautobot から同期し直せる。
+
+### Q. Kafka を KRaft のクラスターにするには、何台要る？
+
+**A. 結論**
+
+コントローラーを 3 台、ブローカーを 3 台。PoC では 1 台が両方の役を持つ形（combined）にして、合わせて 3 台で足りる。
+
+**理由**
+
+| 項目 | 公式ドキュメントの記述 | この PoC での扱い |
+|---|---|---|
+| コントローラーの台数 | 3 台か 5 台を選ぶ。過半数が生きている必要がある。3 台なら 1 台の故障に耐える | 3 台 |
+| 役の持たせ方 | `process.roles` に `broker`、`controller`、または両方を書く。両方を持つ combined は小さい環境向けで、重要な環境には勧めない | combined で 3 台（台数と費用を抑える）。本番では分けると docs に書く |
+| お互いの見つけ方 | `controller.quorum.bootstrap.servers` に全コントローラーを並べる。`controller.quorum.voters` は古い書き方 | ECS の Service Connect か Cloud Map の名前を並べる |
+| メタデータの置き場 | メモリ 5GB、ディスク 5GB で普通は足りる | EFS に置く |
+
+**背景**
+
+- KRaft は、Kafka が自分でクラスターの管理情報（どのブローカーがいるか、トピックの置き場）を持つ仕組み。以前は ZooKeeper という別のソフトに任せていた。
+- コントローラーがその管理情報を持つ。多数決で動くので奇数台にする。
+- トピックの複製数を 3 にすれば、ブローカー 1 台が止まってもデータは読める。
+
+**まだ確かめていないこと**
+
+- Kafka のデータを EFS（NFS）に置いてよいかは、公式ドキュメントに記述が見つからない。
+- combined の 3 台を ECS の Fargate で 1 台ずつ入れ替えたときに、過半数が保たれるかは AWS で未確認。
+
+**出典**
+
+- https://kafka.apache.org/41/operations/kraft/ （2026-10-04 に確認）
+
+### Q. OpenSearch は、レプリカと合わせて 2 台じゃダメ？
+
+データの複製だけなら 2 台で足りる。ただ、1 台止まってもクラスターが動き続けるには、まとめ役（cluster manager）の票が 3 つ要る。OSS 版（005）は「データ 2 台 + まとめ役だけの小さい 1 台」にする（2026-10-04 に決めた）。
+
+**理由**
+
+- レプリカ 1 は「同じデータを 2 台に持つ」なので、データを持つ台は 2 台で足りる。
+- 台数を決めているのは、まとめ役の選挙。選ぶには過半数の票が要る。
+- 2 台では過半数が 2。1 台止まると残りは 1 票なので、新しいまとめ役を選べない。
+- OpenSearch は票を持つ台を奇数にそろえるので、2 台は実質 1 台と同じ扱いになる。
+
+**3 つの構成の比べ**
+
+| | 2 台だけ | データ 2 台 + まとめ役 1 台 | 3 台とも全部の役 |
+|---|---|---|---|
+| データを持つ台 | 2 | 2 | 3 |
+| まとめ役の票 | 実質 1 | 3 | 3 |
+| 票を持つ台が止まったとき | クラスター全体が止まる | 続く | 続く |
+| 1 台止まっているあいだの複製 | 無い | 無い（戻るまで 1 つだけ） | 残りの 2 台で作り直す |
+| 設定の種類 | 1 種類 | 2 種類（`node.roles` が別） | 1 種類 |
+| 費用 | いちばん安い | 中（小さい台が 1 つ増える） | いちばん高い |
+
+**まとめ役だけの台を置くメリット**
+
+- データを持たないので、メモリもディスクも小さくて済む。EFS も要らない。
+- まとめ役の仕事（台の監視、index の管理）が、検索や書き込みの負荷に巻き込まれない。PoC のデータ量では、ほとんど効かない。
+
+確認元は AWS の OpenSearch Service のドキュメント（[Dedicated master nodes](https://docs.aws.amazon.com/opensearch-service/latest/developerguide/managedomains-dedicatedmasternodes.html)）。「2 台は実質 1 台」を OpenSearch 本体のドキュメントでは確かめていない（未確認）。手元のコンテナで 1 台ずつ止めて確かめる。Kafka の controller を 3 台にしたのと同じ理屈。
+
+### Q. VictoriaLogs は、OpenSearch の代わりになる？
+
+**A. 結論**
+
+ログの置き場としては代わりになる。ただし検索の書き方が変わるので、読む側のコードとダッシュボードは書き直しになる。いまは OpenSearch のクラスターを第一の案にして、VictoriaLogs は候補として残す。
+
+**VictoriaLogs とは**
+
+VictoriaMetrics と同じ作り手のログ用データベース。ライセンスは Apache 2.0。
+
+**比べる**
+
+| 項目 | OpenSearch（クラスター） | VictoriaLogs（クラスター） |
+|---|---|---|
+| 役の分け方 | cluster manager、data、coordinating | vlinsert（受ける）、vlselect（検索する）、vlstorage（置く）。実行ファイルは 1 つで、フラグで役が決まる |
+| 書き込み | `_bulk` | `/insert/elasticsearch/_bulk`（OpenSearch と同じ形で受ける）。ほかに JSON の行、Loki、OpenTelemetry など |
+| 検索 | OpenSearch の query DSL | LogsQL（独自の言語）。query DSL は使えない |
+| 複製 | レプリカのシャードを別のノードに置ける | vlinsert は複製しない。ノードに振り分けるだけ |
+| 1 台止まったとき | レプリカがあれば検索も書き込みも続く | 書き込みは続く。検索は 502 を返す（欠けた結果を返さないため） |
+| Grafana | 標準のデータソース | プラグイン `victoriametrics-logs-datasource` を入れる |
+| 軽さ | メモリを多く使う。`vm.max_map_count` の設定が要る | 公式は「Elasticsearch よりメモリが最大 30 分の 1、ディスクが最大 15 分の 1」と書いている |
+| ポート | 9200 | 9428 |
+
+**このリポジトリで変わるところ**
+
+| 場所 | OpenSearch のまま | VictoriaLogs にすると |
+|---|---|---|
+| Spark の書き込み | 認証と宛先を変えるだけ | 宛先のパスと、時刻とメッセージの列を教えるパラメーター（`_time_field`、`_msg_field`、`_stream_fields`）を足す |
+| エージェントの証拠集め（`agent/evidence.py`） | ほぼそのまま | 検索を LogsQL に書き直す |
+| Grafana のダッシュボードとアラート | ほぼそのまま | データソースとクエリを書き直す |
+
+**メリットとデメリット（VictoriaLogs にした場合）**
+
+| | 中身 |
+|---|---|
+| メリット | 軽い。Fargate で `vm.max_map_count` に困らない。VictoriaMetrics と作りが同じで覚えることが少ない |
+| デメリット | 検索とダッシュボードを書き直す。AWS 版（OpenSearch Serverless）とコードを共有しにくくなる。複製が無い |
+
+**まだ確かめていないこと**
+
+- VictoriaLogs のデータを EFS に置いてよいか。公式は ext4 を勧めていて、NFS や EFS の記述は見つからない。
+- Grafana のアラートが、このプラグインのデータソースで動くか。公式には vmalert を使う方法が書かれている。
+- 公式の「30 分の 1」「15 分の 1」は作り手の数字で、この PoC では測っていない。
+
+**出典**
+
+- https://docs.victoriametrics.com/victorialogs/
+- https://docs.victoriametrics.com/victorialogs/cluster/
+- https://docs.victoriametrics.com/victorialogs/data-ingestion/
+- https://docs.victoriametrics.com/victorialogs/integrations/grafana/
+
+### Q. 中心性などのグラフのアルゴリズムは、NetworkX と Neo4j の GDS のどちらでやる？
+
+**A. 結論**
+
+GDS を第一の案にする。AWS 版と同じ「DB の中で `CALL`」の形で比べられるから。GDS が Neo4j Community Edition の上で動かなければ NetworkX にする。
+
+**前提が変わった（2026-10-04 のユーザーの決定）**
+
+- OSS にしたいのは、置き換える 5 つ（Kafka、Spark、OpenSearch、メトリクスの置き場、グラフ DB）だけ。
+- それ以外の道具は、商用で使えるライセンスなら OSS でなくてよい。
+- だから「GDS のプラグインに公開されていないソースがある」ことは、もう選ばない理由にならない。
+
+GDS を商用で使ってよいかは、配布物のライセンスの本文をまだ読めていない（未確認）。公式に書いてあるのは「ライセンスのファイルが無ければ Community Edition として動く」まで。本番で使う前に確かめる。ソースから作る OpenGDS は GPLv3 なので商用で使える。
+
+**背景**
+
+AWS 版は、エージェントのツール `centrality`（`agent/graph.py` の `centrality()`）が Neptune Analytics の `neptune.algo.*` を 3 つ呼んでいる。
+
+| 使っているもの | 意味 |
+|---|---|
+| `neptune.algo.degree` | 機器に付いている回線の数 |
+| `neptune.algo.closenessCentrality` | ほかの全機器への近さ |
+| `neptune.algo.wcc` | 回線でつながっている島の番号 |
+
+**2 つとは**
+
+| | NetworkX | GDS（Graph Data Science） |
+|---|---|---|
+| 何か | Python のグラフ計算ライブラリ | Neo4j のプラグイン。Cypher の `CALL gds.*` で呼ぶ |
+| 計算する場所 | エージェントの Python の中。Neo4j から機器と回線を読み出して計算する | Neo4j の中。グラフをメモリに写して（projection）計算する |
+| ライセンス | BSD（3 条項） | ソースの OpenGDS は GPLv3。Neo4j が配るプラグインは、公開されていないソースを含み、別の条件で配られている |
+| 入れ方 | Python の依存に `networkx` を足す | Neo4j のコンテナに `NEO4J_PLUGINS='["graph-data-science"]'` を渡す |
+| 制限 | 1 プロセスのメモリに載る大きさまで | Community Edition は CPU 4 コアまで、モデルは 3 つまで。ライセンスのファイルが無ければ Community Edition として動く |
+
+**メリットとデメリット**
+
+| | メリット | デメリット |
+|---|---|---|
+| NetworkX | 全部 OSS と言い切れる。Neo4j に足すものが無く、メモリも増えない。グラフ DB を替えても同じコードが動く。ローカルのテストで実物を回せる | グラフを全部読み出すので、機器が何万台にもなると遅い。AWS 版（DB の中で計算）と形が変わる |
+| GDS | AWS 版と同じ「DB の中で `CALL`」の形で、比べやすい。大きいグラフでも速い。アルゴリズムが多い | プラグインに公開されていない部分がある。Neo4j のメモリを余分に使う。計算の前にグラフをメモリに写す手順が要る。版を Neo4j と揃え続ける必要がある（Neo4j 2026.09.0 には GDS 2026.09） |
+
+**選び方**
+
+- 機器が数台〜数千台で、使うのが次数、近接、連結成分くらいなら NetworkX。
+- 何十万の頂点で、経路探索やコミュニティ検出まで使うなら GDS。
+
+**まだ確かめていないこと**
+
+- GDS に近接中心性と弱連結成分があること（`gds.closeness`、`gds.wcc`）は記憶によるもので、今回は公式ページを開いていない。
+- GDS のプラグインが Neo4j Community Edition の上で動くことは、Docker の手順が Community の image を前提にしていることからの推定。実際には動かしていない。
+
+**出典**（2026-10-04 に確認）
+
+- https://neo4j.com/docs/graph-data-science/current/introduction/
+- https://neo4j.com/docs/graph-data-science/current/installation/installation-docker/
+- https://neo4j.com/docs/graph-data-science/current/installation/supported-neo4j-versions/
+- https://github.com/neo4j/graph-data-science （README のライセンスの節）
+
+### Q. VictoriaMetrics のクラスターで「分散」と「複製」は何が違う？
+
+**A. 結論**
+
+分散は、データを vmstorage に分けて置くだけ（どのデータも 1 台にしか無い）。複製は、同じデータを複数の vmstorage に置く。「マネージドを OSS に置き換えた環境を作る（005）」では複製を使う（2026-10-04 に決めた）。
+
+**設定**
+
+| 場所 | フラグ | 意味 |
+|---|---|---|
+| vminsert | `-replicationFactor=2` | どのデータも、別々の vmstorage 2 台に書く |
+| vmselect | `-dedup.minScrapeInterval=1ms` | 2 台から同じデータが返るので、重複を落とす |
+| vmselect | `-replicationFactor=2` | 1 台が止まっていても、結果を「欠けている」扱いにしない |
+
+**台数**
+
+複製数を N にすると、vmstorage は 2N−1 台以上が要る。N=2 なら 3 台。1 台が止まっても、残りの 2 台に 2 つずつ書けるから。
+
+| 役 | 台数 |
+|---|---|
+| vminsert | 1 |
+| vmselect | 1 |
+| vmstorage | 3 |
+
+**メリットとデメリット**
+
+| | 中身 |
+|---|---|
+| メリット | vmstorage が 1 台止まっても、全部のデータを読める。書き込みも続く |
+| デメリット | CPU、メモリ、ディスク、通信が最大で複製数の倍（ここでは 2 倍）になる |
+
+**知っておくこと**
+
+- 公式は、複製よりも「壊れにくいディスクに置く」ことを勧めている。EFS はそれ自体が複数の AZ に複製されるので、複製と重なる。ここでは、クラスターの複製を学ぶために両方を使う。
+- vminsert と vmselect は 1 台ずつなので、そこが止まれば書き込みや検索は止まる。状態を持たないので、ECS が立ち上げ直せば戻る。
+
+**出典**
+
+- https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/ （Replication and data safety。2026-10-04 に確認）

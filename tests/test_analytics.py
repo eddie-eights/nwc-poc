@@ -3,7 +3,7 @@ terraform/pipeline/analytics が main と stream の state を読み、S3 Tables
 Spark のスクリプトが Kafka（MSK の IAM 認証）を格納先ごとに読んで Iceberg / OpenSearch Serverless / Prometheus に流すこと、
 テーブルの列がスクリプトと一致すること、remote write の protobuf と snappy が手で復号できることを見る。
 実行は python3 tests/test_analytics.py（依存は無い。pyspark も botocore も要らない。スクリプトは import するが pyspark は関数の中で読む）。"""
-import ast, importlib.util, io, json, os, re, ssl, struct, sys, zlib
+import ast, importlib.util, inspect, io, json, os, re, ssl, struct, sys, zlib
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 SRC = os.path.join(ROOT, "spark", "snmp_sinks.py")
@@ -271,8 +271,8 @@ args_block = re.search(r'entryPointArguments\s*=\s*concat\((.*?)\n\s*\)\n', tf, 
 check("job_driver の引数は concat（共通 + 格納先ごとの for-if）", args_block is not None)
 for a in ("--bootstrap", "--checkpoint", "--sinks", "--region", "--metric-topics", "--log-topics"):
     check(f"job_driver の共通の引数に {a}", f'"{a}"' in args_block.group(1))
-check("job_driver に検知の引数（--neptune-endpoint / --anomaly-events-table / --device-map / --event-bus）は無く、スクリプトが受ける引数だけを渡す",
-      not any(a in tf for a in ('"--neptune-endpoint"', '"--anomaly-events-table"', '"--device-map"', '"--event-bus"', '"--event-source"'))
+check("job_driver に検知の引数（--neptune-endpoint / --anomaly-events-table / --event-bus）は無く、スクリプトが受ける引数だけを渡す",
+      not any(a in tf for a in ('"--neptune-endpoint"', '"--anomaly-events-table"', '"--event-bus"', '"--event-source"'))
       and set(re.findall(r'"(--[a-z-]+)"', args_block.group(1))) <= set(re.findall(r'add_argument\("(--[a-z-]+)"', src)))
 check("job_driver の格納先の引数は、そのジョブの格納先にあるときだけ（for a in [...] : a if contains(sinks, ...)）",
       re.search(r'\["--iceberg-table",\s*local\.iceberg_table\] : a if contains\(sinks, "iceberg"\)', args_block.group(1)) is not None
@@ -281,6 +281,8 @@ check("job_driver の格納先の引数は、そのジョブの格納先にあ�
       and re.search(r'\["--splunk-hec-url",\s*local\.splunk_hec_url,\s*"--splunk-token-parameter",\s*local\.splunk_token_parameter,\s*"--splunk-index",\s*var\.splunk_index\] : a if contains\(sinks, "splunk"\)', args_block.group(1)) is not None
       and re.search(r'\["--splunk-skip-verify"\] : a if contains\(sinks, "splunk"\) && local\.splunk_skip_tls_verify', args_block.group(1)) is not None
       and "local.sink_" not in args_block.group(1))
+check("job_driver は device map が空でなく、そのジョブに prometheus か opensearch があるときだけ --device-map を渡す（cycle 002。sysName の無い gNMI と trap に機器名を足す）",
+      re.search(r'\["--device-map",\s*var\.device_map\] : a if var\.device_map != "" && \(contains\(sinks, "prometheus"\) \|\| contains\(sinks, "opensearch"\)\)', args_block.group(1)) is not None)
 check("job_driver の引数に token の値は無い（SSM のパラメータ名だけ）", "hec-token" not in args_block.group(1) and "splunk_hec_token" not in args_block.group(1))
 check("--sinks はそのジョブの格納先（var.sinks にあるものだけ）をカンマでつなぐ", '"--sinks", join(",", sinks)' in args_block.group(1) and "var.sinks" not in args_block.group(1))
 check("--checkpoint は s3://<バケット>/analytics/checkpoint/<MSK の uuid>/（MSK を作り直したら checkpoint も新しく。格納先ごとに下を切るのはスクリプト）",
@@ -310,8 +312,8 @@ check("ドライバーのログは CloudWatch、EMR の managed storage は使�
 tree = ast.parse(src, SRC)
 funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
 check("parse_args / sink_topics / read_rows / build / main がある", {"parse_args", "sink_topics", "read_rows", "build", "main"} <= set(funcs))
-check("検知の関数（parse_device_map / device / events / anomaly_key / make_detect_sender）はもう無い（検知は Grafana と Splunk。2026-10-02）",
-      not ({"parse_device_map", "device", "events", "anomaly_key", "anomaly_detail", "make_detect_sender"} & set(funcs)))
+check("検知の関数（device / events / anomaly_key / make_detect_sender）はもう無い（検知は Grafana と Splunk。2026-10-02。parse_device_map は cycle 002 で sysName を足すのに戻した）",
+      not ({"device", "events", "anomaly_key", "anomaly_detail", "make_detect_sender"} & set(funcs)) and {"parse_device_map", "with_sysname"} <= set(funcs))
 check("DynamoDB を使わない（2026-09-24）", "dynamodb" not in tf.lower() and "anomaly_table_name" not in tf)
 check("runtime role に Neptune と EventBridge の許可は無い（Spark は格納先に書くだけ）",
       "neptune-db" not in tf and "events:PutEvents" not in tf and "event_bus" not in tf and "NeptuneAnomalies" not in tf)
@@ -475,6 +477,49 @@ check("prometheus_series: 数値の field だけ（文字列は落とす、bool 
       and sorted(dict(l)["__name__"] for l, _, _ in series) == ["snmp_interface_flag", "snmp_interface_ifInOctets", "snmp_interface_ifOperStatus"])
 check("prometheus_series: トピックでは絞らない（購読で絞っている）", len(mod.prometheus_series([dict(rec, topic="cpu")])) == 3)
 check("prometheus_series: labels は名前順のリスト（Prometheus はソート済みを要求する）", all(l == sorted(l) for l, _, _ in series))
+_ord = mod.prometheus_series([dict(rec, ts=1700000002.0, fields={"a": 2}), dict(rec, ts=1700000001.0, fields={"a": 1, "b": 1}), dict(rec, ts=1700000002.0, fields={"a": 3})])
+check("prometheus_series: サンプルは時刻の順（同じ系列が 1 バッチに逆順で来ても AMP が out-of-order で拒まない）。同じ時刻なら元の順",
+      [(dict(l)["__name__"][-1], v, ms) for l, v, ms in _ord] == [("a", 1.0, 1700000001000), ("b", 1.0, 1700000001000), ("a", 2.0, 1700000002000), ("a", 3.0, 1700000002000)])
+# cycle 002: gNMI の BGP / IS-IS の文字列の状態を 1 / 0 にし、sysName の無いレコードに device map で機器名を足す
+_dm = mod.parse_device_map(" 203.0.113.31 = dc1-leaf-01 ,203.0.113.32=dc1-leaf-02,bad,=x,y=")
+check("parse_device_map: 別名=機器名,… を {別名（小文字）: 機器名}。= の無い要素と空の側は捨てる",
+      _dm == {"203.0.113.31": "dc1-leaf-01", "203.0.113.32": "dc1-leaf-02"} and mod.parse_device_map("") == {} and mod.parse_device_map(None) == {}
+      and mod.parse_device_map("Leaf1=dc1-leaf-01") == {"leaf1": "dc1-leaf-01"})
+_t = {"source": "203.0.113.31", "peer_address": "10.255.0.1"}
+check("with_sysname: sysName が無ければ source を引いて足した写し。表に無い・sysName がある・表が空ならそのまま",
+      mod.with_sysname(_t, _dm) == dict(_t, sysName="dc1-leaf-01") and "sysName" not in _t
+      and mod.with_sysname({"source": "203.0.113.99"}, _dm) == {"source": "203.0.113.99"}
+      and mod.with_sysname({"source": "203.0.113.31", "sysName": "x"}, _dm)["sysName"] == "x"
+      and mod.with_sysname({"source": "203.0.113.31", "sysName": ""}, _dm)["sysName"] == "dc1-leaf-01"
+      and mod.with_sysname(_t, {}) is _t and mod.with_sysname(_t, None) is _t
+      and mod.with_sysname({"source": " 203.0.113.31 "}, _dm)["sysName"] == "dc1-leaf-01")
+check("with_sysname(fallback_source=True): 表に無い（表が空・無いときも）source はそのまま sysName にする。source も無ければそのまま",
+      mod.with_sysname({"source": " 203.0.113.99 "}, _dm, fallback_source=True) == {"source": " 203.0.113.99 ", "sysName": "203.0.113.99"}
+      and mod.with_sysname(_t, {}, fallback_source=True) == dict(_t, sysName="203.0.113.31")
+      and mod.with_sysname(_t, None, fallback_source=True) == dict(_t, sysName="203.0.113.31")
+      and mod.with_sysname(_t, _dm, fallback_source=True)["sysName"] == "dc1-leaf-01"
+      and mod.with_sysname({"source": "203.0.113.31", "sysName": "x"}, _dm, fallback_source=True)["sysName"] == "x"
+      and mod.with_sysname({"agent_host": "r1"}, _dm, fallback_source=True) == {"agent_host": "r1"} and "sysName" not in _t)
+def _gnmi(meas, field, value, **tags):
+    return {"ts": 1700000000.0, "topic": "gnmi", "measurement": meas, "agent_host": "", "host": "h", "tags": dict({"source": "203.0.113.31"}, **tags), "fields": {field: value}}
+_bgp = mod.prometheus_series([_gnmi("bgp_neighbor", "session_state", "established", peer_address="10.255.0.1"),
+                              _gnmi("bgp_neighbor", "session_state", "active", peer_address="10.255.0.2")], _dm)
+check("prometheus_series: bgp_neighbor の session_state は snmp_bgp_neighbor_session_up（established が 1、ほかは 0）で、sysName が機器名",
+      [(dict(l)["__name__"], dict(l)["peer_address"], v) for l, v, _ in _bgp]
+      == [("snmp_bgp_neighbor_session_up", "10.255.0.1", 1.0), ("snmp_bgp_neighbor_session_up", "10.255.0.2", 0.0)]
+      and all(dict(l)["sysName"] == "dc1-leaf-01" and dict(l)["source"] == "203.0.113.31" for l, _, _ in _bgp))
+_isis = mod.prometheus_series([_gnmi("isis_interface", "oper_state", v, interface_name="ethernet-1/1.0") for v in ("up", "DOWN", " Up ")], _dm)
+check("prometheus_series: isis_interface の oper_state は snmp_isis_interface_oper_up（up が 1、ほかは 0。大文字小文字と前後の空白は見ない）",
+      [(dict(l)["__name__"], v) for l, v, _ in _isis] == [("snmp_isis_interface_oper_up", 1.0), ("snmp_isis_interface_oper_up", 0.0), ("snmp_isis_interface_oper_up", 1.0)]
+      and all(dict(l)["interface_name"] == "ethernet-1/1.0" for l, _, _ in _isis))
+check("prometheus_series: 表に無い文字列の field（ほかの measurement の session_state、evpn_es の oper_state）は系列にならない",
+      mod.prometheus_series([_gnmi("evpn_es", "oper_state", "up"), _gnmi("isis_interface", "session_state", "up"), _gnmi("bgp_neighbor", "oper_state", "up")], _dm) == [])
+check("prometheus_series: 表の field でも文字列でなければ表を引かない（数値はそのまま）",
+      [(dict(l)["__name__"], v) for l, v, _ in mod.prometheus_series([_gnmi("bgp_neighbor", "session_state", 6)], _dm)] == [("snmp_bgp_neighbor_session_state", 6.0)])
+check("prometheus_series: 表に無い IP では sysName を足さない。devmap を渡さなければ今までどおり",
+      all("sysName" not in dict(l) for l, _, _ in mod.prometheus_series([_gnmi("bgp_neighbor", "session_state", "established", source="203.0.113.99")], _dm))
+      and all("sysName" not in dict(l) for l, _, _ in mod.prometheus_series([_gnmi("bgp_neighbor", "session_state", "established")]))
+      and mod.prometheus_series([rec], _dm) == series)
 
 # ---- トピックを起動時に作る（無いトピックを購読すると offset 読みで落ちる。2026-09-27）
 check("all_topics: 格納先が読むトピックの和（重複なし、引数の順）",
@@ -1020,6 +1065,23 @@ check("opensearch_docs: action 行と document 行の対、@timestamp は ISO �
       and json.loads(docs[1])["@timestamp"] == "2023-11-14T22:13:20.500000Z"
       and json.loads(docs[1])["fields"] == {"ifInOctets": 123.0, "ifOperStatus": 1.0, "descr": "up", "flag": 1.0}
       and json.loads(docs[1])["tags"]["ifName"] == "Gi0/1")
+_trap = {"ts": 1700000000.0, "topic": "traps", "measurement": "snmp_trap", "agent_host": "", "host": "h",
+         "tags": {"source": "203.0.113.31", "oid": ".1.3.6.1.6.3.1.1.5.3", "name": "linkDown"}, "fields": {"sysUpTimeInstance": 1}}
+_tdocs = mod.opensearch_docs([_trap, dict(_trap, tags=dict(_trap["tags"], source="203.0.113.99"))], mod.parse_device_map("203.0.113.31=dc1-leaf-01"))
+check("opensearch_docs: sysName の無い snmp_trap は tags.sysName に機器名が入る。表に無い IP では IP をそのまま入れる（Grafana の trap のルールの集計に出す）。元のレコードは変えない",
+      json.loads(_tdocs[1])["tags"] == dict(_trap["tags"], sysName="dc1-leaf-01")
+      and json.loads(_tdocs[3])["tags"] == dict(_trap["tags"], source="203.0.113.99", sysName="203.0.113.99")
+      and "sysName" not in _trap["tags"])
+check("opensearch_docs: devmap を渡さなくても sysName の無い trap は source を入れる。sysName のあるレコード（ポーリング）と source の無いレコードは変えない",
+      json.loads(mod.opensearch_docs([_trap])[1])["tags"]["sysName"] == "203.0.113.31" and mod.opensearch_docs([rec], mod.parse_device_map("203.0.113.31=x")) == docs
+      and json.loads(mod.opensearch_docs([dict(_trap, tags={"source": "203.0.113.31", "sysName": "x"})], mod.parse_device_map("203.0.113.31=dc1-leaf-01"))[1])["tags"]["sysName"] == "x")
+check("splunk_events は device map を受けず、sysName を足さない（Splunk のアラートアクションが DEVICE_MAP で引く。cycle 002 でも出力は変えない）",
+      list(inspect.signature(mod.splunk_events).parameters) == ["records", "index"]
+      and "sysName" not in json.loads(mod.splunk_events([_trap])[0])["event"]["tags"])
+check("build は device map を prometheus と opensearch の sender にだけ渡す",
+      "devmap = parse_device_map(args.device_map)" in src
+      and re.search(r'make_prometheus_sender\([^)]*devmap\)', src) is not None and re.search(r'make_opensearch_sender\([^)]*devmap\)', src) is not None
+      and re.search(r'make_splunk_sender\([^)]*devmap', src) is None)
 
 import datetime as dt
 r = mod.row_to_record({"ts": dt.datetime(2023, 11, 14, 22, 13, 20, tzinfo=dt.timezone.utc), "topic": "traps", "measurement": "snmp_trap",
@@ -1087,18 +1149,18 @@ for jar in ("spark-sql-kafka-0-10_2.12", "spark-token-provider-kafka-0-10_2.12",
 check("up.sh の SPARK_VERSION は emr_release_label の Spark（3.5.6）", re.search(r'^SPARK_VERSION=3\.5\.6$', up, re.M) is not None
       and "7.13.0 = Spark 3.5.6" in tf)
 check("up.sh のスクリプトは spark/snmp_sinks.py", re.search(r'^SPARK_SCRIPT=spark/snmp_sinks\.py$', up, re.M) is not None and "snmp_to_iceberg" not in up)
-check("up.sh は SPLUNK_INDEX（既定は空）を読み、STORES に splunk があれば ECS の Splunk の token を SSM に作ってから渡す（値は読まない）。外の Splunk の変数は渡さない",
+check("up.sh は SPLUNK_INDEX（既定は空）を読み、STORES に splunk があれば（既定）ECS の Splunk の token を SSM に作ってから渡す（値は読まない）。外の Splunk の変数は渡さない",
       re.search(r'^SPLUNK_INDEX="\$\{SPLUNK_INDEX:-\}"$', up, re.M) is not None
       and "get-parameter" not in up and "splunk_hec_url=" not in up and "splunk_skip_tls_verify" not in up and "SPLUNK_TOKEN_PARAM" not in up
-      and 'ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX" -var "device_map=$DEVICE_MAP")' in up
+      and 'ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX")' in up
       and up.index('ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]"') < up.index('ensure_secret "/$PREFIX/splunk/hec-token"') < up.index('tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"'))
-check("up.sh は STORES（既定 s3,grafana）から導いた格納先を terraform/pipeline/analytics の sinks に組んで渡す",
-      re.search(r'^if \[ -z "\$\{STORES:-\}" \]; then STORES=s3,grafana; STORES_DEFAULT=1; fi$', up, re.M) is not None
+check("up.sh は STORES（既定 s3,grafana,splunk）から導いた格納先を terraform/pipeline/analytics の sinks に組んで渡す",
+      re.search(r'^if \[ -z "\$\{STORES:-\}" \]; then STORES=s3,grafana,splunk; STORES_DEFAULT=1; fi$', up, re.M) is not None
       and re.search(r'^SINK_S3="\$STORE_S3"; SINK_OPENSEARCH="\$STORE_GRAFANA"; SINK_PROMETHEUS="\$STORE_GRAFANA"; SINK_SPLUNK="\$STORE_SPLUNK"$', up, re.M) is not None
       and 'ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]" ' in up and 'tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"' in up)
-check("up.sh は Splunk を立てるときだけ device map を lab の定義から作って渡す（lab/lab_topology.py --device-map。trap と gNMI には sysName が無い）",
-      re.search(r'if \[ -n "\$SPLUNK_ON_ECS" \]; then\n[\s\S]*?DEVICE_MAP=\$\("\$\{PY\[@\]\}" lab/lab_topology\.py lab --device-map\) \|\| die [^\n]*\n[\s\S]*?-var "device_map=\$DEVICE_MAP"\)\n  fi\n(?:  [^\n]*\n)*?  tf_apply pipeline/analytics', up) is not None
-      and up.count("lab_topology.py lab --device-map") == 1)
+check("up.sh は STORES の splunk に関わらず device map を lab の定義から作って渡す（lab/lab_topology.py --device-map。trap と gNMI には sysName が無い。Splunk の DEVICE_MAP と Spark の --device-map。cycle 002）",
+      re.search(r'  ANALYTICS_VARS=\(-var "sinks=\[\$SINKS_TF\]" [^\n]*\n(?:  ANALYTICS_VARS\+=\(-var "opensearch_az_num=\$OPENSEARCH_AZ_NUM"\)\n)?(?:  ensure_s3tables_catalog [^\n]*\n)?(?:  #[^\n]*\n)*  DEVICE_MAP=\$\("\$\{PY\[@\]\}" lab/lab_topology\.py lab --device-map\) \|\| die [^\n]*\n  ANALYTICS_VARS\+=\(-var "device_map=\$DEVICE_MAP"\)\n  if \[ -n "\$GRAFANA" \]', up) is not None
+      and up.count("lab_topology.py lab --device-map") == 1 and up.count('-var "device_map=$DEVICE_MAP"') == 1)
 check("up.sh は AGENT=0 でも CloudWatch へのログを切らない（CloudWatch Logs へは土台の logs のエンドポイントで届く）",
       "cloudwatch_logging=false" not in up and re.search(r'variable "cloudwatch_logging" \{[^}]*default\s*=\s*true', tf) is not None)
 # 2026-09-26〜28 は NAT Gateway だけで AWS の API に出ていた。2026-09-28 に閉域（エンドポイント + aws:SourceVpc の Deny）にした
@@ -1231,9 +1293,9 @@ check("AGENT は bedrock-runtime / bedrock-agentcore / ecr / logs を足し、KB
       and _endpoints("base/ecr base/core agent", AGENT="1", CREATE_KB="1").startswith("OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs bedrock-agent-runtime | 8"))
 _ALL = "base/ecr base/core agent pipeline/lab pipeline/stream pipeline/analytics pipeline/graph workflow"
 check("全部なら 16 本で重複しない（ecr / logs / s3tables / bedrock-agentcore は 1 本ずつ。graph は Neptune Analytics の neptune-graph-data）。events は無く、アラートの送り手がいれば sns",
-      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1", GRAFANA="1", GRAFANA_ALERTS="1")
+      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1", GRAFANA="1")
       == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs s3tables neptune-graph-data kinesis-firehose sqs bedrock-agentcore.gateway athena bedrock-agent-runtime aps-workspaces sns | 16")
-check("sns のエンドポイントは Grafana のアラートか Splunk があるときだけ（どちらも無ければ 15 本。Splunk だけでも足す）",
+check("sns のエンドポイントは Grafana か Splunk があるときだけ（Grafana はいつもアラートルールを持つ。どちらも無ければ 15 本。Splunk だけでも足す）",
       _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1").endswith("aps-workspaces | 15")
       and _endpoints("base/ecr base/core pipeline/lab pipeline/stream pipeline/analytics", SPLUNK_ON_ECS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr logs s3tables sns | 7"
       and "events" not in _epblk.replace("events の", ""))
@@ -1300,20 +1362,25 @@ _out, _made, _ = _catalog("other")
 check("up.sh: 設定の違う s3tablescatalog があれば作り直さず、警告だけ出して先へ進む", _made == 0 and "設定が想定" in _out and _out.rstrip().endswith("END"))
 check("up.sh: ensure_s3tables_catalog は analytics を作る回（7-4）に、analytics の apply より前に呼ぶ",
       up.index('log "7-4.') < up.index("  ensure_s3tables_catalog   #") < up.index("tf_apply pipeline/analytics", up.index('log "7-4.')))
-# 送り手の決め方（GRAFANA_ALERTS）と「WORKFLOW は送り手が要る」も切り出して動かす
-_sndblk = up[up.index('GRAFANA_ALERTS=""'):up.index('if [ -z "$AGENT" ] && [ -n "$CREATE_KB" ]; then')]
+# link_down の送り手の決め方（LINK_DOWN_SENDERS）と「WORKFLOW は送り手が要る」も切り出して動かす（ワークフローを起こすのは link_down だけ）
+_sndblk = up[up.index('LINK_DOWN_SENDERS=""'):up.index('if [ -z "$AGENT" ] && [ -n "$CREATE_KB" ]; then')]
 def _senders(**env):
-    r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $1"; exit 1; }\n' + _sndblk + 'echo "OUT: ${GRAFANA_ALERTS:-0}"'],
+    r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $1"; exit 1; }\n' + _sndblk + 'echo "OUT: ${LINK_DOWN_SENDERS:-none}"'],
                        capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env})
     return r.stdout.strip().splitlines()[-1][:40] if r.stdout.strip() else r.stderr
-check("Grafana のアラートは Grafana（導いた GRAFANA）と SINK_PROMETHEUS と SNMP_POLL があるときだけ（ルールは Prometheus の、SNMP のポーリングの ifOperStatus を見る）",
-      _senders(GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: 1" and _senders(GRAFANA="1", SINK_PROMETHEUS="1") == "OUT: 0"
-      and _senders(GRAFANA="1", SNMP_POLL="1") == "OUT: 0" and _senders(SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: 0")
-check("up.sh の WORKFLOW=1 はアラートの送り手（Grafana のアラートか Splunk）が 1 つも無ければ、何も作る前に止まる（既定の SNMP_POLL=0 では Grafana は数えない）",
+check("Grafana が link_down の送り手になるのは（STORES の grafana から導いた）GRAFANA と SINK_PROMETHEUS と SNMP_POLL があるときだけ（link_down はポーリングの ifOperStatus を見る）。Splunk は SPLUNK_ON_ECS（STORES の splunk）で",
+      _senders(GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: grafana" and _senders(GRAFANA="1", SINK_PROMETHEUS="1") == "OUT: none"
+      and _senders(GRAFANA="1", SNMP_POLL="1") == "OUT: none" and _senders(SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: none"
+      and _senders(SPLUNK_ON_ECS="1") == "OUT: splunk" and _senders(GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1", SPLUNK_ON_ECS="1") == "OUT: grafana,splunk")
+check("up.sh の WORKFLOW=1 は link_down の送り手（Grafana か Splunk）が 1 つも無ければ、何も作る前に止まる（SNMP_POLL=0 では Grafana は数えない）",
       _senders(WORKFLOW="1", GRAFANA="1").startswith("DIE: WORKFLOW はアラートの送り手が要る") and _senders(WORKFLOW="1").startswith("DIE: WORKFLOW はアラートの送り手が要る")
       and _senders(WORKFLOW="1", GRAFANA="1", SINK_PROMETHEUS="1").startswith("DIE: WORKFLOW はアラートの送り手が要る")
-      and _senders(WORKFLOW="1", GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: 1" and _senders(WORKFLOW="1", SPLUNK_ON_ECS="1") == "OUT: 0"
+      and _senders(WORKFLOW="1", GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: grafana" and _senders(WORKFLOW="1", SPLUNK_ON_ECS="1") == "OUT: splunk"
       and up.index('die "WORKFLOW はアラートの送り手が要る') < up.index("ENDPOINTS=\"\""))
+_r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $1"; exit 1; }\n' + _sndblk], capture_output=True, text=True,
+                    env={"PATH": os.environ["PATH"], "GRAFANA": "1", "SINK_PROMETHEUS": "1", "SPLUNK_ON_ECS": "1"})
+check("SNMP_POLL=0 で Grafana の link_down が黙るときは注意を出す（Splunk があれば trap からだけ知らせると言う）",
+      "注意: SNMP_POLL=0 なので Grafana のアラートルール link_down と Splunk の netops_poll は発火しない" in _r.stdout)
 check("up.sh は base/core に interface_endpoints / network_perimeter / endpoints_az_num を渡し、state に残るルートの分も足す",
       'MAIN_VARS+=(-var "interface_endpoints=[' in up and 'MAIN_VARS+=(-var "network_perimeter=' in up
       and 'MAIN_VARS+=(-var "endpoints_az_num=$ENDPOINTS_AZ_NUM")' in up and "endpoints_multi_az" not in up
@@ -1352,8 +1419,8 @@ check("STORES は deploy.env を読んだあと、前のキーの検査のすぐ
 check("up.sh は SINK_* / GRAFANA をスイッチとして読まない（既定値・flag_value・STORES とのぶつかりの検査が無い）",
       not any(k in up for k in ('SINK_S3="${SINK_S3:-1}"', 'SINK_SPLUNK="${SINK_SPLUNK:-0}"', "flag_value SINK_", 'GRAFANA="${GRAFANA:-1}"',
                                 "flag_value GRAFANA", 'case "${GRAFANA:-}" in', "を一緒に書いている", "SINK_SPLUNK が全部 0")))
-check("STORES が無ければ既定の s3,grafana（S3 Tables と OpenSearch・Prometheus・Grafana。Splunk は作らない）。空も既定",
-      _stores()[:2] == (0, "OUT: iceberg,opensearch,prometheus | G=1 ECS=0") and _stores(STORES="")[:2] == _stores()[:2])
+check("STORES が無ければ既定の s3,grafana,splunk（S3 Tables と OpenSearch・Prometheus・Grafana と Splunk。splunk は cycle 002 で既定に入れた）。空も既定",
+      _stores()[:2] == (0, "OUT: iceberg,opensearch,prometheus,splunk | G=1 ECS=1") and _stores(STORES="")[:2] == _stores()[:2])
 check("STORES=s3,grafana,splunk で 4 つの格納先がそろい、Grafana も ECS の Splunk も作る",
       _stores(STORES="s3,grafana,splunk")[:2] == (0, "OUT: iceberg,opensearch,prometheus,splunk | G=1 ECS=1")
       and _stores('echo "OUT: $SINKS_TF"', STORES="s3,grafana,splunk")[1] == 'OUT: "iceberg","opensearch","prometheus","splunk"')
@@ -1368,7 +1435,7 @@ check("STORES の順番・重複・前後の空白は問わない",
       and _stores(STORES="grafana,s3,grafana")[:2] == _stores(STORES="s3,grafana")[:2])
 check("格納先のログはいつも 1 行出す（STORES の値、既定かどうか、有効なまとまり。SKIP_ANALYTICS ならどれも作らないと書く）",
       _stores()[2].count("LOG:") == 1
-      and "LOG:    格納先（STORES=s3,grafana。既定）: s3（S3 Tables） grafana（OpenSearch・Prometheus・Grafana）\n" in _stores()[2]
+      and "LOG:    格納先（STORES=s3,grafana,splunk。既定）: s3（S3 Tables） grafana（OpenSearch・Prometheus・Grafana） splunk（Splunk）\n" in _stores()[2]
       and "LOG:    格納先（STORES=splunk,s3）: s3（S3 Tables） splunk（Splunk）\n" in _stores(STORES="splunk,s3")[2]
       and "LOG:    格納先（STORES=grafana）: grafana（OpenSearch・Prometheus・Grafana）。analytics を作らないので、どれも作らない\n"
       in _stores(STORES="grafana", SKIP_ANALYTICS="1")[2])
@@ -1387,25 +1454,25 @@ check("deploy-env.sh は STORES と、なくした SINK_* / GRAFANA を読める
       all(re.search(rf'(?<![A-Z_]){k}(?![A-Z_])', _denv_src.split("DEPLOY_ENV_KEYS=")[1].split('"')[1])
           for k in ("STORES", "SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA", "SPLUNK_HEC_URL", "SPLUNK_INDEX", "SPLUNK_SKIP_TLS_VERIFY")))
 # なくしたキー（SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK / GRAFANA）が残っていれば、当たる STORES を出して止まる
-_OLD_WHAT = "はなくなった（2026-10-04 から格納先は STORES だけで選ぶ。s3 / grafana / splunk をカンマで並べ、既定は s3,grafana）。"
+_OLD_WHAT = "はなくなった（2026-10-04 から格納先は STORES だけで選ぶ。s3 / grafana / splunk をカンマで並べ、既定は s3,grafana,splunk）。"
 def _old(**env):
     rc, last, out = _stores(**env)
     return last if rc == 1 else f"rc={rc} {last}"
 check("SINK_S3=0 は STORES=grafana と書くと言って止まる（どのキーを消すか、まだ何も作っていないことも言う）",
       _old(SINK_S3="0") == "DIE: SINK_S3 " + _OLD_WHAT + "いまの値（SINK_S3=0）は STORES=grafana と書く。deploy.env と環境変数から SINK_S3 を消す。まだ何も作っていない")
-check("SINK_SPLUNK=1 は STORES=s3,grafana,splunk、yes / no / false も 1 / 0 と同じに読む",
-      _old(SINK_SPLUNK="1").endswith("いまの値（SINK_SPLUNK=1）は STORES=s3,grafana,splunk と書く。deploy.env と環境変数から SINK_SPLUNK を消す。まだ何も作っていない")
-      and "は STORES=s3,grafana,splunk と書く" in _old(SINK_SPLUNK="yes") and "は STORES=grafana と書く" in _old(SINK_S3="no")
+check("前の既定（SINK_SPLUNK は 0）と同じ GRAFANA=1 は STORES=s3,grafana と書くと言う（いまの既定は splunk も入るので、既定とは言わない）。yes / no / false も 1 / 0 と同じに読む",
+      _old(GRAFANA="1").endswith("いまの値（GRAFANA=1）は STORES=s3,grafana と書く。deploy.env と環境変数から GRAFANA を消す。まだ何も作っていない")
+      and "は STORES=s3,grafana と書く" in _old(SINK_SPLUNK="no") and "は STORES=grafana と書く" in _old(SINK_S3="no")
       and "は STORES=grafana と書く" in _old(SINK_S3="false"))
 check("SINK_OPENSEARCH=0 と SINK_PROMETHEUS=0 は STORES=s3、SINK_* が全部 0 で SINK_SPLUNK=1 なら STORES=splunk。キーは / で並べる",
       _old(SINK_OPENSEARCH="0", SINK_PROMETHEUS="0") == "DIE: SINK_OPENSEARCH / SINK_PROMETHEUS " + _OLD_WHAT
       + "いまの値（SINK_OPENSEARCH=0 SINK_PROMETHEUS=0）は STORES=s3 と書く。deploy.env と環境変数から SINK_OPENSEARCH / SINK_PROMETHEUS を消す。まだ何も作っていない"
       and "は STORES=splunk と書く" in _old(SINK_S3="0", SINK_OPENSEARCH="0", SINK_PROMETHEUS="0", SINK_SPLUNK="1"))
-check("前の既定と同じ値（GRAFANA=1、SINK_S3=1 など）も止まり、STORES を書かないときの既定と同じと言う",
-      all("は STORES=s3,grafana と同じ（STORES を書かないときの既定）。" in _old(**e) and _old(**e).endswith("まだ何も作っていない")
-          for e in ({"GRAFANA": "1"}, {"SINK_S3": "1", "SINK_SPLUNK": "0"}, {"SINK_OPENSEARCH": "true"})))
+check("いまの既定と同じ値（SINK_SPLUNK=1 など。3 つとも作る）も止まり、STORES を書かないときの既定と同じと言う",
+      all("は STORES=s3,grafana,splunk と同じ（STORES を書かないときの既定）。" in _old(**e) and _old(**e).endswith("まだ何も作っていない")
+          for e in ({"SINK_SPLUNK": "1"}, {"SINK_S3": "1", "SINK_SPLUNK": "yes"}, {"GRAFANA": "true", "SINK_SPLUNK": "1"})))
 check("格納先が 1 つも残らない値は、STORES では書けないので analytics ごと作らない SKIP_ANALYTICS=1 を出す",
-      "は格納先が 1 つも無く、STORES ではそう書けない（空なら既定の s3,grafana）。analytics ごと要らないなら SKIP_ANALYTICS=1 を書く。"
+      "は格納先が 1 つも無く、STORES ではそう書けない（空なら既定の s3,grafana,splunk）。analytics ごと要らないなら SKIP_ANALYTICS=1 を書く。"
       in _old(SINK_S3="0", SINK_OPENSEARCH="0", SINK_PROMETHEUS="0"))
 check("GRAFANA=0（Grafana を作らずに OpenSearch / Prometheus を作る）はもう選べないと言い、近い 2 つの STORES を出す",
       _old(GRAFANA="0") == "DIE: GRAFANA " + _OLD_WHAT + "いまの値（GRAFANA=0）は Grafana を作らずに OpenSearch か Prometheus を作る組み合わせで、"
@@ -1428,6 +1495,11 @@ check("STORES で選んだあとも今の検査が効く（grafana だけでは 
       _stores(_sndblk + _ST_OUT, STORES="s3,grafana", WORKFLOW="1", SNMP_POLL="")[1].startswith("DIE: WORKFLOW はアラートの送り手が要る")
       and _stores(_sndblk + _ST_OUT, STORES="s3,grafana", WORKFLOW="1", SNMP_POLL="1")[:2] == (0, "OUT: iceberg,opensearch,prometheus | G=1 ECS=0")
       and _stores(_sndblk + _ST_OUT, STORES="splunk", WORKFLOW="1")[:2] == (0, "OUT: splunk | G=0 ECS=1"))
+# 既定（deploy.env に何も書かない）で WORKFLOW=1 にすると、link_down の送り手は Grafana と Splunk の両方になる（設計の検証。cycle 002）
+_snmp_line = up[up.index('SNMP_POLL="${SNMP_POLL:-1}"'):].split("\n", 1)[0] + "\n"
+check("既定のまま WORKFLOW=1 なら送り手は grafana,splunk、格納先は 4 つ（STORES は s3,grafana,splunk、SNMP_POLL は 1 が既定）",
+      _stores(_snmp_line + _sndblk + 'echo "OUT: ${LINK_DOWN_SENDERS:-none} | $SINKS"', WORKFLOW="1")[:2]
+      == (0, "OUT: grafana,splunk | iceberg,opensearch,prometheus,splunk"))
 check("SKIP_ANALYTICS=1 なら STORES に grafana / splunk があっても Grafana と ECS の Splunk は作らない",
       _stores(STORES="grafana,splunk", SKIP_ANALYTICS="1")[:2] == (0, "OUT: opensearch,prometheus,splunk | G=0 ECS=0"))
 import shutil, tempfile
@@ -1444,23 +1516,24 @@ def _stores_file(text, **env):  # deploy.env から読ませる（ops/deploy-env
         shutil.rmtree(d)
 check("deploy.env の STORES を読む（値の後ろのコメントも外す）。STORES= の空は既定",
       _stores_file("OWNER=a\nSTORES=grafana  # コメント\n") == (0, "OUT: opensearch,prometheus | G=1 ECS=0")
-      and _stores_file("OWNER=a\nSTORES=\n") == (0, "OUT: iceberg,opensearch,prometheus | G=1 ECS=0"))
+      and _stores_file("OWNER=a\nSTORES=\n") == (0, "OUT: iceberg,opensearch,prometheus,splunk | G=1 ECS=1"))
 check("前の deploy.env の SINK_* / GRAFANA は読めて（知らないキーで止まらず）、up.sh が当たる STORES を出して止まる。環境変数でも同じ。空の値は書いていないのと同じ",
       _stores_file("OWNER=a\nGRAFANA=0\n")[1].startswith("DIE: GRAFANA はなくなった")
-      and _stores_file("OWNER=a\nSINK_SPLUNK=1\n")[1].endswith("は STORES=s3,grafana,splunk と書く。deploy.env と環境変数から SINK_SPLUNK を消す。まだ何も作っていない")
+      and _stores_file("OWNER=a\nSINK_SPLUNK=1\n")[1].endswith("は STORES=s3,grafana,splunk と同じ（STORES を書かないときの既定）。deploy.env と環境変数から SINK_SPLUNK を消す。まだ何も作っていない")
       and "（STORES=s3 も書いてあるので、消せばそちらが効く）" in _stores_file("OWNER=a\nSTORES=s3\nSINK_S3=1\n")[1]
       and _stores_file("OWNER=a\nSTORES=splunk\n", SINK_S3="0")[1].startswith("DIE: SINK_S3 はなくなった")
       and _stores_file("OWNER=a\nSTORES=s3\nSINK_S3=\nGRAFANA=\n") == (0, "OUT: iceberg | G=0 ECS=0"))
 _envx = open(ENV_EXAMPLE, encoding="utf-8").read()
-_envx_st = _envx[_envx.index("# analytics の格納先を 3 つのまとまりで選ぶ"):_envx.index("#STORES=s3,grafana")]
-check("deploy.env.example は STORES を既定の s3,grafana で書き、その前にまとまりごとの中身・外すと無くなるもの・費用と、外すとデータごと消えることを書く",
-      re.search(r"^#STORES=s3,grafana$", _envx, re.M) is not None and _envx.count("#STORES=") == 1
+_envx_st = _envx[_envx.index("# analytics の格納先を 3 つのまとまりで選ぶ"):_envx.index("#STORES=s3,grafana,splunk")]
+check("deploy.env.example は STORES を既定の s3,grafana,splunk で書き、その前にまとまりごとの中身・外すと無くなるもの・費用と、外すとデータごと消えることを書く",
+      re.search(r"^#STORES=s3,grafana,splunk$", _envx, re.M) is not None and _envx.count("#STORES=") == 1
       and all(re.search(rf"^#   {g} +全トピック|^#   {g} +traps と logs", _envx_st, re.M) for g in ("s3", "grafana", "splunk"))
-      and all(k in _envx_st for k in ("**既定は s3,grafana**", "+$0.21/h", "約 +$0.61/h", "約 +$0.34/h", "外すと", "入れなければ", "データごと消える",
-                                      "SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK / GRAFANA は 2026-10-04 になくした")))
+      and all(k in _envx_st for k in ("**既定は s3,grafana,splunk = 3 つとも**", "+$0.21/h", "約 +$0.62/h", "約 +$0.34/h", "データごと消える",
+                                      "SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK / GRAFANA は 2026-10-04 になくした"))
+      and _envx_st.count("#            外すと") == 3)
 check("deploy.env.example に SINK_* / GRAFANA のキーの行は無い。SPLUNK_INDEX は STORES のあとに空で書く。SPLUNK_HEC_URL / SPLUNK_SKIP_TLS_VERIFY も書かない（2026-09-28 にやめた）",
       re.search(r"^#?\s*(SINK_[A-Z0-9]+|GRAFANA|SINKS)=", _envx, re.M) is None
-      and re.search(r"^#SPLUNK_INDEX=$", _envx, re.M) is not None and _envx.index("#STORES=s3,grafana") < _envx.index("#SPLUNK_INDEX=")
+      and re.search(r"^#SPLUNK_INDEX=$", _envx, re.M) is not None and _envx.index("#STORES=s3,grafana,splunk") < _envx.index("#SPLUNK_INDEX=")
       and "SPLUNK_HEC_URL" not in _envx and "SPLUNK_SKIP_TLS_VERIFY" not in _envx)
 check("MSK Connect の Splunk は書いていない（2026-09-26 に Spark から書くことにした）",
       "MSK Connect で後回し" not in tf and "MSK Connect で後回し" not in src and "MSK Connect で後回し" not in up)
@@ -1724,8 +1797,8 @@ _VALS = {"local.bootstrap": "b:9098", "local.checkpoint_uri": "s3://bucket/analy
          "local.prometheus_remote_write_url": "https://aps/api/v1/remote_write", "local.splunk_hec_url": "https://splunk.p.internal:8088",
          "local.splunk_token_parameter": "/p/splunk/hec-token", "var.splunk_index": ""}
 _args_body = "\n".join(l for l in args_block.group(1).splitlines() if not l.strip().startswith("#"))
-def _job_args(job, var_sinks, http_send="driver", max_offsets=10000, by_sink=None):
-    """var.sinks / var.http_send / var.max_offsets_per_trigger / var.max_offsets_per_trigger_by_sink のときに job の entryPointArguments になるもの
+def _job_args(job, var_sinks, http_send="driver", max_offsets=10000, by_sink=None, device_map=""):
+    """var.sinks / var.http_send / var.max_offsets_per_trigger / var.max_offsets_per_trigger_by_sink / var.device_map のときに job の entryPointArguments になるもの
     （そのジョブの格納先が無ければ None = job_driver は空文字）。local.max_offsets_by_job は locals.tf と同じ組み方を Python でする"""
     sinks = [s for s in _jobs_def[job] if s in var_sinks]
     if not sinks:
@@ -1741,13 +1814,15 @@ def _job_args(job, var_sinks, http_send="driver", max_offsets=10000, by_sink=Non
             return by_job
         if tok == "tostring(var.max_offsets_per_trigger)":
             return str(max_offsets)
+        if tok == "var.device_map":
+            return device_map
         return http_send if tok == "var.http_send" else _VALS[tok]
     toks = r'"[^"]*"|join\(",", sinks\)|local\.max_offsets_by_job\[job\]|tostring\(var\.max_offsets_per_trigger\)|[a-z_]+\.[a-z_]+'
     out = [val(t) for t in re.findall(toks, _args_body.split("[for a in")[0])]
     for items, cond in re.findall(r'^\s*\[for a in \[(.*)\] : a if (.*)\],?\s*$', _args_body, re.M):
         py = re.sub(r'contains\(sinks, "(\w+)"\)', r'("\1" in sinks)', cond).replace("&&", "and").replace("||", "or")
-        py = py.replace("var.http_send", "http_send").replace("local.splunk_skip_tls_verify", "True").replace("local.max_offsets_by_job[job]", "by_job")
-        if eval(py, {}, {"sinks": sinks, "job": job, "http_send": http_send, "by_job": by_job}):
+        py = py.replace("var.http_send", "http_send").replace("local.splunk_skip_tls_verify", "True").replace("local.max_offsets_by_job[job]", "by_job").replace("var.device_map", "device_map")
+        if eval(py, {}, {"sinks": sinks, "job": job, "http_send": http_send, "by_job": by_job, "device_map": device_map}):
             out += [val(t) for t in re.findall(toks, items)]
     return out
 check("_job_args は outputs.tf の for-if を全部読む（1 行に 1 つ。読めない書き方が増えたら数が合わなくなる）",
@@ -1798,6 +1873,12 @@ check("格納先ごとの値は、その格納先を選んでいなければ渡�
 check("共通 0: どのジョブにも --max-offsets-per-trigger 0 を渡し、スクリプトは上限なしになる",
       all(_val(_job_args(j, _ALL4, max_offsets=0), "--max-offsets-per-trigger") == "0" and mod.parse_args(_job_args(j, _ALL4, max_offsets=0)).max_offsets_per_trigger == 0
           for j in ("iceberg", "splunk", "http")))
+_dmap = "203.0.113.31=dc1-leaf-01,203.0.113.21=dc1-spine-01"
+_dj = {j: _job_args(j, _ALL4, device_map=_dmap) for j in ("iceberg", "splunk", "http")}
+check("device map があれば http のジョブ（opensearch / prometheus）にだけ --device-map を渡し、スクリプトはそれを読む。iceberg と splunk のジョブ、device map が空のときは渡さない（cycle 002）",
+      _val(_dj["http"], "--device-map") == _dmap and mod.parse_args(_dj["http"]).device_map == _dmap
+      and _dj["iceberg"] == _ji and _dj["splunk"] == _js and "--device-map" not in _jh
+      and _val(_job_args("http", ["prometheus"], device_map=_dmap), "--device-map") == _dmap)
 check("variable max_offsets_per_trigger は number で既定 10000、0 以上の整数だけ通す",
       re.search(r'variable "max_offsets_per_trigger" \{\s*description[^\n]*\n\s*type\s*=\s*number\s*\n\s*default\s*=\s*10000\s*\n\s*validation \{\s*\n'
                 r'\s*condition\s*=\s*var\.max_offsets_per_trigger >= 0 && floor\(var\.max_offsets_per_trigger\) == var\.max_offsets_per_trigger\n', tf) is not None)

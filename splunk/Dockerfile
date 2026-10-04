@@ -2,7 +2,9 @@
 # ECR の <接頭辞>-splunk に置く。上流の公式イメージ（splunk/splunk。amd64 だけ）に、アラートの app（netops_alerts）と入口（entrypoint.sh）を足すだけ。
 # 上流は etc を /opt/splunk-etc に持ち、起動のとき /opt/splunk/etc（VOLUME）へ写すので、app は /opt/splunk-etc/apps に置く
 # （/opt/splunk/etc に COPY しても VOLUME に隠れる）。RUN は無いので arm64 の PC でも QEMU 無しでビルドできる（--platform linux/amd64）。
-# Splunkbase の add-on（Splunk Add-on for AWS など）は入れていない（配布物をこの公開リポジトリに置けず、VPC から Splunkbase へも出られない）
+# Splunkbase の add-on（Splunk Add-on for AWS など）は入れていない（配布物をこの公開リポジトリに置けず、VPC から Splunkbase へも出られない）。
+# アラートアクションの boto3 は Splunk の Python が持っているもの（10.4.3 は 1.37.14）を使い、app に同梱しない。SPLUNK_VERSION を変えたら
+# tests/check_splunk_image.py で、その版の Python に boto3 があり publish できることを確かめる
 ARG SPLUNK_VERSION=10.4.3
 FROM splunk/splunk:${SPLUNK_VERSION}
 
