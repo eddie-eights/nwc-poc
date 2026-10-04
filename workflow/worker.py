@@ -21,6 +21,8 @@ Grafana と Splunk のアラート（SNS → SQS）を受けてエージェン�
   → put_proposal（created の行。proposal_id = <anomaly_id>#<first_seen>。同じ異常の古い承認待ちは先に expired にする）
   → 人の判断をシグナル decide で待つ（Web の「承認」タブ → 決定のキュー → starter）。先に届いた 1 回だけが効き、
     自分の proposal_id でないもの（同じ異常の前の発生への決定）は無視する。待つあいだに解消の通知が来たら、打つ相手がもういないので obsolete にして終わる
+    効いたあとに届いた中身の違う決定は、効かなかった決定として ignored の行にする（status は変えない。2026-10-05）。
+    承認待ちが決定なしで終わったあと（expired / obsolete）に届いた決定は、行にせずログだけ
   → 承認・却下の行（decided_by は Web で名乗った名前）
   → approved なら、打つ直前にもう一度、解消していないか確かめる（していれば obsolete にして打たない）
   → apply_on_lab（SSM Run Command で `sudo lab <cmd>`。cmd は rules.ALLOWED_ACTIONS だけ）→ applied / failed
@@ -72,6 +74,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("worker")
 
 RETRY = RetryPolicy(maximum_attempts=3, initial_interval=timedelta(seconds=5))
+OPTS = {"start_to_close_timeout": timedelta(seconds=60), "retry_policy": RETRY}  # 行を足すアクティビティ
 NEWER_PROPOSAL_NOTE = "同じ異常の新しい修復案ができた"
 NO_WORKFLOW_NOTE = "決定が届いたが、ワークフローがもう無い"
 
@@ -153,6 +156,14 @@ async def record_event(proposal: dict, event: str, fields: dict | None = None) -
 
 
 @activity.defn
+async def record_ignored(proposal: dict, decision: dict, effective: dict) -> dict:
+    """効かなかった決定の行（rules.ignored_event。status とほかの項目は proposal のまま、seq だけ進める）を 1 行足し、その行を返す"""
+    row = rules.ignored_event(proposal, decision, effective, int(time.time()))
+    await _append([row])
+    return row
+
+
+@activity.defn
 async def apply_on_lab(command: str) -> dict:
     if not awsio.LAB_INSTANCE_ID:
         return {"status": "Skipped", "output": "LAB_INSTANCE_ID が無い（terraform/pipeline/lab が無い）"}
@@ -160,7 +171,7 @@ async def apply_on_lab(command: str) -> dict:
     return {"status": status, "output": out}
 
 
-ACTIVITIES = [investigate, put_proposal, record_event, apply_on_lab]
+ACTIVITIES = [investigate, put_proposal, record_event, record_ignored, apply_on_lab]
 
 
 # ---------------------------------------------------------------- ワークフロー（決定的な側。AWS には触らない）
@@ -170,16 +181,38 @@ class InvestigateAnomaly:
         self._decision: dict = {}
         self._resolved = False
         self._proposal_id = ""
+        self._row: dict = {}         # 最後に足した行（次の行はこれの seq + 1）
+        self._ignored: list = []     # 効かなかった決定のうち、まだ行にしていないもの（届いた順）
+        self._seen: set = set()      # 届いた決定の中身（rules.decision_key）。同じものは SQS の重複配達として捨てる
+        self._closed = False         # 承認待ちが決定なしで終わった（expired / obsolete）。以後の決定はログだけ
 
     @workflow.signal
     def decide(self, decision: dict) -> None:
         """人の判断（starter が決定のキューから送る。{"proposal_id", "decision", "decided_by", "decided_at"}）。
-        先に届いた 1 回だけが効く（SQS の重複配達も同じ）。自分の proposal_id でないもの（同じ異常の前の発生への決定）は無視する"""
-        if self._decision or not isinstance(decision, dict) or decision.get("decision") not in rules.DECISIONS:
+        先に届いた 1 回だけが効く。あとから届いた中身の違う決定は _ignored に控え、_flush が ignored の行にする。
+        中身が同じもの（SQS の重複配達）と、自分の proposal_id でないもの（同じ異常の前の発生への決定）は無視する。
+        承認待ちが決定なしで終わったあとに届いた決定は、効いた決定として控えずログだけ（控えると次の決定に誤った ignored の行が付く）"""
+        if not isinstance(decision, dict) or decision.get("decision") not in rules.DECISIONS:
             return
-        if not self._proposal_id or decision.get("proposal_id") != self._proposal_id:
+        if not self._proposal_id:
             return
-        self._decision = decision
+        if decision.get("proposal_id") != self._proposal_id:
+            # 前の発生の修復案は put_proposal が expired にしてある（ワークフローが終わったあとに届いた決定と同じく、ログだけ）
+            workflow.logger.info("proposal %s: 別の修復案 %s への %s by %s が届いた（行にしない）", self._proposal_id,
+                                 decision.get("proposal_id") or "-", decision["decision"], decision.get("decided_by") or "-")
+            return
+        if self._closed:
+            workflow.logger.info("proposal %s: 承認待ちが終わったあとに %s by %s が届いた（行にしない）",
+                                 self._proposal_id, decision["decision"], decision.get("decided_by") or "-")
+            return
+        key = rules.decision_key(decision)
+        if key in self._seen:
+            return
+        self._seen.add(key)
+        if not self._decision:
+            self._decision = decision
+        else:
+            self._ignored.append(decision)
 
     @workflow.signal
     def resolved(self, source: str = "") -> None:
@@ -187,12 +220,39 @@ class InvestigateAnomaly:
         self._resolved = True
 
     async def _wait_resolved(self, seconds: int) -> bool:
-        # wait_condition は timeout に達すると asyncio.TimeoutError を投げ、漏らすとワークフロー自体が失敗する（下の承認待ちと同じ）
-        try:
-            await workflow.wait_condition(lambda: self._resolved, timeout=timedelta(seconds=seconds))
-        except asyncio.TimeoutError:
-            pass
+        """解消の通知を seconds 秒まで待つ。待つあいだに届いた効かなかった決定は、その場で ignored の行にする（HOLD は 24 時間ある）"""
+        deadline = workflow.now() + timedelta(seconds=seconds)
+        left = timedelta(seconds=seconds)
+        while left > timedelta(0):
+            # wait_condition は timeout に達すると asyncio.TimeoutError を投げ、漏らすとワークフロー自体が失敗する（下の承認待ちと同じ）
+            try:
+                await workflow.wait_condition(lambda: self._resolved or bool(self._ignored and self._row), timeout=left)
+            except asyncio.TimeoutError:
+                break
+            await self._flush()
+            if self._resolved:
+                break
+            left = deadline - workflow.now()
         return self._resolved
+
+    async def _record(self, event: str, fields: dict, flush: bool = True) -> dict:
+        """次の段の行を足し（record_event）、flush なら続けて控えてある効かなかった決定の行を足す。最後に足した行を返す"""
+        self._row = await workflow.execute_activity(record_event, args=[self._row, event, fields], **OPTS)
+        if flush:
+            await self._flush()
+        return self._row
+
+    async def _flush(self) -> None:
+        """控えてある効かなかった決定を、届いた順に ignored の行にする（seq は最後に足した行の次）。
+        書けなくてもワークフローは止めない（打つ・確かめるほうが先。ログだけ残してその決定は捨てる）"""
+        while self._ignored and self._row:
+            d = self._ignored.pop(0)
+            d = {**d, "decided_at": d.get("decided_at") or int(workflow.now().timestamp())}
+            try:
+                self._row = await workflow.execute_activity(record_ignored, args=[self._row, d, self._decision], **OPTS)
+            except ActivityError as e:
+                workflow.logger.warning("proposal %s: ignored の行を書けなかった（%s by %s）: %s",
+                                        self._proposal_id, d["decision"], d.get("decided_by") or "-", e.cause or e)
 
     @workflow.run
     async def run(self, anomaly: dict) -> str:
@@ -202,18 +262,19 @@ class InvestigateAnomaly:
         if outcome in HOLD_OUTCOMES and not self._resolved:
             workflow.logger.info("anomaly %s: %s。解消の通知を待つ（%d 分まで）", anomaly.get("anomaly_id"), outcome, HOLD_MINUTES)
             await self._wait_resolved(HOLD_MINUTES * 60)
+        # 最後の段のあとに届いた効かなかった決定も行にしてから閉じる
+        await self._flush()
         return outcome
 
     async def _handle(self, anomaly: dict) -> str:
         # 決定のシグナルを受けるかどうかはこの id で決める。調査より前に出しておく（調査のあいだに届いた決定も受ける）
         self._proposal_id = rules.proposal_id(anomaly["anomaly_id"], anomaly.get("first_seen"))
-        opts = {"start_to_close_timeout": timedelta(seconds=60), "retry_policy": RETRY}
         # AgentCore の読み取り待ちは awsio が 150 秒まで延ばしている。1 回分が start_to_close に収まるよう 4 分
         finding = await workflow.execute_activity(
             investigate, anomaly, start_to_close_timeout=timedelta(minutes=4), retry_policy=RETRY)
         info = workflow.info()
-        proposal = await workflow.execute_activity(put_proposal, args=[anomaly, finding, info.workflow_id, info.run_id], **opts)
-        pid = proposal["proposal_id"]
+        self._row = await workflow.execute_activity(put_proposal, args=[anomaly, finding, info.workflow_id, info.run_id], **OPTS)
+        pid = self._row["proposal_id"]
 
         workflow.logger.info("proposal %s: pending (action=%s)", pid, finding["action"])
 
@@ -228,18 +289,18 @@ class InvestigateAnomaly:
             pass
         d = self._decision
         if not d:
+            self._closed = True
             if self._resolved:
                 workflow.logger.info("proposal %s: obsolete（承認を待つあいだに解消した）", pid)
-                await workflow.execute_activity(
-                    record_event, args=[proposal, "obsolete", {"verify_note": "承認を待つあいだにこの異常が解消したので打たなかった"}], **opts)
+                await self._record("obsolete", {"verify_note": "承認を待つあいだにこの異常が解消したので打たなかった"})
                 return "obsolete"
             workflow.logger.info("proposal %s: expired", pid)
-            await workflow.execute_activity(record_event, args=[proposal, "expired", {"verify_note": "承認待ちのまま時間切れ"}], **opts)
+            await self._record("expired", {"verify_note": "承認待ちのまま時間切れ"})
             return "expired"
         decision = d["decision"]
-        proposal = await workflow.execute_activity(
-            record_event, args=[proposal, decision, {"decided_by": d.get("decided_by", ""),
-                                                     "decided_at": d.get("decided_at") or int(workflow.now().timestamp())}], **opts)
+        # 効かなかった決定の行はここでは書かない（打つほうが先。applied / failed の行のあと、解消を待つあいだ、閉じる前に書く）
+        await self._record(decision, {"decided_by": d.get("decided_by", ""),
+                                      "decided_at": d.get("decided_at") or int(workflow.now().timestamp())}, flush=False)
         workflow.logger.info("proposal %s: %s", pid, decision)
         if decision == "rejected":
             return "rejected"
@@ -247,8 +308,7 @@ class InvestigateAnomaly:
         # 承認と同時に解消の通知が届いていることがある。解消した異常へ古い処置を打たない
         if self._resolved:
             workflow.logger.info("proposal %s: obsolete（承認のあいだに異常が解消した）", pid)
-            await workflow.execute_activity(
-                record_event, args=[proposal, "obsolete", {"verify_note": "承認のあいだにこの異常が解消したので打たなかった"}], **opts)
+            await self._record("obsolete", {"verify_note": "承認のあいだにこの異常が解消したので打たなかった"})
             return "obsolete"
 
         # 承認された。none なら打つものが無いので applied 扱いで verify へ
@@ -263,23 +323,20 @@ class InvestigateAnomaly:
                 result = {"status": "Error", "output": f"{type(cause).__name__}: {cause}"}
             ok = result["status"] in ("Success", "Skipped")
             workflow.logger.info("proposal %s: apply %s -> %s", pid, finding["command"], result["status"])
-            proposal = await workflow.execute_activity(
-                record_event, args=[proposal, "applied" if ok else "failed", {"apply_output": f"{result['status']}: {result['output']}"[:4000]}], **opts)
+            await self._record("applied" if ok else "failed", {"apply_output": f"{result['status']}: {result['output']}"[:4000]})
             if not ok:
                 return "failed"
         else:
-            proposal = await workflow.execute_activity(record_event, args=[proposal, "applied", {"apply_output": "処置なし（action=none）"}], **opts)
+            await self._record("applied", {"apply_output": "処置なし（action=none）"})
 
         applied_at = workflow.now()
         if await self._wait_resolved(VERIFY_TIMEOUT):
             waited = int((workflow.now() - applied_at).total_seconds())
             workflow.logger.info("proposal %s: verified (%ds)", pid, waited)
-            await workflow.execute_activity(
-                record_event, args=[proposal, "verified", {"verify_note": f"処置から {waited} 秒で解消の通知が届いた"}], **opts)
+            await self._record("verified", {"verify_note": f"処置から {waited} 秒で解消の通知が届いた"})
             return "verified"
         workflow.logger.info("proposal %s: not resolved after %ds", pid, VERIFY_TIMEOUT)
-        await workflow.execute_activity(
-            record_event, args=[proposal, "failed", {"verify_note": f"{VERIFY_TIMEOUT} 秒待っても解消の通知が届かない"}], **opts)
+        await self._record("failed", {"verify_note": f"{VERIFY_TIMEOUT} 秒待っても解消の通知が届かない"})
         return "failed"
 
 
@@ -358,7 +415,8 @@ async def handle_decision(client: Client, body: str) -> None:
             raise
     latest = await asyncio.to_thread(awsio.latest_proposal, pid)
     if latest.get("status") != "pending":
-        log.info("decide %s: ワークフローが無い（修復案は %s。何もしない）", pid, latest.get("status") or "無い")
+        log.info("decide %s: %s by %s が届いたが、ワークフローが無い（修復案は %s。行にしない）",
+                 pid, d["decision"], d["decided_by"] or "-", latest.get("status") or "無い")
         return
     log.info("decide %s: ワークフローが無いので expired にする", pid)
     await _append([rules.proposal_event("expired", latest, int(time.time()), NO_WORKFLOW_NOTE, {"verify_note": NO_WORKFLOW_NOTE})])

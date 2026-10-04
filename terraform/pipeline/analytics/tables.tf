@@ -124,8 +124,9 @@ resource "aws_s3tables_table" "raw_telemetry" {
 # 障害の履歴は下の alert_events（アラートの通知の履歴。2026-10-04）に置く。
 # 修復案の置き場はこのテーブルだけ（Neptune の頂点 proposal は 2026-10-05 にやめた）。作成・承認・却下・適用・確認を 1 行ずつ足し、どの行も修復案の全項目を持つ。
 # 書くのは terraform/workflow の worker だけ（workflow/awsio.py の append_proposal_events、PyIceberg）。読むのは Web の承認タブとエージェントの list_proposals（Athena）。
-# 修復案の「いま」は proposal_id ごとに seq が最大の行。event は created / approved / rejected / expired / obsolete / applied / failed / verified。
-# event_id = <proposal_id>#<event>。列は workflow/rules.py の PROPOSAL_EVENT_COLUMNS と同じ順・同じ型。
+# 修復案の「いま」は proposal_id ごとに seq が最大の行。event は created / approved / rejected / expired / obsolete / applied / failed / verified / ignored
+# （ignored は効いた決定のあとに届いた中身の違う決定。status は直前の行のまま）。
+# event_id = <proposal_id>#<event>（ignored だけは <proposal_id>#ignored#<届いた決定の時刻>#<名前>）。列は workflow/rules.py の PROPOSAL_EVENT_COLUMNS と同じ順・同じ型。
 # schema を変えるとテーブルは作り直しになり、いまある行は消える（上の raw_telemetry の注記と同じ RequiresReplace。
 # 2026-10-05 に 12 列から 28 列にした。作り直しになることは terraform plan では未確認）
 resource "aws_s3tables_table" "proposal_events" {

@@ -302,6 +302,17 @@ try:
 except ValueError:
     bad = True
 check("知らない出来事は ValueError（証跡の event を増やすときは PROPOSAL_EVENTS に足す）", bad)
+_prev = {"proposal_id": "a#1", "status": "approved", "seq": 2, "decided_by": "山田 (web)", "decided_at": 1700000300, "action": "heal-main"}
+_ig = rules.ignored_event(_prev, {"decision": "rejected", "decided_by": " O'Brien (web) ", "decided_at": 1700000305}, {"decision": "approved"}, 1700000400)
+check("ignored_event は status と決めた人を直前の行のまま seq だけ進め、event_id は <proposal_id>#ignored#<届いた決定の時刻>#<名前>"
+      "（名前の ' はそのまま、前後の空白は落として入る）",
+      (_ig["event"], _ig["status"], _ig["seq"], _ig["decided_by"], _ig["decided_at"], _ig["action"], _ig["event_time"])
+      == ("ignored", "approved", 3, "山田 (web)", 1700000300, "heal-main", 1700000400)
+      and _ig["event_id"] == "a#1#ignored#1700000305#O'Brien (web)"
+      and _ig["detail"] == "却下（O'Brien (web)、2023-11-15 07:18:25）が届いたが、先に承認が決まっていた")
+check("decision_key は decision・decided_by（前後の空白を落とす）・decided_at の組で、送った時刻が違えば別の決定",
+      rules.decision_key({"decision": "approved", "decided_by": "x ", "decided_at": 5}) == rules.decision_key({"decision": "approved", "decided_by": "x", "decided_at": 5, "proposal_id": "z"})
+      != rules.decision_key({"decision": "approved", "decided_by": "x", "decided_at": 6}))
 # 決定のキュー（Web の承認タブ → worker）のメッセージ
 def _dm(**k):
     return json.dumps({"type": "decision", "proposal_id": "a#1", "decision": "approved", "decided_by": "x (web)", "sent_at": 5, **k})
@@ -359,12 +370,12 @@ check("Runtime が error を返したら例外（Temporal が再試行する）"
 check("worker.py は awsio / rules を imports_passed_through で読む",
       re.search(r"with workflow\.unsafe\.imports_passed_through\(\):\n\s*import awsio\n\s*import rules", read("workflow", "worker.py")) is not None)
 # 2026-10-02: パッチの切り出し位置を誤って定数とアクティビティがまるごと欠けた。temporalio を入れていない環境では import の確認が走らず気づけなかったので、形を見る
-check("worker.py に定数・アクティビティ 4 本・@workflow.defn の付いたワークフロー・シグナル 2 本・starter がそろっている",
-      [f.__name__ for f in worker.ACTIVITIES] == ["investigate", "put_proposal", "record_event", "apply_on_lab"]
+check("worker.py に定数・アクティビティ 5 本・@workflow.defn の付いたワークフロー・シグナル 2 本・starter がそろっている",
+      [f.__name__ for f in worker.ACTIVITIES] == ["investigate", "put_proposal", "record_event", "record_ignored", "apply_on_lab"]
       and all(isinstance(getattr(worker, k), int) for k in ("APPROVAL_TIMEOUT_MINUTES", "VERIFY_TIMEOUT", "HOLD_MINUTES"))
       and worker.HOLD_OUTCOMES == ("rejected", "expired", "failed") and worker.TASK_QUEUE and worker.TEMPORAL_ADDRESS == "localhost:7233"
       and re.search(r"^@workflow\.defn\nclass InvestigateAnomaly:", read("workflow", "worker.py"), re.M) is not None
-      and read("workflow", "worker.py").count("@activity.defn\n") == 4
+      and read("workflow", "worker.py").count("@activity.defn\n") == 5
       and len(re.findall(r"^    @workflow\.signal\n    def (decide|resolved)\(", read("workflow", "worker.py"), re.M)) == 2
       and all(callable(getattr(worker, f)) for f in ("start_for", "resolve_for", "handle_message", "handle_decision", "starter_queue", "starter", "connect", "main")))
 check("異常の頂点を見るアクティビティ（get_anomaly / still_open / anomaly_resolved）と、表を見る starter はもう無い",
@@ -849,10 +860,12 @@ PID = f"{AID}#{FS}"
 NOW = FS + 600  # ワークフローの now（workflow.now）
 DECIDED = {"proposal_id": PID, "decision": "approved", "decided_by": "山田 (web)", "decided_at": FS + 300}
 
-def run_wf(script, resolve_when=None, signals=(), signal_after="put_proposal"):
+def run_wf(script, resolve_when=None, signals=(), signal_after="put_proposal", on_timeout=None, now=None, wait=None):
     """InvestigateAnomaly.run を、アクティビティを script（名前 → 返り値 / 例外 / 関数）に差し替えて回す。(結果, 呼んだアクティビティ, 待った timeout)。
     signals は signal_after のアクティビティの直後に届く decide（順に送る）。resolve_when(名前, 引数) が真を返したアクティビティの直後に、
-    解消のシグナル（resolved）を届ける。最後のワークフローは run_wf.wf"""
+    解消のシグナル（resolved）を届ける。on_timeout(timeout) は待ちが時間切れになる直前に呼ぶ（時間切れと同じ瞬間に届いたシグナル）。
+    now() はワークフローの now（epoch 秒。既定は NOW）。wait(条件, timeout) は条件がそろっていない待ちの中身で、真を返せば時間切れにしない。
+    最後のワークフローは run_wf.wf"""
     seen, waits = [], []
     wf = run_wf.wf = worker.InvestigateAnomaly()
     async def execute_activity(fn, *a, args=None, **opts):
@@ -871,9 +884,13 @@ def run_wf(script, resolve_when=None, signals=(), signal_after="put_proposal"):
     async def wait_condition(fn, timeout=None):
         waits.append(timeout)
         if not fn():
+            if wait and wait(fn, timeout):
+                return
+            if on_timeout:
+                on_timeout(timeout)
             raise asyncio.TimeoutError
     t_workflow.execute_activity = execute_activity; t_workflow.wait_condition = wait_condition
-    t_workflow.now = lambda: datetime.datetime.fromtimestamp(NOW, datetime.timezone.utc)
+    t_workflow.now = lambda: datetime.datetime.fromtimestamp(now() if now else NOW, datetime.timezone.utc)
     t_workflow.info = lambda: types.SimpleNamespace(workflow_id="wf-1", run_id="run-1")
     t_workflow.logger = logging.getLogger("wf")
     return asyncio.run(wf.run(anomaly)), seen, waits
@@ -882,7 +899,8 @@ finding = {"cause": "c", "action": "heal-main", "command": "sudo lab heal-main",
 CREATED = rules.proposal_event("created", {"proposal_id": PID, "anomaly_id": AID, "device_id": "hq-ce-01", "kind": "link_down", "target": "eth1",
                                            "first_seen": FS, **finding, "workflow_id": "wf-1", "run_id": "run-1", "created_at": FS + 60}, FS + 60, "r")
 base = {"investigate": finding, "put_proposal": CREATED,
-        "record_event": lambda p, e, f=None: rules.proposal_event(e, p, NOW, "", f), "apply_on_lab": {"status": "Success", "output": "ok"}}
+        "record_event": lambda p, e, f=None: rules.proposal_event(e, p, NOW, "", f),
+        "record_ignored": lambda p, d, eff: rules.ignored_event(p, d, eff, NOW), "apply_on_lab": {"status": "Success", "output": "ok"}}
 APPROVAL = datetime.timedelta(minutes=worker.APPROVAL_TIMEOUT_MINUTES)
 VERIFY = datetime.timedelta(seconds=worker.VERIFY_TIMEOUT)
 HOLD = datetime.timedelta(seconds=worker.HOLD_MINUTES * 60)
@@ -891,6 +909,14 @@ applied = lambda n, p: n == "record_event" and p[1] == "applied"
 names = lambda seen: [n for n, _, _ in seen]
 events = lambda seen: [p[1] for n, p, _ in seen if n == "record_event"]
 ev_args = lambda seen, e: [p for n, p, _ in seen if n == "record_event" and p[1] == e][-1]  # [修復案, 出来事, fields]
+ign_args = lambda seen: [p for n, p, _ in seen if n == "record_ignored"]  # [直前の行, 効かなかった決定, 効いた決定] の list
+REJECTED_SUZUKI = {**DECIDED, "decision": "rejected", "decided_by": "鈴木 (web)", "decided_at": FS + 305}
+
+def written(script):
+    """script の record_event / record_ignored が返した行を、足した順に集める（(script, 行の list)）"""
+    rows = []
+    wrap = lambda f: (lambda *a: rows.append(f(*a)) or rows[-1])
+    return {**script, "record_event": wrap(script["record_event"]), "record_ignored": wrap(script["record_ignored"])}, rows
 
 res, seen, waits = run_wf(base, applied, [DECIDED])
 check("承認のシグナル→打つ→解消のシグナルが届いたら verified（承認は APPROVAL_TIMEOUT_MINUTES 分、確かめは VERIFY_TIMEOUT 秒まで待つ）",
@@ -931,10 +957,85 @@ res, seen, waits = run_wf(base, signals=[{**DECIDED, "decision": "rejected", "de
 check("却下なら打たない（判断は rejected の行に残す）。同じ異常の次の通知でもう一度調べないよう id は握る",
       res == "rejected" and "apply_on_lab" not in names(seen) and events(seen) == ["rejected"]
       and ev_args(seen, "rejected")[2]["decided_by"] == "鈴木 (web)" and waits == [APPROVAL, HOLD])
-res, seen, waits = run_wf(base, applied, [DECIDED, {**DECIDED, "decision": "rejected", "decided_by": "鈴木 (web)"}])
+_s, _rows = written(base)
+res, seen, waits = run_wf(_s, applied, [DECIDED, REJECTED_SUZUKI])
 check("合うシグナルが 2 回（approved、rejected の順）届いたら、効くのは 1 回目（approved、decided_by も 1 回目の名前）",
       res == "verified" and events(seen) == ["approved", "applied", "verified"] and ev_args(seen, "approved")[2]["decided_by"] == "山田 (web)"
       and run_wf.wf._decision["decided_by"] == "山田 (web)")
+check("承認のあとに別の名前の却下が届いたら、打ってから（applied の行のあと、apply_on_lab より後に）ignored の行が 1 つ増え"
+      "（seq は次、status は直前の applied のまま、決めた人は効いた承認のまま）、detail に却下した人の名前と時刻が入る。続く行は ignored の行の seq の次",
+      names(seen) == ["investigate", "put_proposal", "record_event", "apply_on_lab", "record_event", "record_ignored", "record_event"]
+      and [(r["event"], r["status"], r["seq"]) for r in _rows] == [("approved", "approved", 2), ("applied", "applied", 3), ("ignored", "applied", 4), ("verified", "verified", 5)]
+      and (_rows[2]["decided_by"], _rows[2]["decided_at"], _rows[2]["event_id"]) == ("山田 (web)", FS + 300, f"{PID}#ignored#{FS + 305}#鈴木 (web)")
+      and _rows[2]["detail"] == "却下（鈴木 (web)、2023-11-15 07:18:25）が届いたが、先に承認が決まっていた"
+      and ign_args(seen)[0][2] == DECIDED and waits == [APPROVAL, VERIFY])
+_vclock = [NOW]
+def _slow_ignored(p, d, eff):
+    _vclock[0] += worker.VERIFY_TIMEOUT + 100  # S3 Tables への書き込みが確かめの窓より長くかかった
+    return rules.ignored_event(p, d, eff, NOW)
+def _resolve_in_10s(fn, timeout):
+    """待ちに入って 10 秒で解消の通知が届く"""
+    _vclock[0] += 10
+    run_wf.wf.resolved("grafana")
+    return fn()
+_s, _rows = written({**base, "record_ignored": _slow_ignored})
+res, seen, waits = run_wf(_s, signals=[DECIDED, REJECTED_SUZUKI], now=lambda: _vclock[0], wait=_resolve_in_10s)
+check("打つ前に控えた効かなかった決定は applied の行のすぐあとに書き、書くのにかかった時間は確かめの VERIFY_TIMEOUT 秒に数えない（書き終えてから待つ）",
+      res == "verified" and [r["event"] for r in _rows] == ["approved", "applied", "ignored", "verified"] and waits == [APPROVAL, VERIFY])
+_s, _rows = written(base)
+res, seen, waits = run_wf(_s, applied, [DECIDED, DECIDED, {**DECIDED}])
+check("同じ承認（decision・decided_by・decided_at が全部同じ。SQS の重複配達）をもう一度送っても行は増えない",
+      res == "verified" and "record_ignored" not in names(seen) and [r["event"] for r in _rows] == ["approved", "applied", "verified"])
+res, seen, waits = run_wf(base, applied, [DECIDED, {**REJECTED_SUZUKI, "proposal_id": f"{AID}#{FS - 3600}"}])
+check("効いた決定のあとでも、proposal_id の違う決定（同じ異常の前の発生への決定）は ignored の行にしない",
+      res == "verified" and "record_ignored" not in names(seen) and run_wf.wf._ignored == [])
+_s, _rows = written(base)
+res, seen, waits = run_wf(_s, applied, [DECIDED, REJECTED_SUZUKI, REJECTED_SUZUKI, {**DECIDED, "decided_at": FS + 310}])
+check("効かなかった決定の重複配達も 1 行だけ。同じ人の同じ承認でも送った時刻が違えば（2 回押した）別の決定として ignored の行にする",
+      [(r["event"], r["seq"]) for r in _rows if r["event"] == "ignored"] == [("ignored", 4), ("ignored", 5)]
+      and _rows[3]["detail"] == "承認（山田 (web)、2023-11-15 07:18:30）が届いたが、先に承認が決まっていた")
+_third = {**REJECTED_SUZUKI, "decided_by": "佐藤 (web)", "decided_at": FS + 330}
+_s, _rows = written({**base, "record_ignored": lambda p, d, eff: (d["decided_by"] == "鈴木 (web)" and run_wf.wf.decide(_third)) or rules.ignored_event(p, d, eff, NOW)})
+res, seen, waits = run_wf(_s, applied, [DECIDED, REJECTED_SUZUKI])
+check("ignored の行を書いているあいだに届いた次の決定も、同じ流れで続けて行にする（届いた順、seq は 4、5）",
+      [(r["event"], r["seq"], r["detail"][:5]) for r in _rows]
+      == [("approved", 2, ""), ("applied", 3, ""), ("ignored", 4, "却下（鈴木"), ("ignored", 5, "却下（佐藤"), ("verified", 6, "")])
+_late = {**DECIDED, "decided_by": "山田 (web)", "decided_at": FS + 320}
+_s, _rows = written({**base, "record_event": lambda p, e, f=None: (e == "rejected" and run_wf.wf.decide(_late)) or rules.proposal_event(e, p, NOW, "", f)})
+res, seen, waits = run_wf(_s, signals=[REJECTED_SUZUKI])
+check("却下の行を書いているあいだに届いた承認も、解消を待つ 24 時間の頭で却下の行のあとに ignored の行（status は rejected のまま）にし、残りを待って id を握る",
+      res == "rejected" and [(r["event"], r["status"], r["seq"]) for r in _rows] == [("rejected", "rejected", 2), ("ignored", "rejected", 3)]
+      and _rows[1]["detail"] == "承認（山田 (web)、2023-11-15 07:18:40）が届いたが、先に却下が決まっていた"
+      and (_rows[1]["decided_by"], _rows[1]["decided_at"]) == ("鈴木 (web)", FS + 305) and waits == [APPROVAL, HOLD, HOLD])
+_s, _rows = written(base)
+res, seen, waits = run_wf(_s, lambda n, p: n == "record_event" and p[1] == "rejected", [REJECTED_SUZUKI, DECIDED])
+check("却下のあとに承認が届き、却下の行のときにはもう解消していた（解消を待たずに閉じる）ときも、閉じる前に ignored の行にする",
+      res == "rejected" and [(r["event"], r["status"], r["seq"]) for r in _rows] == [("rejected", "rejected", 2), ("ignored", "rejected", 3)]
+      and waits == [APPROVAL])
+_fourth = {**DECIDED, "decided_by": "佐藤 (web)", "decided_at": FS + 330}
+_s, _rows = written({**base, "record_ignored": lambda p, d, eff: (d["decided_by"] == "山田 (web)" and run_wf.wf.decide(_fourth)) or rules.ignored_event(p, d, eff, NOW)})
+res, seen, waits = run_wf(_s, lambda n, p: n == "record_event" and p[1] == "rejected", [REJECTED_SUZUKI, DECIDED])
+check("閉じる前に ignored の行を書いているあいだに届いた決定も、閉じる前に続けて行にする（届いた順、seq は 3、4）",
+      res == "rejected" and [(r["event"], r["seq"], r["detail"][:5]) for r in _rows] == [("rejected", 2, ""), ("ignored", 3, "承認（山田"), ("ignored", 4, "承認（佐藤")]
+      and waits == [APPROVAL] and run_wf.wf._ignored == [])
+_s, _rows = written(base)
+res, seen, waits = run_wf(_s, signals=[REJECTED_SUZUKI], on_timeout=lambda t: t == HOLD and run_wf.wf.decide(DECIDED))
+check("解消を待つ 24 時間が切れるのと同じ瞬間に届いた承認も、閉じる前に ignored の行にする",
+      res == "rejected" and [(r["event"], r["status"], r["seq"]) for r in _rows] == [("rejected", "rejected", 2), ("ignored", "rejected", 3)]
+      and waits == [APPROVAL, HOLD] and run_wf.wf._ignored == [])
+_s, _rows = written(base)
+res, seen, waits = run_wf(_s, signals=[DECIDED, REJECTED_SUZUKI], signal_after="record_event")
+check("時間切れ（expired）のあとに承認を送り、続けて別の名前の却下を送っても、行は増えない（ignored の行も付かない）。その承認は効いた決定として控えない",
+      res == "expired" and names(seen) == ["investigate", "put_proposal", "record_event"] and [r["event"] for r in _rows] == ["expired"]
+      and run_wf.wf._decision == {} and run_wf.wf._ignored == [] and waits == [APPROVAL, HOLD])
+_s, _rows = written(base)
+res, seen, waits = run_wf(_s, resolved_after("put_proposal"), [DECIDED, REJECTED_SUZUKI], signal_after="record_event")
+check("承認を待つあいだに解消して obsolete になったあとに届いた決定も、行にせず控えない",
+      res == "obsolete" and [r["event"] for r in _rows] == ["obsolete"] and run_wf.wf._decision == {} and "record_ignored" not in names(seen))
+res, seen, waits = run_wf({**base, "record_ignored": ActivityError("activity failed", cause=RuntimeError("S3 Tables に届かない"))},
+                          applied, [DECIDED, REJECTED_SUZUKI])
+check("ignored の行を書けなくても（ActivityError）ワークフローは止めずに打って確かめる（次の行は approved の行の seq の次）",
+      res == "verified" and events(seen) == ["approved", "applied", "verified"] and ev_args(seen, "applied")[0]["seq"] == 2)
 res, seen, waits = run_wf(base, signals=[{**DECIDED, "proposal_id": f"{AID}#1600000000"}, {**DECIDED, "proposal_id": "other#link_down#eth1#1700000000"}])
 check("proposal_id の違うシグナル（同じ異常の前の発生・別の異常への決定）は無視して待ち続け、時間切れで expired",
       res == "expired" and run_wf.wf._decision == {} and events(seen) == ["expired"] and waits == [APPROVAL, HOLD])
@@ -956,6 +1057,53 @@ for _bad in ("approved", None, {**DECIDED, "decision": "applied"}, {**DECIDED, "
 check("シグナル decide は dict で、decision が approved / rejected で、proposal_id が合うものだけを受ける", _wf._decision == {})
 _wf.decide({**DECIDED, "decision": "rejected"}); _wf.decide(DECIDED)
 check("受けた決定は後から来たもので上書きしない（SQS の重複配達・2 回押しても 1 回目）", _wf._decision["decision"] == "rejected")
+# 解消を待つあいだ（VERIFY / HOLD）に届いた効かなかった決定は、待ち終わるのを待たずにその場で行にする（HOLD は 24 時間ある）
+_wf._row = rules.proposal_event("rejected", CREATED, NOW, "", {"decided_by": "鈴木 (web)", "decided_at": FS + 305})
+_hold_calls, _hold_waits = [], []
+async def _hold_ea(fn, *a, args=None, **o):
+    _hold_calls.append(fn.__name__)
+    return base[fn.__name__](*args)
+async def _hold_wait(fn, timeout=None):
+    _hold_waits.append(timeout)
+    if not fn():
+        raise asyncio.TimeoutError
+t_workflow.execute_activity, t_workflow.wait_condition = _hold_ea, _hold_wait
+check("解消を待つあいだに控えた効かなかった決定は、待ちの途中で ignored の行にし、残りの時間をまた待つ",
+      asyncio.run(_wf._wait_resolved(worker.HOLD_MINUTES * 60)) is False and _hold_calls == ["record_ignored"]
+      and _hold_waits == [HOLD, HOLD] and (_wf._row["event"], _wf._row["status"], _wf._row["seq"]) == ("ignored", "rejected", 3) and _wf._ignored == [])
+_clock = [NOW]
+t_workflow.now = lambda: datetime.datetime.fromtimestamp(_clock[0], datetime.timezone.utc)
+async def _clock_wait(fn, timeout=None):
+    """条件がそろうまでに 1 時間たつ待ち"""
+    _hold_waits.append(timeout)
+    if not fn():
+        raise asyncio.TimeoutError
+    _clock[0] += 3600
+t_workflow.wait_condition = _clock_wait
+_wf = worker.InvestigateAnomaly(); _wf._proposal_id = PID
+_wf.decide(REJECTED_SUZUKI); _wf.decide(DECIDED)
+_wf._row = rules.proposal_event("rejected", CREATED, NOW, "", {"decided_by": "鈴木 (web)", "decided_at": FS + 305})
+_hold_calls.clear(); _hold_waits.clear()
+check("待ちの途中で ignored の行にしたあとは、締め切りまでの残り（24 時間 - 届くまでの 1 時間）だけ待つ（届くたびに 24 時間が延びない）",
+      asyncio.run(_wf._wait_resolved(worker.HOLD_MINUTES * 60)) is False and _hold_calls == ["record_ignored"]
+      and _hold_waits == [HOLD, HOLD - datetime.timedelta(hours=1)])
+_wf = worker.InvestigateAnomaly(); _wf._ignored = [DECIDED]
+_hold_calls.clear(); _hold_waits.clear()
+check("行がまだ無い（_row が空）あいだは、控えがあっても待ちは起きない（書けないまま回り続けない）",
+      asyncio.run(_wf._wait_resolved(worker.HOLD_MINUTES * 60)) is False and _hold_calls == [] and _hold_waits == [HOLD] and _wf._ignored == [DECIDED])
+t_workflow.now = lambda: datetime.datetime.fromtimestamp(NOW, datetime.timezone.utc)
+# S3: 同じ異常の前の発生への決定は、ワークフローが終わったあとに届いた決定と同じくログだけ
+t_workflow.logger = logging.getLogger("wf")
+_wlogged = []
+_wcap = logging.Handler(); _wcap.emit = lambda r: _wlogged.append(r.getMessage())
+t_workflow.logger.addHandler(_wcap)
+worker.InvestigateAnomaly().decide(DECIDED)
+_wf = worker.InvestigateAnomaly(); _wf._proposal_id = PID
+_wf.decide({**DECIDED, "proposal_id": f"{AID}#1600000000", "decided_by": "Carol (web)"})
+t_workflow.logger.removeHandler(_wcap)
+check("同じ異常の前の発生（proposal_id が違う）への決定は控えず、ワークフローのログに 1 行出す（どの修復案への何の決定か、名前）。走り出す前のシグナルはログも出さない",
+      _wf._decision == {} and _wf._ignored == []
+      and _wlogged == [f"proposal {PID}: 別の修復案 {AID}#1600000000 への approved by Carol (web) が届いた（行にしない）"])
 
 # アクティビティ（awsio を差し替え）
 _old = f"{AID}#1600000000"
@@ -1002,6 +1150,13 @@ check("record_event は fields を重ねて seq を 1 進めた行を 1 行ず�
       [len(r) for r, _ in appended] == [1, 1] and appended[0][0][0] == _r2 and appended[1][0][0] == _r3
       and (_r2["event_id"], _r2["status"], _r2["seq"], _r2["decided_by"], _r2["detail"]) == (f"{PID}#approved", "approved", 2, "山田 (web)", "")
       and (_r3["status"], _r3["seq"], _r3["decided_by"], _r3["detail"], _r3["apply_output"]) == ("applied", 3, "山田 (web)", "Success: ok", "Success: ok"))
+appended.clear()
+_ri = asyncio.run(worker.record_ignored(_r3, {**REJECTED_SUZUKI, "decided_by": ""}, DECIDED))
+check("record_ignored は効かなかった決定の行を 1 行足して返す（status・決めた人・apply_output は直前の行のまま。名前が無ければ -）",
+      appended == [([_ri], rules.PROPOSAL_EVENT_COLUMNS)] and list(_ri) == [c for c, _ in rules.PROPOSAL_EVENT_COLUMNS]
+      and (_ri["event"], _ri["status"], _ri["seq"], _ri["decided_by"], _ri["apply_output"], _ri["event_id"])
+      == ("ignored", "applied", 4, "山田 (web)", "Success: ok", f"{PID}#ignored#{FS + 305}#")
+      and _ri["detail"] == "却下（-、2023-11-15 07:18:25）が届いたが、先に承認が決まっていた")
 
 # starter（SQS のメッセージ 1 通ずつ。アラートのキュー: firing は起こす、resolved は走っているワークフローへシグナル。決定のキュー: decide のシグナル）
 class FakeTemporal:
@@ -1107,6 +1262,13 @@ for _st in ({**CREATED, "status": "approved", "seq": 2}, {}):
     asyncio.run(worker.starter_queue(_nf(), "q-decisions", worker.handle_decision))
 check("ワークフローが無く、修復案が pending でない（もう決まった・無い）なら何も書かずに消す",
       appended == [] and deleted == [("q-decisions", "d1")] * 2)
+_logged = []
+_cap = logging.Handler(); _cap.emit = lambda r: _logged.append(r.getMessage())
+worker.log.addHandler(_cap)
+asyncio.run(worker.starter_queue(_nf(), "q-decisions", worker.handle_decision))
+worker.log.removeHandler(_cap)
+check("ワークフローが終わったあとに届いた決定は、行にせず worker のログに 1 行出す（決定と名前と修復案の状態）",
+      appended == [] and [m for m in _logged if m.startswith(f"decide {PID}: ")] == [f"decide {PID}: approved by 山田 (web) が届いたが、ワークフローが無い（修復案は 無い。行にしない）"])
 deleted.clear()
 asyncio.run(worker.starter_queue(FakeTemporal(sig_exc=RPCError("temporal に届かない", t_service.RPCStatusCode.UNAVAILABLE)), "q-decisions", worker.handle_decision))
 check("Temporal に届かない（NOT_FOUND 以外の RPC の失敗）なら消さない（配り直し、直らなければ DLQ）", deleted == [] and appended == [])

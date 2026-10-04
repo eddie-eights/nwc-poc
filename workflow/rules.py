@@ -284,9 +284,10 @@ PROPOSAL_EVENT_COLUMNS = (
     ("decided_by", "string"), ("decided_at", "timestamptz"), ("apply_output", "string"), ("verify_note", "string"),
     ("detail", "string"), ("workflow_id", "string"), ("run_id", "string"), ("created_at", "timestamptz"), ("event_time", "timestamptz"),
 )
-# created は pending で置いたとき。ほかは status の移り変わりそのもの
-PROPOSAL_EVENTS = ("created", "approved", "rejected", "expired", "obsolete", "applied", "failed", "verified")
+# created は pending で置いたとき。ignored は効かなかった決定（status は変えない）。ほかは status の移り変わりそのもの
+PROPOSAL_EVENTS = ("created", "approved", "rejected", "expired", "obsolete", "applied", "failed", "verified", "ignored")
 DECISIONS = ("approved", "rejected")
+DECISION_JA = {"approved": "承認", "rejected": "却下"}
 TEXT_MAX = 4000  # 文字列の列は 1 項目この字数で切る（agent_response が長い。Temporal の受け渡しと行の大きさを抑える）
 # 行ごとに決まる列（ほかの列は修復案の項目で、前の行から持ち越す）
 _EVENT_ONLY = ("event_id", "event", "status", "seq", "detail", "event_time")
@@ -294,8 +295,9 @@ _EVENT_ONLY = ("event_id", "event", "status", "seq", "detail", "event_time")
 
 def proposal_event(event: str, proposal: dict, now: int, detail: str = "", fields: dict | None = None) -> dict:
     """proposal_events の 1 行（全項目）。proposal は修復案の辞書（前の行そのものでよい）で、fields をその上に重ねる。
-    seq は created が 1、ほかは proposal の seq + 1。status は created が pending、ほかは event と同じ。
-    event_id = <proposal_id>#<event>（1 つの修復案で同じ出来事は 1 回だけ。アクティビティの再試行で二重に入ったら event_id で重複を落とす）"""
+    seq は created が 1、ほかは proposal の seq + 1。status は created が pending、ignored が proposal のまま、ほかは event と同じ。
+    event_id = <proposal_id>#<event>（1 つの修復案で同じ出来事は 1 回だけ。アクティビティの再試行で二重に入ったら event_id で重複を落とす。
+    ignored だけは 1 つの修復案に何度もありうるので ignored_event が付け直す）"""
     if event not in PROPOSAL_EVENTS:
         raise ValueError(f"unknown proposal event: {event}")
     p = {**proposal, **(fields or {})}
@@ -310,10 +312,28 @@ def proposal_event(event: str, proposal: dict, now: int, detail: str = "", field
         else:
             row[name] = str(v if v is not None else "")[:TEXT_MAX]
     row.update({
-        "event_id": f"{pid}#{event}", "event": event, "status": "pending" if event == "created" else event,
+        "event_id": f"{pid}#{event}", "event": event,
+        "status": "pending" if event == "created" else str(p.get("status") or "") if event == "ignored" else event,
         "seq": 1 if event == "created" else _seq(p.get("seq")) + 1, "detail": str(detail or "")[:TEXT_MAX], "event_time": int(now),
     })
     return {name: row[name] for name, _ in PROPOSAL_EVENT_COLUMNS}
+
+
+def decision_key(decision: dict) -> tuple:
+    """決定の中身（decision, decided_by, decided_at）。同じなら同じ決定（SQS の重複配達）として 1 つに扱う"""
+    return (str(decision.get("decision") or ""), str(decision.get("decided_by") or "").strip()[:64], _epoch(decision.get("decided_at")))
+
+
+def ignored_event(proposal: dict, decision: dict, effective: dict, now: int) -> dict:
+    """効かなかった決定（先に effective が効いたあとで届いた、中身の違う decision）の行。status とほかの項目（効いた決定の
+    decided_by / decided_at を含む）は proposal（直前の行）のまま、seq だけ進め、detail に効かなかった決定を書く。
+    event_id = <proposal_id>#ignored#<decided_at の epoch 秒>#<decided_by>"""
+    kind, by, at = decision_key(decision)
+    detail = (f"{DECISION_JA.get(kind, kind)}（{by or '-'}、{jst(at) or '-'}）が届いたが、"
+              f"先に{DECISION_JA.get(effective.get('decision'), str(effective.get('decision') or '-'))}が決まっていた")
+    row = proposal_event("ignored", proposal, now, detail)
+    row["event_id"] = f"{row['proposal_id']}#ignored#{at}#{by}"
+    return row
 
 
 def _seq(v) -> int:
