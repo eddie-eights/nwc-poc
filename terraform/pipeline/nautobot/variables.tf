@@ -67,7 +67,7 @@ variable "db_instance_class" {
 }
 
 variable "nautobot_db_az_num" {
-  description = "1 or 2. 2 makes the database a Multi-AZ DB instance (multi_az = true: a synchronous standby in another AZ, about twice the instance price). 3 is not possible here (a Multi-AZ DB cluster with two readable standbys is a different resource). Changing it modifies the instance in place. ops/up.sh passes NAUTOBOT_DB_AZ_NUM."
+  description = "1 or 2. 2 makes the database a Multi-AZ DB instance (multi_az = true: a synchronous standby in another AZ, about twice the instance price). 3 is not possible here: three AZs is a Multi-AZ DB cluster (a writer and two readable standbys in three AZs), a different resource (aws_rds_cluster) whose instance classes do not include db.t4g.micro (Amazon RDS User Guide, Configuring and managing a Multi-AZ deployment for Amazon RDS: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html, and Multi-AZ DB cluster deployments for Amazon RDS: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/multi-az-db-clusters-concepts.html, checked 2026-10-04). Changing it modifies the instance in place. ops/up.sh passes NAUTOBOT_DB_AZ_NUM."
   type        = number
   default     = 1
 

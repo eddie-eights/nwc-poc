@@ -117,7 +117,9 @@ resource "aws_ecs_service" "workflow" {
   # aws ecs execute-command でタスクの中に入れる
   enable_execute_command = true
 
-  # 2 つ同時に立てない（SQLite はタスクの中）
+  # 2 つ同時に立てない（SQLite はタスクの中）。desired_count は 0 か 1 で、AZ の数のキー（*_AZ_NUM）も作らない: Temporal の開発用サーバーが
+  # タスクの中にあるので、2 つにすると別々の Temporal になり、承認待ちのワークフローが片方にしか無い。
+  # コードから確かめた理由で、AWS では未確認（2026-10-04）
   deployment_minimum_healthy_percent = 0
   deployment_maximum_percent         = 100
 

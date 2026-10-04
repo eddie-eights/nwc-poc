@@ -92,7 +92,7 @@ variable "cloudwatch_logging" {
 }
 
 variable "opensearch_az_num" {
-  description = "1 or 2. 2 turns on standby replicas (standby_replicas = ENABLED) of the logs collection: OpenSearch Serverless keeps a copy in another AZ and the minimum capacity doubles. 3 is not possible (the collection has only on / off). Changing it recreates the collection (the indexed logs are lost). ops/up.sh passes OPENSEARCH_AZ_NUM (also to terraform/agent for the knowledge base)."
+  description = "1 or 2. 2 turns on standby replicas (standby_replicas = ENABLED) of the logs collection: OpenSearch Serverless keeps a copy in another AZ and the minimum capacity doubles (these two effects are not found in the current OpenSearch Service Developer Guide - unverified). 3 is not possible: StandbyReplicas is ENABLED or DISABLED only, and the collection has no AZ or subnet setting; changing it requires replacement (CloudFormation reference AWS::OpenSearchServerless::Collection, StandbyReplicas: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-opensearchserverless-collection.html, checked 2026-10-04). Changing it recreates the collection (the indexed logs are lost). ops/up.sh passes OPENSEARCH_AZ_NUM (also to terraform/agent for the knowledge base)."
   type        = number
   default     = 1
 

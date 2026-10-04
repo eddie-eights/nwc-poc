@@ -336,6 +336,8 @@ resource "aws_ecs_service" "telegraf_dialin" {
   enable_execute_command = true
 
   # 2 つ同時に立てない（同じ機器を 2 回ポーリング・購読して MSK に 2 回書かない）。入れ替えでは古いタスクを止めてから新しいタスクを起こす。
+  # TELEGRAF_AZ_NUM に従わない理由も同じ: どのタスクも機器の一覧の全部を取りにいき、タスクのあいだで機器を分け合う仕組みが無い。
+  # コードから確かめた理由で、AWS では未確認（2026-10-04）
   # gNMI は lab（SR Linux は MDT を送れない）のためのもので、本番の Cisco は MDT の dial-out で送らせる方針（docs/collection.md）
   deployment_minimum_healthy_percent = 0
   deployment_maximum_percent         = 100

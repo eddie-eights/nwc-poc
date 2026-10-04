@@ -30,7 +30,7 @@ variable "provisioned_memory" {
 }
 
 variable "neptune_az_num" {
-  description = "Number of AZs of the Neptune Analytics graph: the primary plus neptune_az_num - 1 replicas (replica_count). 1, 2 or 3. Each replica costs the same m-NCU price as the primary (16 m-NCU is about 0.58 USD/h each). ops/up.sh passes NEPTUNE_AZ_NUM."
+  description = "Number of AZs of the Neptune Analytics graph: the primary plus neptune_az_num - 1 replicas (replica_count). 1, 2 or 3: replicaCount is 0 to 2 (Neptune Analytics API Reference, CreateGraph: https://docs.aws.amazon.com/neptune-analytics/latest/apiref/API_CreateGraph.html, checked 2026-10-04). Each replica costs the same m-NCU price as the primary (16 m-NCU is about 0.58 USD/h each). ops/up.sh passes NEPTUNE_AZ_NUM."
   type        = number
   default     = 1
 

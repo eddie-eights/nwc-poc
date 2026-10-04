@@ -110,7 +110,7 @@ variable "interface_endpoints" {
 }
 
 variable "endpoints_az_num" {
-  description = "Number of AZs (subnets a, b, c from the front) for the interface endpoints and the OpenSearch Serverless endpoint. 1 puts them in subnet a only - workloads in subnets b / c still reach them through the private DNS (cross-AZ), but lose the AWS APIs when a's AZ is down. Each AZ adds about 0.014 USD/h per endpoint. ops/up.sh passes ENDPOINTS_AZ_NUM."
+  description = "Number of AZs (subnets a, b, c from the front) for the interface endpoints and the OpenSearch Serverless endpoint. 1 puts them in subnet a only - workloads in subnets b / c still reach them through the private DNS (cross-AZ), but lose the AWS APIs when a's AZ is down: with one AZ the endpoint DNS name resolves to the ENI in that AZ only, and AWS recommends at least two AZs for production (AWS PrivateLink Guide, Access AWS services through AWS PrivateLink, Subnets and Availability Zones: https://docs.aws.amazon.com/vpc/latest/privatelink/privatelink-access-aws-services.html, checked 2026-10-04; the behaviour when an AZ is down is not tried on AWS). Each AZ adds about 0.014 USD/h per endpoint. ops/up.sh passes ENDPOINTS_AZ_NUM."
   type        = number
   default     = 1
 

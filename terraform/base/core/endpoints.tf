@@ -42,7 +42,14 @@ resource "aws_opensearchserverless_vpc_endpoint" "aoss" {
 # （2026-09-26 まではルートごとに持っていた。7c42b0f）。
 # エンドポイントポリシーは「このアカウントのプリンシパルだけ」: 盗んだ他のアカウントの鍵でこの VPC から外へ持ち出す経路を塞ぐ。
 # 1 本 1.4 セント/h × AZ。endpoints_az_num の数だけサブネット a / b / c の先頭から置く（既定 1 はサブネット a だけ。
-# b / c のワークロードも private DNS で a の ENI に届くが、a の AZ が落ちると AWS の API に届かなくなる）
+# b / c のワークロードも private DNS で a の ENI に届くが、a の AZ が落ちると AWS の API に届かなくなる）。
+# ENI は指定したサブネットごとに 1 つ（1 AZ に 1 サブネットまで）。1 AZ だけに置くと他の AZ からもその AZ の ENI に解決され、
+# その AZ が傷むと届かなくなる。本番は 2 AZ 以上が AWS の勧め。出典: AWS PrivateLink Guide
+# 「Access AWS services through AWS PrivateLink」の Subnets and Availability Zones
+# （https://docs.aws.amazon.com/vpc/latest/privatelink/privatelink-access-aws-services.html）と
+# 「Access an AWS service using an interface VPC endpoint」（https://docs.aws.amazon.com/vpc/latest/privatelink/create-interface-endpoint.html）、
+# 2026-10-04 確認。AZ が落ちたときの振る舞いは AWS で未確認。
+# ENDPOINTS_AZ_NUM を他の <リソース>_AZ_NUM より小さくすると、ops/up.sh が警告（AZ_NUM_OVER）を出す（止めはしない）
 locals {
   endpoint_subnet_ids = slice(local.subnet_ids, 0, var.endpoints_az_num)
 }

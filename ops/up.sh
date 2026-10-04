@@ -103,9 +103,9 @@
 #     Web の EC2（SSM のポートフォワードは 1 台を名指しでつなぐので、2 台にしても切り替える先が無い）、
 #     lab の EC2（containerlab の 1 台の中に全部の機器がある）、
 #     Grafana（ECS。アラートルールの評価もタスクの中なので、2 つにするとアラートを 2 重に出す）、
-#     Splunk（ECS。index がタスクの中にあるので、2 つにすると index が 2 つに分かれ、保存済みサーチが半分ずつしか見ない）、
 #     Nautobot（ECS。Redis と Celery を同じタスクに入れているので、2 つにするとキャッシュとキューが別々になる）、
 #     workflow（ECS。Temporal の開発用サーバーがタスクの中にあるので、2 つにすると別々の Temporal になり、承認待ちが片方にしか無い）
+#   キーがまだ無いもの: Splunk（ECS。いまはサブネット a に 1 台）。何 AZ に置くかは「Splunk をクラスターにする（004）」で SPLUNK_AZ_NUM として足す
 # ---- デバッグ用（ふだんは書かない） ----
 #   NETWORK_PERIMETER=0     AccessDenied の切り分け。VPC の外からの AWS の API を拒む Deny（terraform/base/core の perimeter.tf）を外す。既定 1
 #   TF_VERBOSE=1            terraform の失敗・遅さの切り分け。出力を全部画面に出す（既定は進みと結果だけ。全文は ops/logs/tf-<ルート>-apply.log）
@@ -513,15 +513,38 @@ az_num() {  # az_num <キー> <既定> <最小> <最大> <範囲の理由>  書�
   if [ "$v" -lt "$3" ] || [ "$v" -gt "$4" ]; then die "$k=$v は書けない。$3〜$4 で書く（$5）。まだ何も作っていない"; fi
   printf -v "$k" '%s' "$v"
 }
+# 範囲の理由と出典（AWS の文書は 2026-10-04 に確かめた。AWS で試していないものは「未確認」）:
+#   上限 3 はどれも base/core のサブネットの数（a / b / c。terraform/base/core の vpc.tf）
 az_num ENDPOINTS_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
+#   MSK: 1 にはできない。clientSubnets は別々の AZ のサブネットを 2 つか 3 つ（us-west-1 だけ 2 つ）しか受け付けない
+#   （Amazon MSK API Reference「Clusters」の BrokerNodeGroupInfo.clientSubnets、https://docs.aws.amazon.com/msk/1.0/apireference/clusters.html）
 az_num MSK_AZ_NUM 2 2 3 "MSK はブローカーを 2 か 3 の AZ にしか置けない。1 AZ にはできない"
+#   Runtime: 1 を拒むのは AWS の制約ではなくユーザーの決定。手引きの Best practices が別々の AZ のプライベートサブネットを 2 つ以上と勧める
+#   （Amazon Bedrock AgentCore Developer Guide「Configure Amazon Bedrock AgentCore Runtime and tools for VPC」、
+#   https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html）。API は 1〜16 個を受け付ける（AgentCore Control API Reference
+#   「VpcConfig」、https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_VpcConfig.html）。1 つで作るのは AWS で未確認
 az_num RUNTIME_AZ_NUM 2 2 3 "AgentCore Runtime は AWS の文書の勧めに合わせて 2 AZ 以上に置く（2026-10-04 のユーザー決定）"
 az_num EMR_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
 az_num LAMBDA_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
+#   Neptune: replicaCount は 0〜2（Neptune Analytics API Reference「CreateGraph」、
+#   https://docs.aws.amazon.com/neptune-analytics/latest/apiref/API_CreateGraph.html）。値 - 1 をレプリカの数にするので 3 まで
 az_num NEPTUNE_AZ_NUM 1 1 3 "Neptune Analytics のレプリカは 2 つまで"
+#   OpenSearch: 3 にはできない。StandbyReplicas は ENABLED / DISABLED だけで、AZ やサブネットの指定も無い。変えると作り直し
+#   （CloudFormation のリファレンス「AWS::OpenSearchServerless::Collection」、
+#   https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-opensearchserverless-collection.html）。
+#   「別の AZ に控え」「最小 OCU が倍」は今の Developer Guide に見つけられなかった（未確認）
 az_num OPENSEARCH_AZ_NUM 1 1 2 "OpenSearch Serverless はスタンバイのレプリカの有無だけを選べる。2 = あり"
+#   Nautobot の DB: 3 にはできない。3 AZ は Multi-AZ DB クラスター（書き込み 1 + 読める待機系 2）で別のリソース（aws_rds_cluster）、
+#   しかも使えるクラスに既定の db.t4g.micro が無い（Amazon RDS User Guide「Multi-AZ DB cluster deployments for Amazon RDS」、
+#   https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/multi-az-db-clusters-concepts.html と「Configuring and managing a Multi-AZ
+#   deployment for Amazon RDS」、https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html）
 az_num NAUTOBOT_DB_AZ_NUM 1 1 2 "RDS の Multi-AZ（待機系 1 台）が 2。3 は Multi-AZ DB クラスタで、作っていない"
 az_num TELEGRAF_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
+# ENDPOINTS_AZ_NUM がほかより小さいときの注意（止めはしない）: エンドポイントの ENI は置いた AZ にしか無く、ほかの AZ からもその ENI に
+# 解決されるので、その AZ が傷むとほかの AZ のものも AWS の API に届かない。本番は 2 AZ 以上が AWS の勧め（AWS PrivateLink Guide
+# 「Access AWS services through AWS PrivateLink」の Subnets and Availability Zones、
+# https://docs.aws.amazon.com/vpc/latest/privatelink/privatelink-access-aws-services.html）。AZ が落ちたときの振る舞いは AWS で未確認。
+# 比べるのは deploy.env か環境変数に書いたキーだけ（既定の MSK_AZ_NUM=2 / RUNTIME_AZ_NUM=2 と ENDPOINTS_AZ_NUM=1 の組み合わせでは出さない）
 AZ_NUM_OVER=""
 for k in $AZ_NUM_SET; do
   if [ "$k" != ENDPOINTS_AZ_NUM ] && [ "${!k}" -gt "$ENDPOINTS_AZ_NUM" ]; then AZ_NUM_OVER="$AZ_NUM_OVER $k=${!k}"; fi

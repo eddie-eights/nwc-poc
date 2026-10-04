@@ -88,6 +88,10 @@ resource "aws_opensearchserverless_collection" "kb" {
   type        = "VECTORSEARCH"
   description = "${local.name_prefix} knowledge base"
   # スタンバイを切ると最小 OCU が半分になる（検証用。可用性は下がる）。var.opensearch_az_num が 2 なら別の AZ に控えを置く（ENABLED）。
+  # 「別の AZ に控え」「最小 OCU が倍」は今の OpenSearch Service Developer Guide に書かれているのを見つけられなかった（未確認）。
+  # 3 にはできない: StandbyReplicas は ENABLED / DISABLED の 2 値だけで、コレクションには AZ やサブネットの指定が無い。変えると作り直し
+  # （CloudFormation のリファレンス「AWS::OpenSearchServerless::Collection」の StandbyReplicas、
+  #   https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-opensearchserverless-collection.html、2026-10-04 確認）。
   # 変えるとコレクションを作り直す（取り込みをやり直す）
   standby_replicas = var.opensearch_az_num == 2 ? "ENABLED" : "DISABLED"
 

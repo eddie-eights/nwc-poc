@@ -1159,6 +1159,51 @@ _AZ_USES = {
 check("各ルートは base/core の subnet_ids の先頭から AZ_NUM 個を使う（MSK は複製 = AZ_NUM、min.insync = AZ_NUM - 1。Neptune のレプリカ = AZ_NUM - 1。RDS は 2 で Multi-AZ）",
       all(all(re.search(u, _root_tf(r)) for u in us) for r, us in _AZ_USES.items())
       and not any("runtime_subnet_ids" in _root_tf(r) for r in _AZ_USES))
+# 注意書き（範囲の制限と、ENDPOINTS_AZ_NUM がほかより小さいとき）は、変数の description・リソースのそば・ops/up.sh の検査の 3 か所に
+# 出典の URL と確認日を残す（2026-10-04 のユーザー指示）。AWS で試していないことは「未確認」/ "not tried" と書く
+_AZ_SRC = {  # (ルート, 変数, リソースのファイル): 出典の URL
+    ("pipeline/stream", "msk_az_num", "msk.tf"): "https://docs.aws.amazon.com/msk/1.0/apireference/clusters.html",
+    ("agent", "runtime_az_num", "runtime.tf"): "https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html",
+    ("agent", "opensearch_az_num", "kb.tf"): "https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-opensearchserverless-collection.html",
+    ("pipeline/analytics", "opensearch_az_num", "sinks.tf"): "https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-opensearchserverless-collection.html",
+    ("pipeline/nautobot", "nautobot_db_az_num", "database.tf"): "https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/multi-az-db-clusters-concepts.html",
+    ("base/core", "endpoints_az_num", "endpoints.tf"): "https://docs.aws.amazon.com/vpc/latest/privatelink/privatelink-access-aws-services.html",
+    ("pipeline/graph", "neptune_az_num", "neptune.tf"): "https://docs.aws.amazon.com/neptune-analytics/latest/apiref/API_CreateGraph.html",
+}
+def _az_src_ok(root, name, fname, url):
+    m = re.search(r'variable "' + name + r'" \{\n\s*description\s*=\s*"([^"\n]*)"', _root_tf(root))
+    res = open(os.path.join(ROOT, "terraform", *root.split("/"), fname), encoding="utf-8").read()
+    return (m is not None and url in m.group(1) and "checked 2026-10-04" in m.group(1)
+            and re.search(r"^\s*#.*" + re.escape(url), res, re.M) is not None and "2026-10-04 確認" in res
+            and re.search(r"^#.*" + re.escape(url), up, re.M) is not None)
+check("注意書きの付く *_az_num（MSK / Runtime / OpenSearch 2 か所 / Nautobot の DB / エンドポイント / Neptune）は、description とリソースのそばと up.sh の検査に出典の URL と確認日がある",
+      all(_az_src_ok(r, n, f, u) for (r, n, f), u in _AZ_SRC.items()))
+check("確かめ切れていないことは「未確認」と書く（Runtime の 1 サブネット、OpenSearch のスタンバイの AZ と OCU、エンドポイントの AZ 障害の振る舞い）。"
+      "Runtime の 1 を拒むのは AWS の制約ではなくユーザーの決定と書く",
+      "1 つで作るのは AWS で未確認" in _root_tf("agent") and "not tried on AWS" in _root_tf("agent")
+      and "not by AWS" in _root_tf("agent") and "AWS の制約ではなくユーザーの決定" in _root_tf("agent")
+      and all("（未確認）" in _root_tf(r) and "unverified" in _root_tf(r) for r in ("agent", "pipeline/analytics"))
+      and "AZ が落ちたときの振る舞いは AWS で未確認" in _root_tf("base/core") and "not tried on AWS" in _root_tf("base/core")
+      and all(w in up for w in ("1 つで作るのは AWS で未確認", "「最小 OCU が倍」は今の Developer Guide に見つけられなかった（未確認）",
+                                "AZ が落ちたときの振る舞いは AWS で未確認")))
+_SINGLE = {  # (ルート, リソースの見出し): 理由に書く言葉
+    ("base/core", 'resource "aws_instance" "web"'): "SSM のポートフォワード",
+    ("pipeline/lab", 'resource "aws_instance" "lab"'): "containerlab の 1 台の中に全部の機器",
+    ("pipeline/analytics", 'resource "aws_ecs_service" "grafana"'): "https://grafana.com/docs/grafana/latest/alerting/set-up/configure-high-availability/",
+    ("pipeline/nautobot", 'resource "aws_ecs_service" "nautobot"'): "Redis と Celery のワーカーが同じタスク",
+    ("workflow", 'resource "aws_ecs_service" "workflow"'): "Temporal の開発用サーバー",
+    ("pipeline/stream", 'resource "aws_ecs_service" "telegraf_dialin"'): "TELEGRAF_AZ_NUM に従わない理由",
+}
+def _single_ok(root, head, word):
+    t = _root_tf(root)
+    i = t.find(head)
+    if i < 0:
+        return False
+    j = t.find("\n}\n", i)
+    near = t[max(0, t.rfind("\n\n", 0, i)):j]  # 見出しの直前のコメントから、そのリソースの終わりまで
+    return word in near and ("AWS では未確認（2026-10-04）" in near or "2026-10-04 確認" in near)
+check("1 台でしか成り立たないリソース（Web / lab / Grafana / Nautobot / workflow / Telegraf の dialin）のそばに、AZ の数のキーを作らない理由と確かめ方（出典か「未確認」）を書く",
+      all(_single_ok(r, h, w) for (r, h), w in _SINGLE.items()))
 # ---- 閉域の Deny（terraform/base/core/perimeter.tf と、analytics が付けるもの）
 _perim = open(os.path.join(ROOT, "terraform", "base", "core", "perimeter.tf"), encoding="utf-8").read()
 check("perimeter.tf: aws:SourceVpc がこの VPC でなく、AWS のサービス経由でもない呼び出しを拒む（S3 Tables が裏で呼ぶ分は外す）",
@@ -1554,10 +1599,14 @@ check("deploy.env.example と up.sh のヘッダーは、冗長化用の節に 9
       and not any(k in _env_secs[0] or k in _up_secs[0] for k in _AZ_KEYS + ["ENDPOINTS_MULTI_AZ", "NETWORK_PERIMETER", "TF_VERBOSE"]))
 _red_env = env_example[env_example.index(_RED_H):env_example.index(_DBG_H)]
 _red_up = _up_hdr[_up_hdr.index(_RED_H):_up_hdr.index(_DBG_H)]
-check("冗長化用の節: MSK と Runtime は「1 にはできない」を理由つきで書き、1 台でしか成り立たない 6 つ（Web / lab / Grafana / Splunk / Nautobot / workflow）も理由つきで 1 行ずつ",
+check("冗長化用の節: MSK と Runtime は「1 にはできない」を理由つきで書き、1 台でしか成り立たない 5 つ（Web / lab / Grafana / Nautobot / workflow）も理由つきで 1 行ずつ。"
+      "Splunk はそこに入れず、「Splunk をクラスターにする（004）」で SPLUNK_AZ_NUM として足すと 1 行（キーの行は無い）",
       all("**1 にはできない**（MSK はブローカーを 2 か 3 の AZ にしか置けない）" in t and "**1 にはできない**（AWS の文書が高可用性のため 2 AZ 以上を勧めている" in t
           and "1 台でしか成り立たないのでキーを作らないもの" in t
-          and all(re.search(r"^#\s+" + w + r"（[^\n]+）、?$", t, re.M) for w in ("Web の EC2", "lab の EC2", "Grafana", "Splunk", "Nautobot", "workflow"))
+          and all(re.search(r"^#\s+" + w + r"（[^\n]+）、?$", t, re.M) for w in ("Web の EC2", "lab の EC2", "Grafana", "Nautobot", "workflow"))
+          and not re.search(r"^#\s+Splunk（", t, re.M)
+          and re.search(r"^#\s+キーがまだ無いもの: Splunk（[^\n]+）。[^\n]*「Splunk をクラスターにする（004）」で SPLUNK_AZ_NUM として足す$", t, re.M)
+          and "SPLUNK_AZ_NUM=" not in t
           for t in (_red_env, _red_up))
       and all(re.search(r"^#" + k + r"=[23]$", _red_env, re.M) for k in _AZ_KEYS)
       and all(re.search(r"^#   " + k + "=" + d + r" ", _red_up, re.M) for k, d in zip(_AZ_KEYS, "122111111")))

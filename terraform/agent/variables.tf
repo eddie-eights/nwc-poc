@@ -55,7 +55,7 @@ variable "model_id" {
 
 # ---------------------------------------------------------------- redundancy (ops/up.sh の「冗長化用」)
 variable "runtime_az_num" {
-  description = "Number of AZs (subnets a, b, c of terraform/base/core from the front) the AgentCore Runtime puts its ENIs in. 2 or 3. 1 is refused on purpose (user decision 2026-10-04): the AgentCore VPC guide recommends private subnets in at least two AZs for high availability, and the chat stops when the one AZ of the ENIs fails. The API itself takes one subnet (VpcConfig subnets 1-16, AWS docs checked 2026-10-04; not tried on AWS). ops/up.sh passes RUNTIME_AZ_NUM."
+  description = "Number of AZs (subnets a, b, c of terraform/base/core from the front) the AgentCore Runtime puts its ENIs in. 2 or 3. 1 is refused on purpose (user decision 2026-10-04), not by AWS: the AgentCore VPC guide recommends private subnets in at least two AZs for high availability (Amazon Bedrock AgentCore Developer Guide, Configure Amazon Bedrock AgentCore Runtime and tools for VPC, Best practices: https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html, checked 2026-10-04), and the chat stops when the one AZ of the ENIs fails. The API itself takes one subnet (AgentCore Control API Reference, VpcConfig, subnets 1-16 items: https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_VpcConfig.html, checked 2026-10-04; one subnet not tried on AWS). ops/up.sh passes RUNTIME_AZ_NUM."
   type        = number
   default     = 2
 
@@ -77,7 +77,7 @@ variable "lambda_az_num" {
 }
 
 variable "opensearch_az_num" {
-  description = "1 or 2. 2 turns on standby replicas (standby_replicas = ENABLED) of the knowledge base collection: a copy in another AZ, and the minimum capacity doubles. 3 is not possible (only on / off). Changing it recreates the collection (run the ingestion again). ops/up.sh passes OPENSEARCH_AZ_NUM (also to terraform/pipeline/analytics for the logs collection)."
+  description = "1 or 2. 2 turns on standby replicas (standby_replicas = ENABLED) of the knowledge base collection: a copy in another AZ, and the minimum capacity doubles (these two effects are not found in the current OpenSearch Service Developer Guide - unverified). 3 is not possible: StandbyReplicas is ENABLED or DISABLED only, and the collection has no AZ or subnet setting; changing it requires replacement (CloudFormation reference AWS::OpenSearchServerless::Collection, StandbyReplicas: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-opensearchserverless-collection.html, checked 2026-10-04). Changing it recreates the collection (run the ingestion again). ops/up.sh passes OPENSEARCH_AZ_NUM (also to terraform/pipeline/analytics for the logs collection)."
   type        = number
   default     = 1
 
