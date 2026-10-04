@@ -58,10 +58,10 @@
 #   SNMP_POLL=1             stream の Telegraf で SNMP もポーリングする（10 秒ごとに ifTable → metrics トピック）。既定 0 で、SNMP は trap だけ受ける。
 #                           Grafana のアラートルール link_down と IF のグラフ、エージェントの IF のメトリクスはこのポーリングを見るので、0 では空になる
 #                           （IF の up / down は SINK_SPLUNK=1 の Splunk が trap から link_down を出す）。stream の変数 snmp_poll に渡す
-#   NAUTOBOT=1              PIPELINE=1 で Nautobot（terraform/pipeline/nautobot。ECS Fargate の web + Celery worker + Redis と、RDS の PostgreSQL。+$0.13/h と ecs のエンドポイント）を作る（既定 0）。
+#   （Nautobot）            PIPELINE=1 なら Nautobot（terraform/pipeline/nautobot。ECS Fargate の web + Celery worker + Redis と、RDS の PostgreSQL。+$0.13/h と ecs のエンドポイント）を**いつも作る**（切り替える変数は無い）。
 #                           機器の一覧とケーブルの正を Nautobot にする。最初だけ lab の定義から入り、あとは Nautobot で機器・Service（gnmi / snmp）・ケーブルを変えるたびに、
 #                           Job が Telegraf の取りにいく側（dialin）の機器の一覧（SSM）を書き換えてサービスを作り直し、Neptune の物理層を Gremlin で合わせる。
-#                           stream か graph の少なくとも片方が要る。管理者のパスワード・SECRET_KEY・DB のパスワードは SSM の SecureString に作る（値は出さない）。
+#                           Job の書き先が要るので、SKIP_STREAM と SKIP_GRAPH の両方があるときだけ作らない。管理者のパスワード・SECRET_KEY・DB のパスワードは SSM の SecureString に作る（値は出さない）。
 #                           web の EC2 を踏み台にした SSM のポートフォワードで開く（コマンドは最後に出る）。ops/down.sh で DB ごと消える（編集した内容は残らない）。
 #                           デバッグ用の EC2（ops/lab-debug.sh）は Nautobot を使わず、今までどおり lab の定義の一覧
 #   SKIP_GRAPH=1            PIPELINE=1 で graph（Neptune）を作らない。「トポロジ」は使えず、アラートが届いても status を書く先が無い
@@ -75,7 +75,7 @@
 #   NO_PORTFORWARD=1        ポートフォワーディングを開かずに終わる
 #   TF_VERBOSE=1            terraform の出力を全部画面に出す（既定は進みと結果だけ。全文は ops/logs/tf-<ルート>-apply.log）
 #   AWS_PROFILE / AWS_CA_BUNDLE  AWS CLI と terraform がそのまま読む
-# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* / SINK_* / GRAFANA / NAUTOBOT / SNMP_POLL / NO_PORTFORWARD / NETWORK_PERIMETER / ENDPOINTS_MULTI_AZ は 1 / 0 のほか true / false、yes / no でも書ける（ops/down.sh の KEEP_ECR は 1 か 0 だけ）。
+# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* / SINK_* / GRAFANA / SNMP_POLL / NO_PORTFORWARD / NETWORK_PERIMETER / ENDPOINTS_MULTI_AZ は 1 / 0 のほか true / false、yes / no でも書ける（ops/down.sh の KEEP_ECR は 1 か 0 だけ）。
 #
 # 利用者への権限は人に渡す作業なので入れていない（docs/deploy.md の「利用者に画面を渡す」）。
 set -euo pipefail
@@ -321,14 +321,16 @@ if [ -n "$PIPELINE" ]; then
 else
   SKIP_LAB=1; SKIP_STREAM=1; SKIP_ANALYTICS=1; SKIP_GRAPH=1
 fi
-# Nautobot（terraform/pipeline/nautobot）。Job の書き先（Telegraf の dialin の一覧 = stream、Neptune の物理層 = graph）が少なくとも片方要る
-flag_value NAUTOBOT
-if [ -n "$NAUTOBOT" ]; then
-  [ -n "$PIPELINE" ] || die "NAUTOBOT は PIPELINE が要る（Nautobot の Job が書くのは stream の Telegraf の機器の一覧と graph の Neptune）。PIPELINE=1 にする。まだ何も作っていない"
-  if [ -n "$SKIP_STREAM" ] && [ -n "$SKIP_GRAPH" ]; then
-    die "NAUTOBOT は stream か graph の少なくとも片方が要る（どちらも無いと Job の書き先が無い）。SKIP_STREAM か SKIP_GRAPH を外す。まだ何も作っていない"
-  fi
-fi
+# Nautobot（terraform/pipeline/nautobot）は機器の一覧とケーブルの正なので、PIPELINE=1 ならいつも作る（切り替える変数は無い。2026-10-04）。
+# Job の書き先（Telegraf の dialin の一覧 = stream、Neptune の物理層 = graph）が両方無いときだけ作らない。
+# 前の deploy.env で止まらないよう NAUTOBOT は読むだけ読み、0 が書いてあれば注意を出す
+case "${NAUTOBOT:-}" in
+  '') ;;
+  0|false|no) echo "注意: NAUTOBOT=0 は効かない。Nautobot は PIPELINE=1 ならいつも作る（deploy.env から消してよい）" ;;
+  *) echo "注意: NAUTOBOT は使わない。Nautobot は PIPELINE=1 ならいつも作る（deploy.env から消してよい）" ;;
+esac
+NAUTOBOT=""
+if [ -n "$PIPELINE" ] && { [ -z "$SKIP_STREAM" ] || [ -z "$SKIP_GRAPH" ]; }; then NAUTOBOT=1; fi
 # Grafana（analytics の ECS）は Prometheus か OpenSearch の格納先があるときだけ意味がある
 GRAFANA="${GRAFANA:-1}"; flag_value GRAFANA
 if [ -n "$SKIP_ANALYTICS" ] || { [ -z "$SINK_PROMETHEUS" ] && [ -z "$SINK_OPENSEARCH" ]; }; then GRAFANA=""; fi
@@ -399,7 +401,7 @@ if [ -n "$WORKFLOW" ]; then ROOTS="$ROOTS workflow"; fi
 echo "ACCOUNT_ID=$ACCOUNT_ID"
 echo "CALLER_ARN=$CALLER_ARN"
 echo "IMAGE_TAG=$IMAGE_TAG"
-echo "AGENT=${AGENT:-0} PIPELINE=${PIPELINE:-0} WORKFLOW=${WORKFLOW:-0} CREATE_KB=${CREATE_KB:-0} NAUTOBOT=${NAUTOBOT:-0}"
+echo "AGENT=${AGENT:-0} PIPELINE=${PIPELINE:-0} WORKFLOW=${WORKFLOW:-0} CREATE_KB=${CREATE_KB:-0}"
 echo "作るルート: $ROOTS"
 # インターフェース型エンドポイント（terraform/base/core の var.interface_endpoints）。ルートが呼ぶ AWS の API ごとに 1 本。
 # 手順 3 で、今回作らなくても state にリソースが残っているルートの分を足す（外すとそのルートの呼び出しがどこにも出られず接続のタイムアウトになる）
@@ -791,20 +793,10 @@ if [ -z "$SKIP_STREAM" ]; then
   ensure_fixed_secret "/$PREFIX/telegraf-dialin/gnmi-username" "$LAB_GNMI_USERNAME" "gNMI username of the Telegraf dial-in task (created by ops/up.sh with the containerlab default)"
   ensure_fixed_secret "/$PREFIX/telegraf-dialin/gnmi-password" "$LAB_GNMI_PASSWORD" "gNMI password of the Telegraf dial-in task (created by ops/up.sh with the containerlab default)"
   ensure_fixed_secret "/$PREFIX/telegraf-dialin/snmp-community" "$LAB_SNMP_COMMUNITY" "SNMP community of the Telegraf dial-in task (created by ops/up.sh with the containerlab default)"
-  # NAUTOBOT=1 なら、取りにいく側の一覧は Nautobot の Job が書き換える SSM のパラメータ（…/telegraf-dialin/nautobot/*）から受ける。
-  # 最初の値だけ上の lab の一覧（Nautobot の最初の seed も lab なので同じ）。今回 NAUTOBOT=0 でも Nautobot が残っていればそのままにする
-  # （lab の側に戻すと Job の書き先のパラメータが消える）
-  DIALIN_FROM_NAUTOBOT=false
-  if [ -n "$NAUTOBOT" ]; then
-    DIALIN_FROM_NAUTOBOT=true
-  elif [ -f terraform/pipeline/nautobot/terraform.tfstate ]; then
-    tf_init pipeline/nautobot
-    if has_resources pipeline/nautobot; then
-      echo "NAUTOBOT=0 だが terraform/pipeline/nautobot が残っているので、取りにいく側の一覧は Nautobot からのままにする"
-      DIALIN_FROM_NAUTOBOT=true
-    fi
-  fi
-  if [ "$DIALIN_FROM_NAUTOBOT" = true ]; then echo "Telegraf の取りにいく側の機器の一覧: Nautobot の Job が書く（上の一覧は最初の値）"; fi
+  # 取りにいく側の一覧は Nautobot の Job が書き換える SSM のパラメータ（…/telegraf-dialin/nautobot/*）から受ける（stream を作るなら Nautobot もいつも作る）。
+  # Terraform が書くのは最初の値（上の lab の一覧。Nautobot の最初の seed も lab なので同じ）だけ
+  DIALIN_FROM_NAUTOBOT=true
+  echo "Telegraf の取りにいく側の機器の一覧: Nautobot の Job が書く（上の一覧は最初の値）"
   tf_apply pipeline/stream -var "telegraf_image_tag=$TELEGRAF_TAG" -var "snmp_agents=$SNMP_AGENTS" -var "gnmi_targets=$GNMI_TARGETS" \
     -var "syslog_standard=$SYSLOG_STANDARD" -var "snmp_poll=$SNMP_POLL_TF" -var "dialin_targets_from_nautobot=$DIALIN_FROM_NAUTOBOT"
 fi

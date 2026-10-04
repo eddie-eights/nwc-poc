@@ -1,4 +1,4 @@
-"""Nautobot 連携（nautobot/、terraform/pipeline/nautobot、ops/up.sh の NAUTOBOT=1）の模擬テスト。AWS にも Nautobot にも触れない。
+"""Nautobot 連携（nautobot/、terraform/pipeline/nautobot、ops/up.sh が PIPELINE=1 でいつも作る）の模擬テスト。AWS にも Nautobot にも触れない。
 - 対応付け（nautobot/netops/nb_map.py）: lab の定義 → seed_plan → Nautobot → to_graph / targets と一周すると、lab と同じ機器・回線・Telegraf の一覧に戻る
 - 同期（nb_sync.push_targets）: 変わったときだけ SSM を書いて dialin を作り直す。空の一覧は書かない
 - Web: Nautobot があるあいだは画面からの Neptune の編集を止める（web/topology_view.py）
@@ -184,7 +184,10 @@ check("ops/up.sh: stream に一覧の持ち主を渡し、nautobot は graph の
       and up.index('log "7-3b.') < up.index("# ---- 7-3c. Nautobot") < up.index("# ---- 7-4. analytics"))
 check("ops/up.sh: エンドポイントに ecs（Job が dialin を作り直す）", "pipeline/nautobot) add_endpoints ecr.api ecr.dkr logs ecs ;;" in up)
 check("ops/check.sh が nautobot のルートとこのテストを回す", "pipeline/nautobot" in chk and "tests/test_nautobot.py" in chk)
-check("NAUTOBOT は deploy.env のキー", "NAUTOBOT" in read("ops", "deploy-env.sh").split() and "#NAUTOBOT=1" in read("deploy.env.example"))
+check("Nautobot は PIPELINE=1 ならいつも作る（切り替える変数は無い）",
+      'if [ -n "$PIPELINE" ] && { [ -z "$SKIP_STREAM" ] || [ -z "$SKIP_GRAPH" ]; }; then NAUTOBOT=1; fi' in up
+      and "flag_value NAUTOBOT" not in up and "NAUTOBOT=1" not in read("deploy.env.example") and "DIALIN_FROM_NAUTOBOT=false" not in up)
+check("前の deploy.env の NAUTOBOT で止まらない（読むだけ読んで注意を出す）", "NAUTOBOT" in read("ops", "deploy-env.sh").split() and "注意: NAUTOBOT=0 は効かない" in up)
 check("デバッグ用の EC2 は Nautobot を使わない", "nautobot" not in read("ops", "lab-debug.sh").lower() and "nautobot" not in read("cloudformation", "lab-debug.yaml").lower())
 
 # ---- Web のゲート

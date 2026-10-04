@@ -265,12 +265,12 @@ ops/sync-graph.sh --dry-run    # 作った JSON を出すだけ
 - 状態は Lambda `<prefix>-graph-status` が書く（SNS のトピック `<prefix>-alerts` を購読する。`firing` で落とし、`resolved` で戻す）。`link_down` なら回線の辺に `DOWN` / `UP`、`bgp_down` / `isis_down`（gNMI）なら上の層の頂点 `bgp_session` / `isis_adjacency` に `DOWN` / `UP`、ほかの trap なら機器に `ALARM` / `UP`（`UP` に戻すのは機器が `ALARM` のときだけ。IF の分からない linkDown の `DOWN` は残す）。
 - link 以外の trap には「直った」の知らせが無いので、その機器の最後の trap から 10 分で `resolved` にする（Splunk の保存済みサーチ `netops_trap_clear` が 1 分おきに見る）。coldStart / warmStart は異常にしない。調査ワークフローを起こすのは `link_down` だけ。
 - 入れ直すと状態は全部 `UP` に戻る（上の層も入れ直す。`ops/sync-graph.sh --replace`）。
-- `NAUTOBOT=1` のあいだは物理層の正は Nautobot（下の「Nautobot」）。Web の「トポロジ」タブからの編集は止まり、`--replace` は lab の定義で上書きするので、Nautobot で足したものは Job を打つまで Neptune から消える。
+- 物理層の正は Nautobot（下の「Nautobot」）。Web の「トポロジ」タブからの編集は止まり、`--replace` は lab の定義で上書きするので、Nautobot で足したものは Job を打つまで Neptune から消える。
 - トポロジに無い機器やインタフェースの異常は捨てず、「未登録」の頂点（`registered=false`、機器は `role=unknown`）として残す。Web の図では橙の点線の枠、表の「監視」は「未登録」になる。Lambda のログには WARNING で `UNREGISTERED` が出る。lab に足した機器なら `ops/sync-graph.sh --replace` で登録すると置き換わり、`UP` でない状態は引き継ぐ。
 
 ## Nautobot（機器の一覧とケーブルの正）
 
-`NAUTOBOT=1` で Nautobot 3.2.6 を立てる（`terraform/pipeline/nautobot`。既定は作らない）。機器・インタフェース・ケーブルを Nautobot で変えると、Nautobot の Job が次の 2 つに反映する。
+`PIPELINE=1` なら Nautobot 3.2.6 がいつも立つ（`terraform/pipeline/nautobot`。切り替える変数は無い。`SKIP_STREAM` と `SKIP_GRAPH` の両方があるときだけ作らない）。機器・インタフェース・ケーブルを Nautobot で変えると、Nautobot の Job が次の 2 つに反映する。
 
 ```mermaid
 flowchart LR
