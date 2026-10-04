@@ -7,7 +7,7 @@
 # 変えないのが既定。変えるときは docs/pipeline.md を読む
 # emr_release_label = "emr-7.13.0"
 # namespace         = "netops"
-# table_name        = "snmp_metrics"
+# table_name        = "raw_telemetry"
 
 # 冗長化（ops/up.sh は deploy.env の EMR_AZ_NUM / OPENSEARCH_AZ_NUM を渡す）
 # emr_az_num        = 1   # EMR Serverless のワーカーを置く AZ の数（1-3）

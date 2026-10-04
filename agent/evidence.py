@@ -4,33 +4,42 @@ Spark が検知した異常を受けて、エージェントが Neptune / S3 Tab
 Neptune は graph.py / topology.py（neighbors / blast_radius）、ここは残りの 3 つ:
   search_logs    OpenSearch Serverless の logs コレクション（terraform/pipeline/analytics の sinks=opensearch。Spark が traps を書く）を機器名で検索
   query_metrics  Amazon Managed Service for Prometheus（sinks=prometheus。Spark が metrics を remote write）に PromQL を投げる
-  query_history  S3 Tables（Iceberg）の履歴。Athena のワークグループとカタログの接続をまだ配備していないので、案内だけ返す（未実装）
+  query_history  S3 Tables（Iceberg）の alert_events（Grafana / Splunk のアラートの通知。graph の status Lambda → Firehose が追記）を Athena で読む（2026-10-04）
 
 エンドポイントは環境変数 OPENSEARCH_ENDPOINT（https://...aoss.amazonaws.com）/ OPENSEARCH_INDEX（既定 snmp-logs）/
-PROMETHEUS_QUERY_URL（https://aps-workspaces.<region>.amazonaws.com/workspaces/<id>/api/v1/query）。
+PROMETHEUS_QUERY_URL（https://aps-workspaces.<region>.amazonaws.com/workspaces/<id>/api/v1/query）/
+ATHENA_WORKGROUP・ATHENA_CATALOG・HISTORY_NAMESPACE・ALERT_EVENTS_TABLE（terraform/pipeline/analytics の history.tf の出力）。
 どれも無ければ「まだ配備されていない」を返して、PIPELINE の analytics を作っていない構成でも落ちない。
 署名は botocore の SigV4（サービス名 aoss / aps）。requests は使わず urllib で送る（tools Lambda は素の python3.13、依存を増やさない）。
+Athena は boto3 の athena クライアント（python3.13 の Lambda に入っている）。
 tools Lambda（terraform/workflow）と chat runtime（agent/app.py）の両方から同じものが呼ばれる。
 """
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
-from botocore.exceptions import BotoCoreError
+from botocore.exceptions import BotoCoreError, ClientError
 
 import toolkit
 
 OPENSEARCH_ENDPOINT = os.environ.get("OPENSEARCH_ENDPOINT", "").rstrip("/")
 OPENSEARCH_INDEX = os.environ.get("OPENSEARCH_INDEX", "snmp-logs")
 PROMETHEUS_QUERY_URL = os.environ.get("PROMETHEUS_QUERY_URL", "")
+ATHENA_WORKGROUP = os.environ.get("ATHENA_WORKGROUP", "")
+ATHENA_CATALOG = os.environ.get("ATHENA_CATALOG", "")  # s3tablescatalog/<テーブルバケット>
+HISTORY_NAMESPACE = os.environ.get("HISTORY_NAMESPACE", "")
+ALERT_EVENTS_TABLE = os.environ.get("ALERT_EVENTS_TABLE", "")
 REGION = os.environ.get("AWS_REGION") or os.environ.get("BEDROCK_REGION") or "ap-northeast-1"
 TIMEOUT = 20
+POLL = 0.5  # Athena のクエリの状態を見に行く間隔（秒）
 
 
 def _signed(method: str, url: str, service: str, body: bytes | None = None, headers: dict | None = None) -> dict:
@@ -94,10 +103,83 @@ def query_metrics(query: str, minutes: int = 15) -> dict:
     return {"count": len(series), "minutes": minutes, "series": series}
 
 
+# ---------------------------------------------------------------- アラートの通知の履歴（Athena → S3 Tables の alert_events。2026-10-04）
+HISTORY_NOT_DEPLOYED = ("アラートの履歴（S3 Tables の alert_events を Athena で読む）はまだ配備していない（terraform/pipeline/analytics を apply して、"
+                        "terraform/workflow を apply し直すと使える）。直近はメトリクスを query_metrics、ログを search_logs で見る")
+# 列は workflow/rules.py の ALERT_EVENT_COLUMNS と同じ順（tests/test_app.py が突き合わせる）
+HISTORY_COLUMNS = ("event_id", "anomaly_id", "source", "status", "device_id", "kind", "target", "detail", "starts_at", "received_at")
+HISTORY_LIMIT = 50
+# device_id は ExecutionParameters で渡す。Athena は値を SQL の式として読む（文字列は '…' で囲む）ので、引用符の入らない文字だけを通す
+_DEVICE_RE = re.compile(r"^[A-Za-z0-9._:/#?-]{1,128}$")
+# Athena が返す timestamptz の文字列（2026-10-04 07:00:00.000000 UTC）
+_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?\s*(?:UTC|Z|\+00:00)?$")
+
+
+def history_sql(hours: int, by_device: bool) -> str:
+    """alert_events を読む SQL。Lambda のやり直しで二重に入った行を event_id で落とし、新しい順に最大 50 件。
+    hours は呼ぶ側で整数に丸めたもの。device_id は ? にして ExecutionParameters で渡す（SQL に埋め込まない）"""
+    table = f'"{ATHENA_CATALOG}"."{HISTORY_NAMESPACE}"."{ALERT_EVENTS_TABLE}"'
+    where = f"received_at > current_timestamp - interval '{int(hours)}' hour" + (" AND device_id = ?" if by_device else "")
+    return (f"SELECT {', '.join(HISTORY_COLUMNS)} FROM (SELECT *, row_number() OVER (PARTITION BY event_id ORDER BY received_at) rn "
+            f"FROM {table} WHERE {where}) WHERE rn = 1 ORDER BY received_at DESC LIMIT {HISTORY_LIMIT}")
+
+
+def _jst_of(ts) -> str:
+    """Athena の timestamptz（UTC）の文字列を日本時間の「2026-10-04 16:00:00」に。読めなければ空文字"""
+    m = _TS_RE.match(str(ts or "").strip())
+    if not m:
+        return ""
+    return toolkit.jst(datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp())
+
+
+def _wait(athena, qid: str):
+    """クエリが終わるまで最大 TIMEOUT 秒待つ。終わったら Status、時間切れなら None"""
+    deadline = time.monotonic() + TIMEOUT
+    while True:
+        status = athena.get_query_execution(QueryExecutionId=qid)["QueryExecution"]["Status"]
+        if status.get("State") in ("SUCCEEDED", "FAILED", "CANCELLED"):
+            return status
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(POLL)
+
+
 def query_history(device_id: str = "", hours: int = 24) -> dict:
-    """S3 Tables（Iceberg）に溜めた全メッセージの履歴。Athena をまだ配備していないので案内だけ（2026-09-17）"""
-    return {"error": "S3 Tables の履歴の検索（Athena）はまだ配備していない。直近はメトリクスを query_metrics、ログを search_logs で見る",
-            "device_id": device_id, "hours": hours, "rows": []}
+    """アラートの通知の履歴（Grafana / Splunk。発火と解消）。新しい順に最大 50 件で、同じ通知（event_id）の重複は落とす"""
+    device_id = str(device_id or "").strip()
+    hours = max(1, min(int(hours), 720))
+    if not (ATHENA_WORKGROUP and ATHENA_CATALOG and HISTORY_NAMESPACE and ALERT_EVENTS_TABLE):
+        return {"error": HISTORY_NOT_DEPLOYED, "device_id": device_id, "hours": hours, "rows": []}
+    if device_id and not _DEVICE_RE.match(device_id):
+        return {"error": "device_id に使えない文字がある（英数字と . _ : / # ? - だけ）", "device_id": device_id, "hours": hours, "rows": []}
+    athena = toolkit.client("athena")
+    req = {"QueryString": history_sql(hours, bool(device_id)), "WorkGroup": ATHENA_WORKGROUP}
+    if device_id:
+        req["ExecutionParameters"] = [f"'{device_id}'"]
+    try:
+        qid = athena.start_query_execution(**req)["QueryExecutionId"]
+        status = _wait(athena, qid)
+        if status is None:
+            try:
+                athena.stop_query_execution(QueryExecutionId=qid)
+            except (ClientError, BotoCoreError):
+                pass
+            return {"error": f"Athena のクエリが {TIMEOUT} 秒で終わらなかったので止めた（hours を短くするか device_id で絞る）", "device_id": device_id, "hours": hours, "rows": []}
+        if status["State"] != "SUCCEEDED":
+            return {"error": f"Athena のクエリが {status['State']}: {str(status.get('StateChangeReason', ''))[:300]}", "device_id": device_id, "hours": hours, "rows": []}
+        result = athena.get_query_results(QueryExecutionId=qid, MaxResults=HISTORY_LIMIT + 1)
+    except (ClientError, BotoCoreError) as e:
+        return {"error": f"Athena を呼べない: {str(e)[:300]}", "device_id": device_id, "hours": hours, "rows": []}
+    # 1 行目は列名。NULL のセルは VarCharValue が無い
+    rows = []
+    for r in (result.get("ResultSet") or {}).get("Rows", [])[1:]:
+        cells = [c.get("VarCharValue") for c in r.get("Data", [])]
+        row = dict(zip(HISTORY_COLUMNS, cells))
+        row["starts_at_jst"], row["received_at_jst"] = _jst_of(row.get("starts_at")), _jst_of(row.get("received_at"))
+        rows.append(row)
+    return {"device_id": device_id, "hours": hours, "count": len(rows), "rows": rows,
+            "note": "1 行 = 1 つの通知（event_id = 異常・送り手・状態・starts_at が同じ送り直しは最初に届いた 1 行にまとめる。Grafana の 4 時間ごとの送り直しもまとまる）。starts_at は Grafana なら発火した時刻（resolved の行も同じ）、"
+                    "Splunk ならその状態を最後に見た時刻（latest(_time)。resolved なら解消した時刻）。received_at は Lambda が受けた時刻。いま開いている異常は機器・回線の status で見る"}
 
 
 TOOL_SPECS = [
@@ -120,10 +202,10 @@ TOOL_SPECS = [
     }},
     {"toolSpec": {
         "name": "query_history",
-        "description": "監視データの長期の履歴（S3 Tables）を機器名で引く。まだ配備されていないときは案内だけ返す。",
+        "description": "アラートの通知の履歴（Grafana / Splunk。発火と解消）を機器名で引く。新しい順に最大 50 件で、1 行が 1 つの通知（同じ通知の送り直しは最初に届いた 1 件にまとめる。status = firing / resolved、source = grafana / splunk、starts_at と received_at は UTC、_jst は日本時間）。starts_at は Grafana なら発火した時刻（resolved の行も同じ）、Splunk ならその状態を最後に見た時刻。いつ落ちていつ戻ったか、前にも同じアラートが出ていたかを見るのに使う。まだ配備されていないときは案内だけ返す。",
         "inputSchema": {"json": {"type": "object", "properties": {
             "device_id": {"type": "string", "description": "機器名（例 dc1-leaf-01）。空なら全機器"},
-            "hours": {"type": "integer", "description": "何時間前まで見るか（既定 24）"},
+            "hours": {"type": "integer", "description": "何時間前まで見るか（既定 24、最大 720）"},
         }}},
     }},
 ]

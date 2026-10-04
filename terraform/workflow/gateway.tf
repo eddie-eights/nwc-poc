@@ -60,7 +60,7 @@ resource "aws_iam_role" "tools" {
   count = var.create_gateway ? 1 : 0
 
   name               = "${local.name_prefix}-tools"
-  description        = "Tools Lambda behind the MCP gateway - reads Neptune (topology, proposals), the logs collection and the metrics workspace"
+  description        = "Tools Lambda behind the MCP gateway - reads Neptune (topology, proposals), the logs collection, the metrics workspace and the alert history (Athena)"
   assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
 }
 
@@ -110,6 +110,53 @@ data "aws_iam_policy_document" "tools" {
       sid       = "MetricsQuery"
       actions   = ["aps:QueryMetrics", "aps:GetSeries", "aps:GetLabels", "aps:GetMetricMetadata"]
       resources = [local.prometheus_workspace_arn]
+    }
+  }
+
+  # query_history（アラートの通知の履歴）。Athena のクエリはそのワークグループだけで打ち、結果は Athena の管理ストレージ。
+  # Athena は呼び手の権限で Glue のカタログ（s3tablescatalog）と S3 Tables を読む。閉域の Deny（s3tables:*）は
+  # Athena が代わりに出す呼び出し（aws:ViaAWSService）には効かない前提（docs/cycles/001-alert-history-firehose/design.md のリスク 3）。
+  # そのぶん VPC の外からの athena:* は閉域の Deny で止め、読めるテーブルは alert_events だけにする（proposal_events / raw_telemetry は読ませない）
+  dynamic "statement" {
+    for_each = local.athena_workgroup != "" ? [1] : []
+    content {
+      sid       = "HistoryQuery"
+      actions   = ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:StopQueryExecution"]
+      resources = ["arn:${local.partition}:athena:${var.region}:${local.account_id}:workgroup/${local.athena_workgroup}"]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = local.athena_workgroup != "" ? [1] : []
+    content {
+      sid     = "HistoryCatalog"
+      actions = ["glue:GetCatalog", "glue:GetDatabase", "glue:GetTable"]
+      resources = [
+        "arn:${local.partition}:glue:${var.region}:${local.account_id}:catalog",
+        "arn:${local.partition}:glue:${var.region}:${local.account_id}:catalog/s3tablescatalog",
+        "arn:${local.partition}:glue:${var.region}:${local.account_id}:catalog/s3tablescatalog/*",
+        "arn:${local.partition}:glue:${var.region}:${local.account_id}:database/*",
+        "arn:${local.partition}:glue:${var.region}:${local.account_id}:table/*/*",
+      ]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = local.athena_workgroup != "" ? [1] : []
+    content {
+      sid       = "HistoryBucket"
+      actions   = ["s3tables:GetTableBucket", "s3tables:GetNamespace"]
+      resources = [local.audit_bucket_arn]
+    }
+  }
+
+  # テーブルの ARN は名前ではなくテーブルの ID で終わるので、analytics の出力から受ける
+  dynamic "statement" {
+    for_each = local.alert_events_table_arn != "" ? [1] : []
+    content {
+      sid       = "HistoryTable"
+      actions   = ["s3tables:GetTable", "s3tables:GetTableData", "s3tables:GetTableMetadataLocation"]
+      resources = [local.alert_events_table_arn]
     }
   }
 }
@@ -192,6 +239,11 @@ resource "aws_lambda_function" "tools" {
       OPENSEARCH_ENDPOINT  = local.opensearch_endpoint
       OPENSEARCH_INDEX     = local.opensearch_index
       PROMETHEUS_QUERY_URL = local.prometheus_query_url
+      # query_history（evidence.py）。どれかが空ならツールは「未配備」を返す
+      ATHENA_WORKGROUP   = local.athena_workgroup
+      ATHENA_CATALOG     = local.athena_catalog
+      HISTORY_NAMESPACE  = local.athena_workgroup == "" ? "" : local.audit_namespace
+      ALERT_EVENTS_TABLE = local.alert_events_table_name
     }
   }
 

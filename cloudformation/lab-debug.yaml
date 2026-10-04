@@ -370,7 +370,7 @@ Resources:
                 - Sid: DenyOutsideVpc
                   Effect: Deny
                   Action: ["s3:*", "s3tables:*", "sqs:*", "ssm:*", "ssmmessages:*", "bedrock:*", "sns:*", "aps:*",
-                           "bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:InvokeGateway"]
+                           "athena:*", "firehose:*", "bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:InvokeGateway"]
                   Resource: "*"
                   Condition:
                     StringNotEqualsIfExists: { "aws:SourceVpc": !Ref Vpc, "aws:CalledViaLast": s3tables.amazonaws.com }

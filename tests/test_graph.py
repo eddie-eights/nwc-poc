@@ -106,6 +106,18 @@ os.environ["NEPTUNE_GRAPH_ID"] = "g-abc1234567"
 graph = load("graph")
 check("環境変数で配備あり（neptune-graph のクライアント。接続先はグラフの ID から boto3 が決めるので endpoint_url は渡さない）",
       graph.configured() and graph._client().name == "neptune-graph" and "endpoint_url" not in graph._client().kw)
+# graph-status の Lambda は status_handler._neptune が graph._cache["client"] に NEPTUNE_CONFIG のクライアントを入れる（test_sync は graph を偽物にするので、ここで本物を見る）
+class _Preset(FakeClient):
+    used = 0
+    def execute_query(self, **kw):
+        _Preset.used += 1
+        return super().execute_query(**kw)
+_made, _pre = graph._client(), _Preset("neptune-graph")
+graph._cache["client"] = _pre
+reset(); graph.query("RETURN 1")
+check("_client() と query は graph._cache[\"client\"] に先に入っているクライアントを使い、作り直さない（鍵を変えると graph-status の Lambda は黙って既定の待ちに戻る）",
+      graph._client() is _pre and _Preset.used == 1 and state["queries"] == ["RETURN 1"])
+graph._cache["client"] = _made
 devs = [{"id": "a-ce-01", "label": "device", "hostname": "a-ce-01", "site": "a", "role": "leaf", "asn": 65001, "mgmt_ip": "203.0.113.11", "enabled": True},
         {"id": "b-ce-01", "label": "device", "hostname": "b-ce-01", "site": "b", "role": "leaf", "mgmt_ip": "203.0.113.12", "enabled": False}]
 ifs = [{"id": "a-ce-01#eth0", "label": "interface", "device_id": "a-ce-01", "name": "eth0", "address": "203.0.113.11"},

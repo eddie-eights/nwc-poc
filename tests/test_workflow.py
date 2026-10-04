@@ -217,6 +217,11 @@ check("機器名は小文字の短い名前に（IPv4 はそのまま）、statu
       and _many[1]["anomaly_id"] == "172.20.20.99#trap#.1.3.6.1.4.1.1" and len(_many[2]["detail"]) == 1000
       and all(a["source"] == "splunk" for a in _many))
 check("形の合わない要素（機器か種類が無い・status が firing / resolved でない・dict でない）は捨てる", len(_many) == 3)
+_many_body = json.dumps({"source": "splunk", "alerts": [_alert, {**_alert, "device_id": ""}, "x"]})
+check("alert_count は alerts の要素を形にかかわらず数える（alerts_from_message との差が捨てた件数。封筒も開け、読めない本文は 0）",
+      rules.alert_count(_many_body) == 3 and len(rules.alerts_from_message(_many_body)) == 1
+      and rules.alert_count(json.dumps({"Type": "Notification", "Message": _many_body})) == 3
+      and rules.alert_count("garbage") == 0 and rules.alert_count(None) == 0 and rules.alert_count(json.dumps({"alerts": "x"})) == 0)
 # 送り手 2 つ（Grafana のテンプレートと Splunk のアラートアクション）が同じ形で publish しているか
 _sns_py = read("splunk", "netops_alerts", "bin", "netops_sns.py")
 _gf_yaml = read("grafana", "provisioning", "alerting", "netops.yaml")
@@ -288,6 +293,22 @@ except ValueError:
 check("知らない出来事は ValueError（証跡の event を増やすときは PROPOSAL_EVENTS に足す）", bad)
 check("status に出てくる出来事は全部 PROPOSAL_EVENTS にある", set(proposals.STATUSES) - {"pending"} <= set(rules.PROPOSAL_EVENTS))
 check("append_proposal_events は空なら何もしない（pyiceberg を読まない）", awsio.append_proposal_events([], rules.PROPOSAL_EVENT_COLUMNS) is None)
+# アラートの通知の履歴（S3 Tables の alert_events。書くのは graph/status_handler.py）
+al = rules.alerts_from_message(json.dumps({"source": "grafana", "alerts": [
+    {"status": "firing", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "detail": "oper-state down", "starts_at": 1790000000},
+    {"status": "resolved", "device_id": "?", "kind": "trap", "target": "?", "detail": ""}]}))
+ae = [rules.alert_event(a, 1790000123.5) for a in al]
+check("alert_event の event_id は <anomaly_id>#<source>#<status>#<starts_at の epoch 秒>",
+      ae[0]["event_id"] == "dc1-leaf-01#link_down#ethernet-1/1#grafana#firing#1790000000" and ae[0]["anomaly_id"] == "dc1-leaf-01#link_down#ethernet-1/1")
+check("alert_event の列は ALERT_EVENT_COLUMNS と同じ順、時刻は ISO 8601 の UTC（マイクロ秒と Z）",
+      list(ae[0]) == [n for n, _ in rules.ALERT_EVENT_COLUMNS]
+      and ae[0]["starts_at"] == "2026-09-21T14:13:20.000000Z" and ae[0]["received_at"] == "2026-09-21T14:15:23.500000Z"
+      and ae[0]["detail"] == "oper-state down" and ae[0]["source"] == "grafana" and ae[0]["status"] == "firing")
+check("starts_at の無い通知は starts_at を null、event_id の末尾を 0 にする（機器の無い通知も行にする）",
+      ae[1]["starts_at"] is None and ae[1]["event_id"].endswith("#grafana#resolved#0") and ae[1]["device_id"] == "?")
+check("ALERT_EVENT_COLUMNS の時刻は starts_at と received_at の 2 つで timestamptz",
+      [n for n, t in rules.ALERT_EVENT_COLUMNS if t == "timestamptz"] == ["starts_at", "received_at"]
+      and {t for _, t in rules.ALERT_EVENT_COLUMNS} == {"string", "timestamptz"})
 
 class FakeBody:
     def __init__(self, data): self.data = data
@@ -379,6 +400,9 @@ check("tools.json の 13 個は topology / evidence / proposals の TOOL_SPECS �
       {t["name"] for t in tools} == set(py_specs) and len(tools) == 13 and "list_anomalies" not in py_specs
       and not os.path.exists(os.path.join(ROOT, "agent", "anomalies.py")))
 check("evidence のツールは search_logs / query_metrics / query_history", {s["toolSpec"]["name"] for s in evidence.TOOL_SPECS} == {"search_logs", "query_metrics", "query_history"})
+# query_history が読む列と Firehose が書く列（status Lambda の rules.alert_event）がずれると、SELECT が COLUMN_NOT_FOUND で落ちる
+check("evidence.HISTORY_COLUMNS は rules.ALERT_EVENT_COLUMNS の列名と同じ順",
+      evidence.HISTORY_COLUMNS == tuple(n for n, _ in rules.ALERT_EVENT_COLUMNS))
 check("handler は topology / evidence / proposals のツールを名前で振り分ける",
       "MODULES = (topology, evidence, proposals)" in read("tools", "handler.py"))
 for t in tools:
@@ -475,8 +499,34 @@ check(f"tools.zip は入れたモジュールが import する agent/ のモジ�
 check("tools Lambda は VPC の中（Neptune / OpenSearch / Prometheus に届く）で、OPENSEARCH_ENDPOINT / PROMETHEUS_QUERY_URL を渡す",
       re.search(r'resource "aws_lambda_function" "tools"[\s\S]*?vpc_config \{', tf) is not None
       and all(v in tf for v in ("OPENSEARCH_ENDPOINT", "OPENSEARCH_INDEX", "PROMETHEUS_QUERY_URL")))
+# query_history（アラートの通知の履歴。2026-10-04）。analytics の出力を try で読み、無ければ環境変数も IAM も空
+_tools_env = re.search(r'resource "aws_lambda_function" "tools"[\s\S]*?variables = \{([\s\S]*?)\n    \}', tf)
+_tools_env_keys = set(re.findall(r"^\s*([A-Z_]+)\s*=", _tools_env.group(1), re.M)) if _tools_env else set()
+check("tools Lambda に ATHENA_WORKGROUP / ATHENA_CATALOG / HISTORY_NAMESPACE / ALERT_EVENTS_TABLE を渡す（値は analytics の出力）",
+      {"ATHENA_WORKGROUP", "ATHENA_CATALOG", "HISTORY_NAMESPACE", "ALERT_EVENTS_TABLE"} <= _tools_env_keys
+      and all(f'output "{o}"' in analytics_out and re.search(rf'try\(data\.terraform_remote_state\.analytics\.outputs\.{o}, ""\)', tf) for o in ("athena_workgroup", "athena_catalog", "alert_events_table_name", "alert_events_table_arn"))
+      and 'HISTORY_NAMESPACE  = local.athena_workgroup == "" ? "" : local.audit_namespace' in tf)
+_agent_env_read = set()
+for _m in zipped:
+    _agent_env_read |= set(re.findall(r'os\.environ\.get\("(\w+)"', read("agent", _m + ".py")))
+check(f"tools Lambda に渡す環境変数は全部 zip のモジュールが読む（読まれない: {sorted(_tools_env_keys - _agent_env_read)}）",
+      _tools_env_keys and not (_tools_env_keys - _agent_env_read))
+_hist_stmts = {sid: re.search(rf'sid\s*=\s*"{sid}"[\s\S]*?\n    \}}', tf) for sid in ("HistoryQuery", "HistoryCatalog", "HistoryBucket", "HistoryTable")}
+check("query_history の IAM は analytics があるときだけ（dynamic）で、athena はワークグループ、s3tables のテーブルの読み取りは alert_events だけ（読むだけ）",
+      all(_hist_stmts.values()) and tf.count('for_each = local.athena_workgroup != "" ? [1] : []') == 3
+      and tf.count('for_each = local.alert_events_table_arn != "" ? [1] : []') == 1
+      and 'alert_events_table_arn  = try(data.terraform_remote_state.analytics.outputs.alert_events_table_arn, "")' in tf
+      and re.findall(r'"(athena:\w+)"', _hist_stmts["HistoryQuery"].group(0)) == ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:StopQueryExecution"]
+      and "workgroup/${local.athena_workgroup}" in _hist_stmts["HistoryQuery"].group(0)
+      and re.findall(r'"(glue:\w+)"', _hist_stmts["HistoryCatalog"].group(0)) == ["glue:GetCatalog", "glue:GetDatabase", "glue:GetTable"]
+      and "catalog/s3tablescatalog/*" in _hist_stmts["HistoryCatalog"].group(0)
+      and re.findall(r'"(s3tables:\w+)"', _hist_stmts["HistoryBucket"].group(0)) == ["s3tables:GetTableBucket", "s3tables:GetNamespace"]
+      and "resources = [local.audit_bucket_arn]" in _hist_stmts["HistoryBucket"].group(0)
+      and re.findall(r'"(s3tables:\w+)"', _hist_stmts["HistoryTable"].group(0)) == ["s3tables:GetTable", "s3tables:GetTableData", "s3tables:GetTableMetadataLocation"]
+      and "resources = [local.alert_events_table_arn]" in _hist_stmts["HistoryTable"].group(0)
+      and not any("*" == a.split(":")[-1] for s in _hist_stmts.values() for a in re.findall(r'"((?:athena|glue|s3tables):[\w*]+)"', s.group(0))))
 # 修復案は読むだけ（Neptune の読み取りだけ。承認は画面の承認タブで人が決める）
-neptune_read = re.search(r'sid\s*=\s*"NeptuneRead"[\s\S]*?\n  \}', tf)  # ステートメント 1 つぶん（terraform fmt の桁揃えに依存しないよう粗く取る）
+neptune_read =re.search(r'sid\s*=\s*"NeptuneRead"[\s\S]*?\n  \}', tf)  # ステートメント 1 つぶん（terraform fmt の桁揃えに依存しないよう粗く取る）
 check("tools Lambda のロールの Neptune は読むだけ（WriteDataViaQuery は付けない）",
       neptune_read is not None and "WriteDataViaQuery" not in neptune_read.group(0) and "DeleteDataViaQuery" not in neptune_read.group(0)
       and "neptune-graph:ReadDataViaQuery" in neptune_read.group(0))

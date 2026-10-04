@@ -38,9 +38,9 @@ with open(ENV_EXAMPLE, encoding="utf-8") as f:
     env_example = f.read()
 
 # ---- 他のルートとのつながり
-check("ファイルは versions / providers / variables / locals / network / tables / emr / sinks / access / outputs / ecs / grafana / splunk",
+check("ファイルは versions / providers / variables / locals / network / tables / emr / sinks / access / outputs / ecs / grafana / splunk / history",
       set(tf_files) == {"versions.tf", "providers.tf", "variables.tf", "locals.tf", "network.tf", "tables.tf", "emr.tf", "sinks.tf", "access.tf", "outputs.tf",
-                        "ecs.tf", "grafana.tf", "splunk.tf"})
+                        "ecs.tf", "grafana.tf", "splunk.tf", "history.tf"})
 check("main の state をローカルから読む", re.search(r'data "terraform_remote_state" "main"[\s\S]*?backend\s*=\s*"local"', tf, re.S) is not None
       and '"${path.module}/../../base/core/terraform.tfstate"' in tf)
 check("stream の state をローカルから読む", re.search(r'data "terraform_remote_state" "stream"[\s\S]*?backend\s*=\s*"local"', tf, re.S) is not None
@@ -151,8 +151,8 @@ check("VPC フローログのロール: 信頼は自アカウントの vpc-flow-
 
 # ---- S3 Tables のテーブル（列はスクリプトと同じでなければ append が落ちる）
 TABLE_COLUMNS = ["ts", "topic", "measurement", "agent_host", "host", "tags_json", "fields_json", "ingested_at"]
-schema = re.search(r'resource "aws_s3tables_table" "snmp_metrics"(.*?)\n\}\n', tf, re.S)
-check("aws_s3tables_table snmp_metrics がある", schema is not None)
+schema = re.search(r'resource "aws_s3tables_table" "raw_telemetry"(.*?)\n\}\n', tf, re.S)
+check("aws_s3tables_table raw_telemetry がある", schema is not None)
 fields = re.findall(r'field\s*\{\s*name\s*=\s*"([a-z_]+)"\s*type\s*=\s*"([a-z]+)"\s*required\s*=\s*(true|false)', schema.group(1))
 check("テーブルの列は ts / topic / measurement / agent_host / host / tags_json / fields_json / ingested_at の順", [f[0] for f in fields] == TABLE_COLUMNS)
 coltypes = dict((f[0], f[1]) for f in fields)
@@ -163,7 +163,10 @@ check("format は ICEBERG", re.search(r'format\s*=\s*"ICEBERG"', schema.group(1)
 check("namespace とテーブル名はアンダースコアだけ（ハイフン不可）",
       re.search(r'variable "namespace"[\s\S]*?regex\("\^\[a-z0-9\]\[a-z0-9_\]', tf, re.S) is not None
       and re.search(r'variable "table_name"[\s\S]*?regex\("\^\[a-z0-9\]\[a-z0-9_\]', tf, re.S) is not None)
-check("既定のテーブル名は snmp_metrics", re.search(r'variable "table_name"[\s\S]*?default\s*=\s*"snmp_metrics"', tf, re.M) is not None)
+check("既定のテーブル名は raw_telemetry（2026-10-04 に snmp_metrics から改名）", re.search(r'variable "table_name"[\s\S]*?default\s*=\s*"raw_telemetry"', tf, re.M) is not None)
+check("snmp_metrics から raw_telemetry へ moved で state を引き継ぐ（ほかに snmp_metrics の名前は残らない）",
+      re.search(r'moved \{\n  from = aws_s3tables_table\.snmp_metrics\n  to   = aws_s3tables_table\.raw_telemetry\n\}', tf) is not None
+      and tf.count("snmp_metrics") == 2)
 
 # ---- EMR Serverless（器だけ。ジョブは ops/up.sh が起こす）
 check("EMR Serverless は spark / ARM64", re.search(r'aws_emrserverless_application" "spark"[\s\S]*?type\s*=\s*"spark"[\s\S]*?architecture\s*=\s*"ARM64"', tf, re.S) is not None)
@@ -256,6 +259,7 @@ check("remote write の URL は prometheus_endpoint + api/v1/remote_write",
 for out in ("application_id", "runtime_role_arn", "table_identifier", "job_driver_json_iceberg", "job_driver_json_splunk", "job_driver_json_http", "configuration_overrides_json", "list_job_runs_command", "list_tables_command",
             "sinks", "opensearch_collection_endpoint", "prometheus_workspace_id", "prometheus_remote_write_url", "prometheus_query_url",
             "table_bucket_arn", "table_namespace", "proposal_events_table_name", "proposal_events_table_arn",
+            "alert_events_stream_name", "alert_events_table_name", "alert_events_table_arn", "athena_workgroup", "athena_catalog",
             "opensearch_collection_name", "opensearch_collection_arn", "opensearch_index", "prometheus_workspace_arn",
             "splunk_hec_url", "splunk_token_parameter", "analytics_cluster_name", "splunk_service_name", "splunk_port_forward_command",
             "splunk_password_command", "grafana_service_name", "grafana_port_forward_command", "grafana_password_command"):
@@ -321,9 +325,50 @@ check("証跡のテーブル proposal_events をいつも作り（count 無し�
       _blk is not None and "count" not in _blk.group(1) and "required = true" not in _blk.group(1).replace(" ", "").replace("required=true", "required = true"))
 check("proposal_events の列と順は workflow/rules.py の PROPOSAL_EVENT_COLUMNS と同じ",
       re.findall(r'name\s*=\s*"(\w+)"\s*\n\s*type\s*=\s*"(\w+)"', _blk.group(1)) == [tuple(c) for c in _pec])
-check("異常の履歴のテーブル anomaly_events は無い（S3 Tables のテーブルは snmp_metrics と proposal_events だけ）",
-      re.findall(r'resource "aws_s3tables_table" "(\w+)"', tf) == ["snmp_metrics", "proposal_events"] and '"anomaly_events' not in tf and "anomaly_events_table" not in tf
+check("異常の履歴のテーブル anomaly_events は無い（S3 Tables のテーブルは raw_telemetry と proposal_events と alert_events だけ）",
+      re.findall(r'resource "aws_s3tables_table" "(\w+)"', tf) == ["raw_telemetry", "proposal_events", "alert_events"] and '"anomaly_events' not in tf and "anomaly_events_table" not in tf
       and "ANOMALY_EVENT_COLUMNS" not in src)
+# アラートの通知の履歴（2026-10-04）。書くのは graph の status の Lambda → Firehose（history.tf）、読むのは query_history（Athena）
+_aec = next(ast.literal_eval(n.value) for n in _rules_tree.body if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "ALERT_EVENT_COLUMNS")
+_ablk = re.search(r'resource "aws_s3tables_table" "alert_events" \{(.*?)\n\}\n', tf, re.S)
+check("alert_events をいつも作り（count 無し）、列はどれも required = false",
+      _ablk is not None and "count" not in _ablk.group(1) and re.search(r'required\s*=\s*true', _ablk.group(1)) is None)
+check("alert_events の列と順は workflow/rules.py の ALERT_EVENT_COLUMNS と同じ",
+      re.findall(r'name\s*=\s*"(\w+)"\s*\n\s*type\s*=\s*"(\w+)"', _ablk.group(1)) == [tuple(c) for c in _aec])
+_hist = open(os.path.join(ROOT, "terraform", "pipeline", "analytics", "history.tf"), encoding="utf-8").read()
+_fh = re.search(r'resource "aws_kinesis_firehose_delivery_stream" "alert_events" \{(.*?)\n\}\n', _hist, re.S)
+check("Firehose <接頭辞>-alert-events は iceberg で s3tablescatalog/<テーブルバケット> の alert_events に書き、バッファは 60 秒 / 1 MiB",
+      _fh is not None and 'name        = "${local.name_prefix}-alert-events"' in _fh.group(1) and 'destination = "iceberg"' in _fh.group(1)
+      and re.search(r'catalog_arn\s*=\s*"\$\{local\.glue_catalog\}/\$\{local\.athena_catalog\}"', _fh.group(1)) is not None
+      and 'athena_catalog = "s3tablescatalog/${local.table_bucket}"' in _hist
+      and 'glue_catalog   = "arn:${local.partition}:glue:${var.region}:${local.account_id}:catalog"' in _hist
+      and re.search(r'database_name\s*=\s*aws_s3tables_namespace\.netops\.namespace', _fh.group(1)) is not None
+      and re.search(r'table_name\s*=\s*aws_s3tables_table\.alert_events\.name', _fh.group(1)) is not None
+      and re.search(r'buffering_interval\s*=\s*60\b', _fh.group(1)) is not None and re.search(r'buffering_size\s*=\s*1\b', _fh.group(1)) is not None)
+check("書けなかった行は土台のバケットの firehose-errors/alert_events/ に落とし（FailedDataOnly）、CloudWatch のログを付ける",
+      re.search(r's3_backup_mode\s*=\s*"FailedDataOnly"', _fh.group(1)) is not None
+      and re.search(r'bucket_arn\s*=\s*local\.bucket_arn', _fh.group(1)) is not None
+      and re.search(r'error_output_prefix\s*=\s*local\.alert_errors', _fh.group(1)) is not None and 'alert_errors   = "firehose-errors/alert_events/"' in _hist
+      and re.search(r'cloudwatch_logging_options \{\s*enabled\s*=\s*true', _fh.group(1)) is not None)
+_fhpol = re.search(r'resource "aws_iam_role_policy" "alert_firehose" \{(.*?)\n\}\n', _hist, re.S).group(1)
+check("Firehose のロール <接頭辞>-alert-firehose: 信頼は firehose.amazonaws.com を aws:SourceAccount で絞り、閉域の IAM 側の Deny は付けない",
+      'alert_firehose    = "${local.name_prefix}-alert-firehose"' in _hist
+      and re.search(r'Principal\s*=\s*\{\s*Service\s*=\s*"firehose\.amazonaws\.com"\s*\}', _hist) is not None
+      and '"aws:SourceAccount" = local.account_id' in _hist and "perimeter_policy_arn" not in _hist)
+check("Firehose のロールの許可は S3 Tables（テーブルバケットと /table/*）と Glue の s3tablescatalog と firehose-errors/* とログだけ",
+      sorted(re.findall(r'"(s3tables:\w+)"', _fhpol)) == sorted(["s3tables:GetTableBucket", "s3tables:GetNamespace", "s3tables:GetTable", "s3tables:GetTableData",
+                                                              "s3tables:GetTableMetadataLocation", "s3tables:PutTableData", "s3tables:UpdateTableMetadataLocation"])
+      and sorted(re.findall(r'"(glue:\w+)"', _fhpol)) == sorted(["glue:GetCatalog", "glue:GetDatabase", "glue:GetDatabases", "glue:GetTable", "glue:GetTables", "glue:UpdateTable"])
+      and '"${local.table_bucket_arn}/table/*"' in _fhpol and '"${local.glue_catalog}/s3tablescatalog/*"' in _fhpol
+      and 'Resource = "${local.bucket_arn}/firehose-errors/*"' in _fhpol
+      and "s3:*" not in _fhpol and "s3tables:*" not in _fhpol and "glue:*" not in _fhpol and '"*"' not in _fhpol)
+_wg = re.search(r'resource "aws_athena_workgroup" "history" \{(.*?)\n\}\n', _hist, re.S)
+check("Athena のワークグループ <接頭辞>-history: 結果は管理ストレージ、ワークグループの設定を強制し、スキャン量で打ち切り、force_destroy",
+      _wg is not None and 'history_workgroup = "${local.name_prefix}-history"' in _hist
+      and re.search(r'managed_query_results_configuration \{\s*enabled\s*=\s*true', _wg.group(1)) is not None
+      and re.search(r'enforce_workgroup_configuration\s*=\s*true', _wg.group(1)) is not None
+      and re.search(r'bytes_scanned_cutoff_per_query\s*=\s*\d+', _wg.group(1)) is not None
+      and re.search(r'force_destroy\s*=\s*true', _wg.group(1)) is not None and "output_location" not in _wg.group(1))
 check("analytics に events / sns のエンドポイントは無い（SNS へは土台の sns のエンドポイント。ops/up.sh が足す）", 'resource "aws_vpc_endpoint"' not in tf and "events_endpoint_id" not in tf)
 check("build の引数は spark / args（格納先ごとに Kafka を読む）", [a.arg for a in funcs["build"].args.args] == ["spark", "args"])
 check("pyspark はモジュールの先頭で import しない（テストと引数の検査を pyspark 無しで動かすため）",
@@ -836,7 +881,7 @@ _fake_sql = _types.ModuleType("pyspark.sql")
 _fake_sql.functions, _fake_sql.types = _Any(), _Any()
 _saved_mods = {k: sys.modules.get(k) for k in ("pyspark", "pyspark.sql")}
 _orig_mo = (mod.iceberg_query, mod.http_query, mod.read_ssm_parameter)
-_b4 = base + ["--sinks", "iceberg,splunk,opensearch,prometheus", "--iceberg-table", "s3tables.netops.snmp_metrics",
+_b4 = base + ["--sinks", "iceberg,splunk,opensearch,prometheus", "--iceberg-table", "s3tables.netops.raw_telemetry",
               "--splunk-hec-url", "https://s:8088", "--splunk-token-parameter", "/p/t",
               "--prometheus-url", "https://p/api/v1/remote_write", "--opensearch-endpoint", "https://o"]
 def _reads(*extra):
@@ -890,9 +935,9 @@ check("build 共通 0 + opensearch=300,iceberg=50000: 書いた格納先だけ�
       _r_mixed == {"iceberg": "50000", "splunk": None, "opensearch": "300", "prometheus": None})
 check("main は格納先ごとの上限（0 なら上限なし）を起動時のログに出す", "1 回 {max_offsets(args, s) or '上限なし'} 件まで" in src)
 check("build iceberg: 列の足りない表（tables.tf の 8 列）には iceberg のクエリを組む前に ALTER TABLE を 1 回出し、足した列をログに出す",
-      _sp_old.tables == ["s3tables.netops.snmp_metrics"] and _alter_at == [1]
-      and _sp_old.sqls == ["ALTER TABLE s3tables.netops.snmp_metrics ADD COLUMNS (event_id string, kafka_topic string, kafka_partition int, kafka_offset bigint)"]
-      and "iceberg: s3tables.netops.snmp_metrics に列 event_id, kafka_topic, kafka_partition, kafka_offset を足した（いまある行は null）" in _alter_out)
+      _sp_old.tables == ["s3tables.netops.raw_telemetry"] and _alter_at == [1]
+      and _sp_old.sqls == ["ALTER TABLE s3tables.netops.raw_telemetry ADD COLUMNS (event_id string, kafka_topic string, kafka_partition int, kafka_offset bigint)"]
+      and "iceberg: s3tables.netops.raw_telemetry に列 event_id, kafka_topic, kafka_partition, kafka_offset を足した（いまある行は null）" in _alter_out)
 check("build iceberg: 列がそろっていれば ALTER も列のログも出さない（2 回目の起動から）", _sp_new.sqls == [] and "を足した" not in _new_out)
 check("build: iceberg が無ければ表を見ない（HTTP の格納先のジョブは S3 Tables に触らない）", _sp_http.tables == [] and _sp_http.sqls == [])
 check("ICEBERG_ADDED_COLUMNS は event_id string / kafka_topic string / kafka_partition int / kafka_offset bigint（Kafka の partition は int、offset は long）",
@@ -1140,13 +1185,76 @@ check("AGENT は bedrock-runtime / bedrock-agentcore / ecr / logs を足し、KB
       _endpoints("base/ecr base/core agent", AGENT="1") == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs | 7"
       and _endpoints("base/ecr base/core agent", AGENT="1", CREATE_KB="1").startswith("OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs bedrock-agent-runtime | 8"))
 _ALL = "base/ecr base/core agent pipeline/lab pipeline/stream pipeline/analytics pipeline/graph workflow"
-check("全部なら 14 本で重複しない（ecr / logs / s3tables / bedrock-agentcore は 1 本ずつ。graph は Neptune Analytics の neptune-graph-data）。events は無く、アラートの送り手がいれば sns",
+check("全部なら 16 本で重複しない（ecr / logs / s3tables / bedrock-agentcore は 1 本ずつ。graph は Neptune Analytics の neptune-graph-data）。events は無く、アラートの送り手がいれば sns",
       _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1", GRAFANA="1", GRAFANA_ALERTS="1")
-      == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs s3tables neptune-graph-data sqs bedrock-agentcore.gateway bedrock-agent-runtime aps-workspaces sns | 14")
-check("sns のエンドポイントは Grafana のアラートか Splunk があるときだけ（どちらも無ければ 13 本。Splunk だけでも足す）",
-      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1").endswith("aps-workspaces | 13")
+      == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs s3tables neptune-graph-data kinesis-firehose sqs bedrock-agentcore.gateway athena bedrock-agent-runtime aps-workspaces sns | 16")
+check("sns のエンドポイントは Grafana のアラートか Splunk があるときだけ（どちらも無ければ 15 本。Splunk だけでも足す）",
+      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1").endswith("aps-workspaces | 15")
       and _endpoints("base/ecr base/core pipeline/lab pipeline/stream pipeline/analytics", SPLUNK_ON_ECS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr logs s3tables sns | 7"
       and "events" not in _epblk.replace("events の", ""))
+check("kinesis-firehose（graph の履歴）と athena（workflow の query_history）は analytics を作る回か、analytics が state に残っているときだけ",
+      _endpoints("base/ecr base/core pipeline/lab pipeline/graph", SKIP_ANALYTICS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr neptune-graph-data | 5"
+      and _endpoints("base/ecr base/core pipeline/lab pipeline/analytics pipeline/graph") == "OUT: ssm ssmmessages ecr.api ecr.dkr s3tables logs neptune-graph-data kinesis-firehose | 8"
+      and subprocess.run(["bash", "-c", 'ROOTS="base/ecr base/core"\n' + _epblk + 'ANALYTICS_LEFT=1; endpoints_for pipeline/graph; endpoints_for workflow; echo "OUT: $ENDPOINTS"'],
+                         capture_output=True, text=True, env={"PATH": os.environ["PATH"], "SKIP_ANALYTICS": "1"}).stdout.strip().splitlines()[-1]
+      == "OUT: ssm ssmmessages neptune-graph-data kinesis-firehose sqs s3tables ecr.api ecr.dkr logs bedrock-agentcore bedrock-agentcore.gateway athena")
+check("up.sh: state に残った analytics を見つけたら ANALYTICS_LEFT=1 にし、残った graph / workflow の履歴の分はその後で数える",
+      re.search(r'for r in agent pipeline/lab pipeline/stream pipeline/analytics pipeline/graph pipeline/nautobot workflow; do', up) is not None
+      and re.search(r'if has_resources "\$r"; then\n\s*endpoints_for "\$r"\n\s*if \[ "\$r" = pipeline/analytics \]; then ANALYTICS_LEFT=1; fi', up) is not None)
+check("perimeter.tf: Firehose のロール <接頭辞>-alert-firehose を資源側の Deny の例外に入れる（-kb と同じ。サービスが VPC の外から書く）",
+      '"arn:${local.partition}:iam::${local.account_id}:role/${local.name_prefix}-alert-firehose",' in _perim
+      and len([l for l in re.search(r'perimeter_exempt_principals = \[(.*?)\n\s*\]', _perim, re.S).group(1).splitlines() if l.strip() and not l.strip().startswith("#")]) == 3
+      and "kinesis-firehose" in _core and '"athena"' in _core)
+_denied = re.findall(r'"([\w-]+:[\w*]+)"', _perim.split("perimeter_denied_actions = [")[1].split("]")[0])
+check("perimeter.tf: athena:* と firehose:* も IAM 側で拒む（Athena が代わりに読む S3 Tables は s3tables:* の Deny で止まらない。履歴の行を VPC の外から書かせない）",
+      {"athena:*", "firehose:*"} <= set(_denied)
+      and re.search(r'output "alert_events_table_arn" \{[^}]*value\s*=\s*aws_s3tables_table\.alert_events\.arn', tf) is not None)
+# s3tablescatalog の用意（ensure_s3tables_catalog）も切り出し、aws を偽物にして動かす
+import tempfile
+_catblk = up[up.index("S3TABLES_CATALOG_INPUT="):up.index("ensure_fixed_secret() {")]
+_fakeaws = r'''die() { echo "DIE: $1"; exit 1; }
+aws() {
+  echo "AWS $1 $2" >>"$CALLS"
+  if [ "$2" = create-catalog ]; then   # 中身の JSON に下の --query の名前が入っているので、先に分ける
+    while [ $# -gt 0 ]; do if [ "$1" = --catalog-input ]; then printf '%s' "$2" >"$CALLS.input"; fi; shift; done
+    return 0
+  fi
+  case "$*" in
+    *"get-catalog"*"--query Catalog.Name "*)
+      case "$SCEN" in
+        missing) echo "An error occurred (EntityNotFoundException) when calling the GetCatalog operation: Catalog not found" >&2; return 254 ;;
+        denied) echo "An error occurred (AccessDeniedException) when calling the GetCatalog operation" >&2; return 254 ;;
+        *) echo s3tablescatalog ;;
+      esac ;;
+    *"FederatedCatalog.ConnectionName"*) if [ "$SCEN" = ok ]; then echo aws:s3tables; else echo None; fi ;;
+    *"AllowFullTableExternalDataAccess"*) if [ "$SCEN" = ok ]; then echo True; else echo False; fi ;;
+    *"CreateTableDefaultPermissions"*) if [ "$SCEN" = ok ]; then echo IAM_ALLOWED_PRINCIPALS; else echo arn:aws:iam::123456789012:role/lf-admin; fi ;;
+  esac
+}
+'''
+_catdir = tempfile.mkdtemp()
+def _catalog(scen):
+    calls = os.path.join(_catdir, scen)
+    r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + _fakeaws + _catblk + "ensure_s3tables_catalog\necho END"], capture_output=True, text=True,
+                       env={"PATH": os.environ["PATH"], "SCEN": scen, "CALLS": calls, "REGION": "ap-northeast-1", "ACCOUNT_ID": "123456789012"})
+    made = open(calls, encoding="utf-8").read().count("AWS glue create-catalog") if os.path.exists(calls) else 0
+    sent = json.loads(open(calls + ".input", encoding="utf-8").read()) if os.path.exists(calls + ".input") else None
+    return r.stdout, made, sent
+_out, _made, _sent = _catalog("missing")
+check("up.sh: s3tablescatalog が無ければ（EntityNotFoundException）create-catalog を 1 回打ち、FederatedCatalog はこのリージョンとアカウントの bucket/*、既定の権限は IAM_ALLOWED_PRINCIPALS",
+      _made == 1 and _out.rstrip().endswith("END") and _sent is not None
+      and _sent["FederatedCatalog"] == {"Identifier": "arn:aws:s3tables:ap-northeast-1:123456789012:bucket/*", "ConnectionName": "aws:s3tables"}
+      and all(_sent[k] == [{"Principal": {"DataLakePrincipalIdentifier": "IAM_ALLOWED_PRINCIPALS"}, "Permissions": ["ALL"]}]
+              for k in ("CreateDatabaseDefaultPermissions", "CreateTableDefaultPermissions"))
+      and _sent["AllowFullTableExternalDataAccess"] == "True")
+_out, _made, _ = _catalog("denied")
+check("up.sh: get-catalog がそれ以外のエラー（権限など）なら作らずに止まる", _made == 0 and "DIE: Glue のカタログ s3tablescatalog を確かめられない" in _out and "END" not in _out)
+_out, _made, _ = _catalog("ok")
+check("up.sh: 想定どおりの s3tablescatalog があれば作らず、警告も出さない", _made == 0 and "はある（作り直さない）" in _out and "想定" not in _out and _out.rstrip().endswith("END"))
+_out, _made, _ = _catalog("other")
+check("up.sh: 設定の違う s3tablescatalog があれば作り直さず、警告だけ出して先へ進む", _made == 0 and "設定が想定" in _out and _out.rstrip().endswith("END"))
+check("up.sh: ensure_s3tables_catalog は analytics を作る回（7-4）に、analytics の apply より前に呼ぶ",
+      up.index('log "7-4.') < up.index("  ensure_s3tables_catalog   #") < up.index("tf_apply pipeline/analytics", up.index('log "7-4.')))
 # 送り手の決め方（GRAFANA_ALERTS）と「WORKFLOW は送り手が要る」も切り出して動かす
 _sndblk = up[up.index('GRAFANA_ALERTS=""'):up.index('if [ -z "$AGENT" ] && [ -n "$CREATE_KB" ]; then')]
 def _senders(**env):
@@ -1512,7 +1620,8 @@ check("書いたキーが ENDPOINTS_AZ_NUM より大きいと注意を 1 行出�
 check("AZ_NUM の検査は deploy.env を読んだあと、aws を呼ぶ前・費用の目安より前（何も作る前）",
       up.index("\nload_deploy_env\n") < up.index(_azblk) < up.index("command -v aws >/dev/null") < up.index("COST_CENTS=2\n"))
 check("各ルートに *_AZ_NUM を -var で渡す",
-      'tf_apply_only pipeline/graph -var "neptune_az_num=$NEPTUNE_AZ_NUM" -var "lambda_az_num=$LAMBDA_AZ_NUM" )' in up
+      'GRAPH_VARS=(-var "neptune_az_num=$NEPTUNE_AZ_NUM" -var "lambda_az_num=$LAMBDA_AZ_NUM")\n  if analytics_on; then GRAPH_VARS+=(-var alert_history=true); fi\n'
+      '  ( tf_apply_only pipeline/graph "${GRAPH_VARS[@]}" )' in up
       and re.search(r'tf_apply pipeline/nautobot [^\n]*-var "nautobot_db_az_num=\$NAUTOBOT_DB_AZ_NUM"\n', up) is not None
       and re.search(r'tf_apply workflow [^\n]*-var "lambda_az_num=\$LAMBDA_AZ_NUM"\n', up) is not None
       and re.search(r'tf_apply pipeline/stream (?:[^\n]*\\\n)+\s*-var "msk_az_num=\$MSK_AZ_NUM" -var "telegraf_az_num=\$TELEGRAF_AZ_NUM"\n', up) is not None
@@ -1542,9 +1651,9 @@ check("費用: OpenSearch の OCU は 33 × OPENSEARCH_AZ_NUM（KB も logs も�
 check("費用: EMR / Lambda / Runtime の AZ_NUM では変わらない。AZ をまたぐ転送料は入れず、AZ_NUM を書いたときに 1 行出す",
       _costaz(EMR_AZ_NUM="3", LAMBDA_AZ_NUM="3", RUNTIME_AZ_NUM="3") == _costaz()
       and 'if [ -n "$AZ_NUM_SET" ]; then echo "AZ をまたぐ転送料（' in up)
-# iceberg を外しても、証跡があるのでテーブルバケット・namespace・カタログはいつも作る。生データの snmp_metrics だけ外す
-check('resource "aws_s3tables_table" "snmp_metrics" は sink_iceberg の count',
-      re.search(r'resource "aws_s3tables_table" "snmp_metrics" \{\n  count = local\.sink_iceberg \? 1 : 0\n', tf) is not None)
+# iceberg を外しても、証跡があるのでテーブルバケット・namespace・カタログはいつも作る。生データの raw_telemetry だけ外す
+check('resource "aws_s3tables_table" "raw_telemetry" は sink_iceberg の count',
+      re.search(r'resource "aws_s3tables_table" "raw_telemetry" \{\n  count = local\.sink_iceberg \? 1 : 0\n', tf) is not None)
 for _res in ('resource "aws_s3tables_table_bucket" "tables"', 'resource "aws_s3tables_namespace" "netops"'):
     check(f"{_res} はいつも作る（count 無し）", re.search(re.escape(_res) + r' \{\n  count', tf) is None and _res in tf)
 check("count を外したバケット・namespace は moved で state の [0] を引き継ぐ（作り直さない）",
@@ -1561,7 +1670,7 @@ _jobs_def = {j: [x.strip(' "') for x in v.split(",")] for j, v in
              re.findall(r'(\w+) = \[([^\]]*)\]', re.search(r'spark_jobs = \{ for job, sinks in \{(.*?)\} :', tf).group(1))}
 check("spark_jobs: iceberg / splunk / http（opensearch と prometheus）", _jobs_def == {"iceberg": ["iceberg"], "splunk": ["splunk"], "http": ["opensearch", "prometheus"]})
 _VALS = {"local.bootstrap": "b:9098", "local.checkpoint_uri": "s3://bucket/analytics/checkpoint/u/", "var.region": "ap-northeast-1",
-         "local.metric_topics": "metrics,gnmi", "local.log_topics": "traps,logs", "local.iceberg_table": "s3tables.netops.snmp_metrics",
+         "local.metric_topics": "metrics,gnmi", "local.log_topics": "traps,logs", "local.iceberg_table": "s3tables.netops.raw_telemetry",
          "local.opensearch_endpoint": "https://c.aoss.amazonaws.com", "local.opensearch_index": "snmp-logs",
          "local.prometheus_remote_write_url": "https://aps/api/v1/remote_write", "local.splunk_hec_url": "https://splunk.p.internal:8088",
          "local.splunk_token_parameter": "/p/splunk/hec-token", "var.splunk_index": ""}

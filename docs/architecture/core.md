@@ -14,9 +14,9 @@ AWS の API へは全部 VPC エンドポイントから行き、この VPC を�
 
 | 層 | 何をする | どこ |
 |---|---|---|
-| 経路 | インターフェース型エンドポイント（private DNS）。`ops/up.sh` が機能から選ぶ: 土台 ssm / ssmmessages、AGENT は bedrock-runtime / bedrock-agentcore / ecr.api / ecr.dkr / logs（KB で bedrock-agent-runtime）、lab は ecr、stream は ecr.api / ecr.dkr / logs（Telegraf の ECS）、analytics は s3tables / logs（Prometheus で aps-workspaces、Grafana か ECS の Splunk で ecr.api / ecr.dkr、Grafana のアラートか ECS の Splunk で sns）、WORKFLOW は sqs / s3tables / bedrock-agentcore(.gateway) など。S3 は gateway 型（無料）、OpenSearch Serverless は専用の 1 本 | `terraform/base/core/endpoints.tf` |
+| 経路 | インターフェース型エンドポイント（private DNS）。`ops/up.sh` が機能から選ぶ: 土台 ssm / ssmmessages、AGENT は bedrock-runtime / bedrock-agentcore / ecr.api / ecr.dkr / logs（KB で bedrock-agent-runtime）、lab は ecr、stream は ecr.api / ecr.dkr / logs（Telegraf の ECS）、analytics は s3tables / logs（Prometheus で aps-workspaces、Grafana か ECS の Splunk で ecr.api / ecr.dkr、Grafana のアラートか ECS の Splunk で sns）、graph は analytics があるとき kinesis-firehose（アラートの通知の履歴）、WORKFLOW は sqs / s3tables / bedrock-agentcore(.gateway) など（analytics があるとき athena）。S3 は gateway 型（無料）、OpenSearch Serverless は専用の 1 本 | `terraform/base/core/endpoints.tf` |
 | エンドポイントポリシー | このアカウントのプリンシパルだけ（盗んだ他のアカウントの鍵で VPC から持ち出す経路を塞ぐ）。S3 の gateway は付けない（dnf と ECR のレイヤーが止まる） | 同上 |
-| IAM の Deny | ワークロードのロール全部（Web、Runtime、lab、EMR、ECS（Temporal / Telegraf / Grafana / Splunk）、tools Lambda）に `<prefix>-network-perimeter` を付ける。s3 / s3tables / sqs / sns / ssm / bedrock / aps / AgentCore の呼び出しで `aws:SourceVpc` がこの VPC でなければ拒む。デバッグ用の EC2（CloudFormation の `<prefix>-lab-debug`）のロールは同じ Action と条件の Deny を自分のスタックの VPC に向けてインラインで持つ | `terraform/base/core/perimeter.tf`、各ルートの attachment、`cloudformation/lab-debug.yaml` |
+| IAM の Deny | ワークロードのロール全部（Web、Runtime、lab、EMR、ECS（Temporal / Telegraf / Grafana / Splunk）、tools Lambda、graph-status の Lambda）に `<prefix>-network-perimeter` を付ける。s3 / s3tables / sqs / sns / ssm / bedrock / aps / athena / firehose / AgentCore の呼び出しで `aws:SourceVpc` がこの VPC でなければ拒む。デバッグ用の EC2（CloudFormation の `<prefix>-lab-debug`）のロールは同じ Action と条件の Deny を自分のスタックの VPC に向けてインラインで持つ | `terraform/base/core/perimeter.tf`、各ルートの attachment、`cloudformation/lab-debug.yaml` |
 | リソースポリシーの Deny | バケット、S3 Tables のテーブルバケット、SNS のトピック（`sns:Publish`）、SQS（本体と DLQ）、AgentCore の Runtime と Gateway。同じ条件で、どのプリンシパルからでも VPC の外なら拒む | `bucket.tf`、`alerts.tf`、`pipeline/analytics/tables.tf`、`workflow/events.tf`、`workflow/gateway.tf`、`agent/runtime.tf` |
 
 - **拒まないもの**: apply した人（`terraform` を打つ PC は VPC の外なので。PoC の割り切り）、AWS のサービス自身（`aws:PrincipalIsAWSService`）とサービスが代わりに呼ぶもの（`aws:ViaAWSService`。SNS → SQS / Lambda、Bedrock → S3 など）、KB のロール `<prefix>-kb`（取り込みは Bedrock のサービス側で動く）。
@@ -36,7 +36,7 @@ AWS の API へは全部 VPC エンドポイントから行き、この VPC を�
 | telegraf_dialout / telegraf_dialin / spark | msk | 9098/tcp | Kafka（IAM 認証） |
 | msk | msk | 9092〜9098/tcp | ブローカー同士 |
 | spark | spark | 全部の tcp | 1 つのジョブのドライバとエグゼキュータ |
-| spark | splunk | 8088/tcp | HEC（`SINK_SPLUNK=1`） |
+| spark | splunk | 8088/tcp | HEC（`STORES` の `splunk`） |
 | telegraf_dialout_nlb | telegraf_dialout | 1162/udp、5140/udp、57000/tcp、8080/tcp | trap・syslog・MDT の転送と、NLB のヘルスチェック |
 | lab の管理ネットワーク（203.0.113.0/24） | telegraf_dialout_nlb | 162/udp、5140/udp | 機器の trap と syslog（lab の EC2 が DNAT するので送り元は機器の IP のまま） |
 | `MDT_SOURCE_CIDRS` の CIDR（既定は空で行が無い） | telegraf_dialout_nlb | 57000/tcp | 本番の Cisco の MDT の dial-out（[collection.md](../collection.md)）。`0.0.0.0/0` は変数の検査で拒む |
