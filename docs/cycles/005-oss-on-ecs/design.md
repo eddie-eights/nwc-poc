@@ -263,3 +263,5 @@ oss/
    3 台のものは 3 つの AZ を前提にしている。`feat/az-num` が main に入っていることが要る。
 10. **並べて立てたときの上限。**
     VPC、エンドポイント、Fargate の vCPU の上限に当たるかもしれない。AWS での確認の前に Service Quotas を見る。
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261004-cycle-005-oss-on-ecs-design.html -->
