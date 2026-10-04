@@ -43,10 +43,11 @@ echo "構文エラーなし"
 log "4. 模擬テスト"
 if command -v uv >/dev/null; then
   for t in tests/test_app.py tests/test_graph.py tests/test_stream.py tests/test_sync.py tests/test_analytics.py tests/test_workflow.py tests/test_alerts.py tests/test_kb_index.py tests/test_lab_debug.py tests/test_nautobot.py; do
-    uv run --group dev python "$t" || die "$t が失敗した"
+    # test_nautobot は web/topology_view.py を読むので gradio と pandas（web のグループ）も要る
+    uv run --group dev --group web python "$t" || die "$t が失敗した"
   done
 else
-  echo "uv が無いので飛ばす（docs/development.md の「手元で確かめる」の通り uv sync --group dev を入れてから打つ）"
+  echo "uv が無いので飛ばす（docs/development.md の「手元で確かめる」の通り uv sync --group dev --group web を入れてから打つ）"
 fi
 
 printf '\nすべて通過\n'

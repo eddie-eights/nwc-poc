@@ -442,6 +442,7 @@ source = { virtual = "." }
 
 [package.dev-dependencies]
 dev = [
+    { name = "boto3" },
     { name = "pyyaml" },
 ]
 web = [
@@ -453,7 +454,10 @@ web = [
 [package.metadata]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pyyaml", specifier = ">=6.0" }]
+dev = [
+    { name = "boto3", specifier = ">=1.40,<2" },
+    { name = "pyyaml", specifier = ">=6.0" },
+]
 web = [
     { name = "boto3", specifier = ">=1.40,<2" },
     { name = "gradio", specifier = "==5.50.0" },

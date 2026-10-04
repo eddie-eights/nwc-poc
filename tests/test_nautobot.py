@@ -3,7 +3,7 @@
 - 同期（nb_sync.push_targets）: 変わったときだけ SSM を書いて dialin を作り直す。空の一覧は書かない
 - Web: Nautobot があるあいだは、リンクの追加・削除を Nautobot の REST API に書く（web/topology_view.py、web/nautobot_api.py）。静的データの投入は止める
 - 配線: Dockerfile・Terraform・ops/up.sh・ops/down.sh の名前と順序がそろっている
-実行は uv run --group dev python tests/test_nautobot.py。"""
+実行は uv run --group dev --group web python tests/test_nautobot.py（web/topology_view.py が gradio と pandas を読む）。"""
 import json, logging, os, re, subprocess, sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
