@@ -1,11 +1,12 @@
 """ワーカーの「判断」の部分。AWS にも Temporal にも触らない純粋な関数だけを置く。
 
-ここにあるのは 5 つ:
+ここにあるのは 6 つ:
   - build_prompt        エージェント（AgentCore Runtime）に投げる質問文
   - parse_agent_json    返ってきた文から JSON を取り出す
   - normalize_action    lab EC2 で打ってよいコマンドの許可リスト
   - alerts_from_message / should_start / workflow_id / proposal_id  アラート（SNS → SQS）の読み取りと、どれでワークフローを起こすかの判定と id
   - proposal_event      修復案の証跡（S3 Tables の proposal_events）の 1 行
+  - impact / precheck   処置を打つ前の事前チェック（その処置でグラフがどう変わり、孤立や冗長切れが出るか）
 
 AWS も Temporal も要らないので、tests/test_workflow.py はこのファイルの関数を直接呼んで確かめられる。
 逆に言うと、ここに boto3 や temporalio を持ち込むとテストが動かなくなる。入れない。
@@ -66,6 +67,99 @@ def normalize_action(action: str) -> tuple[str, str]:
     if action in ALLOWED_ACTIONS:
         return action, ALLOWED_ACTIONS[action]
     return NO_ACTION, ""
+
+
+# ---------------------------------------------------------------- 事前チェック（処置を打つ前に、孤立と冗長切れを見る。2026-10-04）
+# 処置がトポロジをどう変えるか（lab/lab.sh のサブコマンドの中身）。処置を ALLOWED_ACTIONS に足すときはここにも足す（無い処置は「確認できず」になる）。
+# いまの 2 つは回線を上げるか見るだけなので、孤立の警告は出ない。落とす処置（機器の再起動・回線の切り離し）を足したときに効く
+ACTION_CHANGES = {"heal-main": [{"op": "link_up", "target": "dc1-leaf-01#ethernet-1/1"}], "check": []}
+PRECHECK_JA = {"ok": "問題なし", "warn": "注意", "danger": "危険", "unknown": "確認できず"}
+
+
+def impact(devices: list, links: list, changes: list) -> dict:
+    """回線・機器を落とした / 上げたと仮定して、孤立する機器と冗長が切れる機器を出す（修復を打つ前の事前チェック）。
+    devices = [{device_id, status}]、links = [{a, a_if, b, b_if, status}]、changes = [{op, target}]。
+    op は link_down / link_up（target = <機器>#<IF>。どちらの端でもよい）か device_down / device_up（target = 機器名）。
+    つながりは DOWN でない回線と機器だけで見て、いちばん大きいかたまりに入っていない機器を「孤立」とする。
+    agent/topology.py と workflow/rules.py に同じものを置く（ワーカーのイメージには agent/ が入らない。tests/test_workflow.py が一致を検査）"""
+    dev_down = {d["device_id"] for d in devices if (d.get("status") or "UP") == "DOWN"}
+    link_down = {n for n, l in enumerate(links) if (l.get("status") or "UP") == "DOWN"}
+    ids = {d["device_id"] for d in devices}
+
+    def view(dd: set, ld: set):
+        adj = {i: [] for i in sorted(ids - dd)}
+        for n, l in enumerate(links):
+            if n not in ld and l["a"] in adj and l["b"] in adj:
+                adj[l["a"]].append(l["b"])
+                adj[l["b"]].append(l["a"])
+        seen, main = set(), set()
+        for start in adj:
+            if start in seen:
+                continue
+            comp, stack = {start}, [start]
+            while stack:
+                for o in adj[stack.pop()]:
+                    if o not in comp:
+                        comp.add(o)
+                        stack.append(o)
+            seen |= comp
+            if len(comp) > len(main):
+                main = comp
+        return set(adj) - main, {i: len(v) for i, v in adj.items()}
+
+    iso0, deg0 = view(dev_down, link_down)
+    dd, ld, unknown, targets = set(dev_down), set(link_down), [], set()
+    for c in changes:
+        op, target = str(c.get("op") or ""), str(c.get("target") or "")
+        if op in ("device_down", "device_up") and target in ids:
+            (dd.add if op == "device_down" else dd.discard)(target)
+            targets.add(target)
+            continue
+        hit = [n for n, l in enumerate(links) if target in (f'{l["a"]}#{l["a_if"]}', f'{l["b"]}#{l["b_if"]}')]
+        if op in ("link_down", "link_up") and hit:
+            for n in hit:
+                (ld.add if op == "link_down" else ld.discard)(n)
+        else:
+            unknown.append(f"{op} {target}".strip())
+    iso1, deg1 = view(dd, ld)
+    out = {
+        "changes": [{"op": str(c.get("op") or ""), "target": str(c.get("target") or "")} for c in changes], "unknown": unknown,
+        "newly_isolated": sorted(iso1 - iso0 - targets),
+        "reconnected": sorted(i for i in iso0 - iso1 if i in deg1),
+        "redundancy_lost": sorted(i for i in deg1 if deg1[i] == 1 and deg0.get(i, 0) >= 2 and i not in iso1),
+        "redundancy_restored": sorted(i for i in deg1 if deg1[i] >= 2 and deg0.get(i, 0) <= 1 and i not in iso1),
+        "isolated_after": sorted(iso1),
+    }
+    out["verdict"] = "unknown" if unknown else "danger" if out["newly_isolated"] else "warn" if out["redundancy_lost"] else "ok"
+    parts = []
+    if unknown:
+        parts.append("トポロジに無い対象: " + ", ".join(unknown))
+    if out["newly_isolated"]:
+        parts.append("孤立する機器: " + ", ".join(out["newly_isolated"]))
+    if out["redundancy_lost"]:
+        parts.append("冗長が切れる機器（残りの回線が 1 本）: " + ", ".join(out["redundancy_lost"]))
+    if not out["newly_isolated"] and not out["redundancy_lost"] and not unknown:
+        parts.append("孤立する機器も、冗長が切れる機器も無い")
+    if out["reconnected"]:
+        parts.append("つながり直す機器: " + ", ".join(out["reconnected"]))
+    if out["redundancy_restored"]:
+        parts.append("冗長が戻る機器: " + ", ".join(out["redundancy_restored"]))
+    out["summary"] = "。".join(parts)
+    return out
+
+
+def precheck(action: str, devices: list, links: list) -> dict:
+    """{verdict, text}。処置（normalize_action を通したもの）をいまのトポロジに重ねた結果。none なら空"""
+    if action == NO_ACTION:
+        return {"verdict": "", "text": ""}
+    if action not in ACTION_CHANGES:
+        return {"verdict": "unknown", "text": f"【{PRECHECK_JA['unknown']}】処置 {action} がトポロジをどう変えるかが決めていない（rules.ACTION_CHANGES）"}
+    changes = ACTION_CHANGES[action]
+    if not changes:
+        return {"verdict": "ok", "text": f"【{PRECHECK_JA['ok']}】状況を見るだけの処置で、回線も機器も変えない"}
+    r = impact(devices, links, changes)
+    what = "、".join(f"{c['target']} を{ {'link_up': '上げる', 'link_down': '落とす', 'device_up': '上げる', 'device_down': '落とす'}[c['op']] }" for c in changes)
+    return {"verdict": r["verdict"], "text": f"【{PRECHECK_JA[r['verdict']]}】{what}と仮定: {r['summary']}"[:1000]}
 
 
 # ---------------------------------------------------------------- アラート（Grafana / Splunk → SNS → SQS）

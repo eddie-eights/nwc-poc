@@ -127,6 +127,14 @@ def update_proposal(proposal_id: str, fields: dict, only_status: str | None = No
     return bool(gremlin(f"g.V({_q(proposal_id)}).hasLabel('proposal'){cond}{props}.id()"))
 
 
+
+def read_topology() -> tuple[list, list]:
+    """(devices, links)。事前チェック（rules.precheck）に渡す形だけ読む: 機器は id と status、回線は両端の機器・IF と status"""
+    devices = [{"device_id": m.get("id"), "status": m.get("status")} for m in gremlin("g.V().hasLabel('device').elementMap('status')")]
+    links = [{"a": (m.get("OUT") or {}).get("id"), "b": (m.get("IN") or {}).get("id"), "a_if": m.get("a_if"), "b_if": m.get("b_if"),
+              "status": m.get("status")} for m in gremlin("g.E().hasLabel('link').elementMap('a_if','b_if','status')")]
+    return devices, links
+
 # ---------------------------------------------------------------- S3 Tables（修復案の証跡）
 def catalog_properties() -> dict:
     """S3 Tables の Iceberg REST エンドポイントにつなぐ PyIceberg の設定（SigV4 の署名名は s3tables）"""

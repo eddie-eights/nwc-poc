@@ -112,6 +112,48 @@ prompt = rules.build_prompt(anomaly)
 check("プロンプトに機器・種別・対象と、発生の時刻（JST）が入る",
       all(s in prompt for s in ("hq-ce-01", "link_down", "eth1", "first_seen_jst=2023-11-15 07:13:20")) and rules.jst(0) == "" and rules.jst(None) == "")
 check("プロンプトはまず root_cause で根本原因かどうかを確かめさせる", "まず root_cause" in prompt)
+# ---- 事前チェック（2026-10-04）
+import asyncio, inspect  # noqa: E402
+check("impact は agent/topology.py と workflow/rules.py で同じ（ワーカーのイメージには agent/ が入らないので 2 か所に置く）",
+      inspect.getsource(rules.impact) == inspect.getsource(topology.impact))
+check("事前チェックの対応表は許可リストの処置を全部持つ", set(rules.ACTION_CHANGES) == set(rules.ALLOWED_ACTIONS))
+_pd = [{"device_id": x, "status": None} for x in ("dc1-leaf-01", "dc1-spine-01", "dc1-spine-02")]
+_pl = [{"a": "dc1-leaf-01", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/3", "status": "DOWN"},
+       {"a": "dc1-leaf-01", "a_if": "ethernet-1/2", "b": "dc1-spine-02", "b_if": "ethernet-1/3", "status": "UP"},
+       {"a": "dc1-spine-01", "a_if": "ethernet-1/9", "b": "dc1-spine-02", "b_if": "ethernet-1/9", "status": None}]
+pc = rules.precheck("heal-main", _pd, _pl)
+check("heal-main の事前チェックは「上げる」と仮定して問題なし、冗長が戻る機器を出す",
+      pc["verdict"] == "ok" and pc["text"].startswith("【問題なし】dc1-leaf-01#ethernet-1/1 を上げると仮定") and "冗長が戻る機器: dc1-leaf-01" in pc["text"])
+check("check は何も変えないので問題なし、none は空", rules.precheck("check", _pd, _pl)["verdict"] == "ok" and rules.precheck("none", _pd, _pl) == {"verdict": "", "text": ""})
+check("対象の回線がグラフに無ければ「確認できず」", rules.precheck("heal-main", _pd, _pl[1:])["verdict"] == "unknown" and "【確認できず】" in rules.precheck("heal-main", _pd, _pl[1:])["text"])
+check("対応表に無い処置は「確認できず」", rules.precheck("reboot", _pd, _pl)["verdict"] == "unknown")
+_g = []
+def _fake_gremlin(q):
+    _g.append(q)
+    if "hasLabel('device')" in q:
+        return [{"id": "dc1-leaf-01", "label": "device", "status": "ALARM"}, {"id": "dc1-spine-01", "label": "device"}]
+    return [{"id": "e1", "label": "link", "OUT": {"id": "dc1-leaf-01", "label": "device"}, "IN": {"id": "dc1-spine-01", "label": "device"}, "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}]
+_gs, awsio.gremlin = awsio.gremlin, _fake_gremlin
+check("awsio.read_topology は機器（id と status）と回線（両端・IF・status）を読む",
+      awsio.read_topology() == ([{"device_id": "dc1-leaf-01", "status": "ALARM"}, {"device_id": "dc1-spine-01", "status": None}],
+                                [{"a": "dc1-leaf-01", "b": "dc1-spine-01", "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}])
+      and len(_g) == 2)
+awsio.gremlin = _gs
+_ask, _rt = awsio.ask_agent, awsio.read_topology
+awsio.ask_agent = lambda prompt: '{"cause": "c", "action": "heal-main", "reason": "r"}'
+awsio.read_topology = lambda: (_pd, _pl)
+f = asyncio.run(worker.investigate({"device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1"}))
+check("investigate は処置の事前チェックを finding に付ける", f["action"] == "heal-main" and f["precheck_verdict"] == "ok" and f["precheck"].startswith("【問題なし】"))
+def _boom():
+    raise RuntimeError("neptune down")
+awsio.read_topology = _boom
+f = asyncio.run(worker.investigate({"device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1"}))
+check("トポロジを読めなくても調査は落とさず、「確認できず」を付ける", f["action"] == "heal-main" and f["precheck_verdict"] == "unknown" and "neptune down" in f["precheck"])
+awsio.ask_agent = lambda prompt: '{"cause": "c", "action": "none", "reason": "r"}'
+f = asyncio.run(worker.investigate({"device_id": "x", "kind": "link_down", "target": "y"}))
+check("処置が none ならトポロジを読まず、事前チェックは空", f["precheck"] == "" and f["precheck_verdict"] == "")
+awsio.ask_agent, awsio.read_topology = _ask, _rt
+check("承認タブの詳細は事前チェックを出す", '("事前チェック", "precheck")' in read("web", "incident_view.py"))
 check("プロンプトは JSON 1 個を求め、action の 3 択を示す", '"action"' in prompt and "heal-main | check | none" in prompt)
 check("応答の中の JSON を拾う（前後に文があっても）",
       rules.parse_agent_json('確認しました。\n{"cause": "eth1 が down", "action": "heal-main", "reason": "主回線"}\n以上')
@@ -318,8 +360,8 @@ check("Gateway に無いツールの call はエラーの辞書", "error" in mcp
 # ---- tools.json と Python の TOOL_SPECS
 tools = json.loads(read("tools", "tools.json"))
 py_specs = {s["toolSpec"]["name"]: s["toolSpec"] for s in topology.TOOL_SPECS + evidence.TOOL_SPECS + proposals.TOOL_SPECS}
-check("tools.json の 10 個は topology / evidence / proposals の TOOL_SPECS と同じ名前（list_anomalies は 2026-10-02 にやめた）",
-      {t["name"] for t in tools} == set(py_specs) and len(tools) == 10 and "list_anomalies" not in py_specs
+check("tools.json の 11 個は topology / evidence / proposals の TOOL_SPECS と同じ名前（list_anomalies は 2026-10-02 にやめた）",
+      {t["name"] for t in tools} == set(py_specs) and len(tools) == 11 and "list_anomalies" not in py_specs
       and not os.path.exists(os.path.join(ROOT, "agent", "anomalies.py")))
 check("evidence のツールは search_logs / query_metrics / query_history", {s["toolSpec"]["name"] for s in evidence.TOOL_SPECS} == {"search_logs", "query_metrics", "query_history"})
 check("handler は topology / evidence / proposals のツールを名前で振り分ける",

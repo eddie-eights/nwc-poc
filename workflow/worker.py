@@ -84,8 +84,17 @@ async def investigate(anomaly: dict) -> dict:
     text = await asyncio.to_thread(awsio.ask_agent, rules.build_prompt(anomaly))
     parsed = rules.parse_agent_json(text)
     action, command = rules.normalize_action(parsed["action"])
+    # 事前チェック: その処置をいまのトポロジに重ねて、孤立と冗長切れを見る。読めなくても修復案は出す（人が見て決める）
+    pre = {"verdict": "", "text": ""}
+    if action != rules.NO_ACTION:
+        try:
+            devices, links = await asyncio.to_thread(awsio.read_topology)
+            pre = rules.precheck(action, devices, links)
+        except Exception as e:  # noqa: BLE001 - Neptune の一時的な失敗で調査をやり直さない（エージェントをもう一度呼ぶことになる）
+            pre = {"verdict": "unknown", "text": f"【{rules.PRECHECK_JA['unknown']}】トポロジを読めなかった: {str(e)[:200]}"}
     return {"cause": parsed["cause"], "action": action, "command": command,
-            "reason": parsed["reason"], "agent_response": text[:4000]}
+            "reason": parsed["reason"], "agent_response": text[:4000],
+            "precheck": pre["text"], "precheck_verdict": pre["verdict"]}
 
 
 @activity.defn
@@ -103,6 +112,7 @@ async def put_proposal(anomaly: dict, finding: dict, wf_id: str, run_id: str = "
         "first_seen": first_seen, "status": "pending",
         "cause": finding["cause"], "action": finding["action"], "command": finding["command"],
         "reason": finding["reason"], "agent_response": finding["agent_response"],
+        "precheck": finding.get("precheck", ""), "precheck_verdict": finding.get("precheck_verdict", ""),
         "source": anomaly.get("source", ""), "detail": anomaly.get("detail", ""),
         "workflow_id": wf_id, "run_id": run_id, "created_at": now, "updated_at": now,
     }

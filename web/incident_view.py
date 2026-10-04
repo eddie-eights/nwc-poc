@@ -61,7 +61,7 @@ def proposal_detail(proposal_id: str) -> str:
     if not p:
         return f"`{proposal_id}` は無い（更新を押す）"
     lines = [f"**{html.escape(proposal_id)}** — {_ja(PROPOSAL_STATUS_JA, p.get('status', ''))}（{p.get('device_id', '')} / {p.get('kind', '')} / {p.get('target', '')}）", ""]
-    for label, key in (("原因", "cause"), ("処置", "action"), ("コマンド", "command"), ("理由", "reason"),
+    for label, key in (("原因", "cause"), ("処置", "action"), ("コマンド", "command"), ("事前チェック", "precheck"), ("理由", "reason"),
                        ("実行結果", "apply_output"), ("確認結果", "verify_note"), ("決めた人", "decided_by"),
                        ("作成", "created_at_jst"), ("更新", "updated_at_jst")):
         v = str(p.get(key) or "").strip()
@@ -70,7 +70,7 @@ def proposal_detail(proposal_id: str) -> str:
     return "\n".join(lines)
 
 
-APPROVE_CHECK_LABEL = "② 上の詳細（原因・コマンド・理由）を読んだ ── 承認にはこのチェックが要る（lab でコマンドが打たれる）"
+APPROVE_CHECK_LABEL = "② 上の詳細（原因・コマンド・事前チェック・理由）を読んだ ── 承認にはこのチェックが要る（lab でコマンドが打たれる）"
 
 
 def approve_button(confirmed: bool, approver: str) -> dict:

@@ -5,7 +5,7 @@ list_records / get_record / update_record。Neptune の接続先が無ければ�
 頂点: id = proposal_id（= <anomaly_id>#<first_seen>。発生ごとに 1 件。閉じて開き直した次の発生は別の頂点）, anomaly_id, device_id, kind, target,
 first_seen（異常の発生時刻）, status（pending → approved / rejected（人）→ applied → verified / failed（ワーカー）、expired（時間切れ）、
 obsolete（承認のあいだに異常が閉じた・開き直したので打たなかった））,
-cause, action（heal-main / check / none）, command, reason, agent_response, workflow_id,
+cause, action（heal-main / check / none）, command, precheck / precheck_verdict（処置を打つ前の孤立・冗長切れのチェック）, reason, agent_response, workflow_id,
 created_at / updated_at / decided_at（epoch 秒）, decided_by, apply_output, verify_note。
 承認・却下は status = pending のときだけ通る（has('status','pending') と property が 1 本の Gremlin）。ワーカーは Temporal のシグナルではなく、
 この頂点の status をポーリングして進む（画面と Temporal を直接つながない）。作成・承認・却下・適用・確認の履歴はワーカーが

@@ -94,7 +94,7 @@ r = app.invoke({"prompt": "%BGP-5-ADJCHANGE が出た"})
 rk = state["calls"][0][1]; ck = state["calls"][1][1]
 check("RERANK_MODEL_ARN が無ければリランクなしで HYBRID と件数だけ渡す", rk["retrievalConfiguration"]["vectorSearchConfiguration"] == {"numberOfResults": 3, "overrideSearchType": "HYBRID"} and rk["knowledgeBaseId"] == "KB12345678")
 check("Converse に guardrailConfig", ck["guardrailConfig"] == {"guardrailIdentifier": "gr123", "guardrailVersion": "1"})
-check("Converse にトポロジの 6 ツール + 証拠の 3 ツール + 修復案の履歴（異常一覧 list_anomalies は 2026-10-02 にやめた）", [t["toolSpec"]["name"] for t in ck["toolConfig"]["tools"]] == ["list_devices", "neighbors", "blast_radius", "root_cause", "topology_graph", "layers", "search_logs", "query_metrics", "query_history", "list_proposals"])
+check("Converse にトポロジの 7 ツール + 証拠の 3 ツール + 修復案の履歴（異常一覧 list_anomalies は 2026-10-02 にやめた）", [t["toolSpec"]["name"] for t in ck["toolConfig"]["tools"]] == ["list_devices", "neighbors", "blast_radius", "root_cause", "what_if", "topology_graph", "layers", "search_logs", "query_metrics", "query_history", "list_proposals"])
 last = ck["messages"][-1]
 check("質問は guardContent、資料は text", last["content"][1] == {"guardContent": {"text": {"text": "%BGP-5-ADJCHANGE が出た"}}} and "<documents>" in last["content"][0]["text"] and 'source="interface-errors.md"' in last["content"][0]["text"])
 check("初回は messages 1 件", len(ck["messages"]) == 1)
@@ -218,6 +218,27 @@ check("相手の機器が DOWN なら、そこへの BGP は機器 1 台で説�
 check("app.run_tool は root_cause を topology に振る", app.run_tool("root_cause", {"device_id": "dc1-leaf-01"})["root_cause_count"] == 1)
 _with_status()
 check("status を戻せば原因なし", t.root_cause()["fault_count"] == 0)
+# ---- 事前チェック（what_if。2026-10-04）
+w = t.what_if("link_down", "dc1-leaf-01#ethernet-1/1")
+check("what_if: 全部 UP で fabric を 1 本落としても孤立は出ず、冗長が切れる機器も無ければ ok（Leaf には host 側の回線も残る）",
+      w["source"] == "static" and w["newly_isolated"] == [] and w["unknown"] == [] and w["verdict"] in ("ok", "warn"))
+w = t.what_if("device_down", "dc1-leaf-01")
+check("what_if: Leaf を 1 台落とすと、両方の Leaf につながる host は孤立せず冗長切れで warn（落とした機器自身は数えない）",
+      w["verdict"] == "warn" and "dc1-host-01" in w["redundancy_lost"] and w["newly_isolated"] == [] and "冗長が切れる機器" in w["summary"])
+check("what_if: 相手の端の名前でも同じ回線に当たる", t.what_if("link_down", "dc1-spine-01#ethernet-1/3")["unknown"] == [])
+check("what_if: 無い対象は unknown、op が違えば error",
+      t.what_if("link_down", "dc1-leaf-01#nope")["verdict"] == "unknown" and "error" in t.what_if("reboot", "dc1-leaf-01"))
+_d = [{"device_id": x} for x in "abc"]
+_l = [{"a": "a", "a_if": "1", "b": "b", "b_if": "1"}, {"a": "a", "a_if": "2", "b": "b", "b_if": "2", "status": "DOWN"}, {"a": "b", "a_if": "3", "b": "c", "b_if": "1"}]
+r = t.impact(_d, _l, [{"op": "link_down", "target": "a#1"}])
+check("impact: いまの status に重ねる（片系が DOWN のまま残りを落とすと孤立）", r["verdict"] == "danger" and r["newly_isolated"] == ["a"] and r["isolated_after"] == ["a"])
+r = t.impact(_d, _l, [{"op": "link_up", "target": "b#2"}])
+check("impact: 上げる操作は冗長が戻る機器を出し、警告は出ない", r["verdict"] == "ok" and r["redundancy_restored"] == ["a"] and "冗長が戻る機器: a" in r["summary"])
+r = t.impact(_d, [dict(l, status="UP") for l in _l], [{"op": "link_down", "target": "a#2"}])
+check("impact: 2 本のうち 1 本を落とすと冗長切れで warn", r["verdict"] == "warn" and r["redundancy_lost"] == ["a"] and r["newly_isolated"] == [])
+r = t.impact(_d, [dict(_l[0], status="DOWN"), _l[1], _l[2]], [{"op": "link_up", "target": "a#1"}])
+check("impact: 孤立していた機器が、上げるとつながり直す", r["reconnected"] == ["a"] and r["verdict"] == "ok")
+check("app.run_tool は what_if を topology に振る", app.run_tool("what_if", {"op": "device_down", "target": "dc1-leaf-01"})["verdict"] == "warn")
 lc = t.link_choices()
 check("link_choices は 12 本の (表示, a|a_if|b)", len(lc) == 12 and ("dc1-leaf-01 ethernet-1/1 - dc1-spine-01 ethernet-1/3  [fabric]", "dc1-leaf-01|ethernet-1/1|dc1-spine-01") in lc)
 check("VM との LACP は lag", ("dc1-host-01 eth1 - dc1-leaf-01 ethernet-1/3  [lag]", "dc1-host-01|eth1|dc1-leaf-01") in lc)
@@ -230,10 +251,10 @@ check("app.run_tool は list_proposals を proposals に振る（Neptune 未設�
 # 過去の経緯・修復履歴・状態に答えられるようにした（2026-09-18）。2026-10-02 から「いまの異常」は機器・回線・層の status で答える
 check("system prompt はいまの異常 → status、履歴 → list_proposals、アラートの履歴は Grafana / Splunk、承認はしない、と言う",
       "status（UP 以外）" in app.SYSTEM_PROMPT and "list_proposals" in app.SYSTEM_PROMPT and "Grafana / Splunk" in app.SYSTEM_PROMPT
-      and "承認や却下はあなたにはできません" in app.SYSTEM_PROMPT and "まず root_cause で" in app.SYSTEM_PROMPT and "list_anomalies" not in app.SYSTEM_PROMPT and "status=all" not in app.SYSTEM_PROMPT)
+      and "承認や却下はあなたにはできません" in app.SYSTEM_PROMPT and "まず root_cause で" in app.SYSTEM_PROMPT and "what_if で" in app.SYSTEM_PROMPT and "list_anomalies" not in app.SYSTEM_PROMPT and "status=all" not in app.SYSTEM_PROMPT)
 # プロンプトに無いツール名を書くと、モデルは無いツールを呼ぼうとして unknown tool が返る（2026-10-02 に layers を list_layers と書いた）
 _tool_names = {s["toolSpec"]["name"] for s in app.TOOL_SPECS}
-_mentioned = set(re.findall(r"\b(?:list|query|search)_[a-z_]+\b|\b(?:neighbors|blast_radius|root_cause|topology_graph|layers)\b", app.SYSTEM_PROMPT))
+_mentioned = set(re.findall(r"\b(?:list|query|search)_[a-z_]+\b|\b(?:neighbors|blast_radius|root_cause|what_if|topology_graph|layers)\b", app.SYSTEM_PROMPT))
 check(f"system prompt に出てくるツール名は全部 TOOL_SPECS にある（無い: {sorted(_mentioned - _tool_names)}）", _mentioned and not (_mentioned - _tool_names))
 
 # ---- ツールの往復

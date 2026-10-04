@@ -325,6 +325,89 @@ def root_cause(device_id: str = "") -> dict:
     return out
 
 
+# ---------------------------------------------------------------- 事前チェック（what-if。2026-10-04）
+WHAT_IF_OPS = ("link_down", "link_up", "device_down", "device_up")
+
+
+def impact(devices: list, links: list, changes: list) -> dict:
+    """回線・機器を落とした / 上げたと仮定して、孤立する機器と冗長が切れる機器を出す（修復を打つ前の事前チェック）。
+    devices = [{device_id, status}]、links = [{a, a_if, b, b_if, status}]、changes = [{op, target}]。
+    op は link_down / link_up（target = <機器>#<IF>。どちらの端でもよい）か device_down / device_up（target = 機器名）。
+    つながりは DOWN でない回線と機器だけで見て、いちばん大きいかたまりに入っていない機器を「孤立」とする。
+    agent/topology.py と workflow/rules.py に同じものを置く（ワーカーのイメージには agent/ が入らない。tests/test_workflow.py が一致を検査）"""
+    dev_down = {d["device_id"] for d in devices if (d.get("status") or "UP") == "DOWN"}
+    link_down = {n for n, l in enumerate(links) if (l.get("status") or "UP") == "DOWN"}
+    ids = {d["device_id"] for d in devices}
+
+    def view(dd: set, ld: set):
+        adj = {i: [] for i in sorted(ids - dd)}
+        for n, l in enumerate(links):
+            if n not in ld and l["a"] in adj and l["b"] in adj:
+                adj[l["a"]].append(l["b"])
+                adj[l["b"]].append(l["a"])
+        seen, main = set(), set()
+        for start in adj:
+            if start in seen:
+                continue
+            comp, stack = {start}, [start]
+            while stack:
+                for o in adj[stack.pop()]:
+                    if o not in comp:
+                        comp.add(o)
+                        stack.append(o)
+            seen |= comp
+            if len(comp) > len(main):
+                main = comp
+        return set(adj) - main, {i: len(v) for i, v in adj.items()}
+
+    iso0, deg0 = view(dev_down, link_down)
+    dd, ld, unknown, targets = set(dev_down), set(link_down), [], set()
+    for c in changes:
+        op, target = str(c.get("op") or ""), str(c.get("target") or "")
+        if op in ("device_down", "device_up") and target in ids:
+            (dd.add if op == "device_down" else dd.discard)(target)
+            targets.add(target)
+            continue
+        hit = [n for n, l in enumerate(links) if target in (f'{l["a"]}#{l["a_if"]}', f'{l["b"]}#{l["b_if"]}')]
+        if op in ("link_down", "link_up") and hit:
+            for n in hit:
+                (ld.add if op == "link_down" else ld.discard)(n)
+        else:
+            unknown.append(f"{op} {target}".strip())
+    iso1, deg1 = view(dd, ld)
+    out = {
+        "changes": [{"op": str(c.get("op") or ""), "target": str(c.get("target") or "")} for c in changes], "unknown": unknown,
+        "newly_isolated": sorted(iso1 - iso0 - targets),
+        "reconnected": sorted(i for i in iso0 - iso1 if i in deg1),
+        "redundancy_lost": sorted(i for i in deg1 if deg1[i] == 1 and deg0.get(i, 0) >= 2 and i not in iso1),
+        "redundancy_restored": sorted(i for i in deg1 if deg1[i] >= 2 and deg0.get(i, 0) <= 1 and i not in iso1),
+        "isolated_after": sorted(iso1),
+    }
+    out["verdict"] = "unknown" if unknown else "danger" if out["newly_isolated"] else "warn" if out["redundancy_lost"] else "ok"
+    parts = []
+    if unknown:
+        parts.append("トポロジに無い対象: " + ", ".join(unknown))
+    if out["newly_isolated"]:
+        parts.append("孤立する機器: " + ", ".join(out["newly_isolated"]))
+    if out["redundancy_lost"]:
+        parts.append("冗長が切れる機器（残りの回線が 1 本）: " + ", ".join(out["redundancy_lost"]))
+    if not out["newly_isolated"] and not out["redundancy_lost"] and not unknown:
+        parts.append("孤立する機器も、冗長が切れる機器も無い")
+    if out["reconnected"]:
+        parts.append("つながり直す機器: " + ", ".join(out["reconnected"]))
+    if out["redundancy_restored"]:
+        parts.append("冗長が戻る機器: " + ", ".join(out["redundancy_restored"]))
+    out["summary"] = "。".join(parts)
+    return out
+
+
+def what_if(op: str, target: str) -> dict:
+    """回線か機器を 1 つ落とした / 上げたと仮定したときの影響（いまの status に重ねて見る）"""
+    if op not in WHAT_IF_OPS:
+        return {"error": f"op は {' / '.join(WHAT_IF_OPS)} のどれか"}
+    return {"source": SOURCE, **impact(DEVICES, LINKS, [{"op": op, "target": (target or "").strip()}])}
+
+
 def interfaces(device_id: str) -> list[str]:
     """device_id のインタフェース名（Web の編集画面の選択肢）。Neptune に lab の定義から入れた一覧があればそれと、
     つながるリンクに出てくるその機器側の名前（静的データには一覧が無いので、いま使われているものだけ）"""
@@ -376,6 +459,14 @@ TOOL_SPECS = [
         }}},
     }},
     {"toolSpec": {
+        "name": "what_if",
+        "description": "回線か機器を 1 つ落とした / 上げたと仮定して、いまの状態に重ねたときの影響を出す（作業や処置の前の事前チェック）。newly_isolated = 孤立する機器、redundancy_lost = 残りの回線が 1 本になる機器、reconnected / redundancy_restored = 上げたときに戻る機器、verdict = danger（孤立が出る）/ warn（冗長が切れる）/ ok / unknown（対象がトポロジに無い）。実際には何も変えない。",
+        "inputSchema": {"json": {"type": "object", "required": ["op", "target"], "properties": {
+            "op": {"type": "string", "description": "link_down / link_up / device_down / device_up"},
+            "target": {"type": "string", "description": "回線なら <機器>#<インタフェース>（例 dc1-leaf-01#ethernet-1/1。どちらの端でもよい）、機器なら機器名"},
+        }}},
+    }},
+    {"toolSpec": {
         "name": "topology_graph",
         "description": "ネットワーク全体のノードとリンクの一覧（物理層）。全体像を説明するときに使う。",
         "inputSchema": {"json": {"type": "object", "properties": {}}},
@@ -389,6 +480,6 @@ TOOL_SPECS = [
         }}},
     }},
 ]
-TOOLS = {"list_devices": list_devices, "neighbors": neighbors, "blast_radius": blast_radius, "root_cause": root_cause, "topology_graph": topology_graph, "layers": layers}
+TOOLS = {"list_devices": list_devices, "neighbors": neighbors, "blast_radius": blast_radius, "root_cause": root_cause, "what_if": what_if, "topology_graph": topology_graph, "layers": layers}
 # ツールを呼ぶ前に reload()（TTL を過ぎていれば Neptune を読み直す。画面での編集が次の質問に効く）
 run_tool = toolkit.runner(TOOLS, before=reload)

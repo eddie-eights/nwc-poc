@@ -66,6 +66,27 @@
     }
   },
   {
+    "name": "what_if",
+    "description": "回線か機器を 1 つ落とした / 上げたと仮定して、いまの状態に重ねたときの影響を出す（作業や処置の前の事前チェック）。newly_isolated = 孤立する機器、redundancy_lost = 残りの回線が 1 本になる機器、reconnected / redundancy_restored = 上げたときに戻る機器、verdict = danger（孤立が出る）/ warn（冗長が切れる）/ ok / unknown（対象がトポロジに無い）。実際には何も変えない。",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "op",
+        "target"
+      ],
+      "properties": {
+        "op": {
+          "type": "string",
+          "description": "link_down / link_up / device_down / device_up"
+        },
+        "target": {
+          "type": "string",
+          "description": "回線なら <機器>#<インタフェース>（例 dc1-leaf-01#ethernet-1/1。どちらの端でもよい）、機器なら機器名"
+        }
+      }
+    }
+  },
+  {
     "name": "topology_graph",
     "description": "ネットワーク全体のノードとリンクの一覧（物理層）。全体像を説明するときに使う。",
     "inputSchema": {
