@@ -40,7 +40,7 @@ AWS の API へは全部 VPC エンドポイントから行き、この VPC を�
 | telegraf_dialout_nlb | telegraf_dialout | 1162/udp、5140/udp、57000/tcp、8080/tcp | trap・syslog・MDT の転送と、NLB のヘルスチェック |
 | lab の管理ネットワーク（203.0.113.0/24） | telegraf_dialout_nlb | 162/udp、5140/udp | 機器の trap と syslog（lab の EC2 が DNAT するので送り元は機器の IP のまま） |
 | `MDT_SOURCE_CIDRS` の CIDR（既定は空で行が無い） | telegraf_dialout_nlb | 57000/tcp | 本番の Cisco の MDT の dial-out（[collection.md](../collection.md)）。`0.0.0.0/0` は変数の検査で拒む |
-| telegraf_dialin | lab の管理ネットワーク | 161/udp、57400/tcp | Telegraf の取りにいく側からの SNMP のポーリング（`SNMP_POLL=1` のときだけ使う。SG は既定でも開けておく）と gNMI（VPC のルートで lab の EC2 へ） |
+| telegraf_dialin | lab の管理ネットワーク | 161/udp、57400/tcp | Telegraf の取りにいく側からの SNMP のポーリング（`SNMP_POLL=0` では使わない。SG はそのときも開けておく）と gNMI（VPC のルートで lab の EC2 へ） |
 
 Neptune Analytics に SG は無い（2026-10-04 に Neptune Database から置き換えた）。VPC の中の口を持たず、インターフェース型エンドポイント `neptune-graph-data`（443、SigV4。表の 1 行目）で openCypher を送る。
 
