@@ -47,6 +47,8 @@ flowchart LR
   同じイメージを、環境変数 `SPLUNK_ROLE` で 4 つの役割に使い分ける（上流の公式イメージの仕組み）。
 - **4 つとも同じサブネット、同じ SG（いまの `splunk`）に置く。**
   analytics の ECS はサブネットが 1 つ（`local.instance_subnet_id`）なので、AZ はまたがない。守るのはタスク 1 つの障害まで。
+- **UI の入口は search head の 1 つ。**
+  検索もダッシュボードもここで見る。cluster manager の UI（クラスターの状態）は、確かめるときだけポートフォワードで開く。indexer の UI は使わない。
 - **search head の名前は `splunk` のまま。**
   UI のポートフォワードのコマンド（output `splunk_port_forward_command`）と、docs の手順を変えずに済む。
 - **1 台のとき（`SPLUNK_CLUSTER=0`）は、いまと 1 文字も変えない。**
@@ -106,7 +108,7 @@ flowchart LR
 | `splunk/entrypoint.sh` | 役割が standalone / search head でなければ、app `netops_alerts` を消してから上流の入口を起こす |
 | `splunk/`（新しい設定） | manager が配る `indexes.conf`（`main` に `repFactor = auto`）。置き場所と入れ方は手元の確認で決める |
 | `terraform/pipeline/analytics/splunk.tf` | 変数 `splunk_cluster` が true のとき、manager、indexer（`desired_count = 2`）、search head のタスク定義とサービス、Cloud Map の `splunk-cm` と `splunk-idx` を作る。false のときは今のまま |
-| `terraform/pipeline/analytics/variables.tf`、`locals.tf`、`outputs.tf` | 変数 `splunk_cluster`、HEC の URL の切り替え、サービス名の output（待つ対象が 4 つになる） |
+| `terraform/pipeline/analytics/variables.tf`、`locals.tf`、`outputs.tf` | 変数 `splunk_cluster`、HEC の URL の切り替え、サービス名の output（待つ対象が 4 つになる）、cluster manager の UI へのポートフォワードのコマンドの output（クラスターのときだけ。`splunk_port_forward_command` と同じ形で、宛先が `splunk-cm`） |
 | `terraform/base/core/security_groups.tf` | `splunk → splunk` の 8089 と 9887（クラスターのときだけ） |
 | `ops/up.sh` | `SPLUNK_CLUSTER`（0 / 1 の検査）、合言葉の SSM、4 つのサービスを待つ、費用の表示 |
 | `deploy.env.example`、deploy-env の許可リスト | `SPLUNK_CLUSTER` |
