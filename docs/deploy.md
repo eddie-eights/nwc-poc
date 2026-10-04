@@ -17,7 +17,7 @@
 | `CREATE_KB` | ナレッジベース（+$0.37/h。OpenSearch Serverless の VPC エンドポイント $0.03（`SINK_OPENSEARCH` の logs と共用）と bedrock-agent-runtime のエンドポイント $0.014 を含む）。`AGENT=1` のとき |
 | `SKIP_LAB` | lab を作らない（-$0.17/h）。`SKIP_STREAM=1` も要る |
 | `SKIP_STREAM` | stream（MSK と Telegraf の ECS）を作らない（-$1.18/h）。analytics も外れる |
-| `SKIP_ANALYTICS` | analytics を作らない（-$0.56/h。KB を作るなら OpenSearch Serverless の VPC エンドポイントは残るので -$0.53/h。Grafana の分を含む）。Grafana と Splunk（アラートの送り手）も無くなる |
+| `SKIP_ANALYTICS` | analytics を作らない（-$0.63/h。KB を作るなら OpenSearch Serverless の VPC エンドポイントは残るので -$0.60/h。Grafana の分を含む）。Grafana と Splunk（アラートの送り手）も無くなる |
 | `SKIP_GRAPH` | Neptune Analytics のグラフを作らない（-$0.60/h。16 m-NCU の $0.58 と `neptune-graph-data` のエンドポイント）。トポロジは静的データになる（アラートで `status` が変わらない） |
 | `SINK_S3` / `SINK_OPENSEARCH` / `SINK_PROMETHEUS` | Spark の格納先。既定は 3 つとも `1`。`0` にするとリソースごと作らない。`SINK_SPLUNK` と合わせて全部 `0` は止まる。`SINK_PROMETHEUS=0` にすると Grafana のアラート（`link_down`）も無くなる |
 | `SINK_SPLUNK` | 4 本目の格納先。`1` で Spark が全トピックを Splunk の HTTP Event Collector（HEC）に送る。既定 `0`。analytics の ECS に Splunk Enterprise（公式イメージ `splunk/splunk:10.4.3` に検知のアプリ `netops_alerts` を足したもの、試用ライセンス。Fargate x86 2 vCPU / 4 GB、エフェメラルストレージ 40 GiB）を立て、Spark は VPC の中の `https://splunk.<prefix>.internal:8088` に送る（自己署名なので検証しない）。起動時に Splunk のライセンスと Splunk General Terms に同意する。admin のパスワードと HEC の token は `ops/up.sh` が SSM の SecureString に乱数で作る。index はタスクと一緒に消える（検証用）。trap と gNMI（BGP / IS-IS）のアラートも Splunk が出す（[pipeline.md](pipeline.md) の「アラート」）。+$0.12/h。`SPLUNK_INDEX`（空なら token の既定）も読む。AWS の外の Splunk へ NAT Gateway で送る道（`SPLUNK_HEC_URL`）は 2026-09-28 にやめた（書いてあると `ops/up.sh` が止まる） |

@@ -50,7 +50,7 @@ variable "table_name" {
 }
 
 variable "max_cpu" {
-  description = "Upper bound of vCPU the application may use at once (EMR Serverless maximumCapacity). The streaming job asks for 2 (driver 1 + executor 1)"
+  description = "Upper bound of vCPU the application may use at once (EMR Serverless maximumCapacity). The streaming job asks for 3 (driver 1 + executor 2)"
   type        = string
   default     = "4 vCPU"
 }
