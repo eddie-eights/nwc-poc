@@ -239,7 +239,7 @@ def main(argv):
         check(f"見えた版が CHECKED と同じ（{seen}）。違うなら、上が通っているので CHECKED を書き換える（Splunk の版を変えたら Dockerfile・ops/up.sh も）",
               seen == CHECKED, f"CHECKED={CHECKED}")
     finally:
-        run("docker", "rm", "-f", NAME, check_rc=False)
+        run("docker", "rm", "-f", "-v", NAME, check_rc=False)   # -v: イメージの VOLUME（/opt/splunk/etc・var）の匿名ボリュームも消す
     print(f"すべて通過（{passed} 件）")
     return 0
 

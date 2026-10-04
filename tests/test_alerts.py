@@ -656,6 +656,9 @@ check("Splunk の版を変えたら、コンテナの検査（tests/check_splunk
       "CHECKED の Splunk = Dockerfile の SPLUNK_VERSION、CHECKED の Python = python.required の版",
       img.CHECKED["splunk"] == re.search(r"^ARG SPLUNK_VERSION=(\S+)$", df, re.M).group(1)
       and img.CHECKED["python"].startswith(actions["netops_sns"]["python.required"] + ".") and set(img.CHECKED) == {"splunk", "python", "boto3"})
+check("tests/check_splunk_image.py はコンテナを消すとき、イメージの VOLUME（/opt/splunk/etc・var）の匿名ボリュームも消す"
+      "（docker rm -f -v。-v が無いと 1 回走らせるごとに約 1.3 GB 残る）",
+      re.findall(r'run\("docker", "rm",[^)]*\)', read("tests", "check_splunk_image.py")) == ['run("docker", "rm", "-f", "-v", NAME, check_rc=False)'])
 up = read("ops", "up.sh")
 check("up.sh の SPLUNK_VERSION / GRAFANA_VERSION は Dockerfile の ARG の既定値と同じ",
       re.search(r"^SPLUNK_VERSION=([\d.]+)", up, re.M).group(1) == re.search(r"ARG SPLUNK_VERSION=([\d.]+)", df).group(1)
