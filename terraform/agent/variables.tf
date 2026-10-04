@@ -55,13 +55,13 @@ variable "model_id" {
 
 # ---------------------------------------------------------------- redundancy (ops/up.sh の「冗長化用」)
 variable "runtime_az_num" {
-  description = "Number of AZs (subnets a, b, c of terraform/base/core from the front) the AgentCore Runtime puts its ENIs in. 2 or 3. 1 is refused on purpose (user decision 2026-10-04), not by AWS: the AgentCore VPC guide recommends private subnets in at least two AZs for high availability (Amazon Bedrock AgentCore Developer Guide, Configure Amazon Bedrock AgentCore Runtime and tools for VPC, Best practices: https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html, checked 2026-10-04), and the chat stops when the one AZ of the ENIs fails. The API itself takes one subnet (AgentCore Control API Reference, VpcConfig, subnets 1-16 items: https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_VpcConfig.html, checked 2026-10-04; one subnet not tried on AWS). ops/up.sh passes RUNTIME_AZ_NUM."
+  description = "Number of AZs (subnets a, b, c of terraform/base/core from the front) the AgentCore Runtime puts its ENIs in. 1-3, default 1 (user decision 2026-10-05). With 2 or more, ops/up.sh also raises the interface endpoints (endpoints_az_num of terraform/base/core) to the same number, or stops when ENDPOINTS_AZ_NUM is set lower: with the endpoints in subnet a only, the Runtime loses the AWS APIs when a's AZ is down, so the extra AZs would be in name only. The API takes 1-16 subnets (AgentCore Control API Reference, VpcConfig: https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_VpcConfig.html, checked 2026-10-05); the AgentCore VPC guide recommends at least two AZs for high availability but does not forbid one (Amazon Bedrock AgentCore Developer Guide, Configure Amazon Bedrock AgentCore Runtime and tools for VPC, Best practices: https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html, checked 2026-10-05). One subnet is not tried on AWS. ops/up.sh passes RUNTIME_AZ_NUM."
   type        = number
-  default     = 2
+  default     = 1
 
   validation {
-    condition     = contains([2, 3], var.runtime_az_num)
-    error_message = "runtime_az_num must be 2 or 3 (kept at two AZs or more for high availability, as the AgentCore VPC guide recommends)."
+    condition     = contains([1, 2, 3], var.runtime_az_num)
+    error_message = "runtime_az_num must be 1, 2 or 3."
   }
 }
 
