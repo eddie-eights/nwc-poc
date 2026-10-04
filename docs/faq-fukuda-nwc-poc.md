@@ -1260,6 +1260,38 @@ SDK を使うと、自分で書かなくて済むもの。
 
 役割ごとの画面の中身は記憶から書いた。「Splunk をクラスターにする（004）」の実装の最初（手元の 4 台）で確かめる。
 
+### Q. HEC で index を指定しないと、自動で index の名前が付く？
+
+**結論**
+
+- 名前を新しく作るのではなく、HEC の token に決めてある既定の index に入る。このプロジェクトでは `main`。
+- このプロジェクトの既定（`SPLUNK_INDEX` が空）は「指定しない」なので、いつも `main` に入り、問題は起きない。
+- 問題になるのは、存在しない index の名前をわざわざ指定したときだけ。Splunk は index を自動では作らないので、HEC は 200 を返すのに、イベントは捨てられる。
+
+**3 つの場合**
+
+| 送り方 | 入る先 | このプロジェクトで起きるか |
+|---|---|---|
+| index を指定しない | token の既定の index（`main`） | 既定はこれ |
+| ある index を指定する | その index | `SPLUNK_INDEX` に書いて、Splunk 側にも index を作ったとき |
+| 無い index を指定する | どこにも入らない（200 が返り、捨てられる） | `SPLUNK_INDEX` に書き間違えたとき、または index を作り忘れたとき |
+
+**理由**
+
+- Spark（`spark/snmp_sinks.py` の `splunk_events`）は、`SPLUNK_INDEX` が空ならイベントに `index` を入れない。HEC の仕様で、入っていない項目は token に決めた値になる。
+- 無い index 宛てのイベントは、`indexes.conf` の `lastChanceIndex` に行き先を書いておけばそこへ入る。既定は空で、空なら捨てられる（公式の記述）。
+- このプロジェクトは `indexes.conf` を書いていない（004 の決定）ので、`lastChanceIndex` も空のまま。
+
+**いまの扱い**
+
+- 既定では起きないので、そのままにしている。直すなら、`lastChanceIndex = main` を足すか、`ops/up.sh` が `SPLUNK_INDEX` に書かれた index があるかを確かめる。
+- 200 が返って捨てられることは、2026-10-04 に手元のコンテナで見つけた（004 の確認の途中）。AWS の上では未確認。
+
+**出どころ**
+
+- https://help.splunk.com/en/splunk-enterprise/get-started/get-data-in/10.0/get-data-with-http-event-collector/format-events-for-http-event-collector （2026-10-05 に確認）
+- https://help.splunk.com/en/splunk-enterprise/administer/admin-manual/10.0/configuration-file-reference/10.0.0-configuration-file-reference/indexes.conf （`lastChanceIndex`。2026-10-05 に確認）
+
 ### Q. Splunk に同じデータが二重に入るのは、防げる？
 
 **A. 入れるときに完全に防ぐことはできない。HEC には「同じものは 1 回だけ」にする仕組みが無い。やれるのは、二重に入る場面を減らすことと、検索のときに重複を落とせるよう、イベントに一意の番号を持たせること。**
