@@ -110,7 +110,7 @@ locals {
   sink_opensearch = contains(var.sinks, "opensearch")
   sink_prometheus = contains(var.sinks, "prometheus")
   sink_splunk     = contains(var.sinks, "splunk")
-  # Spark のジョブは格納先で 3 つに分ける（ジョブ名 sinks-<キー>。ops/up.sh が起こす）。var.sinks に無い格納先は外し、空になったジョブは起こさない
+  # Spark のジョブは格納先で 3 つに分ける（ジョブ名は ops/up.sh の job_name で、iceberg → sinks-s3iceberg、splunk → sinks-splunk、http → sinks-grafana。ops/up.sh が起こす）。var.sinks に無い格納先は外し、空になったジョブは起こさない
   spark_jobs = { for job, sinks in { iceberg = ["iceberg"], splunk = ["splunk"], http = ["opensearch", "prometheus"] } :
   job => [for s in sinks : s if contains(var.sinks, s)] }
   # 格納先ごとの Kafka の読み取りの上限を、ジョブごとにそのジョブの格納先の分だけ「splunk=2000」「opensearch=0,prometheus=5000」の形にする（無ければ空で、引数を渡さない）

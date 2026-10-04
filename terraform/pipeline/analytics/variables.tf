@@ -51,7 +51,7 @@ variable "table_name" {
 
 # ops/up.sh は EMR_MAX_CPU / EMR_MAX_MEMORY（同じ値）を渡し、アプリの上限が変わるときは apply の前にジョブとアプリを止める（動いているアプリは更新できない）
 variable "max_cpu" {
-  description = "Upper bound of vCPU the application may use at once (EMR Serverless maximumCapacity). The streaming jobs (up to 3: sinks-iceberg / -splunk / -http) ask for 3 each (driver 1 + executor 2), 9 in all"
+  description = "Upper bound of vCPU the application may use at once (EMR Serverless maximumCapacity). The streaming jobs (up to 3: sinks-s3iceberg / sinks-splunk / sinks-grafana) ask for 3 each (driver 1 + executor 2), 9 in all"
   type        = string
   default     = "12 vCPU"
 }
