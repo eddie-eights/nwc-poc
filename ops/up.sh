@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # deploy.env の PIPELINE / AGENT / WORKFLOW で選んだ機能を 1 本で起こす。機能は互いに独立で、要るものだけ作る（費用を抑えるため）。
 #   土台（必ず作る）  base/ecr + base/core（VPC / Web の EC2 / バケット / ロール。インターネットへの経路は無い）。約 $0.02/h + エンドポイント。
-#   AGENT（既定 1）   agent での分析。terraform/agent（AgentCore Runtime + ガードレール。CREATE_KB=1 なら Knowledge Base も）。
+#   AGENT（既定 0）   agent での分析。terraform/agent（AgentCore Runtime + ガードレール。CREATE_KB=1 なら Knowledge Base も）。
 #                     Web の「チャット」タブが使える
 #   PIPELINE          データパイプライン。lab（containerlab）→ stream（MSK と Telegraf（ECS））→ analytics（Spark on EMR Serverless → S3 Tables / OpenSearch / Prometheus / Splunk。
 #                     Grafana（ECS）で Prometheus と OpenSearch を見る。検知は Grafana のアラートルールと Splunk の保存済みサーチで、SNS のトピック <接頭辞>-alerts へ出す）と
@@ -15,7 +15,7 @@
 # Terraform の state はこの PC の展開したフォルダの中（terraform/<ルート>/terraform.tfstate）に置く。消すのは ops/down.sh。
 #
 # 使い方（展開したフォルダの直下で。先に AWS CLI の認証を通しておく。IAM ユーザーなら長期キーのまま打つ）:
-#   cp deploy.env.example deploy.env  # 初回だけ。デプロイする人の名前 OWNER（必須）とどの機能を作るかを deploy.env に書く（機能を書かなければ AGENT=1 だけ）
+#   cp deploy.env.example deploy.env  # 初回だけ。デプロイする人の名前 OWNER（必須）とどの機能を作るかを deploy.env に書く（機能を書かなければ土台だけ）
 #   ops/up.sh                         # deploy.env のとおりに作る。最後にポートフォワーディングを開いたまま止まる（Ctrl+C で閉じる）
 #   PIPELINE=1 ops/up.sh              # その回だけ変える（環境変数は deploy.env より優先）。初回は PIPELINE で 40〜60 分（MSK の作成が長い）
 #   DEPLOY_ENV_FILE=<パス> ops/up.sh  # 別の設定ファイルを読む
@@ -29,7 +29,7 @@
 #                           1 つの AWS アカウントを何人かで使うときに、自分の名前で自分のリソースを探せるようにするための値
 #                           （AgentCore Runtime の名前はハイフンが使えないので、- を _ にした <接頭辞>_agent になる）。
 #                           **作ったあとで変えると、Terraform は名前の違うリソースを作り直す**（先に ops/down.sh で消す）
-#   AGENT=1                 agent での分析（既定 1）。terraform/agent を作る
+#   AGENT=1                 agent での分析（既定 0）。terraform/agent を作る。Web の「チャット」タブを使うなら書く
 #   PIPELINE=1              データパイプライン（既定 0）。lab / stream / analytics / graph を作る（SKIP_* で減らせる）
 #   WORKFLOW=1              Temporal での実行（既定 0）。workflow を作る。AGENT と PIPELINE が要り、SKIP_LAB / SKIP_STREAM / SKIP_ANALYTICS / SKIP_GRAPH は書けない。
 #                           アラートの送り手も要る（SINK_SPLUNK=1、または SINK_PROMETHEUS と SNMP_POLL=1（Grafana のアラート）。既定のままでは送り手が無いので止まる）
@@ -348,12 +348,12 @@ SYSLOG_STANDARD="${SYSLOG_STANDARD:-RFC3164}"
 case "$SYSLOG_STANDARD" in RFC3164 | RFC5424) ;; *) die "SYSLOG_STANDARD は RFC3164 か RFC5424（大文字）: $SYSLOG_STANDARD。まだ何も作っていない" ;; esac
 # stream の Telegraf の SNMP のポーリング。既定 0（trap だけ受ける。stream の変数 snmp_poll の既定と同じ）
 flag_value SNMP_POLL
-# どの機能を作るか（既定は土台 + AGENT）
-AGENT="${AGENT:-1}"
+# どの機能を作るか（既定は土台だけ。AGENT / PIPELINE / WORKFLOW は 1 を書いたものだけ作る。AGENT の既定は 2026-10-04 に 1 → 0）
+AGENT="${AGENT:-0}"
 flag_value AGENT; flag_value PIPELINE; flag_value WORKFLOW; flag_value CREATE_KB
 if [ -n "$WORKFLOW" ]; then
   if [ -z "$AGENT" ]; then
-    die "WORKFLOW は AGENT が要る（ワーカーがエージェントの Runtime を呼ぶ。terraform/workflow は terraform/agent の state から ARN を読む）。AGENT=1 にする。まだ何も作っていない"
+    die "WORKFLOW は AGENT が要る（ワーカーがエージェントの Runtime を呼ぶ。terraform/workflow は terraform/agent の state から ARN を読む）。deploy.env に AGENT=1 を書く（AGENT の既定は 0）。まだ何も作っていない"
   fi
   if [ -z "$PIPELINE" ]; then
     die "WORKFLOW は PIPELINE が要る（analytics の Grafana / Splunk がアラートを SNS に出し、ワーカーが Neptune のトポロジと修復案を読み書きし、lab の EC2 で直す）。PIPELINE=1 にする。まだ何も作っていない"
@@ -410,7 +410,7 @@ if [ -n "$GRAFANA" ] && [ -n "$SINK_PROMETHEUS" ] && [ -z "$SNMP_POLL" ] && [ -z
   echo "注意: SNMP_POLL=0（既定）なので Grafana のアラートルール link_down は発火せず、IF の up / down を知らせるものが無い。trap から知らせるなら SINK_SPLUNK=1、ポーリングで知らせるなら SNMP_POLL=1"
 fi
 if [ -z "$AGENT" ] && [ -n "$CREATE_KB" ]; then
-  echo "AGENT=0 なので CREATE_KB は効かない（Knowledge Base は agent の一部）"
+  echo "AGENT=0 なので CREATE_KB は効かない（Knowledge Base は agent の一部。作るなら AGENT=1 も書く。AGENT の既定は 0）"
   CREATE_KB=""
 fi
 # 閉域（terraform/base/core の endpoints.tf と perimeter.tf）。AWS の API は全部インターフェース型エンドポイントを通し、通らない呼び出しを拒む
@@ -418,7 +418,7 @@ NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"
 flag_value NETWORK_PERIMETER; flag_value ENDPOINTS_MULTI_AZ
 if [ -z "$NETWORK_PERIMETER" ]; then echo "NETWORK_PERIMETER=0: VPC の外からの呼び出しを拒む Deny を外す（エンドポイントは作る。切り分けが済んだら 1 に戻して打ち直す）"; fi
 if [ -z "$AGENT$PIPELINE$WORKFLOW" ]; then
-  echo "機能が全部 0 なので土台（base/ecr + base/core）だけ作る（Web は「チャット」で「配備されていない」と返す）"
+  echo "機能が全部 0（既定）なので土台（base/ecr + base/core）だけ作る（Web は開けるが「チャット」は「配備されていない」と返す。チャットを使うなら AGENT=1 を書く）"
 fi
 command -v aws >/dev/null || die "aws CLI が無い（docs/setup.md「Terraform を打つ PC 側」）"
 command -v terraform >/dev/null || die "terraform が無い（docs/setup.md「Terraform を打つ PC 側」。1.11 以上）"
@@ -548,7 +548,7 @@ fi
 if [ -n "$NAUTOBOT" ]; then COST_CENTS=$((COST_CENTS + 13)); fi
 if [ -n "$WORKFLOW" ]; then COST_CENTS=$((COST_CENTS + 5)); fi
 if { [ -n "$AGENT" ] && [ -n "$CREATE_KB" ]; } || { [ -z "$SKIP_ANALYTICS" ] && [ -n "$SINK_OPENSEARCH" ]; }; then COST_CENTS=$((COST_CENTS + 3)); fi
-COST_NOTE=$(printf '待機だけで約 $%d.%02d/h（約 %d 円/h。チャットの分は別）の時間課金。使い終わったら当日中に ops/down.sh を打つ' \
+COST_NOTE=$(printf "待機だけで約 \$%d.%02d/h（約 %d 円/h${AGENT:+。チャットの分は別}）の時間課金。使い終わったら当日中に ops/down.sh を打つ" \
   $((COST_CENTS / 100)) $((COST_CENTS % 100)) $(((COST_CENTS * 150 + 50) / 100)))
 printf '\033[1;33m%s\033[0m\n' "$COST_NOTE"
 case ",$SINKS," in

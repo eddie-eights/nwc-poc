@@ -555,6 +555,32 @@ check(f"main の upload_web_command は Web が import する agent のモジュ
 up = read("ops", "up.sh"); down = read("ops", "down.sh"); chk = read("ops", "check.sh")
 check("up.sh の WORKFLOW=1 は AGENT と PIPELINE が要り、SKIP_LAB / SKIP_STREAM / SKIP_ANALYTICS があれば止まる",
       re.search(r'if \[ -n "\$WORKFLOW" \]; then\n\s*if \[ -z "\$AGENT" \]; then[\s\S]*?if \[ -z "\$PIPELINE" \]; then[\s\S]*?SKIP_LAB[\s\S]*?SKIP_STREAM[\s\S]*?SKIP_ANALYTICS', up) is not None)
+# AGENT の既定は 2026-10-04 に 1 → 0（機能を書かなければ土台だけ）。機能の判定を up.sh から切り出して動かす
+import subprocess as _sp
+_featblk = up[up.index('AGENT="${AGENT:-0}"'):up.index('if [ -n "$PIPELINE" ]; then\n  if [ -n "$SKIP_LAB" ]')]
+_flag = ('die() { echo "DIE: $*"; exit 1; }\n'
+         'flag_value() { local name="$1" v; v="${!name:-}"; case "$v" in 1|true|yes) printf -v "$name" %s 1 ;; ""|0|false|no) printf -v "$name" %s "" ;; *) die "$name は 1 か 0" ;; esac; }\n')
+def _feat(**env):
+    r = _sp.run(["bash", "-c", _flag + _featblk + 'echo "OUT: AGENT=${AGENT:-0}"'], capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env})
+    return r.stdout.strip().splitlines()[-1] if r.stdout.strip() else r.stderr
+check("up.sh の AGENT の既定は 0（何も書かなければ agent を作らない）。1 を書けば作る",
+      'AGENT="${AGENT:-0}"' in up and 'AGENT="${AGENT:-1}"' not in up
+      and _feat() == "OUT: AGENT=0" and _feat(AGENT="1") == "OUT: AGENT=1" and _feat(AGENT="yes") == "OUT: AGENT=1")
+check("up.sh の WORKFLOW=1 は AGENT を書かなければ（既定 0）止まり、AGENT=1 を書けと言う",
+      _feat(WORKFLOW="1", PIPELINE="1").startswith("DIE: WORKFLOW は AGENT が要る") and "AGENT=1 を書く" in _feat(WORKFLOW="1", PIPELINE="1")
+      and _feat(WORKFLOW="1", PIPELINE="1", AGENT="1") == "OUT: AGENT=1")
+_basemsg = up[up.index('if [ -z "$AGENT$PIPELINE$WORKFLOW" ]; then'):].split("\nfi\n", 1)[0]
+check("機能が全部 0（既定）のときの案内は、Web は開けてチャットは配備されていないこと、チャットには AGENT=1 を書くことを言う",
+      "AGENT=1 を書く" in _basemsg and "配備されていない" in _basemsg and "（既定）" in _basemsg)
+_costnote = up[up.index("COST_NOTE=$(printf"):up.index("\n", up.index("COST_CENTS * 150")) + 1]
+def _note(**env):
+    r = _sp.run(["bash", "-c", "COST_CENTS=123\n" + _costnote + 'echo "$COST_NOTE"'], capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env})
+    return r.stdout.strip()
+check("費用の案内の「チャットの分は別」は AGENT があるときだけ出す（金額の $ は展開しない）",
+      _note() == "待機だけで約 $1.23/h（約 185 円/h）の時間課金。使い終わったら当日中に ops/down.sh を打つ"
+      and _note(AGENT="1") == "待機だけで約 $1.23/h（約 185 円/h。チャットの分は別）の時間課金。使い終わったら当日中に ops/down.sh を打つ")
+check("deploy-env.sh の deploy.env が無いときの案内は、既定を土台だけと言う（AGENT=1 だけ、とは言わない）",
+      "既定は AGENT=1" not in read("ops", "deploy-env.sh") and "既定は土台だけ" in read("ops", "deploy-env.sh"))
 check("deploy-env.sh の読めるキーは機能の 3 つ + CREATE_KB + TF_VERBOSE で、古いキー（PHASE / SINKS / WITH_*）は持たない",
       (lambda keys: all(k in keys for k in ("PIPELINE", "AGENT", "WORKFLOW", "CREATE_KB", "TF_VERBOSE"))
        and not any(k in keys for k in ("PHASE", "SINKS", "WITH_LAB", "WITH_STREAM")))(read("ops", "deploy-env.sh").split('DEPLOY_ENV_KEYS="')[1].split('"')[0].split())
@@ -581,8 +607,9 @@ check("down.sh は workflow を最初に消す（必須変数はダミーで渡�
 check("check.sh は workflow ルートとこのテストを見て、.py は名指しせず find で全部見る",
       "workflow)" in chk and "tests/test_workflow.py" in chk
       and re.search(r"find [\w /]*\bworkflow\b [^\n]*-name '\*\.py'", chk) is not None and "ast.parse(" in chk)
-check("deploy.env.example は AGENT=1 / PIPELINE=0 / WORKFLOW=0 を既定にし、CREATE_KB を説明する（古い PHASE の行は載せない）",
-      re.search(r"^AGENT=1\n^PIPELINE=0\n^WORKFLOW=0$", read("deploy.env.example"), re.M) is not None
+check("deploy.env.example は AGENT=0 / PIPELINE=0 / WORKFLOW=0 を既定にし（2026-10-04 に AGENT の既定を 0 にした）、CREATE_KB を説明する（古い PHASE の行は載せない）",
+      re.search(r"^AGENT=0\n^PIPELINE=0\n^WORKFLOW=0$", read("deploy.env.example"), re.M) is not None
+      and "既定は AGENT=1" not in read("deploy.env.example") and "AGENT=1 だけ" not in read("deploy.env.example")
       and re.search(r"^#CREATE_KB=0$", read("deploy.env.example"), re.M) is not None and re.search(r"^#?\s*PHASE=", read("deploy.env.example"), re.M) is None
       and "workflow" in read("deploy.env.example"))
 check("down.sh は VPC の Lambda を持つルート（workflow / graph）を消す間、その関数の available な ENI だけを裏で消す（2026-09-18）",

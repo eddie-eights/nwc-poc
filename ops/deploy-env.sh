@@ -39,7 +39,7 @@ load_deploy_env() {
   keys=" $(echo $DEPLOY_ENV_KEYS) "  # 改行と連続した空白を 1 つにする
   if [ ! -f "$file" ]; then
     if [ -n "${DEPLOY_ENV_FILE:-}" ]; then die "DEPLOY_ENV_FILE のファイルが無い: $file"; fi
-    echo "deploy.env: 無い（環境変数と既定値で動く。既定は AGENT=1 だけ。ただし OWNER は必須なので、cp deploy.env.example deploy.env で写して書く）"
+    echo "deploy.env: 無い（環境変数と既定値で動く。既定は土台だけ（AGENT / PIPELINE / WORKFLOW は 0）。ただし OWNER は必須なので、cp deploy.env.example deploy.env で写して書く）"
     return 0
   fi
   while IFS= read -r line || [ -n "$line" ]; do
