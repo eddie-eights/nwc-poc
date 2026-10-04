@@ -17,18 +17,17 @@ ops/sync-graph.sh --replace で登録すると、未登録の頂点は置き換�
 届いた通知は 1 件 1 行で、アラートの履歴（S3 Tables の alert_events）にも Firehose で送る（環境変数 ALERT_STREAM。空なら送らない。
 terraform/pipeline/graph の alert_history）。行は rules.alert_event が組み、Neptune で無視した通知（機器の無いものなど）も送る。
 alerts_from_message が捨てた通知（device_id か kind が無い・status が firing / resolved でない）は行にせず、件数を WARNING で
-ALERT_DROPPED としてログに出す。
-status の正しさを履歴の完全さより優先する（design.md の決定 6）。Neptune と Firehose は片方がエラーを返しても両方を試し、
-Neptune への書き込みが 1 件でも失敗したときだけ最後に例外で落とす（Lambda の非同期の再試行に任せる。履歴に二重に入った行は読む側が
-event_id で落とす）。Firehose は Lambda の中で合わせて 3 回まで送り直し、それでも届かなかった行は 1 行ずつ JSON のまま ERROR で
-ALERT_EVENT_LOST としてログに書いて終わる（例外にすると、Firehose が止まっているあいだ通知のたびに Neptune の書き込みまでやり直しになる。
-欠けた行は CloudWatch Logs Insights で `filter @message like /ALERT_EVENT_LOST/` と探して戻せる）。
-Neptune を先に書くので、Neptune が応答しないまま Lambda の timeout（60 秒）を使い切ると行もログも残らない。それを防ぐため、Neptune の
-クライアントは待ちを短くし（NEPTUNE_CONFIG）、通知ごとに書く前に Lambda の残り時間を見る。Firehose の取り分と Neptune 1 回の最大に
-足りなければ、その通知から先は Neptune に書かずに書けなかったものとして扱い（行は送り、最後に例外でやり直す）、WARNING で
-NEPTUNE_SKIPPED を 1 回ログに出す。
-これで防げるのは Neptune が応答しない（1 回目の問い合わせで落ちる）場合。残り時間は通知ごとに 1 回しか見ないので、遅いが答える Neptune に
-1 件の通知が何回も問い合わせる（未登録の IF なら 5 回）と、確認を通ったあとで timeout しうる。
+ALERT_DROPPED としてログに出す。行を組めない通知（starts_at が 9999 年を超えるなど、rules.alert_event が例外になるもの）も行にせず、
+1 件ずつ ALERT_DROPPED の WARNING に出して Neptune には書く（その 1 件のせいでほかの通知の行と Neptune を落とさない）。ALERT_STREAM が空なら行を組まない。
+行は Neptune より先に送る。呼び出しの全部の通知の行を組んで Firehose に送り、そのあと通知ごとに Neptune に書く（行は通知だけから組み、
+Neptune の結果を入れないので、先に送れる）。Firehose に使うのは長くても 22 秒ほど（FIREHOSE_CONFIG と RETRY_WAITS）なので、Neptune が遅くても
+応答しなくても、Lambda の timeout（60 秒）の前に履歴は残る。
+status の正しさを履歴の完全さより優先する（design.md の決定 6）。Firehose は Lambda の中で合わせて 3 回まで送り直し、それでも届かなかった
+行は 1 行ずつ JSON のまま ERROR で ALERT_EVENT_LOST としてログに書いて、例外にせず Neptune に進む（例外にすると、Firehose が止まっている
+あいだ通知のたびに Neptune の書き込みまでやり直しになる。欠けた行は CloudWatch Logs Insights で `filter @message like /ALERT_EVENT_LOST/`
+と探して戻せる）。Neptune への書き込みが 1 件でも失敗したら、残りの通知も書いてから最後に例外で落とす。Neptune の途中で timeout したときも
+同じく、Lambda の非同期のやり直しに任せる（status は遅れる。やり直しは書けた通知も流し直すので、そのあいだに届いた通知の値を古い値に
+戻すこともある（design.md のリスク 10）。やり直しで履歴に二重に入った行は、読む側が event_id で落とす）。
 """
 import json
 import logging
@@ -50,14 +49,15 @@ LAYER_KIND = {"bgp_down": "bgp", "isis_down": "isis"}   # アラートの kind �
 BATCH = 500   # put_record_batch の 1 回の上限（件数）。SNS の 1 通は多くて 50 件（Splunk）なので、ふつうは 1 回で済む
 RETRY_WAITS = (0.2, 0.4)   # Firehose の送り直しの前に待つ秒数。1 回目と合わせて 3 回まで試す
 # Firehose のクライアントは botocore の再試行を切り、早めにあきらめる。既定（5 回まで・接続の待ちが 60 秒）のままだと、エンドポイントに
-# 届かないとき 1 回目の呼び出しだけで Lambda の timeout を使い切り、残った行を ERROR に書く前にタイムアウトする。3 回でも 15.6 秒に収まる
+# 届かないとき 1 回目の呼び出しだけで Lambda の timeout を使い切り、残った行を ERROR に書く前に（Neptune にも書かずに）タイムアウトする。
+# 3 回でも 3 ×（接続 2 秒 + 読み 3 秒）+ 待ち 0.6 秒 = 15.6 秒に収まり、60 秒のうち 44 秒は Neptune に残る。接続の待ちはエンドポイントの
+# IP ごとにかかるので、エンドポイントが 2 つの AZ にあるとき（endpoints_multi_az = true）は 3 ×（2 × 2 + 3）+ 0.6 = 21.6 秒、残りは 38 秒
 FIREHOSE_CONFIG = Config(connect_timeout=2, read_timeout=3, retries={"total_max_attempts": 1, "mode": "standard"})
-# Neptune のクライアントもこの Lambda では待ちを短くし、再試行しない（1 回の呼び出しは長くて 13 秒）。agent/graph.py の既定
+# Neptune のクライアントもこの Lambda では待ちを短くし、試すのは 2 回まで（使い回した接続が向こうで切れていた（keep-alive の切れ）
+# ときを 1 回は救う。1 回の呼び出しは長くて 2 ×（接続 3 秒 + 読み 10 秒）+ 再試行の前の待ち 1 秒 = 27 秒、エンドポイントが 2 つの AZ に
+# あれば 2 ×（2 × 3 + 10）+ 1 = 33 秒。Firehose の 21.6 秒と足しても 60 秒に収まるのは問い合わせ 1 回まで。通知 1 件は 1〜5 回問い合わせる）。agent/graph.py の既定
 # （接続 10 秒・読み 60 秒・3 回まで）はエージェントと up.sh が使うので変えず、graph._cache に入れて差し替える
-NEPTUNE_CONFIG = Config(connect_timeout=3, read_timeout=10, retries={"total_max_attempts": 1, "mode": "standard"})
-FIREHOSE_SHARE = 20   # Firehose に残す秒数（3 回 ×（接続 2 秒 + 読み 3 秒）+ 待ち 0.6 秒 = 15.6 秒に余裕を足したもの）
-# Lambda の残りがこれより少なければ、その通知から先は Neptune に書かない（Firehose の取り分 + Neptune 1 回の最大 = 33 秒）
-NEPTUNE_BUDGET_MS = (FIREHOSE_SHARE + NEPTUNE_CONFIG.connect_timeout + NEPTUNE_CONFIG.read_timeout) * 1000
+NEPTUNE_CONFIG = Config(connect_timeout=3, read_timeout=10, retries={"total_max_attempts": 2, "mode": "standard"})
 _cache = {"firehose": None, "neptune": None}   # toolkit._clients とは分ける（toolkit.client("firehose") が先に既定の設定で作ったものを拾わない）
 
 
@@ -98,11 +98,21 @@ def _neptune() -> None:
     graph._cache["client"] = _cache["neptune"]
 
 
+def _dumps(row: dict) -> str:
+    """行の JSON。UTF-8 にできない文字（孤立したサロゲート）を含む行だけ \\u でエスケープする（その 1 行のせいで、バッチ全体の送信と ERROR の書き出しを落とさない）"""
+    s = json.dumps(row, ensure_ascii=False)
+    try:
+        s.encode()
+    except UnicodeEncodeError:
+        return json.dumps(row)
+    return s
+
+
 def _put(stream: str, rows: list) -> list:
     """put_record_batch を 1 回。戻り値は届かなかった行（FailedPutCount が 0 なら空、例外なら全部）"""
     try:
         r = _firehose().put_record_batch(
-            DeliveryStreamName=stream, Records=[{"Data": json.dumps(row, ensure_ascii=False).encode()} for row in rows])
+            DeliveryStreamName=stream, Records=[{"Data": _dumps(row).encode()} for row in rows])
     except Exception as e:  # noqa: BLE001 - 何で落ちても全部を送り直す
         log.warning("Firehose %s に送れなかった（%d 件）: %s: %s", stream, len(rows), type(e).__name__, e)
         return rows
@@ -128,57 +138,52 @@ def send_history(stream: str, rows: list) -> int:
             time.sleep(wait)
             left = _put(stream, left)
         for row in left:
-            log.error("ALERT_EVENT_LOST %s", json.dumps(row, ensure_ascii=False))
+            log.error("ALERT_EVENT_LOST %s", _dumps(row))
         lost += len(left)
     return lost
 
 
 def handler(event, context=None):
-    """SNS からの呼び出し（Records[].Sns.Message）。Neptune への書き込みと Firehose への送信を両方試し、
-    Neptune への書き込みが失敗していれば最後に RuntimeError で落として Lambda の非同期の再試行に任せる（Firehose の失敗では落とさない）。
-    context（Lambda が渡す）の残り時間が NEPTUNE_BUDGET_MS より少なくなったら、その通知から先は Neptune に書かず、書けなかったものとして数える"""
-    results, rows, errors = [], [], []
+    """SNS からの呼び出し（Records[].Sns.Message）。全部の通知の行を組んで先に Firehose へ送り、そのあと通知ごとに Neptune に書く。
+    Neptune への書き込みが失敗していれば最後に RuntimeError で落として Lambda の非同期の再試行に任せる（Firehose の失敗では落とさない）"""
+    alerts, rows = [], []
     received_at = time.time()
-    remaining = getattr(context, "get_remaining_time_in_millis", None)   # context が無い（手で呼んだ）ときは見ない
-    skipped = 0
+    stream = os.environ.get("ALERT_STREAM", "")
     for rec in event.get("Records") or []:
         message = (rec.get("Sns") or {}).get("Message", "")
-        alerts = rules.alerts_from_message(message)
-        dropped = rules.alert_count(message) - len(alerts)
+        got = rules.alerts_from_message(message)
+        dropped = rules.alert_count(message) - len(got)
         if dropped:
             log.warning("ALERT_DROPPED device_id か kind が無い、または status が firing / resolved でない通知を %d 件捨てた（履歴にも残らない）: %s",
                         dropped, str(message)[:300])
-        elif not alerts:
+        elif not got:
             log.warning("読めないメッセージ（捨てる）: %s", str(message)[:300])
-        if not alerts:
+        alerts.extend(got)
+        if not stream:   # ALERT_STREAM が空なら行を組まない（履歴の無い配備では、このサイクルの前と同じ動き）
             continue
-        for a in alerts:
-            rows.append(rules.alert_event(a, received_at))
-            line = json.dumps({k: a.get(k) for k in ("source", "status", "device_id", "kind", "target")}, ensure_ascii=False)
-            left = remaining() if remaining and not skipped else None
-            if skipped or (left is not None and left < NEPTUNE_BUDGET_MS):
-                if not skipped:
-                    log.warning("NEPTUNE_SKIPPED Lambda の残りが %d ミリ秒で %d ミリ秒（Firehose の取り分 + Neptune 1 回の最大）に足りないので、"
-                                "この通知から先は Neptune に書かない（履歴の行は送り、最後に例外でやり直す）: %s", left, NEPTUNE_BUDGET_MS, line)
-                skipped += 1
-                continue
+        for a in got:
             try:
-                _neptune()
-                r = apply(a)
-            except Exception as e:  # noqa: BLE001 - 1 件が落ちても残りの通知と Firehose は試す
-                log.exception("Neptune に書けなかった: %s", line)
-                errors.append(f"neptune {line}: {type(e).__name__}: {e}")
-                continue
-            if r.get("unregistered"):
-                log.warning("UNREGISTERED 未登録の機器・インタフェースの異常（トポロジに登録する）: %s -> %s", line, json.dumps(r, ensure_ascii=False))
-            else:
-                log.info("%s -> %s", line, json.dumps(r, ensure_ascii=False))
-            results.append(r)
-    if skipped:   # 先頭に置く（後ろの 2000 文字の切り詰めで消えないように）
-        errors.insert(0, f"neptune: Lambda の残り時間が足りず {skipped} 件を書かなかった")
-    stream = os.environ.get("ALERT_STREAM", "")
-    if rows and stream:
+                rows.append(rules.alert_event(a, received_at))
+            except Exception as e:  # noqa: BLE001 - 行を組めない 1 件のせいで、ほかの通知の行と Neptune を落とさない
+                log.warning("ALERT_DROPPED 行を組めない通知を履歴に残さない（Neptune には書く）: %s: %s: %s", type(e).__name__, e,
+                            json.dumps({k: a.get(k) for k in ("source", "status", "device_id", "kind", "target", "starts_at")}))
+    if rows:   # Neptune より先に送る（Neptune が遅くても応答しなくても、timeout の前に履歴は残る）
         send_history(stream, rows)
+    results, errors = [], []
+    for a in alerts:
+        line = json.dumps({k: a.get(k) for k in ("source", "status", "device_id", "kind", "target")}, ensure_ascii=False)
+        try:
+            _neptune()
+            r = apply(a)
+        except Exception as e:  # noqa: BLE001 - 1 件が落ちても残りの通知は書く
+            log.exception("Neptune に書けなかった: %s", line)
+            errors.append(f"neptune {line}: {type(e).__name__}: {e}")
+            continue
+        if r.get("unregistered"):
+            log.warning("UNREGISTERED 未登録の機器・インタフェースの異常（トポロジに登録する）: %s -> %s", line, json.dumps(r, ensure_ascii=False))
+        else:
+            log.info("%s -> %s", line, json.dumps(r, ensure_ascii=False))
+        results.append(r)
     if errors:
         raise RuntimeError("; ".join(errors)[:2000])
     return results

@@ -670,3 +670,270 @@ git status 行数: 13
 - 結論の変わったところ: 「Neptune が応答しなくても遅くても、Firehose まで着く」→「応答しない場合に限る。遅いが答える場合は、1 件の通知の問い合わせの回数で 60 秒を超えうる」。直し方の候補の順は、(a) の延長（問い合わせごとの確認）より (b) Firehose を先に送る、を先に置く。
 - 部分的な真実: 再試行なし（決定 2）には #4 の副作用がある。#4 と #5 は AWS で確かめていない。Neptune Analytics が実際に 1 回の問い合わせにかける時間も測っていないので、#1 が PoC の量で起きるかは AWS で測るまで分からない。
 - 残り: #1 #2 は Must、#3〜#7 は Should で、どれも原因が設計側（順番、時間の予算、決定 2、graph.py の共有部分、リスクの文言）なので差し戻す。設計が決まるまで cold review には出さない。
+
+## Round 4
+
+実装モデル: opus-5.5 / effort: high
+
+worktree とブランチは Round 1 と同じ（HEAD `26ddf74` の上）。設計の差し戻し Round 3（design-log.md の `## Round 3`、決定 1〜6）を実装した。design-log.md と design.md の Round 3 の文面は、設計側（勉強用）の依頼でこのブランチに書いた。
+
+### 実装した内容
+
+- 決定 1: handler は全部の通知の行を組む → `send_history`（Firehose）→ alert ごとに Neptune、の順にした。
+- 決定 2: 残り時間を見て打ち切る仕組み（`FIREHOSE_SHARE`、`NEPTUNE_BUDGET_MS`、`NEPTUNE_SKIPPED`）を消した。
+- 決定 3: Neptune の失敗は、これまでどおり最後に RuntimeError。
+- 決定 4: timeout 60 秒と FIREHOSE_CONFIG はそのまま（sync.tf はコメントだけ）。
+- 決定 5: `NEPTUNE_CONFIG` の `total_max_attempts` を 1 → 2 にした。graph.py は変えていない。
+- 決定 6: design.md のリスク 9（`queryTimeoutMilliseconds`）と 10（古い firing が新しい resolved のあと）を足した。
+- セルフレビューで足したもの（下の #1 #2）:
+  - 行を組めない通知を、その 1 件だけ ALERT_DROPPED にする。
+  - `ALERT_STREAM` が空なら行を組まない。
+  - 行の JSON の孤立したサロゲートを `\u` でエスケープする（`_dumps`）。
+
+### 変更ファイル一覧
+
+| ファイル | 変更 |
+| :--- | :--- |
+| `graph/status_handler.py` | 決定 1〜3・5。`_dumps`（:101）、通知ごとの try で行を組む（:162-169）、`if rows: send_history`（:170）が Neptune の前。docstring に順番、ALERT_DROPPED、やり直しで古い値に戻ること。FIREHOSE_CONFIG と NEPTUNE_CONFIG のコメントに 2 AZ のときの上限（21.6 秒、33 秒） |
+| `terraform/pipeline/graph/sync.tf` | timeout 60 のコメントだけ |
+| `tests/test_sync.py` | 残り時間の項目を消し、順番の 3 項目、NEPTUNE_CONFIG（2 回）、Firehose の上限（2 AZ で 21.6 秒）と timeout の和（54.6 秒）、行を組めない通知・ALERT_STREAM が空・サロゲート（2 項目）を足した。91 → 94 項目 |
+| `docs/cycles/001-alert-history-firehose/design.md` | 書く側・実装ステップ・検証方法を Round 3 の順番に。リスクの先頭 2 つを書き直し（「PoC の量では起きない見込み」を消した）、リスク 9・10・11 |
+| `docs/cycles/001-alert-history-firehose/design-log.md` | `## Round 3`（設計側の依頼の文面） |
+| `docs/pipeline.md`、`data-stores.md`、`troubleshooting.md` | 「行は Neptune より先に送る。Neptune が遅くても履歴は残る。status は遅れる、または失敗してやり直す」。打ち切りと NEPTUNE_SKIPPED の記述を消した。ALERT_DROPPED に行を組めない通知、pipeline.md に 2 AZ とやり直しで古い値に戻ること |
+| `docs/development.md` | test_sync の項目数 |
+| `docs/cycles/001-alert-history-firehose/build-r4-check.log` | 最後の編集のあとの `bash ops/check.sh` の全文 |
+
+### 設計からの逸脱と残るリスク
+
+- 依頼に無いが足したもの: 行を組めない通知の扱い（通知ごとの try）と、`ALERT_STREAM` が空なら行を組まないこと、サロゲートのエスケープ。依頼の決定 1「ALERT_DROPPED の扱いは変えない」の範囲を超えるが、足さないと決定 1 の順番のせいで退行する（#1）。design.md の書く側と検証方法に書いた。
+- Firehose の上限はエンドポイントの IP の数で変わる。1 つなら 15.6 秒、2 つの AZ（`endpoints_multi_az = true`）なら 21.6 秒（#S1）。Neptune 1 回の呼び出しは 27 秒 / 33 秒で、60 秒に収まるのは問い合わせ 1 回まで（決定 2 で、それ以上は非同期のやり直しに任せる）。
+- 読みの待ち（3 秒）は 1 回の受信ごとの上限で、応答が細切れに返り続けると上限が無い。AWS のエンドポイントでは起きない見込みで、確かめていない（design.md のリスクの先頭）。
+- `rules.alerts_from_message` の `_epoch` は `starts_at` が `1e400` だと OverflowError で、そのメッセージは「読めない」扱いで捨てる（Neptune にも書かない）。`4bdd397` からある動きで、このラウンドの変更ではない。設計側で決める（#S2）。
+
+### 検証（最後の編集のあとに取り直した出力）
+
+`bash ops/check.sh` の全文は [build-r4-check.log](build-r4-check.log)（1271 行、exit 0）。以下はその抜粋で、行は書き換えていない。
+
+```
+== 1. terraform fmt -check -recursive terraform
+差分なし
+
+== 2. 9 つのルートの validate
+terraform/base/ecr  OK
+terraform/base/core  OK
+terraform/agent  OK
+terraform/pipeline/lab  OK
+terraform/pipeline/stream  OK
+terraform/pipeline/analytics  OK
+terraform/pipeline/graph  OK
+terraform/pipeline/nautobot  OK
+terraform/workflow  OK
+
+== 3. ops スクリプトの構文
+構文エラーなし
+```
+```
+通過 104 / 失敗 0     (test_app)
+通過 74 / 失敗 0      (test_graph)
+通過 60 / 失敗 0      (test_stream)
+通過 94 / 失敗 0      (test_sync)
+通過 271 / 失敗 0     (test_analytics)
+通過 272 / 失敗 0     (test_workflow)
+通過 89 / 失敗 0      (test_alerts)
+通過 7 / 失敗 0       (test_kb_index)
+通過 75 / 失敗 0      (test_lab_debug)
+58 項目すべて通過     (test_nautobot)
+すべて通過
+```
+
+（括弧のファイル名は貼るときに足した。ログ中の Traceback は、例外の経路を確かめるテストが意図して出しているもの。）
+
+#### 依頼のテストと出力
+
+1. 順番と設定の値（test_sync の中。build-r4-check.log の 406-417 行）
+   ```
+   ok 行を組めない通知（starts_at が範囲外）は行にせず ALERT_DROPPED の WARNING を 1 回、ほかの 2 件の行は送り、3 件とも Neptune に書く（例外にしない）
+   ok ALERT_STREAM が空なら行を組まない（starts_at が範囲外でも WARNING を出さず、3 件とも Neptune に書く。このサイクルの前と同じ動き）
+   ok UTF-8 にできない文字を含む行も、ほかの行と同じ 1 回の put_record_batch で送る（その行だけ \u でエスケープし、読み戻すと同じ値）
+   ok Firehose が止まっていても、UTF-8 にできない文字を含む行の ALERT_EVENT_LOST も UTF-8 で書き出せて、JSON として読み戻すと同じ値
+   ok Neptune には status_handler が NEPTUNE_CONFIG で作ったクライアントを graph._cache に入れてから書く
+   ok Records が 2 通（通知 5 件）でも、5 行を 1 回の put_record_batch で Neptune より先に送り、そのあと 5 件を Neptune に書く
+   ok Firehose が止まっていても、3 回送って 5 行を ALERT_EVENT_LOST の ERROR に書き終えてから Neptune に進み、5 件とも書く（例外にしない）
+   ok Neptune が 1 件目から落ちても、行は全部その前に送ってあり、残りの通知も書いてから最後に RuntimeError
+   ok Firehose へは FIREHOSE_CONFIG で 1 つだけ作ったクライアントで送り、botocore の再試行を切る（1 回）。Firehose に使うのは長くて 21.6 秒（22 秒未満）
+   ok Neptune へは NEPTUNE_CONFIG（接続 3 秒・読み 10 秒・試すのは 2 回）で 1 つだけ作ったクライアントを graph._cache に入れて使い、agent/graph.py の既定（接続 10 秒・読み 60 秒）は変えない
+   ok Lambda graph-status の timeout は 60 秒で、Firehose の上限と Neptune 1 回の呼び出しの上限の和（54.6 秒）より長い
+   ok Neptune のクライアントを作るところで落ちても（_neptune() は通知ごとの try の中）、行は Firehose に送ってから RuntimeError で落とす
+   ```
+2. 1 回 9.9 秒で答える偽の Neptune（`slow_r4.py`。本物の botocore の NEPTUNE_CONFIG のクライアントを手元の HTTP サーバに向けた。Firehose は偽物。1) は時計を進める偽物、2) は実時間。UNREGISTERED の WARNING 3 行は省いた）
+   ```
+   1) 未登録の回線 1 件: Firehose に着いた時刻と行数 [(0.0, 1)] / Neptune の最初の問い合わせ 0.0 秒 / 問い合わせ 5 回 / handler 全体 49.5 秒 / 例外 ''
+      呼ばれた順: firehose → 5 回の neptune（firehose は 1 回）
+   1) 登録済みの回線 1 件 + 未登録の回線 1 件（Round 3 で 69.3 秒の形）: Firehose に着いた時刻と行数 [(0.0, 2)] / Neptune の最初の問い合わせ 0.0 秒 / 問い合わせ 7 回 / handler 全体 69.3 秒 / 例外 ''
+      呼ばれた順: firehose → 7 回の neptune（firehose は 1 回）
+   1) 登録済みの回線 1 件 + 未登録の機器の trap 1 件: Firehose に着いた時刻と行数 [(0.0, 2)] / Neptune の最初の問い合わせ 0.0 秒 / 問い合わせ 5 回 / handler 全体 49.5 秒 / 例外 ''
+      呼ばれた順: firehose → 5 回の neptune（firehose は 1 回）
+   1) 登録済みの回線 3 件: Firehose に着いた時刻と行数 [(0.0, 3)] / Neptune の最初の問い合わせ 0.0 秒 / 問い合わせ 6 回 / handler 全体 59.4 秒 / 例外 ''
+      呼ばれた順: firehose → 6 回の neptune（firehose は 1 回）
+   2) 実時間（登録済み + 未登録の回線 2 件、Neptune は 1 回 9.9 秒）:
+        0.001 秒  Firehose のサーバが 2 行を受けた
+        0.002 秒  Neptune に送った
+        9.908 秒  Neptune の答えを受けた
+        9.910 秒  Neptune に送った
+      Firehose に着いたのは 0.001 秒（1 番目の出来事）、Neptune への最初の送信は 0.002 秒（2 番目）→ Neptune より前 / 5 秒以内
+   ```
+   69.3 秒の形は handler 全体が 60 秒を超える（Lambda なら途中で timeout し、非同期のやり直しになる）が、行は 0.0 秒で着いている。
+3. 応答しない Neptune（`hang_r4.py`。connect はつながらない IP 10.255.255.1:9、read は手元のソケットが受けて黙る。通知 2 件。通知ごとの「Neptune に書けなかった」と Traceback は省いた）
+   ```
+   mode=connect 通知 2 件 / handler 全体 13.0 秒
+        0.0 秒  Firehose に 2 行
+        0.0 秒  Neptune に送った
+        3.0 秒  Neptune の 1 回目が ConnectTimeoutError
+        3.7 秒  Neptune に送った
+        6.7 秒  Neptune の 2 回目が ConnectTimeoutError
+        6.7 秒  Neptune に送った
+        9.7 秒  Neptune の 1 回目が ConnectTimeoutError
+       10.0 秒  Neptune に送った
+       13.0 秒  Neptune の 2 回目が ConnectTimeoutError
+   例外: RuntimeError: neptune {"source": "grafana", "status": "firing", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1
+   Firehose に着いたのは 0.0 秒（1 番目）、Neptune への最初の送信は 0.0 秒（2 番目）→ Neptune より前 / Neptune への送信は通知 1 件あたり 2 回 / 通知 1 件の呼び出しは 6.5 秒
+
+   mode=read 通知 2 件 / handler 全体 40.9 秒
+        0.0 秒  Firehose に 2 行
+        0.0 秒  Neptune に送った
+       10.0 秒  Neptune の 1 回目が ReadTimeoutError
+       10.7 秒  Neptune に送った
+       20.7 秒  Neptune の 2 回目が ReadTimeoutError
+       20.7 秒  Neptune に送った
+       30.7 秒  Neptune の 1 回目が ReadTimeoutError
+       30.9 秒  Neptune に送った
+       40.9 秒  Neptune の 2 回目が ReadTimeoutError
+   例外: RuntimeError: neptune {"source": "grafana", "status": "firing", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1
+   Firehose に着いたのは 0.0 秒（1 番目）、Neptune への最初の送信は 0.0 秒（2 番目）→ Neptune より前 / Neptune への送信は通知 1 件あたり 2 回 / 通知 1 件の呼び出しは 20.5 秒
+   ```
+   1 回目と 2 回目のあいだの 0.2〜0.7 秒は botocore の再試行の前の待ち（standard モードの乱数。上限 1 秒）。
+4. Firehose が止まっているときの上限（`firehose_bound.py` は IP 1 つ、`multi_ip_r4.py` は IP 2 つ。本物の botocore の FIREHOSE_CONFIG のクライアント。tls は TLS の握手のあと要求を読んで黙るサーバで、接続と読みの両方の待ちを使い切る最悪。InsecureRequestWarning は省いた）
+   ```
+   mode=tls 通知 3 件 / handler 全体 15.3 秒 / 戻り値 [{'device_id': 'dc1-leaf-01', 'if_name': 'ethernet-1/1', 'status': 'DOWN', 'updated': 2}, {'device_id': 'dc1-leaf-02', 'if_name': 'ethernet-1/1', 'status': 'DOWN', 'updated': 2}, {'device_id': 'dc1-leaf-03', 'if_name': 'ethernet-1/1', 'status': 'DOWN', 'updated': 2}]
+        0.0 秒  Firehose に送った
+        4.9 秒  Firehose の失敗の WARNING: ReadTimeoutError: Read timeout on endpoint URL: "https://localhost:547
+        5.1 秒  Firehose に送った
+       10.0 秒  Firehose の失敗の WARNING: ReadTimeoutError: Read timeout on endpoint URL: "https://localhost:547
+       10.4 秒  Firehose に送った
+       15.3 秒  Firehose の失敗の WARNING: ReadTimeoutError: Read timeout on endpoint URL: "https://localhost:547
+       15.3 秒  ALERT_EVENT_LOST の ERROR
+       15.3 秒  ALERT_EVENT_LOST の ERROR
+       15.3 秒  ALERT_EVENT_LOST の ERROR
+       15.3 秒  Neptune に問い合わせた
+       15.3 秒  Neptune に問い合わせた
+       15.3 秒  Neptune に問い合わせた
+       15.3 秒  Neptune に問い合わせた
+       15.3 秒  Neptune に問い合わせた
+       15.3 秒  Neptune に問い合わせた
+   Firehose に使った時間 15.3 秒（ERROR を書き終えたのは 15.3 秒、そのあと Neptune）/ 60 秒のうち Neptune に残るのは 44.7 秒
+
+   IP 2 個（最後の 1 個は 1.9 秒後に TLS に応じ、要求を読んで黙る）: send_history 全体 21.3 秒、送った時刻 [0.0, 7.1, 14.4]
+   IP 2 個（どれも届かない）: send_history 全体 12.6 秒、送った時刻 [0.0, 4.2, 8.6]
+   ```
+   理論値は IP 1 つで 3 ×（2 + 3）+ 0.6 = 15.6 秒（残り 44.4 秒）、2 つで 3 ×（2 × 2 + 3）+ 0.6 = 21.6 秒（残り 38.4 秒）。
+5. 消した名前が残っていないか（コードと docs。build.md は Round 3 の記録と Round 4 の引用で 30 行当たるので外した。行の後半は … で切った）
+   ```
+   $ grep -rnE "NEPTUNE_SKIPPED|33 ?秒|PoC の量では起きない見込み" graph terraform tests agent docs --include='*.py' --include='*.tf' --include='*.md' --exclude=build.md
+   graph/status_handler.py:58:# あれば 2 ×（2 × 3 + 10）+ 1 = 33 秒。Firehose の 21.6 秒と足しても 60 秒に収まるのは問い合わせ 1 回まで。…
+   docs/pipeline.md:190:  - 接続の待ちはエンドポイントの IP ごとにかかる。…Neptune 1 回が長くて 33 秒で、足しても 60 秒に収まる。
+   docs/cycles/001-alert-history-firehose/design.md:60:  - Firehose に使う時間に上限を付ける（Round 2）。…（Round 4 の実装で実測して足した。Neptune 1 回の 33 秒と足しても 60 秒に収まる）。
+   docs/cycles/001-alert-history-firehose/design.md:62:  - この Lambda が使う Neptune のクライアントは、…エンドポイントが 2 つの AZ にあれば 2 ×（2 × 3 + 10）+ 1 = 33 秒）。…
+   docs/cycles/001-alert-history-firehose/design-log.md:103:  2. 残り時間を見て Neptune を打ち切る仕組み（33 秒の閾値と、その WARNING）は消す。…
+   ```
+   `NEPTUNE_SKIPPED` と「PoC の量では起きない見込み」は build.md の外に 0 件。「33 秒」の残りは、2 AZ のときの Neptune 1 回の呼び出しの上限（打ち切りの閾値とは別の値で、たまたま同じ数）と、design-log の決定 2 の文面。
+6. design.md の検証方法（Round 2 までの項目）は上の check.sh で通る。AWS 1〜5 は**未実行**（ユーザーが `ops/up.sh` を打つ）。
+
+### セルフレビュー
+
+- 自分: opus-5.5 / effort high（スキルの既定は xhigh。セッションの effort を変えられなかった）
+- 反対弁護人: Agent（general-purpose、model opus）1 回。design.md・design-log.md・build.md のパス、変更ファイル、方針（Firehose を先に、打ち切りを消す、試行 2 回）、不安な箇所（順番のテストが本当に縛っているか、Firehose の上限の前提、やり直しの二重と event_id、行を組めない通知）、それまでの結論を渡し、読み取り専用で頼んだ。返ってきたあとの `git status --porcelain -uall` は自分の変更だけで、増えたファイルは無かった。
+- 入力は design.md・design-log.md（Round 3）と worktree のコード。
+
+#### 指摘と片付け
+
+| # | 分類 | 観点 | 場所 | 破綻シナリオ | 確かめたもの | 片付け |
+| :-- | :-- | :-- | :-- | :-- | :-- | :-- |
+| S1 | Should | runtime / docs | `graph/status_handler.py:51-60`、design.md:60、:62 | 接続の待ちはエンドポイントの IP ごとにかかる（TLS の握手も接続の待ちに入る）。2 つの AZ にエンドポイントがあると、Firehose の上限は 15.6 秒でなく 21.6 秒、Neptune 1 回の呼び出しは 27 秒でなく 33 秒。コメントと docs が 1 つの IP を前提にしていた | `multi_ip_r4.py`（上の 4）: IP 2 つで 21.3 秒、送った時刻 [0.0, 7.1, 14.4]。どれも届かない IP 2 つでは 12.6 秒、[0.0, 4.2, 8.6] | 直した: コメント、design.md:60/62、pipeline.md:190。test_sync で 21.6 秒 < 22 秒と、54.6 秒 < 60 秒を検査（R10・R11・R13 で落ちる） |
+| S2 | Should | correctness（前からある） | `workflow/rules.py` の `_epoch`（`4bdd397`） | `starts_at` が `1e400` だと `alerts_from_message` が OverflowError を投げ、メッセージ全体が「読めない」扱いになって Neptune にも書かない | `starts_at_r4.py`（下）: 実際の送り手（Grafana の `.StartsAt.Unix`、Splunk の `latest(_time)`）と空・ゼロ時刻は行を組める。`10000-01-01` と epoch ミリ秒は `alert_event` で ValueError（→ #1）。`1e400` は `alerts_from_message` で OverflowError | 最終報告（設計側で決める。このラウンドの変更ではない） |
+| 1 | Must | correctness / 退行 | `graph/status_handler.py:162-169` | 行を組む `rules.alert_event` が 1 件でも例外になる（starts_at が epoch ミリ秒で 9999 年を超える、など）と、handler ごと落ちて、そのメッセージの全部の通知が Neptune に書かれない。ALERT_STREAM が空（履歴の無い配備）でも起きる。Round 3 までは Neptune を先に書いていたので起きなかった（決定 1 の順番から来る退行） | `verify_da_r4.py` #1（直す前、要約。生の出力は残していない）: ValueError、Neptune に書いた []、put_record_batch []。直したあとは下 | 直した: 通知ごとの try で、その 1 件だけ ALERT_DROPPED の WARNING。ALERT_STREAM が空なら行を組まない。test_sync に 2 項目（R14・R15 で落ちる） |
+| 2 | Should | data loss | `graph/status_handler.py:101-109` | 通知の文字列に孤立したサロゲート（`\udcff`）があると、`json.dumps(ensure_ascii=False).encode()` が UnicodeEncodeError になり、500 件のバッチが丸ごと届かない。ALERT_EVENT_LOST の ERROR も同じ理由で書けない | `verify_da_r4.py` #2（直す前、要約）: put_record_batch []、ALERT_EVENT_LOST 50 行（書き出せない）。直したあとは下 | 直した: `_dumps` でその行だけ `\u` エスケープ。test_sync に 2 項目（R16・R17 で落ちる） |
+| 3 | Should | docs | status_handler.py の docstring、design.md のリスク 10、`docs/pipeline.md:187` | やり直しは呼び出しの通知を全部流し直す（書けていた通知も）ので、status は「遅れる」だけでなく、あいだに届いた新しい通知の値を古い値に戻しうる（両向き） | 読んだだけ（handler は Records 全部を回す。graph.py の SET は時刻を比べない） | 直した: docstring、リスク 10、pipeline.md |
+| 4 | Should | docs | design.md のリスク 9 | 「同じ通知の書き込みどうしなら値は同じ」は 1 回の呼び出しの中でだけ正しい。走り続けた問い合わせが、あとから届いた別の通知の書き込みより後に効くと、新しい status を古い値に戻す | 読んだだけ | 直した: リスク 9 |
+| 5 | Should | docs | design.md のリスク 11 | Firehose を先に送るぶん、Neptune への書き込みは 0〜22 秒遅れ、呼び出しごとに遅れが違うと同じ要素の通知の順が入れ替わる窓が広がる | 読んだだけ（AWS で put_record_batch 1 回の時間は測っていない） | 直した: リスク 11 |
+| 6 | Should | 証跡 | build.md、build-r4-check.log、test_sync | 反対弁護人に渡した時点では check.sh のログが古く、build.md の Round 4 が無く、#1 #2 のテストも無かった | — | 直した: check.sh を最後の編集のあとに取り直し、テストを足し、この節を書いた |
+| 7a | Nit | runtime | `graph/status_handler.py:129-143` | 500 件を超えると put_record_batch が複数回になり、1 回ごとに長くて 21.6 秒。SNS の 1 通は多くて 50 件なので、ふつうは 1 回 | 読んだだけ | 最終報告 |
+| 7b | Nit | runtime | botocore | 名前解決（DNS）の待ちには上限が無い | 読んだだけ | 最終報告 |
+| 7c | Nit | テスト | `tests/test_sync.py` の `_ips = 2` | 2 AZ を決め打ちしている。AZ が 3 つになれば上限は 27.6 秒 | 読んだだけ | 最終報告 |
+| 7d | Nit | docs | `graph/status_handler.py:58` | 「60 秒に収まる」が問い合わせ何回分か書いていなかった | 読んだだけ | 直した:「問い合わせ 1 回まで」 |
+
+反対弁護人の指摘で成り立たなかったもの:
+
+- 「順番のテストは順番を縛っていない」: Neptune を先に書く注入（R1）と Records ごとに送る注入（R2）で test_sync が落ちる（下）。
+- 「やり直しで received_at が変わり、event_id で落ちない」: event_id は `<anomaly_id>#<source>#<status>#<starts_at>` で received_at を含まない（design.md の行の形）。読む側の `history_sql` は event_id ごとに最初の 1 行を取る（test_app の `row_number() OVER (PARTITION BY event_id` の検査）。
+
+#1 #2 を直したあとの再現（`verify_da_r4.py`。最後の編集のあとに取り直した）:
+```
+== 指摘 1: starts_at が epoch ミリ秒の通知が 2 件目 ==
+ALERT_STREAM='': 例外なし / Neptune に書いた ['dc1-leaf-01', 'dc1-leaf-02', 'dc1-leaf-03'] / put_record_batch の件数 []
+ALERT_STREAM='s': 例外なし / Neptune に書いた ['dc1-leaf-01', 'dc1-leaf-02', 'dc1-leaf-03'] / put_record_batch の件数 [2]
+== 指摘 2: 50 件中 1 件の detail に孤立したサロゲート ==
+例外なし / Neptune に書いた 50 件 / put_record_batch の件数 [50] / ALERT_EVENT_LOST の行 0
+```
+
+S2 の再現（`starts_at_r4.py`。`rules.alerts_from_message` → `rules.alert_event` に通した）:
+```
+Grafana の通常（.StartsAt.Unix）: 行を組めた starts_at=2026-09-21T14:13:20.000000Z
+Grafana のゼロ時刻（0001-01-01 の .Unix）: 行を組めた starts_at=None
+Splunk の latest(_time)（小数の文字列）: 行を組めた starts_at=2026-09-21T14:13:20.000000Z
+Splunk の空: 行を組めた starts_at=None
+無い: 行を組めた starts_at=None
+9999-12-31 23:59:59: 行を組めた starts_at=9999-12-31T23:59:59.000000Z
+10000-01-01（年が 9999 を超える）: alert_event で ValueError: year 10000 is out of range
+epoch ミリ秒（送り手の取り違え）: alert_event で ValueError: year 58692 is out of range
+1e400（JSON の数としては読める）: alerts_from_message で OverflowError: cannot convert float infinity to integer
+```
+
+注入（`mutate_r4.py`。最後のコードの編集のあとに取り直した。毎回元に戻した）:
+```
+R1 Neptune を先に書き、Firehose はそのあと（Round 3 までの順）: test_sync exit 1 / 通過 70 件で停止  / AssertionError: Records が 2 通（通知 5 件）でも、5 行を 1 回の put_record_batch で Neptune より先に送り、そのあと 5 件を Neptune に書く
+R2 Records ごとに送る（全部の通知を組む前に送る）: test_sync exit 1 / 通過 58 件で停止  / AssertionError: 1 回の呼び出しで 500 件を超えたら put_record_batch を 500 件ずつに分ける（API の上限）
+R3 Firehose で行を落としたら Neptune に書かない: test_sync exit 1 / 通過 54 件で停止  / AssertionError: Firehose が毎回例外なら put_record_batch は 3 回、待ちは 0.2 秒と 0.4 秒、行ごとに ERROR を 1 つ出して例外にしない（Neptune は書く）
+R4 Neptune の失敗を例外にしない: test_sync exit 1 / 通過 45 件で停止  / AssertionError: Neptune に書けなければ最後に RuntimeError で落とす（Lambda の非同期の再試行に任せる。やり直しの合間に後の通知が来ると古い値に戻る）
+R5 Neptune の失敗で残りの通知を書かずに抜ける: test_sync exit 1 / 通過 72 件で停止  / AssertionError: Neptune が 1 件目から落ちても、行は全部その前に送ってあり、残りの通知も書いてから最後に RuntimeError
+R6 Neptune のクライアントを差し替えない: test_sync exit 1 / 通過 69 件で停止  / AssertionError: Neptune には status_handler が NEPTUNE_CONFIG で作ったクライアントを graph._cache に入れてから書く
+R7 Neptune を試すのは 1 回（Round 3 の値）: test_sync exit 1 / 通過 74 件で停止  / AssertionError: Neptune へは NEPTUNE_CONFIG（接続 3 秒・読み 10 秒・試すのは 2 回）で 1 つだけ作ったクライアントを graph._cache に入れて使い、agent/graph.py の既定（接続 10 秒・読み 60 秒）は変えない
+R8 Neptune を試すのは 3 回: test_sync exit 1 / 通過 74 件で停止  / AssertionError: Neptune へは NEPTUNE_CONFIG（接続 3 秒・読み 10 秒・試すのは 2 回）で 1 つだけ作ったクライアントを graph._cache に入れて使い、agent/graph.py の既定（接続 10 秒・読み 60 秒）は変えない
+R9 Neptune の読みの待ちを 20 秒にする: test_sync exit 1 / 通過 74 件で停止  / AssertionError: Neptune へは NEPTUNE_CONFIG（接続 3 秒・読み 10 秒・試すのは 2 回）で 1 つだけ作ったクライアントを graph._cache に入れて使い、agent/graph.py の既定（接続 10 秒・読み 60 秒）は変えない
+R10 Firehose の読みの待ちを 5 秒にする（上限が 16 秒を超える）: test_sync exit 1 / 通過 73 件で停止  / AssertionError: Firehose へは FIREHOSE_CONFIG で 1 つだけ作ったクライアントで送り、botocore の再試行を切る（1 回）。Firehose に使うのは長くて 27.6 秒（22 秒未満）
+R11 Firehose に botocore の再試行を 3 回させる: test_sync exit 1 / 通過 73 件で停止  / AssertionError: Firehose へは FIREHOSE_CONFIG で 1 つだけ作ったクライアントで送り、botocore の再試行を切る（1 回）。Firehose に使うのは長くて 21.6 秒（22 秒未満）
+R12 2 通目の Records の通知を Neptune に書かない: test_sync exit 1 / 通過 43 件で停止  / AssertionError: 1 通に何件か入っていても、Records が何件あっても、全部を順に書く（Grafana はグループごとに 1 通）
+R13 Lambda の timeout を 30 秒にする: test_sync exit 1 / 通過 75 件で停止  / AssertionError: Lambda graph-status の timeout は 60 秒で、Firehose の上限と Neptune 1 回の呼び出しの上限の和（54.6 秒）より長い
+R14 行を組めない通知で呼び出しごと落ちる（通知ごとの try を外す。反対弁護人の指摘 1）: test_sync exit 1 / 通過 65 件で停止  / ValueError: year 58692 is out of range
+R15 ALERT_STREAM が空でも行を組む（送りはしない。指摘 1 の空のとき）: test_sync exit 1 / 通過 66 件で停止  / AssertionError: ALERT_STREAM が空なら行を組まない（starts_at が範囲外でも WARNING を出さず、3 件とも Neptune に書く。このサイクルの前と同じ動き）
+R16 行の JSON をそのまま UTF-8 にする（_dumps のエスケープを外す。指摘 2）: test_sync exit 1 / 通過 67 件で停止  / AssertionError: UTF-8 にできない文字を含む行も、ほかの行と同じ 1 回の put_record_batch で送る（その行だけ \u でエスケープし、読み戻すと同じ値）
+R17 ALERT_EVENT_LOST だけ素の json.dumps に戻す（指摘 2 の ERROR 側）: test_sync exit 1 / 通過 68 件で停止  / AssertionError: Firehose が止まっていても、UTF-8 にできない文字を含む行の ALERT_EVENT_LOST も UTF-8 で書き出せて、JSON として読み戻すと同じ値
+git status 行数（注入前と同じはず）: 11
+```
+（11 は M 10 本（build.md を含む）と build-r4-check.log。R10 と R11 の項目名の秒数は注入した値から組み立てたもの（R10 は 2 AZ で 3 ×（2 × 2 + 5）+ 0.6 = 27.6 秒。見出しの「16 秒」は IP 1 つで数えた値）。R11 で落ちたのは試行の回数の検査。R2 は 500 件の分割の項目で先に落ちる（順番の項目より前にある）。）
+
+#### 問題なしとした観点
+
+- 打ち切りの仕組みが残っていない: 上の grep（`NEPTUNE_SKIPPED` 0 件、`get_remaining_time_in_millis` も status_handler.py に無い。読んだだけ）。
+- Neptune が応答しない・遅いときも行は先に着く: 上の 2 と 3（実時間で Firehose 0.001 秒、Neptune の最初の送信 0.002 秒）。
+- Firehose が止まっているとき、3 回と ERROR を済ませてから Neptune: 上の 4 と test_sync の項目（R3 で落ちる）。
+- Firehose の失敗だけでは例外にしない（決定 4 の前提）: test_sync の項目（R3 の行で Neptune は書く）。
+- `_neptune()` が落ちても行は送ってある: test_sync の項目（Round 3 の D2 と同じ検査。順番を変えたあとも通る）。
+- やり直しの二重: event_id に received_at が入らないので、読む側が落とす（上の「成り立たなかったもの」）。
+- graph.py の既定を変えていない: test_sync の項目（R7〜R9 の検査と同じ行）。`git diff HEAD -- agent/graph.py` は空（読んだだけ）。
+- Records が空・複数: 行は Records をまたいで 1 回にまとめる（R2・R12）。
+
+#### ジンテーゼ（反対弁護人のあと）
+
+- 結論の変わったところ: 反対弁護人の前は「Must なし」だった。#1 で、決定 1 の順番が「行を組めない 1 件でメッセージ全体の Neptune が落ちる」退行を持ち込むと分かり、直した。決定 1 の「ALERT_DROPPED の扱いは変えない」は、組めない 1 件を ALERT_DROPPED に寄せることで守った（形の合わない通知と同じ WARNING）。
+- 部分的な真実: Firehose の上限は IP の数で変わる（15.6 / 21.6 秒）。status は「遅れる」だけでなく、やり直しで古い値に戻りうる（リスク 9〜11）。AWS で put_record_batch 1 回と Neptune Analytics の 1 回の問い合わせにかかる時間は測っていない。読みの待ちが受信ごとであることの穴（細切れの応答）は残る。
+- 残り: Must なし。S2（`_epoch` の 1e400）は前からあるもので設計側に回す。7a〜7c の Nit は最終報告。
