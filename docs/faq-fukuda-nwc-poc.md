@@ -736,6 +736,23 @@ Lambda から書く経路は 2 案あった。
 
 構成図は [architecture/pipeline.md](architecture/pipeline.md)。
 
+### Q. Spark のジョブは 1 つで、Kafka の購読も 1 つ？
+
+**A. ジョブは 1 つ。Kafka の購読は 1 つではなく、格納先ごとに 1 つずつ（最大 4 つ）。** `spark/snmp_sinks.py` の `build` が、格納先ごとに別のストリーミングクエリを起こしている。
+
+| クエリ（格納先） | 購読するトピック | 有効になる条件 |
+|---|---|---|
+| iceberg（S3 Tables の生データ） | metrics / gnmi / mdt / traps / logs | `SINK_S3` |
+| prometheus | metrics / gnmi / mdt | Prometheus の格納先が有効なとき |
+| opensearch | traps / logs | OpenSearch の格納先が有効なとき |
+| splunk | metrics / gnmi / mdt / traps / logs | `SINK_SPLUNK=1` |
+
+- **1 つのクエリは、複数のトピックをまとめて 1 回で購読する。** トピックごとに購読を分けてはいない（`subscribe` にカンマ区切りで渡す）。
+- **クエリごとに checkpoint が別。** どこまで読んだかを格納先ごとに覚えているので、Splunk への書き込みが遅れても、Prometheus の読み進みは止まらない。同じトピックを複数のクエリが読むので、Kafka からは同じ行を格納先の数だけ読むことになる。
+- **どのクエリも 60 秒ごと**（`TRIGGER`）にまとめて書く。
+- **1 つのクエリが止まったら、ジョブごと終わらせる。** EMR Serverless が起こし直し、どのクエリも checkpoint の続きから読むので、データは落ちない。
+- ジョブは Terraform のリソースではなく、`ops/up.sh` が `start-job-run` で起こす。
+
 ### Q. Grafana は OpenSearch と Prometheus をデータソースにしてる？
 
 **A. その 2 つ。** 定義は `grafana/provisioning/datasources/`。
