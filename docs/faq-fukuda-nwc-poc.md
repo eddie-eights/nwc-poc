@@ -1815,3 +1815,93 @@ VictoriaMetrics と同じ作り手のログ用データベース。ライセン�
 - https://docs.victoriametrics.com/victorialogs/cluster/
 - https://docs.victoriametrics.com/victorialogs/data-ingestion/
 - https://docs.victoriametrics.com/victorialogs/integrations/grafana/
+
+### Q. 中心性などのグラフのアルゴリズムは、NetworkX と Neo4j の GDS のどちらでやる？
+
+**A. 結論**
+
+NetworkX を勧める。使うアルゴリズムが 3 つだけで、機器が数台だから。GDS は「配っているプラグインにソースが公開されていない部分がある」ので、「全部 OSS」の趣旨から少し外れる。
+
+**背景**
+
+AWS 版は、エージェントのツール `centrality`（`agent/graph.py` の `centrality()`）が Neptune Analytics の `neptune.algo.*` を 3 つ呼んでいる。
+
+| 使っているもの | 意味 |
+|---|---|
+| `neptune.algo.degree` | 機器に付いている回線の数 |
+| `neptune.algo.closenessCentrality` | ほかの全機器への近さ |
+| `neptune.algo.wcc` | 回線でつながっている島の番号 |
+
+**2 つとは**
+
+| | NetworkX | GDS（Graph Data Science） |
+|---|---|---|
+| 何か | Python のグラフ計算ライブラリ | Neo4j のプラグイン。Cypher の `CALL gds.*` で呼ぶ |
+| 計算する場所 | エージェントの Python の中。Neo4j から機器と回線を読み出して計算する | Neo4j の中。グラフをメモリに写して（projection）計算する |
+| ライセンス | BSD（3 条項） | ソースの OpenGDS は GPLv3。Neo4j が配るプラグインは、公開されていないソースを含み、別の条件で配られている |
+| 入れ方 | Python の依存に `networkx` を足す | Neo4j のコンテナに `NEO4J_PLUGINS='["graph-data-science"]'` を渡す |
+| 制限 | 1 プロセスのメモリに載る大きさまで | Community Edition は CPU 4 コアまで、モデルは 3 つまで。ライセンスのファイルが無ければ Community Edition として動く |
+
+**メリットとデメリット**
+
+| | メリット | デメリット |
+|---|---|---|
+| NetworkX | 全部 OSS と言い切れる。Neo4j に足すものが無く、メモリも増えない。グラフ DB を替えても同じコードが動く。ローカルのテストで実物を回せる | グラフを全部読み出すので、機器が何万台にもなると遅い。AWS 版（DB の中で計算）と形が変わる |
+| GDS | AWS 版と同じ「DB の中で `CALL`」の形で、比べやすい。大きいグラフでも速い。アルゴリズムが多い | プラグインに公開されていない部分がある。Neo4j のメモリを余分に使う。計算の前にグラフをメモリに写す手順が要る。版を Neo4j と揃え続ける必要がある（Neo4j 2026.09.0 には GDS 2026.09） |
+
+**選び方**
+
+- 機器が数台〜数千台で、使うのが次数、近接、連結成分くらいなら NetworkX。
+- 何十万の頂点で、経路探索やコミュニティ検出まで使うなら GDS。
+
+**まだ確かめていないこと**
+
+- GDS に近接中心性と弱連結成分があること（`gds.closeness`、`gds.wcc`）は記憶によるもので、今回は公式ページを開いていない。
+- GDS のプラグインが Neo4j Community Edition の上で動くことは、Docker の手順が Community の image を前提にしていることからの推定。実際には動かしていない。
+
+**出典**（2026-10-04 に確認）
+
+- https://neo4j.com/docs/graph-data-science/current/introduction/
+- https://neo4j.com/docs/graph-data-science/current/installation/installation-docker/
+- https://neo4j.com/docs/graph-data-science/current/installation/supported-neo4j-versions/
+- https://github.com/neo4j/graph-data-science （README のライセンスの節）
+
+### Q. VictoriaMetrics のクラスターで「分散」と「複製」は何が違う？
+
+**A. 結論**
+
+分散は、データを vmstorage に分けて置くだけ（どのデータも 1 台にしか無い）。複製は、同じデータを複数の vmstorage に置く。「全部 OSS の環境を作る（005）」では複製を使う（2026-10-04 に決めた）。
+
+**設定**
+
+| 場所 | フラグ | 意味 |
+|---|---|---|
+| vminsert | `-replicationFactor=2` | どのデータも、別々の vmstorage 2 台に書く |
+| vmselect | `-dedup.minScrapeInterval=1ms` | 2 台から同じデータが返るので、重複を落とす |
+| vmselect | `-replicationFactor=2` | 1 台が止まっていても、結果を「欠けている」扱いにしない |
+
+**台数**
+
+複製数を N にすると、vmstorage は 2N−1 台以上が要る。N=2 なら 3 台。1 台が止まっても、残りの 2 台に 2 つずつ書けるから。
+
+| 役 | 台数 |
+|---|---|
+| vminsert | 1 |
+| vmselect | 1 |
+| vmstorage | 3 |
+
+**メリットとデメリット**
+
+| | 中身 |
+|---|---|
+| メリット | vmstorage が 1 台止まっても、全部のデータを読める。書き込みも続く |
+| デメリット | CPU、メモリ、ディスク、通信が最大で複製数の倍（ここでは 2 倍）になる |
+
+**知っておくこと**
+
+- 公式は、複製よりも「壊れにくいディスクに置く」ことを勧めている。EFS はそれ自体が複数の AZ に複製されるので、複製と重なる。ここでは、クラスターの複製を学ぶために両方を使う。
+- vminsert と vmselect は 1 台ずつなので、そこが止まれば書き込みや検索は止まる。状態を持たないので、ECS が立ち上げ直せば戻る。
+
+**出典**
+
+- https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/ （Replication and data safety。2026-10-04 に確認）
