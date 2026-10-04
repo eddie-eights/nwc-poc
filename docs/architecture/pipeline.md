@@ -14,8 +14,8 @@ flowchart LR
   SPARK -->|"全トピック（正本）"| ICE["S3 Tables<br/>snmp_metrics"]
   SPARK -->|"traps / logs"| OS["OpenSearch<br/>snmp-logs"]
   SPARK -->|"metrics / gnmi / mdt"| PROM["Prometheus"]
-  SPARK -.->|"全トピック（SINK_SPLUNK=1 のとき）"| SPL["Splunk HEC<br/>analytics の ECS"]
-  GRAF["Grafana（ECS Fargate）<br/>GRAFANA=1"] -.->|"SigV4"| OS
+  SPARK -.->|"全トピック（STORES に splunk があるとき）"| SPL["Splunk HEC<br/>analytics の ECS"]
+  GRAF["Grafana（ECS Fargate）<br/>STORES の grafana"] -.->|"SigV4"| OS
   GRAF -.->|"SigV4"| PROM
   GRAF -->|"アラートルール<br/>link_down（SNMP のポーリング。SNMP_POLL=1 のとき）"| SNS["SNS<br/>prefix-alerts（土台）"]
   SPL -.->|"保存済みサーチ<br/>trap / BGP / IS-IS（gNMI）"| SNS

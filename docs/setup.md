@@ -30,7 +30,7 @@ AWS CLI v2 と Session Manager plugin を入れる。PC から `ssm.ap-northeast
 
 - AWS CLI v2、Terraform 1.11 以上、Docker buildx（arm64）、Session Manager plugin、uv、curl（lab・analytics・デバッグ用の EC2 のときに containerlab の rpm と jar を取る）。
 - `registry.terraform.io` に 443 で届くこと（OpenSearch Serverless には PC からつながない）。
-- イメージをビルドするので、インターネットに出られること。`SINK_SPLUNK=1`（ECS に立てる既定の形）では Docker Hub から `splunk/splunk` の amd64 のイメージ（約 2〜3 GB）を引き、検知のアプリを足して ECR に push する。
+- イメージをビルドするので、インターネットに出られること。`STORES` に `splunk` を入れると、Docker Hub から `splunk/splunk` の amd64 のイメージ（約 2〜3 GB）を引き、検知のアプリを足して ECR に push する。
 - x86_64 の PC では、agent / worker / Grafana のビルドに QEMU（binfmt）が要る（下の WSL2 の `binfmt` の行。Telegraf と Splunk は COPY だけなので要らない）。
 
 ### Mac
