@@ -8,6 +8,7 @@ nwc-poc の作業中に質問したことと、その答えをまとめた。答
 - [4. デバッグ用の EC2（lab + Telegraf）](#4-デバッグ用の-ec2lab--telegraf)
 - [5. 本番の Cisco から送るとき](#5-本番の-cisco-から送るとき)
 - [6. SNMP のポーリングを既定で止めた](#6-snmp-のポーリングを既定で止めた)
+- [7. Nautobot（機器の一覧とケーブルの正）](#7-nautobot機器の一覧とケーブルの正)
 
 ---
 
@@ -473,3 +474,85 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 - **アラート:** Grafana のルール `link_down` はポーリングの `ifOperStatus` を見るので発火しない。IF の up / down は trap から Splunk（`SINK_SPLUNK=1`）が `link_down` を出す。そのため `ops/up.sh` は Grafana を `SNMP_POLL=1` のときだけアラートの送り手に数え、既定のまま `WORKFLOW=1` にすると「`SINK_SPLUNK=1` か `SNMP_POLL=1` が要る」と出して止まる。Grafana と `SINK_PROMETHEUS` があってどちらの送り手も無いときは注意を出す。
 - NLB のヘルスチェック（`outputs.health`）は、何も書いていないうちは 200 を返すので、ポーリングを止めても通る。Spark は無いトピックを作るので、`metrics` が無くても動く。
 - 変えて打ち直すと、ECS の Telegraf のタスクが入れ替わる（環境変数が変わるので）。
+
+---
+
+## 7. Nautobot（機器の一覧とケーブルの正）
+
+### Q. Neptune のグラフの追加は、Nautobot の Job がやっているという理解で合ってる？
+
+**A. 物理層の更新だけが Job。** Neptune に書くものは 4 つあり、書き手が分かれている。
+
+| 書くもの | 書き手 |
+|---|---|
+| 全層（物理 / IP / EVPN・BGP）の最初の投入 | `ops/up.sh` の手順 7-3b（`lab/lab_topology.py` の出力を `ops/seed_graph.py` が入れる） |
+| 物理層（機器・IF・回線）の差分 | Nautobot の Job（`nb_sync.sync` → `agent/graph.py` の `sync_physical()`。Gremlin） |
+| `status`（アラートで変わる） | graph の Lambda（`graph/status_handler.py`） |
+| 修復案 | ワークフローと Web |
+
+- Job は `status` と IP 層より上には触らない。IP 層・EVPN/BGP 層は Nautobot からは入らない。
+- Job は Neptune のほかに、Telegraf の取りにいく側（dialin）の機器の一覧（SSM のパラメータ）も書き換える。
+
+### Q. Nautobot を機器の正本として常に起動させたい。環境変数でオン・オフを切り替えるのではなく、いつも起動するようにして
+
+**A. `NAUTOBOT` の切り替えをやめ、`PIPELINE=1` ならいつも立つようにした。**
+
+- 立たないのは、`PIPELINE=0` のときと、`SKIP_STREAM` と `SKIP_GRAPH` を両方書いたとき（Job の書き先が無い）。
+- 前の `deploy.env` に `NAUTOBOT=...` が残っていても止まらない。`ops/up.sh` が「もう使わない」と注意を出す。
+- Telegraf の dialin の一覧は、いつも Nautobot の Job が書く SSM のパラメータ（`/<prefix>/telegraf-dialin/nautobot/*`）から受ける。
+- 費用は Nautobot の分（$0.14/h）が PIPELINE に入り、約 $1.63/h。
+- デバッグ用の EC2（`ops/lab-debug.sh`）は Nautobot を使わない（lab の定義の一覧のまま）。
+
+### Q. Nautobot にトポロジの情報を入れているのはシェルスクリプトだと思うけど、どこからの情報を引っ張ってきて入れている？
+
+**A. リポジトリの中の lab の定義ファイルから。** 実機や AWS から取ってきてはいない。入れるのはシェルではなく、コンテナの中の Python。
+
+1. 元の情報: `lab/splab.clab.yml.in`（containerlab の機器と配線）と `lab/srlinux/<機器>.cli`（SR Linux の設定）。
+2. 変換: `ops/up.sh` がイメージを作るときに手元で `lab/lab_topology.py` を実行し、機器 8 台・回線 12 本を `lab_seed.json` にしてイメージに入れる。
+3. 投入: コンテナが起動時に `nautobot/netops/bootstrap.py` を実行し、**機器が 1 台も無いときだけ** `lab_seed.json` から入れる。
+
+- 入るもの: 拠点、役割、機器、インタフェース（LAG を含む）、アドレス、管理 IP、ASN、Service（`gnmi` / `snmp`）、ケーブル（主 / 副と帯域）。
+- 2 回目からは seed を飛ばすので、Nautobot で変えた内容が正になる。`ops/down.sh` で DB ごと消えるので、作り直すとまた lab の定義から入る。
+- 実機なら LLDP や gNMI で取るところを、PoC では定義ファイルで代用している。
+
+### Q. 本番だったら、SDN などの機器を管理しているワーカーが、Nautobot に API で格納すればいいってこと？
+
+**A. その通り。** REST API（GraphQL もある）で機器・インタフェース・ケーブルを書けば、あとは今の仕組みがそのまま動く（変更 → JobHook → Job → SSM と Neptune）。先に API で入れれば、機器が 0 台ではなくなるので lab の seed は入らない。
+
+本番で決めること:
+
+- **どちらが正か。** ふつう Nautobot は「あるべき姿」（設計・台帳）、SDN コントローラは「実際の姿」を持つ。コントローラから一方的に流し込むと、Nautobot は正本ではなくコントローラの写しになる。正本にするなら、Nautobot で変える → コントローラや機器へ反映、の向きにして、実機との差分は検出だけにする。
+- **取り込み方。** 外のワーカーが API で書くほかに、Nautobot の側から取りにいく方法がある（下の質問）。
+- **Job が読む項目に合わせる。** Job は Device の Service `gnmi` / `snmp` を監視対象の印にし、ケーブルの主 / 副と帯域、ASN などを決まった場所から読む（対応は `nautobot/netops/nb_map.py`）。同じ形で入れないと Telegraf や Neptune に映らない。
+- 今の構成は閉域で、Nautobot は VPC の中からしか届かない。外のワーカーから書くなら経路と API トークン（発行と SSM での保管）が要る。PoC にはどちらも入っていない。
+
+### Q. Nautobot から取りにいくというのは、Nautobot の Job が取りにいくということ？
+
+**A. そう。** SSoT アプリや Device Onboarding アプリの中身は Job の集まり。
+
+- Device Onboarding: Job が実機に SSH などで入り、機種・インタフェース・アドレスを読んで台帳に書く。
+- SSoT: Job が外のシステム（SDN コントローラや別の台帳）の API を呼び、差分を出して台帳に書く。逆向き（Nautobot から外へ）もできる。
+
+向きが違うだけで、どれも同じ Job の仕組み。
+
+| | 向き |
+|---|---|
+| 今の PoC の Job | Nautobot の台帳 → 外（SSM と Neptune） |
+| 取り込みの Job | 外（実機やコントローラ）→ Nautobot の台帳 |
+
+取り込みの Job を足すなら、worker が実機やコントローラに届く経路が要る。今の PoC の worker は閉域の VPC の中にいて、lab の機器へ取りにいく設定は入っていない。
+
+### Q. そもそも Nautobot は、データベースと Job が一緒になっているということ？
+
+**A. そう。台帳（データベース）と、Job を動かす基盤が 1 つにまとまっている。**
+
+| 部品 | 役割 | この PoC では |
+|---|---|---|
+| Web / API | 画面と REST API・GraphQL | ECS のタスクの web コンテナ |
+| データベース | 機器・インタフェース・ケーブルなどの台帳 | RDS の PostgreSQL |
+| Job | Nautobot の中で動く Python のプログラム。台帳を直接読み書きできる | `nautobot/jobs/netops_jobs.py` |
+| Celery worker | Job を実際に動かすプロセス | 同じタスクの worker コンテナ |
+| Redis | web から worker へ Job を渡すキュー | 同じタスクの Redis コンテナ |
+
+- Job は Nautobot のプロセスの中で動くので、API を通さずに台帳を扱える。
+- Job が動くきっかけは 4 つ: 画面のボタン、スケジュール、API、台帳の変更（JobHook）。この PoC は JobHook（`netops-sync`）と、起動時の 1 回。
