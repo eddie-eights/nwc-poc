@@ -255,8 +255,9 @@ check("Lambda は VPC の中で NEPTUNE_GRAPH_ID を環境変数で持ち、ロ�
       "vpc_config" in tf and "NEPTUNE_GRAPH_ID = aws_neptunegraph_graph.graph.id" in tf and "NEPTUNE_ENDPOINT" not in tf and "retention_in_days = var.log_retention_days" in tf)
 _nep = read("terraform", "pipeline", "graph", "neptune.tf")
 _core_sg = read("terraform", "base", "core", "security_groups.tf")
-check("グラフは Neptune Analytics（公開しない・レプリカ無し）で、ID を SSM の neptune-graph-id に書く。Neptune Database のクラスタはもう無い（2026-10-04）",
-      re.search(r'resource "aws_neptunegraph_graph" "graph" \{', _nep) is not None and "public_connectivity = false" in _nep and "replica_count       = 0" in _nep
+check("グラフは Neptune Analytics（公開しない。レプリカは NEPTUNE_AZ_NUM - 1 で既定 0）で、ID を SSM の neptune-graph-id に書く。Neptune Database のクラスタはもう無い（2026-10-04）",
+      re.search(r'resource "aws_neptunegraph_graph" "graph" \{', _nep) is not None and "public_connectivity = false" in _nep
+      and "replica_count       = var.neptune_az_num - 1" in _nep
       and "provisioned_memory  = var.provisioned_memory" in _nep and 'name        = "/${local.name_prefix}/neptune-graph-id"' in _nep
       and "aws_neptune_cluster" not in _nep + tf and not os.path.exists(os.path.join(ROOT, "terraform", "pipeline", "graph", "network.tf")))
 check("Lambda は base/core の lambda の SG を使い、graph は SG もルールも作らない。Neptune へは土台の neptune-graph-data のエンドポイント（443）で届くので、neptune の SG と 8182 の行は無い",
