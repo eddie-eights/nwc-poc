@@ -779,6 +779,20 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 - 増やすなら `spark.executor.instances` か `spark.executor.cores` を上げ、EMR Serverless の上限（`max_cpu` / `max_memory`）も合わせる。
 - **読むのを並列にしても、書くほうは並列にならない格納先がある。** OpenSearch、Prometheus、Splunk への送信は、行を driver に集めて（`collect`）から driver が 1 本で送っている（`http_query`）。executor を増やして速くなるのは S3 Tables（Iceberg）への書き込みだけ。量が増えたら、送信を executor の側でやる形（`foreachPartition`）に直す必要がある。
 
+### Q. S3 以外の格納先は、VictoriaMetrics みたいにクラスター化できないの？
+
+**A. Prometheus と OpenSearch は、もう AWS の側でクラスターになっている（マネージドなので自分で組まない）。自分でクラスターを組む余地があるのは Splunk だけ。**
+
+| 格納先 | この PoC の実体 | 横に広げる仕組み | 自分でやること |
+|---|---|---|---|
+| Prometheus | Amazon Managed Service for Prometheus（AMP）のワークスペース | 中身は分散型の Prometheus（Cortex）。取り込みと保存を AWS が複数 AZ で分散している | 無い。上限（取り込みの速さ、時系列の数）に当たったら引き上げを申請する |
+| OpenSearch | OpenSearch Serverless のコレクション `logs` | 取り込みと検索の計算（OCU）を AWS が負荷に合わせて増減する | 無い。この PoC は費用を抑えるため予備のレプリカを切っている（`standby_replicas = "DISABLED"`）。本番は有効にする |
+| Splunk | ECS の Splunk Enterprise 1 タスク（`desired_count = 1`） | Splunk の機能としてはある（インデクサークラスターとサーチヘッドクラスター） | 組むなら、インデクサー数台、クラスターマネージャー、HEC の前のロードバランサー、ライセンスが要る。PoC では 1 台のまま |
+
+- **VictoriaMetrics のクラスター版が要るのは、素の Prometheus が 1 台でしか動かないから。** 素の Prometheus を横に広げるために VictoriaMetrics、Thanos、Mimir、Cortex がある。AMP はその Cortex を AWS が運用しているものなので、同じ役目をもう果たしている。
+- **この PoC で先に詰まるのは、格納先ではなく送る側。** OpenSearch、Prometheus、Splunk への送信は、Spark の driver が 1 本で送っている（`spark/snmp_sinks.py` の `http_query`）。格納先を広げても、ここが変わらなければ速くならない。量が増えたら、送信を executor の側で並列にやる形に直すのが先。
+- **Splunk を比較用の 1 台のままにしているのは意図どおり。** Splunk は Grafana との比較のために置いていて（`SINK_SPLUNK=1` のときだけ）、止まっても正本の S3 Tables には影響しない。
+
 ### Q. Grafana は OpenSearch と Prometheus をデータソースにしてる？
 
 **A. その 2 つ。** 定義は `grafana/provisioning/datasources/`。
