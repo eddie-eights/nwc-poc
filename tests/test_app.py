@@ -94,7 +94,7 @@ r = app.invoke({"prompt": "%BGP-5-ADJCHANGE が出た"})
 rk = state["calls"][0][1]; ck = state["calls"][1][1]
 check("RERANK_MODEL_ARN が無ければリランクなしで HYBRID と件数だけ渡す", rk["retrievalConfiguration"]["vectorSearchConfiguration"] == {"numberOfResults": 3, "overrideSearchType": "HYBRID"} and rk["knowledgeBaseId"] == "KB12345678")
 check("Converse に guardrailConfig", ck["guardrailConfig"] == {"guardrailIdentifier": "gr123", "guardrailVersion": "1"})
-check("Converse にトポロジの 5 ツール + 証拠の 3 ツール + 修復案の履歴（異常一覧 list_anomalies は 2026-10-02 にやめた）", [t["toolSpec"]["name"] for t in ck["toolConfig"]["tools"]] == ["list_devices", "neighbors", "blast_radius", "topology_graph", "layers", "search_logs", "query_metrics", "query_history", "list_proposals"])
+check("Converse にトポロジの 6 ツール + 証拠の 3 ツール + 修復案の履歴（異常一覧 list_anomalies は 2026-10-02 にやめた）", [t["toolSpec"]["name"] for t in ck["toolConfig"]["tools"]] == ["list_devices", "neighbors", "blast_radius", "root_cause", "topology_graph", "layers", "search_logs", "query_metrics", "query_history", "list_proposals"])
 last = ck["messages"][-1]
 check("質問は guardContent、資料は text", last["content"][1] == {"guardContent": {"text": {"text": "%BGP-5-ADJCHANGE が出た"}}} and "<documents>" in last["content"][0]["text"] and 'source="interface-errors.md"' in last["content"][0]["text"])
 check("初回は messages 1 件", len(ck["messages"]) == 1)
@@ -177,6 +177,47 @@ check("Neptune が無ければ元データは static", t.SOURCE == "static" and 
 check("load_static は asn を機器に足す", any(d.get("asn") for d in t.load_static()[0]))
 check("interfaces は機器につながるリンクの自分側の IF 名", t.interfaces("dc1-leaf-01") == ["ethernet-1/1", "ethernet-1/2", "ethernet-1/3"] and t.interfaces("dc1-spine-02") == ["ethernet-1/1", "ethernet-1/2", "ethernet-1/3", "ethernet-1/4"])
 check("interfaces は知らない機器なら空", t.interfaces("nope") == [] and t.interfaces("") == [])
+# ---- 根本原因（層をまたいで下へ辿る。2026-10-04）
+def _with_status(links=(), layers=(), devices=None):
+    """静的データに status を足して組み直す（Neptune では graph-status の Lambda が書く値）"""
+    devs, lks = t.load_static(); ly = t.load_static_layers()
+    for l in lks:
+        if (l["a"], l["a_if"]) in links: l["status"] = "DOWN"
+    for v in ly["vertices"]:
+        if v["id"] in layers: v["status"] = "DOWN"
+    for d in devs:
+        if d["device_id"] in (devices or {}): d["status"] = devices[d["device_id"]]
+    t.DEVICES, t.NODES, t.LINKS, t.ADJ = t._build(devs, lks); t.DEVICE_BY_ID = t.NODES; t.LAYERS = ly
+MAIN = "dc1-leaf-01#ethernet-1/1--dc1-spine-01#ethernet-1/3"
+check("root_cause は全部 UP なら原因なし", t.root_cause() == {"source": "static", "device_id": "", "fault_count": 0, "root_cause_count": 0, "root_causes": [], "note": "UP でない要素は無い"})
+_with_status([("dc1-leaf-01", "ethernet-1/1")], ["dc1-leaf-01#isis#ethernet-1/1.0", "dc1-spine-01#isis#ethernet-1/3.0"])
+rc = t.root_cause()
+check("回線と、その上の IS-IS の隣接 2 つが落ちていれば、原因は回線 1 本（途中の UP の IF は通り抜ける）",
+      rc["fault_count"] == 3 and rc["root_cause_count"] == 1 and rc["root_causes"][0]["id"] == MAIN and rc["root_causes"][0]["type"] == "link"
+      and [e["id"] for e in rc["root_causes"][0]["explains"]] == ["dc1-leaf-01#isis#ethernet-1/1.0", "dc1-spine-01#isis#ethernet-1/3.0"]
+      and rc["root_causes"][0]["lower_layers_up"] is False and "isis_adjacency 2" in rc["root_causes"][0]["note"])
+check("also_on_it はまだ UP のままその回線に乗っている要素（両端の IF とサブ IF）",
+      rc["root_causes"][0]["also_on_it"] == ["dc1-leaf-01#ethernet-1/1", "dc1-leaf-01#ethernet-1/1.0", "dc1-spine-01#ethernet-1/3", "dc1-spine-01#ethernet-1/3.0"])
+check("root_cause は機器で絞れる（関わらない機器なら原因なしと、ほかの異常の数）",
+      t.root_cause("dc1-spine-01")["root_cause_count"] == 1 and t.root_cause("dc1-leafsw-01")["root_causes"] == [] and "3 個" in t.root_cause("dc1-leafsw-01")["note"]
+      and "error" in t.root_cause("nope"))
+_with_status([("dc1-leaf-01", "ethernet-1/1")], ["dc1-leaf-01#bgp#10.255.0.1"], {"dc1-leaf-02": "ALARM"})
+rc = {r["id"]: r for r in t.root_cause()["root_causes"]}
+check("BGP は fabric の別の経路で相手に届くなら回線のせいにしない（下の層は UP = その層を疑う）",
+      set(rc) == {MAIN, "dc1-leaf-02", "dc1-leaf-01#bgp#10.255.0.1"} and rc["dc1-leaf-01#bgp#10.255.0.1"]["lower_layers_up"] is True
+      and "この層の設定やプロセスを疑う" in rc["dc1-leaf-01#bgp#10.255.0.1"]["note"] and rc[MAIN]["explains"] == [])
+check("ALARM の機器はそれ自身が原因で、上の要素を巻き込まない", rc["dc1-leaf-02"]["status"] == "ALARM" and rc["dc1-leaf-02"]["also_on_it"] == [])
+_with_status([("dc1-leaf-01", "ethernet-1/1"), ("dc1-leaf-01", "ethernet-1/2")], ["dc1-leaf-01#bgp#10.255.0.1", "dc1-leaf-01#bgp#10.255.0.2"])
+rc = t.root_cause()["root_causes"]
+check("fabric の回線が 2 本とも落ちて相手に届かなければ、BGP の 2 つは切れ目の回線 2 本で説明する",
+      [r["type"] for r in rc] == ["link", "link"] and all(r["explains_count"] == 2 and {e["type"] for e in r["explains"]} == {"bgp_session"} for r in rc))
+_with_status([], ["dc1-leaf-01#bgp#10.255.0.1", "dc1-leaf-02#bgp#10.255.0.1"], {"dc1-spine-01": "DOWN"})
+rc = t.root_cause()["root_causes"]
+check("相手の機器が DOWN なら、そこへの BGP は機器 1 台で説明する", len(rc) == 1 and rc[0]["id"] == "dc1-spine-01" and rc[0]["explains_count"] == 2
+      and "dc1-leafsw-01#bgp#10.255.0.1" in rc[0]["also_on_it"])
+check("app.run_tool は root_cause を topology に振る", app.run_tool("root_cause", {"device_id": "dc1-leaf-01"})["root_cause_count"] == 1)
+_with_status()
+check("status を戻せば原因なし", t.root_cause()["fault_count"] == 0)
 lc = t.link_choices()
 check("link_choices は 12 本の (表示, a|a_if|b)", len(lc) == 12 and ("dc1-leaf-01 ethernet-1/1 - dc1-spine-01 ethernet-1/3  [fabric]", "dc1-leaf-01|ethernet-1/1|dc1-spine-01") in lc)
 check("VM との LACP は lag", ("dc1-host-01 eth1 - dc1-leaf-01 ethernet-1/3  [lag]", "dc1-host-01|eth1|dc1-leaf-01") in lc)
@@ -189,10 +230,10 @@ check("app.run_tool は list_proposals を proposals に振る（Neptune 未設�
 # 過去の経緯・修復履歴・状態に答えられるようにした（2026-09-18）。2026-10-02 から「いまの異常」は機器・回線・層の status で答える
 check("system prompt はいまの異常 → status、履歴 → list_proposals、アラートの履歴は Grafana / Splunk、承認はしない、と言う",
       "status（UP 以外）" in app.SYSTEM_PROMPT and "list_proposals" in app.SYSTEM_PROMPT and "Grafana / Splunk" in app.SYSTEM_PROMPT
-      and "承認や却下はあなたにはできません" in app.SYSTEM_PROMPT and "list_anomalies" not in app.SYSTEM_PROMPT and "status=all" not in app.SYSTEM_PROMPT)
+      and "承認や却下はあなたにはできません" in app.SYSTEM_PROMPT and "まず root_cause で" in app.SYSTEM_PROMPT and "list_anomalies" not in app.SYSTEM_PROMPT and "status=all" not in app.SYSTEM_PROMPT)
 # プロンプトに無いツール名を書くと、モデルは無いツールを呼ぼうとして unknown tool が返る（2026-10-02 に layers を list_layers と書いた）
 _tool_names = {s["toolSpec"]["name"] for s in app.TOOL_SPECS}
-_mentioned = set(re.findall(r"\b(?:list|query|search)_[a-z_]+\b|\b(?:neighbors|blast_radius|topology_graph|layers)\b", app.SYSTEM_PROMPT))
+_mentioned = set(re.findall(r"\b(?:list|query|search)_[a-z_]+\b|\b(?:neighbors|blast_radius|root_cause|topology_graph|layers)\b", app.SYSTEM_PROMPT))
 check(f"system prompt に出てくるツール名は全部 TOOL_SPECS にある（無い: {sorted(_mentioned - _tool_names)}）", _mentioned and not (_mentioned - _tool_names))
 
 # ---- ツールの往復

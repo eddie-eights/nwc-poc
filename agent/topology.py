@@ -171,6 +171,160 @@ def layers(device_id: str = "", layer: str = "") -> dict:
     return {"device_id": device_id, "layer": layer, "count": len(rows), "vertices": rows, "edges": edges}
 
 
+# ---------------------------------------------------------------- 根本原因（層をまたいで下へ辿る）
+# UP でない要素（機器・回線・インタフェース・上の層の頂点）を集め、それぞれが「乗っている」下の要素へ辿る。
+# 下に DOWN の要素があればそれが原因で、無ければその要素自身が根本原因（下の層は生きているので、その層の設定やプロセスを疑う）。
+#   上の層の頂点 → 辺 over の先と interface_id / ip_interface_id（サブ IF → IF）
+#   bgp_session  → 相手の機器。ループバック同士のセッションなので、fabric（IS-IS の underlay）の UP の回線だけで相手に届かなければ、切れ目の DOWN の回線も
+#   interface    → その IF が付く回線と機器。LAG（lag1）ならメンバーの IF
+#   回線         → 両端の機器
+# 途中の UP の要素は通り抜けて下まで見る。原因として数えるのは DOWN だけ（ALARM は trap が見えた印で、落ちた印ではない。ALARM の要素はそれ自身を根本原因として並べる）
+FAULTS = ("DOWN", "ALARM")
+PHYSICAL = "physical"
+LAYER_ORDER = {PHYSICAL: 0, "ip": 1, "evpn": 2}
+MAX_LISTED = 20
+
+
+def link_id(l: dict) -> str:
+    return f'{l["a"]}#{l["a_if"]}--{l["b"]}#{l["b_if"]}'
+
+
+def _underlay_cut(device_id: str, peer: str) -> list[str]:
+    """fabric の UP の回線だけで device_id から peer に届くか。届かなければ、届く範囲の縁にある DOWN の回線と機器の id（届くなら空）"""
+    seen, cut, q = {device_id}, [], deque([device_id])
+    while q:
+        cur = q.popleft()
+        for l in LINKS:
+            if l.get("kind") != "fabric" or cur not in (l["a"], l["b"]):
+                continue
+            other = l["b"] if l["a"] == cur else l["a"]
+            if (l.get("status") or "UP") == "DOWN":
+                cut.append(link_id(l))
+            elif ((DEVICE_BY_ID.get(other) or {}).get("status") or "UP") == "DOWN":
+                cut.append(other)
+            elif other not in seen:
+                seen.add(other)
+                q.append(other)
+    return [] if peer in seen else sorted(set(cut))
+
+
+def elements() -> dict:
+    """id → {id, type, layer, status, devices, deps}。物理層（機器・回線・インタフェース）と上の層の頂点を 1 つの表にする"""
+    out = {}
+    for d in DEVICES:
+        out[d["device_id"]] = {"id": d["device_id"], "type": "device", "layer": PHYSICAL, "status": d.get("status") or "UP",
+                               "devices": [d["device_id"]], "deps": [], "registered": d.get("registered") is not False}
+    if_links: dict[str, list[str]] = {}
+    for l in LINKS:
+        lid = link_id(l)
+        out[lid] = {"id": lid, "type": "link", "layer": PHYSICAL, "status": l.get("status") or "UP", "devices": [l["a"], l["b"]],
+                    "deps": [l["a"], l["b"]], "kind": l.get("kind") or ""}
+        for dev, name in ((l["a"], l["a_if"]), (l["b"], l["b_if"])):
+            if name:
+                if_links.setdefault(f"{dev}#{name}", []).append(lid)
+    for d in DEVICES:
+        known = {i.get("name"): i for i in d.get("interfaces") or [] if i.get("name")}
+        names = set(known) | {i.split("#", 1)[1] for i in if_links if i.split("#", 1)[0] == d["device_id"]}
+        for name in names:
+            iid = f'{d["device_id"]}#{name}'
+            members = [f'{d["device_id"]}#{n}' for n, i in known.items() if i.get("lag") == name]
+            out[iid] = {"id": iid, "type": "interface", "layer": PHYSICAL, "status": (known.get(name) or {}).get("status") or "UP",
+                        "devices": [d["device_id"]], "deps": if_links.get(iid, []) + members + [d["device_id"]],
+                        "registered": (known.get(name) or {}).get("registered") is not False}
+    over: dict[str, list[str]] = {}
+    for e in LAYERS.get("edges") or []:
+        if e.get("label") == "over":
+            over.setdefault(e.get("from"), []).append(e.get("to"))
+    for v in LAYERS.get("vertices") or []:
+        deps = list(over.get(v["id"], [])) + [v.get(k) for k in ("ip_interface_id", "interface_id") if v.get(k)]
+        if v.get("label") == "bgp_session" and v.get("peer_device"):
+            deps.append(v["peer_device"])
+            if (v.get("status") or "UP") != "UP":
+                deps += _underlay_cut(v.get("device_id"), v["peer_device"])
+        out[v["id"]] = {"id": v["id"], "type": v.get("label") or "", "layer": v.get("layer") or "", "status": v.get("status") or "UP",
+                        "devices": [x for x in (v.get("device_id"), v.get("peer_device")) if x], "deps": list(dict.fromkeys(deps)),
+                        "registered": v.get("registered") is not False}
+    for e in out.values():
+        e["deps"] = [x for x in e["deps"] if x in out and x != e["id"]]
+    return out
+
+
+def _below(eid: str, els: dict) -> set:
+    """eid が乗っている要素を下まで全部（途中の UP の要素も通る。回線だけ DOWN でインタフェースの頂点は UP のままのことがある）"""
+    seen, q = set(), deque([eid])
+    while q:
+        for x in els[q.popleft()]["deps"]:
+            if x not in seen and x != eid:
+                seen.add(x)
+                q.append(x)
+    return seen
+
+
+def _roots(eid: str, els: dict) -> set:
+    """eid の下にある DOWN の要素のうち、そのまた下に DOWN が無いもの。下に DOWN が 1 つも無ければ自分自身"""
+    down = {x for x in _below(eid, els) if els[x]["status"] == "DOWN"}
+    if not down:
+        return {eid}
+    return {x for x in down if not any(els[y]["status"] == "DOWN" for y in _below(x, els))}
+
+
+def _brief(e: dict) -> dict:
+    return {"id": e["id"], "type": e["type"], "layer": e["layer"], "status": e["status"]}
+
+
+def root_cause(device_id: str = "") -> dict:
+    """UP でない要素を層をまたいで下へ辿り、根本原因（下の層に DOWN が無い要素）ごとにまとめる。
+    explains はその原因で説明できる UP でない要素、also_on_it はまだ UP のままその上に乗っている要素（検知が遅れているだけかもしれない）。
+    device_id があれば、その機器に関わる原因だけ"""
+    if device_id and device_id not in DEVICE_BY_ID:
+        return {"error": f"{device_id} はトポロジに無い", "known": sorted(DEVICE_BY_ID)}
+    els = elements()
+    faults = [e for e in els.values() if e["status"] in FAULTS]
+    explains: dict[str, list[str]] = {}
+    for e in faults:
+        for r in _roots(e["id"], els):
+            explains.setdefault(r, [])
+            if r != e["id"]:
+                explains[r].append(e["id"])
+    above: dict[str, list[str]] = {}
+    for e in els.values():
+        for x in e["deps"]:
+            above.setdefault(x, []).append(e["id"])
+    rows = []
+    for rid, ids in explains.items():
+        root = els[rid]
+        on_it, q = [], deque([rid])
+        seen = {rid}
+        while q:  # この要素の上に乗っているもの（回線の両端の機器のように下へ向かう辺は逆に辿らない）
+            for up in above.get(q.popleft(), []):
+                if up not in seen:
+                    seen.add(up)
+                    q.append(up)
+                    if els[up]["status"] == "UP" and root["status"] == "DOWN":  # ALARM は落ちた印ではないので、上を巻き込まない
+                        on_it.append(up)
+        related = set(root["devices"]) | {d for i in ids for d in els[i]["devices"]}
+        if device_id and device_id not in related:
+            continue
+        counts: dict[str, int] = {}
+        for i in ids:
+            counts[els[i]["type"]] = counts.get(els[i]["type"], 0) + 1
+        said = "、".join(f"{k} {n}" for k, n in sorted(counts.items()))
+        lower_ok = root["layer"] != PHYSICAL and bool(root["deps"])
+        note = f'{rid} が {root["status"]}。' + (f"UP でない {len(ids)} 個（{said}）はこれで説明できる。" if ids else "")
+        if lower_ok:
+            note += "下の層（IP・回線・機器）は UP なので、この層の設定やプロセスを疑う。"
+        if root.get("registered") is False:
+            note += "トポロジに未登録の要素（検知だけが来た）。"
+        rows.append({**_brief(root), "devices": root["devices"], "lower_layers_up": lower_ok,
+                     "explains": [_brief(els[i]) for i in sorted(ids, key=lambda i: (LAYER_ORDER.get(els[i]["layer"], 9), i))][:MAX_LISTED],
+                     "explains_count": len(ids), "also_on_it": sorted(on_it)[:MAX_LISTED], "note": note})
+    rows.sort(key=lambda r: (LAYER_ORDER.get(r["layer"], 9), -r["explains_count"], r["id"]))
+    out = {"source": SOURCE, "device_id": device_id, "fault_count": len(faults), "root_cause_count": len(rows), "root_causes": rows}
+    if not rows:
+        out["note"] = "UP でない要素は無い" if not faults else f"{device_id} に関わる原因は無い（ほかに UP でない要素が {len(faults)} 個ある）"
+    return out
+
+
 def interfaces(device_id: str) -> list[str]:
     """device_id のインタフェース名（Web の編集画面の選択肢）。Neptune に lab の定義から入れた一覧があればそれと、
     つながるリンクに出てくるその機器側の名前（静的データには一覧が無いので、いま使われているものだけ）"""
@@ -215,6 +369,13 @@ TOOL_SPECS = [
         }}},
     }},
     {"toolSpec": {
+        "name": "root_cause",
+        "description": "いま UP でない要素（機器・回線・インタフェース・IS-IS の隣接・BGP のセッションなど）を、層をまたいで下へ辿って根本原因ごとにまとめる。root_causes の各行が原因（下の層に DOWN が無い要素）で、explains はその原因で説明できる異常、also_on_it はまだ UP のままその上に乗っている要素、lower_layers_up = true は下の層が生きているのにその層だけ落ちている（設定やプロセスを疑う）。アラートが何本も出ているときや「原因は」「なぜ落ちた」と聞かれたら、まずこれを使う。",
+        "inputSchema": {"json": {"type": "object", "properties": {
+            "device_id": {"type": "string", "description": "機器名（例 dc1-leaf-01）。その機器に関わる原因だけにする。空なら全部"},
+        }}},
+    }},
+    {"toolSpec": {
         "name": "topology_graph",
         "description": "ネットワーク全体のノードとリンクの一覧（物理層）。全体像を説明するときに使う。",
         "inputSchema": {"json": {"type": "object", "properties": {}}},
@@ -228,6 +389,6 @@ TOOL_SPECS = [
         }}},
     }},
 ]
-TOOLS = {"list_devices": list_devices, "neighbors": neighbors, "blast_radius": blast_radius, "topology_graph": topology_graph, "layers": layers}
+TOOLS = {"list_devices": list_devices, "neighbors": neighbors, "blast_radius": blast_radius, "root_cause": root_cause, "topology_graph": topology_graph, "layers": layers}
 # ツールを呼ぶ前に reload()（TTL を過ぎていれば Neptune を読み直す。画面での編集が次の質問に効く）
 run_tool = toolkit.runner(TOOLS, before=reload)

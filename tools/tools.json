@@ -53,6 +53,19 @@
     }
   },
   {
+    "name": "root_cause",
+    "description": "いま UP でない要素（機器・回線・インタフェース・IS-IS の隣接・BGP のセッションなど）を、層をまたいで下へ辿って根本原因ごとにまとめる。root_causes の各行が原因（下の層に DOWN が無い要素）で、explains はその原因で説明できる異常、also_on_it はまだ UP のままその上に乗っている要素、lower_layers_up = true は下の層が生きているのにその層だけ落ちている（設定やプロセスを疑う）。アラートが何本も出ているときや「原因は」「なぜ落ちた」と聞かれたら、まずこれを使う。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "device_id": {
+          "type": "string",
+          "description": "機器名（例 dc1-leaf-01）。その機器に関わる原因だけにする。空なら全部"
+        }
+      }
+    }
+  },
+  {
     "name": "topology_graph",
     "description": "ネットワーク全体のノードとリンクの一覧（物理層）。全体像を説明するときに使う。",
     "inputSchema": {

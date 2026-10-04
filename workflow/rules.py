@@ -30,6 +30,7 @@ def build_prompt(anomaly: dict) -> str:
     """エージェントに投げる質問。答えは JSON 1 個だけにさせる"""
     return (
         "あなたはネットワーク運用の一次切り分け担当です。次の異常について、ツールで状況を確かめてから、原因と処置を JSON で 1 つだけ返してください。"
+        "まず root_cause（Neptune。UP でない要素を層をまたいで下へ辿り、根本原因ごとにまとめる）で、この異常が根本原因なのか、別の原因の結果なのかを確かめてください。"
         "トポロジと影響範囲は neighbors / blast_radius（Neptune。回線や機器の status が DOWN / ALARM なら他にも落ちている）、その機器のログは search_logs（OpenSearch）、"
         "メトリクスの推移は query_metrics（Prometheus）、長期の履歴は query_history（S3）で見て、見えた事実だけを根拠に原因を書いてください。"
         "説明文や Markdown は付けないでください。\n"

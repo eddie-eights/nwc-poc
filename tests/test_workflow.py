@@ -111,6 +111,7 @@ anomaly = {"anomaly_id": "hq-ce-01#link_down#eth1", "device_id": "hq-ce-01", "ki
 prompt = rules.build_prompt(anomaly)
 check("プロンプトに機器・種別・対象と、発生の時刻（JST）が入る",
       all(s in prompt for s in ("hq-ce-01", "link_down", "eth1", "first_seen_jst=2023-11-15 07:13:20")) and rules.jst(0) == "" and rules.jst(None) == "")
+check("プロンプトはまず root_cause で根本原因かどうかを確かめさせる", "まず root_cause" in prompt)
 check("プロンプトは JSON 1 個を求め、action の 3 択を示す", '"action"' in prompt and "heal-main | check | none" in prompt)
 check("応答の中の JSON を拾う（前後に文があっても）",
       rules.parse_agent_json('確認しました。\n{"cause": "eth1 が down", "action": "heal-main", "reason": "主回線"}\n以上')
@@ -317,8 +318,8 @@ check("Gateway に無いツールの call はエラーの辞書", "error" in mcp
 # ---- tools.json と Python の TOOL_SPECS
 tools = json.loads(read("tools", "tools.json"))
 py_specs = {s["toolSpec"]["name"]: s["toolSpec"] for s in topology.TOOL_SPECS + evidence.TOOL_SPECS + proposals.TOOL_SPECS}
-check("tools.json の 9 個は topology / evidence / proposals の TOOL_SPECS と同じ名前（list_anomalies は 2026-10-02 にやめた）",
-      {t["name"] for t in tools} == set(py_specs) and len(tools) == 9 and "list_anomalies" not in py_specs
+check("tools.json の 10 個は topology / evidence / proposals の TOOL_SPECS と同じ名前（list_anomalies は 2026-10-02 にやめた）",
+      {t["name"] for t in tools} == set(py_specs) and len(tools) == 10 and "list_anomalies" not in py_specs
       and not os.path.exists(os.path.join(ROOT, "agent", "anomalies.py")))
 check("evidence のツールは search_logs / query_metrics / query_history", {s["toolSpec"]["name"] for s in evidence.TOOL_SPECS} == {"search_logs", "query_metrics", "query_history"})
 check("handler は topology / evidence / proposals のツールを名前で振り分ける",
