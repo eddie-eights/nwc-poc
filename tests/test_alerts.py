@@ -577,4 +577,23 @@ dirs = re.search(r"\nfind ([a-z ]+) -name '\*\.py'", chk).group(1).split()
 tracked = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "*.py"], capture_output=True, text=True, cwd=ROOT).stdout.split()
 check("check.sh の構文検査は .py のあるディレクトリを全部見る（splunk/ のアラートアクションと graph/ の Lambda も）",
       {p.split("/")[0] for p in tracked} <= set(dirs) and {"splunk", "graph"} <= set(dirs))
+
+# ---- lab.sh: 比べるための障害（fail-bgp / heal-bgp / trap-test）
+lab = read("lab", "lab.sh")
+labc = {k: re.search(rf"(?:^|; ){k}=([^;\s]+)", lab, re.M).group(1) for k in ("BGP_NODE", "BGP_PEER", "ACC_VM", "TEST_TRAP_OID")}
+check("lab.sh の fail-bgp / heal-bgp は BGP_NODE の設定にある iBGP の neighbor（BGP_PEER）の admin-state を disable / enable にする。使い方の表示に 3 つが載る",
+      f"set / network-instance default protocols bgp neighbor {labc['BGP_PEER']} peer-group overlay" in read("lab", "srlinux", labc["BGP_NODE"] + ".cli")
+      and all(f'"set / network-instance default protocols bgp neighbor $BGP_PEER admin-state {s}" "commit now"' in lab for s in ("disable", "enable"))
+      and all(f"\n  {c})\n" in lab for c in ("fail-bgp", "heal-bgp", "trap-test"))
+      and [i for i, l in enumerate(lab.splitlines(), 1) if l.startswith("#   lab.sh ")] == [3, 4, 5, 6] and "fail-bgp | heal-bgp | trap-test" in lab.splitlines()[3]
+      and "  *) sed -n '2,6p' \"$SELF\"; exit 1 ;;" in lab and "      *) sed -n '6p' \"$SELF\"; exit 1 ;;" in lab and "telegraf run" in lab.splitlines()[5])
+_dm = dict(kv.split("=") for kv in subprocess.run([sys.executable, os.path.join(ROOT, "lab", "lab_topology.py"), os.path.join(ROOT, "lab"), "--device-map"],
+                                                   capture_output=True, text=True, check=True).stdout.strip().split(","))
+check("lab.sh の trap-test の OID は Splunk の netops_trap も Grafana の trap ルールも除かない（どちらも kind = trap）。管理ネットワークの中（ACC_VM の netns）から"
+      "機器の trap と同じ $MGMT_GW:162 へ送り、送り元の管理 IP は device map で ACC_VM になる",
+      labc["TEST_TRAP_OID"] not in set(SPLUNK_TRAP_SKIP) | {".1.3.6.1.6.3.1.1.5.3", ".1.3.6.1.6.3.1.1.5.4"}
+      and labc["TEST_TRAP_OID"] not in re.search(r"tags\.oid\.keyword:\((.*?)\)", grules["trap"]).group(1)
+      and """nsenter -t "$pid" -n snmptrap -v2c -c "$SNMP_COMMUNITY" "$MGMT_GW:162" '' "$TEST_TRAP_OID" """ in lab
+      and """pid=$(docker inspect -f '{{.State.Pid}}' "clab-$LAB-$ACC_VM")""" in lab
+      and [ip for ip, n in _dm.items() if n == labc["ACC_VM"] and ip.startswith("203.0.113.")] == ["203.0.113.102"])
 print(f"通過 {passed} / 失敗 0")

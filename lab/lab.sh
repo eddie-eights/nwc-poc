@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # lab EC2（terraform/pipeline/lab / デバッグ用は cloudformation/lab-debug.yaml）の上で containerlab を動かす。setup.sh が /usr/local/bin/lab に置くので、SSM セッションから `sudo lab check` で使う。
 #   lab.sh render | pull | up | down | status | check | snmp [node] | logs [node] | cli <node> [cmd...] | fail-main | heal-main | failover | clab <args...>
+#   lab.sh fail-bgp | heal-bgp | trap-test   （Grafana と Splunk のアラートを比べる障害: BGP の隣接 1 本を止める / 戻す、link 以外の trap を 1 通送る）
 #   lab.sh forward | forward-status     （stream: ECS の Telegraf へ SNMP / gNMI / trap / syslog を通す。デバッグ用の EC2 は trap の 162 を 1162 へ向けるだけ。up が毎回呼ぶ）
 #   lab.sh telegraf run | stop | status | test | gnmi | logs [-f]   （デバッグ用の EC2 だけ。この EC2 の Telegraf。中身は telegraf/telegraf.sh、出力は標準出力）
 # 手元の containerlab と違うのは 3 つ: containerlab を直接呼ぶ（root）、イメージは ECR から取る（pull）、
@@ -40,6 +41,11 @@ FW_TAG=nwc-lab-telegraf
 # 上流 VM とアクセス側 VM（同じ mac-vrf。EVPN が通っていれば L2 で届く）
 UP_VM=wan-upstream-01; UP_IP=10.100.0.10
 ACC_VM=dc1-host-01;    ACC_IP=10.100.0.20
+# fail-bgp / heal-bgp が止める iBGP（EVPN）の隣接: dc1-leaf-01 から dc1-spine-01 のループバックへの 1 本（srlinux/dc1-leaf-01.cli の bgp neighbor）
+BGP_NODE=dc1-leaf-01; BGP_PEER=10.255.0.1
+# trap-test が送る trap の OID（net-snmp の NET-SNMP-EXAMPLES-MIB::netSnmpExampleHeartbeatNotification）。link でも起動の知らせでもないので、
+# Splunk の netops_trap と Grafana の trap ルールがどちらも kind = trap にする
+TEST_TRAP_OID=.1.3.6.1.4.1.8072.2.3.0.1
 # user_data が書く（キーは setup.sh の頭）。TELEGRAF_IMAGE があるのはデバッグ用の EC2（cloudformation/lab-debug.yaml）だけ
 ENV_FILE=$(ls /etc/*-lab.env 2>/dev/null | head -1 || true)
 [ -n "$ENV_FILE" ] && set -a && . "$ENV_FILE" && set +a
@@ -71,6 +77,12 @@ vm_ping() {
     if x "${pair%%:*}" ping -c1 -W2 "${pair##*:}" >/dev/null 2>&1; then r=ok; else r=NG; fi
     printf '  %-16s -> %-12s %s\n' "${pair%%:*}" "${pair##*:}" "$r"
   done
+}
+# 障害を入れたあとにどこを見るか。デバッグ用の EC2 はこの EC2 の Telegraf の標準出力、stream は Grafana / Splunk が SNS のトピックに出すアラート
+hint() {  # hint <デバッグ用の EC2 の文> <stream の文>
+  if [ -n "${TELEGRAF_IMAGE:-}" ]; then echo "  この EC2 の Telegraf: $1"
+  elif iptables -t nat -S PREROUTING 2>/dev/null | grep -q -- "--comment $FW_TAG"; then echo "  stream: $2"
+  else echo "  Telegraf への転送が張られていない（sudo lab forward-status）"; fi
 }
 unforward() {  # forward が入れた規則（目印 ${FW_TAG}）を全部消す
   local t rules r
@@ -133,6 +145,30 @@ case "${1:-}" in
     echo "  IS-IS の隣接は数秒で落ちる。切替の確認は 'lab failover' が待ってくれる"
     ;;
   heal-main) echo "アクセス側 Leaf の fabric (dc1-leaf-01 ethernet-1/1) を戻す"; x dc1-leaf-01 ip link set e1-1 up ;;
+  fail-bgp)
+    echo "$BGP_NODE の iBGP（EVPN）の隣接 1 本（dc1-spine-01 = $BGP_PEER）を止める"
+    # neighbor の admin-state を disable にする（回線は落とさない）。$BGP_NODE 側と dc1-spine-01 側（neighbor は $BGP_NODE のループバック）の
+    # session-state が established でなくなり、gNMI の on_change（bgp_neighbor）で流れる。EVPN の経路は dc1-spine-02 からも来るので、VM 同士は通ったまま
+    srl "$BGP_NODE" "enter candidate" "set / network-instance default protocols bgp neighbor $BGP_PEER admin-state disable" "commit now"
+    hint "'sudo lab telegraf logs' に bgp_neighbor の session_state（established 以外）が出る。戻すのは 'lab heal-bgp'" \
+      "数分で Grafana と Splunk の両方が bgp_down（$BGP_NODE の $BGP_PEER と、dc1-spine-01 の $BGP_NODE 側）を SNS のトピックに出す。戻すのは 'lab heal-bgp'"
+    ;;
+  heal-bgp)
+    echo "$BGP_NODE の iBGP の隣接（$BGP_PEER）を戻す。established に戻るまで数十秒（'lab check' で見る）"
+    srl "$BGP_NODE" "enter candidate" "set / network-instance default protocols bgp neighbor $BGP_PEER admin-state enable" "commit now"
+    ;;
+  trap-test)
+    # link 以外の trap を 1 通送る。機器（SR Linux）には出させず、この EC2 の net-snmp の snmptrap（setup.sh が入れる net-snmp-utils）を
+    # $ACC_VM の network namespace で動かす。送り元は $ACC_VM の管理 IP になり、機器の trap と同じく $MGMT_GW の 162 に届くので、forward の規則
+    # （デバッグ用の EC2 は REDIRECT、stream は NLB への DNAT）に乗る。この EC2 から直接送ると PREROUTING を通らないので乗らない。
+    # 機器名は Spark（--device-map）と Splunk のアラートアクション（DEVICE_MAP）が送り元の IP から引く（$ACC_VM になる）
+    command -v snmptrap >/dev/null || { echo "snmptrap が無い（net-snmp-utils）" >&2; exit 1; }
+    pid=$(docker inspect -f '{{.State.Pid}}' "clab-$LAB-$ACC_VM")
+    nsenter -t "$pid" -n snmptrap -v2c -c "$SNMP_COMMUNITY" "$MGMT_GW:162" '' "$TEST_TRAP_OID" .1.3.6.1.4.1.8072.2.3.2.1 i 1
+    echo "trap $TEST_TRAP_OID を $ACC_VM（$(mgmt_ip "$ACC_VM")）から $MGMT_GW:162 へ送った"
+    hint "'sudo lab telegraf logs' に snmp_trap（oid=$TEST_TRAP_OID）が出る" \
+      "数分で Grafana と Splunk の両方が trap（$ACC_VM の $TEST_TRAP_OID）を出し、次の trap が来なければおよそ 10 分後に両方が解消を出す"
+    ;;
   failover)
     # dc1-leaf-01 から dc1-leafsw-01 のループバック（10.255.1.1）への経路。切替前は spine 2 台（172.16.0.4 / 172.16.0.12）の ECMP、切替後は 172.16.0.12 だけ
     # 26.7.2 の sr_cli には "show … route-table ipv4-unicast prefix …" が無い（Unknown token 'ipv4-unicast'。2026-09-27 実測）ので、state の経路 → next-hop-group → next-hop の ip-address をたどる
@@ -247,8 +283,8 @@ case "${1:-}" in
       test)   docker exec "$TG" tg test ;;
       gnmi)   docker exec "$TG" tg gnmi ;;
       logs)   docker logs --tail "${LINES:-50}" "${@:3}" "$TG" ;;
-      *) sed -n '5p' "$SELF"; exit 1 ;;
+      *) sed -n '6p' "$SELF"; exit 1 ;;
     esac
     ;;
-  *) sed -n '2,5p' "$SELF"; exit 1 ;;
+  *) sed -n '2,6p' "$SELF"; exit 1 ;;
 esac
