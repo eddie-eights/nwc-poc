@@ -58,6 +58,14 @@ x() { docker exec "clab-$LAB-$1" "${@:2}"; }
 srl() { printf '%s\n' "${@:2}" | docker exec -i "clab-$LAB-$1" sr_cli -d; }
 routers() { for f in srlinux/*.cli; do basename "$f" .cli; done; }
 mgmt_ip() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "clab-$LAB-$1"; }
+# $BGP_NODE の neighbor $BGP_PEER の admin-state を enable / disable にし、state を読み直して変わったことを確かめる。
+# commit が通らなかったとき sr_cli -d が 0 以外で終わるかは確かめていないので、終了コードに頼らない。読み直した出力は変数に取ってから grep する
+# （pipe の後ろの grep -q が先に終わると、前の sr_cli が SIGPIPE で落ち、pipefail で失敗に見える）
+bgp_admin() {
+  srl "$BGP_NODE" "enter candidate" "set / network-instance default protocols bgp neighbor $BGP_PEER admin-state $1" "commit now"
+  local st; st=$(srl "$BGP_NODE" "info from state / network-instance default protocols bgp neighbor $BGP_PEER admin-state")
+  grep -qw "admin-state $1" <<<"$st" || { echo "$BGP_NODE の neighbor $BGP_PEER の admin-state が $1 になっていない（commit が通らなかった）: $st" >&2; exit 1; }
+}
 # ifName / ifAdminStatus / ifOperStatus を ifIndex で突き合わせて出す（この EC2 から機器の管理 IP を snmpwalk。net-snmp-utils）。
 # SR Linux は未設定の物理ポートも全部 ifTable に出す（admin=down）ので、admin=up の行だけ見せる。
 # サブインタフェース（ethernet-1/1.0）も行になるが、回線の状態は親の行で見る
@@ -149,13 +157,13 @@ case "${1:-}" in
     echo "$BGP_NODE の iBGP（EVPN）の隣接 1 本（dc1-spine-01 = $BGP_PEER）を止める"
     # neighbor の admin-state を disable にする（回線は落とさない）。$BGP_NODE 側と dc1-spine-01 側（neighbor は $BGP_NODE のループバック）の
     # session-state が established でなくなり、gNMI の on_change（bgp_neighbor）で流れる。EVPN の経路は dc1-spine-02 からも来るので、VM 同士は通ったまま
-    srl "$BGP_NODE" "enter candidate" "set / network-instance default protocols bgp neighbor $BGP_PEER admin-state disable" "commit now"
+    bgp_admin disable
     hint "'sudo lab telegraf logs' に bgp_neighbor の session_state（established 以外）が出る。戻すのは 'lab heal-bgp'" \
       "数分で Grafana と Splunk の両方が bgp_down（$BGP_NODE の $BGP_PEER と、dc1-spine-01 の $BGP_NODE 側）を SNS のトピックに出す。戻すのは 'lab heal-bgp'"
     ;;
   heal-bgp)
     echo "$BGP_NODE の iBGP の隣接（$BGP_PEER）を戻す。established に戻るまで数十秒（'lab check' で見る）"
-    srl "$BGP_NODE" "enter candidate" "set / network-instance default protocols bgp neighbor $BGP_PEER admin-state enable" "commit now"
+    bgp_admin enable
     ;;
   trap-test)
     # link 以外の trap を 1 通送る。機器（SR Linux）には出させず、この EC2 の net-snmp の snmptrap（setup.sh が入れる net-snmp-utils）を
