@@ -158,7 +158,7 @@ if has_resources pipeline/analytics; then
   APP_ID=$(tf pipeline/analytics output -raw application_id 2>/dev/null || true)
   if [ -n "$APP_ID" ]; then
     RUNNING=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$APP_ID" \
-      --states SUBMITTED PENDING SCHEDULED RUNNING --query 'jobRuns[].id' --output text 2>/dev/null || true)
+      --states SUBMITTED PENDING SCHEDULED RUNNING QUEUED --query 'jobRuns[].id' --output text 2>/dev/null || true)
     if [ -n "$RUNNING" ] && [ "$RUNNING" != None ]; then
       for id in $RUNNING; do
         echo "Spark のジョブ $id を止める"
@@ -166,7 +166,7 @@ if has_resources pipeline/analytics; then
       done
       for i in $(seq 1 24); do  # 止まるまで最大 2 分
         LEFT=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$APP_ID" \
-          --states SUBMITTED PENDING SCHEDULED RUNNING CANCELLING --query 'jobRuns[].id' --output text 2>/dev/null || true)
+          --states SUBMITTED PENDING SCHEDULED RUNNING QUEUED CANCELLING --query 'jobRuns[].id' --output text 2>/dev/null || true)
         if [ -z "$LEFT" ] || [ "$LEFT" = None ]; then break; fi
         sleep 5
       done

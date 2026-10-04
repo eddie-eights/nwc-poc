@@ -894,7 +894,7 @@ check("up.sh は SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS（既定 1）を te
       re.search(r'^SINK_S3="\$\{SINK_S3:-1\}"; SINK_OPENSEARCH="\$\{SINK_OPENSEARCH:-1\}"; SINK_PROMETHEUS="\$\{SINK_PROMETHEUS:-1\}"$', up, re.M) is not None
       and 'ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]" ' in up and 'tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"' in up)
 check("up.sh は Splunk を立てるときだけ device map を lab の定義から作って渡す（lab/lab_topology.py --device-map。trap と gNMI には sysName が無い）",
-      re.search(r'if \[ -n "\$SPLUNK_ON_ECS" \]; then\n[\s\S]*?DEVICE_MAP=\$\("\$\{PY\[@\]\}" lab/lab_topology\.py lab --device-map\) \|\| die [^\n]*\n[\s\S]*?-var "device_map=\$DEVICE_MAP"\)\n  fi\n  tf_apply pipeline/analytics', up) is not None
+      re.search(r'if \[ -n "\$SPLUNK_ON_ECS" \]; then\n[\s\S]*?DEVICE_MAP=\$\("\$\{PY\[@\]\}" lab/lab_topology\.py lab --device-map\) \|\| die [^\n]*\n[\s\S]*?-var "device_map=\$DEVICE_MAP"\)\n  fi\n(?:  [^\n]*\n)*?  tf_apply pipeline/analytics', up) is not None
       and up.count("lab_topology.py lab --device-map") == 1)
 check("up.sh は AGENT=0 でも CloudWatch へのログを切らない（CloudWatch Logs へは土台の logs のエンドポイントで届く）",
       "cloudwatch_logging=false" not in up and re.search(r'variable "cloudwatch_logging" \{[^}]*default\s*=\s*true', tf) is not None)
@@ -1025,13 +1025,13 @@ check("up.sh は analytics に Spark のジョブ 1 つにつき 21 セント（
       '  if [ -n "$SINK_OPENSEARCH$SINK_PROMETHEUS" ]; then COST_CENTS=$((COST_CENTS + 21)); fi\n' in up
       and up.count("COST_CENTS + 21") == 3 and "COST_CENTS=2\n" in up
       and re.search(r'\*,opensearch,\*\) if \[ -z "\$SKIP_ANALYTICS" \]; then printf', up) is not None)
-check("up.sh はジョブごとに同じ SpecHash のものが動いていれば起こさない", "--states SUBMITTED PENDING SCHEDULED RUNNING --query 'jobRuns[].[name,id]'" in up
+check("up.sh はジョブごとに同じ SpecHash のものが動いていれば起こさない", "--states SUBMITTED PENDING SCHEDULED RUNNING QUEUED --query 'jobRuns[].[name,id]'" in up
       and "jobRun.tags.SpecHash" in up and 'if [ -z "$KEEP" ] && [ "$spec" = "$JOB_SPEC" ]; then KEEP="$id"; else STALE="$STALE $id"; fi' in up)
 check("up.sh は SpecHash が違うジョブを cancel し、止まるのを待ってから、SpecHash のタグを付けて起こし直す（スクリプトや引数の変更を反映する）",
       re.search(r'cancel-job-run[\s\S]*CANCELLING[\s\S]*--name "snmp-sinks-\$JOB" --mode STREAMING[\s\S]*--tags "[^"]*SpecHash=\$JOB_SPEC"', up) is not None)
 check("up.sh は PIPELINE=1 で SKIP_STREAM=1 なら analytics も飛ばす", re.search(r'SKIP_STREAM=1 なので analytics も作らない[^\n]*\n\s*SKIP_ANALYTICS=1', up) is not None)
 check("down.sh は名前で絞らずに動いているジョブを全部 cancel する（snmp-sinks-iceberg / -splunk / -http も、前の snmp-sinks も止まる）",
-      re.search(r"list-job-runs [^\n]*\\\n\s*--states SUBMITTED PENDING SCHEDULED RUNNING --query 'jobRuns\[\]\.id'", down) is not None
+      re.search(r"list-job-runs [^\n]*\\\n\s*--states SUBMITTED PENDING SCHEDULED RUNNING QUEUED --query 'jobRuns\[\]\.id'", down) is not None
       and "jobRuns[?name" not in down and "snmp-sinks" not in down)
 check("down.sh は job を cancel → stop-application → destroy analytics → destroy graph の順",
       down.index("cancel-job-run") < down.index("stop-application") < down.index("destroy_root pipeline/analytics") < down.index("destroy_lambda_root pipeline/graph") < down.index("destroy_root pipeline/stream"))
@@ -1305,4 +1305,117 @@ check("7-5: 前の up.sh が止めきれなかった（CANCELLING の）同じ�
 _rc, _out, _st = _run75([{"id": "old", "name": "snmp-sinks", "state": "RUNNING", "spec": "x"}], _D, cancel_delay=1000)
 check("7-5: 前の snmp-sinks が 3 分たっても止まらなければ、新しいジョブを起こさずに止まる",
       _rc == 1 and "DIE: Spark のジョブ（old）が 3 分たっても止まらない" in _out and _acts(_st) == ["cancel snmp-sinks:old"])
+_rc, _out, _st = _run75([{"id": "q", "name": "snmp-sinks-http", "state": "QUEUED", "spec": "x"}], dict(_D, iceberg=""))
+check("7-5: 待っている（QUEUED の）ジョブも動いているものとして扱い、SpecHash が違えば止めてから起こす",
+      _rc == 0 and _acts(_st) == ["cancel snmp-sinks-http:q", "start snmp-sinks-http STREAMING"])
+# 7-4 の前の「上限が変わるときだけジョブとアプリを止める」を up.sh から切り出し、偽の aws（アプリの状態も持つ）で動かす
+_b74 = up[up.index("  # EMR Serverless のアプリの上限（maximum_capacity。"):up.index('  tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"')]
+_tfv = open(os.path.join(ROOT, "terraform", "pipeline", "analytics", "variables.tf"), encoding="utf-8").read()
+_m_cpu = re.search(r'variable "max_cpu" \{[^}]*default\s*=\s*"([^"]+)"', _tfv)
+_m_mem = re.search(r'variable "max_memory" \{[^}]*default\s*=\s*"([^"]+)"', _tfv)
+check("up.sh の EMR_MAX_CPU / EMR_MAX_MEMORY は variables.tf の max_cpu / max_memory の既定値と同じで、tf_apply の前に止める判断がある",
+      f'EMR_MAX_CPU="{_m_cpu.group(1)}"; EMR_MAX_MEMORY="{_m_mem.group(1)}"' in _b74
+      and 'ANALYTICS_VARS+=(-var "max_cpu=$EMR_MAX_CPU" -var "max_memory=$EMR_MAX_MEMORY")' in _b74
+      and up.index("ANALYTICS_VARS=(-var") < up.index(_b74) < up.index('tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"'))
+_FAKE_AWS74 = "#!" + sys.executable + r"""
+import json, os, sys
+st_path = os.environ["FAKE_STATE"]
+st = json.load(open(st_path))
+a = sys.argv[1:]
+opt = lambda k: a[a.index(k) + 1]
+def opts(k):
+    i, out = a.index(k) + 1, []
+    while i < len(a) and not a[i].startswith("--"):
+        out.append(a[i]); i += 1
+    return out
+cmd, app = a[1], st["app"]
+if cmd == "get-application":
+    if app is None:
+        sys.exit("ResourceNotFoundException")
+    q = opt("--query")
+    if q == "application.[state,maximumCapacity.cpu,maximumCapacity.memory]":
+        print("\t".join([app["state"], app["cpu"], app["memory"]]))
+    else:
+        assert q == "application.state", q
+        if app["state"] == "STOPPING":
+            app["left"] -= 1
+            if app["left"] <= 0:
+                app["state"] = "STOPPED"
+        print(app["state"])
+elif cmd == "list-job-runs":  # 呼ばれるたびに時間が進む: 止めている途中のものは left 回で止まる
+    for r in st["runs"]:
+        if r["state"] == "CANCELLING":
+            r["left"] -= 1
+            if r["left"] <= 0:
+                r["state"] = "CANCELLED"
+    assert opt("--query") == "jobRuns[].id", opt("--query")
+    hits = [r for r in st["runs"] if r["state"] in opts("--states")]
+    st["log"].append("list " + " ".join(f'{r["id"]}:{r["state"]}' for r in hits))
+    print("\t".join(r["id"] for r in hits))
+elif cmd == "cancel-job-run":
+    r = next(r for r in st["runs"] if r["id"] == opt("--job-run-id"))
+    r["state"], r["left"] = "CANCELLING", st["cancel_delay"]
+    st["log"].append(f'cancel {r["id"]}')
+elif cmd == "stop-application":  # ジョブが残っていれば断る（実物も止まらない）
+    if any(r["state"] not in ("CANCELLED", "SUCCESS", "FAILED") for r in st["runs"]):
+        st["log"].append("stop REFUSED")
+        json.dump(st, open(st_path, "w"))
+        sys.exit("ValidationException: jobs are running")
+    st["log"].append("stop")
+    if app["state"] == "STARTED":
+        app["state"], app["left"] = "STOPPING", st["stop_delay"]
+else:
+    sys.exit("unknown " + cmd)
+json.dump(st, open(st_path, "w"))
+"""
+def _run74(app, runs=(), cancel_delay=2, stop_delay=2, state_file=True):
+    d = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(d, "aws"), "w") as f:
+            f.write(_FAKE_AWS74)
+        os.chmod(os.path.join(d, "aws"), 0o755)
+        if state_file:
+            os.makedirs(os.path.join(d, "terraform", "pipeline", "analytics"))
+            open(os.path.join(d, "terraform", "pipeline", "analytics", "terraform.tfstate"), "w").close()
+        state = os.path.join(d, "state.json")
+        with open(state, "w") as f:
+            json.dump({"app": copy.deepcopy(app), "runs": copy.deepcopy(list(runs)), "log": [],
+                       "cancel_delay": cancel_delay, "stop_delay": stop_delay}, f)
+        pre = ('set -euo pipefail\nREGION=r; ANALYTICS_VARS=(-var x=1)\n'
+               'die() { echo "DIE: $*"; exit 1; }\nsleep() { :; }\ntf_init() { :; }\nhas_resources() { return 0; }\n'
+               'tf() { case "$4" in application_id) echo app ;; list_job_runs_command) echo LIST ;; *) echo "tf? $*" >&2; exit 9 ;; esac; }\n')
+        r = subprocess.run(["bash", "-c", pre + _b74 + '\nprintf "VARS:%s\\n" "${ANALYTICS_VARS[@]}"'], capture_output=True, text=True, cwd=d,
+                           env={"PATH": d + os.pathsep + os.environ["PATH"], "FAKE_STATE": state})
+        with open(state) as f:
+            st = json.load(f)
+        return r.returncode, r.stdout + r.stderr, st
+    finally:
+        shutil.rmtree(d)
+_acts74 = lambda st: [l for l in st["log"] if l.startswith(("cancel", "stop"))]
+_old_app = {"state": "STARTED", "cpu": "4 vCPU", "memory": "16 GB"}
+_runs74 = [{"id": "a", "name": "snmp-sinks", "state": "RUNNING"}, {"id": "b", "name": "snmp-sinks-http", "state": "QUEUED"},
+           {"id": "c", "name": "snmp-sinks", "state": "SUCCESS"}]
+_rc, _out, _st = _run74(_old_app, _runs74, cancel_delay=3)
+check("7-4 の前（上限が変わる）: 動いている・待っている（QUEUED）ジョブを全部 cancel し、止まってから stop-application、STOPPED を待つ",
+      _rc == 0 and _acts74(_st) == ["cancel a", "cancel b", "stop"] and _st["app"]["state"] == "STOPPED"
+      and all(r["state"] in ("CANCELLED", "SUCCESS") for r in _st["runs"])
+      and "上限を 4 vCPU / 16 GB から 12 vCPU / 48 GB に変える。アプリが STARTED なので" in _out and "アプリ（app）を止めた" in _out
+      and "VARS:max_cpu=12 vCPU" in _out and "VARS:max_memory=48 GB" in _out)
+_rc, _out, _st = _run74(dict(_old_app, cpu="12 vCPU", memory="48 GB"), _runs74)
+_rc2, _out2, _st2 = _run74(dict(_old_app, cpu="12vCPU", memory="48 gb"), _runs74)
+check("7-4 の前（上限が変わらない）: ジョブもアプリも止めない（空白と大文字小文字の違いは同じとみる）",
+      _rc == 0 and _acts74(_st) == [] and "上限を" not in _out and _rc2 == 0 and _acts74(_st2) == [] and _st2["app"]["state"] == "STARTED")
+_rc, _out, _st = _run74(_old_app, _runs74, cancel_delay=1000)
+check("7-4 の前（ジョブが止まらない）: 3 分待って止まり、stop-application も tf_apply もしない",
+      _rc == 1 and "DIE: 上限を変える前に止めた Spark のジョブ（a\tb）が 3 分たっても止まらない" in _out
+      and _acts74(_st) == ["cancel a", "cancel b"] and _st["app"]["state"] == "STARTED")
+_rc, _out, _st = _run74(_old_app, _runs74, stop_delay=1000)
+check("7-4 の前（アプリが止まらない）: 3 分待って止まる（STOPPING のまま tf_apply に進まない）",
+      _rc == 1 and "DIE: EMR Serverless のアプリ（app）が 3 分たっても止まらない（STOPPING）" in _out and _acts74(_st)[-1] == "stop")
+_rc, _out, _st = _run74(dict(_old_app, state="STOPPED"), [])
+_rc2, _out2, _st2 = _run74(None, [])
+_rc3, _out3, _st3 = _run74(_old_app, _runs74, state_file=False)
+check("7-4 の前: アプリが止まっていれば上限が変わっても何も止めない。アプリが無いか state が無ければ何もしない（terraform に任せる）",
+      _rc == 0 and _acts74(_st) == [] and not any(l.startswith("list") for l in _st["log"]) and "（アプリは STOPPED）" in _out
+      and _rc2 == 0 and _st2["log"] == [] and _rc3 == 0 and _st3["log"] == [] and _st3["app"]["state"] == "STARTED")
 print(f"通過 {passed} / 失敗 0")

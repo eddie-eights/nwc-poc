@@ -927,6 +927,59 @@ if [ -z "$SKIP_ANALYTICS" ]; then
     ensure_secret "/$PREFIX/splunk/hec-token" uuid "Splunk HEC token (created by ops/up.sh)"
     ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX" -var "device_map=$DEVICE_MAP")
   fi
+  # EMR Serverless のアプリの上限（maximum_capacity。terraform/pipeline/analytics の max_cpu / max_memory の既定値と同じ値。tests/test_analytics.py が検査）
+  EMR_MAX_CPU="12 vCPU"; EMR_MAX_MEMORY="48 GB"
+  ANALYTICS_VARS+=(-var "max_cpu=$EMR_MAX_CPU" -var "max_memory=$EMR_MAX_MEMORY")
+  # アプリは STOPPED か CREATED のときしか更新できない（UpdateApplication の API リファレンス）。動いている（STARTED の）まま上限を変えると
+  # tf_apply が失敗し、打ち直しても同じところで止まる。ジョブが動いていると stop-application も効かない（2026-09-17 に実測）。
+  # そこで上限が変わるときだけ、先にジョブを全部止めてからアプリを止める（ops/down.sh と同じ手順）。止めたジョブは 7-5 が checkpoint から起こし直す
+  if [ -f terraform/pipeline/analytics/terraform.tfstate ] && { tf_init pipeline/analytics; has_resources pipeline/analytics; }; then
+    APP_ID=$(tf pipeline/analytics output -raw application_id 2>/dev/null || true)
+    APP_NOW=""
+    if [ -n "$APP_ID" ]; then
+      APP_NOW=$(aws emr-serverless get-application --region "$REGION" --application-id "$APP_ID" \
+        --query 'application.[state,maximumCapacity.cpu,maximumCapacity.memory]' --output text 2>/dev/null || true)
+    fi
+    APP_STATE=""; APP_CPU=""; APP_MEMORY=""
+    if [ -n "$APP_NOW" ]; then IFS=$'\t' read -r APP_STATE APP_CPU APP_MEMORY <<<"$APP_NOW"; fi
+    same_capacity() { [ "$(printf '%s' "$1" | tr -d ' ' | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$2" | tr -d ' ' | tr '[:upper:]' '[:lower:]')" ]; }
+    if [ -n "$APP_STATE" ] && ! { same_capacity "$APP_CPU" "$EMR_MAX_CPU" && same_capacity "$APP_MEMORY" "$EMR_MAX_MEMORY"; }; then
+      case "$APP_STATE" in
+        STOPPED | CREATED) echo "EMR Serverless のアプリの上限を $APP_CPU / $APP_MEMORY から $EMR_MAX_CPU / $EMR_MAX_MEMORY に変える（アプリは $APP_STATE）" ;;
+        *)
+          echo "EMR Serverless のアプリの上限を $APP_CPU / $APP_MEMORY から $EMR_MAX_CPU / $EMR_MAX_MEMORY に変える。アプリが $APP_STATE なので、ジョブを全部止めてからアプリを止める（ジョブは 7-5 で起こし直す）"
+          RUNS=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$APP_ID" \
+            --states SUBMITTED PENDING SCHEDULED RUNNING QUEUED --query 'jobRuns[].id' --output text)
+          for id in $RUNS; do
+            [ "$id" != None ] || continue
+            echo "Spark のジョブ $id を止める"
+            aws emr-serverless cancel-job-run --region "$REGION" --application-id "$APP_ID" --job-run-id "$id" >/dev/null
+          done
+          LEFT=""
+          for i in $(seq 1 36); do  # 止まるまで最大 3 分
+            LEFT=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$APP_ID" \
+              --states SUBMITTED PENDING SCHEDULED RUNNING QUEUED CANCELLING --query 'jobRuns[].id' --output text)
+            [ "$LEFT" != None ] || LEFT=""
+            [ -n "$LEFT" ] || break
+            sleep 5
+          done
+          [ -z "$LEFT" ] || die "上限を変える前に止めた Spark のジョブ（$LEFT）が 3 分たっても止まらない。$(tf pipeline/analytics output -raw list_job_runs_command) で見て、止まってから打ち直す"
+          for i in $(seq 1 36); do  # STOPPED になるまで最大 3 分（STARTING から STARTED になったものにも stop-application を打ち直す）
+            APP_STATE=$(aws emr-serverless get-application --region "$REGION" --application-id "$APP_ID" --query application.state --output text)
+            case "$APP_STATE" in
+              STOPPED | CREATED) break ;;
+              STARTED) aws emr-serverless stop-application --region "$REGION" --application-id "$APP_ID" >/dev/null 2>&1 || true ;;
+            esac
+            sleep 5
+          done
+          case "$APP_STATE" in
+            STOPPED | CREATED) echo "アプリ（$APP_ID）を止めた" ;;
+            *) die "EMR Serverless のアプリ（$APP_ID）が 3 分たっても止まらない（$APP_STATE）。aws emr-serverless get-application --region $REGION --application-id $APP_ID で STOPPED になってから打ち直す" ;;
+          esac
+          ;;
+      esac
+    fi
+  fi
   tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}" -var "http_send=$HTTP_SEND"   # http_send（driver / executor）を変えるとジョブの引数が変わり、7-5 で起こし直す
   APP_ID=$(tf pipeline/analytics output -raw application_id); echo "APP_ID=$APP_ID"
   if [ -n "$SPLUNK_ON_ECS" ]; then
@@ -962,7 +1015,7 @@ if [ -z "$SKIP_ANALYTICS" ]; then
   }
   # 動いている（起動中を含む）ジョブを「名前 id」の行で持ち、名前で id を引く
   ACTIVE=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$APP_ID" \
-    --states SUBMITTED PENDING SCHEDULED RUNNING --query 'jobRuns[].[name,id]' --output text)
+    --states SUBMITTED PENDING SCHEDULED RUNNING QUEUED --query 'jobRuns[].[name,id]' --output text)
   runs_named() { printf '%s\n' "$ACTIVE" | awk -v n="$1" '$1 == n {printf "%s ", $2}'; }
   STOP=""; START=""
   # 2026-10-04 までは 1 つのジョブ snmp-sinks が全部の格納先へ書いていた。格納先ごとの checkpoint（<checkpoint>/iceberg/ など）は
@@ -1009,7 +1062,7 @@ if [ -z "$SKIP_ANALYTICS" ]; then
     LEFT=""
     for i in $(seq 1 36); do
       LEFT=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$APP_ID" \
-        --states SUBMITTED PENDING SCHEDULED RUNNING CANCELLING --query 'jobRuns[].[name,id]' --output text \
+        --states SUBMITTED PENDING SCHEDULED RUNNING QUEUED CANCELLING --query 'jobRuns[].[name,id]' --output text \
         | awk -v names="$WAIT_NAMES" 'index(names, " " $1 " ") {printf "%s ", $2}')
       [ -n "$LEFT" ] || break
       sleep 5
