@@ -233,6 +233,26 @@ r = graph.sync_physical([{**sync_devs[0], "interfaces": sync_devs[0]["interfaces
 check("同じ内容なら何も書かない（読む 2 本と count だけ）", r["added"] == r["updated"] == r["removed"] == 0
       and not any(x in q for q in state["queries"] for x in ("drop()", "addV", "addE", ".property(")))
 state.update(answer={"g.V().hasLabel('device','interface').elementMap()": [], "g.E().hasLabel('link').elementMap()": [], "addV": [], "count()": [0]}, queries=[])
+# ---- 保守中と変更履歴（2026-10-04）
+_answer = dict(state["answer"])
+state.update(answer={"g.V().hasLabel('device','interface').elementMap()": [dict(cur_v[0], maintenance=True)] if cur_v[0].get("label") == "device" else cur_v,
+                     "g.E().hasLabel('link').elementMap()": [], "drop()": [], "addV": [], "addE": [], ".id()": ["x"], "count()": [1]}, queries=[])
+_first = cur_v[0]["id"]
+graph.sync_physical([{"device_id": _first, **{k: cur_v[0].get(k) for k in ("hostname", "site", "role", "asn", "mgmt_ip", "enabled")}, "interfaces": []}], [])
+check("sync_physical: 保守が明けた機器（一覧に maintenance が無い）は property ごと消す",
+      any(q.startswith(f"g.V('{_first}')") and "properties('maintenance').drop()" in q for q in state["queries"]))
+state.update(answer={"g.V().hasLabel('device','interface').elementMap()": [cur_v[0]], "g.E().hasLabel('link').elementMap()": [], "drop()": [], "addV": [], "addE": [], ".id()": ["x"], "count()": [1]}, queries=[])
+graph.sync_physical([{"device_id": _first, **{k: cur_v[0].get(k) for k in ("hostname", "site", "role", "asn", "mgmt_ip", "enabled")}, "maintenance": True, "interfaces": []}], [])
+check("sync_physical: 保守中にした機器には maintenance = true を single で書く",
+      any(q.startswith(f"g.V('{_first}')") and ".property(single,'maintenance',true)" in q for q in state["queries"]))
+state.update(answer={"g.V().hasLabel('change').id()": ["change#old", "change#keep"], "drop()": [], "addV": []}, queries=[])
+r = graph.sync_changes([{"change_id": "change#keep", "time": 1}, {"change_id": "change#new", "time": 2, "user": "admin", "action": "update", "object_type": "device", "object": "a", "device_id": "a", "detail": ""}])
+check("sync_changes: 無い id だけ足し、一覧に無い古い頂点を消し、もうある id は触らない",
+      r == {"added": 1, "removed": 1, "kept": 2} and state["queries"] == [
+          "g.V().hasLabel('change').id()",
+          "g.addV('change').property(id,'change#new').property('time',2).property('user','admin').property('action','update').property('object_type','device').property('object','a').property('device_id','a')",
+          "g.V('change#old').hasLabel('change').drop()"])
+state.update(answer=_answer, queries=[])
 r = graph.sync_physical([], [{"a": "x", "a_if": "e", "b": "y", "b_if": "e"}])
 check("端の機器が無い回線は張らずに skipped に理由を出す", r["added"] == 0 and len(r["skipped"]) == 1 and "機器が無い" in r["skipped"][0])
 

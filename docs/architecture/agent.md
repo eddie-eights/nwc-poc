@@ -12,7 +12,7 @@ flowchart LR
   WEB -->|"invoke_agent_runtime"| RT["AgentCore Runtime<br/>agent/app.py"]
   RT -->|"Retrieve（HYBRID + Rerank、20 件 → 5 件）"| KB["ナレッジベース<br/>CREATE_KB=1 のときだけ"]
   RT -->|"Converse + Guardrail"| LLM["Nova 2 Lite（jp.）"]
-  RT -->|"ツール（最大 5 往復）"| TOOLS["list_devices / neighbors / blast_radius / root_cause / what_if / topology_graph / layers<br/>search_logs / query_metrics / query_history / list_proposals"]
+  RT -->|"ツール（最大 5 往復）"| TOOLS["list_devices / neighbors / blast_radius / root_cause / what_if / topology_graph / layers<br/>search_logs / query_metrics / query_history / list_proposals / recent_changes"]
   RT -.->|"WORKFLOW=1"| GW["Gateway（MCP）→ tools Lambda"]
 ```
 

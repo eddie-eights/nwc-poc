@@ -293,6 +293,11 @@ async def start_for(client: Client, alert: dict) -> bool:
     existing = await asyncio.to_thread(awsio.read_proposal, rules.proposal_id(aid, alert.get("first_seen")))
     if not rules.should_start(alert, existing):
         return False
+    # 保守中の機器（Nautobot の Status が Maintenance）に関わる異常では起こさない。修復案も作らないので、保守が明けても落ちたままなら次の通知で起こす
+    held = rules.maintenance_hold(alert, *await asyncio.to_thread(awsio.read_topology))
+    if held:
+        log.info("skip %s: 保守中の機器（%s）", aid, ", ".join(held))
+        return False
     wid = rules.workflow_id(aid)
     try:
         await client.start_workflow(InvestigateAnomaly.run, alert, id=wid, task_queue=TASK_QUEUE)

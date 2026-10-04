@@ -28,7 +28,8 @@ flowchart LR
 - アラートは Grafana と Splunk が同じ形の JSON で SNS のトピック `<prefix>-alerts` に出す（`{"source", "alerts": [{"status", "device_id", "kind", "target", "detail", "starts_at"}]}`。読むのは `workflow/rules.py` の `alerts_from_message`）。異常の id は `<device_id>#<kind>#<target>`。
 - ワークフローは異常ごとに 1 つ（id は `investigate-<anomaly_id>`。発生の時刻を入れない）。Grafana と Splunk が同じ障害を知らせても、同じ id なので Temporal が二重起動を弾く。修復案は発生ごと（`<anomaly_id>#<first_seen>`。`first_seen` はアラートの `starts_at`）で、直ってからもう一度起きた次の発生は、前の修復案を上書きせず別の頂点になる。
 - 起こすのは `firing` の `link_down` だけ（`workflow/rules.py` の `START_KINDS`。trap と BGP / IS-IS は Neptune の `status` を変えるだけ）。`resolved` は、走っているワークフローにシグナル `resolved` で伝える（走っていなければ何もしない）。異常の「いま」を置く場所は持たず、発生はワークフローそのもの、解消はシグナルで持つ。
-- SQS のメッセージは、起こした・起こす理由が無い・同じ異常のワークフローが既に走っている・解消を伝える相手がいない、のどれかなら消す。Temporal や Neptune に届かないときは消さずに残し、配り直させる（5 回で DLQ `<prefix>-anomalies-dlq`）。
+- アラートの機器か、落ちた回線の相手の機器が Nautobot で保守中（Status が `Maintenance`。Neptune の `device` の `maintenance`）なら起こさない（`workflow/rules.py` の `maintenance_hold`。starter のログに `skip … 保守中の機器`）。Neptune を読めないときは起こす。
+- SQS のメッセージは、起こした・起こす理由が無い・保守中・同じ異常のワークフローが既に走っている・解消を伝える相手がいない、のどれかなら消す。Temporal や Neptune に届かないときは消さずに残し、配り直させる（5 回で DLQ `<prefix>-anomalies-dlq`）。
 - 同じルートで AgentCore Gateway（MCP）と tools Lambda も作る。Runtime はツールを Gateway 経由で呼ぶ（届かなければコンテナの中のツールで答える）。
 
 ## 修復案の状態
@@ -105,6 +106,7 @@ terraform -chdir=terraform/workflow output -raw worker_logs_command; echo
 | 承認しても approved のまま進まない（UI で `TimeoutError`） | ワーカーのイメージが古い。`deploy.env` の `IMAGE_TAG` を上げて `ops/up.sh` |
 | Runtime のログに `gateway tools/list failed, using local tools` | Gateway に届いていない。答えはコンテナの中のツールで返る |
 | 修復案が出ない | アラートが SQS まで届いていない。送り手 → SNS → SQS の順に見る（[troubleshooting.md](troubleshooting.md) の「パイプラインと WORKFLOW」） |
+| `link_down` なのに修復案が出ない（starter のログに `保守中の機器`） | 仕様。その機器か回線の相手が Nautobot で `Maintenance`。Status を `Active` に戻すと、次のアラートから起きる |
 | trap や BGP / IS-IS の異常に修復案が出ない | 仕様。ワークフローを起こすのは `link_down` だけ（`workflow/rules.py` の `START_KINDS`） |
 | 承認したのに `obsolete` になった | 承認までに解消の通知が届いた。古い処置は打たない。もう一度落ちれば、次の通知で別の修復案が出る |
 | 直したのに `failed`（`300 秒待っても解消の通知が届かない`） | 解消の通知が遅れたか届いていない。Grafana のルールが Normal に戻ったか、SQS の DLQ に溜まっていないかを見る。回線が実際に上がっていれば、もう打たなくてよい |

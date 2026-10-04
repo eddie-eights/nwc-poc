@@ -4,7 +4,7 @@
   - build_prompt        エージェント（AgentCore Runtime）に投げる質問文
   - parse_agent_json    返ってきた文から JSON を取り出す
   - normalize_action    lab EC2 で打ってよいコマンドの許可リスト
-  - alerts_from_message / should_start / workflow_id / proposal_id  アラート（SNS → SQS）の読み取りと、どれでワークフローを起こすかの判定と id
+  - alerts_from_message / should_start / maintenance_hold / workflow_id / proposal_id  アラート（SNS → SQS）の読み取りと、どれでワークフローを起こすかの判定と id
   - proposal_event      修復案の証跡（S3 Tables の proposal_events）の 1 行
   - impact / precheck   処置を打つ前の事前チェック（その処置でグラフがどう変わり、孤立や冗長切れが出るか）
 
@@ -33,7 +33,7 @@ def build_prompt(anomaly: dict) -> str:
         "あなたはネットワーク運用の一次切り分け担当です。次の異常について、ツールで状況を確かめてから、原因と処置を JSON で 1 つだけ返してください。"
         "まず root_cause（Neptune。UP でない要素を層をまたいで下へ辿り、根本原因ごとにまとめる）で、この異常が根本原因なのか、別の原因の結果なのかを確かめてください。"
         "トポロジと影響範囲は neighbors / blast_radius（Neptune。回線や機器の status が DOWN / ALARM なら他にも落ちている）、その機器のログは search_logs（OpenSearch）、"
-        "メトリクスの推移は query_metrics（Prometheus）、長期の履歴は query_history（S3）で見て、見えた事実だけを根拠に原因を書いてください。"
+        "メトリクスの推移は query_metrics（Prometheus）、長期の履歴は query_history（S3）、直前の構成変更は recent_changes（Nautobot の変更履歴）で見て、見えた事実だけを根拠に原因を書いてください。"
         "説明文や Markdown は付けないでください。\n"
         f"異常: device_id={anomaly.get('device_id', '')} kind={anomaly.get('kind', '')} target={anomaly.get('target', '')} "
         f"detail={anomaly.get('detail', '')} first_seen_jst={jst(anomaly.get('first_seen'))}\n"
@@ -230,6 +230,19 @@ def should_start(alert: dict, existing: dict | None) -> bool:
     if not alert.get("anomaly_id") or alert.get("kind") not in START_KINDS or alert.get("status") != "firing":
         return False
     return not existing
+
+
+def maintenance_hold(alert: dict, devices: list, links: list) -> list:
+    """このアラートに関わる保守中の機器（Nautobot で Status を Maintenance にしたもの。Neptune の maintenance = true）。空でなければワークフローを起こさない。
+    見るのはアラートの機器と、target のインタフェースにつながる回線の相手（相手を保守で止めても、こちらの回線が落ちる）"""
+    dev, target = alert.get("device_id", ""), alert.get("target", "")
+    involved = {dev}
+    for l in links:
+        if (l.get("a"), l.get("a_if")) == (dev, target):
+            involved.add(l.get("b"))
+        elif (l.get("b"), l.get("b_if")) == (dev, target):
+            involved.add(l.get("a"))
+    return sorted(d["device_id"] for d in devices if d.get("maintenance") and d["device_id"] in involved)
 
 
 def workflow_id(anomaly_id: str) -> str:

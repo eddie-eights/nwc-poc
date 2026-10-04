@@ -1,6 +1,8 @@
 """Nautobot の Job（JOBS_ROOT = /opt/nautobot/jobs）。Nautobot を機器の一覧とトポロジの正にして、Telegraf の dialin と Neptune に流す。
 中身は /opt/nautobot/netops/nb_sync.py。Job の行と JobHook は起動時の bootstrap.py が作って有効にする。
 
+同期の最後に、Nautobot の変更履歴（ObjectChange）の新しい 50 件を Neptune の頂点 change に写す（エージェントの recent_changes が読む）。
+
   SyncTopology   画面から手で打つ同期。IP をインタフェースに付け替えただけのような、JobHook が出ない変更のあとに使う
   SyncOnChange   JobHook が呼ぶ。Device / Interface / Cable / IPAddress / Service / Location / Role の作成・変更・削除のたびに同じ同期をする
 """

@@ -96,7 +96,9 @@ def _props(d: dict, keys) -> str:
     return "".join(f".property({_q(k)},{_q(d[k])})" for k in keys if d.get(k) is not None and d.get(k) != "")
 
 
-DEVICE_KEYS = ("hostname", "site", "role", "asn", "mgmt_ip", "enabled", "status")
+# maintenance = Nautobot で保守中（status が Maintenance）の機器だけ true（Job が同期する。保守が明ければ property ごと消える。2026-10-04）
+DEVICE_KEYS = ("hostname", "site", "role", "asn", "mgmt_ip", "enabled", "maintenance", "status")
+CHANGE_KEYS = ("time", "user", "action", "object_type", "object", "device_id", "detail")   # label change（Nautobot の変更履歴の写し）
 IF_KEYS = ("device_id", "name", "address", "lag", "status")
 LINK_KEYS = ("a_if", "b_if", "kind", "role", "bandwidth_mbps", "status")
 STATUSES = ("UP", "DOWN", "ALARM")
@@ -117,6 +119,7 @@ def load_topology() -> tuple[list[dict], list[dict]]:
         d = {k: m.get(k) for k in DEVICE_KEYS}
         d["device_id"] = m.get("id")
         d["enabled"] = bool(d.get("enabled"))
+        d["maintenance"] = bool(d.get("maintenance"))
         d["registered"] = m.get("registered") is not False
         d["interfaces"] = []
         devices[d["device_id"]] = d
@@ -329,6 +332,19 @@ def sync_physical(devices: list[dict], links: list[dict]) -> dict:
         if st and st != "UP":
             set_status(dev, ifn, st)
     return {**count(), **stats, **({"skipped": skipped} if skipped else {})}
+
+
+def sync_changes(changes: list[dict]) -> dict:
+    """Nautobot の変更履歴（直近の何件か。nb_map.change_rows の形）を label change の頂点に写す。エージェントが「直前に何を変えたか」を
+    Nautobot に届かなくても読めるようにするため（Runtime と tools Lambda から Nautobot への経路と権限を足さない）。
+    一覧に無い古い頂点は消す。変更履歴は書き換わらないので、もうある id は触らない"""
+    have = set(query("g.V().hasLabel('change').id()"))
+    want = {c["change_id"]: c for c in changes if c.get("change_id")}
+    for vid in sorted(set(want) - have):
+        query(f"g.addV('change').property(id,{_q(vid)}){_props(want[vid], CHANGE_KEYS)}")
+    for vid in sorted(have - set(want)):
+        query(f"g.V({_q(vid)}).hasLabel('change').drop()")
+    return {"added": len(set(want) - have), "removed": len(have - set(want)), "kept": len(want)}
 
 
 def _registered(vid: str) -> list:

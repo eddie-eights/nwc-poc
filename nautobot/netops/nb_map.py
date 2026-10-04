@@ -35,8 +35,46 @@ def link_kind(role_a: str, role_b: str, lag_a: str, lag_b: str) -> str:
     return "fabric" if "spine" in roles else "l2"
 
 
+# 機器の Status がこれなら「保守中」。Neptune の機器に maintenance = true を付け、ワークフローはその機器（と回線の相手）の異常では起こさない。
+# Nautobot の既定では Maintenance は機器に付けられないので、bootstrap.py が機器にも選べるようにする
+MAINTENANCE_STATUSES = ("Maintenance",)
+CHANGES_KEEP = 50      # Neptune に写す変更履歴の件数（新しい順）
+DETAIL_SKIP = {"last_updated", "created", "_custom_field_data"}
+
+
+def _plain(v) -> str:
+    """変更履歴の値を 1 語に（Status のような関連は名前、ほかはそのまま）"""
+    if isinstance(v, dict):
+        return str(v.get("name") or v.get("display") or v.get("id") or "")
+    return "" if v is None else str(v)
+
+
+def change_detail(differences: dict | None) -> str:
+    """ObjectChange.get_snapshots()["differences"]（{"removed": {項目: 前の値}, "added": {項目: 後の値}}）を「status: Active → Maintenance」の形に"""
+    removed, added = (differences or {}).get("removed") or {}, (differences or {}).get("added") or {}
+    parts = [f"{k}: {_plain(removed.get(k)) or '-'} → {_plain(added.get(k)) or '-'}"
+             for k in sorted(set(removed) | set(added)) if k not in DETAIL_SKIP]
+    return "、".join(parts)[:300]
+
+
+def change_rows(changes: list[dict]) -> list[dict]:
+    """nb_sync.read_changes() の行を graph.sync_changes() に渡す形に。新しい順に CHANGES_KEEP 件。
+    1 行 = {change_id, time（epoch 秒）, user, action（create / update / delete）, object_type, object, device_id, detail}"""
+    rows = []
+    for c in changes:
+        if not c.get("id"):
+            continue
+        rows.append({
+            "change_id": f"change#{c['id']}", "time": int(c.get("time") or 0), "user": str(c.get("user") or "")[:80],
+            "action": str(c.get("action") or ""), "object_type": str(c.get("object_type") or ""), "object": str(c.get("object") or "")[:200],
+            "device_id": str(c.get("device") or "").strip().lower(), "detail": change_detail(c.get("differences")),
+        })
+    rows.sort(key=lambda r: (-r["time"], r["change_id"]))
+    return rows[:CHANGES_KEEP]
+
+
 def to_graph(rows: list[dict], cables: list[dict]) -> tuple[list[dict], list[dict], list[str]]:
-    """(devices, links, warnings)。rows は機器（{name, site, role, mgmt_ip, asn, interfaces: [{name, address, lag}], services: [{name, protocol, ports}]}）、
+    """(devices, links, warnings)。rows は機器（{name, status, site, role, mgmt_ip, asn, interfaces: [{name, address, lag}], services: [{name, protocol, ports}]}）、
     cables は回線（{a, a_if, b, b_if, role, bandwidth_mbps}）。名前の無い機器と、端の機器が rows に無い / 両端が同じ機器 / 重なった回線は落として warnings に書く"""
     warnings, devices = [], {}
     for r in rows:
@@ -54,6 +92,8 @@ def to_graph(rows: list[dict], cables: list[dict]) -> tuple[list[dict], list[dic
             "interfaces": sorted(({"name": i["name"], "address": i.get("address") or "", "lag": i.get("lag") or ""}
                                   for i in r.get("interfaces") or [] if i.get("name")), key=lambda i: i["name"]),
         }
+        if r.get("status") in MAINTENANCE_STATUSES:   # 保守中の機器だけ持つ（無ければ sync_physical が property ごと消す）
+            devices[name]["maintenance"] = True
     lag_of = {n: {i["name"]: i["lag"] for i in d["interfaces"]} for n, d in devices.items()}
     links = {}
     for c in cables:

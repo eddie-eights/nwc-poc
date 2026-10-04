@@ -115,7 +115,7 @@ def _public(d: dict) -> dict:
     return {
         "device_id": d["device_id"], "site": d["site"], "role": d["role"], "mgmt_ip": d.get("mgmt_ip"),
         "asn": d.get("asn"), "monitored": bool(d.get("enabled")), "status": d.get("status") or "UP",
-        "registered": d.get("registered") is not False,
+        "registered": d.get("registered") is not False, "maintenance": bool(d.get("maintenance")),
     }
 
 
@@ -315,9 +315,12 @@ def root_cause(device_id: str = "") -> dict:
             note += "下の層（IP・回線・機器）は UP なので、この層の設定やプロセスを疑う。"
         if root.get("registered") is False:
             note += "トポロジに未登録の要素（検知だけが来た）。"
+        maint = sorted(d for d in root["devices"] if (DEVICE_BY_ID.get(d) or {}).get("maintenance"))
+        if maint:
+            note += f"保守中の機器（{', '.join(maint)}）に関わるので、作業による停止かもしれない。"
         rows.append({**_brief(root), "devices": root["devices"], "lower_layers_up": lower_ok,
                      "explains": [_brief(els[i]) for i in sorted(ids, key=lambda i: (LAYER_ORDER.get(els[i]["layer"], 9), i))][:MAX_LISTED],
-                     "explains_count": len(ids), "also_on_it": sorted(on_it)[:MAX_LISTED], "note": note})
+                     "explains_count": len(ids), "also_on_it": sorted(on_it)[:MAX_LISTED], "maintenance": maint, "note": note})
     rows.sort(key=lambda r: (LAYER_ORDER.get(r["layer"], 9), -r["explains_count"], r["id"]))
     out = {"source": SOURCE, "device_id": device_id, "fault_count": len(faults), "root_cause_count": len(rows), "root_causes": rows}
     if not rows:
@@ -408,6 +411,28 @@ def what_if(op: str, target: str) -> dict:
     return {"source": SOURCE, **impact(DEVICES, LINKS, [{"op": op, "target": (target or "").strip()}])}
 
 
+# ---------------------------------------------------------------- Nautobot の変更履歴（Job が Neptune に写したもの。2026-10-04）
+CHANGES_NOT_DEPLOYED = "変更履歴はまだ無い（Nautobot と Neptune が要る。Nautobot の Job が変更のたびに Neptune に写す）"
+
+
+def recent_changes(device_id: str = "", limit: int = 20) -> dict:
+    """Nautobot で直近に変えたもの（新しい順）。device_id があれば、その機器か、名前にその機器を含むもの（ケーブルなど）だけ"""
+    if not graph.configured():
+        return {"error": CHANGES_NOT_DEPLOYED, "changes": []}
+    limit = max(1, min(int(limit), 50))
+    try:
+        rows = graph.list_records("change", "change_id", "time", limit=50)
+    except (ClientError, BotoCoreError) as e:
+        return {"error": f"変更履歴を読めない: {str(e)[:200]}", "changes": []}
+    if device_id:
+        rows = [r for r in rows if r.get("device_id") == device_id or device_id in str(r.get("object") or "")]
+    changes = [{"time_jst": toolkit.jst(r.get("time")), "time": r.get("time"), "user": r.get("user") or "", "action": r.get("action") or "",
+                "object_type": r.get("object_type") or "", "object": r.get("object") or "", "device_id": r.get("device_id") or "",
+                "detail": r.get("detail") or ""} for r in rows[:limit]]
+    return {"device_id": device_id, "count": len(changes), "changes": changes,
+            "note": "Nautobot（機器と回線の正）での変更だけ。機器に直接打った設定変更は入らない（ログを search_logs で見る）"}
+
+
 def interfaces(device_id: str) -> list[str]:
     """device_id のインタフェース名（Web の編集画面の選択肢）。Neptune に lab の定義から入れた一覧があればそれと、
     つながるリンクに出てくるその機器側の名前（静的データには一覧が無いので、いま使われているものだけ）"""
@@ -430,7 +455,7 @@ def link_choices() -> list[tuple[str, str]]:
 TOOL_SPECS = [
     {"toolSpec": {
         "name": "list_devices",
-        "description": "監視対象ネットワークの機器一覧（拠点 site、役割 role、管理 IP、AS 番号、いまの状態 status = UP / DOWN / ALARM、registered = false はトポロジに未登録で検知だけが来た機器 role=unknown）。site や role で絞れる。",
+        "description": "監視対象ネットワークの機器一覧（拠点 site、役割 role、管理 IP、AS 番号、いまの状態 status = UP / DOWN / ALARM、maintenance = true は Nautobot で保守中にしてある機器、registered = false はトポロジに未登録で検知だけが来た機器 role=unknown）。site や role で絞れる。",
         "inputSchema": {"json": {"type": "object", "properties": {
             "site": {"type": "string", "description": "拠点名で絞る（dc1 / wan）。空なら全部"},
             "role": {"type": "string", "description": "役割で絞る（leafsw = 上流側の Leaf / spine / leaf = アクセス側の Leaf / upstream = 上流の VM / host = アクセス側の VM / unknown）。空なら全部"},
@@ -479,7 +504,15 @@ TOOL_SPECS = [
             "layer": {"type": "string", "description": "ip か evpn。空なら両方"},
         }}},
     }},
+    {"toolSpec": {
+        "name": "recent_changes",
+        "description": "Nautobot（機器と回線の正）で直近に変えたもの（新しい順。いつ time_jst、誰が user、create / update / delete、何を object_type と object、どう変えたか detail = 「status: Active → Maintenance」の形）。異常の直前に構成を変えていないかを確かめるのに使う。機器に直接打った設定変更は入らない。",
+        "inputSchema": {"json": {"type": "object", "properties": {
+            "device_id": {"type": "string", "description": "機器名（例 dc1-leaf-01）。その機器に関わる変更だけにする。空なら全部"},
+            "limit": {"type": "integer", "description": "件数（既定 20、最大 50）"},
+        }}},
+    }},
 ]
-TOOLS = {"list_devices": list_devices, "neighbors": neighbors, "blast_radius": blast_radius, "root_cause": root_cause, "what_if": what_if, "topology_graph": topology_graph, "layers": layers}
+TOOLS = {"list_devices": list_devices, "neighbors": neighbors, "blast_radius": blast_radius, "root_cause": root_cause, "what_if": what_if, "topology_graph": topology_graph, "layers": layers, "recent_changes": recent_changes}
 # ツールを呼ぶ前に reload()（TTL を過ぎていれば Neptune を読み直す。画面での編集が次の質問に効く）
 run_tool = toolkit.runner(TOOLS, before=reload)

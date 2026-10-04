@@ -131,6 +131,8 @@ terraform -chdir=terraform/pipeline/nautobot output -raw password_command       
 | Device（名前、Location、Role、primary IPv4、custom field `asn`） | Neptune の `device`。Service がどちらかあれば「監視」 |
 | Interface（名前、最初の IP、LAG の親） | Neptune の `interface` |
 | Cable（両端が Interface。custom field `link_role` / `bandwidth_mbps`） | Neptune の回線。種類（fabric / l2 / lag）は両端の Role と LAG から決まる |
+| Device の Status を `Maintenance` にする | Neptune の `device` の `maintenance`。保守中の機器の異常ではワークフローを起こさない（6 章の (5)） |
+| どれかを作る・変える・消す（Nautobot の変更履歴 ObjectChange） | Neptune の頂点 `change`（新しい順に 50 件）。エージェントの `recent_changes` が読む（6 章の (6)） |
 
 Role の名前は `leaf` / `leafsw` / `spine` / `host` / `upstream` を使う（回線の種類と Web の図の並びがこれを見る）。
 
@@ -205,7 +207,25 @@ flowchart LR
 
 トポロジに無い機器やインタフェースの異常は、Neptune に「未登録」の頂点として残る（Web の図では橙の点線の枠）。これは「台帳に載っていない機器が動いている」の知らせになる。Nautobot にその機器を足すと、Job が未登録の頂点を登録済みに置き換え、`UP` でない `status` は引き継ぐ。
 
-### (5) 本番の機器の一覧を外から入れる（PoC には未実装）
+### (5) 保守中の機器の異常では、調査を起こさない
+
+Device の Status を `Maintenance` にすると、Job が Neptune の `device` に `maintenance` を付ける（`Maintenance` を機器の Status に選べるようにするのは起動時の `bootstrap.py`。対象の名前は `nb_map.py` の `MAINTENANCE_STATUSES`）。
+
+- アラートの機器か、落ちた回線の相手の機器が保守中なら、ワークフローを起こさない（`workflow/rules.py` の `maintenance_hold`。starter のログに `skip … 保守中の機器`）。Neptune の `status` は今までどおり変わるので、Web の図には出る。
+- エージェントの `list_devices` と `root_cause` は `maintenance` を返す。根本原因の機器が保守中なら「作業によるものの可能性」と添える。
+- Status を `Active` に戻すと `maintenance` は外れる。戻したあとに来たアラート（Grafana は 4 時間ごとに送り直す）から、また調査が起きる。
+- Neptune を読めないときは、保守中と見なさずに起こす（止める側に倒さない）。
+
+### (6) 障害の直前に台帳の何が変わったかを引く
+
+Nautobot は変更のたびに ObjectChange（だれが・いつ・何を・どう変えたか）を残す。Job は同期の最後に、新しい順に 50 件（`nb_map.py` の `CHANGES_KEEP`）を Neptune の頂点 `change` に写す（無いものだけ足し、50 件から外れたものは消す）。
+
+- エージェントの `recent_changes`（`device_id` で絞れる）がこれを読む。調査のプロンプトにも「直前の構成変更は `recent_changes`」と入れてある。
+- 1 件は `time` / `user` / `action` / `object_type` / `object` / `device_id` / `detail`（変わった項目。例 `status: Active → Maintenance`）。
+- Runtime と tools Lambda から Nautobot へは届かせていない（経路も IAM も足さない）。Neptune に写すのはそのため。
+- 写るのは Job が走ったときまでの分。JobHook が出ない変更（IP の付け替えだけ、など）は、次に Job が走ったときに入る。
+
+### (7) 本番の機器の一覧を外から入れる（PoC には未実装）
 
 - 外のシステム（SDN コントローラや構成管理のワーカー）が Nautobot の API で書く。JobHook は API からの変更でも出るので、Telegraf と Neptune への反映は今のまま動く。
 - Nautobot の側から取りにいく（SSoT アプリや Device Onboarding アプリ。中身は Job）。
@@ -213,11 +233,12 @@ flowchart LR
 
 ## 7. 役割の分担（Nautobot と Neptune）
 
-Neptune に書くものは 4 つあり、書き手が分かれている。Nautobot から入るのは物理層だけ。
+Neptune に書くものは 5 つあり、書き手が分かれている。Nautobot から入るのは物理層（保守中の印を含む）と変更履歴。
 
 | Neptune に書くもの | 書き手 | 元の情報 |
 |---|---|---|
 | 物理層（機器・IF・回線） | Nautobot の Job（`agent/graph.py` の `sync_physical()`。差分） | Nautobot の台帳 |
+| 変更履歴（頂点 `change`。新しい順に 50 件） | Nautobot の Job（`agent/graph.py` の `sync_changes()`） | Nautobot の ObjectChange |
 | IP 層 / EVPN・BGP 層 | `ops/up.sh` の手順 7-3b、`ops/sync-graph.sh` | lab の定義（SR Linux の設定）。Nautobot には無い |
 | `status` | Lambda `<prefix>-graph-status` | アラート（SNS） |
 | 修復案 | ワークフローと Web | エージェントの調査と人の承認 |

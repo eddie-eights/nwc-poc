@@ -137,15 +137,39 @@ synced = []
 graph.configured = lambda: True
 graph.sync_physical = lambda devices, links: synced.append((len(devices), len(links))) or {"devices": len(devices)}
 toolkit.client = lambda name: {"ssm": Ssm({"/p/gnmi": "old", "/p/snmp": "old"}), "ecs": Ecs()}[name]
+_changes = [{"id": "u1", "time": 1790000000, "user": "admin", "action": "update", "object_type": "device", "object": "DC1-Leaf-01", "device": "DC1-Leaf-01",
+             "differences": {"removed": {"status": {"name": "Active"}, "last_updated": "a"}, "added": {"status": {"name": "Maintenance"}, "last_updated": "b"}}},
+            {"id": "u2", "time": 1790000100, "user": "netops-web", "action": "delete", "object_type": "cable", "object": "x <> y", "device": "", "differences": None},
+            {"id": "", "time": 1}]
+changes_synced = []
+nb_sync.read_changes = lambda: list(_changes)
+graph.sync_changes = lambda rows: changes_synced.append(rows) or {"kept": len(rows)}
 nb_sync.read = lambda: ([], [])
 out = nb_sync.sync(log)
 check("sync: 機器が 1 台も無いときは Neptune を触らない（空で合わせると物理層が全部消える）", synced == [] and out["neptune"] == {"skipped": True})
 nb_sync.read = lambda: (rows, plan["cables"])
 out = nb_sync.sync(log)
 check("sync: 機器があれば Neptune の物理層を合わせる", synced == [(len(lab["devices"]), len(lab["links"]))])
+# ---- 保守中と変更履歴（2026-10-04）
+check("sync: 変更履歴を Neptune に写す（新しい順。id の無い行は落とす。機器が無くても写す）",
+      len(changes_synced) == 2 and out["changes"] == {"kept": 2} and [r["change_id"] for r in changes_synced[-1]] == ["change#u2", "change#u1"])
+check("change_rows: 機器名は小文字、差分は「項目: 前 → 後」（last_updated は出さない）、差分が無ければ空",
+      changes_synced[-1][1] == {"change_id": "change#u1", "time": 1790000000, "user": "admin", "action": "update", "object_type": "device",
+                                "object": "DC1-Leaf-01", "device_id": "dc1-leaf-01", "detail": "status: Active → Maintenance"}
+      and changes_synced[-1][0]["detail"] == "" and nb_map.change_detail({"removed": {}, "added": {"name": "x"}}) == "name: - → x")
+check("change_rows: 新しい順に CHANGES_KEEP 件まで",
+      len(nb_map.change_rows([{"id": str(i), "time": i} for i in range(nb_map.CHANGES_KEEP + 5)])) == nb_map.CHANGES_KEEP
+      and nb_map.change_rows([{"id": "a", "time": 1}, {"id": "b", "time": 2}])[0]["change_id"] == "change#b")
+dm, _, _ = nb_map.to_graph([{**rows[0], "status": "Maintenance"}, {**rows[1], "status": "Active"}], [])
+check("to_graph: Status が Maintenance の機器だけ maintenance = true を持つ（ほかはキーごと無い）", dm[0].get("maintenance") is True and "maintenance" not in dm[1])
+ns = read("nautobot", "netops", "nb_sync.py")
+check("nb_sync.read は機器の Status を読み、read_changes は ObjectChange を新しい順に読む",
+      '"status": d.status.name if d.status else ""' in ns and 'ObjectChange.objects.select_related("changed_object_type", "related_object_type").order_by("-time")[:limit]' in ns)
 boot = read("nautobot", "netops", "bootstrap.py")
 check("bootstrap: seed が失敗したら起動時の同期を飛ばし、JobHook は起動のたびに決まった形へ戻す",
       "steps_skip.add(first_sync)" in boot and "JobHook.objects.update_or_create" in boot)
+check("bootstrap: Maintenance を機器の Status に選べるようにする（seed より前）",
+      "for step in (superuser, api_user, custom_fields, statuses, seed, jobs, first_sync)" in boot and "status.content_types.add(device_ct)" in boot)
 
 # ---- 配線
 docker = read("nautobot", "Dockerfile")

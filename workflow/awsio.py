@@ -129,8 +129,10 @@ def update_proposal(proposal_id: str, fields: dict, only_status: str | None = No
 
 
 def read_topology() -> tuple[list, list]:
-    """(devices, links)。事前チェック（rules.precheck）に渡す形だけ読む: 機器は id と status、回線は両端の機器・IF と status"""
-    devices = [{"device_id": m.get("id"), "status": m.get("status")} for m in gremlin("g.V().hasLabel('device').elementMap('status')")]
+    """(devices, links)。事前チェック（rules.precheck）と保守中の判定（rules.maintenance_hold）に渡す形だけ読む:
+    機器は id・status・maintenance、回線は両端の機器・IF と status"""
+    devices = [{"device_id": m.get("id"), "status": m.get("status"), "maintenance": bool(m.get("maintenance"))}
+               for m in gremlin("g.V().hasLabel('device').elementMap('status','maintenance')")]
     links = [{"a": (m.get("OUT") or {}).get("id"), "b": (m.get("IN") or {}).get("id"), "a_if": m.get("a_if"), "b_if": m.get("b_if"),
               "status": m.get("status")} for m in gremlin("g.E().hasLabel('link').elementMap('a_if','b_if','status')")]
     return devices, links

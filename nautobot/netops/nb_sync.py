@@ -4,6 +4,8 @@
   1. 機器の一覧: Service（gnmi / snmp）を持つ機器から作った文字列が SSM の今の値と違うときだけ書き換え、dialin のサービスを作り直す
      （ECS は起動時に secrets を読むので、書き換えただけでは反映されない）。空の一覧は書かない（Telegraf が起動できなくなる）
   2. Neptune: graph.sync_physical()（Gremlin）で物理層だけを差分で合わせる。status と上の層は残る。機器が 1 台も無いときは触らない（全部消えるので）
+     機器の Status が Maintenance なら maintenance = true を付ける（保守中。ワークフローが起こさない）
+  3. 変更履歴: 直近の ObjectChange（誰が・いつ・何を・どう変えたか）を graph.sync_changes() で label change の頂点に写す（エージェントの recent_changes）
 
 同時に 2 つ走ると古い読みが後から書くことがあるので、Redis のロック（Django の cache）の中で「読む → 書く」をする。
 
@@ -28,14 +30,14 @@ def read() -> tuple[list[dict], list[dict]]:
     from nautobot.dcim.models import Cable, Device
 
     rows = []
-    for d in (Device.objects.select_related("location", "role", "primary_ip4")
+    for d in (Device.objects.select_related("location", "role", "primary_ip4", "status")
               .prefetch_related("interfaces__ip_addresses", "interfaces__lag", "services").order_by("name")):
         interfaces = []
         for i in d.interfaces.all():
             hosts = sorted((str(ip.host) for ip in i.ip_addresses.all()), key=lambda h: (":" in h, h))   # v4 が先
             interfaces.append({"name": i.name, "address": hosts[0] if hosts else "", "lag": i.lag.name if i.lag else ""})
         rows.append({
-            "name": d.name, "site": d.location.name if d.location else "", "role": d.role.name if d.role else "",
+            "name": d.name, "status": d.status.name if d.status else "", "site": d.location.name if d.location else "", "role": d.role.name if d.role else "",
             "mgmt_ip": str(d.primary_ip4.host) if d.primary_ip4 else "", "asn": d.cf.get("asn"), "interfaces": interfaces,
             "services": [{"name": s.name, "protocol": s.protocol, "ports": list(s.ports or [])} for s in d.services.all()],
         })
@@ -49,6 +51,25 @@ def read() -> tuple[list[dict], list[dict]]:
         cables.append({"a": ends["A"].device.name, "a_if": ends["A"].name, "b": ends["B"].device.name, "b_if": ends["B"].name,
                        "role": c.cf.get("link_role"), "bandwidth_mbps": c.cf.get("bandwidth_mbps")})
     return rows, cables
+
+
+def read_changes(limit: int = nb_map.CHANGES_KEEP) -> list[dict]:
+    """直近の変更履歴（ObjectChange）を nb_map.change_rows() に渡す形で。device は、変えたものが機器ならその名前、機器に付くもの（インタフェースなど）なら親の機器"""
+    from nautobot.extras.models import ObjectChange
+
+    out = []
+    for c in ObjectChange.objects.select_related("changed_object_type", "related_object_type").order_by("-time")[:limit]:
+        model = c.changed_object_type.model if c.changed_object_type else ""
+        device = c.object_repr if model == "device" else ""
+        if not device and c.related_object_type and c.related_object_type.model == "device":
+            device = getattr(c.related_object, "name", "") or ""   # 消えた機器なら None
+        try:
+            differences = (c.get_snapshots() or {}).get("differences")
+        except Exception:  # noqa: BLE001 - 差分が作れない古い行でも、誰がいつ何を変えたかは残す
+            differences = None
+        out.append({"id": str(c.pk), "time": int(c.time.timestamp()), "user": c.user_name, "action": str(c.action), "object_type": model,
+                    "object": c.object_repr, "device": device, "differences": differences})
+    return out
 
 
 def push_targets(rows: list[dict], log, force_redeploy: bool = False) -> dict:
@@ -100,6 +121,11 @@ def sync(log, force_redeploy: bool = False) -> dict:
                 log.warning("NEPTUNE_ENDPOINT が無い。Neptune は触らない")
         except Exception as e:
             errors.append(f"Neptune: {e}")
+        try:
+            if graph.configured():
+                out["changes"] = graph.sync_changes(nb_map.change_rows(read_changes()))
+        except Exception as e:
+            errors.append(f"変更履歴: {e}")
     if errors:
         raise RuntimeError(" / ".join(errors))
     return out

@@ -131,11 +131,11 @@ _g = []
 def _fake_gremlin(q):
     _g.append(q)
     if "hasLabel('device')" in q:
-        return [{"id": "dc1-leaf-01", "label": "device", "status": "ALARM"}, {"id": "dc1-spine-01", "label": "device"}]
+        return [{"id": "dc1-leaf-01", "label": "device", "status": "ALARM", "maintenance": True}, {"id": "dc1-spine-01", "label": "device"}]
     return [{"id": "e1", "label": "link", "OUT": {"id": "dc1-leaf-01", "label": "device"}, "IN": {"id": "dc1-spine-01", "label": "device"}, "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}]
 _gs, awsio.gremlin = awsio.gremlin, _fake_gremlin
-check("awsio.read_topology は機器（id と status）と回線（両端・IF・status）を読む",
-      awsio.read_topology() == ([{"device_id": "dc1-leaf-01", "status": "ALARM"}, {"device_id": "dc1-spine-01", "status": None}],
+check("awsio.read_topology は機器（id・status・maintenance）と回線（両端・IF・status）を読む",
+      awsio.read_topology() == ([{"device_id": "dc1-leaf-01", "status": "ALARM", "maintenance": True}, {"device_id": "dc1-spine-01", "status": None, "maintenance": False}],
                                 [{"a": "dc1-leaf-01", "b": "dc1-spine-01", "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}])
       and len(_g) == 2)
 awsio.gremlin = _gs
@@ -153,6 +153,14 @@ awsio.ask_agent = lambda prompt: '{"cause": "c", "action": "none", "reason": "r"
 f = asyncio.run(worker.investigate({"device_id": "x", "kind": "link_down", "target": "y"}))
 check("処置が none ならトポロジを読まず、事前チェックは空", f["precheck"] == "" and f["precheck_verdict"] == "")
 awsio.ask_agent, awsio.read_topology = _ask, _rt
+# ---- 保守中（Nautobot の Status が Maintenance → Neptune の maintenance。2026-10-04）
+_al = {"device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1"}
+_m = lambda *names: [dict(d, maintenance=d["device_id"] in names) for d in _pd]
+check("保守中でなければ止めない", rules.maintenance_hold(_al, _m(), _pl) == [])
+check("アラートの機器が保守中なら止める", rules.maintenance_hold(_al, _m("dc1-leaf-01"), _pl) == ["dc1-leaf-01"])
+check("回線の相手が保守中でも止める（相手を止めればこちらの回線が落ちる）", rules.maintenance_hold(_al, _m("dc1-spine-01"), _pl) == ["dc1-spine-01"])
+check("別の回線の相手が保守中なら止めない", rules.maintenance_hold(_al, _m("dc1-spine-02"), _pl) == [])
+check("プロンプトは直前の構成変更を recent_changes で見させる", "recent_changes（Nautobot の変更履歴）" in prompt)
 check("承認タブの詳細は事前チェックを出す", '("事前チェック", "precheck")' in read("web", "incident_view.py"))
 check("プロンプトは JSON 1 個を求め、action の 3 択を示す", '"action"' in prompt and "heal-main | check | none" in prompt)
 check("応答の中の JSON を拾う（前後に文があっても）",
@@ -360,8 +368,8 @@ check("Gateway に無いツールの call はエラーの辞書", "error" in mcp
 # ---- tools.json と Python の TOOL_SPECS
 tools = json.loads(read("tools", "tools.json"))
 py_specs = {s["toolSpec"]["name"]: s["toolSpec"] for s in topology.TOOL_SPECS + evidence.TOOL_SPECS + proposals.TOOL_SPECS}
-check("tools.json の 11 個は topology / evidence / proposals の TOOL_SPECS と同じ名前（list_anomalies は 2026-10-02 にやめた）",
-      {t["name"] for t in tools} == set(py_specs) and len(tools) == 11 and "list_anomalies" not in py_specs
+check("tools.json の 12 個は topology / evidence / proposals の TOOL_SPECS と同じ名前（list_anomalies は 2026-10-02 にやめた）",
+      {t["name"] for t in tools} == set(py_specs) and len(tools) == 12 and "list_anomalies" not in py_specs
       and not os.path.exists(os.path.join(ROOT, "agent", "anomalies.py")))
 check("evidence のツールは search_logs / query_metrics / query_history", {s["toolSpec"]["name"] for s in evidence.TOOL_SPECS} == {"search_logs", "query_metrics", "query_history"})
 check("handler は topology / evidence / proposals のツールを名前で振り分ける",
@@ -827,6 +835,12 @@ def msg(status="firing", kind="link_down", fs=FS, source="grafana", n=1):
         {"status": status, "device_id": "hq-ce-01", "kind": kind, "target": f"eth{i + 1}", "detail": "ifOperStatus down", "starts_at": fs} for i in range(n)]})
 WID = f"investigate-{AID}"
 awsio.read_proposal = lambda p: {}
+_rt2 = awsio.read_topology
+awsio.read_topology = lambda: ([{"device_id": "hq-ce-01", "status": "DOWN", "maintenance": True}], [])
+tc = FakeTemporal()
+asyncio.run(worker.handle_message(tc, msg()))
+check("保守中の機器の link_down ではワークフローを起こさない（例外にしない = 通知は消す）", tc.started == [])
+awsio.read_topology = lambda: ([{"device_id": "hq-ce-01", "status": "DOWN", "maintenance": False}], [])
 tc = FakeTemporal()
 asyncio.run(worker.handle_message(tc, msg()))
 check("firing の link_down は、異常ごとの id（investigate-<anomaly_id>）でワークフローを起こし、アラートの dict を渡す",

@@ -94,7 +94,7 @@ r = app.invoke({"prompt": "%BGP-5-ADJCHANGE が出た"})
 rk = state["calls"][0][1]; ck = state["calls"][1][1]
 check("RERANK_MODEL_ARN が無ければリランクなしで HYBRID と件数だけ渡す", rk["retrievalConfiguration"]["vectorSearchConfiguration"] == {"numberOfResults": 3, "overrideSearchType": "HYBRID"} and rk["knowledgeBaseId"] == "KB12345678")
 check("Converse に guardrailConfig", ck["guardrailConfig"] == {"guardrailIdentifier": "gr123", "guardrailVersion": "1"})
-check("Converse にトポロジの 7 ツール + 証拠の 3 ツール + 修復案の履歴（異常一覧 list_anomalies は 2026-10-02 にやめた）", [t["toolSpec"]["name"] for t in ck["toolConfig"]["tools"]] == ["list_devices", "neighbors", "blast_radius", "root_cause", "what_if", "topology_graph", "layers", "search_logs", "query_metrics", "query_history", "list_proposals"])
+check("Converse にトポロジの 8 ツール + 証拠の 3 ツール + 修復案の履歴（異常一覧 list_anomalies は 2026-10-02 にやめた）", [t["toolSpec"]["name"] for t in ck["toolConfig"]["tools"]] == ["list_devices", "neighbors", "blast_radius", "root_cause", "what_if", "topology_graph", "layers", "recent_changes", "search_logs", "query_metrics", "query_history", "list_proposals"])
 last = ck["messages"][-1]
 check("質問は guardContent、資料は text", last["content"][1] == {"guardContent": {"text": {"text": "%BGP-5-ADJCHANGE が出た"}}} and "<documents>" in last["content"][0]["text"] and 'source="interface-errors.md"' in last["content"][0]["text"])
 check("初回は messages 1 件", len(ck["messages"]) == 1)
@@ -239,6 +239,30 @@ check("impact: 2 本のうち 1 本を落とすと冗長切れで warn", r["verd
 r = t.impact(_d, [dict(_l[0], status="DOWN"), _l[1], _l[2]], [{"op": "link_up", "target": "a#1"}])
 check("impact: 孤立していた機器が、上げるとつながり直す", r["reconnected"] == ["a"] and r["verdict"] == "ok")
 check("app.run_tool は what_if を topology に振る", app.run_tool("what_if", {"op": "device_down", "target": "dc1-leaf-01"})["verdict"] == "warn")
+# ---- Nautobot の保守中と変更履歴（2026-10-04）
+check("list_devices は maintenance を出す（静的データでは全部 false）", all(d["maintenance"] is False for d in t.list_devices()["devices"]))
+check("recent_changes は Neptune が無ければ案内を返す", "Nautobot" in t.recent_changes()["error"] and t.recent_changes()["changes"] == [])
+_cfg, _lr = t.graph.configured, t.graph.list_records
+t.graph.configured = lambda: True
+_rows = [{"change_id": "change#2", "time": 1790000100, "user": "admin", "action": "update", "object_type": "device", "object": "dc1-leaf-01", "device_id": "dc1-leaf-01", "detail": "status: Active → Maintenance"},
+         {"change_id": "change#1", "time": 1790000000, "user": "netops-web", "action": "delete", "object_type": "cable", "object": "dc1-leaf-02 ethernet-1/1 <> dc1-spine-01", "device_id": ""}]
+_asked = []
+t.graph.list_records = lambda label, key, order, **kw: _asked.append((label, key, order, kw)) or list(_rows)
+rc = t.recent_changes()
+check("recent_changes は label change を time の新しい順に読み、JST の時刻を足す",
+      _asked == [("change", "change_id", "time", {"limit": 50})] and rc["count"] == 2 and rc["changes"][0]["detail"] == "status: Active → Maintenance"
+      and rc["changes"][0]["time_jst"] == t.toolkit.jst(1790000100) and "change_id" not in rc["changes"][0])
+check("recent_changes は機器で絞れる（device_id が同じか、名前にその機器を含むもの）",
+      [c["object_type"] for c in t.recent_changes("dc1-leaf-02")["changes"]] == ["cable"] and t.recent_changes("dc1-spine-02")["count"] == 0
+      and t.recent_changes(limit=1)["count"] == 1)
+t.graph.configured, t.graph.list_records = _cfg, _lr
+_devs = [dict(d, maintenance=(d["device_id"] == "dc1-spine-01")) for d in t.DEVICES]
+t.DEVICES, t.NODES, t.LINKS, t.ADJ = t._build(_devs, [dict(l, status="DOWN") if t.link_id(l) == MAIN else l for l in t.LINKS])
+t.DEVICE_BY_ID = t.NODES
+rc = t.root_cause()["root_causes"][0]
+check("root_cause は原因に関わる保守中の機器を出す", rc["id"] == MAIN and rc["maintenance"] == ["dc1-spine-01"] and "保守中の機器（dc1-spine-01）" in rc["note"])
+t.DEVICES, t.NODES, t.LINKS, t.ADJ = t._build([{k: v for k, v in d.items() if k != "maintenance"} for d in t.DEVICES], [{k: v for k, v in l.items() if k != "status"} for l in t.LINKS])
+t.DEVICE_BY_ID = t.NODES
 lc = t.link_choices()
 check("link_choices は 12 本の (表示, a|a_if|b)", len(lc) == 12 and ("dc1-leaf-01 ethernet-1/1 - dc1-spine-01 ethernet-1/3  [fabric]", "dc1-leaf-01|ethernet-1/1|dc1-spine-01") in lc)
 check("VM との LACP は lag", ("dc1-host-01 eth1 - dc1-leaf-01 ethernet-1/3  [lag]", "dc1-host-01|eth1|dc1-leaf-01") in lc)
@@ -251,10 +275,10 @@ check("app.run_tool は list_proposals を proposals に振る（Neptune 未設�
 # 過去の経緯・修復履歴・状態に答えられるようにした（2026-09-18）。2026-10-02 から「いまの異常」は機器・回線・層の status で答える
 check("system prompt はいまの異常 → status、履歴 → list_proposals、アラートの履歴は Grafana / Splunk、承認はしない、と言う",
       "status（UP 以外）" in app.SYSTEM_PROMPT and "list_proposals" in app.SYSTEM_PROMPT and "Grafana / Splunk" in app.SYSTEM_PROMPT
-      and "承認や却下はあなたにはできません" in app.SYSTEM_PROMPT and "まず root_cause で" in app.SYSTEM_PROMPT and "what_if で" in app.SYSTEM_PROMPT and "list_anomalies" not in app.SYSTEM_PROMPT and "status=all" not in app.SYSTEM_PROMPT)
+      and "承認や却下はあなたにはできません" in app.SYSTEM_PROMPT and "まず root_cause で" in app.SYSTEM_PROMPT and "what_if で" in app.SYSTEM_PROMPT and "recent_changes" in app.SYSTEM_PROMPT and "maintenance" in app.SYSTEM_PROMPT and "list_anomalies" not in app.SYSTEM_PROMPT and "status=all" not in app.SYSTEM_PROMPT)
 # プロンプトに無いツール名を書くと、モデルは無いツールを呼ぼうとして unknown tool が返る（2026-10-02 に layers を list_layers と書いた）
 _tool_names = {s["toolSpec"]["name"] for s in app.TOOL_SPECS}
-_mentioned = set(re.findall(r"\b(?:list|query|search)_[a-z_]+\b|\b(?:neighbors|blast_radius|root_cause|what_if|topology_graph|layers)\b", app.SYSTEM_PROMPT))
+_mentioned = set(re.findall(r"\b(?:list|query|search)_[a-z_]+\b|\brecent_changes\b|\b(?:neighbors|blast_radius|root_cause|what_if|topology_graph|layers)\b", app.SYSTEM_PROMPT))
 check(f"system prompt に出てくるツール名は全部 TOOL_SPECS にある（無い: {sorted(_mentioned - _tool_names)}）", _mentioned and not (_mentioned - _tool_names))
 
 # ---- ツールの往復

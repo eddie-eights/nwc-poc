@@ -83,6 +83,15 @@ def custom_fields():
             field.content_types.add(ContentType.objects.get_for_model(model))
 
 
+def statuses():
+    """保守中（Maintenance）を機器の Status に選べるようにする。既定では機器の Status に入っていない"""
+    device_ct = ContentType.objects.get_for_model(Device)
+    for name in nb_map.MAINTENANCE_STATUSES:
+        status, _ = Status.objects.get_or_create(name=name)
+        status.content_types.add(device_ct)
+    log.info("機器の Status に %s を選べるようにした", " / ".join(nb_map.MAINTENANCE_STATUSES))
+
+
 def seed():
     if Device.objects.exists():
         log.info("機器がもう入っている。seed は飛ばす")
@@ -160,7 +169,7 @@ def first_sync():
 
 if __name__ == "__main__":
     steps_skip = set()
-    for step in (superuser, api_user, custom_fields, seed, jobs, first_sync):
+    for step in (superuser, api_user, custom_fields, statuses, seed, jobs, first_sync):
         if step in steps_skip:
             log.warning("%s は飛ばす（seed が失敗した）", step.__name__)
             continue
