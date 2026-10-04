@@ -25,6 +25,8 @@ flowchart LR
 
 ## 作るもの
 
+できる限り AWS のマネージドサービスで作っている。最終的には、これとは別にマネージドの部分を OSS にした版も作り、できること・費用・メンテナンス性を比べる（[oss-variant.md](docs/oss-variant.md)）。
+
 `deploy.env` で要る機能だけ `1` にする。何も書かなければ土台と AGENT を作る。
 
 | 機能 | できること | 待機の時間課金（東京） |
@@ -147,6 +149,7 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | [nautobot.md](docs/nautobot.md) | Nautobot: コンテナと部品の構成、起動から同期まで、使い方、Neptune と組み合わせた使いどころ |
 | [workflow.md](docs/workflow.md) | 承認の流れと Temporal UI |
 | [troubleshooting.md](docs/troubleshooting.md) | うまくいかないとき |
+| [oss-variant.md](docs/oss-variant.md) | 方針: いまはできる限り AWS マネージドで作り、最終的にはマネージドの部分を OSS にした版も別に作る。その目的（マネージドでできて OSS でできないこと、費用、メンテナンス性の比較）と、いまマネージドにしている部分の一覧 |
 | [development.md](docs/development.md) | 手元のテスト、変更するときの決まり、Web を手元で動かす |
 | [faq-fukuda-nwc-poc.md](docs/faq-fukuda-nwc-poc.md) | 学習 FAQ: 作業中に質問したことと答え（syslog の基本、lab を `local7` にした理由、デバッグ用の EC2、本番の Cisco から送るとき、Nautobot） |
 | [data-stores.md](docs/data-stores.md) | 勉強会メモ: データの置き場（Neptune にトポロジと修復案の「いま」、S3 Tables に証跡。障害の履歴の置き場は未定）と DynamoDB をやめた理由、コンテナイメージの役目と arm64 に揃える理由（Splunk だけ x86）、Neptune の基礎（Aurora との関係、AZ 冗長、トポロジをグラフにする意味）、MSK のブートストラップサーバーと、Telegraf・Spark がそれをどう受け取るか（`msk-bootstrap` を残す理由） |
