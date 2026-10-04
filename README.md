@@ -75,6 +75,46 @@ ops/down.sh
 - `ops/up.sh` はできているものを飛ばすので、途中で落ちたら打ち直せばよい。
 - リージョンは東京（`ap-northeast-1`）で固定。
 
+## GUI の一覧
+
+`<prefix>` は `<OWNER>-nwc-poc`。リージョンは東京（`ap-northeast-1`）。
+
+### 自分で立てている GUI（PC の localhost で開く）
+
+VPC の中にあるので、どれも SSM のポートフォワードを打ってから開く（Web の EC2 が踏み台）。コマンドは `ops/up.sh` の最後に出る。あとから出すなら下の「開くコマンド」。
+
+| GUI | URL | 要る機能 | ログイン | 開くコマンド（打ったままにする） |
+|---|---|---|---|---|
+| Web（チャット / トポロジ / 承認） | http://localhost:8080/ | 土台（必ず） | 無し | `terraform -chdir=terraform/base/core output -raw start_session_command` |
+| Nautobot（機器とケーブルの台帳、Job の結果） | http://localhost:8081/ | `PIPELINE=1` | `admin` / SSM のパスワード | `terraform -chdir=terraform/pipeline/nautobot output -raw port_forward_command` |
+| Grafana（ダッシュボード、アラート） | http://localhost:3000/ | `PIPELINE=1`（`GRAFANA=1`。既定） | `admin` / SSM のパスワード | `terraform -chdir=terraform/pipeline/analytics output -raw grafana_port_forward_command` |
+| Splunk（ログの検索、アラート） | http://localhost:8000/ | `PIPELINE=1` で Splunk を ECS に立てたとき | `admin` / SSM のパスワード | `terraform -chdir=terraform/pipeline/analytics output -raw splunk_port_forward_command` |
+| Temporal UI（ワークフローの実行の履歴） | http://localhost:8233/ | `WORKFLOW=1` | 無し | `ops/up.sh` の手順 8-5 が出す（タスクの IP が要る。[workflow.md](docs/workflow.md)） |
+
+- `terraform ... output -raw ...` は「打つコマンド」を表示するだけなので、出てきた `aws ssm start-session ...` をそのまま打つ。
+- パスワードを出すコマンドは、同じルートの出力 `password_command`（Nautobot）/ `grafana_password_command` / `splunk_password_command`。
+- Nautobot でよく見る場所: Devices → Devices（機器）、Devices → Cables（ケーブル）、Jobs → Job Results（Neptune / Telegraf への同期の結果）。使い方は [nautobot.md](docs/nautobot.md)。
+
+### AWS のマネージドサービス（AWS マネジメントコンソールで見る）
+
+専用の画面は無く、コンソールの各サービスのページで見る。コンソールの右上のリージョンを東京にする。
+
+| 見たいもの | サービス | リソース名 | コンソールでの行き方 |
+|---|---|---|---|
+| エージェント | Bedrock AgentCore | Runtime `<owner>_nwc_poc_agent`、Gateway `<prefix>-tools`（`WORKFLOW=1`） | Amazon Bedrock AgentCore → Agent Runtime / Gateways |
+| ガードレール、手順書の検索 | Bedrock | ガードレール `<prefix>-guardrail`、ナレッジベース `<prefix>-kb`（`CREATE_KB=1`） | Amazon Bedrock → ガードレール / ナレッジベース |
+| Kafka | MSK | クラスター `<prefix>-stream` | Amazon MSK → クラスター → `<prefix>-stream`（トピックの中身は見られない。モニタリングと設定だけ） |
+| Spark のジョブ | EMR Serverless | アプリケーション `<prefix>-spark` | Amazon EMR → EMR Serverless → EMR Studio を開く → アプリケーション → `<prefix>-spark` → ジョブ実行 → 「Spark UI」 |
+| 生データの表 | S3 Tables | テーブルバケット `<prefix>-tables`、名前空間 `netops` | Amazon S3 → テーブルバケット → `<prefix>-tables`（中身を引くのは Athena。カタログ `s3tablescatalog`） |
+| ログの検索先 | OpenSearch Serverless | コレクション `<prefix>-logs`（KB は `<prefix>-kb`） | Amazon OpenSearch Service → サーバーレス → コレクション。**OpenSearch Dashboards は開けない**（コレクションは VPC エンドポイントからだけ届く）。中身は Grafana で見る |
+| メトリクス | Managed Service for Prometheus | ワークスペース（エイリアス `<prefix>-metrics`） | Amazon Prometheus → ワークスペース。グラフの画面は無いので Grafana で見る |
+| トポロジのグラフ | Neptune | クラスター `<prefix>-graph` | Amazon Neptune → クラスター。グラフを見る画面は無いので、Web の「トポロジ」タブで見る |
+| Nautobot の DB | RDS | インスタンス `<prefix>-nautobot` | Amazon RDS → データベース |
+| コンテナ | ECS | クラスター `<prefix>-telegraf` / `<prefix>-analytics`（Grafana・Splunk）/ `<prefix>-nautobot` / `<prefix>-workflow` | Amazon ECS → クラスター → サービス → タスク → 「ログ」 |
+| アラートの流れ | SNS / SQS / Lambda | トピック `<prefix>-alerts`、キュー `<prefix>-anomalies`（と `-dlq`）、関数 `<prefix>-graph-status` / `<prefix>-tools` / `<prefix>-kb-index` | Amazon SNS → トピック、Amazon SQS → キュー、AWS Lambda → 関数 → 「モニタリング」 |
+| ログ | CloudWatch Logs | `/ecs/<prefix>-{telegraf,grafana,splunk,nautobot,workflow}`、`/aws/emr-serverless/<prefix>`、`/aws/lambda/<prefix>-*`、`/<prefix>/msk`、`/<prefix>/vpc-flow-logs` | CloudWatch → ロググループ → `<prefix>` で絞る |
+| EC2（Web、lab） | EC2 / Systems Manager | `<prefix>-web`、`<prefix>-lab` | EC2 → インスタンス。中に入るのは Systems Manager → セッションマネージャー（画面は無い。シェルだけ） |
+
 ## よく使うキー
 
 | キー | 何 |
