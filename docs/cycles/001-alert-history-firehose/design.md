@@ -57,6 +57,11 @@ Splunk の通知。splunk/netops_alerts/bin/netops_sns.py:6 と :106 から引�
 - 処理した通知の行は 1 回の呼び出し分をまとめ、環境変数 `ALERT_STREAM` が空でなければ `firehose.put_record_batch` で 1 回送る（500 件以下）。
   - `FailedPutCount > 0` のときは失敗した行だけを、例外のときは全部の行を送り直す。試すのは合わせて 3 回まで（あいだは 0.2 秒、0.4 秒）。
   - 3 回目のあとも残った行は、1 行ずつ JSON のままログに ERROR で書く。例外は投げない。
+  - Lambda の時間切れの前に、必ず Firehose まで着くようにする（Round 2）。
+    - Lambda の timeout を 30 秒から 60 秒にする。
+    - この Lambda が使う Neptune のクライアントは、待ちを短くする（接続 3 秒、読み 10 秒、再試行なし。1 回の呼び出しは長くて 13 秒）。エージェントや up.sh が使う `agent/graph.py` の既定（接続 10 秒、読み 60 秒）は変えない。
+    - alert ごとに、Neptune に書く前に `context.get_remaining_time_in_millis()` を見る。残りが 33 秒（Firehose の取り分 20 秒 + Neptune 1 回の最大 13 秒）より少なければ、その alert から先は Neptune に書かず、「Neptune への書き込みに失敗した」ものとして扱う（行は送る。最後に RuntimeError になり、やり直しで書かれる）。打ち切ったことはログに WARNING で 1 回書く。
+    - Firehose の取り分 20 秒は、3 回 ×（接続 2 秒 + 読み 3 秒）+ 待ち 0.6 秒 = 15.6 秒に余裕を足したもの。Firehose のクライアントは botocore の再試行を切る（接続 2 秒、読み 3 秒）。
   - 最後に、Neptune への書き込みが 1 件でも失敗していれば RuntimeError を投げる。Firehose の失敗だけでは投げない（投げると、Firehose が止まっているあいだ、通知のたびに Neptune への書き込みまでやり直しになる）。
   - `alerts_from_message` が落とした通知（`device_id` か `kind` が無い、status が firing / resolved でない）は、落とした件数をログに WARNING で書く（`alerts` の要素の数と、返ってきた数の差）。行にはしない。
   - `ALERT_STREAM` が空なら Firehose には何も送らない。いまの動きと同じ。
@@ -178,7 +183,7 @@ Splunk の通知。splunk/netops_alerts/bin/netops_sns.py:6 と :106 から引�
 - status_handler のテストで次を確かめる:
   - Grafana の firing と resolved を 1 通ずつ（starts_at が同じ）入れると、Firehose に 2 行が届く。event_id は `dc1-leaf-01#link_down#ethernet-1/1#grafana#firing#1790000000` と `…#resolved#1790000000`。
   - 同じ通知をもう 1 回入れると、同じ event_id で届く。
-  - Neptune に頂点が無い機器の通知も 1 行届く。Neptune の結果は ignored。
+  - Neptune に頂点が無い機器の通知も 1 行届く。Neptune の結果は unregistered（main で Neptune Analytics に移ったあとの値）。
   - device_id が無い通知は、put_record_batch に渡らず、ログに WARNING が 1 行出る。
   - fake の neptunedata が例外を投げても put_record_batch は呼ばれ、handler は RuntimeError を投げる。
   - fake の firehose が毎回例外を投げると、put_record_batch は 3 回呼ばれ、ログに ERROR が行の数だけ出て、handler は例外を投げずに返る。
@@ -194,6 +199,9 @@ Splunk の通知。splunk/netops_alerts/bin/netops_sns.py:6 と :106 から引�
   5. エージェントに「dc1-leaf-01 のアラートの履歴」と聞くと、query_history が firing の行を返す。
 
 ## 未確定事項とリスク
+
+- Lambda が時間切れやメモリ不足で落ちたときは、行もログの行も残らない（`Task timed out` だけ）。上の残り時間の確認で、Neptune が応答しない場合は防ぐ。「欠けた分はログから戻せる」は、Lambda が最後まで走った場合に限る。
+- Neptune が遅い（1 件数秒）状態で 1 通に多くの alert が入っていると、途中で打ち切って例外になり、やり直しになる。やり直しでも同じ所で打ち切られると、後ろの alert の status は更新されない（履歴の行は届く）。PoC の量（1 通に数件）では起きない見込み。実測していない。
 
 1. **Firehose が受け付ける timestamptz の書式を、文書で確かめきれていない。** ISO 8601 の UTC で送る。検証 3 で 1970 年や NULL になったら epoch ミリ秒に切り替える。
 2. **Firehose → S3 Tables と Athena → S3 Tables が IAM だけで通るかは、AWS で試していない。** Lake Formation が IAM 任せのモードで、AllowFullTableExternalDataAccess を付けている前提。通らなければ `lakeformation:GetDataAccess` を足すか、Lake Formation で許可を出す。
