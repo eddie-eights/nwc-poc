@@ -480,7 +480,8 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 # lab = 17（EC2 の t4g.xlarge 17.28。2026-10-04 に公開の料金ファイルで確認。それまでの 9 は t4g.large の単価だった）、graph = 58（Neptune Analytics の 16 m-NCU で 58.1。2026-10-04 に料金のページで確認。Price List API では確かめていない。
 #   2026-10-04 までの Neptune Database の db.t4g.medium は 14 だった）、stream = 57 + Telegraf 5（Fargate ARM 0.25 vCPU / 0.5 GB で 1.2 のタスクが 2 つ（受ける側と取りにいく側。2026-10-04 に分けた）と内部 NLB 2.43。
 #   NLB は 2026-09-28 から。どちらも公表単価からで、Price List API では確かめていない）、
-# analytics = 14（ストリーミングのジョブが動いている間の EMR Serverless の 2 vCPU。単価は 2026-09-17 に確認。
+# analytics = 21（ストリーミングのジョブが動いている間の EMR Serverless の 3 vCPU（driver 1 + executor 2。1 vCPU のワーカー 1 台で約 7）。単価は 2026-09-17 に確認。
+#   executor は 2026-10-04 に 1 → 2（Kafka のパーティション 2 つを並列に読む）。
 #   S3 Tables のテーブルは無料）
 #   + SINK_PROMETHEUS は 0（取り込みのサンプル課金は別）
 #   + SINK_OPENSEARCH なら 33（logs コレクションの OCU。KB のコレクションと共有されるか確認できていないので最大値で数える。
@@ -502,7 +503,7 @@ if [ -z "$SKIP_STREAM" ]; then
   COST_CENTS=$((COST_CENTS + 5))   # Telegraf（Fargate のタスク 2 つと NLB）
 fi
 if [ -z "$SKIP_ANALYTICS" ]; then
-  COST_CENTS=$((COST_CENTS + 14))
+  COST_CENTS=$((COST_CENTS + 21))
   if [ -n "$SINK_OPENSEARCH" ]; then COST_CENTS=$((COST_CENTS + 33)); fi
   if [ -n "$GRAFANA" ]; then COST_CENTS=$((COST_CENTS + 2)); fi
   if [ -n "$SPLUNK_ON_ECS" ]; then COST_CENTS=$((COST_CENTS + 12)); fi

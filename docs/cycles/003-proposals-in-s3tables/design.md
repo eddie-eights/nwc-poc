@@ -1,4 +1,4 @@
-# Cycle 003 proposals-in-s3tables 設計: 修復案を S3 Tables だけに置く（Neptune はトポロジと status だけ）
+# 修復案を S3 Tables にまとめる（Cycle 003 proposals-in-s3tables）設計: 修復案を S3 Tables だけに置く（Neptune はトポロジと status だけ）
 
 main(fable-5.1) / effort: high
 

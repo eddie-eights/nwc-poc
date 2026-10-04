@@ -285,8 +285,8 @@ check("--checkpoint は s3://<バケット>/analytics/checkpoint/<MSK の uuid>/
       and re.search(r'checkpoint_uri\s*=\s*"s3://\$\{local\.bucket\}/\$\{local\.checkpoint\}/\$\{local\.msk_cluster_uuid\}/"', tf) is not None)
 check("job_driver は jars を s3://<バケット>/analytics/jars/ から読む", "spark.jars=s3://${local.bucket}/${local.jars_prefix}/*.jar" in tf
       and re.search(r'jars_prefix\s*=\s*"\$\{local\.s3_prefix\}/jars"', tf) is not None and re.search(r's3_prefix\s*=\s*"analytics"', tf) is not None)
-check("ジョブは 2 vCPU（driver 1 + executor 1、動的割り当て無し）",
-      "spark.driver.cores=1" in tf and "spark.executor.cores=1" in tf and "spark.executor.instances=1" in tf and "spark.dynamicAllocation.enabled=false" in tf)
+check("ジョブは 3 vCPU（driver 1 + executor 2。Kafka のパーティション 2 つを並列に読む。動的割り当て無し）",
+      "spark.driver.cores=1" in tf and "spark.executor.cores=1" in tf and "spark.executor.instances=2" in tf and "spark.dynamicAllocation.enabled=false" in tf)
 check("ドライバーのログは CloudWatch、EMR の managed storage は使わない",
       re.search(r'cloudWatchLoggingConfiguration\s*=\s*\{\s*enabled\s*=\s*var\.cloudwatch_logging', tf) is not None
       and re.search(r'managedPersistenceMonitoringConfiguration\s*=\s*\{\s*enabled\s*=\s*false', tf) is not None)
@@ -831,8 +831,8 @@ check("MSK Connect の Splunk は書いていない（2026-09-26 に Spark か�
       "MSK Connect で後回し" not in tf and "MSK Connect で後回し" not in src and "MSK Connect で後回し" not in up)
 check("up.sh は analytics を stream の後に apply し、job を STREAMING で起こす（名前は snmp-sinks）",
       up.index("tf_apply pipeline/stream") < up.index("tf_apply pipeline/analytics") < up.index("--name snmp-sinks --mode STREAMING"))
-check("up.sh は analytics に 14 セント（EMR だけ。エンドポイントは無い）と opensearch の OCU を足し、prometheus は足さず、opensearch は analytics を作るときだけ OCU の注意を出す",
-      re.search(r'COST_CENTS=\$\(\(COST_CENTS \+ 14\)\)\n\s*if \[ -n "\$SINK_OPENSEARCH" \]; then COST_CENTS=\$\(\(COST_CENTS \+ 33\)\); fi', up) is not None
+check("up.sh は analytics に 21 セント（EMR だけ。エンドポイントは無い）と opensearch の OCU を足し、prometheus は足さず、opensearch は analytics を作るときだけ OCU の注意を出す",
+      re.search(r'COST_CENTS=\$\(\(COST_CENTS \+ 21\)\)\n\s*if \[ -n "\$SINK_OPENSEARCH" \]; then COST_CENTS=\$\(\(COST_CENTS \+ 33\)\); fi', up) is not None
       and '"$SINK_PROMETHEUS" ]; then COST_CENTS' not in up and "COST_CENTS=2\n" in up
       and re.search(r'\*,opensearch,\*\) if \[ -z "\$SKIP_ANALYTICS" \]; then printf', up) is not None)
 check("up.sh は同じ SpecHash のジョブが動いていれば起こさない", "--states SUBMITTED PENDING SCHEDULED RUNNING" in up

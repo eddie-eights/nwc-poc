@@ -9,6 +9,10 @@ nwc-poc の作業中に質問したことと、その答えをまとめた。答
 - [5. 本番の Cisco から送るとき](#5-本番の-cisco-から送るとき)
 - [6. SNMP のポーリングを既定で止めた](#6-snmp-のポーリングを既定で止めた)
 - [7. Nautobot（機器の一覧とケーブルの正）](#7-nautobot機器の一覧とケーブルの正)
+- [8. Neptune Database と Neptune Analytics](#8-neptune-database-と-neptune-analytics)
+- [9. 障害の情報をどこに残すか](#9-障害の情報をどこに残すか)
+- [10. データの流し先とテーブル](#10-データの流し先とテーブル)
+- [11. Neptune に置くもの](#11-neptune-に置くもの)
 
 ---
 
@@ -592,3 +596,377 @@ flowchart LR
 - Web が使う API のトークンは SSM の SecureString（`/<prefix>/nautobot/api-token`）。
 
 詳しくは [nautobot.md](nautobot.md) の 5 章。
+
+---
+
+## 8. Neptune Database と Neptune Analytics
+
+### Q. Neptune Database と Neptune Analytics の使い分けは？ いまの構成でも問題ない？
+
+**A. いまの構成（Neptune Analytics にトポロジと status を置く）で問題ない。** この PoC の使い方は Analytics のほうに合っている。ただし AWS の上ではまだ動かしていない（2026-10-04 時点）。
+
+使い分けは次のとおり。Database は「書き込みを落とさず持ち続ける置き場」、Analytics は「載せて調べる道具」。
+
+| | Neptune Database | Neptune Analytics |
+|---|---|---|
+| 向いている用途 | 業務の正本。小さな読み書きが常に大量に来る | 分析。グラフ全体をメモリに載せて、経路や影響範囲を調べる |
+| 問い合わせ | Gremlin、openCypher、SPARQL | openCypher だけ |
+| 分析の機能 | 自分で書く | 経路、中心性、コミュニティなどのアルゴリズムとベクトル検索が組み込み |
+| データの入れ方 | 書き込みを積む。一括ロードもある | S3 から一括で載せるのが速い。書き込みもできる |
+| 構成 | クラスタとインスタンス。リードレプリカ、複数 AZ | グラフ 1 つにメモリ量を指定するだけ |
+
+いまの構成に合う理由:
+
+- **データが小さく、書き込みが少ない。** トポロジは機器とリンクが数十件で、書くのは status の更新だけ。Database の強み（大量の同時書き込み、レプリカ）を使う場面が無い。
+- **正本を Neptune に置かない方針と合う。** 修復案や履歴の正は S3 Tables で、Neptune は壊れても作り直せる置き場。S3 から一括で載せるのが得意な Analytics は、あとで履歴をグラフで分析するときにもそのまま使える。
+- **やりたい問いが分析寄り。** 「このリンクが落ちたら、どの機器に影響するか」は経路や到達可能性の問いで、組み込みのアルゴリズムが使える。
+
+気を付ける点:
+
+| 点 | 中身 |
+|---|---|
+| 書き込みの集中 | アラートが一度に大量に来て status の更新が重なる使い方は、本来 Database の領分。PoC の量なら問題にならない見込み |
+| 料金 | Analytics はメモリ量 × 時間の課金で、最小構成でも動かしているあいだは掛かる。単価と、止めておけるかは確かめていない |
+| 未確認 | 閉域のエンドポイントと IAM の Deny が通るかは、`ops/up.sh` を流すまで分からない |
+
+Database に戻すのは、次のどれかに当てはまったとき:
+
+- status 以外の業務データも Neptune を正本にして、常時書き込むようになった
+- 複数 AZ での可用性やリードレプリカが要件になった
+- Gremlin や SPARQL が要る
+
+何をどこに置いているかは [data-stores.md](data-stores.md)。
+
+---
+
+## 9. 障害の情報をどこに残すか
+
+2026-10-04 に聞いたこと。ここでの結論が「アラートの履歴を残す（Cycle 001）」の設計になった（[設計](cycles/001-alert-history-firehose/design.md)。実装は main に入る前）。
+
+### Q. いまネットワークの障害情報はどこに書いてる？
+
+**A. 障害の履歴（開いた・閉じた）を書いている場所は、聞いた時点では無かった。** 2026-10-02 に検知を Spark から Grafana と Splunk に移したとき、それまでの置き場（Neptune の頂点 `anomaly` と S3 Tables の `anomaly_events`）をやめ、新しい置き場を決めていなかった。
+
+| 知りたいこと | どこで見るか | 補足 |
+|---|---|---|
+| いま何が落ちているか | Neptune の機器・IF・層の頂点の `status`。Web の「トポロジ」タブ | Lambda graph-status がアラートを受けて書き換える。前の状態は残らない |
+| アラートが出た・消えた履歴 | Grafana と Splunk のアラートの履歴 | ECS のタスクを止めると消える |
+| 1 回の障害で何をしたか | S3 Tables の `proposal_events`（作成・承認・適用・確認を 1 行ずつ） | 修復案を作らなかった障害は残らない |
+| 機器から来た生データ | S3 Tables の生データのテーブル | 読む側（Athena）は聞いた時点では未配備 |
+
+- `proposal_events` は修復案の流れの記録で、障害の記録ではない。
+- `ops/down.sh` はテーブルバケットごと消すので、履歴も消える。
+
+### Q. 障害情報は S3 に持っておくのは適切？
+
+**A. 履歴の置き場としては適切。「いま開いている障害」の一覧には使わない。**
+
+向いている理由:
+
+- **追記するだけの記録だから。** 開いた・閉じたは、書いたら書き換えない。`proposal_events` と同じ使い方になる。
+- **量が少ない。** 1 回の障害で数行。費用はほぼ掛からない。
+- **生データと合わせて集計できる。** 同じ場所にあるので、「この機器で月に何回落ちたか」「障害の前後のメトリクス」を SQL で出せる。
+- **方針に合う。** Neptune にはトポロジと `status` だけを置く。
+
+向いていないところと対処:
+
+| 弱いところ | 中身 | 対処 |
+|---|---|---|
+| 「いま開いている障害」を見る | 1 行を書き換えるのが苦手。開いた行と閉じた行を突き合わせないと分からない | Neptune の `status` と、Grafana / Splunk のアラートの状態で見る |
+| 読む手段 | Athena が要る | 「アラートの履歴を残す（Cycle 001）」で Athena まで作る |
+| Lambda から書きにくい | PyIceberg と pyarrow は Lambda の素の zip には重い。同時に何本も動くと、同じテーブルへの書き込みがぶつかる | Lambda は Firehose に送るだけにし、Firehose がまとめて書く |
+| 環境を壊すと消える | `ops/down.sh` がテーブルバケットごと消す | PoC のあいだは消えてよいと決めた |
+
+Lambda から書く経路は 2 案あった。
+
+| 案 | 中身 | 判断 |
+|---|---|---|
+| Data Firehose → S3 Tables | Lambda は Firehose に 1 件ずつ送るだけ | **採った。** 生データの流れ（Spark）が止まっていても履歴が残る |
+| MSK の新しいトピック → Spark → S3 Tables | Spark のいまの書き込みに乗る。新しいサービスは要らない | 採らない。Spark が止まっているあいだは書かれない |
+
+### Q. worker（Temporal）からのほうが、複数のソースから障害情報を取得したあとに整形して S3 に書ける？ 同じ情報を agent に渡せば情報源が揃う？
+
+**A. どちらもできる。ただし、ワークフローの中で書くと障害の一部しか残らないので、書く場所を 2 つに分ける。**
+
+- **集めて書くのはできる。** worker はすでに Neptune を読み、PyIceberg で S3 Tables に追記している。ログ（OpenSearch）、メトリクス（Prometheus）、Nautobot の変更履歴を取る処理は `agent/evidence.py` にあり、worker から呼べる。足りないのは worker の IAM とエンドポイントの環境変数。
+- **ワークフローは全部の障害を見ていない。** 起こすのは `link_down` だけ。保守中の機器の通知、重複、閉じたあとに届いた解消は捨てている。
+- **情報源は、聞いた時点では揃っていない。** エージェントに渡しているのはアラートの 5 項目（機器、種類、対象、内容、発生時刻）だけで、証拠はエージェントが自分のツールで取り直している。何を見て判断したかは残らない。
+
+揃えるには、ワークフローの `investigate` の前に証拠を集めるアクティビティ（`collect_evidence`）を置き、集めたものを S3 に書いて、同じものをプロンプトに入れる。気を付ける点:
+
+| 点 | 中身 |
+|---|---|
+| ツールで取り直す余地 | 「まず渡した証拠で判断し、足りないときだけツールを使う」と指示し、使ったツールの呼び出しも記録する |
+| 大きさ | Temporal でアクティビティのあいだに渡すデータには上限がある（既定で 1 件 2MB）。本体は S3 に置き、id と要約だけを受け渡す |
+| ログの遅れ | OpenSearch に入るのが遅れることがある。集めた時刻を証拠と一緒に残す |
+
+`collect_evidence` は別のサイクルでやる（まだ設計していない）。
+
+### Q. Temporal が障害情報を S3 に記載するのは良くない？
+
+**A. 悪くはない。Temporal に任せるのは「証拠を集めて整形する部分」までで、「開いた・閉じた」の記録は任せない。**
+
+| 記録 | 書く担当 | 理由 |
+|---|---|---|
+| 開いた・閉じた（全部のアラート） | Lambda graph-status | SNS から全種類のアラートを受けていて、パイプライン（`PIPELINE=1`）と一緒にいつも作られる。Temporal の有無に左右されない |
+| 整形した証拠と、エージェントの判断 | Temporal（アクティビティ） | 何か所かに取りにいき、失敗したら再試行する処理は Temporal が得意。集めて、同じものをエージェントに渡すまでを 1 か所でやれる |
+
+「開いた・閉じた」を Temporal に任せない理由:
+
+1. **記録が修復の仕組みに縛られる。** SQS と worker は `WORKFLOW=1` のときしか作られない。検知は Temporal が無くても動くのに、履歴だけが残ったり残らなかったりする。
+2. **ワークフローが全部の障害を見ていない。** 上の Q のとおり。
+3. **この PoC の Temporal は消える前提。** データはタスクの中の SQLite で、タスクが入れ替わると走っていたワークフローが消える。「開いた」は書けても「閉じた」を書く担当がいなくなる。
+
+2 つの記録は、異常の id（`<device_id>#<kind>#<target>`）と発生時刻でつなぐ。
+
+---
+
+## 10. データの流し先とテーブル
+
+### Q. ログ形式は OpenSearch、メトリクスは Prometheus に流してるよね？
+
+**A. 合っている。** Spark が MSK のトピックを種類で振り分けている。
+
+| 流し先 | 入るトピック | 中身 |
+|---|---|---|
+| OpenSearch（インデックス `snmp-logs`） | traps / logs | trap と syslog |
+| Prometheus | metrics / gnmi / mdt | メトリクスの時系列 |
+| S3 Tables の生データのテーブル | 5 つ全部 | 正本 |
+| Splunk（`SINK_SPLUNK=1` のときだけ） | 5 つ全部 | 比較用 |
+
+構成図は [architecture/pipeline.md](architecture/pipeline.md)。
+
+### Q. Spark のジョブは 1 つで、Kafka の購読も 1 つ？
+
+**A. ジョブは 1 つ。Kafka の購読は 1 つではなく、格納先ごとに 1 つずつ（最大 4 つ）。** `spark/snmp_sinks.py` の `build` が、格納先ごとに別のストリーミングクエリを起こしている。
+
+| クエリ（格納先） | 購読するトピック | 有効になる条件 |
+|---|---|---|
+| iceberg（S3 Tables の生データ） | metrics / gnmi / mdt / traps / logs | `SINK_S3` |
+| prometheus | metrics / gnmi / mdt | Prometheus の格納先が有効なとき |
+| opensearch | traps / logs | OpenSearch の格納先が有効なとき |
+| splunk | metrics / gnmi / mdt / traps / logs | `SINK_SPLUNK=1` |
+
+- **1 つのクエリは、複数のトピックをまとめて 1 回で購読する。** トピックごとに購読を分けてはいない（`subscribe` にカンマ区切りで渡す）。
+- **クエリごとに checkpoint が別。** どこまで読んだかを格納先ごとに覚えているので、Splunk への書き込みが遅れても、Prometheus の読み進みは止まらない。同じトピックを複数のクエリが読むので、Kafka からは同じ行を格納先の数だけ読むことになる。
+- **どのクエリも 60 秒ごと**（`TRIGGER`）にまとめて書く。
+- **1 つのクエリが止まったら、ジョブごと終わらせる。** EMR Serverless が起こし直し、どのクエリも checkpoint の続きから読むので、データは落ちない。
+- ジョブは Terraform のリソースではなく、`ops/up.sh` が `start-job-run` で起こす。
+
+### Q. Kafka のパーティションが 4 つあるとしたら、Spark で分散して購読させたい場合は Spark のコンテナを 4 つにすればいい？
+
+**A. ジョブを 4 つに増やすのではなく、1 つのジョブの executor（働き手のコンテナ）を増やす。** パーティション 4 つなら、executor のコアを合わせて 4 つ以上にすれば、4 つを同時に読む。
+
+Spark の読み方は、Kafka のふつうのコンシューマーグループと違う。
+
+| | Kafka のふつうのコンシューマー | Spark Structured Streaming |
+|---|---|---|
+| 分け方 | 同じグループのプロセスを増やすと、Kafka がパーティションを配り直す | driver が「このパーティションのここからここまで」を決め、executor のタスクに配る |
+| 並列の単位 | プロセス 1 つがパーティションを受け持つ | パーティション 1 つがタスク 1 つ。タスクは executor のコアの数だけ同時に走る |
+| 増やすもの | コンシューマーのプロセス | executor の数かコアの数 |
+
+- **ジョブを 4 つ起こすのは間違い。** checkpoint を分けると 4 つとも全部のパーティションを読み、同じ行が 4 回書かれる。checkpoint を共有すると壊れる。
+- **パーティションの数が並列の上限。** パーティション 4 つに executor を 8 コア付けても、同時に読むのは 4 つまで（`minPartitions` で 1 つをさらに割ることはできる）。
+
+この PoC のいまの設定:
+
+| 項目 | 値 | 場所 |
+|---|---|---|
+| トピックのパーティション | 2 | `terraform/pipeline/stream/msk.tf` の `num.partitions` |
+| executor | 2 つ、それぞれ 1 コア、固定（自動で増やさない）。2026-10-04 に 1 → 2 にした。driver と合わせて 3 vCPU | `terraform/pipeline/analytics/outputs.tf` の `spark.executor.instances` ほか |
+
+- つまり、いまはパーティション 2 つを executor 2 つで同時に読んでいる（AWS では未確認）。
+- 増やすなら `spark.executor.instances` か `spark.executor.cores` を上げ、EMR Serverless の上限（`max_cpu` / `max_memory`）も合わせる。
+- **読むのを並列にしても、書くほうは並列にならない格納先がある。** OpenSearch、Prometheus、Splunk への送信は、行を driver に集めて（`collect`）から driver が 1 本で送っている（`http_query`）。executor を増やして速くなるのは S3 Tables（Iceberg）への書き込みだけ。量が増えたら、送信を executor の側でやる形（`foreachPartition`）に直す必要がある。
+
+### Q. executor を 2 つにしたら Kafka からの読み取りは 2 つに分かれる。送信はまた別に並列化が要るの？
+
+**A. 要る。読み取りは 2 つに分かれるが、OpenSearch、Prometheus、Splunk への送信は driver が 1 本でやっているので、そこは executor を増やしても並列にならない。** 「どこで動くか」がコードの書き方で決まるため。
+
+1 回のバッチ（60 秒ごと）は、次の 3 段で進む。
+
+| 段 | やること | 動く場所 | executor 2 つで並列になるか |
+|---|---|---|---|
+| 1. 読む | Kafka のパーティションからレコードを取る | executor（パーティション 1 つにタスク 1 つ） | なる |
+| 2. 変換する | JSON を解いて列にする、絞り込む | executor（読んだのと同じタスク） | なる |
+| 3. 書く | 格納先へ送る | 格納先ごとに違う（下の表） | 格納先による |
+
+| 格納先 | 書き方 | 動く場所 | 並列 |
+|---|---|---|---|
+| S3 Tables（Iceberg） | Spark の書き込み機能にそのまま渡す | executor がそれぞれファイルを書く | なる |
+| OpenSearch、Prometheus、Splunk | `collect()` で全部の行を driver に集め、driver が HTTP で順に送る（`http_query`） | driver（1 つ、1 コア） | ならない |
+
+- **`collect()` が境目。** executor が読んで変換した行を、driver の 1 か所に集める命令。集めたあとの処理は driver のふつうの Python で、1 本で動く。
+- **だから HTTP の格納先では、2 つに分かれて読んだものが、送る手前で 1 本に合流する。** 読むのと変換は速くなるが、送るのは速くならない。
+- **並列に送るには、送る処理を executor の側に移す。** `collect()` をやめ、`foreachPartition` でパーティションごとに executor が自分で HTTP を送る形に書き直す。そうすると executor の数だけ同時に送る。
+- **いま直していない理由。** PoC の量（機器 10 台ほど、60 秒ごと）なら driver 1 本で間に合っている。driver で送るほうが、失敗したときの再送とログが 1 か所で済んで単純。量が増えて 1 回のバッチが 60 秒で終わらなくなったら直す。
+
+### Q. `foreachPartition` は、大量のデータを Spark のジョブ 1 つでは捌けなくなったときに使う？ 環境変数で切り替えられる？
+
+**A. 使うのは「ジョブ 1 つで捌けなくなったとき」より手前で、「driver 1 本の送信が 60 秒のバッチに収まらなくなったとき」。ジョブは 1 つのまま、その中の送り方を変える。切り替えは作れる（Spark の引数を 1 つ足し、`ops/up.sh` の環境変数から渡す）。いまはまだ実装していない。**
+
+増やす順番は次のとおり。ジョブを分けるのは最後。
+
+| 順 | 詰まる場所 | 打つ手 | ジョブの数 |
+|---|---|---|---|
+| 1 | Kafka から読むのと変換 | executor を増やす（いま 2）。パーティションも増やす | 1 のまま |
+| 2 | HTTP の格納先への送信（driver 1 本） | `foreachPartition` で executor が送る | 1 のまま |
+| 3 | 格納先の側の上限（AMP の取り込みの上限、OpenSearch の OCU、Splunk 1 台） | 上限の引き上げ、Splunk のクラスター | 1 のまま |
+| 4 | 1 つのジョブに全部の格納先が同居していること（1 つ止まると全部が起こし直しになる） | 格納先ごとにジョブを分ける | 増やす |
+
+**切り替えるサインは、1 回のバッチにかかる時間。** トリガーは 60 秒なので、HTTP の格納先のバッチが 60 秒近くかかるようになったら、送信が追いついていない（Spark のログの `batchDuration`、Kafka の lag で見る）。
+
+**切り替えを作るときの形**
+
+| 場所 | 中身 |
+|---|---|
+| `spark/snmp_sinks.py` | 引数 `--http-send driver / executor` を足す。`http_query` の中で、`driver` なら今の `collect()`、`executor` なら `batch_df.foreachPartition(...)` に分ける |
+| `terraform/pipeline/analytics` | 変数を足し、ジョブの引数に渡す |
+| `ops/up.sh` と `deploy.env.example` | 環境変数（例 `HTTP_SEND=executor`）を読む。既定は `driver` |
+
+引数が変わるとジョブの SpecHash が変わるので、`ops/up.sh` を流し直せばジョブが起こし直され、checkpoint の続きから読む。
+
+**`executor` にしたときに変わること（切り替えを既定にしない理由）**
+
+| 点 | driver で送る（今） | executor で送る |
+|---|---|---|
+| 並列 | 1 本 | executor のコアの数だけ同時 |
+| 認証 | driver が 1 回用意する（SigV4 の署名、Splunk の token） | executor ごとに用意する。token や署名の材料を executor に渡す書き方が要る |
+| 失敗したとき | driver が例外を出し、バッチ全体をやり直す | 1 つのパーティションの失敗でバッチ全体をやり直す。成功したパーティションの分はもう届いているので、重複が増える |
+| 順番 | 1 本なので順に届く | パーティションの間では順不同。同じ系列が別のパーティションに分かれると、Prometheus が「古いサンプル」として拒むことがある |
+| ログ | driver のログ 1 か所 | executor ごとに分かれる |
+
+- 重複は今も起こりうる（やり直しのとき）。OpenSearch は文書の id、Prometheus は同じ時刻の同じ値なら受け流すので、害は小さい。Splunk は重複がそのまま入る。
+- 順番の問題は、Kafka のキーを機器にしておけば、同じ機器は同じパーティションに入るので避けられる（いまのキーは未確認）。
+
+### Q. 大量のデータでは、格納先ごとに Spark のジョブを分けたほうがいい？
+
+**A. 本番の規模なら分けるのがふつう。ただし理由は「速くなるから」ではなく「互いに巻き込まないため」。速さだけなら、ジョブ 1 つのまま executor を増やせば足りる。**
+
+いまの作りでも、格納先ごとにクエリが別で、Kafka の購読も checkpoint も別になっている。つまりジョブを分けても、読む量も処理の中身も変わらない。変わるのは、同じ driver と executor に同居しているかどうかだけ。
+
+| 点 | ジョブ 1 つに同居（今） | 格納先ごとにジョブを分ける |
+|---|---|---|
+| 障害の巻き込み | クエリが 1 つ止まるとジョブごと終わり、全部の格納先が起こし直しになる。Splunk が落ちると S3 Tables への書き込みも一度止まる | 止まるのはその格納先のジョブだけ |
+| 資源の取り合い | executor を全部のクエリで分け合う。遅い格納先が、ほかの格納先のタスクを待たせる | 格納先ごとに executor の数とメモリを決められる |
+| 止めずに変える | 1 つの格納先の変更でも、全部を起こし直す | その格納先のジョブだけ起こし直す |
+| 遅れの見え方 | どの格納先が遅れているかは、クエリごとのログを見て分ける | ジョブごとに lag と費用が見える |
+| 費用 | driver は 1 つ | driver が格納先の数だけ要る（1 つ約 $0.07/h。4 つなら +$0.21/h） |
+| 運用 | 起こす、止める、監視が 1 つ | 格納先の数だけ |
+| 速さ | executor を増やせば伸びる | 同じ。分けただけでは速くならない |
+
+- **分けるサイン。** 次のどれかが実際に困りごとになったとき。
+  - ある格納先が止まるたびに、正本（S3 Tables）への書き込みまで止まる。
+  - 遅い格納先のせいで、ほかの格納先のバッチが 60 秒に収まらない。
+  - 格納先ごとに必要な executor の数が大きく違う（たとえば S3 Tables は 8、Splunk は 1）。
+- **分け方の第一歩は 2 つ。** 「正本の S3 Tables」と「それ以外（OpenSearch、Prometheus、Splunk）」に分けるのが効果が大きい。正本が、ほかの格納先の不調に巻き込まれなくなる。
+- **この PoC では 3 つに分けることにした（2026-10-04 に決定。実装はこれから）。** 分け方は「S3 Tables」「Splunk」「OpenSearch + Prometheus」。
+
+| ジョブ | 格納先 | 分ける理由 | executor |
+|---|---|---|---|
+| 1 | S3 Tables（Iceberg） | 正本。ほかの不調に巻き込ませない。書き込みが並列になるのはここだけ | 2 |
+| 2 | Splunk | 比較用で、自前の 1 台なので一番止まりやすい。止まっても、ほかを起こし直さない | 2 |
+| 3 | OpenSearch + Prometheus | どちらもマネージドで、Grafana のアラートの元。まとめて driver を 1 つ節約する | 2 |
+
+  - executor はどのジョブも 2 にする。パーティション 2 つを分かれて読む動きを、どのジョブでも確かめるため（HTTP の格納先は送信が driver 1 本なので、速さのためだけなら 1 で足りる）。
+  - 費用は 3 vCPU → 9 vCPU（driver 3 + executor 6）で、約 +$0.42/h の見込み。EMR Serverless の上限（`max_cpu`）も 4 → 12 vCPU に上げる。
+  - スクリプトは `--sinks` で格納先を選べ、checkpoint は格納先ごとに分かれているので、同じスクリプトを 3 つ起こす形にする。
+
+### Q. S3 以外の格納先は、VictoriaMetrics みたいにクラスター化できないの？
+
+**A. Prometheus と OpenSearch は、もう AWS の側でクラスターになっている（マネージドなので自分で組まない）。自分でクラスターを組む余地があるのは Splunk だけ。**
+
+| 格納先 | この PoC の実体 | 横に広げる仕組み | 自分でやること |
+|---|---|---|---|
+| Prometheus | Amazon Managed Service for Prometheus（AMP）のワークスペース | 中身は分散型の Prometheus（Cortex）。取り込みと保存を AWS が複数 AZ で分散している | 無い。上限（取り込みの速さ、時系列の数）に当たったら引き上げを申請する |
+| OpenSearch | OpenSearch Serverless のコレクション `logs` | 取り込みと検索の計算（OCU）を AWS が負荷に合わせて増減する | 無い。この PoC は費用を抑えるため予備のレプリカを切っている（`standby_replicas = "DISABLED"`）。本番は有効にする |
+| Splunk | ECS の Splunk Enterprise 1 タスク（`desired_count = 1`） | Splunk の機能としてはある（インデクサークラスターとサーチヘッドクラスター） | 組むなら、インデクサー数台、クラスターマネージャー、HEC の前のロードバランサー、ライセンスが要る。PoC では 1 台のまま |
+
+- **VictoriaMetrics のクラスター版が要るのは、素の Prometheus が 1 台でしか動かないから。** 素の Prometheus を横に広げるために VictoriaMetrics、Thanos、Mimir、Cortex がある。AMP はその Cortex を AWS が運用しているものなので、同じ役目をもう果たしている。
+- **この PoC で先に詰まるのは、格納先ではなく送る側。** OpenSearch、Prometheus、Splunk への送信は、Spark の driver が 1 本で送っている（`spark/snmp_sinks.py` の `http_query`）。格納先を広げても、ここが変わらなければ速くならない。量が増えたら、送信を executor の側で並列にやる形に直すのが先。
+- **Splunk を比較用の 1 台のままにしているのは意図どおり。** Splunk は Grafana との比較のために置いていて（`SINK_SPLUNK=1` のときだけ）、止まっても正本の S3 Tables には影響しない。
+
+### Q. Grafana は OpenSearch と Prometheus をデータソースにしてる？
+
+**A. その 2 つ。** 定義は `grafana/provisioning/datasources/`。
+
+| データソース | 接続先 | 入っているもの | 使い道 |
+|---|---|---|---|
+| Prometheus (AMP)。既定 | Amazon Managed Service for Prometheus | metrics / gnmi / mdt | ダッシュボード `metrics.json` と、アラートルール `link_down` |
+| OpenSearch (logs) | OpenSearch Serverless の logs コレクション | traps / logs | ダッシュボード `logs.json` |
+
+- 聞いた時点（2026-10-04）では、アラートは Prometheus だけを見ている。OpenSearch のログで発火するルールは無く、trap や BGP / IS-IS の落ちは Splunk が検知する。これを両方で揃えるのが「Splunk と Grafana のアラートを比べる（Cycle 002）」。
+- S3 Tables は Grafana のデータソースではない。
+- どちらも認証はタスクロールの SigV4 で、VPC エンドポイント経由。
+
+### Q. snmp_metrics って何？
+
+**A. 機器から来た生データを、全部そのまま溜めておく S3 Tables（Iceberg）のテーブル。**
+
+- **入るもの。** MSK の 5 つのトピック（metrics / gnmi / mdt / traps / logs）の全部。Spark が up か down かを判断せず、行をそのまま追記する。どのトピックから来た行かは `topic` 列で分かる。
+- **役割。** メトリクスとログの履歴の正本。OpenSearch と Prometheus は検索やグラフのための写し。
+- **作られる条件。** `SINK_S3` が有効なときだけ。
+- **名前。** SNMP のメトリクスだけではないので、`raw_telemetry` に改名すると決めた（ブランチ `rename-raw-telemetry` に実装済み。main にはまだ入っていない）。
+
+### Q. S3 Tables には 1 つのテーブルしかない？ メトリクスもログも 1 つの同じテーブル？
+
+**A. テーブルは 1 つではない。ただし生データに限れば、メトリクスもログも同じ 1 つのテーブルに入る。**
+
+| 中身 | テーブル名 | 書く人 | 状態 |
+|---|---|---|---|
+| 機器から来た生データ（metrics / gnmi / mdt / traps / logs の全部） | `snmp_metrics`（`raw_telemetry` に改名予定） | Spark | `SINK_S3` が有効なときだけ作る |
+| 修復案の証跡（作成・承認・却下・適用・確認） | `proposal_events` | Temporal の worker | いつも作る |
+| アラートの通知の履歴（発火と解消） | `alert_events` | Lambda graph-status（Firehose 経由） | 「アラートの履歴を残す（Cycle 001）」で実装中 |
+
+生データのテーブルの列は 8 つ（`terraform/pipeline/analytics/tables.tf`）。
+
+- `ts`、`ingested_at`: 時刻
+- `topic`: どのトピックから来たか。メトリクスとログはこの列で見分ける
+- `measurement`、`agent_host`、`host`: Telegraf が付ける名前と送り元
+- `tags_json`、`fields_json`: 中身。JSON の文字列のまま
+
+メトリクスとログでは項目がまったく違うので、項目ごとの列は作らず、JSON の文字列 2 列に丸ごと入れている。読むときは `topic` で絞ってから JSON を取り出す。
+
+何をどこに置いているかの全体は [data-stores.md](data-stores.md)。
+
+---
+
+## 11. Neptune に置くもの
+
+### Q. Neptune には修復案は書かないよね？ status 更新だけよね？
+
+**A. 聞いた時点（2026-10-04）の実装では、修復案も Neptune に書いている。これをやめて status だけにすると決めた。**
+
+いまの実装で Neptune に入るもの:
+
+| 入るもの | 書く人 | 読む人 |
+|---|---|---|
+| トポロジの `status` | Lambda graph-status | Web、エージェント |
+| 修復案の「いま」（頂点 `proposal`。pending → approved …） | worker、Web の承認タブ | worker、Web の承認タブ、エージェント |
+
+- 修復案の履歴は別で、S3 Tables の `proposal_events` に worker が 1 段ごとに追記している。同じ内容を 2 か所に書いている状態。
+- 「修復案を S3 Tables にまとめる（Cycle 003）」で、修復案は `proposal_events` だけに置き、Neptune はトポロジと `status` だけにする（[設計](cycles/003-proposals-in-s3tables/design.md)。実装はまだ）。Web の承認は SQS で worker に届け、読むのは Athena。
+
+### Q. Neptune Analytics で分析するときに障害情報や修復案も必要になるなら、プロパティとして入れたほうがいい？
+
+**A. いまは入れない。正は S3 Tables に置き、グラフの分析で必要になったときに、S3 Tables から「写し」として Neptune に載せる。** そのときはプロパティでなく、機器や回線に辺でつないだ頂点にする。
+
+- **プロパティに向くのは「いまの値が 1 つ」のものだけ。** 機器や回線の `status` がそれ。障害や修復案は 1 つの機器に何件も積み重なるので、プロパティには収まらない。
+- **いまの修復案の頂点は、グラフとして使われていない。** 辺が 1 本も無く、id で引いて書き換えるだけ。S3 Tables に移しても分析で失うものは無い。
+- **Neptune Analytics は、あとからデータを載せて分析する作り。** S3 のファイルを一括で読み込めるので、履歴が要る分析をやるときに、その期間の分だけ載せればよい。
+
+| 分析 | 要るもの | いま足りているか |
+|---|---|---|
+| この障害で影響を受ける機器はどれか | トポロジ + いまの `status` | 足りている |
+| link → IS-IS → BGP を 1 つの障害にまとめる | トポロジ + いまの `status` | 足りている |
+| 隣の機器で過去に似た障害があったか | トポロジ + 障害の履歴 | 履歴を頂点として載せる必要がある |
+| この処置は過去にこの構成で効いたか | トポロジ + 修復案の履歴 | 同上 |
+
+件数や期間の集計だけなら Athena で足り、Neptune は要らない。
+
+| | 正は S3 Tables、必要なときに写しを載せる | 最初から Neptune にも書く |
+|---|---|---|
+| メリット | 書く場所が 1 つ。食い違わない。Neptune が止まっても修復が止まらない | 分析をすぐ始められる |
+| デメリット | 分析の前に読み込みの手順が 1 つ要る | 二重に書く。使うか分からない分析のために複雑さが残る |
+
+Database と Analytics の使い分けは [8 章](#8-neptune-database-と-neptune-analytics)。

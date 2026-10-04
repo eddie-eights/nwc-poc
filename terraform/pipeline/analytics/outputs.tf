@@ -61,7 +61,7 @@ output "job_driver_json" {
           "--conf spark.driver.memory=2g",
           "--conf spark.executor.cores=1",
           "--conf spark.executor.memory=2g",
-          "--conf spark.executor.instances=1",
+          "--conf spark.executor.instances=2",
         "--conf spark.dynamicAllocation.enabled=false"],
       ))
     }
