@@ -328,7 +328,9 @@ check("Iceberg に append で書き、toTable で名前を渡す", '.writeStream
 check("checkpoint は格納先ごと（iceberg/ と <name>/）", '.option("checkpointLocation", checkpoint + "iceberg/")' in src
       and '.option("checkpointLocation", checkpoint + name + "/")' in src)
 check("60 秒ごとのマイクロバッチ", re.search(r'^TRIGGER\s*=\s*"60 seconds"', src, re.M) is not None and src.count("processingTime=TRIGGER") == 2)
-check("HTTP の格納先は foreachBatch で driver から送る", ".foreachBatch(each_batch)" in src and "batch_df.collect()" in src)
+check("HTTP の格納先は foreachBatch で、既定は driver が collect して送り、--http-send executor なら foreachPartition で executor が送る",
+      '.foreachBatch({"driver": each_batch, "executor": each_batch_on_executors}[http_send])' in src and "batch_df.collect()" in src
+      and "batch_df.foreachPartition(" in src)
 check("SigV4 は botocore（EMR の実行ロールの認証情報）", "from botocore.auth import SigV4Auth" in src and "from botocore.awsrequest import AWSRequest" in src and 'h["x-amz-content-sha256"] = hashlib.sha256(body).hexdigest()' in src)
 check("OpenSearch は _bulk に aoss の SigV4、Prometheus は remote write に aps の SigV4",
       re.search(r'sigv4_headers\("POST", url, body, "aoss", region', src) is not None
@@ -506,6 +508,192 @@ check("build: splunk は起動時に SSM から token を読み（WithDecryption
       re.search(r'elif s == "splunk":\s*\n(\s*#[^\n]*\n)*\s*token = read_ssm_parameter\(args\.splunk_token_parameter, args\.region\)\s*\n\s*queries\.append\(http_query\(rows, s, args\.checkpoint, make_splunk_sender\(args\.splunk_hec_url, token, args\.splunk_index, args\.splunk_skip_verify\)\)\)', src) is not None
       and re.search(r'def read_ssm_parameter\(name, region\):[\s\S]*?get_parameter\(Name=name, WithDecryption=True\)', src) is not None)
 check("http_post は context（SSL）を urlopen に渡せる", re.search(r'def http_post\(url, body, headers, context=None\)', src) is not None and "context=context" in src)
+
+# ---- HTTP の格納先へ送る所（--http-send。既定 driver = collect して driver が送る、executor = foreachPartition で executor が送る。2026-10-04）
+import subprocess
+check("HTTP_SEND は driver / executor", mod.HTTP_SEND == ("driver", "executor"))
+_sp = ["--sinks", "prometheus", "--prometheus-url", "https://p/api/v1/remote_write"]
+check("parse_args: --http-send の既定は driver（引数を渡さなければ今のまま）", mod.parse_args(base + _sp).http_send == "driver")
+check("parse_args: --http-send executor を受ける", mod.parse_args(base + _sp + ["--http-send", "executor"]).http_send == "executor")
+check("parse_args: --http-send は driver / executor だけ（大文字、他の値、空は 2）",
+      all(parse_error(base + _sp + ["--http-send", v]) == 2 for v in ("foo", "Executor", "DRIVER", "")))
+check("variable http_send は既定 driver で、driver / executor だけ通す",
+      re.search(r'variable "http_send" \{\s*description[^\n]*\n\s*type\s*=\s*string\s*\n\s*default\s*=\s*"driver"\s*\n\s*validation \{\s*\n'
+                r'\s*condition\s*=\s*contains\(\["driver", "executor"\], var\.http_send\)', tf) is not None)
+check("job_driver は executor のときだけ --http-send を渡す（既定の driver ではジョブの引数が変わらず、up.sh が起こし直さない）",
+      re.search(r'\[for a in \["--http-send",\s*var\.http_send\] : a if var\.http_send != "driver"\]', args_block.group(1)) is not None)
+check("up.sh は HTTP_SEND（既定 driver）を何かを作る前に確かめ、http_send で analytics に渡す",
+      'HTTP_SEND="${HTTP_SEND:-driver}"' in up
+      and up.index('case "$HTTP_SEND" in driver | executor) ;;') < up.index("\ntf_apply base/ecr")
+      and '\n  tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}" -var "http_send=$HTTP_SEND"   #' in up)
+# HTTP_SEND の判定の 2 行を up.sh から切り出して、bash で実際に動かす
+_hsblk = "\n".join(up[up.index('HTTP_SEND="${HTTP_SEND:-driver}"'):].split("\n")[:2]) + "\n"
+def _http_send(**env):
+    r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $*"; exit 1; }\n' + _hsblk + 'echo "OUT: $HTTP_SEND"'], capture_output=True, text=True,
+                       env={"PATH": os.environ["PATH"], **env})
+    return r.returncode, r.stdout.strip()
+check("HTTP_SEND が無いか空なら driver、driver / executor はそのまま",
+      _http_send() == (0, "OUT: driver") and _http_send(HTTP_SEND="") == (0, "OUT: driver")
+      and _http_send(HTTP_SEND="driver") == (0, "OUT: driver") and _http_send(HTTP_SEND="executor") == (0, "OUT: executor"))
+check("HTTP_SEND が driver / executor 以外（大文字、1、他の値）なら止まる",
+      all(_http_send(HTTP_SEND=v)[0] == 1 and "HTTP_SEND は driver か executor" in _http_send(HTTP_SEND=v)[1] for v in ("Executor", "DRIVER", "1", "both")))
+check("deploy-env.sh は HTTP_SEND を読めるキーに持ち、deploy.env.example は既定の #HTTP_SEND=driver を書く",
+      re.search(r'(?<![A-Z_])HTTP_SEND(?![A-Z_])', open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read()) is not None
+      and re.search(r"^#HTTP_SEND=driver$", env_example, re.M) is not None)
+
+def _row(ts, v=1):
+    """Spark の Row の代わり（row_to_record は asDict が無ければ dict(row) で読む）"""
+    return {"ts": ts, "topic": "metrics", "measurement": "interface", "agent_host": "r1", "host": "h",
+            "tags_json": '{"agent_host":"r1","ifName":"Gi0/1"}', "fields_json": json.dumps({"ifInOctets": v})}
+
+def _stderr(fn):
+    """fn() を呼んで (戻り値, stderr) を返す"""
+    saved = sys.stderr
+    sys.stderr = io.StringIO()
+    try:
+        return fn(), sys.stderr.getvalue()
+    finally:
+        sys.stderr = saved
+
+check("partition_id: pyspark が無いかタスクの外なら -1", mod.partition_id() == -1)
+_got = []
+_n, _err = _stderr(lambda: mod.send_partition("prometheus", _got.append, 7, iter([_row(3.0), _row(1.0), _row(2.0)])))
+check("send_partition: 行のイテレータを row_to_record にし、ts の順に並べて sender に 1 回で渡し、行数を返す",
+      _n == 3 and len(_got) == 1 and [r["ts"] for r in _got[0]] == [1.0, 2.0, 3.0] and _got[0][0]["fields"] == {"ifInOctets": 1})
+check("send_partition: パーティションごとに batch / partition / 行数をログに出す", "[snmp_sinks] prometheus: batch 7 partition -1 で 3 行を送った" in _err)
+_got.clear()
+_n, _err = _stderr(lambda: mod.send_partition("prometheus", _got.append, 7, iter([])))
+check("send_partition: 空のパーティションは送らず、ログも出さず 0", _n == 0 and _got == [] and _err == "")
+
+# executor で Prometheus に送る: BULK_SIZE ごとのまとまり、4xx は捨てて続ける、ts の順（http_post と SigV4 は差し替える）
+_posts = []
+_seen = []
+_orig_sig, _orig_series = mod.sigv4_headers, mod.prometheus_series
+mod.sigv4_headers = lambda method, url, body, service, region, headers: dict(headers, Authorization=f"AWS4-HMAC-SHA256 {service} {region}")
+mod.prometheus_series = lambda records: (_seen.append([r["ts"] for r in records]), _orig_series(records))[1]
+mod.http_post = lambda url, body, headers, context=None: (_posts.append((url, body, headers)), (400, b"out of order sample") if len(_posts) == 1 else (200, b""))[1]
+try:
+    _rows = [_row(1700000000.0 + i, i) for i in range(mod.BULK_SIZE + 1)][::-1]
+    _n, _err = _stderr(lambda: mod.send_partition("prometheus", mod.make_prometheus_sender("https://p/api/v1/remote_write", "ap-northeast-1"), 1, iter(_rows)))
+finally:
+    mod.http_post, mod.sigv4_headers, mod.prometheus_series = _orig_post, _orig_sig, _orig_series
+check("send_partition + prometheus: 並べてから系列にし、BULK_SIZE サンプルごとに aps の SigV4 で remote write に送る",
+      _n == mod.BULK_SIZE + 1 and _seen == [sorted(1700000000.0 + i for i in range(mod.BULK_SIZE + 1))]
+      and len(_posts) == 2 and all(u == "https://p/api/v1/remote_write" and h["Authorization"] == "AWS4-HMAC-SHA256 aps ap-northeast-1"
+                                   and h["Content-Encoding"] == "snappy" for u, _, h in _posts))
+check("send_partition + prometheus: 400 のまとまりは捨てて次を送る（例外にしない。タスクを落とさない）",
+      f"prometheus: remote write が 400 を返した。{mod.BULK_SIZE} サンプルを捨てる" in _err and "partition -1 で 501 行を送った".replace("501", str(mod.BULK_SIZE + 1)) in _err)
+
+# executor で Splunk に送る: token は executor が送るたびに SSM から読む（driver から運ばない）
+_ssm = []
+_orig_ssm = mod.read_ssm_parameter
+mod.read_ssm_parameter = lambda name, region: (_ssm.append((name, region)), "tok-from-ssm")[1]
+mod.http_post = lambda url, body, headers, context=None: (_posts.append((url, body, headers, context)), (403, b'{"text":"Invalid token","code":4}'))[1]
+_posts.clear()
+try:
+    _send = mod.make_splunk_sender_on_executor("https://s:8088", "/p/splunk/hec-token", "ap-northeast-1", "netops", True)
+    _ssm_at_make = list(_ssm)
+    _cells = [c.cell_contents for c in (_send.__closure__ or ())]
+    _n, _err = _stderr(lambda: mod.send_partition("splunk", _send, 3, iter([_row(2.0), _row(1.0)])))
+finally:
+    mod.http_post, mod.read_ssm_parameter = _orig_post, _orig_ssm
+check("make_splunk_sender_on_executor: 作るときは SSM を読まず、持つのは URL / パラメータ名 / region / index / skip_verify の文字列と bool だけ（token も SSL の context も executor へ運ばない）",
+      _ssm_at_make == [] and sorted(map(repr, _cells)) == sorted(map(repr, ["https://s:8088", "/p/splunk/hec-token", "ap-northeast-1", "netops", True])))
+check("make_splunk_sender_on_executor: 送るときに SSM から token を読み、Authorization: Splunk <token> で HEC に送る。index と skip_verify（検証しない context）も今の sender と同じ",
+      _ssm == [("/p/splunk/hec-token", "ap-northeast-1")] and len(_posts) == 1 and _posts[0][0] == "https://s:8088/services/collector/event"
+      and _posts[0][2]["Authorization"] == "Splunk tok-from-ssm" and _posts[0][3] is not None and _posts[0][3].verify_mode == ssl.CERT_NONE
+      and [json.loads(x)["time"] for x in _posts[0][1].decode().split("\n")] == [1.0, 2.0] and json.loads(_posts[0][1].decode().split("\n")[0])["index"] == "netops")
+check("make_splunk_sender_on_executor: 4xx は捨てて続け（例外にしない）、ログに token の値を出さない",
+      _n == 2 and "splunk: HEC が 403 を返した" in _err and "tok-from-ssm" not in _err)
+check("executor へ運ぶ opensearch / prometheus の sender が持つのは文字列と辞書だけ（pickle できないものを持たない）",
+      all(isinstance(c.cell_contents, (str, dict)) for f in (mod.make_opensearch_sender("https://o", "snmp-logs", "ap-northeast-1"),
+                                                             mod.make_prometheus_sender("https://p/api/v1/remote_write", "ap-northeast-1"))
+          for c in (f.__closure__ or ())))
+
+# http_query を Spark 無しで動かす（writeStream の鎖と、マイクロバッチの DataFrame を差し替える）
+class _Writer:
+    def __init__(self): self.calls = []
+    def __getattr__(self, k): return lambda *a, **kw: (self.calls.append((k, a)), self)[1]
+
+
+class _Rows:
+    def __init__(self): self.writeStream = _Writer()
+
+
+class _Acc:
+    def __init__(self, v): self.value = v
+    def add(self, n): self.value += n
+
+
+class _ExecutorBatch:
+    """foreachPartition はパーティションごとに行のイテレータで f を呼ぶ。collect は呼ばれたら落とす"""
+    def __init__(self, parts):
+        self.parts = parts
+        self.sparkSession = type("SS", (), {"sparkContext": type("SC", (), {"accumulator": staticmethod(lambda v: _Acc(v))})()})()
+    def collect(self): raise AssertionError("executor の分岐で collect が呼ばれた")
+    def foreachPartition(self, f):
+        for p in self.parts:
+            f(iter(p))
+
+
+class _DriverBatch:
+    def __init__(self, rows): self.rows = rows
+    def collect(self): return self.rows
+    def foreachPartition(self, f): raise AssertionError("driver の分岐で foreachPartition が呼ばれた")
+
+
+def _query(*http_send):
+    r = _Rows()
+    mod.http_query(r, "prometheus", "s3://b/analytics/checkpoint/u/", _got.append, *http_send)
+    return r.writeStream.calls
+
+
+_got.clear()
+_calls = _query("executor")
+_fb = [a[0] for k, a in _calls if k == "foreachBatch"][0]
+_, _err = _stderr(lambda: _fb(_ExecutorBatch([[_row(3.0), _row(1.0)], [], [_row(2.0)]]), 5))
+check("http_query executor: collect せず foreachPartition でパーティションごとに sender を呼ぶ（中は ts の順、空のパーティションは呼ばない）",
+      [[r["ts"] for r in c] for c in _got] == [[1.0, 3.0], [2.0]])
+check("http_query executor: 送った行数を accumulator で driver に戻してログに出す", "[snmp_sinks] prometheus: batch 5 で 3 行を executor から送った" in _err)
+check("http_query executor: クエリの名前、checkpoint、トリガーは driver のときと同じ",
+      _calls[0] == ("queryName", ("prometheus",)) and ("option", ("checkpointLocation", "s3://b/analytics/checkpoint/u/prometheus/")) in _calls
+      and [k for k, _ in _calls] == [k for k, _ in _query()])
+for _hs in ((), ("driver",)):
+    _got.clear()
+    _fb = [a[0] for k, a in _query(*_hs) if k == "foreachBatch"][0]
+    _, _err = _stderr(lambda: _fb(_DriverBatch([_row(3.0), _row(1.0)]), 6))
+    check(f"http_query {'既定' if not _hs else 'driver'}: collect して 1 回で sender に渡す（今のまま。並べ替えない）",
+          [[r["ts"] for r in c] for c in _got] == [[3.0, 1.0]] and "[snmp_sinks] prometheus: batch 6 で 2 行を送った" in _err)
+_inner = {n.name: n for n in ast.walk(funcs["http_query"]) if isinstance(n, ast.FunctionDef)}
+_attrs = lambda f: {n.attr for n in ast.walk(f) if isinstance(n, ast.Attribute)} | {n.id for n in ast.walk(f) if isinstance(n, ast.Name)}
+check("executor の分岐（each_batch_on_executors と send_partition）は行を driver に集めない（collect / toPandas / toLocalIterator / take / head を呼ばない）",
+      not ({"collect", "toPandas", "toLocalIterator", "take", "head"} & (_attrs(_inner["each_batch_on_executors"]) | _attrs(funcs["send_partition"])))
+      and "foreachPartition" in _attrs(_inner["each_batch_on_executors"]) and "collect" in _attrs(_inner["each_batch"]))
+
+# build: どの HTTP の格納先にも http_send を渡す。splunk は executor のとき token を持たない sender にする
+_hq = []
+_orig_build = (mod.read_rows, mod.read_ssm_parameter, mod.http_query)
+mod.read_rows = lambda spark, bootstrap, topics: _Rows()
+mod.read_ssm_parameter = lambda name, region: (_ssm.append(name), "tok-from-ssm")[1]
+mod.http_query = lambda rows, name, checkpoint, sender, http_send="driver": (_hq.append((name, sender, http_send)), name)[1]
+_ba = base + ["--sinks", "splunk,prometheus,opensearch", "--splunk-hec-url", "https://s:8088", "--splunk-token-parameter", "/p/t",
+              "--prometheus-url", "https://p/api/v1/remote_write", "--opensearch-endpoint", "https://o"]
+try:
+    _ssm.clear()
+    mod.build(None, mod.parse_args(_ba + ["--http-send", "executor"]))
+    _exec, _ssm_exec = list(_hq), list(_ssm)
+    _hq.clear(), _ssm.clear()
+    mod.build(None, mod.parse_args(_ba))
+    _drv, _ssm_drv = list(_hq), list(_ssm)
+finally:
+    mod.read_rows, mod.read_ssm_parameter, mod.http_query = _orig_build
+check("build executor: splunk / prometheus / opensearch に executor を渡す。splunk は起動時に SSM を 1 回読んで確かめる（読めなければ起動で落ちる）が、sender は token を持たない",
+      [(n, h) for n, _, h in _exec] == [("splunk", "executor"), ("prometheus", "executor"), ("opensearch", "executor")] and _ssm_exec == ["/p/t"]
+      and "tok-from-ssm" not in repr([c.cell_contents for c in (_exec[0][1].__closure__ or ())]))
+check("build driver（既定）: 今のまま（splunk は起動時に読んだ token を持つ sender、http_send は driver）",
+      [(n, h) for n, _, h in _drv] == [("splunk", "driver"), ("prometheus", "driver"), ("opensearch", "driver")] and _ssm_drv == ["/p/t"]
+      and "Splunk tok-from-ssm" in repr([c.cell_contents for c in (_drv[0][1].__closure__ or ())]))
+check("main は HTTP の送信先（driver / executor）を起動時のログに出す", '+ f"。HTTP の送信: {args.http_send}"' in src)
 
 def read_varint(b, i):
     n = shift = 0

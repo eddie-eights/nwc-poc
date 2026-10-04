@@ -90,6 +90,17 @@ variable "sinks" {
   }
 }
 
+variable "http_send" {
+  description = "Where the Spark job sends to the HTTP sinks (opensearch / prometheus / splunk): driver = collect each micro-batch and send from the driver, executor = foreachPartition, each executor sends its own partitions. ops/up.sh passes HTTP_SEND. The job gets --http-send only when it is executor, so the default leaves the job arguments as they were"
+  type        = string
+  default     = "driver"
+
+  validation {
+    condition     = contains(["driver", "executor"], var.http_send)
+    error_message = "http_send は driver か executor。"
+  }
+}
+
 # ---------------------------------------------------------------- splunk (only when sinks has splunk)
 variable "splunk_hec_token_parameter" {
   description = "Name of the SSM SecureString parameter that holds the HEC token. The job reads it at start with the runtime role (ssm:GetParameter through the ssm endpoint of terraform/base/core); Terraform never reads the value. Empty = /<prefix>/splunk/hec-token. ops/up.sh generates it and the Splunk task on ECS makes the HEC token from it"

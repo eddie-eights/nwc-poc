@@ -43,6 +43,8 @@ output "job_driver_json" {
       entryPointArguments = concat(
         ["--bootstrap", local.bootstrap, "--checkpoint", local.checkpoint_uri, "--sinks", join(",", var.sinks), "--region", var.region,
         "--metric-topics", local.metric_topics, "--log-topics", local.log_topics],
+        # HTTP の格納先へ送る所。既定の driver では渡さない（ジョブの引数が変わらず、ops/up.sh が起こし直さない）
+        [for a in ["--http-send", var.http_send] : a if var.http_send != "driver"],
         [for a in ["--iceberg-table", local.iceberg_table] : a if local.sink_iceberg],
         [for a in ["--opensearch-endpoint", local.opensearch_endpoint, "--opensearch-index", local.opensearch_index] : a if local.sink_opensearch],
         [for a in ["--prometheus-url", local.prometheus_remote_write_url] : a if local.sink_prometheus],

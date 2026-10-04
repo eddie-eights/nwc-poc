@@ -71,6 +71,7 @@
 #                           terraform/base/core の mdt_source_cidrs。既定は空で、どこからも受けない（lab の SR Linux は MDT を送れない）
 #   NETWORK_PERIMETER=0     VPC の外からの AWS の API を拒む Deny（terraform/base/core の perimeter.tf）を外す。既定 1。切り分けのときだけ
 #   ENDPOINTS_MULTI_AZ=1    インターフェース型エンドポイントを 2 AZ に置く（本番の形。費用は倍）。既定 0 でサブネット a だけ
+#   HTTP_SEND=executor      analytics の Spark のジョブが HTTP の格納先（opensearch / prometheus / splunk）へ executor から送る（foreachPartition）。既定 driver（driver に集めて送る）
 #   LOCAL_PORT              PC 側のポート。既定 8080
 #   NO_PORTFORWARD=1        ポートフォワーディングを開かずに終わる
 #   TF_VERBOSE=1            terraform の出力を全部画面に出す（既定は進みと結果だけ。全文は ops/logs/tf-<ルート>-apply.log）
@@ -287,6 +288,10 @@ if [ -n "$SINK_SPLUNK" ]; then SINKS="$SINKS${SINKS:+,}splunk"; fi
 SPLUNK_ON_ECS="$SINK_SPLUNK"
 [ -n "$SINKS" ] || die "SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK が全部 0。Spark のジョブは格納先が 1 つ以上要る。analytics ごと要らないなら SKIP_ANALYTICS=1。まだ何も作っていない"
 SINKS_TF="\"$(printf '%s' "$SINKS" | sed 's/,/","/g')\""
+# Spark のジョブが HTTP の格納先（opensearch / prometheus / splunk）へ送る所。既定 driver（マイクロバッチを driver に集めて送る）、
+# executor ならパーティションごとに executor が送る（foreachPartition）。terraform/pipeline/analytics の var.http_send に渡す
+HTTP_SEND="${HTTP_SEND:-driver}"
+case "$HTTP_SEND" in driver | executor) ;; *) die "HTTP_SEND は driver か executor（小文字）: $HTTP_SEND。まだ何も作っていない" ;; esac
 flag_value SKIP_LAB; flag_value SKIP_STREAM; flag_value SKIP_ANALYTICS; flag_value SKIP_GRAPH; flag_value NO_PORTFORWARD
 # stream の Telegraf の syslog の形式。既定は本番の Cisco に合わせた RFC3164（stream の変数の既定と同じ）
 SYSLOG_STANDARD="${SYSLOG_STANDARD:-RFC3164}"
@@ -903,7 +908,7 @@ if [ -z "$SKIP_ANALYTICS" ]; then
     ensure_secret "/$PREFIX/splunk/hec-token" uuid "Splunk HEC token (created by ops/up.sh)"
     ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX" -var "device_map=$DEVICE_MAP")
   fi
-  tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"
+  tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}" -var "http_send=$HTTP_SEND"   # http_send（driver / executor）を変えるとジョブの引数が変わり、7-5 で起こし直す
   APP_ID=$(tf pipeline/analytics output -raw application_id); echo "APP_ID=$APP_ID"
   if [ -n "$SPLUNK_ON_ECS" ]; then
     # Spark のジョブは起動してすぐ HEC に送るので、Splunk が受けられるようになってから起こす（初回の起動は設定の展開で 5〜10 分）。

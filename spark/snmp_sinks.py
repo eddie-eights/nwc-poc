@@ -26,8 +26,8 @@ Telegraf の JSON 出力（outputs.kafka の data_format = "json"、json_timesta
 （trap・gNMI の BGP / IS-IS。splunk/netops_alerts）が SNS のトピック <接頭辞>-alerts に出し、ワークフロー（SQS）と
 トポロジの status（graph の Lambda）がそれを受ける。
 
-HTTP の送信は driver でまとめて行う（マイクロバッチを collect する。PoC の量（機器数台、10 秒間隔）なら 1 分に数百行）。
-量が増えたら foreachPartition に移す。remote write の protobuf と snappy は外部ライブラリ無しで組む
+HTTP の送信は既定で driver でまとめて行う（マイクロバッチを collect する。PoC の量（機器数台、10 秒間隔）なら 1 分に数百行）。
+量が増えたら --http-send executor で foreachPartition に切り替える（集めずに、パーティションごとに executor が送る）。remote write の protobuf と snappy は外部ライブラリ無しで組む
 （EMR Serverless の Python に protobuf / python-snappy は無い。snappy は「全部リテラル」の圧縮で規格上正しい）。
 """
 import argparse
@@ -44,6 +44,7 @@ import urllib.request
 METRIC_TOPICS = "metrics,gnmi,mdt"   # metrics = Telegraf の inputs.snmp と lab の gNMI を変えた共通の形、gnmi = inputs.gnmi、mdt = inputs.cisco_telemetry_mdt（telegraf/telegraf.conf.in。Telegraf（ECS）で動く）
 LOG_TOPICS = "traps,logs"   # traps = Telegraf の inputs.snmp_trap、logs = inputs.syslog（機器の syslog。measurement は device_log）
 SINKS = ("iceberg", "opensearch", "prometheus", "splunk")
+HTTP_SEND = ("driver", "executor")   # HTTP の格納先（opensearch / prometheus / splunk）へ送る所。--http-send（既定 driver）
 TRIGGER = "60 seconds"
 HTTP_TIMEOUT = 30
 HTTP_RETRIES = 3        # 5xx と接続エラーだけ打ち直す。4xx は捨ててログに出す（古すぎるサンプルなどは何度打っても通らない）
@@ -60,6 +61,8 @@ def parse_args(argv):
     p.add_argument("--bootstrap", required=True, help="MSK の bootstrap servers（SASL/IAM、9098）")
     p.add_argument("--checkpoint", required=True, help="checkpoint の親（s3://<バケット>/analytics/checkpoint/。格納先ごとに下にディレクトリを切る）")
     p.add_argument("--sinks", required=True, help="格納先（カンマ区切り。iceberg / opensearch / prometheus / splunk）")
+    p.add_argument("--http-send", choices=HTTP_SEND, default="driver", help="HTTP の格納先へ送る所。driver = マイクロバッチを collect して driver が送る（既定）、"
+                                                                         "executor = foreachPartition でパーティションごとに executor が送る")
     p.add_argument("--region", default="ap-northeast-1", help="SigV4 のリージョン")
     p.add_argument("--metric-topics", default=METRIC_TOPICS, help="メトリクスのトピック（カンマ区切り。iceberg と prometheus が読む）")
     p.add_argument("--log-topics", default=LOG_TOPICS, help="ログのトピック（カンマ区切り。iceberg と opensearch が読む）")
@@ -347,6 +350,14 @@ def make_splunk_sender(url, token, index="", skip_verify=False):
     return send
 
 
+def make_splunk_sender_on_executor(url, token_parameter, region, index="", skip_verify=False):
+    """--http-send executor の splunk の sender。token は driver から運ばず（Spark のタスクに載せない）、送るたびに executor が SSM から読む。
+    送り方（BULK_SIZE ごと、4xx は捨てる、TLS）は make_splunk_sender のまま。持つのは文字列と bool だけ（executor へ pickle で運ぶ）"""
+    def send(records):
+        make_splunk_sender(url, read_ssm_parameter(token_parameter, region), index, skip_verify)(records)
+    return send
+
+
 # ---------------------------------------------------------------- prometheus（remote write）
 _LABEL_BAD = re.compile(r"[^a-zA-Z0-9_]")
 _METRIC_BAD = re.compile(r"[^a-zA-Z0-9_:]")
@@ -469,17 +480,45 @@ def make_prometheus_sender(url, region):
 
 
 # ---------------------------------------------------------------- クエリの組み立て
-def http_query(rows, name, checkpoint, sender):
-    """マイクロバッチごとに driver で collect して sender に渡す foreachBatch のクエリ"""
+def partition_id():
+    """executor のタスクのパーティション番号（pyspark が無いか、タスクの外なら -1）"""
+    try:
+        from pyspark import TaskContext
+    except ImportError:
+        return -1
+    ctx = TaskContext.get()
+    return ctx.partitionId() if ctx else -1
+
+
+def send_partition(name, sender, batch_id, rows):
+    """--http-send executor: 1 パーティションの行を executor で sender に渡し、送った行数を返す（foreachPartition から呼ぶ。pyspark が無くても動く）。
+    ts の順に並べてから送る（Prometheus は系列ごとに時刻が戻るサンプルを拒む。並べられるのはパーティションの中だけ）"""
+    records = sorted((row_to_record(r) for r in rows), key=lambda r: r["ts"])
+    if records:
+        sender(records)
+        log(f"{name}: batch {batch_id} partition {partition_id()} で {len(records)} 行を送った")
+    return len(records)
+
+
+def http_query(rows, name, checkpoint, sender, http_send="driver"):
+    """マイクロバッチごとに driver で collect して sender に渡す foreachBatch のクエリ。
+    http_send が executor なら collect せず、foreachPartition でパーティションごとに executor が sender で送る（sender は pickle で executor へ運ぶ）"""
     def each_batch(batch_df, batch_id):
         records = [row_to_record(r) for r in batch_df.collect()]
         if records:
             sender(records)
             log(f"{name}: batch {batch_id} で {len(records)} 行を送った")
 
+    def each_batch_on_executors(batch_df, batch_id):
+        # 行は driver に集めない。送った行数だけ accumulator で戻し、driver のログ（CloudWatch Logs）にも出す
+        sent = batch_df.sparkSession.sparkContext.accumulator(0)
+        batch_df.foreachPartition(lambda part: sent.add(send_partition(name, sender, batch_id, part)))
+        if sent.value:
+            log(f"{name}: batch {batch_id} で {sent.value} 行を executor から送った")
+
     return (
         rows.writeStream.queryName(name)
-        .foreachBatch(each_batch)
+        .foreachBatch({"driver": each_batch, "executor": each_batch_on_executors}[http_send])
         .option("checkpointLocation", checkpoint + name + "/")
         .trigger(processingTime=TRIGGER)
         .start()
@@ -554,9 +593,14 @@ def build(spark, args):
         if s == "iceberg":
             queries.append(iceberg_query(rows, args.iceberg_table, args.checkpoint))
         elif s == "opensearch":
-            queries.append(http_query(rows, s, args.checkpoint, make_opensearch_sender(args.opensearch_endpoint, args.opensearch_index, args.region)))
+            queries.append(http_query(rows, s, args.checkpoint, make_opensearch_sender(args.opensearch_endpoint, args.opensearch_index, args.region), args.http_send))
         elif s == "prometheus":
-            queries.append(http_query(rows, s, args.checkpoint, make_prometheus_sender(args.prometheus_url, args.region)))
+            queries.append(http_query(rows, s, args.checkpoint, make_prometheus_sender(args.prometheus_url, args.region), args.http_send))
+        elif s == "splunk" and args.http_send == "executor":
+            # 起動時に読めるかだけ確かめる（読めなければ driver のときと同じく起動で落ちる）。値は捨て、executor が送るたびに SSM から読み直す
+            read_ssm_parameter(args.splunk_token_parameter, args.region)
+            queries.append(http_query(rows, s, args.checkpoint, make_splunk_sender_on_executor(
+                args.splunk_hec_url, args.splunk_token_parameter, args.region, args.splunk_index, args.splunk_skip_verify), args.http_send))
         elif s == "splunk":
             # token は起動時に 1 回だけ読む（driver の中に置く。ログにも引数にも出ない）。読めなければジョブが起動で落ち、原因が stderr に出る
             token = read_ssm_parameter(args.splunk_token_parameter, args.region)
@@ -572,7 +616,7 @@ def main(argv):
     made = ensure_topics(spark, args.bootstrap, all_topics(args))
     log("トピック: " + ", ".join(all_topics(args)) + (f"（作った: {', '.join(made)}）" if made else "（全部あった）"))
     queries = build(spark, args)
-    log("格納先: " + ", ".join(f"{s}({sink_topics(s, args.metric_topics, args.log_topics)})" for s in args.sinks))
+    log("格納先: " + ", ".join(f"{s}({sink_topics(s, args.metric_topics, args.log_topics)})" for s in args.sinks) + f"。HTTP の送信: {args.http_send}")
     # どれか 1 つでもクエリが止まったら、残りも止めて 1 で終わる。EMR Serverless の STREAMING モードがジョブごと起こし直し、
     # 止まったクエリも checkpoint の続きから読み直す（データは落ちない）。以前は他が動いているあいだ ERROR を出すだけでジョブが RUNNING のまま残り、
     # 一時的な失敗（HTTP の 5xx が HTTP_RETRIES 回続いた、S3 Tables の書き込みの失敗）で止まったクエリが二度と戻らなかった。
