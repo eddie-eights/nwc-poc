@@ -1598,3 +1598,31 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 - https://docs.aws.amazon.com/eks/latest/userguide/fargate.html
 - https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ebs-volumes.html
 - https://aws.amazon.com/eks/pricing/
+
+### Q. Prometheus は、そもそもクラスターにできない？
+
+**A. 結論**
+
+できない。Prometheus 本体には、複数台でデータを分け合ったり複製したりする仕組みが無い。公式も「ローカルのストレージはクラスター化も複製もされない。1 台のデータベースとして扱うこと」と書いている。
+
+2026-10-04 に公式ドキュメント（v3.15.0 の storage.md と FAQ）で確かめた。
+
+**では、止まらないようにするには**
+
+| やり方 | 中身 | データ |
+|---|---|---|
+| 同じ設定の Prometheus を 2 台以上動かす（公式の答え） | それぞれが同じ対象を別々に集める。互いを知らない | 台ごとに別々に持つ。片方が止まっていた間の分は、その台には無いまま |
+| 外のストレージに書き出す（remote write） | Thanos、Cortex、Mimir など、クラスターを組める別の OSS に送る。重複はそちらで落とす | 外のストレージがまとめて持つ |
+
+アラートが 2 台から二重に出る分は、Alertmanager が 1 つにまとめる（Alertmanager 自体はクラスターを組める）。
+
+**このプロジェクトでは**
+
+- マネージド版の Amazon Managed Service for Prometheus は、この「外のストレージ」を AWS が運用しているもの（中身は Cortex 系。これは記憶にもとづく内容で、今回は確かめていない）。
+- OSS 版（005）の Prometheus は 1 台で作る。Spark が remote write で書き込む形なので、2 台にするなら Spark が両方に書くことになる。そこまではやらない。
+- 「Splunk をクラスターにする（004）」のような台数の切り替えは、Prometheus には作れない。マネージドと OSS を比べるときの材料になる。
+
+**出典**
+
+- https://github.com/prometheus/prometheus/blob/v3.15.0/docs/storage.md
+- https://prometheus.io/docs/introduction/faq/
