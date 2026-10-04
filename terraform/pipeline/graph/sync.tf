@@ -101,7 +101,7 @@ resource "aws_lambda_function" "status" {
   # VPC の中に置く（グラフは公開していないので、土台の neptune-graph-data のエンドポイントからしか届かない）。SG は terraform/base/core の lambda
   # （エンドポイントの 443 へ出られる。SSM は引かない。グラフの ID は環境変数で渡す）
   vpc_config {
-    subnet_ids         = local.subnet_ids
+    subnet_ids         = slice(local.subnet_ids, 0, var.lambda_az_num)
     security_group_ids = [local.lambda_sg_id]
   }
 

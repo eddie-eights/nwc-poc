@@ -87,8 +87,9 @@ resource "aws_opensearchserverless_collection" "kb" {
   name        = local.collection_name
   type        = "VECTORSEARCH"
   description = "${local.name_prefix} knowledge base"
-  # スタンバイを切ると最小 OCU が半分になる（検証用。可用性は下がる）
-  standby_replicas = "DISABLED"
+  # スタンバイを切ると最小 OCU が半分になる（検証用。可用性は下がる）。var.opensearch_az_num が 2 なら別の AZ に控えを置く（ENABLED）。
+  # 変えるとコレクションを作り直す（取り込みをやり直す）
+  standby_replicas = var.opensearch_az_num == 2 ? "ENABLED" : "DISABLED"
 
   tags = { Name = local.collection_name }
 
@@ -197,7 +198,7 @@ resource "aws_lambda_function" "kb_index" {
   memory_size = 128
 
   vpc_config {
-    subnet_ids         = local.subnet_ids
+    subnet_ids         = slice(local.subnet_ids, 0, var.lambda_az_num)
     security_group_ids = [local.lambda_sg_id]
   }
 

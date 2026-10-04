@@ -10,7 +10,8 @@ resource "aws_neptunegraph_graph" "graph" {
   graph_name          = "${local.name_prefix}-graph"
   provisioned_memory  = var.provisioned_memory
   public_connectivity = false
-  replica_count       = 0 # その日に消す使い捨て。レプリカは同じ m-NCU の料金がもう 1 つ分かかる
+  # 既定 0（その日に消す使い捨て）。var.neptune_az_num - 1 個のレプリカを置く。レプリカは 1 つごとに同じ m-NCU の料金がかかる
+  replica_count       = var.neptune_az_num - 1
   deletion_protection = var.deletion_protection
 }
 

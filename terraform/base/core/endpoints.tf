@@ -25,13 +25,14 @@ resource "aws_vpc_endpoint" "s3" {
 # 1 つの VPC に 1 本あれば全コレクションに届き（AWS の文書「You only need one OpenSearch Serverless VPC endpoint in a VPC」）、
 # 作ると AOSS が *.<region>.aoss.amazonaws.com の private hosted zone を VPC に付ける。2 本目を作らないよう、ここに 1 本だけ置く。
 # ops/up.sh は CREATE_KB か STORES の grafana（OpenSearch）のとき create_opensearch_endpoint=true で apply する。
-# ENI は 2 AZ（1 本 1.4 セント/h × 2）。SG は endpoints（ワークロードの SG からの 443 だけ。security_groups.tf）
+# ENI はインターフェース型と同じ endpoints_az_num の AZ（1 本 1.4 セント/h × AZ。2026-10-04 までは 2 AZ 固定）。
+# SG は endpoints（ワークロードの SG からの 443 だけ。security_groups.tf）
 resource "aws_opensearchserverless_vpc_endpoint" "aoss" {
   count = var.create_opensearch_endpoint ? 1 : 0
 
   name               = "${local.name_prefix}-aoss"
   vpc_id             = aws_vpc.this.id
-  subnet_ids         = [aws_subnet.a.id, aws_subnet.b.id]
+  subnet_ids         = local.endpoint_subnet_ids
   security_group_ids = [aws_security_group.endpoints.id]
 }
 
@@ -40,9 +41,10 @@ resource "aws_opensearchserverless_vpc_endpoint" "aoss" {
 # 同じサービスの private DNS 付きエンドポイントは 1 つの VPC に 1 本しか作れないので、ルートごとに持たずここに集める
 # （2026-09-26 まではルートごとに持っていた。7c42b0f）。
 # エンドポイントポリシーは「このアカウントのプリンシパルだけ」: 盗んだ他のアカウントの鍵でこの VPC から外へ持ち出す経路を塞ぐ。
-# 1 本 1.4 セント/h × AZ（endpoints_multi_az = false ならサブネット a だけ。b のワークロードも private DNS で a の ENI に届く）
+# 1 本 1.4 セント/h × AZ。endpoints_az_num の数だけサブネット a / b / c の先頭から置く（既定 1 はサブネット a だけ。
+# b / c のワークロードも private DNS で a の ENI に届くが、a の AZ が落ちると AWS の API に届かなくなる）
 locals {
-  endpoint_subnet_ids = var.endpoints_multi_az ? [aws_subnet.a.id, aws_subnet.b.id] : [aws_subnet.a.id]
+  endpoint_subnet_ids = slice(local.subnet_ids, 0, var.endpoints_az_num)
 }
 
 resource "aws_vpc_endpoint" "interface" {

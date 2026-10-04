@@ -78,10 +78,11 @@ resource "aws_opensearchserverless_access_policy" "logs" {
 resource "aws_opensearchserverless_collection" "logs" {
   count = local.sink_opensearch ? 1 : 0
 
-  name             = local.logs_collection
-  type             = "TIMESERIES"
-  description      = "${local.name_prefix} SNMP traps and logs from the Spark job"
-  standby_replicas = "DISABLED"
+  name        = local.logs_collection
+  type        = "TIMESERIES"
+  description = "${local.name_prefix} SNMP traps and logs from the Spark job"
+  # var.opensearch_az_num が 2 なら別の AZ に控えを置く（ENABLED）。変えるとコレクションを作り直す
+  standby_replicas = var.opensearch_az_num == 2 ? "ENABLED" : "DISABLED"
 
   tags = { Name = local.logs_collection }
 

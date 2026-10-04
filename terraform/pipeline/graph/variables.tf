@@ -29,6 +29,28 @@ variable "provisioned_memory" {
   }
 }
 
+variable "neptune_az_num" {
+  description = "Number of AZs of the Neptune Analytics graph: the primary plus neptune_az_num - 1 replicas (replica_count). 1, 2 or 3. Each replica costs the same m-NCU price as the primary (16 m-NCU is about 0.58 USD/h each). ops/up.sh passes NEPTUNE_AZ_NUM."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2, 3], var.neptune_az_num)
+    error_message = "neptune_az_num must be 1, 2 or 3."
+  }
+}
+
+variable "lambda_az_num" {
+  description = "Number of AZs (subnets a, b, c of terraform/base/core from the front) of the status Lambda (sync.tf). 1, 2 or 3. ops/up.sh passes LAMBDA_AZ_NUM (also to terraform/agent and terraform/workflow)."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2, 3], var.lambda_az_num)
+    error_message = "lambda_az_num must be 1, 2 or 3."
+  }
+}
+
 variable "deletion_protection" {
   description = "Keep false so terraform destroy can delete the graph the same day."
   type        = bool

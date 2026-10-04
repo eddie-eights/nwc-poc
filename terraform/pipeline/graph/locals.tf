@@ -33,8 +33,9 @@ locals {
   account_id = data.aws_caller_identity.current.account_id
   partition  = data.aws_partition.current.partition
 
-  vpc_id     = data.terraform_remote_state.main.outputs.vpc_id
-  subnet_ids = data.terraform_remote_state.main.outputs.runtime_subnet_ids
+  vpc_id = data.terraform_remote_state.main.outputs.vpc_id
+  # サブネット a / b / c（この順）。status Lambda は先頭から var.lambda_az_num 個を使う
+  subnet_ids = data.terraform_remote_state.main.outputs.subnet_ids
   # SG は古い state の destroy でも評価できるように try（空のまま apply に進まないよう remote_state の postcondition で止める）
   lambda_sg_id    = try(data.terraform_remote_state.main.outputs.security_group_ids["lambda"], "") # sync.tf の status Lambda
   reader_role_ids = toset([data.terraform_remote_state.main.outputs.runtime_role_name, data.terraform_remote_state.main.outputs.web_role_name])

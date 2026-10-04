@@ -13,10 +13,12 @@
 # kafka_version        = "4.1.x.kraft"
 # broker_instance_type = "kafka.m5.large"  # Kafka 4.x は kafka.t3.small を受け付けない
 # log_retention_days   = 7
+# msk_az_num           = 2                 # 2 か 3（1 にはできない）。ops/up.sh は MSK_AZ_NUM を渡す
 #
 # telegraf_image_tag   = "1.40.0"          # ops/up.sh passes <telegraf version>-<hash of telegraf/>
 # snmp_agents          = "\"udp://203.0.113.11:161\", ..."   # python3 lab/lab_topology.py lab --snmp-agents
 # gnmi_targets         = "\"203.0.113.11:57400\", ..."       # python3 lab/lab_topology.py lab --gnmi-targets
 # syslog_standard      = "RFC3164"       # Cisco IOS (BSD format). ops/up.sh passes SYSLOG_STANDARD (default RFC3164; RFC5424 for the SR Linux lab logs)
+# telegraf_az_num      = 1                 # dialout の NLB のサブネットとタスクの数。ops/up.sh は TELEGRAF_AZ_NUM を渡す
 # telegraf_task_cpu    = 256
 # telegraf_task_memory = 512

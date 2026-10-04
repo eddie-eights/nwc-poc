@@ -9,6 +9,10 @@
 # namespace         = "netops"
 # table_name        = "snmp_metrics"
 
+# 冗長化（ops/up.sh は deploy.env の EMR_AZ_NUM / OPENSEARCH_AZ_NUM を渡す）
+# emr_az_num        = 1   # EMR Serverless のワーカーを置く AZ の数（1-3）
+# opensearch_az_num = 1   # 2 で logs のコレクションの standby_replicas を ENABLED（1-2。変えると作り直し）
+
 # 4 本目の格納先 splunk（Splunk の HTTP Event Collector。ops/up.sh は deploy.env の STORES に splunk があれば足す）。
 # Splunk Enterprise をここの ECS で立てる（splunk.tf。VPC の中。起動時に Splunk のライセンスと General Terms に同意する）。
 #   管理者のパスワード /<owner>-nwc-poc/splunk/admin-password と HEC の token /<owner>-nwc-poc/splunk/hec-token は ops/up.sh が作る

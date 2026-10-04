@@ -83,6 +83,8 @@ locals {
 
   vpc_id    = data.terraform_remote_state.main.outputs.vpc_id
   subnet_id = data.terraform_remote_state.main.outputs.instance_subnet_id # サブネット a（Web の EC2 と同じ）
+  # サブネット a / b / c（この順）。tools Lambda は先頭から var.lambda_az_num 個を使う
+  subnet_ids = data.terraform_remote_state.main.outputs.subnet_ids
   # SG は古い state の destroy でも評価できるように try（空のまま apply に進まないよう remote_state の postcondition で止める）
   workflow_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["workflow"], "")
   lambda_sg_id   = try(data.terraform_remote_state.main.outputs.security_group_ids["lambda"], "") # gateway.tf の tools Lambda

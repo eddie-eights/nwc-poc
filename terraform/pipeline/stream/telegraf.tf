@@ -57,7 +57,10 @@ resource "aws_lb" "telegraf_dialout" {
   name               = "${local.name_prefix}-tg"
   internal           = true
   load_balancer_type = "network"
-  subnets            = [local.telegraf_subnet_id]
+  subnets            = local.telegraf_dialout_subnet_ids
+  # 2 AZ 以上では、サブネット a の受け口（lab の DNAT の宛先）に来たものも b / c のタスクへ振る（a のタスクが落ちても受ける）。
+  # AZ をまたいだ分は転送料がかかる
+  enable_cross_zone_load_balancing = var.telegraf_az_num > 1
   # NLB の SG は作るときにしか付けられない（後から足すと作り直し。付けて作った NLB なら入れ替えはできる）
   security_groups = [local.telegraf_dialout_nlb_sg_id]
 
@@ -65,11 +68,15 @@ resource "aws_lb" "telegraf_dialout" {
   tags = { Name = "${local.name_prefix}-telegraf-dialout" }
 }
 
-# NLB のアドレス（サブネット 1 つなので ENI も 1 つ）。lab.sh forward の DNAT の宛先
+# NLB のサブネット a のアドレス（NLB の ENI はサブネットごとに 1 つ。a のものだけ選ぶ）。lab.sh forward の DNAT の宛先
 data "aws_network_interface" "telegraf_dialout_lb" {
   filter {
     name   = "description"
     values = ["ELB ${aws_lb.telegraf_dialout.arn_suffix}"]
+  }
+  filter {
+    name   = "subnet-id"
+    values = [local.telegraf_subnet_id]
   }
   filter {
     name   = "vpc-id"
@@ -281,8 +288,9 @@ resource "aws_ecs_service" "telegraf_dialout" {
   name            = "${local.name_prefix}-telegraf-dialout"
   cluster         = aws_ecs_cluster.telegraf.id
   task_definition = aws_ecs_task_definition.telegraf_dialout.arn
-  # 機器から送ってくるものだけなので、増やしても同じものを 2 回書かない（NLB が振り分ける）。PoC は 1 つ
-  desired_count = 1
+  # 機器から送ってくるものだけなので、増やしても同じものを 2 回書かない（NLB が振り分ける）。1 AZ に 1 つ（var.telegraf_az_num。
+  # Fargate のサービスはタスクを AZ に散らして置く）
+  desired_count = var.telegraf_az_num
   launch_type   = "FARGATE"
 
   # aws ecs execute-command でタスクの中に入れる（設定を見る程度。tg test / tg gnmi は telegraf-dialin で打つ）
@@ -295,7 +303,7 @@ resource "aws_ecs_service" "telegraf_dialout" {
   health_check_grace_period_seconds = 60
 
   network_configuration {
-    subnets          = [local.telegraf_subnet_id]
+    subnets          = local.telegraf_dialout_subnet_ids
     security_groups  = [local.telegraf_dialout_sg_id]
     assign_public_ip = false
   }
@@ -316,7 +324,7 @@ resource "aws_ecs_service" "telegraf_dialout" {
   ]
 }
 
-# 取りにいく側（dialin）。NLB に付けない。terraform/pipeline/nautobot の Job が機器の一覧を書き換えたあと、このサービスを作り直す（force-new-deployment）
+# 取りにいく側（dialin）。NLB に付けない。telegraf_az_num に従わず、いつもサブネット a に 1 つ。terraform/pipeline/nautobot の Job が機器の一覧を書き換えたあと、このサービスを作り直す（force-new-deployment）
 resource "aws_ecs_service" "telegraf_dialin" {
   name            = "${local.name_prefix}-telegraf-dialin"
   cluster         = aws_ecs_cluster.telegraf.id

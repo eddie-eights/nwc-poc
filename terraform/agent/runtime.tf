@@ -113,7 +113,7 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
   network_configuration {
     network_mode = "VPC"
     network_mode_config {
-      subnets         = local.subnet_ids
+      subnets         = slice(local.subnet_ids, 0, var.runtime_az_num)
       security_groups = [local.runtime_sg_id]
     }
   }

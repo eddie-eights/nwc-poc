@@ -38,6 +38,11 @@ output "telegraf_address" {
   value       = data.aws_network_interface.telegraf_dialout_lb.private_ip
 }
 
+output "telegraf_dialout_dns_name" {
+  description = "DNS name of the Telegraf dial-out NLB (internal; resolves to its address in each of the telegraf_az_num subnets). Point real devices (trap / syslog / MDT) at this name - the lab keeps using telegraf_address in subnet a"
+  value       = aws_lb.telegraf_dialout.dns_name
+}
+
 output "telegraf_log_group_name" {
   description = "CloudWatch Logs group of the Telegraf tasks (streams dialout/... and dialin/...)"
   value       = aws_cloudwatch_log_group.telegraf.name

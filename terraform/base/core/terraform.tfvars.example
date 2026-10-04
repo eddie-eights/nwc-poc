@@ -11,6 +11,7 @@
 # vpc_cidr    = "10.0.0.0/16"
 # az_id_a     = "apne1-az1"
 # az_id_b     = "apne1-az4"
+# az_id_c     = "apne1-az2"
 #
 # instance_type     = "t4g.small"
 # ami_ssm_parameter = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
