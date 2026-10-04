@@ -2,12 +2,14 @@
 # AWS の API は全部 VPC エンドポイント（endpoints.tf）を通すので、正しいリクエストには aws:SourceVpc = この VPC が付く。
 # それが付かないリクエスト（盗んだ認証情報を VPC の外で使った）を 2 か所で拒む:
 #   1. IAM 側   ワークロードのロールに付ける Deny（下の network_perimeter）。付け先は web / runtime（ここ）、lab / Telegraf（pipeline/lab）、
-#               Spark / Grafana / Splunk（pipeline/analytics）、ワーカー（workflow）、ツールの Lambda（workflow）
+#               Spark / Grafana / Splunk（pipeline/analytics）、ワーカー（workflow）、ツールの Lambda（workflow）、
+#               アラートの状態と履歴を書く Lambda（pipeline/graph の graph-status）
 #   2. 資源側   バケット（下）、アラートの SNS トピック（alerts.tf）、S3 Tables（pipeline/analytics）、SQS（workflow）のリソースポリシーの Deny
 # 例外は 3 つ:
 #   - デプロイする人（ops/up.sh を打つ PC の認証情報。terraform と s3 cp が VPC の外から来る。PoC では仕方ないとユーザーが決めた、2026-09-28）
 #   - AWS のサービス自身（aws:PrincipalIsAWSService: SNS → SQS）とサービスが呼び手の代わりに出すリクエスト（aws:ViaAWSService）
-#   - サービスがロールを引き受けて自分の側から来るもの（Bedrock の KB が docs/ を読む <prefix>-kb）
+#   - サービスがロールを引き受けて自分の側から来るもの（Bedrock の KB が docs/ を読む <prefix>-kb、Firehose が S3 Tables の alert_events に
+#     書き、書けなかった行を firehose-errors/ に落とす <prefix>-alert-firehose。terraform/pipeline/analytics の history.tf）
 # IAM 側で拒む API は、VPC エンドポイントを通るものだけにする。logs / ecr / ec2 / kms / sts / xray はサービスがロールの認証情報で
 # 自分の側から呼ぶ（Lambda のログ、Runtime のイメージ取得）ので入れない。neptune-db / kafka-cluster は VPC の中にしか無く、aoss はネットワークポリシーで閉じている。
 # S3 Tables の Iceberg REST（/iceberg）は s3tables が呼び手の代わりに中で出す呼び出しに元の VPC を引き継がないので、
@@ -23,9 +25,13 @@ locals {
   perimeter_exempt_principals = [
     data.aws_iam_session_context.deployer.issuer_arn,
     "arn:${local.partition}:iam::${local.account_id}:role/${local.name_prefix}-kb",
+    # Firehose はロールを引き受けて VPC の外から書く（-kb と同じ）。ロールは pipeline/analytics の history.tf
+    "arn:${local.partition}:iam::${local.account_id}:role/${local.name_prefix}-alert-firehose",
   ]
 
-  # IAM 側で拒む API。どれも VPC エンドポイント（s3 は gateway）を通る
+  # IAM 側で拒む API。どれも VPC エンドポイント（s3 は gateway）を通る。
+  # athena は tools Lambda の query_history（Athena が呼び手の代わりに Glue と S3 Tables を読むので、s3tables:* の Deny では止まらない）、
+  # firehose は graph-status の履歴の送信（漏れた認証情報で履歴の行を偽造させない）
   perimeter_denied_actions = [
     "s3:*",
     "s3tables:*",
@@ -35,12 +41,14 @@ locals {
     "bedrock:*",
     "sns:*",
     "aps:*",
+    "athena:*",
+    "firehose:*",
     "bedrock-agentcore:InvokeAgentRuntime",
     "bedrock-agentcore:InvokeGateway",
   ]
 }
 
-# ポリシーはいつも作り、network_perimeter = false のときは中身を何も拒まないものにする。消すと、ほかのルート（lab / analytics / workflow）の
+# ポリシーはいつも作り、network_perimeter = false のときは中身を何も拒まないものにする。消すと、ほかのルート（lab / analytics / graph / workflow）の
 # ロールに付いたままのうちは DeleteConflict で base/core の apply が落ちるため。ほかのルートは output が空になると次の apply で外す
 resource "aws_iam_policy" "network_perimeter" {
   name        = "${local.name_prefix}-network-perimeter"

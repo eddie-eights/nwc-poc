@@ -92,9 +92,9 @@ variable "interface_endpoints" {
     condition = alltrue([for s in var.interface_endpoints : contains([
       "ssm", "ssmmessages", "ecr.api", "ecr.dkr", "logs",
       "bedrock-runtime", "bedrock-agent-runtime", "bedrock-agentcore", "bedrock-agentcore.gateway",
-      "s3tables", "aps-workspaces", "sqs", "sns", "ecs",
+      "s3tables", "aps-workspaces", "sqs", "sns", "ecs", "kinesis-firehose", "athena",
     ], s)])
-    error_message = "interface_endpoints may only list ssm, ssmmessages, ecr.api, ecr.dkr, logs, bedrock-runtime, bedrock-agent-runtime, bedrock-agentcore, bedrock-agentcore.gateway, s3tables, aps-workspaces, sqs, sns and ecs."
+    error_message = "interface_endpoints may only list ssm, ssmmessages, ecr.api, ecr.dkr, logs, bedrock-runtime, bedrock-agent-runtime, bedrock-agentcore, bedrock-agentcore.gateway, s3tables, aps-workspaces, sqs, sns, ecs, kinesis-firehose and athena."
   }
 }
 

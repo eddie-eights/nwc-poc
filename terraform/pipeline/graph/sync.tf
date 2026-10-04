@@ -4,9 +4,17 @@
 # (graph/status_handler.py + agent/graph.py + workflow/rules.py) that sets the property "status" (DOWN / UP, ALARM for other traps) on the
 # link edge or the device vertex. The web draws DOWN in red and the chat tools return it. Neptune holds the topology and this status only -
 # the alerts themselves are not stored here (2026-10-02; until then the Spark job put AnomalyOpened / AnomalyResolved on EventBridge).
+# With alert_history = true (ops/up.sh sets it when it deploys analytics) the same Lambda also sends every alert, one row each, to the
+# Firehose stream <prefix>-alert-events of terraform/pipeline/analytics (history.tf), which appends it to the S3 Tables table alert_events
+# (2026-10-04). The Lambda reaches Firehose through the kinesis-firehose interface endpoint of terraform/base/core.
 # The static topology itself comes from lab/ (ops/up.sh 7-3b and ops/sync-graph.sh seed it through the web EC2) - not from here.
 # Cost: the subscription is free, the Lambda is a few invocations per alert (free tier), nothing else
-# (Neptune is in the VPC; the Lambda service writes its logs without going through the VPC).
+# (Neptune is in the VPC; the Lambda service writes its logs without going through the VPC). The Firehose stream and its endpoint are
+# counted in terraform/pipeline/analytics and terraform/base/core.
+
+locals {
+  alert_stream = "${local.name_prefix}-alert-events" # terraform/pipeline/analytics/history.tf の aws_kinesis_firehose_delivery_stream.alert_events と同じ名前
+}
 
 data "archive_file" "status" {
   type        = "zip"
@@ -74,12 +82,31 @@ data "aws_iam_policy_document" "status" {
     actions   = ["neptune-db:ReadDataViaQuery", "neptune-db:WriteDataViaQuery", "neptune-db:DeleteDataViaQuery", "neptune-db:GetQueryStatus"]
     resources = ["arn:${local.partition}:neptune-db:${var.region}:${local.account_id}:${aws_neptune_cluster.graph.cluster_resource_id}/*"]
   }
+
+  # アラートの通知の履歴（alert_history = true のときだけ）。送り先は terraform/pipeline/analytics の Firehose 1 本だけ
+  dynamic "statement" {
+    for_each = var.alert_history ? [1] : []
+    content {
+      sid       = "AlertHistory"
+      actions   = ["firehose:PutRecordBatch"]
+      resources = ["arn:${local.partition}:firehose:${var.region}:${local.account_id}:deliverystream/${local.alert_stream}"]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "status" {
   name   = "${local.name_prefix}-graph-status"
   role   = aws_iam_role.status.name
   policy = data.aws_iam_policy_document.status.json
+}
+
+# terraform/base/core の perimeter.tf の Deny。firehose（履歴）は kinesis-firehose のエンドポイントを通る。
+# ログと ENI は Lambda のサービスがこのロールで出し、neptune-db は VPC の中にしか無いので、Deny の対象に入っていない
+resource "aws_iam_role_policy_attachment" "status_perimeter" {
+  count = local.perimeter_policy_arn != "" ? 1 : 0
+
+  role       = aws_iam_role.status.name
+  policy_arn = local.perimeter_policy_arn
 }
 
 resource "aws_cloudwatch_log_group" "status" {
@@ -107,6 +134,7 @@ resource "aws_lambda_function" "status" {
   environment {
     variables = {
       NEPTUNE_ENDPOINT = "${aws_neptune_cluster.graph.endpoint}:${aws_neptune_cluster.graph.port}" # graph.py はこれがあれば SSM を引かない
+      ALERT_STREAM     = var.alert_history ? local.alert_stream : ""                               # 空なら status_handler.py は履歴を送らない
     }
   }
 

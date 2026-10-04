@@ -91,7 +91,7 @@ output "list_job_runs_command" {
 }
 
 output "list_tables_command" {
-  description = "See the tables (snmp_metrics, proposal_events) in S3 Tables"
+  description = "See the tables (snmp_metrics, proposal_events, alert_events) in S3 Tables"
   value       = "aws s3tables list-tables --region ${var.region} --table-bucket-arn ${local.table_bucket_arn} --namespace ${var.namespace}"
 }
 
@@ -178,6 +178,31 @@ output "proposal_events_table_name" {
 output "proposal_events_table_arn" {
   description = "ARN of proposal_events (terraform/workflow lets the worker append to it)"
   value       = aws_s3tables_table.proposal_events.arn
+}
+
+output "alert_events_stream_name" {
+  description = "Firehose stream the status Lambda of terraform/pipeline/graph sends the alert notifications to (history.tf; graph builds the same fixed name)"
+  value       = aws_kinesis_firehose_delivery_stream.alert_events.name
+}
+
+output "alert_events_table_name" {
+  description = "History of the alert notifications (Grafana / Splunk, firing and resolved), appended by the Firehose stream"
+  value       = aws_s3tables_table.alert_events.name
+}
+
+output "alert_events_table_arn" {
+  description = "ARN of alert_events (terraform/workflow lets the query_history tool read only this table)"
+  value       = aws_s3tables_table.alert_events.arn
+}
+
+output "athena_workgroup" {
+  description = "Athena workgroup the query_history tool of terraform/workflow runs its query in (results in the Athena managed storage)"
+  value       = aws_athena_workgroup.history.name
+}
+
+output "athena_catalog" {
+  description = "How Athena names the table bucket (s3tablescatalog/<table bucket>). SQL: \"<athena_catalog>\".\"<table_namespace>\".\"alert_events\""
+  value       = local.athena_catalog
 }
 
 output "opensearch_collection_name" {

@@ -1,11 +1,12 @@
 """ワーカーの「判断」の部分。AWS にも Temporal にも触らない純粋な関数だけを置く。
 
-ここにあるのは 6 つ:
+ここにあるのは 7 つ:
   - build_prompt        エージェント（AgentCore Runtime）に投げる質問文
   - parse_agent_json    返ってきた文から JSON を取り出す
   - normalize_action    lab EC2 で打ってよいコマンドの許可リスト
   - alerts_from_message / should_start / maintenance_hold / workflow_id / proposal_id  アラート（SNS → SQS）の読み取りと、どれでワークフローを起こすかの判定と id
   - proposal_event      修復案の証跡（S3 Tables の proposal_events）の 1 行
+  - alert_event         アラートの通知の履歴（S3 Tables の alert_events）の 1 行
   - impact / precheck   処置を打つ前の事前チェック（その処置でグラフがどう変わり、孤立や冗長切れが出るか）
 
 AWS も Temporal も要らないので、tests/test_workflow.py はこのファイルの関数を直接呼んで確かめられる。
@@ -33,7 +34,7 @@ def build_prompt(anomaly: dict) -> str:
         "あなたはネットワーク運用の一次切り分け担当です。次の異常について、ツールで状況を確かめてから、原因と処置を JSON で 1 つだけ返してください。"
         "まず root_cause（Neptune。UP でない要素を層をまたいで下へ辿り、根本原因ごとにまとめる）で、この異常が根本原因なのか、別の原因の結果なのかを確かめてください。"
         "トポロジと影響範囲は neighbors / blast_radius（Neptune。回線や機器の status が DOWN / ALARM なら他にも落ちている）、その機器のログは search_logs（OpenSearch）、"
-        "メトリクスの推移は query_metrics（Prometheus）、長期の履歴は query_history（S3）、直前の構成変更は recent_changes（Nautobot の変更履歴）で見て、見えた事実だけを根拠に原因を書いてください。"
+        "メトリクスの推移は query_metrics（Prometheus）、アラートの履歴は query_history、直前の構成変更は recent_changes（Nautobot の変更履歴）で見て、見えた事実だけを根拠に原因を書いてください。"
         "説明文や Markdown は付けないでください。\n"
         f"異常: device_id={anomaly.get('device_id', '')} kind={anomaly.get('kind', '')} target={anomaly.get('target', '')} "
         f"detail={anomaly.get('detail', '')} first_seen_jst={jst(anomaly.get('first_seen'))}\n"
@@ -280,4 +281,32 @@ def proposal_event(event: str, proposal: dict, now: int, detail: str = "", decid
         "cause": str(proposal.get("cause") or ""), "command": str(proposal.get("command") or ""),
         "decided_by": str(decided_by or proposal.get("decided_by") or ""), "detail": str(detail or "")[:4000],
         "event_time": int(now),
+    }
+
+
+# ---------------------------------------------------------------- アラートの通知の履歴（S3 Tables の alert_events。2026-10-04）
+# 書くのは terraform/pipeline/graph の status Lambda（graph/status_handler.py）で、Firehose → S3 Tables。読むのはエージェントの query_history（Athena）。
+# 列は terraform/pipeline/analytics/tables.tf の alert_events と同じ順・同じ型。時刻は ISO 8601 の UTC で送り、Firehose が timestamptz にする
+ALERT_EVENT_COLUMNS = (
+    ("event_id", "string"), ("anomaly_id", "string"), ("source", "string"), ("status", "string"), ("device_id", "string"),
+    ("kind", "string"), ("target", "string"), ("detail", "string"), ("starts_at", "timestamptz"), ("received_at", "timestamptz"),
+)
+
+
+def iso_utc(epoch) -> str:
+    """epoch 秒を Firehose に渡す UTC の時刻「2026-10-04T07:00:00.000000Z」に"""
+    return datetime.fromtimestamp(float(epoch), timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def alert_event(alert: dict, received_at) -> dict:
+    """alert_events の 1 行（alerts_from_message の 1 件 = 届いた通知 1 件）。重複は落とさない（Grafana の送り直しも、両方の送り手から来た分も行にする）。
+    event_id = <anomaly_id>#<source>#<status>#<starts_at の epoch 秒>。Lambda のやり直しで二重に入った分は、読む側が event_id で落とす。
+    starts_at の意味は送り手で違う（Grafana は発火した時刻のまま resolved も来る。Splunk はその状態の latest(_time)）。無ければ 0 で、列は空"""
+    starts_at = int(alert.get("first_seen") or 0)
+    status, source = str(alert.get("status") or ""), str(alert.get("source") or "")
+    return {
+        "event_id": f"{alert.get('anomaly_id') or ''}#{source}#{status}#{starts_at}", "anomaly_id": str(alert.get("anomaly_id") or ""),
+        "source": source, "status": status, "device_id": str(alert.get("device_id") or ""), "kind": str(alert.get("kind") or ""),
+        "target": str(alert.get("target") or ""), "detail": str(alert.get("detail") or ""),
+        "starts_at": iso_utc(starts_at) if starts_at else None, "received_at": iso_utc(received_at),
     }

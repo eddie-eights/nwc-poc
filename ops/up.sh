@@ -218,6 +218,30 @@ with open(path, "w", encoding="utf-8") as f:
   [ "$rc" -eq 0 ] || die "SSM に $name を作れなかった（上のエラー）"
   echo "$name を作った（値は出さない。見るコマンドは最後に出る）"
 }
+# アラートの通知の履歴（Firehose → S3 Tables の alert_events、Athena で読む）は、Glue の S3 Tables 連携のカタログ s3tablescatalog を通る。
+# アカウントとリージョンに 1 つで、ほかの OWNER の環境と共有するので、無いときだけ作り、ops/down.sh では消さない（消し方は docs/deploy.md）
+S3TABLES_CATALOG_INPUT='{"FederatedCatalog": {"Identifier": "arn:aws:s3tables:__REGION__:__ACCOUNT__:bucket/*", "ConnectionName": "aws:s3tables"},
+ "CreateDatabaseDefaultPermissions": [{"Principal": {"DataLakePrincipalIdentifier": "IAM_ALLOWED_PRINCIPALS"}, "Permissions": ["ALL"]}],
+ "CreateTableDefaultPermissions": [{"Principal": {"DataLakePrincipalIdentifier": "IAM_ALLOWED_PRINCIPALS"}, "Permissions": ["ALL"]}],
+ "AllowFullTableExternalDataAccess": "True"}'
+ensure_s3tables_catalog() {  # 無ければ作る。あれば設定が想定（IAM だけで読み書きできる）と違うときに警告だけ出す
+  local out conn ext perms
+  if ! out=$(aws glue get-catalog --region "$REGION" --catalog-id s3tablescatalog --query Catalog.Name --output text 2>&1); then
+    case "$out" in *EntityNotFoundException*) ;; *) die "Glue のカタログ s3tablescatalog を確かめられない: $out" ;; esac
+    echo "Glue のカタログ s3tablescatalog を作る（S3 Tables 連携。アカウントとリージョンで共有し、ops/down.sh では消さない）"
+    aws glue create-catalog --region "$REGION" --name s3tablescatalog \
+      --catalog-input "$(printf '%s' "$S3TABLES_CATALOG_INPUT" | sed "s/__REGION__/$REGION/; s/__ACCOUNT__/$ACCOUNT_ID/")" >/dev/null \
+      || die "Glue のカタログ s3tablescatalog を作れなかった（上のエラー。docs/deploy.md の「アラートの通知の履歴」）"
+    return 0
+  fi
+  conn=$(aws glue get-catalog --region "$REGION" --catalog-id s3tablescatalog --query Catalog.FederatedCatalog.ConnectionName --output text)
+  ext=$(aws glue get-catalog --region "$REGION" --catalog-id s3tablescatalog --query Catalog.AllowFullTableExternalDataAccess --output text)
+  perms=$(aws glue get-catalog --region "$REGION" --catalog-id s3tablescatalog --query 'Catalog.CreateTableDefaultPermissions[].Principal.DataLakePrincipalIdentifier' --output text)
+  case "$conn|$ext|$perms" in
+    "aws:s3tables|True|"*IAM_ALLOWED_PRINCIPALS*) echo "Glue のカタログ s3tablescatalog はある（作り直さない）" ;;
+    *) printf '\033[1;33m%s\033[0m\n' "Glue のカタログ s3tablescatalog は既にあるが、設定が想定（aws:s3tables / True / IAM_ALLOWED_PRINCIPALS）と違う（${conn} / ${ext} / ${perms}）。ほかの人が Lake Formation で管理しているかもしれない。そのまま使うので、Firehose と Athena が alert_events に届かないことがある（docs/deploy.md の「アラートの通知の履歴」）" ;;
+  esac
+}
 ensure_fixed_secret() {  # ensure_fixed_secret <SSM のパラメータ名> <値> <説明>  無ければ決まった値の SecureString を作る。あれば触らない（書き換えた値を残す）
   local name="$1" value="$2" desc="$3" type
   type=$(aws ssm describe-parameters --region "$REGION" --parameter-filters "Key=Name,Values=$name" \
@@ -406,6 +430,8 @@ echo "作るルート: $ROOTS"
 # インターフェース型エンドポイント（terraform/base/core の var.interface_endpoints）。ルートが呼ぶ AWS の API ごとに 1 本。
 # 手順 3 で、今回作らなくても state にリソースが残っているルートの分を足す（外すとそのルートの呼び出しがどこにも出られず接続のタイムアウトになる）
 ENDPOINTS=""
+ANALYTICS_LEFT=""   # 手順 3 で、今回作らない analytics が state に残っていれば 1
+analytics_on() { [ -z "$SKIP_ANALYTICS" ] || [ -n "$ANALYTICS_LEFT" ]; }   # アラートの通知の履歴（Firehose と Athena）があるか
 add_endpoints() {  # add_endpoints <サービス名…>  重複は足さない
   local s
   for s in "$@"; do
@@ -424,8 +450,12 @@ endpoints_for() {  # endpoints_for <ルート>  そのルートが呼ぶ AWS の
     pipeline/analytics) add_endpoints s3tables logs ;;
     # Nautobot（ECS）: イメージとログ。Job が Telegraf の dialin のサービスを作り直すのに ecs の API を呼ぶ（SSM は土台の分。RDS と Neptune は VPC の中）
     pipeline/nautobot) add_endpoints ecr.api ecr.dkr logs ecs ;;
-    # ワーカー: SQS（アラートは SNS → SQS で届く。SNS からの配信はエンドポイントを通らない）、S3 Tables（修復案の証跡）、ECR、ログ、Runtime、Gateway
-    workflow) add_endpoints sqs s3tables ecr.api ecr.dkr logs bedrock-agentcore bedrock-agentcore.gateway ;;
+    # status の Lambda: アラートの通知の履歴を Firehose に送る（analytics があるときだけ。Neptune は VPC の中）
+    pipeline/graph) if analytics_on; then add_endpoints kinesis-firehose; fi ;;
+    # ワーカー: SQS（アラートは SNS → SQS で届く。SNS からの配信はエンドポイントを通らない）、S3 Tables（修復案の証跡）、ECR、ログ、Runtime、Gateway。
+    # ツールの Lambda の query_history が Athena を呼ぶ（analytics があるときだけ）
+    workflow) add_endpoints sqs s3tables ecr.api ecr.dkr logs bedrock-agentcore bedrock-agentcore.gateway
+              if analytics_on; then add_endpoints athena; fi ;;
   esac
 }
 add_endpoints ssm ssmmessages   # 土台: Web の EC2 の SSM Agent とポートフォワーディング、SSM パラメータ
@@ -608,13 +638,15 @@ for r in agent pipeline/analytics; do
   fi
 done
 if [ -n "$NEED_AOSS" ]; then MAIN_VARS+=(-var create_opensearch_endpoint=true); fi
-# 今回作らないルートでも、state にリソースが残っていればそのエンドポイントを残す
-for r in agent pipeline/lab pipeline/stream pipeline/analytics pipeline/nautobot workflow; do
+# 今回作らないルートでも、state にリソースが残っていればそのエンドポイントを残す。
+# graph と workflow の履歴の分（kinesis-firehose / athena）は残った analytics も数えるので、analytics より後に回す
+for r in agent pipeline/lab pipeline/stream pipeline/analytics pipeline/graph pipeline/nautobot workflow; do
   case " $ROOTS " in *" $r "*) continue ;; esac
   if [ -f "terraform/$r/terraform.tfstate" ]; then
     tf_init "$r"
     if has_resources "$r"; then
       endpoints_for "$r"
+      if [ "$r" = pipeline/analytics ]; then ANALYTICS_LEFT=1; fi
       echo "terraform/$r は今回作らないが state にリソースが残っているので、そのエンドポイントを残す"
     fi
   fi
@@ -643,7 +675,9 @@ if [ -z "$SKIP_GRAPH" ]; then
   log "3-2. graph（Neptune）の apply を裏で始める（10〜15 分。待たずに次へ進む）"
   mkdir -p ops/logs
   tf_init pipeline/graph   # init は前で済ませる（provider のキャッシュを 2 つの init で同時に触らない）
-  ( tf_apply_only pipeline/graph ) >"$GRAPH_LOG" 2>&1 &
+  # analytics を作る回は、status の Lambda がアラートの通知の履歴を analytics の Firehose（名前は固定）に送る
+  if [ -z "$SKIP_ANALYTICS" ]; then GRAPH_VARS=(-var alert_history=true); else GRAPH_VARS=(); fi
+  ( tf_apply_only pipeline/graph ${GRAPH_VARS[@]+"${GRAPH_VARS[@]}"} ) >"$GRAPH_LOG" 2>&1 &
   GRAPH_PID=$!
   echo "進み具合: tail -f $GRAPH_LOG"
 fi
@@ -883,6 +917,7 @@ if [ -z "$SKIP_ANALYTICS" ]; then
   log "7-4. analytics（terraform/pipeline/analytics。EMR Serverless と格納先: ${SINKS}。数分）"
   # ドライバーのログは CloudWatch Logs へ出す（terraform/base/core の logs のエンドポイントで届く）
   ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]")
+  ensure_s3tables_catalog   # alert_events への Firehose はこのカタログ越しにテーブルを引く（無いと配信の作成か書き込みで落ちる）
   if [ -n "$GRAFANA" ]; then
     # Grafana の admin のパスワードは SSM に乱数で作る（Terraform の state に載せない。タスクが起動時に実行ロールで読む）
     ensure_secret "/$PREFIX/grafana/admin-password" password "Grafana admin password (created by ops/up.sh)"

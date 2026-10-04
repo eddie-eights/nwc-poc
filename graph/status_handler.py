@@ -13,18 +13,27 @@ zip には agent/graph.py も同梱する（Gremlin の組み立てと boto3 の
 トポロジに無い機器やインタフェースは捨てずに「未登録」の頂点として Neptune に残し（graph.set_status）、WARNING で UNREGISTERED を
 ログに出す（登録漏れの印。CloudWatch Logs Insights で `filter @message like /UNREGISTERED/` と探す。lab に足した機器は
 ops/sync-graph.sh --replace で登録すると、未登録の頂点は置き換わる）。
+
+届いた通知は 1 件 1 行で、アラートの履歴（S3 Tables の alert_events）にも Firehose で送る（環境変数 ALERT_STREAM。空なら送らない。
+terraform/pipeline/graph の alert_history）。行は rules.alert_event が組み、Neptune で無視した通知（機器の無いものなど）も送る。
+Neptune と Firehose は片方が落ちても両方を 1 回ずつ試し、どちらかが失敗していれば最後に例外で落とす（Lambda の非同期の再試行に任せる。
+Neptune の書き込みは繰り返して害が無く、履歴に二重に入った行は読む側が event_id で落とす）。
 """
 import json
 import logging
+import os
+import time
 
 import graph
 import rules
+import toolkit
 
 log = logging.getLogger()
 log.setLevel(logging.INFO)
 
 STATUS_OF = {"firing": "DOWN", "resolved": "UP"}
 LAYER_KIND = {"bgp_down": "bgp", "isis_down": "isis"}   # アラートの kind → graph.set_layer_status の kind（頂点の id の真ん中）
+BATCH = 500   # put_record_batch の 1 回の上限（件数）。SNS の 1 通は多くて 50 件（Splunk）なので、ふつうは 1 回で済む
 
 
 def apply(alert: dict) -> dict:
@@ -50,9 +59,30 @@ def apply(alert: dict) -> dict:
     return graph.set_status(device_id, "", "UP", only_if="ALARM")
 
 
+def send_history(stream: str, rows: list) -> str:
+    """alert_events の行を Firehose に送る。戻り値は失敗の説明（全部届けば空）。FailedPutCount が 0 でなければ失敗"""
+    failed = []
+    for i in range(0, len(rows), BATCH):
+        chunk = rows[i:i + BATCH]
+        try:
+            r = toolkit.client("firehose").put_record_batch(
+                DeliveryStreamName=stream, Records=[{"Data": json.dumps(row, ensure_ascii=False).encode()} for row in chunk])
+        except Exception as e:  # noqa: BLE001 - 何で落ちても Neptune の結果と合わせて最後に例外にする
+            log.exception("Firehose %s に送れなかった（%d 件）", stream, len(chunk))
+            failed.append(f"{type(e).__name__}: {e}")
+            continue
+        if r.get("FailedPutCount"):
+            codes = sorted({x.get("ErrorCode") for x in r.get("RequestResponses") or [] if x.get("ErrorCode")})
+            log.error("Firehose %s に %d / %d 件が届かなかった: %s", stream, r["FailedPutCount"], len(chunk), codes)
+            failed.append(f"FailedPutCount {r['FailedPutCount']} / {len(chunk)} {codes}")
+    return "; ".join(failed)
+
+
 def handler(event, context=None):
-    """SNS からの呼び出し（Records[].Sns.Message）。1 件でも Neptune に書けなければ例外で落とし、Lambda の非同期の再試行に任せる（書き込みは繰り返して害が無い）"""
-    results = []
+    """SNS からの呼び出し（Records[].Sns.Message）。Neptune への書き込みと Firehose への送信を両方試し、
+    どちらかが失敗していれば最後に RuntimeError で落として Lambda の非同期の再試行に任せる"""
+    results, rows, errors = [], [], []
+    received_at = time.time()
     for rec in event.get("Records") or []:
         message = (rec.get("Sns") or {}).get("Message", "")
         alerts = rules.alerts_from_message(message)
@@ -60,11 +90,24 @@ def handler(event, context=None):
             log.warning("読めないメッセージ（捨てる）: %s", str(message)[:300])
             continue
         for a in alerts:
-            r = apply(a)
+            rows.append(rules.alert_event(a, received_at))
             line = json.dumps({k: a.get(k) for k in ("source", "status", "device_id", "kind", "target")}, ensure_ascii=False)
+            try:
+                r = apply(a)
+            except Exception as e:  # noqa: BLE001 - 1 件が落ちても残りの通知と Firehose は試す
+                log.exception("Neptune に書けなかった: %s", line)
+                errors.append(f"neptune {line}: {type(e).__name__}: {e}")
+                continue
             if r.get("unregistered"):
                 log.warning("UNREGISTERED 未登録の機器・インタフェースの異常（トポロジに登録する）: %s -> %s", line, json.dumps(r, ensure_ascii=False))
             else:
                 log.info("%s -> %s", line, json.dumps(r, ensure_ascii=False))
             results.append(r)
+    stream = os.environ.get("ALERT_STREAM", "")
+    if rows and stream:
+        failed = send_history(stream, rows)
+        if failed:
+            errors.append(f"firehose: {failed}")
+    if errors:
+        raise RuntimeError("; ".join(errors)[:2000])
     return results

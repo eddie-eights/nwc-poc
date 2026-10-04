@@ -208,10 +208,84 @@ def _boom(*a, **k):
 
 fake_graph.set_status = _boom
 try:
-    h.handler(ev("firing", device_id="dc1-leaf-01", kind="link_down", target="eth1")); raised = False
-except OSError:
-    raised = True
-check("Neptune に書けなければ例外で落とす（Lambda の非同期の再試行に任せる。書き込みは繰り返して害が無い）", raised)
+    h.handler(ev("firing", device_id="dc1-leaf-01", kind="link_down", target="eth1")); raised = ""
+except RuntimeError as e:
+    raised = str(e)
+check("Neptune に書けなければ最後に RuntimeError で落とす（Lambda の非同期の再試行に任せる。書き込みは繰り返して害が無い）",
+      "neptune" in raised and "OSError: neptune unreachable" in raised)
+
+# ---- アラートの通知の履歴（Firehose → S3 Tables の alert_events。ALERT_STREAM が空なら送らない）
+class FakeFirehose:
+    def __init__(self):
+        self.batches, self.fail, self.boom = [], 0, None
+    def put_record_batch(self, DeliveryStreamName, Records):
+        if self.boom:
+            raise self.boom
+        self.batches.append((DeliveryStreamName, [json.loads(r["Data"].decode()) for r in Records]))
+        return {"FailedPutCount": self.fail, "RequestResponses": [{"ErrorCode": "ServiceUnavailableException"}] * self.fail + [{"RecordId": "r"}] * (len(Records) - self.fail)}
+
+
+fh = FakeFirehose()
+_saved_fh = h.toolkit._clients.get("firehose")
+h.toolkit._clients["firehose"] = fh
+fake_graph.set_status = lambda dev, ifn="", status="DOWN", only_if="": (calls.append((dev, ifn, status) + ((only_if,) if only_if else ())) or {"updated": 1})
+os.environ.pop("ALERT_STREAM", None)
+h.handler(ev("firing", device_id="dc1-leaf-01", kind="link_down", target="ethernet-1/1", starts_at=1790000000))
+check("ALERT_STREAM が空なら Firehose に送らない（alert_history=false の配備）", fh.batches == [])
+os.environ["ALERT_STREAM"] = "nwc-alert-events"
+pair = {"Records": [{"Sns": {"Message": json.dumps({"source": "grafana", "alerts": [
+    {"status": "firing", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "detail": "down", "starts_at": 1790000000},
+    {"status": "resolved", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "detail": "up", "starts_at": 1790000000}]})}}]}
+h.handler(pair)
+_ids = ["dc1-leaf-01#link_down#ethernet-1/1#grafana#firing#1790000000", "dc1-leaf-01#link_down#ethernet-1/1#grafana#resolved#1790000000"]
+check("Grafana の firing と resolved（starts_at は同じ）は 1 回の put_record_batch に 2 行、event_id は status で分かれる",
+      len(fh.batches) == 1 and fh.batches[0][0] == "nwc-alert-events" and [r["event_id"] for r in fh.batches[0][1]] == _ids)
+check("行の列は rules.ALERT_EVENT_COLUMNS と同じ、時刻は ISO 8601 の UTC（starts_at は通知のまま、received_at は受けた時刻）",
+      all(list(r) == [n for n, _ in h.rules.ALERT_EVENT_COLUMNS] for r in fh.batches[0][1])
+      and fh.batches[0][1][0]["starts_at"] == "2026-09-21T14:13:20.000000Z"
+      and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z", fh.batches[0][1][0]["received_at"]) is not None)
+h.handler(pair)
+check("同じ通知をもう一度受けても Lambda では落とさず、同じ event_id の行をまた送る（重複は読む側が event_id で落とす）",
+      len(fh.batches) == 2 and [r["event_id"] for r in fh.batches[1][1]] == _ids)
+n = len(calls)
+r = h.handler(ev("firing", device_id="?", kind="trap", target="?", starts_at=1790000000))
+check("Neptune で無視した通知（機器の無いもの）も履歴には 1 行送る",
+      len(fh.batches) == 3 and len(fh.batches[2][1]) == 1 and fh.batches[2][1][0]["device_id"] == "?" and "ignored" in r[0] and len(calls) == n)
+fake_graph.set_status = _boom
+try:
+    h.handler(pair); raised = ""
+except RuntimeError as e:
+    raised = str(e)
+check("Neptune に書けなくても Firehose には送り、最後に RuntimeError（片方が落ちても両方を 1 回ずつ試す）",
+      len(fh.batches) == 4 and len(fh.batches[3][1]) == 2 and "neptune" in raised and "firehose" not in raised)
+fake_graph.set_status = lambda dev, ifn="", status="DOWN", only_if="": (calls.append((dev, ifn, status) + ((only_if,) if only_if else ())) or {"updated": 1})
+fh.fail = 1
+n = len(calls)
+try:
+    h.handler(pair); raised = ""
+except RuntimeError as e:
+    raised = str(e)
+check("FailedPutCount が 0 でなければ RuntimeError（Neptune は書いたうえで）",
+      "firehose: FailedPutCount 1 / 2" in raised and "ServiceUnavailableException" in raised and len(calls) == n + 2)
+fh.fail, fh.boom = 0, OSError("firehose unreachable")
+n = len(calls)
+try:
+    h.handler(pair); raised = ""
+except RuntimeError as e:
+    raised = str(e)
+check("Firehose の呼び出しが例外でも Neptune は書き、最後に RuntimeError", "firehose: OSError: firehose unreachable" in raised and len(calls) == n + 2)
+fh.boom = None
+_many = {"Records": [{"Sns": {"Message": json.dumps({"source": "splunk", "alerts": [
+    {"status": "firing", "device_id": f"dc1-leaf-{i:02d}", "kind": "link_down", "target": "ethernet-1/1", "starts_at": 1790000000} for i in range(50)]})}}] * 11}
+fh.batches.clear()
+h.handler(_many)
+check("1 回の呼び出しで 500 件を超えたら put_record_batch を 500 件ずつに分ける（API の上限）", [len(b[1]) for b in fh.batches] == [500, 50])
+fh.batches.clear()
+os.environ.pop("ALERT_STREAM", None)
+if _saved_fh is None:
+    h.toolkit._clients.pop("firehose", None)
+else:
+    h.toolkit._clients["firehose"] = _saved_fh
 import logging
 class _Cap(logging.Handler):
     def __init__(self):
@@ -242,7 +316,7 @@ check(f"status.zip は graph.py が import する agent/ のモジュールを�
 _imports = lambda text: set(re.findall(r"^(?:import|from) (\w+)", text, re.M))
 check("status.zip は workflow/rules.py を rules.py で入れ、status_handler.py と rules.py は zip の中と標準ライブラリしか import しない",
       'workflow/rules.py")' in tf and "rules" in zipped
-      and _imports(read("graph", "status_handler.py")) - zipped <= {"json", "logging"}
+      and _imports(read("graph", "status_handler.py")) - zipped <= {"json", "logging", "os", "time"}
       and _imports(read("workflow", "rules.py")) <= {"json", "re", "datetime"})
 _loc = read("terraform", "pipeline", "graph", "locals.tf")
 check("EventBridge のルールは無く、土台（base/core）のトピック <接頭辞>-alerts を Lambda が購読する（接頭辞ごとのトピックなので他の人のアラートを拾わない）",
@@ -262,4 +336,23 @@ check("Lambda のロールは neptune-db の Read / Write / Delete（Gremlin だ
       all(f'"neptune-db:{a}DataViaQuery"' in tf for a in ("Read", "Write", "Delete")) and "neptune-db:*" not in tf)
 check("SNS から Lambda を呼ぶ permission（呼べるのは土台のトピックだけ）", 'principal     = "sns.amazonaws.com"' in tf and "source_arn    = local.alerts_topic_arn" in tf)
 check("variables.tf に log_retention_days", 'variable "log_retention_days"' in read("terraform", "pipeline", "graph", "variables.tf"))
+# アラートの通知の履歴: alert_history = false なら ALERT_STREAM は空で firehose の権限も無い。true なら送り先の 1 本だけ
+_gv = read("terraform", "pipeline", "graph", "variables.tf")
+check("variables.tf の alert_history は bool で既定 false（analytics を作らない回は送らない）",
+      re.search(r'variable "alert_history" \{[^}]*type\s*=\s*bool\s*default\s*=\s*false', _gv) is not None)
+check("alert_history が false なら ALERT_STREAM は空、true なら <接頭辞>-alert-events（analytics の Firehose と同じ名前）",
+      'ALERT_STREAM     = var.alert_history ? local.alert_stream : ""' in tf and 'alert_stream = "${local.name_prefix}-alert-events"' in tf
+      and 'name        = "${local.name_prefix}-alert-events"' in read("terraform", "pipeline", "analytics", "history.tf"))
+_ah = re.search(r'dynamic "statement" \{\s*for_each = var\.alert_history \? \[1\] : \[\]\s*content \{(.*?)\n    \}', tf, re.S)
+check("firehose の権限は alert_history が true のときだけで、PutRecordBatch を <接頭辞>-alert-events の ARN だけに",
+      _ah is not None and 'actions   = ["firehose:PutRecordBatch"]' in _ah.group(1)
+      and 'resources = ["arn:${local.partition}:firehose:${var.region}:${local.account_id}:deliverystream/${local.alert_stream}"]' in _ah.group(1)
+      and tf.count("firehose:") == 2 and "firehose:*" not in tf)
+check("up.sh は analytics を作る回（SKIP_ANALYTICS が空）だけ graph に -var alert_history=true を渡す",
+      'if [ -z "$SKIP_ANALYTICS" ]; then GRAPH_VARS=(-var alert_history=true); else GRAPH_VARS=(); fi' in up
+      and '( tf_apply_only pipeline/graph ${GRAPH_VARS[@]+"${GRAPH_VARS[@]}"} )' in up)
+check("graph-status のロールにも閉域の Deny を付ける（firehose を持つので、VPC の外から履歴の行を書かせない）。NETWORK_PERIMETER=0 か古い土台なら付けない",
+      re.search(r'resource "aws_iam_role_policy_attachment" "status_perimeter" \{\s*count = local\.perimeter_policy_arn != "" \? 1 : 0\s*'
+                r'role\s*= aws_iam_role\.status\.name\s*policy_arn = local\.perimeter_policy_arn\s*\}', tf) is not None
+      and 'perimeter_policy_arn = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")' in _loc)
 print(f"通過 {passed} / 失敗 0")

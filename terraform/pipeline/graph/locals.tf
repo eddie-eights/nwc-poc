@@ -41,4 +41,6 @@ locals {
   reader_role_ids = toset([data.terraform_remote_state.main.outputs.runtime_role_name, data.terraform_remote_state.main.outputs.web_role_name])
   # アラートの SNS トピック（terraform/base/core の alerts.tf）。sync.tf の status Lambda が購読する。古い state なら空で、購読の precondition が止める
   alerts_topic_arn = try(data.terraform_remote_state.main.outputs.alerts_topic_arn, "")
+  # terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
+  perimeter_policy_arn = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
 }

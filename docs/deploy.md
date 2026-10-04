@@ -17,7 +17,7 @@
 | `CREATE_KB` | ナレッジベース（+$0.37/h。OpenSearch Serverless の VPC エンドポイント $0.03（`SINK_OPENSEARCH` の logs と共用）と bedrock-agent-runtime のエンドポイント $0.014 を含む）。`AGENT=1` のとき |
 | `SKIP_LAB` | lab を作らない（-$0.17/h）。`SKIP_STREAM=1` も要る |
 | `SKIP_STREAM` | stream（MSK と Telegraf の ECS）を作らない（-$1.18/h）。analytics も外れる |
-| `SKIP_ANALYTICS` | analytics を作らない（-$0.56/h。KB を作るなら OpenSearch Serverless の VPC エンドポイントは残るので -$0.53/h。Grafana の分を含む）。Grafana と Splunk（アラートの送り手）も無くなる |
+| `SKIP_ANALYTICS` | analytics を作らない（-$0.57/h。KB を作るなら OpenSearch Serverless の VPC エンドポイントは残るので -$0.54/h。Grafana の分と、アラートの通知の履歴のエンドポイント `kinesis-firehose` を含む。`WORKFLOW=1` なら `athena` の $0.014 も減る）。Grafana と Splunk（アラートの送り手）も無くなり、アラートの通知の履歴（`alert_events`）も残らない |
 | `SKIP_GRAPH` | Neptune を作らない（-$0.14/h）。トポロジは静的データになる（アラートで `status` が変わらない） |
 | `SINK_S3` / `SINK_OPENSEARCH` / `SINK_PROMETHEUS` | Spark の格納先。既定は 3 つとも `1`。`0` にするとリソースごと作らない。`SINK_SPLUNK` と合わせて全部 `0` は止まる。`SINK_PROMETHEUS=0` にすると Grafana のアラート（`link_down`）も無くなる |
 | `SINK_SPLUNK` | 4 本目の格納先。`1` で Spark が全トピックを Splunk の HTTP Event Collector（HEC）に送る。既定 `0`。analytics の ECS に Splunk Enterprise（公式イメージ `splunk/splunk:10.4.3` に検知のアプリ `netops_alerts` を足したもの、試用ライセンス。Fargate x86 2 vCPU / 4 GB、エフェメラルストレージ 40 GiB）を立て、Spark は VPC の中の `https://splunk.<prefix>.internal:8088` に送る（自己署名なので検証しない）。起動時に Splunk のライセンスと Splunk General Terms に同意する。admin のパスワードと HEC の token は `ops/up.sh` が SSM の SecureString に乱数で作る。index はタスクと一緒に消える（検証用）。trap と gNMI（BGP / IS-IS）のアラートも Splunk が出す（[pipeline.md](pipeline.md) の「アラート」）。+$0.12/h。`SPLUNK_INDEX`（空なら token の既定）も読む。AWS の外の Splunk へ NAT Gateway で送る道（`SPLUNK_HEC_URL`）は 2026-09-28 にやめた（書いてあると `ops/up.sh` が止まる） |
@@ -58,7 +58,7 @@
 | 7-2c | Telegraf の ECS のサービス 2 つ（受ける側と取りにいく側）が安定するのを待つ（最大 10 分。落ちても止まらず、見るところを出す） |
 | 7-3 | graph を待ち、Neptune が空ならトポロジを入れる（アラートの送り手より先に、`status` の Lambda とトポロジを用意する） |
 | 7-3c | Nautobot（stream か graph を作るならいつも）。SSM に Nautobot のシークレット 3 つを作り（無いときだけ）、`terraform/pipeline/nautobot`（RDS に 5〜10 分）。サービスが安定するのを待つ（初回は DB の migrate で 5〜10 分。最大 20 分。落ちても止まらず、見るところを出す）。起動時に lab の定義を Nautobot に入れ（空のときだけ）、Job と JobHook を有効にして 1 回同期する |
-| 7-4 | `terraform/pipeline/analytics`（`SINK_SPLUNK=1` なら、Splunk のアラートが IP を機器名に直す device map を lab の定義から作って渡す）。先に Grafana / ECS の Splunk の admin のパスワードと HEC の token を SSM の SecureString に作る（無いときだけ。値は出さない） |
+| 7-4 | `terraform/pipeline/analytics`（`SINK_SPLUNK=1` なら、Splunk のアラートが IP を機器名に直す device map を lab の定義から作って渡す）。先に Glue のカタログ `s3tablescatalog` を確かめ（無いときだけ作る。下の「アラートの通知の履歴」）、Grafana / ECS の Splunk の admin のパスワードと HEC の token を SSM の SecureString に作る（無いときだけ。値は出さない） |
 | 7-4b | ECS の Splunk がヘルスチェックで HEALTHY になるのを待つ（最大 20 分。Spark のジョブは起動してすぐ HEC に送るので） |
 | 7-5 | Spark のジョブが動いていなければ起こす |
 | 8-3 | Web を再起動 |
@@ -86,6 +86,23 @@ flowchart LR
 - **Runtime の ENI は最大 8 時間残る。**その間は VPC、サブネット、Runtime の SG（`<prefix>-runtime`）を残して他を消す。時間をおいて打ち直す。
 - graph / workflow / KB（`<prefix>-kb-index`）の Lambda の ENI（20〜40 分残る）は裏で消す。
 - `KEEP_ECR=1 ops/down.sh` で ECR を残すと、翌朝のビルドを飛ばせる。
+- analytics を消してから graph を消すまでのあいだ、graph の Lambda は Firehose へ送れずにやり直す（ログに ERROR が出る）。片付けの途中なので害は無い。
+- Glue のカタログ `s3tablescatalog` は消さない（下の「アラートの通知の履歴」）。
+
+## アラートの通知の履歴（Firehose と Athena）
+
+analytics を作る回（`SKIP_ANALYTICS` が空）は、graph の Lambda が受けたアラートの通知を Firehose `<prefix>-alert-events` で S3 Tables の `alert_events` に追記し、エージェントの `query_history` が Athena のワークグループ `<prefix>-history` で読む（2026-10-04。中身は [pipeline.md](pipeline.md) の「アラートの履歴」）。
+
+- **Glue のカタログ `s3tablescatalog`:** Firehose と Athena は S3 Tables のテーブルを Glue の S3 Tables 連携のカタログ越しに引く。アカウントとリージョンに 1 つで、ほかの OWNER の環境と共有するので、`ops/up.sh` は手順 7-4 で無いときだけ作り（IAM だけで読み書きできる設定: `IAM_ALLOWED_PRINCIPALS` と `AllowFullTableExternalDataAccess`）、`ops/down.sh` では消さない。もうあって設定が違うときは黄色の注意を出してそのまま使う（ほかの人が Lake Formation で管理していると、Firehose と Athena が `alert_events` に届かないことがある）。
+- **消すとき:** このアカウントとリージョンで、誰も S3 Tables を Athena や Firehose から使っていないことを確かめてから打つ（カタログを消してもテーブルバケットの中身は消えない）。
+
+```bash
+aws glue delete-catalog --region ap-northeast-1 --catalog-id s3tablescatalog
+```
+
+- **費用:** VPC のインターフェース型エンドポイントが 2 本増える（graph の Lambda の `kinesis-firehose` と、`WORKFLOW=1` のときの tools Lambda の `athena`。1 本 $0.014/h × AZ）。手順 0 の目安はこの本数を数えている。Firehose は取り込んだ量、Athena はスキャンした量の課金で、PoC の量なら月に数セント（Athena は 1 回 1 GiB で打ち切る）。
+- **`starts_at` の意味は送り手で違う:** Grafana は発火した時刻（`resolved` の行も同じ）、Splunk は保存済みサーチの `latest(_time)`（その状態を最後に見た時刻）。届いた時刻は `received_at`。
+- **AWS の上ではまだ通していない:** Firehose と Athena が IAM だけで S3 Tables に届くか、Firehose が時刻の書式（ISO 8601 の UTC）を受け付けるか、閉域の Deny に当たらないかは、最初の `ops/up.sh` で確かめる（`firehose-errors/alert_events/` にオブジェクトが無いこと、Athena で行が読めること）。
 
 ## 利用者に画面を渡す
 

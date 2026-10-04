@@ -21,6 +21,7 @@ flowchart LR
   GRAF -->|"アラートルール（link_down）"| SNS["SNS<br/>prefix-alerts（土台）"]
   SPL -->|"保存済みサーチ（trap / BGP / IS-IS）"| SNS
   SNS --> GL["Lambda graph-status"] --> NEP["Neptune（graph）<br/>トポロジと status"]
+  GL -->|"通知の履歴"| FH["Firehose（analytics）"] --> AEV["S3 Tables<br/>alert_events"]
   SNS -.->|"WORKFLOW=1"| SQS["SQS → ワークフロー"]
 ```
 
@@ -32,7 +33,7 @@ flowchart LR
 - 機器は lab の EC2 の中の docker network（`203.0.113.0/24`）にいる。Telegraf の取りにいく側のタスクからの SNMP のポーリング（`161/udp`。`SNMP_POLL=1` のときだけ）と gNMI の購読（`57400/tcp`）は VPC のルートで lab の EC2 を通り（タスクの IP は作り直すたびに変わるので、送り元はタスクのサブネットの CIDR（SSM `/<prefix>/telegraf-source-cidr`）で通す）、trap（`162/udp`）と syslog（`5140/udp`）は機器が lab の EC2（`203.0.113.1`）へ送り、lab の EC2 が Telegraf の NLB の IP（SSM `/<prefix>/telegraf-address`）へ DNAT する。NLB は trap をタスクの `1162/udp` へ、syslog を `5140/udp` へ渡す（UDP なので送り元の IP はそのまま）。この 4 つは lab の EC2 で `sudo lab forward` が張る（`lab up` が毎回呼び、`ops/up.sh` も手順 7-2b で打つ。lab の変数 `forward_to_telegraf`）。
 - gNMI（Telegraf の `inputs.gnmi`）は BGP の `session-state` と IS-IS の IF の `oper-state`（隣接そのもの（`interface/adjacency`）は落ちると down を経ずに消え、Telegraf は gNMI の delete を載せないので取らない）を on_change で、EVPN の ethernet-segment の `oper-state` と MAC テーブルを 1 分おきに取り、トピック `gnmi` に出す。2 つめの `inputs.gnmi`（購読名 `lab_*`、1 分おき）は CPU・メモリ・IF のカウンタと速度・MAC テーブルの数と上限・サブ IF の種類と IF の状態を取り、`telegraf/lab_gnmi.star` と `lab_circuits.star` が共通の形（`device_cpu` / `device_memory` / `if_stats` / `sessions` / `circuits`。[collection.md](collection.md) の「共通の形（仮）」）に変えてトピック `metrics` に出す（1 つめと分けるのは、SR Linux が知らないパスが 1 つでもあると購読ごと断るため）。本番の Cisco の MDT は `inputs.cisco_telemetry_mdt`（57000/tcp）で受けてトピック `mdt` に出す（`MDT_SOURCE_CIDRS` が空のあいだは何も届かない）。Splunk の保存済みサーチ `netops_gnmi` はここから `bgp_down`（相手の IP が対象）と `isis_down`（サブインタフェースが対象）を出す（`SINK_SPLUNK=1` のとき。下の「アラート」）。
 - Spark は起動時に、読むトピック（`metrics` / `gnmi` / `mdt` / `traps` / `logs`）のうち無いものを作る（`snmp_sinks.py` の `ensure_topics`。EMR のロールに `kafka-cluster:CreateTopic`）。MSK の `auto.create.topics.enable=true` は書き込みのときにしか効かず、Telegraf が最初の trap / syslog を出すまで `traps` / `logs` が無い。無いトピックを購読するとジョブは offset 読みで落ちて、起こし直しの上限（1 時間 5 回）を使い切る（2026-09-27 に実測）。
-- メトリクスとログの履歴の正本は S3 Tables（`snmp_metrics`）。Spark は格納先へ流すだけで、異常の検知はしない（2026-10-02 にやめた）。検知は Grafana と Splunk のアラートで、SNS のトピック `<prefix>-alerts` に出す（下の「アラート」）。Neptune の頂点 `anomaly`、S3 Tables の `anomaly_events`、Web の「異常一覧」、エージェントの `list_anomalies` は無くなり、障害の履歴の置き場は決めていない（[data-stores.md](data-stores.md)）。
+- メトリクスとログの履歴の正本は S3 Tables（`snmp_metrics`）。Spark は格納先へ流すだけで、異常の検知はしない（2026-10-02 にやめた）。検知は Grafana と Splunk のアラートで、SNS のトピック `<prefix>-alerts` に出す（下の「アラート」）。Neptune の頂点 `anomaly`、S3 Tables の `anomaly_events`、Web の「異常一覧」、エージェントの `list_anomalies` は無くなった。障害の履歴は 2026-10-04 から、アラートの通知 1 件を 1 行として S3 Tables の `alert_events` に置く（下の「アラートの履歴」、[data-stores.md](data-stores.md)）。
 - analytics は graph が無くても作れる（Neptune に書くのは SNS を購読する graph の Lambda だけ）。`SKIP_GRAPH=1` だと、トポロジは `agent/data/` の静的データになり、アラートが届いても `status` を書く先が無い。
 - テーブルバケットは `SINK_S3=0` でも作る（証跡の置き場）。`ops/down.sh` はバケットごと消すので、証跡も消える。
 - Splunk（`SINK_SPLUNK=1`）は Spark の driver が全トピックを HTTP Event Collector（HEC）に POST する（2026-09-26 に MSK Connect の Splunk Connect for Kafka をやめて、ほかの格納先と同じ形にした）。
@@ -164,7 +165,7 @@ terraform -chdir=terraform/pipeline/analytics output -raw splunk_password_comman
 
 ## アラート
 
-異常を見つけるのは Grafana と Splunk。どちらも発火（`firing`）と解消（`resolved`）を、同じ形の JSON で SNS のトピック `<prefix>-alerts`（`terraform/base/core/alerts.tf`）に publish する。トピックは graph の Lambda（Neptune の `status`）と、`WORKFLOW=1` なら workflow の SQS（[workflow.md](workflow.md)）へ配る。
+異常を見つけるのは Grafana と Splunk。どちらも発火（`firing`）と解消（`resolved`）を、同じ形の JSON で SNS のトピック `<prefix>-alerts`（`terraform/base/core/alerts.tf`）に publish する。トピックは graph の Lambda（Neptune の `status` と、下の「アラートの履歴」）と、`WORKFLOW=1` なら workflow の SQS（[workflow.md](workflow.md)）へ配る。
 
 | 送り手 | 見るもの | 出す `kind` | 定義 | 落ちてから通知まで |
 |---|---|---|---|---|
@@ -176,6 +177,29 @@ terraform -chdir=terraform/pipeline/analytics output -raw splunk_password_comman
 - 送り手は「いまの状態」を出すだけなので、同じ知らせが重なって届くことがある。受け手は何度受けてもよい作り（ワークフローの id は異常ごとに 1 つ、`status` は上書き）。
 - publish はタスクロール（`sns:Publish` だけ）で、VPC の `sns` のエンドポイントを通る。アクセスキーは置かない。トピックは VPC の外からの publish を拒む。
 - トピックは土台にあるので、送り手も受け手も無いときも作る（時間課金は無い）。
+
+### アラートの履歴
+
+届いた通知は 1 件ずつ S3 Tables の `alert_events` に残る（2026-10-04 から。analytics を作る回だけ）。
+
+- 書くのは graph の Lambda `<prefix>-graph-status`。Neptune に書いたあと、同じ呼び出しの通知を Firehose `<prefix>-alert-events` へ `PutRecordBatch` で送る（500 件ずつ）。Firehose が 60 秒（か 1 MiB）ごとにまとめて Iceberg に追記する。Neptune で無視した通知（機器名の無いものなど）も行にする。
+- `ops/up.sh` は analytics を作る回（`SKIP_ANALYTICS` が空）にだけ graph の変数 `alert_history = true` を渡す。そのときだけ Lambda の環境変数 `ALERT_STREAM` と `firehose:PutRecordBatch`（そのストリームだけ）が付く。graph は analytics より先に apply するが、ストリームの名前が固定なので待たない。
+- Neptune と Firehose はどちらも必ず 1 回試し、どちらかが失敗すると Lambda は最後に例外を投げる（非同期のやり直しが 2 回）。やり直しで同じ通知が二重に入るので、読むときは `event_id`（`<anomaly_id>#<source>#<status>#<starts_at の epoch 秒>`）で落とす。
+- Lambda は重複を落とさない。Grafana の 4 時間ごとの送り直しも、Grafana と Splunk の両方から来た分も行になる。
+- `starts_at` は送り手で意味が違う。Grafana は発火した時刻で、`resolved` の行も発火の時刻のまま。Splunk は保存済みサーチの `latest(_time)` で、その状態を最後に見た時刻（`resolved` なら戻った時刻）。`received_at` は Lambda が受けた時刻。
+- 書けなかった行は土台のバケットの `firehose-errors/alert_events/` に落ちる。Firehose のログはロググループ `/aws/kinesisfirehose/<prefix>-alert-events`。
+- 読むのはエージェントの `query_history`（Athena のワークグループ `<prefix>-history`。`event_id` で重複を落とし、新しい順に最大 50 件）。手で見るとき（`<bucket>` はテーブルバケットの名前。カタログ名は analytics の output `athena_catalog`）:
+
+```bash
+terraform -chdir=terraform/pipeline/analytics output -raw athena_catalog; echo
+```
+
+```sql
+SELECT status, source, device_id, kind, target, starts_at, received_at FROM "s3tablescatalog/<bucket>"."netops"."alert_events" ORDER BY received_at DESC LIMIT 20
+```
+
+- Athena のコンソールではワークグループ `<prefix>-history` を選ぶ（クエリの結果は Athena の管理ストレージに置き、1 回のスキャンは 1 GiB で止める）。
+- AWS の上での通し（Firehose から S3 Tables への書き込みが IAM だけで通るか、時刻の書式、閉域の Deny）はまだ確かめていない。
 
 ### Grafana のアラート
 
@@ -239,7 +263,7 @@ LOG_GROUP=$(terraform -chdir=terraform/pipeline/analytics output -raw log_group_
 - ジョブは同時に 1 本だけにする（同じチェックポイントを 2 本で書くと壊れる）。`ops/up.sh` の手順 7-5 は、スクリプトと引数のハッシュをジョブのタグ `SpecHash` に付けて起こし、動いているジョブのタグが今のハッシュと同じなら何もせず、違えば止めて（最大 3 分待つ）起こし直す。
 - 格納先ごとのクエリ（iceberg / opensearch / prometheus / splunk）のどれかが止まると、ジョブを終わらせ（exit 1）、STREAMING モードに起こし直させる。チェックポイントの続きから読むので、取りこぼしも二重も無い。起こし直しは既定で 1 時間に 5 回まで（超えると `FAILED`）。
 - チェックポイントは MSK クラスタごとのパス（`s3://<バケット>/analytics/checkpoint/<クラスタの uuid>/`）。MSK を作り直すと、前のクラスタのオフセットを読まずに新しいパスから始まる。
-- analytics を消すと S3 Tables の履歴も消える。
+- analytics を消すと S3 Tables の履歴も消える（`alert_events` も）。
 
 ## Neptune のトポロジ
 

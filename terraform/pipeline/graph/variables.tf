@@ -57,3 +57,9 @@ variable "log_retention_days" {
     error_message = "log_retention_days must be one of 1, 3, 7, 14, 30."
   }
 }
+
+variable "alert_history" {
+  description = "true sends every alert the status Lambda receives to the Firehose stream <prefix>-alert-events of terraform/pipeline/analytics (S3 Tables alert_events). ops/up.sh sets it only when it deploys analytics, so the stream exists."
+  type        = bool
+  default     = false
+}
