@@ -22,9 +22,9 @@ resource "aws_emrserverless_application" "spark" {
     memory = var.max_memory
   }
 
-  # SG は terraform/base/core の spark（network.tf）
+  # SG は terraform/base/core の spark（network.tf）。サブネットは var.emr_az_num の AZ（a から）
   network_configuration {
-    subnet_ids         = slice(local.subnet_ids, 0, 2)
+    subnet_ids         = slice(local.subnet_ids, 0, var.emr_az_num)
     security_group_ids = [local.spark_sg_id]
   }
 

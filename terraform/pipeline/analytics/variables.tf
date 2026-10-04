@@ -62,6 +62,17 @@ variable "max_memory" {
   default     = "48 GB"
 }
 
+variable "emr_az_num" {
+  description = "Number of AZs (subnets a, b, c of terraform/base/core from the front) the EMR Serverless application may start its workers in. 1, 2 or 3. More AZs do not cost more by themselves (workers are billed by vCPU and memory), but traffic to MSK and the endpoints in another AZ is cross-AZ. ops/up.sh passes EMR_AZ_NUM."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2, 3], var.emr_az_num)
+    error_message = "emr_az_num must be 1, 2 or 3."
+  }
+}
+
 variable "idle_timeout_minutes" {
   description = "Minutes without a running job before the application stops itself (it restarts on the next start-job-run)"
   type        = number
@@ -78,6 +89,17 @@ variable "cloudwatch_logging" {
   description = "Send the driver stdout / stderr to CloudWatch Logs (through the logs interface endpoint of the base root). false keeps the logs only in the asset bucket"
   type        = bool
   default     = true
+}
+
+variable "opensearch_az_num" {
+  description = "1 or 2. 2 turns on standby replicas (standby_replicas = ENABLED) of the logs collection: OpenSearch Serverless keeps a copy in another AZ and the minimum capacity doubles (these two effects are not found in the current OpenSearch Service Developer Guide - unverified). 3 is not possible: StandbyReplicas is ENABLED or DISABLED only, and the collection has no AZ or subnet setting; changing it requires replacement (CloudFormation reference AWS::OpenSearchServerless::Collection, StandbyReplicas: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-opensearchserverless-collection.html, checked 2026-10-04). Changing it recreates the collection (the indexed logs are lost). ops/up.sh passes OPENSEARCH_AZ_NUM (also to terraform/agent for the knowledge base)."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2], var.opensearch_az_num)
+    error_message = "opensearch_az_num must be 1 or 2 (OpenSearch Serverless standby replicas are only on or off)."
+  }
 }
 
 variable "sinks" {

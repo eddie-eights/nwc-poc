@@ -21,6 +21,7 @@ locals {
     telegraf_dialin      = "Telegraf dial-in ECS task - gNMI and SNMP polling (terraform/pipeline/stream)"
     telegraf_dialout_nlb = "Internal NLB in front of the Telegraf dial-out task (terraform/pipeline/stream)"
     msk                  = "MSK brokers (terraform/pipeline/stream)"
+    kafka_ui             = "Kafbat UI ECS task (terraform/pipeline/stream)"
     spark                = "EMR Serverless workers (terraform/pipeline/analytics)"
     grafana              = "Grafana ECS task (terraform/pipeline/analytics)"
     splunk               = "Splunk ECS task (terraform/pipeline/analytics)"
@@ -38,7 +39,7 @@ locals {
 
   # AWS の API（インターフェース型と OpenSearch Serverless の VPC エンドポイント）と S3（ゲートウェイエンドポイント。S3 Tables のデータ・ECR のレイヤー・
   # AL2023 の dnf もここ）へ出るワークロード。Fargate のタスクは ECR のイメージ・SSM のシークレット・ログもタスクの ENI で取りに行く
-  aws_api_clients = ["web", "lab", "telegraf_dialout", "telegraf_dialin", "spark", "grafana", "splunk", "nautobot", "lambda", "workflow", "runtime"]
+  aws_api_clients = ["web", "lab", "telegraf_dialout", "telegraf_dialin", "kafka_ui", "spark", "grafana", "splunk", "nautobot", "lambda", "workflow", "runtime"]
 
   # 通信の表。1 行が 1 つの流れで、from が送り、to が受ける（応答は SG の接続追跡で通るので書かない）。from / to は上の SG のキーか endpoints、
   # または SG でない相手の s3（S3 のマネージドプレフィックスリスト）と lab_mgmt（local.lab_mgmt_cidr）。
@@ -60,6 +61,7 @@ locals {
       { from = "web", to = "splunk", protocol = "tcp", port = 8000, why = "Splunk Web through SSM port forwarding" },
       { from = "web", to = "workflow", protocol = "tcp", port = 8233, why = "Temporal UI through SSM port forwarding" },
       { from = "web", to = "nautobot", protocol = "tcp", port = 8080, why = "Nautobot UI through SSM port forwarding" },
+      { from = "web", to = "kafka_ui", protocol = "tcp", port = 8080, why = "Kafbat UI through SSM port forwarding" },
 
       # Nautobot（terraform/pipeline/nautobot）→ RDS の PostgreSQL
       { from = "nautobot", to = "nautobot_db", protocol = "tcp", port = 5432, why = "PostgreSQL - Nautobot database" },
@@ -68,6 +70,7 @@ locals {
       { from = "telegraf_dialout", to = "msk", protocol = "tcp", port = 9098, why = "Kafka IAM - Telegraf dial-out writes" },
       { from = "telegraf_dialin", to = "msk", protocol = "tcp", port = 9098, why = "Kafka IAM - Telegraf dial-in writes" },
       { from = "spark", to = "msk", protocol = "tcp", port = 9098, why = "Kafka IAM - Spark reads" },
+      { from = "kafka_ui", to = "msk", protocol = "tcp", port = 9098, why = "Kafka IAM - Kafbat UI" },
       { from = "msk", to = "msk", protocol = "tcp", port = 9092, to_port = 9098, why = "Brokers talk to each other" },
 
       # Spark

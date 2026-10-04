@@ -110,6 +110,10 @@ resource "aws_ecs_service" "grafana" {
   desired_count   = 1
   launch_type     = "FARGATE"
 
+  # 1 タスクだけ（サブネット a）。AZ の数のキー（*_AZ_NUM）を作らない理由: アラートルールの評価もタスクの中なので、2 つにすると両方が評価して
+  # 通知が 2 重になる（Grafana の文書「Configure high availability」: HA を組まずに複数台にすると全部の台が全ルールを評価し、通知が重なる。
+  #   https://grafana.com/docs/grafana/latest/alerting/set-up/configure-high-availability/、2026-10-04 確認）。
+  # 設定もタスクの中の SQLite（/var/lib/grafana）でタスクごとに別々。2 つにして AWS で試してはいない（未確認）
   # 状態を持たないので、作り直すときに古いタスクを待たない
   deployment_minimum_healthy_percent = 0
   deployment_maximum_percent         = 100

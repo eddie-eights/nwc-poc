@@ -30,13 +30,24 @@ variable "kafka_version" {
 }
 
 variable "broker_instance_type" {
-  description = "Smallest Standard broker that Kafka 4.x (KRaft) accepts. kafka.t3.small is rejected by CreateCluster with 4.1.x.kraft (Unsupported InstanceType, seen 2026-09-18); it is only for 3.x. kafka.m5.large is 0.271 USD per hour per broker in Tokyo, so 0.542 for the 2 brokers (Price List API, 2026-09-18)."
+  description = "Smallest Standard broker that Kafka 4.x (KRaft) accepts. kafka.t3.small is rejected by CreateCluster with 4.1.x.kraft (Unsupported InstanceType, seen 2026-09-18); it is only for 3.x. kafka.m5.large is 0.271 USD per hour per broker in Tokyo, so 0.542 for 2 brokers and 0.813 for 3 (msk_az_num; Price List API, 2026-09-18)."
   type        = string
   default     = "kafka.m5.large"
 
   validation {
     condition     = contains(["kafka.m5.large", "kafka.m7g.large"], var.broker_instance_type)
     error_message = "broker_instance_type must be kafka.m5.large or kafka.m7g.large (Kafka 4.x does not accept kafka.t3.small)."
+  }
+}
+
+variable "msk_az_num" {
+  description = "Number of AZs (subnets a, b, c of terraform/base/core from the front) of the MSK cluster, one broker per AZ. 2 or 3; 1 is not possible because MSK takes client subnets in two or three AZs only (Amazon MSK API Reference, Clusters, BrokerNodeGroupInfo.clientSubnets: https://docs.aws.amazon.com/msk/1.0/apireference/clusters.html, checked 2026-10-04). 2 keeps replication factor 2 / min.insync.replicas 1, 3 uses 3 / 2. Each broker is about 0.271 USD/h (kafka.m5.large). Changing it on a live cluster recreates the cluster (the topics are lost). ops/up.sh passes MSK_AZ_NUM."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = contains([2, 3], var.msk_az_num)
+    error_message = "msk_az_num must be 2 or 3 (MSK puts its brokers in two or three AZs; one AZ is not possible)."
   }
 }
 
@@ -106,6 +117,17 @@ variable "snmp_poll" {
   default     = true
 }
 
+variable "telegraf_az_num" {
+  description = "Number of AZs (subnets a, b, c from the front) of the Telegraf dial-out side: the NLB subnets and the number of dial-out tasks (one per AZ). 1, 2 or 3. The dial-in task stays one in subnet a (two would poll and subscribe twice). SSM /<prefix>/telegraf-address stays the NLB address in subnet a (the lab DNATs to it); real devices should send to output telegraf_dialout_dns_name. With 2 or 3 the NLB balances across zones, so subnet a's address still reaches the tasks in b / c. ops/up.sh passes TELEGRAF_AZ_NUM."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2, 3], var.telegraf_az_num)
+    error_message = "telegraf_az_num must be 1, 2 or 3."
+  }
+}
+
 variable "telegraf_task_cpu" {
   description = "Fargate CPU units of the Telegraf task (ARM64). 256 (0.25 vCPU) is enough for 6 SNMP agents, 6 gNMI subscriptions, traps and syslog."
   type        = number
@@ -125,5 +147,52 @@ variable "telegraf_task_memory" {
   validation {
     condition     = contains([512, 1024, 2048], var.telegraf_task_memory)
     error_message = "telegraf_task_memory must be 512, 1024 or 2048."
+  }
+}
+
+# ---------------------------------------------------------------- Kafbat UI (kafka_ui.tf)
+# Always created with this root (no switch, user decision of 2026-10-05). Opened through an SSM port forward via the web EC2
+# (output kafka_ui_port_forward_command), with a login form whose admin password is an SSM SecureString created by ops/up.sh
+variable "kafka_ui_image_tag" {
+  description = "Tag of the Kafbat UI image in the ECR repository <prefix>-kafka-ui. ops/up.sh mirrors ghcr.io/kafbat/kafka-ui:<KAFKA_UI_TAG> with the same tag and passes it."
+  type        = string
+  default     = "v1.5.0"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$", var.kafka_ui_image_tag))
+    error_message = "kafka_ui_image_tag must be a valid ECR tag (letters, digits, _ . -, up to 128 characters)."
+  }
+}
+
+variable "kafka_ui_security_protocol" {
+  description = "How Kafbat UI talks to Kafka. SASL_SSL adds the MSK IAM settings (AWS_MSK_IAM with the task role, port 9098 - this root's MSK). PLAINTEXT adds none, for a Kafka without authentication (the OSS Kafka of cycle 005)."
+  type        = string
+  default     = "SASL_SSL"
+
+  validation {
+    condition     = contains(["SASL_SSL", "PLAINTEXT"], var.kafka_ui_security_protocol)
+    error_message = "kafka_ui_security_protocol must be SASL_SSL (MSK IAM) or PLAINTEXT."
+  }
+}
+
+variable "kafka_ui_task_cpu" {
+  description = "Fargate CPU units of the Kafbat UI task (ARM64). 512 (0.5 vCPU) started in about 14 seconds in a local Docker test limited to 0.5 CPU (2026-10-05)."
+  type        = number
+  default     = 512
+
+  validation {
+    condition     = contains([256, 512, 1024], var.kafka_ui_task_cpu)
+    error_message = "kafka_ui_task_cpu must be 256, 512 or 1024."
+  }
+}
+
+variable "kafka_ui_task_memory" {
+  description = "Fargate memory (MiB) of the Kafbat UI task. Must be a valid pair with kafka_ui_task_cpu. The JVM takes 75% of it (JAVA_OPTS); about 210 MiB was used when idle in a local Docker test (2026-10-05)."
+  type        = number
+  default     = 1024
+
+  validation {
+    condition     = contains([512, 1024, 2048], var.kafka_ui_task_memory)
+    error_message = "kafka_ui_task_memory must be 512, 1024 or 2048."
   }
 }

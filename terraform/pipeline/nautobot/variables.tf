@@ -66,6 +66,17 @@ variable "db_instance_class" {
   default     = "db.t4g.micro"
 }
 
+variable "nautobot_db_az_num" {
+  description = "1 or 2. 2 makes the database a Multi-AZ DB instance (multi_az = true: a synchronous standby in another AZ, about twice the instance price). 3 is not possible here: three AZs is a Multi-AZ DB cluster (a writer and two readable standbys in three AZs), a different resource (aws_rds_cluster) whose instance classes do not include db.t4g.micro (Amazon RDS User Guide, Configuring and managing a Multi-AZ deployment for Amazon RDS: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html, and Multi-AZ DB cluster deployments for Amazon RDS: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/multi-az-db-clusters-concepts.html, checked 2026-10-04). Changing it modifies the instance in place. ops/up.sh passes NAUTOBOT_DB_AZ_NUM."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2], var.nautobot_db_az_num)
+    error_message = "nautobot_db_az_num must be 1 or 2 (3 would need a Multi-AZ DB cluster, which this root does not build)."
+  }
+}
+
 variable "db_engine_version" {
   description = "PostgreSQL major version (RDS picks the minor). Nautobot 3 supports PostgreSQL 12.0 and later."
   type        = string

@@ -61,3 +61,33 @@
 | `graph.list_records` は topology.py が使っている | 消すのは `get_record` と `update_record` だけ |
 | 読んでから書く手順が原子的でない | 並べ方を `seq DESC, event_time DESC` にする |
 | docs の行番号がずれている | 行番号をやめ、節の名前で指す |
+
+## 2026-10-05 Runtime の代替実行で返るもの
+
+- エンジニアの指摘: 「代替実行では『まだ配備されていない』が返る」と「Web の設定は SSM のパラメータで渡す」は両立しない。Runtime も `parameter/<prefix>/*` を読めるので、設定を引けて、Athena の AccessDenied になる。
+- 決めたこと: そのまま受け入れる。代替実行では「修復案を読めない」が返る。IAM には触らない。
+- やらない案: Runtime の `ssm:GetParameter` を使っている名前に絞る。`pipeline/graph/access.tf` と `workflow/proposals.tf` に手が入り、このサイクルの範囲を超える。
+
+## 2026-10-05 Athena の共通の関数を置く場所
+
+- エンジニアの指摘: 設計は共通の関数を `agent/evidence.py` に置くとしていたが、Web の EC2 に配るのは toolkit / topology / graph / proposals の 4 つだけ（`ops/up.sh` と `terraform/base/core/outputs.tf` の `upload_web_command`）。`proposals.py` が evidence を import すると、承認タブが壊れる。
+- 決めたこと: 共通の関数と `_jst_of` を `agent/toolkit.py` に置く。配る一覧は変えない。boto3 のクライアントは呼ばれたときに作る。テストに「4 つだけで proposals を import できる」を足す。
+- やらない案: evidence.py に置いたまま、配る一覧に evidence を足す。`ops/up.sh` と `base/core` に手が入り、承認タブに要らない依存が載る。
+- あわせて: `web/app.py` の Neptune 前提の文言 3 か所を S3 Tables に直す。承認タブの 30 秒ごとの Athena のクエリは、リスクに書いて、このサイクルでは変えない。
+
+## 2026-10-05 Round 1 のセルフレビューで出た 3 件
+
+エンジニアが実装（4d4d5d7）のセルフレビューで、設計の側で決めることを 3 件挙げた。設計の役が決めた（ユーザーには報告した。異論があれば変える）。
+
+- 決定の順番（2 人が数秒差で却下と承認を押すと、先に届いたほうが効き、負けたほうは何も残らない）
+  - 決めたこと: 効かなかった決定を `ignored` の行として残す。順番は変えない。
+  - 理由: 困るのは「順番が逆になること」より「負けた決定が跡形もなく消えること」。行に残せば、あとから誰が何を押したかを追える。変更は worker と rules だけで済む。
+  - やらない案 1: FIFO キュー。キューに届いた順は守られるが、2 つのブラウザから数秒差で送られたものの「押した順」までは保証できない。キューの作り直し、MessageGroupId、重複排除の ID が要り、変更が広い。
+  - やらない案 2: 却下を承認より優先する。承認が先に効いて実行が始まったあとの却下は、どのみち止められない。運用の決まりを変える話なので、このサイクルでは入れない。
+- Temporal の履歴が消えたときに救える範囲
+  - 決めたこと: リスク 5 に範囲を書く（閉じられるのは pending だけ。approved / applied で止まったものは残る）。起動のときに `failed` で閉じる処理は入れない。
+  - 理由: 「起動のときの掃除は入れない」という前の決定と同じ扱い。
+- リスク 9 の文言
+  - 決めたこと: 「失敗する」を、エンジニアが再現した動き（追記は成功し、null の入った行が入る）に直す。「analytics を作り直したら workflow も apply」をリスク 9 に書き、実装が main に入ったら docs（troubleshooting.md）にも書く。
+- あわせて: `'` を含む `target` の修復案は決められないことを、リスク 11 に足した。
+

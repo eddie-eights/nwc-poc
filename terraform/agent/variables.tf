@@ -53,6 +53,40 @@ variable "model_id" {
   default     = "jp.amazon.nova-2-lite-v1:0"
 }
 
+# ---------------------------------------------------------------- redundancy (ops/up.sh の「冗長化用」)
+variable "runtime_az_num" {
+  description = "Number of AZs (subnets a, b, c of terraform/base/core from the front) the AgentCore Runtime puts its ENIs in. 1-3, default 1 (user decision 2026-10-05). With 2 or more, ops/up.sh also raises the interface endpoints (endpoints_az_num of terraform/base/core) to the same number, or stops when ENDPOINTS_AZ_NUM is set lower: with the endpoints in subnet a only, the Runtime loses the AWS APIs when a's AZ is down, so the extra AZs would be in name only. The API takes 1-16 subnets (AgentCore Control API Reference, VpcConfig: https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_VpcConfig.html, checked 2026-10-05); the AgentCore VPC guide recommends at least two AZs for high availability but does not forbid one (Amazon Bedrock AgentCore Developer Guide, Configure Amazon Bedrock AgentCore Runtime and tools for VPC, Best practices: https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html, checked 2026-10-05). One subnet is not tried on AWS. ops/up.sh passes RUNTIME_AZ_NUM."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2, 3], var.runtime_az_num)
+    error_message = "runtime_az_num must be 1, 2 or 3."
+  }
+}
+
+variable "lambda_az_num" {
+  description = "Number of AZs (subnets a, b, c from the front) of the knowledge base index Lambda (kb.tf). 1, 2 or 3; a VPC Lambda costs nothing more per subnet. ops/up.sh passes LAMBDA_AZ_NUM (also to terraform/pipeline/graph and terraform/workflow)."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2, 3], var.lambda_az_num)
+    error_message = "lambda_az_num must be 1, 2 or 3."
+  }
+}
+
+variable "opensearch_az_num" {
+  description = "1 or 2. 2 turns on standby replicas (standby_replicas = ENABLED) of the knowledge base collection: a copy in another AZ, and the minimum capacity doubles (these two effects are not found in the current OpenSearch Service Developer Guide - unverified). 3 is not possible: StandbyReplicas is ENABLED or DISABLED only, and the collection has no AZ or subnet setting; changing it requires replacement (CloudFormation reference AWS::OpenSearchServerless::Collection, StandbyReplicas: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-opensearchserverless-collection.html, checked 2026-10-04). Changing it recreates the collection (run the ingestion again). ops/up.sh passes OPENSEARCH_AZ_NUM (also to terraform/pipeline/analytics for the logs collection)."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2], var.opensearch_az_num)
+    error_message = "opensearch_az_num must be 1 or 2 (OpenSearch Serverless standby replicas are only on or off)."
+  }
+}
+
 # ---------------------------------------------------------------- knowledge base (optional) and guardrail
 variable "create_knowledge_base" {
   description = "Create the Bedrock Knowledge Base (S3 -> Titan Embeddings v2 -> OpenSearch Serverless) and pass it to the runtime. Off by default: the collection costs about 0.33 USD per hour (1 OCU with standby disabled). Without it the agent answers from the model, the topology tools and the MCP tools only."

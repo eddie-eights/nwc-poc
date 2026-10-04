@@ -19,9 +19,9 @@ output "vpc_id" {
   value       = aws_vpc.this.id
 }
 
-output "runtime_subnet_ids" {
-  description = "Read by terraform/agent (runtime ENIs), terraform/pipeline/stream (MSK brokers, Telegraf task and NLB), terraform/pipeline/graph (status Lambda), terraform/pipeline/analytics (EMR, Grafana / Splunk tasks) and terraform/workflow (Fargate, Lambda)"
-  value       = [aws_subnet.a.id, aws_subnet.b.id]
+output "subnet_ids" {
+  description = "Private subnets a, b, c in this order. Each root takes the first <resource>_az_num of them: terraform/agent (runtime ENIs, KB index Lambda), terraform/pipeline/stream (MSK brokers, Telegraf dialout tasks and NLB), terraform/pipeline/graph (status Lambda), terraform/pipeline/analytics (EMR), terraform/pipeline/nautobot (DB subnet group) and terraform/workflow (tools Lambda). Replaced runtime_subnet_ids (a, b) on 2026-10-04"
+  value       = local.subnet_ids
 }
 
 output "instance_subnet_id" {
@@ -40,7 +40,7 @@ output "vpc_cidr" {
 }
 
 output "security_group_ids" {
-  description = "SG of each workload (security_groups.tf), keyed web / lab / telegraf_dialout / telegraf_dialin / telegraf_dialout_nlb / msk / spark / grafana / splunk / nautobot / nautobot_db / lambda / workflow / runtime / endpoints. Read by terraform/agent (runtime, lambda), terraform/pipeline/lab (lab), terraform/pipeline/stream (telegraf_dialout, telegraf_dialin, telegraf_dialout_nlb, msk), terraform/pipeline/nautobot (nautobot, nautobot_db), terraform/pipeline/graph (lambda), terraform/pipeline/analytics (spark, grafana, splunk) and terraform/workflow (workflow, lambda)"
+  description = "SG of each workload (security_groups.tf), keyed web / lab / telegraf_dialout / telegraf_dialin / telegraf_dialout_nlb / msk / kafka_ui / spark / grafana / splunk / nautobot / nautobot_db / lambda / workflow / runtime / endpoints. Read by terraform/agent (runtime, lambda), terraform/pipeline/lab (lab), terraform/pipeline/stream (telegraf_dialout, telegraf_dialin, telegraf_dialout_nlb, msk, kafka_ui), terraform/pipeline/nautobot (nautobot, nautobot_db), terraform/pipeline/graph (lambda), terraform/pipeline/analytics (spark, grafana, splunk) and terraform/workflow (workflow, lambda)"
   value       = local.sg_ids
 }
 

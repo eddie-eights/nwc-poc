@@ -113,7 +113,15 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
   network_configuration {
     network_mode = "VPC"
     network_mode_config {
-      subnets         = local.subnet_ids
+      # サブネット a から var.runtime_az_num 個（1〜3。既定 1 は 2026-10-05 のユーザー決定）。2 以上のときは ops/up.sh が
+      # エンドポイント（terraform/base/core の endpoints_az_num）も同じ数以上にそろえる（そろわないと 2 AZ が見かけだけになる）。
+      # API はサブネット 1 つでも受け付ける（AgentCore Control API Reference「VpcConfig」の subnets は 1〜16 個、
+      #   https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_VpcConfig.html、2026-10-05 確認）。
+      # 手引きは高可用のために別々の AZ のサブネットを 2 つ以上と勧めるが、1 つを禁じる記述は無い
+      # （Amazon Bedrock AgentCore Developer Guide「Configure Amazon Bedrock AgentCore Runtime and tools for VPC」の Best practices、
+      #   https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html、2026-10-05 確認）。1 つで作るのは AWS で未確認。
+      # 対応していない AZ のサブネットは作成時に失敗する。東京の a / b / c（apne1-az1 / az4 / az2）は対応している（同じ手引きで 2026-10-05 確認）
+      subnets         = slice(local.subnet_ids, 0, var.runtime_az_num)
       security_groups = [local.runtime_sg_id]
     }
   }

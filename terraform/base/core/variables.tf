@@ -41,13 +41,24 @@ variable "az_id_a" {
 }
 
 variable "az_id_b" {
-  description = "AZ ID of subnet B (Runtime needs two AZs). Must differ from az_id_a."
+  description = "AZ ID of subnet B (MSK needs two AZs; used by the Runtime when runtime_az_num is 2 or more). Must differ from az_id_a."
   type        = string
   default     = "apne1-az4"
 
   validation {
     condition     = contains(["apne1-az1", "apne1-az2", "apne1-az4"], var.az_id_b) && var.az_id_b != var.az_id_a
     error_message = "az_id_b must be apne1-az1, apne1-az2 or apne1-az4 and differ from az_id_a."
+  }
+}
+
+variable "az_id_c" {
+  description = "AZ ID of subnet C (used by resources whose <resource>_az_num is 3). Must differ from az_id_a and az_id_b."
+  type        = string
+  default     = "apne1-az2"
+
+  validation {
+    condition     = contains(["apne1-az1", "apne1-az2", "apne1-az4"], var.az_id_c) && var.az_id_c != var.az_id_a && var.az_id_c != var.az_id_b
+    error_message = "az_id_c must be apne1-az1, apne1-az2 or apne1-az4 and differ from az_id_a and az_id_b."
   }
 }
 
@@ -98,10 +109,15 @@ variable "interface_endpoints" {
   }
 }
 
-variable "endpoints_multi_az" {
-  description = "Put the interface endpoints in both subnets (production). false puts them in subnet a only - workloads in subnet b still reach them through the private DNS (cross-AZ), at half the hourly price."
-  type        = bool
-  default     = false
+variable "endpoints_az_num" {
+  description = "Number of AZs (subnets a, b, c from the front) for the interface endpoints and the OpenSearch Serverless endpoint. 1 puts them in subnet a only - workloads in subnets b / c still reach them through the private DNS (cross-AZ), but lose the AWS APIs when a's AZ is down: with one AZ the endpoint DNS name resolves to the ENI in that AZ only, and AWS recommends at least two AZs for production (AWS PrivateLink Guide, Access AWS services through AWS PrivateLink, Subnets and Availability Zones: https://docs.aws.amazon.com/vpc/latest/privatelink/privatelink-access-aws-services.html, checked 2026-10-04; the behaviour when an AZ is down is not tried on AWS). Each AZ adds about 0.014 USD/h per endpoint. ops/up.sh passes ENDPOINTS_AZ_NUM."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2, 3], var.endpoints_az_num)
+    error_message = "endpoints_az_num must be 1, 2 or 3."
+  }
 }
 
 variable "flow_log_retention_days" {

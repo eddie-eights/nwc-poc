@@ -57,8 +57,9 @@ locals {
   account_id = data.aws_caller_identity.current.account_id
   partition  = data.aws_partition.current.partition
 
-  vpc_id     = data.terraform_remote_state.main.outputs.vpc_id
-  subnet_ids = data.terraform_remote_state.main.outputs.runtime_subnet_ids
+  vpc_id = data.terraform_remote_state.main.outputs.vpc_id
+  # サブネット a / b / c（この順）。EMR は先頭から var.emr_az_num 個を使う
+  subnet_ids = data.terraform_remote_state.main.outputs.subnet_ids
   # ECS のタスク（Grafana / Splunk）を置くサブネット（web の EC2 と同じ。SSM のポートフォワードは web の EC2 から届く）
   instance_subnet_id = data.terraform_remote_state.main.outputs.instance_subnet_id
   # SSM のポートフォワードの踏み台（Grafana / Splunk の UI。outputs.tf のコマンド）

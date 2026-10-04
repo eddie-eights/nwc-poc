@@ -53,3 +53,24 @@
 - Spark は 3.5 系。GDS の jar はイメージに焼き込む。
 - 頂点の id はプロパティ `id` と一意制約で持つ。
 - 接頭辞は `<owner>-nwc-oss`。
+
+## 2026-10-05 Kafka の監視の画面に Kafbat UI を足す
+
+- ユーザーの決定: 「oss の kafka では監視ツールの kafbat を入れたい」。
+- 公式で確かめたこと（2026-10-05）: ライセンスは Apache 2.0。イメージは `ghcr.io/kafbat/kafka-ui`、ポートは 8080。`KAFKA_CLUSTERS_0_READONLY`（既定 false）、`GITHUB_RELEASE_INFO_ENABLED`（既定 true。GitHub の API へ新しい版を見にいく）、`AUTH_TYPE=LOGIN_FORM` と `SPRING_SECURITY_USER_NAME` / `SPRING_SECURITY_USER_PASSWORD`。
+- 設計の役が決めたこと（異論があれば変える）: 1 タスク、見るだけ、ログインあり、GitHub への確認は止める、開き方は Grafana と同じポートフォワード、置き場は `oss/terraform/pipeline/stream/`。
+- 未確認: 版、ARM64 のイメージ、KRaft の表示、`AUTH_TYPE` を書かないときの動き、タスクの大きさ。手元の compose で確かめる。
+- やらないこと: JMX のメトリクスを VictoriaMetrics に入れて Grafana でグラフとアラートにする（Kafbat UI は時系列とアラートを持たない）。
+
+## 2026-10-05 Kafbat UI は見るだけにしない
+
+- ユーザーの決定: 「追加もしたい」。見るだけ（`KAFKA_CLUSTERS_0_READONLY=true`）をやめ、画面からトピックの追加などをできるようにする。
+- 受け入れること: 画面でパイプラインの 5 つのトピックを消したり変えたりできてしまう。守るのはログインだけ。
+- やらない案: 役割ごとの権限（RBAC）で「追加はできるが、5 つのトピックは触れない」にする。OAuth か LDAP が要り、PoC には重い（未確認: ログインフォームの認証で RBAC が使えるか）。
+
+## 2026-10-05 マネージド版の MSK にも Kafbat UI を置く
+
+- ユーザーの決定: 「msk にも入れたい」。OSS 版だけでなく、マネージド版の stream にも Kafbat UI を置く。
+- 進め方: 005 を待たずに、ブランチ `feat/kafka-ui` でエンジニアに頼んだ（MSK へは IAM 認証、1 タスク、ログインあり、画面からトピックを追加できる）。
+- 005 への影響: OSS 版の Kafbat UI は、マネージド版で作るタスク定義を使い回す。違いは認証（PLAINTEXT）だけ。
+- スイッチは作らない（同日のユーザーの決定: 「スイッチなしで常に作る」）。stream を作る回は、いつも Kafbat UI を作る。`KAFKA_UI` というキーは置かない。

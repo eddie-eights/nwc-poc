@@ -15,4 +15,5 @@
 # task_memory         = 4096
 # db_instance_class   = "db.t4g.micro"
 # db_engine_version   = "17"
+# nautobot_db_az_num  = 1                # 1 or 2 (2 = Multi-AZ). ops/up.sh passes NAUTOBOT_DB_AZ_NUM
 # deletion_protection = false

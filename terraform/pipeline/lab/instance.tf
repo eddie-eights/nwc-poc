@@ -1,6 +1,9 @@
 # 起動のたびに流す（cloud-config の always）。S3 の lab/ を置き直して再起動すれば設定も更新される
 # Telegraf はここでは動かさない（terraform/pipeline/stream の ECS のタスク）。forward_to_telegraf のとき、lab の EC2 は管理ネットワークへの転送と
 # trap / syslog の DNAT を受け持つ（lab.sh forward）
+# 1 台だけ（サブネット a）。AZ の数のキー（*_AZ_NUM）を作らない理由: containerlab の 1 台の中に全部の機器があり、管理ネットワーク（203.0.113.x）
+# への経路（telegraf.tf の aws_route.lab_mgmt）もこの 1 台の ENI を向く。2 台にすると別々の lab になる。
+# コードから確かめた理由で、AWS では未確認（2026-10-04）
 resource "aws_instance" "lab" {
   ami                         = data.aws_ssm_parameter.al2023.insecure_value
   instance_type               = var.instance_type

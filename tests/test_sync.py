@@ -479,7 +479,7 @@ h.toolkit._clients.pop("firehose", None)
 h.handler(pair); h.handler(pair)
 _cfg, _ncfg = h.FIREHOSE_CONFIG, h.NEPTUNE_CONFIG
 _timeout = int(re.search(r"^\s*timeout\s*=\s*(\d+)", read("terraform", "pipeline", "graph", "sync.tf"), re.M).group(1))
-_ips = 2   # エンドポイントの IP の数。インターフェース型エンドポイントは AZ ごとに 1 つ（endpoints_multi_az = true で 2 つ）で、接続の待ちは IP ごとにかかる
+_ips = 2   # エンドポイントの IP の数。インターフェース型エンドポイントは AZ ごとに 1 つ（endpoints_az_num = 2 で 2 つ）で、接続の待ちは IP ごとにかかる
 _fh_max = 3 * (_ips * _cfg.connect_timeout + _cfg.read_timeout) + sum(h.RETRY_WAITS)   # Firehose に使う時間の上限（3 回の接続と読みの待ち + 送り直しの待ち）
 _nep_max = _ncfg.retries["total_max_attempts"] * (_ips * _ncfg.connect_timeout + _ncfg.read_timeout) + 1   # Neptune 1 回の呼び出しの上限（再試行の前の待ちは 1 秒まで）
 check(f"Firehose へは FIREHOSE_CONFIG で 1 つだけ作ったクライアントで送り、botocore の再試行を切る（1 回）。Firehose に使うのは長くて {_fh_max:.1f} 秒（22 秒未満）",
@@ -537,8 +537,9 @@ check("Lambda は VPC の中で NEPTUNE_GRAPH_ID を環境変数で持ち、ロ�
       "vpc_config" in tf and "NEPTUNE_GRAPH_ID = aws_neptunegraph_graph.graph.id" in tf and "NEPTUNE_ENDPOINT" not in tf and "retention_in_days = var.log_retention_days" in tf)
 _nep = read("terraform", "pipeline", "graph", "neptune.tf")
 _core_sg = read("terraform", "base", "core", "security_groups.tf")
-check("グラフは Neptune Analytics（公開しない・レプリカ無し）で、ID を SSM の neptune-graph-id に書く。Neptune Database のクラスタはもう無い（2026-10-04）",
-      re.search(r'resource "aws_neptunegraph_graph" "graph" \{', _nep) is not None and "public_connectivity = false" in _nep and "replica_count       = 0" in _nep
+check("グラフは Neptune Analytics（公開しない。レプリカは NEPTUNE_AZ_NUM - 1 で既定 0）で、ID を SSM の neptune-graph-id に書く。Neptune Database のクラスタはもう無い（2026-10-04）",
+      re.search(r'resource "aws_neptunegraph_graph" "graph" \{', _nep) is not None and "public_connectivity = false" in _nep
+      and "replica_count       = var.neptune_az_num - 1" in _nep
       and "provisioned_memory  = var.provisioned_memory" in _nep and 'name        = "/${local.name_prefix}/neptune-graph-id"' in _nep
       and "aws_neptune_cluster" not in _nep + tf and not os.path.exists(os.path.join(ROOT, "terraform", "pipeline", "graph", "network.tf")))
 check("Lambda は base/core の lambda の SG を使い、graph は SG もルールも作らない。Neptune へは土台の neptune-graph-data のエンドポイント（443）で届くので、neptune の SG と 8182 の行は無い",
@@ -573,23 +574,24 @@ check("firehose の権限は alert_history が true のときだけで、PutReco
 # up.sh のエンドポイントの選び方・残ったルートのループ・graph の変数を切り出し、state のファイルだけ置いた一時ディレクトリで bash で動かす（terraform は呼ばない）
 _epb = up[up.index('ENDPOINTS=""'):up.index('echo "インターフェース型エンドポイント')]
 _lfb = up[up.index("for r in agent pipeline/lab pipeline/stream pipeline/analytics pipeline/graph pipeline/nautobot workflow; do"):up.index("for pair in ")]
-_gvb = re.search(r"^  if analytics_on; then GRAPH_VARS=\(-var alert_history=true\); else GRAPH_VARS=\(\); fi$", up, re.M)
+_gvb = re.search(r'^  GRAPH_VARS=\(-var "neptune_az_num=\$NEPTUNE_AZ_NUM" -var "lambda_az_num=\$LAMBDA_AZ_NUM"\)\n'
+                 r"  if analytics_on; then GRAPH_VARS\+=\(-var alert_history=true\); fi$", up, re.M)
 def _graph_vars(roots, left=(), **env):
     with tempfile.TemporaryDirectory() as d:
         for r in left:
             os.makedirs(os.path.join(d, "terraform", r))
             open(os.path.join(d, "terraform", r, "terraform.tfstate"), "w").close()
         p = subprocess.run(["bash", "-c", "tf_init() { :; }\nhas_resources() { :; }\n" + f'ROOTS="{roots}"\n' + _epb + _lfb + (_gvb.group(0) if _gvb else "exit 3")
-                            + '\necho "OUT: $ENDPOINTS | GV=${GRAPH_VARS[*]}"'], capture_output=True, text=True, cwd=d, env={"PATH": os.environ["PATH"], **env})
+                            + '\necho "OUT: $ENDPOINTS | GV=${GRAPH_VARS[*]}"'], capture_output=True, text=True, cwd=d, env={"PATH": os.environ["PATH"], "NEPTUNE_AZ_NUM": "1", "LAMBDA_AZ_NUM": "2", **env})
         return p.stdout.strip().splitlines()[-1] if p.stdout.strip() else p.stderr
-check("up.sh は analytics がある回（今回作るか、state に残っている）に graph に -var alert_history=true を渡し、そのときは kinesis-firehose も足す。"
+check("up.sh は graph にいつも neptune_az_num / lambda_az_num を渡し、analytics がある回（今回作るか、state に残っている）は -var alert_history=true も渡し、そのときは kinesis-firehose も足す。"
       "SKIP_ANALYTICS=1 で analytics が残っていれば、今回作る graph / workflow にも kinesis-firehose / athena を足す（残ったルートのループのあとで graph の変数を決める）",
-      _graph_vars("base/ecr base/core pipeline/graph", SKIP_ANALYTICS="1") == "OUT: ssm ssmmessages neptune-graph-data | GV="
-      and _graph_vars("base/ecr base/core pipeline/analytics pipeline/graph") == "OUT: ssm ssmmessages s3tables logs neptune-graph-data kinesis-firehose | GV=-var alert_history=true"
+      _graph_vars("base/ecr base/core pipeline/graph", SKIP_ANALYTICS="1") == "OUT: ssm ssmmessages neptune-graph-data | GV=-var neptune_az_num=1 -var lambda_az_num=2"
+      and _graph_vars("base/ecr base/core pipeline/analytics pipeline/graph") == "OUT: ssm ssmmessages s3tables logs neptune-graph-data kinesis-firehose | GV=-var neptune_az_num=1 -var lambda_az_num=2 -var alert_history=true"
       and _graph_vars("base/ecr base/core pipeline/graph workflow", left=("pipeline/analytics",), SKIP_ANALYTICS="1")
-      == "OUT: ssm ssmmessages neptune-graph-data sqs s3tables ecr.api ecr.dkr logs bedrock-agentcore bedrock-agentcore.gateway kinesis-firehose athena | GV=-var alert_history=true"
+      == "OUT: ssm ssmmessages neptune-graph-data sqs s3tables ecr.api ecr.dkr logs bedrock-agentcore bedrock-agentcore.gateway kinesis-firehose athena | GV=-var neptune_az_num=1 -var lambda_az_num=2 -var alert_history=true"
       and _gvb is not None and up.index(_lfb) < _gvb.start()
-      and '( tf_apply_only pipeline/graph ${GRAPH_VARS[@]+"${GRAPH_VARS[@]}"} )' in up)
+      and '( tf_apply_only pipeline/graph "${GRAPH_VARS[@]}" )' in up)
 check("graph-status のロールにも閉域の Deny を付ける（firehose を持つので、VPC の外から履歴の行を書かせない）。NETWORK_PERIMETER=0 か古い土台なら付けない",
       re.search(r'resource "aws_iam_role_policy_attachment" "status_perimeter" \{\s*count = local\.perimeter_policy_arn != "" \? 1 : 0\s*'
                 r'role\s*= aws_iam_role\.status\.name\s*policy_arn = local\.perimeter_policy_arn\s*\}', tf) is not None

@@ -104,3 +104,14 @@ variable "create_gateway" {
   type        = bool
   default     = true
 }
+
+variable "lambda_az_num" {
+  description = "Number of AZs (subnets a, b, c of terraform/base/core from the front) of the tools Lambda (gateway.tf). 1, 2 or 3. The workflow task itself stays one in subnet a (Temporal keeps its SQLite inside the task). ops/up.sh passes LAMBDA_AZ_NUM (also to terraform/agent and terraform/pipeline/graph)."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2, 3], var.lambda_az_num)
+    error_message = "lambda_az_num must be 1, 2 or 3."
+  }
+}
