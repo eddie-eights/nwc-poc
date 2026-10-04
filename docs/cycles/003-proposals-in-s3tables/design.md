@@ -101,12 +101,12 @@ flowchart LR
 
   | 列 | 型 | 中身 |
   |---|---|---|
-  | event_id | string | `<proposal_id>#<event>`（今のまま。再試行の重複を落とす鍵） |
+  | event_id | string | `<proposal_id>#<event>`（今のまま。再試行の重複を落とす鍵）。`ignored` の行だけは `<proposal_id>#ignored#<decided_at の epoch 秒>#<decided_by>` |
   | proposal_id | string | `<anomaly_id>#<first_seen>` |
   | anomaly_id | string | |
   | seq | **int** | 修復案の中の順番。created が 1、以後 1 ずつ増える |
-  | event | string | created / approved / rejected / expired / obsolete / applied / failed / verified |
-  | status | string | この行の時点の状態（created は pending、ほかは event と同じ） |
+  | event | string | created / approved / rejected / expired / obsolete / applied / failed / verified / ignored |
+  | status | string | この行の時点の状態（created は pending、`ignored` は直前の行と同じ、ほかは event と同じ） |
   | device_id、kind、target | string | アラートの機器、種類、対象 |
   | first_seen | timestamptz | 異常の発生時刻 |
   | source | string | grafana / splunk |
@@ -162,6 +162,12 @@ flowchart LR
 - ワークフローは次のときシグナルを無視する:
   - `proposal_id` が自分のものと違う（同じ異常の、前の発生への決定）。自分の `proposal_id` は実行の最初に `rules.proposal_id` で出す。
   - もう決定を持っている（先に届いた 1 回だけが効く。SQS の重複配達も同じ扱い）。
+- **効かなかった決定は `ignored` の行として残す**（2026-10-05。2 人が数秒差で却下と承認を押すと、キューは順番を守らないので、先に届いたほうが効く。負けたほうが何も残らないのを避ける）。
+  - 残すのは「もう決定を持っているときに届いた、中身の違う決定」だけ。効いた決定と `decision`・`decided_by`・`decided_at` が全部同じもの（SQS の重複配達）は残さない。`proposal_id` が違うものも残さない。
+  - 行の作り: `event` は `ignored`、`seq` は次の番号、`status` とほかの項目（効いた決定の `decided_by` / `decided_at` を含む）は直前の行と同じ。`detail` に「却下（<名前>、<時刻>）が届いたが、先に承認が決まっていた」の形で、効かなかった決定を書く。
+  - `status` は変わらないので、「いま」の読み方（`seq` が最大の行）と画面はそのまま。画面の履歴には 1 行増える。
+  - 順番そのものは変えない（標準キュー、先着 1 回のまま）。FIFO キューにする案と、却下を承認より優先する案は採らない（経緯は design-log.md）。
+  - ワークフローが終わったあとに届いた決定（`NOT_FOUND` で pending でない）は、行にしない。worker のログに 1 行出す。
 - ワークフローが走っていないとき（`NOT_FOUND`）:
   - `latest_proposal` が pending なら、`expired` の行を starter が足す（`verify_note` は「決定が届いたが、ワークフローがもう無い」）。worker のタスクが入れ替わって Temporal の履歴が消えた修復案が、承認待ちのまま残らないようにする。
   - pending でなければ何もしない。
@@ -255,6 +261,7 @@ flowchart LR
   - アラートのキューから来た `{"type":"decision",…}` は、シグナルを送らずに捨てる。
   - 同じ `anomaly_id` で `proposal_id` の違う pending があるとき、`put_proposal` が `expired` の行を 1 つ足してから `created` を足す。
   - Terraform: `decisions` のキューに SNS の購読が無く、`sqs:SendMessage` が付くのは Web のロールだけ（Runtime のロールに無い）。
+  - ワークフロー（テスト環境）: 承認のあとに別の名前の却下を送ると、`ignored` の行が 1 つ増え、`status` は変わらず、`detail` に却下した人の名前が入る。同じ承認をもう一度送っても行は増えない。
   - ワークフロー（テスト環境）: `proposal_id` の違うシグナルを送っても待ち続ける。合うシグナルを 2 回（approved、rejected の順）送ると、結果は approved で、行の `decided_by` は 1 回目の名前。
   - `audit_rows` が `seq` を int、`decided_at` の None を None にする。
 - `python3 tests/test_app.py`:
@@ -267,7 +274,7 @@ flowchart LR
   1. `sudo lab fail-main` のあと、承認タブの「承認待ち」に 1 件出る。Athena で `proposal_events` に `created` の行があり、`kind` と `reason` が入っている。
   2. 承認を押すと「送った」の文言が出る。20 秒以内に更新すると「承認済み」か、その先に進んでいる。
   3. Athena で同じ `proposal_id` の行が created → approved → applied → verified の順に `seq` 1〜4 で並び、`decided_by` が入力した名前。
-  4. 同じ修復案をもう一度（別の名前で却下）送っても、行が増えない。
+  4. 同じ修復案をもう一度（別の名前で却下）送ると、ワークフローがまだ走っていれば `ignored` の行が 1 つ増える（`status` は変わらない）。終わっていれば行は増えない。
   5. Neptune に `MATCH (n:proposal) RETURN count(n)` を打つと 0。
   6. エージェントに「修復履歴は」と聞くと、`list_proposals` が同じ修復案を返す。
 
@@ -277,11 +284,12 @@ flowchart LR
 2. **スキーマを変えるとテーブルが作り直しになる、というのは `terraform plan` で確かめていない。** 作り直しにならず更新もできない場合は、`ops/up.sh` で消してから作る手順が要る。
 3. **`strands-agent` のブランチ（main に未 merge）と `agent/app.py` が重なる。** 003 は docstring とシステムプロンプトの `list_proposals` の説明に触る。あとから入るほうで衝突を解く。
 4. **worker が 1 日より長く止まると、送った決定が SQS から消える。** 修復案は承認待ちのまま時間切れになる。画面には「送った」としか出ていない。
-5. **worker のタスクが入れ替わると、承認待ちの修復案が残る**（Temporal の履歴が消える。今もある穴）。決定が届くか、同じ異常がまた発火すれば `expired` にするが、どちらも無ければ「承認待ち」に残り続ける。起動のときに古い pending を `expired` にする掃除は、このサイクルでは入れない。
+5. **worker のタスクが入れ替わると、承認待ちの修復案が残る**（Temporal の履歴が消える。今もある穴）。決定が届くか、同じ異常がまた発火すれば `expired` にするが、どちらも無ければ「承認待ち」に残り続ける。起動のときに古い pending を `expired` にする掃除は、このサイクルでは入れない。**決定が届いて閉じられるのは pending だけ。**approved や applied で止まった修復案（承認のあと、実行や確認の途中で履歴が消えたもの）は、閉じる手段が無く、その状態のまま残る。起動のときに `failed` で閉じる処理も、このサイクルでは入れない。
 6. **デプロイする人（管理者）は決定のキューに送れる。** IAM で止めているのは Runtime と、Grafana・Splunk のタスクロール。
 7. **PyIceberg の読み取りが遅いと、starter のアラートの処理が遅れる。** テーブルが小さいうちは問題にならない。行が増えたら `proposal_id` で区切る（パーティション）か、保持を決める。
 8. **実装は cycle 001 と 002 のあと。** `workflow/`、`agent/evidence.py`、`terraform/workflow/`、`ops/up.sh`、`tests/` が重なる。
-9. **配備の順番。** テーブルを作り直してから worker を入れ替えるまでのあいだ、古い worker は 12 列で書こうとして失敗する。up.sh の 1 回の中で両方が替わることを確かめる。
+9. **配備の順番。** テーブルを作り直してから worker を入れ替えるまでのあいだ、古い worker が 12 列で書くと、追記は成功し、`seq` と `first_seen` が null の行が入る（エンジニアが手元で再現。2026-10-05）。その行は「いま」には選ばれないが（null は 0 として扱い、Athena の DESC も null を最後に置く）、空欄の多い修復案として一覧に出る。up.sh の 1 回の中で両方が替わることを確かめる。**`proposal_events` を作り直すと ARN が変わる。analytics を作り直したら workflow も apply し直す**（しないと、Web とツールが古い ARN を指して AccessDenied になる。エンジニアがコードを読んだ結果で、AWS では未確認）。
+11. **`'` を含む `target` の修復案は決められない。** `proposal_id` は Athena のパラメータとして渡すので、`'` と制御文字を含むものは検査で弾く。Splunk の `target` が自由文（ifDescr）に落ち、そこに `'` があると、修復案は作られるが詳細を引けず、承認できないまま `expired` になる。
 10. **承認タブは 30 秒ごとに `list_proposals` を呼ぶ。** 開いているブラウザ 1 つにつき、30 秒に 1 回 Athena のクエリが走る（1 日開きっぱなしで約 2,880 回、エンジニアの見積もりで約 $0.14/日、応答は 1〜3 秒。AWS では未確認）。このサイクルでは変えない。気になるなら、間隔を延ばすか、結果を短い時間だけ持つ。
 
 <!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261004-cycle-003-proposals-in-s3tables-design.html -->
