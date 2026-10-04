@@ -86,6 +86,7 @@
 #   ENDPOINTS_AZ_NUM=1      インターフェース型エンドポイントと OpenSearch Serverless の VPC エンドポイント。1〜3。エンドポイントの費用が AZ の数の倍。
 #                           ほかのキーを書いて 2 以上にしたのにこれがそれより小さいと注意を出す（エンドポイントの無い AZ が残ると、a の AZ が止まったとき
 #                           b / c のものも AWS の API に届かない）。RUNTIME_AZ_NUM より小さいときだけは注意で済ませない（下の RUNTIME_AZ_NUM）。
+#                           3 にすると、グラフの状態の Lambda がエンドポイントに届かないときに待つ時間の上限（66.6 秒）が timeout の 60 秒を超えるので、注意を出す（graph と analytics を作る回）。
 #                           ENDPOINTS_MULTI_AZ は 2026-10-04 にこれへ変わった（書いてあると止まる）
 #   MSK_AZ_NUM=2            MSK のブローカー（1 AZ に 1 台。+$0.27/h ずつ）。2〜3。**1 にはできない**（MSK はブローカーを 2 か 3 の AZ にしか置けない）。
 #                           2 で複製 2 / min.insync.replicas 1、3 で 3 / 2。変えるとクラスタを作り直す（トピックの中身は消える）
@@ -572,6 +573,23 @@ for k in $AZ_NUM_SET; do
 done
 if [ -n "$AZ_NUM_OVER" ]; then
   echo "注意:${AZ_NUM_OVER} に対して ENDPOINTS_AZ_NUM=$ENDPOINTS_AZ_NUM。エンドポイントはサブネット a から $ENDPOINTS_AZ_NUM つにしか無いので、その AZ が止まると、ほかの AZ に置いたものも AWS の API に届かない（止めずに進む。そろえるなら ENDPOINTS_AZ_NUM も同じ数にする）"
+fi
+# グラフの状態の Lambda（<prefix>-graph-status。terraform/pipeline/graph の sync.tf で timeout 60 秒）が Firehose（アラートの履歴）と Neptune を
+# 待つ時間の上限は、ENDPOINTS_AZ_NUM で伸びる。エンドポイントの IP は AZ ごとに 1 つあり、接続の待ちは IP ごとにかかる（urllib3 は名前の
+# 引けた IP を順に試す）。graph/status_handler.py の FIREHOSE_CONFIG・RETRY_WAITS・NEPTUNE_CONFIG から:
+#   Firehose = 3 回 ×（接続 2 秒 × AZ の数 + 読み 3 秒）+ 送り直しの前の待ち 0.6 秒
+#   Neptune の 1 回の問い合わせ = 2 回 ×（接続 3 秒 × AZ の数 + 読み 10 秒）+ 再試行の前の待ち 1 秒
+#   1 AZ は 15.6 + 27 = 42.6 秒、2 AZ は 21.6 + 33 = 54.6 秒、3 AZ は 27.6 + 39 = 66.6 秒で、3 AZ だけ 60 秒を超える
+# 超えると、エンドポイントに届かないときに Neptune の 1 回目の問い合わせの途中で timeout し、Lambda の非同期のやり直しになる（status が遅れる。
+# 履歴の行は Neptune より先に送るので、それまでに Firehose に届くか ALERT_EVENT_LOST でログに残る）。注意だけ出して進む
+# （2026-10-05 のユーザー決定。Lambda の timeout と待ちの設定は変えない）。graph を作る回だけ見る。Firehose に送るのは analytics がある回だけ
+# （alert_history）。今回は作らない analytics が前の回の state に残っている回（手順 3 の ANALYTICS_LEFT）は、ここではまだ分からないので数えない
+if [ -z "$SKIP_GRAPH" ]; then
+  GRAPH_WAIT=$((20 * (3 * ENDPOINTS_AZ_NUM + 10) + 10))   # 0.1 秒単位。Neptune の 1 回の問い合わせ
+  if [ -z "$SKIP_ANALYTICS" ]; then GRAPH_WAIT=$((GRAPH_WAIT + 30 * (2 * ENDPOINTS_AZ_NUM + 3) + 6)); fi   # + Firehose
+  if [ "$GRAPH_WAIT" -gt 600 ]; then
+    echo "注意: ENDPOINTS_AZ_NUM=$ENDPOINTS_AZ_NUM だと、グラフの状態の Lambda（graph-status）がエンドポイントに届かないときに待つ時間の上限が $((GRAPH_WAIT / 10)).$((GRAPH_WAIT % 10)) 秒（Firehose の履歴 + Neptune の 1 回の問い合わせ。接続の待ちは AZ ごとの IP の数だけかかる）になり、Lambda の timeout の 60 秒を超える。そのときは Neptune に書く途中で切れて非同期のやり直しになり、status が遅れる（止めずに進む。超えないのは ENDPOINTS_AZ_NUM=2 まで）"
+  fi
 fi
 if [ -z "$NETWORK_PERIMETER" ]; then echo "NETWORK_PERIMETER=0: VPC の外からの呼び出しを拒む Deny を外す（エンドポイントは作る。切り分けが済んだら 1 に戻して打ち直す）"; fi
 if [ -z "$AGENT$PIPELINE$WORKFLOW" ]; then
