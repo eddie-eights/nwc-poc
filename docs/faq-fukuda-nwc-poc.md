@@ -816,7 +816,7 @@ Spark UI（EMR Serverless のコンソールから開ける）の Executors の�
 | 場面 | 動き |
 |---|---|
 | 量が少ない | 60 秒待ってから、溜まった分を処理する |
-| 量が多い | やはり 60 秒待つ。バッチが大きくなるだけ（上限は付けていない。`maxOffsetsPerTrigger` を使っていない） |
+| 量が多い | やはり 60 秒待つ。バッチが大きくなる。ただし 1 回に読むのは `maxOffsetsPerTrigger` の件数まで（既定 10000）で、超えた分は次の回に回る |
 | バッチの処理が 60 秒を超えた | 終わりしだい、待たずに次のバッチを始める。遅れは Kafka に溜まる（消えない） |
 | データが 1 件も無い | そのバッチは何もしない |
 
@@ -830,7 +830,7 @@ Spark UI（EMR Serverless のコンソールから開ける）の Executors の�
 | Firehose → S3 Tables（アラートの履歴。アラートの履歴を残す（001）で足す） | 60 秒、またはバッファの大きさの早いほう | 60 秒 |
 
 - **遅れを縮めたいなら、間隔を短くする。** `TRIGGER` を 10 秒にすれば、機器から格納先までの遅れが縮む。代わりに、S3 Tables に小さいファイルが増え、HTTP の呼び出しの回数も増える。アラートの速さに効くのはここ（Grafana と Splunk は、格納先に入ったデータを見て判定するため）。
-- **1 回のバッチを大きくしすぎたくないなら、上限を付ける。** `maxOffsetsPerTrigger` で 1 回に読む件数を抑えられる。止まっていたジョブを起こし直した直後に、溜まった分を一気に読んでメモリが足りなくなるのを防げる。
+- **1 回のバッチを大きくしすぎたくないなら、上限を付ける。** `maxOffsetsPerTrigger` で 1 回に読む件数を抑えられる。止まっていたジョブを起こし直した直後に、溜まった分を一気に読んでメモリが足りなくなるのを防げる。 この PoC は付けている（既定 10000。`deploy.env` の `MAX_OFFSETS_PER_TRIGGER`）。
 
 ### Q. `maxOffsetsPerTrigger` は、格納先がどのくらいの量を処理できるかで決まる？
 
@@ -850,7 +850,7 @@ Spark UI（EMR Serverless のコンソールから開ける）の Executors の�
 - **クエリごとに別の値にできる。** このスクリプトは、格納先ごとにクエリも Kafka の購読も別なので、S3 Tables には大きい値、Splunk には小さい値、と分けられる。ジョブを 3 つに分ける話とは別に効く。
 - **数え方は「全部のパーティションの合計の件数」。** 10000 と書けば、パーティション 2 つに、溜まり具合に応じて配られる。
 - **普段は効かない値にしておく。** ふだんの 1 回分より十分大きくしておけば、いつもは何も抑えない。効くのは、止まっていたジョブを起こし直した直後や、最初に `earliest` から読むときに、溜まった分を何回かに分けて読むところ。
-- **この PoC では付けていない。** 量が少なく、溜まっても 1 回で読める。ジョブを長く止めたあとに起こすとメモリで落ちる、という症状が出たら付ける。
+- **この PoC では付けている（既定 10000。0 で上限なし）。** `deploy.env` の `MAX_OFFSETS_PER_TRIGGER` で変える。格納先ごとの値は `MAX_OFFSETS_PER_TRIGGER_ICEBERG` / `_SPLUNK` / `_OPENSEARCH` / `_PROMETHEUS`（空なら共通の値）。ふだんの 60 秒分より十分大きいので、いつもは何も抑えない。変えて `ops/up.sh` を流すと、値が変わった格納先のジョブだけ起こし直される（AWS では未確認）。
 
 ### Q. Kafka のパーティションが 4 つあるとしたら、Spark で分散して購読させたい場合は Spark のコンテナを 4 つにすればいい？
 
@@ -872,15 +872,15 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 | 項目 | 値 | 場所 |
 |---|---|---|
 | トピックのパーティション | 2 | `terraform/pipeline/stream/msk.tf` の `num.partitions` |
-| executor | 2 つ、それぞれ 1 コア、固定（自動で増やさない）。2026-10-04 に 1 → 2 にした。driver と合わせて 3 vCPU | `terraform/pipeline/analytics/outputs.tf` の `spark.executor.instances` ほか |
+| executor | 2 つ、それぞれ 1 コア、固定（自動で増やさない）。2026-10-04 に 1 → 2 にした。driver と合わせて、ジョブ 1 つにつき 3 vCPU。ジョブは格納先で 3 つまで動くので、合わせて最大 9 vCPU | `terraform/pipeline/analytics/outputs.tf` の `spark.executor.instances` ほか |
 
 - つまり、いまはパーティション 2 つを executor 2 つで同時に読んでいる（AWS では未確認）。
 - 増やすなら `spark.executor.instances` か `spark.executor.cores` を上げ、EMR Serverless の上限（`max_cpu` / `max_memory`）も合わせる。
-- **読むのを並列にしても、書くほうは並列にならない格納先がある。** OpenSearch、Prometheus、Splunk への送信は、行を driver に集めて（`collect`）から driver が 1 本で送っている（`http_query`）。executor を増やして速くなるのは S3 Tables（Iceberg）への書き込みだけ。量が増えたら、送信を executor の側でやる形（`foreachPartition`）に直す必要がある。
+- **読むのを並列にしても、書くほうは並列にならない格納先がある。** OpenSearch、Prometheus、Splunk への送信は、既定では行を driver に集めて（`collect`）から driver が 1 本で送る（`http_query`）。executor を増やして速くなるのは S3 Tables（Iceberg）への書き込みだけ。量が増えたら `deploy.env` に `HTTP_SEND=executor` を書くと、executor が自分で送る形（`foreachPartition`）に切り替わる。
 
 ### Q. executor を 2 つにしたら Kafka からの読み取りは 2 つに分かれる。送信はまた別に並列化が要るの？
 
-**A. 要る。読み取りは 2 つに分かれるが、OpenSearch、Prometheus、Splunk への送信は driver が 1 本でやっているので、そこは executor を増やしても並列にならない。** 「どこで動くか」がコードの書き方で決まるため。
+**A. 要る。読み取りは 2 つに分かれるが、OpenSearch、Prometheus、Splunk への送信は、既定では driver が 1 本でやっているので、そこは executor を増やしても並列にならない。並列にするには `HTTP_SEND=executor` に切り替える。** 「どこで動くか」がコードの書き方で決まるため。
 
 1 回のバッチ（60 秒ごと）は、次の 3 段で進む。
 
@@ -893,16 +893,16 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 | 格納先 | 書き方 | 動く場所 | 並列 |
 |---|---|---|---|
 | S3 Tables（Iceberg） | Spark の書き込み機能にそのまま渡す | executor がそれぞれファイルを書く | なる |
-| OpenSearch、Prometheus、Splunk | `collect()` で全部の行を driver に集め、driver が HTTP で順に送る（`http_query`） | driver（1 つ、1 コア） | ならない |
+| OpenSearch、Prometheus、Splunk（既定の `HTTP_SEND=driver`） | `collect()` で全部の行を driver に集め、driver が HTTP で順に送る（`http_query`） | driver（1 つ、1 コア） | ならない |
 
 - **`collect()` が境目。** executor が読んで変換した行を、driver の 1 か所に集める命令。集めたあとの処理は driver のふつうの Python で、1 本で動く。
 - **だから HTTP の格納先では、2 つに分かれて読んだものが、送る手前で 1 本に合流する。** 読むのと変換は速くなるが、送るのは速くならない。
-- **並列に送るには、送る処理を executor の側に移す。** `collect()` をやめ、`foreachPartition` でパーティションごとに executor が自分で HTTP を送る形に書き直す。そうすると executor の数だけ同時に送る。
-- **いま直していない理由。** PoC の量（機器 10 台ほど、60 秒ごと）なら driver 1 本で間に合っている。driver で送るほうが、失敗したときの再送とログが 1 か所で済んで単純。量が増えて 1 回のバッチが 60 秒で終わらなくなったら直す。
+- **並列に送るには、送る処理を executor の側に移す。** `collect()` をやめ、`foreachPartition` でパーティションごとに executor が自分で HTTP を送る。そうすると executor の数だけ同時に送る。この切り替えは入っている（`HTTP_SEND=executor`。下の Q）。
+- **既定を driver のままにしている理由。** PoC の量（機器 10 台ほど、60 秒ごと）なら driver 1 本で間に合っている。driver で送るほうが、失敗したときの再送とログが 1 か所で済んで単純。量が増えて 1 回のバッチが 60 秒で終わらなくなったら切り替える。
 
 ### Q. `foreachPartition` は、大量のデータを Spark のジョブ 1 つでは捌けなくなったときに使う？ 環境変数で切り替えられる？
 
-**A. 使うのは「ジョブ 1 つで捌けなくなったとき」より手前で、「driver 1 本の送信が 60 秒のバッチに収まらなくなったとき」。ジョブは 1 つのまま、その中の送り方を変える。切り替えは作れる（Spark の引数を 1 つ足し、`ops/up.sh` の環境変数から渡す）。いまはまだ実装していない。**
+**A. 使うのは「ジョブ 1 つで捌けなくなったとき」より手前で、「driver 1 本の送信が 60 秒のバッチに収まらなくなったとき」。ジョブの数は変えず、その中の送り方を変える。切り替えは `deploy.env` の `HTTP_SEND`（既定 `driver`、`executor` で `foreachPartition`）。2026-10-04 に実装した（AWS では未確認）。**
 
 増やす順番は次のとおり。ジョブを分けるのは最後。
 
@@ -913,38 +913,41 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 | 3 | 格納先の側の上限（AMP の取り込みの上限、OpenSearch の OCU、Splunk 1 台） | 上限の引き上げ、Splunk のクラスター | 1 のまま |
 | 4 | 1 つのジョブに全部の格納先が同居していること（1 つ止まると全部が起こし直しになる） | 格納先ごとにジョブを分ける | 増やす |
 
+この表は「量が増えたときに打つ順番」。この PoC は 4 を先にやり、格納先でジョブを 3 つに分けてある（下の Q）。
+
 **切り替えるサインは、1 回のバッチにかかる時間。** トリガーは 60 秒なので、HTTP の格納先のバッチが 60 秒近くかかるようになったら、送信が追いついていない（Spark のログの `batchDuration`、Kafka の lag で見る）。
 
-**切り替えを作るときの形**
+**切り替えの作り**
 
 | 場所 | 中身 |
 |---|---|
-| `spark/snmp_sinks.py` | 引数 `--http-send driver / executor` を足す。`http_query` の中で、`driver` なら今の `collect()`、`executor` なら `batch_df.foreachPartition(...)` に分ける |
-| `terraform/pipeline/analytics` | 変数を足し、ジョブの引数に渡す |
-| `ops/up.sh` と `deploy.env.example` | 環境変数（例 `HTTP_SEND=executor`）を読む。既定は `driver` |
+| `spark/snmp_sinks.py` | 引数 `--http-send driver / executor`。`http_query` の中で、`driver` なら `collect()`、`executor` なら `batch_df.foreachPartition(...)` |
+| `terraform/pipeline/analytics` | 変数 `http_send`。`executor` のときだけ、Splunk のジョブと OpenSearch + Prometheus のジョブの引数に渡す（S3 Tables のジョブには渡さない） |
+| `ops/up.sh` と `deploy.env.example` | 環境変数 `HTTP_SEND`。既定は `driver`。ほかの値なら、何も作る前に止まる |
 
-引数が変わるとジョブの SpecHash が変わるので、`ops/up.sh` を流し直せばジョブが起こし直され、checkpoint の続きから読む。
+引数が変わるとジョブの SpecHash が変わるので、`ops/up.sh` を流し直せば HTTP の格納先のジョブ 2 つが起こし直され、checkpoint の続きから読む。費用は変わらない（executor の数は同じ）。
 
 **`executor` にしたときに変わること（切り替えを既定にしない理由）**
 
-| 点 | driver で送る（今） | executor で送る |
+| 点 | driver で送る（既定） | executor で送る |
 |---|---|---|
 | 並列 | 1 本 | executor のコアの数だけ同時 |
-| 認証 | driver が 1 回用意する（SigV4 の署名、Splunk の token） | executor ごとに用意する。token や署名の材料を executor に渡す書き方が要る |
+| 認証 | driver が 1 回用意する（SigV4 の署名、Splunk の token） | 送る関数ごと executor へ運ぶ。AWS の上で運べるかは未確認 |
 | 失敗したとき | driver が例外を出し、バッチ全体をやり直す | 1 つのパーティションの失敗でバッチ全体をやり直す。成功したパーティションの分はもう届いているので、重複が増える |
-| 順番 | 1 本なので順に届く | パーティションの間では順不同。同じ系列が別のパーティションに分かれると、Prometheus が「古いサンプル」として拒むことがある |
-| ログ | driver のログ 1 か所 | executor ごとに分かれる |
+| 順番 | 1 回のバッチの中は、時刻の順に並べてから送る | パーティションの間では順不同。Prometheus だけは、送る前に系列（measurement と tags）で分け直し、同じ系列を 1 つのタスクが時刻の順に送る |
+| ログ | driver のログ 1 か所 | 送った行数と捨てた数は driver のログ（CloudWatch Logs）。捨てた理由は executor の stderr（S3 の logs） |
 
-- 重複は今も起こりうる（やり直しのとき）。OpenSearch は文書の id、Prometheus は同じ時刻の同じ値なら受け流すので、害は小さい。Splunk は重複がそのまま入る。
-- 順番の問題は、Kafka のキーを機器にしておけば、同じ機器は同じパーティションに入るので避けられる（いまのキーは未確認）。
+- 重複はどちらでも起こりうる（やり直しのとき）。Prometheus は同じ系列の同じ時刻なら受け流すので害が無い。OpenSearch と Splunk は重複がそのまま入る（[data-stores.md](data-stores.md) の「届け方の保証」）。
+- Telegraf は Kafka のキーを付けていないので、同じ系列が 2 つのパーティションに散らばる。そのまま executor から送ると、Prometheus が「古いサンプル」として拒む。だから Prometheus だけ系列で分け直している。
+- 残っている弱点。バッチをまたいだ順番は保証しない。ラベル名を直したあとで同じ系列になるもの（記号の違いだけの名前）は、別のタスクに分かれうる。
 
 ### Q. 大量のデータでは、格納先ごとに Spark のジョブを分けたほうがいい？
 
 **A. 本番の規模なら分けるのがふつう。ただし理由は「速くなるから」ではなく「互いに巻き込まないため」。速さだけなら、ジョブ 1 つのまま executor を増やせば足りる。**
 
-いまの作りでも、格納先ごとにクエリが別で、Kafka の購読も checkpoint も別になっている。つまりジョブを分けても、読む量も処理の中身も変わらない。変わるのは、同じ driver と executor に同居しているかどうかだけ。
+このスクリプトは、ジョブが 1 つでも、格納先ごとにクエリが別で、Kafka の購読も checkpoint も別になっている。つまりジョブを分けても、読む量も処理の中身も変わらない。変わるのは、同じ driver と executor に同居しているかどうかだけ。
 
-| 点 | ジョブ 1 つに同居（今） | 格納先ごとにジョブを分ける |
+| 点 | ジョブ 1 つに同居 | 格納先ごとにジョブを分ける |
 |---|---|---|
 | 障害の巻き込み | クエリが 1 つ止まるとジョブごと終わり、全部の格納先が起こし直しになる。Splunk が落ちると S3 Tables への書き込みも一度止まる | 止まるのはその格納先のジョブだけ |
 | 資源の取り合い | executor を全部のクエリで分け合う。遅い格納先が、ほかの格納先のタスクを待たせる | 格納先ごとに executor の数とメモリを決められる |
@@ -959,7 +962,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
   - 遅い格納先のせいで、ほかの格納先のバッチが 60 秒に収まらない。
   - 格納先ごとに必要な executor の数が大きく違う（たとえば S3 Tables は 8、Splunk は 1）。
 - **分け方の第一歩は 2 つ。** 「正本の S3 Tables」と「それ以外（OpenSearch、Prometheus、Splunk）」に分けるのが効果が大きい。正本が、ほかの格納先の不調に巻き込まれなくなる。
-- **この PoC では 3 つに分けることにした（2026-10-04 に決定。実装はこれから）。** 分け方は「S3 Tables」「Splunk」「OpenSearch + Prometheus」。
+- **この PoC では 3 つに分けた（2026-10-04 に決めて実装した。AWS では未確認）。** 分け方は「S3 Tables」「Splunk」「OpenSearch + Prometheus」。ジョブの名前は `snmp-sinks-iceberg` / `snmp-sinks-splunk` / `snmp-sinks-http`。
 
 | ジョブ | 格納先 | 分ける理由 | executor |
 |---|---|---|---|
@@ -967,9 +970,11 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 | 2 | Splunk | 比較用で、自前の 1 台なので一番止まりやすい。止まっても、ほかを起こし直さない | 2 |
 | 3 | OpenSearch + Prometheus | どちらもマネージドで、Grafana のアラートの元。まとめて driver を 1 つ節約する | 2 |
 
-  - executor はどのジョブも 2 にする。パーティション 2 つを分かれて読む動きを、どのジョブでも確かめるため（HTTP の格納先は送信が driver 1 本なので、速さのためだけなら 1 で足りる）。
-  - 費用は 3 vCPU → 9 vCPU（driver 3 + executor 6）で、約 +$0.42/h の見込み。EMR Serverless の上限（`max_cpu`）も 4 → 12 vCPU に上げる。
-  - スクリプトは `--sinks` で格納先を選べ、checkpoint は格納先ごとに分かれているので、同じスクリプトを 3 つ起こす形にする。
+  - executor はどのジョブも 2。パーティション 2 つを分かれて読む動きを、どのジョブでも確かめるため（HTTP の格納先は送信が driver 1 本なので、速さのためだけなら 1 で足りる）。
+  - 費用はジョブ 1 つにつき約 $0.21/h（3 vCPU）。3 つとも動くと 9 vCPU で約 $0.63/h。EMR Serverless の上限（`max_cpu` / `max_memory`）は 12 vCPU / 48 GB に上げた。
+  - 格納先を外すと、そのジョブは起きない（`SINK_SPLUNK=0` なら Splunk のジョブは無い）。
+  - 上限を変える apply は、アプリが止まっていないと通らない。`ops/up.sh` は上限が違うときだけ、先にジョブとアプリを止めてから apply し、ジョブを checkpoint の続きから起こし直す。
+  - スクリプトは `--sinks` で格納先を選べ、checkpoint は格納先ごとに分かれているので、同じスクリプトを 3 つ起こしている。
 
 ### Q. S3 以外の格納先は、VictoriaMetrics みたいにクラスター化できないの？
 

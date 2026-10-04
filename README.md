@@ -125,6 +125,7 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | `AGENT` / `PIPELINE` / `WORKFLOW` / `CREATE_KB` | 作る機能 |
 | `SKIP_LAB` / `SKIP_STREAM` / `SKIP_ANALYTICS` / `SKIP_GRAPH` | PIPELINE の一部を外す |
 | `IMAGE_TAG` | `agent/` や `workflow/` を変えたら `v2` などに上げる |
+| `HTTP_SEND` | Spark が HTTP の格納先（OpenSearch / Prometheus / Splunk）へ送る所。既定 `driver`。量が増えたら `executor`（費用は変わらない） |
 | `MAX_OFFSETS_PER_TRIGGER` | Spark の 1 つのクエリが Kafka の 1 回のトリガー（60 秒）に読む件数の上限（全パーティションの合計）。既定 `10000`、`0` で上限なし。格納先ごとに `MAX_OFFSETS_PER_TRIGGER_ICEBERG` / `_SPLUNK` / `_OPENSEARCH` / `_PROMETHEUS` で上書きできる（既定は空 = 共通の値） |
 | `SYSLOG_STANDARD` | stream の Telegraf が受ける syslog の形式。既定 `RFC3164`（本番の Cisco IOS）。lab の SR Linux のログまで見るなら `RFC5424` |
 | `KEEP_ECR` | `1` で `ops/down.sh` が ECR を残す |

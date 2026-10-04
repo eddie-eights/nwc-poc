@@ -35,7 +35,7 @@ flowchart LR
 - メトリクスとログの履歴の正本は S3 Tables（`snmp_metrics`）。Spark は格納先へ流すだけで、異常の検知はしない（2026-10-02 にやめた）。検知は Grafana と Splunk のアラートで、SNS のトピック `<prefix>-alerts` に出す（下の「アラート」）。Neptune の頂点 `anomaly`、S3 Tables の `anomaly_events`、Web の「異常一覧」、エージェントの `list_anomalies` は無くなり、障害の履歴の置き場は決めていない（[data-stores.md](data-stores.md)）。
 - analytics は graph が無くても作れる（Neptune に書くのは SNS を購読する graph の Lambda だけ）。`SKIP_GRAPH=1` だと、トポロジは `agent/data/` の静的データになり、アラートが届いても `status` を書く先が無い。
 - テーブルバケットは `SINK_S3=0` でも作る（証跡の置き場）。`ops/down.sh` はバケットごと消すので、証跡も消える。
-- Splunk（`SINK_SPLUNK=1`）は Spark の driver が全トピックを HTTP Event Collector（HEC）に POST する（2026-09-26 に MSK Connect の Splunk Connect for Kafka をやめて、ほかの格納先と同じ形にした）。
+- Splunk（`SINK_SPLUNK=1`）は Spark（既定は driver。`HTTP_SEND=executor` なら executor）が全トピックを HTTP Event Collector（HEC）に POST する（2026-09-26 に MSK Connect の Splunk Connect for Kafka をやめて、ほかの格納先と同じ形にした）。
   - analytics の ECS に Splunk Enterprise（`splunk/Dockerfile`。公式の `splunk/splunk:10.4.3` に検知のアプリ `netops_alerts` を足し、ECR の `<prefix>-splunk:10.4.3-<ディレクトリのハッシュ 12 文字>` に作る。amd64 しか無いので Fargate x86、2 vCPU / 4 GB、エフェメラルストレージ 40 GiB）を 1 タスク立て、Spark は Cloud Map の `https://splunk.<prefix>.internal:8088` に送る（イメージの自己署名の証明書なので検証しない）。起動時に Splunk のライセンスと Splunk General Terms に同意する（`SPLUNK_START_ARGS=--accept-license`、`SPLUNK_GENERAL_TERMS=--accept-sgt-current-at-splunk-com`）。試用ライセンス（60 日、1 日 500 MB）。admin のパスワード `/<prefix>/splunk/admin-password` と HEC の token `/<prefix>/splunk/hec-token`（uuid）は `ops/up.sh` が SSM の SecureString に作る（値は出さない。`ops/down.sh` が消す）。index はタスクのエフェメラルストレージにあり、タスクと一緒に消える（検証用）。`ops/up.sh` は手順 7-4b でタスクが HEALTHY になるのを待ってから（最大 20 分）Spark のジョブを起こす。画面は下の「Grafana と Splunk を開く」。
   - AWS の外の Splunk（Splunk Cloud など）へ NAT Gateway で送る道は 2026-09-28 にやめた（VPC から AWS の外へ出る経路を作らない。`SPLUNK_HEC_URL` が書いてあると `ops/up.sh` が止まる）。
   - HEC が 4xx を返したまとまり（最大 500 件）は捨ててログに出し、ジョブは止めない。5xx は再送する。
@@ -227,6 +227,7 @@ aws emr-serverless get-dashboard-for-job-run --region ap-northeast-1 --applicati
 - **URL は一時的な認証を含み、約 1 時間で切れる。チャットやチケットに貼らない。**
 - 見るタブは「Structured Streaming」（バッチごとの入力行数と処理時間）と「Executors」。
 - `$JOB_RUN_ID` が `None` なら動いているジョブが無い。
+- 上のコマンドは、動いているジョブのうち最初の 1 つを取る。ジョブを選ぶなら `--query` を `"jobRuns[?name=='snmp-sinks-splunk']|[0].id"` のように名前で絞る。
 
 CLI だけで見るとき:
 
@@ -236,8 +237,12 @@ LOG_GROUP=$(terraform -chdir=terraform/pipeline/analytics output -raw log_group_
 ```
 
 - `FAILED` なら、ロググループ `/aws/emr-serverless/<prefix>` のドライバーの stderr を見る。
-- ジョブは同時に 1 本だけにする（同じチェックポイントを 2 本で書くと壊れる）。`ops/up.sh` の手順 7-5 は、スクリプトと引数のハッシュをジョブのタグ `SpecHash` に付けて起こし、動いているジョブのタグが今のハッシュと同じなら何もせず、違えば止めて（最大 3 分待つ）起こし直す。
-- 格納先ごとのクエリ（iceberg / opensearch / prometheus / splunk）のどれかが止まると、ジョブを終わらせ（exit 1）、STREAMING モードに起こし直させる。チェックポイントの続きから読むので、取りこぼしも二重も無い。起こし直しは既定で 1 時間に 5 回まで（超えると `FAILED`）。
+- ジョブは格納先で 3 つに分かれる（2026-10-04 から）。`snmp-sinks-iceberg`（S3 Tables）、`snmp-sinks-splunk`、`snmp-sinks-http`（OpenSearch と Prometheus）。格納先を外すと、そのジョブは起きない。driver 1 + executor 2 の 3 vCPU ずつで、アプリの上限は 12 vCPU / 48 GB。
+- 同じ名前のジョブは同時に 1 本だけにする（同じチェックポイントを 2 本で書くと壊れる）。`ops/up.sh` の手順 7-5 は、ジョブごとにスクリプトと引数のハッシュをタグ `SpecHash` に付けて起こし、動いているジョブのタグが今のハッシュと同じなら何もせず、違えばそのジョブだけ止めて起こし直す。
+- HTTP の格納先（OpenSearch / Prometheus / Splunk）へ送る所は `HTTP_SEND` で選ぶ。既定の `driver` は 1 回分を driver に集めて送る。`executor` は集めずに、パーティションごとに executor が送る（`foreachPartition`）。Prometheus は送る前に系列で分け直し、同じ系列を 1 つのタスクが時刻の順に送る。4xx で捨てた数は driver のログ、理由は executor の stderr（S3 の logs）。AWS では未確認。
+- 1 つのクエリが 1 回のトリガー（60 秒）に読む件数には上限がある（`MAX_OFFSETS_PER_TRIGGER`。既定 10000、0 で上限なし。格納先ごとの値も書ける）。効くのは、止めていたジョブを起こし直した直後。
+- アプリの上限（`max_cpu` / `max_memory`）を変える apply は、アプリが止まっていないと通らない。`ops/up.sh` の手順 7-4 は、上限が違うときだけ、先にジョブを全部止めてアプリを止め、apply のあと 7-5 が起こし直す。
+- 格納先ごとのクエリ（iceberg / opensearch / prometheus / splunk）のどれかが止まると、そのクエリのいるジョブを終わらせ（exit 1）、STREAMING モードに起こし直させる。ほかのジョブは動き続ける。チェックポイントの続きから読むので、取りこぼしは無い。S3 Tables は二重にもならない。HTTP の格納先は、やり直しで同じ行がもう一度届きうる（[data-stores.md](data-stores.md) の「届け方の保証」）。起こし直しは既定で 1 時間に 5 回まで（超えると `FAILED`）。
 - チェックポイントは MSK クラスタごとのパス（`s3://<バケット>/analytics/checkpoint/<クラスタの uuid>/`）。MSK を作り直すと、前のクラスタのオフセットを読まずに新しいパスから始まる。
 - analytics を消すと S3 Tables の履歴も消える。
 
@@ -333,7 +338,7 @@ uv run python lab/lab_topology.py lab --layers > agent/data/layers.json
 | `telegraf/`（`telegraf.conf.in` / `telegraf.sh` / `Dockerfile`） | `ops/up.sh` を打つ（ディレクトリのハッシュが変わるので手順 2 がイメージを作り直し、手順 7 の stream の apply がタスクを入れ替える）。lab の EC2 はそのまま。デバッグ用の EC2 は `ops/lab-debug.sh up` |
 | `grafana/`（provisioning。ダッシュボードとアラート） | `ops/up.sh` を打つ（同じく手順 2 がイメージを作り直し、手順 7-4 の analytics の apply がタスクを入れ替える） |
 | `splunk/`（保存済みサーチ、アラートアクション） | `ops/up.sh` を打つ（同じ。Splunk の index はタスクと一緒に消えるので、入れ替えの前のイベントは検索できなくなる） |
-| `spark/snmp_sinks.py` | `ops/up.sh` を打つ（手順 7-5 がハッシュの違いを見て、動いているジョブを止めて起こし直す）。手で止めるコマンドは下 |
+| `spark/snmp_sinks.py` | `ops/up.sh` を打つ（手順 7-5 がハッシュの違いを見て、動いているジョブ（3 つまで）を止めて起こし直す）。手で止めるコマンドは下 |
 | lab の機器や回線 | 上のあと `ops/sync-graph.sh --replace`。監視する機器を足したら `ops/up.sh`（stream の変数 `snmp_agents` / `gnmi_targets` が変わるので Telegraf の取りにいく側のタスクが作り直される。device map は Splunk のタスクの環境変数なので、変われば手順 7-4 の apply が Splunk のタスクを入れ替える） |
 
 ジョブを止めるコマンド（`$APP_ID` と `$JOB_RUN_ID` は上の「Spark を確かめる」で入れる）:
