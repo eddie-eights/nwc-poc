@@ -182,7 +182,7 @@ flowchart LR
 - 返す辞書は今のキーに合わせる。`updated_at` は `event_time`、`detail` は `alert_detail`。時刻は epoch 秒に直してから `_decorate` に渡す（Athena は timestamptz を UTC の文字列で返す。`agent/evidence.py` の `_jst_of` と同じ読み方で直す）。
 - テーブルは `"<catalog>"."<namespace>"."proposal_events"` の 3 部で書く（`query_history` と同じ）。
 - `proposal_id`（`device#kind#target#epoch` の形）を実行パラメータで渡すときの検査は、`query_history` の `_DEVICE_RE`（`^[A-Za-z0-9._:/#?-]{1,128}$`）をそのまま使えるかを実装で確かめる。`target` の文字と長さで通らないなら、`proposal_id` 用の検査を別に書く。
-- Athena の実行（開始 → 待つ → 止める → 結果）は、いま `agent/evidence.py` の `query_history` の中に直書きされている。これを共通の関数に切り出して、`query_history` と `proposals.py` の両方が使う（切り出しはこのサイクルでやる）。環境変数は同じ `ATHENA_WORKGROUP` / `ATHENA_CATALOG` / `HISTORY_NAMESPACE` に、`PROPOSAL_EVENTS_TABLE` を足す。
+- Athena の実行（開始 → 待つ → 止める → 結果）は、いま `agent/evidence.py` の `query_history` の中に直書きされている。これを共通の関数に切り出して `agent/toolkit.py` に置き、`query_history` と `proposals.py` の両方が使う（切り出しはこのサイクルでやる）。`evidence.py` に置かないのは、Web の EC2 に配るのが toolkit / topology / graph / proposals の 4 つだけで、`proposals.py` が evidence を import すると承認タブが壊れるから。boto3 のクライアントは呼ばれたときに作る（import しただけでは作らない）。環境変数は同じ `ATHENA_WORKGROUP` / `ATHENA_CATALOG` / `HISTORY_NAMESPACE` に、`PROPOSAL_EVENTS_TABLE` を足す。
 - Runtime のコンテナの中での代替実行（`agent/app.py` が Gateway に届かないとき `list_proposals` をコンテナ内で動かす）では、「修復案を読めない」というエラーが返る。設定は Web と同じ道（SSM のパラメータ）で渡すので、Runtime も設定は引けるが、Athena の権限が無いので AccessDenied になる。Runtime には Athena の権限を付けない（どちらにしても読めない。受け入れる）。Runtime の `ssm:GetParameter` を名前ごとに絞ることは、このサイクルではやらない。
 - 設定（SSM のパラメータ）が無ければ、今と同じく「まだ配備されていない」を返す。
 - `decide(proposal_id, decision, decided_by)`:
@@ -220,7 +220,7 @@ flowchart LR
 ## 変更対象ファイル
 
 - worker: `workflow/worker.py`、`workflow/awsio.py`、`workflow/rules.py`
-- 読む側と承認: `agent/proposals.py`、`agent/graph.py`、`agent/evidence.py`（Athena の共通の関数）、`web/incident_view.py`、`web/config.py`
+- 読む側と承認: `agent/proposals.py`、`agent/graph.py`、`agent/toolkit.py`（Athena の共通の関数）、`agent/evidence.py`（共通の関数を使うように直す）、`web/incident_view.py`、`web/config.py`、`web/app.py`（Neptune 前提の文言 3 か所を S3 Tables に直す）
 - Terraform: `terraform/pipeline/analytics/tables.tf`、`terraform/pipeline/graph/access.tf`、`terraform/workflow/events.tf`、`iam.tf`、`gateway.tf`、`proposals.tf`、`locals.tf`
 - 配備: `ops/up.sh`（Web に渡す設定が増えるなら）
 - テスト: `tests/test_workflow.py`、`tests/test_app.py`、`tests/test_graph.py`、`tests/test_analytics.py`
@@ -282,5 +282,6 @@ flowchart LR
 7. **PyIceberg の読み取りが遅いと、starter のアラートの処理が遅れる。** テーブルが小さいうちは問題にならない。行が増えたら `proposal_id` で区切る（パーティション）か、保持を決める。
 8. **実装は cycle 001 と 002 のあと。** `workflow/`、`agent/evidence.py`、`terraform/workflow/`、`ops/up.sh`、`tests/` が重なる。
 9. **配備の順番。** テーブルを作り直してから worker を入れ替えるまでのあいだ、古い worker は 12 列で書こうとして失敗する。up.sh の 1 回の中で両方が替わることを確かめる。
+10. **承認タブは 30 秒ごとに `list_proposals` を呼ぶ。** 開いているブラウザ 1 つにつき、30 秒に 1 回 Athena のクエリが走る（1 日開きっぱなしで約 2,880 回、エンジニアの見積もりで約 $0.14/日、応答は 1〜3 秒。AWS では未確認）。このサイクルでは変えない。気になるなら、間隔を延ばすか、結果を短い時間だけ持つ。
 
 <!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261004-cycle-003-proposals-in-s3tables-design.html -->

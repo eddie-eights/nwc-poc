@@ -67,3 +67,10 @@
 - エンジニアの指摘: 「代替実行では『まだ配備されていない』が返る」と「Web の設定は SSM のパラメータで渡す」は両立しない。Runtime も `parameter/<prefix>/*` を読めるので、設定を引けて、Athena の AccessDenied になる。
 - 決めたこと: そのまま受け入れる。代替実行では「修復案を読めない」が返る。IAM には触らない。
 - やらない案: Runtime の `ssm:GetParameter` を使っている名前に絞る。`pipeline/graph/access.tf` と `workflow/proposals.tf` に手が入り、このサイクルの範囲を超える。
+
+## 2026-10-05 Athena の共通の関数を置く場所
+
+- エンジニアの指摘: 設計は共通の関数を `agent/evidence.py` に置くとしていたが、Web の EC2 に配るのは toolkit / topology / graph / proposals の 4 つだけ（`ops/up.sh` と `terraform/base/core/outputs.tf` の `upload_web_command`）。`proposals.py` が evidence を import すると、承認タブが壊れる。
+- 決めたこと: 共通の関数と `_jst_of` を `agent/toolkit.py` に置く。配る一覧は変えない。boto3 のクライアントは呼ばれたときに作る。テストに「4 つだけで proposals を import できる」を足す。
+- やらない案: evidence.py に置いたまま、配る一覧に evidence を足す。`ops/up.sh` と `base/core` に手が入り、承認タブに要らない依存が載る。
+- あわせて: `web/app.py` の Neptune 前提の文言 3 か所を S3 Tables に直す。承認タブの 30 秒ごとの Athena のクエリは、リスクに書いて、このサイクルでは変えない。
