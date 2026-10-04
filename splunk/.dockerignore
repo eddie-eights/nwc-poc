@@ -1,0 +1,3 @@
+# ビルドに入れないもの。lib/ は Dockerfile の 1 段目が作る（手元に残っていても混ぜない）
+netops_alerts/lib
+**/__pycache__

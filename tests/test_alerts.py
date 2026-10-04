@@ -1,11 +1,11 @@
 """アラートの送り手の模擬テスト（AWS にも Splunk にも Grafana にも触れない）。
-Splunk のアラートアクション（splunk/netops_alerts/bin/netops_sns.py）が保存済みサーチの結果を SNS の本文にして SigV4 で publish すること、
+Splunk のアラートアクション（splunk/netops_alerts/bin/netops_sns.py）が保存済みサーチの結果を SNS の本文にして publish すること（boto3）、
 保存済みサーチ（default/savedsearches.conf）と Grafana のアラート（grafana/provisioning/alerting/netops*.yaml）が同じ形の本文を出し、
 受け手（workflow/rules.py の alerts_from_message）がそのまま読めること、SNS のトピック（terraform/base/core の alerts.tf）と
 イメージ（splunk/Dockerfile・entrypoint.sh、grafana/start.sh）と ops/up.sh・ops/check.sh がその配線を持つこと。
 受け手の側は tests/test_workflow.py（SQS → ワークフロー）と tests/test_sync.py（Lambda → Neptune の status）。
-実行は uv run --group dev python tests/test_alerts.py（依存は標準ライブラリだけ。botocore があれば署名を突き合わせる）"""
-import ast, contextlib, csv, datetime, glob, gzip, importlib.util, io, json, os, re, subprocess, sys, tempfile, urllib.error, urllib.parse
+実行は uv run --group dev python tests/test_alerts.py（boto3 が無くても通る。あれば手元の偽の SNS へ本物の boto3 で publish して確かめる）"""
+import ast, contextlib, csv, glob, gzip, http.server, importlib.util, io, json, os, re, subprocess, sys, tempfile, threading, urllib.parse
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, os.path.join(ROOT, "workflow"))
@@ -34,13 +34,19 @@ sns = load(ACTION, "netops_sns")
 import rules   # noqa: E402  受け手（workflow/rules.py）
 src = read(ACTION)
 KEYS = ["status", "device_id", "kind", "target", "detail", "starts_at"]
-TOPIC = "arn:aws:sns:ap-northeast-1:111122223333:netops-alerts"  # 下の SigV4 の既知の答えはこの ARN で作ってある
-CREDS = ("AKIDTEST", "test-secret", "test-token")   # 偽の値（署名の計算を確かめるためだけ）
+TOPIC = "arn:aws:sns:ap-northeast-1:111122223333:netops-alerts"
+CREDS = ("AKIDTEST", "test-secret", "test-token")   # 偽の値（手元の偽の認証情報の口が返す）
 
 # ---- アラートアクション: 行 → アラート
-check("アラートアクションは標準ライブラリだけで動く（Splunk の Python に boto3 は無い）",
-      {n.split(".")[0] for node in ast.walk(ast.parse(src)) if isinstance(node, (ast.Import, ast.ImportFrom))
-       for n in ([a.name for a in node.names] if isinstance(node, ast.Import) else [node.module])} <= set(sys.stdlib_module_names))
+def imported(nodes):
+    return {n.split(".")[0] for node in nodes if isinstance(node, (ast.Import, ast.ImportFrom))
+            for n in ([a.name for a in node.names] if isinstance(node, ast.Import) else [node.module])}
+
+
+top = imported(ast.parse(src).body)
+check("アラートアクションはモジュールの頭では標準ライブラリだけを読み、boto3 / botocore は publish のときに app の lib/ から読む（boto3 の無い PC でもテストできる）",
+      top <= set(sys.stdlib_module_names) and imported(ast.walk(ast.parse(src))) - top == {"boto3", "botocore"}
+      and os.path.realpath(sns.APP_LIB) == os.path.realpath(os.path.join(ROOT, "splunk", "netops_alerts", "lib")) and "sys.path.insert(0, APP_LIB)" in src)
 devmap = sns.parse_device_map(" 203.0.113.31=dc1-leaf-01 ,DC1-Leaf-02.Example.Net=dc1-leaf-02,壊れた要素,=x,y=,203.0.113.101=")
 check("device map は「別名=機器名」をカンマで並べたもの。別名は小文字にし、= の無い要素と片方が空の要素は捨てる",
       devmap == {"203.0.113.31": "dc1-leaf-01", "dc1-leaf-02.example.net": "dc1-leaf-02"} and sns.parse_device_map("") == {} and sns.parse_device_map(None) == {})
@@ -117,109 +123,154 @@ with tempfile.TemporaryDirectory() as tmp:
           and "OTHER" not in sns.load_env(ENVF, environ={"OTHER": "x"})
           and sns.load_env(os.path.join(tmp, "none"), environ={"ALERTS_TOPIC_ARN": TOPIC}) == {"ALERTS_TOPIC_ARN": TOPIC})
 
-    # ---- SigV4
-    URL = "https://sns.ap-northeast-1.amazonaws.com/"
-    BODY = urllib.parse.urlencode({"Action": "Publish", "Version": "2010-03-31", "TopicArn": TOPIC, "Subject": "netops alert", "Message": '{"source":"splunk","alerts":[]}'}).encode()
-    NOW = datetime.datetime(2026, 10, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)
-    h = sns.signed_headers(URL, BODY, "ap-northeast-1", CREDS, now=NOW)
-    check("SigV4 の署名（時刻を固定した既知の答え。botocore 1.43.94 の SigV4Auth と同じ値）",
-          h["authorization"] == "AWS4-HMAC-SHA256 Credential=AKIDTEST/20261002/ap-northeast-1/sns/aws4_request, "
-          "SignedHeaders=content-type;host;x-amz-date;x-amz-security-token, Signature=cab76b30225255c51cb022237f5ece528ed391e6aece6898d341b89856be87ff")
-    check("一時的な認証情報の token はヘッダーに入れて署名にも含める。token が無ければヘッダーごと無い",
-          h["x-amz-security-token"] == "test-token" and h["x-amz-date"] == "20261002T030405Z" and h["host"] == "sns.ap-northeast-1.amazonaws.com"
-          and sns.signed_headers(URL, BODY, "ap-northeast-1", CREDS[:2] + ("",), now=NOW)["authorization"].endswith(
-              "SignedHeaders=content-type;host;x-amz-date, Signature=d6bd5e6c29754aa30f48b4b57c5b9e8e7ef4bd9b5c4cbc1e0af600ce89e8c06a")
-          and "x-amz-security-token" not in sns.signed_headers(URL, BODY, "ap-northeast-1", CREDS[:2] + ("",), now=NOW))
-    check("秘密鍵は署名の計算にだけ使い、ヘッダーには出ない", not any("test-secret" in v for v in h.values()))
-    try:
-        from botocore.auth import SigV4Auth
-        from botocore.awsrequest import AWSRequest
-        from botocore.credentials import Credentials
-    except ImportError:
-        print("-- botocore が無いので、署名の突き合わせは既知の答えだけ")
-    else:
-        req = AWSRequest(method="POST", url=URL, data=BODY, headers={"Content-Type": h["content-type"]})
-        SigV4Auth(Credentials(*CREDS), "sns", "ap-northeast-1").add_auth(req)
-        at = datetime.datetime.strptime(req.headers["X-Amz-Date"], "%Y%m%dT%H%M%SZ").replace(tzinfo=datetime.timezone.utc)
-        check("botocore の SigV4Auth と同じ署名になる（同じ時刻・同じ本文）",
-              sns.signed_headers(URL, BODY, "ap-northeast-1", CREDS, now=at)["authorization"] == req.headers["Authorization"])
+    # ---- SNS へ publish（boto3）
     check("リージョンはトピックの ARN から取る（ARN で分からないときだけ AWS_REGION）",
           sns.topic_region(TOPIC) == "ap-northeast-1" and sns.topic_region("", "us-west-2") == "us-west-2" and sns.topic_region("arn:aws:sns", "x") == "x")
+    check("boto3 には環境変数でなく引数で渡す: 認証情報は ECS のタスクロールの口だけ（アクセスキーの環境変数・~/.aws へは逃げない）、"
+          "プロキシの環境変数と AWS_ENDPOINT_URL などの宛先の設定は見ない、boto3 の中では打ち直さない（送り直しは send）",
+          "ContainerProvider(environ=env)" in src and "proxies={}" in src and "ignore_configured_endpoint_urls=True" in src and '"total_max_attempts": 1' in src
+          and "AWS_ACCESS_KEY_ID" not in src and "AWS_SECRET_ACCESS_KEY" not in src)
 
-    # ---- 認証情報と publish（HTTP は差し替える）
-    class Res(io.BytesIO):
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
+    class Denied(Exception):
+        """botocore の ClientError と同じく response を持つ"""
+        def __init__(self):
+            super().__init__("An error occurred (AuthorizationError) when calling the Publish operation")
+            self.response = {"Error": {"Code": "AuthorizationError", "Message": "not authorized " + "x" * 400}, "ResponseMetadata": {"HTTPStatusCode": 403}}
 
-    class Opener:
-        def __init__(self, *answers): self.calls, self.answers = [], list(answers)
-        def open(self, req, timeout=None):
-            self.calls.append((req, timeout))
-            a = self.answers.pop(0) if self.answers else b"<ok/>"
-            if isinstance(a, Exception):
-                raise a
-            return Res(a)
+    check("失敗は 1 行にする: SNS が断ったら HTTP の状態・エラーコード・理由（300 字まで）、ほかは例外の名前と中身",
+          sns.describe(Denied()) == "HTTP 403 AuthorizationError: " + ("not authorized " + "x" * 400)[:300] and sns.describe(TimeoutError("timed out")) == "TimeoutError: timed out")
 
-    real_opener = sns.OPENER
-    check("HTTP はプロキシの環境変数を見ない opener で出す（認証情報の口は 169.254.170.2、SNS は VPC のエンドポイント）",
-          "ProxyHandler({})" in src and "urlopen(" not in src and src.count("OPENER.open(") == 2)
-    CRED_JSON = json.dumps({"AccessKeyId": "AKIDTEST", "SecretAccessKey": "test-secret", "Token": "test-token", "Expiration": "2026-10-02T09:00:00Z"}).encode()
-    sns.OPENER = Opener(CRED_JSON, CRED_JSON)
-    check("認証情報は ECS のタスクロールの口（http://169.254.170.2 + AWS_CONTAINER_CREDENTIALS_RELATIVE_URI）から取る",
-          sns.credentials(env) == CREDS and sns.OPENER.calls[0] == ("http://169.254.170.2/v2/credentials/abc", sns.TIMEOUT)
-          and sns.credentials({"AWS_CONTAINER_CREDENTIALS_FULL_URI": "http://127.0.0.1:9911/creds"}) == CREDS and sns.OPENER.calls[1][0] == "http://127.0.0.1:9911/creds")
-    try:
-        sns.credentials({}); raised = ""
-    except RuntimeError as e:
-        raised = str(e)
-    check("口が無い（タスクロールが付いていない）ときは理由を言って止まる。アクセスキーの環境変数へは逃げない",
-          "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI" in raised and "AWS_ACCESS_KEY_ID" not in src and "AWS_SECRET_ACCESS_KEY" not in src)
-    sns.OPENER = Opener()
-    sns.publish(env, CREDS, texts[0])
-    req, timeout = sns.OPENER.calls[0]
-    form = dict(urllib.parse.parse_qsl(req.data.decode()))
-    check("publish は SNS の Query API へ POST する（トピックのリージョンのエンドポイント、Action=Publish、本文はアラートの JSON）",
-          req.full_url == URL and req.get_method() == "POST" and timeout == sns.TIMEOUT
-          and form == {"Action": "Publish", "Version": "2010-03-31", "TopicArn": TOPIC, "Subject": "netops alert", "Message": texts[0]})
-    check("publish のリクエストは SigV4 で署名してある（token 付き）",
-          req.get_header("Authorization").startswith("AWS4-HMAC-SHA256 Credential=AKIDTEST/") and "/ap-northeast-1/sns/aws4_request" in req.get_header("Authorization")
-          and req.get_header("X-amz-security-token") == "test-token")
-    sns.OPENER = Opener()
-    sns.publish(dict(env, AWS_ENDPOINT_URL_SNS="http://127.0.0.1:9911/"), CREDS, "{}")
-    check("AWS_ENDPOINT_URL_SNS があればそこへ送る（手元で偽の SNS に向けて試すとき）", sns.OPENER.calls[0][0].full_url == "http://127.0.0.1:9911/")
-    sns.OPENER = real_opener
+    # ---- 送り直し（client は差し替える）
+    def run_send(outcomes, connect_errors=()):
+        """client.publish が outcomes の順に成功（None）/ 失敗（例外）し、client を作る（認証情報を取る）のが connect_errors の順に失敗する。
+        (送れた通数, publish の回数, client を作った回数, 待った秒, publish の引数, stderr)"""
+        log = {"publish": [], "connect": 0, "slept": []}
+        outcomes, connect_errors = list(outcomes), list(connect_errors)
 
-    # ---- 送り直し
-    def run_send(outcomes):
-        """outcomes の順に publish が成功（None）/ 失敗（例外）する。(送れた通数, publish の回数, 認証情報を取った回数, 待った秒, stderr)"""
-        log = {"publish": 0, "creds": 0, "slept": []}
-        def publish(e, creds, text):
-            log["publish"] += 1
-            o = outcomes.pop(0) if outcomes else None
-            if o is not None:
-                raise o
-        def credentials(e):
-            log["creds"] += 1
-            return CREDS
-        keep = sns.publish, sns.credentials
-        sns.publish, sns.credentials = publish, credentials
+        class Client:
+            def publish(self, **kw):
+                log["publish"].append(kw)
+                o = outcomes.pop(0) if outcomes else None
+                if o is not None:
+                    raise o
+
+        def connect(e):
+            log["connect"] += 1
+            if connect_errors:
+                raise connect_errors.pop(0)
+            return Client()
         err = io.StringIO()
-        try:
-            with contextlib.redirect_stderr(err):
-                sent = sns.send(env, ["a", "b"], sleep=log["slept"].append)
-        finally:
-            sns.publish, sns.credentials = keep
-        return sent, log["publish"], log["creds"], log["slept"], err.getvalue()
+        with contextlib.redirect_stderr(err):
+            sent = sns.send(env, ["a", "b"], sleep=log["slept"].append, connect=connect)
+        return sent, len(log["publish"]), log["connect"], log["slept"], log["publish"], err.getvalue()
 
-    check("2 通とも 1 回で送れれば待たない", run_send([])[:4] == (2, 2, 2, []))
-    http = urllib.error.HTTPError(URL, 403, "Forbidden", {}, io.BytesIO(b"<Error><Code>AuthorizationError</Code></Error>"))
-    sent, n, ncreds, slept, err = run_send([http, urllib.error.URLError("timed out")])
-    check("失敗したら認証情報を取り直して送り直す（1 通につき 3 回まで。待ちは 1 秒、2 秒）",
-          (sent, n, ncreds, slept) == (2, 4, 4, [1, 2]) and err.count("ERROR publish に失敗した") == 2 and "HTTP 403" in err and "AuthorizationError" in err and "URLError" in err)
-    sent, n, ncreds, slept, err = run_send([OSError("down")] * 3)
-    check("3 回とも失敗した通は諦めて次の通へ進む（送れた通数を返す）", (sent, n, slept) == (1, 4, [1, 2]) and "（3/3）" in err)
-    check("失敗のログに認証情報は出ない", not any(s in err for s in ("test-secret", "test-token", "AKIDTEST")))
+    sent, n, nconn, slept, calls, err = run_send([])
+    check("2 通とも 1 回で送れれば待たない。client（認証情報）は 1 回だけ作って使い回す。publish するのはトピック・件名・本文",
+          (sent, n, nconn, slept, err) == (2, 2, 1, [], "") and calls == [{"TopicArn": TOPIC, "Subject": "netops alert", "Message": m} for m in ("a", "b")])
+    sent, n, nconn, slept, calls, err = run_send([Denied(), TimeoutError("timed out")])
+    check("失敗したら client を作り直して（認証情報を取り直して）送り直す（1 通につき 3 回まで。待ちは 1 秒、2 秒）",
+          (sent, n, nconn, slept) == (2, 4, 3, [1, 2]) and err.count("ERROR publish に失敗した") == 2 and "HTTP 403 AuthorizationError" in err and "TimeoutError: timed out" in err)
+    sent, n, nconn, slept, calls, err = run_send([OSError("down")] * 3)
+    check("3 回とも失敗した通は諦めて次の通へ進む（送れた通数を返す）", (sent, n, slept) == (1, 4, [1, 2]) and "（3/3）" in err and calls[-1]["Message"] == "b")
+    sent, n, nconn, slept, calls, err = run_send([], connect_errors=[RuntimeError("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI が無い")] * 3)
+    check("認証情報を取れないのも失敗として数えて送り直す", (sent, n, nconn, slept) == (1, 1, 4, [1, 2]) and err.count("RuntimeError: AWS_CONTAINER_CREDENTIALS_RELATIVE_URI が無い") == 3)
+    try:
+        run_send([], connect_errors=[ModuleNotFoundError("No module named 'boto3'")]); raised = None
+    except ImportError as e:
+        raised = e
+    check("boto3 が読めない（lib/ が無い = イメージの作り方の誤り）ときは送り直さずに止まる（main が ERROR で 3 にする）", isinstance(raised, ModuleNotFoundError))
     check("送り直しの回数と待ちの定数", (sns.ATTEMPTS, sns.TIMEOUT, sns.SUBJECT, sns.STATUSES) == (3, 10, "netops alert", ("firing", "resolved")))
+
+    # ---- 本物の boto3 で、手元の偽の認証情報の口と偽の SNS へ publish する（boto3 が無ければ飛ばす。ops/check.sh は dev のグループで入れる）
+    try:
+        import boto3  # noqa: F401
+    except ImportError:
+        print("-- boto3 が無いので、本物の boto3 での publish は確かめない")
+    else:
+        from botocore.utils import ContainerMetadataFetcher
+        seen = {"creds": 0, "posts": [], "fail": []}
+        CRED_JSON = json.dumps({"AccessKeyId": CREDS[0], "SecretAccessKey": CREDS[1], "Token": CREDS[2], "Expiration": "2099-01-01T00:00:00Z"}).encode()
+
+        class Fake(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+
+            def reply(self, code, body, ctype):
+                self.send_response(code); self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(len(body))); self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):   # 認証情報の口（ECS の 169.254.170.2 の代わり）
+                seen["creds"] += 1
+                self.reply(200 if self.path == "/creds" else 404, CRED_JSON, "application/json")
+
+            def do_POST(self):   # SNS の Query API
+                body = self.rfile.read(int(self.headers["Content-Length"])).decode()
+                seen["posts"].append({"path": self.path, "auth": self.headers.get("Authorization", ""), "token": self.headers.get("X-Amz-Security-Token"),
+                                      "form": dict(urllib.parse.parse_qsl(body))})
+                if seen["fail"]:
+                    status, code = seen["fail"].pop(0)
+                    return self.reply(status, f'<ErrorResponse xmlns="http://sns.amazonaws.com/doc/2010-03-31/"><Error><Type>Sender</Type><Code>{code}</Code>'
+                                              f'<Message>not authorized</Message></Error><RequestId>r</RequestId></ErrorResponse>'.encode(), "text/xml")
+                self.reply(200, b'<PublishResponse xmlns="http://sns.amazonaws.com/doc/2010-03-31/"><PublishResult><MessageId>m-1</MessageId></PublishResult>'
+                                b'<ResponseMetadata><RequestId>r</RequestId></ResponseMetadata></PublishResponse>', "text/xml")
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fake)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{srv.server_port}"
+        local = {"ALERTS_TOPIC_ARN": TOPIC, "AWS_REGION": "us-west-2", "AWS_CONTAINER_CREDENTIALS_FULL_URI": base + "/creds", "AWS_ENDPOINT_URL_SNS": base + "/"}
+        # プロセスの環境変数に紛らわしい値を置く（boto3 がこれらを見たら、届かない・別の鍵で署名する・別のリージョンへ行く・打ち直す）
+        dead = "http://127.0.0.1:9"
+        noise = {"HTTP_PROXY": dead, "HTTPS_PROXY": dead, "http_proxy": dead, "https_proxy": dead, "ALL_PROXY": dead, "AWS_ENDPOINT_URL": dead,
+                 "AWS_ENDPOINT_URL_SNS": dead, "AWS_ACCESS_KEY_ID": "AKIDENV", "AWS_SECRET_ACCESS_KEY": "env-secret", "AWS_REGION": "eu-west-1",
+                 "AWS_DEFAULT_REGION": "eu-west-1", "AWS_MAX_ATTEMPTS": "9", "AWS_RETRY_MODE": "standard",
+                 "AWS_CONFIG_FILE": os.path.join(tmp, "none"), "AWS_SHARED_CREDENTIALS_FILE": os.path.join(tmp, "none")}
+        drop = ("NO_PROXY", "no_proxy", "AWS_PROFILE", "AWS_SESSION_TOKEN", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI")
+        keep = {k: os.environ.get(k) for k in (*noise, *drop)}
+        os.environ.update(noise)
+        for k in drop:
+            os.environ.pop(k, None)
+        try:
+            c = sns.sns_client(local)
+            check("本物の boto3: リージョンはトピックの ARN（AWS_REGION の環境変数ではない）、宛先は AWS_ENDPOINT_URL_SNS（env ファイルの値。プロセスの環境変数ではない）",
+                  c.meta.region_name == "ap-northeast-1" and c.meta.endpoint_url.rstrip("/") == base and seen["creds"] == 1)
+            c = sns.sns_client({"ALERTS_TOPIC_ARN": TOPIC, "AWS_CONTAINER_CREDENTIALS_FULL_URI": base + "/creds"})
+            check("本物の boto3: AWS_ENDPOINT_URL_SNS が無ければトピックのリージョンの SNS（VPC のインターフェース型エンドポイントがこの名前を引き受ける）",
+                  c.meta.endpoint_url == "https://sns.ap-northeast-1.amazonaws.com")
+            check("本物の boto3: RELATIVE_URI は ECS の口（http://169.254.170.2）に足して引く",
+                  ContainerMetadataFetcher().full_url("/v2/credentials/abc") == "http://169.254.170.2/v2/credentials/abc")
+            try:
+                sns.sns_client({"ALERTS_TOPIC_ARN": TOPIC}); raised = ""
+            except RuntimeError as e:
+                raised = str(e)
+            check("本物の boto3: 口が無い（タスクロールが付いていない）ときは理由を言って止まる。アクセスキーの環境変数へは逃げない",
+                  "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI が無い" in raised)
+            seen.update(creds=0, posts=[], fail=[(500, "InternalError")])
+            slept, err = [], io.StringIO()
+            with contextlib.redirect_stderr(err):
+                sent = sns.send(local, [texts[0], "{}"], sleep=slept.append)
+            ok = [p for p in seen["posts"]]
+            check("本物の boto3: 偽の SNS へ 2 通届く。本文は Query API の Publish（トピック・件名・アラートの JSON）で、"
+                  "一時的な認証情報（token 付き）でトピックのリージョンの sns として SigV4 で署名してある。プロキシの環境変数は通らない",
+                  sent == 2 and len(ok) == 3 and ok[1]["path"] == "/"
+                  and ok[1]["form"] == {"Action": "Publish", "Version": "2010-03-31", "TopicArn": TOPIC, "Subject": "netops alert", "Message": texts[0]}
+                  and ok[2]["form"]["Message"] == "{}"
+                  and all(p["auth"].startswith("AWS4-HMAC-SHA256 Credential=AKIDTEST/") and "/ap-northeast-1/sns/aws4_request" in p["auth"] and p["token"] == "test-token"
+                          for p in ok))
+            check("本物の boto3: SNS の 500 は boto3 の中で打ち直さず（AWS_MAX_ATTEMPTS も見ない）、send が client を作り直して（認証情報を取り直して）送り直す",
+                  slept == [1] and seen["creds"] == 2 and "ERROR publish に失敗した（1/3）: HTTP 500 InternalError: not authorized" in err.getvalue())
+            seen.update(creds=0, posts=[], fail=[(403, "AuthorizationError")] * 3)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                sent = sns.send(local, ["{}"], sleep=lambda s: None)
+            check("本物の boto3: 3 回とも断られたら 0 通。ログは HTTP の状態とエラーコードだけで、認証情報は出ない",
+                  sent == 0 and len(seen["posts"]) == 3 and err.getvalue().count("HTTP 403 AuthorizationError: not authorized") == 3
+                  and not any(v in err.getvalue() for v in (*CREDS, "AKIDENV", "env-secret")))
+        finally:
+            for k, v in keep.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            srv.shutdown()
 
     # ---- main（Splunk が --execute で起こし、標準入力に JSON を渡す）
     def run_main(argv, stdin, envd=None, sent=None, fail=None):
@@ -252,6 +303,8 @@ with tempfile.TemporaryDirectory() as tmp:
     rc, published, err = run_main(["netops_sns.py", "--execute"], json.dumps({"results_file": os.path.join(tmp, "none.csv.gz")}))
     check("main: 結果のファイルが無い・JSON が壊れているなどは traceback を出さずに 3", rc == 3 and "ERROR Unexpected error: FileNotFoundError" in err and "Traceback" not in err
           and run_main(["netops_sns.py", "--execute"], "{壊れた")[0] == 3 and run_main(["netops_sns.py", "--execute"], PAYLOAD, fail=ValueError("x"))[0] == 3)
+    rc, published, err = run_main(["netops_sns.py", "--execute"], PAYLOAD, fail=ModuleNotFoundError("No module named 'boto3'"))
+    check("main: boto3 が読めない（lib/ が無い）ときも traceback を出さずに 3", rc == 3 and "ERROR Unexpected error: ModuleNotFoundError: No module named 'boto3'" in err)
     with gzip.open(RESULTS, "wt", encoding="utf-8", newline="") as f:
         f.write("device,kind,target,status,detail,starts_at\n")
     rc, published, err = run_main(["netops_sns.py", "--execute"], PAYLOAD)
@@ -444,7 +497,8 @@ check("サーチが出す kind は受け手が知っているものだけ（link
 check("detail の末尾でどの入力から出したかが分かる（Grafana は (grafana: …)）: ポーリングは (splunk: poll)、gNMI は (splunk: gnmi)、"
       "link の trap は (splunk: linkDown trap) / (splunk: linkUp trap)、ほかの trap は (splunk: trap)",
       re.findall(r"\((splunk[^)]*)\)", p + g + t + c) == ["splunk: poll", "splunk: gnmi", "splunk: linkUp trap", "splunk: linkDown trap", "splunk: trap", "splunk: trap"])
-check("アラートアクションの定義: カスタム、標準入力は JSON、Python 3", actions == {"netops_sns": dict(actions["netops_sns"], **{"is_custom": "1", "payload_format": "json", "python.required": "latest"})}
+check("アラートアクションの定義: カスタム、標準入力は JSON、Python 3.13（lib/ の boto3 は 3.10 から）",
+      actions == {"netops_sns": dict(actions["netops_sns"], **{"is_custom": "1", "payload_format": "json", "python.required": "3.13"})}
       and os.path.exists(os.path.join(ROOT, *APP, "bin", "netops_sns.py")) and os.path.exists(os.path.join(ROOT, *APP, "default", "data", "ui", "alerts", "netops_sns.html")))
 check("spec（README/*.conf.spec）がある（無いと btool check が知らない設定として警告する）",
       "[netops_sns]" in read(*APP, "README", "alert_actions.conf.spec") and "action.netops_sns = " in read(*APP, "README", "savedsearches.conf.spec"))
@@ -460,9 +514,27 @@ check("app の中に認証情報や local/ は無い（公開リポジトリ）"
 # ---- Splunk のイメージ
 df = read("splunk", "Dockerfile")
 dcode = [l for l in df.splitlines() if l.strip() and not l.startswith("#")]
-check("Splunk のイメージは上流の公式イメージに app と入口を足すだけ（RUN は無い = arm64 の PC でも QEMU 無しでビルドできる）",
-      dcode == ["ARG SPLUNK_VERSION=10.4.3", "FROM splunk/splunk:${SPLUNK_VERSION}", "COPY --chown=splunk:splunk netops_alerts /opt/splunk-etc/apps/netops_alerts",
-                "COPY --chmod=0755 entrypoint.sh /sbin/nwc-entrypoint.sh", 'ENTRYPOINT ["/sbin/nwc-entrypoint.sh"]', 'CMD ["start-service"]'])
+stages = re.split(r"^FROM ", "\n".join(dcode), flags=re.M)[1:]
+check("Splunk のイメージは 2 段: 1 段目（ビルドする PC の CPU の python）で boto3 を取り、2 段目は上流の公式イメージに app・lib/・入口を COPY するだけ"
+      "（amd64 の段に RUN が無い = arm64 の PC でも QEMU 無しでビルドできる）",
+      [l for l in dcode if l.startswith(("FROM", "COPY", "ENTRYPOINT", "CMD"))]
+      == ["FROM --platform=$BUILDPLATFORM python:${PYTHON_VERSION}-slim AS lib", "FROM splunk/splunk:${SPLUNK_VERSION}",
+          "COPY --chown=splunk:splunk netops_alerts /opt/splunk-etc/apps/netops_alerts", "COPY --from=lib --chown=splunk:splunk /out /opt/splunk-etc/apps/netops_alerts/lib",
+          "COPY --chmod=0755 entrypoint.sh /sbin/nwc-entrypoint.sh", 'ENTRYPOINT ["/sbin/nwc-entrypoint.sh"]', 'CMD ["start-service"]']
+      and len(stages) == 2 and sum(l.startswith("RUN ") for l in stages[0].splitlines()) == 1 and "RUN " not in stages[1])
+pins = dict(re.findall(r'"?([a-z][a-z0-9-]*)==([^"\s]+)', stages[0]))
+check("boto3 と依存は版を固定して（boto3 / botocore は ARG の BOTO3_VERSION、ほかは ==）wheel だけで /out に入れる。純粋な Python でないもの"
+      "（*-none-any でない wheel・.so）が混ざったらビルドを止める。botocore のデータは sns と直下のファイルだけ残す",
+      re.search(r"^ARG BOTO3_VERSION=\d+\.\d+\.\d+$", stages[0], re.M) is not None
+      and set(pins) == {"boto3", "botocore", "jmespath", "python-dateutil", "s3transfer", "six", "urllib3"}
+      and pins["boto3"] == pins["botocore"] == "${BOTO3_VERSION}" and all(re.fullmatch(r"\d[\w.]*", v) for k, v in pins.items() if k not in ("boto3", "botocore"))
+      and "--only-binary=:all:" in stages[0] and "--target /out " in stages[0]
+      and "find /out/botocore/data -mindepth 1 -maxdepth 1 -type d ! -name sns -exec rm -rf {} +" in stages[0]
+      and "! grep -h '^Tag:' /out/*.dist-info/WHEEL | grep -v -- '-none-any$'" in stages[0] and "! find /out -name '*.so' | grep ." in stages[0])
+check("Python の版は 1 つに揃える: Dockerfile の PYTHON_VERSION（boto3 を入れる段）= アラートアクションの python.required",
+      re.search(r"^ARG PYTHON_VERSION=([\d.]+)$", df, re.M).group(1) == actions["netops_sns"]["python.required"] == "3.13")
+check("lib/ はリポジトリにもビルドの文脈にも入れない（.gitignore・splunk/.dockerignore。手元に残っていても混ぜない）",
+      "splunk/netops_alerts/lib/" in read(".gitignore").splitlines() and {"netops_alerts/lib", "**/__pycache__"} <= set(read("splunk", ".dockerignore").splitlines()))
 up = read("ops", "up.sh")
 check("up.sh の SPLUNK_VERSION / GRAFANA_VERSION は Dockerfile の ARG の既定値と同じ",
       re.search(r"^SPLUNK_VERSION=([\d.]+)", up, re.M).group(1) == re.search(r"ARG SPLUNK_VERSION=([\d.]+)", df).group(1)

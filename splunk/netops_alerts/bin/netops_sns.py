@@ -6,38 +6,32 @@ publish する JSON は Grafana（grafana/provisioning/alerting）と同じ形�
   {"source": "splunk", "alerts": [{"status", "device_id", "kind", "target", "detail", "starts_at"}, …]}
 
 - 機器名: gNMI と trap のイベントは機器名でなく管理 IP（tags.source）を持つ。DEVICE_MAP（別名=機器名,…）で名前に直す
-- 認証: ECS のタスクロール（AWS_CONTAINER_CREDENTIALS_RELATIVE_URI から一時的な認証情報を取り、SigV4 で署名する）。アクセスキーは置かない
-- 設定: コンテナの環境変数を splunk/entrypoint.sh がファイルに写したもの（splunkd の子プロセスはコンテナの環境変数を引き継がない）
-- ライブラリ: 標準ライブラリだけ（Splunk の Python に boto3 は無い。VPC から PyPI へも出られない）
+- 認証: ECS のタスクロール（AWS_CONTAINER_CREDENTIALS_RELATIVE_URI から一時的な認証情報を取る）。アクセスキーは置かない
+- 設定: コンテナの環境変数を splunk/entrypoint.sh がファイルに写したもの（splunkd の子プロセスはコンテナの環境変数を引き継がない）。
+  boto3 には環境変数でなく引数で渡す（認証情報の口・リージョン・AWS_ENDPOINT_URL_SNS）
+- ライブラリ: boto3 を app の lib/ に同梱する（splunk/Dockerfile がイメージのビルドのときに入れる。Splunk の Python に pip で入れない。
+  VPC から PyPI へは出られない）。boto3 は publish のときに読むので、boto3 の無い PC でもテストできる
 
 失敗は stderr に "ERROR …" で書いて 0 以外で終わる（Splunk が splunkd.log の sendmodalert に残す）。Splunk は打ち直さないので、ここで 3 回まで試す
 """
 import csv
-import datetime
 import gzip
-import hashlib
-import hmac
 import json
 import os
 import re
 import sys
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 
 ENV_FILE = "/opt/container_artifact/nwc-alerts.env"   # splunk/entrypoint.sh が書く
 ENV_KEYS = ("AWS_REGION", "ALERTS_TOPIC_ARN", "DEVICE_MAP", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
             "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_ENDPOINT_URL_SNS")
-ECS_CREDENTIALS_HOST = "http://169.254.170.2"   # ECS のタスクの認証情報の口（タスクの中からだけ届く）
+APP_LIB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib")   # boto3 など（splunk/Dockerfile が入れる）
 STATUSES = ("firing", "resolved")
 MAX_ALERTS = 50      # 1 通に入れる件数（SNS の本文は 256 KB まで。1 件は数百バイト）
 ATTEMPTS = 3
 TIMEOUT = 10
 SUBJECT = "netops alert"
 IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
-# プロキシの環境変数は見ない（認証情報の口は 169.254.170.2、SNS は VPC のエンドポイント）
-OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def log(level, text):
@@ -112,71 +106,58 @@ def read_rows(path):
         return list(csv.DictReader(f))
 
 
-def credentials(env):
-    """タスクロールの一時的な認証情報 (access key id, secret, token)。値はログに出さない"""
-    rel, full = env.get("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"), env.get("AWS_CONTAINER_CREDENTIALS_FULL_URI")
-    url = (ECS_CREDENTIALS_HOST + rel) if rel else full
-    if not url:
-        raise RuntimeError("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI が無い（ECS のタスクロールが付いていない）")
-    with OPENER.open(url, timeout=TIMEOUT) as res:
-        d = json.load(res)
-    return d["AccessKeyId"], d["SecretAccessKey"], d.get("Token") or ""
-
-
 def topic_region(topic_arn, default=""):
     """arn:aws:sns:<region>:<account>:<name> の region"""
     parts = (topic_arn or "").split(":")
     return parts[3] if len(parts) >= 6 and parts[3] else default
 
 
-def _hmac(key, text):
-    return hmac.new(key, text.encode(), hashlib.sha256).digest()
+def sns_client(env):
+    """SNS のクライアント（boto3）。認証情報は ECS のタスクロールの口（env の AWS_CONTAINER_CREDENTIALS_RELATIVE_URI。手元で偽の口に向けるときは
+    AWS_CONTAINER_CREDENTIALS_FULL_URI）からだけ取り、アクセスキーの環境変数・~/.aws・IMDS へは逃げない。値はログに出さない。
+    リージョンはトピックの ARN から（分からないときだけ AWS_REGION）、宛先は AWS_ENDPOINT_URL_SNS があればそこ。
+    プロキシの環境変数と、AWS_ENDPOINT_URL などの宛先の設定は見ない（認証情報の口は 169.254.170.2、SNS は VPC のエンドポイント）。
+    試し直しは send がする（boto3 の中では打ち直さない）"""
+    if APP_LIB not in sys.path:
+        sys.path.insert(0, APP_LIB)
+    import boto3
+    from botocore.config import Config
+    from botocore.credentials import ContainerProvider
+    creds = ContainerProvider(environ=env).load()
+    if creds is None:
+        raise RuntimeError("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI が無い（ECS のタスクロールが付いていない）")
+    c = creds.get_frozen_credentials()
+    session = boto3.session.Session(aws_access_key_id=c.access_key, aws_secret_access_key=c.secret_key, aws_session_token=c.token or None,
+                                    region_name=topic_region(env["ALERTS_TOPIC_ARN"], env.get("AWS_REGION", "")) or None)
+    config = Config(connect_timeout=TIMEOUT, read_timeout=TIMEOUT, retries={"total_max_attempts": 1}, proxies={},
+                    ignore_configured_endpoint_urls=True)
+    return session.client("sns", endpoint_url=env.get("AWS_ENDPOINT_URL_SNS") or None, config=config)
 
 
-def signed_headers(url, body, region, creds, now=None, service="sns"):
-    """SigV4 で署名した POST のヘッダー（body は bytes）。now は UTC の datetime（テスト用）"""
-    key_id, secret, token = creds
-    u = urllib.parse.urlsplit(url)
-    now = now or datetime.datetime.now(datetime.timezone.utc)
-    amz_date, date = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
-    headers = {"content-type": "application/x-www-form-urlencoded; charset=utf-8", "host": u.netloc, "x-amz-date": amz_date}
-    if token:
-        headers["x-amz-security-token"] = token
-    names = ";".join(sorted(headers))
-    canonical = "\n".join(["POST", u.path or "/", u.query, "".join(f"{k}:{headers[k]}\n" for k in sorted(headers)), names,
-                           hashlib.sha256(body).hexdigest()])
-    scope = f"{date}/{region}/{service}/aws4_request"
-    to_sign = "\n".join(["AWS4-HMAC-SHA256", amz_date, scope, hashlib.sha256(canonical.encode()).hexdigest()])
-    key = _hmac(_hmac(_hmac(_hmac(("AWS4" + secret).encode(), date), region), service), "aws4_request")
-    signature = hmac.new(key, to_sign.encode(), hashlib.sha256).hexdigest()
-    headers["authorization"] = f"AWS4-HMAC-SHA256 Credential={key_id}/{scope}, SignedHeaders={names}, Signature={signature}"
-    return headers
+def describe(e):
+    """失敗を 1 行に。SNS が断った（botocore の ClientError）なら HTTP の状態とエラーコード。認証情報の値は入らない"""
+    r = getattr(e, "response", None)
+    if isinstance(r, dict) and isinstance(r.get("Error"), dict):
+        status = (r.get("ResponseMetadata") or {}).get("HTTPStatusCode", "?")
+        return f"HTTP {status} {r['Error'].get('Code', '')}: {str(r['Error'].get('Message', ''))[:300]}"
+    return f"{type(e).__name__}: {str(e)[:300]}"
 
 
-def publish(env, creds, text):
-    """SNS の Publish（Query API）。2xx 以外と通信の失敗は例外"""
-    topic = env["ALERTS_TOPIC_ARN"]
-    region = topic_region(topic, env.get("AWS_REGION", ""))
-    url = env.get("AWS_ENDPOINT_URL_SNS") or f"https://sns.{region}.amazonaws.com/"
-    body = urllib.parse.urlencode({"Action": "Publish", "Version": "2010-03-31", "TopicArn": topic, "Subject": SUBJECT, "Message": text}).encode()
-    req = urllib.request.Request(url, data=body, headers=signed_headers(url, body, region, creds), method="POST")
-    with OPENER.open(req, timeout=TIMEOUT) as res:
-        res.read()
-
-
-def send(env, texts, sleep=time.sleep):
-    """本文を順に publish する。失敗したら認証情報を取り直して ATTEMPTS 回まで試す。送れた通数を返す"""
-    sent = 0
+def send(env, texts, sleep=time.sleep, connect=None):
+    """本文を順に publish する。失敗したらクライアントを作り直して（認証情報を取り直して）ATTEMPTS 回まで試す。送れた通数を返す"""
+    connect = connect or sns_client
+    client, sent = None, 0
     for text in texts:
         for attempt in range(1, ATTEMPTS + 1):
             try:
-                publish(env, credentials(env), text)
+                client = client or connect(env)
+                client.publish(TopicArn=env["ALERTS_TOPIC_ARN"], Subject=SUBJECT, Message=text)
                 sent += 1
                 break
-            except urllib.error.HTTPError as e:
-                err = f"HTTP {e.code} {e.read()[:300]!r}"
-            except (urllib.error.URLError, OSError, KeyError, ValueError, RuntimeError) as e:
-                err = f"{type(e).__name__}: {e}"
+            except ImportError:
+                raise   # app の lib/ に boto3 が無い（イメージの作り方の誤り）。試し直しても直らない
+            except Exception as e:   # boto3 の失敗はどれも試し直す（ClientError = SNS が断った、BotoCoreError = 通信・認証情報の口）
+                client, err = None, describe(e)
             log("ERROR", f"publish に失敗した（{attempt}/{ATTEMPTS}）: {err}")
             if attempt < ATTEMPTS:
                 sleep(attempt)

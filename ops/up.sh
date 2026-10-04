@@ -555,7 +555,8 @@ if [ -z "$NEED_AGENT$NEED_LAB$NEED_WORKER$NEED_TEMPORAL$NEED_TELEGRAF$NEED_GRAFA
 else
   docker info >/dev/null 2>&1 || die "dockerd に接続できない（WSL なら sudo service docker start。docs/setup.md「Terraform を打つ PC 側」）"
   # agent / worker / grafana / nautobot は RUN があるので、x86_64 の PC では QEMU（binfmt）が要る（lab のイメージは上流の arm64 をミラーするだけで、
-  # telegraf は COPY だけ。splunk も COPY だけで amd64 なので、arm64 の PC（Apple シリコン）でもエミュレーション無しで作れる）
+  # telegraf は COPY だけ。splunk は amd64 だが、RUN は boto3 を取る 1 段目（ビルドする PC の CPU で動かす）だけで、amd64 の段は COPY だけなので、
+  # arm64 の PC（Apple シリコン）でもエミュレーション無しで作れる）
   # 出力は変数で受けてから探す（grep -q が先に閉じると docker が SIGPIPE で落ち、pipefail で「無い」扱いになることがある）
   BUILDX_LS=$(docker buildx ls 2>/dev/null || true)
   if [ -n "$NEED_AGENT$NEED_WORKER$NEED_GRAFANA$NEED_NAUTOBOT" ] && ! grep -q 'linux/arm64' <<<"$BUILDX_LS"; then
@@ -586,8 +587,8 @@ else
     docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push grafana/
   fi
   if [ -n "$NEED_SPLUNK" ]; then
-    # Splunk Enterprise の公式イメージ（amd64 だけ。約 2〜3 GB）に検知のアプリ（splunk/netops_alerts）を足す。
-    # Fargate は VPC の中から ECR しか引けず、タスクは Splunkbase にも出られないので、アプリはビルドのときに入れる
+    # Splunk Enterprise の公式イメージ（amd64 だけ。約 2〜3 GB）に検知のアプリ（splunk/netops_alerts）と、その lib/ に boto3 を足す。
+    # Fargate は VPC の中から ECR しか引けず、タスクは Splunkbase にも PyPI にも出られないので、ビルドのときに入れる（boto3 はこの PC から PyPI へ取りに行く）
     docker buildx build --platform linux/amd64 --build-arg "SPLUNK_VERSION=$SPLUNK_VERSION" -t "$REG/$PREFIX-splunk:$SPLUNK_TAG" --push splunk/
   fi
   if [ -n "$NEED_NAUTOBOT" ]; then
