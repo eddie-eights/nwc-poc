@@ -1173,9 +1173,9 @@ check("deploy.env.example は SINK_SPLUNK=0 を既定にし、SPLUNK_HEC_URL / S
       and "SPLUNK_HEC_URL" not in open(ENV_EXAMPLE, encoding="utf-8").read() and "SPLUNK_SKIP_TLS_VERIFY" not in open(ENV_EXAMPLE, encoding="utf-8").read())
 check("MSK Connect の Splunk は書いていない（2026-09-26 に Spark から書くことにした）",
       "MSK Connect で後回し" not in tf and "MSK Connect で後回し" not in src and "MSK Connect で後回し" not in up)
-check("up.sh は analytics を stream の後に apply し、ジョブを格納先ごとに STREAMING で起こす（名前は snmp-sinks-<iceberg|splunk|http>）",
-      up.index("tf_apply pipeline/stream") < up.index("tf_apply pipeline/analytics") < up.index('--name "snmp-sinks-$JOB" --mode STREAMING')
-      and "--name snmp-sinks " not in up and 'for JOB in iceberg splunk http; do' in up
+check("up.sh は analytics を stream の後に apply し、ジョブを格納先ごとに STREAMING で起こす（名前は sinks-<iceberg|splunk|http>。snmp は付けない）",
+      up.index("tf_apply pipeline/stream") < up.index("tf_apply pipeline/analytics") < up.index('--name "sinks-$JOB" --mode STREAMING')
+      and "--name snmp-sinks" not in up and '--name "snmp-sinks' not in up and 'for JOB in iceberg splunk http; do' in up
       and 'JOB_DRIVER=$(tf pipeline/analytics output -raw "job_driver_json_$JOB")' in up)
 check("up.sh は analytics に Spark のジョブ 1 つにつき 21 セント（S3 / Splunk / OpenSearch か Prometheus）と opensearch の OCU を足し、opensearch は analytics を作るときだけ OCU の注意を出す",
       'if [ -n "$SINK_S3" ]; then COST_CENTS=$((COST_CENTS + 21)); fi\n  if [ -n "$SINK_SPLUNK" ]; then COST_CENTS=$((COST_CENTS + 21)); fi\n'
@@ -1185,11 +1185,11 @@ check("up.sh は analytics に Spark のジョブ 1 つにつき 21 セント（
 check("up.sh はジョブごとに同じ SpecHash のものが動いていれば起こさない", "--states SUBMITTED PENDING SCHEDULED RUNNING QUEUED --query 'jobRuns[].[name,id]'" in up
       and "jobRun.tags.SpecHash" in up and 'if [ -z "$KEEP" ] && [ "$spec" = "$JOB_SPEC" ]; then KEEP="$id"; else STALE="$STALE $id"; fi' in up)
 check("up.sh は SpecHash が違うジョブを cancel し、止まるのを待ってから、SpecHash のタグを付けて起こし直す（スクリプトや引数の変更を反映する）",
-      re.search(r'cancel-job-run[\s\S]*CANCELLING[\s\S]*--name "snmp-sinks-\$JOB" --mode STREAMING[\s\S]*--tags "[^"]*SpecHash=\$JOB_SPEC"', up) is not None)
+      re.search(r'cancel-job-run[\s\S]*CANCELLING[\s\S]*--name "sinks-\$JOB" --mode STREAMING[\s\S]*--tags "[^"]*SpecHash=\$JOB_SPEC"', up) is not None)
 check("up.sh は PIPELINE=1 で SKIP_STREAM=1 なら analytics も飛ばす", re.search(r'SKIP_STREAM=1 なので analytics も作らない[^\n]*\n\s*SKIP_ANALYTICS=1', up) is not None)
-check("down.sh は名前で絞らずに動いているジョブを全部 cancel する（snmp-sinks-iceberg / -splunk / -http も、前の snmp-sinks も止まる）",
+check("down.sh は名前で絞らずに動いているジョブを全部 cancel する（sinks-iceberg / -splunk / -http も、古い名前の snmp-sinks / snmp-sinks-<キー> も止まる）",
       re.search(r"list-job-runs [^\n]*\\\n\s*--states SUBMITTED PENDING SCHEDULED RUNNING QUEUED --query 'jobRuns\[\]\.id'", down) is not None
-      and "jobRuns[?name" not in down and "snmp-sinks" not in down)
+      and "jobRuns[?name" not in down and "sinks-" not in down and "snmp-sinks" not in down)
 check("down.sh は job を cancel → stop-application → destroy analytics → destroy graph の順",
       down.index("cancel-job-run") < down.index("stop-application") < down.index("destroy_root pipeline/analytics") < down.index("destroy_lambda_root pipeline/graph") < down.index("destroy_root pipeline/stream"))
 # .py は名指しで並べず find で全部見る（名指しだとファイルを足したときに構文検査から漏れる）
@@ -1396,9 +1396,9 @@ elif cmd == "cancel-job-run":
     r = next(r for r in st["runs"] if r["id"] == opt("--job-run-id"))
     r["state"], r["left"] = "CANCELLING", st["cancel_delay"]
     st["log"].append(f'cancel {r["name"]}:{r["id"]}')
-elif cmd == "start-job-run":  # 同じ名前か前の snmp-sinks がまだ動いて（止めて）いれば CONFLICT（同じ checkpoint を 2 つのジョブが使う）
+elif cmd == "start-job-run":  # 同じ checkpoint を使うジョブ（同じ名前、古い名前の snmp-sinks-<キー>、全部を書いていた snmp-sinks）がまだ動いて（止めて）いれば CONFLICT
     name, tags = opt("--name"), dict(t.split("=", 1) for t in opt("--tags").split(","))
-    busy = [r for r in st["runs"] if r["state"] != "CANCELLED" and r["name"] in (name, "snmp-sinks")]
+    busy = [r for r in st["runs"] if r["state"] != "CANCELLED" and r["name"] in (name, "snmp-" + name, "snmp-sinks")]
     rid = f'j{len(st["runs"]) + 1}'
     st["runs"].append({"id": rid, "name": name, "state": "SUBMITTED", "spec": tags["SpecHash"], "driver": opt("--job-driver")})
     st["log"].append(f"start {name}" + (" CONFLICT" if busy else "") + f' {opt("--mode")}')
@@ -1436,35 +1436,53 @@ _acts = lambda st: [l for l in st["log"] if l.startswith(("cancel", "start"))]
 _D = {"iceberg": '{"j":"iceberg"}', "splunk": "", "http": '{"j":"http"}'}
 _rc, _out, _st = _run75([{"id": "old", "name": "snmp-sinks", "state": "RUNNING", "spec": "x"}], _D, cancel_delay=3)
 _i = _st["log"].index("cancel snmp-sinks:old")
-check("7-5（移行）: 前の snmp-sinks を cancel し、止まる（CANCELLED）まで待ってから iceberg と http を起こす（splunk は格納先が無いので起こさない）",
-      _rc == 0 and _acts(_st) == ["cancel snmp-sinks:old", "start snmp-sinks-iceberg STREAMING", "start snmp-sinks-http STREAMING"]
-      and any("snmp-sinks:old:CANCELLING" in l for l in _st["log"][_i:]) and "1 つにまとめていた頃のジョブ snmp-sinks（old）を止め" in _out)
+check("7-5（移行）: 1 つにまとめていた頃の snmp-sinks を cancel し、止まる（CANCELLED）まで待ってから sinks-iceberg と sinks-http を起こす（splunk は格納先が無いので起こさない）",
+      _rc == 0 and _acts(_st) == ["cancel snmp-sinks:old", "start sinks-iceberg STREAMING", "start sinks-http STREAMING"]
+      and any("snmp-sinks:old:CANCELLING" in l for l in _st["log"][_i:]) and "古い名前のジョブ snmp-sinks（old）を止める" in _out)
 check("7-5（移行）: 新しいジョブには自分の job_driver と SpecHash（スクリプト + その job_driver + overrides）を付ける",
       {r["name"]: (r["spec"], r["driver"]) for r in _st["runs"] if r["name"] != "snmp-sinks"}
-      == {"snmp-sinks-iceberg": (_spec(_D["iceberg"]), _D["iceberg"]), "snmp-sinks-http": (_spec(_D["http"]), _D["http"])})
-_now = [{"id": "a", "name": "snmp-sinks-iceberg", "state": "RUNNING", "spec": _spec(_D["iceberg"])},
-        {"id": "b", "name": "snmp-sinks-http", "state": "RUNNING", "spec": _spec(_D["http"])}]
-_rc, _out, _st = _run75(_now, _D)
-check("7-5: どのジョブも SpecHash が同じなら何も止めず、何も起こさない",
-      _rc == 0 and _acts(_st) == [] and _out.count("同じスクリプトと引数で動いている") == 2)
+      == {"sinks-iceberg": (_spec(_D["iceberg"]), _D["iceberg"]), "sinks-http": (_spec(_D["http"]), _D["http"])})
+_old3 = [{"id": "oi", "name": "snmp-sinks-iceberg", "state": "RUNNING", "spec": _spec(_D["iceberg"])},
+         {"id": "oh", "name": "snmp-sinks-http", "state": "QUEUED", "spec": _spec(_D["http"])},
+         {"id": "os", "name": "snmp-sinks-splunk", "state": "RUNNING", "spec": "s"}]
+_rc, _out, _st = _run75(_old3, _D, cancel_delay=3)
+_i = max(_st["log"].index(f"cancel {n}") for n in ("snmp-sinks-iceberg:oi", "snmp-sinks-http:oh", "snmp-sinks-splunk:os"))
+check("7-5（改名）: snmp-sinks-<キー> は SpecHash が同じでも古い名前として 3 つとも cancel し、止まってから sinks-iceberg と sinks-http を起こす（CONFLICT しない）",
+      _rc == 0 and sorted(_acts(_st)[:3]) == ["cancel snmp-sinks-http:oh", "cancel snmp-sinks-iceberg:oi", "cancel snmp-sinks-splunk:os"]
+      and _acts(_st)[3:] == ["start sinks-iceberg STREAMING", "start sinks-http STREAMING"]
+      and any("snmp-sinks-iceberg:oi:CANCELLING" in l for l in _st["log"][_i:])
+      and all(f"古い名前のジョブ {n}を止める" in _out for n in ("snmp-sinks-iceberg（oi）", "snmp-sinks-http（oh）", "snmp-sinks-splunk（os）")))
+_now = [{"id": "a", "name": "sinks-iceberg", "state": "RUNNING", "spec": _spec(_D["iceberg"])},
+        {"id": "b", "name": "sinks-http", "state": "RUNNING", "spec": _spec(_D["http"])}]
+_rc, _out, _st = _run75(_now + [{"id": "oh", "name": "snmp-sinks-http", "state": "CANCELLED", "spec": "x"}], _D)
+check("7-5: どのジョブも SpecHash が同じなら何も止めず、何も起こさない（止まった古い名前のジョブは見ない。sinks-http を snmp-sinks-http と取り違えない）",
+      _rc == 0 and _acts(_st) == [] and _out.count("同じスクリプトと引数で動いている") == 2 and "古い名前" not in _out)
+_rc, _out, _st = _run75(_now + [{"id": "oh", "name": "snmp-sinks-http", "state": "RUNNING", "spec": _spec(_D["http"])}], _D)
+check("7-5: 新しい名前が動いていても古い名前のジョブ（snmp-sinks-http）が動いていれば止める。起こすジョブが無いので待たない",
+      _rc == 0 and _acts(_st) == ["cancel snmp-sinks-http:oh"] and _out.count("同じスクリプトと引数で動いている") == 2
+      and "古い名前のジョブ snmp-sinks-http（oh）を止める" in _out)
 _rc, _out, _st = _run75(_now, dict(_D, http='{"j":"http","new":1}'))
 check("7-5: 引数が変わったジョブ（http）だけ止めて起こし直し、iceberg はそのまま",
-      _rc == 0 and _acts(_st) == ["cancel snmp-sinks-http:b", "start snmp-sinks-http STREAMING"])
-_rc, _out, _st = _run75(_now + [{"id": "c", "name": "snmp-sinks-splunk", "state": "RUNNING", "spec": "s"}], _D)
+      _rc == 0 and _acts(_st) == ["cancel sinks-http:b", "start sinks-http STREAMING"])
+_rc, _out, _st = _run75(_now + [{"id": "c", "name": "sinks-splunk", "state": "RUNNING", "spec": "s"}], _D)
 check("7-5: 格納先が無くなったジョブ（SINK_SPLUNK=0 にした splunk）は止めるだけで起こさない",
-      _rc == 0 and _acts(_st) == ["cancel snmp-sinks-splunk:c"] and "snmp-sinks-splunk（c）は格納先が無くなったので止める" in _out)
-_rc, _out, _st = _run75(_now + [{"id": "d", "name": "snmp-sinks-iceberg", "state": "RUNNING", "spec": _spec(_D["iceberg"])}], _D)
+      _rc == 0 and _acts(_st) == ["cancel sinks-splunk:c"] and "sinks-splunk（c）は格納先が無くなったので止める" in _out)
+_rc, _out, _st = _run75(_now + [{"id": "d", "name": "sinks-iceberg", "state": "RUNNING", "spec": _spec(_D["iceberg"])}], _D)
 check("7-5: 同じ名前のジョブが 2 つ動いていれば 1 つだけ残して止め、起こし直さない（同じ checkpoint を 2 つで使わない）",
-      _rc == 0 and _acts(_st) == ["cancel snmp-sinks-iceberg:d"])
-_rc, _out, _st = _run75([{"id": "e", "name": "snmp-sinks-iceberg", "state": "CANCELLING", "left": 3, "spec": "x"}], dict(_D, http=""))
-check("7-5: 前の up.sh が止めきれなかった（CANCELLING の）同じ名前のジョブがあれば、止まるまで待ってから起こす",
-      _rc == 0 and _acts(_st) == ["start snmp-sinks-iceberg STREAMING"] and any("snmp-sinks-iceberg:e:CANCELLING" in l for l in _st["log"]))
+      _rc == 0 and _acts(_st) == ["cancel sinks-iceberg:d"])
+_rc, _out, _st = _run75([{"id": "e", "name": "sinks-iceberg", "state": "CANCELLING", "left": 3, "spec": "x"}], dict(_D, http=""))
+_rc2, _out2, _st2 = _run75([{"id": "e", "name": "snmp-sinks-iceberg", "state": "CANCELLING", "left": 3, "spec": "x"}], dict(_D, http=""))
+check("7-5: 前の up.sh が止めきれなかった（CANCELLING の）同じ名前か古い名前のジョブがあれば、止まるまで待ってから起こす",
+      _rc == 0 and _acts(_st) == ["start sinks-iceberg STREAMING"] and any("sinks-iceberg:e:CANCELLING" in l for l in _st["log"])
+      and _rc2 == 0 and _acts(_st2) == ["start sinks-iceberg STREAMING"] and any("snmp-sinks-iceberg:e:CANCELLING" in l for l in _st2["log"]))
 _rc, _out, _st = _run75([{"id": "old", "name": "snmp-sinks", "state": "RUNNING", "spec": "x"}], _D, cancel_delay=1000)
-check("7-5: 前の snmp-sinks が 3 分たっても止まらなければ、新しいジョブを起こさずに止まる",
-      _rc == 1 and "DIE: Spark のジョブ（old）が 3 分たっても止まらない" in _out and _acts(_st) == ["cancel snmp-sinks:old"])
-_rc, _out, _st = _run75([{"id": "q", "name": "snmp-sinks-http", "state": "QUEUED", "spec": "x"}], dict(_D, iceberg=""))
+_rc2, _out2, _st2 = _run75([{"id": "oh", "name": "snmp-sinks-http", "state": "RUNNING", "spec": "x"}], _D, cancel_delay=1000)
+check("7-5: 古い名前のジョブ（snmp-sinks / snmp-sinks-http）が 3 分たっても止まらなければ、新しいジョブを起こさずに止まる",
+      _rc == 1 and "DIE: Spark のジョブ（old）が 3 分たっても止まらない" in _out and _acts(_st) == ["cancel snmp-sinks:old"]
+      and _rc2 == 1 and "DIE: Spark のジョブ（oh）が 3 分たっても止まらない" in _out2 and _acts(_st2) == ["cancel snmp-sinks-http:oh"])
+_rc, _out, _st = _run75([{"id": "q", "name": "sinks-http", "state": "QUEUED", "spec": "x"}], dict(_D, iceberg=""))
 check("7-5: 待っている（QUEUED の）ジョブも動いているものとして扱い、SpecHash が違えば止めてから起こす",
-      _rc == 0 and _acts(_st) == ["cancel snmp-sinks-http:q", "start snmp-sinks-http STREAMING"])
+      _rc == 0 and _acts(_st) == ["cancel sinks-http:q", "start sinks-http STREAMING"])
 # 7-4 の前の「上限が変わるときだけジョブとアプリを止める」を up.sh から切り出し、偽の aws（アプリの状態も持つ）で動かす
 _b74 = up[up.index("  # EMR Serverless のアプリの上限（maximum_capacity。"):up.index('  tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"')]
 _tfv = open(os.path.join(ROOT, "terraform", "pipeline", "analytics", "variables.tf"), encoding="utf-8").read()
@@ -1550,8 +1568,8 @@ def _run74(app, runs=(), cancel_delay=2, stop_delay=2, state_file=True):
         shutil.rmtree(d)
 _acts74 = lambda st: [l for l in st["log"] if l.startswith(("cancel", "stop"))]
 _old_app = {"state": "STARTED", "cpu": "4 vCPU", "memory": "16 GB"}
-_runs74 = [{"id": "a", "name": "snmp-sinks", "state": "RUNNING"}, {"id": "b", "name": "snmp-sinks-http", "state": "QUEUED"},
-           {"id": "c", "name": "snmp-sinks", "state": "SUCCESS"}]
+_runs74 = [{"id": "a", "name": "snmp-sinks", "state": "RUNNING"}, {"id": "b", "name": "sinks-http", "state": "QUEUED"},
+           {"id": "c", "name": "sinks-iceberg", "state": "SUCCESS"}]
 _rc, _out, _st = _run74(_old_app, _runs74, cancel_delay=3)
 check("7-4 の前（上限が変わる）: 動いている・待っている（QUEUED）ジョブを全部 cancel し、止まってから stop-application、STOPPED を待つ",
       _rc == 0 and _acts74(_st) == ["cancel a", "cancel b", "stop"] and _st["app"]["state"] == "STOPPED"

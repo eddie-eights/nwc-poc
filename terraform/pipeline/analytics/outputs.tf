@@ -74,17 +74,17 @@ locals {
 }
 
 output "job_driver_json_iceberg" {
-  description = "jobDriver of the job snmp-sinks-iceberg (all topics to S3 Tables). Empty unless sinks has iceberg"
+  description = "jobDriver of the job sinks-iceberg (all topics to S3 Tables). Empty unless sinks has iceberg"
   value       = local.job_drivers["iceberg"]
 }
 
 output "job_driver_json_splunk" {
-  description = "jobDriver of the job snmp-sinks-splunk (all topics to the Splunk HEC). Empty unless sinks has splunk"
+  description = "jobDriver of the job sinks-splunk (all topics to the Splunk HEC). Empty unless sinks has splunk"
   value       = local.job_drivers["splunk"]
 }
 
 output "job_driver_json_http" {
-  description = "jobDriver of the job snmp-sinks-http (log topics to OpenSearch, metric topics to Prometheus; only those in sinks). Empty unless sinks has opensearch or prometheus"
+  description = "jobDriver of the job sinks-http (log topics to OpenSearch, metric topics to Prometheus; only those in sinks). Empty unless sinks has opensearch or prometheus"
   value       = local.job_drivers["http"]
 }
 
