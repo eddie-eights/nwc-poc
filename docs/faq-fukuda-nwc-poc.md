@@ -9,6 +9,7 @@ nwc-poc の作業中に質問したことと、その答えをまとめた。答
 - [5. 本番の Cisco から送るとき](#5-本番の-cisco-から送るとき)
 - [6. SNMP のポーリングを既定で止めた](#6-snmp-のポーリングを既定で止めた)
 - [7. Nautobot（機器の一覧とケーブルの正）](#7-nautobot機器の一覧とケーブルの正)
+- [8. Neptune Database と Neptune Analytics](#8-neptune-database-と-neptune-analytics)
 
 ---
 
@@ -592,3 +593,43 @@ flowchart LR
 - Web が使う API のトークンは SSM の SecureString（`/<prefix>/nautobot/api-token`）。
 
 詳しくは [nautobot.md](nautobot.md) の 5 章。
+
+---
+
+## 8. Neptune Database と Neptune Analytics
+
+### Q. Neptune Database と Neptune Analytics の使い分けは？ いまの構成でも問題ない？
+
+**A. いまの構成（Neptune Analytics にトポロジと status を置く）で問題ない。** この PoC の使い方は Analytics のほうに合っている。ただし AWS の上ではまだ動かしていない（2026-10-04 時点）。
+
+使い分けは次のとおり。Database は「書き込みを落とさず持ち続ける置き場」、Analytics は「載せて調べる道具」。
+
+| | Neptune Database | Neptune Analytics |
+|---|---|---|
+| 向いている用途 | 業務の正本。小さな読み書きが常に大量に来る | 分析。グラフ全体をメモリに載せて、経路や影響範囲を調べる |
+| 問い合わせ | Gremlin、openCypher、SPARQL | openCypher だけ |
+| 分析の機能 | 自分で書く | 経路、中心性、コミュニティなどのアルゴリズムとベクトル検索が組み込み |
+| データの入れ方 | 書き込みを積む。一括ロードもある | S3 から一括で載せるのが速い。書き込みもできる |
+| 構成 | クラスタとインスタンス。リードレプリカ、複数 AZ | グラフ 1 つにメモリ量を指定するだけ |
+
+いまの構成に合う理由:
+
+- **データが小さく、書き込みが少ない。** トポロジは機器とリンクが数十件で、書くのは status の更新だけ。Database の強み（大量の同時書き込み、レプリカ）を使う場面が無い。
+- **正本を Neptune に置かない方針と合う。** 修復案や履歴の正は S3 Tables で、Neptune は壊れても作り直せる置き場。S3 から一括で載せるのが得意な Analytics は、あとで履歴をグラフで分析するときにもそのまま使える。
+- **やりたい問いが分析寄り。** 「このリンクが落ちたら、どの機器に影響するか」は経路や到達可能性の問いで、組み込みのアルゴリズムが使える。
+
+気を付ける点:
+
+| 点 | 中身 |
+|---|---|
+| 書き込みの集中 | アラートが一度に大量に来て status の更新が重なる使い方は、本来 Database の領分。PoC の量なら問題にならない見込み |
+| 料金 | Analytics はメモリ量 × 時間の課金で、最小構成でも動かしているあいだは掛かる。単価と、止めておけるかは確かめていない |
+| 未確認 | 閉域のエンドポイントと IAM の Deny が通るかは、`ops/up.sh` を流すまで分からない |
+
+Database に戻すのは、次のどれかに当てはまったとき:
+
+- status 以外の業務データも Neptune を正本にして、常時書き込むようになった
+- 複数 AZ での可用性やリードレプリカが要件になった
+- Gremlin や SPARQL が要る
+
+何をどこに置いているかは [data-stores.md](data-stores.md)。
