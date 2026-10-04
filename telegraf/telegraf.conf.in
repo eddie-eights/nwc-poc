@@ -31,7 +31,7 @@
 # MIB は入れないので OID は数値で書き、名前を明示する（translator が無くても動く）。trap の varbind 名は数値 OID のまま
 # Kafka に載る（ifName の OID を引くのは Splunk の保存済みサーチ。splunk/netops_alerts）。
 # SR Linux の ifTable は物理ポート全部（未使用の admin-down も）とサブインタフェース（ethernet-1/1.0）を行に出す。落とすのは Grafana のアラートルール
-#（grafana/provisioning/alerting/netops.yaml。ifAdminStatus が down の行と "." を含む名前）。ifDescr は「名前 + description」になるので IF の鍵は ifName にする。
+#（grafana/provisioning/alerting/netops-prometheus.yaml。ifAdminStatus が down の行と "." を含む名前）。ifDescr は「名前 + description」になるので IF の鍵は ifName にする。
 
 [agent]
   interval = "10s"

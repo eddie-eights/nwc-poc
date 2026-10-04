@@ -1,0 +1,90 @@
+# Grafana のアラートルール（OpenSearch = logs コレクションの文書を見るもの）。送り先と本文は netops.yaml。
+# grafana/start.sh が OPENSEARCH_URL と ALERTS_TOPIC_ARN の両方があるときだけ並べる。
+# 文書は spark/snmp_sinks.py の opensearch_docs が書く {"@timestamp", "topic", "measurement", "tags": {…}, "fields": {…}}。index に mapping は置いておらず
+# （動的 mapping）、文字列は text と .keyword の両方になるので、完全一致と集計は .keyword で書く。
+# trap の tags.oid は ".1.3.6.1.…" の形（Telegraf 1.40 に net-snmp の snmptrap で送って実測。MIB が無いので tags.name は "iso.3.6.1.…" になるが使わない）。
+# 機器名の tags.sysName は trap 自身は持たず、Spark が device map（送り元の IP = tags.source → 機器名）で足す。対応表に無い機器の trap は集計に出ない
+# （Splunk は IP のまま出す）
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: nwc-opensearch
+    folder: nwc-alerts
+    interval: 1m
+    rules:
+      # ---- trap: link 以外の trap。過去 10 分の snmp_trap を機器（tags.sysName）と OID（tags.oid）ごとに数え、1 通以上なら発火（target は OID）。
+      # 10 分来なければ数えるものが無くなり、Grafana が解消を送る（OID ごと。Splunk の netops_trap_clear は機器ごとに閉じる）。
+      # 除くもの（Splunk の netops_trap と同じ）: linkDown / linkUp（…1.5.3 / …1.5.4）、機器が起きた知らせ（coldStart / warmStart の …1.5.1 / …1.5.2 と
+      # net-snmp の nsNotifyShutdown / nsNotifyRestart）。linkDown / linkUp を link_down にするルールは作らない（IF 名の入った varbind の field 名が
+      # IF ごとに変わる（"iso.3.6.1.2.1.2.2.1.1.49" の末尾が ifIndex）ので、OpenSearch の集計では取り出せない）。
+      # 数えるものが無いとき（どの機器からも trap が来ていない）は NoData。OK にする（KeepLast だと発火したまま解消しない）。
+      # terms の size は 機器 50 × OID 20 まで（プラグインが「terms の組み合わせ × 時間の区切り 20 個」が 65535 を超えるクエリを拒む。100 × 100 だと評価がエラーになる。2.34.4 で実測）
+      - uid: nwc-trap
+        title: trap
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: KeepLast
+        labels:
+          kind: trap
+          sysName: '{{ index .Labels "tags.sysName.keyword" }}'
+          target: '{{ index .Labels "tags.oid.keyword" }}'
+        annotations:
+          detail: 'trap {{ index .Labels "tags.oid.keyword" }} (grafana: trap)'
+        data:
+          - refId: A
+            datasourceUid: aoss-logs
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              queryType: lucene
+              query: 'measurement.keyword:snmp_trap AND NOT tags.oid.keyword:(".1.3.6.1.6.3.1.1.5.1" OR ".1.3.6.1.6.3.1.1.5.2" OR ".1.3.6.1.6.3.1.1.5.3" OR ".1.3.6.1.6.3.1.1.5.4" OR ".1.3.6.1.4.1.8072.4.0.2" OR ".1.3.6.1.4.1.8072.4.0.3")'
+              timeField: '@timestamp'
+              metrics:
+                - id: '1'
+                  type: count
+              bucketAggs:
+                - id: '2'
+                  type: terms
+                  field: tags.sysName.keyword
+                  settings:
+                    size: '50'
+                    order: desc
+                    orderBy: _count
+                    min_doc_count: '1'
+                - id: '3'
+                  type: terms
+                  field: tags.oid.keyword
+                  settings:
+                    size: '20'
+                    order: desc
+                    orderBy: _count
+                    min_doc_count: '1'
+                - id: '4'
+                  type: date_histogram
+                  field: '@timestamp'
+                  settings:
+                    interval: auto
+                    min_doc_count: '0'
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: sum
+              settings:
+                mode: dropNN
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]

@@ -1,6 +1,6 @@
 """アラートの送り手の模擬テスト（AWS にも Splunk にも Grafana にも触れない）。
 Splunk のアラートアクション（splunk/netops_alerts/bin/netops_sns.py）が保存済みサーチの結果を SNS の本文にして SigV4 で publish すること、
-保存済みサーチ（default/savedsearches.conf）と Grafana のアラート（grafana/provisioning/alerting/netops.yaml）が同じ形の本文を出し、
+保存済みサーチ（default/savedsearches.conf）と Grafana のアラート（grafana/provisioning/alerting/netops*.yaml）が同じ形の本文を出し、
 受け手（workflow/rules.py の alerts_from_message）がそのまま読めること、SNS のトピック（terraform/base/core の alerts.tf）と
 イメージ（splunk/Dockerfile・entrypoint.sh、grafana/start.sh）と ops/up.sh・ops/check.sh がその配線を持つこと。
 受け手の側は tests/test_workflow.py（SQS → ワークフロー）と tests/test_sync.py（Lambda → Neptune の status）。
@@ -389,9 +389,15 @@ check("device map（lab/lab_topology.py --device-map）は管理 IP と回線の
       dm.returncode == 0 and len(dmap) >= 8 and all(sns.IPV4_RE.match(k) and re.fullmatch(r"[a-z0-9-]+", v) for k, v in dmap.items())
       and sns.device_name("10.255.2.1", dmap) == "dc1-leaf-01" and len(dm.stdout.strip()) < 4000)
 
-# ---- Grafana のアラート
-gy = read("grafana", "provisioning", "alerting", "netops.yaml")
-gcode = "\n".join(l for l in gy.splitlines() if not l.lstrip().startswith("#"))
+# ---- Grafana のアラート（送り先と本文は netops.yaml、ルールは格納先ごとに netops-prometheus.yaml / netops-opensearch.yaml）
+def nocomment(text):
+    return "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
+
+
+gcode = nocomment(read("grafana", "provisioning", "alerting", "netops.yaml"))
+gpcode = nocomment(read("grafana", "provisioning", "alerting", "netops-prometheus.yaml"))
+gocode = nocomment(read("grafana", "provisioning", "alerting", "netops-opensearch.yaml"))
+rcode = gpcode + "\n" + gocode
 tmpl = re.search(r'\{\{ define "netops\.sns" \}\}(.*)\{\{ end \}\}\s*$', gcode, re.S).group(1)
 check("Grafana の本文の項目は Splunk のアラートアクションと同じ 6 つ（同じ順）、source は grafana",
       re.findall(r'"(\w+)":', tmpl) == ["source", "alerts"] + KEYS and tmpl.startswith('{"source":"grafana","alerts":['))
@@ -403,38 +409,85 @@ def render(alerts):
     out = []
     for i, a in enumerate(alerts):
         s = m.group(2).replace("{{ if $i }},{{ end }}", "," if i else "")
-        s = s.replace('{{ printf "%q" (printf "%s is down (grafana)" $a.Labels.ifName) }}', json.dumps(f"{a['labels'].get('ifName', '')} is down (grafana)"))
+        s = s.replace('{{ printf "%q" (or $a.Labels.sysName $a.Labels.source) }}', json.dumps(a["labels"].get("sysName") or a["labels"].get("source", "")))
         s = re.sub(r'\{\{ printf "%q" \$a\.Labels\.(\w+) \}\}', lambda x: json.dumps(a["labels"].get(x.group(1), "")), s)
+        s = re.sub(r'\{\{ printf "%q" \$a\.Annotations\.(\w+) \}\}', lambda x: json.dumps(a["annotations"].get(x.group(1), "")), s)
         s = s.replace('{{ printf "%q" $a.Status }}', json.dumps(a["status"])).replace("{{ $a.StartsAt.Unix }}", str(a["starts_at"]))
         out.append(s)
     return m.group(1) + "".join(out) + m.group(3)
 
 
-body = render([{"status": "firing", "labels": {"sysName": "dc1-leaf-01", "ifName": "ethernet-1/49", "kind": "link_down"}, "starts_at": 1790000000},
-               {"status": "resolved", "labels": {"sysName": "DC1-Spine-01", "ifName": 'eth"x', "kind": "link_down"}, "starts_at": 1790000030}])
-check("Grafana の本文は埋めたあと JSON になる（テンプレートの構文は全部埋まる。値の中の \" も壊さない）",
-      "{{" not in body and [a["target"] for a in json.loads(body)["alerts"]] == ["ethernet-1/49", 'eth"x'] and all(list(a) == KEYS for a in json.loads(body)["alerts"]))
+body = render([{"status": "firing", "labels": {"sysName": "dc1-leaf-01", "ifName": "ethernet-1/49", "kind": "link_down", "target": "ethernet-1/49"},
+                "annotations": {"detail": "ethernet-1/49 is down (grafana: poll)"}, "starts_at": 1790000000},
+               {"status": "resolved", "labels": {"sysName": "DC1-Spine-01", "kind": "link_down", "target": 'eth"x'},
+                "annotations": {"detail": 'eth"x is down (grafana: poll)'}, "starts_at": 1790000030},
+               {"status": "firing", "labels": {"source": "203.0.113.99", "peer_address": "10.255.0.9", "kind": "bgp_down", "target": "10.255.0.9"},
+                "annotations": {"detail": "bgp session to 10.255.0.9 is not established (grafana: gnmi)"}, "starts_at": 1790000060}])
+check("Grafana の本文は埋めたあと JSON になる（テンプレートの構文は全部埋まる。値の中の \" も壊さない。機器名が無ければ送り元の IP）",
+      "{{" not in body and [(a["device_id"], a["target"], a["detail"]) for a in json.loads(body)["alerts"]]
+      == [("dc1-leaf-01", "ethernet-1/49", "ethernet-1/49 is down (grafana: poll)"), ("DC1-Spine-01", 'eth"x', 'eth"x is down (grafana: poll)'),
+          ("203.0.113.99", "10.255.0.9", "bgp session to 10.255.0.9 is not established (grafana: gnmi)")]
+      and all(list(a) == KEYS for a in json.loads(body)["alerts"]))
 check("受け手がそのまま読める: Grafana の link_down は Splunk の linkDown trap と同じ anomaly_id（同じ障害は 1 つのワークフロー）",
-      [(a["anomaly_id"], a["status"], a["first_seen"], a["source"]) for a in rules.alerts_from_message(body)]
+      [(a["anomaly_id"], a["status"], a["first_seen"], a["source"]) for a in rules.alerts_from_message(body)][:2]
       == [("dc1-leaf-01#link_down#ethernet-1/49", "firing", 1790000000, "grafana"), ("dc1-spine-01#link_down#eth\"x", "resolved", 1790000030, "grafana")]
       and rules.alerts_from_message(sns.messages(sns.alerts_from_rows([{"device": "10.255.2.1", "kind": "link_down", "target": "ethernet-1/49", "status": "firing"}], dmap))[0], now=1)[0]["anomaly_id"]
       == "dc1-leaf-01#link_down#ethernet-1/49")
-check("$ は二重にしない（$$ と書くと Grafana 13.2.2 が起動しない）。${…} は連絡先の環境変数 2 つだけ", "$$" not in gcode and set(re.findall(r"\$\{(\w+)\}", gcode)) == {"ALERTS_TOPIC_ARN", "AWS_REGION"})
-check("ルール: ifOperStatus が 2 の IF を link_down にする（ループバック・管理ポート・サブ IF・admin down は見ない。値で判定するので直れば次の評価で解消）",
-      "expr: 'snmp_interface_ifOperStatus{ifName!~\"(lo|mgmt).*|.*[.].*\"} unless on (sysName, ifName) (snmp_interface_ifAdminStatus == 2)'" in gcode
-      and re.search(r"type: within_range\s*\n\s*params: \[1\.5, 2\.5\]", gcode) is not None and "condition: C" in gcode and "for: 0s" in gcode and "interval: 30s" in gcode)
+check("$ は二重にしない（$$ と書くと Grafana 13.2.2 が起動しない）。${…} は連絡先の環境変数 2 つだけ。ルールのファイルは $ を持たない"
+      "（provisioning がラベルの $labels を環境変数として消すので .Labels で書く）",
+      "$$" not in gcode and set(re.findall(r"\$\{(\w+)\}", gcode)) == {"ALERTS_TOPIC_ARN", "AWS_REGION"} and "$" not in rcode)
+
+
+def grafana_rules(code):
+    """ルールのファイルを rule ごとに切り分け、title → その rule の本文"""
+    return {re.search(r"^\s*title: (\S+)$", r, re.M).group(1): r for r in re.split(r"\n(?=[ \t]*- uid: )", code)[1:]}
+
+
+grules = dict(grafana_rules(gpcode), **grafana_rules(gocode))
+check("ルールは 4 本（link_down / bgp_down / isis_down は Prometheus、trap は OpenSearch）。評価は 1 分ごと（Splunk の保存済みサーチと同じ）",
+      sorted(grules) == ["bgp_down", "isis_down", "link_down", "trap"] and set(grafana_rules(gocode)) == {"trap"}
+      and re.findall(r"^    interval: (\S+)$", rcode, re.M) == ["1m", "1m"] and "folder: nwc-alerts" in gpcode and "folder: nwc-alerts" in gocode)
+check("どのルールもラベル kind（= title）/ target と注釈 detail（末尾が「(grafana: <入力>)」）を持ち、すぐ発火する",
+      all(re.search(rf"labels:\s*\n\s*kind: {t}\n\s*(sysName: .*\n\s*)?target: '\{{\{{ .+ \}}\}}'\n", r) and "condition: C" in r and "for: 0s" in r
+          for t, r in grules.items())
+      and {t: re.search(r"detail: '.*\((grafana: \w+)\)'", r).group(1) for t, r in grules.items()}
+      == {"link_down": "grafana: poll", "bgp_down": "grafana: gnmi", "isis_down": "grafana: gnmi", "trap": "grafana: trap"})
+check("link_down: ifOperStatus が 2 の IF（ループバック・管理ポート・サブ IF・admin down は見ない。値で判定するので直れば次の評価で解消）。target は ifName",
+      "expr: 'snmp_interface_ifOperStatus{ifName!~\"(lo|mgmt).*|.*[.].*\"} unless on (sysName, ifName) (snmp_interface_ifAdminStatus == 2)'" in grules["link_down"]
+      and re.search(r"type: within_range\s*\n\s*params: \[1\.5, 2\.5\]", grules["link_down"]) is not None
+      and "target: '{{ .Labels.ifName }}'" in grules["link_down"])
 ss = read("spark", "snmp_sinks.py")
+check("bgp_down / isis_down: Spark が書く 1 / 0 の系列の直近 24 時間の最後の値が 0.5 未満なら発火。target は peer_address / interface_name（gNMI の tag）",
+      "expr: 'last_over_time(snmp_bgp_neighbor_session_up[24h])'" in grules["bgp_down"] and "target: '{{ .Labels.peer_address }}'" in grules["bgp_down"]
+      and "expr: 'last_over_time(snmp_isis_interface_oper_up[24h])'" in grules["isis_down"] and "target: '{{ .Labels.interface_name }}'" in grules["isis_down"]
+      and all(re.search(r"type: lt\s*\n\s*params: \[0\.5\]", grules[t]) for t in ("bgp_down", "isis_down"))
+      and '("bgp_neighbor", "session_state"): ("session_up", "established")' in ss and '("isis_interface", "oper_state"): ("oper_up", "up")' in ss)
 check("ルールのメトリクス名とラベルは Spark が AMP に書く名前（snmp_<measurement>_<field>、tag はそのままラベル）で、データソースは uid: amp",
-      'METRIC_PREFIX = "snmp"' in ss and "datasourceUid: amp" in gcode and re.search(r"^\s*uid: amp$", read("grafana", "provisioning", "datasources", "prometheus.yaml"), re.M) is not None
+      'METRIC_PREFIX = "snmp"' in ss and gpcode.count("datasourceUid: amp") == 3
+      and re.search(r"^\s*uid: amp$", read("grafana", "provisioning", "datasources", "prometheus.yaml"), re.M) is not None
       and all(f in read("telegraf", "telegraf.conf.in") for f in ("ifOperStatus", "ifAdminStatus", "ifName", "sysName")))
-check("データが無い・クエリが失敗したときは直前の状態のまま（分からないときに発火も解消もしない）", "noDataState: KeepLast" in gcode and "execErrState: KeepLast" in gcode)
-check("ルールは kind: link_down のラベルを付ける（本文の kind。ワークフローが起きる種類）", re.search(r"labels:\s*\n\s*kind: link_down", gcode) is not None and "link_down" in rules.START_KINDS)
+SPLUNK_TRAP_SKIP = re.findall(r'oid!="([.0-9]+)"', re.search(r"^\[netops_trap\]$(.*?)^\[", read("splunk", "netops_alerts", "default", "savedsearches.conf"), re.S | re.M).group(1))
+check("trap: 過去 10 分の snmp_trap を機器と OID ごとに数える（OpenSearch のデータソース uid: aoss-logs、文字列は .keyword）。除く OID は Splunk の netops_trap と"
+      "同じに linkDown / linkUp を足したもの。target は OID",
+      "datasourceUid: aoss-logs" in grules["trap"] and "from: 600" in grules["trap"] and "measurement.keyword:snmp_trap AND NOT tags.oid.keyword:(" in grules["trap"]
+      and set(re.findall(r'"([.0-9]+)"', re.search(r"tags\.oid\.keyword:\((.*?)\)", grules["trap"]).group(1)))
+      == set(SPLUNK_TRAP_SKIP) | {".1.3.6.1.6.3.1.1.5.3", ".1.3.6.1.6.3.1.1.5.4"} and len(SPLUNK_TRAP_SKIP) == 4
+      and re.findall(r"field: (\S+)", grules["trap"]) == ["tags.sysName.keyword", "tags.oid.keyword", "'@timestamp'"]
+      and """sysName: '{{ index .Labels "tags.sysName.keyword" }}'""" in grules["trap"] and """target: '{{ index .Labels "tags.oid.keyword" }}'""" in grules["trap"]
+      and re.search(r"type: gt\s*\n\s*params: \[0\]", grules["trap"]) is not None
+      and re.search(r"^\s*uid: aoss-logs$", read("grafana", "provisioning", "datasources", "opensearch.yaml"), re.M) is not None)
+check("trap の terms は 機器 × OID × 時間の区切り 20 個が 65535 に収まる大きさ（超えると opensearch プラグインが評価をエラーにする）",
+      (lambda n: len(n) == 2 and n[0] * n[1] * 20 <= 65535)([int(x) for x in re.findall(r"size: '(\d+)'", grules["trap"])]))
+check("データが無い・クエリが失敗したときは直前の状態のまま（分からないときに発火も解消もしない）。trap だけは数えるものが無ければ解消（10 分来なければ閉じる）",
+      all("noDataState: KeepLast" in grules[t] for t in ("link_down", "bgp_down", "isis_down")) and "noDataState: OK" in grules["trap"]
+      and all("execErrState: KeepLast" in r for r in grules.values()))
+check("ルールの kind のうちワークフローを起こすのは link_down だけ（bgp_down / isis_down / trap は記録だけ）", rules.START_KINDS == {"link_down"})
 check("連絡先は SNS（鍵は書かない = タスクロールで SigV4）。解消も送る",
       "type: sns" in gcode and "topic_arn: ${ALERTS_TOPIC_ARN}" in gcode and re.search(r"sigv4:\s*\n\s*region: \$\{AWS_REGION\}", gcode) is not None
       and "disableResolveMessage: false" in gcode and "message: '{{ template \"netops.sns\" . }}'" in gcode
-      and not re.search(r"(?i)access_key|secret_key|assume_role|profile", gcode))
-check("通知ポリシー: IF ごとに 1 通、発火はすぐ、解消は 30 秒以内、直らないあいだは 4 時間ごとに送り直す",
-      "receiver: nwc-sns" in gcode and "group_by: ['alertname', 'sysName', 'ifName']" in gcode and "group_wait: 0s" in gcode and "group_interval: 30s" in gcode and "repeat_interval: 4h" in gcode)
+      and not re.search(r"(?i)access_key|secret_key|assume_role|profile", gcode + rcode) and "groups:" not in gcode)
+check("通知ポリシー: 対象（機器 + target）ごとに 1 通、発火はすぐ、解消は 30 秒以内、直らないあいだは 4 時間ごとに送り直す",
+      "receiver: nwc-sns" in gcode and "group_by: ['alertname', 'sysName', 'target']" in gcode and "group_wait: 0s" in gcode and "group_interval: 30s" in gcode and "repeat_interval: 4h" in gcode)
 gdf = read("grafana", "Dockerfile")
 check("Grafana のイメージは provisioning を持ち、SigV4 を既定の認証情報（タスクロール）で使う",
       "COPY provisioning /etc/grafana/netops" in gdf and "GF_AUTH_SIGV4_AUTH_ENABLED=true" in gdf and "GF_AWS_ALLOWED_AUTH_PROVIDERS=default" in gdf)
@@ -455,10 +508,13 @@ def start_sh(**env):
 
 
 AMP = "https://aps-workspaces.ap-northeast-1.amazonaws.com/workspaces/ws-x"
-check("start.sh: アラートの定義は PROMETHEUS_URL と ALERTS_TOPIC_ARN の両方があるときだけ並べる（ルールは AMP を読み、連絡先はトピックへ送る）",
-      start_sh(PROMETHEUS_URL=AMP, ALERTS_TOPIC_ARN=TOPIC) == (["netops.yaml"], ["prometheus.yaml"])
-      and start_sh(PROMETHEUS_URL=AMP) == ([], ["prometheus.yaml"])
-      and start_sh(ALERTS_TOPIC_ARN=TOPIC, OPENSEARCH_URL="https://x") == ([], ["opensearch.yaml"]) and start_sh() == ([], []))
+check("start.sh: アラートの定義は ALERTS_TOPIC_ARN があるときだけ並べ、ルールはデータソースがあるほうだけ（無いデータソースを読むルールは並べない）",
+      start_sh(PROMETHEUS_URL=AMP, ALERTS_TOPIC_ARN=TOPIC) == (["netops-prometheus.yaml", "netops.yaml"], ["prometheus.yaml"])
+      and start_sh(ALERTS_TOPIC_ARN=TOPIC, OPENSEARCH_URL="https://x") == (["netops-opensearch.yaml", "netops.yaml"], ["opensearch.yaml"])
+      and start_sh(PROMETHEUS_URL=AMP, OPENSEARCH_URL="https://x", ALERTS_TOPIC_ARN=TOPIC)
+      == (["netops-opensearch.yaml", "netops-prometheus.yaml", "netops.yaml"], ["opensearch.yaml", "prometheus.yaml"])
+      and start_sh(PROMETHEUS_URL=AMP, OPENSEARCH_URL="https://x") == ([], ["opensearch.yaml", "prometheus.yaml"])
+      and start_sh(ALERTS_TOPIC_ARN=TOPIC) == ([], []) and start_sh() == ([], []))
 
 # ---- SNS のトピック（土台）と受け手の配線
 atf = read("terraform", "base", "core", "alerts.tf")
