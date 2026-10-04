@@ -74,7 +74,7 @@ flowchart LR
 - **Kafka の監視の画面に Kafbat UI を置く（2026-10-05 のユーザーの決定）。**
   ブローカー、トピック、メッセージの中身、コンシューマーの遅れ（lag）を画面で見る。ライセンスは Apache 2.0（公式のリポジトリで確認）。MSK のコンソールと CloudWatch の代わりになる。
   - 1 タスク。状態を持たないので EFS は要らない。Kafka は PLAINTEXT なので、渡すのは `KAFKA_CLUSTERS_0_NAME` と `KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS`（3 台の `kafka-N:9092`）だけ。
-  - 見るだけにする（`KAFKA_CLUSTERS_0_READONLY=true`）。トピックを作るのは up.sh とコードで、画面からは変えない（設計の役の判断）。
+  - 画面から変えられるようにする（`KAFKA_CLUSTERS_0_READONLY` は既定の false のまま。2026-10-05 のユーザーの決定）。トピックの追加と設定の変更、メッセージの送信ができる。パイプラインが使う 5 つのトピックは今までどおり up.sh とコードが作る。画面で 5 つのトピックを消したり設定を変えたりすると、パイプラインが止まるか、次の up.sh とずれる（止める仕組みは入れない。ログインで守る）。
   - ログインを付ける（`AUTH_TYPE=LOGIN_FORM`）。パスワードは Grafana と同じく `oss/ops/up.sh` が SSM の SecureString に作る。
   - 閉域なので、GitHub へ新しい版を見にいく動きを止める（`GITHUB_RELEASE_INFO_ENABLED=false`。既定は true）。
   - 開き方は Grafana と同じで、Web の EC2 を踏み台にした SSM のポートフォワード（8080）。LB は置かない。
@@ -225,7 +225,7 @@ oss/
 
 ### 手元のコンテナ（実装者が実行する）
 
-1. Kafka 3 台: トピックを複製数 3 で作り、1 台を止めても、書いた 1000 件が全部読める。Kafbat UI にブローカー 3 台、トピック、コンシューマーの lag が出て、1 台を止めるとブローカーが 2 台に見える。画面からトピックを作れない（見るだけ）。
+1. Kafka 3 台: トピックを複製数 3 で作り、1 台を止めても、書いた 1000 件が全部読める。Kafbat UI にブローカー 3 台、トピック、コンシューマーの lag が出て、1 台を止めるとブローカーが 2 台に見える。画面からトピックを作れて（複製数 3）、メッセージを送って読める。
 2. OpenSearch 3 台: `_cluster/health` が `green`、ノード数 3。データの台を 1 台止めると `yellow` になり、入れた 1000 件が全部検索できる。まとめ役だけの台を止めても `green` のまま検索できる。
 3. VictoriaMetrics: vmstorage を 1 台止めても、入れた系列が全部読め、結果に `"isPartial":false` が返る。
 4. Neo4j: `seed_graph.py` と同じトポロジを入れ、`centrality` が degree、closeness、component を返す。島の数は 1。
@@ -245,7 +245,7 @@ oss/
 2. lab のメトリクスが Grafana に出る。trap が OpenSearch に入る。S3 Tables に行が増える。
 3. lab でリンクを落とすと、アラートが出て、Neo4j の status が変わり、Web のトポロジに出る。
 4. エージェントのツール `centrality`、`search_logs`、`query_metrics` が答えを返す。
-5. Kafka、OpenSearch、vmstorage のタスクを 1 つずつ止めても、2 と 3 が続く。Kafbat UI をポートフォワードで開くと、5 つのトピックと Spark のコンシューマーの lag が見える。
+5. Kafka、OpenSearch、vmstorage のタスクを 1 つずつ止めても、2 と 3 が続く。Kafbat UI をポートフォワードで開くと、5 つのトピックと Spark のコンシューマーの lag が見える。画面から試しのトピックを 1 つ作って消せる。
 6. Neo4j のタスクを止めると 3 が止まり、起こし直して同期をかけると戻る（注意書きのとおりになること）。
 7. `oss/ops/down.sh` のあと、接頭辞 `<owner>-nwc-oss` のリソースが残っていない。確認が終わったらすぐ消す。
 

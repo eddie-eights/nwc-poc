@@ -24,7 +24,7 @@
 | モデルとガードレール | Bedrock（Amazon Nova 2 Lite、ガードレール） | 変えない（マネージドのまま） |
 | 手順書の検索 | Bedrock のナレッジベース + OpenSearch Serverless | 変えない（マネージドのまま） |
 | Kafka | MSK | Apache Kafka（KRaft）を ECS に 3 台。データは EFS |
-| Kafka の監視の画面 | MSK のコンソールと CloudWatch | Kafbat UI（Apache 2.0）を ECS に 1 台。ブローカー、トピック、メッセージ、コンシューマーの遅れを見るだけ（画面からは変えない） |
+| Kafka の監視の画面 | MSK のコンソールと CloudWatch | Kafbat UI（Apache 2.0）を ECS に 1 台。ブローカー、トピック、メッセージ、コンシューマーの遅れを見る。トピックの追加とメッセージの送信も画面からできる |
 | ストリーム処理 | EMR Serverless（Spark） | Apache Spark を ECS に（格納先ごとに 1 タスク） |
 | 生データの表 | S3 Tables（Iceberg） | 変えない（マネージドのまま） |
 | ログの検索 | OpenSearch Serverless | OpenSearch を ECS に 3 台（データ 2 台でレプリカ 1、まとめ役だけの小さい 1 台）。データは EFS。候補として VictoriaLogs を残す |
