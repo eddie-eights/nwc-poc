@@ -1708,7 +1708,7 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 |---|---|
 | 入っているのが、作り直せるデータだから | Neo4j に置くのは機器、インタフェース、ケーブルのトポロジと、障害の status。元は Nautobot にあり、同期し直せば戻る |
 | 量が小さいから | lab の機器は数台。クラスターで読み取りを分散するほどの負荷が無い |
-| クラスターは OSS 版に無いから | クラスターは Enterprise Edition だけ（有償のライセンス）。Community Edition（GPLv3）では組めない。「全部 OSS」の趣旨から外れる |
+| クラスターは OSS 版に無いから | クラスターは Enterprise Edition だけ（有償のライセンス）。Community Edition（GPLv3）では組めない。有償の契約が要るので、PoC では使わない |
 
 **1 台が止まると困ること**
 
@@ -1729,7 +1729,7 @@ Community Edition にクラスターが無いことは、2026-10-04 に Neo4j �
 
 **決めたこと（2026-10-04）**
 
-「全部 OSS の環境を作る（005）」では Neo4j Community Edition を 1 台で動かす。設計と docs には次の注意書きを入れる。
+「マネージドを OSS に置き換えた環境を作る（005）」では Neo4j Community Edition を 1 台で動かす。設計と docs には次の注意書きを入れる。
 
 - クラスターは Enterprise Edition だけの機能で、Community Edition では組めない。
 - だから OSS 版の中で、Neo4j だけは 1 台で動く（Kafka、OpenSearch、VictoriaMetrics はクラスター）。
@@ -1878,7 +1878,7 @@ AWS 版は、エージェントのツール `centrality`（`agent/graph.py` の 
 
 **A. 結論**
 
-分散は、データを vmstorage に分けて置くだけ（どのデータも 1 台にしか無い）。複製は、同じデータを複数の vmstorage に置く。「全部 OSS の環境を作る（005）」では複製を使う（2026-10-04 に決めた）。
+分散は、データを vmstorage に分けて置くだけ（どのデータも 1 台にしか無い）。複製は、同じデータを複数の vmstorage に置く。「マネージドを OSS に置き換えた環境を作る（005）」では複製を使う（2026-10-04 に決めた）。
 
 **設定**
 
