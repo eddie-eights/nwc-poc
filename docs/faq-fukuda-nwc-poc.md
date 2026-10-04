@@ -475,7 +475,7 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 ```
 
 - **止めると空になるもの:** `metrics` トピック（measurement `system` / `interface`）が出なくなるので、Grafana のダッシュボード「netops / SNMP metrics」、エージェントの `query_metrics`、S3 Tables のポーリングの行が空になる。
-- **アラート:** Grafana のルール `link_down` はポーリングの `ifOperStatus` を見るので発火しない。IF の up / down は trap から Splunk（`SINK_SPLUNK=1`）が `link_down` を出す。そのため `ops/up.sh` は Grafana を `SNMP_POLL=1` のときだけアラートの送り手に数え、既定のまま `WORKFLOW=1` にすると「`SINK_SPLUNK=1` か `SNMP_POLL=1` が要る」と出して止まる。Grafana と `SINK_PROMETHEUS` があってどちらの送り手も無いときは注意を出す。
+- **アラート:** Grafana のルール `link_down` はポーリングの `ifOperStatus` を見るので発火しない。IF の up / down は trap から Splunk（`STORES` の `splunk`）が `link_down` を出す。そのため `ops/up.sh` は Grafana を `SNMP_POLL=1` のときだけアラートの送り手に数え、既定のまま `WORKFLOW=1` にすると「`STORES` に `splunk` を入れるか `SNMP_POLL=1` にする」と出して止まる。`STORES` に `grafana` があってどちらの送り手も無いときは注意を出す。
 - NLB のヘルスチェック（`outputs.health`）は、何も書いていないうちは 200 を返すので、ポーリングを止めても通る。Spark は無いトピックを作るので、`metrics` が無くても動く。
 - 変えて打ち直すと、ECS の Telegraf のタスクが入れ替わる（環境変数が変わるので）。
 
@@ -732,7 +732,7 @@ Lambda から書く経路は 2 案あった。
 | OpenSearch（インデックス `snmp-logs`） | traps / logs | trap と syslog |
 | Prometheus | metrics / gnmi / mdt | メトリクスの時系列 |
 | S3 Tables の生データのテーブル | 5 つ全部 | 正本 |
-| Splunk（`SINK_SPLUNK=1` のときだけ） | 5 つ全部 | 比較用 |
+| Splunk（`STORES` に `splunk` があるときだけ） | 5 つ全部 | 比較用 |
 
 構成図は [architecture/pipeline.md](architecture/pipeline.md)。
 
@@ -798,10 +798,10 @@ Spark UI（EMR Serverless のコンソールから開ける）の Executors の�
 
 | クエリ（格納先） | 購読するトピック | 有効になる条件 |
 |---|---|---|
-| iceberg（S3 Tables の生データ） | metrics / gnmi / mdt / traps / logs | `SINK_S3` |
+| iceberg（S3 Tables の生データ） | metrics / gnmi / mdt / traps / logs | `STORES` の `s3` |
 | prometheus | metrics / gnmi / mdt | Prometheus の格納先が有効なとき |
 | opensearch | traps / logs | OpenSearch の格納先が有効なとき |
-| splunk | metrics / gnmi / mdt / traps / logs | `SINK_SPLUNK=1` |
+| splunk | metrics / gnmi / mdt / traps / logs | `STORES` の `splunk` |
 
 - **1 つのクエリは、複数のトピックをまとめて 1 回で購読する。** トピックごとに購読を分けてはいない（`subscribe` にカンマ区切りで渡す）。
 - **クエリごとに checkpoint が別。** どこまで読んだかを格納先ごとに覚えているので、Splunk への書き込みが遅れても、Prometheus の読み進みは止まらない。同じトピックを複数のクエリが読むので、Kafka からは同じ行を格納先の数だけ読むことになる。
@@ -962,7 +962,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
   - 遅い格納先のせいで、ほかの格納先のバッチが 60 秒に収まらない。
   - 格納先ごとに必要な executor の数が大きく違う（たとえば S3 Tables は 8、Splunk は 1）。
 - **分け方の第一歩は 2 つ。** 「正本の S3 Tables」と「それ以外（OpenSearch、Prometheus、Splunk）」に分けるのが効果が大きい。正本が、ほかの格納先の不調に巻き込まれなくなる。
-- **この PoC では 3 つに分けた（2026-10-04 に決めて実装した。AWS では未確認）。** 分け方は「S3 Tables」「Splunk」「OpenSearch + Prometheus」。ジョブの名前は `snmp-sinks-iceberg` / `snmp-sinks-splunk` / `snmp-sinks-http`。
+- **この PoC では 3 つに分けた（2026-10-04 に決めて実装した。AWS では未確認）。** 分け方は「S3 Tables」「Splunk」「OpenSearch + Prometheus」。ジョブの名前は `sinks-s3iceberg` / `sinks-splunk` / `sinks-grafana`。
 
 | ジョブ | 格納先 | 分ける理由 | executor |
 |---|---|---|---|
@@ -972,7 +972,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
   - executor はどのジョブも 2。パーティション 2 つを分かれて読む動きを、どのジョブでも確かめるため（HTTP の格納先は送信が driver 1 本なので、速さのためだけなら 1 で足りる）。
   - 費用はジョブ 1 つにつき約 $0.21/h（3 vCPU）。3 つとも動くと 9 vCPU で約 $0.63/h。EMR Serverless の上限（`max_cpu` / `max_memory`）は 12 vCPU / 48 GB に上げた。
-  - 格納先を外すと、そのジョブは起きない（`SINK_SPLUNK=0` なら Splunk のジョブは無い）。
+  - 格納先を外すと、そのジョブは起きない（`STORES` に `splunk` が無ければ Splunk のジョブは無い）。
   - 上限を変える apply は、アプリが止まっていないと通らない。`ops/up.sh` は上限が違うときだけ、先にジョブとアプリを止めてから apply し、ジョブを checkpoint の続きから起こし直す。
   - スクリプトは `--sinks` で格納先を選べ、checkpoint は格納先ごとに分かれているので、同じスクリプトを 3 つ起こしている。
 
@@ -988,7 +988,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 - **VictoriaMetrics のクラスター版が要るのは、素の Prometheus が 1 台でしか動かないから。** 素の Prometheus を横に広げるために VictoriaMetrics、Thanos、Mimir、Cortex がある。AMP はその Cortex を AWS が運用しているものなので、同じ役目をもう果たしている。
 - **この PoC で先に詰まるのは、格納先ではなく送る側。** OpenSearch、Prometheus、Splunk への送信は、Spark の driver が 1 本で送っている（`spark/snmp_sinks.py` の `http_query`）。格納先を広げても、ここが変わらなければ速くならない。量が増えたら、送信を executor の側で並列にやる形に直すのが先。
-- **Splunk を比較用の 1 台のままにしているのは意図どおり。** Splunk は Grafana との比較のために置いていて（`SINK_SPLUNK=1` のときだけ）、止まっても正本の S3 Tables には影響しない。
+- **Splunk を比較用の 1 台のままにしているのは意図どおり。** Splunk は Grafana との比較のために置いていて（`STORES` に `splunk` があるときだけ）、止まっても正本の S3 Tables には影響しない。
 
 ### Q. Grafana は OpenSearch と Prometheus をデータソースにしてる？
 
@@ -1009,7 +1009,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 - **入るもの。** MSK の 5 つのトピック（metrics / gnmi / mdt / traps / logs）の全部。Spark が up か down かを判断せず、行をそのまま追記する。どのトピックから来た行かは `topic` 列で分かる。
 - **役割。** メトリクスとログの履歴の正本。OpenSearch と Prometheus は検索やグラフのための写し。
-- **作られる条件。** `SINK_S3` が有効なときだけ。
+- **作られる条件。** `STORES` に `s3` があるときだけ。
 - **名前。** SNMP のメトリクスだけではないので、`raw_telemetry` に改名すると決めた（ブランチ `rename-raw-telemetry` に実装済み。main にはまだ入っていない）。
 
 ### Q. S3 Tables には 1 つのテーブルしかない？ メトリクスもログも 1 つの同じテーブル？
@@ -1018,7 +1018,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 | 中身 | テーブル名 | 書く人 | 状態 |
 |---|---|---|---|
-| 機器から来た生データ（metrics / gnmi / mdt / traps / logs の全部） | `snmp_metrics`（`raw_telemetry` に改名予定） | Spark | `SINK_S3` が有効なときだけ作る |
+| 機器から来た生データ（metrics / gnmi / mdt / traps / logs の全部） | `snmp_metrics`（`raw_telemetry` に改名予定） | Spark | `STORES` に `s3` があるときだけ作る |
 | 修復案の証跡（作成・承認・却下・適用・確認） | `proposal_events` | Temporal の worker | いつも作る |
 | アラートの通知の履歴（発火と解消） | `alert_events` | Lambda graph-status（Firehose 経由） | 「アラートの履歴を残す（Cycle 001）」で実装中 |
 
