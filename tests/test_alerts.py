@@ -44,9 +44,10 @@ def imported(nodes):
 
 
 top = imported(ast.parse(src).body)
-check("アラートアクションはモジュールの頭では標準ライブラリだけを読み、boto3 / botocore は publish のときに app の lib/ から読む（boto3 の無い PC でもテストできる）",
+check("アラートアクションはモジュールの頭では標準ライブラリだけを読み、boto3 / botocore は publish のときに読む（Splunk の Python が持っているもの。"
+      "app に同梱せず、sys.path も足さない。boto3 の無い PC でもテストできる）",
       top <= set(sys.stdlib_module_names) and imported(ast.walk(ast.parse(src))) - top == {"boto3", "botocore"}
-      and os.path.realpath(sns.APP_LIB) == os.path.realpath(os.path.join(ROOT, "splunk", "netops_alerts", "lib")) and "sys.path.insert(0, APP_LIB)" in src)
+      and "sys.path" not in src and not hasattr(sns, "APP_LIB"))
 devmap = sns.parse_device_map(" 203.0.113.31=dc1-leaf-01 ,DC1-Leaf-02.Example.Net=dc1-leaf-02,壊れた要素,=x,y=,203.0.113.101=")
 check("device map は「別名=機器名」をカンマで並べたもの。別名は小文字にし、= の無い要素と片方が空の要素は捨てる",
       devmap == {"203.0.113.31": "dc1-leaf-01", "dc1-leaf-02.example.net": "dc1-leaf-02"} and sns.parse_device_map("") == {} and sns.parse_device_map(None) == {})
@@ -178,7 +179,7 @@ with tempfile.TemporaryDirectory() as tmp:
         run_send([], connect_errors=[ModuleNotFoundError("No module named 'boto3'")]); raised = None
     except ImportError as e:
         raised = e
-    check("boto3 が読めない（lib/ が無い = イメージの作り方の誤り）ときは送り直さずに止まる（main が ERROR で 3 にする）", isinstance(raised, ModuleNotFoundError))
+    check("boto3 が読めない（Splunk の Python に無い）ときは送り直さずに止まる（main が理由を ERROR で残して 3 にする）", isinstance(raised, ModuleNotFoundError))
     check("送り直しの回数と待ちの定数", (sns.ATTEMPTS, sns.TIMEOUT, sns.SUBJECT, sns.STATUSES) == (3, 10, "netops alert", ("firing", "resolved")))
 
     # ---- 本物の boto3 で、手元の偽の認証情報の口と偽の SNS へ publish する（boto3 が無ければ飛ばす。ops/check.sh は dev のグループで入れる）
@@ -304,7 +305,10 @@ with tempfile.TemporaryDirectory() as tmp:
     check("main: 結果のファイルが無い・JSON が壊れているなどは traceback を出さずに 3", rc == 3 and "ERROR Unexpected error: FileNotFoundError" in err and "Traceback" not in err
           and run_main(["netops_sns.py", "--execute"], "{壊れた")[0] == 3 and run_main(["netops_sns.py", "--execute"], PAYLOAD, fail=ValueError("x"))[0] == 3)
     rc, published, err = run_main(["netops_sns.py", "--execute"], PAYLOAD, fail=ModuleNotFoundError("No module named 'boto3'"))
-    check("main: boto3 が読めない（lib/ が無い）ときも traceback を出さずに 3", rc == 3 and "ERROR Unexpected error: ModuleNotFoundError: No module named 'boto3'" in err)
+    check("main: boto3 が読めない（Splunk の版を変えて Splunk の Python から無くなった）ときは、理由と確かめ方を 1 行で残して 3（traceback は出さない）",
+          rc == 3 and published == [] and len(err.splitlines()) == 1 and "Traceback" not in err
+          and f"ERROR boto3 を読めない（ModuleNotFoundError: No module named 'boto3'）。Splunk の Python {sys.version.split()[0]}（" in err
+          and "tests/check_splunk_image.py" in err and "ffba169" in err)
     with gzip.open(RESULTS, "wt", encoding="utf-8", newline="") as f:
         f.write("device,kind,target,status,detail,starts_at\n")
     rc, published, err = run_main(["netops_sns.py", "--execute"], PAYLOAD)
@@ -497,7 +501,7 @@ check("サーチが出す kind は受け手が知っているものだけ（link
 check("detail の末尾でどの入力から出したかが分かる（Grafana は (grafana: …)）: ポーリングは (splunk: poll)、gNMI は (splunk: gnmi)、"
       "link の trap は (splunk: linkDown trap) / (splunk: linkUp trap)、ほかの trap は (splunk: trap)",
       re.findall(r"\((splunk[^)]*)\)", p + g + t + c) == ["splunk: poll", "splunk: gnmi", "splunk: linkUp trap", "splunk: linkDown trap", "splunk: trap", "splunk: trap"])
-check("アラートアクションの定義: カスタム、標準入力は JSON、Python 3.13（lib/ の boto3 は 3.10 から）",
+check("アラートアクションの定義: カスタム、標準入力は JSON、Python は 3.13 と書く（boto3 は Splunk の Python のもの。latest だと Splunk を上げたとき黙って替わる）",
       actions == {"netops_sns": dict(actions["netops_sns"], **{"is_custom": "1", "payload_format": "json", "python.required": "3.13"})}
       and os.path.exists(os.path.join(ROOT, *APP, "bin", "netops_sns.py")) and os.path.exists(os.path.join(ROOT, *APP, "default", "data", "ui", "alerts", "netops_sns.html")))
 check("spec（README/*.conf.spec）がある（無いと btool check が知らない設定として警告する）",
@@ -514,27 +518,14 @@ check("app の中に認証情報や local/ は無い（公開リポジトリ）"
 # ---- Splunk のイメージ
 df = read("splunk", "Dockerfile")
 dcode = [l for l in df.splitlines() if l.strip() and not l.startswith("#")]
-stages = re.split(r"^FROM ", "\n".join(dcode), flags=re.M)[1:]
-check("Splunk のイメージは 2 段: 1 段目（ビルドする PC の CPU の python）で boto3 を取り、2 段目は上流の公式イメージに app・lib/・入口を COPY するだけ"
-      "（amd64 の段に RUN が無い = arm64 の PC でも QEMU 無しでビルドできる）",
-      [l for l in dcode if l.startswith(("FROM", "COPY", "ENTRYPOINT", "CMD"))]
-      == ["FROM --platform=$BUILDPLATFORM python:${PYTHON_VERSION}-slim AS lib", "FROM splunk/splunk:${SPLUNK_VERSION}",
-          "COPY --chown=splunk:splunk netops_alerts /opt/splunk-etc/apps/netops_alerts", "COPY --from=lib --chown=splunk:splunk /out /opt/splunk-etc/apps/netops_alerts/lib",
-          "COPY --chmod=0755 entrypoint.sh /sbin/nwc-entrypoint.sh", 'ENTRYPOINT ["/sbin/nwc-entrypoint.sh"]', 'CMD ["start-service"]']
-      and len(stages) == 2 and sum(l.startswith("RUN ") for l in stages[0].splitlines()) == 1 and "RUN " not in stages[1])
-pins = dict(re.findall(r'"?([a-z][a-z0-9-]*)==([^"\s]+)', stages[0]))
-check("boto3 と依存は版を固定して（boto3 / botocore は ARG の BOTO3_VERSION、ほかは ==）wheel だけで /out に入れる。純粋な Python でないもの"
-      "（*-none-any でない wheel・.so）が混ざったらビルドを止める。botocore のデータは sns と直下のファイルだけ残す",
-      re.search(r"^ARG BOTO3_VERSION=\d+\.\d+\.\d+$", stages[0], re.M) is not None
-      and set(pins) == {"boto3", "botocore", "jmespath", "python-dateutil", "s3transfer", "six", "urllib3"}
-      and pins["boto3"] == pins["botocore"] == "${BOTO3_VERSION}" and all(re.fullmatch(r"\d[\w.]*", v) for k, v in pins.items() if k not in ("boto3", "botocore"))
-      and "--only-binary=:all:" in stages[0] and "--target /out " in stages[0]
-      and "find /out/botocore/data -mindepth 1 -maxdepth 1 -type d ! -name sns -exec rm -rf {} +" in stages[0]
-      and "! grep -h '^Tag:' /out/*.dist-info/WHEEL | grep -v -- '-none-any$'" in stages[0] and "! find /out -name '*.so' | grep ." in stages[0])
-check("Python の版は 1 つに揃える: Dockerfile の PYTHON_VERSION（boto3 を入れる段）= アラートアクションの python.required",
-      re.search(r"^ARG PYTHON_VERSION=([\d.]+)$", df, re.M).group(1) == actions["netops_sns"]["python.required"] == "3.13")
-check("lib/ はリポジトリにもビルドの文脈にも入れない（.gitignore・splunk/.dockerignore。手元に残っていても混ぜない）",
-      "splunk/netops_alerts/lib/" in read(".gitignore").splitlines() and {"netops_alerts/lib", "**/__pycache__"} <= set(read("splunk", ".dockerignore").splitlines()))
+check("Splunk のイメージは上流の公式イメージに app と入口を足すだけ（RUN は無い = arm64 の PC でも QEMU 無しでビルドできる。boto3 は同梱しない）",
+      dcode == ["ARG SPLUNK_VERSION=10.4.3", "FROM splunk/splunk:${SPLUNK_VERSION}", "COPY --chown=splunk:splunk netops_alerts /opt/splunk-etc/apps/netops_alerts",
+                "COPY --chmod=0755 entrypoint.sh /sbin/nwc-entrypoint.sh", 'ENTRYPOINT ["/sbin/nwc-entrypoint.sh"]', 'CMD ["start-service"]'])
+img = load("tests/check_splunk_image.py", "check_splunk_image")
+check("Splunk の版を変えたら、コンテナの検査（tests/check_splunk_image.py。その版の Python の boto3 で publish できるか）を走らせて CHECKED を書き換える: "
+      "CHECKED の Splunk = Dockerfile の SPLUNK_VERSION、CHECKED の Python = python.required の版",
+      img.CHECKED["splunk"] == re.search(r"^ARG SPLUNK_VERSION=(\S+)$", df, re.M).group(1)
+      and img.CHECKED["python"].startswith(actions["netops_sns"]["python.required"] + ".") and set(img.CHECKED) == {"splunk", "python", "boto3"})
 up = read("ops", "up.sh")
 check("up.sh の SPLUNK_VERSION / GRAFANA_VERSION は Dockerfile の ARG の既定値と同じ",
       re.search(r"^SPLUNK_VERSION=([\d.]+)", up, re.M).group(1) == re.search(r"ARG SPLUNK_VERSION=([\d.]+)", df).group(1)

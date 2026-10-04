@@ -9,8 +9,10 @@ publish する JSON は Grafana（grafana/provisioning/alerting）と同じ形�
 - 認証: ECS のタスクロール（AWS_CONTAINER_CREDENTIALS_RELATIVE_URI から一時的な認証情報を取る）。アクセスキーは置かない
 - 設定: コンテナの環境変数を splunk/entrypoint.sh がファイルに写したもの（splunkd の子プロセスはコンテナの環境変数を引き継がない）。
   boto3 には環境変数でなく引数で渡す（認証情報の口・リージョン・AWS_ENDPOINT_URL_SNS）
-- ライブラリ: boto3 を app の lib/ に同梱する（splunk/Dockerfile がイメージのビルドのときに入れる。Splunk の Python に pip で入れない。
-  VPC から PyPI へは出られない）。boto3 は publish のときに読むので、boto3 の無い PC でもテストできる
+- ライブラリ: boto3 は Splunk の Python が持っているものを使う（Splunk 10.4.3 は python3.13 の site-packages に boto3 1.37.14。
+  python.required = 3.13 は default/alert_actions.conf）。app に同梱しない・pip で入れない。Splunk の版を変えたら
+  tests/check_splunk_image.py で、その版の Python に boto3 があり publish できることを確かめる（無くなっていたら app の lib/ に同梱する形に戻す。git の ffba169）。
+  boto3 は publish のときに読むので、boto3 の無い PC でもテストできる
 
 失敗は stderr に "ERROR …" で書いて 0 以外で終わる（Splunk が splunkd.log の sendmodalert に残す）。Splunk は打ち直さないので、ここで 3 回まで試す
 """
@@ -25,7 +27,6 @@ import time
 ENV_FILE = "/opt/container_artifact/nwc-alerts.env"   # splunk/entrypoint.sh が書く
 ENV_KEYS = ("AWS_REGION", "ALERTS_TOPIC_ARN", "DEVICE_MAP", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
             "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_ENDPOINT_URL_SNS")
-APP_LIB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib")   # boto3 など（splunk/Dockerfile が入れる）
 STATUSES = ("firing", "resolved")
 MAX_ALERTS = 50      # 1 通に入れる件数（SNS の本文は 256 KB まで。1 件は数百バイト）
 ATTEMPTS = 3
@@ -118,8 +119,6 @@ def sns_client(env):
     リージョンはトピックの ARN から（分からないときだけ AWS_REGION）、宛先は AWS_ENDPOINT_URL_SNS があればそこ。
     プロキシの環境変数と、AWS_ENDPOINT_URL などの宛先の設定は見ない（認証情報の口は 169.254.170.2、SNS は VPC のエンドポイント）。
     試し直しは send がする（boto3 の中では打ち直さない）"""
-    if APP_LIB not in sys.path:
-        sys.path.insert(0, APP_LIB)
     import boto3
     from botocore.config import Config
     from botocore.credentials import ContainerProvider
@@ -155,7 +154,7 @@ def send(env, texts, sleep=time.sleep, connect=None):
                 sent += 1
                 break
             except ImportError:
-                raise   # app の lib/ に boto3 が無い（イメージの作り方の誤り）。試し直しても直らない
+                raise   # Splunk の Python に boto3 が無い。試し直しても直らない（main が理由を残す）
             except Exception as e:   # boto3 の失敗はどれも試し直す（ClientError = SNS が断った、BotoCoreError = 通信・認証情報の口）
                 client, err = None, describe(e)
             log("ERROR", f"publish に失敗した（{attempt}/{ATTEMPTS}）: {err}")
@@ -180,6 +179,10 @@ def main(argv, stdin):
         sent = send(env, texts)
         log("INFO", f"search={payload.get('search_name')} rows={len(rows)} alerts={len(alerts)} published={sent}/{len(texts)}")
         return 0 if sent == len(texts) else 2
+    except ImportError as e:   # Splunk の版を変えて、その Python から boto3 が無くなった・壊れた
+        log("ERROR", f"boto3 を読めない（{type(e).__name__}: {e}）。Splunk の Python {sys.version.split()[0]}（{sys.executable}）に boto3 が無い。"
+                     "Splunk の版を変えたなら tests/check_splunk_image.py で確かめ、無ければ boto3 を app の lib/ に同梱する（git の ffba169）")
+        return 3
     except Exception as e:   # Splunk に traceback を流さない（1 行で残す）
         log("ERROR", f"Unexpected error: {type(e).__name__}: {e}")
         return 3

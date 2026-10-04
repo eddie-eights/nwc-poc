@@ -13,8 +13,6 @@ lab/splab.clab.yml
 *.rpm
 # uv の仮想環境
 .venv/
-# Splunk の app に同梱する boto3（splunk/Dockerfile がビルドのときに入れる。リポジトリには置かない）
-splunk/netops_alerts/lib/
 
 # Terraform（state はローカル。消すと Terraform が作ったものを見失うので、このリポジトリのフォルダごと残す）
 .terraform/
