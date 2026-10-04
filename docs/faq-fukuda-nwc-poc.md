@@ -1520,3 +1520,18 @@ Splunk の中で重複を扱う方法。
 | デメリット | 分析の前に読み込みの手順が 1 つ要る | 二重に書く。使うか分からない分析のために複雑さが残る |
 
 Database と Analytics の使い分けは [8 章](#8-neptune-database-と-neptune-analytics)。
+
+### Q. もう 2 AZ に置いてあるものは、1 AZ にできるか
+
+**A. 結論**
+MSK と AgentCore Runtime 以外は 1 AZ にできる。MSK は AWS の決まりで 2 AZ より少なくできない。
+
+| リソース | 1 AZ にできるか | 理由 |
+|---|---|---|
+| MSK | できない | ブローカーを置くサブネットは 2 つ以上の AZ に要る（AWS の決まり）。ブローカーの数も AZ の数の倍数 |
+| AgentCore Runtime | できない（未確認） | `terraform/agent/variables.tf` の説明に「Runtime needs two AZs」とある。AWS の文書では確かめていない |
+| EMR Serverless | できる | サブネットを 1 つだけ渡せばよい。費用は変わらない |
+| Lambda（KB の索引、グラフの状態、tools） | できる | サブネットを 1 つだけ渡せばよい。費用は変わらない |
+| AOSS の VPC エンドポイント | できる見込み（未確認） | 1 サブネットで作れるかは確かめていない。作れれば 1.4 セント/h 減る |
+
+1 AZ にしても費用が減るのは AOSS のエンドポイントだけ。EMR と Lambda は「既定は全部 1 AZ」に揃える意味だけがある。
