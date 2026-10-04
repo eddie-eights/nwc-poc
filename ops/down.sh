@@ -13,7 +13,7 @@
 #   KEEP_ECR   ECR を残すか。1 = 残す、0 = 消す（既定）。それ以外の値は何も消さずに止まる
 #   AWS_PROFILE / AWS_CA_BUNDLE  ops/up.sh と同じ
 #
-# PIPELINE / AGENT / WORKFLOW / SKIP_* / CREATE_KB / KB_GRAPHRAG は見ない。機能の設定に関係なく、state にリソースが載っているルートを全部消す
+# PIPELINE / AGENT / WORKFLOW / SKIP_* / CREATE_KB は見ない。機能の設定に関係なく、state にリソースが載っているルートを全部消す
 # （作っていないルートは飛ばす）。analytics は Spark のジョブを止めてから消す。
 #
 # 社内の SSL 検査がある PC では ops/up.sh と同じく AWS_CA_BUNDLE を入れてから打つ。
@@ -197,12 +197,8 @@ if has_resources agent; then
   LOG_GROUP=$(tf agent output -raw runtime_log_group_name 2>/dev/null || true)
 fi
 # create_knowledge_base=true で作った agent は、既定の false のまま destroy すると KB のリソースを state から外そうとして止まらないよう、state から読む
-if has_resources agent && tf agent state list 2>/dev/null | grep -q '^aws_bedrockagent_knowledge_base\.kb\['; then
+if has_resources agent && tf agent state list 2>/dev/null | grep -q '^aws_opensearchserverless_collection\.kb\['; then
   AGENT_VARS+=(-var create_knowledge_base=true)
-fi
-# GraphRAG の KB（Neptune Analytics のグラフ）も同じ。データソースは terraform_data の destroy の local-exec が AWS CLI で消す
-if has_resources agent && tf agent state list 2>/dev/null | grep -q '^aws_neptunegraph_graph\.kb\['; then
-  AGENT_VARS+=(-var kb_graphrag=true)
 fi
 # KB を作っていれば、ベクトルインデックスを作る Lambda（terraform/agent/kb.tf）が VPC の中にいる。ENI を刈りながら消す
 destroy_lambda_root agent "$PREFIX-kb-index" ${AGENT_VARS[@]+"${AGENT_VARS[@]}"}

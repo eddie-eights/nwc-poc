@@ -60,29 +60,6 @@ variable "create_knowledge_base" {
   default     = false
 }
 
-variable "kb_graphrag" {
-  description = "With create_knowledge_base = true, store the vectors in a Neptune Analytics graph instead of OpenSearch Serverless (Bedrock Knowledge Bases GraphRAG). Bedrock extracts entities from the chunks at ingestion and links chunks that share them. About 0.58 USD per hour (16 m-NCU in Tokyo). Switching replaces the knowledge base."
-  type        = bool
-  default     = false
-}
-
-variable "kb_graph_memory" {
-  description = "Provisioned memory of the Neptune Analytics graph in m-NCU (16 is the minimum; it does not scale by itself). Used only with kb_graphrag = true."
-  type        = number
-  default     = 16
-
-  validation {
-    condition     = contains([16, 32, 64, 128, 256, 384, 512, 768, 1024, 2048, 3072, 4096], var.kb_graph_memory)
-    error_message = "kb_graph_memory must be one of 16, 32, 64, 128, 256, 384, 512, 768, 1024, 2048, 3072, 4096."
-  }
-}
-
-variable "kb_graph_model_id" {
-  description = "Model or inference profile ID that extracts entities when the graph is built (Claude Haiku or Amazon Nova). Leave empty to use model_id. Used only with kb_graphrag = true."
-  type        = string
-  default     = ""
-}
-
 variable "guardrail_profile_id" {
   description = "System-defined guardrail profile for cross-Region inference (required by the Standard tier). apac.guardrail.v1:0 for Tokyo."
   type        = string

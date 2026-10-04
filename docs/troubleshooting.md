@@ -64,7 +64,6 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 | 150 秒で失敗する | Runtime が返らなかった。初回は起動が遅いので再送する |
 | Runtime のログの `InvokeModel` が `ap-northeast-3` で `AccessDeniedException` | `jp.` のモデルは大阪にも振り分けられる。SCP / Permissions boundary が大阪を止めている |
 | 機器の質問に「資料に見当たらない」 | ツールを呼んでいない（Runtime のログに `tools=0`）。機器名をそのまま書いて聞き直す |
-| `terraform_data.kb_graph_data_source` が失敗（KB_GRAPHRAG=1） | GraphRAG のデータソースは Terraform の中から AWS CLI（`aws bedrock-agent create-data-source`）で作る。手元の AWS CLI が古いと `contextEnrichmentConfiguration` を知らずに落ちる（2.36 で確認）。モデルの拒否なら `-var kb_graph_model_id=` でグラフを作るモデルを替える |
 | 回答に `参照:` が付かない | `CREATE_KB=1` でない、または取り込みが失敗している。Runtime のログの `retrieve failed` を見る |
 | 普通の質問がガードレールの定型文で返る | 誤検知。`terraform/agent/kb.tf` の `aws_bedrock_guardrail.this` のフィルタを弱め、版を作り直す（[development.md](development.md)） |
 

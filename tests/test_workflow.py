@@ -594,8 +594,8 @@ check("down.sh は 1 ルートが消えなくても止まらず、残りを消�
       and re.search(r'destroy_root\(\)[\s\S]*?\n\}', down).group(0).count("die ") == 0)
 # ---- terraform/agent と terraform/base/core の分担
 agent_files = set(n for n in os.listdir(os.path.join(ROOT, "terraform", "agent")) if n.endswith(".tf"))
-check("terraform/agent のファイルは versions / providers / variables / locals / runtime / kb / kb_graph / outputs（network.tf は 2026-09-26 に無くなった）",
-      agent_files == {"versions.tf", "providers.tf", "variables.tf", "locals.tf", "runtime.tf", "kb.tf", "kb_graph.tf", "outputs.tf"})
+check("terraform/agent のファイルは versions / providers / variables / locals / runtime / kb / outputs（network.tf は 2026-09-26 に無くなった）",
+      agent_files == {"versions.tf", "providers.tf", "variables.tf", "locals.tf", "runtime.tf", "kb.tf", "outputs.tf"})
 agent_tf = "".join(read("terraform", "agent", n) for n in sorted(agent_files))
 main_tf = "".join(read("terraform", "base", "core", n) for n in sorted(os.listdir(os.path.join(ROOT, "terraform", "base", "core"))) if n.endswith(".tf"))
 check("Runtime / ガードレール / KB は terraform/agent にあり、terraform/base/core には無い。agent にエンドポイントも SG も無く、Runtime は土台の runtime の SG を使う",
@@ -621,38 +621,6 @@ check("up.sh は KB か logs のコレクションがあるときだけ base/cor
 check("KB は create_knowledge_base（既定 false）の count で作り、Runtime は KB があるときだけ KNOWLEDGE_BASE_ID を受ける",
       re.search(r'variable "create_knowledge_base"[\s\S]*?default\s*=\s*false', agent_tf) is not None and 'resource "aws_bedrockagent_knowledge_base" "kb" {\n  count = local.kb ? 1 : 0' in agent_tf
       and re.search(r'local\.kb \? \{\n\s*KNOWLEDGE_BASE_ID', agent_tf) is not None)
-# ---- GraphRAG（Bedrock KB のベクトルの置き場を Neptune Analytics にする。2026-10-04）
-_kbg = read("terraform", "agent", "kb_graph.tf"); _kbtf = read("terraform", "agent", "kb.tf")
-check("kb_graphrag（既定 false）で置き場を切り替える: OpenSearch Serverless の側は kb_aoss、グラフの側は kb_graph の count で、KB とサービスロールは共用",
-      re.search(r'variable "kb_graphrag"[\s\S]*?default\s*=\s*false', agent_tf) is not None
-      and re.search(r'kb_graph\s*=\s*local\.kb && var\.kb_graphrag\n\s*kb_aoss\s*=\s*local\.kb && !var\.kb_graphrag', agent_tf) is not None
-      and all(f'resource "{r}" {{\n  count = local.kb_aoss ? 1 : 0' in _kbtf for r in ('aws_opensearchserverless_collection" "kb', 'aws_lambda_function" "kb_index', 'aws_lambda_invocation" "kb_index', 'aws_bedrockagent_data_source" "docs'))
-      and 'resource "aws_iam_role" "kb" {\n  count = local.kb ? 1 : 0' in _kbtf
-      and 'type = local.kb_graph ? "NEPTUNE_ANALYTICS" : "OPENSEARCH_SERVERLESS"' in _kbtf
-      and re.search(r'dynamic "neptune_analytics_configuration" \{\s*for_each = local\.kb_graph \? \[1\] : \[\][\s\S]*?graph_arn = aws_neptunegraph_graph\.kb\[0\]\.arn', _kbtf) is not None)
-check("Neptune Analytics のグラフは公開せず、最小の 16 m-NCU、ベクトルは Titan v2 の 1024 次元。サービスロールは neptune-graph の 4 つと実体を抜き出すモデルの InvokeModel",
-      re.search(r'resource "aws_neptunegraph_graph" "kb" \{\n  count = local\.kb_graph \? 1 : 0', _kbg) is not None
-      and re.search(r'public_connectivity\s*=\s*false', _kbg) is not None and re.search(r'vector_search_dimension\s*=\s*1024', _kbg) is not None
-      and re.search(r'variable "kb_graph_memory"[\s\S]*?default\s*=\s*16', agent_tf) is not None
-      and '"neptune-graph:GetGraph", "neptune-graph:ReadDataViaQuery", "neptune-graph:WriteDataViaQuery", "neptune-graph:DeleteDataViaQuery"' in _kbg
-      and "local.kb_graph_statements," in _kbtf and "] : s if local.kb_aoss]," in _kbtf)
-check("GraphRAG のデータソースは provider に項目が無いので AWS CLI で作る（実体の抜き出し、RETAIN、docs/ だけ）。destroy では KB より先に消す",
-      'resource "terraform_data" "kb_graph_data_source"' in _kbg and 'method = "CHUNK_ENTITY_EXTRACTION"' in _kbg and "contextEnrichmentConfiguration" in _kbg
-      and 'dataDeletionPolicy = "RETAIN"' in _kbg and 'inclusionPrefixes = ["docs/"]' in _kbg
-      and "aws bedrock-agent create-data-source" in _kbg and re.search(r'when\s*=\s*destroy[\s\S]*?aws bedrock-agent delete-data-source[\s\S]*?self\.input\.kb_id', _kbg) is not None
-      and "context_enrichment_configuration" not in agent_tf)
-check("Runtime は GraphRAG のとき KB_SEARCH_TYPE=DEFAULT を受ける（ハイブリッド検索は OpenSearch Serverless だけ）",
-      'KB_SEARCH_TYPE = local.kb_graph ? "DEFAULT" : "HYBRID"' in agent_tf
-      and 'if KB_SEARCH_TYPE in ("HYBRID", "SEMANTIC"):' in read("agent", "app.py"))
-check("up.sh は KB_GRAPHRAG のとき kb_graphrag=true を渡し、OpenSearch Serverless のエンドポイントを求めず、データソースの ID を名前から引く。CREATE_KB が無ければ効かない",
-      'AGENT_VARS+=(-var kb_graphrag=true)' in up and 'if [ -n "$CREATE_KB" ] && [ -z "$KB_GRAPHRAG" ]; then NEED_AOSS=1; fi' in up
-      and "tf agent output -raw data_source_name" in up and "flag_value KB_GRAPHRAG" in up
-      and re.search(r'if \[ -z "\$CREATE_KB" \] && \[ -n "\$KB_GRAPHRAG" \]; then\n\s*echo[^\n]*\n\s*KB_GRAPHRAG=""', up) is not None
-      and "COST_CENTS + 58" in up)
-check("down.sh は state に KB / グラフがあれば create_knowledge_base / kb_graphrag を付けて destroy する。deploy.env は KB_GRAPHRAG を読める",
-      re.search(r"aws_bedrockagent_knowledge_base\\\.kb\\\['; then\n\s*AGENT_VARS\+=\(-var create_knowledge_base=true\)", down) is not None
-      and re.search(r"aws_neptunegraph_graph\\\.kb\\\['; then\n\s*AGENT_VARS\+=\(-var kb_graphrag=true\)", down) is not None
-      and " KB_GRAPHRAG " in read("ops", "deploy-env.sh") and re.search(r"^#KB_GRAPHRAG=0$", read("deploy.env.example"), re.M) is not None)
 check("Runtime の ARN は agent が SSM に書き、web はそれを読む（main は runtime_arn を user_data に渡さない）",
       'resource "aws_ssm_parameter" "runtime_arn"' in agent_tf and 'name        = "${local.param_prefix}/runtime-arn"' in agent_tf
       and "runtime_arn" not in read("terraform", "base", "core", "templates", "web_user_data.sh.tftpl")

@@ -142,8 +142,6 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
       KNOWLEDGE_BASE_ID          = aws_bedrockagent_knowledge_base.kb[0].id
       NUMBER_OF_RESULTS          = tostring(var.number_of_results)
       NUMBER_OF_RERANKED_RESULTS = tostring(var.number_of_reranked_results)
-      # ハイブリッド検索（ベクトル + キーワード）は OpenSearch Serverless だけ。Neptune Analytics（GraphRAG）は検索の種類を指定しない
-      KB_SEARCH_TYPE = local.kb_graph ? "DEFAULT" : "HYBRID"
     } : {},
     { for k, v in { RERANK_MODEL_ARN = local.rerank_model_arn } : k => v if local.kb && local.rerank },
   )

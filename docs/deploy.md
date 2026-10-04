@@ -15,7 +15,6 @@
 | `PIPELINE` | lab / stream / analytics / graph。既定 `0` |
 | `WORKFLOW` | Temporal での調査と修復。`AGENT=1` と `PIPELINE=1` が要り、`SKIP_LAB` / `SKIP_STREAM` / `SKIP_ANALYTICS` / `SKIP_GRAPH` とは一緒に書けない。ワークフローを起こすのはアラートなので、送り手も要る（`SINK_SPLUNK=1` か、`GRAFANA=1` と `SINK_PROMETHEUS=1` の既定のまま `SNMP_POLL=1`。どちらも無いと `ops/up.sh` が止まる。`SNMP_POLL` が既定の `0` だと Grafana のルールは発火しないので、既定のままの `WORKFLOW=1` は止まる） |
 | `CREATE_KB` | ナレッジベース（+$0.37/h。OpenSearch Serverless の VPC エンドポイント $0.03（`SINK_OPENSEARCH` の logs と共用）と bedrock-agent-runtime のエンドポイント $0.014 を含む）。`AGENT=1` のとき |
-| `KB_GRAPHRAG` | ナレッジベースを GraphRAG にする（既定 `0`。`CREATE_KB=1` のとき）。ベクトルの置き場が OpenSearch Serverless でなく Neptune Analytics のグラフ（16 m-NCU、公開しない）になり、取り込みのときに Bedrock が手順書から実体と関係のグラフを作って検索で辿る。+$0.59/h（グラフ $0.58 と bedrock-agent-runtime のエンドポイント $0.014。OpenSearch Serverless の OCU と VPC エンドポイントは要らない）。ハイブリッド検索は使えずベクトルだけの検索になる。あとから切り替えると KB は作り直し。**AWS では未確認**（2026-10-04 時点。コードとテストまで） |
 | `SKIP_LAB` | lab を作らない（-$0.17/h）。`SKIP_STREAM=1` も要る |
 | `SKIP_STREAM` | stream（MSK と Telegraf の ECS）を作らない（-$1.18/h）。analytics も外れる |
 | `SKIP_ANALYTICS` | analytics を作らない（-$0.56/h。KB を作るなら OpenSearch Serverless の VPC エンドポイントは残るので -$0.53/h。Grafana の分を含む）。Grafana と Splunk（アラートの送り手）も無くなる |
