@@ -153,8 +153,11 @@ fake_graph = types.ModuleType("graph")
 fake_graph.set_status = lambda dev, ifn="", status="DOWN", only_if="": (calls.append((dev, ifn, status) + ((only_if,) if only_if else ())) or {"updated": 1})
 layer_calls = []
 fake_graph.set_layer_status = lambda dev, kind, target, status="DOWN": (layer_calls.append((dev, kind, target, status)) or {"updated": 1})
+fake_graph._cache = {"client": None}   # status_handler._neptune が NEPTUNE_CONFIG のクライアントを入れる置き場
 sys.modules["graph"] = fake_graph
 h = load("graph/status_handler.py", "status_handler")
+_neptune_client = object()
+h._cache["neptune"] = _neptune_client   # 資格情報を探しに行かない（作り方は下の NEPTUNE_CONFIG の検査で見る）
 def ev(status, source="grafana", **a):
     """SNS が Lambda に渡すイベント（Records[].Sns.Message に共通の形の JSON）"""
     return {"Records": [{"EventSource": "aws:sns", "Sns": {"Message": json.dumps({"source": source, "alerts": [dict(a, status=status)]})}}]}
@@ -211,7 +214,7 @@ try:
     h.handler(ev("firing", device_id="dc1-leaf-01", kind="link_down", target="eth1")); raised = ""
 except RuntimeError as e:
     raised = str(e)
-check("Neptune に書けなければ最後に RuntimeError で落とす（Lambda の非同期の再試行に任せる。書き込みは繰り返して害が無い）",
+check("Neptune に書けなければ最後に RuntimeError で落とす（Lambda の非同期の再試行に任せる。やり直しの合間に後の通知が来ると古い値に戻る）",
       "neptune" in raised and "OSError: neptune unreachable" in raised)
 
 # ---- アラートの通知の履歴（Firehose → S3 Tables の alert_events。ALERT_STREAM が空なら送らない）
@@ -352,22 +355,88 @@ h.handler({"Records": [{"Sns": {"Message": "not json"}}]})
 check("読めないメッセージは WARNING でログに出す（ALERT_DROPPED ではない）",
       len(cap.records) == 1 and cap.records[-1].levelno == logging.WARNING and "読めない" in cap.records[-1].getMessage()
       and "ALERT_DROPPED" not in cap.records[-1].getMessage())
+check("Neptune には status_handler が NEPTUNE_CONFIG で作ったクライアントを graph._cache に入れてから書く", fake_graph._cache["client"] is _neptune_client)
+# ---- Lambda の残り時間（design.md Round 2: 残りが Firehose の取り分 + Neptune 1 回の最大より少なければ、その通知から先は Neptune に書かない）
+class _Ctx:
+    """Lambda の context の偽物。get_remaining_time_in_millis は呼ばれるたびに left を先頭から返す（最後の値は使い回す）"""
+    def __init__(self, *left):
+        self.left, self.asked = list(left), 0
+    def get_remaining_time_in_millis(self):
+        self.asked += 1
+        return self.left.pop(0) if len(self.left) > 1 else self.left[0]
+
+
+_four = {"Records": [{"Sns": {"Message": json.dumps({"source": "splunk", "alerts": [
+    {"status": "firing", "device_id": f"dc1-leaf-0{i}", "kind": "link_down", "target": "ethernet-1/1", "starts_at": 1790000000} for i in (1, 2, 3, 4)]})}}]}
+fh.batches.clear(); cap.records.clear()
+n = len(calls)
+try:
+    h.handler(_four, _Ctx(h.NEPTUNE_BUDGET_MS - 1)); raised = ""
+except RuntimeError as e:
+    raised = str(e)
+skips = [x for x in cap.at(logging.WARNING) if "NEPTUNE_SKIPPED" in x.getMessage()]
+check("Lambda の残りが 33 秒を切っていたら Neptune を呼ばず、4 行を Firehose に送り、WARNING の NEPTUNE_SKIPPED を 1 回出して最後に RuntimeError",
+      len(calls) == n and [len(b[1]) for b in fh.batches] == [4] and len(skips) == 1
+      and raised.startswith("neptune: Lambda の残り時間が足りず 4 件を書かなかった"))
+fh.batches.clear(); cap.records.clear()
+ctx = _Ctx(60000, h.NEPTUNE_BUDGET_MS, h.NEPTUNE_BUDGET_MS - 1, 60000)
+try:
+    h.handler(_four, ctx); raised = ""
+except RuntimeError as e:
+    raised = str(e)
+skips = [x for x in cap.at(logging.WARNING) if "NEPTUNE_SKIPPED" in x.getMessage()]
+check("途中で 33 秒を切ったら、その通知から先だけを飛ばす（ちょうど 33 秒は書く。飛ばしたあとは残り時間を見直さず、WARNING も 1 回）。行は 4 行とも送る",
+      [c[0] for c in calls[n:]] == ["dc1-leaf-01", "dc1-leaf-02"] and ctx.asked == 3 and [len(b[1]) for b in fh.batches] == [4]
+      and len(skips) == 1 and "dc1-leaf-03" in skips[0].getMessage() and "2 件を書かなかった" in raised)
+fake_graph.set_status = _boom
+fh.batches.clear(); cap.records.clear()
+try:
+    h.handler(_four, _Ctx(60000, h.NEPTUNE_BUDGET_MS - 1)); raised = ""
+except RuntimeError as e:
+    raised = str(e)
+check("Neptune の失敗と打ち切りが重なっても、行は全部送り、例外の文の先頭に打ち切った件数を置く（後ろの切り詰めで消えない）",
+      [len(b[1]) for b in fh.batches] == [4] and raised.startswith("neptune: Lambda の残り時間が足りず 3 件を書かなかった; neptune {")
+      and "OSError: neptune unreachable" in raised)
+fake_graph.set_status = lambda dev, ifn="", status="DOWN", only_if="": (calls.append((dev, ifn, status) + ((only_if,) if only_if else ())) or {"updated": 1})
+n = len(calls)
+check("残りが十分なら全部を書いて例外にしない", h.handler(_four, _Ctx(60000)) == [{"updated": 1}] * 4 and len(calls) == n + 4)
 h.log.removeHandler(cap)
 h.time = _saved_time
 # 送る経路が FIREHOSE_CONFIG のクライアントを使うか（偽物を置き場に入れるだけだと、toolkit.client("firehose") に替えても通ってしまう）
-_saved_boto3, _made, _fh2 = h.boto3, [], FakeFirehose()
-h.boto3 = types.SimpleNamespace(client=lambda service, **kw: _made.append((service, kw)) or _fh2)   # 資格情報を探しに行かない
-h._cache["firehose"] = None
+_saved_boto3, _made, _fh2, _nep2 = h.boto3, [], FakeFirehose(), object()
+h.boto3 = types.SimpleNamespace(client=lambda service, **kw: _made.append((service, kw)) or (_fh2 if service == "firehose" else _nep2))   # 資格情報を探しに行かない
+h._cache["firehose"] = h._cache["neptune"] = None
 h.toolkit._clients.pop("firehose", None)
 h.handler(pair); h.handler(pair)
-_cfg = h.FIREHOSE_CONFIG
+_cfg, _ncfg = h.FIREHOSE_CONFIG, h.NEPTUNE_CONFIG
 _timeout = int(re.search(r"^\s*timeout\s*=\s*(\d+)", read("terraform", "pipeline", "graph", "sync.tf"), re.M).group(1))
-check(f"Firehose へは FIREHOSE_CONFIG で 1 つだけ作ったクライアントで送り、botocore の再試行を切る（1 回）。3 回の接続と読みの待ち + 送り直しの待ちが Lambda の timeout（{_timeout} 秒）に収まる",
-      _made == [("firehose", {"region_name": h.toolkit.REGION, "config": _cfg})] and [len(b[1]) for b in _fh2.batches] == [2, 2]
+check(f"Firehose へは FIREHOSE_CONFIG で 1 つだけ作ったクライアントで送り、botocore の再試行を切る（1 回）。3 回の接続と読みの待ち + 送り直しの待ちが Firehose の取り分（{h.FIREHOSE_SHARE} 秒）に収まる",
+      [m for m in _made if m[0] == "firehose"] == [("firehose", {"region_name": h.toolkit.REGION, "config": _cfg})] and [len(b[1]) for b in _fh2.batches] == [2, 2]
       and "firehose" not in h.toolkit._clients and _cfg.retries.get("total_max_attempts") == 1
-      and 3 * (_cfg.connect_timeout + _cfg.read_timeout) + sum(h.RETRY_WAITS) < _timeout)
+      and 3 * (_cfg.connect_timeout + _cfg.read_timeout) + sum(h.RETRY_WAITS) < h.FIREHOSE_SHARE)
+check("Neptune へは NEPTUNE_CONFIG（接続 3 秒・読み 10 秒・再試行なし）で 1 つだけ作ったクライアントを graph._cache に入れて使い、agent/graph.py の既定（接続 10 秒・読み 60 秒）は変えない",
+      [m for m in _made if m[0] == "neptune-graph"] == [("neptune-graph", {"region_name": h.toolkit.REGION, "config": _ncfg})] and fake_graph._cache["client"] is _nep2
+      and (_ncfg.connect_timeout, _ncfg.read_timeout, _ncfg.retries) == (3, 10, {"total_max_attempts": 1, "mode": "standard"})
+      and 'config=Config(connect_timeout=10, read_timeout=60, retries={"max_attempts": 2}))' in read("agent", "graph.py"))
+check(f"Lambda graph-status の timeout は 60 秒で、打ち切りの閾値（Firehose の取り分 + Neptune 1 回の最大 = {h.NEPTUNE_BUDGET_MS} ミリ秒）より長い",
+      _timeout == 60 and h.NEPTUNE_BUDGET_MS == (h.FIREHOSE_SHARE + _ncfg.connect_timeout + _ncfg.read_timeout) * 1000 == 33000 and h.NEPTUNE_BUDGET_MS < _timeout * 1000)
+def _no_neptune(service, **kw):
+    if service == "neptune-graph":
+        raise OSError("neptune-graph のクライアントを作れない")
+    return _fh2
+h.boto3 = types.SimpleNamespace(client=_no_neptune)
+h._cache["neptune"] = None
+_fh2.batches.clear(); cap.records.clear(); h.log.addHandler(cap)
+try:
+    h.handler(pair); raised = ""
+except RuntimeError as e:
+    raised = str(e)
+h.log.removeHandler(cap)
+check("Neptune のクライアントを作るところで落ちても（_neptune() は通知ごとの try の中）、行は Firehose に送ってから RuntimeError で落とす",
+      [len(b[1]) for b in _fh2.batches] == [2] and raised.count("OSError: neptune-graph のクライアントを作れない") == 2 and len(cap.at(logging.ERROR)) == 2)
 h.boto3 = _saved_boto3
 h._cache["firehose"] = None
+h._cache["neptune"] = _neptune_client
 fh.batches.clear()
 os.environ.pop("ALERT_STREAM", None)
 

@@ -122,7 +122,7 @@ resource "aws_lambda_function" "status" {
   handler          = "index.handler"
   filename         = data.archive_file.status.output_path
   source_code_hash = data.archive_file.status.output_base64sha256
-  timeout          = 30
+  timeout          = 60 # Neptune が応答しなくても Firehose まで着く（status_handler.py の NEPTUNE_BUDGET_MS と FIREHOSE_SHARE。遅いが答えるときの穴は同じファイルの docstring）
   memory_size      = 128
 
   # VPC の中に置く（グラフは公開していないので、土台の neptune-graph-data のエンドポイントからしか届かない）。SG は terraform/base/core の lambda

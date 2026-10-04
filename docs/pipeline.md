@@ -185,7 +185,10 @@ terraform -chdir=terraform/pipeline/analytics output -raw splunk_password_comman
 - 書くのは graph の Lambda `<prefix>-graph-status`。Neptune に書いたあと、同じ呼び出しの通知を Firehose `<prefix>-alert-events` へ `PutRecordBatch` で送る（500 件ずつ）。Firehose が 60 秒（か 1 MiB）ごとにまとめて Iceberg に追記する。Neptune で無視した通知（機器名の無いものなど）も行にする。
 - `ops/up.sh` は analytics を作る回（`SKIP_ANALYTICS` が空）にだけ graph の変数 `alert_history = true` を渡す。そのときだけ Lambda の環境変数 `ALERT_STREAM` と `firehose:PutRecordBatch`（そのストリームだけ）が付く。graph は analytics より先に apply するが、ストリームの名前が固定なので待たない。
 - Neptune と Firehose は片方がエラーを返しても両方を試す。Lambda が最後に例外を投げる（非同期のやり直しが 2 回）のは Neptune への書き込みが失敗したときだけで、やり直しで同じ通知が二重に入るので、読むときは `event_id`（`<anomaly_id>#<source>#<status>#<starts_at の epoch 秒>`）で落とす。
-- ただし Neptune が応答しないまま Lambda の timeout（30 秒）を使い切ると、Firehose に送る前に落ちる。そのときは行も `ALERT_EVENT_LOST` も残らず、ロググループには `Task timed out` だけが出る（Neptune のクライアントは接続 10 秒 × 3 回まで試すので、届かなければ 1 件目で 30 秒を超える）。
+- Neptune を先に書くので、Lambda の timeout（60 秒）を Neptune で使い切ると、Firehose に送る前に落ちて行も `ALERT_EVENT_LOST` も残らない（ロググループには `Task timed out` だけ）。そうならないよう:
+  - この Lambda の Neptune のクライアントは、接続 3 秒・読み 10 秒・再試行なし（1 回の呼び出しは長くて 13 秒）。エージェントや `ops/up.sh` が使う `agent/graph.py` の既定（接続 10 秒・読み 60 秒・3 回まで）は変えず、`graph/status_handler.py` の `NEPTUNE_CONFIG` で差し替える。
+  - 通知ごとに、Neptune に書く前に Lambda の残り時間を見る。33 秒（Firehose の取り分 20 秒 + Neptune への問い合わせ 1 回の最大 13 秒）より少なければ、その通知から先は Neptune に書かず、`NEPTUNE_SKIPPED` の WARNING を 1 回出す。行は送り、最後に例外で落とす（非同期のやり直しで Neptune に書く。Neptune が遅いままなら、やり直しも同じところで打ち切られる）。
+  - これで防げるのは、Neptune が応答しない（1 回目の問い合わせで落ちる）場合。1 件の通知は Neptune に 1〜5 回問い合わせる（未登録の IF なら 5 回）ので、Neptune が遅いが答える（1 回数秒〜10 秒）と、33 秒の確認を通ったあとで 60 秒を超えることがある（設計へ差し戻し中。[build.md](cycles/001-alert-history-firehose/build.md) の Round 3）。
 - Firehose の失敗では落とさない（`status` の正しさを履歴より優先する）。届かなかった行だけを、0.2 秒・0.4 秒おいて合わせて 3 回まで送り直し、それでも残った行は 1 行ずつ JSON のまま `ALERT_EVENT_LOST` の ERROR でロググループ `/aws/lambda/<prefix>-graph-status` に書く。探すのは CloudWatch Logs Insights の `filter @message like /ALERT_EVENT_LOST/`。
 - 形の合わない通知（`device_id` か `kind` が無い・`status` が firing / resolved でない）は行にしない。捨てた件数を `ALERT_DROPPED` の WARNING で同じロググループに出す。
 - Lambda は重複を落とさない。Grafana の 4 時間ごとの送り直しも、Grafana と Splunk の両方から来た分も行になる。

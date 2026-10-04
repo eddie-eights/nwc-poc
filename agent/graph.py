@@ -59,7 +59,8 @@ def _client():
     """neptune-graph のクライアント（接続先はクエリごとにグラフの ID から決まるので 1 つを使い回す）"""
     if _cache["client"] is None:
         # 既定（接続 60 秒 × 再試行）だと SG で落とされたときに 1 回の呼び出しが数分かかり、
-        # ops/up.sh の 7-3b が何十分も黙る。接続は 10 秒・再試行 1 回で早く諦める
+        # ops/up.sh の 7-3b が何十分も黙る。接続は 10 秒・再試行 2 回（max_attempts は再試行の数で、最初と合わせて 3 回）で早く諦める。
+        # graph-status の Lambda はここを使わず、status_handler.py の NEPTUNE_CONFIG に差し替える
         _cache["client"] = boto3.client(
             "neptune-graph", region_name=REGION,
             config=Config(connect_timeout=10, read_timeout=60, retries={"max_attempts": 2}))
