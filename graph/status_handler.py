@@ -51,7 +51,7 @@ RETRY_WAITS = (0.2, 0.4)   # Firehose の送り直しの前に待つ秒数。1 �
 # Firehose のクライアントは botocore の再試行を切り、早めにあきらめる。既定（5 回まで・接続の待ちが 60 秒）のままだと、エンドポイントに
 # 届かないとき 1 回目の呼び出しだけで Lambda の timeout を使い切り、残った行を ERROR に書く前に（Neptune にも書かずに）タイムアウトする。
 # 3 回でも 3 ×（接続 2 秒 + 読み 3 秒）+ 待ち 0.6 秒 = 15.6 秒に収まり、60 秒のうち 44 秒は Neptune に残る。接続の待ちはエンドポイントの
-# IP ごとにかかるので、エンドポイントが 2 つの AZ にあるとき（endpoints_multi_az = true）は 3 ×（2 × 2 + 3）+ 0.6 = 21.6 秒、残りは 38 秒
+# IP ごとにかかるので、エンドポイントが 2 つの AZ にあるとき（endpoints_az_num = 2）は 3 ×（2 × 2 + 3）+ 0.6 = 21.6 秒、残りは 38 秒
 FIREHOSE_CONFIG = Config(connect_timeout=2, read_timeout=3, retries={"total_max_attempts": 1, "mode": "standard"})
 # Neptune のクライアントもこの Lambda では待ちを短くし、試すのは 2 回まで（使い回した接続が向こうで切れていた（keep-alive の切れ）
 # ときを 1 回は救う。1 回の呼び出しは長くて 2 ×（接続 3 秒 + 読み 10 秒）+ 再試行の前の待ち 1 秒 = 27 秒、エンドポイントが 2 つの AZ に

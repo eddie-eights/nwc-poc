@@ -187,7 +187,7 @@ terraform -chdir=terraform/pipeline/analytics output -raw splunk_password_comman
 - Neptune と Firehose は片方がエラーを返しても両方を試す。Lambda が最後に例外を投げる（非同期のやり直しが 2 回）のは Neptune への書き込みが失敗したときだけ。Neptune の途中で timeout（60 秒）したときも同じく非同期のやり直しになる。やり直しで同じ通知が二重に入るので、読むときは `event_id`（`<anomaly_id>#<source>#<status>#<starts_at の epoch 秒>`）で落とす。やり直しは書けていた通知も流し直すので、そのあいだに届いた通知の `status` を古い値に戻すことがある（前からある危険。cycle 001 の design.md のリスク 10）。
 - 行は Neptune より先に送る。Neptune が遅くても応答しなくても履歴は残る。`status` は遅れる、または失敗してやり直す。
   - Firehose に使うのは長くて 15.6 秒（下の送り直しを含めて 3 回 ×（接続 2 秒 + 読み 3 秒）+ 待ち 0.6 秒）。60 秒のうち 44 秒は Neptune に残る。
-  - 接続の待ちはエンドポイントの IP ごとにかかる。エンドポイントが 2 つの AZ にあるとき（core の `endpoints_multi_az = true`）は Firehose が長くて 21.6 秒、Neptune 1 回が長くて 33 秒で、足しても 60 秒に収まる。
+  - 接続の待ちはエンドポイントの IP ごとにかかる。エンドポイントが 2 つの AZ にあるとき（core の `endpoints_az_num = 2`。`deploy.env` の `ENDPOINTS_AZ_NUM=2`）は Firehose が長くて 21.6 秒、Neptune 1 回が長くて 33 秒で、足しても 60 秒に収まる。
   - この Lambda の Neptune のクライアントは、接続 3 秒・読み 10 秒・試すのは 2 回まで（使い回した接続が向こうで切れていたときを 1 回は救う。1 回の呼び出しは長くて 27 秒）。エージェントや `ops/up.sh` が使う `agent/graph.py` の既定（接続 10 秒・読み 60 秒・3 回まで）は変えず、`graph/status_handler.py` の `NEPTUNE_CONFIG` で差し替える。
 - Firehose の失敗では落とさない（`status` の正しさを履歴より優先する）。届かなかった行だけを、0.2 秒・0.4 秒おいて合わせて 3 回まで送り直し、それでも残った行は 1 行ずつ JSON のまま `ALERT_EVENT_LOST` の ERROR でロググループ `/aws/lambda/<prefix>-graph-status` に書く。探すのは CloudWatch Logs Insights の `filter @message like /ALERT_EVENT_LOST/`。
 - 形の合わない通知（`device_id` か `kind` が無い・`status` が firing / resolved でない）は行にしない。捨てた件数を `ALERT_DROPPED` の WARNING で同じロググループに出す。
