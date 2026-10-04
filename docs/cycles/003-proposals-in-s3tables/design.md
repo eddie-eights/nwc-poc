@@ -12,14 +12,14 @@ main(fable-5.1) / effort: high
 |---|---|---|
 | 修復案の「いま」 | Neptune の頂点 `proposal` | `proposal_events` の最新の 1 行 |
 | 修復案の履歴 | `proposal_events`（項目は一部だけ） | `proposal_events`（どの行にも全項目） |
-| 承認・却下 | Web が頂点の status を書き換え、worker が 30 秒ごとに見に行く | Web が SQS に送り、worker がシグナルにする |
+| 承認・却下 | Web が頂点の status を書き換え、worker が 30 秒ごとに見に行く | Web が決定専用の SQS に送り、worker がシグナルにする |
 | 書く人 | worker と Web | worker だけ |
 | Neptune に入るもの | トポロジ、status、修復案 | トポロジ、status |
 
 ## 理由
 
-- 同じ内容を 2 か所に書いている。Neptune には最新だけ、S3 Tables には履歴。食い違う穴がある（承認は頂点にあるのに、証跡の行は worker が拾うまで入らない。docs/data-stores.md の 73 行目）。
-- Neptune の `proposal` は辺の無い頂点で、グラフとして使っていない（docs/data-stores.md の 216 行目）。
+- 同じ内容を 2 か所に書いている。Neptune には最新だけ、S3 Tables には履歴。食い違う穴がある（承認は頂点にあるのに、証跡の行は worker が拾うまで入らない。docs/data-stores.md の「修復案」の流れの節）。
+- Neptune の `proposal` は辺の無い頂点で、グラフとして使っていない（docs/data-stores.md の Neptune の頂点の表）。
 - 正は S3 Tables に置く。グラフで分析したくなったら、S3 Tables から写しを頂点と辺として載せる（別のサイクル）。
 
 ## 背景
@@ -71,7 +71,7 @@ main(fable-5.1) / effort: high
 | | Neptune が止まっても、承認から修復までが進む（事前チェックのトポロジ読みは残る） |
 | | 二重の承認をワークフローが防ぐ（先に届いた 1 回だけ） |
 | | 30 秒ごとに頂点を見に行く処理が無くなる |
-| | Web と Runtime から Neptune の書き込み権限を外せる。「チャットから承認できない」が IAM でも守られる（SQS に送れるのは Web だけ） |
+| | Runtime から Neptune の書き込み権限を外せる。「チャットから承認できない」が IAM でも守られる（決定のキューに送れるのは Web のロールだけ）。Web の書き込みは残る（トポロジの投入と編集が Web の EC2 のロールで書くため） |
 | デメリット | 承認タブの一覧と詳細に、Athena の数秒がかかる |
 | | 承認を押してから反映まで数秒〜20 秒。押した直後は「承認待ち」のまま |
 | | 列を足すのでテーブルを作り直す。いまの行は消える |
@@ -84,8 +84,9 @@ main(fable-5.1) / effort: high
 
 ```mermaid
 flowchart LR
-  WEB["Web の承認タブ"] -->|"決定（id・承認か却下・名前）"| SQS["SQS<br/>anomalies"]
-  SNS["SNS（アラート）"] --> SQS
+  WEB["Web の承認タブ"] -->|"決定（id・承認か却下・名前）"| DQ["SQS<br/>decisions"]
+  DQ --> ST
+  SNS["SNS（アラート）"] --> SQS["SQS<br/>anomalies"]
   SQS --> ST["worker の starter"]
   ST -->|"シグナル decide"| WF["ワークフロー"]
   WF -->|"段ごとに 1 行"| PEV["S3 Tables<br/>proposal_events"]
@@ -135,6 +136,9 @@ flowchart LR
   - 走っているあいだは、ワークフロー ID（異常ごとに 1 つ）が防ぐ。
   - 閉じたあとの通知の送り直しは、starter が `proposal_events` を見て防ぐ（3 番）。
   - `put_proposal` は書く前に同じ `proposal_id` の行を読み、別の実行（`workflow_id` か `run_id` が違う）の行があれば今と同じ再試行なしのエラーにする。自分の行があれば、それを使って進む。
+  - この「読んでから書く」は原子的ではない（前は Neptune の MERGE が原子的だった）。同じワークフロー ID の実行は Temporal が 1 つに絞るので、起きうるのはアクティビティの再試行で同じ `seq` の行が重なることだけ。読む側の並べ方で吸収する（5 番）。
+- **古い承認待ちを閉じる。**
+  `put_proposal` は `created` を足す前に、同じ異常（`anomaly_id`）で `proposal_id` が違う修復案のうち、最新の行が pending のものに `expired` の行を足す（`verify_note` は「同じ異常の新しい修復案ができた」）。worker のタスクが入れ替わって Temporal の履歴が消えたあと、同じ異常がまた発火すると、古い修復案への決定は新しい実行が「自分のものでない」と無視する。閉じておかないと、古い承認待ちが永久に残る。
 
 ### 3. starter: 修復案があるかを `proposal_events` で見る
 
@@ -143,12 +147,16 @@ flowchart LR
 
 ### 4. 承認: Web → SQS → starter → シグナル
 
-- **キューは今の `<prefix>-anomalies` を共用する。** 待つループが 1 つで済み、VPC のエンドポイントと Deny もそのまま使える。
+- **決定専用のキュー `<prefix>-decisions` を作る。アラートのキュー `<prefix>-anomalies` は共用しない。**
+  - 理由: `anomalies` は SNS のトピック `<prefix>-alerts` を `raw_message_delivery` で受けている。このトピックに publish できる Grafana と Splunk のタスクロールが `{"type":"decision",…}` を流すと、承認として通ってしまう（エンジニアの指摘。2026-10-04）。
+  - `decisions` は SNS を購読しない。キューのポリシーは VPC の外を拒むだけで、SNS の送信は許さない。`sqs:SendMessage` は Web の EC2 のロール（`local.web_role_name`）にだけ付ける。`reader_role_names` には Runtime が入っているので、そこには足さない。
+  - 設定は `anomalies` と同じ（可視性タイムアウト 120 秒、long polling 20 秒、保持 1 日、5 回で専用の DLQ）。VPC のエンドポイントと Deny は共用で足りる。
+  - worker は待つループを 2 つ持つ（`starter_queue` と同じ作りをもう 1 つ）。`decisions` から来たものだけを決定として読み、`anomalies` に `type` が `decision` のものが来たら捨てる。
 - メッセージ:
   ```json
   {"type": "decision", "proposal_id": "<anomaly_id>#<first_seen>", "decision": "approved", "decided_by": "<名前> (web)", "sent_at": 1790000000}
   ```
-- `handle_message` は、`alerts_from_message` に渡す前に `type` を見る。`decision` なら `rules.decision_from_message` で読む（`decision` が approved / rejected、`proposal_id` が空でない。読めなければ今と同じく消す）。
+- 決定のループは `rules.decision_from_message` で読む（`type` が `decision`、`decision` が approved / rejected、`proposal_id` が空でない。読めなければ今と同じく消す）。
 - ワークフロー ID は `proposal_id` から出す（`#` の右端を外した残りが `anomaly_id`）。
 - シグナルは辞書 1 つにする: `decide({"proposal_id", "decision", "decided_by", "decided_at"})`。`decided_at` は `sent_at`。
 - ワークフローは次のときシグナルを無視する:
@@ -166,20 +174,23 @@ flowchart LR
 - クエリ（値は Athena の実行パラメータで渡す。文字列に埋めない）:
   ```sql
   SELECT * FROM (
-    SELECT *, row_number() OVER (PARTITION BY proposal_id ORDER BY seq DESC) AS rn
+    SELECT *, row_number() OVER (PARTITION BY proposal_id ORDER BY seq DESC, event_time DESC) AS rn
     FROM "<namespace>"."proposal_events"
   ) WHERE rn = 1 AND status = ? AND device_id = ?
   ORDER BY event_time DESC LIMIT 100
   ```
-- 返す辞書は今のキーに合わせる。`updated_at` は `event_time`、`detail` は `alert_detail`。時刻は epoch 秒に直してから `_decorate` に渡す。
-- Athena の実行（開始 → 待つ → 結果）は、cycle 001 が `agent/evidence.py` の `query_history` に作るものを共通の関数に出して使う。環境変数は同じ `ATHENA_WORKGROUP` / `ATHENA_CATALOG` / `HISTORY_NAMESPACE` に、`PROPOSAL_EVENTS_TABLE` を足す。**cycle 001 の実物を読んでから形を決める。**
+- 返す辞書は今のキーに合わせる。`updated_at` は `event_time`、`detail` は `alert_detail`。時刻は epoch 秒に直してから `_decorate` に渡す（Athena は timestamptz を UTC の文字列で返す。`agent/evidence.py` の `_jst_of` と同じ読み方で直す）。
+- テーブルは `"<catalog>"."<namespace>"."proposal_events"` の 3 部で書く（`query_history` と同じ）。
+- `proposal_id`（`device#kind#target#epoch` の形）を実行パラメータで渡すときの検査は、`query_history` の `_DEVICE_RE`（`^[A-Za-z0-9._:/#?-]{1,128}$`）をそのまま使えるかを実装で確かめる。`target` の文字と長さで通らないなら、`proposal_id` 用の検査を別に書く。
+- Athena の実行（開始 → 待つ → 止める → 結果）は、いま `agent/evidence.py` の `query_history` の中に直書きされている。これを共通の関数に切り出して、`query_history` と `proposals.py` の両方が使う（切り出しはこのサイクルでやる）。環境変数は同じ `ATHENA_WORKGROUP` / `ATHENA_CATALOG` / `HISTORY_NAMESPACE` に、`PROPOSAL_EVENTS_TABLE` を足す。
+- Runtime のコンテナの中での代替実行（`agent/app.py` が Gateway に届かないとき `list_proposals` をコンテナ内で動かす）では、「まだ配備されていない」が返る。Runtime には Athena の権限も環境変数も付けない（`query_history` と同じ扱い。受け入れる）。
 - 環境変数が無ければ、今と同じく「まだ配備されていない」を返す。
 - `decide(proposal_id, decision, decided_by)`:
   1. 決定と id を確かめる（今と同じ）。
   2. `get_proposal` で pending かを見る。違えば今と同じ文言で返す（早く気づかせるため。最後に決めるのはワークフロー）。
   3. SQS に送る。返すのは `{"proposal_id", "status": "sent", …}`。
 - `decide` は今までどおりツールに出さない。
-- `agent/graph.py` の `update_record` と、proposal 用の `list_records` / `get_record` は、ほかに使う人がいなければ消す。
+- `agent/graph.py` の `get_record` と `update_record` は消す。`list_records` は残す（`agent/topology.py` が label `change` で使っている）。
 
 ### 6. 画面（web/incident_view.py）
 
@@ -191,19 +202,20 @@ flowchart LR
 | 場所 | 中身 |
 |---|---|
 | terraform/pipeline/analytics/tables.tf | `proposal_events` のスキーマを 28 列に（テーブルは作り直しになる） |
-| terraform/workflow/events.tf | キューのコメントを直す（アラートと決定の 2 種類が入る） |
-| terraform/workflow の IAM | Web の EC2 のロールに、このキューへの `sqs:SendMessage` |
-| | Web の EC2 と tools の Lambda に、Athena で `proposal_events` を読む権限（cycle 001 が `query_history` の実行役に付けるものと同じ形） |
+| terraform/workflow/events.tf | 決定のキュー `<prefix>-decisions` と DLQ を足す（SNS の購読なし） |
+| terraform/workflow の IAM | Web の EC2 のロール（`local.web_role_name`）にだけ、`decisions` への `sqs:SendMessage`。worker のタスクロールに `decisions` の受信と削除 |
+| | Web の EC2 と tools の Lambda に、Athena で `proposal_events` を読む権限。tools の Lambda は、gateway.tf の `HistoryTable` に `local.proposal_events_table_arn` を足す（いまは `alert_events` だけで、コメントに「proposal_events は読ませない」とあるので直す）。Web には同じ 4 文（HistoryQuery / HistoryCatalog / HistoryBucket / HistoryTable）を `local.web_role_name` で付ける |
 | terraform/workflow/gateway.tf | tools の Lambda に `PROPOSAL_EVENTS_TABLE` |
 | Web の設定 | キューの URL と Athena の設定を、ほかの設定と同じ道（SSM のパラメータ）で渡す |
-| terraform/pipeline/graph/access.tf | Web と Runtime の Neptune の書き込みを外し、読み取りだけにする |
+| terraform/pipeline/graph/access.tf | Runtime の Neptune の書き込みを外し、読み取りだけにする。Web は書き込みを残す（`ops/up.sh` の 7-3b と `ops/sync-graph.sh` が Web の EC2 の上で `ops/seed_graph.py` を走らせ、トポロジタブの seed / add_link / remove_link も書く） |
+| コメントと説明 | Neptune に修復案がある前提の文を直す（workflow/worker.py、workflow/awsio.py、agent/proposals.py、agent/app.py、tools/handler.py、web/incident_view.py、terraform/workflow の locals.tf と proposals.tf、analytics の tables.tf と history.tf のワークグループの説明） |
 | terraform/workflow/proposals.tf | コメントを今の形に書き直す |
 
 ### やらないこと
 
 - 履歴（`alert_events` / `proposal_events`）を Neptune に頂点と辺として載せること。グラフで分析したくなったときに別のサイクルでやる。
 - 承認タブの見た目の変更。
-- 決定のキューを分けること。
+- Web から Neptune の書き込み権限を外すこと（トポロジの投入と編集に要る）。
 
 ## 変更対象ファイル
 
@@ -226,11 +238,11 @@ flowchart LR
 
 1. `rules.py`: 列を 28 個に。`proposal_event` を全項目の行に。`decision_from_message` を足す。単体テスト。
 2. `awsio.py`: `audit_rows` に int。`latest_proposal` を足す。Neptune の proposal の読み書きを消す。決定を送る関数は Web 側に置く。
-3. `worker.py`: `put_proposal` が辞書を返す。`record_event` にまとめる。シグナル `decide` を辞書に。starter に決定の分岐と、走っていないときの `expired`。
+3. `worker.py`: `put_proposal` が辞書を返す。`record_event` にまとめる。シグナル `decide` を辞書に。決定のキューを待つループと、走っていないときの `expired`。`put_proposal` が同じ異常の古い pending を `expired` にする。
 4. `tables.tf`: スキーマ。`terraform plan` で作り直しになることを確かめる。
 5. `agent/proposals.py`: Athena で読む。`decide` は SQS に送る。
 6. `web/incident_view.py` の文言、Web の設定、IAM、gateway。
-7. Neptune の書き込み権限を外す。`graph.update_record` を消す。
+7. Runtime の Neptune の書き込み権限を外す。`graph.get_record` と `graph.update_record` を消す（テストも直す: test_graph.py、test_app.py、test_workflow.py の該当箇所）。
 8. テストと `ops/check.sh`。
 
 ## 検証方法（期待出力つき）
@@ -239,7 +251,10 @@ flowchart LR
   - `rules.proposal_event("created", item, now)` の行が 28 列を全部持ち、`seq` が 1、`status` が `pending`、`decided_at` が None。
   - 同じ辞書で `approved` の行を作ると `seq` が 2、`kind` / `target` / `reason` / `precheck` が created の行と同じ。
   - `rules.decision_from_message('{"type":"decision","proposal_id":"a#1","decision":"approved","decided_by":"x (web)","sent_at":5}')` が辞書を返す。`decision` が `maybe` のとき、`proposal_id` が空のときは None。
-  - アラートの JSON を渡すと None（今までどおり `alerts_from_message` に進む）。
+  - アラートの JSON を渡すと None。
+  - アラートのキューから来た `{"type":"decision",…}` は、シグナルを送らずに捨てる。
+  - 同じ `anomaly_id` で `proposal_id` の違う pending があるとき、`put_proposal` が `expired` の行を 1 つ足してから `created` を足す。
+  - Terraform: `decisions` のキューに SNS の購読が無く、`sqs:SendMessage` が付くのは Web のロールだけ（Runtime のロールに無い）。
   - ワークフロー（テスト環境）: `proposal_id` の違うシグナルを送っても待ち続ける。合うシグナルを 2 回（approved、rejected の順）送ると、結果は approved で、行の `decided_by` は 1 回目の名前。
   - `audit_rows` が `seq` を int、`decided_at` の None を None にする。
 - `python3 tests/test_app.py`:
@@ -258,12 +273,12 @@ flowchart LR
 
 ## 未確定事項とリスク
 
-1. **Web の EC2 から Athena と SQS に届くかは AWS で未確認。** 閉域（エンドポイントと Deny）の中で、Web のサブネットから両方のエンドポイントに出られるかを確かめる。SQS は worker が使っているのでエンドポイントはある。Athena は cycle 001 の結果を見る。
+1. **Web の EC2 から Athena と SQS に届くかは AWS で未確認。** コードを読んだ限りでは届く（WORKFLOW には analytics が必須なので Athena のエンドポイントは必ずあり、SG はワークロードの全 SG から endpoints の 443 へ通り、perimeter の Deny はエンドポイント経由なら外れる）。AWS で確かめる。
 2. **スキーマを変えるとテーブルが作り直しになる、というのは `terraform plan` で確かめていない。** 作り直しにならず更新もできない場合は、`ops/up.sh` で消してから作る手順が要る。
-3. **Athena で S3 Tables を読む権限の形は、cycle 001 の実装がまだ main に無いので実物を読んでいない。** 実装の前に読む。
+3. **`strands-agent` のブランチ（main に未 merge）と `agent/app.py` が重なる。** 003 は docstring とシステムプロンプトの `list_proposals` の説明に触る。あとから入るほうで衝突を解く。
 4. **worker が 1 日より長く止まると、送った決定が SQS から消える。** 修復案は承認待ちのまま時間切れになる。画面には「送った」としか出ていない。
-5. **worker のタスクが入れ替わると、承認待ちの修復案が残る**（Temporal の履歴が消える。今もある穴）。決定が届けば `expired` にするが、誰も押さなければ「承認待ち」に残り続ける。起動のときに古い pending を `expired` にする掃除は、このサイクルでは入れない。
-6. **キューの共用。** 決定が 5 回失敗すると、アラートと同じ DLQ に入る。`type` で見分けられる。
+5. **worker のタスクが入れ替わると、承認待ちの修復案が残る**（Temporal の履歴が消える。今もある穴）。決定が届くか、同じ異常がまた発火すれば `expired` にするが、どちらも無ければ「承認待ち」に残り続ける。起動のときに古い pending を `expired` にする掃除は、このサイクルでは入れない。
+6. **デプロイする人（管理者）は決定のキューに送れる。** IAM で止めているのは Runtime と、Grafana・Splunk のタスクロール。
 7. **PyIceberg の読み取りが遅いと、starter のアラートの処理が遅れる。** テーブルが小さいうちは問題にならない。行が増えたら `proposal_id` で区切る（パーティション）か、保持を決める。
 8. **実装は cycle 001 と 002 のあと。** `workflow/`、`agent/evidence.py`、`terraform/workflow/`、`ops/up.sh`、`tests/` が重なる。
 9. **配備の順番。** テーブルを作り直してから worker を入れ替えるまでのあいだ、古い worker は 12 列で書こうとして失敗する。up.sh の 1 回の中で両方が替わることを確かめる。
