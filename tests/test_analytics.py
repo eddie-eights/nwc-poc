@@ -570,7 +570,7 @@ _posts = []
 _seen = []
 _orig_sig, _orig_series = mod.sigv4_headers, mod.prometheus_series
 mod.sigv4_headers = lambda method, url, body, service, region, headers: dict(headers, Authorization=f"AWS4-HMAC-SHA256 {service} {region}")
-mod.prometheus_series = lambda records: (_seen.append([r["ts"] for r in records]), _orig_series(records))[1]
+mod.prometheus_series = lambda records, *a: (_seen.append([r["ts"] for r in records]), _orig_series(records, *a))[1]
 mod.http_post = lambda url, body, headers, context=None: (_posts.append((url, body, headers)), (400, b"out of order sample") if len(_posts) == 1 else (200, b""))[1]
 try:
     _rows = [_row(1700000000.0 + i, i) for i in range(mod.BULK_SIZE + 1)][::-1]
@@ -605,8 +605,8 @@ check("make_splunk_sender_on_executor: 送るときに SSM から token を読�
       and [json.loads(x)["time"] for x in _posts[0][1].decode().split("\n")] == [1.0, 2.0] and json.loads(_posts[0][1].decode().split("\n")[0])["index"] == "netops")
 check("make_splunk_sender_on_executor: 4xx は捨てて続け（例外にしない）、ログに token の値を出さない",
       _n == 2 and "splunk: HEC が 403 を返した" in _err and "tok-from-ssm" not in _err)
-check("executor へ運ぶ opensearch / prometheus の sender が持つのは文字列と辞書だけ（pickle できないものを持たない）",
-      all(isinstance(c.cell_contents, (str, dict)) for f in (mod.make_opensearch_sender("https://o", "snmp-logs", "ap-northeast-1"),
+check("executor へ運ぶ opensearch / prometheus の sender が持つのは文字列と辞書（と None）だけ（pickle できないものを持たない）",
+      all(isinstance(c.cell_contents, (str, dict, type(None))) for f in (mod.make_opensearch_sender("https://o", "snmp-logs", "ap-northeast-1"),
                                                              mod.make_prometheus_sender("https://p/api/v1/remote_write", "ap-northeast-1"))
           for c in (f.__closure__ or ())))
 
