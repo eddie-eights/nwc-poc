@@ -1003,14 +1003,14 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 - S3 Tables は Grafana のデータソースではない。
 - どちらも認証はタスクロールの SigV4 で、VPC エンドポイント経由。
 
-### Q. snmp_metrics って何？
+### Q. raw_telemetry（旧 snmp_metrics）って何？
 
 **A. 機器から来た生データを、全部そのまま溜めておく S3 Tables（Iceberg）のテーブル。**
 
 - **入るもの。** MSK の 5 つのトピック（metrics / gnmi / mdt / traps / logs）の全部。Spark が up か down かを判断せず、行をそのまま追記する。どのトピックから来た行かは `topic` 列で分かる。
 - **役割。** メトリクスとログの履歴の正本。OpenSearch と Prometheus は検索やグラフのための写し。
 - **作られる条件。** `STORES` に `s3` があるときだけ。
-- **名前。** SNMP のメトリクスだけではないので、`raw_telemetry` に改名すると決めた（ブランチ `rename-raw-telemetry` に実装済み。main にはまだ入っていない）。
+- **名前。** SNMP のメトリクスだけではないので、2026-10-04 に `snmp_metrics` から `raw_telemetry` に改名した。
 
 ### Q. S3 Tables には 1 つのテーブルしかない？ メトリクスもログも 1 つの同じテーブル？
 
@@ -1018,7 +1018,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 | 中身 | テーブル名 | 書く人 | 状態 |
 |---|---|---|---|
-| 機器から来た生データ（metrics / gnmi / mdt / traps / logs の全部） | `snmp_metrics`（`raw_telemetry` に改名予定） | Spark | `STORES` に `s3` があるときだけ作る |
+| 機器から来た生データ（metrics / gnmi / mdt / traps / logs の全部） | `raw_telemetry`（旧 `snmp_metrics`） | Spark | `STORES` に `s3` があるときだけ作る |
 | 修復案の証跡（作成・承認・却下・適用・確認） | `proposal_events` | Temporal の worker | いつも作る |
 | アラートの通知の履歴（発火と解消） | `alert_events` | Lambda graph-status（Firehose 経由） | 「アラートの履歴を残す（Cycle 001）」で実装中 |
 
@@ -1535,3 +1535,29 @@ MSK と AgentCore Runtime 以外は 1 AZ にできる。MSK は AWS の決まり
 | AOSS の VPC エンドポイント | できる見込み（未確認） | 1 サブネットで作れるかは確かめていない。作れれば 1.4 セント/h 減る |
 
 1 AZ にしても費用が減るのは AOSS のエンドポイントだけ。EMR と Lambda は「既定は全部 1 AZ」に揃える意味だけがある。
+
+### Q. ECS で動かす OSS（Kafka、OpenSearch、Prometheus、Neo4j）のデータは、EBS と EFS のどちらに置くのが向いているか
+
+**A. 結論**
+
+データベースとして向いているのは EBS。ただし Fargate のサービスでは EBS のボリュームがタスクと一緒に消えるので、「タスクが入れ替わっても残す」には EFS しか選べない。OSS 版（005）は Fargate と EFS で作る。
+
+以下は記憶にもとづく内容で、2026-10-04 の時点で公式ドキュメントでは確かめていない（005 の設計で確かめる）。
+
+| | EBS | EFS |
+|---|---|---|
+| 種類 | ブロックストレージ（1 つのタスクが専有する） | ファイル共有（NFS。複数のタスクと AZ から同時に使える） |
+| データベースとの相性 | よい。Kafka、OpenSearch、Prometheus、Neo4j はどれもローカルのディスクを前提に作られている | よくない。NFS は遅延が大きく、Prometheus は NFS を公式にはサポートしないと書いている |
+| Fargate のサービスで使うと | タスクごとに新しいボリュームが作られ、タスクが終わると消える | タスクが入れ替わっても残る |
+| AZ | 1 つの AZ に固定 | リージョンの中のどの AZ からも使える |
+| 料金（考え方） | 確保した容量に払う | 使った容量と、読み書きした量に払う |
+
+**EBS で残したいとき**
+
+Fargate をやめて、ECS の EC2（または EC2 そのもの）にボリュームを付けたままにする。EC2 の管理（AMI の更新、台数）が増える。
+
+**OSS 版で EFS を選ぶ理由**
+
+- Fargate のまま、タスクが入れ替わってもデータが残る。
+- どれも 1 台で、書くのは 1 つのタスクだけ。NFS で問題になりやすい同時書き込みが起きない。
+- 「NFS は勧めない」という注意は、マネージドと OSS を比べるときの材料として残す（自前で持つと、置き場の選び方まで自分の責任になる）。

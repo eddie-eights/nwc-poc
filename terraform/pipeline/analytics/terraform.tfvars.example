@@ -7,7 +7,7 @@
 # 変えないのが既定。変えるときは docs/pipeline.md を読む
 # emr_release_label = "emr-7.13.0"
 # namespace         = "netops"
-# table_name        = "snmp_metrics"
+# table_name        = "raw_telemetry"
 
 # 4 本目の格納先 splunk（Splunk の HTTP Event Collector。ops/up.sh は deploy.env の STORES に splunk があれば足す）。
 # Splunk Enterprise をここの ECS で立てる（splunk.tf。VPC の中。起動時に Splunk のライセンスと General Terms に同意する）。

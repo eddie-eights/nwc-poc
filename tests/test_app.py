@@ -288,8 +288,8 @@ check("異常一覧のモジュールとツールはもう無い（app.run_tool 
 check("app.run_tool は layers を topology に振る", app.run_tool("layers", {"device_id": "dc1-leaf-01", "layer": "ip"})["count"] == 5)
 check("app.run_tool は list_proposals を proposals に振る（Neptune 未設定なので案内）", "terraform/workflow" in app.run_tool("list_proposals", {})["error"])
 # 過去の経緯・修復履歴・状態に答えられるようにした（2026-09-18）。2026-10-02 から「いまの異常」は機器・回線・層の status で答える
-check("system prompt はいまの異常 → status、履歴 → list_proposals、アラートの履歴は Grafana / Splunk、承認はしない、と言う",
-      "status（UP 以外）" in app.SYSTEM_PROMPT and "list_proposals" in app.SYSTEM_PROMPT and "Grafana / Splunk" in app.SYSTEM_PROMPT
+check("system prompt はいまの異常 → status、履歴 → list_proposals、アラートの履歴 → query_history（Grafana / Splunk の通知）、承認はしない、と言う",
+      "status（UP 以外）" in app.SYSTEM_PROMPT and "list_proposals" in app.SYSTEM_PROMPT and "アラートの履歴は query_history（Grafana / Splunk" in app.SYSTEM_PROMPT
       and "承認や却下はあなたにはできません" in app.SYSTEM_PROMPT and "まず root_cause で" in app.SYSTEM_PROMPT and "what_if で" in app.SYSTEM_PROMPT and "recent_changes" in app.SYSTEM_PROMPT and "maintenance" in app.SYSTEM_PROMPT and "list_anomalies" not in app.SYSTEM_PROMPT and "status=all" not in app.SYSTEM_PROMPT)
 # プロンプトに無いツール名を書くと、モデルは無いツールを呼ぼうとして unknown tool が返る（2026-10-02 に layers を list_layers と書いた）
 _tool_names = {s["toolSpec"]["name"] for s in app.TOOL_SPECS}
@@ -320,4 +320,102 @@ state.update(converse=[tool_converse("neighbors", {"device_id": "dc1-leaf-01"}),
 n = len(app.history)
 r = app.invoke({"prompt": "q"})
 check("2 回目の Converse 失敗も error で履歴に残らない", r["status"] == "error" and len(app.history) == n)
+
+# ---- query_history（アラートの通知の履歴。Athena → S3 Tables の alert_events。2026-10-04）
+import evidence, toolkit  # noqa: E402,E401 - app.py が import した同じモジュール
+
+class FakeAthena:
+    def __init__(self, states=("RUNNING", "SUCCEEDED"), rows=(), start_error=None, reason=""):
+        self.states, self.rows, self.start_error, self.reason, self.calls = list(states), list(rows), start_error, reason, []
+    def start_query_execution(self, **kw):
+        self.calls.append(("start", kw))
+        if self.start_error:
+            raise self.start_error
+        return {"QueryExecutionId": "q1"}
+    def get_query_execution(self, **kw):
+        self.calls.append(("get", kw))
+        st = self.states.pop(0) if len(self.states) > 1 else self.states[0]
+        return {"QueryExecution": {"Status": {"State": st, "StateChangeReason": self.reason}}}
+    def get_query_results(self, **kw):
+        self.calls.append(("results", kw))
+        head = {"Data": [{"VarCharValue": c} for c in evidence.HISTORY_COLUMNS]}
+        return {"ResultSet": {"Rows": [head] + [{"Data": [{"VarCharValue": v} if v is not None else {} for v in r]} for r in self.rows]}}
+    def stop_query_execution(self, **kw):
+        self.calls.append(("stop", kw))
+        return {}
+    def started(self):
+        return [kw for name, kw in self.calls if name == "start"]
+
+_hist_env = ("ATHENA_WORKGROUP", "ATHENA_CATALOG", "HISTORY_NAMESPACE", "ALERT_EVENTS_TABLE")
+_hist_saved = {k: getattr(evidence, k) for k in _hist_env + ("TIMEOUT", "POLL")}
+toolkit._clients["athena"] = fa = FakeAthena()
+r = evidence.query_history("dc1-leaf-01")
+check("query_history は環境変数が無ければ rows == [] で「未配備」を返し、Athena を呼ばない",
+      r["rows"] == [] and "まだ配備していない" in r["error"] and fa.calls == [])
+for _missing in _hist_env:
+    for k, v in zip(_hist_env, ("nwc-history", "s3tablescatalog/tb", "netops", "alert_events")):
+        setattr(evidence, k, "" if k == _missing else v)
+    check(f"query_history は {_missing} だけが空でも「未配備」", "まだ配備していない" in evidence.query_history()["error"] and fa.calls == [])
+for k, v in zip(_hist_env, ("nwc-history", "s3tablescatalog/tb", "netops", "alert_events")):
+    setattr(evidence, k, v)
+evidence.POLL = 0
+
+_row1 = ("dc1-leaf-01#link_down#ethernet-1/1#grafana#resolved#1790000000", "dc1-leaf-01#link_down#ethernet-1/1", "grafana", "resolved", "dc1-leaf-01",
+         "link_down", "ethernet-1/1", "ethernet-1/1 is down (grafana)", "2026-09-21 14:13:20.000000 UTC", "2026-09-21 14:20:00.123456 UTC")
+_row2 = ("dc1-leaf-01#link_down#ethernet-1/1#splunk#firing#0", "dc1-leaf-01#link_down#ethernet-1/1", "splunk", "firing", "dc1-leaf-01",
+         "link_down", "ethernet-1/1", "", None, "2026-09-21 14:10:00.000000 UTC")
+toolkit._clients["athena"] = fa = FakeAthena(rows=[_row1, _row2])
+r = evidence.query_history("dc1-leaf-01")
+_q = fa.started()[0]
+check("query_history の SQL は event_id で重複を落とし（row_number() OVER (PARTITION BY event_id）、新しい順に LIMIT 50",
+      "row_number() OVER (PARTITION BY event_id ORDER BY received_at)" in _q["QueryString"] and "WHERE rn = 1 ORDER BY received_at DESC LIMIT 50" in _q["QueryString"])
+check("query_history は \"<catalog>\".\"<namespace>\".\"<table>\" を読み、10 列を ALERT_EVENT_COLUMNS の順で選ぶ",
+      'FROM "s3tablescatalog/tb"."netops"."alert_events"' in _q["QueryString"]
+      and _q["QueryString"].startswith("SELECT event_id, anomaly_id, source, status, device_id, kind, target, detail, starts_at, received_at FROM"))
+check("device_id は ExecutionParameters（'…' で囲んだ文字列の式）で渡り、SQL の文字列には現れない",
+      _q["ExecutionParameters"] == ["'dc1-leaf-01'"] and "AND device_id = ?" in _q["QueryString"] and "dc1-leaf-01" not in _q["QueryString"])
+check("クエリはワークグループ指定で打つ（結果の置き場はワークグループの管理ストレージ）", _q["WorkGroup"] == "nwc-history" and "ResultConfiguration" not in _q)
+check("既定は 24 時間", "received_at > current_timestamp - interval '24' hour" in _q["QueryString"] and r["hours"] == 24)
+check("RUNNING のあいだ待って、SUCCEEDED で結果を読む", [c[0] for c in fa.calls] == ["start", "get", "get", "results"])
+check("行は列名つきの辞書で、時刻に JST を足す（NULL の starts_at は None と空文字）",
+      r["count"] == 2 and r["rows"][0]["event_id"].endswith("#grafana#resolved#1790000000") and r["rows"][0]["status"] == "resolved"
+      and r["rows"][0]["starts_at_jst"] == "2026-09-21 23:13:20" and r["rows"][0]["received_at_jst"] == "2026-09-21 23:20:00"
+      and r["rows"][1]["starts_at"] is None and r["rows"][1]["starts_at_jst"] == "" and r["rows"][1]["received_at_jst"] == "2026-09-21 23:10:00")
+check("返り値の note に starts_at の意味が Grafana と Splunk で違うことを書く", "Grafana" in r["note"] and "Splunk" in r["note"] and "latest(_time)" in r["note"])
+
+toolkit._clients["athena"] = fa = FakeAthena()
+r = evidence.query_history("", hours=10000)
+_q = fa.started()[0]
+check("device_id が空なら全機器（ExecutionParameters を渡さない）", "ExecutionParameters" not in _q and "device_id = ?" not in _q["QueryString"] and r["rows"] == [])
+check("hours は 720 までに丸める", "interval '720' hour" in _q["QueryString"] and r["hours"] == 720)
+toolkit._clients["athena"] = fa = FakeAthena()
+check("hours は 1 より小さくしない", evidence.query_history(hours=0)["hours"] == 1 and "interval '1' hour" in fa.started()[0]["QueryString"])
+
+toolkit._clients["athena"] = fa = FakeAthena()
+r = evidence.query_history("x' OR '1'='1")
+r2 = evidence.query_history("dc1-leaf-01'")
+check("引用符の入った device_id は Athena に投げずにエラー（引用符 1 文字だけでも）",
+      "使えない文字" in r.get("error", "") and "使えない文字" in r2.get("error", "") and r["rows"] == r2["rows"] == [] and fa.calls == [])
+
+toolkit._clients["athena"] = fa = FakeAthena(states=("FAILED",), reason="TABLE_NOT_FOUND: alert_events")
+r = evidence.query_history("dc1-leaf-01")
+check("FAILED は理由つきのエラーで rows == []（結果は読まない）", "FAILED" in r["error"] and "TABLE_NOT_FOUND" in r["error"] and r["rows"] == [] and "results" not in [c[0] for c in fa.calls])
+
+evidence.TIMEOUT = 0
+toolkit._clients["athena"] = fa = FakeAthena(states=("RUNNING",))
+r = evidence.query_history("dc1-leaf-01")
+check("時間内に終わらなければ stop_query_execution で止めてエラー", "終わらなかった" in r["error"] and r["rows"] == [] and [c[0] for c in fa.calls] == ["start", "get", "stop"]
+      and fa.calls[-1][1] == {"QueryExecutionId": "q1"})
+evidence.TIMEOUT = _hist_saved["TIMEOUT"]
+
+toolkit._clients["athena"] = fa = FakeAthena(start_error=ClientError("AccessDenied"))
+r = evidence.query_history("dc1-leaf-01")
+check("Athena の ClientError はエラーの辞書（落ちない）", "Athena を呼べない" in r["error"] and r["rows"] == [])
+
+toolkit._clients["athena"] = fa = FakeAthena(rows=[_row1])
+r = app.run_tool("query_history", {"device_id": "dc1-leaf-01", "hours": 48, "extra": 1})
+check("app.run_tool は query_history を evidence に振る（仕様に無い引数は落とす）", r["count"] == 1 and "interval '48' hour" in fa.started()[0]["QueryString"])
+for k, v in _hist_saved.items():
+    setattr(evidence, k, v)
+toolkit._clients.pop("athena", None)
 print(f"通過 {passed} / 失敗 0")

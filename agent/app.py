@@ -80,7 +80,7 @@ SYSTEM_PROMPT = os.environ.get(
     "機器・回線・異常・修復の状況は推測せず、必ずツールで調べてください。"
     # 異常の一覧（anomaly の頂点と list_anomalies）は 2026-10-02 にやめた。「いま」は機器・回線・層の status、経緯はログと修復案の履歴で答える
     "いまの異常は list_devices / neighbors / layers の status（UP 以外）で調べてください。"
-    "過去の経緯（「いつから落ちていた」「これまで何があった」）は search_logs と list_proposals で分かる範囲を答え、アラートの履歴は Grafana / Splunk にあると伝えてください。"
+    "過去の経緯（「いつから落ちていた」「これまで何があった」）は、アラートの履歴は query_history（Grafana / Splunk の発火と解消の通知）で、ほかは search_logs と list_proposals で分かる範囲を答えてください。"
     "修復の履歴（「何を直した」「承認待ちは」）は list_proposals です。"
     "承認や却下はあなたにはできません。頼まれたら画面の承認タブで人が決めると伝えてください。"
     "「ネットワークの状態は」と聞かれたら list_devices の status を答え、UP でない機器があればその隣接（neighbors）と層（layers）の status も見てください。"
