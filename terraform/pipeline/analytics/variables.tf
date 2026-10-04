@@ -41,7 +41,7 @@ variable "namespace" {
 variable "table_name" {
   description = "S3 Tables table that the Spark job appends the Telegraf messages to (lowercase letters, digits, underscores)"
   type        = string
-  default     = "snmp_metrics"
+  default     = "raw_telemetry"
 
   validation {
     condition     = can(regex("^[a-z0-9][a-z0-9_]{0,254}$", var.table_name))

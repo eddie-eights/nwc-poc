@@ -184,7 +184,7 @@
   },
   {
     "name": "query_history",
-    "description": "監視データの長期の履歴（S3 Tables）を機器名で引く。まだ配備されていないときは案内だけ返す。",
+    "description": "アラートの通知の履歴（Grafana / Splunk。発火と解消）を機器名で引く。新しい順に最大 50 件で、1 行が 1 つの通知（同じ通知の送り直しは最初に届いた 1 件にまとめる。status = firing / resolved、source = grafana / splunk、starts_at と received_at は UTC、_jst は日本時間）。starts_at は Grafana なら発火した時刻（resolved の行も同じ）、Splunk ならその状態を最後に見た時刻。いつ落ちていつ戻ったか、前にも同じアラートが出ていたかを見るのに使う。まだ配備されていないときは案内だけ返す。",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -194,7 +194,7 @@
         },
         "hours": {
           "type": "integer",
-          "description": "何時間前まで見るか（既定 24）"
+          "description": "何時間前まで見るか（既定 24、最大 720）"
         }
       }
     }

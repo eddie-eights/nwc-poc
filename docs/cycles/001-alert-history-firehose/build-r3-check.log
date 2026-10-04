@@ -1,0 +1,1268 @@
+
+== 1. terraform fmt -check -recursive terraform
+差分なし
+
+== 2. 9 つのルートの validate
+terraform/base/ecr  OK
+terraform/base/core  OK
+terraform/agent  OK
+terraform/pipeline/lab  OK
+terraform/pipeline/stream  OK
+terraform/pipeline/analytics  OK
+terraform/pipeline/graph  OK
+terraform/pipeline/nautobot  OK
+terraform/workflow  OK
+
+== 3. ops スクリプトの構文
+構文エラーなし
+
+== 4. 模擬テスト
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=guardrail_intervened
+INFO:agent:tokens in=1 out=1 chunks=0 tools=0 stop=end_turn
+ERROR:agent:retrieve failed
+Traceback (most recent call last):
+  File "/Users/eight/Documents/Dev/sandbox/nwc-poc/.claude/worktrees/cycle-001-alert-history-firehose/tests/../agent/app.py", line 182, in invoke
+    chunks = retrieve(prompt)
+  File "/Users/eight/Documents/Dev/sandbox/nwc-poc/.claude/worktrees/cycle-001-alert-history-firehose/tests/../agent/app.py", line 118, in retrieve
+    res = agent_runtime.retrieve(
+        knowledgeBaseId=KNOWLEDGE_BASE_ID,
+        retrievalQuery={"text": prompt},
+        retrievalConfiguration={"vectorSearchConfiguration": search},
+    )
+  File "/Users/eight/Documents/Dev/sandbox/nwc-poc/.claude/worktrees/cycle-001-alert-history-firehose/tests/test_app.py", line 23, in retrieve
+    raise r
+ClientError: x
+ERROR:agent:converse failed
+Traceback (most recent call last):
+  File "/Users/eight/Documents/Dev/sandbox/nwc-poc/.claude/worktrees/cycle-001-alert-history-firehose/tests/../agent/app.py", line 204, in invoke
+    res, text, tool_calls = converse_with_tools(request)
+                            ~~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/Users/eight/Documents/Dev/sandbox/nwc-poc/.claude/worktrees/cycle-001-alert-history-firehose/tests/../agent/app.py", line 157, in converse_with_tools
+    res = bedrock.converse(**request)
+  File "/Users/eight/Documents/Dev/sandbox/nwc-poc/.claude/worktrees/cycle-001-alert-history-firehose/tests/test_app.py", line 32, in converse
+    raise r
+BotoCoreError: x
+INFO:agent:tokens in=1 out=1 chunks=0 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tokens in=1 out=1 chunks=3 tools=0 stop=end_turn
+INFO:agent:tool neighbors {'device_id': 'dc1-leaf-01'}
+INFO:agent:tokens in=1 out=1 chunks=3 tools=1 stop=end_turn
+INFO:agent:tool neighbors {'device_id': 'zzz'}
+INFO:agent:tokens in=1 out=1 chunks=3 tools=1 stop=end_turn
+INFO:agent:tool topology_graph {}
+INFO:agent:tool topology_graph {}
+INFO:agent:tool topology_graph {}
+INFO:agent:tool topology_graph {}
+INFO:agent:tool topology_graph {}
+INFO:agent:tokens in=1 out=1 chunks=3 tools=5 stop=tool_use
+INFO:agent:tool neighbors {'device_id': 'dc1-leaf-01'}
+ERROR:agent:converse failed
+Traceback (most recent call last):
+  File "/Users/eight/Documents/Dev/sandbox/nwc-poc/.claude/worktrees/cycle-001-alert-history-firehose/tests/../agent/app.py", line 204, in invoke
+    res, text, tool_calls = converse_with_tools(request)
+                            ~~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/Users/eight/Documents/Dev/sandbox/nwc-poc/.claude/worktrees/cycle-001-alert-history-firehose/tests/../agent/app.py", line 157, in converse_with_tools
+    res = bedrock.converse(**request)
+  File "/Users/eight/Documents/Dev/sandbox/nwc-poc/.claude/worktrees/cycle-001-alert-history-firehose/tests/test_app.py", line 32, in converse
+    raise r
+BotoCoreError: x
+ok 空の prompt は error
+ok dict 以外は error
+ok RERANK_MODEL_ARN が無ければリランクなしで HYBRID と件数だけ渡す
+ok Converse に guardrailConfig
+ok Converse にトポロジの 9 ツール + 証拠の 3 ツール + 修復案の履歴（異常一覧 list_anomalies は 2026-10-02 にやめた）
+ok 質問は guardContent、資料は text
+ok 初回は messages 1 件
+ok 参照元は重複なしで本文末尾
+ok 履歴は素の質問と回答
+ok 止められたら blocked で参照なし
+ok 止められた往復は履歴に残らない
+ok 2 回目は履歴 2 件 + 今回
+ok 資料なしでも答え、参照は付けない
+ok Retrieve 失敗は error で Converse を呼ばない
+ok Converse 失敗は error で履歴に残らない
+ok KNOWLEDGE_BASE_ID が空なら Retrieve を呼ばず Converse だけで答える（参照なし）
+ok app.py は KNOWLEDGE_BASE_ID を任意にする（既定は空）
+ok 送るのは直近 10 往復 + 今回で user 始まり
+ok user と assistant が交互
+ok GUARDRAIL_ID が空なら guardrailConfig なしで質問は text
+ok RERANK_MODEL_ARN があれば候補数とリランク設定を渡す
+ok リランクありでも参照元の組み立ては同じ
+ok 機器は 8 台で community を出さない
+ok site で絞れる
+ok role で絞れる（leafsw / spine / leaf / upstream / host）
+ok dc1-leaf-01 の隣接は Spine 2 台とアクセス側の VM
+ok 隣接に両端の IF と種別（fabric / lag）が付く
+ok Spine-02 が落ちると 1 ホップで Leaf-SW 2 台と Leaf 2 台（VM とは直接つながらない）
+ok 2 ホップなら VM まで届く
+ok 知らない機器は error と候補
+ok run_tool は余計な引数を捨てる
+ok 全体図はノード 8 リンク 12（物理層）
+ok layers は物理層より上の頂点（ip / evpn）を辺付きで返し、下の層を指す ID を持つ
+ok layers は機器と層で絞れる（dc1-leaf-01 の evpn = BGP 2 + EVI 1 + ES 1）
+ok layers の BGP のセッションは相手の機器と Spine の RR を持つ
+ok layers は知らない機器・層なら error
+ok Neptune が無ければ元データは static
+ok load_static は asn を機器に足す
+ok interfaces は機器につながるリンクの自分側の IF 名
+ok interfaces は知らない機器なら空
+ok root_cause は全部 UP なら原因なし
+ok 回線と、その上の IS-IS の隣接 2 つが落ちていれば、原因は回線 1 本（途中の UP の IF は通り抜ける）
+ok also_on_it はまだ UP のままその回線に乗っている要素（両端の IF とサブ IF）
+ok root_cause は機器で絞れる（関わらない機器なら原因なしと、ほかの異常の数）
+ok BGP は fabric の別の経路で相手に届くなら回線のせいにしない（下の層は UP = その層を疑う）
+ok ALARM の機器はそれ自身が原因で、上の要素を巻き込まない
+ok fabric の回線が 2 本とも落ちて相手に届かなければ、BGP の 2 つは切れ目の回線 2 本で説明する
+ok 相手の機器が DOWN なら、そこへの BGP は機器 1 台で説明する
+ok app.run_tool は root_cause を topology に振る
+ok status を戻せば原因なし
+ok what_if: 全部 UP で fabric を 1 本落としても孤立は出ず、冗長が切れる機器も無ければ ok（Leaf には host 側の回線も残る）
+ok what_if: Leaf を 1 台落とすと、両方の Leaf につながる host は孤立せず冗長切れで warn（落とした機器自身は数えない）
+ok what_if: 相手の端の名前でも同じ回線に当たる
+ok what_if: 無い対象は unknown、op が違えば error
+ok impact: いまの status に重ねる（片系が DOWN のまま残りを落とすと孤立）
+ok impact: 上げる操作は冗長が戻る機器を出し、警告は出ない
+ok impact: 2 本のうち 1 本を落とすと冗長切れで warn
+ok impact: 孤立していた機器が、上げるとつながり直す
+ok app.run_tool は what_if を topology に振る
+ok list_devices は maintenance を出す（静的データでは全部 false）
+ok recent_changes は Neptune が無ければ案内を返す
+ok recent_changes は label change を time の新しい順に読み、JST の時刻を足す
+ok recent_changes は機器で絞れる（device_id が同じか、名前にその機器を含むもの）
+ok centrality は Neptune Analytics が無ければ案内を返す
+ok centrality は graph.centrality の結果に note を添え、limit を 1〜50 に収める
+ok run_tool は centrality に振り分ける
+ok centrality は読めなければ error を返す（例外にしない）
+ok root_cause は原因に関わる保守中の機器を出す
+ok link_choices は 12 本の (表示, a|a_if|b)
+ok VM との LACP は lag
+ok link_choices の値は remove_link の引数に戻せる
+ok 異常一覧のモジュールとツールはもう無い（app.run_tool は unknown を返す）
+ok app.run_tool は layers を topology に振る
+ok app.run_tool は list_proposals を proposals に振る（Neptune 未設定なので案内）
+ok system prompt はいまの異常 → status、履歴 → list_proposals、アラートの履歴 → query_history（Grafana / Splunk の通知）、承認はしない、と言う
+ok system prompt に出てくるツール名は全部 TOOL_SPECS にある（無い: []）
+ok tool_use なら結果を返して 2 回目を呼ぶ
+ok 2 回目の末尾は toolResult（success、json）
+ok 2 回目の直前は assistant の toolUse
+ok 履歴には質問と最終回答だけ
+ok 知らない機器は status=error で返す
+ok ツールの往復は MAX_TOOL_ROUNDS(5) で打ち切る（Converse は 6 回）
+ok 2 回目の Converse 失敗も error で履歴に残らない
+ok query_history は環境変数が無ければ rows == [] で「未配備」を返し、Athena を呼ばない
+ok query_history は ATHENA_WORKGROUP だけが空でも「未配備」
+ok query_history は ATHENA_CATALOG だけが空でも「未配備」
+ok query_history は HISTORY_NAMESPACE だけが空でも「未配備」
+ok query_history は ALERT_EVENTS_TABLE だけが空でも「未配備」
+ok query_history の SQL は event_id で重複を落とし（row_number() OVER (PARTITION BY event_id）、新しい順に LIMIT 50
+ok query_history は "<catalog>"."<namespace>"."<table>" を読み、10 列を ALERT_EVENT_COLUMNS の順で選ぶ
+ok device_id は ExecutionParameters（'…' で囲んだ文字列の式）で渡り、SQL の文字列には現れない
+ok クエリはワークグループ指定で打つ（結果の置き場はワークグループの管理ストレージ）
+ok 既定は 24 時間
+ok RUNNING のあいだ待って、SUCCEEDED で結果を読む
+ok 行は列名つきの辞書で、時刻に JST を足す（NULL の starts_at は None と空文字）
+ok 返り値の note に starts_at の意味が Grafana と Splunk で違うことを書く
+ok device_id が空なら全機器（ExecutionParameters を渡さない）
+ok hours は 720 までに丸める
+ok hours は 1 より小さくしない
+ok 引用符の入った device_id は Athena に投げずにエラー（引用符 1 文字だけでも）
+ok FAILED は理由つきのエラーで rows == []（結果は読まない）
+ok 時間内に終わらなければ stop_query_execution で止めてエラー
+ok Athena の ClientError はエラーの辞書（落ちない）
+ok app.run_tool は query_history を evidence に振る（仕様に無い引数は落とす）
+通過 104 / 失敗 0
+neptune read failed, using static data: boom
+ok SSM に無ければ未配備
+ok 未配備なら静的データ
+ok _node は ~id / ~labels / ~properties を {id, label, property…} に
+ok _ident は英数字と _ の名前だけを ` で囲んで通す（クエリに値を埋め込ませない）
+ok _props は None と空文字を落とし、False と 0 は残す
+ok 環境変数で配備あり（neptune-graph のクライアント。接続先はグラフの ID から boto3 が決めるので endpoint_url は渡さない）
+ok _client() と query は graph._cache["client"] に先に入っているクライアントを使い、作り直さない（鍵を変えると graph-status の Lambda は黙って既定の待ちに戻る）
+ok 読むクエリにパラメータは無く、上の層の辺は型の「どれか」で 1 本
+ok load_layers は上の層の頂点（registered を付ける。未登録は False）と辺（from / to は両端の id）を id の順で返す
+ok load_topology はインタフェースの頂点を device_id で機器に付け、機器の無いものは捨てる
+ok load_topology は device_id と a/b を組み立てる
+ok 配備ありなら Neptune から組む
+ok 隣接も Neptune の辺から
+ok topology_graph の source は neptune
+ok Neptune が落ちていれば静的データに戻る
+ok Neptune が空なら静的データを見せて neptune-empty
+ok add_link は同じ機器を拒む
+ok add_link は a < b に正規化して辺を作る（property は 1 つの map）
+ok add_link は先に「同じ両端 + a_if」の辺を数える
+ok 同じ回線がもうあれば add_link は error
+ok 機器が無ければ add_link は error
+ok remove_link は数えてから辺を消す
+ok add_device は property を map で渡し、id は `~id` に入れる
+ok remove_device は無ければ error
+ok remove_device はインタフェースの頂点も消す（辺でつないでいない）
+ok add_device は登録済みなら error
+ok add_device は未登録の頂点を置き換え、status を引き継ぐ
+ok count は登録済みの機器・IF・回線、上の層の頂点と辺、未登録の頂点を数える
+ok seed は未登録の頂点を読み、登録済みを消してから、今回登録される未登録の頂点だけ消す
+ok seed は lab の 8 台と全インタフェース 38 個、12 本を UNWIND でまとめて作る（機器・IF・回線で 1 本ずつ）
+ok 回線の行は a < b に揃えた両端の id と property
+ok seed は status を入れず、置き換えた未登録の頂点の UP でない status だけ引き継ぐ
+ok 静的データ（インタフェースの一覧が無い）でも seed は 8 台と 12 本
+ok seed は同じ回線の 2 本目・端の機器が一覧に無い回線・両端が同じ回線を入れない
+ok UNWIND は CHUNK 行ずつに分ける（機器が増えても 1 本のクエリが大きくなりすぎない）
+ok seed に layers を渡すと上の層の 62 頂点と 84 辺も入れ、未登録の同じ id の頂点を消して status を引き継ぐ
+ok 上の層の頂点は属性を全部 property に、id と label は付けない。辺は型ごとに 1 本のクエリ
+ok seed_layers は片端の無い辺を張らずに skipped_edges に数える
+ok sync_physical は今の機器・インタフェース・回線を 1 回ずつ読み、全部を消すクエリは送らない
+ok 一覧に無い登録済みの機器・インタフェースと、一覧に無い回線は消す（未登録の頂点 zz-ce-09 と、機器ごと消えた辺には触らない）
+ok 残る機器は変わった property だけ上書きし、無くなった値は property ごと消す（status は書かない）
+ok 残る回線は a < b に直して突き合わせ、辺の id でなく「両端 + a_if」で引いて、変わった property だけ書く（status は残る）
+ok 未登録の頂点が一覧にあれば置き換えて UP でない status を引き継ぎ、新しい IF と回線を足す
+ok 戻り値は count() に足した数・変えた数・消した数
+ok 同じ内容なら何も書かない（読む 3 本と count だけ）
+ok 同じ回線が 2 本あれば全部消して 1 本を作り直し、1 本目の status を引き継ぐ（辺を id で 1 本だけ消せないため）
+ok sync_physical: 保守が明けた機器（一覧に maintenance が無い）は property ごと消す
+ok sync_physical: 保守中にした機器には maintenance = true を書く
+ok sync_changes: 無い id だけ足し、一覧に無い古い頂点を消し、もうある id は触らない
+ok 端の機器が無い回線は張らずに skipped に理由を出す
+ok set_status は IF 付きなら、その IF が付く辺（a 側でも b 側でも）とインタフェースの頂点に書き、更新数を返す
+ok set_status は IF 無しなら機器の頂点に書く
+ok only_if を渡すと、今の status がそれのときだけ書き（条件と書き込みが 1 本）、合わなければ未登録の頂点も作らない
+ok only_if があれば UP 以外でも、合わなければ未登録の頂点を作らない
+ok set_status は UP / DOWN / ALARM 以外を拒む
+ok トポロジに無い機器の異常は捨てず、未登録の頂点（role=unknown, registered=false）を MERGE で作って status を書く
+ok トポロジに無いインタフェースの異常は、機器（無ければ）とインタフェースの未登録の頂点を作る
+ok UP に戻すだけのときは未登録の頂点を作らない
+ok set_layer_status は <機器>#bgp#<相手の IP> の bgp_session の頂点に書く
+ok isis は isis_adjacency の頂点（target = サブインタフェース）
+ok トポロジに無いセッションは未登録の頂点（layer と peer_address 付き）を作って status を書く
+ok UP に戻すだけなら未登録の頂点を作らない
+ok kind / status が違えば error
+ok 未登録の頂点に書いたときも unregistered
+ok list_records は status / device_id で絞り、order_by の新しい順に limit 件（絞る値はパラメータ、並べる property と件数は埋め込み）
+ok get_record は id とラベルで 1 件
+ok update_record は only_status の条件と書き込みを 1 本で送り、空の値は書かない
+ok update_record は条件に合わなければ False
+ok centrality は次数・近接中心性・弱連結成分をグラフの中で回し、closeness の大きい順に limit 件と島の数を返す
+ok アルゴリズムは機器の頂点と回線の辺だけを、向きを問わずに見る
+ok Neptune の上の層は topology.layers に出て、未登録の頂点は registered False のまま
+ok Neptune の status は機器一覧・隣接・影響範囲に出て、無ければ UP
+ok 未登録の機器は registered=false・role=unknown で一覧の最後に出る
+ok interfaces は Neptune のインタフェースの一覧とリンクの IF 名を合わせる
+通過 74 / 失敗 0
+ok stream/detector.py は無い（検知は Grafana と Splunk）
+ok terraform/pipeline/stream に detector の Lambda が無い
+ok terraform/pipeline/stream に lambda のエンドポイントが無い
+ok terraform/pipeline/stream に MSK Connect の S3 sink が無い（Spark が S3 Tables に入れるので 2026-09-26 に削除。sts のエンドポイントも一緒に）
+ok terraform/pipeline/stream に DynamoDB が無い（2026-09-24）
+ok detector_logs の output は無い
+ok MSK は Kafka 4 以上の KRaft（kafka_version の既定が N.N.x.kraft で、検査が .kraft を強いる）
+ok ブローカーは Kafka 4 が受け付ける m5 / m7g（t3.small は Unsupported InstanceType。2026-09-18）
+ok Spark のジョブに検知の引数（--neptune-endpoint / --anomaly-events-table / --device-map / --event-bus / --event-source）は無い
+ok Spark のジョブは Neptune にも EventBridge にも触らず、boto3 を読むのは SSM の HEC token だけ
+ok 検知の関数と定数（events / device / parse_device_map / NeptuneAnomalies / make_detect_sender / EVENT_SOURCE / TRAP_TTL）はもう無い
+ok 格納先は iceberg / opensearch / prometheus / splunk の 4 つで、マイクロバッチは 60 秒（アラートが届くまでの遅れの一部）
+ok 空のマイクロバッチでは sender を呼ばない（検知の見回りのための例外は無くなった）
+ok SR Linux の 6 台の設定は set / の行だけ（containerlab が候補に流し込んで commit する。enter candidate / commit を書くと二重になる）
+ok containerlab は 6 台とも nokia_srlinux で srlinux/<機器名>.cli を startup-config にする
+ok 6 台とも syslog を lab.sh の MGMT_GW:LOG_PORT/udp に送る（forward が Telegraf へ DNAT する）
+ok 6 台とも syslog のファシリティは local7（本番の Cisco の既定に合わせる。SR Linux の既定は local6）
+ok trap の宛先は 6 台とも lab.sh の MGMT_GW:162（Spine-Leaf の全部が監視対象）
+ok 6 台とも IS-IS（instance main）と iBGP EVPN（AS 65100）を持ち、Spine だけ route-reflector
+ok containerlab の VM 2 台は linux で、leaf の組へ 2 本（bond）
+ok lab.sh forward は syslog の LOG_PORT も trap の 162 と同じ仕組みで DNAT する（rsyslog は無い）
+ok syslog のポートが lab.sh・telegraf.sh・telegraf.conf.in・stream の NLB・土台の通信の表で同じで、trap は NLB の 162 をタスクの 1162 で受ける
+ok MDT は tcp 57000 で受ける（inputs.cisco_telemetry_mdt・telegraf.sh・NLB の TCP のリスナー・タスクの portMappings・NLB → タスクの SG）
+ok 管理ネットワークが containerlab・lab.sh・lab の locals・土台の SG の lab_mgmt_cidr で同じ
+ok Telegraf のポーリング先は lab の監視対象（enabled）の管理 IP で、全部管理ネットワークの中（VPC のルートで lab の EC2 へ行く）
+ok telegraf.conf.in の agents は __SNMP_AGENTS__ を telegraf.sh render がタスクの SNMP_AGENTS で埋める（形を確かめてから）
+ok gNMI の購読先は同じ 6 台の管理 IP:57400 で、telegraf.conf.in の __GNMI_TARGETS__ を telegraf.sh render がタスクの GNMI_TARGETS で埋める
+ok inputs.gnmi は TLS（自己署名）で bgp_neighbor / isis_interface（IS-IS の IF の oper-state。隣接そのものは消えるので取らない）を on_change、evpn_es / mac_table を 1 分の sample で購読する
+ok gNMI の 4 つは gnmi トピックへ（metrics には混ざらない）
+ok 性能メトリクスは 2 つめの inputs.gnmi（知らないパスで BGP / IS-IS の購読を巻き込まない）で、lab_* の 11 本を 1 分の sample。宛先・認証・TLS は 1 つめと同じ
+ok lab_* は processors.starlark（lab_gnmi.star）と aggregators.starlark（lab_circuits.star）で全部受け、Kafka のどの出力にも lab_* を載せない。.star はイメージの /etc/telegraf
+ok MDT は collector タグで mdt トピックへだけ（measurement の名前は機器で変わるので namepass でなく tagpass）
+ok lab.sh forward は gNMI の GNMI_PORT/tcp も SNMP の 161/udp と同じく Telegraf から管理ネットワークへ通す
+ok syslog の形式は stream の syslog_standard（既定 RFC3164 = 本番の Cisco）→ タスクの SYSLOG_STANDARD → telegraf.conf.in の __SYSLOG_STANDARD__。up.sh も deploy.env の SYSLOG_STANDARD（既定 RFC3164。lab の SR Linux は RFC5424）を渡す
+ok SNMP のポーリングは既定で止める（trap だけ。2026-10-04 ユーザー決定）: stream の snmp_poll（bool、既定 false）→ タスクの SNMP_POLL（1 / 0）→ telegraf.sh が「>>> snmp_poll」の区間を残すか消す。up.sh は deploy.env の SNMP_POLL（既定 0）を渡す
+ok Telegraf に入るコマンドの既定は tg gnmi（tg test はポーリングを止めていると何も取らない）
+ok up.sh は lab の定義からポーリング先と gNMI の購読先を作り、stream の snmp_agents / gnmi_targets に渡す（S3 には置かない）
+ok lab.sh up は毎回 forward を呼び、forward / forward-status がある
+ok forward の iptables の規則は全部目印付き（unforward で消せる）
+ok Telegraf はポーリングの IF の鍵を ifName（タグ）にする（SR Linux の ifDescr は description 付き）
+ok Telegraf は機器の syslog を inputs.syslog（udp）で受け、device_log として logs トピックに出す
+ok metrics / traps / mdt の出力に device_log が混ざらない（namepass / namedrop / tagpass）
+ok syslog の hostname を sysName のタグに付け替える（metrics / traps と同じ機器名のタグ）
+ok Spark の既定は gnmi / mdt トピックも読む（iceberg / prometheus は metrics,gnmi,mdt、opensearch は traps,logs）
+ok Telegraf は stream の ECS で、MSK への書き込みはタスクロール（lab の state のロールに頼らない。2026-09-28）
+ok lab と stream は SG も SG のルールも作らない（ポーリング・trap・syslog のルールは土台の通信の表。2026-09-29）
+ok Telegraf は受ける側（dialout。NLB の後ろ、SG telegraf_dialout）と取りにいく側（dialin。1 タスク固定、NLB なし、SG telegraf_dialin）の 2 サービス（2026-10-04 ユーザー決定）
+ok 取りにいく側は機器の一覧と認証情報を SSM から ECS の secrets で受ける（environment に載せない）。認証情報の SecureString は up.sh が stream の apply の前に作り、実行ロールが読めるのは telegraf-dialin の下だけ
+ok up.sh は base/core の state に古い Telegraf の SG（telegraf）があり stream が残っていれば、ECR より前に止める（SG のキーを変えると作り直しで、付けたままでは消せない）
+ok down.sh は stream の必須変数（snmp_agents / gnmi_targets）に形だけ合う値を渡して destroy する（telegraf.sh の形の検査と同じ）
+ok Spark の既定は logs も読む
+ok lab_cpu: index all だけを device_cpu（used_pct は float、component は slot、time と source を引き継ぐ）にし、コアごとは落とす
+ok lab_memory: uint64 の文字列を数にし、utilization が無ければ (total - free) / total。名前空間の接頭辞とパスの前置きを外して比べる
+ok lab_if_counters: if_stats（discarded / error の名前を共通の形に）。速度は先に届いた port-speed（25G）/ lag-speed（Mbps）を覚えて speed_bps に付け、速度の metric は落とす
+ok MAC の数: sessions（kind mac、scope network_instance / subinterface、owner は mac-vrf かサブ IF）。上限は機器と owner ごとに覚えて limit / warning_pct / used_pct に
+ok 変換できないものは lab_* のまま返す（Kafka には載らず、デバッグ用の EC2 の標準出力で見える）
+ok 数の文字列: 負・小数・桁あふれ（19 桁以上は float）・数でないもの
+ok circuits: 機器ごとに active（bridged のサブ IF を持つ IF。lag も数える）/ up（そのうち oper up）/ capacity（ethernet-*）/ used_pct
+ok circuits: 届かなくなった IF / サブ IF / 機器は EXPIRE（3）回の push で数えなくなる（gNMI の delete は Telegraf が載せない）
+ok circuits: source や name の無いもの、type / oper-state の無いものは数えない
+通過 60 / 失敗 0
+読めないメッセージ（捨てる）: not json
+読めないメッセージ（捨てる）: {"source": "grafana"}
+読めないメッセージ（捨てる）: 
+Neptune に書けなかった: {"source": "grafana", "status": "firing", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "eth1"}
+Traceback (most recent call last):
+  File "/Users/eight/Documents/Dev/sandbox/nwc-poc/.claude/worktrees/cycle-001-alert-history-firehose/tests/../graph/status_handler.py", line 167, in handler
+    r = apply(a)
+  File "/Users/eight/Documents/Dev/sandbox/nwc-poc/.claude/worktrees/cycle-001-alert-history-firehose/tests/../graph/status_handler.py", line 78, in apply
+    return graph.set_status(device_id, target, status)
+           ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/eight/Documents/Dev/sandbox/nwc-poc/.claude/worktrees/cycle-001-alert-history-firehose/tests/test_sync.py", line 209, in _boom
+    raise OSError("neptune unreachable")
+OSError: neptune unreachable
+ok lab の定義から 8 台と 12 本（Leaf-SW 2 + Spine 2 + Leaf 2 + VM 2）
+ok 機器（hostname / site / role / asn / mgmt_ip / enabled）が agent/data の静的データと同じ
+ok 回線（両端の IF / 種別 / 主副 / 帯域）が agent/data の静的データと同じ
+ok 回線は a < b に正規化
+ok 監視対象は SNMP（trap-group）の設定を持つ SR Linux の 6 台（VM は対象外）
+ok 帯域は SR Linux の interface description の 1G / 100M / 10G から
+ok 主副は description の primary / secondary から
+ok SR Linux の設定（set / の行）から asn と interface の description、SNMP の有無
+ok インタフェースはリンクの両端だけでなく全部（管理の mgmt0 が先頭、SR Linux / exec のアドレス付き）
+ok 別名は device_id / hostname / 管理 IP / 全インタフェースのアドレスを小文字で
+ok device map は別名 → device_id（device_id 自身は省く）で、全機器の管理 IP を含む
+ok 1 つの別名が 2 台を指していたら device map を作らずに止める
+ok snmp agents は監視対象（enabled）の管理 IP だけ
+ok SR Linux の host-name と subinterface の ipv4 address も読む（SNMP 無しなら snmp は False）
+ok gnmi targets は監視対象（enabled）の管理 IP:57400（Telegraf の inputs.gnmi の addresses）
+ok 上の層は 62 頂点・84 辺で、頂点の id は機器ごとに一意
+ok ip_interface は物理層の interface を interface_id で指し、over の辺でつながる（ループバック system0.0 は物理層に無いので空。IS-IS の隣接は ip_interface_id も）
+ok EVPN・BGP 層は loopback の ip_interface を ip_interface_id で指し、ES は lag の interface を指す
+ok iBGP EVPN は Leaf-SW / Leaf から Spine 2 台へ（Spine は RR。AS 65100）
+ok IS-IS の隣接は fabric の 8 本の両端（peer の辺）
+ok EVI 100 は 4 台で同じ RT / VNI、ES は Leaf-SW の組と Leaf の組で同じ ESI
+ok agent/data/layers.json は lab の定義から作った上の層と同じ
+ok lab/splab.clab.yml.in と lab/srlinux/*.cli は lab/gen_lab.py の出力と同じ（既定の leaf 2・spine 2）
+ok PyYAML が無くても同じ結果（自前の読み取り）
+ok 自前の YAML 読み取りはコメント・引用符・真偽値・数値・flow list を読む
+ok CLI は --device-map / --snmp-agents / --gnmi-targets / --layers を受ける
+ok CLI は {devices, links, layers} の JSON を出す
+ok up.sh 7-3b は lab/lab_topology.py の出力を LAB_TOPOLOGY_B64 で seed_graph.py に渡す
+ok sync-graph.sh は --replace で GRAPH_REPLACE=1、--dry-run は Neptune に触らない
+ok seed_graph.py は LAB_TOPOLOGY_B64 を読み、GRAPH_REPLACE=1 のときだけ入れ直す
+ok seed_graph.py は layers も渡す（lab からは JSON の layers、静的データは data/layers.json）
+ok up.sh は gNMI の購読先も lab の定義から作って stream の gnmi_targets に渡し、gateway.tf は data/layers.json を tools の zip に入れる
+ok firing の link_down は機器の IF の回線を DOWN
+ok resolved は同じ回線を UP
+ok それ以外の trap は機器を ALARM
+ok trap の解消は機器が ALARM のときだけ UP（linkDown の DOWN は上書きしない）
+ok IF が分からない linkDown は機器に付ける
+ok bgp_down（gNMI）は BGP のセッションの頂点を set_layer_status で DOWN（set_status は呼ばない）
+ok bgp_down の解消は同じ頂点を UP
+ok isis_down は IS-IS の隣接の頂点（target = サブインタフェース）
+ok target の無い bgp_down / isis_down は何もしない
+ok 機器が無い・firing でも resolved でもない status は何もしない
+ok 機器名は FQDN でも大文字でも、短い小文字の名前で Neptune を引く
+ok 1 通に何件か入っていても、Records が何件あっても、全部を順に書く（Grafana はグループごとに 1 通）
+ok 読めないメッセージ（JSON でない・alerts が無い・Records が無い）は捨てて例外にしない（再試行しても読めない）
+ok Neptune に書けなければ最後に RuntimeError で落とす（Lambda の非同期の再試行に任せる。やり直しの合間に後の通知が来ると古い値に戻る）
+ok ALERT_STREAM が空なら Firehose に送らない（alert_history=false の配備）
+ok Grafana の firing と resolved（starts_at は同じ）は 1 回の put_record_batch に 2 行、event_id は status で分かれる
+ok 行の列は rules.ALERT_EVENT_COLUMNS と同じ、時刻は ISO 8601 の UTC（starts_at は通知のまま、received_at は受けた時刻）
+ok 同じ通知をもう一度受けても Lambda では落とさず、同じ event_id の行をまた送る（重複は読む側が event_id で落とす）
+ok Neptune で無視した通知（機器の無いもの）も履歴には 1 行送る
+ok 送り切れたら待たず、ERROR も出さない
+ok Neptune に書けなくても Firehose には送り（put_record_batch は呼ばれる）、Neptune の失敗だけで最後に RuntimeError
+ok 1 回目に 2 行中 1 行（2 行目）が届かなければ、2 回目はその 1 行だけを送る。0.2 秒待ち、例外にも ERROR にもしない
+ok Firehose が毎回例外なら put_record_batch は 3 回、待ちは 0.2 秒と 0.4 秒、行ごとに ERROR を 1 つ出して例外にしない（Neptune は書く）
+ok ERROR は ALERT_EVENT_LOST のあとに行の JSON そのまま（Logs Insights で拾って戻せる）
+ok 3 回目まで届かなかった行だけを ERROR にする（届いた行は出さない）
+ok RequestResponses の数が合わなければどの行が落ちたか分からないので、全部を送り直す
+ok 1 回の呼び出しで 500 件を超えたら put_record_batch を 500 件ずつに分ける（API の上限）
+ok device_id の無いアラートは put_record_batch に送らず、WARNING を 1 回（ALERT_DROPPED と件数）
+ok 形の合わない要素（kind が無い・status が pending・dict でない）は数えて WARNING 1 回に、正しい 1 件だけ行にする
+ok 未登録の機器・IF の異常は WARNING で UNREGISTERED をログに出す
+ok 未登録の機器の通知も履歴には 1 行送る
+ok 登録済みなら INFO（どの送り手のどのアラートかをログに残す）
+ok 読めないメッセージは WARNING でログに出す（ALERT_DROPPED ではない）
+ok Neptune には status_handler が NEPTUNE_CONFIG で作ったクライアントを graph._cache に入れてから書く
+ok Lambda の残りが 33 秒を切っていたら Neptune を呼ばず、4 行を Firehose に送り、WARNING の NEPTUNE_SKIPPED を 1 回出して最後に RuntimeError
+ok 途中で 33 秒を切ったら、その通知から先だけを飛ばす（ちょうど 33 秒は書く。飛ばしたあとは残り時間を見直さず、WARNING も 1 回）。行は 4 行とも送る
+ok Neptune の失敗と打ち切りが重なっても、行は全部送り、例外の文の先頭に打ち切った件数を置く（後ろの切り詰めで消えない）
+ok 残りが十分なら全部を書いて例外にしない
+ok Firehose へは FIREHOSE_CONFIG で 1 つだけ作ったクライアントで送り、botocore の再試行を切る（1 回）。3 回の接続と読みの待ち + 送り直しの待ちが Firehose の取り分（20 秒）に収まる
+ok Neptune へは NEPTUNE_CONFIG（接続 3 秒・読み 10 秒・再試行なし）で 1 つだけ作ったクライアントを graph._cache に入れて使い、agent/graph.py の既定（接続 10 秒・読み 60 秒）は変えない
+ok Lambda graph-status の timeout は 60 秒で、打ち切りの閾値（Firehose の取り分 + Neptune 1 回の最大 = 33000 ミリ秒）より長い
+ok Neptune のクライアントを作るところで落ちても（_neptune() は通知ごとの try の中）、行は Firehose に送ってから RuntimeError で落とす
+ok sync.tf は status_handler.py を index.py、agent/graph.py を graph.py で zip にする
+ok status.zip は graph.py が import する agent/ のモジュールを全部入れる（足りない: []）
+ok status.zip は workflow/rules.py を rules.py で入れ、status_handler.py と rules.py は zip の中と標準ライブラリ（と boto3）しか import しない
+ok EventBridge のルールは無く、土台（base/core）のトピック <接頭辞>-alerts を Lambda が購読する（接頭辞ごとのトピックなので他の人のアラートを拾わない）
+ok 古い土台（alerts_topic_arn の出力が無い）では、購読の precondition が plan を止める（空の ARN で apply して API のエラーにしない）
+ok Lambda は VPC の中で NEPTUNE_GRAPH_ID を環境変数で持ち、ロググループは retention 付き
+ok グラフは Neptune Analytics（公開しない・レプリカ無し）で、ID を SSM の neptune-graph-id に書く。Neptune Database のクラスタはもう無い（2026-10-04）
+ok Lambda は base/core の lambda の SG を使い、graph は SG もルールも作らない。Neptune へは土台の neptune-graph-data のエンドポイント（443）で届くので、neptune の SG と 8182 の行は無い
+ok Lambda のロールは neptune-graph の Read / Write / Delete をこのグラフにだけ（他のサービスは持たない）
+ok Runtime と Web のロールにも neptune-graph の読み書きをこのグラフにだけ付ける
+ok SNS から Lambda を呼ぶ permission（呼べるのは土台のトピックだけ）
+ok variables.tf に log_retention_days と provisioned_memory（既定 16 m-NCU）。Neptune Database の instance_class / engine_version は無い
+ok variables.tf の alert_history は bool で既定 false（analytics を作らない回は送らない）
+ok alert_history が false なら ALERT_STREAM は空、true なら <接頭辞>-alert-events（analytics の Firehose と同じ名前）
+ok firehose の権限は alert_history が true のときだけで、PutRecordBatch を <接頭辞>-alert-events の ARN だけに
+ok up.sh は analytics を作る回（SKIP_ANALYTICS が空）だけ graph に -var alert_history=true を渡す
+ok graph-status のロールにも閉域の Deny を付ける（firehose を持つので、VPC の外から履歴の行を書かせない）。NETWORK_PERIMETER=0 か古い土台なら付けない
+通過 91 / 失敗 0
+ok ファイルは versions / providers / variables / locals / network / tables / emr / sinks / access / outputs / ecs / grafana / splunk / history
+ok main の state をローカルから読む
+ok stream の state をローカルから読む
+ok main の output vpc_id を使う
+ok main の output runtime_subnet_ids を使う
+ok main の output security_group_ids を使う
+ok main の output opensearch_vpc_endpoint_id を使う
+ok main の output kb_bucket_name を使う
+ok stream の output msk_cluster_arn を try で読む（無ければ precondition で止める）
+ok stream の output bootstrap_brokers を try で読む（無ければ precondition で止める）
+ok graph の state は読まない（Spark は Neptune に書かない。SKIP_GRAPH=1 でも analytics は作れる）
+ok アラートのトピックの ARN は main の state から try で読む（古い土台では空）
+ok stream が無いときは「terraform/pipeline/stream を先に apply する」と出る
+ok terraform/base/core に output vpc_id がある
+ok terraform/base/core に output runtime_subnet_ids がある
+ok terraform/base/core に output security_group_ids がある
+ok terraform/base/core に output opensearch_vpc_endpoint_id がある
+ok terraform/base/core に output kb_bucket_name がある
+ok terraform/base/core に output alerts_topic_arn がある
+ok terraform/pipeline/stream に output msk_cluster_arn がある
+ok terraform/pipeline/stream に output bootstrap_brokers がある
+ok analytics は SG も SG のルールもインターフェース型エンドポイントも作らない（S3 Tables / events / aps / logs の API は土台のエンドポイントを通る）
+ok EMR / Grafana / Splunk は土台の spark / grafana / splunk の SG を使う
+ok 土台の SG はワークロードごとの 14 個と endpoints（['grafana', 'lab', 'lambda', 'msk', 'nautobot', 'nautobot_db', 'runtime', 'spark', 'splunk', 'telegraf_dialin', 'telegraf_dialout', 'telegraf_dialout_nlb', 'web', 'workflow']）
+ok 通信の表は決めた流れだけ（多い: [] 足りない: []）
+ok MDT の送り元は変数 mdt_source_cidrs の CIDR から NLB の 57000/tcp だけ（受信だけ。既定は空、0.0.0.0/0 と重複とネットワークアドレスでない書き方を拒む）
+ok Temporal の gRPC 7233（workflow）と Splunk の管理 API 8089（splunk）は開けず、CIDR のルールは lab の管理ネットワーク・MDT の送り元・endpoints の送信なしだけ（EMR Serverless は 0.0.0.0/0 の inbound を拒否する）
+ok ルールは表から for_each で作る。送信は from の SG、受信は to の SG で、相手は SG の参照・S3 のプレフィックスリスト・lab の管理ネットワークのどれか 1 つ
+ok 土台の lab_mgmt_cidr は terraform/pipeline/lab の mgmt_cidr と lab.sh の MGMT と同じ
+ok 土台の endpoints SG は表の 443 だけ受け、外へ出さない（インターフェース型と OpenSearch Serverless の VPC エンドポイント用）
+ok 土台の output security_group_ids は SG のキーと endpoints の map
+ok VPC フローログ: 土台の VPC の全通信を 60 秒の集約で CloudWatch Logs へ。ロググループは /<prefix>/vpc-flow-logs で保持期間つき
+ok VPC フローログのロール: 信頼は自アカウントの vpc-flow-log だけ、書けるのはそのロググループだけで CreateLogGroup は無く、閉域の Deny は付けない
+ok aws_s3tables_table snmp_metrics がある
+ok テーブルの列は ts / topic / measurement / agent_host / host / tags_json / fields_json / ingested_at の順
+ok ts と ingested_at は timestamp、それ以外は string
+ok 必須は ts / topic / ingested_at だけ
+ok format は ICEBERG
+ok namespace とテーブル名はアンダースコアだけ（ハイフン不可）
+ok 既定のテーブル名は snmp_metrics
+ok EMR Serverless は spark / ARM64
+ok 使わなければ止まる（auto_stop）
+ok release は emr-7.5 以上（S3 Tables の下限）
+ok ロググループに retention がある
+ok runtime role は emr-serverless から assume（SourceAccount の条件付き）
+ok runtime role に s3tables:GetTableMetadataLocation
+ok runtime role に s3tables:UpdateTableMetadataLocation
+ok runtime role に s3tables:PutTableData
+ok runtime role に kafka-cluster:ReadData
+ok runtime role に kafka-cluster:Connect
+ok runtime role に kafka-cluster:CreateTopic
+ok Kafka のトピック ARN は cluster → topic の置き換え
+ok variable sinks は list、既定 3 つ（iceberg / opensearch / prometheus。2026-09-17 ユーザー決定）、validation は splunk を入れた 4 つ
+ok variable metric_topics / log_topics（既定 metrics / traps + logs、空を拒否）
+ok Splunk のリソースは splunk.tf だけで、全部 splunk_on_ecs（sinks に splunk があるとき）だけ作る
+ok ECS の Splunk の HEC は Cloud Map の splunk.<prefix>.internal:8088 で、自己署名なので検証しない
+ok Splunk のパスワードと HEC の token はタスク定義の secrets（SSM の ARN）で渡し、environment に値を書かない
+ok Splunk のヘルスチェックは checkstate.sh で、startPeriod は上限の 300
+ok Grafana は create_grafana（Prometheus か OpenSearch があるとき）だけで、admin のパスワードは secrets
+ok Grafana のタスクロールは読むだけ（aps:QueryMetrics などと aoss:APIAccessAll。書き込みの aps:RemoteWrite は無い）
+ok ECS のロールは全部 perimeter の Deny を付け、信頼ポリシーは aws:SourceAccount で絞る
+ok up.sh は Grafana / Splunk のパスワードと HEC の token を ensure_secret で SSM に作り（値は Python が本人だけ読める一時ファイルに書いて file:// で渡し、すぐ消す）、down.sh は ManagedBy のタグで消す
+ok up.sh は ECS の Splunk が HEALTHY になってから Spark のジョブを起こす
+ok variable splunk_hec_token_parameter（既定は空。/ で始まる）/ splunk_index。外の Splunk の splunk_hec_url / splunk_skip_tls_verify は無い（2026-09-28）
+ok locals に sink_iceberg / sink_opensearch / sink_prometheus / sink_splunk
+ok HEC の token は SSM の SecureString /<prefix>/splunk/hec-token（変数で変えられる）。runtime role は splunk のときだけ ssm:GetParameter をそのパラメータに限って持つ
+ok Terraform は token の値を読まない（data aws_ssm_parameter が無い）
+ok HEC のポートごとのエグレスは analytics に無い（spark から splunk の 8088 は土台の通信の表。ECS の Splunk は VPC の中）
+ok OpenSearch Serverless は TIMESERIES のコレクション <prefix>-logs（count で作る）
+ok OpenSearch のコレクションは公開せず、土台の VPC エンドポイント（KB と共用。2026-09-28）からだけ。無ければ precondition で止まる
+ok 土台の OpenSearch Serverless の VPC エンドポイントは create_opensearch_endpoint（既定 false）の count で 1 本、SG は endpoints
+ok OpenSearch のデータアクセスは EMR の実行ロールだけ、snmp-logs のインデックスに WriteDocument / CreateIndex
+ok Prometheus はワークスペース <prefix>-metrics（remote write は土台の aps-workspaces のエンドポイントを通る。analytics はエンドポイントを持たない）
+ok runtime role に aoss:APIAccessAll と aps:RemoteWrite（格納先を選んだときだけ。for-if で count 0 のときの index を避ける）
+ok remote write の URL は prometheus_endpoint + api/v1/remote_write
+ok output application_id がある
+ok output runtime_role_arn がある
+ok output table_identifier がある
+ok output job_driver_json がある
+ok output configuration_overrides_json がある
+ok output list_job_runs_command がある
+ok output list_tables_command がある
+ok output sinks がある
+ok output opensearch_collection_endpoint がある
+ok output prometheus_workspace_id がある
+ok output prometheus_remote_write_url がある
+ok output prometheus_query_url がある
+ok output table_bucket_arn がある
+ok output table_namespace がある
+ok output proposal_events_table_name がある
+ok output proposal_events_table_arn がある[snmp_sinks] splunk: HEC が 400 を返した。1 件を捨てる: '{"text":"Invalid token"}'
+
+ok output alert_events_stream_name がある
+ok output alert_events_table_name がある
+ok output alert_events_table_arn がある
+ok output athena_workgroup がある
+ok output athena_catalog がある
+ok output opensearch_collection_name がある
+ok output opensearch_collection_arn がある
+ok output opensearch_index がある
+ok output prometheus_workspace_arn がある
+ok output splunk_hec_url がある
+ok output splunk_token_parameter がある
+ok output analytics_cluster_name がある
+ok output splunk_service_name がある
+ok output splunk_port_forward_command がある
+ok output splunk_password_command がある
+ok output grafana_service_name がある
+ok output grafana_port_forward_command がある
+ok output grafana_password_command がある
+ok job_driver は S3 Tables のカタログを spark-submit の --conf で渡す
+ok job_driver の引数は concat（共通 + 格納先ごとの for-if）
+ok job_driver の共通の引数に --bootstrap
+ok job_driver の共通の引数に --checkpoint
+ok job_driver の共通の引数に --sinks
+ok job_driver の共通の引数に --region
+ok job_driver の共通の引数に --metric-topics
+ok job_driver の共通の引数に --log-topics
+ok job_driver に検知の引数（--neptune-endpoint / --anomaly-events-table / --device-map / --event-bus）は無く、スクリプトが受ける引数だけを渡す
+ok job_driver の格納先の引数は選んだときだけ（for a in [...] : a if local.sink_*）
+ok job_driver の引数に token の値は無い（SSM のパラメータ名だけ）
+ok --sinks は var.sinks をカンマでつなぐ
+ok --checkpoint は s3://<バケット>/analytics/checkpoint/<MSK の uuid>/（MSK を作り直したら checkpoint も新しく。格納先ごとに下を切るのはスクリプト）
+ok job_driver は jars を s3://<バケット>/analytics/jars/ から読む
+ok ジョブは 3 vCPU（driver 1 + executor 2。Kafka のパーティション 2 つを並列に読む。動的割り当て無し）
+ok ドライバーのログは CloudWatch、EMR の managed storage は使わない
+ok parse_args / sink_topics / read_rows / build / main がある
+ok 検知の関数（parse_device_map / device / events / anomaly_key / make_detect_sender）はもう無い（検知は Grafana と Splunk。2026-10-02）
+ok DynamoDB を使わない（2026-09-24）
+ok runtime role に Neptune と EventBridge の許可は無い（Spark は格納先に書くだけ）
+ok EMR と Neptune の間の SG のルールは analytics にも土台にも無い
+ok 証跡のテーブル proposal_events をいつも作り（count 無し）、列はどれも required = false（PyArrow の列は nullable）
+ok proposal_events の列と順は workflow/rules.py の PROPOSAL_EVENT_COLUMNS と同じ
+ok 異常の履歴のテーブル anomaly_events は無い（S3 Tables のテーブルは snmp_metrics と proposal_events と alert_events だけ）
+ok alert_events をいつも作り（count 無し）、列はどれも required = false
+ok alert_events の列と順は workflow/rules.py の ALERT_EVENT_COLUMNS と同じ
+ok Firehose <接頭辞>-alert-events は iceberg で s3tablescatalog/<テーブルバケット> の alert_events に書き、バッファは 60 秒 / 1 MiB
+ok 書けなかった行は土台のバケットの firehose-errors/alert_events/ に落とし（FailedDataOnly）、CloudWatch のログを付ける
+ok Firehose のロール <接頭辞>-alert-firehose: 信頼は firehose.amazonaws.com を aws:SourceAccount で絞り、閉域の IAM 側の Deny は付けない
+ok Firehose のロールの許可は S3 Tables（テーブルバケットと /table/*）と Glue の s3tablescatalog と firehose-errors/* とログだけ
+ok Athena のワークグループ <接頭辞>-history: 結果は管理ストレージ、ワークグループの設定を強制し、スキャン量で打ち切り、force_destroy
+ok analytics に events / sns のエンドポイントは無い（SNS へは土台の sns のエンドポイント。ops/up.sh が足す）
+ok build の引数は spark / args（格納先ごとに Kafka を読む）
+ok pyspark はモジュールの先頭で import しない（テストと引数の検査を pyspark 無しで動かすため）
+ok 既定のトピックは metrics / gnmi / mdt（メトリクス。gnmi は Telegraf の inputs.gnmi、mdt は inputs.cisco_telemetry_mdt）と traps / logs（ログ。logs は機器の syslog）
+ok SINKS は iceberg / opensearch / prometheus / splunk（Terraform の validation と同じ）
+ok Kafka を readStream で読み、購読は引数（格納先ごと）
+ok MSK の IAM 認証: kafka.security.protocol
+ok MSK の IAM 認証: kafka.sasl.mechanism
+ok MSK の IAM 認証: kafka.sasl.jaas.config
+ok MSK の IAM 認証: kafka.sasl.client.callback.handler.class
+ok Iceberg に append で書き、toTable で名前を渡す
+ok checkpoint は格納先ごと（iceberg/ と <name>/）
+ok 60 秒ごとのマイクロバッチ
+ok HTTP の格納先は foreachBatch で driver から送る
+ok SigV4 は botocore（EMR の実行ロールの認証情報）
+ok OpenSearch は _bulk に aoss の SigV4、Prometheus は remote write に aps の SigV4
+ok スクリプトの列は tables.tf の列と同じ順
+ok timestamp が無い行は捨てる
+ok tags / fields は JSON 文字列のまま
+ok parse_args: 既定は metrics / traps,logs、checkpoint に / を足す、sinks はリスト
+ok parse_args: 空白を除いて 3 つ、トピックも空白を除く
+ok parse_args: iceberg なのに --iceberg-table が無ければ 2 で止まる
+ok parse_args: opensearch / prometheus も同じ
+ok parse_args: 知らない格納先と空の --sinks は 2
+ok parse_args: splunk は --splunk-hec-url と --splunk-token-parameter が要る（index と skip-verify は任意）
+ok parse_args: 空の --metric-topics は 2
+ok sink_topics: iceberg は全部（重複無し）、prometheus はメトリクス、opensearch はログ
+ok sink_topics: splunk は iceberg と同じく全部
+ok sink_topics: 知らない格納先は ValueError
+ok metric_name: snmp_<measurement>_<field>、使えない字は _、先頭の数字は _ を足す
+ok label_name: 使えない字は _、空と先頭の数字は _ を足す、__ 始まりは _ 1 つに
+ok prometheus_series: 数値の field だけ（文字列は落とす、bool は 1/0）、ms は ts × 1000、空のタグは落とす
+ok prometheus_series: トピックでは絞らない（購読で絞っている）
+ok prometheus_series: labels は名前順のリスト（Prometheus はソート済みを要求する）
+ok all_topics: 格納先が読むトピックの和（重複なし、引数の順）
+ok ensure_topics: 無いものだけ作って名前を返す。AdminClient は SASL_SSL / AWS_MSK_IAM で bootstrap に繋ぎ、終わったら close
+ok ensure_topics: 全部あれば作らない（createTopics を呼ばない）
+ok ensure_topics: 同時に作られて TopicExistsException になっても先へ進む
+ok ensure_topics: TopicExists 以外の失敗は上げる（権限が無いのを黙って通さない）。close はする
+ok splunk_hec_url: 末尾の / を除き、/services/collector/event を足す（すでに付いていればそのまま、/services/collector なら /event を足す）
+ok splunk_events: 1 レコードが 1 行の JSON。time は ts、host は host → agent_host → unknown、source は telegraf:<measurement>、sourcetype は netops:<topic>、index は渡したとき
+ok splunk_events: event に topic / measurement / agent_host / tags / fields。数値の文字列は数値に、それ以外はそのまま
+ok splunk_events: index を渡さなければ index キーが無い（token の既定の index）
+ok splunk_events: 1 行に改行が無い（HEC は連結した JSON を受ける）
+ok make_splunk_sender: HEC の URL に Authorization: Splunk <token> で POST し、BULK_SIZE ごとに分ける、TLS は既定で検証（context 無し）
+ok make_splunk_sender: skip_verify なら検証しない SSL context を渡す
+ok make_splunk_sender: HEC が 4xx を返したらそのまとまりを捨てて続ける（例外にしない。ジョブを止めない）
+ok build: splunk は起動時に SSM から token を読み（WithDecryption）、make_splunk_sender で http_query に流す
+ok http_post は context（SSL）を urlopen に渡せる
+ok encode_write_request: WriteRequest.timeseries(1) が 1 本
+ok encode_write_request: labels(1) は name(1) / value(2) の文字列、samples(2) は value(1) double / timestamp(2) varint
+ok _varint: 0 / 127 / 128 / 300
+ok _field_varint: 負の int64 は 2^64 を足して 10 バイト
+ok snappy_compress: 短いリテラルは 1 バイトのタグ、前置きは非圧縮長
+ok snappy_compress: 60 以上は 61 のタグ + 2 バイトの長さ、chunk で分ける。復号すると元に戻る
+ok opensearch_docs: action 行と document 行の対、@timestamp は ISO の Z、数値の field は数値、文字列はそのまま
+ok row_to_record: ts は epoch 秒、tags は辞書、壊れた JSON は空の辞書
+ok row_to_record: naive な datetime は UTC とみなす
+ok _number: 数値の文字列は float、それ以外は None
+ok up.sh は 6 本の jar を置く
+ok up.sh の jar に spark-sql-kafka-0-10_2.12
+ok up.sh の jar に spark-token-provider-kafka-0-10_2.12
+ok up.sh の jar に kafka-clients
+ok up.sh の jar に commons-pool2
+ok up.sh の jar に aws-msk-iam-auth
+ok up.sh の jar に s3-tables-catalog-for-iceberg-runtime
+ok up.sh の SPARK_VERSION は emr_release_label の Spark（3.5.6）
+ok up.sh のスクリプトは spark/snmp_sinks.py
+ok up.sh は SINK_SPLUNK（既定 0）と SPLUNK_INDEX を読み、splunk なら ECS の Splunk の token を SSM に作ってから渡す（値は読まない）。外の Splunk の変数は渡さない
+ok up.sh は SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS（既定 1）を terraform/pipeline/analytics の sinks に組んで渡す
+ok up.sh は Splunk を立てるときだけ device map を lab の定義から作って渡す（lab/lab_topology.py --device-map。trap と gNMI には sysName が無い）
+ok up.sh は AGENT=0 でも CloudWatch へのログを切らない（CloudWatch Logs へは土台の logs のエンドポイントで届く）
+ok 土台の S3 は Gateway 型で、ポリシーは付けない（2026-09-15 / 17 の障害）
+ok インターフェース型エンドポイントは var.interface_endpoints の for_each 1 か所だけ（private DNS、endpoints SG、このアカウントだけのポリシー）
+ok perimeter.tf: aws:SourceVpc がこの VPC でなく、AWS のサービス経由でもない呼び出しを拒む（S3 Tables が裏で呼ぶ分は外す）
+ok perimeter.tf: ポリシーはいつも作り、NETWORK_PERIMETER=0 では何も拒まない中身にする（他のルートが付けたままでも base/core の apply が落ちない）
+ok analytics: EMR のロールに perimeter を付け、テーブルバケットにも VPC の外を拒むポリシーを付ける（ポリシーの操作とデプロイする人は外す）
+ok 土台だけなら ssm / ssmmessages の 2 本
+ok AGENT は bedrock-runtime / bedrock-agentcore / ecr / logs を足し、KB で bedrock-agent-runtime
+ok 全部なら 16 本で重複しない（ecr / logs / s3tables / bedrock-agentcore は 1 本ずつ。graph は Neptune Analytics の neptune-graph-data）、ENDPOINTS_MULTI_AZ=1 で 2 AZ。events は無く、アラートの送り手がいれば sns
+ok sns のエンドポイントは Grafana のアラートか Splunk があるときだけ（どちらも無ければ 15 本。Splunk だけでも足す）
+ok kinesis-firehose（graph の履歴）と athena（workflow の query_history）は analytics を作る回か、analytics が state に残っているときだけ
+ok up.sh: state に残った analytics を見つけたら ANALYTICS_LEFT=1 にし、残った graph / workflow の履歴の分はその後で数える
+ok perimeter.tf: Firehose のロール <接頭辞>-alert-firehose を資源側の Deny の例外に入れる（-kb と同じ。サービスが VPC の外から書く）
+ok perimeter.tf: athena:* と firehose:* も IAM 側で拒む（Athena が代わりに読む S3 Tables は s3tables:* の Deny で止まらない。履歴の行を VPC の外から書かせない）
+ok up.sh: s3tablescatalog が無ければ（EntityNotFoundException）create-catalog を 1 回打ち、FederatedCatalog はこのリージョンとアカウントの bucket/*、既定の権限は IAM_ALLOWED_PRINCIPALS
+ok up.sh: get-catalog がそれ以外のエラー（権限など）なら作らずに止まる
+ok up.sh: 想定どおりの s3tablescatalog があれば作らず、警告も出さない
+ok up.sh: 設定の違う s3tablescatalog があれば作り直さず、警告だけ出して先へ進む
+ok up.sh: ensure_s3tables_catalog は analytics を作る回（7-4）に、analytics の apply より前に呼ぶ
+ok Grafana のアラートは GRAFANA と SINK_PROMETHEUS と SNMP_POLL があるときだけ（ルールは Prometheus の、SNMP のポーリングの ifOperStatus を見る）
+ok up.sh の WORKFLOW=1 はアラートの送り手（Grafana のアラートか Splunk）が 1 つも無ければ、何も作る前に止まる（既定の SNMP_POLL=0 では Grafana は数えない）
+ok up.sh は base/core に interface_endpoints / network_perimeter / endpoints_multi_az を渡し、state に残るルートの分も足す
+ok 費用の目安にエンドポイント（1 本 1.4 セント × AZ）を足す
+ok NAT Gateway / IGW / EIP / パブリックサブネット / 既定ルートは作らない（2026-09-28。VPC から AWS の外へ出る経路が無い）。up.sh も create_nat_gateway を渡さない
+ok 費用の目安: 土台は Web の EC2 の 2 セント（NAT Gateway は無い）。ECS の Splunk は 12、Grafana は 2
+ok lab.sh は containerlab の版の確かめ（GitHub へ出る）をしない
+ok up.sh / deploy-env.sh に共用のエンドポイントと CLIENT_CIDR の扱いは無い
+ok SINK_* が無ければ 3 つ全部
+ok SINK_OPENSEARCH=0 で opensearch だけ外れる
+ok SINK_S3=0 SINK_PROMETHEUS=no で opensearch だけ残る
+ok SINK_S3=false で S3 Tables が外れる
+ok SINK_* が全部 0 なら止まる
+ok SINK_S3=2 は止まる
+ok SINK_SPLUNK=1 で splunk が 4 つ目に足される
+ok SINK_SPLUNK=1 だけでも 1 つ以上になる
+ok SINK_SPLUNK=1 なら splunk が入り、Splunk を ECS で立てる（SPLUNK_ON_ECS=1）
+ok SINK_SPLUNK=0 なら SPLUNK_ON_ECS は立たない
+ok SPLUNK_HEC_URL（2026-09-28 にやめた外の Splunk）が書いてあれば、黙って ECS の Splunk に替えずに止まる
+ok SPLUNK_HEC_URL は SINK_SPLUNK=0 でも止まる（deploy.env から消してもらう）
+ok SPLUNK_SKIP_TLS_VERIFY は使わない（書いてあれば注意だけ）
+ok deploy-env.sh は SINK_* を読めるキーに持つ
+ok deploy.env.example は SINK_SPLUNK=0 を既定にし、SPLUNK_HEC_URL / SPLUNK_SKIP_TLS_VERIFY を書かない（2026-09-28 にやめた）
+ok MSK Connect の Splunk は書いていない（2026-09-26 に Spark から書くことにした）
+ok up.sh は analytics を stream の後に apply し、job を STREAMING で起こす（名前は snmp-sinks）
+ok up.sh は analytics に 21 セント（EMR だけ。エンドポイントは無い）と opensearch の OCU を足し、prometheus は足さず、opensearch は analytics を作るときだけ OCU の注意を出す
+ok up.sh は同じ SpecHash のジョブが動いていれば起こさない
+ok up.sh は SpecHash が違うジョブを cancel してから、SpecHash のタグを付けて起こし直す（スクリプトや引数の変更を反映する）
+ok up.sh は PIPELINE=1 で SKIP_STREAM=1 なら analytics も飛ばす
+ok down.sh は job を cancel → stop-application → destroy analytics → destroy graph の順
+ok check.sh は spark/ の .py を構文検査に入れ、spark/snmp_sinks.py がある
+ok up.sh の WORKFLOW=1 は SKIP_ANALYTICS があれば止まる（Grafana / Splunk のアラートが無いとワーカーが起きない）
+ok up.sh は SKIP_GRAPH=1 でも analytics を作る（Spark は Neptune に書かない。2026-10-02）
+ok up.sh は PIPELINE=0 なら lab / stream / analytics / graph を全部飛ばす
+ok deploy.env.example に SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS の行がある（既定 1）。カンマ区切りの SINKS は使わない
+ok resource "aws_s3tables_table" "snmp_metrics" は sink_iceberg の count
+ok resource "aws_s3tables_table_bucket" "tables" はいつも作る（count 無し）
+ok resource "aws_s3tables_namespace" "netops" はいつも作る（count 無し）
+ok count を外したバケット・namespace は moved で state の [0] を引き継ぐ（作り直さない）
+ok 実行ロールの S3TablesCatalog は iceberg を選んだときだけ（Spark は証跡に書かなくなった。2026-10-02）、Spark のカタログの設定はいつも入る
+ok job_driver_json は sparkSubmit の 3 キー
+通過 271 / 失敗 0
+ok プロンプトに機器・種別・対象と、発生の時刻（JST）が入る
+ok プロンプトはまず root_cause で根本原因かどうかを確かめさせる
+ok impact は agent/topology.py と workflow/rules.py で同じ（ワーカーのイメージには agent/ が入らないので 2 か所に置く）
+ok 事前チェックの対応表は許可リストの処置を全部持つ
+ok heal-main の事前チェックは「上げる」と仮定して問題なし、冗長が戻る機器を出す
+ok check は何も変えないので問題なし、none は空
+ok 対象の回線がグラフに無ければ「確認できず」
+ok 対応表に無い処置は「確認できず」
+ok awsio.read_topology は機器（id・status・maintenance）と回線（両端・IF・status）を読む
+ok investigate は処置の事前チェックを finding に付ける
+ok トポロジを読めなくても調査は落とさず、「確認できず」を付ける
+ok 処置が none ならトポロジを読まず、事前チェックは空
+ok 保守中でなければ止めない
+ok アラートの機器が保守中なら止める
+ok 回線の相手が保守中でも止める（相手を止めればこちらの回線が落ちる）
+ok 別の回線の相手が保守中なら止めない
+ok プロンプトは直前の構成変更を recent_changes で見させる
+ok 承認タブの詳細は事前チェックを出す
+ok プロンプトは JSON 1 個を求め、action の 3 択を示す
+ok 応答の中の JSON を拾う（前後に文があっても）
+ok JSON が無ければ action=none で本文を理由に残す
+ok 壊れた JSON でも落ちない
+ok cause は 1000 字で切る
+ok heal-main は sudo lab heal-main
+ok check は sudo lab check
+ok 許可リストに無い処置は none でコマンド空（rm -rf / も fail-main も）
+ok ALLOWED_ACTIONS は lab/lab.sh のサブコマンド
+ok firing の link_down で、同じ発生の修復案が無ければ起こす
+ok 同じ発生の修復案がもうあれば起こさない（Grafana は同じ starts_at を repeat_interval ごとに送り直す）
+ok anomaly_id が無ければ起こさない
+ok link_down 以外（trap / bgp_down / isis_down）は起こさない
+ok resolved と、status の無いものは起こさない
+ok ワークフロー id は異常ごと（investigate-<anomaly_id>）、修復案の id は発生ごと（<anomaly_id>#<first_seen>）
+ok alerts_from_message は SNS に publish された JSON をアラートの list にする（anomaly_id = 機器#種類#対象、first_seen = starts_at）
+ok SNS の封筒（raw message delivery でない配り方）でも中身を読む
+ok 読めない本文・alerts が list でない本文は []
+ok 機器名は小文字の短い名前に（IPv4 はそのまま）、status は小文字に、starts_at が無ければ now、detail は 1000 字で切る
+ok 形の合わない要素（機器か種類が無い・status が firing / resolved でない・dict でない）は捨てる
+ok alert_count は alerts の要素を形にかかわらず数える（alerts_from_message との差が捨てた件数。封筒も開け、読めない本文は 0）
+ok Splunk のアラートアクションと Grafana のテンプレートは同じ 6 つの項目を出す
+ok rules.py は標準ライブラリ（json / re / datetime）しか読まない
+ok Gremlin の組み立て（_q / _un / gremlin）はもう無い（値は openCypher のパラメータで渡すので、エスケープが要らない）
+ok read_proposal は Neptune Analytics（label proposal）から 1 件読み、id を proposal_id にする（作るときの目印 _writer は出さない）
+ok awsio は異常の頂点（label anomaly）を読まない
+ok read_proposal は無ければ {}
+ok update_proposal は status / apply_output / updated_at を 1 つの map で書く（改行もそのままパラメータで渡る）
+ok update_proposal(only_status) は status の条件を同じ 1 本のクエリに入れる（読んでから書くあいだに割り込まれない）
+ok 書けなければ（空の結果）False
+ok write_proposal は None と空文字を落とし、無ければ作って property を map で書く（スカラーでない値は文字列に）
+ok write_proposal(only_new) は無いときだけ作る（作るときだけ書く目印が自分のものなら True）
+ok 既にあれば例外にせず False（人が決めた status を pending に戻さない）
+ok PyIceberg は S3 Tables の Iceberg REST に SigV4（署名名 s3tables）でつなぐ
+ok audit_rows は timestamptz を UTC の datetime に、ほかは文字列にする
+ok proposal_event の event_id は <proposal_id>#<event>、created の status は pending、detail は 4000 字で切る
+ok 知らない出来事は ValueError（証跡の event を増やすときは PROPOSAL_EVENTS に足す）
+ok status に出てくる出来事は全部 PROPOSAL_EVENTS にある
+ok append_proposal_events は空なら何もしない（pyiceberg を読まない）
+ok alert_event の event_id は <anomaly_id>#<source>#<status>#<starts_at の epoch 秒>
+ok alert_event の列は ALERT_EVENT_COLUMNS と同じ順、時刻は ISO 8601 の UTC（マイクロ秒と Z）
+ok starts_at の無い通知は starts_at を null、event_id の末尾を 0 にする（機器の無い通知も行にする）
+ok ALERT_EVENT_COLUMNS の時刻は starts_at と received_at の 2 つで timestamptz
+ok ask_agent は読み取り 150 秒・botocore の再送なし（やり直しは Temporal に任せる）
+ok Runtime を InvokeAgentRuntime（qualifier DEFAULT、JSON の prompt、33 字以上の runtimeSessionId）で呼ぶ
+ok Runtime が error を返したら例外（Temporal が再試行する）
+ok worker.py は awsio / rules を imports_passed_through で読む
+ok worker.py に定数・アクティビティ 6 本・@workflow.defn の付いたワークフロー・シグナル 2 本・starter がそろっている
+ok 異常の頂点を見るアクティビティ（get_anomaly / still_open / anomaly_resolved）と、表を見る starter はもう無い
+ok 承認は pending のときだけ書く 1 本のクエリ（条件と書き込みが同じ文）
+ok pending でなければエラーの文で返す（例外にしない）
+ok approved / rejected 以外は弾く
+ok proposal_id が空なら弾く
+ok 一覧は status で絞って updated_at の新しい順に読み、JST の列を足す
+ok all は status で絞らない
+ok get_proposal は 1 件
+ok Neptune が無ければ案内だけ返す
+ok ツールの既定は all（履歴）
+ok device_id はクエリの中で絞る（絞ってから LIMIT を数える）
+ok 承認・却下はツールに出さない（人が画面の承認タブで決める）
+ok JSON の応答はそのまま
+ok SSE は data: 行の JSON-RPC を採る
+ok 空の応答は {}
+ok Gateway の <target>___<tool> を短い名前にして Converse の toolSpec にする
+ok Gateway の URL が無ければツール一覧は空（app.py はコンテナ内の関数に戻す）
+ok Gateway に無いツールの call はエラーの辞書
+ok tools.json の 13 個は topology / evidence / proposals の TOOL_SPECS と同じ名前（list_anomalies は 2026-10-02 にやめた）
+ok evidence のツールは search_logs / query_metrics / query_history
+ok evidence.HISTORY_COLUMNS は rules.ALERT_EVENT_COLUMNS の列名と同じ順
+ok handler は topology / evidence / proposals のツールを名前で振り分ける
+ok list_devices の引数と必須が Python と同じ
+ok list_devices の説明が Python と同じ
+ok neighbors の引数と必須が Python と同じ
+ok neighbors の説明が Python と同じ
+ok blast_radius の引数と必須が Python と同じ
+ok blast_radius の説明が Python と同じ
+ok root_cause の引数と必須が Python と同じ
+ok root_cause の説明が Python と同じ
+ok what_if の引数と必須が Python と同じ
+ok what_if の説明が Python と同じ
+ok topology_graph の引数と必須が Python と同じ
+ok topology_graph の説明が Python と同じ
+ok layers の引数と必須が Python と同じ
+ok layers の説明が Python と同じ
+ok2026-10-04 19:55:26,860 INFO root tool=list_devices args={"site": "dc1"}
+ recent_changes の引数と必須が Python と同じ
+ok recent_changes の説明が Python と同じ
+ok centrality の引数と必須が Python と同じ
+ok centrality の説明が Python と同じ
+ok search_logs の引数と必須が Python と同じ
+ok search_logs の説明が Python と同じ
+ok query_metrics の引数と必須が Python と同じ
+ok query_metrics の説明が Python と同じ
+ok query_history の引数と必須が Python と同じ
+ok query_history の説明が Python と同じ
+ok list_proposals の引数と必須が Python と同じ
+ok list_proposals の説明が Python と同じ
+ok tools.json の型は string / integer だけ（Gateway の inline schema が受ける形）
+ok Lambda は client_context のツール名から <target>___ を外す
+ok list_devices を静的トポロジで答える（devices.json / yaml のどちらでも）
+ok 知らないツールはエラーの辞書
+ok ファイルは versions / providers / variables / locals / proposals / iam / ecs / gateway / outputs
+ok graph と analytics の state は try で読む（無くても apply できる）
+ok base/core の state をローカルから読む
+ok pipeline/lab の state をローカルから読む
+ok base/ecr の state をローカルから読む
+ok agent の state をローカルから読む
+ok main の出力 vpc_id がある
+ok main の出力 instance_subnet_id がある
+ok main の出力 security_group_ids がある
+ok main の出力 runtime_role_name がある
+ok main の出力 web_role_name がある
+ok agent の出力 agent_runtime_arn を try で読み、無ければ precondition で止まる（terraform/agent を先に apply）
+ok graph の出力 graph_id / graph_arn を読む（Neptune Analytics。届く道は土台の neptune-graph-data のエンドポイント）
+ok analytics の出力（テーブルバケット・namespace・proposal_events）を読む
+ok stream の state は読まない（異常はアラートとして SQS から届く）
+ok 土台の出力 alerts_topic_arn を try で読み、無ければ購読の precondition で止まる（2026-10-02 より前の土台）
+ok lab の出力 lab_instance_id がある
+ok ecr の出力 worker_repository_url / temporal_repository_url がある
+ok ECS のタスクは Fargate の ARM64
+ok temporal コンテナは start-dev を SQLite で動かし、gRPC 7233 は 127.0.0.1 だけで待ち、UI の 8233 だけを 0.0.0.0 に出す（2026-09-29）
+ok temporal コンテナの portMappings は UI の 8233 だけ（7233 は出さない。ワーカーは同じタスクの localhost）
+ok worker は temporal の後に起き、localhost:7233 につなぐ
+ok worker の環境変数 NEPTUNE_GRAPH_ID を渡す
+ok worker の環境変数 AUDIT_TABLE_BUCKET_ARN を渡す
+ok worker の環境変数 AUDIT_NAMESPACE を渡す
+ok worker の環境変数 PROPOSAL_EVENTS_TABLE を渡す
+ok worker の環境変数 ANOMALY_QUEUE_URL を渡す
+ok worker の環境変数 AGENT_RUNTIME_ARN を渡す
+ok worker の環境変数 LAB_INSTANCE_ID を渡す
+ok worker の環境変数 APPROVAL_TIMEOUT_MINUTES を渡す
+ok worker の環境変数 VERIFY_TIMEOUT を渡す
+ok worker の環境変数 HOLD_MINUTES を渡す
+ok worker の環境変数 PARAM_PREFIX を渡す
+ok worker のコンテナに渡す環境変数は全部 worker.py / awsio.py が読む（読まれない: []）
+ok タスクロールは Runtime の InvokeAgentRuntime と lab への ssm:SendCommand（AWS-RunShellScript だけ）
+ok DynamoDB はもう使わない（修復案の「いま」は Neptune、証跡は S3 Tables）
+ok タスクロールは Neptune の読み書きと、証跡テーブルの PutTableData / UpdateTableMetadataLocation
+ok タスクと Lambda は土台の workflow / lambda の SG を使い、SG もルールも作らない（ルールは土台の通信の表。2026-09-29）
+ok graph と analytics が無ければ precondition で止まる（ワーカーが起きてから Neptune / 証跡に届かず落ちるより先に）
+ok Runtime と Web のロールに Gateway の権限を足す
+ok 修復案を決める専用の IAM（decide_access）はもう無い
+ok Gateway は AWS_IAM 認可の MCP で、2025-06-18 を話す
+ok Gateway のターゲットは tools.json から inline schema を作る
+ok tools Lambda は python3.13 arm64 で、handler.py / toolkit / topology / evidence / proposals / graph / data を zip にする（anomalies は入れない）
+ok tools.zip は入れたモジュールが import する agent/ のモジュールを全部入れる（足りない: []）
+ok tools Lambda は VPC の中（Neptune / OpenSearch / Prometheus に届く）で、OPENSEARCH_ENDPOINT / PROMETHEUS_QUERY_URL を渡す
+ok tools Lambda に ATHENA_WORKGROUP / ATHENA_CATALOG / HISTORY_NAMESPACE / ALERT_EVENTS_TABLE を渡す（値は analytics の出力）
+ok tools Lambda に渡す環境変数は全部 zip のモジュールが読む（読まれない: []）
+ok query_history の IAM は analytics があるときだけ（dynamic）で、athena はワークグループ、s3tables のテーブルの読み取りは alert_events だけ（読むだけ）
+ok tools Lambda のロールの Neptune は読むだけ（WriteDataViaQuery は付けない）
+ok tools Lambda のロールに aoss:APIAccessAll と aps:QueryMetrics、コレクションの data access policy
+ok SQS（anomalies）は土台の SNS トピックを raw message delivery で購読し、DLQ は 5 回で（購読の配信失敗も同じ DLQ へ）
+ok キュー 2 つのポリシーは sns.amazonaws.com の SendMessage をそのトピックに絞る
+ok EventBridge のルールはもう無い（Spark の検知と一緒にやめた。2026-10-02）
+ok タスクロールは SQS の ReceiveMessage / DeleteMessage
+ok workflow はエンドポイントを持たない（SQS / S3 Tables / AgentCore へは土台のインターフェース型エンドポイント。2026-09-28）
+ok 閉域: 実行ロール・タスクロール・tools Lambda に perimeter を付け、キュー 2 つと Gateway は VPC の外からの呼び出しを拒む
+ok output に anomaly_queue_url / anomaly_dlq_url / tools_function_name があり、anomaly_rule_name は無い
+ok Gateway の URL を SSM の gateway-url に書く
+ok aws_iam_role の description は ASCII だけ
+ok Fargate のタスクは 1 vCPU / 2 GB が既定（≒ $0.05/h）
+ok ログの保持期間を書く
+ok mcp_client は SigV4 のサービス名 bedrock-agentcore で署名する
+ok agent/app.py は Gateway のツールを先に、無ければコンテナ内の関数を使う
+ok agent/Dockerfile は toolkit.py / mcp_client.py / proposals.py を入れる
+ok workflow/Dockerfile は非 root で worker.py を打つ
+ok workflow/Dockerfile は *.py をまとめて入れる
+ok workflow/requirements.txt は temporalio / boto3 / pyiceberg[pyarrow]（証跡の append）を固定する
+ok terraform/base/ecr は worker / temporal のリポジトリを作る
+ok web は app / config / chat / topology_view / incident_view / nautobot_api に分かれる
+ok app.py には行頭の import gradio がある（user_data の置き間違い検出が見ている）
+ok Web のタブはチャット / トポロジ / 承認の 3 つ（異常一覧は無い）
+ok Web に「承認」タブがあり、名前と「読んだ」のチェックを添えて proposals.decide で approved / rejected を書く
+ok 承認・却下の結果はボタンの下の pr_result に出す（表の上の pr_msg は 30 秒ごとの描き直しが上書きし、押しても何も起きないように見える）
+ok main の upload_web_command は Web が import する agent のモジュールを全部上げる（足りない: []）
+ok up.sh の WORKFLOW=1 は AGENT と PIPELINE が要り、SKIP_LAB / SKIP_STREAM / SKIP_ANALYTICS があれば止まる
+ok deploy-env.sh の読めるキーは機能の 3 つ + CREATE_KB + TF_VERBOSE で、古いキー（PHASE / SINKS / WITH_*）は持たない
+ok up.sh の WORKFLOW=1 はアラートの送り手（Grafana のアラートか Splunk）が無ければ止まる
+ok starter は SQS を 20 秒の long polling で待ち、ANOMALY_QUEUE_URL が無ければ起動で止まる（表を見る経路はもう無い）2026-10-04 19:55:26,870 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: pending (action=heal-main)
+2026-10-04 19:55:26,870 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: approved
+2026-10-04 19:55:26,870 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: apply sudo lab heal-main -> Success
+2026-10-04 19:55:26,870 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: verified (0s)
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: pending (action=heal-main)
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: approved
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: apply sudo lab heal-main -> Success
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: not resolved after 300s
+2026-10-04 19:55:26,871 INFO wf anomaly hq-ce-01#link_down#eth1: failed。解消の通知を待つ（1440 分まで）
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: pending (action=heal-main)
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: obsolete（承認を待つあいだに解消した）
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: pending (action=heal-main)
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: obsolete（承認を待つあいだに解消した）
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: pending (action=heal-main)
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: approved
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: obsolete（承認のあいだに異常が解消した）
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: pending (action=heal-main)
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: approved
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: apply sudo lab heal-main -> Error
+2026-10-04 19:55:26,871 INFO wf anomaly hq-ce-01#link_down#eth1: failed。解消の通知を待つ（1440 分まで）
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: pending (action=heal-main)
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: approved
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: apply sudo lab heal-main -> Failed
+2026-10-04 19:55:26,871 INFO wf anomaly hq-ce-01#link_down#eth1: failed。解消の通知を待つ（1440 分まで）
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: pending (action=heal-main)
+2026-10-04 19:55:26,871 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: rejected
+2026-10-04 19:55:26,871 INFO wf anomaly hq-ce-01#link_down#eth1: rejected。解消の通知を待つ（1440 分まで）
+2026-10-04 19:55:26,872 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: pending (action=heal-main)
+2026-10-04 19:55:26,872 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: rejected
+2026-10-04 19:55:26,872 INFO wf anomaly hq-ce-01#link_down#eth1: rejected。解消の通知を待つ（1440 分まで）
+2026-10-04 19:55:26,872 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: pending (action=heal-main)
+2026-10-04 19:55:26,872 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: approved
+2026-10-04 19:55:26,872 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: apply sudo lab heal-main -> Success
+2026-10-04 19:55:26,872 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: verified (0s)
+2026-10-04 19:55:26,872 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: pending (action=heal-main)
+2026-10-04 19:55:26,872 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: expired
+2026-10-04 19:55:26,872 INFO wf anomaly hq-ce-01#link_down#eth1: expired。解消の通知を待つ（1440 分まで）
+2026-10-04 19:55:26,872 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: pending (action=none)
+2026-10-04 19:55:26,872 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: approved
+2026-10-04 19:55:26,872 INFO wf proposal hq-ce-01#link_down#eth1#1700000000: verified (0s)
+2026-10-04 19:55:26,874 INFO worker skip hq-ce-01#link_down#eth1: 保守中の機器（hq-ce-01）
+2026-10-04 19:55:26,874 INFO worker started investigate-hq-ce-01#link_down#eth1 (grafana)
+2026-10-04 19:55:26,875 INFO worker started investigate-hq-ce-01#link_down#eth1 (splunk)
+2026-10-04 19:55:26,875 INFO worker started investigate-hq-ce-01#link_down#eth2 (splunk)
+2026-10-04 19:55:26,875 WARNING worker starter: 読めないメッセージ（消す）: garbage
+2026-10-04 19:55:26,876 INFO worker resolved investigate-hq-ce-01#link_down#eth1 (splunk)
+2026-10-04 19:55:26,876 WARNING worker starter: RPCError: temporal に届かない（メッセージは残す）
+2026-10-04 19:55:26,877 WARNING worker starter: RuntimeError: temporal に届かない（メッセージは残す）
+2026-10-04 19:55:26,877 WARNING worker starter: OSError: Neptune に届かない（メッセージは残す）
+2026-10-04 19:55:26,877 WARNING worker starter: 読めないメッセージ（消す）: garbage
+
+ok up.sh は workflow ルートを足し、費用に 5 セント足す（Fargate だけ。sqs のエンドポイントは無くなった）
+ok up.sh は worker を buildx でビルドし、temporalio/temporal を ECR にミラーする
+ok up.sh の TEMPORAL_TAG は terraform/workflow の temporal_image_tag の既定値と同じ
+ok up.sh は workflow を apply して services-stable を待ち、Temporal UI のポートフォワーディングを案内する
+ok down.sh は workflow を最初に消す（必須変数はダミーで渡す）
+ok check.sh は workflow ルートとこのテストを見て、.py は名指しせず find で全部見る
+ok deploy.env.example は AGENT=1 / PIPELINE=0 / WORKFLOW=0 を既定にし、CREATE_KB を説明する（古い PHASE の行は載せない）
+ok down.sh は VPC の Lambda を持つルート（workflow / graph）を消す間、その関数の available な ENI だけを裏で消す（2026-09-18）
+ok terraform の出力は tf_logged で絞り、全文を ops/logs に残す。TF_VERBOSE=1 で全部出す。up.sh と down.sh の両方が通す
+ok tf_logged は TF_VERBOSE=1 の枝でも全文を ops/logs に残す
+ok down.sh は 1 ルートが消えなくても止まらず、残りを消してから最後にまとめて出す（止まると後ろの EC2 が動いたまま残る）
+ok terraform/agent のファイルは versions / providers / variables / locals / runtime / kb / outputs（network.tf は 2026-09-26 に無くなった）
+ok Runtime / ガードレール / KB は terraform/agent にあり、terraform/base/core には無い。agent にエンドポイントも SG も無く、Runtime は土台の runtime の SG を使う
+ok KB のコレクションは公開せず、土台の VPC エンドポイントと Bedrock のサービスからだけ。人の ARN はデータアクセスポリシーに入らない（2026-09-28）
+ok KB のベクトルインデックスは VPC の中の Lambda（agent/kb_index.py）が作り、KB はその後に作る。Lambda は CreateIndex / DescribeIndex だけ
+ok up.sh は KB か logs のコレクションがあるときだけ base/core に create_opensearch_endpoint=true を渡す（費用 +3 セント）
+ok KB は create_knowledge_base（既定 false）の count で作り、Runtime は KB があるときだけ KNOWLEDGE_BASE_ID を受ける
+ok Runtime の ARN は agent が SSM に書き、web はそれを読む（main は runtime_arn を user_data に渡さない）
+ok agent は web のロールに InvokeAgentRuntime を付け、main の runtime ロールにポリシーを足す
+ok 閉域: Runtime のリソースポリシーは VPC の外からの InvokeAgentRuntime を拒み、apply した人は外す（deploy.md の CLI の確認が通る）
+ok down.sh は Runtime の ENI が残るあいだ VPC・サブネット・runtime の SG を残して他を消す（aws_security_group.internal は 2026-09-29 より前の state）
+ok up.sh は base/core の state に 2026-09-29 より前の SG（aws_security_group.internal）があれば、ECR より前に止めて先に down.sh を打たせる
+ok SG の ID を読む 6 ルートは try で読み（古い state のまま down.sh の destroy が通る）、base/core の state に security_group_ids が無ければ apply の前に止める
+ok down.sh は agent を lab の後、main の前に消し、ロググループ名を agent の state から読む
+ok up.sh は main の後に agent を apply し、CREATE_KB のときだけ手順書を取り込む
+ok 承認待ちの wait_condition は TimeoutError を握って表を見直す（漏らすとワークフロー失敗）
+ok 承認タブの注記はワークフローが Temporal であることを言い、表は折り返し、id は表から選べる
+ok up.sh 4-2 は web/*.py を全部置く（app.py が import する ['chat', 'config', 'incident_view', 'topology_view'] を含む）
+ok Web の起動確認は is-active（落ちて再起動するまでの数秒も active）ではなく 8080 を聞いているかで見る
+ok lab の状態の照合は 1 つの空白で区切った lab=active containers=N をそのまま探す（空白を 2 つ要る形だと合わない）
+ok 承認→打つ→解消のシグナルが届いたら verified（待つのは VERIFY_TIMEOUT 秒まで。握り直しはしない）
+ok investigate にはアラートの dict をそのまま渡し、put_proposal にはワークフローの id と実行の id も渡す
+ok investigate の start_to_close は 4 分（AgentCore の読み取り 150 秒 1 回分が収まる）
+ok apply_on_lab は 1 回しか打たない（maximum_attempts=1）
+ok 打ったあと VERIFY_TIMEOUT 秒のうちに解消のシグナルが来なければ failed を書き、そのあと解消を待って id を握る（HOLD_MINUTES 分まで）
+ok 承認を待つ前に解消していれば、判断を読まずに obsolete（握らない）
+ok 承認を待つあいだに解消したら打たずに obsolete
+ok 承認と同時に解消していれば、判断は証跡に残して打たずに obsolete
+ok apply_on_lab の失敗（ActivityError）はワークフローを落とさず failed を書く（approved のまま残さない）。確かめは待たず、id は握る
+ok コマンドが失敗を返したときも failed（確かめは待たない）
+ok 却下なら何もしない（判断は record_decision で証跡に残す）。同じ異常の次の通知でもう一度調べないよう id は握る
+ok シグナルで approved が来ても、web が先に rejected を書いていれば（record_decision が返す方）打たない
+ok シグナル decide で決まれば頂点を見ずに進む（record_decision に via_signal = True）
+ok 時間切れは expired を書く（証跡は set_status が残す）。id は握る
+ok 処置なし（action = none）は打たずに applied を書き、解消を待つ
+ok シグナル decide は approved / rejected 以外を無視する
+ok put_proposal は <anomaly_id>#<first_seen> を only_new で書き、送り手と detail と実行の id を残して、証跡に created を足す
+ok 既にある修復案がこの実行の書いたもの（書けたあとで再試行）なら、それを使って進む
+ok 同じワークフロー id でも別の実行（run_id が違う）の修復案なら再試行しない失敗（上書きしない）
+ok 別のワークフローの修復案なら再試行しない失敗（上書きしない）
+ok record_decision（web が決めた）は頂点を書かず、決めた人ごと証跡に残す
+ok シグナルで決めたときは pending のときだけ頂点に書き、効いた方（web が先なら web の判断）を返して残す
+ok set_status は頂点を書き、証跡に apply_output を detail として残す
+ok 保守中の機器の link_down ではワークフローを起こさない（例外にしない = 通知は消す）
+ok firing の link_down は、異常ごとの id（investigate-<anomaly_id>）でワークフローを起こし、アラートの dict を渡す
+ok 1 通に 2 件あれば 2 つ起こす（送り手も渡す）
+ok link_down 以外（trap / bgp_down / isis_down）と読めない本文は、起こさずシグナルも送らない（例外にもしない = 消す）
+ok 同じ発生（<anomaly_id>#<first_seen>）の修復案がもうあれば起こさない（閉じたあとで届いた、同じ starts_at の繰り返しの通知）
+ok resolved はそのワークフローへシグナル resolved を送り、起こさない
+ok resolved の相手が走っていない（NOT_FOUND）のは普通のこと（link_down 以外・もう閉じた）なので消す
+ok それ以外の RPC の失敗は消さずに残す（解消のシグナルを落とすと verify が時間切れで failed になる）
+ok もう起きている（WorkflowAlreadyStartedError = 同じ異常の繰り返し・重複配達）なら消す（残すと DLQ で本物の失敗と混ざる）
+ok それ以外の失敗は消さずに残す（可視性タイムアウトのあとで配り直し、5 回で DLQ）
+ok Neptune に届かないときも消さない
+ok 読めない本文と、起こさない種類のアラートは消す
+ok 名前が無ければ書かない（表と選択もそのまま）
+ok 承認ボタンは名前とチェックがそろうまで押せず、足りないものを文字で出す
+ok 承認のチェックは承認ボタンの真上（同じ Column）にあり、チェックと名前が変わるたびにボタンを描き直す
+ok 状態は表示だけ日本語で、ラジオの値・一覧に渡す値は英語のまま（Neptune の status と同じ）
+ok 承認は「読んだ」のチェックが無ければ書かない
+ok proposal_id が空なら書かない
+ok 名前は空白を詰めて「<名前> (web)」で decided_by に残し、選択は空に戻す（続けて押しても別の行に書かない）
+ok 却下はチェック無しで通り、名前は 40 字で切る
+ok Temporal UI（8233）は土台の通信の表の web → workflow の 1 行で、workflow にはルールも Web の SG の参照も無く、7233 の行は無い
+ok 修復案の status に obsolete がある（tools.json の説明も）
+通過 272 / 失敗 0
+ok アラートアクションは標準ライブラリだけで動く（Splunk の Python に boto3 は無い）
+ok device map は「別名=機器名」をカンマで並べたもの。別名は小文字にし、= の無い要素と片方が空の要素は捨てる
+ok 機器名は device map を引き、無ければ小文字にしてドメインを落とす（IPv4 は落とさない）
+ok 受け手（rules.device_name）も同じ規則で揃える（device map を通ったあとの名前はそのまま通る）
+ok starts_at は epoch 秒の整数にする（小数は切り捨て、読めない値と負の値は 0）
+ok 結果の 1 行 = アラート 1 件。機器か種類が無い行と、status が firing / resolved でない行は捨てる
+ok アラートの項目は 6 つで、detail は 1000 字で切る
+ok 本文は {"source": "splunk", "alerts": […]} の JSON 1 通（空白を入れない）
+ok 50 件ごとに 1 通に分ける（SNS の本文は 256 KB まで）。0 件なら何も送らない
+ok 受け手（rules.alerts_from_message）がそのまま読める: anomaly_id は <機器>#<種類>#<対象>、starts_at が無ければ受けた時刻
+ok 結果のファイル（gzip の CSV。Splunk が results_file で渡す）を行の dict にする（余分な列は無視、改行とカンマ入りの値も読む）
+ok entrypoint.sh がファイルに写す環境変数は、アラートアクションが読むもの（ENV_KEYS）と同じ並び
+ok entrypoint.sh は写したあと上流の入口へ exec する（引数はそのまま）、ファイルは splunk ユーザーが読める（umask 022）
+ok 認証情報そのもの（AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN）はファイルに写さない
+ok entrypoint.sh を実際に走らせる: 6 行の KEY=VALUE を書き、他の環境変数（SPLUNK_PASSWORD など）は写さない
+ok load_env はそのファイルを読む（値の中の = とカンマはそのまま、空の値は入れない）
+ok プロセスの環境変数に同じ名前があればそちら（知らない名前は読まない）。ファイルが無くても落ちない
+ok SigV4 の署名（時刻を固定した既知の答え。botocore 1.43.94 の SigV4Auth と同じ値）
+ok 一時的な認証情報の token はヘッダーに入れて署名にも含める。token が無ければヘッダーごと無い
+ok 秘密鍵は署名の計算にだけ使い、ヘッダーには出ない
+ok botocore の SigV4Auth と同じ署名になる（同じ時刻・同じ本文）
+ok リージョンはトピックの ARN から取る（ARN で分からないときだけ AWS_REGION）
+ok HTTP はプロキシの環境変数を見ない opener で出す（認証情報の口は 169.254.170.2、SNS は VPC のエンドポイント）
+ok 認証情報は ECS のタスクロールの口（http://169.254.170.2 + AWS_CONTAINER_CREDENTIALS_RELATIVE_URI）から取る
+ok 口が無い（タスクロールが付いていない）ときは理由を言って止まる。アクセスキーの環境変数へは逃げない
+ok publish は SNS の Query API へ POST する（トピックのリージョンのエンドポイント、Action=Publish、本文はアラートの JSON）
+ok publish のリクエストは SigV4 で署名してある（token 付き）
+ok AWS_ENDPOINT_URL_SNS があればそこへ送る（手元で偽の SNS に向けて試すとき）
+ok 2 通とも 1 回で送れれば待たない
+ok 失敗したら認証情報を取り直して送り直す（1 通につき 3 回まで。待ちは 1 秒、2 秒）
+ok 3 回とも失敗した通は諦めて次の通へ進む（送れた通数を返す）
+ok 失敗のログに認証情報は出ない
+ok 送り直しの回数と待ちの定数
+ok main: 結果のファイルを読んで publish し、0 で終わる（件数を 1 行で残す）
+ok main: Splunk のセッションキーはログに出さない
+ok main: --execute 以外では何もしない（1）
+ok main: トピックの ARN が無ければ送らずに 2（理由を ERROR で残す）
+ok main: 送れなかった通があれば 2（Splunk の sendmodalert に失敗として残る）
+ok main: 結果のファイルが無い・JSON が壊れているなどは traceback を出さずに 3
+ok main: 行が 0 件なら何も送らずに 0
+ok 保存済みサーチは 3 つ（gNMI の BGP / IS-IS、trap、trap を時間で閉じる）
+ok どのサーチも毎分走り、遅れても飛ばさず（realtime_schedule = 0）、結果が 1 行でもあれば全部の行をまとめて 1 回アクションへ渡す（digest）。抑制はしない
+ok アクションは netops_sns だけ（メールや webhook は付けない）
+ok どのサーチも _raw だけにしてから spath で項目を取る（KV_MODE = json の項目に spath を重ねると多値になって 1 行も出ない）
+ok どのサーチも最後は table device kind target status detail starts_at（アラートアクションが読む列）
+ok 窓は索引に入った時刻で切る（直前の 1 分を 10 秒手前にずらして 1 回だけ読む。イベントの時刻の窓 dispatch.earliest_time は広く取る）
+ok イベントは source で選ぶ（Spark の splunk_events が telegraf:<measurement> を付ける）。index は決め打ちしない（SPLUNK_INDEX で変わる）
+ok 機器は tags.sysName > tags.agent_host > tags.source（gNMI と trap は IP。アラートアクションが DEVICE_MAP で名前に直す）
+ok gNMI: BGP は session_state が established 以外で bgp_down、IS-IS は oper_state が up 以外で isis_down（対象ごとに最後の状態 1 つ）
+ok gNMI: target は BGP がピアのアドレス、IS-IS が IF 名（status Lambda の set_layer_status が引く名前）
+ok trap: OID は先頭を .1. に揃える（MIB が無いと Telegraf は iso.3.6… と書く）
+ok trap: 機器が起きた知らせ（coldStart / warmStart / nsNotifyShutdown / nsNotifyRestart）は異常にしない
+ok trap: linkDown は link_down の firing、linkUp は resolved。それ以外は kind = trap（target は trap の OID）の firing
+ok trap: IF は varbind の ifName > ifDescr > ifIndex（名前でも数値 OID でも、末尾の ifIndex 付きでも拾う。似た OID は拾わない）
+ok trap の解消: link の trap は対象にしない（linkUp が閉じる）。その機器から link 以外の trap が 10 分来なければ、機器ごとにまとめて resolved
+ok trap の解消の target は trap の firing と同じ（OID）なので、同じ anomaly_id を閉じる
+ok サーチが出す kind は受け手が知っているものだけ（link_down はワークフローを起こし、bgp_down / isis_down / trap は status だけ）
+ok アラートアクションの定義: カスタム、標準入力は JSON、Python 3
+ok spec（README/*.conf.spec）がある（無いと btool check が知らない設定として警告する）
+ok app は有効で、画面には出さない。サーチ・アクション・props は全体へ export する（HEC のイベントは他の app の文脈でも読める）
+ok props: telegraf:* の source は JSON として読む（画面で tags.* / fields.* を使えるように）
+ok app の中に認証情報や local/ は無い（公開リポジトリ）
+ok Splunk のイメージは上流の公式イメージに app と入口を足すだけ（RUN は無い = arm64 の PC でも QEMU 無しでビルドできる）
+ok up.sh の SPLUNK_VERSION / GRAFANA_VERSION は Dockerfile の ARG の既定値と同じ
+ok up.sh は Splunk と Grafana のイメージを <版>-<ディレクトリのハッシュ> のタグでビルドする（中身を変えたら別のタグ。Splunk は amd64、Grafana は arm64）
+ok Splunk のタスクはトピックの ARN と device map を環境変数で受け、タスクロールは土台のトピックへの sns:Publish だけを足す
+ok device map（lab/lab_topology.py --device-map）は管理 IP と回線の IP を機器名に引ける形で、アラートアクションがそのまま読む
+ok Grafana の本文の項目は Splunk のアラートアクションと同じ 6 つ（同じ順）、source は grafana
+ok Grafana の本文は埋めたあと JSON になる（テンプレートの構文は全部埋まる。値の中の " も壊さない）
+ok 受け手がそのまま読める: Grafana の link_down は Splunk の linkDown trap と同じ anomaly_id（同じ障害は 1 つのワークフロー）
+ok $ は二重にしない（$$ と書くと Grafana 13.2.2 が起動しない）。${…} は連絡先の環境変数 2 つだけ
+ok ルール: ifOperStatus が 2 の IF を link_down にする（ループバック・管理ポート・サブ IF・admin down は見ない。値で判定するので直れば次の評価で解消）
+ok ルールのメトリクス名とラベルは Spark が AMP に書く名前（snmp_<measurement>_<field>、tag はそのままラベル）で、データソースは uid: amp
+ok データが無い・クエリが失敗したときは直前の状態のまま（分からないときに発火も解消もしない）
+ok ルールは kind: link_down のラベルを付ける（本文の kind。ワークフローが起きる種類）
+ok 連絡先は SNS（鍵は書かない = タスクロールで SigV4）。解消も送る
+ok 通知ポリシー: IF ごとに 1 通、発火はすぐ、解消は 30 秒以内、直らないあいだは 4 時間ごとに送り直す
+ok Grafana のイメージは provisioning を持ち、SigV4 を既定の認証情報（タスクロール）で使う
+ok Grafana のタスクはトピックの ARN を環境変数で受け、タスクロールは土台のトピックへの sns:Publish だけを足す
+ok start.sh: アラートの定義は PROMETHEUS_URL と ALERTS_TOPIC_ARN の両方があるときだけ並べる（ルールは AMP を読み、連絡先はトピックへ送る）
+ok トピックは土台（base/core）に 1 つ（<接頭辞>-alerts）、保存時の暗号化は AWS 管理の鍵
+ok トピックのポリシー: 許すのはこのアカウントだけ（Principal に * の Allow は無い）
+ok 閉域（network_perimeter）のとき、VPC の外からの sns:Publish を拒む（拒むのは Publish だけ）
+ok 土台は alerts_topic_arn を出し、閉域の IAM 側の Deny に sns:* がある（events:* はもう無い）
+ok 送り手（analytics）と受け手（workflow / graph）は土台の state からトピックを読む（古い土台なら apply の前に理由を言って止まる）
+ok 受け手は 2 つ: SQS（raw message delivery。ワークフロー）と Lambda（status）
+ok EventBridge のルールと Spark からの put_events はどこにも無い
+ok check.sh は tests/ の test_*.py を全部走らせる（このテストも）
+ok check.sh の構文検査は .py のあるディレクトリを全部見る（splunk/ のアラートアクションと graph/ の Lambda も）
+通過 89 / 失敗 0
+OK: 索引がもうあれば PUT しない（created False）
+OK: 無ければ body を PUT して created True
+403 denied（反映待ち）。10 秒後に打ち直す
+0 timed out（反映待ち）。10 秒後に打ち直す
+OK: 403（ポリシーの反映待ち）と 0（届かない）は 10 秒おきに打ち直す
+OK: PUT が resource_already_exists_exception なら作られたものとして返す
+OK: それ以外の 400 は打ち直さずに落とす
+OK: HEAD の 5xx は落とす
+OK: 残り時間が次の 1 回分（45 秒）を切ったら 403 でも落とす
+通過 7 / 失敗 0
+ok ContainerlabVersion の既定値 = terraform/pipeline/lab の containerlab_version = ops/lab-common.sh の CONTAINERLAB_VERSION
+ok SrlinuxImageTag の既定値 = terraform/pipeline/lab の srlinux_image_tag = ops/lab-common.sh の SRLINUX_TAG
+ok MultitoolImageTag の既定値 = terraform/pipeline/lab の multitool_image_tag = ops/lab-common.sh の MULTITOOL_TAG
+ok InstanceType / VolumeSize / ImageId / AutoStartLab の既定値は terraform/pipeline/lab と同じ
+ok InstanceType の選べる値は terraform の検査と同じ（arm64 の t4g だけ）
+ok ops/lab-common.sh の TELEGRAF_VERSION = telegraf/Dockerfile の ARG の既定値
+ok ops/up.sh と ops/lab-debug.sh は ops/lab-common.sh を source し、lab の版を自分では持たない
+ok イメージの作り方（ミラー・Telegraf のビルド・lab/ の置き方）は lab-common.sh の関数を両方が呼ぶ
+ok lab-debug.sh は既定値の無いパラメータと版を全部渡す（版は lab-common.sh から）
+ok ロールの Sid は iam.tf と同じ（TelegrafAddress は stream の NLB を読む forward 用なので、デバッグ用の EC2 には要らない）
+ok Sid ごとの Action は iam.tf と同じ
+ok ECR はこのスタックのリポジトリ 3 つ（lab の 2 つと Telegraf）だけを読む
+ok S3 は このスタックのバケットの lab/ だけ（GetObject と prefix 付きの ListBucket）
+ok SSM のマネージドポリシーと、NetworkPerimeter のときだけ境界の Deny（perimeter.tf と同じ Action と条件。SourceVpc はこのスタックの VPC）
+ok パラメータに土台から受け取るもの（サブネット・SG・バケット・境界ポリシー）が無い
+ok VPC はインターネットへの経路を持たない（IGW / NAT / 0.0.0.0/0 の経路が無く、サブネットはパブリック IP を付けない）
+ok エンドポイントは S3（gateway）と SSM で入る 2 本と ECR の 2 本だけ
+ok インターフェース型はどれも private DNS を有効にし、ポリシーは endpoints.tf と同じ「このアカウントのプリンシパルだけ」
+ok EC2 の SG は受信無し・送信 443 だけ。エンドポイントの SG は EC2 の SG からの 443 だけ受ける
+ok ECR のリポジトリはタグを上書きできず、スタックを消すとイメージごと消える（base/ecr の <接頭辞>-lab-* と別の名前）
+ok バケットは <接頭辞>-lab-debug-<アカウント>で、公開を全部止めて暗号化し、暗号化されていない経路を拒む
+ok lab-debug.sh のバケットとリポジトリの名前はテンプレートと同じ作り方（down は Outputs を読まずに空にできる）
+ok EC2 は CreateInstance=true のときだけ作り、そのときは TelegrafImageTag が要る（Rules）。エンドポイントができてから起こす
+ok lab-debug.sh up は初回に EC2 の無い器を作り、イメージと lab/ を置いてから EC2 を作る
+ok lab-debug.sh down はバケットを空にしてからスタックを消し、消えるのを待つ
+ok IMDSv2 必須・hop limit 1（コンテナから IMDS に届かせない）。instance.tf と同じ
+ok ルートは gp3・暗号化・EC2 と一緒に消える。パブリック IP は付けない
+ok Project と owner のタグ（Terraform の default_tags と同じ）を EC2 とロールに付ける
+ok UserData は terraform の user_data（tftpl）と、変数の置き換えとリポジトリの名前と TELEGRAF_IMAGE の行のほかは同じ
+ok UserData の ${…} はパラメータか疑似パラメータかこのスタックのバケットだけ（シェルの変数は $LAB と書く）
+ok TELEGRAF_IMAGE は lab の EC2 では空、デバッグ用の EC2 ではこのスタックのリポジトリ（<接頭辞>-debug-telegraf。stream と同じ作り方のイメージ）
+ok env のキーは 2 つの user_data と setup.sh の頭の一覧で同じ
+ok どちらも起動のたびに流し（cloud-config の always）、lab/ を置き直して setup.sh を exec する
+ok lab/ の置き場は upload_lab の宛先と同じ（s3://<バケット>/lab/）
+ok setup.sh は TELEGRAF_IMAGE があるときだけ Telegraf のユニットを作り、無ければ消す（lab の EC2 には残さない）
+ok setup.sh は lab のユニットを tftpl の前の版と同じ中身で作る（lab.sh up / down、20 分待つ）
+ok SINK の既定は kafka（MSK）。outputs.kafka が 5 つ（metrics / traps / gnmi / logs / mdt）で outputs.file は無い
+ok SINK=stdout は KAFKA_BROKERS が無くても描け、outputs.kafka が無く outputs.file（stdout / json）だけ。aws_config も書かない
+ok 入力（SNMP / trap / syslog / gNMI ...）と agent と health は kafka と stdout で同じ
+ok stdout の json は MSK に載るもの（outputs.kafka）と同じ形（秒の timestamp）
+ok 知らない SINK と、kafka で KAFKA_BROKERS が無いのは描かずに止まる
+ok syslog の形式の既定は RFC3164（本番の Cisco IOS）。SYSLOG_STANDARD=RFC5424 で lab の SR Linux 向けになり、ほかの値は描かずに止まる
+ok telegraf.conf.in の出力の区間は telegraf.sh の SINKS と同じ名前で、開きと閉じが対になる
+ok telegraf.conf.in の inputs.snmp（ポーリング）は「>>> snmp_poll」〜「<<< snmp_poll」の 1 区間に丸ごと入り、trap / gNMI / syslog は外にある
+ok SNMP_POLL の既定は 0: kafka でも stdout でも inputs.snmp が無く、trap / gNMI / syslog は残る（ログは snmp poll: off）
+ok gNMI は 2 つ（状態と lab の性能メトリクス）で、どちらも GNMI_TARGETS を宛先にする。MDT の受け口（57000/tcp）と Starlark の変換は kafka でも stdout でも入る
+ok SNMP_POLL=1 は inputs.snmp を残し、agents を SNMP_AGENTS で埋める（ifName をタグにした interface の表と system）
+ok SNMP_AGENTS を見るのは SNMP_POLL=1 のときだけ（無いか形が違えば止まる）。SNMP_POLL は 0 か 1 だけ
+ok tg test はポーリングを止めている（SNMP_POLL=0）と、SNMP_POLL=1 で起こし直すよう言って止まる
+ok telegraf.conf.in の役割の区間は telegraf.sh の ROLES と同じ名前で対になり、snmp_poll の区間は dialin の中にある
+ok TELEGRAF_ROLE=dialout は trap / syslog / MDT と syslog の rename だけ（gNMI・SNMP のポーリング・Starlark は無く、GNMI_TARGETS / SNMP_AGENTS は要らない）
+ok TELEGRAF_ROLE=dialin は gNMI 2 つ・SNMP のポーリング（SNMP_POLL=1 のとき）・Starlark だけ（trap / syslog / MDT の受け口は無い）
+ok どの役割でも出力（Kafka の 5 つと health）は同じ。知らない TELEGRAF_ROLE は描かずに止まる。既定（all）は両方の入力を持つ
+ok 受ける側（dialout）のタスクで tg test / tg gnmi を打つと、取りにいく側（telegraf-dialin）で打つよう言って止まる
+ok telegraf.conf.in は機器の認証情報を持たず、${GNMI_USERNAME} / ${GNMI_PASSWORD} / ${SNMP_COMMUNITY} で受ける（render した設定にも値は入らない）
+ok 取りにいく入力があるとき（all / dialin）は GNMI_USERNAME / GNMI_PASSWORD が無ければ止まり、SNMP_COMMUNITY は SNMP_POLL=1 のときだけ要る。dialout はどれも要らない
+ok lab の認証情報（containerlab の既定）は lab.sh と lab-common.sh で同じで、lab.sh telegraf run が Telegraf に渡す
+ok trap のポートは lab.sh と telegraf.sh で同じ（機器は 162 に送り、デバッグ用の EC2 は REDIRECT で Telegraf の待つポートへ）
+ok syslog のポートも lab.sh と telegraf.sh で同じ
+ok lab の SR Linux の syslog の形式は lab.sh の LOG_STANDARD = lab-common.sh の LAB_SYSLOG_STANDARD = RFC5424（Telegraf の既定 RFC3164 を上書きする）
+ok lab.sh telegraf run は同じイメージを host ネットワークで SINK=stdout で起こし、ポーリング先は up.sh と同じ lab_topology.py から作る
+ok lab.sh の forward は TELEGRAF_IMAGE があれば SSM の NLB を見ずに抜ける（デバッグ用の EC2 は stream を使わない）
+ok lab.sh pull は TELEGRAF_IMAGE があるときだけ Telegraf も引く
+ok ops/up.sh / ops/down.sh はデバッグ用の EC2 を作らない・消さない・見ない
+ok LAB_DEBUG は使わない。deploy.env に残っていれば up.sh が注意を出すだけ（deploy.env.example には無い）
+ok 土台だけなら up.sh は ECR のエンドポイントを作らない（LAB_DEBUG=1 が残っていても。デバッグ用の EC2 は自分の VPC のを使う）
+ok cfn_stack_status は「無い」（空・0）と「読めない」（認証切れなど。1）を分ける（読めないのを無いと扱うと、lab-debug.sh down が消さずに終わり、up が器を作り直そうとする）
+ok スタック名は <接頭辞>-lab-debug で、ロールとインスタンスプロファイルは lab の EC2（<接頭辞>-lab）と別の名前
+ok ops/lab-common.sh は bash として読める
+ok ops/lab-debug.sh は bash として読める
+ok ops/up.sh は bash として読める
+ok ops/down.sh は bash として読める
+ok lab/setup.sh は bash として読める
+ok lab/lab.sh は bash として読める
+ok telegraf/telegraf.sh は bash として読める
+通過 75 / 失敗 0
+neptune read failed, using static data: Missing Dependency: Using the login credential provider requires an additional dependency. You will need to pip install "botocore[crt]" before proceeding.
+ok seed: 機器は lab と同じ台数で、site と role が全部挙がる
+ok seed: 監視対象（enabled）の機器だけが gnmi と snmp の Service を持つ
+ok seed: LAG の親がメンバーより先に並び、親の type は lag
+ok seed: 管理 IP を持つ機器は、その IP のインタフェースがちょうど 1 つ mgmt
+ok seed: インタフェースの IP は全部、親の Prefix に入る
+ok parent_prefix: v4 は /24、v6 は /64
+ok interface_type
+ok 一周: 警告が出ない
+ok 一周: 機器が lab と同じ（device_id / site / role / mgmt_ip / asn / enabled / interfaces）
+ok 一周: 回線が lab と同じ（端・kind・role・bandwidth_mbps）
+ok 一周: gNMI の一覧が lab/lab_topology.py --gnmi-targets と同じ文字列（最初の同期で Telegraf を作り直さない）
+ok 一周: SNMP の一覧が lab/lab_topology.py --snmp-agents と同じ文字列
+ok targets のキーは terraform/pipeline/stream の出力のキーと同じ
+ok kind: spine が入れば fabric、スイッチどうしは l2、VM は LAG のメンバーなら lag・そうでなければ l2
+ok to_graph: a < b にそろえ、同じ機器どうし・知らない機器・重なった回線・名前の無い機器と重複した機器を落として警告する
+ok to_graph: asn の空文字は None、Service が無ければ enabled でない
+ok targets: 名前の順、Service の名前は大文字小文字を問わず protocol は合わせる、ポートは Service の値、管理 IP の無い機器は入らない
+ok targets: 機器が無ければ空文字（nb_sync が書かない）
+ok targets: IP でない管理 IP は通さない（telegraf.conf にそのまま入るので）
+ok push_targets: 同じなら SSM も ECS も触らない
+ok push_targets: 変わったものだけ String で上書きし、dialin を 1 回作り直す
+ok push_targets: 空の一覧は書かない（Telegraf が起動できなくなる）
+ok push_targets: force_redeploy なら変わっていなくても作り直す
+ok push_targets: 書き先が渡されていなければ何もしない
+ok sync: 機器が 1 台も無いときは Neptune を触らない（空で合わせると物理層が全部消える）
+ok sync: 機器があれば Neptune の物理層を合わせる
+ok sync: 変更履歴を Neptune に写す（新しい順。id の無い行は落とす。機器が無くても写す）
+ok change_rows: 機器名は小文字、差分は「項目: 前 → 後」（last_updated は出さない）、差分が無ければ空
+ok change_rows: 新しい順に CHANGES_KEEP 件まで
+ok to_graph: Status が Maintenance の機器だけ maintenance = true を持つ（ほかはキーごと無い）
+ok nb_sync.read は機器の Status を読み、read_changes は ObjectChange を新しい順に読む
+ok bootstrap: seed が失敗したら起動時の同期を飛ばし、JobHook は起動のたびに決まった形へ戻す
+ok bootstrap: Maintenance を機器の Status に選べるようにする（seed より前）
+ok 版: ops/up.sh の NAUTOBOT_VERSION = Dockerfile の ARG
+ok 版: ops/up.sh の REDIS_TAG = terraform の redis_image_tag の既定値
+ok Dockerfile が COPY するものを ops/up.sh の nautobot_context が集める
+ok lab_seed.json はリポジトリに置かない（毎回 lab の定義から作る）
+ok Job が import するモジュールが PYTHONPATH の先にそろう
+ok nb_sync が読む環境変数を Terraform がコンテナに渡す
+ok シークレットは SSM の SecureString から（タスク定義の secrets と RDS の write-only）。Terraform の変数に値を持たない
+ok ops/up.sh が作る SSM のシークレット = Terraform が読む名前
+ok SG とロールは base/core の nautobot / nautobot_db を使う
+ok Web が Nautobot の有無を読むパラメータ（<接頭辞>/nautobot/url）を Terraform が置く
+ok ops/down.sh は nautobot を graph と stream より先に消す（state を読む相手が残っているうちに）
+ok ops/down.sh は nautobot が消えなかったとき、その secrets を残す
+ok ops/up.sh: stream に一覧の持ち主を渡し、nautobot は graph の seed（7-3b）の後・analytics（7-4）の前
+ok ops/up.sh: エンドポイントに ecs（Job が dialin を作り直す）
+ok ops/check.sh が nautobot のルートとこのテストを回す
+ok Nautobot は PIPELINE=1 ならいつも作る（切り替える変数は無い）
+ok 前の deploy.env の NAUTOBOT で止まらない（読むだけ読んで注意を出す）
+ok デバッグ用の EC2 は Nautobot を使わない
+ok Web: Nautobot が無ければ今までどおり Neptune を編集できる
+ok Web: Nautobot があれば静的データの投入は止める（Job が上書きするので）
+ok Web: Nautobot があればリンクの追加は Nautobot に書く（無いインタフェースを作ってからケーブル。Neptune には書かない）
+ok Web: ケーブルのあるインタフェースには足さず、削除は相手の機器を確かめてからケーブルだけ消す
+ok Web: トークンは SecureString として読み（decrypt）、API のユーザーは bootstrap が同じ環境変数から作る
+ok API のトークンは worker のコンテナには渡さない
+ok Web: Neptune が無いときの案内は今までどおり
+
+58 項目すべて通過
+
+すべて通過

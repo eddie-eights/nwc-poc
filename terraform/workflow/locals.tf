@@ -112,6 +112,13 @@ locals {
   proposal_events_table_name = try(data.terraform_remote_state.analytics.outputs.proposal_events_table_name, "")
   proposal_events_table_arn  = try(data.terraform_remote_state.analytics.outputs.proposal_events_table_arn, "")
 
+  # アラートの通知の履歴（alert_events。graph の status Lambda → Firehose が書く）を query_history が Athena で読む。
+  # analytics が無いか 2026-10-04 より前の analytics なら空で、ツールは「未配備」を返す
+  athena_workgroup        = try(data.terraform_remote_state.analytics.outputs.athena_workgroup, "")
+  athena_catalog          = try(data.terraform_remote_state.analytics.outputs.athena_catalog, "")
+  alert_events_table_name = try(data.terraform_remote_state.analytics.outputs.alert_events_table_name, "")
+  alert_events_table_arn  = try(data.terraform_remote_state.analytics.outputs.alert_events_table_arn, "")
+
   opensearch_collection_name = try(data.terraform_remote_state.analytics.outputs.opensearch_collection_name, "")
   opensearch_collection_arn  = try(data.terraform_remote_state.analytics.outputs.opensearch_collection_arn, "")
   opensearch_endpoint        = try(data.terraform_remote_state.analytics.outputs.opensearch_collection_endpoint, "")

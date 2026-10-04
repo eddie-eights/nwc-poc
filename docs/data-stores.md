@@ -6,15 +6,15 @@
 
 ## データの置き場
 
-この PoC で「何を・どこに・なぜ」置いているかのまとめ。2026-09-24 に DynamoDB をやめ、「いま」は Neptune、履歴と証跡は S3 Tables に寄せた。2026-10-02 に検知を Spark から Grafana と Splunk へ移し、異常の頂点と `anomaly_events` をやめた（5 に経緯）。**障害の履歴の置き場はまだ決めていない。**
+この PoC で「何を・どこに・なぜ」置いているかのまとめ。2026-09-24 に DynamoDB をやめ、「いま」は Neptune、履歴と証跡は S3 Tables に寄せた。2026-10-02 に検知を Spark から Grafana と Splunk へ移し、異常の頂点と `anomaly_events` をやめた（5 に経緯）。2026-10-04 にアラートの通知の履歴を S3 Tables の `alert_events` に置くことにした。
 
 ### 1. 置き場は 2 つ（+ 見るための写し 2 つ）
 
 | データ | 置き場 | 書く | 読む |
 |---|---|---|---|
-| 生データの履歴（metrics / gnmi / mdt / traps / logs の全部） | S3 Tables（Iceberg）`snmp_metrics` | Spark の `iceberg` | まだ読む側が無い（エージェントの `query_history` は Athena 未配備のため案内だけ返す） |
+| 生データの履歴（metrics / gnmi / mdt / traps / logs の全部） | S3 Tables（Iceberg）`raw_telemetry` | Spark の `iceberg` | まだ読む側が無い（`query_history` が読むのは下の `alert_events`） |
 | 異常の「いま」 | 置かない。機器・回線・層の `status`（下の 2 行）と、Grafana / Splunk のアラートの状態で見る | — | — |
-| 障害の履歴（開いた・閉じた） | **未定**。いまは Grafana / Splunk のアラートの履歴で見る（どちらもタスクと一緒に消える） | — | — |
+| 障害の履歴（アラートの通知 1 件が 1 行。発火と解消） | S3 Tables `alert_events` | Lambda `graph-status` → Firehose（60 秒ごとにまとめて追記） | エージェントの `query_history`（Athena） |
 | 修復案の「いま」（pending → approved …） | Neptune の頂点 `proposal`（id は `<anomaly_id>#<first_seen>`） | worker、Web の承認タブ | worker、Web の承認タブ、エージェントの `list_proposals` |
 | 修復案の証跡（作成・承認・却下・適用・確認） | S3 Tables `proposal_events` | worker（PyIceberg） | まだ読む側が無い（証跡） |
 | トポロジと、機器・回線の状態（物理層） | Neptune の頂点 `device` / `interface`、辺 `link` | 投入スクリプト、Lambda `graph-status`（アラートの `link_down` / `trap`） | エージェントの `neighbors` / `blast_radius` / `topology_graph`、Web の「トポロジ」タブ |
@@ -28,12 +28,14 @@
 ```mermaid
 flowchart LR
   MSK["MSK<br/>metrics / gnmi / mdt / traps / logs"] --> SPARK["Spark<br/>EMR Serverless"]
-  SPARK -->|"全部 append"| ICE["S3 Tables<br/>snmp_metrics"]
+  SPARK -->|"全部 append"| ICE["S3 Tables<br/>raw_telemetry"]
   SPARK --> PROM["Prometheus"] --> GRAF["Grafana<br/>アラートルール"]
   SPARK -.->|"STORES の splunk"| SPL["Splunk<br/>保存済みサーチ"]
   GRAF -->|"firing / resolved"| SNS["SNS<br/>prefix-alerts"]
   SPL -.-> SNS
   SNS --> GL["Lambda graph-status"] -->|"status"| NEP["Neptune<br/>トポロジ + proposal"]
+  GL -->|"通知 1 件で 1 行"| FH["Firehose"] --> AEV["S3 Tables<br/>alert_events"]
+  AEV -->|"Athena"| QH["エージェントの<br/>query_history"]
   SNS --> SQS["SQS"] --> WK["Temporal worker"]
   WK <-->|"proposal"| NEP
   WK -->|"1 段ごとに 1 行"| PEV["S3 Tables<br/>proposal_events"]
@@ -45,34 +47,36 @@ flowchart LR
 `sudo lab fail-main` でアクセス側 Leaf の fabric（`dc1-leaf-01 ethernet-1/1`）を落としたときの流れ（送り手が Grafana の構成。`STORES` は既定の `s3,grafana` のまま、`SNMP_POLL=1` にしたとき）。既定の `SNMP_POLL=0` ではポーリングをしないので 1〜3 が起きず、`STORES` に `splunk` が無い（既定）ままならアラートは出ない。`STORES` に `splunk` があれば、1〜3 の代わりに linkDown の trap が `traps` に載り、Splunk の保存済みサーチが同じ id の `link_down` を SNS に出す（4 から先は同じ）。
 
 1. **ポーリング（10 秒ごと）:** Telegraf が `ifOperStatus=down` を拾い、MSK の `metrics` に出す。
-2. **Spark:** `iceberg` が行をそのまま `snmp_metrics` に追記し、`prometheus` が同じ値を Prometheus に書く。どちらも up か down かを判断しない。
+2. **Spark:** `iceberg` が行をそのまま `raw_telemetry` に追記し、`prometheus` が同じ値を Prometheus に書く。どちらも up か down かを判断しない。
 3. **Grafana:** ルール `link_down` が 30 秒ごとに `ifOperStatus` を見て、down の IF を `firing` として SNS のトピック `<prefix>-alerts` に出す。異常の id は `dc1-leaf-01#link_down#ethernet-1/1`。ここでは頂点も行も書かない。
-4. **Lambda `graph-status`:** SNS から受け取り、Neptune の IF の頂点の `status` を `DOWN` にする。`STORES` に `splunk` があれば、同じ回線の IS-IS の隣接が Splunk の `isis_down`（gNMI）で届き、頂点 `dc1-leaf-01#isis#ethernet-1/1.0` も `DOWN` になる。
+4. **Lambda `graph-status`:** SNS から受け取り、Neptune の IF の頂点の `status` を `DOWN` にする。`STORES` に `splunk` があれば、同じ回線の IS-IS の隣接が Splunk の `isis_down`（gNMI）で届き、頂点 `dc1-leaf-01#isis#ethernet-1/1.0` も `DOWN` になる。同じ通知を Firehose にも送り、60 秒ほどで `alert_events` に `firing` の行が入る（event_id は `<anomaly_id>#<source>#<status>#<starts_at の epoch 秒>`）。
 5. **worker:** SQS から受け取り、異常ごとに Temporal のワークフロー `investigate-<anomaly_id>` を起こす。
 6. **修復案:** worker が Neptune に `proposal` の頂点を `pending` で置き（id は `<anomaly_id>#<first_seen>`。`first_seen` はアラートの `starts_at`）、`proposal_events` に `created` を足す。
    Web で承認すると頂点が `approved` になり、worker がそれを拾って `approved` の行を足す。`heal-main` を打つと `applied`、解消の通知が届くと `verified` の行が続く。
-7. **回復:** Grafana が `resolved` を出す。Lambda が IF の `status` を `UP` に戻し、worker は走っているワークフローにシグナル `resolved` を送る。
+7. **回復:** Grafana が `resolved` を出す。Lambda が IF の `status` を `UP` に戻し、`alert_events` に `resolved` の行を足す。worker は走っているワークフローにシグナル `resolved` を送る。
 
-障害が開いた・閉じたこと自体は、どこにも行として残らない（置き場は未定）。残るのは修復の流れで、`proposal_events` の `proposal_id`（`<anomaly_id>#<first_seen>`）で 1 回の発生をまとめて追える。
+障害が開いた・閉じたことは `alert_events` に通知の行として残る。Lambda は重複を落とさないので、Grafana の 4 時間ごとの送り直しや、Grafana と Splunk の両方から来た分もそのまま行になる。開いた・閉じたの組み合わせは読む側で作る。修復の流れは `proposal_events` の `proposal_id`（`<anomaly_id>#<first_seen>`）で 1 回の発生をまとめて追える。
 
 ### 3. なぜこの分け方か
 
 | 置き場 | 向いていること | この PoC で使っている機能 |
 |---|---|---|
 | Neptune | つながりをたどる。頂点 1 つの「いま」を書き換える | 隣接と影響範囲（`blast_radius`）の探索。`MATCH … WHERE n.status = 'pending' SET …` を 1 本の openCypher にした条件付き更新（人が決めた status を上書きしない） |
-| S3 Tables（Iceberg） | 大量の追記と、後からの集計。安い | Spark の append、worker の PyIceberg の append |
+| S3 Tables（Iceberg） | 大量の追記と、後からの集計。安い | Spark の append、worker の PyIceberg の append、Firehose の Iceberg 宛て、Athena の SELECT |
 
 - **「いま」と証跡を分ける:** 頂点は書き換わるので、それだけでは「いつ誰が承認したか」が後から追えない。変わるたびに S3 Tables に 1 行足し、上書きしない。
-- **Web と Iceberg:** Web は Iceberg を読まない。Athena もまだ配備していないので、S3 Tables は書くだけの状態。
+- **Web と Iceberg:** Web は Iceberg を読まない。読むのはエージェントの `query_history`（Athena のワークグループ `<prefix>-history` で `alert_events` だけ）。`raw_telemetry` と `proposal_events` はまだ書くだけの状態。
 
 ### 4. 気を付けること
 
 - **Neptune が止まっても検知は止まらない:** 見つけるのは Grafana と Splunk で、Neptune を読まない。止まるのは `status` の更新（Lambda）、修復案の読み書き（worker と Web の承認タブ）、トポロジのツール。そのあいだのアラートは SQS に残り、worker が 5 回受け取っても処理できなければ DLQ へ行く。
 - **承認・却下を書けるのはコードの上だけ:** Neptune の IAM は頂点ごとに絞れず、Runtime と Web のロールはどちらも書ける。チャットから決めさせないのは、`decide` をツールに出していないから（HITL の線はコードで引いている）。
-- **証跡は二重に入ることがある:** Spark の読み直しやアクティビティの再試行で同じ行がもう一度入る。集計するときは `event_id` で重複を落とす。
+- **証跡は二重に入ることがある:** Spark の読み直しやアクティビティの再試行で同じ行がもう一度入る。`alert_events` も、Lambda が Neptune への書き込みで失敗するか、Neptune の途中で timeout するとやり直し（最大 2 回）で同じ通知を送り直す。集計するときは `event_id` で重複を落とす（`query_history` はそうしている）。
+- **`alert_events` は欠けることがある:** Firehose に 3 回送っても届かなかった行は、Lambda を落とさずに `ALERT_EVENT_LOST` の ERROR でログに残すだけ（`status` の正しさを優先する。[pipeline.md](pipeline.md) の「アラートの履歴」）。`device_id` か `kind` の無い通知と、`starts_at` が範囲外で行を組めない通知も行にしない（`ALERT_DROPPED` の WARNING）。行は Neptune より先に送るので、Neptune が遅くても応答しなくても履歴は残る。`status` は遅れる、または失敗してやり直す（[pipeline.md](pipeline.md) の「アラートの履歴」）。
+- **`alert_events` の `starts_at` は送り手で意味が違う:** Grafana は発火した時刻で、`resolved` の行も発火の時刻を持ったまま来る。Splunk は保存済みサーチの `latest(_time)` で、その状態を最後に見た時刻（`resolved` なら戻った時刻）。いつ届いたかは `received_at`（Lambda が受けた時刻）で見る。
 - **worker が止まっているあいだの承認:** Web で承認した事実は頂点にあるが、`proposal_events` の `approved` の行は worker が拾ったときに書く。worker が起きないまま時間が過ぎると、証跡に承認が残らない。Temporal の履歴はタスクと一緒に消える。
-- **`ops/down.sh` は証跡も消す:** テーブルバケットごと消えるので、`proposal_events` も残らない。残したいときは消す前に書き出す。
-- **`STORES` に `s3` が無くてもテーブルバケットはできる:** 証跡の置き場なのでいつも作る（生データの `snmp_metrics` だけが `STORES` の `s3` に従う）。
+- **`ops/down.sh` は証跡も消す:** テーブルバケットごと消えるので、`proposal_events` も `alert_events` も残らない。残したいときは消す前に書き出す。
+- **`STORES` に `s3` が無くてもテーブルバケットはできる:** 証跡の置き場なのでいつも作る（生データの `raw_telemetry` だけが `STORES` の `s3` に従う）。
 
 ### 5. 経緯: DynamoDB をやめた（2026-09-24）
 
@@ -89,16 +93,18 @@ flowchart LR
 3. **修復案:** Neptune の頂点 `proposal`。条件付き書き込みはグラフの問い合わせ 1 本（当時は Gremlin の `fold().coalesce(unfold(), addV(...))` と `has('status','pending')`。2026-10-04 からは openCypher の `MERGE` と `WHERE n.status = 'pending'`）で置き換えた。
 4. **修復案の証跡:** worker が S3 Tables の `proposal_events` に 1 段ごとに追記する。
 
-**2026-10-02: 異常の頂点と `anomaly_events` をやめた。** 検知とアラートの相関を Grafana と Splunk に寄せ、Spark の `detect`（上の 1 と 2、EventBridge への発火）を消した。Neptune にはネットワークトポロジの情報だけを置く方針で、機器・回線・層の動的な `status` はトポロジに含める。修復案（上の 3 と 4）はこの方針から外れるが、障害の履歴と一緒に置き場を決めるまでそのまま動かしている。
+**2026-10-02: 異常の頂点と `anomaly_events` をやめた。** 検知とアラートの相関を Grafana と Splunk に寄せ、Spark の `detect`（上の 1 と 2、EventBridge への発火）を消した。Neptune にはネットワークトポロジの情報だけを置く方針で、機器・回線・層の動的な `status` はトポロジに含める。修復案（上の 3 と 4）はこの方針から外れるが、置き場を決めるまでそのまま動かしている。
 
-| | 以前（DynamoDB あり） | 2026-09-24 から | 2026-10-02 から |
-|---|---|---|---|
-| 置き場の数 | 3 つ（+ 写し 2 つ） | 2 つ（+ 写し 2 つ） | 同じ |
-| 異常の「いま」 | DynamoDB | Neptune の頂点 `anomaly` | 置かない（`status` とアラートの状態で見る） |
-| 障害の履歴 | 無い | `anomaly_events` | 未定（Grafana / Splunk のアラートの履歴） |
-| 修復案の証跡 | 無い（1 行を上書き） | `proposal_events` | 同じ |
-| 費用 | DynamoDB は放置中ほぼ $0 | ほとんど変わらない（S3 Tables の小さな追記だけ） | 同じ |
-| Neptune が止まったとき | トポロジだけ見えない | 検知の書き込みも異常一覧も止まる | `status` の更新と修復案が止まる（検知は止まらない） |
+**2026-10-04: 障害の履歴を `alert_events` に置いた。** すべてのアラートを SNS で受ける Lambda `graph-status` が、Neptune に書くのと同じ通知を Firehose に送り、Firehose が S3 Tables に追記する（Temporal には書かせない。MSK のトピックも足さない）。エージェントの `query_history` が Athena で読む。
+
+| | 以前（DynamoDB あり） | 2026-09-24 から | 2026-10-02 から | 2026-10-04 から |
+|---|---|---|---|---|
+| 置き場の数 | 3 つ（+ 写し 2 つ） | 2 つ（+ 写し 2 つ） | 同じ | 同じ |
+| 異常の「いま」 | DynamoDB | Neptune の頂点 `anomaly` | 置かない（`status` とアラートの状態で見る） | 同じ |
+| 障害の履歴 | 無い | `anomaly_events` | 未定（Grafana / Splunk のアラートの履歴） | `alert_events`（アラートの通知 1 件が 1 行） |
+| 修復案の証跡 | 無い（1 行を上書き） | `proposal_events` | 同じ | 同じ |
+| 費用 | DynamoDB は放置中ほぼ $0 | ほとんど変わらない（S3 Tables の小さな追記だけ） | 同じ | VPC エンドポイントが 2 本増える。Firehose と Athena は量に比例で、PoC では小さい |
+| Neptune が止まったとき | トポロジだけ見えない | 検知の書き込みも異常一覧も止まる | `status` の更新と修復案が止まる（検知は止まらない） | 同じ（行は Neptune より先に送るので `alert_events` は残る。Neptune がエラーを返すか応答しないまま timeout すると Lambda のやり直しになり、行は二重に入る） |
 
 ### 6. コードの入口
 
@@ -106,7 +112,9 @@ flowchart LR
 |---|---|
 | 検知（アラートのルール、保存済みサーチ、SNS への publish） | [grafana/provisioning/alerting/netops.yaml](../grafana/provisioning/alerting/netops.yaml)、[splunk/netops_alerts/](../splunk/netops_alerts/) |
 | アラートのトピックと、本文の読み方 | [terraform/base/core/alerts.tf](../terraform/base/core/alerts.tf)、[workflow/rules.py](../workflow/rules.py) の `alerts_from_message` |
-| 証跡のテーブル（`proposal_events`） | [terraform/pipeline/analytics/tables.tf](../terraform/pipeline/analytics/tables.tf) |
+| 証跡と履歴のテーブル（`proposal_events` / `alert_events`） | [terraform/pipeline/analytics/tables.tf](../terraform/pipeline/analytics/tables.tf) |
+| 障害の履歴の書き込みと読み出し（Firehose、Athena のワークグループ） | [terraform/pipeline/analytics/history.tf](../terraform/pipeline/analytics/history.tf)、[graph/status_handler.py](../graph/status_handler.py) の `send_history`、[agent/evidence.py](../agent/evidence.py) の `query_history` |
+| 履歴の 1 行の形 | [workflow/rules.py](../workflow/rules.py) の `alert_event` |
 | 修復案の頂点と証跡（Terraform 側の説明と IAM） | [terraform/workflow/proposals.tf](../terraform/workflow/proposals.tf)、[terraform/workflow/iam.tf](../terraform/workflow/iam.tf) |
 | worker の読み書き（openCypher と PyIceberg） | [workflow/awsio.py](../workflow/awsio.py) |
 | 証跡の 1 行の形 | [workflow/rules.py](../workflow/rules.py) の `proposal_event` |
@@ -316,6 +324,8 @@ Telegraf・Spark が「どのブローカーにつなぐか」をどう知るか
 
 - **同じアラートが 2 回 SNS に出ても、障害の履歴は二重にならない。**
   starts_at は、サーチを回した時刻ではなく、元のイベントの時刻から取っている。同じイベントから出た通知は `event_id` が同じになり、読むときに 1 行になる。
+- **starts_at の無い通知は、別の回の発生でも 1 行にまとまる。**
+  starts_at が無いか読めない（無限大を含む）と `event_id` の末尾が `#0` になり、同じ異常・送り手・状態の別の発生も読むときに 1 行になる。いまの送り手は starts_at を付けるので起きない見込み（cycle 001 の design.md のリスク 12）。
 - **Splunk の中の重複は、アラートの判定を変えない。**
   保存済みサーチは「最後の状態」や「状態が変わったか」で判定している。同じイベントが 2 つあっても結果は同じ。
 
