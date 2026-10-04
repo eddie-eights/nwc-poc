@@ -4,7 +4,9 @@
 
 - **いまの構成は、できる限り AWS のマネージドサービスで作る。**自分で立てるのは、マネージドに相当するものが無いか、このアカウントで使えないものだけ（下の表の「自分で立てているもの」）。
 - **最終的には、いまの構成とは別に、マネージドの部分を OSS に置き換えた版も作る。**いまの構成を書き換えるのではなく、並べて持つ。
-- OSS 版はまだ作っていない。何に置き換えるかも未定（決めたらこのページに書く）。
+- OSS 版はまだ作っていない。置き換え先は 2026-10-04 に決めた（下の表）。設計は [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md)。
+- **OSS にするのは、下の表で置き換え先を書いた 5 つだけ。**ほかはマネージドのまま使う。
+- **5 つ以外の道具は、商用で使えるライセンスなら OSS でなくてよい。**
 
 ## OSS 版を作る目的
 
@@ -18,21 +20,27 @@
 
 | 役割 | いま（AWS マネージド） | OSS 版 |
 |---|---|---|
-| エージェントの実行と入口 | Bedrock AgentCore（Runtime、Gateway） | 未定 |
-| モデルとガードレール | Bedrock（Amazon Nova 2 Lite、ガードレール） | 未定 |
-| 手順書の検索 | Bedrock のナレッジベース + OpenSearch Serverless | 未定 |
-| Kafka | MSK | 未定 |
-| ストリーム処理 | EMR Serverless（Spark） | 未定 |
-| 生データの表 | S3 Tables（Iceberg） | 未定 |
-| ログの検索 | OpenSearch Serverless | 未定 |
-| メトリクス | Amazon Managed Service for Prometheus | 未定 |
-| トポロジのグラフ | Neptune Analytics（openCypher。中心性と連結成分は `neptune.algo.*`） | 未定（アルゴリズムは NetworkX などで置き換える） |
-| Nautobot の DB | RDS | 未定 |
-| コンテナの実行 | ECS Fargate | 未定 |
-| アラートの配送 | SNS、SQS、Lambda | 未定 |
-| ログ | CloudWatch Logs | 未定 |
-| 設定とシークレット、踏み台 | SSM（パラメータ、Session Manager） | 未定 |
-| 閉域 | VPC エンドポイントと `aws:SourceVpc` の Deny | 未定 |
+| エージェントの実行と入口 | Bedrock AgentCore（Runtime、Gateway） | 変えない（マネージドのまま） |
+| モデルとガードレール | Bedrock（Amazon Nova 2 Lite、ガードレール） | 変えない（マネージドのまま） |
+| 手順書の検索 | Bedrock のナレッジベース + OpenSearch Serverless | 変えない（マネージドのまま） |
+| Kafka | MSK | Apache Kafka（KRaft）を ECS に 3 台。データは EFS |
+| ストリーム処理 | EMR Serverless（Spark） | Apache Spark を ECS に（格納先ごとに 1 タスク） |
+| 生データの表 | S3 Tables（Iceberg） | 変えない（マネージドのまま） |
+| ログの検索 | OpenSearch Serverless | OpenSearch を ECS に 3 台、レプリカ 1。データは EFS。候補として VictoriaLogs を残す |
+| メトリクス | Amazon Managed Service for Prometheus | VictoriaMetrics のクラスターを ECS に（vminsert 1、vmselect 1、vmstorage 3、複製数 2）。データは EFS |
+| トポロジのグラフ | Neptune Analytics（openCypher。中心性と連結成分は `neptune.algo.*`） | Neo4j Community Edition を ECS に 1 台。アルゴリズムは GDS（動かなければ NetworkX） |
+| Nautobot の DB | RDS | 変えない（マネージドのまま） |
+| コンテナの実行 | ECS Fargate | 変えない（マネージドのまま） |
+| アラートの配送 | SNS、SQS、Lambda | 変えない（マネージドのまま） |
+| ログ | CloudWatch Logs | 変えない（マネージドのまま） |
+| 設定とシークレット、踏み台 | SSM（パラメータ、Session Manager） | 変えない（マネージドのまま） |
+| 閉域 | VPC エンドポイントと `aws:SourceVpc` の Deny | 変えない（マネージドのまま） |
+
+**Neo4j のクラスターについての注意**
+
+- クラスターは Neo4j Enterprise Edition だけの機能で、Community Edition では組めない。OSS 版の中で、Neo4j だけは 1 台で動く。
+- 止まっているあいだは、トポロジの表示、status の更新、エージェントのトポロジの検索ができない。
+- データはタスクの一時領域にある（Neo4j は NFS を非対応と明記している）。タスクが入れ替わると消えるので、Nautobot と lab の定義から同期し直す。
 
 自分で立てているもの（マネージド版でも OSS か自前のコンテナ）: Telegraf、Grafana、Temporal、Nautobot、containerlab（lab）、Splunk（OSS ではないが、VPC の中の ECS に自分で立てている）。
 Amazon Managed Grafana は、このアカウントに IAM Identity Center が無くて使えないので Grafana OSS にしている（[deploy.md](deploy.md)）。
