@@ -1,4 +1,4 @@
-# Grafana OSS のコンテナ（terraform/pipeline/analytics の ECS。Fargate の arm64）。ops/up.sh の手順 2 が GRAFANA=1 のときビルドして ECR の <接頭辞>-grafana に置く。
+# Grafana OSS のコンテナ（terraform/pipeline/analytics の ECS。Fargate の arm64）。ops/up.sh の手順 2 が Grafana を作るとき（SINK_PROMETHEUS か SINK_OPENSEARCH があるとき）ビルドして ECR の <接頭辞>-grafana に置く。
 # Amazon Managed Grafana は IAM Identity Center（か SAML の IdP）が要り、このアカウントには無いので使えない（2026-09-28）。
 # 上流の公式イメージに、AMP と OpenSearch のデータソースのプラグイン・データソースとダッシュボードの定義（provisioning/）・入口（start.sh）を足す。
 # タスクは VPC の外へ出られない（NAT が無い）ので、プラグインはビルドのときに入れておく。/var/lib/grafana は上流で VOLUME なので、

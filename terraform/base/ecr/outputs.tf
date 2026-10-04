@@ -29,7 +29,7 @@ output "telegraf_repository_url" {
 }
 
 output "grafana_repository_url" {
-  description = "Build grafana/ (arm64) and push it here with tag <Grafana version>-<hash of grafana/> (step 2 of ops/up.sh, GRAFANA=1). terraform/pipeline/analytics runs it on ECS."
+  description = "Build grafana/ (arm64) and push it here with tag <Grafana version>-<hash of grafana/> (step 2 of ops/up.sh, when SINK_PROMETHEUS or SINK_OPENSEARCH is on). terraform/pipeline/analytics runs it on ECS."
   value       = aws_ecr_repository.pipeline["grafana"].repository_url
 }
 

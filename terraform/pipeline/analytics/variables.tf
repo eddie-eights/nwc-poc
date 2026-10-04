@@ -188,7 +188,7 @@ variable "splunk_ephemeral_storage_gib" {
 
 # ---------------------------------------------------------------- grafana (grafana.tf)
 variable "create_grafana" {
-  description = "Run Grafana OSS on ECS (grafana.tf) with the Prometheus workspace and the OpenSearch logs collection as data sources. Opened through an SSM port forward via the web EC2. ops/up.sh sets it with GRAFANA=1. Needs prometheus or opensearch in sinks"
+  description = "Run Grafana OSS on ECS (grafana.tf) with the Prometheus workspace and the OpenSearch logs collection as data sources. Opened through an SSM port forward via the web EC2. ops/up.sh sets it whenever SINK_PROMETHEUS or SINK_OPENSEARCH is on. Needs prometheus or opensearch in sinks"
   type        = bool
   default     = false
 }
