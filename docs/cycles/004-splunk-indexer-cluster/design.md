@@ -86,7 +86,7 @@ flowchart LR
    Splunk の index は、`indexes.conf` に `repFactor = auto` と書いたものだけが複製される。書かなければ、クラスターにしても複製されない。HEC の token の既定の index は `main` なので、`main` に付ける。`SPLUNK_INDEX` で別の index を使うときは、その index も同じ設定で作る。
    - 入れ方: cluster manager が indexer に配る設定（manager の `manager-apps/_cluster/local/indexes.conf`）に書く。indexer に同じ `indexes.conf` を配るのが、Splunk の決まった形。
 2. **indexer 同士と、manager・search head との間のポートを開ける。**
-   いまの SG は 8089 を開けていない（terraform/base/core の security_groups.tf の冒頭「開けていないもの: … Splunk の管理 API 8089（外から使わない）」）。`splunk` から `splunk` へ、8089（管理と検索）と 9887（複製）を足す。**いつも作る**（base/core は `SPLUNK_AZ_NUM` を知らない層なので、1 台のときも規則だけはある。同じ SG の中だけの通信で、1 台のときは相手がいない）。9997（forwarder の受け口）は、手元の確認で要ると分かったときだけ足す。
+   いまの SG は 8089 を開けていない（terraform/base/core の security_groups.tf の冒頭「開けていないもの: … Splunk の管理 API 8089（外から使わない）」）。`splunk` から `splunk` へ、8089（管理と検索）と 9887（複製）を足す。**いつも作る**（base/core は `SPLUNK_AZ_NUM` を知らない層なので、1 台のときも規則だけはある。同じ SG の中だけの通信で、1 台のときは相手がいない）。9997（forwarder の受け口）も足す。search head と manager は、自分の `_internal` と `_audit` を 9997 で indexer へ送っている（手元で確認）。docs にある `index=_internal` の調べ方は、この転送があるから動く。
 3. **クラスターの合言葉（pass4SymmKey）を 4 つのタスクに同じ値で渡す。**
    `ops/up.sh` が SSM の SecureString `/<接頭辞>/splunk/idxc-secret` に乱数で作り、タスク定義の `secrets` で渡す。4 つは、3 のときは 5 つ。値は Terraform も state も持たない（管理者のパスワードと HEC の token と同じやり方）。
 
@@ -127,6 +127,38 @@ flowchart LR
 | 複製のポート | 9887 |
 | indexer の一覧 | manager と search head に `SPLUNK_INDEXER_URL` が要るかもしれない。A レコードが複数ある名前 1 つで足りるかは分からない |
 | 1 台のときの `SPLUNK_INDEX` | 1 台でも効いていないかもしれない（index を作る処理が無く、HEC が 400 を返す、というエンジニアの見立て）。手元で確かめ、本当なら別の小さい修正にする（このサイクルには入れない） |
+
+### 手元の確認で分かったこと（2026-10-04、エンジニアセッションが Docker の 4 台で確認）
+
+期待どおりだったもの: 役の分け方（`SPLUNK_ROLE`）、複製（RF と SF を満たす）、1000 件の検索、indexer を 1 台止めても 1000 件、空の indexer を足すと 73 秒で複製が戻る、保存済みサーチは search head だけ、アラートは 1 通だけ、1 台構成の回帰（11 件）。
+
+設計を変えるもの:
+
+| 分かったこと | 設計への反映 |
+|---|---|
+| `main` の `repFactor = auto` は、manager の既定の設定に入っている | `indexes.conf` を自分で書かない |
+| `SPLUNK_INDEXER_URL` に名前を 1 つ入れると、複製の数が 1 になる（上流の ansible が、名前の数と指定の小さいほうにする） | `SPLUNK_INDEXER_URL` は付けない |
+| indexer が止まるまで 47 秒かかる。Fargate の既定は 30 秒で、途中で強制終了になる | indexer のタスク定義に `stopTimeout = 120` |
+| search head と manager は 9997 で indexer へログを送る | SG に 9997 を足す（上の 2） |
+| 起動に 6 分半かかる | healthCheck の猶予（600 秒）に収まる。変えない |
+| 1 台からクラスターに切り替えると、空のクラスターから始まる | docs に書く |
+
+### indexer が前と同じ IP で入れ替わったときの手当て
+
+- **起きること。**
+  indexer のタスクが入れ替わって前と同じ IP をもらうと、search head は古い indexer の GUID のままその IP を持ち続け、新しい indexer への検索が 401 になる。検索は成功を返し、警告も出ない。その indexer に入ったイベントは見えず、アラートは黙って落ちる（手元で 2 回再現）。
+- **直り方。**
+  search head を起こし直すと直る。ただし、落としたアラートはあとからは出ない（保存済みサーチは「索引に入った時刻」の 1 分の窓を 1 回しか読まない）。
+- **手当て（こちらで決めた。A と B の両方）。**
+  - A. search head のヘルスチェックに突き合わせを足す。manager が「Up」と言っている peer（GUID）が、search head の distributed peers で Down か、GUID が違うなら unhealthy にする。ECS が search head を入れ替える。
+    - indexer が本当に落ちているだけのとき（manager も Down と言っている）は、unhealthy にしない。
+    - 1 回の食い違いでは unhealthy にしない。続けて 3 回（healthCheck の `retries`）食い違ったときだけにする。indexer の起動の途中で search head が入れ替わるのを防ぐ。
+    - manager に問い合わせられないときは、unhealthy にしない（manager が落ちただけで search head まで入れ替えない）。
+  - B. `ops/up.sh` の全タスク待ちのあとに、同じ突き合わせを 1 回行う。食い違っていたら、止めて理由を出す。
+- **やらない案。**
+  indexer の GUID を台ごとに固定する（`instance.cfg` を書く）。同じ GUID の台が入れ替わったときの Splunk の動きが読めない。
+- **残る弱さ。**
+  A が効くまでの数分と、search head が入れ替わっている数分は、アラートが落ちる。あとから出し直す仕組みは、このサイクルでは作らない。
 
 ## 変更対象ファイル
 
@@ -173,6 +205,8 @@ manager 1、indexer 2、search head 1 を起こし、HEC でイベントを 1000
 6. link down のイベントを 1 件入れると、偽の SNS に届く通知が 1 通だけ（台の数だけ届かない）。
 7. `SPLUNK_ROLE` を付けずに 1 台で起こすと、いまと同じに動く（app があり、アラートが 1 通出る）。
 
+4. **前と同じ IP で indexer を入れ替えたあと、search head が自分で入れ替わり、そのあとに入れた link down のアラートが 1 通出る。**（手当て A の確認。入れ替わる前に入れた分は出なくてよい。）
+
 ### テスト
 
 - `splunk_az_num = 1` のとき、作るものが今と変わらない（サービス 1 つ、Cloud Map の `splunk`、HEC の URL）。
@@ -208,6 +242,9 @@ AZ をまたぐ複製の通信料（1 GB あたり約 $0.01 ずつ）は入れ�
 manager と search head を小さくできるかは、手元の確認のあとに決める（変数の下限が 2 vCPU のため、いまは 4 つとも同じ大きさ）。
 
 ## 未確定事項とリスク
+
+0. **indexer が前と同じ IP で入れ替わると、アラートが黙って落ちる（手元で再現）。**
+   手当ては上の「indexer が前と同じ IP で入れ替わったときの手当て」。Fargate で同じ IP がまた割り当てられるかは、AWS では未確認。手当てが効くことも未検証（実装で、手元の 4 台で再現させて確かめる）。
 
 1. **上流のイメージの環境変数は推測。**
    「推測のまま残っていること」の表。実装ステップ 1 で確かめる。違っていたら設計のこの表とタスク定義を直す。
