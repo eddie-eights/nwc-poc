@@ -8,7 +8,7 @@
 
 - 4 種類のアラート（`link_down` / `bgp_down` / `isis_down` / `trap`）を、Grafana と Splunk の両方が出すようにした。
 - ルールはどれも書けた。ただし Grafana の 3 つは「条件つき」で、Spark の側でデータの形を整える必要があった。
-- **検知の遅れと取りこぼしの比較は、まだ結果が無い。**AWS で障害を入れてから「4. 結果」を埋める。それまでこのサイクルは完了にしない。
+- **検知の遅れと取りこぼしの比較は、1 回分だけ結果がある**（2026-10-05、`fail-main`）。両方が `link_down` と `isis_down` を出し、取りこぼしは無かった。`link_down` は Splunk のほうが 1〜3 分早かった。手順どおりの 3 回と、`bgp_down`・`trap` はまだ。それまでこのサイクルは完了にしない。
 
 理由と背景:
 
@@ -88,7 +88,7 @@ date -u +%FT%TZ
 
 ## 3. Athena のクエリ
 
-「アラートの履歴を残す（001）」で作った履歴を読む。**下のクエリは、まだ実行していない**（AWS の全体の動作確認で打つ）。
+「アラートの履歴を残す（001）」で作った履歴を読む。**下のクエリそのものは、まだ実行していない**（2026-10-05 の動作確認では、異常の id・`status`・`source` ごとに最初の `received_at` を取るだけの集計を打った）。
 
 読むのは S3 Tables の `alert_events`。中身は、Lambda `<prefix>-graph-status` が受けたアラートの通知 1 件ごとの行（送り手 `source`、異常の id `anomaly_id`、`status`、説明 `detail`、送り手の `starts_at`、Lambda が受けた時刻 `received_at`）。Athena のワークグループは `<prefix>-history`、カタログは `s3tablescatalog/<テーブルバケットの名前>`（`terraform/pipeline/analytics/history.tf`）。
 
@@ -136,7 +136,38 @@ ORDER BY anomaly_id, status
 
 ## 4. 結果
 
-**AWS で障害を入れてから埋める。未実施。**
+**1 回分だけある。手順どおりの 3 回はまだ。**
+
+### 2026-10-05 の 1 回（AWS の全体の動作確認）
+
+`sudo lab fail-main` を 02:36:59（UTC）に打った。遅れは、打ってから Lambda が最初の `firing` を受けるまでの秒。
+
+| 異常の id | Grafana firing | Splunk firing | 差（Splunk − Grafana） | 取りこぼし |
+|---|---|---|---|---|
+| `dc1-leaf-01#link_down#ethernet-1/1` | 297 秒（02:41:56） | 121 秒（02:39:00） | −176 秒 | 無い |
+| `dc1-spine-01#link_down#ethernet-1/3` | 297 秒（02:41:56） | 242 秒（02:41:01） | −55 秒 | 無い |
+| `dc1-leaf-01#isis_down#ethernet-1/1.0` | 234 秒（02:40:53） | 242 秒（02:41:01） | +8 秒 | 無い |
+| `dc1-spine-01#isis_down#ethernet-1/3.0` | 237 秒（02:40:56） | 242 秒（02:41:01） | +5 秒 | 無い |
+
+分かったこと:
+
+- どちらも、手順に書いた「2 分待つ」では足りなかった
+
+  いちばん早い Splunk の `link_down` で 121 秒、Grafana の `link_down` は 297 秒かかった。3 回の計測をするときは、待つ時間を 5 分以上にする。
+- Splunk だけが、サブインターフェースの `link_down` を出した
+
+  `dc1-leaf-01#link_down#ethernet-1/1.0`（02:40:00）と `dc1-spine-01#link_down#ethernet-1/3.0`（02:42:01）。Grafana には対応する行が無い。異常の id が別なので、ワークフローも別に起きた（1 本の回線断で修復案が 4 件）。
+- Splunk は起動の直後に `resolved` を大量に送った
+
+  `alert_events` の `resolved` は Splunk が 83 行、Grafana が 4 行。Splunk の内訳は `bgp_down` 31、`isis_down` 46、`link_down` 6 で、`bgp_down` と `isis_down` は障害を入れていない相手の分。
+
+この回で取れていないもの:
+
+- `resolved` の遅れ。戻したのは承認からの `heal-main`（02:45:16）で、行はあるが時刻を控えていない。
+- `link_down` の Splunk の内訳（ポーリングと trap）。
+- `bgp_down`（`fail-bgp`）と `trap`（`trap-test`）。打っていない。
+
+### 手順どおりの 3 回（未実施）
 
 遅れは、コマンドを打ってから Lambda が通知を受けるまでの秒。
 
