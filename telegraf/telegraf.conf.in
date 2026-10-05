@@ -276,18 +276,21 @@
 # <<< role dialout
 
 # >>> sink kafka（telegraf.sh render が SINK で片方だけ残す。既定 kafka）
-# ---- MSK へ。トピックは metric 名で分ける（snmp_trap → traps、device_log → logs、gNMI の 4 つ → gnmi、共通の形と SNMP のポーリング → metrics、
+# ---- Kafka（MSK。OSS 版は ECS の Kafka）へ。トピックは metric 名で分ける（snmp_trap → traps、device_log → logs、gNMI の 4 つ → gnmi、共通の形と SNMP のポーリング → metrics、
 # MDT → mdt（collector タグ））。lab_* の変換前の値はどれにも載せない。役割に関わらず 5 つとも置く（来ないトピックの出力は何も書かない）
+# 「>>> kafka_auth iam」の区間は MSK の IAM 認証の 4 行。telegraf.sh render が KAFKA_AUTH=none（OSS 版の認証なしの Kafka。cycle 005）のとき消す
 # sasl_aws_msk_iam_profile: Telegraf 1.40.0 は profile か role + session のどちらかを書かないと
 # 「both role and session must be set」で落ち、インスタンスプロファイルだけでは起動しない（2026-09-18 に EC2 で確認。plugins/common/kafka/sasl_aws_iam_msk.go）。
 # telegraf.sh render が region だけの [default] を /tmp/aws_config に書き、鍵が無いので SDK がタスクロール（ECS のコンテナの認証情報）に落ちる
 [[outputs.kafka]]
   brokers = [__KAFKA_BROKERS__]
   topic = "metrics"
+# >>> kafka_auth iam
   enable_tls = true
   sasl_mechanism = "AWS-MSK-IAM"
   sasl_aws_msk_iam_region = "__AWS_REGION__"
   sasl_aws_msk_iam_profile = "default"
+# <<< kafka_auth iam
   data_format = "json"
   json_timestamp_units = "1s"
   required_acks = 1
@@ -297,10 +300,12 @@
 [[outputs.kafka]]
   brokers = [__KAFKA_BROKERS__]
   topic = "gnmi"
+# >>> kafka_auth iam
   enable_tls = true
   sasl_mechanism = "AWS-MSK-IAM"
   sasl_aws_msk_iam_region = "__AWS_REGION__"
   sasl_aws_msk_iam_profile = "default"
+# <<< kafka_auth iam
   data_format = "json"
   json_timestamp_units = "1s"
   required_acks = 1
@@ -310,10 +315,12 @@
 [[outputs.kafka]]
   brokers = [__KAFKA_BROKERS__]
   topic = "traps"
+# >>> kafka_auth iam
   enable_tls = true
   sasl_mechanism = "AWS-MSK-IAM"
   sasl_aws_msk_iam_region = "__AWS_REGION__"
   sasl_aws_msk_iam_profile = "default"
+# <<< kafka_auth iam
   data_format = "json"
   json_timestamp_units = "1s"
   required_acks = 1
@@ -323,10 +330,12 @@
 [[outputs.kafka]]
   brokers = [__KAFKA_BROKERS__]
   topic = "logs"
+# >>> kafka_auth iam
   enable_tls = true
   sasl_mechanism = "AWS-MSK-IAM"
   sasl_aws_msk_iam_region = "__AWS_REGION__"
   sasl_aws_msk_iam_profile = "default"
+# <<< kafka_auth iam
   data_format = "json"
   json_timestamp_units = "1s"
   required_acks = 1
@@ -336,10 +345,12 @@
 [[outputs.kafka]]
   brokers = [__KAFKA_BROKERS__]
   topic = "mdt"
+# >>> kafka_auth iam
   enable_tls = true
   sasl_mechanism = "AWS-MSK-IAM"
   sasl_aws_msk_iam_region = "__AWS_REGION__"
   sasl_aws_msk_iam_profile = "default"
+# <<< kafka_auth iam
   data_format = "json"
   json_timestamp_units = "1s"
   required_acks = 1

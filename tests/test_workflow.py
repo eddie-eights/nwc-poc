@@ -836,7 +836,9 @@ check("up.sh は base/core の state に 2026-09-29 より前の SG（aws_securi
       re.search(r"grep -qx 'aws_security_group\\\.internal'", up) is not None
       and up.index("aws_security_group\\.internal") < up.index('log "1. ECR リポジトリ') and "先に ops/down.sh で消す" in up)
 _sg_roots = ("agent", "pipeline/analytics", "pipeline/graph", "pipeline/lab", "pipeline/stream", "workflow")
-_sg_locals = {r: read("terraform", *r.split("/"), "locals.tf") for r in _sg_roots}
+# stream の MSK の SG は msk.tf で読む（MSK だけのもの。OSS 版のルートに msk.tf は無い。cycle 005）
+_sg_files = {r: ("locals.tf", "msk.tf") if r == "pipeline/stream" else ("locals.tf",) for r in _sg_roots}
+_sg_locals = {r: "\n".join(read("terraform", *r.split("/"), f) for f in fs) for r, fs in _sg_files.items()}
 check("SG の ID を読む 6 ルートは try で読み（古い state のまま down.sh の destroy が通る）、base/core の state に security_group_ids が無ければ apply の前に止める",
       all(re.search(r'data "terraform_remote_state" "main" \{[\s\S]*?lifecycle \{\s*postcondition \{\s*condition\s*=\s*can\(self\.outputs\.security_group_ids(\["\w+"\])?\)', s) is not None
           and re.findall(r'security_group_ids\[', s)
@@ -844,7 +846,7 @@ check("SG の ID を読む 6 ルートは try で読み（古い state のまま
           and len(re.findall(r'(?<!can\(self\.outputs\.)security_group_ids\[', s)) == len(re.findall(r'= try\(data\.terraform_remote_state\.main\.outputs\.security_group_ids\["\w+"\], ""\)', s))
           for s in _sg_locals.values())
       and not any("security_group_ids[" in read("terraform", *r.split("/"), f) for r in _sg_roots
-                  for f in os.listdir(os.path.join(ROOT, "terraform", *r.split("/"))) if f.endswith(".tf") and f != "locals.tf"))
+                  for f in os.listdir(os.path.join(ROOT, "terraform", *r.split("/"))) if f.endswith(".tf") and f not in _sg_files[r]))
 check("down.sh は agent を lab の後、main の前に消し、ロググループ名を agent の state から読む",
       down.index("destroy_root pipeline/lab") < down.index('destroy_lambda_root agent "$PREFIX-kb-index"') < down.index("destroy_root base/core") and "tf agent output -raw runtime_log_group_name" in down)
 check("up.sh は main の後に agent を apply し、CREATE_KB のときだけ手順書を取り込む",

@@ -7,6 +7,8 @@
   4. oss/terraform（設計の 3）: 変えないルートは terraform/ のファイルへのシンボリックリンク、変える 3 ルート（stream / analytics / graph）に
      マネージドのサービス（MSK / EMR Serverless / AMP / Neptune Analytics / OpenSearch Serverless）が無い、接頭辞は var.project、
      土台の OSS の SG と EFS はマネージド版では作らない
+  5. OSS 版の Kafka（設計の 4）: stream は msk.tf だけを kafka.tf（ECS on Fargate の KRaft 3 台、EFS、Cloud Map の名前）に替え、
+     共有のファイルは Kafka の差し替え口の locals だけを読む。Telegraf は KAFKA_AUTH=none で IAM の行を消す（描画は tests/test_lab_debug.py）
 実行は python3 tests/test_oss.py。graph.py のクエリを意図して変えたときだけ --write-golden で golden を作り直す
 （作り直すと 1. はその時点のコードを正とする。差分は git diff tests/golden で見る）。"""
 import base64, copy, importlib.util, io, json, os, re, subprocess, sys, tempfile, types, urllib.request
@@ -676,5 +678,78 @@ check("OSS 版のイメージのリポジトリは project = nwc-oss のとき�
 _chk = open(os.path.join(ROOT, "ops", "check.sh"), encoding="utf-8").read()
 check("ops/check.sh は terraform/ と oss/terraform/ の両方に fmt と validate を打つ",
       "TF_BASES=(terraform oss/terraform)" in _chk and 'terraform fmt -check -recursive "$base"' in _chk and 'terraform -chdir="$base/$r" validate' in _chk)
+
+# ---- 5. OSS 版の Kafka と Telegraf（設計の 4）。stream は MSK の msk.tf だけを kafka.tf に替え、ほかはマネージド版のファイルへのリンク
+_STREAM = "pipeline/stream"
+_stream_files = git_files(f"oss/terraform/{_STREAM}")
+_stream_links = sorted(n for n in _stream_files if os.path.islink(os.path.join(ROOT, "oss", "terraform", *_STREAM.split("/"), n)))
+_stream_shared = ("locals.tf", "telegraf.tf", "kafka_ui.tf", "access.tf", "outputs.tf")
+check("OSS 版の stream の実ファイルは kafka.tf と oss.auto.tfvars だけで、マネージド版のファイルのうち msk.tf 以外は全部リンク",
+      sorted(set(_stream_files) - set(_stream_links)) == ["kafka.tf", "oss.auto.tfvars"]
+      and _stream_links == sorted(_shared + _stream_shared) and not links_to_managed(_STREAM, _stream_links)
+      and sorted(set(git_files(f"terraform/{_STREAM}")) - set(_stream_links)) == ["msk.tf"])
+
+
+def _locals_keys(s):
+    """locals { ... } の直下（2 字下げ）で定義する名前"""
+    return {k for blk in re.findall(r"^locals \{\n(.*?)^\}\n", s, re.M | re.S) for k in re.findall(r"^  (\w+)\s*=", blk, re.M)}
+
+
+def _code(s):
+    return re.sub(r"(?m)^\s*#.*$", "", s)
+
+
+_m_stream, _o_stream = tf_text("terraform", _STREAM), tf_text("oss/terraform", _STREAM)
+_msk_tf, _kafka_tf = _m_stream["msk.tf"], _o_stream["kafka.tf"]
+_IFACE = {"kafka_bootstrap_brokers", "kafka_bootstrap_by_protocol", "kafka_cluster_name", "kafka_client_environment",
+          "telegraf_kafka_statements", "kafka_ui_kafka_statements", "kafka_descriptions"}
+_shared_code = "\n".join(_code(_m_stream[n]) for n in _stream_shared)
+_shared_defs = set().union(*(_locals_keys(_m_stream[n]) for n in _stream_shared))
+_shared_refs = set(re.findall(r"\blocal\.(\w+)", _shared_code))
+check(f"Kafka の差し替え口（{', '.join(sorted(_IFACE))}）は msk.tf と kafka.tf の両方が定義し、共有のファイルは MSK のリソースを直接読まない"
+      f"（共有のファイルが読む local のうち、共有のファイルにも差し替え口にも無いもの: {sorted(_shared_refs - _shared_defs - _IFACE)}）",
+      _IFACE <= _locals_keys(_msk_tf) and _IFACE <= _locals_keys(_kafka_tf) and not (_IFACE & _shared_defs)
+      and _IFACE <= _shared_refs and not (_shared_refs - _shared_defs - _IFACE)
+      and not re.search(r"\baws_msk_\w+", _shared_code))
+check("マネージド版の msk.tf の差し替え口は今と同じ値（Telegraf の環境変数は足さない、ブートストラップは IAM の SASL_SSL）",
+      "kafka_client_environment = []" in _msk_tf and "kafka_bootstrap_brokers = aws_msk_cluster.stream.bootstrap_brokers_sasl_iam" in _msk_tf
+      and 'output "msk_cluster_arn"' in _msk_tf and 'output "msk_cluster_arn"' not in _m_stream["outputs.tf"])
+_tg_envs = re.findall(r"^      environment = concat\(\n        \[\n[\s\S]*?^        \],\n        local\.kafka_client_environment,\n      \)\n",
+                      _m_stream["telegraf.tf"], re.M)
+check("Telegraf の 2 つのタスク（dialin / dialout）の環境変数は local.kafka_client_environment を足す",
+      len(_tg_envs) == 2 == _m_stream["telegraf.tf"].count("local.kafka_client_environment"))
+
+_k = _code(_kafka_tf)
+check("OSS 版の Kafka は 3 台（kafka_nodes の 1〜3）で、台ごとに ECS のサービス・タスク定義・Cloud Map の名前・EFS のアクセスポイントを持つ",
+      "kafka_nodes = { for i in range(3) : tostring(i + 1) => try(local.subnet_ids[i], \"\") }" in _k
+      and all(re.search(r'resource "' + t + r'" "kafka" \{\n  for_each = local\.kafka_nodes\n', _k)
+              for t in ("aws_ecs_service", "aws_ecs_task_definition", "aws_service_discovery_service", "aws_efs_access_point"))
+      and 'name = "kafka-${each.key}"' in _k and 'path = "/kafka-${each.key}"' in _k
+      and "access_point_id = aws_efs_access_point.kafka[each.key].id" in _k and "subnets          = [each.value]" in _k
+      and "registry_arn = aws_service_discovery_service.kafka[each.key].arn" in _k)
+check("KRaft の固定の voter は Cloud Map の名前の 9093、広告するのは自分の名前の 9092、番号は台の番号",
+      '{ name = "KAFKA_CONTROLLER_QUORUM_VOTERS", value = join(",", [for n, h in local.kafka_hosts : "${n}@${h}:9093"]) }' in _k
+      and 'kafka_hosts = { for n, _ in local.kafka_nodes : n => "kafka-${n}.${local.stream_service_namespace}" }' in _k
+      and '{ name = "KAFKA_ADVERTISED_LISTENERS", value = "PLAINTEXT://${local.kafka_hosts[each.key]}:9092" }' in _k
+      and '{ name = "KAFKA_NODE_ID", value = each.key }' in _k and '"broker,controller"' in _k
+      and "controller.quorum.bootstrap.servers" not in _k.lower().replace("_", "."))
+check("データは EFS（TLS と IAM の認可）、CLUSTER_ID は SSM から ECS の secrets で渡す（state にも環境変数にも値を書かない）",
+      'transit_encryption = "ENABLED"' in _k and 'iam             = "ENABLED"' in _k
+      and 'containerPath = "/var/lib/kafka/data"' in _k and '{ name = "KAFKA_LOG_DIRS", value = "/var/lib/kafka/data" }' in _k
+      and 'secrets     = [{ name = "CLUSTER_ID", valueFrom = local.kafka_cluster_id_arn }]' in _k
+      and 'kafka_cluster_id_parameter = "/${local.name_prefix}/kafka/cluster-id"' in _k
+      and '"elasticfilesystem:AccessPointArn" = [for ap in aws_efs_access_point.kafka : ap.arn]' in _k
+      and not re.search(r'name = "CLUSTER_ID", value =', _k))
+check("同じ番号の台を 2 つ同時に立てない（入れ替えは止めてから起こす）。SG は土台の kafka",
+      "deployment_minimum_healthy_percent = 0" in _k and "deployment_maximum_percent         = 100" in _k
+      and 'kafka_sg_id         = try(data.terraform_remote_state.main.outputs.security_group_ids["kafka"], "")' in _k
+      and "security_groups  = [local.kafka_sg_id]" in _k)
+check("OSS 版の差し替え口: 認証なし（Telegraf に KAFKA_AUTH=none、Kafbat UI は PLAINTEXT だけ、Kafka の IAM の権限は無く MSK を拒む）",
+      '[{ name = "KAFKA_AUTH", value = "none" }]' in _k and "kafka_bootstrap_by_protocol = { PLAINTEXT = local.kafka_bootstrap_brokers }" in _k
+      and 'kafka_bootstrap_brokers = join(",", [for n, h in local.kafka_hosts : "${h}:9092"])' in _k
+      and "telegraf_kafka_statements = []" in _k and re.search(r'Sid\s*=\s*"NoMsk"\s*Effect\s*=\s*"Deny"\s*Action\s*=\s*\["kafka-cluster:\*"\]', _k)
+      and re.search(r'^kafka_ui_security_protocol = "PLAINTEXT"$', open(_auto[_STREAM], encoding="utf-8").read(), re.M))
+check("kafka.tf は接頭辞を作らず（locals.tf の local.name_prefix を使う）、MSK の変数（kafka_version など）も読まない",
+      not re.search(r"^\s*name_prefix\s*=", _k, re.M) and "var.kafka_version" not in _k and "var.msk_" not in _k)
 
 print(f"通過 {passed} / 失敗 0")
