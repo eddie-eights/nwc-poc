@@ -53,6 +53,15 @@ def proposal_table(status: str = "pending"):
     return msg, pd.DataFrame(rows, columns=PROPOSAL_COLS), gr.update(choices=ids, value=None)
 
 
+def select_proposal(evt: gr.SelectData):
+    """表の行を押したら、その行の proposal_id を下のプルダウンに入れる（詳細と「読んだ」の外しはプルダウンの change が続けて行う）。
+    行の番号（evt.index）ではなく、押した行の中身（evt.row_value）の 1 列目を使う。表は 30 秒ごとに描き直され、列の見出しで並べ替えも
+    できるので、番号で引き直すと押した行と別の修復案を選ぶことがある（2026-10-05 に AWS で、行を押しても選ばれなかった）"""
+    row = getattr(evt, "row_value", None) or []
+    proposal_id = str(row[0]).strip() if row else ""
+    return gr.update(value=proposal_id) if proposal_id else gr.update()
+
+
 def proposal_detail(proposal_id: str) -> str:
     """選んだ修復案の全文（表では切れる原因・理由・結果）"""
     proposal_id = (proposal_id or "").strip()
@@ -93,7 +102,7 @@ def decide_proposal(proposal_id: str, decision: str, status: str, approver: str 
     proposal_id = (proposal_id or "").strip()
     name = " ".join((approver or "").split())[:APPROVER_MAX]
     if not proposal_id:
-        return "proposal_id を選ぶ（表の 1 列目）", gr.update(), gr.update()
+        return "修復案を選ぶ（表の行を押すか、proposal_id のプルダウンで）", gr.update(), gr.update()
     if not name:
         return "決める人の名前を入れる（decided_by に残る）", gr.update(), gr.update()
     if decision == "approved" and not confirmed:
