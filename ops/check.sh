@@ -34,7 +34,7 @@ log "3. ops スクリプトの構文"
 bash -n ops/up.sh ops/down.sh ops/deploy-env.sh ops/check.sh ops/lab-debug.sh ops/lab-common.sh lab/lab.sh lab/setup.sh
 if command -v python3 >/dev/null; then PY=(python3); else PY=(uv run --python 3.13 python); fi
 # .py は名指しにせず全部見る（名指しにすると、ファイルを足したときに検査から漏れる）
-find agent graph lab nautobot ops spark splunk tests tools web workflow -name '*.py' -not -path '*/__pycache__/*' -print0 |
+find agent graph lab nautobot ops oss spark splunk tests tools web workflow -name '*.py' -not -path '*/__pycache__/*' -print0 |
   xargs -0 "${PY[@]}" -c 'import ast, sys
 for f in sys.argv[1:]:
     ast.parse(open(f, encoding="utf-8").read(), f)'
