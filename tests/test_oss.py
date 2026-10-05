@@ -12,6 +12,10 @@
   6. OSS 版の OpenSearch と VictoriaMetrics（設計の 5）: analytics の opensearch.tf（データ 2 台 + まとめ役 1 台、インデックスはタスクの
      エフェメラルストレージ）と victoriametrics.tf（vminsert 1・vmselect 1・vmstorage 3、複製数 2、vminsert は vmstorage 3 台を待つ）。
      Spark・Grafana・evidence の接続先と terraform/workflow が読む output が、Cloud Map の名前・コンテナのポート・土台の SG の行と合う
+  7. OSS 版の Spark と Neo4j（005 の 2）: Spark は格納先の組ごとに ECS のタスク、Neo4j は ECS に 1 台。status の Lambda・Worker・Web は Neo4j に向く
+  8. AWS で動かす前の点検（005）: マネージド版と OSS 版を同じアカウントに並べても名前が重ならない（アカウントに 1 つのものを作らない）、
+     サブネットは AZ の数の設定によらず 3 つで、3 台の Kafka・OpenSearch・vmstorage はサブネットが足りなければ plan で止まる、
+     OSS 版の bootstrap_brokers は kafka-1〜3 の PLAINTEXT、Neo4j・OpenSearch・VictoriaMetrics を使う側の SG の行がそろう
 実行は python3 tests/test_oss.py。graph.py のクエリを意図して変えたときだけ --write-golden で golden を作り直す
 （作り直すと 1. はその時点のコードを正とする。差分は git diff tests/golden で見る）。"""
 import base64, copy, importlib.util, io, json, os, re, subprocess, sys, tempfile, types, urllib.request
@@ -1130,5 +1134,168 @@ check(f"Neo4j のドライバの版は Lambda の層・Web・Worker でそろえ
       all(len(p) == 1 for p in _pins.values()) and len({p[0] for p in _pins.values()}) == 1
       and all(re.search(r"^-r requirements\.txt$", _req[n], re.M) for n in ("web", "workflow"))
       and "ARG REQUIREMENTS=requirements.txt" in open(os.path.join(ROOT, "workflow", "Dockerfile"), encoding="utf-8").read())
+
+# ---- 8. AWS で動かす前の点検（005）。ファイルを読むだけ（plan はしない）
+# マネージド版と OSS 版を同じアカウントに並べたときの名前。接頭辞は var.owner = o のとき
+_TREES = {"terraform": "o-nwc-poc", "oss/terraform": _PREFIX}
+# アカウント（とリージョン）で一意な名前を持つ属性（resource の直下）
+_NAME_KEYS = ("name", "name_prefix", "bucket", "function_name", "family", "creation_token", "graph_name", "identifier", "layer_name", "cluster_identifier")
+# 名前が親のリソースの中でだけ一意なもの（親の名前に接頭辞がある）: ロールのインラインポリシー、Cloud Map のサービス（名前空間の中）、
+# S3 Tables のテーブルと名前空間（テーブルバケットの中）、ロググループのストリーム、Gateway のターゲット、KB のデータソース
+_SCOPED = {"aws_iam_role_policy", "aws_service_discovery_service", "aws_s3tables_table", "aws_s3tables_namespace", "aws_cloudwatch_log_stream",
+           "aws_bedrockagentcore_gateway_target", "aws_bedrockagent_data_source"}
+# アカウントかリージョンに 1 つしか無い設定（どちらかの木が作ると、もう片方の apply / destroy が上書きする）
+_SINGLETON = re.compile(r"^aws_(\w*account\w*|iam_service_linked_role|default_\w+|ebs_encryption_by_default|ebs_default_kms_key|ecr_registry_\w+"
+                        r"|ecr_replication_configuration|bedrock_model_invocation_logging_configuration|lakeformation_\w+|glue_\w+"
+                        r"|guardduty_detector|config_configuration_recorder|ssm_service_setting|ec2_serial_console_access|ec2_image_block_public_access"
+                        r"|vpc_block_public_access_options|xray_encryption_config|inspector2_enabler|cloudwatch_log_resource_policy)$")
+_RES = re.compile(r'^resource "([a-z0-9_]+)" "([^"]+)" \{\n(.*?)^\}\n', re.M | re.S)
+
+
+def _defs(base, root):
+    """ルートの全ファイルの locals（1 行の定義）"""
+    return {k: v for s in tf_text(base, root).values() for k, v in _tf_locals(_code(s)).items()}
+
+
+def _reaches_prefix(expr, defs, seen=()):
+    """名前の式が locals をたどって接頭辞（local.name_prefix か "${var.owner}-${var.project}"）に届く"""
+    if "name_prefix" in expr or "${var.owner}-${var.project}" in expr:
+        return True
+    return any(k in defs and k not in seen and _reaches_prefix(defs[k], defs, seen + (k,)) for k in re.findall(r"\blocal\.(\w+)", expr))
+
+
+def _resolve(expr, defs, prefix):
+    """1 行の文字列の式（"…${local.X}…" か local.X）を、locals を展開して文字列にする"""
+    v = expr.strip()
+    if re.fullmatch(r"local\.\w+", v):
+        return _resolve(defs[v[len("local."):]], defs, prefix)
+    assert v.startswith('"') and v.endswith('"'), v
+    s = re.sub(r"\$\{local\.(\w+)\}", lambda m: _resolve(defs[m.group(1)], defs, prefix), v[1:-1]).replace("${var.owner}-${var.project}", prefix)
+    assert "${" not in s, (expr, s)
+    return s
+
+
+_named, _unprefixed, _types, _ns = {}, {}, {}, {}
+for _b, _p in _TREES.items():
+    for _r in TF_ROOTS:
+        _d = _defs(_b, _r)
+        for _n, _s in tf_text(_b, _r).items():
+            for _t, _nm, _body in _RES.findall(_code(_s)):
+                _types.setdefault(_b, set()).add(_t)
+                if _t == "aws_service_discovery_private_dns_namespace":
+                    _ns.setdefault(_b, []).append(_resolve(re.search(r"^  name\s+= (.+)$", _body, re.M).group(1), _d, _p))
+                if _b == "oss/terraform" and os.path.islink(os.path.join(ROOT, _b, *_r.split("/"), _n)):
+                    continue   # リンクのファイルの名前はマネージド版の木で見る
+                for _key, _v in re.findall(r"^  (" + "|".join(_NAME_KEYS) + r")\s*=\s*(.+)$", _body, re.M):
+                    _v = re.sub(r"\s+#.*$", "", _v).strip()
+                    if _t in _SCOPED or re.match(r"^(aws_\w+|data\.\w+)\.\w+", _v):
+                        continue   # 親の中の名前か、ほかのリソースの名前をそのまま使う
+                    _named[_b] = _named.get(_b, 0) + 1
+                    if not _reaches_prefix(_v, _d):
+                        _unprefixed.setdefault(_b, []).append(f"{_r}/{_n}: {_t}.{_nm}.{_key} = {_v}")
+_projects = re.findall(r'"(nwc-\w+)"', re.search(r"condition\s*=\s*contains\((\[[^\]]*\]), var\.project\)", _vars["base/core"]).group(1))
+check(f"マネージド版と OSS 版を同じアカウントに並べても名前が重ならない: アカウントで一意な名前（マネージド版 {_named.get('terraform')} 個・"
+      f"OSS 版の実ファイル {_named.get('oss/terraform')} 個）はどれも locals をたどると接頭辞 <owner>-<project> に届き（届かない: {_unprefixed}）、"
+      f"project の 2 つの値（{_projects}）は同じ長さ（名前の長さの上限で切れ方が変わらない）",
+      all(_named.get(b) for b in _TREES) and not _unprefixed and sorted(_projects) == ["nwc-oss", "nwc-poc"] and len({len(p) for p in _projects}) == 1)
+_single = {b: sorted(t for t in v if _SINGLETON.match(t)) for b, v in _types.items()}
+_down = {n: _code(open(os.path.join(ROOT, *n.split("/")), encoding="utf-8").read()) for n in ("ops/down.sh", "ops/down-common.sh", "oss/ops/down.sh")}
+_ensure = re.search(r"^ensure_s3tables_catalog\(\) \{.*?^\}$", open(os.path.join(ROOT, "ops", "up-common.sh"), encoding="utf-8").read(), re.M | re.S)
+check(f"どちらの木もアカウントかリージョンに 1 つの設定を Terraform で作らない（{ {b: v for b, v in _single.items() if v} }）。"
+      "Glue のカタログ s3tablescatalog は ops/up-common.sh が無いときだけ作り、どちらの down も消さない（テーブルバケットの名前は接頭辞つき）",
+      len(_types) == 2 and not any(_single.values()) and _ensure is not None
+      and "*EntityNotFoundException*) ;;" in _ensure.group(0) and _ensure.group(0).count("aws glue create-catalog") == 1
+      and not any(re.search(r"glue (delete|update)-catalog|s3tablescatalog", s) for s in _down.values()))
+check(f"Cloud Map の名前空間は木の中で重ならず、マネージド版と OSS 版でも重ならない（マネージド版 {sorted(_ns.get('terraform', []))}、"
+      f"OSS 版 {sorted(_ns.get('oss/terraform', []))}）",
+      sorted(_ns["terraform"]) == sorted(f"o-nwc-poc{s}.internal" for s in ("", "-stream", "-nautobot"))
+      and sorted(_ns["oss/terraform"]) == sorted(f"{_PREFIX}{s}.internal" for s in ("", "-stream", "-nautobot", "-graph"))
+      and all(len(set(v)) == len(v) for v in _ns.values()) and not set(_ns["terraform"]) & set(_ns["oss/terraform"]))
+
+# AZ の数（ENDPOINTS_AZ_NUM など）とサブネット a / b / c
+_core = {n: _code(s) for n, s in tf_text("terraform", "base/core").items()}
+check("サブネットは AZ の数の設定によらず a / b / c の 3 つを必ず作り（count も for_each も無い）、3 つの AZ ID が違うことは変数の検査（plan の前）で止める。"
+      "3 つとも同じルートテーブルで、S3 の gateway エンドポイントはそのルートテーブルに付く。土台は 3 つを a / b / c の順に output する",
+      all(re.search(rf'^resource "aws_subnet" "{z}" \{{\n  vpc_id\s+= aws_vpc\.this\.id\n  availability_zone_id\s+= var\.az_id_{z}\n', _core["vpc.tf"], re.M)
+          for z in "abc")
+      and "  subnet_ids = [aws_subnet.a.id, aws_subnet.b.id, aws_subnet.c.id]\n" in _core["vpc.tf"]
+      and all(re.search(rf'^resource "aws_route_table_association" "{z}" \{{\n  subnet_id\s+= aws_subnet\.{z}\.id\n  route_table_id = aws_route_table\.private\.id\n',
+                        _core["vpc.tf"], re.M) for z in "abc")
+      and "route_table_ids   = [aws_route_table.private.id]" in _core["endpoints.tf"]
+      and "var.az_id_b != var.az_id_a" in _vars["base/core"] and "var.az_id_c != var.az_id_a && var.az_id_c != var.az_id_b" in _vars["base/core"]
+      and "value       = local.subnet_ids" in _block(_core["outputs.tf"], "output", "subnet_ids"))
+_az_refs = {b: {f"{r}/{n}": c for r in TF_ROOTS for n, s in tf_text(b, r).items()
+                if (c := len(re.findall(r"\b(?:var\.endpoints_az_num|local\.endpoint_subnet_ids)\b", _code(s))))} for b in _TREES}
+check(f"ENDPOINTS_AZ_NUM が変えるのはインターフェース型と OpenSearch Serverless の VPC エンドポイントの ENI を置くサブネット（a から n 個）だけで"
+      f"（参照: {_az_refs['oss/terraform']}）、サブネットの数・EFS のマウントターゲット（3 つのサブネット全部）・3 台のサービスの置き場には効かない",
+      all(v == {"base/core/endpoints.tf": 3, "base/core/variables.tf": 1} for v in _az_refs.values())
+      and "  endpoint_subnet_ids = slice(local.subnet_ids, 0, var.endpoints_az_num)\n" in _core["endpoints.tf"]
+      and len(re.findall(r"^  subnet_ids\s+= local\.endpoint_subnet_ids$", _core["endpoints.tf"], re.M)) == 2
+      and "count = local.oss ? length(local.subnet_ids) : 0" in _oss_tf and "subnet_id       = local.subnet_ids[count.index]" in _oss_tf)
+_kafka_svc = _block(_k, "resource", "aws_ecs_service.kafka")
+_need3 = 'precondition {{\n      condition     = {} != ""\n      error_message = "terraform/base/core の state のサブネットが 3 つ無い'
+check("Kafka・OpenSearch・vmstorage は AZ ごとに 1 台でサブネットを 0〜2 番目まで使い、土台の state のサブネットが 3 つ無ければ ECS のサービスの precondition で "
+      "plan のうちに止まる（足りない台のサブネットは空になる）",
+      'kafka_nodes = { for i in range(3) : tostring(i + 1) => try(local.subnet_ids[i], "") }' in _k
+      and "subnets          = [each.value]" in _kafka_svc and _need3.format("each.value") in _kafka_svc
+      and [s for _, s, _ in _os_nodes] == ["0", "1", "2"] and _need3.format("each.value.subnet") in _os_svc
+      and 'vmstorage_nodes = local.sink_prometheus ? { for i in range(3) : tostring(i + 1) => try(local.subnet_ids[i], "") } : {}' in _vm_tf
+      and "subnets          = [each.value]" in _vs_svc and _need3.format("each.value") in _vs_svc
+      and all("subnet_ids = data.terraform_remote_state.main.outputs.subnet_ids" in _code(s)
+              for s in (_o_stream["locals.tf"], _o_an["network.tf"])))
+
+# OSS 版の stream の outputs.tf（マネージド版へのリンク）の bootstrap_brokers
+_sd = _defs("oss/terraform", _STREAM)
+_kns = _resolve("local.stream_service_namespace", _sd, _PREFIX)
+_brokers = ",".join(f"kafka-{i}.{_kns}:9092" for i in (1, 2, 3))   # Terraform は map を鍵の順（"1"〜"3"）に回す
+check(f"OSS 版の bootstrap_brokers は {_brokers}（PLAINTEXT）: outputs.tf は差し替え口の kafka_bootstrap_brokers を出し、kafka.tf はそれを"
+      "台ごとの Cloud Map の名前（kafka-N）・advertised listener・コンテナのポート 9092 と同じ名前で作る。Kafbat UI は PLAINTEXT を選ぶ",
+      not links_to_managed(_STREAM, ["outputs.tf"]) and "value       = local.kafka_bootstrap_brokers" in _block(_m_stream["outputs.tf"], "output", "bootstrap_brokers")
+      and 'kafka_hosts = { for n, _ in local.kafka_nodes : n => "kafka-${n}.${local.stream_service_namespace}" }' in _k
+      and 'kafka_bootstrap_brokers = join(",", [for n, h in local.kafka_hosts : "${h}:9092"])' in _k
+      and "kafka_bootstrap_by_protocol = { PLAINTEXT = local.kafka_bootstrap_brokers }" in _k
+      and 'name = "kafka-${each.key}"' in _block(_k, "resource", "aws_service_discovery_service.kafka")
+      and '{ name = "KAFKA_ADVERTISED_LISTENERS", value = "PLAINTEXT://${local.kafka_hosts[each.key]}:9092" }' in _k
+      and "{ containerPort = 9092, protocol = \"tcp\" }" in _k and _kns == f"{_PREFIX}-stream.internal"
+      and re.search(r'^kafka_ui_security_protocol = "PLAINTEXT"$', open(_auto[_STREAM], encoding="utf-8").read(), re.M) is not None)
+check("OSS 版の Spark は stream の state の bootstrap_brokers を --bootstrap で受け、KAFKA_AUTH=none で読む（空なら precondition で止まる）。"
+      "Kafka の 9092 には Spark・Telegraf（dial-out / dial-in）・Kafbat UI の SG の行がある",
+      'bootstrap = try(data.terraform_remote_state.stream.outputs.bootstrap_brokers, "")' in _code(_o_an["network.tf"])
+      and re.search(r'"--bootstrap",\s*local\.bootstrap', _spark) is not None
+      and '{ name = "KAFKA_AUTH", value = "none" }' in _spark and 'condition     = local.bootstrap != ""' in _spark
+      and {"spark", "telegraf_dialout", "telegraf_dialin", "kafka_ui"} <= _from("kafka", 9092))
+
+
+# Neo4j・OpenSearch・VictoriaMetrics を使う側の SG
+def _sg_keys(base, root, name):
+    """ファイルが ENI に付ける SG の、土台の security_group_ids の鍵"""
+    d, keys = _defs(base, root), set()
+    for v in re.findall(r"^\s+(?:vpc_)?security_groups?(?:_ids)?\s+= \[(.+)\]$", _code(tf_text(base, root)[name]), re.M):
+        m = re.fullmatch(r'aws_security_group\.workload\["(\w+)"\]\.id', v) \
+            or re.fullmatch(r'try\(data\.terraform_remote_state\.main\.outputs\.security_group_ids\["(\w+)"\], ""\)', d.get(v.removeprefix("local."), ""))
+        keys.add(m.group(1) if m else v)
+    return keys
+
+
+_users = {("oss/terraform", "pipeline/graph", "sync.tf"): "lambda", ("terraform", "workflow", "gateway.tf"): "lambda",
+          ("terraform", "workflow", "ecs.tf"): "workflow", ("terraform", "base/core", "web.tf"): "web",
+          ("terraform", "agent", "runtime.tf"): "runtime", ("terraform", "pipeline/nautobot", "nautobot.tf"): "nautobot",
+          ("oss/terraform", "pipeline/graph", "neo4j.tf"): "neo4j"}
+_got = {f"{b}/{r}/{n}": _sg_keys(b, r, n) for b, r, n in _users}
+check(f"status の Lambda と道具の Lambda は lambda、Worker は workflow、Web は web、Runtime は runtime、Nautobot は nautobot、Neo4j は neo4j の SG を付ける（{_got}）",
+      all(_got[f"{b}/{r}/{n}"] == {k} for (b, r, n), k in _users.items()))
+_need = {("neo4j", 7687): {"lambda", "workflow", "web", "runtime", "nautobot"}, ("opensearch", 9200): {"lambda", "runtime", "spark"},
+         ("victoriametrics", 8481): {"lambda", "runtime"}, ("victoriametrics", 8480): {"spark"}}
+_lack = {f"{t}:{p}": sorted(c - _from(t, p)) for (t, p), c in _need.items() if c - _from(t, p)}
+_api = set(re.findall(r'"(\w+)"', re.search(r"^  aws_api_clients = \[(.*)\]$", tf_text("terraform", "base/core")["security_groups.tf"], re.M).group(1)))
+_oss_api = set(re.findall(r'"(\w+)"', re.search(r"^  oss_api_clients = \[(.*)\]$", _oss_tf, re.M).group(1)))
+check(f"土台の SG の行: Neo4j の 7687 には status の Lambda・道具の Lambda（lambda）・Worker・Web・Runtime・Nautobot、OpenSearch の 9200 と vmselect の 8481 には "
+      f"lambda と Runtime（9200 と vminsert の 8480 には Spark）から行があり（足りない: {_lack}）、Neo4j のコンテナは 7687 で受ける。"
+      "使う側も Neo4j・OpenSearch・VictoriaMetrics のタスクも AWS の API（VPC エンドポイントの 443）と S3（443）へ出られる",
+      not _lack and "{ containerPort = 7687, protocol = \"tcp\" }" in _neo and 'neo4j_uri = "bolt://${local.neo4j_host}:7687"' in _neo
+      and {"lambda", "workflow", "web", "runtime", "nautobot", "spark"} <= _api and {"kafka", "opensearch", "victoriametrics", "neo4j"} <= _oss_api
+      and all(re.search(rf'\[for sg in local\.{v} : \[\n\s+\{{ from = sg, to = "endpoints", protocol = "tcp", port = 443, why = "[^"]*" \}},\n'
+                        rf'\s+\{{ from = sg, to = "s3", protocol = "tcp", port = 443, why = "[^"]*" \}},\n', s)
+              for v, s in (("aws_api_clients", tf_text("terraform", "base/core")["security_groups.tf"]), ("oss_api_clients", _oss_tf))))
 
 print(f"通過 {passed} / 失敗 0")
