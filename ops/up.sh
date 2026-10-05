@@ -102,13 +102,16 @@
 #   NAUTOBOT_DB_AZ_NUM=1    Nautobot の RDS。1〜2（2 は Multi-AZ で、別の AZ に同期の待機系。約 2 倍。3 は Multi-AZ DB クラスタで、作っていない）
 #   TELEGRAF_AZ_NUM=1       stream の Telegraf の受ける側（dialout）。1〜3。NLB のサブネットとタスクの数（1 AZ に 1 つ。+$0.01/h ずつ。2 以上は NLB が AZ をまたいで配る）。
 #                           取りにいく側（dialin）はいつも 1 つ（2 つにすると同じ機器を 2 重にポーリング・購読する）
+#   SPLUNK_AZ_NUM=1         Splunk（ECS。STORES の splunk）。1〜3。1 はサブネット a に 1 台（いままで通り）。2 か 3 は indexer のクラスター
+#                           （「Splunk をクラスターにする（004）」）で、cluster manager 1 + indexer AZ の数（1 AZ に 1 つ。全部のイベントを互いに複製）+
+#                           search head 1 のタスク（どれも +$0.12/h）。manager と search head はサブネット a。indexer を AZ に散らすのは Fargate の
+#                           ベストエフォート。index は main だけなので SPLUNK_INDEX は書けない。切り替えると空から始まる
 #   1 台でしか成り立たないのでキーを作らないもの（どれもサブネット a に 1 つ）:
 #     Web の EC2（SSM のポートフォワードは 1 台を名指しでつなぐので、2 台にしても切り替える先が無い）、
 #     lab の EC2（containerlab の 1 台の中に全部の機器がある）、
 #     Grafana（ECS。アラートルールの評価もタスクの中なので、2 つにするとアラートを 2 重に出す）、
 #     Nautobot（ECS。Redis と Celery を同じタスクに入れているので、2 つにするとキャッシュとキューが別々になる）、
 #     workflow（ECS。Temporal の開発用サーバーがタスクの中にあるので、2 つにすると別々の Temporal になり、承認待ちが片方にしか無い）
-#   キーがまだ無いもの: Splunk（ECS。いまはサブネット a に 1 台）。何 AZ に置くかは「Splunk をクラスターにする（004）」で SPLUNK_AZ_NUM として足す
 # ---- デバッグ用（ふだんは書かない） ----
 #   NETWORK_PERIMETER=0     AccessDenied の切り分け。VPC の外からの AWS の API を拒む Deny（terraform/base/core の perimeter.tf）を外す。既定 1
 #   TF_VERBOSE=1            terraform の失敗・遅さの切り分け。出力を全部画面に出す（既定は進みと結果だけ。全文は ops/logs/tf-<ルート>-apply.log）
@@ -552,6 +555,15 @@ az_num OPENSEARCH_AZ_NUM 1 1 2 "OpenSearch Serverless はスタンバイのレ�
 #   deployment for Amazon RDS」、https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html）
 az_num NAUTOBOT_DB_AZ_NUM 1 1 2 "RDS の Multi-AZ（待機系 1 台）が 2。3 は Multi-AZ DB クラスタで、作っていない"
 az_num TELEGRAF_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
+az_num SPLUNK_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
+# Splunk のクラスター（2 か 3）は STORES の splunk の Splunk を変えるもの。analytics を作らない（SKIP_ANALYTICS=1）なら見ない。
+# index は main だけ（docs/cycles/004-splunk-indexer-cluster/design.md。ほかの index を複製する設定を入れていない）
+if [ "$SPLUNK_AZ_NUM" -gt 1 ] && [ -z "$SKIP_ANALYTICS" ]; then
+  [ -n "$SPLUNK_ON_ECS" ] || die "SPLUNK_AZ_NUM=$SPLUNK_AZ_NUM は Splunk のクラスターで、STORES に splunk が要る（いまは STORES=$STORES）。splunk を足すか、SPLUNK_AZ_NUM を消す。まだ何も作っていない"
+  [ -z "$SPLUNK_INDEX" ] || die "SPLUNK_AZ_NUM=$SPLUNK_AZ_NUM（Splunk のクラスター）では index は main だけで、SPLUNK_INDEX は書けない（いまは SPLUNK_INDEX=$SPLUNK_INDEX）。SPLUNK_INDEX を消すか、SPLUNK_AZ_NUM=1 にする。まだ何も作っていない"
+fi
+SPLUNK_TASKS=1   # Splunk のタスクの数（費用と 7-4b の待ち）。クラスターは manager 1 + indexer SPLUNK_AZ_NUM + search head 1
+if [ "$SPLUNK_AZ_NUM" -gt 1 ]; then SPLUNK_TASKS=$((SPLUNK_AZ_NUM + 2)); fi
 # Runtime を 2 AZ 以上にするときはエンドポイントも同じ数にそろえる（2026-10-05 のユーザー決定）。Runtime の ENI が b / c にあっても、
 # エンドポイントが a にしか無いと a の AZ が止まったときチャットは Bedrock などの AWS の API に届かず、2 AZ が見かけだけになる。
 # ENDPOINTS_AZ_NUM を書いていなければ Runtime の数まで上げ、Runtime より小さく書いてあれば止める（黙って見かけだけの 2 AZ にしない）。
@@ -709,6 +721,7 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 #     共有されれば 0 に近づく）
 #     と Grafana の 2（Fargate ARM 0.5 vCPU / 1 GB で 2.5）
 #   + STORES の splunk なら 12（ECS の Splunk。Fargate x86 2 vCPU / 4 GB で 12.3。エフェメラルストレージの 20 GB 超えの分は 0.3 未満。
+#     SPLUNK_AZ_NUM が 2 か 3 ならタスクが SPLUNK_AZ_NUM + 2 個で 49 か 61。
 #     Grafana と Splunk の単価も公表単価からで、Price List API では確かめていない）、
 # nautobot = 13（Fargate ARM 2 vCPU / 4 GB のタスク 1 つ 9.9 + RDS の db.t4g.micro 2.5 と gp3 20 GB 0.4。公表単価からで、Price List API では確かめていない。
 #   NAUTOBOT_DB_AZ_NUM=2 は Multi-AZ で RDS の 2.9 が倍になり 16）、
@@ -734,7 +747,7 @@ if [ -z "$SKIP_ANALYTICS" ]; then
   if [ -n "$SINK_OPENSEARCH$SINK_PROMETHEUS" ]; then COST_CENTS=$((COST_CENTS + 21)); fi
   if [ -n "$SINK_OPENSEARCH" ]; then COST_CENTS=$((COST_CENTS + 33 * OPENSEARCH_AZ_NUM)); fi
   if [ -n "$GRAFANA" ]; then COST_CENTS=$((COST_CENTS + 2)); fi
-  if [ -n "$SPLUNK_ON_ECS" ]; then COST_CENTS=$((COST_CENTS + 12)); fi
+  if [ -n "$SPLUNK_ON_ECS" ]; then COST_CENTS=$((COST_CENTS + 123 * SPLUNK_TASKS / 10)); fi
 fi
 if [ -n "$NAUTOBOT" ]; then COST_CENTS=$((COST_CENTS + 13 + 3 * (NAUTOBOT_DB_AZ_NUM - 1))); fi
 if [ -n "$WORKFLOW" ]; then COST_CENTS=$((COST_CENTS + 5)); fi
@@ -1187,7 +1200,9 @@ if [ -z "$SKIP_ANALYTICS" ]; then
     echo "Splunk Enterprise（splunk/splunk:$SPLUNK_VERSION・試用ライセンス）を立てる。Splunk のライセンスと Splunk General Terms に同意して起動する"
     ensure_secret "/$PREFIX/splunk/admin-password" password "Splunk admin password (created by ops/up.sh)"
     ensure_secret "/$PREFIX/splunk/hec-token" uuid "Splunk HEC token (created by ops/up.sh)"
-    ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX")
+    # クラスター（SPLUNK_AZ_NUM が 2 か 3）は、manager と indexer と search head が互いを確かめる合言葉（pass4SymmKey）も作る
+    if [ "$SPLUNK_AZ_NUM" -gt 1 ]; then ensure_secret "/$PREFIX/splunk/idxc-secret" password "Splunk indexer cluster key (created by ops/up.sh)"; fi
+    ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX" -var "splunk_az_num=$SPLUNK_AZ_NUM")
   fi
   # EMR Serverless のアプリの上限（maximum_capacity。terraform/pipeline/analytics の max_cpu / max_memory の既定値と同じ値。tests/test_analytics.py が検査）
   EMR_MAX_CPU="12 vCPU"; EMR_MAX_MEMORY="48 GB"
@@ -1254,24 +1269,60 @@ if [ -z "$SKIP_ANALYTICS" ]; then
   APP_ID=$(tf pipeline/analytics output -raw application_id); echo "APP_ID=$APP_ID"
   if [ -n "$SPLUNK_ON_ECS" ]; then
     # Spark のジョブは起動してすぐ HEC に送るので、Splunk が受けられるようになってから起こす（初回の起動は設定の展開で 5〜10 分）。
-    # タスクのヘルスチェック（/sbin/checkstate.sh）が HEALTHY になるのを待つ
-    log "7-4b. Splunk（ECS）が起動するのを待つ（最大 20 分）"
-    AN_CLUSTER=$(tf pipeline/analytics output -raw analytics_cluster_name); SP_SERVICE=$(tf pipeline/analytics output -raw splunk_service_name)
-    SP_HEALTH=""
+    # タスクのヘルスチェック（/sbin/checkstate.sh）が HEALTHY になるのを待つ。クラスター（SPLUNK_AZ_NUM が 2 か 3）は manager・indexer・
+    # search head の 3 つのサービスの全部のタスク（indexer は manager に加わるまで、search head は manager に加わった indexer を全部検索できるまで HEALTHY にならない）
+    # クラスターは全タスクの HEALTHY のあとに 2 つ見る。引数はサービス（search head、manager、indexer の順。SP_SERVICES）。
+    # 1. indexer の AZ。AZ に 1 台ずつは Fargate の振り分けに任せている（保証ではない）ので、同じ AZ に 2 台いたら注意だけ出す。
+    # 2. search head の突き合わせ（splunk/peers_check.py）の判定。判定が変わるたびに PID 1 の stdout に書く行「nwc-peer-check state=… reason=…」を、
+    #    いまの search head のタスクのログストリーム（splunk/splunk/<タスク ID>）から読む。state=ok で Up の peer が indexer の数になるまで待ち
+    #    （最大 6 分）、ならなければ止まる。行が 1 つも無いのも成功にしない
+    splunk_cluster_check() {
+      local azs sh_task="" line="" i
+      azs=$(aws ecs describe-tasks --region "$REGION" --cluster "$AN_CLUSTER" --query 'tasks[].availabilityZone' --output text --tasks \
+        $(aws ecs list-tasks --region "$REGION" --cluster "$AN_CLUSTER" --service-name "$3" --desired-status RUNNING --query 'taskArns' --output text) 2>/dev/null || true)
+      azs=$(echo $azs | tr ' ' '\n' | sort)
+      if [ -n "$(echo "$azs" | uniq -d)" ]; then
+        printf '\033[1;33m%s\033[0m\n' "注意: indexer のタスクが同じ AZ に 2 台いる（$(echo $azs)）。その AZ が落ちると、その 2 台にある複製が一緒に無くなる。止めずに進む（AZ に 1 台ずつは Fargate の振り分けに任せていて、保証ではない）"
+      fi
+      for i in $(seq 1 24); do
+        sh_task=$(aws ecs list-tasks --region "$REGION" --cluster "$AN_CLUSTER" --service-name "$1" --desired-status RUNNING --query 'taskArns[0]' --output text 2>/dev/null || true)
+        line=$(aws logs filter-log-events --region "$REGION" --log-group-name "/ecs/$PREFIX-splunk" --log-stream-names "splunk/splunk/${sh_task##*/}" \
+          --filter-pattern '"nwc-peer-check"' --query 'events[].message' --output text 2>/dev/null | tr '\t' '\n' | grep '^nwc-peer-check ' | tail -n 1 || true)
+        case "$line" in
+          "nwc-peer-check state=ok reason=peers_up:"*)
+            if [ "${line##*:}" -ge "$SPLUNK_AZ_NUM" ]; then echo "search head は indexer を全部（${SPLUNK_AZ_NUM} 台）同じ GUID で検索できる（$line）"; return 0; fi ;;
+        esac
+        sleep 15
+      done
+      [ -n "$line" ] || die "search head のタスク（${sh_task##*/}）は、突き合わせ（splunk/peers_check.py）をまだ 1 回もしていない（6 分待っても判定の行「nwc-peer-check …」がロググループ /ecs/$PREFIX-splunk の splunk/splunk/${sh_task##*/} に無い）。search head が入れ替わったばかりなら、HEALTHY になってから打ち直す"
+      die "search head の突き合わせ（splunk/peers_check.py）が 6 分たっても ok（Up の indexer が ${SPLUNK_AZ_NUM} 台）にならない。最新の判定は「$line」（mismatch: search head が古い GUID の indexer を持っている。続けば ECS が search head を入れ替える。skip: manager に聞けない。error: search head の peers を読めない）。ロググループ /ecs/$PREFIX-splunk を見る"
+    }
+    log "7-4b. Splunk（ECS。タスク ${SPLUNK_TASKS} つ）が起動するのを待つ（最大 20 分）"
+    AN_CLUSTER=$(tf pipeline/analytics output -raw analytics_cluster_name); SP_SERVICES=$(tf pipeline/analytics output -raw splunk_service_name)
+    if [ "$SPLUNK_AZ_NUM" -gt 1 ]; then
+      SP_SERVICES="$SP_SERVICES $(tf pipeline/analytics output -raw splunk_cm_service_name) $(tf pipeline/analytics output -raw splunk_idx_service_name)"
+    fi
+    SP_HEALTHY=0; SP_HEALTH=""
     for i in $(seq 1 80); do
-      SP_TASK=$(aws ecs list-tasks --region "$REGION" --cluster "$AN_CLUSTER" --service-name "$SP_SERVICE" --desired-status RUNNING \
-        --query 'taskArns[0]' --output text 2>/dev/null || echo "")
-      if [ -n "$SP_TASK" ] && [ "$SP_TASK" != None ]; then
-        SP_HEALTH=$(aws ecs describe-tasks --region "$REGION" --cluster "$AN_CLUSTER" --tasks "$SP_TASK" \
-          --query 'tasks[0].healthStatus' --output text 2>/dev/null || echo "")
-        [ "$SP_HEALTH" = HEALTHY ] && break
+      SP_TASKS=""
+      for svc in $SP_SERVICES; do
+        SP_TASKS="$SP_TASKS $(aws ecs list-tasks --region "$REGION" --cluster "$AN_CLUSTER" --service-name "$svc" --desired-status RUNNING \
+          --query 'taskArns' --output text 2>/dev/null || echo "")"
+      done
+      SP_TASKS=$(echo $SP_TASKS)   # 空白とタブを 1 つの空白に（describe-tasks の --tasks に分けて渡す）
+      if [ -n "$SP_TASKS" ] && [ "$SP_TASKS" != None ]; then
+        SP_HEALTH=$(aws ecs describe-tasks --region "$REGION" --cluster "$AN_CLUSTER" --tasks $SP_TASKS \
+          --query 'tasks[].healthStatus' --output text 2>/dev/null || echo "")
+        SP_HEALTHY=$(echo $SP_HEALTH | tr ' \t' '\n\n' | grep -c '^HEALTHY$' || true)
+        [ "$SP_HEALTHY" -ge "$SPLUNK_TASKS" ] && break
       fi
       sleep 15
     done
-    if [ "$SP_HEALTH" = HEALTHY ]; then
+    if [ "$SP_HEALTHY" -ge "$SPLUNK_TASKS" ]; then
       echo "Splunk は起動した"
+      if [ "$SPLUNK_AZ_NUM" -gt 1 ]; then splunk_cluster_check $SP_SERVICES; fi
     else
-      printf '\033[1;33m%s\033[0m\n' "Splunk が 20 分たっても HEALTHY にならない（いまは「${SP_HEALTH:-タスク無し}」）。ロググループ /ecs/$PREFIX-splunk を見る。Spark のジョブはこのまま起こす（届かない間の行は HEC への送信で失敗し、ジョブの再試行に任せる）"
+      printf '\033[1;33m%s\033[0m\n' "Splunk が 20 分たっても HEALTHY にならない（HEALTHY は ${SPLUNK_TASKS} つのうち ${SP_HEALTHY} つ。いまは「${SP_HEALTH:-タスク無し}」）。ロググループ /ecs/$PREFIX-splunk を見る。Spark のジョブはこのまま起こす（届かない間の行は HEC への送信で失敗し、ジョブの再試行に任せる）"
     fi
   fi
   # ジョブのキー（terraform の output job_driver_json_<キー>。spark_jobs のキー）から EMR Serverless のジョブ名を引く。ジョブ名はここでだけ決める。

@@ -152,6 +152,21 @@ output "splunk_port_forward_command" {
   value       = local.splunk_on_ecs ? "aws ssm start-session --region ${var.region} --target ${local.web_instance_id} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{\"host\":[\"splunk.${local.service_namespace}\"],\"portNumber\":[\"8000\"],\"localPortNumber\":[\"8000\"]}'" : ""
 }
 
+output "splunk_cm_service_name" {
+  description = "ECS service of the Splunk cluster manager (empty unless splunk_az_num is 2 or 3)"
+  value       = local.splunk_on_ecs && local.splunk_cluster ? aws_ecs_service.splunk_cm[0].name : ""
+}
+
+output "splunk_idx_service_name" {
+  description = "ECS service of the Splunk indexers, one task per AZ (empty unless splunk_az_num is 2 or 3)"
+  value       = local.splunk_on_ecs && local.splunk_cluster ? aws_ecs_service.splunk_idx[0].name : ""
+}
+
+output "splunk_cm_port_forward_command" {
+  description = "Open the Web UI of the Splunk cluster manager (indexer clustering status) at http://localhost:8001 through the web EC2 (SSM port forward; same admin password). Empty unless splunk_az_num is 2 or 3"
+  value       = local.splunk_on_ecs && local.splunk_cluster ? "aws ssm start-session --region ${var.region} --target ${local.web_instance_id} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{\"host\":[\"splunk-cm.${local.service_namespace}\"],\"portNumber\":[\"8000\"],\"localPortNumber\":[\"8001\"]}'" : ""
+}
+
 output "splunk_password_command" {
   description = "Print the Splunk admin password (SSM SecureString created by ops/up.sh). Empty unless the Splunk runs on ECS"
   value       = local.splunk_on_ecs ? "aws ssm get-parameter --region ${var.region} --name ${local.splunk_password_parameter} --with-decryption --query Parameter.Value --output text" : ""

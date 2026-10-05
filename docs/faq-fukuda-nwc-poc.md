@@ -2036,3 +2036,48 @@ AWS 版は、エージェントのツール `centrality`（`agent/graph.py` の 
 **出典**
 
 - https://docs.victoriametrics.com/victoriametrics/cluster-victoriametrics/ （Replication and data safety。2026-10-04 に確認）
+
+### Q. containerlab で使えるシスコの機器は、何がある？
+
+**結論**
+
+11 種類ある。コンテナのまま動くのは Cisco XRd と Cisco IOL の 2 つだけで、残りは VM をコンテナで包んで動かす（vrnetlab）。どれもイメージは配られていないので、シスコから自分で手に入れる。
+
+**一覧**（containerlab の公式の表。2026-10-05 に確認）
+
+| 機器 | kind | OS | 動かし方 |
+|---|---|---|---|
+| Cisco XRd | `cisco_xrd` | IOS XR | コンテナ |
+| Cisco IOL（IOL-L2 を含む） | `cisco_iol` | IOS / IOS XE | コンテナ |
+| Cisco XRd vRouter | `cisco_xrd_vrouter` | IOS XR | VM |
+| Cisco XRv | `cisco_xrv` | IOS XR | VM |
+| Cisco XRv9k | `cisco_xrv9k` | IOS XR | VM |
+| Cisco CSR1000v | `cisco_csr1000v` | IOS XE | VM |
+| Cisco 8000v | `cisco_c8000v` | IOS XE | VM |
+| Cisco Catalyst 9000v | `cisco_cat9kv` | IOS XE | VM |
+| Cisco Nexus 9000v | `cisco_n9kv` | NX-OS | VM |
+| Cisco 8000 | `cisco_c8000` | IOS XR | VM（表では「VM+」） |
+| Cisco FTDv | `cisco_ftdv` | FTD（ファイアウォール） | VM |
+
+vrnetlab のページには、このほかに Cisco vIOS と Cisco ASAv も載っている。
+
+**コンテナと VM の違い**
+
+| | コンテナ（XRd、IOL） | VM（vrnetlab） |
+|---|---|---|
+| 仕組み | ふつうのコンテナとして動く | コンテナの中で QEMU / KVM が VM を動かす |
+| ホストに要るもの | Docker だけ | KVM。ホストが VM なら、入れ子の仮想化（nested virtualization）が有効であること |
+| 起動 | 速い | 遅い（分の単位） |
+| メモリ | 少ない | 多い（1 台で数 GB） |
+| イメージ | シスコから手に入れたものを読み込む | シスコの qcow2 から、`srl-labs/vrnetlab` で自分でビルドする |
+
+**このプロジェクトで使うなら**
+
+- いまの lab は Nokia SR Linux（コンテナ、イメージは公開）を EC2 で動かしている。
+- シスコを足すなら、コンテナで動く XRd か IOL が向いている。VM のものは、EC2 で入れ子の仮想化が使えるインスタンスの型が要る。
+- 未確認: いまの lab の EC2 の型で入れ子の仮想化が使えるか。XRd と IOL のイメージを手に入れる条件（シスコの契約や CML のライセンス）。XRd が要るメモリとカーネルの設定。
+
+**出典**
+
+- https://containerlab.dev/manual/kinds/ （2026-10-05 に確認）
+- https://containerlab.dev/manual/vrnetlab/ （2026-10-05 に確認）

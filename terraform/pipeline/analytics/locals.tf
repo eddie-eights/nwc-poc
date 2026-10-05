@@ -121,8 +121,9 @@ locals {
   # splunk: Splunk Enterprise をここの ECS で立てる（splunk.tf。HEC は VPC の中の splunk.<名前空間>:8088）。
   # AWS の外の Splunk（NAT Gateway から出る）は 2026-09-28 にやめた（NAT を作らない）
   splunk_on_ecs = local.sink_splunk
-  # 証明書はイメージの自己署名なので検証しない（VPC の中だけの通信で、宛先は Cloud Map の名前）
-  splunk_hec_url         = "https://splunk.${local.service_namespace}:8088"
+  # 証明書はイメージの自己署名なので検証しない（VPC の中だけの通信で、宛先は Cloud Map の名前）。
+  # クラスター（var.splunk_az_num が 2 か 3。splunk.tf）のときは indexer の splunk-idx（A レコードが indexer の数だけ）へ送る
+  splunk_hec_url         = local.splunk_cluster ? "https://splunk-idx.${local.service_namespace}:8088" : "https://splunk.${local.service_namespace}:8088"
   splunk_skip_tls_verify = true
   # HEC の token を入れた SSM の SecureString（値は Terraform も state も持たない。ジョブが起動時に ssm:GetParameter で読む）。
   # ops/up.sh が作り、タスクが同じ値を SPLUNK_HEC_TOKEN として受けて HEC の token にする

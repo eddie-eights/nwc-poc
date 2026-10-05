@@ -197,6 +197,17 @@ variable "splunk_task_memory" {
   }
 }
 
+variable "splunk_az_num" {
+  description = "Number of AZs of the Splunk on ECS (splunk.tf). 1 = one standalone task (as before). 2 or 3 = an indexer cluster: one cluster manager (splunk-cm), one indexer per AZ (subnets a, b, c from the front; splunk-idx, which the HEC URL points to) replicating every event to each other, and one search head (splunk, the saved searches and the UI). Fargate spreads the indexers across the AZs on a best-effort basis. ops/up.sh passes SPLUNK_AZ_NUM"
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2, 3], var.splunk_az_num)
+    error_message = "splunk_az_num must be 1, 2 or 3."
+  }
+}
+
 variable "splunk_ephemeral_storage_gib" {
   description = "Ephemeral storage of the Splunk task (GiB, 21-200). Indexes live here and vanish with the task; Splunk stops indexing below 5 GB free"
   type        = number

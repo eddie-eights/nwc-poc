@@ -5,7 +5,7 @@ Splunk のアラートアクション（splunk/netops_alerts/bin/netops_sns.py�
 イメージ（splunk/Dockerfile・entrypoint.sh、grafana/start.sh）と ops/up.sh・ops/check.sh がその配線を持つこと。
 受け手の側は tests/test_workflow.py（SQS → ワークフロー）と tests/test_sync.py（Lambda → Neptune の status）。
 実行は uv run --group dev python tests/test_alerts.py（boto3 が無くても通る。あれば手元の偽の SNS へ本物の boto3 で publish して確かめる）"""
-import ast, contextlib, csv, glob, gzip, http.server, importlib.util, io, json, os, re, subprocess, sys, tempfile, threading, urllib.parse
+import ast, contextlib, csv, glob, gzip, http.server, importlib.util, io, json, os, re, signal, subprocess, sys, tempfile, threading, time, urllib.parse
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, os.path.join(ROOT, "workflow"))
@@ -123,6 +123,85 @@ with tempfile.TemporaryDirectory() as tmp:
           sns.load_env(ENVF, environ={"AWS_REGION": "us-east-1", "OTHER": "x"})["AWS_REGION"] == "us-east-1"
           and "OTHER" not in sns.load_env(ENVF, environ={"OTHER": "x"})
           and sns.load_env(os.path.join(tmp, "none"), environ={"ALERTS_TOPIC_ARN": TOPIC}) == {"ALERTS_TOPIC_ARN": TOPIC})
+    up_stub = os.path.join(tmp, "upstream.sh")   # 上流の入口（/sbin/entrypoint.sh）の代わり
+    with open(up_stub, "w", encoding="utf-8") as f:
+        f.write('echo "upstream $*"\n')
+    stub_role = os.path.join(tmp, "entrypoint-role.sh")
+    with open(stub_role, "w", encoding="utf-8") as f:
+        f.write(ep.replace("sudo -n -u splunk rm -rf ", "echo removed ").replace("/sbin/entrypoint.sh", f"bash {up_stub}"))
+    roles = {}
+    for role in (None, "splunk_standalone", "splunk_search_head", "splunk_cluster_master", "splunk_indexer"):
+        r = subprocess.run(["bash", stub_role, "start-service"], capture_output=True, text=True,
+                           env={"PATH": os.environ["PATH"], "NETOPS_ALERTS_ENV": os.path.join(tmp, "role.env"), **({"SPLUNK_ROLE": role} if role else {})})
+        roles[role] = (r.returncode, r.stdout.splitlines())
+    check("クラスター（「Splunk をクラスターにする（004）」）では保存済みサーチ（app netops_alerts）を search head だけに残す: SPLUNK_ROLE が無い・standalone・"
+          "search_head は消さず、manager と indexer は上流の入口の前に /opt/splunk-etc/apps/netops_alerts を splunk ユーザーで消す（同じアラートが台の数だけ出ない）",
+          all(roles[k] == (0, ["upstream start-service"]) for k in (None, "splunk_standalone", "splunk_search_head"))
+          and all(roles[k] == (0, ["removed /opt/splunk-etc/apps/netops_alerts", "upstream start-service"]) for k in ("splunk_cluster_master", "splunk_indexer"))
+          and ep.count("sudo -n -u splunk rm -rf /opt/splunk-etc/apps/netops_alerts") == 1)
+
+    # indexer は止められると splunk offline を打ってから、上流の入口へ SIGTERM を回す（「Splunk をクラスターにする（004）」のリスク 11）
+    up_term = os.path.join(tmp, "upstream-term.sh")   # 上流の入口と同じく、SIGTERM で teardown（splunk stop）して終わる
+    with open(up_term, "w", encoding="utf-8") as f:
+        f.write('trap \'echo "upstream teardown"; kill $s; exit 0\' TERM\necho "upstream $*"\nsleep 30 &\ns=$!\nwait $s\n')
+    fake_args = os.path.join(tmp, "offline.args")
+    fake = os.path.join(tmp, "fake-splunk")   # sudo -n -u splunk /opt/splunk/bin/splunk の代わり。引数をファイルに書き、FAKE_SLEEP 秒かけて FAKE_RC で終わる
+    with open(fake, "w", encoding="utf-8") as f:
+        f.write(f'#!/bin/bash\nprintf "%s\\n" "$@" > {fake_args}\necho "fake offline"\nsleep "${{FAKE_SLEEP:-0}}"\nexit "${{FAKE_RC:-0}}"\n')
+    bindir = os.path.join(tmp, "bin")   # GNU の timeout（コンテナにはある。macOS には無い）と同じ約束: 打ち切ったら 124
+    os.makedirs(bindir, exist_ok=True)
+    with open(os.path.join(bindir, "timeout"), "w", encoding="utf-8") as f:
+        f.write(f"#!{sys.executable}\nimport subprocess, sys\ntry:\n    sys.exit(subprocess.run(sys.argv[2:], timeout=float(sys.argv[1])).returncode)\n"
+                "except subprocess.TimeoutExpired:\n    sys.exit(124)\n")
+    for x in (fake, os.path.join(bindir, "timeout")):
+        os.chmod(x, 0o755)
+
+    def term_run(role, offline_timeout=None, **env):
+        """入口を走らせ、上流の入口が起きたら SIGTERM を送る。(終了コード, 出力の行, 秒)"""
+        script, out = os.path.join(tmp, "entrypoint-term.sh"), os.path.join(tmp, "term.out")
+        s = ep.replace("sudo -n -u splunk rm -rf ", "echo removed ").replace("sudo -n -u splunk /opt/splunk/bin/splunk", fake).replace("/sbin/entrypoint.sh", f"bash {up_term}")
+        if offline_timeout:
+            s = re.sub(r"\nOFFLINE_TIMEOUT=\d+\n", f"\nOFFLINE_TIMEOUT={offline_timeout}\n", s)
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(s)
+        if os.path.exists(fake_args):
+            os.remove(fake_args)
+        t0 = time.time()
+        with open(out, "w", encoding="utf-8") as fo:
+            p = subprocess.Popen(["bash", script, "start-service"], stdout=fo, stderr=subprocess.STDOUT,
+                                 env={"PATH": bindir + os.pathsep + os.environ["PATH"], "NETOPS_ALERTS_ENV": os.path.join(tmp, "term.env"),
+                                      "SPLUNK_ROLE": role, "SPLUNK_PASSWORD": "pw-not-printed", **env})
+        while "upstream start-service" not in read(out) and time.time() - t0 < 10:
+            time.sleep(0.05)
+        p.send_signal(signal.SIGTERM)
+        rc = p.wait(timeout=20)
+        return rc, read(out).splitlines(), time.time() - t0
+
+    rc, lines, _ = term_run("splunk_indexer")
+    args = read(fake_args).splitlines() if os.path.exists(fake_args) else []
+    check("indexer: SIGTERM で splunk offline を splunk ユーザーで打ち（admin で認証）、終わったら上流の入口へ SIGTERM を回して teardown させる。"
+          "かかった秒数を nwc-offline の行に出し、パスワードは出さない",
+          rc == 0 and lines[:4] == ["removed /opt/splunk-etc/apps/netops_alerts", "upstream start-service", "nwc-offline: start", "fake offline"]
+          and re.fullmatch(r"nwc-offline: rc=0 [01]s", lines[4]) is not None and lines[5:] == ["upstream teardown"]
+          and args == ["offline", "-auth", "admin:pw-not-printed"] and not any("pw-not-printed" in l for l in lines)
+          and 'timeout "$OFFLINE_TIMEOUT" sudo -n -u splunk /opt/splunk/bin/splunk offline -auth "admin:${SPLUNK_PASSWORD:-}" < /dev/null' in ep)
+    rc, lines, sec = term_run("splunk_indexer", offline_timeout=1, FAKE_SLEEP="30")
+    check("indexer: offline が OFFLINE_TIMEOUT 秒で終わらなければ打ち切り（124）、それでも上流の入口へ SIGTERM を回す",
+          rc == 0 and lines[2:4] == ["nwc-offline: start", "fake offline"] and re.fullmatch(r"nwc-offline: rc=124 [123]s", lines[4]) is not None
+          and lines[5:] == ["upstream teardown"] and sec < 10)
+    rc, lines, _ = term_run("splunk_indexer", FAKE_RC="22")
+    check("indexer: offline が失敗しても（splunkd がまだ起きていないなど）上流の入口へ SIGTERM を回して止まる",
+          rc == 0 and lines[2:4] == ["nwc-offline: start", "fake offline"] and re.fullmatch(r"nwc-offline: rc=22 [01]s", lines[4]) is not None
+          and lines[5:] == ["upstream teardown"])
+    roles = {r: term_run(r) for r in ("splunk_search_head", "splunk_cluster_master", "splunk_standalone")}
+    check("indexer 以外（search head・manager・standalone）は今までどおり上流の入口へ exec し、SIGTERM は上流がそのまま受ける（offline は打たない）",
+          all(rc == 0 and lines[-2:] == ["upstream start-service", "upstream teardown"] and not any("nwc-offline" in l for l in lines)
+              for rc, lines, _ in roles.values()) and not os.path.exists(fake_args))
+    stf_idx = read("terraform", "pipeline", "analytics", "splunk.tf").split('resource "aws_ecs_task_definition" "splunk_idx"', 1)[1].split("\nresource ", 1)[0]
+    stop_timeout = int(re.search(r"\n    stopTimeout = (\d+)\n", stf_idx).group(1))
+    offline_timeout = int(re.search(r"\nOFFLINE_TIMEOUT=(\d+)\n", ep).group(1))
+    check("offline を打ち切る秒数と、そのあとの splunk stop（手元で 47 秒）が、indexer のタスクの stopTimeout（splunk.tf。Fargate の上限 120 秒）に収まる",
+          stop_timeout == 120 and offline_timeout + 47 <= stop_timeout)
 
     # ---- SNS へ publish（boto3）
     check("リージョンはトピックの ARN から取る（ARN で分からないときだけ AWS_REGION）",
@@ -518,14 +597,134 @@ check("app の中に認証情報や local/ は無い（公開リポジトリ）"
 # ---- Splunk のイメージ
 df = read("splunk", "Dockerfile")
 dcode = [l for l in df.splitlines() if l.strip() and not l.startswith("#")]
-check("Splunk のイメージは上流の公式イメージに app と入口を足すだけ（RUN は無い = arm64 の PC でも QEMU 無しでビルドできる。boto3 は同梱しない）",
+check("Splunk のイメージは上流の公式イメージに app と入口とヘルスチェックの突き合わせ（peers_check.py）を足すだけ（RUN は無い = arm64 の PC でも QEMU 無しでビルドできる。boto3 は同梱しない）",
       dcode == ["ARG SPLUNK_VERSION=10.4.3", "FROM splunk/splunk:${SPLUNK_VERSION}", "COPY --chown=splunk:splunk netops_alerts /opt/splunk-etc/apps/netops_alerts",
-                "COPY --chmod=0755 entrypoint.sh /sbin/nwc-entrypoint.sh", 'ENTRYPOINT ["/sbin/nwc-entrypoint.sh"]', 'CMD ["start-service"]'])
+                "COPY --chmod=0755 entrypoint.sh /sbin/nwc-entrypoint.sh", "COPY --chmod=0755 peers_check.py /sbin/nwc-peers-check.py",
+                'ENTRYPOINT ["/sbin/nwc-entrypoint.sh"]', 'CMD ["start-service"]'])
+
+# ---- search head のヘルスチェックに足す突き合わせ（splunk/peers_check.py。「Splunk をクラスターにする（004）」の手当て A）
+pc = load("splunk/peers_check.py", "peers_check")
+pcsrc = read("splunk", "peers_check.py")
+check("peers_check.py は OS の /usr/bin/python3 で標準ライブラリだけを読む（Splunk の Python に頼らない）。イメージの /sbin/nwc-peers-check.py を、"
+      "クラスターの search head のヘルスチェック（splunk.tf）が checkstate.sh のあとに呼ぶ",
+      pcsrc.startswith("#!/usr/bin/python3\n") and imported(ast.walk(ast.parse(pcsrc))) <= set(sys.stdlib_module_names)
+      and '"/sbin/checkstate.sh && /sbin/nwc-peers-check.py"' in read("terraform", "pipeline", "analytics", "splunk.tf"))
+check("peers_check.py: SPLUNK_CLUSTER_MASTER_URL（上流の入口と同じく名前だけ）を管理 API の URL にする（https:// とポート 8089 が無ければ足す）",
+      pc.manager_base("splunk-cm.t-nwc-poc.internal") == "https://splunk-cm.t-nwc-poc.internal:8089"
+      and pc.manager_base(" https://x:8089/ ") == "https://x:8089" and pc.manager_base("https://x") == "https://x:8089"
+      and pc.manager_base("x:18089") == "https://x:18089")
+
+
+def _cm(guid, status="Up", label=None):  # cluster/manager/peers の entry（name が GUID）
+    return {"name": guid, "content": {"status": status, **({"label": label} if label else {})}}
+
+
+def _sh(guid, status="Up", disabled=False, host="10.0.1.10:8089"):  # search/distributed/peers の entry（name が host:port）
+    return {"name": host, "content": {"guid": guid, "status": status, "disabled": disabled}}
+
+
+check("peers_check.py の missing: manager が Up と言う peer のうち、search head が同じ GUID の Up で持っていないもの（GUID の大小は見ない。manager も Down なら見ない。"
+      "search head で無効・Down は持っていない扱い。名前は label、無ければ GUID）",
+      pc.missing([_cm("AAA-1", label="idx-a"), _cm("BBB-2", label="idx-b"), _cm("CCC-3", "Down", "idx-c")], [_sh("aaa-1"), _sh("BBB-2", disabled=True)]) == ["idx-b"]
+      and pc.missing([_cm("AAA-1", label="idx-a")], [_sh("AAA-1", "Down")]) == ["idx-a"]
+      and pc.missing([_cm("AAA-1", label="idx-a")], [_sh("AAA-1", disabled="1")]) == ["idx-a"]
+      and pc.missing([_cm("NEW-9")], [_sh("OLD-1")]) == ["NEW-9"]
+      and pc.missing([_cm("AAA-1"), _cm("BBB-2")], [_sh("AAA-1"), _sh("BBB-2", host="10.0.2.10:8089")]) == []
+      and pc.missing([], [_sh("AAA-1")]) == [])
+_PW = "pw-must-not-be-printed"
+_PCENV = {"SPLUNK_CLUSTER_MASTER_URL": "splunk-cm.t-nwc-poc.internal", "SPLUNK_PASSWORD": _PW}
+
+
+def _pc_main(environ, resp, d=None, out_file=None):  # resp: パス → entry の並び（例外なら投げる）。d: 判定の行と前の行を置く場所（同じ d なら続きの回）
+    calls, out = [], io.StringIO()   # 戻り値は (終了コード, 出力, 問い合わせ, PID 1 の stdout の代わりのファイルの行)
+    d = d or tempfile.mkdtemp()
+    out_file = out_file or os.path.join(d, "pid1-stdout")
+
+    def fetch(base, path, password):
+        calls.append((base, path, password))
+        if isinstance(resp[path], Exception):
+            raise resp[path]
+        return resp[path]
+    with contextlib.redirect_stdout(out):
+        rc = pc.main(environ=environ, fetch=fetch, out=out_file, state_file=os.path.join(d, "state"))
+    lines = open(out_file, encoding="utf-8").read().splitlines() if os.path.exists(out_file) else []
+    return rc, out.getvalue(), calls, lines
+
+
+_ok = {pc.CM_PEERS: [_cm("AAA-1", label="idx-a")], pc.SH_PEERS: [_sh("AAA-1")]}
+_runs = {"none": _pc_main({"SPLUNK_PASSWORD": _PW}, _ok), "ok": _pc_main(_PCENV, _ok),
+         "lost": _pc_main(_PCENV, {pc.CM_PEERS: [_cm("AAA-1", label="idx-a"), _cm("BBB-2", label="idx-b")], pc.SH_PEERS: [_sh("AAA-1"), _sh("OLD-1")]}),
+         "cm_down": _pc_main(_PCENV, {pc.CM_PEERS: OSError("refused"), pc.SH_PEERS: [_sh("AAA-1")]}),
+         "sh_down": _pc_main(_PCENV, {pc.CM_PEERS: [_cm("AAA-1")], pc.SH_PEERS: TimeoutError("timed out")})}
+check("peers_check.py の main: SPLUNK_CLUSTER_MASTER_URL が無い（standalone）なら聞かずに 0。manager に聞けなければ 0（manager が落ちただけで search head を入れ替えない）、"
+      "search head の peers を読めない・食い違えば 1（label を出す）。問い合わせは manager と自分の管理 API へ admin のパスワードで、パスワードは出力しない",
+      _runs["none"][:3] == (0, "", [])
+      and _runs["ok"][:3] == (0, "", [("https://splunk-cm.t-nwc-poc.internal:8089", pc.CM_PEERS, _PW), ("https://127.0.0.1:8089", pc.SH_PEERS, _PW)])
+      and _runs["lost"][0] == 1 and _runs["lost"][1].rstrip().endswith(": idx-b")
+      and _runs["cm_down"][0] == 0 and "OSError" in _runs["cm_down"][1] and len(_runs["cm_down"][2]) == 1
+      and _runs["sh_down"][0] == 1 and "TimeoutError" in _runs["sh_down"][1]
+      and not any(_PW in r[1] for r in _runs.values()))
+check("peers_check.py の判定の行（手当て B）: ok / mismatch / skip / error を「nwc-peer-check state=<判定> reason=<理由>」の 1 行で PID 1 の stdout（/proc/1/fd/1）に書く。"
+      "理由は Up の peer の数・消えた peer の名前・例外の型だけで、例外の文やパスワードは入れない。standalone は書かない",
+      pc.OUT == "/proc/1/fd/1" and pc.PREFIX == "nwc-peer-check"
+      and _runs["none"][3] == [] and _runs["ok"][3] == ["nwc-peer-check state=ok reason=peers_up:1"]
+      and _runs["lost"][3] == ["nwc-peer-check state=mismatch reason=lost:idx-b"]
+      and _runs["cm_down"][3] == ["nwc-peer-check state=skip reason=manager_unreachable:OSError"]
+      and _runs["sh_down"][3] == ["nwc-peer-check state=error reason=sh_peers_unreadable:TimeoutError"]
+      and _pc_main(_PCENV, {pc.CM_PEERS: [_cm("AAA-1")], pc.SH_PEERS: RuntimeError(f"admin:{_PW}")})[3] == ["nwc-peer-check state=error reason=sh_peers_unreadable:RuntimeError"])
+_pcd = tempfile.mkdtemp()
+_two = {pc.CM_PEERS: [_cm("AAA-1", label="idx-a"), _cm("BBB-2", label="idx-b")], pc.SH_PEERS: [_sh("AAA-1"), _sh("BBB-2")]}
+_gone = {pc.CM_PEERS: [_cm("AAA-1", label="idx a"), _cm("BBB-2", label="idx-b")], pc.SH_PEERS: [_sh("OLD-1"), _sh("BBB-2")]}
+_seq = [_pc_main(_PCENV, r, _pcd)[3] for r in (_ok, _ok, _two, _gone, _gone, _two, _two)]
+check("peers_check.py の判定の行: 前の回と同じ判定なら書かない（30 秒ごとに積まない）。Up の数が変われば書く。peer の名前の空白は _ にする",
+      _seq[-1] == ["nwc-peer-check state=ok reason=peers_up:1", "nwc-peer-check state=ok reason=peers_up:2",
+                   "nwc-peer-check state=mismatch reason=lost:idx_a", "nwc-peer-check state=ok reason=peers_up:2"]
+      and [len(x) for x in _seq] == [1, 1, 2, 3, 3, 4, 4])
+_pcd = tempfile.mkdtemp()
+_nowrite = _pc_main(_PCENV, _ok, _pcd, out_file=os.path.join(_pcd, "no-such-dir", "fd1"))
+_after = _pc_main(_PCENV, _ok, _pcd)
+check("peers_check.py の判定の行: 書けないときはヘルスチェックの出力に型を出し、終了コードは判定のまま。前の行として覚えないので、次の回に書ける",
+      _nowrite[0] == 0 and _nowrite[1] == f"判定の行を {os.path.join(_pcd, 'no-such-dir', 'fd1')} に書けない（FileNotFoundError）\n" and _nowrite[3] == []
+      and _after[:2] == (0, "") and _after[3] == ["nwc-peer-check state=ok reason=peers_up:1"])
+_mgmt = []
+
+
+class _Mgmt(http.server.BaseHTTPRequestHandler):  # Splunk の管理 API の代わり（平文の http）
+    def log_message(self, *a): pass
+
+    def do_GET(self):
+        _mgmt.append((self.path, self.headers.get("Authorization", "")))
+        body = json.dumps({"entry": [{"name": "AAA-1", "content": {"status": "Up"}}], "paging": {}}).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(body))); self.end_headers()
+        self.wfile.write(body)
+
+
+_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Mgmt)
+threading.Thread(target=_srv.serve_forever, daemon=True).start()
+_pkeys = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy")
+_pkeep = {k: os.environ.get(k) for k in _pkeys}
+os.environ.update({k: "http://127.0.0.1:9" for k in _pkeys if "no_" not in k.lower()})
+os.environ.pop("NO_PROXY", None); os.environ.pop("no_proxy", None)
+try:
+    _got = pc.get(f"http://127.0.0.1:{_srv.server_port}", pc.CM_PEERS, "pw")
+finally:
+    for k, v in _pkeep.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+    _srv.shutdown()
+check("peers_check.py の get: admin の Basic 認証で ?output_mode=json&count=0 を GET し、entry の並びを返す（プロキシの環境変数は見ない）",
+      _got == [{"name": "AAA-1", "content": {"status": "Up"}}]
+      and _mgmt == [(pc.CM_PEERS + "?output_mode=json&count=0", "Basic YWRtaW46cHc=")])
 img = load("tests/check_splunk_image.py", "check_splunk_image")
 check("Splunk の版を変えたら、コンテナの検査（tests/check_splunk_image.py。その版の Python の boto3 で publish できるか）を走らせて CHECKED を書き換える: "
       "CHECKED の Splunk = Dockerfile の SPLUNK_VERSION、CHECKED の Python = python.required の版",
       img.CHECKED["splunk"] == re.search(r"^ARG SPLUNK_VERSION=(\S+)$", df, re.M).group(1)
       and img.CHECKED["python"].startswith(actions["netops_sns"]["python.required"] + ".") and set(img.CHECKED) == {"splunk", "python", "boto3"})
+check("tests/check_splunk_image.py はコンテナを消すとき、イメージの VOLUME（/opt/splunk/etc・var）の匿名ボリュームも消す"
+      "（docker rm -f -v。-v が無いと 1 回走らせるごとに約 1.3 GB 残る）",
+      re.findall(r'run\("docker", "rm",[^)]*\)', read("tests", "check_splunk_image.py")) == ['run("docker", "rm", "-f", "-v", NAME, check_rc=False)'])
 up = read("ops", "up.sh")
 check("up.sh の SPLUNK_VERSION / GRAFANA_VERSION は Dockerfile の ARG の既定値と同じ",
       re.search(r"^SPLUNK_VERSION=([\d.]+)", up, re.M).group(1) == re.search(r"ARG SPLUNK_VERSION=([\d.]+)", df).group(1)
