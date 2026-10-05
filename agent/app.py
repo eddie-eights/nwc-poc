@@ -4,11 +4,13 @@
   1. KNOWLEDGE_BASE_ID があれば Bedrock Knowledge Base の Retrieve をハイブリッド検索（ベクトル + キーワード）で呼び、候補を取る。
      RERANK_MODEL_ARN があれば、同じ Retrieve の中でリランクモデルが候補を並べ替えて上位だけを返す。
      無ければ（terraform/agent の create_knowledge_base = false。既定）資料なしでモデルとツールだけで答える
-  2. 資料と質問を Converse に渡す。ガードレールは質問（guardContent）と回答を判定する。
+  2. 資料と質問を Strands Agents のエージェントに渡す（モデルは BedrockModel。中身は Converse）。
+     ガードレールは質問（guardContent）と回答を判定する。
      モデルがトポロジのツール（topology.py。機器一覧・隣接・影響範囲・全体図。Neptune があればそこから、
      無ければコンテナ内の静的データ。機器・回線の status がいまの異常）、ログとメトリクス（evidence.py）、
      修復案の履歴（proposals.py。S3 Tables の proposal_events。読むだけで承認はできない）を使うと言ったら、
-     結果を返して往復する。ツールは MAX_TOOL_ROUNDS 回まで。達したら、その旨を断って、そこまでに分かったことで答える。
+     Strands のループが結果を返して往復する。ツールは MAX_TOOL_ROUNDS 回まで（ToolLimit のフック）。
+     達したら、その旨を断って、そこまでに分かったことで答える。
      Gateway（MCP。terraform/workflow）があれば
      ツールはそちら（mcp_client.py）から取り、届かなければコンテナ内の関数に戻す
   3. 回答の末尾に参照した資料のファイル名を付けて返す
@@ -20,6 +22,7 @@ AgentCore Runtime は 1 セッション = 1 microVM なので、モジュール�
 出力: {"status": "success", "response": "...", "sources": [...], "blocked": false} か {"status": "error", "message": "..."}
 """
 
+import copy
 import logging
 import os
 import posixpath
@@ -27,6 +30,13 @@ import posixpath
 import boto3
 from bedrock_agentcore import BedrockAgentCoreApp
 from botocore.exceptions import BotoCoreError, ClientError
+from strands import Agent
+from strands.agent.conversation_manager import NullConversationManager
+from strands.hooks import AfterModelCallEvent, AfterToolsEvent, BeforeToolsEvent, HookProvider, HookRegistry
+from strands.models import BedrockModel
+from strands.tools.executors import SequentialToolExecutor
+from strands.tools.tools import PythonAgentTool
+from strands.types.exceptions import MaxTokensReachedException
 
 import evidence
 import graph
@@ -103,8 +113,19 @@ SYSTEM_PROMPT = os.environ.get(
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("agent")
 
-bedrock = boto3.client("bedrock-runtime", region_name=BEDROCK_REGION)
 agent_runtime = boto3.client("bedrock-agent-runtime", region_name=BEDROCK_REGION)
+# Converse は Strands の BedrockModel が呼ぶ（streaming=False で Converse。ConverseStream は使わない）
+model = BedrockModel(
+    model_id=MODEL_ID,
+    region_name=BEDROCK_REGION,
+    max_tokens=MAX_TOKENS,
+    streaming=False,
+    # 既定（auto）だと Claude 以外には toolResult の status を送らない。Converse で回していたときと同じく送る
+    include_tool_result_status=True,
+    # 止めた往復は履歴に残さないので、Strands 側で質問を伏せ字にする必要はない
+    guardrail_redact_input=False,
+    **({"guardrail_id": GUARDRAIL_ID, "guardrail_version": GUARDRAIL_VERSION} if GUARDRAIL_ID else {}),
+)
 app = BedrockAgentCoreApp()
 # 質問と回答の本文だけを持つ（資料は毎回取り直すので履歴に入れない）
 history: list[dict] = []
@@ -152,42 +173,95 @@ def build_user_content(prompt: str, chunks: list[dict]) -> list[dict]:
     return content
 
 
-def converse_with_tools(request: dict) -> tuple[dict, str, int]:
-    """Converse を呼び、stopReason が tool_use のあいだはツールの結果を返して呼び直す。
+def _tool_func(tool_use: dict, **_invocation_state) -> dict:
+    """Strands のツールの入口。toolUse を run_tool に渡し、結果を toolResult にする"""
+    out = run_tool(tool_use["name"], tool_use.get("input") or {})
+    log.info("tool %s %s", tool_use["name"], tool_use.get("input"))
+    return {"toolUseId": tool_use["toolUseId"], "content": [{"json": out}],
+            "status": "error" if "error" in out else "success"}
 
-    戻り値は (最後の応答, 本文, ツールを呼んだ回数)。request["messages"] は呼び出し側のリストを壊さないよう複製する。
-    ツールの回数が MAX_TOOL_ROUNDS に達したら、その回の toolResult に TOOL_LIMIT_NOTE を添えてもう 1 回だけ呼び、
-    本文の頭に TOOL_LIMIT_PREFIX を付ける（それでもツールを呼んできたら、ツールは動かさずに本文か TOOL_LIMIT_EMPTY を返す）。
-    toolConfig は外さない（履歴に toolUse / toolResult があると、Converse は toolConfig を要る）。
+
+def strands_tools() -> list:
+    """tool_specs() の toolSpec を Strands のツールにする（並びはそのまま）。
+
+    topology.py などは Lambda や Web でも動く（toolkit.py の docstring）ので @tool で飾らず、ここで包む。
     """
-    messages = list(request["messages"])
-    request = {**request, "messages": messages}
-    tool_calls = 0
-    limited = False
-    # 1 回の往復で 1 本以上呼ぶので、MAX_TOOL_ROUNDS 回の往復までに必ず上限に達し、次の 1 回で抜ける
-    for _ in range(MAX_TOOL_ROUNDS + 1):
-        res = bedrock.converse(**request)
-        message = res["output"]["message"]
-        messages.append(message)
-        uses = [b["toolUse"] for b in message.get("content", []) if "toolUse" in b]
-        if res.get("stopReason") != "tool_use" or not uses or limited:
-            break
-        results = []
-        for u in uses:
-            tool_calls += 1
-            out = run_tool(u["name"], u.get("input") or {})
-            log.info("tool %s %s", u["name"], u.get("input"))
-            results.append({"toolResult": {"toolUseId": u["toolUseId"], "content": [{"json": out}],
-                                           "status": "error" if "error" in out else "success"}})
-        if tool_calls >= MAX_TOOL_ROUNDS:
-            limited = True
-            results.append({"text": TOOL_LIMIT_NOTE})
-        messages.append({"role": "user", "content": results})
-    text = "".join(b.get("text", "") for b in message.get("content", []))
-    if limited and res.get("stopReason") != "guardrail_intervened":
-        log.warning("tool limit reached: tools=%d stop=%s", tool_calls, res.get("stopReason"))
+    return [PythonAgentTool(s["toolSpec"]["name"], s["toolSpec"], _tool_func) for s in tool_specs()]
+
+
+class ToolLimit(HookProvider):
+    """ツールの回数の上限。1 回の質問ごとに作る。
+
+    Strands の limits={"turns": N} は往復の数で数えるが、ここでは 1 往復に何本呼んでもそれぞれ 1 回と数える。
+    回数が MAX_TOOL_ROUNDS に達したら、その回の toolResult の後ろに TOOL_LIMIT_NOTE を添えてモデルをもう 1 回だけ呼ばせ、
+    それでもツールを呼んできたら動かさずにループを止める（モデルの呼び出しは多くても MAX_TOOL_ROUNDS + 1 回）。
+    toolConfig は外さない（履歴に toolUse / toolResult があると、Converse は toolConfig を要る）。
+    本文と stopReason は、モデルが最後に返したものをそのまま持つ（max_tokens のとき Strands は toolUse を英語の断りに
+    置き換えてから履歴に入れるので、Strands の履歴からは取らない）。
+    """
+
+    def __init__(self):
+        self.calls = 0
+        self.limited = False
+        self.stop = None
+        self.message: dict = {}
+
+    def register_hooks(self, registry: HookRegistry, **_kwargs) -> None:
+        registry.add_callback(AfterModelCallEvent, self.after_model)
+        registry.add_callback(BeforeToolsEvent, self.before_tools)
+        registry.add_callback(AfterToolsEvent, self.after_tools)
+
+    def after_model(self, event: AfterModelCallEvent) -> None:
+        if event.stop_response is not None:
+            self.stop = event.stop_response.stop_reason
+            self.message = event.stop_response.message
+
+    def before_tools(self, event: BeforeToolsEvent) -> None:
+        if self.limited or not any("toolUse" in b for b in event.message.get("content", [])):
+            event.cancel = True
+            event.invocation_state["request_state"]["stop_event_loop"] = True
+
+    def after_tools(self, event: AfterToolsEvent) -> None:
+        if self.limited:
+            return
+        self.calls += sum(1 for b in event.message["content"] if "toolResult" in b)
+        if self.calls >= MAX_TOOL_ROUNDS:
+            self.limited = True
+            # この message がそのまま Strands の履歴に入り、次の Converse で送られる
+            event.message["content"].append({"text": TOOL_LIMIT_NOTE})
+
+
+def ask(messages: list, content: list) -> tuple[str, str | None, dict, int]:
+    """エージェントを作って 1 回の質問を回す。戻り値は (本文, 最後の stopReason, トークン数, ツールを呼んだ回数)。
+
+    messages はここで深く複製してから渡す。Strands は渡したリストに往復を書き足し、各メッセージにも tracking_id を書き込むので、
+    そのまま渡すと history の中身が書き換わる。
+    """
+    limit = ToolLimit()
+    agent = Agent(
+        model=model,
+        system_prompt=SYSTEM_PROMPT,
+        messages=copy.deepcopy(messages),
+        tools=strands_tools(),
+        hooks=[limit],
+        callback_handler=None,  # 既定は応答を標準出力に書く。ログは invoke の 1 行だけにする
+        # 履歴の長さは MAX_TURNS で自分で切る。既定（スライディングウィンドウ）は溢れたとき古い往復を黙って落として呼び直す
+        conversation_manager=NullConversationManager(),
+        # 1 往復に複数のツールを頼まれても、Converse で回していたときと同じく順に 1 本ずつ動かす
+        tool_executor=SequentialToolExecutor(),
+        # 既定はスロットリングを最大 6 回、待ちを伸ばしながら呼び直す。boto3 の再試行だけにして、Web を待たせない
+        retry_strategy=None,
+    )
+    try:
+        # ToolLimit が先に止めるので届かない。フックが効かなかったときの歯止め
+        agent(content, limits={"turns": MAX_TOOL_ROUNDS + 1})
+    except MaxTokensReachedException:
+        pass  # Converse で回していたときと同じく、途中までの本文を返す（stop は max_tokens）
+    text = "".join(b.get("text", "") for b in limit.message.get("content", []))
+    if limit.limited and limit.stop != "guardrail_intervened":
+        log.warning("tool limit reached: tools=%d stop=%s", limit.calls, limit.stop)
         text = f"{TOOL_LIMIT_PREFIX}\n\n{text.strip() or TOOL_LIMIT_EMPTY}"
-    return res, text, tool_calls
+    return text, limit.stop, agent.event_loop_metrics.accumulated_usage, limit.calls
 
 
 @app.entrypoint
@@ -203,34 +277,19 @@ def invoke(payload):
         return {"status": "error", "message": "ナレッジベースの検索に失敗した"}
 
     # 履歴は常に user で始まり assistant で終わる偶数長。直近 MAX_TURNS 往復に今回の質問を足して送る
-    messages = history[-(2 * MAX_TURNS):] + [
-        {"role": "user", "content": build_user_content(prompt, chunks)}
-    ]
-    request = {
-        "modelId": MODEL_ID,
-        "system": [{"text": SYSTEM_PROMPT}],
-        "messages": messages,
-        "inferenceConfig": {"maxTokens": MAX_TOKENS},
-    }
-    if GUARDRAIL_ID:
-        request["guardrailConfig"] = {
-            "guardrailIdentifier": GUARDRAIL_ID,
-            "guardrailVersion": GUARDRAIL_VERSION,
-        }
-    request["toolConfig"] = {"tools": tool_specs()}
     try:
-        res, text, tool_calls = converse_with_tools(request)
-    except (ClientError, BotoCoreError):
-        log.exception("converse failed")
+        text, stop, usage, tool_calls = ask(history[-(2 * MAX_TURNS):], build_user_content(prompt, chunks))
+    except Exception:  # Strands は boto の例外のほかに自前の例外（ContextWindowOverflowException など）も投げる
+        log.exception("agent failed")
         return {"status": "error", "message": "モデルの呼び出しに失敗した"}
 
-    usage = res.get("usage", {})
+    # トークン数は、ツールで往復したぶんも足した合計
     log.info(
         "tokens in=%s out=%s chunks=%d tools=%d stop=%s",
-        usage.get("inputTokens"), usage.get("outputTokens"), len(chunks), tool_calls, res.get("stopReason"),
+        usage.get("inputTokens"), usage.get("outputTokens"), len(chunks), tool_calls, stop,
     )
 
-    if res.get("stopReason") == "guardrail_intervened":
+    if stop == "guardrail_intervened":
         # 止めた往復は履歴に残さない（次の質問の文脈に混ぜない）
         return {"status": "success", "response": text, "sources": [], "blocked": True}
 

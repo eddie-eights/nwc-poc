@@ -11,6 +11,8 @@ dev = [
   "pyyaml>=6.0",
   # tests/test_sync.py などは agent/topology.py を差し替えずに読み、botocore.exceptions を import する（2026-10-04 に足した）
   "boto3>=1.40,<2",
+  # tests/test_app.py は Strands を本物のまま動かし、boto3 のクライアントだけを差し替える（版は agent/requirements.txt と同じ）
+  "strands-agents==1.57.2",
 ]
 # 手元で web/app.py を動かすとき（docs/development.md「Web を手元で動かす」）。中身は web/requirements.txt と同じ
 web = [
