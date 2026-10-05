@@ -2213,3 +2213,72 @@ Multi-AZ DB クラスターが使えるエンジンは、RDS for MySQL と RDS f
 
 - https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html
 - https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.RDS_Fea_Regions_DB-eng.Feature.MultiAZDBClusters.html
+
+### Q. YANG とは？
+
+**結論**
+
+ネットワーク機器が持つデータの「形」を書くための言語。どんな項目があり、どういう木の構造で、型は何で、設定なのか状態なのかを定義する。データそのものではなく、データの設計図にあたる。
+
+RFC 7950 の要約は「YANG は、ネットワーク管理のプロトコルのために、設定のデータ、状態のデータ、RPC、通知をモデル化するデータモデリング言語」（2026-10-05 に確認）。
+
+**たとえると**
+
+| YANG の世界 | データベースの世界 |
+|---|---|
+| YANG モデル | テーブルの定義（スキーマ） |
+| 機器が持つ実際の値 | テーブルの行 |
+| gNMI、NETCONF | SQL を運ぶ接続 |
+
+**主な部品**
+
+| 部品 | 役割 | 例 |
+|---|---|---|
+| module | モデル 1 つのまとまり | `openconfig-interfaces` |
+| container | 項目をまとめる入れ物。値は持たない | `state`、`counters` |
+| list | キーで区別する、同じ形の繰り返し | `interface`（キーは `name`） |
+| leaf | 値を 1 つ持つ末端 | `oper-status`、`in-octets` |
+| leaf-list | 同じ型の値の並び | DNS サーバーの一覧など |
+
+**例**（OpenConfig のインターフェースのモデルを、短くした形）
+
+```yang
+container interfaces {
+  list interface {
+    key "name";
+    leaf name { type string; }
+    container state {
+      config false;                // 状態（読むだけ）
+      leaf oper-status { type enumeration { enum UP; enum DOWN; } }
+      container counters {
+        leaf in-octets { type uint64; }
+      }
+    }
+  }
+}
+```
+
+この木をたどった道が、gNMI のパスになる。
+
+```
+/interfaces/interface[name=ethernet-1/1]/state/counters/in-octets
+```
+
+`[name=...]` は list のキー。`*` にすると全部のインターフェースが対象になる。
+
+**YANG、OpenConfig、gNMI の関係**
+
+| もの | 決めること |
+|---|---|
+| YANG | モデルを書く言語（文法） |
+| OpenConfig のモデル、ベンダー独自のモデル | YANG で書かれた、具体的なモデル（どんな項目があるか） |
+| gNMI、NETCONF、RESTCONF | モデルに沿ったデータを運ぶプロトコル |
+
+**このプロジェクトでは**
+
+- Telegraf の `path = "/interface[name=*]/statistics"` などは、SR Linux 独自の YANG モデルの木をたどったパス（`telegraf/telegraf.conf.in`）。
+- SNMP での MIB にあたるものが、gNMI での YANG モデル。MIB は OID（数字の並び）で、YANG は名前のパスで値を指す。
+
+**出典**
+
+- https://www.rfc-editor.org/rfc/rfc7950.html （YANG 1.1。2026-10-05 に確認）
