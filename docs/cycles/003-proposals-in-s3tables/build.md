@@ -534,3 +534,175 @@ E) 抜けた
 - `bash ops/check.sh` が通っていない（未実行）。
 
 この 2 つが片付くまで `/cycle-review` は実行しない。
+
+## Round 3
+
+実装モデル: Opus 5.5 / effort: xhigh（このセッションの effort は変えられない。既定は high）
+
+勉強用の差し戻し S1（main の bfdd398。design.md L104 の新しい形）。実装の commit は 4b0853e。そのあと bfdd398 をこのブランチに merge した（ユーザーの許可あり、衝突なし）。main はその後 cfdd9c2（004 の Splunk クラスター）まで進んでいるが、そこは取り込んでいない。
+
+### 変更ファイル一覧
+
+| ファイル | 変更 |
+| :--- | :--- |
+| `workflow/rules.py` | `ignored_event` の event_id を `<proposal_id>#ignored#<decision>#<decided_at の epoch 秒>#<decided_by>` にした（L335） |
+| `tests/test_workflow.py` | 期待値を新しい形にした（ログ 1019・1330・1361）。足したのは 2 項目: 同じ人・同じ秒の承認と却下で event_id が別になること（1020）、ワークフローで 2 行とも残ること（1335） |
+| `terraform/pipeline/analytics/tables.tf` | コメントだけ（L129） |
+
+### 「いま」を event で読んでいるコード
+
+- 読める範囲には無い。
+- grep（`proposals.py` と `incident_view.py` を除外）: `["event"]`・`get("event")`・`event_detail` を workflow / agent / web / tools / graph で探して rc=1（0 件）。
+- 「いま」を選ぶのは `rules.latest_proposals`（seq、同じなら event_time）。
+- 読む側の判断:
+  - `worker.handle_decision` は status だけを見る。
+  - `should_start` は修復案があるかどうかだけを見る。
+- `agent/proposals.py` と `web/incident_view.py` は、読む許可がまだ無いので未確認。
+
+### 検証（最後の編集と merge のあとに取り直した出力）
+
+1. `ops/check.sh`（fmt、9 ルートの validate、構文、模擬テスト 10 本）
+   - 全文は [build-r3-check.log](build-r3-check.log)（1661 行、2026-10-05、merge のあと）。
+   - 抜粋（ログの行番号）:
+   ```
+   3: 差分なし
+   6-14: terraform/base/ecr … terraform/workflow  OK（9 ルート）
+   17: 構文エラーなし
+   228: 通過 142 / 失敗 0
+   302: 通過 72 / 失敗 0
+   378: 通過 75 / 失敗 0
+   487: 通過 95 / 失敗 0
+   962: 通過 473 / 失敗 0
+   1019: ok ignored_event は status と決めた人を直前の行のまま seq だけ進め、event_id は <proposal_id>#ignored#<届いた決定の種類>#<届いた決定の時刻>#<名前>（名前の ' はそのまま、前後の空白は落として入る）
+   1020: ok 同じ人が同じ秒に送った承認と却下は、ignored の event_id が別になる（event_id で重複を落としても 2 行とも残る）
+   1335: ok 効いた決定のあとに同じ人が同じ秒に却下と承認を送ると、ignored の行が 2 つでき、event_id も別（event_id で重複を落としても 2 行残る）
+   1398: 通過 318 / 失敗 0
+   1512: 通過 113 / 失敗 0
+   1522: 通過 7 / 失敗 0
+   1598: 通過 75 / 失敗 0
+   1659: 58 項目すべて通過
+   1661: すべて通過
+   ```
+   - 1398 が test_workflow（Round 2 の 316 から 2 増えた）。順は test_app、graph、stream、sync、analytics、workflow、alerts、kb_index、lab_debug、nautobot。
+   - test_workflow は単独でも取り直した（436 行、rc=0、`通過 318 / 失敗 0`）。
+2. `grep -rn --exclude=proposals.py --exclude=incident_view.py "n:proposal\|update_record" workflow agent web` — 出力なし。
+3. `terraform plan` — **未実行**（AWS を触らない。tables.tf はコメントだけ）。
+4. AWS 1〜6 — **未実行**（ユーザーが `ops/up.sh` を打つ）。
+
+### セルフレビュー
+
+- 自分: opus-5.5 / effort xhigh。
+- 反対弁護人: opus（general-purpose）。文脈を渡して 1 回、読み取り専用で頼んだ。
+  - 作ったのは scratchpad の adv3_rules.py / adv3_wf.py だけ。終わったあと `git status --porcelain -uall` は M の 3 ファイルのままだった。
+  - 結論: Must と Should は無し。Nit が 2 件。
+  - 禁止のファイルは読んでいない（本人の申告）。テスト一式は、`proposals` と `incident_view` を import するので走らせていない。
+
+#### 指摘と片付け
+
+| ID | 分類 | [観点] | 場所 | 破綻シナリオ | 確かめたこと | 片付け |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| R3-1 | Nit | [一意性] | `workflow/worker.py:208`、`:250`、`workflow/rules.py:335` | decided_at の無い決定と、decided_at がちょうど flush の秒の決定（同じ人・同じ種類）。`_seen` では 2 つの決定として扱い、ignored の行が 2 つできるが、event_id は同じになる。flush が空の decided_at を書く時点の時刻で埋めるため。detail の時刻も届いた時刻ではなく書いた時刻になる | adv3_wf.py A: 下の出力 | 最終報告へ。格下げの根拠は 2 つ。(1) SQS の経路では decided_at が 0 にならない（r3_sqs_at.py: 8 通りとも 0 でない）。(2) decide のシグナルを送るのは `worker.py:410` だけ（grep で確認。`proposals.py` は除外したので未確認だが、test_app を見ると `proposals.decide` は SQS に送っている）。直すなら `decide` の中で鍵を作る前に `workflow.now()` で埋める |
+| R3-2 | Nit | [docs] | `docs/architecture/resources/temporal.md:30`、`:71`、`docs/data-stores.md:324`、`docs/architecture/resources/s3-tables-athena.md:30`、`:58-59` | event_id を `<proposal_id>#<event>` だけで説明して「event_id で落とす」と書いている。読んだ人が (proposal_id, event) を鍵にすると、ignored の行が 1 行にまとまる。s3-tables-athena.md:30 は 12 列のまま | 上のファイルを `grep -n event_id` | N15 に足す（docs は勉強用が merge のあとに書く） |
+
+R3-1 の再現（adv3_wf.py。模擬のログの行は省いた）:
+
+```
+A) 結果 verified | _seen: [('approved', '山田', 1700000300), ('rejected', '鈴木', 0), ('rejected', '鈴木', 1700000600)]
+   ignored の行: [('ignored', 4, 'applied', '#ignored#rejected#1700000600#鈴木'), ('ignored', 5, 'applied', '#ignored#rejected#1700000600#鈴木')] | event_id が重なる: True
+```
+
+格下げの根拠（r3_sqs_at.py。`rules.decision_from_message` に sent_at を変えて渡した）:
+
+```
+'<無し>' -> 1700000600 | 0 か: False
+None -> 1700000600 | 0 か: False
+0 -> 1700000600 | 0 か: False
+'' -> 1700000600 | 0 か: False
+'abc' -> 1700000600 | 0 か: False
+-5 -> 1700000600 | 0 か: False
+'2023-11-14T22:13:20Z' -> 1700000600 | 0 か: False
+1700000305 -> 1700000305 | 0 か: False
+```
+
+#### 退行を入れて、テストが落ちるかを確かめた
+
+- inject_r3.py: 退行を `rules.py` に 1 つずつ入れて test_workflow を走らせ、元に戻した。
+- inject_r3b.py: 形の期待値を Round 2 の形に戻したテストの写しを scratchpad に作った。足した 2 項目が、形の検査に頼らずに単独で落ちるかを見るため。リポジトリのテストは触っていない。
+
+```
+M18 event_id に決定の種類を入れない（Round 2 の形）: rc=1 [..., "AssertionError: ignored_event は status と決めた人を直前の行のまま seq だけ進め、event_id は <proposal_id>#ignored#<届いた決定の種類>#<届いた決定の時刻>#<名前>（名前の ' はそのまま、前後の空白は落として入る）"] []
+M19 決定の種類の代わりに効いた決定の種類を入れる: rc=1 [..., "AssertionError: ignored_event は status と決めた人を直前の行のまま seq だけ進め、event_id は <proposal_id>#ignored#<届いた決定の種類>#<届いた決定の時刻>#<名前>（名前の ' はそのまま、前後の空白は落として入る）"] []
+restored True
+M18 × A 形の期待値を戻した写し（58・373 が残る）: rc=1 ['AssertionError: 同じ人が同じ秒に送った承認と却下は、ignored の event_id が別になる（event_id で重複を落としても 2 行とも残る）'] []
+M18 × B さらに 58 を外した写し（373 だけ残る）: rc=1 ['AssertionError: 効いた決定のあとに同じ人が同じ秒に却下と承認を送ると、ignored の行が 2 つでき、event_id も別（event_id で重複を落としても 2 行残る）'] []
+restored True
+```
+
+（58・373 は merge 前のログの行番号。check のログでは 1020・1335。）
+
+#### 反対弁護人の probe を取り直した出力
+
+adv3_rules.py（decided_at が 10**20 の組で出る OverflowError の行は省いた。build.md の N2 と同じ種類）:
+
+```
+1) 組 552 | 鍵の数 108 | event_id の数 108
+   鍵が違うのに event_id が同じ: []
+   鍵が同じなのに event_id が違う: []
+2) 旧形式と新形式の重なり: set()
+3) 細工した target と名前で別の修復案と重なる: True | anomaly_of(pid2) = hq-ce-01#link_down#eth1#1700000000#ignored#approved#17000003
+   ignored どうし（名前に #ignored# を入れた細工）: True
+4) 'aaaaaX' 'aaaaaY' 鍵が同じ: True event_id が同じ: True
+4) '' ' ' 鍵が同じ: True event_id が同じ: True
+4) ' (web)' '(web)\n' 鍵が同じ: True event_id が同じ: True
+   decision_from_message: True | 63 字 + 空白 + 字: 'aa ' 鍵の名前: 'aaa'
+   sent_at 無し: 1 回目と再配達で event_id が違う: True
+5) 再試行の 2 行: event_id 同じ True | seq 同じ True | event_time 100 160
+6) 長い id: created の event_id は切れない True | 列は 4000 字 | ignored の event_id は切れた id から True | 元の id と同じか False
+```
+
+adv3_wf.py の A 以外:
+
+```
+B) ignored の行: [('ignored', 4, 'applied', '#ignored#rejected#1700000600#鈴木')]
+C) ignored の行: [('ignored', 4, 'applied', '#ignored#rejected#1700000305#鈴木'), ('ignored', 5, 'applied', '#ignored#approved#1700000305#鈴木')] | 全行の event_id が一意: True
+D) 行: [('created', 1, 'pending', '#created'), ('approved', 2, 'approved', '#approved'), ('applied', 3, 'applied', '#applied'), ('ignored', 4, 'applied', '#ignored#rejected#1700000300#山田'), ('verified', 5, 'verified', '#verified')]
+E) 行: [('created', 1, 'pending', '#created'), ('approved', 2, 'approved', '#approved'), ('applied', 3, 'applied', '#applied'), ('ignored', 4, 'applied', '#ignored#rejected#1700000305#鈴木'), ('ignored', 4, 'applied', '#ignored#approved#1700000305#鈴木'), ('verified', 5, 'verified', '#verified')]
+   いま: ('verified', 5, 'verified') | event_id が一意: True
+F) ignored の行の数: 1
+```
+
+#### 問題なしとした観点と根拠
+
+| 観点 | 根拠 |
+| :--- | :--- |
+| 1 つの修復案の中で、decision_key が違えば event_id も違う（R3-1 を除く） | adv3_rules.py 1)。名前に `#`・改行・64 字超・空、decided_at に None・0・負・文字列・inf を入れた 552 組 |
+| 旧形式の行と重ならない | adv3_rules.py 2)（`#ignored#` の次が数字か英字か） |
+| N4（書けたのに失敗扱いになった行）と組み合わせても壊れない | adv3_wf.py E)。「いま」は verified、event_id は全部一意 |
+| アクティビティの再試行は event_id で落とせる | adv3_rules.py 5) |
+| 64 字で切れて同じになる 2 人は 1 行（Round 2 の前から同じ） | adv3_rules.py 4)、adv3_wf.py F) |
+| 読める範囲のコードは event_id を解釈しない | grep（反対弁護人）。`test_app.py:462` は行を作るだけ、event_id で落とす `query_history` は alert_events 用 |
+| 「いま」を event で読まない | 上の grep。`should_start` と `handle_decision` は読んだ |
+| Temporal の決定性 | event_id はアクティビティの中（`worker.py:161`）で作る。読んだだけ |
+| テストが形の検査に頼っていない | 注入 M18 × A・B |
+
+#### 未確認
+
+1. 画面の履歴が ignored の行をどう出すか。名前の `'` を読む側（Athena と `agent/proposals.py`）、detail のエスケープ。`web/incident_view.py` と `agent/proposals.py` は、読む許可がユーザー待ち
+2. `agent/proposals.py` と `web/incident_view.py` が「いま」を event で読んでいないか
+3. terraform plan と AWS 1〜6
+4. 本物の Temporal での動き（テストと probe は temporalio を差し替えた模擬）
+
+#### ジンテーゼ（反対弁護人のあとで変えた結論）
+
+- **event_id の一意性**
+  - 前: decision_key が違えば event_id も違う。
+  - 後: SQS の経路では成り立つ。decided_at の無い決定を Temporal に直接送ったときだけ、flush の秒の決定と重なる（R3-1）。
+- **形を変えた影響**
+  - 前: 読む側のコードは event_id を解釈しないので、形を変えても困らない。
+  - 後: コードはその通り。ただし docs の 4 か所が古い形のまま「event_id で落とす」と説明している（R3-2）。docs が直るまでは、読んだ人が (proposal_id, event) を鍵にするおそれがある。
+
+#### 次へ
+
+- 未解消の Must fix と Should fix は無い。
+- check.sh はすべて通過した。
+- `/cycle-review` へ進む。
