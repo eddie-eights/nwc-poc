@@ -52,7 +52,7 @@ Telegraf が集めた機器のデータを、いったんためておく Kafka�
   出典: `terraform/pipeline/stream/variables.tf` の `kafka_version` の説明。
 - **トピックは最初の書き込みで自動でできる。**
   `auto.create.topics.enable=true`。そのため Telegraf のタスクロールに `kafka-cluster:CreateTopic` が要る。Spark も、無いトピックを起動時に作る（`ensure_topics`）ので、`SNMP_POLL=0` で `metrics` が無くても落ちない。
-  出典: [data-stores.md](../../data-stores.md) の「15. ブローカーの渡し方と msk-bootstrap」、FAQ「snmp ポーリングはデフォルトでは無効にして…」。
+  出典: [data-stores.md](../../data-stores.md) の「15. ブローカーの渡し方と msk-bootstrap」、FAQ「SNMP はポーリングと trap のどちらで集めている？ ポーリングは止められる？」。
 - **`min.insync.replicas` はブローカーの数の 1 つ下。**
   2 台なら 1 なので、1 台止まっても書ける。
   出典: `terraform/pipeline/stream/msk.tf` の先頭のコメント。

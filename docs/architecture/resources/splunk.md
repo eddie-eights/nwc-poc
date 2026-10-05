@@ -157,4 +157,4 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 - [emr-serverless.md](emr-serverless.md)、[grafana.md](grafana.md)、[sns-sqs-lambda.md](sns-sqs-lambda.md)、[ssm-parameter-store.md](ssm-parameter-store.md)
 - [pipeline.md](../../pipeline.md): 「Grafana と Splunk を開く」「アラート」「Splunk のアラート」
 - [alert-comparison.md](../../alert-comparison.md): Splunk と Grafana のアラートを比べる（002）の結果、「Splunk の `netops_poll`」
-- FAQ の 10 章: [faq-fukuda-nwc-poc.md](../../faq-fukuda-nwc-poc.md)
+- FAQ の 11 章「Splunk」と 10 章「格納先とテーブル、重複」: [faq-fukuda-nwc-poc.md](../../faq-fukuda-nwc-poc.md)

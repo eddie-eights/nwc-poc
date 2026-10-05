@@ -94,4 +94,4 @@ MSK のトピックを読み、格納先（S3 Tables、OpenSearch、Prometheus�
 - [msk.md](msk.md)、[s3-tables-athena.md](s3-tables-athena.md)、[opensearch-serverless.md](opensearch-serverless.md)、[prometheus.md](prometheus.md)、[splunk.md](splunk.md)
 - [pipeline.md](../../pipeline.md): 「Spark を確かめる」
 - [data-stores.md](../../data-stores.md): 「届け方の保証」
-- FAQ の 10 章「データの流し先とテーブル」: [faq-fukuda-nwc-poc.md](../../faq-fukuda-nwc-poc.md)
+- FAQ の 6 章「Spark の動き」と 10 章「格納先とテーブル、重複」: [faq-fukuda-nwc-poc.md](../../faq-fukuda-nwc-poc.md)

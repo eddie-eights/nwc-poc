@@ -109,4 +109,4 @@
 - [sns-sqs-lambda.md](sns-sqs-lambda.md)、[nautobot.md](nautobot.md)、[temporal.md](temporal.md)、[vpc-perimeter.md](vpc-perimeter.md)
 - [data-stores.md](../../data-stores.md): 「Neptune の層」「11. Neptune とは」〜「14. トポロジをグラフにする意味」
 - [pipeline.md](../../pipeline.md): 「Neptune のトポロジ」
-- FAQ の 8 章と 11 章: [faq-fukuda-nwc-poc.md](../../faq-fukuda-nwc-poc.md)
+- FAQ の 8 章「Neptune（グラフに置くもの）」: [faq-fukuda-nwc-poc.md](../../faq-fukuda-nwc-poc.md)

@@ -52,7 +52,7 @@
   出典: `terraform/pipeline/analytics/sinks.tf` のコメント。
 - **`SNMP_POLL=0` では `snmp_interface_ifOperStatus` が無い。**
   ダッシュボード「netops / SNMP metrics」、`query_metrics`、ルール `link_down` が動かない。
-  出典: FAQ「snmp ポーリングはデフォルトでは無効にして…」。
+  出典: FAQ「SNMP はポーリングと trap のどちらで集めている？ ポーリングは止められる？」。
 
 ## 制約と未確認
 

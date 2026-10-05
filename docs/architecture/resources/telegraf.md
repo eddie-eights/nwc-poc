@@ -50,7 +50,7 @@
   出典: 同上。
 - **UDP は応答で生死を見られないので、ヘルスチェックは Telegraf の `outputs.health` を見る。**
   何も書いていないうちは 200 を返すので、ポーリングを止めても通る。
-  出典: `telegraf.tf` の `aws_lb_target_group` のコメント、FAQ「snmp ポーリングはデフォルトでは無効にして…」。
+  出典: `telegraf.tf` の `aws_lb_target_group` のコメント、FAQ「SNMP はポーリングと trap のどちらで集めている？ ポーリングは止められる？」。
 - **機器の一覧と認証情報は、タスクを起こすときに読む。**
   SSM の値を変えたら、サービスを作り直さないと効かない。Nautobot の Job はパラメータを書き換えたあと `ecs:UpdateService` で作り直す。
   出典: `telegraf.tf` の先頭のコメント、`terraform/pipeline/nautobot/access.tf`。
@@ -59,10 +59,10 @@
   出典: [data-stores.md](../../data-stores.md) の「15. ブローカーの渡し方と msk-bootstrap」。
 - **syslog の形式は機器に合わせる。**
   既定は RFC3164（本番の Cisco）。lab の SR Linux は RFC5424 なので、lab のログを見るなら `SYSLOG_STANDARD=RFC5424`。合っていないとホスト名や本文が崩れる。
-  出典: [troubleshooting.md](../../troubleshooting.md) の「パイプラインと WORKFLOW」、FAQ「syslog_standard を環境変数で選べるようにして。既定は RFC3164 に」。
+  出典: [troubleshooting.md](../../troubleshooting.md) の「パイプラインと WORKFLOW」、FAQ「Telegraf が受ける syslog の形式（RFC 3164 / RFC 5424）は、どこで切り替える？」。
 - **`SNMP_POLL=0` にすると `metrics` トピックが空になる。**
   Grafana のダッシュボード「netops / SNMP metrics」、エージェントの `query_metrics`、Grafana のルール `link_down` が動かなくなる。IF の up / down は trap から Splunk だけが知らせる。
-  出典: FAQ「snmp ポーリングはデフォルトでは無効にして…」、[troubleshooting.md](../../troubleshooting.md)。
+  出典: FAQ「SNMP はポーリングと trap のどちらで集めている？ ポーリングは止められる？」、[troubleshooting.md](../../troubleshooting.md)。
 - **切り分けは `tg gnmi` と `tg test`。**
   ECS Exec で取りにいく側に入って打つ。標準出力に出すだけで MSK には送らないので、機器との疎通と MSK との疎通を分けて見られる。
   出典: [pipeline.md](../../pipeline.md) の「Telegraf に入る」、[data-stores.md](../../data-stores.md) の「15.」。

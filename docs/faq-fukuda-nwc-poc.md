@@ -1786,6 +1786,29 @@ AWS の上（ECS のタスクロール、VPC エンドポイント）で送れ�
 
 ## 12. マネージドを OSS に置き換えるとき
 
+### Q. 「005」とは何？ 何を OSS に置き換える？
+
+**A. 「マネージドを OSS に置き換えた環境を作る」というサイクルの番号。** AWS のマネージドサービス 5 つを、ECS（Fargate）の上で動かす OSS に置き換えた版を作る。マネージド版は残して、同じアカウントに並べて立てて比べる（接頭辞は `<owner>-nwc-oss`）。
+
+| いま | 置き換え先 | 構成 |
+|---|---|---|
+| MSK | Apache Kafka（KRaft） | 3 台 |
+| EMR Serverless | Apache Spark 3.5 系 | 格納先ごとに 1 タスク |
+| OpenSearch Serverless | OpenSearch | データ 2 台 + まとめ役（cluster manager）だけの 1 台 |
+| Managed Prometheus | VictoriaMetrics のクラスター | vminsert 1、vmselect 1、vmstorage 3 |
+| Neptune Analytics | Neo4j Community Edition + GDS | 1 台 |
+
+- **理由**
+  同じ用途でマネージドと OSS を並べて、できること、費用、手間を比べるため。OSS にするのはこの 5 つだけで、ほかはマネージドのまま。
+- **共用のもの**
+  アプリのコードは共用で、接続先を環境変数で切り替える。エージェント（Strands Agents のループを含む）は、どちらの版でも同じ。
+- **メリット**
+  5 つを同じ条件で比べられる。3 台のものは 1 台止まっても続く。
+- **デメリット**
+  Fargate のタスクが 13 個以上増える。並べて立てると、共通の部分も 2 つ分の費用がかかる。Neo4j は 1 台（クラスターは Enterprise Edition だけの機能）。アプリに分岐が入る。
+- **状況（2026-10-05）**
+  設計まで。実装は始めたところで、AWS では何も確かめていない。設計は `docs/cycles/005-oss-on-ecs/design.md`、置き換え先の説明は [oss-variant.md](oss-variant.md)。
+
 ### Q. S3 以外の格納先は、VictoriaMetrics のようにクラスターにできる？
 
 **A. Prometheus と OpenSearch は、もう AWS の側でクラスターになっている（マネージドなので自分で組まない）。自分でクラスターを組む余地があるのは Splunk だけ。**
