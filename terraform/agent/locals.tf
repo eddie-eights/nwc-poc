@@ -73,6 +73,10 @@ locals {
 
   kb = var.create_knowledge_base
 
+  # OSS 版（oss/terraform/agent。var.project = nwc-oss を oss.auto.tfvars が入れる。cycle 005）。terraform/base/core の local.oss と同じ見分け方。
+  # このルートは graph と analytics の state を読まない（先に apply される）ので、state の中身ではなく project で見分ける
+  oss = var.project == "nwc-oss"
+
   rerank           = var.rerank_model_id != ""
   rerank_model_arn = local.rerank ? "arn:${local.partition}:bedrock:${var.region}::foundation-model/${var.rerank_model_id}" : ""
 

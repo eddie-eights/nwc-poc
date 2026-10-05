@@ -540,7 +540,8 @@ check("tools Lambda は VPC の中（Neptune / OpenSearch / Prometheus に届く
       re.search(r'resource "aws_lambda_function" "tools"[\s\S]*?vpc_config \{', tf) is not None
       and all(v in tf for v in ("OPENSEARCH_ENDPOINT", "OPENSEARCH_INDEX", "PROMETHEUS_QUERY_URL")))
 # query_history（アラートの通知の履歴。2026-10-04）。analytics の出力を try で読み、無ければ環境変数も IAM も空
-_tools_env = re.search(r'resource "aws_lambda_function" "tools"[\s\S]*?variables = \{([\s\S]*?)\n    \}', tf)
+# 環境変数は merge の 1 つ目の map（2 つ目からは OSS 版だけ足す切り替え。tests/test_oss.py の 9）
+_tools_env = re.search(r'resource "aws_lambda_function" "tools"[\s\S]*?variables = merge\(\n      \{([\s\S]*?)\n      \},', tf)
 _tools_env_keys = set(re.findall(r"^\s*([A-Z_]+)\s*=", _tools_env.group(1), re.M)) if _tools_env else set()
 check("tools Lambda に ATHENA_WORKGROUP / ATHENA_CATALOG / HISTORY_NAMESPACE / ALERT_EVENTS_TABLE / PROPOSAL_EVENTS_TABLE を渡す（値は analytics の出力）",
       {"ATHENA_WORKGROUP", "ATHENA_CATALOG", "HISTORY_NAMESPACE", "ALERT_EVENTS_TABLE", "PROPOSAL_EVENTS_TABLE"} <= _tools_env_keys

@@ -153,6 +153,12 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
       NUMBER_OF_RERANKED_RESULTS = tostring(var.number_of_reranked_results)
     } : {},
     { for k, v in { RERANK_MODEL_ARN = local.rerank_model_arn } : k => v if local.kb && local.rerank },
+    # OSS 版（cycle 005）だけ足す接続先の切り替え。マネージド版では空の map で、上の環境変数だけになる。
+    # graph.py は Neptune の代わりに Neo4j を読む（URI とパスワードは PARAM_PREFIX で SSM の neo4j-uri / neo4j-password。読む権限は
+    # oss/terraform/pipeline/graph の access.tf、届く経路は terraform/base/core の oss.tf の runtime → neo4j）。ドライバは agent/requirements-oss.txt。
+    # evidence.py の認証も OSS 版のもの（Basic / 署名なし）にそろえる。エンドポイントはマネージド版と同じく Runtime には渡さず、
+    # ログとメトリクスは Gateway の tools Lambda（terraform/workflow の gateway.tf）越しに読む
+    local.oss ? { GRAPH_BACKEND = "neo4j", OPENSEARCH_AUTH = "basic", PROMETHEUS_AUTH = "none" } : {},
   )
 
   tags = { Name = "${local.name_prefix}-agent" }

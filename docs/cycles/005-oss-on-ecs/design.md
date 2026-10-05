@@ -206,7 +206,7 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 |---|---|
 | `oss/ops/up.sh` が作るルート | `base/ecr`、`base/core`、`pipeline/lab`、`pipeline/stream`、`pipeline/analytics`、`pipeline/graph` |
 | `oss/ops/up.sh` がまだ作らないルート | `pipeline/nautobot`、`agent`、`workflow`（リンクはある） |
-| Grafana | OSS 版の analytics にまだ無い（`grafana.tf` をリンクしていない）。データソースの定義（`grafana/provisioning/datasources-oss`）と `grafana/start.sh` の切り替えはある |
+| Grafana | OSS 版の analytics の `grafana.tf`（実ファイル）にある。データソースは vmselect（署名なし）と自前の OpenSearch（Basic 認証）で、`grafana/start.sh` が `datasources-oss` を並べる。uid がマネージド版と同じなので、イメージ・ダッシュボード・アラートのルールはマネージド版と同じものを使う。アラートは同じ SNS のトピックへ出る。`oss/ops/up.sh` はまだ作らない（イメージ、admin のパスワード、`create_grafana=true` を渡すのが、まだ） |
 | Web | EC2 は立つが、部品（wheel と手順書）を置かないので画面は出ない |
 | Neo4j への同期 | `oss/ops/up.sh` は呼ばない（Nautobot をまだ作らないため）。`ops/seed_graph.py` は `GRAPH_BACKEND=neo4j` を読める |
 | 格納先の選択 | 無い。いつも iceberg、opensearch、prometheus、splunk の 4 つ（マネージド版の `STORES` は読まない） |
@@ -232,6 +232,11 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
   Neptune は `~id` に文字列の id を入れ、`id(n)` で読んでいる。Neo4j の `id()` は整数で、消すと再利用される。OSS 版では id をプロパティ `id` に入れ、一意制約を付ける。制約は、アプリ（`agent/graph.py`）が最初のクエリの前に作る。
 - **Neo4j のドライバは、Lambda のレイヤーで足す。**
   中身は `graph/requirements-oss.txt`。`oss/ops/up.sh` が apply の前に作る。
+- **エージェントの道具の Lambda と AgentCore の Runtime も、OSS 版だけ接続先を切り替える。**
+  道具の Lambda（`terraform/workflow/gateway.tf`）は、graph の state に `neo4j_uri` があれば `GRAPH_BACKEND=neo4j` と `NEO4J_URI` を受け、graph のルートが作ったドライバのレイヤー（output `neo4j_layer_arn`）を付ける。analytics の state に OpenSearch のパスワードの名前があれば `OPENSEARCH_AUTH=basic` と `PROMETHEUS_AUTH=none` を受ける。
+  Runtime（`terraform/agent/runtime.tf`）は `var.project` が `nwc-oss` のとき同じ 3 つの切り替えを受ける。マネージド版の `ops/up.sh` は agent を graph と並べて apply する（graph の state を待たない）ので、state ではなく `var.project` で見分ける。Neo4j の URI は SSM の `neo4j-uri` から読む。ドライバは `agent/requirements-oss.txt`（イメージを `--build-arg REQUIREMENTS=requirements-oss.txt` でビルドする）。
+  パスワードは環境変数に置かない。コードが SSM の `neo4j-password`、`opensearch-password` を読む。
+  Runtime にはマネージド版と同じく OpenSearch と VictoriaMetrics の宛先を渡さない。ログとメトリクスは Gateway の先の道具の Lambda が読む。
 - **Neo4j のパスワードは、`NEO4J_` で始まらない名前（`GRAPH_PASSWORD`）で渡す。**
   公式イメージは `NEO4J_` で始まる環境変数を設定のファイルに書き写す。パスワードがファイルに平文で残り、知らない設定として起動も止まる。`neo4j/entrypoint.sh` が `NEO4J_AUTH` に直してから公式の入口を呼ぶ。
 
@@ -273,6 +278,8 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 | Kafka のログを EFS に置いて、遅さやロックの不具合が出ない | AWS で立てて、1 台ずつ止める |
 | Spark が EMR なしで S3 Tables に書ける | AWS で立てる（手元からは確かめられない） |
 | GDS の結果が、Neptune の `neptune.algo.*` の結果と同じ並びになる | AWS で同じトポロジを入れて比べる（順位と島の数を見る） |
+| 道具の Lambda（python3.13）が、graph のルートのレイヤーの Neo4j のドライバを読み込める | AWS で立てて、チャットからトポロジの道具を呼ぶ |
+| Runtime と道具の Lambda が、SSM のパスワードで Neo4j と OpenSearch に入り、vmselect を読める | AWS で立てて、チャットからログとメトリクスの道具を呼ぶ |
 | Kafbat UI が KRaft の 3 台を表示でき、画面からトピックを作れる | 手順は `check-kafka.sh` にある。結果はこの文書に反映していない |
 | VictoriaMetrics が、時刻が前後したサンプルを受ける | 手順は `check_vm.py` にある。結果はこの文書に反映していない |
 
@@ -311,7 +318,7 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 2. アプリのコードの切り替え（Spark、evidence、graph）とテスト。（済み）
 3. `oss/terraform/` の骨組み（シンボリックリンク、接頭辞の変数、SG、ECR、EFS）。（済み）
 4. Kafka と Telegraf。（済み）
-5. OpenSearch、VictoriaMetrics、Spark。（済み）Grafana。（まだ）
+5. OpenSearch、VictoriaMetrics、Spark、Grafana。（済み）Grafana を `oss/ops/up.sh` から作る。（まだ）
 6. Neo4j と status の Lambda。（済み）worker、Web、Nautobot の Job、エージェントを `oss/ops/up.sh` につなぐ。（まだ）
 7. `oss/ops/up.sh` と `down.sh`、`ops/check.sh`。（済み。作るのは上の「実装の状態」の 6 ルート）
 8. AWS での確認。（まだ）

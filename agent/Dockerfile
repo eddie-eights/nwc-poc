@@ -14,8 +14,10 @@ ENV PYTHONUNBUFFERED=1 \
 ENV PIP_TRUSTED_HOST="pypi.org files.pythonhosted.org pypi.python.org"
 
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --trusted-host pypi.python.org -r requirements.txt
+# OSS 版（cycle 005）は --build-arg REQUIREMENTS=requirements-oss.txt（マネージド版の依存 + Neo4j のドライバ）。既定はマネージド版のまま
+ARG REQUIREMENTS=requirements.txt
+COPY requirements*.txt ./
+RUN pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --trusted-host pypi.python.org -r "$REQUIREMENTS"
 
 COPY app.py toolkit.py topology.py graph.py evidence.py mcp_client.py proposals.py .
 COPY data/ data/

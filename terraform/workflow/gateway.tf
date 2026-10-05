@@ -79,7 +79,8 @@ data "aws_iam_policy_document" "tools" {
     resources = ["*"]
   }
 
-  # Neptune Analytics のグラフの ID（terraform/pipeline/graph）を SSM から引く
+  # Neptune Analytics のグラフの ID（terraform/pipeline/graph）を SSM から引く。
+  # OSS 版はここで neo4j-password と opensearch-password（SecureString。AWS 管理の aws/ssm キーなので kms:Decrypt は要らない）も読む
   statement {
     sid       = "Parameters"
     actions   = ["ssm:GetParameter"]
@@ -191,6 +192,8 @@ resource "aws_lambda_function" "tools" {
   source_code_hash = data.archive_file.tools[0].output_base64sha256
   timeout          = 60
   memory_size      = 256
+  # OSS 版（local.graph_neo4j）だけ Neo4j のドライバのレイヤーを付ける（graph.py が GRAPH_BACKEND=neo4j のとき import する）。マネージド版は付けない
+  layers = local.graph_neo4j ? [local.neo4j_layer_arn] : null
 
   # VPC の中（var.lambda_az_num の AZ。既定はサブネット a だけ）。SG は terraform/base/core の lambda
   vpc_config {
@@ -199,17 +202,30 @@ resource "aws_lambda_function" "tools" {
   }
 
   environment {
-    variables = {
-      PARAM_PREFIX         = local.param_prefix # graph.py が <prefix>/neptune-graph-id を引く（無ければ data/ の静的トポロジ）
-      OPENSEARCH_ENDPOINT  = local.opensearch_endpoint
-      OPENSEARCH_INDEX     = local.opensearch_index
-      PROMETHEUS_QUERY_URL = local.prometheus_query_url
-      # query_history（evidence.py）と list_proposals（proposals.py）。どれかが空ならツールは「未配備」を返す
-      ATHENA_WORKGROUP      = local.athena_workgroup
-      ATHENA_CATALOG        = local.athena_catalog
-      HISTORY_NAMESPACE     = local.athena_workgroup == "" ? "" : local.audit_namespace
-      ALERT_EVENTS_TABLE    = local.alert_events_table_name
-      PROPOSAL_EVENTS_TABLE = local.proposal_events_table_name
+    variables = merge(
+      {
+        PARAM_PREFIX         = local.param_prefix # graph.py が <prefix>/neptune-graph-id を引く（無ければ data/ の静的トポロジ）
+        OPENSEARCH_ENDPOINT  = local.opensearch_endpoint
+        OPENSEARCH_INDEX     = local.opensearch_index
+        PROMETHEUS_QUERY_URL = local.prometheus_query_url
+        # query_history（evidence.py）と list_proposals（proposals.py）。どれかが空ならツールは「未配備」を返す
+        ATHENA_WORKGROUP      = local.athena_workgroup
+        ATHENA_CATALOG        = local.athena_catalog
+        HISTORY_NAMESPACE     = local.athena_workgroup == "" ? "" : local.audit_namespace
+        ALERT_EVENTS_TABLE    = local.alert_events_table_name
+        PROPOSAL_EVENTS_TABLE = local.proposal_events_table_name
+      },
+      # OSS 版（cycle 005）だけ足す接続先の切り替え。マネージド版ではどちらも空の map で、上の環境変数だけになる。
+      # パスワードは環境変数に書かない（state に残る）。graph.py と evidence.py が PARAM_PREFIX で SSM の neo4j-password / opensearch-password を引く
+      local.graph_neo4j ? { GRAPH_BACKEND = "neo4j", NEO4J_URI = local.neo4j_uri } : {},
+      local.analytics_oss ? { OPENSEARCH_AUTH = "basic", PROMETHEUS_AUTH = "none" } : {},
+    )
+  }
+
+  lifecycle {
+    precondition {
+      condition     = !local.graph_neo4j || local.neo4j_layer_arn != ""
+      error_message = "graph の state に neo4j_layer_arn が無い（Neo4j のドライバのレイヤー）。oss/terraform/pipeline/graph を apply し直してから workflow を apply する"
     }
   }
 
