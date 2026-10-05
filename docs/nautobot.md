@@ -3,7 +3,7 @@
 Nautobot は、機器の一覧とケーブルの**正**（台帳）。`PIPELINE=1` ならいつも立つ（`terraform/pipeline/nautobot`）。
 Nautobot で機器・インタフェース・ケーブルを変えると、Nautobot の中の Job が Telegraf の取りにいく先と Neptune のトポロジを合わせる。
 
-反映の決まりと注意の細かい一覧は [pipeline.md の「Nautobot」](pipeline.md#nautobot機器の一覧とケーブルの正)、質問と答えは [学習 FAQ の 7 章](faq-fukuda-nwc-poc.md#7-nautobot機器の一覧とケーブルの正)。
+反映の決まりと注意の細かい一覧は [pipeline.md の「Nautobot」](pipeline.md#nautobot機器の一覧とケーブルの正)、質問と答えは [FAQ の 6 章](faq-fukuda-nwc-poc.md#6-nautobot機器の一覧とケーブルの正)。
 
 - [1. 何のためにあるか](#1-何のためにあるか)
 - [2. 構成（コンテナと AWS のリソース）](#2-構成コンテナと-aws-のリソース)

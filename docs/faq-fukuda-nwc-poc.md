@@ -1,163 +1,23 @@
-# 学習 FAQ（nwc-poc を進めながら質問したこと）
+# FAQ（nwc-poc を説明するときに出る質問）
 
-nwc-poc の作業中に質問したことと、その答えをまとめた。答えは会話の中身を要約したもの。コードのパスはこのリポジトリの中のもの。
+nwc-poc の技術と構成について、ほかの開発者に説明するときに役に立つ質問と答えをまとめた。開発の進め方（サイクルや作業の順番）の質問は入れない。コードのパスはこのリポジトリの中のもの。
 
-- [1. 学習教材の選び方](#1-学習教材の選び方)
-- [2. syslog の基本](#2-syslog-の基本)
-- [3. 収集の設定（Telegraf と本番の Cisco）](#3-収集の設定telegraf-と本番の-cisco)
-- [4. デバッグ用の EC2（lab + Telegraf）](#4-デバッグ用の-ec2lab--telegraf)
-- [5. YANG・OpenConfig とシスコの機器](#5-yangopenconfig-とシスコの機器)
-- [6. Spark の動き](#6-spark-の動き)
-- [7. Nautobot（機器の一覧とケーブルの正）](#7-nautobot機器の一覧とケーブルの正)
-- [8. Neptune（グラフに置くもの）](#8-neptuneグラフに置くもの)
-- [9. 障害の情報をどこに残すか](#9-障害の情報をどこに残すか)
-- [10. 格納先とテーブル、重複](#10-格納先とテーブル重複)
-- [11. Splunk](#11-splunk)
-- [12. マネージドを OSS に置き換えるとき](#12-マネージドを-oss-に置き換えるとき)
-- [13. AWS の基礎（AZ、署名、SDK、MSK の画面）](#13-aws-の基礎az署名sdkmsk-の画面)
-
----
-
-## 1. 学習教材の選び方
-
-### Q. 「ネットワーク技術＆設計入門 第2版」と「図解入門TCP/IP 第2版」、どっちから読めばいい？
-
-**A. 図解入門TCP/IP が先。** 2 冊とも著者はみやたひろしさんで、役割が分かれている。
-
-| | 図解入門TCP/IP | ネットワーク技術＆設計入門 |
-|---|---|---|
-| 問い | パケットがどう動くか | ネットワークをどう組むか |
-| 中身 | Ethernet・ARP・IP・ICMP・TCP/UDP・TLS・HTTP・DNS を層ごとに | 物理設計・論理設計（VLAN・ルーティング）・冗長化・FW や LB・運用管理（SNMP・Syslog・NTP） |
-| 前提 | ほぼ不要 | プロトコルの基本を知っていること |
-
-- 設計本は「この要件ならこの技術」という選び方の話が中心。プロトコルの土台がないと「なぜその設計か」がつかみにくい。
-- 次の 4 つを説明できるなら、設計本から読んでもよい。
-  - 3 ウェイハンドシェイク、再送、ウィンドウ制御
-  - ARP がいつ飛ぶか、L2 と L3 の転送の違い
-  - サブネット計算、ルーティングテーブルの最長一致
-  - NAT やステートフル FW のセッションの扱い
-- 設計本の運用管理の章（SNMP・Syslog・NTP）は、今の構成（trap と syslog を Telegraf に集める）にそのまま当てはまる。
-- 設計本はオンプレミスが前提で、VPC や PrivateLink の話はほとんど無い。
-
-### Q. Udemy の 5 講座（PySpark、CCNA 総合、CCNA Part2、Packet Tracer、Cisco ルーターのセットアップ）はどう？
-
-**A. 役に立つ順に「CCNA Part2 の一部」→「PySpark の DataFrame の章」→「CCNA 総合のつまみ食い」。Packet Tracer とルーターのセットアップはやらなくてよい。**
-
-判断の元にした、プロジェクトで使っている技術:
-
-- lab（SR Linux）: IS-IS（アンダーレイ）、BGP EVPN / VXLAN、LAG / LACP
-- 集める情報: SNMP（trap を含む）、gNMI、syslog
-- Spark（`spark/snmp_sinks.py`）: Kafka を Structured Streaming で読み、DataFrame で処理する。異常検知はルールベースで、機械学習は使っていない。
-
-| 講座 | 判定 | 見る範囲と理由 |
-|---|---|---|
-| CCNA Part2 | やる（一部） | 「管理」（SNMP・syslog・NTP）、「自動化」（YANG・REST。gNMI の前提になる）、「SDN」 |
-| PySpark | やる（一部） | 「Spark DataFrame」の章。Structured Streaming と Kafka 連携は無いので公式ドキュメントで補う。MLlib は後回し |
-| CCNA 総合（41 時間） | 必要なところだけ | VLAN・STP・OSPF（IS-IS と同じリンクステート型）。TCP/IP の本と重なる |
-| Packet Tracer ハンズオン | やらない | Cisco IOS 専用で、範囲は CCNA まで |
-| Cisco ルーターのセットアップ | やらない | 同上 |
-
-lab の中心にある IS-IS、BGP EVPN / VXLAN、gNMI / OpenConfig は、5 本とも扱っていない。
-
-### Q. IS-IS、BGP EVPN / VXLAN、gNMI / OpenConfig を学べる教材は Udemy にない？
-
-**A. あるが、全部英語。** gNMI だけを扱う Udemy の講座は見つからなかった。
-
-- **第一候補**
-  Nokia DataCenter [IPFabric] EVPN/VXLAN with SR Linux（英語、5.5 時間）
-  - SR Linux を containerlab で動かし、IS-IS / BGP のアンダーレイ、EVPN / VXLAN、L2 / L3 EVPN、IRB まで扱う。lab にいちばん近い。
-  - gNMI は扱わない。評価の件数はまだ少ない。
-- **EVPN をもっと深く**
-  Cisco Data Centers | VXLAN EVPN（定番、実習は NX-OS）、VXLAN BGP EVPN by Arash Deljoo（ベンダー中立）、Juniper IP Fabric EVPN-VXLAN。
-- **IS-IS**
-  専用講座はあるが、lab の IS-IS は単純なアンダーレイなので、Nokia の講座で足りるはず。
-- **gNMI / OpenConfig**
-  Udemy の外で学ぶ。
-  - 無料: learn.srlinux.dev、gNMIc のドキュメント、SR Experts のハッカソン教材
-  - 有料: Packet Coders の Modern Network Telemetry（Telegraf の gNMI プラグインと gNMIc。nwc-poc の Telegraf とほぼ同じ形）
-
-英語の講座でも自動翻訳字幕が付くことがある。買う前にプレビューで確かめる。
-
-### Q. Packet Tracer って何をやるの？
-
-**A. Cisco が無料で配っているネットワークシミュレーター。** Cisco Networking Academy に登録すると使える。
-
-- 機器のアイコンを並べてケーブルでつなぐ。
-- Cisco IOS 風のコマンドで設定する。
-- `ping` や `tracert` を打つ。
-- **シミュレーションモード**では、パケットが 1 つずつ進む様子と、各地点でヘッダーがどう書き換わったかを見られる。いちばんの特徴。
-
-| | Packet Tracer | containerlab + SR Linux（lab） |
-|---|---|---|
-| 中身 | 動きをまねたシミュレーター | 本物のネットワーク OS がコンテナで動く |
-| 扱える技術 | CCNA の範囲 | IS-IS、BGP EVPN、VXLAN、gNMI まで |
-| 強み | パケットの動きが目で見える | 実機と同じ動き、Telegraf など外のツールとつながる |
-
-講座は買わずにツールだけ入れて、TCP/IP の本で ARP やルーティングがピンとこないときに使うのがよい。
-
-### Q. CCNP ENCOR の講座（ccnp-encor-master）はどう？
-
-**A. 優先度は低め。** 日本語で約 5 時間と手軽だが、試験範囲を広く浅く見る構成。
-
-- 「ネットワーク管理」（41 分）は Telegraf が集めているものなので、役に立つ。
-- 「自動化」は 24 分と短い。CCNA Part2 の方が厚い（約 2 時間 + 約 1 時間）。
-- VXLAN は Cisco SD-Access（LISP と組み合わせる方式）の部品として出てくる。lab の「BGP EVPN で VXLAN を制御する」方式とは違う。
-- IS-IS、BGP EVPN、gNMI は紹介ページに出てこない。
-
-### Q. Cisco ルーターのセットアップ講座は、スイッチやルーターの知識として役に立たない？
-
-**A. 技術の知識にはほとんどならない。実機を触る作業の作法を学ぶ講座（55 分）。**
-
-- **身につくもの**
-  コンソール接続、起動と初期設定、作業ログを取る習慣、running-config と startup-config の違い。
-- **身につかないもの**
-  ルーティングやスイッチングの仕組み、設計の考え方。
-- lab は SR Linux で、「候補の設定を作ってから commit する」方式。コンソールケーブルも使わない。
-- 仕事で Cisco の実機を初めて触る予定があるなら、見る価値はある。
-
-### Q. CCNP ENARSI の Packet Tracer 講座はどう？
-
-**A. 後回しでよい。** 上の表の「Packet Tracer ハンズオン」は「【超絶入門】CCNA対策 Packet Tracer」のことで、ENARSI の講座はそれとは別の講座。
-
-- ENARSI の講座は評価が高い（4.8）。扱うのは IPv6、OSPFv2 / v3、EIGRP、経路の再配布。
-- lab の IS-IS と BGP EVPN は出てこない。EIGRP はもとは Cisco 独自（RFC 7868 で公開されたが、実装はほぼ Cisco だけ）。
-- CCNP の資格を取る人や、仕事で Cisco のルーティングを扱う人には向いている。
-
-### Q. 教材は、何をどの順番で進める？
-
-**A. 講座はデータが流れる順（lab → 収集 → 処理）に進める。図解入門TCP/IP は最初から並行して読む。**
-
-| 順 | やること | 範囲 | 目安 | 効くところ |
-|---|---|---|---|---|
-| 1 | Nokia SR Linux EVPN/VXLAN（英語） | 全部 | 5.5 時間 | `lab/srlinux/` の IS-IS・BGP EVPN・VXLAN |
-| 2 | learn.srlinux.dev と gNMIc（無料） | gNMI / テレメトリ | – | Telegraf の `inputs.gnmi` |
-| 3 | CCNA Part2（日本語） | 管理・自動化・SDN の章 | 約 4.5 時間 | SNMP の trap、syslog、YANG |
-| 4 | PySpark（日本語）と Spark の公式ドキュメント | DataFrame の章、Structured Streaming | 約 2 時間〜 | `spark/snmp_sinks.py` |
-| 5 | ネットワーク技術＆設計入門（本） | 全体、特に運用管理の章 | – | 全体の設計の見直し |
-
-- **必要になったら**
-  - EVPN をもっと深く知りたいとき: Cisco か Arash Deljoo の EVPN 講座。
-  - VLAN・STP・OSPF の基礎が足りないとき: CCNA 総合の該当章。
-- **今はやらない**
-  CCNP ENCOR、CCNP ENARSI、CCNA の Packet Tracer 講座、Cisco ルーターのセットアップ、PySpark の MLlib の章。
-
-### Q. 英語の動画は厳しいので CCNA Part2 から始めたい。セクション 5 は全部見る？
-
-**A. 30 以外は全部見る。**
-
-| 講義 | 判定 | 理由 |
-|---|---|---|
-| 26. SNMP | 済 | – |
-| 27. システムログの管理 | 見る | 重要度（severity）とファシリティの考え方が、lab の syslog にそのまま出てくる |
-| 28. NTP | 見る | 時計がずれると、SNMP・syslog・gNMI の時刻を並べて比べられない。lab では NTP を設定していない（コンテナは EC2 の時計を共有するのでずれない。実機では要る） |
-| 29. CDP と LLDP | 見る | 実機のトポロジを取るときの元ネタになる（`lab/lab_topology.py` は lab の定義から作っている）。CDP は Cisco 独自なので軽く流す |
-| 30. IOS の管理 | 飛ばす | Cisco の運用作業の話 |
-
-このセクションの後は、「ネットワーク自動化とプログラマビリティ」（REST・JSON・YANG）、余裕があれば「SDN」。HSRP・QoS・無線 LAN・セキュリティ・IPv6 は今は飛ばす。
+- [1. syslog の基本](#1-syslog-の基本)
+- [2. 収集の設定（Telegraf と本番の Cisco）](#2-収集の設定telegraf-と本番の-cisco)
+- [3. デバッグ用の EC2（lab + Telegraf）](#3-デバッグ用の-ec2lab--telegraf)
+- [4. YANG・OpenConfig とシスコの機器](#4-yangopenconfig-とシスコの機器)
+- [5. Spark の動き](#5-spark-の動き)
+- [6. Nautobot（機器の一覧とケーブルの正）](#6-nautobot機器の一覧とケーブルの正)
+- [7. Neptune（グラフに置くもの）](#7-neptuneグラフに置くもの)
+- [8. 障害の情報をどこに残すか](#8-障害の情報をどこに残すか)
+- [9. 格納先とテーブル、重複](#9-格納先とテーブル重複)
+- [10. Splunk](#10-splunk)
+- [11. マネージドを OSS に置き換えるとき](#11-マネージドを-oss-に置き換えるとき)
+- [12. AWS の基礎（AZ、署名、SDK、MSK の画面）](#12-aws-の基礎az署名sdkmsk-の画面)
 
 ---
 
-## 2. syslog の基本
+## 1. syslog の基本
 
 ### Q. システムログと syslog は別物？
 
@@ -325,7 +185,7 @@ PRI = ファシリティの番号 × 8 + 重要度
 
 ---
 
-## 3. 収集の設定（Telegraf と本番の Cisco）
+## 2. 収集の設定（Telegraf と本番の Cisco）
 
 ### Q. 本番の Cisco の `logging host <IPアドレス | ホスト名>` には、AWS の NLB を書く？
 
@@ -410,7 +270,7 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 
 ---
 
-## 4. デバッグ用の EC2（lab + Telegraf）
+## 3. デバッグ用の EC2（lab + Telegraf）
 
 ### Q. lab と Telegraf だけを確かめるデバッグ用の EC2 は、どう作ってある？ terraform の側とずれない？
 
@@ -444,7 +304,7 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 
 ### Q. デバッグ用の EC2 のために、Telegraf は何が変わった？
 
-**A. ECS で動いている Telegraf の動きは変わらない。同じイメージをデバッグ用の EC2 でも動かせるように、出力を選べるようにしただけ。** 収集の中身（inputs と processors）は同じ（`inputs.syslog` の形式は `SYSLOG_STANDARD` で選ぶ。3 章）。
+**A. ECS で動いている Telegraf の動きは変わらない。同じイメージをデバッグ用の EC2 でも動かせるように、出力を選べるようにしただけ。** 収集の中身（inputs と processors）は同じ（`inputs.syslog` の形式は `SYSLOG_STANDARD` で選ぶ。2 章）。
 
 - `telegraf.conf.in`
   - 出力を `# >>> sink kafka` と `# >>> sink stdout` の区間に分けた。
@@ -483,7 +343,7 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 
 ---
 
-## 5. YANG・OpenConfig とシスコの機器
+## 4. YANG・OpenConfig とシスコの機器
 
 ### Q. YANG とは？
 
@@ -694,7 +554,7 @@ vrnetlab のページには、このほかに Cisco vIOS と Cisco ASAv も載�
 
 ---
 
-## 6. Spark の動き
+## 5. Spark の動き
 
 ### Q. Spark のジョブ、driver、executor、クエリ、タスクは、役割がどう違う？
 
@@ -959,7 +819,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 ---
 
-## 7. Nautobot（機器の一覧とケーブルの正）
+## 6. Nautobot（機器の一覧とケーブルの正）
 
 ### Q. Neptune のグラフの追加は、Nautobot の Job がやっているという理解で合ってる？
 
@@ -972,7 +832,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 | `status`（アラートで変わる） | graph の Lambda（`graph/status_handler.py`） |
 | 台帳の変更履歴（頂点 `change`。新しい順に 50 件） | Nautobot の Job（`sync_changes()`） |
 
-- 修復案は Neptune に書かない（2026-10-05 から。置き場は S3 Tables の `proposal_events` だけ。8 章）。当時（2026-10-04 まで）はワークフローと Web が修復案の頂点を書いていた。
+- 修復案は Neptune に書かない（2026-10-05 から。置き場は S3 Tables の `proposal_events` だけ。7 章）。当時（2026-10-04 まで）はワークフローと Web が修復案の頂点を書いていた。
 - Job は `status` と IP 層より上には触らない。IP 層・EVPN/BGP 層は Nautobot からは入らない。
 - Job は Neptune のほかに、Telegraf の取りにいく側（dialin）の機器の一覧（SSM のパラメータ）も書き換える。
 
@@ -1081,7 +941,7 @@ flowchart LR
 
 ---
 
-## 8. Neptune（グラフに置くもの）
+## 7. Neptune（グラフに置くもの）
 
 ### Q. Neptune Database と Neptune Analytics の使い分けは？ いまの構成でも問題ない？
 
@@ -1164,7 +1024,7 @@ Database と Analytics の使い分けは、この章の最初の Q。
 
 ---
 
-## 9. 障害の情報をどこに残すか
+## 8. 障害の情報をどこに残すか
 
 2026-10-04 に聞いたこと。ここでの結論が「アラートの履歴を残す（001）」の設計になり（[設計](cycles/001-alert-history-firehose/design.md)）、いまは main に入っている。
 
@@ -1255,7 +1115,7 @@ Lambda から書く経路は 2 案あった。
 
 ---
 
-## 10. 格納先とテーブル、重複
+## 9. 格納先とテーブル、重複
 
 ### Q. ログは OpenSearch、メトリクスは Prometheus に流している？
 
@@ -1550,7 +1410,7 @@ Splunk の中で重複を扱う方法。
 
 ---
 
-## 11. Splunk
+## 10. Splunk
 
 ### Q. Splunk はデータ量で課金されると聞いた。Splunk Cloud の話？
 
@@ -1784,30 +1644,7 @@ AWS の上（ECS のタスクロール、VPC エンドポイント）で送れ�
 
 ---
 
-## 12. マネージドを OSS に置き換えるとき
-
-### Q. 「005」とは何？ 何を OSS に置き換える？
-
-**A. 「マネージドを OSS に置き換えた環境を作る」というサイクルの番号。** AWS のマネージドサービス 5 つを、ECS（Fargate）の上で動かす OSS に置き換えた版を作る。マネージド版は残して、同じアカウントに並べて立てて比べる（接頭辞は `<owner>-nwc-oss`）。
-
-| いま | 置き換え先 | 構成 |
-|---|---|---|
-| MSK | Apache Kafka（KRaft） | 3 台 |
-| EMR Serverless | Apache Spark 3.5 系 | 格納先ごとに 1 タスク |
-| OpenSearch Serverless | OpenSearch | データ 2 台 + まとめ役（cluster manager）だけの 1 台 |
-| Managed Prometheus | VictoriaMetrics のクラスター | vminsert 1、vmselect 1、vmstorage 3 |
-| Neptune Analytics | Neo4j Community Edition + GDS | 1 台 |
-
-- **理由**
-  同じ用途でマネージドと OSS を並べて、できること、費用、手間を比べるため。OSS にするのはこの 5 つだけで、ほかはマネージドのまま。
-- **共用のもの**
-  アプリのコードは共用で、接続先を環境変数で切り替える。エージェント（Strands Agents のループを含む）は、どちらの版でも同じ。
-- **メリット**
-  5 つを同じ条件で比べられる。3 台のものは 1 台止まっても続く。
-- **デメリット**
-  Fargate のタスクが 13 個以上増える。並べて立てると、共通の部分も 2 つ分の費用がかかる。Neo4j は 1 台（クラスターは Enterprise Edition だけの機能）。アプリに分岐が入る。
-- **状況（2026-10-05）**
-  設計まで。実装は始めたところで、AWS では何も確かめていない。設計は `docs/cycles/005-oss-on-ecs/design.md`、置き換え先の説明は [oss-variant.md](oss-variant.md)。
+## 11. マネージドを OSS に置き換えるとき
 
 ### Q. S3 以外の格納先は、VictoriaMetrics のようにクラスターにできる？
 
@@ -2235,7 +2072,7 @@ AWS 版は、エージェントのツール `centrality`（`agent/graph.py` の 
 
 ---
 
-## 13. AWS の基礎（AZ、署名、SDK、MSK の画面）
+## 12. AWS の基礎（AZ、署名、SDK、MSK の画面）
 
 ### Q. もう 2 AZ に置いてあるものは、1 AZ にできるか
 

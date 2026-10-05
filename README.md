@@ -163,5 +163,5 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | [troubleshooting.md](docs/troubleshooting.md) | うまくいかないとき |
 | [oss-variant.md](docs/oss-variant.md) | 方針: いまはできる限り AWS マネージドで作り、最終的にはマネージドの部分を OSS にした版も別に作る。その目的（マネージドでできて OSS でできないこと、費用、メンテナンス性の比較）と、いまマネージドにしている部分の一覧 |
 | [development.md](docs/development.md) | 手元のテスト、変更するときの決まり、Web を手元で動かす |
-| [faq-fukuda-nwc-poc.md](docs/faq-fukuda-nwc-poc.md) | 学習 FAQ: 作業中に質問したことと答え（教材の選び方、syslog、収集の設定、デバッグ用の EC2、YANG、Spark、Nautobot、Neptune、障害の情報の置き場、格納先とテーブル、Splunk、マネージドを OSS に置き換えるとき、AWS の基礎） |
+| [faq-fukuda-nwc-poc.md](docs/faq-fukuda-nwc-poc.md) | FAQ: ほかの開発者に説明するときに出る質問と答え（syslog、収集の設定、デバッグ用の EC2、YANG、Spark、Nautobot、Neptune、障害の情報の置き場、格納先とテーブル、Splunk、マネージドを OSS に置き換えるとき、AWS の基礎） |
 | [data-stores.md](docs/data-stores.md) | 勉強会メモ: データの置き場（Neptune にトポロジと `status`、S3 Tables の `proposal_events` に修復案の状態と証跡、`alert_events` にアラートの通知の履歴）と DynamoDB をやめた理由、コンテナイメージの役目と arm64 に揃える理由（Splunk だけ x86）、Neptune Analytics の基礎（Neptune Database との違い、AZ 冗長、トポロジをグラフにする意味）、MSK のブートストラップサーバーと、Telegraf・Spark がそれをどう受け取るか（`msk-bootstrap` を残す理由） |

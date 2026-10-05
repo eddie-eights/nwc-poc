@@ -105,4 +105,4 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 - [neptune-analytics.md](neptune-analytics.md)、[telegraf.md](telegraf.md)、[ssm-parameter-store.md](ssm-parameter-store.md)、[lab-ec2.md](lab-ec2.md)
 - [nautobot.md](../../nautobot.md): 構成・部品・使い方・Neptune と組み合わせた使いどころ
 - [pipeline.md](../../pipeline.md): 「Nautobot（機器の一覧とケーブルの正）」
-- FAQ の 7 章: [faq-fukuda-nwc-poc.md](../../faq-fukuda-nwc-poc.md)
+- FAQ の 6 章: [faq-fukuda-nwc-poc.md](../../faq-fukuda-nwc-poc.md)
