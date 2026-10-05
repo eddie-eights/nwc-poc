@@ -2121,3 +2121,56 @@ vrnetlab のページには、このほかに Cisco vIOS と Cisco ASAv も載�
 - XRd、Nexus 9000v など仮想版の機器で、カウンターや CPU の値がどこまで実機と同じに出るか。
 - OS と版ごとの、OpenConfig の対応範囲。
 - 上の表のシスコの部分は、公式ドキュメントで確かめていない。一般的な知識で書いた。
+
+### Q. OpenConfig とは？
+
+**結論**
+
+ネットワーク機器の設定と状態を、ベンダーをまたいで同じ形で扱うための、共通のデータモデル（YANG）と、その周りの仕組みを作っているプロジェクト。機器を使う側（通信事業者やクラウド事業者などの運用者）が主導している。
+
+**作っているもの**（公式サイトによる。2026-10-05 に確認）
+
+| もの | 中身 |
+|---|---|
+| 共通のデータモデル | インターフェース、BGP、IS-IS、LLDP、プラットフォームなどの設定と状態を、YANG で定義したもの |
+| ストリーミングテレメトリ | 機器が値を押し出す方式の監視。購読（subscribe）して受け取る |
+| gRPC の上の管理プロトコル | gNMI（設定と状態の読み書き、購読）など |
+
+公式サイトは目標のひとつに「SNMP を引退させる」と書いている。
+
+**何がうれしいか**
+
+同じ値でも、独自のモデルではベンダーごとにパスが違う。OpenConfig なら 1 つのパスで済む。
+
+| 取りたい値 | SR Linux 独自のパス（いまの Telegraf） | OpenConfig のパス |
+|---|---|---|
+| インターフェースのカウンター | `/interface[name=*]/statistics` | `/interfaces/interface[name=*]/state/counters` |
+| インターフェースの up / down | `/interface[name=*]/oper-state` | `/interfaces/interface[name=*]/state/oper-status` |
+| BGP のセッションの状態 | `/network-instance[name=default]/protocols/bgp/neighbor[peer-address=*]/session-state` | `/network-instances/network-instance[name=*]/protocols/protocol[...]/bgp/neighbors/neighbor[neighbor-address=*]/state/session-state` |
+
+**OpenConfig と gNMI の関係**
+
+- OpenConfig のモデルは「何を」（値の名前と住所）を決める。
+- gNMI は「どう運ぶか」（プロトコル）を決める。gNMI も OpenConfig のプロジェクトが作った。
+- gNMI は独自のモデルも運べる。いまの Telegraf は、gNMI で SR Linux 独自のモデルを読んでいる。
+
+**メリットとデメリット**
+
+| | 中身 |
+|---|---|
+| メリット | ベンダーが混ざっても、収集の設定、メトリクスの名前、アラートルールを 1 つにできる |
+| デメリット | 機器と OS の版によって、対応している範囲が違う。ベンダー独自の機能は OpenConfig に無いことが多く、独自のモデルと併用になる |
+
+**このプロジェクトでは**
+
+- いまは SR Linux だけなので、独自のパスで困っていない。独自のモデルのほうが、取れる値が多い（EVPN の Ethernet Segment、MAC テーブルの上限など）。
+- シスコなどを足すときに、共通にできる部分（インターフェース、BGP）を OpenConfig に寄せる、という使い方になる。
+
+**未確認**
+
+- SR Linux で OpenConfig を有効にする設定の中身と前提条件、いまの lab の版での対応範囲（Nokia の公式ドキュメントで確かめていない）。
+- 上の表の OpenConfig のパスは、公開されているモデルの一般的な形で書いた。実機では確かめていない。
+
+**出典**
+
+- https://www.openconfig.net/ （2026-10-05 に確認）
