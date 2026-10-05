@@ -3,8 +3,8 @@
 # db.t4g.medium 1 台）から置き換えた: 機器が増えたときに影響範囲や中心性をグラフの側で計算したい、がユーザーの理由。グラフ DB はこの 1 つだけ。
 # 公開のエンドポイントは閉じ（public_connectivity = false）、VPC の中からは terraform/base/core のインターフェース型エンドポイント
 # neptune-graph-data（private DNS で <graph-id>.<region>.neptune-graph.amazonaws.com がそこへ向く）で届く。認証は IAM（SigV4）だけ。
-# サブネットグループも SG も持たない（VPC の中に置くものが無い）。この経路だけで届かなければ aws_neptunegraph_private_graph_endpoint を足す
-# （AWS では未確認。docs/troubleshooting.md）。
+# サブネットグループも SG も持たない（VPC の中に置くものが無い）。この経路だけで届くことは 2026-10-05 に AWS で確かめた（Lambda graph-status が
+# status を書き換え、チャットがトポロジに答えた。aws_neptunegraph_private_graph_endpoint は足していない）。届かなくなったらそれを足す（docs/troubleshooting.md）。
 # 料金は確保したメモリ（m-NCU）の時間課金で、止めておく手段は無い。使わない日は ops/down.sh で消す
 resource "aws_neptunegraph_graph" "graph" {
   graph_name          = "${local.name_prefix}-graph"

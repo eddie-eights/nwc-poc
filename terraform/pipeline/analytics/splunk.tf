@@ -131,6 +131,8 @@ resource "aws_ecs_task_definition" "splunk" {
         { name = "DEVICE_MAP", value = var.device_map },
         ], local.splunk_cluster ? concat([
           { name = "SPLUNK_ROLE", value = "splunk_search_head" },
+          # 突き合わせ（splunk/peers_check.py）が、Up の indexer がこれより少ないとき degraded と書く
+          { name = "NWC_PEERS_EXPECTED", value = tostring(var.splunk_az_num) },
       ], local.splunk_cluster_environment) : [])
       secrets = concat(local.splunk_secrets, local.splunk_cluster ? local.splunk_cluster_secrets : [])
       # 起動（Ansible での初期設定）に数分かかる。ops/up.sh はこれが HEALTHY になってから Spark のジョブを出す

@@ -11,7 +11,11 @@
 # コードでも、agent/proposals.py の decide を呼ぶのは Web の承認タブだけで、チャットのツール（TOOL_SPECS）には decide が無い。
 
 # ---------------------------------------------------------------- access for the chat runtime and the web EC2 (terraform/base/core roles)
+# SSM は 2 つとも読む。Gateway を呼ぶのはチャットの Runtime だけ（agent/mcp_client.py。Web のコードは Gateway を呼ばない）。
+# ロールごとに文書を分けるので、Runtime のポリシーは前と同じ中身のまま
 data "aws_iam_policy_document" "reader_access" {
+  for_each = local.reader_role_names
+
   statement {
     sid       = "Parameters"
     actions   = ["ssm:GetParameter"]
@@ -19,7 +23,7 @@ data "aws_iam_policy_document" "reader_access" {
   }
 
   dynamic "statement" {
-    for_each = var.create_gateway ? [1] : []
+    for_each = var.create_gateway && each.value == local.runtime_role_name ? [1] : []
     content {
       sid       = "Gateway"
       actions   = ["bedrock-agentcore:InvokeGateway"]
@@ -33,7 +37,7 @@ resource "aws_iam_role_policy" "reader_access" {
 
   name   = "${local.name_prefix}-workflow-access"
   role   = each.value
-  policy = data.aws_iam_policy_document.reader_access.json
+  policy = data.aws_iam_policy_document.reader_access[each.key].json
 }
 
 # ---------------------------------------------------------------- access for the web EC2 only (approve tab)

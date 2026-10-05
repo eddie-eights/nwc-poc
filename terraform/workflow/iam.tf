@@ -63,16 +63,11 @@ data "aws_iam_policy_document" "task" {
     resources = [aws_sqs_queue.decisions.arn]
   }
 
-  # トポロジと status を読む（workflow/awsio.py の read_topology。事前チェックと保守中の判定）。
-  # 修復案の頂点は 2026-10-05 にやめたので書き込みはもう使わないが、外すことは cycle 003 の設計に無いので残している
+  # トポロジと status を読むだけ（workflow/awsio.py の read_topology。事前チェックと保守中の判定）。
+  # 修復案の頂点は 2026-10-05 にやめたので、書き込みと削除の権限は付けない
   statement {
-    sid = "Neptune"
-    actions = [
-      "neptune-graph:ReadDataViaQuery",
-      "neptune-graph:WriteDataViaQuery",
-      "neptune-graph:DeleteDataViaQuery",
-      "neptune-graph:GetQueryStatus",
-    ]
+    sid       = "Neptune"
+    actions   = ["neptune-graph:ReadDataViaQuery", "neptune-graph:GetQueryStatus"]
     resources = [local.neptune_data_arn]
   }
 

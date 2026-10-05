@@ -28,7 +28,7 @@
 | AgentCore Runtime | Web → Runtime | `InvokeAgentRuntime`（bedrock-agentcore のエンドポイント、IAM）。ARN は SSM `/<prefix>/runtime-arn` |
 | Athena → S3 Tables の `proposal_events` | Web → Athena（承認タブの一覧と詳細） | `athena` のエンドポイント、インスタンスロール。ワークグループ `<prefix>-history`。開いているあいだ 30 秒ごとに 1 本 |
 | SQS `<prefix>-decisions` | Web → キュー（承認・却下） | `sqs` のエンドポイント、`sqs:SendMessage`。URL は SSM `/<prefix>/decision-queue-url` |
-| AgentCore Gateway | 呼んでいない | ロールに `InvokeGateway` の許可はあるが、Web に置くモジュール（`toolkit` / `topology` / `graph` / `proposals`）に Gateway のクライアント（`agent/mcp_client.py`）は入っていない |
+| AgentCore Gateway | 呼んでいない | Web に置くモジュール（`toolkit` / `topology` / `graph` / `proposals`）に Gateway のクライアント（`agent/mcp_client.py`）は入っていない。ロールにも `InvokeGateway` は付けない（付けるのは Runtime だけ。`terraform/workflow/proposals.tf` の `reader_access`） |
 | Neptune Analytics | Web → グラフ | neptune-graph-data のエンドポイント、SigV4（トポロジの表示と、最初の投入）。修復案は読まない |
 | Nautobot | Web → Nautobot | 8080/tcp（トポロジの編集を REST API へ。SSM `/<prefix>/nautobot/url` があるあいだ） |
 | Grafana / Splunk / Temporal UI / Nautobot | PC → Web → 各タスク | 3000 / 8000 / 8233 / 8080（Web を踏み台にしたポートフォワーディング） |

@@ -1271,12 +1271,15 @@ def _az_src_ok(root, name, fname, url):
             and re.search(r"^#.*" + re.escape(url), up, re.M) is not None)
 check("注意書きの付く *_az_num（MSK / Runtime / OpenSearch 2 か所 / Nautobot の DB / エンドポイント / Neptune）は、description とリソースのそばと up.sh の検査に出典の URL と確認日がある",
       all(_az_src_ok(r, n, f, u) for (r, n, f), u in _AZ_SRC.items()))
-check("確かめ切れていないことは「未確認」と書く（Runtime の 1 サブネット、OpenSearch のスタンバイの AZ と OCU、エンドポイントの AZ 障害の振る舞い）",
-      "1 つで作るのは AWS で未確認" in _root_tf("agent") and "One subnet is not tried on AWS" in _root_tf("agent")
+check("確かめ切れていないことは「未確認」と書く（Runtime の 2 サブネット以上、OpenSearch のスタンバイの AZ と OCU、エンドポイントの AZ 障害の振る舞い）。"
+      "Runtime の 1 サブネット（既定）は 2026-10-05 に AWS で確かめたので、未確認の文を残さない",
+      "1 つ（既定）で作って動くことは 2026-10-05 に AWS で確かめた。2 つ以上は AWS で未確認" in _root_tf("agent")
+      and "One subnet (the default) worked on AWS on 2026-10-05; two or more are not tried on AWS" in _root_tf("agent")
+      and "1 つ（既定）で作って動くことは 2026-10-05 に AWS で確かめた。2 つ以上は AWS で未確認" in up
+      and not any(w in t for t in (_root_tf("agent"), up) for w in ("1 つで作るのは AWS で未確認", "One subnet is not tried on AWS"))
       and all("（未確認）" in _root_tf(r) and "unverified" in _root_tf(r) for r in ("agent", "pipeline/analytics"))
       and "AZ が落ちたときの振る舞いは AWS で未確認" in _root_tf("base/core") and "not tried on AWS" in _root_tf("base/core")
-      and all(w in up for w in ("1 つで作るのは AWS で未確認", "「最小 OCU が倍」は今の Developer Guide に見つけられなかった（未確認）",
-                                "AZ が落ちたときの振る舞いは AWS で未確認")))
+      and all(w in up for w in ("「最小 OCU が倍」は今の Developer Guide に見つけられなかった（未確認）", "AZ が落ちたときの振る舞いは AWS で未確認")))
 # Runtime の既定は 1（2026-10-05 のユーザー決定）。前の決定（1 を拒む）の文は残さない
 _faq = open(os.path.join(ROOT, "docs", "faq-fukuda-nwc-poc.md"), encoding="utf-8").read()
 check("Runtime の 1 AZ を拒んでいた前の決定（2026-10-04）の文が、up.sh・deploy.env.example・terraform・FAQ に残っていない",
@@ -1845,7 +1848,8 @@ def _scc(azs, lines, az_num="2"):  # 戻り値は (出力, aws logs を読んだ
 _OK2 = ["nwc-peer-check state=ok reason=peers_up:1", "nwc-peer-check state=mismatch reason=lost:idx-b", "nwc-peer-check state=ok reason=peers_up:2"]
 _scc_runs = {"ok": _scc("ap-northeast-1a\tap-northeast-1c", _OK2), "same_az": _scc("ap-northeast-1c\tap-northeast-1c", _OK2),
              "none": _scc("ap-northeast-1a\tap-northeast-1c", []), "few": _scc("ap-northeast-1a\tap-northeast-1c", _OK2[:1]),
-             "mismatch": _scc("ap-northeast-1a\tap-northeast-1c", _OK2[:2]), "three": _scc("ap-northeast-1a\tap-northeast-1b\tap-northeast-1c", _OK2[:1] + ["nwc-peer-check state=ok reason=peers_up:3"], "3")}
+             "mismatch": _scc("ap-northeast-1a\tap-northeast-1c", _OK2[:2]), "three": _scc("ap-northeast-1a\tap-northeast-1b\tap-northeast-1c", _OK2[:1] + ["nwc-peer-check state=ok reason=peers_up:3"], "3"),
+             "degraded": _scc("ap-northeast-1a\tap-northeast-1c", _OK2[2:] + ["nwc-peer-check state=degraded reason=peers_up:1/2"])}
 check("up.sh（クラスター）: 全タスクが HEALTHY になったら splunk_cluster_check に search head・manager・indexer のサービスを渡す。1 台のときは呼ばない",
       'SP_SERVICES="$SP_SERVICES $(tf pipeline/analytics output -raw splunk_cm_service_name) $(tf pipeline/analytics output -raw splunk_idx_service_name)"' in up
       and re.search(r'echo "Splunk は起動した"\n\s+if \[ "\$SPLUNK_AZ_NUM" -gt 1 \]; then splunk_cluster_check \$SP_SERVICES; fi\n', up) is not None
@@ -1866,6 +1870,10 @@ check("up.sh（クラスター）: 最新の判定が mismatch、または ok �
           for k in ("few", "mismatch"))
       and "最新の判定は「nwc-peer-check state=mismatch reason=lost:idx-b」" in _scc_runs["mismatch"][0]
       and "最新の判定は「nwc-peer-check state=ok reason=peers_up:1」" in _scc_runs["few"][0])
+check("up.sh（クラスター）: 最新の判定が degraded（Up の indexer が足りない。peers_check.py は 0 で終わる）なら、その前の ok では進まず、"
+      "6 分待ってから最新の判定と degraded の意味を出して止まる",
+      _scc_runs["degraded"][1] == 24 and "END" not in _scc_runs["degraded"][0]
+      and "最新の判定は「nwc-peer-check state=degraded reason=peers_up:1/2」（degraded: manager が Up と言う indexer が足りない。reason=peers_up:<Up の数>/<あるはずの数>。" in _scc_runs["degraded"][0])
 check("ENDPOINTS_MULTI_AZ が残っていると止まる（1 / true / yes は ENDPOINTS_AZ_NUM=2 に書き換え、0 / false / no は消す）",
       all(_aznum(ENDPOINTS_MULTI_AZ=v).startswith("DIE: ") and "を ENDPOINTS_AZ_NUM=2 と書き換える。まだ何も作っていない" in _aznum(ENDPOINTS_MULTI_AZ=v)
           for v in ("1", "true", "yes"))

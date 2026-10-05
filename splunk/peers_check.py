@@ -10,14 +10,18 @@ indexer のタスクが入れ替わって前と同じ IP をもらうと、searc
 - manager に聞けないときは 0（manager が落ちただけで search head まで入れ替えない）。
 - indexer が普通に入ってきたときの食い違いは 1 秒ほどで消える（手元で確認）。
 
-判定（ok / mismatch / skip / error）が前の回と変わったときだけ、決まった形の 1 行「nwc-peer-check state=<判定> reason=<理由>」を
+manager が Up と言う peer が、あるはずの台数（NWC_PEERS_EXPECTED。search head のタスク定義が indexer の数を入れる）より少ないときは、
+食い違いが無くても ok でなく degraded と書く（reason=peers_up:<Up の数>/<あるはずの数>）。indexer が落ちているだけなので終了コードは 0
+（search head を入れ替えても直らない）。NWC_PEERS_EXPECTED が無い・数でないときは台数を見ない（ok の reason=peers_up:<Up の数>）。
+
+判定（ok / degraded / mismatch / skip / error）が前の回と変わったときだけ、決まった形の 1 行「nwc-peer-check state=<判定> reason=<理由>」を
 PID 1（コンテナの入口）の stdout に書く（手当て B）。ECS では awslogs で CloudWatch Logs に出て、ops/up.sh が全タスク待ちのあとに
 いまの search head のタスクの最新の行を読む（state=ok で indexer が全部 Up になるまで待ち、ならなければ止まる）。手元では docker logs に出る。
 理由に入れるのは peer の名前と数と例外の型だけ（admin のパスワード・HEC の token・合言葉は入れない）。
 
 イメージ（splunk/Dockerfile）に /sbin/nwc-peers-check.py として入れ、クラスターの search head のタスク定義（terraform/pipeline/analytics の
 splunk.tf）が `/sbin/checkstate.sh && /sbin/nwc-peers-check.py` で呼ぶ。読む環境変数は上流の入口と同じ SPLUNK_CLUSTER_MASTER_URL
-（manager の名前）と SPLUNK_PASSWORD（admin。どのタスクも同じ SSM の値）。Splunk の Python でなく OS の /usr/bin/python3（標準ライブラリだけ）で動く
+（manager の名前）と SPLUNK_PASSWORD（admin。どのタスクも同じ SSM の値）、それに NWC_PEERS_EXPECTED（indexer の数）。Splunk の Python でなく OS の /usr/bin/python3（標準ライブラリだけ）で動く
 """
 import base64
 import json
@@ -110,7 +114,16 @@ def main(environ=os.environ, fetch=get, out=OUT, state_file=STATE):
         print("manager は Up と言うが、search head が同じ GUID で Up と見ていない peer: " + ", ".join(lost))
         record("mismatch", "lost:" + ",".join("_".join(n.split()) for n in lost), out, state_file)
         return 1
-    record("ok", f"peers_up:{sum(1 for e in cm_entries if e['content'].get('status') == 'Up')}", out, state_file)
+    up = sum(1 for e in cm_entries if e["content"].get("status") == "Up")
+    try:
+        expected = int(environ.get("NWC_PEERS_EXPECTED", "") or 0)
+    except ValueError:
+        expected = 0
+    if up < expected:
+        print(f"manager が Up と言う peer が {up} 台で、{expected} 台に足りない（indexer が落ちている。search head は入れ替えない）")
+        record("degraded", f"peers_up:{up}/{expected}", out, state_file)
+        return 0
+    record("ok", f"peers_up:{up}", out, state_file)
     return 0
 
 

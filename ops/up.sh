@@ -537,7 +537,7 @@ az_num MSK_AZ_NUM 2 2 3 "MSK はブローカーを 2 か 3 の AZ にしか置�
 #   https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_VpcConfig.html）。手引きは Best practices で高可用のために
 #   別々の AZ のサブネットを 2 つ以上と勧めるが、1 つを禁じる記述は無い（Amazon Bedrock AgentCore Developer Guide「Configure Amazon Bedrock
 #   AgentCore Runtime and tools for VPC」、https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-vpc.html）。どちらも 2026-10-05 確認。
-#   1 つで作るのは AWS で未確認
+#   1 つ（既定）で作って動くことは 2026-10-05 に AWS で確かめた。2 つ以上は AWS で未確認
 az_num RUNTIME_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
 az_num EMR_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
 az_num LAMBDA_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
@@ -1295,7 +1295,7 @@ if [ -z "$SKIP_ANALYTICS" ]; then
         sleep 15
       done
       [ -n "$line" ] || die "search head のタスク（${sh_task##*/}）は、突き合わせ（splunk/peers_check.py）をまだ 1 回もしていない（6 分待っても判定の行「nwc-peer-check …」がロググループ /ecs/$PREFIX-splunk の splunk/splunk/${sh_task##*/} に無い）。search head が入れ替わったばかりなら、HEALTHY になってから打ち直す"
-      die "search head の突き合わせ（splunk/peers_check.py）が 6 分たっても ok（Up の indexer が ${SPLUNK_AZ_NUM} 台）にならない。最新の判定は「$line」（mismatch: search head が古い GUID の indexer を持っている。続けば ECS が search head を入れ替える。skip: manager に聞けない。error: search head の peers を読めない）。ロググループ /ecs/$PREFIX-splunk を見る"
+      die "search head の突き合わせ（splunk/peers_check.py）が 6 分たっても ok（Up の indexer が ${SPLUNK_AZ_NUM} 台）にならない。最新の判定は「$line」（degraded: manager が Up と言う indexer が足りない。reason=peers_up:<Up の数>/<あるはずの数>。mismatch: search head が古い GUID の indexer を持っている。続けば ECS が search head を入れ替える。skip: manager に聞けない。error: search head の peers を読めない）。ロググループ /ecs/$PREFIX-splunk を見る"
     }
     log "7-4b. Splunk（ECS。タスク ${SPLUNK_TASKS} つ）が起動するのを待つ（最大 20 分）"
     AN_CLUSTER=$(tf pipeline/analytics output -raw analytics_cluster_name); SP_SERVICES=$(tf pipeline/analytics output -raw splunk_service_name)

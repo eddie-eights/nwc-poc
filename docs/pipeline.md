@@ -264,8 +264,8 @@ SELECT status, source, device_id, kind, target, starts_at, received_at FROM "s3t
 | 保存済みサーチ | 見るもの | 出すもの |
 |---|---|---|
 | `netops_poll` | `telegraf:interface` の `ifOperStatus`（SNMP のポーリング。`SNMP_POLL=1` のときだけ値がある） | down（2）かどうかが変わった IF だけを出す。down になったら `link_down` の `firing`、down でなくなったら `resolved`。ループバック、管理ポート、サブインタフェース、admin-state が disable の IF は外す（Grafana の `link_down` と同じ） |
-| `netops_gnmi` | `telegraf:bgp_neighbor` の `session_state`、`telegraf:isis_interface` の `oper_state` | `established` / `up` でなければ `bgp_down` / `isis_down` の `firing`、戻れば `resolved` |
-| `netops_trap` | `telegraf:snmp_trap` | linkDown は `link_down` の `firing`、linkUp は `resolved`。ほかの trap は `trap` の `firing`（coldStart / warmStart などは出さない） |
+| `netops_gnmi` | `telegraf:bgp_neighbor` の `session_state`、`telegraf:isis_interface` の `oper_state` | 前の値（過去 24 時間の最後の値）と比べて変わったときだけ出す。`established` / `up` でなくなれば `bgp_down` / `isis_down` の `firing`、戻れば `resolved`。前の値が無いときは、異常なら `firing` だけ出す（起動の直後に `resolved` をまとめて送らない） |
+| `netops_trap` | `telegraf:snmp_trap` | linkDown は `link_down` の `firing`、linkUp は `resolved`（ループバック、管理ポート、サブインタフェースは外す）。ほかの trap は `trap` の `firing`（coldStart / warmStart などは出さない） |
 | `netops_trap_clear` | 同上（過去 70 分） | その機器から link 以外の trap が 10 分来なければ、その機器の `trap` を `resolved` にする（機器ごと。1 つの trap につき 1 回） |
 
 - 4 本とも毎分動き、「索引に入った時刻」で直前の 1 分を 1 回だけ読む（`_index_earliest` / `_index_latest`。イベントの時刻で切ると、Spark のマイクロバッチで遅れて届いた分を取りこぼす）。`netops_poll` は比べる相手としてその前の 10 分も、`netops_trap_clear` は過去 70 分を読む。スケジューラが遅れても飛ばさない（`realtime_schedule = 0`）。
@@ -278,7 +278,7 @@ SELECT status, source, device_id, kind, target, starts_at, received_at FROM "s3t
   - サーチが動いたか: `index=_internal sourcetype=scheduler savedsearch_name=netops_*`
   - publish の結果: `index=_internal sourcetype=splunkd sendmodalert netops_sns`（成功は `published=` の分子と分母が同じ。失敗は `ERROR`）
 - 2026-10-02 の作り替えは、模擬テストと手元のコンテナ（Splunk 10.4.3、Grafana 13.2.2）で確かめた。2026-10-05 に AWS で確かめた: `sudo lab fail-main` で Grafana と Splunk の両方が `link_down` と `isis_down` を出し、`sns` のエンドポイント越しの publish と、SNS からの配信（Lambda と SQS）が通った。AWS では未確認: `bgp_down` と `trap` の発火、trap の送り元の IP が `DEVICE_MAP` に当たるか、SR Linux の linkDown の trap に IF 名が載るか。
-- 既知の不具合（2026-10-05）: Splunk はサブインターフェース（`ethernet-1/1.0`）の `link_down` も出す。起動の直後に `resolved` をまとめて送る。[troubleshooting.md](troubleshooting.md) の「既知の不具合」。
+- 2026-10-05 の AWS で見つけた 2 つ（trap の検索がサブインターフェース（`ethernet-1/1.0`）の `link_down` も出す、`netops_gnmi` が起動の直後に `resolved` をまとめて送る）は直した。trap は手元のテスト、`netops_gnmi` は手元のコンテナ（Splunk 10.4.3）で確かめた。AWS では未確認。
 
 ## Spark を確かめる
 

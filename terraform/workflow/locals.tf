@@ -97,10 +97,12 @@ locals {
   # agent が無いとワークフローが原因を聞く先が無い。下の precondition で「agent を先に」と出す
   runtime_arn = try(data.terraform_remote_state.agent.outputs.agent_runtime_arn, "")
 
-  # SSM とゲートウェイを使う 2 つのロール（チャットの Runtime と Web の EC2）。Neptune の読み書きは terraform/pipeline/graph の access.tf が付ける。
+  # SSM を読む 2 つのロール（チャットの Runtime と Web の EC2）。Gateway を呼ぶのは Runtime だけ（proposals.tf の reader_access）。
+  # Neptune の読み書きは terraform/pipeline/graph の access.tf が付ける。
   # 決定のキューへの送信と Athena での proposal_events の読み取りは Web だけ（proposals.tf）
+  runtime_role_name = data.terraform_remote_state.main.outputs.runtime_role_name
   web_role_name     = data.terraform_remote_state.main.outputs.web_role_name
-  reader_role_names = toset([data.terraform_remote_state.main.outputs.runtime_role_name, local.web_role_name])
+  reader_role_names = toset([local.runtime_role_name, local.web_role_name])
 
   # lab が無ければ Apply の段は打つ先が無い（ワーカーは修復案を failed にする）
   lab_instance_id = try(data.terraform_remote_state.lab.outputs.lab_instance_id, "")

@@ -494,6 +494,11 @@ check("タスクロールは Neptune（トポロジの読み取り）と、修�
       task_doc is not None and re.search(r'sid\s*=\s*"Neptune"', task_doc.group(0)) and '"neptune-graph:ReadDataViaQuery"' in task_doc.group(0)
       and re.search(r'sid\s*=\s*"AuditTable"', task_doc.group(0)) and '"s3tables:PutTableData"' in task_doc.group(0)
       and '"s3tables:UpdateTableMetadataLocation"' in task_doc.group(0))
+_neptune_task = re.search(r'sid\s*=\s*"Neptune"[\s\S]*?\n  \}', task_doc.group(0)) if task_doc else None
+check("タスクロールの Neptune は読むだけ（ReadDataViaQuery と GetQueryStatus。worker は read_topology の MATCH しか投げない）",
+      _neptune_task is not None
+      and re.findall(r'"(neptune-graph:\w+)"', _neptune_task.group(0)) == ["neptune-graph:ReadDataViaQuery", "neptune-graph:GetQueryStatus"]
+      and "WriteDataViaQuery" not in task_doc.group(0) and "DeleteDataViaQuery" not in task_doc.group(0))
 _dq_task = re.search(r'sid\s*=\s*"DecisionQueue"[\s\S]*?\n  \}', task_doc.group(0)) if task_doc else None
 check("タスクロールは決定のキューを受けて消すだけ（ReceiveMessage / DeleteMessage / GetQueueAttributes。送るのは Web）",
       _dq_task is not None and re.findall(r'"(sqs:\w+)"', _dq_task.group(0)) == ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
@@ -503,7 +508,16 @@ check("タスクと Lambda は土台の workflow / lambda の SG を使い、SG 
       and 'resource "aws_security_group"' not in tf and "aws_vpc_security_group_" not in tf and "neptune_sg_id" not in tf)
 check("graph と analytics が無ければ precondition で止まる（ワーカーが起きてから Neptune / 証跡に届かず落ちるより先に）",
       'local.neptune_graph_id != ""' in tf and 'local.audit_bucket_arn != ""' in tf and 'local.proposal_events_table_name != ""' in tf)
-check("Runtime と Web のロールに Gateway の権限を足す", 'for_each = local.reader_role_names' in tf and '"bedrock-agentcore:InvokeGateway"' in tf)
+_reader_all = re.search(r'data "aws_iam_policy_document" "reader_access" \{[\s\S]*?\n\}\n', tf)
+check("Runtime と Web のロールに SSM の読み取りを付け、Gateway の権限（InvokeGateway）は Runtime だけ（Web のコードは Gateway を呼ばない）",
+      _reader_all is not None and _reader_all.group(0).count("for_each = local.reader_role_names") == 1
+      and re.search(r'for_each = var\.create_gateway && each\.value == local\.runtime_role_name \? \[1\] : \[\]\n\s*content \{\n\s*sid\s*=\s*"Gateway"\n\s*actions\s*=\s*\["bedrock-agentcore:InvokeGateway"\]',
+                   _reader_all.group(0)) is not None
+      and re.search(r'resource "aws_iam_role_policy" "reader_access" \{\n\s*for_each = local\.reader_role_names[\s\S]*?'
+                    r'policy = data\.aws_iam_policy_document\.reader_access\[each\.key\]\.json', tf) is not None
+      and "runtime_role_name = data.terraform_remote_state.main.outputs.runtime_role_name" in tf
+      and "reader_role_names = toset([local.runtime_role_name, local.web_role_name])" in tf
+      and tf.count('"bedrock-agentcore:InvokeGateway"') == 2)
 # 承認・却下を書けるのはコードの上では web だけ（decide はツールにしない）。Neptune の IAM は頂点ごとに絞れないので、線はコードで引く
 check("修復案を決める専用の IAM（decide_access）はもう無い", "decide_access" not in tf)
 check("Gateway は AWS_IAM 認可の MCP で、2025-06-18 を話す", 'authorizer_type = "AWS_IAM"' in tf and 'protocol_type   = "MCP"' in tf and '"2025-06-18"' in tf)

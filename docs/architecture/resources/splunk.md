@@ -45,7 +45,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | 保存済みサーチ | 見るもの | 出すもの |
 |---|---|---|
 | `netops_poll` | SNMP のポーリングの `ifOperStatus` | down かどうかが変わった IF だけ。`link_down` の `firing` / `resolved` |
-| `netops_gnmi` | gNMI の BGP の `session_state`、IS-IS の `oper_state` | `bgp_down` / `isis_down` の `firing` / `resolved` |
+| `netops_gnmi` | gNMI の BGP の `session_state`、IS-IS の `oper_state` | 前の値と比べて変わったときだけ。`bgp_down` / `isis_down` の `firing` / `resolved` |
 | `netops_trap` | trap | linkDown は `link_down` の `firing`、linkUp は `resolved`。ほかの trap は `trap` の `firing` |
 | `netops_trap_clear` | trap（過去 70 分） | その機器から link 以外の trap が 10 分来なければ `trap` を `resolved` |
 
@@ -83,7 +83,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
   出典: `splunk/entrypoint.sh`、004 の設計の「未確定事項とリスク」の 11。
 - **search head のヘルスチェックは、indexer の GUID の突き合わせも見る（`nwc-peer-check`）。**
   indexer が入れ替わって前と同じ IP をもらうと、search head は古い GUID のままその indexer を持ち続け、検索が黙って欠ける（手元の Docker で再現。Fargate で同じ IP がまた割り当てられるかは未確認）。`splunk/peers_check.py`（イメージの `/sbin/nwc-peers-check.py`）が、manager が Up と言う indexer を search head が同じ GUID の Up で持っているかを見る。食い違いが 10 回（約 5 分）続くと、ECS が search head を入れ替える。
-  判定が変わったときだけ、ログに `nwc-peer-check state=<ok / mismatch / skip / error> reason=<理由>` を 1 行書く。`skip` は manager に聞けない、`error` は search head の peers を読めない。
+  判定が変わったときだけ、ログに `nwc-peer-check state=<ok / degraded / mismatch / skip / error> reason=<理由>` を 1 行書く。`degraded` は manager が Up と言う indexer がタスク定義の数（`NWC_PEERS_EXPECTED`）より少ない（`reason=peers_up:<Up の数>/<あるはずの数>`。終了コードは 0 で、search head は入れ替えない）、`skip` は manager に聞けない、`error` は search head の peers を読めない。
   `ops/up.sh` の手順 7-4b は、全タスクが HEALTHY になったあとにこの行を読み、`state=ok reason=peers_up:<indexer の数>` になるまで最大 6 分待つ。ならなければ止まる。
   2026-10-05 に AWS で確かめた（`nwc-peer-check state=ok reason=peers_up:2`）。`mismatch` で search head が入れ替わるところは AWS では未確認。
   出典: `splunk/peers_check.py`、`ops/up.sh` の `splunk_cluster_check`。
@@ -146,7 +146,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | AWS の上での通し | 2026-10-05 に AWS で確かめた: `sudo lab fail-main` で Splunk が `link_down` と `isis_down` を出し、`sns` のエンドポイント越しに SNS へ届いた（`SPLUNK_AZ_NUM=2` の構成）。未確認: `bgp_down` と `trap` の firing、trap の送り元の IP が `DEVICE_MAP` に当たるか、SR Linux の linkDown の trap に IF 名が載るか、Splunk の画面 |
 | `SPLUNK_AZ_NUM` | 2026-10-05 に AWS で確かめたのは `2`（4 タスク、indexer は 2 つの AZ）。`3` は未確認。`1` のままの 1 台の構成も、004 を入れたあとの AWS では未確認 |
 | 試用ライセンス | タスクごとに別々の試用ライセンスを持つ。2026-10-05 の `SPLUNK_AZ_NUM=2` ではクラスターとアラートが動いた。日数がたったあとの挙動は未確認 |
-| 既知の不具合（2026-10-05） | 1 本の回線断でサブインターフェース（`ethernet-1/1.0`）の `link_down` も出る。起動の直後に `resolved` をまとめて送る。[troubleshooting.md](../../troubleshooting.md) の「既知の不具合」 |
+| 既知の不具合（2026-10-05） | trap のサブインターフェース（`ethernet-1/1.0`）の `link_down` と、起動の直後の `resolved` のまとめ送りは直した（手元で確認、AWS では未確認）。回線の両端が別の異常になる件は [troubleshooting.md](../../troubleshooting.md) の「既知の不具合」 |
 | Telegraf か Splunk が 10 分を超えて止まったとき | `netops_poll` の「前の値」が無くなり、戻ったときに新しい `starts_at` で `firing` をもう 1 回出す |
 | Splunk が止まっているあいだの変化 | 次に状態が変わるまで出ない |
 

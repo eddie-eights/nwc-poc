@@ -433,9 +433,11 @@ check("どのサーチも _raw だけにしてから spath で項目を取る（
 check("どのサーチも最後は table device kind target status detail starts_at（アラートアクションが読む列）",
       all(p[-1] == "table device kind target status detail starts_at" for p in pipes.values())
       and all(re.search(rf"r\.get\(\"{c}\"\)", src) for c in ("device", "kind", "target", "status", "detail", "starts_at")))
-check("窓は索引に入った時刻で切る（直前の 1 分を 10 秒手前にずらして 1 回だけ読む。ポーリングは前の値としてその前の 10 分も読む。イベントの時刻の窓 dispatch.earliest_time は広く取る）",
-      all(pipes[n][0].endswith("_index_earliest=-1m@m-10s _index_latest=@m-10s") and saved[n]["dispatch.earliest_time"] == "-1h" for n in ("netops_gnmi", "netops_trap"))
+check("窓は索引に入った時刻で切る（直前の 1 分を 10 秒手前にずらして 1 回だけ読む。前の値としてポーリングはその前の 10 分、gNMI は 24 時間も読む。"
+      "イベントの時刻の窓 dispatch.earliest_time は広く取る）",
+      pipes["netops_trap"][0].endswith("_index_earliest=-1m@m-10s _index_latest=@m-10s") and saved["netops_trap"]["dispatch.earliest_time"] == "-1h"
       and pipes["netops_poll"][0].endswith("_index_earliest=-11m@m-10s _index_latest=@m-10s") and saved["netops_poll"]["dispatch.earliest_time"] == "-1h"
+      and pipes["netops_gnmi"][0].endswith("_index_earliest=-1441m@m-10s _index_latest=@m-10s") and saved["netops_gnmi"]["dispatch.earliest_time"] == "-25h"
       and pipes["netops_trap_clear"][0].endswith("_index_earliest=-70m@m-10s _index_latest=@m-10s") and saved["netops_trap_clear"]["dispatch.earliest_time"] == "-3h")
 check("イベントは source で選ぶ（Spark の splunk_events が telegraf:<measurement> を付ける）。index は決め打ちしない（SPLUNK_INDEX で変わる）",
       pipes["netops_poll"][0].startswith('index=* source="telegraf:interface" ')
@@ -534,12 +536,38 @@ check("ポーリング: 見ない IF は Grafana の link_down と同じ（ル�
       and [n for n in ("lo0", "mgmt0", "ethernet-1/1.0", "ethernet-1/1", "ethernet-1/49", "irb0") if not re.fullmatch("(lo|mgmt).*|.*[.].*", n)] == ["ethernet-1/1", "ethernet-1/49", "irb0"]
       and 'ifName!~"(lo|mgmt).*|.*[.].*"' in read("grafana", "provisioning", "alerting", "netops-prometheus.yaml"))
 g = saved["netops_gnmi"]["search"]
-check("gNMI: BGP は session_state が established 以外で bgp_down、IS-IS は oper_state が up 以外で isis_down（対象ごとに最後の状態 1 つ）",
+check("gNMI: BGP は session_state が established 以外で bgp_down、IS-IS は oper_state が up 以外で isis_down",
       'eval kind=if(source=="telegraf:bgp_neighbor", "bgp_down", "isis_down")' in g and "'fields.session_state'" in g and "'fields.oper_state'" in g
-      and "stats latest(state) as state latest(_time) as starts_at by device kind target" in g
-      and 'eval status=if((kind=="bgp_down" AND state=="established") OR (kind=="isis_down" AND state=="up"), "resolved", "firing")' in g)
+      and 'eval down=if((kind=="bgp_down" AND state=="established") OR (kind=="isis_down" AND state=="up"), 0, 1), '
+          'in_now=if(_indextime >= relative_time(now(), "-1m@m-10s"), 1, 0)' in g)
 check("gNMI: target は BGP がピアのアドレス、IS-IS が IF 名（status Lambda の set_layer_status が引く名前）",
       "coalesce('tags.peer_address', 'tags.neighbor_peer_address'), 'tags.interface_name'" in g)
+_gp = pipes["netops_gnmi"]
+_pp = [x.replace("by device target", "by device kind target") for x in pipes["netops_poll"]]
+check("gNMI: 前の値と比べて down かどうかが変わったときだけ出す。比べ方（前・今・出す条件・starts_at）はポーリングと同じ行（対象は device kind target）。"
+      "detail の state は最後の値",
+      all(x in _gp for x in _pp if x.startswith(("eval prev_down=", "eventstats ", "eval now_down=", "eval run_time=", "where arrived")))
+      and "stats latest(prev_down) as prev_down max(now_down) as now_down max(in_now) as arrived latest(state) as state min(run_time) as starts_at by device kind target" in _gp
+      and 'eval status=if(now_down==1, "firing", "resolved")' in _gp
+      and [x.split(" ")[0] for x in _gp] == ["index=*", "fields", "spath", "eval", "eval", "eval", "eval", "where", "eval", "eval", "eventstats", "eval", "eval",
+                                              "stats", "where", "eval", "eval", "table"])
+GNMI_BACK = (int(re.search(r"_index_earliest=-(\d+)m@m-10s", _gp[0]).group(1)) - 1) * 60
+check("gNMI の遷移: 参照実装の前の長さは SPL の窓（-1441m@m-10s から今の 1 分を除いた 24 時間。Grafana の last_over_time(...[24h]) と同じ）",
+      GNMI_BACK == 86400 and "[24h]" in read("grafana", "provisioning", "alerting", "netops-prometheus.yaml"))
+_H = 3600
+check("gNMI: 起動の直後（購読の最初の送信や、Spark が Kafka を頭から読み直した分が今の 1 分にまとめて入る）は、up / established の resolved を出さない。down は firing",
+      poll_ref([(65, 10, 0), (66, 20, 0), (67, 30, 1)], 120, GNMI_BACK) == ("firing", 30)
+      and poll_ref([(65, 10, 1), (66, 20, 0)], 120, GNMI_BACK) == (None, None)
+      and poll_ref([(65, 10, 0)], 120, GNMI_BACK) == (None, None))
+check("gNMI: Telegraf がつなぎ直して今の状態を送り直しても、前と同じなら出さない（24 時間以内）。down のまま送り直しても firing を出し直さない",
+      poll_runs([ev(10, 0), ev(6 * _H + 10, 0)], 6 * 60 + 1, GNMI_BACK)[-1] == (None, None)
+      and poll_runs([ev(10, 1), ev(6 * _H + 10, 1)], 6 * 60 + 1, GNMI_BACK)[-1] == (None, None))
+check("gNMI: 変わったときは前の値が何時間前でも出す（down から 2 時間後に established → resolved。ポーリングの 10 分なら前が無くて出せない）",
+      poll_runs([ev(10, 1), ev(2 * _H + 10, 0)], 2 * 60 + 1, GNMI_BACK)[-1] == ("resolved", 2 * _H + 10)
+      and poll_runs([ev(10, 1), ev(2 * _H + 10, 0)], 2 * 60 + 1)[-1] == (None, None))
+check("gNMI: 24 時間を超えて down が続いたあとの resolved は出さない。down を送り直すと firing を出し直す（限界。Grafana が閉じる）",
+      poll_runs([ev(10, 1), ev(25 * _H + 10, 0)], 25 * 60 + 1, GNMI_BACK)[-1] == (None, None)
+      and poll_runs([ev(10, 1), ev(25 * _H + 10, 1)], 25 * 60 + 1, GNMI_BACK)[-1] == ("firing", 25 * _H + 10))
 
 
 def norm(oid, search):
@@ -556,6 +584,11 @@ IGNORED = [".1.3.6.1.6.3.1.1.5.1", ".1.3.6.1.6.3.1.1.5.2", ".1.3.6.1.4.1.8072.4.
 LINK = [".1.3.6.1.6.3.1.1.5.3", ".1.3.6.1.6.3.1.1.5.4"]
 excluded = lambda s: re.findall(r'oid!="(\.[0-9.]+)"', s)   # noqa: E731
 check("trap: 機器が起きた知らせ（coldStart / warmStart / nsNotifyShutdown / nsNotifyRestart）は異常にしない", excluded(t) == IGNORED)
+_tskip = re.search(r'where kind!="link_down" OR NOT match\(target, "([^"]+)"\)', t)
+check("trap: linkDown / linkUp でも、ポーリングと同じ IF（ループバック・管理ポート・サブインタフェース）は見ない。link 以外の trap の target（OID）は落とさない",
+      _tskip is not None and _tskip.group(1) == SKIP_IF
+      and pipes["netops_trap"].index(_tskip.group(0)) == pipes["netops_trap"].index('eval target=if(kind=="link_down", coalesce(if_name, if_descr, if_index, "?"), oid)') + 1
+      and [n for n in ("ethernet-1/1.0", "lo0", "mgmt0", "ethernet-1/1", "5", "?") if not re.search(_tskip.group(1), n)] == ["ethernet-1/1", "5", "?"])
 check("trap: linkDown は link_down の firing、linkUp は resolved。それ以外は kind = trap（target は trap の OID）の firing",
       'eval kind=if(oid==".1.3.6.1.6.3.1.1.5.3" OR oid==".1.3.6.1.6.3.1.1.5.4", "link_down", "trap")' in t
       and 'eval status=if(oid==".1.3.6.1.6.3.1.1.5.4", "resolved", "firing")' in t
@@ -686,6 +719,29 @@ _after = _pc_main(_PCENV, _ok, _pcd)
 check("peers_check.py の判定の行: 書けないときはヘルスチェックの出力に型を出し、終了コードは判定のまま。前の行として覚えないので、次の回に書ける",
       _nowrite[0] == 0 and _nowrite[1] == f"判定の行を {os.path.join(_pcd, 'no-such-dir', 'fd1')} に書けない（FileNotFoundError）\n" and _nowrite[3] == []
       and _after[:2] == (0, "") and _after[3] == ["nwc-peer-check state=ok reason=peers_up:1"])
+_PCENV2 = dict(_PCENV, NWC_PEERS_EXPECTED="2")
+_one_down = {pc.CM_PEERS: [_cm("AAA-1", label="idx-a"), _cm("BBB-2", "Down", "idx-b")], pc.SH_PEERS: [_sh("AAA-1")]}
+_deg = _pc_main(_PCENV2, _one_down)
+_pcd = tempfile.mkdtemp()
+_dseq = [_pc_main(_PCENV2, r, _pcd) for r in (_one_down, _one_down, _two, _one_down)]
+_three = {pc.CM_PEERS: [_cm("AAA-1"), _cm("BBB-2"), _cm("CCC-3")], pc.SH_PEERS: [_sh("AAA-1"), _sh("BBB-2"), _sh("CCC-3")]}
+check("peers_check.py: manager が Up と言う peer が NWC_PEERS_EXPECTED（indexer の数）より少なければ、食い違いが無くても ok でなく "
+      "「state=degraded reason=peers_up:<Up の数>/<あるはずの数>」と書き、終了コードは 0（indexer が落ちているだけで、search head は入れ替えない）。"
+      "そろえば ok に戻る。多いのは ok。食い違いは degraded より先（1）。NWC_PEERS_EXPECTED が無い・数でない・0 なら台数を見ない",
+      _deg[0] == 0 and _deg[3] == ["nwc-peer-check state=degraded reason=peers_up:1/2"] and "1 台で、2 台に足りない" in _deg[1] and _PW not in _deg[1]
+      and [r[0] for r in _dseq] == [0, 0, 0, 0]
+      and _dseq[-1][3] == ["nwc-peer-check state=degraded reason=peers_up:1/2", "nwc-peer-check state=ok reason=peers_up:2",
+                           "nwc-peer-check state=degraded reason=peers_up:1/2"]
+      and _pc_main(_PCENV2, _three)[:4:3] == (0, ["nwc-peer-check state=ok reason=peers_up:3"])
+      and _pc_main(dict(_PCENV, NWC_PEERS_EXPECTED="3"), {pc.CM_PEERS: [_cm("AAA-1", label="idx-a"), _cm("BBB-2", label="idx-b")],
+                                                          pc.SH_PEERS: [_sh("AAA-1"), _sh("OLD-1")]})[:4:3] == (1, ["nwc-peer-check state=mismatch reason=lost:idx-b"])
+      and all(_pc_main(dict(_PCENV, NWC_PEERS_EXPECTED=v), _one_down)[:4:3] == (0, ["nwc-peer-check state=ok reason=peers_up:1"]) for v in ("", "x", "0", "1"))
+      and _pc_main(_PCENV, _one_down)[3] == ["nwc-peer-check state=ok reason=peers_up:1"])
+_sh_env = read("terraform", "pipeline", "analytics", "splunk.tf")
+check("splunk.tf: クラスターの search head のタスクだけに NWC_PEERS_EXPECTED（indexer の数 = splunk_az_num）を渡す（manager と indexer の環境変数には入れない）",
+      re.search(r'\{ name = "SPLUNK_ROLE", value = "splunk_search_head" \},\n(?:\s*#[^\n]*\n)*\s*\{ name = "NWC_PEERS_EXPECTED", value = tostring\(var\.splunk_az_num\) \},\n'
+                r'\s*\], local\.splunk_cluster_environment\) : \[\]\)', _sh_env) is not None
+      and _sh_env.count("NWC_PEERS_EXPECTED") == 1)
 _mgmt = []
 
 

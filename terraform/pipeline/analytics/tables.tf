@@ -129,7 +129,9 @@ resource "aws_s3tables_table" "raw_telemetry" {
 # event_id = <proposal_id>#<event>（ignored だけは <proposal_id>#ignored#<届いた決定の種類>#<届いた決定の時刻>#<名前>）。列は workflow/rules.py の PROPOSAL_EVENT_COLUMNS と同じ順・同じ型。
 # schema を変えるとテーブルは作り直しになり、いまある行は消える（上の raw_telemetry の注記と同じ RequiresReplace。
 # 2026-10-05 に 12 列から 28 列にした。12 列の state に plan を打つと must be replaced になることは、AWS に触らずに確かめた
-# （provider 6.64.0、偽の鍵と -refresh=false。docs/cycles/003-proposals-in-s3tables/review.md の Round 1）。AWS 上の plan は未実行）
+# （provider 6.64.0、偽の鍵と -refresh=false。docs/cycles/003-proposals-in-s3tables/review.md の Round 1）。
+# 2026-10-05 に AWS で 28 列のテーブルを新しく作り、worker が created → approved → applied → verified の行を書き、Web の承認タブが Athena で読めた。
+# 12 列のテーブルが残っている state からの作り直しは、AWS では見ていない（未確認））
 resource "aws_s3tables_table" "proposal_events" {
   name             = "proposal_events"
   namespace        = aws_s3tables_namespace.netops.namespace
