@@ -1,0 +1,1010 @@
+{
+ "graph": [
+  [
+   "MATCH (n:`device`) RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n:`interface`) RETURN n",
+   {}
+  ],
+  [
+   "MATCH (a)-[l:link]->(b) RETURN id(a) AS a, id(b) AS b, l",
+   {}
+  ],
+  [
+   "MATCH (n:`ip_interface`) RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n:`isis_adjacency`) RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n:`bgp_session`) RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n:`evpn_instance`) RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n:`ethernet_segment`) RETURN n",
+   {}
+  ],
+  [
+   "MATCH (a)-[e:over|peer|tunnel|attach|segment]->(b) RETURN type(e) AS label, id(a) AS from, id(b) AS to",
+   {}
+  ],
+  [
+   "MATCH (n:device) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:interface) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH ()-[l:link]->() RETURN count(l) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`ip_interface`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`isis_adjacency`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`bgp_session`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`evpn_instance`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`ethernet_segment`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH ()-[e:over|peer|tunnel|attach|segment]->() RETURN count(e) AS n",
+   {}
+  ],
+  [
+   "MATCH (n) WHERE n.registered = false RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n) WHERE n.registered = false RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n:device) WHERE n.registered IS NULL DETACH DELETE n",
+   {}
+  ],
+  [
+   "MATCH (n:interface) WHERE n.registered IS NULL DETACH DELETE n",
+   {}
+  ],
+  [
+   "MATCH (n) WHERE id(n) IN $ids DETACH DELETE n",
+   {
+    "ids": [
+     "zz-ce-09"
+    ]
+   }
+  ],
+  [
+   "UNWIND $rows AS r CREATE (n:`device` {`~id`: r.id}) SET n += r.props",
+   {
+    "rows": [
+     {
+      "id": "a-ce-01",
+      "props": {
+       "hostname": "a-ce-01",
+       "site": "a",
+       "role": "spine",
+       "asn": 65001,
+       "enabled": true
+      }
+     },
+     {
+      "id": "c-ce-01",
+      "props": {
+       "hostname": "c-ce-01",
+       "site": "c",
+       "role": "leaf"
+      }
+     },
+     {
+      "id": "zz-ce-09",
+      "props": {
+       "hostname": "zz-ce-09",
+       "site": "z",
+       "role": "leaf"
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "UNWIND $rows AS r CREATE (n:`interface` {`~id`: r.id}) SET n += r.props",
+   {
+    "rows": [
+     {
+      "id": "a-ce-01#eth1",
+      "props": {
+       "device_id": "a-ce-01",
+       "name": "eth1",
+       "address": "172.16.1.2"
+      }
+     },
+     {
+      "id": "a-ce-01#eth3",
+      "props": {
+       "device_id": "a-ce-01",
+       "name": "eth3"
+      }
+     },
+     {
+      "id": "c-ce-01#eth1",
+      "props": {
+       "device_id": "c-ce-01",
+       "name": "eth1"
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "UNWIND $rows AS r MATCH (a:device), (b:device) WHERE id(a) = r.a AND id(b) = r.b CREATE (a)-[l:link]->(b) SET l += r.props",
+   {
+    "rows": [
+     {
+      "a": "a-ce-01",
+      "b": "c-ce-01",
+      "props": {
+       "a_if": "eth3",
+       "b_if": "eth1",
+       "kind": "l2",
+       "bandwidth_mbps": 100
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id SET n.status = $st RETURN n.registered AS registered",
+   {
+    "id": "zz-ce-09",
+    "st": "ALARM"
+   }
+  ],
+  [
+   "MERGE (n:`device` {`~id`: $id}) ON CREATE SET n += $props, n.registered = false",
+   {
+    "id": "zz-ce-09",
+    "props": {
+     "hostname": "zz-ce-09",
+     "site": "?",
+     "role": "unknown",
+     "enabled": false
+    }
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id SET n.status = $st RETURN n.registered AS registered",
+   {
+    "id": "zz-ce-09",
+    "st": "ALARM"
+   }
+  ],
+  [
+   "MATCH (n:device) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:interface) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH ()-[l:link]->() RETURN count(l) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`ip_interface`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`isis_adjacency`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`bgp_session`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`evpn_instance`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`ethernet_segment`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH ()-[e:over|peer|tunnel|attach|segment]->() RETURN count(e) AS n",
+   {}
+  ],
+  [
+   "MATCH (n) WHERE n.registered = false RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`ip_interface`) WHERE n.registered = false RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n:`isis_adjacency`) WHERE n.registered = false RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n:`bgp_session`) WHERE n.registered = false RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n:`evpn_instance`) WHERE n.registered = false RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n:`ethernet_segment`) WHERE n.registered = false RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n) WHERE id(n) IN $ids DETACH DELETE n",
+   {
+    "ids": [
+     "a-ce-01#bgp#10.255.0.9"
+    ]
+   }
+  ],
+  [
+   "MATCH (n:ip_interface) WHERE n.registered IS NULL DETACH DELETE n",
+   {}
+  ],
+  [
+   "MATCH (n:isis_adjacency) WHERE n.registered IS NULL DETACH DELETE n",
+   {}
+  ],
+  [
+   "MATCH (n:bgp_session) WHERE n.registered IS NULL DETACH DELETE n",
+   {}
+  ],
+  [
+   "MATCH (n:evpn_instance) WHERE n.registered IS NULL DETACH DELETE n",
+   {}
+  ],
+  [
+   "MATCH (n:ethernet_segment) WHERE n.registered IS NULL DETACH DELETE n",
+   {}
+  ],
+  [
+   "UNWIND $rows AS r CREATE (n:`ip_interface` {`~id`: r.id}) SET n += r.props",
+   {
+    "rows": [
+     {
+      "id": "a-ce-01#eth1.0",
+      "props": {
+       "layer": "ip",
+       "device_id": "a-ce-01",
+       "interface_id": "a-ce-01#eth1",
+       "name": "eth1.0"
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "UNWIND $rows AS r CREATE (n:`bgp_session` {`~id`: r.id}) SET n += r.props",
+   {
+    "rows": [
+     {
+      "id": "a-ce-01#bgp#10.255.0.9",
+      "props": {
+       "layer": "evpn",
+       "device_id": "a-ce-01",
+       "peer_address": "10.255.0.9",
+       "status": "DOWN"
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "UNWIND $rows AS r MATCH (a), (b) WHERE id(a) = r.f AND id(b) = r.t CREATE (a)-[:`over`]->(b)",
+   {
+    "rows": [
+     {
+      "f": "a-ce-01#eth1.0",
+      "t": "a-ce-01#eth1"
+     }
+    ]
+   }
+  ],
+  [
+   "MATCH (n:device) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:interface) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH ()-[l:link]->() RETURN count(l) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`ip_interface`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`isis_adjacency`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`bgp_session`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`evpn_instance`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`ethernet_segment`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH ()-[e:over|peer|tunnel|attach|segment]->() RETURN count(e) AS n",
+   {}
+  ],
+  [
+   "MATCH (n) WHERE n.registered = false RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:interface) RETURN id(n) AS id",
+   {}
+  ],
+  [
+   "MATCH (n:`ip_interface`) WHERE n.registered = false RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n:`isis_adjacency`) WHERE n.registered = false RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n:`bgp_session`) WHERE n.registered = false RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n:`evpn_instance`) WHERE n.registered = false RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n:`ethernet_segment`) WHERE n.registered = false RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n:ip_interface) WHERE n.registered IS NULL DETACH DELETE n",
+   {}
+  ],
+  [
+   "MATCH (n:isis_adjacency) WHERE n.registered IS NULL DETACH DELETE n",
+   {}
+  ],
+  [
+   "MATCH (n:bgp_session) WHERE n.registered IS NULL DETACH DELETE n",
+   {}
+  ],
+  [
+   "MATCH (n:evpn_instance) WHERE n.registered IS NULL DETACH DELETE n",
+   {}
+  ],
+  [
+   "MATCH (n:ethernet_segment) WHERE n.registered IS NULL DETACH DELETE n",
+   {}
+  ],
+  [
+   "UNWIND $rows AS r CREATE (n:`ip_interface` {`~id`: r.id}) SET n += r.props",
+   {
+    "rows": [
+     {
+      "id": "a-ce-01#eth1.0",
+      "props": {
+       "layer": "ip",
+       "device_id": "a-ce-01",
+       "interface_id": "a-ce-01#eth1",
+       "name": "eth1.0"
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "UNWIND $rows AS r CREATE (n:`bgp_session` {`~id`: r.id}) SET n += r.props",
+   {
+    "rows": [
+     {
+      "id": "a-ce-01#bgp#10.255.0.9",
+      "props": {
+       "layer": "evpn",
+       "device_id": "a-ce-01",
+       "peer_address": "10.255.0.9"
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "UNWIND $rows AS r MATCH (a), (b) WHERE id(a) = r.f AND id(b) = r.t CREATE (a)-[:`over`]->(b)",
+   {
+    "rows": [
+     {
+      "f": "a-ce-01#eth1.0",
+      "t": "a-ce-01#eth1"
+     }
+    ]
+   }
+  ],
+  [
+   "MATCH (n:device) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:interface) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH ()-[l:link]->() RETURN count(l) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`ip_interface`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`isis_adjacency`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`bgp_session`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`evpn_instance`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`ethernet_segment`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH ()-[e:over|peer|tunnel|attach|segment]->() RETURN count(e) AS n",
+   {}
+  ],
+  [
+   "MATCH (n) WHERE n.registered = false RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`device`) RETURN n",
+   {}
+  ],
+  [
+   "MATCH (n:`interface`) RETURN n",
+   {}
+  ],
+  [
+   "MATCH (a)-[l:link]->(b) RETURN id(a) AS a, id(b) AS b, l",
+   {}
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id DETACH DELETE n",
+   {
+    "id": "b-ce-01"
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id SET n += $put REMOVE n.`mgmt_ip`",
+   {
+    "id": "a-ce-01",
+    "put": {
+     "role": "spine"
+    }
+   }
+  ],
+  [
+   "UNWIND $rows AS r CREATE (n:`device` {`~id`: r.id}) SET n += r.props",
+   {
+    "rows": [
+     {
+      "id": "c-ce-01",
+      "props": {
+       "hostname": "c-ce-01",
+       "site": "c",
+       "role": "leaf"
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id DETACH DELETE n",
+   {
+    "id": "zz-ce-09"
+   }
+  ],
+  [
+   "UNWIND $rows AS r CREATE (n:`device` {`~id`: r.id}) SET n += r.props",
+   {
+    "rows": [
+     {
+      "id": "zz-ce-09",
+      "props": {
+       "hostname": "zz-ce-09",
+       "site": "z",
+       "role": "leaf"
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id DETACH DELETE n",
+   {
+    "id": "b-ce-01#eth1"
+   }
+  ],
+  [
+   "UNWIND $rows AS r CREATE (n:`interface` {`~id`: r.id}) SET n += r.props",
+   {
+    "rows": [
+     {
+      "id": "a-ce-01#eth3",
+      "props": {
+       "device_id": "a-ce-01",
+       "name": "eth3"
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "UNWIND $rows AS r CREATE (n:`interface` {`~id`: r.id}) SET n += r.props",
+   {
+    "rows": [
+     {
+      "id": "c-ce-01#eth1",
+      "props": {
+       "device_id": "c-ce-01",
+       "name": "eth1"
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "MATCH (a:device)-[l:link]->(b:device) WHERE id(a) = $a AND id(b) = $b AND l.a_if = $a_if DELETE l",
+   {
+    "a": "a-ce-01",
+    "b": "gone-01",
+    "a_if": "eth9"
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) IN $ids RETURN id(n) AS id",
+   {
+    "ids": [
+     "a-ce-01",
+     "c-ce-01"
+    ]
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) IN $ids RETURN id(n) AS id",
+   {
+    "ids": [
+     "a-ce-01",
+     "b-ce-01"
+    ]
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) IN $ids RETURN id(n) AS id",
+   {
+    "ids": [
+     "a-ce-01",
+     "x-ce-01"
+    ]
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id SET n.status = $st RETURN n.registered AS registered",
+   {
+    "id": "zz-ce-09",
+    "st": "ALARM"
+   }
+  ],
+  [
+   "MATCH (n:device) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:interface) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH ()-[l:link]->() RETURN count(l) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`ip_interface`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`isis_adjacency`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`bgp_session`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`evpn_instance`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:`ethernet_segment`) WHERE n.registered IS NULL RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH ()-[e:over|peer|tunnel|attach|segment]->() RETURN count(e) AS n",
+   {}
+  ],
+  [
+   "MATCH (n) WHERE n.registered = false RETURN count(n) AS n",
+   {}
+  ],
+  [
+   "MATCH (n:change) RETURN id(n) AS id",
+   {}
+  ],
+  [
+   "UNWIND $rows AS r CREATE (n:`change` {`~id`: r.id}) SET n += r.props",
+   {
+    "rows": [
+     {
+      "id": "change#new",
+      "props": {
+       "time": 2,
+       "user": "admin",
+       "action": "update",
+       "object_type": "device",
+       "object": "a",
+       "device_id": "a"
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "MATCH (n:change) WHERE id(n) IN $ids DETACH DELETE n",
+   {
+    "ids": [
+     "change#old"
+    ]
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id RETURN n.registered AS registered",
+   {
+    "id": "c-ce-01"
+   }
+  ],
+  [
+   "UNWIND $rows AS r CREATE (n:`device` {`~id`: r.id}) SET n += r.props",
+   {
+    "rows": [
+     {
+      "id": "c-ce-01",
+      "props": {
+       "hostname": "c-ce-01",
+       "site": "c",
+       "role": "leaf",
+       "asn": 65003,
+       "mgmt_ip": "203.0.113.15",
+       "enabled": false
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id RETURN n.registered AS registered",
+   {
+    "id": "zz-ce-09"
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id RETURN n.status AS status",
+   {
+    "id": "zz-ce-09"
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id DETACH DELETE n",
+   {
+    "id": "zz-ce-09"
+   }
+  ],
+  [
+   "UNWIND $rows AS r CREATE (n:`device` {`~id`: r.id}) SET n += r.props",
+   {
+    "rows": [
+     {
+      "id": "zz-ce-09",
+      "props": {
+       "hostname": "zz-ce-09",
+       "site": "zz",
+       "role": "ce",
+       "enabled": false,
+       "status": "ALARM"
+      }
+     }
+    ]
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id RETURN n.registered AS registered",
+   {
+    "id": "a-ce-01"
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id DETACH DELETE n",
+   {
+    "id": "a-ce-01"
+   }
+  ],
+  [
+   "MATCH (n:interface) WHERE n.device_id = $id DETACH DELETE n",
+   {
+    "id": "a-ce-01"
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) IN $ids RETURN id(n) AS id",
+   {
+    "ids": [
+     "a-ce-01",
+     "b-ce-01"
+    ]
+   }
+  ],
+  [
+   "MATCH (a:device)-[l:link]->(b:device) WHERE id(a) = $a AND id(b) = $b AND l.a_if = $a_if RETURN count(l) AS n",
+   {
+    "a": "a-ce-01",
+    "b": "b-ce-01",
+    "a_if": "eth3"
+   }
+  ],
+  [
+   "MATCH (a), (b) WHERE id(a) = $a AND id(b) = $b CREATE (a)-[l:link]->(b) SET l += $props",
+   {
+    "a": "a-ce-01",
+    "b": "b-ce-01",
+    "props": {
+     "a_if": "eth3",
+     "b_if": "eth2",
+     "kind": "fabric",
+     "role": "secondary",
+     "bandwidth_mbps": 100
+    }
+   }
+  ],
+  [
+   "MATCH (a)-[l:link]->(b) WHERE id(a) = $a AND id(b) = $b AND l.a_if = $a_if RETURN count(l) AS n",
+   {
+    "a": "a-ce-01",
+    "b": "b-ce-01",
+    "a_if": "eth3"
+   }
+  ],
+  [
+   "MATCH (a)-[l:link]->(b) WHERE id(a) = $a AND id(b) = $b AND l.a_if = $a_if DELETE l",
+   {
+    "a": "a-ce-01",
+    "b": "b-ce-01",
+    "a_if": "eth3"
+   }
+  ],
+  [
+   "MATCH (a)-[l:link]->(b) WHERE id(a) = $a AND id(b) = $b RETURN count(l) AS n",
+   {
+    "a": "a-ce-01",
+    "b": "b-ce-01"
+   }
+  ],
+  [
+   "MATCH (a)-[l:link]->(b) WHERE id(a) = $a AND id(b) = $b DELETE l",
+   {
+    "a": "a-ce-01",
+    "b": "b-ce-01"
+   }
+  ],
+  [
+   "MATCH (a)-[l:link]->(b) WHERE (id(a) = $dev AND l.a_if = $ifn) OR (id(b) = $dev AND l.b_if = $ifn) SET l.status = $st RETURN count(l) AS n",
+   {
+    "dev": "a-ce-01",
+    "ifn": "eth1",
+    "st": "DOWN"
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id SET n.status = $st RETURN n.registered AS registered",
+   {
+    "id": "a-ce-01#eth1",
+    "st": "DOWN"
+   }
+  ],
+  [
+   "MATCH (a)-[l:link]->(b) WHERE (id(a) = $dev AND l.a_if = $ifn) OR (id(b) = $dev AND l.b_if = $ifn) SET l.status = $st RETURN count(l) AS n",
+   {
+    "dev": "zz-ce-09",
+    "ifn": "eth7",
+    "st": "DOWN"
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id SET n.status = $st RETURN n.registered AS registered",
+   {
+    "id": "zz-ce-09#eth7",
+    "st": "DOWN"
+   }
+  ],
+  [
+   "MERGE (n:`device` {`~id`: $id}) ON CREATE SET n += $props, n.registered = false",
+   {
+    "id": "zz-ce-09",
+    "props": {
+     "hostname": "zz-ce-09",
+     "site": "?",
+     "role": "unknown",
+     "enabled": false
+    }
+   }
+  ],
+  [
+   "MERGE (n:`interface` {`~id`: $id}) ON CREATE SET n += $props, n.registered = false",
+   {
+    "id": "zz-ce-09#eth7",
+    "props": {
+     "device_id": "zz-ce-09",
+     "name": "eth7"
+    }
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id SET n.status = $st RETURN n.registered AS registered",
+   {
+    "id": "zz-ce-09#eth7",
+    "st": "DOWN"
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id SET n.status = $st RETURN n.registered AS registered",
+   {
+    "id": "a-ce-01",
+    "st": "ALARM"
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id AND n.status = $only SET n.status = $st RETURN n.registered AS registered",
+   {
+    "id": "a-ce-01",
+    "st": "UP",
+    "only": "ALARM"
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id SET n.status = $st RETURN n.registered AS registered",
+   {
+    "id": "zz-ce-10",
+    "st": "ALARM"
+   }
+  ],
+  [
+   "MERGE (n:`device` {`~id`: $id}) ON CREATE SET n += $props, n.registered = false",
+   {
+    "id": "zz-ce-10",
+    "props": {
+     "hostname": "zz-ce-10",
+     "site": "?",
+     "role": "unknown",
+     "enabled": false
+    }
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id SET n.status = $st RETURN n.registered AS registered",
+   {
+    "id": "zz-ce-10",
+    "st": "ALARM"
+   }
+  ],
+  [
+   "MATCH (n:`bgp_session`) WHERE id(n) = $id SET n.status = $st RETURN n.registered AS registered",
+   {
+    "id": "a-ce-01#bgp#10.255.9.9",
+    "st": "DOWN"
+   }
+  ],
+  [
+   "MERGE (n:`bgp_session` {`~id`: $id}) ON CREATE SET n += $props, n.registered = false",
+   {
+    "id": "a-ce-01#bgp#10.255.9.9",
+    "props": {
+     "device_id": "a-ce-01",
+     "layer": "evpn",
+     "peer_address": "10.255.9.9"
+    }
+   }
+  ],
+  [
+   "MATCH (n) WHERE id(n) = $id SET n.status = $st RETURN n.registered AS registered",
+   {
+    "id": "a-ce-01#bgp#10.255.9.9",
+    "st": "DOWN"
+   }
+  ],
+  [
+   "MATCH (n:`isis_adjacency`) WHERE id(n) = $id SET n.status = $st RETURN n.registered AS registered",
+   {
+    "id": "a-ce-01#isis#ethernet-1/1.0",
+    "st": "UP"
+   }
+  ],
+  [
+   "MATCH (n:`change`) WHERE n.status = $status AND n.device_id = $device_id RETURN n ORDER BY n.`time` DESC LIMIT 5",
+   {
+    "status": "done",
+    "device_id": "a-ce-01"
+   }
+  ],
+  [
+   "MATCH (n:device) CALL neptune.algo.degree(n, {edgeLabels: [\"link\"], vertexLabels: [\"device\"], traversalDirection: \"both\"}) YIELD degree RETURN id(n) AS id, degree",
+   {}
+  ],
+  [
+   "MATCH (n:device) CALL neptune.algo.closenessCentrality(n, {edgeLabels: [\"link\"], vertexLabel: \"device\", traversalDirection: \"both\", numSources: 8192}) YIELD score RETURN id(n) AS id, score",
+   {}
+  ],
+  [
+   "MATCH (n:device) CALL neptune.algo.wcc(n, {edgeLabels: [\"link\"], vertexLabel: \"device\"}) YIELD component RETURN id(n) AS id, component",
+   {}
+  ]
+ ],
+ "awsio": [
+  [
+   "MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance",
+   {}
+  ],
+  [
+   "MATCH (a)-[l:link]->(b) RETURN id(a) AS a, id(b) AS b, l.a_if AS a_if, l.b_if AS b_if, l.status AS status",
+   {}
+  ]
+ ]
+}

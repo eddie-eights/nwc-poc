@@ -1,11 +1,7 @@
-output "msk_cluster_arn" {
-  description = "MSK cluster ARN"
-  value       = aws_msk_cluster.stream.arn
-}
-
+# msk_cluster_arn は msk.tf（OSS 版には無い）
 output "bootstrap_brokers" {
-  description = "SASL/IAM bootstrap brokers (also in SSM /<prefix>/msk-bootstrap)"
-  value       = aws_msk_cluster.stream.bootstrap_brokers_sasl_iam
+  description = "Bootstrap brokers of Kafka (local.kafka_bootstrap_brokers): the MSK SASL/IAM ones (9098, also in SSM /<prefix>/msk-bootstrap) in the managed build, kafka-1..3 PLAINTEXT (9092) in the OSS build"
+  value       = local.kafka_bootstrap_brokers
 }
 
 output "telegraf_cluster_name" {
@@ -59,7 +55,7 @@ output "telegraf_dialin_list_tasks_command" {
 }
 
 output "telegraf_exec_command" {
-  description = "Run on the user's PC (AWS CLI v2 + Session Manager plugin) with TASK_ID of the dial-in task. tg gnmi subscribes for 20 seconds, tg test polls SNMP once (only with snmp_poll = true); neither writes to MSK"
+  description = "Run on the user's PC (AWS CLI v2 + Session Manager plugin) with TASK_ID of the dial-in task. tg gnmi subscribes for 20 seconds, tg test polls SNMP once (only with snmp_poll = true); neither writes to Kafka"
   value       = "aws ecs execute-command --region ${var.region} --cluster ${aws_ecs_cluster.telegraf.name} --task TASK_ID --container telegraf --interactive --command 'tg gnmi'"
 }
 

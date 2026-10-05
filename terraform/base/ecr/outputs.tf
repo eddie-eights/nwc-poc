@@ -52,3 +52,8 @@ output "redis_repository_url" {
   description = "Push redis:<REDIS_TAG of ops/up.sh> (arm64) here with the same tag (step 2, whenever PIPELINE=1). The Redis sidecar of the Nautobot task (cache and Celery broker)."
   value       = aws_ecr_repository.pipeline["redis"].repository_url
 }
+
+output "oss_repository_urls" {
+  description = "OSS build only (oss/terraform, cycle 005): repository URL per image - kafka / opensearch / vminsert / vmselect / vmstorage (mirrored public images) and spark / neo4j (built by ops). Empty map in the managed build."
+  value       = { for k, r in aws_ecr_repository.oss : k => r.repository_url }
+}

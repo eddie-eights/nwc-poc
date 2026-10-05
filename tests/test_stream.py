@@ -179,7 +179,7 @@ check("lab_* は processors.starlark（lab_gnmi.star）と aggregators.starlark�
       _star_proc is not None and _star_aggr is not None
       and sorted(re.findall(r'"(\w+)"', _star_proc.group(1)) + re.findall(r'"(\w+)"', _star_aggr.group(1))) == sorted(LAB_SUBS)
       and re.findall(r'"(\w+)"', _star_aggr.group(1)) == ["lab_subif_type", "lab_if_oper"]
-      and not any("lab_" in blk.split("# <<<", 1)[0] for blk in tele.split("[[outputs.kafka]]")[1:])
+      and not any("lab_" in blk.split("# <<< sink", 1)[0] for blk in tele.split("[[outputs.kafka]]")[1:])
       and re.search(r"^COPY telegraf\.conf\.in lab_gnmi\.star lab_circuits\.star /etc/telegraf/$", _dockerfile, re.M) is not None)
 check("MDT は collector タグで mdt トピックへだけ（measurement の名前は機器で変わるので namepass でなく tagpass）",
       re.search(r'\[\[inputs\.cisco_telemetry_mdt\]\][\s\S]*?\[inputs\.cisco_telemetry_mdt\.tags\]\s*\n\s*collector = "mdt"', tele) is not None
@@ -227,8 +227,14 @@ check("Spark の既定は gnmi / mdt トピックも読む（iceberg / prometheu
       and mod.sink_topics("iceberg", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "metrics,gnmi,mdt,traps,logs" and mod.sink_topics("prometheus", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "metrics,gnmi,mdt")
 _access = _read("terraform", "pipeline", "stream", "access.tf")
 _lab_tg = _read("terraform", "pipeline", "lab", "telegraf.tf")
-check("Telegraf は stream の ECS で、MSK への書き込みはタスクロール（lab の state のロールに頼らない。2026-09-28）",
-      'resource "aws_iam_role" "telegraf_task"' in stream_tg and "kafka-cluster:WriteData" in stream_tg
+# Kafka による違いは msk.tf の kafka_* の locals（OSS 版は oss/terraform/pipeline/stream/kafka.tf。cycle 005）
+_msk = _read("terraform", "pipeline", "stream", "msk.tf")
+_msk_code = "\n".join(l for l in _msk.splitlines() if not l.lstrip().startswith("#"))
+_tg_kafka = _msk_code[_msk_code.index("telegraf_kafka_statements = ["):_msk_code.index("kafka_ui_kafka_statements = [")]
+check("Telegraf は stream の ECS で、MSK への書き込みはタスクロール（lab の state のロールに頼らない。2026-09-28）。権限は msk.tf の telegraf_kafka_statements",
+      'resource "aws_iam_role" "telegraf_task"' in stream_tg and "kafka-cluster:WriteData" in _tg_kafka
+      and "Resource = [aws_msk_cluster.stream.arn, local.topic_arns]" in _tg_kafka
+      and "Statement = concat(local.telegraf_kafka_statements, [" in stream_tg and "kafka-cluster" not in stream_tg
       and "stream_produce" not in _access and "telegraf_role_name" not in _access
       and 'resource "aws_iam_role"' not in _lab_tg and 'resource "aws_instance"' not in _lab_tg)
 check("lab と stream は SG も SG のルールも作らない（ポーリング・trap・syslog のルールは土台の通信の表。2026-09-29）",
@@ -394,20 +400,28 @@ check("MSK へは IAM 認証（SASL_SSL / AWS_MSK_IAM / IAMClientCallbackHandler
 check("認証の違いは kafka_ui_security_protocol だけで切り替わる（SASL_SSL は IAM のブートストラップと SASL の 3 つ、PLAINTEXT は平文のブートストラップで SASL は無し。cycle 005 の OSS 版で使い回す）",
       re.search(r'variable "kafka_ui_security_protocol" \{[\s\S]*?contains\(\["SASL_SSL", "PLAINTEXT"\], var\.kafka_ui_security_protocol\)', stream_vars) is not None
       and 'kafka_ui_iam               = var.kafka_ui_security_protocol == "SASL_SSL"' in kui
-      and "kafka_ui_bootstrap_servers = local.kafka_ui_iam ? aws_msk_cluster.stream.bootstrap_brokers_sasl_iam : aws_msk_cluster.stream.bootstrap_brokers" in kui
+      and 'kafka_ui_bootstrap_servers = lookup(local.kafka_bootstrap_by_protocol, var.kafka_ui_security_protocol, "")' in kui
+      and re.search(r"kafka_bootstrap_by_protocol = \{\s*SASL_SSL\s*=\s*aws_msk_cluster\.stream\.bootstrap_brokers_sasl_iam\s*"
+                    r"PLAINTEXT\s*=\s*aws_msk_cluster\.stream\.bootstrap_brokers\s*\}", _msk) is not None
+      and "condition     = local.kafka_ui_bootstrap_servers != \"\"" in kui
+      and '{ name = "KAFKA_CLUSTERS_0_NAME", value = local.kafka_cluster_name }' in _kenv
+      and "kafka_cluster_name = aws_msk_cluster.stream.cluster_name" in _msk
       and "kafka_ui_iam_environment = local.kafka_ui_iam ? [" in kui and "] : []" in kui
       and '{ name = "KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL", value = var.kafka_ui_security_protocol }' in _kenv
       and "local.kafka_ui_iam_environment," in _kenv and "SASL" not in _kenv)
-_kpol = kui[kui.index('resource "aws_iam_role_policy" "kafka_ui_task"'):kui.index("kafka_ui_execution_perimeter")]
+# タスクロールのポリシーは msk.tf の kafka_ui_kafka_statements をそのまま使う
+_kpol = _msk_code[_msk_code.index("kafka_ui_kafka_statements = ["):_msk_code.index("kafka_descriptions = {")]
 _kact = lambda sid: re.findall(r'"kafka-cluster:(\w+)"', re.search(r'Sid\s*=\s*"' + sid + r'"[\s\S]*?Resource', _kpol).group(0))
 check("タスクロールは Kafbat UI が使う Kafka の操作だけ（クラスターの Connect / Describe、トピックの作成・変更・削除・設定の読み書き・データの読み書き、グループの Describe）",
       _kact("KafkaCluster") == ["Connect", "DescribeCluster", "DescribeClusterDynamicConfiguration", "WriteDataIdempotently"]
       and _kact("KafkaTopics") == ["DescribeTopic", "CreateTopic", "AlterTopic", "DeleteTopic", "DescribeTopicDynamicConfiguration",
                                    "AlterTopicDynamicConfiguration", "ReadData", "WriteData"]
       and _kact("KafkaGroups") == ["DescribeGroup"]
-      and "kafka-cluster:*" not in _kpol and "AlterCluster" not in kui_code and "AlterGroup" not in kui_code and "DeleteGroup" not in kui_code
+      and "kafka-cluster:*" not in _kpol and all(a not in kui_code + _kpol for a in ("AlterCluster", "AlterGroup", "DeleteGroup"))
       and "Resource = aws_msk_cluster.stream.arn" in _kpol and "Resource = local.topic_arns" in _kpol and "Resource = local.group_arns" in _kpol
-      and 'group_arns = "${replace(aws_msk_cluster.stream.arn, ":cluster/", ":group/")}/*"' in _read("terraform", "pipeline", "stream", "locals.tf"))
+      and 'group_arns = "${replace(aws_msk_cluster.stream.arn, ":cluster/", ":group/")}/*"' in _msk
+      and re.search(r'resource "aws_iam_role_policy" "kafka_ui_task" \{\n  name = "\$\{local\.name_prefix\}-kafka-ui-task"\n  role = aws_iam_role\.kafka_ui_task\.name\n\n  policy = jsonencode\(\{\n    Version   = "2012-10-17"\n    Statement = local\.kafka_ui_kafka_statements\n', kui) is not None
+      and "kafka-cluster" not in kui_code)
 check("実行ロールにもタスクロールにも閉域の Deny（perimeter）を付ける（古い土台で ARN が無ければ付けない）",
       all(re.search(r'resource "aws_iam_role_policy_attachment" "kafka_ui_' + r + r'_perimeter" \{\n  count = local\.perimeter_policy_arn != "" \? 1 : 0\n\n  role\s*=\s*aws_iam_role\.kafka_ui_' + r + r'\.name', kui)
           for r in ("execution", "task")))

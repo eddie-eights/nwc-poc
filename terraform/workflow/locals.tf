@@ -11,7 +11,15 @@
 # リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、
 # 1 つの AWS アカウントを何人かで使っても、自分の名前で自分のリソースを探せる
 locals {
-  name_prefix = "${var.owner}-nwc-poc"
+  # 末尾は var.project（terraform/ は既定の nwc-poc、OSS 版の oss/terraform/ は oss.auto.tfvars の nwc-oss。cycle 005）
+  name_prefix = "${var.owner}-${var.project}"
+}
+
+# リポジトリの根（Lambda の zip に入れるソースをここから読む）。terraform/<このルート> と oss/terraform/<このルート>（ファイルごとの
+# シンボリックリンク。cycle 005）のどちらから打っても同じ場所を指す。path.module はリンクを置いたフォルダなので、../../ の先に
+# pyproject.toml があるかで深さを見分ける（terraform/ なら 2 つ上、oss/terraform/ なら 3 つ上）
+locals {
+  repo_root = fileexists("${path.module}/../../pyproject.toml") ? "${path.module}/../.." : "${path.module}/../../.."
 }
 
 data "aws_caller_identity" "current" {}

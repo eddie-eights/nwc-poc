@@ -25,6 +25,8 @@
 #                         telegraf_dialout の SG へ udp 1162 / 5140、tcp 57000 と tcp 8080（ヘルスチェック）を送る
 #   telegraf_dialout      NLB の SG から受け（送り元の IP が残っても、NLB の SG を参照したルールで通る）、MSK の 9098・エンドポイントと S3 の 443 へ送る
 #   telegraf_dialin       何も受けない。管理ネットワークの udp 161 / tcp 57400・MSK の 9098・エンドポイントと S3 の 443 へ送る
+# OSS 版（cycle 005。oss/terraform/pipeline/stream）はこのファイルをシンボリックリンクで使う。書き先は ECS の Kafka（kafka-1〜3 の 9092、認証なし）で、
+# KAFKA_BROKERS・KAFKA_AUTH=none（telegraf.sh が outputs.kafka の IAM の行を消す）・Kafka の権限は kafka.tf の kafka_* の locals が渡す。SG の行は土台の oss.tf
 
 locals {
   telegraf_repository_url = try(data.terraform_remote_state.ecr.outputs.telegraf_repository_url, "")
@@ -205,12 +207,15 @@ resource "aws_ecs_task_definition" "telegraf_dialout" {
         { containerPort = 57000, protocol = "tcp" }, # MDT の dial-out
         { containerPort = 8080, protocol = "tcp" },  # outputs.health（NLB のヘルスチェック）
       ]
-      environment = [
-        { name = "TELEGRAF_ROLE", value = "dialout" },
-        { name = "AWS_REGION", value = var.region },
-        { name = "KAFKA_BROKERS", value = aws_msk_cluster.stream.bootstrap_brokers_sasl_iam },
-        { name = "SYSLOG_STANDARD", value = var.syslog_standard },
-      ]
+      environment = concat(
+        [
+          { name = "TELEGRAF_ROLE", value = "dialout" },
+          { name = "AWS_REGION", value = var.region },
+          { name = "KAFKA_BROKERS", value = local.kafka_bootstrap_brokers },
+          { name = "SYSLOG_STANDARD", value = var.syslog_standard },
+        ],
+        local.kafka_client_environment,
+      )
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -250,12 +255,15 @@ resource "aws_ecs_task_definition" "telegraf_dialin" {
       name      = "telegraf"
       image     = local.telegraf_image
       essential = true
-      environment = [
-        { name = "TELEGRAF_ROLE", value = "dialin" },
-        { name = "AWS_REGION", value = var.region },
-        { name = "KAFKA_BROKERS", value = aws_msk_cluster.stream.bootstrap_brokers_sasl_iam },
-        { name = "SNMP_POLL", value = var.snmp_poll ? "1" : "0" },
-      ]
+      environment = concat(
+        [
+          { name = "TELEGRAF_ROLE", value = "dialin" },
+          { name = "AWS_REGION", value = var.region },
+          { name = "KAFKA_BROKERS", value = local.kafka_bootstrap_brokers },
+          { name = "SNMP_POLL", value = var.snmp_poll ? "1" : "0" },
+        ],
+        local.kafka_client_environment,
+      )
       # 機器の一覧（String）と認証情報（SecureString）。telegraf.conf.in は ${GNMI_USERNAME} などで読み、SNMP_AGENTS / GNMI_TARGETS は telegraf.sh が埋める
       secrets = concat(
         [
@@ -404,7 +412,7 @@ resource "aws_iam_role_policy" "telegraf_execution" {
 
 resource "aws_iam_role" "telegraf_task" {
   name               = "${local.name_prefix}-telegraf-task"
-  description        = "Telegraf task - write SNMP / gNMI / trap / syslog / MDT to MSK (IAM auth), ECS Exec"
+  description        = local.kafka_descriptions.telegraf_task
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
 }
 
@@ -412,22 +420,10 @@ resource "aws_iam_role_policy" "telegraf_task" {
   name = "${local.name_prefix}-telegraf-task"
   role = aws_iam_role.telegraf_task.name
 
+  # Kafka の権限は msk.tf（MSK の IAM）/ OSS 版の kafka.tf（認証なしなので無い）
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "Kafka"
-        Effect = "Allow"
-        Action = [
-          "kafka-cluster:Connect",
-          "kafka-cluster:DescribeCluster",
-          "kafka-cluster:WriteData",
-          "kafka-cluster:WriteDataIdempotently",
-          "kafka-cluster:DescribeTopic",
-          "kafka-cluster:CreateTopic",
-        ]
-        Resource = [aws_msk_cluster.stream.arn, local.topic_arns]
-      },
+    Statement = concat(local.telegraf_kafka_statements, [
       {
         # ECS Exec（aws ecs execute-command）
         Sid    = "EcsExec"
@@ -440,7 +436,7 @@ resource "aws_iam_role_policy" "telegraf_task" {
         ]
         Resource = "*"
       },
-    ]
+    ])
   })
 }
 

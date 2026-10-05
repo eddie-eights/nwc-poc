@@ -10,7 +10,9 @@
 # 開けていないもの: Temporal の gRPC 7233（ワーカーは同じタスクの localhost。terraform/workflow の ecs.tf）、Splunk の管理 API 8089
 # （開けるのはクラスターの splunk どうしだけ。外から使わない）。
 # 2026-09-26〜09-29 は全部で internal 1 つ（VPC の中は何でも受け、送信は自由）だった。その前（7c42b0f）はルートごとに SG とルールを持っていた。
-# SG の description は変えると作り直しになる（付いている ENI があると消えない）ので、変えるときは down してから
+# SG の description は変えると作り直しになる（付いている ENI があると消えない）ので、変えるときは down してから。
+# OSS 版（oss/terraform。var.project = nwc-oss。cycle 005）は oss.tf が SG と表を差し替える（msk を外し、kafka / efs / opensearch /
+# victoriametrics / neo4j を足す）。作るのは local.workload_security_groups と local.active_sg_flows で、マネージド版では下の 2 つと同じ
 locals {
   # SG を付けるワークロード。名前は <接頭辞>-<キーの _ を - に>
   security_groups = {
@@ -32,7 +34,7 @@ locals {
     workflow             = "Temporal dev server and worker ECS task (terraform/workflow)"
     runtime              = "AgentCore Runtime ENIs (terraform/agent)"
   }
-  sg_keys = concat(keys(local.security_groups), ["endpoints"])
+  sg_keys = concat(keys(local.workload_security_groups), ["endpoints"])
   sg_ids  = merge({ for k, sg in aws_security_group.workload : k => sg.id }, { endpoints = aws_security_group.endpoints.id })
 
   # lab の管理ネットワーク。terraform/pipeline/lab の local.mgmt_cidr と lab/ の機器の設定と同じ値（tests/test_analytics.py が見る）
@@ -112,7 +114,7 @@ locals {
     ],
   ])
 
-  sg_rules = { for f in local.sg_flows : "${f.from}-${f.to}-${f.protocol}-${f.port}" => {
+  sg_rules = { for f in local.active_sg_flows : "${f.from}-${f.to}-${f.protocol}-${f.port}" => {
     from     = f.from
     to       = f.to
     protocol = f.protocol
@@ -129,7 +131,7 @@ data "aws_ec2_managed_prefix_list" "s3" {
 }
 
 resource "aws_security_group" "workload" {
-  for_each = local.security_groups
+  for_each = local.workload_security_groups
 
   name        = "${local.name_prefix}-${replace(each.key, "_", "-")}"
   description = each.value

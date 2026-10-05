@@ -460,7 +460,7 @@ async def connect() -> Client:
 
 
 async def main() -> None:
-    for k in ("ANOMALY_QUEUE_URL", "DECISION_QUEUE_URL", "NEPTUNE_GRAPH_ID", "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "AGENT_RUNTIME_ARN"):
+    for k in ("ANOMALY_QUEUE_URL", "DECISION_QUEUE_URL", awsio.GRAPH_ENV, "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "AGENT_RUNTIME_ARN"):
         if not getattr(awsio, k):
             raise SystemExit(f"{k} が無い")
     client = await connect()

@@ -11,7 +11,7 @@ TEMPLATE=${TELEGRAF_TEMPLATE:-/etc/telegraf/telegraf.conf.in}
 # コンテナの / は書けるが、書くのは /tmp だけにする（作り直せば消える）
 CONF=${TELEGRAF_CONF:-/tmp/telegraf.conf}
 export AWS_CONFIG_FILE="${CONF%/*}/aws_config"
-# 出力先。kafka = MSK（stream の ECS。既定）/ stdout = 標準出力（デバッグ用の EC2。MSK が無い）。telegraf.conf.in の「>>> sink <名前>」の区間
+# 出力先。kafka = Kafka（stream の ECS。既定。マネージド版は MSK、OSS 版は ECS の Kafka）/ stdout = 標準出力（デバッグ用の EC2。MSK が無い）。telegraf.conf.in の「>>> sink <名前>」の区間
 SINK=${SINK:-kafka}
 SINKS="kafka stdout"
 # 役割。telegraf.conf.in の「>>> role <名前>」の区間。all（既定）は両方を残し、dialout / dialin は相手の区間を消す:
@@ -26,6 +26,9 @@ SYSLOG_STANDARDS="RFC3164 RFC5424"
 # SNMP のポーリング（inputs.snmp。10 秒ごとに ifTable）。1 = する（既定）/ 0 = 止める（SNMP は trap だけ受ける）。
 # telegraf.conf.in の「>>> snmp_poll」の区間。stream の snmp_poll（ops/up.sh は deploy.env の SNMP_POLL）が渡す
 SNMP_POLL=${SNMP_POLL:-1}
+# Kafka の認証。iam = MSK の IAM 認証（既定）/ none = 認証なしの PLAINTEXT（OSS 版の ECS の Kafka。cycle 005。spark/snmp_sinks.py と同じ名前と値）。
+# telegraf.conf.in の「>>> kafka_auth iam」の区間。SINK=kafka のときだけ効く
+KAFKA_AUTH=${KAFKA_AUTH:-iam}
 # 機器の syslog を受ける UDP のポート（telegraf.conf.in の inputs.syslog と lab/lab.sh の LOG_PORT と同じ）
 LOG_PORT=5140
 # trap を受ける UDP のポート。機器は 162 に送り、NLB が 1162 に向ける（非 root は 1024 未満で待てない）
@@ -35,7 +38,8 @@ MDT_PORT=57000
 
 render() {
   # ECS のタスク定義の環境変数（terraform/pipeline/stream の telegraf.tf）を埋めて $CONF を作る:
-  #   KAFKA_BROKERS  MSK のブローカー（host:9098 をカンマで。IAM 認証の口）。SINK=stdout では要らない
+  #   KAFKA_BROKERS  Kafka のブローカー（host:port をカンマで。MSK は IAM 認証の口の 9098、OSS 版は kafka-N.<名前空間>:9092）。SINK=stdout では要らない
+  #   KAFKA_AUTH     Kafka の認証（iam / none、既定 iam）。none は outputs.kafka の IAM の行を消し、aws_config も書かない
   #   TELEGRAF_ROLE  役割（all / dialout / dialin。既定 all）
   #   SNMP_POLL      SNMP のポーリングをするか（1 / 0、既定 1。0 = trap だけ）。stream の snmp_poll
   #   SNMP_AGENTS    ポーリング先（"udp://<IP>:161", ...）。ops/up.sh が lab の定義から作る（lab/lab_topology.py --snmp-agents）。SNMP_POLL=1 のときだけ見る
@@ -47,11 +51,12 @@ render() {
   #   SYSLOG_STANDARD  機器の syslog の形式（既定 RFC3164）。stream の syslog_standard。lab の SR Linux は RFC5424
   #   AWS_REGION
   : "${AWS_REGION:?}"
-  local agents="${SNMP_AGENTS:-}" gnmi="${GNMI_TARGETS:-}" q="" s drop=() ins=""
+  local agents="${SNMP_AGENTS:-}" gnmi="${GNMI_TARGETS:-}" q="" s drop=() ins="" auth=""
   case " all $ROLES " in *" $TELEGRAF_ROLE "*) ;; *) echo "TELEGRAF_ROLE は all $ROLES のどれか: $TELEGRAF_ROLE" >&2; exit 1 ;; esac
   case " $SINKS " in *" $SINK "*) ;; *) echo "SINK は $SINKS のどれか: $SINK" >&2; exit 1 ;; esac
   case " $SYSLOG_STANDARDS " in *" $SYSLOG_STANDARD "*) ;; *) echo "SYSLOG_STANDARD は $SYSLOG_STANDARDS のどれか: $SYSLOG_STANDARD" >&2; exit 1 ;; esac
   case "$SNMP_POLL" in 0|1) ;; *) echo "SNMP_POLL は 0 か 1: $SNMP_POLL" >&2; exit 1 ;; esac
+  case "$KAFKA_AUTH" in iam|none) ;; *) echo "KAFKA_AUTH は iam か none: $KAFKA_AUTH" >&2; exit 1 ;; esac
   # 選ばなかった役割の区間を消す（snmp_poll の区間は dialin の中にあるので一緒に消える）
   for s in $ROLES; do [ "$TELEGRAF_ROLE" = all ] || [ "$s" = "$TELEGRAF_ROLE" ] || drop+=(-e "/^# >>> role $s/,/^# <<< role $s/d"); done
   if [ "$TELEGRAF_ROLE" = dialout ]; then
@@ -83,14 +88,20 @@ render() {
       echo "KAFKA_BROKERS の形が違う: $KAFKA_BROKERS" >&2; exit 1
     fi
     q=$(printf '"%s"' "${KAFKA_BROKERS//,/\",\"}")
-    # Telegraf の MSK IAM 認証は profile の指定が要る（telegraf.conf.in の注記）。鍵を書かない [default] なので、
-    # SDK はタスクロール（ECS が入れる AWS_CONTAINER_CREDENTIALS_RELATIVE_URI）を使う
-    printf '[default]\nregion = %s\n' "$AWS_REGION" > "$AWS_CONFIG_FILE"
+    if [ "$KAFKA_AUTH" = iam ]; then
+      # Telegraf の MSK IAM 認証は profile の指定が要る（telegraf.conf.in の注記）。鍵を書かない [default] なので、
+      # SDK はタスクロール（ECS が入れる AWS_CONTAINER_CREDENTIALS_RELATIVE_URI）を使う
+      printf '[default]\nregion = %s\n' "$AWS_REGION" > "$AWS_CONFIG_FILE"
+    else
+      # 認証なしの PLAINTEXT。5 つの outputs.kafka から TLS と SASL の行を消す
+      drop+=(-e "/^# >>> kafka_auth iam/,/^# <<< kafka_auth iam/d")
+      auth=" / kafka auth: none"
+    fi
   fi
   # 選ばなかった出力の区間を消す
   for s in $SINKS; do [ "$s" = "$SINK" ] || drop+=(-e "/^# >>> sink $s/,/^# <<< sink $s/d"); done
   sed "${drop[@]}" -e "s#__KAFKA_BROKERS__#$q#" -e "s#__AWS_REGION__#$AWS_REGION#" -e "s#__SNMP_AGENTS__#$agents#" -e "s#__GNMI_TARGETS__#$gnmi#" -e "s#__SYSLOG_STANDARD__#$SYSLOG_STANDARD#" "$TEMPLATE" > "$CONF"
-  echo "$CONF を作った（role: ${TELEGRAF_ROLE} / sink: ${SINK}${q:+ / brokers: $KAFKA_BROKERS}${ins}）"
+  echo "$CONF を作った（role: ${TELEGRAF_ROLE} / sink: ${SINK}${q:+ / brokers: $KAFKA_BROKERS}${auth}${ins}）"
 }
 
 # tg test / gnmi が回す入力が描いた設定に無ければ、telegraf を呼ぶ前に分かる言葉で止まる

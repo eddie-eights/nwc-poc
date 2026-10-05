@@ -145,7 +145,7 @@ check("seed_graph.py は LAB_TOPOLOGY_B64 を読み、GRAPH_REPLACE=1 のとき�
 check("seed_graph.py は layers も渡す（lab からは JSON の layers、静的データは data/layers.json）", 'lab.get("layers")' in seed and "topology.load_static_layers()" in seed and "graph.seed(devices, links, layers)" in seed)
 check("up.sh は gNMI の購読先も lab の定義から作って stream の gnmi_targets に渡し、gateway.tf は data/layers.json を tools の zip に入れる",
       "lab/lab_topology.py lab --gnmi-targets" in up and '-var "gnmi_targets=$GNMI_TARGETS"' in up
-      and '"../../agent/data/layers.json"' in read("terraform", "workflow", "gateway.tf"))
+      and '"agent/data/layers.json"' in read("terraform", "workflow", "gateway.tf"))
 
 # ---- status Lambda（graph.set_status を差し替えて呼び出しを見る）
 calls = []
@@ -154,6 +154,7 @@ fake_graph.set_status = lambda dev, ifn="", status="DOWN", only_if="": (calls.ap
 layer_calls = []
 fake_graph.set_layer_status = lambda dev, kind, target, status="DOWN": (layer_calls.append((dev, kind, target, status)) or {"updated": 1})
 fake_graph._cache = {"client": None}   # status_handler._neptune が NEPTUNE_CONFIG のクライアントを入れる置き場
+fake_graph.BACKEND = "neptune"   # status_handler._neptune が見る（GRAPH_BACKEND=neo4j の OSS 版は tests/test_oss.py）
 sys.modules["graph"] = fake_graph
 h = load("graph/status_handler.py", "status_handler")
 _neptune_client = object()

@@ -19,4 +19,4 @@ resource "aws_iam_role_policy" "parameters_read" {
   })
 }
 
-# Telegraf の MSK への書き込みは telegraf.tf のタスクロール（2026-09-28 までは terraform/pipeline/lab の Telegraf の EC2 のロールにここで付けていた）
+# Telegraf の Kafka（MSK）への書き込みは telegraf.tf のタスクロール（2026-09-28 までは terraform/pipeline/lab の Telegraf の EC2 のロールにここで付けていた）

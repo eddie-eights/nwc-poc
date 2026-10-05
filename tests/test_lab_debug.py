@@ -248,6 +248,33 @@ tpl = read("telegraf", "telegraf.conf.in")
 check("telegraf.conf.in の出力の区間は telegraf.sh の SINKS と同じ名前で、開きと閉じが対になる",
       sorted(re.findall(r"^# >>> sink (\w+)", tpl, re.M)) == sorted(re.findall(r"^# <<< sink (\w+)", tpl, re.M))
       == sorted(re.search(r'^SINKS="([^"]*)"', tg_sh, re.M).group(1).split()))
+# Kafka の認証（cycle 005）: 既定 iam は MSK の IAM（今まで通り）。none は OSS 版の Kafka（PLAINTEXT）向けに outputs.kafka の IAM の行を消す
+_IAM_KEYS = ("enable_tls", "sasl_mechanism", "sasl_aws_msk_iam_region", "sasl_aws_msk_iam_profile")
+_auth_blks = re.findall(r"^# >>> kafka_auth iam\n(.*?)^# <<< kafka_auth iam\n", tpl, re.M | re.S)
+check("telegraf.conf.in の「>>> kafka_auth iam」の区間は outputs.kafka ごとに 1 つ（5 つ）で、どれも IAM の 4 行だけを囲む",
+      len(_auth_blks) == 5 == tpl.count("# >>> kafka_auth iam") == tpl.count("# <<< kafka_auth iam") == tpl.count("[[outputs.kafka]]")
+      and all([l.split("=", 1)[0].strip() for l in b.splitlines()] == list(_IAM_KEYS) for b in _auth_blks)
+      and not re.search(r"^\s*(sasl_|enable_tls)", re.sub(r"^# >>> kafka_auth iam\n.*?^# <<< kafka_auth iam\n", "", tpl, flags=re.M | re.S), re.M))
+_iam, out_iam, iam_files = render(None, KAFKA_BROKERS="b-1.example:9098", KAFKA_AUTH="iam")
+_none, out_none, none_files = render(None, KAFKA_BROKERS="kafka-1.example:9092", KAFKA_AUTH="none")
+check("KAFKA_AUTH の既定は iam: 5 つの outputs.kafka に TLS と MSK の IAM の 4 行があり、aws_config を書く。iam を明示しても同じ。ログに kafka auth は出ない",
+      sh_const(tg_sh, "KAFKA_AUTH") == "${KAFKA_AUTH:-iam}"
+      and all(o["enable_tls"] is True and o["sasl_mechanism"] == "AWS-MSK-IAM" and o["sasl_aws_msk_iam_region"] == "ap-northeast-1"
+              and o["sasl_aws_msk_iam_profile"] == "default" for o in kafka["outputs"]["kafka"])
+      and _iam is not None and _iam["outputs"]["kafka"] == [dict(o, brokers=["b-1.example:9098"]) for o in kafka["outputs"]["kafka"]]
+      and "aws_config" in iam_files and "kafka auth" not in out_iam)
+check("KAFKA_AUTH=none は outputs.kafka から TLS と SASL の行だけを消し（ほかのキーは iam と同じ）、aws_config を書かない。ログに kafka auth: none",
+      _none is not None and len(_none["outputs"]["kafka"]) == 5
+      and all(set(_IAM_KEYS).isdisjoint(o) for o in _none["outputs"]["kafka"])
+      and [dict(o, brokers=None) for o in _none["outputs"]["kafka"]]
+      == [dict({k: v for k, v in o.items() if k not in _IAM_KEYS}, brokers=None) for o in _iam["outputs"]["kafka"]]
+      and all(o["brokers"] == ["kafka-1.example:9092"] for o in _none["outputs"]["kafka"])
+      and _none["inputs"] == _iam["inputs"] and _none["agent"] == _iam["agent"]
+      and "aws_config" not in none_files and "kafka auth: none" in out_none)
+check("知らない KAFKA_AUTH（plaintext / 大文字の IAM）は描かずに止まる。SINK=stdout では KAFKA_AUTH を見ない",
+      render(None, KAFKA_BROKERS="b:9092", KAFKA_AUTH="plaintext")[0] is None
+      and render(None, KAFKA_BROKERS="b:9092", KAFKA_AUTH="IAM")[0] is None
+      and render("stdout", KAFKA_AUTH="none")[0] == stdout_conf)
 # SNMP のポーリングは既定でする（cycle 002。Grafana の link_down と Splunk の netops_poll が見る）。SNMP_POLL=0 で inputs.snmp を消す（trap だけ）
 _poll, out_poll, _ = render("stdout", SNMP_POLL="1")
 _snmp_blk = tpl.split("# >>> snmp_poll", 1)[1].split("# <<< snmp_poll", 1)[0] if "# >>> snmp_poll" in tpl else ""

@@ -57,11 +57,14 @@ check("アラートのトピックの ARN は main の state から try で読�
       'alerts_topic_arn = try(data.terraform_remote_state.main.outputs.alerts_topic_arn, "")' in tf)
 check("stream が無いときは「terraform/pipeline/stream を先に apply する」と出る",
       re.search(r'precondition\s*\{[\s\S]*?msk_cluster_arn\s*!=\s*""[\s\S]*?terraform/pipeline/stream を先に apply する', tf, re.S) is not None)
-# main / stream の outputs.tf に本当にその output があるか
+# main / stream の .tf に本当にその output があるか（stream の msk_cluster_arn は MSK だけのものなので msk.tf にある。cycle 005）
 for root, outs in (("base/core", ("vpc_id", "subnet_ids", "security_group_ids", "opensearch_vpc_endpoint_id", "kb_bucket_name", "alerts_topic_arn")),
                    ("pipeline/stream", ("msk_cluster_arn", "bootstrap_brokers"))):
-    with open(os.path.join(ROOT, "terraform", root, "outputs.tf"), encoding="utf-8") as f:
-        other = f.read()
+    _dir = os.path.join(ROOT, "terraform", root)
+    other = ""
+    for name in sorted(n for n in os.listdir(_dir) if n.endswith(".tf")):
+        with open(os.path.join(_dir, name), encoding="utf-8") as f:
+            other += f.read() + "\n"
     for out in outs:
         check(f"terraform/{root} に output {out} がある", re.search(r'^output "' + out + r'"', other, re.M) is not None)
 
@@ -82,7 +85,7 @@ _sg_keys = set(re.findall(r'^\s+(\w+)\s+=\s+"', _sg_keys.group(1), re.M)) if _sg
 SG_KEYS = {"web", "lab", "telegraf_dialout", "telegraf_dialin", "telegraf_dialout_nlb", "msk", "spark", "grafana", "splunk", "nautobot", "nautobot_db", "lambda", "workflow", "runtime", "kafka_ui"}
 check(f"土台の SG はワークロードごとの 15 個と endpoints（{sorted(_sg_keys)}）",
       _sg_keys == SG_KEYS and re.findall(r'resource "aws_security_group" "(\w+)"', _core) == ["workload", "endpoints"]
-      and re.search(r'resource "aws_security_group" "workload" \{\n\s*for_each = local\.security_groups', _sg_tf) is not None)
+      and re.search(r'resource "aws_security_group" "workload" \{\n\s*for_each = local\.workload_security_groups\n', _sg_tf) is not None)
 # 通信の表を読む（from = sg の行は aws_api_clients に展開する）
 _clients = re.search(r'aws_api_clients = \[([^\]]*)\]', _sg_tf)
 _clients = re.findall(r'"(\w+)"', _clients.group(1)) if _clients else []

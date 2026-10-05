@@ -43,11 +43,19 @@ HTTP の送信は既定で driver でまとめて行う（マイクロバッチ�
 
 Kafka は 1 回のトリガー（60 秒）に 1 つのクエリが 10000 件まで読む（--max-offsets-per-trigger。格納先ごとに --max-offsets-per-trigger-by-sink で変えられ、0 で上限なし）。
 止めていたジョブを起こし直した直後や最初に earliest から読むときに、溜まった分を 1 回で読んで driver のメモリ（2g）に collect しないため。
+
+OSS 版（cycle 005。oss/terraform）は同じジョブを ECS の Spark（local[*]）で動かし、接続の認証だけを環境変数で切り替える（無ければ上のマネージド版のまま）:
+  KAFKA_AUTH=none           Kafka（KRaft の自前のクラスタ）に PLAINTEXT で繋ぐ（SG で絞る。既定 iam は MSK の IAM 認証）
+  OPENSEARCH_AUTH=basic     OpenSearch の _bulk に Basic 認証で POST（OPENSEARCH_USER（既定 admin）/ OPENSEARCH_PASSWORD。既定 sigv4 は aoss の署名）
+  PROMETHEUS_AUTH=none      remote write を署名せずに POST（VictoriaMetrics の vminsert。--prometheus-url は /insert/0/prometheus/api/v1/write。既定 sigv4 は aps の署名）
+パスワードは送るたびに環境変数から読む（executor へ運ぶ sender に値を持たせない。ECS のタスク定義の secrets で SSM の SecureString から渡す）。
 """
 import argparse
+import base64
 import datetime as dt
 import hashlib
 import json
+import os
 import re
 import struct
 import sys
@@ -58,6 +66,10 @@ import urllib.request
 METRIC_TOPICS = "metrics,gnmi,mdt"   # metrics = Telegraf の inputs.snmp と lab の gNMI を変えた共通の形、gnmi = inputs.gnmi、mdt = inputs.cisco_telemetry_mdt（telegraf/telegraf.conf.in。Telegraf（ECS）で動く）
 LOG_TOPICS = "traps,logs"   # traps = Telegraf の inputs.snmp_trap、logs = inputs.syslog（機器の syslog。measurement は device_log）
 SINKS = ("iceberg", "opensearch", "prometheus", "splunk")
+# 接続の認証（先頭が既定 = マネージド版。OSS 版は環境変数で後ろの方にする。モジュールの docstring）
+KAFKA_AUTHS = ("iam", "none")
+OPENSEARCH_AUTHS = ("sigv4", "basic")
+PROMETHEUS_AUTHS = ("sigv4", "none")
 HTTP_SEND = ("driver", "executor")   # HTTP の格納先（opensearch / prometheus / splunk）へ送る所。--http-send（既定 driver）
 # Kafka の 1 回のトリガーに 1 つのクエリが読む件数の上限（全パーティションの合計。Spark の maxOffsetsPerTrigger）。0 なら付けない（上限なし）。
 # ふだんの 1 回分（60 秒）より十分大きくして、いつもは何も抑えない。効くのは止めていたジョブを起こし直した直後と、最初に earliest から読むとき
@@ -166,6 +178,23 @@ def sink_topics(sink, metric_topics, log_topics):
     raise ValueError(sink)
 
 
+def env_choice(name, choices):
+    """環境変数 name の値（小文字）。無いか空なら choices[0]（マネージド版）、choices に無い値は ValueError（綴り違いで黙ってマネージド版にしない）"""
+    v = (os.environ.get(name) or choices[0]).strip().lower()
+    if v not in choices:
+        raise ValueError(f"{name} は {' / '.join(choices)} のどれか: {v!r}")
+    return v
+
+
+def basic_auth_header():
+    """OPENSEARCH_AUTH=basic の Authorization。OPENSEARCH_PASSWORD が無ければ ValueError（認証なしで送って 401 を捨て続けない）"""
+    password = os.environ.get("OPENSEARCH_PASSWORD") or ""
+    if not password:
+        raise ValueError("OPENSEARCH_AUTH=basic なのに OPENSEARCH_PASSWORD が無い")
+    user = os.environ.get("OPENSEARCH_USER") or "admin"
+    return "Basic " + base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
+
+
 # ---------------------------------------------------------------- 行の形（Kafka → 列）
 def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
     """Kafka の topics（カンマ区切り）を読んで tables.tf の列にした DataFrame を返す（テストでは start せずに中身だけ見る）。
@@ -185,12 +214,19 @@ def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
         .option("kafka.bootstrap.servers", bootstrap)
         .option("subscribe", topics)
         .option("startingOffsets", "earliest")
-        # MSK の IAM 認証（aws-msk-iam-auth の -all jar。AWS ドキュメント「Connect to MSK with IAM」の 4 項目）
-        .option("kafka.security.protocol", "SASL_SSL")
-        .option("kafka.sasl.mechanism", "AWS_MSK_IAM")
-        .option("kafka.sasl.jaas.config", "software.amazon.msk.auth.iam.IAMLoginModule required;")
-        .option("kafka.sasl.client.callback.handler.class", "software.amazon.msk.auth.iam.IAMClientCallbackHandler")
     )
+    if env_choice("KAFKA_AUTH", KAFKA_AUTHS) == "none":
+        # OSS 版の KRaft のクラスタ（oss/terraform/pipeline/stream）。暗号化も認証も無く、SG で Spark と Telegraf だけに絞る
+        reader = reader.option("kafka.security.protocol", "PLAINTEXT")
+    else:
+        reader = (
+            reader
+            # MSK の IAM 認証（aws-msk-iam-auth の -all jar。AWS ドキュメント「Connect to MSK with IAM」の 4 項目）
+            .option("kafka.security.protocol", "SASL_SSL")
+            .option("kafka.sasl.mechanism", "AWS_MSK_IAM")
+            .option("kafka.sasl.jaas.config", "software.amazon.msk.auth.iam.IAMLoginModule required;")
+            .option("kafka.sasl.client.callback.handler.class", "software.amazon.msk.auth.iam.IAMClientCallbackHandler")
+        )
     if max_offsets_per_trigger:
         reader = reader.option("maxOffsetsPerTrigger", str(max_offsets_per_trigger))
     raw = reader.load()
@@ -362,6 +398,9 @@ def opensearch_docs(records, devmap=None):
 
 def make_opensearch_sender(endpoint, index, region, devmap=None):
     url = endpoint.rstrip("/") + f"/{index}/_bulk"
+    auth = env_choice("OPENSEARCH_AUTH", OPENSEARCH_AUTHS)
+    if auth == "basic":
+        basic_auth_header()   # パスワードが無ければ、送り始める前（ジョブの起動時）に止める
 
     def send(records):
         """送り、入らなかった（捨てた）ドキュメントの数を返す"""
@@ -369,7 +408,11 @@ def make_opensearch_sender(endpoint, index, region, devmap=None):
         dropped = 0
         for i in range(0, len(lines), BULK_SIZE * 2):
             body = ("\n".join(lines[i:i + BULK_SIZE * 2]) + "\n").encode("utf-8")
-            headers = sigv4_headers("POST", url, body, "aoss", region, {"Content-Type": "application/x-ndjson"})
+            if auth == "sigv4":
+                headers = sigv4_headers("POST", url, body, "aoss", region, {"Content-Type": "application/x-ndjson"})
+            else:
+                # OSS 版の OpenSearch（Basic 認証）。値は送るたびに環境変数から読む（sender に持たせない）
+                headers = {"Content-Type": "application/x-ndjson", "Authorization": basic_auth_header()}
             status, text = http_post(url, body, headers)
             if status >= 400:
                 log(f"opensearch: _bulk が {status} を返した。{len(lines[i:i + BULK_SIZE * 2]) // 2} 件を捨てる: {text[:200]!r}")
@@ -590,6 +633,7 @@ def make_prometheus_sender(url, region, devmap=None):
         "Content-Encoding": "snappy",
         "X-Prometheus-Remote-Write-Version": "0.1.0",
     }
+    auth = env_choice("PROMETHEUS_AUTH", PROMETHEUS_AUTHS)   # none は OSS 版の vminsert（署名しない）
 
     def send(records):
         """送り、捨てたサンプルの数を返す"""
@@ -597,7 +641,7 @@ def make_prometheus_sender(url, region, devmap=None):
         dropped = 0
         for i in range(0, len(series), BULK_SIZE):
             body = snappy_compress(encode_write_request(series[i:i + BULK_SIZE]))
-            signed = sigv4_headers("POST", url, body, "aps", region, headers)
+            signed = sigv4_headers("POST", url, body, "aps", region, headers) if auth == "sigv4" else dict(headers)
             status, text = http_post(url, body, signed)
             if status >= 400:
                 # 400 は out-of-order か古すぎるサンプル（startingOffsets=earliest で最初に流れる古い分など）。打ち直しても通らないので捨てる
@@ -710,6 +754,13 @@ KAFKA_IAM_PROPS = {"security.protocol": "SASL_SSL", "sasl.mechanism": "AWS_MSK_I
                    "sasl.client.callback.handler.class": "software.amazon.msk.auth.iam.IAMClientCallbackHandler"}
 
 
+def kafka_admin_props():
+    """AdminClient の認証の設定（read_rows の Kafka の認証と同じ切り替え。KAFKA_AUTH=none は OSS 版の PLAINTEXT）"""
+    if env_choice("KAFKA_AUTH", KAFKA_AUTHS) == "none":
+        return {"security.protocol": "PLAINTEXT"}
+    return KAFKA_IAM_PROPS
+
+
 def all_topics(args):
     """引数の格納先が読むトピックの和（重複なし、引数の順）"""
     seen = []
@@ -730,7 +781,7 @@ def ensure_topics(spark, bootstrap, topics):
     jvm = spark._jvm
     props = jvm.java.util.Properties()
     props.put("bootstrap.servers", bootstrap)
-    for k, v in KAFKA_IAM_PROPS.items():
+    for k, v in kafka_admin_props().items():
         props.put(k, v)
     admin = jvm.org.apache.kafka.clients.admin.AdminClient.create(props)
     try:

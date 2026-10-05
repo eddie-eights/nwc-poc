@@ -7,22 +7,38 @@
 #   ALERTS_TOPIC_ARN  アラートを publish する SNS のトピック（terraform/base/core の alerts.tf）。これがあるときだけアラートの定義（provisioning/alerting）を
 #                     並べる: 送り先（netops.yaml）と、データソースがあるほうのルール（netops-prometheus.yaml / netops-opensearch.yaml）
 #   AWS_REGION
+#   PROMETHEUS_AUTH / OPENSEARCH_AUTH  OSS 版（cycle 005。oss/terraform）だけ none / basic。データソースを datasources-oss の定義にする
+#                     （VictoriaMetrics の vmselect に署名なし / 自前の OpenSearch に Basic 認証。uid は同じ amp / aoss-logs なので、
+#                     ダッシュボードとアラートのルールはそのまま）。無ければ sigv4（マネージド版）
+#   OPENSEARCH_USER   OPENSEARCH_AUTH=basic のときのユーザー（既定 admin）。パスワード OPENSEARCH_PASSWORD は ECS が SSM の SecureString から入れる
 # 管理者のパスワード GF_SECURITY_ADMIN_PASSWORD は ECS が SSM の SecureString から入れる（値はここでもログでも出さない）
 set -eu
 SRC=/etc/grafana/netops
 DST=/tmp/grafana-provisioning
+PROM_DS="$SRC/datasources"
+OS_DS="$SRC/datasources"
+case "${PROMETHEUS_AUTH:-sigv4}" in
+  sigv4) ;;
+  none) PROM_DS="$SRC/datasources-oss" ;;
+  *) echo "PROMETHEUS_AUTH は sigv4 / none のどれか: ${PROMETHEUS_AUTH}" >&2; exit 1 ;;
+esac
+case "${OPENSEARCH_AUTH:-sigv4}" in
+  sigv4) ;;
+  basic) OS_DS="$SRC/datasources-oss"; export OPENSEARCH_USER="${OPENSEARCH_USER:-admin}" ;;
+  *) echo "OPENSEARCH_AUTH は sigv4 / basic のどれか: ${OPENSEARCH_AUTH}" >&2; exit 1 ;;
+esac
 rm -rf "$DST" /tmp/grafana-dashboards
 mkdir -p "$DST/datasources" "$DST/dashboards" "$DST/plugins" "$DST/alerting" /tmp/grafana-dashboards
 cp "$SRC/dashboards/netops.yaml" "$DST/dashboards/"
 if [ -n "${PROMETHEUS_URL:-}" ]; then
-  cp "$SRC/datasources/prometheus.yaml" "$DST/datasources/"
+  cp "$PROM_DS/prometheus.yaml" "$DST/datasources/"
   cp "$SRC/dashboards/metrics.json" /tmp/grafana-dashboards/
   if [ -n "${ALERTS_TOPIC_ARN:-}" ]; then
     cp "$SRC/alerting/netops-prometheus.yaml" "$DST/alerting/"
   fi
 fi
 if [ -n "${OPENSEARCH_URL:-}" ]; then
-  cp "$SRC/datasources/opensearch.yaml" "$DST/datasources/"
+  cp "$OS_DS/opensearch.yaml" "$DST/datasources/"
   cp "$SRC/dashboards/logs.json" /tmp/grafana-dashboards/
   if [ -n "${ALERTS_TOPIC_ARN:-}" ]; then
     cp "$SRC/alerting/netops-opensearch.yaml" "$DST/alerting/"

@@ -7,20 +7,20 @@
 # Without graph / analytics the topology comes from data/ and the evidence tools say so.
 
 locals {
-  tools = jsondecode(file("${path.module}/../../tools/tools.json"))
+  tools = jsondecode(file("${local.repo_root}/tools/tools.json"))
 
-  # Lambda の zip に入れるファイル（プロジェクトの中の場所 = zip の中の名前）。
+  # Lambda の zip に入れるファイル（リポジトリの根からの場所 = zip の中の名前）。
   # handler.py だけ名前が変わる（Lambda のハンドラが index.handler）。proposals.py は読むだけで、承認・却下はツールに出していない。
   # agent/ のモジュールを増やしたらここにも足す（同じ一覧が agent/Dockerfile と terraform/base/core の upload_web_command にもある）
   tools_files = {
-    "../../tools/handler.py"         = "index.py"
-    "../../agent/toolkit.py"         = "toolkit.py"
-    "../../agent/topology.py"        = "topology.py"
-    "../../agent/graph.py"           = "graph.py"
-    "../../agent/evidence.py"        = "evidence.py"
-    "../../agent/proposals.py"       = "proposals.py"
-    "../../agent/data/topology.json" = "data/topology.json"
-    "../../agent/data/layers.json"   = "data/layers.json"
+    "tools/handler.py"         = "index.py"
+    "agent/toolkit.py"         = "toolkit.py"
+    "agent/topology.py"        = "topology.py"
+    "agent/graph.py"           = "graph.py"
+    "agent/evidence.py"        = "evidence.py"
+    "agent/proposals.py"       = "proposals.py"
+    "agent/data/topology.json" = "data/topology.json"
+    "agent/data/layers.json"   = "data/layers.json"
   }
 }
 
@@ -34,14 +34,14 @@ data "archive_file" "tools" {
     for_each = local.tools_files
 
     content {
-      content  = file("${path.module}/${source.key}")
+      content  = file("${local.repo_root}/${source.key}")
       filename = source.value
     }
   }
 
   # Lambda には PyYAML が無いので devices.yaml を JSON にして入れる（topology.load_static は devices.json を先に見る）
   source {
-    content  = jsonencode(yamldecode(file("${path.module}/../../agent/data/devices.yaml")))
+    content  = jsonencode(yamldecode(file("${local.repo_root}/agent/data/devices.yaml")))
     filename = "data/devices.json"
   }
 }

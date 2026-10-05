@@ -61,6 +61,8 @@ FIREHOSE_CONFIG = Config(connect_timeout=2, read_timeout=3, retries={"total_max_
 # そのときは ops/up.sh が注意を出す（2026-10-05 のユーザー決定。timeout とここの待ちは変えない））。agent/graph.py の既定
 # （接続 10 秒・読み 60 秒・3 回まで）はエージェントと up.sh が使うので変えず、graph._cache に入れて差し替える
 NEPTUNE_CONFIG = Config(connect_timeout=3, read_timeout=10, retries={"total_max_attempts": 2, "mode": "standard"})
+# OSS 版（GRAPH_BACKEND=neo4j）の Neo4j のドライバも同じ考えで短くする（graph.NEO4J_CONFIG は接続 10 秒・やり直し 15 秒）
+NEO4J_CONFIG = {"connection_timeout": 3, "max_transaction_retry_time": 5}
 _cache = {"firehose": None, "neptune": None}   # toolkit._clients とは分ける（toolkit.client("firehose") が先に既定の設定で作ったものを拾わない）
 
 
@@ -95,7 +97,11 @@ def _firehose():
 
 
 def _neptune() -> None:
-    """graph.py が使う neptune-graph のクライアントを、NEPTUNE_CONFIG で 1 つだけ作ったものに差し替える"""
+    """graph.py が使う neptune-graph のクライアントを、NEPTUNE_CONFIG で 1 つだけ作ったものに差し替える。
+    OSS 版（GRAPH_BACKEND=neo4j）は、graph.py の Neo4j のドライバを NEO4J_CONFIG で先に作る（以後 graph.py がそれを使い回す）"""
+    if graph.BACKEND == "neo4j":
+        graph._driver(NEO4J_CONFIG)
+        return
     if _cache["neptune"] is None:
         _cache["neptune"] = boto3.client("neptune-graph", region_name=toolkit.REGION, config=NEPTUNE_CONFIG)
     graph._cache["client"] = _cache["neptune"]

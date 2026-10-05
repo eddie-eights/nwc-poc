@@ -6,19 +6,22 @@
 # 認証情報チェーンの ECS コンテナの分。awsRoleArn は使わないので STS も要らない）。PLAINTEXT は認証の無い Kafka（cycle 005 の OSS 版）向けで、この root の MSK は受け付けない。
 # 開き方は Grafana と同じで、output kafka_ui_port_forward_command（web の EC2 を踏み台にした SSM のポートフォワード）。画面はログインフォーム（AUTH_TYPE=LOGIN_FORM）で、
 # admin のパスワードは ops/up.sh が作る SSM の SecureString（output kafka_ui_password_command）。設定は環境変数だけ（DYNAMIC_CONFIG_ENABLED は既定の false）で、
-# 画面からクラスターの設定は変えられない
+# 画面からクラスターの設定は変えられない。
+# OSS 版（cycle 005。oss/terraform/pipeline/stream）はこのファイルをシンボリックリンクで使い、ECS の Kafka（kafka.tf）に PLAINTEXT で繋ぐ（oss.auto.tfvars）。
+# Kafka による違い（ブートストラップ・クラスタの名前・タスクロールの権限・説明文）は msk.tf / kafka.tf の kafka_* の locals
 
 locals {
   kafka_ui_image     = "${try(data.terraform_remote_state.ecr.outputs.kafka_ui_repository_url, "")}:${var.kafka_ui_image_tag}"
   kafka_ui_log_group = "/ecs/${local.name_prefix}-kafka-ui"
-  # Cloud Map の名前空間（stream で ECS のサービスを DNS で引くのは Kafbat UI だけ）
+  # Cloud Map の名前空間（マネージド版で ECS のサービスを DNS で引くのは Kafbat UI だけ。OSS 版は Kafka の kafka-1〜3 もここ）
   stream_service_namespace    = "${local.name_prefix}-stream.internal"
   kafka_ui_password_parameter = "/${local.name_prefix}/kafka-ui/admin-password"
   kafka_ui_password_arn       = "${local.ssm_parameter_arn}${local.kafka_ui_password_parameter}"
 
-  # 認証の違いはここだけ。SASL_SSL は MSK の IAM のポート（9098）、PLAINTEXT は平文のポート
+  # 認証の違いはここだけ。ブートストラップは Kafka の側（msk.tf / OSS 版の kafka.tf）がプロトコルごとに渡す
+  # （MSK は SASL_SSL = IAM のポート 9098、OSS 版の Kafka は PLAINTEXT = 9092）
   kafka_ui_iam               = var.kafka_ui_security_protocol == "SASL_SSL"
-  kafka_ui_bootstrap_servers = local.kafka_ui_iam ? aws_msk_cluster.stream.bootstrap_brokers_sasl_iam : aws_msk_cluster.stream.bootstrap_brokers
+  kafka_ui_bootstrap_servers = lookup(local.kafka_bootstrap_by_protocol, var.kafka_ui_security_protocol, "")
   # Kafbat UI の文書「AWS IAM」（https://ui.docs.kafbat.io/configuration/authentication/for-kafka/aws-iam 、2026-10-05 確認）の 4 つ
   kafka_ui_iam_environment = local.kafka_ui_iam ? [
     { name = "KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM", value = "AWS_MSK_IAM" },
@@ -34,7 +37,7 @@ resource "aws_cloudwatch_log_group" "kafka_ui" {
 
 resource "aws_service_discovery_private_dns_namespace" "stream" {
   name        = local.stream_service_namespace
-  description = "Kafbat UI of ${local.name_prefix} (terraform/pipeline/stream)"
+  description = local.kafka_descriptions.namespace
   vpc         = local.vpc_id
 }
 
@@ -76,7 +79,7 @@ resource "aws_ecs_task_definition" "kafka_ui" {
       portMappings = [{ containerPort = 8080, protocol = "tcp" }]
       environment = concat(
         [
-          { name = "KAFKA_CLUSTERS_0_NAME", value = aws_msk_cluster.stream.cluster_name },
+          { name = "KAFKA_CLUSTERS_0_NAME", value = local.kafka_cluster_name },
           { name = "KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS", value = local.kafka_ui_bootstrap_servers },
           { name = "KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL", value = var.kafka_ui_security_protocol },
         ],
@@ -120,7 +123,7 @@ resource "aws_ecs_task_definition" "kafka_ui" {
     }
     precondition {
       condition     = local.kafka_ui_bootstrap_servers != ""
-      error_message = "MSK に kafka_ui_security_protocol（${var.kafka_ui_security_protocol}）のブートストラップが無い。この root の MSK は IAM（SASL_SSL）だけを受け付ける。"
+      error_message = "Kafka に kafka_ui_security_protocol（${var.kafka_ui_security_protocol}）のブートストラップが無い。マネージド版の MSK は IAM（SASL_SSL）だけ、OSS 版の Kafka は PLAINTEXT だけを受け付ける。"
     }
   }
 }
@@ -190,54 +193,18 @@ resource "aws_iam_role_policy" "kafka_ui_execution" {
 
 resource "aws_iam_role" "kafka_ui_task" {
   name               = "${local.name_prefix}-kafka-ui-task"
-  description        = "Kafbat UI task - browse the MSK cluster, create / alter / delete topics, read and write messages (MSK IAM)"
+  description        = local.kafka_descriptions.kafka_ui_task
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
 }
 
-# Kafbat UI が使う Kafka の操作だけ。ブローカーの設定の変更（AlterClusterDynamicConfiguration）と consumer group の変更・削除（AlterGroup / DeleteGroup）は付けない
-# （画面のその操作は権限エラーになる）。メッセージを読むときの consumer は group を使わない（assign）
+# 権限は Kafka の側: msk.tf の kafka_ui_kafka_statements（Kafbat UI が使う MSK の操作だけ）/ OSS 版の kafka.tf（認証なしなので MSK を拒む Deny だけ）
 resource "aws_iam_role_policy" "kafka_ui_task" {
   name = "${local.name_prefix}-kafka-ui-task"
   role = aws_iam_role.kafka_ui_task.name
 
   policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        # DescribeClusterDynamicConfiguration: ブローカーの設定（画面の Brokers と、起動時に版を調べる describeConfigs）。
-        # WriteDataIdempotently: 画面からメッセージを送る producer（Kafka 3.x からの既定で冪等）
-        Sid    = "KafkaCluster"
-        Effect = "Allow"
-        Action = [
-          "kafka-cluster:Connect",
-          "kafka-cluster:DescribeCluster",
-          "kafka-cluster:DescribeClusterDynamicConfiguration",
-          "kafka-cluster:WriteDataIdempotently",
-        ]
-        Resource = aws_msk_cluster.stream.arn
-      },
-      {
-        Sid    = "KafkaTopics"
-        Effect = "Allow"
-        Action = [
-          "kafka-cluster:DescribeTopic",
-          "kafka-cluster:CreateTopic",
-          "kafka-cluster:AlterTopic",
-          "kafka-cluster:DeleteTopic",
-          "kafka-cluster:DescribeTopicDynamicConfiguration",
-          "kafka-cluster:AlterTopicDynamicConfiguration",
-          "kafka-cluster:ReadData",
-          "kafka-cluster:WriteData",
-        ]
-        Resource = local.topic_arns
-      },
-      {
-        Sid      = "KafkaGroups"
-        Effect   = "Allow"
-        Action   = ["kafka-cluster:DescribeGroup"]
-        Resource = local.group_arns
-      },
-    ]
+    Version   = "2012-10-17"
+    Statement = local.kafka_ui_kafka_statements
   })
 }
 

@@ -14,8 +14,14 @@ ATHENA_WORKGROUP・ATHENA_CATALOG・HISTORY_NAMESPACE・ALERT_EVENTS_TABLE（ter
 Athena は boto3 の athena クライアント（python3.13 の Lambda に入っている）。実行の手順（開始 → 待つ → 止める → 結果）は toolkit.athena_rows
 （agent/proposals.py の修復案の読み取りと共用。2026-10-05）。
 tools Lambda（terraform/workflow）と chat runtime（agent/app.py）の両方から同じものが呼ばれる。
+
+OSS 版（cycle 005。oss/terraform）は送り先の認証だけを環境変数で切り替える（無ければ上の SigV4 のまま）:
+  OPENSEARCH_AUTH=basic   OpenSearch（自前）に Basic 認証。ユーザーは OPENSEARCH_USER（既定 admin）、パスワードは
+                          環境変数 OPENSEARCH_PASSWORD か SSM の <PARAM_PREFIX>/opensearch-password（SecureString。ops/up.sh が作る）
+  PROMETHEUS_AUTH=none    VictoriaMetrics の vmselect に署名せずに送る（PROMETHEUS_QUERY_URL は http://…/select/0/prometheus/api/v1/query）
 """
 
+import base64
 import json
 import os
 import time
@@ -37,8 +43,29 @@ ATHENA_CATALOG = os.environ.get("ATHENA_CATALOG", "")  # s3tablescatalog/<テー
 HISTORY_NAMESPACE = os.environ.get("HISTORY_NAMESPACE", "")
 ALERT_EVENTS_TABLE = os.environ.get("ALERT_EVENTS_TABLE", "")
 REGION = os.environ.get("AWS_REGION") or os.environ.get("BEDROCK_REGION") or "ap-northeast-1"
+# 送り先の認証（先頭が既定 = マネージド版。OSS 版だけ後ろの方。モジュールの docstring）
+AUTHS = {"aoss": ("OPENSEARCH_AUTH", ("sigv4", "basic")), "aps": ("PROMETHEUS_AUTH", ("sigv4", "none"))}
+OPENSEARCH_USER = os.environ.get("OPENSEARCH_USER") or "admin"
+OPENSEARCH_PASSWORD = toolkit.Param("OPENSEARCH_PASSWORD", "opensearch-password", decrypt=True)
 TIMEOUT = 20
 POLL = 0.5  # Athena のクエリの状態を見に行く間隔（秒）
+
+
+def _request(method: str, url: str, service: str, body: bytes | None = None, headers: dict | None = None) -> dict:
+    """service（aoss / aps）の認証で送る。既定は _signed（SigV4）。OSS 版は OPENSEARCH_AUTH=basic / PROMETHEUS_AUTH=none（モジュールの docstring）"""
+    name, choices = AUTHS[service]
+    auth = (os.environ.get(name) or choices[0]).strip().lower()
+    if auth not in choices:
+        return {"error": f"{name} は {' / '.join(choices)} のどれか: {auth!r}"}
+    if auth == "sigv4":
+        return _signed(method, url, service, body, headers)
+    headers = dict(headers or {})
+    if auth == "basic":
+        password = OPENSEARCH_PASSWORD.value()
+        if not password:
+            return {"error": "OPENSEARCH_AUTH=basic なのに OpenSearch のパスワードが無い（環境変数 OPENSEARCH_PASSWORD か SSM の opensearch-password）"}
+        headers["Authorization"] = "Basic " + base64.b64encode(f"{OPENSEARCH_USER}:{password}".encode("utf-8")).decode("ascii")
+    return _send(method, url, body, headers)
 
 
 def _signed(method: str, url: str, service: str, body: bytes | None = None, headers: dict | None = None) -> dict:
@@ -50,8 +77,13 @@ def _signed(method: str, url: str, service: str, body: bytes | None = None, head
         SigV4Auth(toolkit.session().get_credentials(), service, REGION).add_auth(req)
     except (BotoCoreError, AttributeError, TypeError) as e:  # NoCredentialsError は BotoCoreError の子
         return {"error": f"署名できない（認証情報が無い）: {e}"}
+    return _send(method, url, body, dict(req.headers))
+
+
+def _send(method: str, url: str, body: bytes | None, headers: dict) -> dict:
+    """送って応答の JSON を返す。届かない・拒否されたときは {"error": ...}"""
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, data=body, headers=dict(req.headers), method=method), timeout=TIMEOUT) as res:
+        with urllib.request.urlopen(urllib.request.Request(url, data=body, headers=headers, method=method), timeout=TIMEOUT) as res:
             return json.loads(res.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as e:
         return {"error": f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:300]}"}
@@ -71,7 +103,7 @@ def search_logs(device_id: str = "", minutes: int = 60, limit: int = 20) -> dict
         # Spark は tags.sysName / tags.agent_host / tags.source を持つ（spark/snmp_sinks.py の opensearch の文書）
         must.append({"multi_match": {"query": device_id, "fields": ["tags.sysName", "tags.agent_host", "tags.source", "device_id"]}})
     body = json.dumps({"size": limit, "sort": [{"@timestamp": "desc"}], "query": {"bool": {"must": must}}}).encode()
-    res = _signed("POST", f"{OPENSEARCH_ENDPOINT}/{OPENSEARCH_INDEX}/_search", "aoss", body, {"Content-Type": "application/json"})
+    res = _request("POST", f"{OPENSEARCH_ENDPOINT}/{OPENSEARCH_INDEX}/_search", "aoss", body, {"Content-Type": "application/json"})
     if "error" in res:
         return {"error": res["error"], "hits": []}
     hits = [h.get("_source", {}) for h in (res.get("hits") or {}).get("hits", [])]
@@ -89,7 +121,7 @@ def query_metrics(query: str, minutes: int = 15) -> dict:
     params = urllib.parse.urlencode({"query": query, "start": end - minutes * 60, "end": end, "step": "60s"})
     url = PROMETHEUS_QUERY_URL.rstrip("/")
     url = url[: -len("/query")] + "/query_range" if url.endswith("/query") else url + "/query_range"
-    res = _signed("GET", f"{url}?{params}", "aps")
+    res = _request("GET", f"{url}?{params}", "aps")
     if "error" in res:
         return {"error": res["error"], "series": []}
     if res.get("status") != "success":

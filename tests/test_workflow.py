@@ -521,14 +521,14 @@ check("Runtime と Web のロールに SSM の読み取りを付け、Gateway �
 # 承認・却下を書けるのはコードの上では web だけ（decide はツールにしない）。Neptune の IAM は頂点ごとに絞れないので、線はコードで引く
 check("修復案を決める専用の IAM（decide_access）はもう無い", "decide_access" not in tf)
 check("Gateway は AWS_IAM 認可の MCP で、2025-06-18 を話す", 'authorizer_type = "AWS_IAM"' in tf and 'protocol_type   = "MCP"' in tf and '"2025-06-18"' in tf)
-check("Gateway のターゲットは tools.json から inline schema を作る", 'jsondecode(file("${path.module}/../../tools/tools.json"))' in tf and 'dynamic "inline_payload"' in tf)
+check("Gateway のターゲットは tools.json から inline schema を作る", 'jsondecode(file("${local.repo_root}/tools/tools.json"))' in tf and 'dynamic "inline_payload"' in tf)
 check("tools Lambda は python3.13 arm64 で、handler.py / toolkit / topology / evidence / proposals / graph / data を zip にする（anomalies は入れない）",
       'runtime          = "python3.13"' in tf and 'architectures    = ["arm64"]' in tf
-      and all(f"../../{p}" in tf for p in ("tools/handler.py", "agent/toolkit.py", "agent/topology.py", "agent/evidence.py", "agent/proposals.py", "agent/graph.py", "agent/data/topology.json", "agent/data/devices.yaml", "agent/data/layers.json"))
+      and all(f'"{p}"' in tf or f'{{local.repo_root}}/{p}"' in tf for p in ("tools/handler.py", "agent/toolkit.py", "agent/topology.py", "agent/evidence.py", "agent/proposals.py", "agent/graph.py", "agent/data/topology.json", "agent/data/devices.yaml", "agent/data/layers.json"))
       and "agent/anomalies.py" not in tf)
 # 入れ忘れても apply も plan も通り、実行時に ModuleNotFoundError になる。だから「入っている」ではなく「足りていないものが無い」を見る:
 # zip に入れたモジュールが import する agent/ のモジュールが、全部 tools_files に並んでいるか
-zipped = set(re.findall(r'"\.\./\.\./agent/(\w+)\.py"', tf))
+zipped = set(re.findall(r'^\s+"agent/(\w+)\.py"\s+=', tf, re.M))
 needed = set()
 for src in [("tools", "handler.py")] + [("agent", m + ".py") for m in zipped]:
     needed |= {i for i in re.findall(r"^import (\w+)$", read(*src), re.M) if os.path.exists(os.path.join(ROOT, "agent", i + ".py"))}
@@ -733,9 +733,9 @@ check("up.sh の WORKFLOW=1 は link_down のアラートの送り手（Grafana 
       and up.index('LINK_DOWN_SENDERS=') < up.index('[ -z "$LINK_DOWN_SENDERS" ]'))
 # ---- starter: SQS のメッセージ（SNS のトピックの購読）
 check("starter はアラートと決定の 2 つのキューを 20 秒の long polling で待ち、ANOMALY_QUEUE_URL / DECISION_QUEUE_URL が無ければ起動で止まる（表を見る経路はもう無い）",
-      all(hasattr(awsio, f) for f in ("receive_messages", "delete_message"))
+      all(hasattr(awsio, f) for f in ("receive_messages", "delete_message")) and awsio.GRAPH_ENV == "NEPTUNE_GRAPH_ID"
       and "WaitTimeSeconds=20" in read("workflow", "awsio.py")
-      and re.search(r'for k in \("ANOMALY_QUEUE_URL", "DECISION_QUEUE_URL", "NEPTUNE_GRAPH_ID", "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "AGENT_RUNTIME_ARN"\):\n\s*if not getattr\(awsio, k\):\n\s*raise SystemExit',
+      and re.search(r'for k in \("ANOMALY_QUEUE_URL", "DECISION_QUEUE_URL", awsio\.GRAPH_ENV, "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "AGENT_RUNTIME_ARN"\):\n\s*if not getattr\(awsio, k\):\n\s*raise SystemExit',
                     read("workflow", "worker.py")) is not None
       and "starter(client, awsio.ANOMALY_QUEUE_URL, handle_message)" in read("workflow", "worker.py")
       and "starter(client, awsio.DECISION_QUEUE_URL, handle_decision)" in read("workflow", "worker.py"))
@@ -836,7 +836,9 @@ check("up.sh は base/core の state に 2026-09-29 より前の SG（aws_securi
       re.search(r"grep -qx 'aws_security_group\\\.internal'", up) is not None
       and up.index("aws_security_group\\.internal") < up.index('log "1. ECR リポジトリ') and "先に ops/down.sh で消す" in up)
 _sg_roots = ("agent", "pipeline/analytics", "pipeline/graph", "pipeline/lab", "pipeline/stream", "workflow")
-_sg_locals = {r: read("terraform", *r.split("/"), "locals.tf") for r in _sg_roots}
+# stream の MSK の SG は msk.tf で読む（MSK だけのもの。OSS 版のルートに msk.tf は無い。cycle 005）
+_sg_files = {r: ("locals.tf", "msk.tf") if r == "pipeline/stream" else ("locals.tf",) for r in _sg_roots}
+_sg_locals = {r: "\n".join(read("terraform", *r.split("/"), f) for f in fs) for r, fs in _sg_files.items()}
 check("SG の ID を読む 6 ルートは try で読み（古い state のまま down.sh の destroy が通る）、base/core の state に security_group_ids が無ければ apply の前に止める",
       all(re.search(r'data "terraform_remote_state" "main" \{[\s\S]*?lifecycle \{\s*postcondition \{\s*condition\s*=\s*can\(self\.outputs\.security_group_ids(\["\w+"\])?\)', s) is not None
           and re.findall(r'security_group_ids\[', s)
@@ -844,7 +846,7 @@ check("SG の ID を読む 6 ルートは try で読み（古い state のまま
           and len(re.findall(r'(?<!can\(self\.outputs\.)security_group_ids\[', s)) == len(re.findall(r'= try\(data\.terraform_remote_state\.main\.outputs\.security_group_ids\["\w+"\], ""\)', s))
           for s in _sg_locals.values())
       and not any("security_group_ids[" in read("terraform", *r.split("/"), f) for r in _sg_roots
-                  for f in os.listdir(os.path.join(ROOT, "terraform", *r.split("/"))) if f.endswith(".tf") and f != "locals.tf"))
+                  for f in os.listdir(os.path.join(ROOT, "terraform", *r.split("/"))) if f.endswith(".tf") and f not in _sg_files[r]))
 check("down.sh は agent を lab の後、main の前に消し、ロググループ名を agent の state から読む",
       down.index("destroy_root pipeline/lab") < down.index('destroy_lambda_root agent "$PREFIX-kb-index"') < down.index("destroy_root base/core") and "tf agent output -raw runtime_log_group_name" in down)
 check("up.sh は main の後に agent を apply し、CREATE_KB のときだけ手順書を取り込む",

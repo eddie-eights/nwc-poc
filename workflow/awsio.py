@@ -14,11 +14,15 @@ Temporal のワークフロー（決定的でないといけない）から直�
 
 boto3 / pyiceberg / pyarrow は import せず、呼ばれたときに関数の中で読む。Temporal のワークフローサンドボックスが
 このモジュールを再 import するときに重い依存を引きずらないようにするため。
+
+OSS 版（cycle 005）は GRAPH_BACKEND=neo4j で、トポロジを Neptune Analytics の代わりに Neo4j（NEO4J_URI / NEO4J_USER / NEO4J_PASSWORD /
+NEO4J_DATABASE）から読む。クエリは同じ文字列のまま、送る直前に id(n) を n.id に直す（agent/graph.py の _dialect と同じ）。
 """
 
 import datetime as dt
 import json
 import os
+import re
 import time
 import uuid
 
@@ -27,6 +31,14 @@ import rules  # 判断だけの純粋関数（同じディレクトリ。重い�
 ANOMALY_QUEUE_URL = os.environ.get("ANOMALY_QUEUE_URL", "")  # terraform/workflow の events.tf（SNS のトピックを購読するキュー）
 DECISION_QUEUE_URL = os.environ.get("DECISION_QUEUE_URL", "")  # terraform/workflow の events.tf（Web の承認・却下が届くキュー。SNS は購読しない）
 NEPTUNE_GRAPH_ID = os.environ.get("NEPTUNE_GRAPH_ID", "")    # Neptune Analytics のグラフの ID（g-xxxxxxxxxx。terraform/pipeline/graph）
+GRAPH_BACKEND = (os.environ.get("GRAPH_BACKEND") or "neptune").strip().lower()   # OSS 版だけ neo4j（agent/graph.py と同じ）
+if GRAPH_BACKEND not in ("neptune", "neo4j"):
+    raise ValueError(f"GRAPH_BACKEND は neptune / neo4j のどれか: {GRAPH_BACKEND!r}")
+NEO4J_URI = os.environ.get("NEO4J_URI", "")                  # OSS 版の Neo4j（bolt://…。oss/terraform/pipeline/graph）
+NEO4J_USER = os.environ.get("NEO4J_USER") or "neo4j"
+NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "")        # ECS の secrets で SSM の SecureString から渡す
+NEO4J_DATABASE = os.environ.get("NEO4J_DATABASE") or "neo4j"
+GRAPH_ENV = "NEO4J_URI" if GRAPH_BACKEND == "neo4j" else "NEPTUNE_GRAPH_ID"   # グラフの接続先の変数の名前（worker.py が起動時に有無を見る）
 AUDIT_TABLE_BUCKET_ARN = os.environ.get("AUDIT_TABLE_BUCKET_ARN", "")  # terraform/pipeline/analytics の S3 Tables のバケット
 AUDIT_NAMESPACE = os.environ.get("AUDIT_NAMESPACE", "")
 PROPOSAL_EVENTS_TABLE = os.environ.get("PROPOSAL_EVENTS_TABLE", "proposal_events")
@@ -57,6 +69,8 @@ def _agent_config():
 def cypher(q: str, **params) -> list:
     """neptune-graph で openCypher を 1 本打ち、結果の行（dict）の list を返す（IAM 認証の署名は boto3 が付ける）。クライアントは使い回す。
     値は全部パラメータで渡す（エージェントの答えの本文に何が入ってもクエリは壊れない）。agent/graph.py の query と同じ"""
+    if GRAPH_BACKEND == "neo4j":
+        return _neo4j_cypher(q, params)
     if "neptune" not in _cache:
         from botocore.config import Config
 
@@ -64,6 +78,18 @@ def cypher(q: str, **params) -> list:
     kw = {"parameters": params} if params else {}
     res = _cache["neptune"].execute_query(graphIdentifier=NEPTUNE_GRAPH_ID, queryString=q, language="OPEN_CYPHER", **kw)
     return json.loads(res["payload"].read()).get("results", [])
+
+
+def _neo4j_cypher(q: str, params: dict) -> list:
+    """OSS 版。頂点の id は property id（agent/graph.py の _dialect と同じ直し方）。ここで読むのは値だけ（頂点や辺そのものは返さない）。
+    neo4j は OSS 版の image にしか入れないので、ここで import する"""
+    if "neo4j" not in _cache:
+        from neo4j import GraphDatabase
+
+        auth = (NEO4J_USER, NEO4J_PASSWORD) if NEO4J_PASSWORD else None
+        _cache["neo4j"] = GraphDatabase.driver(NEO4J_URI, auth=auth, connection_timeout=10, max_transaction_retry_time=15)
+    res = _cache["neo4j"].execute_query(re.sub(r"\bid\((\w+)\)", r"\1.id", q), parameters_=params, database_=NEO4J_DATABASE)
+    return [dict(r.items()) for r in res.records]
 
 
 def read_topology() -> tuple[list, list]:

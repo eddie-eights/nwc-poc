@@ -1,0 +1,1 @@
+../../../../terraform/base/core/locals.tf
