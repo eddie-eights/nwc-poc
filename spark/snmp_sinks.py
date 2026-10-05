@@ -48,7 +48,9 @@ OSS 版（cycle 005。oss/terraform）は同じジョブを ECS の Spark（loca
   KAFKA_AUTH=none           Kafka（KRaft の自前のクラスタ）に PLAINTEXT で繋ぐ（SG で絞る。既定 iam は MSK の IAM 認証）
   OPENSEARCH_AUTH=basic     OpenSearch の _bulk に Basic 認証で POST（OPENSEARCH_USER（既定 admin）/ OPENSEARCH_PASSWORD。既定 sigv4 は aoss の署名）
   PROMETHEUS_AUTH=none      remote write を署名せずに POST（VictoriaMetrics の vminsert。--prometheus-url は /insert/0/prometheus/api/v1/write。既定 sigv4 は aps の署名）
-パスワードは送るたびに環境変数から読む（executor へ運ぶ sender に値を持たせない。ECS のタスク定義の secrets で SSM の SecureString から渡す）。
+  SPLUNK_HEC_TOKEN          splunk の HEC の token。あれば SSM を読まずにこれを使い、--splunk-token-parameter は要らない
+                            （Splunk のタスクが HEC の token を作るのと同じ SSM の SecureString。無ければマネージド版のまま SSM から読む）
+パスワードと token は送るたびに環境変数から読む（executor へ運ぶ sender に値を持たせない。ECS のタスク定義の secrets で SSM の SecureString から渡す）。
 """
 import argparse
 import base64
@@ -116,7 +118,8 @@ def parse_args(argv):
     p.add_argument("--opensearch-index", default=OPENSEARCH_INDEX, help="opensearch: インデックス名")
     p.add_argument("--prometheus-url", default="", help="prometheus: remote write の URL（…/api/v1/remote_write）")
     p.add_argument("--splunk-hec-url", default="", help="splunk: HEC の URL（https://<host>:8088。/services/collector/event が無ければ足す）")
-    p.add_argument("--splunk-token-parameter", default="", help="splunk: HEC の token を入れた SSM の SecureString の名前（/<接頭辞>/splunk/hec-token。値は起動時に読み、ログに出さない）")
+    p.add_argument("--splunk-token-parameter", default="", help="splunk: HEC の token を入れた SSM の SecureString の名前（/<接頭辞>/splunk/hec-token。値は起動時に読み、ログに出さない。"
+                                                                 "環境変数 SPLUNK_HEC_TOKEN があれば要らない）")
     p.add_argument("--splunk-index", default="", help="splunk: イベントを入れる index（空なら token の既定の index）")
     p.add_argument("--splunk-skip-verify", action="store_true", help="splunk: HEC の TLS 証明書を検証しない（自己署名の Splunk Enterprise の検証用。既定は検証する）")
     p.add_argument("--device-map", default="", help="prometheus / opensearch: sysName の無いレコードの source（機器の管理 IP）を機器名に引く表"
@@ -131,6 +134,9 @@ def parse_args(argv):
             "splunk": ["splunk_hec_url", "splunk_token_parameter"]}
     for s in args.sinks:
         for k in need[s]:
+            # OSS 版は token を環境変数 SPLUNK_HEC_TOKEN で受ける（splunk_token）ので、SSM のパラメータ名は要らない
+            if k == "splunk_token_parameter" and os.environ.get("SPLUNK_HEC_TOKEN"):
+                continue
             if not getattr(args, k):
                 p.error(f"--sinks に {s} があるので --{k.replace('_', '-')} が要る")
     if not args.checkpoint.endswith("/"):
@@ -487,6 +493,12 @@ def read_ssm_parameter(name, region):
     return boto3.client("ssm", region_name=region).get_parameter(Name=name, WithDecryption=True)["Parameter"]["Value"]
 
 
+def splunk_token(parameter, region):
+    """HEC の token。OSS 版は ECS のタスク定義の secrets が同じ SSM の SecureString を環境変数 SPLUNK_HEC_TOKEN に入れる（あればそれ）。
+    無ければマネージド版のまま SSM から読む。値はログに出さない"""
+    return os.environ.get("SPLUNK_HEC_TOKEN") or read_ssm_parameter(parameter, region)
+
+
 def make_splunk_sender(url, token, index="", skip_verify=False):
     url = splunk_hec_url(url)
     headers = {"Authorization": f"Splunk {token}", "Content-Type": "application/json"}
@@ -512,10 +524,11 @@ def make_splunk_sender(url, token, index="", skip_verify=False):
 
 
 def make_splunk_sender_on_executor(url, token_parameter, region, index="", skip_verify=False):
-    """--http-send executor の splunk の sender。token は driver から運ばず（Spark のタスクに載せない）、送るたびに executor が SSM から読む。
+    """--http-send executor の splunk の sender。token は driver から運ばず（Spark のタスクに載せない）、送るたびに executor が
+    SSM（OSS 版は環境変数 SPLUNK_HEC_TOKEN）から読む。
     送り方（BULK_SIZE ごと、4xx は捨てる、TLS）は make_splunk_sender のまま。持つのは文字列と bool だけ（executor へ pickle で運ぶ）"""
     def send(records):
-        return make_splunk_sender(url, read_ssm_parameter(token_parameter, region), index, skip_verify)(records)
+        return make_splunk_sender(url, splunk_token(token_parameter, region), index, skip_verify)(records)
     return send
 
 
@@ -818,13 +831,13 @@ def build(spark, args):
         elif s == "prometheus":
             queries.append(http_query(rows, s, args.checkpoint, make_prometheus_sender(args.prometheus_url, args.region, devmap), args.http_send))
         elif s == "splunk" and args.http_send == "executor":
-            # 起動時に読めるかだけ確かめる（読めなければ driver のときと同じく起動で落ちる）。値は捨て、executor が送るたびに SSM から読み直す
-            read_ssm_parameter(args.splunk_token_parameter, args.region)
+            # 起動時に読めるかだけ確かめる（読めなければ driver のときと同じく起動で落ちる）。値は捨て、executor が送るたびに読み直す
+            splunk_token(args.splunk_token_parameter, args.region)
             queries.append(http_query(rows, s, args.checkpoint, make_splunk_sender_on_executor(
                 args.splunk_hec_url, args.splunk_token_parameter, args.region, args.splunk_index, args.splunk_skip_verify), args.http_send))
         elif s == "splunk":
             # token は起動時に 1 回だけ読む（driver の中に置く。ログにも引数にも出ない）。読めなければジョブが起動で落ち、原因が stderr に出る
-            token = read_ssm_parameter(args.splunk_token_parameter, args.region)
+            token = splunk_token(args.splunk_token_parameter, args.region)
             queries.append(http_query(rows, s, args.checkpoint, make_splunk_sender(args.splunk_hec_url, token, args.splunk_index, args.splunk_skip_verify)))
     return queries
 

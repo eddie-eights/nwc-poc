@@ -1,6 +1,7 @@
 # ---------------------------------------------------------------- Spark（ECS on Fargate、local モード）
 # マネージド版の EMR Serverless のジョブ（emr.tf と outputs.tf の job_drivers）の代わり。分け方は同じで、格納先ごとに 1 サービス
-# （iceberg = 全トピックを S3 Tables、http = opensearch と prometheus。var.sinks に無い格納先は外し、空になったジョブは作らない）。
+# （iceberg = 全トピックを S3 Tables、splunk = 全トピックを Splunk の HEC、http = opensearch と prometheus。
+# var.sinks に無い格納先は外し、空になったジョブは作らない）。
 # どのタスクも spark-submit --master local[*]（driver も executor も 1 つの JVM）。EMR の STREAMING モードの起こし直しの代わりに、
 # サービス（desired_count = 1）がタスクの終わりを見て起こし直す。
 # イメージは spark/Dockerfile（apache/spark:3.5.9 に Kafka・Iceberg・S3 Tables・S3A の jar と spark/snmp_sinks.py を焼き込む。
@@ -8,7 +9,10 @@
 # checkpoint はマネージド版と同じバケットの analytics/checkpoint/ に S3A（s3a://）で書く（EMR の s3:// は EMRFS で、素の Spark には無い）。
 # Kafka は PLAINTEXT（KAFKA_AUTH=none）、OpenSearch は Basic 認証（OPENSEARCH_AUTH=basic）、vminsert は署名なし（PROMETHEUS_AUTH=none）。
 # OpenSearch と VictoriaMetrics のタスクは別の作業で、ここでは Cloud Map の名前（opensearch / vminsert）だけを使う。
-# splunk の格納先は OSS 版の analytics にまだ Splunk が無いので受けない（precondition で止める）
+# Splunk はマネージド版と同じ（リンクした splunk.tf のタスク）で、送り方もマネージド版の splunk の格納先と同じ（HEC に自己署名の TLS で POST）。
+# 違うのは HEC の token の受け取り方だけで、EMR のジョブが起動時に SSM から読む代わりに、Splunk のタスクと同じく
+# ECS の secrets で SSM の SecureString を SPLUNK_HEC_TOKEN として受ける（値は Terraform も state もタスク定義も持たない）。
+# Splunk が起きる前（起動に数分）は HEC への POST が再試行の後に落ちてタスクが終わり、サービスが起こし直す（checkpoint の続きから読む）
 
 variable "spark_image_tag" {
   description = "Tag of the spark/ image in the <prefix>-spark repository (apache/spark with the jars and spark/snmp_sinks.py). The OSS ops/up.sh builds it as <Spark version>-<hash of spark/>."
@@ -47,8 +51,8 @@ locals {
   spark_image     = "${try(data.terraform_remote_state.ecr.outputs.oss_repository_urls["spark"], "")}:${var.spark_image_tag}"
   spark_log_group = "/ecs/${local.name_prefix}-spark"
 
-  # ジョブ → 格納先（空のジョブと splunk は作らない）
-  spark_services = { for job, sinks in local.spark_jobs : job => sinks if length(sinks) > 0 && job != "splunk" }
+  # ジョブ → 格納先（空のジョブは作らない）
+  spark_services = { for job, sinks in local.spark_jobs : job => sinks if length(sinks) > 0 }
 
   # checkpoint は Kafka の offset を持つ。マネージド版は MSK のクラスタの uuid をパスに入れる（locals.tf の checkpoint_uri）。
   # OSS 版の Kafka のデータは terraform/base/core の EFS にあるので、EFS が作り直されたら checkpoint も新しくする
@@ -64,6 +68,13 @@ locals {
   spark_opensearch_password_parameter = "/${local.name_prefix}/opensearch-password"
   spark_opensearch_password_arn       = "${local.ssm_parameter_arn}${local.spark_opensearch_password_parameter}"
 
+  # 格納先ごとに ECS の secrets で受ける SSM の SecureString（名前は spark/snmp_sinks.py が読む環境変数）。
+  # SPLUNK_HEC_TOKEN は splunk.tf の Splunk のタスクが HEC の token を作るのと同じパラメータ（network.tf の splunk_token_parameter_arn）
+  spark_secrets = {
+    opensearch = { name = "OPENSEARCH_PASSWORD", valueFrom = local.spark_opensearch_password_arn }
+    splunk     = { name = "SPLUNK_HEC_TOKEN", valueFrom = local.splunk_token_parameter_arn }
+  }
+
   # spark-submit の引数。カタログの設定はマネージド版の sparkSubmitParameters と同じ（iceberg を選ばなければ S3 Tables の API は呼ばない）
   spark_submit = concat(
     ["/opt/spark/bin/spark-submit", "--master", "local[*]", "--driver-memory", "${floor(var.spark_task_memory / 2)}m",
@@ -78,7 +89,8 @@ locals {
     ["/opt/nwc/snmp_sinks.py"],
   )
 
-  # snmp_sinks.py の引数。マネージド版の job_drivers の entryPointArguments と同じ並び（splunk の引数は無い）
+  # snmp_sinks.py の引数。マネージド版の job_drivers の entryPointArguments と同じ並び
+  # （splunk は --splunk-token-parameter だけを渡さない。token は環境変数 SPLUNK_HEC_TOKEN で受ける）
   spark_arguments = { for job, sinks in local.spark_services : job => concat(
     ["--bootstrap", local.bootstrap, "--checkpoint", local.spark_checkpoint_uri, "--sinks", join(",", sinks), "--region", var.region,
     "--metric-topics", local.metric_topics, "--log-topics", local.log_topics],
@@ -88,6 +100,8 @@ locals {
     [for a in ["--iceberg-table", local.iceberg_table] : a if contains(sinks, "iceberg")],
     [for a in ["--opensearch-endpoint", local.spark_opensearch_endpoint, "--opensearch-index", local.opensearch_index] : a if contains(sinks, "opensearch")],
     [for a in ["--prometheus-url", local.spark_remote_write_url] : a if contains(sinks, "prometheus")],
+    [for a in ["--splunk-hec-url", local.splunk_hec_url, "--splunk-index", var.splunk_index] : a if contains(sinks, "splunk")],
+    [for a in ["--splunk-skip-verify"] : a if contains(sinks, "splunk") && local.splunk_skip_tls_verify],
     [for a in ["--device-map", var.device_map] : a if var.device_map != "" && (contains(sinks, "prometheus") || contains(sinks, "opensearch"))],
   ) }
 }
@@ -95,13 +109,6 @@ locals {
 resource "aws_cloudwatch_log_group" "spark" {
   name              = local.spark_log_group
   retention_in_days = var.log_retention_days
-
-  lifecycle {
-    precondition {
-      condition     = !local.sink_splunk
-      error_message = "OSS 版の analytics にはまだ Splunk が無いので、sinks に splunk は入れられない（iceberg / opensearch / prometheus のどれか）。"
-    }
-  }
 }
 
 resource "aws_ecs_task_definition" "spark" {
@@ -135,8 +142,8 @@ resource "aws_ecs_task_definition" "spark" {
         [for e in [{ name = "OPENSEARCH_AUTH", value = "basic" }] : e if contains(each.value, "opensearch")],
         [for e in [{ name = "PROMETHEUS_AUTH", value = "none" }] : e if contains(each.value, "prometheus")],
       )
-      # OpenSearch の admin のパスワード（ユーザーは snmp_sinks.py の既定の admin）
-      secrets = [for s in [{ name = "OPENSEARCH_PASSWORD", valueFrom = local.spark_opensearch_password_arn }] : s if contains(each.value, "opensearch")]
+      # OpenSearch の admin のパスワード（ユーザーは snmp_sinks.py の既定の admin）と Splunk の HEC の token。そのジョブの格納先の分だけ
+      secrets = [for sink, s in local.spark_secrets : s if contains(each.value, sink)]
       # 止めるときに今の micro-batch を終える時間（Fargate の上限）。checkpoint は batch ごとに書くので、途中で切れても次は続きから読む
       stopTimeout = 120
       logConfiguration = {
@@ -202,7 +209,7 @@ resource "aws_ecs_service" "spark" {
 # ---------------------------------------------------------------- IAM（どのジョブも同じロール）
 resource "aws_iam_role" "spark_execution" {
   name               = "${local.name_prefix}-spark-exec"
-  description        = "ECS task execution role of the Spark tasks (ECR pull, CloudWatch Logs, the OpenSearch password from SSM)"
+  description        = "ECS task execution role of the Spark tasks (ECR pull, CloudWatch Logs, the OpenSearch password and the Splunk HEC token from SSM)"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
 }
 
@@ -211,22 +218,22 @@ resource "aws_iam_role_policy_attachment" "spark_execution" {
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# secrets の OPENSEARCH_PASSWORD（SecureString でも AWS 管理の aws/ssm キーなので kms:Decrypt は要らない）。
-# opensearch を選ばないときは読むパラメータが無いので、ポリシーごと作らない
+# secrets の OPENSEARCH_PASSWORD と SPLUNK_HEC_TOKEN（SecureString でも AWS 管理の aws/ssm キーなので kms:Decrypt は要らない）。
+# 選んだ格納先の分だけ。opensearch も splunk も選ばないときは読むパラメータが無いので、ポリシーごと作らない
 resource "aws_iam_role_policy" "spark_execution" {
-  count = local.sink_opensearch ? 1 : 0
+  count = local.sink_opensearch || local.sink_splunk ? 1 : 0
 
   name = "${local.name_prefix}-spark-exec"
   role = aws_iam_role.spark_execution.name
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid      = "OpenSearchPassword"
+    Statement = [for sink, sid in { opensearch = "OpenSearchPassword", splunk = "SplunkHecToken" } : {
+      Sid      = sid
       Effect   = "Allow"
       Action   = ["ssm:GetParameters"]
-      Resource = local.spark_opensearch_password_arn
-    }]
+      Resource = local.spark_secrets[sink].valueFrom
+    } if contains(var.sinks, sink)]
   })
 }
 
@@ -310,7 +317,7 @@ resource "aws_iam_role_policy_attachment" "spark_task_perimeter" {
 
 # ---------------------------------------------------------------- outputs（OSS 版だけ）
 output "spark_service_names" {
-  description = "ECS service of each Spark job, keyed iceberg / http (the same split as the EMR Serverless jobs of the managed build). Empty for a job whose sinks are not in var.sinks"
+  description = "ECS service of each Spark job, keyed iceberg / splunk / http (the same split as the EMR Serverless jobs of the managed build). No key for a job whose sinks are not in var.sinks"
   value       = { for j, s in aws_ecs_service.spark : j => s.name }
 }
 

@@ -445,6 +445,8 @@ check("tags / fields は JSON 文字列のまま", 'F.to_json(F.col("m.tags")).a
 spec = importlib.util.spec_from_file_location("snmp_sinks", SRC)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
+# マネージド版の動き（token は SSM から読む）を見る。OSS 版の SPLUNK_HEC_TOKEN は tests/test_oss.py
+os.environ.pop("SPLUNK_HEC_TOKEN", None)
 
 def parse_error(argv):
     """argparse の p.error は SystemExit(2)。使い方の表示は捨てる"""
@@ -648,8 +650,9 @@ try:
 finally:
     mod.http_post = _orig_post
 check("make_splunk_sender: HEC が 4xx を返したらそのまとまりを捨てて続け（例外にしない。ジョブを止めない）、捨てた件数を返す", _dropped == 3)
-check("build: splunk は起動時に SSM から token を読み（WithDecryption）、make_splunk_sender で http_query に流す",
-      re.search(r'elif s == "splunk":\s*\n(\s*#[^\n]*\n)*\s*token = read_ssm_parameter\(args\.splunk_token_parameter, args\.region\)\s*\n\s*queries\.append\(http_query\(rows, s, args\.checkpoint, make_splunk_sender\(args\.splunk_hec_url, token, args\.splunk_index, args\.splunk_skip_verify\)\)\)', src) is not None
+check("build: splunk は起動時に SSM から token を読み（WithDecryption。環境変数 SPLUNK_HEC_TOKEN が無ければ）、make_splunk_sender で http_query に流す",
+      re.search(r'elif s == "splunk":\s*\n(\s*#[^\n]*\n)*\s*token = splunk_token\(args\.splunk_token_parameter, args\.region\)\s*\n\s*queries\.append\(http_query\(rows, s, args\.checkpoint, make_splunk_sender\(args\.splunk_hec_url, token, args\.splunk_index, args\.splunk_skip_verify\)\)\)', src) is not None
+      and re.search(r'def splunk_token\(parameter, region\):[\s\S]*?return os\.environ\.get\("SPLUNK_HEC_TOKEN"\) or read_ssm_parameter\(parameter, region\)\n', src) is not None
       and re.search(r'def read_ssm_parameter\(name, region\):[\s\S]*?get_parameter\(Name=name, WithDecryption=True\)', src) is not None)
 check("http_post は context（SSL）を urlopen に渡せる", re.search(r'def http_post\(url, body, headers, context=None\)', src) is not None and "context=context" in src)
 

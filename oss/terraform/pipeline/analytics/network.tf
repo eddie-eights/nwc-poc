@@ -1,7 +1,8 @@
 # ---------------------------------------------------------------- 土台と stream の state、共有の locals
 # マネージド版の locals.tf と同じ名前の locals を、OSS 版で作れるものだけ持つ（マネージド版の locals.tf は MSK・EMR・
-# OpenSearch Serverless・AMP・Splunk を引くのでリンクできない）。リンクしている tables.tf・history.tf・ecs.tf はここの locals を読む。
-# Spark は spark.tf。VictoriaMetrics と OpenSearch の ECS は別の作業で、同じ locals を使う
+# OpenSearch Serverless・AMP を引くのでリンクできない）。リンクしている tables.tf・history.tf・ecs.tf・splunk.tf はここの locals を読む。
+# Spark は spark.tf。VictoriaMetrics と OpenSearch の ECS は別の作業で、同じ locals を使う。
+# Splunk は OSS 版でも変えない（設計 005）ので、マネージド版の splunk.tf をそのままリンクし、splunk の locals もマネージド版と同じ値にする
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
@@ -51,9 +52,10 @@ locals {
   instance_subnet_id = data.terraform_remote_state.main.outputs.instance_subnet_id
   web_instance_id    = try(data.terraform_remote_state.main.outputs.web_instance_id, "")
   # SG は古い state の destroy でも評価できるように try（空のまま apply に進まないよう spark.tf の precondition で止める）
-  spark_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["spark"], "")
-  bucket      = data.terraform_remote_state.main.outputs.kb_bucket_name
-  bucket_arn  = "arn:${local.partition}:s3:::${local.bucket}"
+  spark_sg_id  = try(data.terraform_remote_state.main.outputs.security_group_ids["spark"], "")
+  splunk_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["splunk"], "")
+  bucket       = data.terraform_remote_state.main.outputs.kb_bucket_name
+  bucket_arn   = "arn:${local.partition}:s3:::${local.bucket}"
   # terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
   perimeter_policy_arn        = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
   perimeter_exempt_principals = try(data.terraform_remote_state.main.outputs.perimeter_exempt_principals, [])
@@ -81,6 +83,16 @@ locals {
   job => [for s in sinks : s if contains(var.sinks, s)] }
   max_offsets_by_job = { for job, sinks in local.spark_jobs :
   job => join(",", [for s in sinks : "${s}=${var.max_offsets_per_trigger_by_sink[s]}" if contains(keys(var.max_offsets_per_trigger_by_sink), s)]) }
+
+  # splunk: マネージド版と同じ Splunk Enterprise を ECS で立てる（リンクした splunk.tf。HEC は VPC の中の splunk.<名前空間>:8088、
+  # クラスターなら splunk-idx.<名前空間>:8088）。値はマネージド版の locals.tf と同じ。
+  # HEC の token は Splunk のタスクも Spark のタスク（spark.tf）も ECS の secrets で同じ SSM の SecureString から SPLUNK_HEC_TOKEN として受ける
+  splunk_on_ecs              = local.sink_splunk
+  splunk_hec_url             = local.splunk_cluster ? "https://splunk-idx.${local.service_namespace}:8088" : "https://splunk.${local.service_namespace}:8088"
+  splunk_skip_tls_verify     = true
+  splunk_token_parameter     = var.splunk_hec_token_parameter != "" ? var.splunk_hec_token_parameter : "/${local.name_prefix}/splunk/hec-token"
+  splunk_token_parameter_arn = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.splunk_token_parameter}"
+  splunk_password_parameter  = "/${local.name_prefix}/splunk/admin-password"
 
   # ECS のクラスタと Cloud Map の名前空間（ecs.tf）。OSS 版では Spark がいつも ECS で動くので、いつも作る
   create_ecs        = true

@@ -1,6 +1,6 @@
 # マネージド版の outputs.tf のうち、ほかのルート（workflow・graph・agent）と ops が読む共通の output（名前と中身を同じにする）。
-# EMR Serverless・OpenSearch Serverless・AMP・Splunk の output は無い。Spark の output は spark.tf、OpenSearch と VictoriaMetrics の output はその .tf に置く
-# （共通の opensearch_index も、opensearch.tf が出すのでここには置かない）
+# EMR Serverless・OpenSearch Serverless・AMP の output は無い。Spark の output は spark.tf、OpenSearch と VictoriaMetrics の output はその .tf に置く
+# （共通の opensearch_index も、opensearch.tf が出すのでここには置かない）。Splunk（リンクした splunk.tf）の output はマネージド版と同じ
 
 output "table_bucket_arn" {
   description = "S3 Tables table bucket (the Iceberg warehouse of the Spark catalog; terraform/workflow appends proposal_events here)"
@@ -23,13 +23,53 @@ output "list_tables_command" {
 }
 
 output "sinks" {
-  description = "Where the streaming jobs store the messages (var.sinks: iceberg = all topics, opensearch = log topics, prometheus = metric topics)"
+  description = "Where the streaming jobs store the messages (var.sinks: iceberg = all topics, opensearch = log topics, prometheus = metric topics, splunk = all topics)"
   value       = var.sinks
 }
 
+output "splunk_hec_url" {
+  description = "HTTP Event Collector the splunk sink posts every topic to (empty unless sinks has splunk). https://splunk.<namespace>:8088 of the Splunk on ECS (splunk.tf)"
+  value       = local.sink_splunk ? local.splunk_hec_url : ""
+}
+
+output "splunk_token_parameter" {
+  description = "SSM SecureString parameter holding the HEC token (empty unless sinks has splunk). The Spark task and the Splunk task both get it as SPLUNK_HEC_TOKEN through the ECS secrets. ops/up.sh creates it. Terraform never reads the value"
+  value       = local.sink_splunk ? local.splunk_token_parameter : ""
+}
+
 output "analytics_cluster_name" {
-  description = "ECS cluster of the Spark tasks (and the OpenSearch / VictoriaMetrics tasks)"
+  description = "ECS cluster of the Spark tasks (and the OpenSearch / VictoriaMetrics / Splunk tasks)"
   value       = local.create_ecs ? aws_ecs_cluster.analytics[0].name : ""
+}
+
+output "splunk_service_name" {
+  description = "ECS service of the Splunk task (empty unless the Splunk runs on ECS)"
+  value       = local.splunk_on_ecs ? aws_ecs_service.splunk[0].name : ""
+}
+
+output "splunk_port_forward_command" {
+  description = "Open the Splunk Web UI at http://localhost:8000 through the web EC2 (SSM port forward; user admin, password from splunk_password_command). Empty unless the Splunk runs on ECS"
+  value       = local.splunk_on_ecs ? "aws ssm start-session --region ${var.region} --target ${local.web_instance_id} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{\"host\":[\"splunk.${local.service_namespace}\"],\"portNumber\":[\"8000\"],\"localPortNumber\":[\"8000\"]}'" : ""
+}
+
+output "splunk_cm_service_name" {
+  description = "ECS service of the Splunk cluster manager (empty unless splunk_az_num is 2 or 3)"
+  value       = local.splunk_on_ecs && local.splunk_cluster ? aws_ecs_service.splunk_cm[0].name : ""
+}
+
+output "splunk_idx_service_name" {
+  description = "ECS service of the Splunk indexers, one task per AZ (empty unless splunk_az_num is 2 or 3)"
+  value       = local.splunk_on_ecs && local.splunk_cluster ? aws_ecs_service.splunk_idx[0].name : ""
+}
+
+output "splunk_cm_port_forward_command" {
+  description = "Open the Web UI of the Splunk cluster manager (indexer clustering status) at http://localhost:8001 through the web EC2 (SSM port forward; same admin password). Empty unless splunk_az_num is 2 or 3"
+  value       = local.splunk_on_ecs && local.splunk_cluster ? "aws ssm start-session --region ${var.region} --target ${local.web_instance_id} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{\"host\":[\"splunk-cm.${local.service_namespace}\"],\"portNumber\":[\"8000\"],\"localPortNumber\":[\"8001\"]}'" : ""
+}
+
+output "splunk_password_command" {
+  description = "Print the Splunk admin password (SSM SecureString created by ops/up.sh). Empty unless the Splunk runs on ECS"
+  value       = local.splunk_on_ecs ? "aws ssm get-parameter --region ${var.region} --name ${local.splunk_password_parameter} --with-decryption --query Parameter.Value --output text" : ""
 }
 
 output "service_namespace" {

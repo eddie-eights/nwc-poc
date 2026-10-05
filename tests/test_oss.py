@@ -2,7 +2,7 @@
   1. 環境変数が無いとき、agent/graph.py と workflow/awsio.py が出す openCypher とパラメータが、切り替えを入れる前と 1 文字も違わない
      （tests/golden/neptune_cypher.json と比べる。golden は切り替えを入れる前のコードで --write-golden を付けて作った）
   2. GRAPH_BACKEND=neo4j のとき、出す Cypher に neptune.algo・`~id`・id( が無く、同じグラフの中身から同じ結果を返す
-  3. Spark（spark/snmp_sinks.py）・agent/evidence.py・grafana/start.sh の認証の切り替え（KAFKA_AUTH / OPENSEARCH_AUTH / PROMETHEUS_AUTH）。
+  3. Spark（spark/snmp_sinks.py）・agent/evidence.py・grafana/start.sh の認証の切り替え（KAFKA_AUTH / OPENSEARCH_AUTH / PROMETHEUS_AUTH / SPLUNK_HEC_TOKEN）。
      環境変数が無いときは今のまま（MSK の IAM 認証・SigV4・マネージド版のデータソース）
   4. oss/terraform（設計の 3）: 変えないルートは terraform/ のファイルへのシンボリックリンク、変える 3 ルート（stream / analytics / graph）に
      マネージドのサービス（MSK / EMR Serverless / AMP / Neptune Analytics / OpenSearch Serverless）が無い、接頭辞は var.project、
@@ -19,7 +19,7 @@ GOLDEN = os.path.join(ROOT, "tests", "golden", "neptune_cypher.json")
 sys.path[:0] = [AGENT, WORKFLOW]
 
 for k in ("GRAPH_BACKEND", "NEO4J_URI", "NEO4J_USER", "NEO4J_PASSWORD", "NEO4J_DATABASE", "KAFKA_AUTH", "OPENSEARCH_AUTH",
-          "PROMETHEUS_AUTH", "OPENSEARCH_USER", "OPENSEARCH_PASSWORD", "PARAM_PREFIX"):
+          "PROMETHEUS_AUTH", "OPENSEARCH_USER", "OPENSEARCH_PASSWORD", "SPLUNK_HEC_TOKEN", "PARAM_PREFIX"):
     os.environ.pop(k, None)
 
 
@@ -470,6 +470,50 @@ check("KAFKA_AUTH / OPENSEARCH_AUTH / PROMETHEUS_AUTH の綴り違いは ValueEr
       raises(ValueError, lambda: kafka_opts(KAFKA_AUTH="plaintext")) and raises(ValueError, lambda: admin_props(KAFKA_AUTH="sasl"))
       and raises(ValueError, lambda: send("opensearch", OPENSEARCH_AUTH="aws")) and raises(ValueError, lambda: send("prometheus", PROMETHEUS_AUTH="basic")))
 
+# Splunk の HEC の token: OSS 版は ECS の secrets が SSM の SecureString を SPLUNK_HEC_TOKEN に入れる。無ければマネージド版のまま SSM から読む
+_ssm_reads = []
+sinks.read_ssm_parameter = lambda name, region: (_ssm_reads.append(name), "tok-ssm")[1]
+_SPLUNK_ARGS = ["--bootstrap", "b:9092", "--checkpoint", "s3a://b/analytics/checkpoint", "--sinks", "splunk", "--splunk-hec-url", "https://s:8088"]
+
+
+def parse_ok(argv, **env):
+    saved = sys.stderr
+    sys.stderr = io.StringIO()
+    try:
+        return with_env(env, lambda: sinks.parse_args(argv)) is not None
+    except SystemExit:
+        return False
+    finally:
+        sys.stderr = saved
+
+
+def splunk_send(make, **env):
+    """splunk の sender を作って rec を 1 件送る。(sender, 作った時点の SSM の読み, POST の [(url, headers)], 全体の SSM の読み)"""
+    posts.clear(); _ssm_reads.clear()
+
+    def go():
+        f = make()
+        at_make = list(_ssm_reads)
+        f([rec])
+        return f, at_make
+    f, at_make = with_env(env, go)
+    return f, at_make, list(posts), list(_ssm_reads)
+
+
+check("環境変数が無いとき、--sinks splunk は --splunk-token-parameter が要る（マネージド版のまま）。SPLUNK_HEC_TOKEN があれば要らない",
+      not parse_ok(_SPLUNK_ARGS) and parse_ok(_SPLUNK_ARGS, SPLUNK_HEC_TOKEN="tok-env")
+      and parse_ok(_SPLUNK_ARGS + ["--splunk-token-parameter", "/p/splunk/hec-token"]))
+check("splunk_token: 環境変数が無いときは SSM から読み、SPLUNK_HEC_TOKEN があれば SSM を読まずにそれを使う",
+      (_ssm_reads.clear(), sinks.splunk_token("/p/splunk/hec-token", "r"), _ssm_reads == ["/p/splunk/hec-token"])[-1]
+      and (_ssm_reads.clear(), with_env({"SPLUNK_HEC_TOKEN": "tok-env"}, lambda: sinks.splunk_token("", "r")) == "tok-env" and _ssm_reads == [])[-1])
+_f, _at, _p, _r = splunk_send(lambda: sinks.make_splunk_sender_on_executor("https://s:8088", "", "r", "", True), SPLUNK_HEC_TOKEN="tok-env")
+check("SPLUNK_HEC_TOKEN: executor へ運ぶ splunk の sender は token を持たず（作るときも送るときも SSM を読まない）、送るたびに環境変数から読んで Authorization: Splunk <token> で送る",
+      _at == [] and _r == [] and "tok-env" not in repr([c.cell_contents for c in _f.__closure__])
+      and _p == [("https://s:8088/services/collector/event", {"Authorization": "Splunk tok-env", "Content-Type": "application/json"})])
+_f, _at, _p, _r = splunk_send(lambda: sinks.make_splunk_sender_on_executor("https://s:8088", "/p/splunk/hec-token", "r"))
+check("環境変数が無いとき、executor の splunk の sender は送るときに SSM から token を読む（マネージド版のまま）",
+      _at == [] and _r == ["/p/splunk/hec-token"] and _p[0][1]["Authorization"] == "Splunk tok-ssm")
+
 
 # ---- agent/evidence.py の切り替え（botocore の署名と urlopen は偽物）
 class SigV4Auth:
@@ -770,11 +814,41 @@ check(f"Spark・Iceberg・Neo4j の版は compose で確かめた組み合わせ
       and "cp /var/lib/neo4j/products/neo4j-graph-data-science-*.jar /var/lib/neo4j/plugins/" in _dock["neo4j/Dockerfile"]
       and "NEO4J_PLUGINS" not in _code(_dock["neo4j/Dockerfile"]) and "--packages" not in _code(_dock["spark/Dockerfile"]))
 _spark = _code(tf_text("oss/terraform", "pipeline/analytics")["spark.tf"])
-check("Spark はマネージド版の spark_jobs と同じ分け方で格納先の組ごとに 1 タスク（splunk は外す）。checkpoint は S3A で、同じ checkpoint を 2 つのタスクが同時に使わない",
-      'spark_services = { for job, sinks in local.spark_jobs : job => sinks if length(sinks) > 0 && job != "splunk" }' in _spark
+check("Spark はマネージド版の spark_jobs と同じ分け方で格納先の組ごとに 1 タスク（iceberg / splunk / http）。checkpoint は S3A で、同じ checkpoint を 2 つのタスクが同時に使わない",
+      "spark_services = { for job, sinks in local.spark_jobs : job => sinks if length(sinks) > 0 }" in _spark
       and all(re.search(r'resource "' + t + r'" "spark" \{\n  for_each = local\.spark_services\n', _spark) for t in ("aws_ecs_task_definition", "aws_ecs_service"))
       and 'spark_checkpoint_uri = "s3a://${local.bucket}/${local.checkpoint}/' in _spark
       and "deployment_minimum_healthy_percent = 0" in _spark and "deployment_maximum_percent         = 100" in _spark)
+
+
+def _tf_values(text, kind, names):
+    """locals の 1 行の定義（kind = local）か output の value（kind = output）を名前ごとに返す（空白をつめる）"""
+    pat = {"local": r"^\s+{n}\s*=\s*(.+)$", "output": r'^output "{n}" \{{[\s\S]*?^\s+value\s*=\s*(.+)$'}[kind]
+    return {n: (lambda m: m and re.sub(r"\s+", " ", m.group(1).strip()))(re.search(pat.format(n=n), text, re.M)) for n in names}
+
+
+_SPLUNK_LOCALS = ("splunk_sg_id", "splunk_on_ecs", "splunk_hec_url", "splunk_skip_tls_verify", "splunk_token_parameter", "splunk_token_parameter_arn",
+                  "splunk_password_parameter")
+_SPLUNK_OUTPUTS = ("splunk_hec_url", "splunk_token_parameter", "splunk_service_name", "splunk_port_forward_command", "splunk_cm_service_name",
+                   "splunk_idx_service_name", "splunk_cm_port_forward_command", "splunk_password_command")
+_ana = {b: tf_text(b, "pipeline/analytics") for b in ("terraform", "oss/terraform")}
+_loc = {b: _tf_values(_code(_ana[b]["network.tf" if b == "oss/terraform" else "locals.tf"]), "local", _SPLUNK_LOCALS) for b in _ana}
+_out = {b: _tf_values(_ana[b]["outputs.tf"], "output", _SPLUNK_OUTPUTS) for b in _ana}
+check(f"Splunk は OSS 版でも変えない（設計 005）: splunk.tf はマネージド版へのリンクで、splunk の locals と output はマネージド版と同じ値"
+      f"（locals の違い: { {k: v for k, v in _loc['oss/terraform'].items() if v != _loc['terraform'][k]} }、output の違い: { {k: v for k, v in _out['oss/terraform'].items() if v != _out['terraform'][k]} }）",
+      not links_to_managed("pipeline/analytics", ["splunk.tf"])
+      and None not in _loc["terraform"].values() and _loc["oss/terraform"] == _loc["terraform"]
+      and None not in _out["terraform"].values() and _out["oss/terraform"] == _out["terraform"])
+check("Spark の splunk のタスクは HEC の token を ECS の secrets（SPLUNK_HEC_TOKEN。Splunk のタスクと同じ SSM の SecureString）で受け、"
+      "--splunk-token-parameter は渡さない。実行ロールが読めるのは選んだ格納先のパラメータだけ",
+      'splunk     = { name = "SPLUNK_HEC_TOKEN", valueFrom = local.splunk_token_parameter_arn }' in _spark
+      and "secrets = [for sink, s in local.spark_secrets : s if contains(each.value, sink)]" in _spark
+      and '[for a in ["--splunk-hec-url", local.splunk_hec_url, "--splunk-index", var.splunk_index] : a if contains(sinks, "splunk")]' in _spark
+      and '[for a in ["--splunk-skip-verify"] : a if contains(sinks, "splunk") && local.splunk_skip_tls_verify]' in _spark
+      and "--splunk-token-parameter" not in _spark
+      and 'name = "SPLUNK_HEC_TOKEN", valueFrom = local.splunk_token_parameter_arn' in _code(_ana["terraform"]["splunk.tf"])
+      and re.search(r'count = local\.sink_opensearch \|\| local\.sink_splunk \? 1 : 0[\s\S]*?\{ opensearch = "OpenSearchPassword", splunk = "SplunkHecToken" \}'
+                    r'[\s\S]*?Action\s+= \["ssm:GetParameters"\]\s*\n\s*Resource = local\.spark_secrets\[sink\]\.valueFrom\s*\n\s*\} if contains\(var\.sinks, sink\)\]', _spark))
 _graph_files = git_files("oss/terraform/pipeline/graph")
 _graph_real = sorted(n for n in _graph_files if not os.path.islink(os.path.join(ROOT, "oss", "terraform", "pipeline", "graph", n)))
 _neo = _code(tf_text("oss/terraform", "pipeline/graph")["neo4j.tf"])
