@@ -154,6 +154,7 @@ fake_graph.set_status = lambda dev, ifn="", status="DOWN", only_if="": (calls.ap
 layer_calls = []
 fake_graph.set_layer_status = lambda dev, kind, target, status="DOWN": (layer_calls.append((dev, kind, target, status)) or {"updated": 1})
 fake_graph._cache = {"client": None}   # status_handler._neptune が NEPTUNE_CONFIG のクライアントを入れる置き場
+fake_graph.BACKEND = "neptune"   # status_handler._neptune が見る（GRAPH_BACKEND=neo4j の OSS 版は tests/test_oss.py）
 sys.modules["graph"] = fake_graph
 h = load("graph/status_handler.py", "status_handler")
 _neptune_client = object()

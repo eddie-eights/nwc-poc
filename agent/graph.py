@@ -30,10 +30,19 @@ Nautobot を正にしているとき（terraform/pipeline/nautobot）は、Nauto
 トポロジに無い機器やインタフェースの異常は捨てずに「未登録」の頂点（property registered=false。機器は role=unknown）として残し、
 set_status() の戻り値に unregistered を付ける（Lambda が WARNING でログに出す。登録漏れの印）。登録済みの頂点は registered を持たない。
 あとから seed() / add_device() で登録すると未登録の頂点は置き換わり、UP でない status は引き継ぐ。
+
+OSS 版（cycle 005。oss/terraform）は環境変数 GRAPH_BACKEND=neo4j で Neo4j（Community + GDS）に切り替える。無ければ Neptune Analytics のまま。
+接続先は NEO4J_URI（bolt://…。無ければ SSM の <PARAM_PREFIX>/neo4j-uri）、ユーザーは NEO4J_USER（既定 neo4j）、パスワードは
+NEO4J_PASSWORD（無ければ SSM の <PARAM_PREFIX>/neo4j-password。SecureString）、データベースは NEO4J_DATABASE（既定 neo4j）。
+クエリは Neptune の openCypher のまま組み、Neo4j に送る直前に _dialect() が 1 か所で書き換える（頂点の id は property id に置き、
+ラベルごとに一意の制約を張る。id(n) → n.id、`~id` → id）。結果の頂点と辺は Neptune と同じ形（~id / ~labels / ~properties）に戻すので、
+ほかの関数は 2 つのグラフを区別しない。違うのはアルゴリズム（centrality。neptune.algo.* の代わりに GDS）だけ。
 """
 
 import json
+import os
 import re
+import uuid
 
 import boto3
 from botocore.config import Config
@@ -43,7 +52,18 @@ import toolkit
 REGION = toolkit.REGION
 GRAPH_ID = toolkit.Param("NEPTUNE_GRAPH_ID", "neptune-graph-id")  # グラフの ID（環境変数か SSM）
 CHUNK = 500  # UNWIND で 1 本のクエリに載せる行数（seed）
-_cache = {"client": None}
+BACKENDS = ("neptune", "neo4j")
+BACKEND = (os.environ.get("GRAPH_BACKEND") or "neptune").strip().lower()   # OSS 版だけ neo4j
+if BACKEND not in BACKENDS:
+    raise ValueError(f"GRAPH_BACKEND は {' / '.join(BACKENDS)} のどれか: {BACKEND!r}")
+NEO4J_URI = toolkit.Param("NEO4J_URI", "neo4j-uri")
+NEO4J_PASSWORD = toolkit.Param("NEO4J_PASSWORD", "neo4j-password", decrypt=True)
+NEO4J_USER = os.environ.get("NEO4J_USER") or "neo4j"
+NEO4J_DATABASE = os.environ.get("NEO4J_DATABASE") or "neo4j"
+# ドライバの既定（接続 30 秒・やり直し 30 秒）は長いので、_client() の Neptune と同じく早めにあきらめる。graph-status の Lambda は
+# status_handler.py が短い設定で先に _driver() を作る
+NEO4J_CONFIG = {"connection_timeout": 10, "max_transaction_retry_time": 15}
+_cache = {"client": None, "driver": None, "schema": False}
 
 
 def graph_id() -> str:
@@ -51,8 +71,8 @@ def graph_id() -> str:
 
 
 def configured() -> bool:
-    """Neptune Analytics を配備してあるか（無ければ topology.py は data/ の静的データに戻る）"""
-    return bool(graph_id())
+    """Neptune Analytics（OSS 版は Neo4j）を配備してあるか（無ければ topology.py は data/ の静的データに戻る）"""
+    return bool(NEO4J_URI.value() if BACKEND == "neo4j" else graph_id())
 
 
 def _client():
@@ -69,9 +89,63 @@ def _client():
 
 def query(cypher: str, **params) -> list:
     """openCypher を 1 本打ち、結果の行（RETURN の名前 → 値の dict）の list を返す"""
+    if BACKEND == "neo4j":
+        return _neo4j_query(cypher, params)
     kw = {"parameters": params} if params else {}
     res = _client().execute_query(graphIdentifier=graph_id(), queryString=cypher, language="OPEN_CYPHER", **kw)
     return json.loads(res["payload"].read()).get("results", [])
+
+
+# ---------------------------------------------------------------- Neo4j（OSS 版。GRAPH_BACKEND=neo4j のときだけ）
+def _driver(config: dict | None = None):
+    """Neo4j のドライバ（接続を内部で使い回すので 1 つだけ作る）。neo4j は OSS 版でしか入れないので、ここで import する"""
+    if _cache["driver"] is None:
+        from neo4j import GraphDatabase
+
+        uri, password = NEO4J_URI.value(), NEO4J_PASSWORD.value()
+        if not uri:
+            raise RuntimeError("NEO4J_URI が無い（環境変数か SSM の neo4j-uri）")
+        auth = (NEO4J_USER, password) if password else None   # パスワードが無ければ認証なし（手元の compose で NEO4J_AUTH=none のとき）
+        _cache["driver"] = GraphDatabase.driver(uri, auth=auth, **(NEO4J_CONFIG if config is None else config))
+    return _cache["driver"]
+
+
+def _dialect(cypher: str) -> str:
+    """Neptune の openCypher を Neo4j の Cypher に直す（id を読む式と id で作る式は、この 1 か所だけで直す）。
+    頂点の id は Neptune では ~id、Neo4j では property id（ラベルごとに一意の制約。_neo4j_schema）。
+    from / to は Neo4j で予約語に近いので、列の名前に使うときは ` で囲む"""
+    cypher = re.sub(r"\bid\((\w+)\)", r"\1.id", cypher)
+    cypher = cypher.replace("`~id`", "id")
+    return re.sub(r"\bAS (from|to)\b", r"AS `\1`", cypher)
+
+
+def _plain(v):
+    """ドライバの頂点と辺を Neptune の結果と同じ形（~id / ~labels / ~properties）にする（_node と _links がそのまま読める）"""
+    if hasattr(v, "labels"):
+        props = dict(v)
+        return {"~id": props.pop("id", None), "~entityType": "node", "~labels": sorted(v.labels), "~properties": props}
+    if hasattr(v, "type") and hasattr(v, "start_node"):
+        return {"~entityType": "relationship", "~type": v.type, "~properties": dict(v)}
+    if isinstance(v, list):
+        return [_plain(x) for x in v]
+    return v
+
+
+def _neo4j_schema(driver) -> None:
+    """頂点の id をラベルごとに一意にする（Neptune の ~id の代わり。MATCH と MERGE が id の索引を使う）。プロセスで最初の 1 回だけ"""
+    if _cache["schema"]:
+        return
+    for label in ("device", "interface", "change") + LAYER_LABELS:
+        driver.execute_query(f"CREATE CONSTRAINT nwc_{label}_id IF NOT EXISTS FOR (n:{_ident(label)}) REQUIRE n.id IS UNIQUE",
+                             database_=NEO4J_DATABASE)
+    _cache["schema"] = True
+
+
+def _neo4j_query(cypher: str, params: dict) -> list:
+    driver = _driver()
+    _neo4j_schema(driver)
+    res = driver.execute_query(_dialect(cypher), parameters_=params, database_=NEO4J_DATABASE)
+    return [{k: _plain(v) for k, v in r.items()} for r in res.records]
 
 
 def _node(n: dict) -> dict:
@@ -544,24 +618,48 @@ def set_layer_status(device_id: str, kind: str, target: str, status: str = "DOWN
 # ---------------------------------------------------------------- アルゴリズム（Neptune Analytics に固有。neptune.algo.*）
 # グラフを取り出さずに、Neptune Analytics の中で回す。機器が増えても、エージェントやワーカーが全部の頂点と辺を読んで手元で数えなくて済む。
 # 見るのは物理層の構造（機器と回線）だけで、status は見ない（DOWN の回線も「つながっている」と数える。障害の影響は topology.py の what_if）。
-# OSS のグラフ DB に移すときは同じ名前のプロシージャが無いので、ここを置き換える（docs/oss-variant.md）
+# OSS 版（GRAPH_BACKEND=neo4j）は同じ名前のプロシージャが無いので、GDS（Graph Data Science）で同じ 3 つを回す（_algo_neo4j。docs/oss-variant.md）
 _ALGO = '{edgeLabels: ["link"], vertexLabel: "device"'   # 設定の先頭（回線の辺と機器の頂点だけを見る）。続きを足して } で閉じる
+
+
+def _algo_neptune() -> tuple[list, list, list]:
+    """(degree の行, closeness の行, component の行)。行は {id, degree} / {id, score} / {id, component}"""
+    return (query('MATCH (n:device) CALL neptune.algo.degree(n, {edgeLabels: ["link"], vertexLabels: ["device"], traversalDirection: "both"}) '
+                  "YIELD degree RETURN id(n) AS id, degree"),
+            query("MATCH (n:device) CALL neptune.algo.closenessCentrality(n, " + _ALGO + ', traversalDirection: "both", numSources: 8192}) '
+                  "YIELD score RETURN id(n) AS id, score"),
+            query("MATCH (n:device) CALL neptune.algo.wcc(n, " + _ALGO + "}) YIELD component RETURN id(n) AS id, component"))
+
+
+def _algo_neo4j() -> tuple[list, list, list]:
+    """_algo_neptune と同じ形を GDS で。機器と回線だけを向きの無いグラフとしてメモリに写し（回線の無い機器も入れる）、3 つを回して消す。
+    名前は呼ぶたびに変える（エージェントとワーカーが同時に呼んでもぶつからない）"""
+    if not _count("MATCH (n:device) RETURN count(n) AS n"):
+        return [], [], []
+    g = f"nwc-centrality-{uuid.uuid4().hex}"
+    query("MATCH (a:device) OPTIONAL MATCH (a)-[:link]->(b:device) "
+          "WITH gds.graph.project($g, a, b, {}, {undirectedRelationshipTypes: ['*']}) AS p RETURN p.graphName AS graph", g=g)
+    try:
+        return (query("CALL gds.degree.stream($g) YIELD nodeId, score RETURN gds.util.asNode(nodeId).id AS id, toInteger(score) AS degree", g=g),
+                query("CALL gds.closeness.stream($g) YIELD nodeId, score RETURN gds.util.asNode(nodeId).id AS id, score", g=g),
+                query("CALL gds.wcc.stream($g) YIELD nodeId, componentId RETURN gds.util.asNode(nodeId).id AS id, componentId AS component", g=g))
+    finally:
+        query("CALL gds.graph.drop($g, false) YIELD graphName RETURN graphName", g=g)
 
 
 def centrality(limit: int = 10) -> dict:
     """機器の中心性と、つながりの島。
-      degree     付いている回線の数（次数中心性。neptune.algo.degree）
-      closeness  ほかの全機器への近さ（近接中心性。neptune.algo.closenessCentrality。大きいほど中心にあり、落ちたときに影響が広い）
-      component  回線でつながっている島の番号（弱連結成分。neptune.algo.wcc）。components が 2 以上なら、どの回線でも届かない機器の組がある
+      degree     付いている回線の数（次数中心性。neptune.algo.degree、OSS 版は gds.degree）
+      closeness  ほかの全機器への近さ（近接中心性。neptune.algo.closenessCentrality、OSS 版は gds.closeness。大きいほど中心にあり、落ちたときに影響が広い）
+      component  回線でつながっている島の番号（弱連結成分。neptune.algo.wcc、OSS 版は gds.wcc）。components が 2 以上なら、どの回線でも届かない機器の組がある
     devices は closeness の大きい順に limit 件"""
     rows = {}
-    for r in query('MATCH (n:device) CALL neptune.algo.degree(n, {edgeLabels: ["link"], vertexLabels: ["device"], traversalDirection: "both"}) '
-                   "YIELD degree RETURN id(n) AS id, degree"):
+    degree, closeness, component = _algo_neo4j() if BACKEND == "neo4j" else _algo_neptune()
+    for r in degree:
         rows.setdefault(r["id"], {"device_id": r["id"]})["degree"] = r["degree"]
-    for r in query("MATCH (n:device) CALL neptune.algo.closenessCentrality(n, " + _ALGO + ', traversalDirection: "both", numSources: 8192}) '
-                   "YIELD score RETURN id(n) AS id, score"):
+    for r in closeness:
         rows.setdefault(r["id"], {"device_id": r["id"]})["closeness"] = round(float(r["score"]), 4)
-    for r in query("MATCH (n:device) CALL neptune.algo.wcc(n, " + _ALGO + "}) YIELD component RETURN id(n) AS id, component"):
+    for r in component:
         rows.setdefault(r["id"], {"device_id": r["id"]})["component"] = r["component"]
     names = {c: i + 1 for i, c in enumerate(sorted({d.get("component") for d in rows.values() if d.get("component") is not None}))}
     for d in rows.values():   # 島の番号は内部の大きな数なので、1 からの連番に直す

@@ -3,7 +3,7 @@
 #   1. terraform fmt -check -recursive
 #   2. 9 つのルートで init -backend=false + validate（provider を取るだけで state には触らない）
 #   3. スクリプトの構文（ops/*.sh は bash -n、リポジトリの .py は全部 ast.parse）
-#   4. 模擬テスト 10 本（AWS に触れない）
+#   4. 模擬テスト 11 本（AWS に触れない）
 # 最後の行が「すべて通過」なら健全。途中で落ちたらそこで止まる。
 set -euo pipefail
 
@@ -42,7 +42,7 @@ echo "構文エラーなし"
 
 log "4. 模擬テスト"
 if command -v uv >/dev/null; then
-  for t in tests/test_app.py tests/test_graph.py tests/test_stream.py tests/test_sync.py tests/test_analytics.py tests/test_workflow.py tests/test_alerts.py tests/test_kb_index.py tests/test_lab_debug.py tests/test_nautobot.py; do
+  for t in tests/test_app.py tests/test_graph.py tests/test_stream.py tests/test_sync.py tests/test_analytics.py tests/test_workflow.py tests/test_alerts.py tests/test_kb_index.py tests/test_lab_debug.py tests/test_nautobot.py tests/test_oss.py; do
     # test_nautobot は web/topology_view.py を読むので gradio と pandas（web のグループ）も要る
     uv run --group dev --group web python "$t" || die "$t が失敗した"
   done

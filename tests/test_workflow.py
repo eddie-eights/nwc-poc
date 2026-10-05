@@ -733,9 +733,9 @@ check("up.sh の WORKFLOW=1 は link_down のアラートの送り手（Grafana 
       and up.index('LINK_DOWN_SENDERS=') < up.index('[ -z "$LINK_DOWN_SENDERS" ]'))
 # ---- starter: SQS のメッセージ（SNS のトピックの購読）
 check("starter はアラートと決定の 2 つのキューを 20 秒の long polling で待ち、ANOMALY_QUEUE_URL / DECISION_QUEUE_URL が無ければ起動で止まる（表を見る経路はもう無い）",
-      all(hasattr(awsio, f) for f in ("receive_messages", "delete_message"))
+      all(hasattr(awsio, f) for f in ("receive_messages", "delete_message")) and awsio.GRAPH_ENV == "NEPTUNE_GRAPH_ID"
       and "WaitTimeSeconds=20" in read("workflow", "awsio.py")
-      and re.search(r'for k in \("ANOMALY_QUEUE_URL", "DECISION_QUEUE_URL", "NEPTUNE_GRAPH_ID", "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "AGENT_RUNTIME_ARN"\):\n\s*if not getattr\(awsio, k\):\n\s*raise SystemExit',
+      and re.search(r'for k in \("ANOMALY_QUEUE_URL", "DECISION_QUEUE_URL", awsio\.GRAPH_ENV, "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "AGENT_RUNTIME_ARN"\):\n\s*if not getattr\(awsio, k\):\n\s*raise SystemExit',
                     read("workflow", "worker.py")) is not None
       and "starter(client, awsio.ANOMALY_QUEUE_URL, handle_message)" in read("workflow", "worker.py")
       and "starter(client, awsio.DECISION_QUEUE_URL, handle_decision)" in read("workflow", "worker.py"))
