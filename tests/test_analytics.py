@@ -82,7 +82,7 @@ _sg_keys = set(re.findall(r'^\s+(\w+)\s+=\s+"', _sg_keys.group(1), re.M)) if _sg
 SG_KEYS = {"web", "lab", "telegraf_dialout", "telegraf_dialin", "telegraf_dialout_nlb", "msk", "spark", "grafana", "splunk", "nautobot", "nautobot_db", "lambda", "workflow", "runtime", "kafka_ui"}
 check(f"土台の SG はワークロードごとの 15 個と endpoints（{sorted(_sg_keys)}）",
       _sg_keys == SG_KEYS and re.findall(r'resource "aws_security_group" "(\w+)"', _core) == ["workload", "endpoints"]
-      and re.search(r'resource "aws_security_group" "workload" \{\n\s*for_each = local\.security_groups', _sg_tf) is not None)
+      and re.search(r'resource "aws_security_group" "workload" \{\n\s*for_each = local\.workload_security_groups\n', _sg_tf) is not None)
 # 通信の表を読む（from = sg の行は aws_api_clients に展開する）
 _clients = re.search(r'aws_api_clients = \[([^\]]*)\]', _sg_tf)
 _clients = re.findall(r'"(\w+)"', _clients.group(1)) if _clients else []

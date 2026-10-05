@@ -123,7 +123,7 @@ data "archive_file" "kb_index" {
   output_path = "${path.module}/.build/kb_index.zip"
 
   source {
-    content  = file("${path.module}/../../agent/kb_index.py")
+    content  = file("${local.repo_root}/agent/kb_index.py")
     filename = "index.py"
   }
 }

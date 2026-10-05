@@ -6,7 +6,8 @@
 # リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、
 # 1 つの AWS アカウントを何人かで使っても、自分の名前で自分のリソースを探せる
 locals {
-  name_prefix = "${var.owner}-nwc-poc"
+  # 末尾は var.project（terraform/ は既定の nwc-poc、OSS 版の oss/terraform/ は oss.auto.tfvars の nwc-oss。cycle 005）
+  name_prefix = "${var.owner}-${var.project}"
 }
 
 locals {
@@ -15,6 +16,10 @@ locals {
   # ECS で動かすパイプラインの 6 つ（Telegraf と Kafbat UI は pipeline/stream、Grafana と Splunk は pipeline/analytics、Nautobot とその Redis は pipeline/nautobot）。
   # リポジトリに時間課金は無いので、いつも作る
   pipeline_repositories = toset(["telegraf", "kafka-ui", "grafana", "splunk", "nautobot", "redis"])
+  # OSS 版（oss/terraform。var.project = nwc-oss。cycle 005）だけのイメージ。kafka（apache/kafka）・opensearch・vminsert / vmselect / vmstorage
+  # （VictoriaMetrics のクラスター版）は公開イメージをそのまま写し、spark（Spark 3.5 と spark/ のジョブ）と neo4j（Neo4j と GDS）は ops がビルドする。
+  # マネージド版では空（リポジトリを作らない）
+  oss_repositories = var.project == "nwc-oss" ? toset(["kafka", "opensearch", "vminsert", "vmselect", "vmstorage", "spark", "neo4j"]) : toset([])
 }
 
 resource "aws_ecr_repository" "agent" {
@@ -81,6 +86,22 @@ resource "aws_ecr_repository" "workflow" {
 
 resource "aws_ecr_repository" "pipeline" {
   for_each = local.pipeline_repositories
+
+  name                 = "${local.name_prefix}-${each.key}"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+}
+
+resource "aws_ecr_repository" "oss" {
+  for_each = local.oss_repositories
 
   name                 = "${local.name_prefix}-${each.key}"
   image_tag_mutability = "IMMUTABLE"

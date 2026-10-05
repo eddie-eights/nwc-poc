@@ -1,0 +1,1 @@
+../../../../terraform/base/core/.terraform.lock.hcl

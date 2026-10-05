@@ -1,0 +1,1 @@
+../../../../terraform/base/core/alerts.tf

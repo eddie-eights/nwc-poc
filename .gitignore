@@ -21,7 +21,10 @@ lab/splab.clab.yml
 .terraform.tfstate.lock.info
 *.tfvars
 !*.tfvars.example
+# OSS 版（cycle 005）のルートは oss.auto.tfvars で project = nwc-oss を入れる（値に秘密は無い）
+!oss/terraform/**/oss.auto.tfvars
 terraform/**/.build/
+oss/terraform/**/.build/
 ops/logs/
 *.part
 # ops/up.sh の手順 5-3 で取る Spark の jar

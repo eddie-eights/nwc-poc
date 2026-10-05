@@ -521,14 +521,14 @@ check("Runtime と Web のロールに SSM の読み取りを付け、Gateway �
 # 承認・却下を書けるのはコードの上では web だけ（decide はツールにしない）。Neptune の IAM は頂点ごとに絞れないので、線はコードで引く
 check("修復案を決める専用の IAM（decide_access）はもう無い", "decide_access" not in tf)
 check("Gateway は AWS_IAM 認可の MCP で、2025-06-18 を話す", 'authorizer_type = "AWS_IAM"' in tf and 'protocol_type   = "MCP"' in tf and '"2025-06-18"' in tf)
-check("Gateway のターゲットは tools.json から inline schema を作る", 'jsondecode(file("${path.module}/../../tools/tools.json"))' in tf and 'dynamic "inline_payload"' in tf)
+check("Gateway のターゲットは tools.json から inline schema を作る", 'jsondecode(file("${local.repo_root}/tools/tools.json"))' in tf and 'dynamic "inline_payload"' in tf)
 check("tools Lambda は python3.13 arm64 で、handler.py / toolkit / topology / evidence / proposals / graph / data を zip にする（anomalies は入れない）",
       'runtime          = "python3.13"' in tf and 'architectures    = ["arm64"]' in tf
-      and all(f"../../{p}" in tf for p in ("tools/handler.py", "agent/toolkit.py", "agent/topology.py", "agent/evidence.py", "agent/proposals.py", "agent/graph.py", "agent/data/topology.json", "agent/data/devices.yaml", "agent/data/layers.json"))
+      and all(f'"{p}"' in tf or f'{{local.repo_root}}/{p}"' in tf for p in ("tools/handler.py", "agent/toolkit.py", "agent/topology.py", "agent/evidence.py", "agent/proposals.py", "agent/graph.py", "agent/data/topology.json", "agent/data/devices.yaml", "agent/data/layers.json"))
       and "agent/anomalies.py" not in tf)
 # 入れ忘れても apply も plan も通り、実行時に ModuleNotFoundError になる。だから「入っている」ではなく「足りていないものが無い」を見る:
 # zip に入れたモジュールが import する agent/ のモジュールが、全部 tools_files に並んでいるか
-zipped = set(re.findall(r'"\.\./\.\./agent/(\w+)\.py"', tf))
+zipped = set(re.findall(r'^\s+"agent/(\w+)\.py"\s+=', tf, re.M))
 needed = set()
 for src in [("tools", "handler.py")] + [("agent", m + ".py") for m in zipped]:
     needed |= {i for i in re.findall(r"^import (\w+)$", read(*src), re.M) if os.path.exists(os.path.join(ROOT, "agent", i + ".py"))}

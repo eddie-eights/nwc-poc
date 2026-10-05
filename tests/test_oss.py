@@ -4,6 +4,9 @@
   2. GRAPH_BACKEND=neo4j のとき、出す Cypher に neptune.algo・`~id`・id( が無く、同じグラフの中身から同じ結果を返す
   3. Spark（spark/snmp_sinks.py）・agent/evidence.py・grafana/start.sh の認証の切り替え（KAFKA_AUTH / OPENSEARCH_AUTH / PROMETHEUS_AUTH）。
      環境変数が無いときは今のまま（MSK の IAM 認証・SigV4・マネージド版のデータソース）
+  4. oss/terraform（設計の 3）: 変えないルートは terraform/ のファイルへのシンボリックリンク、変える 3 ルート（stream / analytics / graph）に
+     マネージドのサービス（MSK / EMR Serverless / AMP / Neptune Analytics / OpenSearch Serverless）が無い、接頭辞は var.project、
+     土台の OSS の SG と EFS はマネージド版では作らない
 実行は python3 tests/test_oss.py。graph.py のクエリを意図して変えたときだけ --write-golden で golden を作り直す
 （作り直すと 1. はその時点のコードを正とする。差分は git diff tests/golden で見る）。"""
 import base64, copy, importlib.util, io, json, os, re, subprocess, sys, tempfile, types, urllib.request
@@ -567,5 +570,111 @@ check("OSS 版のデータソースの uid はマネージド版と同じ amp / 
 check("OSS 版のデータソースは SigV4 を使わず、Prometheus は素の prometheus、OpenSearch は Basic 認証でパスワードは環境変数（値を書かない）",
       "sigV4" not in _oss_prom + _oss_os and "serverless" not in _oss_os and re.search(r"^\s+type: prometheus$", _oss_prom, re.M) is not None
       and "basicAuth: true" in _oss_os and "basicAuthUser: ${OPENSEARCH_USER}" in _oss_os and "basicAuthPassword: ${OPENSEARCH_PASSWORD}" in _oss_os)
+
+# ---- 4. oss/terraform の木（設計の 3）。ファイルを読むだけ（terraform validate は ops/check.sh が両方の木に打つ）
+TF_ROOTS = ("base/ecr", "base/core", "agent", "pipeline/lab", "pipeline/stream", "pipeline/analytics", "pipeline/graph", "pipeline/nautobot", "workflow")
+OSS_REAL = ("pipeline/stream", "pipeline/analytics", "pipeline/graph")
+UNCHANGED = tuple(r for r in TF_ROOTS if r not in OSS_REAL)
+
+
+def git_files(path):
+    """git が持つ（か、持つはずの）ファイル。.terraform/・state・.build/ のような無視するものは入らない"""
+    out = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", path], capture_output=True, text=True, cwd=ROOT, check=True).stdout
+    return sorted(os.path.relpath(p, path) for p in out.split())
+
+
+def tf_text(base, root):
+    d = os.path.join(ROOT, base, *root.split("/"))
+    return {n: open(os.path.join(d, n), encoding="utf-8").read() for n in sorted(os.listdir(d)) if n.endswith(".tf")}
+
+
+def links_to_managed(root, names):
+    """oss/terraform/<root>/<name> が相対のシンボリックリンクで、terraform/<root>/<name> と同じファイルを指す"""
+    bad = []
+    for n in names:
+        link = os.path.join(ROOT, "oss", "terraform", *root.split("/"), n)
+        if not (os.path.islink(link) and not os.path.isabs(os.readlink(link))
+                and os.path.realpath(link) == os.path.realpath(os.path.join(ROOT, "terraform", *root.split("/"), n))):
+            bad.append(f"{root}/{n}")
+    return bad
+
+
+_bad = [b for r in UNCHANGED for b in links_to_managed(r, git_files(f"terraform/{r}"))]
+_extra = {r: sorted(set(git_files(f"oss/terraform/{r}")) - set(git_files(f"terraform/{r}"))) for r in UNCHANGED}
+check(f"oss/terraform の変えない 6 ルートは terraform/ の同じルートのファイル全部への相対リンクで、実ファイルは oss.auto.tfvars だけ（違う: {_bad} {_extra}）",
+      not _bad and all(e == ["oss.auto.tfvars"] for e in _extra.values()))
+_shared = ("versions.tf", "providers.tf", "variables.tf", ".terraform.lock.hcl", "terraform.tfvars.example")
+_cross = [f"{r}/{n}" for r in OSS_REAL for n in git_files(f"oss/terraform/{r}")
+          if os.path.islink(os.path.join(ROOT, "oss", "terraform", *r.split("/"), n)) and links_to_managed(r, [n])]
+check(f"変える 3 ルート（{', '.join(OSS_REAL)}）も共通のファイル（{', '.join(_shared)}）はリンクで、リンクは同じルートの同じ名前だけを指す（違う: {_cross}）",
+      not [b for r in OSS_REAL for b in links_to_managed(r, _shared)] and not _cross)
+_tfstate = {}
+for r in TF_ROOTS:
+    for n, s in tf_text("oss/terraform", r).items():
+        for m in re.finditer(r'"\$\{path\.module\}/([^"]*terraform\.tfstate)"', s):
+            _tfstate.setdefault(r, set()).add(os.path.normpath(os.path.join("oss/terraform", r, m.group(1))))
+_outside = {r: sorted(p for p in v if not any(p == f"oss/terraform/{t}/terraform.tfstate" for t in TF_ROOTS)) for r, v in _tfstate.items()}
+check(f"remote_state が読む state は oss/terraform の中のルートのもの（terraform/ と oss/terraform/ の state は混ざらない。外を指すもの: { {k: v for k, v in _outside.items() if v} }）",
+      _tfstate and not any(_outside.values()))
+
+_forbidden = re.compile(r"\baws_(msk|emrserverless|prometheus|neptunegraph|opensearchserverless)_\w+")
+_hits = {f"{r}/{n}": sorted({m.group(0) for m in _forbidden.finditer(re.sub(r"(?m)^\s*#.*$", "", s))})
+         for r in OSS_REAL for n, s in tf_text("oss/terraform", r).items()}
+check(f"OSS 版の stream / analytics / graph に MSK / EMR Serverless / AMP / Neptune Analytics / OpenSearch Serverless のリソースも参照も無い（{ {k: v for k, v in _hits.items() if v} }）",
+      _hits and not any(_hits.values()))
+
+_auto = {r: os.path.join(ROOT, "oss", "terraform", *r.split("/"), "oss.auto.tfvars") for r in TF_ROOTS}
+check("oss/terraform の 9 ルートに oss.auto.tfvars（project = nwc-oss）があり、実ファイルで git が無視しない（.gitignore の *.tfvars の例外）",
+      all(os.path.isfile(p) and not os.path.islink(p) and re.search(r'^project = "nwc-oss"$', open(p, encoding="utf-8").read(), re.M)
+          and subprocess.run(["git", "check-ignore", "-q", os.path.relpath(p, ROOT)], cwd=ROOT).returncode == 1 for p in _auto.values())
+      and subprocess.run(["git", "check-ignore", "-q", "oss/terraform/workflow/.build/tools.zip"], cwd=ROOT).returncode == 0)
+
+_vars = {r: open(os.path.join(ROOT, "terraform", *r.split("/"), "variables.tf"), encoding="utf-8").read() for r in TF_ROOTS}
+_prefix = {r: "\n".join(tf_text("terraform", r).values()) for r in TF_ROOTS}
+_prefix.update({f"oss:{r}": "\n".join(tf_text("oss/terraform", r).values()) for r in OSS_REAL})
+check("9 ルートに var.project（既定 nwc-poc、nwc-poc と nwc-oss だけ受ける）があり、接頭辞はどれも <owner>-<project>（-nwc-poc の書き込みは無い）",
+      all(re.search(r'variable "project" \{[^}]*?default\s*=\s*"nwc-poc"[\s\S]*?condition\s*=\s*contains\(\["nwc-poc", "nwc-oss"\], var\.project\)', v) for v in _vars.values())
+      and all([v for v in re.findall(r"^\s*name_prefix\s*=\s*(.+)$", s, re.M) if v != "local.name_prefix"] == ['"${var.owner}-${var.project}"'] for s in _prefix.values()))
+
+_bad_reads = {}
+for r in UNCHANGED:
+    for n, s in tf_text("terraform", r).items():
+        for line in s.splitlines():
+            if re.search(r"\$\{path\.module\}/\.\.", line) and not line.strip().startswith("#") \
+                    and not re.search(r'terraform\.tfstate"', line) and not line.strip().startswith("repo_root ="):
+                _bad_reads.setdefault(f"{r}/{n}", []).append(line.strip())
+_repo_root = 'repo_root = fileexists("${path.module}/../../pyproject.toml") ? "${path.module}/../.." : "${path.module}/../../.."'
+check(f"リンクで使うルートはリポジトリのファイルを local.repo_root から読む（path.module から上るのは state と repo_root の定義だけ: {_bad_reads}）",
+      not _bad_reads and all(_repo_root in tf_text("terraform", r)["locals.tf"] for r in ("agent", "workflow"))
+      and 'file("${local.repo_root}/agent/kb_index.py")' in tf_text("terraform", "agent")["kb.tf"])
+
+_oss_tf = tf_text("terraform", "base/core")["oss.tf"]
+_oss_sg = re.search(r"oss_security_groups = \{(.*?)\n  \}", _oss_tf, re.S)
+_oss_sg = set(re.findall(r"^\s+(\w+)\s+=\s+\"", _oss_sg.group(1), re.M)) if _oss_sg else set()
+_managed_sg = re.search(r"security_groups = \{(.*?)\n  \}", tf_text("terraform", "base/core")["security_groups.tf"], re.S)
+_managed_sg = set(re.findall(r"^\s+(\w+)\s+=\s+\"", _managed_sg.group(1), re.M))
+_oss_rows = re.findall(r'\{ from = ("?\w+"?), to = "(\w+)", protocol = "\w+", port = \d+', _oss_tf)
+_known = (_managed_sg - {"msk"}) | _oss_sg | {"endpoints", "s3"}
+check(f"OSS 版の SG（{sorted(_oss_sg)}）と通信の行は土台の oss.tf にあり、msk を外して足す。行の両端は知っている SG で、msk の行は無い",
+      _oss_sg == {"kafka", "efs", "opensearch", "victoriametrics", "neo4j", "spark"} and "oss = var.project == \"nwc-oss\"" in _oss_tf
+      and 'oss_replaced = local.oss ? ["msk"] : []' in _oss_tf and _oss_rows
+      and all(f.strip('"') in _known | {"sg"} and t in _known for f, t in _oss_rows))
+check("OSS 版の SG・行・EFS はマネージド版（project = nwc-poc）では作らない（どれも local.oss で絞る。SG とルールは security_groups.tf の for_each が作る）",
+      "{ for k, v in local.oss_security_groups : k => v if local.oss }" in _oss_tf and "[for f in local.oss_flows : f if local.oss]" in _oss_tf
+      and "[for f in local.sg_flows : f if !contains(local.oss_replaced, f.from) && !contains(local.oss_replaced, f.to)]" in _oss_tf
+      and re.findall(r'resource "(\w+)" "\w+" \{\n  count = local\.oss \?', _oss_tf) == ["aws_efs_file_system", "aws_efs_mount_target", "aws_efs_file_system_policy"]
+      and _oss_tf.count('resource "') == 3
+      and "for_each = local.workload_security_groups" in tf_text("terraform", "base/core")["security_groups.tf"]
+      and "for f in local.active_sg_flows :" in tf_text("terraform", "base/core")["security_groups.tf"])
+check("EFS は暗号化し、TLS でない接続を拒み、このアカウントの IAM がマウントターゲット経由で読み書きするのだけを許す",
+      "encrypted        = true" in _oss_tf and '"aws:SecureTransport" = "false"' in _oss_tf
+      and '"elasticfilesystem:AccessedViaMountTarget" = "true"' in _oss_tf and 'security_groups = [local.sg_ids["efs"]]' in _oss_tf)
+_ecr = tf_text("terraform", "base/ecr")["main.tf"]
+check("OSS 版のイメージのリポジトリは project = nwc-oss のときだけ（kafka / opensearch / vminsert / vmselect / vmstorage / spark / neo4j）",
+      'oss_repositories = var.project == "nwc-oss" ? toset(["kafka", "opensearch", "vminsert", "vmselect", "vmstorage", "spark", "neo4j"]) : toset([])' in _ecr
+      and re.search(r'resource "aws_ecr_repository" "oss" \{\n  for_each = local\.oss_repositories\n', _ecr) is not None)
+_chk = open(os.path.join(ROOT, "ops", "check.sh"), encoding="utf-8").read()
+check("ops/check.sh は terraform/ と oss/terraform/ の両方に fmt と validate を打つ",
+      "TF_BASES=(terraform oss/terraform)" in _chk and 'terraform fmt -check -recursive "$base"' in _chk and 'terraform -chdir="$base/$r" validate' in _chk)
 
 print(f"通過 {passed} / 失敗 0")

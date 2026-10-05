@@ -1,0 +1,1 @@
+../../../../terraform/pipeline/analytics/providers.tf
