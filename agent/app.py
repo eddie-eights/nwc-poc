@@ -8,7 +8,8 @@
      モデルがトポロジのツール（topology.py。機器一覧・隣接・影響範囲・全体図。Neptune があればそこから、
      無ければコンテナ内の静的データ。機器・回線の status がいまの異常）、ログとメトリクス（evidence.py）、
      修復案の履歴（proposals.py。S3 Tables の proposal_events。読むだけで承認はできない）を使うと言ったら、
-     結果を返して最大 MAX_TOOL_ROUNDS 回まで往復する。Gateway（MCP。terraform/workflow）があれば
+     結果を返して往復する。ツールは MAX_TOOL_ROUNDS 回まで。達したら、その旨を断って、そこまでに分かったことで答える。
+     Gateway（MCP。terraform/workflow）があれば
      ツールはそちら（mcp_client.py）から取り、届かなければコンテナ内の関数に戻す
   3. 回答の末尾に参照した資料のファイル名を付けて返す
 
@@ -46,8 +47,14 @@ GUARDRAIL_ID = os.environ.get("GUARDRAIL_ID", "")
 GUARDRAIL_VERSION = os.environ.get("GUARDRAIL_VERSION", "DRAFT")
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "1024"))
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "10"))
-# 1 回の質問でツールを呼び直す上限。超えたら、そこまでの本文で打ち切る
+# 1 回の質問でツールを呼べる回数の上限。達したら、最後の結果と一緒に TOOL_LIMIT_NOTE を送り、ツールなしで答えさせる
 MAX_TOOL_ROUNDS = int(os.environ.get("MAX_TOOL_ROUNDS", "5"))
+# 上限に達したときにモデルへ送る指示と、回答の頭に付ける断り。断りが無いと、黙って途中で終わったように見える（2026-10-05 に AWS で、
+# 「いま DOWN になっている回線と、直近の修復案の状態を教えて」で 5 回呼んだ時点で本文が空のまま終わった）
+TOOL_LIMIT_NOTE = (f"ツールを呼べる回数の上限（{MAX_TOOL_ROUNDS} 回）に達しました。これ以上ツールは呼ばずに、ここまでのツールの結果で"
+                   "分かったことを答えてください。調べきれなかったことは、調べきれなかったと書いてください。")
+TOOL_LIMIT_PREFIX = f"ツールの呼び出しが上限（{MAX_TOOL_ROUNDS} 回）に達したので、ここまでに分かった範囲で答えます。"
+TOOL_LIMIT_EMPTY = "答えをまとめる前に止まりました。質問を分けて（たとえば回線と修復案を別々に）聞き直してください。"
 # ツールを持つモジュール。**ここに足せば TOOL_SPECS も run_tool の振り分けも付いてくる**（tools/handler.py にも同じ並びがある）
 MODULES = (topology, evidence, proposals)
 # コンテナ内の関数。Gateway（MCP。terraform/workflow）があれば mcp_client がそちらの一覧を返す
@@ -149,16 +156,21 @@ def converse_with_tools(request: dict) -> tuple[dict, str, int]:
     """Converse を呼び、stopReason が tool_use のあいだはツールの結果を返して呼び直す。
 
     戻り値は (最後の応答, 本文, ツールを呼んだ回数)。request["messages"] は呼び出し側のリストを壊さないよう複製する。
+    ツールの回数が MAX_TOOL_ROUNDS に達したら、その回の toolResult に TOOL_LIMIT_NOTE を添えてもう 1 回だけ呼び、
+    本文の頭に TOOL_LIMIT_PREFIX を付ける（それでもツールを呼んできたら、ツールは動かさずに本文か TOOL_LIMIT_EMPTY を返す）。
+    toolConfig は外さない（履歴に toolUse / toolResult があると、Converse は toolConfig を要る）。
     """
     messages = list(request["messages"])
     request = {**request, "messages": messages}
     tool_calls = 0
+    limited = False
+    # 1 回の往復で 1 本以上呼ぶので、MAX_TOOL_ROUNDS 回の往復までに必ず上限に達し、次の 1 回で抜ける
     for _ in range(MAX_TOOL_ROUNDS + 1):
         res = bedrock.converse(**request)
         message = res["output"]["message"]
         messages.append(message)
         uses = [b["toolUse"] for b in message.get("content", []) if "toolUse" in b]
-        if res.get("stopReason") != "tool_use" or not uses or tool_calls >= MAX_TOOL_ROUNDS:
+        if res.get("stopReason") != "tool_use" or not uses or limited:
             break
         results = []
         for u in uses:
@@ -167,8 +179,14 @@ def converse_with_tools(request: dict) -> tuple[dict, str, int]:
             log.info("tool %s %s", u["name"], u.get("input"))
             results.append({"toolResult": {"toolUseId": u["toolUseId"], "content": [{"json": out}],
                                            "status": "error" if "error" in out else "success"}})
+        if tool_calls >= MAX_TOOL_ROUNDS:
+            limited = True
+            results.append({"text": TOOL_LIMIT_NOTE})
         messages.append({"role": "user", "content": results})
     text = "".join(b.get("text", "") for b in message.get("content", []))
+    if limited and res.get("stopReason") != "guardrail_intervened":
+        log.warning("tool limit reached: tools=%d stop=%s", tool_calls, res.get("stopReason"))
+        text = f"{TOOL_LIMIT_PREFIX}\n\n{text.strip() or TOOL_LIMIT_EMPTY}"
     return res, text, tool_calls
 
 

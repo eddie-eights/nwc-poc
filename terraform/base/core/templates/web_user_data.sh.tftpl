@@ -37,10 +37,12 @@ fi
 python3.13 -m pip install --quiet --no-index --find-links $APP/src/wheels --target $APP/lib --upgrade \
   -r $APP/src/requirements.txt
 
+# コメント以外に ASCII 以外の文字を書かない。cloud-init は MIME の 8bit の部分を raw-unicode-escape で取り出すので、
+# 日本語は「運」がバックスラッシュ付きの u904b の形になり、systemd の EnvironmentFile がバックスラッシュを落として u904b になる（2026-10-05 に AWS で再現）。
+# 画面のタイトルは web/config.py の既定値（運用管理ダッシュボード）を使う
 cat > /etc/${name_prefix}-web.env <<__ENV__
 AWS_REGION=${region}
 PORT=8080
-TITLE=運用管理ダッシュボード
 DATA_DIR=$APP/src/data
 PARAM_PREFIX=/${name_prefix}
 PYTHONPATH=$APP/lib

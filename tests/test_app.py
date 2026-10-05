@@ -305,6 +305,7 @@ check("tool_use なら結果を返して 2 回目を呼ぶ", len(convs) == 2 and
 tr = convs[1]["messages"][-1]
 check("2 回目の末尾は toolResult（success、json）", tr["role"] == "user" and tr["content"][0]["toolResult"]["toolUseId"] == "tu1" and tr["content"][0]["toolResult"]["status"] == "success" and "neighbors" in tr["content"][0]["toolResult"]["content"][0]["json"])
 check("2 回目の直前は assistant の toolUse", convs[1]["messages"][-2]["content"][0]["toolUse"]["name"] == "neighbors")
+check("1 本目の結果には上限の指示を添えない（toolResult だけ）", len(convs[1]["messages"][-1]["content"]) == 1)
 check("履歴には質問と最終回答だけ", app.history == [{"role": "user", "content": [{"text": "dc1-leaf-01 の隣は"}]}, {"role": "assistant", "content": [{"text": "dc1-leaf-01 は Spine 2 台につながる"}]}])
 
 state.update(converse=[tool_converse("neighbors", {"device_id": "zzz"}), ok_converse("そんな機器は無い")], calls=[])
@@ -312,9 +313,47 @@ r = app.invoke({"prompt": "zzz の隣は"})
 tr = [c[1] for c in state["calls"] if c[0] == "converse"][1]["messages"][-1]["content"][0]["toolResult"]
 check("知らない機器は status=error で返す", tr["status"] == "error" and r["status"] == "success")
 
+# 上限に達したら、5 本目の結果に TOOL_LIMIT_NOTE を添えて 6 回目を呼び、回答の頭に断りを付ける（2026-10-05 に AWS で、
+# 5 本呼んだところで本文が空のまま終わった。ログは tokens in=5246 out=29 tools=5 stop=tool_use）
+app.history.clear()
+state.update(converse=[tool_converse("topology_graph", {}, f"tu{i}") for i in range(5)] + [ok_converse("ethernet-1/1 が DOWN。修復案は調べきれなかった")], calls=[])
+r = app.invoke({"prompt": "いま DOWN になっている回線と、直近の修復案の状態を教えて"})
+convs = [c[1] for c in state["calls"] if c[0] == "converse"]
+last = convs[-1]["messages"][-1]["content"]
+check("上限（5 本）に達したら、5 本目の toolResult のあとに上限の指示を添えて 6 回目を呼ぶ",
+      len(convs) == 6 and [list(b) for b in last] == [["toolResult"], ["text"]] and last[1]["text"] == app.TOOL_LIMIT_NOTE
+      and "上限（5 回）" in app.TOOL_LIMIT_NOTE and all(len(c["messages"][-1]["content"]) == 1 for c in convs[1:5]))
+check("6 回目も toolConfig を付けたまま呼ぶ（履歴に toolUse があると Converse は toolConfig を要る）", "toolConfig" in convs[-1])
+check("上限に達した回答は、断りのあとにモデルの本文が続く",
+      r["status"] == "success" and r["response"].startswith(app.TOOL_LIMIT_PREFIX + "\n\nethernet-1/1 が DOWN。修復案は調べきれなかった")
+      and "上限（5 回）" in app.TOOL_LIMIT_PREFIX)
+check("履歴にも断り付きの本文が残る", app.history[-1]["content"][0]["text"].startswith(app.TOOL_LIMIT_PREFIX))
+
 state.update(converse=[tool_converse("topology_graph", {}, f"tu{i}") for i in range(7)] + [ok_converse("x")], calls=[])
 r = app.invoke({"prompt": "全体は"})
-check("ツールの往復は MAX_TOOL_ROUNDS(5) で打ち切る（Converse は 6 回）", len([c for c in state["calls"] if c[0] == "converse"]) == 6 and r["status"] == "success")
+check("指示のあとでもツールを呼んできたら、ツールは動かさずに打ち切る（Converse は 6 回）",
+      len([c for c in state["calls"] if c[0] == "converse"]) == 6 and r["status"] == "success")
+check("そのとき本文が空なら、断りと聞き直しの案内を返す", r["response"].startswith(f"{app.TOOL_LIMIT_PREFIX}\n\n{app.TOOL_LIMIT_EMPTY}\n\n参照: "))
+
+# 1 回の往復で複数のツールを呼んで上限を越えたときも、その回の toolResult を全部返してから指示を添える
+multi = {"output": {"message": {"role": "assistant", "content": [{"toolUse": {"toolUseId": f"m{i}", "name": "topology_graph", "input": {}}} for i in range(3)]}},
+         "stopReason": "tool_use", "usage": {"inputTokens": 1, "outputTokens": 1}}
+state.update(converse=[tool_converse("topology_graph", {}, "a"), tool_converse("topology_graph", {}, "b"), multi, ok_converse("まとめ")], calls=[])
+r = app.invoke({"prompt": "全体は"})
+convs = [c[1] for c in state["calls"] if c[0] == "converse"]
+check("3 本まとめて呼んで 5 本を越えたら、3 本ぶんの toolResult のあとに指示を添える",
+      len(convs) == 4 and [list(b) for b in convs[-1]["messages"][-1]["content"]] == [["toolResult"]] * 3 + [["text"]]
+      and r["response"].startswith(app.TOOL_LIMIT_PREFIX))
+
+# ガードレールが止めた回答には断りを付けない（止めた文言をそのまま返す）
+state.update(converse=[tool_converse("topology_graph", {}, f"tu{i}") for i in range(5)] + [ok_converse("止めました", "guardrail_intervened")], calls=[])
+r = app.invoke({"prompt": "全体は"})
+check("上限に達しても、ガードレールが止めた回答は断りを付けずに blocked で返す", r["blocked"] is True and r["response"] == "止めました")
+
+# 上限の手前で答えたら断りを付けない
+state.update(converse=[tool_converse("topology_graph", {}, f"tu{i}") for i in range(4)] + [ok_converse("4 本で足りた")], calls=[])
+r = app.invoke({"prompt": "全体は"})
+check("4 本で答えたら断りを付けない", r["response"].startswith("4 本で足りた"))
 
 state.update(converse=[tool_converse("neighbors", {"device_id": "dc1-leaf-01"}), BotoCoreError("x")], calls=[])
 n = len(app.history)

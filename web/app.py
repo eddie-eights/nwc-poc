@@ -79,10 +79,10 @@ with gr.Blocks(title=f"{TITLE} チャット") as demo:
             pr_refresh = gr.Button("更新", scale=1)
         pr_msg = gr.Markdown()
         pr_table = gr.Dataframe(pd.DataFrame(columns=iv.PROPOSAL_COLS), interactive=False, wrap=True, column_widths=iv.PROPOSAL_WIDTHS,
-                                label="修復案（ワーカーが S3 Tables に書いたもの。長い列は折り返し。全文は下の「詳細」）")
+                                label="修復案（ワーカーが S3 Tables に書いたもの。行を押すと下で選ばれる。長い列は折り返し。全文は下の「詳細」）")
         with gr.Row():
             pr_id = gr.Dropdown([], value=None, allow_custom_value=True, scale=4,
-                                label="proposal_id（表の 1 列目。選ぶと下に全文が出る）")
+                                label="proposal_id（表の行を押すか、ここで選ぶ。選ぶと下に全文が出る）")
         pr_detail = gr.Markdown(label="詳細")
         # 承認の手順を上から順に並べる（①名前 → ②チェック → ③ボタン）。チェックは承認ボタンの真上に置き、
         # 名前とチェックがそろうまで承認ボタンを押せなくする（チェックが横に並んでいると気づかれず、押しても進まなかった。2026-09-24）
@@ -99,6 +99,8 @@ with gr.Blocks(title=f"{TITLE} チャット") as demo:
         pr_refresh.click(iv.proposal_table, [pr_status], pr_out)
         pr_status.change(iv.proposal_table, [pr_status], pr_out)
         demo.load(iv.proposal_table, [pr_status], pr_out)
+        # 行を押したら、その行の proposal_id をプルダウンに入れる。詳細と「読んだ」の外しは、下の pr_id.change がそのまま続ける
+        pr_table.select(iv.select_proposal, None, [pr_id])
         pr_id.change(iv.proposal_detail, [pr_id], [pr_detail])
         # 選び直したら「読んだ」を外す（前の案で入れたチェックのまま別の案を承認させない）
         pr_id.change(lambda _: False, [pr_id], [pr_ok])

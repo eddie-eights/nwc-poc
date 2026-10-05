@@ -624,6 +624,11 @@ check("web は app / config / chat / topology_view / incident_view / nautobot_ap
 check("app.py には行頭の import gradio がある（user_data の置き間違い検出が見ている）",
       re.search(r"^import gradio as gr$", web, re.M) is not None
       and 'grep -q "^import gradio"' in read("terraform", "base", "core", "templates", "web_user_data.sh.tftpl"))
+# cloud-init は MIME の 8bit の部分を raw-unicode-escape で取り出すので、日本語は「運」がバックスラッシュ付きの u904b になり、EnvironmentFile で u904b に崩れる
+web_ud = read("terraform", "base", "core", "templates", "web_user_data.sh.tftpl")
+check("web の user_data はコメント以外が ASCII だけで、TITLE を渡さない（タイトルは config.py の既定値）",
+      all(l.isascii() for l in web_ud.splitlines() if not l.lstrip().startswith("#"))
+      and "TITLE=" not in web_ud and 'os.environ.get("TITLE", "運用管理ダッシュボード")' in read("web", "config.py"))
 incident = read("web", "incident_view.py")
 # 異常一覧のタブは 2026-10-02 にやめた（Neptune に異常の頂点を置かない。いまの異常はトポロジの状態と Grafana / Splunk で見る）
 check("Web のタブはチャット / トポロジ / 承認の 3 つ（異常一覧は無い）",
@@ -1296,6 +1301,7 @@ for k, v in _saved.items():
 
 # ---- web/incident_view.py の承認（gradio / pandas / config は差し替えて読む。config は環境変数と env ファイルを読むので本物は使わない）
 _gr = types.ModuleType("gradio"); _gr.update = lambda **k: ("update", k)
+_gr.SelectData = type("SelectData", (), {})  # select_proposal の注釈。中身は types.SimpleNamespace で渡す
 _pd = types.ModuleType("pandas"); _pd.DataFrame = lambda rows, columns=None: rows
 _web_mods = {"gradio": _gr, "pandas": _pd, "config": types.ModuleType("config")}
 _prev = {k: sys.modules.get(k) for k in _web_mods}
@@ -1337,6 +1343,16 @@ rj = iv.decide_proposal("p1", "rejected", "pending", "x" * 100)
 check(f"却下はチェック無しで通り、名前は {iv.APPROVER_MAX} 字で切る", decided[-1] == ("p1", "rejected", "x" * iv.APPROVER_MAX + " (web)"))
 check("承認も却下も、押したら「送った。反映まで少し待つ」と出す（一覧は数秒〜20 秒「承認待ち」のまま。design.md §6）",
       all("送った" in str(x[0]) and "反映まで" in str(x[0]) for x in (r, rj)))
+# 表の行を押したら、その行の proposal_id をプルダウンに入れる（2026-10-05 に AWS で、行を押しても選ばれず、プルダウンから選ぶしかなかった）。
+# 番号（index）ではなく押した行の中身（row_value）で引く。表は 30 秒ごとに描き直され、並べ替えもできるので、番号は押した行とずれうる
+_evt = lambda row, index=(0, 0): types.SimpleNamespace(row_value=row, index=list(index), value="")
+check("行を押すと、その行の 1 列目（proposal_id）をプルダウンに入れる。index がずれていても row_value の行を使う",
+      iv.select_proposal(_evt(["dc1-spine-01#link_down#ethernet-1/3.0#1", "承認待ち"], index=(1, 5))) == ("update", {"value": "dc1-spine-01#link_down#ethernet-1/3.0#1"}))
+check("行の中身が取れない・1 列目が空なら、選択を変えない",
+      iv.select_proposal(_evt(None)) == nothing and iv.select_proposal(_evt([])) == nothing and iv.select_proposal(_evt(["  ", "x"])) == nothing)
+check("表の select をプルダウンにつなぎ、詳細と「読んだ」の外しはプルダウンの change が続ける（選び方が 2 つでも同じ道を通る）",
+      "pr_table.select(iv.select_proposal, None, [pr_id])" in web and "def select_proposal(evt: gr.SelectData)" in incident
+      and "pr_id.change(iv.proposal_detail, [pr_id], [pr_detail])" in web and "pr_id.change(lambda _: False, [pr_id], [pr_ok])" in web)
 
 # ---- Temporal UI（8233）: 2026-09-24 のレビューではポートごとの SG ルールの抜けで UI が開かなかった。2026-09-29 からルールは土台の通信の表にあり、
 #      Web の EC2 から workflow の 8233 の 1 行で送信と受信の 2 本ができる（7233 は無い）
