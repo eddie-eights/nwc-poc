@@ -124,6 +124,9 @@ locals {
   neo4j_uri          = try(data.terraform_remote_state.graph.outputs.neo4j_uri, "")
   graph_neo4j        = local.neo4j_uri != ""
   neo4j_password_arn = local.graph_neo4j ? "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${data.terraform_remote_state.graph.outputs.neo4j_password_parameter}" : ""
+  # tools Lambda（gateway.tf）に付ける Neo4j のドライバのレイヤー（OSS 版の graph が status Lambda 用に作るものを共用する。Lambda の Python に neo4j は無い）。
+  # OSS 版でも 2026-10-06 より前の graph の state には無いので空で、gateway.tf の precondition が「graph を apply し直す」と出す
+  neo4j_layer_arn = try(data.terraform_remote_state.graph.outputs.neo4j_layer_arn, "")
 
   # 修復案（S3 Tables の proposal_events。2026-10-05 から修復案の置き場はここだけ）。analytics が無ければ空で、ecs.tf の precondition が「analytics を先に」と出す
   audit_bucket_arn           = try(data.terraform_remote_state.analytics.outputs.table_bucket_arn, "")
@@ -180,6 +183,11 @@ locals {
   opensearch_index           = try(data.terraform_remote_state.analytics.outputs.opensearch_index, "snmp-logs")
   prometheus_workspace_arn   = try(data.terraform_remote_state.analytics.outputs.prometheus_workspace_arn, "")
   prometheus_query_url       = try(data.terraform_remote_state.analytics.outputs.prometheus_query_url, "")
+  # OSS 版（oss/terraform/pipeline/analytics。cycle 005）は OpenSearch Serverless と AMP の代わりに ECS の OpenSearch と VictoriaMetrics で、
+  # state にコレクションとワークスペースの ARN が無く、OpenSearch の admin のパスワードの SSM の名前（opensearch_password_parameter）がある。
+  # そのときだけ tools Lambda の evidence.py を Basic 認証（OPENSEARCH_AUTH=basic）と署名なし（PROMETHEUS_AUTH=none）に切り替える（gateway.tf）。
+  # マネージド版の analytics の state にはこの output が無いので false のまま
+  analytics_oss = try(data.terraform_remote_state.analytics.outputs.opensearch_password_parameter, "") != ""
 
   worker_repository_url   = try(data.terraform_remote_state.ecr.outputs.worker_repository_url, "")
   temporal_repository_url = try(data.terraform_remote_state.ecr.outputs.temporal_repository_url, "")

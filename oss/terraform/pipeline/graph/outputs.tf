@@ -15,6 +15,11 @@ output "neo4j_password_parameter" {
   value       = local.neo4j_password_parameter
 }
 
+output "neo4j_layer_arn" {
+  description = "Lambda layer with the Neo4j Python driver (graph/requirements-oss.txt, python3.13 arm64). The tools Lambda of terraform/workflow attaches the same layer so agent/graph.py can import neo4j."
+  value       = aws_lambda_layer_version.neo4j.arn
+}
+
 output "graph_cluster_name" {
   description = "ECS cluster of the Neo4j task"
   value       = aws_ecs_cluster.graph.name

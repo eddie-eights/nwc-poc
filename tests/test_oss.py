@@ -16,6 +16,10 @@
   8. AWS で動かす前の点検（005）: マネージド版と OSS 版を同じアカウントに並べても名前が重ならない（アカウントに 1 つのものを作らない）、
      サブネットは AZ の数の設定によらず 3 つで、3 台の Kafka・OpenSearch・vmstorage はサブネットが足りなければ plan で止まる、
      OSS 版の bootstrap_brokers は kafka-1〜3 の PLAINTEXT、Neo4j・OpenSearch・VictoriaMetrics を使う側の SG の行がそろう
+  9. エージェントを OSS 版につなぐ（005）: 道具の Lambda（terraform/workflow の gateway.tf）と AgentCore の Runtime（terraform/agent の runtime.tf）は
+     OSS 版だけ GRAPH_BACKEND・OPENSEARCH_AUTH・PROMETHEUS_AUTH と Neo4j のドライバを受け、パスワードは環境変数に置かない。
+     OSS 版の graph・analytics はマネージドの口（graph_arn・コレクション・ワークスペース）を output しないので、Neptune・aoss・aps の IAM の行は 1 つも付かない。
+     OSS 版の環境変数で動かすと、エージェント・道具・Worker・Web のコードは neptune-graph のクライアントも SigV4 の署名も作らず、Kafka（MSK）は読まない
 実行は python3 tests/test_oss.py。graph.py のクエリを意図して変えたときだけ --write-golden で golden を作り直す
 （作り直すと 1. はその時点のコードを正とする。差分は git diff tests/golden で見る）。"""
 import base64, copy, importlib.util, io, json, os, re, subprocess, sys, tempfile, types, urllib.request
@@ -1297,5 +1301,124 @@ check(f"土台の SG の行: Neo4j の 7687 には status の Lambda・道具の
       and all(re.search(rf'\[for sg in local\.{v} : \[\n\s+\{{ from = sg, to = "endpoints", protocol = "tcp", port = 443, why = "[^"]*" \}},\n'
                         rf'\s+\{{ from = sg, to = "s3", protocol = "tcp", port = 443, why = "[^"]*" \}},\n', s)
               for v, s in (("aws_api_clients", tf_text("terraform", "base/core")["security_groups.tf"]), ("oss_api_clients", _oss_tf))))
+
+# ---- 9. エージェントを OSS 版につなぐ（005）。道具の Lambda と Runtime の Terraform を読み、OSS 版の環境変数でコードを動かす
+_gw, _wfl, _wiam = (_code(tf_text("terraform", "workflow")[n]) for n in ("gateway.tf", "locals.tf", "iam.tf"))
+_fn = _block(_gw, "resource", "aws_lambda_function.tools")
+check("道具の Lambda: OSS 版（graph の state に neo4j_uri がある）だけ GRAPH_BACKEND=neo4j と NEO4J_URI、analytics が OSS 版（state に OpenSearch の "
+      "パスワードの名前がある）だけ OPENSEARCH_AUTH=basic と PROMETHEUS_AUTH=none を足す。マネージド版では足す map は空で、環境変数は今のまま",
+      'local.graph_neo4j ? { GRAPH_BACKEND = "neo4j", NEO4J_URI = local.neo4j_uri } : {},' in _fn
+      and 'local.analytics_oss ? { OPENSEARCH_AUTH = "basic", PROMETHEUS_AUTH = "none" } : {},' in _fn
+      and 'analytics_oss = try(data.terraform_remote_state.analytics.outputs.opensearch_password_parameter, "") != ""' in _wfl
+      and all(_gw.count(k) == 1 for k in ("GRAPH_BACKEND", "NEO4J_URI", "OPENSEARCH_AUTH", "PROMETHEUS_AUTH")))
+_oss_graph = "".join(_code(v) for v in tf_text("oss/terraform", "pipeline/graph").values())
+_oss_an = "".join(_code(v) for v in tf_text("oss/terraform", "pipeline/analytics").values())
+check("道具の Lambda: Neo4j のドライバは graph のルートが作るレイヤー（output neo4j_layer_arn）を OSS 版だけ付け、state に無ければ plan で止まる。"
+      "マネージド版は layers を付けない（null）",
+      "layers = local.graph_neo4j ? [local.neo4j_layer_arn] : null" in _fn
+      and 'condition     = !local.graph_neo4j || local.neo4j_layer_arn != ""' in _fn
+      and 'neo4j_layer_arn = try(data.terraform_remote_state.graph.outputs.neo4j_layer_arn, "")' in _wfl
+      and re.search(r'output "neo4j_layer_arn" \{[^}]*value\s+= aws_lambda_layer_version\.neo4j\.arn', _oss_graph)
+      and 'output "opensearch_password_parameter"' in _oss_an
+      and "neo4j_layer_arn" not in "".join(tf_text("terraform", "pipeline/graph").values()))
+_rt, _al = (_code(tf_text("terraform", "agent")[n]) for n in ("runtime.tf", "locals.tf"))
+check("Runtime: OSS 版（var.project = nwc-oss。oss/terraform/agent の oss.auto.tfvars）だけ GRAPH_BACKEND=neo4j・OPENSEARCH_AUTH=basic・"
+      "PROMETHEUS_AUTH=none を足す。マネージド版では空の map",
+      'local.oss ? { GRAPH_BACKEND = "neo4j", OPENSEARCH_AUTH = "basic", PROMETHEUS_AUTH = "none" } : {},' in _rt
+      and 'oss = var.project == "nwc-oss"' in _al and _rt.count("GRAPH_BACKEND") == 1
+      and re.search(r'^project = "nwc-oss"$', open(os.path.join(ROOT, "oss/terraform/agent/oss.auto.tfvars"), encoding="utf-8").read(), re.M)
+      and re.search(r'^project = "nwc-oss"$', open(os.path.join(ROOT, "oss/terraform/workflow/oss.auto.tfvars"), encoding="utf-8").read(), re.M))
+check("パスワードは Lambda と Runtime の環境変数に置かない（コードが SSM の <PARAM_PREFIX>/neo4j-password・opensearch-password を引く。"
+      "道具の Lambda は接頭辞の下の ssm:GetParameter を持ち、Runtime の実行ロールには OSS 版の graph の access.tf が付ける）",
+      not re.search(r"NEO4J_PASSWORD|OPENSEARCH_PASSWORD", _gw + _rt)
+      and 'resources = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.param_prefix}/*"]' in _gw
+      and 'Action   = "ssm:GetParameter"' in _oss_graph and "neptune-graph:" not in _oss_graph)
+_areq = open(os.path.join(ROOT, "agent", "requirements-oss.txt"), encoding="utf-8").read()
+_adock = open(os.path.join(ROOT, "agent", "Dockerfile"), encoding="utf-8").read()
+check("Runtime のイメージ: agent/requirements-oss.txt はマネージド版の依存に Neo4j のドライバ（ほかと同じ版）を足し、Dockerfile の既定は requirements.txt のまま",
+      re.findall(r"^neo4j==\S+$", _areq, re.M) == _pins["workflow"] and re.search(r"^-r requirements\.txt$", _areq, re.M)
+      and "ARG REQUIREMENTS=requirements.txt" in _adock and '-r "$REQUIREMENTS"' in _adock
+      and "neo4j" not in open(os.path.join(ROOT, "agent", "requirements.txt"), encoding="utf-8").read())
+
+# マネージドの口（opensearch_collection_endpoint は名前だけ引き継いだ差し替え口で、OSS 版では OpenSearch の URL が入る）。workflow の locals はこの output が state にあるときだけ値を持ち、IAM の行はその値があるときだけ付く
+_MANAGED_OUT = ("graph_id", "graph_arn", "opensearch_collection_name", "opensearch_collection_arn",
+                "prometheus_workspace_id", "prometheus_workspace_arn")
+_has = [o for o in _MANAGED_OUT if f'output "{o}"' in _oss_graph + _oss_an]
+check(f"OSS 版の graph・analytics は、Neptune・OpenSearch Serverless・AMP の output を 1 つも出さない（出している: {_has}）", not _has)
+
+
+def _guard(text, action):
+    """action を含む行を囲む dynamic "statement" の for_each（無ければ None）"""
+    out = []
+    for m in re.finditer(re.escape(action), text):
+        head = text[:m.start()]
+        i = head.rfind('dynamic "statement"')
+        j = head.rfind("\n  statement {")
+        g = re.search(r"for_each = ([^\n]+)", head[i:]) if i > j else None
+        out.append(g.group(1).strip() if g else None)
+    return out
+
+
+_guards = {"gateway neptune": _guard(_gw, '"neptune-graph:ReadDataViaQuery"'), "gateway aoss": _guard(_gw, '"aoss:APIAccessAll"'),
+           "gateway aps": _guard(_gw, '"aps:QueryMetrics"'), "worker neptune": _guard(_wiam, '"neptune-graph:ReadDataViaQuery"')}
+check(f"workflow の IAM: Neptune・aoss・aps の行は、マネージドの output があるとき（OSS 版では無い）だけ付く（{_guards}）",
+      _guards == {"gateway neptune": ['local.neptune_data_arn != "" ? [1] : []'], "gateway aoss": ['local.opensearch_collection_arn != "" ? [1] : []'],
+                  "gateway aps": ['local.prometheus_workspace_arn != "" ? [1] : []'], "worker neptune": ["local.graph_neo4j ? [] : [1]"]}
+      and all(f'{k} = try(data.terraform_remote_state.{r}.outputs.{o}, "")' in re.sub(r" +", " ", _wfl)
+              for k, r, o in (("neptune_data_arn", "graph", "graph_arn"), ("opensearch_collection_arn", "analytics", "opensearch_collection_arn"),
+                              ("opensearch_collection_name", "analytics", "opensearch_collection_name"),
+                              ("prometheus_workspace_arn", "analytics", "prometheus_workspace_arn")))
+      and 'count = var.create_gateway && local.opensearch_collection_name != "" ? 1 : 0' in _block(_gw, "resource", "aws_opensearchserverless_access_policy.tools"))
+_wf_all = "".join(_code(v) for v in tf_text("terraform", "workflow").values())
+_ag = {n: _code(v) for n, v in tf_text("terraform", "agent").items()}
+_kb_res = [f"{t}.{n}" for t, n, body in re.findall(r'^(?:resource|data) "([^"]+)" "([^"]+)" \{\n(.*?)^\}\n', _ag["kb.tf"], re.M | re.S)
+           if re.search(r"aoss|opensearchserverless", t + body) and not body.startswith("  count = local.kb ? 1 : 0\n")]
+check("ほかにマネージドの行は無い: workflow の neptune-graph・aoss・aps の行は上の 4 か所とアクセスポリシーだけ、MSK（kafka）の行は無い。"
+      f"agent のルートの aoss は kb.tf だけで、kb.tf は create_knowledge_base（既定 false）のときだけ作る（count の無いもの: {_kb_res}）",
+      len(re.findall(r'"neptune-graph:ReadDataViaQuery"', _wf_all)) == 2 and len(re.findall(r'"aps:QueryMetrics"', _wf_all)) == 1
+      and len(re.findall(r'"aoss:\w+"', _wf_all)) == 4 and not re.search(r'"kafka(-cluster)?:|aws_msk', _wf_all)
+      and all(not re.search(r'"aoss:|neptune-graph|"aps:|kafka', v) for n, v in _ag.items() if n != "kb.tf")
+      and not _kb_res and re.search(r'variable "create_knowledge_base" \{[^}]*default\s+= false', _ag["variables.tf"]))
+
+# コードを OSS 版の環境変数で動かし、boto3 のクライアントの名前と、送ったものの署名を集める
+_made = []
+_plain_client = boto3.client
+boto3.client = lambda name, **kw: (_made.append(name), _plain_client(name, **kw))[1]
+_OSS_ENV = dict(NEO4J, NEPTUNE_GRAPH_ID=None, OPENSEARCH_AUTH="basic", PROMETHEUS_AUTH="none", OPENSEARCH_PASSWORD="pw-os")
+
+
+def _oss_run():
+    state["calls"] = []
+    g = load(os.path.join(AGENT, "graph.py"), "graph")
+    scenario(g, with_algo=False)
+    a = load(os.path.join(WORKFLOW, "awsio.py"), "awsio")
+    awsio_scenario(a)
+    return g.BACKEND, a.GRAPH_ENV
+
+
+try:
+    _backend = with_env(_OSS_ENV, _oss_run)
+    _ncalls = len(state["calls"])
+    (_logs, _met), _s = ev(**{k: v for k, v in _OSS_ENV.items() if v is not None})
+finally:
+    boto3.client = _plain_client
+check(f"OSS 版の環境変数（道具の Lambda・Runtime・Worker・Web に渡すもの）で graph.py・awsio.py・evidence.py を動かすと、neptune-graph の"
+      f"クライアントを 1 つも作らず（作ったもの: {sorted(set(_made))}）、OpenSearch と vmselect へ SigV4（aoss / aps）の署名を付けない",
+      _backend == ("neo4j", "NEO4J_URI") and "neptune-graph" not in _made and _ncalls > 0
+      and len(_s) == 2 and not any("AWS4-HMAC-SHA256" in (x["auth"] or "") for x in _s) and _logs["count"] == 1 and "error" not in _met)
+_py = {f"{d}/{n}": open(os.path.join(ROOT, d, n), encoding="utf-8").read() for d in ("agent", "web", "workflow")
+       for n in sorted(os.listdir(os.path.join(ROOT, d))) if n.endswith(".py")}
+_np = sorted(n for n, t in _py.items() if re.search(r"""["']neptune-graph["']""", _code(t)))
+_sig = sorted(n for n, t in _py.items() if re.search(r"SigV4Auth\((?![^\n]*\"bedrock-agentcore\")", _code(t)))   # Gateway（bedrock-agentcore）への署名は両方の版で同じ
+_kafka = sorted(n for n, t in _py.items() if re.search(r"kafka|\bmsk\b", _code(t), re.I))
+check(f"エージェント・Web・Worker のコードで、neptune-graph のクライアントを作るのは切り替えのある graph.py と awsio.py だけ（{_np}）、SigV4 で送るのは "
+      f"切り替えのある evidence.py と、KB を作るときだけ呼ぶ kb_index.py だけ（{_sig}）、Kafka（MSK）を読むコードは無い（{_kafka}）",
+      _np == ["agent/graph.py", "workflow/awsio.py"] and _sig == ["agent/evidence.py", "agent/kb_index.py"] and not _kafka)
+_ecs, _web = _code(tf_text("terraform", "workflow")["ecs.tf"]), _code(tf_text("terraform", "base/core")["web.tf"])
+check("Worker のタスク定義は OSS 版では NEPTUNE_GRAPH_ID を渡さず（GRAPH_BACKEND と NEO4J_URI に替える）、Web は OSS 版で GRAPH_BACKEND=neo4j を受ける",
+      re.search(r'local\.graph_neo4j \? \[\n\s+\{ name = "GRAPH_BACKEND", value = "neo4j" \},\n\s+\{ name = "NEO4J_URI", value = local\.neo4j_uri \},\n'
+                r'\s+\] : \[\n\s+\{ name = "NEPTUNE_GRAPH_ID", value = local\.neptune_graph_id \},\n\s+\]', _ecs)
+      and _ecs.count("NEPTUNE_GRAPH_ID") == 1 and 'graph_backend = local.oss ? "neo4j" : ""' in _web)
+
 
 print(f"通過 {passed} / 失敗 0")
