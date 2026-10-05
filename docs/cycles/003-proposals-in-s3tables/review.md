@@ -226,3 +226,158 @@ Must fix は 0 件。Should fix の 2 件はどちらも再現を試み、片付
   | test_nautobot | 58 項目すべて通過 |
 
 - `terraform -chdir=terraform/pipeline/analytics fmt -check -diff` は差分なし。`ops/check.sh` 全体（3 つの root の validate を含む）はこのラウンドでは打っていない（実行の許可が 1 回ぶんで、Round 3 で使った）
+
+## Round 2
+
+cold reviewer に依頼した（完了判定の直前の 2 回目。opus、general-purpose。渡したのは design.md のパス、変更ファイルのパス一覧、前ラウンドの未解消 Must fix（無し）、書き出し先の 4 つだけ）。戻ったあと `git status --porcelain -uall` は `?? docs/cycles/003-proposals-in-s3tables/review-r02.md` の 1 本だけ。以下はその本文（review-r02.md を連結した）。
+
+# Cycle 003 修復案を S3 Tables にまとめる（proposals-in-s3tables） cold review Round 2
+
+対象: worktree `feat/proposals-s3tables`（HEAD d8c994e）を `bfdd398` と比べた差分。判断の根拠は design.md と実コードだけ。前回の未解決の Must fix は無し。
+
+## サマリ
+
+Must fix 0 件、Should fix 0 件、Nit 1 件。
+
+design.md の変更一覧（L230-238）、行の作り（L104-124）、`ignored` の行の規則（L165-176）、検証（L266-284）に照らして、実装に食い違いは見つからなかった。Nit の 1 件は、workflow の worker が Neptune の書き込み権限を持ったままになっていること（最小権限。設計の範囲外）。
+
+### 見た観点 / 見ていない観点
+
+見た観点
+
+- design.md への適合
+  - 変更一覧の各ファイル: workflow/worker.py、workflow/awsio.py、workflow/rules.py、agent/graph.py、agent/toolkit.py、terraform/workflow（events.tf、proposals.tf、locals.tf、iam.tf）、terraform/pipeline/graph（access.tf、locals.tf）。
+  - 変更一覧にあるが差分の無い web/config.py、ops/up.sh、tests/test_analytics.py は、変更が要らないことを確かめた。
+    - web/config.py は `toolkit.Param` で SSM から読む。
+    - up.sh は analytics を workflow より先に apply する。
+    - test_analytics.py:330 は列の順を一般的に検査している。
+- 正しさ
+  - 「いま」は proposal_id ごとに (seq, event_time) の最大（rules.py:346-355）。design.md L124 と L139 に合う。
+  - `ignored` の event_id の形は `<pid>#ignored#<decision>#<decided_at>#<decided_by>` で、design.md L104 に合う。
+  - `_closed`（決定なしで終わったあと）に届いた決定は控えず、行にしない。design.md L175 に合う。
+  - `ignored` の行は効いた決定があるときだけ書く。書けなければ warning を出して捨てる（worker.py:245-255）。design.md L169-171 に合う。
+  - 決定のキュー: NOT_FOUND 以外の RPC の失敗では消さない。読めない本文や決定以外の値は、シグナルを送らずに消す。
+- セキュリティ
+  - SendMessage は Web のロールだけ（proposals.tf の `web_access`）。キューのポリシーは閉域の Deny だけ。
+  - Runtime の Neptune は読み取りだけ（graph/access.tf）。
+  - `brief_error` が ARN とアカウント ID を伏せる。
+  - Athena のクエリの値は ExecutionParameters で渡す。`ATHENA_TEXT_RE` で幅の広い proposal_id も通す。
+- 実行時の不具合・データ損失
+  - put_proposal の自分の再試行と古い修復案の expired を 1 回の append にまとめている。
+  - `append_proposal_events` は CommitFailedException を 5 回まで読み直す。
+  - `_flush` で `record_ignored` がコミット後に再試行を使い切ると、`_row` が進まず、次の行と seq が重なる。design.md L139 が「再試行で同じ seq が重なる」ことを受け入れ、読む側の (seq, event_time) の並べ方で吸収している。「いま」は後から書いた行（event_time が遅い）になるので壊れない。指摘にはしない。
+- API 互換・型
+  - `audit_rows` の int と timestamptz の変換。`from_table_rows` の戻し。28 列の順。
+- テストの不足
+  - design.md の検証の項目（L266-271）に対応するテストがあることを、テスト名で確かめた。
+- テストの実行（自分で実行した。出力の最終行）
+  - `tests/test_workflow.py`: 通過 319 / 失敗 0
+  - `tests/test_app.py`: 通過 142 / 失敗 0
+  - `tests/test_graph.py`: 通過 72 / 失敗 0
+  - `tests/test_sync.py`: 通過 95 / 失敗 0
+  - `tests/test_analytics.py`: 通過 473 / 失敗 0
+  - まとめて走らせたシェルは exit code 0。zsh の PIPESTATUS が空で、ファイルごとの exit code は取れていない。根拠は上の「通過 / 失敗」の行。
+- Terraform
+  - `terraform -chdir=terraform/workflow`、`terraform/pipeline/graph`、`terraform/pipeline/analytics` で `fmt -check -diff` と `validate` が通った。
+  - 実行の前後で `git status --porcelain` は空のまま。
+
+見ていない観点
+
+- agent/proposals.py と web/incident_view.py の中身
+  - ユーザーの許可待ちのため開いていない。
+  - これらを import する test_app.py と test_workflow.py の結果でだけ、間接的に見た。
+  - Athena のクエリ（design.md L186-193）と画面の表示は、コードで確かめていない。
+- AWS の上での動き
+  - Athena、SQS、VPC エンドポイント経由の到達。
+  - Neptune Analytics の `neptune.algo.*` が ReadDataViaQuery だけで動くか。
+  - PyIceberg の S3 Tables への実際の append。
+- `terraform plan`（テーブルの作り直しが起きるか）。
+- docs/*.md の文言。
+- Web のロールのインラインポリシーの合計サイズ
+  - IAM のロールごとの上限は 10,240 文字。
+  - 載っているポリシー: base/core/web.tf:32 と :61、agent/runtime.tf:202、pipeline/stream/access.tf、pipeline/graph/access.tf、workflow/proposals.tf:32 と :60。
+  - `web_access` が増えた分で上限に届くかは測っていない。
+
+## Must fix
+
+None
+
+## Should fix
+
+None
+
+## Nit
+
+- [security] terraform/workflow/iam.tf:66-77: workflow の worker のロールが `neptune-graph:WriteDataViaQuery` と `DeleteDataViaQuery` を持ったままになっている。いまの worker が Neptune に打つクエリは workflow/awsio.py:68-75 の `read_topology` の 2 本（MATCH ... RETURN）だけで、書き込みは使わない。worker の権限で Neptune のトポロジや status を消せる状態が残っている。design.md L74 と L221 で外すと決めているのは Runtime の書き込みだけで、worker については何も書いていない。設計に食い違うわけではなく、壊れる入力も無いので Nit（コメントにも「設計に無いので残している」とある）。
+
+## 良かった点
+
+- design.md の検証の項目ごとに、テスト名で対応が追える。
+  - 時間切れのあとの決定は行を増やさない。
+  - 承認のあとに別の名前で却下すると `ignored` が 1 行。
+  - 同じ承認の重複配達では行を増やさない。
+- 決定のキューは SNS につながない独立のキューで、SendMessage は Web のロールだけに付いている。「チャットから承認できない」が IAM でも守られている（チャットのツールに decide が無いこともテストで押さえている）。
+- エラー文の ARN とアカウント ID を伏せる `brief_error` を、Athena と SQS の両方の失敗に通している。
+- `handle_decision` は、Temporal に届かない（NOT_FOUND 以外）ときに決定のメッセージを消さない。直らなければ DLQ に回るので、決定が黙って消えない。
+- `ignored` の行を「打つ・確かめる」のあとに書く順にしていて、lab への適用を待たせない（design.md L169）。
+- Runtime の Neptune は読み取りの権限だけになり、agent/graph.py も読み取りの関数しか残していない（「修復案の頂点を読み書きする関数は無い」をテストで確かめている）。
+
+## ユーザーへの質問
+
+- workflow の worker のロールから Neptune の書き込み（WriteDataViaQuery / DeleteDataViaQuery）を外すのは、このサイクルで入れるか、次のサイクルに回すか。いまのコードは読み取りしか使っていない。
+
+### 指摘の再現と分類（Opus 5.5 / effort xhigh）
+
+Must fix 0 件、Should fix 0 件。Nit の 1 件は Round 1 の Nit 2 と同じもの。
+
+- Nit「worker のロールに Neptune の書き込み・削除の権限が残っている」
+  - 再現した: `grep -n -E "WriteDataViaQuery|DeleteDataViaQuery|設計に無い" terraform/workflow/iam.tf` で L67（「外すことは cycle 003 の設計に無いので残している」）、L72、L73。
+  - 直さない。外すかどうかは設計の範囲外なので、勉強用に回す。cold reviewer の「ユーザーへの質問」も同じ件。
+- 「見ていない観点」のうち `agent/proposals.py` と `web/incident_view.py` は、ユーザーの許可を得て自分で読んだ。結果は下の項目 6・9 と Round 1 の Nit 1。
+
+### 未確認だった項目
+
+- Round 1 の Nit 1「design.md L278 の grep のうち agent/proposals.py の分が未確認」
+  - 解消した: `grep -rn "n:proposal\|update_record" workflow agent web; echo "rc=$?"` → `rc=1`（0 件）。
+- 項目 6「ignored の行が『いま』になったとき、画面に何が出るか」（design.md L168 で未確認）
+  - 一覧は proposal_id ごとに最新の 1 行だけを出す（agent/proposals.py L60-62 の `row_number() … WHERE rn = 1`）。ignored の行が付いても、画面の行は増えない。
+  - 一覧（web/incident_view.py L48 まわり）と詳細（L64-70）には event と detail の欄が無い。`grep -n -E "event_detail|\"event\"|'event'|detail" web/incident_view.py` でヒットしたのは L56 の関数名 `proposal_detail` だけ。
+  - そのため、ignored の行が最後に来ても、状態と決めた人は効いた決定のまま。変わるのは「更新」の時刻だけで、効かなかった決定の中身は画面に出ない。見られるのはエージェントの `list_proposals`（COLUMNS に event がある）からだけ。
+  - design.md §6 の「表と詳細の項目は変えない」とは合う。ただし L168 の「画面の履歴には 1 行増える」は実装と違う。design.md の文言を直すよう勉強用に回す（Nit。壊れる入力は無い）。
+- 項目 9「名前に `'` が入っていても読めるか」
+  - 読む側: Athena に渡す値は proposal_id・device_id・status の 3 つだけ（agent/proposals.py L97 `params = [v for v in (by_id, device_id, status) if v]`）。decided_by は条件に使わない。詳細の画面は `html.escape` を通す（web/incident_view.py L64、L70）。
+  - 書く側: tests/test_workflow.py L306-315 が `O'Brien (web)` で event_id と detail を検査している（check.sh の test_workflow は 319 / 0）。
+  - 問題なし。
+
+### Round 1 の Should の再確認（main e02648a を取り込んだあと）
+
+- Should 1: `.venv/bin/python scratchpad/inject_rv1.py` → `rc 1`、`AssertionError: 承認も却下も、押したら「送った。反映まで少し待つ」と出す（…）`。注入しないときは check.sh の test_workflow が `通過 319 / 失敗 0`。
+- Should 2: `.venv/bin/python scratchpad/plan_offline.py` → `old(bfdd398) 12 列 / new(worktree) 28 列`、`plan rc 0`、`# aws_s3tables_table.proposal_events must be replaced`、`Plan: 1 to add, 0 to change, 1 to destroy.`
+
+### main の取り込みと check.sh
+
+- `git merge-tree --write-tree --name-only HEAD e02648a` → 衝突なし。`git merge --no-ff e02648a` で取り込んだ（ユーザーの許可による。push はしていない）。
+- `ops/check.sh`（取り込んだあと。最後の行は `すべて通過`）:
+
+  | 項目 | 結果 |
+  | :--- | :--- |
+  | terraform fmt -check -recursive | 差分なし |
+  | 9 つのルートの validate | すべて OK |
+  | ops スクリプトの構文 | 構文エラーなし |
+  | test_app | 通過 142 / 失敗 0 |
+  | test_graph | 通過 72 / 失敗 0 |
+  | test_stream | 通過 75 / 失敗 0 |
+  | test_sync | 通過 95 / 失敗 0 |
+  | test_analytics | 通過 484 / 失敗 0（main の splunk-cluster のテストを含む） |
+  | test_workflow | 通過 319 / 失敗 0 |
+  | test_alerts | 通過 128 / 失敗 0 |
+  | test_kb_index | 通過 7 / 失敗 0 |
+  | test_lab_debug | 通過 75 / 失敗 0 |
+  | test_nautobot | 58 項目すべて通過 |
+
+### 残るもの（最終報告に載せる）
+
+- AWS 上の検証（design.md L279-284 の 1〜6）と、AWS 上の `terraform plan` は未実行。
+- Nit: Round 1 の 2〜6、Round 2 の項目 6 の design.md の文言。
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261005-cycle-003-proposals-in-s3tables-review.html -->
