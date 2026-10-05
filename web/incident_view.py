@@ -1,6 +1,7 @@
-"""「承認」タブの中身。Neptune の頂点を読み、status を書き戻す。
+"""「承認」タブの中身。修復案を読み、承認・却下をワーカーへ送る。
 
-  承認      terraform/workflow のワーカーが書いた proposal の頂点（proposals.py）。承認・却下はここから書き戻す。履歴は S3 Tables の proposal_events（ワーカーが書く）
+  承認      terraform/workflow のワーカーが S3 Tables の proposal_events に書いた修復案（proposals.py が Athena で読む）。
+            承認・却下は決定のキューに送り、ワーカーがワークフローに伝えて行を足す（画面に出るまで数秒〜20 秒。2026-10-05 までは Neptune の頂点に書き戻していた）
 
 「異常一覧」タブ（Spark が書いた anomaly の頂点）は 2026-10-02 にやめた。いまの異常はトポロジのタブの状態、アラートの履歴は Grafana / Splunk で見る。
 未配備のときは list_* が error を返すので、その文言をそのまま画面に出す。
@@ -21,7 +22,7 @@ PROPOSAL_COLS = ["proposal_id", "状態", "機器", "種別", "対象", "原因"
 PROPOSAL_WIDTHS = ["14%", "6%", "7%", "7%", "5%", "16%", "6%", "9%", "16%", "7%", "7%", "5%", "12%"]
 
 
-# 状態の日本語。変えるのは画面の表示だけで、Neptune・証跡・ワーカー・ツールの値（open / pending など）はそのまま
+# 状態の日本語。変えるのは画面の表示だけで、proposal_events・ワーカー・ツールの値（pending など）はそのまま
 PROPOSAL_STATUS_JA = {
     "pending": "承認待ち", "approved": "承認済み（修復待ち）", "applied": "修復した（確認中）", "verified": "復旧を確認",
     "failed": "失敗", "rejected": "却下", "expired": "期限切れ", "obsolete": "不要（先に解消）", "all": "すべて",
@@ -86,9 +87,9 @@ APPROVER_MAX = 40  # decided_by に残す名前の長さ（proposals.decide は 
 
 
 def decide_proposal(proposal_id: str, decision: str, status: str, approver: str = "", confirmed: bool = False):
-    """承認・却下を書く。名前（decided_by に「<名前> (web)」で残す）は両方に要り、承認は「詳細を読んだ」の確認も要る。
+    """承認・却下を送る。名前（decided_by に「<名前> (web)」で残す）は両方に要り、承認は「詳細を読んだ」の確認も要る。
     Web は SSM のポートフォワーディングの先で認証が無く、誰が押したかを画面の外から知る手段が無いので、自分で名乗ってもらう。
-    足りなければ Neptune には触らず、表と選択もそのまま残す"""
+    足りなければ何も送らず、表と選択もそのまま残す"""
     proposal_id = (proposal_id or "").strip()
     name = " ".join((approver or "").split())[:APPROVER_MAX]
     if not proposal_id:
@@ -98,6 +99,6 @@ def decide_proposal(proposal_id: str, decision: str, status: str, approver: str 
     if decision == "approved" and not confirmed:
         return "「詳細を読んだ」にチェックを入れてから承認する（lab でコマンドが打たれる）", gr.update(), gr.update()
     r = proposals.decide(proposal_id, decision, decided_by=f"{name} (web)")
-    msg = r["error"] if r.get("error") else f"{r['proposal_id']} を「{_ja(PROPOSAL_STATUS_JA, decision)}」にした（{name}。ワーカーが次の段に進める。状態を「承認済み」→「修復した」→「復旧を確認」に切り替えて追える）"
+    msg = r["error"] if r.get("error") else f"{'承認' if decision == 'approved' else '却下'}を送った（{r['proposal_id']}、{name}）。反映まで少し待つ（数秒〜20 秒。更新を押す）"
     _, table, ids = proposal_table(status)
     return msg, table, ids

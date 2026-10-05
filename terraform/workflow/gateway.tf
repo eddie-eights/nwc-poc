@@ -2,7 +2,8 @@
 # The chat runtime (agent/app.py) lists the tools through the gateway URL (SSM <prefix>/gateway-url) and calls them over MCP
 # instead of its built-in functions. The Lambda runs the same agent/topology.py, agent/evidence.py and
 # agent/proposals.py inside the VPC (subnet a), so it reads Neptune (terraform/pipeline/graph), the logs collection and the metrics
-# workspace (terraform/pipeline/analytics). Proposals are Neptune vertices too (label proposal, 2026-09-24).
+# workspace (terraform/pipeline/analytics). Proposals and the alert history are S3 Tables rows read through Athena
+# (proposal_events / alert_events; Neptune holds no proposal since 2026-10-05).
 # Without graph / analytics the topology comes from data/ and the evidence tools say so.
 
 locals {
@@ -60,7 +61,7 @@ resource "aws_iam_role" "tools" {
   count = var.create_gateway ? 1 : 0
 
   name               = "${local.name_prefix}-tools"
-  description        = "Tools Lambda behind the MCP gateway - reads Neptune (topology, proposals), the logs collection, the metrics workspace and the alert history (Athena)"
+  description        = "Tools Lambda behind the MCP gateway - reads Neptune (topology), the logs collection, the metrics workspace, the alert history and the proposals (Athena)"
   assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
 }
 
@@ -85,7 +86,7 @@ data "aws_iam_policy_document" "tools" {
     resources = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.param_prefix}/*"]
   }
 
-  # トポロジ・異常・修復案を読むだけ。Write は付けない（ツールに承認・却下は無い。proposals.tf の冒頭）
+  # トポロジと status を読むだけ。Write は付けない（修復案は Neptune に無い。ツールに承認・却下も無い。proposals.tf の冒頭）
   dynamic "statement" {
     for_each = local.neptune_data_arn != "" ? [1] : []
     content {
@@ -113,50 +114,14 @@ data "aws_iam_policy_document" "tools" {
     }
   }
 
-  # query_history（アラートの通知の履歴）。Athena のクエリはそのワークグループだけで打ち、結果は Athena の管理ストレージ。
-  # Athena は呼び手の権限で Glue のカタログ（s3tablescatalog）と S3 Tables を読む。閉域の Deny（s3tables:*）は
-  # Athena が代わりに出す呼び出し（aws:ViaAWSService）には効かない前提（docs/cycles/001-alert-history-firehose/design.md のリスク 3）。
-  # そのぶん VPC の外からの athena:* は閉域の Deny で止め、読めるテーブルは alert_events だけにする（proposal_events / raw_telemetry は読ませない）
+  # query_history（アラートの通知の履歴）と list_proposals（修復案）。Athena で alert_events と proposal_events を読む 4 文
+  # （locals.tf の history_read_statements。Web の EC2 にも同じものを付ける）。ワークグループが無ければ 1 文も無い
   dynamic "statement" {
-    for_each = local.athena_workgroup != "" ? [1] : []
+    for_each = local.history_read_statements
     content {
-      sid       = "HistoryQuery"
-      actions   = ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:StopQueryExecution"]
-      resources = ["arn:${local.partition}:athena:${var.region}:${local.account_id}:workgroup/${local.athena_workgroup}"]
-    }
-  }
-
-  dynamic "statement" {
-    for_each = local.athena_workgroup != "" ? [1] : []
-    content {
-      sid     = "HistoryCatalog"
-      actions = ["glue:GetCatalog", "glue:GetDatabase", "glue:GetTable"]
-      resources = [
-        "arn:${local.partition}:glue:${var.region}:${local.account_id}:catalog",
-        "arn:${local.partition}:glue:${var.region}:${local.account_id}:catalog/s3tablescatalog",
-        "arn:${local.partition}:glue:${var.region}:${local.account_id}:catalog/s3tablescatalog/*",
-        "arn:${local.partition}:glue:${var.region}:${local.account_id}:database/*",
-        "arn:${local.partition}:glue:${var.region}:${local.account_id}:table/*/*",
-      ]
-    }
-  }
-
-  dynamic "statement" {
-    for_each = local.athena_workgroup != "" ? [1] : []
-    content {
-      sid       = "HistoryBucket"
-      actions   = ["s3tables:GetTableBucket", "s3tables:GetNamespace"]
-      resources = [local.audit_bucket_arn]
-    }
-  }
-
-  # テーブルの ARN は名前ではなくテーブルの ID で終わるので、analytics の出力から受ける
-  dynamic "statement" {
-    for_each = local.alert_events_table_arn != "" ? [1] : []
-    content {
-      sid       = "HistoryTable"
-      actions   = ["s3tables:GetTable", "s3tables:GetTableData", "s3tables:GetTableMetadataLocation"]
-      resources = [local.alert_events_table_arn]
+      sid       = statement.value.sid
+      actions   = statement.value.actions
+      resources = statement.value.resources
     }
   }
 }
@@ -239,11 +204,12 @@ resource "aws_lambda_function" "tools" {
       OPENSEARCH_ENDPOINT  = local.opensearch_endpoint
       OPENSEARCH_INDEX     = local.opensearch_index
       PROMETHEUS_QUERY_URL = local.prometheus_query_url
-      # query_history（evidence.py）。どれかが空ならツールは「未配備」を返す
-      ATHENA_WORKGROUP   = local.athena_workgroup
-      ATHENA_CATALOG     = local.athena_catalog
-      HISTORY_NAMESPACE  = local.athena_workgroup == "" ? "" : local.audit_namespace
-      ALERT_EVENTS_TABLE = local.alert_events_table_name
+      # query_history（evidence.py）と list_proposals（proposals.py）。どれかが空ならツールは「未配備」を返す
+      ATHENA_WORKGROUP      = local.athena_workgroup
+      ATHENA_CATALOG        = local.athena_catalog
+      HISTORY_NAMESPACE     = local.athena_workgroup == "" ? "" : local.audit_namespace
+      ALERT_EVENTS_TABLE    = local.alert_events_table_name
+      PROPOSAL_EVENTS_TABLE = local.proposal_events_table_name
     }
   }
 

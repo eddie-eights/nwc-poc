@@ -66,6 +66,7 @@ resource "aws_ecs_task_definition" "workflow" {
         { name = "AWS_REGION", value = var.region },
         { name = "PARAM_PREFIX", value = local.param_prefix },
         { name = "ANOMALY_QUEUE_URL", value = aws_sqs_queue.anomalies.url },
+        { name = "DECISION_QUEUE_URL", value = aws_sqs_queue.decisions.url },
         { name = "NEPTUNE_GRAPH_ID", value = local.neptune_graph_id },
         { name = "AUDIT_TABLE_BUCKET_ARN", value = local.audit_bucket_arn },
         { name = "AUDIT_NAMESPACE", value = local.audit_namespace },
@@ -98,11 +99,11 @@ resource "aws_ecs_task_definition" "workflow" {
     }
     precondition {
       condition     = local.neptune_graph_id != "" && local.neptune_data_arn != ""
-      error_message = "terraform/pipeline/graph の state から graph_id / graph_arn が読めない。修復案の「いま」は Neptune にあるので、terraform/pipeline/graph を先に apply する（2026-09-24 から）。"
+      error_message = "terraform/pipeline/graph の state から graph_id / graph_arn が読めない。事前チェックと保守中の判定はトポロジ（Neptune）を読むので、terraform/pipeline/graph を先に apply する（2026-09-24 から）。"
     }
     precondition {
       condition     = local.audit_bucket_arn != "" && local.audit_namespace != "" && local.proposal_events_table_name != ""
-      error_message = "terraform/pipeline/analytics の state から table_bucket_arn / table_namespace / proposal_events_table_name が読めない。修復案の証跡は S3 Tables の proposal_events に書くので、terraform/pipeline/analytics を先に apply する（2026-09-24 から）。"
+      error_message = "terraform/pipeline/analytics の state から table_bucket_arn / table_namespace / proposal_events_table_name が読めない。修復案は S3 Tables の proposal_events に置くので、terraform/pipeline/analytics を先に apply する（2026-09-24 から）。"
     }
   }
 }

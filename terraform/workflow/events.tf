@@ -151,4 +151,58 @@ resource "aws_sqs_queue_policy" "anomalies_dlq" {
   policy    = data.aws_iam_policy_document.anomalies_dlq.json
 }
 
+# ---------------------------------------------------------------- SQS (the Web sends an approval / rejection, the worker signals the workflow)
+# 承認タブ（web/incident_view.py → agent/proposals.py の decide）が {"type":"decision",…} を送り、worker の 2 つ目の待つループ（workflow/worker.py の
+# handle_decision）が受けて investigate-<anomaly_id> に decide のシグナルを送る。メッセージの形は workflow/rules.py の decision_from_message。
+# アラートのキュー（上の anomalies）を共用しない: あちらは SNS の <接頭辞>-alerts を購読していて、そのトピックに publish できる
+# Grafana と Splunk のタスクロールが決定を流せてしまう。こちらは SNS を購読せず、送れるのは Web の EC2 のロールだけ（proposals.tf）。
+# 設定は anomalies と同じ（2026-10-05）
+resource "aws_sqs_queue" "decisions_dlq" {
+  name                      = "${local.name_prefix}-decisions-dlq"
+  message_retention_seconds = 1209600 # 14 日（最大）。worker が 5 回受け取っても消さなかったもの（Temporal に届かないなど）が来る
+}
+
+resource "aws_sqs_queue" "decisions" {
+  name                       = "${local.name_prefix}-decisions"
+  visibility_timeout_seconds = 120
+  message_retention_seconds  = 86400 # worker が 1 日より長く止まると、送った決定は消える（修復案は承認待ちのまま時間切れになる）
+  receive_wait_time_seconds  = 20
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.decisions_dlq.arn
+    maxReceiveCount     = 5
+  })
+}
+
+# VPC の外からの呼び出しを拒む Deny だけ（SNS の送信は許さない）。perimeter が無いときは文が 1 つも無くなるので、ポリシーごと付けない
+data "aws_iam_policy_document" "decisions_queue" {
+  for_each = local.perimeter_policy_arn != "" ? { decisions = aws_sqs_queue.decisions.arn, decisions_dlq = aws_sqs_queue.decisions_dlq.arn } : {}
+
+  statement {
+    sid         = "DenyOutsideVpc"
+    effect      = "Deny"
+    not_actions = local.sqs_policy_actions
+    resources   = [each.value]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    dynamic "condition" {
+      for_each = local.perimeter_conditions
+      content {
+        test     = condition.value.test
+        variable = condition.value.variable
+        values   = condition.value.values
+      }
+    }
+  }
+}
+
+resource "aws_sqs_queue_policy" "decisions" {
+  for_each = data.aws_iam_policy_document.decisions_queue
+
+  queue_url = each.key == "decisions" ? aws_sqs_queue.decisions.id : aws_sqs_queue.decisions_dlq.id
+  policy    = each.value.json
+}
+
 # worker から SQS へは terraform/base/core の sqs のインターフェース型エンドポイントを通る（ops/up.sh が WORKFLOW のときに作らせる）

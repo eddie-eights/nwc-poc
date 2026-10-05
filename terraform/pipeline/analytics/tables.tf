@@ -122,10 +122,14 @@ resource "aws_s3tables_table" "raw_telemetry" {
 # ---------------------------------------------------------------- 証跡（2026-09-24）
 # 異常が開いた・閉じたの履歴（anomaly_events）は 2026-10-02 にやめた（書いていた Spark の detect をなくした）。
 # 障害の履歴は下の alert_events（アラートの通知の履歴。2026-10-04）に置く。
-# 修復案の作成・承認・却下・適用・確認の履歴。書くのは terraform/workflow の worker（workflow/awsio.py の append_proposal_events、PyIceberg）。
-# event は created / approved / rejected / expired / obsolete / applied / failed / verified。event_id = <proposal_id>#<event>。
-# 列は workflow/rules.py の PROPOSAL_EVENT_COLUMNS と同じ順・同じ型。action / cause はエージェントの答え、decided_by は承認・却下した人。
-# 修復案の「いま」は Neptune の proposal の頂点（Web の承認タブが読み書きする）で、ここは証跡
+# 修復案の置き場はこのテーブルだけ（Neptune の頂点 proposal は 2026-10-05 にやめた）。作成・承認・却下・適用・確認を 1 行ずつ足し、どの行も修復案の全項目を持つ。
+# 書くのは terraform/workflow の worker だけ（workflow/awsio.py の append_proposal_events、PyIceberg）。読むのは Web の承認タブとエージェントの list_proposals（Athena）。
+# 修復案の「いま」は proposal_id ごとに seq が最大の行。event は created / approved / rejected / expired / obsolete / applied / failed / verified / ignored
+# （ignored は効いた決定のあとに届いた中身の違う決定。status は直前の行のまま）。
+# event_id = <proposal_id>#<event>（ignored だけは <proposal_id>#ignored#<届いた決定の種類>#<届いた決定の時刻>#<名前>）。列は workflow/rules.py の PROPOSAL_EVENT_COLUMNS と同じ順・同じ型。
+# schema を変えるとテーブルは作り直しになり、いまある行は消える（上の raw_telemetry の注記と同じ RequiresReplace。
+# 2026-10-05 に 12 列から 28 列にした。12 列の state に plan を打つと must be replaced になることは、AWS に触らずに確かめた
+# （provider 6.64.0、偽の鍵と -refresh=false。docs/cycles/003-proposals-in-s3tables/review.md の Round 1）。AWS 上の plan は未実行）
 resource "aws_s3tables_table" "proposal_events" {
   name             = "proposal_events"
   namespace        = aws_s3tables_namespace.netops.namespace
@@ -151,6 +155,11 @@ resource "aws_s3tables_table" "proposal_events" {
           required = false
         }
         field {
+          name     = "seq"
+          type     = "int"
+          required = false
+        }
+        field {
           name     = "event"
           type     = "string"
           required = false
@@ -166,7 +175,27 @@ resource "aws_s3tables_table" "proposal_events" {
           required = false
         }
         field {
-          name     = "action"
+          name     = "kind"
+          type     = "string"
+          required = false
+        }
+        field {
+          name     = "target"
+          type     = "string"
+          required = false
+        }
+        field {
+          name     = "first_seen"
+          type     = "timestamptz"
+          required = false
+        }
+        field {
+          name     = "source"
+          type     = "string"
+          required = false
+        }
+        field {
+          name     = "alert_detail"
           type     = "string"
           required = false
         }
@@ -176,7 +205,32 @@ resource "aws_s3tables_table" "proposal_events" {
           required = false
         }
         field {
+          name     = "action"
+          type     = "string"
+          required = false
+        }
+        field {
           name     = "command"
+          type     = "string"
+          required = false
+        }
+        field {
+          name     = "reason"
+          type     = "string"
+          required = false
+        }
+        field {
+          name     = "agent_response"
+          type     = "string"
+          required = false
+        }
+        field {
+          name     = "precheck"
+          type     = "string"
+          required = false
+        }
+        field {
+          name     = "precheck_verdict"
           type     = "string"
           required = false
         }
@@ -186,8 +240,38 @@ resource "aws_s3tables_table" "proposal_events" {
           required = false
         }
         field {
+          name     = "decided_at"
+          type     = "timestamptz"
+          required = false
+        }
+        field {
+          name     = "apply_output"
+          type     = "string"
+          required = false
+        }
+        field {
+          name     = "verify_note"
+          type     = "string"
+          required = false
+        }
+        field {
           name     = "detail"
           type     = "string"
+          required = false
+        }
+        field {
+          name     = "workflow_id"
+          type     = "string"
+          required = false
+        }
+        field {
+          name     = "run_id"
+          type     = "string"
+          required = false
+        }
+        field {
+          name     = "created_at"
+          type     = "timestamptz"
           required = false
         }
         field {

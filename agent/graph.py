@@ -6,7 +6,7 @@
 接続先は boto3 がグラフの ID とリージョンから決める（https://<グラフの ID>.<region>.neptune-graph.amazonaws.com。VPC の中では
 インターフェース型エンドポイント neptune-graph-data の private DNS がこの名前を引き受ける）。
 
-値は全部クエリのパラメータ（$name）で渡す（文字列を埋め込まないので、修復案の本文や承認者の名前に何が入っても壊れない）。
+値は全部クエリのパラメータ（$name）で渡す（文字列を埋め込まないので、機器名や Nautobot から来た値に何が入っても壊れない）。
 ラベルと property の名前はパラメータにできないので、このファイルの定数か、英数字と _ だけと確かめたもの（_ident）だけを埋め込む。
 辺の id は Neptune Analytics が振り、自分では決められない（振り直しもある）ので、辺は id で引かず「両端の機器 + a_if」で引く。
 
@@ -571,11 +571,12 @@ def centrality(limit: int = 10) -> dict:
     return {"devices": ordered[:max(1, int(limit))], "device_count": len(rows), "components": len(names)}
 
 
-# ---------------------------------------------------------------- 修復案の頂点（2026-09-24 に DynamoDB から移した）
-# 修復案（label proposal）は terraform/workflow のワーカー（workflow/awsio.py）が書く。トポロジの頂点とは辺でつながず、device_id で引く。
-# ここは読むのと、承認タブの decide だけ（agent/proposals.py）。異常（label anomaly）の頂点は 2026-10-02 にやめた（書いていた Spark の detect をなくした）
+# ---------------------------------------------------------------- 一覧（構成変更の頂点）
+# label change（構成変更。agent/topology.py の recent_changes）を新しい順に読む。
+# 修復案の頂点（label proposal）は 2026-10-05 にやめた（修復案は S3 Tables の proposal_events だけ。agent/proposals.py が Athena で読む）。
+# 異常（label anomaly）の頂点は 2026-10-02 にやめた（書いていた Spark の detect をなくした）
 def _record(m: dict, id_key: str) -> dict:
-    """_node() の 1 件を、id を id_key（proposal_id / change_id）に置き換えた dict に"""
+    """_node() の 1 件を、id を id_key（change_id など）に置き換えた dict に"""
     d = {k: v for k, v in m.items() if k not in ("id", "label")}
     d[id_key] = m.get("id")
     return d
@@ -588,16 +589,3 @@ def list_records(label: str, id_key: str, order_by: str, status: str = "", devic
     q = (f"MATCH (n:{_ident(label)})" + (" WHERE " + " AND ".join(cond) if cond else "")
          + f" RETURN n ORDER BY n.{_ident(order_by)} DESC LIMIT {int(limit)}")
     return [_record(_node(r["n"]), id_key) for r in query(q, **params)]
-
-
-def get_record(label: str, id_key: str, vid: str) -> dict:
-    rows = query(f"MATCH (n:{_ident(label)}) WHERE id(n) = $id RETURN n", id=vid)
-    return _record(_node(rows[0]["n"]), id_key) if rows else {}
-
-
-def update_record(label: str, vid: str, fields: dict, only_status: str = "") -> bool:
-    """頂点の fields を書き換える。only_status なら今の status がそれのときだけ。書けたら True。
-    条件と書き込みが 1 本のクエリなので、読んでから書くあいだに別の書き手が割り込まない"""
-    match = f"MATCH (n:{_ident(label)}) WHERE id(n) = $id" + (" AND n.status = $only" if only_status else "")
-    params = {"id": vid, "fields": _props(fields, fields), **({"only": only_status} if only_status else {})}
-    return bool(query(f"{match} SET n += $fields RETURN id(n) AS id", **params))

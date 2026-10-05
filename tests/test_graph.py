@@ -392,22 +392,13 @@ check("kind / status が違えば error", "error" in graph.set_layer_status("d",
 reset(**{SET_ST: [{"registered": False}]})
 check("未登録の頂点に書いたときも unregistered", graph.set_status("zz-ce-09", "", "UP").get("unregistered") is True and len(state["queries"]) == 1)
 
-# ---- 修復案と変更履歴の頂点（agent/proposals.py、topology.recent_changes が読む）
-prop = {"id": "p-1", "label": "proposal", "status": "pending", "device_id": "a-ce-01", "created_at": 10}
-reset(**{"RETURN n": nodes([prop])})
+# ---- 変更履歴の頂点（topology.recent_changes が読む）。修復案の頂点 proposal は 2026-10-05 にやめた（get_record / update_record も消した）
+chg = {"id": "c-1", "label": "change", "status": "done", "device_id": "a-ce-01", "time": 10}
+reset(**{"RETURN n": nodes([chg])})
 check("list_records は status / device_id で絞り、order_by の新しい順に limit 件（絞る値はパラメータ、並べる property と件数は埋め込み）",
-      graph.list_records("proposal", "proposal_id", "created_at", status="pending", device_id="a-ce-01", limit=5) == [{"status": "pending", "device_id": "a-ce-01", "created_at": 10, "proposal_id": "p-1"}]
-      and calls() == [("MATCH (n:`proposal`) WHERE n.status = $status AND n.device_id = $device_id RETURN n ORDER BY n.`created_at` DESC LIMIT 5", {"status": "pending", "device_id": "a-ce-01"})])
-reset(**{"RETURN n": nodes([prop])})
-check("get_record は id とラベルで 1 件", graph.get_record("proposal", "proposal_id", "p-1")["proposal_id"] == "p-1"
-      and calls() == [("MATCH (n:`proposal`) WHERE id(n) = $id RETURN n", {"id": "p-1"})])
-reset(**{"RETURN id(n) AS id": [{"id": "p-1"}]})
-check("update_record は only_status の条件と書き込みを 1 本で送り、空の値は書かない",
-      graph.update_record("proposal", "p-1", {"status": "approved", "decided_by": "it's\nme", "note": ""}, only_status="pending") is True
-      and calls() == [("MATCH (n:`proposal`) WHERE id(n) = $id AND n.status = $only SET n += $fields RETURN id(n) AS id",
-                       {"id": "p-1", "fields": {"status": "approved", "decided_by": "it's\nme"}, "only": "pending"})])
-reset(**{"RETURN id(n) AS id": []})
-check("update_record は条件に合わなければ False", graph.update_record("proposal", "p-1", {"status": "approved"}, only_status="pending") is False)
+      graph.list_records("change", "change_id", "time", status="done", device_id="a-ce-01", limit=5) == [{"status": "done", "device_id": "a-ce-01", "time": 10, "change_id": "c-1"}]
+      and calls() == [("MATCH (n:`change`) WHERE n.status = $status AND n.device_id = $device_id RETURN n ORDER BY n.`time` DESC LIMIT 5", {"status": "done", "device_id": "a-ce-01"})])
+check("修復案の頂点を読み書きする関数は無い", not hasattr(graph, "get_record") and not hasattr(graph, "update_record"))
 
 # ---- アルゴリズム（Neptune Analytics の neptune.algo.*）
 reset(**{"neptune.algo.degree": [{"id": "a", "degree": 2}, {"id": "b", "degree": 1}, {"id": "c", "degree": 0}],

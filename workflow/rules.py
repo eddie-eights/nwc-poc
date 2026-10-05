@@ -1,11 +1,12 @@
 """ワーカーの「判断」の部分。AWS にも Temporal にも触らない純粋な関数だけを置く。
 
-ここにあるのは 7 つ:
+ここにあるのは 8 つ:
   - build_prompt        エージェント（AgentCore Runtime）に投げる質問文
   - parse_agent_json    返ってきた文から JSON を取り出す
   - normalize_action    lab EC2 で打ってよいコマンドの許可リスト
   - alerts_from_message / should_start / maintenance_hold / workflow_id / proposal_id  アラート（SNS → SQS）の読み取りと、どれでワークフローを起こすかの判定と id
-  - proposal_event      修復案の証跡（S3 Tables の proposal_events）の 1 行
+  - proposal_event      修復案（S3 Tables の proposal_events）の 1 行。どの行も全項目を持つ
+  - decision_from_message / anomaly_of  Web の承認・却下（決定のキュー）の読み取りと、送る先のワークフローの id
   - alert_event         アラートの通知の履歴（S3 Tables の alert_events）の 1 行
   - impact / precheck   処置を打つ前の事前チェック（その処置でグラフがどう変わり、孤立や冗長切れが出るか）
 
@@ -271,31 +272,109 @@ def proposal_id(anomaly_id: str, first_seen) -> str:
     return f"{anomaly_id}#{int(first_seen or 0)}"
 
 
-# ---------------------------------------------------------------- 修復案の証跡（S3 Tables の proposal_events。2026-09-24）
+# ---------------------------------------------------------------- 修復案（S3 Tables の proposal_events。2026-09-24、全項目の行にしたのは 2026-10-05）
+# 修復案の置き場はこのテーブルだけ（Neptune の頂点 proposal は 2026-10-05 にやめた）。どの行も修復案の全項目を持ち、
+# 修復案の「いま」は proposal_id ごとに seq が最大の行（event_time は秒なので順番に使わない）。
 # 列は terraform/pipeline/analytics/tables.tf の proposal_events と同じ順・同じ型。時刻は epoch 秒で組み、awsio が書くときに tz 付きにする
 PROPOSAL_EVENT_COLUMNS = (
-    ("event_id", "string"), ("proposal_id", "string"), ("anomaly_id", "string"), ("event", "string"), ("status", "string"),
-    ("device_id", "string"), ("action", "string"), ("cause", "string"), ("command", "string"), ("decided_by", "string"),
-    ("detail", "string"), ("event_time", "timestamptz"),
+    ("event_id", "string"), ("proposal_id", "string"), ("anomaly_id", "string"), ("seq", "int"), ("event", "string"),
+    ("status", "string"), ("device_id", "string"), ("kind", "string"), ("target", "string"), ("first_seen", "timestamptz"),
+    ("source", "string"), ("alert_detail", "string"), ("cause", "string"), ("action", "string"), ("command", "string"),
+    ("reason", "string"), ("agent_response", "string"), ("precheck", "string"), ("precheck_verdict", "string"),
+    ("decided_by", "string"), ("decided_at", "timestamptz"), ("apply_output", "string"), ("verify_note", "string"),
+    ("detail", "string"), ("workflow_id", "string"), ("run_id", "string"), ("created_at", "timestamptz"), ("event_time", "timestamptz"),
 )
-# created は pending で置いたとき。ほかは status の移り変わりそのもの
-PROPOSAL_EVENTS = ("created", "approved", "rejected", "expired", "obsolete", "applied", "failed", "verified")
+# created は pending で置いたとき。ignored は効かなかった決定（status は変えない）。ほかは status の移り変わりそのもの
+PROPOSAL_EVENTS = ("created", "approved", "rejected", "expired", "obsolete", "applied", "failed", "verified", "ignored")
+DECISIONS = ("approved", "rejected")
+DECISION_JA = {"approved": "承認", "rejected": "却下"}
+TEXT_MAX = 4000  # 文字列の列は 1 項目この字数で切る（agent_response が長い。Temporal の受け渡しと行の大きさを抑える）
+# 行ごとに決まる列（ほかの列は修復案の項目で、前の行から持ち越す）
+_EVENT_ONLY = ("event_id", "event", "status", "seq", "detail", "event_time")
 
 
-def proposal_event(event: str, proposal: dict, now: int, detail: str = "", decided_by: str = "") -> dict:
-    """proposal_events の 1 行。event_id = <proposal_id>#<event>（1 つの修復案で同じ出来事は 1 回だけ。
-    アクティビティの再試行で二重に入ったら event_id で重複を落とす）"""
+def proposal_event(event: str, proposal: dict, now: int, detail: str = "", fields: dict | None = None) -> dict:
+    """proposal_events の 1 行（全項目）。proposal は修復案の辞書（前の行そのものでよい）で、fields をその上に重ねる。
+    seq は created が 1、ほかは proposal の seq + 1。status は created が pending、ignored が proposal のまま、ほかは event と同じ。
+    event_id = <proposal_id>#<event>（1 つの修復案で同じ出来事は 1 回だけ。アクティビティの再試行で二重に入ったら event_id で重複を落とす。
+    ignored だけは 1 つの修復案に何度もありうるので ignored_event が付け直す）"""
     if event not in PROPOSAL_EVENTS:
         raise ValueError(f"unknown proposal event: {event}")
-    pid = str(proposal.get("proposal_id") or "")
-    return {
-        "event_id": f"{pid}#{event}", "proposal_id": pid, "anomaly_id": str(proposal.get("anomaly_id") or ""),
-        "event": event, "status": "pending" if event == "created" else event,
-        "device_id": str(proposal.get("device_id") or ""), "action": str(proposal.get("action") or ""),
-        "cause": str(proposal.get("cause") or ""), "command": str(proposal.get("command") or ""),
-        "decided_by": str(decided_by or proposal.get("decided_by") or ""), "detail": str(detail or "")[:4000],
-        "event_time": int(now),
-    }
+    p = {**proposal, **(fields or {})}
+    pid = str(p.get("proposal_id") or "")
+    row = {}
+    for name, typ in PROPOSAL_EVENT_COLUMNS:
+        if name in _EVENT_ONLY:
+            continue
+        v = p.get(name)
+        if typ == "timestamptz":
+            row[name] = _epoch(v) or None
+        else:
+            row[name] = str(v if v is not None else "")[:TEXT_MAX]
+    row.update({
+        "event_id": f"{pid}#{event}", "event": event,
+        "status": "pending" if event == "created" else str(p.get("status") or "") if event == "ignored" else event,
+        "seq": 1 if event == "created" else _seq(p.get("seq")) + 1, "detail": str(detail or "")[:TEXT_MAX], "event_time": int(now),
+    })
+    return {name: row[name] for name, _ in PROPOSAL_EVENT_COLUMNS}
+
+
+def decision_key(decision: dict) -> tuple:
+    """決定の中身（decision, decided_by, decided_at）。同じなら同じ決定（SQS の重複配達）として 1 つに扱う"""
+    return (str(decision.get("decision") or ""), str(decision.get("decided_by") or "").strip()[:64], _epoch(decision.get("decided_at")))
+
+
+def ignored_event(proposal: dict, decision: dict, effective: dict, now: int) -> dict:
+    """効かなかった決定（先に effective が効いたあとで届いた、中身の違う decision）の行。status とほかの項目（効いた決定の
+    decided_by / decided_at を含む）は proposal（直前の行）のまま、seq だけ進め、detail に効かなかった決定を書く。
+    event_id = <proposal_id>#ignored#<decision>#<decided_at の epoch 秒>#<decided_by>（同じ人が同じ秒に承認と却下を送っても別の行）"""
+    kind, by, at = decision_key(decision)
+    detail = (f"{DECISION_JA.get(kind, kind)}（{by or '-'}、{jst(at) or '-'}）が届いたが、"
+              f"先に{DECISION_JA.get(effective.get('decision'), str(effective.get('decision') or '-'))}が決まっていた")
+    row = proposal_event("ignored", proposal, now, detail)
+    row["event_id"] = f"{row['proposal_id']}#ignored#{kind}#{at}#{by}"
+    return row
+
+
+def _seq(v) -> int:
+    try:
+        return max(int(v or 0), 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def latest_proposals(rows: list) -> dict:
+    """proposal_events の行の list を {proposal_id: 最新の行} にする。最新は seq が最大の行（同じ seq が再試行で 2 つあれば event_time が遅いほう。
+    agent/proposals.py の Athena のクエリと同じ並べ方）"""
+    out = {}
+    for r in rows:
+        pid = str(r.get("proposal_id") or "")
+        cur = out.get(pid)
+        if cur is None or (_seq(r.get("seq")), _epoch(r.get("event_time"))) > (_seq(cur.get("seq")), _epoch(cur.get("event_time"))):
+            out[pid] = r
+    return out
+
+
+def anomaly_of(proposal_id: str) -> str:
+    """proposal_id（<anomaly_id>#<first_seen>）から anomaly_id を出す（右端の # から後ろを外す）"""
+    return str(proposal_id or "").rsplit("#", 1)[0]
+
+
+def decision_from_message(body: str, now: int = 0) -> dict | None:
+    """決定のキュー（<prefix>-decisions。Web の承認タブが送る）のメッセージ本文を、シグナル decide に渡す辞書にする。
+    本文は {"type": "decision", "proposal_id", "decision", "decided_by", "sent_at"}。読めない・type が decision でない・
+    decision が approved / rejected でない・proposal_id が <anomaly_id>#<first_seen> の形でないときは None。decided_at は sent_at（無ければ now）"""
+    try:
+        data = json.loads(body or "")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("type") != "decision":
+        return None
+    pid, decision = str(data.get("proposal_id") or "").strip(), str(data.get("decision") or "").strip()
+    if decision not in DECISIONS or "#" not in pid or not anomaly_of(pid):
+        return None
+    return {"proposal_id": pid, "decision": decision, "decided_by": str(data.get("decided_by") or "").strip()[:64],
+            "decided_at": _epoch(data.get("sent_at")) or int(now or 0)}
 
 
 # ---------------------------------------------------------------- アラートの通知の履歴（S3 Tables の alert_events。2026-10-04）

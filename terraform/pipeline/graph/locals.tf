@@ -39,6 +39,8 @@ locals {
   # SG は古い state の destroy でも評価できるように try（空のまま apply に進まないよう remote_state の postcondition で止める）
   lambda_sg_id    = try(data.terraform_remote_state.main.outputs.security_group_ids["lambda"], "") # sync.tf の status Lambda
   reader_role_ids = toset([data.terraform_remote_state.main.outputs.runtime_role_name, data.terraform_remote_state.main.outputs.web_role_name])
+  # Neptune に書けるのは Web の EC2 のロールだけ（access.tf）
+  graph_writer_role = data.terraform_remote_state.main.outputs.web_role_name
   # アラートの SNS トピック（terraform/base/core の alerts.tf）。sync.tf の status Lambda が購読する。古い state なら空で、購読の precondition が止める
   alerts_topic_arn = try(data.terraform_remote_state.main.outputs.alerts_topic_arn, "")
   # terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
