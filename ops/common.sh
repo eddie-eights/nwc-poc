@@ -33,3 +33,14 @@ tf() {  # tf <ルート> <terraform のサブコマンドと引数…>
   local root="$1"; shift
   env ${TF_AWS_ENV[@]+"${TF_AWS_ENV[@]}"} terraform -chdir="$TF_DIR/$root" "$@"
 }
+# tf_init_root <ルート>  マネージド版は「init -input=false」のまま。OSS 版（005）は TF_INIT_LOCKFILE=readonly にして -lockfile=readonly を足す。
+# oss/terraform/<ルート>/.terraform.lock.hcl はマネージド版の lock へのシンボリックリンクで、init が lock を書き換える場面
+# （その PC の OS・CPU のハッシュが lock に無いとき）に、リンクが実ファイルに置き換わる。readonly なら書き換えずに止まる
+tf_init_root() {
+  local hint=""
+  if [ -n "${TF_INIT_LOCKFILE:-}" ]; then
+    hint="。上に「lock file」のエラーが出ているなら、この PC の OS・CPU のハッシュが lock に無い（-lockfile=$TF_INIT_LOCKFILE では書き足さない）。先にマネージド版のルートを init して lock に足す: terraform -chdir=terraform/$1 init -input=false のあと、もう一度打つ"
+  fi
+  tf "$1" init -input=false ${TF_INIT_LOCKFILE:+"-lockfile=$TF_INIT_LOCKFILE"} >/dev/null \
+    || die "$TF_DIR/$1 の init に失敗した（provider の取得。社内 PC は docs/setup.md「社内 PC の CA」）$hint"
+}

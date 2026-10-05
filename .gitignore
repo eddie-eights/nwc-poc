@@ -9,6 +9,8 @@ __pycache__/
 deploy.env
 # pip download の置き場（ops/up.sh の手順 4）
 wheels/
+# OSS 版（oss/ops/up.sh の手順 4-1。web/requirements-oss.txt のぶん）
+wheels-oss/
 lab/splab.clab.yml
 *.rpm
 # uv の仮想環境

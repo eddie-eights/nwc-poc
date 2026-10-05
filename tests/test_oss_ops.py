@@ -8,7 +8,11 @@ aws / terraform / docker は偽物（下の FAKE_*）に差し替え、AWS に�
   4. イメージの名前と版が oss/compose/（正）・spark/ と neo4j/ の Dockerfile・terraform の既定値・ECR のリポジトリに合い、
      mirror_oss_images が ECR に無いものだけを写す（spark / neo4j はリポジトリの直下の spark/・neo4j/ をビルドする）
   5. ensure_secret の kafka-cluster-id（KRaft の CLUSTER_ID の形）と strong-password（OpenSearch の admin。値は画面に出さない）と、
-     oss/ops/ が ops/ の関数を写さず読むこと、up.sh が analytics と graph まで当て、Splunk のイメージと SSM をマネージド版と同じ関数で用意すること
+     oss/ops/ が ops/ の関数を写さず読むこと、up.sh がマネージド版と同じ 9 つのルートを当て、Splunk のイメージと SSM をマネージド版と同じ関数で用意すること
+  6. oss/ops/up.sh を偽物の道具で最後まで通す（3 回）。9 つのルートの apply の順番と渡す値、イメージと SSM のパラメータ、Web の部品、
+     Neo4j が安定してからの同期、OpenSearch・VictoriaMetrics・Splunk が上がってからの Spark、ポートフォワードの案内と、
+     打ち直し（イメージもパラメータも作り直さない）、サービスが安定しなかったとき（同期を飛ばし、Spark は起こし、警告を出す）。
+     そのあと oss/ops/down.sh が、up.sh の作ったパラメータを全部消す
 実行は python3 tests/test_oss_ops.py"""
 import base64, json, os, re, shutil, subprocess, tempfile, types
 
@@ -69,7 +73,53 @@ svc, op = (args + ["", ""])[:2]
 query = opt("--query")
 log()
 if (svc, op) == ("sts", "get-caller-identity"):
-    print("123456789012")
+    print("arn:aws:sts::123456789012:assumed-role/Admin/tester" if query == "Arn" else "123456789012")
+# ---- ここから oss/ops/up.sh が打つもの（6.）。送ったコマンドは在庫の cmds に残し、結果を聞かれたら Success と答える
+elif (svc, op) == ("ecr", "get-login-password"):
+    print("fake-ecr-login")
+elif svc == "s3" and op in ("cp", "sync"):
+    pass
+elif (svc, op) == ("ssm", "describe-instance-information"):
+    print("Online")
+elif (svc, op) == ("ssm", "send-command"):
+    inv.setdefault("cmds", []).append(opt("--parameters"))
+    save()
+    print(f'cmd-{len(inv["cmds"])}')
+elif (svc, op) == ("ssm", "get-command-invocation"):
+    sent = inv["cmds"][int(opt("--command-id")[len("cmd-"):]) - 1]
+    if query == "Status":
+        print("Success")
+    elif query == "StandardOutputContent":
+        print(f'lab=active containers={os.environ.get("FAKE_LAB_NODES", "0")}' if "containers=" in sent else "")
+    else:
+        log({"unknown": "query " + str(query)}); fail("unknown query", 255)
+elif (svc, op) == ("ssm", "start-session"):
+    pass
+elif (svc, op) == ("ec2", "reboot-instances"):
+    pass
+elif (svc, op) == ("ecs", "wait"):  # FAKE_ECS_UNSTABLE のサービスは安定しない（待ちが切れる）
+    if set(multi("--services")) & set(os.environ.get("FAKE_ECS_UNSTABLE", "").split(",")):
+        fail("Waiter ServicesStable failed: Max attempts exceeded", 255)
+elif (svc, op) == ("ecs", "list-tasks"):
+    print(f'arn:aws:ecs:ap-northeast-1:123456789012:task/{opt("--cluster")}/{opt("--service-name")}-t1')
+elif (svc, op) == ("ecs", "describe-tasks"):
+    if query == "tasks[].healthStatus":
+        print("HEALTHY")
+    elif query and query.startswith("tasks[0].attachments[0].details"):
+        print("10.0.1.23")
+    else:
+        log({"unknown": "query " + str(query)}); fail("unknown query", 255)
+elif (svc, op) == ("ecs", "update-service"):
+    print(opt("--service"))
+elif (svc, op) == ("glue", "get-catalog"):
+    answers = {"Catalog.Name": "s3tablescatalog", "Catalog.FederatedCatalog.ConnectionName": "aws:s3tables",
+               "Catalog.AllowFullTableExternalDataAccess": "True",
+               "Catalog.CreateTableDefaultPermissions[].Principal.DataLakePrincipalIdentifier": "IAM_ALLOWED_PRINCIPALS"}
+    if query not in answers:
+        log({"unknown": "query " + str(query)}); fail("unknown query", 255)
+    print(answers[query])
+elif svc == "logs" and op in ("put-retention-policy", "create-log-group", "tag-resource"):
+    pass
 elif (svc, op) == ("ssm", "describe-parameters"):
     names = []
     for name, p in sorted(inv["ssm"].items()):
@@ -149,7 +199,7 @@ elif (svc, op) == ("resourcegroupstaggingapi", "get-resources"):
     print("\t".join(arns))
 elif (svc, op) == ("ecr", "describe-images"):
     tag = (opt("--image-ids") or "").partition("=")[2]
-    if f'{opt("--repository-name")}:{tag}' not in inv.get("ecr", []):
+    if not os.environ.get("FAKE_ECR_ALL") and f'{opt("--repository-name")}:{tag}' not in inv.get("ecr", []):
         fail("An error occurred (ImageNotFoundException)")
 else:
     log({"unknown": f"{svc} {op}"})
@@ -168,9 +218,27 @@ chdir = args[0][len("-chdir="):] if args and args[0].startswith("-chdir=") else 
 rest = args[1:] if chdir else args
 verb = rest[0] if rest else ""
 if verb == "init":
+    if os.environ.get("FAKE_TF_INIT_FAIL") == chdir:  # lock にこの PC のハッシュが無いときの readonly の init
+        print("Error: Provider dependency changes detected (lock file is read-only)", file=sys.stderr)
+        sys.exit(1)
     sys.exit(0)
 if rest[:2] == ["state", "list"]:
     print("aws_instance.this")
+    sys.exit(0)
+if verb == "apply":
+    print("Apply complete! Resources: 1 added, 0 changed, 0 destroyed.")
+    sys.exit(0)
+if verb == "output" and os.environ.get("FAKE_TF_UP"):  # up.sh（6.）にだけ答える。値は「out-<ルートの末尾>-<output の名前>」
+    name = rest[-1]
+    if "-json" in rest:
+        if name.endswith("_service_names"):
+            print(json.dumps({k: f'x-nwc-oss-{name[:-len("_service_names")]}-{k}' for k in ("c", "a", "b")}))
+        else:
+            print("{}")
+    elif name == "agent_repository_url":
+        print("123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/x-nwc-oss-agent", end="")
+    else:
+        print(f'out-{chdir.rsplit("/", 1)[-1]}-{name}', end="")
     sys.exit(0)
 if verb == "output":
     sys.exit(1)
@@ -189,10 +257,37 @@ FAKE_DOCKER = r'''#!/usr/bin/env python3
 import json, os, sys
 with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as f:
     f.write(json.dumps({"cmd": "docker", "args": sys.argv[1:]}) + "\n")
+if sys.argv[1:3] == ["buildx", "ls"]:
+    print("default *  docker\n  default  default  running  v0.20.0  linux/amd64, linux/arm64")
+if sys.argv[1:2] == ["login"]:
+    sys.stdin.read()
 '''
 
-ROOTS = ["base/ecr", "base/core", "agent", "pipeline/lab", "pipeline/stream", "pipeline/analytics",
-         "pipeline/graph", "pipeline/nautobot", "workflow"]
+# ---- 偽物の uv（up.sh が pip を打つのに使う。PyPI には行かない）。download は -d の先に、install は --target の先に空のファイルを置く
+FAKE_UV = r'''#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as f:
+    f.write(json.dumps({"cmd": "uv", "args": args}) + "\n")
+for flag, name in (("-d", "fake-1.0-py3-none-any.whl"), ("--target", "fake.py")):
+    if flag in args:
+        os.makedirs(args[args.index(flag) + 1], exist_ok=True)
+        open(os.path.join(args[args.index(flag) + 1], name), "w").close()
+'''
+
+# ---- 偽物の curl（containerlab の rpm）。-o の先に空でないファイルを置く
+FAKE_CURL = r'''#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as f:
+    f.write(json.dumps({"cmd": "curl", "args": args}) + "\n")
+with open(args[args.index("-o") + 1], "w") as f:
+    f.write("fake")
+'''
+
+# oss/ops/up.sh が apply する順番
+ROOTS = ["base/ecr", "base/core", "agent", "pipeline/lab", "pipeline/stream", "pipeline/graph",
+         "pipeline/nautobot", "pipeline/analytics", "workflow"]
 
 def lambda_eni(eni_id, fn, vpc):
     return {"id": eni_id, "desc": f"AWS Lambda VPC ENI-{fn}-0a1b2c", "status": "available", "type": "lambda", "vpc": vpc}
@@ -205,7 +300,9 @@ def ssm_param(managed_by, project):
 
 # 同じアカウントに 3 つが並んでいる: OSS 版（OWNER=x → x-nwc-oss）、マネージド版（OWNER=x-nwc-oss → x-nwc-oss-nwc-poc）、
 # マネージド版（OWNER=x → x-nwc-poc）
-OSS_MANAGED_PARAMS = ["/x-nwc-oss/kafka/cluster-id", "/x-nwc-oss/kafka-ui/admin-password", "/x-nwc-oss/telegraf-dialin/gnmi-password"]
+OSS_MANAGED_PARAMS = ["/x-nwc-oss/kafka/cluster-id", "/x-nwc-oss/kafka-ui/admin-password", "/x-nwc-oss/telegraf-dialin/gnmi-password",
+                      "/x-nwc-oss/opensearch-password", "/x-nwc-oss/splunk/admin-password", "/x-nwc-oss/splunk/hec-token",
+                      "/x-nwc-oss/neo4j-password", "/x-nwc-oss/nautobot/secret-key"]
 def inventory():
     return {
         "ssm": {
@@ -235,19 +332,25 @@ def inventory():
 TMP = tempfile.mkdtemp(prefix="nwc-oss-ops-")
 BIN = os.path.join(TMP, "bin")
 os.makedirs(BIN)
-for name, body in (("aws", FAKE_AWS), ("terraform", FAKE_TF), ("docker", FAKE_DOCKER), ("sleep", "#!/bin/sh\nexec /bin/sleep 0.1\n")):
+for name, body in (("aws", FAKE_AWS), ("terraform", FAKE_TF), ("docker", FAKE_DOCKER), ("sleep", "#!/bin/sh\nexec /bin/sleep 0.1\n"),
+                   ("uv", FAKE_UV), ("curl", FAKE_CURL), ("session-manager-plugin", "#!/bin/sh\nexit 0\n")):
     with open(os.path.join(BIN, name), "w", encoding="utf-8") as f:
         f.write(body)
     os.chmod(os.path.join(BIN, name), 0o755)
 LOG, INV = os.path.join(TMP, "calls.jsonl"), os.path.join(TMP, "inv.json")
 
-# down.sh を打つ場所（リポジトリの写し）。ops/ と oss/ops/ のスクリプトと、9 つのルートの state だけを置く
+# down.sh と up.sh を打つ場所（リポジトリの写し）。ops/ と oss/ops/ のスクリプトと、9 つのルートの state と、
+# up.sh が読む材料（イメージの元、Web とエージェントの部品、lab の定義）を置く。設定と秘密のファイルは写さない
 REPO = os.path.join(TMP, "repo")
 for d in ("ops", "oss/ops"):
     os.makedirs(os.path.join(REPO, d))
     for f in os.listdir(os.path.join(ROOT, d)):
-        if f.endswith(".sh"):
+        if f.endswith(".sh") or f == "seed_graph.py":
             shutil.copy(os.path.join(ROOT, d, f), os.path.join(REPO, d, f))
+UP_DIRS = ("lab", "web", "agent", "nautobot", "telegraf", "splunk", "spark", "neo4j", "graph", "workflow")
+for d in UP_DIRS:
+    shutil.copytree(os.path.join(ROOT, d), os.path.join(REPO, d), ignore=shutil.ignore_patterns(
+        "__pycache__", ".env", ".env.*", "deploy.env", "*.tfvars", "*.rpm", "*.part", "node_modules", ".venv", "splab.clab.yml"))
 for base in ("terraform", "oss/terraform"):
     for r in ROOTS:
         os.makedirs(os.path.join(REPO, base, r))
@@ -268,8 +371,8 @@ def calls():
     with open(LOG, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
-def run_down(script, owner, extra=None):
-    reset(inventory())
+def run_down(script, owner, extra=None, inv=None):  # inv を渡すと、その在庫から始める（6. で up.sh の作ったものを消す）
+    reset(inventory() if inv is None else inv)
     shutil.rmtree(os.path.join(REPO, "ops", "logs"), ignore_errors=True)
     envfile = os.path.join(TMP, f"owner-{owner}.env")
     with open(envfile, "w", encoding="utf-8") as f:
@@ -286,6 +389,9 @@ def tf_calls(cs):
 def chdir_of(c):
     return c["args"][0][len("-chdir="):]
 
+def inits(cs):  # terraform init の引数（-chdir の後ろ）
+    return [c["args"][1:] for c in tf_calls(cs) if c["args"][1] == "init"]
+
 def destroyed(cs):  # destroy を打ったルート（-chdir の値）
     return {chdir_of(c) for c in tf_calls(cs) if c["args"][1] == "destroy"}
 
@@ -294,6 +400,11 @@ def aws_calls(cs, svc, op):
 
 def arg_after(a, name):
     return a[a.index(name) + 1]
+
+def multi_of(a, name):  # --services a b c のように、次の --… までの値を全部
+    i = a.index(name) + 1
+    j = next((k for k in range(i, len(a)) if a[k].startswith("--")), len(a))
+    return a[i:j]
 
 def logs_made():
     d = os.path.join(REPO, "ops", "logs")
@@ -341,7 +452,7 @@ check("terraform に渡す認証のプロファイル名は接頭辞から作る
       {c["profile"] for c in tf_calls(cs)} == {"x-nwc-oss-terraform"})
 check("terraform のログは ops/logs/tf-oss-*（マネージド版の tf-* を上書きしない）",
       logs_made() and all(f.startswith("tf-oss-") for f in logs_made()) and "tf-oss-pipeline-stream-destroy.log" in logs_made())
-check("SSM: oss/ops/up.sh が作った 3 つ（Kafka の CLUSTER_ID を含む）を消し、手で入れたものとマネージド版のものは残す",
+check("SSM: oss/ops/up.sh が作った 8 つ（Kafka の CLUSTER_ID、OpenSearch・Splunk・Neo4j・Nautobot のものを含む）を消し、手で入れたものとマネージド版のものは残す",
       set(inv["ssm"]) == ALL_PARAMS - set(OSS_MANAGED_PARAMS))
 check("SSM: delete-parameter は /x-nwc-oss/ の下にしか打っていない",
       all(arg_after(a, "--name").startswith("/x-nwc-oss/") for a in aws_calls(cs, "ssm", "delete-parameter")))
@@ -376,7 +487,7 @@ check("マネージド版: terraform は terraform/ の下だけ（oss/terraform
 check("マネージド版: Runtime の ENI が残っているので base/core は -target で ENI に関わらないものだけ消す",
       "Runtime の ENI が残っている" in out
       and any(chdir_of(c) == "terraform/base/core" and "-target=aws_instance.this" in c["args"] for c in tf_calls(cs)))
-check("マネージド版: SSM は /x-nwc-oss-nwc-poc/ の ManagedBy=ops/up.sh の 2 つだけ消し、OSS 版の 4 つは残す",
+check("マネージド版: SSM は /x-nwc-oss-nwc-poc/ の ManagedBy=ops/up.sh の 2 つだけ消し、OSS 版の 9 つは残す",
       set(inv["ssm"]) == ALL_PARAMS - {"/x-nwc-oss-nwc-poc/kafka-ui/admin-password", "/x-nwc-oss-nwc-poc/nautobot/secret-key"})
 check("マネージド版: Lambda の ENI は x-nwc-oss-nwc-poc の 2 つだけ消し、OSS 版のものは残す",
       eni_ids(inv) == ALL_ENIS - {"eni-mgd-tools", "eni-mgd-graph"})
@@ -384,6 +495,8 @@ check("マネージド版: ロググループは x_nwc_oss_nwc_poc_agent- だけ
       set(inv["log_groups"]) == ALL_LOG_GROUPS - {"/aws/bedrock-agentcore/runtimes/x_nwc_oss_nwc_poc_agent-BBB-DEFAULT"})
 check("マネージド版: 残りも Project=x-nwc-oss-nwc-poc で数える（「残り: 2 件」）",
       "残り: 2 件（Project=x-nwc-oss-nwc-poc のタグ）" in out and "x-nwc-oss-left" not in out)
+check("マネージド版: terraform init は「init -input=false」のまま（-lockfile を付けない。lock はマネージド版が書き足す）",
+      inits(cs) and all(a == ["init", "-input=false"] for a in inits(cs)))
 check("マネージド版: terraform のログは ops/logs/tf-*（tf-oss-* を作らない）",
       logs_made() and not [f for f in logs_made() if f.startswith("tf-oss-")])
 
@@ -413,6 +526,13 @@ check("残りを数えられなかった（タグの API のエラー）とき�
 p, cs, inv = run_down("oss/ops/down.sh", "x", {"FAKE_TF_FAIL": "oss/terraform/base/core"})
 check("base/core（Kafka のデータの EFS）が消えなかったときも Kafka の CLUSTER_ID は残す",
       p.returncode == 1 and "/x-nwc-oss/kafka/cluster-id" in inv["ssm"] and "/x-nwc-oss/kafka-ui/admin-password" not in inv["ssm"])
+
+p, cs, inv = run_down("oss/ops/down.sh", "x", {"FAKE_TF_FAIL": "oss/terraform/pipeline/nautobot"})
+check("nautobot が消えなかった: 終了コード 1 で、/x-nwc-oss/nautobot/ の下（DB に入っている値と合わせるもの）だけ残し、ほかは Kafka の CLUSTER_ID も消す",
+      p.returncode == 1 and "NG: 消えなかったルート: pipeline/nautobot（" in p.stdout + p.stderr
+      and set(inv["ssm"]) == ALL_PARAMS - set(OSS_MANAGED_PARAMS) | {"/x-nwc-oss/nautobot/secret-key"})
+check("nautobot が消えなかった: 前後のルート（analytics / graph / stream / base/core）は消しにいく",
+      {f"oss/terraform/{r}" for r in ROOTS} == destroyed(cs))
 
 # ================================================================ 4. イメージの名前と版
 img_sh = read("oss/ops/oss-images.sh")
@@ -559,10 +679,13 @@ check("oss/ops/ の 2 つは resolve_name_prefix nwc-oss で接頭辞を作り�
       all("resolve_name_prefix nwc-oss" in t and re.search(r"^TF_DIR=oss/terraform\b", t, re.M)
           and re.search(r"^OPS_DIR=oss/ops\b", t, re.M) and re.search(r"^TF_LOG_NAME=tf-oss\b", t, re.M) for t in (up, down)))
 pos = lambda s: up.find(s)
-check("oss/ops/up.sh はルートを base/ecr → base/core → pipeline/lab → pipeline/stream → pipeline/analytics → pipeline/graph の順に当て、ROOTS もその 6 つ",
-      0 <= pos("tf_apply base/ecr") < pos("tf_apply base/core") < pos("tf_apply pipeline/lab") < pos("tf_apply pipeline/stream")
-      < pos("tf_apply pipeline/analytics") < pos("tf_apply pipeline/graph")
-      and re.search(r'^ROOTS="base/ecr base/core pipeline/lab pipeline/stream pipeline/analytics pipeline/graph"$', up, re.M))
+_applies = [pos(f"tf_apply {r}") for r in ROOTS]
+check("oss/ops/up.sh はルートを base/ecr → base/core → agent → pipeline/lab → pipeline/stream → pipeline/graph → pipeline/nautobot → pipeline/analytics → workflow の順に当て、ROOTS もその 9 つ（マネージド版と同じ範囲）",
+      _applies[0] >= 0 and _applies == sorted(_applies) and len(set(_applies)) == 9
+      and re.search(r'^ROOTS="' + " ".join(ROOTS) + r'"$', up, re.M))
+check("oss/ops/down.sh は up.sh の 9 つのルートを全部消す（base/core は destroy_base_core、agent は destroy_agent）",
+      all(re.search(rf"^\s*destroy_(lambda_)?root {re.escape(r)}\b", down, re.M) for r in ROOTS if r not in ("base/core", "agent"))
+      and re.search(r"^destroy_agent$", down, re.M) and re.search(r"^destroy_base_core$", down, re.M))
 check("oss/ops/up.sh は ECR ができてから OSS のイメージを全部（OSS_IMAGES の 7 つ）写すかビルドし、stream より先に済ませる",
       (m := re.search(r'^OSS_NOW="([^"]*)"$', up, re.M)) and set(m.group(1).split()) == set(V["OSS_IMAGES"].split())
       and pos("tf_apply base/ecr") < pos('mirror_oss_images "$REG" "$PREFIX" $OSS_NOW') < pos("tf_apply pipeline/stream"))
@@ -587,9 +710,46 @@ check("oss/ops/up.sh は graph の前に SSM の /<接頭辞>/neo4j-password を
       and 0 <= pos("--target oss/terraform/pipeline/graph/.build/neo4j-layer/python") < pos("tf_apply pipeline/graph")
       and "--platform manylinux2014_aarch64" in up and "-r graph/requirements-oss.txt" in up
       and 'tf_apply pipeline/graph -var "neo4j_image_tag=$NEO4J_TAG" -var alert_history=true' in up)
-check("oss/ops/up.sh のエンドポイントに、analytics と graph が使う s3tables（Spark の iceberg）・sns（Splunk のアラート）・kinesis-firehose（アラートの履歴）を入れる",
-      (m := re.search(r'^ENDPOINTS="([^"]*)"$', up, re.M))
-      and {"ssm", "ssmmessages", "ecr.api", "ecr.dkr", "logs", "s3tables", "sns", "kinesis-firehose"} == set(m.group(1).split()))
+UP_ENDPOINTS = {"ssm", "ssmmessages", "ecr.api", "ecr.dkr", "logs", "s3tables", "sns", "kinesis-firehose",
+                "bedrock-runtime", "bedrock-agentcore", "ecs", "sqs", "bedrock-agentcore.gateway", "athena"}
+check("oss/ops/up.sh のエンドポイントは 14 個: 土台の 5 つ、analytics と graph の s3tables・sns・kinesis-firehose、agent の bedrock-runtime・bedrock-agentcore、"
+      "nautobot の ecs、workflow の sqs・bedrock-agentcore.gateway・athena",
+      (m := re.search(r'^ENDPOINTS="([^"]*)"$', up, re.M)) and UP_ENDPOINTS == set(m.group(1).split()) and len(m.group(1).split()) == 14)
+check("oss/ops/up.sh は agent・graph・workflow に lambda_az_num を、agent に runtime_az_num を、nautobot に nautobot_db_az_num を渡す（マネージド版が渡している値）",
+      all(re.search(rf'^az_num {k} 1 1 ', up, re.M) for k in ("RUNTIME_AZ_NUM", "LAMBDA_AZ_NUM", "NAUTOBOT_DB_AZ_NUM"))
+      and 'tf_apply agent -var "agent_image_tag=$IMAGE_TAG" -var "runtime_az_num=$RUNTIME_AZ_NUM" -var "lambda_az_num=$LAMBDA_AZ_NUM"' in up
+      and 'tf_apply pipeline/graph -var "neo4j_image_tag=$NEO4J_TAG" -var alert_history=true -var "lambda_az_num=$LAMBDA_AZ_NUM"' in up
+      and 'tf_apply workflow -var "worker_image_tag=$IMAGE_TAG" -var "lambda_az_num=$LAMBDA_AZ_NUM"' in up
+      and 'tf_apply pipeline/nautobot -var "nautobot_image_tag=$NAUTOBOT_TAG" -var "redis_image_tag=$REDIS_TAG" -var "nautobot_db_az_num=$NAUTOBOT_DB_AZ_NUM"' in up)
+check("oss/ops/up.sh は analytics に http_send と Spark の 1 回に読む件数（max_offsets_per_trigger とその格納先ごと）を、stream に telegraf_az_num と dialin_targets_from_nautobot=true を渡す",
+      '-var "http_send=$HTTP_SEND"' in _an and '-var "max_offsets_per_trigger=' in _an and '-var "max_offsets_per_trigger_by_sink=' in _an
+      and '-var "telegraf_az_num=$TELEGRAF_AZ_NUM"' in up and "-var dialin_targets_from_nautobot=true" in up)
+_spark_tf = read("oss/terraform/pipeline/analytics/spark.tf")
+check("Spark のサービスは Terraform では 0 台で作り（desired_count = 0、あとの変更は見ない）、up.sh が OpenSearch・VictoriaMetrics・Splunk を待ったあとで 1 台にする",
+      re.search(r"^\s*desired_count\s*=\s*0$", _spark_tf, re.M) and "ignore_changes = [desired_count]" in _spark_tf
+      and 0 <= pos("tf_apply pipeline/analytics") < pos("--services $OS_SERVICES") < pos("--services $VM_SERVICES")
+      < pos("'tasks[].healthStatus'") < pos('echo "Splunk は起動した"') < pos("--desired-count 1")
+      and up.count("--desired-count 1") == 1)
+check("oss/ops/up.sh は Neo4j のサービスが安定してから、Web の EC2（部品を入れ直したあと）で ops/seed_graph.py を流す（マネージド版が Neptune に入れるのと同じスクリプト）",
+      0 <= pos("aws ec2 reboot-instances") < pos("tf_apply pipeline/graph") < pos('--services "$NEO4J_SERVICE"') < pos("base64 < ops/seed_graph.py")
+      < pos("tf_apply pipeline/nautobot")
+      and "ops/seed_graph.py" in read("ops/up.sh") and "/usr/bin/python3.13 -" in up)
+check("oss/ops/up.sh は Web に Neo4j のドライバーを入れる（web/requirements-oss.txt のホイールを wheels-oss/ に取り、S3 に上げる）。wheels-oss/ は git に入れない",
+      "-d wheels-oss -r web/requirements-oss.txt" in up and 'aws s3 sync --only-show-errors wheels-oss/ "s3://$KB_BUCKET/web/wheels/"' in up
+      and re.search(r"^neo4j==", read("web/requirements-oss.txt"), re.M) and re.search(r"^-r requirements\.txt$", read("web/requirements-oss.txt"), re.M)
+      and re.search(r"^wheels-oss/$", read(".gitignore"), re.M) and re.search(r"^oss/terraform/\*\*/\.build/$", read(".gitignore"), re.M))
+check("oss/ops/up.sh はワーカーのイメージを Neo4j のドライバー入り（workflow/requirements-oss.txt）でビルドする",
+      'build_worker "$IMAGE_TAG" requirements-oss.txt' in up and re.search(r"^neo4j==", read("workflow/requirements-oss.txt"), re.M))
+check("oss/ops/up.sh は nautobot の前に ensure_nautobot_secrets（マネージド版と同じ関数）を呼ぶ",
+      0 <= pos("\nensure_nautobot_secrets") < pos("tf_apply pipeline/nautobot") and "ensure_nautobot_secrets" in read("ops/up.sh"))
+check("oss/ops/up.sh は最後に Web へのポートフォワーディングを開く（NO_DASHBOARD_PORTFORWARD=1 なら開かずに終わる）。exec の前に一時ファイルを片付ける",
+      0 <= pos("tf_apply workflow") < pos('if [ -n "$NO_DASHBOARD_PORTFORWARD" ]; then') < pos("\ntrap - EXIT") < pos("\nexec aws ssm start-session")
+      and "--document-name AWS-StartPortForwardingSession" in up[pos("\nexec aws ssm start-session"):]
+      and up.rstrip().endswith('--parameters "{\\"portNumber\\":[\\"8080\\"],\\"localPortNumber\\":[\\"$LOCAL_PORT\\"]}"'))
+check("oss/ops/up.sh はポートフォワードの案内（Web・lab・Kafbat UI・Nautobot・Splunk・Neo4j のブラウザと Bolt）を、パスワードの値ではなく取り方で出す",
+      all(f"output -raw {o}" in up for o in ("start_session_command", "kafka_ui_port_forward_command", "kafka_ui_password_command", "port_forward_command",
+                                              "password_command", "splunk_port_forward_command", "splunk_password_command", "opensearch_password_parameter",
+                                              "neo4j_password_parameter", "neo4j_browser_port_forward_command", "neo4j_bolt_port_forward_command")))
 check("oss/ops/up.sh は SPLUNK_AZ_NUM が 2 以上（クラスター）なら SPLUNK_INDEX を書けない（マネージド版と同じ）",
       re.search(r'^az_num SPLUNK_AZ_NUM 1 1 3 ', up, re.M) and re.search(r'^az_num EMR_AZ_NUM 1 1 3 ', up, re.M)
       and re.search(r'^SPLUNK_INDEX="\$\{SPLUNK_INDEX:-\}"$', up, re.M)
@@ -601,6 +761,185 @@ check("oss/ops/ はシークレットの値を読まない（get-parameter / --w
       not re.search(r"get-parameter\b|--with-decryption", up + down + img_sh))
 check("oss/ops/up.sh の lab の既定の認証情報は ensure_fixed_secret にだけ渡す（echo しない）",
       all("ensure_fixed_secret" in line for line in up.splitlines() if re.search(r"\$\{?LAB_[A-Z_]*(PASSWORD|COMMUNITY|USERNAME)", line)))
+
+# ================================================================ 6. oss/ops/up.sh を偽物の道具で最後まで通す
+LAB_NODES = len(re.findall(r"^ *kind: (?:nokia_srlinux|linux)$", read("lab/splab.clab.yml.in"), re.M))
+def run_up(inv, extra=None):
+    reset(inv)
+    shutil.rmtree(os.path.join(REPO, "ops", "logs"), ignore_errors=True)
+    envfile = os.path.join(TMP, "owner-x.env")
+    with open(envfile, "w", encoding="utf-8") as f:
+        f.write("OWNER=x\n")
+    p = subprocess.run(["bash", "oss/ops/up.sh"], cwd=REPO, capture_output=True, text=True, timeout=600,
+                       env=fake_env({"DEPLOY_ENV_FILE": envfile, "FAKE_TF_UP": "1", "FAKE_LAB_NODES": str(LAB_NODES), **(extra or {})}))
+    with open(INV, encoding="utf-8") as f:
+        inv = json.load(f)
+    return p, calls(), inv
+
+def first(cs, pred):  # 条件に合う最初の呼び出しの位置。無ければ -1
+    return next((i for i, c in enumerate(cs) if pred(c)), -1)
+def is_aws(c, svc, op, *words):
+    return c["cmd"] == "aws" and c["args"][:2] == [svc, op] and all(w in " ".join(c["args"]) for w in words)
+def applies(cs):  # apply を打った順の (ルート, 引数)
+    return [(chdir_of(c), c["args"]) for c in tf_calls(cs) if c["args"][1] == "apply"]
+def has_var(a, v):
+    return any(a[i] == "-var" and a[i + 1] == v for i in range(len(a) - 1))
+def apply_at(cs, root):
+    return first(cs, lambda c: c["cmd"] == "terraform" and c["args"][:2] == [f"-chdir=oss/terraform/{root}", "apply"])
+def is_seed(c):
+    return is_aws(c, "ssm", "send-command", "base64 -d | NAME_PREFIX=x-nwc-oss LAB_TOPOLOGY_B64=", "/usr/bin/python3.13 -")
+def spark_starts(cs):
+    return [arg_after(c["args"], "--service") for c in cs if is_aws(c, "ecs", "update-service", "--desired-count 1")]
+
+UP_PARAMS = {f"/x-nwc-oss/{n}" for n in (
+    "telegraf-dialin/gnmi-username", "telegraf-dialin/gnmi-password", "telegraf-dialin/snmp-community", "kafka-ui/admin-password",
+    "kafka/cluster-id", "neo4j-password", "nautobot/secret-key", "nautobot/admin-password", "nautobot/db-password", "nautobot/api-token",
+    "opensearch-password", "splunk/admin-password", "splunk/hec-token")}
+SPARK_SERVICES = [f"x-nwc-oss-spark-{k}" for k in "abc"]
+empty = {"ssm": {}, "vpcs": {}, "enis": [], "log_groups": [], "tagged": {}, "ecr": []}
+
+# ---- 1 回目: 何も無いところから（ポートフォワーディングは開かない）
+p, cs, inv = run_up(dict(empty), {"NO_DASHBOARD_PORTFORWARD": "1"})
+out = p.stdout + p.stderr
+ap = applies(cs)
+check("up.sh（通し）: 終了コード 0 で最後まで行き、偽物の知らないコマンドを打たず、未定義の変数も踏まない",
+      p.returncode == 0 and not [c for c in cs if "unknown" in c] and "unbound variable" not in out and "command not found" not in out
+      and "NO_DASHBOARD_PORTFORWARD=1: Web へのポートフォワーディングは開かない" in p.stdout)
+check("up.sh（通し）: oss/terraform/ の 9 つのルートを決めた順に 1 回ずつ apply し、どれにも owner=x を渡す（terraform/ のルートには触らない）",
+      [r for r, _ in ap] == [f"oss/terraform/{r}" for r in ROOTS] and all(has_var(a, "owner=x") for _, a in ap)
+      and all(chdir_of(c).startswith("oss/terraform/") for c in tf_calls(cs)))
+A = {r[len("oss/terraform/"):]: a for r, a in ap}
+check("up.sh（通し）: base/core にエンドポイント 14 個と、閉域（network_perimeter=true）と endpoints_az_num=1 を渡す",
+      "base/core" in A and any(a.startswith("interface_endpoints=") and set(json.loads(a.partition("=")[2])) == UP_ENDPOINTS for a in A["base/core"])
+      and has_var(A["base/core"], "network_perimeter=true") and has_var(A["base/core"], "endpoints_az_num=1"))
+check("up.sh（通し）: agent に agent_image_tag=v1・runtime_az_num=1・lambda_az_num=1、workflow に worker_image_tag=v1・lambda_az_num=1 を渡す",
+      all(has_var(A.get("agent", []), v) for v in ("agent_image_tag=v1", "runtime_az_num=1", "lambda_az_num=1"))
+      and all(has_var(A.get("workflow", []), v) for v in ("worker_image_tag=v1", "lambda_az_num=1")))
+check("up.sh（通し）: graph に alert_history=true・lambda_az_num=1 と Neo4j のタグ、nautobot に nautobot_db_az_num=1、lab に forward_to_telegraf=true を渡す",
+      all(has_var(A.get("pipeline/graph", []), v) for v in ("alert_history=true", "lambda_az_num=1", f'neo4j_image_tag={T["neo4j"][0]}'))
+      and has_var(A.get("pipeline/nautobot", []), "nautobot_db_az_num=1") and has_var(A.get("pipeline/lab", []), "forward_to_telegraf=true"))
+check("up.sh（通し）: stream に Kafka の版・telegraf_az_num=1・snmp_poll=true・syslog_standard=RFC3164・dialin_targets_from_nautobot=true と、lab の定義から作った SNMP と gNMI の宛先を渡す",
+      all(has_var(A.get("pipeline/stream", []), v) for v in (f'kafka_image_tag={V["OSS_KAFKA_TAG"]}', "telegraf_az_num=1", "snmp_poll=true",
+                                                              "syslog_standard=RFC3164", "dialin_targets_from_nautobot=true"))
+      and any(re.match(r'snmp_agents="udp://[0-9.]+:161"', a) for a in A.get("pipeline/stream", []))
+      and any(re.match(r'gnmi_targets="[0-9.]+:57400"', a) for a in A.get("pipeline/stream", [])))
+check("up.sh（通し）: analytics に 4 つの格納先・http_send=driver・Spark と OpenSearch と VictoriaMetrics のタグ・splunk_az_num=1・emr_az_num=1 を渡す",
+      all(has_var(A.get("pipeline/analytics", []), v) for v in ('sinks=["iceberg","opensearch","prometheus","splunk"]', "http_send=driver",
+                                                                 f'spark_image_tag={T["spark"][0]}', f'opensearch_image_tag={V["OSS_OPENSEARCH_TAG"]}',
+                                                                 f'victoriametrics_image_tag={V["OSS_VM_TAG"]}', "splunk_az_num=1", "emr_az_num=1")))
+check("up.sh（通し）: SSM のパラメータを 13 個、全部 SecureString で、ManagedBy=oss/ops/up.sh・Project=x-nwc-oss のタグを付けて作る（oss/ops/down.sh が消せる）",
+      set(inv["ssm"]) == UP_PARAMS and all(m["type"] == "SecureString" and m["tags"].get("ManagedBy") == "oss/ops/up.sh"
+                                           and m["tags"].get("Project") == "x-nwc-oss" for m in inv["ssm"].values()))
+_secrets = [m.get("value", "") for n, m in inv["ssm"].items() if "/telegraf-dialin/" not in n]
+check("up.sh（通し）: 乱数で作ったシークレット（10 個）の値を、画面にも、aws・terraform・docker の引数にも出さない",
+      len(_secrets) == 10 and all(len(v) >= 16 for v in _secrets)
+      and not any(v in out or any(v in " ".join(c["args"]) for c in cs) for v in _secrets))
+docker = [c["args"] for c in cs if c["cmd"] == "docker"]
+_tags = {arg_after(a, "-t") for a in docker if a[:2] == ["buildx", "build"]} | {a[-1] for a in docker if a[0] == "push"}
+check("up.sh（通し）: イメージを ECR に置く（OSS の 7 つ、lab の 2 つ、Telegraf、Kafbat UI、Splunk、agent、worker、Temporal、Nautobot、Redis）。docker login のあと、stream の apply より前",
+      {t.split("/", 1)[1].split(":")[0] for t in _tags if t.startswith(REG + "/")}
+      >= {f"x-nwc-oss-{n}" for n in V["OSS_IMAGES"].split()} | {f"x-nwc-oss-{n}" for n in ("telegraf", "splunk", "agent", "worker", "nautobot")}
+      and len(_tags) >= 16 and all(t.startswith(REG + "/x-nwc-oss-") for t in _tags)
+      and 0 <= first(cs, lambda c: c["cmd"] == "docker" and c["args"][0] == "login")
+      < first(cs, lambda c: c["cmd"] == "docker" and c["args"][0] in ("push", "buildx") and c["args"][:2] != ["buildx", "ls"] and c["args"][:2] != ["buildx", "version"])
+      and max(i for i, c in enumerate(cs) if c["cmd"] == "docker") < apply_at(cs, "base/core"))
+check("up.sh（通し）: ワーカーのイメージは Neo4j のドライバー入り（REQUIREMENTS=requirements-oss.txt）で、タグは IMAGE_TAG（v1）",
+      any(a[:2] == ["buildx", "build"] and arg_after(a, "-t") == f"{REG}/x-nwc-oss-worker:v1" and "REQUIREMENTS=requirements-oss.txt" in a for a in docker))
+uv = [c["args"] for c in cs if c["cmd"] == "uv"]
+check("up.sh（通し）: Web のホイール（web/requirements-oss.txt）を wheels-oss/ に取り、Web とエージェントの部品と一緒に S3 に上げてから Web の EC2 を再起動する",
+      any("download" in a and arg_after(a, "-d") == "wheels-oss" and arg_after(a, "-r") == "web/requirements-oss.txt" for a in uv)
+      and 0 <= first(cs, lambda c: is_aws(c, "s3", "cp", "web/requirements-oss.txt"))
+      < first(cs, lambda c: is_aws(c, "s3", "sync", "wheels-oss/", "/web/wheels/"))
+      < first(cs, lambda c: is_aws(c, "ec2", "reboot-instances")) < apply_at(cs, "pipeline/lab"))
+check("up.sh（通し）: status の Lambda のレイヤー（graph/requirements-oss.txt）を arm64 向けに入れてから graph を apply する",
+      any("install" in a and arg_after(a, "--target") == "oss/terraform/pipeline/graph/.build/neo4j-layer/python"
+          and arg_after(a, "--platform") == "manylinux2014_aarch64" and arg_after(a, "-r") == "graph/requirements-oss.txt" for a in uv)
+      and 0 <= first(cs, lambda c: c["cmd"] == "uv" and "install" in c["args"]) < apply_at(cs, "pipeline/graph"))
+_neo_wait = first(cs, lambda c: is_aws(c, "ecs", "wait", "--services out-graph-neo4j_service_name"))
+check("up.sh（通し）: Neo4j のサービスが安定してから、Web の EC2 に ops/seed_graph.py を 1 回送る（graph の apply のあと、nautobot の apply の前）",
+      0 <= apply_at(cs, "pipeline/graph") < _neo_wait < first(cs, is_seed) < apply_at(cs, "pipeline/nautobot")
+      and len([c for c in cs if is_seed(c)]) == 1
+      and arg_after(cs[first(cs, is_seed)]["args"], "--instance-ids") == "out-core-web_instance_id")
+_seed = json.loads(arg_after(cs[first(cs, is_seed)]["args"], "--parameters"))["commands"][-1] if first(cs, is_seed) >= 0 else ""
+_sent = re.search(r"echo (\S+) \| base64 -d \| NAME_PREFIX=x-nwc-oss LAB_TOPOLOGY_B64=(\S+) ", _seed)
+check("up.sh（通し）: 送るのはリポジトリの ops/seed_graph.py そのもので、トポロジは lab/lab_topology.py が lab の定義から作ったもの（機器と回線が入っている）",
+      _sent and base64.b64decode(_sent.group(1)).decode() == read("ops/seed_graph.py")
+      and (lambda t: isinstance(t, dict) and len(json.dumps(t)) > 200)(json.loads(base64.b64decode(_sent.group(2)))))
+_os_wait = first(cs, lambda c: is_aws(c, "ecs", "wait", "x-nwc-oss-opensearch-a"))
+_vm_wait = first(cs, lambda c: is_aws(c, "ecs", "wait", "x-nwc-oss-victoriametrics-a"))
+_sp_health = first(cs, lambda c: is_aws(c, "ecs", "describe-tasks", "tasks[].healthStatus"))
+_spark_at = first(cs, lambda c: is_aws(c, "ecs", "update-service"))
+check("up.sh（通し）: Spark のサービス（3 つ）を 1 台にするのは、analytics の apply、OpenSearch と VictoriaMetrics の安定、Splunk の HEALTHY のあと",
+      0 <= apply_at(cs, "pipeline/analytics") < _os_wait < _vm_wait < _sp_health < _spark_at < apply_at(cs, "workflow")
+      and spark_starts(cs) == SPARK_SERVICES and "Splunk は起動した" in p.stdout
+      and all(arg_after(c["args"], "--cluster") == "out-analytics-analytics_cluster_name" for c in cs if is_aws(c, "ecs", "update-service")))
+check("up.sh（通し）: OpenSearch と VictoriaMetrics は output のサービス名を全部（名前の順で）待つ",
+      multi_of(cs[_os_wait]["args"], "--services") == [f"x-nwc-oss-opensearch-{k}" for k in "abc"]
+      and multi_of(cs[_vm_wait]["args"], "--services") == [f"x-nwc-oss-victoriametrics-{k}" for k in "abc"])
+check("up.sh（通し）: lab の EC2 でトポロジが上がったのを確かめ（コンテナの数は lab の定義から）、Telegraf へ通す（lab forward）。警告は出ない",
+      first(cs, lambda c: is_aws(c, "ssm", "send-command", "out-lab-lab_instance_id", "containers=")) >= 0
+      and first(cs, lambda c: is_aws(c, "ssm", "send-command", "out-lab-lab_instance_id", "/usr/local/bin/lab forward")) >= 0
+      and LAB_NODES > 0 and "トポロジが上がっていない" not in out and "安定しない" not in out and "上がりきらない" not in out)
+check("up.sh（通し）: workflow のワーカーが安定してから Web を起こし直し、ポートフォワードの案内（Web・Kafbat UI・Nautobot・Splunk・Neo4j）を出す",
+      0 <= apply_at(cs, "workflow") < first(cs, lambda c: is_aws(c, "ecs", "wait", "out-workflow-service_name"))
+      < max(i for i, c in enumerate(cs) if is_aws(c, "ssm", "send-command", "systemctl restart x-nwc-oss-web.service"))
+      and all(s in p.stdout for s in ("out-core-start_session_command", "out-stream-kafka_ui_port_forward_command", "out-nautobot-port_forward_command",
+                                      "out-analytics-splunk_port_forward_command", "out-graph-neo4j_browser_port_forward_command",
+                                      "out-graph-neo4j_bolt_port_forward_command", "out-graph-neo4j_password_parameter"))
+      and not aws_calls(cs, "ssm", "start-session"))
+check("up.sh（通し）: PC に残すのは wheels-oss/ とレイヤーの .build/ と rpm とログだけで、Nautobot のイメージの材料の一時フォルダは片付ける",
+      os.path.isdir(os.path.join(REPO, "wheels-oss")) and not [f for f in os.listdir(TMP) if f.startswith("x-nwc-oss-nautobot.")]
+      and any(f.startswith("tf-oss-") and f.endswith("-apply.log") for f in logs_made()))
+
+# ---- 2 回目: 打ち直し（イメージも SSM のパラメータもある）。最後にポートフォワーディングを開く
+made_values = {n: m.get("value") for n, m in inv["ssm"].items()}
+p, cs2, inv2 = run_up(inv, {"FAKE_ECR_ALL": "1"})
+docker2 = [c["args"] for c in cs2 if c["cmd"] == "docker"]
+check("up.sh（打ち直し）: 終了コード 0。ECR にあるイメージは写さずビルドもせず、docker にも入らない",
+      p.returncode == 0 and not [c for c in cs2 if "unknown" in c] and not [a for a in docker2 if a[0] in ("pull", "push", "login") or a[:2] == ["buildx", "build"]])
+check("up.sh（打ち直し）: SSM のパラメータを作り直さない（値が変わると、動いている Kafka・Nautobot の DB・Neo4j と合わなくなる）",
+      not aws_calls(cs2, "ssm", "put-parameter") and {n: m.get("value") for n, m in inv2["ssm"].items()} == made_values
+      and all(f"{n} はある（作り直さない）" in p.stdout for n in UP_PARAMS))
+check("up.sh（打ち直し）: ホイールは取り直さず、9 つのルートは同じ順で apply し直し、同期と Spark の起動もやり直す",
+      not [c for c in cs2 if c["cmd"] == "uv" and "download" in c["args"]]
+      and [r for r, _ in applies(cs2)] == [f"oss/terraform/{r}" for r in ROOTS]
+      and len([c for c in cs2 if is_seed(c)]) == 1 and spark_starts(cs2) == SPARK_SERVICES)
+_last = cs2[-1]["args"] if cs2 else []
+check("up.sh（打ち直し）: 最後に Web の EC2 へのポートフォワーディング（8080 → LOCAL_PORT の既定 8080）を開く",
+      _last[:2] == ["ssm", "start-session"] and arg_after(_last, "--target") == "out-core-web_instance_id"
+      and arg_after(_last, "--document-name") == "AWS-StartPortForwardingSession"
+      and json.loads(arg_after(_last, "--parameters")) == {"portNumber": ["8080"], "localPortNumber": ["8080"]}
+      and not [f for f in os.listdir(TMP) if f.startswith("x-nwc-oss-nautobot.")])
+
+# ---- 3 回目: Neo4j と OpenSearch のサービスが安定しない
+p, cs3, inv3 = run_up(inv2, {"FAKE_ECR_ALL": "1", "NO_DASHBOARD_PORTFORWARD": "1",
+                             "FAKE_ECS_UNSTABLE": "out-graph-neo4j_service_name,x-nwc-oss-opensearch-b"})
+out3 = p.stdout + p.stderr
+check("up.sh（Neo4j が安定しない）: 同期を送らず、警告（トポロジは入れていない）を出して先へ進む（nautobot・analytics・workflow まで apply する）",
+      p.returncode == 0 and not [c for c in cs3 if is_seed(c)] and out3.count("トポロジは入れていない") == 2
+      and [r for r, _ in applies(cs3)] == [f"oss/terraform/{r}" for r in ROOTS])
+check("up.sh（OpenSearch が安定しない）: 警告（どの格納先か）を出し、VictoriaMetrics と Splunk は待ち、Spark は起こす（書き先が上がれば ECS が起こし直す）",
+      out3.count("格納先が 20 分たっても上がりきらない: OpenSearch（") == 2 and "VictoriaMetrics（" not in out3.split("上がりきらない:", 1)[-1].split("。Spark は", 1)[0]
+      and first(cs3, lambda c: is_aws(c, "ecs", "wait", "x-nwc-oss-victoriametrics-a")) >= 0 and spark_starts(cs3) == SPARK_SERVICES)
+
+# ---- up.sh の作ったものを oss/ops/down.sh が消す（同じ在庫から）
+p, csd, invd = run_down("oss/ops/down.sh", "x", inv=inv3)
+check("up.sh → down.sh: up.sh が作った SSM のパラメータ 13 個を全部消し、up.sh が apply した 9 つのルートを全部 destroy する",
+      p.returncode == 0 and invd["ssm"] == {} and len(aws_calls(csd, "ssm", "delete-parameter")) == 13
+      and destroyed(csd) == {f"oss/terraform/{r}" for r in ROOTS} and "残り: 0 件" in p.stdout)
+
+check("oss/ops/up.sh と down.sh の terraform init は、どのルートも -lockfile=readonly（lock はマネージド版へのシンボリックリンクなので書き換えない）",
+      len({tuple(c["args"][:1]) for c in tf_calls(cs) if c["args"][1] == "init"}) == 9
+      and all(a == ["init", "-input=false", "-lockfile=readonly"] for a in inits(cs) + inits(csd)) and inits(csd))
+check("oss/terraform/ の .terraform.lock.hcl は、どのルートもマネージド版の lock へのシンボリックリンク（実ファイルにしない）",
+      all(os.path.islink(os.path.join(ROOT, "oss/terraform", r, ".terraform.lock.hcl")) for r in ROOTS))
+
+# ---- readonly の init が止まったとき（この PC の OS・CPU のハッシュが lock に無い）
+p, cs, inv = run_up(dict(empty), {"NO_DASHBOARD_PORTFORWARD": "1", "FAKE_TF_INIT_FAIL": "oss/terraform/base/ecr"})
+out = p.stdout + p.stderr
+check("up.sh: readonly の init が止まったら apply せずに止まり、先にマネージド版のルートを init する案内（terraform -chdir=terraform/base/ecr init）を出す",
+      p.returncode != 0 and not applies(cs) and "oss/terraform/base/ecr の init に失敗した" in out
+      and "terraform -chdir=terraform/base/ecr init -input=false" in out and "-lockfile=readonly" in out)
 
 shutil.rmtree(TMP, ignore_errors=True)
 print(f"通過 {passed} / 失敗 0")

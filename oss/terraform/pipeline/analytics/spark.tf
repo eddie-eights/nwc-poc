@@ -3,7 +3,7 @@
 # （iceberg = 全トピックを S3 Tables、splunk = 全トピックを Splunk の HEC、http = opensearch と prometheus。
 # var.sinks に無い格納先は外し、空になったジョブは作らない）。
 # どのタスクも spark-submit --master local[*]（driver も executor も 1 つの JVM）。EMR の STREAMING モードの起こし直しの代わりに、
-# サービス（desired_count = 1）がタスクの終わりを見て起こし直す。
+# サービス（1 台）がタスクの終わりを見て起こし直す。台数は作るときは 0 で、OSS 版の ops/up.sh が書き先が上がってから 1 にする。
 # イメージは spark/Dockerfile（apache/spark:3.5.9 に Kafka・Iceberg・S3 Tables・S3A の jar と spark/snmp_sinks.py を焼き込む。
 # 閉域で Maven に届かないので、起動時に jar を取りに行かない）。OSS 版の ops/up.sh が作って ECR の <接頭辞>-spark に push する。
 # checkpoint はマネージド版と同じバケットの analytics/checkpoint/ に S3A（s3a://）で書く（EMR の s3:// は EMRFS で、素の Spark には無い）。
@@ -164,8 +164,10 @@ resource "aws_ecs_service" "spark" {
   name            = "${local.name_prefix}-spark-${each.key}"
   cluster         = aws_ecs_cluster.analytics[0].id
   task_definition = aws_ecs_task_definition.spark[each.key].arn
-  desired_count   = 1
-  launch_type     = "FARGATE"
+  # 作るときは 0 台。OSS 版の ops/up.sh が OpenSearch・VictoriaMetrics・Splunk が上がるのを待ってから 1 にする
+  # （先に起こすと、書き先に届かずに落ちては起こし直されるのを繰り返す）。1 にした後の apply で 0 に戻さないよう、台数は Terraform が見ない
+  desired_count = 0
+  launch_type   = "FARGATE"
 
   # aws ecs execute-command でタスクの中に入れる
   enable_execute_command = true
@@ -182,6 +184,7 @@ resource "aws_ecs_service" "spark" {
   }
 
   lifecycle {
+    ignore_changes = [desired_count]
     precondition {
       condition     = local.spark_sg_id != ""
       error_message = "terraform/base/core の state に spark の SG が無い。oss/terraform/base/core を先に apply する。"

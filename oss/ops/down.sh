@@ -10,8 +10,9 @@
 #   KEEP_ECR=1 oss/ops/down.sh   # ECR（イメージ）だけ残す。翌日の oss/ops/up.sh で写すのを飛ばせる（保管料は月数円）
 #
 # oss/ops/up.sh と同じ deploy.env（DEPLOY_ENV_FILE=<パス> で別のファイル）を読む。使うキーは OWNER（必須。作ったときと同じ値）、
-# KEEP_ECR、AWS_PROFILE / AWS_CA_BUNDLE。oss/ops/up.sh が作るのは base/ecr・base/core・pipeline/lab・pipeline/stream・pipeline/analytics・
-# pipeline/graph で、oss/terraform/ にあるほかのルートも、state にリソースが載っていれば消す（作っていないルートは飛ばす）。
+# KEEP_ECR、AWS_PROFILE / AWS_CA_BUNDLE。oss/ops/up.sh はいつも 9 つのルート（base/ecr・base/core・agent・pipeline/lab・pipeline/stream・
+# pipeline/graph・pipeline/nautobot・pipeline/analytics・workflow）を作るので、9 つとも消す（途中で止まって作っていないルートは飛ばす）。
+# PC に残るもの（wheels-oss/ と oss/terraform/pipeline/graph/.build/）は消さない（次の oss/ops/up.sh が使い回すか作り直す）。
 # Glue のカタログ s3tablescatalog はアカウントで 1 つをマネージド版と共有するので、マネージド版の ops/down.sh と同じく消さない
 set -uo pipefail
 
@@ -25,6 +26,7 @@ cd "$(dirname "$0")/../.."
 TF_DIR=oss/terraform  # destroy するルートの親。マネージド版の terraform/ の state には触らない
 OPS_DIR=oss/ops       # 消す SSM のパラメータはタグ ManagedBy=oss/ops/up.sh のものだけ（マネージド版の ManagedBy=ops/up.sh は残る）
 TF_LOG_NAME=tf-oss    # terraform のログは ops/logs/tf-oss-<ルート>-destroy.log
+TF_INIT_LOCKFILE=readonly  # init は lock を書き換えない（lock はマネージド版へのシンボリックリンク。ops/common.sh の tf_init_root）
 trap 'if [ -n "$TF_AWS_CONFIG" ]; then rm -f "$TF_AWS_CONFIG"; fi' EXIT  # tf_use_cli_credentials の一時ファイル
 
 log "0. 設定と道具と認証（OSS 版）"
@@ -69,12 +71,13 @@ else
   destroy_root base/ecr
 fi
 
-log "5. Runtime のロググループ（agent を作っていたときだけある）"
+log "5. Runtime のロググループ（AgentCore が作るもので、agent の destroy では消えない）"
 delete_runtime_log_groups
 
-log "5-2. oss/ops/up.sh が作った SSM のパラメータ（Kafka の CLUSTER_ID、Kafbat UI の admin のパスワード、Telegraf が機器に入る認証情報）"
+log "5-2. oss/ops/up.sh が作った SSM のパラメータ（Kafka の CLUSTER_ID、Kafbat UI・OpenSearch・Splunk・Neo4j・Nautobot のパスワードや token、Telegraf が機器に入る認証情報）"
 # タグ ManagedBy=oss/ops/up.sh の付いたものだけ消す（マネージド版と手で入れたパラメータは消さない）。値は読まない。
-# stream か base/core が消えなかったときは Kafka の CLUSTER_ID を残す（ops/down-common.sh の delete_up_ssm_params）
+# stream か base/core が消えなかったときは Kafka の CLUSTER_ID を、nautobot が消えなかったときは /<接頭辞>/nautobot/ の下を残す
+# （ops/down-common.sh の delete_up_ssm_params）
 delete_up_ssm_params
 
 log "6. 残っていないか（Project=$PREFIX のタグ）"
