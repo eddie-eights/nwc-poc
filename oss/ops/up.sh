@@ -7,8 +7,8 @@
 #   → pipeline/graph（Neo4j + GDS の ECS と status の Lambda。上がったら lab の定義からトポロジを入れる）→ pipeline/nautobot
 #   → pipeline/analytics（Spark・OpenSearch・VictoriaMetrics・Splunk の ECS と S3 Tables）→ workflow（Temporal のワーカーと AgentCore Gateway）。
 #   Spark のタスクは、OpenSearch・VictoriaMetrics が安定し Splunk が HEALTHY になってから起こす。最後に Web（8080）へのポートフォワーディングを開く。
-#   格納先はいつも iceberg / opensearch / prometheus / splunk の 4 つ（マネージド版の STORES のようには選ばない）。
-#   イメージは ECR に無いタグだけ写すかビルドする（oss/ops/oss-images.sh の mirror_oss_images と、ops/up-common.sh の build_splunk / build_agent /
+#   格納先はいつも iceberg / opensearch / prometheus / splunk の 4 つ（マネージド版の STORES のようには選ばない）。Grafana もいつも作る。
+#   イメージは ECR に無いタグだけ写すかビルドする（oss/ops/oss-images.sh の mirror_oss_images と、ops/up-common.sh の build_splunk / build_grafana / build_agent /
 #   build_worker / mirror_temporal / build_nautobot）。
 # 関数は ops/ のもの（ops/common.sh・ops/up-common.sh・ops/lab-common.sh・ops/deploy-env.sh）を読み、写しを作らない。
 # 何度打っても同じ状態に収束する（できているものは Terraform が差分なしで飛ばし、ECR にあるタグは写さない）。
@@ -110,7 +110,7 @@ IGNORED=""
 for k in AGENT PIPELINE WORKFLOW CREATE_KB SKIP_LAB SKIP_STREAM SKIP_ANALYTICS SKIP_GRAPH STORES NAUTOBOT GRAFANA MSK_AZ_NUM NEPTUNE_AZ_NUM OPENSEARCH_AZ_NUM; do
   if [ -n "${!k:-}" ]; then IGNORED="$IGNORED $k"; fi
 done
-if [ -n "$IGNORED" ]; then echo "注意:${IGNORED} はマネージド版（ops/up.sh）のキーで、OSS 版では読まない（ルートはいつも全部作り、格納先はいつも iceberg / opensearch / prometheus / splunk。Knowledge Base は作らない）"; fi
+if [ -n "$IGNORED" ]; then echo "注意:${IGNORED} はマネージド版（ops/up.sh）のキーで、OSS 版では読まない（ルートはいつも全部作り、格納先はいつも iceberg / opensearch / prometheus / splunk で、Grafana もいつも作る。Knowledge Base は作らない）"; fi
 if [ -z "$NETWORK_PERIMETER" ]; then echo "NETWORK_PERIMETER=0: VPC の外からの呼び出しを拒む Deny を外す（エンドポイントは作る。切り分けが済んだら 1 に戻して打ち直す）"; fi
 command -v aws >/dev/null || die "aws CLI が無い（docs/setup.md「Terraform を打つ PC 側」）"
 command -v terraform >/dev/null || die "terraform が無い（docs/setup.md「Terraform を打つ PC 側」。1.11 以上）"
@@ -155,7 +155,7 @@ REG="${REPO%%/*}"
 # ---- 2. イメージ ----------------------------------------------------------------
 log "2. イメージ（ECR に無いタグだけ写すかビルドする）"
 NEED_LAB=""; NEED_TELEGRAF=""; NEED_KAFKA_UI=""; NEED_OSS=""; NEED_OSS_BUILD=""; NEED_SPLUNK=""
-NEED_AGENT=""; NEED_WORKER=""; NEED_TEMPORAL=""; NEED_NAUTOBOT=""; NEED_REDIS=""
+NEED_AGENT=""; NEED_WORKER=""; NEED_TEMPORAL=""; NEED_NAUTOBOT=""; NEED_REDIS=""; NEED_GRAFANA=""
 if ! ecr_has "$PREFIX-lab-srlinux" "$SRLINUX_TAG" || ! ecr_has "$PREFIX-lab-multitool" "$MULTITOOL_TAG"; then NEED_LAB=1
 else echo "lab-srlinux:$SRLINUX_TAG と lab-multitool:$MULTITOOL_TAG はある"; fi
 TELEGRAF_TAG=$(telegraf_tag) || die "telegraf/ のタグを作れなかった"
@@ -176,8 +176,11 @@ SPARK_TAG=$(oss_image_tag spark) || die "spark/ のタグを作れなかった"
 NEO4J_TAG=$(oss_image_tag neo4j) || die "neo4j/ のタグを作れなかった"
 # Splunk はマネージド版と同じイメージ（splunk/ をビルドして <接頭辞>-splunk に置く）。SPLUNK_TAG と NEED_SPLUNK（ops/up-common.sh）
 splunk_image_check
+# Grafana もマネージド版と同じイメージ（grafana/ をビルドして <接頭辞>-grafana に置く。タグは <版>-<grafana/ のハッシュ>）。OSS 版はいつも作る
+GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" grafana) || die "grafana/ のタグを作れなかった"
+if ecr_has "$PREFIX-grafana" "$GRAFANA_TAG"; then echo "grafana:$GRAFANA_TAG はある"; else NEED_GRAFANA=1; fi
 # agent・worker・Temporal・Nautobot・Redis はマネージド版と同じ中身を、OSS 版の接頭辞のリポジトリに置く（関数は ops/up-common.sh）。
-# worker だけは依存が違う（workflow/requirements-oss.txt。Neo4j のドライバー入り）
+# agent と worker は依存が違う（agent/・workflow/ の requirements-oss.txt。Neo4j のドライバー入り）
 if ecr_has "$PREFIX-agent" "$IMAGE_TAG"; then echo "agent:$IMAGE_TAG はある（作り直すなら IMAGE_TAG を変える）"; else NEED_AGENT=1; fi
 if ecr_has "$PREFIX-worker" "$IMAGE_TAG"; then echo "worker:$IMAGE_TAG はある"; else NEED_WORKER=1; fi
 if ecr_has "$PREFIX-temporal" "$TEMPORAL_TAG"; then echo "temporal:$TEMPORAL_TAG はある"; else NEED_TEMPORAL=1; fi
@@ -187,14 +190,14 @@ nautobot_context "$NAUTOBOT_CTX" || die "Nautobot のイメージの材料（nau
 NAUTOBOT_TAG=$(dir_tag "$NAUTOBOT_VERSION" "$NAUTOBOT_CTX") || die "nautobot/ のタグを作れなかった"
 if ecr_has "$PREFIX-nautobot" "$NAUTOBOT_TAG"; then echo "nautobot:$NAUTOBOT_TAG はある"; else NEED_NAUTOBOT=1; fi
 if ecr_has "$PREFIX-redis" "$REDIS_TAG"; then echo "redis:$REDIS_TAG はある"; else NEED_REDIS=1; fi
-if [ -z "$NEED_LAB$NEED_TELEGRAF$NEED_KAFKA_UI$NEED_OSS$NEED_SPLUNK$NEED_AGENT$NEED_WORKER$NEED_TEMPORAL$NEED_NAUTOBOT$NEED_REDIS" ]; then
+if [ -z "$NEED_LAB$NEED_TELEGRAF$NEED_KAFKA_UI$NEED_OSS$NEED_SPLUNK$NEED_GRAFANA$NEED_AGENT$NEED_WORKER$NEED_TEMPORAL$NEED_NAUTOBOT$NEED_REDIS" ]; then
   echo "写すイメージもビルドするイメージも無い"
 else
   docker info >/dev/null 2>&1 || die "dockerd に接続できない（WSL なら sudo service docker start。docs/setup.md「Terraform を打つ PC 側」）"
-  # agent / worker / nautobot / spark / neo4j は arm64 で RUN があるので、x86_64 の PC では QEMU（binfmt）が要る（写すだけのものと、COPY だけの
+  # agent / worker / nautobot / grafana / spark / neo4j は arm64 で RUN があるので、x86_64 の PC では QEMU（binfmt）が要る（写すだけのものと、COPY だけの
   # telegraf、amd64 の splunk は要らない）。出力は変数で受けてから探す（grep -q が先に閉じると docker が SIGPIPE で落ちることがある）
   BUILDX_LS=$(docker buildx ls 2>/dev/null || true)
-  if [ -n "$NEED_AGENT$NEED_WORKER$NEED_NAUTOBOT$NEED_OSS_BUILD" ] && ! grep -q 'linux/arm64' <<<"$BUILDX_LS"; then
+  if [ -n "$NEED_AGENT$NEED_WORKER$NEED_NAUTOBOT$NEED_GRAFANA$NEED_OSS_BUILD" ] && ! grep -q 'linux/arm64' <<<"$BUILDX_LS"; then
     die "docker buildx ls の Platforms に linux/arm64 が無い（docs/setup.md「WSL2（Ubuntu）」の binfmt の行）"
   fi
   aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REG"
@@ -216,8 +219,11 @@ else
   if [ -n "$NEED_SPLUNK" ]; then
     build_splunk   # amd64（ops/up-common.sh。マネージド版と共通）
   fi
+  if [ -n "$NEED_GRAFANA" ]; then
+    build_grafana   # arm64（ops/up-common.sh。マネージド版と共通）
+  fi
   if [ -n "$NEED_AGENT" ]; then
-    build_agent "$REPO:$IMAGE_TAG"
+    build_agent "$REPO:$IMAGE_TAG" requirements-oss.txt   # Runtime は agent/graph.py を GRAPH_BACKEND=neo4j で使うので、Neo4j のドライバーを入れる
   fi
   if [ -n "$NEED_WORKER" ]; then
     build_worker "$IMAGE_TAG" requirements-oss.txt   # ワーカーは agent/graph.py を GRAPH_BACKEND=neo4j で使うので、Neo4j のドライバーを入れる
@@ -421,6 +427,8 @@ ensure_secret "/$PREFIX/opensearch-password" strong-password "OpenSearch admin p
 # Splunk の管理者のパスワードと HEC の token（クラスターなら合言葉も）。マネージド版と同じ関数（ops/up-common.sh）
 echo "Splunk Enterprise（splunk/splunk:$SPLUNK_VERSION・試用ライセンス）を立てる。Splunk のライセンスと Splunk General Terms に同意して起動する"
 ensure_splunk_secrets "$SPLUNK_AZ_NUM"
+# Grafana の admin のパスワード。Grafana のタスクが ECS の secrets で受ける（grafana.tf。マネージド版と同じ名前）
+ensure_secret "/$PREFIX/grafana/admin-password" password "Grafana admin password (created by oss/ops/up.sh)"
 ensure_s3tables_catalog   # alert_events への Firehose（マネージド版の history.tf へのリンク）はこのカタログ越しにテーブルを引く
 # device map（別名=機器名,...）。Splunk のアラートアクションと Spark の prometheus / opensearch の sysName に使う（マネージド版と同じ）
 DEVICE_MAP=$("${PY[@]}" lab/lab_topology.py lab --device-map) || die "lab/lab_topology.py が lab の定義から device map を作れなかった"
@@ -428,6 +436,7 @@ DEVICE_MAP=$("${PY[@]}" lab/lab_topology.py lab --device-map) || die "lab/lab_to
 tf_apply pipeline/analytics -var 'sinks=["iceberg","opensearch","prometheus","splunk"]' \
   -var "spark_image_tag=$SPARK_TAG" -var "opensearch_image_tag=$OSS_OPENSEARCH_TAG" -var "victoriametrics_image_tag=$OSS_VM_TAG" \
   -var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX" -var "splunk_az_num=$SPLUNK_AZ_NUM" \
+  -var create_grafana=true -var "grafana_image_tag=$GRAFANA_TAG" \
   -var "emr_az_num=$EMR_AZ_NUM" -var "device_map=$DEVICE_MAP" -var "http_send=$HTTP_SEND" \
   -var "max_offsets_per_trigger=$MAX_OFFSETS_PER_TRIGGER" -var "max_offsets_per_trigger_by_sink={$MAX_OFFSETS_BY_SINK}"
 
@@ -548,6 +557,9 @@ tf pipeline/nautobot output -raw password_command; echo
 echo "Splunk（http://localhost:8000/ 。ユーザー admin）を開くポートフォワードと admin のパスワード:"
 tf pipeline/analytics output -raw splunk_port_forward_command; echo
 tf pipeline/analytics output -raw splunk_password_command; echo
+echo "Grafana（http://localhost:3000/ 。ユーザー admin）を開くポートフォワードと admin のパスワード:"
+tf pipeline/analytics output -raw grafana_port_forward_command; echo
+tf pipeline/analytics output -raw grafana_password_command; echo
 echo "OpenSearch の admin のパスワードは SSM の $(tf pipeline/analytics output -raw opensearch_password_parameter)（SecureString）"
 echo "Neo4j Browser（http://localhost:7474/ 。ユーザー neo4j。パスワードは SSM の $(tf pipeline/graph output -raw neo4j_password_parameter)）を開くポートフォワード 2 本:"
 tf pipeline/graph output -raw neo4j_browser_port_forward_command; echo
@@ -559,7 +571,7 @@ if [ -n "$LAB_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$LAB_WARN"; fi
 if [ -n "$GRAPH_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$GRAPH_WARN"; fi
 if [ -n "$NAUTOBOT_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$NAUTOBOT_WARN"; fi
 if [ -n "$STORE_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$STORE_WARN"; fi
-printf '\033[1;33m%s\033[0m\n' "時間課金（Kafka 3 台・Telegraf・Kafbat UI・Spark・OpenSearch 3 台・VictoriaMetrics・Splunk・Neo4j・Nautobot・Temporal のワーカーの ECS、Nautobot の DB、AgentCore Runtime、lab と Web の EC2、EFS、エンドポイント 14 種）。使い終わったら当日中に oss/ops/down.sh"
+printf '\033[1;33m%s\033[0m\n' "時間課金（Kafka 3 台・Telegraf・Kafbat UI・Spark・OpenSearch 3 台・VictoriaMetrics・Splunk・Grafana・Neo4j・Nautobot・Temporal のワーカーの ECS、Nautobot の DB、AgentCore Runtime、lab と Web の EC2、EFS、エンドポイント 14 種）。使い終わったら当日中に oss/ops/down.sh"
 
 # ---- 10. ポートフォワーディング ------------------------------------------------------------
 if [ -n "$NO_DASHBOARD_PORTFORWARD" ]; then

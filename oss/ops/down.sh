@@ -74,7 +74,7 @@ fi
 log "5. Runtime のロググループ（AgentCore が作るもので、agent の destroy では消えない）"
 delete_runtime_log_groups
 
-log "5-2. oss/ops/up.sh が作った SSM のパラメータ（Kafka の CLUSTER_ID、Kafbat UI・OpenSearch・Splunk・Neo4j・Nautobot のパスワードや token、Telegraf が機器に入る認証情報）"
+log "5-2. oss/ops/up.sh が作った SSM のパラメータ（Kafka の CLUSTER_ID、Kafbat UI・OpenSearch・Splunk・Grafana・Neo4j・Nautobot のパスワードや token、Telegraf が機器に入る認証情報）"
 # タグ ManagedBy=oss/ops/up.sh の付いたものだけ消す（マネージド版と手で入れたパラメータは消さない）。値は読まない。
 # stream か base/core が消えなかったときは Kafka の CLUSTER_ID を、nautobot が消えなかったときは /<接頭辞>/nautobot/ の下を残す
 # （ops/down-common.sh の delete_up_ssm_params）

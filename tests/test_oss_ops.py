@@ -699,6 +699,18 @@ check("oss/ops/up.sh は analytics の前に Splunk の SSM（ensure_splunk_secr
       and 0 <= pos('ensure_splunk_secrets "$SPLUNK_AZ_NUM"') < pos("tf_apply pipeline/analytics")
       and 0 <= pos("ensure_s3tables_catalog") < pos("tf_apply pipeline/analytics")
       and 'ensure_splunk_secrets "$SPLUNK_AZ_NUM"' in read("ops/up.sh"))
+check("oss/ops/up.sh の Grafana のイメージはマネージド版と同じ関数（ops/up-common.sh の build_grafana。版は GRAFANA_VERSION、タグは dir_tag）で、docker login のあと、analytics より前",
+      'GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" grafana)' in up and 'ecr_has "$PREFIX-grafana" "$GRAFANA_TAG"' in up
+      and pos("aws ecr get-login-password") < pos("    build_grafana") < pos("tf_apply pipeline/analytics")
+      and "    build_grafana" in read("ops/up.sh") and "GRAFANA_VERSION=" not in read("ops/up.sh") and "GRAFANA_VERSION=" not in up
+      and re.search(r"^GRAFANA_VERSION=(\S+)", read("ops/up-common.sh"), re.M).group(1)
+      == re.search(r"^ARG GRAFANA_VERSION=(\S+)", read("grafana/Dockerfile"), re.M).group(1)
+      and 'docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push grafana/'
+      in read("ops/up-common.sh"))
+check("oss/ops/up.sh は analytics の前に Grafana の admin のパスワードを SSM に作り、analytics に create_grafana=true と Grafana のタグを渡す（OSS 版はいつも Grafana を作る）",
+      0 <= pos('ensure_secret "/$PREFIX/grafana/admin-password" password') < pos("tf_apply pipeline/analytics")
+      and "-var create_grafana=true" in up[pos("tf_apply pipeline/analytics"):up.index("\n\n", pos("tf_apply pipeline/analytics"))]
+      and '-var "grafana_image_tag=$GRAFANA_TAG"' in up[pos("tf_apply pipeline/analytics"):up.index("\n\n", pos("tf_apply pipeline/analytics"))])
 _an = up[pos("tf_apply pipeline/analytics"):up.index("\n\n", pos("tf_apply pipeline/analytics"))]
 check("oss/ops/up.sh は analytics に 4 つの格納先と、Spark・OpenSearch・VictoriaMetrics・Splunk のタグ、Splunk の台数と index、Spark のサブネット、device map を渡す",
       all(v in _an for v in ("-var 'sinks=[" + '"iceberg","opensearch","prometheus","splunk"' + "]'", '-var "spark_image_tag=$SPARK_TAG"',
@@ -740,15 +752,21 @@ check("oss/ops/up.sh は Web に Neo4j のドライバーを入れる（web/requ
       and re.search(r"^wheels-oss/$", read(".gitignore"), re.M) and re.search(r"^oss/terraform/\*\*/\.build/$", read(".gitignore"), re.M))
 check("oss/ops/up.sh はワーカーのイメージを Neo4j のドライバー入り（workflow/requirements-oss.txt）でビルドする",
       'build_worker "$IMAGE_TAG" requirements-oss.txt' in up and re.search(r"^neo4j==", read("workflow/requirements-oss.txt"), re.M))
+check("oss/ops/up.sh は agent（Runtime）のイメージも Neo4j のドライバー入り（agent/requirements-oss.txt）でビルドする。マネージド版は既定（requirements.txt）のまま",
+      'build_agent "$REPO:$IMAGE_TAG" requirements-oss.txt' in up and re.search(r"^neo4j==", read("agent/requirements-oss.txt"), re.M)
+      and re.search(r"^ARG REQUIREMENTS=requirements\.txt$", read("agent/Dockerfile"), re.M)
+      and '--build-arg "REQUIREMENTS=${2:-requirements.txt}"' in read("ops/up-common.sh")
+      and re.search(r'^\s*build_agent "\$REPO:\$IMAGE_TAG"(\s+#.*)?$', read("ops/up.sh"), re.M))
 check("oss/ops/up.sh は nautobot の前に ensure_nautobot_secrets（マネージド版と同じ関数）を呼ぶ",
       0 <= pos("\nensure_nautobot_secrets") < pos("tf_apply pipeline/nautobot") and "ensure_nautobot_secrets" in read("ops/up.sh"))
 check("oss/ops/up.sh は最後に Web へのポートフォワーディングを開く（NO_DASHBOARD_PORTFORWARD=1 なら開かずに終わる）。exec の前に一時ファイルを片付ける",
       0 <= pos("tf_apply workflow") < pos('if [ -n "$NO_DASHBOARD_PORTFORWARD" ]; then') < pos("\ntrap - EXIT") < pos("\nexec aws ssm start-session")
       and "--document-name AWS-StartPortForwardingSession" in up[pos("\nexec aws ssm start-session"):]
       and up.rstrip().endswith('--parameters "{\\"portNumber\\":[\\"8080\\"],\\"localPortNumber\\":[\\"$LOCAL_PORT\\"]}"'))
-check("oss/ops/up.sh はポートフォワードの案内（Web・lab・Kafbat UI・Nautobot・Splunk・Neo4j のブラウザと Bolt）を、パスワードの値ではなく取り方で出す",
+check("oss/ops/up.sh はポートフォワードの案内（Web・lab・Kafbat UI・Nautobot・Splunk・Grafana・Neo4j のブラウザと Bolt）を、パスワードの値ではなく取り方で出す",
       all(f"output -raw {o}" in up for o in ("start_session_command", "kafka_ui_port_forward_command", "kafka_ui_password_command", "port_forward_command",
-                                              "password_command", "splunk_port_forward_command", "splunk_password_command", "opensearch_password_parameter",
+                                              "password_command", "splunk_port_forward_command", "splunk_password_command", "grafana_port_forward_command",
+                                              "grafana_password_command", "opensearch_password_parameter",
                                               "neo4j_password_parameter", "neo4j_browser_port_forward_command", "neo4j_bolt_port_forward_command")))
 check("oss/ops/up.sh は SPLUNK_AZ_NUM が 2 以上（クラスター）なら SPLUNK_INDEX を書けない（マネージド版と同じ）",
       re.search(r'^az_num SPLUNK_AZ_NUM 1 1 3 ', up, re.M) and re.search(r'^az_num EMR_AZ_NUM 1 1 3 ', up, re.M)
@@ -794,7 +812,7 @@ def spark_starts(cs):
 UP_PARAMS = {f"/x-nwc-oss/{n}" for n in (
     "telegraf-dialin/gnmi-username", "telegraf-dialin/gnmi-password", "telegraf-dialin/snmp-community", "kafka-ui/admin-password",
     "kafka/cluster-id", "neo4j-password", "nautobot/secret-key", "nautobot/admin-password", "nautobot/db-password", "nautobot/api-token",
-    "opensearch-password", "splunk/admin-password", "splunk/hec-token")}
+    "opensearch-password", "splunk/admin-password", "splunk/hec-token", "grafana/admin-password")}
 SPARK_SERVICES = [f"x-nwc-oss-spark-{k}" for k in "abc"]
 empty = {"ssm": {}, "vpcs": {}, "enis": [], "log_groups": [], "tagged": {}, "ecr": []}
 
@@ -827,24 +845,33 @@ check("up.sh（通し）: analytics に 4 つの格納先・http_send=driver・S
       all(has_var(A.get("pipeline/analytics", []), v) for v in ('sinks=["iceberg","opensearch","prometheus","splunk"]', "http_send=driver",
                                                                  f'spark_image_tag={T["spark"][0]}', f'opensearch_image_tag={V["OSS_OPENSEARCH_TAG"]}',
                                                                  f'victoriametrics_image_tag={V["OSS_VM_TAG"]}', "splunk_az_num=1", "emr_az_num=1")))
-check("up.sh（通し）: SSM のパラメータを 13 個、全部 SecureString で、ManagedBy=oss/ops/up.sh・Project=x-nwc-oss のタグを付けて作る（oss/ops/down.sh が消せる）",
+_gver = re.search(r"^GRAFANA_VERSION=(\S+)", read("ops/up-common.sh"), re.M).group(1)
+_gb = [c["args"] for c in cs if c["cmd"] == "docker" and c["args"][:2] == ["buildx", "build"] and c["args"][-1] == "grafana/"]
+_gtag = arg_after(_gb[0], "-t") if _gb else ""
+check("up.sh（通し）: Grafana のイメージを arm64 でビルドし（版は --build-arg）、同じタグと create_grafana=true を analytics に渡す",
+      len(_gb) == 1 and re.fullmatch(re.escape(REG) + r"/x-nwc-oss-grafana:" + re.escape(_gver) + r"-[0-9a-f]+", _gtag)
+      and _gb[0][2:4] == ["--platform", "linux/arm64"] and "--push" in _gb[0] and arg_after(_gb[0], "--build-arg") == f"GRAFANA_VERSION={_gver}"
+      and has_var(A.get("pipeline/analytics", []), "create_grafana=true")
+      and has_var(A.get("pipeline/analytics", []), "grafana_image_tag=" + _gtag.rsplit(":", 1)[-1]))
+check("up.sh（通し）: SSM のパラメータを 14 個、全部 SecureString で、ManagedBy=oss/ops/up.sh・Project=x-nwc-oss のタグを付けて作る（oss/ops/down.sh が消せる）",
       set(inv["ssm"]) == UP_PARAMS and all(m["type"] == "SecureString" and m["tags"].get("ManagedBy") == "oss/ops/up.sh"
                                            and m["tags"].get("Project") == "x-nwc-oss" for m in inv["ssm"].values()))
 _secrets = [m.get("value", "") for n, m in inv["ssm"].items() if "/telegraf-dialin/" not in n]
-check("up.sh（通し）: 乱数で作ったシークレット（10 個）の値を、画面にも、aws・terraform・docker の引数にも出さない",
-      len(_secrets) == 10 and all(len(v) >= 16 for v in _secrets)
+check("up.sh（通し）: 乱数で作ったシークレット（11 個）の値を、画面にも、aws・terraform・docker の引数にも出さない",
+      len(_secrets) == 11 and all(len(v) >= 16 for v in _secrets)
       and not any(v in out or any(v in " ".join(c["args"]) for c in cs) for v in _secrets))
 docker = [c["args"] for c in cs if c["cmd"] == "docker"]
 _tags = {arg_after(a, "-t") for a in docker if a[:2] == ["buildx", "build"]} | {a[-1] for a in docker if a[0] == "push"}
-check("up.sh（通し）: イメージを ECR に置く（OSS の 7 つ、lab の 2 つ、Telegraf、Kafbat UI、Splunk、agent、worker、Temporal、Nautobot、Redis）。docker login のあと、stream の apply より前",
+check("up.sh（通し）: イメージを ECR に置く（OSS の 7 つ、lab の 2 つ、Telegraf、Kafbat UI、Splunk、Grafana、agent、worker、Temporal、Nautobot、Redis）。docker login のあと、stream の apply より前",
       {t.split("/", 1)[1].split(":")[0] for t in _tags if t.startswith(REG + "/")}
-      >= {f"x-nwc-oss-{n}" for n in V["OSS_IMAGES"].split()} | {f"x-nwc-oss-{n}" for n in ("telegraf", "splunk", "agent", "worker", "nautobot")}
-      and len(_tags) >= 16 and all(t.startswith(REG + "/x-nwc-oss-") for t in _tags)
+      >= {f"x-nwc-oss-{n}" for n in V["OSS_IMAGES"].split()} | {f"x-nwc-oss-{n}" for n in ("telegraf", "splunk", "grafana", "agent", "worker", "nautobot")}
+      and len(_tags) >= 17 and all(t.startswith(REG + "/x-nwc-oss-") for t in _tags)
       and 0 <= first(cs, lambda c: c["cmd"] == "docker" and c["args"][0] == "login")
       < first(cs, lambda c: c["cmd"] == "docker" and c["args"][0] in ("push", "buildx") and c["args"][:2] != ["buildx", "ls"] and c["args"][:2] != ["buildx", "version"])
       and max(i for i, c in enumerate(cs) if c["cmd"] == "docker") < apply_at(cs, "base/core"))
-check("up.sh（通し）: ワーカーのイメージは Neo4j のドライバー入り（REQUIREMENTS=requirements-oss.txt）で、タグは IMAGE_TAG（v1）",
-      any(a[:2] == ["buildx", "build"] and arg_after(a, "-t") == f"{REG}/x-nwc-oss-worker:v1" and "REQUIREMENTS=requirements-oss.txt" in a for a in docker))
+check("up.sh（通し）: ワーカーと agent のイメージは Neo4j のドライバー入り（REQUIREMENTS=requirements-oss.txt）で、タグは IMAGE_TAG（v1）",
+      all(any(a[:2] == ["buildx", "build"] and arg_after(a, "-t") == f"{REG}/x-nwc-oss-{n}:v1" and "REQUIREMENTS=requirements-oss.txt" in a
+              for a in docker) for n in ("worker", "agent")))
 uv = [c["args"] for c in cs if c["cmd"] == "uv"]
 check("up.sh（通し）: Web のホイール（web/requirements-oss.txt）を wheels-oss/ に取り、Web とエージェントの部品と一緒に S3 に上げてから Web の EC2 を再起動する",
       any("download" in a and arg_after(a, "-d") == "wheels-oss" and arg_after(a, "-r") == "web/requirements-oss.txt" for a in uv)
@@ -880,11 +907,12 @@ check("up.sh（通し）: lab の EC2 でトポロジが上がったのを確か
       first(cs, lambda c: is_aws(c, "ssm", "send-command", "out-lab-lab_instance_id", "containers=")) >= 0
       and first(cs, lambda c: is_aws(c, "ssm", "send-command", "out-lab-lab_instance_id", "/usr/local/bin/lab forward")) >= 0
       and LAB_NODES > 0 and "トポロジが上がっていない" not in out and "安定しない" not in out and "上がりきらない" not in out)
-check("up.sh（通し）: workflow のワーカーが安定してから Web を起こし直し、ポートフォワードの案内（Web・Kafbat UI・Nautobot・Splunk・Neo4j）を出す",
+check("up.sh（通し）: workflow のワーカーが安定してから Web を起こし直し、ポートフォワードの案内（Web・Kafbat UI・Nautobot・Splunk・Grafana・Neo4j）を出す",
       0 <= apply_at(cs, "workflow") < first(cs, lambda c: is_aws(c, "ecs", "wait", "out-workflow-service_name"))
       < max(i for i, c in enumerate(cs) if is_aws(c, "ssm", "send-command", "systemctl restart x-nwc-oss-web.service"))
       and all(s in p.stdout for s in ("out-core-start_session_command", "out-stream-kafka_ui_port_forward_command", "out-nautobot-port_forward_command",
-                                      "out-analytics-splunk_port_forward_command", "out-graph-neo4j_browser_port_forward_command",
+                                      "out-analytics-splunk_port_forward_command", "out-analytics-grafana_port_forward_command",
+                                      "out-analytics-grafana_password_command", "out-graph-neo4j_browser_port_forward_command",
                                       "out-graph-neo4j_bolt_port_forward_command", "out-graph-neo4j_password_parameter"))
       and not aws_calls(cs, "ssm", "start-session"))
 check("up.sh（通し）: PC に残すのは wheels-oss/ とレイヤーの .build/ と rpm とログだけで、Nautobot のイメージの材料の一時フォルダは片付ける",
@@ -924,8 +952,8 @@ check("up.sh（OpenSearch が安定しない）: 警告（どの格納先か）�
 
 # ---- up.sh の作ったものを oss/ops/down.sh が消す（同じ在庫から）
 p, csd, invd = run_down("oss/ops/down.sh", "x", inv=inv3)
-check("up.sh → down.sh: up.sh が作った SSM のパラメータ 13 個を全部消し、up.sh が apply した 9 つのルートを全部 destroy する",
-      p.returncode == 0 and invd["ssm"] == {} and len(aws_calls(csd, "ssm", "delete-parameter")) == 13
+check("up.sh → down.sh: up.sh が作った SSM のパラメータ 14 個を全部消し、up.sh が apply した 9 つのルートを全部 destroy する",
+      p.returncode == 0 and invd["ssm"] == {} and len(aws_calls(csd, "ssm", "delete-parameter")) == 14
       and destroyed(csd) == {f"oss/terraform/{r}" for r in ROOTS} and "残り: 0 件" in p.stdout)
 
 check("oss/ops/up.sh と down.sh の terraform init は、どのルートも -lockfile=readonly（lock はマネージド版へのシンボリックリンクなので書き換えない）",

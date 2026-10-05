@@ -124,10 +124,9 @@ REGION=ap-northeast-1
 # デプロイする人の名前 OWNER は deploy.env に書くので、OWNER と接頭辞 PREFIX=<owner>-nwc-poc が確定するのは
 # load_deploy_env のあと（手順 0 の resolve_name_prefix。必須なので、無ければそこで止まる。形の検査も ops/deploy-env.sh）
 # lab と Telegraf の版（SRLINUX_TAG / MULTITOOL_TAG / CONTAINERLAB_VERSION / TELEGRAF_VERSION）と作り方は ops/lab-common.sh
-# （デバッグ用の EC2 の ops/lab-debug.sh と共通）。GRAFANA_VERSION は grafana/ の Dockerfile の ARG の既定値に合わせてある。変えるときは両方を変える。
-# SPLUNK_VERSION・NAUTOBOT_VERSION・REDIS_TAG・TEMPORAL_TAG と、Splunk・Agent・worker・Temporal・Nautobot のイメージの作り方は OSS 版と共通なので ops/up-common.sh
+# （デバッグ用の EC2 の ops/lab-debug.sh と共通）。
+# SPLUNK_VERSION・GRAFANA_VERSION・NAUTOBOT_VERSION・REDIS_TAG・TEMPORAL_TAG と、Splunk・Grafana・Agent・worker・Temporal・Nautobot のイメージの作り方は OSS 版と共通なので ops/up-common.sh
 . "$(dirname "$0")/lab-common.sh"
-GRAFANA_VERSION=13.2.2
 # Kafbat UI（stream の ECS。ghcr.io/kafbat/kafka-ui を同じタグで ECR に写す）。terraform/pipeline/stream の kafka_ui_image_tag の既定値に合わせてある
 KAFKA_UI_TAG=v1.5.0
 # analytics の Spark ジョブに足す jar（Maven Central。2026-09-17 に 6 本とも取れることを確認）。EMR Serverless 7.13.0 の Spark 3.5.6 に合わせてある。
@@ -672,8 +671,7 @@ else
     build_telegraf "$REG/$PREFIX-telegraf:$TELEGRAF_TAG"
   fi
   if [ -n "$NEED_GRAFANA" ]; then
-    # データソースの plugin をビルドのときに入れる（タスクは AWS の外へ出られず、起動時に grafana.com から落とせない）
-    docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push grafana/
+    build_grafana   # arm64（ops/up-common.sh。OSS 版と共通）
   fi
   if [ -n "$NEED_SPLUNK" ]; then
     build_splunk   # Splunk の公式イメージに検知のアプリを足して push する（ops/up-common.sh。OSS 版と共通）

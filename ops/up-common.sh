@@ -209,6 +209,7 @@ splunk_cluster_check() {
 # NAUTOBOT_VERSION は nautobot/Dockerfile の ARG、REDIS_TAG は terraform/pipeline/nautobot の redis_image_tag、
 # TEMPORAL_TAG は terraform/workflow の temporal_image_tag の既定値に合わせてある（変えるときは両方を変える）
 NAUTOBOT_VERSION=3.2.6
+GRAFANA_VERSION=13.2.2   # grafana/ の Dockerfile の ARG の既定値に合わせてある（変えるときは両方を変える）
 REDIS_TAG=7.4.2-alpine
 TEMPORAL_TAG=1.9.1
 nautobot_context() {  # nautobot_context <空のディレクトリ>  Nautobot のイメージのビルドの context を集める（nautobot/Dockerfile の頭の説明）
@@ -219,8 +220,12 @@ nautobot_context() {  # nautobot_context <空のディレクトリ>  Nautobot �
   find "$1" -name .DS_Store -delete 2>/dev/null
   "${PY[@]}" lab/lab_topology.py lab >"$1/lab_seed.json"
 }
-build_agent() {  # build_agent <リポジトリの URL>:<タグ>  Runtime のコンテナ（arm64）
-  docker buildx build --platform linux/arm64 -t "$1" --push agent/
+build_agent() {  # build_agent <リポジトリの URL>:<タグ> [requirements のファイル名]  Runtime のコンテナ（arm64）。OSS 版は requirements-oss.txt（neo4j のドライバー入り）
+  docker buildx build --platform linux/arm64 --build-arg "REQUIREMENTS=${2:-requirements.txt}" -t "$1" --push agent/
+}
+build_grafana() {  # REG / PREFIX / GRAFANA_TAG（dir_tag "$GRAFANA_VERSION" grafana）を使う。Grafana OSS（arm64）
+  # データソースの plugin をビルドのときに入れる（タスクは AWS の外へ出られず、起動時に grafana.com から落とせない）
+  docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push grafana/
 }
 build_worker() {  # build_worker <タグ> [requirements のファイル名]  Temporal の worker（arm64）。OSS 版は requirements-oss.txt（neo4j のドライバー入り）
   docker buildx build --platform linux/arm64 --build-arg "REQUIREMENTS=${2:-requirements.txt}" -t "$REG/$PREFIX-worker:$1" --push workflow/
