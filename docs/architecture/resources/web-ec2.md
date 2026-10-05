@@ -16,7 +16,7 @@
 | メタデータ | IMDSv2 だけ、ホップ数 1 | `terraform/base/core/web.tf` |
 | 画面 | Gradio が `127.0.0.1:8080` だけで待つ。systemd のユニット `<prefix>-web` | `web/app.py`、`terraform/base/core/templates/web_user_data.sh.tftpl` |
 | 画面のコード | 共有バケット `<prefix>-kb-<アカウント>` の `web/` から起動時に取る | `ops/up.sh` の手順 4、`terraform/base/core/bucket.tf` |
-| ロール | `<prefix>-web`。SSM の管理、`web/*` の読み取り、`/<prefix>/*` の `ssm:GetParameter`。Runtime と Gateway を呼ぶ許可は agent と workflow のルートが足す | `terraform/base/core/web.tf`、`terraform/agent/runtime.tf`、`terraform/workflow/iam.tf` |
+| ロール | `<prefix>-web`。SSM の管理、`web/*` の読み取り、`/<prefix>/*` の `ssm:GetParameter`。Runtime と Gateway を呼ぶ許可は agent と workflow のルートが足す。承認タブの許可（決定のキューへの `sqs:SendMessage` と、Athena での `proposal_events` の読み取り）は workflow のルートがポリシー `<prefix>-workflow-web` で足す | `terraform/base/core/web.tf`、`terraform/agent/runtime.tf`、`terraform/workflow/proposals.tf` |
 | スイッチ | 無い（土台なので必ず作る）。PC 側のポートは `LOCAL_PORT`（既定 8080）、`NO_DASHBOARD_PORTFORWARD=1` で最後のポートフォワーディングを開かない | [deploy.md](../../deploy.md) の「`deploy.env` のキー」 |
 | 費用 | 2.2 セント/時（t4g.small。土台は合わせて約 2 セント/時 + エンドポイント） | `ops/up.sh` の先頭のコメント |
 
@@ -26,8 +26,10 @@
 |---|---|---|
 | 利用者の PC | PC → Web | SSM のポートフォワーディング（SSM Agent が内側から ssmmessages へつなぐ）。`localhost:8080` |
 | AgentCore Runtime | Web → Runtime | `InvokeAgentRuntime`（bedrock-agentcore のエンドポイント、IAM）。ARN は SSM `/<prefix>/runtime-arn` |
-| AgentCore Gateway | Web → Gateway | `InvokeGateway`（承認タブとトポロジのツール）。URL は SSM `/<prefix>/gateway-url` |
-| Neptune Analytics | Web → グラフ | neptune-graph-data のエンドポイント、SigV4（トポロジの表示と、最初の投入） |
+| Athena → S3 Tables の `proposal_events` | Web → Athena（承認タブの一覧と詳細） | `athena` のエンドポイント、インスタンスロール。ワークグループ `<prefix>-history`。開いているあいだ 30 秒ごとに 1 本 |
+| SQS `<prefix>-decisions` | Web → キュー（承認・却下） | `sqs` のエンドポイント、`sqs:SendMessage`。URL は SSM `/<prefix>/decision-queue-url` |
+| AgentCore Gateway | 呼んでいない | ロールに `InvokeGateway` の許可はあるが、Web に置くモジュール（`toolkit` / `topology` / `graph` / `proposals`）に Gateway のクライアント（`agent/mcp_client.py`）は入っていない |
+| Neptune Analytics | Web → グラフ | neptune-graph-data のエンドポイント、SigV4（トポロジの表示と、最初の投入）。修復案は読まない |
 | Nautobot | Web → Nautobot | 8080/tcp（トポロジの編集を REST API へ。SSM `/<prefix>/nautobot/url` があるあいだ） |
 | Grafana / Splunk / Temporal UI / Nautobot | PC → Web → 各タスク | 3000 / 8000 / 8233 / 8080（Web を踏み台にしたポートフォワーディング） |
 | S3 | Web → バケット | gateway 型エンドポイント（`web/` の取得と dnf） |
@@ -46,6 +48,9 @@
 - **user_data を変えるとインスタンスは作り直しになる。**
   `user_data_replace_on_change`。画面のコードだけを変えたときは、`ops/up.sh` の手順 4 が S3 に置き直して EC2 を再起動する。
   出典: `terraform/base/core/web.tf`、`ops/up.sh` の手順 4-2 と 4-4。
+- **承認タブは Neptune を使わない（2026-10-05 から）。**
+  一覧と詳細は Athena で `proposal_events` を読み、承認・却下は決定のキューに 1 通送る。押したあと反映まで数秒〜20 秒かかる（画面にもそう出る）。名前は 40 文字までで、`<名前> (web)` として「決めた人」に残る。承認には名前と「詳細を読んだ」のチェックが要る。
+  出典: `web/incident_view.py`、`agent/proposals.py` の `decide`、[workflow.md](../../workflow.md) の「流れ」。
 - **ポートフォワーディングはアイドル 20 分で切れる。**
   `start-session` をやり直して再読み込みする。
   出典: [troubleshooting.md](../../troubleshooting.md) の「画面に入れない」。
@@ -61,6 +66,8 @@
 | 項目 | 状態 |
 |---|---|
 | 1 台・1 AZ | 冗長にしていない。AZ が止まると画面も踏み台も使えない（コードから読める範囲。AWS で確かめた記録は無い） |
+| 承認タブ | 2026-10-05 に AWS で確かめた（承認 → `heal-main` が Success → verified。名前に `'` を入れても通った）。却下は未確認 |
+| ページのタイトル | 文字化けする。既知（2026-10-05。[troubleshooting.md](../../troubleshooting.md) の「既知の不具合」） |
 | 認証 | 画面にログインは無い。入れる人は SSM の `start-session` を打てる IAM の利用者（[deploy.md](../../deploy.md) の「利用者に画面を渡す」） |
 
 ## 関連

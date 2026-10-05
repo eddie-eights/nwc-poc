@@ -16,14 +16,14 @@ AWS のリソース 1 つにつき 1 ファイル。FAQ、設計の記録、Terr
 | MSK | `pipeline/stream` | 機器のデータを 5 つのトピックで 24 時間ためる Kafka | [msk.md](msk.md) |
 | Telegraf（ECS） | `pipeline/stream` | 機器から trap・syslog・gNMI・SNMP を集めて MSK に書く | [telegraf.md](telegraf.md) |
 | EMR Serverless（Spark） | `pipeline/analytics` | MSK を読み、格納先ごとのジョブで 60 秒ごとに書く | [emr-serverless.md](emr-serverless.md) |
-| S3 Tables（Iceberg）と Athena | `pipeline/analytics` | 生データ、修復案の証跡、アラートの通知の履歴の置き場と、それを読む SQL | [s3-tables-athena.md](s3-tables-athena.md) |
+| S3 Tables（Iceberg）と Athena | `pipeline/analytics` | 生データ、修復案（いまの状態と証跡。`proposal_events`）、アラートの通知の履歴の置き場と、それを読む SQL | [s3-tables-athena.md](s3-tables-athena.md) |
 | Firehose | `pipeline/analytics` | アラートの通知を 1 件 1 行で S3 Tables に追記する | [firehose.md](firehose.md) |
 | OpenSearch Serverless | `pipeline/analytics`、`agent` | trap と syslog の検索（logs）と、手順書のベクトル検索（KB） | [opensearch-serverless.md](opensearch-serverless.md) |
 | Amazon Managed Prometheus | `pipeline/analytics` | メトリクスの時系列の置き場 | [prometheus.md](prometheus.md) |
 | Grafana（ECS） | `pipeline/analytics` | Prometheus と OpenSearch を見る画面と、アラートルール 4 本 | [grafana.md](grafana.md) |
-| Splunk（ECS） | `pipeline/analytics` | 全トピックを入れる検索基盤と、保存済みサーチ 4 本のアラート | [splunk.md](splunk.md) |
+| Splunk（ECS） | `pipeline/analytics` | 全トピックを入れる検索基盤と、保存済みサーチ 4 本のアラート。`SPLUNK_AZ_NUM` が 2 か 3 で indexer のクラスター | [splunk.md](splunk.md) |
 | Neptune Analytics | `pipeline/graph` | トポロジのグラフと、機器・回線のいまの `status` | [neptune-analytics.md](neptune-analytics.md) |
-| SNS・SQS・Lambda | `base/core`、`pipeline/graph`、`workflow` | アラートを配る（トピック → graph-status の Lambda と、ワーカーの SQS） | [sns-sqs-lambda.md](sns-sqs-lambda.md) |
+| SNS・SQS・Lambda | `base/core`、`pipeline/graph`、`workflow` | アラートを配る（トピック → graph-status の Lambda と、ワーカーの SQS）。Web の承認・却下を worker へ運ぶ決定のキューも | [sns-sqs-lambda.md](sns-sqs-lambda.md) |
 | AgentCore と Bedrock | `agent`、`workflow` | エージェントの実行環境（Runtime）、ツールの入口（Gateway）、モデル、ガードレール、ナレッジベース | [agentcore-bedrock.md](agentcore-bedrock.md) |
 | Temporal（ECS） | `workflow` | 調査 → 修復案 → 承認 → 適用 → 確認 を進めるワークフロー | [temporal.md](temporal.md) |
 | Nautobot（ECS + RDS） | `pipeline/nautobot` | 機器・IF・ケーブルの台帳（正本）。変更を Neptune と Telegraf に映す | [nautobot.md](nautobot.md) |
@@ -37,6 +37,4 @@ AWS のリソース 1 つにつき 1 ファイル。FAQ、設計の記録、Terr
 
 | サイクル | 変わるファイル | 設計 |
 |---|---|---|
-| 修復案を S3 Tables にまとめる（003） | S3 Tables、Neptune Analytics、Temporal、SNS・SQS・Lambda | [design.md](../../cycles/003-proposals-in-s3tables/design.md) |
-| Splunk をクラスターにする（004） | Splunk | [design.md](../../cycles/004-splunk-indexer-cluster/design.md) |
 | マネージドを OSS に置き換えた環境を作る（005） | MSK、OpenSearch Serverless、Prometheus、Neptune Analytics | [design.md](../../cycles/005-oss-on-ecs/design.md) |

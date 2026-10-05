@@ -37,7 +37,8 @@ flowchart LR
 - analytics は graph が無くても作れる（Neptune に書くのは SNS を購読する graph の Lambda だけ）。`SKIP_GRAPH=1` だと、トポロジは `agent/data/` の静的データになり、アラートが届いても `status` を書く先が無い。
 - テーブルバケットは `STORES` に `s3` が無くても作る（証跡の置き場）。`ops/down.sh` はバケットごと消すので、証跡も消える。
 - Splunk（`STORES` の `splunk`）は Spark（既定は driver。`HTTP_SEND=executor` なら executor）が全トピックを HTTP Event Collector（HEC）に POST する（2026-09-26 に MSK Connect の Splunk Connect for Kafka をやめて、ほかの格納先と同じ形にした）。
-  - analytics の ECS に Splunk Enterprise（`splunk/Dockerfile`。公式の `splunk/splunk:10.4.3` に検知のアプリ `netops_alerts` を足し、ECR の `<prefix>-splunk:10.4.3-<ディレクトリのハッシュ 12 文字>` に作る。amd64 しか無いので Fargate x86、2 vCPU / 4 GB、エフェメラルストレージ 40 GiB）を 1 タスク立て、Spark は Cloud Map の `https://splunk.<prefix>.internal:8088` に送る（イメージの自己署名の証明書なので検証しない）。起動時に Splunk のライセンスと Splunk General Terms に同意する（`SPLUNK_START_ARGS=--accept-license`、`SPLUNK_GENERAL_TERMS=--accept-sgt-current-at-splunk-com`）。試用ライセンス（60 日、1 日 500 MB）。admin のパスワード `/<prefix>/splunk/admin-password` と HEC の token `/<prefix>/splunk/hec-token`（uuid）は `ops/up.sh` が SSM の SecureString に作る（値は出さない。`ops/down.sh` が消す）。index はタスクのエフェメラルストレージにあり、タスクと一緒に消える（検証用）。`ops/up.sh` は手順 7-4b でタスクが HEALTHY になるのを待ってから（最大 20 分）Spark のジョブを起こす。画面は下の「Grafana と Splunk を開く」。
+  - analytics の ECS に Splunk Enterprise（`splunk/Dockerfile`。公式の `splunk/splunk:10.4.3` に検知のアプリ `netops_alerts` を足し、ECR の `<prefix>-splunk:10.4.3-<ディレクトリのハッシュ 12 文字>` に作る。amd64 しか無いので Fargate x86、2 vCPU / 4 GB、エフェメラルストレージ 40 GiB）を既定では 1 タスク立て、Spark は Cloud Map の `https://splunk.<prefix>.internal:8088` に送る（イメージの自己署名の証明書なので検証しない）。起動時に Splunk のライセンスと Splunk General Terms に同意する（`SPLUNK_START_ARGS=--accept-license`、`SPLUNK_GENERAL_TERMS=--accept-sgt-current-at-splunk-com`）。試用ライセンス（60 日、1 日 500 MB）。admin のパスワード `/<prefix>/splunk/admin-password` と HEC の token `/<prefix>/splunk/hec-token`（uuid）は `ops/up.sh` が SSM の SecureString に作る（値は出さない。`ops/down.sh` が消す）。index はタスクのエフェメラルストレージにあり、タスクと一緒に消える（検証用）。`ops/up.sh` は手順 7-4b でタスクが HEALTHY になるのを待ってから（最大 20 分）Spark のジョブを起こす。画面は下の「Grafana と Splunk を開く」。
+  - `SPLUNK_AZ_NUM` を 2 か 3 にすると indexer のクラスターになる（Splunk をクラスターにする（004）。2026-10-05 に `SPLUNK_AZ_NUM=2` を AWS で確かめた。`3` は未確認）。タスクは cluster manager 1（`splunk-cm.<prefix>.internal`）、indexer が AZ ごとに 1（`splunk-idx.<prefix>.internal`。全部のイベントを互いに複製する）、search head 1（`splunk.<prefix>.internal`。検索、UI、保存済みサーチ）。Spark の送り先は `https://splunk-idx.<prefix>.internal:8088` に変わる。合言葉 `/<prefix>/splunk/idxc-secret` も `ops/up.sh` が SSM の SecureString に作る。index は `main` だけ（`SPLUNK_INDEX` と一緒には書けない）。1 台とクラスターを切り替えると空から始まる。手順 7-4b は全部のタスクの HEALTHY を待ち、そのあと search head が indexer を全部検索できること（ログの `nwc-peer-check state=ok reason=peers_up:<indexer の数>`）を最大 6 分待つ。indexer は止められると先に `splunk offline` を打つ（ログに `nwc-offline: start` と `nwc-offline: rc=0 <秒>s`）。くわしくは [architecture/resources/splunk.md](architecture/resources/splunk.md)。
   - AWS の外の Splunk（Splunk Cloud など）へ NAT Gateway で送る道は 2026-09-28 にやめた（VPC から AWS の外へ出る経路を作らない。`SPLUNK_HEC_URL` が書いてあると `ops/up.sh` が止まる）。
   - HEC が 4xx を返したまとまり（最大 500 件）は捨ててログに出し、ジョブは止めない。5xx は再送する。
 
@@ -163,7 +164,8 @@ terraform -chdir=terraform/pipeline/stream output -raw kafka_ui_password_command
 - MSK へは IAM 認証（`SASL_SSL` / `AWS_MSK_IAM`、9098）でつなぐ。
 - 手元のポートは 8082（Web が 8080、Nautobot が 8081）。
 - ヘルスチェックの `/actuator/health` は、Kafka に届かなくても UP を返す。タスクが動いていても、MSK につながっているとは限らない。
-- **AWS では未確認**（2026-10-05 時点）: MSK に IAM でつながるか、画面からトピックを足せるか、タスクロールの権限で足りるか、ポートフォワードで `kafka-ui.<接頭辞>-stream.internal` が引けるか。手元の Docker では起動と画面までを確かめた。
+- 2026-10-05 に AWS で確かめた: MSK に IAM でつながる（タスクのログに `Metrics updated for cluster` が出た）。
+- **AWS では未確認**（2026-10-05 時点。画面は開いていない）: 画面に入れるか、画面からトピックを足せるか、タスクロールの権限で足りるか、ポートフォワードで `kafka-ui.<接頭辞>-stream.internal` が引けるか。手元の Docker では起動と画面までを確かめた。
 
 ## Grafana と Splunk を開く
 
@@ -180,7 +182,7 @@ terraform -chdir=terraform/pipeline/analytics output -raw splunk_password_comman
 - データソースの plugin はイメージに焼き込んである（AWS の外へ出る経路が無いので起動時に落とせない）。ダッシュボードは `grafana/provisioning` だけで、UI で変えたものはタスクと一緒に消える。残すなら provisioning に書いて `ops/up.sh`（ディレクトリのハッシュが変わるのでイメージから作り直す）。
 - admin のパスワードは `ops/up.sh` が SSM の SecureString `/<prefix>/grafana/admin-password` に乱数で作り、`ops/down.sh` が消す（タグ `ManagedBy=ops/up.sh`）。
 - Amazon Managed Grafana は使えない。サインインに IAM Identity Center か SAML の IdP が要り、このアカウントには Organizations も Identity Center も無い。
-- Splunk（ECS）は `STORES` に `splunk` があるとき（既定で入っている）だけ。検索は `index=main`（HEC の token の既定の index）。
+- Splunk（ECS）は `STORES` に `splunk` があるとき（既定で入っている）だけ。検索は `index=main`（HEC の token の既定の index）。クラスター（`SPLUNK_AZ_NUM` が 2 か 3）のときも入口は同じで、search head につながる。cluster manager の画面（クラスターの状態）は `terraform -chdir=terraform/pipeline/analytics output -raw splunk_cm_port_forward_command`（`http://localhost:8001/`）。
 - Web は EC2 のまま（踏み台を兼ねる。ECS にするとタスクの IP が変わり、踏み台にしにくい）。
 
 ## アラート
@@ -233,7 +235,7 @@ SELECT status, source, device_id, kind, target, starts_at, received_at FROM "s3t
 ```
 
 - Athena のコンソールではワークグループ `<prefix>-history` を選ぶ（クエリの結果は Athena の管理ストレージに置き、1 回のスキャンは 1 GiB で止める）。
-- AWS の上での通し（Firehose から S3 Tables への書き込みが IAM だけで通るか、時刻の書式、閉域の Deny）はまだ確かめていない。
+- 2026-10-05 に AWS で確かめた: Firehose から `alert_events` に `firing` と `resolved` の行が入り、Athena（ワークグループ `<prefix>-history`）で読めた（IAM だけの書き込み、時刻の書式、閉域の Deny のどれにも当たらなかった）。
 
 ### Grafana のアラート
 
@@ -253,7 +255,7 @@ SELECT status, source, device_id, kind, target, starts_at, received_at FROM "s3t
 - 画面は Alerting → Alert rules。provisioning したルール・連絡先・ポリシーは画面から変えられない。変えるなら `grafana/provisioning/alerting/` の `netops-prometheus.yaml` / `netops-opensearch.yaml`（ルール）か `netops.yaml`（送り先、ポリシー、本文のテンプレート）を変えて `ops/up.sh`（イメージから作り直す）。
 - `netops.yaml` のテンプレートの `$` はそのまま書く。`$$` とエスケープすると Grafana が起動しない（`Invalid format of the submitted template`。13.2.2 で実測）。`${ALERTS_TOPIC_ARN}` と `${AWS_REGION}` だけは、起動時に Grafana が環境変数で埋める。
 - `grafana/start.sh` は、`ALERTS_TOPIC_ARN` があるときだけアラートの定義を並べる。`netops-prometheus.yaml` は `PROMETHEUS_URL` も、`netops-opensearch.yaml` は `OPENSEARCH_URL` もあるとき。`netops.yaml` はどちらかを並べたとき。
-- 4 本になったあとの形（cycle 002）は、AWS の上では未確認。
+- 4 本になったあとの形（Splunk と Grafana のアラートを比べる（002））は、2026-10-05 に AWS で `link_down` と `isis_down` の発火を確かめた（`sudo lab fail-main`）。`bgp_down` と `trap` の発火は AWS では未確認。
 
 ### Splunk のアラート
 
@@ -275,7 +277,8 @@ SELECT status, source, device_id, kind, target, starts_at, received_at FROM "s3t
 - 確かめる（Splunk の画面の検索）:
   - サーチが動いたか: `index=_internal sourcetype=scheduler savedsearch_name=netops_*`
   - publish の結果: `index=_internal sourcetype=splunkd sendmodalert netops_sns`（成功は `published=` の分子と分母が同じ。失敗は `ERROR`）
-- 2026-10-02 の作り替えは、模擬テストと手元のコンテナ（Splunk 10.4.3、Grafana 13.2.2）で確かめた。AWS の上での通し（SNS からの配信、`sns` のエンドポイント越しの publish、trap の送り元の IP が `DEVICE_MAP` に当たるか、SR Linux の linkDown の trap に IF 名が載るか）はまだ確かめていない。`netops_poll` を足したあとの形（cycle 002）も AWS の上では未確認。
+- 2026-10-02 の作り替えは、模擬テストと手元のコンテナ（Splunk 10.4.3、Grafana 13.2.2）で確かめた。2026-10-05 に AWS で確かめた: `sudo lab fail-main` で Grafana と Splunk の両方が `link_down` と `isis_down` を出し、`sns` のエンドポイント越しの publish と、SNS からの配信（Lambda と SQS）が通った。AWS では未確認: `bgp_down` と `trap` の発火、trap の送り元の IP が `DEVICE_MAP` に当たるか、SR Linux の linkDown の trap に IF 名が載るか。
+- 既知の不具合（2026-10-05）: Splunk はサブインターフェース（`ethernet-1/1.0`）の `link_down` も出す。起動の直後に `resolved` をまとめて送る。[troubleshooting.md](troubleshooting.md) の「既知の不具合」。
 
 ## Spark を確かめる
 
@@ -407,7 +410,7 @@ uv run python lab/lab_topology.py lab --layers > agent/data/layers.json
 | `lab/` の設定（`lab/gen_lab.py` を回したあと） | `ops/up.sh` を打つ（手順 5 で S3 に置き直す）→ lab に入って `sudo systemctl restart <prefix>-lab`。デバッグ用の EC2 は `ops/lab-debug.sh sync` |
 | `telegraf/`（`telegraf.conf.in` / `telegraf.sh` / `Dockerfile`） | `ops/up.sh` を打つ（ディレクトリのハッシュが変わるので手順 2 がイメージを作り直し、手順 7 の stream の apply がタスクを入れ替える）。lab の EC2 はそのまま。デバッグ用の EC2 は `ops/lab-debug.sh up` |
 | `grafana/`（provisioning。ダッシュボードとアラート） | `ops/up.sh` を打つ（同じく手順 2 がイメージを作り直し、手順 7-4 の analytics の apply がタスクを入れ替える） |
-| `splunk/`（保存済みサーチ、アラートアクション） | `ops/up.sh` を打つ（同じ。Splunk の index はタスクと一緒に消えるので、入れ替えの前のイベントは検索できなくなる） |
+| `splunk/`（保存済みサーチ、アラートアクション） | `ops/up.sh` を打つ（同じ。Splunk の index はタスクと一緒に消えるので、入れ替えの前のイベントは検索できなくなる。クラスター（`SPLUNK_AZ_NUM` が 2 か 3）は indexer を 1 台ずつ入れ替えるが、複製が終わる前に次の台が入れ替わると、その分は消える） |
 | `spark/snmp_sinks.py` | `ops/up.sh` を打つ（手順 7-5 がハッシュの違いを見て、動いているジョブ（3 つまで）を止めて起こし直す）。手で止めるコマンドは下 |
 | lab の機器や回線 | 上のあと `ops/sync-graph.sh --replace`。監視する機器を足したら `ops/up.sh`（stream の変数 `snmp_agents` / `gnmi_targets` が変わるので Telegraf の取りにいく側のタスクが作り直される。device map は Splunk のタスクの環境変数なので、変われば手順 7-4 の apply が Splunk のタスクを入れ替える） |
 

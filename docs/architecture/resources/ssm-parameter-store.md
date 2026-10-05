@@ -38,6 +38,7 @@ SecureString（`ops/up.sh` が作る）:
 | `/<prefix>/nautobot/secret-key`、`admin-password`、`db-password`、`api-token` | Django の SECRET_KEY、admin のパスワード、DB のパスワード、Web が使う API のトークン | 乱数 | Nautobot のタスク（ECS の secrets）、RDS（`db-password`） |
 | `/<prefix>/grafana/admin-password` | Grafana の admin のパスワード | 乱数（`STORES` に `grafana` があるとき） | Grafana のタスク |
 | `/<prefix>/splunk/admin-password`、`hec-token` | Splunk の admin のパスワード、HEC の token | 乱数、uuid（`STORES` に `splunk` があるとき） | Splunk のタスク |
+| `/<prefix>/splunk/idxc-secret` | Splunk のクラスターの合言葉（cluster manager・indexer・search head が互いを確かめる） | 乱数（`SPLUNK_AZ_NUM` が 2 か 3 のとき） | Splunk のタスク（どの役割も同じ値） |
 | `/<prefix>/telegraf-dialin/gnmi-username`、`gnmi-password`、`snmp-community` | 機器の gNMI と SNMP の認証情報 | 決まった値（containerlab の既定値を最初の値にする） | Telegraf の取りにいく側のタスク |
 
 ## つながり

@@ -4,8 +4,8 @@
 
 ## ひとことで
 
-履歴と証跡の置き場。追記だけで、上書きしない。「いま」の状態は Neptune に置き、変わったことの記録をここに 1 行ずつ足す。
-Athena は、ここのテーブルをエージェントが SQL で読むための入口（ワークグループ 1 つ）。
+履歴と修復案の置き場。追記だけで、上書きしない。機器や回線の「いま」の `status` は Neptune に置き、変わったことの記録をここに 1 行ずつ足す。修復案は「いま」もここにある（`seq` が最大の行）。
+Athena は、ここのテーブルをエージェントと Web の承認タブが SQL で読むための入口（ワークグループ 1 つ）。
 
 ## このプロジェクトでの使い方
 
@@ -27,7 +27,7 @@ Athena は、ここのテーブルをエージェントが SQL で読むため�
 |---|---|---|---|---|
 | `raw_telemetry` | 機器から来た生データの全部（metrics / gnmi / mdt / traps / logs）。up か down かを判断せず、そのまま | Terraform の 8 列（`ts`、`topic`、`measurement`、`agent_host`、`host`、`tags_json`、`fields_json`、`ingested_at`）+ Spark が足す 4 列（`event_id`、`kafka_topic`、`kafka_partition`、`kafka_offset`） | Spark の `iceberg`（ジョブ `sinks-s3iceberg`） | まだ読む側が無い |
 | `alert_events` | アラートの通知 1 件が 1 行（発火と解消） | 10 列（`event_id`、`anomaly_id`、`source`、`status`、`device_id`、`kind`、`target`、`detail`、`starts_at`、`received_at`） | Lambda `<prefix>-graph-status` → Firehose | エージェントの `query_history`（Athena） |
-| `proposal_events` | 修復案の証跡（作成・承認・却下・適用・確認）。1 段ごとに 1 行 | 12 列（`event_id`、`proposal_id`、`anomaly_id`、`event`、`status`、`device_id`、`action`、`cause`、`command`、`decided_by`、`detail`、`event_time`） | Temporal の worker（PyIceberg） | まだ読む側が無い（証跡） |
+| `proposal_events` | 修復案（作成・承認・却下・時間切れ・適用・確認・効かなかった決定）。1 段ごとに 1 行で、どの行にも修復案の全項目（異常、原因、コマンド、理由、エージェントの答え、事前チェック、決めた人と時刻、処置の出力、確認のメモ）。「いま」は `proposal_id` ごとに `seq` が最大の行 | 28 列（`event_id`、`proposal_id`、`anomaly_id`、`seq`、`event`、`status`、`device_id`、`kind`、`target`、`first_seen`、`source`、`alert_detail`、`cause`、`action`、`command`、`reason`、`agent_response`、`precheck`、`precheck_verdict`、`decided_by`、`decided_at`、`apply_output`、`verify_note`、`detail`、`workflow_id`、`run_id`、`created_at`、`event_time`）。正は `workflow/rules.py` の `PROPOSAL_EVENT_COLUMNS` | Temporal の worker だけ（PyIceberg） | Web の承認タブとエージェントの `list_proposals`（Athena）、worker（PyIceberg） |
 
 ## つながり
 
@@ -35,14 +35,21 @@ Athena は、ここのテーブルをエージェントが SQL で読むため�
 |---|---|---|
 | Spark（EMR Serverless） | Spark → `raw_telemetry` | s3tables のエンドポイント（Iceberg REST）、IAM |
 | Firehose | Firehose → `alert_events` | Glue の `s3tablescatalog` 越し。ロール `<prefix>-alert-firehose`（サービス側から書くので閉域の Deny の例外） |
-| Temporal の worker | worker → `proposal_events` | s3tables のエンドポイント、PyIceberg、タスクロール |
-| tools の Lambda（`query_history`） | Lambda → Athena → `alert_events` | athena のエンドポイント、IAM。Athena が呼び手に代わって S3 Tables を読む |
+| Temporal の worker | worker ⇄ `proposal_events`（読み書き） | s3tables のエンドポイント、PyIceberg、タスクロール |
+| tools の Lambda（`query_history`、`list_proposals`） | Lambda → Athena → `alert_events`、`proposal_events` | athena のエンドポイント、IAM。Athena が呼び手に代わって S3 Tables を読む |
+| Web の EC2（承認タブ） | Web → Athena → `proposal_events` | 同じエンドポイント、インスタンスロール（ポリシー `<prefix>-workflow-web`）。設定は SSM の `/<prefix>/athena-workgroup`、`athena-catalog`、`history-namespace`、`proposal-events-table` |
 
 ## 知見
 
-- **「いま」と証跡を分けている。**
-  Neptune の頂点は書き換わるので、それだけでは「いつ誰が承認したか」を後から追えない。変わるたびにここへ 1 行足し、上書きしない。
-  出典: [data-stores.md](../../data-stores.md) の「3. なぜこの分け方か」。
+- **修復案は「いま」も証跡も `proposal_events` の行で持つ（2026-10-05 から）。**
+  変わるたびに 1 行足し、上書きしない。「いつ誰が承認したか」は行として残り、「いま」は `proposal_id` ごとに `seq` が最大の行（同じ `seq` が 2 つあれば `event_time` が遅いほう）。2026-10-04 までは「いま」を Neptune の頂点に置いていた。
+  出典: [data-stores.md](../../data-stores.md) の「3. なぜこの分け方か」、`agent/proposals.py` の `proposals_sql`、`workflow/rules.py` の `latest_proposals`。
+- **`proposal_events` に書くのは worker だけ。**
+  Web は決定を SQS に送るだけで、テーブルには書かない。書き手が 1 人なので、コミットがぶつかるのは worker の中だけ（5 回までやり直す）。
+  出典: `workflow/awsio.py` の `append_proposal_events`、`terraform/workflow/proposals.tf` の先頭のコメント。
+- **文字列の列は 4000 文字で切る。**
+  エージェントの答えや処置の出力が長いとき。
+  出典: `workflow/rules.py` の `TEXT_MAX`。
 - **生データは、メトリクスもログも同じ 1 つのテーブルに入る。**
   項目がまったく違うので項目ごとの列は作らず、JSON の文字列 2 列（`tags_json`、`fields_json`）に丸ごと入れる。読むときは `topic` で絞ってから JSON を取り出す。
   出典: FAQ「S3 Tables には 1 つのテーブルしかない？ メトリクスもログも 1 つの同じテーブル？」。
@@ -77,11 +84,12 @@ Athena は、ここのテーブルをエージェントが SQL で読むため�
 
 | 項目 | 状態 |
 |---|---|
-| Firehose と Athena が IAM だけで S3 Tables に届くか、閉域の Deny に当たらないか | AWS の上ではまだ通していない（[deploy.md](../../deploy.md) の「アラートの通知の履歴」） |
-| `raw_telemetry` と `proposal_events` | 書くだけで、読む側がまだ無い |
-| Web の画面 | Iceberg を読まない（読むのはエージェントの `query_history` だけ） |
+| Firehose と Athena が IAM だけで S3 Tables に届くか、閉域の Deny に当たらないか | 2026-10-05 に AWS で確かめた。Firehose が `alert_events` に firing / resolved の行を書き、Athena（ワークグループ `<prefix>-history`）で読めた。Web の承認タブも `proposal_events` を Athena で読めた |
+| `proposal_events` の行 | 2026-10-05 に AWS で created → approved → applied → verified と obsolete を確かめた。rejected / expired / failed / ignored の行は未確認 |
+| `raw_telemetry` | 書くだけで、読む側がまだ無い。Spark のジョブ `sinks-s3iceberg` が RUNNING になるところまでは 2026-10-05 に確かめた（行の中身は見ていない） |
+| Splunk が起動の直後に resolved をまとめて送る | 既知（2026-10-05）。`alert_events` の行が増える（[troubleshooting.md](../../troubleshooting.md) の「既知の不具合」） |
 
-このあと変わる予定: 修復案の「いま」も Neptune からここへ移す。[修復案を S3 Tables にまとめる（003）の設計](../../cycles/003-proposals-in-s3tables/design.md)。
+2026-10-05 に、修復案の「いま」も Neptune からここへ移した。[修復案を S3 Tables にまとめる（003）の設計](../../cycles/003-proposals-in-s3tables/design.md)。
 
 ## 関連
 

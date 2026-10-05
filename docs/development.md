@@ -61,8 +61,8 @@ uv run python web/app.py
 - Temporal の永続化と UI の認証。履歴はタスクと一緒に消え、UI にはポートフォワーディングでしか届かない。
 - 実機への修復。打てるのは lab の `sudo lab heal-main`（`dc1-leaf-01 ethernet-1/1` の fabric を戻す）と `sudo lab check` だけ。
 - 生データ（`raw_telemetry`）の検索。エージェントの `query_history` が Athena で読むのはアラートの通知の履歴（`alert_events`）だけ。analytics が無ければ案内だけ返す。
-- Web の画面の中のグラフ。修復案は Neptune の頂点をそのまま表に出す（メトリクスとログのグラフは 2026-09-28 から Grafana（`STORES` の `grafana`）で見る）。
+- Web の画面の中のグラフ。修復案は S3 Tables の `proposal_events` を Athena で読んで、そのまま表に出す（メトリクスとログのグラフは 2026-09-28 から Grafana（`STORES` の `grafana`）で見る）。
 - Web の異常一覧と、障害の履歴を見る画面。2026-10-02 に検知を Grafana と Splunk へ移したときにやめた（[data-stores.md](data-stores.md) の「5. 経緯」）。いまの異常は「トポロジ」タブの `status`、アラートは Grafana / Splunk の画面で見る。通知の履歴は 2026-10-04 から S3 Tables の `alert_events` に残り、エージェントの `query_history` で引ける。
 - 複数の機器にまたがるアラートの相関。まとめるのは同じ機器・種類・対象のアラートだけ（送り手が違っても異常の id が同じになる）で、「Spine が落ちたので配下の Leaf のアラートを 1 つの障害にする」ようなルールは入れていない。
-- 証跡（S3 Tables の `proposal_events`）を読む画面。書くだけで、読むには Athena などを足す。
+- 修復案の経過（S3 Tables の `proposal_events` の全部の行）を追う画面。「承認」タブとエージェントの `list_proposals` が出すのは修復案ごとの最新の 1 行だけ。経過は Athena（ワークグループ `<prefix>-history`）で読む。
 - state の共有。1 人が 1 台の PC で打つ前提。

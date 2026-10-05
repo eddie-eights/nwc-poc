@@ -84,7 +84,7 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 
 | 項目 | 状態 |
 |---|---|
-| 4 本になったあとの形（Splunk と Grafana のアラートを比べる（002）） | AWS の上では未確認 |
+| 4 本になったあとの形（Splunk と Grafana のアラートを比べる（002）） | 2026-10-05 に AWS で `link_down` と `isis_down` の発火を確かめた（`sudo lab fail-main`）。`bgp_down` と `trap` の発火、Grafana の画面は未確認 |
 | OpenSearch Serverless を SigV4 でルールの評価に使えるか | 未確認（ダッシュボードで読めることは 2026-09-28 に確認済み） |
 | 機器ごと止まったとき | 検知しない（系列が途切れると解消を送る） |
 | `SNMP_POLL=0` | `link_down` は発火も解消もしない |

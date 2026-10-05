@@ -25,9 +25,10 @@ worker が読み書きするもの:
 | 置き場 | 中身 | 向き |
 |---|---|---|
 | SQS `<prefix>-anomalies` | アラート（`firing` / `resolved`） | 読む（long polling 20 秒） |
+| SQS `<prefix>-decisions` | Web の承認・却下（決定 1 件が 1 通） | 読む（long polling 20 秒）。ワークフローにシグナル `decide` で渡す |
 | AgentCore Runtime | 原因と修復案 | 聞く |
-| Neptune Analytics の `proposal` | 修復案の「いま」（`pending` → `approved` / `rejected` → `applied` → `verified` / `failed`、`expired`、`obsolete`） | 読み書き。承認待ちは 30 秒おきに見る |
-| S3 Tables の `proposal_events` | 作成・承認・却下・時間切れ・適用・確認を 1 行ずつ（`event_id` = `<proposal_id>#<event>`） | 書く（PyIceberg） |
+| Neptune Analytics | トポロジ（事前チェックと、保守中の機器の判定に使う）。修復案は置かない | 読むだけ |
+| S3 Tables の `proposal_events` | 修復案。作成・承認・却下・時間切れ・適用・確認のたびに 1 行（28 列。どの行にも全項目。`event_id` = `<proposal_id>#<event>`、「いま」は `seq` が最大の行） | 読み書き（PyIceberg）。書くのは worker だけ |
 | lab の EC2 | 修復のコマンド（`sudo lab heal-main`） | SSM の Run Command で打つ |
 
 ## つながり
@@ -35,9 +36,9 @@ worker が読み書きするもの:
 | 相手 | 向き | ポートと認証 |
 |---|---|---|
 | 利用者の PC | PC → Web の EC2 → Temporal UI | 8233/tcp。SSM のポートフォワーディング（`ops/up.sh` の手順 8-5 がコマンドを出す） |
-| SQS | worker → キュー | `sqs` のエンドポイント、タスクロール |
+| SQS | worker → キュー（アラートと決定の 2 本） | `sqs` のエンドポイント、タスクロール（受け取りと削除だけ） |
 | AgentCore Runtime | worker → Runtime | `bedrock-agentcore` のエンドポイント、タスクロール |
-| Neptune Analytics | worker → グラフ | `neptune-graph-data` のエンドポイント、SigV4 |
+| Neptune Analytics | worker → グラフ（読むだけ） | `neptune-graph-data` のエンドポイント、SigV4 |
 | S3 Tables | worker → `proposal_events` | `s3tables` のエンドポイント、Iceberg REST、SigV4 |
 | lab の EC2 | worker → SSM → EC2 | `ssm` のエンドポイント、Run Command |
 
@@ -47,7 +48,7 @@ worker が読み書きするもの:
   開発用サーバーがタスクの中にあるので、承認待ちのワークフローが片方にしか無くなる。コードから確かめた理由で、AWS では試していない（2026-10-04）。
   出典: `terraform/workflow/ecs.tf` のコメント、`ops/up.sh` の先頭のコメント。
 - **タスクが入れ替わると、走っていたワークフローは消える。**
-  SQLite がタスクの中にあるため。修復案の頂点は `pending` のまま残り、時間切れにもならない。Grafana の次の送り直しでは、同じ発生の修復案があるので起きない。直すなら「承認」タブで却下する。
+  SQLite がタスクの中にあるため。修復案は `pending` のまま残り、ワークフローの時間切れは働かない。Grafana の次の送り直しでは、同じ発生の修復案があるので起きない。「承認」タブで承認か却下を押すと、worker が `expired` の行を足して閉じる（処置は打たない）。同じ異常の新しい修復案ができたときも、古い `pending` は `expired` で閉じる。
   出典: [workflow.md](../../workflow.md) の「通知の重なりと取りこぼし」。
 - **gRPC の 7233 はタスクの外に出さない。**
   `--ip 127.0.0.1` で待ち、UI だけを `--ui-ip 0.0.0.0` で出す。worker は同じタスクの `localhost:7233`。2026-09-29 までは 7233 も外に開いていた。
@@ -64,12 +65,15 @@ worker が読み書きするもの:
 - **`rejected` / `expired` / `failed` で終わるときは、解消の通知が来るまでワークフローを閉じない。**
   閉じると、まだ直っていない同じ異常の次の通知がもう一度調査を起こすため。長くて 1440 分。
   出典: [workflow.md](../../workflow.md) の「修復案の状態」。
-- **承認・却下は `pending` のときだけ書ける。**
-  `WHERE n.status = 'pending'` と `SET` が 1 本の openCypher。Web と worker は修復案の頂点の `status` だけでやり取りする。
-  出典: [workflow.md](../../workflow.md) の「流れ」。
-- **`proposal_events` の承認・却下の行は、worker が頂点の変化を拾ったときに書く。**
-  worker が止まっていると遅れて入る。再試行で二重に入ることがあるので、集計では `event_id` で落とす。
-  出典: [workflow.md](../../workflow.md) の「流れ」。
+- **承認・却下は、Web が SQS に送り、worker がシグナル `decide` でワークフローに渡す。**
+  1 つの worker のプロセスが 3 つを動かす: アラートのキューを読むループ、決定のキューを読むループ、Temporal の worker。承認待ちは頂点を見に行かず、シグナルを待つ。押してから反映まで数秒〜20 秒。
+  出典: `workflow/worker.py` の先頭のコメント、[workflow.md](../../workflow.md) の「流れ」。
+- **決定は最初の 1 通だけが効く。**
+  内容の違う後の決定は `ignored` の行で残す（`status` は変えない）。同じ内容の重複（SQS の配り直し）は捨てる。承認待ちが時間切れや解消で終わったあとの決定は、ログだけ。
+  出典: `workflow/worker.py` の `InvestigateAnomaly.decide`、[workflow.md](../../workflow.md) の「流れ」。
+- **`proposal_events` に書くのは worker だけ。**
+  Web はテーブルに書かない。worker が止まっていると、承認・却下の行は遅れて入る（決定は SQS で 1 日まで待つ）。再試行で二重に入ることがあるので、集計では `event_id` で落とす。コミットがぶつかったら 5 回までやり直す。
+  出典: `workflow/awsio.py` の `append_proposal_events`、`terraform/workflow/events.tf` のコメント。
 - **保守中の機器の異常では起こさない。**
   アラートの機器か、落ちた回線の相手が Nautobot で `Maintenance` のとき。Neptune を読めないときは起こす。
   出典: [workflow.md](../../workflow.md) の「流れ」。
@@ -80,8 +84,11 @@ worker が読み書きするもの:
   Temporal が上がるまで 1〜3 分かかる。
   出典: [workflow.md](../../workflow.md) の「うまくいかないとき」。
 - **修復案は以前 DynamoDB のテーブルだった。**
-  2026-09-24 に Neptune と S3 Tables に寄せた。
+  2026-09-24 に Neptune と S3 Tables に寄せ、2026-10-05 に S3 Tables の `proposal_events` だけにした。
   出典: `terraform/workflow/proposals.tf` の先頭のコメント、[data-stores.md](../../data-stores.md) の「5. 経緯: DynamoDB をやめた（2026-09-24）」。
+- **2026-10-05 に AWS で通した。**
+  `sudo lab fail-main` のあと、`proposal_events` に created → approved → applied → verified の行が入った。Web の「承認」タブで承認すると `sudo lab heal-main` が Success になり、処置から 103 秒で verified になった。決めた人の名前に `'` を入れても通った。却下・時間切れ・failed の経路は未確認。
+  出典: 2026-10-05 の動作確認（`AGENT=1 PIPELINE=1 WORKFLOW=1 ENDPOINTS_AZ_NUM=2 SPLUNK_AZ_NUM=2`）。
 - **Temporal はいまは ECS。あとで EKS に移す（2026-09-17 のユーザー決定）。**
   出典: `terraform/workflow/locals.tf` の先頭のコメント。
 
@@ -93,8 +100,12 @@ worker が読み書きするもの:
 | 2 タスク | 立てられない（上の知見。AWS では未確認） |
 | フラップ | 走っているあいだに届いた落ち直しの `firing` は捨てる（[workflow.md](../../workflow.md) の「通知の重なりと取りこぼし」） |
 | 処置の種類 | 回線を上げる `heal-main` と見るだけの `check` だけ。事前チェック（`precheck`）の警告は、落とす処置を足したときに効く |
+| worker が 1 日を超えて止まる | そのあいだに Web から送った決定は SQS の保持（1 日）で消える。修復案は `pending` のまま残る |
+| 却下・時間切れ（`expired`）・`failed`・`ignored` の経路 | AWS では未確認（模擬テストだけ） |
+| 1 本の回線断で修復案が 4 件できる | 既知（2026-10-05。[troubleshooting.md](../../troubleshooting.md) の「既知の不具合」）。承認した 1 件が verified、残りの 3 件は obsolete になった |
+| Temporal UI の画面 | 開いて確かめていない（2026-10-05 の動作確認では見ていない） |
 
-このあと変わる予定: 修復案は S3 Tables の `proposal_events` だけに置き、Web の承認は SQS で worker に届ける。[修復案を S3 Tables にまとめる（003）の設計](../../cycles/003-proposals-in-s3tables/design.md)。
+2026-10-05 に、修復案を S3 Tables の `proposal_events` だけに置き、Web の承認を SQS で worker に届ける形に変えた。[修復案を S3 Tables にまとめる（003）の設計](../../cycles/003-proposals-in-s3tables/design.md)。
 
 ## 関連
 

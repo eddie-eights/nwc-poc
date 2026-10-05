@@ -29,9 +29,8 @@
 | EVPN/BGP | `bgp_session`、`evpn_instance`、`ethernet_segment` | BGP のセッション、EVPN のインスタンス、ES |
 | 状態 | 各頂点・辺のプロパティ `status` | UP / DOWN / ALARM。アラートが届くと Lambda `<prefix>-graph-status` が書き換える |
 | 変更 | `change`（id は `change#<id>`） | Nautobot の変更の履歴の新しい 50 件 |
-| 修復案 | `proposal`（id は `<anomaly_id>#<first_seen>`） | 修復案の「いま」の状態（pending → approved …）。辺は無い |
 
-障害そのもの（アラートの 1 通ごと）は頂点にしていない。履歴は S3 Tables の `alert_events` にある。
+障害そのもの（アラートの 1 通ごと）も修復案も頂点にしていない。アラートの履歴は S3 Tables の `alert_events`、修復案は `proposal_events` にある（修復案の頂点 `proposal` は 2026-10-05 にやめた）。
 
 ## つながり
 
@@ -40,7 +39,7 @@
 | Runtime（エージェント）、Web の EC2 | 読み書き | `neptune-graph-data` のエンドポイント（443、private DNS）、SigV4。ポリシー `<prefix>-graph-access` |
 | Lambda `<prefix>-graph-status` | 書く（`status`） | 同じエンドポイント、SigV4 |
 | tools の Lambda（Gateway のトポロジのツール） | 読むだけ | 同じエンドポイント、SigV4（`ReadDataViaQuery` と `GetQueryStatus` だけ） |
-| ワーカー（Temporal） | 読み書き（修復案） | 同じエンドポイント、SigV4 |
+| ワーカー（Temporal） | 読むだけ（トポロジ。事前チェックと保守中の機器の判定） | 同じエンドポイント、SigV4（タスクロールには Write と Delete も残っているが、コードは使わない） |
 | Nautobot の Job | 書く（物理層） | 同じエンドポイント、SigV4（タスクロール） |
 | `ops/sync-graph.sh` | 書く（lab の定義の投入） | 利用者の PC → SSM → Web の EC2 → 上と同じ経路 |
 
@@ -76,31 +75,34 @@
 - **登録の無い機器のアラートは、`registered=false` の頂点になる。**
   Lambda のログには `UNREGISTERED` の警告が出る。
   出典: [pipeline.md](../../pipeline.md) の「Neptune のトポロジ」。
-- **Neptune が止まっても検知は続く。止まるのは `status` の更新、修復案の読み書き、トポロジのツール。**
-  アラートは SQS で待ち、5 回受け取っても処理できなければ DLQ に行く。
+- **Neptune が止まっても検知は続く。止まるのは `status` の更新、トポロジのツール、新しいワークフローの起動。**
+  worker は起こす前に保守中の機器かどうかを Neptune で見るため。修復案の一覧と承認・却下は Neptune を使わないので動く。アラートは SQS で待ち、5 回受け取っても処理できなければ DLQ に行く。
   出典: [data-stores.md](../../data-stores.md) の「4. 気を付けること」、[workflow.md](../../workflow.md) の「流れ」。
 - **IAM では頂点ごとに権限を分けられない。**
-  許可はグラフ単位（`ReadDataViaQuery` / `WriteDataViaQuery` / `DeleteDataViaQuery`）。「修復案を承認できるのは人だけ」の線は IAM でなくコードで引いている（承認の操作をエージェントのツールとして出さない）。
-  出典: `terraform/pipeline/graph/access.tf`、[data-stores.md](../../data-stores.md) の「4. 気を付けること」、[workflow.md](../../workflow.md) の「流れ」。
-- **修復案の頂点は、グラフとして使われていない。**
-  辺が 1 本も無く、id で引いて書き換えるだけ。同じ内容の履歴を S3 Tables の `proposal_events` にも書いている（2 か所に書いている状態）。
-  出典: FAQ「Neptune には修復案は書かないよね？ status 更新だけよね？」「Neptune Analytics で分析するときに障害情報や修復案も必要になるなら、プロパティとして入れたほうがいい？」。
+  許可はグラフ単位（`ReadDataViaQuery` / `WriteDataViaQuery` / `DeleteDataViaQuery`）。修復案を Neptune に置いていたあいだは、「承認できるのは人だけ」の線を IAM で引けなかった。2026-10-05 からは修復案が Neptune に無く、この線は決定のキューの `sqs:SendMessage`（Web の EC2 のロールだけ）で引いている。
+  出典: `terraform/pipeline/graph/access.tf`、`terraform/workflow/proposals.tf` の先頭のコメント、[data-stores.md](../../data-stores.md) の「4. 気を付けること」。
+- **修復案の頂点はやめた（2026-10-05）。**
+  辺が 1 本も無く、id で引いて書き換えるだけで、グラフとして使っていなかった。同じ内容を S3 Tables の `proposal_events` にも書いていた（2 か所に書いていた）。いまは `proposal_events` だけ。
+  出典: [修復案を S3 Tables にまとめる（003）の設計](../../cycles/003-proposals-in-s3tables/design.md)、FAQ「Neptune には修復案は書かないよね？ status 更新だけよね？」。
 - **プロパティに向くのは「いまの値が 1 つ」のものだけ。**
   機器や回線の `status` がそれ。障害や修復案は 1 つの機器に何件も積み重なるので、分析で要るときに S3 Tables から「写し」として頂点で載せる。件数や期間の集計だけなら Athena で足りる。
-  出典: 同じ FAQ（2 つ目）。
+  出典: FAQ「Neptune Analytics で分析するときに障害情報や修復案も必要になるなら、プロパティとして入れたほうがいい？」。
 
 ## 制約と未確認
 
 | 項目 | 状態 |
 |---|---|
-| AWS の上での動作 | 置き換えたあと一度も動かしていない（2026-10-04 時点）。エンドポイントの private DNS だけで届くかも未確認 |
-| 16 m-NCU で足りるか | 未確認 |
+| AWS の上での動作 | 2026-10-05 に AWS で確かめた。Lambda `<prefix>-graph-status` が `status` を DOWN / UP に書き換え、チャット（AgentCore Runtime）が「dc1-leaf-01 の接続先は」に正しく答えた。`private_graph_endpoint` は足していない（土台の `neptune-graph-data` のエンドポイントだけ）。`NEPTUNE_AZ_NUM` は既定の 1、エンドポイントは 2 AZ |
+| `NEPTUNE_AZ_NUM` が 2 以上 | 未確認 |
+| 16 m-NCU で足りるか | 2026-10-05 の動作確認は 16 m-NCU で通した（lab の 8 台）。メモリの使用量は見ていない |
 | `neptune-graph` のリクエストに `aws:SourceVpc` が付くか | 未確認（それで Deny に入れていない） |
 | サーバー側の問い合わせのタイムアウト | 付けていない（クライアント側は接続 3 秒・読み 10 秒・2 回。アラートの履歴を残す（001）の設計のリスクの 9） |
 | `status` の Lambda が待つ時間 | エンドポイントが 3 AZ だと上限 66.6 秒で、Lambda の timeout 60 秒を超える（`ops/up.sh` は注意だけ出す） |
 | アカウントあたりのグラフの数の上限 | リポジトリに数字が無い（Service Quotas で確かめる、と data-stores.md にある） |
 
-このあと変わる予定: 修復案（`proposal`）は S3 Tables の `proposal_events` だけに置き、Neptune はトポロジと `status` だけにする。[修復案を S3 Tables にまとめる（003）の設計](../../cycles/003-proposals-in-s3tables/design.md)。OSS 版では Neo4j（ECS）に置き換える。[マネージドを OSS に置き換えた環境を作る（005）の設計](../../cycles/005-oss-on-ecs/design.md)。
+2026-10-05 に、修復案（`proposal`）を S3 Tables の `proposal_events` だけに置き、Neptune をトポロジと `status` だけにした。[修復案を S3 Tables にまとめる（003）の設計](../../cycles/003-proposals-in-s3tables/design.md)。
+
+このあと変わる予定: OSS 版では Neo4j（ECS）に置き換える。[マネージドを OSS に置き換えた環境を作る（005）の設計](../../cycles/005-oss-on-ecs/design.md)。
 
 ## 関連
 

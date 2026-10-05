@@ -5,6 +5,7 @@
 ## ひとことで
 
 アラートを配る経路。Grafana と Splunk が同じ形の JSON を SNS のトピックに publish し、トピックが Lambda（Neptune の `status` とアラートの履歴）と SQS（ワークフローを起こす worker）へ配る。
+SQS はもう 1 本あり、Web の承認・却下を worker に届ける（決定のキュー。SNS は通らない）。
 配達は「少なくとも 1 回」で、順序も 1 回だけの配達も約束しない。受け手は同じ知らせを何度受けてもよい作りにしてある。
 
 ## このプロジェクトでの使い方
@@ -17,6 +18,8 @@
 | Lambda のログ | `/aws/lambda/<prefix>-graph-status` | `sync.tf` |
 | キュー | `<prefix>-anomalies`。可視性タイムアウト 120 秒、保持 1 日、long polling 20 秒、5 回受け取ったら DLQ へ | `terraform/workflow/events.tf` |
 | DLQ | `<prefix>-anomalies-dlq`。保持 14 日 | `events.tf` |
+| 決定のキュー | `<prefix>-decisions`。Web の承認・却下が 1 件 1 通で入る。設定はアラートのキューと同じ（可視性タイムアウト 120 秒、保持 1 日、long polling 20 秒、5 回で DLQ）。SNS の購読は無い。URL は SSM の `/<prefix>/decision-queue-url` | `events.tf`、`terraform/workflow/proposals.tf` |
+| 決定の DLQ | `<prefix>-decisions-dlq`。保持 14 日 | `events.tf` |
 | 購読 | Lambda（graph のルート）と SQS（workflow のルート。`raw_message_delivery = true`）。どちらも自分のルートが作る | `sync.tf`、`events.tf` |
 | スイッチ | トピックは常に作る。Lambda は `PIPELINE=1`（`SKIP_GRAPH=1` で外す）、SQS は `WORKFLOW=1` | `ops/up.sh` |
 | 費用 | 時間課金は無い（publish は 100 万件/月まで、SQS は 100 万リクエスト/月まで無料）。エンドポイント `sns`、`sqs` が 1.4 セント/時 × `ENDPOINTS_AZ_NUM` | `alerts.tf` と `events.tf` のコメント、`ops/up.sh` の先頭のコメント |
@@ -30,6 +33,7 @@
 | `kind` | `link_down`、`bgp_down`、`isis_down`、`trap` |
 | 異常の id | `<device_id>#<kind>#<target>`。送り手が違っても同じ機器・種類・対象なら同じ |
 | 履歴の行の `event_id` | `<anomaly_id>#<source>#<status>#<starts_at の epoch 秒>`（`starts_at` が無いと末尾は `#0`） |
+| 決定のキューの本文 | `{"type": "decision", "proposal_id", "decision": "approved" \| "rejected", "decided_by", "sent_at"}`（読むのは `workflow/rules.py` の `decision_from_message`） |
 
 このファイルの Lambda は `<prefix>-graph-status` だけ。Gateway のツールの Lambda `<prefix>-tools` と KB の index を作る `<prefix>-kb-index` は [agentcore-bedrock.md](agentcore-bedrock.md)。
 
@@ -42,7 +46,8 @@
 | Firehose `<prefix>-alert-events` | Lambda → Firehose | `kinesis-firehose` のエンドポイント、`firehose:PutRecordBatch`（analytics がある回だけ） |
 | Neptune Analytics | Lambda → グラフ | `neptune-graph-data` のエンドポイント、SigV4 |
 | SQS `<prefix>-anomalies` | トピック → キュー | SNS のサービスが配る（キューのポリシーで許す） |
-| worker（Temporal のタスク） | worker → キュー | `sqs` のエンドポイント、long polling 20 秒、タスクロール |
+| worker（Temporal のタスク） | worker → キュー（アラートと決定の 2 本） | `sqs` のエンドポイント、long polling 20 秒、タスクロール（受け取りと削除） |
+| Web の EC2（承認タブ） | Web → 決定のキュー | `sqs` のエンドポイント、インスタンスロールの `sqs:SendMessage`（ポリシー `<prefix>-workflow-web`。このロールだけ） |
 
 ## 知見
 
@@ -85,6 +90,15 @@
 - **worker はメッセージを「処理できた」ときだけ消す。**
   起こした・起こす理由が無い・保守中・既に走っている・解消を伝える相手がいない、のどれかなら消す。Temporal や Neptune に届かないときは残して配り直させ、5 回で DLQ へ。処理が 120 秒を超えると、もう一度受け取る。
   出典: [workflow.md](../../workflow.md) の「流れ」、[data-stores.md](../../data-stores.md) の「アラートの経路（格納先 → 修復）」。
+- **決定のキューに送れるのは Web の EC2 のロールだけ。**
+  「チャットからは承認できない」を IAM で守る。Runtime と tools の Lambda のロールには `sqs:SendMessage` を付けない。キューのポリシーは VPC の外からの呼び出しの Deny だけ（閉域があるとき）。
+  出典: `terraform/workflow/proposals.tf` の先頭のコメント、`events.tf` のコメント。
+- **決定をアラートのキューに入れても効かない。**
+  アラートのキューには Grafana と Splunk のタスクロールも SNS 越しに届くので、worker はそこに来た決定を読めないメッセージとして消す。
+  出典: `workflow/worker.py` の `handle_message` のコメント。
+- **決定のメッセージは、シグナルを送れたか、ワークフローが無いと分かったら消す。**
+  ワークフローが無く修復案が `pending` なら、worker が `expired` の行を足してから消す。Temporal や S3 Tables に届かないときは残し、5 回で DLQ へ。worker が 1 日を超えて止まると、保持の切れた決定は消える（修復案は `pending` のまま）。
+  出典: `workflow/worker.py` の `handle_decision`、`events.tf` のコメント。
 - **`starts_at` の意味は送り手で違う。**
   Grafana は発火した時刻で、`resolved` でも発火の時刻のまま。Splunk はその状態を最後に見た時刻（`resolved` なら戻った時刻）。
   出典: [pipeline.md](../../pipeline.md) の「アラートの履歴」。
@@ -103,6 +117,7 @@
 | Grafana → SNS | 通知の失敗は Grafana が送り直す | 発火中は 4 時間ごとに送り直す |
 | SNS → Lambda | やり直し（2 回）を使い切った分 | Lambda が失敗してやり直した分 |
 | SNS → SQS → worker → Temporal | 5 回受け取っても処理できなかった分は DLQ へ | 処理が 120 秒を超えたとき |
+| Web → 決定のキュー → worker → Temporal | 5 回受け取っても処理できなかった分は DLQ へ。worker が 1 日を超えて止まると保持が切れる | 処理が 120 秒を超えたとき（同じ内容の決定はワークフローが捨てる） |
 
 ## 制約と未確認
 
@@ -111,9 +126,10 @@
 | エンドポイントが 3 AZ のとき | Lambda の待ちの上限（66.6 秒）が timeout（60 秒）を超える。注意だけ出す |
 | フラップ（承認待ちのあいだに直って、また落ちた） | 落ち直しの `firing` がワークフローの走っているあいだに届くと捨てる。次に調査が起きるのは Grafana の送り直し（4 時間後）か Splunk の次の変化 |
 | DLQ に入ったメッセージ | 戻す仕組みは作っていない（保持 14 日） |
-| AWS の上での通し（Grafana と Splunk の publish、Firehose への書き込み） | 未確認（[grafana.md](grafana.md)、[splunk.md](splunk.md)、[firehose.md](firehose.md)） |
+| AWS の上での通し（Grafana と Splunk の publish、Firehose への書き込み） | 2026-10-05 に AWS で確かめた。`sudo lab fail-main` で Grafana と Splunk の両方が `link_down` と `isis_down` を出し、SNS → Lambda（`status` の書き換えと Firehose）と SNS → SQS → worker の配信が通った。`bgp_down` と `trap` の firing は未確認 |
+| 決定のキュー（Web → SQS → worker） | 2026-10-05 に AWS で承認の 1 通を確かめた。却下、重複、DLQ に落ちる経路は未確認 |
 
-このあと変わる予定: Web の承認も SQS で worker に届けるようになる。[修復案を S3 Tables にまとめる（003）の設計](../../cycles/003-proposals-in-s3tables/design.md)。
+2026-10-05 に、Web の承認も SQS で worker に届ける形に変えた。[修復案を S3 Tables にまとめる（003）の設計](../../cycles/003-proposals-in-s3tables/design.md)。
 
 ## 関連
 

@@ -31,7 +31,7 @@
 | 症状 | 原因と直し方 |
 |---|---|
 | ワークロードのログに `<サービス>.ap-northeast-1.amazonaws.com` への接続のタイムアウト（`Connect timeout` / `ConnectTimeoutError`） | そのサービスのインターフェース型エンドポイントが無い（VPC にインターネットへの経路が無いので、どこにも出られない）。手順 0 の一覧にあるか見る。無ければ `ops/up.sh` の `endpoints_for` に足し、`terraform/base/core` の `interface_endpoints` の validation にも足す |
-| Neptune（Neptune Analytics）への問い合わせがタイムアウトする・名前が引けない | **AWS では未確認の構成**（2026-10-04 に置き換えた）。`public_connectivity = false` のグラフに、土台のインターフェース型エンドポイント `neptune-graph-data`（private DNS）だけで届く前提で作ってある。届かなければ `terraform/pipeline/graph/neptune.tf` に `aws_neptunegraph_private_graph_endpoint`（グラフごとの VPC エンドポイント）を足す。`AccessDenied` なら IAM の `neptune-graph:ReadDataViaQuery` などと、Resource のグラフの ARN を見る |
+| Neptune（Neptune Analytics）への問い合わせがタイムアウトする・名前が引けない | `public_connectivity = false` のグラフに、土台のインターフェース型エンドポイント `neptune-graph-data`（private DNS）だけで届く作り。2026-10-05 に AWS で確かめた（`<prefix>-graph-status` が `status` を DOWN / UP に書き、チャットがトポロジを答えた）。届かないときは手順 0 の一覧に `neptune-graph-data` があるかと、SG `endpoints` を見る。`AccessDenied` なら IAM の `neptune-graph:ReadDataViaQuery` などと、Resource のグラフの ARN を見る |
 | VPC の中の相手（MSK / ECS のタスク / 機器）への接続がタイムアウトする | 土台の通信の表にその流れが無い（SG は表に無い通信を VPC の中でも通さない。[architecture/core.md](architecture/core.md) の「SG」）。`terraform/base/core/security_groups.tf` の `sg_flows` に 1 行足して `ops/up.sh` を打ち直す。拒んだ通信は VPC フローログに出るので、CloudWatch Logs Insights でロググループ `/<prefix>/vpc-flow-logs` に `filter action = "REJECT" \| stats count(*) by srcAddr, dstAddr, dstPort, protocol \| sort count(*) desc` を打つ（1〜2 分遅れて出る。IP は ENI の一覧で SG を引く）。送り元が S3 の公開 IP（プレフィックスリスト `com.amazonaws.ap-northeast-1.s3` の範囲）で宛先が 32768 以上のポートの REJECT が少し出るのは、閉じた接続に遅れて届いたパケットで、表の漏れではない |
 | ワークロードのログに `AccessDenied ... with an explicit deny in an identity-based policy` | その呼び出しが VPC のエンドポイントを通らなかった（`<prefix>-network-perimeter` の Deny。PC から打った CLI などで、VPC の外から呼んだとき）。呼んだサービスのインターフェース型エンドポイントが手順 0 の一覧にあるか見る。無ければ `ops/up.sh` の `endpoints_for` に足す。切り分けは `NETWORK_PERIMETER=0 ops/up.sh`（[setup.md](setup.md) の「閉域を一時的に外すとき」） |
 | `... in a resource-based policy`（S3 / S3 Tables / SNS / SQS / AgentCore） | リソースポリシーの Deny。apply した人と AWS のサービスは外してあるので、ほかの人か、VPC の外の PC から打った。apply した本人の PC から打つか、VPC の中（Web の EC2 に SSM で入る）から打つ |
@@ -81,20 +81,35 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 | BGP / IS-IS の層や機器の `ALARM` が変わらない | 出すのは Grafana と Splunk のアラート（`bgp_down` / `isis_down` / `trap`）。`STORES` に `grafana` も `splunk` も無ければ出ない（仕様）。あるのに変わらなければ、Grafana は Alerting → Alert rules のルール `bgp_down` / `isis_down` / `trap` の状態、Splunk は上の「Splunk のアラートが出ない」の行を見る。Grafana の `bgp_down` / `isis_down` は Explore で `snmp_bgp_neighbor_session_up` / `snmp_isis_interface_oper_up` が来ているかも見る |
 | Grafana のダッシュボード「netops / SNMP metrics」が空、エージェントの `query_metrics` が何も返さない | `deploy.env` に `SNMP_POLL=0` を書いていないか（既定は 1）。`0` では SNMP のポーリングをしないので `metrics` トピックにポーリングの行が載らない。見るなら `SNMP_POLL=0` を消して（か `1` にして）`ops/up.sh`（Telegraf の取りにいく側のタスクが入れ替わる）。`1` なのに空なら Telegraf か Spark（下の行と [pipeline.md](pipeline.md) の「Spark を確かめる」） |
 | トポロジは赤くなるのに修復案が出ない | SNS → SQS か、ワーカー。`WORKFLOW=1` か、起こす種類か（ワークフローを起こすのは `link_down` だけ）を見る。`terraform -chdir=terraform/workflow output -raw anomaly_dlq_url` のキューに溜まっていれば、ワーカーが 5 回読んで処理できなかった。ワーカーのログは `terraform -chdir=terraform/workflow output -raw worker_logs_command`（[workflow.md](workflow.md) の「うまくいかないとき」） |
+| 承認を押しても `pending` のまま | 反映まで数秒〜20 秒かかる（Web → SQS `<prefix>-decisions` → worker → ワークフロー → `proposal_events` → Athena）。「更新」を押す。1 分たっても変わらなければ、worker のログに `decide <proposal_id>` が出ているか、DLQ `<prefix>-decisions-dlq` に溜まっていないかを見る（[workflow.md](workflow.md)） |
+| 承認を押したら `expired` になった | ワークフローがもう無かった（worker のタスクが入れ替わった）。処置は打たれない。まだ落ちていれば、次の通知で別の修復案が出る（[workflow.md](workflow.md)） |
 | 承認しても approved のまま進まない | ワーカーのイメージが古い。`deploy.env` の `IMAGE_TAG` を上げて `ops/up.sh`（[workflow.md](workflow.md)） |
 | 手順 7-2c で「Telegraf のサービスが 10 分たっても安定しない」 | タスクが起きては止まっている。サービスは 2 つ（受ける側 `<prefix>-telegraf-dialout` と取りにいく側 `<prefix>-telegraf-dialin`）。`terraform -chdir=terraform/pipeline/stream output -raw telegraf_dialout_list_tasks_command`（取りにいく側は `telegraf_dialin_list_tasks_command`）に `--desired-status STOPPED` を足して打ち、`aws ecs describe-tasks` の `stoppedReason` を見る。`CannotPullContainerError` / `ResourceInitializationError` は ecr.api / ecr.dkr / logs のエンドポイント（手順 0 の一覧）と S3 の gateway。起きてすぐ終わるならロググループ `/ecs/<prefix>-telegraf` の最初の行（ストリームは受ける側が `dialout/…`、取りにいく側が `dialin/…`。`SNMP_AGENTS が無いか形が違う` なら stream の変数 `snmp_agents` の形（`SNMP_POLL=0` では見ない）、`SNMP_POLL は 0 か 1` なら変数 `snmp_poll`。`ops/up.sh` を通して打つ）。NLB のヘルスチェック（`8080/tcp`、Telegraf の `outputs.health`。Telegraf が動いていれば 200）が通らないと入れ替えが続く（NLB の後ろにいるのは受ける側だけ） |
 | syslog の項目（ホスト名・本文など）が崩れる、取れない | Telegraf の `syslog_standard` と機器の形式が合っていない。既定は RFC3164（本番の Cisco）、lab の SR Linux は RFC5424。up.sh は `deploy.env` の `SYSLOG_STANDARD`（空なら RFC3164）を stream の `syslog_standard` に渡す。lab のログを見るなら `SYSLOG_STANDARD=RFC5424` にして打ち直す。`lab telegraf run`（デバッグ用の EC2）は常に RFC5424 |
 | デバッグ用の EC2 で Telegraf の出力を見たい | `sudo lab telegraf status` / `logs -f` / `test` / `gnmi`（出力は標準出力。MSK へは送らない）。デバッグ用の EC2 では SNMP のポーリングを既定で止めてあるので（stream の既定とは違う）、`test` やメトリクスの行を見るなら `sudo SNMP_POLL=1 lab telegraf run` で起こし直す |
 | `tg gnmi`（と `tg test`。`SNMP_POLL=0` では `tg test` は使えない。取りにいく側のタスクで打つ）は通るのに trap / syslog が Kafka に来ない | lab の EC2 の DNAT の宛先が古い NLB の IP か、転送が無い。lab の EC2 で `sudo lab forward-status`、無ければ `sudo lab forward`（SSM `/<prefix>/telegraf-address` を読み直す） |
-| Grafana / Splunk のポートフォワードがつながらない | 踏み台は Web の EC2（`Online` か上の「画面に入れない」のコマンドで見る）。タスクが動いているか `aws ecs list-services --cluster <prefix>-analytics` と `describe-services` の `runningCount` を見る。Cloud Map の名前（`grafana.<prefix>.internal` / `splunk.<prefix>.internal`）はタスクが動いていないと引けない。起きないときはロググループ `/ecs/<prefix>-grafana` / `/ecs/<prefix>-splunk` と `stoppedReason`（ECR のエンドポイントと、SSM のパスワードが消えていないか） |
+| Grafana / Splunk のポートフォワードがつながらない | 踏み台は Web の EC2（`Online` か上の「画面に入れない」のコマンドで見る）。タスクが動いているか `aws ecs list-services --cluster <prefix>-analytics` と `describe-services` の `runningCount` を見る。Cloud Map の名前（`grafana.<prefix>.internal` / `splunk.<prefix>.internal`）はタスクが動いていないと引けない。Splunk がクラスター（`SPLUNK_AZ_NUM` が 2 か 3）のとき、画面は search head のサービス `<prefix>-splunk`（cluster manager の画面は `terraform -chdir=terraform/pipeline/analytics output -raw splunk_cm_port_forward_command`）。起きないときはロググループ `/ecs/<prefix>-grafana` / `/ecs/<prefix>-splunk`（クラスターではストリームの頭が `splunk` / `splunk-cm` / `splunk-idx`）と `stoppedReason`（ECR のエンドポイントと、SSM のパスワードが消えていないか） |
 | Grafana に入れない（パスワードが違う） | admin のパスワードは SSM の値（`grafana_password_command`）。タスクが起きたときに読むので、SSM を手で変えたら `aws ecs update-service --force-new-deployment` で作り直す |
 | 手順 7-4b で「Splunk が 20 分たっても HEALTHY にならない」 | ロググループ `/ecs/<prefix>-splunk` を見る。初回は設定の展開で 5〜10 分かかる。ライセンスに同意していない旨で止まるならタスク定義の `SPLUNK_START_ARGS` / `SPLUNK_GENERAL_TERMS`。Spark のジョブはそのまま起きるので、Splunk が起きたあとで落ちていれば `ops/up.sh` を打ち直す |
+| 手順 7-4b で「search head の突き合わせ（splunk/peers_check.py）が 6 分たっても ok … にならない」/「まだ 1 回もしていない」 | クラスター（`SPLUNK_AZ_NUM` が 2 か 3）だけ。search head が、いまの indexer を全部は検索できていない。ロググループ `/ecs/<prefix>-splunk` のストリーム `splunk/…` で `nwc-peer-check` の最新の行を見る（`state=ok reason=peers_up:<数>` が正常。`mismatch` は古い indexer を覚えたまま、`error` は cluster manager に聞けていない）。indexer と cluster manager（`splunk-idx/…` / `splunk-cm/…`）が起きているかを見て、`ops/up.sh` を打ち直す。2026-10-05 の AWS（`SPLUNK_AZ_NUM=2`）では `state=ok reason=peers_up:2` になった |
+| 手順 7-4b で「注意: indexer のタスクが同じ AZ に 2 台いる」 | 止まらない。AZ に 1 台ずつは Fargate の振り分け任せで、保証ではない。その AZ が落ちると複製が一緒に無くなる。散らし直すなら indexer のサービス `<prefix>-splunk-idx` を `aws ecs update-service --force-new-deployment` で作り直す（散るかは未確認） |
 
 ## 消すとき
 
 | 症状 | 原因と直し方 |
 |---|---|
-| `DependencyViolation`（SG / サブネット） | Runtime の ENI が残っている（最大 8 時間）。時間をおいて `ops/down.sh` を打ち直す |
+| `DependencyViolation`（SG / サブネット） | Runtime の ENI が残っている（最大 8 時間）。時間をおいて `ops/down.sh` を打ち直す。2026-10-05 の AWS でも、`ops/down.sh` は終了コード 0 で終わったが、VPC・サブネット・SG が残った（時間課金は無い。数時間おいて打ち直す） |
 | `ops/down.sh` の最後の一覧に `<prefix>-lab-debug` の VPC やバケットが出る | デバッグ用の EC2 のスタック。`ops/down.sh` は消さないので `ops/lab-debug.sh down` |
 | `ops/lab-debug.sh down` が「… を空にできなかった」/「消えなかった」 | 打ち直す。原因は `aws cloudformation describe-stack-events --region ap-northeast-1 --stack-name <prefix>-lab-debug` |
 | `ops/down.sh` の最後に残りが出る | 上と同じなら待つ。それ以外は get-resources で `Project=<prefix>` を探して手で消す |
+
+## 既知の不具合
+
+2026-10-05 の AWS の動作確認（`AGENT=1 PIPELINE=1 WORKFLOW=1 ENDPOINTS_AZ_NUM=2 SPLUNK_AZ_NUM=2`）で見つけて、まだ直していないもの。直したら、その行を消す。
+
+| 見つけた日 | 症状 | 分かっていること |
+|---|---|---|
+| 2026-10-05 | 1 本の回線断で修復案が 4 件できる | Splunk が、サブインターフェース（`ethernet-1/1.0`）の `link_down` も出す。回線の相手側（spine）でも同じことが起きる。1 件を承認して verified になると、残りの 3 件は obsolete になった |
+| 2026-10-05 | チャットが何も返さずに終わる | ツールの回数の上限（`agent/app.py` の `MAX_TOOL_ROUNDS`。既定 5）に当たったとき |
+| 2026-10-05 | Web のページのタイトルが文字化けする | 原因は未確認 |
+| 2026-10-05 | Splunk が起動の直後に resolved をまとめて送る | S3 Tables の `alert_events`（アラートの通知の履歴）の行が、その分だけ増える。原因は未確認 |

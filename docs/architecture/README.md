@@ -41,7 +41,7 @@
 | `lab/` | containerlab の構成、SR Linux の設定（`srlinux/*.cli`）、EC2 の支度（`setup.sh`。lab とデバッグ用の EC2 で共通）、Telegraf（ECS）への転送（`lab forward`）、デバッグ用の EC2 の Telegraf（`lab telegraf`） |
 | `telegraf/` | Telegraf の `Dockerfile`、設定（`telegraf.conf.in`）と `tg`（stream の ECS のタスクで動く。デバッグ用の EC2 でも docker で `SINK=stdout`） |
 | `grafana/` | Grafana の `Dockerfile` と provisioning（データソース、ダッシュボード、アラート（`alerting/` の `netops-prometheus.yaml` / `netops-opensearch.yaml` / `netops.yaml`）。analytics の ECS のタスクで動く） |
-| `splunk/` | Splunk の `Dockerfile`（公式イメージ + 検知のアプリ）と、アプリ `netops_alerts`（保存済みサーチと、SNS へ publish するアラートアクション。analytics の ECS のタスクで動く） |
+| `splunk/` | Splunk の `Dockerfile`（公式イメージ + 検知のアプリ）、アプリ `netops_alerts`（保存済みサーチと、SNS へ publish するアラートアクション。analytics の ECS のタスクで動く）、`entrypoint.sh`（役割に合わせてアプリを外す。indexer は止まる前に `splunk offline`）、`peers_check.py`（クラスターの search head が indexer を全部検索できるかの突き合わせ） |
 | `nautobot/` | Nautobot の `Dockerfile`（公式イメージ + boto3）、Job（`jobs/netops_jobs.py`）と、その中身（`netops/`。対応付け `nb_map.py`、同期 `nb_sync.py`、起動時の `bootstrap.py`）。`PIPELINE=1` ならいつも ECS で動く |
 | `graph/` | アラート（SNS）を受けて Neptune（Neptune Analytics）の `status` を書く Lambda |
 | `kb-docs/` | ナレッジベースに入れる手順書 |
@@ -59,7 +59,7 @@ terraform/
 │   ├── stream/      MSK / Telegraf（ECS Fargate + 内部 NLB）
 │   ├── analytics/   EMR Serverless / S3 Tables / OpenSearch / Prometheus / Grafana と Splunk（ECS Fargate）
 │   └── graph/       Neptune Analytics のグラフ / status の Lambda（SNS の購読）
-└── workflow/      WORKFLOW=1  Temporal on ECS / Gateway（MCP）/ SQS（SNS の購読）
+└── workflow/      WORKFLOW=1  Temporal on ECS / Gateway（MCP）/ SQS（SNS の購読と、承認・却下の decisions）
 ```
 
 デバッグ用の EC2（lab + Telegraf を 1 台）だけは terraform ではなく CloudFormation の `cloudformation/lab-debug.yaml`（スタック `<prefix>-lab-debug`）。作るのも消すのも `ops/lab-debug.sh up` / `down` だけで、`ops/up.sh` / `ops/down.sh` は触らない（2026-10-04 から）。土台（base/core）は使わず、自分の VPC（既定 `10.20.0.0/24`。どこともつながないので base/core と重なってよい。IGW / NAT は無い）、インターフェース型エンドポイント 4 本（ssm / ssmmessages / ecr.api / ecr.dkr）と S3 の gateway、バケット `<prefix>-lab-debug-<アカウント>`、ECR のリポジトリ 3 つ（`<prefix>-debug-lab-srlinux` / `-lab-multitool` / `-telegraf`。スタックと一緒に消える）を持つ。

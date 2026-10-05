@@ -30,7 +30,8 @@
 | ツール | 読む先 |
 |---|---|
 | `list_devices`、`neighbors`、`blast_radius`、`root_cause`、`what_if`、`topology_graph`、`layers`、`centrality` | Neptune Analytics のトポロジ（無ければ `agent/data/` の静的な 8 台） |
-| `list_proposals`、`recent_changes` | Neptune Analytics の `proposal`、`change` |
+| `recent_changes` | Neptune Analytics の `change` |
+| `list_proposals` | S3 Tables の `proposal_events`（Athena のワークグループ `<prefix>-history`。`proposal_id` ごとに `seq` が最大の行。既定は全部の状態を新しい順に 20 件、最大 100 件） |
 | `search_logs` | OpenSearch Serverless の `snmp-logs`（trap と syslog） |
 | `query_metrics` | Amazon Managed Prometheus（PromQL） |
 | `query_history` | S3 Tables の `alert_events`（Athena のワークグループ `<prefix>-history`。`event_id` で重複を落とし、新しい順に最大 50 件） |
@@ -82,8 +83,8 @@
   AgentCore の文書の DenyAllExceptVPC と同じ形のリソースポリシー。デプロイする人は外れるので、Runtime だけを PC から CLI で確かめられる。
   出典: `runtime.tf` と `terraform/workflow/gateway.tf` のコメント。
 - **承認・却下はツールに出していない。**
-  tools の Lambda の権限は Neptune を読むだけ（Write は付けない）。`query_history` で読めるテーブルも `alert_events` だけ。
-  出典: `gateway.tf` のコメント、[workflow.md](../../workflow.md) の「流れ」。
+  承認・却下は Web が決定のキュー `<prefix>-decisions` に送る。このキューへの `sqs:SendMessage` は Web の EC2 のロールにだけ付け、Runtime と tools の Lambda のロールには付けない。tools の Lambda の権限は Neptune を読むだけ（Write は付けない）で、Athena で読めるテーブルは `alert_events` と `proposal_events` だけ。
+  出典: `gateway.tf` と `terraform/workflow/proposals.tf` のコメント、[workflow.md](../../workflow.md) の「流れ」。
 - **Gateway に届かなければ、Runtime はコンテナの中のツールで答える。**
   出典: [workflow.md](../../workflow.md) の「流れ」。
 - **`agent/` のモジュールを増やしたら、3 か所に足す。**
@@ -103,8 +104,10 @@
 
 | 項目 | 状態 |
 |---|---|
-| Runtime をサブネット 1 つで作る | API は受け付ける（`VpcConfig` の subnets は 1〜16 個、https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_VpcConfig.html 、2026-10-05 確認）。手引きは 2 つ以上を勧める。1 つで作るのは AWS で未確認 |
-| `query_history` が閉域の Deny に当たらないか | 未確認（Athena が代わりに出す呼び出しには効かない前提。アラートの履歴を残す（001）の設計のリスクの 3） |
+| Runtime をサブネット 1 つで作る | API は受け付ける（`VpcConfig` の subnets は 1〜16 個、https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_VpcConfig.html 、2026-10-05 確認）。手引きは 2 つ以上を勧める。1 つ（既定の `RUNTIME_AZ_NUM=1`）で作って動くことは 2026-10-05 に AWS で確かめた。2 つ以上は未確認 |
+| `query_history` が閉域の Deny に当たらないか | Athena のワークグループ `<prefix>-history` で `alert_events` を読めることは 2026-10-05 に AWS で確かめた。チャットから `query_history` を呼んだ結果は未確認 |
+| チャットの通し | 2026-10-05 に AWS で、チャットが「dc1-leaf-01 の接続先は」に正しく答えた（`AGENT=1 PIPELINE=1 WORKFLOW=1`、`RUNTIME_AZ_NUM` は既定の 1） |
+| ツールの回数の上限に当たったとき | `MAX_TOOL_ROUNDS`（既定 5）に当たると、何も返さずに終わる。既知（2026-10-05。[troubleshooting.md](../../troubleshooting.md) の「既知の不具合」） |
 | 異常の一覧を返すツール | 無い（2026-10-02 にやめた。いまのアラートは Grafana と Splunk の画面で見る） |
 | タグ | Runtime のロググループには Terraform で付かない（`ops/up.sh` の手順 9 で付ける）。KB のデータソースとガードレールの版には付かない |
 

@@ -61,9 +61,10 @@ Lambda が 1 件ずつ渡した行を、60 秒か 1 MiB ごとにまとめて書
 
 | 項目 | 状態 |
 |---|---|
-| Firehose から S3 Tables への書き込みが IAM だけで通るか | AWS の上ではまだ通していない |
-| 時刻の書式（ISO 8601 の UTC）を Firehose が受け付けるか | 未確認 |
-| 閉域の Deny に当たらないか | 未確認。確かめ方は `firehose-errors/alert_events/` にオブジェクトが無いことと、Athena で行が読めること（[deploy.md](../../deploy.md)） |
+| Firehose から S3 Tables への書き込みが IAM だけで通るか | 2026-10-05 に AWS で確かめた（`alert_events` に `firing` と `resolved` の行が入った） |
+| 時刻の書式（ISO 8601 の UTC）を Firehose が受け付けるか | 2026-10-05 に AWS で確かめた（同じ行を Athena のワークグループ `<prefix>-history` で読めた） |
+| 閉域の Deny に当たらないか | 2026-10-05 に AWS で確かめた（行が Athena で読めた）。確かめ方は `firehose-errors/alert_events/` にオブジェクトが無いことと、Athena で行が読めること（[deploy.md](../../deploy.md)） |
+| Splunk が起動の直後に `resolved` をまとめて送る | 既知（2026-10-05）。`alert_events` の行が増える（[troubleshooting.md](../../troubleshooting.md) の「既知の不具合」） |
 | ロールの権限 | 広い（S3 Tables は `table/*`、Glue は `database/*` と `table/*/*`）。まず通すことを優先した（同じ設計のリスクの 13） |
 
 ## 関連

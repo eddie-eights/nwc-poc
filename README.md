@@ -16,9 +16,11 @@ flowchart LR
   PC -->|"SSM ポートフォワーディング<br/>（Web の EC2 を踏み台）"| GRAF["Grafana<br/>ECS Fargate"] -->|"Prometheus / OpenSearch を見る"| STORE
   GRAF -->|"Grafana のアラート<br/>（link_down / BGP / IS-IS / trap）"| SNS["SNS<br/>prefix-alerts"]
   STORE -.->|"Splunk のアラート<br/>（link_down / trap / BGP / IS-IS）"| SNS
-  SNS -->|"Lambda"| NEP["Neptune<br/>トポロジ（status）・修復案"]
+  SNS -->|"Lambda"| NEP["Neptune<br/>トポロジ（status）"]
   SNS -->|"SQS"| WF["Temporal<br/>ECS Fargate"]
-  WF -->|"修復案の証跡"| PAUDIT["S3 Tables<br/>proposal_events"]
+  WF -->|"修復案（状態と証跡）"| PAUDIT["S3 Tables<br/>proposal_events"]
+  WEB -->|"承認・却下<br/>SQS（prefix-decisions）"| WF
+  WEB -.->|"Athena で読む"| PAUDIT
   WF -->|"調査"| RT
   WF -->|"承認後に修復"| LAB
 ```
@@ -130,7 +132,7 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | `SKIP_LAB` / `SKIP_STREAM` / `SKIP_ANALYTICS` / `SKIP_GRAPH` | PIPELINE の一部を外す |
 | `STORES` | analytics の格納先。`s3`（S3 Tables）/ `grafana`（OpenSearch + Prometheus + Grafana）/ `splunk`（Splunk）をカンマで並べる。既定は 3 つとも（`s3,grafana,splunk`）。外したまとまりは作らない（前に作っていればデータごと消える） |
 | `SNMP_POLL` | stream の Telegraf で SNMP をポーリングするか。既定 `1`（10 秒ごとに ifTable）。`0` なら SNMP は trap だけ受ける |
-| `*_AZ_NUM` | 冗長化用。リソースごとに何 AZ に置くか（`ENDPOINTS_AZ_NUM` / `MSK_AZ_NUM` / `RUNTIME_AZ_NUM` など 9 つ）。既定は 1（MSK だけ 2）。ふだんの検証では書かない |
+| `*_AZ_NUM` | 冗長化用。リソースごとに何 AZ に置くか（`ENDPOINTS_AZ_NUM` / `MSK_AZ_NUM` / `RUNTIME_AZ_NUM` / `SPLUNK_AZ_NUM` など 10 個）。既定は 1（MSK だけ 2）。`SPLUNK_AZ_NUM` を 2 か 3 にすると Splunk が indexer のクラスターになる。ふだんの検証では書かない |
 | `IMAGE_TAG` | `agent/` や `workflow/` を変えたら `v2` などに上げる |
 | `HTTP_SEND` | Spark が HTTP の格納先（OpenSearch / Prometheus / Splunk）へ送る所。既定 `driver`。量が増えたら `executor`（費用は変わらない） |
 | `MAX_OFFSETS_PER_TRIGGER` | Spark の 1 つのクエリが Kafka の 1 回のトリガー（60 秒）に読む件数の上限（全パーティションの合計）。既定 `10000`、`0` で上限なし。格納先ごとに `MAX_OFFSETS_PER_TRIGGER_ICEBERG` / `_SPLUNK` / `_OPENSEARCH` / `_PROMETHEUS` で上書きできる（既定は空 = 共通の値） |
@@ -157,9 +159,9 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | [pipeline.md](docs/pipeline.md) | lab、Telegraf、デバッグ用の EC2（`ops/lab-debug.sh`）、Spark、Grafana と Splunk のアラート、Neptune のトポロジの使い方 |
 | [nautobot.md](docs/nautobot.md) | Nautobot: コンテナと部品の構成、起動から同期まで、使い方、Neptune と組み合わせた使いどころ |
 | [workflow.md](docs/workflow.md) | 承認の流れと Temporal UI |
-| [alert-comparison.md](docs/alert-comparison.md) | Splunk と Grafana のアラートを比べる: 4 種類のアラートを両方で書けたか、障害を入れる手順、遅れと取りこぼしを出す Athena のクエリ、結果（未実施） |
+| [alert-comparison.md](docs/alert-comparison.md) | Splunk と Grafana のアラートを比べる: 4 種類のアラートを両方で書けたか、障害を入れる手順、遅れと取りこぼしを出す Athena のクエリ、結果（2026-10-05 の 1 回分。手順どおりの 3 回の計測と `bgp_down`・`trap` は未実施） |
 | [troubleshooting.md](docs/troubleshooting.md) | うまくいかないとき |
 | [oss-variant.md](docs/oss-variant.md) | 方針: いまはできる限り AWS マネージドで作り、最終的にはマネージドの部分を OSS にした版も別に作る。その目的（マネージドでできて OSS でできないこと、費用、メンテナンス性の比較）と、いまマネージドにしている部分の一覧 |
 | [development.md](docs/development.md) | 手元のテスト、変更するときの決まり、Web を手元で動かす |
 | [faq-fukuda-nwc-poc.md](docs/faq-fukuda-nwc-poc.md) | 学習 FAQ: 作業中に質問したことと答え（syslog の基本、lab を `local7` にした理由、デバッグ用の EC2、本番の Cisco から送るとき、Nautobot） |
-| [data-stores.md](docs/data-stores.md) | 勉強会メモ: データの置き場（Neptune にトポロジと修復案の「いま」、S3 Tables に証跡。障害の履歴の置き場は未定）と DynamoDB をやめた理由、コンテナイメージの役目と arm64 に揃える理由（Splunk だけ x86）、Neptune Analytics の基礎（Neptune Database との違い、AZ 冗長、トポロジをグラフにする意味）、MSK のブートストラップサーバーと、Telegraf・Spark がそれをどう受け取るか（`msk-bootstrap` を残す理由） |
+| [data-stores.md](docs/data-stores.md) | 勉強会メモ: データの置き場（Neptune にトポロジと `status`、S3 Tables の `proposal_events` に修復案の状態と証跡、`alert_events` にアラートの通知の履歴）と DynamoDB をやめた理由、コンテナイメージの役目と arm64 に揃える理由（Splunk だけ x86）、Neptune Analytics の基礎（Neptune Database との違い、AZ 冗長、トポロジをグラフにする意味）、MSK のブートストラップサーバーと、Telegraf・Spark がそれをどう受け取るか（`msk-bootstrap` を残す理由） |

@@ -20,8 +20,8 @@ Nautobot で機器・インタフェース・ケーブルを変えると、Nauto
 
 | | Nautobot | Neptune |
 |---|---|---|
-| 持つもの | あるべき姿（台帳）: 機器、インタフェース、IP、Service、ケーブル | いまの姿（グラフ）: 台帳の写し + アラートで変わる `status` + IP 層 / EVPN・BGP 層 + 修復案 |
-| 変える人 | 人（Nautobot の画面、Web の「トポロジ」タブ）か、外のシステム（API） | Job、Lambda、ワークフロー（人は直接変えない） |
+| 持つもの | あるべき姿（台帳）: 機器、インタフェース、IP、Service、ケーブル | いまの姿（グラフ）: 台帳の写し + アラートで変わる `status` + IP 層 / EVPN・BGP 層（修復案は 2026-10-05 から S3 Tables の `proposal_events`。Neptune には無い） |
+| 変える人 | 人（Nautobot の画面、Web の「トポロジ」タブ）か、外のシステム（API） | Job、Lambda、`ops/up.sh` と `ops/sync-graph.sh`（人は直接変えない） |
 | 読む人 | 運用者、Job | AI エージェント、Web の「トポロジ」タブ |
 | 得意なこと | 入力の検査、変更の履歴、権限 | つながりをたどる（隣、影響の範囲、層をまたぐ紐づけ） |
 
@@ -233,7 +233,7 @@ Nautobot は変更のたびに ObjectChange（だれが・いつ・何を・ど�
 
 ## 7. 役割の分担（Nautobot と Neptune）
 
-Neptune に書くものは 5 つあり、書き手が分かれている。Nautobot から入るのは物理層（保守中の印を含む）と変更履歴。
+Neptune に書くものは 4 つあり、書き手が分かれている。Nautobot から入るのは物理層（保守中の印を含む）と変更履歴。
 
 | Neptune に書くもの | 書き手 | 元の情報 |
 |---|---|---|
@@ -241,7 +241,8 @@ Neptune に書くものは 5 つあり、書き手が分かれている。Nautob
 | 変更履歴（頂点 `change`。新しい順に 50 件） | Nautobot の Job（`agent/graph.py` の `sync_changes()`） | Nautobot の ObjectChange |
 | IP 層 / EVPN・BGP 層 | `ops/up.sh` の手順 7-3b、`ops/sync-graph.sh` | lab の定義（SR Linux の設定）。Nautobot には無い |
 | `status` | Lambda `<prefix>-graph-status` | アラート（SNS） |
-| 修復案 | ワークフローと Web | エージェントの調査と人の承認 |
+
+修復案は Neptune に書かない（2026-10-05 から。S3 Tables の `proposal_events` に worker だけが書く。[data-stores.md](data-stores.md)）。
 
 Web の「トポロジ」タブのリンクの追加・削除は、Neptune ではなく Nautobot に書く（SSM `/<prefix>/nautobot/url` があるあいだ。5 章）。Web が Neptune の物理層を直接書くことはない。
 

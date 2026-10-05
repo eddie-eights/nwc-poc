@@ -48,6 +48,7 @@
 | `NEPTUNE_AZ_NUM` | 冗長化用。Neptune Analytics のグラフ。既定 `1`、`1`〜`3`（2 以上は別の AZ の待機系のレプリカを 値 - 1 個。1 つ +$0.58/h） |
 | `OPENSEARCH_AZ_NUM` | 冗長化用。OpenSearch Serverless（KB と logs のコレクション）。既定 `1`、`1`〜`2`（`2` はスタンバイのレプリカで OCU が倍。3 という形は無い）。変えるとコレクションを作り直す（索引は消える） |
 | `NAUTOBOT_DB_AZ_NUM` | 冗長化用。Nautobot の RDS。既定 `1`、`1`〜`2`（`2` は Multi-AZ で、別の AZ に同期の待機系。約 +$0.03/h。3 は Multi-AZ DB クラスタで、作っていない） |
+| `SPLUNK_AZ_NUM` | 冗長化用。Splunk（ECS。`STORES` の `splunk`）。既定 `1`（サブネット a に 1 台）、`1`〜`3`。`2` か `3` で indexer のクラスター: cluster manager 1 + indexer が AZ の数（1 AZ に 1 つ。全部のイベントを互いに複製する）+ search head 1 のタスクで、`2` は +$0.37/h、`3` は +$0.49/h。manager と search head はサブネット a。indexer を AZ に散らすのは Fargate の振り分けに任せている（保証ではない。同じ AZ に 2 台いたら `ops/up.sh` が注意を出す）。index は `main` だけなので `SPLUNK_INDEX` と一緒には書けない。`STORES` に `splunk` が無いと止まる（`SKIP_ANALYTICS=1` のときは見ない）。`1` とクラスターを切り替えると空から始まる（index はタスクの中）。2026-10-05 に `2` を AWS で確かめた。`3` は未確認（[architecture/resources/splunk.md](architecture/resources/splunk.md)） |
 | `TELEGRAF_AZ_NUM` | 冗長化用。stream の Telegraf の受ける側（dialout）。既定 `1`、`1`〜`3`。NLB のサブネットとタスクの数（1 AZ に 1 つ。+$0.01/h ずつ。2 以上は NLB が AZ をまたいで配る）。取りにいく側（dialin）はいつも 1 つ（2 つにすると同じ機器を 2 重にポーリング・購読する） |
 | `AWS_CA_BUNDLE` | 社内 PC の CA（[setup.md](setup.md)）。前にあった `OPENSEARCH_CACERT_FILE` と `ADMIN_ARN` は 2026-09-28 から使わない（書いてあっても止まらず、注意だけ出る） |
 | `TF_VERBOSE` | `1` で terraform の出力を全部出す。既定は要点だけで、全文は `ops/logs/tf-<ルート>-apply.log` |
@@ -55,13 +56,13 @@
 なくなったキー（2026-10-04 から）: `SINK_S3` / `SINK_OPENSEARCH` / `SINK_PROMETHEUS` / `SINK_SPLUNK` / `GRAFANA`（格納先は `STORES` だけで選ぶ）、`NO_PORTFORWARD`（`NO_DASHBOARD_PORTFORWARD` に改名）、`ENDPOINTS_MULTI_AZ`（`ENDPOINTS_AZ_NUM` に変わった。前の `1` は `ENDPOINTS_AZ_NUM=2`）。`deploy.env` か環境変数に残っていると、`ops/up.sh` が書き換え方を出して止まる。
 OpenSearch・Prometheus・Grafana は `grafana` でまとめて作るか作らないかなので、Prometheus だけ・OpenSearch だけ・Grafana 無しはもう選べない。
 
-`*_AZ_NUM`（9 つ）は冗長化用で、本番の形を試すときにだけ書く。
+`*_AZ_NUM`（10 個）は冗長化用で、本番の形を試すときにだけ書く。
 
 - まとめて切り替えるキーは無い。リソースごとに何 AZ に置くかを選ぶ。既定は 1 AZ で、MSK だけ 2 AZ。
 - `terraform/base/core` はサブネット a / b / c をいつも作り、各リソースは a から `*_AZ_NUM` 個を使う。範囲の外の値は何も作る前に止まる。
 - 増やした分は `ops/up.sh` の費用の目安に入る。AZ をまたぐ転送料（$0.01/GB 前後）は入らない。
-- キーが無いもの（どれもサブネット a に 1 つ）: Web の EC2、lab の EC2、Grafana、Nautobot（ECS）、workflow。1 つでしか成り立たない（理由は `deploy.env.example`）。Splunk もいまは 1 台で、キー（`SPLUNK_AZ_NUM`）は「Splunk をクラスターにする（004）」で足す。
-- 2 AZ 以上の構成は AWS では未確認。
+- キーが無いもの（どれもサブネット a に 1 つ）: Web の EC2、lab の EC2、Grafana、Nautobot（ECS）、workflow。1 つでしか成り立たない（理由は `deploy.env.example`）。Splunk の cluster manager と search head も、いつもサブネット a に 1 つずつ。
+- 2026-10-05 に AWS で確かめたのは `ENDPOINTS_AZ_NUM=2` と `SPLUNK_AZ_NUM=2`（ほかは既定。MSK は既定の 2 AZ）。`ENDPOINTS_AZ_NUM=3`、`MSK_AZ_NUM=3`、`SPLUNK_AZ_NUM=3` と、ほかの `*_AZ_NUM` を 2 以上にした構成は AWS では未確認。
 
 キーの読み方:
 
@@ -88,7 +89,7 @@ OpenSearch・Prometheus・Grafana は `grafana` でまとめて作るか作ら�
 | 7-3 | graph を待ち、Neptune が空ならトポロジを入れる（アラートの送り手より先に、`status` の Lambda とトポロジを用意する） |
 | 7-3c | Nautobot（stream か graph を作るならいつも）。SSM に Nautobot のシークレット 3 つを作り（無いときだけ）、`terraform/pipeline/nautobot`（RDS に 5〜10 分）。サービスが安定するのを待つ（初回は DB の migrate で 5〜10 分。最大 20 分。落ちても止まらず、見るところを出す）。起動時に lab の定義を Nautobot に入れ（空のときだけ）、Job と JobHook を有効にして 1 回同期する |
 | 7-4 | `terraform/pipeline/analytics`（`STORES` に `splunk` があれば、Splunk のアラートが IP を機器名に直す device map を lab の定義から作って渡す）。先に Glue のカタログ `s3tablescatalog` を確かめ（無いときだけ作る。下の「アラートの通知の履歴」）、Grafana / ECS の Splunk の admin のパスワードと HEC の token を SSM の SecureString に作る（無いときだけ。値は出さない） |
-| 7-4b | ECS の Splunk がヘルスチェックで HEALTHY になるのを待つ（最大 20 分。Spark のジョブは起動してすぐ HEC に送るので） |
+| 7-4b | ECS の Splunk がヘルスチェックで HEALTHY になるのを待つ（最大 20 分。Spark のジョブは起動してすぐ HEC に送るので）。クラスター（`SPLUNK_AZ_NUM` が 2 か 3）は cluster manager・indexer・search head の全部のタスク（`SPLUNK_AZ_NUM` + 2 個）を待ち、そのあと 2 つ見る。indexer が同じ AZ に 2 台いたら注意を出す（止まらない）。search head のログの `nwc-peer-check state=ok reason=peers_up:<indexer の数>` を最大 6 分待ち、出なければ止まる |
 | 7-5 | Spark のジョブが動いていなければ起こす |
 | 8-3 | Web を再起動 |
 | 8-5 | `terraform/workflow`。Temporal UI を開くコマンドを表示 |
@@ -108,11 +109,11 @@ flowchart LR
   A["workflow"] --> B["analytics<br/>Spark のジョブを cancel"] --> N["nautobot<br/>RDS ごと"] --> C["graph"] --> D["stream"] --> E["lab"] --> F["agent"] --> G["base/core"] --> H["base/ecr"] --> I["Runtime の<br/>ロググループ"] --> J["SSM のパラメータ<br/>ManagedBy=ops/up.sh"]
 ```
 
-- 手順 5-2 で、`ops/up.sh` が作った SSM のパラメータ（`/<prefix>/` の下でタグ `ManagedBy=ops/up.sh` のもの。Grafana / Splunk / Nautobot の admin のパスワード、Splunk の HEC の token、Nautobot の SECRET_KEY と DB のパスワード）を消す。手で入れたパラメータは消さない。nautobot のルートが消えなかったときは Nautobot の分だけ残す（Terraform が destroy でも DB のパスワードを読むので。打ち直せば消える）。
+- 手順 5-2 で、`ops/up.sh` が作った SSM のパラメータ（`/<prefix>/` の下でタグ `ManagedBy=ops/up.sh` のもの。Grafana / Splunk / Nautobot の admin のパスワード、Splunk の HEC の token とクラスターの合言葉（`/<prefix>/splunk/idxc-secret`）、Nautobot の SECRET_KEY と DB のパスワード）を消す。手で入れたパラメータは消さない。nautobot のルートが消えなかったときは Nautobot の分だけ残す（Terraform が destroy でも DB のパスワードを読むので。打ち直せば消える）。
 - Nautobot の RDS は最後のスナップショットを取らずに消す。Nautobot で編集した内容は残らない（次の `ops/up.sh` でまた lab の定義から入る）。
 - 最後に `Project=<prefix>` のタグが残っているものを出す。何も出なければ全部消えている。
 - デバッグ用の EC2（CloudFormation の `<prefix>-lab-debug`）は消さない。`ops/lab-debug.sh down` で消す（同じ `Project` タグなので、残っていれば上の一覧に出る）。
-- **Runtime の ENI は最大 8 時間残る。**その間は VPC、サブネット、Runtime の SG（`<prefix>-runtime`）を残して他を消す。時間をおいて打ち直す。
+- **Runtime の ENI は最大 8 時間残る。**その間は VPC、サブネット、Runtime の SG（`<prefix>-runtime`）を残して他を消す。時間をおいて打ち直す。2026-10-05 の AWS でもこうなった（`ops/down.sh` は終了コード 0 で終わり、ENI が外れるまで VPC・サブネット・SG が残った。残った分に時間課金は無い。数時間おいて打ち直す）。
 - graph / workflow / KB（`<prefix>-kb-index`）の Lambda の ENI（20〜40 分残る）は裏で消す。
 - `KEEP_ECR=1 ops/down.sh` で ECR を残すと、翌朝のビルドを飛ばせる。
 - analytics を消してから graph を消すまでのあいだ、graph の Lambda は Firehose へ送れずにやり直す（ログに ERROR が出る）。片付けの途中なので害は無い。
@@ -131,7 +132,7 @@ aws glue delete-catalog --region ap-northeast-1 --catalog-id s3tablescatalog
 
 - **費用:** VPC のインターフェース型エンドポイントが 2 本増える（graph の Lambda の `kinesis-firehose` と、`WORKFLOW=1` のときの tools Lambda の `athena`。1 本 $0.014/h × AZ）。手順 0 の目安はこの本数を数えている。Firehose は取り込んだ量、Athena はスキャンした量の課金で、PoC の量なら月に数セント（Athena は 1 回 1 GiB で打ち切る）。
 - **`starts_at` の意味は送り手で違う:** Grafana は発火した時刻（`resolved` の行も同じ）、Splunk は保存済みサーチの `latest(_time)`（その状態を最後に見た時刻）。届いた時刻は `received_at`。
-- **AWS の上ではまだ通していない:** Firehose と Athena が IAM だけで S3 Tables に届くか、Firehose が時刻の書式（ISO 8601 の UTC）を受け付けるか、閉域の Deny に当たらないかは、最初の `ops/up.sh` で確かめる（`firehose-errors/alert_events/` にオブジェクトが無いこと、Athena で行が読めること）。
+- **2026-10-05 に AWS で確かめた:** Firehose が `alert_events` に firing と resolved の行を書き、Athena（ワークグループ `<prefix>-history`）で読めた（閉域の Deny は既定の `NETWORK_PERIMETER=1` のまま）。うまくいかないときは `firehose-errors/alert_events/` にオブジェクトが無いかを見る。
 
 ## 利用者に画面を渡す
 
