@@ -1,5 +1,5 @@
 # ops/up.sh と OSS 版（005）の oss/ops/up.sh が読む共通の関数（terraform の apply、Session Manager でのコマンド、SSM のシークレット、
-# Glue の s3tablescatalog、Splunk のイメージと SSM のパラメータ）。
+# Glue の s3tablescatalog、Splunk のイメージと SSM のパラメータ、Agent・worker・Temporal・Nautobot のイメージと Nautobot の SSM のパラメータ）。
 # 先に ops/common.sh と ops/deploy-env.sh を読む（log / die / tf / tf_logged を使う）。Splunk のイメージは ops/lab-common.sh の dir_tag / ecr_has を使う。
 # REGION / PY / PREFIX / OWNER（s3tablescatalog は ACCOUNT_ID も）は呼ぶ前に決める。
 tf_init() {  # tf_init <ルート>
@@ -178,4 +178,67 @@ ensure_splunk_secrets() {  # ensure_splunk_secrets <SPLUNK_AZ_NUM>  analytics �
   ensure_secret "/$PREFIX/splunk/hec-token" uuid "Splunk HEC token (created by $OPS_DIR/up.sh)"
   # クラスター（SPLUNK_AZ_NUM が 2 か 3）は、manager と indexer と search head が互いを確かめる合言葉（pass4SymmKey）も作る
   if [ "$1" -gt 1 ]; then ensure_secret "/$PREFIX/splunk/idxc-secret" password "Splunk indexer cluster key (created by $OPS_DIR/up.sh)"; fi
+}
+# Splunk のクラスター（SPLUNK_AZ_NUM が 2 か 3）は、全タスクの HEALTHY のあとに 2 つ見る。引数はサービス（search head、manager、indexer の順。SP_SERVICES）。
+# REGION / AN_CLUSTER（analytics の ECS のクラスター）/ PREFIX / SPLUNK_AZ_NUM を使う。マネージド版と OSS 版（005）が同じものを呼ぶ。
+# 1. indexer の AZ。AZ に 1 台ずつは Fargate の振り分けに任せている（保証ではない）ので、同じ AZ に 2 台いたら注意だけ出す。
+# 2. search head の突き合わせ（splunk/peers_check.py）の判定。判定が変わるたびに PID 1 の stdout に書く行「nwc-peer-check state=… reason=…」を、
+#    いまの search head のタスクのログストリーム（splunk/splunk/<タスク ID>）から読む。state=ok で Up の peer が indexer の数になるまで待ち
+#    （最大 6 分）、ならなければ止まる。行が 1 つも無いのも成功にしない
+splunk_cluster_check() {
+  local azs sh_task="" line="" i
+  azs=$(aws ecs describe-tasks --region "$REGION" --cluster "$AN_CLUSTER" --query 'tasks[].availabilityZone' --output text --tasks \
+    $(aws ecs list-tasks --region "$REGION" --cluster "$AN_CLUSTER" --service-name "$3" --desired-status RUNNING --query 'taskArns' --output text) 2>/dev/null || true)
+  azs=$(echo $azs | tr ' ' '\n' | sort)
+  if [ -n "$(echo "$azs" | uniq -d)" ]; then
+    printf '\033[1;33m%s\033[0m\n' "注意: indexer のタスクが同じ AZ に 2 台いる（$(echo $azs)）。その AZ が落ちると、その 2 台にある複製が一緒に無くなる。止めずに進む（AZ に 1 台ずつは Fargate の振り分けに任せていて、保証ではない）"
+  fi
+  for i in $(seq 1 24); do
+    sh_task=$(aws ecs list-tasks --region "$REGION" --cluster "$AN_CLUSTER" --service-name "$1" --desired-status RUNNING --query 'taskArns[0]' --output text 2>/dev/null || true)
+    line=$(aws logs filter-log-events --region "$REGION" --log-group-name "/ecs/$PREFIX-splunk" --log-stream-names "splunk/splunk/${sh_task##*/}" \
+      --filter-pattern '"nwc-peer-check"' --query 'events[].message' --output text 2>/dev/null | tr '\t' '\n' | grep '^nwc-peer-check ' | tail -n 1 || true)
+    case "$line" in
+      "nwc-peer-check state=ok reason=peers_up:"*)
+        if [ "${line##*:}" -ge "$SPLUNK_AZ_NUM" ]; then echo "search head は indexer を全部（${SPLUNK_AZ_NUM} 台）同じ GUID で検索できる（$line）"; return 0; fi ;;
+    esac
+    sleep 15
+  done
+  [ -n "$line" ] || die "search head のタスク（${sh_task##*/}）は、突き合わせ（splunk/peers_check.py）をまだ 1 回もしていない（6 分待っても判定の行「nwc-peer-check …」がロググループ /ecs/$PREFIX-splunk の splunk/splunk/${sh_task##*/} に無い）。search head が入れ替わったばかりなら、HEALTHY になってから打ち直す"
+  die "search head の突き合わせ（splunk/peers_check.py）が 6 分たっても ok（Up の indexer が ${SPLUNK_AZ_NUM} 台）にならない。最新の判定は「$line」（degraded: manager が Up と言う indexer が足りない。reason=peers_up:<Up の数>/<あるはずの数>。mismatch: search head が古い GUID の indexer を持っている。続けば ECS が search head を入れ替える。skip: manager に聞けない。error: search head の peers を読めない）。ロググループ /ecs/$PREFIX-splunk を見る"
+}
+# Agent（Runtime）・worker・Temporal・Nautobot と Redis のイメージ。マネージド版と OSS 版（005）が同じ作り方をする。どれも docker login 済みで呼び、REG / PREFIX を使う。
+# NAUTOBOT_VERSION は nautobot/Dockerfile の ARG、REDIS_TAG は terraform/pipeline/nautobot の redis_image_tag、
+# TEMPORAL_TAG は terraform/workflow の temporal_image_tag の既定値に合わせてある（変えるときは両方を変える）
+NAUTOBOT_VERSION=3.2.6
+REDIS_TAG=7.4.2-alpine
+TEMPORAL_TAG=1.9.1
+nautobot_context() {  # nautobot_context <空のディレクトリ>  Nautobot のイメージのビルドの context を集める（nautobot/Dockerfile の頭の説明）
+  # nautobot/ の中身に、グラフへ openCypher で書く agent/graph.py と agent/toolkit.py、最初の seed にする lab の定義を足す。
+  # タグはこのディレクトリの中身から作る（dir_tag）ので、graph.py や lab の定義を変えてもイメージが作り直される
+  cp -R nautobot/. "$1/" && cp agent/graph.py agent/toolkit.py "$1/" || return 1
+  find "$1" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null
+  find "$1" -name .DS_Store -delete 2>/dev/null
+  "${PY[@]}" lab/lab_topology.py lab >"$1/lab_seed.json"
+}
+build_agent() {  # build_agent <リポジトリの URL>:<タグ>  Runtime のコンテナ（arm64）
+  docker buildx build --platform linux/arm64 -t "$1" --push agent/
+}
+build_worker() {  # build_worker <タグ> [requirements のファイル名]  Temporal の worker（arm64）。OSS 版は requirements-oss.txt（neo4j のドライバー入り）
+  docker buildx build --platform linux/arm64 --build-arg "REQUIREMENTS=${2:-requirements.txt}" -t "$REG/$PREFIX-worker:$1" --push workflow/
+}
+mirror_temporal() {  # Temporal の CLI 入りイメージ（temporal server start-dev。arm64 あり）。Fargate は ECR からしか安定して引けないのでミラーする
+  docker pull --platform linux/arm64 "temporalio/temporal:$TEMPORAL_TAG"
+  docker tag "temporalio/temporal:$TEMPORAL_TAG" "$REG/$PREFIX-temporal:$TEMPORAL_TAG"
+  docker push "$REG/$PREFIX-temporal:$TEMPORAL_TAG"
+}
+build_nautobot() {  # build_nautobot <タグ> <context のディレクトリ>  Nautobot の公式イメージ（arm64。約 1 GB）に boto3 と Job と対応付けと最初の seed を足す
+  docker buildx build --platform linux/arm64 --build-arg "NAUTOBOT_VERSION=$NAUTOBOT_VERSION" -t "$REG/$PREFIX-nautobot:$1" --push "$2"
+}
+ensure_nautobot_secrets() {  # pipeline/nautobot の apply より前に呼ぶ。値は出さない
+  # Django の SECRET_KEY・画面の管理者のパスワード・RDS のマスターユーザーのパスワードは SSM に乱数で作る（Terraform の state に載せない）
+  ensure_secret "/$PREFIX/nautobot/secret-key" password "Nautobot SECRET_KEY (created by $OPS_DIR/up.sh)"
+  ensure_secret "/$PREFIX/nautobot/admin-password" password "Nautobot admin password (created by $OPS_DIR/up.sh)"
+  ensure_secret "/$PREFIX/nautobot/db-password" password "Nautobot database password (created by $OPS_DIR/up.sh)"
+  # Web の「トポロジ」タブがリンクの追加・削除を Nautobot の REST API に書くためのトークン（bootstrap.py が同じ値でユーザー netops-web のトークンを作る）
+  ensure_secret "/$PREFIX/nautobot/api-token" token "Nautobot API token of the web UI (created by $OPS_DIR/up.sh)"
 }

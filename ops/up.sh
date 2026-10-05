@@ -125,12 +125,9 @@ REGION=ap-northeast-1
 # load_deploy_env のあと（手順 0 の resolve_name_prefix。必須なので、無ければそこで止まる。形の検査も ops/deploy-env.sh）
 # lab と Telegraf の版（SRLINUX_TAG / MULTITOOL_TAG / CONTAINERLAB_VERSION / TELEGRAF_VERSION）と作り方は ops/lab-common.sh
 # （デバッグ用の EC2 の ops/lab-debug.sh と共通）。GRAFANA_VERSION は grafana/ の Dockerfile の ARG の既定値に合わせてある。変えるときは両方を変える。
-# SPLUNK_VERSION と Splunk のイメージの作り方は OSS 版と共通なので ops/up-common.sh
+# SPLUNK_VERSION・NAUTOBOT_VERSION・REDIS_TAG・TEMPORAL_TAG と、Splunk・Agent・worker・Temporal・Nautobot のイメージの作り方は OSS 版と共通なので ops/up-common.sh
 . "$(dirname "$0")/lab-common.sh"
 GRAFANA_VERSION=13.2.2
-# Nautobot と、同じタスクで動かす Redis。nautobot/Dockerfile の ARG と terraform/pipeline/nautobot の redis_image_tag の既定値に合わせてある
-NAUTOBOT_VERSION=3.2.6
-REDIS_TAG=7.4.2-alpine
 # Kafbat UI（stream の ECS。ghcr.io/kafbat/kafka-ui を同じタグで ECR に写す）。terraform/pipeline/stream の kafka_ui_image_tag の既定値に合わせてある
 KAFKA_UI_TAG=v1.5.0
 # analytics の Spark ジョブに足す jar（Maven Central。2026-09-17 に 6 本とも取れることを確認）。EMR Serverless 7.13.0 の Spark 3.5.6 に合わせてある。
@@ -153,15 +150,7 @@ resolve_deploy_env_file  # DEPLOY_ENV_FILE の相対パスは、下の cd の前
 cd "$(dirname "$0")/.."
 
 . ops/common.sh     # log / die / tf と terraform の認証情報（OSS 版の oss/ops/up.sh と同じものを読む）
-. ops/up-common.sh  # tf_apply / has_resources / ssm_run / ensure_secret / ensure_s3tables_catalog / Splunk のイメージと SSM など
-nautobot_context() {  # nautobot_context <空のディレクトリ>  Nautobot のイメージのビルドの context を集める（nautobot/Dockerfile の頭の説明）
-  # nautobot/ の中身に、Neptune Analytics へ openCypher で書く agent/graph.py と agent/toolkit.py、最初の seed にする lab の定義を足す。
-  # タグはこのディレクトリの中身から作る（dir_tag）ので、graph.py や lab の定義を変えてもイメージが作り直される
-  cp -R nautobot/. "$1/" && cp agent/graph.py agent/toolkit.py "$1/" || return 1
-  find "$1" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null
-  find "$1" -name .DS_Store -delete 2>/dev/null
-  "${PY[@]}" lab/lab_topology.py lab >"$1/lab_seed.json"
-}
+. ops/up-common.sh  # tf_apply / has_resources / ssm_run / ensure_secret / ensure_s3tables_catalog / Splunk・Agent・worker・Temporal・Nautobot のイメージと SSM など
 NAUTOBOT_CTX=""
 GRAPH_PID=""
 GRAPH_LOG=ops/logs/graph-apply.log
@@ -618,7 +607,6 @@ log "1. ECR リポジトリ（terraform/base/ecr）"
 tf_apply base/ecr
 REPO=$(tf base/ecr output -raw agent_repository_url); echo "REPO=$REPO"
 REG="${REPO%%/*}"
-TEMPORAL_TAG=1.9.1   # terraform/workflow の temporal_image_tag の既定値。変えるときは両方を変える
 
 # ---- 2. イメージ ----------------------------------------------------------------
 log "2. イメージ（ECR に無いタグだけ作る）"
@@ -668,20 +656,17 @@ else
   fi
   aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REG"
   if [ -n "$NEED_AGENT" ]; then
-    docker buildx build --platform linux/arm64 -t "$REPO:$IMAGE_TAG" --push agent/
+    build_agent "$REPO:$IMAGE_TAG"   # ops/up-common.sh（OSS 版と共通）
   fi
   if [ -n "$NEED_LAB" ]; then
     # Nokia SR Linux（公開イメージ。約 1 GB）と VM の multitool。ECR にミラーして lab の EC2 が VPC の中から引けるようにする（ops/lab-common.sh）
     mirror_lab_images "$REG" "$PREFIX" || die "lab のイメージを ECR に置けなかった"
   fi
   if [ -n "$NEED_WORKER" ]; then
-    docker buildx build --platform linux/arm64 -t "$REG/$PREFIX-worker:$IMAGE_TAG" --push workflow/
+    build_worker "$IMAGE_TAG"   # ops/up-common.sh（OSS 版と共通）
   fi
   if [ -n "$NEED_TEMPORAL" ]; then
-    # Temporal の CLI 入りイメージ（temporal server start-dev。arm64 あり）。Fargate は ECR からしか安定して引けないのでミラーする
-    docker pull --platform linux/arm64 "temporalio/temporal:$TEMPORAL_TAG"
-    docker tag "temporalio/temporal:$TEMPORAL_TAG" "$REG/$PREFIX-temporal:$TEMPORAL_TAG"
-    docker push "$REG/$PREFIX-temporal:$TEMPORAL_TAG"
+    mirror_temporal   # temporalio/temporal を ECR に写す（ops/up-common.sh。OSS 版と共通）
   fi
   if [ -n "$NEED_TELEGRAF" ]; then
     build_telegraf "$REG/$PREFIX-telegraf:$TELEGRAF_TAG"
@@ -694,8 +679,8 @@ else
     build_splunk   # Splunk の公式イメージに検知のアプリを足して push する（ops/up-common.sh。OSS 版と共通）
   fi
   if [ -n "$NEED_NAUTOBOT" ]; then
-    # Nautobot の公式イメージ（arm64。約 1 GB）に boto3 と Job（nautobot/jobs）と対応付け（nautobot/netops + agent/graph.py）と最初の seed を足す
-    docker buildx build --platform linux/arm64 --build-arg "NAUTOBOT_VERSION=$NAUTOBOT_VERSION" -t "$REG/$PREFIX-nautobot:$NAUTOBOT_TAG" --push "$NAUTOBOT_CTX"
+    # Nautobot の公式イメージに boto3 と Job（nautobot/jobs）と対応付け（nautobot/netops + agent/graph.py）と最初の seed を足す（ops/up-common.sh。OSS 版と共通）
+    build_nautobot "$NAUTOBOT_TAG" "$NAUTOBOT_CTX"
   fi
   if [ -n "$NEED_REDIS" ]; then
     # Nautobot のタスクの中で動かす Redis（キャッシュと Celery のブローカー）。Fargate は VPC の中から ECR しか引けないのでミラーする
@@ -992,12 +977,8 @@ fi
 NAUTOBOT_WARN=""
 if [ -n "$NAUTOBOT" ]; then
   log "7-3c. Nautobot（terraform/pipeline/nautobot。RDS の作成に 5〜10 分、初回の起動（DB の migrate）に 5〜10 分）"
-  # Django の SECRET_KEY・画面の管理者のパスワード・RDS のマスターユーザーのパスワードは SSM に乱数で作る（Terraform の state に載せない）
-  ensure_secret "/$PREFIX/nautobot/secret-key" password "Nautobot SECRET_KEY (created by ops/up.sh)"
-  ensure_secret "/$PREFIX/nautobot/admin-password" password "Nautobot admin password (created by ops/up.sh)"
-  ensure_secret "/$PREFIX/nautobot/db-password" password "Nautobot database password (created by ops/up.sh)"
-  # Web の「トポロジ」タブがリンクの追加・削除を Nautobot の REST API に書くためのトークン（bootstrap.py が同じ値でユーザー netops-web のトークンを作る）
-  ensure_secret "/$PREFIX/nautobot/api-token" token "Nautobot API token of the web UI (created by ops/up.sh)"
+  # Django の SECRET_KEY・画面の管理者・RDS のパスワードと Web の API トークンは SSM に乱数で作る（ops/up-common.sh。OSS 版と共通）
+  ensure_nautobot_secrets
   tf_apply pipeline/nautobot -var "nautobot_image_tag=$NAUTOBOT_TAG" -var "redis_image_tag=$REDIS_TAG" -var "nautobot_db_az_num=$NAUTOBOT_DB_AZ_NUM"
   echo "Nautobot の Job の書き先: $(tf pipeline/nautobot output -json sync_targets)"
   NB_CLUSTER=$(tf pipeline/nautobot output -raw cluster_name); NB_SERVICE=$(tf pipeline/nautobot output -raw service_name)
@@ -1101,33 +1082,8 @@ if [ -z "$SKIP_ANALYTICS" ]; then
   if [ -n "$SPLUNK_ON_ECS" ]; then
     # Spark のジョブは起動してすぐ HEC に送るので、Splunk が受けられるようになってから起こす（初回の起動は設定の展開で 5〜10 分）。
     # タスクのヘルスチェック（/sbin/checkstate.sh）が HEALTHY になるのを待つ。クラスター（SPLUNK_AZ_NUM が 2 か 3）は manager・indexer・
-    # search head の 3 つのサービスの全部のタスク（indexer は manager に加わるまで、search head は manager に加わった indexer を全部検索できるまで HEALTHY にならない）
-    # クラスターは全タスクの HEALTHY のあとに 2 つ見る。引数はサービス（search head、manager、indexer の順。SP_SERVICES）。
-    # 1. indexer の AZ。AZ に 1 台ずつは Fargate の振り分けに任せている（保証ではない）ので、同じ AZ に 2 台いたら注意だけ出す。
-    # 2. search head の突き合わせ（splunk/peers_check.py）の判定。判定が変わるたびに PID 1 の stdout に書く行「nwc-peer-check state=… reason=…」を、
-    #    いまの search head のタスクのログストリーム（splunk/splunk/<タスク ID>）から読む。state=ok で Up の peer が indexer の数になるまで待ち
-    #    （最大 6 分）、ならなければ止まる。行が 1 つも無いのも成功にしない
-    splunk_cluster_check() {
-      local azs sh_task="" line="" i
-      azs=$(aws ecs describe-tasks --region "$REGION" --cluster "$AN_CLUSTER" --query 'tasks[].availabilityZone' --output text --tasks \
-        $(aws ecs list-tasks --region "$REGION" --cluster "$AN_CLUSTER" --service-name "$3" --desired-status RUNNING --query 'taskArns' --output text) 2>/dev/null || true)
-      azs=$(echo $azs | tr ' ' '\n' | sort)
-      if [ -n "$(echo "$azs" | uniq -d)" ]; then
-        printf '\033[1;33m%s\033[0m\n' "注意: indexer のタスクが同じ AZ に 2 台いる（$(echo $azs)）。その AZ が落ちると、その 2 台にある複製が一緒に無くなる。止めずに進む（AZ に 1 台ずつは Fargate の振り分けに任せていて、保証ではない）"
-      fi
-      for i in $(seq 1 24); do
-        sh_task=$(aws ecs list-tasks --region "$REGION" --cluster "$AN_CLUSTER" --service-name "$1" --desired-status RUNNING --query 'taskArns[0]' --output text 2>/dev/null || true)
-        line=$(aws logs filter-log-events --region "$REGION" --log-group-name "/ecs/$PREFIX-splunk" --log-stream-names "splunk/splunk/${sh_task##*/}" \
-          --filter-pattern '"nwc-peer-check"' --query 'events[].message' --output text 2>/dev/null | tr '\t' '\n' | grep '^nwc-peer-check ' | tail -n 1 || true)
-        case "$line" in
-          "nwc-peer-check state=ok reason=peers_up:"*)
-            if [ "${line##*:}" -ge "$SPLUNK_AZ_NUM" ]; then echo "search head は indexer を全部（${SPLUNK_AZ_NUM} 台）同じ GUID で検索できる（$line）"; return 0; fi ;;
-        esac
-        sleep 15
-      done
-      [ -n "$line" ] || die "search head のタスク（${sh_task##*/}）は、突き合わせ（splunk/peers_check.py）をまだ 1 回もしていない（6 分待っても判定の行「nwc-peer-check …」がロググループ /ecs/$PREFIX-splunk の splunk/splunk/${sh_task##*/} に無い）。search head が入れ替わったばかりなら、HEALTHY になってから打ち直す"
-      die "search head の突き合わせ（splunk/peers_check.py）が 6 分たっても ok（Up の indexer が ${SPLUNK_AZ_NUM} 台）にならない。最新の判定は「$line」（degraded: manager が Up と言う indexer が足りない。reason=peers_up:<Up の数>/<あるはずの数>。mismatch: search head が古い GUID の indexer を持っている。続けば ECS が search head を入れ替える。skip: manager に聞けない。error: search head の peers を読めない）。ロググループ /ecs/$PREFIX-splunk を見る"
-    }
+    # search head の 3 つのサービスの全部のタスク（indexer は manager に加わるまで、search head は manager に加わった indexer を全部検索できるまで HEALTHY にならない）。
+    # クラスターはそのあと splunk_cluster_check（ops/up-common.sh。OSS 版と共通）で indexer の AZ と search head の突き合わせを見る
     log "7-4b. Splunk（ECS。タスク ${SPLUNK_TASKS} つ）が起動するのを待つ（最大 20 分）"
     AN_CLUSTER=$(tf pipeline/analytics output -raw analytics_cluster_name); SP_SERVICES=$(tf pipeline/analytics output -raw splunk_service_name)
     if [ "$SPLUNK_AZ_NUM" -gt 1 ]; then

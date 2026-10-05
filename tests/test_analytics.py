@@ -1837,7 +1837,7 @@ check("SPLUNK_AZ_NUM: 2 か 3 は STORES に splunk が要り、SPLUNK_INDEX と
               for a, t in (("", "1"), ("1", "1"), ("2", "4"), ("3", "5"))))
 # クラスターの全タスク待ちのあと（splunk_cluster_check）を切り出し、aws を偽物にして動かす。indexer の AZ の注意（止めない）と、
 # search head の突き合わせの判定の行（CloudWatch Logs）を ok まで待つ・無い / 食い違いなら止まる
-_sccblk = up[up.index("    splunk_cluster_check() {"):up.index("\n    }\n", up.index("    splunk_cluster_check() {")) + 7]
+_sccblk = up[up.index("\nsplunk_cluster_check() {") + 1:up.index("\n}\n", up.index("\nsplunk_cluster_check() {")) + 3]   # ops/up-common.sh（OSS 版と共通）
 _scc_aws = r"""aws() {
   echo "AWS $*" >>"$CALLS"
   case "$*" in
@@ -1867,7 +1867,7 @@ _scc_runs = {"ok": _scc("ap-northeast-1a\tap-northeast-1c", _OK2), "same_az": _s
 check("up.sh（クラスター）: 全タスクが HEALTHY になったら splunk_cluster_check に search head・manager・indexer のサービスを渡す。1 台のときは呼ばない",
       'SP_SERVICES="$SP_SERVICES $(tf pipeline/analytics output -raw splunk_cm_service_name) $(tf pipeline/analytics output -raw splunk_idx_service_name)"' in up
       and re.search(r'echo "Splunk は起動した"\n\s+if \[ "\$SPLUNK_AZ_NUM" -gt 1 \]; then splunk_cluster_check \$SP_SERVICES; fi\n', up) is not None
-      and up.index("    splunk_cluster_check() {") < up.index('log "7-4b.'))
+      and up.index("\nsplunk_cluster_check() {") < up.index('log "7-4b.'))
 check("up.sh（クラスター）: indexer のタスクの AZ が重なっていれば注意を 1 行出して止めずに進む（Fargate の振り分けは保証でない）。重ならなければ出さない",
       "注意:" not in _scc_runs["ok"][0] and _scc_runs["ok"][0].rstrip().endswith("END")
       and _scc_runs["same_az"][0].count("注意: indexer のタスクが同じ AZ に 2 台いる（ap-northeast-1c ap-northeast-1c）") == 1 and _scc_runs["same_az"][0].rstrip().endswith("END")
