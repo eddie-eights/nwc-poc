@@ -304,12 +304,15 @@ except ValueError:
 check("知らない出来事は ValueError（証跡の event を増やすときは PROPOSAL_EVENTS に足す）", bad)
 _prev = {"proposal_id": "a#1", "status": "approved", "seq": 2, "decided_by": "山田 (web)", "decided_at": 1700000300, "action": "heal-main"}
 _ig = rules.ignored_event(_prev, {"decision": "rejected", "decided_by": " O'Brien (web) ", "decided_at": 1700000305}, {"decision": "approved"}, 1700000400)
-check("ignored_event は status と決めた人を直前の行のまま seq だけ進め、event_id は <proposal_id>#ignored#<届いた決定の時刻>#<名前>"
+check("ignored_event は status と決めた人を直前の行のまま seq だけ進め、event_id は <proposal_id>#ignored#<届いた決定の種類>#<届いた決定の時刻>#<名前>"
       "（名前の ' はそのまま、前後の空白は落として入る）",
       (_ig["event"], _ig["status"], _ig["seq"], _ig["decided_by"], _ig["decided_at"], _ig["action"], _ig["event_time"])
       == ("ignored", "approved", 3, "山田 (web)", 1700000300, "heal-main", 1700000400)
-      and _ig["event_id"] == "a#1#ignored#1700000305#O'Brien (web)"
+      and _ig["event_id"] == "a#1#ignored#rejected#1700000305#O'Brien (web)"
       and _ig["detail"] == "却下（O'Brien (web)、2023-11-15 07:18:25）が届いたが、先に承認が決まっていた")
+_ig2 = rules.ignored_event(_ig, {"decision": "approved", "decided_by": "O'Brien (web)", "decided_at": 1700000305}, {"decision": "approved"}, 1700000401)
+check("同じ人が同じ秒に送った承認と却下は、ignored の event_id が別になる（event_id で重複を落としても 2 行とも残る）",
+      _ig2["event_id"] == "a#1#ignored#approved#1700000305#O'Brien (web)" and _ig2["event_id"] != _ig["event_id"] and _ig2["seq"] == 4)
 check("decision_key は decision・decided_by（前後の空白を落とす）・decided_at の組で、送った時刻が違えば別の決定",
       rules.decision_key({"decision": "approved", "decided_by": "x ", "decided_at": 5}) == rules.decision_key({"decision": "approved", "decided_by": "x", "decided_at": 5, "proposal_id": "z"})
       != rules.decision_key({"decision": "approved", "decided_by": "x", "decided_at": 6}))
@@ -966,7 +969,7 @@ check("承認のあとに別の名前の却下が届いたら、打ってから�
       "（seq は次、status は直前の applied のまま、決めた人は効いた承認のまま）、detail に却下した人の名前と時刻が入る。続く行は ignored の行の seq の次",
       names(seen) == ["investigate", "put_proposal", "record_event", "apply_on_lab", "record_event", "record_ignored", "record_event"]
       and [(r["event"], r["status"], r["seq"]) for r in _rows] == [("approved", "approved", 2), ("applied", "applied", 3), ("ignored", "applied", 4), ("verified", "verified", 5)]
-      and (_rows[2]["decided_by"], _rows[2]["decided_at"], _rows[2]["event_id"]) == ("山田 (web)", FS + 300, f"{PID}#ignored#{FS + 305}#鈴木 (web)")
+      and (_rows[2]["decided_by"], _rows[2]["decided_at"], _rows[2]["event_id"]) == ("山田 (web)", FS + 300, f"{PID}#ignored#rejected#{FS + 305}#鈴木 (web)")
       and _rows[2]["detail"] == "却下（鈴木 (web)、2023-11-15 07:18:25）が届いたが、先に承認が決まっていた"
       and ign_args(seen)[0][2] == DECIDED and waits == [APPROVAL, VERIFY])
 _vclock = [NOW]
@@ -994,6 +997,12 @@ res, seen, waits = run_wf(_s, applied, [DECIDED, REJECTED_SUZUKI, REJECTED_SUZUK
 check("効かなかった決定の重複配達も 1 行だけ。同じ人の同じ承認でも送った時刻が違えば（2 回押した）別の決定として ignored の行にする",
       [(r["event"], r["seq"]) for r in _rows if r["event"] == "ignored"] == [("ignored", 4), ("ignored", 5)]
       and _rows[3]["detail"] == "承認（山田 (web)、2023-11-15 07:18:30）が届いたが、先に承認が決まっていた")
+_s, _rows = written(base)
+res, seen, waits = run_wf(_s, applied, [DECIDED, REJECTED_SUZUKI, {**REJECTED_SUZUKI, "decision": "approved"}])
+_ign = [r for r in _rows if r["event"] == "ignored"]
+check("効いた決定のあとに同じ人が同じ秒に却下と承認を送ると、ignored の行が 2 つでき、event_id も別（event_id で重複を落としても 2 行残る）",
+      [(r["seq"], r["event_id"]) for r in _ign] == [(4, f"{PID}#ignored#rejected#{FS + 305}#鈴木 (web)"), (5, f"{PID}#ignored#approved#{FS + 305}#鈴木 (web)")]
+      and len({r["event_id"] for r in _rows}) == len(_rows))
 _third = {**REJECTED_SUZUKI, "decided_by": "佐藤 (web)", "decided_at": FS + 330}
 _s, _rows = written({**base, "record_ignored": lambda p, d, eff: (d["decided_by"] == "鈴木 (web)" and run_wf.wf.decide(_third)) or rules.ignored_event(p, d, eff, NOW)})
 res, seen, waits = run_wf(_s, applied, [DECIDED, REJECTED_SUZUKI])
@@ -1155,7 +1164,7 @@ _ri = asyncio.run(worker.record_ignored(_r3, {**REJECTED_SUZUKI, "decided_by": "
 check("record_ignored は効かなかった決定の行を 1 行足して返す（status・決めた人・apply_output は直前の行のまま。名前が無ければ -）",
       appended == [([_ri], rules.PROPOSAL_EVENT_COLUMNS)] and list(_ri) == [c for c, _ in rules.PROPOSAL_EVENT_COLUMNS]
       and (_ri["event"], _ri["status"], _ri["seq"], _ri["decided_by"], _ri["apply_output"], _ri["event_id"])
-      == ("ignored", "applied", 4, "山田 (web)", "Success: ok", f"{PID}#ignored#{FS + 305}#")
+      == ("ignored", "applied", 4, "山田 (web)", "Success: ok", f"{PID}#ignored#rejected#{FS + 305}#")
       and _ri["detail"] == "却下（-、2023-11-15 07:18:25）が届いたが、先に承認が決まっていた")
 
 # starter（SQS のメッセージ 1 通ずつ。アラートのキュー: firing は起こす、resolved は走っているワークフローへシグナル。決定のキュー: decide のシグナル）

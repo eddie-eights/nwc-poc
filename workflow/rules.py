@@ -327,12 +327,12 @@ def decision_key(decision: dict) -> tuple:
 def ignored_event(proposal: dict, decision: dict, effective: dict, now: int) -> dict:
     """効かなかった決定（先に effective が効いたあとで届いた、中身の違う decision）の行。status とほかの項目（効いた決定の
     decided_by / decided_at を含む）は proposal（直前の行）のまま、seq だけ進め、detail に効かなかった決定を書く。
-    event_id = <proposal_id>#ignored#<decided_at の epoch 秒>#<decided_by>"""
+    event_id = <proposal_id>#ignored#<decision>#<decided_at の epoch 秒>#<decided_by>（同じ人が同じ秒に承認と却下を送っても別の行）"""
     kind, by, at = decision_key(decision)
     detail = (f"{DECISION_JA.get(kind, kind)}（{by or '-'}、{jst(at) or '-'}）が届いたが、"
               f"先に{DECISION_JA.get(effective.get('decision'), str(effective.get('decision') or '-'))}が決まっていた")
     row = proposal_event("ignored", proposal, now, detail)
-    row["event_id"] = f"{row['proposal_id']}#ignored#{at}#{by}"
+    row["event_id"] = f"{row['proposal_id']}#ignored#{kind}#{at}#{by}"
     return row
 
 
