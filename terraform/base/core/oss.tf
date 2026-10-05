@@ -4,7 +4,8 @@
 # local.active_sg_flows = local.sg_flows）。
 # OSS 版は MSK の SG（msk）とその行を外し、ECS で動かす OSS の SG と行を足す。キーと行の書き方は security_groups.tf と同じで、
 # ルールも security_groups.tf の for_each が作る（ここにはルールのリソースを置かない）。
-# Kafka（oss/terraform/pipeline/stream）と OpenSearch・VictoriaMetrics（oss/terraform/pipeline/analytics）のデータは下の EFS に置く。
+# Kafka（oss/terraform/pipeline/stream）と VictoriaMetrics（oss/terraform/pipeline/analytics）のデータは下の EFS に置く。
+# OpenSearch はタスクのエフェメラルストレージに置く（OpenSearch の公式がネットワークファイルシステムを避けるよう書いている）。
 # Neo4j は NFS 上のデータを支えない（設計 005）ので EFS を使わない（oss/terraform/pipeline/graph が置き場を決める）
 locals {
   oss = var.project == "nwc-oss"
@@ -15,7 +16,7 @@ locals {
   # OSS 版で足す SG と、OSS 版で description を替える SG（spark: EMR Serverless でなく ECS のタスク 1 つ）
   oss_security_groups = {
     kafka           = "Kafka brokers and controllers, KRaft on ECS (oss/terraform/pipeline/stream)"
-    efs             = "EFS mount targets - Kafka, OpenSearch and VictoriaMetrics data (oss/terraform/base/core)"
+    efs             = "EFS mount targets - Kafka and VictoriaMetrics data (oss/terraform/base/core)"
     opensearch      = "OpenSearch ECS tasks (oss/terraform/pipeline/analytics)"
     victoriametrics = "VictoriaMetrics vminsert, vmselect and vmstorage ECS tasks (oss/terraform/pipeline/analytics)"
     neo4j           = "Neo4j ECS task (oss/terraform/pipeline/graph)"
@@ -41,7 +42,6 @@ locals {
 
       # EFS（NFS。TLS はマウントヘルパーが 2049 の上でかける。下のファイルシステムポリシーが TLS でない接続を拒む）
       { from = "kafka", to = "efs", protocol = "tcp", port = 2049, why = "NFS - Kafka log directories" },
-      { from = "opensearch", to = "efs", protocol = "tcp", port = 2049, why = "NFS - OpenSearch data" },
       { from = "victoriametrics", to = "efs", protocol = "tcp", port = 2049, why = "NFS - vmstorage data" },
 
       # OpenSearch（9200 が REST、9300 がノードどうし）。書くのは Spark、読むのは Grafana とエージェントの道具（runtime / lambda）
@@ -82,8 +82,8 @@ locals {
 }
 
 # ---------------------------------------------------------------- EFS（OSS 版のデータ）
-# 1 つのファイルシステムを Kafka・OpenSearch・VictoriaMetrics で分けて使う（アクセスポイントはそれぞれのルートが作る）。
-# マウントターゲットはサブネット a / b / c に 1 つずつ（Kafka の 3 ノードが AZ ごとに 1 つ）。スループットは使った分だけの elastic。
+# 1 つのファイルシステムを Kafka と VictoriaMetrics（vmstorage）で分けて使う（アクセスポイントはそれぞれのルートが作る）。
+# マウントターゲットはサブネット a / b / c に 1 つずつ（Kafka の 3 ノードと vmstorage の 3 台が AZ ごとに 1 つ）。スループットは使った分だけの elastic。
 # 時間課金は無く、容量（GB 月）と読み書きの量に課金される。ops/down.sh がルートごと消す（自動バックアップは API で作ると無効のまま）
 resource "aws_efs_file_system" "oss" {
   count = local.oss ? 1 : 0
@@ -135,6 +135,6 @@ resource "aws_efs_file_system_policy" "oss" {
 }
 
 output "efs_file_system_id" {
-  description = "OSS build only (oss/terraform, cycle 005): EFS for the Kafka, OpenSearch and VictoriaMetrics data, with mount targets in subnets a, b and c (SG efs). Each root makes its own access point. Empty in the managed build."
+  description = "OSS build only (oss/terraform, cycle 005): EFS for the Kafka and VictoriaMetrics (vmstorage) data, with mount targets in subnets a, b and c (SG efs). Each root makes its own access point. Empty in the managed build."
   value       = try(aws_efs_file_system.oss[0].id, "")
 }
