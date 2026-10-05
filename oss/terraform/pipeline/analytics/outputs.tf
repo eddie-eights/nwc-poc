@@ -1,6 +1,6 @@
 # マネージド版の outputs.tf のうち、ほかのルート（workflow・graph・agent）と ops が読む共通の output（名前と中身を同じにする）。
 # EMR Serverless・OpenSearch Serverless・AMP の output は無い。Spark の output は spark.tf、OpenSearch と VictoriaMetrics の output はその .tf に置く
-# （共通の opensearch_index も、opensearch.tf が出すのでここには置かない）。Splunk（リンクした splunk.tf）の output はマネージド版と同じ
+# （共通の opensearch_index も、opensearch.tf が出すのでここには置かない）。Splunk（リンクした splunk.tf）と Grafana（grafana.tf）の output はマネージド版と同じ
 
 output "table_bucket_arn" {
   description = "S3 Tables table bucket (the Iceberg warehouse of the Spark catalog; terraform/workflow appends proposal_events here)"
@@ -70,6 +70,21 @@ output "splunk_cm_port_forward_command" {
 output "splunk_password_command" {
   description = "Print the Splunk admin password (SSM SecureString created by ops/up.sh). Empty unless the Splunk runs on ECS"
   value       = local.splunk_on_ecs ? "aws ssm get-parameter --region ${var.region} --name ${local.splunk_password_parameter} --with-decryption --query Parameter.Value --output text" : ""
+}
+
+output "grafana_service_name" {
+  description = "ECS service of the Grafana task (empty unless create_grafana with prometheus or opensearch in sinks)"
+  value       = local.create_grafana ? aws_ecs_service.grafana[0].name : ""
+}
+
+output "grafana_port_forward_command" {
+  description = "Open Grafana at http://localhost:3000 through the web EC2 (SSM port forward; user admin, password from grafana_password_command). Empty unless Grafana runs"
+  value       = local.create_grafana ? "aws ssm start-session --region ${var.region} --target ${local.web_instance_id} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{\"host\":[\"grafana.${local.service_namespace}\"],\"portNumber\":[\"3000\"],\"localPortNumber\":[\"3000\"]}'" : ""
+}
+
+output "grafana_password_command" {
+  description = "Print the Grafana admin password (SSM SecureString created by ops/up.sh). Empty unless Grafana runs"
+  value       = local.create_grafana ? "aws ssm get-parameter --region ${var.region} --name ${local.grafana_password_parameter} --with-decryption --query Parameter.Value --output text" : ""
 }
 
 output "service_namespace" {

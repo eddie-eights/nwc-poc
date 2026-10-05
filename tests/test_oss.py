@@ -16,6 +16,9 @@
   8. AWS で動かす前の点検（005）: マネージド版と OSS 版を同じアカウントに並べても名前が重ならない（アカウントに 1 つのものを作らない）、
      サブネットは AZ の数の設定によらず 3 つで、3 台の Kafka・OpenSearch・vmstorage はサブネットが足りなければ plan で止まる、
      OSS 版の bootstrap_brokers は kafka-1〜3 の PLAINTEXT、Neo4j・OpenSearch・VictoriaMetrics を使う側の SG の行がそろう
+  9. OSS 版の Grafana（005 の 3）: analytics の grafana.tf はマネージド版と同じイメージ・ダッシュボード・アラートのルールを使い（写しを作らない）、
+     データソースは vmselect（署名なし）と自前の OpenSearch（Basic 認証）。アラートはマネージド版と同じ SNS のトピックから status の Lambda と
+     ワークフローに届き、タスクロールは SNS の publish だけ
 実行は python3 tests/test_oss.py。graph.py のクエリを意図して変えたときだけ --write-golden で golden を作り直す
 （作り直すと 1. はその時点のコードを正とする。差分は git diff tests/golden で見る）。"""
 import base64, copy, importlib.util, io, json, os, re, subprocess, sys, tempfile, types, urllib.request
@@ -1297,5 +1300,141 @@ check(f"土台の SG の行: Neo4j の 7687 には status の Lambda・道具の
       and all(re.search(rf'\[for sg in local\.{v} : \[\n\s+\{{ from = sg, to = "endpoints", protocol = "tcp", port = 443, why = "[^"]*" \}},\n'
                         rf'\s+\{{ from = sg, to = "s3", protocol = "tcp", port = 443, why = "[^"]*" \}},\n', s)
               for v, s in (("aws_api_clients", tf_text("terraform", "base/core")["security_groups.tf"]), ("oss_api_clients", _oss_tf))))
+
+# ---- 9. OSS 版の Grafana（005 の 3）。analytics の grafana.tf は実ファイル（マネージド版の grafana.tf は AMP と OpenSearch Serverless を引くのでリンクできない）。
+# イメージ（grafana/）・ダッシュボード・アラートのルールはマネージド版と同じものを使い、違うのはデータソースの宛先と認証（環境変数）とタスクロールだけ
+_g = {b: _code(_ana[b]["grafana.tf"]) for b in _ana}
+_g_res = {b: {f"{t}.{n}": _squeeze(body) for t, n, body in _RES.findall(_g[b])} for b in _g}
+_g_names = {b: {k: m.group(1) for k, v in _g_res[b].items() if (m := re.search(r"^\s*(?:name|family)\s+= (.+)$", v, re.M))} for b in _g}
+_g_m_hits = sorted({m.group(0) for m in _forbidden.finditer(_g["terraform"])})
+_G_SAME = ("aws_cloudwatch_log_group.grafana", "aws_service_discovery_service.grafana", "aws_iam_role_policy_attachment.grafana_execution",
+           "aws_iam_role_policy_attachment.grafana_execution_perimeter", "aws_iam_role_policy_attachment.grafana_task_perimeter")
+check(f"OSS 版の analytics の grafana.tf は実ファイルで、マネージド版の grafana.tf（{_g_m_hits} を引く）にはリンクしない。リソースはマネージド版から OpenSearch Serverless の"
+      "データアクセスポリシーを抜いたもので、名前（name・family）は同じ。ロググループ・Cloud Map・実行ロールの管理ポリシー・閉域の Deny の付け方はマネージド版と同じ",
+      "grafana.tf" in _an_real and links_to_managed(_AN, ["grafana.tf"]) and _g_m_hits
+      and set(_g_res["oss/terraform"]) == set(_g_res["terraform"]) - {"aws_opensearchserverless_access_policy.grafana"}
+      and _g_names["oss/terraform"] == {k: v for k, v in _g_names["terraform"].items() if k in _g_res["oss/terraform"]}
+      and all(_g_res["oss/terraform"][k] == _g_res["terraform"][k] for k in _G_SAME))
+check("ECS のサービス（1 タスク・サブネット a・Grafana の SG・Cloud Map）はマネージド版と同じで、depends_on から OpenSearch Serverless のポリシーが抜けるだけ",
+      _g_res["oss/terraform"]["aws_ecs_service.grafana"]
+      == _g_res["terraform"]["aws_ecs_service.grafana"].replace("\n    aws_opensearchserverless_access_policy.grafana,", ""))
+_G_LOCALS = ("grafana_image", "grafana_log_group", "grafana_password_arn")
+_G_OUTPUTS = ("grafana_service_name", "grafana_port_forward_command", "grafana_password_command")
+_g_loc = {b: _tf_locals(_g[b]) for b in _g}
+check(f"Grafana の locals（network.tf の grafana_sg_id・grafana_password_parameter・create_grafana と grafana.tf の {', '.join(_G_LOCALS)}）と "
+      f"output（{', '.join(_G_OUTPUTS)}）はマネージド版と同じ（作るかどうかは同じ var.create_grafana、パスワードは同じ名前の SSM のパラメータ）",
+      {"grafana_sg_id", "grafana_password_parameter", "create_grafana"} <= set(_net)
+      and all(_g_loc["oss/terraform"][n] == _g_loc["terraform"][n] for n in _G_LOCALS)
+      and all(_squeeze(_block(_ana["oss/terraform"]["outputs.tf"], "output", n)) == _squeeze(_block(_ana["terraform"]["outputs.tf"], "output", n)) != ""
+              for n in _G_OUTPUTS))
+
+# タスク定義の環境変数と secrets
+_g_td = {b: _block(_g[b], "resource", "aws_ecs_task_definition.grafana") for b in _g}
+_g_env = {b: dict(re.findall(r'^\s+\{ name = "(\w+)", value = (.+?) \},?$', _g_td[b], re.M)) for b in _g}
+_G_OSS_ENV = {"AWS_REGION": "var.region", "PROMETHEUS_URL": "local.prometheus_select_url", "OPENSEARCH_URL": "local.opensearch_endpoint",
+              "OPENSEARCH_INDEX": "local.opensearch_index", "PROMETHEUS_AUTH": '"none"', "OPENSEARCH_AUTH": '"basic"', "ALERTS_TOPIC_ARN": "local.alerts_topic_arn"}
+_g_rest = {b: _squeeze(re.sub(r"(?s)environment = \[.*?\n      \]\n|secrets = (?:\[.*?\n      \]|local\.grafana_secrets)\n|error_message = [^\n]*\n", "", _g_td[b]))
+           for b in _g}
+check(f"タスク定義の環境変数（{_g_env['oss/terraform']}）: PROMETHEUS_URL は vmselect の根、OPENSEARCH_URL は自前の OpenSearch、PROMETHEUS_AUTH=none と "
+      "OPENSEARCH_AUTH=basic で datasources-oss を選ぶ。ほかはマネージド版と同じ値で、環境変数と secrets のほか（イメージ・ポート・CPU・ログ）もマネージド版と同じ",
+      _g_env["oss/terraform"] == _G_OSS_ENV
+      and {k: v for k, v in _G_OSS_ENV.items() if k not in ("PROMETHEUS_AUTH", "OPENSEARCH_AUTH", "PROMETHEUS_URL")}
+      == {k: v for k, v in _g_env["terraform"].items() if k != "PROMETHEUS_URL"}
+      and _g_rest["oss/terraform"] == _g_rest["terraform"] and "environment" not in _g_rest["terraform"])
+_g_sec = re.findall(r'\{ name = "(\w+)", valueFrom = (local\.\w+) \}', _g["oss/terraform"])
+check(f"パスワードは環境変数に書かず ECS の secrets（{_g_sec}）: admin はマネージド版と同じ SSM のパラメータ、OpenSearch は OpenSearch のタスクと Spark と同じ "
+      "SecureString（OpenSearch を作るときだけ）。実行ロールが読めるのは secrets に並べたものだけ",
+      _g_sec == [("GF_SECURITY_ADMIN_PASSWORD", "local.grafana_password_arn"), ("OPENSEARCH_PASSWORD", "local.opensearch_password_arn")]
+      and not [k for k in _g_env["oss/terraform"] if "PASSWORD" in k]
+      and "      secrets = local.grafana_secrets\n" in _g_td["oss/terraform"]
+      and '[for s in [{ name = "OPENSEARCH_PASSWORD", valueFrom = local.opensearch_password_arn }] : s if local.sink_opensearch],' in _g["oss/terraform"]
+      and 'name = "GF_SECURITY_ADMIN_PASSWORD", valueFrom = local.grafana_password_arn' in _g["terraform"]
+      and 'secrets = [{ name = "OPENSEARCH_INITIAL_ADMIN_PASSWORD", valueFrom = local.opensearch_password_arn }]' in _os_tf
+      and 'opensearch = { name = "OPENSEARCH_PASSWORD", valueFrom = local.opensearch_password_arn }' in _spark
+      and re.search(r'Action\s+= \["ssm:GetParameters"\]\n\s+Resource = \[for s in local\.grafana_secrets : s\.valueFrom\]\n',
+                    _block(_g["oss/terraform"], "resource", "aws_iam_role_policy.grafana_execution")) is not None)
+_g_task = {b: _block(_g[b], "resource", "aws_iam_role_policy.grafana_task") for b in _g}
+_g_publish = re.compile(r'Sid\s+= "PublishAlerts"\n\s+Effect\s+= "Allow"\n\s+Action\s+= \["sns:Publish"\]\n\s+Resource = local\.alerts_topic_arn\n')
+check("タスクロールはアラートの SNS のトピックへの publish だけ（マネージド版の PublishAlerts と同じ行）。AMP（aps）と OpenSearch Serverless（aoss）の許可は無い",
+      re.findall(r'Sid\s+= "(\w+)"', _g_task["oss/terraform"]) == ["PublishAlerts"]
+      and _g_publish.search(_g_task["oss/terraform"]) and _g_publish.search(_g_task["terraform"])
+      and not re.search(r'"(?:aps|aoss):', _g["oss/terraform"]) and re.search(r'"(?:aps|aoss):', _g["terraform"]))
+
+
+# grafana/start.sh を OSS 版のタスク定義の環境変数で走らせ、並ぶファイルをマネージド版と比べる
+def grafana_files(**env):
+    """grafana/start.sh が並べるファイル {datasources|alerting|dashboards/<名前>: 中身}（start_sh と同じやり方。環境変数は渡したものだけ）"""
+    with tempfile.TemporaryDirectory() as tmp:
+        sh = open(os.path.join(ROOT, "grafana", "start.sh"), encoding="utf-8").read()
+        sh = sh.replace("SRC=/etc/grafana/netops", f"SRC={os.path.join(ROOT, 'grafana', 'provisioning')}")
+        sh = sh.replace("/tmp/grafana-", f"{tmp}/grafana-").replace('exec /run.sh "$@"', "true")
+        assert "/etc/grafana" not in sh and "exec " not in sh
+        subprocess.run(["sh", "-c", sh], capture_output=True, text=True, check=True, env={"PATH": os.environ["PATH"], **env})
+        dirs = {"datasources": f"{tmp}/grafana-provisioning/datasources", "alerting": f"{tmp}/grafana-provisioning/alerting", "dashboards": f"{tmp}/grafana-dashboards"}
+        return {f"{k}/{n}": open(os.path.join(d, n), encoding="utf-8").read() for k, d in dirs.items() for n in sorted(os.listdir(d))}
+
+
+_TOPIC = f"arn:aws:sns:ap-northeast-1:123456789012:{_PREFIX}-alerts"
+_g_val = {"var.region": "ap-northeast-1", "local.alerts_topic_arn": _TOPIC}
+_g_oss_env = {k: v[1:-1] if v.startswith('"') else _g_val.get(v) or _render(v[len("local."):], _L) for k, v in _g_env["oss/terraform"].items()}
+_g_oss = grafana_files(**_g_oss_env)
+_g_m = grafana_files(AWS_REGION="ap-northeast-1", PROMETHEUS_URL="https://aps-workspaces.ap-northeast-1.amazonaws.com/workspaces/ws-x",
+                     OPENSEARCH_URL="https://x.ap-northeast-1.aoss.amazonaws.com", OPENSEARCH_INDEX="snmp-logs", ALERTS_TOPIC_ARN=_TOPIC)
+# ルールとダッシュボードのデータソースの参照を持つファイルは grafana/provisioning の中だけ（docs と tests は除く）
+_g_copies = subprocess.run(["git", "grep", "-l", "--untracked", "-e", "datasourceUid", "-e", '"uid": "amp"', "-e", '"uid": "aoss-logs"',
+                            "--", ".", ":!docs", ":!tests", ":!grafana/provisioning"], capture_output=True, text=True, cwd=ROOT).stdout.split()
+_G_FILES = {"datasources/prometheus.yaml", "datasources/opensearch.yaml", "dashboards/metrics.json", "dashboards/logs.json",
+            "alerting/netops.yaml", "alerting/netops-prometheus.yaml", "alerting/netops-opensearch.yaml"}
+check(f"OSS 版の環境変数（PROMETHEUS_URL={_g_oss_env['PROMETHEUS_URL']}、OPENSEARCH_URL={_g_oss_env['OPENSEARCH_URL']}）で start.sh は datasources-oss の 2 つと、"
+      "マネージド版と同じダッシュボード 2 つ・アラートの定義 3 つ（grafana/provisioning のファイルそのもの）を並べる。ダッシュボードとルールの写しはリポジトリに無い",
+      set(_g_oss) == set(_g_m) == _G_FILES
+      and _g_oss_env["PROMETHEUS_URL"] == SELECT_URL and _g_oss_env["OPENSEARCH_URL"] == OS_URL and _g_oss_env["OPENSEARCH_INDEX"] == _index
+      and all(_g_oss[f"datasources/{n}"] == provisioning("datasources-oss", n) for n in ("prometheus.yaml", "opensearch.yaml"))
+      and all(_g_oss[f] == _g_m[f] == provisioning(*f.split("/")) for f in _G_FILES if not f.startswith("datasources/"))
+      and sorted(f for f in git_files("grafana") if f.endswith((".json", ".yaml")) and not f.startswith("provisioning/datasources"))
+      == sorted("provisioning/" + f for f in _G_FILES if not f.startswith("datasources/")) + ["provisioning/dashboards/netops.yaml"]
+      and not _g_copies)
+
+
+def _ds_refs(o):
+    """ダッシュボードの JSON の中の "datasource": {"uid": …} を全部"""
+    if isinstance(o, dict):
+        return ([o["datasource"]["uid"]] if isinstance(o.get("datasource"), dict) else []) + [u for v in o.values() for u in _ds_refs(v)]
+    return [u for v in o for u in _ds_refs(v)] if isinstance(o, list) else []
+
+
+_g_have = {u for f, s in _g_oss.items() if f.startswith("datasources/") for u in uids(s)}
+_g_want = {f: set(_ds_refs(json.loads(s))) if f.endswith(".json") else set(re.findall(r"^\s+datasourceUid: (\S+)$", s, re.M)) - {"__expr__"}
+           for f, s in _g_oss.items() if f.startswith(("dashboards/", "alerting/netops-"))}
+check(f"ダッシュボードとアラートのルールが引くデータソースの uid（{ {f: sorted(v) for f, v in _g_want.items()} }）は、どれも OSS 版で並べたデータソース（{sorted(_g_have)}）にある",
+      _g_have == {"amp", "aoss-logs"} and all(_g_want.values()) and set().union(*_g_want.values()) <= _g_have)
+_g_vars = set(re.findall(r"\$\{(\w+)\}", "".join(s for f, s in _g_oss.items() if f.endswith(".yaml"))))
+check(f"並べた定義が起動時に読む環境変数（{sorted(_g_vars)}）は、どれもタスク定義の環境変数か secrets か start.sh の既定（OPENSEARCH_USER）で入る",
+      _g_vars and _g_vars <= set(_g_env["oss/terraform"]) | {n for n, _ in _g_sec} | {"OPENSEARCH_USER"})
+
+# アラートの経路: Grafana の連絡先 → 土台の SNS のトピック → status の Lambda（OSS 版の graph の sync.tf）と SQS → ワークフロー（terraform/workflow の events.tf）
+_nets = _g_oss["alerting/netops.yaml"]
+_sub = {f"{b}/{r}": _block(_code(tf_text(b, r)[n]), "resource", f"aws_sns_topic_subscription.{s}")
+        for b, r, n, s in (("oss/terraform", "pipeline/graph", "sync.tf", "status"), ("oss/terraform", "workflow", "events.tf", "anomalies"))}
+_topic_expr = 'alerts_topic_arn = try(data.terraform_remote_state.main.outputs.alerts_topic_arn, "")'
+check("アラートの経路はマネージド版と同じ: 連絡先は SNS（タスクロールの SigV4。鍵は書かない）で topic_arn は ALERTS_TOPIC_ARN、Grafana・status の Lambda・ワークフローは"
+      "どれも OSS 版の土台の state の alerts_topic_arn を読み、status の Lambda（lambda）と SQS（sqs）がそのトピックを購読する",
+      re.search(r"^\s+type: sns\n[\s\S]*?^\s+topic_arn: \$\{ALERTS_TOPIC_ARN\}\n\s+sigv4:\n\s+region: \$\{AWS_REGION\}\n", _nets, re.M) is not None
+      and not re.search(r"access_key|secret_key|assume_role", _nets) and re.search(r"^\s+receiver: nwc-sns$", _nets, re.M) is not None
+      and all(re.search(r"^\s+topic_arn\s+= local\.alerts_topic_arn\n", s, re.M) for s in _sub.values())
+      and 'protocol  = "lambda"' in _sub["oss/terraform/pipeline/graph"] and re.search(r'protocol\s+= "sqs"', _sub["oss/terraform/workflow"]) is not None
+      and not links_to_managed("workflow", ["events.tf", "locals.tf"])
+      and all(_topic_expr in _code(tf_text("oss/terraform", r)[n]) for r, n in (("pipeline/analytics", "network.tf"), ("pipeline/graph", "locals.tf"), ("workflow", "locals.tf"))))
+
+# 土台の SG と VPC エンドポイント
+_ep = set(re.search(r'^ENDPOINTS="([^"]*)"$', open(os.path.join(ROOT, "oss", "ops", "up.sh"), encoding="utf-8").read(), re.M).group(1).split())
+_ecr_repos = re.search(r"pipeline_repositories = toset\(\[(.*)\]\)", tf_text("terraform", "base/ecr")["main.tf"]).group(1)
+check(f"Grafana のタスクは grafana の SG（{_sg_keys('oss/terraform', _AN, 'grafana.tf')}）を付け、土台の SG で OpenSearch の 9200・vmselect の 8481・AWS の API へ出られ、"
+      f"web の EC2 から 3000 で開ける。OSS 版の ops/up.sh が作る VPC エンドポイント（{sorted(_ep)}）に ECR・ログ・SSM（secrets）・SNS（アラート）がある。イメージの置き場は土台の ECR の grafana",
+      _sg_keys("oss/terraform", _AN, "grafana.tf") == _sg_keys("terraform", _AN, "grafana.tf") == {"grafana"}
+      and "grafana" in _from("opensearch", _port(OS_URL)) and "grafana" in _from("victoriametrics", _port(SELECT_URL)) and "grafana" in _api
+      and '{ from = "web", to = "grafana", protocol = "tcp", port = 3000,' in tf_text("terraform", "base/core")["security_groups.tf"]
+      and "portMappings = [{ containerPort = 3000, protocol = \"tcp\" }]" in _g_td["oss/terraform"]
+      and {"ecr.api", "ecr.dkr", "logs", "ssm", "sns"} <= _ep and '"grafana"' in _ecr_repos)
 
 print(f"通過 {passed} / 失敗 0")

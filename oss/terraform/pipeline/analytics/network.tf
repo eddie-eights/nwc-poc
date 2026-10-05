@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------- 土台と stream の state、共有の locals
 # マネージド版の locals.tf と同じ名前の locals を、OSS 版で作れるものだけ持つ（マネージド版の locals.tf は MSK・EMR・
 # OpenSearch Serverless・AMP を引くのでリンクできない）。リンクしている tables.tf・history.tf・ecs.tf・splunk.tf と、
-# spark.tf・opensearch.tf・victoriametrics.tf はここの locals を読む（OpenSearch と VictoriaMetrics の宛先とパスワードの locals はその .tf が持つ）。
+# spark.tf・opensearch.tf・victoriametrics.tf・grafana.tf はここの locals を読む（OpenSearch と VictoriaMetrics の宛先とパスワードの locals はその .tf が持つ）。
 # Splunk は OSS 版でも変えない（設計 005）ので、マネージド版の splunk.tf をそのままリンクし、splunk の locals もマネージド版と同じ値にする
 
 data "aws_caller_identity" "current" {}
@@ -53,10 +53,11 @@ locals {
   instance_subnet_id = data.terraform_remote_state.main.outputs.instance_subnet_id
   web_instance_id    = try(data.terraform_remote_state.main.outputs.web_instance_id, "")
   # SG は古い state の destroy でも評価できるように try（空のまま apply に進まないよう spark.tf の precondition で止める）
-  spark_sg_id  = try(data.terraform_remote_state.main.outputs.security_group_ids["spark"], "")
-  splunk_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["splunk"], "")
-  bucket       = data.terraform_remote_state.main.outputs.kb_bucket_name
-  bucket_arn   = "arn:${local.partition}:s3:::${local.bucket}"
+  spark_sg_id   = try(data.terraform_remote_state.main.outputs.security_group_ids["spark"], "")
+  grafana_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["grafana"], "")
+  splunk_sg_id  = try(data.terraform_remote_state.main.outputs.security_group_ids["splunk"], "")
+  bucket        = data.terraform_remote_state.main.outputs.kb_bucket_name
+  bucket_arn    = "arn:${local.partition}:s3:::${local.bucket}"
   # terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
   perimeter_policy_arn        = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
   perimeter_exempt_principals = try(data.terraform_remote_state.main.outputs.perimeter_exempt_principals, [])
@@ -94,6 +95,10 @@ locals {
   splunk_token_parameter     = var.splunk_hec_token_parameter != "" ? var.splunk_hec_token_parameter : "/${local.name_prefix}/splunk/hec-token"
   splunk_token_parameter_arn = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.splunk_token_parameter}"
   splunk_password_parameter  = "/${local.name_prefix}/splunk/admin-password"
+
+  # Grafana（grafana.tf）。作るかどうかと admin のパスワードの名前はマネージド版の locals.tf と同じ（create_grafana は ops/up.sh が true にする）
+  grafana_password_parameter = "/${local.name_prefix}/grafana/admin-password"
+  create_grafana             = var.create_grafana && (local.sink_prometheus || local.sink_opensearch)
 
   # ECS のクラスタと Cloud Map の名前空間（ecs.tf）。OSS 版では Spark がいつも ECS で動くので、いつも作る
   create_ecs        = true
