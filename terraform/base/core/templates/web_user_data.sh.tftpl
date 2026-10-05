@@ -35,7 +35,7 @@ if ! grep -q "^import gradio" $APP/src/app.py; then
 fi
 # インターネットに出ないので PyPI は見ない。wheel は arm64 / cp313 で揃えてある。--target で $APP/lib に入れる
 python3.13 -m pip install --quiet --no-index --find-links $APP/src/wheels --target $APP/lib --upgrade \
-  -r $APP/src/requirements.txt
+  -r $APP/src/requirements%{ if graph_backend != "" }-oss%{ endif }.txt
 
 # コメント以外に ASCII 以外の文字を書かない。cloud-init は MIME の 8bit の部分を raw-unicode-escape で取り出すので、
 # 日本語は「運」がバックスラッシュ付きの u904b の形になり、systemd の EnvironmentFile がバックスラッシュを落として u904b になる（2026-10-05 に AWS で再現）。
@@ -50,6 +50,9 @@ GRADIO_TEMP_DIR=/var/lib/${name_prefix}-web/tmp
 GRADIO_ANALYTICS_ENABLED=False
 HF_HUB_OFFLINE=1
 HF_HUB_DISABLE_TELEMETRY=1
+%{ if graph_backend != "" ~}
+GRAPH_BACKEND=${graph_backend}
+%{ endif ~}
 __ENV__
 
 cat > /etc/systemd/system/${name_prefix}-web.service <<__UNIT__

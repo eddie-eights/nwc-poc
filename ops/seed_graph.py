@@ -30,7 +30,9 @@ import graph  # noqa: E402
 import topology  # noqa: E402
 
 if not graph.configured():
-    sys.exit(f"SSM の {os.environ.get('PARAM_PREFIX', '')}/neptune-graph-id が読めない（terraform/pipeline/graph の apply が終わっているか）")
+    # OSS 版（Web の環境変数に GRAPH_BACKEND=neo4j。cycle 005）は neo4j-uri を読む
+    _param = "neo4j-uri" if graph.BACKEND == "neo4j" else "neptune-graph-id"
+    sys.exit(f"SSM の {os.environ.get('PARAM_PREFIX', '')}/{_param} が読めない（terraform/pipeline/graph の apply が終わっているか）")
 
 if os.environ.get("LAB_TOPOLOGY_B64"):
     lab = json.loads(base64.b64decode(os.environ["LAB_TOPOLOGY_B64"]))

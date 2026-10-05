@@ -56,18 +56,25 @@ resource "aws_ecs_task_definition" "workflow" {
         }
       }
     },
-    {
+    # OSS 版（local.graph_neo4j）は NEPTUNE_GRAPH_ID の代わりに GRAPH_BACKEND と NEO4J_URI を同じ位置に置き、パスワードを secrets で足す
+    # （merge の右が空のマネージド版では、出来上がるタスク定義は前と 1 文字も変わらない）
+    merge({
       name      = "worker"
       image     = local.worker_image
       essential = true
       dependsOn = [{ containerName = "temporal", condition = "START" }]
-      environment = [
+      environment = concat([
         { name = "TEMPORAL_ADDRESS", value = "localhost:7233" },
         { name = "AWS_REGION", value = var.region },
         { name = "PARAM_PREFIX", value = local.param_prefix },
         { name = "ANOMALY_QUEUE_URL", value = aws_sqs_queue.anomalies.url },
         { name = "DECISION_QUEUE_URL", value = aws_sqs_queue.decisions.url },
+        ], local.graph_neo4j ? [
+        { name = "GRAPH_BACKEND", value = "neo4j" },
+        { name = "NEO4J_URI", value = local.neo4j_uri },
+        ] : [
         { name = "NEPTUNE_GRAPH_ID", value = local.neptune_graph_id },
+        ], [
         { name = "AUDIT_TABLE_BUCKET_ARN", value = local.audit_bucket_arn },
         { name = "AUDIT_NAMESPACE", value = local.audit_namespace },
         { name = "PROPOSAL_EVENTS_TABLE", value = local.proposal_events_table_name },
@@ -76,7 +83,7 @@ resource "aws_ecs_task_definition" "workflow" {
         { name = "APPROVAL_TIMEOUT_MINUTES", value = tostring(var.approval_timeout_minutes) },
         { name = "VERIFY_TIMEOUT", value = tostring(var.verify_timeout_seconds) },
         { name = "HOLD_MINUTES", value = tostring(var.hold_minutes) },
-      ]
+      ])
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -85,7 +92,10 @@ resource "aws_ecs_task_definition" "workflow" {
           awslogs-stream-prefix = "worker"
         }
       }
-    },
+      }, local.graph_neo4j ? {
+      # workflow/awsio.py の NEO4J_PASSWORD（SSM の SecureString。値は state にもタスク定義にも書かない。読む権限は iam.tf の execution_neo4j）
+      secrets = [{ name = "NEO4J_PASSWORD", valueFrom = local.neo4j_password_arn }]
+    } : {}),
   ])
 
   lifecycle {
@@ -98,8 +108,8 @@ resource "aws_ecs_task_definition" "workflow" {
       error_message = "terraform/agent の state から agent_runtime_arn が読めない。terraform/agent を先に apply する（deploy.env の AGENT=1）。"
     }
     precondition {
-      condition     = local.neptune_graph_id != "" && local.neptune_data_arn != ""
-      error_message = "terraform/pipeline/graph の state から graph_id / graph_arn が読めない。事前チェックと保守中の判定はトポロジ（Neptune）を読むので、terraform/pipeline/graph を先に apply する（2026-09-24 から）。"
+      condition     = (local.neptune_graph_id != "" && local.neptune_data_arn != "") || local.graph_neo4j
+      error_message = "terraform/pipeline/graph の state から graph_id / graph_arn（OSS 版は neo4j_uri）が読めない。事前チェックと保守中の判定はトポロジ（Neptune。OSS 版は Neo4j）を読むので、terraform/pipeline/graph を先に apply する（2026-09-24 から）。"
     }
     precondition {
       condition     = local.audit_bucket_arn != "" && local.audit_namespace != "" && local.proposal_events_table_name != ""
@@ -130,5 +140,5 @@ resource "aws_ecs_service" "workflow" {
     assign_public_ip = false
   }
 
-  depends_on = [aws_iam_role_policy.task, aws_iam_role_policy_attachment.execution]
+  depends_on = [aws_iam_role_policy.task, aws_iam_role_policy_attachment.execution, aws_iam_role_policy.execution_neo4j]
 }

@@ -27,6 +27,24 @@ resource "aws_iam_role_policy_attachment" "execution" {
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# OSS 版（Neo4j）だけ: Worker の secrets の NEO4J_PASSWORD（SSM の SecureString。AWS 管理の aws/ssm キーなので kms:Decrypt は要らない）
+resource "aws_iam_role_policy" "execution_neo4j" {
+  count = local.graph_neo4j ? 1 : 0
+
+  name = "${local.name_prefix}-workflow-exec-neo4j"
+  role = aws_iam_role.execution.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "Neo4jPassword"
+      Effect   = "Allow"
+      Action   = ["ssm:GetParameters"]
+      Resource = local.neo4j_password_arn
+    }]
+  })
+}
+
 # terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
 resource "aws_iam_role_policy_attachment" "execution_perimeter" {
   count = local.perimeter_policy_arn != "" ? 1 : 0
@@ -64,11 +82,15 @@ data "aws_iam_policy_document" "task" {
   }
 
   # トポロジと status を読むだけ（workflow/awsio.py の read_topology。事前チェックと保守中の判定）。
-  # 修復案の頂点は 2026-10-05 にやめたので、書き込みと削除の権限は付けない
-  statement {
-    sid       = "Neptune"
-    actions   = ["neptune-graph:ReadDataViaQuery", "neptune-graph:GetQueryStatus"]
-    resources = [local.neptune_data_arn]
+  # 修復案の頂点は 2026-10-05 にやめたので、書き込みと削除の権限は付けない。
+  # OSS 版（Neo4j）は IAM でなくパスワードで入るので、この行は無い（パスワードは実行ロールの execution_neo4j）
+  dynamic "statement" {
+    for_each = local.graph_neo4j ? [] : [1]
+    content {
+      sid       = "Neptune"
+      actions   = ["neptune-graph:ReadDataViaQuery", "neptune-graph:GetQueryStatus"]
+      resources = [local.neptune_data_arn]
+    }
   }
 
   # 修復案（proposal_events）を読み、append する（PyIceberg から S3 Tables の Iceberg REST エンドポイント）

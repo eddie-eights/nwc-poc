@@ -74,10 +74,16 @@ resource "aws_instance" "web" {
   vpc_security_group_ids      = [aws_security_group.workload["web"].id]
   associate_public_ip_address = false
 
+  # graph_backend: OSS 版（oss/terraform、cycle 005）だけ neo4j。Web の環境変数に GRAPH_BACKEND=neo4j を足し、agent/graph.py が
+  # Neptune の代わりに Neo4j を読む（URI とパスワードは SSM の neo4j-uri / neo4j-password。oss/terraform/pipeline/graph）。
+  # 依存は web/requirements-oss.txt（マネージド版の依存 + Neo4j のドライバ）で入れる。
+  # マネージド版は空で、テンプレートはどちらも出さない（user_data は前と 1 文字も変わらず、インスタンスも作り直さない）。
+  # テンプレートの中に説明を書かないのは、コメントも user_data に入って、マネージド版のインスタンスが作り直されるから
   user_data = templatefile("${path.module}/templates/web_user_data.sh.tftpl", {
-    name_prefix = local.name_prefix
-    region      = var.region
-    bucket      = aws_s3_bucket.kb.bucket
+    name_prefix   = local.name_prefix
+    region        = var.region
+    bucket        = aws_s3_bucket.kb.bucket
+    graph_backend = local.oss ? "neo4j" : ""
   })
   user_data_replace_on_change = true
 

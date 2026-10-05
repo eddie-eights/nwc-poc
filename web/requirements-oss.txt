@@ -1,0 +1,4 @@
+# OSS 版（cycle 005）の Web: マネージド版の依存に Neo4j のドライバ（agent/graph.py が GRAPH_BACKEND=neo4j で使う）を足す。
+# EC2 の user_data は OSS 版ではこのファイルで入れる（terraform/base/core の web.tf の graph_backend）。wheel もこのファイルで取る（OSS 版の ops/up.sh）
+-r requirements.txt
+neo4j==6.3.1

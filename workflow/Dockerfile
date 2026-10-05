@@ -12,8 +12,10 @@ ENV PYTHONUNBUFFERED=1 \
 ENV PIP_TRUSTED_HOST="pypi.org files.pythonhosted.org pypi.python.org"
 
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --trusted-host pypi.python.org -r requirements.txt
+# OSS 版（cycle 005）は --build-arg REQUIREMENTS=requirements-oss.txt（マネージド版の依存 + Neo4j のドライバ）。既定はマネージド版のまま
+ARG REQUIREMENTS=requirements.txt
+COPY requirements*.txt ./
+RUN pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --trusted-host pypi.python.org -r "$REQUIREMENTS"
 
 # worker.py / awsio.py / rules.py。1 つずつ書くと足したファイルを入れ忘れる（入れ忘れると起動時に ModuleNotFoundError）
 COPY *.py ./

@@ -752,4 +752,50 @@ check("OSS 版の差し替え口: 認証なし（Telegraf に KAFKA_AUTH=none、
 check("kafka.tf は接頭辞を作らず（locals.tf の local.name_prefix を使う）、MSK の変数（kafka_version など）も読まない",
       not re.search(r"^\s*name_prefix\s*=", _k, re.M) and "var.kafka_version" not in _k and "var.msk_" not in _k)
 
+# ---- 6. OSS 版の Spark と Neo4j（005 の 2）。analytics は EMR Serverless を spark.tf の ECS に、graph は Neptune Analytics を neo4j.tf の ECS に替える
+_dock = {n: open(os.path.join(ROOT, *n.split("/")), encoding="utf-8").read()
+         for n in ("spark/Dockerfile", "oss/compose/spark/Dockerfile", "neo4j/Dockerfile", "oss/compose/neo4j/Dockerfile")}
+
+
+def _arg(text, name):
+    m = re.search(rf"^ARG {name}=(\S+)$", text, re.M)
+    return m.group(1) if m else None
+
+
+_versions = {n: (_arg(_dock[n], "SPARK_VERSION"), _arg(_dock[n], "ICEBERG_VERSION")) for n in ("spark/Dockerfile", "oss/compose/spark/Dockerfile")}
+_neo4j_from = re.findall(r"^FROM (\S+)", _dock["oss/compose/neo4j/Dockerfile"], re.M)
+check(f"Spark・Iceberg・Neo4j の版は compose で確かめた組み合わせと同じで（{_versions} {_neo4j_from}）、GDS の jar はイメージに焼き込む（起動時に取りに行かない）",
+      len(set(_versions.values())) == 1 and None not in _versions["spark/Dockerfile"]
+      and _neo4j_from == [f"neo4j:{_arg(_dock['neo4j/Dockerfile'], 'NEO4J_VERSION')}-community"]
+      and "cp /var/lib/neo4j/products/neo4j-graph-data-science-*.jar /var/lib/neo4j/plugins/" in _dock["neo4j/Dockerfile"]
+      and "NEO4J_PLUGINS" not in _code(_dock["neo4j/Dockerfile"]) and "--packages" not in _code(_dock["spark/Dockerfile"]))
+_spark = _code(tf_text("oss/terraform", "pipeline/analytics")["spark.tf"])
+check("Spark はマネージド版の spark_jobs と同じ分け方で格納先の組ごとに 1 タスク（splunk は外す）。checkpoint は S3A で、同じ checkpoint を 2 つのタスクが同時に使わない",
+      'spark_services = { for job, sinks in local.spark_jobs : job => sinks if length(sinks) > 0 && job != "splunk" }' in _spark
+      and all(re.search(r'resource "' + t + r'" "spark" \{\n  for_each = local\.spark_services\n', _spark) for t in ("aws_ecs_task_definition", "aws_ecs_service"))
+      and 'spark_checkpoint_uri = "s3a://${local.bucket}/${local.checkpoint}/' in _spark
+      and "deployment_minimum_healthy_percent = 0" in _spark and "deployment_maximum_percent         = 100" in _spark)
+_graph_files = git_files("oss/terraform/pipeline/graph")
+_graph_real = sorted(n for n in _graph_files if not os.path.islink(os.path.join(ROOT, "oss", "terraform", "pipeline", "graph", n)))
+_neo = _code(tf_text("oss/terraform", "pipeline/graph")["neo4j.tf"])
+check(f"OSS 版の graph の実ファイルは Neo4j の分だけで（{_graph_real}）、Neo4j は ECS に 1 台。パスワードは SSM から secrets（GRAPH_PASSWORD）で、頂点の id は一意制約",
+      _graph_real == ["access.tf", "neo4j.tf", "oss.auto.tfvars", "outputs.tf", "sync.tf"]
+      and "desired_count   = 1" in _neo and 'secrets     = [{ name = "GRAPH_PASSWORD", valueFrom = local.neo4j_password_arn }]' in _neo
+      and "REQUIRE n.id IS UNIQUE" in open(os.path.join(ROOT, "agent", "graph.py"), encoding="utf-8").read())
+_tpl = open(os.path.join(ROOT, "terraform", "base", "core", "templates", "web_user_data.sh.tftpl"), encoding="utf-8").read()
+_wf = {n: _code(s) for n, s in tf_text("terraform", "workflow").items()}
+check("status の Lambda・Worker・Web は環境変数で Neo4j に向く（Lambda は OSS 版の sync.tf、Worker は graph の state の neo4j_uri、Web は project = nwc-oss）。"
+      "マネージド版のテンプレートは GRAPH_BACKEND も requirements-oss も出さない",
+      re.search(r'^\s+GRAPH_BACKEND = "neo4j"\n\s+NEO4J_URI     = local\.neo4j_uri\n', _code(tf_text("oss/terraform", "pipeline/graph")["sync.tf"]), re.M)
+      and 'graph_neo4j        = local.neo4j_uri != ""' in _wf["locals.tf"] and '{ name = "GRAPH_BACKEND", value = "neo4j" },' in _wf["ecs.tf"]
+      and 'graph_backend = local.oss ? "neo4j" : ""' in tf_text("terraform", "base/core")["web.tf"]
+      and _tpl.count("GRAPH_BACKEND") == 1 and '%{ if graph_backend != "" ~}\nGRAPH_BACKEND=${graph_backend}\n%{ endif ~}\n' in _tpl
+      and '-r $APP/src/requirements%{ if graph_backend != "" }-oss%{ endif }.txt' in _tpl)
+_req = {n: open(os.path.join(ROOT, n, "requirements-oss.txt"), encoding="utf-8").read() for n in ("graph", "web", "workflow")}
+_pins = {n: re.findall(r"^neo4j==\S+$", s, re.M) for n, s in _req.items()}
+check(f"Neo4j のドライバの版は Lambda の層・Web・Worker でそろえ（{_pins}）、Web と Worker はマネージド版の依存に足す（Worker の既定のビルドは今のまま）",
+      all(len(p) == 1 for p in _pins.values()) and len({p[0] for p in _pins.values()}) == 1
+      and all(re.search(r"^-r requirements\.txt$", _req[n], re.M) for n in ("web", "workflow"))
+      and "ARG REQUIREMENTS=requirements.txt" in open(os.path.join(ROOT, "workflow", "Dockerfile"), encoding="utf-8").read())
+
 print(f"通過 {passed} / 失敗 0")

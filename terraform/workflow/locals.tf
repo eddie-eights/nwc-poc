@@ -26,7 +26,7 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 # VPC / サブネット / SG / ロール名は terraform/base/core、Runtime ARN は terraform/agent、lab EC2 は terraform/pipeline/lab、
-# Neptune（トポロジと status）は terraform/pipeline/graph、修復案の S3 Tables と OpenSearch / Prometheus は terraform/pipeline/analytics の state から読む。
+# Neptune（トポロジと status。OSS 版は Neo4j）は terraform/pipeline/graph、修復案の S3 Tables と OpenSearch / Prometheus は terraform/pipeline/analytics の state から読む。
 # ワーカーは Neptune（事前チェック）と proposal_events が無いと動かないので graph と analytics は必須（ecs.tf の precondition）
 data "terraform_remote_state" "main" {
   backend = "local"
@@ -118,6 +118,12 @@ locals {
   # Neptune（トポロジと status。ワーカーの事前チェック）。graph が無ければ空で、ecs.tf の precondition が「graph を先に」と出す
   neptune_graph_id = try(data.terraform_remote_state.graph.outputs.graph_id, "")
   neptune_data_arn = try(data.terraform_remote_state.graph.outputs.graph_arn, "")
+  # OSS 版（oss/terraform/pipeline/graph。cycle 005）は Neptune の代わりに Neo4j で、state に neo4j_uri がある。あれば Worker を
+  # GRAPH_BACKEND=neo4j で Neo4j に向け（ecs.tf）、パスワード（SSM の SecureString）を ECS の secrets で渡す（iam.tf の実行ロール）。
+  # マネージド版の graph の state には無いので空で、ここから下はマネージド版では何も変えない
+  neo4j_uri          = try(data.terraform_remote_state.graph.outputs.neo4j_uri, "")
+  graph_neo4j        = local.neo4j_uri != ""
+  neo4j_password_arn = local.graph_neo4j ? "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${data.terraform_remote_state.graph.outputs.neo4j_password_parameter}" : ""
 
   # 修復案（S3 Tables の proposal_events。2026-10-05 から修復案の置き場はここだけ）。analytics が無ければ空で、ecs.tf の precondition が「analytics を先に」と出す
   audit_bucket_arn           = try(data.terraform_remote_state.analytics.outputs.table_bucket_arn, "")
