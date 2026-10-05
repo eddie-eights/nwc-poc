@@ -74,3 +74,39 @@
 - 進め方: 005 を待たずに、ブランチ `feat/kafka-ui` でエンジニアに頼んだ（MSK へは IAM 認証、1 タスク、ログインあり、画面からトピックを追加できる）。
 - 005 への影響: OSS 版の Kafbat UI は、マネージド版で作るタスク定義を使い回す。違いは認証（PLAINTEXT）だけ。
 - スイッチは作らない（同日のユーザーの決定: 「スイッチなしで常に作る」）。stream を作る回は、いつも Kafbat UI を作る。`KAFKA_UI` というキーは置かない。
+
+## Round 1（2026-10-06）手元の確認と実装に合わせて設計を直した
+
+手元のコンテナ（`oss/compose/`）での確認と、`oss/` の実装が main に入った。design.md を現行の形に書き直した。AWS ではまだ立てていない。
+
+### 手元の確認で変わった設計
+
+| 項目 | 前の設計 | いまの設計 | 理由 |
+|---|---|---|---|
+| Kafka の voter | 動的（`controller.quorum.bootstrap.servers`） | 固定（`controller.quorum.voters`） | 公式イメージ `apache/kafka` が、動的な voter に必要な初期化をしない。組めなかった |
+| OpenSearch のデータの 2 台の置き場 | EFS | タスクの一時領域 | 公式の文書がネットワークファイルシステムを避けるよう書いている（設計の役の決定）。2 台が同時に落ちるとデータは消える |
+| vminsert の起動 | 順は決めていなかった | vmstorage の 3 台が受けるまで待つコンテナを付ける | つなぐ前に書いた行は 1 台にしか入らず、その台を止めると、欠けたことを示さずに値が抜けた |
+| GDS | 動かなければ NetworkX | GDS だけ | Community Edition で動いた。中心性は定義どおりの値と一致、島の数は 1。「動くか」をリスクから外した |
+| GDS のライセンス | 未確認 | GPLv3。自社の ECS で動かすだけなら配布に当たらない、という読み | jar の中の `NOTICE.txt` と `LICENSE.txt`、https://neo4j.com/licensing/ 。法的な助言ではない |
+| Spark と Splunk | 書いていなかった | Splunk は変えない。Spark は同じ HEC に書く。token は ECS の secrets で受ける | 手元で Kafka から OpenSearch、vminsert、Iceberg、Splunk に書けた |
+
+### 実装（コード）に合わせて直した記述
+
+| 項目 | 前の設計の記述 | コード |
+|---|---|---|
+| Spark のタスクの数 | 格納先ごとに 1 タスク | サービスは 3 つ（`iceberg`、`splunk`、`http`）。`http` が OpenSearch と VictoriaMetrics の両方に書く。格納先は 4 つ |
+| OpenSearch の Cloud Map の名前 | `opensearch-1`、`opensearch-2`、`opensearch-cm` | `opensearch`（データの 2 台）と `opensearch-cm`。ECS のサービスは Cloud Map のサービスを 1 つしか持てない |
+| OpenSearch の REST | 書いていなかった | TLS なしの HTTP と Basic 認証。台どうしはデモの証明書の TLS |
+| EFS の置き場 | `pipeline/analytics` | `terraform/base/core/oss.tf`（SG と通信の表と同じファイル）。アクセスポイントは使うルート |
+| Kafka、OpenSearch の入れ替え | 1 台ずつ待って進める | `terraform apply` でタスク定義が変わると 3 台が同時に入れ替わる。1 台ずつの手順は、まだ無い |
+| Neo4j のドライバ | レイヤーか、zip に同梱か（未定） | Lambda のレイヤー（`graph/requirements-oss.txt`） |
+| GDS の入れ方 | jar をダウンロードして焼き込む | 公式イメージの `products/` にある jar を `plugins/` に写す |
+| イメージの版 | Kafbat UI の版は未確認 | `oss/ops/oss-images.sh` に 1 か所（Kafka 4.3.1、Kafbat UI v1.5.0、OpenSearch 3.9.0、VictoriaMetrics v1.153.0、Spark 3.5.9、Neo4j 2026.09.0） |
+| `oss/ops/up.sh` が作る範囲 | 全部のルート | `base/ecr`、`base/core`、`pipeline/lab`、`pipeline/stream`、`pipeline/analytics`、`pipeline/graph` の 6 つ。`pipeline/nautobot`、`agent`、`workflow`、Grafana、Web の部品、グラフの同期は、まだ |
+
+### 未確認のまま
+
+- OpenSearch が Fargate で起動するか（手元は `vm.max_map_count` が 262144 だった）。
+- Kafka を EFS に置いてよいか（公式の文書に記述が無い）。
+- Spark が S3 Tables に書けるか（AWS でしか確かめられない）。
+- Kafbat UI の表示と、VictoriaMetrics の時刻が前後したサンプル（手順は `oss/compose/` にある。結果は docs に反映していない）。

@@ -1667,9 +1667,9 @@ AWS の上（ECS のタスクロール、VPC エンドポイント）で送れ�
 
 **A. 結論**
 
-データベースとして向いているのは EBS。ただし Fargate のサービスでは EBS のボリュームがタスクと一緒に消えるので、「タスクが入れ替わっても残す」には EFS しか選べない。OSS 版（005）は Fargate と EFS で作る。
+データベースとして向いているのは EBS。ただし Fargate のサービスでは EBS のボリュームがタスクと一緒に消えるので、「タスクが入れ替わっても残す」には EFS しか選べない。OSS 版（005）は Fargate で作り、EFS に置くのは Kafka と VictoriaMetrics（vmstorage）だけにした。OpenSearch と Neo4j は、公式の文書がネットワークファイルシステムを避ける（Neo4j は非対応）と書いているので、タスクの一時領域に置く。
 
-以下は記憶にもとづく内容で、2026-10-04 の時点で公式ドキュメントでは確かめていない（005 の設計で確かめる）。
+下の表は記憶にもとづく内容で、2026-10-04 の時点で公式ドキュメントでは確かめていない。OSS ごとの置き場は、2026-10-06 に「マネージドを OSS に置き換えた環境を作る（005）」の設計に合わせて直した。
 
 | | EBS | EFS |
 |---|---|---|
@@ -1683,10 +1683,16 @@ AWS の上（ECS のタスクロール、VPC エンドポイント）で送れ�
 
 Fargate をやめて、ECS の EC2（または EC2 そのもの）にボリュームを付けたままにする。EC2 の管理（AMI の更新、台数）が増える。
 
-**OSS 版で EFS を選ぶ理由**
+**OSS 版での置き場（2026-10-06 の設計）**
 
-- Fargate のまま、タスクが入れ替わってもデータが残る。
-- どれも 1 台で、書くのは 1 つのタスクだけ。NFS で問題になりやすい同時書き込みが起きない。
+| OSS | 置き場 | 理由 |
+|---|---|---|
+| Kafka | EFS | タスクが入れ替わってもログを残す。Kafka の公式の文書に NFS / EFS の記述は無い（置いてよいかは未確認） |
+| VictoriaMetrics（vmstorage） | EFS | 公式の文書が「Amazon EFS などの NFS に置ける」と書いている |
+| OpenSearch | タスクの一時領域 | 公式の文書がネットワークファイルシステムを避けるよう書いている。データの 2 台が同時に落ちると消える |
+| Neo4j | タスクの一時領域 | NFS は非対応と明記。消えたら Nautobot と lab の定義から同期し直す |
+
+- EFS は、台ごとにアクセスポイント（ディレクトリ）を分ける。1 つのディレクトリに書くのは 1 つのタスクだけなので、NFS で問題になりやすい同時書き込みが起きない。
 - 「NFS は勧めない」という注意は、マネージドと OSS を比べるときの材料として残す（自前で持つと、置き場の選び方まで自分の責任になる）。
 
 ### Q. EKS だと EFS を使えることはある？
@@ -1716,7 +1722,7 @@ Fargate をやめて、ECS の EC2（または EC2 そのもの）にボリュ�
 
 **このプロジェクトでは**
 
-OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate のままでは EBS を使えないので、Prometheus と Neo4j のために EC2 のノードが要る点は同じ。それなら EKS に替えるより、その 2 つだけ ECS の EC2 に載せるほうが変更が小さい。
+OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate のままでは EBS を使えないので、EFS に置けないもの（OpenSearch と Neo4j）のデータを残すには EC2 のノードが要る点は同じ。それなら EKS に替えるより、その 2 つだけ ECS の EC2 に載せるほうが変更が小さい。いまの OSS 版は、その 2 つをタスクの一時領域に置いている（メトリクスは Prometheus でなく VictoriaMetrics にしたので、EFS に置ける）。
 
 **出典**
 
@@ -1746,7 +1752,7 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 **このプロジェクトでは**
 
 - マネージド版の Amazon Managed Service for Prometheus は、この「外のストレージ」を AWS が運用しているもの（中身は Cortex 系。これは記憶にもとづく内容で、今回は確かめていない）。
-- OSS 版（005）の Prometheus は 1 台で作る。Spark が remote write で書き込む形なので、2 台にするなら Spark が両方に書くことになる。そこまではやらない。
+- OSS 版（005）は、Prometheus ではなく VictoriaMetrics のクラスターにした（次の質問）。Prometheus のままだと 1 台でしか動かず、Spark が remote write で書き込む形なので、2 台にするなら Spark が両方に書くことになる。
 - 「Splunk をクラスターにする（004）」のような台数の切り替えは、Prometheus には作れない。マネージドと OSS を比べるときの材料になる。
 
 **出典**
@@ -1758,9 +1764,9 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 
 **A. 結論**
 
-クラスターを組めて、EFS にも公式に置ける。Prometheus の remote write と問い合わせの API をそのまま受けるので、書く側（Spark）と読む側（Grafana、エージェント）は送り先の URL を替えるだけで済む見込み。OSS 版（005）はこれに替える（2026-10-04 のユーザーの決定）。
+クラスターを組めて、EFS にも公式に置ける。Prometheus の remote write と問い合わせの API をそのまま受けるので、書く側（Spark）と読む側（Grafana、エージェント）は送り先の URL を替え、署名（SigV4）を外すだけで済んだ。OSS 版（005）はこれに替える（2026-10-04 のユーザーの決定）。
 
-2026-10-04 に公式ドキュメントと Docker Hub で確かめた。AWS では動かしていない。
+2026-10-04 に公式ドキュメントと Docker Hub で確かめた。手元のコンテナでは、Spark から vminsert に書けて、vmstorage を 1 台止めても全部読めた。AWS では動かしていない。
 
 **構成**
 
@@ -1783,6 +1789,12 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 | ライセンス | Apache 2.0 | Apache 2.0（vmstorage の自動発見などは有償版だけ） |
 
 イメージは `victoriametrics/vminsert`、`vmselect`、`vmstorage` の `v1.153.0-cluster`（2026-09-28、arm64 あり）。
+
+**起動の順に気をつける（手元のコンテナで分かったこと）**
+
+- vminsert が vmstorage の 3 台につなぐ前に書いた行は、1 台にしか入らない。その台を止めると、欠けたことを示さずに値が抜ける。
+- だから vmstorage が上がってから vminsert を起動する。OSS 版は、vminsert のタスクに「3 台が受けるまで待つ」コンテナを付けている。
+- つないだあとに書いたデータは、1 台止めても全部読めた。
 
 **未確認**
 
@@ -1854,7 +1866,7 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 | OSS | クラスター | EFS |
 |---|---|---|
 | Kafka | 組める（KRaft） | 記述が見つからない |
-| OpenSearch | 組める | 記述が見つからない |
+| OpenSearch | 組める | ネットワークファイルシステムは避けるよう書いている |
 | VictoriaMetrics | 組める | 置けると明記 |
 | Prometheus | 組めない | 非対応と明記 |
 | Neo4j（Community） | 組めない（クラスターは Enterprise だけ） | NFS は非対応と明記 |
@@ -1887,10 +1899,12 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 
 **まとめ役だけの台を置くメリット**
 
-- データを持たないので、メモリもディスクも小さくて済む。EFS も要らない。
+- データを持たないので、メモリもディスクも小さくて済む。
 - まとめ役の仕事（台の監視、index の管理）が、検索や書き込みの負荷に巻き込まれない。PoC のデータ量では、ほとんど効かない。
 
-確認元は AWS の OpenSearch Service のドキュメント（[Dedicated master nodes](https://docs.aws.amazon.com/opensearch-service/latest/developerguide/managedomains-dedicatedmasternodes.html)）。「2 台は実質 1 台」を OpenSearch 本体のドキュメントでは確かめていない（未確認）。手元のコンテナで 1 台ずつ止めて確かめる。Kafka の controller を 3 台にしたのと同じ理屈。
+確認元は AWS の OpenSearch Service のドキュメント（[Dedicated master nodes](https://docs.aws.amazon.com/opensearch-service/latest/developerguide/managedomains-dedicatedmasternodes.html)）。「2 台は実質 1 台」を OpenSearch 本体のドキュメントでは確かめていない（未確認）。「データ 2 台 + まとめ役 1 台」は、手元のコンテナで 3 台のどれを止めても検索できた（Fargate では未確認）。Kafka の controller を 3 台にしたのと同じ理屈。
+
+データは 3 台ともタスクの一時領域に置く（公式の文書がネットワークファイルシステムを避けるよう書いているため）。1 台が入れ替わったときは、もう 1 台のレプリカから戻る。データの 2 台が同時に落ちると消える。
 
 ### Q. VictoriaLogs は、OpenSearch の代わりになる？
 
@@ -1994,7 +2008,7 @@ Community Edition にクラスターが無いことは、2026-10-04 に Neo4j �
 |---|---|---|
 | コントローラーの台数 | 3 台か 5 台を選ぶ。過半数が生きている必要がある。3 台なら 1 台の故障に耐える | 3 台 |
 | 役の持たせ方 | `process.roles` に `broker`、`controller`、または両方を書く。両方を持つ combined は小さい環境向けで、重要な環境には勧めない | combined で 3 台（台数と費用を抑える）。本番では分けると docs に書く |
-| お互いの見つけ方 | `controller.quorum.bootstrap.servers` に全コントローラーを並べる。`controller.quorum.voters` は古い書き方 | ECS の Service Connect か Cloud Map の名前を並べる |
+| お互いの見つけ方 | `controller.quorum.bootstrap.servers`（動的な voter）に全コントローラーを並べる。`controller.quorum.voters`（固定の voter）は古い書き方 | 固定の `controller.quorum.voters` に Cloud Map の名前を並べる。公式イメージ `apache/kafka` が動的な voter に必要な初期化をしないので、動的では組めなかった |
 | メタデータの置き場 | メモリ 5GB、ディスク 5GB で普通は足りる | EFS に置く |
 
 **背景**
@@ -2003,10 +2017,15 @@ Community Edition にクラスターが無いことは、2026-10-04 に Neo4j �
 - コントローラーがその管理情報を持つ。多数決で動くので奇数台にする。
 - トピックの複製数を 3 にすれば、ブローカー 1 台が止まってもデータは読める。
 
+**手元のコンテナで確かめたこと**
+
+- 固定の voter で 3 台が組めた。
+- 1 台止めても、書いた 1000 件を全部読めて、書けた。
+
 **まだ確かめていないこと**
 
 - Kafka のデータを EFS（NFS）に置いてよいかは、公式ドキュメントに記述が見つからない。
-- combined の 3 台を ECS の Fargate で 1 台ずつ入れ替えたときに、過半数が保たれるかは AWS で未確認。
+- combined の 3 台を ECS の Fargate で 1 台ずつ入れ替えたときに、過半数が保たれるかは AWS で未確認。いまの terraform は、タスク定義が変わると 3 台を同時に入れ替える（データは EFS に残る）。
 
 **出典**
 
@@ -2016,7 +2035,7 @@ Community Edition にクラスターが無いことは、2026-10-04 に Neo4j �
 
 **A. 結論**
 
-GDS を第一の案にする。AWS 版と同じ「DB の中で `CALL`」の形で比べられるから。GDS が Neo4j Community Edition の上で動かなければ NetworkX にする。
+GDS でやる。AWS 版と同じ「DB の中で `CALL`」の形で比べられるから。GDS が Neo4j Community Edition の上で動くことは、手元のコンテナで確かめた（中心性は定義どおりの値と一致、島の数は 1）。
 
 **前提が変わった（2026-10-04 のユーザーの決定）**
 
@@ -2024,7 +2043,11 @@ GDS を第一の案にする。AWS 版と同じ「DB の中で `CALL`」の形�
 - それ以外の道具は、商用で使えるライセンスなら OSS でなくてよい。
 - だから「GDS のプラグインに公開されていないソースがある」ことは、もう選ばない理由にならない。
 
-GDS を商用で使ってよいかは、配布物のライセンスの本文をまだ読めていない（未確認）。公式に書いてあるのは「ライセンスのファイルが無ければ Community Edition として動く」まで。本番で使う前に確かめる。ソースから作る OpenGDS は GPLv3 なので商用で使える。
+**GDS のライセンス（法的な助言ではない）**
+
+- Neo4j が配る GDS の jar は GPLv3（jar の中の `NOTICE.txt` と `LICENSE.txt` で確かめた）。https://neo4j.com/licensing/ も Community Edition を GPL v3 としている。
+- GPLv3 は、商用利用そのものを制限しない。義務が生じるのは、イメージを第三者に配るとき。
+- 自社の ECS と private の ECR で動かすだけなら配布に当たらない、という読み。本番で使う前に、法務か契約の担当に確かめる。
 
 **背景**
 
@@ -2042,26 +2065,30 @@ AWS 版は、エージェントのツール `centrality`（`agent/graph.py` の 
 |---|---|---|
 | 何か | Python のグラフ計算ライブラリ | Neo4j のプラグイン。Cypher の `CALL gds.*` で呼ぶ |
 | 計算する場所 | エージェントの Python の中。Neo4j から機器と回線を読み出して計算する | Neo4j の中。グラフをメモリに写して（projection）計算する |
-| ライセンス | BSD（3 条項） | ソースの OpenGDS は GPLv3。Neo4j が配るプラグインは、公開されていないソースを含み、別の条件で配られている |
-| 入れ方 | Python の依存に `networkx` を足す | Neo4j のコンテナに `NEO4J_PLUGINS='["graph-data-science"]'` を渡す |
-| 制限 | 1 プロセスのメモリに載る大きさまで | Community Edition は CPU 4 コアまで、モデルは 3 つまで。ライセンスのファイルが無ければ Community Edition として動く |
+| ライセンス | BSD（3 条項） | GPLv3（Neo4j が配る jar の中の `NOTICE.txt` と `LICENSE.txt`） |
+| 入れ方 | Python の依存に `networkx` を足す | 公式イメージの `products/` に入っている jar を `plugins/` に写してイメージを作る（`neo4j/Dockerfile`）。`NEO4J_PLUGINS` は起動時にダウンロードするので、閉域では使えない |
+| 制限 | 1 プロセスのメモリに載る大きさまで | Community 版の GDS は並列 4 コアまで、モデルは 3 つまで。ライセンスのファイルが無ければ Community 版として動く |
 
 **メリットとデメリット**
 
 | | メリット | デメリット |
 |---|---|---|
 | NetworkX | 全部 OSS と言い切れる。Neo4j に足すものが無く、メモリも増えない。グラフ DB を替えても同じコードが動く。ローカルのテストで実物を回せる | グラフを全部読み出すので、機器が何万台にもなると遅い。AWS 版（DB の中で計算）と形が変わる |
-| GDS | AWS 版と同じ「DB の中で `CALL`」の形で、比べやすい。大きいグラフでも速い。アルゴリズムが多い | プラグインに公開されていない部分がある。Neo4j のメモリを余分に使う。計算の前にグラフをメモリに写す手順が要る。版を Neo4j と揃え続ける必要がある（Neo4j 2026.09.0 には GDS 2026.09） |
+| GDS | AWS 版と同じ「DB の中で `CALL`」の形で、比べやすい。大きいグラフでも速い。アルゴリズムが多い | GPLv3 なので、イメージを社外に配るなら義務が生じる。Neo4j のメモリを余分に使う。計算の前にグラフをメモリに写す手順が要る。版を Neo4j と揃え続ける必要がある（Neo4j 2026.09.0 には GDS 2026.09） |
 
 **選び方**
 
 - 機器が数台〜数千台で、使うのが次数、近接、連結成分くらいなら NetworkX。
 - 何十万の頂点で、経路探索やコミュニティ検出まで使うなら GDS。
 
+**手元のコンテナで確かめたこと**
+
+- GDS は Neo4j Community Edition の上で動いた。
+- `gds.degree`、`gds.closeness`、`gds.wcc` の結果は、定義どおりの値と一致した。島の数は 1。
+
 **まだ確かめていないこと**
 
-- GDS に近接中心性と弱連結成分があること（`gds.closeness`、`gds.wcc`）は記憶によるもので、今回は公式ページを開いていない。
-- GDS のプラグインが Neo4j Community Edition の上で動くことは、Docker の手順が Community の image を前提にしていることからの推定。実際には動かしていない。
+- GDS の結果が、Neptune の `neptune.algo.*` と同じ並びになるか（AWS で同じトポロジを入れて比べる）。
 
 **出典**（2026-10-04 に確認）
 
