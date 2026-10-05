@@ -22,6 +22,9 @@ def read(*p):
     with open(os.path.join(ROOT, *p), encoding="utf-8") as f:
         return f.read()
 
+def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の oss/ops/ と共通）とつないで見る
+    return read("ops", "common.sh") + read("ops", f"{name}-common.sh") + read("ops", f"{name}.sh")
+
 # CloudFormation の短縮形（!Sub / !Ref / !If ...）を {"Fn::Sub": ...} の形で読む
 class CfnLoader(yaml.SafeLoader):
     pass
@@ -46,8 +49,8 @@ tftpl = read("terraform", "pipeline", "lab", "templates", "lab_user_data.sh.tftp
 setup = read("lab", "setup.sh")
 lab_sh = read("lab", "lab.sh")
 tg_sh = read("telegraf", "telegraf.sh")
-up = read("ops", "up.sh")
-down = read("ops", "down.sh")
+up = read_ops("up")
+down = read_ops("down")
 dbg = read("ops", "lab-debug.sh")
 
 def tf_default(name):
@@ -407,7 +410,8 @@ check("cfn_stack_status は「無い」（空・0）と「読めない」（認�
 check("スタック名は <接頭辞>-lab-debug で、ロールとインスタンスプロファイルは lab の EC2（<接頭辞>-lab）と別の名前",
       'STACK="$PREFIX-lab-debug"' in dbg and role["RoleName"] == {"Fn::Sub": "${NamePrefix}-lab-debug"}
       and res["InstanceProfile"]["Properties"]["InstanceProfileName"] == {"Fn::Sub": "${NamePrefix}-lab-debug"})
-for f in (("ops", "lab-common.sh"), ("ops", "lab-debug.sh"), ("ops", "up.sh"), ("ops", "down.sh"), ("lab", "setup.sh"), ("lab", "lab.sh"), ("telegraf", "telegraf.sh")):
+for f in (("ops", "lab-common.sh"), ("ops", "lab-debug.sh"), ("ops", "up.sh"), ("ops", "down.sh"),
+          ("ops", "common.sh"), ("ops", "up-common.sh"), ("ops", "down-common.sh"), ("lab", "setup.sh"), ("lab", "lab.sh"), ("telegraf", "telegraf.sh")):
     r = subprocess.run(["bash", "-n", os.path.join(ROOT, *f)], capture_output=True, text=True)
     check(f"{'/'.join(f)} は bash として読める", r.returncode == 0)
 

@@ -66,6 +66,9 @@ check("空のマイクロバッチでは sender を呼ばない（検知の見�
 def _read(*parts):
     with open(os.path.join(ROOT, *parts), encoding="utf-8") as f:
         return f.read()
+
+def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の oss/ops/ と共通）とつないで見る
+    return _read("ops", "common.sh") + _read("ops", f"{name}-common.sh") + _read("ops", f"{name}.sh")
 srl_dir = os.path.join(ROOT, "lab", "srlinux")
 srl_nodes = sorted(n[:-4] for n in os.listdir(srl_dir) if n.endswith(".cli"))
 srl_cfg = {n: _read("lab", "srlinux", n + ".cli") for n in srl_nodes}
@@ -187,7 +190,7 @@ check("MDT は collector タグで mdt トピックへだけ（measurement の�
       and tele.count('topic = "mdt"') == 1)
 check("lab.sh forward は gNMI の GNMI_PORT/tcp も SNMP の 161/udp と同じく Telegraf から管理ネットワークへ通す",
       re.search(r'-p tcp --dport "\$GNMI_PORT" "\$\{c\[@\]\}" -j ACCEPT', labsh) is not None and re.search(r"^GNMI_PORT=57400$", labsh, re.M) is not None)
-_up = _read("ops", "up.sh")
+_up = read_ops("up")
 check("syslog の形式は stream の syslog_standard（既定 RFC3164 = 本番の Cisco）→ タスクの SYSLOG_STANDARD → telegraf.conf.in の __SYSLOG_STANDARD__。up.sh も deploy.env の SYSLOG_STANDARD（既定 RFC3164。lab の SR Linux は RFC5424）を渡す",
       re.search(r'^\s*syslog_standard = "__SYSLOG_STANDARD__"$', tele, re.M) is not None and 's#__SYSLOG_STANDARD__#$SYSLOG_STANDARD#' in tgsh
       and '{ name = "SYSLOG_STANDARD", value = var.syslog_standard }' in stream_tg
@@ -367,7 +370,7 @@ kui =_read("terraform", "pipeline", "stream", "kafka_ui.tf")
 kui_code = "\n".join(l for l in kui.splitlines() if not l.lstrip().startswith("#"))   # コメントを除いた中身
 stream_vars = _read("terraform", "pipeline", "stream", "variables.tf")
 stream_out = _read("terraform", "pipeline", "stream", "outputs.tf")
-up = _read("ops", "up.sh")
+up = read_ops("up")
 denv = _read("ops", "deploy-env.sh")
 ecr_tf = _read("terraform", "base", "ecr", "main.tf")
 check("Kafbat UI の資源 12 個は stream の root にいつもある（切り替える変数は無い。2026-10-05 のユーザー決定。count は閉域の Deny の 2 つが perimeter の有無で使うだけ）",
@@ -469,7 +472,7 @@ check("stream を作る回はいつも作る: イメージを ECR に写し、�
       and '-var "kafka_ui_image_tag=$KAFKA_UI_TAG"' in up[up.index("  tf_apply pipeline/stream "):].split("\n", 1)[0]
       and _in_stream_block('  echo "Kafbat UI（http://localhost:8082/'))
 check("ops/down.sh は Kafbat UI のパスワード（ManagedBy=ops/up.sh のタグ）も消す。stream の destroy に Kafbat UI の変数は要らない",
-      "Tags" in up[up.index("ensure_secret() {"):up.index("ensure_secret() {") + 2500] and "Key=tag:ManagedBy,Values=ops/up.sh" in _read("ops", "down.sh")
-      and "kafka_ui" not in _read("ops", "down.sh"))
+      "Tags" in up[up.index("ensure_secret() {"):up.index("ensure_secret() {") + 2500] and "Key=tag:ManagedBy,Values=$OPS_DIR/up.sh" in read_ops("down") and 'OPS_DIR="${OPS_DIR:-ops}"' in _read("ops", "common.sh")
+      and "kafka_ui" not in read_ops("down"))
 
 print(f"通過 {passed} / 失敗 0")

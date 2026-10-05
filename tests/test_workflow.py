@@ -19,6 +19,9 @@ def read(*parts):
     with open(os.path.join(ROOT, *parts), encoding="utf-8") as f:
         return f.read()
 
+def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の oss/ops/ と共通）とつないで見る
+    return read("ops", "common.sh") + read("ops", f"{name}-common.sh") + read("ops", f"{name}.sh")
+
 # ---- 差し替え: boto3 / botocore（呼ばれた内容を記録する）
 calls = []
 class ClientError(Exception):
@@ -695,7 +698,8 @@ check(f"Web に上げる agent のモジュール（{' '.join(sorted(uploaded))}
       _wr.returncode == 0 and "RESULT [] [] True" in _wr.stdout)
 
 # ---- ops
-up = read("ops", "up.sh"); down = read("ops", "down.sh"); chk = read("ops", "check.sh")
+up = read_ops("up"); down = read_ops("down"); chk = read("ops", "check.sh")
+_down_body = read("ops", "down.sh")
 check("up.sh の WORKFLOW=1 は AGENT と PIPELINE が要り、SKIP_LAB / SKIP_STREAM / SKIP_ANALYTICS があれば止まる",
       re.search(r'if \[ -n "\$WORKFLOW" \]; then\n\s*if \[ -z "\$AGENT" \]; then[\s\S]*?if \[ -z "\$PIPELINE" \]; then[\s\S]*?SKIP_LAB[\s\S]*?SKIP_STREAM[\s\S]*?SKIP_ANALYTICS', up) is not None)
 # AGENT の既定は 2026-10-04 に 1 → 0（機能を書かなければ土台だけ）。機能の判定を up.sh から切り出して動かす
@@ -763,7 +767,7 @@ check("down.sh は VPC の Lambda を持つルート（workflow / graph）を消
 _envsh = read("ops", "deploy-env.sh")
 check("terraform の出力は tf_logged で絞り、全文を ops/logs に残す。TF_VERBOSE=1 で全部出す。up.sh と down.sh の両方が通す",
       "tf_logged()" in _envsh and 'tee "$logf"' in _envsh and 'if [ -n "$TF_VERBOSE" ]' in _envsh
-      and 'tf_logged "$root" apply' in read("ops", "up.sh") and 'tf_logged "$root" destroy' in down
+      and 'tf_logged "$root" apply' in up and 'tf_logged "$root" destroy' in down
       and re.search(r"^set -e?uo pipefail", down, re.M) is not None)
 # TF_VERBOSE=1 のときログを残さないと、down.sh が DependencyViolation と掴んでいる SG を読めず打ち直しが効かない
 check("tf_logged は TF_VERBOSE=1 の枝でも全文を ops/logs に残す", _envsh[_envsh.index("tf_logged() {"):].count('tee "$logf"') == 2)
@@ -780,7 +784,7 @@ def _tfv(text, **env):
     return r.stdout.strip()
 check("up.sh と down.sh は deploy.env を読んだ直後に TF_VERBOSE を 1 / 空にそろえる。0 / false / no と書かないときは絞り、1 / true / yes で全部出す。それ以外は止まる",
       all(sh.count("\nflag_value TF_VERBOSE\n") == 1 and sh.index("\nresolve_name_prefix  #") < sh.index("\nflag_value TF_VERBOSE\n") < sh.index('\nlog "1. ')
-          for sh in (read("ops", "up.sh"), down))
+          for sh in (up, down))
       and [_tfv(f"OWNER=a\nTF_VERBOSE={v}\n") for v in ("0", "false", "no", "", "1", "true", "yes")] == ["絞る"] * 4 + ["全部"] * 3
       and _tfv("OWNER=a\n") == "絞る" and _tfv("OWNER=a\nTF_VERBOSE=1\n", TF_VERBOSE="0") == "絞る"
       and _tfv("OWNER=a\nTF_VERBOSE=2\n") == "DIE: TF_VERBOSE は 1 か 0（いまは「2」）")
@@ -847,8 +851,10 @@ check("SG の ID を読む 6 ルートは try で読み（古い state のまま
           for s in _sg_locals.values())
       and not any("security_group_ids[" in read("terraform", *r.split("/"), f) for r in _sg_roots
                   for f in os.listdir(os.path.join(ROOT, "terraform", *r.split("/"))) if f.endswith(".tf") and f not in _sg_files[r]))
-check("down.sh は agent を lab の後、main の前に消し、ロググループ名を agent の state から読む",
-      down.index("destroy_root pipeline/lab") < down.index('destroy_lambda_root agent "$PREFIX-kb-index"') < down.index("destroy_root base/core") and "tf agent output -raw runtime_log_group_name" in down)
+_destroy_agent = re.search(r"\ndestroy_agent\(\) \{[\s\S]*?\n\}", down).group(0)
+check("down.sh は agent を lab の後、main の前に消し（ops/down-common.sh の destroy_agent）、ロググループ名を agent の state から読む",
+      _down_body.index("\ndestroy_root pipeline/lab\n") < _down_body.index("\ndestroy_agent\n") < _down_body.index("\ndestroy_base_core\n")
+      and 'destroy_lambda_root agent "$PREFIX-kb-index"' in _destroy_agent and "tf agent output -raw runtime_log_group_name" in _destroy_agent)
 check("up.sh は main の後に agent を apply し、CREATE_KB のときだけ手順書を取り込む",
       up.index("tf_apply base/core") < up.index('tf_apply agent "${AGENT_VARS[@]}"') < up.index("start-ingestion-job")
       and re.search(r'if \[ -n "\$CREATE_KB" \]; then\nlog "4-3\. 手順書を置いて取り込む', up) is not None and 'AGENT_VARS+=(-var create_knowledge_base=true)' in up)

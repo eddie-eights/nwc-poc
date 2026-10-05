@@ -8,7 +8,7 @@
 # 閉域で Maven に届かないので、起動時に jar を取りに行かない）。OSS 版の ops/up.sh が作って ECR の <接頭辞>-spark に push する。
 # checkpoint はマネージド版と同じバケットの analytics/checkpoint/ に S3A（s3a://）で書く（EMR の s3:// は EMRFS で、素の Spark には無い）。
 # Kafka は PLAINTEXT（KAFKA_AUTH=none）、OpenSearch は Basic 認証（OPENSEARCH_AUTH=basic）、vminsert は署名なし（PROMETHEUS_AUTH=none）。
-# OpenSearch と VictoriaMetrics のタスクは別の作業で、ここでは Cloud Map の名前（opensearch / vminsert）だけを使う。
+# 宛先とパスワードは opensearch.tf・victoriametrics.tf の locals をそのまま使う（同じ値を別の名前で持たない）。
 # Splunk はマネージド版と同じ（リンクした splunk.tf のタスク）で、送り方もマネージド版の splunk の格納先と同じ（HEC に自己署名の TLS で POST）。
 # 違うのは HEC の token の受け取り方だけで、EMR のジョブが起動時に SSM から読む代わりに、Splunk のタスクと同じく
 # ECS の secrets で SSM の SecureString を SPLUNK_HEC_TOKEN として受ける（値は Terraform も state もタスク定義も持たない）。
@@ -58,20 +58,13 @@ locals {
   # OSS 版の Kafka のデータは terraform/base/core の EFS にあるので、EFS が作り直されたら checkpoint も新しくする
   spark_checkpoint_uri = "s3a://${local.bucket}/${local.checkpoint}/${try(data.terraform_remote_state.main.outputs.efs_file_system_id, "none")}/"
 
-  # 宛先は Cloud Map の名前（ecs.tf の名前空間 <接頭辞>.internal。タスクは別の作業の OpenSearch と VictoriaMetrics）。
-  # OpenSearch の REST は TLS なしの HTTP（opensearch.tf。snmp_sinks.py に自己署名の証明書を飛ばす設定が無いため）
-  spark_opensearch_endpoint = "http://opensearch.${local.service_namespace}:9200"
-  spark_remote_write_url    = "http://vminsert.${local.service_namespace}:8480/insert/0/prometheus/api/v1/write"
-
-  # OpenSearch の admin のパスワード（SecureString。OSS 版の ops/up.sh が作る。agent/evidence.py が読む <PARAM_PREFIX>/opensearch-password と同じ）。
-  # opensearch.tf の opensearch_password_parameter と同じ値で、マージしてもぶつからないよう名前に spark_ を付ける
-  spark_opensearch_password_parameter = "/${local.name_prefix}/opensearch-password"
-  spark_opensearch_password_arn       = "${local.ssm_parameter_arn}${local.spark_opensearch_password_parameter}"
-
+  # 宛先（local.opensearch_endpoint・local.prometheus_remote_write_url）は opensearch.tf と victoriametrics.tf が Cloud Map の名前で持つ
+  # （マネージド版の locals.tf と同じ名前）。OpenSearch の REST は TLS なしの HTTP（snmp_sinks.py に自己署名の証明書を飛ばす設定が無いため）。
   # 格納先ごとに ECS の secrets で受ける SSM の SecureString（名前は spark/snmp_sinks.py が読む環境変数）。
+  # OPENSEARCH_PASSWORD は OpenSearch のタスクが admin のパスワードにするのと同じパラメータ（opensearch.tf の opensearch_password_arn）、
   # SPLUNK_HEC_TOKEN は splunk.tf の Splunk のタスクが HEC の token を作るのと同じパラメータ（network.tf の splunk_token_parameter_arn）
   spark_secrets = {
-    opensearch = { name = "OPENSEARCH_PASSWORD", valueFrom = local.spark_opensearch_password_arn }
+    opensearch = { name = "OPENSEARCH_PASSWORD", valueFrom = local.opensearch_password_arn }
     splunk     = { name = "SPLUNK_HEC_TOKEN", valueFrom = local.splunk_token_parameter_arn }
   }
 
@@ -98,8 +91,8 @@ locals {
     [for a in ["--max-offsets-per-trigger-by-sink", local.max_offsets_by_job[job]] : a if local.max_offsets_by_job[job] != ""],
     [for a in ["--http-send", var.http_send] : a if var.http_send != "driver" && job != "iceberg"],
     [for a in ["--iceberg-table", local.iceberg_table] : a if contains(sinks, "iceberg")],
-    [for a in ["--opensearch-endpoint", local.spark_opensearch_endpoint, "--opensearch-index", local.opensearch_index] : a if contains(sinks, "opensearch")],
-    [for a in ["--prometheus-url", local.spark_remote_write_url] : a if contains(sinks, "prometheus")],
+    [for a in ["--opensearch-endpoint", local.opensearch_endpoint, "--opensearch-index", local.opensearch_index] : a if contains(sinks, "opensearch")],
+    [for a in ["--prometheus-url", local.prometheus_remote_write_url] : a if contains(sinks, "prometheus")],
     [for a in ["--splunk-hec-url", local.splunk_hec_url, "--splunk-index", var.splunk_index] : a if contains(sinks, "splunk")],
     [for a in ["--splunk-skip-verify"] : a if contains(sinks, "splunk") && local.splunk_skip_tls_verify],
     [for a in ["--device-map", var.device_map] : a if var.device_map != "" && (contains(sinks, "prometheus") || contains(sinks, "opensearch"))],
@@ -334,11 +327,6 @@ output "spark_checkpoint_uri" {
 output "spark_log_group_name" {
   description = "CloudWatch Logs group of the Spark tasks (stream prefix spark-<job>)"
   value       = aws_cloudwatch_log_group.spark.name
-}
-
-output "spark_opensearch_password_parameter" {
-  description = "SSM SecureString holding the OpenSearch admin password the http job sends with (the OSS ops/up.sh creates it; the same one agent/evidence.py reads)"
-  value       = local.spark_opensearch_password_parameter
 }
 
 output "spark_list_tasks_commands" {

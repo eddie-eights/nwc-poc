@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------- 土台と stream の state、共有の locals
 # マネージド版の locals.tf と同じ名前の locals を、OSS 版で作れるものだけ持つ（マネージド版の locals.tf は MSK・EMR・
-# OpenSearch Serverless・AMP を引くのでリンクできない）。リンクしている tables.tf・history.tf・ecs.tf・splunk.tf はここの locals を読む。
-# Spark は spark.tf。VictoriaMetrics と OpenSearch の ECS は別の作業で、同じ locals を使う。
+# OpenSearch Serverless・AMP を引くのでリンクできない）。リンクしている tables.tf・history.tf・ecs.tf・splunk.tf と、
+# spark.tf・opensearch.tf・victoriametrics.tf はここの locals を読む（OpenSearch と VictoriaMetrics の宛先とパスワードの locals はその .tf が持つ）。
 # Splunk は OSS 版でも変えない（設計 005）ので、マネージド版の splunk.tf をそのままリンクし、splunk の locals もマネージド版と同じ値にする
 
 data "aws_caller_identity" "current" {}
@@ -32,7 +32,8 @@ data "terraform_remote_state" "stream" {
   }
 }
 
-# Spark のイメージ（spark/Dockerfile。OSS 版の ops/up.sh が作って <接頭辞>-spark に push する）は oss/terraform/base/ecr
+# Spark（spark/Dockerfile。OSS 版の ops/up.sh が作って <接頭辞>-spark に push する）と OpenSearch・VictoriaMetrics（OSS 版の ops/up.sh が
+# ECR に写す）のイメージは oss/terraform/base/ecr
 data "terraform_remote_state" "ecr" {
   backend = "local"
 

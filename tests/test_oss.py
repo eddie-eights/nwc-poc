@@ -9,6 +9,9 @@
      土台の OSS の SG と EFS はマネージド版では作らない
   5. OSS 版の Kafka（設計の 4）: stream は msk.tf だけを kafka.tf（ECS on Fargate の KRaft 3 台、EFS、Cloud Map の名前）に替え、
      共有のファイルは Kafka の差し替え口の locals だけを読む。Telegraf は KAFKA_AUTH=none で IAM の行を消す（描画は tests/test_lab_debug.py）
+  6. OSS 版の OpenSearch と VictoriaMetrics（設計の 5）: analytics の opensearch.tf（データ 2 台 + まとめ役 1 台、インデックスはタスクの
+     エフェメラルストレージ）と victoriametrics.tf（vminsert 1・vmselect 1・vmstorage 3、複製数 2、vminsert は vmstorage 3 台を待つ）。
+     Spark・Grafana・evidence の接続先と terraform/workflow が読む output が、Cloud Map の名前・コンテナのポート・土台の SG の行と合う
 実行は python3 tests/test_oss.py。graph.py のクエリを意図して変えたときだけ --write-golden で golden を作り直す
 （作り直すと 1. はその時点のコードを正とする。差分は git diff tests/golden で見る）。"""
 import base64, copy, importlib.util, io, json, os, re, subprocess, sys, tempfile, types, urllib.request
@@ -796,7 +799,263 @@ check("OSS 版の差し替え口: 認証なし（Telegraf に KAFKA_AUTH=none、
 check("kafka.tf は接頭辞を作らず（locals.tf の local.name_prefix を使う）、MSK の変数（kafka_version など）も読まない",
       not re.search(r"^\s*name_prefix\s*=", _k, re.M) and "var.kafka_version" not in _k and "var.msk_" not in _k)
 
-# ---- 6. OSS 版の Spark と Neo4j（005 の 2）。analytics は EMR Serverless を spark.tf の ECS に、graph は Neptune Analytics を neo4j.tf の ECS に替える
+# ---- 6. OSS 版の OpenSearch と VictoriaMetrics（設計の 5）。analytics の opensearch.tf・victoriametrics.tf と、Spark・Grafana・evidence の接続先
+_AN = "pipeline/analytics"
+_an_files = git_files(f"oss/terraform/{_AN}")
+_an_real = {n for n in _an_files if not os.path.islink(os.path.join(ROOT, "oss", "terraform", *_AN.split("/"), n))}
+_m_an, _o_an = tf_text("terraform", _AN), tf_text("oss/terraform", _AN)
+_os_tf, _vm_tf = _code(_o_an["opensearch.tf"]), _code(_o_an["victoriametrics.tf"])
+_an_code = "\n".join(_code(s) for s in _o_an.values())
+check("OSS 版の analytics は opensearch.tf・victoriametrics.tf・network.tf が実ファイル（マネージド版の network.tf はコメントだけ）で、"
+      "ecs.tf（ECS のクラスタと Cloud Map の名前空間）はマネージド版へのリンク",
+      {"opensearch.tf", "victoriametrics.tf", "network.tf"} <= _an_real and "ecs.tf" in _an_files and not links_to_managed(_AN, ["ecs.tf"])
+      and not {"opensearch.tf", "victoriametrics.tf"} & set(_m_an) and not _code(_m_an["network.tf"]).strip()
+      and re.search(r"^\s+name\s+= local\.service_namespace$", _m_an["ecs.tf"], re.M) is not None)
+
+
+def _tf_locals(s):
+    """locals { ... } の直下（2 字下げ）に 1 行で書いた定義 {名前: 式}（行末のコメントは外す。複数行の式は最初の行だけ）"""
+    return {k: re.sub(r"\s+#.*$", "", v).strip() for blk in re.findall(r"^locals \{\n(.*?)^\}\n", s, re.M | re.S)
+            for k, v in re.findall(r"^  (\w+)\s*=\s*(.+)$", blk, re.M)}
+
+
+def _block(s, kind, name):
+    """resource / data / output の 1 つのブロックの中身（閉じるのは行頭の }）"""
+    m = re.search(rf'^{kind} "{name}" \{{\n(.*?)^\}}\n' if kind == "output" else rf'^{kind} "{name.split(".")[0]}" "{name.split(".")[1]}" \{{\n(.*?)^\}}\n',
+                  s, re.M | re.S)
+    return m.group(1) if m else ""
+
+
+def _squeeze(s):
+    """空行（コメントを外した跡を含む）を詰める"""
+    return re.sub(r"\n\s*\n+", "\n", s).strip()
+
+
+_net =_tf_locals(_code(_o_an["network.tf"]))
+_m_loc = _tf_locals(_code(_m_an["locals.tf"]))
+_net_diff = {k: (v, _m_loc[k]) for k, v in _net.items() if k in _m_loc and v != _m_loc[k] and k != "create_ecs"}
+check(f"network.tf の locals はマネージド版の locals.tf と同じ名前・同じ値（違うのは create_ecs = true だけ。違う: {_net_diff}）で、"
+      "接頭辞は作らない。remote_state の main / ecr もマネージド版と同じ state を読む",
+      not _net_diff and _net["create_ecs"] == "true" and set(_net) - set(_m_loc) == {"ssm_parameter_arn"} and "name_prefix" not in _net
+      and _net["ssm_parameter_arn"][:-1] + '${local.splunk_token_parameter}"' == _m_loc["splunk_token_parameter_arn"]
+      and all(_squeeze(_block(_code(_o_an["network.tf"]), "data", f"terraform_remote_state.{d}"))
+              == _squeeze(_block(_code(_m_an["locals.tf"]), "data", f"terraform_remote_state.{d}")) != "" for d in ("main", "ecr")))
+
+# OpenSearch
+_os_nodes = re.findall(r'^\s+"(\w+)"\s+= \{ subnet = try\(local\.subnet_ids\[(\d)\], ""\), data = (true|false) \}$',
+                       re.search(r"opensearch_nodes = \{\n(.*?)\n  \}", _os_tf, re.S).group(1), re.M)
+_os_env = dict(re.findall(r'\{ name = "([\w.]+)", value = "([^"]*)" \}', _os_tf))
+_os_td, _os_svc = _block(_os_tf, "resource", "aws_ecs_task_definition.opensearch"), _block(_os_tf, "resource", "aws_ecs_service.opensearch")
+check("OpenSearch は 3 台（データ 1・2 とまとめ役 cm）で台ごとに ECS のサービスとタスク定義、台 N はサブネットの N 番目。最初の投票の顔ぶれは 3 台の node.name と同じ",
+      _os_nodes == [("1", "0", "true"), ("2", "1", "true"), ("cm", "2", "false")]
+      and _os_td.startswith("  for_each = local.sink_opensearch ? local.opensearch_nodes : {}\n")
+      and _os_svc.startswith("  for_each = local.sink_opensearch ? local.opensearch_nodes : {}\n")
+      and "subnets          = [each.value.subnet]" in _os_svc and "desired_count   = 1" in _os_svc
+      and '{ name = "node.name", value = "opensearch-${each.key}" }' in _os_td
+      and _os_env["cluster.initial_cluster_manager_nodes"].split(",") == [f"opensearch-{n}" for n, _, _ in _os_nodes])
+check("まとめ役だけ node.roles = cluster_manager。インデックスはデータの台のエフェメラルストレージで、OpenSearch は EFS を使わない",
+      re.search(r'each\.value\.data \? \[\] : \[\n\s+\{ name = "node\.roles", value = "cluster_manager" \},\n\s+\]\)', _os_td) is not None
+      and "for_each = each.value.data ? [var.opensearch_ephemeral_storage_gib] : []" in _os_td and "size_in_gib = ephemeral_storage.value" in _os_td
+      and not re.search(r"\baws_efs_|efs_volume_configuration|elasticfilesystem|mountPoints", _os_tf))
+check("mmap を使わない（node.store.allow_mmap=false）。vm.max_map_count は変えない（OSS 版の analytics に sysctl も systemControls も無い）",
+      _os_env["node.store.allow_mmap"] == "false" and not re.search(r"max_map_count|sysctl|systemControls", _an_code))
+check("REST（9200）は TLS なしの HTTP、台どうし（9300）の TLS とセキュリティプラグイン（Basic 認証）は切らない",
+      _os_env["plugins.security.ssl.http.enabled"] == "false" and not re.search(r"plugins\.security\.disabled|ssl\.transport\.enabled", _os_tf)
+      and 'portMappings = [{ containerPort = 9200, protocol = "tcp" }, { containerPort = 9300, protocol = "tcp" }]' in _os_td)
+check("Cloud Map はデータ 2 台が入る opensearch と、まとめ役の opensearch-cm（ECS のサービスは Cloud Map のサービスを 1 つしか持てない）。"
+      "seed_hosts はその 2 つの名前で、同じ node.name の台を 2 つ同時に立てない",
+      _block(_os_tf, "resource", "aws_service_discovery_service.opensearch").startswith(
+          '  for_each = local.sink_opensearch ? toset(["opensearch", "opensearch-cm"]) : toset([])\n')
+      and 'registry_arn = aws_service_discovery_service.opensearch[each.value.data ? "opensearch" : "opensearch-cm"].arn' in _os_svc
+      and _os_env["discovery.seed_hosts"] == "${local.opensearch_host},${local.opensearch_cm_host}"
+      and "deployment_minimum_healthy_percent = 0" in _os_svc and "deployment_maximum_percent         = 100" in _os_svc)
+check("admin のパスワードは SSM の SecureString を secrets で受け、実行ロールはその 1 つだけ読める（環境変数に値を書かない）",
+      'secrets = [{ name = "OPENSEARCH_INITIAL_ADMIN_PASSWORD", valueFrom = local.opensearch_password_arn }]' in _os_td
+      and re.search(r'Action\s+= \["ssm:GetParameters"\]\n\s+Resource = local\.opensearch_password_arn\n', _os_tf) is not None
+      and "OPENSEARCH_INITIAL_ADMIN_PASSWORD" not in _os_env)
+
+# VictoriaMetrics
+_vs_td, _vs_svc = _block(_vm_tf, "resource", "aws_ecs_task_definition.vmstorage"), _block(_vm_tf, "resource", "aws_ecs_service.vmstorage")
+_vi_td, _vi_svc = _block(_vm_tf, "resource", "aws_ecs_task_definition.vminsert"), _block(_vm_tf, "resource", "aws_ecs_service.vminsert")
+_vq_td, _vq_svc = _block(_vm_tf, "resource", "aws_ecs_task_definition.vmselect"), _block(_vm_tf, "resource", "aws_ecs_service.vmselect")
+check("VictoriaMetrics は vmstorage 3 台（台ごとに ECS のサービス・タスク定義・EFS のアクセスポイント /vmstorage-N・Cloud Map の vmstorage-N）と vminsert・vmselect 1 台ずつ",
+      'vmstorage_nodes = local.sink_prometheus ? { for i in range(3) : tostring(i + 1) => try(local.subnet_ids[i], "") } : {}' in _vm_tf
+      and all(b.startswith("  for_each = local.vmstorage_nodes\n") for b in (_vs_td, _vs_svc, _block(_vm_tf, "resource", "aws_efs_access_point.vmstorage")))
+      and 'path = "/vmstorage-${each.key}"' in _vm_tf and "access_point_id = aws_efs_access_point.vmstorage[each.key].id" in _vs_td
+      and 'registry_arn = aws_service_discovery_service.victoriametrics["vmstorage-${each.key}"].arn' in _vs_svc
+      and 'vmstorage_hosts = [for i in range(3) : "vmstorage-${i + 1}.${local.service_namespace}"]' in _vm_tf
+      and 'vm_service_names = local.sink_prometheus ? toset(concat(["vminsert", "vmselect"], [for n in range(3) : "vmstorage-${n + 1}"])) : toset([])' in _vm_tf
+      and all(b.startswith("  count = local.sink_prometheus ? 1 : 0\n") and "desired_count   = 1" in b for b in (_vi_svc, _vq_svc))
+      and 'registry_arn = aws_service_discovery_service.victoriametrics["vminsert"].arn' in _vi_svc
+      and 'registry_arn = aws_service_discovery_service.victoriametrics["vmselect"].arn' in _vq_svc)
+check("複製数 2: vminsert は vmstorage 3 台の 8400、vmselect は 8401 につなぎ、どちらも -replicationFactor=2。vmselect は複製の重複を落とす",
+      "vm_replication_factor = 2" in _vm_tf
+      and '"-storageNode=${join(",", [for h in local.vmstorage_hosts : "${h}:8400"])}"' in _vi_td
+      and '"-storageNode=${join(",", [for h in local.vmstorage_hosts : "${h}:8401"])}"' in _vq_td
+      and all('"-replicationFactor=${local.vm_replication_factor}"' in b for b in (_vi_td, _vq_td))
+      and '"-dedup.minScrapeInterval=1ms"' in _vq_td
+      and re.findall(r"containerPort = (\d+)", _vs_td) == ["8400", "8401", "8482"])
+check("vmstorage の置き場は EFS（TLS と IAM の認可）で、タスクロールは vmstorage の 3 つのアクセスポイントからだけマウントできる。同じ台を 2 つ同時に立てない",
+      'transit_encryption = "ENABLED"' in _vs_td and 'iam             = "ENABLED"' in _vs_td
+      and 'mountPoints = [{ sourceVolume = "storage", containerPath = "/storage", readOnly = false }]' in _vs_td
+      and '"-storageDataPath=/storage"' in _vs_td
+      and '"elasticfilesystem:AccessPointArn" = [for ap in aws_efs_access_point.vmstorage : ap.arn]' in _vm_tf
+      and "deployment_minimum_healthy_percent = 0" in _vs_svc and "deployment_maximum_percent         = 100" in _vs_svc)
+check("vminsert のタスクは待ちのコンテナ（essential でない wait-vmstorage）が 0 で終わってから vminsert を起こし（dependsOn の SUCCESS）、サービスも vmstorage の後に作る",
+      re.search(r'name\s+= "wait-vmstorage"\n\s+image\s+= local\.vm_images\["vminsert"\]\n\s+essential\s+= false\n'
+                r'\s+entryPoint = \["/bin/sh", "-c"\]\n\s+command\s+= \[local\.vmstorage_wait_command\]\n', _vi_td) is not None
+      and 'dependsOn    = [{ containerName = "wait-vmstorage", condition = "SUCCESS" }]' in _vi_td
+      and re.search(r"depends_on = \[\n\s+aws_ecs_service\.vmstorage,\n", _vi_svc) is not None)
+
+
+def _wait_command(secs, hosts):
+    """victoriametrics.tf の vmstorage_wait_command を Terraform と同じように 1 行にする（期限の秒と vmstorage の名前を入れる）"""
+    lines = re.search(r'vmstorage_wait_command = join\(" ", \[\n(.*?)\n  \]\)', _vm_tf, re.S).group(1).splitlines()
+    cmd = " ".join(re.fullmatch(r'\s*"(.*)",?', ln).group(1) for ln in lines).replace('\\"', '"')
+    cmd = cmd.replace("${var.vmstorage_wait_seconds}", str(secs)).replace('${join(" ", local.vmstorage_hosts)}', " ".join(hosts))
+    assert "${" not in cmd and "%{" not in cmd, cmd
+    return cmd
+
+
+_NC = """#!/bin/sh
+# 偽物の nc。引数を覚え、NC_MODE で答える（ok: いつも受ける、fail: いつも受けない、flaky: vmstorage-2 だけ 2 回受けない）
+echo "$*" >> "$NC_LOG"
+case "$NC_MODE" in
+  ok) exit 0 ;;
+  fail) exit 1 ;;
+  flaky) case "$4" in vmstorage-2.*) [ "$(grep -c -- "$4" "$NC_LOG")" -gt 2 ]; exit $? ;; esac; exit 0 ;;
+esac
+exit 2
+"""
+
+
+def run_wait(secs, mode, hosts):
+    """待ちのコマンドを sh で走らせる（nc と sleep は偽物）。(終了コード, 出た行, nc に渡した引数の行)"""
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, body in (("nc", _NC), ("sleep", "#!/bin/sh\nexit 0\n")):
+            with open(os.path.join(tmp, name), "w", encoding="utf-8") as f:
+                f.write(body)
+            os.chmod(os.path.join(tmp, name), 0o755)
+        log = os.path.join(tmp, "nc.log")
+        r = subprocess.run(["sh", "-c", _wait_command(secs, hosts)], capture_output=True, text=True, timeout=60,
+                           env={"PATH": f"{tmp}:{os.environ['PATH']}", "NC_LOG": log, "NC_MODE": mode})
+        return r.returncode, r.stdout.splitlines(), (open(log, encoding="utf-8").read().splitlines() if os.path.exists(log) else [])
+
+
+_PREFIX = "o-nwc-oss"   # var.owner = o、var.project = nwc-oss のときの接頭辞
+_NS = f"{_PREFIX}.internal"
+_VS = [f"vmstorage-{i}.{_NS}" for i in (1, 2, 3)]
+_rc, _out, _nc = run_wait(300, "ok", _VS)
+check("待ちのコマンド: 3 台が受けていれば vmstorage-1〜3 の 8400 を 1 回ずつ確かめて 0 で終わる",
+      _rc == 0 and _out == ["vmstorage wait done"] and _nc == [f"-z -w 2 {h} 8400" for h in _VS])
+_rc, _out, _nc = run_wait(300, "flaky", _VS)
+check("待ちのコマンド: まだ受けない台は受けるまで待ち（2 秒おき）、3 台そろってから 0 で終わる",
+      _rc == 0 and _out == [f"waiting for {_VS[1]}:8400"] * 2 + ["vmstorage wait done"]
+      and _nc == [f"-z -w 2 {h} 8400" for h in (_VS[0], _VS[1], _VS[1], _VS[1], _VS[2])])
+_rc, _out, _nc = run_wait(0, "fail", _VS)
+check("待ちのコマンド: 期限（vmstorage_wait_seconds）を過ぎたらあきらめて、それでも 0 で終わる（dependsOn の SUCCESS で vminsert を起こす）",
+      _rc == 0 and _out == [f"gave up waiting for {h}:8400" for h in _VS] + ["vmstorage wait done"] and len(_nc) == 3
+      and re.search(r'variable "vmstorage_wait_seconds" \{[^}]*default\s+= 300\n', _vm_tf) is not None)
+
+# 土台（terraform/base/core の oss.tf）の SG の行とコンテナのポート
+_sg_rows = [(f, t, int(p), int(q or p)) for f, t, p, q in
+            re.findall(r'\{ from = "(\w+)", to = "(\w+)", protocol = "tcp", port = (\d+)(?:, to_port = (\d+))?, why', _oss_tf)]
+_cports = {"opensearch": {int(p) for p in re.findall(r"containerPort = (\d+)", _os_tf)},
+           "victoriametrics": {int(p) for p in re.findall(r"containerPort = (\d+)", _vm_tf)}}
+_opened = {t: sorted((f, p, q) for f, tt, p, q in _sg_rows if tt == t) for t in _cports}
+
+
+def _from(to, port):
+    return {f for f, t, p, q in _sg_rows if t == to and p <= port <= q}
+
+
+check(f"土台の SG の行が OpenSearch / VictoriaMetrics に開けるポートは、どれもコンテナのポート（{_opened}）。"
+      "OpenSearch から EFS への行は無く、EFS の SG の説明にも OpenSearch は無い",
+      all(_opened[t] and all(set(range(p, q + 1)) <= _cports[t] for _, p, q in _opened[t]) for t in _cports)
+      and not _from("efs", 2049) - {"kafka", "victoriametrics"} and "victoriametrics" in _from("efs", 2049)
+      and "OpenSearch" not in re.search(r'^\s+efs\s+= "([^"]*)"', _oss_tf, re.M).group(1)
+      and _from("opensearch", 9300) == {"opensearch"} and _from("victoriametrics", 8400) == _from("victoriametrics", 8401) == {"victoriametrics"})
+
+
+def _render(name, defs):
+    """locals の 1 行の式を、sinks が全部あるとして文字列にする（${local.X} は defs から引く。接頭辞は _PREFIX）"""
+    v = re.sub(r'^local\.sink_\w+ \? (.*) : ""$', r"\1", defs[name])
+    if re.fullmatch(r"local\.\w+", v):
+        return _render(v[len("local."):], defs)
+    assert v.startswith('"') and v.endswith('"'), (name, v)
+    s = re.sub(r"\$\{local\.(\w+)\}", lambda m: _render(m.group(1), defs), v[1:-1])
+    s = s.replace("${var.owner}-${var.project}", _PREFIX)
+    assert "${" not in s, (name, s)
+    return s
+
+
+_L = {k: v for s in _o_an.values() for k, v in _tf_locals(_code(s)).items()}
+OS_URL, WRITE_URL, SELECT_URL, QUERY_URL = (_render(n, _L) for n in ("opensearch_endpoint", "prometheus_remote_write_url", "prometheus_select_url", "prometheus_query_url"))
+_host = lambda u: urllib.parse.urlsplit(u).hostname
+_port = lambda u: urllib.parse.urlsplit(u).port
+check(f"接続先は Cloud Map の名前（<名前>.<接頭辞>.internal）とコンテナのポート: OpenSearch {OS_URL}、vminsert {WRITE_URL}、vmselect {SELECT_URL}",
+      OS_URL == f"http://opensearch.{_NS}:9200" and WRITE_URL == f"http://vminsert.{_NS}:8480/insert/0/prometheus/api/v1/write"
+      and SELECT_URL == f"http://vmselect.{_NS}:8481/select/0/prometheus" and QUERY_URL == SELECT_URL + "/api/v1/query"
+      and _render("service_namespace", _L) == _NS and _render("opensearch_cm_host", _L) == f"opensearch-cm.{_NS}"
+      and _port(OS_URL) in {int(p) for p in re.findall(r"containerPort = (\d+)", _os_td)}
+      and _port(WRITE_URL) in {int(p) for p in re.findall(r"containerPort = (\d+)", _vi_td)}
+      and _port(SELECT_URL) in {int(p) for p in re.findall(r"containerPort = (\d+)", _vq_td)})
+check("接続先のポートは使う相手から土台の SG で開いている（9200 は Spark・Grafana・AgentCore・Lambda、vminsert の 8480 は Spark だけ、vmselect の 8481 は Grafana・AgentCore・Lambda）",
+      _from("opensearch", _port(OS_URL)) >= {"spark", "grafana", "runtime", "lambda"} and _from("victoriametrics", _port(WRITE_URL)) == {"spark"}
+      and _from("victoriametrics", _port(SELECT_URL)) >= {"grafana", "runtime", "lambda"})
+_https = re.findall(r"https://(?:\$\{local\.(?:opensearch_host|opensearch_cm_host|service_namespace)\}|(?:opensearch|vminsert|vmselect|vmstorage)[\w-]*\.)", _an_code)
+check(f"OSS 版の analytics から OpenSearch・VictoriaMetrics へは https で行かない（REST は HTTP。https で書いたところ: {_https}）", not _https)
+_cvm = open(os.path.join(ROOT, "oss", "compose", "check_vm.py"), encoding="utf-8").read()
+_cvm_path = lambda k: urllib.parse.urlsplit(re.search(rf'^{k} = "([^"]+)"$', _cvm, re.M).group(1)).path
+check("vminsert の書き込みと vmselect の読み出しの道は、oss/compose の check_vm.py で確かめたもの（/insert/0/prometheus/api/v1/write・/select/0/prometheus/api/v1/）と同じ",
+      urllib.parse.urlsplit(WRITE_URL).path == _cvm_path("INSERT") and urllib.parse.urlsplit(SELECT_URL).path + "/api/v1/" == _cvm_path("SELECT"))
+
+# Spark・Grafana・evidence を OSS 版の接続先に向ける
+_index = _render("opensearch_index", _L)
+posts.clear(); sigs.clear()
+with_env({"OPENSEARCH_AUTH": "basic", "OPENSEARCH_PASSWORD": "pw-os", "PROMETHEUS_AUTH": "none"},
+         lambda: (sinks.make_opensearch_sender(OS_URL, _index, "ap-northeast-1")([rec]), sinks.make_prometheus_sender(WRITE_URL, "ap-northeast-1")([rec])))
+check("Spark: OPENSEARCH_AUTH=basic / PROMETHEUS_AUTH=none で、OpenSearch の <接続先>/snmp-logs/_bulk に Basic 認証、vminsert の remote write に署名なしで送る",
+      sigs == [] and [u for u, _ in posts] == [f"{OS_URL}/snmp-logs/_bulk", WRITE_URL]
+      and posts[0][1]["Authorization"] == "Basic " + base64.b64encode(b"admin:pw-os").decode() and posts[1][1] == PROM_HEADERS
+      and _index == sinks.OPENSEARCH_INDEX == evidence.OPENSEARCH_INDEX == "snmp-logs")
+_rc, _files, _last, _ = start_sh(PROMETHEUS_AUTH="none", OPENSEARCH_AUTH="basic", PROMETHEUS_URL=SELECT_URL, OPENSEARCH_URL=OS_URL)
+_hint = re.search(r"PROMETHEUS_URL は (http://\S+?)（", _oss_prom).group(1)
+check("Grafana: PROMETHEUS_URL に vmselect の根、OPENSEARCH_URL に OpenSearch の接続先で datasources-oss を並べる。vmselect の根はデータソースに書いた形（http://<vmselect>:8481/select/0/prometheus）",
+      _rc == 0 and _files == {"opensearch.yaml": _oss_os, "prometheus.yaml": _oss_prom}
+      and "url: ${PROMETHEUS_URL}" in _oss_prom and "url: ${OPENSEARCH_URL}" in _oss_os and "database: ${OPENSEARCH_INDEX}" in _oss_os
+      and re.fullmatch(re.escape(_hint).replace(re.escape("<vmselect>"), r"[\w.-]+"), SELECT_URL) is not None
+      and _hint.replace("<vmselect>", f"vmselect.{_NS}") == SELECT_URL)
+_saved = evidence.OPENSEARCH_ENDPOINT, evidence.PROMETHEUS_QUERY_URL
+evidence.OPENSEARCH_ENDPOINT, evidence.PROMETHEUS_QUERY_URL = OS_URL, QUERY_URL
+evidence.OPENSEARCH_PASSWORD.cached, evidence.OPENSEARCH_PASSWORD.checked = "", 0.0
+state["ssm"].clear()
+sys.modules["toolkit"].PARAM_PREFIX = "/" + _PREFIX   # terraform/workflow・agent の param_prefix = "/${local.name_prefix}"
+try:
+    (_logs, _met), _s = ev(OPENSEARCH_AUTH="basic", PROMETHEUS_AUTH="none")
+finally:
+    sys.modules["toolkit"].PARAM_PREFIX = ""
+    evidence.OPENSEARCH_ENDPOINT, evidence.PROMETHEUS_QUERY_URL = _saved
+check("evidence: OpenSearch の <接続先>/snmp-logs/_search と vmselect の query_range に送り、パスワードは SSM の <param_prefix>/opensearch-password"
+      "（opensearch.tf が admin に渡すのと同じ名前）",
+      [x["url"].split("?")[0] for x in _s] == [f"{OS_URL}/snmp-logs/_search", f"{SELECT_URL}/api/v1/query_range"]
+      and _s[0]["auth"] == "Basic " + base64.b64encode(b"admin:pw-ssm").decode() and _s[1]["auth"] is None and _logs["count"] == 1
+      and state["ssm"] == [(_render("opensearch_password_parameter", _L), True)] == [(f"/{_PREFIX}/opensearch-password", True)]
+      and all('param_prefix = "/${local.name_prefix}"' in tf_text("terraform", r)["locals.tf"] for r in ("workflow", "agent")))
+_wf_reads = set(re.findall(r"data\.terraform_remote_state\.analytics\.outputs\.(\w+)", tf_text("terraform", "workflow")["locals.tf"]))
+_an_outs = set(re.findall(r'^output "(\w+)"', _an_code, re.M))
+_gw = tf_text("terraform", "workflow")["gateway.tf"]
+check("terraform/workflow が読む output: 接続先（opensearch_collection_endpoint・opensearch_index・prometheus_query_url）は同じ名前で出し、"
+      "OpenSearch Serverless と AMP の名前・ARN は出さない（workflow は空なら aoss / aps の IAM を作らない）。道具の Lambda にはそのまま渡る",
+      {"opensearch_collection_endpoint", "opensearch_index", "prometheus_query_url"} <= _wf_reads & _an_outs
+      and {"opensearch_collection_name", "opensearch_collection_arn", "prometheus_workspace_arn"} <= _wf_reads
+      and not {"opensearch_collection_name", "opensearch_collection_arn", "prometheus_workspace_arn", "prometheus_workspace_id"} & _an_outs
+      and "value       = local.opensearch_endpoint" in _block(_os_tf, "output", "opensearch_collection_endpoint")
+      and "value       = local.opensearch_index" in _block(_os_tf, "output", "opensearch_index")
+      and "value       = local.prometheus_query_url" in _block(_vm_tf, "output", "prometheus_query_url")
+      and "OPENSEARCH_ENDPOINT  = local.opensearch_endpoint" in _gw and "PROMETHEUS_QUERY_URL = local.prometheus_query_url" in _gw)
+
+# ---- 7. OSS 版の Spark と Neo4j（005 の 2）。analytics は EMR Serverless を spark.tf の ECS に、graph は Neptune Analytics を neo4j.tf の ECS に替える
 _dock = {n: open(os.path.join(ROOT, *n.split("/")), encoding="utf-8").read()
          for n in ("spark/Dockerfile", "oss/compose/spark/Dockerfile", "neo4j/Dockerfile", "oss/compose/neo4j/Dockerfile")}
 
