@@ -2174,3 +2174,42 @@ vrnetlab のページには、このほかに Cisco vIOS と Cisco ASAv も載�
 **出典**
 
 - https://www.openconfig.net/ （2026-10-05 に確認）
+
+### Q. RDS は 3 AZ にできない？
+
+**結論**
+
+RDS そのものは 3 AZ にできる。ただし「Multi-AZ DB クラスター」という別の作り方になる。このプロジェクトの Nautobot の RDS は、いまの作り方（DB インスタンス 1 つ）のままでは 2 AZ まで。
+
+**RDS の 3 つの置き方**（Amazon RDS User Guide。2026-10-05 に確認）
+
+| 置き方 | AZ の数 | 中身 | 待機系から読めるか |
+|---|---|---|---|
+| Single-AZ | 1 | DB インスタンス 1 台 | — |
+| Multi-AZ DB インスタンス | 2 | 本番 1 台 + 別の AZ に待機系 1 台（同期で複製） | 読めない（切り替え用だけ） |
+| Multi-AZ DB クラスター | 3 | 書き込み 1 台 + 読める待機系 2 台。3 つの AZ に 1 台ずつ | 読める |
+
+Multi-AZ DB クラスターが使えるエンジンは、RDS for MySQL と RDS for PostgreSQL だけ。
+
+**このプロジェクトで 3 にしていない理由**
+
+| 理由 | 中身 |
+|---|---|
+| 別のリソースになる | Terraform では `aws_db_instance` ではなく `aws_rds_cluster`。1 と 2 の切り替え（`multi_az` を変えるだけ）とは別の作りになる |
+| いまのクラスが使えない | Multi-AZ DB クラスターで使えるインスタンスクラスに、いまの `db.t4g.micro` が無い。大きいクラスが 3 台になり、費用が大きく増える |
+| 必要が薄い | Nautobot の DB は機器の一覧とケーブルの正を持つだけで、読み込みを分ける量ではない。1 台止まっても続ける目的なら、2 AZ で足りる |
+
+**いまの設定**
+
+- `NAUTOBOT_DB_AZ_NUM`: 既定 1、1〜2。2 にすると `multi_az = true`（約 +$0.03/h）。
+- 定義は `terraform/pipeline/nautobot/database.tf` と `variables.tf`。
+
+**3 AZ にしたくなったら**
+
+- Multi-AZ DB クラスターに作り替える（`aws_rds_cluster`、対応するインスタンスクラスとストレージ）。
+- または Aurora PostgreSQL にする（ストレージが 3 つの AZ に複製される）。Nautobot が Aurora で動くかは未確認。
+
+**出典**
+
+- https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html
+- https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.RDS_Fea_Regions_DB-eng.Feature.MultiAZDBClusters.html
