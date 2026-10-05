@@ -37,6 +37,7 @@ cd "$(dirname "$0")/../.."
 TF_DIR=oss/terraform   # tf / tf_apply が -chdir で入るルートの親。マネージド版の terraform/ には触らない
 OPS_DIR=oss/ops        # SSM のパラメータのタグ ManagedBy=oss/ops/up.sh（oss/ops/down.sh はこのタグのものだけ消す）
 TF_LOG_NAME=tf-oss     # terraform のログは ops/logs/tf-oss-<ルート>-<apply|destroy>.log
+TF_INIT_LOCKFILE=readonly  # init は lock を書き換えない（lock はマネージド版へのシンボリックリンク。ops/common.sh の tf_init_root）
 NAUTOBOT_CTX=""        # Nautobot のイメージの材料を集める一時ディレクトリ（手順 2）。終わるときに消す
 trap 'if [ -n "$TF_AWS_CONFIG" ]; then rm -f "$TF_AWS_CONFIG"; fi; if [ -n "$NAUTOBOT_CTX" ]; then rm -rf -- "$NAUTOBOT_CTX"; fi' EXIT
 

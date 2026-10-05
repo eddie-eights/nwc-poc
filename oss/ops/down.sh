@@ -26,6 +26,7 @@ cd "$(dirname "$0")/../.."
 TF_DIR=oss/terraform  # destroy するルートの親。マネージド版の terraform/ の state には触らない
 OPS_DIR=oss/ops       # 消す SSM のパラメータはタグ ManagedBy=oss/ops/up.sh のものだけ（マネージド版の ManagedBy=ops/up.sh は残る）
 TF_LOG_NAME=tf-oss    # terraform のログは ops/logs/tf-oss-<ルート>-destroy.log
+TF_INIT_LOCKFILE=readonly  # init は lock を書き換えない（lock はマネージド版へのシンボリックリンク。ops/common.sh の tf_init_root）
 trap 'if [ -n "$TF_AWS_CONFIG" ]; then rm -f "$TF_AWS_CONFIG"; fi' EXIT  # tf_use_cli_credentials の一時ファイル
 
 log "0. 設定と道具と認証（OSS 版）"

@@ -218,6 +218,9 @@ chdir = args[0][len("-chdir="):] if args and args[0].startswith("-chdir=") else 
 rest = args[1:] if chdir else args
 verb = rest[0] if rest else ""
 if verb == "init":
+    if os.environ.get("FAKE_TF_INIT_FAIL") == chdir:  # lock にこの PC のハッシュが無いときの readonly の init
+        print("Error: Provider dependency changes detected (lock file is read-only)", file=sys.stderr)
+        sys.exit(1)
     sys.exit(0)
 if rest[:2] == ["state", "list"]:
     print("aws_instance.this")
@@ -386,6 +389,9 @@ def tf_calls(cs):
 def chdir_of(c):
     return c["args"][0][len("-chdir="):]
 
+def inits(cs):  # terraform init の引数（-chdir の後ろ）
+    return [c["args"][1:] for c in tf_calls(cs) if c["args"][1] == "init"]
+
 def destroyed(cs):  # destroy を打ったルート（-chdir の値）
     return {chdir_of(c) for c in tf_calls(cs) if c["args"][1] == "destroy"}
 
@@ -489,6 +495,8 @@ check("マネージド版: ロググループは x_nwc_oss_nwc_poc_agent- だけ
       set(inv["log_groups"]) == ALL_LOG_GROUPS - {"/aws/bedrock-agentcore/runtimes/x_nwc_oss_nwc_poc_agent-BBB-DEFAULT"})
 check("マネージド版: 残りも Project=x-nwc-oss-nwc-poc で数える（「残り: 2 件」）",
       "残り: 2 件（Project=x-nwc-oss-nwc-poc のタグ）" in out and "x-nwc-oss-left" not in out)
+check("マネージド版: terraform init は「init -input=false」のまま（-lockfile を付けない。lock はマネージド版が書き足す）",
+      inits(cs) and all(a == ["init", "-input=false"] for a in inits(cs)))
 check("マネージド版: terraform のログは ops/logs/tf-*（tf-oss-* を作らない）",
       logs_made() and not [f for f in logs_made() if f.startswith("tf-oss-")])
 
@@ -919,6 +927,19 @@ p, csd, invd = run_down("oss/ops/down.sh", "x", inv=inv3)
 check("up.sh → down.sh: up.sh が作った SSM のパラメータ 13 個を全部消し、up.sh が apply した 9 つのルートを全部 destroy する",
       p.returncode == 0 and invd["ssm"] == {} and len(aws_calls(csd, "ssm", "delete-parameter")) == 13
       and destroyed(csd) == {f"oss/terraform/{r}" for r in ROOTS} and "残り: 0 件" in p.stdout)
+
+check("oss/ops/up.sh と down.sh の terraform init は、どのルートも -lockfile=readonly（lock はマネージド版へのシンボリックリンクなので書き換えない）",
+      len({tuple(c["args"][:1]) for c in tf_calls(cs) if c["args"][1] == "init"}) == 9
+      and all(a == ["init", "-input=false", "-lockfile=readonly"] for a in inits(cs) + inits(csd)) and inits(csd))
+check("oss/terraform/ の .terraform.lock.hcl は、どのルートもマネージド版の lock へのシンボリックリンク（実ファイルにしない）",
+      all(os.path.islink(os.path.join(ROOT, "oss/terraform", r, ".terraform.lock.hcl")) for r in ROOTS))
+
+# ---- readonly の init が止まったとき（この PC の OS・CPU のハッシュが lock に無い）
+p, cs, inv = run_up(dict(empty), {"NO_DASHBOARD_PORTFORWARD": "1", "FAKE_TF_INIT_FAIL": "oss/terraform/base/ecr"})
+out = p.stdout + p.stderr
+check("up.sh: readonly の init が止まったら apply せずに止まり、先にマネージド版のルートを init する案内（terraform -chdir=terraform/base/ecr init）を出す",
+      p.returncode != 0 and not applies(cs) and "oss/terraform/base/ecr の init に失敗した" in out
+      and "terraform -chdir=terraform/base/ecr init -input=false" in out and "-lockfile=readonly" in out)
 
 shutil.rmtree(TMP, ignore_errors=True)
 print(f"通過 {passed} / 失敗 0")

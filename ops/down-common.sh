@@ -4,7 +4,7 @@
 # <名前>-nwc-oss-nwc-poc の頭と同じ文字列になる。前方一致で探すと相手のものを消す）
 has_resources() {  # has_resources <ルート>  state があり、リソースが 1 つ以上載っている（init もここで済ませる）
   [ -f "$TF_DIR/$1/terraform.tfstate" ] || return 1
-  tf "$1" init -input=false >/dev/null || die "$TF_DIR/$1 の init に失敗した（provider の取得。社内 PC は docs/setup.md「社内 PC の CA」）"
+  tf_init_root "$1"  # ops/common.sh。OSS 版は -lockfile=readonly が付く
   [ -n "$(tf "$1" state list 2>/dev/null)" ]
 }
 # SG が消えないときの DependencyViolation は「まだ何かが掴んでいる」としか言わないので、掴んでいるものを名指しで出す。

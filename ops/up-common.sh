@@ -3,8 +3,7 @@
 # 先に ops/common.sh と ops/deploy-env.sh を読む（log / die / tf / tf_logged を使う）。Splunk のイメージは ops/lab-common.sh の dir_tag / ecr_has を使う。
 # REGION / PY / PREFIX / OWNER（s3tablescatalog は ACCOUNT_ID も）は呼ぶ前に決める。
 tf_init() {  # tf_init <ルート>
-  tf "$1" init -input=false >/dev/null \
-    || die "$TF_DIR/$1 の init に失敗した（provider の取得。社内 PC は docs/setup.md「社内 PC の CA」）"
+  tf_init_root "$1"  # ops/common.sh。OSS 版は -lockfile=readonly が付く
 }
 tf_apply_only() {  # tf_apply_only <ルート> [-var 名前=値 …]  init 済みのルートを apply する
   local root="$1"; shift
