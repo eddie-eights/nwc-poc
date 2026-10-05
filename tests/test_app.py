@@ -1,21 +1,33 @@
-"""agent/app.py の模擬テスト。boto3 と bedrock_agentcore を差し替えて、AWS に触れずに流れを確かめる。"""
-import importlib.util, os, re, sys, types
+"""agent/app.py の模擬テスト。boto3 のクライアントと bedrock_agentcore を差し替えて、AWS に触れずに流れを確かめる。
+
+Strands Agents（strands.Agent / BedrockModel）は本物のまま動かす。BedrockModel が作る bedrock-runtime のクライアントを
+FakeClient にすり替えるので、Strands が Converse に渡す中身（messages / toolConfig / guardrailConfig）をそのまま見られる。
+"""
+import copy, importlib.util, os, re, sys, time, types
+
+import boto3
+from botocore.exceptions import BotoCoreError as _BotoCoreError, ClientError as _ClientError
 
 # 引数が無ければ agent/app.py を読む。実行は uv run python tests/test_app.py（docs/development.md「手元で確かめる」）
 APP_PATH = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "agent", "app.py")
 # app.py は同じディレクトリの topology.py を import する（PyYAML が要る: uv sync --group dev）
 sys.path.insert(0, os.path.dirname(os.path.abspath(APP_PATH)))
 
-class ClientError(Exception):
-    pass
-class BotoCoreError(Exception):
-    pass
+class ClientError(_ClientError):
+    """本物の ClientError の子（app.py や toolkit.py の except に掛かる）。テストでは文言 1 つで作る（response は持たない）"""
+    def __init__(self, msg="x"):
+        Exception.__init__(self, msg)
+class BotoCoreError(_BotoCoreError):
+    """本物の BotoCoreError の子。本物はキーワード引数で作るので、文言 1 つで作れるようにする"""
+    def __init__(self, msg=""):
+        Exception.__init__(self, msg)
 
 state = {"retrieve": None, "converse": None, "calls": []}
 
 class FakeClient:
     def __init__(self, name):
         self.name = name
+        self.meta = types.SimpleNamespace(region_name="ap-northeast-1")  # BedrockModel がログに出す
     def retrieve(self, **kw):
         state["calls"].append(("retrieve", kw))
         r = state["retrieve"]
@@ -23,7 +35,7 @@ class FakeClient:
             raise r
         return r
     def converse(self, **kw):
-        # messages は app 側で複製されるので、呼び出し時点の中身を残す
+        # messages はこのあとも Strands が足していくので、呼び出し時点の中身を残す
         state["calls"].append(("converse", {**kw, "messages": list(kw["messages"])}))
         r = state["converse"]
         if isinstance(r, list):
@@ -32,9 +44,9 @@ class FakeClient:
             raise r
         return r
 
-boto3 = types.ModuleType("boto3"); boto3.client = lambda name, **kw: FakeClient(name)
-botocore = types.ModuleType("botocore"); exc = types.ModuleType("botocore.exceptions")
-exc.ClientError = ClientError; exc.BotoCoreError = BotoCoreError; botocore.exceptions = exc
+# boto3 と botocore は本物（Strands が使う）。app.py などの boto3.client(...) と、BedrockModel の boto3.Session().client(...) を差し替える
+boto3.client = lambda name, **kw: FakeClient(name)
+boto3.Session.client = lambda self, service_name=None, **kw: FakeClient(service_name)
 bac = types.ModuleType("bedrock_agentcore")
 class App:
     def entrypoint(self, f):
@@ -42,17 +54,11 @@ class App:
     def run(self, **kw):
         pass
 bac.BedrockAgentCoreApp = App
-auth = types.ModuleType("botocore.auth"); awsreq = types.ModuleType("botocore.awsrequest")
-class SigV4Auth:  # mcp_client が読む。Gateway の URL が無いので署名は呼ばれない
-    def __init__(self, *a, **kw): pass
-    def add_auth(self, request): pass
-class AWSRequest:
-    def __init__(self, **kw): self.headers = {}
-    def prepare(self): return self
-auth.SigV4Auth = SigV4Auth; awsreq.AWSRequest = AWSRequest; botocore.auth = auth; botocore.awsrequest = awsreq
-cfg = types.ModuleType("botocore.config"); cfg.Config = lambda **kw: kw; botocore.config = cfg
-sys.modules.update({"boto3": boto3, "botocore": botocore, "botocore.exceptions": exc, "botocore.auth": auth,
-                    "botocore.awsrequest": awsreq, "botocore.config": cfg, "bedrock_agentcore": bac})
+sys.modules["bedrock_agentcore"] = bac
+# 手元の AWS の設定や認証情報を読みに行かせない。Gateway の URL が無いので mcp_client の署名は呼ばれない
+os.environ.update({"AWS_EC2_METADATA_DISABLED": "true", "OTEL_SDK_DISABLED": "true"})
+for k in ("PARAM_PREFIX", "GATEWAY_URL", "NEPTUNE_ENDPOINT", "NEPTUNE_GRAPH_ID"):
+    os.environ.pop(k, None)
 
 RERANK_ARN = "arn:aws:bedrock:ap-northeast-1::foundation-model/amazon.rerank-v1:0"
 
@@ -93,7 +99,8 @@ state.update(retrieve=RET, converse=ok_converse("clear ip bgp * は避けます"
 r = app.invoke({"prompt": "%BGP-5-ADJCHANGE が出た"})
 rk = state["calls"][0][1]; ck = state["calls"][1][1]
 check("RERANK_MODEL_ARN が無ければリランクなしで HYBRID と件数だけ渡す", rk["retrievalConfiguration"]["vectorSearchConfiguration"] == {"numberOfResults": 3, "overrideSearchType": "HYBRID"} and rk["knowledgeBaseId"] == "KB12345678")
-check("Converse に guardrailConfig", ck["guardrailConfig"] == {"guardrailIdentifier": "gr123", "guardrailVersion": "1"})
+check("Converse に guardrailConfig（Strands は trace も足す）", {k: ck["guardrailConfig"][k] for k in ("guardrailIdentifier", "guardrailVersion")} == {"guardrailIdentifier": "gr123", "guardrailVersion": "1"})
+check("Converse にモデルと system prompt と maxTokens", ck["modelId"] == "m" and ck["system"] == [{"text": app.SYSTEM_PROMPT}] and ck["inferenceConfig"] == {"maxTokens": 1024})
 check("Converse にトポロジの 9 ツール + 証拠の 3 ツール + 修復案の履歴（異常一覧 list_anomalies は 2026-10-02 にやめた）", [t["toolSpec"]["name"] for t in ck["toolConfig"]["tools"]] == ["list_devices", "neighbors", "blast_radius", "root_cause", "what_if", "topology_graph", "layers", "recent_changes", "centrality", "search_logs", "query_metrics", "query_history", "list_proposals"])
 last = ck["messages"][-1]
 check("質問は guardContent、資料は text", last["content"][1] == {"guardContent": {"text": {"text": "%BGP-5-ADJCHANGE が出た"}}} and "<documents>" in last["content"][0]["text"] and 'source="interface-errors.md"' in last["content"][0]["text"])
@@ -329,21 +336,31 @@ check("上限に達した回答は、断りのあとにモデルの本文が続�
       and "上限（5 回）" in app.TOOL_LIMIT_PREFIX)
 check("履歴にも断り付きの本文が残る", app.history[-1]["content"][0]["text"].startswith(app.TOOL_LIMIT_PREFIX))
 
+# ツールが動いた順を残す（Strands のツールは app.run_tool を呼ぶ）。並べて動かすと start が続く
+_run_tool, _runs = app.run_tool, []
+def _spy_tool(name, args):
+    _runs.append("start"); time.sleep(0.02); out = _run_tool(name, args); _runs.append("end")
+    return out
+app.run_tool = _spy_tool
 state.update(converse=[tool_converse("topology_graph", {}, f"tu{i}") for i in range(7)] + [ok_converse("x")], calls=[])
 r = app.invoke({"prompt": "全体は"})
-check("指示のあとでもツールを呼んできたら、ツールは動かさずに打ち切る（Converse は 6 回）",
-      len([c for c in state["calls"] if c[0] == "converse"]) == 6 and r["status"] == "success")
+check("指示のあとでもツールを呼んできたら、ツールは動かさずに打ち切る（Converse は 6 回、ツールは 5 本だけ動く）",
+      len([c for c in state["calls"] if c[0] == "converse"]) == 6 and r["status"] == "success" and _runs.count("start") == 5)
 check("そのとき本文が空なら、断りと聞き直しの案内を返す", r["response"].startswith(f"{app.TOOL_LIMIT_PREFIX}\n\n{app.TOOL_LIMIT_EMPTY}\n\n参照: "))
 
 # 1 回の往復で複数のツールを呼んで上限を越えたときも、その回の toolResult を全部返してから指示を添える
 multi = {"output": {"message": {"role": "assistant", "content": [{"toolUse": {"toolUseId": f"m{i}", "name": "topology_graph", "input": {}}} for i in range(3)]}},
          "stopReason": "tool_use", "usage": {"inputTokens": 1, "outputTokens": 1}}
 state.update(converse=[tool_converse("topology_graph", {}, "a"), tool_converse("topology_graph", {}, "b"), multi, ok_converse("まとめ")], calls=[])
+_runs.clear()
 r = app.invoke({"prompt": "全体は"})
+app.run_tool = _run_tool
 convs = [c[1] for c in state["calls"] if c[0] == "converse"]
 check("3 本まとめて呼んで 5 本を越えたら、3 本ぶんの toolResult のあとに指示を添える",
       len(convs) == 4 and [list(b) for b in convs[-1]["messages"][-1]["content"]] == [["toolResult"]] * 3 + [["text"]]
       and r["response"].startswith(app.TOOL_LIMIT_PREFIX))
+check("まとめて頼まれたツールは 1 本ずつ順に動かし（並べて動かさない）、頼まれた順で返す",
+      _runs == ["start", "end"] * 5 and [b["toolResult"]["toolUseId"] for b in convs[-1]["messages"][-1]["content"][:3]] == ["m0", "m1", "m2"])
 
 # ガードレールが止めた回答には断りを付けない（止めた文言をそのまま返す）
 state.update(converse=[tool_converse("topology_graph", {}, f"tu{i}") for i in range(5)] + [ok_converse("止めました", "guardrail_intervened")], calls=[])
@@ -354,6 +371,31 @@ check("上限に達しても、ガードレールが止めた回答は断りを�
 state.update(converse=[tool_converse("topology_graph", {}, f"tu{i}") for i in range(4)] + [ok_converse("4 本で足りた")], calls=[])
 r = app.invoke({"prompt": "全体は"})
 check("4 本で答えたら断りを付けない", r["response"].startswith("4 本で足りた"))
+
+# ---- Strands に載せ替えて（2026-10-05）増えた道。Converse を直に回していたときと同じ結果になること
+_hist = copy.deepcopy(app.history)
+state.update(converse=[tool_converse("neighbors", {"device_id": "dc1-leaf-01"}), ok_converse("途中で切れた本", "max_tokens")], calls=[])
+r = app.invoke({"prompt": "長い答え"})
+check("max_tokens で切れたら、そこまでの本文を返して履歴に残す（Strands は例外を投げるが落とさない）",
+      r["status"] == "success" and r["response"].startswith("途中で切れた本") and app.history[-1]["content"][0]["text"] == "途中で切れた本")
+# Strands は渡したメッセージに tracking_id を書き込む（strands/agent/agent.py の _ensure_tracking_id）。app.py は深く複製して渡す
+check("Strands に渡した履歴の中身は書き換わらない（tracking_id も入らず、ツールの往復も履歴に入らない）",
+      app.history[:-2] == _hist and len(app.history) == len(_hist) + 2 and all(set(m) == {"role", "content"} for m in app.history))
+cut = {"output": {"message": {"role": "assistant", "content": [{"text": "調べます"}, {"toolUse": {"toolUseId": "x", "name": "topology_graph", "input": {}}}]}},
+       "stopReason": "max_tokens", "usage": {"inputTokens": 1, "outputTokens": 1}}
+state.update(converse=[cut, ok_converse("呼ばれてはいけない")], calls=[])
+r = app.invoke({"prompt": "q"})
+check("max_tokens で切れた toolUse は動かさず、本文だけを返す（Strands が履歴に入れる英語の断りは出さない）",
+      len([c for c in state["calls"] if c[0] == "converse"]) == 1 and r["response"].startswith("調べます\n\n参照: "))
+state.update(converse=[ok_converse("呼ぶと言って呼ばなかった", "tool_use"), ok_converse("呼ばれてはいけない")], calls=[])
+r = app.invoke({"prompt": "q"})
+check("stopReason が tool_use でも toolUse が無ければ、そこで止めて本文を返す（Converse は 1 回）",
+      len([c for c in state["calls"] if c[0] == "converse"]) == 1 and r["response"].startswith("呼ぶと言って呼ばなかった"))
+state.update(converse=[_ClientError({"Error": {"Code": "ThrottlingException", "Message": "Too many requests"}}, "Converse"), ok_converse("呼び直さない")], calls=[])
+n = len(app.history)
+r = app.invoke({"prompt": "q"})
+check("スロットリングは Strands では呼び直さずに error（boto3 の再試行だけ。Web を待たせない）",
+      r["status"] == "error" and len([c for c in state["calls"] if c[0] == "converse"]) == 1 and len(app.history) == n)
 
 state.update(converse=[tool_converse("neighbors", {"device_id": "dc1-leaf-01"}), BotoCoreError("x")], calls=[])
 n = len(app.history)
