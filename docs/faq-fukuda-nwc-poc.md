@@ -2081,3 +2081,43 @@ vrnetlab のページには、このほかに Cisco vIOS と Cisco ASAv も載�
 
 - https://containerlab.dev/manual/kinds/ （2026-10-05 に確認）
 - https://containerlab.dev/manual/vrnetlab/ （2026-10-05 に確認）
+
+### Q. シスコの機器なら、メトリクスはどれも同じ？
+
+**結論**
+
+同じではない。メトリクスの名前と取り方は、機器の名前ではなく OS（IOS XR、IOS XE、NX-OS）で決まる。同じなのは、標準で決まっている部分（SNMP の標準 MIB と、OpenConfig のモデルの一部）だけ。
+
+**理由**
+
+- gNMI で取る値の住所（パス）は、YANG モデルで決まる。YANG モデルには、ベンダーをまたいで共通の OpenConfig と、OS ごとの独自のもの（native）がある。
+- 独自のモデルは OS ごとに別物。IOS XR は `Cisco-IOS-XR-*`、IOS XE は `Cisco-IOS-XE-*`、NX-OS は `Cisco-NX-OS-device`。
+- OpenConfig も、OS や版によって対応している範囲が違う。
+
+**どこまで同じか**
+
+| 取り方 | 同じ部分 | 違う部分 |
+|---|---|---|
+| SNMP のポーリング | 標準 MIB（IF-MIB の ifOperStatus、ifInOctets など）は、どの OS でも同じ OID | CPU やメモリなどは、シスコ独自の MIB（CISCO-PROCESS-MIB など）。OS によって有無が違う |
+| SNMP のトラップ | linkDown / linkUp は標準 | BGP などの通知は、標準のものとシスコ独自のものがある |
+| gNMI | OpenConfig のパス（`/interfaces/interface/state/counters` など）は、対応していれば同じ | 独自のパスは OS ごとに別。対応する範囲、エンコード、TLS の設定も違う |
+| syslog | 送る仕組み | メッセージの書式（`%LINK-3-UPDOWN` など）は OS ごとに少し違う |
+
+**このプロジェクトへの影響**
+
+いまの Telegraf は、2 種類の取り方をしている（`telegraf/telegraf.conf.in`）。
+
+| いま集めているもの | シスコを足したとき |
+|---|---|
+| SNMP の標準 MIB（sysName、sysUpTime、ifName、ifAdminStatus、ifOperStatus、ifInOctets など） | そのまま使える見込み |
+| gNMI の SR Linux 独自のパス（`/network-instance[name=default]/protocols/bgp/neighbor[...]/session-state`、`/platform/control[...]/cpu[...]`、`/interface[name=*]/statistics` など） | 使えない。OS ごとにパスを書き直す |
+
+- パスが変わると、メトリクスの名前とラベルも変わる。Grafana のアラートルール、Splunk の検索、`lab_gnmi.star` の変換も、機器の種類ごとに直すことになる。
+- 複数のベンダーを混ぜるなら、OpenConfig のパスに寄せると、直す場所が減る。SR Linux も OpenConfig に対応している（有効にする設定が要る）。
+
+**未確認**
+
+- IOL が gNMI に対応しているか（IOL は IOS / IOS XE を Linux のプロセスとして動かすもの）。
+- XRd、Nexus 9000v など仮想版の機器で、カウンターや CPU の値がどこまで実機と同じに出るか。
+- OS と版ごとの、OpenConfig の対応範囲。
+- 上の表のシスコの部分は、公式ドキュメントで確かめていない。一般的な知識で書いた。
