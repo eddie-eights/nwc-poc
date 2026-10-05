@@ -128,7 +128,8 @@ resource "aws_s3tables_table" "raw_telemetry" {
 # （ignored は効いた決定のあとに届いた中身の違う決定。status は直前の行のまま）。
 # event_id = <proposal_id>#<event>（ignored だけは <proposal_id>#ignored#<届いた決定の種類>#<届いた決定の時刻>#<名前>）。列は workflow/rules.py の PROPOSAL_EVENT_COLUMNS と同じ順・同じ型。
 # schema を変えるとテーブルは作り直しになり、いまある行は消える（上の raw_telemetry の注記と同じ RequiresReplace。
-# 2026-10-05 に 12 列から 28 列にした。作り直しになることは terraform plan では未確認）
+# 2026-10-05 に 12 列から 28 列にした。12 列の state に plan を打つと must be replaced になることは、AWS に触らずに確かめた
+# （provider 6.64.0、偽の鍵と -refresh=false。docs/cycles/003-proposals-in-s3tables/review.md の Round 1）。AWS 上の plan は未実行）
 resource "aws_s3tables_table" "proposal_events" {
   name             = "proposal_events"
   namespace        = aws_s3tables_namespace.netops.namespace

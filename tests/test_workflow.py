@@ -1333,8 +1333,10 @@ check("proposal_id が空なら書かない", iv.decide_proposal("", "approved",
 r = iv.decide_proposal("p1", "approved", "pending", "  山田   太郎 ", True)
 check("名前は空白を詰めて「<名前> (web)」で decided_by に残し、選択は空に戻す（続けて押しても別の行に書かない）",
       decided == [("p1", "approved", "山田 太郎 (web)")] and r[2] == ("update", {"choices": ["p1"], "value": None}))
-iv.decide_proposal("p1", "rejected", "pending", "x" * 100)
+rj = iv.decide_proposal("p1", "rejected", "pending", "x" * 100)
 check(f"却下はチェック無しで通り、名前は {iv.APPROVER_MAX} 字で切る", decided[-1] == ("p1", "rejected", "x" * iv.APPROVER_MAX + " (web)"))
+check("承認も却下も、押したら「送った。反映まで少し待つ」と出す（一覧は数秒〜20 秒「承認待ち」のまま。design.md §6）",
+      all("送った" in str(x[0]) and "反映まで" in str(x[0]) for x in (r, rj)))
 
 # ---- Temporal UI（8233）: 2026-09-24 のレビューではポートごとの SG ルールの抜けで UI が開かなかった。2026-09-29 からルールは土台の通信の表にあり、
 #      Web の EC2 から workflow の 8233 の 1 行で送信と受信の 2 本ができる（7233 は無い）
