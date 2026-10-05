@@ -26,6 +26,9 @@ def read(*p):
     with open(os.path.join(ROOT, *p), encoding="utf-8") as f:
         return f.read()
 
+def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の oss/ops/ と共通）とつないで見る
+    return read("ops", "common.sh") + read("ops", f"{name}-common.sh") + read("ops", f"{name}.sh")
+
 
 # ---- lab → トポロジ
 lt = load("lab/lab_topology.py", "lab_topology")
@@ -138,7 +141,7 @@ check("CLI は --device-map / --snmp-agents / --gnmi-targets / --layers を受�
 check("CLI は {devices, links, layers} の JSON を出す", "json.dump" in read("lab", "lab_topology.py") and '"devices": devices, "links": links, "layers": lyr' in read("lab", "lab_topology.py"))
 
 # ---- ops/up.sh 7-3b と ops/sync-graph.sh は lab から作って base64 で渡す
-up = read("ops", "up.sh"); sync = read("ops", "sync-graph.sh"); seed = read("ops", "seed_graph.py")
+up = read_ops("up"); sync = read("ops", "sync-graph.sh"); seed = read("ops", "seed_graph.py")
 check("up.sh 7-3b は lab/lab_topology.py の出力を LAB_TOPOLOGY_B64 で seed_graph.py に渡す", "lab/lab_topology.py lab | base64" in up and "LAB_TOPOLOGY_B64=$LAB_TOPOLOGY_B64 /usr/bin/python3.13 -" in up)
 check("sync-graph.sh は --replace で GRAPH_REPLACE=1、--dry-run は Neptune に触らない", "GRAPH_REPLACE=${REPLACE:-0}" in sync and "--replace) REPLACE=1" in sync and 'if [ -n "$DRY" ]; then printf' in sync)
 check("seed_graph.py は LAB_TOPOLOGY_B64 を読み、GRAPH_REPLACE=1 のときだけ入れ直す", 'os.environ.get("LAB_TOPOLOGY_B64")' in seed and 'os.environ.get("GRAPH_REPLACE") != "1"' in seed)

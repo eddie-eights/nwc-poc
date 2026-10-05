@@ -28,113 +28,9 @@ REGION=ap-northeast-1
 resolve_deploy_env_file  # DEPLOY_ENV_FILE の相対パスは、下の cd の前の場所から見る
 cd "$(dirname "$0")/.."
 
-log()  { printf '\n\033[1;34m== %s\033[0m\n' "$*"; }
-die()  { printf '\033[1;31mNG: %s\033[0m\n' "$*" >&2; exit 1; }
-# terraform に渡す認証情報。もとは terraform/agent の opensearch provider（古い AWS SDK の Go v1）が `aws login` で入ったプロファイル
-# （login_session）を読めずに NoCredentialProviders で落ちたための回避（provider は 2026-09-28 に外した。aws provider が
-# login_session を読めるかは確かめていないので残す）。鍵が環境変数に無い（= プロファイルから読む）ときは、AWS CLI から
-# 資格情報を受け取る credential_process だけのプロファイルを一時ファイルに書き、terraform にはそちらを読ませる
-# （AWS CLI ユーザーガイド「Sharing Login credentials as process credentials」の形。15 分ごとの更新は CLI が続ける）
-TF_AWS_CONFIG=""
-TF_AWS_ENV=()
-tf_use_cli_credentials() {
-  if [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then  # 鍵が環境変数にあるときはそのまま渡す
-    echo "terraform の認証情報: 環境変数の鍵"
-    return 0
-  fi
-  local profile_opt=""
-  if [ -n "${AWS_PROFILE:-}" ]; then profile_opt="--profile $(printf '%q' "$AWS_PROFILE")"; fi
-  TF_AWS_CONFIG=$(mktemp "${TMPDIR:-/tmp}/$PREFIX-aws-config.XXXXXX") || die "一時ファイルを作れない（TMPDIR）"
-  trap 'rm -f "$TF_AWS_CONFIG"' EXIT
-  printf '[profile %s-terraform]\ncredential_process = env -u AWS_PROFILE AWS_CONFIG_FILE=%q aws configure export-credentials %s --format process\n' \
-    "$PREFIX" "${AWS_CONFIG_FILE:-$HOME/.aws/config}" "$profile_opt" >"$TF_AWS_CONFIG"
-  TF_AWS_ENV=(AWS_CONFIG_FILE="$TF_AWS_CONFIG" AWS_PROFILE="$PREFIX-terraform")
-  echo "terraform の認証情報: プロファイル ${AWS_PROFILE:-（既定）} を AWS CLI 経由（credential_process）で渡す"
-}
-tf() {  # tf <ルート> <terraform のサブコマンドと引数…>
-  local root="$1"; shift
-  env ${TF_AWS_ENV[@]+"${TF_AWS_ENV[@]}"} terraform -chdir="terraform/$root" "$@"
-}
-has_resources() {  # has_resources <ルート>  state があり、リソースが 1 つ以上載っている（init もここで済ませる）
-  [ -f "terraform/$1/terraform.tfstate" ] || return 1
-  tf "$1" init -input=false >/dev/null || die "terraform/$1 の init に失敗した（provider の取得。社内 PC は docs/setup.md「社内 PC の CA」）"
-  [ -n "$(tf "$1" state list 2>/dev/null)" ]
-}
-# SG が消えないときの DependencyViolation は「まだ何かが掴んでいる」としか言わないので、掴んでいるものを名指しで出す。
-# 掴んでいるのは 2 種類ある:
-#   1. ENI — サービスが持つもの（RequesterManaged=true。MSK のブローカー、VPC エンドポイント、
-#      AgentCore Runtime）は自分では消せないので、AWS 側が片付けるのを待つしかない。それ以外で status=available のものは
-#      誰も使っていない残骸なので、ここで消す
-#   2. 他の SG のルート — その SG をこの SG から参照していると、参照している側が消えるまでこの SG は消せない
-show_and_reap_sg() {  # show_and_reap_sg <SG ID>
-  local sg="$1" eni st managed desc
-  echo "  SG $sg を掴んでいる ENI:"
-  aws ec2 describe-network-interfaces --region "$REGION" --filters "Name=group-id,Values=$sg" \
-    --query 'NetworkInterfaces[].[NetworkInterfaceId,Status,RequesterManaged,Description]' --output text 2>/dev/null \
-    | while IFS=$'\t' read -r eni st managed desc; do
-        echo "    $eni $st RequesterManaged=$managed $desc"
-        if [ "$st" = available ] && [ "$managed" = False ]; then
-          aws ec2 delete-network-interface --region "$REGION" --network-interface-id "$eni" >/dev/null 2>&1 \
-            && echo "      → 誰も使っていないので消した"
-        fi
-      done
-  echo "  SG $sg を参照しているルールを持つ他の SG:"
-  aws ec2 describe-security-groups --region "$REGION" --filters "Name=ip-permission.group-id,Values=$sg" \
-    --query "SecurityGroups[?GroupId!='$sg'].[GroupId,GroupName]" --output text 2>/dev/null | sed 's/^/    ingress /'
-  aws ec2 describe-security-groups --region "$REGION" --filters "Name=egress.ip-permission.group-id,Values=$sg" \
-    --query "SecurityGroups[?GroupId!='$sg'].[GroupId,GroupName]" --output text 2>/dev/null | sed 's/^/    egress  /'
-}
-FAILED_ROOTS=""  # 消えなかったルート（最後にまとめて出して、終了コードを 1 にする）
-destroy_root() {  # destroy_root <ルート> [-var 名前=値 …]  消えたら 0、消えなかったら 1（呼ぶ側は止まらない）
-  local root="$1"; shift
-  if ! has_resources "$root"; then echo "terraform/$root: 無い（state が無いか空）"; return 0; fi
-  echo "terraform/$root: 消す"
-  local logf try sg
-  logf=$(tf_log_file "$root" destroy)
-  # DependencyViolation は、消したサービスの ENI を AWS 側が片付けるまでの数分だけ出ることが多い。
-  # 掴んでいるものを名指しで出しながら 3 回まで打ち直す（誰も使っていない ENI はその場で消える）
-  for try in 1 2 3; do
-    if tf_logged "$root" destroy -input=false -auto-approve -var "owner=$OWNER" "$@"; then
-      echo "terraform/$root: 消えた"
-      return 0
-    fi
-    # DependencyViolation 以外の失敗（変数の不足・権限・state の食い違い）は待っても変わらないので打ち直さない
-    grep -q DependencyViolation "$logf" 2>/dev/null || break
-    for sg in $(grep DependencyViolation "$logf" | grep -Eo 'sg-[0-9a-f]+' | sort -u); do
-      show_and_reap_sg "$sg"
-    done
-    [ "$try" -lt 3 ] || break
-    echo "terraform/$root: DependencyViolation だった。2 分待って $((try + 1)) 回目を打つ"
-    sleep 120
-  done
-  # ここで止めない。1 つのルートで抜けると後ろのルート（lab / agent / 土台）が消えず、EC2 が動いたまま課金が続く。
-  # 覚えておいて残りを消しにいき、最後にまとめて出す（AWS 側の ENI 待ちなら、待ってから打ち直せば消える）
-  FAILED_ROOTS="$FAILED_ROOTS $root"
-  echo "NG: terraform/$root が消えなかった（上のエラー。全文は ${logf}）。先へ進んで、残りのルートを消す"
-  return 1
-}
-# VPC の中の Lambda は、関数を消しても ENI が available のまま 20〜40 分残り、SG とサブネットの削除を DependencyViolation で待たせる
-# （2026-09-18 に graph の destroy が 20 分以上止まった）。destroy の間、その関数の available な ENI だけを裏で消し続ける。
-reap_lambda_enis() {  # reap_lambda_enis <関数名>  親（このスクリプト）が終われば止まる
-  local e
-  while kill -0 $$ 2>/dev/null; do
-    for e in $(aws ec2 describe-network-interfaces --region "$REGION" \
-        --filters "Name=description,Values=AWS Lambda VPC ENI-$1-*" Name=status,Values=available \
-        --query 'NetworkInterfaces[].NetworkInterfaceId' --output text 2>/dev/null); do
-      if aws ec2 delete-network-interface --region "$REGION" --network-interface-id "$e" >/dev/null 2>&1; then
-        echo "Lambda（$1）の残った ENI を 1 つ消した"
-      fi
-    done
-    sleep 20
-  done
-}
-destroy_lambda_root() {  # destroy_lambda_root <ルート> <VPC の中の Lambda の関数名> [-var 名前=値 …]
-  local root="$1" fn="$2" reaper; shift 2
-  reap_lambda_enis "$fn" &
-  reaper=$!
-  destroy_root "$root" "$@"
-  kill "$reaper" 2>/dev/null; wait "$reaper" 2>/dev/null || true
-}
+. ops/common.sh       # log / die / tf と terraform の認証情報（OSS 版の oss/ops/down.sh と同じものを読む）
+. ops/down-common.sh  # destroy_root / destroy_agent / destroy_base_core / report_leftovers など
+trap 'if [ -n "$TF_AWS_CONFIG" ]; then rm -f "$TF_AWS_CONFIG"; fi' EXIT  # tf_use_cli_credentials の一時ファイル
 
 log "0. 設定と道具と認証"
 load_deploy_env
@@ -152,7 +48,6 @@ command -v terraform >/dev/null || die "terraform が無い"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text) || die "認証が通っていない（aws configure か aws login で入り直す）"
 echo "ACCOUNT_ID=$ACCOUNT_ID"
 tf_use_cli_credentials
-AGENT_VARS=()
 
 log "1. workflow → analytics → nautobot → graph → stream（workflow は analytics と graph を、analytics は stream の Kafka を、nautobot は graph と stream を読むので、この順）"
 # EMR Serverless のアプリケーションは、ジョブが動いているか STARTED のままだと destroy が落ちる。先にジョブを止め、アプリケーションを止める
@@ -194,64 +89,11 @@ log "2. lab"
 destroy_root pipeline/lab
 
 log "3. agent（Runtime / ガードレール / KB。terraform/base/core のロールにポリシーを付けているので base/core より先）"
-LOG_GROUP=""
-if has_resources agent; then
-  LOG_GROUP=$(tf agent output -raw runtime_log_group_name 2>/dev/null || true)
-fi
-# create_knowledge_base=true で作った agent は、既定の false のまま destroy すると KB のリソースを state から外そうとして止まらないよう、state から読む
-if has_resources agent && tf agent state list 2>/dev/null | grep -q '^aws_opensearchserverless_collection\.kb\['; then
-  AGENT_VARS+=(-var create_knowledge_base=true)
-fi
-# KB を作っていれば、ベクトルインデックスを作る Lambda（terraform/agent/kb.tf）が VPC の中にいる。ENI を刈りながら消す
-destroy_lambda_root agent "$PREFIX-kb-index" ${AGENT_VARS[@]+"${AGENT_VARS[@]}"}
+destroy_agent
 
 log "3-2. 土台（terraform/base/core。VPC / Web の EC2 / バケット（中身ごと消える）/ ロール）"
-# Runtime の ENI（種類 agentic_ai。AWS 側の所有で、自分では外せない）は Runtime を消したあとも最大 8 時間残り、その間はサブネットと
-# runtime の SG（terraform/base/core の security_groups.tf）が DependencyViolation で消えない（terraform は 20 分待ってから落ちる）。
-# runtime の SG を参照するルール（endpoints の受信、runtime 自身の送信）は別のリソースなので一緒に消え、ほかの SG は消せる。
-# 残っているあいだは、それ以外だけを消して先へ進む（2026-09-28 より前の state なら NAT Gateway・EIP・IGW も。時間課金があるのでこのとき消す）。
-# 残る VPC・サブネット・SG に時間課金は無く、次の ops/up.sh はそのまま使い回す
-MAIN_LEFT=0
-if has_resources base/core; then
-  # 確認そのものが落ちたときに黙って全部消しにいくと 20 分待ちに戻るので、結果は必ず表示し、エラーも隠さない
-  # VPC は terraform の output でなくタグで引く。destroy が途中で落ちた state には output が残らず（terraform は output を先に外す）、
-  # `terraform output -raw` は空を返して成功するので、打ち直しのとき（= いちばん要るとき）に読めない
-  VPC_ID=$(aws ec2 describe-vpcs --region "$REGION" --filters "Name=tag:Name,Values=$PREFIX-vpc" \
-    --query 'Vpcs[0].VpcId' --output text) || { echo "注意: VPC を引けなかった（上のエラー）"; VPC_ID=""; }
-  if [ "$VPC_ID" = None ]; then VPC_ID=""; fi
-  AGENT_ENIS=""
-  if [ -n "$VPC_ID" ]; then
-    AGENT_ENIS=$(aws ec2 describe-network-interfaces --region "$REGION" --filters "Name=vpc-id,Values=$VPC_ID" \
-      --query "NetworkInterfaces[?InterfaceType=='agentic_ai'].NetworkInterfaceId" --output text) \
-      || echo "注意: ENI の確認に失敗した（上のエラー）。残っていない扱いで進む"
-  fi
-  echo "Runtime の ENI の確認: VPC=${VPC_ID:-（読めない）} 残り=${AGENT_ENIS:-なし}"
-  if [ -n "$AGENT_ENIS" ] && [ "$AGENT_ENIS" != None ]; then
-    MAIN_LEFT=1
-    echo "Runtime の ENI が残っている: $AGENT_ENIS"
-    echo "VPC・サブネット・runtime の SG は残し、それ以外を消す"
-    MAIN_TARGETS=()
-    while IFS= read -r addr; do
-      case "$addr" in
-        # aws_security_group.internal は 2026-09-29 より前の state（全ワークロード共用の SG 1 つだった）
-        ""|data.*|aws_vpc.this|aws_subnet.*|'aws_security_group.workload["runtime"]'|aws_security_group.internal) ;;
-        *) MAIN_TARGETS+=("-target=$addr") ;;
-      esac
-    done < <(tf base/core state list 2>/dev/null)
-    if [ "${#MAIN_TARGETS[@]}" -gt 0 ]; then
-      tf_logged base/core destroy -input=false -auto-approve -var "owner=$OWNER" "${MAIN_TARGETS[@]}" || {
-        FAILED_ROOTS="$FAILED_ROOTS base/core"
-        echo "NG: terraform/base/core の ENI に関わらない部分が消えなかった（上のエラー）。先へ進んで、残りを消す"
-      }
-    else
-      echo "terraform/base/core: 残っているのは VPC・サブネット・runtime の SG だけ"
-    fi
-  else
-    destroy_root base/core
-  fi
-else
-  echo "terraform/base/core: 無い（state が無いか空）"
-fi
+# Runtime の ENI が残っているあいだは VPC・サブネット・runtime の SG を残し、それ以外を消す（ops/down-common.sh の destroy_base_core）
+destroy_base_core
 
 if [ "$KEEP_ECR" = 1 ]; then
   log "4. ECR は残す（KEEP_ECR=1）"
@@ -261,38 +103,16 @@ else
 fi
 
 log "5. Runtime のロググループ（AgentCore が作るもので Terraform の管理外）"
-# 名前は agent の state からも読めるが、前回の down.sh が途中（main の destroy など）で落ちていると、打ち直しのときには state が空で読めない。
-# Runtime はここまでに消してあるので、この接頭辞のロググループを全部消す（Runtime を作り直すたびに末尾の ID が変わり、古いものが溜まる）
-LOG_PREFIX="/aws/bedrock-agentcore/runtimes/${PREFIX//-/_}_agent-"
-LOG_GROUPS=$(aws logs describe-log-groups --region "$REGION" --log-group-name-prefix "$LOG_PREFIX" \
-  --query 'logGroups[].logGroupName' --output text) || echo "注意: ロググループを引けなかった（上のエラー）"
-if [ -n "$LOG_GROUP" ]; then LOG_GROUPS="$LOG_GROUPS $LOG_GROUP"; fi
-LOG_GROUPS=$(printf '%s\n' $LOG_GROUPS | grep -v '^None$' | sort -u)
-if [ -z "$LOG_GROUPS" ]; then echo "$LOG_PREFIX*: 無い"; fi
-for g in $LOG_GROUPS; do
-  aws logs delete-log-group --region "$REGION" --log-group-name "$g" 2>/dev/null && echo "$g: 消した" || echo "$g: 無い"
-done
+delete_runtime_log_groups
 
 log "5-2. ops/up.sh が作った SSM のパラメータ（Grafana / Splunk / Nautobot の admin のパスワード、ECS の Splunk の HEC の token、Nautobot の SECRET_KEY と DB のパスワード など）"
-# Terraform の state に値を載せないよう ops/up.sh が作ったもので、Terraform の管理外。タグ ManagedBy=ops/up.sh の付いたものだけ消す
-# （手で入れたパラメータは消さない）。値は読まない
-SSM_PARAMS=$(aws ssm describe-parameters --region "$REGION" \
-  --parameter-filters "Key=Path,Option=Recursive,Values=/$PREFIX/" "Key=tag:ManagedBy,Values=ops/up.sh" \
-  --query 'Parameters[].Name' --output text) || echo "注意: SSM のパラメータを引けなかった（上のエラー）"
-SSM_PARAMS=$(printf '%s\n' $SSM_PARAMS | grep -v '^None$' || true)
-if [ -z "$SSM_PARAMS" ]; then echo "/$PREFIX/（ManagedBy=ops/up.sh）: 無い"; fi
-for n in $SSM_PARAMS; do
-  # nautobot が消えなかったときは、その secrets を残す（RDS のパスワードを Terraform が destroy でも読むので、消すと打ち直しても消せなくなる）
-  case "$n" in "/$PREFIX/nautobot/"*)
-    case " $FAILED_ROOTS " in *" pipeline/nautobot "*) echo "$n: 残す（terraform/pipeline/nautobot が消えなかったので、次の ops/down.sh で消す）"; continue ;; esac ;;
-  esac
-  aws ssm delete-parameter --region "$REGION" --name "$n" 2>/dev/null && echo "$n: 消した" || echo "$n: 無い"
-done
+# タグ ManagedBy=ops/up.sh の付いたものだけ消す（手で入れたパラメータは消さない）。値は読まない。
+# terraform/pipeline/nautobot が消えなかったときは、その secrets を残す（ops/down-common.sh の delete_up_ssm_params）
+delete_up_ssm_params
 
 log "6. 残っていないか（Project=$PREFIX のタグ）"
-aws resourcegroupstaggingapi get-resources --region "$REGION" --tag-filters "Key=Project,Values=$PREFIX" \
-  --query 'ResourceTagMappingList[].ResourceARN' --output text | tr '\t' '\n' | sed '/^$/d' || true
-echo "（何も出なければ全部消えている。ecr を残したときはリポジトリが出る。消した直後の数分は消えたものが出ることがある）"
+report_leftovers
+echo "（残り 0 件なら全部消えている。ecr を残したときはリポジトリが出る。消した直後の数分は消えたものが出ることがある）"
 if [ "$MAIN_LEFT" = 1 ]; then
   echo "terraform/base/core の VPC・サブネット・runtime の SG は残した（Runtime の ENI 待ち。時間課金は無い）。"
   echo "すぐ使うなら ops/up.sh がそのまま使い回す。消し切るなら数時間おいて ops/down.sh を打ち直す"

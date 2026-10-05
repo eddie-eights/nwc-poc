@@ -153,113 +153,8 @@ SPARK_SCRIPT=spark/snmp_sinks.py
 resolve_deploy_env_file  # DEPLOY_ENV_FILE の相対パスは、下の cd の前の場所から見る
 cd "$(dirname "$0")/.."
 
-log()  { printf '\n\033[1;34m== %s\033[0m\n' "$*"; }
-die()  { printf '\033[1;31mNG: %s\033[0m\n' "$*" >&2; exit 1; }
-# terraform に渡す認証情報。もとは terraform/agent の opensearch provider（古い AWS SDK の Go v1）が `aws login` で入ったプロファイル
-# （login_session）を読めずに NoCredentialProviders で落ちたための回避（provider は 2026-09-28 に外した。aws provider が
-# login_session を読めるかは確かめていないので残す）。鍵が環境変数に無い（= プロファイルから読む）ときは、AWS CLI から
-# 資格情報を受け取る credential_process だけのプロファイルを一時ファイルに書き、terraform にはそちらを読ませる
-# （AWS CLI ユーザーガイド「Sharing Login credentials as process credentials」の形。15 分ごとの更新は CLI が続ける）
-TF_AWS_CONFIG=""
-TF_AWS_ENV=()
-tf_use_cli_credentials() {
-  if [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then  # 鍵が環境変数にあるときはそのまま渡す
-    echo "terraform の認証情報: 環境変数の鍵"
-    return 0
-  fi
-  local profile_opt=""
-  if [ -n "${AWS_PROFILE:-}" ]; then profile_opt="--profile $(printf '%q' "$AWS_PROFILE")"; fi
-  TF_AWS_CONFIG=$(mktemp "${TMPDIR:-/tmp}/$PREFIX-aws-config.XXXXXX") || die "一時ファイルを作れない（TMPDIR）"
-  printf '[profile %s-terraform]\ncredential_process = env -u AWS_PROFILE AWS_CONFIG_FILE=%q aws configure export-credentials %s --format process\n' \
-    "$PREFIX" "${AWS_CONFIG_FILE:-$HOME/.aws/config}" "$profile_opt" >"$TF_AWS_CONFIG"
-  TF_AWS_ENV=(AWS_CONFIG_FILE="$TF_AWS_CONFIG" AWS_PROFILE="$PREFIX-terraform")
-  echo "terraform の認証情報: プロファイル ${AWS_PROFILE:-（既定）} を AWS CLI 経由（credential_process）で渡す"
-}
-tf() {  # tf <ルート> <terraform のサブコマンドと引数…>
-  local root="$1"; shift
-  env ${TF_AWS_ENV[@]+"${TF_AWS_ENV[@]}"} terraform -chdir="terraform/$root" "$@"
-}
-tf_init() {  # tf_init <ルート>
-  tf "$1" init -input=false >/dev/null \
-    || die "terraform/$1 の init に失敗した（provider の取得。社内 PC は docs/setup.md「社内 PC の CA」）"
-}
-tf_apply_only() {  # tf_apply_only <ルート> [-var 名前=値 …]  init 済みのルートを apply する
-  local root="$1"; shift
-  tf_logged "$root" apply -input=false -auto-approve -var "owner=$OWNER" "$@" \
-    || die "terraform/$root の apply に失敗した（上のエラー。全文は $(tf_log_file "$root" apply)。docs/troubleshooting.md の「うまくいかないとき」。直したらもう一度 ops/up.sh）"
-}
-tf_apply() {  # tf_apply <ルート> [-var 名前=値 …]
-  tf_init "$1"
-  tf_apply_only "$@"
-}
-has_resources() {  # has_resources <ルート>  state があり、リソースが 1 つ以上載っている（init 済みが前提）
-  [ -f "terraform/$1/terraform.tfstate" ] && [ -n "$(tf "$1" state list 2>/dev/null)" ]
-}
-wait_ssm_online() {  # wait_ssm_online <インスタンス ID>
-  local i
-  for i in $(seq 1 60); do
-    if [ "$(aws ssm describe-instance-information --region "$REGION" \
-          --filters "Key=InstanceIds,Values=$1" \
-          --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null)" = Online ]; then
-      return 0
-    fi
-    sleep 10
-  done
-  die "$1 が 10 分たっても Session Manager に Online にならない（docs/troubleshooting.md の「画面に入れない」）"
-}
-ssm_run() {  # ssm_run <インスタンス ID> <コマンド…>  cloud-init（user_data）が終わるのを待ってから打ち、標準出力を出す。失敗なら 1
-  # コマンドは JSON の文字列に埋めるので、ダブルクォートとバックスラッシュを含めない
-  local id="$1"; shift
-  local cmd_id status
-  cmd_id=$(aws ssm send-command --region "$REGION" --instance-ids "$id" \
-    --document-name AWS-RunShellScript --timeout-seconds 900 \
-    --parameters "{\"commands\":[\"cloud-init status --wait >/dev/null || true\",\"$*\"]}" \
-    --query Command.CommandId --output text)
-  while :; do
-    status=$(aws ssm get-command-invocation --region "$REGION" --command-id "$cmd_id" --instance-id "$id" \
-      --query Status --output text 2>/dev/null || echo Pending)
-    case "$status" in
-      Success)
-        aws ssm get-command-invocation --region "$REGION" --command-id "$cmd_id" --instance-id "$id" \
-          --query StandardOutputContent --output text | sed '/^$/d'
-        return 0 ;;
-      Pending|InProgress|Delayed) sleep 10 ;;
-      *) aws ssm get-command-invocation --region "$REGION" --command-id "$cmd_id" --instance-id "$id" \
-           --query '[StandardOutputContent,StandardErrorContent]' --output text >&2
-         echo "インスタンス上のコマンドが $status" >&2
-         return 1 ;;
-    esac
-  done
-}
-run_on_instance() {  # run_on_instance <インスタンス ID> <コマンド…>  ssm_run の失敗で止まる版
-  ssm_run "$@" || die "インスタンス $1 の上のコマンドが失敗した（上の出力）"
-}
-ensure_secret() {  # ensure_secret <SSM のパラメータ名> <password|uuid|token> <説明>  無ければ乱数の SecureString を作る。値は画面にもログにも出さない
-  local name="$1" kind="$2" desc="$3" type
-  type=$(aws ssm describe-parameters --region "$REGION" --parameter-filters "Key=Name,Values=$name" \
-    --query 'Parameters[0].Type' --output text 2>/dev/null || echo "")
-  [ "$type" != None ] || type=""   # 無いときの --output text は None
-  case "$type" in
-    SecureString) echo "$name はある（作り直さない）"; return 0 ;;
-    "") ;;
-    *) die "$name が SecureString でない（${type}）。消してから打ち直す: aws ssm delete-parameter --region $REGION --name $name" ;;
-  esac
-  # 値は Python が作って本人だけが読める一時ファイルに書き、AWS CLI に file:// で渡す（コマンドラインにも変数にも載せない）。
-  # 標準入力（file:///dev/stdin）は AWS CLI v2 が読めず Invalid JSON になる。ops/down.sh は ManagedBy のタグで見分けて消す
-  local input rc=0
-  input=$(umask 077; mktemp "${TMPDIR:-/tmp}/nwc-secret.XXXXXX") || die "一時ファイルを作れなかった"
-  "${PY[@]}" -c 'import json, secrets, sys, uuid
-name, kind, desc, prefix, owner, path = sys.argv[1:]
-value = str(uuid.uuid4()) if kind == "uuid" else secrets.token_hex(20) if kind == "token" else secrets.token_urlsafe(24)  # token = Nautobot の API トークン（40 桁の 16 進）
-with open(path, "w", encoding="utf-8") as f:
-    json.dump({"Name": name, "Type": "SecureString", "Value": value, "Description": desc,
-               "Tags": [{"Key": "ManagedBy", "Value": "ops/up.sh"}, {"Key": "Project", "Value": prefix}, {"Key": "owner", "Value": owner}]}, f)' \
-    "$name" "$kind" "$desc" "$PREFIX" "$OWNER" "$input" \
-    && aws ssm put-parameter --region "$REGION" --cli-input-json "file://$input" >/dev/null || rc=$?
-  rm -f -- "${input:?}"
-  [ "$rc" -eq 0 ] || die "SSM に $name を作れなかった（上のエラー）"
-  echo "$name を作った（値は出さない。見るコマンドは最後に出る）"
-}
+. ops/common.sh     # log / die / tf と terraform の認証情報（OSS 版の oss/ops/up.sh と同じものを読む）
+. ops/up-common.sh  # tf_apply / has_resources / ssm_run / ensure_secret など
 # アラートの通知の履歴（Firehose → S3 Tables の alert_events、Athena で読む）は、Glue の S3 Tables 連携のカタログ s3tablescatalog を通る。
 # アカウントとリージョンに 1 つで、ほかの OWNER の環境と共有するので、無いときだけ作り、ops/down.sh では消さない（消し方は docs/deploy.md）
 S3TABLES_CATALOG_INPUT='{"FederatedCatalog": {"Identifier": "arn:aws:s3tables:__REGION__:__ACCOUNT__:bucket/*", "ConnectionName": "aws:s3tables"},
@@ -283,30 +178,6 @@ ensure_s3tables_catalog() {  # 無ければ作る。あれば設定が想定（I
     "aws:s3tables|True|"*IAM_ALLOWED_PRINCIPALS*) echo "Glue のカタログ s3tablescatalog はある（作り直さない）" ;;
     *) printf '\033[1;33m%s\033[0m\n' "Glue のカタログ s3tablescatalog は既にあるが、設定が想定（aws:s3tables / True / IAM_ALLOWED_PRINCIPALS）と違う（${conn} / ${ext} / ${perms}）。ほかの人が Lake Formation で管理しているかもしれない。そのまま使うので、Firehose と Athena が alert_events に届かないことがある（docs/deploy.md の「アラートの通知の履歴」）" ;;
   esac
-}
-ensure_fixed_secret() {  # ensure_fixed_secret <SSM のパラメータ名> <値> <説明>  無ければ決まった値の SecureString を作る。あれば触らない（書き換えた値を残す）
-  local name="$1" value="$2" desc="$3" type
-  type=$(aws ssm describe-parameters --region "$REGION" --parameter-filters "Key=Name,Values=$name" \
-    --query 'Parameters[0].Type' --output text 2>/dev/null || echo "")
-  [ "$type" != None ] || type=""
-  case "$type" in
-    SecureString) echo "$name はある（作り直さない）"; return 0 ;;
-    "") ;;
-    *) die "$name が SecureString でない（${type}）。消してから打ち直す: aws ssm delete-parameter --region $REGION --name $name" ;;
-  esac
-  # ensure_secret と同じく、本人だけが読める一時ファイルに書いて file:// で渡す（値は環境変数で Python に渡し、コマンドラインに載せない）
-  local input rc=0
-  input=$(umask 077; mktemp "${TMPDIR:-/tmp}/nwc-secret.XXXXXX") || die "一時ファイルを作れなかった"
-  FIXED_SECRET_VALUE="$value" "${PY[@]}" -c 'import json, os, sys
-name, desc, prefix, owner, path = sys.argv[1:]
-with open(path, "w", encoding="utf-8") as f:
-    json.dump({"Name": name, "Type": "SecureString", "Value": os.environ["FIXED_SECRET_VALUE"], "Description": desc,
-               "Tags": [{"Key": "ManagedBy", "Value": "ops/up.sh"}, {"Key": "Project", "Value": prefix}, {"Key": "owner", "Value": owner}]}, f)' \
-    "$name" "$desc" "$PREFIX" "$OWNER" "$input" \
-    && aws ssm put-parameter --region "$REGION" --cli-input-json "file://$input" >/dev/null || rc=$?
-  rm -f -- "${input:?}"
-  [ "$rc" -eq 0 ] || die "SSM に $name を作れなかった（上のエラー）"
-  echo "$name を作った（値は出さない）"
 }
 nautobot_context() {  # nautobot_context <空のディレクトリ>  Nautobot のイメージのビルドの context を集める（nautobot/Dockerfile の頭の説明）
   # nautobot/ の中身に、Neptune Analytics へ openCypher で書く agent/graph.py と agent/toolkit.py、最初の seed にする lab の定義を足す。
@@ -518,15 +389,7 @@ case "${ENDPOINTS_MULTI_AZ:-}" in
   0|false|no) die "ENDPOINTS_MULTI_AZ は ENDPOINTS_AZ_NUM に変わった（2026-10-04。AZ の数で書く）。ENDPOINTS_MULTI_AZ=${ENDPOINTS_MULTI_AZ} は既定（ENDPOINTS_AZ_NUM=1）と同じなので、deploy.env と環境変数から消す。まだ何も作っていない" ;;
   *) die "ENDPOINTS_MULTI_AZ は ENDPOINTS_AZ_NUM に変わった（2026-10-04。AZ の数で書く）。deploy.env と環境変数の ENDPOINTS_MULTI_AZ=${ENDPOINTS_MULTI_AZ} を ENDPOINTS_AZ_NUM=2 と書き換える。まだ何も作っていない" ;;
 esac
-AZ_NUM_SET=""   # deploy.env か環境変数に書いてあった *_AZ_NUM（ENDPOINTS_AZ_NUM と比べる）
-az_num() {  # az_num <キー> <既定> <最小> <最大> <範囲の理由>  書いてなければ既定。範囲の外なら止める
-  local k=$1 v="${!1:-}"
-  if [ -n "$v" ]; then AZ_NUM_SET="$AZ_NUM_SET $k"; else v=$2; fi
-  case "$v" in *[!0-9]* | '') die "$k は $3〜$4 の数で書く（いまは $k=$v）。まだ何も作っていない" ;; esac
-  v=$((10#$v))
-  if [ "$v" -lt "$3" ] || [ "$v" -gt "$4" ]; then die "$k=$v は書けない。$3〜$4 で書く（$5）。まだ何も作っていない"; fi
-  printf -v "$k" '%s' "$v"
-}
+# az_num と、書いてあったキーを溜める AZ_NUM_SET は ops/up-common.sh（OSS 版の oss/ops/up.sh と共通）
 # 範囲の理由と出典（AWS の文書は 2026-10-04 に確かめた。AWS で試していないものは「未確認」）:
 #   上限 3 はどれも base/core のサブネットの数（a / b / c。terraform/base/core の vpc.tf）
 az_num ENDPOINTS_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"

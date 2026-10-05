@@ -20,6 +20,9 @@ def read(*p):
     with open(os.path.join(ROOT, *p), encoding="utf-8") as f:
         return f.read()
 
+def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の oss/ops/ と共通）とつないで見る
+    return read("ops", "common.sh") + read("ops", f"{name}-common.sh") + read("ops", f"{name}.sh")
+
 def lab_cli(*flags):
     return subprocess.run([sys.executable, os.path.join(ROOT, "lab", "lab_topology.py"), os.path.join(ROOT, "lab"), *flags],
                           check=True, capture_output=True, text=True).stdout.strip()
@@ -173,7 +176,7 @@ check("bootstrap: Maintenance を機器の Status に選べるようにする（
 
 # ---- 配線
 docker = read("nautobot", "Dockerfile")
-up, down, chk = read("ops", "up.sh"), read("ops", "down.sh"), read("ops", "check.sh")
+up, down, chk = read_ops("up"), read_ops("down"), read("ops", "check.sh")
 tf = {n: read("terraform", "pipeline", "nautobot", n) for n in os.listdir(os.path.join(ROOT, "terraform", "pipeline", "nautobot")) if n.endswith(".tf")}
 nb_tf, all_tf = tf["nautobot.tf"], "\n".join(tf.values())
 ver = re.search(r"^NAUTOBOT_VERSION=(\S+)", up, re.M).group(1)

@@ -111,7 +111,9 @@ load_deploy_env() {
   if [ -n "$from_env" ]; then echo "  環境変数が先にあったので、ファイルの値を使わなかったキー:$from_env"; fi
 }
 
-# resolve_name_prefix  deploy.env の OWNER（= デプロイする人の名前。**必須**）を確かめ、接頭辞 PREFIX=<owner>-nwc-poc を作る。
+# resolve_name_prefix [プロジェクト]  deploy.env の OWNER（= デプロイする人の名前。**必須**）を確かめ、接頭辞 PREFIX=<owner>-<プロジェクト> を作る。
+# プロジェクトは既定が nwc-poc（ops/up.sh / ops/down.sh）で、OSS 版（005）の oss/ops/up.sh / down.sh は nwc-oss を渡す
+# （oss/terraform/ の oss.auto.tfvars の project と同じ値。同じ 8 文字なので下の長さの上限も同じ）。
 # load_deploy_env のあとに呼ぶ。OWNER は terraform の -var owner と AWS CLI の owner タグに渡り、
 # PREFIX はリソース名の接頭辞であり Project タグの値で、terraform 側は同じものを locals.tf が var.owner から作る（渡さない）。
 # 有無と形は各ルートの variables.tf の owner（既定値が無い + 同じ validation）と同じものをここでも見る（terraform を起こす前に、
@@ -124,7 +126,7 @@ resolve_name_prefix() {
     || die "OWNER（デプロイする人の名前）が要る。cp deploy.env.example deploy.env で写して OWNER=<自分の名前> を書く（自分の名前でリソースを探せるようにするための値）"
   [[ "$OWNER" =~ ^[a-z][a-z0-9]*(-[a-z0-9]+)*$ && ${#OWNER} -le 14 ]] \
     || die "OWNER は英小文字で始まる 14 文字までの英小文字・数字・ハイフンで、ハイフンは連続せず末尾にも置けない（いまは「${OWNER}」）"
-  PREFIX="$OWNER-nwc-poc"
+  PREFIX="$OWNER-${1:-nwc-poc}"
 }
 
 # flag_value <変数名>  1 / true / yes なら 1、0 / false / no / 空なら空にそろえる。それ以外の値は止まる
@@ -140,9 +142,10 @@ flag_value() {
 
 # ---- terraform の出力を絞る（up.sh / down.sh 共通。呼ぶ側が tf <ルート> <引数…> を持っていること）
 # 画面には Plan / 完了したリソース / 5 分ごとの経過 / エラーだけを出し、全文は ops/logs/ に残す。TF_VERBOSE=1 で全部そのまま出す。
+# ファイル名の頭は TF_LOG_NAME（既定 tf。OSS 版の oss/ops/ は tf-oss にして、同じ名前のルートのログを上書きしない）
 TF_VERBOSE="${TF_VERBOSE:-}"
 TF_KEEP='^(Plan:|Apply complete|Destroy complete|No changes)|Error|^[│╷╵]|: (Creation|Destruction|Modifications) complete|: Still (creating|destroying|modifying)\.\.\. \[[0-9]*[05]m0s elapsed\]'
-tf_log_file() { echo "ops/logs/tf-${1//\//-}-$2.log"; }
+tf_log_file() { echo "ops/logs/${TF_LOG_NAME:-tf}-${1//\//-}-$2.log"; }
 tf_logged() { # <ルート> <apply|destroy> <引数…>。終了コードは terraform のもの（呼ぶ側の pipefail が前提）
   local root="$1" verb="$2"; shift 2
   local logf; logf=$(tf_log_file "$root" "$verb")

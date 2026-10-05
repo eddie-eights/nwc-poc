@@ -32,6 +32,11 @@ with open(UP, encoding="utf-8") as f:
     up = f.read()
 with open(DOWN, encoding="utf-8") as f:
     down = f.read()
+# up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/up-common.sh / down-common.sh。OSS 版の oss/ops/ と共通）とつないで見る
+def _ops_common(kind):
+    return "".join(open(os.path.join(ROOT, "ops", n), encoding="utf-8").read() for n in ("common.sh", f"{kind}-common.sh"))
+up = _ops_common("up") + up
+down = _ops_common("down") + down
 with open(CHECK, encoding="utf-8") as f:
     checksh = f.read()
 with open(ENV_EXAMPLE, encoding="utf-8") as f:
@@ -245,7 +250,7 @@ check("up.sh は Grafana / Splunk のパスワードと HEC の token を ensure
       'ensure_secret "/$PREFIX/grafana/admin-password" password' in up and 'ensure_secret "/$PREFIX/splunk/admin-password" password' in up
       and 'ensure_secret "/$PREFIX/splunk/hec-token" uuid' in up and '--cli-input-json "file://$input"' in up and "umask 077" in up
       and 'rm -f -- "${input:?}"' in up and "file:///dev/stdin" not in up.replace("（file:///dev/stdin）", "")
-      and '"Key=tag:ManagedBy,Values=ops/up.sh"' in down and "aws ssm delete-parameter" in down)
+      and '"Key=tag:ManagedBy,Values=$OPS_DIR/up.sh"' in down and "aws ssm delete-parameter" in down)
 check("up.sh は ECS の Splunk が HEALTHY になってから Spark のジョブを起こす", up.index('log "7-4b.') < up.index('log "7-5.') and "healthStatus" in up)
 check("variable splunk_hec_token_parameter（既定は空。/ で始まる）/ splunk_index。外の Splunk の splunk_hec_url / splunk_skip_tls_verify は無い（2026-09-28）",
       re.search(r'variable "splunk_hec_token_parameter"[\s\S]*?default\s*=\s*""[\s\S]*?validation', tf, re.S) is not None
@@ -1362,7 +1367,7 @@ check("perimeter.tf: athena:* と firehose:* も IAM 側で拒む（Athena が�
       and re.search(r'output "alert_events_table_arn" \{[^}]*value\s*=\s*aws_s3tables_table\.alert_events\.arn', tf) is not None)
 # s3tablescatalog の用意（ensure_s3tables_catalog）も切り出し、aws を偽物にして動かす
 import tempfile
-_catblk = up[up.index("S3TABLES_CATALOG_INPUT="):up.index("ensure_fixed_secret() {")]
+_catblk = up[up.index("S3TABLES_CATALOG_INPUT="):up.index("nautobot_context() {")]
 _fakeaws = r'''die() { echo "DIE: $1"; exit 1; }
 aws() {
   echo "AWS $1 $2" >>"$CALLS"
@@ -1773,8 +1778,10 @@ check("DEPLOY_ENV_KEYS に 10 の *_AZ_NUM と、止めるために読む ENDPOI
       and 'NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"\nflag_value NETWORK_PERIMETER\n' in up and "flag_value ENDPOINTS_MULTI_AZ" not in up)
 # AZ_NUM の検査を up.sh から切り出して動かす（何も作る前に止まる・注意を出す）
 _azblk = up[up.index('case "${ENDPOINTS_MULTI_AZ:-}" in'):up.index('if [ -z "$NETWORK_PERIMETER" ]; then echo "NETWORK_PERIMETER=0')]
+# az_num と AZ_NUM_SET は ops/up-common.sh にある（上の up は先頭にそれをつないである）ので、切り出しの前に置く
+_azfn = up[up.index('AZ_NUM_SET=""'):up.index("\n}\n", up.index("az_num() {")) + 3]
 def _aznum(**env):   # 既定は graph も analytics も作らない回（PIPELINE=0 と同じ）。graph-status の待ちの注意を見るときは SKIP_GRAPH="" と SKIP_ANALYTICS="" を渡す
-    r = subprocess.run(["bash", "-uc", 'die() { echo "DIE: $*"; exit 1; }\n' + _azblk + 'echo "OUT: ' + " ".join("$" + k for k in _AZ_KEYS) + '"'],
+    r = subprocess.run(["bash", "-uc", 'die() { echo "DIE: $*"; exit 1; }\n' + _azfn + _azblk + 'echo "OUT: ' + " ".join("$" + k for k in _AZ_KEYS) + '"'],
                        capture_output=True, text=True, env={"PATH": os.environ["PATH"], **_AZ_ENV, **env})
     return r.stdout.strip() or r.stderr
 _AZ_ENV = {"SKIP_GRAPH": "1", "SKIP_ANALYTICS": "1", "SPLUNK_ON_ECS": "1", "STORES": "s3,grafana,splunk", "SPLUNK_INDEX": ""}   # SPLUNK_AZ_NUM の組み合わせの検査は SKIP_ANALYTICS="" を渡す
@@ -1821,7 +1828,7 @@ check("SPLUNK_AZ_NUM: 2 か 3 は STORES に splunk が要り、SPLUNK_INDEX と
       and _aznum(SPLUNK_AZ_NUM="2", SPLUNK_ON_ECS="", STORES="s3", SKIP_ANALYTICS="").startswith("DIE: SPLUNK_AZ_NUM=2 は Splunk のクラスターで、STORES に splunk が要る（いまは STORES=s3）")
       and _aznum(SPLUNK_AZ_NUM="3", SPLUNK_INDEX="netops", SKIP_ANALYTICS="").startswith("DIE: SPLUNK_AZ_NUM=3（Splunk のクラスター）では index は main だけで、SPLUNK_INDEX は書けない")
       and _aznum(SPLUNK_AZ_NUM="2", SPLUNK_ON_ECS="", STORES="s3", SPLUNK_INDEX="netops", SKIP_ANALYTICS="1").endswith(" 2")
-      and all(subprocess.run(["bash", "-uc", 'die() { exit 1; }\n' + _azblk + 'echo "$SPLUNK_TASKS"'], capture_output=True, text=True,
+      and all(subprocess.run(["bash", "-uc", 'die() { exit 1; }\n' + _azfn + _azblk + 'echo "$SPLUNK_TASKS"'], capture_output=True, text=True,
                              env={"PATH": os.environ["PATH"], **_AZ_ENV, "SKIP_ANALYTICS": "", "SPLUNK_AZ_NUM": a, "ENDPOINTS_AZ_NUM": "3"}).stdout.strip() == t
               for a, t in (("", "1"), ("1", "1"), ("2", "4"), ("3", "5"))))
 # クラスターの全タスク待ちのあと（splunk_cluster_check）を切り出し、aws を偽物にして動かす。indexer の AZ の注意（止めない）と、
