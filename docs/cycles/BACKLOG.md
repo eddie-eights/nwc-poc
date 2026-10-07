@@ -29,3 +29,15 @@
 - [ ] `terraform/agent/kb.tf` の kb_index のロールにネットワークの境界の条件を付ける（ほかのロールにはあって、これだけ無い。2026-10-08 の docs 同期で見つけた）
 - [ ] status の Lambda の Firehose の待ちを AZ の数に合わせる（`terraform/pipeline/graph/sync.tf:125` と `graph/status_handler.py:23-24` のコメントは 1 AZ = 15.6 秒の `ops/up.sh:421-423` と合っていない）
 - [ ] 手元の compose の構成のスライドを作る（006 のあと。マネージド版・OSS 版は 2026-10-08 に作った）
+- [ ] `ops/check.sh` の `bash -n` を 1 ファイルずつ打つ（`bash -n a b c` は a しか見ず、b と c は位置引数になる。2026-10-08 に 006 の実装で見つけた。`tests/test_oss.py` の `^bash -n` の正規表現も合わせる）
+- [ ] `docs/development.md` のテストの本数を数え直す（006 で `tests/test_local_compose.py` が増えた）
+- [ ] Telegraf の health（8080/tcp）と MDT（57000/tcp）のポートを環境変数で変えられるようにする（手元の compose は host ネットワークなので host のほかのプロセスとぶつかる。2026-10-08 に 006 の実装で固定値と確かめた。design.md の未確定事項 6）
+- [ ] containerlab が作る `lab/clab-*/` を `.gitignore` に入れる（手元で `lab.sh up` すると root の持ち物の `lab/clab-splab/` が `git status` に出る。2026-10-08 に 006 の実装で見つけた）
+- [ ] 手元の Telegraf の受け口（8080 / 57000 / 1162 / 5140）を lab の管理ネットと 127.0.0.1 からだけ受ける（host ネットワークなので全部のインターフェースで待ち、WSL の外から偽の trap や syslog を入れられる。2026-10-08 に 006 のセルフレビュー S3 で見つけた。README には書いた）
+- [ ] 手元の `check.sh` で trap と Kafka のメッセージ数まで見る（今はトピックの有無だけで、トピックは Spark が起動のときに作るので Telegraf から届いた証拠にならない。trap は `fail-main` / `trap-test` で人が見る。2026-10-08 に 006 のセルフレビュー S4 で見つけた。README には書いた）
+- [ ] 手元の Prometheus が spark-http の追い付きで逆順のサンプルを捨てないか確かめる（`out_of_order_time_window` が無い。2026-10-08 に 006 のセルフレビュー U1。未確認）
+- [ ] 手元の Splunk のアプリを作り直したとき splunk-etc の volume に写るか確かめる（写らないなら `down.sh -v` まで古いアプリのまま。2026-10-08 に 006 のセルフレビュー U2。未確認）
+- [ ] 手元の `check.sh` と `local/compose/lab.sh` の `.env` の読み方を compose に合わせる（行末の `# メモ`・CRLF・`export` を読み違える。2026-10-08 に 006 のセルフレビュー N1）
+- [ ] 手元の `check.sh` で Splunk の認証の失敗を「0 件」と分けて出す（401 の応答も `NG Splunk: 0 件` になる。2026-10-08 に 006 のセルフレビュー N2）
+- [ ] `lab/lab.sh` の `fail-main` と `heal-bgp` の案内を手元でも合うようにする（EC2 の `lab` コマンドを案内する。2026-10-08 に 006 のセルフレビュー N3）
+- [ ] `lab/lab.sh render` の表示をイメージ名にする（`REGISTRY` が無い手元では「イメージは ?」と出る。2026-10-08 に 006 のセルフレビューの Nit）

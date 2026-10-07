@@ -371,8 +371,9 @@ check("lab.sh telegraf run は同じイメージを host ネットワークで S
       re.search(r"docker run -d --name \"\$TG\" --restart unless-stopped --network host [^\n]*\\\n\s*-e SINK=stdout -e SYSLOG_STANDARD=\"\$LOG_STANDARD\" -e SNMP_POLL=\"\$\{SNMP_POLL:-0\}\" -e AWS_REGION -e SNMP_AGENTS=\"\$agents\" -e GNMI_TARGETS=\"\$gnmi\" \\\n\s*-e GNMI_USERNAME=\"\$GNMI_USERNAME\" -e GNMI_PASSWORD=\"\$GNMI_PASSWORD\" -e SNMP_COMMUNITY=\"\$SNMP_COMMUNITY\" \"\$TELEGRAF_IMAGE\" run", lab_sh) is not None
       and "python3 lab_topology.py . --snmp-agents" in lab_sh and "python3 lab_topology.py . --gnmi-targets" in lab_sh
       and "lab/lab_topology.py lab --snmp-agents" in up)
-check("lab.sh の forward は TELEGRAF_IMAGE があれば SSM の NLB を見ずに抜ける（デバッグ用の EC2 は stream を使わない）",
-      re.search(r'forward\)\n\s*if \[ -n "\$\{TELEGRAF_IMAGE:-\}" \]; then[\s\S]*?exit 0\n\s*fi', lab_sh) is not None)
+check("lab.sh の forward は TELEGRAF_IMAGE があれば SSM の NLB を見ずに抜ける（デバッグ用の EC2 は stream を使わない。手元の compose の TELEGRAF_LOCAL=1 も同じ分岐。tests/test_local_compose.py が動かして見る）",
+      re.search(r'forward\)\n\s*if local_telegraf; then[\s\S]*?exit 0\n\s*fi', lab_sh) is not None
+      and 'local_telegraf() { [ -n "${TELEGRAF_IMAGE:-}" ] || ' in lab_sh)
 check("lab.sh pull は TELEGRAF_IMAGE があるときだけ Telegraf も引く",
       'for i in "$SRLINUX_IMAGE" "$MULTITOOL_IMAGE" ${TELEGRAF_IMAGE:+"$TELEGRAF_IMAGE"}; do docker pull -q "$i"; done' in lab_sh)
 

@@ -86,9 +86,12 @@ vm_ping() {
     printf '  %-16s -> %-12s %s\n' "${pair%%:*}" "${pair##*:}" "$r"
   done
 }
-# 障害を入れたあとにどこを見るか。デバッグ用の EC2 はこの EC2 の Telegraf の標準出力、stream は Grafana / Splunk が SNS のトピックに出すアラート
+# Telegraf がこのホストの host ネットワークにいるか: デバッグ用の EC2（TELEGRAF_IMAGE）か、手元の compose（local/compose/lab.sh が TELEGRAF_LOCAL=1 を渡す）
+local_telegraf() { [ -n "${TELEGRAF_IMAGE:-}" ] || [ "${TELEGRAF_LOCAL:-0}" = 1 ]; }
+# 障害を入れたあとにどこを見るか。デバッグ用の EC2 はこの EC2 の Telegraf の標準出力、手元は compose の Grafana / Splunk、stream は Grafana / Splunk が SNS のトピックに出すアラート
 hint() {  # hint <デバッグ用の EC2 の文> <stream の文>
   if [ -n "${TELEGRAF_IMAGE:-}" ]; then echo "  この EC2 の Telegraf: $1"
+  elif local_telegraf; then echo "  compose の Telegraf: 数分で Grafana（:3000）と Splunk（:8000）に出る（SNS のトピックは無い）"
   elif iptables -t nat -S PREROUTING 2>/dev/null | grep -q -- "--comment $FW_TAG"; then echo "  stream: $2"
   else echo "  Telegraf への転送が張られていない（sudo lab forward-status）"; fi
 }
@@ -108,9 +111,12 @@ case "${1:-}" in
     echo "$TOPO を作った（イメージは ${REGISTRY:-?}）"
     ;;
   pull)
-    # ECR の認証は 12 時間で切れるので、毎回ログインしてから取る（署名はインスタンスロール）
-    : "${REGISTRY:?}" "${AWS_REGION:?}"
-    aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+    # ECR の認証は 12 時間で切れるので、毎回ログインしてから取る（署名はインスタンスロール）。
+    # REGISTRY が無い（手元。local/compose/lab.sh がイメージを ghcr.io のまま渡す）ならログインせずに取る
+    if [ -n "${REGISTRY:-}" ]; then
+      : "${AWS_REGION:?}"
+      aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+    fi
     for i in "$SRLINUX_IMAGE" "$MULTITOOL_IMAGE" ${TELEGRAF_IMAGE:+"$TELEGRAF_IMAGE"}; do docker pull -q "$i"; done
     ;;
   up)
@@ -212,6 +218,9 @@ case "${1:-}" in
     if [ -n "${TELEGRAF_IMAGE:-}" ]; then
       echo "== Telegraf（この EC2。標準出力）=="
       echo "  'sudo lab telegraf logs' に interface（ifOperStatus）、snmp_trap の linkDown、device_log（syslog）、isis_interface の down が出る。戻すのは 'lab heal-main'"
+    elif local_telegraf; then
+      echo "== Telegraf（compose の Telegraf）=="
+      echo "  数分で Grafana（:3000）の metrics ダッシュボードの dc1-leaf-01 ethernet-1/1 が DOWN、logs ダッシュボードと Splunk（:8000）に linkDown の trap と syslog が出る。戻すのは 'heal-main'"
     elif iptables -t nat -S PREROUTING 2>/dev/null | grep -q -- "--comment $FW_TAG"; then
       echo "== Telegraf（stream。ECS のタスク）=="
       echo "  ポーリング（10 秒周期）と SR Linux の linkDown トラップ、syslog、gNMI の IS-IS の隣接が MSK に流れ、Grafana のアラートルール（ポーリング）と Splunk の保存済みサーチ（trap と gNMI）が SNS のトピックに出す。"
@@ -219,13 +228,14 @@ case "${1:-}" in
     fi
     ;;
   forward)
-    if [ -n "${TELEGRAF_IMAGE:-}" ]; then
-      # デバッグ用の EC2: Telegraf はこの EC2 の host ネットワークにいるので、ポーリングと syslog（$MGMT_GW:$LOG_PORT）はそのまま届く。
+    if local_telegraf; then
+      # デバッグ用の EC2 と手元の compose: Telegraf はこのホストの host ネットワークにいるので、ポーリングと syslog（$MGMT_GW:$LOG_PORT）はそのまま届く。
       # 機器の trap は $MGMT_GW の 162 に来るので、Telegraf が待つ $TRAP_PORT へ向けるだけ（送り元は機器の管理 IP のまま）
       unforward
       c=(-m comment --comment "$FW_TAG")
       iptables -t nat -I PREROUTING 1 -s "$MGMT" -d "$MGMT_GW" -p udp --dport 162 "${c[@]}" -j REDIRECT --to-ports "$TRAP_PORT"
-      echo "この EC2 の Telegraf へ: trap 162/udp を $TRAP_PORT/udp へ向けた（syslog $LOG_PORT/udp とポーリングはそのまま）"
+      if [ -n "${TELEGRAF_IMAGE:-}" ]; then w="この EC2 の Telegraf"; else w="compose の Telegraf"; fi
+      echo "$w へ: trap 162/udp を $TRAP_PORT/udp へ向けた（syslog $LOG_PORT/udp とポーリングはそのまま）"
       exit 0
     fi
     # ECS の Telegraf（terraform/pipeline/stream の telegraf.tf）へ 4 つを通す。SSM の $PARAM_PREFIX/telegraf-address（内部 NLB の IP。trap と syslog の DNAT の宛先）と
