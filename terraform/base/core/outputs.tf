@@ -55,7 +55,7 @@ output "network_perimeter" {
 }
 
 output "network_perimeter_policy_arn" {
-  description = "IAM policy that denies AWS API calls not coming through a VPC endpoint, empty unless network_perimeter. Attached by terraform/pipeline/lab, terraform/pipeline/analytics and terraform/workflow to their workload roles"
+  description = "IAM policy that denies AWS API calls not coming through a VPC endpoint, empty unless network_perimeter. Attached by terraform/pipeline/lab, terraform/pipeline/stream, terraform/pipeline/analytics, terraform/pipeline/graph, terraform/pipeline/nautobot and terraform/workflow to their workload roles (terraform/agent only checks it is not empty before adding the runtime resource policy)"
   value       = var.network_perimeter ? aws_iam_policy.network_perimeter.arn : ""
 }
 

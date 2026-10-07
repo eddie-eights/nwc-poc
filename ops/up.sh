@@ -44,7 +44,7 @@
 #                           書かなかったまとまりは作らない（前に作っていればその格納先はデータごと消える）。格納先を選ぶのはこれだけ
 #                           （SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK / GRAFANA は 2026-10-04 になくし、書いてあれば止まる）。
 #                             s3      = 全トピック → S3 Tables（Iceberg）
-#                             grafana = traps と logs（機器の syslog）→ OpenSearch Serverless、metrics と gnmi → Amazon Managed Service for Prometheus と、
+#                             grafana = traps と logs（機器の syslog）→ OpenSearch Serverless、metrics と gnmi と mdt → Amazon Managed Service for Prometheus と、
 #                                       その 2 つを見る Grafana OSS（ECS。+$0.02/h）。Grafana のアラートルールも入り、SNS へ出す（grafana/provisioning/alerting。
 #                                       Prometheus の link_down / bgp_down / isis_down と、OpenSearch の trap）。link_down が見る ifOperStatus は SNMP のポーリングの値
 #                                       なので、SNMP_POLL=0 では link_down は発火しない。web の EC2 を踏み台にした SSM のポートフォワードで開く（コマンドは最後に出る）
@@ -217,8 +217,8 @@ if [ -n "$OLD_STORE_KEYS" ]; then
   die "$OLD_STORE_WHAT。いまの値（${OLD_STORE_VALUES# }）は STORES=$OLD_STORES と書く。$OLD_STORE_HOW"
 fi
 # 格納先を 3 つのまとまりで選ぶ（STORES=s3,grafana,splunk の形。カンマで並べ、順番と重複は問わない）。既定は s3,grafana,splunk（3 つとも。splunk は cycle 002 で既定に入れた）。
-#   s3      = 全トピック → S3 Tables（Iceberg）。Athena はサイクル 001「アラートの履歴を残す」が main に入ったらここに足す
-#   grafana = traps と logs → OpenSearch Serverless、metrics と gnmi → Amazon Managed Service for Prometheus と、その 2 つを見る Grafana（ECS）
+#   s3      = 全トピック → S3 Tables（Iceberg）の raw_telemetry。アラートの履歴（alert_events と Athena。サイクル 001）は STORES に関わらず analytics を作れば入る
+#   grafana = traps と logs → OpenSearch Serverless、metrics と gnmi と mdt → Amazon Managed Service for Prometheus と、その 2 つを見る Grafana（ECS）
 #   splunk  = 全トピック → Splunk の HTTP Event Collector（analytics の ECS に Splunk を立てる。SPLUNK_ON_ECS）
 # 書かなかったまとまりは作らない（前に作っていれば、その格納先はデータごと消える）。空は書いていないのと同じで既定になる
 # （deploy.env の空の値は書いていないのと同じ（ops/deploy-env.sh）なのに合わせる）。
@@ -445,7 +445,7 @@ if command -v python3 >/dev/null; then PY=(python3)
 elif command -v uv >/dev/null; then PY=(uv run --python 3.13 python)
 else die "python3 も uv も無い（docs/setup.md「Terraform を打つ PC 側」）"; fi
 if [ -z "$SKIP_LAB" ] || [ -z "$SKIP_ANALYTICS" ]; then command -v curl >/dev/null || die "curl が無い（lab の containerlab の rpm と analytics の jar を取るのに使う。sudo apt install curl）"; fi
-# docker はイメージ（agent / lab の 2 つ / telegraf / grafana / splunk / nautobot / redis / worker / temporal）を ECR に置くときだけ要る。土台だけなら要らない
+# docker はイメージ（agent / lab の 2 つ / telegraf / kafka-ui / grafana / splunk / nautobot / redis / worker / temporal）を ECR に置くときだけ要る。土台だけなら要らない
 NEED_DOCKER="$AGENT$WORKFLOW$GRAFANA$SPLUNK_ON_ECS$NAUTOBOT"; if [ -z "$SKIP_LAB" ] || [ -z "$SKIP_STREAM" ]; then NEED_DOCKER=1; fi
 if [ -n "$NEED_DOCKER" ]; then
   command -v docker >/dev/null || die "docker が無い（イメージのビルドに使う。docs/setup.md「Terraform を打つ PC 側」）"
@@ -533,7 +533,8 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 # agent = 0（Runtime は使った分だけ）
 #   + CREATE_KB なら 33 × OPENSEARCH_AZ_NUM（OpenSearch Serverless の OCU。2 はスタンバイのレプリカで OCU が倍）、
 # OpenSearch Serverless の VPC エンドポイント = 1.4 × ENDPOINTS_AZ_NUM（2026-10-04 までは 2 AZ 固定で 3。公表単価からで Price List API では確かめていない。
-#   KB と logs のコレクションを公開しないために作り、両方で 1 本を共用する。NEED_AOSS のときだけ）、
+#   KB と logs のコレクションを公開しないために作り、両方で 1 本を共用する。CREATE_KB か STORES の grafana のときだけ数える。
+#   前に作ったコレクションが state に残っているだけで手順 3 の NEED_AOSS が 1 になる回は数えない）、
 # lab = 17（EC2 の t4g.xlarge 17.28。2026-10-04 に公開の料金ファイルで確認。それまでの 9 は t4g.large の単価だった）、graph = 58（Neptune Analytics の 16 m-NCU で 58.1。2026-10-04 に料金のページで確認。Price List API では確かめていない。
 #   2026-10-04 までの Neptune Database の db.t4g.medium は 14 だった。レプリカも同じ単価なので × NEPTUNE_AZ_NUM）、
 #   stream = MSK 57（ブローカー 2 台。MSK_AZ_NUM=3 で 1 台 27 を足す）+ Telegraf 5（Fargate ARM 0.25 vCPU / 0.5 GB で 1.2 のタスクが、受ける側 1 つと

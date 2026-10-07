@@ -1,12 +1,12 @@
 # nwc-poc - PIPELINE analytics root module. A Spark streaming job on EMR Serverless reads the Telegraf messages
-# (topics metrics / traps) from MSK (terraform/pipeline/stream) and stores them in S3 Tables (Iceberg, all topics), OpenSearch Serverless
+# (var.metric_topics metrics / gnmi / mdt and var.log_topics traps / logs) from MSK (terraform/pipeline/stream) and stores them in S3 Tables (Iceberg, all topics), OpenSearch Serverless
 # (log topics), Amazon Managed Service for Prometheus (metric topics) and, when asked, the HTTP Event Collector of a Splunk
 # (all topics; Splunk Enterprise on ECS here in splunk.tf, inside the VPC) - see var.sinks. Grafana OSS on ECS (grafana.tf)
 # shows the Prometheus and OpenSearch sinks. The job only stores: detection is done by the Grafana alert rules (metrics) and the
 # Splunk saved searches (logs, traps, telemetry), and both publish the alerts to the SNS topic of terraform/base/core
 # (alerts.tf; terraform/workflow and terraform/pipeline/graph subscribe). Until 2026-10-02 the Spark job detected and put events on EventBridge.
 # The table bucket is the long-term record of the pipeline (raw messages, and proposal_events written by terraform/workflow).
-# Costs about 0.17 USD per hour per streaming job (up to 3, split by sink: iceberg / splunk / opensearch + prometheus) while it runs
+# Costs about 0.21 USD per hour per streaming job (up to 3, split by sink: iceberg / splunk / opensearch + prometheus) while it runs
 # (+ about 0.02 for Grafana, + about 0.12 for the Splunk on ECS) - ops/down.sh cancels the jobs and destroys this root.
 
 # リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、

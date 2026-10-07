@@ -106,7 +106,7 @@ variable "gnmi_targets" {
 }
 
 variable "dialin_targets_from_nautobot" {
-  description = "Whether the Nautobot job (terraform/pipeline/nautobot) owns the dial-in targets. true moves them to /<prefix>/telegraf-dialin/nautobot/* (Terraform writes only the first value, from snmp_agents / gnmi_targets, and ignores later changes); false keeps them in /<prefix>/telegraf-dialin/lab/* from the variables. ops/up.sh sets it from NAUTOBOT."
+  description = "Whether the Nautobot job (terraform/pipeline/nautobot) owns the dial-in targets. true moves them to /<prefix>/telegraf-dialin/nautobot/* (Terraform writes only the first value, from snmp_agents / gnmi_targets, and ignores later changes); false keeps them in /<prefix>/telegraf-dialin/lab/* from the variables. ops/up.sh always passes true (Nautobot is always built with stream since 2026-10-04); false is left for applying this root by hand."
   type        = bool
   default     = false
 }

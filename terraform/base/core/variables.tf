@@ -99,7 +99,7 @@ variable "create_s3_gateway_endpoint" {
 }
 
 variable "create_opensearch_endpoint" {
-  description = "Create the OpenSearch Serverless VPC endpoint (endpoints.tf). One per VPC serves every collection: the knowledge base of terraform/agent and the logs collection of terraform/pipeline/analytics, both reachable only through it. ops/up.sh sets true with CREATE_KB or with grafana (OpenSearch) in STORES. About 0.03 USD/h (2 AZ)."
+  description = "Create the OpenSearch Serverless VPC endpoint (endpoints.tf). One per VPC serves every collection: the knowledge base of terraform/agent and the logs collection of terraform/pipeline/analytics, both reachable only through it. ops/up.sh sets true with CREATE_KB, with grafana (OpenSearch) in STORES, or while a collection made before is still in the state of terraform/agent or terraform/pipeline/analytics (NEED_AOSS). About 0.014 USD/h per AZ (endpoints_az_num AZs, the same as the interface endpoints)."
   type        = bool
   default     = false
 }
