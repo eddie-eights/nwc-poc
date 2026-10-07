@@ -30,8 +30,12 @@ echo "差分なし"
 
 log "2. 9 つのルートの validate（terraform/ と oss/terraform/）"
 for base in "${TF_BASES[@]}"; do
+  # oss/terraform の lock はマネージド版の lock へのシンボリックリンク。init が lock を書くとリンクが実ファイルに置き換わる（ops/common.sh の tf_init_root）ので、
+  # oss/terraform は -lockfile=readonly で読むだけにする。この PC のハッシュは先に回る terraform/ のルートが足す（TF_BASES の順を入れ替えても lock は壊れず、init で止まる）
+  LOCK=""; if [ "$base" = oss/terraform ]; then LOCK=-lockfile=readonly; fi
   for r in "${ROOTS[@]}"; do
-    terraform -chdir="$base/$r" init -backend=false -input=false >/dev/null || die "$base/$r の init が失敗した"
+    terraform -chdir="$base/$r" init -backend=false -input=false ${LOCK:+"$LOCK"} >/dev/null \
+      || die "$base/$r の init が失敗した${LOCK:+（lock file のエラーなら、この PC のハッシュがマネージド版の lock に無い。先に terraform -chdir=terraform/$r init -backend=false で足す）}"
     terraform -chdir="$base/$r" validate >/dev/null || die "$base/$r の validate が失敗した（terraform -chdir=$base/$r validate で中身を見る）"
     echo "$base/$r  OK"
   done

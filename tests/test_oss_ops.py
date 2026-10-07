@@ -763,9 +763,19 @@ check("oss/ops/up.sh は Neo4j のサービスが安定してから、Web の EC
       < pos("tf_apply pipeline/nautobot")
       and "ops/seed_graph.py" in read("ops/up.sh") and "/usr/bin/python3.13 -" in up)
 check("oss/ops/up.sh は Web に Neo4j のドライバーを入れる（web/requirements-oss.txt のホイールを wheels-oss/ に取り、S3 に上げる）。wheels-oss/ は git に入れない",
-      "-d wheels-oss -r web/requirements-oss.txt" in up and 'aws s3 sync --only-show-errors wheels-oss/ "s3://$KB_BUCKET/web/wheels/"' in up
+      "fetch_wheels wheels-oss web/requirements-oss.txt web/requirements.txt " in up
+      and 'aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels-oss/ "s3://$KB_BUCKET/web/wheels/"' in up
       and re.search(r"^neo4j==", read("web/requirements-oss.txt"), re.M) and re.search(r"^-r requirements\.txt$", read("web/requirements-oss.txt"), re.M)
       and re.search(r"^wheels-oss/$", read(".gitignore"), re.M) and re.search(r"^oss/terraform/\*\*/\.build/$", read(".gitignore"), re.M))
+_fw = re.search(r"^fetch_wheels\(\) \{.*?^\}$", read("ops/up-common.sh"), re.M | re.S)
+_fw = _fw.group(0) if _fw else ""
+check("Web の wheel はマネージド版と OSS 版が同じ関数（ops/up-common.sh の fetch_wheels）で取り、requirements と pip の引数のハッシュが置き場の .requirements.sha256 と"
+      "違えば置き場を消して取り直す。S3 へは --delete で写し、.sha256 は上げない（005 のレビュー Nit 5）",
+      all(w in _fw for w in ('"${WHEEL_ARGS[*]}"', '"${WHEEL_ARGS[@]}"', 'rm -rf "$dir"', '"$dir/.requirements.sha256"', 'cat "${@:2}"'))
+      and _fw.index('rm -rf "$dir"') < _fw.index("download") < _fw.index('> "$dir/.requirements.sha256"')
+      and "\nfetch_wheels wheels web/requirements.txt\n" in read("ops/up.sh")
+      and 'aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels/ "s3://$KB_BUCKET/web/wheels/"' in read("ops/up.sh")
+      and "manylinux" not in up[pos('log "4-1.'):pos('log "4-2.')] and "*.whl" not in up and "*.whl" not in read("ops/up.sh"))
 check("oss/ops/up.sh はワーカーのイメージを Neo4j のドライバー入り（workflow/requirements-oss.txt）でビルドする",
       'build_worker "$IMAGE_TAG" requirements-oss.txt' in up and re.search(r"^neo4j==", read("workflow/requirements-oss.txt"), re.M))
 check("oss/ops/up.sh は agent（Runtime）のイメージも Neo4j のドライバー入り（agent/requirements-oss.txt）でビルドする。マネージド版は既定（requirements.txt）のまま",
@@ -904,6 +914,18 @@ def layer_sha():  # up.sh と同じ計算（graph/requirements-oss.txt + pip に
     with open(os.path.join(REPO, "graph", "requirements-oss.txt"), "rb") as f:
         return hashlib.sha256(f.read() + f"{m.group(1)} {m.group(2)}\n".encode()).hexdigest()
 
+def wheel_sha():  # ops/up-common.sh の fetch_wheels と同じ計算（requirements を渡した順に + WHEEL_ARGS を空白でつないだ行）
+    args = re.search(r"^WHEEL_ARGS=\((.*?)\)$", read("ops/up-common.sh"), re.M | re.S).group(1).split()
+    body = b"".join(open(os.path.join(REPO, "web", n), "rb").read() for n in ("requirements-oss.txt", "requirements.txt"))
+    return hashlib.sha256(body + (" ".join(args) + "\n").encode()).hexdigest()
+
+def wheel_stamp():
+    try:
+        with open(os.path.join(REPO, "wheels-oss", ".requirements.sha256"), encoding="utf-8") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return None
+
 def layer_stamp():
     try:
         with open(os.path.join(REPO, "oss/terraform/pipeline/graph/.build/neo4j-layer.sha256"), encoding="utf-8") as f:
@@ -911,6 +933,11 @@ def layer_stamp():
     except FileNotFoundError:
         return None
 
+_wsync = cs[first(cs, lambda c: is_aws(c, "s3", "sync", "wheels-oss/", "/web/wheels/"))]["args"]
+check("up.sh（通し）: ホイールを取ったあと、web/requirements-oss.txt と requirements.txt と pip の引数の SHA-256 を wheels-oss/.requirements.sha256 に残し、"
+      "S3 へは --delete で写して .sha256 は除く",
+      wheel_stamp() == wheel_sha() and "--delete" in _wsync and arg_after(_wsync, "--exclude") == ".requirements.sha256"
+      and any("download" in a and all(w in a for w in ("--platform", "manylinux_2_28_aarch64", "--abi", "cp313")) for a in uv))
 check("up.sh（通し）: レイヤーを入れたあと、graph/requirements-oss.txt と platform / python の版の SHA-256 を .build/neo4j-layer.sha256 に残す",
       layer_stamp() == layer_sha() and os.path.isfile(os.path.join(REPO, "oss/terraform/pipeline/graph/.build/neo4j-layer/python/neo4j/__init__.py")))
 _neo_wait = first(cs, lambda c: is_aws(c, "ecs", "wait", "--services out-graph-neo4j_service_name"))
@@ -962,8 +989,9 @@ check("up.sh（打ち直し）: SSM のパラメータを作り直さない（�
 check("up.sh（打ち直し）: status の Lambda のレイヤーは作り直さない（neo4j/ と .sha256 がそろっていれば pip を打たず、「はある」と言う）",
       not [c for c in cs2 if c["cmd"] == "uv" and "install" in c["args"]] and layer_stamp() == layer_sha()
       and "neo4j-layer）はある（graph/requirements-oss.txt は変わっていない）" in p.stdout)
-check("up.sh（打ち直し）: ホイールは取り直さず、9 つのルートは同じ順で apply し直し、同期と Spark の起動もやり直す",
-      not [c for c in cs2 if c["cmd"] == "uv" and "download" in c["args"]]
+check("up.sh（打ち直し）: ホイールは取り直さず（.sha256 が合っていれば「変わっていない」と言う）、9 つのルートは同じ順で apply し直し、同期と Spark の起動もやり直す",
+      not [c for c in cs2 if c["cmd"] == "uv" and "download" in c["args"]] and wheel_stamp() == wheel_sha()
+      and "wheels-oss/ に 1 個ある（web/requirements-oss.txt web/requirements.txt は変わっていない）" in p.stdout
       and [r for r, _ in applies(cs2)] == [f"oss/terraform/{r}" for r in ROOTS]
       and len([c for c in cs2 if is_seed(c)]) == 1 and spark_starts(cs2) == SPARK_SERVICES)
 _last = cs2[-1]["args"] if cs2 else []
@@ -974,21 +1002,42 @@ check("up.sh（打ち直し）: 最後に Web の EC2 へのポートフォワ�
       and not [f for f in os.listdir(TMP) if f.startswith("x-nwc-oss-nautobot.")])
 
 # ---- 3 回目: Neo4j と OpenSearch のサービスが安定しない（ついでに graph/requirements-oss.txt を変えて、レイヤーを作り直すことも見る）
-_old_sha = layer_sha()
+_old_sha, _old_wheel_sha = layer_sha(), wheel_sha()
 with open(os.path.join(REPO, "graph", "requirements-oss.txt"), "a", encoding="utf-8") as f:
     f.write("# 版を変えたつもり\n")
+with open(os.path.join(REPO, "web", "requirements.txt"), "a", encoding="utf-8") as f:   # -r で読まれる側だけを変える
+    f.write("# 版を変えたつもり\n")
+open(os.path.join(REPO, "wheels-oss", "old-0.9-py3-none-any.whl"), "w").close()   # 前の版の wheel
 p, cs3, inv3 = run_up(inv2, {"FAKE_ECR_ALL": "1", "NO_DASHBOARD_PORTFORWARD": "1",
-                             "FAKE_ECS_UNSTABLE": "out-graph-neo4j_service_name,x-nwc-oss-opensearch-b"})
+                             "FAKE_ECS_UNSTABLE": "out-graph-neo4j_service_name,x-nwc-oss-opensearch-b,out-workflow-service_name"})
 out3 = p.stdout + p.stderr
 check("up.sh（requirements-oss.txt を変えた）: レイヤーを消して pip を打ち直し、新しい SHA-256 を .sha256 に残す",
       [c for c in cs3 if c["cmd"] == "uv" and "install" in c["args"]] and layer_sha() != _old_sha and layer_stamp() == layer_sha()
       and "neo4j-layer）はある" not in out3)
+check("up.sh（web/requirements.txt を変えた）: wheels-oss/ を消して取り直し（前の版の wheel は残らない）、新しい SHA-256 を .requirements.sha256 に残す",
+      [c for c in cs3 if c["cmd"] == "uv" and "download" in c["args"]] and wheel_sha() != _old_wheel_sha and wheel_stamp() == wheel_sha()
+      and sorted(os.listdir(os.path.join(REPO, "wheels-oss"))) == [".requirements.sha256", "fake-1.0-py3-none-any.whl"]
+      and "は変わっていない）" not in out3.split("4-1.", 1)[-1].split("4-2.", 1)[0])
 check("up.sh（Neo4j が安定しない）: 同期を送らず、警告（トポロジは入れていない）を出して先へ進む（nautobot・analytics・workflow まで apply する）",
       p.returncode == 0 and not [c for c in cs3 if is_seed(c)] and out3.count("トポロジは入れていない") == 2
       and [r for r, _ in applies(cs3)] == [f"oss/terraform/{r}" for r in ROOTS])
 check("up.sh（OpenSearch が安定しない）: 警告（どの格納先か）を出し、VictoriaMetrics と Splunk は待ち、Spark は起こす（書き先が上がれば ECS が起こし直す）",
       out3.count("格納先が 20 分たっても上がりきらない: OpenSearch（") == 2 and "VictoriaMetrics（" not in out3.split("上がりきらない:", 1)[-1].split("。Spark は", 1)[0]
       and first(cs3, lambda c: is_aws(c, "ecs", "wait", "x-nwc-oss-victoriametrics-a")) >= 0 and spark_starts(cs3) == SPARK_SERVICES)
+
+_wf_waits = [i for i, c in enumerate(cs3) if is_aws(c, "ecs", "wait", "out-workflow-service_name")]
+check("up.sh（workflow のワーカーが安定しない）: 2 回待ち（1 回 10 分）、警告を出して先へ進む（Web の起こし直しと最後の案内まで届き、警告は最後にもう一度出す。"
+      "Temporal の UI の案内はタスクの IP が無いので出さない。005 のレビュー Nit 6）",
+      p.returncode == 0 and len(_wf_waits) == 2 and out3.count("workflow のワーカーのサービス（out-workflow-service_name）が 20 分たっても安定しない") == 2
+      and not [c for c in cs3 if is_aws(c, "ecs", "list-tasks", "out-workflow-service_name")]
+      and max(i for i, c in enumerate(cs3) if is_aws(c, "ssm", "send-command", "systemctl restart x-nwc-oss-web.service")) > _wf_waits[-1]
+      and "Temporal の UI" not in out3 and "Temporal の UI" in out)
+_mup = read("ops/up.sh")
+_m85 = _mup[_mup.index("# ---- 8-5. workflow"):_mup.index("# ---- 9. Runtime")]
+check("ops/up.sh（マネージド版）の workflow の待ちも 2 回までで、安定しなければ警告（WF_WARN）を出して先へ進み、最後にもう一度出す",
+      _m85.count('aws ecs wait services-stable --region "$REGION" --cluster "$WF_CLUSTER" --services "$WF_SERVICE"') == 2
+      and 'WF_WARN="workflow のワーカーのサービス' in _m85 and re.search(r'^WF_WARN=""$', _mup, re.M)
+      and """if [ -n "$WF_WARN" ]; then printf '\\033[1;33m%s\\033[0m\\n' "$WF_WARN"; fi""" in _mup)
 
 # ---- up.sh の作ったものを oss/ops/down.sh が消す（同じ在庫から）
 p, csd, invd = run_down("oss/ops/down.sh", "x", inv=inv3)

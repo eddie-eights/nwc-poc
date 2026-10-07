@@ -16,7 +16,7 @@ boto3 / pyiceberg / pyarrow は import せず、呼ばれたときに関数の�
 このモジュールを再 import するときに重い依存を引きずらないようにするため。
 
 OSS 版（cycle 005）は GRAPH_BACKEND=neo4j で、トポロジを Neptune Analytics の代わりに Neo4j（NEO4J_URI / NEO4J_USER / NEO4J_PASSWORD /
-NEO4J_DATABASE）から読む。クエリは同じ文字列のまま、送る直前に id(n) を n.id に直す（agent/graph.py の _dialect と同じ）。
+NEO4J_DATABASE）から読む。クエリは同じ文字列のまま、送る直前に _dialect で直す（agent/graph.py の _dialect の写し）。
 """
 
 import datetime as dt
@@ -80,15 +80,24 @@ def cypher(q: str, **params) -> list:
     return json.loads(res["payload"].read()).get("results", [])
 
 
+def _dialect(q: str) -> str:
+    """Neptune の openCypher を Neo4j の Cypher に直す。agent/graph.py の _dialect の写し（ワーカーの image は workflow/ だけで、
+    agent/ を持たない）。いまのクエリは id(x) しか使わないが、`~id` や AS from / to を足しても壊れないよう 3 つとも写す。
+    2 つが同じ答えを返すことは tests/test_oss.py が見る"""
+    q = re.sub(r"\bid\((\w+)\)", r"\1.id", q)
+    q = q.replace("`~id`", "id")
+    return re.sub(r"\bAS (from|to)\b", r"AS `\1`", q)
+
+
 def _neo4j_cypher(q: str, params: dict) -> list:
-    """OSS 版。頂点の id は property id（agent/graph.py の _dialect と同じ直し方）。ここで読むのは値だけ（頂点や辺そのものは返さない）。
+    """OSS 版。頂点の id は property id（_dialect で直す）。ここで読むのは値だけ（頂点や辺そのものは返さない）。
     neo4j は OSS 版の image にしか入れないので、ここで import する"""
     if "neo4j" not in _cache:
         from neo4j import GraphDatabase
 
         auth = (NEO4J_USER, NEO4J_PASSWORD) if NEO4J_PASSWORD else None
         _cache["neo4j"] = GraphDatabase.driver(NEO4J_URI, auth=auth, connection_timeout=10, max_transaction_retry_time=15)
-    res = _cache["neo4j"].execute_query(re.sub(r"\bid\((\w+)\)", r"\1.id", q), parameters_=params, database_=NEO4J_DATABASE)
+    res = _cache["neo4j"].execute_query(_dialect(q), parameters_=params, database_=NEO4J_DATABASE)
     return [dict(r.items()) for r in res.records]
 
 

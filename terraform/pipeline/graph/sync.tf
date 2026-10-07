@@ -122,8 +122,8 @@ resource "aws_lambda_function" "status" {
   handler          = "index.handler"
   filename         = data.archive_file.status.output_path
   source_code_hash = data.archive_file.status.output_base64sha256
-  timeout          = 60 # 行は Neptune より先に Firehose へ送る（長くて 22 秒ほど、エンドポイントが 3 AZ なら 28 秒ほど。status_handler.py の FIREHOSE_CONFIG）。Neptune の途中で切れたら非同期の再試行に任せる（3 AZ では Neptune の 1 回目でも切れうるので ops/up.sh が注意を出す）
-  memory_size      = 128
+  timeout          = 60  # 行は Neptune より先に Firehose へ送る（長くて 22 秒ほど、エンドポイントが 3 AZ なら 28 秒ほど。status_handler.py の FIREHOSE_CONFIG）。Neptune の途中で切れたら非同期の再試行に任せる（3 AZ では Neptune の 1 回目でも切れうるので ops/up.sh が注意を出す）
+  memory_size      = 256 # 128 MB では OSS 版（同じ Lambda に Neo4j のドライバのレイヤー）が AWS で 111 MB を使い、余裕が無かった。OSS 版の sync.tf とそろえる
 
   # VPC の中に置く（グラフは公開していないので、土台の neptune-graph-data のエンドポイントからしか届かない）。SG は terraform/base/core の lambda
   # （エンドポイントの 443 へ出られる。SSM は引かない。グラフの ID は環境変数で渡す）

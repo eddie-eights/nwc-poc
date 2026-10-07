@@ -146,8 +146,8 @@ resource "aws_lambda_function" "status" {
   filename         = data.archive_file.status.output_path
   source_code_hash = data.archive_file.status.output_base64sha256
   layers           = [aws_lambda_layer_version.neo4j.arn]
-  timeout          = 60 # マネージド版と同じ（行は Neo4j より先に Firehose へ送る。Neo4j の途中で切れたら非同期の再試行に任せる）
-  memory_size      = 128
+  timeout          = 60  # マネージド版と同じ（行は Neo4j より先に Firehose へ送る。Neo4j の途中で切れたら非同期の再試行に任せる）
+  memory_size      = 256 # マネージド版と同じ。128 MB では AWS で Max Memory Used が 111 MB（Neo4j のドライバのレイヤー込み）で、余裕が無かった
 
   # VPC の中に置く（Neo4j は VPC の中にしか無い）。SG は terraform/base/core の lambda（Neo4j の 7687 とエンドポイントの 443 へ出られる）
   vpc_config {
