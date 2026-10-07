@@ -94,7 +94,7 @@ def reload(force: bool = False) -> str:
             if devices:
                 layers = graph.load_layers()
         except (*graph.errors(), KeyError, ValueError, TypeError) as e:
-            log.warning("neptune read failed, using static data: %s", str(e)[:200])
+            log.warning("%s read failed, using static data: %s", graph.BACKEND, str(e)[:200])   # OSS 版は neo4j と出す
             devices = None
     if not devices:
         devices, links = load_static()

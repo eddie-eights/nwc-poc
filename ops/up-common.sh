@@ -1,4 +1,4 @@
-# ops/up.sh と OSS 版（005）の oss/ops/up.sh が読む共通の関数（terraform の apply、Session Manager でのコマンド、SSM のシークレット、
+# ops/up.sh と OSS 版（005）の oss/ops/up.sh が読む共通の関数（terraform の apply、Session Manager でのコマンド、Web の wheel、SSM のシークレット、
 # Glue の s3tablescatalog、Splunk のイメージと SSM のパラメータ、Agent・worker・Temporal・Nautobot のイメージと Nautobot の SSM のパラメータ）。
 # 先に ops/common.sh と ops/deploy-env.sh を読む（log / die / tf / tf_logged を使う）。Splunk のイメージは ops/lab-common.sh の dir_tag / ecr_has を使う。
 # REGION / PY / PREFIX / OWNER（s3tablescatalog は ACCOUNT_ID も）は呼ぶ前に決める。
@@ -57,6 +57,24 @@ run_on_instance() {  # run_on_instance <インスタンス ID> <コマンド…>
   ssm_run "$@" || die "インスタンス $1 の上のコマンドが失敗した（上の出力）"
 }
 AZ_NUM_SET=""   # deploy.env か環境変数に書いてあった *_AZ_NUM（ENDPOINTS_AZ_NUM と比べる）
+# Web の EC2 が入れる wheel（arm64 / cp313）。EC2 はインターネットに出ないので PC で取って S3 に置き、user_data が pip install --no-index で入れる
+# （terraform/base/core の web_user_data.sh.tftpl）。requirements（-r で読み込まれる側も）と pip の引数 WHEEL_ARGS のハッシュを <置き場>/.requirements.sha256 に残し、
+# 同じで .whl があれば取り直さない。違えば置き場を消して取り直す（.whl が 1 つでもあれば飛ばすと、版を上げても古い wheel のまま進む。005 のレビュー Nit 5）。
+# 置き場を S3 に上げるときは --delete と --exclude .requirements.sha256 を付ける（古い版を EC2 に残さない）。PY を使う
+WHEEL_ARGS=(--only-binary=:all: --platform manylinux2014_aarch64 --platform manylinux_2_17_aarch64 --platform manylinux_2_28_aarch64
+  --python-version 3.13 --implementation cp --abi cp313 --abi none)
+fetch_wheels() {  # fetch_wheels <置き場> <pip に -r で渡す requirements> [その中から -r で読まれる requirements …]
+  local dir=$1 req=$2 sha pip
+  sha=$( { cat "${@:2}"; echo "${WHEEL_ARGS[*]}"; } | "${PY[@]}" -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
+  if [ -n "$(ls "$dir"/*.whl 2>/dev/null)" ] && [ "$(cat "$dir/.requirements.sha256" 2>/dev/null)" = "$sha" ]; then
+    echo "$dir/ に $(ls "$dir"/*.whl | wc -l | tr -d ' ') 個ある（${*:2} は変わっていない）"
+    return 0
+  fi
+  if command -v uv >/dev/null; then pip="uv run --python 3.13 --with pip python -m pip"; else pip="python3 -m pip"; fi
+  rm -rf "$dir"
+  $pip download "${WHEEL_ARGS[@]}" -d "$dir" -r "$req" || die "Web の wheel（$req）を $dir/ に取れなかった"
+  printf '%s\n' "$sha" > "$dir/.requirements.sha256"
+}
 az_num() {  # az_num <キー> <既定> <最小> <最大> <範囲の理由>  書いてなければ既定。範囲の外なら止める
   local k=$1 v="${!1:-}"
   if [ -n "$v" ]; then AZ_NUM_SET="$AZ_NUM_SET $k"; else v=$2; fi

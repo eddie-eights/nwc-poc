@@ -418,11 +418,13 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 8. **シンボリックリンクの terraform。**
    変えないルートが、変えるルートの output や IAM を参照している。「空なら作らない」の分岐が多くなるなら、そのルートは複製に切り替える。`agent`、`workflow`、`pipeline/nautobot` は `oss/ops/up.sh` から apply し、AWS で動いた。
 9. **Lambda から Neo4j へ。**
-   ドライバはレイヤーで入れた。AWS で、Grafana と Splunk の両方のアラートで status が変わり、Neo4j を止めて戻したあとも書けた。ただし status の Lambda は `Max Memory Used` が 111 MB / 128 MB で、ドライバの版を上げると足りなくなる（`terraform/pipeline/graph/sync.tf` の `memory_size`。マネージド版と共用なので、別のサイクルで上げる）。
+   ドライバはレイヤーで入れた。AWS で、Grafana と Splunk の両方のアラートで status が変わり、Neo4j を止めて戻したあとも書けた。ただし status の Lambda は `Max Memory Used` が 111 MB / 128 MB で、余裕が無かった。2026-10-08 に `memory_size` を 256 MB に上げた（マネージド版の `terraform/pipeline/graph/sync.tf` と、OSS 版の写し `oss/terraform/pipeline/graph/sync.tf` の両方。`tests/test_oss.py` が同じ値かを見る）。256 MB での `REPORT` は、AWS ではまだ見ていない。
 10. **並べて立てたときの上限。**
     Fargate の vCPU の上限（30）に OSS 版だけで 21.5 なので、マネージド版と並べるには上限を上げる。並べたときの VPC とエンドポイントの上限は未確認。
-11. **Neo4j の ECS のサービスに healthCheck が無い。**
-    タスクの healthStatus が UNKNOWN のままで、`aws ecs wait services-stable` は RUNNING を見るだけ。Neo4j のプロセスが起きていて Bolt が開いていない時間は、ECS からは見えない（別のサイクルで足す）。
+11. **Neo4j の ECS の healthCheck は、Bolt のポートが開いているかしか見ない。**
+    2026-10-08 に足した（`oss/terraform/pipeline/graph/neo4j.tf`。公式イメージに curl と nc が無いので、bash の `/dev/tcp` で 7687 に繋ぐ）。手元の `neo4j:2026.09.0-community` で、起動前は失敗し、起動後に通るのを確かめた。
+    UNHEALTHY になると ECS がタスクを入れ替え、データが消える。そのため 30 秒おきに 10 回続けて失敗する（5 分）まで落とさず、起動の 3 分は数えない。`oss/ops/up.sh` は HEALTHY を待たず、7-3b が Bolt に繋げるかを 30 秒おきに見る。
+    Bolt が開いていてクエリに答えない状態は、healthCheck では見えない。AWS ではまだ打っていない。
 12. **エンドポイントが 1 つの AZ だけのとき。**
     `ENDPOINTS_AZ_NUM=1` でも動くが、その AZ が止まると、ほかの AZ の Kafka も ECR や CloudWatch Logs に届かない。
 

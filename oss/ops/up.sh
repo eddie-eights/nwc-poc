@@ -263,15 +263,7 @@ echo "Runtime の ARN は SSM の $(tf agent output -raw runtime_arn_parameter_n
 # OSS 版の Web は web/requirements-oss.txt（マネージド版の依存 + Neo4j のドライバー）で入れる（terraform/base/core の web.tf の graph_backend）。
 # wheel の置き場はマネージド版の wheels/ と分ける（同じフォルダから両方の up.sh を打っても混ざらない）
 log "4-1. wheel（arm64 / cp313。web/requirements-oss.txt）"
-if [ -z "$(ls wheels-oss/*.whl 2>/dev/null)" ]; then
-  if command -v uv >/dev/null; then PIP="uv run --python 3.13 --with pip python -m pip"; else PIP="python3 -m pip"; fi
-  $PIP download --only-binary=:all: \
-    --platform manylinux2014_aarch64 --platform manylinux_2_17_aarch64 --platform manylinux_2_28_aarch64 \
-    --python-version 3.13 --implementation cp --abi cp313 --abi none \
-    -d wheels-oss -r web/requirements-oss.txt
-else
-  echo "wheels-oss/ に $(ls wheels-oss/*.whl | wc -l | tr -d ' ') 個ある。取り直すなら wheels-oss/ を消す"
-fi
+fetch_wheels wheels-oss web/requirements-oss.txt web/requirements.txt   # requirements-oss.txt は -r で requirements.txt を読むので、両方の版を見る
 
 log "4-2. Web の部品を s3://$KB_BUCKET/web/ に置く"
 for f in web/*.py; do aws s3 cp --only-show-errors "$f" "s3://$KB_BUCKET/web/${f#web/}"; done
@@ -279,7 +271,7 @@ aws s3 cp --only-show-errors web/requirements.txt "s3://$KB_BUCKET/web/requireme
 aws s3 cp --only-show-errors web/requirements-oss.txt "s3://$KB_BUCKET/web/requirements-oss.txt"
 for f in toolkit topology graph proposals; do aws s3 cp --only-show-errors "agent/$f.py" "s3://$KB_BUCKET/web/$f.py"; done
 aws s3 cp --only-show-errors agent/data/ "s3://$KB_BUCKET/web/data/" --recursive
-aws s3 sync --only-show-errors wheels-oss/ "s3://$KB_BUCKET/web/wheels/"
+aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels-oss/ "s3://$KB_BUCKET/web/wheels/"
 
 log "4-4. EC2 を再起動して Web を立てる（初回の apply 時点では web/ が無いため）"
 wait_ssm_online "$INSTANCE_ID"
@@ -397,7 +389,8 @@ fi
 # アラートの履歴は 7-4 の analytics の Firehose に送る（analytics はいつも作るので、いつも true。Firehose ができるのは 7-4 で、それまでは送れない）
 tf_apply pipeline/graph -var "neo4j_image_tag=$NEO4J_TAG" -var alert_history=true -var "lambda_az_num=$LAMBDA_AZ_NUM"
 
-# Neo4j は ECS の healthCheck を持たないので、サービスが安定する（タスクが RUNNING のまま落ちない）のを待つ。Bolt に応えるかは次の 7-3b が 30 秒おきに確かめる
+# サービスが安定する（タスクが RUNNING のまま落ちない）のを待つ。Neo4j の ECS の healthCheck（Bolt の 7687 が開いているか）の HEALTHY は
+# ここでは待たない。Bolt に応えるかは次の 7-3b が 30 秒おきに確かめる
 log "7-3a. Neo4j の ECS のサービスが安定するのを待つ（イメージの取得と起動。2〜5 分）"
 GRAPH_WARN=""
 GRAPH_CLUSTER=$(tf pipeline/graph output -raw graph_cluster_name); NEO4J_SERVICE=$(tf pipeline/graph output -raw neo4j_service_name)
@@ -533,11 +526,19 @@ run_on_instance "$INSTANCE_ID" "systemctl restart $PREFIX-web.service; $WEB_ACTI
 log "8. workflow（oss/terraform/workflow。Temporal のワーカーの ECS と AgentCore Gateway）"
 tf_apply workflow -var "worker_image_tag=$IMAGE_TAG" -var "lambda_az_num=$LAMBDA_AZ_NUM"
 WF_CLUSTER=$(tf workflow output -raw cluster_name); WF_SERVICE=$(tf workflow output -raw service_name)
-aws ecs wait services-stable --region "$REGION" --cluster "$WF_CLUSTER" --services "$WF_SERVICE"
-WF_TASK=$(aws ecs list-tasks --region "$REGION" --cluster "$WF_CLUSTER" --service-name "$WF_SERVICE" --query 'taskArns[0]' --output text)
-WF_TASK_IP=$(aws ecs describe-tasks --region "$REGION" --cluster "$WF_CLUSTER" --tasks "$WF_TASK" \
-  --query 'tasks[0].attachments[0].details[?name==`privateIPv4Address`].value | [0]' --output text)
-echo "WF_TASK=${WF_TASK##*/} WF_TASK_IP=$WF_TASK_IP"
+# services-stable は 1 回で最大 10 分。イメージの取得や Temporal の起動が遅い回に備えて 2 回まで待ち、それでも安定しなければ警告を出して先へ進む
+# （set -e で up.sh ごと止まると、Web の起こし直しと最後の案内まで届かない。005 のレビュー Nit 6。マネージド版の 8-5 も同じ）
+WF_WARN=""; WF_TASK_IP=""
+if aws ecs wait services-stable --region "$REGION" --cluster "$WF_CLUSTER" --services "$WF_SERVICE" 2>/dev/null \
+  || aws ecs wait services-stable --region "$REGION" --cluster "$WF_CLUSTER" --services "$WF_SERVICE"; then
+  WF_TASK=$(aws ecs list-tasks --region "$REGION" --cluster "$WF_CLUSTER" --service-name "$WF_SERVICE" --query 'taskArns[0]' --output text)
+  WF_TASK_IP=$(aws ecs describe-tasks --region "$REGION" --cluster "$WF_CLUSTER" --tasks "$WF_TASK" \
+    --query 'tasks[0].attachments[0].details[?name==`privateIPv4Address`].value | [0]' --output text)
+  echo "WF_TASK=${WF_TASK##*/} WF_TASK_IP=$WF_TASK_IP"
+else
+  WF_WARN="workflow のワーカーのサービス（$WF_SERVICE）が 20 分たっても安定しない。ワーカーのログ（$(tf workflow output -raw worker_logs_command)）と aws ecs list-tasks --region $REGION --cluster $WF_CLUSTER --desired-status STOPPED を見て、直ったら oss/ops/up.sh を打ち直す"
+  printf '\033[1;33m%s\033[0m\n' "$WF_WARN"
+fi
 log "8-2. Web を起こし直す（workflow の Gateway の値を読ませる）"
 run_on_instance "$INSTANCE_ID" "systemctl restart $PREFIX-web.service; $WEB_ACTIVE"
 
@@ -577,12 +578,15 @@ echo "Neo4j Browser（http://localhost:7474/ 。ユーザー neo4j。パスワ�
 tf pipeline/graph output -raw neo4j_browser_port_forward_command; echo
 tf pipeline/graph output -raw neo4j_bolt_port_forward_command; echo
 echo "ワーカーのログ: $(tf workflow output -raw worker_logs_command)"
-echo "Temporal の UI（Web の EC2 経由でタスクの 8233 へ。PC の http://localhost:8233/ ）:"
-echo "  aws ssm start-session --region $REGION --target $INSTANCE_ID --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{\"host\":[\"$WF_TASK_IP\"],\"portNumber\":[\"8233\"],\"localPortNumber\":[\"8233\"]}'"
+if [ -n "$WF_TASK_IP" ]; then   # ワーカーが安定しなかったときはタスクの IP が無い（WF_WARN）
+  echo "Temporal の UI（Web の EC2 経由でタスクの 8233 へ。PC の http://localhost:8233/ ）:"
+  echo "  aws ssm start-session --region $REGION --target $INSTANCE_ID --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{\"host\":[\"$WF_TASK_IP\"],\"portNumber\":[\"8233\"],\"localPortNumber\":[\"8233\"]}'"
+fi
 if [ -n "$LAB_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$LAB_WARN"; fi
 if [ -n "$GRAPH_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$GRAPH_WARN"; fi
 if [ -n "$NAUTOBOT_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$NAUTOBOT_WARN"; fi
 if [ -n "$STORE_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$STORE_WARN"; fi
+if [ -n "$WF_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$WF_WARN"; fi
 printf '\033[1;33m%s\033[0m\n' "時間課金（Kafka 3 台・Telegraf・Kafbat UI・Spark・OpenSearch 3 台・VictoriaMetrics・Splunk・Grafana・Neo4j・Nautobot・Temporal のワーカーの ECS、Nautobot の DB、AgentCore Runtime、lab と Web の EC2、EFS、エンドポイント 14 種）。使い終わったら当日中に oss/ops/down.sh"
 
 # ---- 10. ポートフォワーディング ------------------------------------------------------------

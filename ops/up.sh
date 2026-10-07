@@ -778,15 +778,7 @@ fi
 
 # ---- 4. Web の部品と手順書 ------------------------------------------------------------
 log "4-1. wheel（arm64 / cp313）"
-if [ -z "$(ls wheels/*.whl 2>/dev/null)" ]; then
-  if command -v uv >/dev/null; then PIP="uv run --python 3.13 --with pip python -m pip"; else PIP="python3 -m pip"; fi
-  $PIP download --only-binary=:all: \
-    --platform manylinux2014_aarch64 --platform manylinux_2_17_aarch64 --platform manylinux_2_28_aarch64 \
-    --python-version 3.13 --implementation cp --abi cp313 --abi none \
-    -d wheels -r web/requirements.txt
-else
-  echo "wheels/ に $(ls wheels/*.whl | wc -l | tr -d ' ') 個ある。取り直すなら wheels/ を消す"
-fi
+fetch_wheels wheels web/requirements.txt
 
 log "4-2. Web の部品を s3://$KB_BUCKET/web/ に置く"
 # app.py が import する web/ の .py（chat / config / incident_view / topology_view）も全部置く。app.py だけだと Web が起動のたびに落ちる
@@ -794,7 +786,7 @@ for f in web/*.py; do aws s3 cp --only-show-errors "$f" "s3://$KB_BUCKET/web/${f
 aws s3 cp --only-show-errors web/requirements.txt "s3://$KB_BUCKET/web/requirements.txt"
 for f in toolkit topology graph proposals; do aws s3 cp --only-show-errors "agent/$f.py" "s3://$KB_BUCKET/web/$f.py"; done
 aws s3 cp --only-show-errors agent/data/ "s3://$KB_BUCKET/web/data/" --recursive
-aws s3 sync --only-show-errors wheels/ "s3://$KB_BUCKET/web/wheels/"
+aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels/ "s3://$KB_BUCKET/web/wheels/"
 
 if [ -n "$CREATE_KB" ]; then
 log "4-3. 手順書を置いて取り込む（CREATE_KB=1）"
@@ -1215,19 +1207,27 @@ if [ -z "$SKIP_STREAM" ] || [ -z "$SKIP_GRAPH" ] || [ -n "$NAUTOBOT" ]; then
 fi
 
 # ---- 8-5. workflow（機能 WORKFLOW）--------------------------------------------------------
+WF_WARN=""
 if [ -n "$WORKFLOW" ]; then
   log "8-5. workflow（terraform/workflow。Temporal のワーカーと AgentCore Gateway。数分）"
   tf_apply workflow -var "worker_image_tag=$IMAGE_TAG" -var "lambda_az_num=$LAMBDA_AZ_NUM"
   WF_CLUSTER=$(tf workflow output -raw cluster_name); WF_SERVICE=$(tf workflow output -raw service_name)
   echo "ECS のサービスが安定するのを待つ（イメージの取得と Temporal の起動。1〜3 分）"
-  aws ecs wait services-stable --region "$REGION" --cluster "$WF_CLUSTER" --services "$WF_SERVICE"
-  WF_TASK=$(aws ecs list-tasks --region "$REGION" --cluster "$WF_CLUSTER" --service-name "$WF_SERVICE" --query 'taskArns[0]' --output text)
-  WF_TASK_IP=$(aws ecs describe-tasks --region "$REGION" --cluster "$WF_CLUSTER" --tasks "$WF_TASK" \
-    --query 'tasks[0].attachments[0].details[?name==`privateIPv4Address`].value | [0]' --output text)
-  echo "WF_TASK=${WF_TASK##*/} WF_TASK_IP=$WF_TASK_IP"
-  echo "ワーカーのログ: $(tf workflow output -raw worker_logs_command)"
-  echo "Temporal の UI（Web の EC2 経由でタスクの 8233 へ。PC の http://localhost:8233/ ）:"
-  echo "  aws ssm start-session --region $REGION --target $INSTANCE_ID --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{\"host\":[\"$WF_TASK_IP\"],\"portNumber\":[\"8233\"],\"localPortNumber\":[\"8233\"]}'"
+  # services-stable は 1 回で最大 10 分。2 回まで待ち、それでも安定しなければ警告を出して先へ進む
+  # （set -e で up.sh ごと止まると、Web の再起動と最後の案内まで届かない。005 のレビュー Nit 6。OSS 版の 8 も同じ）
+  if aws ecs wait services-stable --region "$REGION" --cluster "$WF_CLUSTER" --services "$WF_SERVICE" 2>/dev/null \
+    || aws ecs wait services-stable --region "$REGION" --cluster "$WF_CLUSTER" --services "$WF_SERVICE"; then
+    WF_TASK=$(aws ecs list-tasks --region "$REGION" --cluster "$WF_CLUSTER" --service-name "$WF_SERVICE" --query 'taskArns[0]' --output text)
+    WF_TASK_IP=$(aws ecs describe-tasks --region "$REGION" --cluster "$WF_CLUSTER" --tasks "$WF_TASK" \
+      --query 'tasks[0].attachments[0].details[?name==`privateIPv4Address`].value | [0]' --output text)
+    echo "WF_TASK=${WF_TASK##*/} WF_TASK_IP=$WF_TASK_IP"
+    echo "ワーカーのログ: $(tf workflow output -raw worker_logs_command)"
+    echo "Temporal の UI（Web の EC2 経由でタスクの 8233 へ。PC の http://localhost:8233/ ）:"
+    echo "  aws ssm start-session --region $REGION --target $INSTANCE_ID --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{\"host\":[\"$WF_TASK_IP\"],\"portNumber\":[\"8233\"],\"localPortNumber\":[\"8233\"]}'"
+  else
+    WF_WARN="workflow のワーカーのサービス（$WF_SERVICE）が 20 分たっても安定しない。ワーカーのログ（$(tf workflow output -raw worker_logs_command)）と aws ecs list-tasks --region $REGION --cluster $WF_CLUSTER --desired-status STOPPED を見て、直ったら ops/up.sh を打ち直す"
+    printf '\033[1;33m%s\033[0m\n' "$WF_WARN"
+  fi
   log "8-6. Web を再起動する（Neptune の接続先を SSM から読み直すため。エージェントは Gateway を 5 分以内に拾う）"
   run_on_instance "$INSTANCE_ID" "systemctl restart $PREFIX-web.service; $WEB_ACTIVE"
   echo "Web が動いている"
@@ -1280,6 +1280,7 @@ if [ -z "$SKIP_STREAM" ]; then
 fi
 if [ -n "$LAB_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$LAB_WARN"; fi
 if [ -n "$NAUTOBOT_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$NAUTOBOT_WARN"; fi
+if [ -n "$WF_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$WF_WARN"; fi
 printf '\033[1;33m%s\033[0m\n' "$COST_NOTE"
 if [ -n "$NO_DASHBOARD_PORTFORWARD" ]; then exit 0; fi
 log "10. ポートフォワーディング（http://localhost:$LOCAL_PORT/ 。Ctrl+C で閉じる）"

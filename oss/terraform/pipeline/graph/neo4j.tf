@@ -116,7 +116,9 @@ resource "aws_service_discovery_service" "neo4j" {
   }
 }
 
-# ヘルスチェックは付けない（Kafka と同じ。LB が無いので入れ替えの判断にしか使われない）
+# ヘルスチェックは Bolt（7687）が開いているかだけを見る（ECS の healthStatus で、起動してからアプリがつなげるまでが見える）。
+# UNHEALTHY になると ECS はタスクを入れ替え、データ（一時領域）は消える。そのため重い GDS や GC で数分詰まっても入れ替えないよう、
+# 30 秒おきに 10 回続けて（5 分）開かないときだけ UNHEALTHY にする。起動の 3 分は数えない
 resource "aws_ecs_task_definition" "neo4j" {
   family                   = "${local.name_prefix}-neo4j"
   requires_compatibilities = ["FARGATE"]
@@ -147,6 +149,14 @@ resource "aws_ecs_task_definition" "neo4j" {
       # イメージの入口（neo4j/entrypoint.sh）が NEO4J_AUTH=neo4j/<パスワード> に直して消す
       secrets     = [{ name = "GRAPH_PASSWORD", valueFrom = local.neo4j_password_arn }]
       mountPoints = [{ sourceVolume = "data", containerPath = "/data", readOnly = false }]
+      # 公式イメージ（Debian）に curl と nc は無く、bash と wget はある。2026-10-08 に neo4j:2026.09.0-community で、起動前は失敗し起動後に通るのを確かめた
+      healthCheck = {
+        command     = ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/7687"]
+        interval    = 30
+        timeout     = 5
+        retries     = 10
+        startPeriod = 180
+      }
       # 止めるときにトランザクションログを閉じる時間（Fargate の上限）
       stopTimeout = 120
       logConfiguration = {

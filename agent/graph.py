@@ -41,8 +41,10 @@ NEO4J_PASSWORD（無ければ SSM の <PARAM_PREFIX>/neo4j-password。SecureStri
 
 import contextlib
 import json
+import logging
 import os
 import re
+import time
 import uuid
 
 import boto3
@@ -65,7 +67,9 @@ NEO4J_DATABASE = os.environ.get("NEO4J_DATABASE") or "neo4j"
 # ドライバの既定（接続 30 秒・やり直し 30 秒）は長いので、_client() の Neptune と同じく早めにあきらめる。graph-status の Lambda は
 # status_handler.py が短い設定で先に _driver() を作る
 NEO4J_CONFIG = {"connection_timeout": 10, "max_transaction_retry_time": 15}
-_cache = {"client": None, "driver": None, "schema": False}
+SCHEMA_TTL = 60   # 一意制約を張り直すまでの秒数（_neo4j_schema。Neo4j のタスクが入れ替わると制約もデータと一緒に消える）
+_cache = {"client": None, "driver": None, "schema": None}   # schema は制約を張った時刻（time.monotonic。まだなら None）
+log = logging.getLogger("graph")
 
 
 def graph_id() -> str:
@@ -164,19 +168,34 @@ def _plain(v):
 
 
 def _neo4j_schema(driver) -> None:
-    """頂点の id をラベルごとに一意にする（Neptune の ~id の代わり。MATCH と MERGE が id の索引を使う）。プロセスで最初の 1 回だけ"""
-    if _cache["schema"]:
+    """頂点の id をラベルごとに一意にする（Neptune の ~id の代わり。MATCH と MERGE が id の索引を使う）。
+    張ったら SCHEMA_TTL 秒は張り直さない。Neo4j のタスクが入れ替わるとデータは一時領域なので制約ごと消えるが、生きている Web・Runtime・
+    温まった Lambda はそれを知らない（ドライバは切れた接続を中で黙ってやり直すので、失敗として見えないこともある）。張り直さないと
+    一意制約の無いまま MERGE が走り、同じ id のアラートが同時に来ると頂点が 2 つできる。そこで時間がたったら張り直し、ドライバの失敗
+    （DriverError）のあとはすぐ張り直す（_neo4j_query）。IF NOT EXISTS なので、残っていれば何も起きない。
+    重複がすでにあって張れないラベル（サーバーの失敗。Neo4jError）は WARNING に出して先に進む（そこで止めると、重複を消すはずの
+    ops/sync-graph.sh --oss の seed まで落ちる）。張れなかったラベルは次の張り直しでまた試す。つながらない失敗はそのまま上げる"""
+    now = time.monotonic()
+    if _cache["schema"] is not None and now - _cache["schema"] < SCHEMA_TTL:
         return
     for label in ("device", "interface", "change") + LAYER_LABELS:
-        driver.execute_query(f"CREATE CONSTRAINT nwc_{label}_id IF NOT EXISTS FOR (n:{_ident(label)}) REQUIRE n.id IS UNIQUE",
-                             database_=NEO4J_DATABASE)
-    _cache["schema"] = True
+        try:
+            driver.execute_query(f"CREATE CONSTRAINT nwc_{label}_id IF NOT EXISTS FOR (n:{_ident(label)}) REQUIRE n.id IS UNIQUE",
+                                 database_=NEO4J_DATABASE)
+        except _server_errors() as e:
+            log.warning("Neo4j の %s の一意制約を張れない（同じ id の頂点が 2 つ以上ある等。%d 秒後にまた試す）: %s",
+                        label, SCHEMA_TTL, str(e)[:200])
+    _cache["schema"] = now
 
 
 def _neo4j_query(cypher: str, params: dict) -> list:
     driver = _driver()
     _neo4j_schema(driver)
-    res = driver.execute_query(_dialect(cypher), parameters_=params, database_=NEO4J_DATABASE)
+    try:
+        res = driver.execute_query(_dialect(cypher), parameters_=params, database_=NEO4J_DATABASE)
+    except _driver_errors():
+        _cache["schema"] = None   # つながらない・切れた。Neo4j が入れ替わったかもしれないので、次のクエリの前に制約を張り直す
+        raise
     return [{k: _plain(v) for k, v in r.items()} for r in res.records]
 
 

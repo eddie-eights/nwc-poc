@@ -25,7 +25,7 @@
      ワークフローに届き、タスクロールは SNS の publish だけ
 実行は python3 tests/test_oss.py。graph.py のクエリを意図して変えたときだけ --write-golden で golden を作り直す
 （作り直すと 1. はその時点のコードを正とする。差分は git diff tests/golden で見る）。"""
-import base64, copy, importlib.util, io, json, os, re, subprocess, sys, tempfile, types, urllib.request
+import base64, copy, importlib.util, io, json, logging, os, re, subprocess, sys, tempfile, types, urllib.request
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 AGENT, WORKFLOW, SPARK = (os.path.join(ROOT, d) for d in ("agent", "workflow", "spark"))
@@ -381,9 +381,16 @@ check("neo4j の centrality: 射影がドライバの失敗（DriverError。つ�
 
 # agent/topology.py を Neo4j の設定で読み込み、graph.errors() の型が実際に受け止められることを見る（文字列の検査だけにしない）
 state["answer"], state["calls"] = {"": DriverError("切れた")}, []   # 空の鍵は全部のクエリに当たる（最初の読み込みが落ちる）
+_topo_log = logging.getLogger("topology")
+_topo_warns = []
+_grab = type("Grab", (logging.Handler,), {"emit": lambda self, r: _topo_warns.append(r.getMessage())})()
+_topo_log.addHandler(_grab)
 topology4 = load(os.path.join(AGENT, "topology.py"), "topology")
+_topo_log.removeHandler(_grab)
 check("neo4j の topology.py: 読み込みが DriverError で落ちたら 500 にせず静的データに戻る（SOURCE が static、機器は data/ の 8 台）",
       topology4.SOURCE == "static" and len(topology4.DEVICES) == 8 and any("device" in q for q, _ in state["calls"]))
+check("neo4j の topology.py: 読めなかったときの WARNING は graph の名前（neo4j）で出し、neptune とは書かない",
+      _topo_warns == ["neo4j read failed, using static data: 切れた"])
 _cent_err = {}
 for _name, _e in (("DriverError", DriverError("切れた")), ("Neo4jError", Neo4jError("There is no procedure with the name gds.closeness.stream"))):
     state["answer"], state["calls"] = dict(ALGO, **{"gds.closeness": _e}), []
@@ -398,6 +405,45 @@ check("neo4j の topology.py: 失敗しなければ GDS の結果に note を付
 state["answer"], state["calls"] = dict(ALGO, **{"gds.closeness": RuntimeError("ドライバが包まない失敗")}), []
 check("neo4j の topology.py: ドライバが包まない失敗（RuntimeError 等）は graph.errors() の範囲外なので、そのまま上がる（握りつぶさない）",
       raises(RuntimeError, topology4.centrality))
+
+# 一意制約の張り直し（005 のレビューの Nit 1）。Neo4j のタスクが入れ替わると制約も消えるので、時間がたつか、ドライバが失敗したら張り直す。
+# 時計は graph4.time を差し替えて進め、WARNING は graph4.log を差し替えて拾う
+_clock, _warns = [1000.0], []
+_real_time, graph4.time = graph4.time, types.SimpleNamespace(monotonic=lambda: _clock[0])
+_real_log, graph4.log = graph4.log, types.SimpleNamespace(warning=lambda msg, *a: _warns.append(msg % a))
+_q = "MATCH (n:device) RETURN n.id AS id"
+def _schema_sent():
+    state["calls"] = []
+    graph4.query(_q)
+    return [q for q, _ in state["calls"] if q.startswith("CREATE CONSTRAINT")]
+state["answer"] = {}
+graph4._cache["schema"] = None
+_first = _schema_sent()
+_clock[0] += graph4.SCHEMA_TTL - 1
+_within = _schema_sent()
+_clock[0] += 1
+_after = _schema_sent()
+check("neo4j: 一意制約は張ってから SCHEMA_TTL 秒（60）は張り直さず、過ぎたら次のクエリの前にまた全ラベルに張る（入れ替わった Neo4j に制約を戻す）",
+      graph4.SCHEMA_TTL == 60 and len(_first) == len(labels) and _within == [] and _after == _first)
+state["answer"] = {_q: DriverError("切れた")}
+_err = _catch(lambda: graph4.query(_q))
+state["answer"] = {}
+check("neo4j: クエリがドライバの失敗（DriverError）で落ちたら、時間がたっていなくても次のクエリの前に制約を張り直す",
+      isinstance(_err, DriverError) and _schema_sent() == _first and _schema_sent() == [])
+_clock[0] += graph4.SCHEMA_TTL
+state["answer"], state["calls"] = {"CREATE CONSTRAINT nwc_interface_id": Neo4jError("Unable to create Constraint( name='nwc_interface_id' ): Both Node(1) and Node(2) have the label `interface`")}, []
+_rows = graph4.query(_q)
+check("neo4j: 重複があって張れない制約（Neo4jError）は WARNING に出して先に進み、ほかのラベルの制約とクエリは打つ（seed で重複を消せるように）",
+      [q for q, _ in state["calls"] if q.startswith("CREATE CONSTRAINT")] == _first and state["calls"][-1][0] == _q
+      and _rows == [{"n": 1}] and len(_warns) == 1 and "interface" in _warns[0] and "60 秒後" in _warns[0])
+_clock[0] += graph4.SCHEMA_TTL
+state["answer"], state["calls"] = {"CREATE CONSTRAINT": DriverError("つながらない")}, []
+_err = _catch(lambda: graph4.query(_q))
+_sent = state["calls"]
+state["answer"] = {}
+check("neo4j: 制約を張る途中のドライバの失敗（DriverError）はそのまま上げてクエリを打たず、張ったことにしない（次のクエリでまた張る）",
+      isinstance(_err, DriverError) and len(_sent) == 1 and _sent[0][0].startswith("CREATE CONSTRAINT") and _schema_sent() == _first)
+graph4.time, graph4.log = _real_time, _real_log
 del sys.modules["neo4j.exceptions"]; del neo4j.exceptions; del sys.modules["topology"]
 with open(os.path.join(AGENT, "topology.py"), encoding="utf-8") as f:
     _topo_src = f.read()
@@ -416,6 +462,11 @@ topo4 = awsio_scenario(awsio4)
 check("neo4j: awsio.read_topology は同じ中身から Neptune と同じトポロジを返し、送るのは golden の id(x) を x.id に直したもの",
       topo4 == neptune_topo and state["calls"] == [[re.sub(r"\bid\((\w+)\)", r"\1.id", q), p] for q, p in golden["awsio"]]
       and not any(re.search(r"\bid\(", q) for q, _ in state["calls"]))
+_samples = [q for q, _ in golden["graph"] + golden["awsio"]] + [
+    "MATCH (n) WHERE id(n) = $id MERGE (m {`~id`: $x}) RETURN id(m) AS a, valid(n) AS from, n.to AS to, 1 AS fromage"]
+check("neo4j: awsio._dialect は agent/graph.py の _dialect の写しで、golden の全クエリと `~id`・AS from / to を含む文で同じ答えを返す（005 のレビューの Nit 2）",
+      all(awsio4._dialect(q) == graph4._dialect(q) for q in _samples)
+      and awsio4._dialect(_samples[-1]) != _samples[-1] and "`~id`" not in awsio4._dialect(_samples[-1]))
 check("neo4j: awsio のドライバも NEO4J_USER / NEO4J_PASSWORD で、worker.py が起動時に見る変数は NEO4J_URI",
       awsio4.GRAPH_ENV == "NEO4J_URI" and len(FakeDriver.made) == 1 and FakeDriver.made[0].auth == ("neo4j", "pw-neo4j")
       and FakeDriver.made[0].uri == NEO4J["NEO4J_URI"])
@@ -800,6 +851,9 @@ check("OSS 版のイメージのリポジトリは project = nwc-oss のとき�
 _chk = open(os.path.join(ROOT, "ops", "check.sh"), encoding="utf-8").read()
 check("ops/check.sh は terraform/ と oss/terraform/ の両方に fmt と validate を打つ",
       "TF_BASES=(terraform oss/terraform)" in _chk and 'terraform fmt -check -recursive "$base"' in _chk and 'terraform -chdir="$base/$r" validate' in _chk)
+check("ops/check.sh は oss/terraform のルートを -lockfile=readonly で init する（lock はマネージド版へのシンボリックリンク。書くと実ファイルになる。005 のレビュー Nit 6）",
+      'LOCK=""; if [ "$base" = oss/terraform ]; then LOCK=-lockfile=readonly; fi' in _chk
+      and 'terraform -chdir="$base/$r" init -backend=false -input=false ${LOCK:+"$LOCK"} >/dev/null' in _chk)
 
 # ---- 5. OSS 版の Kafka と Telegraf（設計の 4）。stream は MSK の msk.tf だけを kafka.tf に替え、ほかはマネージド版のファイルへのリンク
 _STREAM = "pipeline/stream"
@@ -1190,6 +1244,10 @@ check(f"OSS 版の graph の実ファイルは Neo4j の分だけで（{_graph_r
       _graph_real == ["access.tf", "neo4j.tf", "oss.auto.tfvars", "outputs.tf", "sync.tf"]
       and "desired_count   = 1" in _neo and 'secrets     = [{ name = "GRAPH_PASSWORD", valueFrom = local.neo4j_password_arn }]' in _neo
       and "REQUIRE n.id IS UNIQUE" in open(os.path.join(ROOT, "agent", "graph.py"), encoding="utf-8").read())
+check("Neo4j のタスクの healthCheck は Bolt（7687）が開いているかを bash で見て（公式イメージに curl と nc は無い）、"
+      "5 分（30 秒 × 10 回）続けて開かないときだけ UNHEALTHY にする（入れ替えるとデータが消えるので、詰まった程度では入れ替えない）",
+      re.search(r'healthCheck = \{\s*command\s*= \["CMD", "bash", "-c", "</dev/tcp/127\.0\.0\.1/7687"\]\s*interval\s*= 30\s*timeout\s*= 5\s*'
+                r'retries\s*= 10\s*startPeriod = 180\s*\}', _neo) is not None and _neo.count("healthCheck") == 1)
 _tpl = open(os.path.join(ROOT, "terraform", "base", "core", "templates", "web_user_data.sh.tftpl"), encoding="utf-8").read()
 _wf = {n: _code(s) for n, s in tf_text("terraform", "workflow").items()}
 check("status の Lambda・Worker・Web は環境変数で Neo4j に向く（Lambda は OSS 版の sync.tf、Worker は graph の state の neo4j_uri、Web は project = nwc-oss）。"
@@ -1199,6 +1257,9 @@ check("status の Lambda・Worker・Web は環境変数で Neo4j に向く（Lam
       and 'graph_backend = local.oss ? "neo4j" : ""' in tf_text("terraform", "base/core")["web.tf"]
       and _tpl.count("GRAPH_BACKEND") == 1 and '%{ if graph_backend != "" ~}\nGRAPH_BACKEND=${graph_backend}\n%{ endif ~}\n' in _tpl
       and '-r $APP/src/requirements%{ if graph_backend != "" }-oss%{ endif }.txt' in _tpl)
+_ms = {t: re.findall(r"^\s*memory_size\s*=\s*(\d+)", tf_text(t, "pipeline/graph")["sync.tf"], re.M) for t in ("terraform", "oss/terraform")}
+check(f"status の Lambda のメモリはマネージド版と OSS 版で同じ 256 MB（{_ms}。AWS で 128 MB のうち 111 MB を使った。Neo4j のドライバのレイヤー込み）",
+      _ms == {"terraform": ["256"], "oss/terraform": ["256"]})
 _req = {n: open(os.path.join(ROOT, n, "requirements-oss.txt"), encoding="utf-8").read() for n in ("graph", "web", "workflow")}
 _pins = {n: re.findall(r"^neo4j==\S+$", s, re.M) for n, s in _req.items()}
 check(f"Neo4j のドライバの版は Lambda の層・Web・Worker でそろえ（{_pins}）、Web と Worker はマネージド版の依存に足す（Worker の既定のビルドは今のまま）",
