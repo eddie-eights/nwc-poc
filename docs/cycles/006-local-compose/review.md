@@ -168,3 +168,139 @@ $ bash ops/check.sh                                     → 通過 325 / 失敗 
 - エンジニア1 の自己レビューの N1（テストが `set -e` に依る）と N5（`.sh` 8 本が `bash -n` の対象外）は BACKLOG 48 行目に 1 件で載せた。N4（理由の重複・長さ）は 49 行目、U1/U2（本物の応答）は 50 行目。このサイクルでは直さない（検証スクリプトの改善で、設計の合格条件の外）
 - Should 2（Telegraf の全インターフェース）は Round 1 のまま据え置き
 - Must fix が消えたと判断したので、次に cold reviewer の 2 回目を呼ぶ
+# 手元の docker compose で動く構成を作る（006）Round 2 cold review
+
+## サマリ
+
+- 基準は `4665ffa`、対象は `HEAD`（`7459e5c`）。design.md と、変わったファイル全部（下の「見た観点」）を突き合わせた。
+- Round 1 の Should 1（`ops/check.sh` の `bash -n` を 1 本ずつにする）と Should 3（Splunk の認証の失敗を 0 件と分ける）は、マージ後の木で直っていた。
+  - Should 1 は `ops/check.sh:45` の `for f in ...; do bash -n "$f"; done` で直った。`tests/test_local_compose.py` に回帰の検査もある。
+  - Should 3 は `local/compose/check.sh` で直った。Splunk の export が FATAL や ERROR を返したときと、「result が無い」ときを分けて NG にしている。
+- 前の Round で直っていない Must fix は無い。今回も Must fix は見つからなかった。
+- 合格の基準は、design.md の WSL での手順 4〜6（ユーザーが打つ）。このレビューでは打っていない。
+
+### 見た観点 / 見ていない観点
+
+見た観点:
+
+- 設計との一致
+  - design.md の構成（`name: nwc-local`、11 サービス、`network_mode: host` の Telegraf、`127.0.0.1` に出すポート、Splunk の `platform: linux/amd64`、volume 10 個、`.env.example` のキー 7 つ）を、`local/compose/compose.yaml` と `.env.example` に照らした。
+  - `lab/lab.sh` を変えてよい 3 か所（`local_telegraf` での `hint` と `forward`、`pull` の `REGISTRY` の分岐）を確かめた。
+  - docs の差分（README、`docs/architecture/README.md`、`docs/setup.md`、`docs/cycles/BACKLOG.md`）を見た。
+- 正しさと実行時のバグ
+  - `local/compose/up.sh`、`lab.sh`、`check.sh`、`down.sh` を読んだ。
+  - 呼び先との約束を確かめた。`telegraf/telegraf.sh`（`AWS_REGION` が要る、`SNMP_AGENTS` と `GNMI_TARGETS` の形）、`grafana/start.sh`（`ALERTS_TOPIC_ARN` が無ければアラートを入れない）、Splunk の entrypoint、`spark/Dockerfile`（`USER spark`、`snmp_sinks.py` の置き場）、`snmp_sinks` の `metric_name` を見た。
+- セキュリティ
+  - パスワードの渡し方（`curl -K -` に stdin で渡す）と、ポートを出すインターフェースを見た。
+- テスト
+  - 下のコマンドを自分で打って、出力を見た。
+    - `uv run --group dev python tests/test_local_compose.py` → 通過 77 / 失敗 0
+    - `uv run --group dev python tests/test_lab_debug.py` → 通過 82
+    - `uv run --group dev python tests/test_oss.py` → 通過 164
+    - `docker compose -f local/compose/compose.yaml --env-file local/compose/.env.example config -q` → 終了コード 0
+    - `git status --short` → 何も出ない（clean）
+
+見ていない観点:
+
+- `bash ops/check.sh` は打っていない（terraform の検査も含むため）。
+- WSL2 で通して打つ手順（design.md の手順 4〜6）は打っていない。
+  - コンテナを本当に起動して確かめてはいない。
+  - containerlab での lab の deploy と、`iptables` の REDIRECT を本物で確かめてはいない。
+- 本物の Splunk が 401 のときに返す body の形と、OpenSearch を single-node・TLS 無しで起動したときの挙動は、実物で確かめていない。
+- `.env` は読んでいない（`.env.example` だけ見た）。
+
+## Must fix
+
+None
+
+## Should fix
+
+None
+
+## Nit
+
+- [設計との一致] `lab/lab.sh:90`, `lab/lab.sh:94`, `lab/lab.sh:221`, `lab/lab.sh:231`
+  - design.md:141 の検証の項目は「`lab/lab.sh` に `TELEGRAF_LOCAL` が `forward` と `hint` の両方にある」と書いている。
+  - 実装では、`TELEGRAF_LOCAL` という文字は `local_telegraf()` の定義（:90）にしか無い。`hint`（:94）と `forward`/`failover`（:221, :231）は `local_telegraf` を呼ぶ。
+  - 挙動は design と同じ。ただ、design の文の通りに `grep TELEGRAF_LOCAL` で確かめる人は、hint と forward に見つけられない。
+  - 機能は満たしていて、design の書き方と実装の言葉がずれているだけなので Nit とした。
+
+- [実行時のバグ] `local/compose/compose.yaml:116`
+  - kafka-ui は `127.0.0.1:18080` に出す。`oss/compose/compose.yaml:90` も同じ `127.0.0.1:18080` を使う。
+  - 同じ機械で OSS 版の compose と手元の compose を同時に上げると、後から上げた方の kafka-ui が bind に失敗して起動しない。
+  - 2 つを並べて動かすことは design の範囲外で、ぶつかればエラーが出るので Nit とした。README の「ぶつかりやすいポート」にも書かれていない。
+
+- [実行時のバグ] `local/compose/compose.yaml:46`, `local/compose/compose.yaml:65`
+  - telegraf と spark は `restart: on-failure` で、再起動の回数に上限が無い。
+  - 例えば `docker compose` を直に打って `SNMP_AGENTS` が空のとき、Telegraf は起動の検査で止まって再起動を繰り返す。
+  - ログを見れば原因は分かり、データは壊れないので Nit とした。README:46 は `up.sh` を使うよう書いている。
+
+- [テストの不足] `tests/test_local_compose.py` / `tests/test_lab_debug.py`
+  - 次の経路は、正規表現で文字があるかを見るだけで、実行しては確かめていない。
+    - `lab/lab.sh` の `hint` で `TELEGRAF_LOCAL=1` のときに出る文言
+    - `failover` の分岐（:221）
+  - `forward` は偽の `iptables` と `sudo` で実行の検査がある。
+  - どちらも表示や手で打つ経路で、壊れても Grafana と Splunk のデータには影響しないので Nit とした。
+
+既に BACKLOG にあるため、新しい指摘には数えないもの:
+
+- `env_get` は CRLF や `export ` や行末のコメントを扱わない（`local/compose/check.sh:7`, `local/compose/lab.sh:8`）。
+- Telegraf の 4 つのポートは、host の全部のインターフェースで待つ（BACKLOG:40）。
+- `fail-main` の案内がまだ `lab failover` を指している。
+- `render` は `${REGISTRY:-?}` と表示する。
+- splunk-etc の volume の扱い（U2）。
+- Prometheus の `out_of_order_time_window`（BACKLOG:42）。
+- `lab/clab-*/` が `.gitignore` に入っていない（BACKLOG:39）。
+- 手元の `check.sh` は、Kafka のトピックがあるかだけを見て、メッセージ数は見ない（BACKLOG:41）。
+
+## 良かった点
+
+- `ops/check.sh:45` を 1 本ずつの `bash -n` にした。今回の `local/compose/*.sh` だけでなく、それより前から黙って見落とされていた `ops/` と `oss/ops/` の 2 本目以降の構文検査も効くようになった。`tests/test_oss.py` の正規表現も合わせて直してある。
+- `local/compose/check.sh` はパスワードを `curl -K -` に stdin で渡し、`"` と `\` をエスケープしている。そのため、パスワードがプロセスの引数（`ps` で見える）に出ない。
+- Splunk の判定で、認証の失敗や検索のエラーを「0 件」と分けた。NG の理由を取り違えにくくなった。
+- `local/compose/lab.sh` は `sudo env` で 3 つの変数だけを渡す。シェルにある `REGISTRY` や `AWS_REGION` が漏れて、ECR や SSM へ行くことを構造で防いでいる。
+- ポートは Telegraf 以外すべて `127.0.0.1` に出している。例外の Telegraf は、README とBACKLOG に理由と残りの作業が書いてある。
+- 偽の docker、iptables、sudo、curl を使って、`up.sh`、`lab.sh`、`check.sh` の分岐（`.env` が無い、メモリが足りない、Splunk の FATAL と 0 件）を実行で確かめるテストがある。
+
+## ユーザーへの質問
+
+- design.md:141 の検証の項目「`TELEGRAF_LOCAL` が `forward` と `hint` の両方にある」は、どちらに揃えるか。
+  - design.md の文を「`local_telegraf`（`TELEGRAF_IMAGE` か `TELEGRAF_LOCAL=1`）を `forward` と `hint` が使う」に直す。
+  - または実装をこの文に合わせる。
+  - 今の実装で挙動に問題は無い。
+- OSS 版の compose と手元の compose を、同じ機械で同時に上げることを想定するか。
+  - 想定するなら、kafka-ui の 18080 をどちらかで変える必要がある。
+
+## Round 3（PM の確認・完了判定）
+
+- 確認モデル: claude-fable-5-1 / effort high（実装は opus 5.5 / xhigh。同等以上）
+- cold reviewer: **2 回目を依頼した**（opus / high。上の「Round 2 cold review」。`git status` で増えた新規ファイルは `review-r02.md` の 1 本だけだったのを確かめてから連結した）
+- 結果: Must 0 / Should 0 / Nit 4
+
+### Nit の扱い
+
+| 番号 | 指摘 | 扱い |
+| :--- | :--- | :--- |
+| Nit 1 | design.md:141 の文と `lab/lab.sh` の言葉がずれている | design.md:141 を「`local_telegraf()`（`TELEGRAF_IMAGE` か `TELEGRAF_LOCAL=1`）があり、`forward` と `hint` がそれを呼ぶ」に直した（実装は変えない） |
+| Nit 2 | `oss/compose` と `local/compose` の kafka-ui が同じ `127.0.0.1:18080` | 並べて上げることは想定しない。`oss/compose` は OSS 版の検証用の使い捨てで、残すか消すかは 007（並べ直し）で決める。BACKLOG に行を足した |
+| Nit 3 | telegraf / spark の `restart: on-failure` に回数の上限が無い | 直さない。BACKLOG に行を足した |
+| Nit 4 | `hint` と `failover` の案内は正規表現でしか見ていない | 直さない。BACKLOG に行を足した |
+
+### 完了前の取り直し（HEAD `7459e5c`、この Round で打った）
+
+- `bash ops/check.sh` → 終了コード 0、「すべて通過」（通過 325 / 失敗 0）
+- `uv run --group dev python tests/test_local_compose.py` → 通過 77 / 失敗 0
+- `uv run --group dev python tests/test_lab_debug.py` → 通過 82 / 失敗 0
+- `uv run --group dev python tests/test_oss.py` → 通過 164 / 失敗 0
+- `uv run --group dev python tests/test_oss_ops.py` → 通過 139 / 失敗 0
+- `docker compose -f local/compose/compose.yaml --env-file local/compose/.env.example config -q` → 終了コード 0
+- Round 1 の Should 1 の再現（`scratchpad/bashn_loop.sh`。構文エラーのファイルを 2 番目に置く）→ 終了コード 2（落ちる。直前は 0 で素通りしていた）
+- Round 1 の Should 3 の再現（`scratchpad/splunk_judge_r2.py`）→ `401 -> FATAL Unauthorized / count0 -> 0 件 / count3 -> ok`
+
+### 判断
+
+- Must fix / Should fix は無い。Round 1 の Should 2（Telegraf の 4 ポートが host の全インターフェース）は据え置きのまま BACKLOG:40 にある（理由は Round 1 の PM の確認）。
+- design.md の合格条件のうち、WSL2 で通して打つ手順 4〜6（`lab up` → `check.sh` が「すべて ok」 → `fail-main` のあとに Grafana と Splunk で見える）は**このレビューでも打っていない**。ユーザーが WSL で打つ。
+- サイクルを完了にし、BACKLOG の行を `[x]` にした。
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261008-cycle-006-local-compose-review.html -->

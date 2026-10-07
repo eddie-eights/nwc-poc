@@ -17,7 +17,7 @@
 - [x] `spark/Dockerfile` が取る Maven Central の jar のハッシュを照合する（005 のレビュー Nit 4）（2026-10-08 完了。feat/spark-bump）
 - [x] `oss/ops/up.sh` の wheel の取り直しを requirements のハッシュで判定する（いまは `.whl` が 1 つでもあれば取り直さない。005 のレビュー Nit 5）（2026-10-08 完了。fix/oss-review-nits）
 - [x] `oss/ops/up.sh` の services-stable の待ちに再試行を付け、`ops/check.sh` の OSS のルートにも `-lockfile=readonly` を付ける（005 のレビュー Nit 6）（2026-10-08 完了。fix/oss-review-nits）
-- [ ] 手元の docker compose で動く構成を作る（WSL 用。lab から Splunk と Grafana まで届くこと） → 006-local-compose
+- [x] 手元の docker compose で動く構成を作る（WSL 用。lab から Splunk と Grafana まで届くこと） → 006-local-compose（2026-10-08 完了。WSL の通し検証はユーザー）
 - [ ] ディレクトリを app/ と docker/ と IaC/ に並べ直す（006 のあと。compose は docker/compose.yml へ動かす。app/ の下は agent→agentcore、workflow→temporal、web→dashboard、lab→containerlab に改名。2026-10-08 に順番を入れ替えた）
 - [ ] Kafbat UI を Web の EC2 に同居させ、lab の EC2 で `containerlab graph` のトポロジ図を見られるようにする（Fargate のタスクと Cloud Map をやめる。EC2 は t4g.medium に上げ、Docker と MSK の IAM 権限と SG の web→MSK 9098 を足す。graph は 50080 を SSM のポートフォワードで。2026-10-08 の決定）
 - [x] Redis を 8 系に上げる（OSS 版）（2026-10-08 完了。feat/oss-redis8-rolling。`REDIS_TAG` は共通なのでマネージド版の Nautobot の Redis も 8.10.2 になる。AWS では未確認）
@@ -48,3 +48,6 @@
 - [ ] `ops/check.sh` の 3 で追跡している `.sh` を全部 `bash -n` する（いまは並べた 19 本だけで、`ops/sync-graph.sh`・`telegraf/telegraf.sh`・`splunk/entrypoint.sh`・`grafana/start.sh`・`neo4j/entrypoint.sh`・`oss/compose/check-*.sh` の 8 本が漏れる。テストは本体の `set -e` を前提にしていて、`bash -n a b` の行が後から足されても見ない。2026-10-08 に 006 の Round 2 のセルフレビュー N1 / N2 / N5）
 - [ ] 手元の `check.sh` の Splunk の理由を重複なし・長さの上限つき・1 行にする（同じ `ERROR Unauthorized` が 30 件なら 598 字になり、text の改行で NG の行が割れる。2026-10-08 に 006 の Round 2 のセルフレビュー N4）
 - [ ] 手元の `check.sh` の Splunk の判定を本物の応答で確かめる（401 の本文の形と、件数があるのに messages に ERROR が混ざる応答が無いか。Mac ではイメージが amd64 だけで起動していない。2026-10-08 に 006 の Round 2 のセルフレビュー U1 / U2。未確認）
+- [ ] `oss/compose` と `local/compose` の kafka-ui の 18080 を分ける（同じ機械で並べて上げるなら。いまは並べる想定は無く、`oss/compose` を残すか消すかは 007 で決める。2026-10-08 に 006 の cold review Round 2 の Nit 2）
+- [ ] 手元の compose の telegraf / spark の `restart: on-failure` に回数の上限を付ける（`docker compose` を直に打って `SNMP_AGENTS` が空だと再起動を繰り返す。2026-10-08 に 006 の cold review Round 2 の Nit 3）
+- [ ] `lab/lab.sh` の `hint` と `failover` の案内を実行で確かめるテストを足す（いまは正規表現で文言があるかだけ。`forward` には偽の iptables と sudo の実行の検査がある。2026-10-08 に 006 の cold review Round 2 の Nit 4）

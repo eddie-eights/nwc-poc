@@ -138,7 +138,7 @@ WSL2（Ubuntu）
   - `prometheus` の command に `--web.enable-remote-write-receiver`、`spark-http` の command に `--prometheus-url http://prometheus:9090/api/v1/write`、`spark-splunk` に `--splunk-skip-verify`、どちらにも `--sinks` と `--checkpoint file:///opt/spark/work-dir/checkpoint`、`iceberg` が無い
   - compose.yaml の `${VAR}` が全部 `.env.example` のキーか `up.sh` が export する 3 つ（`SNMP_AGENTS` / `GNMI_TARGETS` / `DEVICE_MAP`）に含まれる
   - `.env.example` の `SRLINUX_IMAGE` / `MULTITOOL_IMAGE` が `ops/lab-common.sh` の upstream:tag と同値
-  - `lab/lab.sh` に `TELEGRAF_LOCAL` が `forward` と `hint` の両方にある、`pull` に `REGISTRY` の有無の分岐がある
+  - `lab/lab.sh` に `local_telegraf()`（`TELEGRAF_IMAGE` か `TELEGRAF_LOCAL=1`）があり、`forward` と `hint` がそれを呼ぶ、`pull` に `REGISTRY` の有無の分岐がある
   - `local/` の下に `.py` が無い
 - `docker compose -f local/compose/compose.yaml --env-file local/compose/.env.example config` が exit 0（`SNMP_AGENTS` 等は空のまま）。
 
