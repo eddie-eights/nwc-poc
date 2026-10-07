@@ -728,7 +728,7 @@ check("oss/ops/up.sh は graph の前に SSM の /<接頭辞>/neo4j-password を
       0 <= pos('ensure_secret "/$PREFIX/neo4j-password" password') < pos("tf_apply pipeline/graph")
       and 0 <= pos("--target oss/terraform/pipeline/graph/.build/neo4j-layer/python") < pos("tf_apply pipeline/graph")
       and "--platform manylinux2014_aarch64" in up and "-r graph/requirements-oss.txt" in up
-      and "hashlib.sha256" in up and "shasum" not in up and pos('"${PY[@]}" -c') < pos("neo4j-layer.sha256")
+      and "shasum" not in up and 0 <= pos("""| "${PY[@]}" -c 'import hashlib, sys; print(hashlib.sha256(""") < pos('"$LAYER_SHA" > oss/terraform/pipeline/graph/.build/neo4j-layer.sha256')
       and 'tf_apply pipeline/graph -var "neo4j_image_tag=$NEO4J_TAG" -var alert_history=true' in up)
 UP_ENDPOINTS = {"ssm", "ssmmessages", "ecr.api", "ecr.dkr", "logs", "s3tables", "sns", "kinesis-firehose",
                 "bedrock-runtime", "bedrock-agentcore", "ecs", "sqs", "bedrock-agentcore.gateway", "athena"}

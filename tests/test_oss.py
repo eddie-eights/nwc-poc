@@ -353,6 +353,10 @@ def _catch(f):
 _err = _catch(graph4.centrality)
 check("neo4j の centrality: 失敗したあとの drop まで失敗しても、上がるのは元の失敗（GDS が無い等を drop の失敗で隠さない）",
       isinstance(_err, RuntimeError) and str(_err) == "closeness に失敗" and "gds.graph.drop" in state["calls"][-1][0])
+state["answer"], state["calls"] = dict(ALGO, **{"gds.graph.project": RuntimeError("GDS が無い")}), []
+_err = _catch(graph4.centrality)
+check("neo4j の centrality: 射影そのものが失敗したら（GDS が無い・つながらない）写しは無いので drop を打たずにそのまま上げる",
+      isinstance(_err, RuntimeError) and str(_err) == "GDS が無い" and not any("gds.graph.drop" in q for q, _ in state["calls"]))
 
 # topology.py の except は graph.errors() の型で受ける（Neptune は boto の 2 つ、Neo4j はドライバの Neo4jError / DriverError も）
 _exc = types.ModuleType("neo4j.exceptions")

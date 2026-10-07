@@ -652,12 +652,12 @@ def _algo_neo4j() -> tuple[list, list, list]:
     if not _count("MATCH (n:device) RETURN count(n) AS n"):
         return [], [], []
     g = f"nwc-centrality-{uuid.uuid4().hex}"
-    # project も try の中（写しがサーバー側にできたあとで結果の受け取りに失敗しても drop が走る。無ければ failIfMissing=false で何もしない）。
-    # 失敗したときの drop は、その失敗（GDS が入っていない等）を隠さないように、drop 自身の失敗を飲んで元の失敗を上げる
+    # project が失敗したら（GDS が無い・つながらない）写しは無いので drop せずにそのまま上げる（つながらないときに drop の再試行で倍待たない）。
+    # 3 つの stream の途中で失敗したら drop してから上げる。その失敗（GDS が入っていない等）を隠さないように、drop 自身の失敗は飲む
     drop = "CALL gds.graph.drop($g, false) YIELD graphName RETURN graphName"
+    query("MATCH (a:device) OPTIONAL MATCH (a)-[:link]->(b:device) "
+          "WITH gds.graph.project($g, a, b, {}, {undirectedRelationshipTypes: ['*']}) AS p RETURN p.graphName AS graph", g=g)
     try:
-        query("MATCH (a:device) OPTIONAL MATCH (a)-[:link]->(b:device) "
-              "WITH gds.graph.project($g, a, b, {}, {undirectedRelationshipTypes: ['*']}) AS p RETURN p.graphName AS graph", g=g)
         out = (query("CALL gds.degree.stream($g) YIELD nodeId, score RETURN gds.util.asNode(nodeId).id AS id, toInteger(score) AS degree", g=g),
                query("CALL gds.closeness.stream($g) YIELD nodeId, score RETURN gds.util.asNode(nodeId).id AS id, score", g=g),
                query("CALL gds.wcc.stream($g) YIELD nodeId, componentId RETURN gds.util.asNode(nodeId).id AS id, componentId AS component", g=g))
