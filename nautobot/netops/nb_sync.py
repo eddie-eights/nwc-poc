@@ -1,9 +1,9 @@
-"""Nautobot の中身を読んで、Telegraf の dialin の機器の一覧（SSM）と Neptune の物理層に合わせる。nautobot/jobs/netops_jobs.py の Job と、
+"""Nautobot の中身を読んで、Telegraf の dialin の機器の一覧（SSM）と Neptune（OSS 版は Neo4j）の物理層に合わせる。nautobot/jobs/netops_jobs.py の Job と、
 起動時の bootstrap.py が呼ぶ。対応付けは nb_map.py。
 
   1. 機器の一覧: Service（gnmi / snmp）を持つ機器から作った文字列が SSM の今の値と違うときだけ書き換え、dialin のサービスを作り直す
      （ECS は起動時に secrets を読むので、書き換えただけでは反映されない）。空の一覧は書かない（Telegraf が起動できなくなる）
-  2. Neptune: graph.sync_physical()（openCypher）で物理層だけを差分で合わせる。status と上の層は残る。機器が 1 台も無いときは触らない（全部消えるので）
+  2. Neptune（OSS 版は Neo4j。graph.py が GRAPH_BACKEND で切り替える）: graph.sync_physical()（openCypher）で物理層だけを差分で合わせる。status と上の層は残る。機器が 1 台も無いときは触らない（全部消えるので）
      機器の Status が Maintenance なら maintenance = true を付ける（保守中。ワークフローが起こさない）
   3. 変更履歴: 直近の ObjectChange（誰が・いつ・何を・どう変えたか）を graph.sync_changes() で label change の頂点に写す（エージェントの recent_changes）
 
@@ -12,7 +12,9 @@
 環境変数（terraform/pipeline/nautobot がコンテナに渡す）:
   DIALIN_GNMI_PARAMETER / DIALIN_SNMP_PARAMETER   一覧を書く SSM のパラメータ名（terraform/pipeline/stream の出力）。空なら 1 を飛ばす
   TELEGRAF_CLUSTER / TELEGRAF_DIALIN_SERVICE     作り直す ECS のサービス
-  NEPTUNE_GRAPH_ID                               Neptune Analytics のグラフの ID（g-xxxxxxxxxx）。空なら 2 を飛ばす
+  NEPTUNE_GRAPH_ID                               Neptune Analytics のグラフの ID（g-xxxxxxxxxx）。空なら 2 と 3 を飛ばす
+  GRAPH_BACKEND / NEO4J_URI / NEO4J_PASSWORD     OSS 版（cycle 005）だけ。NEPTUNE_GRAPH_ID の代わりに Neo4j に書く（パスワードはタスク定義の secrets）。
+                                                 NEO4J_URI が空なら 2 と 3 を飛ばす。Job の戻り値の鍵は graph.BACKEND（neptune / neo4j）
 """
 import os
 
@@ -23,6 +25,8 @@ import toolkit
 LOCK = "netops-nautobot-sync"
 LOCK_TIMEOUT = 900   # ロックを持ったまま落ちても、この秒数で外れる。Job の制限時間（Celery の hard limit 600 秒）より長くし、走っている途中で外れないようにする
 LOCK_WAIT = 240      # 先に走っている同期を待つ秒数
+GRAPH_NAME = {"neptune": "Neptune", "neo4j": "Neo4j"}[graph.BACKEND]   # ログと失敗の文言に出すグラフの名前
+GRAPH_SETTING = {"neptune": "NEPTUNE_GRAPH_ID", "neo4j": "NEO4J_URI"}[graph.BACKEND]   # 書き先を決める環境変数（無ければグラフを触らない）
 
 
 def read() -> tuple[list[dict], list[dict]]:
@@ -96,7 +100,7 @@ def push_targets(rows: list[dict], log, force_redeploy: bool = False) -> dict:
 
 
 def sync(log, force_redeploy: bool = False) -> dict:
-    """Nautobot → Telegraf の一覧と Neptune。片方が失敗してももう片方はやり、最後に失敗をまとめて上げる（Job が失敗になる）"""
+    """Nautobot → Telegraf の一覧と Neptune（OSS 版は Neo4j）。片方が失敗してももう片方はやり、最後に失敗をまとめて上げる（Job が失敗になる）"""
     from django.core.cache import cache
 
     with cache.lock(LOCK, timeout=LOCK_TIMEOUT, blocking_timeout=LOCK_WAIT):
@@ -107,20 +111,20 @@ def sync(log, force_redeploy: bool = False) -> dict:
         out, errors = {"devices": len(devices), "links": len(links)}, []
         try:
             out["telegraf"] = push_targets(rows, log, force_redeploy)
-        except Exception as e:  # SSM / ECS の失敗。Neptune は続ける
+        except Exception as e:  # SSM / ECS の失敗。グラフは続ける
             errors.append(f"Telegraf の一覧: {e}")
         try:
             if not devices:
-                # 空のまま合わせると Neptune の物理層が（status と上の層への辺ごと）全部消える。seed の失敗や入れ直しの途中を、消す指示とは読まない
-                log.warning("Nautobot に機器が 1 台も無い。Neptune は触らない")
-                out["neptune"] = {"skipped": True}
+                # 空のまま合わせるとグラフの物理層が（status と上の層への辺ごと）全部消える。seed の失敗や入れ直しの途中を、消す指示とは読まない
+                log.warning("Nautobot に機器が 1 台も無い。%s は触らない", GRAPH_NAME)
+                out[graph.BACKEND] = {"skipped": True}
             elif graph.configured():
-                out["neptune"] = graph.sync_physical(devices, links)
-                log.info("Neptune の物理層を合わせた: %s", out["neptune"])
+                out[graph.BACKEND] = graph.sync_physical(devices, links)
+                log.info("%s の物理層を合わせた: %s", GRAPH_NAME, out[graph.BACKEND])
             else:
-                log.warning("NEPTUNE_GRAPH_ID が無い。Neptune は触らない")
+                log.warning("%s が無い。%s は触らない", GRAPH_SETTING, GRAPH_NAME)
         except Exception as e:
-            errors.append(f"Neptune: {e}")
+            errors.append(f"{GRAPH_NAME}: {e}")
         try:
             if graph.configured():
                 out["changes"] = graph.sync_changes(nb_map.change_rows(read_changes()))

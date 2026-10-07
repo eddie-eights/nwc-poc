@@ -12,7 +12,7 @@
   6. OSS 版の OpenSearch と VictoriaMetrics（設計の 5）: analytics の opensearch.tf（データ 2 台 + まとめ役 1 台、インデックスはタスクの
      エフェメラルストレージ）と victoriametrics.tf（vminsert 1・vmselect 1・vmstorage 3、複製数 2、vminsert は vmstorage 3 台を待つ）。
      Spark・Grafana・evidence の接続先と terraform/workflow が読む output が、Cloud Map の名前・コンテナのポート・土台の SG の行と合う
-  7. OSS 版の Spark と Neo4j（005 の 2）: Spark は格納先の組ごとに ECS のタスク、Neo4j は ECS に 1 台。status の Lambda・Worker・Web は Neo4j に向く
+  7. OSS 版の Spark と Neo4j（005 の 2）: Spark は格納先の組ごとに ECS のタスク、Neo4j は ECS に 1 台。status の Lambda・Worker・Web・Nautobot の Job は Neo4j に向く
   8. AWS で動かす前の点検（005）: マネージド版と OSS 版を同じアカウントに並べても名前が重ならない（アカウントに 1 つのものを作らない）、
      サブネットは AZ の数の設定によらず 3 つで、3 台の Kafka・OpenSearch・vmstorage はサブネットが足りなければ plan で止まる、
      OSS 版の bootstrap_brokers は kafka-1〜3 の PLAINTEXT、Neo4j・OpenSearch・VictoriaMetrics を使う側の SG の行がそろう
@@ -1260,12 +1260,32 @@ check("status の Lambda・Worker・Web は環境変数で Neo4j に向く（Lam
 _ms = {t: re.findall(r"^\s*memory_size\s*=\s*(\d+)", tf_text(t, "pipeline/graph")["sync.tf"], re.M) for t in ("terraform", "oss/terraform")}
 check(f"status の Lambda のメモリはマネージド版と OSS 版で同じ 256 MB（{_ms}。AWS で 128 MB のうち 111 MB を使った。Neo4j のドライバのレイヤー込み）",
       _ms == {"terraform": ["256"], "oss/terraform": ["256"]})
-_req = {n: open(os.path.join(ROOT, n, "requirements-oss.txt"), encoding="utf-8").read() for n in ("graph", "web", "workflow")}
+_req = {n: open(os.path.join(ROOT, n, "requirements-oss.txt"), encoding="utf-8").read() for n in ("graph", "web", "workflow", "nautobot")}
 _pins = {n: re.findall(r"^neo4j==\S+$", s, re.M) for n, s in _req.items()}
-check(f"Neo4j のドライバの版は Lambda の層・Web・Worker でそろえ（{_pins}）、Web と Worker はマネージド版の依存に足す（Worker の既定のビルドは今のまま）",
+check(f"Neo4j のドライバの版は Lambda の層・Web・Worker・Nautobot でそろえ（{_pins}）、Web と Worker と Nautobot はマネージド版の依存に足す"
+      "（Worker と Nautobot の既定のビルドは今のまま）",
       all(len(p) == 1 for p in _pins.values()) and len({p[0] for p in _pins.values()}) == 1
-      and all(re.search(r"^-r requirements\.txt$", _req[n], re.M) for n in ("web", "workflow"))
-      and "ARG REQUIREMENTS=requirements.txt" in open(os.path.join(ROOT, "workflow", "Dockerfile"), encoding="utf-8").read())
+      and all(re.search(r"^-r requirements\.txt$", _req[n], re.M) for n in ("web", "workflow", "nautobot"))
+      and all("ARG REQUIREMENTS=requirements.txt" in open(os.path.join(ROOT, d, "Dockerfile"), encoding="utf-8").read() for d in ("workflow", "nautobot")))
+# Nautobot の Job（nautobot/netops/nb_sync.py）は agent/graph.py をそのまま使うので、OSS 版は Worker と同じ読み方（graph の state の neo4j_uri）で Neo4j に向ける
+_nb = {n: _code(s) for n, s in tf_text("terraform", "pipeline/nautobot").items()}
+_nb_up = {t: open(os.path.join(ROOT, *t, "up.sh"), encoding="utf-8").read() for t in (("ops",), ("oss", "ops"))}
+_nb_dock = open(os.path.join(ROOT, "nautobot", "Dockerfile"), encoding="utf-8").read()
+check("Nautobot: OSS 版（graph の state に neo4j_uri がある）だけ NEPTUNE_GRAPH_ID の代わりに GRAPH_BACKEND=neo4j と NEO4J_URI を受け、パスワードは "
+      "secrets で web と worker の両方に渡し（環境変数に値を置かない）、実行ロールはそのパラメータを足して読む。イメージは OSS 版の up.sh だけ "
+      "requirements-oss.txt でビルドし、マネージド版の依存（nautobot/requirements.txt）に Neo4j のドライバは無い",
+      'graph_neo4j        = local.neo4j_uri != ""' in _nb["locals.tf"]
+      and re.search(r'local\.graph_neo4j \? \[\n\s+\{ name = "GRAPH_BACKEND", value = "neo4j" \},\n\s+\{ name = "NEO4J_URI", value = local\.neo4j_uri \},\n'
+                    r'\s+\] : \[\n\s+\{ name = "NEPTUNE_GRAPH_ID", value = local\.neptune_graph_id \},\n\s+\]', _nb["nautobot.tf"])
+      and _nb["nautobot.tf"].count("NEPTUNE_GRAPH_ID") == 1
+      and re.search(r'local\.graph_neo4j \? \[\n\s+\{ name = "NEO4J_PASSWORD", valueFrom = local\.neo4j_password_arn \},\n\s+\] : \[\]\)', _nb["nautobot.tf"])
+      and '!contains(["NAUTOBOT_SUPERUSER_PASSWORD", "NAUTOBOT_API_TOKEN"], s.name)' in _nb["nautobot.tf"]
+      and "Resource = concat(values(local.secret_arns), local.graph_neo4j ? [local.neo4j_password_arn] : [])" in _nb["access.tf"]
+      and re.search(r'^\s+build_nautobot "\$NAUTOBOT_TAG" "\$NAUTOBOT_CTX" requirements-oss\.txt\s', _nb_up[("oss", "ops")], re.M)
+      and re.search(r'^\s+build_nautobot "\$NAUTOBOT_TAG" "\$NAUTOBOT_CTX"$', _nb_up[("ops",)], re.M)
+      and '--build-arg "REQUIREMENTS=${3:-requirements.txt}"' in open(os.path.join(ROOT, "ops", "up-common.sh"), encoding="utf-8").read()
+      and '-r "/tmp/netops-requirements/$REQUIREMENTS"' in _nb_dock and "COPY requirements*.txt /tmp/netops-requirements/" in _nb_dock
+      and "neo4j" not in open(os.path.join(ROOT, "nautobot", "requirements.txt"), encoding="utf-8").read())
 
 # ---- 8. AWS で動かす前の点検（005）。ファイルを読むだけ（plan はしない）
 # マネージド版と OSS 版を同じアカウントに並べたときの名前。接頭辞は var.owner = o のとき

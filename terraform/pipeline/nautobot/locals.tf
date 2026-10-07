@@ -2,7 +2,8 @@
 # One task runs three containers: web (UI / API on 8080), a Celery worker (runs the jobs) and Redis (cache and Celery broker).
 # The NetOps jobs of the image (nautobot/jobs) read the devices and cables of Nautobot and bring two things in line with them:
 #   1. the targets of the Telegraf dial-in task - SSM parameters of terraform/pipeline/stream, then a new deployment of the dial-in service
-#   2. the physical layer of the topology in Neptune (terraform/pipeline/graph), written with openCypher (agent/graph.py sync_physical)
+#   2. the physical layer of the topology in Neptune (terraform/pipeline/graph), written with openCypher (agent/graph.py sync_physical).
+#      The OSS variant (oss/terraform, cycle 005) writes the same into Neo4j instead: its graph state has neo4j_uri, not graph_id
 # A job hook runs the job on every change of a device / interface / cable / IP address / service, and the task runs it once at start.
 # The first start seeds Nautobot from the lab definition (lab_seed.json in the image), so the lab works without typing anything.
 # Costs about 0.13 USD per hour (Fargate ARM 2 vCPU / 4 GB + RDS db.t4g.micro) - ops/down.sh destroys this root, and what was edited in Nautobot goes with it.
@@ -53,7 +54,7 @@ data "terraform_remote_state" "stream" {
   }
 }
 
-# Neptune は terraform/pipeline/graph。無ければ Job は Neptune を触らない
+# Neptune（OSS 版は Neo4j）は terraform/pipeline/graph。無ければ Job はグラフを触らない
 data "terraform_remote_state" "graph" {
   backend = "local"
 
@@ -95,6 +96,12 @@ locals {
   # Neptune Analytics（graph が無ければ空）。agent/graph.py はグラフの ID（g-xxxxxxxxxx）を受ける
   neptune_graph_id  = try(data.terraform_remote_state.graph.outputs.graph_id, "")
   neptune_graph_arn = try(data.terraform_remote_state.graph.outputs.graph_arn, "")
+  # OSS 版（oss/terraform/pipeline/graph。cycle 005）は Neptune の代わりに Neo4j で、state に neo4j_uri がある。あれば Job を
+  # GRAPH_BACKEND=neo4j で Neo4j に向け（nautobot.tf）、パスワード（SSM の SecureString）を ECS の secrets で渡す（access.tf の実行ロール）。
+  # terraform/workflow の locals.tf と同じ読み方
+  neo4j_uri          = try(data.terraform_remote_state.graph.outputs.neo4j_uri, "")
+  graph_neo4j        = local.neo4j_uri != ""
+  neo4j_password_arn = local.graph_neo4j ? "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${data.terraform_remote_state.graph.outputs.neo4j_password_parameter}" : ""
 
   # ops/up.sh が無ければ乱数で作る SecureString（値は Terraform の state に載せない。ops/down.sh が消す）
   secret_parameters = {

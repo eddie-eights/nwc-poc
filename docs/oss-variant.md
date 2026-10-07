@@ -61,8 +61,8 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
   `base/ecr`、`base/core`、`agent`、`pipeline/lab`、`pipeline/stream`、`pipeline/graph`、`pipeline/nautobot`、`pipeline/analytics`、`workflow`。Grafana、Web の部品、エージェント、workflow、Neo4j への同期までつないである（何がどう動くかは [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md) の「実装の状態」）。
 - **機能と格納先は選ばない。**
   `AGENT` / `PIPELINE` / `WORKFLOW` / `STORES` などのキーは読まず、ルートはいつも全部、格納先はいつも `iceberg` / `opensearch` / `prometheus` / `splunk` の 4 つ、Grafana もいつも作る。
-- **まだつないでいないもの。**
-  Nautobot の Job から Neo4j への同期（Nautobot のイメージに Neo4j のドライバが無く、`terraform/pipeline/nautobot` のタスク定義も `GRAPH_BACKEND` / `NEO4J_URI` を渡さない）。lab の定義からの同期（`ops/sync-graph.sh --oss`）で代える。
+- **Nautobot の Job は Neo4j に書く（2026-10-08。AWS ではまだ確かめていない）。**
+  graph の state に `neo4j_uri` があるので、`terraform/pipeline/nautobot` が `GRAPH_BACKEND=neo4j`・`NEO4J_URI` と secrets の `NEO4J_PASSWORD` を渡し、`oss/ops/up.sh` が Neo4j のドライバー入りのイメージ（`nautobot/requirements-oss.txt`）を作る。
 - **Splunk は OSS 版でも変えない。**
   マネージド版と同じ Splunk を立てる。Spark は Splunk の token を、ECS の secrets（SSM の SecureString）から環境変数 `SPLUNK_HEC_TOKEN` で受ける（マネージド版は、ジョブが SSM から読む）。
 

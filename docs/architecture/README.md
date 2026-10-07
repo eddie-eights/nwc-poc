@@ -4,7 +4,7 @@
 
 `<prefix>` は `deploy.env` の `OWNER` から作る接頭辞 `<owner>-nwc-poc`。
 
-スライドの構成図は [architecture.pptx](../architecture.pptx)。5 枚で、全体像、① 〜 ③ 収集から格納まで、④ 〜 ⑤ 検知から修復まで、Nautobot 連携、どこで何が動くか（配置と閉域）の順。
+スライドの構成図は 2 本。マネージド版が [architecture-managed.pptx](../architecture-managed.pptx)（10 枚。データの流れ、9 つの Terraform ルート、6 段の処理、収集から格納まで、検知から修復まで、SG、費用、消す順、画面の開き方）、OSS 版が [architecture-oss.pptx](../architecture-oss.pptx)（10 枚。置き換えた 5 つ、1 対 1 の対応、Fargate のタスク、ルート、6 段の処理、SG、`oss/ops/up.sh`、AWS で確かめたこと、未確認）。
 
 構成の説明は terraform のルートに合わせて 4 つに分けてある。
 
