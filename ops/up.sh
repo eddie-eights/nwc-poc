@@ -178,6 +178,7 @@ LOCAL_PORT="${LOCAL_PORT:-8080}"
 # 格納先は STORES だけで選ぶ（2026-10-04 から。SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK / GRAFANA はなくした）。
 # 前の deploy.env（か環境変数）にこの 5 つが残っていると、黙って STORES の既定に替わって格納先が変わり、データごと消えることもあるので止め、
 # その値に当たる STORES の書き方を出す。書いていない変数は前の既定（SINK_SPLUNK だけ 0、ほかは 1）で埋めて読む。
+# 前の既定は main で SINK_* を書けた版のもの。002 の SINK_SPLUNK=1（29515e6）は STORES の後に main に入った（cfd58af）ので、移行の案内には関係ない。
 # OpenSearch・Prometheus・Grafana は STORES の grafana でまとめて作る・作らないので、その 3 つがそろわない値は当たる STORES が無い
 OLD_STORE_KEYS=""; OLD_STORE_VALUES=""
 for v in SINK_S3 SINK_OPENSEARCH SINK_PROMETHEUS SINK_SPLUNK GRAFANA; do
