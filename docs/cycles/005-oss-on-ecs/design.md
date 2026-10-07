@@ -10,7 +10,7 @@ main(fable-5.1) / effort: high
 - 目的は、同じ用途でマネージドと OSS を並べて、できること、費用、メンテナンスの手間を比べること。
 - OSS にするのは次の 5 つだけ。ほか（AgentCore、Bedrock、S3 Tables、Firehose、Athena、RDS、SNS、SQS、Lambda、Splunk）は変えない。
 - 5 つ以外の道具は、商用で使えるライセンスなら OSS でなくてよい（2026-10-04 のユーザーの決定）。
-- 手元のコンテナ（`oss/compose/`）での確認は済んだ。AWS ではまだ 1 回も立てていない（未確認）。
+- 手元のコンテナ（`oss/compose/`）での確認は済んだ。AWS では 2026-10-07 に 1 回立てて、下の「AWS」の検証を通した（結果は「AWS で確かめたこと」。立てたのは OSS 版だけで、マネージド版と並べてはいない）。
 
 ## 設計方針
 
@@ -37,7 +37,7 @@ main(fable-5.1) / effort: high
 
 | OSS | 置き場 | 理由 |
 |---|---|---|
-| Kafka | EFS | タスクが入れ替わってもログを残す。Kafka の公式の文書に NFS / EFS の記述は無い（置いてよいかは未確認） |
+| Kafka | EFS | タスクが入れ替わってもログを残す。Kafka の公式の文書に NFS / EFS の記述は無い。AWS で 1 時間ほど流して、1 台止めて戻すまで遅さやロックの不具合は出なかった（長く流したときは未確認） |
 | VictoriaMetrics（vmstorage） | EFS | 公式の文書が「Amazon EFS などの NFS に置ける」と書いている |
 | OpenSearch | タスクの一時領域 | 公式の文書がネットワークファイルシステムを避けるよう書いている |
 | Neo4j | タスクの一時領域 | 公式の文書が NFS を非対応と書いている |
@@ -155,7 +155,7 @@ flowchart LR
 | OpenSearch | `cluster.initial_cluster_manager_nodes` | `opensearch-1,opensearch-2,opensearch-cm`（ノード名） |
 | OpenSearch | `node.roles` | データの 2 台は既定（全部の役）。まとめ役の 1 台は `cluster_manager` だけ |
 | OpenSearch | index のレプリカ | 1（OpenSearch の既定） |
-| OpenSearch | `node.store.allow_mmap` | `false`（Fargate は `vm.max_map_count` を変えられないため。Fargate で起動するかは未確認） |
+| OpenSearch | `node.store.allow_mmap` | `false`（Fargate は `vm.max_map_count` を変えられないため。AWS で 3.9.0 の 3 台が起動し、green になった） |
 | vminsert | `-storageNode`、`-replicationFactor` | 3 台の `vmstorage-N:8400`、2 |
 | vminsert | 起動の順 | 待ちのコンテナ（`wait-vmstorage`）が、3 台の 8400 が開くまで vminsert を起こさない |
 | vmselect | `-storageNode`、`-replicationFactor`、`-dedup.minScrapeInterval` | 3 台の `vmstorage-N:8401`、2、`1ms` |
@@ -250,9 +250,9 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 | 書き込み | vlinsert の `/insert/elasticsearch/_bulk` が OpenSearch と同じ形で受ける。Spark は宛先と、`_time_field` などのパラメーターを変えるだけ |
 | 書き直すもの | `agent/evidence.py` の `search_logs`（LogsQL にする）、Grafana のデータソース（プラグイン `victoriametrics-logs-datasource`）とダッシュボード |
 | 弱いところ | 複製が無い。vlstorage が 1 台止まると検索は 502 を返す |
-| 確認の状態 | `oss/compose/compose.yaml` に profile `vlogs` を置いただけで、起こしていない（未確認） |
+| 確認の状態 | `oss/compose/compose.yaml` に profile `vlogs` を置いただけで、起こしていない（未確認）。OpenSearch が AWS で動いたので、切り替える条件は満たしていない |
 
-### 手元のコンテナで確かめたこと（`oss/compose/`。AWS では未確認）
+### 手元のコンテナで確かめたこと（`oss/compose/`）
 
 | 対象 | 確かめたこと | 手順 |
 |---|---|---|
@@ -271,18 +271,26 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 - GDS: 上の「GDS のライセンス」。
 - Fargate: `systemControls` で `vm.*` は変えられない。EFS は platform version 1.4.0 以上。
 
+### AWS で確かめたこと（2026-10-07、`oss/ops/up.sh` で 1 回立てた）
+
+| 対象 | 確かめたこと |
+|---|---|
+| OpenSearch 3.9.0 | Fargate で `node.store.allow_mmap=false` の 3 台が起動し、green。まとめ役（1 GB、heap 512m）は 1 時間で exit 137 を出さなかった（止まったタスク 0） |
+| Kafka（EFS） | 3 台が組めて、5 つのトピックに流れた。1 台止めても残り 2 台で受け続け（under-replicated 2）、戻ると 3 分以内に 0 に戻った。遅さやロックの不具合は出なかった |
+| Spark → S3 Tables | EMR なしで `netops.raw_telemetry` に行が増えた（Athena で 1 時間に 115,719 行） |
+| 道具の Lambda と Runtime | python3.13 のレイヤーで Neo4j のドライバを読み込めた。SSM のパスワードで Neo4j と OpenSearch に入り、vmselect を読めた（`centrality`、`search_logs`、`query_metrics` が答えを返した） |
+| status の Lambda | Grafana と Splunk の両方の経路のアラートで Neo4j の status を変えた。`REPORT` の `Max Memory Used` は 111 MB / 128 MB（余裕が無い。下の「未確定事項とリスク」） |
+| Kafbat UI | KRaft の 3 台とトピックを表示でき、API でトピックを作って消せた（画面は開いていない）。Spark の consumer group は出ない（Spark は group を作らずに offset を checkpoint に持つ） |
+| Grafana | `datasources-oss` の `opensearch.yaml` の `version` 3.9.0 が、立てた OpenSearch と同じ。両方のデータソースの health が OK |
+
 ### 未確認のまま残っていること
 
 | 未確認 | 確かめ方 |
 |---|---|
-| OpenSearch 3.9.0 が、Fargate（`vm.max_map_count` を上げられない）で `node.store.allow_mmap=false` で起動する | AWS で立てる |
-| Kafka のログを EFS に置いて、遅さやロックの不具合が出ない | AWS で立てて、1 台ずつ止める |
-| Spark が EMR なしで S3 Tables に書ける | AWS で立てる（手元からは確かめられない） |
-| GDS の結果が、Neptune の `neptune.algo.*` の結果と同じ並びになる | AWS で同じトポロジを入れて比べる（順位と島の数を見る） |
-| 道具の Lambda（python3.13）が、graph のルートのレイヤーの Neo4j のドライバを読み込める | AWS で立てて、チャットからトポロジの道具を呼ぶ |
-| Runtime と道具の Lambda が、SSM のパスワードで Neo4j と OpenSearch に入り、vmselect を読める | AWS で立てて、チャットからログとメトリクスの道具を呼ぶ |
-| Kafbat UI が KRaft の 3 台を表示でき、画面からトピックを作れる | 手順は `check-kafka.sh` にある。結果はこの文書に反映していない |
+| マネージド版と並べて立つ（名前がぶつからない） | 2 つを同時に立てる。Fargate の vCPU の上限（30）に OSS 版だけで 21.5 なので、上限を上げてから |
+| GDS の結果が、Neptune の `neptune.algo.*` の結果と同じ並びになる | マネージド版と同時に立てて、同じトポロジを入れて比べる（順位と島の数を見る） |
 | VictoriaMetrics が、時刻が前後したサンプルを受ける | 手順は `check_vm.py` にある。結果はこの文書に反映していない |
+| Kafka を EFS に置いて、長く（日単位で）流したときの遅さやロック | 立てたまま置く（費用がかかるので、このサイクルではやらない） |
 
 ## 変更対象ファイル
 
@@ -344,22 +352,34 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 - `oss/ops/oss-images.sh` の版が、`oss/compose/` と Dockerfile の版と同じ。
 - `ops/check.sh` が通る（`terraform/` と `oss/terraform/` の fmt と validate、スクリプトの構文、テスト）。
 
-### AWS（`oss/ops/up.sh` で行う。このサイクルの完了の条件。どれも未確認）
+### AWS（`oss/ops/up.sh` で行う。このサイクルの完了の条件。2026-10-07 に 1 を除いて通った）
 
-1. マネージド版を立てたまま、OSS 版が立つ（名前がぶつからない）。
-2. lab のメトリクスが VictoriaMetrics に入り、Grafana に出る。trap が OpenSearch に入る。S3 Tables と Splunk に行が増える。
-3. lab でリンクを落とすと、アラートが出て、Neo4j の status が変わり、Web のトポロジに出る。
-4. エージェントのツール `centrality`、`search_logs`、`query_metrics` が答えを返す。
-5. Kafka、OpenSearch、vmstorage のタスクを 1 つずつ止めても、2 と 3 が続く。Kafbat UI をポートフォワードで開くと、5 つのトピックと Spark のコンシューマーの lag が見える。画面から試しのトピックを 1 つ作って消せる。
-6. Neo4j のタスクを止めると 3 が止まり、起こし直して同期をかけると戻る（注意書きのとおりになること）。
-7. `oss/ops/down.sh` のあと、接頭辞 `<owner>-nwc-oss` のリソースが残っていない。確認が終わったらすぐ消す。
-8. 立てたあとに見る、机上では確かめられない点:
+1. マネージド版を立てたまま、OSS 版が立つ（名前がぶつからない）。**未確認。** OSS 版だけで立てた（Fargate の vCPU の上限 30 に OSS 版が 21.5 で、2 つは入らない）。名前は接頭辞で分けてあり、ぶつかる作りではない。
+2. lab のメトリクスが VictoriaMetrics に入り、Grafana に出る。trap が OpenSearch に入る。S3 Tables と Splunk に行が増える。**通った。** VictoriaMetrics に 6 台分 396 系列、OpenSearch に `snmp_trap` の文書、S3 Tables に 115,719 行、Splunk に 4 つの sourcetype。
+3. lab でリンクを落とすと、アラートが出て、Neo4j の status が変わり、Web のトポロジに出る。**通った。** `fail-main` から 3 分以内に `link_down` / `isis_down` / `trap` が Alerting になり、Neo4j のインターフェース・リンク・IS-IS の隣接が DOWN、Web の画面が使う関数が同じ値を返した。`heal-main` で戻った。
+4. エージェントのツール `centrality`、`search_logs`、`query_metrics` が答えを返す。**通った。** Runtime のログに 3 つの道具の呼び出しが出て、答えが障害の内容と合っていた。workflow もアラートからエージェントを呼んだ。
+5. Kafka、OpenSearch、vmstorage のタスクを 1 つずつ止めても、2 と 3 が続く。Kafbat UI をポートフォワードで開くと、5 つのトピックと Spark のコンシューマーの lag が見える。画面から試しのトピックを 1 つ作って消せる。**通った（lag は見えない）。** 3 つを同時に 1 台ずつ止めても、Kafka は 2 台で受け、OpenSearch は yellow で検索でき、VictoriaMetrics の値は新しいまま。3 分で全部戻った。Kafbat UI は API で確かめ、トピックの作成と削除は 200。Spark は consumer group を作らないので、lag は Kafbat UI には出ない。
+6. Neo4j のタスクを止めると 3 が止まり、起こし直して同期をかけると戻る（注意書きのとおりになること）。**通った。** 止めると `graph.query` は ServiceUnavailable、Web は静的データに落ちて 200 のまま。ECS が 1 分で起こし直し、グラフは空（0 台）。`ops/sync-graph.sh --oss` で 8 台 / 38 インターフェース / 12 リンクに戻り、`centrality` が答えた。
+7. `oss/ops/down.sh` のあと、接頭辞 `<owner>-nwc-oss` のリソースが残っていない。確認が終わったらすぐ消す。**通った。** 結果は下の「down.sh のあと」。
+8. 立てたあとに見る、机上では確かめられない点（**どれも見た**。結果は「AWS で確かめたこと」）:
    - OpenSearch の 2 つの ECS サービス（データとまとめ役）が 1 つの Cloud Map の名前 `opensearch` に入り、`discovery.seed_hosts` が両方を引く。
    - まとめ役（1 GB のタスク、heap 512m）が exit 137（OOM）で落ちない。
-   - status の Lambda（128 MB、Neo4j のレイヤー付き）の `REPORT` の `Max Memory Used` に余裕がある。
+   - status の Lambda（128 MB、Neo4j のレイヤー付き）の `REPORT` の `Max Memory Used` に余裕がある（111 MB で、余裕は無かった）。
    - Grafana の `datasources-oss` の `opensearch.yaml` の `version` が、立てた OpenSearch の版と合っている（違うとクエリの文法で失敗する）。
 
 3 の Nautobot の Job からの同期は、「実装の状態」の「まだ」が埋まってから確かめる（lab の定義からの同期で代える）。
+
+### down.sh のあと（2026-10-07 05:14Z に `OWNER=efukuda KEEP_ECR=1 oss/ops/down.sh` が rc 0 で終わった。その 10 分後に AWS CLI で名指しで見た）
+
+| 見たもの | 結果 |
+|---|---|
+| 消えていたもの | ECS のクラスター 6 つとサービス、EC2（Web と lab の 2 台は `terminated`）、EFS、VPC エンドポイント、フローログ、EBS のボリューム、SSM のパラメータ 14 件、Lambda、SNS、SQS、S3 のバケット、S3 Tables のテーブルバケット、AgentCore の Runtime と Gateway、Cloud Map の名前空間 4 つ、ロググループ（ECS、Lambda、Runtime）、Athena のワークグループ、IAM のロール |
+| 設計どおり残したもの | VPC `efukuda-nwc-oss-vpc`、サブネット 3 つ、SG `efukuda-nwc-oss-runtime`（ルールは 0）。AgentCore の Runtime の ENI（種類 `agentic_ai`。AWS 側の所有で自分では外せない）がまだ attached で、これが消えるまで VPC は消せない（最大 8 時間）。時間課金は無い。消し切るなら数時間おいて `oss/ops/down.sh` を打ち直す |
+| 設計どおり残したもの（2） | ECR のリポジトリ 18 個（`KEEP_ECR=1`。翌日の `up.sh` でイメージの写しを飛ばすため。保管料は月数円） |
+| 費用が無く、名前だけ残るもの | ECS のタスク定義 22 個が `INACTIVE`（terraform の destroy は登録解除まで。課金は無い） |
+| 気をつけること | `resourcegroupstaggingapi` の `Project=efukuda-nwc-oss` の一覧は、消した直後は消えたもの（ECS のサービス、VPC エンドポイント、ボリューム、フローログ）も出す。`down.sh` の最後の「残っていないか」の一覧はこれを使っているので、名指しの describe で確かめ直した |
+
+マネージド版の VPC `efukuda-nwc-poc-vpc`（`vpc-02ec7950cb98632a0`）は、このサイクルの前から残っているもので、OSS 版の検査では触っていない。
 
 ## 費用
 
@@ -386,21 +406,23 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 2. **OpenSearch のデータは、2 台が同時に落ちると消える。**
    タスクの一時領域に置いているため。`terraform apply` でタスク定義が変わると、3 つのサービスが同時に入れ替わり、インデックスもクラスターの状態も消える。1 台ずつ入れ替える手順は、まだ無い。
 3. **Kafka を EFS に置いてよいか。**
-   公式の文書に記述が無い。遅さや、ロックの不具合が出るかもしれない。出たら、タスクの一時領域に戻す（複製があるので、1 台が入れ替わっても残りから戻る）。
+   公式の文書に記述が無い。AWS で 1 時間流して 1 台止めて戻すまでは不具合が出なかったが、長く流したときの遅さやロックは未確認。出たら、タスクの一時領域に戻す（複製があるので、1 台が入れ替わっても残りから戻る）。
 4. **Kafka の入れ替え。**
    `terraform apply` でタスク定義が変わると、3 つのサービスが同時に入れ替わり、そのあいだ controller の過半数が無い（データは EFS に残るので戻る）。1 台ずつ入れ替える手順は、まだ無い。
 5. **vminsert が vmstorage より先に受けると、値が抜ける。**
-   待ちのコンテナで防いでいる。あとから vmstorage が 1 台だけ長く止まり、そのあいだに vminsert が起き直した場合は、残りの 2 台に書く（複製数 2 は保たれる）。ECS の上でこの順が守られるかは未確認。
+   待ちのコンテナで防いでいる。あとから vmstorage が 1 台だけ長く止まり、そのあいだに vminsert が起き直した場合は、残りの 2 台に書く（複製数 2 は保たれる）。AWS で立てたときは 6 台分の系列が全部入り、vmstorage を 1 台止めて戻しても値は抜けなかった。vminsert だけが起き直す場合は未確認。
 6. **Spark が EMR なしで S3 Tables に書けるか。**
-   EMR が暗黙に足している設定の全体は分かっていない。AWS での確認まで分からない。
+   AWS で書けた（1 時間で 115,719 行）。EMR が暗黙に足している設定の全体は分かっていないので、版を上げるときは見直す。
 7. **GDS のライセンス。**
    上の「GDS のライセンス」の読みは、法的な助言ではない。イメージを社外に配る形にするなら、GPLv3 の義務が生じる。
 8. **シンボリックリンクの terraform。**
-   変えないルートが、変えるルートの output や IAM を参照している。「空なら作らない」の分岐が多くなるなら、そのルートは複製に切り替える。`agent`、`workflow`、`pipeline/nautobot` は `oss/ops/up.sh` から apply するようにしたが、AWS ではまだ apply していない（未確認）。
+   変えないルートが、変えるルートの output や IAM を参照している。「空なら作らない」の分岐が多くなるなら、そのルートは複製に切り替える。`agent`、`workflow`、`pipeline/nautobot` は `oss/ops/up.sh` から apply し、AWS で動いた。
 9. **Lambda から Neo4j へ。**
-   ドライバはレイヤーで入れた。接続の張り直し（Lambda は実行のたびに使い回す）が AWS で問題なく動くかは未確認。
+   ドライバはレイヤーで入れた。AWS で、Grafana と Splunk の両方のアラートで status が変わり、Neo4j を止めて戻したあとも書けた。ただし status の Lambda は `Max Memory Used` が 111 MB / 128 MB で、ドライバの版を上げると足りなくなる（`terraform/pipeline/graph/sync.tf` の `memory_size`。マネージド版と共用なので、別のサイクルで上げる）。
 10. **並べて立てたときの上限。**
-    VPC、エンドポイント、Fargate の vCPU の上限に当たるかもしれない。AWS での確認の前に Service Quotas を見る。
+    Fargate の vCPU の上限（30）に OSS 版だけで 21.5 なので、マネージド版と並べるには上限を上げる。並べたときの VPC とエンドポイントの上限は未確認。
+12. **Neo4j の ECS のサービスに healthCheck が無い。**
+    タスクの healthStatus が UNKNOWN のままで、`aws ecs wait services-stable` は RUNNING を見るだけ。Neo4j のプロセスが起きていて Bolt が開いていない時間は、ECS からは見えない（別のサイクルで足す）。
 11. **エンドポイントが 1 つの AZ だけのとき。**
     `ENDPOINTS_AZ_NUM=1` でも動くが、その AZ が止まると、ほかの AZ の Kafka も ECR や CloudWatch Logs に届かない。
 

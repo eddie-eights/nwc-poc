@@ -4,7 +4,7 @@
 
 - **いまの構成は、できる限り AWS のマネージドサービスで作る。**自分で立てるのは、マネージドに相当するものが無いか、このアカウントで使えないものだけ（下の表の「自分で立てているもの」）。
 - **最終的には、いまの構成とは別に、マネージドの部分を OSS に置き換えた版も作る。**いまの構成を書き換えるのではなく、並べて持つ。
-- OSS 版は、手元のコンテナ（`oss/compose/`）での確認と、terraform と ops の実装（`oss/`）まで済んだ。AWS ではまだ 1 回も立てていない（未確認）。置き換え先は下の表。設計は [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md)。
+- OSS 版は、手元のコンテナ（`oss/compose/`）での確認と、terraform と ops の実装（`oss/`）が済み、2026-10-07 に AWS で 1 回立てて動作を確かめた（結果は下の「AWS で確かめたこと」）。置き換え先は下の表。設計は [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md)。
 - **OSS にするのは、下の表で置き換え先を書いた 5 つだけ。**ほかはマネージドのまま使う。
 - **5 つ以外の道具は、商用で使えるライセンスなら OSS でなくてよい。**
 
@@ -24,7 +24,7 @@
 | モデルとガードレール | Bedrock（Amazon Nova 2 Lite、ガードレール） | 変えない（マネージドのまま） |
 | 手順書の検索 | Bedrock のナレッジベース + OpenSearch Serverless | 変えない（マネージドのまま） |
 | Kafka | MSK | Apache Kafka（KRaft）を ECS に 3 台。データは EFS |
-| Kafka の監視の画面 | MSK のコンソールと CloudWatch | Kafbat UI（Apache 2.0）を ECS に 1 台。ブローカー、トピック、メッセージ、コンシューマーの遅れを見る。トピックの追加とメッセージの送信も画面からできる |
+| Kafka の監視の画面 | MSK のコンソールと CloudWatch | Kafbat UI（Apache 2.0）を ECS に 1 台。ブローカー、トピック、メッセージを見る。トピックの追加とメッセージの送信も画面からできる。コンシューマーの遅れは出ない（Spark は consumer group を作らず、offset を checkpoint に持つ） |
 | ストリーム処理 | EMR Serverless（Spark） | Apache Spark 3.5 を ECS に（ジョブごとに 1 タスクで 3 つ。`iceberg`、`splunk`、OpenSearch と VictoriaMetrics に書く `http`）。Splunk へはマネージド版と同じ HEC に書く |
 | 生データの表 | S3 Tables（Iceberg） | 変えない（マネージドのまま） |
 | ログの検索 | OpenSearch Serverless | OpenSearch を ECS に 3 台（データ 2 台でレプリカ 1、まとめ役だけの小さい 1 台）。データは 3 台ともタスクの一時領域（公式の文書がネットワークファイルシステムを避けるよう書いている）。データの 2 台が同時に落ちると消える。候補として VictoriaLogs を残す |
@@ -57,22 +57,33 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
 | `spark/Dockerfile`、`neo4j/Dockerfile` | ECS 向けの Spark と Neo4j（GDS 入り）のイメージ |
 | `ops/common.sh`、`ops/up-common.sh`、`ops/down-common.sh` | マネージド版と OSS 版の共通の関数 |
 
-- **`oss/ops/up.sh` が作るのは、lab から Neo4j までの 6 つのルート。**
-  `base/ecr`、`base/core`、`pipeline/lab`、`pipeline/stream`、`pipeline/analytics`、`pipeline/graph`。
+- **`oss/ops/up.sh` が作るルートは、マネージド版の `ops/up.sh` と同じ 9 つ。**
+  `base/ecr`、`base/core`、`agent`、`pipeline/lab`、`pipeline/stream`、`pipeline/graph`、`pipeline/nautobot`、`pipeline/analytics`、`workflow`。Grafana、Web の部品、エージェント、workflow、Neo4j への同期までつないである（何がどう動くかは [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md) の「実装の状態」）。
 - **まだつないでいないもの。**
-  Nautobot、エージェント、workflow、Grafana、Web の部品、Neo4j への同期。
+  Nautobot の Job から Neo4j への同期（Nautobot のイメージに Neo4j のドライバが無い）。lab の定義からの同期（`ops/sync-graph.sh --oss`）で代える。
 - **Splunk は OSS 版でも変えない。**
   マネージド版と同じ Splunk を立てる。Spark は Splunk の token を、ECS の secrets（SSM の SecureString）から環境変数 `SPLUNK_HEC_TOKEN` で受ける（マネージド版は、ジョブが SSM から読む）。
 
-## 手元のコンテナで確かめたこと（AWS では未確認）
+## 手元のコンテナで確かめたこと
+
+| OSS | 確かめたこと |
+|---|---|
+| Kafka | 固定の voter（`controller.quorum.voters`）で 3 台が組めた。1 台止めても、書いた 1000 件を全部読めて、書けた。動的な voter は、公式イメージが必要な初期化をしないので組めなかった |
+| OpenSearch | 3 台のどれを止めても検索できた |
+| VictoriaMetrics | vminsert が vmstorage の 3 台につないだあとに書いたデータは、1 台止めても全部読めた。つなぐ前に書いた行は 1 台にしか入らず、その台を止めると、欠けたことを示さずに値が抜ける。だから vmstorage が上がってから vminsert を起動する |
+| Neo4j + GDS | Community Edition で GDS が動いた。中心性は定義どおりの値と一致、島の数は 1 |
+| Spark | EMR なしの Spark 3.5 で、Kafka から OpenSearch、vminsert、Iceberg、Splunk（HEC）に書けた |
+
+## AWS で確かめたこと（2026-10-07。OSS 版だけを立てた）
 
 | OSS | 確かめたこと | 残っている未確認 |
 |---|---|---|
-| Kafka | 固定の voter（`controller.quorum.voters`）で 3 台が組めた。1 台止めても、書いた 1000 件を全部読めて、書けた。動的な voter は、公式イメージが必要な初期化をしないので組めなかった | EFS に置いてよいか（Kafka の文書に NFS / EFS の記述は無い） |
-| OpenSearch | 3 台のどれを止めても検索できた | Fargate で起動するか（手元は `vm.max_map_count` が 262144 の環境だった） |
-| VictoriaMetrics | vminsert が vmstorage の 3 台につないだあとに書いたデータは、1 台止めても全部読めた。つなぐ前に書いた行は 1 台にしか入らず、その台を止めると、欠けたことを示さずに値が抜ける。だから vmstorage が上がってから vminsert を起動する | ECS の上で、この起動の順が守られるか |
-| Neo4j + GDS | Community Edition で GDS が動いた。中心性は定義どおりの値と一致、島の数は 1 | Neptune の結果と同じ並びになるか |
-| Spark | EMR なしの Spark 3.5 で、Kafka から OpenSearch、vminsert、Iceberg、Splunk（HEC）に書けた | S3 Tables に書けるか（AWS でしか確かめられない） |
+| Kafka | EFS に置いた 3 台が組めて、1 時間流して 5 つのトピックに入った。1 台止めても残り 2 台で受け続け、戻ると 3 分以内に under-replicated が 0 に戻った | 日単位で流したときの遅さやロック |
+| OpenSearch | 3.9.0 の 3 台が Fargate で `node.store.allow_mmap=false` で起動し、green。trap が入り、1 台止めても yellow で検索できた。まとめ役（1 GB）は OOM で落ちなかった | なし |
+| VictoriaMetrics | 6 台分 396 系列が入り、Grafana に出た。vmstorage を 1 台止めて戻しても値は抜けなかった | vminsert だけが起き直したとき |
+| Neo4j + GDS | status の Lambda とエージェントの `centrality` が Neo4j を読み書きした。タスクを止めると Web は静的データに落ちて 200 のまま、起こし直して `ops/sync-graph.sh --oss` で戻った | Neptune の結果と同じ並びになるか（マネージド版と並べて立てる必要がある） |
+| Spark | EMR なしで S3 Tables に書けた（1 時間で 115,719 行）。OpenSearch、vminsert、Splunk にも入った | なし |
+| 全体 | lab でリンクを落とすと、Grafana のアラート → SNS → Lambda → Neo4j の status → Web のトポロジまでつながった。エージェントの `centrality`、`search_logs`、`query_metrics` が答えた。`oss/ops/down.sh` で接頭辞 `efukuda-nwc-oss` のリソースが消えた（設計どおり残るのは、Runtime の ENI が消えるまでの VPC・サブネット・runtime の SG と、`KEEP_ECR=1` の ECR。どちらも時間課金は無い） | マネージド版と並べて立つか（Fargate の vCPU の上限 30 に OSS 版だけで 21.5） |
 
 ## GDS のライセンス（法的な助言ではない）
 
@@ -93,5 +104,5 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
 
 | 箇所 | 頼ったもの | OSS 版で比べること |
 |---|---|---|
-| エージェントのツール `centrality`（[agent/graph.py](../agent/graph.py) の `centrality()`） | Neptune Analytics のグラフアルゴリズム `neptune.algo.degree` / `closenessCentrality` / `wcc`（openCypher の `CALL`） | GDS の `gds.degree` / `gds.closeness` / `gds.wcc` で計算する（手元では、定義どおりの値と一致した）。Neptune の結果と同じ並びになるかと、機器が増えたときの計算時間は未確認 |
+| エージェントのツール `centrality`（[agent/graph.py](../agent/graph.py) の `centrality()`） | Neptune Analytics のグラフアルゴリズム `neptune.algo.degree` / `closenessCentrality` / `wcc`（openCypher の `CALL`） | GDS の `gds.degree` / `gds.closeness` / `gds.wcc` で計算する（手元では定義どおりの値と一致し、AWS でもエージェントから答えが返った）。Neptune の結果と同じ並びになるかと、機器が増えたときの計算時間は未確認 |
 | グラフへの問い合わせ全部（[agent/graph.py](../agent/graph.py) の `query()`、[workflow/awsio.py](../workflow/awsio.py) の `cypher()`） | boto3 の `neptune-graph` の `execute_query`（SigV4、VPC エンドポイント `neptune-graph-data`）。頂点の id は Neptune の `~id` | Neo4j の Python ドライバ（Bolt）とパスワードに差し替えた（`GRAPH_BACKEND=neo4j`）。id はプロパティ `id` と一意制約で持つ |
