@@ -36,7 +36,8 @@ OSS 版（cycle 005。oss/terraform）は環境変数 GRAPH_BACKEND=neo4j で Ne
 NEO4J_PASSWORD（無ければ SSM の <PARAM_PREFIX>/neo4j-password。SecureString）、データベースは NEO4J_DATABASE（既定 neo4j）。
 クエリは Neptune の openCypher のまま組み、Neo4j に送る直前に _dialect() が 1 か所で書き換える（頂点の id は property id に置き、
 ラベルごとに一意の制約を張る。id(n) → n.id、`~id` → id）。結果の頂点と辺は Neptune と同じ形（~id / ~labels / ~properties）に戻すので、
-ほかの関数は 2 つのグラフを区別しない。違うのはアルゴリズム（centrality。neptune.algo.* の代わりに GDS）だけ。
+ほかの関数は 2 つのグラフを区別しない。違うのはアルゴリズム（centrality。neptune.algo.* の代わりに GDS）と、id で頂点を引くパターンの
+ラベル（_lbl。Neo4j だけに付け、一意制約の索引を使わせる。Neptune に送る openCypher は変えない）だけ。
 """
 
 import contextlib
@@ -168,7 +169,7 @@ def _plain(v):
 
 
 def _neo4j_schema(driver) -> None:
-    """頂点の id をラベルごとに一意にする（Neptune の ~id の代わり。MATCH と MERGE が id の索引を使う）。
+    """頂点の id をラベルごとに一意にする（Neptune の ~id の代わり。ラベル付きの MATCH と MERGE が id の索引を使う。_lbl）。
     張ったら SCHEMA_TTL 秒は張り直さない。Neo4j のタスクが入れ替わるとデータは一時領域なので制約ごと消えるが、生きている Web・Runtime・
     温まった Lambda はそれを知らない（ドライバは切れた接続を中で黙ってやり直すので、失敗として見えないこともある）。張り直さないと
     一意制約の無いまま MERGE が走り、同じ id のアラートが同時に来ると頂点が 2 つできる。そこで時間がたったら張り直し、ドライバの失敗
@@ -211,6 +212,15 @@ def _ident(name: str) -> str:
     return f"`{name}`"
 
 
+def _lbl(label: str, on_neptune: bool = False) -> str:
+    """id で頂点を引くパターンに付けるラベル（f"MATCH (n{_lbl('device')}) WHERE id(n) = $id"）。
+    Neo4j（OSS 版）では必ず付ける。頂点の id は property id で、一意制約（_neo4j_schema）とその索引はラベルごとなので、ラベルが無いと
+    索引を使えず、全部の頂点を読んで id を比べる（頂点が増えるほど遅い）。
+    Neptune Analytics の ~id はグラフ全体で一意で、ラベル無しでも id で直に引ける。送る openCypher を変えないよう（tests/golden）、
+    Neptune では on_neptune（前からラベルで絞っていた所）のときだけ付ける"""
+    return f":{_ident(label)}" if on_neptune or BACKEND == "neo4j" else ""
+
+
 def _props(d: dict, keys) -> dict:
     """d から keys の値を拾った dict（SET n += $props に渡す）。None と空文字は書かない。入れ子の値は文字列にする"""
     return {k: (d[k] if isinstance(d[k], (str, bool, int, float)) else str(d[k]))
@@ -232,12 +242,25 @@ LAYER_LABELS = ("ip_interface", "isis_adjacency", "bgp_session", "evpn_instance"
 LAYER_EDGES = ("over", "peer", "tunnel", "attach", "segment")
 LAYER_KIND = {"bgp": "bgp_session", "isis": "isis_adjacency"}   # set_layer_status の kind（id の真ん中）→ label
 _LAYER_EDGE_TYPES = "|".join(LAYER_EDGES)   # 辺の型の「どれか」（[e:over|peer|…]）
-_BY_ID = "MATCH (n) WHERE id(n) = $id"
 _LINK = "MATCH (a:device)-[l:link]->(b:device) WHERE id(a) = $a AND id(b) = $b AND l.a_if = $a_if"
 
 
 def _if_id(device_id: str, if_name: str) -> str:
     return f"{device_id}#{if_name}"
+
+
+def _by_id(label: str) -> str:
+    """label の頂点を id で 1 つ引く MATCH（Neo4j ではラベルを付けて一意制約の索引を使う。_lbl）"""
+    return f"MATCH (n{_lbl(label)}) WHERE id(n) = $id"
+
+
+def _delete_ids(labeled: list) -> None:
+    """[(id, label)] の頂点を消す（つながる辺も）。Neo4j はラベルごとに 1 本（_lbl）、Neptune は今まで通り全部で 1 本"""
+    by_label = {}
+    for vid, label in labeled:
+        by_label.setdefault(_lbl(label), []).append(vid)
+    for lbl, ids in by_label.items():
+        query(f"MATCH (n{lbl}) WHERE id(n) IN $ids DETACH DELETE n", ids=ids)
 
 
 def _nodes(label: str, where: str = "") -> list:
@@ -351,15 +374,15 @@ def seed(devices: list[dict], links: list[dict], layers: dict | None = None) -> 
         m = _node(r["n"])
         vid = m.get("id")
         if vid in dev_ids and m.get("label") == "device":
-            replaced.append(vid)
+            replaced.append((vid, "device"))
             carry.append((vid, "", m.get("status")))
         elif vid in if_ids and m.get("label") == "interface":
-            replaced.append(vid)
+            replaced.append((vid, "interface"))
             carry.append((m.get("device_id"), m.get("name"), m.get("status")))
     for label in ("device", "interface"):
         query(f"MATCH (n:{label}) WHERE n.registered IS NULL DETACH DELETE n")
     if replaced:
-        query("MATCH (n) WHERE id(n) IN $ids DETACH DELETE n", ids=replaced)
+        _delete_ids(replaced)
     _create("device", [{"id": d["device_id"], "props": _props(d, DEVICE_KEYS[:-1])} for d in devices])
     _create("interface", [r for d in devices for r in _if_rows(d["device_id"], d.get("interfaces"))])
     rows, seen = [], set()
@@ -387,13 +410,13 @@ def seed_layers(layers: dict, known_ids: set | None = None) -> dict:
     ids = {v["id"] for v in vertices if v.get("id")}
     if known_ids is None:
         known_ids = {r["id"] for r in query("MATCH (n:interface) RETURN id(n) AS id")}
-    carry = {}
+    carry, carry_label = {}, {}
     for label in LAYER_LABELS:
         for m in _nodes(label, "n.registered = false"):
             if m.get("id") in ids:
-                carry[m["id"]] = m.get("status")
+                carry[m["id"]], carry_label[m["id"]] = m.get("status"), label
     if carry:
-        query("MATCH (n) WHERE id(n) IN $ids DETACH DELETE n", ids=sorted(carry))
+        _delete_ids([(vid, carry_label[vid]) for vid in sorted(carry)])
     for label in LAYER_LABELS:
         query(f"MATCH (n:{label}) WHERE n.registered IS NULL DETACH DELETE n")
     by_label = {}
@@ -406,15 +429,17 @@ def seed_layers(layers: dict, known_ids: set | None = None) -> dict:
         by_label.setdefault(v["label"], []).append({"id": v["id"], "props": props})
     for label, rows in by_label.items():
         _create(label, rows)
+    # 辺の両端のラベル（Neo4j の MATCH に付ける。_lbl）。作った上の層の頂点と、物理層のインタフェース
+    kind = {**{x: "interface" for x in known_ids}, **{r["id"]: label for label, rows in by_label.items() for r in rows}}
     skipped, by_type = 0, {}
     for e in edges:
-        if e.get("label") not in LAYER_EDGES or not ({e.get("from"), e.get("to")} <= (ids | known_ids)):
+        if e.get("label") not in LAYER_EDGES or not ({e.get("from"), e.get("to")} <= set(kind)):
             skipped += 1
             continue
-        by_type.setdefault(e["label"], []).append({"f": e["from"], "t": e["to"]})
-    for label, rows in by_type.items():
+        by_type.setdefault((e["label"], _lbl(kind[e["from"]]), _lbl(kind[e["to"]])), []).append({"f": e["from"], "t": e["to"]})
+    for (label, fl, tl), rows in by_type.items():
         for part in _chunks(rows):
-            query(f"UNWIND $rows AS r MATCH (a), (b) WHERE id(a) = r.f AND id(b) = r.t CREATE (a)-[:{_ident(label)}]->(b)", rows=part)
+            query(f"UNWIND $rows AS r MATCH (a{fl}), (b{tl}) WHERE id(a) = r.f AND id(b) = r.t CREATE (a)-[:{_ident(label)}]->(b)", rows=part)
     out = {k: v for k, v in count().items() if k in ("layers", "layer_edges", "unregistered")}
     if skipped:
         out["skipped_edges"] = skipped
@@ -469,7 +494,7 @@ def sync_physical(devices: list[dict], links: list[dict]) -> dict:
     for label, keys in (("device", DEVICE_KEYS[:-1]), ("interface", IF_KEYS[:-1])):
         for vid, m in current.items():
             if m.get("label") == label and vid not in want[label] and m.get("registered") is not False:
-                query(f"{_BY_ID} DETACH DELETE n", id=vid)
+                query(f"{_by_id(label)} DETACH DELETE n", id=vid)
                 stats["removed"] += 1
                 if label == "device":
                     gone.add(vid)
@@ -478,11 +503,11 @@ def sync_physical(devices: list[dict], links: list[dict]) -> dict:
             if m is not None and m.get("label") == label and m.get("registered") is not False:
                 put, drop = _diff_props(m, w, keys)
                 if put or drop:
-                    _apply_diff(_BY_ID, "n", put, drop, id=vid)
+                    _apply_diff(_by_id(label), "n", put, drop, id=vid)
                     stats["updated"] += 1
                 continue
             if m is not None:   # 未登録の頂点は置き換える
-                query(f"{_BY_ID} DETACH DELETE n", id=vid)
+                query(f"{_by_id(label)} DETACH DELETE n", id=vid)
                 carry.append((vid, "", m.get("status")) if label == "device" else (w["device_id"], w["name"], m.get("status")))
                 if label == "device":
                     gone.add(vid)
@@ -538,29 +563,29 @@ def sync_changes(changes: list[dict]) -> dict:
     return {"added": len(set(want) - have), "removed": len(old), "kept": len(want)}
 
 
-def _registered(vid: str) -> list:
+def _registered(vid: str, label: str) -> list:
     """[] = 無い、[True] = 登録済み、[False] = 未登録の頂点"""
-    return [r["registered"] is not False for r in query(f"{_BY_ID} RETURN n.registered AS registered", id=vid)]
+    return [r["registered"] is not False for r in query(f"{_by_id(label)} RETURN n.registered AS registered", id=vid)]
 
 
 def add_device(device_id: str, site: str, role: str, mgmt_ip: str = "", asn=None, enabled: bool = False) -> dict:
     """機器を足す。未登録の頂点（検知が先に来たもの）があれば置き換え、その status を引き継ぐ"""
-    reg = _registered(device_id)
+    reg = _registered(device_id, "device")
     if reg and reg[0] is not False:
         return {"error": f"{device_id} はもうある"}
     status = None
     if reg:
-        status = (query(f"{_BY_ID} RETURN n.status AS status", id=device_id) or [{}])[0].get("status")
-        query(f"{_BY_ID} DETACH DELETE n", id=device_id)
+        status = (query(f"{_by_id('device')} RETURN n.status AS status", id=device_id) or [{}])[0].get("status")
+        query(f"{_by_id('device')} DETACH DELETE n", id=device_id)
     d = {"hostname": device_id, "site": site, "role": role, "mgmt_ip": mgmt_ip, "asn": asn, "enabled": enabled, "status": status}
     _create("device", [{"id": device_id, "props": _props(d, DEVICE_KEYS)}])
     return {"added": device_id, **({"replaced_unregistered": True} if reg else {})}
 
 
 def remove_device(device_id: str) -> dict:
-    if not _registered(device_id):
+    if not _registered(device_id, "device"):
         return {"error": f"{device_id} は無い"}
-    query(f"{_BY_ID} DETACH DELETE n", id=device_id)  # つながる辺も消える
+    query(f"{_by_id('device')} DETACH DELETE n", id=device_id)  # つながる辺も消える
     query("MATCH (n:interface) WHERE n.device_id = $id DETACH DELETE n", id=device_id)  # インタフェースは辺でつないでいないので別に消す
     return {"removed": device_id}
 
@@ -570,13 +595,14 @@ def add_link(a: str, a_if: str, b: str, b_if: str, kind: str = "l2", role: str =
         return {"error": "両端が同じ機器"}
     row = _link_row({"a": a, "a_if": a_if, "b": b, "b_if": b_if, "kind": kind, "role": role, "bandwidth_mbps": bandwidth_mbps})
     a, b, a_if, b_if = row["a"], row["b"], row["props"].get("a_if"), row["props"].get("b_if")
-    have = {r["id"] for r in query("MATCH (n) WHERE id(n) IN $ids RETURN id(n) AS id", ids=[a, b])}
+    dev = _lbl("device")
+    have = {r["id"] for r in query(f"MATCH (n{dev}) WHERE id(n) IN $ids RETURN id(n) AS id", ids=[a, b])}
     missing = [x for x in (a, b) if x not in have]
     if missing:
         return {"error": f"機器が無い: {', '.join(missing)}"}
     if _count_p(f"{_LINK} RETURN count(l) AS n", a=a, b=b, a_if=a_if):
         return {"error": f"{a} {a_if} - {b} のリンクはもうある"}
-    query("MATCH (a), (b) WHERE id(a) = $a AND id(b) = $b CREATE (a)-[l:link]->(b) SET l += $props", a=a, b=b, props=row["props"])
+    query(f"MATCH (a{dev}), (b{dev}) WHERE id(a) = $a AND id(b) = $b CREATE (a)-[l:link]->(b) SET l += $props", a=a, b=b, props=row["props"])
     return {"added": f"{a} {a_if} - {b} {b_if}"}
 
 
@@ -587,7 +613,8 @@ def _count_p(cypher: str, **params) -> int:
 def remove_link(a: str, b: str, a_if: str = "") -> dict:
     if a > b:
         a, b = b, a
-    match = "MATCH (a)-[l:link]->(b) WHERE id(a) = $a AND id(b) = $b" + (" AND l.a_if = $a_if" if a_if else "")
+    dev = _lbl("device")
+    match = f"MATCH (a{dev})-[l:link]->(b{dev}) WHERE id(a) = $a AND id(b) = $b" + (" AND l.a_if = $a_if" if a_if else "")
     params = {"a": a, "b": b, **({"a_if": a_if} if a_if else {})}
     n = _count_p(f"{match} RETURN count(l) AS n", **params)
     if not n:
@@ -601,10 +628,11 @@ def _upsert_unregistered(vid: str, label: str, props: dict) -> None:
     query(f"MERGE (n:{_ident(label)} {{`~id`: $id}}) ON CREATE SET n += $props, n.registered = false", id=vid, props=_props(props, props))
 
 
-def _set_vertex_status(vid: str, status: str, label: str = "", only_if: str = "") -> list:
-    """頂点の status を書き、書いた頂点ごとに「登録済みか」を返す（[] = 頂点が無い / 条件に合わない）。
-    条件と書き込みが 1 本のクエリなので、読んでから書くあいだに別の書き手が割り込まない"""
-    match = f"MATCH (n{':' + _ident(label) if label else ''}) WHERE id(n) = $id" + (" AND n.status = $only" if only_if else "")
+def _set_vertex_status(vid: str, status: str, label: str, only_if: str = "", on_neptune: bool = False) -> list:
+    """label の頂点の status を書き、書いた頂点ごとに「登録済みか」を返す（[] = 頂点が無い / 条件に合わない）。
+    条件と書き込みが 1 本のクエリなので、読んでから書くあいだに別の書き手が割り込まない。
+    Neptune で label でも絞るのは on_neptune のときだけ（上の層。_lbl）"""
+    match = f"MATCH (n{_lbl(label, on_neptune)}) WHERE id(n) = $id" + (" AND n.status = $only" if only_if else "")
     params = {"id": vid, "st": status, **({"only": only_if} if only_if else {})}
     return [r["registered"] is not False for r in query(f"{match} SET n.status = $st RETURN n.registered AS registered", **params)]
 
@@ -619,23 +647,32 @@ def set_status(device_id: str, if_name: str = "", status: str = "DOWN", only_if:
     if status not in STATUSES:
         return {"error": f"status は {' / '.join(STATUSES)} のどれか"}
     if if_name:
-        n = _count_p("MATCH (a)-[l:link]->(b) WHERE (id(a) = $dev AND l.a_if = $ifn) OR (id(b) = $dev AND l.b_if = $ifn) "
-                     "SET l.status = $st RETURN count(l) AS n", dev=device_id, ifn=if_name, st=status)
-        reg = _set_vertex_status(_if_id(device_id, if_name), status)
+        dev = _lbl("device")
+        if BACKEND == "neo4j":
+            # 「a 側か b 側か」の OR が 2 つの頂点にまたがると、ラベルがあっても Neo4j のプランナは id の索引を使えず device を全部読む
+            # （NodeByLabelScan）。機器を id で 1 つ引いてから、その機器に付く辺を向きで見分ける（一意制約の索引を使う）。
+            # 無向の一致なので同じ辺が 2 回出ることがあり（自分への辺）、DISTINCT で数える
+            link = (f"MATCH (d{dev})-[l:link]-({dev}) WHERE id(d) = $dev AND ((startNode(l) = d AND l.a_if = $ifn) OR (endNode(l) = d AND l.b_if = $ifn)) "
+                    "SET l.status = $st RETURN count(DISTINCT l) AS n")
+        else:
+            link = (f"MATCH (a{dev})-[l:link]->(b{dev}) WHERE (id(a) = $dev AND l.a_if = $ifn) OR (id(b) = $dev AND l.b_if = $ifn) "
+                    "SET l.status = $st RETURN count(l) AS n")
+        n = _count_p(link, dev=device_id, ifn=if_name, st=status)
+        reg = _set_vertex_status(_if_id(device_id, if_name), status, "interface")
         out = {"device_id": device_id, "if_name": if_name, "status": status, "updated": int(n) + len(reg)}
         if not n and not reg and status != "UP":
             _upsert_unregistered(device_id, "device", {"hostname": device_id, "site": "?", "role": "unknown", "enabled": False})
             _upsert_unregistered(_if_id(device_id, if_name), "interface", {"device_id": device_id, "name": if_name})
-            _set_vertex_status(_if_id(device_id, if_name), status)
+            _set_vertex_status(_if_id(device_id, if_name), status, "interface")
             out["unregistered"] = True
         elif any(r is False for r in reg):
             out["unregistered"] = True
         return out
-    reg = _set_vertex_status(device_id, status, only_if=str(only_if).upper() if only_if else "")
+    reg = _set_vertex_status(device_id, status, "device", only_if=str(only_if).upper() if only_if else "")
     out = {"device_id": device_id, "status": status, "updated": len(reg)}
     if not reg and status != "UP" and not only_if:
         _upsert_unregistered(device_id, "device", {"hostname": device_id, "site": "?", "role": "unknown", "enabled": False})
-        _set_vertex_status(device_id, status)
+        _set_vertex_status(device_id, status, "device")
         out["unregistered"] = True
     elif any(r is False for r in reg):
         out["unregistered"] = True
@@ -653,13 +690,13 @@ def set_layer_status(device_id: str, kind: str, target: str, status: str = "DOWN
     if not label:
         return {"error": f"kind は {' / '.join(LAYER_KIND)} のどれか"}
     vid = f"{device_id}#{kind}#{target}"
-    reg = _set_vertex_status(vid, status, label=label)
+    reg = _set_vertex_status(vid, status, label, on_neptune=True)
     out = {"device_id": device_id, "kind": kind, "target": target, "status": status, "updated": len(reg)}
     if not reg and status != "UP":
         props = {"device_id": device_id, "layer": "evpn" if kind == "bgp" else "ip",
                  ("peer_address" if kind == "bgp" else "name"): target}
         _upsert_unregistered(vid, label, props)
-        _set_vertex_status(vid, status)
+        _set_vertex_status(vid, status, label)
         out["unregistered"] = True
     elif any(r is False for r in reg):
         out["unregistered"] = True

@@ -1,7 +1,8 @@
 """cycle 005（マネージドを OSS に置き換えた環境を作る）の切り替えの模擬テスト。AWS にも Neo4j にも触れない。
   1. 環境変数が無いとき、agent/graph.py と workflow/awsio.py が出す openCypher とパラメータが、切り替えを入れる前と 1 文字も違わない
      （tests/golden/neptune_cypher.json と比べる。golden は切り替えを入れる前のコードで --write-golden を付けて作った）
-  2. GRAPH_BACKEND=neo4j のとき、出す Cypher に neptune.algo・`~id`・id( が無く、同じグラフの中身から同じ結果を返す
+  2. GRAPH_BACKEND=neo4j のとき、出す Cypher に neptune.algo・`~id`・id( が無く、同じグラフの中身から同じ結果を返す。
+     id で頂点を引くところには一意制約と同じラベルが付く（送った Cypher と、agent/・workflow/・graph/・oss/compose/ のソースの文字列の両方を見る）
   3. Spark（spark/snmp_sinks.py）・agent/evidence.py・grafana/start.sh の認証の切り替え（KAFKA_AUTH / OPENSEARCH_AUTH / PROMETHEUS_AUTH / SPLUNK_HEC_TOKEN）。
      環境変数が無いときは今のまま（MSK の IAM 認証・SigV4・マネージド版のデータソース）
   4. oss/terraform（設計の 3）: 変えないルートは terraform/ のファイルへのシンボリックリンク、変える 3 ルート（stream / analytics / graph）に
@@ -159,6 +160,7 @@ DEV, IFS = "MATCH (n:`device`) RETURN n", "MATCH (n:`interface`) RETURN n"
 LINKS = "MATCH (a)-[l:link]->(b) RETURN"
 LAYER_E = "RETURN type(e) AS label"
 SET_ST = "SET n.status = $st RETURN n.registered AS registered"
+SET_L = "SET l.status = $st"   # set_status の辺（Neo4j は count(DISTINCT l) で数える。graph.set_status）
 REG = "RETURN n.registered AS registered"
 UNREG = "WHERE n.registered = false RETURN n"
 devs = [{"id": "a-ce-01", "label": "device", "hostname": "a-ce-01", "site": "a", "role": "leaf", "asn": 65001, "mgmt_ip": "203.0.113.11", "enabled": True},
@@ -214,8 +216,8 @@ def scenario(graph, with_algo=True):
         **{"IN $ids RETURN": [{"id": "a-ce-01"}, {"id": "b-ce-01"}], "count(l)": [{"n": 0}]})
     run("remove_link", lambda: graph.remove_link("b-ce-01", "a-ce-01", "eth3"), **{"count(l)": [{"n": 1}]})
     run("remove_link_all", lambda: graph.remove_link("a-ce-01", "b-ce-01"), **{"count(l)": [{"n": 2}]})
-    run("set_status_if", lambda: graph.set_status("a-ce-01", "eth1", "down"), **{"count(l)": [{"n": 1}], SET_ST: [{"registered": None}]})
-    run("set_status_if_unregistered", lambda: graph.set_status("zz-ce-09", "eth7", "DOWN"), **{"count(l)": [{"n": 0}], SET_ST: []})
+    run("set_status_if", lambda: graph.set_status("a-ce-01", "eth1", "down"), **{SET_L: [{"n": 1}], SET_ST: [{"registered": None}]})
+    run("set_status_if_unregistered", lambda: graph.set_status("zz-ce-09", "eth7", "DOWN"), **{SET_L: [{"n": 0}], SET_ST: []})
     run("set_status_device", lambda: graph.set_status("a-ce-01", "", "ALARM"), **{SET_ST: [{"registered": False}]})
     run("set_status_only_if", lambda: graph.set_status("a-ce-01", "", "UP", only_if="alarm"), **{SET_ST: []})
     run("set_status_unregistered", lambda: graph.set_status("zz-ce-10", "", "ALARM"), **{SET_ST: []})
@@ -304,9 +306,109 @@ labels = ("device", "interface", "change") + graph4.LAYER_LABELS
 schema = [q for q, _ in calls4 if q.startswith("CREATE CONSTRAINT")]
 body4 = [c for c in calls4 if not c[0].startswith("CREATE CONSTRAINT")]
 n4 = len(body4)
-check("neo4j: 送るのは golden（Neptune の openCypher）を _dialect で直したものだけで、パラメータも順番も同じ（centrality より前の全関数）",
-      [[graph4._dialect(q), p] for q, p in golden["graph"][:n4]] == body4 and len(golden["graph"]) - n4 == 3
-      and all("neptune.algo." in q for q, _ in golden["graph"][n4:]))
+_LBL = re.compile(r"\((\w+):`(\w+)`\)")   # ラベルだけのノード (v:`label`)（_lbl が付けるもの）
+# Neo4j だけ書き方を変えた文（Neptune の文 → Neo4j で送る文）。a 側か b 側かの OR が 2 つの頂点にまたがると、ラベルがあっても
+# Neo4j は id の索引を使えず device を全部読むので、機器を id で 1 つ引いてから辺の向きを見る（graph.set_status のコメント）
+_REWRITE4 = {
+    "MATCH (a)-[l:link]->(b) WHERE (id(a) = $dev AND l.a_if = $ifn) OR (id(b) = $dev AND l.b_if = $ifn) SET l.status = $st RETURN count(l) AS n":
+    "MATCH (d:`device`)-[l:link]-(:`device`) WHERE d.id = $dev AND ((startNode(l) = d AND l.a_if = $ifn) OR (endNode(l) = d AND l.b_if = $ifn)) "
+    "SET l.status = $st RETURN count(DISTINCT l) AS n"}
+check("neo4j: 送るのは golden（Neptune の openCypher）を _dialect で直し、id で引く頂点にラベル（_lbl）を足したものだけで、"
+      "パラメータも順番も同じ（centrality より前の全関数。_REWRITE4 の 1 文だけは決めた書き方に替える）",
+      len(golden["graph"]) - n4 == 3 and all("neptune.algo." in q for q, _ in golden["graph"][n4:])
+      and sum(q in _REWRITE4 for q, _ in golden["graph"]) >= 2
+      and all((q4 == _REWRITE4[q] if q in _REWRITE4 else _LBL.sub(r"(\1)", q4) == _LBL.sub(r"(\1)", graph4._dialect(q))
+               and set(_LBL.findall(graph4._dialect(q))) <= set(_LBL.findall(q4))) and p4 == p
+              for (q, p), (q4, p4) in zip(golden["graph"], body4)))
+
+# ラベル無しの id 検索（BACKLOG の「Neo4j の id 検索にラベルを付ける」）。Neo4j の一意制約と索引はラベルごとなので、
+# (n) WHERE n.id = $id のようにラベルが無いと索引を使えず、全部の頂点を読む。Neptune の ~id はグラフ全体で一意なので要らない
+_ID_CMP = re.compile(r"\bid\((\w+)\)\s*(?:=|IN\b)|\b(\w+)\.id\s*(?:=|IN\b)")   # id(v) = … / v.id IN …
+_ID_PROP = re.compile(r"\((\w+)\s*\{\s*(?:`~id`|id)\s*:")                        # (v {id: …})（ラベル無しの MATCH / MERGE）
+
+
+def id_seeks(q, hole=None):
+    """q の中で id で頂点を引いている変数と、そのノードのラベル（無ければ None。hole は f-string の {…} の印で、そこはラベルとみなす）"""
+    out = []
+    for m in _ID_CMP.finditer(q):
+        v = m.group(1) or m.group(2)
+        lab = re.search(rf"\({v}:`?(\w+)`?[\s)]", q) or (hole and re.search(rf"\({v}({re.escape(hole)})", q))
+        out.append((v, lab and lab.group(1)))
+    return out + [(m.group(1), None) for m in _ID_PROP.finditer(q)]
+
+
+_seeks4 = [(q, v, lab) for q, _ in calls4 for v, lab in id_seeks(q)]
+check("neo4j: id で頂点を引くところには、必ず一意制約と同じラベル（device / interface / change / 上の層の 5 つ）が付く（ラベル無しの id 検索が無い）",
+      len(_seeks4) > 40 and all(lab in labels for _, _, lab in _seeks4))
+check("neo4j: ラベル無しの id 検索を見分ける（見落としで上が素通りしない）",
+      id_seeks("MATCH (n) WHERE n.id = $id") == [("n", None)] and id_seeks("MATCH (a), (b:`device`) WHERE a.id = r.f AND b.id IN $ids")
+      == [("a", None), ("b", "device")] and id_seeks("MERGE (n {id: $x})") == [("n", None)] and id_seeks("MATCH (n:`device`) RETURN n.id AS id") == []
+      and id_seeks("MATCH (n<?>) WHERE id(n) = $id", "<?>") == [("n", "<?>")] and id_seeks("MATCH (n) WHERE id(n) IN $ids", "<?>") == [("n", None)])
+
+
+def source_seeks(paths):
+    """ソースの文字列（f-string の {…} は <?> にする。docstring は除く）のうち、id で頂点を引くのにラベルが無いもの [(ファイル, 行, 文字列)]"""
+    import ast
+    bad = []
+    for path in paths:
+        tree = ast.parse(open(path, encoding="utf-8").read())
+        inner = {id(c) for n in ast.walk(tree) if isinstance(n, ast.JoinedStr) for c in n.values}
+        docs = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)}
+        for n in ast.walk(tree):
+            if isinstance(n, ast.JoinedStr):
+                s = "".join(c.value if isinstance(c, ast.Constant) else "<?>" for c in n.values)
+            elif isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in inner | docs:
+                s = n.value
+            else:
+                continue
+            if any(lab is None for _, lab in id_seeks(s, "<?>")):
+                bad.append((os.path.relpath(path, ROOT), n.lineno, s))
+    return bad
+
+
+_src = [os.path.join(ROOT, d, f) for d in ("agent", "workflow", "graph", os.path.join("oss", "compose"))
+        for f in sorted(os.listdir(os.path.join(ROOT, d))) if f.endswith(".py")]
+_bad_src = source_seeks(_src)
+check("agent/・workflow/・graph/・oss/compose/ のソースに、ラベル（:label か f-string の {_lbl(…)}）の無い id 検索の Cypher が無い",
+      not _bad_src and len(_src) >= 12 and os.path.join(ROOT, "agent", "graph.py") in _src)
+if _bad_src:
+    print("   ラベル無し:", _bad_src)
+with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as _f:
+    _f.write('def f(label):\n    """MATCH (n) WHERE id(n) = $id は docstring なので見ない"""\n'
+             '    query(f"MATCH (n{_lbl(label)}) WHERE id(n) = $id")\n    query(f"MATCH (n) WHERE id(n) IN $ids AND n.x = {label}")\n')
+check("ソースの検査は、ラベル無しの id 検索を f-string でも見つけ、docstring とラベルの {…} 付きのものは通す",
+      [(line, s) for _, line, s in source_seeks([_f.name])] == [(4, "MATCH (n) WHERE id(n) IN $ids AND n.x = <?>")])
+os.unlink(_f.name)
+
+# Neo4j では消す頂点と張る辺をラベルごとに分けて送る。Neptune は今まで通り 1 本（golden の scenario はラベルが 1 つずつなので、ここで混ぜる）
+_sent, _query = [], graph4.query
+graph4.query = lambda c, **p: (_sent.append([c, p]), [{"n": 0}] if "count(" in c else [])[1]
+_mixed = {"vertices": [{"id": "x#ip#e1", "label": "ip_interface"}, {"id": "x#isis#e1", "label": "isis_adjacency"},
+                       {"id": "x#isis#e2", "label": "isis_adjacency"}],
+          "edges": [{"label": "over", "from": "x#ip#e1", "to": "x#e1"}, {"label": "over", "from": "x#isis#e1", "to": "x#ip#e1"},
+                    {"label": "over", "from": "x#isis#e2", "to": "x#ip#e1"}]}
+
+
+def _split(backend):
+    graph4.BACKEND, _sent[:] = backend, []
+    graph4._delete_ids([("d1", "device"), ("i1", "interface"), ("d2", "device")])
+    graph4.seed_layers(_mixed, {"x#e1"})
+    return [c for c in _sent if "DETACH DELETE n" in c[0] and "IN $ids" in c[0] or "CREATE (a)-" in c[0]]
+
+
+try:
+    _split4, _split1 = _split("neo4j"), _split("neptune")
+finally:
+    graph4.BACKEND, graph4.query = "neo4j", _query
+_E = "UNWIND $rows AS r MATCH (a{}), (b{}) WHERE id(a) = r.f AND id(b) = r.t CREATE (a)-[:`over`]->(b)"
+check("neo4j: 消す頂点はラベルごとに 1 本、辺は型と両端のラベルの組ごとに 1 本で送り、ラベルは頂点の種類（物理層の id はインタフェース）",
+      _split4 == [["MATCH (n:`device`) WHERE id(n) IN $ids DETACH DELETE n", {"ids": ["d1", "d2"]}],
+                  ["MATCH (n:`interface`) WHERE id(n) IN $ids DETACH DELETE n", {"ids": ["i1"]}],
+                  [_E.format(":`ip_interface`", ":`interface`"), {"rows": [{"f": "x#ip#e1", "t": "x#e1"}]}],
+                  [_E.format(":`isis_adjacency`", ":`ip_interface`"), {"rows": [{"f": "x#isis#e1", "t": "x#ip#e1"}, {"f": "x#isis#e2", "t": "x#ip#e1"}]}]])
+check("Neptune: 同じものを、今まで通り消すのは 1 本・辺は型ごとに 1 本で、ラベルを付けずに送る",
+      _split1 == [["MATCH (n) WHERE id(n) IN $ids DETACH DELETE n", {"ids": ["d1", "i1", "d2"]}],
+                  [_E.format("", ""), {"rows": [{"f": "x#ip#e1", "t": "x#e1"}, {"f": "x#isis#e1", "t": "x#ip#e1"}, {"f": "x#isis#e2", "t": "x#ip#e1"}]}]])
 check("neo4j: Cypher に neptune.algo・`~id`・id(…) と、予約語のままの AS from / AS to が無い",
       not any("neptune.algo" in q or "`~id`" in q or re.search(r"\bid\(", q) or re.search(r"\bAS (from|to)\b", q) for q, _ in calls4))
 check("neo4j: _dialect は id(x) を x.id に、`~id` を id に、AS from / to を `from` / `to` に直し、ほかは変えない",
