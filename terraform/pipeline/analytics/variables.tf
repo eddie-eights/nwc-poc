@@ -28,9 +28,9 @@ variable "project" {
 }
 
 variable "emr_release_label" {
-  description = "EMR Serverless release. 7.13.0 = Spark 3.5.6 (checked 2026-09-17). The Kafka jars that ops/up.sh uploads are pinned to this Spark version - change both together"
+  description = "EMR Serverless release. 7.14.0 = Spark 3.5.8 (checked 2026-10-08). The Kafka jars that ops/up.sh uploads are pinned to this Spark version - change both together"
   type        = string
-  default     = "emr-7.13.0"
+  default     = "emr-7.14.0"
 
   validation {
     condition     = can(regex("^emr-7\\.(5|[6-9]|1[0-9])\\.[0-9]+$", var.emr_release_label))

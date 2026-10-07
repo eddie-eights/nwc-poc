@@ -129,11 +129,11 @@ REGION=ap-northeast-1
 . "$(dirname "$0")/lab-common.sh"
 # Kafbat UI（stream の ECS。ghcr.io/kafbat/kafka-ui を同じタグで ECR に写す）。terraform/pipeline/stream の kafka_ui_image_tag の既定値に合わせてある
 KAFKA_UI_TAG=v1.5.0
-# analytics の Spark ジョブに足す jar（Maven Central。2026-09-17 に 6 本とも取れることを確認）。EMR Serverless 7.13.0 の Spark 3.5.6 に合わせてある。
+# analytics の Spark ジョブに足す jar（Maven Central。2026-10-08 に 6 本とも取れることを確認）。EMR Serverless 7.14.0 の Spark 3.5.8 に合わせてある。
 # terraform/pipeline/analytics の emr_release_label を変えるときは spark-sql-kafka とその依存（kafka-clients / commons-pool2 は spark-sql-kafka の pom の版）も変える
 JARS_DIR=jars
 MAVEN=https://repo1.maven.org/maven2
-SPARK_VERSION=3.5.6
+SPARK_VERSION=3.5.8
 JAR_URLS=(
   "$MAVEN/org/apache/spark/spark-sql-kafka-0-10_2.12/$SPARK_VERSION/spark-sql-kafka-0-10_2.12-$SPARK_VERSION.jar"
   "$MAVEN/org/apache/spark/spark-token-provider-kafka-0-10_2.12/$SPARK_VERSION/spark-token-provider-kafka-0-10_2.12-$SPARK_VERSION.jar"

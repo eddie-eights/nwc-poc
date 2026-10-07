@@ -1184,8 +1184,8 @@ check("prometheus_series: ラベルの名前に event_id / kafka_* が出ない�
 check("up.sh は 6 本の jar を置く", len(re.findall(r'^\s*"\$MAVEN/', up, re.M)) == 6)
 for jar in ("spark-sql-kafka-0-10_2.12", "spark-token-provider-kafka-0-10_2.12", "kafka-clients", "commons-pool2", "aws-msk-iam-auth", "s3-tables-catalog-for-iceberg-runtime"):
     check(f"up.sh の jar に {jar}", jar in up)
-check("up.sh の SPARK_VERSION は emr_release_label の Spark（3.5.6）", re.search(r'^SPARK_VERSION=3\.5\.6$', up, re.M) is not None
-      and "7.13.0 = Spark 3.5.6" in tf)
+check("up.sh の SPARK_VERSION は emr_release_label の Spark（3.5.8）", re.search(r'^SPARK_VERSION=3\.5\.8$', up, re.M) is not None
+      and "7.14.0 = Spark 3.5.8" in tf)
 check("up.sh のスクリプトは spark/snmp_sinks.py", re.search(r'^SPARK_SCRIPT=spark/snmp_sinks\.py$', up, re.M) is not None and "snmp_to_iceberg" not in up)
 check("up.sh は SPLUNK_INDEX（既定は空）を読み、STORES に splunk があれば（既定）ECS の Splunk の token を SSM に作ってから渡す（値は読まない）。外の Splunk の変数は渡さない",
       re.search(r'^SPLUNK_INDEX="\$\{SPLUNK_INDEX:-\}"$', up, re.M) is not None

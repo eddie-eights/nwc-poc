@@ -554,10 +554,10 @@ check("oss-images.sh の公開イメージ（kafka / kafka-ui / opensearch / Vic
       | {f'victoriametrics/{n}:{V["OSS_VM_TAG"]}' for n in ("vmstorage", "vminsert", "vmselect")} <= compose_images)
 check("ビルドする spark / neo4j の版は spark/・neo4j/ の Dockerfile の ARG の既定値と同じで、oss/compose/<名前>/Dockerfile の FROM とも同じ",
       re.search(rf'^ARG SPARK_VERSION={re.escape(V["OSS_SPARK_VERSION"])}\s*$', read("spark/Dockerfile"), re.M)
-      and re.search(r'^FROM apache/spark:\$\{SPARK_VERSION\}\s*$', read("spark/Dockerfile"), re.M)
+      and re.search(r'^FROM apache/spark:\$\{SPARK_VERSION\}-java17-python3\s*$', read("spark/Dockerfile"), re.M)
       and re.search(rf'^ARG NEO4J_VERSION={re.escape(V["OSS_NEO4J_VERSION"])}\s*$', read("neo4j/Dockerfile"), re.M)
       and re.search(r'^FROM neo4j:\$\{NEO4J_VERSION\}-community\s*$', read("neo4j/Dockerfile"), re.M)
-      and re.search(rf'^FROM apache/spark:{re.escape(V["OSS_SPARK_VERSION"])}\s*$', read("oss/compose/spark/Dockerfile"), re.M)
+      and re.search(rf'^FROM apache/spark:{re.escape(V["OSS_SPARK_VERSION"])}-java17-python3\s*$', read("oss/compose/spark/Dockerfile"), re.M)
       and re.search(rf'^FROM neo4j:{re.escape(V["OSS_NEO4J_VERSION"])}-community\s*$', read("oss/compose/neo4j/Dockerfile"), re.M))
 check("Neo4j の版は oss/terraform/pipeline/graph/neo4j.tf の neo4j_image_tag の既定値と同じ",
       tf_default_early("oss/terraform/pipeline/graph/neo4j.tf", "neo4j_image_tag") == V["OSS_NEO4J_VERSION"])
