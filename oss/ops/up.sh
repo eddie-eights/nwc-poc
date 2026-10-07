@@ -377,8 +377,10 @@ log "7-3. graph（oss/terraform/pipeline/graph。Neo4j + GDS の ECS と status 
 ensure_secret "/$PREFIX/neo4j-password" password "Neo4j password of the neo4j user (created by oss/ops/up.sh)"
 # status の Lambda（arm64）のレイヤーの中身。ドライバは純 Python なので、どの PC でも同じものができる（sync.tf の locals の注記）。
 # graph/requirements-oss.txt と pip に渡す platform / python の版のハッシュを .build/neo4j-layer.sha256 に残し、同じなら作り直さない
-# （毎回 pip を回さない。zip の中身は変わらない。版を変えたらハッシュが変わって作り直す）
-LAYER_SHA=$( { cat graph/requirements-oss.txt; echo "manylinux2014_aarch64 3.13"; } \
+# （毎回 pip を回さない。zip の中身は変わらない。版を変えたらハッシュが変わって作り直す）。
+# platform と python の版は、pip に渡すのもハッシュに入れるのもこの 2 つの変数（別々に書くと片方だけ変えてスタンプが合ったままになる）
+LAYER_PLATFORM=manylinux2014_aarch64; LAYER_PYVER=3.13
+LAYER_SHA=$( { cat graph/requirements-oss.txt; echo "$LAYER_PLATFORM $LAYER_PYVER"; } \
   | "${PY[@]}" -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
 if [ -d oss/terraform/pipeline/graph/.build/neo4j-layer/python/neo4j ] \
    && [ "$(cat oss/terraform/pipeline/graph/.build/neo4j-layer.sha256 2>/dev/null)" = "$LAYER_SHA" ]; then
@@ -387,7 +389,7 @@ else
   if command -v uv >/dev/null; then PIP="uv run --python 3.13 --with pip python -m pip"; else PIP="python3 -m pip"; fi
   rm -rf oss/terraform/pipeline/graph/.build/neo4j-layer oss/terraform/pipeline/graph/.build/neo4j-layer.sha256
   $PIP install --quiet --target oss/terraform/pipeline/graph/.build/neo4j-layer/python --only-binary=:all: \
-    --platform manylinux2014_aarch64 --python-version 3.13 -r graph/requirements-oss.txt \
+    --platform "$LAYER_PLATFORM" --python-version "$LAYER_PYVER" -r graph/requirements-oss.txt \
     || die "Neo4j のドライバ（graph/requirements-oss.txt）を oss/terraform/pipeline/graph/.build/neo4j-layer/python に入れられなかった"
   printf '%s\n' "$LAYER_SHA" > oss/terraform/pipeline/graph/.build/neo4j-layer.sha256
 fi

@@ -355,10 +355,10 @@ check("neo4j の centrality: 失敗したあとの drop まで失敗しても、
       isinstance(_err, RuntimeError) and str(_err) == "closeness に失敗" and "gds.graph.drop" in state["calls"][-1][0])
 state["answer"], state["calls"] = dict(ALGO, **{"gds.graph.project": RuntimeError("GDS が無い")}), []
 _err = _catch(graph4.centrality)
-check("neo4j の centrality: 射影そのものが失敗したら（GDS が無い・つながらない）写しは無いので drop を打たずにそのまま上げる",
+check("neo4j の centrality: 射影がドライバの包まない失敗（RuntimeError 等）で止まったら、写しは無いので drop を打たずにそのまま上げる",
       isinstance(_err, RuntimeError) and str(_err) == "GDS が無い" and not any("gds.graph.drop" in q for q, _ in state["calls"]))
 
-# topology.py の except は graph.errors() の型で受ける（Neptune は boto の 2 つ、Neo4j はドライバの Neo4jError / DriverError も）
+# ドライバの例外の偽物（neo4j.exceptions）。graph.errors() が足す型と、射影の失敗の種類で drop を打つかの検査に使い、最後に外す
 _exc = types.ModuleType("neo4j.exceptions")
 class Neo4jError(Exception): pass
 class DriverError(Exception): pass
@@ -367,14 +367,47 @@ _e_none = graph4.errors()
 sys.modules["neo4j.exceptions"] = _exc; neo4j.exceptions = _exc
 _e4 = graph4.errors()
 graph4.BACKEND = "neptune"; _e1 = graph4.errors(); graph4.BACKEND = "neo4j"
-del sys.modules["neo4j.exceptions"]; del neo4j.exceptions
-with open(os.path.join(AGENT, "topology.py"), encoding="utf-8") as f:
-    _topo_src = f.read()
 check("neo4j: graph.errors() はドライバの neo4j.exceptions があれば Neo4jError / DriverError を足し、無ければ boto の 2 つ。Neptune のままなら boto の 2 つだけ",
       _e_none == (ClientError, BotoCoreError) and _e4 == (ClientError, BotoCoreError, Neo4jError, DriverError) and _e1 == (ClientError, BotoCoreError))
-check("agent/topology.py の読み込み・変更履歴・中心性の except は graph.errors() で受ける（OSS 版で Neo4j の失敗が 500 にならない）",
+state["answer"], state["calls"] = dict(ALGO, **{"gds.graph.project": Neo4jError("A graph with name x already exists")}), []
+_err = _catch(graph4.centrality)
+check("neo4j の centrality: 射影がサーバーの失敗（Neo4jError。ドライバのやり直しで 2 度目が already exists になる等）なら、残っているかもしれない写しを同じ名前で消してから上げる",
+      isinstance(_err, Neo4jError) and "gds.graph.drop" in state["calls"][-1][0] and state["calls"][-1][1]["g"] == state["calls"][-2][1]["g"]
+      and "gds.graph.project" in state["calls"][-2][0])
+state["answer"], state["calls"] = dict(ALGO, **{"gds.graph.project": DriverError("つながらない")}), []
+_err = _catch(graph4.centrality)
+check("neo4j の centrality: 射影がドライバの失敗（DriverError。つながらない・切れた）なら、送っても届かないので drop を打たずに上げる",
+      isinstance(_err, DriverError) and not any("gds.graph.drop" in q for q, _ in state["calls"]))
+
+# agent/topology.py を Neo4j の設定で読み込み、graph.errors() の型が実際に受け止められることを見る（文字列の検査だけにしない）
+state["answer"], state["calls"] = {"": DriverError("切れた")}, []   # 空の鍵は全部のクエリに当たる（最初の読み込みが落ちる）
+topology4 = load(os.path.join(AGENT, "topology.py"), "topology")
+check("neo4j の topology.py: 読み込みが DriverError で落ちたら 500 にせず静的データに戻る（SOURCE が static、機器は data/ の 8 台）",
+      topology4.SOURCE == "static" and len(topology4.DEVICES) == 8 and any("device" in q for q, _ in state["calls"]))
+_cent_err = {}
+for _name, _e in (("DriverError", DriverError("切れた")), ("Neo4jError", Neo4jError("There is no procedure with the name gds.closeness.stream"))):
+    state["answer"], state["calls"] = dict(ALGO, **{"gds.closeness": _e}), []
+    _cent_err[_name] = topology4.centrality()
+check("neo4j の topology.py: centrality の途中の DriverError / Neo4jError は「中心性を計算できない: …」の答えになり、射影は消す",
+      all(v["error"].startswith("中心性を計算できない: ") and v["devices"] == [] for v in _cent_err.values())
+      and "切れた" in _cent_err["DriverError"]["error"] and "gds.closeness" in _cent_err["Neo4jError"]["error"]
+      and "gds.graph.drop" in state["calls"][-1][0])
+state["answer"], state["calls"] = ALGO, []
+check("neo4j の topology.py: 失敗しなければ GDS の結果に note を付けて返す",
+      topology4.centrality(limit=2)["note"].startswith("degree は回線の数") and "gds.graph.drop" in state["calls"][-1][0])
+state["answer"], state["calls"] = dict(ALGO, **{"gds.closeness": RuntimeError("ドライバが包まない失敗")}), []
+check("neo4j の topology.py: ドライバが包まない失敗（RuntimeError 等）は graph.errors() の範囲外なので、そのまま上がる（握りつぶさない）",
+      raises(RuntimeError, topology4.centrality))
+del sys.modules["neo4j.exceptions"]; del neo4j.exceptions; del sys.modules["topology"]
+with open(os.path.join(AGENT, "topology.py"), encoding="utf-8") as f:
+    _topo_src = f.read()
+with open(os.path.join(ROOT, "web", "topology_view.py"), encoding="utf-8") as f:
+    _web_src = f.read()
+check("agent/topology.py の読み込み・変更履歴・中心性と、web/topology_view.py の編集（_graph_call）の except は graph.errors() で受ける（OSS 版で Neo4j の失敗が 500 にならない）",
       _topo_src.count("except graph.errors() as e:") == 2 and "except (*graph.errors(), KeyError, ValueError, TypeError) as e:" in _topo_src
-      and "except (ClientError, BotoCoreError" not in _topo_src)
+      and "except (ClientError, BotoCoreError" not in _topo_src
+      and "except (*graph.errors(), KeyError, ValueError, TypeError) as e:" in _web_src
+      and "except (ClientError, BotoCoreError" not in _web_src and "from botocore.exceptions import" not in _web_src)
 
 state["calls"] = []
 FakeDriver.made.clear()

@@ -78,16 +78,33 @@ def configured() -> bool:
 
 
 def errors() -> tuple[type[BaseException], ...]:
-    """読み書きの失敗として捕まえる例外の型（topology.py の except に渡す）。Neptune は boto の 2 つ。
-    OSS 版はドライバの Neo4jError（サーバーが返す失敗）と DriverError（つながらない・切れた）も加える（無ければ boto の 2 つだけ）"""
-    exc: tuple[type[BaseException], ...] = (ClientError, BotoCoreError)
-    if BACKEND == "neo4j":
-        try:
-            from neo4j.exceptions import DriverError, Neo4jError
-        except ImportError:   # ドライバが無い（テストの偽物など）
-            return exc
-        exc += (Neo4jError, DriverError)
-    return exc
+    """読み書きの失敗として捕まえる例外の型（topology.py と web/topology_view.py の except に渡す）。Neptune は boto の 2 つ。
+    OSS 版はドライバの Neo4jError（サーバーが返す失敗）と DriverError（つながらない・切れた）も加える。
+    ドライバが包まない例外（OSError 等）は受けない。neo4j.exceptions が無いときに boto の 2 つに戻るのはテストの偽物のためで、
+    本番でドライバが無ければ _driver() の import が落ちて配備ミスをそのまま見せる"""
+    return (ClientError, BotoCoreError) + _server_errors() + _driver_errors()
+
+
+def _server_errors() -> tuple[type[BaseException], ...]:
+    """Neo4j のサーバーが答えた失敗（Neo4jError。GDS が無い・文法・一意制約など）。Neptune のとき、ドライバが無いときは空"""
+    if BACKEND != "neo4j":
+        return ()
+    try:
+        from neo4j.exceptions import Neo4jError
+    except ImportError:
+        return ()
+    return (Neo4jError,)
+
+
+def _driver_errors() -> tuple[type[BaseException], ...]:
+    """Neo4j につながらない・切れた失敗（DriverError）。Neptune のとき、ドライバが無いときは空"""
+    if BACKEND != "neo4j":
+        return ()
+    try:
+        from neo4j.exceptions import DriverError
+    except ImportError:
+        return ()
+    return (DriverError,)
 
 
 def _client():
@@ -652,18 +669,28 @@ def _algo_neo4j() -> tuple[list, list, list]:
     if not _count("MATCH (n:device) RETURN count(n) AS n"):
         return [], [], []
     g = f"nwc-centrality-{uuid.uuid4().hex}"
-    # project が失敗したら（GDS が無い・つながらない）写しは無いので drop せずにそのまま上げる（つながらないときに drop の再試行で倍待たない）。
-    # 3 つの stream の途中で失敗したら drop してから上げる。その失敗（GDS が入っていない等）を隠さないように、drop 自身の失敗は飲む
+    # 失敗したら drop してから上げる。その失敗（GDS が入っていない等）を隠さないように、drop 自身の失敗は飲む。
+    # project の失敗のうち、サーバーが答えた失敗（Neo4jError）だけ drop する: 写しはトランザクションの外（GDS のカタログ）にできるので、
+    # 1 回目がサーバー側で済んだあと結果の受け取りに失敗すると、execute_query の自動の打ち直しが「already exists」で落ち、写しが残る。
+    # つながらない（DriverError）・GDS 以外の失敗は写しが無いので drop せずに上げる（つながらないときに drop の再試行で倍待たない）
     drop = "CALL gds.graph.drop($g, false) YIELD graphName RETURN graphName"
-    query("MATCH (a:device) OPTIONAL MATCH (a)-[:link]->(b:device) "
-          "WITH gds.graph.project($g, a, b, {}, {undirectedRelationshipTypes: ['*']}) AS p RETURN p.graphName AS graph", g=g)
+
+    def drop_quietly():
+        with contextlib.suppress(Exception):
+            query(drop, g=g)
+
+    try:
+        query("MATCH (a:device) OPTIONAL MATCH (a)-[:link]->(b:device) "
+              "WITH gds.graph.project($g, a, b, {}, {undirectedRelationshipTypes: ['*']}) AS p RETURN p.graphName AS graph", g=g)
+    except _server_errors():
+        drop_quietly()
+        raise
     try:
         out = (query("CALL gds.degree.stream($g) YIELD nodeId, score RETURN gds.util.asNode(nodeId).id AS id, toInteger(score) AS degree", g=g),
                query("CALL gds.closeness.stream($g) YIELD nodeId, score RETURN gds.util.asNode(nodeId).id AS id, score", g=g),
                query("CALL gds.wcc.stream($g) YIELD nodeId, componentId RETURN gds.util.asNode(nodeId).id AS id, componentId AS component", g=g))
-    except BaseException:
-        with contextlib.suppress(Exception):
-            query(drop, g=g)
+    except Exception:
+        drop_quietly()
         raise
     query(drop, g=g)
     return out

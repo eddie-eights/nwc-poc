@@ -727,7 +727,10 @@ check("oss/ops/up.sh は analytics に 4 つの格納先と、Spark・OpenSearch
 check("oss/ops/up.sh は graph の前に SSM の /<接頭辞>/neo4j-password を作り、status の Lambda のレイヤー（graph/requirements-oss.txt を arm64 向けに）を入れ、Neo4j のタグと alert_history=true を渡す",
       0 <= pos('ensure_secret "/$PREFIX/neo4j-password" password') < pos("tf_apply pipeline/graph")
       and 0 <= pos("--target oss/terraform/pipeline/graph/.build/neo4j-layer/python") < pos("tf_apply pipeline/graph")
-      and "--platform manylinux2014_aarch64" in up and "-r graph/requirements-oss.txt" in up
+      and '--platform "$LAYER_PLATFORM" --python-version "$LAYER_PYVER" -r graph/requirements-oss.txt' in up
+      and re.search(r"^LAYER_PLATFORM=manylinux2014_aarch64; LAYER_PYVER=3\.13$", up, re.M)
+      # pip に渡す値とハッシュに入れる値は同じ変数（レイヤーの節に platform の文字そのものは定義の 1 回だけ。4-1 の wheel の pip は別）
+      and 'echo "$LAYER_PLATFORM $LAYER_PYVER"' in up and up[pos("LAYER_PLATFORM="):pos('"$LAYER_SHA" > oss/terraform')].count("manylinux") == 1
       and "shasum" not in up and 0 <= pos("""| "${PY[@]}" -c 'import hashlib, sys; print(hashlib.sha256(""") < pos('"$LAYER_SHA" > oss/terraform/pipeline/graph/.build/neo4j-layer.sha256')
       and 'tf_apply pipeline/graph -var "neo4j_image_tag=$NEO4J_TAG" -var alert_history=true' in up)
 UP_ENDPOINTS = {"ssm", "ssmmessages", "ecr.api", "ecr.dkr", "logs", "s3tables", "sns", "kinesis-firehose",
@@ -891,9 +894,10 @@ check("up.sh（通し）: status の Lambda のレイヤー（graph/requirements
           and arg_after(a, "--platform") == "manylinux2014_aarch64" and arg_after(a, "-r") == "graph/requirements-oss.txt" for a in uv)
       and 0 <= first(cs, lambda c: c["cmd"] == "uv" and "install" in c["args"]) < apply_at(cs, "pipeline/graph"))
 
-def layer_sha():  # up.sh と同じ計算（graph/requirements-oss.txt + pip に渡す platform / python の版）
+def layer_sha():  # up.sh と同じ計算（graph/requirements-oss.txt + pip に渡す platform / python の版。up.sh の LAYER_PLATFORM / LAYER_PYVER から読む）
+    m = re.search(r"^LAYER_PLATFORM=(\S+); LAYER_PYVER=(\S+)$", read("oss/ops/up.sh"), re.M)
     with open(os.path.join(REPO, "graph", "requirements-oss.txt"), "rb") as f:
-        return hashlib.sha256(f.read() + b"manylinux2014_aarch64 3.13\n").hexdigest()
+        return hashlib.sha256(f.read() + f"{m.group(1)} {m.group(2)}\n".encode()).hexdigest()
 
 def layer_stamp():
     try:
@@ -1018,6 +1022,45 @@ out = p.stdout + p.stderr
 check("up.sh: readonly の init が止まったら apply せずに止まり、先にマネージド版のルートを init する案内（terraform -chdir=terraform/base/ecr init）を出す",
       p.returncode != 0 and not applies(cs) and "oss/terraform/base/ecr の init に失敗した" in out
       and "terraform -chdir=terraform/base/ecr init -input=false" in out and "-lockfile=readonly" in out)
+
+# ================================================================ 7. ops/sync-graph.sh（--oss で OSS 版の state と接頭辞。up.sh の 7-3b と同じ処理を単独で）
+def run_sync(*args):
+    reset(inventory())
+    envfile = os.path.join(TMP, "owner-x.env")
+    with open(envfile, "w", encoding="utf-8") as f:
+        f.write("OWNER=x\n")
+    p = subprocess.run(["bash", "ops/sync-graph.sh", *args], cwd=REPO, capture_output=True, text=True, timeout=300,
+                       env=fake_env({"DEPLOY_ENV_FILE": envfile, "FAKE_TF_UP": "1"}))
+    with open(INV, encoding="utf-8") as f:
+        inv = json.load(f)
+    return p, calls(), inv
+
+def sent_seed(inv):  # 送ったコマンドから (接頭辞, トポロジ JSON, GRAPH_REPLACE, スクリプトが ops/seed_graph.py そのものか)
+    cmd = json.loads(inv["cmds"][-1])["commands"][-1]
+    m = re.search(r"^echo (\S+) \| base64 -d \| NAME_PREFIX=(\S+) LAB_TOPOLOGY_B64=(\S+) GRAPH_REPLACE=(\d) /usr/bin/python3\.13 -$", cmd)
+    return (m.group(2), json.loads(base64.b64decode(m.group(3))), m.group(4), base64.b64decode(m.group(1)).decode() == read("ops/seed_graph.py")) if m else None
+
+p, cs, inv = run_sync("--oss")
+_tf = [c["args"] for c in tf_calls(cs)]
+_send = [c for c in cs if is_aws(c, "ssm", "send-command")]
+check("sync-graph.sh --oss: Web の EC2 の id を oss/terraform/base/core の出力から取り、接頭辞 x-nwc-oss と lab のトポロジで ops/seed_graph.py を送る（GRAPH_REPLACE=0）",
+      p.returncode == 0 and _tf == [["-chdir=oss/terraform/base/core", "output", "-raw", "web_instance_id"]]
+      and len(_send) == 1 and arg_after(_send[0]["args"], "--instance-ids") == "out-core-web_instance_id"
+      and (s := sent_seed(inv)) and s[0] == "x-nwc-oss" and s[2] == "0" and s[3] and len(s[1].get("nodes", s[1].get("devices", []))) == LAB_NODES
+      and "再読み込み" in p.stdout)
+p, cs, inv = run_sync("--oss", "--replace")
+check("sync-graph.sh --oss --replace: 同じ送り先で GRAPH_REPLACE=1（入っていても lab の定義で入れ直す）",
+      p.returncode == 0 and [c["args"][0] for c in tf_calls(cs)] == ["-chdir=oss/terraform/base/core"] and sent_seed(inv)[0] == "x-nwc-oss" and sent_seed(inv)[2] == "1")
+p, cs, inv = run_sync()
+check("sync-graph.sh（--oss 無し）: マネージド版の terraform/base/core と接頭辞 x-nwc-poc のまま（OSS 版の追加で変わらない）",
+      p.returncode == 0 and [c["args"][0] for c in tf_calls(cs)] == ["-chdir=terraform/base/core"] and sent_seed(inv)[0] == "x-nwc-poc" and sent_seed(inv)[2] == "0")
+p, cs, inv = run_sync("--oss", "--dry-run")
+check("sync-graph.sh --oss --dry-run: terraform にも aws にも触らず、lab から作ったトポロジ JSON を出すだけ",
+      p.returncode == 0 and not tf_calls(cs) and not [c for c in cs if c["cmd"] == "aws"] and not inv.get("cmds")
+      and isinstance(json.loads(p.stdout), dict))
+p, cs, inv = run_sync("--oss", "--yes")
+check("sync-graph.sh: 知らない引数は使い方を出して 2 で止まる（terraform と aws には触らない）",
+      p.returncode == 2 and "使い方" in p.stderr and not tf_calls(cs) and not inv.get("cmds"))
 
 shutil.rmtree(TMP, ignore_errors=True)
 print(f"通過 {passed} / 失敗 0")

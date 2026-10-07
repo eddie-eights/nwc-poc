@@ -11,7 +11,8 @@
 #                                      # Neo4j はタスクが入れ替わるとグラフが空に戻るので、起こし直したあとにこれを打つ
 #
 # 物理層の正は Nautobot（terraform/pipeline/nautobot。PIPELINE=1 ならいつも立つ）。--replace は lab の定義で上書きするので、Nautobot で足した機器と回線は
-# グラフ DB から消える（Nautobot の Job「Telegraf と Neptune に同期」を打てば戻る。IP 層と EVPN・BGP 層は Nautobot に無いので lab からだけ入る）。
+# グラフ DB から消える（マネージド版は Nautobot の Job「Telegraf と Neptune に同期」を打てば戻る。OSS 版はその Job がまだ Neo4j に書けないので
+# 戻らない: docs/cycles/BACKLOG.md。IP 層と EVPN・BGP 層は Nautobot に無いので lab からだけ入る）。
 #
 # base/core（Web の EC2）と pipeline/graph（Neptune か Neo4j）が出来ていることが前提。Web の EC2 の上で ops/seed_graph.py を SSM Run Command で動かす
 # （どちらに入れるかは Web の環境変数 GRAPH_BACKEND で決まり、ops/seed_graph.py が agent/graph.py 経由で切り替える）。
@@ -31,7 +32,7 @@ done
 die() { echo "NG: $*" >&2; exit 1; }
 # shellcheck source=ops/deploy-env.sh
 . ops/deploy-env.sh
-load_deploy_env
+load_deploy_env >&2   # 読んだファイルとキーの案内は stderr へ（--dry-run の stdout を JSON だけにして jq に渡せるようにする）
 # PREFIX（<owner>-nwc-poc。--oss なら <owner>-nwc-oss）。Web の EC2 の中での置き場（/opt/<接頭辞>-web）を ops/seed_graph.py に教える
 if [ -n "$OSS" ]; then resolve_name_prefix nwc-oss; TF_DIR=oss/terraform; else resolve_name_prefix; TF_DIR=terraform; fi
 REGION=ap-northeast-1

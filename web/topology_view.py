@@ -11,7 +11,6 @@ import html
 
 import gradio as gr
 import pandas as pd
-from botocore.exceptions import BotoCoreError, ClientError
 
 from config import log
 
@@ -205,7 +204,7 @@ def _graph_call(fn, *args, a="", b=""):
         return "Neptune は未配備（terraform/pipeline/graph）", *refresh_topology(a, b)
     try:
         r = fn(*args)
-    except (ClientError, BotoCoreError, KeyError, ValueError, TypeError) as e:
+    except (*graph.errors(), KeyError, ValueError, TypeError) as e:   # OSS 版は Neo4j のドライバの失敗（入れ替え中など）もここで受ける
         log.error("neptune write failed: %s", str(e)[:500])
         return f"Neptune の更新に失敗: {str(e)[:200]}", *refresh_topology(a, b)
     msg = r.get("error") or ", ".join(f"{k}: {v}" for k, v in r.items())
