@@ -49,7 +49,8 @@ echo "構文エラーなし"
 
 log "4. 模擬テスト"
 if command -v uv >/dev/null; then
-  for t in tests/test_app.py tests/test_graph.py tests/test_stream.py tests/test_sync.py tests/test_analytics.py tests/test_workflow.py tests/test_alerts.py tests/test_kb_index.py tests/test_lab_debug.py tests/test_nautobot.py tests/test_oss.py tests/test_oss_ops.py; do
+  # tests/ の test_*.py を全部（名指しで並べると、足したテストを入れ忘れる。tests/test_oss.py がこの glob であることを見る）
+  for t in tests/test_*.py; do
     # test_nautobot は web/topology_view.py を読むので gradio と pandas（web のグループ）も要る
     uv run --group dev --group web python "$t" || die "$t が失敗した"
   done

@@ -161,9 +161,8 @@ else echo "lab-srlinux:$SRLINUX_TAG と lab-multitool:$MULTITOOL_TAG はある";
 TELEGRAF_TAG=$(telegraf_tag) || die "telegraf/ のタグを作れなかった"
 if ecr_has "$PREFIX-telegraf" "$TELEGRAF_TAG"; then echo "telegraf:$TELEGRAF_TAG はある"; else NEED_TELEGRAF=1; fi
 if ecr_has "$PREFIX-kafka-ui" "$OSS_KAFKA_UI_TAG"; then echo "kafka-ui:$OSS_KAFKA_UI_TAG はある"; else NEED_KAFKA_UI=1; fi
-# ルートが使う OSS のイメージ（stream の kafka、analytics の opensearch / vmstorage vminsert vmselect / spark、graph の neo4j）
-OSS_NOW="kafka opensearch vmstorage vminsert vmselect spark neo4j"
-for name in $OSS_NOW; do
+# ルートが使う OSS のイメージ（oss/ops/oss-images.sh の OSS_IMAGES。stream の kafka、analytics の opensearch / vmstorage vminsert vmselect / spark、graph の neo4j）
+for name in $OSS_IMAGES; do
   tag=$(oss_image_tag "$name") || die "oss/ops/oss-images.sh が $name のタグを作れなかった"
   if ecr_has "$PREFIX-$name" "$tag"; then
     echo "$name:$tag はある"
@@ -214,7 +213,7 @@ else
   if [ -n "$NEED_OSS" ]; then
     # 公開イメージ（Fargate は VPC の中から ECR しか引けないので写す。arm64）と、spark/・neo4j/ のビルド（arm64）
     # shellcheck disable=SC2086
-    mirror_oss_images "$REG" "$PREFIX" $OSS_NOW || die "OSS 版のイメージ（$OSS_NOW）を ECR に置けなかった"
+    mirror_oss_images "$REG" "$PREFIX" $OSS_IMAGES || die "OSS 版のイメージ（$OSS_IMAGES）を ECR に置けなかった"
   fi
   if [ -n "$NEED_SPLUNK" ]; then
     build_splunk   # amd64（ops/up-common.sh。マネージド版と共通）
@@ -376,12 +375,20 @@ fi
 log "7-3. graph（oss/terraform/pipeline/graph。Neo4j + GDS の ECS と status の Lambda）"
 # neo4j ユーザーのパスワード（Neo4j のタスクが ECS の secrets で受け、status の Lambda と Web が SSM から読む）。値は出さない
 ensure_secret "/$PREFIX/neo4j-password" password "Neo4j password of the neo4j user (created by oss/ops/up.sh)"
-# status の Lambda（arm64）のレイヤーの中身。ドライバは純 Python なので、どの PC でも同じものができる（sync.tf の locals の注記）
-if command -v uv >/dev/null; then PIP="uv run --python 3.13 --with pip python -m pip"; else PIP="python3 -m pip"; fi
-rm -rf oss/terraform/pipeline/graph/.build/neo4j-layer
-$PIP install --quiet --target oss/terraform/pipeline/graph/.build/neo4j-layer/python --only-binary=:all: \
-  --platform manylinux2014_aarch64 --python-version 3.13 -r graph/requirements-oss.txt \
-  || die "Neo4j のドライバ（graph/requirements-oss.txt）を oss/terraform/pipeline/graph/.build/neo4j-layer/python に入れられなかった"
+# status の Lambda（arm64）のレイヤーの中身。ドライバは純 Python なので、どの PC でも同じものができる（sync.tf の locals の注記）。
+# graph/requirements-oss.txt のハッシュを .build/neo4j-layer.sha256 に残し、同じなら作り直さない（毎回 pip を回さない。zip の中身は変わらない）
+LAYER_SHA=$(shasum -a 256 graph/requirements-oss.txt | cut -d' ' -f1)
+if [ -d oss/terraform/pipeline/graph/.build/neo4j-layer/python/neo4j ] \
+   && [ "$(cat oss/terraform/pipeline/graph/.build/neo4j-layer.sha256 2>/dev/null)" = "$LAYER_SHA" ]; then
+  echo "Neo4j のドライバのレイヤー（oss/terraform/pipeline/graph/.build/neo4j-layer）はある（graph/requirements-oss.txt は変わっていない）"
+else
+  if command -v uv >/dev/null; then PIP="uv run --python 3.13 --with pip python -m pip"; else PIP="python3 -m pip"; fi
+  rm -rf oss/terraform/pipeline/graph/.build/neo4j-layer oss/terraform/pipeline/graph/.build/neo4j-layer.sha256
+  $PIP install --quiet --target oss/terraform/pipeline/graph/.build/neo4j-layer/python --only-binary=:all: \
+    --platform manylinux2014_aarch64 --python-version 3.13 -r graph/requirements-oss.txt \
+    || die "Neo4j のドライバ（graph/requirements-oss.txt）を oss/terraform/pipeline/graph/.build/neo4j-layer/python に入れられなかった"
+  printf '%s\n' "$LAYER_SHA" > oss/terraform/pipeline/graph/.build/neo4j-layer.sha256
+fi
 # アラートの履歴は 7-4 の analytics の Firehose に送る（analytics はいつも作るので、いつも true。Firehose ができるのは 7-4 で、それまでは送れない）
 tf_apply pipeline/graph -var "neo4j_image_tag=$NEO4J_TAG" -var alert_history=true -var "lambda_az_num=$LAMBDA_AZ_NUM"
 
@@ -469,7 +476,7 @@ if [ "$SPLUNK_AZ_NUM" -gt 1 ]; then
   SP_SERVICES="$SP_SERVICES $(tf pipeline/analytics output -raw splunk_cm_service_name) $(tf pipeline/analytics output -raw splunk_idx_service_name)"
 fi
 SP_HEALTHY=0; SP_HEALTH=""
-for i in $(seq 1 80); do
+for _ in $(seq 1 80); do
   SP_TASKS=""
   for svc in $SP_SERVICES; do
     SP_TASKS="$SP_TASKS $(aws ecs list-tasks --region "$REGION" --cluster "$AN_CLUSTER" --service-name "$svc" --desired-status RUNNING \

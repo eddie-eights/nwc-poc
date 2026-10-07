@@ -210,7 +210,7 @@ check("ops/up.sh: stream に一覧の持ち主を渡し、nautobot は graph の
       '-var "dialin_targets_from_nautobot=$DIALIN_FROM_NAUTOBOT"' in up
       and up.index('log "7-3b.') < up.index("# ---- 7-3c. Nautobot") < up.index("# ---- 7-4. analytics"))
 check("ops/up.sh: エンドポイントに ecs（Job が dialin を作り直す）", "pipeline/nautobot) add_endpoints ecr.api ecr.dkr logs ecs ;;" in up)
-check("ops/check.sh が nautobot のルートとこのテストを回す", "pipeline/nautobot" in chk and "tests/test_nautobot.py" in chk)
+check("ops/check.sh が nautobot のルートとこのテストを回す（モックの検査は tests/test_*.py のグロブ）", "pipeline/nautobot" in chk and "for t in tests/test_*.py; do" in chk)
 check("Nautobot は PIPELINE=1 ならいつも作る（切り替える変数は無い）",
       'if [ -n "$PIPELINE" ] && { [ -z "$SKIP_STREAM" ] || [ -z "$SKIP_GRAPH" ]; }; then NAUTOBOT=1; fi' in up
       and "flag_value NAUTOBOT" not in up and "NAUTOBOT=1" not in read("deploy.env.example") and "DIALIN_FROM_NAUTOBOT=false" not in up)

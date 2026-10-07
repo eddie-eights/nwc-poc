@@ -308,6 +308,8 @@ def inventory():
         "ssm": {
             **{n: ssm_param("oss/ops/up.sh", "x-nwc-oss") for n in OSS_MANAGED_PARAMS},
             "/x-nwc-oss/manual/note": ssm_param(None, "x-nwc-oss"),  # 手で入れたもの（ManagedBy が無い）は残す
+            # /x-nwc-oss/ の下でもマネージド版の ops/up.sh のタグのものは残す（Path だけで消さない）。Project は「残り」の数に入らない別の名前
+            "/x-nwc-oss/shared/from-managed": ssm_param("ops/up.sh", "y-nwc-poc"),
             "/x-nwc-oss-nwc-poc/kafka-ui/admin-password": ssm_param("ops/up.sh", "x-nwc-oss-nwc-poc"),
             "/x-nwc-oss-nwc-poc/nautobot/secret-key": ssm_param("ops/up.sh", "x-nwc-oss-nwc-poc"),
             "/x-nwc-poc/kafka-ui/admin-password": ssm_param("ops/up.sh", "x-nwc-poc"),
@@ -456,10 +458,14 @@ check("SSM: oss/ops/up.sh が作った 8 つ（Kafka の CLUSTER_ID、OpenSearch
       set(inv["ssm"]) == ALL_PARAMS - set(OSS_MANAGED_PARAMS))
 check("SSM: delete-parameter は /x-nwc-oss/ の下にしか打っていない",
       all(arg_after(a, "--name").startswith("/x-nwc-oss/") for a in aws_calls(cs, "ssm", "delete-parameter")))
-check("SSM の絞り込みは Path=/x-nwc-oss/（末尾の / まで）と ManagedBy=oss/ops/up.sh",
-      any(a[a.index("--parameter-filters") + 1:a.index("--parameter-filters") + 3]
-          == ["Key=Path,Option=Recursive,Values=/x-nwc-oss/", "Key=tag:ManagedBy,Values=oss/ops/up.sh"]
-          for a in aws_calls(cs, "ssm", "describe-parameters")))
+check("SSM の絞り込みは、describe-parameters のどの呼び出しも Path=/x-nwc-oss/（末尾の / まで）と ManagedBy=oss/ops/up.sh の両方を付ける",
+      aws_calls(cs, "ssm", "describe-parameters")
+      and all(a[a.index("--parameter-filters") + 1:a.index("--parameter-filters") + 3]
+              == ["Key=Path,Option=Recursive,Values=/x-nwc-oss/", "Key=tag:ManagedBy,Values=oss/ops/up.sh"]
+              for a in aws_calls(cs, "ssm", "describe-parameters")))
+check("SSM: /x-nwc-oss/ の下にあってもタグ ManagedBy=ops/up.sh（マネージド版）のパラメータは消さない",
+      "/x-nwc-oss/shared/from-managed" in inv["ssm"]
+      and "/x-nwc-oss/shared/from-managed" not in {arg_after(a, "--name") for a in aws_calls(cs, "ssm", "delete-parameter")})
 check("Lambda の ENI: OSS 版の tools のものだけ消し、マネージド版（x-nwc-oss-nwc-poc-tools / graph-status）と Runtime のものは残す",
       eni_ids(inv) == ALL_ENIS - {"eni-oss-tools"})
 check("ENI の絞り込みは「AWS Lambda VPC ENI-<接頭辞>-<関数>-*」で、OSS 版の関数名だけ",
@@ -686,9 +692,9 @@ check("oss/ops/up.sh はルートを base/ecr → base/core → agent → pipeli
 check("oss/ops/down.sh は up.sh の 9 つのルートを全部消す（base/core は destroy_base_core、agent は destroy_agent）",
       all(re.search(rf"^\s*destroy_(lambda_)?root {re.escape(r)}\b", down, re.M) for r in ROOTS if r not in ("base/core", "agent"))
       and re.search(r"^destroy_agent$", down, re.M) and re.search(r"^destroy_base_core$", down, re.M))
-check("oss/ops/up.sh は ECR ができてから OSS のイメージを全部（OSS_IMAGES の 7 つ）写すかビルドし、stream より先に済ませる",
-      (m := re.search(r'^OSS_NOW="([^"]*)"$', up, re.M)) and set(m.group(1).split()) == set(V["OSS_IMAGES"].split())
-      and pos("tf_apply base/ecr") < pos('mirror_oss_images "$REG" "$PREFIX" $OSS_NOW') < pos("tf_apply pipeline/stream"))
+check("oss/ops/up.sh は OSS_NOW を持たず、oss-images.sh の OSS_IMAGES（7 つ）をそのまま使って、ECR ができてから OSS のイメージを写すかビルドし、stream より先に済ませる",
+      "OSS_NOW" not in up and len(V["OSS_IMAGES"].split()) == 7 and re.search(r"^for name in \$OSS_IMAGES; do$", up, re.M) is not None
+      and 0 <= pos("tf_apply base/ecr") < pos('mirror_oss_images "$REG" "$PREFIX" $OSS_IMAGES') < pos("tf_apply pipeline/stream"))
 check("oss/ops/up.sh の Splunk のイメージはマネージド版と同じ関数（ops/up-common.sh の splunk_image_check / build_splunk）で、docker login のあと、analytics より前",
       "splunk_image_check" in up and "$NEED_SPLUNK" in up
       and pos("aws ecr get-login-password") < pos("    build_splunk") < pos("tf_apply pipeline/analytics")
@@ -961,6 +967,25 @@ check("oss/ops/up.sh と down.sh の terraform init は、どのルートも -lo
       and all(a == ["init", "-input=false", "-lockfile=readonly"] for a in inits(cs) + inits(csd)) and inits(csd))
 check("oss/terraform/ の .terraform.lock.hcl は、どのルートもマネージド版の lock へのシンボリックリンク（実ファイルにしない）",
       all(os.path.islink(os.path.join(ROOT, "oss/terraform", r, ".terraform.lock.hcl")) for r in ROOTS))
+
+# ---- up.sh / down.sh が -var で渡す名前は、どれもそのルートの variable "名" として宣言されている（シンボリックリンク先も読む）
+def tf_variables(root):
+    d = os.path.join(ROOT, "oss/terraform", root)
+    names = set()
+    for n in os.listdir(d):
+        if n.endswith(".tf"):
+            with open(os.path.join(d, n), encoding="utf-8") as f:   # open はシンボリックリンクの先を読む
+                names |= set(re.findall(r'^variable\s+"(\w+)"', f.read(), re.M))
+    return names
+def var_names(args):
+    return {args[i + 1].partition("=")[0] for i in range(len(args) - 1) if args[i] == "-var"}
+_up_vars = {(r[len("oss/terraform/"):], v) for r, a in ap for v in var_names(a)}
+_down_vars = {(chdir_of(c)[len("oss/terraform/"):], v) for c in tf_calls(csd) if c["args"][1] == "destroy" for v in var_names(c["args"])}
+check("up.sh（通し）が 9 つのルートに渡した -var の名前は、どれも oss/terraform/<ルート>/*.tf の variable で宣言されている（owner を含めて全部）",
+      _up_vars and {r for r, _ in _up_vars} == set(ROOTS) and not [(r, v) for r, v in _up_vars if v not in tf_variables(r)])
+check("down.sh が destroy に渡した -var（workflow の worker_image_tag、stream の snmp_agents / gnmi_targets、owner）も、そのルートの variable で宣言されている",
+      {("workflow", "worker_image_tag"), ("pipeline/stream", "snmp_agents"), ("pipeline/stream", "gnmi_targets")} <= _down_vars
+      and not [(r, v) for r, v in _down_vars if v not in tf_variables(r)])
 
 # ---- readonly の init が止まったとき（この PC の OS・CPU のハッシュが lock に無い）
 p, cs, inv = run_up(dict(empty), {"NO_DASHBOARD_PORTFORWARD": "1", "FAKE_TF_INIT_FAIL": "oss/terraform/base/ecr"})

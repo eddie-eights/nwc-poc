@@ -45,14 +45,14 @@ main(fable-5.1) / effort: high
 - **OpenSearch は、データの 2 台が同時に落ちるとデータが消える。**
   1 台が入れ替わったときは、もう 1 台のレプリカから戻る。2 台が同時に落ちると戻す元が無い。ログの正本は S3 Tables にあるので、OpenSearch の分は検索用の写しとして扱う。
 - **Neo4j は、タスクが入れ替わるとグラフが空に戻る。**
-  Nautobot と lab の定義から同期し直す（`ops/sync-graph.sh`）。
+  Nautobot と lab の定義から同期し直す（`ops/sync-graph.sh --oss`）。
 
 ### Neo4j のクラスターについての注意書き（docs にも同じ文を入れる）
 
 - クラスターは Neo4j Enterprise Edition だけの機能で、Community Edition では組めない。
 - だから OSS 版の中で、Neo4j だけは 1 台で動く。
 - 止まっているあいだは、トポロジの表示、status の更新、エージェントのトポロジの検索ができない。
-- データは Nautobot と lab の定義から同期し直せる（`ops/sync-graph.sh`）。タスクが入れ替わるとデータは消えるので、起こし直したあとに同期をかける。
+- データは Nautobot と lab の定義から同期し直せる（`ops/sync-graph.sh --oss`。`--oss` が接頭辞 `<owner>-nwc-oss` と `oss/terraform/` の state を選ぶ）。タスクが入れ替わるとデータは消えるので、起こし直したあとに同期をかける。
 - NFS（EFS）は Neo4j が非対応と明記しているので、データは EFS に置かない。
 
 ### GDS のライセンス（法的な助言ではない）
@@ -200,15 +200,16 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 - **OSS 版の SSM のパラメータは、タグ `ManagedBy=oss/ops/up.sh` で見分ける。**
   `oss/ops/down.sh` はこのタグのものだけ消す。マネージド版のパラメータには触らない。
 
-### 実装の状態（2026-10-06 の main）
+### 実装の状態（2026-10-07 の main）
 
 | 項目 | 状態 |
 |---|---|
-| `oss/ops/up.sh` が作るルート | `base/ecr`、`base/core`、`pipeline/lab`、`pipeline/stream`、`pipeline/analytics`、`pipeline/graph` |
-| `oss/ops/up.sh` がまだ作らないルート | `pipeline/nautobot`、`agent`、`workflow`（リンクはある） |
-| Grafana | OSS 版の analytics の `grafana.tf`（実ファイル）にある。データソースは vmselect（署名なし）と自前の OpenSearch（Basic 認証）で、`grafana/start.sh` が `datasources-oss` を並べる。uid がマネージド版と同じなので、イメージ・ダッシュボード・アラートのルールはマネージド版と同じものを使う。アラートは同じ SNS のトピックへ出る。`oss/ops/up.sh` はまだ作らない（イメージ、admin のパスワード、`create_grafana=true` を渡すのが、まだ） |
-| Web | EC2 は立つが、部品（wheel と手順書）を置かないので画面は出ない |
-| Neo4j への同期 | `oss/ops/up.sh` は呼ばない（Nautobot をまだ作らないため）。`ops/seed_graph.py` は `GRAPH_BACKEND=neo4j` を読める |
+| `oss/ops/up.sh` が作るルート | マネージド版の `ops/up.sh` と同じ 9 つ。`base/ecr`、`base/core`、`agent`、`pipeline/lab`、`pipeline/stream`、`pipeline/graph`、`pipeline/nautobot`、`pipeline/analytics`、`workflow`（`oss/ops/down.sh` が逆順に消す） |
+| Grafana | OSS 版の analytics の `grafana.tf`（実ファイル）にある。データソースは vmselect（署名なし）と自前の OpenSearch（Basic 認証）で、`grafana/start.sh` が `datasources-oss` を並べる。uid がマネージド版と同じなので、イメージ・ダッシュボード・アラートのルールはマネージド版と同じものを使う。アラートは同じ SNS のトピックへ出る。`oss/ops/up.sh` がイメージ、admin のパスワード、`create_grafana=true` を渡して作る |
+| Web | EC2 に部品（wheel と手順書）を置き、`GRAPH_BACKEND=neo4j` で動く |
+| Neo4j への同期 | `oss/ops/up.sh` の 7-3b が `ops/seed_graph.py` を Web の EC2 で打つ（空のときだけ）。入れ直しは `ops/sync-graph.sh --oss [--replace]` |
+| エージェント | `agent` のイメージを Neo4j のドライバー入りでビルドし、`GRAPH_BACKEND=neo4j` で Neo4j を引く |
+| Nautobot の Job から Neo4j | **まだ。** `terraform/pipeline/nautobot` のタスク定義が `GRAPH_BACKEND` / `NEO4J_URI` / `NEO4J_PASSWORD` を渡さず、Nautobot のイメージに Neo4j のドライバーが無い（OSS 版では Job「Telegraf と Neptune に同期」の Neptune 側が動かない。lab の定義からの同期は動く） |
 | 格納先の選択 | 無い。いつも iceberg、opensearch、prometheus、splunk の 4 つ（マネージド版の `STORES` は読まない） |
 
 ### アプリのコードの切り替え
@@ -318,9 +319,9 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 2. アプリのコードの切り替え（Spark、evidence、graph）とテスト。（済み）
 3. `oss/terraform/` の骨組み（シンボリックリンク、接頭辞の変数、SG、ECR、EFS）。（済み）
 4. Kafka と Telegraf。（済み）
-5. OpenSearch、VictoriaMetrics、Spark、Grafana。（済み）Grafana を `oss/ops/up.sh` から作る。（まだ）
-6. Neo4j と status の Lambda。（済み）worker、Web、Nautobot の Job、エージェントを `oss/ops/up.sh` につなぐ。（まだ）
-7. `oss/ops/up.sh` と `down.sh`、`ops/check.sh`。（済み。作るのは上の「実装の状態」の 6 ルート）
+5. OpenSearch、VictoriaMetrics、Spark、Grafana。（済み。Grafana も `oss/ops/up.sh` が作る）
+6. Neo4j と status の Lambda。（済み）worker、Web、エージェントを `oss/ops/up.sh` につなぐ。（済み）Nautobot の Job を Neo4j につなぐ。（まだ。上の「実装の状態」）
+7. `oss/ops/up.sh` と `down.sh`、`ops/check.sh`。（済み。作るのは上の「実装の状態」の 9 ルート）
 8. AWS での確認。（まだ）
 9. docs（こちらで書く）。
 
@@ -352,8 +353,13 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 5. Kafka、OpenSearch、vmstorage のタスクを 1 つずつ止めても、2 と 3 が続く。Kafbat UI をポートフォワードで開くと、5 つのトピックと Spark のコンシューマーの lag が見える。画面から試しのトピックを 1 つ作って消せる。
 6. Neo4j のタスクを止めると 3 が止まり、起こし直して同期をかけると戻る（注意書きのとおりになること）。
 7. `oss/ops/down.sh` のあと、接頭辞 `<owner>-nwc-oss` のリソースが残っていない。確認が終わったらすぐ消す。
+8. 立てたあとに見る、机上では確かめられない点:
+   - OpenSearch の 2 つの ECS サービス（データとまとめ役）が 1 つの Cloud Map の名前 `opensearch` に入り、`discovery.seed_hosts` が両方を引く。
+   - まとめ役（1 GB のタスク、heap 512m）が exit 137（OOM）で落ちない。
+   - status の Lambda（128 MB、Neo4j のレイヤー付き）の `REPORT` の `Max Memory Used` に余裕がある。
+   - Grafana の `datasources-oss` の `opensearch.yaml` の `version` が、立てた OpenSearch の版と合っている（違うとクエリの文法で失敗する）。
 
-2 の Grafana、3 の Web、4 は、「実装の状態」の「まだ」が埋まってから確かめる。
+3 の Nautobot の Job からの同期は、「実装の状態」の「まだ」が埋まってから確かめる（lab の定義からの同期で代える）。
 
 ## 費用
 
@@ -390,7 +396,7 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 7. **GDS のライセンス。**
    上の「GDS のライセンス」の読みは、法的な助言ではない。イメージを社外に配る形にするなら、GPLv3 の義務が生じる。
 8. **シンボリックリンクの terraform。**
-   変えないルートが、変えるルートの output や IAM を参照している。「空なら作らない」の分岐が多くなるなら、そのルートは複製に切り替える。`agent`、`workflow`、`pipeline/nautobot` は、まだ OSS 版で apply していない（未確認）。
+   変えないルートが、変えるルートの output や IAM を参照している。「空なら作らない」の分岐が多くなるなら、そのルートは複製に切り替える。`agent`、`workflow`、`pipeline/nautobot` は `oss/ops/up.sh` から apply するようにしたが、AWS ではまだ apply していない（未確認）。
 9. **Lambda から Neo4j へ。**
    ドライバはレイヤーで入れた。接続の張り直し（Lambda は実行のたびに使い回す）が AWS で問題なく動くかは未確認。
 10. **並べて立てたときの上限。**

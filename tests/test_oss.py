@@ -1559,4 +1559,75 @@ check(f"Grafana のタスクは grafana の SG（{_sg_keys('oss/terraform', _AN,
       and "portMappings = [{ containerPort = 3000, protocol = \"tcp\" }]" in _g_td["oss/terraform"]
       and {"ecr.api", "ecr.dkr", "logs", "ssm", "sns"} <= _ep and '"grafana"' in _ecr_repos)
 
+# ---- パスワードはタスク定義の environment（平文）に置かない
+_neo_env = re.findall(r'\{\s*name\s*=\s*"(\w+)",\s*value\s*=', _neo)
+_neo_pw = [n for n in re.findall(r'\bname\s*=\s*"(\w+)"', _neo) if any(w in n for w in ("NEO4J_AUTH", "NEO4J_PASSWORD", "PASSWORD"))]
+check("Neo4j のタスク定義: パスワード系の名前は secrets の GRAPH_PASSWORD（valueFrom = local.neo4j_password_arn）だけで、environment（value =）に NEO4J_AUTH・NEO4J_PASSWORD・*PASSWORD* は無い",
+      _neo_env and _neo_pw == ["GRAPH_PASSWORD"]
+      and not [n for n in _neo_env if any(w in n for w in ("NEO4J_AUTH", "NEO4J_PASSWORD", "PASSWORD"))]
+      and 'secrets     = [{ name = "GRAPH_PASSWORD", valueFrom = local.neo4j_password_arn }]' in _neo)
+_oss_env = {r: [n for t in tf_text("oss/terraform", r).values() for n in re.findall(r'\{\s*name\s*=\s*"(\w+)",\s*value\s*=', _code(t))] for r in OSS_REAL}
+check("OSS 版の 3 つの実体ルート（stream / analytics / graph）の .tf に、environment の { name = \"…PASSWORD… / …TOKEN… / …SECRET…\", value = … } は 0 件（KAFKA_AUTH などの方式名は数えない）",
+      all(_oss_env[r] for r in OSS_REAL)
+      and not [n for ns in _oss_env.values() for n in ns if any(w in n for w in ("PASSWORD", "TOKEN", "SECRET"))])
+
+# ---- 土台の SG の表は、いまの oss.tf から起こした 31 行と完全に一致する（増えても減っても気づく）
+_sg_expected = {(sg, to, 443, 443) for sg in ("kafka", "opensearch", "victoriametrics", "neo4j") for to in ("endpoints", "s3")} | {
+    ("telegraf_dialout", "kafka", 9092, 9092), ("telegraf_dialin", "kafka", 9092, 9092), ("spark", "kafka", 9092, 9092),
+    ("kafka_ui", "kafka", 9092, 9092), ("kafka", "kafka", 9092, 9093),
+    ("kafka", "efs", 2049, 2049), ("victoriametrics", "efs", 2049, 2049),
+    ("spark", "opensearch", 9200, 9200), ("grafana", "opensearch", 9200, 9200), ("runtime", "opensearch", 9200, 9200),
+    ("lambda", "opensearch", 9200, 9200), ("opensearch", "opensearch", 9300, 9300),
+    ("spark", "victoriametrics", 8480, 8480), ("grafana", "victoriametrics", 8481, 8481), ("runtime", "victoriametrics", 8481, 8481),
+    ("lambda", "victoriametrics", 8481, 8481), ("victoriametrics", "victoriametrics", 8400, 8401),
+    ("web", "neo4j", 7687, 7687), ("runtime", "neo4j", 7687, 7687), ("lambda", "neo4j", 7687, 7687), ("workflow", "neo4j", 7687, 7687),
+    ("nautobot", "neo4j", 7687, 7687), ("web", "neo4j", 7474, 7474)}
+_sg_actual = set(_sg_rows) | {(sg, to, 443, 443) for sg in _oss_api for to in ("endpoints", "s3")}
+check("土台の SG の表（terraform/base/core/oss.tf の oss_flows）は oss_api_clients 4 × 2（endpoints / s3）+ kafka 5 + efs 2 + opensearch 5 + victoriametrics 5 + neo4j 6（7474 の web→neo4j を含む）= 31 行と完全に一致し、重複は無い",
+      len(_sg_expected) == 31 and _sg_actual == _sg_expected and len(_sg_rows) == 23 == len(set(_sg_rows))
+      and _oss_api == {"kafka", "opensearch", "victoriametrics", "neo4j"})
+
+# ---- ops/check.sh は OSS 版のスクリプトと検査を漏らさない
+_chk_bash_n = re.search(r"^bash -n (.*)$", _chk, re.M)
+_chk_find = re.search(r"^find (.*?) -name '\*\.py'", _chk, re.M)
+check("ops/check.sh: bash -n に oss/ops の 3 つ（oss-images.sh / up.sh / down.sh）があり、.py の find に oss があり、モックの検査は tests/test_*.py のグロブで回す（名前を 1 つずつ並べない）",
+      _chk_bash_n and {"oss/ops/oss-images.sh", "oss/ops/up.sh", "oss/ops/down.sh"} <= set(_chk_bash_n.group(1).split())
+      and _chk_find and "oss" in _chk_find.group(1).split()
+      and re.search(r"^\s*for t in tests/test_\*\.py; do$", _chk, re.M) is not None
+      and "for t in tests/test_app.py" not in _chk)
+
+# ---- neo4j/entrypoint.sh: GRAPH_PASSWORD を NEO4J_AUTH に直してから公式の entrypoint を呼ぶ（偽物の tini と entrypoint で通す）
+def neo4j_entrypoint(**env):
+    """(終了コード, 偽物の entrypoint が受けた {env, args}, stderr)"""
+    with tempfile.TemporaryDirectory() as tmp:
+        b = os.path.join(tmp, "bin")
+        os.makedirs(b)
+        with open(os.path.join(b, "tini"), "w", encoding="utf-8") as f:   # tini -g -- <cmd> … をそのまま exec する
+            f.write('#!/bin/sh\nwhile [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done\n[ "${1:-}" = "--" ] && shift\nexec "$@"\n')
+        fake_ep = os.path.join(tmp, "docker-entrypoint.sh")
+        with open(fake_ep, "w", encoding="utf-8") as f:   # 受けた環境変数と引数を JSON で出す
+            f.write(f'#!{sys.executable}\nimport json, os, sys\nprint(json.dumps({{"env": dict(os.environ), "args": sys.argv[1:]}}))\n')
+        for p in (os.path.join(b, "tini"), fake_ep):
+            os.chmod(p, 0o755)
+        sh = open(os.path.join(ROOT, "neo4j", "entrypoint.sh"), encoding="utf-8").read()
+        assert sh.count("/startup/docker-entrypoint.sh") >= 1
+        sh = sh.replace("/startup/docker-entrypoint.sh", fake_ep)
+        ep = os.path.join(tmp, "entrypoint.sh")
+        with open(ep, "w", encoding="utf-8") as f:
+            f.write(sh)
+        r = subprocess.run(["bash", ep, "neo4j", "console"], capture_output=True, text=True, env={"PATH": b + os.pathsep + os.environ["PATH"], **env})
+        got = json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else None
+        return r.returncode, got, r.stderr
+
+_rc1, _got1, _ = neo4j_entrypoint(GRAPH_PASSWORD="s3cret-pass")
+_rc2, _got2, _ = neo4j_entrypoint(NEO4J_AUTH="neo4j/given-pass")
+_rc3, _got3, _err3 = neo4j_entrypoint()
+check("neo4j/entrypoint.sh: GRAPH_PASSWORD があれば NEO4J_AUTH=neo4j/<値> にして公式の entrypoint（tini -g -- …）へ渡し、GRAPH_PASSWORD は消す。引数はそのまま",
+      _rc1 == 0 and _got1 and _got1["env"].get("NEO4J_AUTH") == "neo4j/s3cret-pass" and "GRAPH_PASSWORD" not in _got1["env"]
+      and _got1["args"] == ["neo4j", "console"])
+check("neo4j/entrypoint.sh: NEO4J_AUTH だけなら、そのまま通す",
+      _rc2 == 0 and _got2 and _got2["env"].get("NEO4J_AUTH") == "neo4j/given-pass" and "GRAPH_PASSWORD" not in _got2["env"])
+check("neo4j/entrypoint.sh: どちらも無ければ公式の entrypoint を呼ばずに終了コード 1 で止まり、stderr で GRAPH_PASSWORD を名指しする",
+      _rc3 == 1 and _got3 is None and "GRAPH_PASSWORD" in _err3)
+
 print(f"通過 {passed} / 失敗 0")

@@ -755,7 +755,7 @@ check("down.sh は workflow を最初に消す（必須変数はダミーで渡�
       down.index('destroy_lambda_root workflow') < down.index('destroy_root pipeline/analytics') and 'worker_image_tag=${IMAGE_TAG:-destroy}' in down)
 # .py を名指しで並べると、ファイルを足したときに構文検査から漏れる（分割で 7 本増えた）。find に任せているかを見る
 check("check.sh は workflow ルートとこのテストを見て、.py は名指しせず find で全部見る",
-      "workflow)" in chk and "tests/test_workflow.py" in chk
+      "workflow)" in chk and "for t in tests/test_*.py; do" in chk
       and re.search(r"find [\w /]*\bworkflow\b [^\n]*-name '\*\.py'", chk) is not None and "ast.parse(" in chk)
 check("deploy.env.example は AGENT=0 / PIPELINE=0 / WORKFLOW=0 を既定にし（2026-10-04 に AGENT の既定を 0 にした）、CREATE_KB を説明する（古い PHASE の行は載せない）",
       re.search(r"^AGENT=0\n^PIPELINE=0\n^WORKFLOW=0$", read("deploy.env.example"), re.M) is not None

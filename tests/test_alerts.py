@@ -963,7 +963,9 @@ check("EventBridge のルールと Spark からの put_events はどこにも無
 
 # ---- ops/check.sh
 chk = read("ops", "check.sh")
-listed = re.search(r"\n  for t in ([^;]+); do\n", chk).group(1).split()
+# for の語を bash と同じように glob 展開する（check.sh は tests/test_*.py のグロブで回す。名指しなら名指しのまま）
+listed = [os.path.relpath(p, ROOT) for w in re.search(r"\n  for t in ([^;]+); do\n", chk).group(1).split()
+          for p in (sorted(glob.glob(os.path.join(ROOT, w))) if any(c in w for c in "*?[") else [os.path.join(ROOT, w)])]
 check("check.sh は tests/ の test_*.py を全部走らせる（このテストも）",
       sorted(listed) == sorted("tests/" + os.path.basename(p) for p in glob.glob(os.path.join(ROOT, "tests", "test_*.py"))) and "tests/test_alerts.py" in listed)
 dirs = re.search(r"\nfind ([a-z ]+) -name '\*\.py'", chk).group(1).split()

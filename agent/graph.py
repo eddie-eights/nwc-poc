@@ -637,9 +637,10 @@ def _algo_neo4j() -> tuple[list, list, list]:
     if not _count("MATCH (n:device) RETURN count(n) AS n"):
         return [], [], []
     g = f"nwc-centrality-{uuid.uuid4().hex}"
-    query("MATCH (a:device) OPTIONAL MATCH (a)-[:link]->(b:device) "
-          "WITH gds.graph.project($g, a, b, {}, {undirectedRelationshipTypes: ['*']}) AS p RETURN p.graphName AS graph", g=g)
+    # project も try の中（写しがサーバー側にできたあとで結果の受け取りに失敗しても drop が走る。無ければ failIfMissing=false で何もしない）
     try:
+        query("MATCH (a:device) OPTIONAL MATCH (a)-[:link]->(b:device) "
+              "WITH gds.graph.project($g, a, b, {}, {undirectedRelationshipTypes: ['*']}) AS p RETURN p.graphName AS graph", g=g)
         return (query("CALL gds.degree.stream($g) YIELD nodeId, score RETURN gds.util.asNode(nodeId).id AS id, toInteger(score) AS degree", g=g),
                 query("CALL gds.closeness.stream($g) YIELD nodeId, score RETURN gds.util.asNode(nodeId).id AS id, score", g=g),
                 query("CALL gds.wcc.stream($g) YIELD nodeId, componentId RETURN gds.util.asNode(nodeId).id AS id, componentId AS component", g=g))

@@ -1,4 +1,4 @@
-"""Kafka（MSK、IAM 認証）のトピックを読み、選んだ格納先に流し続ける Spark Structured Streaming のジョブ（Kafka の 4 分岐）。
+"""Kafka（マネージド版は MSK の IAM 認証、OSS 版は PLAINTEXT。KAFKA_AUTH で切り替え）のトピックを読み、選んだ格納先に流し続ける Spark Structured Streaming のジョブ（Kafka の 4 分岐）。
 
 EMR Serverless の上で動く（terraform/pipeline/analytics）。起動は ops/up.sh の a-3（start-job-run）で、引数は terraform/pipeline/analytics の
 output job_driver_json_<iceberg|splunk|http> が組み立てる（--bootstrap / --checkpoint / --sinks と、格納先ごとの --iceberg-table などの値）。
@@ -101,7 +101,7 @@ ICEBERG_ADDED_COLUMNS = (("event_id", "string"), ("kafka_topic", "string"), ("ka
 # ---------------------------------------------------------------- 引数
 def parse_args(argv):
     p = argparse.ArgumentParser(prog="snmp_sinks.py", description=__doc__.split("\n")[0])
-    p.add_argument("--bootstrap", required=True, help="MSK の bootstrap servers（SASL/IAM、9098）")
+    p.add_argument("--bootstrap", required=True, help="Kafka の bootstrap servers（マネージド版は MSK の SASL/IAM の 9098、OSS 版（KAFKA_AUTH=none）は kafka-N の 9092）")
     p.add_argument("--checkpoint", required=True, help="checkpoint の親（s3://<バケット>/analytics/checkpoint/。格納先ごとに下にディレクトリを切る）")
     p.add_argument("--sinks", required=True, help="格納先（カンマ区切り。iceberg / opensearch / prometheus / splunk）")
     p.add_argument("--http-send", choices=HTTP_SEND, default="driver", help="HTTP の格納先へ送る所。driver = マイクロバッチを collect して driver が送る（既定）、"
