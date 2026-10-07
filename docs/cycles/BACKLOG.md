@@ -33,7 +33,7 @@
 - [ ] Grafana の trap ルールの terms の size か時間の幅を直す（`grafana/provisioning/alerting/netops-opensearch.yaml` の `nwc-trap` が Grafana 13.2.2 で `bucket budget out of bounds: ... up to 13600 buckets` になり、起動からずっと `Normal (Error)` で Grafana 側の trap のアラートが出ない。Splunk 側は通る。2026-10-08 のマネージド版の AWS 検証で見つけた。`docs/verification/20261008-managed-aws.md`）
 - [ ] graph-status の Lambda が Neptune の `ConflictException` を関数の中でやり直す（同じ秒に resolved が 2 件届くと ExecuteQuery が concurrent operations で落ち、Lambda の非同期の再試行で 54 秒後に反映された。データは失われない。2026-10-08 のマネージド版の AWS 検証で見つけた）
 - [ ] 消えたことの確認と残った VPC の扱いを docs に合わせる（`docs/deploy.md:117` と `docs/troubleshooting.md:102` の「数時間おいて down.sh を打ち直す」は誰も打たず VPC が 3 日残った → 「残っても無料。次の up.sh が使い回す」を既定にする。`docs/deploy.md:38` の KEEP_ECR「月数円」は実測 7.39 GB ≈ 110 円/月。down.sh の最後のタグ API の一覧は何日も前に消えた EMR まで 189 件出るので、消えたかはサービスごとの API で見ると書く。2026-10-08 のマネージド版の AWS 検証で見つけた）
-- [ ] `ops/check.sh` の `bash -n` を 1 ファイルずつ打つ（`bash -n a b c` は a しか見ず、b と c は位置引数になる。2026-10-08 に 006 の実装で見つけた。`tests/test_oss.py` の `^bash -n` の正規表現も合わせる）
+- [x] `ops/check.sh` の `bash -n` を 1 ファイルずつ打つ（`bash -n a b c` は a しか見ず、b と c は位置引数になる。2026-10-08 に 006 の実装で見つけた。`tests/test_oss.py` の `^bash -n` の正規表現も合わせる）（2026-10-08 完了。fix/local-compose-r2）
 - [ ] `docs/development.md` のテストの本数を数え直す（006 で `tests/test_local_compose.py` が増えた）
 - [ ] Telegraf の health（8080/tcp）と MDT（57000/tcp）のポートを環境変数で変えられるようにする（手元の compose は host ネットワークなので host のほかのプロセスとぶつかる。2026-10-08 に 006 の実装で固定値と確かめた。design.md の未確定事項 6）
 - [ ] containerlab が作る `lab/clab-*/` を `.gitignore` に入れる（手元で `lab.sh up` すると root の持ち物の `lab/clab-splab/` が `git status` に出る。2026-10-08 に 006 の実装で見つけた）
@@ -42,6 +42,9 @@
 - [ ] 手元の Prometheus が spark-http の追い付きで逆順のサンプルを捨てないか確かめる（`out_of_order_time_window` が無い。2026-10-08 に 006 のセルフレビュー U1。未確認）
 - [ ] 手元の Splunk のアプリを作り直したとき splunk-etc の volume に写るか確かめる（写らないなら `down.sh -v` まで古いアプリのまま。2026-10-08 に 006 のセルフレビュー U2。未確認）
 - [ ] 手元の `check.sh` と `local/compose/lab.sh` の `.env` の読み方を compose に合わせる（行末の `# メモ`・CRLF・`export` を読み違える。2026-10-08 に 006 のセルフレビュー N1）
-- [ ] 手元の `check.sh` で Splunk の認証の失敗を「0 件」と分けて出す（401 の応答も `NG Splunk: 0 件` になる。2026-10-08 に 006 のセルフレビュー N2）
+- [x] 手元の `check.sh` で Splunk の認証の失敗を「0 件」と分けて出す（401 の応答も `NG Splunk: 0 件` になる。2026-10-08 に 006 のセルフレビュー N2）（2026-10-08 完了。fix/local-compose-r2。messages の FATAL / ERROR はその理由、result が無ければ「result が無い」と出す。本物の Splunk の 401 は未確認）
 - [ ] `lab/lab.sh` の `fail-main` と `heal-bgp` の案内を手元でも合うようにする（EC2 の `lab` コマンドを案内する。2026-10-08 に 006 のセルフレビュー N3）
 - [ ] `lab/lab.sh render` の表示をイメージ名にする（`REGISTRY` が無い手元では「イメージは ?」と出る。2026-10-08 に 006 のセルフレビューの Nit）
+- [ ] `ops/check.sh` の 3 で追跡している `.sh` を全部 `bash -n` する（いまは並べた 19 本だけで、`ops/sync-graph.sh`・`telegraf/telegraf.sh`・`splunk/entrypoint.sh`・`grafana/start.sh`・`neo4j/entrypoint.sh`・`oss/compose/check-*.sh` の 8 本が漏れる。テストは本体の `set -e` を前提にしていて、`bash -n a b` の行が後から足されても見ない。2026-10-08 に 006 の Round 2 のセルフレビュー N1 / N2 / N5）
+- [ ] 手元の `check.sh` の Splunk の理由を重複なし・長さの上限つき・1 行にする（同じ `ERROR Unauthorized` が 30 件なら 598 字になり、text の改行で NG の行が割れる。2026-10-08 に 006 の Round 2 のセルフレビュー N4）
+- [ ] 手元の `check.sh` の Splunk の判定を本物の応答で確かめる（401 の本文の形と、件数があるのに messages に ERROR が混ざる応答が無いか。Mac ではイメージが amd64 だけで起動していない。2026-10-08 に 006 の Round 2 のセルフレビュー U1 / U2。未確認）

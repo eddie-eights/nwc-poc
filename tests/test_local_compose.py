@@ -4,7 +4,7 @@
 - lab/lab.sh: REGISTRY が無ければ ECR に触らずに pull、TELEGRAF_LOCAL=1 なら trap の REDIRECT だけ（デバッグ用の EC2 と同じ）。偽の docker / aws / iptables / sudo で動かす
 - local/compose/*.sh: up.sh が lab の値を環境で渡す、lab.sh が 3 つだけを sudo に渡す、check.sh が全部見てから終わりパスワードを引数に載せない
 実行は uv run --group dev python tests/test_local_compose.py（pyyaml を使う。AWS も docker も要らない）。"""
-import importlib.util, io, json, os, re, shutil, subprocess, sys, tempfile
+import glob, importlib.util, io, json, os, re, shutil, subprocess, sys, tempfile
 
 import yaml
 
@@ -204,9 +204,31 @@ check("local/compose の 4 つと lab/lab.sh は実行できる（local/compose/
       all(os.access(os.path.join(LC, s), os.X_OK) for s in SCRIPTS) and os.access(os.path.join(ROOT, "lab", "lab.sh"), os.X_OK))
 check("local/compose の 4 つと lab/lab.sh は 1 つずつ bash -n が通る（bash -n a b は a しか見ない）",
       all(subprocess.run(["bash", "-n", p]).returncode == 0 for p in [os.path.join(LC, s) for s in SCRIPTS] + [os.path.join(ROOT, "lab", "lab.sh")]))
-check("ops/check.sh の bash -n に local/compose/*.sh、.py の find に local がある",
-      re.search(r"^bash -n .* local/compose/\*\.sh$", read("ops", "check.sh"), re.M) is not None
+check("ops/check.sh の bash -n（1 つずつ打つ for 文）に local/compose/*.sh、.py の find に local がある",
+      re.search(r'^for f in .* local/compose/\*\.sh; do bash -n "\$f"; done$', read("ops", "check.sh"), re.M) is not None
       and re.search(r"^find .*\blocal\b.* -name '\*\.py'", read("ops", "check.sh"), re.M) is not None)
+# ops/check.sh の 3 の 1 行を、並んだファイルを写した木（中身は true）で打つ。1 つずつ構文エラー（if だけ）に替えて、どの位置でも落ちることを見る
+_s3 = re.search(r'^log "3\. .*\n(.*)\n', read("ops", "check.sh"), re.M).group(1)
+_s3_tmp = tempfile.mkdtemp()
+_s3_files = sorted({os.path.relpath(f, ROOT) for p in _s3.replace(";", " ").split() if p.endswith(".sh")
+                    for f in glob.glob(os.path.join(ROOT, p))})
+for _f in _s3_files:
+    os.makedirs(os.path.join(_s3_tmp, os.path.dirname(_f)), exist_ok=True)
+    with open(os.path.join(_s3_tmp, _f), "w") as f:
+        f.write("true\n")
+def s3_run(bad=None):  # bad のファイルだけ構文エラーにして 3 の 1 行を打ち、終了コードを返す
+    if bad:
+        with open(os.path.join(_s3_tmp, bad), "w") as f:
+            f.write("if\n")
+    r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + _s3], cwd=_s3_tmp, capture_output=True, text=True)
+    if bad:
+        with open(os.path.join(_s3_tmp, bad), "w") as f:
+            f.write("true\n")
+    return r.returncode
+check(f"ops/check.sh の 3: 並んだ {len(_s3_files)} ファイルのどれか 1 つ（2 番目以降を含む）が構文エラーなら落ち、全部通れば 0（bash -n a b c は a しか見ず、b と c は位置引数になる）",
+      len(_s3_files) >= 19 and "local/compose/check.sh" in _s3_files and s3_run() == 0
+      and [f for f in _s3_files if s3_run(f) == 0] == [])
+shutil.rmtree(_s3_tmp)
 
 # ---- 8. 偽のコマンドで動かす（呼ばれたコマンドを FAKE_LOG に 1 行ずつ書く）
 TMP = tempfile.mkdtemp()
@@ -228,7 +250,8 @@ fake("sudo", 'exec env -i PATH="$PATH" FAKE_LOG="$FAKE_LOG" "$@"\n')
 fake("containerlab")
 fake("modprobe")
 fake("free", 'printf "               total        used        free\\nMem:  %s  1000  1000\\nSwap:  0  0  0\\n" "${FAKE_MEM:-32000}"\n')
-# check.sh が打つ curl。引数と、-K - で渡された標準入力を書き、URL ごとに決めた応答を返す。FAKE_DOWN=1 なら繋がらない（出力なしで 7）
+# check.sh が打つ curl。引数と、-K - で渡された標準入力を書き、URL ごとに決めた応答を返す。FAKE_DOWN=1 なら繋がらない（出力なしで 7）。
+# Splunk の応答は FAKE_SPLUNK があればそれ（認証の失敗は 401 でも curl -sS は本文を出して 0 で終わる）
 fake("curl", r'''prev=; url=
 for a in "$@"; do
   case "$a" in http*) url=$a ;; esac
@@ -240,14 +263,16 @@ case "$url" in
   *18080/api/clusters/nwc/topics*) echo '{"topics":[{"name":"metrics"},{"name":"gnmi"},{"name":"traps"},{"name":"logs"},{"name":"mdt"}]}' ;;
   *9090/api/v1/query*) echo '{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1760000000,"12"]}]}}' ;;
   *9200/snmp-logs/_count*) echo "{\"count\":${FAKE_OS_COUNT:-5}}" ;;
-  *8089/services/search/jobs/export*) printf '%s\n' '{"preview":true,"result":{"count":"0"}}' '{"preview":false,"result":{"count":"7"}}' ;;
+  *8089/services/search/jobs/export*)
+    if [ -n "${FAKE_SPLUNK:-}" ]; then printf '%s\n' "$FAKE_SPLUNK"
+    else printf '%s\n' '{"preview":true,"result":{"count":"0"}}' '{"preview":false,"result":{"count":"7"}}'; fi ;;
   *3000/api/datasources/uid/amp/health*) echo '{"status":"OK","message":"Successfully queried the Prometheus API."}' ;;
   *3000/api/datasources*) echo '[{"uid":"amp","type":"prometheus"},{"uid":"aoss-logs","type":"grafana-opensearch-datasource"}]' ;;
 esac
 ''')
 LOG = os.path.join(TMP, "calls.log")
 CLEAN = ("REGISTRY", "AWS_REGION", "PARAM_PREFIX", "TELEGRAF_IMAGE", "TELEGRAF_LOCAL", "SRLINUX_IMAGE", "MULTITOOL_IMAGE",
-         "SNMP_AGENTS", "GNMI_TARGETS", "DEVICE_MAP", "FAKE_IPT_RULES", "FAKE_MEM", "FAKE_DOWN", "FAKE_OS_COUNT")
+         "SNMP_AGENTS", "GNMI_TARGETS", "DEVICE_MAP", "FAKE_IPT_RULES", "FAKE_MEM", "FAKE_DOWN", "FAKE_OS_COUNT", "FAKE_SPLUNK")
 
 def run(cmd, **env):
     """偽のコマンドを先に置いた PATH で cmd を打ち、(結果, 呼ばれたコマンドの行) を返す。lab に効く環境変数は消してから env を足す"""
@@ -388,6 +413,16 @@ _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_OS_COUNT="0", FAKE_MEM="16000
 check("check.sh: 1 つが 0 件なら、そこだけ NG にして残りも見てから終了コード 1。メモリが 20 GB 未満なら注意を出す",
       _r.returncode == 1 and "NG  OpenSearch: snmp-logs の件数 > 0: 0 件" in _r.stdout and len([l for l in _r.stdout.splitlines() if l.startswith("ok  ")]) == 5
       and "注意: メモリが 16000 MiB" in _r.stdout and _r.stdout.splitlines()[-1].startswith("NG がある"))
+SPL = "Splunk: sourcetype=netops:* の直近 10 分の件数 > 0"
+def splunk_line(body):  # Splunk の応答を body にして check.sh を打ち、Splunk の行を返す
+    _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_SPLUNK=body)
+    return [l for l in _r.stdout.splitlines() if SPL in l]
+check("check.sh: Splunk の認証の失敗（messages の FATAL / ERROR）は「0 件」と分けてその理由を（result の行があっても）、result が 1 行も無ければ「result が無い」と messages を出す。count が 0 なら「0 件」、3 なら ok",
+      splunk_line('{"messages":[{"type":"FATAL","text":"Unauthorized"}]}') == [f"NG  {SPL}: FATAL Unauthorized"]
+      and splunk_line('{"messages":[{"type":"ERROR","text":"Unauthorized"}]}\n{"result":{"count":"5"}}') == [f"NG  {SPL}: ERROR Unauthorized"]
+      and splunk_line('{"messages":[{"type":"WARN","text":"call not properly authenticated"}]}') == [f"NG  {SPL}: result が無い: WARN call not properly authenticated"]
+      and splunk_line('{"result":{"count":0}}') == [f"NG  {SPL}: 0 件"]
+      and splunk_line('{"result":{"count":3}}') == [f"ok  {SPL}"])
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_DOWN="1")
 check("check.sh: どこにも繋がらなくても set -e で途中で落ちず、6 項目とも「読めない応答: 空」の NG で終了コード 1",
       _r.returncode == 1 and _r.stdout.count("読めない応答: 空") == 6)

@@ -334,3 +334,250 @@ Must fix 0、Should fix 4、Nit 5、未確認の懸念 4。
     - 127.0.0.1 なのは compose の `ports` だけ（Telegraf の 4 つは別）。
     - `check.sh` の ok は trap の経路を含まない。
     - lab の台数とイメージを変えたら `lab.sh up` が追従し、パスワードは初回の前だけ変えられる。
+
+## Round 2
+
+実装モデル: claude-opus-5-5 / effort: xhigh（Round 1 と同じ。切り替えていない）
+
+cold review（Round 1）の Should fix 3 件のうち、PM が選んだ 2 件を直した。
+
+- Should 2（Telegraf の host ネットワーク。BACKLOG 40 行目）は据え置き。
+- cold review の Nit 5 件と design.md は触っていない。
+- AWS には触っていない。
+
+枝は `fix/local-compose-r2`（docs/cycle-006-design @ 7c7310a から）。
+
+### 変更ファイル
+
+| ファイル | 変更 |
+|---|---|
+| `ops/check.sh` | :45 の 3 を `for f in …; do bash -n "$f"; done` に（並びと `local/compose/*.sh` のグロブはそのまま）。:7 のコメント（「並べた ops/・oss/ops/・lab/ の .sh」。`ops/*.sh` 全部ではない） |
+| `tests/test_oss.py` | :1847 の正規表現を for 文に |
+| `tests/test_local_compose.py` | :207 の正規表現を for 文に。ops/check.sh の 3 の行を写した木で打つ検査を足す（:210-231）。偽の curl に `FAKE_SPLUNK`。Splunk の認証の失敗の検査を足す（:416-425）。75 → 77 項目 |
+| `local/compose/check.sh` | Splunk の判定式（:44-50）と :43 のコメント。messages の FATAL / ERROR はその「type text」、result の行が無ければ「result が無い」（messages があれば添える）、あれば件数 |
+| `docs/cycles/BACKLOG.md` | 36 行目と 45 行目を `[x]`。セルフレビューで直さなかった指摘を `- [ ]` で 3 行（N1 / N2 / N5、N4、U1 / U2） |
+
+### red-green
+
+直す前（テストだけ直した状態）の `tests/test_local_compose.py`。1 つ目の NG で止まらないように写しで全部見た:
+
+```
+NG ops/check.sh の bash -n（1 つずつ打つ for 文）に local/compose/*.sh、.py の find に local がある
+NG ops/check.sh の 3: 並んだ 19 ファイルのどれか 1 つ（2 番目以降を含む）が構文エラーなら落ち、全部通れば 0（bash -n a b c は a しか見ず、b と c は位置引数になる）
+NG check.sh: Splunk の認証の失敗（messages の FATAL / ERROR）は「0 件」と分けてその理由を、result が 1 行も無ければ「result が無い」と messages を出す。count が 0 なら「0 件」、3 なら ok
+（ほかの 74 件は ok）
+```
+
+直す前の `ops/check.sh` で `tests/test_oss.py`: 終了コード 1（`AssertionError: ops/check.sh: bash -n に oss/ops の 4 つ（oss-images.sh / up.sh / down.sh / roll-nodes.sh）があり、…`）。
+
+`r2_probe.py` は 2 つのことを見る。
+
+- ops/check.sh の 3 の行を、並んだファイルを写した木で打つ。ファイルは 1 つずつ構文エラーにする。
+- `local/compose/check.sh` に Splunk の応答を流す。
+
+直す前:
+
+```
+ops/check.sh の 3: bash -n ops/up.sh ops/down.sh ops/deploy…
+  19 ファイル中、構文エラーを見逃した位置 18 個: ['lab/lab.sh', 'lab/setup.sh', 'local/compose/check.sh'] …
+  {"messages":[{"type":"FATAL","text":"Unauthorized"}]} → NG  Splunk: sourcetype=netops:* の直近 10 分の件数 > 0: 0 件
+  {"messages":[{"type":"WARN","text":"call not properly authenticated"}]} → NG  Splunk: sourcetype=netops:* の直近 10 分の件数 > 0: 0 件
+  {"result":{"count":0}} → NG  Splunk: sourcetype=netops:* の直近 10 分の件数 > 0: 0 件
+  {"result":{"count":3}} → ok  Splunk: sourcetype=netops:* の直近 10 分の件数 > 0
+  （空） → NG  Splunk: sourcetype=netops:* の直近 10 分の件数 > 0: 読めない応答: 空
+```
+
+直したあと:
+
+```
+ops/check.sh の 3: for f in ops/up.sh ops/down.sh ops/deplo…
+  19 ファイル中、構文エラーを見逃した位置 0 個: []
+  {"messages":[{"type":"FATAL","text":"Unauthorized"}]} → NG  Splunk: sourcetype=netops:* の直近 10 分の件数 > 0: FATAL Unauthorized
+  {"messages":[{"type":"WARN","text":"call not properly authenticated"}]} → NG  Splunk: sourcetype=netops:* の直近 10 分の件数 > 0: result が無い: WARN call not properly authenticated
+  {"result":{"count":0}} → NG  Splunk: sourcetype=netops:* の直近 10 分の件数 > 0: 0 件
+  {"result":{"count":3}} → ok  Splunk: sourcetype=netops:* の直近 10 分の件数 > 0
+  （空） → NG  Splunk: sourcetype=netops:* の直近 10 分の件数 > 0: 読めない応答: 空
+```
+
+### OpenSearch と Grafana の 401（触らなかった理由）
+
+本物に違うパスワードで打った（`r2_401.py`）。
+
+- 使い捨てのコンテナで打ち、終わったら `docker rm -f -v` で消した。
+- `後片付け: コンテナは残っていない` を確かめた。
+
+```
+OpenSearch /snmp-logs/_count → HTTP 401 本文 Unauthorized
+  判定: NG  OpenSearch: snmp-logs の件数 > 0: 読めない応答: Unauthorized
+Grafana /api/datasources → HTTP 401 本文 {"extra":null,"message":"Invalid username or password","messageId":"password-auth.failed","statusCode":401,"traceID":""}
+  判定: NG  Grafana: データソース uid amp / aoss-logs がある: 読めない応答: {"extra":null,"message":"Invalid username or password","messageId":"password-auth.failed","statusCode":401,"traceID":""}
+Grafana /api/datasources/uid/amp/health → HTTP 401 本文 {"extra":null,"message":"Invalid username or password","messageId":"password-auth.failed","statusCode":401,"traceID":""}
+  判定: NG  Grafana: amp（Prometheus）の health が OK: Invalid username or password
+```
+
+- 使ったイメージは `opensearchproject/opensearch:3.9.0` と `nwc-local-grafana`（0010bb086eee）。
+- Grafana の health は「読めない応答」にならない。判定式が `message` を返すので、理由が出て成功とは分かれる。
+- OpenSearch と Grafana は、401 なら「0 件」でも ok でもないので触らない。
+
+Splunk の本物の 401 の本文は取っていない（イメージが amd64 だけで、Mac では起動していない）。判定式は、本文の形によらず「0 件」にはしない。
+
+- messages の type が FATAL / ERROR なら、その理由を出す。
+- それ以外の type なら「result が無い: …」と出す。
+- JSON でなければ「読めない応答: …」と出す。
+
+### 検証（最後の編集のあと）
+
+最後のコードの編集は、ジンテーゼで直した `ops/check.sh:7` と `local/compose/check.sh:43` のコメント。そのあとに 3 つとも打ち直した。後から変えたのは BACKLOG と build.md だけで、テストはこの 2 つを読まない（`grep -n 'BACKLOG\|docs/cycles\|build\.md' tests/test_oss.py tests/test_local_compose.py` はコメントの 2 行だけ）。
+
+#### `bash ops/check.sh`
+
+```
+
+== 1. terraform fmt -check -recursive terraform oss/terraform
+差分なし
+
+== 2. 9 つのルートの validate（terraform/ と oss/terraform/）
+terraform/base/ecr  OK
+terraform/base/core  OK
+terraform/agent  OK
+terraform/pipeline/lab  OK
+terraform/pipeline/stream  OK
+terraform/pipeline/analytics  OK
+terraform/pipeline/graph  OK
+terraform/pipeline/nautobot  OK
+terraform/workflow  OK
+oss/terraform/base/ecr  OK
+oss/terraform/base/core  OK
+oss/terraform/agent  OK
+oss/terraform/pipeline/lab  OK
+oss/terraform/pipeline/stream  OK
+oss/terraform/pipeline/analytics  OK
+oss/terraform/pipeline/graph  OK
+oss/terraform/pipeline/nautobot  OK
+oss/terraform/workflow  OK
+
+== 3. ops スクリプトの構文
+構文エラーなし
+
+== 4. 模擬テスト
+（各テストファイルの最後の行）
+通過 137 / 失敗 0
+通過 489 / 失敗 0
+通過 158 / 失敗 0
+通過 72 / 失敗 0
+通過 7 / 失敗 0
+通過 82 / 失敗 0
+通過 77 / 失敗 0
+62 項目すべて通過
+通過 164 / 失敗 0
+通過 139 / 失敗 0
+通過 56 / 失敗 0
+通過 75 / 失敗 0
+通過 96 / 失敗 0
+通過 325 / 失敗 0
+
+すべて通過
+```
+
+終了コード 0。
+
+#### `uv run --group dev python tests/test_local_compose.py`（変えた検査と足した検査）
+
+```
+ok local/compose の 4 つと lab/lab.sh は 1 つずつ bash -n が通る（bash -n a b は a しか見ない）
+ok ops/check.sh の bash -n（1 つずつ打つ for 文）に local/compose/*.sh、.py の find に local がある
+ok ops/check.sh の 3: 並んだ 19 ファイルのどれか 1 つ（2 番目以降を含む）が構文エラーなら落ち、全部通れば 0（bash -n a b c は a しか見ず、b と c は位置引数になる）
+ok check.sh: Splunk の認証の失敗（messages の FATAL / ERROR）は「0 件」と分けてその理由を（result の行があっても）、result が 1 行も無ければ「result が無い」と messages を出す。count が 0 なら「0 件」、3 なら ok
+通過 77 / 失敗 0
+```
+
+終了コード 0。NG の行は 0。
+
+#### `uv run --group dev python tests/test_oss.py`
+
+```
+通過 164 / 失敗 0
+```
+
+終了コード 0。NG の行は 0。
+
+### セルフレビュー
+
+- 自分: claude-opus-5-5 / effort: xhigh
+- 反対弁護人: Agent（general-purpose、model: opus）。effort は Agent ツールで指定できないので未指定。読み取り専用で頼んだ。返ってきたあとの `git status --porcelain -uall` は自分の変更の 5 ファイルだけ（本人の作業ファイルは scratchpad に置いて消した、と本人の報告）。
+- 入力は PM の Round 2 の指示（cold review の Should fix 2 件）と変えた 5 ファイル。会話の記憶は根拠にしていない。
+
+#### 自分で見た分（反対弁護人の前）
+
+| # | 分類 | 観点と場所 | 破綻シナリオ | 確かめたもの | 片付け |
+|---|---|---|---|---|---|
+| R2-a | Should fix | [missing tests] `tests/test_local_compose.py:416-425` | Splunk の検査が FATAL だけで result の無い応答しか流していなかった。判定式の `('FATAL', 'ERROR')` を `('FATAL',)` にしても、件数を ERROR より先に見る順にしても通る | 読んだだけ（足す前には注入していない） | 直した: `ERROR Unauthorized` の messages と count `"5"` の result が両方ある応答を足した。足したあとの注入で、2 つとも終了コード 1（下の表） |
+
+退行の注入（`r2_inject.py`。1 つずつ入れてテストを走らせ、終わったらバイト単位で戻す）。最後の編集のあとに打ち直した。8 件とも落ちた。
+
+| 注入 | 結果 |
+|---|---|
+| ops/check.sh: Round 1 の形（`bash -n a b c`）に戻す | test_local_compose 終了コード 1、test_oss 終了コード 1 |
+| ops/check.sh: for 文のまま `lab/setup.sh` を列から外す | 終了コード 1（「並んだ 18 ファイル」） |
+| ops/check.sh: for 文のまま `local/compose/*.sh` を列から外す | 終了コード 1 |
+| check.sh: FATAL / ERROR の理由を出さない | 終了コード 1 |
+| check.sh: ERROR を拾わない（FATAL だけ） | 終了コード 1 |
+| check.sh: result の行があれば ERROR より件数を先に見る | 終了コード 1 |
+| check.sh: result が無いときも「0 件」と出す | 終了コード 1 |
+| check.sh: result が無いとき messages を添えない | 終了コード 1 |
+
+`元に戻した:  5 files changed, 54 insertions(+), 12 deletions(-)`（注入の前と同じ）。
+
+実装時の関心と重ならない観点として、bash の版を変えて 3 の行を打った（`r2_bashver.py`、`r2_bash5.py`）。
+
+```
+/bin/bash（3.2.57(1)-release）: 全部 true で終了コード 0 / 19 個の位置で見逃し 0 個 [] / エラーの例 ['line 2: syntax error: unexpected end of file']
+local/compose が無い木: 終了コード 127 / bash: local/compose/*.sh: No such file or directory
+bash 5.1.16(1)-release（nwc-local-spark の /bin/bash。--rm）
+全部 true: 終了コード 0
+19 個の位置で見逃し 0 個
+残ったコンテナ: なし
+```
+
+#### 反対弁護人の指摘と再現
+
+Must fix 0、Should fix 0、Nit 5、未確認の懸念 2。再現は `r2_synth_probe.py`（ops/check.sh に入れた変更はバイト単位で戻した。`戻した:  5 files changed, 54 insertions(+), 12 deletions(-)`）。
+
+| # | 分類 | 観点と場所 | 破綻シナリオ | 再現（コマンドと出力） | 片付け |
+|---|---|---|---|---|---|
+| N1 | Nit | [missing tests] `tests/test_local_compose.py:223` | 3 の検査は自分で `set -euo pipefail` を前に付けて打つ。本体が `set -uo pipefail` になる、3 の前に `set +e` が入る、3 を関数にして `\|\| die` で呼ぶ、のどれかで本体は構文エラーを見逃すのに、検査は通る | `N1 本体が set -e のとき 3 で見逃す位置: 0 / 19` / `N1 本体が set -uo pipefail のとき … 19 / 19`（3 の次の行に進む） / `N1 ops/check.sh を set -uo pipefail にして test_local_compose: 終了コード 0（通過 77 / 失敗 0）` | 直さない。いまの本体は 10 行目が `set -euo pipefail` で、3 は関数の外。直し方の 1 つ（`bash -n "$f" \|\| die …`）は PM の指定した形を変えるので PM に報告。BACKLOG に足した |
+| N2 | Nit | [missing tests] `tests/test_local_compose.py:211` | 検査は `log "3.` の次の 1 行しか見ない。あとで `bash -n a b` の行が別に足されても通る | `N2 3 の次に bash -n ops/sync-graph.sh telegraf/telegraf.sh の行を足して test_local_compose: 終了コード 0（通過 77 / 失敗 0）` | 直さない（Round 2 の範囲の外）。BACKLOG に足した（N1 と同じ行） |
+| N3 | Nit | [ドキュメント] `local/compose/check.sh:43`、BACKLOG:45 | コメントが「401 の本文に messages が入り result が無い」と言い切る。本物の Splunk の 401 は取っていない（上の「OpenSearch と Grafana の 401」） | 読んだだけ（build.md の自分の記述と食い違う） | 直した: :43 を「認証の失敗などで result が無い応答を 0 件と分ける（本物の 401 の本文は未確認）。…」に。BACKLOG:45 に「本物の Splunk の 401 は未確認」 |
+| N4 | Nit | [診断] `local/compose/check.sh:45-47` | 理由に重複の除去も長さの上限も無い。text に改行があると NG の行が割れ、type か text が無いと `None` と出る | `N4 同じ ERROR 4 件: 78 字 / 30 件: 598 字` / `N4 text に改行: 'FATAL a\nb'` / `N4 text が無い: 'ERROR None'`（反対弁護人の 206 字・3238 字は text が違う） | 直さない（NG にはなり、理由も読める）。BACKLOG に足した |
+| N5 | Nit | [ドキュメント] `ops/check.sh:7`、:45 | :7 は「ops/*.sh と oss/ops/*.sh」と書くが、:45 は名指しで、追跡している .sh の一部が漏れる | `N5 追跡している .sh 27 本、3 で見る 19 本、漏れ 8 本: ['grafana/start.sh', 'neo4j/entrypoint.sh', 'ops/sync-graph.sh', 'oss/compose/check-kafka.sh', 'oss/compose/check-opensearch.sh', 'oss/compose/check-spark.sh', 'splunk/entrypoint.sh', 'telegraf/telegraf.sh']` / 8 本とも `bash -n` は 0 | :7 のコメントだけ直した（「並べた ops/・oss/ops/・lab/ の .sh」）。列を広げるのは PM の指定（並びはそのまま）の外なので、BACKLOG に足して PM に報告 |
+| U1 | 未確認 | [誤検知] `local/compose/check.sh:45` | 件数があっても messages に ERROR があれば NG になる。健全な Splunk が ERROR を混ぜて返すなら、いつも NG | `U1 ERROR と count 5: 'ERROR x'`（意図どおり NG）。健全な Splunk が ERROR を出すかは未確認（Splunk を Mac で起動していない） | BACKLOG に足した（U2 と同じ行） |
+| U2 | 未確認 | [互換] `local/compose/check.sh:44-50` | 本物の export の JSON も 401 の本文も見ていない | `U2 XML: '読めない応答: <?xml …call not properly authenticated</msg>…'` / `U2 messages が null で count 7: '読めない応答: {"messages":null,"result":{"count":"7"}}'`（Round 1 の式なら ok。Splunk が null を返すかは未確認） | BACKLOG に足した。WSL の通し（ステップ 7）で本物を見る |
+
+反対弁護人が「成立しない」とした 8 件（for 文の中でも `set -e` が効く、bash 3.2 と 5 で差が無い、19 本とも `bash -n` が通る、`tests/test_alerts.py:967` の正規表現は当たらない、など）のうち、`set -e` と bash の版は上の `r2_bashver.py` / `r2_bash5.py` で、19 本の `bash -n` は `bash ops/check.sh` の 3 で確かめた。残りは読んだだけ。
+
+#### 「問題なし」とした観点
+
+| 観点 | 根拠（実行したもの） |
+|---|---|
+| PM の指定どおり: 並びはそのまま、`local/compose/*.sh` のグロブは残す、for 文の形 | `r2_inject.py` の「lab/setup.sh を外す」「local/compose/*.sh を外す」「Round 1 の形」がどれも終了コード 1 |
+| correctness: 2 番目以降の構文エラーで 3 が落ちる | `r2_bashver.py`（bash 3.2）と `r2_bash5.py`（bash 5.1.16）で 19 個の位置とも見逃し 0 |
+| correctness: 認証の失敗が「0 件」にも ok にもならない | `r2_probe.py` の直したあとの出力（FATAL / WARN / 空）と、反対弁護人の 22 通りの本文（ok になったものは無い、と本人の報告。自分で打ったのは上の U2 の 2 通り） |
+| security: パスワードを引数や出力に載せない | `local/compose/check.sh` の `get` は変えていない（diff の塊は :43 と :45-48 だけ）。Round 1 の注入「-u で引数に載せる: 終了コード 1」の検査はそのまま通る |
+| 範囲: design.md、Should 2（BACKLOG 40 行目）、cold review の Nit、`oss/compose`、AWS に触っていない | `git status --porcelain -uall` は `docs/cycles/BACKLOG.md` / `local/compose/check.sh` / `ops/check.sh` / `tests/test_local_compose.py` / `tests/test_oss.py`（と build.md）だけ。BACKLOG 40 行目は `git diff` に出ない |
+
+#### ジンテーゼ
+
+- 部分的な真実
+  - N1 / N2: 3 の検査が縛るのは「`log "3.` の次の 1 行を、`set -e` の下で打つこと」まで。本体の `set -e` と、ほかの行に足される `bash -n` は縛っていない。
+  - N5: 3 が見るのは並べた 19 本で、追跡している .sh の全部ではない。いまは漏れた 8 本も通る。
+  - N3 / U1 / U2: Splunk の判定は、偽の本文で確かめた範囲の話。本物の 401 と export の形は見ていない。
+- 結論の言い直し
+  - `ops/check.sh` の 3 は、並べた 19 本のどれが構文エラーでも落ちる（bash 3.2 と 5.1）。本体が `set -e` のままである限り。
+  - `local/compose/check.sh` の Splunk は、本文が JSON の messages なら FATAL / ERROR の理由を、そうでなければ「result が無い」か「読めない応答」を出し、「0 件」と ok にはしない。本物の Splunk の本文で確かめるのは WSL の通しのとき。
+- 残リスク
+  - N1・N2・N4・N5・U1・U2（どれも BACKLOG に足した）。
+  - WSL 未実施（Round 1 と同じ）。
+- アンチテーゼ前との差分
+  - 前の結論は「3 は 2 番目以降の構文エラーで落ち、Splunk の認証の失敗は 0 件と分かれる」だった。
+  - 今の結論は「本体の `set -e` が前提」「3 が見るのは 19 本」「Splunk の判定は本物の本文で未確認」の 3 点を限定した。
+  - コメント 2 か所（`ops/check.sh:7`、`local/compose/check.sh:43`）を、この限定に合わせて直した。
