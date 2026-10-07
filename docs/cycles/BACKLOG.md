@@ -4,7 +4,7 @@
 
 - [x] Nautobot の Job を OSS 版の Neo4j につなぐ（2026-10-08 完了。コードとテストまでで、AWS では未確認。005 の design.md「実装の状態」）
 - [ ] Neo4j の id 検索にラベルを付ける（頂点が増えると全走査になる）
-- [ ] Kafka と OpenSearch のタスクを 1 台ずつ入れ替える手順を作る（いまは `terraform apply` で 3 つが同時に入れ替わる）
+- [x] Kafka と OpenSearch のタスクを 1 台ずつ入れ替える手順を作る（いまは `terraform apply` で 3 つが同時に入れ替わる）（2026-10-08 完了。feat/oss-redis8-rolling の `oss/ops/roll-nodes.sh`。AWS では未確認）
 - [ ] OSS 版とマネージド版の時間あたりの費用を測って `docs/oss-variant.md` に書く
 - [ ] OSS 版をマネージド版と並べて立てる（Fargate の vCPU の上限 30 を上げてから。GDS と `neptune.algo.*` の並びの比較もここで）
 - [x] Neo4j の ECS のサービスに healthCheck を付ける（いまは healthStatus が UNKNOWN のままで、Bolt が開くまでの時間が ECS から見えない）（2026-10-08 完了。fix/oss-review-nits、AWS では未確認）
@@ -19,7 +19,7 @@
 - [ ] 手元の docker compose で動く構成を作る（WSL 用。lab から Splunk と Grafana まで届くこと） → 006-local-compose
 - [ ] ディレクトリを app/ と docker/ と IaC/ に並べ直す（006 のあと。compose は docker/compose.yml へ動かす。app/ の下は agent→agentcore、workflow→temporal、web→dashboard、lab→containerlab に改名。2026-10-08 に順番を入れ替えた）
 - [ ] Kafbat UI を Web の EC2 に同居させ、lab の EC2 で `containerlab graph` のトポロジ図を見られるようにする（Fargate のタスクと Cloud Map をやめる。EC2 は t4g.medium に上げ、Docker と MSK の IAM 権限と SG の web→MSK 9098 を足す。graph は 50080 を SSM のポートフォワードで。2026-10-08 の決定）
-- [ ] Redis を 8 系に上げる（OSS 版）
+- [x] Redis を 8 系に上げる（OSS 版）（2026-10-08 完了。feat/oss-redis8-rolling。`REDIS_TAG` は共通なのでマネージド版の Nautobot の Redis も 8.10.2 になる。AWS では未確認）
 - [x] EMR を 7.14.0 に上げ、Spark の jar を合わせる（2026-10-08 完了。feat/spark-bump。AWS では未確認）
 - [x] Iceberg を 1.12.0 に上げる（2026-10-08 完了。feat/spark-bump。OSS 版だけ。マネージド版は EMR 同梱の 1.10.1 のまま。AWS では未確認）
 - [ ] lab を IS-IS の spine 2 + a-leaf 2 + s-leaf 2 と各 leaf につなぐ TRex にする（SR-MPLS はライセンスが届いたら `ixr-6e` に差し替え。2026-10-08 の決定）
