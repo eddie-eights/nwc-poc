@@ -376,8 +376,9 @@ log "7-3. graph（oss/terraform/pipeline/graph。Neo4j + GDS の ECS と status 
 # neo4j ユーザーのパスワード（Neo4j のタスクが ECS の secrets で受け、status の Lambda と Web が SSM から読む）。値は出さない
 ensure_secret "/$PREFIX/neo4j-password" password "Neo4j password of the neo4j user (created by oss/ops/up.sh)"
 # status の Lambda（arm64）のレイヤーの中身。ドライバは純 Python なので、どの PC でも同じものができる（sync.tf の locals の注記）。
-# graph/requirements-oss.txt のハッシュを .build/neo4j-layer.sha256 に残し、同じなら作り直さない（毎回 pip を回さない。zip の中身は変わらない）
-LAYER_SHA=$(shasum -a 256 graph/requirements-oss.txt | cut -d' ' -f1)
+# graph/requirements-oss.txt と pip に渡す platform / python の版のハッシュを .build/neo4j-layer.sha256 に残し、同じなら作り直さない
+# （毎回 pip を回さない。zip の中身は変わらない。版を変えたらハッシュが変わって作り直す）
+LAYER_SHA=$( { cat graph/requirements-oss.txt; echo "manylinux2014_aarch64 3.13"; } | shasum -a 256 | cut -d' ' -f1)
 if [ -d oss/terraform/pipeline/graph/.build/neo4j-layer/python/neo4j ] \
    && [ "$(cat oss/terraform/pipeline/graph/.build/neo4j-layer.sha256 2>/dev/null)" = "$LAYER_SHA" ]; then
   echo "Neo4j のドライバのレイヤー（oss/terraform/pipeline/graph/.build/neo4j-layer）はある（graph/requirements-oss.txt は変わっていない）"
