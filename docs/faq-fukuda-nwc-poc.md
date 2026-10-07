@@ -2025,7 +2025,7 @@ Community Edition にクラスターが無いことは、2026-10-04 に Neo4j �
 **まだ確かめていないこと**
 
 - Kafka のデータを EFS（NFS）に置いてよいかは、公式ドキュメントに記述が見つからない。
-- combined の 3 台を ECS の Fargate で 1 台ずつ入れ替えたときに、過半数が保たれるかは AWS で未確認。いまの terraform は、タスク定義が変わると 3 台を同時に入れ替える（データは EFS に残る）。
+- combined の 3 台を ECS の Fargate で 1 台ずつ入れ替えたときに、過半数が保たれるかは AWS で未確認。terraform だけで apply すると、タスク定義が変わった台を同時に入れ替える（データは EFS に残る）。`oss/ops/up.sh` は apply の前に `oss/ops/roll-nodes.sh` で 1 台ずつ入れ替え、間で controller と複製がそろうのを ECS Exec で待つ（2026-10-08 に足した。AWS ではまだ打っていない。`OSS_ROLL=0` で一度に入れ替える）。
 
 **出典**
 
