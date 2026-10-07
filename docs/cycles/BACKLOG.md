@@ -25,7 +25,7 @@
 - [ ] lab を IS-IS の spine 2 + a-leaf 2 + s-leaf 2 と各 leaf につなぐ TRex にする（SR-MPLS はライセンスが届いたら `ixr-6e` に差し替え。2026-10-08 の決定）
 - [ ] コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種にする（telegraf-dialin を外し、ifTable の代わりに gNMI の oper-state を使う）
 - [ ] `ops/up.sh` が取る jar（`JAR_URLS` 6 本）のハッシュを照合する（`spark/Dockerfile` と compose の分は 2026-10-08 に済んだ）
-- [ ] `.env.example` と `ops/up.sh` と terraform のコメントの古い記述を直す（2026-10-08 の docs 同期で見つけた、コードの側の食い違い: `.env.example:140` の SNMP_POLL の既定、`ops/up.sh:445` の docker の要る先に kafka-ui が無い、`ops/up.sh` の mdt・NEED_AOSS・SINK_*/GRAFANA の古いコメント、`terraform/base/core/endpoints.tf:27`・`perimeter.tf:4-6`・`outputs.tf:58`、`terraform/pipeline/stream/variables.tf:109`、`terraform/pipeline/analytics/locals.tf:1-10`、`agent/evidence.py:3,5`）
+- [x] `.env.example` と `ops/up.sh` と terraform のコメントの古い記述を直す（2026-10-08 完了。fix/stale-comments。コメントと description だけで動作は変えていない。2026-10-08 の docs 同期で見つけた、コードの側の食い違い: `.env.example:140` の SNMP_POLL の既定、`ops/up.sh:445` の docker の要る先に kafka-ui が無い、`ops/up.sh` の mdt・NEED_AOSS・SINK_*/GRAFANA の古いコメント、`terraform/base/core/endpoints.tf:27`・`perimeter.tf:4-6`・`outputs.tf:58`、`terraform/pipeline/stream/variables.tf:109`、`terraform/pipeline/analytics/locals.tf:1-10`、`agent/evidence.py:3,5`）
 - [ ] `terraform/agent/kb.tf` の kb_index のロールにネットワークの境界の条件を付ける（ほかのロールにはあって、これだけ無い。2026-10-08 の docs 同期で見つけた）
 - [ ] status の Lambda の Firehose の待ちを AZ の数に合わせる（`terraform/pipeline/graph/sync.tf:125` と `graph/status_handler.py:23-24` のコメントは 1 AZ = 15.6 秒の `ops/up.sh:421-423` と合っていない）
 - [ ] 手元の compose の構成のスライドを作る（006 のあと。マネージド版・OSS 版は 2026-10-08 に作った）

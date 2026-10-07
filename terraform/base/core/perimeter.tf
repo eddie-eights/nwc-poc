@@ -1,9 +1,10 @@
 # ---------------------------------------------------------------- network perimeter (2026-09-28)
 # AWS の API は全部 VPC エンドポイント（endpoints.tf）を通すので、正しいリクエストには aws:SourceVpc = この VPC が付く。
 # それが付かないリクエスト（盗んだ認証情報を VPC の外で使った）を 2 か所で拒む:
-#   1. IAM 側   ワークロードのロールに付ける Deny（下の network_perimeter）。付け先は web / runtime（ここ）、lab / Telegraf（pipeline/lab）、
-#               Spark / Grafana / Splunk（pipeline/analytics）、ワーカー（workflow）、ツールの Lambda（workflow）、
-#               アラートの状態と履歴を書く Lambda（pipeline/graph の graph-status）
+#   1. IAM 側   ワークロードのロールに付ける Deny（下の network_perimeter）。付け先は web / runtime（ここ）、lab（pipeline/lab）、
+#               Telegraf / Kafbat UI（pipeline/stream）、Spark / Grafana / Splunk（pipeline/analytics）、Nautobot（pipeline/nautobot）、
+#               ワーカーとツールの Lambda（workflow）、アラートの状態と履歴を書く Lambda（pipeline/graph の graph-status）。
+#               OSS 版（oss/terraform）は自前の ECS のタスク（Kafka / Neo4j / OpenSearch / VictoriaMetrics / Spark / Grafana）のロールにも付ける
 #   2. 資源側   バケット（下）、アラートの SNS トピック（alerts.tf）、S3 Tables（pipeline/analytics）、SQS（workflow）のリソースポリシーの Deny
 # 例外は 3 つ:
 #   - デプロイする人（ops/up.sh を打つ PC の認証情報。terraform と s3 cp が VPC の外から来る。PoC では仕方ないとユーザーが決めた、2026-09-28）
@@ -49,7 +50,7 @@ locals {
   ]
 }
 
-# ポリシーはいつも作り、network_perimeter = false のときは中身を何も拒まないものにする。消すと、ほかのルート（lab / analytics / graph / workflow）の
+# ポリシーはいつも作り、network_perimeter = false のときは中身を何も拒まないものにする。消すと、ほかのルート（lab / stream / analytics / graph / nautobot / workflow）の
 # ロールに付いたままのうちは DeleteConflict で base/core の apply が落ちるため。ほかのルートは output が空になると次の apply で外す
 resource "aws_iam_policy" "network_perimeter" {
   name        = "${local.name_prefix}-network-perimeter"

@@ -1,8 +1,8 @@
 """調査の証拠を取るツール（WORKFLOW。エージェントが原因分析のために OpenSearch / Prometheus / S3 Tables を見に行く）。
 
-Spark が検知した異常を受けて、エージェントが Neptune / S3 Tables / OpenSearch / Prometheus を見に行って原因を分析する。
+Grafana / Splunk のアラート（2026-10-02 までは Spark が検知していた）を受けて、エージェントが Neptune / S3 Tables / OpenSearch / Prometheus を見に行って原因を分析する。
 Neptune は graph.py / topology.py（neighbors / blast_radius）、ここは残りの 3 つ:
-  search_logs    OpenSearch Serverless の logs コレクション（terraform/pipeline/analytics の sinks=opensearch。Spark が traps を書く）を機器名で検索
+  search_logs    OpenSearch Serverless の logs コレクション（terraform/pipeline/analytics の sinks=opensearch。Spark が traps と logs（機器の syslog）を書く）を機器名で検索
   query_metrics  Amazon Managed Service for Prometheus（sinks=prometheus。Spark が metrics を remote write）に PromQL を投げる
   query_history  S3 Tables（Iceberg）の alert_events（Grafana / Splunk のアラートの通知。graph の status Lambda → Firehose が追記）を Athena で読む（2026-10-04）
 

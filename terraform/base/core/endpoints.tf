@@ -24,7 +24,8 @@ resource "aws_vpc_endpoint" "s3" {
 # ネットワークポリシーには IP の許可リストが無いので、VPC の中から閉じて届く経路はこれしかない。
 # 1 つの VPC に 1 本あれば全コレクションに届き（AWS の文書「You only need one OpenSearch Serverless VPC endpoint in a VPC」）、
 # 作ると AOSS が *.<region>.aoss.amazonaws.com の private hosted zone を VPC に付ける。2 本目を作らないよう、ここに 1 本だけ置く。
-# ops/up.sh は CREATE_KB か STORES の grafana（OpenSearch）のとき create_opensearch_endpoint=true で apply する。
+# ops/up.sh は CREATE_KB か STORES の grafana（OpenSearch）のとき、または前に作ったコレクションが terraform/agent か terraform/pipeline/analytics の
+# state に残っているとき（外すとそのコレクションに届かなくなる）に create_opensearch_endpoint=true で apply する（ops/up.sh の NEED_AOSS）。
 # ENI はインターフェース型と同じ endpoints_az_num の AZ（1 本 1.4 セント/h × AZ。2026-10-04 までは 2 AZ 固定）。
 # SG は endpoints（ワークロードの SG からの 443 だけ。security_groups.tf）
 resource "aws_opensearchserverless_vpc_endpoint" "aoss" {
