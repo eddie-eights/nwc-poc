@@ -49,6 +49,7 @@
 | `cloudformation/` | デバッグ用の EC2 のスタック（`lab-debug.yaml`。下の段落） |
 | `ops/` | `up.sh` / `down.sh` / `check.sh` / `lab-debug.sh` / `sync-graph.sh` など |
 | `oss/` | OSS 版（`oss/ops/up.sh` / `down.sh`、`oss/terraform/`、手元で組み合わせを確かめる `oss/compose/`。[oss-variant.md](../oss-variant.md)） |
+| `local/` | 手元の docker compose（`local/compose/`。WSL2 の中だけで lab から Grafana / Splunk まで一周させる。AWS は使わない。[README](../../local/compose/README.md)） |
 | `tests/` | 模擬テスト（AWS を呼ばない） |
 
 ```

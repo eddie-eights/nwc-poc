@@ -1,0 +1,2 @@
+# Spark（spark-http）の remote write を受けるだけ（compose.yaml の --web.enable-remote-write-receiver）。scrape はしない
+global:

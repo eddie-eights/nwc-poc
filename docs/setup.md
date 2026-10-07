@@ -77,6 +77,8 @@ docker buildx ls
 
 `docker buildx ls` に `linux/arm64` があればよい。WSL を再起動すると消えるので、無くなったら `binfmt` の行だけ打ち直す。
 
+AWS を使わずに WSL の中だけでパイプラインを動かす（`local/compose/`）なら、この Docker Engine に docker-compose-plugin・containerlab・snmp を足す。`binfmt` は要らない。手順は [local/compose/README.md](../local/compose/README.md)。
+
 AWS CLI v2 と Session Manager plugin は Linux 版を、uv は公式の手順で入れる。Python 3.13 は uv が `.python-version` を見て自分で取る。
 
 ## 社内 PC の CA

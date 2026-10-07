@@ -29,6 +29,8 @@ flowchart LR
 
 できる限り AWS のマネージドサービスで作っている。これとは別に、マネージドの部分を OSS にした版（`oss/`。Kafka・Neo4j・OpenSearch・VictoriaMetrics・Spark を ECS で動かす）も作ってあり、`oss/ops/up.sh` で立てて `oss/ops/down.sh` で消す（2026-10-07 に AWS で 1 回立てて確かめた。マネージド版と同じアカウントに並べて立てるのは未確認）。できること・費用・メンテナンス性の比較は [oss-variant.md](docs/oss-variant.md)。
 
+AWS を使わずに、WSL2 の中だけでパイプライン（lab → Telegraf → Kafka → Spark → OpenSearch / Prometheus / Splunk → Grafana）を一周させる構成もある（`local/compose/`。SNS・Neptune・Nautobot・ワークフロー・エージェントは無い）。手順は [local/compose/README.md](local/compose/README.md)（WSL での通しは未確認）。
+
 `deploy.env` で要る機能だけ `1` にする。何も書かなければ土台だけを作る。
 
 | 機能 | できること | 待機の時間課金（東京） |
@@ -164,6 +166,7 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | [alert-comparison.md](docs/alert-comparison.md) | Splunk と Grafana のアラートを比べる: 4 種類のアラートを両方で書けたか、障害を入れる手順、遅れと取りこぼしを出す Athena のクエリ、結果（2026-10-05 の 1 回分。手順どおりの 3 回の計測と `bgp_down`・`trap` は未実施） |
 | [troubleshooting.md](docs/troubleshooting.md) | うまくいかないとき |
 | [oss-variant.md](docs/oss-variant.md) | マネージドの部分を OSS にした版（`oss/`、`oss/ops/up.sh`）: その目的（マネージドでできて OSS でできないこと、費用、メンテナンス性の比較）、マネージドの部分と OSS の置き換え先の対応、2026-10-07 に AWS で確かめたことと未確認のこと |
+| [local/compose/README.md](local/compose/README.md) | 手元の docker compose（WSL2）: 前提（WSL の docker-ce、`.wslconfig` のメモリ）、立てて障害を入れて見るまでの手順、見る場所、ぶつかりやすいポート、消し方 |
 | [hearing.md](docs/hearing.md) | ヒアリング項目: PoC の設計を決めるために相手に確かめたいこと（格納先の冗長化、保管期間など）と答え |
 | [development.md](docs/development.md) | 手元のテスト、変更するときの決まり、Web を手元で動かす |
 | [faq-fukuda-nwc-poc.md](docs/faq-fukuda-nwc-poc.md) | FAQ: ほかの開発者に説明するときに出る質問と答え（syslog、収集の設定、デバッグ用の EC2、YANG、Spark、Nautobot、Neptune、障害の情報の置き場、格納先とテーブル、Splunk、マネージドを OSS に置き換えるとき、AWS の基礎） |
