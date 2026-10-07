@@ -16,3 +16,11 @@
 - [ ] `spark/Dockerfile` が取る Maven Central の jar のハッシュを照合する（005 のレビュー Nit 4）
 - [ ] `oss/ops/up.sh` の wheel の取り直しを requirements のハッシュで判定する（いまは `.whl` が 1 つでもあれば取り直さない。005 のレビュー Nit 5）
 - [ ] `oss/ops/up.sh` の services-stable の待ちに再試行を付け、`ops/check.sh` の OSS のルートにも `-lockfile=readonly` を付ける（005 のレビュー Nit 6）
+- [ ] 手元の docker compose で動く構成を作る（WSL 用。lab から Splunk と Grafana まで届くこと） → 006-local-compose
+- [ ] ディレクトリを app/ と docker/ と IaC/ に並べ直す（006 のあと。compose は docker/compose.yml へ動かす。app/ の下は agent→agentcore、workflow→temporal、web→dashboard、lab→containerlab に改名。2026-10-08 に順番を入れ替えた）
+- [ ] Kafbat UI を Web の EC2 に同居させ、lab の EC2 で `containerlab graph` のトポロジ図を見られるようにする（Fargate のタスクと Cloud Map をやめる。EC2 は t4g.medium に上げ、Docker と MSK の IAM 権限と SG の web→MSK 9098 を足す。graph は 50080 を SSM のポートフォワードで。2026-10-08 の決定）
+- [ ] Redis を 8 系に上げる（OSS 版）
+- [ ] EMR を 7.14.0 に上げ、Spark の jar を合わせる
+- [ ] Iceberg を 1.12.0 に上げる
+- [ ] lab を IS-IS の spine 2 + a-leaf 2 + s-leaf 2 と各 leaf につなぐ TRex にする（SR-MPLS はライセンスが届いたら `ixr-6e` に差し替え。2026-10-08 の決定）
+- [ ] コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種にする（telegraf-dialin を外し、ifTable の代わりに gNMI の oper-state を使う）
