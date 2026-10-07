@@ -672,7 +672,8 @@ def _algo_neo4j() -> tuple[list, list, list]:
     # 失敗したら drop してから上げる。その失敗（GDS が入っていない等）を隠さないように、drop 自身の失敗は飲む。
     # project の失敗のうち、サーバーが答えた失敗（Neo4jError）だけ drop する: 写しはトランザクションの外（GDS のカタログ）にできるので、
     # 1 回目がサーバー側で済んだあと結果の受け取りに失敗すると、execute_query の自動の打ち直しが「already exists」で落ち、写しが残る。
-    # つながらない（DriverError）・GDS 以外の失敗は写しが無いので drop せずに上げる（つながらないときに drop の再試行で倍待たない）
+    # つながらない（DriverError）・GDS 以外の失敗は drop せずに上げる（つながらないときに drop の再試行で倍待たない）。DriverError でも、サーバー側で
+    # 写しができた直後に切れて打ち直しも全部切れたときだけ写しが残るが、Neo4j のタスクが入れ替われば消える（1 台で一時領域: design.md）
     drop = "CALL gds.graph.drop($g, false) YIELD graphName RETURN graphName"
 
     def drop_quietly():
@@ -689,7 +690,7 @@ def _algo_neo4j() -> tuple[list, list, list]:
         out = (query("CALL gds.degree.stream($g) YIELD nodeId, score RETURN gds.util.asNode(nodeId).id AS id, toInteger(score) AS degree", g=g),
                query("CALL gds.closeness.stream($g) YIELD nodeId, score RETURN gds.util.asNode(nodeId).id AS id, score", g=g),
                query("CALL gds.wcc.stream($g) YIELD nodeId, componentId RETURN gds.util.asNode(nodeId).id AS id, componentId AS component", g=g))
-    except Exception:
+    except BaseException:   # 手元で Ctrl-C したときも写しを残さない
         drop_quietly()
         raise
     query(drop, g=g)

@@ -733,6 +733,11 @@ check("oss/ops/up.sh は graph の前に SSM の /<接頭辞>/neo4j-password を
       and 'echo "$LAYER_PLATFORM $LAYER_PYVER"' in up and up[pos("LAYER_PLATFORM="):pos('"$LAYER_SHA" > oss/terraform')].count("manylinux") == 1
       and "shasum" not in up and 0 <= pos("""| "${PY[@]}" -c 'import hashlib, sys; print(hashlib.sha256(""") < pos('"$LAYER_SHA" > oss/terraform/pipeline/graph/.build/neo4j-layer.sha256')
       and 'tf_apply pipeline/graph -var "neo4j_image_tag=$NEO4J_TAG" -var alert_history=true' in up)
+_sync_tf = read("oss/terraform/pipeline/graph/sync.tf")
+_layer_pyver = re.search(r"^LAYER_PLATFORM=\S+; LAYER_PYVER=(\S+)$", up, re.M).group(1)
+check("oss/ops/up.sh の LAYER_PYVER は sync.tf の Lambda の runtime とレイヤーの compatible_runtimes と同じ版（片方だけ変えると読めないレイヤーになる）",
+      f'runtime          = "python{_layer_pyver}"' in _sync_tf and f'compatible_runtimes      = ["python{_layer_pyver}"]' in _sync_tf
+      and _sync_tf.count("python3.") == 2)
 UP_ENDPOINTS = {"ssm", "ssmmessages", "ecr.api", "ecr.dkr", "logs", "s3tables", "sns", "kinesis-firehose",
                 "bedrock-runtime", "bedrock-agentcore", "ecs", "sqs", "bedrock-agentcore.gateway", "athena"}
 check("oss/ops/up.sh のエンドポイントは 14 個: 土台の 5 つ、analytics と graph の s3tables・sns・kinesis-firehose、agent の bedrock-runtime・bedrock-agentcore、"

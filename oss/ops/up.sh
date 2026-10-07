@@ -378,7 +378,8 @@ ensure_secret "/$PREFIX/neo4j-password" password "Neo4j password of the neo4j us
 # status の Lambda（arm64）のレイヤーの中身。ドライバは純 Python なので、どの PC でも同じものができる（sync.tf の locals の注記）。
 # graph/requirements-oss.txt と pip に渡す platform / python の版のハッシュを .build/neo4j-layer.sha256 に残し、同じなら作り直さない
 # （毎回 pip を回さない。zip の中身は変わらない。版を変えたらハッシュが変わって作り直す）。
-# platform と python の版は、pip に渡すのもハッシュに入れるのもこの 2 つの変数（別々に書くと片方だけ変えてスタンプが合ったままになる）
+# platform と python の版は、pip に渡すのもハッシュに入れるのもこの 2 つの変数（別々に書くと片方だけ変えてスタンプが合ったままになる）。
+# LAYER_PYVER は sync.tf の Lambda の runtime（python3.13）と同じにする（tests/test_oss_ops.py が突き合わせる）。片方だけ変えると読めないレイヤーになる
 LAYER_PLATFORM=manylinux2014_aarch64; LAYER_PYVER=3.13
 LAYER_SHA=$( { cat graph/requirements-oss.txt; echo "$LAYER_PLATFORM $LAYER_PYVER"; } \
   | "${PY[@]}" -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
