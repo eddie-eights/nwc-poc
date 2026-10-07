@@ -832,6 +832,13 @@ check("agent は web のロールに InvokeAgentRuntime を付け、main の run
       and 'output "runtime_role_arn"' in main_out and 'resource "aws_iam_role" "runtime"' in main_tf)
 check("閉域: Runtime のリソースポリシーは VPC の外からの InvokeAgentRuntime を拒み、apply した人は外す（deploy.md の CLI の確認が通る）",
       re.search(r'resource "aws_bedrockagentcore_resource_policy" "runtime"[\s\S]*?"bedrock-agentcore:InvokeAgentRuntime"[\s\S]*?agent_runtime_arn[\s\S]*?"aws:SourceVpc"[\s\S]*?local\.perimeter_exempt_principals', agent_tf) is not None)
+_agent_roles = set(re.findall(r'resource "aws_iam_role" "(\w+)"', agent_tf))
+_agent_perim = set(re.findall(r'resource "aws_iam_role_policy_attachment" "\w+" \{\n\s*count = local\.kb && local\.perimeter_policy_arn != "" \? 1 : 0\n\s*'
+                              r'role\s*= aws_iam_role\.(\w+)\[0\]\.name\n\s*policy_arn = local\.perimeter_policy_arn\n\}', agent_tf))
+check("閉域: agent のロールは、サービス側で動く KB のロール（<prefix>-kb。perimeter_exempt_principals）を除いて全部 perimeter の Deny を付ける（kb-index の Lambda も）",
+      _agent_roles == {"kb", "kb_index"} and _agent_perim == _agent_roles - {"kb"}
+      and 'perimeter_policy_arn        = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")' in agent_tf
+      and '"arn:${local.partition}:iam::${local.account_id}:role/${local.name_prefix}-kb",' in main_tf)
 check("down.sh は Runtime の ENI が残るあいだ VPC・サブネット・runtime の SG を残して他を消す（aws_security_group.internal は 2026-09-29 より前の state）",
       "InterfaceType=='agentic_ai'" in down and "Name=tag:Name,Values=$PREFIX-vpc" in down and "tf base/core output -raw vpc_id" not in down and "Runtime の ENI の確認:" in down
       and '''""|data.*|aws_vpc.this|aws_subnet.*|'aws_security_group.workload["runtime"]'|aws_security_group.internal) ;;''' in down

@@ -483,9 +483,12 @@ h.toolkit._clients.pop("firehose", None)
 h.handler(pair); h.handler(pair)
 _cfg, _ncfg = h.FIREHOSE_CONFIG, h.NEPTUNE_CONFIG
 _timeout = int(re.search(r"^\s*timeout\s*=\s*(\d+)", read("terraform", "pipeline", "graph", "sync.tf"), re.M).group(1))
+def _fh_max_of(ips):   # Firehose に使う時間の上限（3 回の接続と読みの待ち + 送り直しの待ち）
+    return 3 * (ips * _cfg.connect_timeout + _cfg.read_timeout) + sum(h.RETRY_WAITS)
+def _nep_max_of(ips):   # Neptune 1 回の呼び出しの上限（再試行の前の待ちは 1 秒まで）
+    return _ncfg.retries["total_max_attempts"] * (ips * _ncfg.connect_timeout + _ncfg.read_timeout) + 1
 _ips = 2   # エンドポイントの IP の数。インターフェース型エンドポイントは AZ ごとに 1 つ（endpoints_az_num = 2 で 2 つ）で、接続の待ちは IP ごとにかかる
-_fh_max = 3 * (_ips * _cfg.connect_timeout + _cfg.read_timeout) + sum(h.RETRY_WAITS)   # Firehose に使う時間の上限（3 回の接続と読みの待ち + 送り直しの待ち）
-_nep_max = _ncfg.retries["total_max_attempts"] * (_ips * _ncfg.connect_timeout + _ncfg.read_timeout) + 1   # Neptune 1 回の呼び出しの上限（再試行の前の待ちは 1 秒まで）
+_fh_max, _nep_max = _fh_max_of(_ips), _nep_max_of(_ips)
 check(f"Firehose へは FIREHOSE_CONFIG で 1 つだけ作ったクライアントで送り、botocore の再試行を切る（1 回）。Firehose に使うのは長くて {_fh_max:.1f} 秒（22 秒未満）",
       [m for m in _made if m[0] == "firehose"] == [("firehose", {"region_name": h.toolkit.REGION, "config": _cfg})] and [len(b[1]) for b in _fh2.batches] == [2, 2]
       and "firehose" not in h.toolkit._clients and _cfg.retries.get("total_max_attempts") == 1 and _fh_max < 22)
@@ -495,6 +498,22 @@ check("Neptune へは NEPTUNE_CONFIG（接続 3 秒・読み 10 秒・試すの�
       and 'config=Config(connect_timeout=10, read_timeout=60, retries={"max_attempts": 2}))' in read("agent", "graph.py"))
 check(f"Lambda graph-status の timeout は 60 秒で、Firehose の上限と Neptune 1 回の呼び出しの上限の和（{_fh_max + _nep_max:.1f} 秒）より長い",
       _timeout == 60 and _fh_max + _nep_max < _timeout)
+# 待ちの秒数は AZ の数（ENDPOINTS_AZ_NUM）で変わる。sync.tf の timeout のコメント・status_handler.py の docstring・ops/up.sh の注意の式を、
+# FIREHOSE_CONFIG / NEPTUNE_CONFIG から出した値と突き合わせる（ずれていると、1 AZ の既定でも 22 秒と読める説明が残る）
+_timeout_note = re.search(r"^\s*timeout\s*=\s*\d+\s*#(.*)$", read("terraform", "pipeline", "graph", "sync.tf"), re.M).group(1)
+_fh_doc = h.__doc__.split("Firehose に使うのは長くて")[1].split("Lambda の timeout")[0]
+_up = read("ops", "up.sh")
+_up_nep = re.search(r"GRAPH_WAIT=\$\(\((20 \* \(3 \* ENDPOINTS_AZ_NUM \+ 10\) \+ 10)\)\)", _up)
+_up_fh = re.search(r"GRAPH_WAIT=\$\(\(GRAPH_WAIT \+ (30 \* \(2 \* ENDPOINTS_AZ_NUM \+ 3\) \+ 6)\)\)", _up)
+def _up_wait(n):   # up.sh の式（0.1 秒単位）を AZ の数 n で計算する
+    return sum(eval(m.group(1).replace("ENDPOINTS_AZ_NUM", str(n))) for m in (_up_nep, _up_fh))
+check("Firehose の上限は AZ の数で変わり、sync.tf の timeout のコメントと status_handler.py の docstring が 1・2・3 AZ の秒数（"
+      + "、".join(f"{_fh_max_of(n):.1f}" for n in (1, 2, 3)) + " 秒）を書き、ops/up.sh の注意の式が同じ和を出す（60 秒を超えるのは 3 AZ だけ）",
+      all(f"{_fh_max_of(n):.1f} 秒" in t for n in (1, 2, 3) for t in (_timeout_note, _fh_doc))
+      and "1 AZ（ENDPOINTS_AZ_NUM の既定）なら 15.6 秒" in _timeout_note and "22 秒" not in _timeout_note + _fh_doc
+      and _up_nep is not None and _up_fh is not None
+      and all(_up_wait(n) == round(10 * (_fh_max_of(n) + _nep_max_of(n))) for n in (1, 2, 3))
+      and [n for n in (1, 2, 3) if _fh_max_of(n) + _nep_max_of(n) > _timeout] == [3] and 'if [ "$GRAPH_WAIT" -gt 600 ]' in _up)
 def _no_neptune(service, **kw):
     if service == "neptune-graph":
         raise OSError("neptune-graph のクライアントを作れない")
