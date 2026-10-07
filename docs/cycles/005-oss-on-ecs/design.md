@@ -210,7 +210,7 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 | Neo4j への同期 | `oss/ops/up.sh` の 7-3b が `ops/seed_graph.py` を Web の EC2 で打つ（空のときだけ）。入れ直しは `ops/sync-graph.sh --oss [--replace]` |
 | エージェント | `agent` のイメージを Neo4j のドライバー入りでビルドし、`GRAPH_BACKEND=neo4j` で Neo4j を引く |
 | Nautobot の Job から Neo4j | **まだ。** `terraform/pipeline/nautobot` のタスク定義が `GRAPH_BACKEND` / `NEO4J_URI` / `NEO4J_PASSWORD` を渡さず、Nautobot のイメージに Neo4j のドライバーが無い（OSS 版では Job「Telegraf と Neptune に同期」の Neptune 側が動かない。lab の定義からの同期は動く） |
-| 格納先の選択 | 無い。いつも iceberg、opensearch、prometheus、splunk の 4 つ（マネージド版の `STORES` は読まない） |
+| 格納先の選択 | `oss/ops/up.sh` は読まない。いつも iceberg、opensearch、prometheus、splunk の 4 つを `sinks` に渡す（マネージド版の `STORES` は読まない）。terraform の変数 `sinks` はマネージド版と共用なので、手で絞ればその分のジョブは作られない |
 
 ### アプリのコードの切り替え
 
@@ -330,7 +330,7 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 5. OpenSearch、VictoriaMetrics、Spark、Grafana。（済み。Grafana も `oss/ops/up.sh` が作る）
 6. Neo4j と status の Lambda。（済み）worker、Web、エージェントを `oss/ops/up.sh` につなぐ。（済み）Nautobot の Job を Neo4j につなぐ。（まだ。上の「実装の状態」）
 7. `oss/ops/up.sh` と `down.sh`、`ops/check.sh`。（済み。作るのは上の「実装の状態」の 9 ルート）
-8. AWS での確認。（まだ）
+8. AWS での確認。（済み。2026-10-07 に 1 回。結果は「検証方法」の AWS の表と「AWS で確かめたこと」）
 9. docs（こちらで書く）。
 
 ## 検証方法
@@ -421,9 +421,9 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
    ドライバはレイヤーで入れた。AWS で、Grafana と Splunk の両方のアラートで status が変わり、Neo4j を止めて戻したあとも書けた。ただし status の Lambda は `Max Memory Used` が 111 MB / 128 MB で、ドライバの版を上げると足りなくなる（`terraform/pipeline/graph/sync.tf` の `memory_size`。マネージド版と共用なので、別のサイクルで上げる）。
 10. **並べて立てたときの上限。**
     Fargate の vCPU の上限（30）に OSS 版だけで 21.5 なので、マネージド版と並べるには上限を上げる。並べたときの VPC とエンドポイントの上限は未確認。
-12. **Neo4j の ECS のサービスに healthCheck が無い。**
+11. **Neo4j の ECS のサービスに healthCheck が無い。**
     タスクの healthStatus が UNKNOWN のままで、`aws ecs wait services-stable` は RUNNING を見るだけ。Neo4j のプロセスが起きていて Bolt が開いていない時間は、ECS からは見えない（別のサイクルで足す）。
-11. **エンドポイントが 1 つの AZ だけのとき。**
+12. **エンドポイントが 1 つの AZ だけのとき。**
     `ENDPOINTS_AZ_NUM=1` でも動くが、その AZ が止まると、ほかの AZ の Kafka も ECR や CloudWatch Logs に届かない。
 
 <!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261004-cycle-005-oss-on-ecs-design.html -->
