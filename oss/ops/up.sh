@@ -231,7 +231,7 @@ else
     mirror_temporal
   fi
   if [ -n "$NEED_NAUTOBOT" ]; then
-    build_nautobot "$NAUTOBOT_TAG" "$NAUTOBOT_CTX"
+    build_nautobot "$NAUTOBOT_TAG" "$NAUTOBOT_CTX" requirements-oss.txt   # Job は agent/graph.py を GRAPH_BACKEND=neo4j で使うので、Neo4j のドライバーを入れる
   fi
   if [ -n "$NEED_REDIS" ]; then
     mirror_image "redis:$REDIS_TAG" "$REG/$PREFIX-redis:$REDIS_TAG" || die "redis のイメージを ECR に置けなかった"
@@ -414,8 +414,9 @@ else
 fi
 
 # ---- 7-3c. nautobot ------------------------------------------------------------------
-# マネージド版と同じルート（oss/terraform/pipeline/nautobot は terraform/pipeline/nautobot へのリンク）。Job は Telegraf の取りにいく側の一覧（SSM）を書く。
-# グラフへは書かない（ルートが読むのは Neptune の graph_id で、OSS 版の graph には無い。Neo4j へ入れるのは 7-3b）
+# マネージド版と同じルート（oss/terraform/pipeline/nautobot は terraform/pipeline/nautobot へのリンク）。Job は Telegraf の取りにいく側の一覧（SSM）と、
+# Neo4j の物理層と変更履歴を書く（graph の state に neo4j_uri があるので、ルートが GRAPH_BACKEND=neo4j・NEO4J_URI と secrets の NEO4J_PASSWORD を渡す）。
+# 7-3b で lab の定義から入れたトポロジに、起動時の同期（bootstrap.py）が Nautobot の中身を差分で合わせる（status と上の層は残る）
 log "7-3c. nautobot（oss/terraform/pipeline/nautobot。Aurora / RDS と ECS。初回は 15 分ほど）"
 NAUTOBOT_WARN=""
 ensure_nautobot_secrets

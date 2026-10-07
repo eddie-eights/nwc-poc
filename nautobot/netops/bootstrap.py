@@ -9,7 +9,7 @@
   3. 最初の seed: 機器が 1 台も無いときだけ、イメージに入れた lab の定義（lab_seed.json = lab/lab_topology.py の出力）から
      Location / Role / Device / Interface / IPAddress / Service / Cable を作る。あとは Nautobot が正で、lab を変えてもここは入れ直さない
   4. Job: JOBS_ROOT の netops_jobs の 2 つを登録して有効にし、JobHook（netops-sync）を張る
-  5. 起動時の同期: Telegraf の dialin の一覧と Neptune の物理層を今の Nautobot に合わせる（nb_sync.sync）
+  5. 起動時の同期: Telegraf の dialin の一覧と Neptune（OSS 版は Neo4j）の物理層を今の Nautobot に合わせる（nb_sync.sync）
 """
 import contextlib
 import ipaddress

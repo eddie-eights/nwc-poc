@@ -2,6 +2,7 @@
 
 Nautobot は、機器の一覧とケーブルの**正**（台帳）。`PIPELINE=1` ならいつも立つ（`terraform/pipeline/nautobot`）。
 Nautobot で機器・インタフェース・ケーブルを変えると、Nautobot の中の Job が Telegraf の取りにいく先と Neptune のトポロジを合わせる。
+OSS 版（[oss-variant.md](oss-variant.md)）では、同じ Job が Neptune の代わりに Neo4j に書く（2026-10-08。AWS ではまだ確かめていない）。この文書の「Neptune」は、OSS 版では Neo4j と読み替える。
 
 反映の決まりと注意の細かい一覧は [pipeline.md の「Nautobot」](pipeline.md#nautobot機器の一覧とケーブルの正)、質問と答えは [FAQ の 6 章](faq-fukuda-nwc-poc.md#6-nautobot機器の一覧とケーブルの正)。
 

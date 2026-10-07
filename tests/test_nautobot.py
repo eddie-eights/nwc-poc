@@ -165,6 +165,45 @@ check("change_rows: 新しい順に CHANGES_KEEP 件まで",
       and nb_map.change_rows([{"id": "a", "time": 1}, {"id": "b", "time": 2}])[0]["change_id"] == "change#b")
 dm, _, _ = nb_map.to_graph([{**rows[0], "status": "Maintenance"}, {**rows[1], "status": "Active"}], [])
 check("to_graph: Status が Maintenance の機器だけ maintenance = true を持つ（ほかはキーごと無い）", dm[0].get("maintenance") is True and "maintenance" not in dm[1])
+# ---- OSS 版（cycle 005）: GRAPH_BACKEND=neo4j なら同じ Job が agent/graph.py の Neo4j 側で書く。戻り値の鍵と文言だけが変わる
+import importlib
+class Log:
+    def __init__(self): self.lines = []
+    def info(self, msg, *a): self.lines.append(msg % a)
+    warning = info
+def oss_sync(uri, devices):
+    saved = {k: os.environ.get(k) for k in ("GRAPH_BACKEND", "NEO4J_URI", "NEPTUNE_GRAPH_ID")}
+    os.environ.update({"GRAPH_BACKEND": "neo4j", "NEO4J_URI": uri, "NEPTUNE_GRAPH_ID": ""})
+    try:
+        importlib.reload(graph)
+        importlib.reload(nb_sync)   # GRAPH_NAME / GRAPH_SETTING は import のときに graph.BACKEND から決まる
+        written = []
+        graph.sync_physical = lambda d, l: written.append((len(d), len(l))) or {"devices": len(d)}
+        graph.sync_changes = lambda rows: {"kept": len(rows)}
+        nb_sync.read, nb_sync.read_changes = (lambda: (devices, plan["cables"] if devices else [])), (lambda: list(_changes))
+        lg = Log()
+        return nb_sync.sync(lg), written, lg.lines, graph.configured(), (nb_sync.GRAPH_NAME, nb_sync.GRAPH_SETTING)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        importlib.reload(graph)
+        importlib.reload(nb_sync)
+out, written, lines, conf, names = oss_sync("bolt://neo4j.o-nwc-oss-graph.internal:7687", rows)
+check("sync（OSS 版）: NEO4J_URI があれば Neo4j の物理層と変更履歴を合わせ、結果は neo4j の鍵に入る（neptune の鍵は出さない）",
+      conf and names == ("Neo4j", "NEO4J_URI") and written == [(len(lab["devices"]), len(lab["links"]))]
+      and out["neo4j"] == {"devices": len(lab["devices"])} and "neptune" not in out and out["changes"] == {"kept": 2}
+      and any(l.startswith("Neo4j の物理層を合わせた") for l in lines))
+out, written, lines, conf, _ = oss_sync("", rows)
+check("sync（OSS 版）: NEO4J_URI が空ならグラフを触らず、NEPTUNE_GRAPH_ID でなく NEO4J_URI を名指しする",
+      not conf and written == [] and "neo4j" not in out and "changes" not in out and "NEO4J_URI が無い。Neo4j は触らない" in lines)
+out, written, lines, _, _ = oss_sync("bolt://neo4j.o-nwc-oss-graph.internal:7687", [])
+check("sync（OSS 版）: 機器が 1 台も無いときは Neo4j を触らない", written == [] and out["neo4j"] == {"skipped": True}
+      and "Nautobot に機器が 1 台も無い。Neo4j は触らない" in lines)
+check("sync（OSS 版）のあと、graph と nb_sync はマネージド版（Neptune）に戻る", graph.BACKEND == "neptune" and nb_sync.GRAPH_NAME == "Neptune")
+graph.configured = lambda: True
 ns = read("nautobot", "netops", "nb_sync.py")
 check("nb_sync.read は機器の Status を読み、read_changes は ObjectChange を新しい順に読む",
       '"status": d.status.name if d.status else ""' in ns and 'ObjectChange.objects.select_related("changed_object_type", "related_object_type").order_by("-time")[:limit]' in ns)

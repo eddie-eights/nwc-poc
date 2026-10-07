@@ -209,7 +209,7 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 | Web | EC2 に部品（Web の `.py` と `web/requirements-oss.txt` の wheel）を置き、`GRAPH_BACKEND=neo4j` で動く。手順書は Knowledge Base を作らないので置かない |
 | Neo4j への同期 | `oss/ops/up.sh` の 7-3b が `ops/seed_graph.py` を Web の EC2 で打つ（空のときだけ）。入れ直しは `ops/sync-graph.sh --oss [--replace]` |
 | エージェント | `agent` のイメージを Neo4j のドライバー入りでビルドし、`GRAPH_BACKEND=neo4j` で Neo4j を引く |
-| Nautobot の Job から Neo4j | **まだ。** `terraform/pipeline/nautobot` のタスク定義が `GRAPH_BACKEND` / `NEO4J_URI` / `NEO4J_PASSWORD` を渡さず、Nautobot のイメージに Neo4j のドライバーが無い（OSS 版では Job「Telegraf と Neptune に同期」の Neptune 側が動かない。lab の定義からの同期は動く） |
+| Nautobot の Job から Neo4j | コードとテストまで済み（2026-10-08）。**AWS ではまだ確かめていない。** `terraform/pipeline/nautobot` は graph の state に `neo4j_uri` があれば、`NEPTUNE_GRAPH_ID` の代わりに `GRAPH_BACKEND=neo4j` と `NEO4J_URI` を渡す（worker と同じ読み方）。パスワードは ECS の secrets の `NEO4J_PASSWORD` で web と worker に渡し、実行ロールがそのパラメータを読む。`oss/ops/up.sh` は Nautobot のイメージを `nautobot/requirements-oss.txt`（Neo4j のドライバー入り）でビルドする。Job の名前は「Telegraf と Neptune に同期」のままで、OSS 版では Neo4j に書く。マネージド版のタスク定義とイメージの依存は変わらない |
 | 格納先の選択 | `oss/ops/up.sh` は読まない。いつも iceberg、opensearch、prometheus、splunk の 4 つを `sinks` に渡す（マネージド版の `STORES` は読まない）。terraform の変数 `sinks` はマネージド版と共用なので、手で絞ればその分のジョブは作られない |
 
 ### アプリのコードの切り替え
@@ -328,7 +328,7 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 3. `oss/terraform/` の骨組み（シンボリックリンク、接頭辞の変数、SG、ECR、EFS）。（済み）
 4. Kafka と Telegraf。（済み）
 5. OpenSearch、VictoriaMetrics、Spark、Grafana。（済み。Grafana も `oss/ops/up.sh` が作る）
-6. Neo4j と status の Lambda。（済み）worker、Web、エージェントを `oss/ops/up.sh` につなぐ。（済み）Nautobot の Job を Neo4j につなぐ。（まだ。上の「実装の状態」）
+6. Neo4j と status の Lambda。（済み）worker、Web、エージェントを `oss/ops/up.sh` につなぐ。（済み）Nautobot の Job を Neo4j につなぐ。（済み。2026-10-08 にコードとテストまで。AWS では未確認）
 7. `oss/ops/up.sh` と `down.sh`、`ops/check.sh`。（済み。作るのは上の「実装の状態」の 9 ルート）
 8. AWS での確認。（済み。2026-10-07 に 1 回。結果は「検証方法」の AWS の表と「AWS で確かめたこと」）
 9. docs（こちらで書く）。
@@ -367,7 +367,7 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
    - status の Lambda（128 MB、Neo4j のレイヤー付き）の `REPORT` の `Max Memory Used` に余裕がある（111 MB で、余裕は無かった）。
    - Grafana の `datasources-oss` の `opensearch.yaml` の `version` が、立てた OpenSearch の版と合っている（違うとクエリの文法で失敗する）。
 
-3 の Nautobot の Job からの同期は、「実装の状態」の「まだ」が埋まってから確かめる（lab の定義からの同期で代える）。
+3 の Nautobot の Job からの同期は、2026-10-07 の時点ではつないでいなかったので確かめていない（lab の定義からの同期で代えた）。2026-10-08 にコードをつないだので、次に AWS で立てるときに、Nautobot で機器を変えたあと Job が Neo4j の物理層と変更履歴を書くかを確かめる。
 
 ### down.sh のあと（2026-10-07 05:14Z に `OWNER=efukuda KEEP_ECR=1 oss/ops/down.sh` が rc 0 で終わった。その 10 分後に AWS CLI で名指しで見た）
 

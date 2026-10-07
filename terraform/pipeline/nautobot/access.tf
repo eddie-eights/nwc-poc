@@ -35,12 +35,13 @@ resource "aws_iam_role_policy" "exec_secrets" {
     Statement = [{
       Effect   = "Allow"
       Action   = "ssm:GetParameters"
-      Resource = values(local.secret_arns)
+      Resource = concat(values(local.secret_arns), local.graph_neo4j ? [local.neo4j_password_arn] : []) # OSS 版だけ Neo4j のパスワード（nautobot.tf の secrets）
     }]
   })
 }
 
-# タスクロール: Job が呼ぶ AWS の API だけ。dialin の一覧の 2 つのパラメータの読み書き、dialin のサービスの作り直し、Neptune の読み書き
+# タスクロール: Job が呼ぶ AWS の API だけ。dialin の一覧の 2 つのパラメータの読み書き、dialin のサービスの作り直し、Neptune の読み書き。
+# OSS 版の Neo4j は IAM でなくパスワード（実行ロールが secrets で渡す）で入るので、OSS 版の graph に graph_arn が無く Neptune の行は付かない
 resource "aws_iam_role" "task" {
   name               = "${local.name_prefix}-nautobot-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json

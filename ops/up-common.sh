@@ -235,8 +235,10 @@ mirror_temporal() {  # Temporal の CLI 入りイメージ（temporal server sta
   docker tag "temporalio/temporal:$TEMPORAL_TAG" "$REG/$PREFIX-temporal:$TEMPORAL_TAG"
   docker push "$REG/$PREFIX-temporal:$TEMPORAL_TAG"
 }
-build_nautobot() {  # build_nautobot <タグ> <context のディレクトリ>  Nautobot の公式イメージ（arm64。約 1 GB）に boto3 と Job と対応付けと最初の seed を足す
-  docker buildx build --platform linux/arm64 --build-arg "NAUTOBOT_VERSION=$NAUTOBOT_VERSION" -t "$REG/$PREFIX-nautobot:$1" --push "$2"
+build_nautobot() {  # build_nautobot <タグ> <context のディレクトリ> [requirements のファイル名]  Nautobot の公式イメージ（arm64。約 1 GB）に boto3 と Job と対応付けと最初の seed を足す。
+  # OSS 版は requirements-oss.txt（neo4j のドライバー入り。Job が Neo4j に書く）。どちらの requirements も context（nautobot/ の写し）にあるので、タグ（dir_tag）は両方の中身で決まる
+  docker buildx build --platform linux/arm64 --build-arg "NAUTOBOT_VERSION=$NAUTOBOT_VERSION" --build-arg "REQUIREMENTS=${3:-requirements.txt}" \
+    -t "$REG/$PREFIX-nautobot:$1" --push "$2"
 }
 ensure_nautobot_secrets() {  # pipeline/nautobot の apply より前に呼ぶ。値は出さない
   # Django の SECRET_KEY・画面の管理者のパスワード・RDS のマスターユーザーのパスワードは SSM に乱数で作る（Terraform の state に載せない）

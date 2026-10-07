@@ -1,4 +1,5 @@
 """Nautobot の Job（JOBS_ROOT = /opt/nautobot/jobs）。Nautobot を機器の一覧とトポロジの正にして、Telegraf の dialin と Neptune に流す。
+OSS 版（cycle 005）は同じ Job が Neo4j に書く（agent/graph.py が GRAPH_BACKEND=neo4j で切り替える）。Job の名前は両方の版で同じ。
 中身は /opt/nautobot/netops/nb_sync.py。Job の行と JobHook は起動時の bootstrap.py が作って有効にする。
 
 同期の最後に、Nautobot の変更履歴（ObjectChange）の新しい 50 件を Neptune の頂点 change に写す（エージェントの recent_changes が読む）。

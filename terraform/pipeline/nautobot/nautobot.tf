@@ -43,7 +43,9 @@ resource "aws_service_discovery_service" "nautobot" {
 
 locals {
   # web と worker に同じものを渡す（どちらも同じ設定で DB と Redis につなぎ、Job は worker の中で AWS の API を呼ぶ）
-  nautobot_environment = [
+  # OSS 版（local.graph_neo4j）は NEPTUNE_GRAPH_ID の代わりに GRAPH_BACKEND と NEO4J_URI を同じ位置に置き、パスワードを secrets で足す
+  # （concat の右が空のマネージド版では、出来上がるタスク定義は前と 1 文字も変わらない）
+  nautobot_environment = concat([
     { name = "NAUTOBOT_ALLOWED_HOSTS", value = "*" }, # 届くのは VPC の中（web の SG）からだけ
     { name = "NAUTOBOT_DB_HOST", value = aws_db_instance.nautobot.address },
     { name = "NAUTOBOT_DB_PORT", value = tostring(aws_db_instance.nautobot.port) },
@@ -54,19 +56,28 @@ locals {
     { name = "NAUTOBOT_SUPERUSER_NAME", value = var.admin_user },
     { name = "AWS_REGION", value = var.region },
     # Job の書き先（nautobot/netops/nb_sync.py）。空ならその片方を飛ばす
+    ], local.graph_neo4j ? [
+    { name = "GRAPH_BACKEND", value = "neo4j" },
+    { name = "NEO4J_URI", value = local.neo4j_uri },
+    ] : [
     { name = "NEPTUNE_GRAPH_ID", value = local.neptune_graph_id },
+    ], [
     { name = "DIALIN_GNMI_PARAMETER", value = lookup(local.dialin_parameters, "gnmi-targets", "") },
     { name = "DIALIN_SNMP_PARAMETER", value = lookup(local.dialin_parameters, "snmp-agents", "") },
     { name = "TELEGRAF_CLUSTER", value = local.telegraf_cluster },
     { name = "TELEGRAF_DIALIN_SERVICE", value = local.telegraf_service },
-  ]
+  ])
   # SSM の SecureString（ops/up.sh が作る）。ECS のエージェントが実行ロールで読んでコンテナの環境変数にする
-  nautobot_secrets = [
+  nautobot_secrets = concat([
     { name = "NAUTOBOT_SECRET_KEY", valueFrom = local.secret_arns["secret-key"] },
     { name = "NAUTOBOT_DB_PASSWORD", valueFrom = local.secret_arns["db-password"] },
     { name = "NAUTOBOT_SUPERUSER_PASSWORD", valueFrom = local.secret_arns["admin-password"] },
     { name = "NAUTOBOT_API_TOKEN", valueFrom = local.secret_arns["api-token"] },
-  ]
+    ], local.graph_neo4j ? [
+    # agent/graph.py の NEO4J_PASSWORD（OSS 版の oss/ops/up.sh が作る SecureString。値は state にもタスク定義にも書かない）。
+    # web の起動時の同期（bootstrap.py）と worker の Job の両方が書くので、両方に渡す
+    { name = "NEO4J_PASSWORD", valueFrom = local.neo4j_password_arn },
+  ] : [])
   nautobot_log = { for c in ["web", "worker", "redis"] : c => {
     logDriver = "awslogs"
     options = {
