@@ -5,7 +5,7 @@
 #      oss/terraform/ のルートは terraform/ のファイルへのシンボリックリンクと oss.auto.tfvars（project = nwc-oss）なので、
 #      terraform/ を変えると両方の validate に効く
 #   3. スクリプトの構文（ops/*.sh と oss/ops/*.sh は bash -n、リポジトリの .py は全部 ast.parse）
-#   4. 模擬テスト 12 本（AWS に触れない）
+#   4. 模擬テスト（tests/test_*.py を全部。AWS に触れない）
 # 最後の行が「すべて通過」なら健全。途中で落ちたらそこで止まる。
 set -euo pipefail
 
@@ -42,7 +42,7 @@ for base in "${TF_BASES[@]}"; do
 done
 
 log "3. ops スクリプトの構文"
-bash -n ops/up.sh ops/down.sh ops/deploy-env.sh ops/check.sh ops/lab-debug.sh ops/lab-common.sh ops/common.sh ops/up-common.sh ops/down-common.sh oss/ops/oss-images.sh oss/ops/up.sh oss/ops/down.sh lab/lab.sh lab/setup.sh
+bash -n ops/up.sh ops/down.sh ops/deploy-env.sh ops/check.sh ops/lab-debug.sh ops/lab-common.sh ops/common.sh ops/up-common.sh ops/down-common.sh oss/ops/oss-images.sh oss/ops/up.sh oss/ops/down.sh oss/ops/roll-nodes.sh lab/lab.sh lab/setup.sh
 if command -v python3 >/dev/null; then PY=(python3); else PY=(uv run --python 3.13 python); fi
 # .py は名指しにせず全部見る（名指しにすると、ファイルを足したときに検査から漏れる）
 find agent graph lab nautobot ops oss spark splunk tests tools web workflow -name '*.py' -not -path '*/__pycache__/*' -print0 |

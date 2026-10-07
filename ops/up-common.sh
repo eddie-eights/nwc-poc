@@ -228,7 +228,7 @@ splunk_cluster_check() {
 # TEMPORAL_TAG は terraform/workflow の temporal_image_tag の既定値に合わせてある（変えるときは両方を変える）
 NAUTOBOT_VERSION=3.2.6
 GRAFANA_VERSION=13.2.2   # grafana/ の Dockerfile の ARG の既定値に合わせてある（変えるときは両方を変える）
-REDIS_TAG=7.4.2-alpine
+REDIS_TAG=8.10.2-alpine   # 8 系は AGPLv3 も選べる（7.4 は RSALv2 / SSPL だけ）。公式のイメージは Search・JSON などのモジュールを読み込んで起きる
 TEMPORAL_TAG=1.9.1
 nautobot_context() {  # nautobot_context <空のディレクトリ>  Nautobot のイメージのビルドの context を集める（nautobot/Dockerfile の頭の説明）
   # nautobot/ の中身に、グラフへ openCypher で書く agent/graph.py と agent/toolkit.py、最初の seed にする lab の定義を足す。

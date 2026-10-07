@@ -11,7 +11,9 @@
 # opensearch-cm.<接頭辞>.internal。ECS のサービスは Cloud Map のサービスを 1 つしか持てないので、データの台ごとの名前（opensearch-1 など）は作らない。
 # インデックスはタスクのエフェメラルストレージにあり、タスクと一緒に消える（OpenSearch の公式がネットワークファイルシステムを避けるよう書いているので EFS に置かない）。
 # 1 台が入れ替わっても、もう 1 台のレプリカ（OpenSearch の既定のレプリカ数 1）から戻る。データ 2 台が同時に落ちるとインデックスは消える。
-# terraform apply でタスク定義が変わると 3 つのサービスが同時に入れ替わり、インデックスもクラスターの状態も消える（1 台ずつ入れ替えるのは ops の手順。まだ無い）。
+# terraform apply でタスク定義が変わると 3 つのサービスが同時に入れ替わり、インデックスもクラスターの状態も消える。OSS 版の ops/up.sh は、apply の前に
+# 変わる台を plan で調べて 1 台ずつ -target で入れ替え、間で green に戻るのを待つ（oss/ops/roll-nodes.sh。設計の未確定事項 2。OSS_ROLL=0 で一度に入れ替える）。
+# 3 台とも cluster manager になれる（データの台は既定の役割）ので、1 台ずつなら残りの 2 台で投票の過半数が残る。
 # REST（9200）は TLS なしの HTTP で、セキュリティプラグインの Basic 認証（admin）は効く。Spark（spark/snmp_sinks.py）と Grafana の
 # データソース（grafana/provisioning/datasources-oss）に自己署名の証明書を飛ばす設定が無いので、デモの証明書の HTTPS にはしない。
 # 台どうし（9300）はデモの証明書の TLS（どの台も同じ証明書。oss/compose で 3 台が green になるのを確かめた）。
@@ -357,7 +359,7 @@ output "opensearch_password_parameter" {
 }
 
 output "opensearch_service_names" {
-  description = "ECS service of each OpenSearch node, keyed by 1, 2 (data) and cm (cluster manager). Replace the data nodes one at a time and wait for green in between - the indexes are on the ephemeral storage"
+  description = "ECS service of each OpenSearch node, keyed by 1, 2 (data) and cm (cluster manager). Replace the data nodes one at a time and wait for green in between - the indexes are on the ephemeral storage. The OSS ops/up.sh does it (oss/ops/roll-nodes.sh)"
   value       = { for n, s in aws_ecs_service.opensearch : n => s.name }
 }
 

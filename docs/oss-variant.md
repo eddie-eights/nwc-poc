@@ -53,6 +53,7 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
 | `oss/terraform/` | OSS 版の terraform。ルートごとのディレクトリに、変えないファイルは `terraform/` のファイルへのシンボリックリンク、OSS 版だけのファイル（`kafka.tf`、`opensearch.tf` など）と `oss.auto.tfvars`（`project = "nwc-oss"`）を置く。state は別 |
 | `oss/ops/up.sh`、`oss/ops/down.sh` | OSS 版の作る・消す。接頭辞は `<owner>-nwc-oss` で、マネージド版と並べて立てられる |
 | `oss/ops/oss-images.sh` | イメージの名前と版（1 か所）。正は `oss/compose/` |
+| `oss/ops/roll-nodes.sh`、`oss/ops/roll_health.py` | Kafka と OpenSearch を 1 台ずつ入れ替える。`oss/ops/up.sh` が stream と analytics の apply の前に打つ |
 | `oss/compose/` | 手元の確認用の compose と、確認の手順 |
 | `spark/Dockerfile`、`neo4j/Dockerfile` | ECS 向けの Spark と Neo4j（GDS 入り）のイメージ |
 | `ops/common.sh`、`ops/up-common.sh`、`ops/down-common.sh` | マネージド版と OSS 版の共通の関数 |
@@ -63,6 +64,8 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
   `AGENT` / `PIPELINE` / `WORKFLOW` / `STORES` などのキーは読まず、ルートはいつも全部、格納先はいつも `iceberg` / `opensearch` / `prometheus` / `splunk` の 4 つ、Grafana もいつも作る。
 - **Nautobot の Job は Neo4j に書く（2026-10-08。AWS ではまだ確かめていない）。**
   graph の state に `neo4j_uri` があるので、`terraform/pipeline/nautobot` が `GRAPH_BACKEND=neo4j`・`NEO4J_URI` と secrets の `NEO4J_PASSWORD` を渡し、`oss/ops/up.sh` が Neo4j のドライバー入りのイメージ（`nautobot/requirements-oss.txt`）を作る。
+- **打ち直しで Kafka か OpenSearch のタスク定義が変わると、1 台ずつ入れ替える。**
+  terraform だけで apply すると、変わった台が同時に入れ替わる（Kafka は controller の過半数を、OpenSearch はインデックスを失う）。`oss/ops/up.sh` は変わる台を plan で拾い、リーダーでない台から 1 台ずつ `-target` で apply して、間でクラスターが健全に戻るのを ECS Exec で待つ（手元に Session Manager plugin が要る）。止まったら `oss/ops/up.sh` を打ち直せば残りの台だけ入れ替える。`OSS_ROLL=0` で一度に入れ替える。**AWS ではまだ打っていない**（手順は [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md) の「Kafka と OpenSearch を 1 台ずつ入れ替える」）。
 - **Splunk は OSS 版でも変えない。**
   マネージド版と同じ Splunk を立てる。Spark は Splunk の token を、ECS の secrets（SSM の SecureString）から環境変数 `SPLUNK_HEC_TOKEN` で受ける（マネージド版は、ジョブが SSM から読む）。
 

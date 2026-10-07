@@ -348,7 +348,7 @@ REPO = os.path.join(TMP, "repo")
 for d in ("ops", "oss/ops"):
     os.makedirs(os.path.join(REPO, d))
     for f in os.listdir(os.path.join(ROOT, d)):
-        if f.endswith(".sh") or f == "seed_graph.py":
+        if f.endswith(".sh") or f in ("seed_graph.py", "roll_health.py"):
             shutil.copy(os.path.join(ROOT, d, f), os.path.join(REPO, d, f))
 UP_DIRS = ("lab", "web", "agent", "nautobot", "telegraf", "splunk", "spark", "neo4j", "graph", "workflow")
 for d in UP_DIRS:
@@ -714,11 +714,19 @@ check("oss/ops/up.sh の Grafana のイメージはマネージド版と同じ�
       == re.search(r"^ARG GRAFANA_VERSION=(\S+)", read("grafana/Dockerfile"), re.M).group(1)
       and 'docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push grafana/'
       in read("ops/up-common.sh"))
+# analytics と stream の -var は配列（ANALYTICS_VARS / STREAM_VARS）にまとめ、1 台ずつの入れ替え（roll_nodes）と apply に同じものを渡す
+_an = up[pos("ANALYTICS_VARS=("):pos('tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"')]
+_st = up[pos("STREAM_VARS=("):pos('tf_apply pipeline/stream "${STREAM_VARS[@]}"')]
+check("oss/ops/up.sh は stream と analytics の apply の前に roll_nodes（oss/ops/roll-nodes.sh）を同じ -var の配列で打つ",
+      ". oss/ops/roll-nodes.sh" in up and 0 <= pos(". ops/up-common.sh") < pos(". oss/ops/roll-nodes.sh")
+      and 0 <= pos("STREAM_VARS=(") < pos('roll_nodes kafka pipeline/stream "${STREAM_VARS[@]}"\ntf_apply pipeline/stream "${STREAM_VARS[@]}"\n')
+      and 0 <= pos("ANALYTICS_VARS=(") < pos('roll_nodes opensearch pipeline/analytics "${ANALYTICS_VARS[@]}"\ntf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"\n')
+      and _an.count("\n\n") == 0 and _st.count("\n\n") == 0 and up.count("roll_nodes ") == 2
+      and re.search(r'^OSS_ROLL="\$\{OSS_ROLL:-1\}"; flag_value OSS_ROLL\b', up, re.M) is not None
+      and 'if [ -n "$ROLL_PLAN" ]; then rm -f "$ROLL_PLAN"; fi' in up[pos("\ntrap '"):up.index("\n", pos("\ntrap '") + 1)])
 check("oss/ops/up.sh は analytics の前に Grafana の admin のパスワードを SSM に作り、analytics に create_grafana=true と Grafana のタグを渡す（OSS 版はいつも Grafana を作る）",
       0 <= pos('ensure_secret "/$PREFIX/grafana/admin-password" password') < pos("tf_apply pipeline/analytics")
-      and "-var create_grafana=true" in up[pos("tf_apply pipeline/analytics"):up.index("\n\n", pos("tf_apply pipeline/analytics"))]
-      and '-var "grafana_image_tag=$GRAFANA_TAG"' in up[pos("tf_apply pipeline/analytics"):up.index("\n\n", pos("tf_apply pipeline/analytics"))])
-_an = up[pos("tf_apply pipeline/analytics"):up.index("\n\n", pos("tf_apply pipeline/analytics"))]
+      and "-var create_grafana=true" in _an and '-var "grafana_image_tag=$GRAFANA_TAG"' in _an)
 check("oss/ops/up.sh は analytics に 4 つの格納先と、Spark・OpenSearch・VictoriaMetrics・Splunk のタグ、Splunk の台数と index、Spark のサブネット、device map を渡す",
       all(v in _an for v in ("-var 'sinks=[" + '"iceberg","opensearch","prometheus","splunk"' + "]'", '-var "spark_image_tag=$SPARK_TAG"',
                               '-var "opensearch_image_tag=$OSS_OPENSEARCH_TAG"', '-var "victoriametrics_image_tag=$OSS_VM_TAG"',

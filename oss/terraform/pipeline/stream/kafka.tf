@@ -13,7 +13,8 @@
 # CLUSTER_ID は 3 台で同じ値で、OSS 版の ops/up.sh が 1 回だけ作って SSM の /<接頭辞>/kafka/cluster-id（String か SecureString）に置く。
 # ECS の secrets で渡すので、Terraform の state には入らない。
 # terraform apply でタスク定義が変わると 3 つのサービスが同時に入れ替わり、そのあいだ controller の過半数が無い（データは EFS に残るので戻る）。
-# 1 台ずつ入れ替えるのは ops の手順（設計の未確定事項 4。まだ無い。docs/cycles/BACKLOG.md）
+# OSS 版の ops/up.sh は、apply の前に変わる台を plan で調べて 1 台ずつ -target で入れ替え、間で controller と複製がそろうのを待つ
+# （oss/ops/roll-nodes.sh。設計の未確定事項 4。OSS_ROLL=0 で一度に入れ替える）
 
 variable "kafka_image_tag" {
   description = "Tag of the Kafka image in the <prefix>-kafka repository (apache/kafka copied to ECR by the OSS ops/up.sh). Same version as oss/compose."
@@ -373,7 +374,7 @@ output "kafka_ecs_cluster_name" {
 }
 
 output "kafka_service_names" {
-  description = "ECS service of each Kafka node, keyed by node.id (1 to 3). Replace them one at a time - the controllers need two of the three."
+  description = "ECS service of each Kafka node, keyed by node.id (1 to 3). Replace them one at a time - the controllers need two of the three. The OSS ops/up.sh does it (oss/ops/roll-nodes.sh)."
   value       = { for n, s in aws_ecs_service.kafka : n => s.name }
 }
 

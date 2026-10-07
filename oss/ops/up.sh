@@ -22,6 +22,8 @@
 #   RUNTIME_AZ_NUM / LAMBDA_AZ_NUM / NAUTOBOT_DB_AZ_NUM / IMAGE_TAG（agent と worker のイメージのタグ。既定 v1）/ HTTP_SEND /
 #   MAX_OFFSETS_PER_TRIGGER と MAX_OFFSETS_PER_TRIGGER_<格納先> / LOCAL_PORT（既定 8080）/ NO_DASHBOARD_PORTFORWARD /
 #   TF_VERBOSE / AWS_PROFILE / AWS_CA_BUNDLE。
+#   OSS_ROLL（環境変数だけ。deploy.env には書かない。既定 1）: 打ち直しで Kafka か OpenSearch のタスク定義が変わるとき、台を 1 台ずつ入れ替え、
+#   間でクラスターが健全に戻るのを ECS Exec で確かめる（oss/ops/roll-nodes.sh）。OSS_ROLL=0 なら待たずに、変わる台を apply で一度に入れ替える
 #   機能を選ぶキー（AGENT / PIPELINE / WORKFLOW / SKIP_* / STORES など）と、OSS 版に相手がいない NEPTUNE_AZ_NUM / OPENSEARCH_AZ_NUM / MSK_AZ_NUM は
 #   マネージド版のもので、ここでは読まない（書いてあれば注意を出す）。Knowledge Base（CREATE_KB）は OSS 版では作らない。
 #   同じ deploy.env をマネージド版と共有するので、VPC_CIDR を書くと両方の VPC が同じ CIDR になる（VPC どうしをつながないので重なってよい）
@@ -34,12 +36,13 @@ resolve_deploy_env_file   # 相対の DEPLOY_ENV_FILE を cd の前の場所で�
 cd "$(dirname "$0")/../.."
 . ops/common.sh
 . ops/up-common.sh
+. oss/ops/roll-nodes.sh   # Kafka と OpenSearch の台を 1 台ずつ入れ替える（roll_nodes。手順 7-2 と 7-4）
 TF_DIR=oss/terraform   # tf / tf_apply が -chdir で入るルートの親。マネージド版の terraform/ には触らない
 OPS_DIR=oss/ops        # SSM のパラメータのタグ ManagedBy=oss/ops/up.sh（oss/ops/down.sh はこのタグのものだけ消す）
 TF_LOG_NAME=tf-oss     # terraform のログは ops/logs/tf-oss-<ルート>-<apply|destroy>.log
 TF_INIT_LOCKFILE=readonly  # init は lock を書き換えない（lock はマネージド版へのシンボリックリンク。ops/common.sh の tf_init_root）
 NAUTOBOT_CTX=""        # Nautobot のイメージの材料を集める一時ディレクトリ（手順 2）。終わるときに消す
-trap 'if [ -n "$TF_AWS_CONFIG" ]; then rm -f "$TF_AWS_CONFIG"; fi; if [ -n "$NAUTOBOT_CTX" ]; then rm -rf -- "$NAUTOBOT_CTX"; fi' EXIT
+trap 'if [ -n "$TF_AWS_CONFIG" ]; then rm -f "$TF_AWS_CONFIG"; fi; if [ -n "$NAUTOBOT_CTX" ]; then rm -rf -- "$NAUTOBOT_CTX"; fi; if [ -n "$ROLL_PLAN" ]; then rm -f "$ROLL_PLAN"; fi' EXIT
 
 # ---- 0. 道具と認証 -------------------------------------------------------------
 log "0. 設定と道具と認証を確かめる（OSS 版）"
@@ -69,6 +72,7 @@ case "$SYSLOG_STANDARD" in
   *) die "SYSLOG_STANDARD は RFC3164 か RFC5424（大文字）: $SYSLOG_STANDARD。まだ何も作っていない" ;;
 esac
 SNMP_POLL="${SNMP_POLL:-1}"; flag_value SNMP_POLL
+OSS_ROLL="${OSS_ROLL:-1}"; flag_value OSS_ROLL   # 0 なら Kafka と OpenSearch の台を 1 台ずつ入れ替えない（oss/ops/roll-nodes.sh）
 NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"; flag_value NETWORK_PERIMETER
 case "${ENDPOINTS_MULTI_AZ:-}" in
   '') ;;
@@ -322,10 +326,13 @@ ensure_secret "/$PREFIX/kafka-ui/admin-password" password "Kafbat UI admin passw
 ensure_secret "/$PREFIX/kafka/cluster-id" kafka-cluster-id "Kafka KRaft CLUSTER_ID shared by the three nodes (created by oss/ops/up.sh)"
 # 取りにいく側の機器の一覧は Nautobot の Job が書く（7-3c。マネージド版と同じ dialin_targets_from_nautobot=true。Terraform は最初の値として
 # lab の一覧を置き、あとは触らない）
-tf_apply pipeline/stream -var "telegraf_image_tag=$TELEGRAF_TAG" -var "kafka_ui_image_tag=$OSS_KAFKA_UI_TAG" -var "kafka_image_tag=$OSS_KAFKA_TAG" \
-  -var "snmp_agents=$SNMP_AGENTS" -var "gnmi_targets=$GNMI_TARGETS" \
-  -var "syslog_standard=$SYSLOG_STANDARD" -var "snmp_poll=$SNMP_POLL_TF" -var dialin_targets_from_nautobot=true \
-  -var "telegraf_az_num=$TELEGRAF_AZ_NUM"
+STREAM_VARS=(-var "telegraf_image_tag=$TELEGRAF_TAG" -var "kafka_ui_image_tag=$OSS_KAFKA_UI_TAG" -var "kafka_image_tag=$OSS_KAFKA_TAG"
+  -var "snmp_agents=$SNMP_AGENTS" -var "gnmi_targets=$GNMI_TARGETS"
+  -var "syslog_standard=$SYSLOG_STANDARD" -var "snmp_poll=$SNMP_POLL_TF" -var dialin_targets_from_nautobot=true
+  -var "telegraf_az_num=$TELEGRAF_AZ_NUM")
+# 打ち直しで Kafka のタスク定義が変わるなら、先に 1 台ずつ入れ替える（3 台が同時に止まると controller の過半数が無くなる）
+roll_nodes kafka pipeline/stream "${STREAM_VARS[@]}"
+tf_apply pipeline/stream "${STREAM_VARS[@]}"
 
 # ---- 7-2. lab と Kafka と Telegraf の中を確かめる ------------------------------------------
 log "7-2. lab のトポロジを確かめる"
@@ -439,12 +446,16 @@ ensure_s3tables_catalog   # alert_events への Firehose（マネージド版の
 # device map（別名=機器名,...）。Splunk のアラートアクションと Spark の prometheus / opensearch の sysName に使う（マネージド版と同じ）
 DEVICE_MAP=$("${PY[@]}" lab/lab_topology.py lab --device-map) || die "lab/lab_topology.py が lab の定義から device map を作れなかった"
 # Spark のサービスは desired_count=0 で作る（spark.tf。書き先が上がる前に起こさない）。起こすのは 7-4c
-tf_apply pipeline/analytics -var 'sinks=["iceberg","opensearch","prometheus","splunk"]' \
-  -var "spark_image_tag=$SPARK_TAG" -var "opensearch_image_tag=$OSS_OPENSEARCH_TAG" -var "victoriametrics_image_tag=$OSS_VM_TAG" \
-  -var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX" -var "splunk_az_num=$SPLUNK_AZ_NUM" \
-  -var create_grafana=true -var "grafana_image_tag=$GRAFANA_TAG" \
-  -var "emr_az_num=$EMR_AZ_NUM" -var "device_map=$DEVICE_MAP" -var "http_send=$HTTP_SEND" \
-  -var "max_offsets_per_trigger=$MAX_OFFSETS_PER_TRIGGER" -var "max_offsets_per_trigger_by_sink={$MAX_OFFSETS_BY_SINK}"
+ANALYTICS_VARS=(-var 'sinks=["iceberg","opensearch","prometheus","splunk"]'
+  -var "spark_image_tag=$SPARK_TAG" -var "opensearch_image_tag=$OSS_OPENSEARCH_TAG" -var "victoriametrics_image_tag=$OSS_VM_TAG"
+  -var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX" -var "splunk_az_num=$SPLUNK_AZ_NUM"
+  -var create_grafana=true -var "grafana_image_tag=$GRAFANA_TAG"
+  -var "emr_az_num=$EMR_AZ_NUM" -var "device_map=$DEVICE_MAP" -var "http_send=$HTTP_SEND"
+  -var "max_offsets_per_trigger=$MAX_OFFSETS_PER_TRIGGER" -var "max_offsets_per_trigger_by_sink={$MAX_OFFSETS_BY_SINK}")
+# 打ち直しで OpenSearch のタスク定義が変わるなら、先に 1 台ずつ入れ替え、間で green に戻るのを待つ（インデックスはタスクの中にあり、
+# データ 2 台が同時に入れ替わると消える）
+roll_nodes opensearch pipeline/analytics "${ANALYTICS_VARS[@]}"
+tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"
 
 # ---- 7-4b. 格納先が上がるのを待つ ---------------------------------------------------------
 # OpenSearch と VictoriaMetrics は ECS の healthCheck を持たないので、サービスが安定するのを待つ。Splunk は healthCheck があるので HEALTHY を待つ

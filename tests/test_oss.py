@@ -1744,8 +1744,8 @@ check("土台の SG の表（terraform/base/core/oss.tf の oss_flows）は oss_
 # ---- ops/check.sh は OSS 版のスクリプトと検査を漏らさない
 _chk_bash_n = re.search(r"^bash -n (.*)$", _chk, re.M)
 _chk_find = re.search(r"^find (.*?) -name '\*\.py'", _chk, re.M)
-check("ops/check.sh: bash -n に oss/ops の 3 つ（oss-images.sh / up.sh / down.sh）があり、.py の find に oss があり、モックの検査は tests/test_*.py のグロブで回す（名前を 1 つずつ並べない）",
-      _chk_bash_n and {"oss/ops/oss-images.sh", "oss/ops/up.sh", "oss/ops/down.sh"} <= set(_chk_bash_n.group(1).split())
+check("ops/check.sh: bash -n に oss/ops の 4 つ（oss-images.sh / up.sh / down.sh / roll-nodes.sh）があり、.py の find に oss があり、モックの検査は tests/test_*.py のグロブで回す（名前を 1 つずつ並べない）",
+      _chk_bash_n and {"oss/ops/oss-images.sh", "oss/ops/up.sh", "oss/ops/down.sh", "oss/ops/roll-nodes.sh"} <= set(_chk_bash_n.group(1).split())
       and _chk_find and "oss" in _chk_find.group(1).split()
       and re.search(r"^\s*for t in tests/test_\*\.py; do$", _chk, re.M) is not None
       and "for t in tests/test_app.py" not in _chk)

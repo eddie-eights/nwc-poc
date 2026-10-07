@@ -31,7 +31,7 @@ uv sync --group dev --group web
 bash ops/check.sh
 ```
 
-`web` のグループ（gradio・boto3・pyyaml。pandas は gradio と一緒に入る）も入れるのは、`test_nautobot` が Web の画面のモジュールを読むため。最後の行が `すべて通過` なら健全。中身は `terraform fmt`（`terraform/` と `oss/terraform/`）、9 ルートの `terraform validate`（`terraform/` と `oss/terraform/` の両方で 18 回）、`ops/*.sh` などの `bash -n` と `.py` 全部の構文、`tests/test_*.py` の 12 本（`test_app` 158 項目、`test_graph` 72、`test_stream` 75、`test_sync` 95、`test_analytics` 485、`test_workflow` 324、`test_alerts` 137、`test_kb_index` 7、`test_lab_debug` 82、`test_nautobot` 58、`test_oss` 146、`test_oss_ops` 133。2026-10-08 に数えた）。途中で落ちたらそこで止まる。
+`web` のグループ（gradio・boto3・pyyaml。pandas は gradio と一緒に入る）も入れるのは、`test_nautobot` が Web の画面のモジュールを読むため。最後の行が `すべて通過` なら健全。中身は `terraform fmt`（`terraform/` と `oss/terraform/`）、9 ルートの `terraform validate`（`terraform/` と `oss/terraform/` の両方で 18 回）、`ops/*.sh` などの `bash -n` と `.py` 全部の構文、`tests/test_*.py` の全部（2026-10-08 で 13 本。`test_app` 158 項目、`test_graph` 72、`test_stream` 75、`test_sync` 95、`test_analytics` 485、`test_workflow` 324、`test_alerts` 137、`test_kb_index` 7、`test_lab_debug` 82、`test_nautobot` 58、`test_oss` 146、`test_oss_ops` 134、`test_oss_roll` 56）。途中で落ちたらそこで止まる。
 
 ## Web を手元で動かす
 

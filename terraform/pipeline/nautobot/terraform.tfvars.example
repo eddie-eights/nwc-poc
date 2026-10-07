@@ -10,7 +10,7 @@
 # owner       = "yamada"
 #
 # nautobot_image_tag  = "3.2.6"
-# redis_image_tag     = "7.4.2-alpine"
+# redis_image_tag     = "8.10.2-alpine"
 # task_cpu            = 2048
 # task_memory         = 4096
 # db_instance_class   = "db.t4g.micro"

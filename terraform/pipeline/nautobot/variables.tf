@@ -38,7 +38,7 @@ variable "nautobot_image_tag" {
 variable "redis_image_tag" {
   description = "Tag of the Redis image in the ECR repository <prefix>-redis (mirrored by ops/up.sh, REDIS_TAG)."
   type        = string
-  default     = "7.4.2-alpine"
+  default     = "8.10.2-alpine"
 }
 
 variable "task_cpu" {
