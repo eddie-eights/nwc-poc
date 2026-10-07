@@ -3,7 +3,7 @@
 # それが付かないリクエスト（盗んだ認証情報を VPC の外で使った）を 2 か所で拒む:
 #   1. IAM 側   ワークロードのロールに付ける Deny（下の network_perimeter）。付け先は web / runtime（ここ）、lab / Telegraf（pipeline/lab）、
 #               Spark / Grafana / Splunk（pipeline/analytics）、ワーカー（workflow）、ツールの Lambda（workflow）、
-#               アラートの状態と履歴を書く Lambda（pipeline/graph の graph-status）
+#               アラートの状態と履歴を書く Lambda（pipeline/graph の graph-status）、KB の索引を作る Lambda（agent の kb-index）
 #   2. 資源側   バケット（下）、アラートの SNS トピック（alerts.tf）、S3 Tables（pipeline/analytics）、SQS（workflow）のリソースポリシーの Deny
 # 例外は 3 つ:
 #   - デプロイする人（ops/up.sh を打つ PC の認証情報。terraform と s3 cp が VPC の外から来る。PoC では仕方ないとユーザーが決めた、2026-09-28）

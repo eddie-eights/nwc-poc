@@ -20,8 +20,9 @@ alerts_from_message が捨てた通知（device_id か kind が無い・status �
 ALERT_DROPPED としてログに出す。行を組めない通知（starts_at が 9999 年を超えるなど、rules.alert_event が例外になるもの）も行にせず、
 1 件ずつ ALERT_DROPPED の WARNING に出して Neptune には書く（その 1 件のせいでほかの通知の行と Neptune を落とさない）。ALERT_STREAM が空なら行を組まない。
 行は Neptune より先に送る。呼び出しの全部の通知の行を組んで Firehose に送り、そのあと通知ごとに Neptune に書く（行は通知だけから組み、
-Neptune の結果を入れないので、先に送れる）。Firehose に使うのは長くても 22 秒ほど（FIREHOSE_CONFIG と RETRY_WAITS。エンドポイントが 3 つの AZ にあれば
-28 秒ほど）なので、Neptune が遅くても応答しなくても、Lambda の timeout（60 秒）の前に履歴は残る。
+Neptune の結果を入れないので、先に送れる）。Firehose に使うのは長くて、エンドポイントが 1 つの AZ にあるとき（ENDPOINTS_AZ_NUM の既定）15.6 秒、
+2 つなら 21.6 秒、3 つなら 27.6 秒（FIREHOSE_CONFIG と RETRY_WAITS。接続の待ちはエンドポイントの IP ごとにかかり、IP は AZ ごとに 1 つ）なので、
+Neptune が遅くても応答しなくても、Lambda の timeout（60 秒）の前に履歴は残る。
 status の正しさを履歴の完全さより優先する（design.md の決定 6）。Firehose は Lambda の中で合わせて 3 回まで送り直し、それでも届かなかった
 行は 1 行ずつ JSON のまま ERROR で ALERT_EVENT_LOST としてログに書いて、例外にせず Neptune に進む（例外にすると、Firehose が止まっている
 あいだ通知のたびに Neptune の書き込みまでやり直しになる。欠けた行は CloudWatch Logs Insights で `filter @message like /ALERT_EVENT_LOST/`

@@ -179,6 +179,16 @@ resource "aws_iam_role_policy" "kb_index" {
   })
 }
 
+# terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。ほかのワークロードのロールとそろえる。
+# ログと ENI は Lambda のサービスがこのロールで出し、aoss はネットワークポリシー（上の kb_network）で閉じているので、いまの許可はどれも Deny の対象に入っていない
+# （付けても動きは変わらない。許可を足したときに、漏れた認証情報で VPC の外から使わせないため）。KB のロール（下の kb）はサービス側で動くので付けない
+resource "aws_iam_role_policy_attachment" "kb_index_perimeter" {
+  count = local.kb && local.perimeter_policy_arn != "" ? 1 : 0
+
+  role       = aws_iam_role.kb_index[0].name
+  policy_arn = local.perimeter_policy_arn
+}
+
 resource "aws_cloudwatch_log_group" "kb_index" {
   count = local.kb ? 1 : 0
 
