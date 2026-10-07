@@ -5,7 +5,7 @@
 # owner = "yamada"
 
 # 変えないのが既定。変えるときは docs/pipeline.md を読む
-# emr_release_label = "emr-7.13.0"
+# emr_release_label = "emr-7.14.0"
 # namespace         = "netops"
 # table_name        = "raw_telemetry"
 

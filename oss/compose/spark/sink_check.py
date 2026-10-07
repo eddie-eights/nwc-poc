@@ -10,7 +10,7 @@ Iceberg は手元の Hadoop カタログ（file://）に iceberg_query のまま
 jar のクラスが読めるかと、カタログを開いたときにどこで止まるかだけを見る。
 
 使い方: oss/compose/check-spark.sh から spark-submit で起こす（compose の spark コンテナの中。spark/ は /opt/check、ここは /opt/oss）。
-コンテナの Python は 3.10（apache/spark:3.5.9）なので、f 文字列の {} の中にバックスラッシュを書かない
+コンテナの Python は 3.10（apache/spark:3.5.9-java17-python3）なので、f 文字列の {} の中にバックスラッシュを書かない
 """
 import base64
 import json

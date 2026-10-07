@@ -1201,6 +1201,15 @@ check(f"Spark・Iceberg・Neo4j の版は compose で確かめた組み合わせ
       and _neo4j_from == [f"neo4j:{_arg(_dock['neo4j/Dockerfile'], 'NEO4J_VERSION')}-community"]
       and "cp /var/lib/neo4j/products/neo4j-graph-data-science-*.jar /var/lib/neo4j/plugins/" in _dock["neo4j/Dockerfile"]
       and "NEO4J_PLUGINS" not in _code(_dock["neo4j/Dockerfile"]) and "--packages" not in _code(_dock["spark/Dockerfile"]))
+_jars = {n: re.findall(r"^ {6}(\S+?):(\S+\.jar)(?:; do)? \\$", _dock[n], re.M) for n in ("spark/Dockerfile", "oss/compose/spark/Dockerfile")}
+check("Spark の jar は sha256 を書いて取り、合わなければビルドを止める（005 のレビュー Nit 4）。compose の jar は spark/Dockerfile と同じ sha256 で、spark/ はそれに S3A の 2 本を足す",
+      [len(v) for v in _jars.values()] == [9, 7]
+      and all(re.fullmatch(r"[0-9a-f]{64}", s) for v in _jars.values() for s, _ in v)
+      and _jars["spark/Dockerfile"][:7] == _jars["oss/compose/spark/Dockerfile"]
+      and [p.split("/")[-3] for _, p in _jars["spark/Dockerfile"][7:]] == ["hadoop-aws", "aws-java-sdk-bundle"]
+      and all('p=${e#*:}; curl -fsSLO "$MAVEN/$p" && echo "${e%%:*}  ${p##*/}" | sha256sum -c --quiet - || exit 1; \\' in _dock[n] for n in _jars))
+check("Iceberg 1.12 のクラスは Java 17 向けなので、Spark のイメージは Java 17 のもの（apache/spark:<版>-java17-python3）",
+      all(re.search(r"^FROM apache/spark:\S+-java17-python3$", _dock[n], re.M) for n in _jars))
 _spark = _code(tf_text("oss/terraform", "pipeline/analytics")["spark.tf"])
 check("Spark はマネージド版の spark_jobs と同じ分け方で格納先の組ごとに 1 タスク（iceberg / splunk / http）。checkpoint は S3A で、同じ checkpoint を 2 つのタスクが同時に使わない",
       "spark_services = { for job, sinks in local.spark_jobs : job => sinks if length(sinks) > 0 }" in _spark

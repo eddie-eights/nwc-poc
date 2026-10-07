@@ -11,7 +11,7 @@ MSK のトピックを読み、格納先（S3 Tables、OpenSearch、Prometheus�
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
-| アプリケーション | `<prefix>-spark`。Spark、`emr-7.13.0`、ARM64。pre-initialized capacity なし | `terraform/pipeline/analytics/emr.tf`、変数 `emr_release_label` |
+| アプリケーション | `<prefix>-spark`。Spark、`emr-7.14.0`、ARM64。pre-initialized capacity なし | `terraform/pipeline/analytics/emr.tf`、変数 `emr_release_label` |
 | 上限 | 12 vCPU / 48 GB。アイドル 15 分で自動停止 | 変数 `max_cpu`、`max_memory`、`idle_timeout_minutes` |
 | AZ の数 | `EMR_AZ_NUM`（既定 1）。サブネットを a から渡す | `ops/up.sh`、変数 `emr_az_num` |
 | ジョブ | `sinks-s3iceberg`（`STORES` の `s3`）、`sinks-splunk`（`splunk`）、`sinks-grafana`（`grafana`。OpenSearch と Prometheus）。1 つ driver 1 + executor 2 = 3 vCPU | `ops/up.sh` の手順 7-5、`spark/snmp_sinks.py` |

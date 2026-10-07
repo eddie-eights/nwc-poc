@@ -4,7 +4,7 @@
 # var.sinks に無い格納先は外し、空になったジョブは作らない）。
 # どのタスクも spark-submit --master local[*]（driver も executor も 1 つの JVM）。EMR の STREAMING モードの起こし直しの代わりに、
 # サービス（1 台）がタスクの終わりを見て起こし直す。台数は作るときは 0 で、OSS 版の ops/up.sh が書き先が上がってから 1 にする。
-# イメージは spark/Dockerfile（apache/spark:3.5.9 に Kafka・Iceberg・S3 Tables・S3A の jar と spark/snmp_sinks.py を焼き込む。
+# イメージは spark/Dockerfile（apache/spark:3.5.9-java17-python3 に Kafka・Iceberg・S3 Tables・S3A の jar と spark/snmp_sinks.py を焼き込む。
 # 閉域で Maven に届かないので、起動時に jar を取りに行かない）。OSS 版の ops/up.sh が作って ECR の <接頭辞>-spark に push する。
 # checkpoint はマネージド版と同じバケットの analytics/checkpoint/ に S3A（s3a://）で書く（EMR の s3:// は EMRFS で、素の Spark には無い）。
 # Kafka は PLAINTEXT（KAFKA_AUTH=none）、OpenSearch は Basic 認証（OPENSEARCH_AUTH=basic）、vminsert は署名なし（PROMETHEUS_AUTH=none）。
