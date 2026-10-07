@@ -124,3 +124,47 @@ Should 2 を据え置く理由（格下げではない。Should fix のまま BA
 ### Round 2 への入力
 
 - Should 1 と 3 をエンジニア1 に依頼（枝は docs/cycle-006-design @ 7c7310a から）。design.md は変えない（設計の前提の誤りではなく、検証スクリプトの実装の穴）
+
+## Round 2（PM の確認）
+
+- 確認モデル: claude-fable-5-1 / effort: high。cold reviewer は呼んでいない（中間ラウンド。実装は `fix/local-compose-r2` @ 743ee7c、マージは 1ef8853）。レビューは build.md Round 2 の `### セルフレビュー`（Must 0 / Should 0、退行注入 8 件）に依った
+- 実装モデル（build.md Round 2）: claude-opus-5-5 / xhigh
+
+### Round 1 の Should 1 / 3 の解消確認（マージ後の木で実行）
+
+再現 1（`ops/check.sh:45` と同じ `for … do bash -n "$f"; done` の形で good.sh bad.sh を通す）:
+
+```
+$ bash scratchpad/bashn_loop.sh; echo "rc=$?"
+…/bad.sh: line 1: syntax error near unexpected token `then'
+…/bad.sh: line 1: `if then fi ('
+rc=2
+```
+
+2 つ目のファイルの構文エラーで止まる（Round 1 は rc=0 で素通りしていた）。解消。
+
+再現 3（`local/compose/check.sh:45-48` の式に本文を食わせる。`scratchpad/splunk_judge_r2.py` で check.sh から式を抜いて eval）:
+
+```
+$ python3 scratchpad/splunk_judge_r2.py
+401 -> FATAL Unauthorized        # {"messages":[{"type":"FATAL","text":"Unauthorized"}]}
+count0 -> 0 件                   # {"result":{"count":"0"}}
+count3 -> ok                     # {"result":{"count":"3"}}
+empty -> raises JSONDecodeError  # 空文字。check.sh では judge の try/except が受けて「読めない応答: 空」になる（check.sh:23-24）
+```
+
+401 が `0 件` ではなく `FATAL Unauthorized` と出る。解消。本物の 401 の本文は未確認のまま（BACKLOG 50 行目）。
+
+テスト（マージ後の木）:
+
+```
+$ uv run --group dev python tests/test_local_compose.py → 通過 77 / 失敗 0
+$ uv run --group dev python tests/test_oss.py           → 通過 164 / 失敗 0
+$ bash ops/check.sh                                     → 通過 325 / 失敗 0、すべて通過（rc=0）
+```
+
+### 判断
+
+- エンジニア1 の自己レビューの N1（テストが `set -e` に依る）と N5（`.sh` 8 本が `bash -n` の対象外）は BACKLOG 48 行目に 1 件で載せた。N4（理由の重複・長さ）は 49 行目、U1/U2（本物の応答）は 50 行目。このサイクルでは直さない（検証スクリプトの改善で、設計の合格条件の外）
+- Should 2（Telegraf の全インターフェース）は Round 1 のまま据え置き
+- Must fix が消えたと判断したので、次に cold reviewer の 2 回目を呼ぶ
