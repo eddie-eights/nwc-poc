@@ -12,13 +12,13 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
 | サービス | `<prefix>-nautobot`。1 タスクに 3 コンテナ。Fargate ARM、2 vCPU / 4 GB。AZ を選ぶキーは無い | `terraform/pipeline/nautobot/nautobot.tf` |
-| イメージ | 公式の `networktocode/nautobot:3.2.6-py3.12` に boto3、`nautobot/` の Job、`agent/graph.py`、`lab_seed.json` を足したもの。ECR の `<prefix>-nautobot`。redis は `7.4.2-alpine` を ECR の `<prefix>-redis` に写したもの | `nautobot/Dockerfile`、`ops/up.sh` の `NAUTOBOT_VERSION`、`REDIS_TAG` |
+| イメージ | 公式の `networktocode/nautobot:3.2.6-py3.12` に boto3、`nautobot/` の Job、`agent/graph.py`、`lab_seed.json` を足したもの。ECR の `<prefix>-nautobot`。redis は `7.4.2-alpine` を ECR の `<prefix>-redis` に写したもの | `nautobot/Dockerfile`、`ops/up-common.sh` の `NAUTOBOT_VERSION`、`REDIS_TAG` |
 | DB | RDS の PostgreSQL 17、`db.t4g.micro`、gp3 20 GB。バックアップ無し、最後のスナップショット無し。`NAUTOBOT_DB_AZ_NUM`（既定 1、1〜2。2 は Multi-AZ） | `terraform/pipeline/nautobot/database.tf` |
 | 名前 | Cloud Map `nautobot.<prefix>-nautobot.internal:8080`。SSM の String `/<prefix>/nautobot/url` にも書く | `nautobot.tf` |
-| シークレット | SSM の SecureString `/<prefix>/nautobot/{secret-key,admin-password,db-password,api-token}` の 4 つ（`ops/up.sh` が乱数で作る） | `ops/up.sh`、`nautobot.tf` の `secrets` |
+| シークレット | SSM の SecureString `/<prefix>/nautobot/{secret-key,admin-password,db-password,api-token}` の 4 つ（`ops/up.sh` が apply の前に乱数で作る） | `ops/up-common.sh` の `ensure_nautobot_secrets`、`nautobot.tf` の `secrets` |
 | ログ | `/ecs/<prefix>-nautobot`。ストリームは `web/`、`worker/`、`redis/` | `nautobot.tf` |
 | スイッチ | `PIPELINE=1` ならいつも立つ。`SKIP_STREAM` と `SKIP_GRAPH` の両方があるときだけ作らない | `ops/up.sh` |
-| 費用 | 13 セント/時（Fargate 9.9 + RDS 2.5 + gp3 0.4）。Multi-AZ で 16 セント/時 | `ops/up.sh` の先頭のコメント |
+| 費用 | 13 セント/時（Fargate 9.9 + RDS 2.5 + gp3 0.4）。Multi-AZ で 16 セント/時 | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`） |
 
 台帳のどこが、どこに映るか:
 
@@ -99,6 +99,7 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 | Web からの Nautobot への書き込み | AWS では未確認 |
 | 本番の機器の一覧を外から入れる | PoC には未実装（[nautobot.md](../../nautobot.md) の 6 章の (7)） |
 | デバッグ用の EC2（`ops/lab-debug.sh`） | Nautobot を使わない |
+| OSS 版（`oss/terraform/pipeline/nautobot`。同じファイルをシンボリックリンクで使う） | Job は Neo4j に書けない（タスク定義が `GRAPH_BACKEND` などを渡さず、イメージに Neo4j のドライバーが無い）。トポロジは lab の定義から `ops/sync-graph.sh --oss` で入れる（[005 の設計](../../cycles/005-oss-on-ecs/design.md)の「実装の状態」） |
 
 ## 関連
 

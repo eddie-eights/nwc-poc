@@ -23,7 +23,7 @@
 | tools の Lambda | `<prefix>-tools`。VPC の中（`LAMBDA_AZ_NUM`、既定 1）。`agent/topology.py`、`agent/evidence.py`、`agent/proposals.py` を動かす | `gateway.tf` |
 | KB の index を作る Lambda | `<prefix>-kb-index`（`agent/kb_index.py`）。apply のときに 1 回呼ぶ | `kb.tf` |
 | スイッチ | `AGENT=1`（既定 0）。KB は `CREATE_KB=1`。Gateway と tools の Lambda は `WORKFLOW=1` | `deploy.env.example`、`ops/up.sh` |
-| 費用 | KB は +$0.35/h（OCU 0.33 + エンドポイント 2 本）。エンドポイントは 1 本 1.4 セント/時 × `ENDPOINTS_AZ_NUM` | `ops/up.sh` の先頭のコメント |
+| 費用 | KB は 33 セント/時 × `OPENSEARCH_AZ_NUM`（OCU）と、OpenSearch Serverless の VPC エンドポイント 1.4 セント/時 × `ENDPOINTS_AZ_NUM`（logs のコレクションと共用）。インターフェース型エンドポイントは 1 本 1.4 セント/時 × `ENDPOINTS_AZ_NUM`。Runtime は使った分だけ | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`） |
 
 ツールと読む先:
 
@@ -35,6 +35,8 @@
 | `search_logs` | OpenSearch Serverless の `snmp-logs`（trap と syslog） |
 | `query_metrics` | Amazon Managed Prometheus（PromQL） |
 | `query_history` | S3 Tables の `alert_events`（Athena のワークグループ `<prefix>-history`。`event_id` で重複を落とし、新しい順に最大 50 件） |
+
+OSS 版（`oss/terraform/`）でも AgentCore と Bedrock はそのまま使う。読む先だけが変わり、Runtime と tools の Lambda に `GRAPH_BACKEND=neo4j`（Neo4j）、`OPENSEARCH_AUTH=basic`（ECS の OpenSearch）、`PROMETHEUS_AUTH=none`（VictoriaMetrics）が入る（`terraform/agent/runtime.tf`、`terraform/workflow/gateway.tf`）。[oss-variant.md](../../oss-variant.md)。
 
 ## つながり
 

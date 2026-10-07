@@ -13,10 +13,10 @@
 |---|---|---|
 | 名前 | どれも `/<prefix>/…` の下 | 各ルート、`ops/up.sh` |
 | String | Terraform の各ルートが作る（下の表） | 各ルートの `aws_ssm_parameter` |
-| SecureString | `ops/up.sh` の `ensure_secret`（乱数）と `ensure_fixed_secret`（決まった値）が作る。タグ `ManagedBy=ops/up.sh` | `ops/up.sh` |
-| 消す | `ops/down.sh` の手順 5-2 が、タグ `ManagedBy=ops/up.sh` の付いたものだけ消す | `ops/down.sh` |
+| SecureString | `ops/up.sh` が `ensure_secret`（乱数）と `ensure_fixed_secret`（決まった値）で作る。タグ `ManagedBy=ops/up.sh`（OSS 版は `oss/ops/up.sh` が作り、タグは `ManagedBy=oss/ops/up.sh`） | `ops/up-common.sh` の `ensure_secret`、`ensure_fixed_secret` |
+| 消す | `ops/down.sh` の手順 5-2 が、タグ `ManagedBy=ops/up.sh` の付いたものだけ消す（OSS 版は `oss/ops/down.sh` の手順 5-2 が `ManagedBy=oss/ops/up.sh` のものを消す） | `ops/down.sh`、`ops/down-common.sh` の `delete_up_ssm_params` |
 | エンドポイント | `ssm`（土台の分。`ssmmessages` と一緒にいつも作る） | `ops/up.sh` の手順 0 |
-| 費用 | エンドポイントが 1 本 1.4 セント/時 × `ENDPOINTS_AZ_NUM` | `ops/up.sh` のコメント |
+| 費用 | エンドポイントが 1 本 1.4 セント/時 × `ENDPOINTS_AZ_NUM` | `ops/up.sh` の費用の目安（526〜583 行） |
 
 String（ルートをまたいで渡す値）:
 
@@ -28,8 +28,11 @@ String（ルートをまたいで渡す値）:
 | `/<prefix>/telegraf-address` | Telegraf の内部 NLB のアドレス | stream | lab の EC2（`lab forward`） |
 | `/<prefix>/telegraf-source-cidr` | 取りにいく側のタスクのサブネットの CIDR | stream | lab の EC2（`lab forward`） |
 | `/<prefix>/telegraf-dialin/<lab か nautobot>/gnmi-targets`、`snmp-agents` | Telegraf が取りにいく機器の一覧 | stream（最初の値）。`nautobot` のほうは Nautobot の Job が書き換える | Telegraf の取りにいく側（ECS の secrets） |
-| `/<prefix>/neptune-graph-id` | Neptune Analytics のグラフの ID | graph | Runtime、Web、Lambda、worker |
+| `/<prefix>/neptune-graph-id` | Neptune Analytics のグラフの ID | graph | Runtime、Web、tools の Lambda（graph-status の Lambda、worker、Nautobot のタスクは同じ値を環境変数 `NEPTUNE_GRAPH_ID` でもらう） |
 | `/<prefix>/nautobot/url` | Nautobot の URL | nautobot | Web の EC2 |
+| `/<prefix>/decision-queue-url` | 決定のキュー `<prefix>-decisions` の URL | workflow | Web の EC2（承認タブ） |
+| `/<prefix>/athena-workgroup`、`athena-catalog`、`history-namespace`、`proposal-events-table` | 承認タブが Athena で `proposal_events` を読むための設定。値が空のものは作らない | workflow | Web の EC2（tools の Lambda は同じ名前の環境変数が先に効く） |
+| `/<prefix>/neo4j-uri` | Neo4j の bolt の URI（OSS 版だけ） | graph（`oss/terraform/pipeline/graph/neo4j.tf`） | Web、Runtime |
 
 SecureString（`ops/up.sh` が作る）:
 
@@ -40,12 +43,14 @@ SecureString（`ops/up.sh` が作る）:
 | `/<prefix>/splunk/admin-password`、`hec-token` | Splunk の admin のパスワード、HEC の token | 乱数、uuid（`STORES` に `splunk` があるとき） | Splunk のタスク |
 | `/<prefix>/splunk/idxc-secret` | Splunk のクラスターの合言葉（cluster manager・indexer・search head が互いを確かめる） | 乱数（`SPLUNK_AZ_NUM` が 2 か 3 のとき） | Splunk のタスク（どの役割も同じ値） |
 | `/<prefix>/telegraf-dialin/gnmi-username`、`gnmi-password`、`snmp-community` | 機器の gNMI と SNMP の認証情報 | 決まった値（containerlab の既定値を最初の値にする） | Telegraf の取りにいく側のタスク |
+| `/<prefix>/kafka-ui/admin-password` | Kafbat UI の admin のパスワード | 乱数（stream を作るとき） | Kafbat UI のタスク |
+| `/<prefix>/kafka/cluster-id`、`/<prefix>/neo4j-password`、`/<prefix>/opensearch-password` | Kafka（KRaft）の CLUSTER_ID、Neo4j と OpenSearch のパスワード（OSS 版だけ。`oss/ops/up.sh` が作る） | 乱数 | Kafka・Neo4j・OpenSearch のタスクと、それを読む側 |
 
 ## つながり
 
 | 相手 | 向き | ポートと認証 |
 |---|---|---|
-| ECS のタスク（Telegraf、Grafana、Splunk、Nautobot） | タスクの起動時に ECS が読む | タスク定義の `secrets`（`valueFrom` にパラメータの ARN） |
+| ECS のタスク（Telegraf、Kafbat UI、Grafana、Splunk、Nautobot） | タスクの起動時に ECS が読む | タスク定義の `secrets`（`valueFrom` にパラメータの ARN） |
 | Web の EC2、Runtime、Lambda、worker、lab の EC2 | 各自 → パラメータ | `ssm` のエンドポイント、それぞれのロール（`/<prefix>/*` か、名前を絞った許可） |
 | RDS（Nautobot の DB） | Terraform → RDS | ephemeral で読み、write-only の引数（`password_wo`）に渡す |
 | Nautobot の Job | Job → `telegraf-dialin/nautobot/*` | `ssm` のエンドポイント、タスクロール |
@@ -58,7 +63,7 @@ SecureString（`ops/up.sh` が作る）:
   出典: `ops/down.sh` の手順 5-2 のコメント、`ops/up.sh` のコメント。
 - **もうあれば作り直さない。**
   `ops/up.sh` を打ち直してもパスワードは変わらない。機器の認証情報を手で書き換えた値も残る。型が SecureString でなければ止まる。
-  出典: `ops/up.sh` の `ensure_secret`、`ensure_fixed_secret`。
+  出典: `ops/up-common.sh` の `ensure_secret`、`ensure_fixed_secret`。
 - **タスクは起動のときに値を読む。SSM を手で変えたら、サービスを作り直す。**
   `aws ecs update-service --force-new-deployment`。
   出典: [troubleshooting.md](../../troubleshooting.md) の「パイプラインと WORKFLOW」。

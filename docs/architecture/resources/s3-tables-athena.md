@@ -14,12 +14,12 @@ Athena は、ここのテーブルをエージェントと Web の承認タブ�
 | テーブルバケット | `<prefix>-tables`。analytics を作る回はいつも作る（`STORES` に `s3` が無くても） | `terraform/pipeline/analytics/tables.tf` |
 | namespace | `netops`（アンダースコアだけ。ハイフンは使えない） | `tables.tf` |
 | テーブルの作り方 | Terraform が作る（`ops/down.sh` の destroy でバケットごと消せるように） | `tables.tf` |
-| Glue のカタログ | `s3tablescatalog`。アカウントとリージョンに 1 つ。無いときだけ `ops/up.sh` が作り、`ops/down.sh` では消さない | `ops/up.sh` の `ensure_s3tables_catalog`、[deploy.md](../../deploy.md) の「アラートの通知の履歴」 |
+| Glue のカタログ | `s3tablescatalog`。アカウントとリージョンに 1 つ。無いときだけ `ops/up.sh` が作り、`ops/down.sh` では消さない | `ops/up-common.sh` の `ensure_s3tables_catalog`（`ops/up.sh` の手順 7-4 が呼ぶ）、[deploy.md](../../deploy.md) の「アラートの通知の履歴」 |
 | Athena のワークグループ | `<prefix>-history`。設定を強制、1 回のスキャンは 1 GiB で打ち切り、結果は Athena の管理ストレージ | `terraform/pipeline/analytics/history.tf` |
 | Athena から見たカタログ名 | `s3tablescatalog/<テーブルバケット>`（analytics の output `athena_catalog`） | `history.tf` の `local.athena_catalog` |
 | 閉域 | テーブルバケットのポリシーに、この VPC の外からの呼び出しの Deny | `tables.tf`、[vpc-perimeter.md](vpc-perimeter.md) |
 | スイッチ | `STORES` の `s3`（`raw_telemetry` と Spark のジョブ `sinks-s3iceberg` だけがこれに従う）、`SKIP_ANALYTICS=1` | `deploy.env.example` |
-| 費用 | テーブルは時間課金なし。`STORES` の `s3` は Spark のジョブ 1 つ分で +$0.21/h。Athena はスキャンした量の課金（PoC の量なら月に数セント） | `ops/up.sh` の先頭のコメント、`deploy.env.example`、`history.tf` のコメント |
+| 費用 | テーブルは時間課金なし。`STORES` の `s3` は Spark のジョブ 1 つ分で +$0.21/h。Athena はスキャンした量の課金（PoC の量なら月に数セント） | `ops/up.sh` の費用の目安（526〜583 行）、`deploy.env.example`、`history.tf` のコメント |
 
 テーブルと中身:
 

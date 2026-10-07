@@ -22,7 +22,7 @@ SQS はもう 1 本あり、Web の承認・却下を worker に届ける（決�
 | 決定の DLQ | `<prefix>-decisions-dlq`。保持 14 日 | `events.tf` |
 | 購読 | Lambda（graph のルート）と SQS（workflow のルート。`raw_message_delivery = true`）。どちらも自分のルートが作る | `sync.tf`、`events.tf` |
 | スイッチ | トピックは常に作る。Lambda は `PIPELINE=1`（`SKIP_GRAPH=1` で外す）、SQS は `WORKFLOW=1` | `ops/up.sh` |
-| 費用 | 時間課金は無い（publish は 100 万件/月まで、SQS は 100 万リクエスト/月まで無料）。エンドポイント `sns`、`sqs` が 1.4 セント/時 × `ENDPOINTS_AZ_NUM` | `alerts.tf` と `events.tf` のコメント、`ops/up.sh` の先頭のコメント |
+| 費用 | 時間課金は無い（publish は 100 万件/月まで、SQS は 100 万リクエスト/月まで無料）。エンドポイント `sns`、`sqs` が 1.4 セント/時 × `ENDPOINTS_AZ_NUM` | `alerts.tf` と `events.tf` のコメント、`ops/up.sh` の費用の目安（526〜583 行） |
 
 メッセージの中身:
 

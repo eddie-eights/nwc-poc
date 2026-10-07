@@ -52,7 +52,7 @@ flowchart LR
 1. **ポーリング（10 秒ごと）:** Telegraf が `ifOperStatus=down` を拾い、MSK の `metrics` に出す。
 2. **Spark:** `iceberg` が行をそのまま `raw_telemetry` に追記し、`prometheus` が同じ値を Prometheus に書く。どちらも up か down かを判断しない。
 3. **Grafana:** ルール `link_down` が 1 分ごとに `ifOperStatus` を見て、down の IF を `firing` として SNS のトピック `<prefix>-alerts` に出す。異常の id は `dc1-leaf-01#link_down#ethernet-1/1`。ここでは頂点も行も書かない。
-4. **Lambda `graph-status`:** SNS から受け取り、Neptune の IF の頂点の `status` を `DOWN` にする。同じ回線の IS-IS の隣接も Grafana と Splunk の `isis_down`（gNMI）で届き、頂点 `dc1-leaf-01#isis#ethernet-1/1.0` も `DOWN` になる。同じ通知を Firehose にも送り、60 秒ほどで `alert_events` に `firing` の行が入る（event_id は `<anomaly_id>#<source>#<status>#<starts_at の epoch 秒>`）。
+4. **Lambda `graph-status`:** SNS から受け取り、Neptune の回線（辺 `link`）と IF の頂点の `status` を `DOWN` にする。同じ回線の IS-IS の隣接も Grafana と Splunk の `isis_down`（gNMI）で届き、頂点 `dc1-leaf-01#isis#ethernet-1/1.0` も `DOWN` になる。同じ通知を Firehose にも送り、60 秒ほどで `alert_events` に `firing` の行が入る（event_id は `<anomaly_id>#<source>#<status>#<starts_at の epoch 秒>`）。
 5. **worker:** SQS から受け取り、異常ごとに Temporal のワークフロー `investigate-<anomaly_id>` を起こす。
 6. **修復案:** worker が `proposal_events` に `created` の行を足す（`status` は `pending`。`proposal_id` は `<anomaly_id>#<first_seen>`。`first_seen` はアラートの `starts_at`）。Neptune には書かない。
    Web で承認すると、決定が SQS `<prefix>-decisions` に 1 通入る。worker がそれを受け取ってワークフローにシグナル `decide` を送り、ワークフローが `approved` の行を足す。`heal-main` を打つと `applied`、解消の通知が届くと `verified` の行が続く。
@@ -152,13 +152,16 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 | `telegraf` | [telegraf/](../telegraf/)（公式の `telegraf:1.40.0` に設定のテンプレートと `tg` を足す） | ECS Fargate（stream。受ける側（内部 NLB の後ろ）と取りにいく側の 2 サービス。役割は環境変数 `TELEGRAF_ROLE`）。デバッグ用の EC2（`ops/lab-debug.sh`）でも同じ作り方のイメージ（スタックの ECR の `<prefix>-debug-telegraf`）を docker で動かす | 機器の gNMI の購読・SNMP のポーリングと trap・syslog を受けて MSK に書く。SNMP のポーリングは `SNMP_POLL=0` で止める（stream の既定は `1`。デバッグ用の EC2 の既定は `0`）（デバッグ用の EC2 では `SINK=stdout` で標準出力に書く）。2026-09-28 まで lab とは別の EC2 で systemd の下に rpm で動いていた |
 | `grafana` | [grafana/](../grafana/)（公式の Grafana OSS にデータソースの plugin と provisioning を焼き込む） | ECS Fargate（analytics。`STORES` の `grafana`） | Prometheus（AMP）と OpenSearch Serverless を SigV4 で読んで見せる。アラートルール（Prometheus の `link_down` / `bgp_down` / `isis_down` と、OpenSearch の `trap`）を評価して SNS へ出す（`link_down` はポーリングの値を見るので、`SNMP_POLL=0` では発火しない） |
 | `splunk` | [splunk/](../splunk/)（公式の `splunk/splunk:10.4.3` に検知のアプリ `netops_alerts` と入口のスクリプトを足す。amd64 だけ、約 2〜3 GB） | ECS Fargate x86（analytics。`STORES` に `splunk` があるとき） | Splunk Enterprise（試用ライセンス）。Spark が HEC に全トピックを送り、保存済みサーチが SNMP のポーリング・trap・gNMI から異常を見つけて SNS へ出す |
+| `kafka-ui` | `ghcr.io/kafbat/kafka-ui`（ミラー） | ECS Fargate（stream） | Kafbat UI。MSK のトピック・メッセージ・consumer group を画面で見る（IAM 認証） |
+| `nautobot` | [nautobot/](../nautobot/)（公式の `networktocode/nautobot` に Job と `netops` を足す） | ECS Fargate（pipeline/nautobot。`PIPELINE=1`） | 台帳（Nautobot）。変更を Telegraf の取りにいく先と Neptune に同期する |
+| `redis` | `redis`（ミラー） | ECS Fargate（`nautobot` と同じタスク） | Nautobot のキャッシュと Celery のブローカー |
 
 分けて見ると、監視される側が `lab-srlinux` / `lab-multitool`、集める側が `telegraf`、考える側が `agent`、実行する側が `temporal` / `worker`、見る側と見つける側が `grafana` / `splunk`。
 
 ### 8. arm64 に揃える（Splunk だけ x86）
 
 - **AgentCore Runtime は linux/arm64 のイメージしか動かせない。** x86_64 でビルドしたイメージは起動しない。`agent/Dockerfile` の冒頭にも書いてある。
-- ほかも arm64 に揃えてある: ECS Fargate は `cpu_architecture = "ARM64"`（[terraform/workflow/ecs.tf](../terraform/workflow/ecs.tf)、stream の Telegraf、analytics の Grafana）、lab / Web の EC2 は `t4g`（Graviton）だけを受け付ける。
+- ほかも arm64 に揃えてある: ECS Fargate は `cpu_architecture = "ARM64"`（[terraform/workflow/ecs.tf](../terraform/workflow/ecs.tf)、stream の Telegraf と Kafbat UI、analytics の Grafana、pipeline/nautobot の Nautobot）、EMR Serverless と Lambda も arm64、lab / Web の EC2 は `t4g`（Graviton）だけを受け付ける。
 - 例外は `splunk`。公式イメージが amd64 しか無いので、そのタスクだけ `X86_64` にし、`docker buildx build --platform linux/amd64` で作る（公式イメージに COPY するだけなので、arm64 の PC でもエミュレーション無しで作れる）。
 - だから `splunk` のほかは、PC 側の `docker buildx build` は必ず `--platform linux/arm64`、`docker pull` も `--platform linux/arm64`。Mac（Apple Silicon）はそのまま、WSL2 は `binfmt` を入れる（[setup.md](setup.md)）。
 - ミラーの push で「only the available single-platform image was pushed」と出るのは、arm64 だけ push したという意味で問題ない。
@@ -166,15 +169,15 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 ### 9. タグ
 
 - ECR のリポジトリは `IMMUTABLE`（[terraform/base/ecr/main.tf](../terraform/base/ecr/main.tf)）。同じタグへの上書きはできないので、コードを変えたらタグを進める。
-- 自前ビルドの `agent` / `worker` は `IMAGE_TAG`（既定 `v1`）。ミラーは上流の版そのまま（`ops/lab-common.sh` の `SRLINUX_TAG` / `MULTITOOL_TAG`、`ops/up.sh` の `TEMPORAL_TAG`）。
-- `telegraf` / `grafana` / `splunk` は `<版>-<ディレクトリの中身の sha256 の先頭 12 文字>`（`ops/lab-common.sh` の `dir_tag`）。中身を変えれば自動でタグが変わるので、`IMAGE_TAG` を上げなくてよい。
+- 自前ビルドの `agent` / `worker` は `IMAGE_TAG`（既定 `v1`）。ミラーは上流の版そのまま（`ops/lab-common.sh` の `SRLINUX_TAG` / `MULTITOOL_TAG`、`ops/up-common.sh` の `TEMPORAL_TAG` / `REDIS_TAG`、`ops/up.sh` の `KAFKA_UI_TAG`）。
+- `telegraf` / `grafana` / `splunk` / `nautobot` は `<版>-<ディレクトリの中身の sha256 の先頭 12 文字>`（`ops/lab-common.sh` の `dir_tag`）。中身を変えれば自動でタグが変わるので、`IMAGE_TAG` を上げなくてよい。
 - `ops/up.sh` は ECR にそのタグが無いときだけビルドして push する（手順 2）。
 
 ### 10. コードの入口
 
 | 見たいもの | ファイル |
 |---|---|
-| ビルドと push、タグの定数 | [ops/up.sh](../ops/up.sh) の手順 2 |
+| ビルドと push、タグの定数 | [ops/up.sh](../ops/up.sh) の手順 2、[ops/up-common.sh](../ops/up-common.sh) |
 | リポジトリの定義 | [terraform/base/ecr/main.tf](../terraform/base/ecr/main.tf) |
 | lab のどの機器がどのイメージか | [lab/splab.clab.yml.in](../lab/splab.clab.yml.in)（[lab/gen_lab.py](../lab/gen_lab.py) が作る） |
 | Runtime がどのイメージを指すか | [terraform/agent/variables.tf](../terraform/agent/variables.tf) の `agent_image_tag` |
@@ -221,7 +224,7 @@ AWS が運用を持つグラフデータベース。データを頂点と辺で�
 
 ### 12. AZ 冗長か
 
-グラフはメモリに載っており、レプリカ（`replica_count`）を足すと別の AZ に待機系を持てる（レプリカの分も同じ単価がかかる）。この PoC は [neptune.tf](../terraform/pipeline/graph/neptune.tf) で `replica_count = 0`。**障害が起きるとグラフが戻るまで止まる**（4 のとおり、止まると `status` の更新と新しいワークフローの起動も止まる）。その日に消す使い捨てなので費用を優先している。
+グラフはメモリに載っており、レプリカ（`replica_count`）を足すと別の AZ に待機系を持てる（レプリカの分も同じ単価がかかる）。この PoC は [neptune.tf](../terraform/pipeline/graph/neptune.tf) で `replica_count = var.neptune_az_num - 1` で、既定の `NEPTUNE_AZ_NUM=1` では 0。**既定では障害が起きるとグラフが戻るまで止まる**（4 のとおり、止まると `status` の更新と新しいワークフローの起動も止まる）。その日に消す使い捨てなので費用を優先している。
 
 ### 13. グラフはいくつ作れるか
 
@@ -287,12 +290,13 @@ Telegraf・Spark が「どのブローカーにつなぐか」をどう知るか
 
 実行ロール `<prefix>-telegraf-exec` は `AmazonECSTaskExecutionRolePolicy`（ECR とログ）と、取りにいく側の secrets を読む `ssm:GetParameters`（`/<prefix>/telegraf-dialin/*` だけ）。どちらのロールにも閉域の Deny（`<prefix>-network-perimeter`）を付ける。
 
-**クライアントごとの渡し方。** どちらも SSM を読まない。
+**クライアントごとの渡し方。** どれも SSM を読まない。
 
 | クライアント | ブローカーの知り方 | 理由 |
 |---|---|---|
 | Telegraf（ECS） | タスク定義の環境変数 `KAFKA_BROKERS`（同じ root の MSK の属性） | MSK と同じ root で作られ、タスクは起動のたびに環境変数をもらえるから |
 | Spark（EMR Serverless） | [terraform/pipeline/analytics](../terraform/pipeline/analytics) が stream の state の `bootstrap_brokers` を読み、ジョブの引数 `--bootstrap` で渡す（[spark/snmp_sinks.py](../spark/snmp_sinks.py)） | ジョブは起動のたびに引数をもらえるので、パラメータストアを引く必要が無い |
+| Kafbat UI（ECS） | タスク定義の環境変数 `KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS`（同じ root の MSK の IAM 認証の口。[kafka_ui.tf](../terraform/pipeline/stream/kafka_ui.tf)） | Telegraf と同じ |
 
 **確かめ方。** ロググループ `/ecs/<prefix>-telegraf` に「`/tmp/telegraf.conf を作った（role: … / sink: kafka / brokers: …）`」が出ていれば `render` は通っている。ECS Exec で取りにいく側のタスクに入って（[pipeline.md](pipeline.md) の「Telegraf に入る」）`tg gnmi` を打つと gNMI の購読を 20 秒だけ受けて標準出力に出す（MSK には送らない）ので、機器との疎通と MSK との疎通を切り分けられる。`SNMP_POLL=1`（既定）のタスクなら `tg test` でポーリングを 1 回まわして同じように見られる（`SNMP_POLL=0` では「止めてある」と出して終わる）。MSK 側は、Kafka の `WriteData` が拒まれればログに出る。
 

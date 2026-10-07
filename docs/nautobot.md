@@ -51,14 +51,14 @@ flowchart LR
 | リソース | 名前 | 中身 |
 |---|---|---|
 | ECS のクラスタ / サービス / タスク | `<prefix>-nautobot` | 1 タスクに 3 コンテナ（web・worker・redis）。同じタスクなので互いに `localhost` で届く |
-| RDS | PostgreSQL `db.t4g.micro` | 台帳。`ops/down.sh` で消える |
+| RDS | PostgreSQL `db.t4g.micro` | 台帳。`ops/down.sh` で消える。`NAUTOBOT_DB_AZ_NUM=2` なら Multi-AZ（別の AZ に待機系。既定 1） |
 | SG | `<prefix>-nautobot` / `<prefix>-nautobot-db` | 画面へは Web の EC2 からだけ。DB へはタスクからだけ |
 | 名前解決 | `nautobot.<prefix>-nautobot.internal:8080` | VPC の中の URL（SSM `/<prefix>/nautobot/url` にも書く） |
 | ログ | `/ecs/<prefix>-nautobot` | ストリームは `web/`（migrate・bootstrap・画面）、`worker/`（Job）、`redis/` |
 | シークレット | SSM の SecureString `/<prefix>/nautobot/{secret-key,admin-password,db-password,api-token}` | `ops/up.sh` が乱数で作る。タスクは ECS の secrets で受ける |
 | イメージ | ECR `<prefix>-nautobot` | 公式イメージ `networktocode/nautobot:3.2.6-py3.12` に boto3 と下の「足したもの」を入れたもの |
 
-LB は無い。閉域なので、画面は Web の EC2 を踏み台にしたポートフォワードで開く。費用は約 $0.14/h。
+LB は無い。閉域なので、画面は Web の EC2 を踏み台にしたポートフォワードで開く。費用は約 $0.13/h（`NAUTOBOT_DB_AZ_NUM=2` で RDS が Multi-AZ になると +$0.03/h）。
 
 ## 3. 部品ごとの役割
 

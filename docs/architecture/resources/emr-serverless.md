@@ -21,7 +21,7 @@ MSK のトピックを読み、格納先（S3 Tables、OpenSearch、Prometheus�
 | チェックポイント | `s3://<バケット>/analytics/checkpoint/<MSK クラスタの uuid>/`。クエリごとに別 | [pipeline.md](../../pipeline.md) の「Spark を確かめる」 |
 | ログ | `/aws/emr-serverless/<prefix>`、保存 7 日 | `emr.tf` の `aws_cloudwatch_log_group.emr` |
 | スイッチ | `STORES`（既定 `s3,grafana,splunk`）、`SKIP_ANALYTICS=1` | `deploy.env.example` |
-| 費用 | ジョブ 1 つ 21 セント/時（3 vCPU。3 つで 63）。動いているあいだだけ | `ops/up.sh` の先頭のコメント（2026-09-17 確認） |
+| 費用 | ジョブ 1 つ 21 セント/時（3 vCPU。3 つで 63）。動いているあいだだけ | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`。単価は 2026-09-17 確認） |
 
 クエリ（格納先）と読むトピック:
 
@@ -88,6 +88,8 @@ MSK のトピックを読み、格納先（S3 Tables、OpenSearch、Prometheus�
 | 同じ秒に中身がまったく同じメッセージが 2 つ来たとき | `event_id` が同じになる（受け入れている） |
 | 1 AZ（既定） | その AZ が止まるとジョブも止まる。AWS で確かめた記録は無い |
 | MDT のトピック | 共通の形への変換がまだ無いので、中身は機器の sensor path のまま |
+
+OSS 版（`oss/terraform/pipeline/analytics`）には EMR Serverless が無く、代わりに `spark.tf` が同じ `spark/snmp_sinks.py` を ECS（Fargate）で `local[*]` で動かす（Spark 3.5.9。ジョブの分け方は同じで、格納先ごとに 1 サービス。起こし直しは ECS のサービスがする）。チェックポイントは同じバケットの `analytics/checkpoint/` に S3A で書く。[oss-variant.md](../../oss-variant.md)。
 
 ## 関連
 

@@ -16,9 +16,9 @@ Telegraf が集めた機器のデータを、いったんためておく Kafka�
 | AZ の数 | `MSK_AZ_NUM`（既定 2、2〜3）。ブローカーの数と同じ | `ops/up.sh`、変数 `msk_az_num` |
 | 認証と暗号 | IAM 認証だけ（9098）。クライアントとの間もブローカー同士も TLS | `msk.tf` の `client_authentication`、`encryption_info` |
 | ブローカーの設定 | `auto.create.topics.enable=true`、`default.replication.factor` = ブローカーの数、`min.insync.replicas` = その 1 つ下、`num.partitions=2`、`log.retention.hours=24` | `msk.tf` の `aws_msk_configuration` |
-| ブローカーのログ | CloudWatch Logs、保存 7 日 | 変数 `log_retention_days` |
+| ブローカーのログ | CloudWatch Logs のロググループ `/<prefix>/msk`、保存 7 日 | 変数 `log_retention_days`、`msk.tf` |
 | スイッチ | `PIPELINE=1` で作る。`SKIP_STREAM=1` で作らない（analytics も作らない） | `deploy.env.example` |
-| 費用 | 57 セント/時（2 台。1 台増やすごとに +27） | `ops/up.sh` の先頭のコメント |
+| 費用 | 57 セント/時（2 台。1 台増やすごとに +27） | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`） |
 
 トピックと中身:
 
@@ -55,7 +55,7 @@ Telegraf が集めた機器のデータを、いったんためておく Kafka�
   出典: [data-stores.md](../../data-stores.md) の「15. ブローカーの渡し方と msk-bootstrap」、FAQ「SNMP はポーリングと trap のどちらで集めている？ ポーリングは止められる？」。
 - **`min.insync.replicas` はブローカーの数の 1 つ下。**
   2 台なら 1 なので、1 台止まっても書ける。
-  出典: `terraform/pipeline/stream/msk.tf` の先頭のコメント。
+  出典: `terraform/pipeline/stream/msk.tf` の `aws_msk_configuration` の上のコメント。
 - **ブートストラップの文字列は、クラスターを作り終えるまで決まらない。**
   Telegraf はタスク定義の環境変数 `KAFKA_BROKERS`、Spark はジョブの引数 `--bootstrap` でもらう。どちらも SSM は読まない。`/<prefix>/msk-bootstrap` は手で確かめるときのために残してある。
   出典: [data-stores.md](../../data-stores.md) の「15.」。
@@ -84,7 +84,7 @@ Telegraf が集めた機器のデータを、いったんためておく Kafka�
 | 保存期間 | 24 時間。Spark を 24 時間より長く止めると、そのあいだの分は読めない |
 | AZ 間の転送料 | 費用の数字に入れていない |
 
-このあと変わる予定: OSS 版では Kafka を ECS に立てる。[マネージドを OSS に置き換えた環境を作る（005）の設計](../../cycles/005-oss-on-ecs/design.md)。
+OSS 版（`oss/terraform/pipeline/stream`）には MSK が無く、代わりに `kafka.tf` が Apache Kafka（KRaft）を ECS に 3 台立てる（9092、認証なし。データは EFS）。Telegraf と Kafbat UI は同じファイルをシンボリックリンクで使い、書き先だけが変わる。[oss-variant.md](../../oss-variant.md)、[マネージドを OSS に置き換えた環境を作る（005）の設計](../../cycles/005-oss-on-ecs/design.md)。
 
 ## 関連
 

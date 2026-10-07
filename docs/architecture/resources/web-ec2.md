@@ -5,7 +5,7 @@
 ## ひとことで
 
 運用者の画面（Gradio。チャット / トポロジ / 承認）を動かす EC2。
-パブリック IP も受信ルールも無く、PC からは SSM のポートフォワーディングで開く。Grafana、Splunk、Temporal UI、Nautobot を開くときの踏み台も兼ねる。
+パブリック IP も受信ルールも無く、PC からは SSM のポートフォワーディングで開く。Grafana、Splunk、Temporal UI、Nautobot、Kafbat UI を開くときの踏み台も兼ねる。
 
 ## このプロジェクトでの使い方
 
@@ -18,7 +18,7 @@
 | 画面のコード | 共有バケット `<prefix>-kb-<アカウント>` の `web/` から起動時に取る | `ops/up.sh` の手順 4、`terraform/base/core/bucket.tf` |
 | ロール | `<prefix>-web`。SSM の管理、`web/*` の読み取り、`/<prefix>/*` の `ssm:GetParameter`。Runtime と Gateway を呼ぶ許可は agent と workflow のルートが足す。承認タブの許可（決定のキューへの `sqs:SendMessage` と、Athena での `proposal_events` の読み取り）は workflow のルートがポリシー `<prefix>-workflow-web` で足す | `terraform/base/core/web.tf`、`terraform/agent/runtime.tf`、`terraform/workflow/proposals.tf` |
 | スイッチ | 無い（土台なので必ず作る）。PC 側のポートは `LOCAL_PORT`（既定 8080）、`NO_DASHBOARD_PORTFORWARD=1` で最後のポートフォワーディングを開かない | [deploy.md](../../deploy.md) の「`deploy.env` のキー」 |
-| 費用 | 2.2 セント/時（t4g.small。土台は合わせて約 2 セント/時 + エンドポイント） | `ops/up.sh` の先頭のコメント |
+| 費用 | 2.2 セント/時（t4g.small。土台は合わせて約 2 セント/時 + エンドポイント） | `ops/up.sh` の費用の目安（526〜583 行） |
 
 ## つながり
 
@@ -31,7 +31,7 @@
 | AgentCore Gateway | 呼んでいない | Web に置くモジュール（`toolkit` / `topology` / `graph` / `proposals`）に Gateway のクライアント（`agent/mcp_client.py`）は入っていない。ロールにも `InvokeGateway` は付けない（付けるのは Runtime だけ。`terraform/workflow/proposals.tf` の `reader_access`） |
 | Neptune Analytics | Web → グラフ | neptune-graph-data のエンドポイント、SigV4（トポロジの表示と、最初の投入）。修復案は読まない |
 | Nautobot | Web → Nautobot | 8080/tcp（トポロジの編集を REST API へ。SSM `/<prefix>/nautobot/url` があるあいだ） |
-| Grafana / Splunk / Temporal UI / Nautobot | PC → Web → 各タスク | 3000 / 8000 / 8233 / 8080（Web を踏み台にしたポートフォワーディング） |
+| Grafana / Splunk / Temporal UI / Nautobot / Kafbat UI | PC → Web → 各タスク | 3000 / 8000 / 8233 / 8080 / 8080（Web を踏み台にしたポートフォワーディング。Kafbat UI は PC 側を 8082 で開く） |
 | S3 | Web → バケット | gateway 型エンドポイント（`web/` の取得と dnf） |
 
 ## 知見

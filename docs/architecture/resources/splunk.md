@@ -20,9 +20,9 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | Splunk どうしのポート | 管理と検索 8089、複製 9887、転送の受け口 9997。SG `splunk` から `splunk` へだけ開けてある（1 台のときも規則はある。相手がいないだけ）。ほかの SG からは 8089 に届かない | `terraform/base/core/security_groups.tf` |
 | 入るもの | 5 つのトピックの全部。sourcetype は `netops:<トピック>`。index は `main`（HEC の token の既定） | `spark/snmp_sinks.py`、変数 `SPLUNK_INDEX`（既定は空） |
 | ライセンス | 試用（60 日、1 日 500 MB まで）。起動時に環境変数で同意する | `splunk.tf` の `SPLUNK_START_ARGS`、`SPLUNK_GENERAL_TERMS` |
-| シークレット | SSM の SecureString `/<prefix>/splunk/admin-password`、`/<prefix>/splunk/hec-token`。クラスターのときは `/<prefix>/splunk/idxc-secret`（manager・indexer・search head が互いを確かめる合言葉）も。どれも `ops/up.sh` が作る。値は Terraform も state も持たない | `ops/up.sh`、`splunk.tf` の `secrets` |
+| シークレット | SSM の SecureString `/<prefix>/splunk/admin-password`、`/<prefix>/splunk/hec-token`。クラスターのときは `/<prefix>/splunk/idxc-secret`（manager・indexer・search head が互いを確かめる合言葉）も。どれも `ops/up.sh` が作る。値は Terraform も state も持たない | `ops/up-common.sh` の `ensure_splunk_secrets`（`ops/up.sh` の手順 7-4 が呼ぶ）、`splunk.tf` の `secrets` |
 | スイッチ | `STORES` の `splunk`。クラスターにするかは `SPLUNK_AZ_NUM` | `deploy.env.example` |
-| 費用 | 1 タスク 12 セント/時（`STORES` の `splunk` 全体では Spark のジョブと合わせて約 +$0.34/h）。`SPLUNK_AZ_NUM=2` は 4 タスクで 49 セント/時（+$0.37/h）、`3` は 5 タスクで 61 セント/時（+$0.49/h）。AZ をまたぐ複製の通信料は入っていない | `ops/up.sh` の先頭のコメント、`deploy.env.example` |
+| 費用 | 1 タスク 12 セント/時（`STORES` の `splunk` 全体では Spark のジョブと合わせて約 +$0.34/h）。`SPLUNK_AZ_NUM=2` は 4 タスクで 49 セント/時（+$0.37/h）、`3` は 5 タスクで 61 セント/時（+$0.49/h）。AZ をまたぐ複製の通信料は入っていない | `ops/up.sh` の費用の目安（526〜583 行）、`deploy.env.example` |
 
 `SPLUNK_AZ_NUM` と構成:
 
@@ -86,10 +86,10 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
   判定が変わったときだけ、ログに `nwc-peer-check state=<ok / degraded / mismatch / skip / error> reason=<理由>` を 1 行書く。`degraded` は manager が Up と言う indexer がタスク定義の数（`NWC_PEERS_EXPECTED`）より少ない（`reason=peers_up:<Up の数>/<あるはずの数>`。終了コードは 0 で、search head は入れ替えない）、`skip` は manager に聞けない、`error` は search head の peers を読めない。
   `ops/up.sh` の手順 7-4b は、全タスクが HEALTHY になったあとにこの行を読み、`state=ok reason=peers_up:<indexer の数>` になるまで最大 6 分待つ。ならなければ止まる。
   2026-10-05 に AWS で確かめた（`nwc-peer-check state=ok reason=peers_up:2`）。`mismatch` で search head が入れ替わるところは AWS では未確認。
-  出典: `splunk/peers_check.py`、`ops/up.sh` の `splunk_cluster_check`。
+  出典: `splunk/peers_check.py`、`ops/up-common.sh` の `splunk_cluster_check`。
 - **indexer が AZ に 1 台ずつになるかは、Fargate の振り分けに任せている（保証ではない）。**
   同じ AZ に 2 台いたら、`ops/up.sh` が注意を出して進む。2026-10-05 の AWS（`SPLUNK_AZ_NUM=2`）では ap-northeast-1a と ap-northeast-1c に分かれた。
-  出典: `splunk.tf` の `aws_ecs_service.splunk_idx`、`ops/up.sh` の `splunk_cluster_check`。
+  出典: `splunk.tf` の `aws_ecs_service.splunk_idx`、`ops/up-common.sh` の `splunk_cluster_check`。
 - **新しい indexer は、ECS のヘルスチェックが通るまで HEC の宛先に載らない。**
   `splunk-idx` の Cloud Map にだけ `health_check_custom_config` を付けてある。クラスターに入る前の indexer に Spark が送らないようにするため。
   出典: `splunk.tf` の `aws_service_discovery_service.splunk_idx`。

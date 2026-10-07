@@ -25,9 +25,9 @@
 | `SKIP_LAB` | lab を作らない（-$0.17/h）。単独で書ける（ほかは lab が無くても作れる。`WORKFLOW=1` とは一緒に書けない）。lab が無いと stream には何も届かない。Telegraf の取りにいく側は lab の定義の機器を探しに行き、届かないのでエラーをログに出して繋ぎ直し続ける（タスクは落ちない）。trap / syslog は lab からしか来ない。MDT は `MDT_SOURCE_CIDRS` を書いたときだけ届く。graph には lab のトポロジを入れないので、Neptune には Nautobot の Job が書く物理層だけが入る（IP 層と EVPN・BGP 層は入らない） |
 | `SKIP_STREAM` | stream（MSK、Telegraf の ECS、Kafka の画面の Kafbat UI）を作らない（-$1.80/h。`STORES` が既定のとき）。analytics も外れる（アラートは出ない） |
 | `SKIP_ANALYTICS` | analytics（Spark と `STORES` の格納先、Grafana / Splunk とそのアラート）を作らない（-$1.16/h。`STORES` が既定のとき。Spark のジョブ 3 つ、OpenSearch の OCU、Grafana、Splunk と、エンドポイント `s3tables` / `aps-workspaces` / `sns` / `kinesis-firehose` / OpenSearch Serverless の分。KB を作るなら OpenSearch Serverless の VPC エンドポイント $0.014 は残る）。アラートの送り手が無くなり、アラートの通知の履歴（`alert_events`）も残らない |
-| `SKIP_GRAPH` | Neptune Analytics のグラフを作らない（-$0.60/h。16 m-NCU の $0.58 と `neptune-graph-data` のエンドポイント）。トポロジは静的データになる（アラートで `status` が変わらない） |
+| `SKIP_GRAPH` | Neptune Analytics のグラフを作らない（-$0.60/h。16 m-NCU の $0.58 と `neptune-graph-data` のエンドポイント。analytics がある回は `kinesis-firehose` のエンドポイントも外れる）。トポロジは静的データになる（アラートで `status` が変わらない） |
 | `STORES` | analytics の格納先を 3 つのまとまりで選ぶ。カンマで並べる（例 `STORES=s3,grafana`。順番と重複は問わない）。**既定は `s3,grafana,splunk`（3 つとも）。**格納先を選ぶキーはこれだけ。書かなかったまとまりは作らない（前に作ったまとまりを外して打ち直すと、その格納先はデータごと消える）。知らない名前と空の要素は止まる。Spark のジョブはまとまりごとに 1 つで、1 つ $0.21/h。`s3` は全トピック → S3 Tables（Iceberg）のテーブル `raw_telemetry`（生データの履歴。ジョブ `sinks-s3iceberg`。+$0.21/h。テーブルは無料）。`grafana` は 3 つまとめて: traps と logs（機器の syslog）→ OpenSearch Serverless のコレクション `<prefix>-logs`、metrics と gnmi → Amazon Managed Service for Prometheus のワークスペース `<prefix>-metrics`（ジョブ `sinks-grafana`）と、その 2 つを SigV4 で見る Grafana OSS（analytics の ECS。Fargate ARM 0.5 vCPU / 1 GB）。約 +$0.60/h（ジョブ $0.21、OpenSearch の OCU 最大 $0.33、Grafana $0.02、OpenSearch Serverless の VPC エンドポイント $0.014、`aps-workspaces` と `sns` のエンドポイント $0.014 ずつ。`sns` は `splunk` と共用。エンドポイントは `ENDPOINTS_AZ_NUM` の数の倍。Prometheus の取り込みのサンプル課金は別）。Grafana のアラートルールも入り、SNS へ出す（Prometheus の `link_down` / `bgp_down` / `isis_down` と、OpenSearch の `trap`。[pipeline.md](pipeline.md) の「アラート」）。`link_down` が見るのは SNMP のポーリングの値なので、`SNMP_POLL=0` では発火しない。外すと、エージェントの `search_logs` / `query_metrics` は「配備されていない」を返し、Grafana の画面とアラートルールも無くなる。Amazon Managed Grafana はサインインに IAM Identity Center か SAML が要り、このアカウントには Organizations も Identity Center も無いので使えない。`splunk` は全トピック → Splunk の HTTP Event Collector（HEC。ジョブ `sinks-splunk`）。analytics の ECS に Splunk Enterprise（公式イメージ `splunk/splunk:10.4.3` に検知のアプリ `netops_alerts` を足したもの、試用ライセンス。Fargate x86 2 vCPU / 4 GB、エフェメラルストレージ 40 GiB）を立て、Spark は VPC の中の `https://splunk.<prefix>.internal:8088` に送る（自己署名なので検証しない）。起動時に Splunk のライセンスと Splunk General Terms に同意する。admin のパスワードと HEC の token は `ops/up.sh` が SSM の SecureString に乱数で作る。index はタスクと一緒に消える（検証用）。保存済みサーチ（ポーリングの ifOperStatus、trap の linkDown / linkUp、gNMI の BGP / IS-IS、そのほかの trap）が毎分走り、アラートを SNS へ出す（[pipeline.md](pipeline.md) の「アラート」）。約 +$0.34/h（ジョブ $0.21、ECS の Splunk $0.12、`sns` のエンドポイント $0.014）。外すと、trap の linkDown / linkUp から IF の up / down を知らせるものが無い。`SPLUNK_INDEX`（空なら token の既定）も読む。AWS の外の Splunk へ NAT Gateway で送る道（`SPLUNK_HEC_URL`）は 2026-09-28 にやめた（書いてあると `ops/up.sh` が止まる） |
-| （Nautobot） | Nautobot 3.2.6（`terraform/pipeline/nautobot`。ECS Fargate ARM 2 vCPU / 4 GB の 1 タスクに web・Celery worker・Redis、RDS の PostgreSQL `db.t4g.micro`。+$0.13/h と `ecs` のエンドポイント $0.014/h）。**切り替えるキーは無く、`PIPELINE=1` ならいつも作る**（Job の書き先が要るので、`SKIP_STREAM` と `SKIP_GRAPH` の両方があるときだけ作らない）。機器の一覧とケーブルの正は Nautobot で、Nautobot の Job が Telegraf の取りにいく側の一覧（SSM）と Neptune の物理層（Gremlin）に反映する（[pipeline.md](pipeline.md) の「Nautobot」）。SECRET_KEY・admin と DB のパスワードは `ops/up.sh` が SSM の SecureString に作る。デバッグ用の EC2 は使わない |
+| （Nautobot） | Nautobot 3.2.6（`terraform/pipeline/nautobot`。ECS Fargate ARM 2 vCPU / 4 GB の 1 タスクに web・Celery worker・Redis、RDS の PostgreSQL `db.t4g.micro`。+$0.13/h と `ecs` のエンドポイント $0.014/h）。**切り替えるキーは無く、`PIPELINE=1` ならいつも作る**（Job の書き先が要るので、`SKIP_STREAM` と `SKIP_GRAPH` の両方があるときだけ作らない）。機器の一覧とケーブルの正は Nautobot で、Nautobot の Job が Telegraf の取りにいく側の一覧（SSM）と Neptune の物理層（Gremlin）に反映する（[pipeline.md](pipeline.md) の「Nautobot」）。SECRET_KEY・admin と DB のパスワード・Web の「トポロジ」タブが使う API トークンは `ops/up.sh` が SSM の SecureString に作る。前にあった `NAUTOBOT` のキーは書いてあっても止まらず、注意だけ出る。デバッグ用の EC2 は使わない |
 | `HTTP_SEND` | Spark のジョブが HTTP の格納先（OpenSearch / Prometheus / Splunk）へ送る所。既定 `driver`（1 回分を driver に集めて送る。PoC の量なら足りる）。`executor` で、集めずにパーティションごとに executor が送る（量が増えたとき用。費用は変わらない）。変えて `ops/up.sh` を打ち直すと、HTTP の格納先のジョブが起こし直される。AWS では未確認 |
 | `MAX_OFFSETS_PER_TRIGGER` | Spark の 1 つのクエリが Kafka の 1 回のトリガー（60 秒）に読む件数の上限（全パーティションの合計。Spark の `maxOffsetsPerTrigger`）。既定 `10000`、`0` で上限なし。ふだんの 60 秒分より十分大きく、効くのは止めていたジョブを起こし直した直後と、最初にトピックの頭から読むとき（HTTP の格納先は 1 回分を driver に集めて送るので、その量を抑える）。どのジョブにも同じ値を渡す |
 | `MAX_OFFSETS_PER_TRIGGER_ICEBERG` / `_SPLUNK` / `_OPENSEARCH` / `_PROMETHEUS` | その格納先のクエリだけ `MAX_OFFSETS_PER_TRIGGER` を上書きする。既定は空（共通の値を使う）。`0` でそのクエリだけ上限なし。名前は Spark の格納先の呼び名（`STORES` の `s3` は `ICEBERG`）。OpenSearch と Prometheus は同じジョブでもクエリは別なので、別の値が効く。値を変えると、その格納先のジョブだけ `ops/up.sh` が起こし直す |
@@ -37,7 +37,7 @@
 | `IMAGE_TAG` | エージェントとワーカーのイメージのタグ。既定 `v1` |
 | `KEEP_ECR` | `1` で `ops/down.sh` が ECR を残す（保管料は月数円） |
 | `AWS_PROFILE` / `LOCAL_PORT` / `NO_DASHBOARD_PORTFORWARD` | プロファイル / PC 側のポート（既定 8080）/ `1` で最後の Web へのポートフォワーディングを開かずに終わる |
-| `VPC_CIDR` | VPC の CIDR（[setup.md](setup.md)） |
+| `VPC_CIDR` | VPC の CIDR。既定 `10.0.0.0/16`（[setup.md](setup.md)） |
 | `MDT_SOURCE_CIDRS` | Cisco の MDT（dial-out。tcp 57000）を Telegraf の NLB へ送ってよい機器の CIDR（カンマで）。既定は空で、どこからも受けない（[collection.md](collection.md)） |
 | `NETWORK_PERIMETER` | VPC のエンドポイントを通らない AWS の API の呼び出しを拒む Deny（[architecture/core.md](architecture/core.md) の「閉域」）。既定 `1`。`0` は `AccessDenied` の切り分けのときだけ（エンドポイントは作ったまま、Deny だけを外す） |
 | `ENDPOINTS_AZ_NUM` | 冗長化用。インターフェース型エンドポイントと OpenSearch Serverless の VPC エンドポイントを何 AZ に置くか。既定 `1`（サブネット a だけ。b / c のワークロードも private DNS で a の ENI に届く）、`1`〜`3`。エンドポイントの費用が AZ の数の倍。ほかの `*_AZ_NUM` を 2 以上に書いたのにこれが小さいと注意が出る（a の AZ が止まると、b / c に置いたものも AWS の API に届かない）。`RUNTIME_AZ_NUM` より小さいときだけは注意で済まない（`RUNTIME_AZ_NUM` の行）。`3` にすると、graph と analytics を作る回に注意が出る（止まらない）: グラフの状態の Lambda（graph-status）がエンドポイントに届かないときに待つ時間の上限が 66.6 秒になり、Lambda の timeout の 60 秒を超える（1 AZ は 42.6 秒、2 AZ は 54.6 秒）。そのときは Neptune に書く途中で切れてやり直しになり、status が遅れる。analytics を今回は作らないが前の回のものが残っている回は、同じく超えるのに注意が出ない（分かっている穴）。AZ が止まったときの動きは AWS では未確認 |
@@ -77,25 +77,26 @@ OpenSearch・Prometheus・Grafana は `grafana` でまとめて作るか作ら�
 |---|---|
 | 0 | `deploy.env` と道具と認証を確かめ、作るルート、インターフェース型エンドポイント、費用の目安を出す |
 | 1 | `terraform/base/ecr` |
-| 2 | ECR に無いタグだけビルドして push（agent、lab の srlinux / multitool のミラー、worker、Temporal のミラー、Telegraf、Grafana は arm64。ECS の Splunk は amd64 の公式イメージ（約 2〜3 GB）に検知のアプリを足してビルドする）。Telegraf / Grafana / Splunk のタグは `<版>-<ディレクトリの中身のハッシュ 12 文字>` で、`telegraf/`・`grafana/`・`splunk/` を変えると次の `ops/up.sh` が作り直す |
-| 3 | `terraform/base/core`（エンドポイントは今回作る機能の分に、state にリソースが残っているルートの分を足す）。graph を作るなら裏で `terraform/pipeline/graph` を始める（ログは `ops/logs/graph-apply.log`） |
-| 3-3 | `terraform/agent` |
-| 4 | Web の部品を S3 に置く。`CREATE_KB=1` なら手順書を取り込む。Web を再起動 |
+| 2 | ECR に無いタグだけビルドして push（agent、lab の srlinux / multitool のミラー、worker、Temporal のミラー、Telegraf、Grafana、Nautobot、Redis と Kafbat UI のミラーは arm64。ECS の Splunk は amd64 の公式イメージ（約 2〜3 GB）に検知のアプリを足してビルドする）。Telegraf / Grafana / Splunk / Nautobot のタグは `<版>-<ディレクトリの中身のハッシュ 12 文字>` で、`telegraf/`・`grafana/`・`splunk/`・`nautobot/`（Nautobot は中に入れる `agent/graph.py`・`agent/toolkit.py` と lab の定義も）を変えると次の `ops/up.sh` が作り直す |
+| 3 | `terraform/base/core`（エンドポイントは今回作る機能の分に、state にリソースが残っているルートの分を足す）。graph を作るなら 3-2 で裏で `terraform/pipeline/graph` を始める（ログは `ops/logs/graph-apply.log`） |
+| 3-3 | `terraform/agent`（`AGENT=1` のとき） |
+| 4 | 4-1 で Web の wheel を取り（`wheels/` が空のときだけ）、4-2 で Web の部品を S3 に置く。4-3 で `CREATE_KB=1` なら手順書を取り込む。4-4 で Web の EC2 を再起動 |
 | 5 | 5-1 で containerlab の rpm と `lab/`、5-2 で Spark の jar 6 本と `spark/snmp_sinks.py` を S3 に置く |
 | 6 | `terraform/pipeline/lab` |
-| 7 | `terraform/pipeline/stream`（MSK に 20〜30 分。Telegraf の ECS（受ける側と取りにいく側の 2 サービス）と内部 NLB も。ポーリング先と gNMI の相手は lab の定義から作って変数で渡す。ポーリング先は `SNMP_POLL=0` でも渡す（Telegraf が使うのは `SNMP_POLL=1` のときだけ）） |
+| 7 | `terraform/pipeline/stream`（MSK に 20〜30 分（未確認）。Telegraf の ECS（受ける側と取りにいく側の 2 サービス）と内部 NLB も。ポーリング先と gNMI の相手は lab の定義から作って変数で渡す。ポーリング先は `SNMP_POLL=0` でも渡す（Telegraf が使うのは `SNMP_POLL=1` のときだけ）。Kafka の画面の Kafbat UI の ECS も。先に取りにいく側の機器の認証情報 3 つ（`/<prefix>/telegraf-dialin/` の下。最初は lab の既定値）と Kafbat UI の admin のパスワードを SSM の SecureString に作る（無いときだけ）） |
+| 7-2 | lab の EC2 でトポロジ（8 コンテナ）が上がっているかを見る（上がっていなければ注意を出して進む） |
 | 7-2b | lab の EC2 で `lab forward` を打ち、Telegraf のタスク（取りにいく側）のサブネットから SNMP のポーリング（`SNMP_POLL=1` のとき）と gNMI の購読を通し、trap / syslog を Telegraf の NLB へ DNAT する |
 | 7-2c | Telegraf の ECS のサービス 2 つ（受ける側と取りにいく側）が安定するのを待つ（最大 10 分。落ちても止まらず、見るところを出す） |
-| 7-3 | graph を待ち、Neptune が空ならトポロジを入れる（アラートの送り手より先に、`status` の Lambda とトポロジを用意する） |
-| 7-3c | Nautobot（stream か graph を作るならいつも）。SSM に Nautobot のシークレット 3 つを作り（無いときだけ）、`terraform/pipeline/nautobot`（RDS に 5〜10 分）。サービスが安定するのを待つ（初回は DB の migrate で 5〜10 分。最大 20 分。落ちても止まらず、見るところを出す）。起動時に lab の定義を Nautobot に入れ（空のときだけ）、Job と JobHook を有効にして 1 回同期する |
+| 7-3 | graph を待ち、7-3b で Neptune が空ならトポロジを入れる（`SKIP_LAB=1` なら入れない。アラートの送り手より先に、`status` の Lambda とトポロジを用意する） |
+| 7-3c | Nautobot（stream か graph を作るならいつも）。SSM に Nautobot のシークレット 4 つ（SECRET_KEY・admin と DB のパスワード・Web の API トークン）を作り（無いときだけ）、`terraform/pipeline/nautobot`（RDS に 5〜10 分）。サービスが安定するのを待つ（初回は DB の migrate で 5〜10 分（RDS の分と合わせて未確認）。最大 20 分。落ちても止まらず、見るところを出す）。起動時に lab の定義を Nautobot に入れ（空のときだけ）、Job と JobHook を有効にして 1 回同期する |
 | 7-4 | `terraform/pipeline/analytics`（`STORES` に `splunk` があれば、Splunk のアラートが IP を機器名に直す device map を lab の定義から作って渡す）。先に Glue のカタログ `s3tablescatalog` を確かめ（無いときだけ作る。下の「アラートの通知の履歴」）、Grafana / ECS の Splunk の admin のパスワードと HEC の token を SSM の SecureString に作る（無いときだけ。値は出さない） |
 | 7-4b | ECS の Splunk がヘルスチェックで HEALTHY になるのを待つ（最大 20 分。Spark のジョブは起動してすぐ HEC に送るので）。クラスター（`SPLUNK_AZ_NUM` が 2 か 3）は cluster manager・indexer・search head の全部のタスク（`SPLUNK_AZ_NUM` + 2 個）を待ち、そのあと 2 つ見る。indexer が同じ AZ に 2 台いたら注意を出す（止まらない）。search head のログの `nwc-peer-check state=ok reason=peers_up:<indexer の数>` を最大 6 分待ち、出なければ止まる |
 | 7-5 | Spark のジョブが動いていなければ起こす |
-| 8-3 | Web を再起動 |
-| 8-5 | `terraform/workflow`。Temporal UI を開くコマンドを表示 |
-| 8-6 | Web を再起動 |
-| 9 | Runtime のロググループの保持を 7 日にする |
-| 10 | `start_session_command`、lab と Telegraf（取りにいく側）に入るコマンド、Grafana / Splunk / Nautobot のポートフォワードとパスワードを見るコマンドを表示し、ポートフォワーディングを開く（`Ctrl+C` で閉じる） |
+| 8-3 | Web を再起動（stream・graph・Nautobot のどれかを作るとき） |
+| 8-5 | `terraform/workflow`（`WORKFLOW=1` のとき）。Temporal UI（`http://localhost:8233/`）を開くコマンドを表示 |
+| 8-6 | Web を再起動（`WORKFLOW=1` のとき） |
+| 9 | Runtime のロググループの保持を 7 日にする（`AGENT=1` のとき） |
+| 10 | `start_session_command`、lab と Telegraf（取りにいく側）に入るコマンド、Grafana / Splunk / Nautobot / Kafbat UI のポートフォワードとパスワードを見るコマンドを表示し、ポートフォワーディングを開く（`Ctrl+C` で閉じる。`NO_DASHBOARD_PORTFORWARD=1` なら開かずに終わる） |
 
 - スクリプトの中は `-auto-approve`。できているものは飛ばすので、落ちたら打ち直せばよい。
 - 途中で落ちたときは、裏の graph の apply が終わるまで待ってから止まる。その間ターミナルを閉じない。
@@ -109,7 +110,7 @@ flowchart LR
   A["workflow"] --> B["analytics<br/>Spark のジョブを cancel"] --> N["nautobot<br/>RDS ごと"] --> C["graph"] --> D["stream"] --> E["lab"] --> F["agent"] --> G["base/core"] --> H["base/ecr"] --> I["Runtime の<br/>ロググループ"] --> J["SSM のパラメータ<br/>ManagedBy=ops/up.sh"]
 ```
 
-- 手順 5-2 で、`ops/up.sh` が作った SSM のパラメータ（`/<prefix>/` の下でタグ `ManagedBy=ops/up.sh` のもの。Grafana / Splunk / Nautobot の admin のパスワード、Splunk の HEC の token とクラスターの合言葉（`/<prefix>/splunk/idxc-secret`）、Nautobot の SECRET_KEY と DB のパスワード）を消す。手で入れたパラメータは消さない。nautobot のルートが消えなかったときは Nautobot の分だけ残す（Terraform が destroy でも DB のパスワードを読むので。打ち直せば消える）。
+- 手順 5-2 で、`ops/up.sh` が作った SSM のパラメータ（`/<prefix>/` の下でタグ `ManagedBy=ops/up.sh` のもの。Grafana / Splunk / Nautobot の admin のパスワード、Splunk の HEC の token とクラスターの合言葉（`/<prefix>/splunk/idxc-secret`）、Nautobot の SECRET_KEY と DB のパスワードと API トークン、Kafbat UI の admin のパスワード、Telegraf の取りにいく側の機器の認証情報（`/<prefix>/telegraf-dialin/` の下の 3 つ））を消す。手で入れたパラメータは消さない。nautobot のルートが消えなかったときは Nautobot の分だけ残す（Terraform が destroy でも DB のパスワードを読むので。打ち直せば消える）。
 - Nautobot の RDS は最後のスナップショットを取らずに消す。Nautobot で編集した内容は残らない（次の `ops/up.sh` でまた lab の定義から入る）。
 - 最後に `Project=<prefix>` のタグが残っているものを出す。何も出なければ全部消えている。
 - デバッグ用の EC2（CloudFormation の `<prefix>-lab-debug`）は消さない。`ops/lab-debug.sh down` で消す（同じ `Project` タグなので、残っていれば上の一覧に出る）。
@@ -186,6 +187,8 @@ terraform -chdir=terraform/pipeline/analytics output -raw grafana_password_comma
 terraform -chdir=terraform/pipeline/analytics output -raw splunk_port_forward_command
 terraform -chdir=terraform/pipeline/analytics output -raw splunk_password_command
 ```
+
+Nautobot（`http://localhost:8081/`）と Kafbat UI（`http://localhost:8082/`）も同じ形で開く（どちらもユーザー `admin`）。コマンドは `terraform -chdir=terraform/pipeline/nautobot output -raw port_forward_command` / `password_command` と、`terraform -chdir=terraform/pipeline/stream output -raw kafka_ui_port_forward_command` / `kafka_ui_password_command`。
 
 利用者に渡すなら、上のポリシーの `PortForwardDocumentOnly` の Resource に `arn:aws:ssm:ap-northeast-1::document/AWS-StartPortForwardingSessionToRemoteHost` を足す。パスワードを見るには `/<prefix>/grafana/admin-password` への `ssm:GetParameter`（復号あり）も要るので、渡さずに口頭で伝えてもよい。
 

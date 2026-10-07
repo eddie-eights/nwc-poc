@@ -2,11 +2,11 @@
 
 ← [構成](../README.md)
 
-AWS のリソース 1 つにつき 1 ファイル。FAQ、設計の記録、Terraform と `ops/up.sh` のコメントに散らばっていた事実を、リソースごとに集め直したもの。新しい事実は足していない。書いてあることはコード（`terraform/`、`ops/`、各プログラム）と突き合わせてある（2026-10-05）。
+AWS のリソース 1 つにつき 1 ファイル。FAQ、設計の記録、Terraform と `ops/up.sh` のコメントに散らばっていた事実を、リソースごとに集め直したもの。新しい事実は足していない。書いてあることはコード（`terraform/`、`ops/`、各プログラム）と突き合わせてある（2026-10-08）。
 
 - どのファイルも見出しは同じ: ひとことで / このプロジェクトでの使い方 / つながり / 知見 / 制約と未確認 / 関連。
 - `<prefix>` は `deploy.env` の `OWNER` から作る接頭辞 `<owner>-nwc-poc`。リージョンは東京（ap-northeast-1）。
-- 費用は `ops/up.sh` の先頭のコメントの数字（セント/時、東京）。リポジトリに書いてある数字だけを載せた。
+- 費用は `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`）の数字（セント/時、東京）。リポジトリに書いてある数字だけを載せた。
 - 「未確認」は、AWS の上で動かして確かめていないこと。
 
 | リソース | terraform のルート | ひとことの役割 | ファイル |
@@ -29,12 +29,17 @@ AWS のリソース 1 つにつき 1 ファイル。FAQ、設計の記録、Terr
 | Nautobot（ECS + RDS） | `pipeline/nautobot` | 機器・IF・ケーブルの台帳（正本）。変更を Neptune と Telegraf に映す | [nautobot.md](nautobot.md) |
 | lab の EC2（containerlab） | `pipeline/lab` | SR Linux 6 台の検証用ネットワーク | [lab-ec2.md](lab-ec2.md) |
 | SSM Parameter Store | 各ルートと `ops/up.sh` | ルートをまたいで渡す値（String）と、シークレット（SecureString） | [ssm-parameter-store.md](ssm-parameter-store.md) |
-| ECR | `base/ecr` | コンテナイメージ 10 個の置き場 | [ecr.md](ecr.md) |
+| ECR | `base/ecr` | コンテナイメージ 11 個（OSS 版はさらに 7 個）の置き場 | [ecr.md](ecr.md) |
 
-## まだ main に入っていないもの
+## OSS 版
 
-ここには書いていない。入ったら該当するファイルを書き直す。
+上の表はマネージド版（`terraform/`、接頭辞 `<owner>-nwc-poc`）。マネージドを OSS に置き換えた環境を作る（005）で、別の版（`oss/terraform/`、接頭辞 `<owner>-nwc-oss`）が main に入った（2026-10-07 に AWS で 1 回立てて確かめた）。
+OSS 版では次の 5 つを ECS の OSS に置き換え、ほかは同じ。違いの全体は [oss-variant.md](../../oss-variant.md)。
 
-| サイクル | 変わるファイル | 設計 |
+| マネージド版 | OSS 版 | ファイル |
 |---|---|---|
-| マネージドを OSS に置き換えた環境を作る（005） | MSK、OpenSearch Serverless、Prometheus、Neptune Analytics | [design.md](../../cycles/005-oss-on-ecs/design.md) |
+| MSK | Apache Kafka（KRaft）を ECS に 3 台 | [msk.md](msk.md) |
+| EMR Serverless（Spark） | Apache Spark を ECS に（ジョブごとに 1 サービス） | [emr-serverless.md](emr-serverless.md) |
+| OpenSearch Serverless（logs） | OpenSearch を ECS に 3 台（KB のコレクションはマネージドのまま） | [opensearch-serverless.md](opensearch-serverless.md) |
+| Amazon Managed Prometheus | VictoriaMetrics のクラスターを ECS に | [prometheus.md](prometheus.md) |
+| Neptune Analytics | Neo4j Community Edition + GDS を ECS に 1 台 | [neptune-analytics.md](neptune-analytics.md) |
