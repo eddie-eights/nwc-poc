@@ -54,10 +54,14 @@ WSL2（Ubuntu）
 - **OpenSearch 1 台。** `discovery.type=single-node`、`OPENSEARCH_INITIAL_ADMIN_PASSWORD`（`.env` の試し用の値）、`plugins.security.ssl.http.enabled=false`（Spark と Grafana は `http://opensearch:9200` に Basic 認証。`snmp_sinks.py` に自己署名を飛ばす設定が無い。OSS 版の `spark.tf:62` と同じ理由）、`node.store.allow_mmap=false`、`DISABLE_PERFORMANCE_ANALYZER_AGENT_CLI=true`、`OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m`（`oss/compose` と同じ）。インデックス `snmp-logs` は Spark の `_bulk` が作る。
 - **Prometheus。** `prom/prometheus:v3.15.0`（Docker Hub 2026-09-25、amd64 / arm64 あり）。`command: --config.file=/etc/prometheus/prometheus.yml --web.enable-remote-write-receiver --storage.tsdb.retention.time=3d`。scrape は無し（空の `prometheus.yml`）。Grafana のデータソースは `datasources-oss/prometheus.yaml`（uid `amp`）をそのまま使うので、`PROMETHEUS_URL=http://prometheus:9090`。
 - **Splunk。** `splunk/Dockerfile`（`SPLUNK_VERSION=10.4.3`、`ops/up-common.sh` と同値、linux/amd64 だけ）。`SPLUNK_START_ARGS=--accept-license`、`SPLUNK_GENERAL_TERMS=--accept-sgt-current-at-splunk-com`、`SPLUNK_PASSWORD`、`SPLUNK_HEC_TOKEN`（公式イメージが HEC を作る。TLS は既定の自己署名なので Spark は `--splunk-skip-verify`）、`SPLUNK_ROLE` は既定（standalone。app `netops_alerts` が残る）、`AWS_REGION` と `DEVICE_MAP`。`ALERTS_TOPIC_ARN` は渡さない（保存済みサーチは走るが、アラートアクションの SNS への publish は失敗してログに出るだけ。手元では見ない）。`SPLUNK_INDEX` は空（`ops/up.sh:240` と同じ。保存済みサーチは `index=*`）。
-- **Grafana。** `grafana/Dockerfile`（`GRAFANA_VERSION=13.2.2`）。`grafana/start.sh` の契約: `PROMETHEUS_AUTH=none`、`OPENSEARCH_AUTH=basic`、`OPENSEARCH_URL=http://opensearch:9200`、`OPENSEARCH_INDEX=snmp-logs`、`OPENSEARCH_PASSWORD`、`PROMETHEUS_URL=http://prometheus:9090`、`AWS_REGION`、`GF_SECURITY_ADMIN_PASSWORD`。`ALERTS_TOPIC_ARN` を渡さないので、アラートルールは入るが通知先は無い（`start.sh` の分岐どおり）。
-- **lab の手元用の切り替え（`lab/lab.sh`）。** 変更は 3 か所に絞る。(1) `pull`: `REGISTRY` が無ければ ECR の login を飛ばし、`docker pull` だけする（手元は `ghcr.io/nokia/srlinux:26.7.2` と `ghcr.io/srl-labs/network-multitool:v0.10.0`。`ops/lab-common.sh` の `SRLINUX_UPSTREAM:SRLINUX_TAG` / `MULTITOOL_UPSTREAM:MULTITOOL_TAG` と同値）。(2) `forward` / `hint` / `fail-main` の案内: `TELEGRAF_IMAGE` の分岐を `TELEGRAF_IMAGE` **または** `TELEGRAF_LOCAL=1` にする（handling は同じ: trap の REDIRECT だけ。案内の文は「compose の Telegraf」）。(3) `/etc/*-lab.env` が無ければそのまま進む（いまも `|| true` で進む。確かめるだけ）。`telegraf` サブコマンド（EC2 の docker run）は手元では使わない（compose が持つ）。
-- **`local/compose/lab.sh`（薄いラッパー）。** `.env` を読んで `SRLINUX_IMAGE` / `MULTITOOL_IMAGE` / `TELEGRAF_LOCAL=1` を export し、`sudo -E ../../lab/lab.sh "$@"` を呼ぶ。`lab/lab.sh` は `cd "$(dirname "$SELF")"` するので、cwd はどこでもよい。
-- **`local/compose/up.sh`。** `lab/lab_topology.py lab` の `--snmp-agents` / `--gnmi-targets` / `--device-map` を環境変数にして `docker compose up -d --build "$@"` を呼ぶ（compose.yaml は `${SNMP_AGENTS}` 等で受ける。値に `"` と `,` があるので `env_file` には書かず、呼び出し側の環境変数で渡す）。`down.sh` は `docker compose down`（`-v` でデータも消す）。`check.sh` は検証方法の「合格の確認」を打つ。
+- **Grafana。** `grafana/Dockerfile`（`GRAFANA_VERSION=13.2.2`）。`grafana/start.sh` の契約: `PROMETHEUS_AUTH=none`、`OPENSEARCH_AUTH=basic`、`OPENSEARCH_URL=http://opensearch:9200`、`OPENSEARCH_INDEX=snmp-logs`、`OPENSEARCH_PASSWORD`、`PROMETHEUS_URL=http://prometheus:9090`、`AWS_REGION`、`GF_SECURITY_ADMIN_PASSWORD`。`ALERTS_TOPIC_ARN` を渡さないので、**アラートルールも送り先も入らない**（`start.sh:36-49` は `ALERTS_TOPIC_ARN` があるときだけ `provisioning/alerting` を並べる）。手元で見るのはダッシュボードだけ。
+- **Spark の Kafka の認証。** 2 サービスとも `KAFKA_AUTH=none`（`snmp_sinks.py` の既定は `iam`。無いと PLAINTEXT の Kafka に IAM で繋ぎに行く）。
+- **再起動。** `telegraf` / `spark-splunk` / `spark-http` は `restart: on-failure`（Splunk が起きる前に HEC への POST が落ちてジョブが終わるので、ECS のサービスの代わり）。
+- **host へ出すポート。** compose の `ports` は全部 `127.0.0.1:` に縛る（Kafka の 9094〜9096、Kafbat UI 18080、Grafana 3000、Splunk 8000 / 8089、OpenSearch 9200、Prometheus 9090。管理ポートは `check.sh` が叩く）。host ネットワークの Telegraf の 4 つ（8080 / 57000 / 1162 / 5140）は `ports` ではないので全部のインターフェースで待つ（塞ぐのは BACKLOG）。
+- **プロジェクト名。** compose.yaml に `name: nwc-local`（`oss/compose` の `nwc-oss` と同じ形）。無いとディレクトリ名の `compose` になり、ほかの `compose` ディレクトリの構成と volume がぶつかって `down.sh -v` が相手の volume を消す。volume は `nwc-local_<名前>`。
+- **lab の手元用の切り替え（`lab/lab.sh`）。** 変更は 3 か所に絞る。(1) `pull`: `REGISTRY` が無ければ ECR の login を飛ばし、`docker pull` だけする（手元は `ghcr.io/nokia/srlinux:26.7.2` と `ghcr.io/srl-labs/network-multitool:v0.10.0`。`ops/lab-common.sh` の `SRLINUX_UPSTREAM:SRLINUX_TAG` / `MULTITOOL_UPSTREAM:MULTITOOL_TAG` と同値）。(2) `forward` / `hint` / `failover` の案内（障害のあとの案内の分岐は `fail-main)` ではなく `failover)` にある）: `TELEGRAF_IMAGE` の分岐を関数 `local_telegraf()`（`TELEGRAF_IMAGE` **または** `TELEGRAF_LOCAL=1`）にする（handling は同じ: trap の REDIRECT だけ。案内の文は「compose の Telegraf」）。(3) `/etc/*-lab.env` が無ければそのまま進む（いまも `|| true` で進む。確かめるだけ）。`telegraf` サブコマンド（EC2 の docker run）は手元では使わない（compose が持つ）。ファイルのモードは 100755 にする（`local/compose/lab.sh` と `lab.sh` 自身の `"$SELF" render` が直に呼ぶ。EC2 は `lab/setup.sh` が chmod する）。
+- **`local/compose/lab.sh`（薄いラッパー）。** `.env`（無ければ `.env.example`）から `SRLINUX_IMAGE` / `MULTITOOL_IMAGE` の 2 キーだけ読み、`sudo env SRLINUX_IMAGE=… MULTITOOL_IMAGE=… TELEGRAF_LOCAL=1 ../../lab/lab.sh "$@"` を呼ぶ。`sudo -E` で全部渡さないのは、シェルに `REGISTRY` や `AWS_REGION` があっても ECR や SSM へ行かないため。`up` の前に毎回 `lab/lab.sh render` を打つ（`lab/lab.sh up` は `splab.clab.yml` があると render しないので、`gen_lab.py` で台数を変えたあとや `.env` のイメージを変えたあとに古い yml のまま deploy する）。`lab/lab.sh` は `cd "$(dirname "$SELF")"` するので、cwd はどこでもよい。
+- **`local/compose/up.sh`。** `lab/lab_topology.py lab` の `--snmp-agents` / `--gnmi-targets` / `--device-map` を環境変数にして `docker compose up -d --build "$@"` を呼ぶ（compose.yaml は `${SNMP_AGENTS:-}` 等で受ける。値に `"` と `,` があるので `env_file` には書かず、呼び出し側の環境変数で渡す。空なら `docker compose config` は通るが Telegraf は `telegraf.sh` の形の検査で止まる）。`down.sh` は `docker compose down`（`-v` でデータも消す）。`check.sh` は検証方法の「合格の確認」を打つ。パスワードは curl の引数に載せず（`ps` に出る）`-K -` で標準入力から渡す。
 - **`.env.example`。** キーは `SPLUNK_PASSWORD`、`SPLUNK_HEC_TOKEN`、`OPENSEARCH_PASSWORD`、`GF_SECURITY_ADMIN_PASSWORD`、`SRLINUX_IMAGE`、`MULTITOOL_IMAGE`、`AWS_REGION`。値は試し用（`oss/compose` の `NwcOss-Trial-2026!` と同じ流儀の、強度の条件を満たす固定値）。本物のシークレットは入れない（手元だけで使い、AWS につながない）。
 - **版の正。** Kafka / Kafbat UI / OpenSearch は `oss/compose/compose.yaml`、Telegraf は `ops/lab-common.sh` の `TELEGRAF_VERSION`、Grafana / Splunk は `ops/up-common.sh`、SR Linux / multitool は `ops/lab-common.sh`。compose の build args と image タグはこれらと同値にし、`tests/test_local_compose.py` が照合する。Prometheus だけはこの構成にしか無いので compose が正。
 
@@ -72,7 +76,7 @@ WSL2（Ubuntu）
 | Grafana / Prometheus / Telegraf / Kafbat UI | 約 1.5 GB |
 | SR Linux ×6（ixr-d2l） | 約 6〜9 GB |
 
-合計 16〜19 GB。`.wslconfig` の `memory` を 20 GB 以上にする（`check.sh` が `free -g` を見て 20 GB 未満なら警告）。足りなければ `lab/gen_lab.py --leaves 2 --spines 1`（5 台。`leaves` は 2 の倍数で 2 以上、`spines` は 1 以上）で減らす。
+合計 16〜19 GB。`.wslconfig` の `memory` を 20 GB 以上にする（`check.sh` が `free -m` の total を見て 19456 MiB 未満なら警告。`memory=20GB` は `free -g` だと 19 になるので GiB で切り捨てない）。足りなければ `lab/gen_lab.py --leaves 2 --spines 1`（5 台。`leaves` は 2 の倍数で 2 以上、`spines` は 1 以上）で減らす。
 
 ### 実物で確認した契約
 
@@ -89,15 +93,16 @@ WSL2（Ubuntu）
 
 | ファイル | 変更 |
 |---|---|
-| `local/compose/compose.yaml` | 新規。上の構成。named volume: `kafka-1/2/3`、`opensearch`、`prometheus`、`splunk-etc`、`splunk-var`、`grafana`、`spark-splunk-ckpt`、`spark-http-ckpt` |
+| `local/compose/compose.yaml` | 新規。上の構成。`name: nwc-local`。named volume: `kafka-1/2/3`、`opensearch`、`prometheus`、`splunk-etc`、`splunk-var`、`grafana`、`spark-splunk-ckpt`、`spark-http-ckpt` |
 | `local/compose/prometheus.yml` | 新規。`global:` だけ（scrape 無し） |
 | `local/compose/.env.example` | 新規。7 キー |
 | `local/compose/up.sh` / `down.sh` / `check.sh` / `lab.sh` | 新規。`set -euo pipefail`、`cd "$(dirname "$0")"` |
-| `local/compose/README.md` | 新規。前提（WSL2、docker-ce、`.wslconfig`、binfmt は要らない）、手順、見る場所、消し方 |
-| `lab/lab.sh` | `pull` の login を `REGISTRY` があるときだけに。`forward` / `hint` / `fail-main` の分岐に `TELEGRAF_LOCAL` を足す |
+| `local/compose/README.md` | 新規。前提（WSL2、docker-ce + `docker-compose-plugin`、containerlab、`snmp`、`.wslconfig`、binfmt は要らない）、手順、見る場所、消し方 |
+| `lab/lab.sh` | `pull` の login を `REGISTRY` があるときだけに。`forward` / `hint` / `failover` の分岐を `local_telegraf()` に。モード 100755 |
 | `ops/check.sh` | 手順 3 の `bash -n` に `local/compose/*.sh` を足す。`find` の対象に `local` を足す（`.py` は置かない） |
 | `tests/test_local_compose.py` | 新規。下の検証方法 |
-| `.gitignore` | `local/compose/.env` |
+| `tests/test_lab_debug.py` | `forward` の分岐の正規表現を `if local_telegraf; then` に |
+| `.gitignore` | 変えない。`.gitignore:4` の `.env` が `local/compose/.env` も無視する（`git check-ignore -v` で確かめる） |
 | `README.md` / `docs/setup.md` / `docs/architecture/README.md` | 手元の構成の入口（`local/compose/README.md` へのリンク）と、ディレクトリ表に `local/` を足す |
 | `docs/cycles/BACKLOG.md` | この行は着手済みのまま。完了は `/cycle-review` で |
 
@@ -106,7 +111,7 @@ WSL2（Ubuntu）
 - `telegraf/`、`spark/`、`grafana/`、`splunk/` の Dockerfile と設定をそのまま build する（手元用の写しは作らない）。
 - `oss/compose/compose.yaml` の `x-kafka-env` と `kafka-ui`（文字どおり写す。EXTERNAL リスナーだけ足す）。`oss/compose` 自体は変えない（OSS 版の確認用のまま。007 で扱いを決める）。
 - `lab/lab.sh`、`lab/lab_topology.py`、`lab/gen_lab.py`、`lab/splab.clab.yml.in`、`lab/srlinux/*.cli`（trap / syslog の宛先 203.0.113.1 は手元でも同じ）。
-- `grafana/provisioning/datasources-oss/`（OSS 版と同じ分岐）、ダッシュボード `metrics.json` / `logs.json`、アラートルール。
+- `grafana/provisioning/datasources-oss/`（OSS 版と同じ分岐）、ダッシュボード `metrics.json` / `logs.json`（アラートルールは `ALERTS_TOPIC_ARN` が無いので入らない）。
 - `tests/test_lab_debug.py` の `check` / `read` の流儀。
 
 ## 実装ステップ
@@ -143,27 +148,27 @@ WSL2（Ubuntu）
 2. `local/compose/lab.sh up` → 最後に `この EC2 の Telegraf へ: trap 162/udp を 1162/udp へ向けた` に相当する手元用の文。`sudo iptables -t nat -S PREROUTING | grep nwc-lab-telegraf` が 1 行。
 3. `local/compose/lab.sh check` が全台 `ok`。
 4. 2〜3 分待って `local/compose/check.sh` が全部 `ok`:
-   - Kafka: `curl -s 127.0.0.1:18080/api/clusters/nwc/topics` に `metrics` `gnmi` `traps` `logs` の名前がある
+   - Kafka: `curl -s 127.0.0.1:18080/api/clusters/nwc/topics` に `metrics` `gnmi` `traps` `logs` の名前がある（トピックは Spark の `ensure_topics` が作るので、Telegraf から届いた証拠ではない。届いたかは次の Prometheus 以降で見る）
    - Prometheus: `curl -s 'http://127.0.0.1:9090/api/v1/query?query=count(snmp_interface_ifOperStatus)'` の `result[0].value[1]` が `0` より大きい
    - OpenSearch: `curl -s -u admin:… http://127.0.0.1:9200/snmp-logs/_count` の `count` が 0 より大きい
    - Splunk: `curl -sk -u admin:… https://127.0.0.1:8089/services/search/jobs/export -d search='search index=* sourcetype=netops:* earliest=-10m | stats count' -d output_mode=json` の `count` が 0 より大きい
    - Grafana: `curl -s -u admin:… http://127.0.0.1:3000/api/datasources` に uid `amp` と `aoss-logs`、`/api/datasources/uid/amp/health` が `OK`
 5. `local/compose/lab.sh fail-main` → Grafana の `metrics` ダッシュボードで `dc1-leaf-01 ethernet-1/1` が DOWN、`logs` ダッシュボードに linkDown の trap と syslog、Splunk で `index=* source="telegraf:snmp_trap"` に linkDown。`heal-main` で戻る。
 6. `local/compose/lab.sh trap-test` → Splunk の保存済みサーチ `netops_trap` が次の実行で 1 件（`index=_internal source=*scheduler.log savedsearch_name=netops_trap` で `result_count=1`）。
-7. `local/compose/down.sh -v` と `local/compose/lab.sh down` のあと `docker ps -a` に nwc のコンテナが無く、`docker volume ls` に `compose_` の volume が無い。
+7. `local/compose/down.sh -v` と `local/compose/lab.sh down` のあと `docker ps -a` に nwc のコンテナが無く、`docker volume ls` に `nwc-local_` の volume が無い。
 
 合格は 4〜6 が通ること。
 
 ## 未確定事項とリスク
 
-1. **WSL2 のカーネルで SR Linux と `modprobe bonding` が動くか（未確認）。** containerlab は WSL2 を公式に支援しているが、このユーザーの PC では未実施。bonding が無ければ VM 2 台の bond0 が上がらず、`lab up` が `modprobe` で止まる。回避: `lab.sh` の `modprobe bonding` を失敗しても続ける形にはしない（EC2 の挙動を変えない）。失敗したら `uname -r` と `zcat /proc/config.gz | grep BONDING` を報告してもらい、次のサイクルで扱う。
+1. **WSL2 のカーネルで SR Linux と `modprobe bonding` が動くか（未確認）。** containerlab は WSL2 を公式に支援しているが、このユーザーの PC では未実施。bonding が無ければ VM 2 台の bond0 が上がらない。`lab/lab.sh:126` の `modprobe bonding || echo …` は失敗しても続けるので `lab up` は止まらず、`lab check` の `bond0 が無い` で分かる（EC2 の挙動は変えない）。失敗したら `uname -r` と `zcat /proc/config.gz | grep BONDING` を報告してもらい、次のサイクルで扱う。
 2. **Docker Engine の場所。** `network_mode: host` と `iptables` の REDIRECT が効くのは、docker-ce が WSL の Ubuntu の中にあるとき。Docker Desktop の WSL 統合はエンジンが別の distro にいるので、host ネットワークが Ubuntu のネットワーク名前空間にならず、この設計は動かない（未確認。README に「docker-ce を WSL に入れる」と書く）。
 3. **iptables の実装。** Ubuntu の `iptables` が nft 版でも `REDIRECT` は使える。Docker が自分の規則を入れた後に `-I PREROUTING 1` で先頭に入れるので順序は EC2 と同じ。WSL で `DOCKER-USER` チェインが無い構成は無い想定（Docker が作る）。
 4. **Splunk のイメージは amd64 だけ。** WSL（x86_64）は問題ない。Mac（Apple Silicon）は `platform: linux/amd64` のエミュレーションになり、起動に数分かかるか落ちる。Mac は未確認のまま残す。
 5. **Spark の checkpoint の書き込み権限。** `/opt/spark/work-dir` に named volume を付ければ `spark` ユーザー（uid 185）で書ける想定。build で `docker compose logs spark-http` に `Permission denied` が無いことを見る。
-6. **Telegraf の 8080/tcp（health）と 57000/tcp（MDT）が host の他のプロセスとぶつかる。** README に書く。ぶつかったら `telegraf.sh` の `LOG_PORT` / `TRAP_PORT` と同じく環境変数で変えられるか確かめ、無ければ BACKLOG。
+6. **Telegraf の 8080/tcp（health）と 57000/tcp（MDT）が host の他のプロセスとぶつかる。** README に書く。`telegraf.conf.in` で固定値（実装で確かめた）なので、環境変数で変えられるようにするのは BACKLOG。
 7. **Kafka の advertised listener が `localhost`。** compose の外の Telegraf（host）からだけ使う前提。WSL の外（Windows 側）からは使わない。
-8. **メモリ。** 見積もりは未実測。SR Linux の実測は EC2（arm64）の値しか無い。WSL で `free -g` を見て、足りなければ 5 台構成に落とす。
+8. **メモリ。** 見積もりは未実測。SR Linux の実測は EC2（arm64）の値しか無い。WSL で `free -m` を見て、足りなければ 5 台構成に落とす。
 9. **OpenSearch 3.9 の security plugin を TLS なしで動かす設定名。** `plugins.security.ssl.http.enabled: false` は `oss/terraform` の OSS 版で AWS で動いた設定（2026-10-07）と同じ。single-node との組み合わせは手元で未確認。
 
 <!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261008-cycle-006-local-compose-design.html -->

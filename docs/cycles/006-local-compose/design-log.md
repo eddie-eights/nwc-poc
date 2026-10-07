@@ -19,3 +19,13 @@
 - **Splunk を入れない / Grafana だけ。** ユーザーが「grafana と splunk も 1 つずつ」「spark も入れる」と決めている。
 - **Iceberg（S3 Tables）を MinIO で代替。** 手元で見たいのは Grafana と Splunk までの流れで、Iceberg は Athena から読むためのもの。入れると MinIO + REST カタログが増える。入れない。
 - **Nautobot / Neo4j / Temporal / Web を入れる。** ユーザー決定で入れない（「compose は nautobot 要らない」）。
+
+## Round 1 のあとの直し（2026-10-08、PM）
+
+`build.md` Round 1 の逸脱 1〜13 と反対弁護人の N5 を受けて `design.md` を実装に揃えた。設計の意図は変えていない。
+
+- Grafana のアラートルールは `ALERTS_TOPIC_ARN` が無いと入らない（`start.sh:36-49`）。「ルールは入るが通知先は無い」は誤りだった
+- `local/compose/lab.sh` は `sudo -E` でなく `sudo env` で 3 つだけ渡し、`up` の前に毎回 `render` する
+- `check.sh` のメモリは `free -m` の 19456 MiB（`free -g` は 20GB を 19 と出す）
+- `.gitignore` は変えない（`.gitignore:4` が既に無視する）、volume の接頭辞は `nwc-local_`、案内の分岐は `failover)`、`modprobe bonding` は `|| echo` で続く、Kafka のトピックの有無は Telegraf から届いた証拠にしない
+- 実装で足した `KAFKA_AUTH=none` / `restart: on-failure` / `ports` の `127.0.0.1` / `name: nwc-local` / `lab.sh` の 100755 / `check.sh` の `-K -` を設計方針に書いた
