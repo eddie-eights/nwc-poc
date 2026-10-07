@@ -3,7 +3,8 @@
 1 行 1 件、タイトルは動詞で書く。実装の手順と検証はここに書かず、サイクルの `design.md` に書く。
 
 - [x] Nautobot の Job を OSS 版の Neo4j につなぐ（2026-10-08 完了。コードとテストまでで、AWS では未確認。005 の design.md「実装の状態」）
-- [ ] Neo4j の id 検索にラベルを付ける（頂点が増えると全走査になる）
+- [x] Neo4j の id 検索にラベルを付ける（頂点が増えると全走査になる）（2026-10-08 完了。fix/neo4j-id-labels。`_lbl` で Neo4j のときだけ付け、Neptune に送る openCypher は不変。手元の Neo4j で 2000 機器の set_status の dbHits 15014 → 13。AWS の Neo4j / Neptune では未確認）
+- [ ] Neo4j に残る全走査を減らす（`count()` と seed の `MATCH (n) WHERE n.registered = false`、remove_device の `MATCH (n:interface) WHERE n.device_id = $id` は device_id に索引が無い。大量投入の直後は索引の統計が古いので `CALL db.prepareForReplanning()` も検討。2026-10-08 の fix/neo4j-id-labels で見つけた）
 - [x] Kafka と OpenSearch のタスクを 1 台ずつ入れ替える手順を作る（いまは `terraform apply` で 3 つが同時に入れ替わる）（2026-10-08 完了。feat/oss-redis8-rolling の `oss/ops/roll-nodes.sh`。AWS では未確認）
 - [ ] OSS 版とマネージド版の時間あたりの費用を測って `docs/oss-variant.md` に書く
 - [ ] OSS 版をマネージド版と並べて立てる（Fargate の vCPU の上限 30 を上げてから。GDS と `neptune.algo.*` の並びの比較もここで）
