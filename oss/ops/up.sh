@@ -378,7 +378,8 @@ ensure_secret "/$PREFIX/neo4j-password" password "Neo4j password of the neo4j us
 # status の Lambda（arm64）のレイヤーの中身。ドライバは純 Python なので、どの PC でも同じものができる（sync.tf の locals の注記）。
 # graph/requirements-oss.txt と pip に渡す platform / python の版のハッシュを .build/neo4j-layer.sha256 に残し、同じなら作り直さない
 # （毎回 pip を回さない。zip の中身は変わらない。版を変えたらハッシュが変わって作り直す）
-LAYER_SHA=$( { cat graph/requirements-oss.txt; echo "manylinux2014_aarch64 3.13"; } | shasum -a 256 | cut -d' ' -f1)
+LAYER_SHA=$( { cat graph/requirements-oss.txt; echo "manylinux2014_aarch64 3.13"; } \
+  | "${PY[@]}" -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
 if [ -d oss/terraform/pipeline/graph/.build/neo4j-layer/python/neo4j ] \
    && [ "$(cat oss/terraform/pipeline/graph/.build/neo4j-layer.sha256 2>/dev/null)" = "$LAYER_SHA" ]; then
   echo "Neo4j のドライバのレイヤー（oss/terraform/pipeline/graph/.build/neo4j-layer）はある（graph/requirements-oss.txt は変わっていない）"

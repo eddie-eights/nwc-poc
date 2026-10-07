@@ -14,7 +14,7 @@ aws / terraform / docker は偽物（下の FAKE_*）に差し替え、AWS に�
      打ち直し（イメージもパラメータも作り直さない）、サービスが安定しなかったとき（同期を飛ばし、Spark は起こし、警告を出す）。
      そのあと oss/ops/down.sh が、up.sh の作ったパラメータを全部消す
 実行は python3 tests/test_oss_ops.py"""
-import base64, json, os, re, shutil, subprocess, tempfile, types
+import base64, hashlib, json, os, re, shutil, subprocess, tempfile, types
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
@@ -263,15 +263,16 @@ if sys.argv[1:2] == ["login"]:
     sys.stdin.read()
 '''
 
-# ---- 偽物の uv（up.sh が pip を打つのに使う。PyPI には行かない）。download は -d の先に、install は --target の先に空のファイルを置く
+# ---- 偽物の uv（up.sh が pip を打つのに使う。PyPI には行かない）。download は -d の先に空のホイールを、
+# install は --target の先に neo4j/__init__.py（up.sh が「レイヤーはある」と見る目印）を置く
 FAKE_UV = r'''#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
 with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as f:
     f.write(json.dumps({"cmd": "uv", "args": args}) + "\n")
-for flag, name in (("-d", "fake-1.0-py3-none-any.whl"), ("--target", "fake.py")):
+for flag, name in (("-d", "fake-1.0-py3-none-any.whl"), ("--target", "neo4j/__init__.py")):
     if flag in args:
-        os.makedirs(args[args.index(flag) + 1], exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.join(args[args.index(flag) + 1], name)), exist_ok=True)
         open(os.path.join(args[args.index(flag) + 1], name), "w").close()
 '''
 
@@ -727,6 +728,7 @@ check("oss/ops/up.sh は graph の前に SSM の /<接頭辞>/neo4j-password を
       0 <= pos('ensure_secret "/$PREFIX/neo4j-password" password') < pos("tf_apply pipeline/graph")
       and 0 <= pos("--target oss/terraform/pipeline/graph/.build/neo4j-layer/python") < pos("tf_apply pipeline/graph")
       and "--platform manylinux2014_aarch64" in up and "-r graph/requirements-oss.txt" in up
+      and "hashlib.sha256" in up and "shasum" not in up and pos('"${PY[@]}" -c') < pos("neo4j-layer.sha256")
       and 'tf_apply pipeline/graph -var "neo4j_image_tag=$NEO4J_TAG" -var alert_history=true' in up)
 UP_ENDPOINTS = {"ssm", "ssmmessages", "ecr.api", "ecr.dkr", "logs", "s3tables", "sns", "kinesis-firehose",
                 "bedrock-runtime", "bedrock-agentcore", "ecs", "sqs", "bedrock-agentcore.gateway", "athena"}
@@ -888,6 +890,20 @@ check("up.sh（通し）: status の Lambda のレイヤー（graph/requirements
       any("install" in a and arg_after(a, "--target") == "oss/terraform/pipeline/graph/.build/neo4j-layer/python"
           and arg_after(a, "--platform") == "manylinux2014_aarch64" and arg_after(a, "-r") == "graph/requirements-oss.txt" for a in uv)
       and 0 <= first(cs, lambda c: c["cmd"] == "uv" and "install" in c["args"]) < apply_at(cs, "pipeline/graph"))
+
+def layer_sha():  # up.sh と同じ計算（graph/requirements-oss.txt + pip に渡す platform / python の版）
+    with open(os.path.join(REPO, "graph", "requirements-oss.txt"), "rb") as f:
+        return hashlib.sha256(f.read() + b"manylinux2014_aarch64 3.13\n").hexdigest()
+
+def layer_stamp():
+    try:
+        with open(os.path.join(REPO, "oss/terraform/pipeline/graph/.build/neo4j-layer.sha256"), encoding="utf-8") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return None
+
+check("up.sh（通し）: レイヤーを入れたあと、graph/requirements-oss.txt と platform / python の版の SHA-256 を .build/neo4j-layer.sha256 に残す",
+      layer_stamp() == layer_sha() and os.path.isfile(os.path.join(REPO, "oss/terraform/pipeline/graph/.build/neo4j-layer/python/neo4j/__init__.py")))
 _neo_wait = first(cs, lambda c: is_aws(c, "ecs", "wait", "--services out-graph-neo4j_service_name"))
 check("up.sh（通し）: Neo4j のサービスが安定してから、Web の EC2 に ops/seed_graph.py を 1 回送る（graph の apply のあと、nautobot の apply の前）",
       0 <= apply_at(cs, "pipeline/graph") < _neo_wait < first(cs, is_seed) < apply_at(cs, "pipeline/nautobot")
@@ -934,6 +950,9 @@ check("up.sh（打ち直し）: 終了コード 0。ECR にあるイメージは
 check("up.sh（打ち直し）: SSM のパラメータを作り直さない（値が変わると、動いている Kafka・Nautobot の DB・Neo4j と合わなくなる）",
       not aws_calls(cs2, "ssm", "put-parameter") and {n: m.get("value") for n, m in inv2["ssm"].items()} == made_values
       and all(f"{n} はある（作り直さない）" in p.stdout for n in UP_PARAMS))
+check("up.sh（打ち直し）: status の Lambda のレイヤーは作り直さない（neo4j/ と .sha256 がそろっていれば pip を打たず、「はある」と言う）",
+      not [c for c in cs2 if c["cmd"] == "uv" and "install" in c["args"]] and layer_stamp() == layer_sha()
+      and "neo4j-layer）はある（graph/requirements-oss.txt は変わっていない）" in p.stdout)
 check("up.sh（打ち直し）: ホイールは取り直さず、9 つのルートは同じ順で apply し直し、同期と Spark の起動もやり直す",
       not [c for c in cs2 if c["cmd"] == "uv" and "download" in c["args"]]
       and [r for r, _ in applies(cs2)] == [f"oss/terraform/{r}" for r in ROOTS]
@@ -945,10 +964,16 @@ check("up.sh（打ち直し）: 最後に Web の EC2 へのポートフォワ�
       and json.loads(arg_after(_last, "--parameters")) == {"portNumber": ["8080"], "localPortNumber": ["8080"]}
       and not [f for f in os.listdir(TMP) if f.startswith("x-nwc-oss-nautobot.")])
 
-# ---- 3 回目: Neo4j と OpenSearch のサービスが安定しない
+# ---- 3 回目: Neo4j と OpenSearch のサービスが安定しない（ついでに graph/requirements-oss.txt を変えて、レイヤーを作り直すことも見る）
+_old_sha = layer_sha()
+with open(os.path.join(REPO, "graph", "requirements-oss.txt"), "a", encoding="utf-8") as f:
+    f.write("# 版を変えたつもり\n")
 p, cs3, inv3 = run_up(inv2, {"FAKE_ECR_ALL": "1", "NO_DASHBOARD_PORTFORWARD": "1",
                              "FAKE_ECS_UNSTABLE": "out-graph-neo4j_service_name,x-nwc-oss-opensearch-b"})
 out3 = p.stdout + p.stderr
+check("up.sh（requirements-oss.txt を変えた）: レイヤーを消して pip を打ち直し、新しい SHA-256 を .sha256 に残す",
+      [c for c in cs3 if c["cmd"] == "uv" and "install" in c["args"]] and layer_sha() != _old_sha and layer_stamp() == layer_sha()
+      and "neo4j-layer）はある" not in out3)
 check("up.sh（Neo4j が安定しない）: 同期を送らず、警告（トポロジは入れていない）を出して先へ進む（nautobot・analytics・workflow まで apply する）",
       p.returncode == 0 and not [c for c in cs3 if is_seed(c)] and out3.count("トポロジは入れていない") == 2
       and [r for r, _ in applies(cs3)] == [f"oss/terraform/{r}" for r in ROOTS])

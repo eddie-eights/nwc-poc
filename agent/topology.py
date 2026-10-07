@@ -17,7 +17,7 @@ import os
 import time
 from collections import deque
 
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import BotoCoreError, ClientError   # except は graph.errors() で受ける（tests/test_app.py がこの名前を使う）
 
 import graph
 import toolkit
@@ -93,7 +93,7 @@ def reload(force: bool = False) -> str:
             source = "neptune" if devices else "neptune-empty"  # 空なら静的データを見せる（画面の「投入」で入れる）
             if devices:
                 layers = graph.load_layers()
-        except (ClientError, BotoCoreError, KeyError, ValueError, TypeError) as e:
+        except (*graph.errors(), KeyError, ValueError, TypeError) as e:
             log.warning("neptune read failed, using static data: %s", str(e)[:200])
             devices = None
     if not devices:
@@ -422,7 +422,7 @@ def recent_changes(device_id: str = "", limit: int = 20) -> dict:
     limit = max(1, min(int(limit), 50))
     try:
         rows = graph.list_records("change", "change_id", "time", limit=50)
-    except (ClientError, BotoCoreError) as e:
+    except graph.errors() as e:
         return {"error": f"変更履歴を読めない: {str(e)[:200]}", "changes": []}
     if device_id:
         rows = [r for r in rows if r.get("device_id") == device_id or device_id in str(r.get("object") or "")]
@@ -444,7 +444,7 @@ def centrality(limit: int = 10) -> dict:
     limit = max(1, min(int(limit), 50))
     try:
         out = graph.centrality(limit)
-    except (ClientError, BotoCoreError) as e:
+    except graph.errors() as e:   # OSS 版は Neo4j のドライバの失敗（GDS が無い等）もここで受ける
         return {"error": f"中心性を計算できない: {str(e)[:200]}", "devices": []}
     out["note"] = "degree は回線の数、closeness は大きいほど中心、component は島の番号。components が 2 以上なら分断している"
     return out

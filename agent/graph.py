@@ -39,6 +39,7 @@ NEO4J_PASSWORD（無ければ SSM の <PARAM_PREFIX>/neo4j-password。SecureStri
 ほかの関数は 2 つのグラフを区別しない。違うのはアルゴリズム（centrality。neptune.algo.* の代わりに GDS）だけ。
 """
 
+import contextlib
 import json
 import os
 import re
@@ -46,6 +47,7 @@ import uuid
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
 import toolkit
 
@@ -73,6 +75,19 @@ def graph_id() -> str:
 def configured() -> bool:
     """Neptune Analytics（OSS 版は Neo4j）を配備してあるか（無ければ topology.py は data/ の静的データに戻る）"""
     return bool(NEO4J_URI.value() if BACKEND == "neo4j" else graph_id())
+
+
+def errors() -> tuple[type[BaseException], ...]:
+    """読み書きの失敗として捕まえる例外の型（topology.py の except に渡す）。Neptune は boto の 2 つ。
+    OSS 版はドライバの Neo4jError（サーバーが返す失敗）と DriverError（つながらない・切れた）も加える（無ければ boto の 2 つだけ）"""
+    exc: tuple[type[BaseException], ...] = (ClientError, BotoCoreError)
+    if BACKEND == "neo4j":
+        try:
+            from neo4j.exceptions import DriverError, Neo4jError
+        except ImportError:   # ドライバが無い（テストの偽物など）
+            return exc
+        exc += (Neo4jError, DriverError)
+    return exc
 
 
 def _client():
@@ -637,15 +652,21 @@ def _algo_neo4j() -> tuple[list, list, list]:
     if not _count("MATCH (n:device) RETURN count(n) AS n"):
         return [], [], []
     g = f"nwc-centrality-{uuid.uuid4().hex}"
-    # project も try の中（写しがサーバー側にできたあとで結果の受け取りに失敗しても drop が走る。無ければ failIfMissing=false で何もしない）
+    # project も try の中（写しがサーバー側にできたあとで結果の受け取りに失敗しても drop が走る。無ければ failIfMissing=false で何もしない）。
+    # 失敗したときの drop は、その失敗（GDS が入っていない等）を隠さないように、drop 自身の失敗を飲んで元の失敗を上げる
+    drop = "CALL gds.graph.drop($g, false) YIELD graphName RETURN graphName"
     try:
         query("MATCH (a:device) OPTIONAL MATCH (a)-[:link]->(b:device) "
               "WITH gds.graph.project($g, a, b, {}, {undirectedRelationshipTypes: ['*']}) AS p RETURN p.graphName AS graph", g=g)
-        return (query("CALL gds.degree.stream($g) YIELD nodeId, score RETURN gds.util.asNode(nodeId).id AS id, toInteger(score) AS degree", g=g),
-                query("CALL gds.closeness.stream($g) YIELD nodeId, score RETURN gds.util.asNode(nodeId).id AS id, score", g=g),
-                query("CALL gds.wcc.stream($g) YIELD nodeId, componentId RETURN gds.util.asNode(nodeId).id AS id, componentId AS component", g=g))
-    finally:
-        query("CALL gds.graph.drop($g, false) YIELD graphName RETURN graphName", g=g)
+        out = (query("CALL gds.degree.stream($g) YIELD nodeId, score RETURN gds.util.asNode(nodeId).id AS id, toInteger(score) AS degree", g=g),
+               query("CALL gds.closeness.stream($g) YIELD nodeId, score RETURN gds.util.asNode(nodeId).id AS id, score", g=g),
+               query("CALL gds.wcc.stream($g) YIELD nodeId, componentId RETURN gds.util.asNode(nodeId).id AS id, componentId AS component", g=g))
+    except BaseException:
+        with contextlib.suppress(Exception):
+            query(drop, g=g)
+        raise
+    query(drop, g=g)
+    return out
 
 
 def centrality(limit: int = 10) -> dict:

@@ -13,7 +13,7 @@
 # CLUSTER_ID は 3 台で同じ値で、OSS 版の ops/up.sh が 1 回だけ作って SSM の /<接頭辞>/kafka/cluster-id（String か SecureString）に置く。
 # ECS の secrets で渡すので、Terraform の state には入らない。
 # terraform apply でタスク定義が変わると 3 つのサービスが同時に入れ替わり、そのあいだ controller の過半数が無い（データは EFS に残るので戻る）。
-# 1 台ずつ入れ替えるのは ops の手順（設計の未確定事項 7。まだ無い）
+# 1 台ずつ入れ替えるのは ops の手順（設計の未確定事項 4。まだ無い。docs/cycles/BACKLOG.md）
 
 variable "kafka_image_tag" {
   description = "Tag of the Kafka image in the <prefix>-kafka repository (apache/kafka copied to ECR by the OSS ops/up.sh). Same version as oss/compose."

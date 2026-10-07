@@ -206,7 +206,7 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 |---|---|
 | `oss/ops/up.sh` が作るルート | マネージド版の `ops/up.sh` と同じ 9 つ。`base/ecr`、`base/core`、`agent`、`pipeline/lab`、`pipeline/stream`、`pipeline/graph`、`pipeline/nautobot`、`pipeline/analytics`、`workflow`（`oss/ops/down.sh` が逆順に消す） |
 | Grafana | OSS 版の analytics の `grafana.tf`（実ファイル）にある。データソースは vmselect（署名なし）と自前の OpenSearch（Basic 認証）で、`grafana/start.sh` が `datasources-oss` を並べる。uid がマネージド版と同じなので、イメージ・ダッシュボード・アラートのルールはマネージド版と同じものを使う。アラートは同じ SNS のトピックへ出る。`oss/ops/up.sh` がイメージ、admin のパスワード、`create_grafana=true` を渡して作る |
-| Web | EC2 に部品（wheel と手順書）を置き、`GRAPH_BACKEND=neo4j` で動く |
+| Web | EC2 に部品（Web の `.py` と `web/requirements-oss.txt` の wheel）を置き、`GRAPH_BACKEND=neo4j` で動く。手順書は Knowledge Base を作らないので置かない |
 | Neo4j への同期 | `oss/ops/up.sh` の 7-3b が `ops/seed_graph.py` を Web の EC2 で打つ（空のときだけ）。入れ直しは `ops/sync-graph.sh --oss [--replace]` |
 | エージェント | `agent` のイメージを Neo4j のドライバー入りでビルドし、`GRAPH_BACKEND=neo4j` で Neo4j を引く |
 | Nautobot の Job から Neo4j | **まだ。** `terraform/pipeline/nautobot` のタスク定義が `GRAPH_BACKEND` / `NEO4J_URI` / `NEO4J_PASSWORD` を渡さず、Nautobot のイメージに Neo4j のドライバーが無い（OSS 版では Job「Telegraf と Neptune に同期」の Neptune 側が動かない。lab の定義からの同期は動く） |
