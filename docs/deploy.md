@@ -81,7 +81,7 @@ OpenSearch・Prometheus・Grafana は `grafana` でまとめて作るか作ら�
 | 3 | `terraform/base/core`（エンドポイントは今回作る機能の分に、state にリソースが残っているルートの分を足す）。graph を作るなら 3-2 で裏で `terraform/pipeline/graph` を始める（ログは `ops/logs/graph-apply.log`） |
 | 3-3 | `terraform/agent`（`AGENT=1` のとき） |
 | 4 | 4-1 で Web の wheel を取り（`wheels/` が空のときだけ）、4-2 で Web の部品を S3 に置く。4-3 で `CREATE_KB=1` なら手順書を取り込む。4-4 で Web の EC2 を再起動 |
-| 5 | 5-1 で containerlab の rpm と `lab/`、5-2 で Spark の jar 6 本と `spark/snmp_sinks.py` を S3 に置く |
+| 5 | 5-1 で containerlab の rpm と `lab/`、5-2 で Spark の jar 6 本と `spark/snmp_sinks.py` を S3 に置く。jar は `ops/up.sh` の `JARS` に書いた sha256 と照合し、合わなければ消して止まる（打ち直せば取り直す）。`JARS` に無い前の版の jar は `jars/` と S3 から消す |
 | 6 | `terraform/pipeline/lab` |
 | 7 | `terraform/pipeline/stream`（MSK に 20〜30 分（未確認）。Telegraf の ECS（受ける側と取りにいく側の 2 サービス）と内部 NLB も。ポーリング先と gNMI の相手は lab の定義から作って変数で渡す。ポーリング先は `SNMP_POLL=0` でも渡す（Telegraf が使うのは `SNMP_POLL=1` のときだけ）。Kafka の画面の Kafbat UI の ECS も。先に取りにいく側の機器の認証情報 3 つ（`/<prefix>/telegraf-dialin/` の下。最初は lab の既定値）と Kafbat UI の admin のパスワードを SSM の SecureString に作る（無いときだけ）） |
 | 7-2 | lab の EC2 でトポロジ（8 コンテナ）が上がっているかを見る（上がっていなければ注意を出して進む） |

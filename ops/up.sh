@@ -130,17 +130,20 @@ REGION=ap-northeast-1
 # Kafbat UI（stream の ECS。ghcr.io/kafbat/kafka-ui を同じタグで ECR に写す）。terraform/pipeline/stream の kafka_ui_image_tag の既定値に合わせてある
 KAFKA_UI_TAG=v1.5.0
 # analytics の Spark ジョブに足す jar（Maven Central。2026-10-08 に 6 本とも取れることを確認）。EMR Serverless 7.14.0 の Spark 3.5.8 に合わせてある。
-# terraform/pipeline/analytics の emr_release_label を変えるときは spark-sql-kafka とその依存（kafka-clients / commons-pool2 は spark-sql-kafka の pom の版）も変える
+# terraform/pipeline/analytics の emr_release_label を変えるときは spark-sql-kafka とその依存（kafka-clients / commons-pool2 は spark-sql-kafka の pom の版）も変える。
+# jar ごとに <sha256>:<Maven のパス>（spark/Dockerfile と同じ書き方）。取った jar の sha256 が合わなければ消して止める（下の fetch_jars）。
+# 版を変えたら sha256 も変える（Maven の <jar>.sha1 と突き合わせてから、shasum -a 256 の値を書く。2026-10-08 に 6 本とも突き合わせた）。
+# spark/Dockerfile と同じ jar は同じ sha256（tests/test_analytics.py が突き合わせる）
 JARS_DIR=jars
 MAVEN=https://repo1.maven.org/maven2
 SPARK_VERSION=3.5.8
-JAR_URLS=(
-  "$MAVEN/org/apache/spark/spark-sql-kafka-0-10_2.12/$SPARK_VERSION/spark-sql-kafka-0-10_2.12-$SPARK_VERSION.jar"
-  "$MAVEN/org/apache/spark/spark-token-provider-kafka-0-10_2.12/$SPARK_VERSION/spark-token-provider-kafka-0-10_2.12-$SPARK_VERSION.jar"
-  "$MAVEN/org/apache/kafka/kafka-clients/3.4.1/kafka-clients-3.4.1.jar"
-  "$MAVEN/org/apache/commons/commons-pool2/2.11.1/commons-pool2-2.11.1.jar"
-  "$MAVEN/software/amazon/msk/aws-msk-iam-auth/2.3.2/aws-msk-iam-auth-2.3.2-all.jar"
-  "$MAVEN/software/amazon/s3tables/s3-tables-catalog-for-iceberg-runtime/0.1.8/s3-tables-catalog-for-iceberg-runtime-0.1.8.jar"
+JARS=(
+  "d2b7068eabce2a1267103625e58efae32f7ee384db1cbc22424532ad2ed95fb4:org/apache/spark/spark-sql-kafka-0-10_2.12/$SPARK_VERSION/spark-sql-kafka-0-10_2.12-$SPARK_VERSION.jar"
+  "85f44359b60943d262f37d1327ebb7931fe47e0392286fe3023299e25b84b0d8:org/apache/spark/spark-token-provider-kafka-0-10_2.12/$SPARK_VERSION/spark-token-provider-kafka-0-10_2.12-$SPARK_VERSION.jar"
+  "9d0a9058c8ede79db6e54ae378ed16fe8d1bead2894635a4aa6aa0b7981668c6:org/apache/kafka/kafka-clients/3.4.1/kafka-clients-3.4.1.jar"
+  "ea0505ee7515e58b1ac0e686e4d1a5d9f7d808e251a61bc371aa0595b9963f83:org/apache/commons/commons-pool2/2.11.1/commons-pool2-2.11.1.jar"
+  "746f7a331eb02fd92fcad43935a97ce3d219e5f8a97a643012b2bb14c9020011:software/amazon/msk/aws-msk-iam-auth/2.3.2/aws-msk-iam-auth-2.3.2-all.jar"
+  "3c9f6db7aa3f1a64297644598ece21d9a9b1e7a56c52eca6e5dcca59519cbf4d:software/amazon/s3tables/s3-tables-catalog-for-iceberg-runtime/0.1.8/s3-tables-catalog-for-iceberg-runtime-0.1.8.jar"
 )
 SPARK_SCRIPT=spark/snmp_sinks.py
 
@@ -847,15 +850,30 @@ if [ -z "$SKIP_LAB" ]; then
   log "5-1. lab の材料（containerlab の rpm とトポロジ）を s3://$KB_BUCKET/lab/ に置く"
   upload_lab "$KB_BUCKET" || die "lab の材料を s3://$KB_BUCKET/lab/ に置けなかった"
 fi
+fetch_jars() {  # fetch_jars  JARS の jar を $JARS_DIR に取り（手元にあれば取らない）、sha256 を照合する。合わなければ消して止める
+  # JARS に無い jar（版を上げる前に取ったもの）は $JARS_DIR から消す。spark.jars は analytics/jars/*.jar を全部読むので、残すと同じクラスが 2 つの版で載る
+  local e p f sha keep=" "
+  mkdir -p "$JARS_DIR"
+  for e in "${JARS[@]}"; do
+    p=${e#*:}; f="$JARS_DIR/${p##*/}"; keep="$keep${p##*/} "
+    fetch "$MAVEN/$p" "$f" || die "jar が取れない: $MAVEN/$p （社内 PC なら docs/setup.md「社内 PC の CA」）"
+    sha=$("${PY[@]}" -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$f") || die "$f の sha256 を出せない"
+    if [ "$sha" != "${e%%:*}" ]; then
+      rm -f "$f"
+      die "$f の sha256（${sha}）が up.sh の JARS に書いた値と合わないので消した。打ち直せば取り直す。続けて合わないなら、取った先（社内のプロキシなど）か JARS の値を確かめる"
+    fi
+  done
+  for f in "$JARS_DIR"/*.jar; do
+    case "$keep" in *" ${f##*/} "*) ;; *) echo "$f: up.sh の JARS に無い（前の版）ので消す"; rm -f "$f" ;; esac
+  done
+}
 if [ -z "$SKIP_ANALYTICS" ]; then
   log "5-2. Spark のスクリプトと jar（Kafka / MSK IAM / S3 Tables カタログ）を s3://$KB_BUCKET/analytics/ に置く"
-  mkdir -p "$JARS_DIR"
-  for url in "${JAR_URLS[@]}"; do
-    fetch "$url" "$JARS_DIR/${url##*/}" || die "jar が取れない: $url （社内 PC なら docs/setup.md「社内 PC の CA」）"
-  done
+  fetch_jars
   "${PY[@]}" -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$SPARK_SCRIPT" || die "$SPARK_SCRIPT が Python として読めない"
   aws s3 cp --only-show-errors "$SPARK_SCRIPT" "s3://$KB_BUCKET/analytics/"
-  aws s3 sync --only-show-errors "$JARS_DIR/" "s3://$KB_BUCKET/analytics/jars/" --exclude "*" --include "*.jar"
+  # --delete で、S3 の側からも JARS に無い jar（前の版）を消す（--exclude で外したものは消さないので、jar だけが対象）
+  aws s3 sync --only-show-errors --delete "$JARS_DIR/" "s3://$KB_BUCKET/analytics/jars/" --exclude "*" --include "*.jar"
 fi
 
 # ---- 6. lab ---------------------------------------------------------------------

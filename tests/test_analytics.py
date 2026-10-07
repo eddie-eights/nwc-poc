@@ -1181,7 +1181,61 @@ check("prometheus_series: ラベルの名前に event_id / kafka_* が出ない�
       and len({tuple(l) for l, _, _ in mod.prometheus_series(_recs[:2])}) == 2)
 
 # ---- ops/up.sh / ops/down.sh / ops/check.sh / deploy.env.example とのつながり
-check("up.sh は 6 本の jar を置く", len(re.findall(r'^\s*"\$MAVEN/', up, re.M)) == 6)
+_up_jars = re.findall(r'^  "([0-9a-f]{64}):(\S+\.jar)"$', up, re.M)
+check("up.sh は 6 本の jar を <sha256>:<Maven のパス> で書き、5-2 で fetch_jars が取って照合してから S3 に置く。S3 の側も sync --delete で JARS に無い jar を消す",
+      len(_up_jars) == 6 and "JAR_URLS" not in up
+      and up.index('log "5-2.') < up.index("\n  fetch_jars\n") < up.index('aws s3 sync --only-show-errors --delete "$JARS_DIR/" "s3://$KB_BUCKET/analytics/jars/" --exclude "*" --include "*.jar"'))
+def _expand_vars(text, path, assign):  # パスの $NAME / ${NAME} を、text の中の代入（up.sh の NAME=値、Dockerfile の ARG NAME=値）で埋める
+    vals = dict(re.findall(assign, text, re.M))
+    return re.sub(r"\$\{?(\w+)\}?", lambda m: vals[m.group(1)], path)
+_spark_dock = open(os.path.join(ROOT, "spark", "Dockerfile"), encoding="utf-8").read()
+_up_sha = {_expand_vars(up, p, r"^(\w+)=(\S+)$"): s for s, p in _up_jars}
+_dock_sha = {_expand_vars(_spark_dock, p, r"^ARG (\w+)=(\S+)$"): s for s, p in re.findall(r"^ {6}(\S+?):(\S+\.jar)(?:; do)? \\$", _spark_dock, re.M)}
+_same_jars = set(_up_sha) & set(_dock_sha)
+check("up.sh と spark/Dockerfile に同じ jar（版まで同じパス）があれば、sha256 も同じ（いまは kafka-clients / commons-pool2 / S3 Tables のカタログ）",
+      len(_dock_sha) == 9 and len(_same_jars) >= 1 and all(_up_sha[p] == _dock_sha[p] for p in _same_jars))
+import tempfile
+_fjblk = up[up.index("fetch_jars() {"):up.index("\n}\n", up.index("fetch_jars() {")) + 3]
+_lab_common = open(os.path.join(ROOT, "ops", "lab-common.sh"), encoding="utf-8").read()
+_fetchblk = _lab_common[_lab_common.index("fetch() {"):_lab_common.index("\n}\n", _lab_common.index("fetch() {")) + 3]
+_fakecurl = r'''die() { echo "DIE: $*"; exit 1; }
+curl() {  # curl -fL --retry 3 -o <出力> <URL>。中身は jar の名前（BAD に当たる名前だけ別の中身）
+  local out url
+  while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift 2 ;; --retry) shift 2 ;; -*) shift ;; *) url=$1; shift ;; esac; done
+  echo "$url" >> "$CALLS"
+  if [ "${url##*/}" = "${BAD:-}" ]; then printf tampered > "$out"; else printf '%s' "${url##*/}" > "$out"; fi
+}
+'''
+def _fetch_jars(d, names, bad=""):  # d/jars に fetch_jars を打つ。jar の中身はその名前なので、JARS の sha256 は名前の sha256
+    jars = " ".join(f'"{hashlib.sha256(n.encode()).hexdigest()}:g/a/{n}"' for n in names)
+    calls = os.path.join(d, "calls")
+    if os.path.exists(calls):
+        os.remove(calls)
+    r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + _fakecurl + _fetchblk + _fjblk
+                        + f'PY=("{sys.executable}")\nJARS_DIR=jars\nMAVEN=https://m\nJARS=({jars})\nfetch_jars\necho END'],
+                       capture_output=True, text=True, cwd=d, env={"PATH": os.environ["PATH"], "CALLS": calls, "BAD": bad})
+    got = open(calls, encoding="utf-8").read().split() if os.path.exists(calls) else []
+    return r.returncode, r.stdout + r.stderr, sorted(os.listdir(os.path.join(d, "jars"))), got
+def _jar_dir(files):
+    d = tempfile.mkdtemp()
+    os.makedirs(os.path.join(d, "jars"))
+    for n, body in files.items():
+        with open(os.path.join(d, "jars", n), "w", encoding="utf-8") as fh:
+            fh.write(body)
+    return d
+_rc, _out, _ls, _got = _fetch_jars(_jar_dir({"a-1.0.jar": "old", "a-2.0.jar": "a-2.0.jar", "notes.txt": "n"}), ["a-2.0.jar", "b-1.0.jar"])
+check("up.sh: fetch_jars は手元に無い jar だけ Maven から取り、sha256 が合えば通す。JARS に無い jar（前の版）は jars/ から消し、jar でないものは残す",
+      _rc == 0 and _out.rstrip().endswith("END") and _got == ["https://m/g/a/b-1.0.jar"]
+      and _ls == ["a-2.0.jar", "b-1.0.jar", "notes.txt"] and "jars/a-1.0.jar: up.sh の JARS に無い（前の版）ので消す" in _out)
+_rc, _out, _ls, _ = _fetch_jars(_jar_dir({}), ["a-2.0.jar", "b-1.0.jar"], bad="b-1.0.jar")
+check("up.sh: 取った jar の sha256 が JARS と合わなければ、その jar を消して止まる（S3 には上げない）",
+      _rc != 0 and "END" not in _out and "DIE: jars/b-1.0.jar の sha256（" in _out and _ls == ["a-2.0.jar"])
+_d = _jar_dir({"a-2.0.jar": "corrupt"})
+_rc, _out, _ls, _got = _fetch_jars(_d, ["a-2.0.jar"])
+_rc2, _out2, _ls2, _got2 = _fetch_jars(_d, ["a-2.0.jar"])
+check("up.sh: 手元に残っていた jar の sha256 が合わなくても消して止まり、打ち直せば取り直して通る",
+      _rc != 0 and _got == [] and _ls == [] and "DIE: jars/a-2.0.jar の sha256（" in _out
+      and _rc2 == 0 and _out2.rstrip().endswith("END") and _got2 == ["https://m/g/a/a-2.0.jar"] and _ls2 == ["a-2.0.jar"])
 for jar in ("spark-sql-kafka-0-10_2.12", "spark-token-provider-kafka-0-10_2.12", "kafka-clients", "commons-pool2", "aws-msk-iam-auth", "s3-tables-catalog-for-iceberg-runtime"):
     check(f"up.sh の jar に {jar}", jar in up)
 check("up.sh の SPARK_VERSION は emr_release_label の Spark（3.5.8）", re.search(r'^SPARK_VERSION=3\.5\.8$', up, re.M) is not None
