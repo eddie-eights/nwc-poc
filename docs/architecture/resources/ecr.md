@@ -11,7 +11,7 @@ VPC から外へ出る経路が無いので、Fargate も EC2 も Runtime も、
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
-| リポジトリ | 10 個（下の表）。時間課金が無いので、スイッチに関わらずいつも作る | `terraform/base/ecr/main.tf` |
+| リポジトリ | 11 個（下の表）。時間課金が無いので、スイッチに関わらずいつも作る。OSS 版（`oss/terraform/`、`project = nwc-oss`）はこれに 7 個を足す（下の「OSS 版だけのリポジトリ」） | `terraform/base/ecr/main.tf` |
 | タグ | `IMMUTABLE`（同じタグに上書きできない） | `main.tf` |
 | 消し方 | `force_delete = true`。destroy でイメージごと消える | `main.tf` |
 | スキャン | `scan_on_push = true` | `main.tf` |
@@ -26,14 +26,17 @@ VPC から外へ出る経路が無いので、Fargate も EC2 も Runtime も、
 |---|---|---|---|
 | `agent` | `agent/`（自前ビルド） | AgentCore Runtime | `IMAGE_TAG`（既定 `v1`） |
 | `worker` | `workflow/`（自前ビルド） | ECS Fargate（workflow） | `IMAGE_TAG` |
-| `temporal` | `temporalio/temporal`（写し） | ECS Fargate（workflow） | 上流の版（`ops/up.sh` の `TEMPORAL_TAG`） |
+| `temporal` | `temporalio/temporal`（写し） | ECS Fargate（workflow） | 上流の版（`ops/up-common.sh` の `TEMPORAL_TAG`） |
 | `lab-srlinux` | `ghcr.io/nokia/srlinux`（写し。約 1 GB） | lab の EC2 | 上流の版（`ops/lab-common.sh` の `SRLINUX_TAG`） |
 | `lab-multitool` | `ghcr.io/srl-labs/network-multitool`（写し） | lab の EC2 | 上流の版（`MULTITOOL_TAG`） |
 | `telegraf` | 公式の `telegraf` に設定のテンプレートと `tg` を足す | ECS Fargate（stream） | `<版>-<ディレクトリの中身のハッシュ 12 桁>` |
+| `kafka-ui` | `ghcr.io/kafbat/kafka-ui`（写し） | ECS Fargate（stream） | 上流の版（`ops/up.sh` の `KAFKA_UI_TAG`） |
 | `grafana` | 公式の Grafana OSS に plugin と provisioning を焼き込む | ECS Fargate（analytics） | 同上 |
 | `splunk` | 公式の `splunk/splunk` に検知のアプリと入口のスクリプトを足す（amd64 だけ、約 2〜3 GB） | ECS Fargate x86（analytics） | 同上 |
-| `nautobot` | 公式の Nautobot に Job などを足す | ECS Fargate（nautobot） | 同上 |
-| `redis` | 公式の redis（写し） | Nautobot のタスクの中 | 上流の版（`ops/up.sh` の `REDIS_TAG`） |
+| `nautobot` | 公式の Nautobot に Job などを足す | ECS Fargate（nautobot） | 同上（ハッシュは `nautobot/` に `agent/graph.py`・`agent/toolkit.py` と lab の定義の seed を足したビルドの材料から作る） |
+| `redis` | 公式の redis（写し） | Nautobot のタスクの中 | 上流の版（`ops/up-common.sh` の `REDIS_TAG`） |
+
+OSS 版だけのリポジトリ（`oss_repositories`。マネージド版では作らない）: `kafka` / `opensearch` / `vminsert` / `vmselect` / `vmstorage`（公開イメージの写し）と `spark` / `neo4j`（ops がビルドする）。
 
 ## つながり
 
@@ -81,7 +84,7 @@ VPC から外へ出る経路が無いので、Fargate も EC2 も Runtime も、
 
 | 項目 | 状態 |
 |---|---|
-| ライフサイクルポリシー（古いイメージを消す） | `agent` だけにある（新しい 5 個を残す）。ほかの 9 個には無い（`terraform/base/ecr/main.tf`） |
+| ライフサイクルポリシー（古いイメージを消す） | `agent` だけにある（新しい 5 個を残す）。ほかの 10 個（OSS 版はさらに 7 個）には無い（`terraform/base/ecr/main.tf`） |
 | スキャンの結果の扱い | リポジトリに記述が無い（push のときにスキャンが走る設定だけ） |
 
 ## 関連

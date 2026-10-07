@@ -58,7 +58,7 @@ trap と syslog では性能の時系列は取れない（届くのはイベン�
 
 | サービス | `TELEGRAF_ROLE` | 入力 | 数 | SG |
 |---|---|---|---|---|
-| `<prefix>-telegraf-dialout` | `dialout` | trap・syslog・MDT（NLB の後ろ） | 増やしてよい（いまは 1。入れ替えは新しいタスクが立ってから古いものを止める） | `telegraf_dialout`（NLB から受けるだけ） |
+| `<prefix>-telegraf-dialout` | `dialout` | trap・syslog・MDT（NLB の後ろ） | 増やしてよい（`TELEGRAF_AZ_NUM` の数。既定 1。入れ替えは新しいタスクが立ってから古いものを止める） | `telegraf_dialout`（NLB から受けるだけ） |
 | `<prefix>-telegraf-dialin` | `dialin` | gNMI の購読、SNMP のポーリング（`SNMP_POLL=1`。既定）、lab の値を共通の形に変える Starlark | 1 に固定（入れ替えは古いものを止めてから。そのあいだ購読が数十秒切れる） | `telegraf_dialin`（受けない。機器の 161/udp・57400/tcp へ出る） |
 
 Kafka の出力（5 トピック）と health はどちらにもある。Starlark を取りにいく側に置くのは、変える前の `lab_*` を Kafka に載せないので gNMI の入力と同じタスクにいる必要があるから。デバッグ用の EC2 は既定の `all`（両方を 1 つの Telegraf で）。

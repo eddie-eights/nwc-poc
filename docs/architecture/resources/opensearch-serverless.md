@@ -18,7 +18,7 @@
 | 暗号 | AWS 所有の鍵 | AWS 所有の鍵 | 各 `security_policy`（encryption） |
 | ネットワーク | `AllowFromPublic = false`、`SourceVPCEs` に土台の VPC エンドポイントだけ | 同じ | 各 `security_policy`（network） |
 | 控え | `OPENSEARCH_AZ_NUM`（既定 1、1〜2）。2 で `standby_replicas = ENABLED` | 同じキー | 変数 `opensearch_az_num` |
-| 費用 | 33 セント/時 × AZ（公表単価。検索の負荷で増える） | +$0.35/h（OCU 0.33 + VPC エンドポイント 0.01 + bedrock-agent-runtime 0.01。2 AZ で OCU が倍） | `ops/up.sh` の先頭のコメント |
+| 費用 | 33 セント/時 × AZ（公表単価。検索の負荷で増える） | +$0.35/h（OCU 0.33 + VPC エンドポイント 0.01 + bedrock-agent-runtime 0.01。2 AZ で OCU が倍） | `ops/up.sh` の費用の目安（526〜583 行） |
 
 VPC エンドポイント（`aws_opensearchserverless_vpc_endpoint.aoss`）は土台（`terraform/base/core/endpoints.tf`）にあり、KB か `STORES` の `grafana` があるときだけ作る。
 

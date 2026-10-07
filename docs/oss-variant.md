@@ -22,7 +22,7 @@
 |---|---|---|
 | エージェントの実行と入口 | Bedrock AgentCore（Runtime、Gateway） | 変えない（マネージドのまま） |
 | モデルとガードレール | Bedrock（Amazon Nova 2 Lite、ガードレール） | 変えない（マネージドのまま） |
-| 手順書の検索 | Bedrock のナレッジベース + OpenSearch Serverless | 変えない（マネージドのまま） |
+| 手順書の検索 | Bedrock のナレッジベース + OpenSearch Serverless | 変えない（マネージドのまま）。ただし `oss/ops/up.sh` はナレッジベースを作らない（OpenSearch Serverless を使うので OSS 版には入れない。`CREATE_KB` も読まない） |
 | Kafka | MSK | Apache Kafka（KRaft）を ECS に 3 台。データは EFS |
 | Kafka の監視の画面 | MSK のコンソールと CloudWatch | Kafbat UI（Apache 2.0）を ECS に 1 台。ブローカー、トピック、メッセージを見る。トピックの追加とメッセージの送信も画面からできる。コンシューマーの遅れは出ない（Spark は consumer group を作らず、offset を checkpoint に持つ） |
 | ストリーム処理 | EMR Serverless（Spark） | Apache Spark 3.5 を ECS に（ジョブごとに 1 タスクで 3 つ。`iceberg`、`splunk`、OpenSearch と VictoriaMetrics に書く `http`）。Splunk へはマネージド版と同じ HEC に書く |
@@ -43,14 +43,14 @@
 - 止まっているあいだは、トポロジの表示、status の更新、エージェントのトポロジの検索ができない。
 - データはタスクの一時領域にある（Neo4j は NFS を非対応と明記している）。タスクが入れ替わると消えるので、Nautobot と lab の定義から同期し直す。
 
-自分で立てているもの（マネージド版でも OSS か自前のコンテナ）: Telegraf、Grafana、Temporal、Nautobot、containerlab（lab）、Splunk（OSS ではないが、VPC の中の ECS に自分で立てている）。
+自分で立てているもの（マネージド版でも OSS か自前のコンテナ）: Telegraf、Grafana、Temporal、Nautobot（Redis と一緒）、Kafbat UI、containerlab（lab）、Splunk（OSS ではないが、VPC の中の ECS に自分で立てている）。
 Amazon Managed Grafana は、このアカウントに IAM Identity Center が無くて使えないので Grafana OSS にしている（[deploy.md](deploy.md)）。
 
 ## OSS 版の実装の置き場と、いまの状態
 
 | 置き場 | 中身 |
 |---|---|
-| `oss/terraform/` | OSS 版の terraform。変えないルートは `terraform/` へのシンボリックリンク。state は別 |
+| `oss/terraform/` | OSS 版の terraform。ルートごとのディレクトリに、変えないファイルは `terraform/` のファイルへのシンボリックリンク、OSS 版だけのファイル（`kafka.tf`、`opensearch.tf` など）と `oss.auto.tfvars`（`project = "nwc-oss"`）を置く。state は別 |
 | `oss/ops/up.sh`、`oss/ops/down.sh` | OSS 版の作る・消す。接頭辞は `<owner>-nwc-oss` で、マネージド版と並べて立てられる |
 | `oss/ops/oss-images.sh` | イメージの名前と版（1 か所）。正は `oss/compose/` |
 | `oss/compose/` | 手元の確認用の compose と、確認の手順 |
@@ -59,8 +59,10 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
 
 - **`oss/ops/up.sh` が作るルートは、マネージド版の `ops/up.sh` と同じ 9 つ。**
   `base/ecr`、`base/core`、`agent`、`pipeline/lab`、`pipeline/stream`、`pipeline/graph`、`pipeline/nautobot`、`pipeline/analytics`、`workflow`。Grafana、Web の部品、エージェント、workflow、Neo4j への同期までつないである（何がどう動くかは [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md) の「実装の状態」）。
+- **機能と格納先は選ばない。**
+  `AGENT` / `PIPELINE` / `WORKFLOW` / `STORES` などのキーは読まず、ルートはいつも全部、格納先はいつも `iceberg` / `opensearch` / `prometheus` / `splunk` の 4 つ、Grafana もいつも作る。
 - **まだつないでいないもの。**
-  Nautobot の Job から Neo4j への同期（Nautobot のイメージに Neo4j のドライバが無い）。lab の定義からの同期（`ops/sync-graph.sh --oss`）で代える。
+  Nautobot の Job から Neo4j への同期（Nautobot のイメージに Neo4j のドライバが無く、`terraform/pipeline/nautobot` のタスク定義も `GRAPH_BACKEND` / `NEO4J_URI` を渡さない）。lab の定義からの同期（`ops/sync-graph.sh --oss`）で代える。
 - **Splunk は OSS 版でも変えない。**
   マネージド版と同じ Splunk を立てる。Spark は Splunk の token を、ECS の secrets（SSM の SecureString）から環境変数 `SPLUNK_HEC_TOKEN` で受ける（マネージド版は、ジョブが SSM から読む）。
 

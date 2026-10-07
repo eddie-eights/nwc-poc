@@ -27,7 +27,7 @@ flowchart LR
 
 ## 作るもの
 
-できる限り AWS のマネージドサービスで作っている。最終的には、これとは別にマネージドの部分を OSS にした版も作り、できること・費用・メンテナンス性を比べる（[oss-variant.md](docs/oss-variant.md)）。
+できる限り AWS のマネージドサービスで作っている。これとは別に、マネージドの部分を OSS にした版（`oss/`。Kafka・Neo4j・OpenSearch・VictoriaMetrics・Spark を ECS で動かす）も作ってあり、`oss/ops/up.sh` で立てて `oss/ops/down.sh` で消す（2026-10-07 に AWS で 1 回立てて確かめた。マネージド版と同じアカウントに並べて立てるのは未確認）。できること・費用・メンテナンス性の比較は [oss-variant.md](docs/oss-variant.md)。
 
 `deploy.env` で要る機能だけ `1` にする。何も書かなければ土台だけを作る。
 
@@ -35,7 +35,7 @@ flowchart LR
 |---|---|---|
 | 土台（必ず） | VPC、SSM のエンドポイント 2 本、Web の EC2、S3、ECR | 約 $0.05/h |
 | `AGENT=1` | チャット（Runtime + ガードレール）。`CREATE_KB=1` で手順書の検索も | 約 $0.07/h（エンドポイント 5 本。ほかは質問ごとのモデル料金だけ。KB は +$0.35/h） |
-| `PIPELINE=1` | lab → Telegraf（ECS）→ MSK → Spark → S3 Tables / OpenSearch / Prometheus / Splunk（`STORES` の既定は `s3,grafana,splunk` の 3 つとも）、Grafana と Splunk のアラート → SNS、Neptune のトポロジ（アラートで status が変わる）、Nautobot（機器の一覧とケーブルの正。いつも立つ） | 約 $2.73/h（`STORES` が既定のとき。うち Neptune Analytics が $0.58/h、Nautobot が $0.14/h、`STORES` の `grafana` が約 $0.60/h、`splunk` が約 $0.34/h（Spark のジョブ $0.21、ECS の Splunk $0.12、sns のエンドポイント $0.014）） |
+| `PIPELINE=1` | lab → Telegraf（ECS）→ MSK → Spark → S3 Tables / OpenSearch / Prometheus / Splunk（`STORES` の既定は `s3,grafana,splunk` の 3 つとも）、Grafana と Splunk のアラート → SNS、Neptune のトポロジ（アラートで status が変わる）、Nautobot（機器の一覧とケーブルの正。いつも立つ） | 約 $2.75/h（`STORES` が既定のとき。うち Neptune Analytics が $0.58/h、Nautobot が $0.14/h、Kafbat UI が $0.02/h、`STORES` の `grafana` が約 $0.60/h、`splunk` が約 $0.34/h（Spark のジョブ $0.21、ECS の Splunk $0.12、sns のエンドポイント $0.014）） |
 | `WORKFLOW=1` | アラート（SNS → SQS）で Temporal を起こし、調査 → 承認 → 修復。AGENT と PIPELINE と、アラートの送り手（Grafana か Splunk）が要る | 約 $0.09/h |
 
 インターフェース型エンドポイントは 1 本 $0.014/h（既定の 1 AZ のとき。`ENDPOINTS_AZ_NUM` を 2 / 3 にすると AZ の数の倍）で、作る機能が呼ぶ API の分だけ `ops/up.sh` が選ぶ（上の金額に入れてある。同じサービスは機能をまたいで 1 本）。
@@ -97,10 +97,12 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | Nautobot（機器とケーブルの台帳、Job の結果） | http://localhost:8081/ | `PIPELINE=1` | `admin` / SSM のパスワード | `terraform -chdir=terraform/pipeline/nautobot output -raw port_forward_command` |
 | Grafana（ダッシュボード、アラート） | http://localhost:3000/ | `PIPELINE=1`（`STORES` の `grafana`。既定で入っている） | `admin` / SSM のパスワード | `terraform -chdir=terraform/pipeline/analytics output -raw grafana_port_forward_command` |
 | Splunk（ログの検索、アラート） | http://localhost:8000/ | `PIPELINE=1`（`STORES` の `splunk`。既定で入っている） | `admin` / SSM のパスワード | `terraform -chdir=terraform/pipeline/analytics output -raw splunk_port_forward_command` |
+| Splunk の cluster manager（indexer のクラスターの状態） | http://localhost:8001/ | `PIPELINE=1` で `SPLUNK_AZ_NUM` が 2 か 3 | `admin` / Splunk と同じパスワード | `terraform -chdir=terraform/pipeline/analytics output -raw splunk_cm_port_forward_command`（`ops/up.sh` の最後には出ない） |
+| Kafbat UI（Kafka のトピックと中身） | http://localhost:8082/ | `PIPELINE=1`（stream） | `admin` / SSM のパスワード | `terraform -chdir=terraform/pipeline/stream output -raw kafka_ui_port_forward_command` |
 | Temporal UI（ワークフローの実行の履歴） | http://localhost:8233/ | `WORKFLOW=1` | 無し | `ops/up.sh` の手順 8-5 が出す（タスクの IP が要る。[workflow.md](docs/workflow.md)） |
 
 - `terraform ... output -raw ...` は「打つコマンド」を表示するだけなので、出てきた `aws ssm start-session ...` をそのまま打つ。
-- パスワードを出すコマンドは、同じルートの出力 `password_command`（Nautobot）/ `grafana_password_command` / `splunk_password_command`。
+- パスワードを出すコマンドは、同じルートの出力 `password_command`（Nautobot）/ `grafana_password_command` / `splunk_password_command` / `kafka_ui_password_command`（Kafbat UI）。
 - Nautobot でよく見る場所: Devices → Devices（機器）、Devices → Cables（ケーブル）、Jobs → Job Results（Neptune / Telegraf への同期の結果）。使い方は [nautobot.md](docs/nautobot.md)。
 
 ### AWS のマネージドサービス（AWS マネジメントコンソールで見る）
@@ -111,7 +113,7 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 |---|---|---|
 | エージェント | Bedrock AgentCore | Amazon Bedrock AgentCore → Agent Runtime / Gateways |
 | ガードレール、手順書の検索 | Bedrock | Amazon Bedrock → ガードレール / ナレッジベース |
-| Kafka | MSK | Amazon MSK → クラスター → `<prefix>-stream`（トピックの中身は見られない。モニタリングと設定だけ） |
+| Kafka | MSK | Amazon MSK → クラスター → `<prefix>-stream`（コンソールではトピックの中身は見られない。モニタリングと設定だけ。中身は上の Kafbat UI で見る） |
 | Spark のジョブ | EMR Serverless | Amazon EMR → EMR Serverless → EMR Studio を開く → アプリケーション → `<prefix>-spark` → ジョブ実行 → 「Spark UI」 |
 | 生データの表 | S3 Tables | Amazon S3 → テーブルバケット → `<prefix>-tables`（中身を引くのは Athena。カタログ `s3tablescatalog`） |
 | ログの検索先 | OpenSearch Serverless | Amazon OpenSearch Service → サーバーレス → コレクション。**OpenSearch Dashboards は開けない**（コレクションは VPC エンドポイントからだけ届く）。中身は Grafana で見る |
@@ -161,7 +163,8 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | [workflow.md](docs/workflow.md) | 承認の流れと Temporal UI |
 | [alert-comparison.md](docs/alert-comparison.md) | Splunk と Grafana のアラートを比べる: 4 種類のアラートを両方で書けたか、障害を入れる手順、遅れと取りこぼしを出す Athena のクエリ、結果（2026-10-05 の 1 回分。手順どおりの 3 回の計測と `bgp_down`・`trap` は未実施） |
 | [troubleshooting.md](docs/troubleshooting.md) | うまくいかないとき |
-| [oss-variant.md](docs/oss-variant.md) | 方針: いまはできる限り AWS マネージドで作り、最終的にはマネージドの部分を OSS にした版も別に作る。その目的（マネージドでできて OSS でできないこと、費用、メンテナンス性の比較）と、いまマネージドにしている部分の一覧 |
+| [oss-variant.md](docs/oss-variant.md) | マネージドの部分を OSS にした版（`oss/`、`oss/ops/up.sh`）: その目的（マネージドでできて OSS でできないこと、費用、メンテナンス性の比較）、マネージドの部分と OSS の置き換え先の対応、2026-10-07 に AWS で確かめたことと未確認のこと |
+| [hearing.md](docs/hearing.md) | ヒアリング項目: PoC の設計を決めるために相手に確かめたいこと（格納先の冗長化、保管期間など）と答え |
 | [development.md](docs/development.md) | 手元のテスト、変更するときの決まり、Web を手元で動かす |
 | [faq-fukuda-nwc-poc.md](docs/faq-fukuda-nwc-poc.md) | FAQ: ほかの開発者に説明するときに出る質問と答え（syslog、収集の設定、デバッグ用の EC2、YANG、Spark、Nautobot、Neptune、障害の情報の置き場、格納先とテーブル、Splunk、マネージドを OSS に置き換えるとき、AWS の基礎） |
 | [data-stores.md](docs/data-stores.md) | 勉強会メモ: データの置き場（Neptune にトポロジと `status`、S3 Tables の `proposal_events` に修復案の状態と証跡、`alert_events` にアラートの通知の履歴）と DynamoDB をやめた理由、コンテナイメージの役目と arm64 に揃える理由（Splunk だけ x86）、Neptune Analytics の基礎（Neptune Database との違い、AZ 冗長、トポロジをグラフにする意味）、MSK のブートストラップサーバーと、Telegraf・Spark がそれをどう受け取るか（`msk-bootstrap` を残す理由） |

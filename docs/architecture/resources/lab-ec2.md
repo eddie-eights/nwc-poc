@@ -19,7 +19,7 @@ Web やエージェントとはつながっていない。使うのは SNMP・gN
 | 管理ネットワーク | `203.0.113.0/24`（EC2 の中の docker network。VPC からは見えない） | `terraform/pipeline/lab/locals.tf` の `mgmt_cidr`、`lab/splab.clab.yml.in` |
 | 入り方 | SSM Session Manager（管理者用のシェルセッション）。中では `sudo lab <コマンド>` | [pipeline.md](../../pipeline.md) の「lab に入る」 |
 | スイッチ | `PIPELINE=1`。`SKIP_LAB=1` で外す（`WORKFLOW=1` では外せない） | `ops/up.sh` |
-| 費用 | 17 セント/時。止めている間は EBS の保管料だけ | `ops/up.sh` のコメント、[pipeline.md](../../pipeline.md) の「止める・起動する」 |
+| 費用 | 17 セント/時。止めている間は EBS の保管料だけ | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`）、[pipeline.md](../../pipeline.md) の「止める・起動する」 |
 
 lab の中身:
 
@@ -51,8 +51,8 @@ lab の中身:
 - **版の正は `ops/lab-common.sh`。**
   terraform の変数とデバッグ用のスタックの既定値も同じ値にしてある。
   出典: `ops/lab-common.sh`、[pipeline.md](../../pipeline.md) の「デバッグ用の EC2（lab + Telegraf を 1 台）」。
-- **EC2 の `source_dest_check` を切ってある。**
-  送り元や宛先が管理ネットワーク（`203.0.113.x`）のパケットを、Telegraf のタスクや NLB とのあいだで通すため。
+- **stream がある回は、EC2 の `source_dest_check` を切ってある。**
+  送り元や宛先が管理ネットワーク（`203.0.113.x`）のパケットを、Telegraf のタスクや NLB とのあいだで通すため。変数 `forward_to_telegraf`（既定 false）を、`ops/up.sh` が stream を作るか残すときに true にする。
   出典: `instance.tf` と `terraform/pipeline/lab/telegraf.tf` のコメント。
 - **trap と syslog は、送り元の IP を機器の管理 IP のまま届ける。**
   Docker の MASQUERADE にかけず、NLB も送り元を残す。Spark とエージェントが送り元の IP で機器を引くため。

@@ -12,13 +12,13 @@ Temporal の開発用サーバー（`start-dev`）と Python の worker を、Fa
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
 | サービス | 1 タスクに temporal と worker の 2 コンテナ。Fargate ARM、1 vCPU / 2 GB。AZ を選ぶキーは無い（サブネット a に 1 つ） | `terraform/workflow/ecs.tf`、変数 `task_cpu`、`task_memory` |
-| temporal のコンテナ | `temporalio/temporal` 1.9.1 を ECR の `<prefix>-temporal` に写したもの。`server start-dev`、SQLite は `/tmp/temporal.db` | `ecs.tf`、変数 `temporal_image_tag`、`ops/up.sh` の `TEMPORAL_TAG` |
+| temporal のコンテナ | `temporalio/temporal` 1.9.1 を ECR の `<prefix>-temporal` に写したもの。`server start-dev`、SQLite は `/tmp/temporal.db` | `ecs.tf`、変数 `temporal_image_tag`、`ops/up-common.sh` の `TEMPORAL_TAG` |
 | worker のコンテナ | `workflow/worker.py`。ECR の `<prefix>-worker` | `ecs.tf`、`workflow/` |
 | ポート | gRPC 7233 はタスクの中の localhost だけ。UI 8233 だけ外に出す（認証は無い） | `ecs.tf` の `command` |
 | 待ち時間 | 承認待ち 120 分（`APPROVAL_TIMEOUT_MINUTES`）、解消の確認 300 秒（`VERIFY_TIMEOUT`）、閉じずに待つ 1440 分（`HOLD_MINUTES`） | 変数 `approval_timeout_minutes`、`verify_timeout_seconds`、`hold_minutes` |
 | ワークフローの id | `investigate-<anomaly_id>`（発生の時刻を入れない） | `workflow/worker.py`、`workflow/rules.py` |
 | スイッチ | `WORKFLOW=1`。`AGENT=1` と `PIPELINE=1` が要り、`SKIP_LAB` / `SKIP_STREAM` / `SKIP_ANALYTICS` / `SKIP_GRAPH` は書けない | `ops/up.sh` |
-| 費用 | 5 セント/時 | `ops/up.sh` の先頭のコメント |
+| 費用 | 5 セント/時 | `ops/up.sh` の費用の目安（526〜583 行） |
 
 worker が読み書きするもの:
 

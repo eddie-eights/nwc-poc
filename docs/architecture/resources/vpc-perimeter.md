@@ -15,7 +15,7 @@ VPC の中の通信は、SG の通信の表に書いたものだけが通る。
 | サブネット | プライベートが 3 つ（a / b / c。AZ ID は apne1-az1 / az4 / az2）。1 AZ のものは a に置く | `terraform/base/core/vpc.tf` |
 | S3 のエンドポイント | gateway 型。エンドポイントポリシーは付けない | `terraform/base/core/endpoints.tf` の `aws_vpc_endpoint.s3` |
 | インターフェース型エンドポイント | 作る機能から `ops/up.sh` が選んで渡す。private DNS あり。ポリシーは「このアカウントのプリンシパルだけ」 | `ops/up.sh` の `endpoints_for`、`terraform/base/core/endpoints.tf` の `aws_vpc_endpoint.interface` |
-| OpenSearch Serverless の VPC エンドポイント | KB か `STORES` の `grafana` があるときだけ作る（`create_opensearch_endpoint`） | `terraform/base/core/endpoints.tf` の `aws_opensearchserverless_vpc_endpoint.aoss` |
+| OpenSearch Serverless の VPC エンドポイント | KB か `STORES` の `grafana` があるとき、または前に作ったコレクションが agent か analytics の state に残っているときだけ作る（`create_opensearch_endpoint`。`ops/up.sh` の `NEED_AOSS`） | `terraform/base/core/endpoints.tf` の `aws_opensearchserverless_vpc_endpoint.aoss` |
 | エンドポイントを置く AZ の数 | `ENDPOINTS_AZ_NUM`（既定 1、1〜3） | `ops/up.sh`、`deploy.env.example` |
 | IAM の Deny | 管理ポリシー `<prefix>-network-perimeter`。ワークロードのロール全部に付ける | `terraform/base/core/perimeter.tf` と各ルートの attachment |
 | リソースポリシーの Deny | バケット、S3 Tables のテーブルバケット、SNS、SQS（本体と DLQ）、AgentCore の Runtime と Gateway | `bucket.tf`、`alerts.tf`、`pipeline/analytics/tables.tf`、`workflow/events.tf`、`workflow/gateway.tf`、`agent/runtime.tf` |
@@ -23,17 +23,17 @@ VPC の中の通信は、SG の通信の表に書いたものだけが通る。
 | SG | ワークロードごとに 1 つと `endpoints`。ルールは通信の表から作る | `terraform/base/core/security_groups.tf` の `local.sg_flows` |
 | フローログ | VPC の全 ENI。ロググループ `/<prefix>/vpc-flow-logs`、保存 7 日、集約 60 秒 | `terraform/base/core/flow_logs.tf` |
 | スイッチ | `NETWORK_PERIMETER=0` で Deny を一時的に外す（切り分け用） | `ops/up.sh`、[setup.md](../../setup.md) の「閉域を一時的に外すとき」 |
-| 費用 | インターフェース型エンドポイント 1 つ 1.4 セント/時 × `ENDPOINTS_AZ_NUM`（データは別に $0.01/GB）。OpenSearch Serverless の VPC エンドポイントも 1.4 セント/時 × AZ（公表単価）。SG、ルール、gateway 型は時間課金なし | `ops/up.sh` の先頭のコメント |
+| 費用 | インターフェース型エンドポイント 1 つ 1.4 セント/時 × `ENDPOINTS_AZ_NUM`（データは別に $0.01/GB）。OpenSearch Serverless の VPC エンドポイントも 1.4 セント/時 × AZ（公表単価）。SG、ルール、gateway 型は時間課金なし | `ops/up.sh` の費用の目安（526〜583 行） |
 
 機能ごとのエンドポイント（`ops/up.sh` の `endpoints_for`）:
 
 | 機能 | エンドポイント |
 |---|---|
-| 土台 | ssm、ssmmessages |
-| agent | bedrock-runtime、bedrock-agentcore、ecr.api、ecr.dkr、logs（`CREATE_KB=1` で bedrock-agent-runtime） |
+| 土台 | ssm、ssmmessages（`endpoints_for` の外で足す） |
+| agent | bedrock-runtime、bedrock-agentcore、ecr.api、ecr.dkr、logs（`CREATE_KB=1` で bedrock-agent-runtime。`endpoints_for` の外で足す） |
 | lab | ecr.api、ecr.dkr |
 | stream | ecr.api、ecr.dkr、logs |
-| analytics | s3tables、logs（Prometheus で aps-workspaces、Grafana か Splunk で ecr.api / ecr.dkr / sns） |
+| analytics | s3tables、logs（`STORES` の `grafana` で aps-workspaces、Grafana か Splunk で ecr.api / ecr.dkr / sns。この 3 つは `endpoints_for` の外で足す） |
 | graph | neptune-graph-data（analytics があるとき kinesis-firehose） |
 | nautobot | ecr.api、ecr.dkr、logs、ecs |
 | workflow | sqs、s3tables、ecr.api、ecr.dkr、logs、bedrock-agentcore、bedrock-agentcore.gateway（analytics があるとき athena） |
@@ -44,10 +44,10 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
 
 | 送る側 | 受ける側 | ポート | 何のため |
 |---|---|---|---|
-| ワークロードの SG 全部 | endpoints、S3（プレフィックスリスト） | 443/tcp | AWS の API と S3 |
-| web | grafana / splunk / workflow / nautobot | 3000 / 8000 / 8233 / 8080（tcp） | SSM のポートフォワーディングで画面を開く |
+| AWS の API を呼ぶワークロードの SG（`local.aws_api_clients`。web、lab、telegraf_dialout、telegraf_dialin、kafka_ui、spark、grafana、splunk、nautobot、lambda、workflow、runtime） | endpoints、S3（プレフィックスリスト） | 443/tcp | AWS の API と S3 |
+| web | grafana / splunk / workflow / nautobot / kafka_ui | 3000 / 8000 / 8233 / 8080 / 8080（tcp） | SSM のポートフォワーディングで画面を開く |
 | nautobot | nautobot_db | 5432/tcp | PostgreSQL |
-| telegraf_dialout / telegraf_dialin / spark | msk | 9098/tcp | Kafka（IAM 認証） |
+| telegraf_dialout / telegraf_dialin / spark / kafka_ui | msk | 9098/tcp | Kafka（IAM 認証） |
 | msk | msk | 9092〜9098/tcp | ブローカー同士 |
 | spark | spark | 全部の tcp | 1 つのジョブの driver と executor |
 | spark | splunk | 8088/tcp | HEC |

@@ -93,7 +93,7 @@ SR Linux は送る前に subsystem で「BGP と IS-IS だけ」のように選�
 - 本文はメーカーごとに違う。
   - Cisco: `%LINEPROTO-5-UPDOWN: ...`
   - SR Linux: 独自の文面
-- 本文を読む処理（Spark の検知など）は、メーカーごとに読み方を用意する必要がある。lab が IF の状態を syslog ではなく gNMI や SNMP で見ているのは、そのほうが機械で扱いやすいから。
+- 本文を読む処理は、メーカーごとに読み方を用意する必要がある（この PoC のアラート、つまり Grafana のルールと Splunk の保存済みサーチは、いまは syslog の本文を読んでいない。2026-10-02 までは Spark が検知していた）。lab が IF の状態を syslog ではなく gNMI や SNMP で見ているのは、そのほうが機械で扱いやすいから。
 - まとめ: 送り方と PRI の考え方は共通。ヘッダーの版と本文は機器による。
 
 ### Q. PRI とは？
@@ -209,7 +209,7 @@ PRI = ファシリティの番号 × 8 + 重要度
 - **ポート**
   - Cisco の既定は 514。Telegraf は 5140 で待っているので（非 root は 1024 未満で待てない）、`port 5140` が要る。
   - trap は `snmp-server host <NLB の IP> version 2c <community>` と `snmp-server enable traps snmp linkdown linkup` で 162 に送れば、NLB が Telegraf の 1162 へ渡す（版を書かないと v1 で送る。Telegraf は 2c で受ける）。
-  - Cisco の linkDown の varbind には ifName が無い（ifIndex・ifDescr など）。Spark は ifName → ifDescr → ifIndex の順で IF を引くので ifDescr で引くことになり、SR Linux の ifName とは名前の形が違う。
+  - Cisco の linkDown の varbind には ifName が無い（ifIndex・ifDescr など）。trap を `link_down` にする Splunk の保存済みサーチ `netops_trap` は ifName → ifDescr → ifIndex の順で IF を引くので ifDescr で引くことになり、SR Linux の ifName とは名前の形が違う。
 - **経路**
   - 内部 NLB なので、オンプレから届くには Direct Connect か Site-to-Site VPN が要る。
   - NLB の SG でオンプレの CIDR を通す必要もある（今は `terraform/base/core/security_groups.tf` の通信の表で lab の `203.0.113.0/24` だけ）。NACL はコードで作っていない（既定で全部通す）ので、絞っている環境だけ見直す。
@@ -228,7 +228,7 @@ PRI = ファシリティの番号 × 8 + 重要度
 | `terraform/pipeline/stream` | 変数 `syslog_standard`（既定 `RFC3164`）を ECS タスクの環境変数 `SYSLOG_STANDARD` に渡す |
 | `ops/up.sh` | `SYSLOG_STANDARD`（空なら `RFC3164`）を stream の `syslog_standard` に渡す。大文字の `RFC3164` / `RFC5424` 以外は何も作る前に止まる。lab の SR Linux の形式（`ops/lab-common.sh` の `LAB_SYSLOG_STANDARD` = `RFC5424`）と違えば「lab のログの項目が崩れる」と注意を出す |
 | `ops/deploy-env.sh` / `deploy.env.example` | 読めるキーに `SYSLOG_STANDARD` がある |
-| `lab/lab.sh` | デバッグ用の EC2 の Telegraf に `LOG_STANDARD=RFC5424` を渡す |
+| `lab/lab.sh` | デバッグ用の EC2 の Telegraf に `LOG_STANDARD`（`RFC5424`）を `SYSLOG_STANDARD` として渡す |
 
 ```bash
 SYSLOG_STANDARD=RFC5424 PIPELINE=1 ops/up.sh   # lab の SR Linux のログまで見るとき
@@ -236,7 +236,7 @@ SYSLOG_STANDARD=RFC5424 PIPELINE=1 ops/up.sh   # lab の SR Linux のログま�
 
 - 本番の Cisco を受けるときは RFC3164 にする。`terraform/pipeline/stream` を直接打つなら、`syslog_standard` を渡さなければ既定の RFC3164 になる。`ops/up.sh` も書かなければ RFC3164。
 - lab の SR Linux は RFC 5424 で送るので、既定のままだと lab のログはホスト名・本文などがきれいに取れない。lab のログまで見るときだけ `RFC5424` にする。
-- 変えて打ち直すと、ECS の Telegraf のタスクが入れ替わる（環境変数が変わるので）。
+- 変えて打ち直すと、ECS の Telegraf の受ける側のタスク（`telegraf-dialout`）が入れ替わる（環境変数が変わるので）。
 - デバッグ用の EC2 の Telegraf は lab 専用なので、この値によらず `lab/lab.sh` の `LOG_STANDARD`（RFC5424）のまま。
 - Cisco IOS の既定のヘッダー（シーケンス番号や `*` 付きの時刻、ホスト名の有無）が RFC3164 でどう解析されるかは、実機で確かめていない。
 
@@ -248,7 +248,7 @@ SYSLOG_STANDARD=RFC5424 PIPELINE=1 ops/up.sh   # lab の SR Linux のログま�
 |---|---|
 | `telegraf/telegraf.conf.in` | `[[inputs.snmp]]` を `# >>> snmp_poll` 〜 `# <<< snmp_poll` で囲んである |
 | `telegraf/telegraf.sh` | `SNMP_POLL`（既定 `1`。`0` / `1` 以外は止まる）が `0` ならその区間を消す。`SNMP_AGENTS` を見るのは `1` のときだけ。`tg test` は `0` なら「止めてある」と出して終わる |
-| `terraform/pipeline/stream` | 変数 `snmp_poll`（bool、既定 `true`）をタスクの環境変数 `SNMP_POLL`（`1` / `0`）に渡す。ECS Exec の既定のコマンド（出力 `telegraf_exec_command`）は `tg gnmi` |
+| `terraform/pipeline/stream` | 変数 `snmp_poll`（bool、既定 `true`）をタスクの環境変数 `SNMP_POLL`（`1` / `0`）に渡す。ECS Exec の既定のコマンド（出力 `telegraf_exec_command`）は、取りにいく側のタスク（`telegraf-dialin`）で打つ `tg gnmi` |
 | `ops/up.sh` / `ops/deploy-env.sh` / `deploy.env.example` | `deploy.env` の `SNMP_POLL`（`1` / `0`、`true` / `false` も可。既定 `1`）を stream の `snmp_poll` に渡す |
 | `lab/lab.sh` | デバッグ用の EC2 の Telegraf にも `SNMP_POLL` を渡す。こちらは既定 `0`（trap だけ） |
 
@@ -264,8 +264,8 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
   - Grafana のルール `link_down` と Splunk の保存済みサーチ `netops_poll` は、ポーリングの `ifOperStatus` を見るので発火しない。
   - IF の up / down は、trap から Splunk（`STORES` の `splunk`）が `link_down` を出す。
   - そのため `ops/up.sh` は Grafana を `SNMP_POLL=1` のときだけアラートの送り手に数える。`WORKFLOW=1` で送り手が 1 つも無いと「`STORES` に `splunk` を入れるか `SNMP_POLL=1` にする」と出して止まる。`STORES` に `grafana` があって `SNMP_POLL=0` のときは注意を出す。
-- NLB のヘルスチェック（`outputs.health`）は、何も書いていないうちは 200 を返すので、ポーリングを止めても通る。Spark は無いトピックを作るので、`metrics` が無くても動く。
-- 変えて打ち直すと、ECS の Telegraf のタスクが入れ替わる（環境変数が変わるので）。
+- NLB のヘルスチェック（`outputs.health`）が見るのは受ける側のタスク（`telegraf-dialout`）だけ。ポーリングは取りにいく側のタスク（`telegraf-dialin`）で動くので、止めてもヘルスチェックには関わらない。Spark は無いトピックを作るので、`metrics` が無くても動く。
+- 変えて打ち直すと、ECS の Telegraf の取りにいく側のタスク（`telegraf-dialin`）が入れ替わる（環境変数が変わるので）。
 - 当時は既定が `0`（trap だけ）だった。いまは Grafana の `link_down` と Splunk の `netops_poll` がポーリングを見るので、既定は `1`。
 
 ---
@@ -1080,7 +1080,7 @@ Lambda から書く経路は 2 案あった。
 **A. どちらもできる。ただし、ワークフローの中で書くと障害の一部しか残らないので、書く場所を 2 つに分ける。**
 
 - **集めて書くのはできる。**
-  worker はすでに Neptune を読み、PyIceberg で S3 Tables に追記している。ログ（OpenSearch）、メトリクス（Prometheus）、Nautobot の変更履歴を取る処理は `agent/evidence.py` にあり、worker から呼べる。足りないのは worker の IAM とエンドポイントの環境変数。
+  worker はすでに Neptune を読み、PyIceberg で S3 Tables に追記している。ログ（OpenSearch）とメトリクス（Prometheus）を取る処理は `agent/evidence.py`、Nautobot の変更履歴（Neptune の頂点 `change`）を引く処理は `agent/topology.py` の `recent_changes` にあり、worker から呼べる。足りないのは worker の IAM とエンドポイントの環境変数。
 - **ワークフローは全部の障害を見ていない。**
   起こすのは `link_down` だけ。保守中の機器の通知、重複、閉じたあとに届いた解消は捨てている。
 - **情報源は、聞いた時点では揃っていない。**
@@ -1653,7 +1653,7 @@ AWS の上（ECS のタスクロール、VPC エンドポイント）で送れ�
 | 格納先 | この PoC の実体 | 横に広げる仕組み | 自分でやること |
 |---|---|---|---|
 | Prometheus | Amazon Managed Service for Prometheus（AMP）のワークスペース | 中身は分散型の Prometheus（Cortex）。取り込みと保存を AWS が複数 AZ で分散している | 無い。上限（取り込みの速さ、時系列の数）に当たったら引き上げを申請する |
-| OpenSearch | OpenSearch Serverless のコレクション `logs` | 取り込みと検索の計算（OCU）を AWS が負荷に合わせて増減する | 無い。この PoC は費用を抑えるため予備のレプリカを切っている（`standby_replicas = "DISABLED"`）。本番は有効にする |
+| OpenSearch | OpenSearch Serverless のコレクション `logs` | 取り込みと検索の計算（OCU）を AWS が負荷に合わせて増減する | 無い。この PoC は費用を抑えるため、既定では予備のレプリカを切っている（`standby_replicas = "DISABLED"`。`OPENSEARCH_AZ_NUM=2` で `ENABLED`）。本番は有効にする |
 | Splunk | ECS の Splunk Enterprise。既定は 1 タスク | Splunk の機能としてはある（インデクサークラスターとサーチヘッドクラスター） | `SPLUNK_AZ_NUM` を 2 か 3 にすると、インデクサーのクラスターになる（cluster manager 1、indexer は AZ ごとに 1、search head 1）。聞いた時点では 1 台だけで、「組むなら、インデクサー数台、クラスターマネージャー、HEC の前のロードバランサー、ライセンスが要る」と答えていた |
 
 - **VictoriaMetrics のクラスター版が要るのは、素の Prometheus が 1 台でしか動かないから。**
@@ -1687,10 +1687,10 @@ Fargate をやめて、ECS の EC2（または EC2 そのもの）にボリュ�
 
 | OSS | 置き場 | 理由 |
 |---|---|---|
-| Kafka | EFS | タスクが入れ替わってもログを残す。Kafka の公式の文書に NFS / EFS の記述は無い（置いてよいかは未確認） |
+| Kafka | EFS | タスクが入れ替わってもログを残す。Kafka の公式の文書に NFS / EFS の記述は無い。2026-10-07 に AWS で 1 時間ほど流して、1 台止めて戻すまで遅さやロックの不具合は出なかった（日単位で長く流したときは未確認） |
 | VictoriaMetrics（vmstorage） | EFS | 公式の文書が「Amazon EFS などの NFS に置ける」と書いている |
 | OpenSearch | タスクの一時領域 | 公式の文書がネットワークファイルシステムを避けるよう書いている。データの 2 台が同時に落ちると消える |
-| Neo4j | タスクの一時領域 | NFS は非対応と明記。消えたら Nautobot と lab の定義から同期し直す |
+| Neo4j | タスクの一時領域 | NFS は非対応と明記。消えたら lab の定義から同期し直す（`ops/sync-graph.sh --oss`。Nautobot の Job から Neo4j に書く形はまだ無い） |
 
 - EFS は、台ごとにアクセスポイント（ディレクトリ）を分ける。1 つのディレクトリに書くのは 1 つのタスクだけなので、NFS で問題になりやすい同時書き込みが起きない。
 - 「NFS は勧めない」という注意は、マネージドと OSS を比べるときの材料として残す（自前で持つと、置き場の選び方まで自分の責任になる）。
@@ -1764,9 +1764,9 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 
 **A. 結論**
 
-クラスターを組めて、EFS にも公式に置ける。Prometheus の remote write と問い合わせの API をそのまま受けるので、書く側（Spark）と読む側（Grafana、エージェント）は送り先の URL を替え、署名（SigV4）を外すだけで済んだ。OSS 版（005）はこれに替える（2026-10-04 のユーザーの決定）。
+クラスターを組めて、EFS にも公式に置ける。Prometheus の remote write と問い合わせの API をそのまま受けるので、書く側（Spark）と読む側（Grafana、エージェント）は送り先の URL を替え、署名（SigV4）を外すだけで済んだ。OSS 版（005）はこれに替えた（2026-10-04 のユーザーの決定）。
 
-2026-10-04 に公式ドキュメントと Docker Hub で確かめた。手元のコンテナでは、Spark から vminsert に書けて、vmstorage を 1 台止めても全部読めた。AWS では動かしていない。
+2026-10-04 に公式ドキュメントと Docker Hub で確かめた。手元のコンテナでは、Spark から vminsert に書けて、vmstorage を 1 台止めても全部読めた。2026-10-07 に AWS でも立て、lab の 6 台分 396 系列が入り、vmstorage を 1 台止めても値は新しいままだった。
 
 **構成**
 
@@ -1793,7 +1793,7 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 **起動の順に気をつける（手元のコンテナで分かったこと）**
 
 - vminsert が vmstorage の 3 台につなぐ前に書いた行は、1 台にしか入らない。その台を止めると、欠けたことを示さずに値が抜ける。
-- だから vmstorage が上がってから vminsert を起動する。OSS 版は、vminsert のタスクに「3 台が受けるまで待つ」コンテナを付けている。
+- だから vmstorage が上がってから vminsert を起動する。OSS 版は、vminsert のタスクに「3 台が受けるまで待つ」コンテナ（`wait-vmstorage`）を付けている。待つのは `vmstorage_wait_seconds`（既定 300 秒）までで、過ぎたら止まっている台を外して vminsert を起こす。
 - つないだあとに書いたデータは、1 台止めても全部読めた。
 
 **未確認**
@@ -1877,7 +1877,7 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 
 ### Q. OpenSearch は、レプリカと合わせて 2 台では足りない？
 
-データの複製だけなら 2 台で足りる。ただ、1 台止まってもクラスターが動き続けるには、まとめ役（cluster manager）の票が 3 つ要る。OSS 版（005）は「データ 2 台 + まとめ役だけの小さい 1 台」にする（2026-10-04 に決めた）。
+データの複製だけなら 2 台で足りる。ただ、1 台止まってもクラスターが動き続けるには、まとめ役（cluster manager）の票が 3 つ要る。OSS 版（005）は「データ 2 台 + まとめ役だけの小さい 1 台」にした（2026-10-04 に決めた）。
 
 **理由**
 
@@ -1902,7 +1902,7 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 - データを持たないので、メモリもディスクも小さくて済む。
 - まとめ役の仕事（台の監視、index の管理）が、検索や書き込みの負荷に巻き込まれない。PoC のデータ量では、ほとんど効かない。
 
-確認元は AWS の OpenSearch Service のドキュメント（[Dedicated master nodes](https://docs.aws.amazon.com/opensearch-service/latest/developerguide/managedomains-dedicatedmasternodes.html)）。「2 台は実質 1 台」を OpenSearch 本体のドキュメントでは確かめていない（未確認）。「データ 2 台 + まとめ役 1 台」は、手元のコンテナで 3 台のどれを止めても検索できた（Fargate では未確認）。Kafka の controller を 3 台にしたのと同じ理屈。
+確認元は AWS の OpenSearch Service のドキュメント（[Dedicated master nodes](https://docs.aws.amazon.com/opensearch-service/latest/developerguide/managedomains-dedicatedmasternodes.html)）。「2 台は実質 1 台」を OpenSearch 本体のドキュメントでは確かめていない（未確認）。「データ 2 台 + まとめ役 1 台」は、手元のコンテナで 3 台のどれを止めても検索できた。2026-10-07 に AWS の Fargate でも、3.9.0 を `node.store.allow_mmap=false` で 3 台立てて green になり、1 台止めても yellow で検索できた（止めたのがどの台かは記録が無く、3 台のどれでもよいかは Fargate では未確認）。Kafka の controller を 3 台にしたのと同じ理屈。
 
 データは 3 台ともタスクの一時領域に置く（公式の文書がネットワークファイルシステムを避けるよう書いているため）。1 台が入れ替わったときは、もう 1 台のレプリカから戻る。データの 2 台が同時に落ちると消える。
 
@@ -1910,7 +1910,7 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 
 **A. 結論**
 
-ログの置き場としては代わりになる。ただし検索の書き方が変わるので、読む側のコードとダッシュボードは書き直しになる。いまは OpenSearch のクラスターを第一の案にして、VictoriaLogs は候補として残す。
+ログの置き場としては代わりになる。ただし検索の書き方が変わるので、読む側のコードとダッシュボードは書き直しになる。OSS 版（005）は OpenSearch のクラスターで作り、VictoriaLogs は候補として残す。切り替えるのは OpenSearch が Fargate で動かないと分かったときの予定だったが、2026-10-07 に AWS の Fargate で動いた。
 
 **VictoriaLogs とは**
 
@@ -1967,17 +1967,17 @@ VictoriaMetrics と同じ作り手のログ用データベース。ライセン�
 
 | 理由 | 中身 |
 |---|---|
-| 入っているのが、作り直せるデータだから | Neo4j に置くのは機器、インタフェース、ケーブルのトポロジと、障害の status。元は Nautobot にあり、同期し直せば戻る |
+| 入っているのが、作り直せるデータだから | Neo4j に置くのは機器、インタフェース、ケーブルのトポロジと、障害の status。元は Nautobot と lab の定義にあり、同期し直せば戻る（OSS 版は lab の定義から。Nautobot の Job から Neo4j に書く形はまだ無い） |
 | 量が小さいから | lab の機器は数台。クラスターで読み取りを分散するほどの負荷が無い |
 | クラスターは OSS 版に無いから | クラスターは Enterprise Edition だけ（有償のライセンス）。Community Edition（GPLv3）では組めない。有償の契約が要るので、PoC では使わない |
 
 **1 台が止まると困ること**
 
-- Web のトポロジのタブが出ない。
+- Web のトポロジのタブが Neo4j の中身を出せない（2026-10-07 に AWS で止めたときは、静的データの表示に落ちて画面は 200 のままだった）。
 - 障害の status の更新（Lambda graph-status）が失敗する。
 - エージェントが「隣の機器」などトポロジを引けない。
 
-修復案の置き場は「修復案を S3 Tables にまとめる（003）」で S3 Tables に移ったので、Neo4j が止まっても修復の流れは進む。ECS のサービスなので、タスクが落ちれば自動で立ち上がり直す。データが一時領域なら、そのあと Nautobot から同期し直す。
+修復案の置き場は「修復案を S3 Tables にまとめる（003）」で S3 Tables に移ったので、Neo4j が止まっても修復の流れは進む。ECS のサービスなので、タスクが落ちれば自動で立ち上がり直す。データが一時領域なら、そのあと `ops/sync-graph.sh --oss` で lab の定義から同期し直す。2026-10-07 に AWS で Neo4j のタスクを止めると、ECS が 1 分で起こし直してグラフは空になり、同期で 8 台 / 38 インターフェース / 12 リンクに戻った。
 
 **クラスターが要るのは**
 
@@ -1994,7 +1994,7 @@ Community Edition にクラスターが無いことは、2026-10-04 に Neo4j �
 
 - クラスターは Enterprise Edition だけの機能で、Community Edition では組めない。
 - だから OSS 版の中で、Neo4j だけは 1 台で動く（Kafka、OpenSearch、VictoriaMetrics はクラスター）。
-- 止まっているあいだは、トポロジの表示と status の更新ができない。データは Nautobot から同期し直せる。
+- 止まっているあいだは、トポロジの表示と status の更新ができない。データは lab の定義から同期し直せる（`ops/sync-graph.sh --oss`）。
 
 ### Q. Kafka を KRaft のクラスターにするには、何台要る？
 
@@ -2022,10 +2022,15 @@ Community Edition にクラスターが無いことは、2026-10-04 に Neo4j �
 - 固定の voter で 3 台が組めた。
 - 1 台止めても、書いた 1000 件を全部読めて、書けた。
 
+**AWS で確かめたこと（2026-10-07）**
+
+- Fargate と EFS の上で 3 台が組めて、5 つのトピックに流れた。
+- 1 台止めても残りの 2 台で受け続け（under-replicated 2）、戻ると 3 分以内に 0 に戻った。1 時間ほど流して、遅さやロックの不具合は出なかった。
+
 **まだ確かめていないこと**
 
-- Kafka のデータを EFS（NFS）に置いてよいかは、公式ドキュメントに記述が見つからない。
-- combined の 3 台を ECS の Fargate で 1 台ずつ入れ替えたときに、過半数が保たれるかは AWS で未確認。いまの terraform は、タスク定義が変わると 3 台を同時に入れ替える（データは EFS に残る）。
+- Kafka のデータを EFS（NFS）に置いてよいかは、公式ドキュメントに記述が見つからない。日単位で長く流したときの遅さやロックは未確認。
+- いまの terraform は、タスク定義が変わると 3 台を同時に入れ替える（そのあいだ controller の過半数が無い。データは EFS に残る）。1 台ずつ入れ替える手順は、まだ無い。
 
 **出典**
 
@@ -2086,6 +2091,8 @@ AWS 版は、エージェントのツール `centrality`（`agent/graph.py` の 
 - GDS は Neo4j Community Edition の上で動いた。
 - `gds.degree`、`gds.closeness`、`gds.wcc` の結果は、定義どおりの値と一致した。島の数は 1。
 
+2026-10-07 に AWS でも、道具の Lambda と Runtime から `centrality` が GDS の答えを返した。
+
 **まだ確かめていないこと**
 
 - GDS の結果が、Neptune の `neptune.algo.*` と同じ並びになるか（AWS で同じトポロジを入れて比べる）。
@@ -2109,10 +2116,10 @@ MSK 以外は 1 AZ にできる。MSK は AWS の決まりで 2 AZ より少な�
 | リソース | 1 AZ にできるか | 理由 |
 |---|---|---|
 | MSK | できない | ブローカーを置くサブネットは 2 つ以上の AZ に要る（AWS の決まり）。ブローカーの数も AZ の数の倍数 |
-| AgentCore Runtime | できる見込み（AWS では未確認） | API はサブネットを 1〜16 個受け付ける（AgentCore Control API Reference「VpcConfig」）。手引き（AgentCore Developer Guide「Configure Amazon Bedrock AgentCore Runtime and tools for VPC」）は高可用のため 2 AZ 以上を勧めるが、1 つを禁じてはいない（どちらも 2026-10-05 確認）。2 AZ にするときは `ops/up.sh` がエンドポイントも同じ数にそろえる（エンドポイントが a にしか無いと 2 AZ が見かけだけになる） |
+| AgentCore Runtime | できる（既定の 1 サブネットで作って動くことは 2026-10-05 に AWS で確かめた。2 つ以上は AWS で未確認） | API はサブネットを 1〜16 個受け付ける（AgentCore Control API Reference「VpcConfig」）。手引き（AgentCore Developer Guide「Configure Amazon Bedrock AgentCore Runtime and tools for VPC」）は高可用のため 2 AZ 以上を勧めるが、1 つを禁じてはいない（どちらも 2026-10-05 確認）。2 AZ にするときは `ops/up.sh` がエンドポイントも同じ数にそろえる（エンドポイントが a にしか無いと 2 AZ が見かけだけになる） |
 | EMR Serverless | できる | サブネットを 1 つだけ渡せばよい。費用は変わらない |
 | Lambda（KB の索引、グラフの状態、tools） | できる | サブネットを 1 つだけ渡せばよい。費用は変わらない |
-| AOSS の VPC エンドポイント | できる見込み（未確認） | 1 サブネットで作れるかは確かめていない。作れれば 1.4 セント/h 減る |
+| AOSS の VPC エンドポイント | できる見込み（AWS では未確認） | 2026-10-04 までは 2 AZ 固定だった。いまは `ENDPOINTS_AZ_NUM` に従い、既定は 1 AZ（`terraform/base/core/endpoints.tf`）。1 サブネットで作れるかは AWS では確かめていない。2 AZ より 1.4 セント/h 安い |
 
 1 AZ にしても費用が減るのは AOSS のエンドポイントだけ。EMR と Lambda は「既定は全部 1 AZ」に揃える意味だけがある。
 
@@ -2243,8 +2250,8 @@ SDK を使うと、自分で書かなくて済むもの。
 **このプロジェクトでは**
 
 - マネージド版の MSK は Provisioned で IAM 認証なので、条件に合うはず（コンソールで開いたことは無い。未確認）。
-- OSS 版（「マネージドを OSS に置き換えた環境を作る（005）」）には Kafbat UI を置く。
-- マネージド版の MSK にも Kafbat UI を置いてある（2026-10-05 のユーザーの決定）。ECS に 1 タスクがいつも立つ。`SASL_SSL` と `AWS_MSK_IAM` の設定と、タスクロールへの `kafka-cluster:*` の権限で、IAM 認証でつなぐ。
+- OSS 版（「マネージドを OSS に置き換えた環境を作る（005）」）には Kafbat UI を置いた（認証なしの `PLAINTEXT`）。2026-10-07 に AWS で、ブローカーとトピックが見え、API からトピックの作成と削除ができた（200）。Spark は consumer group を作らないので、lag は出ない。
+- マネージド版の MSK にも Kafbat UI を置いてある（2026-10-05 のユーザーの決定）。ECS に 1 タスクがいつも立つ。`SASL_SSL` と `AWS_MSK_IAM` の設定と、タスクロールへの権限（Kafbat UI が使う `kafka-cluster:` の操作だけ。`terraform/pipeline/stream/msk.tf` の `kafka_ui_kafka_statements`）で、IAM 認証でつなぐ。ブローカーの設定の変更と consumer group の変更・削除の権限は付けていないので、画面のその操作は権限エラーになる。
 - IAM でつながることは 2026-10-05 に AWS で確かめた。画面に入れるか、画面からトピックを足せるか、タスクロールの権限で足りるかは未確認。
 
 **出典**（2026-10-05 に確認）

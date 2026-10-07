@@ -21,7 +21,7 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 | admin のパスワード | SSM の SecureString `/<prefix>/grafana/admin-password`（`ops/up.sh` が乱数で作る） | `ops/up.sh`、`grafana.tf` の `secrets` |
 | ログ | `/ecs/<prefix>-grafana` | `grafana.tf` |
 | スイッチ | `STORES` の `grafana`（Grafana だけを切り替えるキーは無い） | `deploy.env.example` |
-| 費用 | 2 セント/時（`STORES` の `grafana` 全体では約 +$0.60/h） | `ops/up.sh` の先頭のコメント、`deploy.env.example` |
+| 費用 | 2 セント/時（`STORES` の `grafana` 全体では約 +$0.60/h） | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`）、`deploy.env.example` の `STORES` |
 
 ルールと中身:
 
@@ -89,6 +89,8 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 | 機器ごと止まったとき | 検知しない（系列が途切れると解消を送る） |
 | `SNMP_POLL=0` | `link_down` は発火も解消もしない |
 | 1 タスク・1 AZ | 止まっているあいだはルールが評価されない |
+
+OSS 版（`oss/terraform/pipeline/analytics/grafana.tf`）も同じイメージとルールで 1 タスク立てる。データソースだけが VictoriaMetrics の vmselect（署名なし）と ECS の OpenSearch（Basic 認証）に変わる（`grafana/provisioning/datasources-oss`。uid が同じなので、ダッシュボードとアラートルールはそのまま使う）。[oss-variant.md](../../oss-variant.md)。
 
 ## 関連
 

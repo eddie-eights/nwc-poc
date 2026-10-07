@@ -12,12 +12,12 @@
 |---|---|---|
 | [core.md](core.md) | `base/core`、`base/ecr` | 土台: VPC、Web の EC2、アラートの SNS トピック、閉域（エンドポイント + Deny）、SG（通信の表） |
 | [agent.md](agent.md) | `agent/`（`AGENT=1`） | チャットの経路: Web → AgentCore Runtime → Nova 2 Lite・ガードレール・KB・ツール |
-| [pipeline.md](pipeline.md) | `pipeline/`（`PIPELINE=1`） | lab → Telegraf → MSK → Spark → 格納先、Grafana と Splunk のアラート、Neptune のトポロジ |
+| [pipeline.md](pipeline.md) | `pipeline/`（`PIPELINE=1`） | lab → Telegraf → MSK → Spark → 格納先、Grafana と Splunk のアラート、Neptune のトポロジ、Nautobot |
 | [workflow.md](workflow.md) | `workflow/`（`WORKFLOW=1`） | アラート（SNS → SQS）→ Temporal の調査・承認・修復、Gateway（MCP） |
 
 リソースごとの知見（使い方、つながり、はまりどころ、制約）は [resources/README.md](resources/README.md)。
 
-使い方は別のファイル: パイプラインは [pipeline.md](../pipeline.md)、機器から集めるデータは [collection.md](../collection.md)、承認の流れは [workflow.md](../workflow.md)、データの置き場は [data-stores.md](../data-stores.md)。
+使い方は別のファイル: パイプラインは [pipeline.md](../pipeline.md)、機器から集めるデータは [collection.md](../collection.md)、承認の流れは [workflow.md](../workflow.md)、データの置き場は [data-stores.md](../data-stores.md)、Nautobot は [nautobot.md](../nautobot.md)、マネージドを OSS に置き換えた版は [oss-variant.md](../oss-variant.md)。
 
 ## どのファイルがどこで動くか
 
@@ -25,7 +25,7 @@
 
 | ファイル | 動く場所 | 設定 |
 |---|---|---|
-| `web/app.py`（と `web/` の他のファイル） | Web の EC2（`<prefix>-web.service`） | `/etc/<prefix>-web.env`。Runtime の ARN は SSM の `<prefix>/runtime-arn` を 60 秒キャッシュで読む |
+| `web/app.py`（と `web/` の他のファイル） | Web の EC2（`<prefix>-web.service`） | `/etc/<prefix>-web.env`。Runtime の ARN は SSM の `/<prefix>/runtime-arn` を 60 秒キャッシュで読む |
 | `agent/app.py` | AgentCore Runtime のコンテナ | `terraform/agent/runtime.tf` の環境変数 |
 
 **`agent/app.py` を EC2 に置かない。**`KeyError: 'MODEL_ID'` か `404` になり、cloud-init のログに `is not web/app.py` が出る。EC2 のロールに権限を足して直さない。
@@ -39,13 +39,16 @@
 | `tools/` | Gateway（MCP）の tools Lambda |
 | `spark/` | Spark のジョブ（`snmp_sinks.py`。格納先へ流すだけで、検知はしない） |
 | `lab/` | containerlab の構成、SR Linux の設定（`srlinux/*.cli`）、EC2 の支度（`setup.sh`。lab とデバッグ用の EC2 で共通）、Telegraf（ECS）への転送（`lab forward`）、デバッグ用の EC2 の Telegraf（`lab telegraf`） |
-| `telegraf/` | Telegraf の `Dockerfile`、設定（`telegraf.conf.in`）と `tg`（stream の ECS のタスクで動く。デバッグ用の EC2 でも docker で `SINK=stdout`） |
-| `grafana/` | Grafana の `Dockerfile` と provisioning（データソース、ダッシュボード、アラート（`alerting/` の `netops-prometheus.yaml` / `netops-opensearch.yaml` / `netops.yaml`）。analytics の ECS のタスクで動く） |
+| `telegraf/` | Telegraf の `Dockerfile`、設定（`telegraf.conf.in`）、入口の `telegraf.sh`（イメージの中では `tg`）、lab の gNMI を共通の形に変える `lab_gnmi.star` / `lab_circuits.star`（stream の ECS のタスクで動く。デバッグ用の EC2 でも docker で `SINK=stdout`） |
+| `grafana/` | Grafana の `Dockerfile`、`start.sh` と provisioning（データソース（OSS 版は `datasources-oss/`）、ダッシュボード、アラート（`alerting/` の `netops-prometheus.yaml` / `netops-opensearch.yaml` / `netops.yaml`）。analytics の ECS のタスクで動く） |
 | `splunk/` | Splunk の `Dockerfile`（公式イメージ + 検知のアプリ）、アプリ `netops_alerts`（保存済みサーチと、SNS へ publish するアラートアクション。analytics の ECS のタスクで動く）、`entrypoint.sh`（役割に合わせてアプリを外す。indexer は止まる前に `splunk offline`）、`peers_check.py`（クラスターの search head が indexer を全部検索できるかの突き合わせ） |
 | `nautobot/` | Nautobot の `Dockerfile`（公式イメージ + boto3）、Job（`jobs/netops_jobs.py`）と、その中身（`netops/`。対応付け `nb_map.py`、同期 `nb_sync.py`、起動時の `bootstrap.py`）。`PIPELINE=1` ならいつも ECS で動く |
-| `graph/` | アラート（SNS）を受けて Neptune（Neptune Analytics）の `status` を書く Lambda |
+| `graph/` | アラート（SNS）を受けて Neptune（Neptune Analytics）の `status` を書き、通知の履歴を Firehose へ送る Lambda（`status_handler.py`） |
+| `neo4j/` | OSS 版の Neo4j（+ GDS）の `Dockerfile` と `entrypoint.sh`（OSS 版の graph の ECS のタスクで動く） |
 | `kb-docs/` | ナレッジベースに入れる手順書 |
-| `ops/` | `up.sh` / `down.sh` / `check.sh` など |
+| `cloudformation/` | デバッグ用の EC2 のスタック（`lab-debug.yaml`。下の段落） |
+| `ops/` | `up.sh` / `down.sh` / `check.sh` / `lab-debug.sh` / `sync-graph.sh` など |
+| `oss/` | OSS 版（`oss/ops/up.sh` / `down.sh`、`oss/terraform/`、手元で組み合わせを確かめる `oss/compose/`。[oss-variant.md](../oss-variant.md)） |
 | `tests/` | 模擬テスト（AWS を呼ばない） |
 
 ```
@@ -56,11 +59,16 @@ terraform/
 ├── agent/         AGENT=1     Runtime / ガードレール / KB
 ├── pipeline/      PIPELINE=1
 │   ├── lab/         containerlab の EC2（stream を作るときは Telegraf への転送も）
-│   ├── stream/      MSK / Telegraf（ECS Fargate + 内部 NLB）
-│   ├── analytics/   EMR Serverless / S3 Tables / OpenSearch / Prometheus / Grafana と Splunk（ECS Fargate）
-│   └── graph/       Neptune Analytics のグラフ / status の Lambda（SNS の購読）
+│   ├── stream/      MSK / Telegraf（ECS Fargate + 内部 NLB）/ Kafbat UI（ECS Fargate）
+│   ├── analytics/   EMR Serverless / S3 Tables / OpenSearch / Prometheus / Grafana と Splunk（ECS Fargate）/ アラートの通知の履歴の Firehose
+│   ├── graph/       Neptune Analytics のグラフ / status の Lambda（SNS の購読）
+│   └── nautobot/    Nautobot（ECS Fargate）と PostgreSQL（RDS）
 └── workflow/      WORKFLOW=1  Temporal on ECS / Gateway（MCP）/ SQS（SNS の購読と、承認・却下の decisions）
 ```
+
+ルートは 9 つで、`ops/up.sh` の `ROOTS` と `ops/check.sh` ではこの順に並ぶ: `base/ecr` → `base/core` → `agent` → `pipeline/lab` → `pipeline/stream` → `pipeline/analytics` → `pipeline/graph` → `pipeline/nautobot` → `workflow`。apply の順は少し違い、graph は手順 3-2 で裏で始めて手順 7-3 で待ち、nautobot は analytics の前（手順 7-3c）。Nautobot は `PIPELINE=1` ならいつも作る（stream と graph を両方外したときだけ作らない）。
+
+OSS 版（`oss/ops/up.sh`）は `oss/terraform/` に同じ 9 つのルートを持つ（多くのファイルは `terraform/` へのシンボリックリンクで、違いは各ルートの `oss.auto.tfvars` と OSS 版だけのファイル）。接頭辞は `<owner>-nwc-oss`、state も `oss/terraform/<ルート>/terraform.tfstate` で、マネージド版とは別（[oss-variant.md](../oss-variant.md)）。
 
 デバッグ用の EC2（lab + Telegraf を 1 台）だけは terraform ではなく CloudFormation の `cloudformation/lab-debug.yaml`（スタック `<prefix>-lab-debug`）。作るのも消すのも `ops/lab-debug.sh up` / `down` だけで、`ops/up.sh` / `ops/down.sh` は触らない（2026-10-04 から）。土台（base/core）は使わず、自分の VPC（既定 `10.20.0.0/24`。どこともつながないので base/core と重なってよい。IGW / NAT は無い）、インターフェース型エンドポイント 4 本（ssm / ssmmessages / ecr.api / ecr.dkr）と S3 の gateway、バケット `<prefix>-lab-debug-<アカウント>`、ECR のリポジトリ 3 つ（`<prefix>-debug-lab-srlinux` / `-lab-multitool` / `-telegraf`。スタックと一緒に消える）を持つ。
 
@@ -89,6 +97,12 @@ aws resourcegroupstaggingapi get-resources --region ap-northeast-1 \
 | ガードレールで止めたか | Runtime のログの `stop=guardrail_intervened` |
 | Telegraf | CloudWatch Logs `/ecs/<prefix>-telegraf`（stream の出力 `telegraf_log_group_name`） |
 | Grafana / ECS の Splunk | CloudWatch Logs `/ecs/<prefix>-grafana` / `/ecs/<prefix>-splunk` |
+| Spark（EMR Serverless） | CloudWatch Logs `/aws/emr-serverless/<prefix>` |
+| Kafbat UI / MSK | CloudWatch Logs `/ecs/<prefix>-kafka-ui` / `/<prefix>/msk` |
+| status の Lambda | CloudWatch Logs `/aws/lambda/<prefix>-graph-status` |
+| Nautobot | CloudWatch Logs `/ecs/<prefix>-nautobot` |
+| Temporal とワーカー | CloudWatch Logs `/ecs/<prefix>-workflow` |
+| SG で拒んだ通信 | VPC フローログ `/<prefix>/vpc-flow-logs`（[core.md](core.md) の「SG」） |
 | デバッグ用の EC2 の Telegraf | EC2 の中の `sudo lab telegraf logs`（docker logs。CloudWatch には出さない） |
 | 誰がいつ入ったか | CloudTrail の `StartSession` |
 

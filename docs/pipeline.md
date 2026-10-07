@@ -26,7 +26,7 @@ flowchart LR
 ```
 
 - lab は Web やエージェントとはつながっていない。使うのは SNMP とログの発生源としてだけ。
-- Telegraf は stream の ECS（Fargate ARM64、0.25 vCPU / 0.5 GB）で、同じイメージを 2 つのサービスで動かす（`terraform/pipeline/stream/telegraf.tf`。2026-09-28 に terraform/pipeline/lab の Telegraf 用の EC2 から移し、2026-10-04 に 2 つに分けた）。受ける側（`<prefix>-telegraf-dialout`、`TELEGRAF_ROLE=dialout`）は内部 NLB の後ろで trap・syslog・MDT を受け、取りにいく側（`<prefix>-telegraf-dialin`、`TELEGRAF_ROLE=dialin`、1 タスク固定、NLB なし）は gNMI の購読と SNMP のポーリングをする（[collection.md](collection.md) の「Telegraf を受ける側と取りにいく側に分けた」）。イメージは `telegraf/Dockerfile`（公式の `telegraf:1.40.0` に `telegraf.conf.in` と `tg` を入れたもの）で、`ops/up.sh` が ECR の `<prefix>-telegraf:<版>-<ディレクトリのハッシュ 12 文字>` に作る。ポーリング先と gNMI の購読先は `ops/up.sh` が lab の定義から作って stream の変数 `snmp_agents` / `gnmi_targets` に渡し、取りにいく側のタスクの環境変数 `SNMP_AGENTS` / `GNMI_TARGETS` になる。MSK のブローカーは環境変数 `KAFKA_BROKERS`。起動時に `tg run` が設定を埋める。
+- Telegraf は stream の ECS（Fargate ARM64、0.25 vCPU / 0.5 GB）で、同じイメージを 2 つのサービスで動かす（`terraform/pipeline/stream/telegraf.tf`。2026-09-28 に terraform/pipeline/lab の Telegraf 用の EC2 から移し、2026-10-04 に 2 つに分けた）。受ける側（`<prefix>-telegraf-dialout`、`TELEGRAF_ROLE=dialout`）は内部 NLB の後ろで trap・syslog・MDT を受け、取りにいく側（`<prefix>-telegraf-dialin`、`TELEGRAF_ROLE=dialin`、1 タスク固定、NLB なし）は gNMI の購読と SNMP のポーリングをする（[collection.md](collection.md) の「Telegraf を受ける側と取りにいく側に分けた」）。イメージは `telegraf/Dockerfile`（公式の `telegraf:1.40.0` に `telegraf.conf.in` と `tg` を入れたもの）で、`ops/up.sh` が ECR の `<prefix>-telegraf:<版>-<ディレクトリのハッシュ 12 文字>` に作る。ポーリング先と gNMI の購読先は SSM の `/<prefix>/telegraf-dialin/nautobot/{snmp-agents,gnmi-targets}` にあり、取りにいく側のタスクが ECS の secrets で環境変数 `SNMP_AGENTS` / `GNMI_TARGETS` として受ける。最初の値は `ops/up.sh` が lab の定義から作って stream の変数 `snmp_agents` / `gnmi_targets` に渡したもので、そのあとは Nautobot の Job が書き換える（Terraform は値の変化を見ない。下の「Nautobot」）。MSK のブローカーは環境変数 `KAFKA_BROKERS`。起動時に `tg run` が設定を埋める。
 - **SNMP のポーリングは既定で動かす**（`deploy.env` の `SNMP_POLL`。既定 `1`）。`ops/up.sh` が stream の変数 `snmp_poll = true` を渡し、タスクの環境変数 `SNMP_POLL=1` で `tg run` が `telegraf.conf.in` の `>>> snmp_poll` の区間（`inputs.snmp`。10 秒ごとに ifTable）を残す。`SNMP_POLL=0` はその区間ごと消すので（SNMP は trap だけ受ける）、`SNMP_AGENTS` は渡っても使わない。止めているあいだは `metrics` トピックにポーリングの行（measurement `system` / `interface`）が載らず（lab の gNMI を変えた共通の形は載る）、S3 Tables の `raw_telemetry` のポーリングの行、Grafana のダッシュボード「netops / SNMP metrics」、エージェントの `query_metrics`（`interface_ifOperStatus` など）は空のまま。Grafana のアラートルール `link_down` と Splunk の保存済みサーチ `netops_poll` も発火しない。そのとき IF の up / down は、Splunk が linkDown / linkUp の trap からだけ知らせる（`STORES` に `splunk` があるとき）。gNMI と syslog はこの値によらず受ける。
 - ポーリングが二重にならないよう、作り直すときは古いタスクを止めてから新しいタスクを立てる。
 - lab は Spine-Leaf（EVPN-VXLAN）。上流側の Leaf-SW 2 台と アクセス側の Leaf 2 台が Spine 2 台とフルメッシュ（fabric。IS-IS）、上流 VM は Leaf-SW の組へ、アクセス側 VM は Leaf の組へ LAG（EVPN マルチホーミング）で 2 本ずつ。機器の定義は `lab/gen_lab.py` が作る（[lab を変える](#lab-を変える)）。SR-MPLS は SR Linux のコンテナが `ixr6e` / `ixr10e` + ライセンスを要るので、ライセンスが届くまで license 不要の `ixr-d2l` で EVPN-VXLAN にしている。
@@ -59,6 +59,8 @@ aws ssm start-session --region ap-northeast-1 --target "$LAB_INSTANCE_ID"
 | `sudo lab check` | BGP EVPN の隣接（Spine の RR）、IS-IS の隣接、EVPN の ethernet-segment、VM の LAG（bond0）、VM 同士の ping、SNMP |
 | `sudo lab failover` | アクセス側 Leaf の fabric（`dc1-leaf-01 ethernet-1/1`）を落とし、経路が `dc1-spine-02` だけに切り替わるのを見る（最大 60 秒） |
 | `sudo lab heal-main` / `sudo lab fail-main` | その fabric を戻す / 落とすだけ |
+| `sudo lab fail-bgp` / `sudo lab heal-bgp` | `dc1-leaf-01` の iBGP（EVPN）の隣接 1 本（`dc1-spine-01` = `10.255.0.1`）の neighbor を disable / enable にする（回線は落とさない。`bgp_down` を出す） |
+| `sudo lab trap-test` | link 以外の trap（`.1.3.6.1.4.1.8072.2.3.0.1`）を `dc1-host-01` から 1 通送る（`trap` を出す） |
 | `sudo lab snmp dc1-leaf-01` | 1 台の ifName / ifAdminStatus / ifOperStatus（EC2 から snmpwalk。admin up の IF だけ） |
 | `sudo lab logs` | 機器のログ（`/var/log/srlinux/file/messages`）の末尾。1 台だけなら `sudo lab logs dc1-leaf-01`、行数は `LINES=50` を前に付ける |
 | `sudo lab cli dc1-leaf-01 "show network-instance default protocols bgp neighbor"` | 1 台に SR Linux の CLI を 1 つ打つ |
@@ -115,7 +117,7 @@ terraform -chdir=terraform/pipeline/stream output -raw telegraf_exec_command; ec
 aws logs tail --region ap-northeast-1 "$(terraform -chdir=terraform/pipeline/stream output -raw telegraf_log_group_name)" --since 10m --follow
 ```
 
-- 以前の `sudo tg status` / `logs` / `restart` は無い（systemd が無い）。作り直すのは `ops/up.sh`（イメージが変わると両方、ポーリング先・購読先か `SNMP_POLL` が変わると取りにいく側、`SYSLOG_STANDARD` が変わると受ける側のタスクが作り直される）か、`aws ecs update-service --force-new-deployment`（サービスごと）。
+- 以前の `sudo tg status` / `logs` / `restart` は無い（systemd が無い）。作り直すのは `ops/up.sh`（イメージが変わると両方、`SNMP_POLL` が変わると取りにいく側、`SYSLOG_STANDARD` が変わると受ける側のタスクが作り直される。ポーリング先・購読先の変化では作り直さない。それは Nautobot の Job が作り直す）か、`aws ecs update-service --force-new-deployment`（サービスごと）。
 - 設定のテンプレートは `telegraf/telegraf.conf.in`。変えたときは下の「変えたとき」。
 - `tg gnmi` / `tg test` で機器に届かない、trap が来ない、ログが来ないときは、lab の EC2 で `sudo lab forward-status` を見る（規則が無ければ `sudo lab forward`）。
 
@@ -331,7 +333,7 @@ Neptune に入れる機器・インタフェース・回線（物理層）と、
 | IP | `ip_interface`（アドレス付きサブインタフェース） / `isis_adjacency` | `<機器>#<IF>.0` / `<機器>#isis#<IF>.0` | `interface_id` / `ip_interface_id` |
 | EVPN・BGP | `bgp_session` / `evpn_instance` / `ethernet_segment` | `<機器>#bgp#<相手の IP>` / `<機器>#evi#<EVI>` / `<機器>#es#<名前>` | `ip_interface_id`（ループバック `system0.0`） / `interface_id`（`lag1`） |
 
-同じ定義から、Telegraf のポーリング先（`--snmp-agents` → stream の変数 `snmp_agents`。`SNMP_POLL=0` では使わない）、gNMI の購読先（`--gnmi-targets` → stream の変数 `gnmi_targets`）と、gNMI と trap の送り元を機器名に直す device map（`--device-map`。hostname・管理 IP・全インタフェースのアドレス → 機器名。Splunk のアラートアクションはタスクの環境変数 `DEVICE_MAP` で、Spark のジョブは引数 `--device-map` で受ける）も作る。機器の一覧はこの 1 か所だけにある。
+同じ定義から、Telegraf のポーリング先（`--snmp-agents` → stream の変数 `snmp_agents`。`SNMP_POLL=0` では使わない）、gNMI の購読先（`--gnmi-targets` → stream の変数 `gnmi_targets`）と、gNMI と trap の送り元を機器名に直す device map（`--device-map`。hostname・管理 IP・全インタフェースのアドレス → 機器名。Splunk のアラートアクションはタスクの環境変数 `DEVICE_MAP` で、Spark のジョブは引数 `--device-map` で受ける）も作る。機器の一覧はこの 1 か所だけにある。ただし Telegraf のポーリング先と購読先はここからは最初の値だけで、そのあとの正は Nautobot（下の「Nautobot」）。
 
 ```bash
 ops/sync-graph.sh              # 空のときに入れる
@@ -369,7 +371,7 @@ flowchart LR
 
 - 構成は ECS Fargate（ARM 2 vCPU / 4 GB）の 1 タスクに web（uWSGI）・Celery worker（Job を回す）・Redis の 3 コンテナと、RDS の PostgreSQL（`db.t4g.micro`）。SG は `<prefix>-nautobot` / `<prefix>-nautobot-db`。LB は無く、Web の EC2 を踏み台にしたポートフォワードで開く。
 - シークレット（Django の SECRET_KEY、admin のパスワード、DB のパスワード、Web が使う API のトークン）は `ops/up.sh` が SSM の SecureString `/<prefix>/nautobot/{secret-key,admin-password,db-password,api-token}` に乱数で作る。タスクは ECS の secrets で受け、RDS には Terraform の write-only の引数で渡す（state に載らない）。
-- 最初の起動で、DB が空なら lab の定義（イメージに入れた `lab_seed.json`）から機器・インタフェース・IP・Service・ケーブルを入れ、Job 2 つ（「Telegraf と Neptune に同期」「変更のたびに…」）と JobHook `netops-sync` を有効にして 1 回同期する（`nautobot/netops/bootstrap.py`。2 回目からは足りないものだけ）。
+- 最初の起動で、DB が空なら lab の定義（イメージに入れた `lab_seed.json`）から機器・インタフェース・IP・Service・ケーブルを入れ、Job 2 つ（「Telegraf と Neptune に同期」「変更のたびに…」）と JobHook `netops-sync` を有効にして 1 回同期する（`nautobot/netops/bootstrap.py`。2 回目からは足りないものだけ作る。lab の定義からの seed は機器が 1 台も無いときだけで、機器があれば lab を変えても入れ直さない）。
 - Telegraf の一覧は、変わったときだけ書き換えて取りにいく側のサービスを作り直す（購読が数十秒切れる）。Service を持つ機器が 1 台も無くなる変更は書かない（Telegraf が起動できなくなるので、警告だけ）。
 - Neptune へは `agent/graph.py` の `sync_physical()` が openCypher で差分を書く。`status`（アラートが書く）と IP 層・EVPN/BGP 層は触らない。IP 層から上は Nautobot に無いので、lab の定義からだけ入る（`ops/sync-graph.sh`）。
 - Web の「トポロジ」タブのリンクの追加・削除は、Nautobot があるあいだ Nautobot の REST API に書く（`web/nautobot_api.py`。無いインタフェースは作り、ケーブルを作る・消す）。Neptune には JobHook の Job が数秒〜十数秒あとに反映するので、画面は「再読み込み」で確かめる。API のユーザーは `netops-web`（起動時に `bootstrap.py` が SSM の `api-token` と同じ値のトークンで作る。JobHook が出るように superuser）。種別（fabric / l2 / lag）は画面で選んだものではなく両端の Role と LAG から決まる。機器の追加・削除は Nautobot の画面でする。「静的データを投入」は Nautobot があるあいだ使えない。
@@ -377,7 +379,7 @@ flowchart LR
 - JobHook は、変更した人に Job を実行する権限が無いと出ない（管理者は出る）。権限を絞ったユーザーを作るなら、Job `netops_jobs.SyncOnChange` の実行も許す。
 - 機器が 1 台も無いときは Neptune を触らない（空で合わせると物理層が全部消えるため。seed が失敗したときも起動時の同期を飛ばす）。全部消したいときは `ops/sync-graph.sh --replace` で入れ直す。
 - 機器の名前を変えると、Neptune では「前の名前の機器を消して新しい名前の機器を足す」になり、その機器の `status` と IP 層より上へのつながりは消える（名前が頂点の ID のため）。上の層は `ops/sync-graph.sh --replace` で入れ直す。
-- 機器の status（Planned / Decommissioning など）は見ない。Nautobot にある機器は全部映る。Module に付いた Interface のケーブルは回線にしない。
+- 機器の status は `Maintenance` だけ見る（Neptune の機器に `maintenance = true` を付け、ワークフローはその機器の異常では起こさない。`bootstrap.py` が `Maintenance` を機器にも選べるようにする）。ほかの status（Planned / Decommissioning など）は見ず、Nautobot にある機器は全部映る。Module に付いた Interface のケーブルは回線にしない。
 - 一括で変えると変更 1 件ごとに Job が 1 本ずつ順に走り、途中の状態で一覧が変わるたびに Telegraf の取りにいく側が作り直される。大きく変えるときは JobHook `netops-sync` を止めてから変え、最後に手で Job を打つ（JobHook は次の起動で有効に戻る）。
 - admin のパスワードは起動のたびに SSM の値へ戻る（画面で変えても残らない）。
 - stream を作り直して一覧の持ち主を変えたとき（`dialin_targets_from_nautobot` を手で変えた apply）は、nautobot のルートも apply し直す。そのままだと Job が `ParameterNotFound` で失敗する（`ops/up.sh` は両方をそろえる）。
@@ -412,7 +414,7 @@ uv run python lab/lab_topology.py lab --layers > agent/data/layers.json
 | `grafana/`（provisioning。ダッシュボードとアラート） | `ops/up.sh` を打つ（同じく手順 2 がイメージを作り直し、手順 7-4 の analytics の apply がタスクを入れ替える） |
 | `splunk/`（保存済みサーチ、アラートアクション） | `ops/up.sh` を打つ（同じ。Splunk の index はタスクと一緒に消えるので、入れ替えの前のイベントは検索できなくなる。クラスター（`SPLUNK_AZ_NUM` が 2 か 3）は indexer を 1 台ずつ入れ替えるが、複製が終わる前に次の台が入れ替わると、その分は消える） |
 | `spark/snmp_sinks.py` | `ops/up.sh` を打つ（手順 7-5 がハッシュの違いを見て、動いているジョブ（3 つまで）を止めて起こし直す）。手で止めるコマンドは下 |
-| lab の機器や回線 | 上のあと `ops/sync-graph.sh --replace`。監視する機器を足したら `ops/up.sh`（stream の変数 `snmp_agents` / `gnmi_targets` が変わるので Telegraf の取りにいく側のタスクが作り直される。device map は Splunk のタスクの環境変数なので、変われば手順 7-4 の apply が Splunk のタスクを入れ替える） |
+| lab の機器や回線 | 上のあと `ops/sync-graph.sh --replace`。監視する機器を足したら Nautobot にも足す（機器と Service `gnmi` / `snmp`。JobHook の Job が Telegraf の一覧を書き換えて取りにいく側を作り直す。Nautobot の seed は機器が 1 台も無いときだけなので、lab を変えても入らない。stream の変数 `snmp_agents` / `gnmi_targets` は最初の値だけで、変えても Telegraf の一覧は変わらない）。device map は `ops/up.sh` で作り直す（Splunk のタスクの環境変数なので、変われば手順 7-4 の apply が Splunk のタスクを入れ替える） |
 
 ジョブを止めるコマンド（`$APP_ID` と `$JOB_RUN_ID` は上の「Spark を確かめる」で入れる）:
 

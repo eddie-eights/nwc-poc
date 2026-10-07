@@ -18,10 +18,10 @@
 | イメージ | 公式の telegraf 1.40.0 に設定のテンプレートと入口（`tg`）を足したもの。ECR の `<prefix>-telegraf` | `telegraf/Dockerfile`、`ops/lab-common.sh`（版の正）、変数 `telegraf_image_tag` |
 | NLB | 内部 NLB `<prefix>-tg`。162/udp → タスクの 1162、5140/udp → 5140、57000/tcp → 57000。ヘルスチェックは HTTP 8080（`outputs.health`） | `telegraf.tf` の `local.telegraf_ports`、`aws_lb.telegraf_dialout` |
 | 機器の一覧 | SSM `/<prefix>/telegraf-dialin/<lab か nautobot>/gnmi-targets`・`snmp-agents`（String） | `telegraf.tf`、変数 `dialin_targets_from_nautobot` |
-| 機器の認証情報 | SSM `/<prefix>/telegraf-dialin/gnmi-username`・`gnmi-password`・`snmp-community`（SecureString。`ops/up.sh` が作る） | `ops/up.sh` の `ensure_fixed_secret` |
+| 機器の認証情報 | SSM `/<prefix>/telegraf-dialin/gnmi-username`・`gnmi-password`・`snmp-community`（SecureString。`ops/up.sh` が作る） | `ops/up-common.sh` の `ensure_fixed_secret`（`ops/up.sh` の手順 7 が呼ぶ） |
 | スイッチ | `SNMP_POLL`（既定 1。0 でポーリングをやめる）、`SYSLOG_STANDARD`（既定 RFC3164）、`MDT_SOURCE_CIDRS`（既定は空）、`TELEGRAF_AZ_NUM` | `deploy.env.example`、変数 `snmp_poll`、`syslog_standard` |
 | ログ | `/ecs/<prefix>-telegraf`（ストリームは `dialout/…` と `dialin/…`） | `telegraf.tf` |
-| 費用 | タスク 1 つ 1.2 セント/時 ×（1 + `TELEGRAF_AZ_NUM`）+ NLB 2.43 セント/時（公表単価） | `ops/up.sh` の先頭のコメント |
+| 費用 | タスク 1 つ 1.2 セント/時 ×（1 + `TELEGRAF_AZ_NUM`）+ NLB 2.43 セント/時（公表単価） | `ops/up.sh` の費用の目安（526〜583 行） |
 
 ## つながり
 
