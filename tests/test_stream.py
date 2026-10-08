@@ -642,15 +642,19 @@ check("75 で止まった Kafbat UI は、Web のユニットの Wants= で、op
       and re.findall(r"^\w+=.*kafka-ui.*$", _wunit, re.M) == ["Wants=${name_prefix}-kafka-ui.service"])
 # その restart は stream の apply より後で、stream を作る回はいつも通る: ops/up.sh の 8-3 の if に SKIP_STREAM が空の条件、OSS 版の 7-5 は if の外
 _up_sh, _oss_up_sh = _read("ops", "up.sh"), _read("oss", "ops", "up.sh")
-_s83 = _up_sh[_up_sh.index("\n# ---- 8-3. Web "):_up_sh.index("\n# ---- 8-5. ")]
-_s75 = _oss_up_sh[_oss_up_sh.index('\nlog "7-5. '):_oss_up_sh.index("\n# ---- 8. workflow ")]
+def _between(text, start, end):  # start から end の手前まで。どちらかが無ければ ""（.index() の ValueError ではなく、それを使う check の名前で落ちる。cycle 016）
+    i = text.find(start)
+    j = text.find(end, i + len(start)) if i >= 0 else -1
+    return text[i:j] if j >= 0 else ""
+_s83 = _between(_up_sh, "\n# ---- 8-3. Web ", "\n# ---- 8-5. ")
+_s75 = _between(_oss_up_sh, '\nlog "7-5. ', "\n# ---- 8. workflow ")
 check("Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z \"$SKIP_STREAM\" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）",
-      _up_sh.index("\n  tf_apply pipeline/stream ") < _up_sh.index("\n# ---- 8-3. Web ")
+      -1 < _up_sh.find("\n  tf_apply pipeline/stream ") < _up_sh.find("\n# ---- 8-3. Web ")
       and re.match(r'\n# ---- 8-3\. Web -*\nif \[ -z "\$SKIP_STREAM" \] \|\| [^\n]*; then\n', _s83) is not None
       and '\n  run_on_instance "$INSTANCE_ID" "systemctl restart $PREFIX-web.service; $WEB_ACTIVE"\n' in _s83 and _s83.count("\nfi\n") == 1
-      and _oss_up_sh.index('\ntf_apply pipeline/stream "${STREAM_VARS[@]}"\n') < _oss_up_sh.index('\nlog "7-5. ')
-      and _s75.split("\n")[2] == 'run_on_instance "$INSTANCE_ID" "systemctl restart $PREFIX-web.service; $WEB_ACTIVE"'
-      and re.findall(r"^(?:if|fi)\b.*$", _oss_up_sh[_oss_up_sh.index("\n# ---- 7-4c. "):_oss_up_sh.index("\n# ---- 8. workflow ")], re.M)
+      and -1 < _oss_up_sh.find('\ntf_apply pipeline/stream "${STREAM_VARS[@]}"\n') < _oss_up_sh.find('\nlog "7-5. ')
+      and re.fullmatch(r'\nlog "7-5\. [^"\n]*"\n(?:[ \t]*(?:#[^\n]*)?\n)*run_on_instance "\$INSTANCE_ID" "systemctl restart \$PREFIX-web\.service; \$WEB_ACTIVE"\n(?:[ \t]*(?:#[^\n]*)?\n)*', _s75) is not None
+      and re.findall(r"^(?:if|fi)\b.*$", _between(_oss_up_sh, "\n# ---- 7-4c. ", "\n# ---- 8. workflow "), re.M)
           == ['if [ -n "$STORE_WARN" ]; then', "fi"])
 check("Docker と Kafbat UI の節は、画面のコードの取得（aws s3 sync）より後、S3 に web/ が無くて exit 0 する所より前で、関数 kafka_ui_setup にまとめて"
       " 1 行ずつ || return 1 で繋ぎ、|| echo で呼ぶ（落ちても user_data を止めない。cycle 014）",
@@ -705,6 +709,10 @@ if [ "$1" = login ]; then cat > "$FAKE_LOG.stdin"; fi
         f.write(_body)
     os.chmod(os.path.join(_kbin, _n), 0o755)
 _krendered = _render_web_ud()
+# 上の _wunit（描く前のテンプレート）の Wants= の検査の、描いたあとの側（${name_prefix} が描けて、Web のユニットに残っていること）
+_kwunit = _between(_krendered, "cat > /etc/systemd/system/x-nwc-poc-web.service <<__UNIT__\n", "\n__UNIT__\n")
+check("描いた user_data の Web のユニットにも Wants=x-nwc-poc-kafka-ui.service があり、kafka-ui を含む行はその 1 行だけ（cycle 016）",
+      "\nWants=x-nwc-poc-kafka-ui.service\n" in _kwunit and [l for l in _kwunit.splitlines() if "kafka-ui" in l] == ["Wants=x-nwc-poc-kafka-ui.service"])
 # user_data のうちスクリプトを書く所（cat > … <<'__KAFKA_UI__' からユニットを書く手前まで。chmod を含む）を、置き場所だけ差し替えてそのまま打つ
 _kwrite = _krendered[_krendered.index("cat > /usr/local/bin/x-nwc-poc-kafka-ui <<'__KAFKA_UI__' || return 1\n"):_krendered.index("cat > /etc/systemd/system/x-nwc-poc-kafka-ui.service")]
 _krun_src = _krendered[_krendered.index("<<'__KAFKA_UI__' || return 1\n") + len("<<'__KAFKA_UI__' || return 1\n"):_krendered.index("\n__KAFKA_UI__\n")]
