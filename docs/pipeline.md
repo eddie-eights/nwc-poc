@@ -256,6 +256,14 @@ SELECT status, source, device_id, kind, target, starts_at, received_at FROM "s3t
 - gNMI と trap のレコードは機器名を持たないので、Spark が device map（`ops/up.sh` が `app/containerlab/lab_topology.py --device-map` で作り、ジョブの引数 `--device-map` で渡す）で `sysName` を足す。対応表に無い送り元の trap は、IP がそのまま機器名になる。
 - `bgp_down` / `isis_down` は直近 24 時間の最後の値を見る（on_change は変わったときにしか値が来ない）。24 時間を超えて同じ状態のままだと系列が消えて解消が出る（制約。Telegraf がつなぎ直すと今の状態を送り直すので、普段は切れない）。
 - Prometheus のルールは、データが無い・クエリが失敗したときは直前の状態のまま（`KeepLast`。分からないときに発火も解消もしない）。機器ごと止まって系列が途切れると、Grafana は古い系列として解消を送る（機器の停止はここでは検知しない）。`trap` は、数えるものが無いとき（NoData）を OK にする（`KeepLast` だと発火したまま解消しない）。
+- 4 本とも、クエリが失敗したときも直前の状態のまま（`execErrState: KeepLast`）なので、評価がエラーでも画面のルールは Normal に見える。`ops/up.sh`（OSS 版は `oss/ops/up.sh`）は最後の手順 9-2 で、Web の EC2 から Grafana のルールの API を読んで確かめる（打ってから全部のルールがもう 1 回評価されるのを待って判定する。エラーのあったルールは、その次の評価でもエラーなら NG。ルールの間隔は 1 分、待つのは最大 5 分。NG でも止めず、黄色の警告を最後にもう一度出す）。あとで確かめ直すときは次を打つ。理由はログ `/ecs/<prefix>-grafana` の `Failed to evaluate rule`（[architecture/resources/grafana.md](architecture/resources/grafana.md) の「知見」）。
+
+  ```bash
+  ops/check-grafana.sh         # マネージド版
+  ops/check-grafana.sh --oss   # OSS 版
+  ```
+
+  - 打ったあとの評価だけを見る（打ったときに見える評価と、直した直後に 1 回分残る前のエラーでは判定しない）。NoData（クエリが何も返さない）はエラーではないので OK になる。データソースや格納先を直したあと、Grafana のタスクが入れ替わったあと、アラートが来ないと思ったときに打つ。入れ替わりの途中は前のタスクを見ることがあるので、終わってから打つ（up.sh の 9-2 は `aws ecs wait services-stable` で待ってから見る）。
 - 通知は機器・種類・対象ごとに 1 通（`group_by` は alertname / sysName / target）。発火はすぐ、解消は 30 秒以内（`group_interval`）。直らないあいだは 4 時間ごと（`repeat_interval`）に同じ `starts_at` で送り直す。
 - 画面は Alerting → Alert rules。provisioning したルール・連絡先・ポリシーは画面から変えられない。変えるなら `app/grafana/provisioning/alerting/` の `netops-prometheus.yaml` / `netops-opensearch.yaml`（ルール）か `netops.yaml`（送り先、ポリシー、本文のテンプレート）を変えて `ops/up.sh`（イメージから作り直す）。
 - `netops.yaml` のテンプレートの `$` はそのまま書く。`$$` とエスケープすると Grafana が起動しない（`Invalid format of the submitted template`。13.2.2 で実測）。`${ALERTS_TOPIC_ARN}` と `${AWS_REGION}` だけは、起動時に Grafana が環境変数で埋める。

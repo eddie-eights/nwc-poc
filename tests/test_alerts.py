@@ -956,6 +956,291 @@ check("start.sh: アラートの定義は ALERTS_TOPIC_ARN があるときだけ
       and start_sh(PROMETHEUS_URL=AMP, OPENSEARCH_URL="https://x") == ([], ["opensearch.yaml", "prometheus.yaml"])
       and start_sh(ALERTS_TOPIC_ARN=TOPIC) == ([], []) and start_sh() == ([], []))
 
+# ---- ルールの評価のエラーを ops で見る（ops/grafana_rules_check.py。ops/up.sh・oss/ops/up.sh の 9-2 と ops/check-grafana.sh が Web の EC2 で動かす）
+# execErrState: KeepLast だと評価のエラーは alerts[].state の「Normal (Error, KeepLast)」にだけ出る（health は ok、lastError は空。手元の Grafana 13.2.2 で実測）
+grc = load("ops/grafana_rules_check.py", "grafana_rules_check")
+
+
+def grule(name, *states, health="ok", last_error="", evaluated="2026-10-08T13:28:50Z"):
+    return {"name": name, "health": health, "state": "inactive", "lastError": last_error, "lastEvaluation": evaluated,
+            "alerts": [{"state": s} for s in states]}
+
+
+def gbody(*rules):
+    return {"status": "success", "data": {"groups": [{"name": "nwc-prometheus", "rules": list(rules)}]}}
+
+
+def before(body, at="2026-10-08T13:27:50Z"):
+    """body の 1 回前の評価（check を打ったときに見える評価）。check はこれと lastEvaluation が違う評価だけで判定する"""
+    return {"status": "success", "data": {"groups": [dict(g, rules=[dict(r, lastEvaluation=at) for r in g["rules"]])
+                                                     for g in body["data"]["groups"]]}}
+
+
+def again(body):
+    """body の 1 回あとの評価。エラーはこの評価でも出たら NG になる"""
+    return before(body, at="2026-10-08T13:29:50Z")
+
+
+def ngrun(body, **kw):
+    """打ったときの評価 → body → その次の評価（body と同じ状態）と答えて check を回す"""
+    return grun(before(body), body, again(body), **kw)
+
+
+def grun(*answers, wait=30):
+    """answers を順に返す（例外なら投げる。尽きたら最後のものを返し続ける）偽の fetch で check を回す。(終了コード, 出力の行, fetch の回数, 待った秒数)"""
+    t, out, n = [0.0], [], [0]
+
+    def fetch():
+        a = answers[min(n[0], len(answers) - 1)]
+        n[0] += 1
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    def sleep(s):
+        t[0] += s
+
+    rc = grc.check(fetch, wait, clock=lambda: t[0], sleep=sleep, out=out.append)
+    return rc, out, n[0], t[0]
+
+
+_ok = gbody(grule("link_down", "Normal"), grule("bgp_down", "Normal (NoData)"), grule("isis_down", "Normal (NoData, KeepLast)"),
+            grule("trap", "Alerting", "Normal"), grule("quiet"))
+check("ルールの確かめ: Normal・NoData（KeepLast も）・Alerting・アラート無しはエラーではない。打ったあとの評価が全部そろえば OK（0）",
+      grun(before(_ok), _ok)[0] == 0 and grun(before(_ok), _ok)[1][-1] == "判定: OK（5 本とも評価のエラーなし）"
+      and grun(before(_ok), _ok)[2:] == (2, 10) and len(grun(before(_ok), _ok)[1]) == 6)
+_ngb = gbody(grule("link_down", "Normal (Error, KeepLast)", "Normal (Error, KeepLast)"), grule("trap", "Normal"))
+_ng = ngrun(_ngb)
+check("ルールの確かめ: 「Normal (Error, KeepLast)」が打ったあとの 2 回の評価で続けば NG（1）。どのルールか、状態ごとの数も出す",
+      _ng[0] == 1 and _ng[1][-1] == "判定: NG（2 本のうち 1 本の評価がエラー: nwc-prometheus/link_down）"
+      and "エラー: nwc-prometheus/link_down（Normal (Error, KeepLast) ×2）" in _ng[1] and _ng[2:] == (3, 20))
+check("ルールの確かめ: health が error、lastError が空でない、state が Error で始まる（execErrState: Error のとき）、"
+      "系列のあるルールのエラー（Alerting (Error, KeepLast)）も NG",
+      [ngrun(gbody(r))[0] for r in (grule("a", health="error"), grule("a", last_error="x" * 500), grule("a", "Error"),
+                                    grule("a", "Alerting (Error)"), grule("a", "Alerting (Error, KeepLast)"))]
+      == [1, 1, 1, 1, 1] and any(len(l) < 400 and "lastError=" in l for l in ngrun(gbody(grule("a", last_error="x" * 500)))[1]))
+_was_ng = grun(gbody(grule("trap", "Normal (Error, KeepLast)", evaluated="2026-10-08T13:57:50Z")),
+               gbody(grule("trap", "Alerting", evaluated="2026-10-08T13:58:50Z")))
+_was_ok = grun(gbody(grule("trap", "Alerting", evaluated="2026-10-08T13:57:50Z")),
+               gbody(grule("trap", "Alerting (Error, KeepLast)", evaluated="2026-10-08T13:58:50Z")),
+               gbody(grule("trap", "Alerting (Error, KeepLast)", evaluated="2026-10-08T13:59:50Z")))
+check("ルールの確かめ: 打ったときに見える評価（データソースを直す前・壊れる前のものかもしれない）では判定せず、lastEvaluation が変わる（次の評価）まで待つ",
+      _was_ng[0] == 0 and _was_ng[2:] == (2, 10) and _was_ok[0] == 1 and _was_ok[2:] == (3, 20))
+# 手元の 13.2.2 で実測: 14:12:11 に OpenSearch を戻すと、14:13:00 の評価は Alerting（系列）と Normal (Error, KeepLast)（前の評価の残り。
+# ラベルはルールのものだけ）が並び、14:14:00 の評価で Alerting だけになった
+_left = gbody(grule("trap", "Alerting", "Normal (Error, KeepLast)"))
+_stale = grun(before(_left), _left, again(gbody(grule("trap", "Alerting"))))
+_flaky = grun(before(_ngb), _ngb, again(gbody(grule("link_down", "Normal"), grule("trap", "Normal"))))
+_slow = grun(before(_ngb), _ngb, gbody(grule("link_down", "Normal (Error, KeepLast)"), grule("trap", "Normal", evaluated="2026-10-08T13:29:50Z")),
+             again(_ngb))
+check("ルールの確かめ: エラーは、そのルールがもう 1 回評価されてもエラーのときだけ NG。直した直後に 1 回分残るエラーでは NG にしない",
+      _stale[0] == 0 and _stale[1][-1] == "判定: OK（1 本とも評価のエラーなし）" and _stale[2:] == (3, 20)
+      and _flaky[0] == 0 and _slow[0] == 1 and _slow[2:] == (4, 30)
+      and grun(before(_ngb), _ngb)[1][-1] == "判定: 未確認（30 秒待った。エラーのあったルールのもう 1 回の評価を待っている"
+                                              "（直した直後は前の評価のエラーが 1 回分残る）: nwc-prometheus/link_down）")
+_late = grun(gbody(grule("link_down", evaluated="0001-01-01T00:00:00Z")), gbody(grule("link_down", evaluated="")), gbody(grule("link_down", "Normal")))
+check("ルールの確かめ: まだ評価されていない（lastEvaluation が 0001- か空）ルールがあれば 10 秒おきに読み直し、全部そろってから判定する"
+      "（立てた直後は最初の評価で判定する）",
+      _late[:1] == (0,) and _late[2] == 3 and _late[3] == 20)
+_never = grun(gbody(grule("link_down", "Normal", evaluated="2026-10-08T13:27:50Z"), grule("trap", evaluated="0001-01-01T00:00:00Z")),
+              gbody(grule("link_down", "Normal"), grule("trap", evaluated="0001-01-01T00:00:00Z")))
+check("ルールの確かめ: 待つ秒数（GRAFANA_WAIT）までに評価がそろわなければ未確認（2）。どのルールを待っていたかを出す",
+      _never[0] == 2 and _never[1][-1] == "判定: 未確認（30 秒待った。確かめ始めてから評価されていないルール: nwc-prometheus/trap）"
+      and _never[3] == 30 and grun(gbody(grule("a", "Normal")))[1][-1] == "判定: 未確認（30 秒待った。確かめ始めてから評価されていないルール: nwc-prometheus/a）"
+      and grun(gbody(), wait=10)[1][-1].startswith("判定: 未確認（10 秒待った。ルールが 0 本"))
+_down = grun(grc.urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")), ValueError("Expecting value"),
+             grc.http.client.IncompleteRead(b"{"), before(gbody(grule("a", "Normal"))), gbody(grule("a", "Normal")), wait=60)
+check("ルールの確かめ: Grafana が起動中（つながらない）・途中で切れた応答・JSON でない応答は待って読み直し、ずっと読めなければ理由を付けて未確認（2）",
+      _down[0] == 0 and _down[2] == 5
+      and grun(grc.urllib.error.URLError("x"), wait=20)[1][-1] == "判定: 未確認（20 秒待った。Grafana のルールの API が読めない（URLError: <urlopen error x>））")
+_unauth = grun(grc.Unauthorized("HTTP 401（admin のパスワードが Grafana と SSM で違う）"), gbody(grule("a", "Normal")))
+check("ルールの確かめ: 401 / 403 は待たずに未確認（2。待っても直らない）",
+      _unauth == (2, ["判定: 未確認（Grafana のルールの API が HTTP 401（admin のパスワードが Grafana と SSM で違う））"], 1, 0))
+
+
+class _Rules(http.server.BaseHTTPRequestHandler):
+    PW = "pw-" + "q9Z2" * 4   # 偽の値（手元の偽の Grafana が受け付けるパスワード）
+    SEEN = []                 # (パス, Authorization が付いていたか)
+
+    def do_GET(self):
+        import base64
+        self.SEEN.append((self.path, "Authorization" in self.headers))
+        if self.path.startswith("/moved/"):   # 別の場所へのリダイレクト
+            self.send_response(302); self.send_header("Location", self.path[len("/moved"):]); self.end_headers()
+            return
+        ok = self.headers.get("Authorization") == "Basic " + base64.b64encode(f"admin:{self.PW}".encode()).decode()
+        rules = "/api/prometheus/grafana/api/v1/rules"
+        code, body = ((200, json.dumps(gbody(grule("a", "Normal")))) if self.path == rules
+                      else (200, "[]") if self.path == "/list" + rules else (404, "{}")) if ok else (401, "{}")
+        self.send_response(code); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(body.encode())
+
+    def log_message(self, *a):
+        pass
+
+
+_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Rules)
+threading.Thread(target=_srv.serve_forever, daemon=True).start()
+_url = f"http://127.0.0.1:{_srv.server_address[1]}"
+_saved = {k: os.environ.get(k) for k in ("http_proxy", "HTTP_PROXY")}
+os.environ["http_proxy"] = os.environ["HTTP_PROXY"] = "http://127.0.0.1:9"   # 届かないプロキシ（make_fetch はプロキシを通さない）
+try:
+    _got = grc.make_fetch(_url, _Rules.PW)()
+    try:
+        grc.make_fetch(_url, "wrong-" + _Rules.PW)()
+        _401 = None
+    except grc.Unauthorized as e:
+        _401 = e
+    _wrong = io.StringIO()
+    with contextlib.redirect_stdout(_wrong):
+        _rc401 = grc.check(grc.make_fetch(_url, "wrong-" + _Rules.PW), 30, sleep=lambda s: None)
+    _Rules.SEEN.clear()
+    try:
+        grc.make_fetch(_url + "/moved", _Rules.PW)()
+        _moved = None
+    except grc.Unauthorized as e:
+        _moved = e
+    _moved_seen = list(_Rules.SEEN)
+    try:
+        grc.make_fetch(_url + "/list", _Rules.PW)()
+        _list = None
+    except ValueError as e:
+        _list = e
+finally:
+    _srv.shutdown()
+    for k, v in _saved.items():
+        os.environ.pop(k) if v is None else os.environ.__setitem__(k, v)
+check("ルールの確かめ: make_fetch は admin の Basic 認証でルールの API を読み（環境変数のプロキシは通さない）、401 は Unauthorized にする。"
+      "パスワードは例外の文にも出力にも出さない",
+      _got == gbody(grule("a", "Normal")) and isinstance(_401, grc.Unauthorized) and _401.__cause__ is None and _401.__suppress_context__
+      and _Rules.PW not in str(_401) and _rc401 == 2 and _Rules.PW not in _wrong.getvalue() and "HTTP 401" in _wrong.getvalue())
+check("ルールの確かめ: make_fetch はリダイレクト先に Authorization（パスワード）を送らない。JSON がオブジェクトでなければ ValueError（check が待って読み直す）",
+      isinstance(_moved, grc.Unauthorized)
+      and _moved_seen == [("/moved/api/prometheus/grafana/api/v1/rules", True), ("/api/prometheus/grafana/api/v1/rules", False)]
+      and isinstance(_list, ValueError) and "list" in str(_list))
+
+_seen, _gout = {}, io.StringIO()
+_orig = (grc.load_web_env, grc.admin_password, grc.make_fetch, grc.check)
+grc.load_web_env = lambda prefix: _seen.setdefault("env", prefix)
+grc.make_fetch = lambda url, pw: _seen.update(url=url, pw=pw) or "fetch"
+grc.check = lambda fetch, wait: _seen.update(fetch=fetch, wait=wait) or 0
+os.environ.pop("GRAFANA_WAIT", None)
+try:
+    os.environ.pop("NAME_PREFIX", None)
+    try:
+        grc.main()
+        _noprefix = None
+    except SystemExit as e:
+        _noprefix = e.code
+    os.environ["NAME_PREFIX"] = "x-nwc-oss"
+    grc.admin_password = lambda prefix: _Rules.PW
+    _rc = grc.main()
+
+    def _no_ssm(prefix):
+        raise RuntimeError(f"AccessDenied for {_Rules.PW}")
+    grc.admin_password = _no_ssm
+    with contextlib.redirect_stdout(_gout):
+        _rc_ssm = grc.main()
+finally:
+    grc.load_web_env, grc.admin_password, grc.make_fetch, grc.check = _orig
+    os.environ.pop("NAME_PREFIX", None)
+check("ルールの確かめ（main）: NAME_PREFIX が無ければ止まる。Grafana は Cloud Map の grafana.<接頭辞>.internal:3000、パスワードは SSM の値、待つのは既定 300 秒。"
+      "SSM が読めなければ例外の型だけを出して未確認（2）",
+      isinstance(_noprefix, str) and "NAME_PREFIX" in _noprefix and _rc == 0 and _seen["env"] == "x-nwc-oss"
+      and _seen == {"env": "x-nwc-oss", "url": "http://grafana.x-nwc-oss.internal:3000", "pw": _Rules.PW, "fetch": "fetch", "wait": 300}
+      and _rc_ssm == 2 and _gout.getvalue() == "判定: 未確認（SSM の /x-nwc-oss/grafana/admin-password が読めない: RuntimeError）\n")
+_gsrc = read("ops", "grafana_rules_check.py")
+check("ルールの確かめ: 読むのは SSM の /<接頭辞>/grafana/admin-password（Web の EC2 のロールが読める範囲）と Web と同じ環境変数・boto3。標準ライブラリのほかは boto3 だけ",
+      'Name=f"/{prefix}/grafana/admin-password", WithDecryption=True' in _gsrc and 'open(f"/etc/{prefix}-web.env"' in _gsrc
+      and imported(ast.parse(_gsrc).body) <= {"base64", "collections", "http", "json", "os", "sys", "time", "urllib"}
+      and imported(ast.walk(ast.parse(_gsrc))) - imported(ast.parse(_gsrc).body) == {"boto3"}
+      and re.search(r'parameter/\$\{local\.name_prefix\}/\*', read("IaC", "terraform", "aws-managed", "base", "core", "web.tf")) is not None)
+
+# ops/up-common.sh の grafana_rules_step（9-2）を偽物の aws で回す。ssm_run も本物（cloud-init の待ちと、結果の読み方）
+_GFAKE = r'''#!/usr/bin/env python3
+import json, os, sys
+a = sys.argv[1:]
+d = os.environ["GDIR"]
+with open(os.path.join(d, "calls.jsonl"), "a", encoding="utf-8") as f:
+    f.write(json.dumps(a) + "\n")
+q = a[a.index("--query") + 1] if "--query" in a else None
+if a[:3] == ["ecs", "wait", "services-stable"]:
+    sys.exit(255 if os.environ.get("G_UNSTABLE") else 0)
+if a[:2] == ["ssm", "send-command"]:
+    if os.environ.get("G_SEND_FAIL"):
+        print("An error occurred (InvalidInstanceId)", file=sys.stderr); sys.exit(254)
+    with open(os.path.join(d, "params.json"), "w", encoding="utf-8") as f:
+        f.write(a[a.index("--parameters") + 1])
+    print("cmd-1"); sys.exit(0)
+if a[:2] == ["ssm", "get-command-invocation"]:
+    if a[a.index("--command-id") + 1] != "cmd-1":
+        print("An error occurred (ValidationException)", file=sys.stderr); sys.exit(254)
+    out = os.environ["G_OUT"]
+    if q == "Status":
+        print(os.environ["G_STATUS"])
+    elif q == "StandardOutputContent":
+        print(out)
+    elif q == "[StandardOutputContent,StandardErrorContent]":
+        print(out + "\t")   # --output text はタブでつなぐ（標準エラーは空）
+    else:
+        sys.exit(255)
+    sys.exit(0)
+sys.exit(255)
+'''
+_GSTEP = r'''set -euo pipefail
+REGION=ap-northeast-1; PREFIX=x-nwc-poc
+. ops/common.sh
+. ops/up-common.sh
+grafana_rules_step i-web cl-an svc-grafana "ops/check-grafana.sh"
+printf 'WARN=[%s]\n' "$GRAFANA_WARN"
+'''
+
+
+def gstep(**env):
+    """(終了コード か None（20 秒で終わらない）, 出力, 送ったコマンド か None, aws の呼び出し)"""
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, "bin"))
+        for name, body in (("aws", _GFAKE), ("sleep", "#!/bin/sh\nexec /bin/sleep 0.05\n")):
+            with open(os.path.join(d, "bin", name), "w", encoding="utf-8") as f:
+                f.write(body)
+            os.chmod(os.path.join(d, "bin", name), 0o755)
+        try:
+            r = subprocess.run(["bash", "-c", _GSTEP], cwd=ROOT, capture_output=True, text=True, timeout=20,
+                               env=dict({"PATH": os.path.join(d, "bin") + os.pathsep + os.environ["PATH"], "GDIR": d, "G_OUT": "", "G_STATUS": "Success"}, **env))
+            rc, out = r.returncode, r.stdout + r.stderr
+        except subprocess.TimeoutExpired:
+            rc, out = None, ""
+        p = os.path.join(d, "params.json")
+        sent = json.load(open(p, encoding="utf-8"))["commands"] if os.path.exists(p) else None
+        with open(os.path.join(d, "calls.jsonl"), encoding="utf-8") as f:
+            calls = [json.loads(line) for line in f]
+        return rc, out, sent, calls
+
+
+_s_ok = gstep(G_OUT="nwc-prometheus/link_down: health=ok\n判定: OK（4 本とも評価のエラーなし）")
+_m = re.fullmatch(r"echo (\S+) \| base64 -d \| NAME_PREFIX=x-nwc-poc /usr/bin/python3\.13 -", (_s_ok[2] or [""])[-1])
+check("9-2（grafana_rules_step）: Grafana のサービスが安定してから、Web の EC2 に ops/grafana_rules_check.py そのものを NAME_PREFIX 付きで 1 回送る。"
+      "OK なら判定を出し、警告は空",
+      _s_ok[0] == 0 and "判定: OK（4 本とも評価のエラーなし）" in _s_ok[1] and "WARN=[]" in _s_ok[1]
+      and _s_ok[3][0] == ["ecs", "wait", "services-stable", "--region", "ap-northeast-1", "--cluster", "cl-an", "--services", "svc-grafana"]
+      and [c[:2] for c in _s_ok[3]].count(["ssm", "send-command"]) == 1 and "i-web" in _s_ok[3][1]
+      and _m is not None and __import__("base64").b64decode(_m.group(1)).decode() == _gsrc)
+check("9-2: 送るコマンドは JSON の文字列に埋めるので、ダブルクォートもバックスラッシュも含まない（ssm_run の約束）",
+      _s_ok[2] is not None and not re.search(r'["\\]', _s_ok[2][-1]))
+_s_ng = gstep(G_STATUS="Failed", G_OUT="nwc-opensearch/trap: health=ok\n判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap）")
+_w_ng = re.search(r"WARN=\[(.*)\]", _s_ng[1]).group(1) if _s_ng[0] == 0 else ""
+check("9-2: NG なら止めずに（0）、判定の行（タブの手前まで）とログの見方（/ecs/<接頭辞>-grafana の Failed to evaluate rule）と確かめ直すコマンドを警告に入れ、黄色で出す",
+      _s_ng[0] == 0 and _w_ng.startswith("Grafana のアラートルールの評価を確かめた結果が OK ではない（判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap））。")
+      and "\t" not in _w_ng and "aws logs tail /ecs/x-nwc-poc-grafana --region ap-northeast-1" in _w_ng and "Failed to evaluate rule" in _w_ng
+      and _w_ng.endswith("直したら ops/check-grafana.sh") and "\033[1;33m" + _w_ng + "\033[0m" in _s_ng[1])
+_s_un = gstep(G_UNSTABLE="1")
+check("9-2: Grafana のサービスが安定しなければ確かめを送らず（0）、安定しない旨とタスクの見方を警告に入れる",
+      _s_un[0] == 0 and _s_un[2] is None and "Grafana のサービス（svc-grafana）が 10 分たっても安定しないので" in _s_un[1]
+      and "--cluster cl-an --desired-status STOPPED" in _s_un[1])
+_s_sf = gstep(G_SEND_FAIL="1")
+check("9-2: SSM Run Command を送れなければ、待ち続けずに（set -e の効かない $( ) の中でも ssm_run が 1 を返す）判定の行が無い旨の警告を出す",
+      _s_sf[0] == 0 and "SSM Run Command を送れなかった" in _s_sf[1] and "（判定の行が無い。上の出力）" in _s_sf[1]
+      and not [c for c in _s_sf[3] if c[:2] == ["ssm", "get-command-invocation"]])
+
 # ---- SNS のトピック（土台）と受け手の配線
 atf = read("IaC", "terraform", "aws-managed", "base", "core", "alerts.tf")
 acode = "\n".join(l for l in atf.splitlines() if not l.lstrip().startswith("#"))
