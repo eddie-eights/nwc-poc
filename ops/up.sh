@@ -1265,11 +1265,17 @@ fi
 
 # ---- 9-2. Grafana のアラートルール ----------------------------------------------------------
 # ルールは評価でエラーになってもアラートを出さず、画面でも Normal に見える（execErrState: KeepLast）。立てたところで 1 回確かめる（ops/up-common.sh の grafana_rules_step）。
-# OK でなくても止めない（警告を最後にもう一度出す）。あとから確かめ直すのは ops/check-grafana.sh
+# OK でなくても止めない（警告を最後にもう一度出す）。あとから確かめ直すのは ops/check-grafana.sh。クラスターとサービスの名前が読めなければ止まる（tf_output）
 GRAFANA_WARN=""
-if [ -n "$GRAFANA" ]; then
-  log "9-2. Grafana のアラートルールが評価でエラーになっていないかを確かめる（Web の EC2 から Grafana のルールの API を読む。最大 5 分）"
-  grafana_rules_step "$INSTANCE_ID" "$(tf pipeline/analytics output -raw analytics_cluster_name)" "$(tf pipeline/analytics output -raw grafana_service_name)" ops/check-grafana.sh
+# 今回は analytics を作らない回（PIPELINE=0・SKIP_ANALYTICS=1）でも、前の回の Grafana が残っていれば確かめる（手順 3 の ANALYTICS_LEFT と state の一覧。
+# grep -q は先に抜けて tf が SIGPIPE になり、pipefail で偽になることがあるので、読み切る grep … >/dev/null）
+GRAFANA_LEFT=""
+if [ -z "$GRAFANA" ] && [ -n "$ANALYTICS_LEFT" ] && tf pipeline/analytics state list 2>/dev/null | grep '^aws_ecs_service\.grafana\[' >/dev/null; then GRAFANA_LEFT=1; fi
+if [ -n "$GRAFANA$GRAFANA_LEFT" ]; then
+  log "9-2. Grafana のアラートルールが評価でエラーになっていないかを確かめる（Web の EC2 から Grafana のルールの API を読む。最大 5 分）${GRAFANA_LEFT:+。今回は analytics を作らないが、前の回の Grafana が残っている}"
+  GF_CLUSTER=$(tf_output pipeline/analytics analytics_cluster_name) || exit 1
+  GF_SERVICE=$(tf_output pipeline/analytics grafana_service_name) || exit 1
+  grafana_rules_step "$INSTANCE_ID" "$GF_CLUSTER" "$GF_SERVICE" ops/check-grafana.sh
 fi
 
 # ---- 10. ポートフォワーディング -------------------------------------------------------------

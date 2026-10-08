@@ -21,6 +21,12 @@ tf_apply() {  # tf_apply <ルート> [-var 名前=値 …]
 has_resources() {  # has_resources <ルート>  state があり、リソースが 1 つ以上載っている（init 済みが前提）
   [ -f "$TF_DIR/$1/terraform.tfstate" ] && [ -n "$(tf "$1" state list 2>/dev/null)" ]
 }
+tf_output() {  # tf_output <ルート> <出力名>  出力を 1 つ読んで出す。読めない・空なら die。呼ぶ側は X=$(tf_output …) || exit 1（$( ) の中の die はサブシェルだけを抜ける）
+  local v
+  v=$(tf "$1" output -raw "$2") || die "$TF_DIR/$1 の出力 $2 が読めない（上のエラー）"
+  [ -n "$v" ] || die "$TF_DIR/$1 の出力 $2 が空"
+  printf '%s' "$v"
+}
 wait_ssm_online() {  # wait_ssm_online <インスタンス ID>
   local i
   for i in $(seq 1 60); do
