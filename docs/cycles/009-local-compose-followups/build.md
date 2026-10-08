@@ -217,3 +217,37 @@ PM（fable-5.1）が 2026-10-08 に実施。`/robust` の手順で diff（a5097a
 テスト: 反対弁護人が `uv run python tests/test_local_compose.py` 111 / 0、`test_stream` 75 / 0、`test_lab_debug` 84 / 0 を実行。PM は a5097ab のマージ後に `bash ops/check.sh` → 最終行「すべて通過」（scratchpad `check-008.log`、cde390f 時点）。
 
 未解消: 1 と 2（エンジニア2 が直す）。解消したら cold reviewer #1 を呼ぶ（`/cycle-review`）。
+
+## Round 2（セルフレビューの Should fix 2 件の修正）
+
+- 実装モデル: opus-5.5（エンジニア2）。commit: 468fd46（`fix/009-spark-restart-env-get`、61d475c から 1 commit）。PM が docs/cycle-006-design にマージ
+- エンジニア2 の報告（SendMessage）をそのまま写す。PM は `bash ops/check.sh` をマージ後に打ち直した（結果は review.md の Round 1）
+
+### 1. Spark が送り先より先に起きて落ちる件（Should fix 1）
+
+- splunk / opensearch / prometheus に healthcheck を足した（splunk: `/sbin/checkstate.sh`、opensearch: `/` が 200 か 401、prometheus: `/-/ready`）
+- `depends_on` に `service_healthy` を足した。spark-splunk は splunk を、spark-http は opensearch と prometheus を待つ。`x-spark` のマージキーは `depends_on` を混ぜないので、Kafka 3 つと合わせて各 service に書いた
+- check.sh に「Spark: spark-splunk / spark-http が動いている」の 2 項目を足した（`docker compose ps -a --format json` を 1 回）。exited / restarting は状態を出して logs と `up.sh <service>` を案内、created は依存が healthy でないことを案内、コンテナが無ければ up.sh を案内
+- 手元で prometheus と opensearch を別プロジェクト名で上げ、2 つとも healthy になるのを見てから `down -v` で消した。opensearch の `/` は 401 だった
+
+### 2. env_get の件（Should fix 2）は案 (b)
+
+- check.sh と lab.sh は `docker compose --env-file F config --environment` の出力から値を取る
+- 本物の compose（v5.1.3）に試し用の .env を読ませるテストを足した。P1〜P9 のすべてと、シェルが勝つことを確かめる
+- compose が読めない .env では値のかけらが stderr に出るので、出さずに汎用の文言で止まり、sudo も curl も打たない（テストあり）
+- `tests/test_local_compose.py` は 121 通過（111 から 10 件増）
+
+### 検証
+
+- `ops/check.sh`: 325 通過・失敗 0、最後の行「すべて通過」（エンジニア2）
+
+### 未確認・挙動の変化
+
+- `config --environment` が使える compose の最小の版は未確認（v5.1.3 にはある）
+- 改行を含む値は読み違える（README と .env.example に「値は 1 行」と書いた）
+- Splunk を含む全体の healthy の待ち時間は未確認（WSL でも Apple Silicon でも）。splunk の healthcheck は手元で走らせていない
+- lab.sh でもシェルの `SRLINUX_IMAGE` / `MULTITOOL_IMAGE` が .env より勝つようになった（compose と同じ。前は .env が勝っていた）
+
+### セルフレビュー
+
+Round 1 の `### セルフレビュー` の Should fix 1・2 がこの修正で解消。未解消の Must fix / Should fix: 無し。Nit 4/5/6/7/9 と据え置きの 8、範囲外の 3 は Round 1 のまま最終報告へ。
