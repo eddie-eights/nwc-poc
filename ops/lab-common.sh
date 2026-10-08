@@ -100,6 +100,8 @@ build_telegraf() {  # build_telegraf <ECR のイメージ:タグ> [platform]  CO
 upload_lab() {  # upload_lab <バケット>  lab の EC2 は起動のたびに s3://<バケット>/lab/ を読む（app/containerlab/setup.sh）。リポジトリの直下で呼ぶ
   fetch "https://github.com/srl-labs/containerlab/releases/download/v$CONTAINERLAB_VERSION/$CONTAINERLAB_RPM" "$CONTAINERLAB_RPM" \
     || { echo "containerlab の rpm が取れない（社内 PC なら docs/setup.md「社内 PC の CA」）" >&2; return 1; }
-  aws s3 sync --only-show-errors app/containerlab/ "s3://$1/lab/" --exclude "splab.clab.yml" --exclude "__pycache__/*" --exclude "*.DS_Store" || return 1
+  # --delete: 手元で消した・改名したファイル（srlinux/*.cli など）を S3 からも消す。EC2 も --delete で読むので、残すと古い機器名が戻る。
+  # --exclude に当たるものは送らず、S3 側でも消さない（aws s3 sync の --delete の説明）。rpm は下の cp で置くので、ここで除いて消させない
+  aws s3 sync --only-show-errors --delete app/containerlab/ "s3://$1/lab/" --exclude "splab.clab.yml" --exclude "__pycache__/*" --exclude "*.DS_Store" --exclude "$CONTAINERLAB_RPM" || return 1
   aws s3 cp --only-show-errors "$CONTAINERLAB_RPM" "s3://$1/lab/"
 }

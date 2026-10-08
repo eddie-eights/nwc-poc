@@ -232,7 +232,21 @@ check("env のキーは 2 つの user_data と setup.sh の頭の一覧で同じ
 check("どちらも起動のたびに流し（cloud-config の always）、app/containerlab/ を置き直して setup.sh を exec する",
       all("- [scripts-user, always]" in s and "exec bash $LAB/src/setup.sh" in s and "aws s3 sync --delete" in s for s in (tftpl, ud)))
 check("lab/ の置き場は upload_lab の宛先と同じ（s3://<バケット>/lab/）",
-      'aws s3 sync --only-show-errors app/containerlab/ "s3://$1/lab/"' in common and "s3://${bucket}/lab/ $LAB/src/" in tftpl and "s3://${Bucket}/lab/ $LAB/src/" in ud)
+      'aws s3 sync --only-show-errors --delete app/containerlab/ "s3://$1/lab/"' in common and "s3://${bucket}/lab/ $LAB/src/" in tftpl and "s3://${Bucket}/lab/ $LAB/src/" in ud)
+# upload_lab の sync は --delete（手元で消した・改名した srlinux/*.cli を S3 に残さない。EC2 も --delete で読むので、残ると古い機器名が戻って lab logs が止まる）。
+# --exclude に当たるものは S3 側でも消さない（aws s3 sync の --delete の説明）。別の cp で置く rpm を除かないと、毎回 sync が消して cp が置き直す
+_ul = re.search(r"^upload_lab\(\) \{.*?^\}", common, re.M | re.S).group(0)
+_ul_sync = [l for l in _ul.splitlines() if l.strip().startswith("aws s3 sync ")]
+_ul_ex = lambda l: set(re.findall(r'--exclude "([^"]+)"', l))
+check("upload_lab の sync は --delete 付きで、除くのは描いた splab.clab.yml・__pycache__・.DS_Store と、下の cp で置く rpm（$CONTAINERLAB_RPM）",
+      len(_ul_sync) == 1 and " --delete " in _ul_sync[0]
+      and _ul_ex(_ul_sync[0]) == {"splab.clab.yml", "__pycache__/*", "*.DS_Store", "$CONTAINERLAB_RPM"}
+      and 'aws s3 cp --only-show-errors "$CONTAINERLAB_RPM" "s3://$1/lab/"' in _ul)
+_ulc = re.search(r'output "upload_lab_command" \{.*?value\s*=\s*"(.*)"\n', read("IaC", "terraform", "aws-managed", "pipeline", "lab", "outputs.tf"), re.S).group(1).replace('\\"', '"')
+check("lab の output upload_lab_command も同じ --delete と同じ除外（rpm は var.containerlab_version の名前）",
+      _ulc.startswith("aws s3 sync --delete app/containerlab/ ")
+      and _ul_ex(_ulc.split(" && ")[0]) == {"splab.clab.yml", "__pycache__/*", "*.DS_Store", "containerlab_${var.containerlab_version}_linux_amd64.rpm"}
+      and sh_const(common, "CONTAINERLAB_RPM") == "containerlab_${CONTAINERLAB_VERSION}_linux_amd64.rpm")
 check("setup.sh は TELEGRAF_IMAGE があるときだけ Telegraf のユニットを作り、無ければ消す（lab の EC2 には残さない）",
       re.search(r'if \[ -n "\$\{TELEGRAF_IMAGE:-\}" \]; then\n\s*cat > "\$TG_UNIT"[\s\S]*?ExecStart=\$SRC/lab\.sh telegraf run[\s\S]*?else\n\s*systemctl disable --now[\s\S]*?rm -f "\$TG_UNIT"', setup) is not None)
 check("setup.sh は lab のユニットを tftpl の前の版と同じ中身で作る（lab.sh up / down、20 分待つ）",
@@ -510,6 +524,51 @@ check("lab.sh down: graph-stop で図を止めてから containerlab destroy す
 _r, _c, _ = _lab_graph("down")
 check("lab.sh down: NAME_PREFIX が無ければ（手元の compose）systemctl を打たずに destroy だけ",
       _r.returncode == 0 and _c == ["containerlab destroy -t splab.clab.yml --cleanup"])
+# ---- lab.sh logs / trex stop / trex status（011 Round 2）。lab.sh・テンプレート・srlinux/*.cli を一時ディレクトリに写し、偽の docker を PATH の先に置く。
+# srlinux/ には S3 に残った古い .cli（dc1-leaf-01。011 で dc1-a-leaf-01 に改名した名前）を 1 本混ぜる
+def _lab_docker(*args, running=False):
+    with tempfile.TemporaryDirectory() as d:
+        b = os.path.join(d, "bin"); os.mkdir(b)
+        log = os.path.join(d, "calls.log"); open(log, "w").close()
+        with open(os.path.join(b, "docker"), "w") as f:
+            f.write('#!/usr/bin/env bash\n{ printf docker; printf " %s" "$@"; echo; } >> "$FAKE_LOG"\n'
+                    'case " $* " in *" pgrep "*|*" pkill "*) [ -n "${FAKE_RUNNING:-}" ] || exit 1; echo "42 /bin/bash ./t-rex-64 -i" ;; esac\n')
+        os.chmod(os.path.join(b, "docker"), 0o755)
+        with open(os.path.join(d, "lab.sh"), "w") as f:
+            f.write(lab_sh)
+        os.chmod(os.path.join(d, "lab.sh"), 0o755)
+        with open(os.path.join(d, "splab.clab.yml.in"), "w") as f:
+            f.write(read("app", "containerlab", "splab.clab.yml.in"))
+        open(os.path.join(d, "splab.clab.yml"), "w").close()
+        os.mkdir(os.path.join(d, "srlinux"))
+        for n in [*sorted(os.listdir(os.path.join(ROOT, "app", "containerlab", "srlinux"))), "dc1-leaf-01.cli"]:
+            open(os.path.join(d, "srlinux", n), "w").close()
+        e = {k: v for k, v in os.environ.items() if k not in ("NAME_PREFIX", "AWS_REGION", "LINES")}
+        e.update(PATH=b + os.pathsep + os.environ["PATH"], FAKE_LOG=log, **({"FAKE_RUNNING": "1"} if running else {}))
+        r = subprocess.run([os.path.join(d, "lab.sh"), *args], env=e, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
+        return r, open(log, encoding="utf-8").read().splitlines()
+_srl_nodes = [n for n, v in yaml.safe_load(read("app", "containerlab", "splab.clab.yml.in"))["topology"]["nodes"].items() if v.get("kind") == "nokia_srlinux"]
+_routers = re.search(r"^routers\(\) \{.*?^\}", lab_sh, re.M | re.S)
+check("lab.sh の routers() は srlinux/*.cli を数えず（glob を使わない）、トポロジのテンプレート（$TOPO.in）を読む",
+      _routers is not None and "*.cli" not in _routers.group(0) and '"$TOPO.in"' in _routers.group(0))
+_r, _c = _lab_docker("logs")
+check("lab.sh logs: 打つ機器はテンプレートの nodes の kind: nokia_srlinux（6 台、この順）だけで、srlinux/ に残った古い .cli の機器（dc1-leaf-01）は打たない",
+      _r.returncode == 0 and len(_srl_nodes) == 6
+      and _c == [f"docker exec clab-splab-{n} tail -n 20 /var/log/srlinux/file/messages" for n in _srl_nodes])
+_trex_case = re.search(r"^  trex\)\n.*?^    ;;$", lab_sh, re.M | re.S).group(0)
+check("lab.sh trex: start / stop / status は同じ式（TREX_PROC=t-rex-64。ラッパーと子の _t-rex-64 の両方に当たる）で pgrep / pkill する",
+      sh_const(lab_sh, "TREX_PROC") == "t-rex-64"
+      and re.findall(r"\b(pgrep|pkill) (-[a-z]+) (\S+)", _trex_case) == [("pgrep", "-f", '"$TREX_PROC"'), ("pkill", "-f", '"$TREX_PROC"'), ("pgrep", "-af", '"$TREX_PROC"')])
+_r, _c = _lab_docker("trex", "stop", running=True)
+_r2, _c2 = _lab_docker("trex", "stop")
+check("lab.sh trex stop: dc1-trex-01 の中で pkill -f t-rex-64。動いていなければ（pkill が 1）止まらずに案内を出す",
+      _r.returncode == 0 and _c == ["docker exec clab-splab-dc1-trex-01 pkill -f t-rex-64"]
+      and _r2.returncode == 0 and _c2 == _c and "TRex は動いていない" in _r2.stdout)
+_r, _c = _lab_docker("trex", "status", running=True)
+check("lab.sh trex status: pgrep -af t-rex-64 のあとに出力の末尾（/var/log/trex.log）を出す",
+      _r.returncode == 0 and _c == ["docker exec clab-splab-dc1-trex-01 pgrep -af t-rex-64", "docker exec clab-splab-dc1-trex-01 tail -n 20 /var/log/trex.log"]
+      and "./t-rex-64 -i" in _r.stdout)
+
 _lab_out = read("IaC", "terraform", "aws-managed", "pipeline", "lab", "outputs.tf")
 check("lab の output graph_port_forward_command は lab.sh graph が出すコマンドと同じ（宛先は aws_instance.lab.id、ポートは lab.sh の GRAPH_PORT）",
       sh_const(lab_sh, "GRAPH_PORT") == "50080"
