@@ -64,3 +64,5 @@
 - [ ] `app/containerlab/lab.sh` と `app/telegraf/telegraf.sh` に残る `$VAR` の直後に全角文字が続く所を `${VAR}` にする（Mac の bash 3.2 だけ 1 バイト食う。2026-10-08 に 009 の実装で見つけた）
 - [ ] `app/containerlab/lab.sh` の failover の `route()` が IS-IS の経路が無いと `set -e` と `pipefail` で止まる（「(IS-IS の経路が無い)」の分岐に来ない。2026-10-08 に 009 の実装で見つけた）
 - [ ] flows（GoFlow2）の Grafana のダッシュボードを作る（012 は Kafka と格納先まで。画面は無い）
+- [ ] Grafana のプラグインの版を `docker/images/grafana/Dockerfile` で固定する（opensearch 2.34.4、amazonprometheus。いまは最新を取るので、プラグインの更新で trap ルールの式の上限（008 の A）が変わっても気付けない。2026-10-08 に 008 の実装で見つけた）
+- [ ] Grafana のアラートルールの Error 状態を ops で検出する（`execErrState: KeepLast` で `Normal (Error)` が隠れ、008 の A の不具合は画面を見るまで分からなかった。ルールの API の `alerts[].state` か、ルールのモデルを `/api/ds/query` に POST して HTTP 200 を見る。2026-10-08 に 008 の実装で見つけた）
