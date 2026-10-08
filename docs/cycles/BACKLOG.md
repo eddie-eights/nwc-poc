@@ -65,7 +65,7 @@
 - [ ] `app/containerlab/lab.sh` の failover の `route()` が IS-IS の経路が無いと `set -e` と `pipefail` で止まる（「(IS-IS の経路が無い)」の分岐に来ない。2026-10-08 に 009 の実装で見つけた）
 - [ ] flows（GoFlow2）の Grafana のダッシュボードを作る（012 は Kafka と格納先まで。画面は無い）
 - [x] Grafana のプラグインの版を `docker/images/grafana/Dockerfile` で固定する（opensearch 2.34.4、amazonprometheus。いまは最新を取るので、プラグインの更新で trap ルールの式の上限（008 の A）が変わっても気付けない。2026-10-08 に 008 の実装で見つけた） → 008-aws-verification-bugs（2026-10-08 完了）
-- [ ] Grafana のアラートルールの Error 状態を ops で検出する（`execErrState: KeepLast` で `Normal (Error)` が隠れ、008 の A の不具合は画面を見るまで分からなかった。ルールの API の `alerts[].state` か、ルールのモデルを `/api/ds/query` に POST して HTTP 200 を見る。2026-10-08 に 008 の実装で見つけた）
+- [x] Grafana のアラートルールの Error 状態を ops で検出する（`execErrState: KeepLast` で `Normal (Error)` が隠れ、008 の A の不具合は画面を見るまで分からなかった。ルールの API の `alerts[].state` か、ルールのモデルを `/api/ds/query` に POST して HTTP 200 を見る。2026-10-08 に 008 の実装で見つけた） → 008-aws-verification-bugs（2026-10-08 完了。fix/grafana-plugin-pin-error-state の Round 3。`ops/check-grafana.sh` と `ops/grafana_rules_check.py`。AWS では未確認）
 - [ ] 手元の `check.sh` の Kafka のメッセージ数の判定で `messagesCount` が無い・null の応答を NG の理由つきで扱う（いまは Python の KeyError / TypeError で NG に倒れ、理由が読めない。2026-10-08 に 009 の cold review Round 1 の Nit 3）
 - [ ] 手元の `check.sh` の Telegraf の health の宛先を `up.sh` が決めた bind に合わせる（いまは `check.sh` を打った時点で 203.0.113.1 の有無を見直すので、`lab.sh down` のあとは 127.0.0.1 に打って案内が合わない。2026-10-08 に 009 の cold review Round 2 の Nit 2）
 - [ ] `IaC/terraform/aws-managed/base/ecr/outputs.tf` の `kafka_ui_repository_url` の description「pipeline/stream runs it on ECS.」を Web の EC2 の Docker が pull する形に直す（2026-10-08 に 010 の cold review の Nit 3）
@@ -76,3 +76,8 @@
 - [ ] `lab graph` の案内の `sudo systemctl status <prefix>-lab-graph` を `journalctl -u` にする（`systemd-run --collect` なので containerlab graph がすぐ落ちると一時ユニットが消え「could not be found」になる。起動の成否を見ずに案内を出す。2026-10-08 に 010 のセルフレビューの Nit 7）
 - [ ] `ops/up.sh` の stream の ECR エンドポイントのコメントに Web の EC2 の Kafbat UI の pull も使うことを足す（いまは Telegraf だけ。2026-10-08 に 010 のセルフレビューの Nit 10）
 - [ ] Kafbat UI のクラスター名を `<prefix>-stream` から `<prefix>` にしたことを `docs/verification/20261008-oss-aws.md` の手筋（`kafka-ui.<名前空間>:8080` と `efukuda-nwc-oss-stream`）に注記する（REST の `/api/clusters/{name}/…` の識別子でもある。2026-10-08 に 010 のセルフレビューの Nit 6）
+- [ ] `ops/grafana_rules_check.py` が rules API のページ分け（`group_limit` / `groupNextToken`）を追う（いまは 1 ページだけ見るので、見ていないルールのエラーで OK になる。13.2.2 では引数なしで全部返った。2026-10-08 に 008 (b) のセルフレビューの Nit N2）
+- [ ] `ops/check-grafana.sh` の未確認（401・届かない）と NG と die の終了コードを分け、未確認のときは「Failed to evaluate rule」のログを案内しない（2026-10-08 に 008 (b) のセルフレビューの Nit N4）
+- [ ] `ops/up.sh` と `oss/ops/up.sh` の 9-2 で `tf output` が失敗したら空の引数で `aws ecs wait` に進まず止める（いまは「10 分たっても安定しない」と出る。2026-10-08 に 008 (b) のセルフレビューの Nit N5）
+- [ ] `ops/up-common.sh` の `ssm_run` の読み直しに全体の締め切りを付ける（失敗が全部 Pending 扱いで待ち続ける。前からある。2026-10-08 に 008 (b) のセルフレビューの Nit N6）
+- [ ] 前の回の analytics が残っている回（`PIPELINE=0` など）でも 9-2 の Grafana のルールの検査を打つ（いまは analytics を作った回しか打たない。2026-10-08 に 008 (b) のセルフレビューの Nit N7）
