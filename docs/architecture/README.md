@@ -12,7 +12,7 @@
 |---|---|---|
 | [core.md](core.md) | `base/core`、`base/ecr` | 土台: VPC、Web の EC2、アラートの SNS トピック、閉域（エンドポイント + Deny）、SG（通信の表） |
 | [agent.md](agent.md) | `app/agentcore/`（`AGENT=1`） | チャットの経路: Web → AgentCore Runtime → Nova 2 Lite・ガードレール・KB・ツール |
-| [pipeline.md](pipeline.md) | `pipeline/`（`PIPELINE=1`） | lab → Telegraf → MSK → Spark → 格納先、Grafana と Splunk のアラート、Neptune のトポロジ、Nautobot |
+| [pipeline.md](pipeline.md) | `pipeline/`（`PIPELINE=1`） | lab → Telegraf・syslog-ng・GoFlow2 → MSK → Spark → 格納先、Grafana と Splunk のアラート、Neptune のトポロジ、Nautobot |
 | [workflow.md](workflow.md) | `app/temporal/`（`WORKFLOW=1`） | アラート（SNS → SQS）→ Temporal の調査・承認・修復、Gateway（MCP） |
 
 リソースごとの知見（使い方、つながり、はまりどころ、制約）は [resources/README.md](resources/README.md)。
@@ -37,15 +37,16 @@
 | `app/dashboard/` | Gradio の画面 |
 | `app/temporal/` | Temporal のワークフローとワーカー |
 | `app/spark/` | Spark のジョブ（`snmp_sinks.py`。格納先へ流すだけで、検知はしない） |
-| `app/containerlab/` | containerlab の構成、SR Linux の設定（`srlinux/*.cli`）、EC2 の支度（`setup.sh`。lab とデバッグ用の EC2 で共通）、Telegraf（ECS）への転送（`lab forward`）、デバッグ用の EC2 の Telegraf（`lab telegraf`） |
+| `app/containerlab/` | containerlab の構成、SR Linux の設定（`srlinux/*.cli`）、EC2 の支度（`setup.sh`。lab とデバッグ用の EC2 で共通）、stream の ECS（Telegraf・syslog-ng・GoFlow2）への転送（`lab forward`）、デバッグ用の EC2 の Telegraf（`lab telegraf`） |
 | `app/telegraf/` | Telegraf の設定（`telegraf.conf.in`）、入口の `telegraf.sh`（イメージの中では `tg`）、lab の gNMI を共通の形に変える `lab_gnmi.star` / `lab_circuits.star`（stream の ECS のタスクで動く。デバッグ用の EC2 でも docker で `SINK=stdout`） |
+| `app/syslog-ng/` | syslog-ng（AxoSyslog）の設定のテンプレート（`syslog-ng.conf.in`）と入口の `syslog-ng.sh`（イメージの中では `sng`）。機器の syslog を Telegraf と同じ `device_log` の形にしてトピック `logs` へ書く（stream の ECS のタスクで動く。2026-10-08 から。NetFlow / sFlow の GoFlow2 は上流のイメージをそのまま使うので、ここには無い） |
 | `app/grafana/` | Grafana の `start.sh` と provisioning（データソース（OSS 版は `datasources-oss/`）、ダッシュボード、アラート（`alerting/` の `netops-prometheus.yaml` / `netops-opensearch.yaml` / `netops.yaml`）。analytics の ECS のタスクで動く） |
 | `app/splunk/` | Splunk のアプリ `netops_alerts`（保存済みサーチと、SNS へ publish するアラートアクション。analytics の ECS のタスクで動く）、`entrypoint.sh`（役割に合わせてアプリを外す。indexer は止まる前に `splunk offline`）、`peers_check.py`（クラスターの search head が indexer を全部検索できるかの突き合わせ） |
 | `app/nautobot/` | Nautobot の Job（`jobs/netops_jobs.py`）と、その中身（`netops/`。対応付け `nb_map.py`、同期 `nb_sync.py`、起動時の `bootstrap.py`）。`PIPELINE=1` ならいつも ECS で動く |
 | `app/graph/` | アラート（SNS）を受けて Neptune（Neptune Analytics）の `status` を書き、通知の履歴を Firehose へ送る Lambda（`status_handler.py`） |
 | `app/neo4j/` | OSS 版の Neo4j（+ GDS）の `entrypoint.sh`（OSS 版の graph の ECS のタスクで動く） |
 | `app/resources/` | ナレッジベースに入れる手順書 |
-| `docker/images/<名前>/Dockerfile` | イメージの `Dockerfile`（agentcore / temporal / grafana / splunk / nautobot / telegraf / spark / neo4j）。ビルドのコンテキストは `app/<名前>/` で、`docker buildx build -f docker/images/<名前>/Dockerfile app/<名前>/` の形で使う。Splunk は公式イメージ + 検知のアプリ、Nautobot は公式イメージ + boto3 |
+| `docker/images/<名前>/Dockerfile` | イメージの `Dockerfile`（agentcore / temporal / grafana / splunk / nautobot / telegraf / syslog-ng / spark / neo4j）。ビルドのコンテキストは `app/<名前>/` で、`docker buildx build -f docker/images/<名前>/Dockerfile app/<名前>/` の形で使う。Splunk は公式イメージ + 検知のアプリ、Nautobot は公式イメージ + boto3 |
 | `docker/compose/` | 手元の docker compose（WSL2 の中だけで lab から Grafana / Splunk まで一周させる。AWS は使わない。[README](../../docker/compose/README.md)） |
 | `IaC/terraform/aws-managed/` | AWS にリソースを作るのはここだけ（下のツリー） |
 | `IaC/terraform/oss/` | OSS 版の同じ 9 つのルート（下の段落） |
@@ -62,8 +63,8 @@ IaC/terraform/aws-managed/
 │   └── core/        VPC / VPC エンドポイント / 閉域の Deny（perimeter.tf）/ SG（ワークロードごと。通信の表は security_groups.tf）/ フローログ / バケット / アラートの SNS トピック（alerts.tf）/ ロール / Web の EC2
 ├── agent/         AGENT=1     Runtime / ガードレール / KB
 ├── pipeline/      PIPELINE=1
-│   ├── lab/         containerlab の EC2（stream を作るときは Telegraf への転送も）
-│   ├── stream/      MSK / Telegraf（ECS Fargate + 内部 NLB）/ Kafbat UI（ECS Fargate）
+│   ├── lab/         containerlab の EC2（stream を作るときは Telegraf・syslog-ng・GoFlow2 への転送も）
+│   ├── stream/      MSK（IAM + SASL/SCRAM）/ Telegraf・syslog-ng・GoFlow2（ECS Fargate + 内部 NLB）/ Kafbat UI（ECS Fargate）
 │   ├── analytics/   EMR Serverless / S3 Tables / OpenSearch / Prometheus / Grafana と Splunk（ECS Fargate）/ アラートの通知の履歴の Firehose
 │   ├── graph/       Neptune Analytics のグラフ / status の Lambda（SNS の購読）
 │   └── nautobot/    Nautobot（ECS Fargate）と PostgreSQL（RDS）
@@ -100,6 +101,7 @@ aws resourcegroupstaggingapi get-resources --region ap-northeast-1 \
 | Web の失敗 | Web の EC2 の `journalctl -u <prefix>-web` |
 | ガードレールで止めたか | Runtime のログの `stop=guardrail_intervened` |
 | Telegraf | CloudWatch Logs `/ecs/<prefix>-telegraf`（stream の出力 `telegraf_log_group_name`） |
+| syslog-ng / GoFlow2 | CloudWatch Logs `/ecs/<prefix>-syslog-ng` / `/ecs/<prefix>-goflow2`（stream の出力 `syslog_ng_log_group_name` / `goflow2_log_group_name`） |
 | Grafana / ECS の Splunk | CloudWatch Logs `/ecs/<prefix>-grafana` / `/ecs/<prefix>-splunk` |
 | Spark（EMR Serverless） | CloudWatch Logs `/aws/emr-serverless/<prefix>` |
 | Kafbat UI / MSK | CloudWatch Logs `/ecs/<prefix>-kafka-ui` / `/<prefix>/msk` |

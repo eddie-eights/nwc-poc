@@ -35,7 +35,7 @@ import os
 
 MGMT_SUBNET = "203.0.113.0/24"
 MGMT_GW = "203.0.113.1"        # lab の EC2 側（trap / syslog の宛先）。lab.sh の MGMT_GW と同じ
-LOG_PORT = 5140                # 機器の syslog の宛先ポート。lab.sh の LOG_PORT と telegraf.conf.in の inputs.syslog と同じ
+LOG_PORT = 5140                # 機器の syslog の宛先ポート。lab.sh の LOG_PORT と stream の syslog-ng（app/syslog-ng/syslog-ng.sh）と同じ
 LOG_FACILITY = "local7"        # 機器の syslog のファシリティ。本番の Cisco（IOS の既定）に合わせる
 AS = 65100
 EVI = 100

@@ -12,7 +12,7 @@ TELEGRAF_VERSION=1.40.1
 CONTAINERLAB_RPM="containerlab_${CONTAINERLAB_VERSION}_linux_arm64.rpm"
 SRLINUX_UPSTREAM=ghcr.io/nokia/srlinux
 MULTITOOL_UPSTREAM=ghcr.io/srl-labs/network-multitool
-# lab の SR Linux が送る syslog の形式。ops/up.sh の SYSLOG_STANDARD（既定は本番の Cisco に合わせた RFC3164）がこれと違えば up.sh が注意を出す。
+# lab の SR Linux が送る syslog の形式。ops/up.sh の SYSLOG_STANDARD（stream の syslog-ng が受ける形式。既定は本番の Cisco に合わせた RFC3164）がこれと違えば up.sh が注意を出す。
 # app/containerlab/lab.sh の LOG_STANDARD（デバッグ用の EC2 の Telegraf に渡す）と同じ
 LAB_SYSLOG_STANDARD=RFC5424
 # containerlab が SR Linux 全台に入れる既定の認証情報（lab だけの公開既定値で、実機の値ではない）。ops/up.sh が SSM の

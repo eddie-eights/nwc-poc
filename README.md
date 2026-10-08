@@ -11,7 +11,7 @@ flowchart LR
   WEB -->|"invoke_agent_runtime"| RT["AgentCore Runtime<br/>Nova 2 Lite + ガードレール"]
   RT --> KB["ナレッジベース<br/>CREATE_KB=1"]
   RT --> TOOLS["ツール<br/>Neptune / OpenSearch / Prometheus"]
-  LAB["lab の EC2<br/>containerlab"] --> TG["Telegraf<br/>ECS Fargate"] --> MSK["MSK"] --> SPARK["Spark<br/>EMR Serverless"]
+  LAB["lab の EC2<br/>containerlab"] --> TG["Telegraf / syslog-ng / GoFlow2<br/>ECS Fargate"] --> MSK["MSK"] --> SPARK["Spark<br/>EMR Serverless"]
   SPARK --> STORE["S3 Tables / OpenSearch / Prometheus<br/>（+ Splunk）"]
   PC -->|"SSM ポートフォワーディング<br/>（Web の EC2 を踏み台）"| GRAF["Grafana<br/>ECS Fargate"] -->|"Prometheus / OpenSearch を見る"| STORE
   GRAF -->|"Grafana のアラート<br/>（link_down / BGP / IS-IS / trap）"| SNS["SNS<br/>prefix-alerts"]
@@ -37,13 +37,13 @@ AWS を使わずに、WSL2 の中だけでパイプライン（lab → Telegraf 
 |---|---|---|
 | 土台（必ず） | VPC、SSM のエンドポイント 2 本、Web の EC2、S3、ECR | 約 $0.05/h |
 | `AGENT=1` | チャット（Runtime + ガードレール）。`CREATE_KB=1` で手順書の検索も | 約 $0.07/h（エンドポイント 5 本。ほかは質問ごとのモデル料金だけ。KB は +$0.35/h） |
-| `PIPELINE=1` | lab → Telegraf（ECS）→ MSK → Spark → S3 Tables / OpenSearch / Prometheus / Splunk（`STORES` の既定は `s3,grafana,splunk` の 3 つとも）、Grafana と Splunk のアラート → SNS、Neptune のトポロジ（アラートで status が変わる）、Nautobot（機器の一覧とケーブルの正。いつも立つ） | 約 $2.75/h（`STORES` が既定のとき。うち Neptune Analytics が $0.58/h、Nautobot が $0.14/h、Kafbat UI が $0.02/h、`STORES` の `grafana` が約 $0.60/h、`splunk` が約 $0.34/h（Spark のジョブ $0.21、ECS の Splunk $0.12、sns のエンドポイント $0.014）） |
+| `PIPELINE=1` | lab → Telegraf・syslog-ng・GoFlow2（ECS）→ MSK → Spark → S3 Tables / OpenSearch / Prometheus / Splunk（`STORES` の既定は `s3,grafana,splunk` の 3 つとも）、Grafana と Splunk のアラート → SNS、Neptune のトポロジ（アラートで status が変わる）、Nautobot（機器の一覧とケーブルの正。いつも立つ） | 約 $2.79/h（`STORES` が既定のとき。うち Neptune Analytics が $0.58/h、Nautobot が $0.14/h、Kafbat UI が $0.02/h、`STORES` の `grafana` が約 $0.60/h、`splunk` が約 $0.34/h（Spark のジョブ $0.21、ECS の Splunk $0.12、sns のエンドポイント $0.014）） |
 | `WORKFLOW=1` | アラート（SNS → SQS）で Temporal を起こし、調査 → 承認 → 修復。AGENT と PIPELINE と、アラートの送り手（Grafana か Splunk）が要る | 約 $0.09/h |
 
 インターフェース型エンドポイントは 1 本 $0.014/h（既定の 1 AZ のとき。`ENDPOINTS_AZ_NUM` を 2 / 3 にすると AZ の数の倍）で、作る機能が呼ぶ API の分だけ `ops/up.sh` が選ぶ（上の金額に入れてある。同じサービスは機能をまたいで 1 本）。
 OpenSearch Serverless のコレクション（KB と logs）も公開せず、VPC エンドポイント 1 本（$0.014/h。両方作っても 1 本。これも `ENDPOINTS_AZ_NUM` の数の倍）からだけ届く。
 
-`PIPELINE=1` だけ（`STORES` は既定の `s3,grafana,splunk`）なら、土台と合わせて約 $2.80/h。`STORES=s3` に絞れば約 $1.88/h。**既定のまま 1 か月置くと約 $2,000（約 30 万円）になるので、使い終わったら当日中に消す。**
+`PIPELINE=1` だけ（`STORES` は既定の `s3,grafana,splunk`）なら、土台と合わせて約 $2.84/h。`STORES=s3` に絞れば約 $1.91/h。**既定のまま 1 か月置くと約 $2,000（約 30 万円）になるので、使い終わったら当日中に消す。**
 
 何 AZ に置くかはリソースごとの `*_AZ_NUM` で選ぶ（既定は 1 AZ。MSK だけ 2 AZ。[deploy.md](docs/deploy.md)）。上の金額は既定の AZ の数のときのもの。
 
@@ -140,7 +140,7 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | `IMAGE_TAG` | `app/agentcore/` や `app/temporal/` を変えたら `v2` などに上げる |
 | `HTTP_SEND` | Spark が HTTP の格納先（OpenSearch / Prometheus / Splunk）へ送る所。既定 `driver`。量が増えたら `executor`（費用は変わらない） |
 | `MAX_OFFSETS_PER_TRIGGER` | Spark の 1 つのクエリが Kafka の 1 回のトリガー（60 秒）に読む件数の上限（全パーティションの合計）。既定 `10000`、`0` で上限なし。格納先ごとに `MAX_OFFSETS_PER_TRIGGER_ICEBERG` / `_SPLUNK` / `_OPENSEARCH` / `_PROMETHEUS` で上書きできる（既定は空 = 共通の値） |
-| `SYSLOG_STANDARD` | stream の Telegraf が受ける syslog の形式。既定 `RFC3164`（本番の Cisco IOS）。lab の SR Linux のログまで見るなら `RFC5424` |
+| `SYSLOG_STANDARD` | stream の syslog-ng が受ける syslog の形式。既定 `RFC3164`（本番の Cisco IOS）。lab の SR Linux のログまで見るなら `RFC5424` |
 | `KEEP_ECR` | `1` で `ops/down.sh` が ECR を残す |
 
 ほかのキーと、`ops/up.sh` / `ops/down.sh` が何をするかは [deploy.md](docs/deploy.md)。その回だけ変えるなら `PIPELINE=1 ops/up.sh` のように環境変数で渡す。
@@ -159,8 +159,8 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | [architecture/](docs/architecture/README.md) | 構成図（スライドはマネージド版 [architecture-managed.pptx](docs/architecture-managed.pptx) と OSS 版 [architecture-oss.pptx](docs/architecture-oss.pptx)）、どのファイルがどこで動くか、名前とタグ、ログ。中身は [core](docs/architecture/core.md)（閉域・SG）/ [agent](docs/architecture/agent.md) / [pipeline](docs/architecture/pipeline.md) / [workflow](docs/architecture/workflow.md) に分けてある |
 | [setup.md](docs/setup.md) | 前提（AWS の権限、ネットワーク、Mac / WSL2、社内 PC の CA） |
 | [deploy.md](docs/deploy.md) | `deploy.env` の全キー、`ops/up.sh` / `ops/down.sh` の中身、利用者に渡す権限、試す質問 |
-| [collection.md](docs/collection.md) | 機器から集めるデータ: 欲しいもの（syslog・trap・telemetry・性能メトリクス）といまの状態、telemetry と性能メトリクスは Cisco MDT の dial-out で受ける方針、未決定事項 |
-| [pipeline.md](docs/pipeline.md) | lab、Telegraf、デバッグ用の EC2（`ops/lab-debug.sh`）、Spark、Grafana と Splunk のアラート、Neptune のトポロジの使い方 |
+| [collection.md](docs/collection.md) | 機器から集めるデータ: 欲しいもの（syslog・trap・telemetry・性能メトリクス・NetFlow / sFlow）といまの状態、集める側（Telegraf・syslog-ng・GoFlow2）、telemetry と性能メトリクスは Cisco MDT の dial-out で受ける方針（受け口は 2026-10-08 に外した）、未決定事項 |
+| [pipeline.md](docs/pipeline.md) | lab、Telegraf・syslog-ng・GoFlow2、デバッグ用の EC2（`ops/lab-debug.sh`）、Spark、Grafana と Splunk のアラート、Neptune のトポロジの使い方 |
 | [nautobot.md](docs/nautobot.md) | Nautobot: コンテナと部品の構成、起動から同期まで、使い方、Neptune と組み合わせた使いどころ |
 | [workflow.md](docs/workflow.md) | 承認の流れと Temporal UI |
 | [alert-comparison.md](docs/alert-comparison.md) | Splunk と Grafana のアラートを比べる: 4 種類のアラートを両方で書けたか、障害を入れる手順、遅れと取りこぼしを出す Athena のクエリ、結果（2026-10-05 の 1 回分。手順どおりの 3 回の計測と `bgp_down`・`trap` は未実施） |

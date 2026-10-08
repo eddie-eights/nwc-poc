@@ -31,7 +31,7 @@ nwc-poc の技術と構成について、ほかの開発者に説明するとき
 - Cisco のログの主な出し先は、コンソール、メモリ（`show logging`）、SSH の端末（`terminal monitor`）、syslog サーバー（`logging host`）の 4 つ。最後の「外へ送る」部分が syslog。
 - lab でも 2 つは分かれている。
   - SR Linux がコンテナの中に書くログ（`lab.sh logs` で読む）。
-  - 同じ出来事を RFC 5424 で UDP 5140 に送る syslog（Telegraf の `inputs.syslog` が受け、MSK の `logs` トピックへ流す）。
+  - 同じ出来事を RFC 5424 で UDP 5140 に送る syslog（stream の syslog-ng が受け、MSK の `logs` トピックへ流す。2026-10-08 までは Telegraf の `inputs.syslog`）。
 
 ### Q. syslog のファシリティとは？ 重要度とは何が違う？
 
@@ -60,7 +60,7 @@ nwc-poc の技術と構成について、ほかの開発者に説明するとき
 | どこで | 決めること | lab では |
 |---|---|---|
 | 送る側（ルーター） | 送り先とポート、ファシリティ、どの重要度以上を送るか | 203.0.113.1:5140/udp、subsystem ごとに informational 以上 |
-| 受ける側（syslog サーバー） | 届いたものをどこに保存し、何を捨てるか | Telegraf は全部受け、ファシリティと重要度を付けたまま MSK へ |
+| 受ける側（syslog サーバー） | 届いたものをどこに保存し、何を捨てるか | syslog-ng は全部受け、ファシリティと重要度を付けたまま MSK へ（2026-10-08 までは Telegraf） |
 | その先（分析側） | どの重要度を異常として扱うか | Spark・OpenSearch・Grafana で絞れる |
 
 - ルーター側で絞ると、量は減るが、送らなかったログは後から見られない。
@@ -207,7 +207,7 @@ PRI = ファシリティの番号 × 8 + 重要度
   - ホスト名を載せる `logging origin-id hostname`、番号を消す `no logging message-counter syslog`、時刻の形を決める `service timestamps log datetime msec` は、RFC3164 の解析がどう変わるかを実機で確かめてから決める。
   - `logging facility local7` と `logging trap informational` は IOS の既定と同じなので、書かなくても変わらない（明示のため書く）。
 - **ポート**
-  - Cisco の既定は 514。Telegraf は 5140 で待っているので（非 root は 1024 未満で待てない）、`port 5140` が要る。
+  - Cisco の既定は 514。syslog-ng は 5140 で待っているので（2026-10-08 までは Telegraf。どちらも非 root で、1024 未満では待てない）、`port 5140` が要る。
   - trap は `snmp-server host <NLB の IP> version 2c <community>` と `snmp-server enable traps snmp linkdown linkup` で 162 に送れば、NLB が Telegraf の 1162 へ渡す（版を書かないと v1 で送る。Telegraf は 2c で受ける）。
   - Cisco の linkDown の varbind には ifName が無い（ifIndex・ifDescr など）。trap を `link_down` にする Splunk の保存済みサーチ `netops_trap` は ifName → ifDescr → ifIndex の順で IF を引くので ifDescr で引くことになり、SR Linux の ifName とは名前の形が違う。
 - **経路**
@@ -216,19 +216,19 @@ PRI = ファシリティの番号 × 8 + 重要度
 - **IP の固定**
   NLB を作り直すと IP が変わる。機器に IP を書くなら、`subnet_mapping` の `private_ipv4_address` で固定したほうが安全。今のコードは固定していない（`subnets` から `subnet_mapping` に変えると NLB は 1 回作り直しになる）。
 - **形式**
-  Cisco IOS の既定は BSD 形式（RFC 3164 に近いが、そのままではない）。Telegraf は RFC3164 で受けるが、きれいに解析できるかは実機で確かめる（形式の切り替えは次の Q）。
+  Cisco IOS の既定は BSD 形式（RFC 3164 に近いが、そのままではない）。syslog-ng は RFC3164 で受けるが、きれいに解析できるかは実機で確かめる（形式の切り替えは次の Q）。
 
-### Q. Telegraf が受ける syslog の形式（RFC 3164 / RFC 5424）は、どこで切り替える？
+### Q. syslog-ng が受ける syslog の形式（RFC 3164 / RFC 5424）は、どこで切り替える？
 
 **A. `deploy.env`（か環境変数）の `SYSLOG_STANDARD` で選ぶ。既定は本番の Cisco に合わせた `RFC3164`。**
 
 | どこ | 中身 |
 |---|---|
-| `app/telegraf/telegraf.sh` | `SYSLOG_STANDARD`（既定 `RFC3164`。空も既定。大文字の `RFC3164` / `RFC5424` 以外は止まる）で `telegraf.conf.in` の `syslog_standard` を埋める |
-| `IaC/terraform/aws-managed/pipeline/stream` | 変数 `syslog_standard`（既定 `RFC3164`）を ECS タスクの環境変数 `SYSLOG_STANDARD` に渡す |
+| `app/syslog-ng/syslog-ng.sh` | `SYSLOG_STANDARD`（既定 `RFC3164`。空も既定。大文字の `RFC3164` / `RFC5424` 以外は止まる）で `syslog-ng.conf.in` の flags を埋める（`RFC5424` は `flags(syslog-protocol)`、`RFC3164` は flags 無し）。2026-10-08 までは `app/telegraf/telegraf.sh` が Telegraf の `syslog_standard` を埋めていた |
+| `IaC/terraform/aws-managed/pipeline/stream` | 変数 `syslog_standard`（既定 `RFC3164`）を syslog-ng の ECS タスク（`collectors.tf`）の環境変数 `SYSLOG_STANDARD` に渡す |
 | `ops/up.sh` | `SYSLOG_STANDARD`（空なら `RFC3164`）を stream の `syslog_standard` に渡す。大文字の `RFC3164` / `RFC5424` 以外は何も作る前に止まる。lab の SR Linux の形式（`ops/lab-common.sh` の `LAB_SYSLOG_STANDARD` = `RFC5424`）と違えば「lab のログの項目が崩れる」と注意を出す |
 | `ops/deploy-env.sh` / `deploy.env.example` | 読めるキーに `SYSLOG_STANDARD` がある |
-| `app/containerlab/lab.sh` | デバッグ用の EC2 の Telegraf に `LOG_STANDARD`（`RFC5424`）を `SYSLOG_STANDARD` として渡す |
+| `app/containerlab/lab.sh` | デバッグ用の EC2 の Telegraf に `LOG_STANDARD`（`RFC5424`）を `SYSLOG_STANDARD` として渡す（2026-10-08 から Telegraf は syslog を受けないので、渡しても使われない） |
 
 ```bash
 SYSLOG_STANDARD=RFC5424 PIPELINE=1 ops/up.sh   # lab の SR Linux のログまで見るとき
@@ -236,8 +236,8 @@ SYSLOG_STANDARD=RFC5424 PIPELINE=1 ops/up.sh   # lab の SR Linux のログま�
 
 - 本番の Cisco を受けるときは RFC3164 にする。`IaC/terraform/aws-managed/pipeline/stream` を直接打つなら、`syslog_standard` を渡さなければ既定の RFC3164 になる。`ops/up.sh` も書かなければ RFC3164。
 - lab の SR Linux は RFC 5424 で送るので、既定のままだと lab のログはホスト名・本文などがきれいに取れない。lab のログまで見るときだけ `RFC5424` にする。
-- 変えて打ち直すと、ECS の Telegraf の受ける側のタスク（`telegraf-dialout`）が入れ替わる（環境変数が変わるので）。
-- デバッグ用の EC2 の Telegraf は lab 専用なので、この値によらず `app/containerlab/lab.sh` の `LOG_STANDARD`（RFC5424）のまま。
+- 変えて打ち直すと、ECS の syslog-ng のタスク（`syslog-ng`）が入れ替わる（環境変数が変わるので）。
+- デバッグ用の EC2 は 2026-10-08 から syslog を受けない（syslog-ng はデバッグ用の EC2 では動かさない）。
 - Cisco IOS の既定のヘッダー（シーケンス番号や `*` 付きの時刻、ホスト名の有無）が RFC3164 でどう解析されるかは、実機で確かめていない。
 
 ### Q. SNMP はポーリングと trap のどちらで集めている？ ポーリングは止められる？
@@ -304,7 +304,7 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 
 ### Q. デバッグ用の EC2 のために、Telegraf は何が変わった？
 
-**A. ECS で動いている Telegraf の動きは変わらない。同じイメージをデバッグ用の EC2 でも動かせるように、出力を選べるようにしただけ。** 収集の中身（inputs と processors）は同じ（`inputs.syslog` の形式は `SYSLOG_STANDARD` で選ぶ。2 章）。
+**A. ECS で動いている Telegraf の動きは変わらない。同じイメージをデバッグ用の EC2 でも動かせるように、出力を選べるようにしただけ。** 収集の中身（inputs と processors）は同じ（syslog は 2026-10-08 から Telegraf ではなく syslog-ng が受ける。形式は `SYSLOG_STANDARD` で選ぶ。2 章）。
 
 - `telegraf.conf.in`
   - 出力を `# >>> sink kafka` と `# >>> sink stdout` の区間に分けた。
@@ -617,10 +617,10 @@ Spark UI（EMR Serverless のコンソールから開ける）の Executors の�
 
 | ジョブ | クエリ（格納先） | 購読するトピック | 有効になる条件 |
 |---|---|---|---|
-| `sinks-s3iceberg` | iceberg（S3 Tables の生データ） | metrics / gnmi / mdt / traps / logs | `STORES` の `s3` |
-| `sinks-grafana` | prometheus | metrics / gnmi / mdt | `STORES` の `grafana` |
-| `sinks-grafana` | opensearch | traps / logs | `STORES` の `grafana` |
-| `sinks-splunk` | splunk | metrics / gnmi / mdt / traps / logs | `STORES` の `splunk` |
+| `sinks-s3iceberg` | iceberg（S3 Tables の生データ） | metrics / gnmi / traps / logs / flows | `STORES` の `s3` |
+| `sinks-grafana` | prometheus | metrics / gnmi | `STORES` の `grafana` |
+| `sinks-grafana` | opensearch | traps / logs / flows | `STORES` の `grafana` |
+| `sinks-splunk` | splunk | metrics / gnmi / traps / logs / flows | `STORES` の `splunk` |
 
 - **1 つのクエリは、複数のトピックをまとめて 1 回で購読する。**
   トピックごとに購読を分けてはいない（`subscribe` にカンマ区切りで渡す）。
@@ -843,7 +843,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 - 立たないのは、`PIPELINE=0` のときと、`SKIP_STREAM` と `SKIP_GRAPH` を両方書いたとき（Job の書き先が無い）。
 - 前の `deploy.env` に `NAUTOBOT=...` が残っていても止まらない。`ops/up.sh` が「もう使わない」と注意を出す。
 - Telegraf の dialin の一覧は、いつも Nautobot の Job が書く SSM のパラメータ（`/<prefix>/telegraf-dialin/nautobot/*`）から受ける。
-- 費用は Nautobot の分（+$0.13/h と `ecs` のエンドポイント $0.014/h）が PIPELINE に入る。`PIPELINE=1` だけ（`STORES` は既定）なら、土台と合わせて約 $2.80/h（README の表）。
+- 費用は Nautobot の分（+$0.13/h と `ecs` のエンドポイント $0.014/h）が PIPELINE に入る。`PIPELINE=1` だけ（`STORES` は既定）なら、土台と合わせて約 $2.84/h（README の表）。
 - デバッグ用の EC2（`ops/lab-debug.sh`）は Nautobot を使わない（lab の定義の一覧のまま）。
 
 ### Q. Nautobot にトポロジの情報を入れているのはシェルスクリプトだと思うけど、どこからの情報を引っ張ってきて入れている？
@@ -1123,8 +1123,8 @@ Lambda から書く経路は 2 案あった。
 
 | 流し先 | 入るトピック | 中身 |
 |---|---|---|
-| OpenSearch（インデックス `snmp-logs`） | traps / logs | trap と syslog |
-| Prometheus | metrics / gnmi / mdt | メトリクスの時系列 |
+| OpenSearch（インデックス `snmp-logs`） | traps / logs / flows | trap と syslog と NetFlow / sFlow |
+| Prometheus | metrics / gnmi | メトリクスの時系列 |
 | S3 Tables の生データのテーブル | 5 つ全部 | 正本 |
 | Splunk（`STORES` に `splunk` があるときだけ） | 5 つ全部 | 比較用 |
 
@@ -1136,8 +1136,8 @@ Lambda から書く経路は 2 案あった。
 
 | データソース | 接続先 | 入っているもの | 使い道 |
 |---|---|---|---|
-| Prometheus (AMP)。既定 | Amazon Managed Service for Prometheus | metrics / gnmi / mdt | ダッシュボード `metrics.json` と、アラートルール `link_down`、`bgp_down`、`isis_down` |
-| OpenSearch (logs) | OpenSearch Serverless の logs コレクション | traps / logs | ダッシュボード `logs.json` と、アラートルール `trap` |
+| Prometheus (AMP)。既定 | Amazon Managed Service for Prometheus | metrics / gnmi | ダッシュボード `metrics.json` と、アラートルール `link_down`、`bgp_down`、`isis_down` |
+| OpenSearch (logs) | OpenSearch Serverless の logs コレクション | traps / logs / flows | ダッシュボード `logs.json` と、アラートルール `trap` |
 
 - アラートは両方のデータソースを見ている。Prometheus のルールが 3 つ、OpenSearch のルールが 1 つ（`app/grafana/provisioning/alerting/`）。
 - 聞いた時点（2026-10-04）では、アラートは Prometheus の `link_down` だけだった。trap や BGP / IS-IS の落ちは Splunk だけが検知していた。「Splunk と Grafana のアラートを比べる（002）」で両方を揃えた。
@@ -1149,7 +1149,7 @@ Lambda から書く経路は 2 案あった。
 **A. 機器から来た生データを、全部そのまま溜めておく S3 Tables（Iceberg）のテーブル。**
 
 - **入るもの。**
-  MSK の 5 つのトピック（metrics / gnmi / mdt / traps / logs）の全部。Spark が up か down かを判断せず、行をそのまま追記する。どのトピックから来た行かは `topic` 列で分かる。
+  MSK の 5 つのトピック（metrics / gnmi / traps / logs / flows）の全部。Spark が up か down かを判断せず、行をそのまま追記する。どのトピックから来た行かは `topic` 列で分かる。
 - **役割。**
   メトリクスとログの履歴の正本。OpenSearch と Prometheus は検索やグラフのための写し。
 - **作られる条件。**
@@ -1163,7 +1163,7 @@ Lambda から書く経路は 2 案あった。
 
 | 中身 | テーブル名 | 書く人 | 状態 |
 |---|---|---|---|
-| 機器から来た生データ（metrics / gnmi / mdt / traps / logs の全部） | `raw_telemetry`（旧 `snmp_metrics`） | Spark | `STORES` に `s3` があるときだけ作る |
+| 機器から来た生データ（metrics / gnmi / traps / logs / flows の全部） | `raw_telemetry`（旧 `snmp_metrics`） | Spark | `STORES` に `s3` があるときだけ作る |
 | 修復案（作成・承認・却下・時間切れ・適用・確認）。修復案の置き場はここだけ | `proposal_events` | Temporal の worker | いつも作る |
 | アラートの通知の履歴（発火と解消） | `alert_events` | Lambda graph-status（Firehose 経由） | 「アラートの履歴を残す（001）」で入った（聞いた時点では実装中だった） |
 

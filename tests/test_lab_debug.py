@@ -433,10 +433,11 @@ _tag_calls = [m for n in ("lab-common.sh", "up-common.sh", "up.sh") for m in re.
     + [m for n in ("up.sh", "oss-images.sh") for m in re.findall(r'^[^#\n]*?\bdir_tag "\$\w+" ([^)\n;]*)', read("oss", "ops", n), re.M)]
 _tag_df = [re.fullmatch(r'(?:app/([\w-]+)|"\$NAUTOBOT_CTX") docker/images/([\w-]+)/Dockerfile\s*', c) for c in _tag_calls]
 _builds = "".join(read(*p) for p in (("ops", "lab-common.sh"), ("ops", "up-common.sh"), ("oss", "ops", "oss-images.sh")))
-check("dir_tag の呼び元 8 か所は、どれも docker build の -f と同じ docker/images/<名前>/Dockerfile を渡す（context が app/<名前>/ ならその名前と同じ）",
-      len(_tag_calls) == 8 and all(_tag_df)
+check("dir_tag の呼び元 10 か所は、どれも docker build の -f と同じ docker/images/<名前>/Dockerfile を渡す（context が app/<名前>/ ならその名前と同じ。"
+      "syslog-ng は cycle 012 で ops/up.sh と oss/ops/up.sh に足した）",
+      len(_tag_calls) == 10 and all(_tag_df)
       and all(m.group(1) in (None, m.group(2)) for m in _tag_df)
-      and {m.group(2) for m in _tag_df} == {"telegraf", "splunk", "grafana", "nautobot", "spark", "neo4j"}
+      and {m.group(2) for m in _tag_df} == {"telegraf", "splunk", "grafana", "nautobot", "spark", "neo4j", "syslog-ng"}
       and all(f"-f docker/images/{m.group(2)}/Dockerfile " in _builds for m in _tag_df))
 
 for f in (("ops", "lab-common.sh"), ("ops", "lab-debug.sh"), ("ops", "up.sh"), ("ops", "down.sh"),

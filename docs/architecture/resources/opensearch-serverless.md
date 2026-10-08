@@ -4,7 +4,7 @@
 
 ## ひとことで
 
-コレクションを 2 つ使っている。機器の trap と syslog を検索するためのログ用（TIMESERIES 型）と、Bedrock の Knowledge Base のベクトル検索用（VECTORSEARCH 型）。
+コレクションを 2 つ使っている。機器の trap と syslog（と NetFlow / sFlow）を検索するためのログ用（TIMESERIES 型）と、Bedrock の Knowledge Base のベクトル検索用（VECTORSEARCH 型）。
 どちらも公開せず、土台の OpenSearch Serverless の VPC エンドポイントからだけ届く。ログ用は正本ではなく、見るための写し。
 
 ## このプロジェクトでの使い方
@@ -12,7 +12,7 @@
 | 項目 | ログ用 | Knowledge Base 用 | 定義している場所 |
 |---|---|---|---|
 | コレクション | `<prefix>-logs`（TIMESERIES） | `<prefix>-kb`（VECTORSEARCH） | `IaC/terraform/aws-managed/pipeline/analytics/sinks.tf`、`IaC/terraform/aws-managed/agent/kb.tf` |
-| index と中身 | `snmp-logs`。MSK の `traps` と `logs` のドキュメント（trap と syslog）。`event_id` と Kafka の位置も項目として持つ | `kb-index`。`app/resources/` の手順書を Titan v2（1024 次元、faiss）でベクトルにしたもの | `app/spark/snmp_sinks.py`、`IaC/terraform/aws-managed/agent/locals.tf` |
+| index と中身 | `snmp-logs`。MSK の `traps` と `logs` と `flows` のドキュメント（trap と syslog と NetFlow / sFlow）。`event_id` と Kafka の位置も項目として持つ | `kb-index`。`app/resources/` の手順書を Titan v2（1024 次元、faiss）でベクトルにしたもの | `app/spark/snmp_sinks.py`、`IaC/terraform/aws-managed/agent/locals.tf` |
 | index を作るもの | Spark の最初の `_bulk` | VPC の中の Lambda `<prefix>-kb-index`（apply のときに 1 回呼ぶ） | `sinks.tf` の `aws_opensearchserverless_access_policy.logs`、`kb.tf` |
 | スイッチ | `STORES` の `grafana`（Prometheus と一緒に作る） | `CREATE_KB=1` | `deploy.env.example` |
 | 暗号 | AWS 所有の鍵 | AWS 所有の鍵 | 各 `security_policy`（encryption） |

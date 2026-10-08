@@ -102,7 +102,7 @@ check("lab.sh forward は syslog の LOG_PORT も trap の 162 と同じ仕組�
       re.search(r'-p udp --dport "\$LOG_PORT" "\$\{c\[@\]\}" -j DNAT --to-destination "\$t:\$LOG_PORT"', labsh) is not None
       and "rsyslog" not in labsh and "LOG_DIR" not in labsh and re.search(r"^\s*logs\)", labsh, re.M) is not None)
 # NLB の受け口は stream の collector_listeners の表（cycle 012）。受け口 → サービスとそのタスクのポートで、どれも UDP。trap は NLB の 162 → タスクの 1162（非 root）。
-# 同じ番号が lab.sh（syslog の LOG_PORT）と土台の SG の通信の表にもある。NetFlow / sFlow の DNAT は commit 4 で lab.sh に足す
+# 同じ番号が lab.sh（syslog の LOG_PORT と NetFlow / sFlow の DNAT）と土台の SG の通信の表にもある
 _cl_blk = re.search(r"^  collector_listeners = \{\n(.*?)^  \}\n", stream_tg, re.M | re.S)
 _cl = {k: (int(lp), int(cp), sv) for k, lp, cp, sv in re.findall(r'^\s*(\w+)\s*= \{ listener = (\d+), container = (\d+), service = "([\w-]+)" \}$', _cl_blk.group(1), re.M)} if _cl_blk else {}
 _hc_blk = re.search(r"^  collector_health_checks = \{\n(.*?)^  \}\n", stream_tg, re.M | re.S)
@@ -460,8 +460,8 @@ check("イメージは ghcr.io/kafbat/kafka-ui を ECR の <接頭辞>-kafka-ui 
       and '"kafka-ui"' in re.search(r'pipeline_repositories = toset\(\[([^\]]*)\]\)', ecr_tf).group(1)
       and 'mirror_image "ghcr.io/kafbat/kafka-ui:$KAFKA_UI_TAG" "$REG/$PREFIX-kafka-ui:$KAFKA_UI_TAG"' in up
       and 'ecr_has "$PREFIX-kafka-ui" "$KAFKA_UI_TAG"' in up and '"kafka_ui_image_tag=$KAFKA_UI_TAG"' in up)
-check("Kafbat UI が呼ぶ AWS の API（ECR・ログ・SSM）は、stream を作る回のエンドポイントで足りる",
-      "pipeline/stream) add_endpoints ecr.api ecr.dkr logs ;;" in up and "add_endpoints ssm ssmmessages" in up)
+check("Kafbat UI が呼ぶ AWS の API（ECR・ログ・SSM）と、syslog-ng と GoFlow2 の SCRAM の secret（Secrets Manager。cycle 012）は、stream を作る回のエンドポイントで足りる",
+      "pipeline/stream) add_endpoints ecr.api ecr.dkr logs secretsmanager ;;" in up and "add_endpoints ssm ssmmessages" in up)
 # stream を作る回だけ（if [ -z "$SKIP_STREAM" ] の中）にあるか。その if より後ろで、間に閉じる fi が無い
 def _in_stream_block(marker):
     i = up.index(marker)
@@ -482,6 +482,32 @@ check("stream を作る回はいつも作る: イメージを ECR に写し、�
       and up.index('ensure_secret "/$PREFIX/kafka-ui/admin-password"') < up.index("  tf_apply pipeline/stream ")
       and '-var "kafka_ui_image_tag=$KAFKA_UI_TAG"' in up[up.index("  tf_apply pipeline/stream "):].split("\n", 1)[0]
       and _in_stream_block('  echo "Kafbat UI（http://localhost:8082/'))
+# ---- MSK の SCRAM の secret と KMS の鍵（cycle 012）。値は ops/up.sh が作り（Terraform の state に入れない）、msk.tf は同じ名前の data source で引く
+_msk_tf = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "msk.tf")
+_upc, _downc = _read("ops", "up-common.sh"), _read("ops", "down-common.sh")
+_up_sh, _down_sh, _oss_up, _oss_down = _read("ops", "up.sh"), _read("ops", "down.sh"), _read("oss", "ops", "up.sh"), _read("oss", "ops", "down.sh")
+check("SCRAM の secret と鍵の名前は、ops/up-common.sh（作る）・ops/down-common.sh（消す）・msk.tf（data source で引く）で同じ（接頭辞は owner-nwc-poc）",
+      'data "aws_secretsmanager_secret" "msk_scram" {\n  name = "AmazonMSK_${local.name_prefix}-collectors"\n}' in _msk_tf
+      and 'data "aws_kms_alias" "msk_scram" {\n  name = "alias/${local.name_prefix}-msk-scram"\n}' in _msk_tf
+      and 'local alias="alias/$PREFIX-msk-scram" out arn state' in _upc and 'local name="AmazonMSK_$PREFIX-collectors" out kms deleted' in _upc
+      and 'local name="AmazonMSK_$PREFIX-collectors" alias="alias/$PREFIX-msk-scram" out arn state' in _downc
+      and 'name_prefix = "${var.owner}-${var.project}"' in _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "locals.tf")
+      and 'PREFIX="$OWNER-${1:-nwc-poc}"' in _read("ops", "deploy-env.sh"))
+_sm_read = [f for f in ([os.path.join("ops", n) for n in sorted(os.listdir(os.path.join(ROOT, "ops"))) if n.endswith(".sh")]
+                        + [os.path.join("oss", "ops", n) for n in sorted(os.listdir(os.path.join(ROOT, "oss", "ops"))) if n.endswith(".sh")])
+            if re.search(r"get-secret-value|batch-get-secret-value", "\n".join(l for l in _read(f).splitlines() if not l.lstrip().startswith("#")))]
+check(f"ops/ と oss/ops/ のシェルは Secrets Manager の secret の中身を読まない（get-secret-value / batch-get-secret-value を打たない。{_sm_read}）", _sm_read == [])
+check("ops/up.sh は stream を作る回だけ、鍵 → secret → stream の apply の順に呼ぶ（msk.tf の data source が apply の時に引く）",
+      _in_stream_block("\n  ensure_msk_scram_key\n")
+      and "\n  ensure_msk_scram_key\n  ensure_msk_scram_secret\n  tf_apply pipeline/stream " in _up_sh
+      and _up_sh.count("ensure_msk_scram_key") == 1 and _up_sh.count("ensure_msk_scram_secret") == 1)
+check("ops/down.sh は 5-3. で delete_msk_scram を呼ぶ（destroy と SSM のパラメータのあと、残りの一覧の前）。OSS 版（MSK が無い）の up.sh / down.sh は呼ばない",
+      re.search(r"^delete_up_ssm_params\n(?:.*\n)*?^delete_msk_scram\n(?:.*\n)*?^report_leftovers$", _down_sh, re.M) is not None
+      and _down_sh.index("\ndestroy_root pipeline/stream ") < _down_sh.index("\ndelete_msk_scram\n")
+      and not re.search(r"msk_scram", _oss_up + _oss_down))
+_lab_flow = re.search(r'^\s*for p in ([\d ]+); do\n\s*iptables -t nat -I PREROUTING 1 -s "\$MGMT" -d "\$MGMT_GW" -p udp --dport "\$p" "\$\{c\[@\]\}" -j DNAT --to-destination "\$t:\$p"$', labsh, re.M)
+check("lab.sh forward の NetFlow / sFlow の DNAT のポートは、NLB の受け口（collector_listeners）の netflow / sflow と同じ（cycle 012）",
+      _lab_flow is not None and sorted(map(int, _lab_flow.group(1).split())) == sorted(_cl[k][0] for k in ("netflow", "sflow")))
 check("ops/down.sh は Kafbat UI のパスワード（ManagedBy=ops/up.sh のタグ）も消す。stream の destroy に Kafbat UI の変数は要らない",
       "Tags" in up[up.index("ensure_secret() {"):up.index("ensure_secret() {") + 2500] and "Key=tag:ManagedBy,Values=$OPS_DIR/up.sh" in read_ops("down") and 'OPS_DIR="${OPS_DIR:-ops}"' in _read("ops", "common.sh")
       and "kafka_ui" not in read_ops("down"))

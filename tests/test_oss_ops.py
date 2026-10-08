@@ -213,6 +213,93 @@ elif (svc, op) == ("ecr", "describe-images"):
     tag = (opt("--image-ids") or "").partition("=")[2]
     if not os.environ.get("FAKE_ECR_ALL") and f'{opt("--repository-name")}:{tag}' not in inv.get("ecr", []):
         fail("An error occurred (ImageNotFoundException)")
+# ---- MSK の SCRAM の secret と KMS の鍵（cycle 012）。在庫の secrets は {名前: {"kms": 鍵の ARN}}（中身は持たない）、
+# kms は {alias: 鍵の ARN}、kms_keys は {鍵の ARN: 状態}。FAKE_SM_FAIL なら delete-secret が落ちる。FAKE_KMS_DENY なら describe-key が権限で落ちる。
+# 削除を予約された secret は "deleted" を持つ。create-secret / create-key が作ったものは中身とタグも持つ（値が外に出ていないかを見るため）
+elif (svc, op) == ("secretsmanager", "create-secret"):
+    src = opt("--cli-input-json")
+    if not src or not src.startswith("file://"):
+        log({"unknown": "create-secret without file://"}); fail("create-secret には file:// で渡す", 255)
+    with open(src[len("file://"):], encoding="utf-8") as f:
+        d = json.load(f)
+    if d["Name"] in inv.setdefault("secrets", {}):
+        fail("An error occurred (ResourceExistsException)")
+    inv["secrets"][d["Name"]] = {"kms": d.get("KmsKeyId", "None"), "value": d["SecretString"], "desc": d.get("Description", ""),
+                                 "tags": {t["Key"]: t["Value"] for t in d.get("Tags", [])}}
+    save()
+    print(json.dumps({"ARN": "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:" + d["Name"] + "-AbCdEf", "Name": d["Name"]}))
+elif (svc, op) == ("secretsmanager", "restore-secret"):
+    s = inv.get("secrets", {}).get(opt("--secret-id"))
+    if s is None or "deleted" not in s:
+        log({"unknown": "restore-secret " + str(opt("--secret-id"))}); fail("unknown restore-secret", 255)
+    del s["deleted"]
+    save()
+elif (svc, op) == ("kms", "create-key"):
+    arn = f'arn:aws:kms:ap-northeast-1:123456789012:key/k-new{len(inv.setdefault("kms_keys", {}))}'
+    if query != "KeyMetadata.Arn":
+        log({"unknown": "query " + str(query)}); fail("unknown query", 255)
+    inv["kms_keys"][arn] = "Enabled"
+    inv.setdefault("kms_made", {})[arn] = {"desc": opt("--description"), "tags": dict(t.replace("TagKey=", "").split(",TagValue=", 1) for t in multi("--tags"))}
+    save()
+    print(arn)
+elif (svc, op) == ("kms", "create-alias"):
+    if opt("--alias-name") in inv.setdefault("kms", {}):
+        fail("An error occurred (AlreadyExistsException)")
+    if opt("--target-key-id") not in inv.get("kms_keys", {}):
+        log({"unknown": "create-alias " + str(opt("--target-key-id"))}); fail("unknown key", 255)
+    inv["kms"][opt("--alias-name")] = opt("--target-key-id")
+    save()
+elif (svc, op) == ("kms", "cancel-key-deletion"):  # 取り消した鍵は Disabled になる（使うには enable-key が要る）
+    if inv.get("kms_keys", {}).get(opt("--key-id")) != "PendingDeletion":
+        fail("An error occurred (KMSInvalidStateException)")
+    inv["kms_keys"][opt("--key-id")] = "Disabled"
+    save()
+elif (svc, op) == ("kms", "enable-key"):
+    if inv.get("kms_keys", {}).get(opt("--key-id")) not in ("Enabled", "Disabled"):
+        fail("An error occurred (KMSInvalidStateException)")
+    inv["kms_keys"][opt("--key-id")] = "Enabled"
+    save()
+elif (svc, op) == ("secretsmanager", "describe-secret"):
+    s = inv.get("secrets", {}).get(opt("--secret-id"))
+    if s is None:
+        fail("An error occurred (ResourceNotFoundException) when calling the DescribeSecret operation: Secrets Manager can't find the specified secret.")
+    if query == "Name":
+        print(opt("--secret-id"))
+    elif query == "[KmsKeyId,DeletedDate]":
+        print(f'{s["kms"]}\t{s.get("deleted", "None")}')
+    else:
+        log({"unknown": "query " + str(query)}); fail("unknown query", 255)
+elif (svc, op) == ("secretsmanager", "delete-secret"):
+    if "--force-delete-without-recovery" not in args:
+        log({"unknown": "delete-secret without --force-delete-without-recovery"}); fail("unknown delete-secret", 255)
+    if os.environ.get("FAKE_SM_FAIL"):
+        fail("An error occurred (AccessDeniedException) when calling the DeleteSecret operation")
+    if opt("--secret-id") not in inv.get("secrets", {}):
+        fail("An error occurred (ResourceNotFoundException)")
+    del inv["secrets"][opt("--secret-id")]
+    save()
+elif (svc, op) == ("kms", "describe-key"):
+    if os.environ.get("FAKE_KMS_DENY"):
+        fail("An error occurred (AccessDeniedException) when calling the DescribeKey operation")
+    arn = inv.get("kms", {}).get(opt("--key-id"))
+    if arn is None:
+        fail(f'An error occurred (NotFoundException) when calling the DescribeKey operation: Alias {opt("--key-id")} is not found.')
+    if query != "KeyMetadata.[Arn,KeyState]":
+        log({"unknown": "query " + str(query)}); fail("unknown query", 255)
+    print(f'{arn}\t{inv["kms_keys"][arn]}')
+elif (svc, op) == ("kms", "schedule-key-deletion"):
+    arn = opt("--key-id")
+    if arn not in inv.get("kms_keys", {}) or opt("--pending-window-in-days") != "7":
+        log({"unknown": "schedule-key-deletion " + str(arn)}); fail("unknown key", 255)
+    if inv["kms_keys"][arn] == "PendingDeletion":
+        fail("An error occurred (KMSInvalidStateException)")
+    inv["kms_keys"][arn] = "PendingDeletion"
+    save()
+elif (svc, op) == ("kms", "delete-alias"):
+    if opt("--alias-name") not in inv.get("kms", {}):
+        fail("An error occurred (NotFoundException)")
+    del inv["kms"][opt("--alias-name")]
+    save()
 else:
     log({"unknown": f"{svc} {op}"})
     fail(f"fake aws: unknown {svc} {op}", 255)
@@ -336,6 +423,8 @@ def ssm_param(managed_by, project):
 
 # 同じアカウントに 3 つが並んでいる: OSS 版（OWNER=x → x-nwc-oss）、マネージド版（OWNER=x-nwc-oss → x-nwc-oss-nwc-poc）、
 # マネージド版（OWNER=x → x-nwc-poc）
+KEY_MGD = "arn:aws:kms:ap-northeast-1:123456789012:key/k-mgd"  # alias/x-nwc-oss-nwc-poc-msk-scram の鍵
+KEY_POC = "arn:aws:kms:ap-northeast-1:123456789012:key/k-poc"  # alias/x-nwc-poc-msk-scram の鍵
 OSS_MANAGED_PARAMS = ["/x-nwc-oss/kafka/cluster-id", "/x-nwc-oss/kafka-ui/admin-password", "/x-nwc-oss/telegraf-dialin/gnmi-password",
                       "/x-nwc-oss/opensearch-password", "/x-nwc-oss/splunk/admin-password", "/x-nwc-oss/splunk/hec-token",
                       "/x-nwc-oss/neo4j-password", "/x-nwc-oss/nautobot/secret-key"]
@@ -365,6 +454,9 @@ def inventory():
                                          "arn:aws:ec2:ap-northeast-1:123456789012:subnet/subnet-0aaa"],
                    "x-nwc-poc": ["arn:aws:s3:::x-nwc-poc-left"]},
         "ecr": [],
+        "secrets": {"AmazonMSK_x-nwc-oss-nwc-poc-collectors": {"kms": KEY_MGD}, "AmazonMSK_x-nwc-poc-collectors": {"kms": KEY_POC}},
+        "kms": {"alias/x-nwc-oss-nwc-poc-msk-scram": KEY_MGD, "alias/x-nwc-poc-msk-scram": KEY_POC},
+        "kms_keys": {KEY_MGD: "Enabled", KEY_POC: "Enabled"},
     }
 
 TMP = tempfile.mkdtemp(prefix="nwc-oss-ops-")
@@ -385,7 +477,7 @@ for d in ("ops", "oss/ops"):
     for f in os.listdir(os.path.join(ROOT, d)):
         if f.endswith(".sh") or f in ("seed_graph.py", "roll_health.py"):
             shutil.copy(os.path.join(ROOT, d, f), os.path.join(REPO, d, f))
-UP_DIRS = ("app/containerlab", "app/dashboard", "app/agentcore", "app/nautobot", "app/telegraf", "app/splunk", "app/grafana", "app/spark", "app/neo4j", "app/graph",
+UP_DIRS = ("app/containerlab", "app/dashboard", "app/agentcore", "app/nautobot", "app/telegraf", "app/syslog-ng", "app/splunk", "app/grafana", "app/spark", "app/neo4j", "app/graph",
            "app/temporal", "docker/images")
 for d in UP_DIRS:
     shutil.copytree(os.path.join(ROOT, d), os.path.join(REPO, d), ignore=shutil.ignore_patterns(
@@ -482,6 +574,9 @@ p, cs, inv = run_down("oss/ops/down.sh", "x")
 out = p.stdout + p.stderr
 check("oss/ops/down.sh（OWNER=x）: 終了コード 0", p.returncode == 0)
 check("偽物の aws に知らないコマンドを打っていない", not [c for c in cs if c.get("unknown")])
+check("OSS 版は MSK を持たないので、Secrets Manager にも KMS にも触らない（マネージド版の SCRAM の secret と鍵はそのまま。cycle 012）",
+      not [c for c in cs if c["cmd"] == "aws" and c["args"][0] in ("secretsmanager", "kms")]
+      and (inv["secrets"], inv["kms"], inv["kms_keys"]) == (inventory()["secrets"], inventory()["kms"], inventory()["kms_keys"]))
 check("terraform は IaC/terraform/oss/ の下だけを -chdir で触り、IaC/terraform/aws-managed/（マネージド版の state）には入らない",
       tf_calls(cs) and all(chdir_of(c).startswith("IaC/terraform/oss/") for c in tf_calls(cs)))
 check("IaC/terraform/oss/ の 9 つのルートを全部 destroy した", destroyed(cs) == {f"IaC/terraform/oss/{r}" for r in ROOTS})
@@ -540,6 +635,24 @@ check("マネージド版: Lambda の ENI は x-nwc-oss-nwc-poc の 2 つだけ�
       eni_ids(inv) == ALL_ENIS - {"eni-mgd-tools", "eni-mgd-graph"})
 check("マネージド版: ロググループは x_nwc_oss_nwc_poc_agent- だけ消す",
       set(inv["log_groups"]) == ALL_LOG_GROUPS - {"/aws/bedrock-agentcore/runtimes/x_nwc_oss_nwc_poc_agent-BBB-DEFAULT"})
+def aws_ops(cs, svc):  # svc に打った操作を順に
+    return [c["args"][1] for c in cs if c["cmd"] == "aws" and c["args"][0] == svc]
+
+def aws_pos(cs, svc, op):
+    return next(i for i, c in enumerate(cs) if c["cmd"] == "aws" and c["args"][:2] == [svc, op])
+
+check("マネージド版: MSK の SCRAM の secret は AmazonMSK_x-nwc-oss-nwc-poc-collectors だけを --force-delete-without-recovery で消し、"
+      "x-nwc-poc のものは残す（cycle 012）",
+      set(inv["secrets"]) == {"AmazonMSK_x-nwc-poc-collectors"}
+      and [arg_after(a, "--secret-id") for a in aws_calls(cs, "secretsmanager", "delete-secret")] == ["AmazonMSK_x-nwc-oss-nwc-poc-collectors"]
+      and "AmazonMSK_x-nwc-oss-nwc-poc-collectors: 消した" in out)
+check("マネージド版: KMS は alias/x-nwc-oss-nwc-poc-msk-scram の鍵だけ、secret を消したあとに 7 日の削除を予約し、それから alias を外す"
+      "（x-nwc-poc の鍵と alias は残す）",
+      inv["kms"] == {"alias/x-nwc-poc-msk-scram": KEY_POC} and inv["kms_keys"] == {KEY_MGD: "PendingDeletion", KEY_POC: "Enabled"}
+      and aws_ops(cs, "kms") == ["describe-key", "schedule-key-deletion", "delete-alias"]
+      and aws_pos(cs, "secretsmanager", "delete-secret") < aws_pos(cs, "kms", "schedule-key-deletion") < aws_pos(cs, "kms", "delete-alias")
+      and "alias/x-nwc-oss-nwc-poc-msk-scram: 鍵の削除を予約し（7 日後に消える。待つあいだは課金されない）、alias を外した" in out)
+check("マネージド版: secret の中身を読むコマンド（get-secret-value）は打たない", not aws_calls(cs, "secretsmanager", "get-secret-value"))
 check("マネージド版: 残りも Project=x-nwc-oss-nwc-poc で数える（「残り: 2 件」）",
       "残り: 2 件（Project=x-nwc-oss-nwc-poc のタグ）" in out and "x-nwc-oss-left" not in out)
 check("マネージド版: terraform init は「init -input=false」のまま（-lockfile を付けない。lock はマネージド版が書き足す）",
@@ -555,6 +668,34 @@ check("ops/down.sh（OWNER=x → x-nwc-poc）: 終了コード 0 で、消した
       and eni_ids(inv) == ALL_ENIS
       and set(inv["log_groups"]) == ALL_LOG_GROUPS - {"/aws/bedrock-agentcore/runtimes/x_nwc_poc_agent-CCC-DEFAULT"}
       and "残り: 1 件（Project=x-nwc-poc のタグ）" in out)
+check("ops/down.sh（OWNER=x）: SCRAM の secret と鍵も x-nwc-poc のものだけ消す（x-nwc-oss-nwc-poc のものは残す）",
+      set(inv["secrets"]) == {"AmazonMSK_x-nwc-oss-nwc-poc-collectors"}
+      and inv["kms"] == {"alias/x-nwc-oss-nwc-poc-msk-scram": KEY_MGD} and inv["kms_keys"] == {KEY_MGD: "Enabled", KEY_POC: "PendingDeletion"})
+
+# ---- 5-3. の分かれ道（cycle 012）
+p, cs, inv = run_down("ops/down.sh", "x-nwc-oss", {"FAKE_TF_FAIL": "IaC/terraform/aws-managed/pipeline/stream"})
+out = p.stdout + p.stderr
+check("ops/down.sh: pipeline/stream が消えなかったら SCRAM の secret と鍵は両方残す（msk.tf の data source が次の destroy でも引く）",
+      p.returncode != 0 and not [c for c in cs if c.get("unknown")]
+      and not [c for c in cs if c["cmd"] == "aws" and c["args"][0] in ("secretsmanager", "kms")]
+      and (inv["secrets"], inv["kms"], inv["kms_keys"]) == (inventory()["secrets"], inventory()["kms"], inventory()["kms_keys"])
+      and "AmazonMSK_x-nwc-oss-nwc-poc-collectors と alias/x-nwc-oss-nwc-poc-msk-scram: 残す（IaC/terraform/aws-managed/pipeline/stream が消えなかったので" in out)
+
+p, cs, inv = run_down("ops/down.sh", "x-nwc-oss", {"FAKE_SM_FAIL": "1"})
+out = p.stdout + p.stderr
+check("ops/down.sh: secret を消せなかったら鍵も残す（消すと secret を復号できなくなる）",
+      not [c for c in cs if c.get("unknown")] and not aws_calls(cs, "kms", "schedule-key-deletion") and not aws_calls(cs, "kms", "delete-alias")
+      and inv["kms_keys"][KEY_MGD] == "Enabled" and "AmazonMSK_x-nwc-oss-nwc-poc-collectors: 消せなかった（上のエラー）。鍵も残す" in out)
+
+pending = inventory()
+del pending["secrets"]["AmazonMSK_x-nwc-oss-nwc-poc-collectors"]
+pending["kms_keys"][KEY_MGD] = "PendingDeletion"
+p, cs, inv = run_down("ops/down.sh", "x-nwc-oss", inv=pending)
+out = p.stdout + p.stderr
+check("ops/down.sh: secret が無く、鍵が削除の予約中（前の down.sh が alias を外せなかった）なら、予約し直さずに alias だけ外す",
+      p.returncode == 0 and not [c for c in cs if c.get("unknown")]
+      and "AmazonMSK_x-nwc-oss-nwc-poc-collectors: 無い" in out
+      and aws_ops(cs, "kms") == ["describe-key", "delete-alias"] and inv["kms"] == {"alias/x-nwc-poc-msk-scram": KEY_POC})
 
 # ================================================================ 2''. 同じ名前の VPC が 2 つあるとき（2026-10-08 の OSS 版の検証の不具合 1）
 # 古い方（前の打ち直しの残り。ENI は無い）が先に返り、今回の VPC に Runtime の ENI が残っている。1 つ目だけ見ると全部消しにいき、
@@ -761,6 +902,79 @@ check("ensure_secret strong-password: SecureString で、値は大文字・小�
 check("ensure_secret strong-password: 値は画面にもコマンドラインにも出さず、タグは ManagedBy=oss/ops/up.sh",
       all(x not in p.stdout + p.stderr and not any(x in " ".join(c["args"]) for c in calls()) for x in vals)
       and all(m.get("tags", {}).get("ManagedBy") == "oss/ops/up.sh" for m in made.values()))
+
+# ---- MSK の SCRAM の鍵と secret（cycle 012。マネージド版の ops/up.sh が stream の apply の前に呼ぶ ops/up-common.sh の関数）
+SCRAM_SH = r'''
+REGION=ap-northeast-1; PY=(python3); PREFIX=x-nwc-poc; OWNER=x
+. ops/common.sh; . ops/up-common.sh; OPS_DIR=ops
+for i in 1 2; do ensure_msk_scram_key || exit 1; ensure_msk_scram_secret || exit 1; echo "KEY=$MSK_SCRAM_KEY_ARN"; done
+'''
+def run_scram(inv, extra=None, sh=SCRAM_SH):
+    reset(inv)
+    p = subprocess.run(["bash", "-c", sh], cwd=ROOT, env=fake_env(extra), capture_output=True, text=True, timeout=60)
+    with open(INV, encoding="utf-8") as f:
+        return p, calls(), json.load(f)
+
+def no_scram():  # 在庫から x-nwc-poc の secret と鍵を除く（何も無いところから作る）
+    i = inventory()
+    del i["secrets"]["AmazonMSK_x-nwc-poc-collectors"]; del i["kms"]["alias/x-nwc-poc-msk-scram"]; del i["kms_keys"][KEY_POC]
+    return i
+
+p, cs, inv = run_scram(no_scram())
+out = p.stdout + p.stderr
+_new = [a for a in inv["kms_keys"] if "/k-new" in a] or ["（作られていない）"]
+_made = inv["secrets"].get("AmazonMSK_x-nwc-poc-collectors", {})
+_val = json.loads(_made.get("value", "{}"))
+check("ensure_msk_scram_key: alias/x-nwc-poc-msk-scram が無ければ鍵を 1 回だけ作って alias を付け、2 回目は作り直さない（MSK_SCRAM_KEY_ARN はその鍵）",
+      p.returncode == 0 and not [c for c in cs if c.get("unknown")] and len(_new) == 1
+      and inv["kms"]["alias/x-nwc-poc-msk-scram"] == _new[0] and len(aws_calls(cs, "kms", "create-key")) == 1 and len(aws_calls(cs, "kms", "create-alias")) == 1
+      and p.stdout.count(f"KEY={_new[0]}\n") == 2 and "alias/x-nwc-poc-msk-scram はある（作り直さない）" in p.stdout
+      and inv.get("kms_made", {}).get(_new[0], {}).get("tags") == {"ManagedBy": "ops/up.sh", "Project": "x-nwc-poc", "owner": "x"})
+check("ensure_msk_scram_secret: AmazonMSK_x-nwc-poc-collectors を作った鍵（MSK_SCRAM_KEY_ARN）で暗号化して 1 回だけ作り、2 回目は作り直さない",
+      _made.get("kms") == _new[0] and len(aws_calls(cs, "secretsmanager", "create-secret")) == 1
+      and "AmazonMSK_x-nwc-poc-collectors はある（作り直さない）" in p.stdout
+      and _made.get("tags") == {"ManagedBy": "ops/up.sh", "Project": "x-nwc-poc", "owner": "x"})
+check("ensure_msk_scram_secret: 中身は JSON の username / password（MSK の SCRAM の形）で、パスワードは 32 文字の乱数",
+      set(_val) == {"username", "password"} and _val["username"] == "collectors" and re.fullmatch(r"[A-Za-z0-9_-]{32}", _val["password"]) is not None)
+check("ensure_msk_scram_secret: パスワードは画面にもコマンドラインにも出さず、値を書いた一時ファイルを残さず、中身を読むコマンド（get-secret-value）は打たない",
+      _val.get("password") and _val["password"] not in out and not any(_val["password"] in " ".join(c["args"]) for c in cs)
+      and not [f for f in os.listdir(TMP) if f.startswith("nwc-secret.")] and not aws_calls(cs, "secretsmanager", "get-secret-value"))
+check("ensure_msk_scram_key / secret: x-nwc-oss-nwc-poc の secret と鍵には触らない",
+      inv["secrets"]["AmazonMSK_x-nwc-oss-nwc-poc-collectors"] == inventory()["secrets"]["AmazonMSK_x-nwc-oss-nwc-poc-collectors"]
+      and inv["kms"]["alias/x-nwc-oss-nwc-poc-msk-scram"] == KEY_MGD and inv["kms_keys"][KEY_MGD] == "Enabled")
+
+# 直前の down.sh が鍵の削除を予約し、secret の削除も予約されている（手で消したとき）: 予約を取り消して有効に戻し、secret を戻す
+_pend = inventory()
+_pend["kms_keys"][KEY_POC] = "PendingDeletion"
+_pend["secrets"]["AmazonMSK_x-nwc-poc-collectors"]["deleted"] = "2026-10-08T00:00:00+09:00"
+p, cs, inv = run_scram(_pend)
+check("ensure_msk_scram_key: 鍵が削除の予約中なら取り消して有効に戻す（cancel-key-deletion のあと enable-key）。secret の削除の予約も戻し、どちらも作り直さない",
+      p.returncode == 0 and aws_ops(cs, "kms") == ["describe-key", "cancel-key-deletion", "enable-key", "describe-key"]
+      and inv["kms_keys"][KEY_POC] == "Enabled" and "deleted" not in inv["secrets"]["AmazonMSK_x-nwc-poc-collectors"]
+      and len(aws_calls(cs, "secretsmanager", "restore-secret")) == 1 and not aws_calls(cs, "secretsmanager", "create-secret")
+      and "alias/x-nwc-poc-msk-scram は PendingDeletion だったので有効に戻した" in p.stdout and f"KEY={KEY_POC}" in p.stdout)
+
+# secret が別の鍵（作り直す前の鍵や aws/secretsmanager）で暗号化されている: MSK が受けないので止める
+_other = inventory()
+_other["secrets"]["AmazonMSK_x-nwc-poc-collectors"]["kms"] = KEY_MGD
+p, cs, inv = run_scram(_other)
+check("ensure_msk_scram_secret: secret の暗号化の鍵が alias/x-nwc-poc-msk-scram の鍵と違えば、作り直さずに止め、消し方を出す",
+      p.returncode != 0 and not aws_calls(cs, "secretsmanager", "create-secret") and "KEY=" not in p.stdout
+      and "AmazonMSK_x-nwc-poc-collectors の暗号化の鍵（" + KEY_MGD + "）が alias/x-nwc-poc-msk-scram の鍵と違う" in p.stderr
+      and "--force-delete-without-recovery" in p.stderr)
+_other["secrets"]["AmazonMSK_x-nwc-poc-collectors"]["kms"] = "None"   # aws/secretsmanager で暗号化した secret は KmsKeyId が無い
+p, cs, inv = run_scram(_other)
+check("ensure_msk_scram_secret: aws/secretsmanager の鍵（KmsKeyId が無い）で暗号化した secret でも止める", p.returncode != 0 and "の暗号化の鍵（None）が" in p.stderr)
+for _form in (KEY_POC.rsplit("/", 1)[1], "alias/x-nwc-poc-msk-scram", "arn:aws:kms:ap-northeast-1:123456789012:alias/x-nwc-poc-msk-scram"):
+    _other["secrets"]["AmazonMSK_x-nwc-poc-collectors"]["kms"] = _form
+    p, cs, inv = run_scram(_other)
+    check(f"ensure_msk_scram_secret: KmsKeyId が同じ鍵の別の書き方（{_form}）なら通す", p.returncode == 0 and not aws_calls(cs, "secretsmanager", "create-secret"))
+
+# 鍵を確かめられない（権限が無いなど）: 新しい鍵を作らずに止める（作ると alias が 2 つ目の鍵を指せず、次の apply が別の鍵を引く）
+p, cs, inv = run_scram(no_scram(), {"FAKE_KMS_DENY": "1"})
+check("ensure_msk_scram_key: describe-key が NotFound 以外で落ちたら、鍵も secret も作らずに止める",
+      p.returncode != 0 and not aws_calls(cs, "kms", "create-key") and not aws_calls(cs, "secretsmanager", "create-secret")
+      and "alias/x-nwc-poc-msk-scram を確かめられない: An error occurred (AccessDeniedException)" in p.stderr)
 
 up, down = read("oss/ops/up.sh"), read("oss/ops/down.sh")
 def funcs(text):
@@ -987,12 +1201,33 @@ _secrets = [m.get("value", "") for n, m in inv["ssm"].items() if "/telegraf-dial
 check("up.sh（通し）: 乱数で作ったシークレット（11 個）の値を、画面にも、aws・terraform・docker の引数にも出さない",
       len(_secrets) == 11 and all(len(v) >= 16 for v in _secrets)
       and not any(v in out or any(v in " ".join(c["args"]) for c in cs) for v in _secrets))
+_slver = re.search(r"^SYSLOG_NG_VERSION=(\S+)$", read("ops/up-common.sh"), re.M).group(1)
+_gfver = re.search(r"^GOFLOW2_TAG=(\S+)$", read("ops/up-common.sh"), re.M).group(1)
+_sb = [c["args"] for c in cs if c["cmd"] == "docker" and c["args"][:2] == ["buildx", "build"] and c["args"][-1] == "app/syslog-ng/"]
+_stag = arg_after(_sb[0], "-t") if _sb else ""
+check("up.sh（通し）: syslog-ng のイメージを arm64 でビルドし（版は ops/up-common.sh の SYSLOG_NG_VERSION を --build-arg、Dockerfile は docker/images/syslog-ng/）、"
+      "同じタグを stream に渡す（cycle 012）",
+      len(_sb) == 1 and re.fullmatch(re.escape(REG) + r"/x-nwc-oss-syslog-ng:" + re.escape(_slver) + r"-[0-9a-f]+", _stag)
+      and _sb[0][2:4] == ["--platform", "linux/arm64"] and "--push" in _sb[0] and arg_after(_sb[0], "--build-arg") == f"SYSLOG_NG_VERSION={_slver}"
+      and arg_after(_sb[0], "-f") == "docker/images/syslog-ng/Dockerfile"
+      and has_var(A.get("pipeline/stream", []), "syslog_ng_image_tag=" + _stag.rsplit(":", 1)[-1]))
+check("up.sh（通し）: GoFlow2 は上流の netsampler/goflow2 の arm64 を ops/up-common.sh の GOFLOW2_TAG のまま ECR に置き直し、同じタグを stream に渡す（cycle 012）",
+      [c["args"] for c in cs if c["cmd"] == "docker" and "goflow2" in " ".join(c["args"])]
+      == [["pull", "--platform", "linux/arm64", f"netsampler/goflow2:{_gfver}"], ["tag", f"netsampler/goflow2:{_gfver}", f"{REG}/x-nwc-oss-goflow2:{_gfver}"],
+          ["push", f"{REG}/x-nwc-oss-goflow2:{_gfver}"]]
+      and has_var(A.get("pipeline/stream", []), f"goflow2_image_tag={_gfver}"))
+_slw = first(cs, lambda c: is_aws(c, "ecs", "wait", "--services out-stream-syslog_ng_service_name out-stream-goflow2_service_name"))
+check("up.sh（通し）: stream の apply のあと、syslog-ng と GoFlow2 のサービス（output の名前）が Telegraf と同じクラスターで安定するのを待つ（cycle 012）",
+      0 <= apply_at(cs, "pipeline/stream") < _slw
+      and arg_after(cs[_slw]["args"], "--cluster") == "out-stream-telegraf_cluster_name" and "syslog-ng と GoFlow2 は動いている" in out)
 docker = [c["args"] for c in cs if c["cmd"] == "docker"]
 _tags = {arg_after(a, "-t") for a in docker if a[:2] == ["buildx", "build"]} | {a[-1] for a in docker if a[0] == "push"}
-check("up.sh（通し）: イメージを ECR に置く（OSS の 7 つ、lab の 2 つ、Telegraf、Kafbat UI、Splunk、Grafana、agent、worker、Temporal、Nautobot、Redis）。docker login のあと、stream の apply より前",
+check("up.sh（通し）: イメージを ECR に置く（OSS の 7 つ、lab の 2 つ、Telegraf、Kafbat UI、Splunk、Grafana、agent、worker、Temporal、Nautobot、Redis、"
+      "syslog-ng、GoFlow2）。docker login のあと、stream の apply より前",
       {t.split("/", 1)[1].split(":")[0] for t in _tags if t.startswith(REG + "/")}
-      >= {f"x-nwc-oss-{n}" for n in V["OSS_IMAGES"].split()} | {f"x-nwc-oss-{n}" for n in ("telegraf", "splunk", "grafana", "agent", "worker", "nautobot")}
-      and len(_tags) >= 17 and all(t.startswith(REG + "/x-nwc-oss-") for t in _tags)
+      >= {f"x-nwc-oss-{n}" for n in V["OSS_IMAGES"].split()}
+      | {f"x-nwc-oss-{n}" for n in ("telegraf", "splunk", "grafana", "agent", "worker", "nautobot", "syslog-ng", "goflow2")}
+      and len(_tags) >= 19 and all(t.startswith(REG + "/x-nwc-oss-") for t in _tags)
       and 0 <= first(cs, lambda c: c["cmd"] == "docker" and c["args"][0] == "login")
       < first(cs, lambda c: c["cmd"] == "docker" and c["args"][0] in ("push", "buildx") and c["args"][:2] != ["buildx", "ls"] and c["args"][:2] != ["buildx", "version"])
       and max(i for i, c in enumerate(cs) if c["cmd"] == "docker") < apply_at(cs, "base/core"))

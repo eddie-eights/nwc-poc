@@ -44,16 +44,18 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
 
 | 送る側 | 受ける側 | ポート | 何のため |
 |---|---|---|---|
-| AWS の API を呼ぶワークロードの SG（`local.aws_api_clients`。web、lab、telegraf_dialout、telegraf_dialin、kafka_ui、spark、grafana、splunk、nautobot、lambda、workflow、runtime） | endpoints、S3（プレフィックスリスト） | 443/tcp | AWS の API と S3 |
+| AWS の API を呼ぶワークロードの SG（`local.aws_api_clients`。web、lab、telegraf_dialout、telegraf_dialin、syslog_ng、goflow2、kafka_ui、spark、grafana、splunk、nautobot、lambda、workflow、runtime） | endpoints、S3（プレフィックスリスト） | 443/tcp | AWS の API と S3 |
 | web | grafana / splunk / workflow / nautobot / kafka_ui | 3000 / 8000 / 8233 / 8080 / 8080（tcp） | SSM のポートフォワーディングで画面を開く |
 | nautobot | nautobot_db | 5432/tcp | PostgreSQL |
 | telegraf_dialout / telegraf_dialin / spark / kafka_ui | msk | 9098/tcp | Kafka（IAM 認証） |
+| syslog_ng / goflow2 | msk | 9096/tcp | Kafka（SASL/SCRAM。2026-10-08 から） |
 | msk | msk | 9092〜9098/tcp | ブローカー同士 |
 | spark | spark | 全部の tcp | 1 つのジョブの driver と executor |
 | spark | splunk | 8088/tcp | HEC |
-| telegraf_dialout_nlb | telegraf_dialout | 1162/udp、5140/udp、57000/tcp、8080/tcp | trap・syslog・MDT の転送と NLB のヘルスチェック |
-| lab の管理ネットワーク（203.0.113.0/24）、lab | telegraf_dialout_nlb | 162/udp、5140/udp | 機器の trap と syslog（lab の EC2 が DNAT する） |
-| `MDT_SOURCE_CIDRS` の CIDR（既定は空） | telegraf_dialout_nlb | 57000/tcp | 本番の Cisco の MDT の dial-out |
+| telegraf_dialout_nlb | telegraf_dialout | 1162/udp、8080/tcp | trap の転送と NLB のヘルスチェック |
+| telegraf_dialout_nlb | syslog_ng | 5140/udp、5140/tcp | syslog の転送と NLB のヘルスチェック |
+| telegraf_dialout_nlb | goflow2 | 2055/udp、6343/udp、8081/tcp | NetFlow・sFlow の転送と NLB のヘルスチェック |
+| lab の管理ネットワーク（203.0.113.0/24）、lab | telegraf_dialout_nlb | 162/udp、5140/udp、2055/udp、6343/udp | 機器の trap・syslog・NetFlow・sFlow（lab の EC2 が DNAT する。NetFlow / sFlow は lab の EC2 から試しに送る分も） |
 | telegraf_dialin | lab の管理ネットワーク | 161/udp、57400/tcp | SNMP のポーリングと gNMI |
 
 ## 知見

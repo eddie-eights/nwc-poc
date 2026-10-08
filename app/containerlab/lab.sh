@@ -2,7 +2,7 @@
 # lab EC2（IaC/terraform/aws-managed/pipeline/lab / デバッグ用は IaC/cloudformation/lab-debug.yaml）の上で containerlab を動かす。setup.sh が /usr/local/bin/lab に置くので、SSM セッションから `sudo lab check` で使う。
 #   lab.sh render | pull | up | down | status | check | snmp [node] | logs [node] | cli <node> [cmd...] | fail-main | heal-main | failover | clab <args...>
 #   lab.sh fail-bgp | heal-bgp | trap-test   （Grafana と Splunk のアラートを比べる障害: BGP の隣接 1 本を止める / 戻す、link 以外の trap を 1 通送る）
-#   lab.sh forward | forward-status     （stream: ECS の Telegraf へ SNMP / gNMI / trap / syslog を通す。デバッグ用の EC2 は trap の 162 を 1162 へ向けるだけ。up が毎回呼ぶ）
+#   lab.sh forward | forward-status     （stream: ECS の Telegraf・syslog-ng・GoFlow2 へ SNMP / gNMI / trap / syslog / NetFlow / sFlow を通す。デバッグ用の EC2 は trap の 162 を 1162 へ向けるだけ。up が毎回呼ぶ）
 #   lab.sh telegraf run | stop | status | test | gnmi | logs [-f]   （デバッグ用の EC2 だけ。この EC2 の Telegraf。中身は app/telegraf/telegraf.sh、出力は標準出力）
 # 手元の containerlab と違うのは 3 つ: containerlab を直接呼ぶ（root）、イメージは ECR から取る（pull）、
 # splab.clab.yml はテンプレート（.in）からイメージ URI を埋めて作る（render）。
@@ -27,10 +27,10 @@ MGMT_GW=203.0.113.1
 TRAP_PORT=1162
 # デバッグ用の EC2 の Telegraf のコンテナ名
 TG=telegraf
-# SR Linux の syslog（RFC 5424 / udp）を Telegraf へ送るポート（srlinux/*.cli の remote-port、app/telegraf/telegraf.conf.in の inputs.syslog、
+# SR Linux の syslog（RFC 5424 / udp）の宛先ポート（srlinux/*.cli の remote-port、stream の syslog-ng（app/syslog-ng/syslog-ng.sh）、
 # IaC/terraform/aws-managed/pipeline/lab の local.log_port と同じ）
 LOG_PORT=5140
-# SR Linux の syslog の形式。デバッグ用の EC2 の Telegraf に SYSLOG_STANDARD で渡す（app/telegraf/telegraf.sh の既定は本番の Cisco に合わせた RFC3164。
+# SR Linux の syslog の形式。デバッグ用の EC2 の Telegraf に SYSLOG_STANDARD で渡す（2026-10-08（cycle 012）から Telegraf は syslog を受けないので使われない。
 # ops/lab-common.sh の LAB_SYSLOG_STANDARD と同じ）
 LOG_STANDARD=RFC5424
 # containerlab が SR Linux 全台に入れる既定の認証情報（lab だけの公開既定値。ops/lab-common.sh の LAB_GNMI_USERNAME / LAB_GNMI_PASSWORD / LAB_SNMP_COMMUNITY と同じ）。
@@ -246,7 +246,8 @@ case "${1:-}" in
       echo "$w へ: trap 162/udp を $TRAP_PORT/udp へ向けた（syslog $LOG_PORT/udp とポーリングはそのまま）"
       exit 0
     fi
-    # ECS の Telegraf（IaC/terraform/aws-managed/pipeline/stream の telegraf.tf）へ 4 つを通す。SSM の $PARAM_PREFIX/telegraf-address（内部 NLB の IP。trap と syslog の DNAT の宛先）と
+    # ECS の Telegraf・syslog-ng・GoFlow2（IaC/terraform/aws-managed/pipeline/stream の telegraf.tf と collectors.tf）へ 6 つを通す。
+    # SSM の $PARAM_PREFIX/telegraf-address（内部 NLB の IP。trap・syslog・NetFlow・sFlow の DNAT の宛先）と
     # $PARAM_PREFIX/telegraf-source-cidr（タスクのサブネット。タスクの IP は作り直すたびに変わるので、ポーリングはサブネットで通す）を読む。
     # 無ければ（stream を作っていない）何もしない。何度打っても同じ規則になる（目印の付いた規則を消してから入れる）
     : "${AWS_REGION:?}" "${PARAM_PREFIX:?}"
@@ -269,9 +270,14 @@ case "${1:-}" in
     iptables -t nat -I PREROUTING 1 -s "$MGMT" -d "$MGMT_GW" -p udp --dport "$LOG_PORT" "${c[@]}" -j DNAT --to-destination "$t:$LOG_PORT"
     iptables -I DOCKER-USER 1 -s "$MGMT" -d "$t" -p udp --dport 162 "${c[@]}" -j ACCEPT
     iptables -I DOCKER-USER 1 -s "$MGMT" -d "$t" -p udp --dport "$LOG_PORT" "${c[@]}" -j ACCEPT
+    # NetFlow と sFlow（cycle 012）: 機器の宛先（$MGMT_GW の 2055 と 6343）を同じ NLB へ向け直す（NLB が GoFlow2 のタスクの同じポートへ）
+    for p in 2055 6343; do
+      iptables -t nat -I PREROUTING 1 -s "$MGMT" -d "$MGMT_GW" -p udp --dport "$p" "${c[@]}" -j DNAT --to-destination "$t:$p"
+      iptables -I DOCKER-USER 1 -s "$MGMT" -d "$t" -p udp --dport "$p" "${c[@]}" -j ACCEPT
+    done
     # 送り元（機器の管理 IP）を残す。Docker の MASQUERADE（-s $MGMT ! -o <bridge>）より前で抜ける。Spark とエージェントは送り元の IP で機器を引く
     iptables -t nat -I POSTROUTING 1 -s "$MGMT" -d "$t" "${c[@]}" -j RETURN
-    echo "Telegraf へ通した: ${s} から SNMP 161/udp と gNMI $GNMI_PORT/tcp の転送、NLB（${t}）へ trap 162/udp と syslog $LOG_PORT/udp の DNAT"
+    echo "stream へ通した: ${s} から SNMP 161/udp と gNMI $GNMI_PORT/tcp の転送、NLB（${t}）へ trap 162/udp・syslog $LOG_PORT/udp・NetFlow 2055/udp・sFlow 6343/udp の DNAT"
     ;;
   forward-status)
     echo "== iptables（目印 ${FW_TAG}）=="

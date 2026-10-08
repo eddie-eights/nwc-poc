@@ -1464,12 +1464,13 @@ check("AGENT は bedrock-runtime / bedrock-agentcore / ecr / logs を足し、KB
       _endpoints("base/ecr base/core agent", AGENT="1") == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs | 7"
       and _endpoints("base/ecr base/core agent", AGENT="1", CREATE_KB="1").startswith("OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs bedrock-agent-runtime | 8"))
 _ALL = "base/ecr base/core agent pipeline/lab pipeline/stream pipeline/analytics pipeline/graph workflow"
-check("全部なら 16 本で重複しない（ecr / logs / s3tables / bedrock-agentcore は 1 本ずつ。graph は Neptune Analytics の neptune-graph-data）。events は無く、アラートの送り手がいれば sns",
+check("全部なら 17 本で重複しない（ecr / logs / s3tables / bedrock-agentcore は 1 本ずつ。graph は Neptune Analytics の neptune-graph-data。"
+      "stream の secretsmanager は syslog-ng と GoFlow2 の SCRAM の secret。cycle 012）。events は無く、アラートの送り手がいれば sns",
       _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1", GRAFANA="1")
-      == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs s3tables neptune-graph-data kinesis-firehose sqs bedrock-agentcore.gateway athena bedrock-agent-runtime aps-workspaces sns | 16")
-check("sns のエンドポイントは Grafana か Splunk があるときだけ（Grafana はいつもアラートルールを持つ。どちらも無ければ 15 本。Splunk だけでも足す）",
-      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1").endswith("aps-workspaces | 15")
-      and _endpoints("base/ecr base/core pipeline/lab pipeline/stream pipeline/analytics", SPLUNK_ON_ECS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr logs s3tables sns | 7"
+      == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs secretsmanager s3tables neptune-graph-data kinesis-firehose sqs bedrock-agentcore.gateway athena bedrock-agent-runtime aps-workspaces sns | 17")
+check("sns のエンドポイントは Grafana か Splunk があるときだけ（Grafana はいつもアラートルールを持つ。どちらも無ければ 16 本。Splunk だけでも足す）",
+      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1").endswith("aps-workspaces | 16")
+      and _endpoints("base/ecr base/core pipeline/lab pipeline/stream pipeline/analytics", SPLUNK_ON_ECS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr logs secretsmanager s3tables sns | 8"
       and "events" not in _epblk.replace("events の", ""))
 check("kinesis-firehose（graph の履歴）と athena（workflow の query_history）は analytics を作る回か、analytics が state に残っているときだけ",
       _endpoints("base/ecr base/core pipeline/lab pipeline/graph", SKIP_ANALYTICS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr neptune-graph-data | 5"
@@ -2077,9 +2078,10 @@ def _costaz(**env):
     return int(r.stdout.split("OUT: ")[1]) if "OUT: " in r.stdout else r.stderr
 check("費用: エンドポイントは 1.4 × 本数 × ENDPOINTS_AZ_NUM（2 本で 1 AZ 3、3 AZ 8）",
       _costaz() == 2 + 3 and _costaz(ENDPOINTS_AZ_NUM="3") == 2 + 8)
-check("費用: MSK は 2 AZ で 57、3 AZ で +27。Telegraf は受ける側のタスクが AZ ごとに増える（1 AZ 5、3 AZ 7）。Kafbat UI は stream を作る回はいつも 2",
-      _costaz(SKIP_STREAM="") == 5 + 57 + 5 + 2 and _costaz(SKIP_STREAM="", MSK_AZ_NUM="3") == 5 + 84 + 5 + 2
-      and _costaz(SKIP_STREAM="", TELEGRAF_AZ_NUM="3") == 5 + 57 + 7 + 2
+check("費用: MSK は 2 AZ で 57、3 AZ で +27。Telegraf・syslog-ng・GoFlow2 は Telegraf の受ける側のタスクが AZ ごとに増える（1 AZ 7、3 AZ 10。"
+      "syslog-ng と GoFlow2 の 2 タスクは cycle 012）。Kafbat UI は stream を作る回はいつも 2",
+      _costaz(SKIP_STREAM="") == 5 + 57 + 7 + 2 and _costaz(SKIP_STREAM="", MSK_AZ_NUM="3") == 5 + 84 + 7 + 2
+      and _costaz(SKIP_STREAM="", TELEGRAF_AZ_NUM="3") == 5 + 57 + 10 + 2
       and "\n  COST_CENTS=$((COST_CENTS + 2))   # Kafbat UI（Fargate のタスク 1）\nfi\n" in _costall)
 check("費用: Neptune は 58 × NEPTUNE_AZ_NUM、Nautobot は Multi-AZ で 13 → 16",
       _costaz(SKIP_GRAPH="") == 5 + 58 and _costaz(SKIP_GRAPH="", NEPTUNE_AZ_NUM="3") == 5 + 174

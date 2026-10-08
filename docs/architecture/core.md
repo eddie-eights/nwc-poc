@@ -14,9 +14,9 @@ AWS の API へは全部 VPC エンドポイントから行き、この VPC を�
 
 | 層 | 何をする | どこ |
 |---|---|---|
-| 経路 | インターフェース型エンドポイント（private DNS）。`ops/up.sh` の `endpoints_for` が機能から選ぶ: 土台 ssm / ssmmessages、AGENT は bedrock-runtime / bedrock-agentcore / ecr.api / ecr.dkr / logs（KB で bedrock-agent-runtime）、lab は ecr.api / ecr.dkr、stream は ecr.api / ecr.dkr / logs（Telegraf と Kafbat UI の ECS）、analytics は s3tables / logs（Prometheus で aps-workspaces、Grafana か ECS の Splunk で ecr.api / ecr.dkr / sns）、graph は neptune-graph-data（analytics があるときは kinesis-firehose も。アラートの通知の履歴）、nautobot は ecr.api / ecr.dkr / logs / ecs（Job が Telegraf の dialin のサービスを作り直す）、WORKFLOW は sqs / s3tables / ecr.api / ecr.dkr / logs / bedrock-agentcore / bedrock-agentcore.gateway（analytics があるとき athena）。S3 は gateway 型（無料）、OpenSearch Serverless は専用の 1 本（`CREATE_KB` か `STORES` の grafana のとき） | `IaC/terraform/aws-managed/base/core/endpoints.tf`、`ops/up.sh` の `endpoints_for` |
+| 経路 | インターフェース型エンドポイント（private DNS）。`ops/up.sh` の `endpoints_for` が機能から選ぶ: 土台 ssm / ssmmessages、AGENT は bedrock-runtime / bedrock-agentcore / ecr.api / ecr.dkr / logs（KB で bedrock-agent-runtime）、lab は ecr.api / ecr.dkr、stream は ecr.api / ecr.dkr / logs / secretsmanager（Telegraf・syslog-ng・GoFlow2・Kafbat UI の ECS。secretsmanager は syslog-ng と GoFlow2 のタスクが起動時に MSK の SCRAM の資格情報を読むため）、analytics は s3tables / logs（Prometheus で aps-workspaces、Grafana か ECS の Splunk で ecr.api / ecr.dkr / sns）、graph は neptune-graph-data（analytics があるときは kinesis-firehose も。アラートの通知の履歴）、nautobot は ecr.api / ecr.dkr / logs / ecs（Job が Telegraf の dialin のサービスを作り直す）、WORKFLOW は sqs / s3tables / ecr.api / ecr.dkr / logs / bedrock-agentcore / bedrock-agentcore.gateway（analytics があるとき athena）。S3 は gateway 型（無料）、OpenSearch Serverless は専用の 1 本（`CREATE_KB` か `STORES` の grafana のとき） | `IaC/terraform/aws-managed/base/core/endpoints.tf`、`ops/up.sh` の `endpoints_for` |
 | エンドポイントポリシー | このアカウントのプリンシパルだけ（盗んだ他のアカウントの鍵で VPC から持ち出す経路を塞ぐ）。S3 の gateway は付けない（dnf と ECR のレイヤーが止まる） | 同上 |
-| IAM の Deny | ワークロードのロール全部（Web、Runtime、lab、EMR、ECS（Temporal / Telegraf / Kafbat UI / Grafana / Splunk / Nautobot）、tools Lambda、graph-status の Lambda）に `<prefix>-network-perimeter` を付ける。s3 / s3tables / sqs / sns / ssm / bedrock / aps / athena / firehose / AgentCore の呼び出しで `aws:SourceVpc` がこの VPC でなければ拒む。デバッグ用の EC2（CloudFormation の `<prefix>-lab-debug`）のロールは同じ Action と条件の Deny を自分のスタックの VPC に向けてインラインで持つ | `IaC/terraform/aws-managed/base/core/perimeter.tf`、各ルートの attachment、`IaC/cloudformation/lab-debug.yaml` |
+| IAM の Deny | ワークロードのロール全部（Web、Runtime、lab、EMR、ECS（Temporal / Telegraf / syslog-ng / GoFlow2 / Kafbat UI / Grafana / Splunk / Nautobot）、tools Lambda、graph-status の Lambda）に `<prefix>-network-perimeter` を付ける。s3 / s3tables / sqs / sns / ssm / bedrock / aps / athena / firehose / AgentCore の呼び出しで `aws:SourceVpc` がこの VPC でなければ拒む。デバッグ用の EC2（CloudFormation の `<prefix>-lab-debug`）のロールは同じ Action と条件の Deny を自分のスタックの VPC に向けてインラインで持つ | `IaC/terraform/aws-managed/base/core/perimeter.tf`、各ルートの attachment、`IaC/cloudformation/lab-debug.yaml` |
 | リソースポリシーの Deny | バケット、S3 Tables のテーブルバケット、SNS のトピック（`sns:Publish`）、SQS（本体と DLQ）、AgentCore の Runtime と Gateway。同じ条件で、どのプリンシパルからでも VPC の外なら拒む | `bucket.tf`、`alerts.tf`、`IaC/terraform/aws-managed/pipeline/analytics/tables.tf`、`IaC/terraform/aws-managed/workflow/events.tf`、`IaC/terraform/aws-managed/workflow/gateway.tf`、`IaC/terraform/aws-managed/agent/runtime.tf` |
 
 - **拒まないもの**: apply した人（`terraform` を打つ PC は VPC の外なので。PoC の割り切り）、AWS のサービス自身（`aws:PrincipalIsAWSService`）とサービスが代わりに呼ぶもの（`aws:ViaAWSService`。SNS → SQS / Lambda、Bedrock → S3 など）、KB のロール `<prefix>-kb`（取り込みは Bedrock のサービス側で動く）。
@@ -31,18 +31,22 @@ AWS の API へは全部 VPC エンドポイントから行き、この VPC を�
 
 | 送る側 | 受ける側 | ポート | 何のため |
 |---|---|---|---|
-| web / lab / telegraf_dialout / telegraf_dialin / kafka_ui / spark / grafana / splunk / nautobot / lambda / workflow / runtime | endpoints / S3（プレフィックスリスト） | 443/tcp | AWS の API（インターフェース型）と S3（gateway 型。ECR のレイヤーと dnf も） |
+| web / lab / telegraf_dialout / telegraf_dialin / syslog_ng / goflow2 / kafka_ui / spark / grafana / splunk / nautobot / lambda / workflow / runtime | endpoints / S3（プレフィックスリスト） | 443/tcp | AWS の API（インターフェース型）と S3（gateway 型。ECR のレイヤーと dnf も） |
 | web | grafana / splunk / workflow / nautobot / kafka_ui | 3000 / 8000 / 8233 / 8080 / 8080（tcp） | SSM のポートフォワーディング（Grafana / Splunk Web / Temporal UI / Nautobot / Kafbat UI） |
 | nautobot | nautobot_db | 5432/tcp | Nautobot の PostgreSQL（RDS） |
 | telegraf_dialout / telegraf_dialin / spark / kafka_ui | msk | 9098/tcp | Kafka（IAM 認証） |
+| syslog_ng / goflow2 | msk | 9096/tcp | Kafka（SASL/SCRAM。syslog-ng と GoFlow2 は MSK の IAM 認証を喋れない。2026-10-08 から） |
 | msk | msk | 9092〜9098/tcp | ブローカー同士 |
 | spark | spark | 全部の tcp | 1 つのジョブのドライバとエグゼキュータ |
 | spark | splunk | 8088/tcp | HEC（`STORES` の `splunk`） |
 | splunk | splunk | 8089 / 9887 / 9997（tcp） | Splunk のクラスター（`SPLUNK_AZ_NUM` が 2 か 3）の管理と検索・indexer 間の複製・内部ログの転送。1 台のときも作る（相手がいない） |
-| telegraf_dialout_nlb | telegraf_dialout | 1162/udp、5140/udp、57000/tcp、8080/tcp | trap・syslog・MDT の転送と、NLB のヘルスチェック |
-| lab の管理ネットワーク（203.0.113.0/24） | telegraf_dialout_nlb | 162/udp、5140/udp | 機器の trap と syslog（lab の EC2 が DNAT するので送り元は機器の IP のまま） |
-| `MDT_SOURCE_CIDRS` の CIDR（既定は空で行が無い） | telegraf_dialout_nlb | 57000/tcp | 本番の Cisco の MDT の dial-out（[collection.md](../collection.md)）。`0.0.0.0/0` は変数の検査で拒む |
+| telegraf_dialout_nlb | telegraf_dialout | 1162/udp、8080/tcp | trap の転送と、NLB のヘルスチェック（Telegraf の `outputs.health`） |
+| telegraf_dialout_nlb | syslog_ng | 5140/udp、5140/tcp | syslog の転送と、NLB のヘルスチェック（TCP） |
+| telegraf_dialout_nlb | goflow2 | 2055/udp、6343/udp、8081/tcp | NetFlow・sFlow の転送と、NLB のヘルスチェック（`/__health`） |
+| lab の管理ネットワーク（203.0.113.0/24） | telegraf_dialout_nlb | 162/udp、5140/udp、2055/udp、6343/udp | 機器の trap・syslog・NetFlow・sFlow（lab の EC2 が DNAT するので送り元は機器の IP のまま） |
 | telegraf_dialin | lab の管理ネットワーク | 161/udp、57400/tcp | Telegraf の取りにいく側からの SNMP のポーリング（`SNMP_POLL=0` では使わない。SG はそのときも開けておく）と gNMI（VPC のルートで lab の EC2 へ） |
+
+本番の Cisco の MDT の dial-out の行（`MDT_SOURCE_CIDRS` の CIDR → telegraf_dialout_nlb の 57000/tcp）は、2026-10-08（cycle 012）に受け口ごと外した（戻し方は [collection.md](../collection.md)）。
 
 OSS 版（`IaC/terraform/oss/`）では `IaC/terraform/aws-managed/base/core/oss.tf` が SG と表を差し替える（msk とその行を外し、kafka / efs / opensearch / victoriametrics / neo4j の SG と行を足す）。
 

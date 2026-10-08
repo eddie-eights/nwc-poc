@@ -14,11 +14,11 @@ AWS のリソース 1 つにつき 1 ファイル。FAQ、設計の記録、Terr
 | VPC と閉域（VPC エンドポイント + Deny、SG） | `base/core` | インターネットへの経路が無い VPC。AWS の API へはエンドポイントだけで行き、VPC の外からの呼び出しを拒む | [vpc-perimeter.md](vpc-perimeter.md) |
 | Web の EC2 | `base/core` | Gradio の画面（チャット / トポロジ / 承認）と、Grafana などを開くための踏み台 | [web-ec2.md](web-ec2.md) |
 | MSK | `pipeline/stream` | 機器のデータを 5 つのトピックで 24 時間ためる Kafka | [msk.md](msk.md) |
-| Telegraf（ECS） | `pipeline/stream` | 機器から trap・syslog・gNMI・SNMP を集めて MSK に書く | [telegraf.md](telegraf.md) |
+| Telegraf（ECS） | `pipeline/stream` | 機器から trap・gNMI・SNMP を集めて MSK に書く（syslog は syslog-ng、NetFlow / sFlow は GoFlow2。同じ stream の ECS） | [telegraf.md](telegraf.md) |
 | EMR Serverless（Spark） | `pipeline/analytics` | MSK を読み、格納先ごとのジョブで 60 秒ごとに書く | [emr-serverless.md](emr-serverless.md) |
 | S3 Tables（Iceberg）と Athena | `pipeline/analytics` | 生データ、修復案（いまの状態と証跡。`proposal_events`）、アラートの通知の履歴の置き場と、それを読む SQL | [s3-tables-athena.md](s3-tables-athena.md) |
 | Firehose | `pipeline/analytics` | アラートの通知を 1 件 1 行で S3 Tables に追記する | [firehose.md](firehose.md) |
-| OpenSearch Serverless | `pipeline/analytics`、`agent` | trap と syslog の検索（logs）と、手順書のベクトル検索（KB） | [opensearch-serverless.md](opensearch-serverless.md) |
+| OpenSearch Serverless | `pipeline/analytics`、`agent` | trap・syslog・NetFlow / sFlow の検索（logs）と、手順書のベクトル検索（KB） | [opensearch-serverless.md](opensearch-serverless.md) |
 | Amazon Managed Prometheus | `pipeline/analytics` | メトリクスの時系列の置き場 | [prometheus.md](prometheus.md) |
 | Grafana（ECS） | `pipeline/analytics` | Prometheus と OpenSearch を見る画面と、アラートルール 4 本 | [grafana.md](grafana.md) |
 | Splunk（ECS） | `pipeline/analytics` | 全トピックを入れる検索基盤と、保存済みサーチ 4 本のアラート。`SPLUNK_AZ_NUM` が 2 か 3 で indexer のクラスター | [splunk.md](splunk.md) |

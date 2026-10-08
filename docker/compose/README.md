@@ -10,7 +10,7 @@ WSL2 の Ubuntu に次を入れる。
 
 | もの | 理由 |
 |---|---|
-| Docker Engine（docker-ce と docker-compose-plugin。Docker Desktop の WSL 統合は使わない） | Telegraf は `network_mode: host` で lab の管理ネット（203.0.113.0/24）に届き、`iptables` の REDIRECT で trap を受ける。Docker Desktop はエンジンが別の distro にいるので、host が Ubuntu のネットワークにならない |
+| Docker Engine（docker-ce と docker-compose-plugin。Docker Desktop の WSL 統合は使わない） | Telegraf（と syslog-ng・GoFlow2）は `network_mode: host` で lab の管理ネット（203.0.113.0/24）に届き、`iptables` の REDIRECT で trap を受ける。Docker Desktop はエンジンが別の distro にいるので、host が Ubuntu のネットワークにならない |
 | containerlab | lab（SR Linux 6 台 + VM 2 台）。`app/containerlab/lab.sh` が `sudo` で呼ぶ |
 | `snmp`（snmpwalk / snmptrap）、`iptables`、`python3` | `lab check` / `trap-test`、trap の REDIRECT、`app/containerlab/lab_topology.py` |
 | `.wslconfig` の `memory=20GB` 以上 | 見積もりは 16〜19 GB（SR Linux 6 台、Kafka 3 台、Splunk、OpenSearch、Spark 2 つ）。`check.sh` が 20 GB 未満なら注意を出す |
@@ -49,7 +49,7 @@ lab を上げる（`sudo` のパスワードを聞かれる）。compose より�
 docker/compose/up.sh
 ```
 
-`app/containerlab/lab_topology.py` から Telegraf のポーリング先・gNMI の購読先・Spark の device map を作り、`docker compose up -d --build` する。Splunk が `healthy` になるまで 2〜3 分。`docker compose -f docker/compose/compose.yaml ps` で 11 サービスが `running` になればよい。`docker compose` を直に打つと `SNMP_AGENTS` が空になり、Telegraf が起動の検査で止まるので、上げ直しも `up.sh` から（`docker/compose/up.sh telegraf` で Telegraf だけ）。Telegraf の 4 つの受け口（下の「ぶつかりやすいポート」）は、host に `203.0.113.1` があればそこだけで待つ（`TELEGRAF_BIND`。`ip -o -4 addr show` で見る）。lab より先に打つと `WARNING: lab の管理ネット（203.0.113.1）がまだ無いので…` が出て、WSL の全部のインターフェースで待つ。そのときは `lab.sh up` のあとに `docker/compose/up.sh telegraf` で `203.0.113.1` だけに直す。
+`app/containerlab/lab_topology.py` から Telegraf のポーリング先・gNMI の購読先・Spark の device map を作り、`docker compose up -d --build` する。Splunk が `healthy` になるまで 2〜3 分。`docker compose -f docker/compose/compose.yaml ps` で 13 サービスが `running` になればよい。`docker compose` を直に打つと `SNMP_AGENTS` が空になり、Telegraf が起動の検査で止まるので、上げ直しも `up.sh` から（`docker/compose/up.sh telegraf` で Telegraf だけ）。Telegraf・syslog-ng・GoFlow2 の受け口（下の「ぶつかりやすいポート」）は、host に `203.0.113.1` があればそこだけで待つ（`TELEGRAF_BIND`。`ip -o -4 addr show` で見る）。lab より先に打つと `WARNING: lab の管理ネット（203.0.113.1）がまだ無いので…` が出て、WSL の全部のインターフェースで待つ。そのときは `lab.sh up` のあとに `docker/compose/up.sh telegraf syslog-ng goflow2` で `203.0.113.1` だけに直す。
 
 続けて `docker/compose/lab.sh check` で BGP・IS-IS・EVPN、VM の LAG と ping、SNMP の応答を見る（bond0 が無いと出たら WSL のカーネルに bonding が無い。`uname -r` と `zcat /proc/config.gz | grep BONDING` を控えておく）。
 
@@ -57,7 +57,7 @@ docker/compose/up.sh
 docker/compose/check.sh
 ```
 
-2〜3 分待ってから打つ。Kafka のトピックとメッセージ数、Prometheus の `snmp_interface_ifOperStatus`、OpenSearch の `snmp-logs`、Splunk の `sourcetype=netops:*`、Grafana のデータソース 2 つと Prometheus の health、Telegraf の health（`up.sh` と同じく `203.0.113.1` があればそこ、無ければ `127.0.0.1` の `HEALTH_PORT`）を見て、NG が無ければ `すべて ok`。Kafka のトピックは Spark が起動のときに作るので、Telegraf から届いているかはメッセージ数（Kafbat UI の `messagesCount`）で見る。`metrics` が 0 件なら NG。trap の `traps` は障害を入れるまで来ないので、0 件でも NG にせず `注意` を出す（下の `fail-main` か `trap-test` のあとに打ち直すと `ok` になる）。1 つでも NG なら非 0 で終わるので、`docker compose -f docker/compose/compose.yaml logs <サービス>` で見る。
+2〜3 分待ってから打つ。Kafka のトピックとメッセージ数、Prometheus の `snmp_interface_ifOperStatus`、OpenSearch の `snmp-logs`、Splunk の `sourcetype=netops:*`、Grafana のデータソース 2 つと Prometheus の health、Telegraf の health（`up.sh` と同じく `203.0.113.1` があればそこ、無ければ `127.0.0.1` の `HEALTH_PORT`）、syslog-ng が 5140/udp で待っているか、GoFlow2 の `/metrics`（8081）を見て、NG が無ければ `すべて ok`。Kafka のトピックは Spark が起動のときに作るので、Telegraf から届いているかはメッセージ数（Kafbat UI の `messagesCount`）で見る。`metrics` が 0 件なら NG。trap の `traps` は障害を入れるまで来ないので、0 件でも NG にせず `注意` を出す（下の `fail-main` か `trap-test` のあとに打ち直すと `ok` になる）。1 つでも NG なら非 0 で終わるので、`docker compose -f docker/compose/compose.yaml logs <サービス>` で見る。
 
 障害を入れて見る:
 
@@ -69,7 +69,7 @@ docker/compose/lab.sh fail-main
 
 ## 見る場所
 
-下の画面のポートは全部 `127.0.0.1` に出す（WSL の外の LAN からは届かない）。host のネットワークにいる Telegraf の 4 つ（下の「ぶつかりやすいポート」）は lab の管理ネットの GW `203.0.113.1` だけで待つ（lab より先に `up.sh` を打ったときだけ全部のインターフェースで、`WARNING` が出る）。Windows のブラウザから同じ URL で開けるかは WSL の localhost 転送（`.wslconfig` の `localhostForwarding`、既定で有効）次第で、未確認。
+下の画面のポートは全部 `127.0.0.1` に出す（WSL の外の LAN からは届かない）。host のネットワークにいる Telegraf・syslog-ng・GoFlow2 の受け口（下の「ぶつかりやすいポート」）は lab の管理ネットの GW `203.0.113.1` だけで待つ（lab より先に `up.sh` を打ったときだけ全部のインターフェースで、`WARNING` が出る）。Windows のブラウザから同じ URL で開けるかは WSL の localhost 転送（`.wslconfig` の `localhostForwarding`、既定で有効）次第で、未確認。
 
 | 画面 | URL | ログイン |
 |---|---|---|
@@ -81,16 +81,18 @@ docker/compose/lab.sh fail-main
 
 ## ぶつかりやすいポート
 
-Telegraf は host のネットワークにいるので、host の次のポートを開ける。待つのは lab の管理ネットの GW `203.0.113.1` だけ（`127.0.0.1` では待たない。lab の外から偽の trap や syslog を入れられないように）。lab が無いときに `up.sh` を打つと全部のインターフェースで待つ（`WARNING` が出る。WSL の外から届くかは WSL のネットワークのモード次第で、未確認）。ほかのプロセスが使っていると Telegraf が起動しない（`docker compose -f docker/compose/compose.yaml logs telegraf`）。`203.0.113.1` が無いとき（lab を `down` したまま）に Telegraf が起こし直されても `bind: cannot assign requested address` で落ちる。telegraf と spark は `restart: on-failure:5` なので、5 回起こし直しても落ちるなら止まったままになる。`docker compose -f docker/compose/compose.yaml ps -a` で `Exited` なら `logs telegraf` で理由を見て、直してから `docker/compose/up.sh telegraf` で起こす（`check.sh` の「Telegraf: health が 200」も NG になる）。lab を `down` / `up` で作り直したあとは、Telegraf が動いていても `docker compose -f docker/compose/compose.yaml restart telegraf` で待ち直させる（作り直した bridge で前の待ち受けが受け続けるかは未確認）。
+Telegraf・syslog-ng・GoFlow2 は host のネットワークにいるので、host の次のポートを開ける。待つのは lab の管理ネットの GW `203.0.113.1` だけ（`127.0.0.1` では待たない。lab の外から偽の trap や syslog を入れられないように）。lab が無いときに `up.sh` を打つと全部のインターフェースで待つ（`WARNING` が出る。WSL の外から届くかは WSL のネットワークのモード次第で、未確認）。ほかのプロセスが使っていると Telegraf が起動しない（`docker compose -f docker/compose/compose.yaml logs telegraf`）。`203.0.113.1` が無いとき（lab を `down` したまま）に Telegraf が起こし直されても `bind: cannot assign requested address` で落ちる。telegraf・syslog-ng と spark は `restart: on-failure:5`（goflow2 は Kafka が上がるまで落ちるので `on-failure:10`）なので、5 回起こし直しても落ちるなら止まったままになる。`docker compose -f docker/compose/compose.yaml ps -a` で `Exited` なら `logs telegraf` で理由を見て、直してから `docker/compose/up.sh telegraf` で起こす（`check.sh` の「Telegraf: health が 200」も NG になる）。lab を `down` / `up` で作り直したあとは、Telegraf が動いていても `docker compose -f docker/compose/compose.yaml restart telegraf syslog-ng goflow2` で待ち直させる（作り直した bridge で前の待ち受けが受け続けるかは未確認）。
 
-MDT と health のポートは `.env` の `MDT_PORT` / `HEALTH_PORT` で変えられる（変えたら `docker/compose/up.sh telegraf`。`check.sh` も `HEALTH_PORT` に打つ）。trap と syslog は lab の `app/containerlab/lab.sh`（`TRAP_PORT` / `LOG_PORT`）と SR Linux の syslog の送り先に揃えてあるので変えられない。ぶつかったら相手のプロセスを止める。
+health のポートは `.env` の `HEALTH_PORT` で変えられる（変えたら `docker/compose/up.sh telegraf`。`check.sh` も `HEALTH_PORT` に打つ）。trap と syslog は lab の `app/containerlab/lab.sh`（`TRAP_PORT` / `LOG_PORT`）と SR Linux の syslog の送り先に揃えてあるので変えられない。ぶつかったら相手のプロセスを止める。
 
 | ポート | 用途 |
 |---|---|
 | 8080/tcp | Telegraf の health（`.env` の `HEALTH_PORT`） |
-| 57000/tcp | Cisco の MDT（dial-out）の受け口。lab からは何も来ない（`.env` の `MDT_PORT`） |
 | 1162/udp | SNMP trap（機器は 162 に送り、`lab.sh forward` が 1162 へ向ける） |
-| 5140/udp | syslog |
+| 5140/udp・5140/tcp | syslog（syslog-ng。tcp は ECS の NLB のヘルスチェックと同じ口） |
+| 2055/udp | NetFlow（GoFlow2。lab からは来ない。`uv run python tools/netflow_send.py 127.0.0.1 2055` で 1 つ送る） |
+| 6343/udp | sFlow（GoFlow2） |
+| 8081/tcp | GoFlow2 の `/metrics`（8080 は Telegraf の health） |
 
 compose の `ports` で host に出すのは 3000、8000、8089、9090、9094〜9096、9200、18080（どれも 127.0.0.1）。
 
