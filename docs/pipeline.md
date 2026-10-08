@@ -9,8 +9,10 @@ flowchart LR
   subgraph LABEC2["lab の EC2（IaC/terraform/aws-managed/pipeline/lab）"]
     CLAB["containerlab<br/>Nokia SR Linux（Spine-Leaf）6 台 + TRex 1 台"]
   end
-  CLAB -->|"SNMP trap / gNMI 購読 / syslog / NetFlow・sFlow<br/>SNMP ポーリング 10 秒（SNMP_POLL=0 で止める）"| TG["Telegraf・syslog-ng・GoFlow2<br/>（ECS Fargate + 内部 NLB）<br/>（IaC/terraform/aws-managed/pipeline/stream）"]
+  CLAB -->|"SNMP trap / syslog / NetFlow・sFlow"| TG["Telegraf・syslog-ng・GoFlow2<br/>（ECS Fargate + 内部 NLB）<br/>（IaC/terraform/aws-managed/pipeline/stream）"]
+  CLAB -->|"gNMI の購読（gnmic が取りにいく）"| GN["gnmic<br/>（ECS Fargate。stream）"]
   TG --> MSK["MSK（stream）<br/>metrics / gnmi / traps / logs / flows"]
+  GN --> MSK
   MSK --> SPARK["Spark（analytics）<br/>EMR Serverless"]
   SPARK -->|"STORES の s3"| ICE["S3 Tables<br/>raw_telemetry"]
   SPARK -->|"STORES の grafana"| OS["OpenSearch<br/>snmp-logs"]
@@ -19,22 +21,31 @@ flowchart LR
   GRAF["Grafana（analytics の ECS）<br/>STORES の grafana"] -.-> OS
   GRAF -.-> PROM
   GRAF -->|"アラートルール（link_down / bgp_down / isis_down / trap）"| SNS["SNS<br/>prefix-alerts（土台）"]
-  SPL -->|"保存済みサーチ（ポーリング / trap / BGP / IS-IS）"| SNS
+  SPL -->|"保存済みサーチ（gNMI / trap）"| SNS
   SNS --> GL["Lambda graph-status"] --> NEP["Neptune（graph）<br/>トポロジと status"]
   GL -->|"通知の履歴"| FH["Firehose（analytics）"] --> AEV["S3 Tables<br/>alert_events"]
   SNS -.->|"WORKFLOW=1"| SQS["SQS → ワークフロー"]
 ```
 
-- lab は Web やエージェントとはつながっていない。使うのは SNMP とログの発生源としてだけ。
-- Telegraf は stream の ECS（Fargate ARM64、0.25 vCPU / 0.5 GB）で、同じイメージを 2 つのサービスで動かす（`IaC/terraform/aws-managed/pipeline/stream/telegraf.tf`。2026-09-28 に IaC/terraform/aws-managed/pipeline/lab の Telegraf 用の EC2 から移し、2026-10-04 に 2 つに分けた）。受ける側（`<prefix>-telegraf-dialout`、`TELEGRAF_ROLE=dialout`）は内部 NLB の後ろで trap を受け（syslog と MDT も受けていたが 2026-10-08 にやめた）、取りにいく側（`<prefix>-telegraf-dialin`、`TELEGRAF_ROLE=dialin`、1 タスク固定、NLB なし）は gNMI の購読と SNMP のポーリングをする（[collection.md](collection.md) の「Telegraf を受ける側と取りにいく側に分けた」）。イメージは `docker/images/telegraf/Dockerfile`（公式の `telegraf:1.40.1` に `telegraf.conf.in` と `tg` を入れたもの）で、`ops/up.sh` が ECR の `<prefix>-telegraf:<版>-<ディレクトリのハッシュ 12 文字>` に作る。ポーリング先と gNMI の購読先は SSM の `/<prefix>/telegraf-dialin/nautobot/{snmp-agents,gnmi-targets}` にあり、取りにいく側のタスクが ECS の secrets で環境変数 `SNMP_AGENTS` / `GNMI_TARGETS` として受ける。最初の値は `ops/up.sh` が lab の定義から作って stream の変数 `snmp_agents` / `gnmi_targets` に渡したもので、そのあとは Nautobot の Job が書き換える（Terraform は値の変化を見ない。下の「Nautobot」）。MSK のブローカーは環境変数 `KAFKA_BROKERS`。起動時に `tg run` が設定を埋める。
+- lab は Web やエージェントとはつながっていない。使うのは gNMI・SNMP trap・ログの発生源としてだけ。
+- Telegraf は stream の ECS（Fargate ARM64、0.25 vCPU / 0.5 GB）のサービス `<prefix>-telegraf-dialout` で、内部 NLB の後ろで SNMP trap だけを受けてトピック `traps` に書く（`IaC/terraform/aws-managed/pipeline/stream/telegraf.tf`。2026-09-28 に IaC/terraform/aws-managed/pipeline/lab の Telegraf 用の EC2 から移した。syslog と MDT も受けていたが 2026-10-08 にやめた）。gNMI の購読と SNMP のポーリングをしていた取りにいく側（`<prefix>-telegraf-dialin`）は 2026-10-09（cycle 013）に外した。gNMI は下の gnmic が取り、SNMP のポーリングはやめた（[collection.md](collection.md)）。イメージは `docker/images/telegraf/Dockerfile`（公式の `telegraf:1.40.1` に `telegraf.conf.in` と `tg` を入れたもの）で、`ops/up.sh` が ECR の `<prefix>-telegraf:<版>-<ディレクトリのハッシュ 12 文字>` に作る。MSK のブローカーは環境変数 `KAFKA_BROKERS`。起動時に `tg run` が設定を埋める。
+- gNMI は gnmic（v0.49.0）が機器へ取りにいく（2026-10-09、cycle 013 から。`IaC/terraform/aws-managed/pipeline/stream/gnmic.tf`）。Telegraf と同じクラスターのサービス `<prefix>-gnmic`（Fargate ARM64、0.25 vCPU / 0.5 GB、1 タスク固定、NLB なし）。2 つ動くと同じ機器を 2 回購読して Kafka に重複が出るので、作り直すときは古いタスクを止めてから新しいタスクを立てる。イメージは `docker/images/gnmic/Dockerfile`（公式の `ghcr.io/openconfig/gnmic:0.49.0` に `app/gnmic/gnmic.yaml.in` と入口の `gn` を入れたもの）で、`ops/up.sh` が ECR の `<prefix>-gnmic:<版>-<ディレクトリのハッシュ 12 文字>` に作る（版は `ops/up-common.sh` の `GNMIC_VERSION`）。購読先は SSM の `/<prefix>/gnmic/nautobot/gnmi-targets`（String）にあり、タスクが ECS の secrets で環境変数 `GNMI_TARGETS` として受ける。最初の値は `ops/up.sh` が lab の定義から作って stream の変数 `gnmi_targets` に渡したもので、そのあとは Nautobot の Job が書き換える（Terraform は値の変化を見ない。下の「Nautobot」）。Kafka へは syslog-ng・GoFlow2 と同じ SASL/SCRAM（9096/tcp、Secrets Manager の `AmazonMSK_<prefix>-collectors`）で書く。起動時に `gn run` が設定を埋める。
+  - マネージドの MSK は IAM と SCRAM の併用なので、SCRAM のユーザーが書くには Kafka の ACL が要る想定。`gnmi` と `metrics` の ACL は syslog-ng・GoFlow2 の分と一緒に Spark が起動時に入れる（下の `ensure_acls`）。それまでの値を gnmic は捨てるので、on-change の購読の直後に送られる今の状態は Kafka に残らない（変わったときの値は ACL が入ったあとから届く。OSS 版の Kafka は認証なしなので当たらない。AWS では未確認）。
 - syslog と NetFlow / sFlow は同じクラスターと NLB の後ろの別のサービスで受ける（2026-10-08、cycle 012 から。`IaC/terraform/aws-managed/pipeline/stream/collectors.tf`。どちらも 1 タスク、Fargate ARM64、0.25 vCPU / 0.5 GB）。syslog-ng（`<prefix>-syslog-ng`）は `docker/images/syslog-ng/Dockerfile`（公式の `ghcr.io/axoflow/axosyslog:4.29.0` に `app/syslog-ng/` を入れたもの）を `ops/up.sh` が ECR の `<prefix>-syslog-ng:<版>-<ディレクトリのハッシュ 12 文字>` に作り、トピック `logs` に Telegraf と同じ `device_log` の形で書く。GoFlow2（`<prefix>-goflow2`）は公式の `netsampler/goflow2:v2.2.7` を ECR の `<prefix>-goflow2:v2.2.7` にミラーしたもので、トピック `flows` に書く。どちらも MSK の IAM 認証を話せないので SASL/SCRAM（9096/tcp、SCRAM-SHA-512）で書く。ユーザー名とパスワードは `ops/up.sh` が Secrets Manager の `AmazonMSK_<prefix>-collectors`（顧客管理の KMS キー `alias/<prefix>-msk-scram` で暗号化。MSK の SCRAM はこの 2 つを要る）に作り（無いときだけ。値は出さない）、タスクは起動時に ECS の secrets で受ける。`ops/down.sh` が secret をすぐ消し、鍵は 7 日後の削除を予約する（手順 5-3）。
-- **SNMP のポーリングは既定で動かす**（`deploy.env` の `SNMP_POLL`。既定 `1`）。`ops/up.sh` が stream の変数 `snmp_poll = true` を渡し、タスクの環境変数 `SNMP_POLL=1` で `tg run` が `telegraf.conf.in` の `>>> snmp_poll` の区間（`inputs.snmp`。10 秒ごとに ifTable）を残す。`SNMP_POLL=0` はその区間ごと消すので（SNMP は trap だけ受ける）、`SNMP_AGENTS` は渡っても使わない。止めているあいだは `metrics` トピックにポーリングの行（measurement `system` / `interface`）が載らず（lab の gNMI を変えた共通の形は載る）、S3 Tables の `raw_telemetry` のポーリングの行、Grafana のダッシュボード「netops / SNMP metrics」、エージェントの `query_metrics`（`interface_ifOperStatus` など）は空のまま。Grafana のアラートルール `link_down` と Splunk の保存済みサーチ `netops_poll` も発火しない。そのとき IF の up / down は、Splunk が linkDown / linkUp の trap からだけ知らせる（`STORES` に `splunk` があるとき）。gNMI と syslog はこの値によらず受ける。
-- ポーリングが二重にならないよう、作り直すときは古いタスクを止めてから新しいタスクを立てる。
+- SNMP のポーリング（Telegraf の `inputs.snmp`。10 秒ごとに ifTable）は 2026-10-09（cycle 013）にやめた。IF の up / down は gnmic の gNMI（IF の `oper-state` / `admin-state`）で取り、Splunk は linkDown / linkUp の trap からも知る。`deploy.env` の `SNMP_POLL` はもう使わない（書いてあれば `ops/up.sh` が注意を出して続ける）。
 - lab は Spine-Leaf（EVPN-VXLAN）。WAN 側の s-leaf 2 台と DC 側の a-leaf 2 台が Spine 2 台とフルメッシュ（fabric。IS-IS）。負荷をかける TRex 1 台（`dc1-trex-01`）が各 leaf の `ethernet-1/3` に 1 本ずつつながる（LAG も EVPN マルチホーミングも無い。TRex 本体は `sudo lab trex start` まで動かない）。機器の定義は `app/containerlab/gen_lab.py` が作る（[lab を変える](#lab-を変える)）。SR-MPLS は SR Linux のコンテナが `ixr6e` / `ixr10e` + ライセンスを要るので、ライセンスが届くまで license 不要の `ixr-d2l` で EVPN-VXLAN にしている。
-- 機器は lab の EC2 の中の docker network（`203.0.113.0/24`）にいる。Telegraf の取りにいく側のタスクからの SNMP のポーリング（`161/udp`。`SNMP_POLL=0` では行かない）と gNMI の購読（`57400/tcp`）は VPC のルートで lab の EC2 を通り（タスクの IP は作り直すたびに変わるので、送り元はタスクのサブネットの CIDR（SSM `/<prefix>/telegraf-source-cidr`）で通す）、trap（`162/udp`）と syslog（`5140/udp`）と NetFlow（`2055/udp`）・sFlow（`6343/udp`）は機器が lab の EC2（`203.0.113.1`）へ送り、lab の EC2 が Telegraf の NLB の IP（SSM `/<prefix>/telegraf-address`）へ DNAT する。NLB は trap を Telegraf のタスクの `1162/udp` へ、syslog を syslog-ng の `5140/udp` へ、NetFlow / sFlow を GoFlow2 の `2055/udp` / `6343/udp` へ渡す（UDP なので送り元の IP はそのまま）。SR Linux は NetFlow を送れないので、NetFlow は lab の EC2 から `python3 ops/netflow_send.py <NLB の IP>:2055` で 1 パケット送って確かめる。この 6 つは lab の EC2 で `sudo lab forward` が張る（`lab up` が毎回呼び、`ops/up.sh` も手順 7-2b で打つ。lab の変数 `forward_to_telegraf`）。
-- gNMI（Telegraf の `inputs.gnmi`）は BGP の `session-state` と IS-IS の IF の `oper-state`（隣接そのもの（`interface/adjacency`）は落ちると down を経ずに消え、Telegraf は gNMI の delete を載せないので取らない）を on_change で、EVPN の ethernet-segment の `oper-state` と MAC テーブルを 1 分おきに取り、トピック `gnmi` に出す。2 つめの `inputs.gnmi`（購読名 `lab_*`、1 分おき）は CPU・メモリ・IF のカウンタと速度・MAC テーブルの数と上限・サブ IF の種類と IF の状態を取り、`app/telegraf/lab_gnmi.star` と `lab_circuits.star` が共通の形（`device_cpu` / `device_memory` / `if_stats` / `sessions` / `circuits`。[collection.md](collection.md) の「共通の形（仮）」）に変えてトピック `metrics` に出す（1 つめと分けるのは、SR Linux が知らないパスが 1 つでもあると購読ごと断るため）。本番の Cisco の MDT の受け口（`inputs.cisco_telemetry_mdt`、57000/tcp、トピック `mdt`）は 2026-10-08（cycle 012）に外した（[collection.md](collection.md) の「方針」）。Grafana のルール `bgp_down` / `isis_down`（`STORES` に `grafana` があるとき）と Splunk の保存済みサーチ `netops_gnmi`（`STORES` に `splunk` があるとき）は、ここから `bgp_down`（相手の IP が対象）と `isis_down`（サブインタフェースが対象）を出す（下の「アラート」）。
-- Spark は起動時に、読むトピック（`metrics` / `gnmi` / `traps` / `logs` / `flows`）のうち無いものを作る（`snmp_sinks.py` の `ensure_topics`。EMR のロールに `kafka-cluster:CreateTopic`）。MSK の `auto.create.topics.enable=true` は書き込みのときにしか効かず、Telegraf が最初の trap を出すまで `traps` が無い。SASL/SCRAM で書く syslog-ng・GoFlow2 には CREATE の ACL を付けないので、AWS の文書どおりなら `logs` / `flows` は自動ではできず、ここで作るまで無い。無いトピックを購読するとジョブは offset 読みで落ちて、起こし直しの上限（1 時間 5 回）を使い切る（2026-09-27 に実測）。
-- 続けて、SASL/SCRAM の収集器のユーザー `collectors` に `logs` / `flows` の `WRITE` と `DESCRIBE` の ACL を入れる（`snmp_sinks.py` の `ensure_acls`。EMR のロールに `kafka-cluster:AlterCluster`。cycle 012）。AWS の文書は MSK の IAM のアクセス制御では `allow.everyone.if.no.acl.found` が効かないとしていて、そのとおりなら ACL が無いと syslog-ng と GoFlow2 は `Topic authorization failed` で書けない（MSK で本当にそうなるかは未確認。[architecture/resources/msk.md](architecture/resources/msk.md)）。stream が立ってからジョブが起きるまでの間（`SKIP_ANALYTICS=1` ならずっと）、syslog-ng は syslog をメモリのキュー（既定 10000 件。syslog-ng が起こし直すと消える）で持って ACL が入ったら書き、GoFlow2 はその間のフローを捨てる。どちらも落ちない（手元の Kafka で 340 秒の待ちを測った）。入れた ACL は driver の stderr に `ACL: User:collectors に WRITE logs, DESCRIBE logs, WRITE flows, DESCRIBE flows` と出る。入れられなければジョブは起動で落ちる。`KAFKA_AUTH=none`（OSS 版・手元の compose）は Kafka に authorizer が無いので入れない。
+- 機器は lab の EC2 の中の docker network（`203.0.113.0/24`）にいる。gnmic のタスクからの gNMI の購読（`57400/tcp`）は VPC のルートで lab の EC2 を通り（タスクの IP は作り直すたびに変わるので、送り元はタスクのサブネットの CIDR（SSM `/<prefix>/telegraf-source-cidr`。名前は Telegraf のときのまま）で通す）、trap（`162/udp`）と syslog（`5140/udp`）と NetFlow（`2055/udp`）・sFlow（`6343/udp`）は機器が lab の EC2（`203.0.113.1`）へ送り、lab の EC2 が Telegraf の NLB の IP（SSM `/<prefix>/telegraf-address`）へ DNAT する。NLB は trap を Telegraf のタスクの `1162/udp` へ、syslog を syslog-ng の `5140/udp` へ、NetFlow / sFlow を GoFlow2 の `2055/udp` / `6343/udp` へ渡す（UDP なので送り元の IP はそのまま）。SR Linux は NetFlow を送れないので、NetFlow は lab の EC2 から `python3 ops/netflow_send.py <NLB の IP>:2055` で 1 パケット送って確かめる。この 5 つは lab の EC2 で `sudo lab forward` が張る（`lab up` が毎回呼び、`ops/up.sh` も手順 7-2b で打つ。lab の変数 `forward_to_telegraf`）。
+- gnmic の購読は 5 つ（`app/gnmic/gnmic.yaml.in`。購読ごとに別の SubscribeRequest なので、1 つが機器に断られてもほかは止まらない）。状態はトピック `gnmi`、カウンタはトピック `metrics` に、gnmic の event の形（`name` / `timestamp` / `tags` / `values`）のまま書き、Spark が Telegraf と同じ形（measurement・タグ・項目）に読み替える（`app/spark/snmp_sinks.py` の `gnmic_message`。[collection.md](collection.md)）。
+  - `interface_state`: IF の `oper-state` と `admin-state`（on_change、`gnmi`）
+  - `interface_stats`: IF の `statistics`（カウンタ。60 秒ごと、`metrics`）
+  - `bgp_neighbor`: BGP の `session-state`（on_change、`gnmi`）
+  - `isis_interface`: IS-IS の IF の `oper-state`（on_change、`gnmi`。隣接そのもの（`interface/adjacency`）は落ちると down を経ずに消えるので取らない）
+  - `system`: CPU（`cpu[index=all]/total`）とメモリ（60 秒ごと、`metrics`）
+  - target の名前は機器の管理 IP（event の `tags.source`）で、機器名（`sysName`）は Spark が device map で足す。on_change は購読の直後に今の状態を全部送り、そのあとは変わったときだけ送る。
+  - EVPN の ethernet-segment と MAC テーブルの購読、`lab_*` の購読と共通の形（`device_cpu` など）は cycle 013 でやめた。本番の Cisco の MDT の受け口（`inputs.cisco_telemetry_mdt`、57000/tcp、トピック `mdt`）は 2026-10-08（cycle 012）に外した（[collection.md](collection.md) の「方針」）。
+  - Grafana のルール `link_down` / `bgp_down` / `isis_down`（`STORES` に `grafana` があるとき）と Splunk の保存済みサーチ `netops_gnmi`（`STORES` に `splunk` があるとき）は、ここから `link_down`（物理 IF が対象）、`bgp_down`（相手の IP が対象）、`isis_down`（サブインタフェースが対象）を出す（下の「アラート」）。
+- Spark は起動時に、読むトピック（`metrics` / `gnmi` / `traps` / `logs` / `flows`）のうち無いものを作る（`snmp_sinks.py` の `ensure_topics`。EMR のロールに `kafka-cluster:CreateTopic`）。MSK の `auto.create.topics.enable=true` は書き込みのときにしか効かず、Telegraf が最初の trap を出すまで `traps` が無い。SASL/SCRAM で書く syslog-ng・GoFlow2・gnmic には CREATE の ACL を付けないので、AWS の文書どおりなら `logs` / `flows` / `gnmi` / `metrics` は自動ではできず、ここで作るまで無い。無いトピックを購読するとジョブは offset 読みで落ちて、起こし直しの上限（1 時間 5 回）を使い切る（2026-09-27 に実測）。
+- 続けて、SASL/SCRAM の収集器のユーザー `collectors` に `logs` / `flows` / `gnmi` / `metrics` の `WRITE` と `DESCRIBE` の ACL を入れる（`snmp_sinks.py` の `ensure_acls`。EMR のロールに `kafka-cluster:AlterCluster`。cycle 012、`gnmi` / `metrics` は cycle 013）。AWS の文書は MSK の IAM のアクセス制御では `allow.everyone.if.no.acl.found` が効かないとしていて、そのとおりなら ACL が無いと syslog-ng・GoFlow2・gnmic は `Topic authorization failed` で書けない（MSK で本当にそうなるかは未確認。[architecture/resources/msk.md](architecture/resources/msk.md)）。stream が立ってからジョブが起きるまでの間（`SKIP_ANALYTICS=1` ならずっと）、syslog-ng は syslog をメモリのキュー（既定 10000 件。syslog-ng が起こし直すと消える）で持って ACL が入ったら書き、GoFlow2 はその間のフローを、gnmic はその間の値を捨てる。どれも落ちない（syslog-ng と GoFlow2 は手元の Kafka で 340 秒の待ちを測った。gnmic は測っていない）。入れた ACL は driver の stderr に `ACL: User:collectors に WRITE logs, DESCRIBE logs, WRITE flows, DESCRIBE flows, WRITE gnmi, DESCRIBE gnmi, WRITE metrics, DESCRIBE metrics` と出る。入れられなければジョブは起動で落ちる。`KAFKA_AUTH=none`（OSS 版・手元の compose）は Kafka に authorizer が無いので入れない。
 - メトリクスとログの履歴の正本は S3 Tables（`raw_telemetry`）。Spark は格納先へ流すだけで、異常の検知はしない（2026-10-02 にやめた）。検知は Grafana と Splunk のアラートで、SNS のトピック `<prefix>-alerts` に出す（下の「アラート」）。Neptune の頂点 `anomaly`、S3 Tables の `anomaly_events`、Web の「異常一覧」、エージェントの `list_anomalies` は無くなった。障害の履歴は 2026-10-04 から、アラートの通知 1 件を 1 行として S3 Tables の `alert_events` に置く（下の「アラートの履歴」、[data-stores.md](data-stores.md)）。
 - analytics は graph が無くても作れる（Neptune に書くのは SNS を購読する graph の Lambda だけ）。`SKIP_GRAPH=1` だと、トポロジは `app/agentcore/data/` の静的データになり、アラートが届いても `status` を書く先が無い。
 - テーブルバケットは `STORES` に `s3` が無くても作る（証跡の置き場）。`ops/down.sh` はバケットごと消すので、証跡も消える。
@@ -73,12 +84,12 @@ aws ssm start-session --region ap-northeast-1 --target "$LAB_INSTANCE_ID"
 
 - 機器とリンクの図: `sudo lab graph` は `containerlab graph` を systemd の一時ユニット `<prefix>-lab-graph` で起こす（SSM のセッションを閉じても残る。止めるのは `sudo lab graph-stop` か `sudo lab down`）。手元の PC で `terraform -chdir=IaC/terraform/aws-managed/pipeline/lab output -raw graph_port_forward_command` を打ち（`sudo lab graph` も同じコマンドを出す）、`http://localhost:50080/` を開く。lab の EC2 への SSM のポートフォワードなので、SG は開けない。図のページが CDN から部品を読むかは [010 の build.md](cycles/010-kafbat-ui-on-web-ec2/build.md) に書く（閉域では CDN に届かない）。AWS では未確認。
 - 機器の CLI: `sudo docker exec -it clab-splab-dc1-a-leaf-01 sr_cli`（1 行だけなら `sudo lab cli dc1-a-leaf-01 "show ..."`）。設定は `app/containerlab/srlinux/<機器>.cli`（`set /` の行だけ。containerlab が起動時に流し込む。手で直さず `app/containerlab/gen_lab.py` で作り直す）
-- `sudo lab failover` を打つと、trap が 5 秒以内に Kafka に届く（2026-09-27 に EC2 で確認）。そのあと既定（`STORES=s3,grafana,splunk` / `SNMP_POLL=1`）では、Splunk が linkDown の trap とポーリングから `link_down` を、gNMI から `isis_down` を出し、Grafana のルールもポーリングから物理 IF の同じ `link_down` を、gNMI から同じ `isis_down` を出す（同じ機器・種類・対象なので、異常としては 1 つにまとまる）。`STORES` から `splunk` を外して `SNMP_POLL=0` にすると `link_down` は出ない。`sudo lab heal-main` で `resolved` が出る。落としてから通知までは 1〜2 分（下の「アラート」の遅れ）。
-  - SR Linux の SNMP の `ifOperStatus` は実際の oper-state より 15〜20 秒遅れる（2026-09-27 実測）。Spark の検知は trap とポーリングを 1 つの状態にまとめていたので、古いポーリングが trap を打ち消さないよう 30 秒の猶予（`POLL_LAG`）を持っていた。いまは送り手ごとに自分の見た状態だけを出し、Grafana は自分が発火させたアラートにしか解消を送らないので、この猶予は要らない。
+- `sudo lab failover` を打つと、trap が 5 秒以内に Kafka に届く（2026-09-27 に EC2 で確認）。そのあと既定（`STORES=s3,grafana,splunk`）では、Splunk が linkDown の trap と gNMI の IF の `oper-state` から `link_down` を、gNMI から `isis_down` を出し、Grafana のルールも gNMI から物理 IF の同じ `link_down` と同じ `isis_down` を出す（同じ機器・種類・対象なので、異常としては 1 つにまとまる）。`sudo lab heal-main` で `resolved` が出る。落としてから通知までは 1〜2 分（下の「アラート」の遅れ）。
+  - gNMI の `link_down`（cycle 013 から）の発火は AWS では未確認。それまでの SNMP のポーリングの `link_down` は、SR Linux の `ifOperStatus` が実際の oper-state より 15〜20 秒遅れた（2026-09-27 実測）。
 - 機器のログは SR Linux の `system logging remote-server`（RFC 5424、udp）で lab の EC2 へ出て、stream の syslog-ng が受け（2026-10-08 から。それまでは Telegraf の `inputs.syslog`）、Telegraf と同じ形でトピック `logs` に出す（measurement は `device_log`。hostname は `sysName` タグに付け替える。`app/syslog-ng/syslog-ng.conf.in`）。送る subsystem は bgp / chassis / evpn / isis / lag / linux / netinst / xdp（informational 以上）。ファシリティは本番の Cisco（IOS の既定）に合わせて `local7`（`system logging subsystem-facility`。SR Linux の既定は `local6`）。
 - syslog の形式は syslog-ng のタスクの環境変数 `SYSLOG_STANDARD`（stream の変数 `syslog_standard`。`RFC5424` なら `syslog-ng.conf.in` の `flags(syslog-protocol)`）で選ぶ。既定は本番の Cisco IOS の BSD 形式 `RFC3164`。`ops/up.sh` は `deploy.env` の `SYSLOG_STANDARD`（空なら同じ `RFC3164`）を渡す。lab の SR Linux は RFC 5424 で送る（`ops/lab-common.sh` の `LAB_SYSLOG_STANDARD`）ので、lab のログの項目まで見るなら `SYSLOG_STANDARD=RFC5424`。デバッグ用の EC2 は 2026-10-08 から syslog を受けない（syslog-ng は stream と手元の compose だけ）。Cisco IOS の既定のヘッダー（シーケンス番号や `*` 付きの時刻）が RFC3164 でどう解析されるかは実機で確かめていない。
-- SNMP は containerlab が全ノードに v2c の community `public` を入れ、gNMI も全ノードで `57400/tcp`（TLS、containerlab の既定の admin）に開く。Telegraf の取りにいく側は、この認証情報を SSM の SecureString（`/<prefix>/telegraf-dialin/gnmi-username`・`gnmi-password`・`snmp-community`。`ops/up.sh` が lab の既定値で作り、あれば触らない）から受ける。実機を足すなら SSM の値を書き換えて、サービスを作り直す（`aws ecs update-service --force-new-deployment`）。監視対象は `app/containerlab/srlinux/<機器>.cli` の `system snmp trap-group`（trap の宛先）の有無で決まり、いまは SR Linux の 6 台全部。TRex は対象外。
-- SR Linux の ifTable は未使用の物理ポートも全部出す（`ifAdminStatus` が down）。IF の鍵は `ifName`（`ifDescr` は「名前 + description」）。Grafana のルールは admin down の行、サブインタフェース（`ethernet-1/1.0`）、ループバック、管理ポートを見ない。
+- gNMI は containerlab が全ノードで `57400/tcp`（TLS、containerlab の既定の admin）に開く（SNMP も v2c の community `public` で入るが、使うのは trap だけ）。gnmic は gNMI の認証情報を SSM の SecureString（`/<prefix>/gnmic/gnmi-username`・`gnmi-password`。`ops/up.sh` が lab の既定値で作り、あれば触らない）から受ける。実機を足すなら SSM の値を書き換えて、gnmic のサービスを作り直す（`aws ecs update-service --force-new-deployment`）。監視対象は `app/containerlab/srlinux/<機器>.cli` の `system snmp trap-group`（trap の宛先）の有無で決まり、いまは SR Linux の 6 台全部。TRex は対象外。
+- SR Linux は未使用の物理ポートも IF として出す（`admin-state` が disable）。IF の鍵は `ifName`（gNMI の `interface[name]` を Spark が付け替えたもの）。Grafana と Splunk の `link_down` は admin-state が disable の IF、サブインタフェース（`ethernet-1/1.0`）、ループバック、管理ポートを見ない。
 
 ### 動かないとき
 
@@ -102,29 +113,32 @@ sudo systemctl restart <prefix>-lab
 terraform -chdir=IaC/terraform/aws-managed/pipeline/lab output -raw stop_command; echo
 ```
 
-## Telegraf に入る
+## gnmic と Telegraf に入る
 
-ECS Exec で入る（PC に AWS CLI v2 と Session Manager plugin が要る）。`tg test` / `tg gnmi` は取りにいく側（`<prefix>-telegraf-dialin`）のタスクで打つ（受ける側で打つと「telegraf-dialin で打つ」と出て終わる）。`telegraf_exec_command` の `TASK_ID` を、取りにいく側のタスクの ARN の最後の部分に置き換えて打つ。
+gnmic のタスクには ECS Exec で入る（PC に AWS CLI v2 と Session Manager plugin が要る）。`gnmic_exec_command` の `TASK_ID` を、gnmic のタスクの ARN の最後の部分に置き換えて打つ。
 
 ```bash
-terraform -chdir=IaC/terraform/aws-managed/pipeline/stream output -raw telegraf_dialin_list_tasks_command; echo   # 打つと取りにいく側のタスクの ARN が出る（受ける側は telegraf_dialout_list_tasks_command）
-terraform -chdir=IaC/terraform/aws-managed/pipeline/stream output -raw telegraf_exec_command; echo         # TASK_ID を置き換えて打つ（既定は tg gnmi）
+terraform -chdir=IaC/terraform/aws-managed/pipeline/stream output -raw gnmic_list_tasks_command; echo   # 打つと gnmic のタスクの ARN が出る（Telegraf は telegraf_dialout_list_tasks_command）
+terraform -chdir=IaC/terraform/aws-managed/pipeline/stream output -raw gnmic_exec_command; echo         # TASK_ID を置き換えて打つ（既定は gn get）
 ```
 
 | コマンド | 何をする |
 |---|---|
-| `tg test` | SNMP のポーリングを 1 回だけまわして画面に出す（MSK には送らない）。`SNMP_POLL=1`（既定）のタスクだけ。`SNMP_POLL=0` では「SNMP のポーリングは止めてある」と出して終わる |
-| `tg gnmi` | gNMI の購読を 20 秒だけ受けて画面に出す（MSK には送らない。BGP / IS-IS の行が出れば届いている） |
+| `gn get` | IF・BGP・IS-IS の状態（購読の `interface_state` / `bgp_neighbor` / `isis_interface` と同じパス）を gNMI の get で 1 回取り、Kafka に載るのと同じ event の形で画面に出す（Kafka には書かない）。`gn get <パス> ...` で別のパスを取る |
+| `gn render` | 設定（`/tmp/gnmic.yaml`）を作るだけ。購読先と Kafka の向き先を見る（機器と Kafka の資格情報は `${…}` のまま） |
 
-- ログは CloudWatch Logs の `/ecs/<prefix>-telegraf`（出力 `telegraf_log_group_name`。2 つのサービスで共有し、ストリームは受ける側が `dialout/…`、取りにいく側が `dialin/…`）。起動時に、受ける側は `/tmp/telegraf.conf を作った（role: dialout / sink: kafka / brokers: … / trap: 1162/udp / health: 8080/tcp）`、取りにいく側は `（role: dialin / sink: kafka / brokers: … / snmp poll: … / gnmi: … / health: 8080/tcp）` が出る（`snmp poll` はポーリング先。`SNMP_POLL=0` なら `off`）。syslog-ng と GoFlow2 のログは `/ecs/<prefix>-syslog-ng` と `/ecs/<prefix>-goflow2`（出力 `syslog_ng_log_group_name` / `goflow2_log_group_name`）。syslog-ng は起動時に `/tmp/syslog-ng.conf を作った（syslog: 0.0.0.0:5140/udp+tcp RFC3164 / brokers: … / topic: logs / kafka auth: SASL/SCRAM-SHA-512）` を出す（`RFC3164` は `SYSLOG_STANDARD` の値）。
+- 以前の `tg test`（SNMP のポーリングを 1 回）と `tg gnmi`（gNMI の購読を 20 秒）は cycle 013 でやめた。打つと「cycle 013 でやめた」と案内を出して終わる。
+- gnmic のログは CloudWatch Logs の `/ecs/<prefix>-gnmic`（出力 `gnmic_log_group_name`）。起動時に `/tmp/gnmic.yaml を作った（gnmi: 6 台 … / brokers: … / topics: gnmi, metrics / kafka auth: SASL/SCRAM-SHA-512）` が出る（OSS 版は `kafka auth: none`）。機器に届かないときは target ごとに `subscription receive error` が出て、10 秒ごとに繋ぎ直す（タスクは落ちない。手元の docker で確かめた。ECS では未確認）。
+- Telegraf のログは `/ecs/<prefix>-telegraf`（出力 `telegraf_log_group_name`。ストリームは `dialout/…`）。起動時に `/tmp/telegraf.conf を作った（sink: kafka / brokers: … / trap: 1162/udp / health: 8080/tcp）` が出る。syslog-ng と GoFlow2 のログは `/ecs/<prefix>-syslog-ng` と `/ecs/<prefix>-goflow2`（出力 `syslog_ng_log_group_name` / `goflow2_log_group_name`）。syslog-ng は起動時に `/tmp/syslog-ng.conf を作った（syslog: 0.0.0.0:5140/udp+tcp RFC3164 / brokers: … / topic: logs / kafka auth: SASL/SCRAM-SHA-512）` を出す（`RFC3164` は `SYSLOG_STANDARD` の値）。
 
 ```bash
+aws logs tail --region ap-northeast-1 "$(terraform -chdir=IaC/terraform/aws-managed/pipeline/stream output -raw gnmic_log_group_name)" --since 10m --follow
 aws logs tail --region ap-northeast-1 "$(terraform -chdir=IaC/terraform/aws-managed/pipeline/stream output -raw telegraf_log_group_name)" --since 10m --follow
 ```
 
-- 以前の `sudo tg status` / `logs` / `restart` は無い（systemd が無い）。作り直すのは `ops/up.sh`（イメージが変わると両方、`SNMP_POLL` が変わると取りにいく側、`SYSLOG_STANDARD` が変わると syslog-ng のタスクが作り直される。ポーリング先・購読先の変化では作り直さない。それは Nautobot の Job が作り直す）か、`aws ecs update-service --force-new-deployment`（サービスごと）。
-- 設定のテンプレートは `app/telegraf/telegraf.conf.in`。変えたときは下の「変えたとき」。
-- `tg gnmi` / `tg test` で機器に届かない、trap が来ない、ログが来ないときは、lab の EC2 で `sudo lab forward-status` を見る（規則が無ければ `sudo lab forward`）。
+- 以前の `sudo tg status` / `logs` / `restart` は無い（systemd が無い）。作り直すのは `ops/up.sh`（イメージが変わるとそのサービス、`SYSLOG_STANDARD` が変わると syslog-ng のタスクが作り直される。gnmic の購読先の変化では作り直さない。それは Nautobot の Job が作り直す）か、`aws ecs update-service --force-new-deployment`（サービスごと）。
+- 設定のテンプレートは `app/gnmic/gnmic.yaml.in` と `app/telegraf/telegraf.conf.in`。変えたときは下の「変えたとき」。
+- `gn get` で機器に届かない、trap が来ない、ログが来ないときは、lab の EC2 で `sudo lab forward-status` を見る（規則が無ければ `sudo lab forward`）。
 
 ## デバッグ用の EC2（lab + Telegraf を 1 台）
 
@@ -138,13 +152,13 @@ ops/lab-debug.sh down          # バケットを空にしてスタックを消�
 ```
 
 - 中身は lab の EC2 と同じ: 版とイメージ（ECR のミラー）と S3 の `lab/` の置き方は `ops/lab-common.sh`、EC2 の中の支度は `app/containerlab/setup.sh`（起動のたびに S3 の `lab/` を置き直して流す）。UserData は terraform の user_data と同じ形で、違うのはイメージのリポジトリの名前（`-debug-` が付く）と `TELEGRAF_IMAGE` があることだけ。パラメータの既定値・ロールの権限・IMDS の設定が IaC/terraform/aws-managed/pipeline/lab とずれていないことは `tests/test_lab_debug.py` が見る。
-- Telegraf は stream の ECS と同じイメージ（同じ `app/telegraf/telegraf.conf.in`）を docker の host ネットワークで動かし、出力だけを標準出力（`SINK=stdout`。MSK に載るのと同じ JSON）にする。ポーリング先と gNMI の相手は stream と同じく `app/containerlab/lab_topology.py` から作る。SNMP のポーリングは、stream（既定 `1`）と違って既定で止めてある（`app/containerlab/lab.sh` の `SNMP_POLL=0`）。見るときは `sudo SNMP_POLL=1 lab telegraf run` で起こし直す（起動時の systemd は既定の `0` で起こすので、EC2 を再起動すると止まった状態に戻る）。機器は trap を `162/udp` に送るので、`lab forward` が iptables の REDIRECT で Telegraf の `1162/udp` へ向ける（syslog は 2026-10-08 から受けない。syslog-ng は stream と手元の compose だけ）。
+- Telegraf は stream の ECS と同じイメージ（同じ `app/telegraf/telegraf.conf.in`）を docker の host ネットワークで動かし、出力だけを標準出力（`SINK=stdout`。MSK に載るのと同じ JSON）にする。受けるのは trap だけ（gNMI の購読と SNMP のポーリングは cycle 013 で Telegraf から外した。デバッグ用の EC2 に gnmic は無い）。機器は trap を `162/udp` に送るので、`lab forward` が iptables の REDIRECT で Telegraf の `1162/udp` へ向ける（syslog は 2026-10-08 から受けない。syslog-ng は stream と手元の compose だけ）。
 - 入ったら `sudo lab status` / `sudo lab check` などは lab の EC2 と同じ。Telegraf は次のコマンド。
 
 | コマンド | 何をする |
 |---|---|
-| `sudo lab telegraf logs -f` | Telegraf の出力（メトリクス・trap・gNMI の JSON）を流す。行数は `LINES=200` を前に付ける |
-| `sudo lab telegraf test` / `sudo lab telegraf gnmi` | ECS の `tg test` / `tg gnmi` と同じ（`test` は `SNMP_POLL=1` で起こしたときだけ） |
+| `sudo lab telegraf logs -f` | Telegraf の出力（trap の JSON）を流す。行数は `LINES=200` を前に付ける |
+| `sudo lab telegraf test` / `sudo lab telegraf gnmi` | cycle 013 でやめた（打つと案内を出して終わる）。gNMI を見るのは stream の gnmic の `gn get` |
 | `sudo lab telegraf status` / `run` / `stop` | コンテナの状態 / 起こし直す / 止める（docker を直接。起動時は systemd の `<prefix>-telegraf` が `run` を呼ぶ） |
 | `sudo lab forward-status` | trap の REDIRECT（162 → 1162） |
 
@@ -199,17 +213,17 @@ terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw splunk
 
 | 送り手 | 見るもの | 出す `kind` | 定義 | 落ちてから通知まで |
 |---|---|---|---|---|
-| Grafana（`STORES` の `grafana`。既定で入っている） | Prometheus: SNMP のポーリングの `ifOperStatus`（`SNMP_POLL=1`。既定）と、gNMI の on_change（BGP のセッション、IS-IS の IF）。OpenSearch: link 以外の trap | `link_down`（ポーリング）、`bgp_down`、`isis_down`、`trap`（link 以外の trap） | `app/grafana/provisioning/alerting/netops-prometheus.yaml`（`link_down` / `bgp_down` / `isis_down`）、`netops-opensearch.yaml`（`trap`）、`netops.yaml`（送り先と本文） | Spark のマイクロバッチ 60 秒 + ルールの評価（1 分ごと）。`link_down` はその前にポーリング 10 秒 + SNMP の遅れ 15〜20 秒 |
-| Splunk（`STORES` の `splunk`。既定で入っている） | SNMP のポーリングの `ifOperStatus`（`SNMP_POLL=1`。既定）、trap、gNMI の on_change（BGP のセッション、IS-IS の IF） | `link_down`（ポーリングと、linkDown / linkUp の trap）、`trap`（ほかの trap）、`bgp_down`、`isis_down` | `app/splunk/netops_alerts/default/savedsearches.conf` | Spark のマイクロバッチ 60 秒 + 保存済みサーチ（毎分。索引に入ってから最大 70 秒ほど）。ポーリングの `link_down` はその前にポーリング 10 秒 + SNMP の遅れ 15〜20 秒 |
+| Grafana（`STORES` の `grafana`。既定で入っている） | Prometheus: gNMI の on_change（IF の `oper-state` / `admin-state`、BGP のセッション、IS-IS の IF）。OpenSearch: link 以外の trap | `link_down`、`bgp_down`、`isis_down`、`trap`（link 以外の trap） | `app/grafana/provisioning/alerting/netops-prometheus.yaml`（`link_down` / `bgp_down` / `isis_down`）、`netops-opensearch.yaml`（`trap`）、`netops.yaml`（送り先と本文） | Spark のマイクロバッチ 60 秒 + ルールの評価（1 分ごと） |
+| Splunk（`STORES` の `splunk`。既定で入っている） | trap、gNMI の on_change（IF の `oper-state` / `admin-state`、BGP のセッション、IS-IS の IF） | `link_down`（gNMI と、linkDown / linkUp の trap）、`trap`（ほかの trap）、`bgp_down`、`isis_down` | `app/splunk/netops_alerts/default/savedsearches.conf` | Spark のマイクロバッチ 60 秒 + 保存済みサーチ（毎分。索引に入ってから最大 70 秒ほど） |
 
-- **既定（`STORES=s3,grafana,splunk` / `SNMP_POLL=1`）では、Grafana と Splunk の両方が同じ 4 種類を出す。**
-  cycle 002（Splunk と Grafana のアラートを比べる）でそろえた。`detail` の末尾の `(grafana: poll)` / `(splunk: poll)` などで、どの送り手がどの入力から出したかが分かる。
+- **既定（`STORES=s3,grafana,splunk`）では、Grafana と Splunk の両方が同じ 4 種類を出す。**
+  cycle 002（Splunk と Grafana のアラートを比べる）でそろえた。`detail` の末尾の `(grafana: gnmi)` / `(splunk: trap)` などで、どの送り手がどの入力から出したかが分かる。
 - **違いは linkDown / linkUp の trap。**
   trap から `link_down` を出すのは Splunk だけ。Grafana は作らない（IF 名の入った varbind の名前が IF ごとに変わり、OpenSearch の集計では取り出せない）。
-- **`SNMP_POLL=0` では、ポーリングを見るものが発火しない。**
-  Grafana の `link_down` と Splunk の `netops_poll` が当たる。ルールとサーチはそのまま作るが、`ifOperStatus` が無い（Grafana はデータが無いとき `KeepLast` なので発火も解消もしない）。IF の up / down は Splunk が trap からだけ知らせ、`STORES` に `splunk` も無ければ知らせるものが無い（`ops/up.sh` が注意を出す）。
+- **`link_down` は cycle 013 から gNMI の IF の `oper-state` で見る。**
+  それまでの SNMP のポーリングの `ifOperStatus`（Grafana の `link_down` と Splunk の `netops_poll`）はやめ、`SNMP_POLL` も使わない。
 - **`ops/up.sh` の送り手の数え方。**
-  Grafana は作ればいつも送り手で、`sns` のエンドポイントを足す。`WORKFLOW=1` の検査が見るのは `link_down` の送り手（ワークフローを起こすのは `link_down` だけ）で、Grafana は `SNMP_POLL=1` のときだけ、Splunk はあればいつも数える。どちらも無いと `ops/up.sh` は何も作らずに止まる。
+  Grafana は作ればいつも送り手で、`sns` のエンドポイントを足す。`WORKFLOW=1` の検査が見るのは `link_down` の送り手（ワークフローを起こすのは `link_down` だけ）で、Grafana も Splunk もあればいつも数える。どちらも無いと `ops/up.sh` は何も作らずに止まる。
 - 本文は `{"source": "grafana" | "splunk", "alerts": [{"status", "device_id", "kind", "target", "detail", "starts_at"}]}`。異常の id は `<device_id>#<kind>#<target>` で、送り手が違っても同じ機器・種類・対象なら同じ id になる（Grafana と Splunk が同じ `link_down` を知らせても 1 つ）。形を変えるときは、Grafana のテンプレート、Splunk のアラートアクション、`app/temporal/rules.py` の `alerts_from_message`（ワーカーと Lambda が同じものを使う）を一緒に変える。
 - 送り手は「いまの状態」を出すだけなので、同じ知らせが重なって届くことがある。受け手は何度受けてもよい作り（ワークフローの id は異常ごとに 1 つ、`status` は上書き）。
 - publish はタスクロール（`sns:Publish` だけ）で、VPC の `sns` のエンドポイントを通る。アクセスキーは置かない。トピックは VPC の外からの publish を拒む。
@@ -251,13 +265,13 @@ SELECT status, source, device_id, kind, target, starts_at, received_at FROM "s3t
 
 | ルール | 見るもの | 出すもの |
 |---|---|---|
-| `link_down` | Prometheus の `snmp_interface_ifOperStatus`（SNMP のポーリング。`SNMP_POLL=1` のときだけ値がある） | 2（down）の IF で `firing`、戻れば `resolved`。対象は IF 名。ループバック、管理ポート、サブインタフェース、admin-state が disable のポート（oper は down だが異常ではない）は外す |
+| `link_down` | Prometheus の `snmp_interface_oper_up` と `snmp_interface_admin_up`（gNMI の `oper_state` / `admin_state` を Spark が 1 / 0 にしたもの） | `oper_up` が 0（`up` でない）の IF で `firing`、1 に戻れば `resolved`。対象は IF 名。ループバック、管理ポート、サブインタフェース、`admin_up` が 0 のポート（admin-state が disable。oper は down だが異常ではない）は外す |
 | `bgp_down` | Prometheus の `snmp_bgp_neighbor_session_up`（gNMI の `session_state` を Spark が 1 / 0 にしたもの） | 0（`established` でない）で `firing`、1 に戻れば `resolved`。対象は相手の IP |
 | `isis_down` | Prometheus の `snmp_isis_interface_oper_up`（gNMI の `oper_state` を Spark が 1 / 0 にしたもの） | 0（`up` でない）で `firing`、1 に戻れば `resolved`。対象はサブインタフェース |
 | `trap` | OpenSearch の `snmp_trap`（過去 10 分を機器と OID ごとに数える） | 1 通以上で `firing`。10 分来なければ `resolved`（OID ごと）。対象は trap の OID。linkDown / linkUp と coldStart / warmStart などは数えない |
 
 - gNMI と trap のレコードは機器名を持たないので、Spark が device map（`ops/up.sh` が `app/containerlab/lab_topology.py --device-map` で作り、ジョブの引数 `--device-map` で渡す）で `sysName` を足す。対応表に無い送り元の trap は、IP がそのまま機器名になる。
-- `bgp_down` / `isis_down` は直近 24 時間の最後の値を見る（on_change は変わったときにしか値が来ない）。24 時間を超えて同じ状態のままだと系列が消えて解消が出る（制約。Telegraf がつなぎ直すと今の状態を送り直すので、普段は切れない）。
+- `link_down` / `bgp_down` / `isis_down` は直近 24 時間の最後の値を見る（on_change は変わったときにしか値が来ない）。24 時間を超えて同じ状態のままだと系列が消えて解消が出る（制約。gnmic がつなぎ直すと購読の始めに今の状態が送り直されるので、普段は切れない）。
 - Prometheus のルールは、データが無い・クエリが失敗したときは直前の状態のまま（`KeepLast`。分からないときに発火も解消もしない）。機器ごと止まって系列が途切れると、Grafana は古い系列として解消を送る（機器の停止はここでは検知しない）。`trap` は、数えるものが無いとき（NoData）を OK にする（`KeepLast` だと発火したまま解消しない）。
 - 4 本とも、クエリが失敗したときも直前の状態のまま（`execErrState: KeepLast`）なので、評価がエラーでも画面のルールは Normal に見える。`ops/up.sh`（OSS 版は `ops/oss/up.sh`）は最後の手順 9-2 で、Web の EC2 から Grafana のルールの API を読んで確かめる（打ってから全部のルールがもう 1 回評価されるのを待って判定する。エラーのあったルールは、その次の評価でもエラーなら NG。ルールの間隔は 1 分、待つのは最大 5 分。NG でも未確認でも止めず、黄色の警告を最後にもう一度出す。マネージド版は、今回は analytics を作らない回（`PIPELINE=0` など）でも前の回の Grafana が残っていれば打つ）。あとで確かめ直すときは次を打つ。終了コードは 0 OK / 1 NG / 2 未確認 / 3 確かめる前に止まった（[troubleshooting.md](troubleshooting.md) の「`ops/check-grafana.sh` の終了コード」）。ログの案内は NG のときだけ出す。理由はログ `/ecs/<prefix>-grafana` の `Failed to evaluate rule`（[architecture/resources/grafana.md](architecture/resources/grafana.md) の「知見」）。
 
@@ -271,20 +285,19 @@ SELECT status, source, device_id, kind, target, starts_at, received_at FROM "s3t
 - 画面は Alerting → Alert rules。provisioning したルール・連絡先・ポリシーは画面から変えられない。変えるなら `app/grafana/provisioning/alerting/` の `netops-prometheus.yaml` / `netops-opensearch.yaml`（ルール）か `netops.yaml`（送り先、ポリシー、本文のテンプレート）を変えて `ops/up.sh`（イメージから作り直す）。
 - `netops.yaml` のテンプレートの `$` はそのまま書く。`$$` とエスケープすると Grafana が起動しない（`Invalid format of the submitted template`。13.2.2 で実測）。`${ALERTS_TOPIC_ARN}` と `${AWS_REGION}` だけは、起動時に Grafana が環境変数で埋める。
 - `app/grafana/start.sh` は、`ALERTS_TOPIC_ARN` があるときだけアラートの定義を並べる。`netops-prometheus.yaml` は `PROMETHEUS_URL` も、`netops-opensearch.yaml` は `OPENSEARCH_URL` もあるとき。`netops.yaml` はどちらかを並べたとき。
-- 4 本になったあとの形（Splunk と Grafana のアラートを比べる（002））は、2026-10-05 に AWS で `link_down` と `isis_down` の発火を確かめた（`sudo lab fail-main`）。`bgp_down` と `trap` の発火は AWS では未確認。
+- 4 本になったあとの形（Splunk と Grafana のアラートを比べる（002））は、2026-10-05 に AWS で `link_down` と `isis_down` の発火を確かめた（`sudo lab fail-main`）。`bgp_down` と `trap` の発火は AWS では未確認。`link_down` が gNMI から出る形（cycle 013）は AWS では未確認。
 
 ### Splunk のアラート
 
-- アプリ `netops_alerts` をイメージに焼き込んである（`app/splunk/netops_alerts/`）。保存済みサーチ 4 本と、結果を SNS へ publish するアラートアクション `netops_sns`（`bin/netops_sns.py`）。
+- アプリ `netops_alerts` をイメージに焼き込んである（`app/splunk/netops_alerts/`）。保存済みサーチ 3 本と、結果を SNS へ publish するアラートアクション `netops_sns`（`bin/netops_sns.py`）。
 
 | 保存済みサーチ | 見るもの | 出すもの |
 |---|---|---|
-| `netops_poll` | `telegraf:interface` の `ifOperStatus`（SNMP のポーリング。`SNMP_POLL=1` のときだけ値がある） | down（2）かどうかが変わった IF だけを出す。down になったら `link_down` の `firing`、down でなくなったら `resolved`。ループバック、管理ポート、サブインタフェース、admin-state が disable の IF は外す（Grafana の `link_down` と同じ） |
-| `netops_gnmi` | `telegraf:bgp_neighbor` の `session_state`、`telegraf:isis_interface` の `oper_state` | 前の値（過去 24 時間の最後の値）と比べて変わったときだけ出す。`established` / `up` でなくなれば `bgp_down` / `isis_down` の `firing`、戻れば `resolved`。前の値が無いときは、異常なら `firing` だけ出す（起動の直後に `resolved` をまとめて送らない） |
+| `netops_gnmi` | `telegraf:interface` の `oper_state` / `admin_state`、`telegraf:bgp_neighbor` の `session_state`、`telegraf:isis_interface` の `oper_state`（どれも gnmic の gNMI を Spark が読み替えたもの） | 前の値（過去 24 時間の最後の値）と比べて変わったときだけ出す。`up` / `established` / `up` でなくなれば `link_down` / `bgp_down` / `isis_down` の `firing`、戻れば `resolved`。前の値が無いときは、異常なら `firing` だけ出す（起動の直後に `resolved` をまとめて送らない）。`link_down` はループバック、管理ポート、サブインタフェース、admin-state が disable の IF を外す（Grafana の `link_down` と同じ） |
 | `netops_trap` | `telegraf:snmp_trap` | linkDown は `link_down` の `firing`、linkUp は `resolved`（ループバック、管理ポート、サブインタフェースは外す）。ほかの trap は `trap` の `firing`（coldStart / warmStart などは出さない） |
 | `netops_trap_clear` | 同上（過去 70 分） | その機器から link 以外の trap が 10 分来なければ、その機器の `trap` を `resolved` にする（機器ごと。1 つの trap につき 1 回） |
 
-- 4 本とも毎分動き、「索引に入った時刻」で直前の 1 分を 1 回だけ読む（`_index_earliest` / `_index_latest`。イベントの時刻で切ると、Spark のマイクロバッチで遅れて届いた分を取りこぼす）。`netops_poll` は比べる相手としてその前の 10 分も、`netops_trap_clear` は過去 70 分を読む。スケジューラが遅れても飛ばさない（`realtime_schedule = 0`）。
+- 3 本とも毎分動き、「索引に入った時刻」で直前の 1 分を 1 回だけ読む（`_index_earliest` / `_index_latest`。イベントの時刻で切ると、Spark のマイクロバッチで遅れて届いた分を取りこぼす）。`netops_gnmi` は比べる相手としてその前の 24 時間も、`netops_trap_clear` は過去 70 分を読む。スケジューラが遅れても飛ばさない（`realtime_schedule = 0`）。
 - 項目は `fields` で `_raw` だけにしてから `spath` で取る。`props.conf` の `KV_MODE = json` と重ねると全部の項目が同じ値 2 つの多値になり、1 行も出なくなる（10.4.3 で実測）。
 - gNMI と trap のイベントは機器名でなく IP を持つので、アラートアクションがタスクの環境変数 `DEVICE_MAP`（`ops/up.sh` が `app/containerlab/lab_topology.py --device-map` で作る）で機器名に直す。直せなかった IP はそのまま `device_id` になり、Neptune では「未登録」の頂点になる。
 - アラートアクションは、Splunk の Python が持っている boto3 で publish する（10.4.4 は python3.13 に boto3 1.37.14。app に同梱しない）。Splunk の版を変えたら `tests/check_splunk_image.py` で、その版に boto3 があり publish できることを確かめる。認証情報は ECS のタスクロール。1 通に 50 件まで、失敗は 3 回まで試す。
@@ -347,7 +360,7 @@ Neptune に入れる機器・インタフェース・回線（物理層）と、
 | IP | `ip_interface`（アドレス付きサブインタフェース） / `isis_adjacency` | `<機器>#<IF>.0` / `<機器>#isis#<IF>.0` | `interface_id` / `ip_interface_id` |
 | EVPN・BGP | `bgp_session` / `evpn_instance` / `ethernet_segment` | `<機器>#bgp#<相手の IP>` / `<機器>#evi#<EVI>` / `<機器>#es#<名前>` | `ip_interface_id`（ループバック `system0.0`） / `interface_id`（LAG の IF。いまの lab には ES が無い） |
 
-同じ定義から、Telegraf のポーリング先（`--snmp-agents` → stream の変数 `snmp_agents`。`SNMP_POLL=0` では使わない）、gNMI の購読先（`--gnmi-targets` → stream の変数 `gnmi_targets`）と、gNMI と trap の送り元を機器名に直す device map（`--device-map`。hostname・管理 IP・全インタフェースのアドレス → 機器名。Splunk のアラートアクションはタスクの環境変数 `DEVICE_MAP` で、Spark のジョブは引数 `--device-map` で受ける）も作る。機器の一覧はこの 1 か所だけにある。ただし Telegraf のポーリング先と購読先はここからは最初の値だけで、そのあとの正は Nautobot（下の「Nautobot」）。
+同じ定義から、gnmic の購読先（`--gnmi-targets` → stream の変数 `gnmi_targets`）と、gNMI と trap の送り元を機器名に直す device map（`--device-map`。hostname・管理 IP・全インタフェースのアドレス → 機器名。Splunk のアラートアクションはタスクの環境変数 `DEVICE_MAP` で、Spark のジョブは引数 `--device-map` で受ける）も作る。機器の一覧はこの 1 か所だけにある。ただし gnmic の購読先はここからは最初の値だけで、そのあとの正は Nautobot（下の「Nautobot」）。
 
 ```bash
 ops/sync-graph.sh              # 空のときに入れる
@@ -372,31 +385,31 @@ ops/sync-graph.sh --dry-run    # 作った JSON を出すだけ
 flowchart LR
   W["Web の「トポロジ」タブ<br/>リンクの追加・削除"] -->|"REST API（トークン）"| U
   U["Nautobot<br/>機器 / Service / ケーブル"] -->|"JobHook（変更のたび）<br/>または手で Job"| J["Job<br/>app/nautobot/jobs/netops_jobs.py"]
-  J -->|"SSM の一覧を書き換え<br/>ECS のサービスを作り直す"| T["Telegraf dialin<br/>gNMI / SNMP を取りにいく"]
+  J -->|"SSM の一覧を書き換え<br/>ECS のサービスを作り直す"| T["gnmic<br/>gNMI を取りにいく"]
   J -->|"openCypher（差分）"| N["Neptune の物理層<br/>device / interface / 回線"]
 ```
 
 | Nautobot | 反映先 |
 |---|---|
-| Device に Service `gnmi`（tcp）がある | Telegraf の gNMI の購読先 `<primary IPv4>:<ポート>`（SSM `/<prefix>/telegraf-dialin/nautobot/gnmi-targets`） |
-| Device に Service `snmp`（udp）がある | Telegraf の SNMP のポーリング先 `udp://<primary IPv4>:<ポート>`（同 `snmp-agents`。`SNMP_POLL=0` では使わない） |
+| Device に Service `gnmi`（tcp）がある | gnmic の購読先 `<primary IPv4>:<ポート>`（SSM `/<prefix>/gnmic/nautobot/gnmi-targets`） |
+| Device に Service `snmp`（udp）がある | 取りにはいかない（機器が SNMP を喋る印で、下の「監視」を決めるだけ。SNMP のポーリングは cycle 013 でやめた） |
 | Device（名前、Location、Role、primary IPv4、custom field `asn`）と Interface（名前、最初の IP、LAG の親） | Neptune の `device` / `interface`。Service がどちらかあれば「監視」 |
 | Cable（両端が Interface。custom field `link_role` / `bandwidth_mbps`） | Neptune の回線。種類（fabric / l2 / lag）は両端の Role と LAG から決める |
 
 - 構成は ECS Fargate（ARM 2 vCPU / 4 GB）の 1 タスクに web（uWSGI）・Celery worker（Job を回す）・Redis の 3 コンテナと、RDS の PostgreSQL（`db.t4g.micro`）。SG は `<prefix>-nautobot` / `<prefix>-nautobot-db`。LB は無く、Web の EC2 を踏み台にしたポートフォワードで開く。
 - シークレット（Django の SECRET_KEY、admin のパスワード、DB のパスワード、Web が使う API のトークン）は `ops/up.sh` が SSM の SecureString `/<prefix>/nautobot/{secret-key,admin-password,db-password,api-token}` に乱数で作る。タスクは ECS の secrets で受け、RDS には Terraform の write-only の引数で渡す（state に載らない）。
-- 最初の起動で、DB が空なら lab の定義（イメージに入れた `lab_seed.json`）から機器・インタフェース・IP・Service・ケーブルを入れ、Job 2 つ（「Telegraf とグラフ DB に同期」「変更のたびに Telegraf とグラフ DB に同期」）と JobHook `netops-sync` を有効にして 1 回同期する（`app/nautobot/netops/bootstrap.py`。2 回目からは足りないものだけ作る。lab の定義からの seed は機器が 1 台も無いときだけで、機器があれば lab を変えても入れ直さない）。
-- Telegraf の一覧は、変わったときだけ書き換えて取りにいく側のサービスを作り直す（購読が数十秒切れる）。Service を持つ機器が 1 台も無くなる変更は書かない（Telegraf が起動できなくなるので、警告だけ）。
+- 最初の起動で、DB が空なら lab の定義（イメージに入れた `lab_seed.json`）から機器・インタフェース・IP・Service・ケーブルを入れ、Job 2 つ（「gnmic とグラフ DB に同期」「変更のたびに gnmic とグラフ DB に同期」）と JobHook `netops-sync` を有効にして 1 回同期する（`app/nautobot/netops/bootstrap.py`。2 回目からは足りないものだけ作る。lab の定義からの seed は機器が 1 台も無いときだけで、機器があれば lab を変えても入れ直さない）。
+- gnmic の一覧は、変わったときだけ書き換えて gnmic のサービスを作り直す（購読が数十秒切れる）。Service `gnmi` を持つ機器が 1 台も無くなる変更は書かない（gnmic が起動できなくなるので、警告だけ）。
 - Neptune へは `app/agentcore/graph.py` の `sync_physical()` が openCypher で差分を書く。`status`（アラートが書く）と IP 層・EVPN/BGP 層は触らない。IP 層から上は Nautobot に無いので、lab の定義からだけ入る（`ops/sync-graph.sh`）。
 - Web の「トポロジ」タブのリンクの追加・削除は、Nautobot があるあいだ Nautobot の REST API に書く（`app/dashboard/nautobot_api.py`。無いインタフェースは作り、ケーブルを作る・消す）。Neptune には JobHook の Job が数秒〜十数秒あとに反映するので、画面は「再読み込み」で確かめる。API のユーザーは `netops-web`（起動時に `bootstrap.py` が SSM の `api-token` と同じ値のトークンで作る。JobHook が出るように superuser）。種別（fabric / l2 / lag）は画面で選んだものではなく両端の Role と LAG から決まる。機器の追加・削除は Nautobot の画面でする。「静的データを投入」は Nautobot があるあいだ使えない。
-- JobHook は Device / Interface / Cable / IPAddress / Service / Location / Role の作成・変更・削除で出る。IP をインタフェースに付け替えただけのように JobHook が出ない変更のあとは、画面の Jobs → 「Telegraf とグラフ DB に同期」を手で打つ。
+- JobHook は Device / Interface / Cable / IPAddress / Service / Location / Role の作成・変更・削除で出る。IP をインタフェースに付け替えただけのように JobHook が出ない変更のあとは、画面の Jobs → 「gnmic とグラフ DB に同期」を手で打つ。
 - JobHook は、変更した人に Job を実行する権限が無いと出ない（管理者は出る）。権限を絞ったユーザーを作るなら、Job `netops_jobs.SyncOnChange` の実行も許す。
 - 機器が 1 台も無いときは Neptune を触らない（空で合わせると物理層が全部消えるため。seed が失敗したときも起動時の同期を飛ばす）。全部消したいときは `ops/sync-graph.sh --replace` で入れ直す。
 - 機器の名前を変えると、Neptune では「前の名前の機器を消して新しい名前の機器を足す」になり、その機器の `status` と IP 層より上へのつながりは消える（名前が頂点の ID のため）。上の層は `ops/sync-graph.sh --replace` で入れ直す。
 - 機器の status は `Maintenance` だけ見る（Neptune の機器に `maintenance = true` を付け、ワークフローはその機器の異常では起こさない。`bootstrap.py` が `Maintenance` を機器にも選べるようにする）。ほかの status（Planned / Decommissioning など）は見ず、Nautobot にある機器は全部映る。Module に付いた Interface のケーブルは回線にしない。
-- 一括で変えると変更 1 件ごとに Job が 1 本ずつ順に走り、途中の状態で一覧が変わるたびに Telegraf の取りにいく側が作り直される。大きく変えるときは JobHook `netops-sync` を止めてから変え、最後に手で Job を打つ（JobHook は次の起動で有効に戻る）。
+- 一括で変えると変更 1 件ごとに Job が 1 本ずつ順に走り、途中の状態で一覧が変わるたびに gnmic が作り直される。大きく変えるときは JobHook `netops-sync` を止めてから変え、最後に手で Job を打つ（JobHook は次の起動で有効に戻る）。
 - admin のパスワードは起動のたびに SSM の値へ戻る（画面で変えても残らない）。
-- stream を作り直して一覧の持ち主を変えたとき（`dialin_targets_from_nautobot` を手で変えた apply）は、nautobot のルートも apply し直す。そのままだと Job が `ParameterNotFound` で失敗する（`ops/up.sh` は両方をそろえる）。
+- stream を作り直して一覧の持ち主を変えたとき（`gnmi_targets_from_nautobot` を手で変えた apply）は、nautobot のルートも apply し直す。そのままだと Job が `ParameterNotFound` で失敗する（`ops/up.sh` は両方をそろえる）。
 - `ops/down.sh` で DB ごと消える。Nautobot で編集した内容は残らない。
 - デバッグ用の EC2 は Nautobot を使わない（lab の定義の一覧のまま）。
 
@@ -425,10 +438,11 @@ uv run python app/containerlab/lab_topology.py app/containerlab --layers > app/a
 |---|---|
 | `app/containerlab/` の設定（`app/containerlab/gen_lab.py` を回したあと） | `ops/up.sh` を打つ（手順 5 で S3 に置き直す）→ lab に入って `sudo systemctl restart <prefix>-lab`。デバッグ用の EC2 は `ops/lab-debug.sh sync` |
 | `app/telegraf/`（`telegraf.conf.in` / `telegraf.sh` / `Dockerfile`） | `ops/up.sh` を打つ（ディレクトリのハッシュが変わるので手順 2 がイメージを作り直し、手順 7 の stream の apply がタスクを入れ替える）。lab の EC2 はそのまま。デバッグ用の EC2 は `ops/lab-debug.sh up` |
+| `app/gnmic/`（`gnmic.yaml.in` / `gnmic.sh`）と `docker/images/gnmic/` | `ops/up.sh` を打つ（同じく手順 2 がイメージを作り直し、手順 7 の stream の apply が gnmic のタスクを入れ替える）。デバッグ用の EC2 には gnmic が無い |
 | `app/grafana/`（provisioning。ダッシュボードとアラート） | `ops/up.sh` を打つ（同じく手順 2 がイメージを作り直し、手順 7-4 の analytics の apply がタスクを入れ替える） |
 | `app/splunk/`（保存済みサーチ、アラートアクション） | `ops/up.sh` を打つ（同じ。Splunk の index はタスクと一緒に消えるので、入れ替えの前のイベントは検索できなくなる。クラスター（`SPLUNK_AZ_NUM` が 2 か 3）は indexer を 1 台ずつ入れ替えるが、複製が終わる前に次の台が入れ替わると、その分は消える） |
 | `app/spark/snmp_sinks.py` | `ops/up.sh` を打つ（手順 7-5 がハッシュの違いを見て、動いているジョブ（3 つまで）を止めて起こし直す）。手で止めるコマンドは下 |
-| lab の機器や回線 | 上のあと `ops/sync-graph.sh --replace`。監視する機器を足したら Nautobot にも足す（機器と Service `gnmi` / `snmp`。JobHook の Job が Telegraf の一覧を書き換えて取りにいく側を作り直す。Nautobot の seed は機器が 1 台も無いときだけなので、lab を変えても入らない。stream の変数 `snmp_agents` / `gnmi_targets` は最初の値だけで、変えても Telegraf の一覧は変わらない）。device map は `ops/up.sh` で作り直す（Splunk のタスクの環境変数なので、変われば手順 7-4 の apply が Splunk のタスクを入れ替える） |
+| lab の機器や回線 | 上のあと `ops/sync-graph.sh --replace`。監視する機器を足したら Nautobot にも足す（機器と Service `gnmi`（と SNMP を喋る印の `snmp`）。JobHook の Job が gnmic の一覧を書き換えて gnmic を作り直す。Nautobot の seed は機器が 1 台も無いときだけなので、lab を変えても入らない。stream の変数 `gnmi_targets` は最初の値だけで、変えても gnmic の一覧は変わらない）。device map は `ops/up.sh` で作り直す（Splunk のタスクの環境変数なので、変われば手順 7-4 の apply が Splunk のタスクを入れ替える） |
 
 ジョブを止めるコマンド（`$APP_ID` と `$JOB_RUN_ID` は上の「Spark を確かめる」で入れる）:
 

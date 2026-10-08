@@ -37,26 +37,26 @@ lab_common, up_common = read("ops", "lab-common.sh"), read("ops", "up-common.sh"
 example = env_file(read("docker", "compose", ".env.example"))
 lab_sh = read("app", "containerlab", "lab.sh")
 
-# up.sh が lab の定義から作って環境で渡す 3 つ（AWS 版の ops/up.sh と同じ作り方）
+# up.sh が lab の定義から作って環境で渡す 2 つ（AWS 版の ops/up.sh と同じ作り方。SNMP のポーリング先 SNMP_AGENTS は cycle 013 でやめた）
 def topology(flag):
     return subprocess.run([sys.executable, os.path.join(ROOT, "app", "containerlab", "lab_topology.py"), os.path.join(ROOT, "app", "containerlab"), flag],
                           capture_output=True, text=True, check=True).stdout.strip()
-UP_ENV = {"SNMP_AGENTS": topology("--snmp-agents"), "GNMI_TARGETS": topology("--gnmi-targets"), "DEVICE_MAP": topology("--device-map")}
+UP_ENV = {"GNMI_TARGETS": topology("--gnmi-targets"), "DEVICE_MAP": topology("--device-map")}
 
 def subst(s, env):  # compose の ${X} / ${X:-既定} を env で埋める
     return re.sub(r"\$\{(\w+)(?::-([^}]*))?\}", lambda m: env.get(m.group(1)) or (m.group(2) or ""), s)
 
 
 # ---- 1. 構成（design.md の「合意した決定」と「変更対象ファイル」）
-check("services は 13 個（telegraf syslog-ng goflow2 kafka-1 kafka-2 kafka-3 kafka-ui spark-splunk spark-http opensearch prometheus splunk grafana。syslog-ng と goflow2 は cycle 012）",
-      list(svc) == "telegraf syslog-ng goflow2 kafka-1 kafka-2 kafka-3 kafka-ui spark-splunk spark-http opensearch prometheus splunk grafana".split())
+check("services は 14 個（telegraf gnmic syslog-ng goflow2 kafka-1 kafka-2 kafka-3 kafka-ui spark-splunk spark-http opensearch prometheus splunk grafana。syslog-ng と goflow2 は cycle 012、gnmic は cycle 013）",
+      list(svc) == "telegraf gnmic syslog-ng goflow2 kafka-1 kafka-2 kafka-3 kafka-ui spark-splunk spark-http opensearch prometheus splunk grafana".split())
 check("named volume は design.md の 10 個（kafka-1/2/3、opensearch、prometheus、splunk-etc、splunk-var、grafana、spark-*-ckpt）",
       set(compose["volumes"]) == {"kafka-1", "kafka-2", "kafka-3", "opensearch", "prometheus", "splunk-etc", "splunk-var", "grafana",
                                   "spark-splunk-ckpt", "spark-http-ckpt"})
 check("ネットワークは nwc-local", compose["networks"]["default"]["name"] == "nwc-local")
 check("プロジェクト名は nwc-local（ディレクトリ名の compose にしない。volume が nwc-local_* になる）",
       compose["name"] == "nwc-local")
-check("compose の ports は全部 127.0.0.1 に縛る（Kafka・Splunk・Grafana・OpenSearch を WSL の外へ出さない。host のネットワークにいる Telegraf・syslog-ng・GoFlow2 の受け口はこの外）",
+check("compose の ports は全部 127.0.0.1 に縛る（Kafka・Splunk・Grafana・OpenSearch を WSL の外へ出さない。host のネットワークにいる Telegraf・syslog-ng・GoFlow2 の受け口はこの外。gnmic は待ち受けない）",
       all(p.startswith("127.0.0.1:") for s in svc.values() for p in s.get("ports", [])))
 def built(n, name):  # compose の build が app/<name> を context に、docker/images/<name>/Dockerfile を dockerfile にしていて、その Dockerfile が実在する
     b = svc[n]["build"]
@@ -64,6 +64,8 @@ def built(n, name):  # compose の build が app/<name> を context に、docker
             and os.path.isfile(os.path.join(LC, b["context"], b["dockerfile"])))
 check("telegraf は network_mode: host で、build の context は ../../app/telegraf、dockerfile は ../../docker/images/telegraf/Dockerfile（context からの相対）",
       svc["telegraf"]["network_mode"] == "host" and built("telegraf", "telegraf") and "ports" not in svc["telegraf"])
+check("gnmic は network_mode: host（lab の管理ネットの SR Linux の 57400/tcp へ繋ぐ）で、build の context は ../../app/gnmic、dockerfile は ../../docker/images/gnmic/Dockerfile、ports を書かない（cycle 013）",
+      svc["gnmic"]["network_mode"] == "host" and built("gnmic", "gnmic") and svc["gnmic"]["image"] == "nwc-local-gnmic" and "ports" not in svc["gnmic"])
 check("syslog-ng は network_mode: host で、build の context は ../../app/syslog-ng、dockerfile は ../../docker/images/syslog-ng/Dockerfile。goflow2 も host で、どちらも ports を書かない",
       svc["syslog-ng"]["network_mode"] == svc["goflow2"]["network_mode"] == "host" and built("syslog-ng", "syslog-ng")
       and svc["syslog-ng"]["image"] == "nwc-local-syslog-ng" and "ports" not in svc["syslog-ng"] and "ports" not in svc["goflow2"])
@@ -88,6 +90,9 @@ check("grafana の GRAFANA_VERSION と splunk の SPLUNK_VERSION は ops/up-comm
       and built("grafana", "grafana") and built("splunk", "splunk"))
 check("telegraf の TELEGRAF_VERSION は ops/lab-common.sh の値",
       svc["telegraf"]["build"]["args"]["TELEGRAF_VERSION"] == sh_const(lab_common, "TELEGRAF_VERSION"))
+check("gnmic の GNMIC_VERSION は ops/up-common.sh の値で、docker/images/gnmic/Dockerfile の ARG の既定値も同じ（cycle 013）",
+      svc["gnmic"]["build"]["args"]["GNMIC_VERSION"] == sh_const(up_common, "GNMIC_VERSION") is not None
+      and re.search(r"^ARG GNMIC_VERSION=(\S+)$", read("docker", "images", "gnmic", "Dockerfile"), re.M).group(1) == sh_const(up_common, "GNMIC_VERSION"))
 check(".env.example の SRLINUX_IMAGE / MULTITOOL_IMAGE / TREX_IMAGE は ops/lab-common.sh の upstream:tag",
       example["SRLINUX_IMAGE"] == f"{sh_const(lab_common, 'SRLINUX_UPSTREAM')}:{sh_const(lab_common, 'SRLINUX_TAG')}"
       and example["MULTITOOL_IMAGE"] == f"{sh_const(lab_common, 'MULTITOOL_UPSTREAM')}:{sh_const(lab_common, 'MULTITOOL_TAG')}"
@@ -97,8 +102,9 @@ check("syslog-ng の SYSLOG_NG_VERSION と goflow2 のタグは ops/up-common.sh
       svc["syslog-ng"]["build"]["args"]["SYSLOG_NG_VERSION"] == sh_const(up_common, "SYSLOG_NG_VERSION") is not None
       and svc["goflow2"]["image"] == f"netsampler/goflow2:{sh_const(up_common, 'GOFLOW2_TAG')}"
       and re.search(r"^ARG SYSLOG_NG_VERSION=(\S+)$", read("docker", "images", "syslog-ng", "Dockerfile"), re.M).group(1) == sh_const(up_common, "SYSLOG_NG_VERSION"))
-check("telegraf・syslog-ng と spark-splunk / spark-http は restart: on-failure:5（起こし直しは 5 回まで。swarm の deploy.restart_policy は使わない）",
-      all(svc[n].get("restart") == "on-failure:5" and "deploy" not in svc[n] for n in ("telegraf", "syslog-ng", "spark-splunk", "spark-http")))
+check("telegraf・gnmic・syslog-ng と spark-splunk / spark-http は restart: on-failure:5（起こし直しは 5 回まで。swarm の deploy.restart_policy は使わない）",
+      all(svc[n].get("restart") == "on-failure:5" and "deploy" not in svc[n] for n in ("telegraf", "gnmic", "syslog-ng", "spark-splunk", "spark-http"))
+      and svc["gnmic"]["depends_on"] == ["kafka-1", "kafka-2", "kafka-3"])
 check("goflow2 は restart: on-failure:10（Kafka が無いと 1 秒ほどで終わるので、5 回では 9 秒しか待てない。10 回で約 110 秒。cycle 012）",
       svc["goflow2"].get("restart") == "on-failure:10" and "deploy" not in svc["goflow2"])
 # Spark は送り先が起きる前に始めると POST の再試行（app/spark/snmp_sinks.py の HTTP_RETRIES）のあとに落ちてジョブが終わるので、送り先が healthy になるまで起こさない。
@@ -141,17 +147,21 @@ check("3 台の KAFKA_NODE_ID は 1〜3、voter はその番号と service 名�
       and len({x["CLUSTER_ID"] for x in _k}) == 1 and re.fullmatch(r"[A-Za-z0-9_-]{22}", _k[0]["CLUSTER_ID"]))
 check("ヒープは初期と上限が同じ（kafka.tf と同じ形。値は手元向けに小さい）",
       all(re.fullmatch(r"-Xms(\d+)m -Xmx\1m", x["KAFKA_HEAP_OPTS"]) for x in _k))
-check("トピックは自動で作る（Telegraf が最初に書く）",
+check("トピックは自動で作る（Telegraf・gnmic が最初に書く）",
       all(svc[n]["environment"]["KAFKA_AUTO_CREATE_TOPICS_ENABLE"] == "true" for n in ("kafka-1", "kafka-2", "kafka-3")))
 
-# ---- 4. Telegraf: 環境は app/telegraf/telegraf.sh の契約どおり。up.sh の値を入れると render が通り、出力は host の EXTERNAL の 3 つ
+# ---- 4. Telegraf: 環境は app/telegraf/telegraf.sh の契約どおり。up.sh の値を入れると render が通り、出力（traps）は host の EXTERNAL の 3 台へ
 _tg = svc["telegraf"]["environment"]
 check("telegraf の KAFKA_BROKERS は 3 台の EXTERNAL（localhost:9094-9096）、KAFKA_AUTH=none。SYSLOG_STANDARD / MDT_PORT は渡さない（syslog は syslog-ng、MDT は外した。cycle 012）",
       _tg["KAFKA_BROKERS"] == "localhost:9094,localhost:9095,localhost:9096" and _tg["KAFKA_AUTH"] == "none" and _tg["SINK"] == "kafka"
       and "SYSLOG_STANDARD" not in _tg and "MDT_PORT" not in _tg)
-check("telegraf の GNMI_USERNAME / GNMI_PASSWORD / SNMP_COMMUNITY は ops/lab-common.sh の lab の公開既定値",
-      (_tg["GNMI_USERNAME"], _tg["GNMI_PASSWORD"], _tg["SNMP_COMMUNITY"])
-      == (sh_const(lab_common, "LAB_GNMI_USERNAME"), sh_const(lab_common, "LAB_GNMI_PASSWORD"), sh_const(lab_common, "LAB_SNMP_COMMUNITY")))
+check("telegraf は trap だけ受ける（cycle 013）: 購読先・ポーリング先・機器の認証情報・TELEGRAF_ROLE / SNMP_POLL を渡さない",
+      not any(k in _tg for k in ("GNMI_TARGETS", "SNMP_AGENTS", "GNMI_USERNAME", "GNMI_PASSWORD", "SNMP_COMMUNITY", "TELEGRAF_ROLE", "SNMP_POLL")))
+_gn = svc["gnmic"]["environment"]
+check("gnmic の環境は KAFKA_AUTH=none、KAFKA_BROKERS は telegraf と同じ、GNMI_TARGETS は up.sh の値、GNMI_USERNAME / GNMI_PASSWORD は ops/lab-common.sh の lab の公開既定値（cycle 013）",
+      _gn == {"KAFKA_AUTH": "none", "KAFKA_BROKERS": _tg["KAFKA_BROKERS"], "GNMI_TARGETS": "${GNMI_TARGETS:-}",
+              "GNMI_USERNAME": sh_const(lab_common, "LAB_GNMI_USERNAME"), "GNMI_PASSWORD": sh_const(lab_common, "LAB_GNMI_PASSWORD")}
+      and _gn["GNMI_USERNAME"] is not None and _gn["GNMI_PASSWORD"] is not None)
 
 def tg_render(env, extra=None):  # env は compose の ${X} を埋める値、extra は compose が渡さない環境（LOG_PORT など）
     with tempfile.TemporaryDirectory() as d:
@@ -164,11 +174,32 @@ def tg_render(env, extra=None):  # env は compose の ${X} を埋める値、ex
         return r, conf
 
 _r, _conf = tg_render(UP_ENV)
-check("up.sh の値を入れた telegraf の環境で telegraf.sh render が通り、出力 3 つ（metrics / gnmi / traps）が localhost:9094-9096 へ書き、IAM の設定が無い",
-      _r.returncode == 0 and _conf.count('brokers = ["localhost:9094","localhost:9095","localhost:9096"]') == 3
-      and "sasl_mechanism" not in _conf and "203.0.113." in _conf)
-check("docker compose を直に打つ（SNMP_AGENTS が空）と telegraf.sh は形の検査で止まる（compose.yaml の頭の注意のとおり。up.sh から上げる）",
-      tg_render({})[0].returncode != 0)
+check("up.sh の値を入れた telegraf の環境で telegraf.sh render が通り、出力 1 つ（traps）が localhost:9094-9096 へ書き、IAM の設定が無い",
+      _r.returncode == 0 and _conf.count('brokers = ["localhost:9094","localhost:9095","localhost:9096"]') == 1
+      and "sasl_mechanism" not in _conf and not any("203.0.113." in l for l in _conf.splitlines() if not l.lstrip().startswith("#")))
+check("telegraf.sh は up.sh の値が無くても（docker compose を直に打っても）render が通る（受けるのは trap だけで、lab の値を使わない）",
+      tg_render({})[0].returncode == 0)
+
+def gn_render(env):  # compose の ${X} を env で埋めた gnmic の環境で app/gnmic/gnmic.sh render を打ち、(結果, 設定) を返す
+    with tempfile.TemporaryDirectory() as d:
+        e = {"PATH": os.environ["PATH"], "GNMIC_TEMPLATE": os.path.join(ROOT, "app", "gnmic", "gnmic.yaml.in"), "GNMIC_CONF": os.path.join(d, "gnmic.yaml")}
+        e.update({k: subst(str(v), env) for k, v in _gn.items()})
+        r = subprocess.run(["sh", os.path.join(ROOT, "app", "gnmic", "gnmic.sh"), "render"], capture_output=True, text=True, env=e)
+        conf = open(e["GNMIC_CONF"], encoding="utf-8").read() if r.returncode == 0 else ""
+        return r, conf
+_gr, _gconf = gn_render(UP_ENV)
+_gy = yaml.safe_load(_gconf) if _gconf else {}
+_ips = re.findall(r'"([0-9.]+):57400"', UP_ENV["GNMI_TARGETS"])
+check("up.sh の値を入れた gnmic の環境で gnmic.sh render が通り、lab の機器の全部（名前は IP）を購読し、gnmi / metrics の 2 つの出力が localhost:9094-9096 へ認証なし（sasl と tls が無い）で書く",
+      _gr.returncode == 0 and len(_ips) >= 2 and sorted(_gy["targets"]) == sorted(_ips)
+      and all(_gy["targets"][ip]["address"] == f"{ip}:57400" for ip in _ips)
+      and {n: (o["topic"], o["address"]) for n, o in _gy["outputs"].items()}
+      == {"gnmi": ("gnmi", _tg["KAFKA_BROKERS"]), "metrics": ("metrics", _tg["KAFKA_BROKERS"])}
+      and not any("sasl" in o or "tls" in o for o in _gy["outputs"].values()) and "NokiaSrl1" not in _gconf
+      and not any("__" in l for l in _gconf.splitlines() if not l.lstrip().startswith("#")))
+_gr = gn_render({})[0]
+check("docker compose を直に打つ（GNMI_TARGETS が空）と gnmic.sh は形の検査で止まる（compose.yaml の頭の注意のとおり。up.sh から上げる）",
+      _gr.returncode != 0 and "GNMI_TARGETS" in _gr.stderr)
 # 受け口の 2 つ（trap・health。syslog と MDT は cycle 012 で外した）。TELEGRAF_BIND が空なら今までどおり全部のインターフェース（ECS は何も渡さない）
 _listen = lambda b, hp="8080": [f'service_address = "udp://{b}:1162"', f'service_address = "http://{b}:{hp}"']
 check("TELEGRAF_BIND が空なら受け口の 2 つは今までどおり全部のインターフェース（udp://:1162 / http://:8080）で、__ が残らず、syslog と MDT の受け口は無い",
@@ -221,7 +252,9 @@ check("syslog-ng の 5140 は app/containerlab/lab.sh の LOG_PORT（SR Linux �
       sh_const(lab_sh, "LOG_PORT") == "5140")
 check("lab の管理ネットの GW は docker/compose/up.sh・check.sh と app/containerlab/lab.sh で同じ（203.0.113.1）",
       sh_const(read("docker", "compose", "up.sh"), "MGMT_GW") == sh_const(read("docker", "compose", "check.sh"), "MGMT_GW") == sh_const(lab_sh, "MGMT_GW") == "203.0.113.1")
-_topics = set(re.findall(r'^\s*topic = "(\w+)"', read("app", "telegraf", "telegraf.conf.in"), re.M))
+_tg_topics = set(re.findall(r'^\s*topic = "(\w+)"', read("app", "telegraf", "telegraf.conf.in"), re.M))
+_gn_topics = set(re.findall(r'^\s*topic: (\w+)$', read("app", "gnmic", "gnmic.yaml.in"), re.M))
+_topics = _tg_topics | _gn_topics
 
 # ---- 5. Spark: 1 イメージから 2 サービス。引数は snmp_sinks.py の parse_args が受ける
 spec = importlib.util.spec_from_file_location("snmp_sinks", os.path.join(ROOT, "app", "spark", "snmp_sinks.py"))
@@ -270,8 +303,9 @@ check("spark-http の引数と環境で parse_args が通る（opensearch,promet
       and svc["spark-http"]["environment"]["PROMETHEUS_AUTH"] == "none")
 check("up.sh の DEVICE_MAP を Spark の --device-map に入れると、lab の機器の管理 IP が機器名に引ける",
       "dc1-a-leaf-01" in sinks.parse_device_map(_a.device_map).values())
-check("Spark の --metric-topics と --log-topics は Telegraf が書くトピック（metrics / gnmi / traps）と、syslog-ng の logs・GoFlow2 の flows だけ（cycle 012）",
-      set(_a.metric_topics.split(",")) | set(_a.log_topics.split(",")) == _topics | {"logs", "flows"} and _topics == {"metrics", "gnmi", "traps"})
+check("Spark の --metric-topics と --log-topics は gnmic が書くトピック（metrics / gnmi）と Telegraf の traps、syslog-ng の logs・GoFlow2 の flows だけ（cycle 012・013）",
+      set(_a.metric_topics.split(",")) | set(_a.log_topics.split(",")) == _topics | {"logs", "flows"}
+      and _gn_topics == {"metrics", "gnmi"} and _tg_topics == {"traps"})
 
 # ---- 6. OpenSearch / Prometheus / Grafana / Splunk
 _os = svc["opensearch"]["environment"]
@@ -297,8 +331,8 @@ _vars = set(re.findall(r"\$\{(\w+)", read("docker", "compose", "compose.yaml")))
 check(".env.example のキーは design.md の 7 つと Telegraf の HEALTH_PORT（009。trap と syslog は lab と揃えるので出さない。MDT_PORT は cycle 012 で外した）と TRex のイメージ（011）",
       set(example) == {"SPLUNK_PASSWORD", "SPLUNK_HEC_TOKEN", "OPENSEARCH_PASSWORD", "GF_SECURITY_ADMIN_PASSWORD", "SRLINUX_IMAGE", "MULTITOOL_IMAGE", "TREX_IMAGE", "AWS_REGION",
                        "HEALTH_PORT"})
-check("compose.yaml の ${VAR} は全部 .env.example のキーか up.sh が渡す 4 つ（SNMP_AGENTS / GNMI_TARGETS / DEVICE_MAP / TELEGRAF_BIND）",
-      _vars and _vars <= set(example) | set(UP_ENV) | {"TELEGRAF_BIND"} and "TELEGRAF_BIND" in _vars)
+check("compose.yaml の ${VAR} は全部 .env.example のキーか up.sh が渡す 3 つ（GNMI_TARGETS / DEVICE_MAP / TELEGRAF_BIND）。SNMP_AGENTS は無い（cycle 013）",
+      _vars and _vars <= set(example) | set(UP_ENV) | {"TELEGRAF_BIND"} and "TELEGRAF_BIND" in _vars and "SNMP_AGENTS" not in _vars)
 check("SPLUNK_HEC_TOKEN は uuid の形（Splunk のイメージが作る HEC の token。ops/up.sh と同じ形）",
       re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", example["SPLUNK_HEC_TOKEN"]) is not None)
 check("docker/compose/.env は git に入らず、.env.example は入る",
@@ -415,7 +449,7 @@ exit 0
 ''')
 fake("free", 'printf "               total        used        free\\nMem:  %s  1000  1000\\nSwap:  0  0  0\\n" "${FAKE_MEM:-32000}"\n')
 # check.sh が打つ curl。引数と、-K - で渡された標準入力を書き、URL ごとに決めた応答を返す。FAKE_DOWN=1 なら繋がらない（出力なしで 7）。
-# Splunk の応答は FAKE_SPLUNK があればそれ（認証の失敗は 401 でも curl -sS は本文を出して 0 で終わる）。Kafka の metrics / traps / logs のメッセージ数は FAKE_METRICS / FAKE_TRAPS / FAKE_LOGS、
+# Splunk の応答は FAKE_SPLUNK があればそれ（認証の失敗は 401 でも curl -sS は本文を出して 0 で終わる）。Kafka の metrics / gnmi / traps / logs のメッセージ数は FAKE_METRICS / FAKE_GNMI / FAKE_TRAPS / FAKE_LOGS、
 # Telegraf の health と GoFlow2 の /metrics の HTTP の番号は FAKE_TG_HEALTH / FAKE_GF_METRICS
 fake("curl", r'''prev=; url=
 for a in "$@"; do
@@ -425,7 +459,7 @@ for a in "$@"; do
 done
 [ "${FAKE_DOWN:-0}" = 1 ] && exit 7
 case "$url" in
-  *18080/api/clusters/nwc/topics*) printf '{"topics":[{"name":"metrics","messagesCount":%s},{"name":"gnmi","messagesCount":0},{"name":"traps","messagesCount":%s},{"name":"logs","messagesCount":%s},{"name":"flows","messagesCount":0}]}\n' "${FAKE_METRICS:-120}" "${FAKE_TRAPS:-3}" "${FAKE_LOGS:-9}" ;;
+  *18080/api/clusters/nwc/topics*) printf '{"topics":[{"name":"metrics","messagesCount":%s},{"name":"gnmi","messagesCount":%s},{"name":"traps","messagesCount":%s},{"name":"logs","messagesCount":%s},{"name":"flows","messagesCount":0}]}\n' "${FAKE_METRICS:-120}" "${FAKE_GNMI:-40}" "${FAKE_TRAPS:-3}" "${FAKE_LOGS:-9}" ;;
   *9090/api/v1/query*) echo '{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1760000000,"12"]}]}}' ;;
   *9200/snmp-logs/_count*) echo "{\"count\":${FAKE_OS_COUNT:-5}}" ;;
   *8089/services/search/jobs/export*)
@@ -591,15 +625,15 @@ check("app/containerlab/lab.sh を直に打つ（LAB_CMD なし、PATH に無い
       and _r2.returncode == 0 and "切替の確認は 'sudo app/containerlab/lab.sh failover' が待ってくれる。戻すのは 'sudo app/containerlab/lab.sh heal-main'" in _r2.stdout
       and _r2.stdout.rstrip("\n").endswith("戻すのは 'sudo app/containerlab/lab.sh heal-main'")
       and _r3.returncode == 0 and _r3.stdout.endswith("  Telegraf への転送が張られていない（sudo app/containerlab/lab.sh forward-status）\n")
-      and _r4.returncode == 0 and _r4.stdout.endswith("  この EC2 の Telegraf: 'sudo app/containerlab/lab.sh telegraf logs' に bgp_neighbor の session_state（established 以外）が出る。戻すのは 'sudo app/containerlab/lab.sh heal-bgp'\n")
-      and _r5.returncode == 0 and _r5.stdout.rstrip("\n").endswith("'sudo app/containerlab/lab.sh telegraf logs' に interface（ifOperStatus）、snmp_trap の linkDown、device_log（syslog）、isis_interface の down が出る。戻すのは 'sudo app/containerlab/lab.sh heal-main'"))
+      and _r4.returncode == 0 and _r4.stdout.endswith("  この EC2 の Telegraf: BGP の状態は gnmic が取るので、ここには出ない（'sudo app/containerlab/lab.sh check' で established 以外になったのを見る）。戻すのは 'sudo app/containerlab/lab.sh heal-bgp'\n")
+      and _r5.returncode == 0 and _r5.stdout.rstrip("\n").endswith("'sudo app/containerlab/lab.sh telegraf logs' に snmp_trap の linkDown が出る（IF / IS-IS の状態は gnmic が取るので、この EC2 では出ない）。戻すのは 'sudo app/containerlab/lab.sh heal-main'"))
 _r, _c = run(["lab", "fail-bgp"], FAKE_BGP_ADMIN="disable", TELEGRAF_IMAGE="x")
 _r2, _c2 = run(["lab", "failover"], TELEGRAF_IMAGE="x")
 _r3, _c3 = run(["lab", "fail-bgp"], FAKE_BGP_ADMIN="disable", FAKE_IPT_RULES="-A PREROUTING -m comment --comment nwc-lab-telegraf -j DNAT\n")
 _r4, _c4 = run(["lab", "fail-bgp"], FAKE_BGP_ADMIN="disable")
-check("EC2（PATH の lab で打つ）は今までどおり 'sudo lab …': デバッグ用の EC2 は Telegraf のログと heal-bgp / heal-main、stream は SNS と heal-bgp、転送なしは forward-status",
-      _r.stdout.endswith("  この EC2 の Telegraf: 'sudo lab telegraf logs' に bgp_neighbor の session_state（established 以外）が出る。戻すのは 'sudo lab heal-bgp'\n")
-      and _r2.stdout.rstrip("\n").endswith("'sudo lab telegraf logs' に interface（ifOperStatus）、snmp_trap の linkDown、device_log（syslog）、isis_interface の down が出る。戻すのは 'sudo lab heal-main'")
+check("EC2（PATH の lab で打つ）は今までどおり 'sudo lab …': デバッグ用の EC2 は check / Telegraf のログと heal-bgp / heal-main（trap だけなので BGP と IF の状態は出ないと言う。cycle 013）、stream は SNS と heal-bgp、転送なしは forward-status",
+      _r.stdout.endswith("  この EC2 の Telegraf: BGP の状態は gnmic が取るので、ここには出ない（'sudo lab check' で established 以外になったのを見る）。戻すのは 'sudo lab heal-bgp'\n")
+      and _r2.stdout.rstrip("\n").endswith("'sudo lab telegraf logs' に snmp_trap の linkDown が出る（IF / IS-IS の状態は gnmic が取るので、この EC2 では出ない）。戻すのは 'sudo lab heal-main'")
       and "切替の確認は 'sudo lab failover' が待ってくれる。戻すのは 'sudo lab heal-main'" in _r2.stdout
       and _r3.stdout.endswith("を SNS のトピックに出す。戻すのは 'sudo lab heal-bgp'\n") and "  stream: 数分で Grafana と Splunk の両方が bgp_down（dc1-a-leaf-01 の 10.255.0.1 と" in _r3.stdout
       and _r4.stdout.endswith("  Telegraf への転送が張られていない（sudo lab forward-status）\n")
@@ -613,8 +647,8 @@ check("up.sh: .env が無ければ docker を打たずに止まり、cp .env.exa
       _r.returncode == 1 and _c == [] and "cp .env.example .env" in _r.stderr and "最初の up.sh の前" in _r.stderr and "down.sh -v" in _r.stderr)
 _lc = tree(read("docker", "compose", ".env.example"))
 _r, _c = run([os.path.join(_lc, "up.sh")])
-_upenv = f"ENV SNMP_AGENTS={UP_ENV['SNMP_AGENTS']} GNMI_TARGETS={UP_ENV['GNMI_TARGETS']} DEVICE_MAP={UP_ENV['DEVICE_MAP']}"
-check("up.sh: app/containerlab/lab_topology.py の 3 つ（SNMP_AGENTS / GNMI_TARGETS / DEVICE_MAP）を環境で渡して docker compose up -d --build を打つ。"
+_upenv = f"ENV SNMP_AGENTS=unset GNMI_TARGETS={UP_ENV['GNMI_TARGETS']} DEVICE_MAP={UP_ENV['DEVICE_MAP']}"
+check("up.sh: app/containerlab/lab_topology.py の 2 つ（GNMI_TARGETS / DEVICE_MAP）を環境で渡して docker compose up -d --build を打つ（SNMP_AGENTS は cycle 013 で渡さない）。"
       "lab の管理ネットの GW（203.0.113.1）が無ければ TELEGRAF_BIND を空にして（全部のインターフェース）WARNING で lab.sh up のあとの up.sh telegraf syslog-ng goflow2 を案内する",
       _r.returncode == 0 and _c == ["ip -o -4 addr show", "docker compose up -d --build", f"{_upenv} TELEGRAF_BIND="]
       and all(UP_ENV.values()) and "WARNING: lab の管理ネット（203.0.113.1）がまだ無いので、Telegraf・syslog-ng・GoFlow2 は" in _r.stderr
@@ -632,22 +666,23 @@ PW = example["OPENSEARCH_PASSWORD"]
 _lc = tree(read("docker", "compose", ".env.example"))
 _r, _c = run([os.path.join(_lc, "check.sh")])
 _ok = [l for l in _r.stdout.splitlines() if l.startswith("ok  ")]
-check("check.sh: 応答が全部そろえば 14 項目とも ok で「すべて ok」、終了コード 0（メモリが 20 GB 以上なら注意を出さない）",
-      _r.returncode == 0 and len(_ok) == 14 and _r.stdout.splitlines()[-1] == "すべて ok" and "注意" not in _r.stdout)
+check("check.sh: 応答が全部そろえば 15 項目とも ok で「すべて ok」、終了コード 0（メモリが 20 GB 以上なら注意を出さない）",
+      _r.returncode == 0 and len(_ok) == 15 and _r.stdout.splitlines()[-1] == "すべて ok" and "注意" not in _r.stdout)
 check("check.sh: .env は docker compose --env-file .env config --environment で読み、Spark の 2 つは docker compose ps -a --format json で 1 回だけ見る",
       [c for c in _c if c.startswith("docker ")] == ["docker compose --env-file .env config --environment", "docker compose ps -a --format json spark-splunk spark-http"])
 _argv = [c for c in _c if c.startswith("curl ")]
 _stdin = [c for c in _c if c.startswith("STDIN ")]
 check("check.sh: パスワードは curl の引数に載せず（ps に出る）、-K - の標準入力で user = \"admin:…\" として渡す（OpenSearch・Splunk・Grafana 2 つの 4 回）。Kafka のトピックの一覧は 1 回だけ取る",
       len(_argv) == 8 and len([c for c in _argv if "18080/api/clusters/nwc/topics" in c]) == 1 and not [c for c in _argv if PW in c] and _stdin == [f'STDIN user = "admin:{PW}"'] * 4)
-check("check.sh: Splunk の検索は sourcetype=netops:*（Spark の SPLUNK_SOURCETYPE_PREFIX）、Prometheus は Grafana のダッシュボードとアラートが使う snmp_interface_ifOperStatus",
+check("check.sh: Splunk の検索は sourcetype=netops:*（Spark の SPLUNK_SOURCETYPE_PREFIX）、Prometheus は Grafana のダッシュボードとアラートが使う snmp_interface_oper_up（gnmic の interface_state を Spark が読み替えた系列）",
       sinks.SPLUNK_SOURCETYPE_PREFIX == "netops" and any("sourcetype=netops:*" in c for c in _argv)
-      and "snmp_interface_ifOperStatus" in read("app", "grafana", "provisioning", "dashboards", "metrics.json")
-      and any("query=count(snmp_interface_ifOperStatus)" in c for c in _argv))
+      and "snmp_interface_oper_up" in read("app", "grafana", "provisioning", "dashboards", "metrics.json")
+      and "snmp_interface_oper_up" in read("app", "grafana", "provisioning", "alerting", "netops-prometheus.yaml")
+      and any("query=count(snmp_interface_oper_up)" in c for c in _argv))
 check("check.sh: Grafana で見る uid（amp / aoss-logs）は app/grafana/provisioning/datasources-oss の定義にある",
       {m for f in ("prometheus.yaml", "opensearch.yaml")
        for m in re.findall(r"uid: (\S+)", read("app", "grafana", "provisioning", "datasources-oss", f))} == {"amp", "aoss-logs"})
-check("check.sh: Kafka で見るトピック（metrics / gnmi / traps / logs / flows。メッセージ数は metrics と traps と logs）は Telegraf か syslog-ng（logs）か GoFlow2（flows）が書くトピック（cycle 012）",
+check("check.sh: Kafka で見るトピック（metrics / gnmi / traps / logs / flows。メッセージ数は metrics と gnmi と traps と logs）は gnmic（metrics / gnmi）か Telegraf（traps）か syslog-ng（logs）か GoFlow2（flows）が書くトピック（cycle 012・013）",
       "{'metrics', 'gnmi', 'traps', 'logs', 'flows'}" in read("docker", "compose", "check.sh")
       and {"metrics", "gnmi", "traps", "logs", "flows"} == _topics | {"logs", _ga["transport.kafka.topic"]})
 TH, GF, SG = "Telegraf: health が 200", "GoFlow2: /metrics が 200", "syslog-ng: udp 5140 を待っている"
@@ -669,10 +704,14 @@ _r2, _c2 = run([os.path.join(tree(read("docker", "compose", ".env.example")), "c
 check("check.sh: health のポートは compose と同じくシェルの HEALTH_PORT、.env の HEALTH_PORT の順",
       [c.split()[-1] for c in _c if c.startswith("curl ") and "-w" in c] == ["http://127.0.0.1:18081/", "http://127.0.0.1:8081/metrics"]
       and [c.split()[-1] for c in _c2 if c.startswith("curl ") and "-w" in c] == ["http://127.0.0.1:18082/", "http://127.0.0.1:8081/metrics"])
-KM, KT = "Kafka: metrics のメッセージ数 > 0", "Kafka: traps のメッセージ数 > 0"
+KM, KT, KG = "Kafka: metrics のメッセージ数 > 0", "Kafka: traps のメッセージ数 > 0", "Kafka: gnmi のメッセージ数 > 0"
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_METRICS="0")
-check("check.sh: Kafka の metrics のメッセージ数が 0 なら NG（Telegraf から届いていない。トピックは Spark が作るのであっても証拠にならない）",
-      _r.returncode == 1 and f"NG  {KM}: 0 件" in _r.stdout.splitlines() and f"ok  {KT}" in _r.stdout.splitlines())
+check("check.sh: Kafka の metrics のメッセージ数が 0 なら NG（gnmic の sample から届いていない。トピックは Spark が作るのであっても証拠にならない）",
+      _r.returncode == 1 and f"NG  {KM}: 0 件" in _r.stdout.splitlines() and f"ok  {KT}" in _r.stdout.splitlines() and f"ok  {KG}" in _r.stdout.splitlines())
+_r, _c = run([os.path.join(_lc, "check.sh")], FAKE_GNMI="0")
+check("check.sh: Kafka の gnmi のメッセージ数が 0 なら、metrics が届いていても NG で logs gnmic を案内する（on-change の購読だけが断られた。cycle 013 のセルフレビュー F5）",
+      _r.returncode == 1 and f"ok  {KM}" in _r.stdout.splitlines()
+      and [l for l in _r.stdout.splitlines() if KG in l] == [f"NG  {KG}: 0 件（gnmic の on-change（IF・BGP・IS-IS の状態）が届いていない。購読した直後に今の値を 1 回送るので、gnmic が繋がっていれば 0 にならない。docker compose logs gnmic）"])
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_TRAPS="0")
 check("check.sh: Kafka の traps が 0 件なら NG にせず「注意」で fail-main か trap-test を案内し、ほかが ok なら「すべて ok」で 0",
       _r.returncode == 0 and f"ok  {KM}" in _r.stdout.splitlines() and _r.stdout.splitlines()[-1] == "すべて ok"
@@ -699,7 +738,7 @@ check("check.sh: GoFlow2 の /metrics に繋がらなければ NG で ps -a と 
       and _r2.returncode == 1 and any(l.startswith(f"NG  {GF}: HTTP 404（") for l in _r2.stdout.splitlines()))
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_OS_COUNT="0", FAKE_MEM="16000")
 check("check.sh: 1 つが 0 件なら、そこだけ NG にして残りも見てから終了コード 1。メモリが 20 GB 未満なら注意を出す",
-      _r.returncode == 1 and "NG  OpenSearch: snmp-logs の件数 > 0: 0 件" in _r.stdout and len([l for l in _r.stdout.splitlines() if l.startswith("ok  ")]) == 13
+      _r.returncode == 1 and "NG  OpenSearch: snmp-logs の件数 > 0: 0 件" in _r.stdout and len([l for l in _r.stdout.splitlines() if l.startswith("ok  ")]) == 14
       and "注意: メモリが 16000 MiB" in _r.stdout and _r.stdout.splitlines()[-1].startswith("NG がある"))
 SPL = "Splunk: sourcetype=netops:* の直近 10 分の件数 > 0"
 def splunk_line(body):  # Splunk の応答を body にして check.sh を打ち、Splunk の行を返す
@@ -719,8 +758,8 @@ check("check.sh: Splunk の理由は同じものを 1 つにし（ERROR Unauthor
       and splunk_line('{"messages":[{"type":"WARN","text":"a"},{"type":"WARN","text":"a"}]}') == [f"NG  {SPL}: result が無い: WARN a"]
       and len(_ll) == 1 and _ll[0].startswith(f"NG  {SPL}: ERROR b c; FATAL xxx") and len(_ll[0]) - len(f"NG  {SPL}: ") == 200)
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_DOWN="1")
-check("check.sh: どこにも繋がらなくても set -e で途中で落ちず、12 項目とも NG（JSON の 9 つは「読めない応答: 空」、Telegraf と GoFlow2 は「繋がらない」、syslog-ng は「待っていない」）で終了コード 1",
-      _r.returncode == 1 and _r.stdout.count("読めない応答: 空") == 9 and _r.stdout.count("NG  ") == 12 and f"NG  {TH}: 繋がらない（" in _r.stdout
+check("check.sh: どこにも繋がらなくても set -e で途中で落ちず、13 項目とも NG（JSON の 10 は「読めない応答: 空」、Telegraf と GoFlow2 は「繋がらない」、syslog-ng は「待っていない」）で終了コード 1",
+      _r.returncode == 1 and _r.stdout.count("読めない応答: 空") == 10 and _r.stdout.count("NG  ") == 13 and f"NG  {TH}: 繋がらない（" in _r.stdout
       and f"NG  {GF}: 繋がらない（" in _r.stdout and f"NG  {SG}: 待っていない（" in _r.stdout)
 _lc = tree('OPENSEARCH_PASSWORD=a"b\\c\nSPLUNK_PASSWORD=x\nGF_SECURITY_ADMIN_PASSWORD=y\n')
 _r, _c = run([os.path.join(_lc, "check.sh")])

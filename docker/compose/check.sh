@@ -44,7 +44,7 @@ fi
 
 # Spark の 2 つが動いているか。restart: on-failure:5 で止まったままのときと、依存（splunk / opensearch / prometheus）が healthy にならず Created のままのときを、
 # 下の件数の NG より先に分ける。--format json は 1 行 1 コンテナ（古い compose は配列を 1 行）で、コンテナが無ければ何も出ない。
-# compose の警告（up.sh が渡す SNMP_AGENTS などが無い）は出さない
+# compose の警告（up.sh が渡す GNMI_TARGETS などが無い）は出さない
 ps=$(docker compose ps -a --format json spark-splunk spark-http 2>/dev/null || true)
 for svc in spark-splunk spark-http; do
   judge "Spark: $svc が動いている" \
@@ -56,25 +56,29 @@ for svc in spark-splunk spark-http; do
     <<<"$ps"
 done
 
-# Kafka は Kafbat UI のトピックの一覧を 1 回取って 4 つ見る。messagesCount はトピックの全パーティションのメッセージ数の和
+# Kafka は Kafbat UI のトピックの一覧を 1 回取って 5 つ見る。messagesCount はトピックの全パーティションのメッセージ数の和
 # （2026-10-08 に手元の compose で kafka-get-offsets.sh の最新オフセットの和と同じ値を確認。docker exec しなくて済む）
 kafka=$(get - 'http://127.0.0.1:18080/api/clusters/nwc/topics?perPage=100' || true)
 judge "Kafka: トピック metrics / gnmi / traps / logs / flows がある" \
   "(lambda n: 'ok' if not n else '無い: ' + ', '.join(n))(sorted({'metrics', 'gnmi', 'traps', 'logs', 'flows'} - {t['name'] for t in json.loads(s)['topics']}))" \
   <<<"$kafka"
-# トピックは Spark が起動のときに作るので、Telegraf と syslog-ng から届いているかはメッセージ数で見る。trap と syslog は障害を入れるまで来ないこともあるので、
+# トピックは Spark が起動のときに作るので、gnmic・Telegraf・syslog-ng から届いているかはメッセージ数で見る（metrics は gnmic の IF のカウンター、
+# gnmi は gnmic の IF・BGP・IS-IS の状態。on-change は購読した直後に今の値を 1 回送るので、gnmic が繋がっていれば 0 にならない）。trap と syslog は障害を入れるまで来ないこともあるので、
 # traps と logs の 0 件は NG にしない。flows は lab の SR Linux が NetFlow を出さないので数を見ない（ops/netflow_send.py で送ったときだけ増える）
 cnt="{t['name']: t['messagesCount'] for t in json.loads(s)['topics']}"
 judge "Kafka: metrics のメッセージ数 > 0" "'ok' if $cnt.get('metrics', 0) > 0 else '0 件'" <<<"$kafka"
+judge "Kafka: gnmi のメッセージ数 > 0" \
+  "'ok' if $cnt.get('gnmi', 0) > 0 else '0 件（gnmic の on-change（IF・BGP・IS-IS の状態）が届いていない。購読した直後に今の値を 1 回送るので、gnmic が繋がっていれば 0 にならない。docker compose logs gnmic）'" \
+  <<<"$kafka"
 judge "Kafka: traps のメッセージ数 > 0" \
   "'ok' if $cnt.get('traps', 0) > 0 else '注意: 0 件（trap は障害を入れるまで来ない。docker/compose/lab.sh fail-main か trap-test のあとに打ち直す）'" \
   <<<"$kafka"
 judge "Kafka: logs のメッセージ数 > 0" \
   "'ok' if $cnt.get('logs', 0) > 0 else '注意: 0 件（syslog は機器が出すまで来ない。docker/compose/lab.sh fail-main のあとに打ち直す。来ないままなら docker compose logs syslog-ng）'" \
   <<<"$kafka"
-judge "Prometheus: count(snmp_interface_ifOperStatus) > 0" \
+judge "Prometheus: count(snmp_interface_oper_up) > 0" \
   "(lambda r: 'ok' if r and float(r[0]['value'][1]) > 0 else '0 件')(json.loads(s)['data']['result'])" \
-  <<<"$(get - 'http://127.0.0.1:9090/api/v1/query' --data-urlencode 'query=count(snmp_interface_ifOperStatus)' -G || true)"
+  <<<"$(get - 'http://127.0.0.1:9090/api/v1/query' --data-urlencode 'query=count(snmp_interface_oper_up)' -G || true)"
 judge "OpenSearch: snmp-logs の件数 > 0" \
   "'ok' if json.loads(s)['count'] > 0 else '0 件'" \
   <<<"$(get OPENSEARCH_PASSWORD 'http://127.0.0.1:9200/snmp-logs/_count' || true)"

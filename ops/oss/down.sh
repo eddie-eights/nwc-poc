@@ -52,8 +52,8 @@ destroy_lambda_root workflow "$PREFIX-tools" -var "worker_image_tag=${IMAGE_TAG:
 destroy_root pipeline/analytics
 destroy_root pipeline/nautobot
 destroy_lambda_root pipeline/graph "$PREFIX-graph-status"
-# stream（Kafka の ECS 3 台・Telegraf と、Web の EC2 の Kafbat UI が読む SSM のパラメータ）。snmp_agents / gnmi_targets は必須変数だが destroy では使われないので、形だけ合う値を渡す
-destroy_root pipeline/stream -var 'snmp_agents="udp://0.0.0.0:161"' -var 'gnmi_targets="0.0.0.0:57400"'
+# stream（Kafka の ECS 3 台・Telegraf・gnmic と、Web の EC2 の Kafbat UI が読む SSM のパラメータ）。gnmi_targets は必須変数だが destroy では使われないので、形だけ合う値を渡す
+destroy_root pipeline/stream -var 'gnmi_targets="0.0.0.0:57400"'
 
 log "2. lab"
 destroy_root pipeline/lab
@@ -74,7 +74,7 @@ fi
 log "5. Runtime のロググループ（AgentCore が作るもので、agent の destroy では消えない）"
 delete_runtime_log_groups
 
-log "5-2. ops/oss/up.sh が作った SSM のパラメータ（Kafka の CLUSTER_ID、Kafbat UI・OpenSearch・Splunk・Grafana・Neo4j・Nautobot のパスワードや token、Telegraf が機器に入る認証情報）"
+log "5-2. ops/oss/up.sh が作った SSM のパラメータ（Kafka の CLUSTER_ID、Kafbat UI・OpenSearch・Splunk・Grafana・Neo4j・Nautobot のパスワードや token、gnmic が機器に入る認証情報）"
 # タグ ManagedBy=ops/oss/up.sh の付いたものだけ消す（マネージド版と手で入れたパラメータは消さない）。値は読まない。
 # stream か base/core が消えなかったときは Kafka の CLUSTER_ID を、nautobot が消えなかったときは /<接頭辞>/nautobot/ の下を残す
 # （ops/down-common.sh の delete_up_ssm_params）

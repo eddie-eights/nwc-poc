@@ -19,8 +19,8 @@ output "url" {
 }
 
 output "sync_targets" {
-  description = "What the NetOps job writes: telegraf (the dial-in targets in SSM) and / or neptune (neo4j in the OSS variant). Empty when neither stream nor graph is there."
-  value       = compact([local.dialin_from_nautobot ? "telegraf" : "", local.neptune_graph_id != "" ? "neptune" : "", local.graph_neo4j ? "neo4j" : ""])
+  description = "What the NetOps job writes: gnmic (the gNMI targets in SSM) and / or neptune (neo4j in the OSS variant). Empty when neither stream nor graph is there."
+  value       = compact([local.gnmic_from_nautobot ? "gnmic" : "", local.neptune_graph_id != "" ? "neptune" : "", local.graph_neo4j ? "neo4j" : ""])
 }
 
 output "port_forward_command" {

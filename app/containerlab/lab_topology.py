@@ -28,12 +28,12 @@ tests/test_sync.py が確かめる（lab を変えて app/agentcore/data を直�
 SR Linux の interface、exec でアドレスを振る IF、回線の端の IF。system0 / lo0 は除く）と、機器を指す別名（aliases。device_id / hostname / 管理 IP /
 全インタフェースとループバックのアドレス。小文字）を付ける。
 検知（Grafana / Splunk のアラート）とトポロジ（Neptune）で機器とインタフェースの名前が合わずに異常がどこにも付かない、を減らすため。
-機器の一覧はここ（lab の定義）1 か所にし、Telegraf のポーリング先と gNMI の接続先、device map（Splunk のアラートアクションの DEVICE_MAP と Spark の --device-map）もここから作る（ops/up.sh）。
+機器の一覧はここ（lab の定義）1 か所にし、gnmic の gNMI の購読先と device map（Splunk のアラートアクションの DEVICE_MAP と Spark の --device-map）もここから作る（ops/up.sh）。
 
 使い方: python3 app/containerlab/lab_topology.py [lab のディレクトリ]  → JSON（{"devices": [...], "links": [...], "layers": {...}}）を標準出力に出す
         --device-map    Splunk のアラートアクション（app/splunk/netops_alerts）の DEVICE_MAP と Spark の --device-map（別名=device_id,...。device_id と同じ別名は省く）を出す
-        --snmp-agents   Telegraf の inputs.snmp の agents（監視対象の管理 IP。"udp://<IP>:161", ... の形）を出す
-        --gnmi-targets  Telegraf の inputs.gnmi の addresses（監視対象の管理 IP。"<IP>:57400", ... の形）を出す
+        --gnmi-targets  gnmic の購読先（監視対象の管理 IP。"<IP>:57400", ... の形。app/gnmic/gnmic.sh の GNMI_TARGETS）を出す
+                        （SNMP のポーリング先の --snmp-agents は cycle 013 でやめた）
         --layers        物理層より上（layers）だけを JSON で出す
 PyYAML があればそれで読み、無ければ（ops/up.sh を打つ PC の python3）この形の YAML だけ読める小さな読み取りで代える。
 """
@@ -49,7 +49,6 @@ EXEC_MASTER_RE = re.compile(r"^ip link set (\S+) master (\S+)")   # VM の bond�
 MGMT_IF = {"nokia_srlinux": "mgmt0"}   # containerlab が管理ネットワークにつなぐ IF（kind ごと。それ以外は eth0）
 MGMT_IF_DEFAULT = "eth0"
 VM_ROLES = {"trex"}   # スイッチでない（linux kind の）ノードの役割。SNMP / gNMI の対象外
-SNMP_PORT = 161       # SR Linux の SNMP サーバ（containerlab が network-instance mgmt で有効にする）
 GNMI_PORT = 57400     # SR Linux の gNMI サーバ（同じく containerlab が有効にする。TLS、admin / NokiaSrl1!）
 TOPO_FILE = "splab.clab.yml.in"
 LOOPBACK_PREFIXES = ("lo", "system")   # インタフェースには数えない（別名にだけ入れる）
@@ -341,7 +340,7 @@ def build(topo: dict, cfg: dict) -> tuple[list[dict], list[dict]]:
         site, role = split_name(name)
         devices.append({"device_id": name, "hostname": name, "site": site, "role": role,
                         "mgmt_ip": spec.get("mgmt-ipv4") or "", "asn": cfg.get(name, {}).get("asn"),
-                        "enabled": bool(cfg.get(name, {}).get("snmp"))})   # SNMP の設定を持つ機器だけ監視対象（スイッチ全部）
+                        "enabled": bool(cfg.get(name, {}).get("snmp"))})   # SNMP の設定（trap の宛先）を持つ機器だけ監視対象（スイッチ全部）
     kind_of = {name: str((spec or {}).get("kind") or "") for name, spec in nodes.items()}
 
     def endpoint(end: str) -> tuple[str, str]:
@@ -395,13 +394,8 @@ def device_map(devices: list[dict]) -> str:
     return ",".join(f"{a}={dev}" for a, dev in sorted(owner.items()) if a != dev)
 
 
-def snmp_agents(devices: list[dict]) -> str:
-    """Telegraf の inputs.snmp の agents の中身（監視対象 = SNMP の設定を持つ機器の管理 IP）"""
-    return ", ".join(f'"udp://{d["mgmt_ip"]}:{SNMP_PORT}"' for d in devices if d.get("enabled") and d.get("mgmt_ip"))
-
-
 def gnmi_targets(devices: list[dict]) -> str:
-    """Telegraf の inputs.gnmi の addresses の中身（同じ監視対象の管理 IP と gNMI のポート）"""
+    """gnmic の購読先（GNMI_TARGETS）の中身（監視対象 = SNMP の設定を持つ機器の管理 IP と gNMI のポート）"""
     return ", ".join(f'"{d["mgmt_ip"]}:{GNMI_PORT}"' for d in devices if d.get("enabled") and d.get("mgmt_ip"))
 
 
@@ -516,18 +510,18 @@ def load(lab_dir: str) -> tuple[list[dict], list[dict], dict]:
     return devices, links, layers(devices, links, cfg)
 
 
-FLAGS = {"--device-map", "--snmp-agents", "--gnmi-targets", "--layers"}
+FLAGS = {"--device-map", "--gnmi-targets", "--layers"}
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     flags = {a for a in sys.argv[1:] if a.startswith("--")}
     if flags - FLAGS or len(flags) > 1:
-        sys.exit("使い方: lab_topology.py [lab のディレクトリ] [--device-map | --snmp-agents | --gnmi-targets | --layers]")
+        sys.exit("使い方: lab_topology.py [lab のディレクトリ] [--device-map | --gnmi-targets | --layers]")
     devices, links, lyr = load(args[0] if args else os.path.dirname(os.path.abspath(__file__)))
     if "--device-map" in flags:
         print(device_map(devices))
-    elif "--snmp-agents" in flags or "--gnmi-targets" in flags:
-        out = snmp_agents(devices) if "--snmp-agents" in flags else gnmi_targets(devices)
+    elif "--gnmi-targets" in flags:
+        out = gnmi_targets(devices)
         if not out:
             sys.exit("監視対象（SNMP の設定を持つ機器）が 1 台も無い")
         print(out)

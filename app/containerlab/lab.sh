@@ -2,9 +2,9 @@
 # lab EC2（IaC/terraform/aws-managed/pipeline/lab / デバッグ用は IaC/cloudformation/lab-debug.yaml）の上で containerlab を動かす。setup.sh が /usr/local/bin/lab に置くので、SSM セッションから `sudo lab check` で使う。
 #   lab.sh render | pull | up | down | status | check | snmp [node] | logs [node] | cli <node> [cmd...] | fail-main | heal-main | failover | clab <args...>
 #   lab.sh fail-bgp | heal-bgp | trap-test   （Grafana と Splunk のアラートを比べる障害: BGP の隣接 1 本を止める / 戻す、link 以外の trap を 1 通送る）
-#   lab.sh forward | forward-status     （stream: ECS の Telegraf・syslog-ng・GoFlow2 へ SNMP / gNMI / trap / syslog / NetFlow / sFlow を通す。デバッグ用の EC2 は trap の 162 を 1162 へ向けるだけ。up が毎回呼ぶ）
+#   lab.sh forward | forward-status     （stream: ECS の gnmic から機器の gNMI へ通し、Telegraf・syslog-ng・GoFlow2 へ trap / syslog / NetFlow / sFlow を向ける。デバッグ用の EC2 は trap の 162 を 1162 へ向けるだけ。up が毎回呼ぶ）
 #   lab.sh graph | graph-stop           （トポロジ図: containerlab graph を 127.0.0.1:50080 で裏に起こし、手元で打つポートフォワードのコマンドを出す / 止める。down も止める）
-#   lab.sh telegraf run | stop | status | test | gnmi | logs [-f]   （デバッグ用の EC2 だけ。この EC2 の Telegraf。中身は app/telegraf/telegraf.sh、出力は標準出力）
+#   lab.sh telegraf run | stop | status | logs [-f]   （デバッグ用の EC2 だけ。この EC2 の Telegraf（trap だけ受ける）。中身は app/telegraf/telegraf.sh、出力は標準出力）
 #   lab.sh trex start | stop | status   （dc1-trex-01 の TRex。トポロジを上げても起動しない。負荷試験のときだけ。中身は trex/README.md）
 # 手元の containerlab と違うのは 3 つ: containerlab を直接呼ぶ（root）、イメージは ECR から取る（pull）、
 # splab.clab.yml はテンプレート（.in）からイメージ URI を埋めて作る（render）。
@@ -22,7 +22,7 @@ export LAB_CMD
 LAB=splab
 TOPO=splab.clab.yml
 # containerlab の管理ネットワーク（splab.clab.yml.in の mgmt）と、その上のこの EC2 のアドレス（srlinux/*.cli の trap と syslog の宛先）。
-# Telegraf のタスク（IaC/terraform/aws-managed/pipeline/stream の ECS）は VPC のルートでここへ来る（IaC/terraform/aws-managed/pipeline/lab の telegraf.tf の local.mgmt_cidr）
+# gnmic のタスク（IaC/terraform/aws-managed/pipeline/stream の ECS）は VPC のルートでここへ来る（IaC/terraform/aws-managed/pipeline/lab の telegraf.tf の local.mgmt_cidr）
 MGMT=203.0.113.0/24
 MGMT_GW=203.0.113.1
 # trap を受けるポート（app/telegraf/telegraf.sh の TRAP_PORT。非 root の Telegraf は 162 で待てない）。デバッグ用の EC2 は機器が 162 に送るのをここへ向ける
@@ -35,12 +35,11 @@ LOG_PORT=5140
 # SR Linux の syslog の形式。デバッグ用の EC2 の Telegraf に SYSLOG_STANDARD で渡す（2026-10-08（cycle 012）から Telegraf は syslog を受けないので使われない。
 # ops/lab-common.sh の LAB_SYSLOG_STANDARD と同じ）
 LOG_STANDARD=RFC5424
-# containerlab が SR Linux 全台に入れる既定の認証情報（lab だけの公開既定値。ops/lab-common.sh の LAB_GNMI_USERNAME / LAB_GNMI_PASSWORD / LAB_SNMP_COMMUNITY と同じ）。
-# デバッグ用の EC2 の Telegraf に渡す（stream の ECS は SSM の SecureString から受ける）
-GNMI_USERNAME=admin
-GNMI_PASSWORD='NokiaSrl1!'
+# SNMP の community（containerlab が SR Linux 全台に入れる既定。lab だけの公開既定値）。trap-test の snmptrap が使う。
+# gNMI の認証情報（ops/lab-common.sh の LAB_GNMI_USERNAME / LAB_GNMI_PASSWORD）は stream の gnmic が SSM の SecureString から受ける。
+# この EC2 の Telegraf は trap だけ受けるので、どちらも渡さない（gNMI の購読と SNMP のポーリングは cycle 013 でやめた）
 SNMP_COMMUNITY=public
-# gNMI（containerlab が SR Linux 全台で開ける。Telegraf の inputs.gnmi が BGP / IS-IS / EVPN の状態を購読する）
+# gNMI（containerlab が SR Linux 全台で開ける。stream の gnmic が IF / BGP / IS-IS の状態と IF のカウンターと CPU / メモリを購読する）
 GNMI_PORT=57400
 # graph（containerlab graph の Web）のポート。127.0.0.1 だけで待ち、手元からは SSM のポートフォワード（IaC/terraform/aws-managed/pipeline/lab の
 # output graph_port_forward_command と同じポート）で開く。SSM のエージェントがこの EC2 の中から繋ぐので SG は開けない
@@ -231,7 +230,7 @@ case "${1:-}" in
     # neighbor の admin-state を disable にする（回線は落とさない）。$BGP_NODE 側と dc1-spine-01 側（neighbor は $BGP_NODE のループバック）の
     # session-state が established でなくなり、gNMI の on_change（bgp_neighbor）で流れる。EVPN の経路は dc1-spine-02 からも来るので、mac-vrf（TRex のポートのあいだ）は通ったまま
     bgp_admin disable
-    hint "'$LAB_CMD telegraf logs' に bgp_neighbor の session_state（established 以外）が出る" \
+    hint "BGP の状態は gnmic が取るので、ここには出ない（'$LAB_CMD check' で established 以外になったのを見る）" \
       "数分で Grafana と Splunk の両方が bgp_down（$BGP_NODE の $BGP_PEER と、dc1-spine-01 の $BGP_NODE 側）を SNS のトピックに出す" heal-bgp
     ;;
   heal-bgp)
@@ -282,30 +281,30 @@ case "${1:-}" in
     echo "$w"
     if [ -n "${TELEGRAF_IMAGE:-}" ]; then
       echo "== Telegraf（この EC2。標準出力）=="
-      echo "  '$LAB_CMD telegraf logs' に interface（ifOperStatus）、snmp_trap の linkDown、device_log（syslog）、isis_interface の down が出る。戻すのは '$LAB_CMD heal-main'"
+      echo "  '$LAB_CMD telegraf logs' に snmp_trap の linkDown が出る（IF / IS-IS の状態は gnmic が取るので、この EC2 では出ない）。戻すのは '$LAB_CMD heal-main'"
     elif local_telegraf; then
       echo "== Telegraf（compose の Telegraf）=="
       echo "  数分で Grafana（:3000）の metrics ダッシュボードの dc1-a-leaf-01 ethernet-1/1 が DOWN、logs ダッシュボードと Splunk（:8000）に linkDown の trap と syslog が出る。戻すのは '$LAB_CMD heal-main'"
     elif iptables -t nat -S PREROUTING 2>/dev/null | grep -q -- "--comment $FW_TAG"; then
       echo "== Telegraf（stream。ECS のタスク）=="
-      echo "  ポーリング（10 秒周期）と SR Linux の linkDown トラップ、syslog、gNMI の IS-IS の隣接が MSK に流れ、Grafana のアラートルール（ポーリング）と Splunk の保存済みサーチ（trap と gNMI）が SNS のトピックに出す。"
+      echo "  gnmic の gNMI（IF の状態と IS-IS の隣接）と SR Linux の linkDown トラップ、syslog が MSK に流れ、Grafana のアラートルール（gNMI）と Splunk の保存済みサーチ（trap と gNMI）が SNS のトピックに出す。"
       echo "  数分で GUI の「トポロジ」の dc1-a-leaf-01 ethernet-1/1 が DOWN になり（link_down と isis_down）、WORKFLOW=1 なら「承認」に修復案が出る。アラートは Grafana / Splunk で見る。戻すのは '$LAB_CMD heal-main'"
     fi
     ;;
   forward)
     if local_telegraf; then
-      # デバッグ用の EC2 と手元の compose: Telegraf はこのホストの host ネットワークにいるので、ポーリングと syslog（$MGMT_GW:$LOG_PORT）はそのまま届く。
+      # デバッグ用の EC2 と手元の compose: 受け手はこのホストの host ネットワークにいるので、gNMI（手元の gnmic）と syslog（$MGMT_GW:$LOG_PORT）はそのまま届く。
       # 機器の trap は $MGMT_GW の 162 に来るので、Telegraf が待つ $TRAP_PORT へ向けるだけ（送り元は機器の管理 IP のまま）
       unforward
       c=(-m comment --comment "$FW_TAG")
       iptables -t nat -I PREROUTING 1 -s "$MGMT" -d "$MGMT_GW" -p udp --dport 162 "${c[@]}" -j REDIRECT --to-ports "$TRAP_PORT"
       if [ -n "${TELEGRAF_IMAGE:-}" ]; then w="この EC2 の Telegraf"; else w="compose の Telegraf"; fi
-      echo "$w へ: trap 162/udp を $TRAP_PORT/udp へ向けた（syslog $LOG_PORT/udp とポーリングはそのまま）"
+      echo "$w へ: trap 162/udp を $TRAP_PORT/udp へ向けた（syslog $LOG_PORT/udp と gNMI はそのまま）"
       exit 0
     fi
-    # ECS の Telegraf・syslog-ng・GoFlow2（IaC/terraform/aws-managed/pipeline/stream の telegraf.tf と collectors.tf）へ 6 つを通す。
+    # ECS の gnmic（gnmic.tf）から機器の gNMI へ通し、Telegraf・syslog-ng・GoFlow2（IaC/terraform/aws-managed/pipeline/stream の telegraf.tf と collectors.tf）へ 4 つを向ける。
     # SSM の $PARAM_PREFIX/telegraf-address（内部 NLB の IP。trap・syslog・NetFlow・sFlow の DNAT の宛先）と
-    # $PARAM_PREFIX/telegraf-source-cidr（タスクのサブネット。タスクの IP は作り直すたびに変わるので、ポーリングはサブネットで通す）を読む。
+    # $PARAM_PREFIX/telegraf-source-cidr（gnmic のタスクのサブネット。タスクの IP は作り直すたびに変わるので、gNMI はサブネットで通す）を読む。
     # 無ければ（stream を作っていない）何もしない。何度打っても同じ規則になる（目印の付いた規則を消してから入れる）
     : "${AWS_REGION:?}" "${PARAM_PREFIX:?}"
     t=$(aws ssm get-parameter --region "$AWS_REGION" --name "$PARAM_PREFIX/telegraf-address" --query Parameter.Value --output text 2>/dev/null) || t=""
@@ -316,11 +315,10 @@ case "${1:-}" in
       exit 0
     fi
     c=(-m comment --comment "$FW_TAG")
-    # ポーリング: Telegraf → SR Linux の SNMP（161/udp）と gNMI（$GNMI_PORT/tcp）。VPC のルートでこの EC2 に来る。Docker は外から管理ネットワークへの転送を落とすので DOCKER-USER で先に通す
-    iptables -I DOCKER-USER 1 -s "$s" -d "$MGMT" -p udp --dport 161 "${c[@]}" -j ACCEPT
+    # gNMI: gnmic → SR Linux の gNMI（$GNMI_PORT/tcp）。VPC のルートでこの EC2 に来る。Docker は外から管理ネットワークへの転送を落とすので DOCKER-USER で先に通す
+    # （SNMP の 161/udp は cycle 013 でポーリングをやめたので通さない）
     iptables -I DOCKER-USER 1 -s "$s" -d "$MGMT" -p tcp --dport "$GNMI_PORT" "${c[@]}" -j ACCEPT
     # Docker 28 以降は raw の PREROUTING でブリッジ以外から来たコンテナ宛てを落とす。その前で抜ける（古い Docker では何もしない規則になる）
-    iptables -t raw -I PREROUTING 1 -s "$s" -d "$MGMT" -p udp --dport 161 "${c[@]}" -j ACCEPT
     iptables -t raw -I PREROUTING 1 -s "$s" -d "$MGMT" -p tcp --dport "$GNMI_PORT" "${c[@]}" -j ACCEPT
     # trap と syslog: 機器の宛先（この EC2 の $MGMT_GW の 162 と $LOG_PORT）を Telegraf の NLB へ向け直す（NLB がタスクの 1162 と $LOG_PORT へ）
     iptables -t nat -I PREROUTING 1 -s "$MGMT" -d "$MGMT_GW" -p udp --dport 162 "${c[@]}" -j DNAT --to-destination "$t:162"
@@ -334,7 +332,7 @@ case "${1:-}" in
     done
     # 送り元（機器の管理 IP）を残す。Docker の MASQUERADE（-s $MGMT ! -o <bridge>）より前で抜ける。Spark とエージェントは送り元の IP で機器を引く
     iptables -t nat -I POSTROUTING 1 -s "$MGMT" -d "$t" "${c[@]}" -j RETURN
-    echo "stream へ通した: ${s} から SNMP 161/udp と gNMI $GNMI_PORT/tcp の転送、NLB（${t}）へ trap 162/udp・syslog $LOG_PORT/udp・NetFlow 2055/udp・sFlow 6343/udp の DNAT"
+    echo "stream へ通した: ${s} から gNMI $GNMI_PORT/tcp の転送、NLB（${t}）へ trap 162/udp・syslog $LOG_PORT/udp・NetFlow 2055/udp・sFlow 6343/udp の DNAT"
     ;;
   forward-status)
     echo "== iptables（目印 ${FW_TAG}）=="
@@ -355,22 +353,20 @@ case "${1:-}" in
     : "${TELEGRAF_IMAGE:?TELEGRAF_IMAGE が無い（Telegraf をこの EC2 で動かすのはデバッグ用の EC2 だけ。lab の EC2 では stream の ECS の Telegraf を使う）}"
     case "${2:-status}" in
       run)
-        # ポーリング先と gNMI の購読先は stream と同じく lab の定義から作る（ops/up.sh が stream の変数に渡すのと同じ lab_topology.py）。
-        # SNMP のポーリングはこの EC2 では既定で止める（trap だけ。stream は既定でする）。見るときは `sudo SNMP_POLL=1 lab telegraf run`（起動時の systemd は既定の 0 で起こす）
-        agents=$(python3 lab_topology.py . --snmp-agents)
-        gnmi=$(python3 lab_topology.py . --gnmi-targets)
+        # trap だけ受ける（gNMI の購読と SNMP のポーリングは cycle 013 でやめた。gNMI を 1 回取って見るのは stream の output の gnmic_exec_command）
         docker image inspect "$TELEGRAF_IMAGE" >/dev/null 2>&1 || "$SELF" pull
         docker rm -f "$TG" >/dev/null 2>&1 || true
         # host ネットワーク: 管理ネットワーク（$MGMT）の機器へそのまま届き、機器からの $MGMT_GW:$LOG_PORT / $TRAP_PORT もそのまま受ける
         docker run -d --name "$TG" --restart unless-stopped --network host --log-opt max-size=50m --log-opt max-file=3 \
-          -e SINK=stdout -e SYSLOG_STANDARD="$LOG_STANDARD" -e SNMP_POLL="${SNMP_POLL:-0}" -e AWS_REGION -e SNMP_AGENTS="$agents" -e GNMI_TARGETS="$gnmi" \
-          -e GNMI_USERNAME="$GNMI_USERNAME" -e GNMI_PASSWORD="$GNMI_PASSWORD" -e SNMP_COMMUNITY="$SNMP_COMMUNITY" "$TELEGRAF_IMAGE" run >/dev/null
+          -e SINK=stdout -e SYSLOG_STANDARD="$LOG_STANDARD" -e AWS_REGION "$TELEGRAF_IMAGE" run >/dev/null
         echo "Telegraf を起こした（${TELEGRAF_IMAGE}。出力は '$LAB_CMD telegraf logs -f'）"
         ;;
       stop)   docker rm -f "$TG" >/dev/null 2>&1 || true ;;
       status) docker ps -a --filter "name=^$TG\$" --format '{{.Names}}  {{.Status}}  {{.Image}}' ;;
-      test)   docker exec "$TG" tg test ;;
-      gnmi)   docker exec "$TG" tg gnmi ;;
+      test | gnmi)
+        echo "lab telegraf $2 は cycle 013 でやめた（Telegraf は trap だけ受ける）。gNMI を 1 回取って見るのは PC から stream の output の gnmic_exec_command（gnmic のタスクの gn get）" >&2
+        exit 1
+        ;;
       logs)   docker logs --tail "${LINES:-50}" "${@:3}" "$TG" ;;
       *) sed -n '7p' "$SELF"; exit 1 ;;
     esac

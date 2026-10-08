@@ -164,7 +164,7 @@
   },
   {
     "name": "query_metrics",
-    "description": "監視メトリクス（Prometheus）に PromQL を投げる。インタフェースの状態やトラフィックの推移を見るのに使う。例: interface_ifOperStatus{sysName=\"dc1-a-leaf-01\"}",
+    "description": "監視メトリクス（Prometheus）に PromQL を投げる。インタフェースの状態やトラフィックの推移を見るのに使う。例: snmp_interface_oper_up{sysName=\"dc1-a-leaf-01\"}",
     "inputSchema": {
       "type": "object",
       "required": [

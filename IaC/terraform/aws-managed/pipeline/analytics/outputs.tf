@@ -54,8 +54,8 @@ locals {
         # token の値は渡さない（SSM のパラメータ名だけ。ジョブが起動時に読む）
         [for a in ["--splunk-hec-url", local.splunk_hec_url, "--splunk-token-parameter", local.splunk_token_parameter, "--splunk-index", var.splunk_index] : a if contains(sinks, "splunk")],
         [for a in ["--splunk-skip-verify"] : a if contains(sinks, "splunk") && local.splunk_skip_tls_verify],
-        # prometheus / opensearch で sysName の無いレコード（gNMI と trap）に機器名を足す表（Splunk のタスクの DEVICE_MAP と同じ値）
-        [for a in ["--device-map", var.device_map] : a if var.device_map != "" && (contains(sinks, "prometheus") || contains(sinks, "opensearch"))],
+        # prometheus / opensearch / splunk で sysName の無いレコード（gNMI と trap）に機器名を足す表（Splunk のタスクの DEVICE_MAP と同じ値。splunk は cycle 013）
+        [for a in ["--device-map", var.device_map] : a if var.device_map != "" && (contains(sinks, "prometheus") || contains(sinks, "opensearch") || contains(sinks, "splunk"))],
       )
       # Iceberg のカタログの設定はいつも渡す（カタログは最初に使うときに開くので、iceberg を選ばなければ S3 Tables の API を呼ばない）
       sparkSubmitParameters = join(" ", concat(

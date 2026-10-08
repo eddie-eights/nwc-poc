@@ -37,7 +37,7 @@ MSK のトピックを読み、格納先（S3 Tables、OpenSearch、Prometheus�
 | 相手 | 向き | ポートと認証 |
 |---|---|---|
 | MSK | Spark ← MSK | 9098/tcp、SASL_SSL + AWS_MSK_IAM |
-| MSK（ACL） | Spark → MSK | 9098/tcp、同じ認証。起動のたびに `User:collectors` の `logs` / `flows` の `WRITE` と `DESCRIBE` を AdminClient の `createAcls` で入れる（`ensure_acls`。実行ロールの `kafka-cluster:AlterCluster`。cycle 012） |
+| MSK（ACL） | Spark → MSK | 9098/tcp、同じ認証。起動のたびに `User:collectors` の `logs` / `flows` / `gnmi` / `metrics` の `WRITE` と `DESCRIBE` を AdminClient の `createAcls` で入れる（`ensure_acls`。実行ロールの `kafka-cluster:AlterCluster`。cycle 012、`gnmi` / `metrics` は 013） |
 | S3 Tables | Spark → テーブル | s3tables のエンドポイント（Iceberg REST）、IAM |
 | Prometheus | Spark → ワークスペース | aps-workspaces のエンドポイント、remote write（protobuf + snappy を自前で組む）、SigV4 |
 | OpenSearch Serverless | Spark → コレクション | OpenSearch Serverless の VPC エンドポイント、SigV4、`_bulk` |

@@ -50,7 +50,7 @@
 1. `OWNER=<owner> ops/sync-graph.sh --oss`
    - lab の定義から、物理層（機器・インタフェース・回線）と IP 層、EVPN・BGP 層を入れる。中心性もこれで答えるようになる。
    - 変更履歴（`change` の頂点）は入らず、0 件のまま。
-2. Nautobot の Job「Telegraf とグラフ DB に同期」を手で打つ
+2. Nautobot の Job「gnmic とグラフ DB に同期」を手で打つ
    - Nautobot の変更履歴と、Nautobot で足した機器と回線を Neo4j に書く。10-08 は変更履歴が 0 件から 19 件に戻った。
 
 順番はこの順にする。先に Job を打つと機器が入ってグラフが空でなくなり、`--replace` なしの `ops/sync-graph.sh` は何もしない。`--replace` を付けると lab の定義で上書きするので、Job で入れた Nautobot の機器と回線が消える。
@@ -73,7 +73,7 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
   `base/ecr`、`base/core`、`agent`、`pipeline/lab`、`pipeline/stream`、`pipeline/graph`、`pipeline/nautobot`、`pipeline/analytics`、`workflow`。Grafana、Web の部品、エージェント、workflow、Neo4j への同期までつないである（何がどう動くかは [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md) の「実装の状態」）。
 - **機能と格納先は選ばない。**
   `AGENT` / `PIPELINE` / `WORKFLOW` / `STORES` などのキーは読まず、ルートはいつも全部、格納先はいつも `iceberg` / `opensearch` / `prometheus` / `splunk` の 4 つ、Grafana もいつも作る。
-- **Nautobot の Job は Neo4j に書く（2026-10-08 に AWS で確かめた。手で打つ Job と JobHook の両方。[verification/20261008-oss-aws.md](verification/20261008-oss-aws.md)）。** Neo4j のタスクが入れ替わると変更履歴も消え、`ops/sync-graph.sh --oss` では戻らないので、そのあと Job「Telegraf とグラフ DB に同期」を打ち直す（上の「Neo4j を起こし直したあとの戻し方」）。Job の名前はマネージド版と同じで、説明に Neo4j と出る。エージェントの `root_cause` と `topology_graph` の `source` は `neo4j`（空なら `neo4j-empty`）
+- **Nautobot の Job は Neo4j に書く（2026-10-08 に AWS で確かめた。手で打つ Job と JobHook の両方。[verification/20261008-oss-aws.md](verification/20261008-oss-aws.md)）。** Neo4j のタスクが入れ替わると変更履歴も消え、`ops/sync-graph.sh --oss` では戻らないので、そのあと Job「gnmic とグラフ DB に同期」を打ち直す（上の「Neo4j を起こし直したあとの戻し方」）。Job の名前はマネージド版と同じで、説明に Neo4j と出る。エージェントの `root_cause` と `topology_graph` の `source` は `neo4j`（空なら `neo4j-empty`）
   graph の state に `neo4j_uri` があるので、`IaC/terraform/aws-managed/pipeline/nautobot` が `GRAPH_BACKEND=neo4j`・`NEO4J_URI` と secrets の `NEO4J_PASSWORD` を渡し、`ops/oss/up.sh` が Neo4j のドライバー入りのイメージ（`app/nautobot/requirements-oss.txt`）を作る。
 - **打ち直しで Kafka か OpenSearch のタスク定義が変わると、1 台ずつ入れ替える。**
   terraform だけで apply すると、変わった台が同時に入れ替わる（Kafka は controller の過半数を、OpenSearch はインデックスを失う）。`ops/oss/up.sh` は変わる台を plan で拾い、リーダーでない台から 1 台ずつ `-target` で apply して、間でクラスターが健全に戻るのを ECS Exec で待つ（手元に Session Manager plugin が要る）。止まったら `ops/oss/up.sh` を打ち直せば残りの台だけ入れ替える。`OSS_ROLL=0` で一度に入れ替える。2026-10-08 に AWS で打った: 端末の無いシェルからは ECS Exec が `Cannot perform start session: EOF` で切れて止まり（何も入れ替えない）、`script -q /dev/null` で疑似端末を付けた 2 回目は Kafka の 3 台をリーダーでない 1 → 2 → 3 の順に入れ替えて rc=0（13 分 57 秒）。そのため標準入力が端末でないときは、`ops/oss/roll-nodes.sh` が ECS Exec を `script` で包んで疑似端末を付ける（Linux の util-linux の `script -q -c` と macOS の `script -q /dev/null` を見分ける。Linux の形は AWS では未確認）。`script` も打てなければ、何も入れ替えずに「端末から打つか `OSS_ROLL=0`」と出して止まる（手順は [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md) の「Kafka と OpenSearch を 1 台ずつ入れ替える」）。

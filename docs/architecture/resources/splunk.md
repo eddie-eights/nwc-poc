@@ -40,12 +40,11 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | indexer（`splunk-idx`） | HEC で受けて index `main` に入れる。相手に複製を送る | index `main`（自分の分と、相手の分の複製） |
 | search head（`splunk`） | 検索、UI、保存済みサーチ、アラートアクション | app `netops_alerts`、`DEVICE_MAP`、SNS へ publish するタスクロール |
 
-保存済みサーチ（app `netops_alerts`。4 本とも毎分）:
+保存済みサーチ（app `netops_alerts`。3 本とも毎分）:
 
 | 保存済みサーチ | 見るもの | 出すもの |
 |---|---|---|
-| `netops_poll` | SNMP のポーリングの `ifOperStatus` | down かどうかが変わった IF だけ。`link_down` の `firing` / `resolved` |
-| `netops_gnmi` | gNMI の BGP の `session_state`、IS-IS の `oper_state` | 前の値と比べて変わったときだけ。`bgp_down` / `isis_down` の `firing` / `resolved` |
+| `netops_gnmi` | gNMI の IF の `oper_state` / `admin_state`、BGP の `session_state`、IS-IS の `oper_state` | 前の値（24 時間）と比べて変わったときだけ。`link_down` / `bgp_down` / `isis_down` の `firing` / `resolved`（`link_down` は 2026-10-09 に SNMP のポーリングの `netops_poll` から移した） |
 | `netops_trap` | trap | linkDown は `link_down` の `firing`、linkUp は `resolved`。ほかの trap は `trap` の `firing` |
 | `netops_trap_clear` | trap（過去 70 分） | その機器から link 以外の trap が 10 分来なければ `trap` を `resolved` |
 
@@ -147,7 +146,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | `SPLUNK_AZ_NUM` | 2026-10-05 に AWS で確かめたのは `2`（4 タスク、indexer は 2 つの AZ）。`3` は未確認。`1` のままの 1 台の構成も、004 を入れたあとの AWS では未確認 |
 | 試用ライセンス | タスクごとに別々の試用ライセンスを持つ。2026-10-05 の `SPLUNK_AZ_NUM=2` ではクラスターとアラートが動いた。日数がたったあとの挙動は未確認 |
 | 既知の不具合（2026-10-05） | trap のサブインターフェース（`ethernet-1/1.0`）の `link_down` と、起動の直後の `resolved` のまとめ送りは直した（手元で確認、AWS では未確認）。回線の両端が別の異常になる件は [troubleshooting.md](../../troubleshooting.md) の「既知の不具合」 |
-| Telegraf か Splunk が 10 分を超えて止まったとき | `netops_poll` の「前の値」が無くなり、戻ったときに新しい `starts_at` で `firing` をもう 1 回出す |
+| 24 時間を超えて変わっていない down | `netops_gnmi` の「前の値」が無いので、戻ったときの `resolved` を出さない。gnmic が繋ぎ直して送り直すと、新しい `starts_at` で `firing` をもう 1 回出す |
 | Splunk が止まっているあいだの変化 | 次に状態が変わるまで出ない |
 
 クラスターの設計と、手元の Docker で確かめたことは [Splunk をクラスターにする（004）の設計](../../cycles/004-splunk-indexer-cluster/design.md)。
@@ -156,5 +155,5 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 
 - [emr-serverless.md](emr-serverless.md)、[grafana.md](grafana.md)、[sns-sqs-lambda.md](sns-sqs-lambda.md)、[ssm-parameter-store.md](ssm-parameter-store.md)
 - [pipeline.md](../../pipeline.md): 「Grafana と Splunk を開く」「アラート」「Splunk のアラート」
-- [alert-comparison.md](../../alert-comparison.md): Splunk と Grafana のアラートを比べる（002）の結果、「Splunk の `netops_poll`」
+- [alert-comparison.md](../../alert-comparison.md): Splunk と Grafana のアラートを比べる（002）の結果（`netops_poll` は 2026-10-09 にやめた）
 - FAQ の 10 章「Splunk」と 9 章「格納先とテーブル、重複」: [faq-fukuda-nwc-poc.md](../../faq-fukuda-nwc-poc.md)

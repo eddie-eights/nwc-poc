@@ -27,7 +27,7 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 
 | ルール | 見るもの | 出すもの |
 |---|---|---|
-| `link_down` | Prometheus の `snmp_interface_ifOperStatus`（SNMP のポーリング） | down の IF で `firing`。ループバック、管理ポート、サブインタフェース、admin-state が disable のポートは外す |
+| `link_down` | Prometheus の `snmp_interface_oper_up`（gnmic が取る gNMI の IF の oper-state。2026-10-09 まではSNMP のポーリングの `ifOperStatus`） | 0 で `firing`。ループバック、管理ポート、サブインタフェース、`snmp_interface_admin_up` が 0（admin-state が disable）のポートは外す |
 | `bgp_down` | Prometheus の `snmp_bgp_neighbor_session_up` | 0 で `firing`。対象は相手の IP |
 | `isis_down` | Prometheus の `snmp_isis_interface_oper_up` | 0 で `firing`。対象はサブインタフェース |
 | `trap` | OpenSearch の `snmp_trap`（過去 10 分を機器と OID ごとに数える） | 1 通以上で `firing`、10 分来なければ `resolved`。linkDown / linkUp などは数えない |
@@ -93,7 +93,7 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 | 4 本になったあとの形（Splunk と Grafana のアラートを比べる（002）） | 2026-10-05 に AWS で `link_down` と `isis_down` の発火を確かめた（`sudo lab fail-main`）。`bgp_down` と `trap` の発火、Grafana の画面は未確認 |
 | OpenSearch Serverless を SigV4 でルールの評価に使えるか | 未確認（ダッシュボードで読めることは 2026-09-28 に確認済み） |
 | 機器ごと止まったとき | 検知しない（系列が途切れると解消を送る） |
-| `SNMP_POLL=0` | `link_down` は発火も解消もしない |
+| gnmic が止まったとき | 系列は `last_over_time(...[24h])` で最後の値のまま残るので、止まっているあいだの変化は出ない（`link_down` / `bgp_down` / `isis_down`） |
 | 1 タスク・1 AZ | 止まっているあいだはルールが評価されない |
 | ルールの評価のエラーの確かめ（手順 9-2、`ops/check-grafana.sh`） | 打ったあとの評価だけを見る（あとで壊れたら打ち直す）。打ってから全部のルールが評価されるまで最大 1 分、エラーがあればもう 1 回の評価まで 1 分ほど延びる。打ったあとの評価で 1 回でもエラーになったルールは、すぐ直っても NG になる（次の評価にエラーが残るため）。NoData はエラーではないので OK になる。待つのは最大 5 分で、評価されないルール（止めたルールなど）があれば「未確認」。SSM Run Command の結果を待つのは `SSM_RUN_WAIT` 秒（既定 1800）までで、過ぎたら未確認。マネージド版は `STORES` に `grafana` があるときと、今回は analytics を作らない回（`PIPELINE=0`・`SKIP_ANALYTICS=1`）でも前の回の Grafana の ECS サービスが state に残っているときに打つ。analytics の state の一覧か、Grafana のクラスターとサービスの名前（`tf output`）が読めないか空なら、確かめず（`aws ecs wait` も打たず）に黄色の警告を出して先へ進む（最後の案内まで届かせる）。AWS では未実行（API の形とログは手元の 13.2.2 で確かめた） |
 | Grafana がやり直さないエラーでも `Failed to evaluate rule` がログに出るか | 未確認。出なければ `--filter-pattern '"level=error"'` で探す |

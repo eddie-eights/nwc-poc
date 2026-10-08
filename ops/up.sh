@@ -3,13 +3,13 @@
 #   土台（必ず作る）  base/ecr + base/core（VPC / Web の EC2 / バケット / ロール。インターネットへの経路は無い）。約 $0.04/h + エンドポイント。
 #   AGENT（既定 0）   agent での分析。IaC/terraform/aws-managed/agent（AgentCore Runtime + ガードレール。CREATE_KB=1 なら Knowledge Base も）。
 #                     Web の「チャット」タブが使える
-#   PIPELINE          データパイプライン。lab（containerlab）→ stream（MSK と Telegraf（ECS））→ analytics（Spark on EMR Serverless → S3 Tables / OpenSearch / Prometheus / Splunk。
+#   PIPELINE          データパイプライン。lab（containerlab）→ stream（MSK と Telegraf・gnmic（ECS））→ analytics（Spark on EMR Serverless → S3 Tables / OpenSearch / Prometheus / Splunk。
 #                     Grafana（ECS）で Prometheus と OpenSearch を見る。検知は Grafana のアラートルールと Splunk の保存済みサーチで、SNS のトピック <接頭辞>-alerts へ出す）と
 #                     graph（Neptune のトポロジと投入。アラートが届くと機器・回線の status を書き換える）。Web の「トポロジ」タブが動く
 #   WORKFLOW          Temporal での実行。workflow（Temporal on ECS Fargate のワーカー + AgentCore Gateway（MCP）+ SNS → SQS）。
 #                     Grafana / Splunk のアラートが SNS → SQS で届き、エージェントが Neptune / OpenSearch / Prometheus を見て原因を調べて修復案を出し、
 #                     Web の「承認」タブで人が承認すると Temporal が lab で直す。AGENT と PIPELINE（lab / stream / analytics / graph）と、
-#                     link_down のアラートの送り手（STORES の splunk、または STORES の grafana と SNMP_POLL=1。既定ではどちらもある）が要る
+#                     link_down のアラートの送り手（STORES の splunk か grafana。既定ではどちらもある）が要る
 # 毎日全部消す運用向け。何度打っても同じ状態に収束する（できているものは Terraform が差分なしで飛ばし、ECR にあるタグはビルドしない）。
 # あとから別の機能を 1 にして打ち直せば、その機能だけ足される（土台と他の機能は作り直さない）。
 # Terraform の state はこの PC の展開したフォルダの中（IaC/terraform/aws-managed/<ルート>/terraform.tfstate）に置く。消すのは ops/down.sh。
@@ -32,10 +32,10 @@
 #   AGENT=1                 agent での分析（既定 0）。IaC/terraform/aws-managed/agent を作る。Web の「チャット」タブを使うなら書く
 #   PIPELINE=1              データパイプライン（既定 0）。lab / stream / analytics / graph を作る（SKIP_* で減らせる）
 #   WORKFLOW=1              Temporal での実行（既定 0）。workflow を作る。AGENT と PIPELINE が要り、SKIP_LAB / SKIP_STREAM / SKIP_ANALYTICS / SKIP_GRAPH は書けない。
-#                           link_down のアラートの送り手も要る（STORES の splunk、または STORES の grafana と SNMP_POLL=1（Grafana のアラート）。既定ではどちらもある。両方無いと止まる）
+#                           link_down のアラートの送り手も要る（STORES の splunk か grafana（Grafana のアラート）。既定ではどちらもある。両方無いと止まる）
 #   CREATE_KB=1             AGENT=1 で Knowledge Base も作る（既定 0。+$0.35/h = OpenSearch Serverless の OCU $0.33 + 土台の VPC エンドポイント $0.01（STORES の grafana の OpenSearch と共用）
 #                           + bedrock-agent-runtime のエンドポイント $0.01）。コレクションは公開せず、そのエンドポイントと Bedrock からだけ届く
-#   SKIP_LAB=1              PIPELINE=1 で lab を作らない（ほかは lab が無くても作れる。stream を作れば Telegraf の取りにいく側は lab の定義の機器を
+#   SKIP_LAB=1              PIPELINE=1 で lab を作らない（ほかは lab が無くても作れる。stream を作れば gnmic は lab の定義の機器を
 #                           探しに行き、届かないのでエラーをログに出して 10 秒ごとに繋ぎ直す（タスクは落ちない）。受ける側は送り手がいなければ何も来ない）
 #   SKIP_STREAM=1           PIPELINE=1 で stream と analytics（stream の Kafka を読む）を作らない
 #   SKIP_ANALYTICS=1        PIPELINE=1 で analytics（Spark → S3 Tables / OpenSearch / Prometheus / Splunk と、検知する Grafana / Splunk）を作らない
@@ -46,11 +46,11 @@
 #                             s3      = 全トピック → S3 Tables（Iceberg）
 #                             grafana = traps と logs（機器の syslog）と flows → OpenSearch Serverless、metrics と gnmi → Amazon Managed Service for Prometheus と、
 #                                       その 2 つを見る Grafana OSS（ECS。+$0.02/h）。Grafana のアラートルールも入り、SNS へ出す（app/grafana/provisioning/alerting。
-#                                       Prometheus の link_down / bgp_down / isis_down と、OpenSearch の trap）。link_down が見る ifOperStatus は SNMP のポーリングの値
-#                                       なので、SNMP_POLL=0 では link_down は発火しない。web の EC2 を踏み台にした SSM のポートフォワードで開く（コマンドは最後に出る）
+#                                       Prometheus の link_down / bgp_down / isis_down（どれも gnmic が取る gNMI の値）と、OpenSearch の trap）。
+#                                       web の EC2 を踏み台にした SSM のポートフォワードで開く（コマンドは最後に出る）
 #                             splunk  = 全トピック → Splunk の HTTP Event Collector。Splunk Enterprise（公式イメージ・試用ライセンス）を analytics の ECS で
 #                                       立てて VPC の中で送る（+$0.12/h。起動時に Splunk のライセンスと Splunk General Terms に同意する。index はタスクと
-#                                       一緒に消える）。イメージは公式イメージに検知のアプリ（app/splunk/netops_alerts。SNMP のポーリング・trap・gNMI の BGP / IS-IS を
+#                                       一緒に消える）。イメージは公式イメージに検知のアプリ（app/splunk/netops_alerts。trap と gNMI の IF・BGP・IS-IS を
 #                                       保存済みサーチで見て SNS へ出す）を足したもの。管理者のパスワードと HEC の token は手順 7-4 で SSM の SecureString に作る
 #                                       （値は出さない。見るコマンドを最後に出す）。SPLUNK_INDEX（既定は空 = token の既定の index）は任意。
 #                                       AWS の外の Splunk へ NAT Gateway で送る道は 2026-09-28 にやめた（VPC から AWS の外へ出る経路は作らない）
@@ -58,13 +58,12 @@
 #   SYSLOG_STANDARD         stream の syslog-ng（2026-10-08 までは Telegraf）が受ける機器の syslog の形式。RFC3164（既定。本番の Cisco IOS の BSD 形式）か RFC5424。
 #                           lab の SR Linux は RFC 5424 で送る（ops/lab-common.sh の LAB_SYSLOG_STANDARD）ので、lab のログの項目まで見るなら RFC5424。
 #                           デバッグ用の EC2（ops/lab-debug.sh。up.sh とは別に作る）は syslog を受けない（2026-10-08 に Telegraf から syslog を外した）
-#   SNMP_POLL=0             stream の Telegraf で SNMP をポーリングしない（既定 1 = 10 秒ごとに ifTable → metrics トピック。0 なら SNMP は trap だけ受ける）。
-#                           Grafana のアラートルール link_down、Splunk の保存済みサーチ netops_poll、IF のグラフ、エージェントの IF のメトリクスはこのポーリングを見るので、
-#                           0 では空になる（IF の up / down は STORES の splunk の Splunk が trap からだけ出す）。stream の変数 snmp_poll に渡す
+#   （SNMP_POLL）           2026-10-09 から使わない（cycle 013 で SNMP のポーリングをやめ、IF の状態とカウンターは gnmic が gNMI で取る）。
+#                           前の deploy.env で止まらないよう読むだけ読み、書いてあれば注意を出す
 #   （Kafbat UI）           stream を作る回は Kafbat UI（Kafka の画面）を**いつも作る**（切り替える変数は無い。2026-10-05）。cycle 010 から Web の EC2 の Docker で動き、費用は Web の EC2（t4g.medium）に入っている。
 #   （Nautobot）            PIPELINE=1 なら Nautobot（IaC/terraform/aws-managed/pipeline/nautobot。ECS Fargate の web + Celery worker + Redis と、RDS の PostgreSQL。+$0.13/h と ecs のエンドポイント）を**いつも作る**（切り替える変数は無い）。
-#                           機器の一覧とケーブルの正を Nautobot にする。最初だけ lab の定義から入り、あとは Nautobot で機器・Service（gnmi / snmp）・ケーブルを変えるたびに、
-#                           Job が Telegraf の取りにいく側（dialin）の機器の一覧（SSM）を書き換えてサービスを作り直し、Neptune の物理層を openCypher で合わせる。
+#                           機器の一覧とケーブルの正を Nautobot にする。最初だけ lab の定義から入り、あとは Nautobot で機器・Service（gnmi）・ケーブルを変えるたびに、
+#                           Job が gnmic の購読先の一覧（SSM）を書き換えてサービスを作り直し、Neptune の物理層を openCypher で合わせる。
 #                           Job の書き先が要るので、SKIP_STREAM と SKIP_GRAPH の両方があるときだけ作らない。管理者のパスワード・SECRET_KEY・DB のパスワードは SSM の SecureString に作る（値は出さない）。
 #                           web の EC2 を踏み台にした SSM のポートフォワードで開く（コマンドは最後に出る）。ops/down.sh で DB ごと消える（編集した内容は残らない）。
 #                           デバッグ用の EC2（ops/lab-debug.sh）は Nautobot を使わず、今までどおり lab の定義の一覧
@@ -99,7 +98,7 @@
 #                           変えるとコレクションを作り直す（索引は消える）
 #   NAUTOBOT_DB_AZ_NUM=1    Nautobot の RDS。1〜2（2 は Multi-AZ で、別の AZ に同期の待機系。約 2 倍。3 は Multi-AZ DB クラスタで、作っていない）
 #   TELEGRAF_AZ_NUM=1       stream の Telegraf の受ける側（dialout）。1〜3。NLB のサブネットとタスクの数（1 AZ に 1 つ。+$0.01/h ずつ。2 以上は NLB が AZ をまたいで配る）。
-#                           取りにいく側（dialin）はいつも 1 つ（2 つにすると同じ機器を 2 重にポーリング・購読する）
+#                           gnmic はいつも 1 つ（2 つにすると同じ機器を 2 重に購読する）
 #   SPLUNK_AZ_NUM=1         Splunk（ECS。STORES の splunk）。1〜3。1 はサブネット a に 1 台（いままで通り）。2 か 3 は indexer のクラスター
 #                           （「Splunk をクラスターにする（004）」）で、cluster manager 1 + indexer AZ の数（1 AZ に 1 つ。全部のイベントを互いに複製）+
 #                           search head 1 のタスク（どれも +$0.12/h）。manager と search head はサブネット a。indexer を AZ に散らすのは Fargate の
@@ -113,7 +112,7 @@
 # ---- デバッグ用（ふだんは書かない） ----
 #   NETWORK_PERIMETER=0     AccessDenied の切り分け。VPC の外からの AWS の API を拒む Deny（IaC/terraform/aws-managed/base/core の perimeter.tf）を外す。既定 1
 #   TF_VERBOSE=1            terraform の失敗・遅さの切り分け。出力を全部画面に出す（既定は進みと結果だけ。全文は ops/logs/tf-<ルート>-apply.log）
-# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* / SNMP_POLL / NO_DASHBOARD_PORTFORWARD / NETWORK_PERIMETER / TF_VERBOSE は 1 / 0 のほか true / false、yes / no でも書ける（ops/down.sh の KEEP_ECR は 1 か 0 だけ）。
+# AGENT / PIPELINE / WORKFLOW / CREATE_KB / SKIP_* / NO_DASHBOARD_PORTFORWARD / NETWORK_PERIMETER / TF_VERBOSE は 1 / 0 のほか true / false、yes / no でも書ける（ops/down.sh の KEEP_ECR は 1 か 0 だけ）。
 #
 # 利用者への権限は人に渡す作業なので入れていない（docs/deploy.md の「利用者に画面を渡す」）。
 set -euo pipefail
@@ -272,8 +271,10 @@ flag_value SKIP_LAB; flag_value SKIP_STREAM; flag_value SKIP_ANALYTICS; flag_val
 # stream の syslog-ng の syslog の形式。既定は本番の Cisco に合わせた RFC3164（stream の変数の既定と同じ）
 SYSLOG_STANDARD="${SYSLOG_STANDARD:-RFC3164}"
 case "$SYSLOG_STANDARD" in RFC3164 | RFC5424) ;; *) die "SYSLOG_STANDARD は RFC3164 か RFC5424（大文字）: $SYSLOG_STANDARD。まだ何も作っていない" ;; esac
-# stream の Telegraf の SNMP のポーリング。既定 1（stream の変数 snmp_poll の既定と同じ）。0 なら trap だけ受ける
-SNMP_POLL="${SNMP_POLL:-1}"; flag_value SNMP_POLL
+# SNMP_POLL は 2026-10-09 から使わない（cycle 013 で SNMP のポーリングをやめた）。前の deploy.env で止まらないよう読むだけ読み、書いてあれば注意を出す
+if [ -n "${SNMP_POLL:-}" ]; then
+  echo "注意: SNMP_POLL は使わない（2026-10-09 に SNMP のポーリングをやめ、IF の状態は gnmic が gNMI で取る。Grafana の link_down も gNMI から出る）。deploy.env から消してよい"
+fi
 # どの機能を作るか（既定は土台だけ。AGENT / PIPELINE / WORKFLOW は 1 を書いたものだけ作る。AGENT の既定は 2026-10-04 に 1 → 0）
 AGENT="${AGENT:-0}"
 flag_value AGENT; flag_value PIPELINE; flag_value WORKFLOW; flag_value CREATE_KB
@@ -288,11 +289,11 @@ if [ -n "$WORKFLOW" ]; then
     die "WORKFLOW は lab と stream と analytics と graph が要る。SKIP_LAB / SKIP_STREAM / SKIP_ANALYTICS / SKIP_GRAPH を外す。まだ何も作っていない"
   fi
 fi
-# lab は単独で外せる（2026-10-04 まで、stream を作るなら lab も要るとして止めていた）。stream の Telegraf の取りにいく側の機器の一覧は
+# lab は単独で外せる（2026-10-04 まで、stream を作るなら lab も要るとして止めていた）。stream の gnmic の購読先の一覧は
 # lab が無くても lab の定義（と、それを最初の seed にする Nautobot）から作る
 if [ -n "$PIPELINE" ]; then
   if [ -n "$SKIP_LAB" ] && [ -z "$SKIP_STREAM" ]; then
-    echo "SKIP_LAB=1 なので lab は作らない。stream の Telegraf の取りにいく側は lab の定義の機器を探しに行き、届かないので gNMI / SNMP のエラーをログに出して繋ぎ直し続ける（タスクは落ちない）。受ける側（trap / syslog / NetFlow / sFlow）は送り手がいなければ何も来ない"
+    echo "SKIP_LAB=1 なので lab は作らない。stream の gnmic は lab の定義の機器を探しに行き、届かないので gNMI のエラーをログに出して 10 秒ごとに繋ぎ直す（タスクは落ちない）。受ける側（trap / syslog / NetFlow / sFlow）は送り手がいなければ何も来ない"
     # NLB へ送れるのは lab の管理ネットワーク（lab の EC2 の DNAT）と lab の EC2 だけ（IaC/terraform/aws-managed/base/core の security_groups.tf。
     # cycle 012 で、外の機器から受ける MDT の受け口を外した）
     printf '\033[1;33m%s\033[0m\n' "注意: lab が無いので、この stream には何も届かない（trap・syslog・NetFlow・sFlow は lab の EC2 からしか来ない）。届けるなら SKIP_LAB を外す"
@@ -308,7 +309,7 @@ else
   SKIP_LAB=1; SKIP_STREAM=1; SKIP_ANALYTICS=1; SKIP_GRAPH=1
 fi
 # Nautobot（IaC/terraform/aws-managed/pipeline/nautobot）は機器の一覧とケーブルの正なので、PIPELINE=1 ならいつも作る（切り替える変数は無い。2026-10-04）。
-# Job の書き先（Telegraf の dialin の一覧 = stream、Neptune の物理層 = graph）が両方無いときだけ作らない。
+# Job の書き先（gnmic の購読先の一覧 = stream、Neptune の物理層 = graph）が両方無いときだけ作らない。
 # 前の deploy.env で止まらないよう NAUTOBOT は読むだけ読み、0 が書いてあれば注意を出す
 case "${NAUTOBOT:-}" in
   '') ;;
@@ -324,21 +325,14 @@ if [ -z "$SKIP_ANALYTICS" ] && { [ -n "$SINK_PROMETHEUS" ] || [ -n "$SINK_OPENSE
 if [ -n "$SKIP_ANALYTICS" ]; then SPLUNK_ON_ECS=""; fi
 log "   格納先（STORES=${STORES}${STORES_DEFAULT:+。既定}）:${STORE_S3:+ s3（S3 Tables）}${STORE_GRAFANA:+ grafana（OpenSearch・Prometheus・Grafana）}${STORE_SPLUNK:+ splunk（Splunk）}${SKIP_ANALYTICS:+。analytics を作らないので、どれも作らない}"
 # アラート（SNS のトピック <接頭辞>-alerts）の送り手。Grafana（STORES の grafana）は Prometheus の link_down / bgp_down / isis_down と OpenSearch の trap の
-# ルールを入れる（app/grafana/start.sh）ので、作ればいつも送り手（sns のエンドポイントを足す）。Splunk（STORES の splunk）は保存済みサーチがポーリング・trap・gNMI を見る。
-# ワークフローを起こすのは link_down だけ（app/temporal/rules.py の START_KINDS）。Grafana の link_down は SNMP のポーリングの ifOperStatus（Prometheus）を
-# 見るので SNMP_POLL が要る。Splunk は linkDown の trap からも出す
+# ルールを入れる（app/grafana/start.sh）ので、作ればいつも送り手（sns のエンドポイントを足す）。Splunk（STORES の splunk）は保存済みサーチが trap と gNMI を見る。
+# ワークフローを起こすのは link_down だけ（app/temporal/rules.py の START_KINDS）。Grafana の link_down は gnmic が取る IF の状態（Prometheus の
+# snmp_interface_oper_up）を見る（cycle 013 までは SNMP のポーリングの ifOperStatus で、SNMP_POLL=0 では出なかった）。Splunk は gNMI と linkDown の trap から出す
 LINK_DOWN_SENDERS=""
-if [ -n "$GRAFANA" ] && [ -n "$SINK_PROMETHEUS" ] && [ -n "$SNMP_POLL" ]; then LINK_DOWN_SENDERS="grafana"; fi
+if [ -n "$GRAFANA" ] && [ -n "$SINK_PROMETHEUS" ]; then LINK_DOWN_SENDERS="grafana"; fi
 if [ -n "$SPLUNK_ON_ECS" ]; then LINK_DOWN_SENDERS="$LINK_DOWN_SENDERS${LINK_DOWN_SENDERS:+,}splunk"; fi
 if [ -n "$WORKFLOW" ] && [ -z "$LINK_DOWN_SENDERS" ]; then
-  die "WORKFLOW はアラートの送り手が要る（ワークフローを起こすのは link_down のアラート）。STORES に splunk を入れる（既定。trap とポーリングから検知する）か、STORES に grafana を入れたまま SNMP_POLL=1（既定）にする（ポーリングから検知する）。まだ何も作っていない"
-fi
-if [ -n "$GRAFANA" ] && [ -n "$SINK_PROMETHEUS" ] && [ -z "$SNMP_POLL" ]; then
-  if [ -n "$SPLUNK_ON_ECS" ]; then
-    echo "注意: SNMP_POLL=0 なので Grafana のアラートルール link_down と Splunk の netops_poll は発火しない（見る ifOperStatus はポーリングの値）。IF の up / down は Splunk が trap からだけ知らせる"
-  else
-    echo "注意: SNMP_POLL=0 なので Grafana のアラートルール link_down は発火せず、IF の up / down を知らせるものが無い。ポーリングで知らせるなら SNMP_POLL=1、trap から知らせるなら STORES に splunk を入れる"
-  fi
+  die "WORKFLOW はアラートの送り手が要る（ワークフローを起こすのは link_down のアラート）。STORES に splunk か grafana を入れる（既定はどちらもある。どちらも gNMI の IF の状態から検知し、Splunk は trap からも検知する）。まだ何も作っていない"
 fi
 if [ -z "$AGENT" ] && [ -n "$CREATE_KB" ]; then
   echo "AGENT=0 なので CREATE_KB は効かない（Knowledge Base は agent の一部。作るなら AGENT=1 も書く。AGENT の既定は 0）"
@@ -444,7 +438,7 @@ if command -v python3 >/dev/null; then PY=(python3)
 elif command -v uv >/dev/null; then PY=(uv run --python 3.13 python)
 else die "python3 も uv も無い（docs/setup.md「Terraform を打つ PC 側」）"; fi
 if [ -z "$SKIP_LAB" ] || [ -z "$SKIP_ANALYTICS" ]; then command -v curl >/dev/null || die "curl が無い（lab の containerlab の rpm と analytics の jar を取るのに使う。sudo apt install curl）"; fi
-# docker はイメージ（agent / lab の 2 つ / telegraf / syslog-ng / goflow2 / kafka-ui / grafana / splunk / nautobot / redis / worker / temporal）を ECR に置くときだけ要る。土台だけなら要らない
+# docker はイメージ（agent / lab の 2 つ / telegraf / gnmic / syslog-ng / goflow2 / kafka-ui / grafana / splunk / nautobot / redis / worker / temporal）を ECR に置くときだけ要る。土台だけなら要らない
 NEED_DOCKER="$AGENT$WORKFLOW$GRAFANA$SPLUNK_ON_ECS$NAUTOBOT"; if [ -z "$SKIP_LAB" ] || [ -z "$SKIP_STREAM" ]; then NEED_DOCKER=1; fi
 if [ -n "$NEED_DOCKER" ]; then
   command -v docker >/dev/null || die "docker が無い（イメージのビルドに使う。docs/setup.md「Terraform を打つ PC 側」）"
@@ -502,8 +496,8 @@ endpoints_for() {  # endpoints_for <ルート>  そのルートが呼ぶ AWS の
     agent) add_endpoints bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs ;;
     # lab の EC2 はイメージを ECR から引く（SSM は土台の分）
     pipeline/lab) add_endpoints ecr.api ecr.dkr ;;
-    # Telegraf・syslog-ng・GoFlow2（ECS）: イメージを ECR から引き、ログを CloudWatch に書く。MSK は VPC の中。Web の EC2 の Kafbat UI（Docker）も同じ ecr.api / ecr.dkr で ECR から pull する
-    # syslog-ng と GoFlow2 のタスクは起動時に MSK の SCRAM の secret を Secrets Manager から読む（cycle 012。復号の KMS は Secrets Manager が代わりに呼ぶ）
+    # Telegraf・gnmic・syslog-ng・GoFlow2（ECS）: イメージを ECR から引き、ログを CloudWatch に書く。MSK は VPC の中。Web の EC2 の Kafbat UI（Docker）も同じ ecr.api / ecr.dkr で ECR から pull する
+    # syslog-ng と GoFlow2 と gnmic のタスクは起動時に MSK の SCRAM の secret を Secrets Manager から読む（cycle 012、gnmic は 013。復号の KMS は Secrets Manager が代わりに呼ぶ）
     pipeline/stream) add_endpoints ecr.api ecr.dkr logs secretsmanager ;;
     # Spark: S3 Tables の API、ドライバのログ（MSK は VPC の中で、S3 は gateway）
     pipeline/analytics) add_endpoints s3tables logs ;;
@@ -511,7 +505,7 @@ endpoints_for() {  # endpoints_for <ルート>  そのルートが呼ぶ AWS の
     # status の Lambda はアラートの通知の履歴を Firehose に送る（analytics があるときだけ）
     pipeline/graph) add_endpoints neptune-graph-data
                     if analytics_on; then add_endpoints kinesis-firehose; fi ;;
-    # Nautobot（ECS）: イメージとログ。Job が Telegraf の dialin のサービスを作り直すのに ecs の API を呼ぶ（SSM は土台の分。RDS は VPC の中で、Neptune は graph の分）
+    # Nautobot（ECS）: イメージとログ。Job が gnmic のサービスを作り直すのに ecs の API を呼ぶ（SSM は土台の分。RDS は VPC の中で、Neptune は graph の分）
     pipeline/nautobot) add_endpoints ecr.api ecr.dkr logs ecs ;;
     # ワーカー: SQS（アラートは SNS → SQS で届く。SNS からの配信はエンドポイントを通らない）、S3 Tables（修復案の証跡）、ECR、ログ、Runtime、Gateway。
     # ツールの Lambda の query_history が Athena を呼ぶ（analytics があるときだけ）
@@ -538,8 +532,8 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 #   前に作ったコレクションが state に残っているだけで手順 3 の NEED_AOSS が 1 になる回は数えない）、
 # lab = 25（EC2 の m6i.xlarge 24.8。2026-10-08 に Price List API で確認。TRex が amd64 だけなので x86_64。2026-10-08 までの 17 は t4g.xlarge、2026-10-04 までの 9 は t4g.large の単価だった）、graph = 58（Neptune Analytics の 16 m-NCU で 58.1。2026-10-04 に料金のページで確認。Price List API では確かめていない。
 #   2026-10-04 までの Neptune Database の db.t4g.medium は 14 だった。レプリカも同じ単価なので × NEPTUNE_AZ_NUM）、
-#   stream = MSK 57（ブローカー 2 台。MSK_AZ_NUM=3 で 1 台 27 を足す）+ Telegraf と syslog-ng と GoFlow2 で 7（Fargate ARM 0.25 vCPU / 0.5 GB で 1.2 のタスクが、
-#   Telegraf の受ける側 1 つと取りにいく側 TELEGRAF_AZ_NUM 個（2026-10-04 に分けた）、syslog-ng 1 つと GoFlow2 1 つ（2026-10-08 から）と内部 NLB 2.43。
+#   stream = MSK 57（ブローカー 2 台。MSK_AZ_NUM=3 で 1 台 27 を足す）+ Telegraf と gnmic と syslog-ng と GoFlow2 で 7（Fargate ARM 0.25 vCPU / 0.5 GB で 1.2 のタスクが、
+#   Telegraf の受ける側 TELEGRAF_AZ_NUM 個、gnmic 1 つ（2026-10-09 に Telegraf の取りにいく側を置き換えた）、syslog-ng 1 つと GoFlow2 1 つ（2026-10-08 から）と内部 NLB 2.43。
 #   NLB は 2026-09-28 から。どちらも公表単価からで、Price List API では確かめていない。Kafbat UI は cycle 010 から土台の Web の EC2 に入っている。
 #   MSK の SCRAM の KMS の鍵（月 $1）と secret（月 $0.40）は 1 時間あたり 0.2 に満たないので入れていない）、
 # analytics = Spark のジョブ 1 つにつき 21（ストリーミングのジョブが動いている間の EMR Serverless の 3 vCPU（driver 1 + executor 2。1 vCPU のワーカー 1 台で約 7）。単価は 2026-09-17 に確認。
@@ -567,7 +561,7 @@ if [ -z "$SKIP_GRAPH" ]; then COST_CENTS=$((COST_CENTS + 58 * NEPTUNE_AZ_NUM)); 
 if [ -z "$SKIP_STREAM" ]; then
   # MSK は kafka.m5.large × 2 で 0.542（Kafka 4 は t3.small を受け付けない。2026-09-18）。3 AZ ならブローカーが 1 台増える
   COST_CENTS=$((COST_CENTS + 57 + 27 * (MSK_AZ_NUM - 2)))
-  COST_CENTS=$((COST_CENTS + (12 * (3 + TELEGRAF_AZ_NUM) + 24 + 5) / 10))   # Telegraf・syslog-ng・GoFlow2（Fargate のタスク 3 + TELEGRAF_AZ_NUM 個と NLB）
+  COST_CENTS=$((COST_CENTS + (12 * (3 + TELEGRAF_AZ_NUM) + 24 + 5) / 10))   # Telegraf・gnmic・syslog-ng・GoFlow2（Fargate のタスク 3 + TELEGRAF_AZ_NUM 個と NLB）
 fi
 if [ -z "$SKIP_ANALYTICS" ]; then
   # Spark のジョブ（1 つ 21。格納先で 3 つ）
@@ -602,6 +596,12 @@ if [ -f "$TF_DIR/base/core/terraform.tfstate" ]; then
     && [ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ] && { tf_init pipeline/stream; [ -n "$(tf pipeline/stream state list 2>/dev/null)" ]; }; then
     die "IaC/terraform/aws-managed/base/core の state に 2026-10-04 より前の Telegraf の SG（telegraf / telegraf_poll / telegraf_nlb）が残っていて、stream がそれを使っている。先に ops/down.sh で消す（stream だけ先に消してもよい）。まだ何も作っていない"
   fi
+  # 取りにいく側の Telegraf の SG（telegraf_dialin）は 2026-10-09 に gnmic へ替えた（cycle 013）。古い SG は stream の取りにいく側のタスクが付けたままだと
+  # 消せないのは上と同じなので、stream が残っているなら先に消してもらう
+  if tf base/core state list 2>/dev/null | grep -qxF 'aws_security_group.workload["telegraf_dialin"]' \
+    && [ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ] && { tf_init pipeline/stream; [ -n "$(tf pipeline/stream state list 2>/dev/null)" ]; }; then
+    die "IaC/terraform/aws-managed/base/core の state に 2026-10-09 より前の取りにいく側の Telegraf の SG（telegraf_dialin）が残っていて、stream がそれを使っている。先に ops/down.sh で消す（stream だけ先に消してもよい）。まだ何も作っていない"
+  fi
 fi
 
 # ---- 1. ECR --------------------------------------------------------------------
@@ -613,9 +613,9 @@ REG="${REPO%%/*}"
 # ---- 2. イメージ ----------------------------------------------------------------
 log "2. イメージ（ECR に無いタグだけ作る）"
 NEED_AGENT=""; NEED_LAB=""; NEED_WORKER=""; NEED_TEMPORAL=""; NEED_TELEGRAF=""; NEED_GRAFANA=""; NEED_SPLUNK=""; NEED_NAUTOBOT=""; NEED_REDIS=""; NEED_KAFKA_UI=""
-NEED_SYSLOG_NG=""; NEED_GOFLOW2=""
-# telegraf / syslog-ng / grafana / splunk は app/<名前>/ の中身と docker/images/<名前>/Dockerfile からタグを作る（どちらかを変えれば次の ops/up.sh が作り直す）
-TELEGRAF_TAG=""; SYSLOG_NG_TAG=""; GRAFANA_TAG=""; SPLUNK_TAG=""; NAUTOBOT_TAG=""
+NEED_SYSLOG_NG=""; NEED_GOFLOW2=""; NEED_GNMIC=""
+# telegraf / gnmic / syslog-ng / grafana / splunk は app/<名前>/ の中身と docker/images/<名前>/Dockerfile からタグを作る（どちらかを変えれば次の ops/up.sh が作り直す）
+TELEGRAF_TAG=""; GNMIC_TAG=""; SYSLOG_NG_TAG=""; GRAFANA_TAG=""; SPLUNK_TAG=""; NAUTOBOT_TAG=""
 if [ -n "$AGENT" ]; then
   if ecr_has "$PREFIX-agent" "$IMAGE_TAG"; then echo "agent:$IMAGE_TAG はある（作り直すなら IMAGE_TAG を変える）"; else NEED_AGENT=1; fi
 fi
@@ -636,6 +636,9 @@ if [ -z "$SKIP_STREAM" ]; then
   SYSLOG_NG_TAG=$(dir_tag "$SYSLOG_NG_VERSION" app/syslog-ng docker/images/syslog-ng/Dockerfile) || die "app/syslog-ng/ のタグを作れなかった"
   if ecr_has "$PREFIX-syslog-ng" "$SYSLOG_NG_TAG"; then echo "syslog-ng:$SYSLOG_NG_TAG はある"; else NEED_SYSLOG_NG=1; fi
   if ecr_has "$PREFIX-goflow2" "$GOFLOW2_TAG"; then echo "goflow2:$GOFLOW2_TAG はある"; else NEED_GOFLOW2=1; fi
+  # 機器の gNMI の購読（cycle 013）。版は ops/up-common.sh の GNMIC_VERSION
+  GNMIC_TAG=$(dir_tag "$GNMIC_VERSION" app/gnmic docker/images/gnmic/Dockerfile) || die "app/gnmic/ のタグを作れなかった"
+  if ecr_has "$PREFIX-gnmic" "$GNMIC_TAG"; then echo "gnmic:$GNMIC_TAG はある"; else NEED_GNMIC=1; fi
 fi
 if [ -n "$GRAFANA" ]; then
   GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" app/grafana docker/images/grafana/Dockerfile) || die "app/grafana/ のタグを作れなかった"
@@ -651,12 +654,12 @@ if [ -n "$NAUTOBOT" ]; then
   if ecr_has "$PREFIX-nautobot" "$NAUTOBOT_TAG"; then echo "nautobot:$NAUTOBOT_TAG はある"; else NEED_NAUTOBOT=1; fi
   if ecr_has "$PREFIX-redis" "$REDIS_TAG"; then echo "redis:$REDIS_TAG はある"; else NEED_REDIS=1; fi
 fi
-if [ -z "$NEED_AGENT$NEED_LAB$NEED_WORKER$NEED_TEMPORAL$NEED_TELEGRAF$NEED_GRAFANA$NEED_SPLUNK$NEED_NAUTOBOT$NEED_REDIS$NEED_KAFKA_UI$NEED_SYSLOG_NG$NEED_GOFLOW2" ]; then
+if [ -z "$NEED_AGENT$NEED_LAB$NEED_WORKER$NEED_TEMPORAL$NEED_TELEGRAF$NEED_GRAFANA$NEED_SPLUNK$NEED_NAUTOBOT$NEED_REDIS$NEED_KAFKA_UI$NEED_SYSLOG_NG$NEED_GOFLOW2$NEED_GNMIC" ]; then
   echo "作るイメージは無い"
 else
   docker info >/dev/null 2>&1 || die "dockerd に接続できない（WSL なら sudo service docker start。docs/setup.md「Terraform を打つ PC 側」）"
   # agent / worker / grafana / nautobot は RUN があるので、x86_64 の PC では QEMU（binfmt）が要る（lab のイメージは上流の amd64 を、goflow2 のイメージは上流の arm64 をミラーするだけで、
-  # telegraf と syslog-ng は COPY だけ。splunk も COPY だけで amd64 なので、arm64 の PC（Apple シリコン）でもエミュレーション無しで作れる）
+  # telegraf と syslog-ng と gnmic は COPY だけ。splunk も COPY だけで amd64 なので、arm64 の PC（Apple シリコン）でもエミュレーション無しで作れる）
   # 出力は変数で受けてから探す（grep -q が先に閉じると docker が SIGPIPE で落ち、pipefail で「無い」扱いになることがある）
   BUILDX_LS=$(docker buildx ls 2>/dev/null || true)
   if [ -n "$NEED_AGENT$NEED_WORKER$NEED_GRAFANA$NEED_NAUTOBOT" ] && ! grep -q 'linux/arm64' <<<"$BUILDX_LS"; then
@@ -699,6 +702,9 @@ else
   fi
   if [ -n "$NEED_SYSLOG_NG" ]; then
     build_syslog_ng   # 機器の syslog の受け口（stream の ECS。ops/up-common.sh。OSS 版と共通）
+  fi
+  if [ -n "$NEED_GNMIC" ]; then
+    build_gnmic   # 機器の gNMI の購読（stream の ECS。ops/up-common.sh。OSS 版と共通）
   fi
   if [ -n "$NEED_GOFLOW2" ]; then
     # NetFlow / sFlow の受け口（stream の ECS）。Fargate は VPC の中から ECR しか引けないのでミラーする
@@ -899,41 +905,32 @@ fi
 
 # ---- 7. stream ------------------------------------------------------------------
 if [ -z "$SKIP_STREAM" ]; then
-  log "7. stream（IaC/terraform/aws-managed/pipeline/stream。MSK の作成に 20〜30 分。Telegraf は ECS のタスク）"
-  # Telegraf のポーリング先と gNMI の購読先は lab の定義から作る（機器の一覧を lab の定義 1 か所にする。app/telegraf/telegraf.sh が
-  # タスクの環境変数から telegraf.conf.in の __SNMP_AGENTS__ / __GNMI_TARGETS__ を埋める）。
-  # ポーリング先は SNMP_POLL=0 でも作って渡す（stream の snmp_agents は必須。telegraf.sh は SNMP_POLL=1 のときだけ使う）
-  SNMP_AGENTS=$("${PY[@]}" app/containerlab/lab_topology.py app/containerlab --snmp-agents) || die "app/containerlab/lab_topology.py が lab の定義からポーリング先を作れなかった"
+  log "7. stream（IaC/terraform/aws-managed/pipeline/stream。MSK の作成に 20〜30 分。Telegraf・gnmic・syslog-ng・GoFlow2 は ECS のタスク）"
+  # gnmic の gNMI の購読先は lab の定義から作る（機器の一覧を lab の定義 1 か所にする。app/gnmic/gnmic.sh が
+  # タスクの環境変数 GNMI_TARGETS から gnmic.yaml.in の targets を埋める）。SNMP のポーリング先は cycle 013 でなくした（SNMP は trap だけ受ける）
   GNMI_TARGETS=$("${PY[@]}" app/containerlab/lab_topology.py app/containerlab --gnmi-targets) || die "app/containerlab/lab_topology.py が lab の定義から gNMI の購読先を作れなかった"
-  if [ -n "$SNMP_POLL" ]; then
-    SNMP_POLL_TF=true
-    echo "Telegraf の SNMP: trap を受け、ポーリングもする（SNMP_POLL=1）。ポーリング先: $SNMP_AGENTS"
-  else
-    SNMP_POLL_TF=false
-    echo "Telegraf の SNMP: trap だけ受ける（SNMP_POLL=0。ポーリングもするなら SNMP_POLL=1 か、deploy.env から消す）"
-  fi
-  echo "Telegraf の gNMI の購読先: $GNMI_TARGETS"
+  echo "gnmic の gNMI の購読先: $GNMI_TARGETS"
   # syslog の形式は SYSLOG_STANDARD（既定は本番の Cisco の RFC3164）。lab の SR Linux は ops/lab-common.sh の LAB_SYSLOG_STANDARD（RFC5424）で送る
   echo "syslog-ng の syslog の形式: $SYSLOG_STANDARD"
   if [ -z "$SKIP_LAB" ] && [ "$SYSLOG_STANDARD" != "$LAB_SYSLOG_STANDARD" ]; then
     echo "注意: lab の SR Linux は $LAB_SYSLOG_STANDARD で送るので、SYSLOG_STANDARD=$SYSLOG_STANDARD では lab のログの項目（ホスト名・本文など）が崩れる。lab のログまで見るなら SYSLOG_STANDARD=$LAB_SYSLOG_STANDARD"
   fi
-  # 機器の認証情報は SSM の SecureString に置き、取りにいく側のタスクが ECS の secrets で受ける（Terraform の state に載せない）。
-  # 最初の値は lab の公開既定値（ops/lab-common.sh）。もうあれば触らないので、実機を足すときは SSM の値を書き換えてサービスを作り直す
-  ensure_fixed_secret "/$PREFIX/telegraf-dialin/gnmi-username" "$LAB_GNMI_USERNAME" "gNMI username of the Telegraf dial-in task (created by ops/up.sh with the containerlab default)"
-  ensure_fixed_secret "/$PREFIX/telegraf-dialin/gnmi-password" "$LAB_GNMI_PASSWORD" "gNMI password of the Telegraf dial-in task (created by ops/up.sh with the containerlab default)"
-  ensure_fixed_secret "/$PREFIX/telegraf-dialin/snmp-community" "$LAB_SNMP_COMMUNITY" "SNMP community of the Telegraf dial-in task (created by ops/up.sh with the containerlab default)"
-  # 取りにいく側の一覧は Nautobot の Job が書き換える SSM のパラメータ（…/telegraf-dialin/nautobot/*）から受ける（stream を作るなら Nautobot もいつも作る）。
+  # 機器の認証情報は SSM の SecureString に置き、gnmic のタスクが ECS の secrets で受ける（Terraform の state に載せない）。
+  # 最初の値は lab の公開既定値（ops/lab-common.sh）。もうあれば触らないので、実機を足すときは SSM の値を書き換えてサービスを作り直す。
+  # cycle 013 より前の /<接頭辞>/telegraf-dialin/ の 3 つ（SNMP の community も）は使わない。ops/down.sh が ManagedBy のタグで消す
+  ensure_fixed_secret "/$PREFIX/gnmic/gnmi-username" "$LAB_GNMI_USERNAME" "gNMI username of the gnmic task (created by ops/up.sh with the containerlab default)"
+  ensure_fixed_secret "/$PREFIX/gnmic/gnmi-password" "$LAB_GNMI_PASSWORD" "gNMI password of the gnmic task (created by ops/up.sh with the containerlab default)"
+  # gnmic の購読先の一覧は Nautobot の Job が書き換える SSM のパラメータ（…/gnmic/nautobot/gnmi-targets）から受ける（stream を作るなら Nautobot もいつも作る）。
   # Terraform が書くのは最初の値（上の lab の一覧。Nautobot の最初の seed も lab なので同じ）だけ
-  DIALIN_FROM_NAUTOBOT=true
-  echo "Telegraf の取りにいく側の機器の一覧: Nautobot の Job が書く（上の一覧は最初の値）"
+  GNMI_FROM_NAUTOBOT=true
+  echo "gnmic の購読先の一覧: Nautobot の Job が書く（上の一覧は最初の値）"
   # Kafbat UI（stream を作る回はいつも作る）。ログインの admin のパスワードは SSM の SecureString（Web の EC2 のユニットが起動のたびに SSM から読む）
   ensure_secret "/$PREFIX/kafka-ui/admin-password" password "Kafbat UI admin password (created by ops/up.sh)"
-  # syslog-ng と GoFlow2 が MSK に書く SCRAM のユーザー名とパスワード（Secrets Manager。KMS の鍵も作る。ops/up-common.sh）。msk.tf が data source で引くので apply より前
+  # syslog-ng と GoFlow2 と gnmic が MSK に書く SCRAM のユーザー名とパスワード（Secrets Manager。KMS の鍵も作る。ops/up-common.sh）。msk.tf が data source で引くので apply より前
   ensure_msk_scram_key
   ensure_msk_scram_secret
-  tf_apply pipeline/stream -var "telegraf_image_tag=$TELEGRAF_TAG" -var "kafka_ui_image_tag=$KAFKA_UI_TAG" -var "snmp_agents=$SNMP_AGENTS" -var "gnmi_targets=$GNMI_TARGETS" \
-    -var "syslog_standard=$SYSLOG_STANDARD" -var "snmp_poll=$SNMP_POLL_TF" -var "dialin_targets_from_nautobot=$DIALIN_FROM_NAUTOBOT" \
+  tf_apply pipeline/stream -var "telegraf_image_tag=$TELEGRAF_TAG" -var "kafka_ui_image_tag=$KAFKA_UI_TAG" -var "gnmi_targets=$GNMI_TARGETS" \
+    -var "syslog_standard=$SYSLOG_STANDARD" -var "gnmic_image_tag=$GNMIC_TAG" -var "gnmi_targets_from_nautobot=$GNMI_FROM_NAUTOBOT" \
     -var "syslog_ng_image_tag=$SYSLOG_NG_TAG" -var "goflow2_image_tag=$GOFLOW2_TAG" \
     -var "msk_az_num=$MSK_AZ_NUM" -var "telegraf_az_num=$TELEGRAF_AZ_NUM"
 fi
@@ -954,19 +951,19 @@ if [ -n "$LAB_INSTANCE_ID" ]; then
   if [ "${LAB_VARS[1]}" = forward_to_telegraf=true ]; then
     # lab の EC2 の起動時の forward は、stream（Telegraf の NLB のアドレスを SSM に置く）より前だと宛先を読めていない。
     # 何度打っても同じ規則になるので毎回打つ（トポロジが上がっていなければ lab.sh の up がまた打つ）
-    log "7-2b. lab の EC2 から stream の ECS（Telegraf・syslog-ng・GoFlow2）へ SNMP / gNMI / trap / syslog / NetFlow / sFlow を通す（lab forward）"
+    log "7-2b. lab の EC2 と stream の ECS（Telegraf・gnmic・syslog-ng・GoFlow2）のあいだに gNMI / trap / syslog / NetFlow / sFlow を通す（lab forward）"
     ssm_run "$LAB_INSTANCE_ID" "[ ! -x /usr/local/bin/lab ] || /usr/local/bin/lab forward" \
       || printf '\033[1;33m%s\033[0m\n' "lab forward が失敗した。lab の EC2 で sudo lab forward-status を見る（docs/pipeline.md）"
   fi
 fi
 if [ -z "$SKIP_STREAM" ]; then
-  log "7-2c. Telegraf の ECS のサービス 2 つ（受ける側と取りにいく側）が安定するのを待つ（イメージの取得と NLB のヘルスチェック。1〜3 分）"
+  log "7-2c. Telegraf（受ける側）と gnmic の ECS のサービスが安定するのを待つ（イメージの取得と NLB のヘルスチェック。1〜3 分）"
   TG_CLUSTER=$(tf pipeline/stream output -raw telegraf_cluster_name); TG_DIALOUT_SERVICE=$(tf pipeline/stream output -raw telegraf_dialout_service_name)
-  TG_DIALIN_SERVICE=$(tf pipeline/stream output -raw telegraf_dialin_service_name)
-  if aws ecs wait services-stable --region "$REGION" --cluster "$TG_CLUSTER" --services "$TG_DIALOUT_SERVICE" "$TG_DIALIN_SERVICE"; then
-    echo "Telegraf は動いている（ログ: aws logs tail --region $REGION $(tf pipeline/stream output -raw telegraf_log_group_name) --follow。ストリームは受ける側が dialout/、取りにいく側が dialin/）"
+  GNMIC_SERVICE=$(tf pipeline/stream output -raw gnmic_service_name)
+  if aws ecs wait services-stable --region "$REGION" --cluster "$TG_CLUSTER" --services "$TG_DIALOUT_SERVICE" "$GNMIC_SERVICE"; then
+    echo "Telegraf と gnmic は動いている（ログ: aws logs tail --region $REGION $(tf pipeline/stream output -raw telegraf_log_group_name) --follow と $(tf pipeline/stream output -raw gnmic_log_group_name)）"
   else
-    printf '\033[1;33m%s\033[0m\n' "Telegraf のサービスが 10 分たっても安定しない。受ける側は $(tf pipeline/stream output -raw telegraf_dialout_list_tasks_command)、取りにいく側は $(tf pipeline/stream output -raw telegraf_dialin_list_tasks_command) とロググループ $(tf pipeline/stream output -raw telegraf_log_group_name) を見る（docs/troubleshooting.md）"
+    printf '\033[1;33m%s\033[0m\n' "Telegraf か gnmic のサービスが 10 分たっても安定しない。Telegraf は $(tf pipeline/stream output -raw telegraf_dialout_list_tasks_command)、gnmic は $(tf pipeline/stream output -raw gnmic_list_tasks_command) と、ロググループ $(tf pipeline/stream output -raw telegraf_log_group_name) と $(tf pipeline/stream output -raw gnmic_log_group_name) を見る（docs/troubleshooting.md）"
   fi
   log "7-2d. syslog-ng と GoFlow2 の ECS のサービス（機器の syslog と NetFlow / sFlow の受け口。cycle 012）が安定するのを待つ（1〜3 分）"
   SYSLOG_NG_SERVICE=$(tf pipeline/stream output -raw syslog_ng_service_name); GOFLOW2_SERVICE=$(tf pipeline/stream output -raw goflow2_service_name)
@@ -1003,7 +1000,7 @@ if [ -n "$GRAPH_PID" ]; then
 fi
 
 # ---- 7-3c. Nautobot -----------------------------------------------------------------
-# stream（dialin の一覧の SSM パラメータとサービス）と graph（Neptune）の state を読むので、その 2 つの後。Neptune には 7-3b で lab の全層が入っていて、
+# stream（gnmic の購読先の SSM パラメータとサービス）と graph（Neptune）の state を読むので、その 2 つの後。Neptune には 7-3b で lab の全層が入っていて、
 # Nautobot の Job は物理層だけを Nautobot に合わせる（最初は Nautobot も lab から入るので差分は無い。SKIP_LAB=1 なら 7-3b が無く、Job が書く物理層だけになる）
 NAUTOBOT_WARN=""
 if [ -n "$NAUTOBOT" ]; then
@@ -1319,9 +1316,9 @@ if [ -n "$LAB_INSTANCE_ID" ]; then
   tf pipeline/lab output -raw start_session_command; echo
 fi
 if [ -z "$SKIP_STREAM" ]; then
-  echo "Telegraf（ECS の取りにいく側）に入るコマンド（TASK_ID は下の 1 行目で出る ARN の最後。中で tg gnmi。SNMP_POLL=1 なら tg test でポーリングも見られる）:"
-  tf pipeline/stream output -raw telegraf_dialin_list_tasks_command; echo
-  tf pipeline/stream output -raw telegraf_exec_command; echo
+  echo "gnmic（ECS）に入って機器の状態を 1 回取るコマンド（TASK_ID は下の 1 行目で出る ARN の最後。gn get が Kafka に書くのと同じ event の形で出す。Kafka には書かない）:"
+  tf pipeline/stream output -raw gnmic_list_tasks_command; echo
+  tf pipeline/stream output -raw gnmic_exec_command; echo
 fi
 if [ -n "$GRAFANA" ]; then
   echo "Grafana（http://localhost:3000/ 。ユーザー admin）を開くポートフォワード（web の EC2 を踏み台にする）と admin のパスワード:"

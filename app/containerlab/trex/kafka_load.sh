@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # MSK のトピック metrics / gnmi へ kafka-producer-perf-test でレコードを流す（後段の負荷試験用。中身は trex/README.md の「Kafka へ流す」）。
 #   kafka_load.sh metrics|gnmi [件数] [件/秒]   （lab の EC2 で root。既定は 100000 件を 1000 件/秒。件/秒に -1 で上限なし）
-# ポーリング（metrics）と gNMI（gnmi）は Telegraf が取りにいくもので UDP ではないので、TRex では作れない。Telegraf が MSK に書く形
-# （json、秒の timestamp）のレコードをここで作り、apache/kafka のイメージの kafka-producer-perf-test で撃つ。
+# metrics と gnmi は gnmic（app/gnmic）が機器の gNMI を購読して書くもので UDP ではないので、TRex では作れない。gnmic が MSK に書く形
+# （format: event、split-events で 1 メッセージ 1 件、ナノ秒の timestamp。Spark の read_rows が Telegraf の形に読み替える）のレコードをここで作り、
+# apache/kafka のイメージの kafka-producer-perf-test で撃つ。event の形は gnmic のソースから組んだもの（実物ではない。cycle 013 の design.md の未確定 1）。
 # MSK は IAM 認証（SASL_SSL、9098）なので aws-msk-iam-auth の jar をイメージの libs に差し込み、認証はこの EC2 のインスタンスプロファイルで通す。
 # 環境（/etc/*-lab.env か呼び出し側）:
 #   AWS_REGION     必須
@@ -33,23 +34,24 @@ if [ -z "${BOOTSTRAP:-}" ]; then
 fi
 [ -f "$IAM_JAR" ] || { echo "$IAM_JAR が無い（aws-msk-iam-auth の all の jar。README の「前提」）" >&2; exit 1; }
 
-# lab の SR Linux（splab.clab.yml.in の kind nokia_srlinux）の名前と管理 IP。レコードの sysName / agent_host / source に使う
+# lab の SR Linux（splab.clab.yml.in の kind nokia_srlinux）の名前と管理 IP。レコードの tags.source に IP を使う（機器名は Spark が device map で足す）
 nodes() { awk '/^    [a-z0-9-]+:$/ { n = $1; sub(":", "", n) } /kind: nokia_srlinux/ { k = n } /mgmt-ipv4:/ && n == k { print n, $2 }' ../splab.clab.yml.in; }
 
 # 1 行 1 レコード（kafka-producer-perf-test の --payload-file は改行で区切り、毎回どれか 1 行を選ぶ）。timestamp は作った時刻で固定
 payload() {
-  local now name ip i
-  now=$(date +%s)
-  while read -r name ip; do
+  local now ip i
+  now=$(date +%s)000000000
+  while read -r _ ip; do
     if [ "$TOPIC" = metrics ]; then
-      # ポーリングの interface（telegraf.conf.in の inputs.snmp.table。機器ごとに ethernet-1/1〜1/3）
+      # gnmic の interface_stats（app/gnmic/gnmic.yaml.in。sample 60 秒。機器ごとに ethernet-1/1〜1/3）
       for i in 1 2 3; do
-        printf '{"fields":{"ifAdminStatus":1,"ifDescr":"ethernet-1/%d","ifInErrors":0,"ifInOctets":%d,"ifOperStatus":1,"ifOutErrors":0,"ifOutOctets":%d},"name":"interface","tags":{"agent_host":"%s","host":"telegraf","ifName":"ethernet-1/%d","sysName":"%s"},"timestamp":%d}\n' \
-          "$i" $((RANDOM * 1000)) $((RANDOM * 1000)) "$ip" "$i" "$name" "$now"
+        printf '{"name":"interface_stats","timestamp":%s,"tags":{"interface_name":"ethernet-1/%d","source":"%s","subscription-name":"interface_stats"},"values":{"/interface/statistics/in-octets":"%d","/interface/statistics/out-octets":"%d","/interface/statistics/in-error-packets":"0","/interface/statistics/out-error-packets":"0"}}\n' \
+          "$now" "$i" "$ip" $((RANDOM * 1000)) $((RANDOM * 1000))
       done
     else
-      # gNMI の bgp_neighbor（established。Splunk の netops_gnmi の bgp_down は発火しない）
-      printf '{"fields":{"session_state":"established"},"name":"bgp_neighbor","tags":{"host":"telegraf","peer_address":"10.255.0.1","source":"%s"},"timestamp":%d}\n' "$ip" "$now"
+      # gnmic の bgp_neighbor（on-change。established なので Splunk の netops_gnmi と Grafana の bgp_down は発火しない）
+      printf '{"name":"bgp_neighbor","timestamp":%s,"tags":{"network-instance_name":"default","neighbor_peer-address":"10.255.0.1","source":"%s","subscription-name":"bgp_neighbor"},"values":{"/network-instance/protocols/bgp/neighbor/session-state":"established"}}\n' \
+        "$now" "$ip"
     fi
   done < <(nodes)
 }

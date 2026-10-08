@@ -83,8 +83,8 @@ destroy_root pipeline/analytics
 # Nautobot（ECS と RDS）。RDS は最後のスナップショット無しで消すので、Nautobot で編集した内容は残らない（5〜10 分）
 destroy_root pipeline/nautobot
 destroy_lambda_root pipeline/graph "$PREFIX-graph-status"
-# stream の snmp_agents / gnmi_targets も必須変数だが destroy では使われないので、形だけ合う値を渡す
-destroy_root pipeline/stream -var 'snmp_agents="udp://0.0.0.0:161"' -var 'gnmi_targets="0.0.0.0:57400"'
+# stream の gnmi_targets も必須変数だが destroy では使われないので、形だけ合う値を渡す
+destroy_root pipeline/stream -var 'gnmi_targets="0.0.0.0:57400"'
 
 log "2. lab"
 destroy_root pipeline/lab

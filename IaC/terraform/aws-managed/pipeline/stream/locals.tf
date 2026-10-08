@@ -1,10 +1,10 @@
-# nwc-poc - PIPELINE stream root module. Kafka receives SNMP polls, gNMI state and traps from Telegraf (telegraf.tf: two ECS on Fargate tasks - a receiver
-# behind an internal NLB and a poller, split on 2026-10-04; it was an EC2 of IaC/terraform/aws-managed/pipeline/lab until 2026-09-28),
-# and device syslog and NetFlow / sFlow from syslog-ng and GoFlow2 behind the same NLB (collectors.tf, cycle 012),
+# nwc-poc - PIPELINE stream root module. Kafka receives SNMP traps from Telegraf (telegraf.tf: an ECS on Fargate task behind an internal NLB;
+# it was an EC2 of IaC/terraform/aws-managed/pipeline/lab until 2026-09-28), gNMI subscriptions from gnmic (gnmic.tf, cycle 013; it replaced the
+# Telegraf poller of SNMP and gNMI), and device syslog and NetFlow / sFlow from syslog-ng and GoFlow2 behind the same NLB (collectors.tf, cycle 012),
 # and the Spark job of IaC/terraform/aws-managed/pipeline/analytics reads them (raw messages go to S3 Tables, Prometheus, OpenSearch and Splunk; detection is done by Grafana and Splunk since 2026-10-02). The MSK Connect S3 sink that also copied the raw messages to the asset bucket was removed on 2026-09-26
 # (Spark already stores every topic in S3 Tables).
 # Kafka is MSK in this root (msk.tf). The OSS build of cycle 005 (IaC/terraform/oss/pipeline/stream) runs Kafka on ECS instead (its kafka.tf) and uses this file,
-# telegraf.tf, collectors.tf, kafka_ui.tf, access.tf and outputs.tf through symbolic links; what differs between the two Kafkas comes from the kafka_* locals of msk.tf / kafka.tf.
+# telegraf.tf, collectors.tf, gnmic.tf, kafka_ui.tf, access.tf and outputs.tf through symbolic links; what differs between the two Kafkas comes from the kafka_* locals of msk.tf / kafka.tf.
 
 # リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、
 # 1 つの AWS アカウントを何人かで使っても、自分の名前で自分のリソースを探せる
@@ -24,12 +24,12 @@ data "terraform_remote_state" "main" {
     path = "${path.module}/../../base/core/terraform.tfstate"
   }
 
-  # SG の ID（security_group_ids）は 2026-09-29 から、Telegraf の SG のキーが dialout / dialin になったのは 2026-10-04 から。
-  # それより前の state なら apply の前に止める。destroy ではこの条件を見ないので、locals の SG の try と合わせて古い state のまま ops/down.sh で消せる（Terraform 1.16 で確認）
+  # SG の ID（security_group_ids）は 2026-09-29 から、Telegraf の SG のキーが dialout / dialin になったのは 2026-10-04 から、dialin が gnmic になったのは
+  # cycle 013 から。それより前の state なら apply の前に止める。destroy ではこの条件を見ないので、locals の SG の try と合わせて古い state のまま ops/down.sh で消せる（Terraform 1.16 で確認）
   lifecycle {
     postcondition {
-      condition     = can(self.outputs.security_group_ids["telegraf_dialin"])
-      error_message = "IaC/terraform/aws-managed/base/core の state に telegraf_dialin の SG が無い（2026-10-04 より前の SG）。先に ops/down.sh で消してから ops/up.sh を打ち直す"
+      condition     = can(self.outputs.security_group_ids["gnmic"])
+      error_message = "IaC/terraform/aws-managed/base/core の state に gnmic の SG が無い（cycle 013 より前の SG）。先に ops/down.sh で消してから ops/up.sh を打ち直す"
     }
   }
 }
@@ -51,7 +51,7 @@ locals {
   subnet_ids = data.terraform_remote_state.main.outputs.subnet_ids
   # SG は古い state の destroy でも評価できるように try（空のまま apply に進まないよう remote_state の postcondition で止める）
   telegraf_dialout_sg_id     = try(data.terraform_remote_state.main.outputs.security_group_ids["telegraf_dialout"], "")
-  telegraf_dialin_sg_id      = try(data.terraform_remote_state.main.outputs.security_group_ids["telegraf_dialin"], "")
+  gnmic_sg_id                = try(data.terraform_remote_state.main.outputs.security_group_ids["gnmic"], "")
   telegraf_dialout_nlb_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["telegraf_dialout_nlb"], "")
   # syslog-ng と GoFlow2（collectors.tf、cycle 012）。それより前の土台には無いので、collectors.tf の precondition で止める
   syslog_ng_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["syslog_ng"], "")
@@ -61,7 +61,7 @@ locals {
   web_instance_id   = try(data.terraform_remote_state.main.outputs.web_instance_id, "")
   reader_role_names = toset([data.terraform_remote_state.main.outputs.runtime_role_name, local.web_role_name])
 
-  # Telegraf の dialin のタスクと、dialout の NLB の lab 向けのアドレスはサブネット a（lab の EC2 と Web の EC2 と同じ）。
+  # gnmic のタスク（gnmic.tf）と、dialout の NLB の lab 向けのアドレスはサブネット a（lab の EC2 と Web の EC2 と同じ）。
   # dialout の NLB とタスクは var.telegraf_az_num の AZ（a から）
   telegraf_subnet_id          = data.terraform_remote_state.main.outputs.instance_subnet_id
   telegraf_dialout_subnet_ids = slice(local.subnet_ids, 0, var.telegraf_az_num)

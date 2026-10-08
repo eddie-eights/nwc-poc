@@ -17,6 +17,7 @@
 # SPLUNK_HEC_URL も同日から使わない（書いてあれば ops/up.sh が止まる。黙って ECS の Splunk に替えないため）
 # LAB_DEBUG は 2026-10-04 から使わない（デバッグ用の EC2 は ops/lab-debug.sh だけで作る・消す）。読むだけ読み、ops/up.sh が注意を出す
 # MDT_SOURCE_CIDRS は 2026-10-08 から使わない（cycle 012 で MDT の受け口を外した）。読むだけ読み、ops/up.sh と ops/oss/up.sh が注意を出す
+# SNMP_POLL は 2026-10-09 から使わない（cycle 013 で SNMP のポーリングをやめた）。読むだけ読み、ops/up.sh と ops/oss/up.sh が注意を出す
 # NAUTOBOT も 2026-10-04 から使わない（Nautobot は PIPELINE=1 ならいつも作る）。同じく読むだけ読み、ops/up.sh が注意を出す
 # SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK / GRAFANA も 2026-10-04 から使わない（格納先は STORES だけで選ぶ）。
 # 書けるキーではないが読むだけ読み、ops/up.sh がその値に当たる STORES の書き方を出して止まる（知らないキーとして止めると書き換え方が分からない。

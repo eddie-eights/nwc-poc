@@ -135,7 +135,7 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | `AGENT` / `PIPELINE` / `WORKFLOW` / `CREATE_KB` | 作る機能 |
 | `SKIP_LAB` / `SKIP_STREAM` / `SKIP_ANALYTICS` / `SKIP_GRAPH` | PIPELINE の一部を外す |
 | `STORES` | analytics の格納先。`s3`（S3 Tables）/ `grafana`（OpenSearch + Prometheus + Grafana）/ `splunk`（Splunk）をカンマで並べる。既定は 3 つとも（`s3,grafana,splunk`）。外したまとまりは作らない（前に作っていればデータごと消える） |
-| `SNMP_POLL` | stream の Telegraf で SNMP をポーリングするか。既定 `1`（10 秒ごとに ifTable）。`0` なら SNMP は trap だけ受ける |
+| `SNMP_POLL` | 2026-10-09 から使わない（cycle 013 で SNMP のポーリングをやめ、IF の状態とカウンターは gnmic が gNMI で取る）。書いてあると `ops/up.sh` が注意を出すだけ。消してよい |
 | `*_AZ_NUM` | 冗長化用。リソースごとに何 AZ に置くか（`ENDPOINTS_AZ_NUM` / `MSK_AZ_NUM` / `RUNTIME_AZ_NUM` / `SPLUNK_AZ_NUM` など 10 個）。既定は 1（MSK だけ 2）。`SPLUNK_AZ_NUM` を 2 か 3 にすると Splunk が indexer のクラスターになる。ふだんの検証では書かない |
 | `IMAGE_TAG` | `app/agentcore/` や `app/temporal/` を変えたら `v2` などに上げる |
 | `HTTP_SEND` | Spark が HTTP の格納先（OpenSearch / Prometheus / Splunk）へ送る所。既定 `driver`。量が増えたら `executor`（費用は変わらない） |

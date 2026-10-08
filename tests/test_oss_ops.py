@@ -440,7 +440,7 @@ def ssm_param(managed_by, project):
 # マネージド版（OWNER=x → x-nwc-poc）
 KEY_MGD = "arn:aws:kms:ap-northeast-1:123456789012:key/k-mgd"  # alias/x-nwc-oss-nwc-poc-msk-scram の鍵
 KEY_POC = "arn:aws:kms:ap-northeast-1:123456789012:key/k-poc"  # alias/x-nwc-poc-msk-scram の鍵
-OSS_MANAGED_PARAMS = ["/x-nwc-oss/kafka/cluster-id", "/x-nwc-oss/kafka-ui/admin-password", "/x-nwc-oss/telegraf-dialin/gnmi-password",
+OSS_MANAGED_PARAMS = ["/x-nwc-oss/kafka/cluster-id", "/x-nwc-oss/kafka-ui/admin-password", "/x-nwc-oss/gnmic/gnmi-password",
                       "/x-nwc-oss/opensearch-password", "/x-nwc-oss/splunk/admin-password", "/x-nwc-oss/splunk/hec-token",
                       "/x-nwc-oss/neo4j-password", "/x-nwc-oss/nautobot/secret-key"]
 def inventory():
@@ -492,7 +492,7 @@ for d in ("ops", "ops/oss"):
     for f in os.listdir(os.path.join(ROOT, d)):
         if f.endswith(".sh") or f in ("seed_graph.py", "roll_health.py", "grafana_rules_check.py"):
             shutil.copy(os.path.join(ROOT, d, f), os.path.join(REPO, d, f))
-UP_DIRS = ("app/containerlab", "app/dashboard", "app/agentcore", "app/nautobot", "app/telegraf", "app/syslog-ng", "app/splunk", "app/grafana", "app/spark", "app/neo4j", "app/graph",
+UP_DIRS = ("app/containerlab", "app/dashboard", "app/agentcore", "app/nautobot", "app/telegraf", "app/gnmic", "app/syslog-ng", "app/splunk", "app/grafana", "app/spark", "app/neo4j", "app/graph",
            "app/temporal", "docker/images")
 for d in UP_DIRS:
     shutil.copytree(os.path.join(ROOT, d), os.path.join(REPO, d), ignore=shutil.ignore_patterns(
@@ -1089,9 +1089,15 @@ check("ops/oss/up.sh は agent・graph・workflow に lambda_az_num を、agent 
       and 'tf_apply pipeline/graph -var "neo4j_image_tag=$NEO4J_TAG" -var alert_history=true -var "lambda_az_num=$LAMBDA_AZ_NUM"' in up
       and 'tf_apply workflow -var "worker_image_tag=$IMAGE_TAG" -var "lambda_az_num=$LAMBDA_AZ_NUM"' in up
       and 'tf_apply pipeline/nautobot -var "nautobot_image_tag=$NAUTOBOT_TAG" -var "redis_image_tag=$REDIS_TAG" -var "nautobot_db_az_num=$NAUTOBOT_DB_AZ_NUM"' in up)
-check("ops/oss/up.sh は analytics に http_send と Spark の 1 回に読む件数（max_offsets_per_trigger とその格納先ごと）を、stream に telegraf_az_num と dialin_targets_from_nautobot=true を渡す",
+check("ops/oss/up.sh は analytics に http_send と Spark の 1 回に読む件数（max_offsets_per_trigger とその格納先ごと）を、stream に telegraf_az_num と gnmi_targets_from_nautobot=true を渡す"
+      "（dialin_targets_from_nautobot・snmp_agents・snmp_poll は cycle 013 でやめた）",
       '-var "http_send=$HTTP_SEND"' in _an and '-var "max_offsets_per_trigger=' in _an and '-var "max_offsets_per_trigger_by_sink=' in _an
-      and '-var "telegraf_az_num=$TELEGRAF_AZ_NUM"' in up and "-var dialin_targets_from_nautobot=true" in up)
+      and '-var "telegraf_az_num=$TELEGRAF_AZ_NUM"' in up and "-var gnmi_targets_from_nautobot=true" in up
+      and not any(w in up for w in ("dialin_targets_from_nautobot", "snmp_agents", "snmp_poll=", "--snmp-agents")))
+check("ops/oss/up.sh は base/core の state に古い取りにいく側の Telegraf の SG（telegraf_dialin、2026-10-09 より前）があり stream が残っていれば、ECR より前に止める"
+      "（マネージド版の ops/up.sh と同じ守り。SG のキーを変えると作り直しで、付けたままでは消せない）",
+      0 <= pos("""grep -qxF 'aws_security_group.workload["telegraf_dialin"]'""") < pos('log "1. ECR リポジトリ')
+      and '[ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ] && { tf_init pipeline/stream;' in up and "先に ops/oss/down.sh で消す" in up)
 _spark_tf = read("IaC/terraform/oss/pipeline/analytics/spark.tf")
 check("Spark のサービスは Terraform では 0 台で作り（desired_count = 0、あとの変更は見ない）、up.sh が OpenSearch・VictoriaMetrics・Splunk を待ったあとで 1 台にする",
       re.search(r"^\s*desired_count\s*=\s*0$", _spark_tf, re.M) and "ignore_changes = [desired_count]" in _spark_tf
@@ -1176,7 +1182,7 @@ def spark_starts(cs):
     return [arg_after(c["args"], "--service") for c in cs if is_aws(c, "ecs", "update-service", "--desired-count 1")]
 
 UP_PARAMS = {f"/x-nwc-oss/{n}" for n in (
-    "telegraf-dialin/gnmi-username", "telegraf-dialin/gnmi-password", "telegraf-dialin/snmp-community", "kafka-ui/admin-password",
+    "gnmic/gnmi-username", "gnmic/gnmi-password", "kafka-ui/admin-password",
     "kafka/cluster-id", "neo4j-password", "nautobot/secret-key", "nautobot/admin-password", "nautobot/db-password", "nautobot/api-token",
     "opensearch-password", "splunk/admin-password", "splunk/hec-token", "grafana/admin-password")}
 SPARK_SERVICES = [f"x-nwc-oss-spark-{k}" for k in "abc"]
@@ -1202,10 +1208,12 @@ check("up.sh（通し）: agent に agent_image_tag=v1・runtime_az_num=1・lamb
 check("up.sh（通し）: graph に alert_history=true・lambda_az_num=1 と Neo4j のタグ、nautobot に nautobot_db_az_num=1、lab に forward_to_telegraf=true を渡す",
       all(has_var(A.get("pipeline/graph", []), v) for v in ("alert_history=true", "lambda_az_num=1", f'neo4j_image_tag={T["neo4j"][0]}'))
       and has_var(A.get("pipeline/nautobot", []), "nautobot_db_az_num=1") and has_var(A.get("pipeline/lab", []), "forward_to_telegraf=true"))
-check("up.sh（通し）: stream に Kafka の版・telegraf_az_num=1・snmp_poll=true・syslog_standard=RFC3164・dialin_targets_from_nautobot=true と、lab の定義から作った SNMP と gNMI の宛先を渡す",
-      all(has_var(A.get("pipeline/stream", []), v) for v in (f'kafka_image_tag={V["OSS_KAFKA_TAG"]}', "telegraf_az_num=1", "snmp_poll=true",
-                                                              "syslog_standard=RFC3164", "dialin_targets_from_nautobot=true"))
-      and any(re.match(r'snmp_agents="udp://[0-9.]+:161"', a) for a in A.get("pipeline/stream", []))
+check("up.sh（通し）: stream に Kafka の版・telegraf_az_num=1・syslog_standard=RFC3164・gnmi_targets_from_nautobot=true・gnmic のタグと、lab の定義から作った gNMI の購読先を渡す"
+      "（SNMP のポーリング先と snmp_poll は cycle 013 でやめた）",
+      all(has_var(A.get("pipeline/stream", []), v) for v in (f'kafka_image_tag={V["OSS_KAFKA_TAG"]}', "telegraf_az_num=1",
+                                                              "syslog_standard=RFC3164", "gnmi_targets_from_nautobot=true"))
+      and any(re.match(r"gnmic_image_tag=\S+", a) for a in A.get("pipeline/stream", []))
+      and not any(a.split("=", 1)[0] in ("snmp_agents", "snmp_poll", "dialin_targets_from_nautobot") for a in A.get("pipeline/stream", []))
       and any(re.match(r'gnmi_targets="[0-9.]+:57400"', a) for a in A.get("pipeline/stream", [])))
 check("up.sh（通し）: analytics に 4 つの格納先・http_send=driver・Spark と OpenSearch と VictoriaMetrics のタグ・splunk_az_num=1・emr_az_num=1 を渡す",
       all(has_var(A.get("pipeline/analytics", []), v) for v in ('sinks=["iceberg","opensearch","prometheus","splunk"]', "http_send=driver",
@@ -1219,10 +1227,10 @@ check("up.sh（通し）: Grafana のイメージを arm64 でビルドし（版
       and _gb[0][2:4] == ["--platform", "linux/arm64"] and "--push" in _gb[0] and arg_after(_gb[0], "--build-arg") == f"GRAFANA_VERSION={_gver}"
       and has_var(A.get("pipeline/analytics", []), "create_grafana=true")
       and has_var(A.get("pipeline/analytics", []), "grafana_image_tag=" + _gtag.rsplit(":", 1)[-1]))
-check("up.sh（通し）: SSM のパラメータを 14 個、全部 SecureString で、ManagedBy=ops/oss/up.sh・Project=x-nwc-oss のタグを付けて作る（ops/oss/down.sh が消せる）",
+check("up.sh（通し）: SSM のパラメータを 13 個、全部 SecureString で、ManagedBy=ops/oss/up.sh・Project=x-nwc-oss のタグを付けて作る（ops/oss/down.sh が消せる）",
       set(inv["ssm"]) == UP_PARAMS and all(m["type"] == "SecureString" and m["tags"].get("ManagedBy") == "ops/oss/up.sh"
                                            and m["tags"].get("Project") == "x-nwc-oss" for m in inv["ssm"].values()))
-_secrets = [m.get("value", "") for n, m in inv["ssm"].items() if "/telegraf-dialin/" not in n]
+_secrets = [m.get("value", "") for n, m in inv["ssm"].items() if "/gnmic/" not in n]
 check("up.sh（通し）: 乱数で作ったシークレット（11 個）の値を、画面にも、aws・terraform・docker の引数にも出さない",
       len(_secrets) == 11 and all(len(v) >= 16 for v in _secrets)
       and not any(v in out or any(v in " ".join(c["args"]) for c in cs) for v in _secrets))
@@ -1236,6 +1244,15 @@ check("up.sh（通し）: syslog-ng のイメージを arm64 でビルドし（�
       and _sb[0][2:4] == ["--platform", "linux/arm64"] and "--push" in _sb[0] and arg_after(_sb[0], "--build-arg") == f"SYSLOG_NG_VERSION={_slver}"
       and arg_after(_sb[0], "-f") == "docker/images/syslog-ng/Dockerfile"
       and has_var(A.get("pipeline/stream", []), "syslog_ng_image_tag=" + _stag.rsplit(":", 1)[-1]))
+_gnver = re.search(r"^GNMIC_VERSION=(\S+)$", read("ops/up-common.sh"), re.M).group(1)
+_gnb = [c["args"] for c in cs if c["cmd"] == "docker" and c["args"][:2] == ["buildx", "build"] and c["args"][-1] == "app/gnmic/"]
+_gntag = arg_after(_gnb[0], "-t") if _gnb else ""
+check("up.sh（通し）: gnmic のイメージを arm64 でビルドし（版は ops/up-common.sh の GNMIC_VERSION を --build-arg、Dockerfile は docker/images/gnmic/）、"
+      "同じタグを stream に渡す（cycle 013）",
+      len(_gnb) == 1 and re.fullmatch(re.escape(REG) + r"/x-nwc-oss-gnmic:" + re.escape(_gnver) + r"-[0-9a-f]+", _gntag)
+      and _gnb[0][2:4] == ["--platform", "linux/arm64"] and "--push" in _gnb[0] and arg_after(_gnb[0], "--build-arg") == f"GNMIC_VERSION={_gnver}"
+      and arg_after(_gnb[0], "-f") == "docker/images/gnmic/Dockerfile"
+      and has_var(A.get("pipeline/stream", []), "gnmic_image_tag=" + _gntag.rsplit(":", 1)[-1]))
 check("up.sh（通し）: GoFlow2 は上流の netsampler/goflow2 の arm64 を ops/up-common.sh の GOFLOW2_TAG のまま ECR に置き直し、同じタグを stream に渡す（cycle 012）",
       [c["args"] for c in cs if c["cmd"] == "docker" and "goflow2" in " ".join(c["args"])]
       == [["pull", "--platform", "linux/arm64", f"netsampler/goflow2:{_gfver}"], ["tag", f"netsampler/goflow2:{_gfver}", f"{REG}/x-nwc-oss-goflow2:{_gfver}"],
@@ -1247,12 +1264,12 @@ check("up.sh（通し）: stream の apply のあと、syslog-ng と GoFlow2 の
       and arg_after(cs[_slw]["args"], "--cluster") == "out-stream-telegraf_cluster_name" and "syslog-ng と GoFlow2 は動いている" in out)
 docker = [c["args"] for c in cs if c["cmd"] == "docker"]
 _tags = {arg_after(a, "-t") for a in docker if a[:2] == ["buildx", "build"]} | {a[-1] for a in docker if a[0] == "push"}
-check("up.sh（通し）: イメージを ECR に置く（OSS の 7 つ、lab の 2 つ、Telegraf、Kafbat UI、Splunk、Grafana、agent、worker、Temporal、Nautobot、Redis、"
+check("up.sh（通し）: イメージを ECR に置く（OSS の 7 つ、lab の 2 つ、Telegraf、gnmic、Kafbat UI、Splunk、Grafana、agent、worker、Temporal、Nautobot、Redis、"
       "syslog-ng、GoFlow2）。docker login のあと、stream の apply より前",
       {t.split("/", 1)[1].split(":")[0] for t in _tags if t.startswith(REG + "/")}
       >= {f"x-nwc-oss-{n}" for n in V["OSS_IMAGES"].split()}
-      | {f"x-nwc-oss-{n}" for n in ("telegraf", "splunk", "grafana", "agent", "worker", "nautobot", "syslog-ng", "goflow2")}
-      and len(_tags) >= 19 and all(t.startswith(REG + "/x-nwc-oss-") for t in _tags)
+      | {f"x-nwc-oss-{n}" for n in ("telegraf", "gnmic", "splunk", "grafana", "agent", "worker", "nautobot", "syslog-ng", "goflow2")}
+      and len(_tags) >= 20 and all(t.startswith(REG + "/x-nwc-oss-") for t in _tags)
       and 0 <= first(cs, lambda c: c["cmd"] == "docker" and c["args"][0] == "login")
       < first(cs, lambda c: c["cmd"] == "docker" and c["args"][0] in ("push", "buildx") and c["args"][:2] != ["buildx", "ls"] and c["args"][:2] != ["buildx", "version"])
       and max(i for i, c in enumerate(cs) if c["cmd"] == "docker") < apply_at(cs, "base/core"))
@@ -1530,8 +1547,8 @@ check("ops/oss/up.sh（81）: 7-4b の analytics のクラスターの名前も 
 
 # ---- up.sh の作ったものを ops/oss/down.sh が消す（同じ在庫から）
 p, csd, invd = run_down("ops/oss/down.sh", "x", inv=inv3)
-check("up.sh → down.sh: up.sh が作った SSM のパラメータ 14 個を全部消し、up.sh が apply した 9 つのルートを全部 destroy する",
-      p.returncode == 0 and invd["ssm"] == {} and len(aws_calls(csd, "ssm", "delete-parameter")) == 14
+check("up.sh → down.sh: up.sh が作った SSM のパラメータ 13 個を全部消し、up.sh が apply した 9 つのルートを全部 destroy する",
+      p.returncode == 0 and invd["ssm"] == {} and len(aws_calls(csd, "ssm", "delete-parameter")) == 13
       and destroyed(csd) == {f"IaC/terraform/oss/{r}" for r in ROOTS} and "残り: 0 件" in p.stdout)
 
 check("ops/oss/up.sh と down.sh の terraform init は、どのルートも -lockfile=readonly（lock はマネージド版へのシンボリックリンクなので書き換えない）",
@@ -1555,8 +1572,8 @@ _up_vars = {(r[len("IaC/terraform/oss/"):], v) for r, a in ap for v in var_names
 _down_vars = {(chdir_of(c)[len("IaC/terraform/oss/"):], v) for c in tf_calls(csd) if c["args"][1] == "destroy" for v in var_names(c["args"])}
 check("up.sh（通し）が 9 つのルートに渡した -var の名前は、どれも IaC/terraform/oss/<ルート>/*.tf の variable で宣言されている（owner を含めて全部）",
       _up_vars and {r for r, _ in _up_vars} == set(ROOTS) and not [(r, v) for r, v in _up_vars if v not in tf_variables(r)])
-check("down.sh が destroy に渡した -var（workflow の worker_image_tag、stream の snmp_agents / gnmi_targets、owner）も、そのルートの variable で宣言されている",
-      {("workflow", "worker_image_tag"), ("pipeline/stream", "snmp_agents"), ("pipeline/stream", "gnmi_targets")} <= _down_vars
+check("down.sh が destroy に渡した -var（workflow の worker_image_tag、stream の gnmi_targets、owner）も、そのルートの variable で宣言されている（snmp_agents は cycle 013 でやめた）",
+      {("workflow", "worker_image_tag"), ("pipeline/stream", "gnmi_targets")} <= _down_vars and ("pipeline/stream", "snmp_agents") not in _down_vars
       and not [(r, v) for r, v in _down_vars if v not in tf_variables(r)])
 
 # ---- readonly の init が止まったとき（この PC の OS・CPU のハッシュが lock に無い）

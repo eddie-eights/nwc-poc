@@ -4,6 +4,8 @@
 
 サイクル「Splunk と Grafana のアラートを比べる（002）」の結果を書く場所。設計は [cycles/002-alert-parity-splunk-grafana/design.md](cycles/002-alert-parity-splunk-grafana/design.md)。
 
+2026-10-09（サイクル「gNMI を gnmic に移し、SNMP のポーリングと telegraf-dialin を外す（013）」）から、どちらの `link_down` も gNMI の IF の状態から出す（Grafana は `snmp_interface_oper_up`、Splunk は保存済みサーチ `netops_gnmi`）。保存済みサーチ `netops_poll` と `SNMP_POLL` は無くなった。下の結果は SNMP のポーリングで測った当時のもの。
+
 ## 結論
 
 - 4 種類のアラート（`link_down` / `bgp_down` / `isis_down` / `trap`）を、Grafana と Splunk の両方が出すようにした。
@@ -13,7 +15,7 @@
 理由と背景:
 
 - これまでは `link_down` を Grafana が、ほかの 3 つを Splunk が出していた。同じ障害を両方で見ないと、遅れも取りこぼしも比べられない。
-- 既定の設定で両方が動く。`STORES` の既定は `s3,grafana,splunk`、`SNMP_POLL` の既定は `1`（[deploy.md](deploy.md)）。
+- 既定の設定で両方が動く。`STORES` の既定は `s3,grafana,splunk`、`SNMP_POLL` の既定は `1`（[deploy.md](deploy.md)）（測った当時。2026-10-09 から `SNMP_POLL` は無い）。
 
 メリットとデメリット:
 
@@ -233,7 +235,7 @@ ORDER BY anomaly_id, status
 
   OpenSearch の文書は、送り元の IP をそのまま `tags.sysName` に入れる（Grafana の `trap` のルールが機器ごとにまとめる鍵が要るため）。Prometheus には足さない。
 
-### Splunk の `netops_poll`
+### Splunk の `netops_poll`（2026-10-09 にやめた）
 
 - 毎分、索引に入った時刻で 11 分ぶんを読む
 

@@ -1,0 +1,78 @@
+# 設計の経緯（013）
+
+## Round 0
+
+PM（SendMessage）との要件のやりとりの要約。PM の下書き（design.md、PM(fable-5.1) / effort: high、f766351 の時点）を受けて、エンジニア4 が gnmic v0.49.0 のソースとイメージ、リポジトリの参照箇所、012（feat/collectors-scram-syslog-goflow、594da74。未マージ）を調べ、判断の要る点を PM に返した。PM の決定は次の 6 つ（2026-10-09）。
+
+### PM の決定
+
+1. **機器名**: target の名前は IP、device map で `sysName` を引く。ユーザーの決定の「hostname」はタグの名前 `sysName` の意味で、機器の `host-name` を subscribe する意図ではない
+   - 採らなかった案: `/system/name/host-name` を subscribe してタグにする。gnmic で別の subscription の値を他の event のタグにするには processor（`event-value-tag`）が要り、Spark でも別の event との突き合わせになる。device map の引き方（`with_sysname`）は Spark がすでに gNMI の行と trap で使っている
+2. **系列名の接頭辞は `snmp_` のまま**
+   - 採らなかった案: `gnmi_interface_*`（下書き）。`prometheus_series` は measurement に関わらず `snmp_<measurement>_<field>` を作るので、いまの gNMI の系列（bgp / isis）も `snmp_` で、名前を替えるとダッシュボード・ルール・evidence・tools.json の全部に及ぶ
+3. **共通の形をやめる**（`lab_gnmi.star` / `lab_circuits.star`、`docs/collection.md` の節、`tests/test_stream.py` と `test_lab_debug.py` の検査を消す）
+   - 採らなかった案: 共通の形（`device_cpu` / `if_stats` / `sessions` / `circuits` …）を残し、Starlark を Spark に移す。読むのは docs とテストだけ（下書きの背景のとおり）
+4. **トピック: 状態は `gnmi`、カウンターは `metrics`**
+   - 採らなかった案: 全部 `gnmi`。調べて分かったこと: Splunk と Iceberg は全トピックを読み、Prometheus は `--metric-topics`（`metrics,gnmi`）を読む（`app/spark/snmp_sinks.py` L176-183）ので、どちらにしても届く先は同じ。分け方は中身の意味（いまの `metrics` = 周期のカウンター）に合わせた
+5. **subscribe は 5 つだけ**（`interface_state` / `interface_stats` / `bgp_neighbor` / `isis_interface` / `system`）
+   - 採らなかった案: いまの dialin の subscription（`evpn_es` / `mac_table` / `lab_*`）を全部写す。読む側は共通の形だけで、決定 3 で無くなる
+6. **event の形を整えるのは Spark**（Python の双子を `tests/test_stream.py` で縛る）
+   - 採らなかった案: gnmic の processor（`event-strings` で名前を置き換え、`event-to-tag` など。下書き）。設定が gnmic の YAML と Go の正規表現に入り、Python のテストで縛れない
+   - 採らなかった案: 配列で来る前提で Spark で `explode`（下書き）。Kafka の出力の `split-events: true` で 1 メッセージ 1 件のオブジェクトになる（下の事実）
+
+### 調べて分かった事実
+
+- gnmic の event（`pkg/formatters/event.go`、v0.49.0 の clone）
+  - 形: L31-37 の `EventMsg`（`name` / `timestamp` / `tags` / `values` / `deletes`）。消えたときは `deleteToEvent`（L146-177）で `values` が無い
+  - タグ: `tagsFromGNMIPath`（L182-221）がパスのキーを `<要素名の最後の ":" の後>_<キー名>` にする（`interface_name`、`neighbor_peer-address`、`interface_interface-name`、`control_slot`）。パスに origin があればパス名の先頭が `origin:` になる。`source` と `subscription-name` は `addMetaTags`（L455-466）が足す（同じ名前のタグがあれば `meta_` が付く）
+  - values: `getValueFlat`（L253-）。json_ietf は JSON を平らにしてキーをパスにする（コンテナを subscribe すると葉ごとのキーになる）
+- `split-events`: `pkg/outputs/kafka_output/kafka_output.go` L122、`pkg/outputs/output.go` L266-（`marshalSplit` が event ごとに `json.Marshal`）。SCRAM-SHA-512 は L823-826
+- target（`pkg/config/targets.go`）: 名前と address はキー（L89-94）、port が無ければ全体の `port` を付ける（L130-153）。環境変数の展開は L268-309（`username` は常に、`password` は `$` で始まるときだけ）。outputs は `pkg/config/outputs.go` L62 の `expandMapEnv`（`msg-template` / `target-template` 以外を全部展開）
+- イメージ `ghcr.io/openconfig/gnmic:0.49.0`: manifest は linux/amd64 と linux/arm64。alpine、`/bin/sh` と `/etc/ssl/certs/ca-certificates.crt` あり（bash は無い）、ENTRYPOINT `/app/gnmic`
+- `GNMI_TARGETS` の形: SSM の値（`telegraf.tf` L143-160）も `lab_topology.py --gnmi-targets` も `"<IP>:57400", ...`。gnmic.sh はこれを読んで target のキーを IP にする（`tags.source` = IP。device map のキーと同じ）
+- Splunk の機器名: `splunk_events`（`snmp_sinks.py` L463-485）は `sysName` を足さない。`netops_gnmi`（`savedsearches.conf` L69-114）は `coalesce('tags.sysName','tags.agent_host','tags.source')` なので gNMI の行は IP になる。temporal の `device_name`（`app/temporal/rules.py` L186-189）は IPv4 をそのまま使い、`anomaly_id` は `device#kind#target`（L192-194）なので、Grafana（`sysName`）と Splunk（IP）で別の anomaly になる。`netops_poll` が機器名を出せていたのは SNMP の Telegraf が `sysName` を付けていたから
+- 012 との重なり: 012 も `snmp_sinks.py`（flows の分岐、`METRIC_TOPICS`）、`lab.sh`、`tests/test_analytics.py` / `test_stream.py` / `test_lab_debug.py` / `test_local_compose.py`、`docker/compose/check.sh` / `compose.yaml` を変える。Terraform は `collectors.tf`（OSS 版へは symlink）と `msk.tf` の `kafka_collector_*` の locals
+
+### 手元で gnmic の event を取ろうとしたこと（取れなかった）
+
+- SR Linux 26.7.2 を Docker Desktop（LinuxKit 6.12.76、arm64）で `docker run` と containerlab 0.79.0（`ghcr.io/srl-labs/clab` のコンテナ）の両方で立てたが、どちらも `net_inst_mgr` が `File exists (17) … creating veth "gway-2800"` で落ち、gNMI のサーバーが上がらなかった（containerlab の管理ネットのサブネットの重なりは直したうえで同じ）
+- 片付け: lab のコンテナとネットワークは destroy 済み。`docker ps -a` に srl / clab / gnmic の名前のコンテナが無いことを確かめた（2026-10-09）
+- そのため検証方法 2 の入力は、上のソースから組んだ形にする（design.md の未確定 1。PM が AWS で実物を確かめる）
+
+### 設計で PM の下書きから変えたこと
+
+- 決定 1〜6 による書き換え: 系列名（`gnmi_interface_*` → `snmp_interface_oper_up` / `admin_up`）とラベル（`hostname` → `sysName`）、processor をやめる、配列 + explode → `split-events`、`tests/test_gnmic.py` → `tests/test_stream.py`、subscription を 5 つに
+- `link_down` の式: 下書きの `… == 0`（5 分の範囲）は on-change の値が来ない間に系列が消える。bgp_down / isis_down と同じ `last_over_time(…[24h])` と `lt 0.5` にした
+- `tags.source` は host:port ではなく IP（target のキーに port を付けない）
+- **Splunk にも `sysName` を足す（新しい判断。PM に確認する）**: `splunk_events` に device map を渡して `with_sysname` を通す。`link_down` が SNMP から gNMI に移ると Splunk の機器名が IP になり、Grafana と anomaly が分かれるため。副作用で bgp_down / isis_down の Splunk の機器名も IP から機器名に変わる（Grafana と揃う方向）
+- on-change に `heartbeat-interval` を付けない（SR Linux が受けるか確かめていない。いまの bgp / isis と同じ扱い）
+- 足したもの: IF の流量・エラーと CPU・メモリのパネル、`app/containerlab/trex/kafka_load.sh` / README、`app/agentcore/evidence.py` / `tools/tools.json`、`docker/compose/{check.sh,up.sh,compose.yaml}`、`tests/check_splunk_image.py`、`test_lab_debug` / `test_local_compose` / `test_nautobot` / `test_sync` / `test_oss` / `test_oss_ops` / `test_oss_roll`、Nautobot の IAM と locals（`pipeline/nautobot/`）、`docker/images/telegraf/Dockerfile`（star の COPY）、`.env.example` / `ops/deploy-env.sh` / `ops/down.sh` / `oss/ops/down.sh`
+- 実装を 2 段に分けた（第 1 段 = 012 に依らないもの、第 2 段 = 012 のマージのあと Terraform / ops / docs）
+
+### 新しい判断への PM の回答（c00e91b のあと）
+
+- Splunk の `sysName`: **承認。** bgp / isis の Splunk の機器名が IP から機器名に変わる副作用は、Grafana と揃う方向なので受け入れる。設計本文に書き（design.md の設計方針 2）、`sysName` が付くことをテストで 1 件確かめる
+- `heartbeat-interval` を付けない（Grafana は `last_over_time` 24h + `lt 0.5`、Splunk は 24 時間）: **承認**
+- event の実物が取れない件: build.md に「ソースから組んだ形」と書き、design.md の未確定事項の筆頭に残す。AWS で実物を取って照合する項目を design.md の検証方法に足す（検証 7）
+
+### 012 のマージと、build 中に設計へ足したこと（2026-10-09）
+
+- docs/cycle-006-design（5be0288。012 の MSK SCRAM・syslog-ng・GoFlow2）を bd10786 で取り込んだ。衝突は `snmp_sinks.py` の read_rows（012 の flows の分岐と 013 の gnmic の分岐）だけで、`F.when(flows).when(gnmic).otherwise(telegraf)` の 1 本に解いた
+- gnmic の SCRAM（`gnmic.yaml.in` の `# >>> kafka_auth scram`、`gnmic.sh` の `KAFKA_SASL_USER` / `KAFKA_SASL_PASS` と Secrets Manager `AmazonMSK_<接頭辞>-collectors` の案内）は 012 の `syslog-ng.sh` と同じ形。gnmic は設定を読んだあとに環境変数を展開するので、syslog-ng の文字の検査は要らない。Terraform 側（SSM の経路・SG・Secrets Manager の鍵）は第 2 段で `collectors.tf` に揃える
+- 設計方針 2 に足した: `--device-map` を渡す Terraform の条件（`job_driver`）に `splunk` を足す。sinks を分けると splunk のジョブに devmap が届かず、Splunk の sysName（PM 承認済みの決定）が効かないため。変更対象にマネージドの `outputs.tf` / `variables.tf` と OSS の `spark.tf` を足した（設計方針・範囲は変えない、承認済みの決定を効かせるための堅牢化）
+- 未確定 7 に足した（PM の指示）: gnmic の Kafka の ACL は 012 Round 2 の仕組みに乗せる（`gnmi` と `metrics` の Write・Describe）
+- 第 1 段の変更対象に足した: `docker/compose/{check.sh,README.md}` の Prometheus の系列名（系列名を変えると第 2 段まで手元の check.sh が 0 件で NG になるため、第 2 段から前倒し）と、`test_oss.py` の偽の pyspark（read_rows の gnmic の条件が `|` / `&` を使い、`ops/check.sh` で落ちたため）。方針・範囲は変えない
+- 設計方針 3 のダッシュボードに足した: IF の状態のパネルを `last_over_time(…[24h])` で包む（on-change は 5 分で線が切れる。`link_down` と同じ理由）、rate の窓を `[5m]`（sample 60 秒で `[2m]` は点が 2 つ）、題名と uid はそのまま。方針・範囲は変えない堅牢化
+
+### PM から受けた運用の指示（2026-10-09）
+
+- レビューの完了条件: Must fix は 0。cold review の Should fix は直さずに件名・ファイル:行・設計の箇所を添えて PM に報告。cold reviewer の 2 回目は実装ファイルが変わったときだけ
+- セルフレビューの指摘を直すかどうかはエンジニアが決め、見送った理由は build.md に残す。cold review の指摘は PM が決める
+- 直すなら先に design.md に入れる: (1) 実装が design.md からずれている → 直す、(2) design.md が事実と違う → design.md を上書きしてから直す、(3) design.md に無い勧め → 採るなら先に design.md に書き足してから直す（セルフレビュー由来で設計方針・範囲を変えないものはエンジニアが足して design-log に 1 行、方針・範囲・外部仕様に関わるものは PM へ）。採らないなら理由を build.md / review.md に残す
+
+### 第 2 段で設計へ足したこと（2026-10-09）
+
+- 設計方針 1 と 4 を事実に合わせて直した: 「`lab.sh gnmic`（gnmic のタスクに入って 1 回 subscribe）」は、subscribe が設定の outputs（Kafka）に書き、lab の EC2 のロールが ECS Exec も gnmic の ECR も持たないので成り立たない。`gn get`（`gnmic get --type STATE --format event`。outputs を使わない）を足し、入口は stream の output `gnmic_exec_command`（PC から ECS Exec）にした。方針・範囲は変えない
+- 設計方針 1 の SCRAM の行（e70f59e）を事実に合わせて直した: gnmic は `gnmi` と `metrics` の両方に SCRAM で書き（`app/gnmic/gnmic.yaml.in` の outputs）、Telegraf（IAM）が書くのは `traps` だけなので、ACL は `metrics` も足して 8 つ（PM 了承済み）。未確定 7 を「ACL が入るまでの値は落ちる」残リスクに書き替えた。方針・範囲は変えない
+- 4. の「第 2 段の実装で決めた細目」に足した（セルフレビュー F5）: 手元の `docker/compose/check.sh` は `gnmi` のメッセージ数も見て 0 件なら NG。`metrics`（sample）だけでは on-change の購読だけが断られたのに気付かないため。方針・範囲は変えない
+- 設計方針 4 に「第 2 段の実装で決めた細目」を足した（TELEGRAF_ROLE を外す、tg / lab.sh の古い手順は案内して exit 1、SNMP_POLL は注意だけ、SG の入れ替えの守り、古い SSM の掃除、OSS の gnmic のイメージと SSM 13 個、Nautobot の seed の SNMP は残す、SKIP_LAB の繋ぎ直しは手元の docker で確かめた事実、gnmic は 1 タスク）。どれも 4. の範囲の中の実装の決め事で、方針・範囲は変えない

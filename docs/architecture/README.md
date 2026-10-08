@@ -37,8 +37,9 @@
 | `app/dashboard/` | Gradio の画面 |
 | `app/temporal/` | Temporal のワークフローとワーカー |
 | `app/spark/` | Spark のジョブ（`snmp_sinks.py`。格納先へ流すだけで、検知はしない） |
-| `app/containerlab/` | containerlab の構成、SR Linux の設定（`srlinux/*.cli`）、EC2 の支度（`setup.sh`。lab とデバッグ用の EC2 で共通）、stream の ECS（Telegraf・syslog-ng・GoFlow2）への転送（`lab forward`）、デバッグ用の EC2 の Telegraf（`lab telegraf`） |
-| `app/telegraf/` | Telegraf の設定（`telegraf.conf.in`）、入口の `telegraf.sh`（イメージの中では `tg`）、lab の gNMI を共通の形に変える `lab_gnmi.star` / `lab_circuits.star`（stream の ECS のタスクで動く。デバッグ用の EC2 でも docker で `SINK=stdout`） |
+| `app/containerlab/` | containerlab の構成、SR Linux の設定（`srlinux/*.cli`）、EC2 の支度（`setup.sh`。lab とデバッグ用の EC2 で共通）、stream の ECS（Telegraf・gnmic・syslog-ng・GoFlow2）とのあいだの転送（`lab forward`）、デバッグ用の EC2 の Telegraf（`lab telegraf`。trap だけ） |
+| `app/telegraf/` | Telegraf の設定（`telegraf.conf.in`。機器の SNMP trap を受けてトピック `traps` へ書く）と入口の `telegraf.sh`（イメージの中では `tg`）（stream の ECS のタスクで動く。デバッグ用の EC2 でも docker で `SINK=stdout`。gNMI は cycle 013 で gnmic へ移した） |
+| `app/gnmic/` | gnmic の設定のテンプレート（`gnmic.yaml.in`。購読 5 つと Kafka の出力）と入口の `gnmic.sh`（イメージの中では `gn`。`run` / `render` / `get`）。機器の gNMI を購読して、状態をトピック `gnmi`、カウンターを `metrics` へ書く（stream の ECS のタスクで動く。cycle 013 から） |
 | `app/syslog-ng/` | syslog-ng（AxoSyslog）の設定のテンプレート（`syslog-ng.conf.in`）と入口の `syslog-ng.sh`（イメージの中では `sng`）。機器の syslog を Telegraf と同じ `device_log` の形にしてトピック `logs` へ書く（stream の ECS のタスクで動く。2026-10-08 から。NetFlow / sFlow の GoFlow2 は上流のイメージをそのまま使うので、ここには無い） |
 | `app/grafana/` | Grafana の `start.sh` と provisioning（データソース（OSS 版は `datasources-oss/`）、ダッシュボード、アラート（`alerting/` の `netops-prometheus.yaml` / `netops-opensearch.yaml` / `netops.yaml`）。analytics の ECS のタスクで動く） |
 | `app/splunk/` | Splunk のアプリ `netops_alerts`（保存済みサーチと、SNS へ publish するアラートアクション。analytics の ECS のタスクで動く）、`entrypoint.sh`（役割に合わせてアプリを外す。indexer は止まる前に `splunk offline`）、`peers_check.py`（クラスターの search head が indexer を全部検索できるかの突き合わせ） |
@@ -47,7 +48,7 @@
 | `app/neo4j/` | OSS 版の Neo4j（+ GDS）の `entrypoint.sh`（OSS 版の graph の ECS のタスクで動く） |
 | `app/resources/` | ナレッジベースに入れる手順書 |
 | `app/gateway/` | Gateway（MCP）の tools Lambda（`handler.py` と、ツールの定義 `tools.json`） |
-| `docker/images/<名前>/Dockerfile` | イメージの `Dockerfile`（agentcore / temporal / grafana / splunk / nautobot / telegraf / syslog-ng / spark / neo4j）。ビルドのコンテキストは `app/<名前>/` で、`docker buildx build -f docker/images/<名前>/Dockerfile app/<名前>/` の形で使う。Splunk は公式イメージ + 検知のアプリ、Nautobot は公式イメージ + boto3 |
+| `docker/images/<名前>/Dockerfile` | イメージの `Dockerfile`（agentcore / temporal / grafana / splunk / nautobot / telegraf / gnmic / syslog-ng / spark / neo4j）。ビルドのコンテキストは `app/<名前>/` で、`docker buildx build -f docker/images/<名前>/Dockerfile app/<名前>/` の形で使う。Splunk は公式イメージ + 検知のアプリ、Nautobot は公式イメージ + boto3 |
 | `docker/compose/` | 手元の docker compose（WSL2 の中だけで lab から Grafana / Splunk まで一周させる。AWS は使わない。[README](../../docker/compose/README.md)） |
 | `IaC/terraform/aws-managed/` | AWS にリソースを作るのはここだけ（下のツリー） |
 | `IaC/terraform/oss/` | OSS 版の同じ 9 つのルート（下の段落） |

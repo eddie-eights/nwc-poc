@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 手元（WSL2 の docker-ce）で compose を上げる。ポーリング先・gNMI の購読先・device map は AWS 版（ops/up.sh）と同じく lab の定義から作って環境で渡す
+# 手元（WSL2 の docker-ce）で compose を上げる。gNMI の購読先・device map は AWS 版（ops/up.sh）と同じく lab の定義から作って環境で渡す
 #   docker/compose/up.sh [docker compose up の引数...]   （例: up.sh telegraf で Telegraf だけ作り直す）
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -7,7 +7,6 @@ cd "$(dirname "$0")"
 if command -v python3 >/dev/null; then PY=(python3)
 elif command -v uv >/dev/null; then PY=(uv run --python 3.13 python)
 else echo "python3 か uv が要る（app/containerlab/lab_topology.py を動かす）" >&2; exit 1; fi
-SNMP_AGENTS=$("${PY[@]}" ../../app/containerlab/lab_topology.py ../../app/containerlab --snmp-agents)
 GNMI_TARGETS=$("${PY[@]}" ../../app/containerlab/lab_topology.py ../../app/containerlab --gnmi-targets)
 DEVICE_MAP=$("${PY[@]}" ../../app/containerlab/lab_topology.py ../../app/containerlab --device-map)
 # Telegraf・syslog-ng・GoFlow2（host のネットワーク）が待つアドレス。lab の管理ネットの GW（app/containerlab/lab.sh の MGMT_GW。lab.sh up で containerlab の bridge に付く）が
@@ -18,7 +17,7 @@ else
   TELEGRAF_BIND=
   echo "WARNING: lab の管理ネット（${MGMT_GW}）がまだ無いので、Telegraf・syslog-ng・GoFlow2 は WSL の全部のインターフェースで待つ。docker/compose/lab.sh up のあとに docker/compose/up.sh telegraf syslog-ng goflow2 で ${MGMT_GW} だけに直す" >&2
 fi
-export SNMP_AGENTS GNMI_TARGETS DEVICE_MAP TELEGRAF_BIND
+export GNMI_TARGETS DEVICE_MAP TELEGRAF_BIND
 # Spark の 2 つは送り先（Splunk / OpenSearch / Prometheus）が healthy になるまで起こさない（compose.yaml の depends_on）ので、初回はここで 2〜3 分待つ。
 # healthy にならなければ dependency failed to start で止まる（docker/compose/README.md）
 docker compose up -d --build "$@"

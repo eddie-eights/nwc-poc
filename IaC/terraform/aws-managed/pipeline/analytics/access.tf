@@ -39,7 +39,7 @@ resource "aws_iam_role_policy" "emr" {
       },
       {
         # Kafka を読む（consumer group は spark-kafka-source-* で Spark が付ける）。
-        # AlterCluster: SASL/SCRAM の収集器（syslog-ng / GoFlow2）のユーザーに logs / flows の ACL を入れる（app/spark/snmp_sinks.py の ensure_acls の createAcls。cycle 012）。
+        # AlterCluster: SASL/SCRAM の収集器（syslog-ng / GoFlow2 / gnmic）のユーザーに logs / flows / gnmi / metrics の ACL を入れる（app/spark/snmp_sinks.py の ensure_acls の createAcls。cycle 012、gnmic は 013）。
         # ACL の作成に要る権限はこれだけで、Kafka の ALTER CLUSTER と同じ幅（どの主体・資源への ACL の作成と削除、パーティションの再配置、
         # リーダー選出、SCRAM の資格情報の変更 等。MSK でどれが効くかは未確認）を許す（docs/architecture/resources/msk.md）
         Sid      = "KafkaCluster"

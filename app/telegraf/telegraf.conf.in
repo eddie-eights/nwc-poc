@@ -1,35 +1,18 @@
 # Telegraf の設定テンプレート。Telegraf のコンテナ（IaC/terraform/aws-managed/pipeline/stream の ECS。docker/images/telegraf/Dockerfile）が起きるとき、telegraf.sh render が
-# タスク定義の環境変数で __KAFKA_BROKERS__ / __AWS_REGION__ / __SNMP_AGENTS__ / __GNMI_TARGETS__ を埋めて /tmp/telegraf.conf に書く。
+# タスク定義の環境変数で __KAFKA_BROKERS__ / __AWS_REGION__ と受け口の __BIND__ / __TRAP_PORT__ / __HEALTH_PORT__ を埋めて /tmp/telegraf.conf に書く。
 # 出力は「>>> sink <名前>」〜「<<< sink <名前>」の区間のうち SINK（kafka = MSK。既定 / stdout = 標準出力。デバッグ用の EC2）の 1 つだけを残す。
-# SNMP のポーリング（「>>> snmp_poll」〜「<<< snmp_poll」の区間）は SNMP_POLL=1（既定）のときだけ残す。0 なら消して、SNMP は trap だけ受ける。
-# 入力は役割で 2 つに分ける（「>>> role <名前>」〜「<<< role <名前>」の区間。telegraf.sh の TELEGRAF_ROLE）:
-#   dialin   こちらから取りにいく。gNMI の購読・SNMP のポーリングと、lab の gNMI を共通の形に変える Starlark。stream の ECS の telegraf-dialin（1 タスク）
-#   dialout  機器から送ってくるものを受ける。trap だけ。stream の ECS の telegraf-dialout（NLB の後ろ。台数を増やしても同じものを 2 回書かない）
-#            機器の syslog は syslog-ng（app/syslog-ng）、NetFlow / sFlow は GoFlow2 が受ける。MDT の受け口は外した（cycle 012。戻し方は docs/collection.md）
-#   all       両方（既定。デバッグ用の EC2 は 1 つの Telegraf で両方やる）
-# 取りにいく入力はタスクを増やすとその数だけ同じ値を MSK に書くので、受ける側と分けて dialin だけを 1 つに保つ。出力と agent はどちらも同じ。
-# ブローカーは IaC/terraform/aws-managed/pipeline/stream が MSK から直接渡す。ポーリング先（inputs.snmp の agents）と gNMI の購読先（inputs.gnmi の addresses）は
-# ops/up.sh が lab の定義から作って IaC/terraform/aws-managed/pipeline/stream の変数に渡す
-#（app/containerlab/lab_topology.py --snmp-agents / --gnmi-targets。機器の一覧を lab の定義 1 か所にするため、ここに IP を書かない）。
-# 機器の認証情報（${GNMI_USERNAME} / ${GNMI_PASSWORD} / ${SNMP_COMMUNITY}）は telegraf.sh では埋めず、Telegraf が起きるときに環境変数から読む
-#（stream の ECS は SSM の SecureString を secrets で受ける。デバッグ用の EC2 は app/containerlab/lab.sh が渡す。値に " と \ は使えない: TOML の文字列が壊れる）。
+# 入力は機器から送ってくる SNMP trap を受けるものだけ。stream の ECS の telegraf-dialout（NLB の後ろ。機器の一覧を持たず、台数を増やしても同じものを 2 回書かない）。
+#   機器の syslog は syslog-ng（app/syslog-ng）、NetFlow / sFlow は GoFlow2 が受ける。MDT の受け口は外した（cycle 012。戻し方は docs/collection.md）。
+#   gNMI の購読と SNMP のポーリング（取りにいく側の telegraf-dialin）は cycle 013 でやめ、gNMI は gnmic（app/gnmic）が取る。
+#   入力を役割で分けていた区間（「>>> role <名前>」と telegraf.sh の TELEGRAF_ROLE）も一緒に外した
 #
-# 流れ: Spine-Leaf の SR Linux 6 台からの trap を udp 162 で受ける + gNMI で BGP / IS-IS / EVPN の状態と性能メトリクスを購読
-#       （+ SNMP_POLL=1 なら SNMP を 10 秒ごとにポーリング。ifTable）→ MSK（IAM 認証、TLS）
-#   metrics トピック: 共通の形（仮）の device_cpu / device_memory / if_stats / sessions / circuits（lab では gNMI の lab_* を変換したもの。下の
-#                     processors.starlark と aggregators.starlark）と、SNMP_POLL=1 のときだけ interface（ifName / ifOperStatus / ifInErrors ...）と system
-#   gnmi    トピック: bgp_neighbor（session_state。on_change）/ isis_interface（oper_state。on_change）/ evpn_es / mac_table（1 分ごと）
-#   traps   トピック: snmp_trap（linkDown / linkUp）
-# （logs トピックの device_log は syslog-ng（app/syslog-ng）、flows トピックは GoFlow2 が書く。cycle 012）
-# 機器は lab の EC2 の中の docker network（203.0.113.0/24）にいる。このコンテナからは次の経路で届く（lab の EC2 で sudo lab forward-status）:
-#   ポーリング  SNMP（161/udp）も gNMI（57400/tcp）も VPC のルートで lab の EC2 へ行き、lab の EC2 が管理ネットワークへ転送する
-#               （タスクの IP は作り直すたびに変わるので、lab の EC2 はタスクのサブネットの CIDR から来たものを通す）
-#   trap        機器は lab の EC2（203.0.113.1:162）へ送り、lab の EC2 が内部 NLB（IP は NLB がある間は変わらない）へ DNAT し、
-#               NLB が 1162 でここへ渡す。NLB は送り元を変えない（UDP のクライアント IP の保持）ので、送り元は機器の管理 IP のまま
-# MIB は入れないので OID は数値で書き、名前を明示する（translator が無くても動く）。trap の varbind 名は数値 OID のまま
-# Kafka に載る（ifName の OID を引くのは Splunk の保存済みサーチ。app/splunk/netops_alerts）。
-# SR Linux の ifTable は物理ポート全部（未使用の admin-down も）とサブインタフェース（ethernet-1/1.0）を行に出す。落とすのは Grafana のアラートルール
-#（app/grafana/provisioning/alerting/netops-prometheus.yaml。ifAdminStatus が down の行と "." を含む名前）。ifDescr は「名前 + description」になるので IF の鍵は ifName にする。
+# 流れ: Spine-Leaf の SR Linux 6 台からの trap を udp 162 で受ける → MSK（IAM 認証、TLS。OSS 版は ECS の Kafka、認証なし）
+#   traps トピック: snmp_trap（linkDown / linkUp ほか）
+# （metrics / gnmi トピックは gnmic、logs トピックの device_log は syslog-ng（app/syslog-ng）、flows トピックは GoFlow2 が書く。cycle 012 / 013）
+# 機器は lab の EC2 の中の docker network（203.0.113.0/24）にいる。trap は次の経路でここへ届く（lab の EC2 で sudo lab forward-status）:
+#   機器は lab の EC2（203.0.113.1:162）へ送り、lab の EC2 が内部 NLB（IP は NLB がある間は変わらない）へ DNAT し、
+#   NLB が 1162 でここへ渡す。NLB は送り元を変えない（UDP のクライアント IP の保持）ので、送り元は機器の管理 IP のまま
+# MIB は入れないので trap の varbind 名は数値 OID のまま Kafka に載る（ifName の OID を引くのは Splunk の保存済みサーチ。app/splunk/netops_alerts）。
 
 [agent]
   interval = "10s"
@@ -40,199 +23,6 @@
   omit_hostname = true
   snmp_translator = "gosmi"
 
-# >>> role dialin（telegraf.sh render が TELEGRAF_ROLE=dialout のとき消す）
-# >>> snmp_poll（telegraf.sh render が SNMP_POLL=1（既定）のときだけ残す。0 なら消す）
-# ---- ポーリング。agents は監視対象（CE）の管理 IP（SR Linux の mgmt0。SNMP v2c の community は環境変数 SNMP_COMMUNITY。lab は containerlab が全ノードに入れる public）。lab の EC2 を経由する（上の注記）
-# 止めると Grafana のルール link_down と Splunk の保存済みサーチ netops_poll（ifOperStatus を見る）は発火しない。IF の up / down は trap（Splunk の保存済みサーチ。deploy.env の STORES に splunk）だけで見る
-[[inputs.snmp]]
-  agents = [__SNMP_AGENTS__]
-  version = 2
-  community = "${SNMP_COMMUNITY}"
-  timeout = "5s"
-  retries = 2
-  name = "system"
-
-  [[inputs.snmp.field]]
-    name = "sysName"
-    oid = ".1.3.6.1.2.1.1.5.0"
-    is_tag = true
-  [[inputs.snmp.field]]
-    name = "sysUpTime"
-    oid = ".1.3.6.1.2.1.1.3.0"
-
-  [[inputs.snmp.table]]
-    name = "interface"
-    inherit_tags = ["sysName"]
-    [[inputs.snmp.table.field]]
-      name = "ifName"
-      oid = ".1.3.6.1.2.1.31.1.1.1.1"
-      is_tag = true
-    [[inputs.snmp.table.field]]
-      name = "ifDescr"
-      oid = ".1.3.6.1.2.1.2.2.1.2"
-    [[inputs.snmp.table.field]]
-      name = "ifAdminStatus"
-      oid = ".1.3.6.1.2.1.2.2.1.7"
-    [[inputs.snmp.table.field]]
-      name = "ifOperStatus"
-      oid = ".1.3.6.1.2.1.2.2.1.8"
-    [[inputs.snmp.table.field]]
-      name = "ifInOctets"
-      oid = ".1.3.6.1.2.1.2.2.1.10"
-    [[inputs.snmp.table.field]]
-      name = "ifInErrors"
-      oid = ".1.3.6.1.2.1.2.2.1.14"
-    [[inputs.snmp.table.field]]
-      name = "ifOutOctets"
-      oid = ".1.3.6.1.2.1.2.2.1.16"
-    [[inputs.snmp.table.field]]
-      name = "ifOutErrors"
-      oid = ".1.3.6.1.2.1.2.2.1.20"
-# <<< snmp_poll
-
-# ---- gNMI は lab 用。本番の Cisco の MDT（dial-out）の受け口は cycle 012 で外した（送り手が無い。戻し方は docs/collection.md）。
-# lab の SR Linux は MDT を話さないので、ここから gNMI（dial-in）で取りにいく。性能メトリクスは 2 つめの inputs.gnmi で取り、本番と同じ共通の形に変換する。
-# 取りにいく入力なので、これを持つ telegraf-dialin（TELEGRAF_ROLE=dialin）は 1 タスク。
-# ---- gNMI（SR Linux の状態を購読。SNMP には無い BGP / IS-IS / EVPN の層）。containerlab が全ノードで 57400（TLS、自己署名）を開け、
-# ユーザーとパスワードは環境変数 GNMI_USERNAME / GNMI_PASSWORD（lab は containerlab が入れる既定で、lab だけの公開既定値。実機なら SSM のパラメータを書き換える）。
-# source タグは購読先のアドレス（機器の管理 IP。Splunk のアラートアクションがこれと device map で機器名を引く）。パスの鍵（peer-address など）はタグになる。
-# on_change は購読の直後に今の状態を全部送り、その後は変わったときだけ送る。sample は sample_interval ごと。
-# Splunk の保存済みサーチ（app/splunk/netops_alerts の netops_gnmi）は bgp_neighbor の session_state != established を bgp_down、isis_interface の
-# oper_state != up を isis_down として SNS に出し、graph の Lambda が Neptune の bgp_session / isis_adjacency の頂点を DOWN にする（app/graph/status_handler.py）。
-# 実測（2026-09-27、SR Linux 26.7.2 / Telegraf 1.40）: bgp_neighbor はタグ peer_address、field session_state。isis_interface はタグ interface_name
-# （ethernet-1/1.0。サブインタフェース。system0.0 も来る）、field oper_state（up / down）
-[[inputs.gnmi]]
-  addresses = [__GNMI_TARGETS__]
-  username = "${GNMI_USERNAME}"
-  password = "${GNMI_PASSWORD}"
-  encoding = "json_ietf"
-  redial = "10s"
-  # inputs.gnmi の TLS は tls_enable（enable_tls は 1.35 で消えた。1.40 は未知のキーで起動を拒む。2026-09-27 実測）。outputs.kafka は enable_tls のまま
-  tls_enable = true
-  insecure_skip_verify = true
-  # isis_interface のパスの instance[name=main] の鍵は、network-instance の name と名前がぶつかるので、Telegraf が YANG のパスそのままの名前
-  # （/srl_nokia-network-instance:network-instance/protocols/srl_nokia-isis:isis/instance/name）のタグにする。値は main 固定で使わないので落とす
-  tagexclude = ["*isis/instance/name"]
-
-  [[inputs.gnmi.subscription]]
-    name = "bgp_neighbor"
-    path = "/network-instance[name=default]/protocols/bgp/neighbor[peer-address=*]/session-state"
-    subscription_mode = "on_change"
-  # IS-IS は隣接（…/interface/adjacency）ではなく IF の oper-state（…/interface/oper-state）を取る。
-  # 隣接は落ちると state=down を経ずに消え（gNMI の delete）、Telegraf は delete を載せないので isis_down が出なかった（2026-09-27 に fail-main で実測）。
-  # oper-state は IF ごとに残る葉で up / down が on_change で届く。level/adjacency-number は gNMI の購読では "unknown element" で拒否される（SR Linux 26.7.2）
-  [[inputs.gnmi.subscription]]
-    name = "isis_interface"
-    path = "/network-instance[name=default]/protocols/isis/instance[name=main]/interface[interface-name=*]/oper-state"
-    subscription_mode = "on_change"
-  [[inputs.gnmi.subscription]]
-    name = "evpn_es"
-    path = "/system/network-instance/protocols/evpn/ethernet-segments/bgp-instance[id=1]/ethernet-segment[name=*]/oper-state"
-    subscription_mode = "sample"
-    sample_interval = "60s"
-  # mac_table は MAC の一覧（どの端末がどこにいるか）。数（セッション数の代替）は下の 2 つめの inputs.gnmi の lab_*_mac_active
-  [[inputs.gnmi.subscription]]
-    name = "mac_table"
-    path = "/network-instance[name=*]/bridge-table/mac-table/mac[address=*]"
-    subscription_mode = "sample"
-    sample_interval = "60s"
-
-# ---- gNMI（lab の性能メトリクス。measurement は lab_*。Kafka には載せず、下の processors.starlark（lab_gnmi.star）と
-# aggregators.starlark（lab_circuits.star）が共通の形（仮）の device_cpu / device_memory / if_stats / sessions / circuits に変えて metrics トピックへ）。
-# 上の inputs.gnmi と分けるのは、SR Linux が知らないパスが 1 つでもあると購読（SubscribeRequest）ごと拒むので、未実測のパスが BGP / IS-IS を巻き込まないため。
-# パスは SR Linux 26.7.2 の YANG（nokia/srlinux-yang-models の v26.7.2）で確かめたが、gNMI での購読は未実測。
-# セッション数の代替は MAC テーブルの数（bridge-table/statistics/active-entries と mac-limit。mac-vrf ごととサブ IF ごと）、
-# 収容回線数の代替は type bridged のサブ IF を持つ IF の数。本番の値の代替であることと、揃わない要素（上限で断った数が無い、
-# 当たったときの影響が違う、lab では値が動かない）は docs/collection.md の「lab（SR Linux）での取り方」
-[[inputs.gnmi]]
-  addresses = [__GNMI_TARGETS__]
-  username = "${GNMI_USERNAME}"
-  password = "${GNMI_PASSWORD}"
-  encoding = "json_ietf"
-  redial = "10s"
-  tls_enable = true
-  insecure_skip_verify = true
-
-  # CPU。index は "all"（全コア）とコアの番号で、lab_gnmi.star が all だけ残す
-  [[inputs.gnmi.subscription]]
-    name = "lab_cpu"
-    path = "/platform/control[slot=*]/cpu[index=*]/total/instant"
-    subscription_mode = "sample"
-    sample_interval = "60s"
-  # メモリ（physical / free / reserved / utilization）
-  [[inputs.gnmi.subscription]]
-    name = "lab_memory"
-    path = "/platform/control[slot=*]/memory"
-    subscription_mode = "sample"
-    sample_interval = "60s"
-  # IF（物理ポートと lag）のカウンタ。帯域使用率は octets の差分と速度で、ドロップは discarded-packets、エラーは error-packets
-  [[inputs.gnmi.subscription]]
-    name = "lab_if_counters"
-    path = "/interface[name=*]/statistics"
-    subscription_mode = "sample"
-    sample_interval = "60s"
-  # 速度。物理ポートは port-speed（10G などの enum）、lag は lag-speed（Mbps）。lab_gnmi.star が覚えて if_stats の speed_bps に付ける
-  [[inputs.gnmi.subscription]]
-    name = "lab_port_speed"
-    path = "/interface[name=*]/ethernet/port-speed"
-    subscription_mode = "sample"
-    sample_interval = "60s"
-  [[inputs.gnmi.subscription]]
-    name = "lab_lag_speed"
-    path = "/interface[name=*]/lag/lag-speed"
-    subscription_mode = "sample"
-    sample_interval = "60s"
-  # セッション数の代替: mac-vrf ごとの MAC の数と上限（maximum-entries、既定 250。warning-threshold-pct、既定 95）
-  [[inputs.gnmi.subscription]]
-    name = "lab_ni_mac_active"
-    path = "/network-instance[name=*]/bridge-table/statistics/active-entries"
-    subscription_mode = "sample"
-    sample_interval = "60s"
-  [[inputs.gnmi.subscription]]
-    name = "lab_ni_mac_limit"
-    path = "/network-instance[name=*]/bridge-table/mac-limit"
-    subscription_mode = "sample"
-    sample_interval = "60s"
-  # 同じものをサブ IF ごとに（どこが食っているか）
-  [[inputs.gnmi.subscription]]
-    name = "lab_subif_mac_active"
-    path = "/interface[name=*]/subinterface[index=*]/bridge-table/statistics/active-entries"
-    subscription_mode = "sample"
-    sample_interval = "60s"
-  [[inputs.gnmi.subscription]]
-    name = "lab_subif_mac_limit"
-    path = "/interface[name=*]/subinterface[index=*]/bridge-table/mac-limit"
-    subscription_mode = "sample"
-    sample_interval = "60s"
-  # 収容回線数の代替: サブ IF の type（bridged を数える）と IF の oper-state。lab_circuits.star が機器ごとに数える
-  [[inputs.gnmi.subscription]]
-    name = "lab_subif_type"
-    path = "/interface[name=*]/subinterface[index=*]/type"
-    subscription_mode = "sample"
-    sample_interval = "60s"
-  [[inputs.gnmi.subscription]]
-    name = "lab_if_oper"
-    path = "/interface[name=*]/oper-state"
-    subscription_mode = "sample"
-    sample_interval = "60s"
-
-# ---- lab の gNMI（lab_*）を共通の形（仮）に変える。説明は lab_gnmi.star の頭。lab_subif_type / lab_if_oper は下の aggregators.starlark が受ける。
-# 元の値を取る inputs.gnmi と同じタスクに置く（Kafka には lab_* を載せないので、別のタスクでは変換できない）
-[[processors.starlark]]
-  namepass = ["lab_cpu", "lab_memory", "lab_if_counters", "lab_port_speed", "lab_lag_speed", "lab_ni_mac_active", "lab_ni_mac_limit", "lab_subif_mac_active", "lab_subif_mac_limit"]
-  script = "/etc/telegraf/lab_gnmi.star"
-
-# ---- 収容回線数の代替（circuits）を機器ごとに数える。説明は lab_circuits.star の頭。period は gNMI の sample_interval と同じ 1 分で、
-# 機器の時刻で付いた metric が period の始まりより前でも落とさないよう grace を付ける。元の lab_subif_type / lab_if_oper は流さない
-[[aggregators.starlark]]
-  namepass = ["lab_subif_type", "lab_if_oper"]
-  period = "60s"
-  grace = "60s"
-  drop_original = true
-  script = "/etc/telegraf/lab_circuits.star"
-# <<< role dialin
-
-# >>> role dialout（telegraf.sh render が TELEGRAF_ROLE=dialin のとき消す）
 # 受け口の 2 つ（trap・health）のアドレスとポートは telegraf.sh render が TELEGRAF_BIND（既定は空 = 全部のインターフェース）と
 # TRAP_PORT / HEALTH_PORT（既定 1162 / 8080）で埋める。ECS は何も渡さないので既定のまま
 # ---- trap 受信。コンテナは非 root なので 162 ではなく 1162 で待つ（NLB が 162 を 1162 に向ける。telegraf.sh の TRAP_PORT）。
@@ -241,45 +31,13 @@
   service_address = "udp://__BIND__:__TRAP_PORT__"
   version = "2c"
   timeout = "5s"
-# <<< role dialout
 
 # >>> sink kafka（telegraf.sh render が SINK で片方だけ残す。既定 kafka）
-# ---- Kafka（MSK。OSS 版は ECS の Kafka）へ。トピックは metric 名で分ける（snmp_trap → traps、gNMI の 4 つ → gnmi、共通の形と SNMP のポーリング → metrics）。
-# lab_* の変換前の値はどれにも載せない。役割に関わらず 3 つとも置く（来ないトピックの出力は何も書かない）
+# ---- Kafka（MSK。OSS 版は ECS の Kafka）の traps トピックへ（snmp_trap）。gNMI の値の metrics / gnmi トピックは cycle 013 から gnmic が書くので、その 2 つの出力は外した
 # 「>>> kafka_auth iam」の区間は MSK の IAM 認証の 4 行。telegraf.sh render が KAFKA_AUTH=none（OSS 版の認証なしの Kafka。cycle 005）のとき消す
 # sasl_aws_msk_iam_profile: Telegraf 1.40.0 は profile か role + session のどちらかを書かないと
 # 「both role and session must be set」で落ち、インスタンスプロファイルだけでは起動しない（2026-09-18 に EC2 で確認。plugins/common/kafka/sasl_aws_iam_msk.go）。
 # telegraf.sh render が region だけの [default] を /tmp/aws_config に書き、鍵が無いので SDK がタスクロール（ECS のコンテナの認証情報）に落ちる
-[[outputs.kafka]]
-  brokers = [__KAFKA_BROKERS__]
-  topic = "metrics"
-# >>> kafka_auth iam
-  enable_tls = true
-  sasl_mechanism = "AWS-MSK-IAM"
-  sasl_aws_msk_iam_region = "__AWS_REGION__"
-  sasl_aws_msk_iam_profile = "default"
-# <<< kafka_auth iam
-  data_format = "json"
-  json_timestamp_units = "1s"
-  required_acks = 1
-  max_retry = 3
-  namepass = ["device_cpu", "device_memory", "if_stats", "sessions", "circuits", "system", "interface"]
-
-[[outputs.kafka]]
-  brokers = [__KAFKA_BROKERS__]
-  topic = "gnmi"
-# >>> kafka_auth iam
-  enable_tls = true
-  sasl_mechanism = "AWS-MSK-IAM"
-  sasl_aws_msk_iam_region = "__AWS_REGION__"
-  sasl_aws_msk_iam_profile = "default"
-# <<< kafka_auth iam
-  data_format = "json"
-  json_timestamp_units = "1s"
-  required_acks = 1
-  max_retry = 3
-  namepass = ["bgp_neighbor", "isis_interface", "evpn_es", "mac_table"]
-
 [[outputs.kafka]]
   brokers = [__KAFKA_BROKERS__]
   topic = "traps"
@@ -298,7 +56,7 @@
 
 # >>> sink stdout
 # ---- 標準出力へ（デバッグ用の EC2。IaC/cloudformation/lab-debug.yaml。MSK が無いので docker logs で見る。sudo lab telegraf logs）。
-# 形は MSK に載るものと同じ（json、秒の timestamp）。トピックの代わりに name で見分ける。lab_* が出ていたら lab_gnmi.star で変換できなかったもの
+# 形は MSK に載るものと同じ（json、秒の timestamp）
 [[outputs.file]]
   files = ["stdout"]
   data_format = "json"
@@ -306,8 +64,8 @@
 # <<< sink stdout
 
 # ---- 生きているかの口。NLB のヘルスチェック（IaC/terraform/aws-managed/pipeline/stream の telegraf.tf。HTTP 8080。dialout のタスク）がここを見る。
-# 条件を書かないので、Telegraf が動いていれば 200 を返す。metric は system だけ通す（全部を流し込まない）。
-# ポーリングを止めている（SNMP_POLL=0）と system は来ないが、何も届いていない間は default_status（200）を返すので、ヘルスチェックは通る
+# 条件を書かないので、Telegraf が動いていれば 200 を返す。namepass には来ない名前（system。cycle 013 までは SNMP のポーリングが出していた）だけを置いて、
+# 何も流し込まない。何も届いていない間は default_status（200）を返すので、ヘルスチェックは通る
 [[outputs.health]]
   service_address = "http://__BIND__:__HEALTH_PORT__"
   namepass = ["system"]

@@ -4,7 +4,7 @@
 
 ## ひとことで
 
-機器の一覧とケーブルの正（台帳）。人が編集する場所をここ 1 か所にし、機械が読む場所（Telegraf の取りにいく先と Neptune の物理層）へは Nautobot の中の Job が写す。
+機器の一覧とケーブルの正（台帳）。人が編集する場所をここ 1 か所にし、機械が読む場所（gnmic の購読先と Neptune の物理層）へは Nautobot の中の Job が写す。
 Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS の PostgreSQL 1 台で動かしている。`ops/down.sh` で DB ごと消える。
 
 ## このプロジェクトでの使い方
@@ -24,8 +24,8 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 
 | Nautobot | 反映先 |
 |---|---|
-| Device の Service `gnmi`（tcp） | Telegraf の gNMI の購読先（SSM `/<prefix>/telegraf-dialin/nautobot/gnmi-targets`） |
-| Device の Service `snmp`（udp） | Telegraf の SNMP のポーリング先（同 `snmp-agents`。`SNMP_POLL=0` では使わない） |
+| Device の Service `gnmi`（tcp） | gnmic の購読先（SSM `/<prefix>/gnmic/nautobot/gnmi-targets`） |
+| Device の Service `snmp`（udp） | 購読先には入れない（機器が SNMP を喋る印。`gnmi` か `snmp` があれば Neptune の `enabled`。SNMP のポーリングは 2026-10-09 にやめた） |
 | Device（名前、Location、Role、primary IPv4、`asn`）と Interface | Neptune の `device` / `interface` |
 | Cable（`link_role`、`bandwidth_mbps`） | Neptune の回線。種類（fabric / l2 / lag）は両端の Role と LAG から決める |
 | Device の Status `Maintenance` | Neptune の `device` の `maintenance`。その機器の `link_down` ではワークフローを起こさない |
@@ -66,12 +66,12 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
   機器が 0 台のときだけ、イメージに入れた `lab_seed.json`（7 台 / 12 本）から seed する。
   出典: [nautobot.md](../../nautobot.md) の「4. 起動してから同期するまで」。
 - **同期は Redis のロックの中で「読む → 書く」をする。**
-  Job が重なっても順に走る。Telegraf とグラフ DB（Neptune。OSS 版は Neo4j）の片方が失敗しても、もう片方はやる。
+  Job が重なっても順に走る。gnmic の一覧とグラフ DB（Neptune。OSS 版は Neo4j）の片方が失敗しても、もう片方はやる。
   出典: 同上。
 - **Job が触るのは物理層と変更履歴だけ。**
   `status`（アラートが書く）と IP 層・EVPN/BGP 層は触らない。IP 層から上は lab の定義から `ops/sync-graph.sh` が入れる（Nautobot には無い）。
   出典: [nautobot.md](../../nautobot.md) の「7. 役割の分担（Nautobot と Neptune）」、[pipeline.md](../../pipeline.md) の「Nautobot（機器の一覧とケーブルの正）」。
-- **Telegraf の一覧は、変わったときだけ書き換えてサービスを作り直す。**
+- **gnmic の一覧は、変わったときだけ書き換えてサービスを作り直す。**
   作り直すと購読が数十秒切れる。
   出典: [pipeline.md](../../pipeline.md) の「Nautobot（機器の一覧とケーブルの正）」。
 - **機器が 1 台も無いときは Neptune を触らない。**
@@ -81,7 +81,7 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
   名前が頂点の ID。その機器の `status` と上の層へのつながりは消える。
   出典: 同上。
 - **一括で変えるときは、JobHook `netops-sync` を止めてから。**
-  変更 1 件ごとに Job が走り、一覧が変わるたびに Telegraf の取りにいく側が作り直される。最後に手で Job を打つ。
+  変更 1 件ごとに Job が走り、一覧が変わるたびに gnmic が作り直される。最後に手で Job を打つ。
   出典: 同上。
 - **JobHook は、変更した人に Job を実行する権限が無いと出ない。**
   管理者は出る。権限を絞ったユーザーを作るなら、Job `netops_jobs.SyncOnChange` の実行も許す。
@@ -99,11 +99,11 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 |---|---|
 | 編集した内容 | `ops/down.sh` で DB ごと消える。作り直すと lab の定義から入り直す |
 | AWS で確かめた範囲 | 起動・seed・Job と JobHook の登録・起動時の同期まで |
-| Nautobot での変更 → JobHook → SSM / dialin / Neptune | AWS では未確認（手元のテスト `tests/test_nautobot.py` と、手元の Docker の Nautobot 3.2.6 への REST API だけ） |
+| Nautobot での変更 → JobHook → SSM / gnmic / Neptune | AWS では未確認（手元のテスト `tests/test_nautobot.py` と、手元の Docker の Nautobot 3.2.6 への REST API だけ） |
 | Web からの Nautobot への書き込み | AWS では未確認 |
 | 本番の機器の一覧を外から入れる | PoC には未実装（[nautobot.md](../../nautobot.md) の 6 章の (7)） |
 | デバッグ用の EC2（`ops/lab-debug.sh`） | Nautobot を使わない |
-| OSS 版（`IaC/terraform/oss/pipeline/nautobot`。同じファイルをシンボリックリンクで使う） | Job は Neo4j に書く（graph の state に `neo4j_uri` があるとタスク定義が `GRAPH_BACKEND=neo4j` などを渡し、`ops/oss/up.sh` が Neo4j のドライバー入りのイメージを作る。手で打つ Job と JobHook の両方を 2026-10-08 に AWS で確かめた）。Neo4j を起こし直したあとは 2 段で戻す: `ops/sync-graph.sh --oss` で lab の定義から物理層と IP 層を入れ、そのあと Job「Telegraf とグラフ DB に同期」で変更履歴と Nautobot で足した機器と回線を戻す（[oss-variant.md](../../oss-variant.md) の「Neo4j を起こし直したあとの戻し方」） |
+| OSS 版（`IaC/terraform/oss/pipeline/nautobot`。同じファイルをシンボリックリンクで使う） | Job は Neo4j に書く（graph の state に `neo4j_uri` があるとタスク定義が `GRAPH_BACKEND=neo4j` などを渡し、`ops/oss/up.sh` が Neo4j のドライバー入りのイメージを作る。手で打つ Job と JobHook の両方を 2026-10-08 に AWS で確かめた）。Neo4j を起こし直したあとは 2 段で戻す: `ops/sync-graph.sh --oss` で lab の定義から物理層と IP 層を入れ、そのあと Job「gnmic とグラフ DB に同期」で変更履歴と Nautobot で足した機器と回線を戻す（[oss-variant.md](../../oss-variant.md) の「Neo4j を起こし直したあとの戻し方」） |
 
 ## 関連
 

@@ -272,13 +272,13 @@ variable "grafana_task_memory" {
 
 # ---------------------------------------------------------------- alerts (Grafana / Splunk -> SNS topic of IaC/terraform/aws-managed/base/core)
 variable "device_map" {
-  description = "alias=device_id,... (management IPs, interface and loopback addresses, hostnames). Used where a record has no sysName tag (traps and gNMI carry the management IP in source): the Splunk task gets it as DEVICE_MAP for its alert action (app/splunk/netops_alerts), and the Spark job gets it as --device-map to add sysName to the prometheus and opensearch sinks (the Grafana rules group by sysName). ops/up.sh always generates it from the lab definition with app/containerlab/lab_topology.py --device-map, so the device list lives in one place. Empty means such alerts keep the raw IP as device_id (they do not match a device in Neptune). ops/up.sh restarts the streaming job when the arguments change."
+  description = "alias=device_id,... (management IPs, interface and loopback addresses, hostnames). Used where a record has no sysName tag (traps and gNMI carry the management IP in source): the Splunk task gets it as DEVICE_MAP for its alert action (app/splunk/netops_alerts), and the Spark job gets it as --device-map to add sysName to the prometheus, opensearch and splunk sinks (the Grafana rules and the Splunk saved searches group by sysName). ops/up.sh always generates it from the lab definition with app/containerlab/lab_topology.py --device-map, so the device list lives in one place. Empty means such alerts keep the raw IP as device_id (they do not match a device in Neptune). ops/up.sh restarts the streaming job when the arguments change."
   type        = string
   default     = ""
 }
 
 variable "metric_topics" {
-  description = "Kafka topics that carry metrics (Telegraf inputs.snmp and the common shape converted from the lab gNMI -> metrics, inputs.gnmi -> gnmi). Read by the iceberg, prometheus and splunk sinks"
+  description = "Kafka topics that carry metrics (gnmic: sampled counters -> metrics, on-change state -> gnmi). Read by the iceberg, prometheus and splunk sinks"
   type        = list(string)
   default     = ["metrics", "gnmi"]
 

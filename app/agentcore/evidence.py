@@ -111,7 +111,7 @@ def search_logs(device_id: str = "", minutes: int = 60, limit: int = 20) -> dict
 
 
 def query_metrics(query: str, minutes: int = 15) -> dict:
-    """PromQL の range query（step 60 秒）。例: interface_ifOperStatus{sysName="dc1-a-leaf-01"}"""
+    """PromQL の range query（step 60 秒）。例: snmp_interface_oper_up{sysName="dc1-a-leaf-01"}"""
     if not PROMETHEUS_QUERY_URL:
         return {"error": "メトリクスの検索はまだ配備されていない（IaC/terraform/aws-managed/pipeline/analytics を sinks に prometheus を入れて apply すると使える）", "series": []}
     if not query:
@@ -190,7 +190,7 @@ TOOL_SPECS = [
     }},
     {"toolSpec": {
         "name": "query_metrics",
-        "description": "監視メトリクス（Prometheus）に PromQL を投げる。インタフェースの状態やトラフィックの推移を見るのに使う。例: interface_ifOperStatus{sysName=\"dc1-a-leaf-01\"}",
+        "description": "監視メトリクス（Prometheus）に PromQL を投げる。インタフェースの状態やトラフィックの推移を見るのに使う。例: snmp_interface_oper_up{sysName=\"dc1-a-leaf-01\"}",
         "inputSchema": {"json": {"type": "object", "required": ["query"], "properties": {
             "query": {"type": "string", "description": "PromQL（メトリクス名は <measurement>_<field>、ラベルは Telegraf のタグ）"},
             "minutes": {"type": "integer", "description": "何分前から見るか（既定 15、最大 1440）"},

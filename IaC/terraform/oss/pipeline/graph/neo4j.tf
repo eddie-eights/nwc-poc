@@ -7,7 +7,7 @@
 # イメージはリポジトリの app/neo4j/（公式の neo4j:<版>-community に GDS の jar を焼き込んだもの。ops/oss/up.sh がビルドして ECR の <接頭辞>-neo4j に置く）。
 # データはタスクの一時領域（Fargate のエフェメラルストレージ）。EFS は使わない（Neo4j は NFS の上のデータを支えない。設計 005）。
 # タスクが入れ替わる（terraform apply でタスク定義が変わる・タスクが落ちる）とグラフは空に戻るので、ops/sync-graph.sh --oss で入れ直し、
-# そのあと Nautobot の Job「Telegraf とグラフ DB に同期」で変更履歴を戻す（status は全部 UP に戻る。docs/oss-variant.md の「Neo4j を起こし直したあとの戻し方」）。頂点の id はプロパティ id で、一意制約はアプリ（app/agentcore/graph.py の _neo4j_schema）が最初のクエリの前に作る。
+# そのあと Nautobot の Job「gnmic とグラフ DB に同期」で変更履歴を戻す（status は全部 UP に戻る。docs/oss-variant.md の「Neo4j を起こし直したあとの戻し方」）。頂点の id はプロパティ id で、一意制約はアプリ（app/agentcore/graph.py の _neo4j_schema）が最初のクエリの前に作る。
 # 届くのは SG で絞った相手だけ（IaC/terraform/aws-managed/base/core の oss.tf の通信の表: Web・Runtime・Lambda・Worker・Nautobot → 7687、Web → 7474）。
 # 名前は Cloud Map の neo4j.<接頭辞>-graph.internal。アプリは bolt://（ルーティングしない直結。1 台なので要らない）でつなぐ。
 # 認証はユーザー neo4j とパスワード。パスワードは ops/oss/up.sh が SSM の /<接頭辞>/neo4j-password（SecureString）に 1 回だけ作り、

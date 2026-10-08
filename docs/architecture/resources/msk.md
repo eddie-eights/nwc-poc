@@ -4,8 +4,8 @@
 
 ## ひとことで
 
-Telegraf・syslog-ng・GoFlow2 が集めた機器のデータを、いったんためておく Kafka（Amazon MSK の Provisioned）。
-書くのは Telegraf・syslog-ng・GoFlow2、読むのは Spark。ためるのは 24 時間で、履歴の置き場ではない。
+Telegraf・gnmic・syslog-ng・GoFlow2 が集めた機器のデータを、いったんためておく Kafka（Amazon MSK の Provisioned）。
+書くのは Telegraf・gnmic・syslog-ng・GoFlow2、読むのは Spark。ためるのは 24 時間で、履歴の置き場ではない。
 
 ## このプロジェクトでの使い方
 
@@ -16,7 +16,7 @@ Telegraf・syslog-ng・GoFlow2 が集めた機器のデータを、いったん�
 | AZ の数 | `MSK_AZ_NUM`（既定 2、2〜3）。ブローカーの数と同じ | `ops/up.sh`、変数 `msk_az_num` |
 | 認証と暗号 | IAM 認証（9098）と SASL/SCRAM（9096。syslog-ng と GoFlow2 だけ。2026-10-08 から）。クライアントとの間もブローカー同士も TLS | `msk.tf` の `client_authentication`、`encryption_info` |
 | SCRAM の資格情報 | Secrets Manager の `AmazonMSK_<prefix>-collectors`（名前は `AmazonMSK_` で始める決まり）。顧客管理の KMS の鍵 `alias/<prefix>-msk-scram` で暗号化する（MSK は既定の鍵の secret を受け付けない）。`ops/up.sh` が stream の apply の前に作り、`ops/down.sh` が消す（鍵は 7 日の削除の予約） | `ops/up-common.sh` の `ensure_msk_scram_key` / `ensure_msk_scram_secret`、`ops/down-common.sh` の `delete_msk_scram`、`msk.tf` の `aws_msk_scram_secret_association` |
-| SCRAM のユーザーの ACL | `User:collectors` に `logs` / `flows` の `WRITE` と `DESCRIBE`（`LITERAL`、host `*`）。`CREATE` と CLUSTER の ACL は付けない。Spark のジョブが起動のたびに入れる（同じものを入れても変わらない）。それまで syslog-ng と GoFlow2 は書けない（2026-10-09 から） | `app/spark/snmp_sinks.py` の `ensure_acls`、EMR の実行ロールの `kafka-cluster:AlterCluster`（`IaC/terraform/aws-managed/pipeline/analytics/access.tf`） |
+| SCRAM のユーザーの ACL | `User:collectors` に `logs` / `flows` / `gnmi` / `metrics` の `WRITE` と `DESCRIBE`（`LITERAL`、host `*`）。`CREATE` と CLUSTER の ACL は付けない。Spark のジョブが起動のたびに入れる（同じものを入れても変わらない）。それまで syslog-ng・GoFlow2・gnmic は書けない（2026-10-09 から。`gnmi` / `metrics` は cycle 013） | `app/spark/snmp_sinks.py` の `ensure_acls`、EMR の実行ロールの `kafka-cluster:AlterCluster`（`IaC/terraform/aws-managed/pipeline/analytics/access.tf`） |
 | ブローカーの設定 | `auto.create.topics.enable=true`、`default.replication.factor` = ブローカーの数、`min.insync.replicas` = その 1 つ下、`num.partitions=2`、`log.retention.hours=24` | `msk.tf` の `aws_msk_configuration` |
 | ブローカーのログ | CloudWatch Logs のロググループ `/<prefix>/msk`、保存 7 日 | 変数 `log_retention_days`、`msk.tf` |
 | スイッチ | `PIPELINE=1` で作る。`SKIP_STREAM=1` で作らない（analytics も作らない） | `deploy.env.example` |
@@ -26,8 +26,8 @@ Telegraf・syslog-ng・GoFlow2 が集めた機器のデータを、いったん�
 
 | トピック | 入っているもの | 書くもの |
 |---|---|---|
-| `metrics` | SNMP のポーリングの結果（measurement `system` / `interface` など。IF の状態とカウンタ）。`SNMP_POLL=0` では空 | Telegraf の取りにいく側 |
-| `gnmi` | gNMI の購読（BGP のセッション、IS-IS の IF などの on_change とサンプル） | Telegraf の取りにいく側 |
+| `metrics` | gNMI のカウンター（IF の統計、CPU、メモリ。60 秒ごと。gnmic の event の形のまま。2026-10-09 まではSNMP のポーリングの結果） | gnmic（2026-10-09 から。それまでは Telegraf の取りにいく側） |
+| `gnmi` | gNMI の状態（IF の oper-state / admin-state、BGP のセッション、IS-IS の IF。on-change。gnmic の event の形のまま） | gnmic（2026-10-09 から。それまでは Telegraf の取りにいく側） |
 | `traps` | SNMP の trap（linkDown / linkUp など） | Telegraf の受ける側 |
 | `logs` | 機器の syslog（measurement `device_log`） | syslog-ng（2026-10-08 までは Telegraf の受ける側） |
 | `flows` | 機器の NetFlow / sFlow（GoFlow2 の JSON のまま。Spark が共通の形に読み替える） | GoFlow2（2026-10-08 から） |
@@ -36,10 +36,11 @@ Telegraf・syslog-ng・GoFlow2 が集めた機器のデータを、いったん�
 
 | 相手 | 向き | ポートと認証 |
 |---|---|---|
-| Telegraf（受ける側 / 取りにいく側） | Telegraf → MSK | 9098/tcp、SASL_SSL + AWS_MSK_IAM。タスクロール `<prefix>-telegraf-task` |
+| Telegraf（受ける側） | Telegraf → MSK | 9098/tcp、SASL_SSL + AWS_MSK_IAM。タスクロール `<prefix>-telegraf-task` |
+| gnmic（ECS） | gnmic → MSK | 9096/tcp、SASL_SSL + SCRAM-SHA-512。syslog-ng・GoFlow2 と同じ secret（`AmazonMSK_<prefix>-collectors`）を ECS の secrets で受ける（実行ロール `<prefix>-gnmic-exec`）。`gnmi` / `metrics` の ACL を Spark が入れるまでマネージドでは書けない見込み |
 | syslog-ng / GoFlow2（ECS） | → MSK | 9096/tcp、SASL_SSL + SCRAM-SHA-512。ユーザー名とパスワードは ECS の secrets で Secrets Manager からタスクの環境変数に入る（実行ロール `<prefix>-syslog-ng-exec` / `<prefix>-goflow2-exec`） |
 | Spark（EMR Serverless） | Spark ← MSK | 9098/tcp、同じ認証。ジョブの実行ロール |
-| Spark（EMR Serverless、ACL） | Spark → MSK | 9098/tcp、同じ認証。起動のたびに `User:collectors` の `logs` / `flows` の `WRITE` と `DESCRIBE` を `createAcls` で入れる（実行ロールの `kafka-cluster:AlterCluster`。cycle 012） |
+| Spark（EMR Serverless、ACL） | Spark → MSK | 9098/tcp、同じ認証。起動のたびに `User:collectors` の `logs` / `flows` / `gnmi` / `metrics` の `WRITE` と `DESCRIBE` を `createAcls` で入れる（実行ロールの `kafka-cluster:AlterCluster`。cycle 012、`gnmi` / `metrics` は 013） |
 | ブローカー同士 | MSK ↔ MSK | 9092〜9098/tcp |
 | Kafbat UI（Web の EC2 の Docker） | Web → MSK | 9098/tcp、同じ認証。Web の EC2 のロール（stream が足すポリシー `<prefix>-kafka-ui`）は、トピックの読み書き・作成・変更・削除と、グループを見ることまで |
 | SSM | MSK → パラメータ | ブートストラップの文字列を `/<prefix>/msk-bootstrap`（String）に書く |
@@ -55,8 +56,8 @@ Telegraf・syslog-ng・GoFlow2 が集めた機器のデータを、いったん�
 - **4.1.x が Standard ブローカーの最新で、4.2.x は Express ブローカーだけ。**
   出典: `IaC/terraform/aws-managed/pipeline/stream/variables.tf` の `kafka_version` の説明。
 - **トピックは最初の書き込みで自動でできる。**
-  `auto.create.topics.enable=true`。そのため Telegraf のタスクロールに `kafka-cluster:CreateTopic` が要る。Spark も、無いトピックを起動時に作る（`ensure_topics`）ので、`SNMP_POLL=0` で `metrics` が無くても落ちない。SASL/SCRAM の syslog-ng・GoFlow2 には `CREATE` の ACL を付けないので、AWS の文書どおりなら `logs` / `flows` は自動ではできず、Spark が作る。
-  出典: [data-stores.md](../../data-stores.md) の「15. ブローカーの渡し方と msk-bootstrap」、FAQ「SNMP はポーリングと trap のどちらで集めている？ ポーリングは止められる？」。
+  `auto.create.topics.enable=true`。そのため Telegraf のタスクロールに `kafka-cluster:CreateTopic` が要る。Spark も、無いトピックを起動時に作る（`ensure_topics`）ので、gnmic がまだ書いていなくて `metrics` / `gnmi` が無くても落ちない。SASL/SCRAM の syslog-ng・GoFlow2・gnmic には `CREATE` の ACL を付けないので、AWS の文書どおりなら `logs` / `flows` / `gnmi` / `metrics` は自動ではできず、Spark が作る。
+  出典: [data-stores.md](../../data-stores.md) の「15. ブローカーの渡し方と msk-bootstrap」。
 - **IAM のアクセス制御を使うクラスターでは、SCRAM のユーザーは ACL が無いと何もできない（AWS の文書から読んだ想定。MSK では未確認）。**
   文書は「IAM のアクセス制御を使うクラスターでは `allow.everyone.if.no.acl.found` が効かない」とし、別のページで「MSK はこれを既定で true にする（ACL の無い資源には誰でも触れる）」ともする。IAM と SCRAM を併用したときにどちらが SCRAM の主体に効くかは書いていない。前者なら ACL が要り（このリポジトリはこちらを想定して ACL を入れる）、後者なら収集器の SCRAM の資格情報で ACL の無いトピックとクラスターに何でもできる。どちらかは AWS で確かめる（cycle 012 の検証 3。後者だったら `allow.everyone.if.no.acl.found=false` を足すかを決める）。IAM の主体は ACL と関係なく IAM のポリシーで動く。ACL を入れるのに要る IAM の権限は `kafka-cluster:AlterCluster`（EMR の実行ロールに付けた）で、Kafka の ALTER CLUSTER と同じ幅（どの主体・資源への ACL の作成と削除、パーティションの再配置、リーダー選出、SCRAM の資格情報の変更 等。MSK でどれが効くかは未確認）を許す。SCRAM のクラスターで CLUSTER の ACL を入れるとブローカー同士の複製が止まるという報告があるので、トピックの ACL だけにした。ブローカーに Read の ACL が要るか（文書の手順にはあり、同じページに「ブローカーは super user」ともある）は AWS で未確認。
   出典: AWS の文書 `iam-access-control.html` / `msk-acls.html`（2026-10-09 に確認）、`docs/cycles/012-msk-scram-syslog-ng-goflow2/design.md` の未確定事項。

@@ -40,7 +40,7 @@ resource "aws_iam_role_policy" "exec_secrets" {
   })
 }
 
-# タスクロール: Job が呼ぶ AWS の API だけ。dialin の一覧の 2 つのパラメータの読み書き、dialin のサービスの作り直し、Neptune の読み書き。
+# タスクロール: Job が呼ぶ AWS の API だけ。gnmic の購読先のパラメータの読み書き、gnmic のサービスの作り直し、Neptune の読み書き。
 # OSS 版の Neo4j は IAM でなくパスワード（実行ロールが secrets で渡す）で入るので、OSS 版の graph に graph_arn が無く Neptune の行は付かない
 resource "aws_iam_role" "task" {
   name               = "${local.name_prefix}-nautobot-task"
@@ -62,18 +62,18 @@ resource "aws_iam_role_policy" "task" {
         Resource = ["*"]
       },
       {
-        on       = local.dialin_from_nautobot
-        Sid      = "DialinTargets"
+        on       = local.gnmic_from_nautobot
+        Sid      = "GnmicTargets"
         Effect   = "Allow"
         Action   = ["ssm:GetParameter", "ssm:PutParameter"]
-        Resource = [for name in values(local.dialin_parameters) : "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${name}"]
+        Resource = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.gnmic_targets_parameter}"]
       },
       {
-        on       = local.dialin_from_nautobot
-        Sid      = "DialinRedeploy"
+        on       = local.gnmic_from_nautobot
+        Sid      = "GnmicRedeploy"
         Effect   = "Allow"
         Action   = ["ecs:UpdateService"]
-        Resource = ["arn:${local.partition}:ecs:${var.region}:${local.account_id}:service/${local.telegraf_cluster}/${local.telegraf_service}"]
+        Resource = ["arn:${local.partition}:ecs:${var.region}:${local.account_id}:service/${local.telegraf_cluster}/${local.gnmic_service}"]
       },
       {
         on       = local.neptune_graph_arn != ""

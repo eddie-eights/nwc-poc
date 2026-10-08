@@ -93,14 +93,16 @@ try:
 except ValueError:
     dup = True
 check("1 つの別名が 2 台を指していたら device map を作らずに止める", dup)
-check("snmp agents は監視対象（enabled）の管理 IP だけ", lt.snmp_agents(devices).count("udp://") == sum(1 for d in devices if d["enabled"])
-      and lt.snmp_agents([{"enabled": True, "mgmt_ip": "203.0.113.9"}, {"enabled": False, "mgmt_ip": "203.0.113.8"}]) == '"udp://203.0.113.9:161"')
+_snmp_flag = subprocess.run([sys.executable, os.path.join(ROOT, "app", "containerlab", "lab_topology.py"), os.path.join(ROOT, "app", "containerlab"), "--snmp-agents"],
+                            capture_output=True, text=True)
+check("SNMP のポーリング先（snmp_agents / --snmp-agents）は cycle 013 でやめた: 関数が無く、--snmp-agents は使い方を出して止まる",
+      not hasattr(lt, "snmp_agents") and _snmp_flag.returncode != 0 and "使い方" in _snmp_flag.stderr and _snmp_flag.stdout == "")
 check("SR Linux の host-name と subinterface の ipv4 address も読む（SNMP 無しなら snmp は False）",
       lt.parse_srl("set / system name host-name R1\nset / interface ethernet-1/1 subinterface 0 ipv4 address 10.0.0.1/30\n")
       == {"asn": None, "hostname": "R1", "interfaces": {"ethernet-1/1": {"address": "10.0.0.1"}}, "snmp": False,
           "subinterfaces": {"ethernet-1/1.0": {"interface": "ethernet-1/1", "address": "10.0.0.1", "prefix_length": 30, "network_instance": None}},
           "isis": {"instance": None, "interfaces": {}}, "bgp": {"router_id": None, "groups": {}, "neighbors": {}}, "evpn": {}, "vxlan": {}, "es": {}})
-check("gnmi targets は監視対象（enabled）の管理 IP:57400（Telegraf の inputs.gnmi の addresses）", lt.gnmi_targets(devices).count(":57400") == 6
+check("gnmi targets は監視対象（enabled）の管理 IP:57400（gnmic の購読先。app/gnmic/gnmic.sh の GNMI_TARGETS）", lt.gnmi_targets(devices).count(":57400") == 6
       and lt.gnmi_targets([{"enabled": True, "mgmt_ip": "203.0.113.9"}, {"enabled": False, "mgmt_ip": "203.0.113.8"}]) == '"203.0.113.9:57400"')
 # 上の層（IP 層 / EVPN・BGP 層）。物理層の頂点 <機器>#<IF> を interface_id / ip_interface_id で指す
 lv = {v["id"]: v for v in layers["vertices"]}
@@ -169,7 +171,7 @@ check("ES は機器ごとに ethernet_segment の頂点（ESI・mode・lag の I
 check("PyYAML が無くても同じ結果（自前の読み取り）", d2 == devices and l2 == links and y2 == layers)
 check("自前の YAML 読み取りはコメント・引用符・真偽値・数値・flow list を読む",
       lt.load_yaml('a: "x # y"  # c\nb: [p, "q"]\nc:\n  - d: 1\n    e: true\n  - f\n') == {"a": "x # y", "b": ["p", "q"], "c": [{"d": 1, "e": True}, "f"]})
-check("CLI は --device-map / --snmp-agents / --gnmi-targets / --layers を受ける", '"--device-map", "--snmp-agents", "--gnmi-targets", "--layers"' in read("app", "containerlab", "lab_topology.py"))
+check("CLI は --device-map / --gnmi-targets / --layers を受ける（--snmp-agents は cycle 013 でやめた）", lt.FLAGS == {"--device-map", "--gnmi-targets", "--layers"})
 check("CLI は {devices, links, layers} の JSON を出す", "json.dump" in read("app", "containerlab", "lab_topology.py") and '"devices": devices, "links": links, "layers": lyr' in read("app", "containerlab", "lab_topology.py"))
 
 # ---- ops/up.sh 7-3b と ops/sync-graph.sh は lab から作って base64 で渡す

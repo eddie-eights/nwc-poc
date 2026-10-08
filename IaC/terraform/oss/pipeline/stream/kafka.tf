@@ -9,7 +9,7 @@
 # 1 つのサービスで 3 タスクにすると、番号と置き場をタスクごとに固定できない。台 N はサブネットの N 番目（a / b / c。AZ ごとに 1 台）。
 # 名前は Cloud Map の kafka-N.<接頭辞>-stream.internal（名前空間もこのファイル。cycle 010 で Kafbat UI が Web の EC2 に移り、マネージド版から名前空間が無くなった）。
 # 認証は無い（クライアントは PLAINTEXT の 9092、controller は 9093）。
-# 届くのは SG で絞った相手だけ（IaC/terraform/aws-managed/base/core の oss.tf の通信の表: Telegraf の 2 つ・syslog-ng・GoFlow2・Spark・Web の EC2（Kafbat UI）→ 9092、
+# 届くのは SG で絞った相手だけ（IaC/terraform/aws-managed/base/core の oss.tf の通信の表: Telegraf・gnmic・syslog-ng・GoFlow2・Spark・Web の EC2（Kafbat UI）→ 9092、
 # Kafka どうし 9092〜9093、Kafka → EFS 2049）。
 # イメージは apache/kafka を ECR の <接頭辞>-kafka に写したもの（閉域で Docker Hub に届かない。ops/oss/up.sh が写す）。
 # CLUSTER_ID は 3 台で同じ値で、ops/oss/up.sh が 1 回だけ作って SSM の /<接頭辞>/kafka/cluster-id（String か SecureString）に置く。
@@ -115,7 +115,7 @@ locals {
   # IAM ロールと Cloud Map の名前空間の description（名前空間の description は変えると作り直しになるので、cycle 010 より前のまま）
   kafka_descriptions = {
     namespace     = "Kafka and Kafbat UI of ${local.name_prefix} (IaC/terraform/oss/pipeline/stream)"
-    telegraf_task = "Telegraf task - write SNMP / gNMI / trap to Kafka (PLAINTEXT, no IAM), ECS Exec"
+    telegraf_task = "Telegraf dial-out task - write SNMP traps to Kafka (PLAINTEXT, no IAM), ECS Exec"
   }
 }
 

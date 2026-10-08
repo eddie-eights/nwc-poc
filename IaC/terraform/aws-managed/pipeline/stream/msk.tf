@@ -46,7 +46,7 @@ locals {
       Resource = data.aws_kms_alias.msk_scram.target_key_arn
     },
   ]
-  # Telegraf の 2 つのタスクに足す環境変数。MSK は telegraf.sh の既定（KAFKA_AUTH=iam）のままなので何も足さない
+  # Telegraf のタスクに足す環境変数。MSK は telegraf.sh の既定（KAFKA_AUTH=iam）のままなので何も足さない
   kafka_client_environment = []
   # Telegraf のタスクロールの Kafka の権限（ECS Exec の分は telegraf.tf）
   telegraf_kafka_statements = [
@@ -104,7 +104,7 @@ locals {
   ]
   # IAM ロールの description（Cloud Map の名前空間は cycle 010 から OSS 版の kafka.tf だけ）
   kafka_descriptions = {
-    telegraf_task = "Telegraf task - write SNMP / gNMI / trap to MSK (IAM auth), ECS Exec"
+    telegraf_task = "Telegraf dial-out task - write SNMP traps to MSK (IAM auth), ECS Exec"
   }
 }
 

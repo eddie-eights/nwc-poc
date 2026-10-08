@@ -1,8 +1,8 @@
 # nwc-poc - optional lab root module. One EC2 (Amazon Linux 2023 x86_64) runs Docker + containerlab with the splab topology
 # (Spine-Leaf: 6 Nokia SR Linux switches with IS-IS + iBGP EVPN-VXLAN, one TRex with a port on each leaf, all fictional addresses. app/containerlab/gen_lab.py). Reached with SSM Session Manager.
 # Images come from ECR (IaC/terraform/aws-managed/base/ecr), the containerlab rpm and configs from the S3 bucket of IaC/terraform/aws-managed/base/core. Stop the instance when not in use.
-# With forward_to_telegraf (telegraf.tf), the VPC routes the lab mgmt network to this EC2 so Telegraf (an ECS task of IaC/terraform/aws-managed/pipeline/stream)
-# can poll the switches over SNMP and gNMI, and lab.sh forward sends their traps and syslog to the Telegraf NLB.
+# With forward_to_telegraf (telegraf.tf), the VPC routes the lab mgmt network to this EC2 so gnmic (an ECS task of IaC/terraform/aws-managed/pipeline/stream)
+# can subscribe to the switches over gNMI, and lab.sh forward sends their traps and syslog to the Telegraf NLB.
 
 # リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、
 # 1 つの AWS アカウントを何人かで使っても、自分の名前で自分のリソースを探せる
@@ -47,10 +47,10 @@ locals {
   bucket    = data.terraform_remote_state.main.outputs.kb_bucket_name
   # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
   perimeter_policy_arn = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
-  # 1 本（IaC/terraform/aws-managed/base/core の private）。Telegraf のタスクから lab の管理ネットワークへの経路を足す
+  # 1 本（IaC/terraform/aws-managed/base/core の private）。gnmic のタスクから lab の管理ネットワークへの経路を足す
   route_table_ids = data.terraform_remote_state.main.outputs.route_table_ids
 
   # containerlab の管理ネットワーク（app/containerlab/splab.clab.yml.in の mgmt、app/containerlab/lab.sh の MGMT、IaC/terraform/aws-managed/base/core の security_groups.tf の local.lab_mgmt_cidr と同じ）。
-  # EC2 の中の docker network で、forward_to_telegraf のときだけ VPC のルートで lab の EC2 に向ける（Telegraf のタスクから機器の SNMP と gNMI を引くため）
+  # EC2 の中の docker network で、forward_to_telegraf のときだけ VPC のルートで lab の EC2 に向ける（gnmic のタスクから機器の gNMI を引くため）
   mgmt_cidr = "203.0.113.0/24"
 }
