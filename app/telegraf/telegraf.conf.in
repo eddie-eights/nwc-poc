@@ -237,19 +237,21 @@
 # >>> role dialout（telegraf.sh render が TELEGRAF_ROLE=dialin のとき消す）
 # ---- 本番の Cisco の MDT（model-driven telemetry）の dial-out を受ける（docs/collection.md の方針）。機器 → NLB の 57000/tcp → ここ。
 # 機器側は telemetry の destination をこの NLB の 57000 に、protocol を grpc（TLS なし）にする想定（本番の機種と版が分かってから確かめる）。
+# 受け口の 4 つ（MDT・trap・syslog・health）のアドレスとポートは telegraf.sh render が TELEGRAF_BIND（既定は空 = 全部のインターフェース）と
+# MDT_PORT / TRAP_PORT / LOG_PORT / HEALTH_PORT（既定 57000 / 1162 / 5140 / 8080）で埋める。ECS は何も渡さないので既定のまま
 # source タグは機器が名乗る node_id、measurement は sensor path（エンコーディングのパス）。共通の形への変換はまだ無いので、生のまま mdt トピックへ。
 # lab の SR Linux は MDT を送れないので、lab では何も届かない（受け口が開いていることだけ確かめる。ss -ltn に 57000）。
 # collector タグで mdt トピックへ振り分ける（measurement の名前は機器と版で変わるので namepass では書けない）
 [[inputs.cisco_telemetry_mdt]]
   transport = "grpc"
-  service_address = ":57000"
+  service_address = "__BIND__:__MDT_PORT__"
   [inputs.cisco_telemetry_mdt.tags]
     collector = "mdt"
 
 # ---- trap 受信。コンテナは非 root なので 162 ではなく 1162 で待つ（NLB が 162 を 1162 に向ける。telegraf.sh の TRAP_PORT）。
 # source タグは機器の管理 IP（lab の EC2 も NLB も送り元を変えない）
 [[inputs.snmp_trap]]
-  service_address = "udp://:1162"
+  service_address = "udp://__BIND__:__TRAP_PORT__"
   version = "2c"
   timeout = "5s"
 
@@ -263,7 +265,7 @@
 # best_effort は形の崩れた行（構造化データ無しなど）も捨てずに載せるため
 [[inputs.syslog]]
   # inputs.syslog の受け口は server（service_address は 1.40 では未知のキーで起動を拒む。2026-09-27 実測。inputs.snmp_trap は service_address のまま）
-  server = "udp://:5140"
+  server = "udp://__BIND__:__LOG_PORT__"
   syslog_standard = "__SYSLOG_STANDARD__"
   name_override = "device_log"
   best_effort = true
@@ -372,5 +374,5 @@
 # 条件を書かないので、Telegraf が動いていれば 200 を返す。metric は system だけ通す（全部を流し込まない）。
 # ポーリングを止めている（SNMP_POLL=0）と system は来ないが、何も届いていない間は default_status（200）を返すので、ヘルスチェックは通る
 [[outputs.health]]
-  service_address = "http://:8080"
+  service_address = "http://__BIND__:__HEALTH_PORT__"
   namepass = ["system"]

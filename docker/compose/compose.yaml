@@ -57,7 +57,9 @@ x-spark-env: &spark-env
 services:
   telegraf:
     # host のネットワークで受ける（SR Linux は trap と syslog を管理ネットの GW 203.0.113.1 = WSL へ送る）。trap の 162/udp → 1162/udp は ./lab.sh up の forward が iptables で向ける。
-    # 待つポート: syslog 5140/udp、trap 1162/udp、MDT 57000/tcp、ヘルスチェック 8080/tcp（host の他のプロセスとぶつかると起きない）
+    # 待つポート: syslog 5140/udp、trap 1162/udp、MDT 57000/tcp（.env の MDT_PORT）、ヘルスチェック 8080/tcp（.env の HEALTH_PORT）。host の他のプロセスとぶつかると起きない。
+    # trap と syslog のポートは lab（app/containerlab/lab.sh の TRAP_PORT / LOG_PORT と SR Linux の remote-port）と揃えるので変えない。
+    # 待つアドレスは ./up.sh が TELEGRAF_BIND に渡す（lab の bridge があれば 203.0.113.1 だけ、無ければ空 = 全部のインターフェース）
     build:
       context: ../../app/telegraf
       dockerfile: ../../docker/images/telegraf/Dockerfile
@@ -78,6 +80,9 @@ services:
       AWS_REGION: ap-northeast-1   # telegraf.sh が必須にしている（KAFKA_AUTH=none では使わない）
       SNMP_AGENTS: ${SNMP_AGENTS:-}
       GNMI_TARGETS: ${GNMI_TARGETS:-}
+      TELEGRAF_BIND: ${TELEGRAF_BIND:-}
+      MDT_PORT: ${MDT_PORT:-57000}
+      HEALTH_PORT: ${HEALTH_PORT:-8080}
       # lab の SR Linux だけの公開の既定値（ops/lab-common.sh の LAB_GNMI_USERNAME / LAB_GNMI_PASSWORD / LAB_SNMP_COMMUNITY）
       GNMI_USERNAME: admin
       GNMI_PASSWORD: NokiaSrl1!

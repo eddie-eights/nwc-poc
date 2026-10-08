@@ -108,11 +108,12 @@ check("telegraf の GNMI_USERNAME / GNMI_PASSWORD / SNMP_COMMUNITY は ops/lab-c
       (_tg["GNMI_USERNAME"], _tg["GNMI_PASSWORD"], _tg["SNMP_COMMUNITY"])
       == (sh_const(lab_common, "LAB_GNMI_USERNAME"), sh_const(lab_common, "LAB_GNMI_PASSWORD"), sh_const(lab_common, "LAB_SNMP_COMMUNITY")))
 
-def tg_render(env):
+def tg_render(env, extra=None):  # env は compose の ${X} を埋める値、extra は compose が渡さない環境（LOG_PORT など）
     with tempfile.TemporaryDirectory() as d:
         e = {"PATH": os.environ["PATH"], "TELEGRAF_TEMPLATE": os.path.join(ROOT, "app", "telegraf", "telegraf.conf.in"),
              "TELEGRAF_CONF": os.path.join(d, "telegraf.conf")}
         e.update({k: subst(str(v), env) for k, v in _tg.items()})
+        e.update(extra or {})
         r = subprocess.run(["bash", os.path.join(ROOT, "app", "telegraf", "telegraf.sh"), "render"], capture_output=True, text=True, env=e)
         conf = open(e["TELEGRAF_CONF"], encoding="utf-8").read() if r.returncode == 0 else ""
         return r, conf
@@ -123,6 +124,31 @@ check("up.sh の値を入れた telegraf の環境で telegraf.sh render が通�
       and "sasl_mechanism" not in _conf and "203.0.113." in _conf)
 check("docker compose を直に打つ（SNMP_AGENTS が空）と telegraf.sh は形の検査で止まる（compose.yaml の頭の注意のとおり。up.sh から上げる）",
       tg_render({})[0].returncode != 0)
+# 受け口の 4 つ（MDT・trap・syslog・health）。TELEGRAF_BIND が空なら今までどおり全部のインターフェース（ECS は何も渡さない）
+_listen = lambda b, mdt="57000", hp="8080": [f'service_address = "{b}:{mdt}"', f'service_address = "udp://{b}:1162"',
+                                             f'server = "udp://{b}:5140"', f'service_address = "http://{b}:{hp}"']
+check("TELEGRAF_BIND が空なら受け口の 4 つは今までどおり全部のインターフェース（:57000 / udp://:1162 / udp://:5140 / http://:8080）で、__ が残らない",
+      all(x in _conf for x in _listen("")) and "__" not in _conf and "/ bind:" not in _r.stdout)
+_r, _conf = tg_render({**UP_ENV, "TELEGRAF_BIND": "203.0.113.1"})
+check("TELEGRAF_BIND=203.0.113.1（docker/compose/up.sh が lab の管理ネットの GW を渡す）なら受け口の 4 つともそのアドレスだけで待ち、起動の 1 行に bind が出る",
+      _r.returncode == 0 and all(x in _conf for x in _listen("203.0.113.1")) and "__" not in _conf
+      and "/ health: 8080/tcp / bind: 203.0.113.1" in _r.stdout)
+_r, _conf = tg_render({**UP_ENV, "TELEGRAF_BIND": "127.0.0.1", "MDT_PORT": "57001", "HEALTH_PORT": "18081"})
+check("MDT_PORT / HEALTH_PORT（.env）を変えると MDT と health の受け口がそのポートになる（design.md の検証方法 1・2）",
+      _r.returncode == 0 and all(x in _conf for x in _listen("127.0.0.1", "57001", "18081")) and "__" not in _conf
+      and "mdt: 57001/tcp / health: 18081/tcp" in _r.stdout)
+_bad = [{"MDT_PORT": v} for v in ("0", "65536", "08080", "80a", "-1")] + [{"HEALTH_PORT": "99999"}, {"LOG_PORT": "x"}, {"TRAP_PORT": "0"}] \
+    + [{"TELEGRAF_BIND": v} for v in ("::1", "localhost", "203.0.113.1 ", "1.2.3", "1.2.3.4#x")]
+_badr = [tg_render(UP_ENV, b)[0] for b in _bad]
+check("telegraf.sh render: ポートが 1〜65535 の数字でない（0 / 65536 / 先頭の 0 / 数字以外）か、TELEGRAF_BIND が空でも IPv4 でもなければ、名前を出して止まる",
+      all(r.returncode != 0 and next(iter(b)) in r.stderr for r, b in zip(_badr, _bad)))
+_tgsh = read("app", "telegraf", "telegraf.sh")
+check("MDT_PORT / HEALTH_PORT の既定は compose・.env.example・telegraf.sh（ECS）で同じ（57000 / 8080）。TELEGRAF_BIND の既定は空",
+      (_tg["MDT_PORT"], _tg["HEALTH_PORT"], _tg["TELEGRAF_BIND"]) == ("${MDT_PORT:-57000}", "${HEALTH_PORT:-8080}", "${TELEGRAF_BIND:-}")
+      and (example["MDT_PORT"], example["HEALTH_PORT"]) == ("57000", "8080")
+      and (sh_const(_tgsh, "MDT_PORT"), sh_const(_tgsh, "HEALTH_PORT"), sh_const(_tgsh, "TELEGRAF_BIND")) == ("${MDT_PORT:-57000}", "${HEALTH_PORT:-8080}", "${TELEGRAF_BIND:-}"))
+check("lab の管理ネットの GW は docker/compose/up.sh・check.sh と app/containerlab/lab.sh で同じ（203.0.113.1）",
+      sh_const(read("docker", "compose", "up.sh"), "MGMT_GW") == sh_const(read("docker", "compose", "check.sh"), "MGMT_GW") == sh_const(lab_sh, "MGMT_GW") == "203.0.113.1")
 _topics = set(re.findall(r'^\s*topic = "(\w+)"', read("app", "telegraf", "telegraf.conf.in"), re.M))
 
 # ---- 5. Spark: 1 イメージから 2 サービス。引数は snmp_sinks.py の parse_args が受ける
@@ -194,10 +220,11 @@ check("splunk の HEC の token は spark-splunk と同じ .env の値", svc["sp
 
 # ---- 7. 設定（.env.example）と compose の ${VAR}
 _vars = set(re.findall(r"\$\{(\w+)", read("docker", "compose", "compose.yaml")))
-check(".env.example のキーは design.md の 7 つ",
-      set(example) == {"SPLUNK_PASSWORD", "SPLUNK_HEC_TOKEN", "OPENSEARCH_PASSWORD", "GF_SECURITY_ADMIN_PASSWORD", "SRLINUX_IMAGE", "MULTITOOL_IMAGE", "AWS_REGION"})
-check("compose.yaml の ${VAR} は全部 .env.example のキーか up.sh が渡す 3 つ（SNMP_AGENTS / GNMI_TARGETS / DEVICE_MAP）",
-      _vars and _vars <= set(example) | set(UP_ENV))
+check(".env.example のキーは design.md の 7 つと Telegraf の MDT_PORT / HEALTH_PORT（009。trap と syslog は lab と揃えるので出さない）",
+      set(example) == {"SPLUNK_PASSWORD", "SPLUNK_HEC_TOKEN", "OPENSEARCH_PASSWORD", "GF_SECURITY_ADMIN_PASSWORD", "SRLINUX_IMAGE", "MULTITOOL_IMAGE", "AWS_REGION",
+                       "MDT_PORT", "HEALTH_PORT"})
+check("compose.yaml の ${VAR} は全部 .env.example のキーか up.sh が渡す 4 つ（SNMP_AGENTS / GNMI_TARGETS / DEVICE_MAP / TELEGRAF_BIND）",
+      _vars and _vars <= set(example) | set(UP_ENV) | {"TELEGRAF_BIND"} and "TELEGRAF_BIND" in _vars)
 check("SPLUNK_HEC_TOKEN は uuid の形（Splunk のイメージが作る HEC の token。ops/up.sh と同じ形）",
       re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", example["SPLUNK_HEC_TOKEN"]) is not None)
 check("docker/compose/.env は git に入らず、.env.example は入る",
@@ -266,7 +293,7 @@ def fake(name, body=""):
     os.chmod(p, 0o755)
 fake("aws", "echo pw\n")
 # docker login は --password-stdin を読む（読まないと aws の側が SIGPIPE で落ち、pipefail で lab.sh が止まる）
-fake("docker", '[ "${1:-}" = login ] && cat >/dev/null\nif [ "${1:-}" = compose ]; then echo "ENV SNMP_AGENTS=${SNMP_AGENTS-unset} GNMI_TARGETS=${GNMI_TARGETS-unset} DEVICE_MAP=${DEVICE_MAP-unset}" >> "$FAKE_LOG"; fi\n')
+fake("docker", '[ "${1:-}" = login ] && cat >/dev/null\nif [ "${1:-}" = compose ]; then echo "ENV SNMP_AGENTS=${SNMP_AGENTS-unset} GNMI_TARGETS=${GNMI_TARGETS-unset} DEVICE_MAP=${DEVICE_MAP-unset} TELEGRAF_BIND=${TELEGRAF_BIND-unset}" >> "$FAKE_LOG"; fi\n')
 # -S（規則の一覧）には FAKE_IPT_RULES を返す
 fake("iptables", 'case " $* " in *" -S"*) printf "%s" "${FAKE_IPT_RULES:-}" ;; esac\n')
 # 本物の sudo は環境を消す（env_reset）。PATH と FAKE_LOG だけ残して、渡された引数を打つ
@@ -274,6 +301,12 @@ fake("sudo", 'exec env -i PATH="$PATH" FAKE_LOG="$FAKE_LOG" "$@"\n')
 # lab.sh up が打つ（containerlab は deploy を書くだけ、modprobe は何もしない）
 fake("containerlab")
 fake("modprobe")
+# up.sh と check.sh が lab の管理ネットの GW を探す ip -o -4 addr show。FAKE_GW=1 なら containerlab の bridge に 203.0.113.1 がある（203.0.113.10 は似た別のアドレス）
+fake("ip", r'''echo "1: lo    inet 127.0.0.1/8 scope host lo\       valid_lft forever preferred_lft forever"
+echo "5: eth0    inet 203.0.113.10/24 brd 203.0.113.255 scope global eth0\       valid_lft forever preferred_lft forever"
+[ "${FAKE_GW:-0}" = 1 ] && echo "7: br-1a2b3c4d5e6f    inet 203.0.113.1/24 brd 203.0.113.255 scope global br-1a2b3c4d5e6f\       valid_lft forever preferred_lft forever"
+exit 0
+''')
 fake("free", 'printf "               total        used        free\\nMem:  %s  1000  1000\\nSwap:  0  0  0\\n" "${FAKE_MEM:-32000}"\n')
 # check.sh が打つ curl。引数と、-K - で渡された標準入力を書き、URL ごとに決めた応答を返す。FAKE_DOWN=1 なら繋がらない（出力なしで 7）。
 # Splunk の応答は FAKE_SPLUNK があればそれ（認証の失敗は 401 でも curl -sS は本文を出して 0 で終わる）。Kafka の metrics / traps のメッセージ数は FAKE_METRICS / FAKE_TRAPS
@@ -293,12 +326,13 @@ case "$url" in
     else printf '%s\n' '{"preview":true,"result":{"count":"0"}}' '{"preview":false,"result":{"count":"7"}}'; fi ;;
   *3000/api/datasources/uid/amp/health*) echo '{"status":"OK","message":"Successfully queried the Prometheus API."}' ;;
   *3000/api/datasources*) echo '[{"uid":"amp","type":"prometheus"},{"uid":"aoss-logs","type":"grafana-opensearch-datasource"}]' ;;
+  http://*:*/) printf '%s' "${FAKE_TG_HEALTH:-200}" ;;
 esac
 ''')
 LOG = os.path.join(TMP, "calls.log")
 CLEAN = ("REGISTRY", "AWS_REGION", "PARAM_PREFIX", "TELEGRAF_IMAGE", "TELEGRAF_LOCAL", "SRLINUX_IMAGE", "MULTITOOL_IMAGE",
          "SNMP_AGENTS", "GNMI_TARGETS", "DEVICE_MAP", "FAKE_IPT_RULES", "FAKE_MEM", "FAKE_DOWN", "FAKE_OS_COUNT", "FAKE_SPLUNK",
-         "FAKE_METRICS", "FAKE_TRAPS")
+         "FAKE_METRICS", "FAKE_TRAPS", "FAKE_GW", "FAKE_TG_HEALTH", "TELEGRAF_BIND", "MDT_PORT", "HEALTH_PORT", "LOG_PORT", "TRAP_PORT")
 
 def run(cmd, **env):
     """偽のコマンドを先に置いた PATH で cmd を打ち、(結果, 呼ばれたコマンドの行) を返す。lab に効く環境変数は消してから env を足す"""
@@ -413,12 +447,16 @@ check("up.sh: .env が無ければ docker を打たずに止まり、cp .env.exa
       _r.returncode == 1 and _c == [] and "cp .env.example .env" in _r.stderr and "最初の up.sh の前" in _r.stderr and "down.sh -v" in _r.stderr)
 _lc = tree(read("docker", "compose", ".env.example"))
 _r, _c = run([os.path.join(_lc, "up.sh")])
-check("up.sh: app/containerlab/lab_topology.py の 3 つ（SNMP_AGENTS / GNMI_TARGETS / DEVICE_MAP）を環境で渡して docker compose up -d --build を打つ",
-      _r.returncode == 0 and _c == ["docker compose up -d --build",
-                                    f"ENV SNMP_AGENTS={UP_ENV['SNMP_AGENTS']} GNMI_TARGETS={UP_ENV['GNMI_TARGETS']} DEVICE_MAP={UP_ENV['DEVICE_MAP']}"]
-      and all(UP_ENV.values()))
+_upenv = f"ENV SNMP_AGENTS={UP_ENV['SNMP_AGENTS']} GNMI_TARGETS={UP_ENV['GNMI_TARGETS']} DEVICE_MAP={UP_ENV['DEVICE_MAP']}"
+check("up.sh: app/containerlab/lab_topology.py の 3 つ（SNMP_AGENTS / GNMI_TARGETS / DEVICE_MAP）を環境で渡して docker compose up -d --build を打つ。"
+      "lab の管理ネットの GW（203.0.113.1）が無ければ TELEGRAF_BIND を空にして（全部のインターフェース）WARNING で lab.sh up のあとの up.sh telegraf を案内する",
+      _r.returncode == 0 and _c == ["ip -o -4 addr show", "docker compose up -d --build", f"{_upenv} TELEGRAF_BIND="]
+      and all(UP_ENV.values()) and "WARNING: lab の管理ネット（203.0.113.1）がまだ無い" in _r.stderr and "up.sh telegraf" in _r.stderr)
+_r, _c = run([os.path.join(_lc, "up.sh")], FAKE_GW="1", TELEGRAF_BIND="10.9.9.9")
+check("up.sh: host に 203.0.113.1（lab.sh up が作る bridge）があれば TELEGRAF_BIND=203.0.113.1 で渡し、WARNING を出さない（シェルの TELEGRAF_BIND は使わない。203.0.113.10 と取り違えない）",
+      _r.returncode == 0 and _c == ["ip -o -4 addr show", "docker compose up -d --build", f"{_upenv} TELEGRAF_BIND=203.0.113.1"] and "WARNING" not in _r.stderr)
 _r, _c = run([os.path.join(_lc, "up.sh"), "telegraf"])
-check("up.sh: 引数は docker compose up に渡す（up.sh telegraf で Telegraf だけ作り直す）", _r.returncode == 0 and _c[0] == "docker compose up -d --build telegraf")
+check("up.sh: 引数は docker compose up に渡す（up.sh telegraf で Telegraf だけ作り直す）", _r.returncode == 0 and _c[1] == "docker compose up -d --build telegraf")
 _r, _c = run([os.path.join(_lc, "down.sh"), "-v"])
 check("down.sh -v: docker compose down -v", _r.returncode == 0 and _c[0] == "docker compose down -v")
 
@@ -427,12 +465,12 @@ PW = example["OPENSEARCH_PASSWORD"]
 _lc = tree(read("docker", "compose", ".env.example"))
 _r, _c = run([os.path.join(_lc, "check.sh")])
 _ok = [l for l in _r.stdout.splitlines() if l.startswith("ok  ")]
-check("check.sh: 応答が全部そろえば 8 項目とも ok で「すべて ok」、終了コード 0（メモリが 20 GB 以上なら注意を出さない）",
-      _r.returncode == 0 and len(_ok) == 8 and _r.stdout.splitlines()[-1] == "すべて ok" and "注意" not in _r.stdout)
+check("check.sh: 応答が全部そろえば 9 項目とも ok で「すべて ok」、終了コード 0（メモリが 20 GB 以上なら注意を出さない）",
+      _r.returncode == 0 and len(_ok) == 9 and _r.stdout.splitlines()[-1] == "すべて ok" and "注意" not in _r.stdout)
 _argv = [c for c in _c if c.startswith("curl ")]
 _stdin = [c for c in _c if c.startswith("STDIN ")]
 check("check.sh: パスワードは curl の引数に載せず（ps に出る）、-K - の標準入力で user = \"admin:…\" として渡す（OpenSearch・Splunk・Grafana 2 つの 4 回）。Kafka のトピックの一覧は 1 回だけ取る",
-      len(_argv) == 6 and len([c for c in _argv if "18080/api/clusters/nwc/topics" in c]) == 1 and not [c for c in _argv if PW in c] and _stdin == [f'STDIN user = "admin:{PW}"'] * 4)
+      len(_argv) == 7 and len([c for c in _argv if "18080/api/clusters/nwc/topics" in c]) == 1 and not [c for c in _argv if PW in c] and _stdin == [f'STDIN user = "admin:{PW}"'] * 4)
 check("check.sh: Splunk の検索は sourcetype=netops:*（Spark の SPLUNK_SOURCETYPE_PREFIX）、Prometheus は Grafana のダッシュボードとアラートが使う snmp_interface_ifOperStatus",
       sinks.SPLUNK_SOURCETYPE_PREFIX == "netops" and any("sourcetype=netops:*" in c for c in _argv)
       and "snmp_interface_ifOperStatus" in read("app", "grafana", "provisioning", "dashboards", "metrics.json")
@@ -442,6 +480,23 @@ check("check.sh: Grafana で見る uid（amp / aoss-logs）は app/grafana/provi
        for m in re.findall(r"uid: (\S+)", read("app", "grafana", "provisioning", "datasources-oss", f))} == {"amp", "aoss-logs"})
 check("check.sh: Kafka で見るトピック（metrics / gnmi / traps / logs。メッセージ数は metrics と traps）は Telegraf が書くトピック",
       {"metrics", "gnmi", "traps", "logs"} <= _topics)
+TH = "Telegraf: health が 200"
+check("check.sh: Telegraf の health は 203.0.113.1 が無ければ 127.0.0.1 の .env の HEALTH_PORT（8080）に、認証なしで打つ",
+      [c for c in _argv if c.endswith(":8080/")] == ["curl -sS --max-time 60 -o /dev/null -w %{http_code} http://127.0.0.1:8080/"] and f"ok  {TH}" in _ok)
+_r, _c = run([os.path.join(_lc, "check.sh")], FAKE_GW="1")
+check("check.sh: 203.0.113.1 があれば（up.sh が TELEGRAF_BIND にしたアドレス）そこの health に打つ",
+      _r.returncode == 0 and [c.split()[-1] for c in _c if c.startswith("curl ") and "-w" in c] == ["http://203.0.113.1:8080/"])
+_r, _c = run([os.path.join(_lc, "check.sh")], FAKE_TG_HEALTH="000")
+check("check.sh: Telegraf の health に繋がらない（restart の上限で止まった、bind に失敗した）なら NG で、ps -a と logs telegraf と up.sh telegraf を案内する",
+      _r.returncode == 1 and [l for l in _r.stdout.splitlines() if TH in l]
+      == [f"NG  {TH}: 繋がらない（docker compose ps -a telegraf が Exited なら logs telegraf で理由を見て up.sh telegraf）"])
+_r, _c = run([os.path.join(_lc, "check.sh")], FAKE_TG_HEALTH="503")
+check("check.sh: Telegraf の health が 200 以外なら HTTP の番号を出して NG", _r.returncode == 1 and any(l.startswith(f"NG  {TH}: HTTP 503（") for l in _r.stdout.splitlines()))
+_r, _c = run([os.path.join(tree(read("docker", "compose", ".env.example").replace("HEALTH_PORT=8080", "HEALTH_PORT=18081 # メモ")), "check.sh")])
+_r2, _c2 = run([os.path.join(tree(read("docker", "compose", ".env.example")), "check.sh")], HEALTH_PORT="18082")
+check("check.sh: health のポートは compose と同じくシェルの HEALTH_PORT、.env の HEALTH_PORT の順",
+      [c.split()[-1] for c in _c if c.startswith("curl ") and "-w" in c] == ["http://127.0.0.1:18081/"]
+      and [c.split()[-1] for c in _c2 if c.startswith("curl ") and "-w" in c] == ["http://127.0.0.1:18082/"])
 KM, KT = "Kafka: metrics のメッセージ数 > 0", "Kafka: traps のメッセージ数 > 0"
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_METRICS="0")
 check("check.sh: Kafka の metrics のメッセージ数が 0 なら NG（Telegraf から届いていない。トピックは Spark が作るのであっても証拠にならない）",
@@ -453,7 +508,7 @@ check("check.sh: Kafka の traps が 0 件なら NG にせず「注意」で fai
       == [f"注意 {KT}: 0 件（trap は障害を入れるまで来ない。docker/compose/lab.sh fail-main か trap-test のあとに打ち直す）"])
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_OS_COUNT="0", FAKE_MEM="16000")
 check("check.sh: 1 つが 0 件なら、そこだけ NG にして残りも見てから終了コード 1。メモリが 20 GB 未満なら注意を出す",
-      _r.returncode == 1 and "NG  OpenSearch: snmp-logs の件数 > 0: 0 件" in _r.stdout and len([l for l in _r.stdout.splitlines() if l.startswith("ok  ")]) == 7
+      _r.returncode == 1 and "NG  OpenSearch: snmp-logs の件数 > 0: 0 件" in _r.stdout and len([l for l in _r.stdout.splitlines() if l.startswith("ok  ")]) == 8
       and "注意: メモリが 16000 MiB" in _r.stdout and _r.stdout.splitlines()[-1].startswith("NG がある"))
 SPL = "Splunk: sourcetype=netops:* の直近 10 分の件数 > 0"
 def splunk_line(body):  # Splunk の応答を body にして check.sh を打ち、Splunk の行を返す
@@ -473,8 +528,8 @@ check("check.sh: Splunk の理由は同じものを 1 つにし（ERROR Unauthor
       and splunk_line('{"messages":[{"type":"WARN","text":"a"},{"type":"WARN","text":"a"}]}') == [f"NG  {SPL}: result が無い: WARN a"]
       and len(_ll) == 1 and _ll[0].startswith(f"NG  {SPL}: ERROR b c; FATAL xxx") and len(_ll[0]) - len(f"NG  {SPL}: ") == 200)
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_DOWN="1")
-check("check.sh: どこにも繋がらなくても set -e で途中で落ちず、8 項目とも「読めない応答: 空」の NG で終了コード 1",
-      _r.returncode == 1 and _r.stdout.count("読めない応答: 空") == 8 and _r.stdout.count("NG  ") == 8)
+check("check.sh: どこにも繋がらなくても set -e で途中で落ちず、9 項目とも NG（JSON の 8 つは「読めない応答: 空」、Telegraf は「繋がらない」）で終了コード 1",
+      _r.returncode == 1 and _r.stdout.count("読めない応答: 空") == 8 and _r.stdout.count("NG  ") == 9 and f"NG  {TH}: 繋がらない（" in _r.stdout)
 _lc = tree('OPENSEARCH_PASSWORD=a"b\\c\nSPLUNK_PASSWORD=x\nGF_SECURITY_ADMIN_PASSWORD=y\n')
 _r, _c = run([os.path.join(_lc, "check.sh")])
 check("check.sh: パスワードの \" と \\ は curl の設定の書き方で逃がす", 'STDIN user = "admin:a\\"b\\\\c"' in _c)

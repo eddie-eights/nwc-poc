@@ -74,6 +74,15 @@ judge "Grafana: データソース uid amp / aoss-logs がある" \
 judge "Grafana: amp（Prometheus）の health が OK" \
   "'ok' if json.loads(s).get('status') == 'OK' else json.loads(s).get('message', s[:200])" \
   <<<"$(get GF_SECURITY_ADMIN_PASSWORD 'http://127.0.0.1:3000/api/datasources/uid/amp/health' || true)"
+# Telegraf の health（outputs.health）。up.sh と同じく lab の管理ネットの GW（app/containerlab/lab.sh の MGMT_GW）が host にあればそこ、無ければ 127.0.0.1 に打つ
+# （GW が無いときの Telegraf は全部のインターフェースで待つ）。ポートは compose と同じくシェルの HEALTH_PORT、.env の HEALTH_PORT、8080 の順。
+# restart: on-failure:5 で止まったままのときもここで分かる
+MGMT_GW=203.0.113.1
+tb=127.0.0.1; ip -o -4 addr show 2>/dev/null | grep -q " $MGMT_GW/" && tb=$MGMT_GW
+hp=${HEALTH_PORT:-$(env_get HEALTH_PORT)}
+judge "Telegraf: health が 200" \
+  "'ok' if s.strip() == '200' else ('繋がらない' if s.strip() in ('', '000') else 'HTTP ' + s.strip()) + '（docker compose ps -a telegraf が Exited なら logs telegraf で理由を見て up.sh telegraf）'" \
+  <<<"$(get - -o /dev/null -w '%{http_code}' "http://$tb:${hp:-8080}/" || true)"
 
 if [ "$ng" = 0 ]; then echo "すべて ok"; else echo "NG がある（docker compose logs <サービス> で見る）"; fi
 exit "$ng"
