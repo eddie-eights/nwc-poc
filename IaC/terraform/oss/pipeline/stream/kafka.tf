@@ -17,7 +17,7 @@
 # （oss/ops/roll-nodes.sh。設計の未確定事項 4。OSS_ROLL=0 で一度に入れ替える）
 
 variable "kafka_image_tag" {
-  description = "Tag of the Kafka image in the <prefix>-kafka repository (apache/kafka copied to ECR by the OSS ops/up.sh). Same version as oss/compose."
+  description = "Tag of the Kafka image in the <prefix>-kafka repository (apache/kafka copied to ECR by the OSS ops/up.sh). Same version as oss/ops/oss-images.sh."
   type        = string
   default     = "4.3.1"
 }
@@ -60,7 +60,8 @@ locals {
   kafka_cluster_id_arn       = "${local.ssm_parameter_arn}${local.kafka_cluster_id_parameter}"
 
   # 公式イメージは KAFKA_* の環境変数を server.properties に変える。1 つでも書くと既定のファイルは使われないので、要るものは全部書く
-  # （oss/compose の compose.yaml と同じ。違うのはホスト名が Cloud Map の名前なのと、ヒープ・保持期間・トピックの自動作成）
+  # （005 の手元の compose で確かめた値。手元の docker/compose/compose.yaml とは、ホスト名が Cloud Map の名前なのと、ヒープ・保持期間と、
+  #  EXTERNAL リスナーの有無が違う。tests/test_local_compose.py が突き合わせる）
   kafka_environment = [
     { name = "KAFKA_PROCESS_ROLES", value = "broker,controller" },
     { name = "KAFKA_LISTENERS", value = "PLAINTEXT://:9092,CONTROLLER://:9093" },
@@ -68,7 +69,7 @@ locals {
     { name = "KAFKA_INTER_BROKER_LISTENER_NAME", value = "PLAINTEXT" },
     { name = "KAFKA_CONTROLLER_LISTENER_NAMES", value = "CONTROLLER" },
     # 固定の voter（controller.quorum.voters）。公式イメージは storage の format を --standalone / --initial-controllers なしで打つので、
-    # 設計の controller.quorum.bootstrap.servers（動的な voter）では組めない（oss/compose で確かめた）
+    # 設計の controller.quorum.bootstrap.servers（動的な voter）では組めない（005 の手元の compose で確かめた）
     { name = "KAFKA_CONTROLLER_QUORUM_VOTERS", value = join(",", [for n, h in local.kafka_hosts : "${n}@${h}:9093"]) },
     { name = "KAFKA_LOG_DIRS", value = "/var/lib/kafka/data" },
     # 複製は 3 台全部、書けるのは 2 台がそろっているあいだ（1 台止まっても acks=all で書ける）

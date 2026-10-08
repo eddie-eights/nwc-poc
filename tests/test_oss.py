@@ -2,7 +2,7 @@
   1. 環境変数が無いとき、app/agentcore/graph.py と app/temporal/awsio.py が出す openCypher とパラメータが、切り替えを入れる前と 1 文字も違わない
      （tests/golden/neptune_cypher.json と比べる。golden は切り替えを入れる前のコードで --write-golden を付けて作った）
   2. GRAPH_BACKEND=neo4j のとき、出す Cypher に neptune.algo・`~id`・id( が無く、同じグラフの中身から同じ結果を返す。
-     id で頂点を引くところには一意制約と同じラベルが付く（送った Cypher と、app/agentcore/・app/temporal/・app/graph/・oss/compose/ のソースの文字列の両方を見る）
+     id で頂点を引くところには一意制約と同じラベルが付く（送った Cypher と、app/agentcore/・app/temporal/・app/graph/ のソースの文字列の両方を見る）
   3. Spark（app/spark/snmp_sinks.py）・app/agentcore/evidence.py・app/grafana/start.sh の認証の切り替え（KAFKA_AUTH / OPENSEARCH_AUTH / PROMETHEUS_AUTH / SPLUNK_HEC_TOKEN）。
      環境変数が無いときは今のまま（MSK の IAM 認証・SigV4・マネージド版のデータソース）
   4. IaC/terraform/oss（設計の 3）: 変えないルートは IaC/terraform/aws-managed/ のファイルへのシンボリックリンク、変える 3 ルート（stream / analytics / graph）に
@@ -366,10 +366,10 @@ def source_seeks(paths):
     return bad
 
 
-_src = [os.path.join(ROOT, d, f) for d in (os.path.join("app", "agentcore"), os.path.join("app", "temporal"), os.path.join("app", "graph"), os.path.join("oss", "compose"))
+_src = [os.path.join(ROOT, d, f) for d in (os.path.join("app", "agentcore"), os.path.join("app", "temporal"), os.path.join("app", "graph"))
         for f in sorted(os.listdir(os.path.join(ROOT, d))) if f.endswith(".py")]
 _bad_src = source_seeks(_src)
-check("app/agentcore/・app/temporal/・app/graph/・oss/compose/ のソースに、ラベル（:label か f-string の {_lbl(…)}）の無い id 検索の Cypher が無い",
+check("app/agentcore/・app/temporal/・app/graph/ のソースに、ラベル（:label か f-string の {_lbl(…)}）の無い id 検索の Cypher が無い",
       not _bad_src and len(_src) >= 12 and os.path.join(ROOT, "app", "agentcore", "graph.py") in _src)
 if _bad_src:
     print("   ラベル無し:", _bad_src)
@@ -1261,10 +1261,9 @@ check("接続先のポートは使う相手から土台の SG で開いている
       and _from("victoriametrics", _port(SELECT_URL)) >= {"grafana", "runtime", "lambda"})
 _https = re.findall(r"https://(?:\$\{local\.(?:opensearch_host|opensearch_cm_host|service_namespace)\}|(?:opensearch|vminsert|vmselect|vmstorage)[\w-]*\.)", _an_code)
 check(f"OSS 版の analytics から OpenSearch・VictoriaMetrics へは https で行かない（REST は HTTP。https で書いたところ: {_https}）", not _https)
-_cvm = open(os.path.join(ROOT, "oss", "compose", "check_vm.py"), encoding="utf-8").read()
-_cvm_path = lambda k: urllib.parse.urlsplit(re.search(rf'^{k} = "([^"]+)"$', _cvm, re.M).group(1)).path
-check("vminsert の書き込みと vmselect の読み出しの道は、oss/compose の check_vm.py で確かめたもの（/insert/0/prometheus/api/v1/write・/select/0/prometheus/api/v1/）と同じ",
-      urllib.parse.urlsplit(WRITE_URL).path == _cvm_path("INSERT") and urllib.parse.urlsplit(SELECT_URL).path + "/api/v1/" == _cvm_path("SELECT"))
+# 道は 005 の手元の compose（check_vm.py。2026-10-08 に compose ごと消した）で、vminsert に書いて vmselect で読めたもの
+check("vminsert の書き込みと vmselect の読み出しの道は、005 の手元の compose で確かめたもの（/insert/0/prometheus/api/v1/write・/select/0/prometheus/api/v1/）と同じ",
+      urllib.parse.urlsplit(WRITE_URL).path == "/insert/0/prometheus/api/v1/write" and urllib.parse.urlsplit(SELECT_URL).path + "/api/v1/" == "/select/0/prometheus/api/v1/")
 
 # Spark・Grafana・evidence を OSS 版の接続先に向ける
 _index = _render("opensearch_index", _L)
@@ -1313,7 +1312,8 @@ check("IaC/terraform/aws-managed/workflow が読む output: 接続先（opensear
 
 # ---- 7. OSS 版の Spark と Neo4j（005 の 2）。analytics は EMR Serverless を spark.tf の ECS に、graph は Neptune Analytics を neo4j.tf の ECS に替える
 _dock = {n: open(os.path.join(ROOT, *n.split("/")), encoding="utf-8").read()
-         for n in ("docker/images/spark/Dockerfile", "oss/compose/spark/Dockerfile", "docker/images/neo4j/Dockerfile", "oss/compose/neo4j/Dockerfile")}
+         for n in ("docker/images/spark/Dockerfile", "docker/images/neo4j/Dockerfile")}
+_SD, _ND = _dock["docker/images/spark/Dockerfile"], _dock["docker/images/neo4j/Dockerfile"]
 
 
 def _arg(text, name):
@@ -1321,22 +1321,25 @@ def _arg(text, name):
     return m.group(1) if m else None
 
 
-_versions = {n: (_arg(_dock[n], "SPARK_VERSION"), _arg(_dock[n], "ICEBERG_VERSION")) for n in ("docker/images/spark/Dockerfile", "oss/compose/spark/Dockerfile")}
-_neo4j_from = re.findall(r"^FROM (\S+)", _dock["oss/compose/neo4j/Dockerfile"], re.M)
-check(f"Spark・Iceberg・Neo4j の版は compose で確かめた組み合わせと同じで（{_versions} {_neo4j_from}）、GDS の jar はイメージに焼き込む（起動時に取りに行かない）",
-      len(set(_versions.values())) == 1 and None not in _versions["docker/images/spark/Dockerfile"]
-      and _neo4j_from == [f"neo4j:{_arg(_dock['docker/images/neo4j/Dockerfile'], 'NEO4J_VERSION')}-community"]
-      and "cp /var/lib/neo4j/products/neo4j-graph-data-science-*.jar /var/lib/neo4j/plugins/" in _dock["docker/images/neo4j/Dockerfile"]
-      and "NEO4J_PLUGINS" not in _code(_dock["docker/images/neo4j/Dockerfile"]) and "--packages" not in _code(_dock["docker/images/spark/Dockerfile"]))
-_jars = {n: re.findall(r"^ {6}(\S+?):(\S+\.jar)(?:; do)? \\$", _dock[n], re.M) for n in ("docker/images/spark/Dockerfile", "oss/compose/spark/Dockerfile")}
-check("Spark の jar は sha256 を書いて取り、合わなければビルドを止める（005 のレビュー Nit 4）。compose の jar は docker/images/spark/Dockerfile と同じ sha256 で、app/spark/ はそれに S3A の 2 本を足す",
-      [len(v) for v in _jars.values()] == [9, 7]
-      and all(re.fullmatch(r"[0-9a-f]{64}", s) for v in _jars.values() for s, _ in v)
-      and _jars["docker/images/spark/Dockerfile"][:7] == _jars["oss/compose/spark/Dockerfile"]
-      and [p.split("/")[-3] for _, p in _jars["docker/images/spark/Dockerfile"][7:]] == ["hadoop-aws", "aws-java-sdk-bundle"]
-      and all('p=${e#*:}; curl -fsSLO "$MAVEN/$p" && echo "${e%%:*}  ${p##*/}" | sha256sum -c --quiet - || exit 1; \\' in _dock[n] for n in _jars))
+_versions = (_arg(_SD, "SPARK_VERSION"), _arg(_SD, "ICEBERG_VERSION"), _arg(_ND, "NEO4J_VERSION"))
+_neo4j_from = re.findall(r"^FROM (\S+)", _ND, re.M)
+check(f"Spark・Iceberg・Neo4j の版は Dockerfile の ARG の既定値に 1 か所で持ち（{_versions}）、Neo4j の FROM はその ARG を使い、"
+      "GDS の jar はイメージに焼き込む（起動時に取りに行かない）",
+      None not in _versions and _neo4j_from == ["neo4j:${NEO4J_VERSION}-community"]
+      and "cp /var/lib/neo4j/products/neo4j-graph-data-science-*.jar /var/lib/neo4j/plugins/" in _ND
+      and "NEO4J_PLUGINS" not in _code(_ND) and "--packages" not in _code(_SD))
+_jars = re.findall(r"^ {6}(\S+?):(\S+\.jar)(?:; do)? \\$", _SD, re.M)
+check("Spark の jar は sha256 を書いて取り、合わなければビルドを止める（005 のレビュー Nit 4）。005 の手元の compose で確かめた 7 本"
+      "（Kafka・Iceberg・S3 Tables のカタログ。Spark と Iceberg の jar は ARG の版）に、S3A の 2 本を足した 9 本",
+      len(_jars) == 9 and all(re.fullmatch(r"[0-9a-f]{64}", h) for h, _ in _jars)
+      and [p.split("/")[-3] for _, p in _jars] == ["spark-sql-kafka-0-10_2.12", "spark-token-provider-kafka-0-10_2.12", "kafka-clients", "commons-pool2",
+                                                  "iceberg-spark-runtime-3.5_2.12", "iceberg-aws-bundle", "s3-tables-catalog-for-iceberg-runtime",
+                                                  "hadoop-aws", "aws-java-sdk-bundle"]
+      and all(p.split("/")[-2] == "$SPARK_VERSION" for _, p in _jars[:2]) and all(p.split("/")[-2] == "$ICEBERG_VERSION" for _, p in _jars[4:6])
+      and len({h for h, _ in _jars}) == 9
+      and 'p=${e#*:}; curl -fsSLO "$MAVEN/$p" && echo "${e%%:*}  ${p##*/}" | sha256sum -c --quiet - || exit 1; \\' in _SD)
 check("Iceberg 1.12 のクラスは Java 17 向けなので、Spark のイメージは Java 17 のもの（apache/spark:<版>-java17-python3）",
-      all(re.search(r"^FROM apache/spark:\S+-java17-python3$", _dock[n], re.M) for n in _jars))
+      re.search(r"^FROM apache/spark:\S+-java17-python3$", _SD, re.M))
 _spark = _code(tf_text("IaC/terraform/oss", "pipeline/analytics")["spark.tf"])
 check("Spark はマネージド版の spark_jobs と同じ分け方で格納先の組ごとに 1 タスク（iceberg / splunk / http）。checkpoint は S3A で、同じ checkpoint を 2 つのタスクが同時に使わない",
       "spark_services = { for job, sinks in local.spark_jobs : job => sinks if length(sinks) > 0 }" in _spark

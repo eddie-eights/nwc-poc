@@ -30,7 +30,7 @@
 set -euo pipefail
 REGION=ap-northeast-1
 . "$(dirname "$0")/../../ops/lab-common.sh"   # lab と telegraf の版と、ecr_has / mirror_image / dir_tag / upload_lab
-. "$(dirname "$0")/oss-images.sh"             # OSS 版のイメージの名前と版（公開イメージの正は oss/compose/）と mirror_oss_images
+. "$(dirname "$0")/oss-images.sh"             # OSS 版のイメージの名前と版（版の正はここ）と mirror_oss_images
 . "$(dirname "$0")/../../ops/deploy-env.sh"
 resolve_deploy_env_file   # 相対の DEPLOY_ENV_FILE を cd の前の場所で解決する
 cd "$(dirname "$0")/../.."

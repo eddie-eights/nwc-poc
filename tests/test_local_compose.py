@@ -1,5 +1,5 @@
 """手元の docker compose で動く構成（docker/compose。docs/cycles/006-local-compose/design.md）が、元にした定義からずれていないかを見る。
-- 版: Kafka / Kafbat UI / OpenSearch は oss/compose/compose.yaml、Telegraf と lab のイメージは ops/lab-common.sh、Grafana / Splunk は ops/up-common.sh と同値
+- 版: Kafka / Kafbat UI / OpenSearch は oss/ops/oss-images.sh、Telegraf と lab のイメージは ops/lab-common.sh、Grafana / Splunk は ops/up-common.sh と同値
 - 契約: Telegraf は app/telegraf/telegraf.sh render が通る環境、Spark は app/spark/snmp_sinks.py の parse_args が通る引数、check.sh が見る名前は実物の定義にある
 - app/containerlab/lab.sh: REGISTRY が無ければ ECR に触らずに pull、TELEGRAF_LOCAL=1 なら trap の REDIRECT だけ（デバッグ用の EC2 と同じ）。偽の docker / aws / iptables / sudo で動かす
 - docker/compose/*.sh: up.sh が lab の値を環境で渡す、lab.sh が 3 つだけを sudo に渡す、check.sh が全部見てから終わりパスワードを引数に載せない
@@ -32,7 +32,7 @@ def env_file(text):  # .env の KEY=値（コメントと空行は飛ばす）
 
 compose = yaml.safe_load(read("docker", "compose", "compose.yaml"))
 svc = compose["services"]
-oss = yaml.safe_load(read("oss", "compose", "compose.yaml"))["services"]
+oss_images = read("oss", "ops", "oss-images.sh")
 lab_common, up_common = read("ops", "lab-common.sh"), read("ops", "up-common.sh")
 example = env_file(read("docker", "compose", ".env.example"))
 lab_sh = read("app", "containerlab", "lab.sh")
@@ -54,8 +54,8 @@ check("named volume は design.md の 10 個（kafka-1/2/3、opensearch、promet
       set(compose["volumes"]) == {"kafka-1", "kafka-2", "kafka-3", "opensearch", "prometheus", "splunk-etc", "splunk-var", "grafana",
                                   "spark-splunk-ckpt", "spark-http-ckpt"})
 check("ネットワークは nwc-local", compose["networks"]["default"]["name"] == "nwc-local")
-check("プロジェクト名は nwc-local（ディレクトリ名の compose にしない。volume が nwc-local_* になり、oss/compose の nwc-oss とも別）",
-      compose["name"] == "nwc-local" and yaml.safe_load(read("oss", "compose", "compose.yaml"))["name"] != "nwc-local")
+check("プロジェクト名は nwc-local（ディレクトリ名の compose にしない。volume が nwc-local_* になる）",
+      compose["name"] == "nwc-local")
 check("compose の ports は全部 127.0.0.1 に縛る（Kafka・Splunk・Grafana・OpenSearch を WSL の外へ出さない。host のネットワークにいる Telegraf の 4 つはこの外）",
       all(p.startswith("127.0.0.1:") for s in svc.values() for p in s.get("ports", [])))
 def built(n, name):  # compose の build が app/<name> を context に、docker/images/<name>/Dockerfile を dockerfile にしていて、その Dockerfile が実在する
@@ -66,11 +66,19 @@ check("telegraf は network_mode: host で、build の context は ../../app/tel
       svc["telegraf"]["network_mode"] == "host" and built("telegraf", "telegraf") and "ports" not in svc["telegraf"])
 
 # ---- 2. 版の正
+def oss_image(name):  # oss/ops/oss-images.sh の OSS_<name>_IMAGE:OSS_<name>_TAG
+    return f"{sh_const(oss_images, f'OSS_{name}_IMAGE')}:{sh_const(oss_images, f'OSS_{name}_TAG')}"
 for n in ("kafka-1", "kafka-2", "kafka-3"):
-    check(f"{n} の image は oss/compose の kafka-1 と同じ（{oss['kafka-1']['image']}）", svc[n]["image"] == oss["kafka-1"]["image"])
-check("kafka-ui は oss/compose の kafka-ui と image・環境・ポートが同じ",
-      all(svc["kafka-ui"][k] == oss["kafka-ui"][k] for k in ("image", "environment", "ports")))
-check("opensearch の image は oss/compose の opensearch-1 と同じ", svc["opensearch"]["image"] == oss["opensearch-1"]["image"])
+    check(f"{n} の image は oss/ops/oss-images.sh の Kafka と同じ（{oss_image('KAFKA')}）", svc[n]["image"] == oss_image("KAFKA"))
+check("kafka-ui の image は oss/ops/oss-images.sh の Kafbat UI と同じで、127.0.0.1:18080 に出す",
+      svc["kafka-ui"]["image"] == oss_image("KAFKA_UI") and svc["kafka-ui"]["ports"] == ["127.0.0.1:18080:8080"])
+check("kafka-ui に渡すのはクラスターの名前と 3 台の PLAINTEXT の宛先だけ（AUTH_TYPE は書かない。宛先は各台の advertised の PLAINTEXT）",
+      svc["kafka-ui"]["environment"] == {
+          "KAFKA_CLUSTERS_0_NAME": "nwc",
+          "KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS": ",".join(re.search(r"PLAINTEXT://([^,]+)", svc[n]["environment"]["KAFKA_ADVERTISED_LISTENERS"]).group(1)
+                                                         for n in ("kafka-1", "kafka-2", "kafka-3"))}
+      and svc["kafka-ui"]["environment"]["KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS"] == "kafka-1:9092,kafka-2:9092,kafka-3:9092")
+check("opensearch の image は oss/ops/oss-images.sh の OpenSearch と同じ", svc["opensearch"]["image"] == oss_image("OPENSEARCH"))
 check("grafana の GRAFANA_VERSION と splunk の SPLUNK_VERSION は ops/up-common.sh の値",
       svc["grafana"]["build"]["args"]["GRAFANA_VERSION"] == sh_const(up_common, "GRAFANA_VERSION")
       and svc["splunk"]["build"]["args"]["SPLUNK_VERSION"] == sh_const(up_common, "SPLUNK_VERSION")
@@ -82,18 +90,32 @@ check(".env.example の SRLINUX_IMAGE / MULTITOOL_IMAGE は ops/lab-common.sh �
       and example["MULTITOOL_IMAGE"] == f"{sh_const(lab_common, 'MULTITOOL_UPSTREAM')}:{sh_const(lab_common, 'MULTITOOL_TAG')}")
 check("splunk は linux/amd64（上流が amd64 だけ）", svc["splunk"]["platform"] == "linux/amd64")
 
-# ---- 3. Kafka: oss/compose の x-kafka-env の写しに EXTERNAL リスナーを足しただけ
-_oss_env = oss["kafka-1"]["environment"]
-_ext = {"KAFKA_LISTENERS", "KAFKA_LISTENER_SECURITY_PROTOCOL_MAP", "KAFKA_ADVERTISED_LISTENERS"}
+# ---- 3. Kafka: OSS 版の ECS（IaC/terraform/oss/pipeline/stream/kafka.tf の kafka_environment）と同じ値に、EXTERNAL リスナーを足しただけ
+# 比べるのは kafka.tf で文字どおりの値のもの。違うと決めてあるのはホスト名（voter と advertised）・ヒープ・保持期間（手元は既定の 168 時間）
+_tf = read("IaC", "terraform", "oss", "pipeline", "stream", "kafka.tf")
+_tf_block = _tf[_tf.index("kafka_environment = ["):]
+_tf_block = _tf_block[:_tf_block.index("\n  ]")]
+_tf_env = {k: v for k, v in re.findall(r'\{\s*name\s*=\s*"(\w+)",\s*value\s*=\s*"([^"]*)"\s*\}', _tf_block) if "${" not in v}
+_ext = {"KAFKA_LISTENERS", "KAFKA_LISTENER_SECURITY_PROTOCOL_MAP"}
+_same = set(_tf_env) - _ext - {"KAFKA_LOG_RETENTION_HOURS"}
+check("kafka.tf の kafka_environment から比べる値を 13 個読めた（読めずに素通りしない）",
+      len(_same) == 13 and _ext <= set(_tf_env) and "KAFKA_HEAP_OPTS" not in _tf_env)
 for i, n in enumerate(("kafka-1", "kafka-2", "kafka-3")):
-    e, o, port = svc[n]["environment"], oss[n]["environment"], 9094 + i
-    check(f"{n}: EXTERNAL 以外の KAFKA_* と CLUSTER_ID は oss/compose と同じ値",
-          all(e.get(k) == v for k, v in o.items() if (k.startswith("KAFKA_") or k == "CLUSTER_ID") and k not in _ext))
-    check(f"{n}: リスナーは oss/compose のものに EXTERNAL://:{port}（advertised は localhost:{port}）を足し、127.0.0.1:{port} に出す",
-          e["KAFKA_LISTENERS"] == o["KAFKA_LISTENERS"] + f",EXTERNAL://:{port}"
-          and e["KAFKA_ADVERTISED_LISTENERS"] == o["KAFKA_ADVERTISED_LISTENERS"] + f",EXTERNAL://localhost:{port}"
-          and e["KAFKA_LISTENER_SECURITY_PROTOCOL_MAP"] == o["KAFKA_LISTENER_SECURITY_PROTOCOL_MAP"] + ",EXTERNAL:PLAINTEXT"
+    e, port = svc[n]["environment"], 9094 + i
+    check(f"{n}: EXTERNAL 以外の KAFKA_*（ホスト名・ヒープ・保持期間を除く）は kafka.tf と同じ値",
+          all(str(e.get(k)).lower() == v.lower() for k, v in _tf_env.items() if k in _same))
+    check(f"{n}: リスナーは kafka.tf のものに EXTERNAL://:{port}（advertised は {n}:9092 と localhost:{port}）を足し、127.0.0.1:{port} に出す",
+          e["KAFKA_LISTENERS"] == _tf_env["KAFKA_LISTENERS"] + f",EXTERNAL://:{port}"
+          and e["KAFKA_ADVERTISED_LISTENERS"] == f"PLAINTEXT://{n}:9092,EXTERNAL://localhost:{port}"
+          and e["KAFKA_LISTENER_SECURITY_PROTOCOL_MAP"] == _tf_env["KAFKA_LISTENER_SECURITY_PROTOCOL_MAP"] + ",EXTERNAL:PLAINTEXT"
           and svc[n]["ports"] == [f"127.0.0.1:{port}:{port}"])
+_k = [svc[n]["environment"] for n in ("kafka-1", "kafka-2", "kafka-3")]
+check("3 台の KAFKA_NODE_ID は 1〜3、voter はその番号と service 名の 9093（固定の voter）、CLUSTER_ID は 3 台で同じ KRaft の形（22 字）",
+      [x["KAFKA_NODE_ID"] for x in _k] == [1, 2, 3]
+      and all(x["KAFKA_CONTROLLER_QUORUM_VOTERS"] == ",".join(f"{y['KAFKA_NODE_ID']}@kafka-{y['KAFKA_NODE_ID']}:9093" for y in _k) for x in _k)
+      and len({x["CLUSTER_ID"] for x in _k}) == 1 and re.fullmatch(r"[A-Za-z0-9_-]{22}", _k[0]["CLUSTER_ID"]))
+check("ヒープは初期と上限が同じ（kafka.tf と同じ形。値は手元向けに小さい）",
+      all(re.fullmatch(r"-Xms(\d+)m -Xmx\1m", x["KAFKA_HEAP_OPTS"]) for x in _k))
 check("トピックは自動で作る（Telegraf が最初に書く）",
       all(svc[n]["environment"]["KAFKA_AUTO_CREATE_TOPICS_ENABLE"] == "true" for n in ("kafka-1", "kafka-2", "kafka-3")))
 
@@ -175,9 +197,11 @@ check("Spark の --metric-topics と --log-topics は Telegraf が書くトピ�
 
 # ---- 6. OpenSearch / Prometheus / Grafana / Splunk
 _os = svc["opensearch"]["environment"]
-check("opensearch は single-node、HTTP の TLS を切る（Spark と Grafana は http:// に Basic 認証）。mmap と heap は oss/compose と同じ",
+_os_tf = dict(re.findall(r'\{\s*name\s*=\s*"([\w.]+)",\s*value\s*=\s*"([^"]*)"\s*\}', read("IaC", "terraform", "oss", "pipeline", "analytics", "opensearch.tf")))
+check("opensearch は single-node、HTTP の TLS を切る（Spark と Grafana は http:// に Basic 認証）。mmap・TLS・Performance Analyzer は opensearch.tf と同じで、heap は初期と上限が同じ",
       _os["discovery.type"] == "single-node" and _os["plugins.security.ssl.http.enabled"] == "false"
-      and all(_os[k] == oss["opensearch-1"]["environment"][k] for k in ("node.store.allow_mmap", "DISABLE_PERFORMANCE_ANALYZER_AGENT_CLI", "OPENSEARCH_JAVA_OPTS")))
+      and all(_os[k] == _os_tf[k] for k in ("node.store.allow_mmap", "plugins.security.ssl.http.enabled", "DISABLE_PERFORMANCE_ANALYZER_AGENT_CLI"))
+      and re.fullmatch(r"-Xms(\d+)m -Xmx\1m", _os["OPENSEARCH_JAVA_OPTS"]))
 check("prometheus は remote write を受け、設定は prometheus.yml（scrape なし）",
       "--web.enable-remote-write-receiver" in svc["prometheus"]["command"]
       and "./prometheus.yml:/etc/prometheus/prometheus.yml:ro" in svc["prometheus"]["volumes"]

@@ -52,7 +52,7 @@
 | `IaC/cloudformation/` | デバッグ用の EC2 のスタック（`lab-debug.yaml`。下の段落） |
 | `tools/` | Gateway（MCP）の tools Lambda |
 | `ops/` | `up.sh` / `down.sh` / `check.sh` / `lab-debug.sh` / `sync-graph.sh` など |
-| `oss/` | OSS 版の操作（`oss/ops/up.sh` / `down.sh`）と、手元で組み合わせを確かめる `oss/compose/`（[oss-variant.md](../oss-variant.md)） |
+| `oss/` | OSS 版の操作（`oss/ops/up.sh` / `down.sh`）とイメージの版（`oss/ops/oss-images.sh`）（[oss-variant.md](../oss-variant.md)） |
 | `tests/` | 模擬テスト（AWS を呼ばない） |
 
 ```

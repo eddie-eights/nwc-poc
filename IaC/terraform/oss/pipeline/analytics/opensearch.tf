@@ -16,14 +16,14 @@
 # 3 台とも cluster manager になれる（データの台は既定の役割）ので、1 台ずつなら残りの 2 台で投票の過半数が残る。
 # REST（9200）は TLS なしの HTTP で、セキュリティプラグインの Basic 認証（admin）は効く。Spark（app/spark/snmp_sinks.py）と Grafana の
 # データソース（app/grafana/provisioning/datasources-oss）に自己署名の証明書を飛ばす設定が無いので、デモの証明書の HTTPS にはしない。
-# 台どうし（9300）はデモの証明書の TLS（どの台も同じ証明書。oss/compose で 3 台が green になるのを確かめた）。
+# 台どうし（9300）はデモの証明書の TLS（どの台も同じ証明書。005 の手元の compose で 3 台が green になるのを確かめた）。
 # 届くのは SG で絞った相手だけ（IaC/terraform/aws-managed/base/core の oss.tf の通信の表: Spark・Grafana・AgentCore・Lambda → 9200、OpenSearch どうし 9300）。
 # admin のパスワードは OSS 版の ops/up.sh が作る SSM の SecureString（/<接頭辞>/opensearch-password。app/agentcore/evidence.py が読むのと同じ名前）を
 # secrets で受ける。初めて起きるときにセキュリティプラグインがこの値で admin を作る（強いパスワードでないと起きない）。
 # イメージは opensearchproject/opensearch を ECR の <接頭辞>-opensearch に写したもの（閉域で Docker Hub に届かない。OSS 版の ops/up.sh が写す）
 
 variable "opensearch_image_tag" {
-  description = "Tag of the OpenSearch image in the <prefix>-opensearch repository (opensearchproject/opensearch copied to ECR by the OSS ops/up.sh). Same version as oss/compose."
+  description = "Tag of the OpenSearch image in the <prefix>-opensearch repository (opensearchproject/opensearch copied to ECR by the OSS ops/up.sh). Same version as oss/ops/oss-images.sh."
   type        = string
   default     = "3.9.0"
 }
@@ -102,7 +102,7 @@ locals {
   opensearch_password_parameter = "/${local.name_prefix}/opensearch-password"
   opensearch_password_arn       = "${local.ssm_parameter_arn}${local.opensearch_password_parameter}"
 
-  # 公式イメージは小文字とドットの環境変数を opensearch -E に変える（oss/compose の compose.yaml と同じ。違うのはホスト名が Cloud Map の名前なのと、
+  # 公式イメージは小文字とドットの環境変数を opensearch -E に変える（005 の手元の compose で確かめた値。違うのはホスト名が Cloud Map の名前なのと、
   # REST が HTTP なのと、ヒープ）
   opensearch_environment = [
     { name = "cluster.name", value = local.name_prefix },
