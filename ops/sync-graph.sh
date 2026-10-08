@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # lab の定義（app/containerlab/splab.clab.yml.in + app/containerlab/srlinux/*.cli）から作ったトポロジをグラフ DB（マネージド版は Neptune、OSS 版は Neo4j）に入れる。
-# ops/up.sh（OSS 版は oss/ops/up.sh）の 7-3b と同じ処理を単独で打つ版。
+# ops/up.sh（OSS 版は ops/oss/up.sh）の 7-3b と同じ処理を単独で打つ版。
 # 設計の「静的なトポロジ構成の同期（初期 & 定期ロード）」の、定期ロードのほう。lab を変えたら打つ（cron で回してもよい）。
 #
 # 使い方（展開したフォルダの直下で。ops/up.sh と同じ deploy.env と AWS の認証情報）:

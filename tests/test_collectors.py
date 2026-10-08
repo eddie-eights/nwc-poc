@@ -2,7 +2,7 @@
 - syslog-ng: app/syslog-ng/syslog-ng.conf.in の format-json のキーと型が、Telegraf 1.40.1 の inputs.syslog（+ processors.rename）が logs に書いていた device_log の実物の 1 行と同じ（検証 2）
 - syslog-ng.sh render: 環境変数で設定を埋める（scram / none、RFC5424 / RFC3164、ポートとアドレス）。おかしな値は設定を書かずに止まり、SCRAM の値を設定にも出力にも出さない
 - Dockerfile: syslog-ng.sh の置き場所・nobody・ヘルスチェックの制御ソケットが噛み合っている
-- tools/netflow_send.py: NetFlow v5 のヘッダーとフロー 1 本（72 バイト）
+- ops/netflow_send.py: NetFlow v5 のヘッダーとフロー 1 本（72 バイト）
 実行は uv run python tests/test_collectors.py（sh と sed と grep を使う。AWS も docker も要らない）。"""
 import importlib.util, json, os, re, secrets, shutil, socket, struct, subprocess, sys, tempfile
 
@@ -205,8 +205,8 @@ r = subprocess.run(["sh", "-n", SNG_SH], capture_output=True, text=True)
 check("syslog-ng.sh は sh として読める", r.returncode == 0)
 
 
-# ---- 4. tools/netflow_send.py（GoFlow2 を試す偽の NetFlow v5）
-spec = importlib.util.spec_from_file_location("netflow_send", os.path.join(ROOT, "tools", "netflow_send.py"))
+# ---- 4. ops/netflow_send.py（GoFlow2 を試す偽の NetFlow v5）
+spec = importlib.util.spec_from_file_location("netflow_send", os.path.join(ROOT, "ops", "netflow_send.py"))
 nf = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(nf)
 pkt = nf.packet(1791462896.5, uptime_ms=60_000, seq=7)

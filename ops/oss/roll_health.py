@@ -1,4 +1,4 @@
-"""oss/ops/roll-nodes.sh が手元の PC で打つ。Kafka と OpenSearch の ECS のサービスを 1 台ずつ入れ替える手順（OSS 版。cycle 005 の
+"""ops/oss/roll-nodes.sh が手元の PC で打つ。Kafka と OpenSearch の ECS のサービスを 1 台ずつ入れ替える手順（OSS 版。cycle 005 の
 設計の未確定事項 2・4）のうち、出力を読むところだけをここに置く（シェルで読むと検査できないので）。
 
   roll_health.py plan <kafka|opensearch>              標準入力の terraform show -json <planfile> から、入れ替える台（aws_ecs_service.<種類>["台"]

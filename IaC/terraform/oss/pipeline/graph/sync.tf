@@ -11,7 +11,7 @@
 locals {
   repo_root    = "${path.module}/../../../../.."
   alert_stream = "${local.name_prefix}-alert-events" # IaC/terraform/oss/pipeline/analytics の history.tf（マネージド版へのリンク）の Firehose と同じ名前
-  # Neo4j のドライバのレイヤーの中身。OSS 版の ops/up.sh が apply の前に作る（arm64 の Lambda 用。ドライバは純 Python なので、どの PC でも同じものができる）:
+  # Neo4j のドライバのレイヤーの中身。ops/oss/up.sh が apply の前に作る（arm64 の Lambda 用。ドライバは純 Python なので、どの PC でも同じものができる）:
   #   pip install --target IaC/terraform/oss/pipeline/graph/.build/neo4j-layer/python --only-binary=:all: --platform manylinux2014_aarch64 \
   #     --python-version 3.13 -r app/graph/requirements-oss.txt
   neo4j_layer_dir = "${path.module}/.build/neo4j-layer"
@@ -186,7 +186,7 @@ resource "aws_sns_topic_subscription" "status" {
   lifecycle {
     precondition {
       condition     = local.alerts_topic_arn != ""
-      error_message = "IaC/terraform/aws-managed/base/core の state から alerts_topic_arn が読めない（2026-10-02 より前の土台）。IaC/terraform/oss/base/core を apply し直す（OSS 版の ops/up.sh）。"
+      error_message = "IaC/terraform/aws-managed/base/core の state から alerts_topic_arn が読めない（2026-10-02 より前の土台）。IaC/terraform/oss/base/core を apply し直す（ops/oss/up.sh）。"
     }
   }
 }

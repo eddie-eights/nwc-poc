@@ -90,7 +90,7 @@ health のポートは `.env` の `HEALTH_PORT` で変えられる（変えた�
 | 8080/tcp | Telegraf の health（`.env` の `HEALTH_PORT`） |
 | 1162/udp | SNMP trap（機器は 162 に送り、`lab.sh forward` が 1162 へ向ける） |
 | 5140/udp・5140/tcp | syslog（syslog-ng。tcp は ECS の NLB のヘルスチェックと同じ口） |
-| 2055/udp | NetFlow（GoFlow2。lab からは来ない。`uv run python tools/netflow_send.py 127.0.0.1 2055` で 1 つ送る） |
+| 2055/udp | NetFlow（GoFlow2。lab からは来ない。`uv run python ops/netflow_send.py 127.0.0.1 2055` で 1 つ送る） |
 | 6343/udp | sFlow（GoFlow2） |
 | 8081/tcp | GoFlow2 の `/metrics`（8080 は Telegraf の health） |
 

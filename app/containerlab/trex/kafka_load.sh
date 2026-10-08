@@ -7,7 +7,7 @@
 # 環境（/etc/*-lab.env か呼び出し側）:
 #   AWS_REGION     必須
 #   BOOTSTRAP      MSK の bootstrap（SASL/IAM の口）。無ければ SSM の $PARAM_PREFIX/msk-bootstrap を読む
-#   KAFKA_IMAGE    既定 apache/kafka:4.3.1（oss/ops/oss-images.sh の OSS_KAFKA_TAG と同じ版）
+#   KAFKA_IMAGE    既定 apache/kafka:4.3.1（ops/oss/oss-images.sh の OSS_KAFKA_TAG と同じ版）
 #   IAM_JAR        aws-msk-iam-auth の all の jar のこのホストでの置き場。既定 /opt/nwc-trex/aws-msk-iam-auth-2.3.9-all.jar
 # 動かして確かめていない（このサイクルでは書くだけ。負荷試験のときに、README の「前提」の 3 つを揃えてから回す）。
 set -euo pipefail

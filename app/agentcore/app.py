@@ -65,7 +65,7 @@ TOOL_LIMIT_NOTE = (f"ツールを呼べる回数の上限（{MAX_TOOL_ROUNDS} �
                    "分かったことを答えてください。調べきれなかったことは、調べきれなかったと書いてください。")
 TOOL_LIMIT_PREFIX = f"ツールの呼び出しが上限（{MAX_TOOL_ROUNDS} 回）に達したので、ここまでに分かった範囲で答えます。"
 TOOL_LIMIT_EMPTY = "答えをまとめる前に止まりました。質問を分けて（たとえば回線と修復案を別々に）聞き直してください。"
-# ツールを持つモジュール。**ここに足せば TOOL_SPECS も run_tool の振り分けも付いてくる**（tools/handler.py にも同じ並びがある）
+# ツールを持つモジュール。**ここに足せば TOOL_SPECS も run_tool の振り分けも付いてくる**（app/gateway/handler.py にも同じ並びがある）
 MODULES = (topology, evidence, proposals)
 # コンテナ内の関数。Gateway（MCP。IaC/terraform/aws-managed/workflow）があれば mcp_client がそちらの一覧を返す
 TOOL_SPECS = [spec for m in MODULES for spec in m.TOOL_SPECS]

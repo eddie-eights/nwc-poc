@@ -110,8 +110,8 @@ locals {
       { from = "lab_mgmt", to = "telegraf_dialout_nlb", protocol = "udp", port = 6343, why = "sFlow from the switches - DNAT on the lab EC2" },
       { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 162, only = "egress", why = "SNMP traps forwarded for the switches" },
       { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 5140, only = "egress", why = "syslog forwarded for the switches" },
-      # NetFlow / sFlow は両側（lab の SR Linux は NetFlow を送れないので、試すときは lab の EC2 のホストが自分の IP から tools/netflow_send.py で送る）
-      { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 2055, why = "NetFlow - forwarded for the switches, or tools/netflow_send.py on the lab EC2" },
+      # NetFlow / sFlow は両側（lab の SR Linux は NetFlow を送れないので、試すときは lab の EC2 のホストが自分の IP から ops/netflow_send.py で送る）
+      { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 2055, why = "NetFlow - forwarded for the switches, or ops/netflow_send.py on the lab EC2" },
       { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 6343, why = "sFlow - forwarded for the switches, or a test sender on the lab EC2" },
 
       # ポーリング: 取りにいくタスク（telegraf_dialin）→ 機器の SNMP と gNMI（VPC のルートで lab の EC2 へ。IaC/terraform/aws-managed/pipeline/lab の telegraf.tf）。

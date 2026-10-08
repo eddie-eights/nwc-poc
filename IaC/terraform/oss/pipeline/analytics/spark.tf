@@ -3,9 +3,9 @@
 # （iceberg = 全トピックを S3 Tables、splunk = 全トピックを Splunk の HEC、http = opensearch と prometheus。
 # var.sinks に無い格納先は外し、空になったジョブは作らない）。
 # どのタスクも spark-submit --master local[*]（driver も executor も 1 つの JVM）。EMR の STREAMING モードの起こし直しの代わりに、
-# サービス（1 台）がタスクの終わりを見て起こし直す。台数は作るときは 0 で、OSS 版の ops/up.sh が書き先が上がってから 1 にする。
+# サービス（1 台）がタスクの終わりを見て起こし直す。台数は作るときは 0 で、ops/oss/up.sh が書き先が上がってから 1 にする。
 # イメージは docker/images/spark/Dockerfile（apache/spark:3.5.9-java17-python3 に Kafka・Iceberg・S3 Tables・S3A の jar と app/spark/snmp_sinks.py を焼き込む。
-# 閉域で Maven に届かないので、起動時に jar を取りに行かない）。OSS 版の ops/up.sh が作って ECR の <接頭辞>-spark に push する。
+# 閉域で Maven に届かないので、起動時に jar を取りに行かない）。ops/oss/up.sh が作って ECR の <接頭辞>-spark に push する。
 # checkpoint はマネージド版と同じバケットの analytics/checkpoint/ に S3A（s3a://）で書く（EMR の s3:// は EMRFS で、素の Spark には無い）。
 # Kafka は PLAINTEXT（KAFKA_AUTH=none）、OpenSearch は Basic 認証（OPENSEARCH_AUTH=basic）、vminsert は署名なし（PROMETHEUS_AUTH=none）。
 # 宛先とパスワードは opensearch.tf・victoriametrics.tf の locals をそのまま使う（同じ値を別の名前で持たない）。
@@ -15,7 +15,7 @@
 # Splunk が起きる前（起動に数分）は HEC への POST が再試行の後に落ちてタスクが終わり、サービスが起こし直す（checkpoint の続きから読む）
 
 variable "spark_image_tag" {
-  description = "Tag of the app/spark/ image in the <prefix>-spark repository (apache/spark with the jars and app/spark/snmp_sinks.py). The OSS ops/up.sh builds it as <Spark version>-<hash of app/spark/ and docker/images/spark/Dockerfile>."
+  description = "Tag of the app/spark/ image in the <prefix>-spark repository (apache/spark with the jars and app/spark/snmp_sinks.py). ops/oss/up.sh builds it as <Spark version>-<hash of app/spark/ and docker/images/spark/Dockerfile>."
   type        = string
   default     = "3.5.9"
 
@@ -164,7 +164,7 @@ resource "aws_ecs_service" "spark" {
   name            = "${local.name_prefix}-spark-${each.key}"
   cluster         = aws_ecs_cluster.analytics[0].id
   task_definition = aws_ecs_task_definition.spark[each.key].arn
-  # 作るときは 0 台。OSS 版の ops/up.sh が OpenSearch・VictoriaMetrics・Splunk が上がるのを待ってから 1 にする
+  # 作るときは 0 台。ops/oss/up.sh が OpenSearch・VictoriaMetrics・Splunk が上がるのを待ってから 1 にする
   # （先に起こすと、書き先に届かずに落ちては起こし直されるのを繰り返す）。1 にした後の apply で 0 に戻さないよう、台数は Terraform が見ない
   desired_count = 0
   launch_type   = "FARGATE"

@@ -20,7 +20,7 @@ def read(*p):
     with open(os.path.join(ROOT, *p), encoding="utf-8") as f:
         return f.read()
 
-def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の oss/ops/ と共通）とつないで見る
+def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の ops/oss/ と共通）とつないで見る
     return read("ops", "common.sh") + read("ops", f"{name}-common.sh") + read("ops", f"{name}.sh")
 
 def lab_cli(*flags):
@@ -254,7 +254,7 @@ check("Job の名前は両方の版で同じ「Telegraf とグラフ DB に同�
 check("Job の説明は書き先の名前（nb_sync.GRAPH_NAME）を出す。マネージド版は Neptune、OSS 版は Neo4j",
       all("Neptune" in v[1] and "Neo4j" not in v[1] for v in _jobs_nep.values()) and all("Neo4j" in v[1] and "Neptune" not in v[1] for v in _jobs_neo.values())
       and "「Telegraf とグラフ DB に同期」と同じ" in _jobs_nep["SyncOnChange"][1])
-_old_name = subprocess.run(["git", "grep", "-n", "-e", "Telegraf と Neptune に同期", "--", "app", "IaC", "oss", "ops",
+_old_name = subprocess.run(["git", "grep", "-n", "-e", "Telegraf と Neptune に同期", "--", "app", "IaC", "ops",
                             "docs/nautobot.md", "docs/oss-variant.md", "docs/pipeline.md", "docs/architecture"], cwd=ROOT, capture_output=True, text=True).stdout
 check(f"Job は名前でなくクラスの場所で引く（bootstrap の JOBS と JobHook の job）ので、名前を変えても外れない。古い名前はコードと docs に残らない（{_old_name.strip()}）",
       'JOBS = ("netops_jobs.SyncTopology", "netops_jobs.SyncOnChange")' in boot and '"job": models[JOBS[1]]' in boot and _old_name == "")

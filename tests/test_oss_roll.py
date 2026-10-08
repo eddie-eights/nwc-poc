@@ -1,5 +1,5 @@
-"""cycle 005（マネージドを OSS に置き換えた環境を作る）の、Kafka と OpenSearch の台を 1 台ずつ入れ替える手順（oss/ops/roll-nodes.sh と
-oss/ops/roll_health.py。設計の未確定事項 2・4）の模擬テスト。terraform / aws / sleep / session-manager-plugin は偽物に差し替え、AWS には触れない。
+"""cycle 005（マネージドを OSS に置き換えた環境を作る）の、Kafka と OpenSearch の台を 1 台ずつ入れ替える手順（ops/oss/roll-nodes.sh と
+ops/oss/roll_health.py。設計の未確定事項 2・4）の模擬テスト。terraform / aws / sleep / session-manager-plugin は偽物に差し替え、AWS には触れない。
   1. roll_health.py が ECS Exec の出力（Session Manager の案内と \\r が混ざる）から、Kafka（fenced でない broker・複製の足りないパーティション・
      KRaft の controller の Leader と遅れ）と OpenSearch（green・台の数・cluster manager）の健全さを判定し、plan の JSON から入れ替える台を選ぶ
   2. タスクの中で打つコマンド（ROLL_PROBE_KAFKA / ROLL_PROBE_OPENSEARCH）を手元の bash で、偽物の kafka-*.sh / curl / timeout に向けて打ち、
@@ -29,7 +29,7 @@ def read(path):
     with open(os.path.join(ROOT, path), encoding="utf-8") as f:
         return f.read()
 
-spec = importlib.util.spec_from_file_location("roll_health", os.path.join(ROOT, "oss/ops/roll_health.py"))
+spec = importlib.util.spec_from_file_location("roll_health", os.path.join(ROOT, "ops/oss/roll_health.py"))
 rh = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rh)
 
@@ -143,7 +143,7 @@ check("roll_health plan: 作るだけ・消すだけ・no-op・ほかのリソ�
       and rh.plan(json.dumps({"format_version": "1.2"}), "kafka") == [])
 
 def run_health(args, stdin):
-    return subprocess.run([sys.executable, os.path.join(ROOT, "oss/ops/roll_health.py")] + args, input=stdin,
+    return subprocess.run([sys.executable, os.path.join(ROOT, "ops/oss/roll_health.py")] + args, input=stdin,
                           capture_output=True, text=True, timeout=30)
 r_ok, r_ng, r_use = run_health(["kafka"] + KAFKA_NODES, wrap(kafka_out(leader="1"))), run_health(["opensearch"] + OS_NODES, os_out(status="red")), run_health(["kafka"], "")
 r_plan = run_health(["plan", "kafka"], PLAN_MIXED)
@@ -164,7 +164,7 @@ check("roll_health.py（コマンド）: 健全ならリーダーを出して 0�
       and r_use.returncode == 2 and "使い方" in r_use.stderr and (r_plan.returncode, r_plan.stdout) == (0, "1 3 6\n"))
 
 # ---------------------------------------------------------------- 2. タスクの中で打つコマンド
-roll_sh = read("oss/ops/roll-nodes.sh")
+roll_sh = read("ops/oss/roll-nodes.sh")
 def probe(name):
     m = re.search(rf"^{name}='([^']*)'$", roll_sh, re.M)
     assert m, name
@@ -335,8 +335,8 @@ REGION=ap-northeast-1
 . "$NWC_ROOT/ops/deploy-env.sh"
 . "$NWC_ROOT/ops/common.sh"
 . "$NWC_ROOT/ops/up-common.sh"
-. "$NWC_ROOT/oss/ops/roll-nodes.sh"
-TF_DIR=IaC/terraform/oss; OPS_DIR="$NWC_ROOT/oss/ops"; TF_LOG_NAME=tf-oss; TF_INIT_LOCKFILE=readonly
+. "$NWC_ROOT/ops/oss/roll-nodes.sh"
+TF_DIR=IaC/terraform/oss; OPS_DIR="$NWC_ROOT/ops/oss"; TF_LOG_NAME=tf-oss; TF_INIT_LOCKFILE=readonly
 PY=("$NWC_PY"); PREFIX=x-nwc-oss; OWNER=x
 OSS_ROLL="${OSS_ROLL-1}"; flag_value OSS_ROLL
 ROLL_MINUTES_PRE="${T_MIN_PRE:-$ROLL_MINUTES_PRE}"; ROLL_MINUTES_KAFKA="${T_MIN:-$ROLL_MINUTES_KAFKA}"; ROLL_MINUTES_OPENSEARCH="${T_MIN:-$ROLL_MINUTES_OPENSEARCH}"

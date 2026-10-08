@@ -11,7 +11,7 @@ output "neo4j_uri_parameter_name" {
 }
 
 output "neo4j_password_parameter" {
-  description = "SSM SecureString with the password of the neo4j user (created by the OSS ops/up.sh, not by Terraform). The workloads read it as NEO4J_PASSWORD."
+  description = "SSM SecureString with the password of the neo4j user (created by ops/oss/up.sh, not by Terraform). The workloads read it as NEO4J_PASSWORD."
   value       = local.neo4j_password_parameter
 }
 

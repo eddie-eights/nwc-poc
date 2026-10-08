@@ -6,7 +6,7 @@
 # 片付けは ./down.sh（-v で volume も消す）。
 #
 # 版の正（tests/test_local_compose.py が照合する）:
-#   Kafka / Kafbat UI / OpenSearch  oss/ops/oss-images.sh
+#   Kafka / Kafbat UI / OpenSearch  ops/oss/oss-images.sh
 #   Telegraf                        ops/lab-common.sh の TELEGRAF_VERSION
 #   Grafana / Splunk                ops/up-common.sh の GRAFANA_VERSION / SPLUNK_VERSION
 #   syslog-ng / GoFlow2             ops/up-common.sh の SYSLOG_NG_VERSION / GOFLOW2_TAG
@@ -109,7 +109,7 @@ services:
 
   goflow2:
     # NetFlow（2055/udp）と sFlow（6343/udp）を host のネットワークで受けて Kafka の flows へ JSON で書く（cycle 012）。lab の SR Linux は NetFlow を出さないので、
-    # 試すときは tools/netflow_send.py で 1 つ送る。/metrics は 8081/tcp（8080 は Telegraf の health）。待つアドレスは Telegraf と同じく ./up.sh の TELEGRAF_BIND。
+    # 試すときは ops/netflow_send.py で 1 つ送る。/metrics は 8081/tcp（8080 は Telegraf の health）。待つアドレスは Telegraf と同じく ./up.sh の TELEGRAF_BIND。
     # Kafka が受け付ける前に起きると 1 秒ほどで終わる（終了コード 1）ので、起こし直す。回数はほかの 5 回より多い 10 回: 5 回では Kafka を 9 秒しか待てず
     # （Mac で Kafka が受け付けるまで約 5 秒、そのあいだに 4 回起こし直した）、10 回なら起こし直しの間隔が倍々に延びて約 110 秒待つ（2026-10-08 に Kafka の無い宛先で測った）
     image: netsampler/goflow2:v2.2.7

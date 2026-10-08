@@ -15,10 +15,10 @@
 # vminsert は起動したとき vmstorage につなぎに行き、3 台につながる前に受けた行は 1 台にしか入らない（エンジニア3 が 005 の手元の compose で確かめた）。
 # そこで vminsert のタスクに待ちのコンテナ（wait-vmstorage）を置き、3 台が 8400 で受けるまで vminsert を起こさない（ECS のコンテナの dependsOn）。
 # vmstorage の台が止まったままなら、待つのは vmstorage_wait_seconds 秒まで（それを過ぎたら起こす。止まっている台を外して残りの 2 台に書く）。
-# イメージは victoriametrics/{vminsert,vmselect,vmstorage} を ECR の <接頭辞>-<名前> に写したもの（閉域で Docker Hub に届かない。OSS 版の ops/up.sh が写す）
+# イメージは victoriametrics/{vminsert,vmselect,vmstorage} を ECR の <接頭辞>-<名前> に写したもの（閉域で Docker Hub に届かない。ops/oss/up.sh が写す）
 
 variable "victoriametrics_image_tag" {
-  description = "Tag of the vminsert, vmselect and vmstorage images in the <prefix>-vminsert / -vmselect / -vmstorage repositories (victoriametrics/* copied to ECR by the OSS ops/up.sh). Same version as oss/ops/oss-images.sh."
+  description = "Tag of the vminsert, vmselect and vmstorage images in the <prefix>-vminsert / -vmselect / -vmstorage repositories (victoriametrics/* copied to ECR by ops/oss/up.sh). Same version as ops/oss/oss-images.sh."
   type        = string
   default     = "v1.153.0-cluster"
 }

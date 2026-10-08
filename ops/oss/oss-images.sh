@@ -1,4 +1,4 @@
-# OSS 版（cycle 005「マネージドを OSS に置き換えた環境を作る」）のイメージの名前と版。oss/ops/up.sh が source する。
+# OSS 版（cycle 005「マネージドを OSS に置き換えた環境を作る」）のイメージの名前と版。ops/oss/up.sh が source する。
 # 版の正はここ 1 か所（ops/lab-common.sh と同じ考え方）。どれも 005 の手元の compose で起こして確かめた版（その compose は 2026-10-08 に消した）。
 # spark / neo4j を ECS 向けにビルドする元は app/spark/ と app/neo4j/（Dockerfile は docker/images/<名前>/。005 で確かめた組み合わせに、ECS で要るもの:
 # Spark は snmp_sinks.py と S3A の jar、Neo4j はパスワードを渡す entrypoint.sh を足したもの）で、版は Dockerfile の ARG の既定値と同じ。
@@ -45,7 +45,7 @@ oss_image_upstream() {  # oss_image_upstream <名前>  写す元（ビルドす�
 mirror_oss_images() {
   local reg="$1" prefix="$2" name tag upstream; shift 2
   for name in "$@"; do
-    tag=$(oss_image_tag "$name") || { echo "知らないイメージ: $name（oss/ops/oss-images.sh の OSS_IMAGES: $OSS_IMAGES）" >&2; return 1; }
+    tag=$(oss_image_tag "$name") || { echo "知らないイメージ: $name（ops/oss/oss-images.sh の OSS_IMAGES: $OSS_IMAGES）" >&2; return 1; }
     if ecr_has "$prefix-$name" "$tag"; then echo "$name:$tag はある"; continue; fi
     upstream=$(oss_image_upstream "$name")
     if [ -n "$upstream" ]; then
