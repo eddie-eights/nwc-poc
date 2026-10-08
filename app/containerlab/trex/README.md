@@ -111,6 +111,10 @@ sudo bash /opt/<prefix>-lab/src/trex/kafka_load.sh gnmi 50000 -1         # gnmi 
 ## 確かめていないこと
 
 - TRex 2.41（2018 年、CentOS 7）が SR Linux 26.7.2 と同じホストで、`privileged: true` + af_packet、hugepages 無しで起きるか（design.md の未確定事項 2）
-- TRex のイメージに `pgrep` / `pkill` / `find` があるか（`lab trex start|stop|status` が使う）。無ければ `docker exec` で `ps` を見て止める
 - `trex-console` が Python 2.7 で動くか 3 で動くか。プロファイルはどちらでも読める書き方にしてある（手元では Python 3.14 と scapy の SNMP の層でパケットを読み戻して確かめた）
 - 負荷の経路（上の (a) / (b)）と、メモリ（上の「大きくする」）
+
+手元で確かめたこと（lab の EC2 では動かしていない）:
+
+- イメージ（amd64 だけ）の層に `/usr/sbin/ip` と `/usr/bin/pgrep` / `pkill` / `find` がある（clab の exec と `lab trex start|stop|status` が使う）。`/var/trex/` に残る版は v2.41 だけ（v2.36 / v2.39 は後の層で消してある）
+- イメージの CMD は `/bin/bash` だけで、ENTRYPOINT は無い。containerlab 0.79.0 はコンテナを `Tty: true` / `OpenStdin: true` で作る（`runtime/docker/docker.go` の `CreateContainer`）ので、端末を待って起きたままになる。CMD がシェルだけのイメージ（`alpine` の `/bin/sh`）で、この 2 つが無いと止まり（exited）、あると起きたまま（running）になるのを確かめた

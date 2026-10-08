@@ -1,6 +1,7 @@
 # TRex の設定のひな型。lab.sh trex start が dc1-trex-01 のポート（eth1〜。eth0 は管理ネットワーク）を数えて埋め、
 # コンテナの中の /etc/trex_cfg.yaml（TRex の既定の置き場。t-rex-64 は --cfg 無しでこれを読む）に書く。
-# - interfaces: DPDK の NIC ではなく Linux の IF の名前。TRex は af_packet で使う（2.37 から。hugepages も igb_uio も要らない。1 コアで ~1 Mpps まで）
+# - interfaces: DPDK の NIC ではなく Linux の IF の名前。TRex は af_packet で使う（TRex の文書では 2.37 から、hugepages も igb_uio も要らず、1 コアで ~1 Mpps まで。
+#   2.41 がこの lab で起きるかは確かめていない: trex/README.md の「確かめていないこと」）
 # - low_end: TRex の全スレッドを 1 コアに寄せ、メモリも少なく取る（lab の EC2 の SR Linux 6 台とコアを取り合わない。platform の節は無視される）
 # - port_info: ポートは 2 本ずつ組（0-1、2-3）。4 本とも leaf の mac-vrf（VNI 100、10.100.0.0/24、EVPN の L2）にいるので、
 #   default_gw は組の相手のアドレス（lab.sh の TREX_NET / TREX_IP_BASE）。EVPN が通っていれば ARP が解ける
