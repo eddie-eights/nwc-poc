@@ -52,7 +52,7 @@ destroy_lambda_root workflow "$PREFIX-tools" -var "worker_image_tag=${IMAGE_TAG:
 destroy_root pipeline/analytics
 destroy_root pipeline/nautobot
 destroy_lambda_root pipeline/graph "$PREFIX-graph-status"
-# stream（Kafka の ECS 3 台・Telegraf・Kafbat UI）。snmp_agents / gnmi_targets は必須変数だが destroy では使われないので、形だけ合う値を渡す
+# stream（Kafka の ECS 3 台・Telegraf と、Web の EC2 の Kafbat UI が読む SSM のパラメータ）。snmp_agents / gnmi_targets は必須変数だが destroy では使われないので、形だけ合う値を渡す
 destroy_root pipeline/stream -var 'snmp_agents="udp://0.0.0.0:161"' -var 'gnmi_targets="0.0.0.0:57400"'
 
 log "2. lab"

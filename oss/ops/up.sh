@@ -211,7 +211,7 @@ else
     build_telegraf "$REG/$PREFIX-telegraf:$TELEGRAF_TAG"
   fi
   if [ -n "$NEED_KAFKA_UI" ]; then
-    # Kafbat UI（stream の ECS）。マネージド版と同じイメージを、OSS 版の接頭辞のリポジトリに写す
+    # Kafbat UI（Web の EC2 の Docker。cycle 010）。マネージド版と同じイメージを、OSS 版の接頭辞のリポジトリに写す
     mirror_image "$OSS_KAFKA_UI_IMAGE:$OSS_KAFKA_UI_TAG" "$REG/$PREFIX-kafka-ui:$OSS_KAFKA_UI_TAG" || die "kafka-ui のイメージを ECR に置けなかった"
   fi
   if [ -n "$NEED_OSS" ]; then
@@ -301,7 +301,7 @@ tf_apply pipeline/lab -var forward_to_telegraf=true
 LAB_INSTANCE_ID=$(tf pipeline/lab output -raw lab_instance_id); echo "LAB_INSTANCE_ID=$LAB_INSTANCE_ID"
 
 # ---- 7. stream ------------------------------------------------------------------
-log "7. stream（IaC/terraform/oss/pipeline/stream。Kafka は ECS の KRaft 3 台、Telegraf と Kafbat UI も ECS のタスク）"
+log "7. stream（IaC/terraform/oss/pipeline/stream。Kafka は ECS の KRaft 3 台、Telegraf も ECS のタスク。Kafbat UI は Web の EC2 の Docker で、ここで接続先を SSM に書く）"
 SNMP_AGENTS=$("${PY[@]}" app/containerlab/lab_topology.py app/containerlab --snmp-agents) || die "app/containerlab/lab_topology.py が lab の定義からポーリング先を作れなかった"
 GNMI_TARGETS=$("${PY[@]}" app/containerlab/lab_topology.py app/containerlab --gnmi-targets) || die "app/containerlab/lab_topology.py が lab の定義から gNMI の購読先を作れなかった"
 if [ -n "$SNMP_POLL" ]; then
@@ -573,7 +573,7 @@ tf pipeline/lab output -raw start_session_command; echo
 echo "Telegraf（ECS の取りにいく側）に入るコマンド（TASK_ID は下の 1 行目で出る ARN の最後。中で tg gnmi。SNMP_POLL=1 なら tg test でポーリングも見られる）:"
 tf pipeline/stream output -raw telegraf_dialin_list_tasks_command; echo
 tf pipeline/stream output -raw telegraf_exec_command; echo
-echo "Kafbat UI（http://localhost:8082/ 。ユーザー admin）を開くポートフォワード（web の EC2 を踏み台にする）と admin のパスワード:"
+echo "Kafbat UI（http://localhost:8082/ 。ユーザー admin。Web の EC2 の Docker で動く）を開くポートフォワードと admin のパスワード:"
 tf pipeline/stream output -raw kafka_ui_port_forward_command; echo
 tf pipeline/stream output -raw kafka_ui_password_command; echo
 echo "Nautobot（http://localhost:8081/ 。ユーザー admin）を開くポートフォワード（web の EC2 を踏み台にする）と admin のパスワード:"
@@ -599,7 +599,7 @@ if [ -n "$GRAPH_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$GRAPH_WARN"; fi
 if [ -n "$NAUTOBOT_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$NAUTOBOT_WARN"; fi
 if [ -n "$STORE_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$STORE_WARN"; fi
 if [ -n "$WF_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$WF_WARN"; fi
-printf '\033[1;33m%s\033[0m\n' "時間課金（Kafka 3 台・Telegraf・Kafbat UI・Spark・OpenSearch 3 台・VictoriaMetrics・Splunk・Grafana・Neo4j・Nautobot・Temporal のワーカーの ECS、Nautobot の DB、AgentCore Runtime、lab と Web の EC2、EFS、エンドポイント 14 種）。使い終わったら当日中に oss/ops/down.sh"
+printf '\033[1;33m%s\033[0m\n' "時間課金（Kafka 3 台・Telegraf・Spark・OpenSearch 3 台・VictoriaMetrics・Splunk・Grafana・Neo4j・Nautobot・Temporal のワーカーの ECS、Nautobot の DB、AgentCore Runtime、lab と Web の EC2（Web に Kafbat UI が同居）、EFS、エンドポイント 14 種）。使い終わったら当日中に oss/ops/down.sh"
 
 # ---- 10. ポートフォワーディング ------------------------------------------------------------
 if [ -n "$NO_DASHBOARD_PORTFORWARD" ]; then
