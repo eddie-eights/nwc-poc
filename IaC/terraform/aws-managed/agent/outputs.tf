@@ -1,5 +1,5 @@
 output "agent_runtime_arn" {
-  description = "ARN of the AgentCore Runtime (read by terraform/workflow; the chat web reads it from runtime_arn_parameter_name)"
+  description = "ARN of the AgentCore Runtime (read by IaC/terraform/aws-managed/workflow; the chat web reads it from runtime_arn_parameter_name)"
   value       = aws_bedrockagentcore_agent_runtime.agent.agent_runtime_arn
 }
 
@@ -40,13 +40,13 @@ output "data_source_id" {
 }
 
 output "collection_endpoint" {
-  description = "OpenSearch Serverless collection endpoint (the vector index lives here). Reachable only from the VPC endpoint of terraform/base/core and from Bedrock. Empty without create_knowledge_base."
+  description = "OpenSearch Serverless collection endpoint (the vector index lives here). Reachable only from the VPC endpoint of IaC/terraform/aws-managed/base/core and from Bedrock. Empty without create_knowledge_base."
   value       = try(aws_opensearchserverless_collection.kb[0].collection_endpoint, "")
 }
 
 output "upload_docs_command" {
   description = "Run in this repository to upload the sample markdown files (create_knowledge_base = true)"
-  value       = "aws s3 cp kb-docs/ s3://${local.bucket_name}/docs/ --recursive --exclude \"*\" --include \"*.md\""
+  value       = "aws s3 cp app/resources/ s3://${local.bucket_name}/docs/ --recursive --exclude \"*\" --include \"*.md\""
 }
 
 output "start_ingestion_command" {

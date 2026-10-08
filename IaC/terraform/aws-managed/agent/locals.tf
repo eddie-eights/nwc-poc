@@ -1,28 +1,27 @@
 # nwc-poc - agent root module (feature "agent"). The AgentCore Runtime (VPC mode) that answers the chat, its
 # execution policy and the guardrail (the runtime reaches Bedrock / SSM / the gateway through the interface endpoints of
-# terraform/base/core, which ops/up.sh asks for when AGENT=1; the perimeter there denies calls from outside the VPC). Optionally (create_knowledge_base = true) a Bedrock
+# IaC/terraform/aws-managed/base/core, which ops/up.sh asks for when AGENT=1; the perimeter there denies calls from outside the VPC). Optionally (create_knowledge_base = true) a Bedrock
 # Knowledge Base on OpenSearch Serverless for RAG - off by default because the collection costs about 0.33 USD per hour.
-# The VPC, the security groups, the S3 bucket, the chat web EC2 and the runtime IAM role come from terraform/base/core
+# The VPC, the security groups, the S3 bucket, the chat web EC2 and the runtime IAM role come from IaC/terraform/aws-managed/base/core
 # (read through terraform_remote_state), so this root can be created and destroyed on its own while the base stays.
 
 # リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、
 # 1 つの AWS アカウントを何人かで使っても、自分の名前で自分のリソースを探せる
 locals {
-  # 末尾は var.project（terraform/ は既定の nwc-poc、OSS 版の oss/terraform/ は oss.auto.tfvars の nwc-oss。cycle 005）
+  # 末尾は var.project（IaC/terraform/aws-managed/ は既定の nwc-poc、OSS 版の IaC/terraform/oss/ は oss.auto.tfvars の nwc-oss。cycle 005）
   name_prefix = "${var.owner}-${var.project}"
 }
 
-# リポジトリの根（Lambda の zip に入れるソースをここから読む）。terraform/<このルート> と oss/terraform/<このルート>（ファイルごとの
-# シンボリックリンク。cycle 005）のどちらから打っても同じ場所を指す。path.module はリンクを置いたフォルダなので、../../ の先に
-# pyproject.toml があるかで深さを見分ける（terraform/ なら 2 つ上、oss/terraform/ なら 3 つ上）
+# リポジトリの根（Lambda の zip に入れるソースをここから読む）。IaC/terraform/aws-managed/<このルート> と IaC/terraform/oss/<このルート>（ファイルごとの
+# シンボリックリンク。cycle 005）は同じ深さなので、path.module（リンクを置いたフォルダ）から 4 つ上がどちらでも根（cycle 007 から）
 locals {
-  repo_root = fileexists("${path.module}/../../pyproject.toml") ? "${path.module}/../.." : "${path.module}/../../.."
+  repo_root = "${path.module}/../../../.."
 }
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
-# VPC / サブネット / SG / バケット / ロールは terraform/base/core の state から読む
+# VPC / サブネット / SG / バケット / ロールは IaC/terraform/aws-managed/base/core の state から読む
 data "terraform_remote_state" "main" {
   backend = "local"
 
@@ -35,12 +34,12 @@ data "terraform_remote_state" "main" {
   lifecycle {
     postcondition {
       condition     = can(self.outputs.security_group_ids)
-      error_message = "terraform/base/core の state に security_group_ids が無い（2026-09-29 より前の SG）。先に ops/down.sh で消してから ops/up.sh を打ち直す"
+      error_message = "IaC/terraform/aws-managed/base/core の state に security_group_ids が無い（2026-09-29 より前の SG）。先に ops/down.sh で消してから ops/up.sh を打ち直す"
     }
   }
 }
 
-# エージェントのイメージの置き場は terraform/base/ecr の state から読む
+# エージェントのイメージの置き場は IaC/terraform/aws-managed/base/ecr の state から読む
 data "terraform_remote_state" "ecr" {
   count   = var.agent_image_uri == "" ? 1 : 0
   backend = "local"
@@ -67,13 +66,13 @@ locals {
   bucket_arn        = data.terraform_remote_state.main.outputs.kb_bucket_arn
   # 土台の OpenSearch Serverless の VPC エンドポイント（create_opensearch_endpoint=true のときだけある。古い state には output が無い）
   aoss_vpce_id = try(data.terraform_remote_state.main.outputs.opensearch_vpc_endpoint_id, "")
-  # terraform/base/core の perimeter.tf（NETWORK_PERIMETER=0 か古い state なら空）
+  # IaC/terraform/aws-managed/base/core の perimeter.tf（NETWORK_PERIMETER=0 か古い state なら空）
   perimeter_policy_arn        = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
   perimeter_exempt_principals = try(data.terraform_remote_state.main.outputs.perimeter_exempt_principals, [])
 
   kb = var.create_knowledge_base
 
-  # OSS 版（oss/terraform/agent。var.project = nwc-oss を oss.auto.tfvars が入れる。cycle 005）。terraform/base/core の local.oss と同じ見分け方。
+  # OSS 版（IaC/terraform/oss/agent。var.project = nwc-oss を oss.auto.tfvars が入れる。cycle 005）。IaC/terraform/aws-managed/base/core の local.oss と同じ見分け方。
   # このルートは graph と analytics の state を読まない（先に apply される）ので、state の中身ではなく project で見分ける
   oss = var.project == "nwc-oss"
 

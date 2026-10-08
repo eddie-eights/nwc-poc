@@ -2,7 +2,7 @@
 
 セッション ID はブラウザのセッションごとに 1 つ（Runtime 側の会話履歴はこの ID で分かれる）。
 Runtime の ARN は環境変数 RUNTIME_ARN があればそれ、無ければ SSM の <PARAM_PREFIX>/runtime-arn
-（terraform/agent が書く）を 60 秒ごとに読む。どちらも無ければ agent が配備されていない
+（IaC/terraform/aws-managed/agent が書く）を 60 秒ごとに読む。どちらも無ければ agent が配備されていない
 （チャットだけ使えない。トポロジ・承認のタブは動く）。
 """
 
@@ -15,7 +15,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from config import MAX_PROMPT, REGION, log
 
-import toolkit  # config が sys.path を通したあとで読む（agent/toolkit.py）
+import toolkit  # config が sys.path を通したあとで読む（app/agentcore/toolkit.py）
 
 RUNTIME_ARN = toolkit.Param("RUNTIME_ARN", "runtime-arn")
 
@@ -27,7 +27,7 @@ agentcore = boto3.client("bedrock-agentcore", region_name=REGION,
 def invoke(prompt: str, session_id: str) -> str:
     arn = RUNTIME_ARN.value()
     if not arn:
-        raise gr.Error("エージェントが配備されていません（terraform/agent を apply する。deploy.env の AGENT=1）")
+        raise gr.Error("エージェントが配備されていません（IaC/terraform/aws-managed/agent を apply する。deploy.env の AGENT=1）")
     try:
         res = agentcore.invoke_agent_runtime(
             agentRuntimeArn=arn, runtimeSessionId=session_id, qualifier="DEFAULT",

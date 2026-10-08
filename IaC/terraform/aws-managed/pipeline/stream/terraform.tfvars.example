@@ -1,6 +1,6 @@
 # Copy to terraform.tfvars only when the defaults are not right. Every value except owner has a default in variables.tf.
-# terraform/base/ecr and terraform/base/core must be applied first (this root reads their state files), and the Telegraf image must be in ECR.
-# terraform/pipeline/lab with forward_to_telegraf = true routes the lab mgmt network to Telegraf (without it Telegraf reaches no switch).
+# IaC/terraform/aws-managed/base/ecr and IaC/terraform/aws-managed/base/core must be applied first (this root reads their state files), and the Telegraf image must be in ECR.
+# IaC/terraform/aws-managed/pipeline/lab with forward_to_telegraf = true routes the lab mgmt network to Telegraf (without it Telegraf reaches no switch).
 # snmp_agents and gnmi_targets have no default: ops/up.sh makes them from the lab definition.
 # owner is the name of the person who deploys this copy and is REQUIRED: it has no default, so terraform asks for it
 # unless you uncomment the line below (with your own name), export TF_VAR_owner or pass -var owner=<name>.
@@ -15,9 +15,9 @@
 # log_retention_days   = 7
 # msk_az_num           = 2                 # 2 か 3（1 にはできない）。ops/up.sh は MSK_AZ_NUM を渡す
 #
-# telegraf_image_tag   = "1.40.0"          # ops/up.sh passes <telegraf version>-<hash of telegraf/>
-# snmp_agents          = "\"udp://203.0.113.11:161\", ..."   # python3 lab/lab_topology.py lab --snmp-agents
-# gnmi_targets         = "\"203.0.113.11:57400\", ..."       # python3 lab/lab_topology.py lab --gnmi-targets
+# telegraf_image_tag   = "1.40.0"          # ops/up.sh passes <telegraf version>-<hash of app/telegraf/>
+# snmp_agents          = "\"udp://203.0.113.11:161\", ..."   # python3 app/containerlab/lab_topology.py app/containerlab --snmp-agents
+# gnmi_targets         = "\"203.0.113.11:57400\", ..."       # python3 app/containerlab/lab_topology.py app/containerlab --gnmi-targets
 # syslog_standard      = "RFC3164"       # Cisco IOS (BSD format). ops/up.sh passes SYSLOG_STANDARD (default RFC3164; RFC5424 for the SR Linux lab logs)
 # telegraf_az_num      = 1                 # dialout の NLB のサブネットとタスクの数。ops/up.sh は TELEGRAF_AZ_NUM を渡す
 # telegraf_task_cpu    = 256

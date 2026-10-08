@@ -32,3 +32,29 @@
 - `oss/ops/` を `IaC/terraform/oss/ops/` へ: 上と同じ。`oss/` は「OSS 版の運用」のままにする
 - `.dockerignore` を足す: いま無くても動いており、「中身を変えない」から外れる
 - `jars/ wheels/` を `docker/` の下へ: gitignore 対象のビルド成果物で、`ops/up.sh` と `oss/ops/up.sh` の置き場の既定値を変えるだけの価値が無い
+
+## Round 1（2026-10-08）実装（エンジニア2）で design.md と現物が食い違ったところ
+
+止めずに次のとおりにして進めた。
+
+| design.md | 現物 | どうしたか |
+|---|---|---|
+| `git ls-files` 434、シンボリックリンク 90 | 436、92（`IaC/terraform/oss/` のリンクが 2 本多い） | 数だけの違い。92 本を全部貼り直し、壊れたリンク 0 を確かめた |
+| 根に残すファイルの一覧（手順 4 の `ls`） | `deploy.env.example` `GLOSSARY.md` `uv.lock` `.python-version` もある | そのまま根に残した |
+| `relink` の例（`${link/terraform\//…}` の置換） | macOS の bash 3.2 / zsh で置換が効かない | `sed` でパスを作って貼り直した |
+| 落とし穴 2（zip に入れる名前が変わる） | `workflow/gateway.tf` の `tools_files` はキーがパス、値が zip の中の名前 | キー（`app/agentcore/toolkit.py` など）だけ変え、値は変えていない。zip の中身は同じ |
+| OSS の `pipeline/graph/sync.tf` の `repo_root` の例が `../` 4 つ | `IaC/terraform/oss/pipeline/graph` は根から 5 段 | `"${path.module}/../../../../.."`（5 つ）にした。マネージド版の `sync.tf` はもともと 5 段で直書き。`tests/test_oss.py` で両方の段数を実パスで確かめる |
+| OSS の `sync.tf` のコメント「マネージド版より 1 つ深い」 | 並べ直しで深さがそろった | コメントを「深さはどちらも同じ」に直した |
+| 書き換える docs に `docs/verification/*.md` | 日付付きの実行記録で、当時のコマンドの出力（例: `20261008-oss-aws.md` の「NG: oss/terraform/base/core が消えなかった」）をそのまま載せている | **書き換えない**（001〜006 のサイクル文書と同じ扱い）。`docs/development.md` の注記に `docs/verification/` も入れた |
+| 検証 13 の grep が 0 件 | 0 にならない。残るのはリポジトリのパスでないもの: S3 の prefix `web/` と `web/data/`、Nautobot のロググループのストリーム `web/`、EC2 の `/opt/<prefix>-web/` と `/var/lib/${name_prefix}-web/tmp`、`tests/test_app.py` のロール名 `nwc-web/i-0abc` | 例外として残した（build.md に grep の生ログ） |
+| 検証 13 の grep | 名前の直後に `/` が要るので、末尾に `/` の無い書き方（`` `oss/terraform` `` や「`local/compose` の README」）を拾わない | 別の grep（`(^|[^/A-Za-z0-9_.-])(oss/terraform|local/compose|local/)`）も打って直した。残るのは `tests/test_alerts.py` の Splunk のアプリの `local/`（リポジトリのパスでない）だけ |
+| `dir_tag` の引数を変えるのは commit 3 | commit 2 で `splunk/` などが無くなるので、`dir_tag "$V" splunk` のままだとタグが作れない | commit 2 でディレクトリの引数を `app/<名前>` に、ビルドを `-f docker/images/<名前>/Dockerfile app/<名前>/` に変えた。Dockerfile をハッシュに混ぜる（追加の引数）のは commit 3 |
+| check.sh の中身を見るテスト（`test_alerts` `test_analytics` `test_workflow`） | ディレクトリごとの名前（`agent` `web` …）を期待していた | `app` を期待するように直した（check.sh の `find` の対象が `app/` にまとまったため） |
+| compose の `build.context` を見るテスト（`tests/test_local_compose.py`） | `"../../telegraf"`（末尾の `/` 無し）と比べていて、機械的な置換で拾えなかった | `context` が `../../app/<名前>`、`dockerfile` が `../../docker/images/<名前>/Dockerfile` で、その Dockerfile が実在することを見る関数にした |
+| 一時ディレクトリで `ops/up.sh` の断片を動かすテスト（`test_sync` `test_analytics`） | `up.sh` が `terraform/<root>/terraform.tfstate` を直に見ていた | `up.sh` を `$TF_DIR/<root>/terraform.tfstate` にしたので、テストの一時ディレクトリに `IaC/terraform/aws-managed/` を作り、`TF_DIR` を渡す |
+| state の移し方（`rm -rf terraform`） | gitignore 対象の `*.tfvars` も `terraform/<root>/` に残る。`rm -rf` だと手で書いた `terraform.tfvars` を失う | `docs/deploy.md` の手順は `terraform.tfvars` も移し、`local/compose/.env` を `docker/compose/.env` へ移し、最後に `find` で残りを見せてから消すようにした |
+| `.gitignore` の `.build/` | — | design どおり `IaC/terraform/**/.build/` の 1 行にした |
+| 検証 13 の grep と「`<旧名>/` を `app/<新名>/` に置換」 | パスでない `neo4j/` を置換しすぎた: `app/neo4j/entrypoint.sh` の `NEO4J_AUTH="neo4j/${GRAPH_PASSWORD}"`（ユーザー名 `neo4j` とパスワード）が `app/neo4j/…` になり、そのまま出すと Neo4j が起動しない | 3 か所（entrypoint.sh・`neo4j.tf` のコメント・`tests/test_oss.py` の check 名）を `neo4j/` に戻した。`tests/test_oss_ops.py` のレイヤーの `neo4j/`（`python/neo4j/`）も戻した。追加した行に出てくる `app/` `docker/` `IaC/` のパスが実在するかを全部突き合わせ、残りはプレースホルダー（`<名前>` など）と gitignore 対象だけだった |
+| 検証 13 の grep | テストがパスを `os.path.join(ROOT, "grafana", …)`・`("agent", m + ".py")`・`git_files("grafana")`・辞書のキー（`_pins["workflow"]`）で組み立てている所は `/` が無いので拾わない | check.sh を流して落ちた所を 1 つずつ直した（`test_alerts` `test_oss` `test_nautobot` `test_graph` `test_workflow` `test_lab_debug`）。`test_stream` の「up.sh に `/telegraf/` が無い」（S3 に置かないことの確かめ）は `app/telegraf/` を除いて見るようにした |
+| `.gitignore` の 2 行を 1 行にする | `tests/test_oss_ops.py` が `^oss/terraform/**/.build/$` の行そのものを見ていた | `^IaC/terraform/**/.build/$` の行に加えて、`git check-ignore` で `oss/pipeline/graph`・`aws-managed/workflow`・`aws-managed/agent` の `.build/` が無視されることを見るようにした |
+| Dockerfile のコメント「build の context はこのディレクトリ」（spark・neo4j） | context は `app/<名前>/` になり、Dockerfile のある `docker/images/<名前>/` ではない | 「context は `app/<名前>/`」に直した |

@@ -1,5 +1,5 @@
 # Copy to terraform.tfvars only when the defaults are not right. Every value except owner has a default in variables.tf.
-# ops/up.sh passes owner (and vpc_cidr when set) with -var. The agent settings moved to terraform/agent.
+# ops/up.sh passes owner (and vpc_cidr when set) with -var. The agent settings moved to IaC/terraform/aws-managed/agent.
 # owner is the name of the person who deploys this copy and is REQUIRED: it has no default, so terraform asks for it
 # unless you uncomment the line below (with your own name), export TF_VAR_owner or pass -var owner=<name>.
 # Resource names and the Project tag become <owner>-nwc-poc (up to 14 lowercase letters, digits and single hyphens),

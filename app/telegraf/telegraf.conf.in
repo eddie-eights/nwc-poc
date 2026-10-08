@@ -1,4 +1,4 @@
-# Telegraf の設定テンプレート。Telegraf のコンテナ（terraform/pipeline/stream の ECS。telegraf/Dockerfile）が起きるとき、telegraf.sh render が
+# Telegraf の設定テンプレート。Telegraf のコンテナ（IaC/terraform/aws-managed/pipeline/stream の ECS。docker/images/telegraf/Dockerfile）が起きるとき、telegraf.sh render が
 # タスク定義の環境変数で __KAFKA_BROKERS__ / __AWS_REGION__ / __SNMP_AGENTS__ / __GNMI_TARGETS__ を埋めて /tmp/telegraf.conf に書く。
 # 出力は「>>> sink <名前>」〜「<<< sink <名前>」の区間のうち SINK（kafka = MSK。既定 / stdout = 標準出力。デバッグ用の EC2）の 1 つだけを残す。
 # SNMP のポーリング（「>>> snmp_poll」〜「<<< snmp_poll」の区間）は SNMP_POLL=1（既定）のときだけ残す。0 なら消して、SNMP は trap だけ受ける。
@@ -7,11 +7,11 @@
 #   dialout  機器から送ってくるものを受ける。trap・syslog・MDT。stream の ECS の telegraf-dialout（NLB の後ろ。台数を増やしても同じものを 2 回書かない）
 #   all       両方（既定。デバッグ用の EC2 は 1 つの Telegraf で両方やる）
 # 取りにいく入力はタスクを増やすとその数だけ同じ値を MSK に書くので、受ける側と分けて dialin だけを 1 つに保つ。出力と agent はどちらも同じ。
-# ブローカーは terraform/pipeline/stream が MSK から直接渡す。ポーリング先（inputs.snmp の agents）と gNMI の購読先（inputs.gnmi の addresses）は
-# ops/up.sh が lab の定義から作って terraform/pipeline/stream の変数に渡す
-#（lab/lab_topology.py --snmp-agents / --gnmi-targets。機器の一覧を lab の定義 1 か所にするため、ここに IP を書かない）。
+# ブローカーは IaC/terraform/aws-managed/pipeline/stream が MSK から直接渡す。ポーリング先（inputs.snmp の agents）と gNMI の購読先（inputs.gnmi の addresses）は
+# ops/up.sh が lab の定義から作って IaC/terraform/aws-managed/pipeline/stream の変数に渡す
+#（app/containerlab/lab_topology.py --snmp-agents / --gnmi-targets。機器の一覧を lab の定義 1 か所にするため、ここに IP を書かない）。
 # 機器の認証情報（${GNMI_USERNAME} / ${GNMI_PASSWORD} / ${SNMP_COMMUNITY}）は telegraf.sh では埋めず、Telegraf が起きるときに環境変数から読む
-#（stream の ECS は SSM の SecureString を secrets で受ける。デバッグ用の EC2 は lab/lab.sh が渡す。値に " と \ は使えない: TOML の文字列が壊れる）。
+#（stream の ECS は SSM の SecureString を secrets で受ける。デバッグ用の EC2 は app/containerlab/lab.sh が渡す。値に " と \ は使えない: TOML の文字列が壊れる）。
 #
 # 流れ: Spine-Leaf の SR Linux 6 台からの trap を udp 162 で受ける + gNMI で BGP / IS-IS / EVPN の状態と性能メトリクスを購読
 #       + 機器の syslog を udp 5140 で受ける + 本番の Cisco の MDT（dial-out）を tcp 57000 で受ける
@@ -21,7 +21,7 @@
 #   gnmi    トピック: bgp_neighbor（session_state。on_change）/ isis_interface（oper_state。on_change）/ evpn_es / mac_table（1 分ごと）
 #   mdt     トピック: inputs.cisco_telemetry_mdt が受けたもの（measurement は sensor path。共通の形への変換はまだ無い）
 #   traps   トピック: snmp_trap（linkDown / linkUp）
-#   logs    トピック: device_log（機器の syslog。BGP の隣接の up / down など。lab/srlinux/*.cli の remote-server）
+#   logs    トピック: device_log（機器の syslog。BGP の隣接の up / down など。app/containerlab/srlinux/*.cli の remote-server）
 # 機器は lab の EC2 の中の docker network（203.0.113.0/24）にいる。このコンテナからは次の経路で届く（lab の EC2 で sudo lab forward-status）:
 #   ポーリング  SNMP（161/udp）も gNMI（57400/tcp）も VPC のルートで lab の EC2 へ行き、lab の EC2 が管理ネットワークへ転送する
 #               （タスクの IP は作り直すたびに変わるので、lab の EC2 はタスクのサブネットの CIDR から来たものを通す）
@@ -29,9 +29,9 @@
 #               NLB が 1162 でここへ渡す。NLB は送り元を変えない（UDP のクライアント IP の保持）ので、送り元は機器の管理 IP のまま
 #   syslog      機器は lab の EC2（203.0.113.1:5140/udp）へ送り、trap と同じ仕組みで NLB からここへ届く（rsyslog は使わない）
 # MIB は入れないので OID は数値で書き、名前を明示する（translator が無くても動く）。trap の varbind 名は数値 OID のまま
-# Kafka に載る（ifName の OID を引くのは Splunk の保存済みサーチ。splunk/netops_alerts）。
+# Kafka に載る（ifName の OID を引くのは Splunk の保存済みサーチ。app/splunk/netops_alerts）。
 # SR Linux の ifTable は物理ポート全部（未使用の admin-down も）とサブインタフェース（ethernet-1/1.0）を行に出す。落とすのは Grafana のアラートルール
-#（grafana/provisioning/alerting/netops-prometheus.yaml。ifAdminStatus が down の行と "." を含む名前）。ifDescr は「名前 + description」になるので IF の鍵は ifName にする。
+#（app/grafana/provisioning/alerting/netops-prometheus.yaml。ifAdminStatus が down の行と "." を含む名前）。ifDescr は「名前 + description」になるので IF の鍵は ifName にする。
 
 [agent]
   interval = "10s"
@@ -99,8 +99,8 @@
 # ユーザーとパスワードは環境変数 GNMI_USERNAME / GNMI_PASSWORD（lab は containerlab が入れる既定で、lab だけの公開既定値。実機なら SSM のパラメータを書き換える）。
 # source タグは購読先のアドレス（機器の管理 IP。Splunk のアラートアクションがこれと device map で機器名を引く）。パスの鍵（peer-address など）はタグになる。
 # on_change は購読の直後に今の状態を全部送り、その後は変わったときだけ送る。sample は sample_interval ごと。
-# Splunk の保存済みサーチ（splunk/netops_alerts の netops_gnmi）は bgp_neighbor の session_state != established を bgp_down、isis_interface の
-# oper_state != up を isis_down として SNS に出し、graph の Lambda が Neptune の bgp_session / isis_adjacency の頂点を DOWN にする（graph/status_handler.py）。
+# Splunk の保存済みサーチ（app/splunk/netops_alerts の netops_gnmi）は bgp_neighbor の session_state != established を bgp_down、isis_interface の
+# oper_state != up を isis_down として SNS に出し、graph の Lambda が Neptune の bgp_session / isis_adjacency の頂点を DOWN にする（app/graph/status_handler.py）。
 # 実測（2026-09-27、SR Linux 26.7.2 / Telegraf 1.40）: bgp_neighbor はタグ peer_address、field session_state。isis_interface はタグ interface_name
 # （ethernet-1/1.0。サブインタフェース。system0.0 も来る）、field oper_state（up / down）
 [[inputs.gnmi]]
@@ -254,9 +254,9 @@
   timeout = "5s"
 
 # ---- 機器のログ（udp。ファシリティは本番の Cisco に合わせて local7）を受ける。ポートは lab.sh の LOG_PORT と
-# terraform/pipeline/lab の local.log_port と同じ。lab の EC2 が 203.0.113.1:5140 宛てを NLB へ DNAT し、NLB がここへ渡すので、送り元は機器の管理 IP のまま。
+# IaC/terraform/aws-managed/pipeline/lab の local.log_port と同じ。lab の EC2 が 203.0.113.1:5140 宛てを NLB へ DNAT し、NLB がここへ渡すので、送り元は機器の管理 IP のまま。
 # 形式は telegraf.sh render が SYSLOG_STANDARD で埋める。既定は RFC3164（本番の Cisco IOS の BSD 形式）。lab の SR Linux の
-# system logging remote-server は RFC 5424 なので、lab/lab.sh telegraf run は RFC5424 を渡す。ops/up.sh（stream の syslog_standard）は deploy.env の
+# system logging remote-server は RFC 5424 なので、app/containerlab/lab.sh telegraf run は RFC5424 を渡す。ops/up.sh（stream の syslog_standard）は deploy.env の
 # SYSLOG_STANDARD（既定 RFC3164）を渡す（lab のログまで見るなら RFC5424）。
 # HOSTNAME は SR Linux の host-name（= sysName）なので、metrics / traps と同じタグ名 sysName に付け替える（下の processors.rename）。
 # Cisco IOS の既定のヘッダー（シーケンス番号や * 付きの時刻、ホスト名の有無）が RFC3164 でどう解析されるかは実機で確かめていない
@@ -360,7 +360,7 @@
 # <<< sink kafka
 
 # >>> sink stdout
-# ---- 標準出力へ（デバッグ用の EC2。cloudformation/lab-debug.yaml。MSK が無いので docker logs で見る。sudo lab telegraf logs）。
+# ---- 標準出力へ（デバッグ用の EC2。IaC/cloudformation/lab-debug.yaml。MSK が無いので docker logs で見る。sudo lab telegraf logs）。
 # 形は MSK に載るものと同じ（json、秒の timestamp）。トピックの代わりに name で見分ける。lab_* が出ていたら lab_gnmi.star で変換できなかったもの
 [[outputs.file]]
   files = ["stdout"]
@@ -368,7 +368,7 @@
   json_timestamp_units = "1s"
 # <<< sink stdout
 
-# ---- 生きているかの口。NLB のヘルスチェック（terraform/pipeline/stream の telegraf.tf。HTTP 8080。dialout のタスク）がここを見る。
+# ---- 生きているかの口。NLB のヘルスチェック（IaC/terraform/aws-managed/pipeline/stream の telegraf.tf。HTTP 8080。dialout のタスク）がここを見る。
 # 条件を書かないので、Telegraf が動いていれば 200 を返す。metric は system だけ通す（全部を流し込まない）。
 # ポーリングを止めている（SNMP_POLL=0）と system は来ないが、何も届いていない間は default_status（200）を返すので、ヘルスチェックは通る
 [[outputs.health]]

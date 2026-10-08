@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # OSS 版（cycle 005「マネージドを OSS に置き換えた環境を作る」）を 1 本で起こす。マネージド版（ops/up.sh）と同じアカウントに並べて立てられる。
-#   リソース名の接頭辞と Project タグは <owner>-nwc-oss（マネージド版は <owner>-nwc-poc）。ルートは oss/terraform/ の下で、
-#   state も oss/terraform/<ルート>/terraform.tfstate に置く（マネージド版の terraform/ の state とは別）。消すのは oss/ops/down.sh。
+#   リソース名の接頭辞と Project タグは <owner>-nwc-oss（マネージド版は <owner>-nwc-poc）。ルートは IaC/terraform/oss/ の下で、
+#   state も IaC/terraform/oss/<ルート>/terraform.tfstate に置く（マネージド版の IaC/terraform/aws-managed/ の state とは別）。消すのは oss/ops/down.sh。
 #   作るのはマネージド版の AGENT=1 PIPELINE=1 WORKFLOW=1 と同じ範囲で、いつも全部: base/ecr → base/core → agent（AgentCore Runtime）→ Web の部品
-#   → pipeline/lab → pipeline/stream（Kafka は MSK でなく ECS の KRaft 3 台。oss/terraform/pipeline/stream/kafka.tf）
+#   → pipeline/lab → pipeline/stream（Kafka は MSK でなく ECS の KRaft 3 台。IaC/terraform/oss/pipeline/stream/kafka.tf）
 #   → pipeline/graph（Neo4j + GDS の ECS と status の Lambda。上がったら lab の定義からトポロジを入れる）→ pipeline/nautobot
 #   → pipeline/analytics（Spark・OpenSearch・VictoriaMetrics・Splunk の ECS と S3 Tables）→ workflow（Temporal のワーカーと AgentCore Gateway）。
 #   Spark のタスクは、OpenSearch・VictoriaMetrics が安定し Splunk が HEALTHY になってから起こす。最後に Web（8080）へのポートフォワーディングを開く。
@@ -37,7 +37,7 @@ cd "$(dirname "$0")/../.."
 . ops/common.sh
 . ops/up-common.sh
 . oss/ops/roll-nodes.sh   # Kafka と OpenSearch の台を 1 台ずつ入れ替える（roll_nodes。手順 7-2 と 7-4）
-TF_DIR=oss/terraform   # tf / tf_apply が -chdir で入るルートの親。マネージド版の terraform/ には触らない
+TF_DIR=IaC/terraform/oss   # tf / tf_apply が -chdir で入るルートの親。マネージド版の IaC/terraform/aws-managed/ には触らない
 OPS_DIR=oss/ops        # SSM のパラメータのタグ ManagedBy=oss/ops/up.sh（oss/ops/down.sh はこのタグのものだけ消す）
 TF_LOG_NAME=tf-oss     # terraform のログは ops/logs/tf-oss-<ルート>-<apply|destroy>.log
 TF_INIT_LOCKFILE=readonly  # init は lock を書き換えない（lock はマネージド版へのシンボリックリンク。ops/common.sh の tf_init_root）
@@ -151,7 +151,7 @@ ROOTS="base/ecr base/core agent pipeline/lab pipeline/stream pipeline/graph pipe
 ENDPOINTS="ssm ssmmessages ecr.api ecr.dkr logs s3tables sns kinesis-firehose bedrock-runtime bedrock-agentcore ecs sqs bedrock-agentcore.gateway athena"
 
 # ---- 1. ECR --------------------------------------------------------------------
-log "1. ECR リポジトリ（oss/terraform/base/ecr）"
+log "1. ECR リポジトリ（IaC/terraform/oss/base/ecr）"
 tf_apply base/ecr
 REPO=$(tf base/ecr output -raw agent_repository_url); echo "REPO=$REPO"
 REG="${REPO%%/*}"
@@ -162,7 +162,7 @@ NEED_LAB=""; NEED_TELEGRAF=""; NEED_KAFKA_UI=""; NEED_OSS=""; NEED_OSS_BUILD="";
 NEED_AGENT=""; NEED_WORKER=""; NEED_TEMPORAL=""; NEED_NAUTOBOT=""; NEED_REDIS=""; NEED_GRAFANA=""
 if ! ecr_has "$PREFIX-lab-srlinux" "$SRLINUX_TAG" || ! ecr_has "$PREFIX-lab-multitool" "$MULTITOOL_TAG"; then NEED_LAB=1
 else echo "lab-srlinux:$SRLINUX_TAG と lab-multitool:$MULTITOOL_TAG はある"; fi
-TELEGRAF_TAG=$(telegraf_tag) || die "telegraf/ のタグを作れなかった"
+TELEGRAF_TAG=$(telegraf_tag) || die "app/telegraf/ のタグを作れなかった"
 if ecr_has "$PREFIX-telegraf" "$TELEGRAF_TAG"; then echo "telegraf:$TELEGRAF_TAG はある"; else NEED_TELEGRAF=1; fi
 if ecr_has "$PREFIX-kafka-ui" "$OSS_KAFKA_UI_TAG"; then echo "kafka-ui:$OSS_KAFKA_UI_TAG はある"; else NEED_KAFKA_UI=1; fi
 # ルートが使う OSS のイメージ（oss/ops/oss-images.sh の OSS_IMAGES。stream の kafka、analytics の opensearch / vmstorage vminsert vmselect / spark、graph の neo4j）
@@ -172,25 +172,25 @@ for name in $OSS_IMAGES; do
     echo "$name:$tag はある"
   else
     NEED_OSS=1
-    case "$name" in spark | neo4j) NEED_OSS_BUILD=1 ;; esac   # この 2 つは写すのでなく spark/・neo4j/ をビルドする（arm64）
+    case "$name" in spark | neo4j) NEED_OSS_BUILD=1 ;; esac   # この 2 つは写すのでなく app/spark/・app/neo4j/ をビルドする（arm64）
   fi
 done
-SPARK_TAG=$(oss_image_tag spark) || die "spark/ のタグを作れなかった"
-NEO4J_TAG=$(oss_image_tag neo4j) || die "neo4j/ のタグを作れなかった"
-# Splunk はマネージド版と同じイメージ（splunk/ をビルドして <接頭辞>-splunk に置く）。SPLUNK_TAG と NEED_SPLUNK（ops/up-common.sh）
+SPARK_TAG=$(oss_image_tag spark) || die "app/spark/ のタグを作れなかった"
+NEO4J_TAG=$(oss_image_tag neo4j) || die "app/neo4j/ のタグを作れなかった"
+# Splunk はマネージド版と同じイメージ（app/splunk/ をビルドして <接頭辞>-splunk に置く）。SPLUNK_TAG と NEED_SPLUNK（ops/up-common.sh）
 splunk_image_check
-# Grafana もマネージド版と同じイメージ（grafana/ をビルドして <接頭辞>-grafana に置く。タグは <版>-<grafana/ のハッシュ>）。OSS 版はいつも作る
-GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" grafana) || die "grafana/ のタグを作れなかった"
+# Grafana もマネージド版と同じイメージ（app/grafana/ をビルドして <接頭辞>-grafana に置く。タグは <版>-<app/grafana/ のハッシュ>）。OSS 版はいつも作る
+GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" app/grafana) || die "app/grafana/ のタグを作れなかった"
 if ecr_has "$PREFIX-grafana" "$GRAFANA_TAG"; then echo "grafana:$GRAFANA_TAG はある"; else NEED_GRAFANA=1; fi
 # agent・worker・Temporal・Nautobot・Redis はマネージド版と同じ中身を、OSS 版の接頭辞のリポジトリに置く（関数は ops/up-common.sh）。
-# agent と worker は依存が違う（agent/・workflow/ の requirements-oss.txt。Neo4j のドライバー入り）
+# agent と worker は依存が違う（app/agentcore/・app/temporal/ の requirements-oss.txt。Neo4j のドライバー入り）
 if ecr_has "$PREFIX-agent" "$IMAGE_TAG"; then echo "agent:$IMAGE_TAG はある（作り直すなら IMAGE_TAG を変える）"; else NEED_AGENT=1; fi
 if ecr_has "$PREFIX-worker" "$IMAGE_TAG"; then echo "worker:$IMAGE_TAG はある"; else NEED_WORKER=1; fi
 if ecr_has "$PREFIX-temporal" "$TEMPORAL_TAG"; then echo "temporal:$TEMPORAL_TAG はある"; else NEED_TEMPORAL=1; fi
-# Nautobot のタグは、イメージに入る材料（nautobot/ と agent/graph.py・toolkit.py と lab の定義）の中身から作る
+# Nautobot のタグは、イメージに入る材料（app/nautobot/ と app/agentcore/graph.py・toolkit.py と lab の定義）の中身から作る
 NAUTOBOT_CTX=$(mktemp -d "${TMPDIR:-/tmp}/$PREFIX-nautobot.XXXXXX") || die "一時ディレクトリを作れない（TMPDIR）"
-nautobot_context "$NAUTOBOT_CTX" || die "Nautobot のイメージの材料（nautobot/ と agent/graph.py・toolkit.py と lab の定義）を集められなかった"
-NAUTOBOT_TAG=$(dir_tag "$NAUTOBOT_VERSION" "$NAUTOBOT_CTX") || die "nautobot/ のタグを作れなかった"
+nautobot_context "$NAUTOBOT_CTX" || die "Nautobot のイメージの材料（app/nautobot/ と app/agentcore/graph.py・toolkit.py と lab の定義）を集められなかった"
+NAUTOBOT_TAG=$(dir_tag "$NAUTOBOT_VERSION" "$NAUTOBOT_CTX") || die "app/nautobot/ のタグを作れなかった"
 if ecr_has "$PREFIX-nautobot" "$NAUTOBOT_TAG"; then echo "nautobot:$NAUTOBOT_TAG はある"; else NEED_NAUTOBOT=1; fi
 if ecr_has "$PREFIX-redis" "$REDIS_TAG"; then echo "redis:$REDIS_TAG はある"; else NEED_REDIS=1; fi
 if [ -z "$NEED_LAB$NEED_TELEGRAF$NEED_KAFKA_UI$NEED_OSS$NEED_SPLUNK$NEED_GRAFANA$NEED_AGENT$NEED_WORKER$NEED_TEMPORAL$NEED_NAUTOBOT$NEED_REDIS" ]; then
@@ -215,7 +215,7 @@ else
     mirror_image "$OSS_KAFKA_UI_IMAGE:$OSS_KAFKA_UI_TAG" "$REG/$PREFIX-kafka-ui:$OSS_KAFKA_UI_TAG" || die "kafka-ui のイメージを ECR に置けなかった"
   fi
   if [ -n "$NEED_OSS" ]; then
-    # 公開イメージ（Fargate は VPC の中から ECR しか引けないので写す。arm64）と、spark/・neo4j/ のビルド（arm64）
+    # 公開イメージ（Fargate は VPC の中から ECR しか引けないので写す。arm64）と、app/spark/・app/neo4j/ のビルド（arm64）
     # shellcheck disable=SC2086
     mirror_oss_images "$REG" "$PREFIX" $OSS_IMAGES || die "OSS 版のイメージ（$OSS_IMAGES）を ECR に置けなかった"
   fi
@@ -226,16 +226,16 @@ else
     build_grafana   # arm64（ops/up-common.sh。マネージド版と共通）
   fi
   if [ -n "$NEED_AGENT" ]; then
-    build_agent "$REPO:$IMAGE_TAG" requirements-oss.txt   # Runtime は agent/graph.py を GRAPH_BACKEND=neo4j で使うので、Neo4j のドライバーを入れる
+    build_agent "$REPO:$IMAGE_TAG" requirements-oss.txt   # Runtime は app/agentcore/graph.py を GRAPH_BACKEND=neo4j で使うので、Neo4j のドライバーを入れる
   fi
   if [ -n "$NEED_WORKER" ]; then
-    build_worker "$IMAGE_TAG" requirements-oss.txt   # ワーカーは agent/graph.py を GRAPH_BACKEND=neo4j で使うので、Neo4j のドライバーを入れる
+    build_worker "$IMAGE_TAG" requirements-oss.txt   # ワーカーは app/agentcore/graph.py を GRAPH_BACKEND=neo4j で使うので、Neo4j のドライバーを入れる
   fi
   if [ -n "$NEED_TEMPORAL" ]; then
     mirror_temporal
   fi
   if [ -n "$NEED_NAUTOBOT" ]; then
-    build_nautobot "$NAUTOBOT_TAG" "$NAUTOBOT_CTX" requirements-oss.txt   # Job は agent/graph.py を GRAPH_BACKEND=neo4j で使うので、Neo4j のドライバーを入れる
+    build_nautobot "$NAUTOBOT_TAG" "$NAUTOBOT_CTX" requirements-oss.txt   # Job は app/agentcore/graph.py を GRAPH_BACKEND=neo4j で使うので、Neo4j のドライバーを入れる
   fi
   if [ -n "$NEED_REDIS" ]; then
     mirror_image "redis:$REDIS_TAG" "$REG/$PREFIX-redis:$REDIS_TAG" || die "redis のイメージを ECR に置けなかった"
@@ -243,7 +243,7 @@ else
 fi
 
 # ---- 3. 土台 --------------------------------------------------------------------
-log "3. 土台（oss/terraform/base/core。VPC / Web の EC2 / バケット / ロール / Kafka のデータの EFS。初回は 3〜5 分）"
+log "3. 土台（IaC/terraform/oss/base/core。VPC / Web の EC2 / バケット / ロール / Kafka のデータの EFS。初回は 3〜5 分）"
 MAIN_VARS=()
 if [ -n "${VPC_CIDR:-}" ];    then MAIN_VARS+=(-var "vpc_cidr=$VPC_CIDR"); fi
 if [ -n "${MDT_SOURCE_CIDRS:-}" ]; then MAIN_VARS+=(-var "mdt_source_cidrs=[\"$(printf '%s' "$MDT_SOURCE_CIDRS" | tr -d ' ' | sed 's/,/","/g')\"]"); fi
@@ -257,27 +257,27 @@ KB_BUCKET=$(tf base/core output -raw kb_bucket_name)
 echo "INSTANCE_ID=$INSTANCE_ID KB_BUCKET=$KB_BUCKET"
 
 # ---- 3-3. agent ----------------------------------------------------------------
-# マネージド版と同じルート（oss/terraform/agent は terraform/agent へのリンク）。Knowledge Base は作らない（OpenSearch Serverless を使うので OSS 版には入れない）
-log "3-3. agent（oss/terraform/agent。AgentCore Runtime + ガードレール。初回は 5〜10 分）"
+# マネージド版と同じルート（IaC/terraform/oss/agent は IaC/terraform/aws-managed/agent へのリンク）。Knowledge Base は作らない（OpenSearch Serverless を使うので OSS 版には入れない）
+log "3-3. agent（IaC/terraform/oss/agent。AgentCore Runtime + ガードレール。初回は 5〜10 分）"
 tf_apply agent -var "agent_image_tag=$IMAGE_TAG" -var "runtime_az_num=$RUNTIME_AZ_NUM" -var "lambda_az_num=$LAMBDA_AZ_NUM"
 LOG_GROUP=$(tf agent output -raw runtime_log_group_name)
 echo "Runtime の ARN は SSM の $(tf agent output -raw runtime_arn_parameter_name) に置いた（Web は 60 秒以内に拾う）"
 
 # ---- 4. Web の部品 ------------------------------------------------------------------
-# OSS 版の Web は web/requirements-oss.txt（マネージド版の依存 + Neo4j のドライバー）で入れる（terraform/base/core の web.tf の graph_backend）。
+# OSS 版の Web は app/dashboard/requirements-oss.txt（マネージド版の依存 + Neo4j のドライバー）で入れる（IaC/terraform/aws-managed/base/core の web.tf の graph_backend）。
 # wheel の置き場はマネージド版の wheels/ と分ける（同じフォルダから両方の up.sh を打っても混ざらない）
-log "4-1. wheel（arm64 / cp313。web/requirements-oss.txt）"
-fetch_wheels wheels-oss web/requirements-oss.txt web/requirements.txt   # requirements-oss.txt は -r で requirements.txt を読むので、両方の版を見る
+log "4-1. wheel（arm64 / cp313。app/dashboard/requirements-oss.txt）"
+fetch_wheels wheels-oss app/dashboard/requirements-oss.txt app/dashboard/requirements.txt   # requirements-oss.txt は -r で requirements.txt を読むので、両方の版を見る
 
 log "4-2. Web の部品を s3://$KB_BUCKET/web/ に置く"
-for f in web/*.py; do aws s3 cp --only-show-errors "$f" "s3://$KB_BUCKET/web/${f#web/}"; done
-aws s3 cp --only-show-errors web/requirements.txt "s3://$KB_BUCKET/web/requirements.txt"   # requirements-oss.txt が -r で読む
-aws s3 cp --only-show-errors web/requirements-oss.txt "s3://$KB_BUCKET/web/requirements-oss.txt"
-for f in toolkit topology graph proposals; do aws s3 cp --only-show-errors "agent/$f.py" "s3://$KB_BUCKET/web/$f.py"; done
-aws s3 cp --only-show-errors agent/data/ "s3://$KB_BUCKET/web/data/" --recursive
+for f in app/dashboard/*.py; do aws s3 cp --only-show-errors "$f" "s3://$KB_BUCKET/web/${f#app/dashboard/}"; done
+aws s3 cp --only-show-errors app/dashboard/requirements.txt "s3://$KB_BUCKET/web/requirements.txt"   # requirements-oss.txt が -r で読む
+aws s3 cp --only-show-errors app/dashboard/requirements-oss.txt "s3://$KB_BUCKET/web/requirements-oss.txt"
+for f in toolkit topology graph proposals; do aws s3 cp --only-show-errors "app/agentcore/$f.py" "s3://$KB_BUCKET/web/$f.py"; done
+aws s3 cp --only-show-errors app/agentcore/data/ "s3://$KB_BUCKET/web/data/" --recursive
 aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels-oss/ "s3://$KB_BUCKET/web/wheels/"
 
-log "4-4. EC2 を再起動して Web を立てる（初回の apply 時点では web/ が無いため）"
+log "4-4. EC2 を再起動して Web を立てる（初回の apply 時点では app/dashboard/ が無いため）"
 wait_ssm_online "$INSTANCE_ID"
 run_on_instance "$INSTANCE_ID" "true"          # 初回の user_data が終わるのを待ってから再起動する
 aws ec2 reboot-instances --region "$REGION" --instance-ids "$INSTANCE_ID"
@@ -295,15 +295,15 @@ upload_lab "$KB_BUCKET" || die "lab の材料を s3://$KB_BUCKET/lab/ に置け�
 
 # ---- 6. lab ---------------------------------------------------------------------
 LAB_WARN=""
-LAB_NODES=$(grep -cE '^ *kind: (nokia_srlinux|linux)$' lab/splab.clab.yml.in)   # containerlab のノードの数
-log "6. lab（oss/terraform/pipeline/lab。EC2 の中でトポロジが上がるまで 10 分ほど。forward_to_telegraf=true）"
+LAB_NODES=$(grep -cE '^ *kind: (nokia_srlinux|linux)$' app/containerlab/splab.clab.yml.in)   # containerlab のノードの数
+log "6. lab（IaC/terraform/oss/pipeline/lab。EC2 の中でトポロジが上がるまで 10 分ほど。forward_to_telegraf=true）"
 tf_apply pipeline/lab -var forward_to_telegraf=true
 LAB_INSTANCE_ID=$(tf pipeline/lab output -raw lab_instance_id); echo "LAB_INSTANCE_ID=$LAB_INSTANCE_ID"
 
 # ---- 7. stream ------------------------------------------------------------------
-log "7. stream（oss/terraform/pipeline/stream。Kafka は ECS の KRaft 3 台、Telegraf と Kafbat UI も ECS のタスク）"
-SNMP_AGENTS=$("${PY[@]}" lab/lab_topology.py lab --snmp-agents) || die "lab/lab_topology.py が lab の定義からポーリング先を作れなかった"
-GNMI_TARGETS=$("${PY[@]}" lab/lab_topology.py lab --gnmi-targets) || die "lab/lab_topology.py が lab の定義から gNMI の購読先を作れなかった"
+log "7. stream（IaC/terraform/oss/pipeline/stream。Kafka は ECS の KRaft 3 台、Telegraf と Kafbat UI も ECS のタスク）"
+SNMP_AGENTS=$("${PY[@]}" app/containerlab/lab_topology.py app/containerlab --snmp-agents) || die "app/containerlab/lab_topology.py が lab の定義からポーリング先を作れなかった"
+GNMI_TARGETS=$("${PY[@]}" app/containerlab/lab_topology.py app/containerlab --gnmi-targets) || die "app/containerlab/lab_topology.py が lab の定義から gNMI の購読先を作れなかった"
 if [ -n "$SNMP_POLL" ]; then
   SNMP_POLL_TF=true
   echo "Telegraf の SNMP: trap を受け、ポーリングもする（SNMP_POLL=1）。ポーリング先: $SNMP_AGENTS"
@@ -353,7 +353,7 @@ log "7-2c. Kafka の ECS のサービス 3 つ（kafka-1〜3）が安定する�
 KAFKA_CLUSTER=$(tf pipeline/stream output -raw kafka_ecs_cluster_name)
 KAFKA_SERVICES=$(tf pipeline/stream output -json kafka_service_names \
   | "${PY[@]}" -c 'import json, sys; print(" ".join(v for _, v in sorted(json.load(sys.stdin).items())))') \
-  || die "oss/terraform/pipeline/stream の output kafka_service_names を読めなかった"
+  || die "IaC/terraform/oss/pipeline/stream の output kafka_service_names を読めなかった"
 # shellcheck disable=SC2086
 if aws ecs wait services-stable --region "$REGION" --cluster "$KAFKA_CLUSTER" --services $KAFKA_SERVICES; then
   echo "Kafka は動いている（ログ: aws logs tail --region $REGION $(tf pipeline/stream output -raw kafka_log_group_name) --follow）"
@@ -371,27 +371,27 @@ fi
 
 # ---- 7-3. graph ----------------------------------------------------------------------
 # Nautobot と workflow が graph の output（neo4j_uri）を読むので、その 2 つより前に当てる（マネージド版の Neptune と同じ位置）
-log "7-3. graph（oss/terraform/pipeline/graph。Neo4j + GDS の ECS と status の Lambda）"
+log "7-3. graph（IaC/terraform/oss/pipeline/graph。Neo4j + GDS の ECS と status の Lambda）"
 # neo4j ユーザーのパスワード（Neo4j のタスクが ECS の secrets で受け、status の Lambda と Web が SSM から読む）。値は出さない
 ensure_secret "/$PREFIX/neo4j-password" password "Neo4j password of the neo4j user (created by oss/ops/up.sh)"
 # status の Lambda（arm64）のレイヤーの中身。ドライバは純 Python なので、どの PC でも同じものができる（sync.tf の locals の注記）。
-# graph/requirements-oss.txt と pip に渡す platform / python の版のハッシュを .build/neo4j-layer.sha256 に残し、同じなら作り直さない
+# app/graph/requirements-oss.txt と pip に渡す platform / python の版のハッシュを .build/neo4j-layer.sha256 に残し、同じなら作り直さない
 # （毎回 pip を回さない。zip の中身は変わらない。版を変えたらハッシュが変わって作り直す）。
 # platform と python の版は、pip に渡すのもハッシュに入れるのもこの 2 つの変数（別々に書くと片方だけ変えてスタンプが合ったままになる）。
 # LAYER_PYVER は sync.tf の Lambda の runtime（python3.13）と同じにする（tests/test_oss_ops.py が突き合わせる）。片方だけ変えると読めないレイヤーになる
 LAYER_PLATFORM=manylinux2014_aarch64; LAYER_PYVER=3.13
-LAYER_SHA=$( { cat graph/requirements-oss.txt; echo "$LAYER_PLATFORM $LAYER_PYVER"; } \
+LAYER_SHA=$( { cat app/graph/requirements-oss.txt; echo "$LAYER_PLATFORM $LAYER_PYVER"; } \
   | "${PY[@]}" -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
-if [ -d oss/terraform/pipeline/graph/.build/neo4j-layer/python/neo4j ] \
-   && [ "$(cat oss/terraform/pipeline/graph/.build/neo4j-layer.sha256 2>/dev/null)" = "$LAYER_SHA" ]; then
-  echo "Neo4j のドライバのレイヤー（oss/terraform/pipeline/graph/.build/neo4j-layer）はある（graph/requirements-oss.txt は変わっていない）"
+if [ -d IaC/terraform/oss/pipeline/graph/.build/neo4j-layer/python/neo4j ] \
+   && [ "$(cat IaC/terraform/oss/pipeline/graph/.build/neo4j-layer.sha256 2>/dev/null)" = "$LAYER_SHA" ]; then
+  echo "Neo4j のドライバのレイヤー（IaC/terraform/oss/pipeline/graph/.build/neo4j-layer）はある（app/graph/requirements-oss.txt は変わっていない）"
 else
   if command -v uv >/dev/null; then PIP="uv run --python 3.13 --with pip python -m pip"; else PIP="python3 -m pip"; fi
-  rm -rf oss/terraform/pipeline/graph/.build/neo4j-layer oss/terraform/pipeline/graph/.build/neo4j-layer.sha256
-  $PIP install --quiet --target oss/terraform/pipeline/graph/.build/neo4j-layer/python --only-binary=:all: \
-    --platform "$LAYER_PLATFORM" --python-version "$LAYER_PYVER" -r graph/requirements-oss.txt \
-    || die "Neo4j のドライバ（graph/requirements-oss.txt）を oss/terraform/pipeline/graph/.build/neo4j-layer/python に入れられなかった"
-  printf '%s\n' "$LAYER_SHA" > oss/terraform/pipeline/graph/.build/neo4j-layer.sha256
+  rm -rf IaC/terraform/oss/pipeline/graph/.build/neo4j-layer IaC/terraform/oss/pipeline/graph/.build/neo4j-layer.sha256
+  $PIP install --quiet --target IaC/terraform/oss/pipeline/graph/.build/neo4j-layer/python --only-binary=:all: \
+    --platform "$LAYER_PLATFORM" --python-version "$LAYER_PYVER" -r app/graph/requirements-oss.txt \
+    || die "Neo4j のドライバ（app/graph/requirements-oss.txt）を IaC/terraform/oss/pipeline/graph/.build/neo4j-layer/python に入れられなかった"
+  printf '%s\n' "$LAYER_SHA" > IaC/terraform/oss/pipeline/graph/.build/neo4j-layer.sha256
 fi
 # アラートの履歴は 7-4 の analytics の Firehose に送る（analytics はいつも作るので、いつも true。Firehose ができるのは 7-4 で、それまでは送れない）
 tf_apply pipeline/graph -var "neo4j_image_tag=$NEO4J_TAG" -var alert_history=true -var "lambda_az_num=$LAMBDA_AZ_NUM"
@@ -403,10 +403,10 @@ GRAPH_WARN=""
 GRAPH_CLUSTER=$(tf pipeline/graph output -raw graph_cluster_name); NEO4J_SERVICE=$(tf pipeline/graph output -raw neo4j_service_name)
 if aws ecs wait services-stable --region "$REGION" --cluster "$GRAPH_CLUSTER" --services "$NEO4J_SERVICE"; then
   echo "Neo4j は動いている（ログ: aws logs tail --region $REGION $(tf pipeline/graph output -raw neo4j_log_group_name) --follow）"
-  # マネージド版が Neptune に入れているのと同じ中身（lab/lab_topology.py が lab の定義から作る機器・回線・IP 層 / EVPN・BGP 層）を、同じ
-  # ops/seed_graph.py で入れる。Web の EC2 の上で打つ（Web の環境変数に GRAPH_BACKEND=neo4j があり、agent/graph.py が Neo4j に書く）
+  # マネージド版が Neptune に入れているのと同じ中身（app/containerlab/lab_topology.py が lab の定義から作る機器・回線・IP 層 / EVPN・BGP 層）を、同じ
+  # ops/seed_graph.py で入れる。Web の EC2 の上で打つ（Web の環境変数に GRAPH_BACKEND=neo4j があり、app/agentcore/graph.py が Neo4j に書く）
   log "7-3b. Neo4j が空なら lab の定義からトポロジを入れる（初期ロード。入っていれば何もしない）"
-  LAB_TOPOLOGY_B64=$("${PY[@]}" lab/lab_topology.py lab | base64 | tr -d '\n') || die "lab/lab_topology.py が lab の定義を読めなかった"
+  LAB_TOPOLOGY_B64=$("${PY[@]}" app/containerlab/lab_topology.py app/containerlab | base64 | tr -d '\n') || die "app/containerlab/lab_topology.py が lab の定義を読めなかった"
   run_on_instance "$INSTANCE_ID" "echo $(base64 < ops/seed_graph.py | tr -d '\n') | base64 -d | NAME_PREFIX=$PREFIX LAB_TOPOLOGY_B64=$LAB_TOPOLOGY_B64 /usr/bin/python3.13 -"
 else
   GRAPH_WARN="Neo4j のサービス（$NEO4J_SERVICE）が 10 分たっても安定しない。トポロジは入れていない。aws ecs list-tasks --region $REGION --cluster $GRAPH_CLUSTER --desired-status STOPPED とロググループ $(tf pipeline/graph output -raw neo4j_log_group_name) を見て、直ったら oss/ops/up.sh を打ち直す"
@@ -414,10 +414,10 @@ else
 fi
 
 # ---- 7-3c. nautobot ------------------------------------------------------------------
-# マネージド版と同じルート（oss/terraform/pipeline/nautobot は terraform/pipeline/nautobot へのリンク）。Job は Telegraf の取りにいく側の一覧（SSM）と、
+# マネージド版と同じルート（IaC/terraform/oss/pipeline/nautobot は IaC/terraform/aws-managed/pipeline/nautobot へのリンク）。Job は Telegraf の取りにいく側の一覧（SSM）と、
 # Neo4j の物理層と変更履歴を書く（graph の state に neo4j_uri があるので、ルートが GRAPH_BACKEND=neo4j・NEO4J_URI と secrets の NEO4J_PASSWORD を渡す）。
 # 7-3b で lab の定義から入れたトポロジに、起動時の同期（bootstrap.py）が Nautobot の中身を差分で合わせる（status と上の層は残る）
-log "7-3c. nautobot（oss/terraform/pipeline/nautobot。Aurora / RDS と ECS。初回は 15 分ほど）"
+log "7-3c. nautobot（IaC/terraform/oss/pipeline/nautobot。Aurora / RDS と ECS。初回は 15 分ほど）"
 NAUTOBOT_WARN=""
 ensure_nautobot_secrets
 tf_apply pipeline/nautobot -var "nautobot_image_tag=$NAUTOBOT_TAG" -var "redis_image_tag=$REDIS_TAG" -var "nautobot_db_az_num=$NAUTOBOT_DB_AZ_NUM"
@@ -433,7 +433,7 @@ else
 fi
 
 # ---- 7-4. analytics ----------------------------------------------------------------
-log "7-4. analytics（oss/terraform/pipeline/analytics。Spark・OpenSearch 3 台・VictoriaMetrics・Splunk の ECS と S3 Tables。格納先: iceberg / opensearch / prometheus / splunk）"
+log "7-4. analytics（IaC/terraform/oss/pipeline/analytics。Spark・OpenSearch 3 台・VictoriaMetrics・Splunk の ECS と S3 Tables。格納先: iceberg / opensearch / prometheus / splunk）"
 # OpenSearch の admin のパスワード（2.12 からの OPENSEARCH_INITIAL_ADMIN_PASSWORD は大文字・小文字・数字・記号を求める）。OpenSearch のタスクと
 # Spark のタスクが ECS の secrets で受ける。値は Terraform の state にも画面にも出さない（ops/up-common.sh）
 ensure_secret "/$PREFIX/opensearch-password" strong-password "OpenSearch admin password (created by oss/ops/up.sh)"
@@ -444,7 +444,7 @@ ensure_splunk_secrets "$SPLUNK_AZ_NUM"
 ensure_secret "/$PREFIX/grafana/admin-password" password "Grafana admin password (created by oss/ops/up.sh)"
 ensure_s3tables_catalog   # alert_events への Firehose（マネージド版の history.tf へのリンク）はこのカタログ越しにテーブルを引く
 # device map（別名=機器名,...）。Splunk のアラートアクションと Spark の prometheus / opensearch の sysName に使う（マネージド版と同じ）
-DEVICE_MAP=$("${PY[@]}" lab/lab_topology.py lab --device-map) || die "lab/lab_topology.py が lab の定義から device map を作れなかった"
+DEVICE_MAP=$("${PY[@]}" app/containerlab/lab_topology.py app/containerlab --device-map) || die "app/containerlab/lab_topology.py が lab の定義から device map を作れなかった"
 # Spark のサービスは desired_count=0 で作る（spark.tf。書き先が上がる前に起こさない）。起こすのは 7-4c
 ANALYTICS_VARS=(-var 'sinks=["iceberg","opensearch","prometheus","splunk"]'
   -var "spark_image_tag=$SPARK_TAG" -var "opensearch_image_tag=$OSS_OPENSEARCH_TAG" -var "victoriametrics_image_tag=$OSS_VM_TAG"
@@ -464,10 +464,10 @@ AN_CLUSTER=$(tf pipeline/analytics output -raw analytics_cluster_name)
 log "7-4b. OpenSearch（3 台）と VictoriaMetrics（vmstorage / vminsert / vmselect）の ECS のサービスが安定するのを待つ"
 OS_SERVICES=$(tf pipeline/analytics output -json opensearch_service_names \
   | "${PY[@]}" -c 'import json, sys; print(" ".join(v for _, v in sorted(json.load(sys.stdin).items())))') \
-  || die "oss/terraform/pipeline/analytics の output opensearch_service_names を読めなかった"
+  || die "IaC/terraform/oss/pipeline/analytics の output opensearch_service_names を読めなかった"
 VM_SERVICES=$(tf pipeline/analytics output -json victoriametrics_service_names \
   | "${PY[@]}" -c 'import json, sys; print(" ".join(v for _, v in sorted(json.load(sys.stdin).items())))') \
-  || die "oss/terraform/pipeline/analytics の output victoriametrics_service_names を読めなかった"
+  || die "IaC/terraform/oss/pipeline/analytics の output victoriametrics_service_names を読めなかった"
 # shellcheck disable=SC2086
 if aws ecs wait services-stable --region "$REGION" --cluster "$AN_CLUSTER" --services $OS_SERVICES; then
   echo "OpenSearch は動いている（ログ: aws logs tail --region $REGION $(tf pipeline/analytics output -raw opensearch_log_group_name) --follow）"
@@ -522,7 +522,7 @@ fi
 log "7-4c. Spark の ECS のサービス（iceberg / splunk / http）を起こす（desired-count 1）"
 SPARK_SERVICES=$(tf pipeline/analytics output -json spark_service_names \
   | "${PY[@]}" -c 'import json, sys; print(" ".join(v for _, v in sorted(json.load(sys.stdin).items())))') \
-  || die "oss/terraform/pipeline/analytics の output spark_service_names を読めなかった"
+  || die "IaC/terraform/oss/pipeline/analytics の output spark_service_names を読めなかった"
 for svc in $SPARK_SERVICES; do
   aws ecs update-service --region "$REGION" --cluster "$AN_CLUSTER" --service "$svc" --desired-count 1 --query 'service.serviceName' --output text
 done
@@ -533,9 +533,9 @@ log "7-5. Web を起こし直す（graph と analytics の値を読ませる）"
 run_on_instance "$INSTANCE_ID" "systemctl restart $PREFIX-web.service; $WEB_ACTIVE"
 
 # ---- 8. workflow -------------------------------------------------------------------
-# マネージド版と同じルート（oss/terraform/workflow は terraform/workflow へのリンク）。graph の output に neo4j_uri があるので、ワーカーとツールの Lambda は
+# マネージド版と同じルート（IaC/terraform/oss/workflow は IaC/terraform/aws-managed/workflow へのリンク）。graph の output に neo4j_uri があるので、ワーカーとツールの Lambda は
 # GRAPH_BACKEND=neo4j で動く。OpenSearch Serverless と AMP の output は OSS 版の analytics に無いので、それを読むツールは値なしで作られる
-log "8. workflow（oss/terraform/workflow。Temporal のワーカーの ECS と AgentCore Gateway）"
+log "8. workflow（IaC/terraform/oss/workflow。Temporal のワーカーの ECS と AgentCore Gateway）"
 tf_apply workflow -var "worker_image_tag=$IMAGE_TAG" -var "lambda_az_num=$LAMBDA_AZ_NUM"
 WF_CLUSTER=$(tf workflow output -raw cluster_name); WF_SERVICE=$(tf workflow output -raw service_name)
 # services-stable は 1 回で最大 10 分。イメージの取得や Temporal の起動が遅い回に備えて 2 回まで待ち、それでも安定しなければ警告を出して先へ進む

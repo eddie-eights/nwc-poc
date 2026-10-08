@@ -1,5 +1,5 @@
 # nwc-oss - VictoriaMetrics of the OSS build (cycle 005). The managed build makes an Amazon Managed Service for Prometheus
-# workspace (terraform/pipeline/analytics/sinks.tf); this one runs the cluster version of VictoriaMetrics on ECS on Fargate
+# workspace (IaC/terraform/aws-managed/pipeline/analytics/sinks.tf); this one runs the cluster version of VictoriaMetrics on ECS on Fargate
 # instead: vminsert 1, vmselect 1 and vmstorage 3 (one ECS service and one EFS access point each), replication factor 2.
 
 # ---------------------------------------------------------------- VictoriaMetrics のクラスター（ECS on Fargate）
@@ -10,7 +10,7 @@
 #     台 N はサブネットの N 番目（a / b / c。AZ ごとに 1 台）。VictoriaMetrics の公式は EFS（NFS）に置けると書いている
 # 複製数 2 は vmstorage が 2N−1 = 3 台なら 1 台止まっても書けて、読んだ結果も欠けない。
 # 名前は Cloud Map の <名前>.<接頭辞>.internal（名前空間は ecs.tf）。認証は無い（マネージド版の SigV4 の代わり。Spark は PROMETHEUS_AUTH=none）。
-# 届くのは SG で絞った相手だけ（terraform/base/core の oss.tf の通信の表: Spark → 8480、Grafana・AgentCore・Lambda → 8481、
+# 届くのは SG で絞った相手だけ（IaC/terraform/aws-managed/base/core の oss.tf の通信の表: Spark → 8480、Grafana・AgentCore・Lambda → 8481、
 # 3 つの部品どうし 8400〜8401、VictoriaMetrics → EFS 2049）。
 # vminsert は起動したとき vmstorage につなぎに行き、3 台につながる前に受けた行は 1 台にしか入らない（エンジニア3 が oss/compose で確かめた）。
 # そこで vminsert のタスクに待ちのコンテナ（wait-vmstorage）を置き、3 台が 8400 で受けるまで vminsert を起こさない（ECS のコンテナの dependsOn）。
@@ -59,7 +59,7 @@ variable "vmstorage_wait_seconds" {
 locals {
   vm_images    = { for c in ["vminsert", "vmselect", "vmstorage"] : c => "${try(data.terraform_remote_state.ecr.outputs.oss_repository_urls[c], "")}:${var.victoriametrics_image_tag}" }
   vm_log_group = "/ecs/${local.name_prefix}-victoriametrics"
-  # 土台（terraform/base/core の oss.tf）の SG と EFS。マネージド版の土台や古い state では無いので try にして、precondition で止める
+  # 土台（IaC/terraform/aws-managed/base/core の oss.tf）の SG と EFS。マネージド版の土台や古い state では無いので try にして、precondition で止める
   vm_sg_id               = try(data.terraform_remote_state.main.outputs.security_group_ids["victoriametrics"], "")
   vm_efs_file_system_id  = try(data.terraform_remote_state.main.outputs.efs_file_system_id, "")
   vm_efs_file_system_arn = "arn:${local.partition}:elasticfilesystem:${var.region}:${local.account_id}:file-system/${local.vm_efs_file_system_id}"
@@ -141,7 +141,7 @@ resource "aws_efs_access_point" "vmstorage" {
   lifecycle {
     precondition {
       condition     = local.vm_efs_file_system_id != ""
-      error_message = "terraform/base/core の state に efs_file_system_id が無いか空（マネージド版の土台か、oss.tf より前の土台）。oss/terraform/base/core を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/core の state に efs_file_system_id が無いか空（マネージド版の土台か、oss.tf より前の土台）。IaC/terraform/oss/base/core を先に apply する。"
     }
   }
 }
@@ -163,7 +163,7 @@ resource "aws_ecs_task_definition" "vmstorage" {
     cpu_architecture        = "ARM64"
   }
 
-  # EFS のポリシー（terraform/base/core の oss.tf）が TLS と IAM の無いマウントを拒むので、両方を有効にする
+  # EFS のポリシー（IaC/terraform/aws-managed/base/core の oss.tf）が TLS と IAM の無いマウントを拒むので、両方を有効にする
   volume {
     name = "storage"
 
@@ -207,7 +207,7 @@ resource "aws_ecs_task_definition" "vmstorage" {
   lifecycle {
     precondition {
       condition     = try(data.terraform_remote_state.ecr.outputs.oss_repository_urls["vmstorage"], "") != ""
-      error_message = "terraform/base/ecr の state に vmstorage のリポジトリが無い（project = nwc-oss でない ECR か、古い ECR）。oss/terraform/base/ecr を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/ecr の state に vmstorage のリポジトリが無い（project = nwc-oss でない ECR か、古い ECR）。IaC/terraform/oss/base/ecr を先に apply する。"
     }
   }
 }
@@ -241,11 +241,11 @@ resource "aws_ecs_service" "vmstorage" {
   lifecycle {
     precondition {
       condition     = local.vm_sg_id != ""
-      error_message = "terraform/base/core の state に victoriametrics の SG が無い（マネージド版の土台か、oss.tf より前の土台）。oss/terraform/base/core を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/core の state に victoriametrics の SG が無い（マネージド版の土台か、oss.tf より前の土台）。IaC/terraform/oss/base/core を先に apply する。"
     }
     precondition {
       condition     = each.value != ""
-      error_message = "terraform/base/core の state のサブネットが 3 つ無い（vmstorage は AZ ごとに 1 台で 3 つ要る）。"
+      error_message = "IaC/terraform/aws-managed/base/core の state のサブネットが 3 つ無い（vmstorage は AZ ごとに 1 台で 3 つ要る）。"
     }
   }
 
@@ -313,7 +313,7 @@ resource "aws_ecs_task_definition" "vminsert" {
   lifecycle {
     precondition {
       condition     = try(data.terraform_remote_state.ecr.outputs.oss_repository_urls["vminsert"], "") != ""
-      error_message = "terraform/base/ecr の state に vminsert のリポジトリが無い（project = nwc-oss でない ECR か、古い ECR）。oss/terraform/base/ecr を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/ecr の state に vminsert のリポジトリが無い（project = nwc-oss でない ECR か、古い ECR）。IaC/terraform/oss/base/ecr を先に apply する。"
     }
   }
 }
@@ -360,7 +360,7 @@ resource "aws_ecs_task_definition" "vmselect" {
   lifecycle {
     precondition {
       condition     = try(data.terraform_remote_state.ecr.outputs.oss_repository_urls["vmselect"], "") != ""
-      error_message = "terraform/base/ecr の state に vmselect のリポジトリが無い（project = nwc-oss でない ECR か、古い ECR）。oss/terraform/base/ecr を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/ecr の state に vmselect のリポジトリが無い（project = nwc-oss でない ECR か、古い ECR）。IaC/terraform/oss/base/ecr を先に apply する。"
     }
   }
 }
@@ -393,7 +393,7 @@ resource "aws_ecs_service" "vminsert" {
   lifecycle {
     precondition {
       condition     = local.vm_sg_id != ""
-      error_message = "terraform/base/core の state に victoriametrics の SG が無い（マネージド版の土台か、oss.tf より前の土台）。oss/terraform/base/core を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/core の state に victoriametrics の SG が無い（マネージド版の土台か、oss.tf より前の土台）。IaC/terraform/oss/base/core を先に apply する。"
     }
   }
 
@@ -432,7 +432,7 @@ resource "aws_ecs_service" "vmselect" {
   lifecycle {
     precondition {
       condition     = local.vm_sg_id != ""
-      error_message = "terraform/base/core の state に victoriametrics の SG が無い（マネージド版の土台か、oss.tf より前の土台）。oss/terraform/base/core を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/core の state に victoriametrics の SG が無い（マネージド版の土台か、oss.tf より前の土台）。IaC/terraform/oss/base/core を先に apply する。"
     }
   }
 
@@ -532,7 +532,7 @@ resource "aws_iam_role_policy" "victoriametrics_task" {
   })
 }
 
-# terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの全部に付ける
+# IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの全部に付ける
 resource "aws_iam_role_policy_attachment" "victoriametrics_perimeter" {
   for_each = local.sink_prometheus && local.perimeter_policy_arn != "" ? {
     execution = aws_iam_role.victoriametrics_execution[0].name
@@ -546,24 +546,24 @@ resource "aws_iam_role_policy_attachment" "victoriametrics_perimeter" {
 
 # ---------------------------------------------------------------- Prometheus の差し替え口（マネージド版は locals.tf・grafana.tf・outputs.tf が AMP の値で持つ）
 locals {
-  # Spark のジョブの remote write の書き先（spark/snmp_sinks.py が PROMETHEUS_AUTH=none でそのまま POST する）
+  # Spark のジョブの remote write の書き先（app/spark/snmp_sinks.py が PROMETHEUS_AUTH=none でそのまま POST する）
   prometheus_remote_write_url = local.sink_prometheus ? "http://vminsert.${local.service_namespace}:8480/insert/0/prometheus/api/v1/write" : ""
-  # PromQL の入口（Grafana の PROMETHEUS_URL。grafana/provisioning/datasources-oss/prometheus.yaml の http://<vmselect>:8481/select/0/prometheus）
+  # PromQL の入口（Grafana の PROMETHEUS_URL。app/grafana/provisioning/datasources-oss/prometheus.yaml の http://<vmselect>:8481/select/0/prometheus）
   prometheus_select_url = local.sink_prometheus ? "http://vmselect.${local.service_namespace}:8481/select/0/prometheus" : ""
-  # エージェントの道具（agent/evidence.py の PROMETHEUS_QUERY_URL）。terraform/workflow が output prometheus_query_url で読む
+  # エージェントの道具（app/agentcore/evidence.py の PROMETHEUS_QUERY_URL）。IaC/terraform/aws-managed/workflow が output prometheus_query_url で読む
   prometheus_query_url = local.sink_prometheus ? "${local.prometheus_select_url}/api/v1/query" : ""
 }
 
 # ---------------------------------------------------------------- outputs
-# terraform/workflow が読む名前はマネージド版の outputs.tf と同じ。prometheus_workspace_arn / _id は出さない
-# （terraform/workflow は空のとき AMP の IAM を作らない）
+# IaC/terraform/aws-managed/workflow が読む名前はマネージド版の outputs.tf と同じ。prometheus_workspace_arn / _id は出さない
+# （IaC/terraform/aws-managed/workflow は空のとき AMP の IAM を作らない）
 output "prometheus_remote_write_url" {
   description = "Remote write URL the job posts to - vminsert, no authentication (empty unless sinks has prometheus)"
   value       = local.prometheus_remote_write_url
 }
 
 output "prometheus_query_url" {
-  description = "PromQL instant query URL of vmselect, no authentication (empty unless sinks has prometheus). Same output name as the managed build, which terraform/workflow reads"
+  description = "PromQL instant query URL of vmselect, no authentication (empty unless sinks has prometheus). Same output name as the managed build, which IaC/terraform/aws-managed/workflow reads"
   value       = local.prometheus_query_url
 }
 

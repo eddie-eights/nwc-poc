@@ -7,7 +7,7 @@
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
-# VPC / サブネット / SG / バケット / アラートの SNS トピックは oss/terraform/base/core、Kafka は oss/terraform/pipeline/stream の state から読む
+# VPC / サブネット / SG / バケット / アラートの SNS トピックは IaC/terraform/oss/base/core、Kafka は IaC/terraform/oss/pipeline/stream の state から読む
 data "terraform_remote_state" "main" {
   backend = "local"
 
@@ -19,7 +19,7 @@ data "terraform_remote_state" "main" {
   lifecycle {
     postcondition {
       condition     = can(self.outputs.security_group_ids)
-      error_message = "terraform/base/core の state に security_group_ids が無い（2026-09-29 より前の SG）。先に ops/down.sh で消してから ops/up.sh を打ち直す"
+      error_message = "IaC/terraform/aws-managed/base/core の state に security_group_ids が無い（2026-09-29 より前の SG）。先に ops/down.sh で消してから ops/up.sh を打ち直す"
     }
   }
 }
@@ -32,8 +32,8 @@ data "terraform_remote_state" "stream" {
   }
 }
 
-# Spark（spark/Dockerfile。OSS 版の ops/up.sh が作って <接頭辞>-spark に push する）と OpenSearch・VictoriaMetrics（OSS 版の ops/up.sh が
-# ECR に写す）のイメージは oss/terraform/base/ecr
+# Spark（docker/images/spark/Dockerfile。OSS 版の ops/up.sh が作って <接頭辞>-spark に push する）と OpenSearch・VictoriaMetrics（OSS 版の ops/up.sh が
+# ECR に写す）のイメージは IaC/terraform/oss/base/ecr
 data "terraform_remote_state" "ecr" {
   backend = "local"
 
@@ -58,12 +58,12 @@ locals {
   splunk_sg_id  = try(data.terraform_remote_state.main.outputs.security_group_ids["splunk"], "")
   bucket        = data.terraform_remote_state.main.outputs.kb_bucket_name
   bucket_arn    = "arn:${local.partition}:s3:::${local.bucket}"
-  # terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
+  # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
   perimeter_policy_arn        = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
   perimeter_exempt_principals = try(data.terraform_remote_state.main.outputs.perimeter_exempt_principals, [])
   # Kafka の 3 台（kafka-N.<接頭辞>-stream.internal:9092、PLAINTEXT）。stream が無いと空で、spark.tf の precondition で止める
   bootstrap = try(data.terraform_remote_state.stream.outputs.bootstrap_brokers, "")
-  # アラートの SNS トピック（terraform/base/core の alerts.tf）
+  # アラートの SNS トピック（IaC/terraform/aws-managed/base/core の alerts.tf）
   alerts_topic_arn = try(data.terraform_remote_state.main.outputs.alerts_topic_arn, "")
   # SSM のパラメータの ARN の頭（後ろに /<接頭辞>/… を付ける）
   ssm_parameter_arn = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter"
@@ -106,5 +106,5 @@ locals {
 
   metric_topics    = join(",", var.metric_topics)
   log_topics       = join(",", var.log_topics)
-  opensearch_index = "snmp-logs" # spark/snmp_sinks.py の OPENSEARCH_INDEX と同じ
+  opensearch_index = "snmp-logs" # app/spark/snmp_sinks.py の OPENSEARCH_INDEX と同じ
 }

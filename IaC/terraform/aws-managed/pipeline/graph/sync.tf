@@ -1,19 +1,19 @@
 # ---------------------------------------------------------------- dynamic status: SNS (<prefix>-alerts) -> Lambda -> Neptune
-# The Grafana alert rules and the Splunk saved searches of terraform/pipeline/analytics publish firing / resolved alerts to the SNS topic of
-# terraform/base/core (alerts.tf) when a link goes down / comes back. The subscription below sends them to a small Lambda in the VPC
-# (graph/status_handler.py + agent/graph.py + workflow/rules.py) that sets the property "status" (DOWN / UP, ALARM for other traps) on the
+# The Grafana alert rules and the Splunk saved searches of IaC/terraform/aws-managed/pipeline/analytics publish firing / resolved alerts to the SNS topic of
+# IaC/terraform/aws-managed/base/core (alerts.tf) when a link goes down / comes back. The subscription below sends them to a small Lambda in the VPC
+# (app/graph/status_handler.py + app/agentcore/graph.py + app/temporal/rules.py) that sets the property "status" (DOWN / UP, ALARM for other traps) on the
 # link edge or the device vertex. The web draws DOWN in red and the chat tools return it. Neptune holds the topology and this status only -
 # the alerts themselves are not stored here (2026-10-02; until then the Spark job put AnomalyOpened / AnomalyResolved on EventBridge).
 # With alert_history = true (ops/up.sh sets it when analytics is deployed - in this run or left in its state) the same Lambda also sends every alert, one row each, to the
-# Firehose stream <prefix>-alert-events of terraform/pipeline/analytics (history.tf), which appends it to the S3 Tables table alert_events
-# (2026-10-04). The Lambda reaches Firehose through the kinesis-firehose interface endpoint of terraform/base/core.
-# The static topology itself comes from lab/ (ops/up.sh 7-3b and ops/sync-graph.sh seed it through the web EC2) - not from here.
+# Firehose stream <prefix>-alert-events of IaC/terraform/aws-managed/pipeline/analytics (history.tf), which appends it to the S3 Tables table alert_events
+# (2026-10-04). The Lambda reaches Firehose through the kinesis-firehose interface endpoint of IaC/terraform/aws-managed/base/core.
+# The static topology itself comes from app/containerlab/ (ops/up.sh 7-3b and ops/sync-graph.sh seed it through the web EC2) - not from here.
 # Cost: the subscription is free, the Lambda is a few invocations per alert (free tier), nothing else
-# (the Lambda reaches Neptune Analytics through the neptune-graph-data interface endpoint of terraform/base/core; the Lambda service writes its logs without going through the VPC).
-# The Firehose stream and its endpoint are counted in terraform/pipeline/analytics and terraform/base/core.
+# (the Lambda reaches Neptune Analytics through the neptune-graph-data interface endpoint of IaC/terraform/aws-managed/base/core; the Lambda service writes its logs without going through the VPC).
+# The Firehose stream and its endpoint are counted in IaC/terraform/aws-managed/pipeline/analytics and IaC/terraform/aws-managed/base/core.
 
 locals {
-  alert_stream = "${local.name_prefix}-alert-events" # terraform/pipeline/analytics/history.tf の aws_kinesis_firehose_delivery_stream.alert_events と同じ名前
+  alert_stream = "${local.name_prefix}-alert-events" # IaC/terraform/aws-managed/pipeline/analytics/history.tf の aws_kinesis_firehose_delivery_stream.alert_events と同じ名前
 }
 
 data "archive_file" "status" {
@@ -21,25 +21,25 @@ data "archive_file" "status" {
   output_path = "${path.module}/.build/status.zip"
 
   source {
-    content  = file("${path.module}/../../../graph/status_handler.py")
+    content  = file("${path.module}/../../../../../app/graph/status_handler.py")
     filename = "index.py"
   }
 
   source {
-    content  = file("${path.module}/../../../agent/graph.py")
+    content  = file("${path.module}/../../../../../app/agentcore/graph.py")
     filename = "graph.py"
   }
 
   # graph.py が import する共通部品（リージョン・SSM パラメータ・boto3 クライアント）。入れ忘れると
   # apply も plan も通るのに、実行時に ModuleNotFoundError で status が一度も書かれない
   source {
-    content  = file("${path.module}/../../../agent/toolkit.py")
+    content  = file("${path.module}/../../../../../app/agentcore/toolkit.py")
     filename = "toolkit.py"
   }
 
   # アラートの JSON の読み方（alerts_from_message）は worker と同じものを使う。標準ライブラリしか読まない
   source {
-    content  = file("${path.module}/../../../workflow/rules.py")
+    content  = file("${path.module}/../../../../../app/temporal/rules.py")
     filename = "rules.py"
   }
 }
@@ -57,7 +57,7 @@ data "aws_iam_policy_document" "lambda_trust" {
 
 resource "aws_iam_role" "status" {
   name               = "${local.name_prefix}-graph-status"
-  description        = "Status Lambda of terraform/pipeline/graph - writes the dynamic status of devices and links into Neptune"
+  description        = "Status Lambda of IaC/terraform/aws-managed/pipeline/graph - writes the dynamic status of devices and links into Neptune"
   assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
 }
 
@@ -83,7 +83,7 @@ data "aws_iam_policy_document" "status" {
     resources = [aws_neptunegraph_graph.graph.arn]
   }
 
-  # アラートの通知の履歴（alert_history = true のときだけ）。送り先は terraform/pipeline/analytics の Firehose 1 本だけ
+  # アラートの通知の履歴（alert_history = true のときだけ）。送り先は IaC/terraform/aws-managed/pipeline/analytics の Firehose 1 本だけ
   dynamic "statement" {
     for_each = var.alert_history ? [1] : []
     content {
@@ -100,7 +100,7 @@ resource "aws_iam_role_policy" "status" {
   policy = data.aws_iam_policy_document.status.json
 }
 
-# terraform/base/core の perimeter.tf の Deny。firehose（履歴）は kinesis-firehose のエンドポイントを通る。
+# IaC/terraform/aws-managed/base/core の perimeter.tf の Deny。firehose（履歴）は kinesis-firehose のエンドポイントを通る。
 # ログと ENI は Lambda のサービスがこのロールで出し、neptune-graph はグラフの public_connectivity = false で閉じているので、Deny の対象に入っていない
 resource "aws_iam_role_policy_attachment" "status_perimeter" {
   count = local.perimeter_policy_arn != "" ? 1 : 0
@@ -125,7 +125,7 @@ resource "aws_lambda_function" "status" {
   timeout          = 60  # 行は Neptune より先に Firehose へ送る（長くて、エンドポイントが 1 AZ（ENDPOINTS_AZ_NUM の既定）なら 15.6 秒、2 AZ なら 21.6 秒、3 AZ なら 27.6 秒。status_handler.py の FIREHOSE_CONFIG）。Neptune の途中で切れたら非同期の再試行に任せる（3 AZ では Neptune の 1 回目でも切れうるので ops/up.sh が注意を出す）
   memory_size      = 256 # 128 MB では OSS 版（同じ Lambda に Neo4j のドライバのレイヤー）が AWS で 111 MB を使い、余裕が無かった。OSS 版の sync.tf とそろえる
 
-  # VPC の中に置く（グラフは公開していないので、土台の neptune-graph-data のエンドポイントからしか届かない）。SG は terraform/base/core の lambda
+  # VPC の中に置く（グラフは公開していないので、土台の neptune-graph-data のエンドポイントからしか届かない）。SG は IaC/terraform/aws-managed/base/core の lambda
   # （エンドポイントの 443 へ出られる。SSM は引かない。グラフの ID は環境変数で渡す）
   vpc_config {
     subnet_ids         = slice(local.subnet_ids, 0, var.lambda_az_num)
@@ -161,7 +161,7 @@ resource "aws_sns_topic_subscription" "status" {
   lifecycle {
     precondition {
       condition     = local.alerts_topic_arn != ""
-      error_message = "terraform/base/core の state から alerts_topic_arn が読めない（2026-10-02 より前の土台）。terraform/base/core を apply し直す（ops/up.sh）。"
+      error_message = "IaC/terraform/aws-managed/base/core の state から alerts_topic_arn が読めない（2026-10-02 より前の土台）。IaC/terraform/aws-managed/base/core を apply し直す（ops/up.sh）。"
     }
   }
 }

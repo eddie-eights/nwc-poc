@@ -1,21 +1,21 @@
 # nwc-poc - PIPELINE stream root module. Kafka receives SNMP polls, gNMI state, traps and syslog from Telegraf (telegraf.tf: two ECS on Fargate tasks - a receiver
-# behind an internal NLB and a poller, split on 2026-10-04; it was an EC2 of terraform/pipeline/lab until 2026-09-28),
-# and the Spark job of terraform/pipeline/analytics reads them (raw messages go to S3 Tables, Prometheus, OpenSearch and Splunk; detection is done by Grafana and Splunk since 2026-10-02). The MSK Connect S3 sink that also copied the raw messages to the asset bucket was removed on 2026-09-26
+# behind an internal NLB and a poller, split on 2026-10-04; it was an EC2 of IaC/terraform/aws-managed/pipeline/lab until 2026-09-28),
+# and the Spark job of IaC/terraform/aws-managed/pipeline/analytics reads them (raw messages go to S3 Tables, Prometheus, OpenSearch and Splunk; detection is done by Grafana and Splunk since 2026-10-02). The MSK Connect S3 sink that also copied the raw messages to the asset bucket was removed on 2026-09-26
 # (Spark already stores every topic in S3 Tables).
-# Kafka is MSK in this root (msk.tf). The OSS build of cycle 005 (oss/terraform/pipeline/stream) runs Kafka on ECS instead (its kafka.tf) and uses this file,
+# Kafka is MSK in this root (msk.tf). The OSS build of cycle 005 (IaC/terraform/oss/pipeline/stream) runs Kafka on ECS instead (its kafka.tf) and uses this file,
 # telegraf.tf, kafka_ui.tf, access.tf and outputs.tf through symbolic links; what differs between the two Kafkas comes from the kafka_* locals of msk.tf / kafka.tf.
 
 # リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、
 # 1 つの AWS アカウントを何人かで使っても、自分の名前で自分のリソースを探せる
 locals {
-  # 末尾は var.project（terraform/ は既定の nwc-poc、OSS 版の oss/terraform/ は oss.auto.tfvars の nwc-oss。cycle 005）
+  # 末尾は var.project（IaC/terraform/aws-managed/ は既定の nwc-poc、OSS 版の IaC/terraform/oss/ は oss.auto.tfvars の nwc-oss。cycle 005）
   name_prefix = "${var.owner}-${var.project}"
 }
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
-# VPC / サブネット / ロール名は terraform/base/core、Telegraf のイメージのリポジトリは terraform/base/ecr の state から読む
+# VPC / サブネット / ロール名は IaC/terraform/aws-managed/base/core、Telegraf のイメージのリポジトリは IaC/terraform/aws-managed/base/ecr の state から読む
 data "terraform_remote_state" "main" {
   backend = "local"
 
@@ -28,7 +28,7 @@ data "terraform_remote_state" "main" {
   lifecycle {
     postcondition {
       condition     = can(self.outputs.security_group_ids["telegraf_dialin"])
-      error_message = "terraform/base/core の state に telegraf_dialin の SG が無い（2026-10-04 より前の SG）。先に ops/down.sh で消してから ops/up.sh を打ち直す"
+      error_message = "IaC/terraform/aws-managed/base/core の state に telegraf_dialin の SG が無い（2026-10-04 より前の SG）。先に ops/down.sh で消してから ops/up.sh を打ち直す"
     }
   }
 }
@@ -62,6 +62,6 @@ locals {
   # dialout の NLB とタスクは var.telegraf_az_num の AZ（a から）
   telegraf_subnet_id          = data.terraform_remote_state.main.outputs.instance_subnet_id
   telegraf_dialout_subnet_ids = slice(local.subnet_ids, 0, var.telegraf_az_num)
-  # terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
+  # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
   perimeter_policy_arn = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
 }

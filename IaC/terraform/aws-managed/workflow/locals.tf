@@ -1,32 +1,31 @@
 # nwc-poc - workflow root module (feature "workflow"). One ECS on Fargate task (ARM64, 1 vCPU / 2 GB) runs the Temporal dev server
-# and a Python worker in the VPC of terraform/base/core. The Grafana alert rules and the Splunk saved searches of terraform/pipeline/analytics
-# publish alerts to the SNS topic of terraform/base/core; events.tf subscribes an SQS queue to it and the worker starts one workflow per anomaly
+# and a Python worker in the VPC of IaC/terraform/aws-managed/base/core. The Grafana alert rules and the Splunk saved searches of IaC/terraform/aws-managed/pipeline/analytics
+# publish alerts to the SNS topic of IaC/terraform/aws-managed/base/core; events.tf subscribes an SQS queue to it and the worker starts one workflow per anomaly
 # (and signals it when the alert resolves). The workflow asks the
 # chat runtime (AgentCore) for a cause and a fix (the runtime looks at Neptune / OpenSearch / Prometheus through the MCP tools),
 # writes the proposal as one row per step to S3 Tables (proposal_events), waits for a human decision (web tab "承認", sent through the
-# decision queue of events.tf), applies the fix on the lab EC2 (terraform/pipeline/lab) through SSM Run Command and waits for the resolved alert. Temporal runs on ECS now (EKS later - 2026-09-17 user decision).
+# decision queue of events.tf), applies the fix on the lab EC2 (IaC/terraform/aws-managed/pipeline/lab) through SSM Run Command and waits for the resolved alert. Temporal runs on ECS now (EKS later - 2026-09-17 user decision).
 # The AgentCore Gateway (MCP) exposes the agent tools through a Lambda in the VPC so the runtime can read Neptune, the logs
 # collection and the metrics workspace over MCP. Costs about 0.05 USD per hour while it exists (Fargate) - destroy it the same day.
 
 # リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、
 # 1 つの AWS アカウントを何人かで使っても、自分の名前で自分のリソースを探せる
 locals {
-  # 末尾は var.project（terraform/ は既定の nwc-poc、OSS 版の oss/terraform/ は oss.auto.tfvars の nwc-oss。cycle 005）
+  # 末尾は var.project（IaC/terraform/aws-managed/ は既定の nwc-poc、OSS 版の IaC/terraform/oss/ は oss.auto.tfvars の nwc-oss。cycle 005）
   name_prefix = "${var.owner}-${var.project}"
 }
 
-# リポジトリの根（Lambda の zip に入れるソースをここから読む）。terraform/<このルート> と oss/terraform/<このルート>（ファイルごとの
-# シンボリックリンク。cycle 005）のどちらから打っても同じ場所を指す。path.module はリンクを置いたフォルダなので、../../ の先に
-# pyproject.toml があるかで深さを見分ける（terraform/ なら 2 つ上、oss/terraform/ なら 3 つ上）
+# リポジトリの根（Lambda の zip に入れるソースをここから読む）。IaC/terraform/aws-managed/<このルート> と IaC/terraform/oss/<このルート>（ファイルごとの
+# シンボリックリンク。cycle 005）は同じ深さなので、path.module（リンクを置いたフォルダ）から 4 つ上がどちらでも根（cycle 007 から）
 locals {
-  repo_root = fileexists("${path.module}/../../pyproject.toml") ? "${path.module}/../.." : "${path.module}/../../.."
+  repo_root = "${path.module}/../../../.."
 }
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
-# VPC / サブネット / SG / ロール名は terraform/base/core、Runtime ARN は terraform/agent、lab EC2 は terraform/pipeline/lab、
-# Neptune（トポロジと status。OSS 版は Neo4j）は terraform/pipeline/graph、修復案の S3 Tables と OpenSearch / Prometheus は terraform/pipeline/analytics の state から読む。
+# VPC / サブネット / SG / ロール名は IaC/terraform/aws-managed/base/core、Runtime ARN は IaC/terraform/aws-managed/agent、lab EC2 は IaC/terraform/aws-managed/pipeline/lab、
+# Neptune（トポロジと status。OSS 版は Neo4j）は IaC/terraform/aws-managed/pipeline/graph、修復案の S3 Tables と OpenSearch / Prometheus は IaC/terraform/aws-managed/pipeline/analytics の state から読む。
 # ワーカーは Neptune（事前チェック）と proposal_events が無いと動かないので graph と analytics は必須（ecs.tf の precondition）
 data "terraform_remote_state" "main" {
   backend = "local"
@@ -40,7 +39,7 @@ data "terraform_remote_state" "main" {
   lifecycle {
     postcondition {
       condition     = can(self.outputs.security_group_ids)
-      error_message = "terraform/base/core の state に security_group_ids が無い（2026-09-29 より前の SG）。先に ops/down.sh で消してから ops/up.sh を打ち直す"
+      error_message = "IaC/terraform/aws-managed/base/core の state に security_group_ids が無い（2026-09-29 より前の SG）。先に ops/down.sh で消してから ops/up.sh を打ち直す"
     }
   }
 }
@@ -96,17 +95,17 @@ locals {
   # SG は古い state の destroy でも評価できるように try（空のまま apply に進まないよう remote_state の postcondition で止める）
   workflow_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["workflow"], "")
   lambda_sg_id   = try(data.terraform_remote_state.main.outputs.security_group_ids["lambda"], "") # gateway.tf の tools Lambda
-  # terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
+  # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
   perimeter_policy_arn = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
   # リソースポリシーの Deny から外すプリンシパル（デプロイする人と KB のロール）
   perimeter_exempt_principals = try(data.terraform_remote_state.main.outputs.perimeter_exempt_principals, [])
-  # アラートの SNS トピック（terraform/base/core の alerts.tf）。events.tf のキューが購読する。古い state なら空で、購読の precondition が止める
+  # アラートの SNS トピック（IaC/terraform/aws-managed/base/core の alerts.tf）。events.tf のキューが購読する。古い state なら空で、購読の precondition が止める
   alerts_topic_arn = try(data.terraform_remote_state.main.outputs.alerts_topic_arn, "")
   # agent が無いとワークフローが原因を聞く先が無い。下の precondition で「agent を先に」と出す
   runtime_arn = try(data.terraform_remote_state.agent.outputs.agent_runtime_arn, "")
 
   # SSM を読む 2 つのロール（チャットの Runtime と Web の EC2）。Gateway を呼ぶのは Runtime だけ（proposals.tf の reader_access）。
-  # Neptune の読み書きは terraform/pipeline/graph の access.tf が付ける。
+  # Neptune の読み書きは IaC/terraform/aws-managed/pipeline/graph の access.tf が付ける。
   # 決定のキューへの送信と Athena での proposal_events の読み取りは Web だけ（proposals.tf）
   runtime_role_name = data.terraform_remote_state.main.outputs.runtime_role_name
   web_role_name     = data.terraform_remote_state.main.outputs.web_role_name
@@ -118,7 +117,7 @@ locals {
   # Neptune（トポロジと status。ワーカーの事前チェック）。graph が無ければ空で、ecs.tf の precondition が「graph を先に」と出す
   neptune_graph_id = try(data.terraform_remote_state.graph.outputs.graph_id, "")
   neptune_data_arn = try(data.terraform_remote_state.graph.outputs.graph_arn, "")
-  # OSS 版（oss/terraform/pipeline/graph。cycle 005）は Neptune の代わりに Neo4j で、state に neo4j_uri がある。あれば Worker を
+  # OSS 版（IaC/terraform/oss/pipeline/graph。cycle 005）は Neptune の代わりに Neo4j で、state に neo4j_uri がある。あれば Worker を
   # GRAPH_BACKEND=neo4j で Neo4j に向け（ecs.tf）、パスワード（SSM の SecureString）を ECS の secrets で渡す（iam.tf の実行ロール）。
   # マネージド版の graph の state には無いので空で、ここから下はマネージド版では何も変えない
   neo4j_uri          = try(data.terraform_remote_state.graph.outputs.neo4j_uri, "")
@@ -183,7 +182,7 @@ locals {
   opensearch_index           = try(data.terraform_remote_state.analytics.outputs.opensearch_index, "snmp-logs")
   prometheus_workspace_arn   = try(data.terraform_remote_state.analytics.outputs.prometheus_workspace_arn, "")
   prometheus_query_url       = try(data.terraform_remote_state.analytics.outputs.prometheus_query_url, "")
-  # OSS 版（oss/terraform/pipeline/analytics。cycle 005）は OpenSearch Serverless と AMP の代わりに ECS の OpenSearch と VictoriaMetrics で、
+  # OSS 版（IaC/terraform/oss/pipeline/analytics。cycle 005）は OpenSearch Serverless と AMP の代わりに ECS の OpenSearch と VictoriaMetrics で、
   # state にコレクションとワークスペースの ARN が無く、OpenSearch の admin のパスワードの SSM の名前（opensearch_password_parameter）がある。
   # そのときだけ tools Lambda の evidence.py を Basic 認証（OPENSEARCH_AUTH=basic）と署名なし（PROMETHEUS_AUTH=none）に切り替える（gateway.tf）。
   # マネージド版の analytics の state にはこの output が無いので false のまま

@@ -1,6 +1,6 @@
 # Nautobot（構成・部品・使い方・Neptune と組み合わせた使いどころ）
 
-Nautobot は、機器の一覧とケーブルの**正**（台帳）。`PIPELINE=1` ならいつも立つ（`terraform/pipeline/nautobot`）。
+Nautobot は、機器の一覧とケーブルの**正**（台帳）。`PIPELINE=1` ならいつも立つ（`IaC/terraform/aws-managed/pipeline/nautobot`）。
 Nautobot で機器・インタフェース・ケーブルを変えると、Nautobot の中の Job が Telegraf の取りにいく先と Neptune のトポロジを合わせる。
 OSS 版（[oss-variant.md](oss-variant.md)）では、同じ Job が Neptune の代わりに Neo4j に書く（2026-10-08 に AWS で確かめた。[verification/20261008-oss-aws.md](verification/20261008-oss-aws.md)）。この文書の「Neptune」は、OSS 版では Neo4j と読み替える。
 
@@ -73,7 +73,7 @@ LB は無い。閉域なので、画面は Web の EC2 を踏み台にしたポ�
 | PostgreSQL | 台帳。Nautobot の必須の部品で、使う側が用意する（ここでは RDS） |
 | Redis | web から worker へ Job を渡すキュー、キャッシュ、同期のロック。同じく使う側が用意する（ここではタスクの中のコンテナ。中身は消えてよい） |
 
-**このリポジトリで足したもの**（`nautobot/`）
+**このリポジトリで足したもの**（`app/nautobot/`）
 
 | ファイル | 役割 |
 |---|---|
@@ -81,7 +81,7 @@ LB は無い。閉域なので、画面は Web の EC2 を踏み台にしたポ�
 | `netops/nb_sync.py` | 同期の本体。台帳を読む → ① Telegraf の一覧（SSM）と dialin の作り直し → ② Neptune の物理層 |
 | `netops/nb_map.py` | 台帳とトポロジの対応付け（Nautobot に依らない純粋な関数。`tests/test_nautobot.py` が検査する） |
 | `netops/bootstrap.py` | web の起動時に 1 回走る用意（下の 4） |
-| `Dockerfile` | 公式イメージに上のファイルと `agent/graph.py`（Neptune へ openCypher で書く関数）、`lab_seed.json` を足す |
+| `Dockerfile` | 公式イメージに上のファイルと `app/agentcore/graph.py`（Neptune へ openCypher で書く関数）、`lab_seed.json` を足す |
 
 ## 4. 起動してから同期するまで
 
@@ -104,7 +104,7 @@ sequenceDiagram
   K->>N: 物理層を差分で合わせる
 ```
 
-- 最初の中身は、リポジトリの lab の定義（`lab/splab.clab.yml.in` と `lab/srlinux/*.cli`）を `lab/lab_topology.py` が JSON にしたもの。2 回目からは seed を飛ばし、Nautobot の中身が正になる。
+- 最初の中身は、リポジトリの lab の定義（`app/containerlab/splab.clab.yml.in` と `app/containerlab/srlinux/*.cli`）を `app/containerlab/lab_topology.py` が JSON にしたもの。2 回目からは seed を飛ばし、Nautobot の中身が正になる。
 - 同期は Redis のロックの中で「読む → 書く」をするので、Job が重なっても順に走る。片方（Telegraf / Neptune）が失敗しても、もう片方はやる。
 
 ## 5. 使い方
@@ -114,11 +114,11 @@ sequenceDiagram
 `ops/up.sh` の最後に出る 2 つのコマンドを使う（あとから出すなら下）。
 
 ```bash
-terraform -chdir=terraform/pipeline/nautobot output -raw port_forward_command   # これを打つと http://localhost:8081/ で開く
+terraform -chdir=IaC/terraform/aws-managed/pipeline/nautobot output -raw port_forward_command   # これを打つと http://localhost:8081/ で開く
 ```
 
 ```bash
-terraform -chdir=terraform/pipeline/nautobot output -raw password_command       # admin のパスワードを出すコマンド
+terraform -chdir=IaC/terraform/aws-managed/pipeline/nautobot output -raw password_command       # admin のパスワードを出すコマンド
 ```
 
 ユーザーは `admin`。パスワードは起動のたびに SSM の値へ戻る（画面で変えても残らない）。
@@ -147,7 +147,7 @@ Role の名前は `leaf` / `leafsw` / `spine` / `host` / `upstream` を使う（
 ### 中に入る
 
 ```bash
-terraform -chdir=terraform/pipeline/nautobot output -raw exec_command   # web コンテナのシェル（ECS Exec）。中で nautobot-server nbshell
+terraform -chdir=IaC/terraform/aws-managed/pipeline/nautobot output -raw exec_command   # web コンテナのシェル（ECS Exec）。中で nautobot-server nbshell
 ```
 
 ### Web の「トポロジ」タブから回線を変える
@@ -157,7 +157,7 @@ terraform -chdir=terraform/pipeline/nautobot output -raw exec_command   # web �
 ```mermaid
 sequenceDiagram
   participant U as 運用者（Web の「トポロジ」タブ）
-  participant W as Web の EC2（web/nautobot_api.py）
+  participant W as Web の EC2（app/dashboard/nautobot_api.py）
   participant N as Nautobot（REST API）
   participant J as Job（JobHook netops-sync）
   participant G as Neptune
@@ -212,7 +212,7 @@ flowchart LR
 
 Device の Status を `Maintenance` にすると、Job が Neptune の `device` に `maintenance` を付ける（`Maintenance` を機器の Status に選べるようにするのは起動時の `bootstrap.py`。対象の名前は `nb_map.py` の `MAINTENANCE_STATUSES`）。
 
-- アラートの機器か、落ちた回線の相手の機器が保守中なら、ワークフローを起こさない（`workflow/rules.py` の `maintenance_hold`。starter のログに `skip … 保守中の機器`）。Neptune の `status` は今までどおり変わるので、Web の図には出る。
+- アラートの機器か、落ちた回線の相手の機器が保守中なら、ワークフローを起こさない（`app/temporal/rules.py` の `maintenance_hold`。starter のログに `skip … 保守中の機器`）。Neptune の `status` は今までどおり変わるので、Web の図には出る。
 - エージェントの `list_devices` と `root_cause` は `maintenance` を返す。根本原因の機器が保守中なら「作業によるものの可能性」と添える。
 - Status を `Active` に戻すと `maintenance` は外れる。戻したあとに来たアラート（Grafana は 4 時間ごとに送り直す）から、また調査が起きる。
 - Neptune を読めないときは、保守中と見なさずに起こす（止める側に倒さない）。
@@ -238,8 +238,8 @@ Neptune に書くものは 4 つあり、書き手が分かれている。Nautob
 
 | Neptune に書くもの | 書き手 | 元の情報 |
 |---|---|---|
-| 物理層（機器・IF・回線） | Nautobot の Job（`agent/graph.py` の `sync_physical()`。差分） | Nautobot の台帳 |
-| 変更履歴（頂点 `change`。新しい順に 50 件） | Nautobot の Job（`agent/graph.py` の `sync_changes()`） | Nautobot の ObjectChange |
+| 物理層（機器・IF・回線） | Nautobot の Job（`app/agentcore/graph.py` の `sync_physical()`。差分） | Nautobot の台帳 |
+| 変更履歴（頂点 `change`。新しい順に 50 件） | Nautobot の Job（`app/agentcore/graph.py` の `sync_changes()`） | Nautobot の ObjectChange |
 | IP 層 / EVPN・BGP 層 | `ops/up.sh` の手順 7-3b、`ops/sync-graph.sh` | lab の定義（SR Linux の設定）。Nautobot には無い |
 | `status` | Lambda `<prefix>-graph-status` | アラート（SNS） |
 

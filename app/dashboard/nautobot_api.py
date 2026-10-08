@@ -1,9 +1,9 @@
 """「トポロジ」タブの編集の書き先（Nautobot があるとき）。Nautobot の REST API にケーブルを作る・消す。
 
 Nautobot が機器と回線の正なので、Web からは Nautobot にだけ書く。Neptune の物理層と Telegraf の機器の一覧には、
-Nautobot の JobHook（netops-sync）が呼ぶ Job（nautobot/jobs/netops_jobs.py）が反映する（数秒〜十数秒あと）。
-URL は SSM の <PARAM_PREFIX>/nautobot/url（terraform/pipeline/nautobot）、API トークンは同じく nautobot/api-token
-（ops/up.sh が作る SecureString。nautobot/netops/bootstrap.py が同じ値でユーザー netops-web のトークンを作る）。
+Nautobot の JobHook（netops-sync）が呼ぶ Job（app/nautobot/jobs/netops_jobs.py）が反映する（数秒〜十数秒あと）。
+URL は SSM の <PARAM_PREFIX>/nautobot/url（IaC/terraform/aws-managed/pipeline/nautobot）、API トークンは同じく nautobot/api-token
+（ops/up.sh が作る SecureString。app/nautobot/netops/bootstrap.py が同じ値でユーザー netops-web のトークンを作る）。
 """
 
 import json
@@ -51,7 +51,7 @@ def _interface(device: str, name: str, depth: int = 0) -> dict | None:
 
 
 def _interface_type(name: str) -> str:
-    """nautobot/netops/nb_map.py の interface_type と同じ（SR Linux の ethernet-* は 25G、それ以外は 1G）"""
+    """app/nautobot/netops/nb_map.py の interface_type と同じ（SR Linux の ethernet-* は 25G、それ以外は 1G）"""
     return "25gbase-x-sfp28" if name.startswith("ethernet-") else "1000base-t"
 
 

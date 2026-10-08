@@ -19,7 +19,7 @@ PID 1（コンテナの入口）の stdout に書く（手当て B）。ECS で�
 いまの search head のタスクの最新の行を読む（state=ok で indexer が全部 Up になるまで待ち、ならなければ止まる）。手元では docker logs に出る。
 理由に入れるのは peer の名前と数と例外の型だけ（admin のパスワード・HEC の token・合言葉は入れない）。
 
-イメージ（splunk/Dockerfile）に /sbin/nwc-peers-check.py として入れ、クラスターの search head のタスク定義（terraform/pipeline/analytics の
+イメージ（docker/images/splunk/Dockerfile）に /sbin/nwc-peers-check.py として入れ、クラスターの search head のタスク定義（IaC/terraform/aws-managed/pipeline/analytics の
 splunk.tf）が `/sbin/checkstate.sh && /sbin/nwc-peers-check.py` で呼ぶ。読む環境変数は上流の入口と同じ SPLUNK_CLUSTER_MASTER_URL
 （manager の名前）と SPLUNK_PASSWORD（admin。どのタスクも同じ SSM の値）、それに NWC_PEERS_EXPECTED（indexer の数）。Splunk の Python でなく OS の /usr/bin/python3（標準ライブラリだけ）で動く
 """

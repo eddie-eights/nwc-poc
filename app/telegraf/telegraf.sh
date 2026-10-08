@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Telegraf のコンテナ（terraform/pipeline/stream の ECS。telegraf/Dockerfile）の入口。イメージの /usr/local/bin/tg。
+# Telegraf のコンテナ（IaC/terraform/aws-managed/pipeline/stream の ECS。docker/images/telegraf/Dockerfile）の入口。イメージの /usr/local/bin/tg。
 #   tg run    （既定。ECS が起こす）設定を作って Telegraf を起こす
 #   tg test | gnmi   （ECS Exec から telegraf-dialin のタスクで打つ。コマンドは ops/up.sh の最後に出る）ポーリング（SNMP_POLL=1 のときだけ）/ gNMI の購読を 1 回だけ回して標準出力に出す
 #   tg render       設定を作るだけ（中身を見る。tests/test_lab_debug.py も手元でこれを回す）
 # stream の ECS は同じイメージを TELEGRAF_ROLE で 2 つのタスクに分けて動かす（受ける telegraf-dialout = dialout、取りにいく telegraf-dialin = dialin）。
-# デバッグ用の EC2（cloudformation/lab-debug.yaml）は SINK=stdout・TELEGRAF_ROLE の既定（all）の 1 つで両方やる（lab/lab.sh telegraf）。
+# デバッグ用の EC2（IaC/cloudformation/lab-debug.yaml）は SINK=stdout・TELEGRAF_ROLE の既定（all）の 1 つで両方やる（app/containerlab/lab.sh telegraf）。
 # 機器（lab の EC2 の中の containerlab）への経路は lab の EC2 側で `sudo lab forward-status` を見る。
 set -euo pipefail
 TEMPLATE=${TELEGRAF_TEMPLATE:-/etc/telegraf/telegraf.conf.in}
@@ -19,35 +19,35 @@ SINKS="kafka stdout"
 #   dialin   こちらから取りにいく（gNMI の購読と SNMP のポーリング、lab の gNMI の変換）。telegraf-dialin。機器の一覧（GNMI_TARGETS / SNMP_AGENTS）と認証情報（GNMI_USERNAME / GNMI_PASSWORD、SNMP_POLL=1 なら SNMP_COMMUNITY）が要る
 TELEGRAF_ROLE=${TELEGRAF_ROLE:-all}
 ROLES="dialout dialin"
-# 機器の syslog の形式。RFC3164 = BSD 形式（本番の Cisco IOS の既定。既定）/ RFC5424 = 新しい形式（lab の SR Linux。ops/up.sh と lab/lab.sh が渡す）。
+# 機器の syslog の形式。RFC3164 = BSD 形式（本番の Cisco IOS の既定。既定）/ RFC5424 = 新しい形式（lab の SR Linux。ops/up.sh と app/containerlab/lab.sh が渡す）。
 # inputs.syslog の syslog_standard。形式が違うと best_effort でも項目がきれいに取れない
 SYSLOG_STANDARD=${SYSLOG_STANDARD:-RFC3164}
 SYSLOG_STANDARDS="RFC3164 RFC5424"
 # SNMP のポーリング（inputs.snmp。10 秒ごとに ifTable）。1 = する（既定）/ 0 = 止める（SNMP は trap だけ受ける）。
 # telegraf.conf.in の「>>> snmp_poll」の区間。stream の snmp_poll（ops/up.sh は deploy.env の SNMP_POLL）が渡す
 SNMP_POLL=${SNMP_POLL:-1}
-# Kafka の認証。iam = MSK の IAM 認証（既定）/ none = 認証なしの PLAINTEXT（OSS 版の ECS の Kafka。cycle 005。spark/snmp_sinks.py と同じ名前と値）。
+# Kafka の認証。iam = MSK の IAM 認証（既定）/ none = 認証なしの PLAINTEXT（OSS 版の ECS の Kafka。cycle 005。app/spark/snmp_sinks.py と同じ名前と値）。
 # telegraf.conf.in の「>>> kafka_auth iam」の区間。SINK=kafka のときだけ効く
 KAFKA_AUTH=${KAFKA_AUTH:-iam}
-# 機器の syslog を受ける UDP のポート（telegraf.conf.in の inputs.syslog と lab/lab.sh の LOG_PORT と同じ）
+# 機器の syslog を受ける UDP のポート（telegraf.conf.in の inputs.syslog と app/containerlab/lab.sh の LOG_PORT と同じ）
 LOG_PORT=5140
 # trap を受ける UDP のポート。機器は 162 に送り、NLB が 1162 に向ける（非 root は 1024 未満で待てない）
 TRAP_PORT=1162
-# MDT の dial-out を受ける TCP のポート（telegraf.conf.in の inputs.cisco_telemetry_mdt と terraform/pipeline/stream の telegraf.tf）
+# MDT の dial-out を受ける TCP のポート（telegraf.conf.in の inputs.cisco_telemetry_mdt と IaC/terraform/aws-managed/pipeline/stream の telegraf.tf）
 MDT_PORT=57000
 
 render() {
-  # ECS のタスク定義の環境変数（terraform/pipeline/stream の telegraf.tf）を埋めて $CONF を作る:
+  # ECS のタスク定義の環境変数（IaC/terraform/aws-managed/pipeline/stream の telegraf.tf）を埋めて $CONF を作る:
   #   KAFKA_BROKERS  Kafka のブローカー（host:port をカンマで。MSK は IAM 認証の口の 9098、OSS 版は kafka-N.<名前空間>:9092）。SINK=stdout では要らない
   #   KAFKA_AUTH     Kafka の認証（iam / none、既定 iam）。none は outputs.kafka の IAM の行を消し、aws_config も書かない
   #   TELEGRAF_ROLE  役割（all / dialout / dialin。既定 all）
   #   SNMP_POLL      SNMP のポーリングをするか（1 / 0、既定 1。0 = trap だけ）。stream の snmp_poll
-  #   SNMP_AGENTS    ポーリング先（"udp://<IP>:161", ...）。ops/up.sh が lab の定義から作る（lab/lab_topology.py --snmp-agents）。SNMP_POLL=1 のときだけ見る
-  #   GNMI_TARGETS   gNMI の購読先（"<IP>:57400", ...）。同じく lab/lab_topology.py --gnmi-targets
+  #   SNMP_AGENTS    ポーリング先（"udp://<IP>:161", ...）。ops/up.sh が lab の定義から作る（app/containerlab/lab_topology.py --snmp-agents）。SNMP_POLL=1 のときだけ見る
+  #   GNMI_TARGETS   gNMI の購読先（"<IP>:57400", ...）。同じく app/containerlab/lab_topology.py --gnmi-targets
   #                  SNMP_AGENTS と GNMI_TARGETS は取りにいく入力のものなので、TELEGRAF_ROLE=dialout では見ない
   #   GNMI_USERNAME / GNMI_PASSWORD / SNMP_COMMUNITY  機器の認証情報。ここでは埋めない（値を /tmp の設定に書かない）。telegraf.conf.in が ${...} で持ち、
   #                  Telegraf が起きるときに環境変数から読む。stream の ECS は SSM の SecureString（/<接頭辞>/telegraf-dialin/...）を secrets で受け、
-  #                  デバッグ用の EC2 は lab/lab.sh が containerlab の既定を渡す。ここでは有るかだけ見る（TELEGRAF_ROLE=dialout では見ない）
+  #                  デバッグ用の EC2 は app/containerlab/lab.sh が containerlab の既定を渡す。ここでは有るかだけ見る（TELEGRAF_ROLE=dialout では見ない）
   #   SYSLOG_STANDARD  機器の syslog の形式（既定 RFC3164）。stream の syslog_standard。lab の SR Linux は RFC5424
   #   AWS_REGION
   : "${AWS_REGION:?}"
@@ -66,7 +66,7 @@ render() {
     # 形が崩れていると Telegraf が起きないので、決まった形だけ通す
     if [ "$SNMP_POLL" = 1 ]; then
       if ! printf '%s' "$agents" | grep -Eq '^"udp://[0-9.]+:[0-9]+"(, *"udp://[0-9.]+:[0-9]+")*$'; then
-        echo "SNMP_AGENTS が無いか形が違う（ops/up.sh が lab の定義から作って terraform/pipeline/stream の snmp_agents に渡す）: $agents" >&2; exit 1
+        echo "SNMP_AGENTS が無いか形が違う（ops/up.sh が lab の定義から作って IaC/terraform/aws-managed/pipeline/stream の snmp_agents に渡す）: $agents" >&2; exit 1
       fi
     else
       # ポーリングの区間ごと消す（__SNMP_AGENTS__ もその中なので、SNMP_AGENTS は見ない）
@@ -74,7 +74,7 @@ render() {
       agents=""
     fi
     if ! printf '%s' "$gnmi" | grep -Eq '^"[0-9.]+:[0-9]+"(, *"[0-9.]+:[0-9]+")*$'; then
-      echo "GNMI_TARGETS が無いか形が違う（ops/up.sh が lab の定義から作って terraform/pipeline/stream の gnmi_targets に渡す）: $gnmi" >&2; exit 1
+      echo "GNMI_TARGETS が無いか形が違う（ops/up.sh が lab の定義から作って IaC/terraform/aws-managed/pipeline/stream の gnmi_targets に渡す）: $gnmi" >&2; exit 1
     fi
     # 認証情報は Telegraf が環境変数から読む（上の注記）。無いと Telegraf は ${...} のまま機器に送って認証で落ち続けるので、起こす前に止める
     [ -n "${GNMI_USERNAME:-}" ] && [ -n "${GNMI_PASSWORD:-}" ] || { echo "GNMI_USERNAME / GNMI_PASSWORD が無い（stream の ECS は SSM の /<接頭辞>/telegraf-dialin/gnmi-username・gnmi-password。ops/up.sh が作る）" >&2; exit 1; }

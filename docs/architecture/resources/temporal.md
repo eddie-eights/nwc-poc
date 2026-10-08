@@ -11,12 +11,12 @@ Temporal の開発用サーバー（`start-dev`）と Python の worker を、Fa
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
-| サービス | 1 タスクに temporal と worker の 2 コンテナ。Fargate ARM、1 vCPU / 2 GB。AZ を選ぶキーは無い（サブネット a に 1 つ） | `terraform/workflow/ecs.tf`、変数 `task_cpu`、`task_memory` |
+| サービス | 1 タスクに temporal と worker の 2 コンテナ。Fargate ARM、1 vCPU / 2 GB。AZ を選ぶキーは無い（サブネット a に 1 つ） | `IaC/terraform/aws-managed/workflow/ecs.tf`、変数 `task_cpu`、`task_memory` |
 | temporal のコンテナ | `temporalio/temporal` 1.9.1 を ECR の `<prefix>-temporal` に写したもの。`server start-dev`、SQLite は `/tmp/temporal.db` | `ecs.tf`、変数 `temporal_image_tag`、`ops/up-common.sh` の `TEMPORAL_TAG` |
-| worker のコンテナ | `workflow/worker.py`。ECR の `<prefix>-worker` | `ecs.tf`、`workflow/` |
+| worker のコンテナ | `app/temporal/worker.py`。ECR の `<prefix>-worker` | `ecs.tf`、`app/temporal/` |
 | ポート | gRPC 7233 はタスクの中の localhost だけ。UI 8233 だけ外に出す（認証は無い） | `ecs.tf` の `command` |
 | 待ち時間 | 承認待ち 120 分（`APPROVAL_TIMEOUT_MINUTES`）、解消の確認 300 秒（`VERIFY_TIMEOUT`）、閉じずに待つ 1440 分（`HOLD_MINUTES`） | 変数 `approval_timeout_minutes`、`verify_timeout_seconds`、`hold_minutes` |
-| ワークフローの id | `investigate-<anomaly_id>`（発生の時刻を入れない） | `workflow/worker.py`、`workflow/rules.py` |
+| ワークフローの id | `investigate-<anomaly_id>`（発生の時刻を入れない） | `app/temporal/worker.py`、`app/temporal/rules.py` |
 | スイッチ | `WORKFLOW=1`。`AGENT=1` と `PIPELINE=1` が要り、`SKIP_LAB` / `SKIP_STREAM` / `SKIP_ANALYTICS` / `SKIP_GRAPH` は書けない | `ops/up.sh` |
 | 費用 | 5 セント/時 | `ops/up.sh` の費用の目安（526〜583 行） |
 
@@ -46,7 +46,7 @@ worker が読み書きするもの:
 
 - **タスクは 1 つだけ。2 つにすると別々の Temporal になる。**
   開発用サーバーがタスクの中にあるので、承認待ちのワークフローが片方にしか無くなる。コードから確かめた理由で、AWS では試していない（2026-10-04）。
-  出典: `terraform/workflow/ecs.tf` のコメント、`ops/up.sh` の先頭のコメント。
+  出典: `IaC/terraform/aws-managed/workflow/ecs.tf` のコメント、`ops/up.sh` の先頭のコメント。
 - **タスクが入れ替わると、走っていたワークフローは消える。**
   SQLite がタスクの中にあるため。修復案は `pending` のまま残り、ワークフローの時間切れは働かない。Grafana の次の送り直しでは、同じ発生の修復案があるので起きない。「承認」タブで承認か却下を押すと、worker が `expired` の行を足して閉じる（処置は打たない）。同じ異常の新しい修復案ができたときも、古い `pending` は `expired` で閉じる。
   出典: [workflow.md](../../workflow.md) の「通知の重なりと取りこぼし」。
@@ -67,30 +67,30 @@ worker が読み書きするもの:
   出典: [workflow.md](../../workflow.md) の「修復案の状態」。
 - **承認・却下は、Web が SQS に送り、worker がシグナル `decide` でワークフローに渡す。**
   1 つの worker のプロセスが 3 つを動かす: アラートのキューを読むループ、決定のキューを読むループ、Temporal の worker。承認待ちは頂点を見に行かず、シグナルを待つ。押してから反映まで数秒〜20 秒。
-  出典: `workflow/worker.py` の先頭のコメント、[workflow.md](../../workflow.md) の「流れ」。
+  出典: `app/temporal/worker.py` の先頭のコメント、[workflow.md](../../workflow.md) の「流れ」。
 - **決定は最初の 1 通だけが効く。**
   内容の違う後の決定は `ignored` の行で残す（`status` は変えない）。同じ内容の重複（SQS の配り直し）は捨てる。承認待ちが時間切れや解消で終わったあとの決定は、ログだけ。
-  出典: `workflow/worker.py` の `InvestigateAnomaly.decide`、[workflow.md](../../workflow.md) の「流れ」。
+  出典: `app/temporal/worker.py` の `InvestigateAnomaly.decide`、[workflow.md](../../workflow.md) の「流れ」。
 - **`proposal_events` に書くのは worker だけ。**
   Web はテーブルに書かない。worker が止まっていると、承認・却下の行は遅れて入る（決定は SQS で 1 日まで待つ）。再試行で二重に入ることがあるので、集計では `event_id` で落とす。コミットがぶつかったら 5 回までやり直す。
-  出典: `workflow/awsio.py` の `append_proposal_events`、`terraform/workflow/events.tf` のコメント。
+  出典: `app/temporal/awsio.py` の `append_proposal_events`、`IaC/terraform/aws-managed/workflow/events.tf` のコメント。
 - **保守中の機器の異常では起こさない。**
   アラートの機器か、落ちた回線の相手が Nautobot で `Maintenance` のとき。Neptune を読めないときは起こす。
   出典: [workflow.md](../../workflow.md) の「流れ」。
 - **`boto3` / `pyiceberg` / `pyarrow` は、呼ばれたときに関数の中で読み込む。**
   Temporal のワークフローサンドボックスに合わせるため。
-  出典: `workflow/awsio.py` の先頭のコメント。
+  出典: `app/temporal/awsio.py` の先頭のコメント。
 - **apply の直後は worker が数回落ちる。**
   Temporal が上がるまで 1〜3 分かかる。
   出典: [workflow.md](../../workflow.md) の「うまくいかないとき」。
 - **修復案は以前 DynamoDB のテーブルだった。**
   2026-09-24 に Neptune と S3 Tables に寄せ、2026-10-05 に S3 Tables の `proposal_events` だけにした。
-  出典: `terraform/workflow/proposals.tf` の先頭のコメント、[data-stores.md](../../data-stores.md) の「5. 経緯: DynamoDB をやめた（2026-09-24）」。
+  出典: `IaC/terraform/aws-managed/workflow/proposals.tf` の先頭のコメント、[data-stores.md](../../data-stores.md) の「5. 経緯: DynamoDB をやめた（2026-09-24）」。
 - **2026-10-05 に AWS で通した。**
   `sudo lab fail-main` のあと、`proposal_events` に created → approved → applied → verified の行が入った。Web の「承認」タブで承認すると `sudo lab heal-main` が Success になり、処置から 103 秒で verified になった。決めた人の名前に `'` を入れても通った。却下・時間切れ・failed の経路は未確認。
   出典: 2026-10-05 の動作確認（`AGENT=1 PIPELINE=1 WORKFLOW=1 ENDPOINTS_AZ_NUM=2 SPLUNK_AZ_NUM=2`）。
 - **Temporal はいまは ECS。あとで EKS に移す（2026-09-17 のユーザー決定）。**
-  出典: `terraform/workflow/locals.tf` の先頭のコメント。
+  出典: `IaC/terraform/aws-managed/workflow/locals.tf` の先頭のコメント。
 
 ## 制約と未確認
 

@@ -7,7 +7,7 @@
 # S3 の gateway エンドポイントは無料（S3 / S3 Tables のデータ / ECR のレイヤー / AL2023 の dnf リポジトリ）。
 # S3 のエンドポイントポリシーは付けない: dnf のリポジトリは匿名の GET で、ECR のレイヤーは ECR が署名した URL なので、
 # aws:PrincipalAccount やバケットで絞ると止まる。ポリシーで絞っていた頃は 2026-09-15（ListBucket）と 2026-09-17（S3 Tables の metadata.json）に止まった。
-# バケットの側（bucket.tf、terraform/pipeline/analytics の S3 Tables）で aws:SourceVpc を要求する
+# バケットの側（bucket.tf、IaC/terraform/aws-managed/pipeline/analytics の S3 Tables）で aws:SourceVpc を要求する
 resource "aws_vpc_endpoint" "s3" {
   count = var.create_s3_gateway_endpoint ? 1 : 0
 
@@ -19,12 +19,12 @@ resource "aws_vpc_endpoint" "s3" {
   tags = { Name = "${local.name_prefix}-s3" }
 }
 
-# OpenSearch Serverless のコレクション（terraform/agent の KB、terraform/pipeline/analytics の logs）はどちらも公開せず、
+# OpenSearch Serverless のコレクション（IaC/terraform/aws-managed/agent の KB、IaC/terraform/aws-managed/pipeline/analytics の logs）はどちらも公開せず、
 # ネットワークポリシーの SourceVPCEs にこのエンドポイントだけを書く。VPC の外（公開の経路）から届かせると公開扱いになり、
 # ネットワークポリシーには IP の許可リストが無いので、VPC の中から閉じて届く経路はこれしかない。
 # 1 つの VPC に 1 本あれば全コレクションに届き（AWS の文書「You only need one OpenSearch Serverless VPC endpoint in a VPC」）、
 # 作ると AOSS が *.<region>.aoss.amazonaws.com の private hosted zone を VPC に付ける。2 本目を作らないよう、ここに 1 本だけ置く。
-# ops/up.sh は CREATE_KB か STORES の grafana（OpenSearch）のとき、または前に作ったコレクションが terraform/agent か terraform/pipeline/analytics の
+# ops/up.sh は CREATE_KB か STORES の grafana（OpenSearch）のとき、または前に作ったコレクションが IaC/terraform/aws-managed/agent か IaC/terraform/aws-managed/pipeline/analytics の
 # state に残っているとき（外すとそのコレクションに届かなくなる）に create_opensearch_endpoint=true で apply する（ops/up.sh の NEED_AOSS）。
 # ENI はインターフェース型と同じ endpoints_az_num の AZ（1 本 1.4 セント/h × AZ。2026-10-04 までは 2 AZ 固定）。
 # SG は endpoints（ワークロードの SG からの 443 だけ。security_groups.tf）

@@ -3,7 +3,7 @@
 # EMR が自分で入れている Iceberg（iceberg-spark-runtime と、S3FileIO と SigV4 が使う AWS SDK の iceberg-aws-bundle）を足す。
 # Spark は 3.5.9 なので spark-sql-kafka も 3.5.9（kafka-clients と commons-pool2 の版は spark-parent_2.12-3.5.9.pom の kafka.version / commons-pool2.version）。
 # Iceberg は 1.12.0（EMR 7.14.0 が入れているのは 1.10.1-amzn-1）。1.12 のクラスは Java 17 向けなので、FROM は Java 17 のイメージ（Python 3 入り）。
-# jar の sha256 は spark/Dockerfile と同じ値（tests/test_oss.py が突き合わせる）
+# jar の sha256 は docker/images/spark/Dockerfile と同じ値（tests/test_oss.py が突き合わせる）
 FROM apache/spark:3.5.9-java17-python3
 USER root
 ARG MAVEN=https://repo1.maven.org/maven2

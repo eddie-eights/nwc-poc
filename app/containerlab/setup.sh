@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # lab の EC2 の支度。起動のたびに user_data が S3 の lab/ を置き直してからこれを呼ぶ。user_data は 2 つあり、どちらも
 # /etc/<接頭辞>-lab.env を書いて S3 から置き直し、これを exec するだけ（中身はここに 1 つだけ。tests/test_lab_debug.py が見る）:
-#   terraform/pipeline/lab/templates/lab_user_data.sh.tftpl   lab の EC2（Telegraf は stream の ECS。TELEGRAF_IMAGE は空）
-#   cloudformation/lab-debug.yaml の UserData                 デバッグ用の EC2（Telegraf もこの EC2 で動かす。TELEGRAF_IMAGE がある）
+#   IaC/terraform/aws-managed/pipeline/lab/templates/lab_user_data.sh.tftpl   lab の EC2（Telegraf は stream の ECS。TELEGRAF_IMAGE は空）
+#   IaC/cloudformation/lab-debug.yaml の UserData                 デバッグ用の EC2（Telegraf もこの EC2 で動かす。TELEGRAF_IMAGE がある）
 # env のキー: NAME_PREFIX / AWS_REGION / REGISTRY / SRLINUX_IMAGE / MULTITOOL_IMAGE / TELEGRAF_IMAGE / PARAM_PREFIX / CONTAINERLAB_VERSION / AUTO_START_LAB
 set -euo pipefail
 SRC=$(dirname "$(readlink -f "$0")")

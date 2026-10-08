@@ -70,7 +70,7 @@ PoC の設計を決めるために、相手に確かめたいことを並べる�
 | Amazon Managed Service for Prometheus | 150 日（サービスの既定） | 設定なし |
 | OpenSearch Serverless | 無期限（データのライフサイクルのポリシーが無い） | 設定なし |
 | Splunk Enterprise（ECS） | タスクが生きている間だけ。index の既定は約 6 年だが、その前にタスクと一緒に消える | 設定なし |
-| Kafka（MSK） | 24 時間 | `terraform/pipeline/stream/msk.tf` の `log.retention.hours=24` |
+| Kafka（MSK） | 24 時間 | `IaC/terraform/aws-managed/pipeline/stream/msk.tf` の `log.retention.hours=24` |
 
 Prometheus の 150 日と Splunk の約 6 年は、サービスと製品の既定値として書いた。このリポジトリの設定からは確かめていない。
 

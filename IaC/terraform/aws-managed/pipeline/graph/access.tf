@@ -1,4 +1,4 @@
-# ---------------------------------------------------------------- access for the roles of terraform/base/core
+# ---------------------------------------------------------------- access for the roles of IaC/terraform/aws-managed/base/core
 # Web の EC2 は読み書き（ops/up.sh の 7-3b と ops/sync-graph.sh が Web の EC2 の上で ops/seed_graph.py を走らせ、トポロジタブの
 # seed / add_link / remove_link も書く）。チャットの Runtime は読むだけ（修復案の頂点をやめた 2026-10-05 から、Runtime が書くものは無い）
 resource "aws_iam_role_policy" "graph_access" {

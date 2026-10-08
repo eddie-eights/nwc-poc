@@ -3,7 +3,7 @@
 # （共通の opensearch_index も、opensearch.tf が出すのでここには置かない）。Splunk（リンクした splunk.tf）と Grafana（grafana.tf）の output はマネージド版と同じ
 
 output "table_bucket_arn" {
-  description = "S3 Tables table bucket (the Iceberg warehouse of the Spark catalog; terraform/workflow appends proposal_events here)"
+  description = "S3 Tables table bucket (the Iceberg warehouse of the Spark catalog; IaC/terraform/aws-managed/workflow appends proposal_events here)"
   value       = local.table_bucket_arn
 }
 
@@ -93,22 +93,22 @@ output "service_namespace" {
 }
 
 output "table_namespace" {
-  description = "S3 Tables namespace of the tables (terraform/workflow appends proposal_events in it)"
+  description = "S3 Tables namespace of the tables (IaC/terraform/aws-managed/workflow appends proposal_events in it)"
   value       = aws_s3tables_namespace.netops.namespace
 }
 
 output "proposal_events_table_name" {
-  description = "Audit trail of proposals (created / approved / rejected / applied / verified ...), written by the terraform/workflow worker"
+  description = "Audit trail of proposals (created / approved / rejected / applied / verified ...), written by the IaC/terraform/aws-managed/workflow worker"
   value       = aws_s3tables_table.proposal_events.name
 }
 
 output "proposal_events_table_arn" {
-  description = "ARN of proposal_events (terraform/workflow lets the worker append to it)"
+  description = "ARN of proposal_events (IaC/terraform/aws-managed/workflow lets the worker append to it)"
   value       = aws_s3tables_table.proposal_events.arn
 }
 
 output "alert_events_stream_name" {
-  description = "Firehose stream the status Lambda of terraform/pipeline/graph sends the alert notifications to (history.tf; graph builds the same fixed name)"
+  description = "Firehose stream the status Lambda of IaC/terraform/aws-managed/pipeline/graph sends the alert notifications to (history.tf; graph builds the same fixed name)"
   value       = aws_kinesis_firehose_delivery_stream.alert_events.name
 }
 
@@ -118,12 +118,12 @@ output "alert_events_table_name" {
 }
 
 output "alert_events_table_arn" {
-  description = "ARN of alert_events (terraform/workflow lets the query_history tool read only this table)"
+  description = "ARN of alert_events (IaC/terraform/aws-managed/workflow lets the query_history tool read only this table)"
   value       = aws_s3tables_table.alert_events.arn
 }
 
 output "athena_workgroup" {
-  description = "Athena workgroup the query_history and list_proposals of terraform/workflow and the web approve tab run their queries in (results in the Athena managed storage)"
+  description = "Athena workgroup the query_history and list_proposals of IaC/terraform/aws-managed/workflow and the web approve tab run their queries in (results in the Athena managed storage)"
   value       = aws_athena_workgroup.history.name
 }
 

@@ -11,12 +11,12 @@
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
-| グラフ | `<prefix>-graph`。1 つ | `terraform/pipeline/graph/neptune.tf` の `aws_neptunegraph_graph.graph` |
+| グラフ | `<prefix>-graph`。1 つ | `IaC/terraform/aws-managed/pipeline/graph/neptune.tf` の `aws_neptunegraph_graph.graph` |
 | 大きさ | 16 m-NCU（最小。16 / 32 / 64 / 128 / 256 から選ぶ） | 変数 `provisioned_memory` |
 | 公開 | `public_connectivity = false`。サブネットグループも SG も持たない | `neptune.tf` |
 | AZ | `NEPTUNE_AZ_NUM`（既定 1、1〜3）。値 − 1 個のレプリカを別の AZ に置く | `ops/up.sh`、`neptune.tf` の `replica_count` |
 | グラフの ID | SSM の String `/<prefix>/neptune-graph-id`。Runtime、Web、Lambda、ワーカーがここから読む | `neptune.tf` の `aws_ssm_parameter.graph_id` |
-| 問い合わせ | openCypher だけ。boto3 の `neptune-graph` クライアントの `execute_query` | `agent/graph.py` の `query()` |
+| 問い合わせ | openCypher だけ。boto3 の `neptune-graph` クライアントの `execute_query` | `app/agentcore/graph.py` の `query()` |
 | スイッチ | `PIPELINE=1`。`SKIP_GRAPH=1` で外す（外すと「トポロジ」が使えず、`status` を書く先が無い） | `deploy.env.example`、`ops/up.sh` |
 | 費用 | 58 セント/時 × `NEPTUNE_AZ_NUM`（東京、16 m-NCU）。無料枠は無い | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`）、変数 `provisioned_memory` の説明 |
 
@@ -47,7 +47,7 @@
 
 - **Neptune Database から置き換えた（2026-10-04）。**
   それまでは Gremlin で `db.t4g.medium` 1 台（約 $0.14/h と数えていた）。機器が増えたときに影響範囲や中心性をグラフの側で計算したい、がユーザーの理由。
-  出典: `terraform/pipeline/graph/neptune.tf` の先頭のコメント、[data-stores.md](../../data-stores.md) の「11. Neptune とは」。
+  出典: `IaC/terraform/aws-managed/pipeline/graph/neptune.tf` の先頭のコメント、[data-stores.md](../../data-stores.md) の「11. Neptune とは」。
 - **この PoC の使い方には Analytics のほうが合う。**
   データが小さく、書くのは `status` の更新だけ。正本を Neptune に置かない方針とも合う。Database に戻すのは、常時書き込む正本にする・複数 AZ のリードレプリカが要る・Gremlin や SPARQL が要る、のどれかになったとき。
   出典: FAQ「Neptune Database と Neptune Analytics の使い分けは？ いまの構成でも問題ない？」。
@@ -59,7 +59,7 @@
   出典: `neptune.tf` の先頭のコメント、[troubleshooting.md](../../troubleshooting.md) の「閉域（`explicit deny`）」の Neptune の行。
 - **閉域の Deny には入れていない。**
   `neptune-graph` のリクエストに `aws:SourceVpc` が付くか確かめていない。外から届かないことは、グラフの `public_connectivity = false` で守っている。
-  出典: `terraform/base/core/perimeter.tf` のコメント、`terraform/pipeline/graph/sync.tf` のコメント。
+  出典: `IaC/terraform/aws-managed/base/core/perimeter.tf` のコメント、`IaC/terraform/aws-managed/pipeline/graph/sync.tf` のコメント。
 - **グラフアルゴリズムは openCypher から呼ぶ。**
   `CALL neptune.algo.degree(...)` の形。使っているのは次数中心性・近接中心性・弱連結成分（`centrality` ツール）。媒介中心性は無い。
   出典: [data-stores.md](../../data-stores.md) の「11. Neptune とは」。
@@ -80,7 +80,7 @@
   出典: [data-stores.md](../../data-stores.md) の「4. 気を付けること」、[workflow.md](../../workflow.md) の「流れ」。
 - **IAM では頂点ごとに権限を分けられない。**
   許可はグラフ単位（`ReadDataViaQuery` / `WriteDataViaQuery` / `DeleteDataViaQuery`）。修復案を Neptune に置いていたあいだは、「承認できるのは人だけ」の線を IAM で引けなかった。2026-10-05 からは修復案が Neptune に無く、この線は決定のキューの `sqs:SendMessage`（Web の EC2 のロールだけ）で引いている。
-  出典: `terraform/pipeline/graph/access.tf`、`terraform/workflow/proposals.tf` の先頭のコメント、[data-stores.md](../../data-stores.md) の「4. 気を付けること」。
+  出典: `IaC/terraform/aws-managed/pipeline/graph/access.tf`、`IaC/terraform/aws-managed/workflow/proposals.tf` の先頭のコメント、[data-stores.md](../../data-stores.md) の「4. 気を付けること」。
 - **修復案の頂点はやめた（2026-10-05）。**
   辺が 1 本も無く、id で引いて書き換えるだけで、グラフとして使っていなかった。同じ内容を S3 Tables の `proposal_events` にも書いていた（2 か所に書いていた）。いまは `proposal_events` だけ。
   出典: [修復案を S3 Tables にまとめる（003）の設計](../../cycles/003-proposals-in-s3tables/design.md)、FAQ「Neptune には修復案は書かないよね？ status 更新だけよね？」。
@@ -102,7 +102,7 @@
 
 2026-10-05 に、修復案（`proposal`）を S3 Tables の `proposal_events` だけに置き、Neptune をトポロジと `status` だけにした。[修復案を S3 Tables にまとめる（003）の設計](../../cycles/003-proposals-in-s3tables/design.md)。
 
-OSS 版（`oss/terraform/pipeline/graph`）には Neptune Analytics が無く、代わりに `neo4j.tf` が Neo4j Community Edition 2026.09.0 と Graph Data Science を ECS（Fargate ARM、1 vCPU / 4 GB）に 1 台立てる。データはタスクの一時領域で、タスクが入れ替わるとグラフは空に戻る（`ops/sync-graph.sh --oss` で入れ直す）。アプリは `bolt://`（7687）でユーザー `neo4j` とパスワード（SSM の SecureString `/<prefix>/neo4j-password`）でつなぐ。[oss-variant.md](../../oss-variant.md)、[マネージドを OSS に置き換えた環境を作る（005）の設計](../../cycles/005-oss-on-ecs/design.md)。
+OSS 版（`IaC/terraform/oss/pipeline/graph`）には Neptune Analytics が無く、代わりに `neo4j.tf` が Neo4j Community Edition 2026.09.0 と Graph Data Science を ECS（Fargate ARM、1 vCPU / 4 GB）に 1 台立てる。データはタスクの一時領域で、タスクが入れ替わるとグラフは空に戻る（`ops/sync-graph.sh --oss` で入れ直す）。アプリは `bolt://`（7687）でユーザー `neo4j` とパスワード（SSM の SecureString `/<prefix>/neo4j-password`）でつなぐ。[oss-variant.md](../../oss-variant.md)、[マネージドを OSS に置き換えた環境を作る（005）の設計](../../cycles/005-oss-on-ecs/design.md)。
 
 ## 関連
 

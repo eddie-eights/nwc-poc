@@ -1,7 +1,7 @@
-# SNMP を投げる対象の初期値（agent/topology.py の静的データ。Neptune が無いときのトポロジと、Neptune への「静的データを投入」の元）。
-# 中身は lab/（containerlab + Nokia SR Linux。Spine-Leaf）の 8 台そのもの。
-# 項目名は lab/lab_topology.py が作る形と揃える（tests/test_sync.py が lab の定義と同じであることを確かめる）。
-# lab を変える（lab/gen_lab.py を打ち直す）ときはここも直す（ここが唯一のシード。lab 側にコピーは置かない）。
+# SNMP を投げる対象の初期値（app/agentcore/topology.py の静的データ。Neptune が無いときのトポロジと、Neptune への「静的データを投入」の元）。
+# 中身は app/containerlab/（containerlab + Nokia SR Linux。Spine-Leaf）の 8 台そのもの。
+# 項目名は app/containerlab/lab_topology.py が作る形と揃える（tests/test_sync.py が lab の定義と同じであることを確かめる）。
+# lab を変える（app/containerlab/gen_lab.py を打ち直す）ときはここも直す（ここが唯一のシード。lab 側にコピーは置かない）。
 #
 # - mgmt_ip は containerlab の mgmt ネットワーク nwc-lab（203.0.113.0/24）上のアドレス。
 # - snmp_community は lab 固定の public。実機の値は書かない。

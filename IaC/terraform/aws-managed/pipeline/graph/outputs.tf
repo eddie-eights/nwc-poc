@@ -4,7 +4,7 @@ output "graph_id" {
 }
 
 output "graph_arn" {
-  description = "Used as the Resource of the neptune-graph IAM statements (terraform/pipeline/nautobot, terraform/workflow)"
+  description = "Used as the Resource of the neptune-graph IAM statements (IaC/terraform/aws-managed/pipeline/nautobot, IaC/terraform/aws-managed/workflow)"
   value       = aws_neptunegraph_graph.graph.arn
 }
 

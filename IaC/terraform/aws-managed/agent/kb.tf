@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------- knowledge base (S3 -> Titan Embeddings v2 -> OpenSearch Serverless)
-# create_knowledge_base = true のときだけ作る（count）。バケットは terraform/base/core のもの（web/ lab/ stream/ と共用）。
+# create_knowledge_base = true のときだけ作る（count）。バケットは IaC/terraform/aws-managed/base/core のもの（web/ lab/ stream/ と共用）。
 # 取り込み元の md は利用者の PC から aws s3 cp で docs/ に置き、start-ingestion-job で取り込む（ops/up.sh の手順 4）
 resource "aws_opensearchserverless_security_policy" "kb_encryption" {
   count = local.kb ? 1 : 0
@@ -17,7 +17,7 @@ resource "aws_opensearchserverless_security_policy" "kb_encryption" {
   })
 }
 
-# 公開しない。届くのは土台（terraform/base/core）の VPC エンドポイントと Bedrock のサービス側だけ。
+# 公開しない。届くのは土台（IaC/terraform/aws-managed/base/core）の VPC エンドポイントと Bedrock のサービス側だけ。
 # Runtime はコレクションを直接呼ばない（Retrieve を呼ぶと Bedrock が SourceServices の経路でサービス側から検索する）。
 # 取り込み（start-ingestion-job）も Bedrock がこの経路で書く。索引は VPC の中の Lambda（下の kb_index）が作る
 resource "aws_opensearchserverless_security_policy" "kb_network" {
@@ -25,7 +25,7 @@ resource "aws_opensearchserverless_security_policy" "kb_network" {
 
   name        = local.collection_name
   type        = "network"
-  description = "Collection reachable only through the OpenSearch Serverless VPC endpoint of terraform/base/core and from Bedrock"
+  description = "Collection reachable only through the OpenSearch Serverless VPC endpoint of IaC/terraform/aws-managed/base/core and from Bedrock"
 
   policy = jsonencode([{
     Rules = [{
@@ -40,7 +40,7 @@ resource "aws_opensearchserverless_security_policy" "kb_network" {
   lifecycle {
     precondition {
       condition     = local.aoss_vpce_id != ""
-      error_message = "terraform/base/core に OpenSearch Serverless の VPC エンドポイントが無い。terraform/base/core を -var create_opensearch_endpoint=true で apply し直す（ops/up.sh は CREATE_KB=1 のとき付ける）。"
+      error_message = "IaC/terraform/aws-managed/base/core に OpenSearch Serverless の VPC エンドポイントが無い。IaC/terraform/aws-managed/base/core を -var create_opensearch_endpoint=true で apply し直す（ops/up.sh は CREATE_KB=1 のとき付ける）。"
     }
   }
 }
@@ -115,7 +115,7 @@ resource "time_sleep" "kb_collection_ready" {
 
 # ---------------------------------------------------------------- vector index (Lambda in the VPC)
 # コレクションは VPC エンドポイントからしか届かないので、Terraform を打つ PC からは索引を作れない。
-# VPC の中（土台の lambda の SG。endpoints の SG が 443 を受ける）の Lambda（agent/kb_index.py）を apply のときに 1 回呼んで作る。
+# VPC の中（土台の lambda の SG。endpoints の SG が 443 を受ける）の Lambda（app/agentcore/kb_index.py）を apply のときに 1 回呼んで作る。
 # 索引がもうあれば作らない（mappings が違っても直さない）。mappings を変えるときは
 # -replace=aws_opensearchserverless_collection.kb[0] でコレクションごと作り直し、そのあと取り込みをやり直す
 data "archive_file" "kb_index" {
@@ -123,7 +123,7 @@ data "archive_file" "kb_index" {
   output_path = "${path.module}/.build/kb_index.zip"
 
   source {
-    content  = file("${local.repo_root}/agent/kb_index.py")
+    content  = file("${local.repo_root}/app/agentcore/kb_index.py")
     filename = "index.py"
   }
 }
@@ -179,7 +179,7 @@ resource "aws_iam_role_policy" "kb_index" {
   })
 }
 
-# terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。ほかのワークロードのロールとそろえる。
+# IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。ほかのワークロードのロールとそろえる。
 # ログと ENI は Lambda のサービスがこのロールで出し、aoss はネットワークポリシー（上の kb_network）で閉じているので、いまの許可はどれも Deny の対象に入っていない
 # （付けても動きは変わらない。許可を足したときに、漏れた認証情報で VPC の外から使わせないため）。KB のロール（下の kb）はサービス側で動くので付けない
 resource "aws_iam_role_policy_attachment" "kb_index_perimeter" {

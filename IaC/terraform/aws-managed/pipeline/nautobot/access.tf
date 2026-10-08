@@ -86,7 +86,7 @@ resource "aws_iam_role_policy" "task" {
   })
 }
 
-# VPC エンドポイントを通らない AWS の API を拒む（terraform/base/core の perimeter.tf）。NETWORK_PERIMETER=0 なら付けない
+# VPC エンドポイントを通らない AWS の API を拒む（IaC/terraform/aws-managed/base/core の perimeter.tf）。NETWORK_PERIMETER=0 なら付けない
 resource "aws_iam_role_policy_attachment" "exec_perimeter" {
   count = local.perimeter_policy_arn != "" ? 1 : 0
 

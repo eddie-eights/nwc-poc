@@ -1,6 +1,6 @@
 """「承認」タブの中身。修復案を読み、承認・却下をワーカーへ送る。
 
-  承認      terraform/workflow のワーカーが S3 Tables の proposal_events に書いた修復案（proposals.py が Athena で読む）。
+  承認      IaC/terraform/aws-managed/workflow のワーカーが S3 Tables の proposal_events に書いた修復案（proposals.py が Athena で読む）。
             承認・却下は決定のキューに送り、ワーカーがワークフローに伝えて行を足す（画面に出るまで数秒〜20 秒。2026-10-05 までは Neptune の頂点に書き戻していた）
 
 「異常一覧」タブ（Spark が書いた anomaly の頂点）は 2026-10-02 にやめた。いまの異常はトポロジのタブの状態、アラートの履歴は Grafana / Splunk で見る。

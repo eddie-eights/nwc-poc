@@ -45,7 +45,7 @@ resource "aws_iam_role_policy" "execution_neo4j" {
   })
 }
 
-# terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
+# IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
 resource "aws_iam_role_policy_attachment" "execution_perimeter" {
   count = local.perimeter_policy_arn != "" ? 1 : 0
 
@@ -81,7 +81,7 @@ data "aws_iam_policy_document" "task" {
     resources = [aws_sqs_queue.decisions.arn]
   }
 
-  # トポロジと status を読むだけ（workflow/awsio.py の read_topology。事前チェックと保守中の判定）。
+  # トポロジと status を読むだけ（app/temporal/awsio.py の read_topology。事前チェックと保守中の判定）。
   # 修復案の頂点は 2026-10-05 にやめたので、書き込みと削除の権限は付けない。
   # OSS 版（Neo4j）は IAM でなくパスワードで入るので、この行は無い（パスワードは実行ロールの execution_neo4j）
   dynamic "statement" {

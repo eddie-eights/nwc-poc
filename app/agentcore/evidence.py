@@ -2,20 +2,20 @@
 
 Grafana / Splunk のアラート（2026-10-02 までは Spark が検知していた）を受けて、エージェントが Neptune / S3 Tables / OpenSearch / Prometheus を見に行って原因を分析する。
 Neptune は graph.py / topology.py（neighbors / blast_radius）、ここは残りの 3 つ:
-  search_logs    OpenSearch Serverless の logs コレクション（terraform/pipeline/analytics の sinks=opensearch。Spark が traps と logs（機器の syslog）を書く）を機器名で検索
+  search_logs    OpenSearch Serverless の logs コレクション（IaC/terraform/aws-managed/pipeline/analytics の sinks=opensearch。Spark が traps と logs（機器の syslog）を書く）を機器名で検索
   query_metrics  Amazon Managed Service for Prometheus（sinks=prometheus。Spark が metrics を remote write）に PromQL を投げる
   query_history  S3 Tables（Iceberg）の alert_events（Grafana / Splunk のアラートの通知。graph の status Lambda → Firehose が追記）を Athena で読む（2026-10-04）
 
 エンドポイントは環境変数 OPENSEARCH_ENDPOINT（https://...aoss.amazonaws.com）/ OPENSEARCH_INDEX（既定 snmp-logs）/
 PROMETHEUS_QUERY_URL（https://aps-workspaces.<region>.amazonaws.com/workspaces/<id>/api/v1/query）/
-ATHENA_WORKGROUP・ATHENA_CATALOG・HISTORY_NAMESPACE・ALERT_EVENTS_TABLE（terraform/pipeline/analytics の history.tf の出力）。
+ATHENA_WORKGROUP・ATHENA_CATALOG・HISTORY_NAMESPACE・ALERT_EVENTS_TABLE（IaC/terraform/aws-managed/pipeline/analytics の history.tf の出力）。
 どれも無ければ「まだ配備されていない」を返して、PIPELINE の analytics を作っていない構成でも落ちない。
 署名は botocore の SigV4（サービス名 aoss / aps）。requests は使わず urllib で送る（tools Lambda は素の python3.13、依存を増やさない）。
 Athena は boto3 の athena クライアント（python3.13 の Lambda に入っている）。実行の手順（開始 → 待つ → 止める → 結果）は toolkit.athena_rows
-（agent/proposals.py の修復案の読み取りと共用。2026-10-05）。
-tools Lambda（terraform/workflow）と chat runtime（agent/app.py）の両方から同じものが呼ばれる。
+（app/agentcore/proposals.py の修復案の読み取りと共用。2026-10-05）。
+tools Lambda（IaC/terraform/aws-managed/workflow）と chat runtime（app/agentcore/app.py）の両方から同じものが呼ばれる。
 
-OSS 版（cycle 005。oss/terraform）は送り先の認証だけを環境変数で切り替える（無ければ上の SigV4 のまま）:
+OSS 版（cycle 005。IaC/terraform/oss）は送り先の認証だけを環境変数で切り替える（無ければ上の SigV4 のまま）:
   OPENSEARCH_AUTH=basic   OpenSearch（自前）に Basic 認証。ユーザーは OPENSEARCH_USER（既定 admin）、パスワードは
                           環境変数 OPENSEARCH_PASSWORD か SSM の <PARAM_PREFIX>/opensearch-password（SecureString。ops/up.sh が作る）
   PROMETHEUS_AUTH=none    VictoriaMetrics の vmselect に署名せずに送る（PROMETHEUS_QUERY_URL は http://…/select/0/prometheus/api/v1/query）
@@ -94,13 +94,13 @@ def _send(method: str, url: str, body: bytes | None, headers: dict) -> dict:
 def search_logs(device_id: str = "", minutes: int = 60, limit: int = 20) -> dict:
     """直近 minutes 分の traps / ログを機器名で検索（新しい順）。device_id が空なら全機器"""
     if not OPENSEARCH_ENDPOINT:
-        return {"error": "ログの検索はまだ配備されていない（terraform/pipeline/analytics を sinks に opensearch を入れて apply すると使える）", "hits": []}
+        return {"error": "ログの検索はまだ配備されていない（IaC/terraform/aws-managed/pipeline/analytics を sinks に opensearch を入れて apply すると使える）", "hits": []}
     minutes = max(1, min(int(minutes), 24 * 60))
     limit = max(1, min(int(limit), 100))
     since = int((time.time() - minutes * 60) * 1000)
     must = [{"range": {"@timestamp": {"gte": since}}}]
     if device_id:
-        # Spark は tags.sysName / tags.agent_host / tags.source を持つ（spark/snmp_sinks.py の opensearch の文書）
+        # Spark は tags.sysName / tags.agent_host / tags.source を持つ（app/spark/snmp_sinks.py の opensearch の文書）
         must.append({"multi_match": {"query": device_id, "fields": ["tags.sysName", "tags.agent_host", "tags.source", "device_id"]}})
     body = json.dumps({"size": limit, "sort": [{"@timestamp": "desc"}], "query": {"bool": {"must": must}}}).encode()
     res = _request("POST", f"{OPENSEARCH_ENDPOINT}/{OPENSEARCH_INDEX}/_search", "aoss", body, {"Content-Type": "application/json"})
@@ -113,7 +113,7 @@ def search_logs(device_id: str = "", minutes: int = 60, limit: int = 20) -> dict
 def query_metrics(query: str, minutes: int = 15) -> dict:
     """PromQL の range query（step 60 秒）。例: interface_ifOperStatus{sysName="dc1-leaf-01"}"""
     if not PROMETHEUS_QUERY_URL:
-        return {"error": "メトリクスの検索はまだ配備されていない（terraform/pipeline/analytics を sinks に prometheus を入れて apply すると使える）", "series": []}
+        return {"error": "メトリクスの検索はまだ配備されていない（IaC/terraform/aws-managed/pipeline/analytics を sinks に prometheus を入れて apply すると使える）", "series": []}
     if not query:
         return {"error": "query（PromQL）が空", "series": []}
     minutes = max(1, min(int(minutes), 24 * 60))
@@ -135,9 +135,9 @@ def query_metrics(query: str, minutes: int = 15) -> dict:
 
 
 # ---------------------------------------------------------------- アラートの通知の履歴（Athena → S3 Tables の alert_events。2026-10-04）
-HISTORY_NOT_DEPLOYED = ("アラートの履歴（S3 Tables の alert_events を Athena で読む）はまだ配備していない（terraform/pipeline/analytics を apply して、"
-                        "terraform/workflow を apply し直すと使える）。直近はメトリクスを query_metrics、ログを search_logs で見る")
-# 列は workflow/rules.py の ALERT_EVENT_COLUMNS と同じ順（tests/test_app.py が突き合わせる）
+HISTORY_NOT_DEPLOYED = ("アラートの履歴（S3 Tables の alert_events を Athena で読む）はまだ配備していない（IaC/terraform/aws-managed/pipeline/analytics を apply して、"
+                        "IaC/terraform/aws-managed/workflow を apply し直すと使える）。直近はメトリクスを query_metrics、ログを search_logs で見る")
+# 列は app/temporal/rules.py の ALERT_EVENT_COLUMNS と同じ順（tests/test_app.py が突き合わせる）
 HISTORY_COLUMNS = ("event_id", "anomaly_id", "source", "status", "device_id", "kind", "target", "detail", "starts_at", "received_at")
 HISTORY_LIMIT = 50
 

@@ -1,4 +1,4 @@
-# Splunk Enterprise のコンテナ（terraform/pipeline/analytics の ECS。Fargate の x86_64）。ops/up.sh の手順 2 が deploy.env の STORES に splunk があるときビルドして
+# Splunk Enterprise のコンテナ（IaC/terraform/aws-managed/pipeline/analytics の ECS。Fargate の x86_64）。ops/up.sh の手順 2 が deploy.env の STORES に splunk があるときビルドして
 # ECR の <接頭辞>-splunk に置く。上流の公式イメージ（splunk/splunk。amd64 だけ）に、アラートの app（netops_alerts）と入口（entrypoint.sh）を足すだけ。
 # 上流は etc を /opt/splunk-etc に持ち、起動のとき /opt/splunk/etc（VOLUME）へ写すので、app は /opt/splunk-etc/apps に置く
 # （/opt/splunk/etc に COPY しても VOLUME に隠れる）。RUN は無いので arm64 の PC でも QEMU 無しでビルドできる（--platform linux/amd64）。

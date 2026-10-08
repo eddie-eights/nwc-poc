@@ -1,7 +1,7 @@
-"""Neptune Analytics（terraform/pipeline/graph）に置いたトポロジの読み書き。boto3 の neptune-graph で openCypher を送る（IAM 認証の署名は boto3 が付ける）。
+"""Neptune Analytics（IaC/terraform/aws-managed/pipeline/graph）に置いたトポロジの読み書き。boto3 の neptune-graph で openCypher を送る（IAM 認証の署名は boto3 が付ける）。
 2026-10-04 に Neptune（データベース。Gremlin）から移した。Neptune Analytics は openCypher だけで、アルゴリズム（neptune.algo.*）をグラフの上でそのまま回せる。
 
-グラフの ID（g-xxxxxxxxxx）は環境変数 NEPTUNE_GRAPH_ID、無ければ SSM の <PARAM_PREFIX>/neptune-graph-id（terraform/pipeline/graph が書く）。
+グラフの ID（g-xxxxxxxxxx）は環境変数 NEPTUNE_GRAPH_ID、無ければ SSM の <PARAM_PREFIX>/neptune-graph-id（IaC/terraform/aws-managed/pipeline/graph が書く）。
 どちらも無ければ configured() が False で、topology.py は data/ の静的データを使う（graph を作っていなくても動く）。
 接続先は boto3 がグラフの ID とリージョンから決める（https://<グラフの ID>.<region>.neptune-graph.amazonaws.com。VPC の中では
 インターフェース型エンドポイント neptune-graph-data の private DNS がこの名前を引き受ける）。
@@ -14,24 +14,24 @@
   頂点 label=device, id=device_id。property: hostname, site, role, asn, mgmt_ip, enabled, status
   頂点 label=interface, id=<device_id>#<IF 名>。property: device_id, name, address, status（機器とは辺でなく device_id でつなぐ）
   辺   label=link, a → b（a < b）。property: a_if, b_if, kind, role, bandwidth_mbps, status
-インタフェースは lab/lab_topology.py が lab の定義から作る全部（管理の mgmt0 やリンクに出ない IF も）。agent/data の静的データには無い。
+インタフェースは app/containerlab/lab_topology.py が lab の定義から作る全部（管理の mgmt0 やリンクに出ない IF も）。app/agentcore/data の静的データには無い。
 
-物理層より上（IP 層 / EVPN・BGP 層。data/layers.json、lab/lab_topology.py の layers）は、機器やインタフェースとは別の頂点で、
+物理層より上（IP 層 / EVPN・BGP 層。data/layers.json、app/containerlab/lab_topology.py の layers）は、機器やインタフェースとは別の頂点で、
 下の層の頂点の id を property に持つ（interface_id / ip_interface_id。層をまたぐ紐づけの鍵）:
   頂点 label=ip_interface（id <機器>#<IF>.<n>）、isis_adjacency（<機器>#isis#<IF>.<n>）、bgp_session（<機器>#bgp#<相手の IP>）、
        evpn_instance（<機器>#evi#<EVI>）、ethernet_segment（<機器>#es#<名前>）。property は lab_topology.py の docstring の通り + status + layer（ip / evpn）
   辺   over（上の層 → 下の層の頂点）、peer（IS-IS の隣接 / BGP のセッションの両端）、tunnel（同じ EVI 同士）、attach（EVI → LAG の IF）、segment（同じ ESI 同士）
-status は物理層と同じ動的な状態で、gNMI の検知（bgp_down / isis_down）を受けた graph/status_handler.py が set_layer_status() で書く。
+status は物理層と同じ動的な状態で、gNMI の検知（bgp_down / isis_down）を受けた app/graph/status_handler.py が set_layer_status() で書く。
 
-status（UP / DOWN / ALARM）は動的な状態で、Grafana / Splunk のアラート（firing / resolved。SNS のトピック）を受けた graph/status_handler.py（terraform/pipeline/graph の Lambda）が
+status（UP / DOWN / ALARM）は動的な状態で、Grafana / Splunk のアラート（firing / resolved。SNS のトピック）を受けた app/graph/status_handler.py（IaC/terraform/aws-managed/pipeline/graph の Lambda）が
 set_status() で書く。無ければ UP。seed() で入れ直すと消える（静的な構成だけを入れる）。
-Nautobot を正にしているとき（terraform/pipeline/nautobot）は、Nautobot の Job が sync_physical() で物理層だけを差分で合わせる（status と上の層は残る）。
+Nautobot を正にしているとき（IaC/terraform/aws-managed/pipeline/nautobot）は、Nautobot の Job が sync_physical() で物理層だけを差分で合わせる（status と上の層は残る）。
 
 トポロジに無い機器やインタフェースの異常は捨てずに「未登録」の頂点（property registered=false。機器は role=unknown）として残し、
 set_status() の戻り値に unregistered を付ける（Lambda が WARNING でログに出す。登録漏れの印）。登録済みの頂点は registered を持たない。
 あとから seed() / add_device() で登録すると未登録の頂点は置き換わり、UP でない status は引き継ぐ。
 
-OSS 版（cycle 005。oss/terraform）は環境変数 GRAPH_BACKEND=neo4j で Neo4j（Community + GDS）に切り替える。無ければ Neptune Analytics のまま。
+OSS 版（cycle 005。IaC/terraform/oss）は環境変数 GRAPH_BACKEND=neo4j で Neo4j（Community + GDS）に切り替える。無ければ Neptune Analytics のまま。
 接続先は NEO4J_URI（bolt://…。無ければ SSM の <PARAM_PREFIX>/neo4j-uri）、ユーザーは NEO4J_USER（既定 neo4j）、パスワードは
 NEO4J_PASSWORD（無ければ SSM の <PARAM_PREFIX>/neo4j-password。SecureString）、データベースは NEO4J_DATABASE（既定 neo4j）。
 クエリは Neptune の openCypher のまま組み、Neo4j に送る直前に _dialect() が 1 か所で書き換える（頂点の id は property id に置き、
@@ -83,7 +83,7 @@ def configured() -> bool:
 
 
 def errors() -> tuple[type[BaseException], ...]:
-    """読み書きの失敗として捕まえる例外の型（topology.py と web/topology_view.py の except に渡す）。Neptune は boto の 2 つ。
+    """読み書きの失敗として捕まえる例外の型（topology.py と app/dashboard/topology_view.py の except に渡す）。Neptune は boto の 2 つ。
     OSS 版はドライバの Neo4jError（サーバーが返す失敗）と DriverError（つながらない・切れた）も加える。
     ドライバが包まない例外（OSError 等）は受けない。neo4j.exceptions が無いときに boto の 2 つに戻るのはテストの偽物のためで、
     本番でドライバが無ければ _driver() の import が落ちて配備ミスをそのまま見せる"""
@@ -360,7 +360,7 @@ def _create_links(rows: list) -> None:
 
 
 def seed(devices: list[dict], links: list[dict], layers: dict | None = None) -> dict:
-    """静的データで置き換える（登録済みを全部消してから入れる）。devices は lab/lab_topology.py が lab の定義から作ったもの
+    """静的データで置き換える（登録済みを全部消してから入れる）。devices は app/containerlab/lab_topology.py が lab の定義から作ったもの
     （interfaces 付き）、または devices.yaml の行に topology.json の asn を足したもの（interfaces 無し）。layers は同じく lab_topology.py の
     layers（または data/layers.json）で、None なら上の層は触らない。
     status は入れない（入れ直したら全部 UP に戻る）。ただし未登録の頂点のうち今回登録されるものは置き換え、UP でない status を引き継ぐ。
@@ -467,7 +467,7 @@ def _apply_diff(match: str, var: str, put: dict, drop: list, **params) -> None:
 
 
 def sync_physical(devices: list[dict], links: list[dict]) -> dict:
-    """物理層（機器・インタフェース・回線）を、渡した一覧に差分で合わせる。Nautobot の Job（nautobot/jobs）が、Nautobot を変えるたびに呼ぶ。
+    """物理層（機器・インタフェース・回線）を、渡した一覧に差分で合わせる。Nautobot の Job（app/nautobot/jobs）が、Nautobot を変えるたびに呼ぶ。
     devices / links の形は seed() と同じ。seed() と違って消して入れ直さないので、残る頂点と辺の status（アラートが付けた動的な状態）と、
     上の層（IP 層 / EVPN・BGP 層。lab の定義から seed_layers() で入れたもの）の頂点と辺はそのまま残る。
       - 一覧に無い登録済みの機器・インタフェース・回線は消す（機器を消すと付いていた辺も消える）
@@ -776,8 +776,8 @@ def centrality(limit: int = 10) -> dict:
 
 
 # ---------------------------------------------------------------- 一覧（構成変更の頂点）
-# label change（構成変更。agent/topology.py の recent_changes）を新しい順に読む。
-# 修復案の頂点（label proposal）は 2026-10-05 にやめた（修復案は S3 Tables の proposal_events だけ。agent/proposals.py が Athena で読む）。
+# label change（構成変更。app/agentcore/topology.py の recent_changes）を新しい順に読む。
+# 修復案の頂点（label proposal）は 2026-10-05 にやめた（修復案は S3 Tables の proposal_events だけ。app/agentcore/proposals.py が Athena で読む）。
 # 異常（label anomaly）の頂点は 2026-10-02 にやめた（書いていた Spark の detect をなくした）
 def _record(m: dict, id_key: str) -> dict:
     """_node() の 1 件を、id を id_key（change_id など）に置き換えた dict に"""

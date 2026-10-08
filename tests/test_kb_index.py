@@ -1,8 +1,8 @@
-"""agent/kb_index.py（KB のベクトル索引を VPC の中で作る Lambda）の模擬テスト。boto3 / botocore と _call を差し替え、AWS に触れない。
+"""app/agentcore/kb_index.py（KB のベクトル索引を VPC の中で作る Lambda）の模擬テスト。boto3 / botocore と _call を差し替え、AWS に触れない。
 実行は python3 tests/test_kb_index.py（依存は無い）。"""
 import importlib.util, os, sys, types
 
-PATH = os.path.join(os.path.dirname(__file__), "..", "agent", "kb_index.py")
+PATH = os.path.join(os.path.dirname(__file__), "..", "app", "agentcore", "kb_index.py")
 
 # boto3 / botocore は Lambda の実行環境にあるが、手元に無くても読めるように差し替える
 boto3 = types.ModuleType("boto3")

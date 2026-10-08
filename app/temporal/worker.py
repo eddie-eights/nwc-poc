@@ -35,7 +35,7 @@ Grafana と Splunk のアラート（SNS → SQS）を受けてエージェン�
 Web とエージェントは Athena で読むので、Temporal を知らなくてよい。Temporal の dev server は SQLite をタスクの中に持つだけで、
 タスクが入れ替わると履歴ごと消えるので、修復案はこちらに残す。行を足す前に落ちたらアクティビティの再試行で足し直す（二重に入ったら読む側が seq で 1 つにする）。
 
-3 ファイルに分けてある（同じディレクトリに置いて import する。Dockerfile は workflow/*.py を全部入れる）:
+3 ファイルに分けてある（同じディレクトリに置いて import する。Dockerfile は app/temporal/*.py を全部入れる）:
   rules.py   判断だけの純粋関数（プロンプト・JSON の読み取り・許可コマンド・アラートと決定の読み取り・起こすかどうか・修復案の行）
   awsio.py   環境変数と AWS 呼び出し（Neptune / S3 Tables / AgentCore / SSM / SQS）
   worker.py  ここ。Temporal のアクティビティ・ワークフロー・starter・main
@@ -166,7 +166,7 @@ async def record_ignored(proposal: dict, decision: dict, effective: dict) -> dic
 @activity.defn
 async def apply_on_lab(command: str) -> dict:
     if not awsio.LAB_INSTANCE_ID:
-        return {"status": "Skipped", "output": "LAB_INSTANCE_ID が無い（terraform/pipeline/lab が無い）"}
+        return {"status": "Skipped", "output": "LAB_INSTANCE_ID が無い（IaC/terraform/aws-managed/pipeline/lab が無い）"}
     status, out = await asyncio.to_thread(awsio.run_on_lab, command)
     return {"status": status, "output": out}
 

@@ -1,16 +1,16 @@
 # ---------------------------------------------------------------- naming
 variable "region" {
-  description = "AWS region. Same value as terraform/base/core."
+  description = "AWS region. Same value as IaC/terraform/aws-managed/base/core."
   type        = string
   default     = "ap-northeast-1"
 }
 
 variable "owner" {
-  description = "Required. Name of the person who deploys this copy. Resource names and the Project tag are <owner>-nwc-poc (<owner>-nwc-oss in oss/terraform, see project), so each person can find their own resources in the console. Same value in every root module."
+  description = "Required. Name of the person who deploys this copy. Resource names and the Project tag are <owner>-nwc-poc (<owner>-nwc-oss in IaC/terraform/oss, see project), so each person can find their own resources in the console. Same value in every root module."
   type        = string
 
   validation {
-    # 接頭辞は <owner>-nwc-poc。OpenSearch Serverless の data access policy 名が 32 文字までで、一番長い接尾辞は terraform/workflow の <接頭辞>-logs-read（10 文字）なので接頭辞は 22 文字まで。-nwc-poc の 8 文字（OSS 版の -nwc-oss も 8 文字）を引いて owner は 14 文字まで
+    # 接頭辞は <owner>-nwc-poc。OpenSearch Serverless の data access policy 名が 32 文字までで、一番長い接尾辞は IaC/terraform/aws-managed/workflow の <接頭辞>-logs-read（10 文字）なので接頭辞は 22 文字まで。-nwc-poc の 8 文字（OSS 版の -nwc-oss も 8 文字）を引いて owner は 14 文字まで
     # ハイフンの連続と末尾のハイフンも弾く（ECR のリポジトリ名が受け付けない）
     condition     = can(regex("^[a-z][a-z0-9]*(-[a-z0-9]+)*$", var.owner)) && length(var.owner) <= 14
     error_message = "owner must be 1-14 lowercase letters, digits and single hyphens, starting with a letter and not ending with one."
@@ -18,13 +18,13 @@ variable "owner" {
 }
 
 variable "project" {
-  description = "Second half of the resource name prefix and of the Project tag (<owner>-<project>). nwc-poc is the managed-services build (terraform/); nwc-oss is the build that runs open-source services on ECS instead (oss/terraform/, cycle 005), whose oss.auto.tfvars sets it. Same value in every root module."
+  description = "Second half of the resource name prefix and of the Project tag (<owner>-<project>). nwc-poc is the managed-services build (IaC/terraform/aws-managed/); nwc-oss is the build that runs open-source services on ECS instead (IaC/terraform/oss/, cycle 005), whose oss.auto.tfvars sets it. Same value in every root module."
   type        = string
   default     = "nwc-poc"
 
   validation {
     condition     = contains(["nwc-poc", "nwc-oss"], var.project)
-    error_message = "project must be nwc-poc (terraform/) or nwc-oss (oss/terraform/)."
+    error_message = "project must be nwc-poc (IaC/terraform/aws-managed/) or nwc-oss (IaC/terraform/oss/)."
   }
 }
 
@@ -65,14 +65,14 @@ variable "auto_start_lab" {
 
 # ---------------------------------------------------------------- path to Telegraf (telegraf.tf)
 variable "forward_to_telegraf" {
-  description = "Route the lab mgmt network (203.0.113.0/24) to this EC2 and turn off its source/destination check, so Telegraf (the ECS task of terraform/pipeline/stream) reaches the switches. The security group rules for the polling, traps and syslog are always there (terraform/base/core security_groups.tf). ops/up.sh sets true when terraform/pipeline/stream is made or kept."
+  description = "Route the lab mgmt network (203.0.113.0/24) to this EC2 and turn off its source/destination check, so Telegraf (the ECS task of IaC/terraform/aws-managed/pipeline/stream) reaches the switches. The security group rules for the polling, traps and syslog are always there (IaC/terraform/aws-managed/base/core security_groups.tf). ops/up.sh sets true when IaC/terraform/aws-managed/pipeline/stream is made or kept."
   type        = bool
   default     = false
 }
 
 # ---------------------------------------------------------------- assets
 variable "containerlab_version" {
-  description = "containerlab_<version>_linux_arm64.rpm must be uploaded to s3://<kb_bucket_name of terraform/base/core>/lab/"
+  description = "containerlab_<version>_linux_arm64.rpm must be uploaded to s3://<kb_bucket_name of IaC/terraform/aws-managed/base/core>/lab/"
   type        = string
   default     = "0.79.0"
 

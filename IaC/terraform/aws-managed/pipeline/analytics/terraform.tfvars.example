@@ -1,4 +1,4 @@
-# terraform/pipeline/analytics の変数の見本。ops/up.sh は -var owner=… で渡すので、手で apply するときだけ terraform.tfvars にコピーして書く
+# IaC/terraform/aws-managed/pipeline/analytics の変数の見本。ops/up.sh は -var owner=… で渡すので、手で apply するときだけ terraform.tfvars にコピーして書く
 # owner はデプロイする人の名前。**必須**（既定が無いので、下の行の # を外して自分の名前に書き換えるか、
 # TF_VAR_owner か -var owner=<自分の名前> で渡す。どれも無いと terraform が値を聞いてくる）。
 # リソース名と Project タグは <owner>-nwc-poc になる（英小文字・数字・ハイフンの 14 文字まで）

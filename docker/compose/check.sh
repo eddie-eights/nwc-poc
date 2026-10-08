@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 手元の compose を通しで確かめる（docs/cycles/006-local-compose/design.md の検証方法「WSL」の 4）。全部見てから、1 つでも NG なら非 0 で終わる
-#   local/compose/check.sh    （up.sh と lab.sh up のあと 2〜3 分待ってから）
+#   docker/compose/check.sh    （up.sh と lab.sh up のあと 2〜3 分待ってから）
 set -euo pipefail
 cd "$(dirname "$0")"
 [ -f .env ] || { echo ".env が無い（up.sh の前に cp .env.example .env）" >&2; exit 1; }
@@ -28,7 +28,7 @@ except Exception: print('読めない応答: ' + (s.strip()[:200].replace(chr(10
 # メモリ（design.md の見積もりは 16〜19 GB）。.wslconfig の 20GB は MemTotal では 19.x GiB に見えるので 19 GiB で切る
 if command -v free >/dev/null; then
   m=$(free -m | awk '/^Mem:/{print $2}')
-  [ "$m" -ge 19456 ] || echo "注意: メモリが ${m} MiB（20 GB 未満）。.wslconfig の memory を 20GB 以上にするか、lab を減らす（local/compose/README.md）"
+  [ "$m" -ge 19456 ] || echo "注意: メモリが ${m} MiB（20 GB 未満）。.wslconfig の memory を 20GB 以上にするか、lab を減らす（docker/compose/README.md）"
 fi
 
 judge "Kafka: トピック metrics / gnmi / traps / logs がある" \

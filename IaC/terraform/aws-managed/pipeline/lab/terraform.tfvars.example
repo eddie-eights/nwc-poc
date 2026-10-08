@@ -1,5 +1,5 @@
 # Copy to terraform.tfvars only when the defaults are not right. Every value except owner has a default in variables.tf.
-# ops/up.sh passes owner with -var. terraform/base/core must be applied first (this root reads its state file).
+# ops/up.sh passes owner with -var. IaC/terraform/aws-managed/base/core must be applied first (this root reads its state file).
 # owner is the name of the person who deploys this copy and is REQUIRED: it has no default, so terraform asks for it
 # unless you uncomment the line below (with your own name), export TF_VAR_owner or pass -var owner=<name>.
 # Resource names and the Project tag become <owner>-nwc-poc (up to 14 lowercase letters, digits and single hyphens),
@@ -13,7 +13,7 @@
 # volume_size       = 24
 # auto_start_lab    = true
 #
-# forward_to_telegraf = false   # ops/up.sh passes true when it makes (or keeps) terraform/pipeline/stream
+# forward_to_telegraf = false   # ops/up.sh passes true when it makes (or keeps) IaC/terraform/aws-managed/pipeline/stream
 #
 # containerlab_version = "0.79.0"
 # srlinux_image_tag    = "26.7.2"

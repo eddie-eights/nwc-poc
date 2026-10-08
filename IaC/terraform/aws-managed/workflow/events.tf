@@ -1,10 +1,10 @@
 # ---------------------------------------------------------------- SNS -> SQS (Grafana / Splunk publish an alert, the worker starts a workflow)
 # 異常の検知（Grafana のアラートルールと Splunk の保存済みサーチ）→ SNS → SQS → エージェントの原因分析 → 修復の提案 → 人の承認 → Temporal で実行、という流れの入口。
-# トピック（<接頭辞>-alerts）は terraform/base/core の alerts.tf にあり、ここはキューと購読を持つ。メッセージの形は workflow/rules.py の alerts_from_message。
-# worker（workflow/worker.py の starter）は SQS を long polling し、firing なら investigate-<anomaly_id> のワークフローを起こし、
+# トピック（<接頭辞>-alerts）は IaC/terraform/aws-managed/base/core の alerts.tf にあり、ここはキューと購読を持つ。メッセージの形は app/temporal/rules.py の alerts_from_message。
+# worker（app/temporal/worker.py の starter）は SQS を long polling し、firing なら investigate-<anomaly_id> のワークフローを起こし、
 # resolved なら走っているワークフローにシグナルを送る。Grafana と Splunk が同じ異常を別々に知らせても、ワークフロー ID が同じなので 1 つにまとまる。
 # SQS を挟む理由: ECS のタスクは SNS から直接叩けない（HTTP の口も Lambda も要らない一番安い経路。SQS は 100 万リクエスト/月まで無料）。
-# キューのポリシーには VPC の外からの呼び出しを拒む Deny も入れる（terraform/base/core の perimeter.tf の資源側）。SNS は
+# キューのポリシーには VPC の外からの呼び出しを拒む Deny も入れる（IaC/terraform/aws-managed/base/core の perimeter.tf の資源側）。SNS は
 # aws:PrincipalIsAWSService で外れ、キューの属性（ポリシーを含む）の読み書きはデプロイする人が変わっても戻せるように外す。
 # 2026-10-02 までは Spark の detect が EventBridge に put_events し、ここのルールがキューへ流していた
 
@@ -82,7 +82,7 @@ resource "aws_sqs_queue_policy" "anomalies" {
 }
 
 # 購読。raw_message_delivery で SNS の封筒を外し、Grafana / Splunk が publish した JSON がそのまま SQS の Body になる
-# （封筒つきでも workflow/rules.py は読める）。キューへ配れなかったものは DLQ へ
+# （封筒つきでも app/temporal/rules.py は読める）。キューへ配れなかったものは DLQ へ
 resource "aws_sns_topic_subscription" "anomalies" {
   topic_arn            = local.alerts_topic_arn
   protocol             = "sqs"
@@ -99,7 +99,7 @@ resource "aws_sns_topic_subscription" "anomalies" {
   lifecycle {
     precondition {
       condition     = local.alerts_topic_arn != ""
-      error_message = "terraform/base/core の state から alerts_topic_arn が読めない（2026-10-02 より前の土台）。terraform/base/core を apply し直す（ops/up.sh）。"
+      error_message = "IaC/terraform/aws-managed/base/core の state から alerts_topic_arn が読めない（2026-10-02 より前の土台）。IaC/terraform/aws-managed/base/core を apply し直す（ops/up.sh）。"
     }
   }
 }
@@ -152,8 +152,8 @@ resource "aws_sqs_queue_policy" "anomalies_dlq" {
 }
 
 # ---------------------------------------------------------------- SQS (the Web sends an approval / rejection, the worker signals the workflow)
-# 承認タブ（web/incident_view.py → agent/proposals.py の decide）が {"type":"decision",…} を送り、worker の 2 つ目の待つループ（workflow/worker.py の
-# handle_decision）が受けて investigate-<anomaly_id> に decide のシグナルを送る。メッセージの形は workflow/rules.py の decision_from_message。
+# 承認タブ（app/dashboard/incident_view.py → app/agentcore/proposals.py の decide）が {"type":"decision",…} を送り、worker の 2 つ目の待つループ（app/temporal/worker.py の
+# handle_decision）が受けて investigate-<anomaly_id> に decide のシグナルを送る。メッセージの形は app/temporal/rules.py の decision_from_message。
 # アラートのキュー（上の anomalies）を共用しない: あちらは SNS の <接頭辞>-alerts を購読していて、そのトピックに publish できる
 # Grafana と Splunk のタスクロールが決定を流せてしまう。こちらは SNS を購読せず、送れるのは Web の EC2 のロールだけ（proposals.tf）。
 # 設定は anomalies と同じ（2026-10-05）
@@ -205,4 +205,4 @@ resource "aws_sqs_queue_policy" "decisions" {
   policy    = each.value.json
 }
 
-# worker から SQS へは terraform/base/core の sqs のインターフェース型エンドポイントを通る（ops/up.sh が WORKFLOW のときに作らせる）
+# worker から SQS へは IaC/terraform/aws-managed/base/core の sqs のインターフェース型エンドポイントを通る（ops/up.sh が WORKFLOW のときに作らせる）

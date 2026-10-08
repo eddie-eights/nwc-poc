@@ -1,12 +1,12 @@
 """Neptune へのトポロジ同期の模擬テスト（AWS に触れない）。
-lab/lab_topology.py が lab の定義（splab.clab.yml.in + srlinux/*.cli。lab/gen_lab.py が作る）から作る機器・回線・上の層が agent/data の静的データと同じであること
-（PyYAML があるときと無いときの両方）、graph/status_handler.py が Grafana と Splunk のアラート（SNS。firing / resolved）を graph.set_status / set_layer_status に正しく写すこと、
-terraform/pipeline/graph の sync.tf がその配線を持つこと。実行は uv run --group dev python tests/test_sync.py"""
+app/containerlab/lab_topology.py が lab の定義（splab.clab.yml.in + srlinux/*.cli。app/containerlab/gen_lab.py が作る）から作る機器・回線・上の層が app/agentcore/data の静的データと同じであること
+（PyYAML があるときと無いときの両方）、app/graph/status_handler.py が Grafana と Splunk のアラート（SNS。firing / resolved）を graph.set_status / set_layer_status に正しく写すこと、
+IaC/terraform/aws-managed/pipeline/graph の sync.tf がその配線を持つこと。実行は uv run --group dev python tests/test_sync.py"""
 import builtins, importlib.util, json, os, re, subprocess, sys, tempfile, types
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-sys.path.insert(0, os.path.join(ROOT, "agent"))
-sys.path.insert(0, os.path.join(ROOT, "workflow"))   # status Lambda の zip は workflow/rules.py を rules.py として同梱する
+sys.path.insert(0, os.path.join(ROOT, "app", "agentcore"))
+sys.path.insert(0, os.path.join(ROOT, "app", "temporal"))   # status Lambda の zip は app/temporal/rules.py を rules.py として同梱する
 passed = 0
 
 
@@ -31,8 +31,8 @@ def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数�
 
 
 # ---- lab → トポロジ
-lt = load("lab/lab_topology.py", "lab_topology")
-topology = load("agent/topology.py", "topology")   # graph は未配備（環境変数もパラメータも無い）なので静的データ
+lt = load("app/containerlab/lab_topology.py", "lab_topology")
+topology = load("app/agentcore/topology.py", "topology")   # graph は未配備（環境変数もパラメータも無い）なので静的データ
 static_devices, static_links = topology.load_static()
 DEV_KEYS = ("hostname", "site", "role", "asn", "mgmt_ip", "enabled")
 
@@ -48,10 +48,10 @@ def same(devices, links):
     return sorted(map(key, links)) == sorted(map(key, static_links))
 
 
-devices, links, layers = lt.load(os.path.join(ROOT, "lab"))
+devices, links, layers = lt.load(os.path.join(ROOT, "app", "containerlab"))
 check("lab の定義から 8 台と 12 本（Leaf-SW 2 + Spine 2 + Leaf 2 + VM 2）", len(devices) == 8 and len(links) == 12)
-check("機器（hostname / site / role / asn / mgmt_ip / enabled）が agent/data の静的データと同じ", same(devices, static_links))
-check("回線（両端の IF / 種別 / 主副 / 帯域）が agent/data の静的データと同じ", same(static_devices, links))
+check("機器（hostname / site / role / asn / mgmt_ip / enabled）が app/agentcore/data の静的データと同じ", same(devices, static_links))
+check("回線（両端の IF / 種別 / 主副 / 帯域）が app/agentcore/data の静的データと同じ", same(static_devices, links))
 check("回線は a < b に正規化", all(l["a"] < l["b"] for l in links))
 check("監視対象は SNMP（trap-group）の設定を持つ SR Linux の 6 台（VM は対象外）", all(d["enabled"] == (d["role"] in ("leafsw", "spine", "leaf")) for d in devices) and sum(d["enabled"] for d in devices) == 6)
 check("帯域は SR Linux の interface description の 1G / 100M / 10G から", lt.bandwidth_mbps("core 10G") == 10000 and lt.bandwidth_mbps("WAN 100M") == 100
@@ -71,7 +71,7 @@ def no_yaml(name, *a, **k):
     return real_import(name, *a, **k)
 builtins.__import__ = no_yaml
 try:
-    d2, l2, y2 = lt.load(os.path.join(ROOT, "lab"))
+    d2, l2, y2 = lt.load(os.path.join(ROOT, "app", "containerlab"))
 finally:
     builtins.__import__ = real_import
 leaf = next(d for d in devices if d["device_id"] == "dc1-leaf-01")
@@ -122,33 +122,33 @@ check("EVI 100 は 4 台で同じ RT / VNI、ES は Leaf-SW の組と Leaf の�
       {(v["evi"], v["vni"], v["route_target"]) for v in lv.values() if v["label"] == "evpn_instance"} == {(100, 100, "target:65100:100")}
       and len({v["esi"] for v in lv.values() if v["label"] == "ethernet_segment" and v["device_id"].startswith("dc1-leaf-")}) == 1
       and len({v["esi"] for v in lv.values() if v["label"] == "ethernet_segment"}) == 2)
-check("agent/data/layers.json は lab の定義から作った上の層と同じ", topology.load_static_layers() == layers)
-# lab の定義は lab/gen_lab.py の出力そのもの（手で直さない。台数を変えるときは gen_lab.py を回す）
+check("app/agentcore/data/layers.json は lab の定義から作った上の層と同じ", topology.load_static_layers() == layers)
+# lab の定義は app/containerlab/gen_lab.py の出力そのもの（手で直さない。台数を変えるときは gen_lab.py を回す）
 with tempfile.TemporaryDirectory() as tmp:
-    subprocess.run([sys.executable, os.path.join(ROOT, "lab", "gen_lab.py"), "--out", tmp], check=True, capture_output=True)
+    subprocess.run([sys.executable, os.path.join(ROOT, "app", "containerlab", "gen_lab.py"), "--out", tmp], check=True, capture_output=True)
     gen = {}
     for dp, _, fns in os.walk(tmp):
         for fn in fns:
             p = os.path.join(dp, fn)
             gen[os.path.relpath(p, tmp)] = open(p, encoding="utf-8").read()
-check("lab/splab.clab.yml.in と lab/srlinux/*.cli は lab/gen_lab.py の出力と同じ（既定の leaf 2・spine 2）",
+check("app/containerlab/splab.clab.yml.in と app/containerlab/srlinux/*.cli は app/containerlab/gen_lab.py の出力と同じ（既定の leaf 2・spine 2）",
       set(gen) == {"splab.clab.yml.in"} | {f"srlinux/{n}.cli" for n in ("dc1-leafsw-01", "dc1-leafsw-02", "dc1-spine-01", "dc1-spine-02", "dc1-leaf-01", "dc1-leaf-02")}
-      and all(read("lab", *rel.split("/")) == text for rel, text in gen.items()))
+      and all(read("app", "containerlab", *rel.split("/")) == text for rel, text in gen.items()))
 check("PyYAML が無くても同じ結果（自前の読み取り）", d2 == devices and l2 == links and y2 == layers)
 check("自前の YAML 読み取りはコメント・引用符・真偽値・数値・flow list を読む",
       lt.load_yaml('a: "x # y"  # c\nb: [p, "q"]\nc:\n  - d: 1\n    e: true\n  - f\n') == {"a": "x # y", "b": ["p", "q"], "c": [{"d": 1, "e": True}, "f"]})
-check("CLI は --device-map / --snmp-agents / --gnmi-targets / --layers を受ける", '"--device-map", "--snmp-agents", "--gnmi-targets", "--layers"' in read("lab", "lab_topology.py"))
-check("CLI は {devices, links, layers} の JSON を出す", "json.dump" in read("lab", "lab_topology.py") and '"devices": devices, "links": links, "layers": lyr' in read("lab", "lab_topology.py"))
+check("CLI は --device-map / --snmp-agents / --gnmi-targets / --layers を受ける", '"--device-map", "--snmp-agents", "--gnmi-targets", "--layers"' in read("app", "containerlab", "lab_topology.py"))
+check("CLI は {devices, links, layers} の JSON を出す", "json.dump" in read("app", "containerlab", "lab_topology.py") and '"devices": devices, "links": links, "layers": lyr' in read("app", "containerlab", "lab_topology.py"))
 
 # ---- ops/up.sh 7-3b と ops/sync-graph.sh は lab から作って base64 で渡す
 up = read_ops("up"); sync = read("ops", "sync-graph.sh"); seed = read("ops", "seed_graph.py")
-check("up.sh 7-3b は lab/lab_topology.py の出力を LAB_TOPOLOGY_B64 で seed_graph.py に渡す", "lab/lab_topology.py lab | base64" in up and "LAB_TOPOLOGY_B64=$LAB_TOPOLOGY_B64 /usr/bin/python3.13 -" in up)
+check("up.sh 7-3b は app/containerlab/lab_topology.py の出力を LAB_TOPOLOGY_B64 で seed_graph.py に渡す", "app/containerlab/lab_topology.py app/containerlab | base64" in up and "LAB_TOPOLOGY_B64=$LAB_TOPOLOGY_B64 /usr/bin/python3.13 -" in up)
 check("sync-graph.sh は --replace で GRAPH_REPLACE=1、--dry-run は Neptune に触らない", "GRAPH_REPLACE=${REPLACE:-0}" in sync and "--replace) REPLACE=1" in sync and 'if [ -n "$DRY" ]; then printf' in sync)
 check("seed_graph.py は LAB_TOPOLOGY_B64 を読み、GRAPH_REPLACE=1 のときだけ入れ直す", 'os.environ.get("LAB_TOPOLOGY_B64")' in seed and 'os.environ.get("GRAPH_REPLACE") != "1"' in seed)
 check("seed_graph.py は layers も渡す（lab からは JSON の layers、静的データは data/layers.json）", 'lab.get("layers")' in seed and "topology.load_static_layers()" in seed and "graph.seed(devices, links, layers)" in seed)
 check("up.sh は gNMI の購読先も lab の定義から作って stream の gnmi_targets に渡し、gateway.tf は data/layers.json を tools の zip に入れる",
-      "lab/lab_topology.py lab --gnmi-targets" in up and '-var "gnmi_targets=$GNMI_TARGETS"' in up
-      and '"agent/data/layers.json"' in read("terraform", "workflow", "gateway.tf"))
+      "app/containerlab/lab_topology.py app/containerlab --gnmi-targets" in up and '-var "gnmi_targets=$GNMI_TARGETS"' in up
+      and '"app/agentcore/data/layers.json"' in read("IaC", "terraform", "aws-managed", "workflow", "gateway.tf"))
 
 # ---- status Lambda（graph.set_status を差し替えて呼び出しを見る）
 calls = []
@@ -159,7 +159,7 @@ fake_graph.set_layer_status = lambda dev, kind, target, status="DOWN": (layer_ca
 fake_graph._cache = {"client": None}   # status_handler._neptune が NEPTUNE_CONFIG のクライアントを入れる置き場
 fake_graph.BACKEND = "neptune"   # status_handler._neptune が見る（GRAPH_BACKEND=neo4j の OSS 版は tests/test_oss.py）
 sys.modules["graph"] = fake_graph
-h = load("graph/status_handler.py", "status_handler")
+h = load("app/graph/status_handler.py", "status_handler")
 _neptune_client = object()
 h._cache["neptune"] = _neptune_client   # 資格情報を探しに行かない（作り方は下の NEPTUNE_CONFIG の検査で見る）
 def ev(status, source="grafana", **a):
@@ -482,7 +482,7 @@ h._cache["firehose"] = h._cache["neptune"] = None
 h.toolkit._clients.pop("firehose", None)
 h.handler(pair); h.handler(pair)
 _cfg, _ncfg = h.FIREHOSE_CONFIG, h.NEPTUNE_CONFIG
-_timeout = int(re.search(r"^\s*timeout\s*=\s*(\d+)", read("terraform", "pipeline", "graph", "sync.tf"), re.M).group(1))
+_timeout = int(re.search(r"^\s*timeout\s*=\s*(\d+)", read("IaC", "terraform", "aws-managed", "pipeline", "graph", "sync.tf"), re.M).group(1))
 def _fh_max_of(ips):   # Firehose に使う時間の上限（3 回の接続と読みの待ち + 送り直しの待ち）
     return 3 * (ips * _cfg.connect_timeout + _cfg.read_timeout) + sum(h.RETRY_WAITS)
 def _nep_max_of(ips):   # Neptune 1 回の呼び出しの上限（再試行の前の待ちは 1 秒まで）
@@ -492,15 +492,15 @@ _fh_max, _nep_max = _fh_max_of(_ips), _nep_max_of(_ips)
 check(f"Firehose へは FIREHOSE_CONFIG で 1 つだけ作ったクライアントで送り、botocore の再試行を切る（1 回）。Firehose に使うのは長くて {_fh_max:.1f} 秒（22 秒未満）",
       [m for m in _made if m[0] == "firehose"] == [("firehose", {"region_name": h.toolkit.REGION, "config": _cfg})] and [len(b[1]) for b in _fh2.batches] == [2, 2]
       and "firehose" not in h.toolkit._clients and _cfg.retries.get("total_max_attempts") == 1 and _fh_max < 22)
-check("Neptune へは NEPTUNE_CONFIG（接続 3 秒・読み 10 秒・試すのは 2 回）で 1 つだけ作ったクライアントを graph._cache に入れて使い、agent/graph.py の既定（接続 10 秒・読み 60 秒）は変えない",
+check("Neptune へは NEPTUNE_CONFIG（接続 3 秒・読み 10 秒・試すのは 2 回）で 1 つだけ作ったクライアントを graph._cache に入れて使い、app/agentcore/graph.py の既定（接続 10 秒・読み 60 秒）は変えない",
       [m for m in _made if m[0] == "neptune-graph"] == [("neptune-graph", {"region_name": h.toolkit.REGION, "config": _ncfg})] and fake_graph._cache["client"] is _nep2
       and (_ncfg.connect_timeout, _ncfg.read_timeout, _ncfg.retries) == (3, 10, {"total_max_attempts": 2, "mode": "standard"})
-      and 'config=Config(connect_timeout=10, read_timeout=60, retries={"max_attempts": 2}))' in read("agent", "graph.py"))
+      and 'config=Config(connect_timeout=10, read_timeout=60, retries={"max_attempts": 2}))' in read("app", "agentcore", "graph.py"))
 check(f"Lambda graph-status の timeout は 60 秒で、Firehose の上限と Neptune 1 回の呼び出しの上限の和（{_fh_max + _nep_max:.1f} 秒）より長い",
       _timeout == 60 and _fh_max + _nep_max < _timeout)
 # 待ちの秒数は AZ の数（ENDPOINTS_AZ_NUM）で変わる。sync.tf の timeout のコメント・status_handler.py の docstring・ops/up.sh の注意の式を、
 # FIREHOSE_CONFIG / NEPTUNE_CONFIG から出した値と突き合わせる（ずれていると、1 AZ の既定でも 22 秒と読める説明が残る）
-_timeout_note = re.search(r"^\s*timeout\s*=\s*\d+\s*#(.*)$", read("terraform", "pipeline", "graph", "sync.tf"), re.M).group(1)
+_timeout_note = re.search(r"^\s*timeout\s*=\s*\d+\s*#(.*)$", read("IaC", "terraform", "aws-managed", "pipeline", "graph", "sync.tf"), re.M).group(1)
 _fh_doc = h.__doc__.split("Firehose に使うのは長くて")[1].split("Lambda の timeout")[0]
 _up = read("ops", "up.sh")
 _up_nep = re.search(r"GRAPH_WAIT=\$\(\((20 \* \(3 \* ENDPOINTS_AZ_NUM \+ 10\) \+ 10)\)\)", _up)
@@ -534,22 +534,22 @@ h._cache["neptune"] = _neptune_client
 fh.batches.clear()
 os.environ.pop("ALERT_STREAM", None)
 
-# ---- terraform/pipeline/graph の配線
-tf = read("terraform", "pipeline", "graph", "sync.tf")
-check("sync.tf は status_handler.py を index.py、agent/graph.py を graph.py で zip にする", 'graph/status_handler.py")' in tf and 'filename = "index.py"' in tf and 'agent/graph.py")' in tf and 'filename = "graph.py"' in tf)
+# ---- IaC/terraform/aws-managed/pipeline/graph の配線
+tf = read("IaC", "terraform", "aws-managed", "pipeline", "graph", "sync.tf")
+check("sync.tf は status_handler.py を index.py、app/agentcore/graph.py を graph.py で zip にする", 'app/graph/status_handler.py")' in tf and 'filename = "index.py"' in tf and 'app/agentcore/graph.py")' in tf and 'filename = "graph.py"' in tf)
 # zip に入れ忘れても apply も plan も通り、実行時に ModuleNotFoundError で初めて分かる。だから「含まれている」ではなく「足りていない
-# ものが無い」を見る: graph.py が import する agent/ のモジュール（いまは toolkit）が全部 source に並んでいるか
+# ものが無い」を見る: graph.py が import する app/agentcore/ のモジュール（いまは toolkit）が全部 source に並んでいるか
 zipped = set(re.findall(r'filename = "(\w+)\.py"', tf))
-needed = {m for m in re.findall(r"^import (\w+)$", read("agent", "graph.py"), re.M) if os.path.exists(os.path.join(ROOT, "agent", m + ".py"))}
-check(f"status.zip は graph.py が import する agent/ のモジュールを全部入れる（足りない: {sorted(needed - zipped)}）", needed and not (needed - zipped))
+needed = {m for m in re.findall(r"^import (\w+)$", read("app", "agentcore", "graph.py"), re.M) if os.path.exists(os.path.join(ROOT, "app", "agentcore", m + ".py"))}
+check(f"status.zip は graph.py が import する app/agentcore/ のモジュールを全部入れる（足りない: {sorted(needed - zipped)}）", needed and not (needed - zipped))
 # status_handler.py と rules.py が import するのは、zip の中のモジュールと標準ライブラリだけ（Lambda の実行環境に無いものを読むと起動で落ちる）。
 # boto3 / botocore は Lambda の Python のランタイムに入っている（zip の toolkit.py も読む）
 _imports = lambda text: set(re.findall(r"^(?:import|from) (\w+)", text, re.M))
-check("status.zip は workflow/rules.py を rules.py で入れ、status_handler.py と rules.py は zip の中と標準ライブラリ（と boto3）しか import しない",
-      'workflow/rules.py")' in tf and "rules" in zipped
-      and _imports(read("graph", "status_handler.py")) - zipped <= {"json", "logging", "os", "time", "boto3", "botocore"}
-      and _imports(read("workflow", "rules.py")) <= {"json", "re", "datetime"})
-_loc = read("terraform", "pipeline", "graph", "locals.tf")
+check("status.zip は app/temporal/rules.py を rules.py で入れ、status_handler.py と rules.py は zip の中と標準ライブラリ（と boto3）しか import しない",
+      'app/temporal/rules.py")' in tf and "rules" in zipped
+      and _imports(read("app", "graph", "status_handler.py")) - zipped <= {"json", "logging", "os", "time", "boto3", "botocore"}
+      and _imports(read("app", "temporal", "rules.py")) <= {"json", "re", "datetime"})
+_loc = read("IaC", "terraform", "aws-managed", "pipeline", "graph", "locals.tf")
 check("EventBridge のルールは無く、土台（base/core）のトピック <接頭辞>-alerts を Lambda が購読する（接頭辞ごとのトピックなので他の人のアラートを拾わない）",
       "aws_cloudwatch_event_" not in tf and "events.amazonaws.com" not in tf
       and re.search(r'resource "aws_sns_topic_subscription" "status" \{\s*topic_arn = local\.alerts_topic_arn\s*protocol  = "lambda"\s*endpoint  = aws_lambda_function\.status\.arn', tf) is not None
@@ -558,28 +558,28 @@ check("古い土台（alerts_topic_arn の出力が無い）では、購読の p
       'condition     = local.alerts_topic_arn != ""' in tf and "depends_on = [aws_lambda_permission.status]" in tf)
 check("Lambda は VPC の中で NEPTUNE_GRAPH_ID を環境変数で持ち、ロググループは retention 付き",
       "vpc_config" in tf and "NEPTUNE_GRAPH_ID = aws_neptunegraph_graph.graph.id" in tf and "NEPTUNE_ENDPOINT" not in tf and "retention_in_days = var.log_retention_days" in tf)
-_nep = read("terraform", "pipeline", "graph", "neptune.tf")
-_core_sg = read("terraform", "base", "core", "security_groups.tf")
+_nep = read("IaC", "terraform", "aws-managed", "pipeline", "graph", "neptune.tf")
+_core_sg = read("IaC", "terraform", "aws-managed", "base", "core", "security_groups.tf")
 check("グラフは Neptune Analytics（公開しない。レプリカは NEPTUNE_AZ_NUM - 1 で既定 0）で、ID を SSM の neptune-graph-id に書く。Neptune Database のクラスタはもう無い（2026-10-04）",
       re.search(r'resource "aws_neptunegraph_graph" "graph" \{', _nep) is not None and "public_connectivity = false" in _nep
       and "replica_count       = var.neptune_az_num - 1" in _nep
       and "provisioned_memory  = var.provisioned_memory" in _nep and 'name        = "/${local.name_prefix}/neptune-graph-id"' in _nep
-      and "aws_neptune_cluster" not in _nep + tf and not os.path.exists(os.path.join(ROOT, "terraform", "pipeline", "graph", "network.tf")))
+      and "aws_neptune_cluster" not in _nep + tf and not os.path.exists(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "pipeline", "graph", "network.tf")))
 check("Lambda は base/core の lambda の SG を使い、graph は SG もルールも作らない。Neptune へは土台の neptune-graph-data のエンドポイント（443）で届くので、neptune の SG と 8182 の行は無い",
       "security_group_ids = [local.lambda_sg_id]" in tf and "aws_vpc_security_group_egress_rule" not in tf and "aws_vpc_security_group_ingress_rule" not in tf
       and "neptune_sg_id" not in _loc + _nep and 'to = "neptune"' not in _core_sg and "port = 8182" not in _core_sg
-      and '"neptune-graph-data"' in read("terraform", "base", "core", "variables.tf")
+      and '"neptune-graph-data"' in read("IaC", "terraform", "aws-managed", "base", "core", "variables.tf")
       and "pipeline/graph) add_endpoints neptune-graph-data\n" in read("ops", "up.sh") and read("ops", "up.sh").count("    pipeline/graph)") == 1)
 check("Lambda のロールは neptune-graph の Read / Write / Delete をこのグラフにだけ（他のサービスは持たない）",
       all(f'"neptune-graph:{a}DataViaQuery"' in tf for a in ("Read", "Write", "Delete")) and "neptune-graph:*" not in tf and "neptune-db" not in tf
       and "resources = [aws_neptunegraph_graph.graph.arn]" in tf)
-_acc = read("terraform", "pipeline", "graph", "access.tf")
+_acc = read("IaC", "terraform", "aws-managed", "pipeline", "graph", "access.tf")
 check("Runtime と Web のロールにも neptune-graph をこのグラフにだけ付ける。書き込み（Write / Delete）は Web だけで、Runtime は読むだけ（2026-10-05）",
       all(f'"neptune-graph:{a}DataViaQuery"' in _acc for a in ("Read", "Write", "Delete")) and "Resource = aws_neptunegraph_graph.graph.arn" in _acc and "neptune-db" not in _acc
       and 'each.value == local.graph_writer_role ? ["neptune-graph:WriteDataViaQuery", "neptune-graph:DeleteDataViaQuery"] : []' in _acc
       and "graph_writer_role = data.terraform_remote_state.main.outputs.web_role_name" in _loc)
 check("SNS から Lambda を呼ぶ permission（呼べるのは土台のトピックだけ）", 'principal     = "sns.amazonaws.com"' in tf and "source_arn    = local.alerts_topic_arn" in tf)
-_var = read("terraform", "pipeline", "graph", "variables.tf")
+_var = read("IaC", "terraform", "aws-managed", "pipeline", "graph", "variables.tf")
 check("variables.tf に log_retention_days と provisioned_memory（既定 16 m-NCU）。Neptune Database の instance_class / engine_version は無い",
       'variable "log_retention_days"' in _var and re.search(r'variable "provisioned_memory" \{[^}]*default     = 16', _var) is not None
       and "instance_class" not in _var and "engine_version" not in _var)
@@ -588,7 +588,7 @@ check("variables.tf の alert_history は bool で既定 false（analytics を�
       re.search(r'variable "alert_history" \{[^}]*type\s*=\s*bool\s*default\s*=\s*false', _var) is not None)
 check("alert_history が false なら ALERT_STREAM は空、true なら <接頭辞>-alert-events（analytics の Firehose と同じ名前）",
       'ALERT_STREAM     = var.alert_history ? local.alert_stream : ""' in tf and 'alert_stream = "${local.name_prefix}-alert-events"' in tf
-      and 'name        = "${local.name_prefix}-alert-events"' in read("terraform", "pipeline", "analytics", "history.tf"))
+      and 'name        = "${local.name_prefix}-alert-events"' in read("IaC", "terraform", "aws-managed", "pipeline", "analytics", "history.tf"))
 _ah = re.search(r'dynamic "statement" \{\s*for_each = var\.alert_history \? \[1\] : \[\]\s*content \{(.*?)\n    \}', tf, re.S)
 check("firehose の権限は alert_history が true のときだけで、PutRecordBatch を <接頭辞>-alert-events の ARN だけに",
       _ah is not None and 'actions   = ["firehose:PutRecordBatch"]' in _ah.group(1)
@@ -602,10 +602,10 @@ _gvb = re.search(r'^  GRAPH_VARS=\(-var "neptune_az_num=\$NEPTUNE_AZ_NUM" -var "
 def _graph_vars(roots, left=(), **env):
     with tempfile.TemporaryDirectory() as d:
         for r in left:
-            os.makedirs(os.path.join(d, "terraform", r))
-            open(os.path.join(d, "terraform", r, "terraform.tfstate"), "w").close()
+            os.makedirs(os.path.join(d, "IaC", "terraform", "aws-managed", r))
+            open(os.path.join(d, "IaC", "terraform", "aws-managed", r, "terraform.tfstate"), "w").close()
         p = subprocess.run(["bash", "-c", "tf_init() { :; }\nhas_resources() { :; }\n" + f'ROOTS="{roots}"\n' + _epb + _lfb + (_gvb.group(0) if _gvb else "exit 3")
-                            + '\necho "OUT: $ENDPOINTS | GV=${GRAPH_VARS[*]}"'], capture_output=True, text=True, cwd=d, env={"PATH": os.environ["PATH"], "NEPTUNE_AZ_NUM": "1", "LAMBDA_AZ_NUM": "2", **env})
+                            + '\necho "OUT: $ENDPOINTS | GV=${GRAPH_VARS[*]}"'], capture_output=True, text=True, cwd=d, env={"PATH": os.environ["PATH"], "TF_DIR": "IaC/terraform/aws-managed", "NEPTUNE_AZ_NUM": "1", "LAMBDA_AZ_NUM": "2", **env})
         return p.stdout.strip().splitlines()[-1] if p.stdout.strip() else p.stderr
 check("up.sh は graph にいつも neptune_az_num / lambda_az_num を渡し、analytics がある回（今回作るか、state に残っている）は -var alert_history=true も渡し、そのときは kinesis-firehose も足す。"
       "SKIP_ANALYTICS=1 で analytics が残っていれば、今回作る graph / workflow にも kinesis-firehose / athena を足す（残ったルートのループのあとで graph の変数を決める）",

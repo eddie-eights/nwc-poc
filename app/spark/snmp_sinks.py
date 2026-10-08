@@ -1,6 +1,6 @@
 """Kafka（マネージド版は MSK の IAM 認証、OSS 版は PLAINTEXT。KAFKA_AUTH で切り替え）のトピックを読み、選んだ格納先に流し続ける Spark Structured Streaming のジョブ（Kafka の 4 分岐）。
 
-EMR Serverless の上で動く（terraform/pipeline/analytics）。起動は ops/up.sh の a-3（start-job-run）で、引数は terraform/pipeline/analytics の
+EMR Serverless の上で動く（IaC/terraform/aws-managed/pipeline/analytics）。起動は ops/up.sh の a-3（start-job-run）で、引数は IaC/terraform/aws-managed/pipeline/analytics の
 output job_driver_json_<iceberg|splunk|http> が組み立てる（--bootstrap / --checkpoint / --sinks と、格納先ごとの --iceberg-table などの値）。
 Kafka と S3 Tables の jar、カタログの設定は spark-submit の --conf で渡す。
 
@@ -19,7 +19,7 @@ logs は機器の syslog。SR Linux が lab の EC2 へ送り、lab の EC2 が 
 Telegraf の JSON 出力（outputs.kafka の data_format = "json"、json_timestamp_units = "1s"）は
   {"fields": {…}, "name": "<measurement>", "tags": {"agent_host": "…", "host": "…", …}, "timestamp": <秒>}
 の形。列に分けるのは timestamp / name / agent_host / host だけで、tags と fields は JSON 文字列のまま入れる
-（機器やメトリクスが増えてもテーブルの列を変えないため。terraform/pipeline/analytics/tables.tf の列と同じ）。
+（機器やメトリクスが増えてもテーブルの列を変えないため。IaC/terraform/aws-managed/pipeline/analytics/tables.tf の列と同じ）。
 
 どの行にも一意の番号 event_id を付ける: Kafka のメッセージの value（from_json の前のバイト列そのまま）の SHA-256 の 16 進 64 文字（F.sha2）。
 中身から作るので、Spark のやり直しで同じメッセージを送り直しても、Telegraf が同じメッセージを Kafka に 2 回入れても同じ値になり、読む側で重複を落とせる
@@ -30,7 +30,7 @@ splunk（event の項目）。prometheus には入れない（ラベルにする
 
 異常の検知はここではしない（2026-10-02 にやめた。detect のクエリと Neptune の anomaly 頂点、S3 Tables の anomaly_events、EventBridge への put_events を消した）。
 検知と相関は格納先の側でする: Grafana のアラートルール（AMP のポーリングの ifOperStatus と gNMI の BGP / IS-IS、OpenSearch の trap。
-grafana/provisioning/alerting）と Splunk の保存済みサーチ（ポーリング・trap・gNMI の BGP / IS-IS。splunk/netops_alerts）が同じ 4 種類を
+app/grafana/provisioning/alerting）と Splunk の保存済みサーチ（ポーリング・trap・gNMI の BGP / IS-IS。app/splunk/netops_alerts）が同じ 4 種類を
 SNS のトピック <接頭辞>-alerts に出し、ワークフロー（SQS）とトポロジの status（graph の Lambda）がそれを受ける（cycle 002 で両方に揃えた）。
 そのために格納先に合わせた整形だけはここでする（Telegraf・Kafka・S3 Tables の生データと Splunk へ送るものは変えない）:
   prometheus  文字列の状態を 1 / 0 の系列にする（STATE_FIELDS。bgp_neighbor の session_state → session_up、isis_interface の oper_state → oper_up）
@@ -44,7 +44,7 @@ HTTP の送信は既定で driver でまとめて行う（マイクロバッチ�
 Kafka は 1 回のトリガー（60 秒）に 1 つのクエリが 10000 件まで読む（--max-offsets-per-trigger。格納先ごとに --max-offsets-per-trigger-by-sink で変えられ、0 で上限なし）。
 止めていたジョブを起こし直した直後や最初に earliest から読むときに、溜まった分を 1 回で読んで driver のメモリ（2g）に collect しないため。
 
-OSS 版（cycle 005。oss/terraform）は同じジョブを ECS の Spark（local[*]）で動かし、接続の認証だけを環境変数で切り替える（無ければ上のマネージド版のまま）:
+OSS 版（cycle 005。IaC/terraform/oss）は同じジョブを ECS の Spark（local[*]）で動かし、接続の認証だけを環境変数で切り替える（無ければ上のマネージド版のまま）:
   KAFKA_AUTH=none           Kafka（KRaft の自前のクラスタ）に PLAINTEXT で繋ぐ（SG で絞る。既定 iam は MSK の IAM 認証）
   OPENSEARCH_AUTH=basic     OpenSearch の _bulk に Basic 認証で POST（OPENSEARCH_USER（既定 admin）/ OPENSEARCH_PASSWORD。既定 sigv4 は aoss の署名）
   PROMETHEUS_AUTH=none      remote write を署名せずに POST（VictoriaMetrics の vminsert。--prometheus-url は /insert/0/prometheus/api/v1/write。既定 sigv4 は aps の署名）
@@ -65,7 +65,7 @@ import time
 import urllib.error
 import urllib.request
 
-METRIC_TOPICS = "metrics,gnmi,mdt"   # metrics = Telegraf の inputs.snmp と lab の gNMI を変えた共通の形、gnmi = inputs.gnmi、mdt = inputs.cisco_telemetry_mdt（telegraf/telegraf.conf.in。Telegraf（ECS）で動く）
+METRIC_TOPICS = "metrics,gnmi,mdt"   # metrics = Telegraf の inputs.snmp と lab の gNMI を変えた共通の形、gnmi = inputs.gnmi、mdt = inputs.cisco_telemetry_mdt（app/telegraf/telegraf.conf.in。Telegraf（ECS）で動く）
 LOG_TOPICS = "traps,logs"   # traps = Telegraf の inputs.snmp_trap、logs = inputs.syslog（機器の syslog。measurement は device_log）
 SINKS = ("iceberg", "opensearch", "prometheus", "splunk")
 # 接続の認証（先頭が既定 = マネージド版。OSS 版は環境変数で後ろの方にする。モジュールの docstring）
@@ -123,7 +123,7 @@ def parse_args(argv):
     p.add_argument("--splunk-index", default="", help="splunk: イベントを入れる index（空なら token の既定の index）")
     p.add_argument("--splunk-skip-verify", action="store_true", help="splunk: HEC の TLS 証明書を検証しない（自己署名の Splunk Enterprise の検証用。既定は検証する）")
     p.add_argument("--device-map", default="", help="prometheus / opensearch: sysName の無いレコードの source（機器の管理 IP）を機器名に引く表"
-                                                     "（別名=機器名,…。Splunk の DEVICE_MAP と同じ。lab/lab_topology.py --device-map。"
+                                                     "（別名=機器名,…。Splunk の DEVICE_MAP と同じ。app/containerlab/lab_topology.py --device-map。"
                                                      "表に無いとき prometheus は足さず、opensearch は source をそのまま sysName にする）")
     args = p.parse_args(argv)
     args.sinks = [s.strip() for s in args.sinks.split(",") if s.strip()]
@@ -222,7 +222,7 @@ def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
         .option("startingOffsets", "earliest")
     )
     if env_choice("KAFKA_AUTH", KAFKA_AUTHS) == "none":
-        # OSS 版の KRaft のクラスタ（oss/terraform/pipeline/stream）。暗号化も認証も無く、SG で Spark と Telegraf だけに絞る
+        # OSS 版の KRaft のクラスタ（IaC/terraform/oss/pipeline/stream）。暗号化も認証も無く、SG で Spark と Telegraf だけに絞る
         reader = reader.option("kafka.security.protocol", "PLAINTEXT")
     else:
         reader = (
@@ -303,7 +303,7 @@ def _loads(s):
 
 
 def parse_device_map(text):
-    """"203.0.113.31=dc1-leaf-01,…" → {別名（小文字）: 機器名}。= の無い要素は捨てる（splunk/netops_alerts/bin/netops_sns.py の parse_device_map と同じ読み方）"""
+    """"203.0.113.31=dc1-leaf-01,…" → {別名（小文字）: 機器名}。= の無い要素は捨てる（app/splunk/netops_alerts/bin/netops_sns.py の parse_device_map と同じ読み方）"""
     out = {}
     for p in (text or "").split(","):
         k, sep, v = p.partition("=")
@@ -789,7 +789,7 @@ def ensure_topics(spark, bootstrap, topics):
     MSK は auto.create.topics.enable=true だが、それは produce のとき。Telegraf が最初の trap / syslog を出すまで traps / logs は無く
     （SNMP のポーリングを止めている（Telegraf の SNMP_POLL=0）と metrics もずっと無い）、
     Spark の offset 読み（AdminClient）は無いトピックで UnknownTopicOrPartitionException で落ちて、起こし直しの上限（1 時間 5 回）を
-    使い切っていた（2026-09-27 実測）。パーティション数と複製数はブローカーの既定（terraform/pipeline/stream の MSK configuration）。
+    使い切っていた（2026-09-27 実測）。パーティション数と複製数はブローカーの既定（IaC/terraform/aws-managed/pipeline/stream の MSK configuration）。
     Telegraf と同時に作って TopicExistsException になっても、あるのだから先へ進む"""
     jvm = spark._jvm
     props = jvm.java.util.Properties()

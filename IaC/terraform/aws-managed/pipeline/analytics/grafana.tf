@@ -2,10 +2,10 @@
 # Prometheus のワークスペース（メトリクス）と OpenSearch Serverless のコレクション（ログ）はどちらも AWS のマネージドだが GUI が無い
 # （OpenSearch Serverless の Dashboards は VPC エンドポイントだけのコレクションには届かない）ので、Grafana OSS を 1 タスク立てて見る。
 # Amazon Managed Grafana はサインインに IAM Identity Center か SAML の IdP が要り、このアカウントはどちらも無いので使わない。
-# イメージは grafana/Dockerfile（公式の grafana にデータソースの plugin と provisioning を焼き込んだもの。AWS の外へ出る経路が無いので起動時に plugin を落とせない）。
+# イメージは docker/images/grafana/Dockerfile（公式の grafana にデータソースの plugin と provisioning を焼き込んだもの。AWS の外へ出る経路が無いので起動時に plugin を落とせない）。
 # データソースは SigV4（タスクロール）で、Prometheus の API は aps-workspaces、OpenSearch は土台の aoss の VPC エンドポイントを通る。
-# アラート（grafana/provisioning/alerting。Prometheus のメトリクスと OpenSearch の trap を見るルール）は SNS のコンタクトポイントから土台のトピック
-# （terraform/base/core の alerts.tf）へ publish する。これもタスクロールの SigV4 で、sns のエンドポイントを通る。
+# アラート（app/grafana/provisioning/alerting。Prometheus のメトリクスと OpenSearch の trap を見るルール）は SNS のコンタクトポイントから土台のトピック
+# （IaC/terraform/aws-managed/base/core の alerts.tf）へ publish する。これもタスクロールの SigV4 で、sns のエンドポイントを通る。
 # 開き方は output grafana_port_forward_command（web の EC2 を踏み台にした SSM のポートフォワード。PoC 用）。admin のパスワードは
 # ops/up.sh が作る SSM の SecureString（output grafana_password_command）。ダッシュボードは provisioning だけで、UI で変えたものはタスクと一緒に消える
 
@@ -58,7 +58,7 @@ resource "aws_ecs_task_definition" "grafana" {
     cpu_architecture        = "ARM64"
   }
 
-  # readonlyRootFilesystem は付けない（Grafana は /var/lib/grafana に SQLite を、grafana/start.sh は /tmp に provisioning を書く。
+  # readonlyRootFilesystem は付けない（Grafana は /var/lib/grafana に SQLite を、app/grafana/start.sh は /tmp に provisioning を書く。
   # Fargate の空のボリュームは root の持ち物で、非 root の Grafana（uid 472）が書けない）
   container_definitions = jsonencode([
     {
@@ -66,13 +66,13 @@ resource "aws_ecs_task_definition" "grafana" {
       image        = local.grafana_image
       essential    = true
       portMappings = [{ containerPort = 3000, protocol = "tcp" }]
-      # grafana/start.sh が、値のあるデータソースとダッシュボードだけを provisioning に入れる
+      # app/grafana/start.sh が、値のあるデータソースとダッシュボードだけを provisioning に入れる
       environment = [
         { name = "AWS_REGION", value = var.region },
         { name = "PROMETHEUS_URL", value = local.grafana_prometheus_url },
         { name = "OPENSEARCH_URL", value = local.opensearch_endpoint },
         { name = "OPENSEARCH_INDEX", value = local.opensearch_index },
-        # アラートの送り先（grafana/start.sh はこれがあるときだけ alerting の provisioning を入れる。ルールは PROMETHEUS_URL / OPENSEARCH_URL があるほうだけ）
+        # アラートの送り先（app/grafana/start.sh はこれがあるときだけ alerting の provisioning を入れる。ルールは PROMETHEUS_URL / OPENSEARCH_URL があるほうだけ）
         { name = "ALERTS_TOPIC_ARN", value = local.alerts_topic_arn },
       ]
       secrets = [
@@ -92,11 +92,11 @@ resource "aws_ecs_task_definition" "grafana" {
   lifecycle {
     precondition {
       condition     = try(data.terraform_remote_state.ecr.outputs.grafana_repository_url, "") != ""
-      error_message = "terraform/base/ecr の state から grafana_repository_url が読めない。terraform/base/ecr を先に apply する（ops/up.sh の手順 1）。"
+      error_message = "IaC/terraform/aws-managed/base/ecr の state から grafana_repository_url が読めない。IaC/terraform/aws-managed/base/ecr を先に apply する（ops/up.sh の手順 1）。"
     }
     precondition {
       condition     = local.alerts_topic_arn != ""
-      error_message = "terraform/base/core の state から alerts_topic_arn が読めない（2026-10-02 より前の土台）。terraform/base/core を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/core の state から alerts_topic_arn が読めない（2026-10-02 より前の土台）。IaC/terraform/aws-managed/base/core を先に apply する。"
     }
   }
 }
@@ -235,7 +235,7 @@ resource "aws_opensearchserverless_access_policy" "grafana" {
   }])
 }
 
-# terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
+# IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
 resource "aws_iam_role_policy_attachment" "grafana_execution_perimeter" {
   count = local.create_grafana && local.perimeter_policy_arn != "" ? 1 : 0
 

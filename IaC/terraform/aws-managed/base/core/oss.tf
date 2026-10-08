@@ -1,12 +1,12 @@
 # ---------------------------------------------------------------- OSS 版（cycle 005「マネージドを OSS に置き換えた環境を作る」）
-# oss/terraform のルート（var.project = nwc-oss。oss.auto.tfvars が入れる）だけが使う。マネージド版（terraform/。既定の nwc-poc）では
+# IaC/terraform/oss のルート（var.project = nwc-oss。oss.auto.tfvars が入れる）だけが使う。マネージド版（IaC/terraform/aws-managed/。既定の nwc-poc）では
 # ここの SG・通信・EFS はどれも作らず、security_groups.tf の SG と表がそのまま使われる（local.workload_security_groups = local.security_groups、
 # local.active_sg_flows = local.sg_flows）。
 # OSS 版は MSK の SG（msk）とその行を外し、ECS で動かす OSS の SG と行を足す。キーと行の書き方は security_groups.tf と同じで、
 # ルールも security_groups.tf の for_each が作る（ここにはルールのリソースを置かない）。
-# Kafka（oss/terraform/pipeline/stream）と VictoriaMetrics（oss/terraform/pipeline/analytics）のデータは下の EFS に置く。
+# Kafka（IaC/terraform/oss/pipeline/stream）と VictoriaMetrics（IaC/terraform/oss/pipeline/analytics）のデータは下の EFS に置く。
 # OpenSearch はタスクのエフェメラルストレージに置く（OpenSearch の公式がネットワークファイルシステムを避けるよう書いている）。
-# Neo4j は NFS 上のデータを支えない（設計 005）ので EFS を使わない（oss/terraform/pipeline/graph が置き場を決める）
+# Neo4j は NFS 上のデータを支えない（設計 005）ので EFS を使わない（IaC/terraform/oss/pipeline/graph が置き場を決める）
 locals {
   oss = var.project == "nwc-oss"
 
@@ -15,12 +15,12 @@ locals {
 
   # OSS 版で足す SG と、OSS 版で description を替える SG（spark: EMR Serverless でなく ECS のタスク 1 つ）
   oss_security_groups = {
-    kafka           = "Kafka brokers and controllers, KRaft on ECS (oss/terraform/pipeline/stream)"
-    efs             = "EFS mount targets - Kafka and VictoriaMetrics data (oss/terraform/base/core)"
-    opensearch      = "OpenSearch ECS tasks (oss/terraform/pipeline/analytics)"
-    victoriametrics = "VictoriaMetrics vminsert, vmselect and vmstorage ECS tasks (oss/terraform/pipeline/analytics)"
-    neo4j           = "Neo4j ECS task (oss/terraform/pipeline/graph)"
-    spark           = "Spark ECS task, local mode (oss/terraform/pipeline/analytics)"
+    kafka           = "Kafka brokers and controllers, KRaft on ECS (IaC/terraform/oss/pipeline/stream)"
+    efs             = "EFS mount targets - Kafka and VictoriaMetrics data (IaC/terraform/oss/base/core)"
+    opensearch      = "OpenSearch ECS tasks (IaC/terraform/oss/pipeline/analytics)"
+    victoriametrics = "VictoriaMetrics vminsert, vmselect and vmstorage ECS tasks (IaC/terraform/oss/pipeline/analytics)"
+    neo4j           = "Neo4j ECS task (IaC/terraform/oss/pipeline/graph)"
+    spark           = "Spark ECS task, local mode (IaC/terraform/oss/pipeline/analytics)"
   }
 
   # Fargate のタスクは ECR のイメージ・SSM のシークレット・ログをタスクの ENI で取りに行く
@@ -135,6 +135,6 @@ resource "aws_efs_file_system_policy" "oss" {
 }
 
 output "efs_file_system_id" {
-  description = "OSS build only (oss/terraform, cycle 005): EFS for the Kafka and VictoriaMetrics (vmstorage) data, with mount targets in subnets a, b and c (SG efs). Each root makes its own access point. Empty in the managed build."
+  description = "OSS build only (IaC/terraform/oss, cycle 005): EFS for the Kafka and VictoriaMetrics (vmstorage) data, with mount targets in subnets a, b and c (SG efs). Each root makes its own access point. Empty in the managed build."
   value       = try(aws_efs_file_system.oss[0].id, "")
 }

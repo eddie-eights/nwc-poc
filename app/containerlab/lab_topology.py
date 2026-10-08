@@ -1,9 +1,9 @@
 """lab の定義（containerlab のトポロジ + SR Linux の設定）から、Neptune に入れるトポロジ（機器と回線と、IP 層 / EVPN・BGP 層）を作る。
 
 設計の「静的なトポロジ構成の取得・同期（初期 & 定期ロード）」の PoC 版。実機なら LLDP / BGP / NETCONF / gNMI で取るところを、
-PoC では機器の定義そのもの（splab.clab.yml.in の nodes / links と srlinux/<機器>.cli。どちらも lab/gen_lab.py が作る）から取る。
-出す形は agent/data（devices.yaml + topology.json + layers.json）と同じで、graph.seed() にそのまま渡せる。agent/data と同じ 8 台・12 本になることは
-tests/test_sync.py が確かめる（lab を変えて agent/data を直し忘れるとテストが落ちる）。
+PoC では機器の定義そのもの（splab.clab.yml.in の nodes / links と srlinux/<機器>.cli。どちらも app/containerlab/gen_lab.py が作る）から取る。
+出す形は app/agentcore/data（devices.yaml + topology.json + layers.json）と同じで、graph.seed() にそのまま渡せる。app/agentcore/data と同じ 8 台・12 本になることは
+tests/test_sync.py が確かめる（lab を変えて app/agentcore/data を直し忘れるとテストが落ちる）。
 
 読むもの:
   - nodes: 名前 <拠点>-<役割>-<連番>（拠点と役割は名前から。group は使わない。役割は leafsw / spine / leaf / upstream / host）、mgmt-ipv4 → mgmt_ip、
@@ -22,7 +22,7 @@ tests/test_sync.py が確かめる（lab を変えて agent/data を直し忘れ
   - evpn_instance  <機器>#evi#<EVI>       ip_interface_id（VTEP）、network_instance、vni、route_target、interfaces           辺 over → ip_interface、attach → interface（LAG）、tunnel ↔ 同じ EVI
   - ethernet_segment <機器>#es#<名前>     interface_id（LAG）、esi、mode                                                     辺 over → interface、segment ↔ 同じ ESI
   頂点の property layer は ip（ip_interface / isis_adjacency）か evpn（bgp_session / evpn_instance / ethernet_segment）。
-  検知は bgp_session と isis_adjacency の status に書く（graph/status_handler.py の bgp_down / isis_down → graph.set_layer_status）。
+  検知は bgp_session と isis_adjacency の status に書く（app/graph/status_handler.py の bgp_down / isis_down → graph.set_layer_status）。
 
 機器ごとに、回線の端だけでなく機器が持つインタフェースを全部（interfaces。containerlab の管理 IF（SR Linux は mgmt0、VM は eth0）、
 SR Linux の interface（lag1 も）、exec でアドレスを振る IF。system0 / lo0 は除く）と、機器を指す別名（aliases。device_id / hostname / 管理 IP /
@@ -30,8 +30,8 @@ SR Linux の interface（lag1 も）、exec でアドレスを振る IF。system
 検知（Grafana / Splunk のアラート）とトポロジ（Neptune）で機器とインタフェースの名前が合わずに異常がどこにも付かない、を減らすため。
 機器の一覧はここ（lab の定義）1 か所にし、Telegraf のポーリング先と gNMI の接続先、device map（Splunk のアラートアクションの DEVICE_MAP と Spark の --device-map）もここから作る（ops/up.sh）。
 
-使い方: python3 lab/lab_topology.py [lab のディレクトリ]  → JSON（{"devices": [...], "links": [...], "layers": {...}}）を標準出力に出す
-        --device-map    Splunk のアラートアクション（splunk/netops_alerts）の DEVICE_MAP と Spark の --device-map（別名=device_id,...。device_id と同じ別名は省く）を出す
+使い方: python3 app/containerlab/lab_topology.py [lab のディレクトリ]  → JSON（{"devices": [...], "links": [...], "layers": {...}}）を標準出力に出す
+        --device-map    Splunk のアラートアクション（app/splunk/netops_alerts）の DEVICE_MAP と Spark の --device-map（別名=device_id,...。device_id と同じ別名は省く）を出す
         --snmp-agents   Telegraf の inputs.snmp の agents（監視対象の管理 IP。"udp://<IP>:161", ... の形）を出す
         --gnmi-targets  Telegraf の inputs.gnmi の addresses（監視対象の管理 IP。"<IP>:57400", ... の形）を出す
         --layers        物理層より上（layers）だけを JSON で出す

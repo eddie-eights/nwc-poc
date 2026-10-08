@@ -12,11 +12,11 @@
 import のときには boto3 のクライアントを作らない（client() を呼んだときに作る）。Web の EC2 では、
 修復案を配備していない構成でも proposals.py を import して「まだ配備されていない」を返すため。
 
-このファイルは 5 か所で動く。AgentCore Runtime のコンテナ（agent/Dockerfile）、tools Lambda の zip
-（terraform/workflow/gateway.tf の archive_file）、Web の EC2（terraform/base/core の出力 upload_web_command）、
-status Lambda の zip（terraform/pipeline/graph/sync.tf の archive_file。graph.py 経由で使う）、
-Nautobot のコンテナ（nautobot/Dockerfile。Job が graph.py 経由で使う。ops/up.sh の nautobot_context が集める）。
-agent/ のモジュールを増やしたら、この 5 か所の一覧にも足す。zip に入れ忘れると apply も plan も通ったまま、
+このファイルは 5 か所で動く。AgentCore Runtime のコンテナ（docker/images/agentcore/Dockerfile）、tools Lambda の zip
+（IaC/terraform/aws-managed/workflow/gateway.tf の archive_file）、Web の EC2（IaC/terraform/aws-managed/base/core の出力 upload_web_command）、
+status Lambda の zip（IaC/terraform/aws-managed/pipeline/graph/sync.tf の archive_file。graph.py 経由で使う）、
+Nautobot のコンテナ（docker/images/nautobot/Dockerfile。Job が graph.py 経由で使う。ops/up.sh の nautobot_context が集める）。
+app/agentcore/ のモジュールを増やしたら、この 5 か所の一覧にも足す。zip に入れ忘れると apply も plan も通ったまま、
 実行時に ModuleNotFoundError で初めて分かる（tests/test_sync.py と tests/test_workflow.py が zip の中身を見ている）。
 """
 
@@ -122,7 +122,7 @@ class Param:
 
 # ---------------------------------------------------------------- Athena（S3 Tables の alert_events / proposal_events を読む。2026-10-05 に evidence.py から移した）
 # evidence.py ではなくここに置くのは、Web の EC2 に上がる agent のモジュールが toolkit / topology / graph / proposals だけだから
-# （ops/up.sh の upload と terraform/base/core の upload_web_command）。proposals.py が evidence.py を import すると Web で落ちる
+# （ops/up.sh の upload と IaC/terraform/aws-managed/base/core の upload_web_command）。proposals.py が evidence.py を import すると Web で落ちる
 # 実行パラメータ（ExecutionParameters）に渡してよい値。Athena は値を SQL の式として読む（文字列は '…' で囲む）ので、引用符の入らない文字だけを通す。
 # 機器名が通る
 ATHENA_PARAM_RE = re.compile(r"^[A-Za-z0-9._:/#?-]{1,128}$")

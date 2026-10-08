@@ -1,8 +1,8 @@
 # ---------------------------------------------------------------- AgentCore Gateway (MCP) + tools Lambda
-# The chat runtime (agent/app.py) lists the tools through the gateway URL (SSM <prefix>/gateway-url) and calls them over MCP
-# instead of its built-in functions. The Lambda runs the same agent/topology.py, agent/evidence.py and
-# agent/proposals.py inside the VPC (subnet a), so it reads Neptune (terraform/pipeline/graph), the logs collection and the metrics
-# workspace (terraform/pipeline/analytics). Proposals and the alert history are S3 Tables rows read through Athena
+# The chat runtime (app/agentcore/app.py) lists the tools through the gateway URL (SSM <prefix>/gateway-url) and calls them over MCP
+# instead of its built-in functions. The Lambda runs the same app/agentcore/topology.py, app/agentcore/evidence.py and
+# app/agentcore/proposals.py inside the VPC (subnet a), so it reads Neptune (IaC/terraform/aws-managed/pipeline/graph), the logs collection and the metrics
+# workspace (IaC/terraform/aws-managed/pipeline/analytics). Proposals and the alert history are S3 Tables rows read through Athena
 # (proposal_events / alert_events; Neptune holds no proposal since 2026-10-05).
 # Without graph / analytics the topology comes from data/ and the evidence tools say so.
 
@@ -11,16 +11,16 @@ locals {
 
   # Lambda の zip に入れるファイル（リポジトリの根からの場所 = zip の中の名前）。
   # handler.py だけ名前が変わる（Lambda のハンドラが index.handler）。proposals.py は読むだけで、承認・却下はツールに出していない。
-  # agent/ のモジュールを増やしたらここにも足す（同じ一覧が agent/Dockerfile と terraform/base/core の upload_web_command にもある）
+  # app/agentcore/ のモジュールを増やしたらここにも足す（同じ一覧が docker/images/agentcore/Dockerfile と IaC/terraform/aws-managed/base/core の upload_web_command にもある）
   tools_files = {
-    "tools/handler.py"         = "index.py"
-    "agent/toolkit.py"         = "toolkit.py"
-    "agent/topology.py"        = "topology.py"
-    "agent/graph.py"           = "graph.py"
-    "agent/evidence.py"        = "evidence.py"
-    "agent/proposals.py"       = "proposals.py"
-    "agent/data/topology.json" = "data/topology.json"
-    "agent/data/layers.json"   = "data/layers.json"
+    "tools/handler.py"                 = "index.py"
+    "app/agentcore/toolkit.py"         = "toolkit.py"
+    "app/agentcore/topology.py"        = "topology.py"
+    "app/agentcore/graph.py"           = "graph.py"
+    "app/agentcore/evidence.py"        = "evidence.py"
+    "app/agentcore/proposals.py"       = "proposals.py"
+    "app/agentcore/data/topology.json" = "data/topology.json"
+    "app/agentcore/data/layers.json"   = "data/layers.json"
   }
 }
 
@@ -41,7 +41,7 @@ data "archive_file" "tools" {
 
   # Lambda には PyYAML が無いので devices.yaml を JSON にして入れる（topology.load_static は devices.json を先に見る）
   source {
-    content  = jsonencode(yamldecode(file("${local.repo_root}/agent/data/devices.yaml")))
+    content  = jsonencode(yamldecode(file("${local.repo_root}/app/agentcore/data/devices.yaml")))
     filename = "data/devices.json"
   }
 }
@@ -79,7 +79,7 @@ data "aws_iam_policy_document" "tools" {
     resources = ["*"]
   }
 
-  # Neptune Analytics のグラフの ID（terraform/pipeline/graph）を SSM から引く。
+  # Neptune Analytics のグラフの ID（IaC/terraform/aws-managed/pipeline/graph）を SSM から引く。
   # OSS 版はここで neo4j-password と opensearch-password（SecureString。AWS 管理の aws/ssm キーなので kms:Decrypt は要らない）も読む
   statement {
     sid       = "Parameters"
@@ -127,12 +127,12 @@ data "aws_iam_policy_document" "tools" {
   }
 }
 
-# ---------------------------------------------------------------- tools Lambda network (subnet a of terraform/base/core)
-# Lambda の SG は terraform/base/core の lambda（エンドポイントの 443 へ出られる。Neptune Analytics もそこ）。aoss / SSM / aps へは terraform/base/core の
+# ---------------------------------------------------------------- tools Lambda network (subnet a of IaC/terraform/aws-managed/base/core)
+# Lambda の SG は IaC/terraform/aws-managed/base/core の lambda（エンドポイントの 443 へ出られる。Neptune Analytics もそこ）。aoss / SSM / aps へは IaC/terraform/aws-managed/base/core の
 # VPC エンドポイントを通る（ログは Lambda のサービスが書く）。
 # 2026-09-26 まではここに tools の SG と 4 本のルールがあった（7c42b0f）
 
-# 検索だけ。terraform/pipeline/analytics の data access policy は Spark の実行ロール（書く側）だけなので、読む側はここで足す
+# 検索だけ。IaC/terraform/aws-managed/pipeline/analytics の data access policy は Spark の実行ロール（書く側）だけなので、読む側はここで足す
 resource "aws_opensearchserverless_access_policy" "tools" {
   count = var.create_gateway && local.opensearch_collection_name != "" ? 1 : 0
 
@@ -165,7 +165,7 @@ resource "aws_iam_role_policy" "tools" {
   policy = data.aws_iam_policy_document.tools.json
 }
 
-# terraform/base/core の perimeter.tf の Deny。ログと ENI は Lambda のサービスがこのロールで出すので、Deny の対象に入っていない
+# IaC/terraform/aws-managed/base/core の perimeter.tf の Deny。ログと ENI は Lambda のサービスがこのロールで出すので、Deny の対象に入っていない
 resource "aws_iam_role_policy_attachment" "tools_perimeter" {
   count = var.create_gateway && local.perimeter_policy_arn != "" ? 1 : 0
 
@@ -195,7 +195,7 @@ resource "aws_lambda_function" "tools" {
   # OSS 版（local.graph_neo4j）だけ Neo4j のドライバのレイヤーを付ける（graph.py が GRAPH_BACKEND=neo4j のとき import する）。マネージド版は付けない
   layers = local.graph_neo4j ? [local.neo4j_layer_arn] : null
 
-  # VPC の中（var.lambda_az_num の AZ。既定はサブネット a だけ）。SG は terraform/base/core の lambda
+  # VPC の中（var.lambda_az_num の AZ。既定はサブネット a だけ）。SG は IaC/terraform/aws-managed/base/core の lambda
   vpc_config {
     subnet_ids         = slice(local.subnet_ids, 0, var.lambda_az_num)
     security_group_ids = [local.lambda_sg_id]
@@ -225,7 +225,7 @@ resource "aws_lambda_function" "tools" {
   lifecycle {
     precondition {
       condition     = !local.graph_neo4j || local.neo4j_layer_arn != ""
-      error_message = "graph の state に neo4j_layer_arn が無い（Neo4j のドライバのレイヤー）。oss/terraform/pipeline/graph を apply し直してから workflow を apply する"
+      error_message = "graph の state に neo4j_layer_arn が無い（Neo4j のドライバのレイヤー）。IaC/terraform/oss/pipeline/graph を apply し直してから workflow を apply する"
     }
   }
 
@@ -298,7 +298,7 @@ resource "aws_bedrockagentcore_gateway" "tools" {
   depends_on = [aws_iam_role_policy.gateway]
 }
 
-# この VPC のエンドポイント（bedrock-agentcore.gateway）を通らない InvokeGateway を拒む（terraform/base/core の perimeter.tf の資源側。
+# この VPC のエンドポイント（bedrock-agentcore.gateway）を通らない InvokeGateway を拒む（IaC/terraform/aws-managed/base/core の perimeter.tf の資源側。
 # AgentCore の文書の DenyAllExceptVPC と同じ形）。呼ぶのはチャットの Runtime だけで、Runtime は VPC の中にいる
 resource "aws_bedrockagentcore_resource_policy" "gateway" {
   count = var.create_gateway && local.perimeter_policy_arn != "" ? 1 : 0
@@ -365,7 +365,7 @@ resource "aws_bedrockagentcore_gateway_target" "tools" {
   }
 }
 
-# agent/app.py は URL を SSM から引く（環境変数 GATEWAY_URL でも上書きできる）
+# app/agentcore/app.py は URL を SSM から引く（環境変数 GATEWAY_URL でも上書きできる）
 resource "aws_ssm_parameter" "gateway_url" {
   count = var.create_gateway ? 1 : 0
 

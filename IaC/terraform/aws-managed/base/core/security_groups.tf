@@ -7,11 +7,11 @@
 # DNS（VPC の +2）・IMDS・ECS のタスクメタデータ・Time Sync は SG の対象外なので表に無い。インターネットからの受信は SG 以前に経路が無い（vpc.tf）。
 # EMR Serverless は 0.0.0.0/0 の受信ルールがある SG を拒むが、表に CIDR の受信は lab の管理ネットワークと MDT の送り元（var.mdt_source_cidrs。
 # NLB の SG だけ。0.0.0.0/0 は変数の検査で拒む）しか無い。
-# 開けていないもの: Temporal の gRPC 7233（ワーカーは同じタスクの localhost。terraform/workflow の ecs.tf）、Splunk の管理 API 8089
+# 開けていないもの: Temporal の gRPC 7233（ワーカーは同じタスクの localhost。IaC/terraform/aws-managed/workflow の ecs.tf）、Splunk の管理 API 8089
 # （開けるのはクラスターの splunk どうしだけ。外から使わない）。
 # 2026-09-26〜09-29 は全部で internal 1 つ（VPC の中は何でも受け、送信は自由）だった。その前（7c42b0f）はルートごとに SG とルールを持っていた。
 # SG の description は変えると作り直しになる（付いている ENI があると消えない）ので、変えるときは down してから。
-# OSS 版（oss/terraform。var.project = nwc-oss。cycle 005）は oss.tf が SG と表を差し替える（msk を外し、kafka / efs / opensearch /
+# OSS 版（IaC/terraform/oss。var.project = nwc-oss。cycle 005）は oss.tf が SG と表を差し替える（msk を外し、kafka / efs / opensearch /
 # victoriametrics / neo4j を足す）。作るのは local.workload_security_groups と local.active_sg_flows で、マネージド版では下の 2 つと同じ
 locals {
   # SG を付けるワークロード。名前は <接頭辞>-<キーの _ を - に>
@@ -20,24 +20,24 @@ locals {
     lab = "Lab EC2 - containerlab, forwards the lab mgmt network"
     # Telegraf は受ける側（dialout。NLB の後ろ）と取りにいく側（dialin）の 2 つのタスク（2026-10-04 に分け、キーを dialout / dialin にそろえた。
     # キーを変えると SG は作り直しになるので、ops/up.sh は古いキーの state のまま stream があると止める）
-    telegraf_dialout     = "Telegraf dial-out ECS task - traps, syslog and MDT behind the NLB (terraform/pipeline/stream)"
-    telegraf_dialin      = "Telegraf dial-in ECS task - gNMI and SNMP polling (terraform/pipeline/stream)"
-    telegraf_dialout_nlb = "Internal NLB in front of the Telegraf dial-out task (terraform/pipeline/stream)"
-    msk                  = "MSK brokers (terraform/pipeline/stream)"
-    kafka_ui             = "Kafbat UI ECS task (terraform/pipeline/stream)"
-    spark                = "EMR Serverless workers (terraform/pipeline/analytics)"
-    grafana              = "Grafana ECS task (terraform/pipeline/analytics)"
-    splunk               = "Splunk ECS task (terraform/pipeline/analytics)"
-    nautobot             = "Nautobot ECS task - web, celery worker and redis (terraform/pipeline/nautobot)"
-    nautobot_db          = "Nautobot PostgreSQL on RDS (terraform/pipeline/nautobot)"
+    telegraf_dialout     = "Telegraf dial-out ECS task - traps, syslog and MDT behind the NLB (IaC/terraform/aws-managed/pipeline/stream)"
+    telegraf_dialin      = "Telegraf dial-in ECS task - gNMI and SNMP polling (IaC/terraform/aws-managed/pipeline/stream)"
+    telegraf_dialout_nlb = "Internal NLB in front of the Telegraf dial-out task (IaC/terraform/aws-managed/pipeline/stream)"
+    msk                  = "MSK brokers (IaC/terraform/aws-managed/pipeline/stream)"
+    kafka_ui             = "Kafbat UI ECS task (IaC/terraform/aws-managed/pipeline/stream)"
+    spark                = "EMR Serverless workers (IaC/terraform/aws-managed/pipeline/analytics)"
+    grafana              = "Grafana ECS task (IaC/terraform/aws-managed/pipeline/analytics)"
+    splunk               = "Splunk ECS task (IaC/terraform/aws-managed/pipeline/analytics)"
+    nautobot             = "Nautobot ECS task - web, celery worker and redis (IaC/terraform/aws-managed/pipeline/nautobot)"
+    nautobot_db          = "Nautobot PostgreSQL on RDS (IaC/terraform/aws-managed/pipeline/nautobot)"
     lambda               = "Lambda in the VPC - graph status, MCP tools, knowledge base index"
-    workflow             = "Temporal dev server and worker ECS task (terraform/workflow)"
-    runtime              = "AgentCore Runtime ENIs (terraform/agent)"
+    workflow             = "Temporal dev server and worker ECS task (IaC/terraform/aws-managed/workflow)"
+    runtime              = "AgentCore Runtime ENIs (IaC/terraform/aws-managed/agent)"
   }
   sg_keys = concat(keys(local.workload_security_groups), ["endpoints"])
   sg_ids  = merge({ for k, sg in aws_security_group.workload : k => sg.id }, { endpoints = aws_security_group.endpoints.id })
 
-  # lab の管理ネットワーク。terraform/pipeline/lab の local.mgmt_cidr と lab/ の機器の設定と同じ値（tests/test_analytics.py が見る）
+  # lab の管理ネットワーク。IaC/terraform/aws-managed/pipeline/lab の local.mgmt_cidr と app/containerlab/ の機器の設定と同じ値（tests/test_analytics.py が見る）
   lab_mgmt_cidr = "203.0.113.0/24"
 
   # AWS の API（インターフェース型と OpenSearch Serverless の VPC エンドポイント）と S3（ゲートウェイエンドポイント。S3 Tables のデータ・ECR のレイヤー・
@@ -56,7 +56,7 @@ locals {
       { from = sg, to = "s3", protocol = "tcp", port = 443, why = "S3 through the gateway endpoint" },
     ]],
     [
-      # Neptune Analytics（terraform/pipeline/graph）は VPC の中に ENI を持たない。web / runtime / lambda / workflow / nautobot は上の endpoints の 443
+      # Neptune Analytics（IaC/terraform/aws-managed/pipeline/graph）は VPC の中に ENI を持たない。web / runtime / lambda / workflow / nautobot は上の endpoints の 443
       # （neptune-graph-data のエンドポイント）で届くので、ここに行は無い（2026-10-04 までは Neptune Database の SG と 8182 の 5 行があった）
 
       # SSM のポートフォワーディング（利用者の PC → ssmmessages → Web の EC2 の SSM Agent → タスク）
@@ -66,7 +66,7 @@ locals {
       { from = "web", to = "nautobot", protocol = "tcp", port = 8080, why = "Nautobot UI through SSM port forwarding" },
       { from = "web", to = "kafka_ui", protocol = "tcp", port = 8080, why = "Kafbat UI through SSM port forwarding" },
 
-      # Nautobot（terraform/pipeline/nautobot）→ RDS の PostgreSQL
+      # Nautobot（IaC/terraform/aws-managed/pipeline/nautobot）→ RDS の PostgreSQL
       { from = "nautobot", to = "nautobot_db", protocol = "tcp", port = 5432, why = "PostgreSQL - Nautobot database" },
 
       # Kafka（IAM 認証の 9098）
@@ -80,13 +80,13 @@ locals {
       { from = "spark", to = "spark", protocol = "tcp", port = 0, to_port = 65535, why = "Driver and executors of one job" },
       { from = "spark", to = "splunk", protocol = "tcp", port = 8088, why = "Splunk HTTP Event Collector - splunk sink" },
 
-      # Splunk のクラスター（terraform/pipeline/analytics の splunk.tf。splunk_az_num が 2 か 3）: manager・indexer・search head が同じ SG。
+      # Splunk のクラスター（IaC/terraform/aws-managed/pipeline/analytics の splunk.tf。splunk_az_num が 2 か 3）: manager・indexer・search head が同じ SG。
       # ここは splunk_az_num を知らないのでいつも作る（1 台のときは相手がいない）
       { from = "splunk", to = "splunk", protocol = "tcp", port = 8089, why = "Splunk management and search - cluster manager, indexers and search head" },
       { from = "splunk", to = "splunk", protocol = "tcp", port = 9887, why = "Splunk replication between the indexers" },
       { from = "splunk", to = "splunk", protocol = "tcp", port = 9997, why = "Splunk forwarding - search head and manager send their internal logs to the indexers" },
 
-      # Telegraf の NLB → タスク（terraform/pipeline/stream の telegraf.tf）。NLB が送り元の IP を残しても、タスクの受信は NLB の SG の参照で通る。
+      # Telegraf の NLB → タスク（IaC/terraform/aws-managed/pipeline/stream の telegraf.tf）。NLB が送り元の IP を残しても、タスクの受信は NLB の SG の参照で通る。
       # NLB の送信ルールは転送とヘルスチェックの両方に効く
       { from = "telegraf_dialout_nlb", to = "telegraf_dialout", protocol = "udp", port = 1162, why = "SNMP traps - NLB 162 to the task 1162" },
       { from = "telegraf_dialout_nlb", to = "telegraf_dialout", protocol = "udp", port = 5140, why = "syslog - NLB 5140 to the task 5140" },
@@ -100,7 +100,7 @@ locals {
       { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 162, only = "egress", why = "SNMP traps forwarded for the switches" },
       { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 5140, only = "egress", why = "syslog forwarded for the switches" },
 
-      # ポーリング: 取りにいくタスク（telegraf_dialin）→ 機器の SNMP と gNMI（VPC のルートで lab の EC2 へ。terraform/pipeline/lab の telegraf.tf）。
+      # ポーリング: 取りにいくタスク（telegraf_dialin）→ 機器の SNMP と gNMI（VPC のルートで lab の EC2 へ。IaC/terraform/aws-managed/pipeline/lab の telegraf.tf）。
       # タスクは管理ネットワークの CIDR へ送り、lab の EC2 はタスクの SG から受ける。受ける側のタスク（telegraf_dialout）は機器へ出ない
       { from = "telegraf_dialin", to = "lab_mgmt", protocol = "udp", port = 161, why = "SNMP polling of the switches" },
       { from = "telegraf_dialin", to = "lab_mgmt", protocol = "tcp", port = 57400, why = "gNMI subscription to the switches" },

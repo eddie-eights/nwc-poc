@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------- neptune analytics
 # グラフは Neptune Analytics（メモリ上のグラフ。openCypher と neptune.algo.* のアルゴリズム）。2026-10-04 に Neptune Database（Gremlin、
 # db.t4g.medium 1 台）から置き換えた: 機器が増えたときに影響範囲や中心性をグラフの側で計算したい、がユーザーの理由。グラフ DB はこの 1 つだけ。
-# 公開のエンドポイントは閉じ（public_connectivity = false）、VPC の中からは terraform/base/core のインターフェース型エンドポイント
+# 公開のエンドポイントは閉じ（public_connectivity = false）、VPC の中からは IaC/terraform/aws-managed/base/core のインターフェース型エンドポイント
 # neptune-graph-data（private DNS で <graph-id>.<region>.neptune-graph.amazonaws.com がそこへ向く）で届く。認証は IAM（SigV4）だけ。
 # サブネットグループも SG も持たない（VPC の中に置くものが無い）。この経路だけで届くことは 2026-10-05 に AWS で確かめた（Lambda graph-status が
 # status を書き換え、チャットがトポロジに答えた。aws_neptunegraph_private_graph_endpoint は足していない）。届かなくなったらそれを足す（docs/troubleshooting.md）。
@@ -17,10 +17,10 @@ resource "aws_neptunegraph_graph" "graph" {
   deletion_protection = var.deletion_protection
 }
 
-# topology.py / graph.py はここからグラフの ID を読む（環境変数 PARAM_PREFIX = /<接頭辞>。terraform/base/core が Runtime と Web に渡す）
+# topology.py / graph.py はここからグラフの ID を読む（環境変数 PARAM_PREFIX = /<接頭辞>。IaC/terraform/aws-managed/base/core が Runtime と Web に渡す）
 resource "aws_ssm_parameter" "graph_id" {
   name        = "/${local.name_prefix}/neptune-graph-id"
   type        = "String"
   value       = aws_neptunegraph_graph.graph.id
-  description = "Neptune Analytics graph id (g-xxxxxxxxxx) for the chat runtime and the web (terraform/pipeline/graph)"
+  description = "Neptune Analytics graph id (g-xxxxxxxxxx) for the chat runtime and the web (IaC/terraform/aws-managed/pipeline/graph)"
 }

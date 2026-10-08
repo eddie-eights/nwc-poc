@@ -3,13 +3,13 @@
 # aws_prometheus_workspace と aws_opensearchserverless_* を引くのでリンクできない。タスク定義・サービス・Cloud Map・実行ロール・閉域の Deny の形は同じで、違うのは次のところ:
 # - データソースは VictoriaMetrics の vmselect（Prometheus 互換の口。victoriametrics.tf の prometheus_select_url。署名なし）と、
 #   自前の OpenSearch（opensearch.tf の opensearch_endpoint。Basic 認証の admin で、パスワードは OpenSearch のタスクと Spark と同じ SSM の SecureString を
-#   ECS の secrets で受ける）。grafana/start.sh が PROMETHEUS_AUTH=none / OPENSEARCH_AUTH=basic で grafana/provisioning/datasources-oss を並べる。
+#   ECS の secrets で受ける）。app/grafana/start.sh が PROMETHEUS_AUTH=none / OPENSEARCH_AUTH=basic で app/grafana/provisioning/datasources-oss を並べる。
 #   uid はマネージド版と同じ amp / aoss-logs なので、ダッシュボード（provisioning/dashboards）とアラートのルール（provisioning/alerting）は
-#   マネージド版と同じファイルをそのまま使う（イメージも同じ grafana/Dockerfile。写しは作らない）
+#   マネージド版と同じファイルをそのまま使う（イメージも同じ docker/images/grafana/Dockerfile。写しは作らない）
 # - タスクロールは SNS の publish だけ（aps と aoss の許可も、OpenSearch Serverless のデータアクセスポリシーも要らない）。
-#   アラートはマネージド版と同じ連絡先（grafana/provisioning/alerting/netops.yaml。タスクロールの SigV4 で sns の VPC エンドポイントを通る）から
-#   土台のトピック（terraform/base/core の alerts.tf）へ出て、status の Lambda（oss/terraform/pipeline/graph の sync.tf）とワークフロー
-#   （terraform/workflow の events.tf）が受ける。SigV4 が要るのは SNS だけで、データソースの認証の違いは環境変数で吸収する
+#   アラートはマネージド版と同じ連絡先（app/grafana/provisioning/alerting/netops.yaml。タスクロールの SigV4 で sns の VPC エンドポイントを通る）から
+#   土台のトピック（IaC/terraform/aws-managed/base/core の alerts.tf）へ出て、status の Lambda（IaC/terraform/oss/pipeline/graph の sync.tf）とワークフロー
+#   （IaC/terraform/aws-managed/workflow の events.tf）が受ける。SigV4 が要るのは SNS だけで、データソースの認証の違いは環境変数で吸収する
 # - Grafana から OpenSearch の 9200 と vmselect の 8481 への SG の行は土台の oss.tf にある
 # 作るかどうかはマネージド版と同じ var.create_grafana（既定 false。network.tf の local.create_grafana）。イメージを <接頭辞>-grafana に push し、
 # admin のパスワードの SecureString を作ってから true にする（OSS 版の ops/up.sh の仕事）
@@ -73,7 +73,7 @@ resource "aws_ecs_task_definition" "grafana" {
       image        = local.grafana_image
       essential    = true
       portMappings = [{ containerPort = 3000, protocol = "tcp" }]
-      # grafana/start.sh が、値のあるデータソースとダッシュボードだけを provisioning に入れる
+      # app/grafana/start.sh が、値のあるデータソースとダッシュボードだけを provisioning に入れる
       environment = [
         { name = "AWS_REGION", value = var.region },
         { name = "PROMETHEUS_URL", value = local.prometheus_select_url },
@@ -82,7 +82,7 @@ resource "aws_ecs_task_definition" "grafana" {
         # データソースを datasources-oss の定義にする（vmselect は署名なし、OpenSearch は Basic 認証。ユーザーは start.sh の既定の admin）
         { name = "PROMETHEUS_AUTH", value = "none" },
         { name = "OPENSEARCH_AUTH", value = "basic" },
-        # アラートの送り先（grafana/start.sh はこれがあるときだけ alerting の provisioning を入れる。ルールは PROMETHEUS_URL / OPENSEARCH_URL があるほうだけ）
+        # アラートの送り先（app/grafana/start.sh はこれがあるときだけ alerting の provisioning を入れる。ルールは PROMETHEUS_URL / OPENSEARCH_URL があるほうだけ）
         { name = "ALERTS_TOPIC_ARN", value = local.alerts_topic_arn },
       ]
       secrets = local.grafana_secrets
@@ -100,11 +100,11 @@ resource "aws_ecs_task_definition" "grafana" {
   lifecycle {
     precondition {
       condition     = try(data.terraform_remote_state.ecr.outputs.grafana_repository_url, "") != ""
-      error_message = "oss/terraform/base/ecr の state から grafana_repository_url が読めない。oss/terraform/base/ecr を先に apply する（OSS 版の ops/up.sh）。"
+      error_message = "IaC/terraform/oss/base/ecr の state から grafana_repository_url が読めない。IaC/terraform/oss/base/ecr を先に apply する（OSS 版の ops/up.sh）。"
     }
     precondition {
       condition     = local.alerts_topic_arn != ""
-      error_message = "oss/terraform/base/core の state から alerts_topic_arn が読めない（2026-10-02 より前の土台）。oss/terraform/base/core を先に apply する。"
+      error_message = "IaC/terraform/oss/base/core の state から alerts_topic_arn が読めない（2026-10-02 より前の土台）。IaC/terraform/oss/base/core を先に apply する。"
     }
   }
 }
@@ -199,7 +199,7 @@ resource "aws_iam_role_policy" "grafana_task" {
   })
 }
 
-# terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
+# IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
 resource "aws_iam_role_policy_attachment" "grafana_execution_perimeter" {
   count = local.create_grafana && local.perimeter_policy_arn != "" ? 1 : 0
 

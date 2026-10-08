@@ -1,5 +1,5 @@
 """Nautobot の Job（JOBS_ROOT = /opt/nautobot/jobs）。Nautobot を機器の一覧とトポロジの正にして、Telegraf の dialin とグラフ DB（Neptune）に流す。
-OSS 版（cycle 005）は同じ Job が Neo4j に書く（agent/graph.py が GRAPH_BACKEND=neo4j で切り替える）。Job の名前は両方の版で同じ「グラフ DB」で、
+OSS 版（cycle 005）は同じ Job が Neo4j に書く（app/agentcore/graph.py が GRAPH_BACKEND=neo4j で切り替える）。Job の名前は両方の版で同じ「グラフ DB」で、
 説明だけが書き先の名前（nb_sync.GRAPH_NAME）になる。JobHook と bootstrap.py は Job をクラスの場所（netops_jobs.SyncOnChange）で引くので、名前を変えても外れない。
 中身は /opt/nautobot/netops/nb_sync.py。Job の行と JobHook は起動時の bootstrap.py が作って有効にする。
 

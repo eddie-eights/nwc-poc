@@ -7,7 +7,7 @@
 # 開き方は Grafana と同じで、output kafka_ui_port_forward_command（web の EC2 を踏み台にした SSM のポートフォワード）。画面はログインフォーム（AUTH_TYPE=LOGIN_FORM）で、
 # admin のパスワードは ops/up.sh が作る SSM の SecureString（output kafka_ui_password_command）。設定は環境変数だけ（DYNAMIC_CONFIG_ENABLED は既定の false）で、
 # 画面からクラスターの設定は変えられない。
-# OSS 版（cycle 005。oss/terraform/pipeline/stream）はこのファイルをシンボリックリンクで使い、ECS の Kafka（kafka.tf）に PLAINTEXT で繋ぐ（oss.auto.tfvars）。
+# OSS 版（cycle 005。IaC/terraform/oss/pipeline/stream）はこのファイルをシンボリックリンクで使い、ECS の Kafka（kafka.tf）に PLAINTEXT で繋ぐ（oss.auto.tfvars）。
 # Kafka による違い（ブートストラップ・クラスタの名前・タスクロールの権限・説明文）は msk.tf / kafka.tf の kafka_* の locals
 
 locals {
@@ -119,7 +119,7 @@ resource "aws_ecs_task_definition" "kafka_ui" {
   lifecycle {
     precondition {
       condition     = try(data.terraform_remote_state.ecr.outputs.kafka_ui_repository_url, "") != ""
-      error_message = "terraform/base/ecr の state から kafka_ui_repository_url が読めない（2026-10-05 より前の ECR）。terraform/base/ecr を先に apply する（ops/up.sh の手順 1）。"
+      error_message = "IaC/terraform/aws-managed/base/ecr の state から kafka_ui_repository_url が読めない（2026-10-05 より前の ECR）。IaC/terraform/aws-managed/base/ecr を先に apply する（ops/up.sh の手順 1）。"
     }
     precondition {
       condition     = local.kafka_ui_bootstrap_servers != ""
@@ -152,7 +152,7 @@ resource "aws_ecs_service" "kafka_ui" {
   lifecycle {
     precondition {
       condition     = local.kafka_ui_sg_id != ""
-      error_message = "terraform/base/core の state に kafka_ui の SG が無い（2026-10-05 より前の土台）。terraform/base/core を先に apply する（ops/up.sh なら手順 1 で apply される）。"
+      error_message = "IaC/terraform/aws-managed/base/core の state に kafka_ui の SG が無い（2026-10-05 より前の土台）。IaC/terraform/aws-managed/base/core を先に apply する（ops/up.sh なら手順 1 で apply される）。"
     }
   }
 
@@ -208,7 +208,7 @@ resource "aws_iam_role_policy" "kafka_ui_task" {
   })
 }
 
-# terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
+# IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
 resource "aws_iam_role_policy_attachment" "kafka_ui_execution_perimeter" {
   count = local.perimeter_policy_arn != "" ? 1 : 0
 

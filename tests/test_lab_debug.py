@@ -1,9 +1,9 @@
-"""デバッグ用の EC2（cloudformation/lab-debug.yaml。lab + Telegraf を 1 台）が terraform/pipeline/lab と stream の Telegraf からずれていないかを見る。
+"""デバッグ用の EC2（IaC/cloudformation/lab-debug.yaml。lab + Telegraf を 1 台）が IaC/terraform/aws-managed/pipeline/lab と stream の Telegraf からずれていないかを見る。
 - 独立: スタックが VPC・エンドポイント・バケット・ECR を持ち、ops/up.sh / ops/down.sh は触らない（2026-10-04 ユーザー決定。ops/lab-debug.sh だけで扱う）
-- 版: CloudFormation のパラメータの既定値 = terraform/pipeline/lab の変数の既定値 = ops/lab-common.sh（ops/up.sh と ops/lab-debug.sh が source する）
-- EC2 の中: どちらの user_data も env を書いて S3 の lab/ を置き直し、lab/setup.sh を exec するだけ（TELEGRAF_IMAGE の値だけが違う）
-- ロール: terraform/pipeline/lab/iam.tf と同じ Sid と Action（ECR は Telegraf のリポジトリも読む）
-- Telegraf: 同じ telegraf.conf.in を SINK=stdout で描く。入力は MSK 向けと同じで、出力だけが標準出力になる（telegraf/telegraf.sh render を手元で回す）
+- 版: CloudFormation のパラメータの既定値 = IaC/terraform/aws-managed/pipeline/lab の変数の既定値 = ops/lab-common.sh（ops/up.sh と ops/lab-debug.sh が source する）
+- EC2 の中: どちらの user_data も env を書いて S3 の lab/ を置き直し、app/containerlab/setup.sh を exec するだけ（TELEGRAF_IMAGE の値だけが違う）
+- ロール: IaC/terraform/aws-managed/pipeline/lab/iam.tf と同じ Sid と Action（ECR は Telegraf のリポジトリも読む）
+- Telegraf: 同じ telegraf.conf.in を SINK=stdout で描く。入力は MSK 向けと同じで、出力だけが標準出力になる（app/telegraf/telegraf.sh render を手元で回す）
 実行は uv run python tests/test_lab_debug.py（pyyaml を使う。AWS も docker も要らない）。"""
 import os, re, shlex, subprocess, sys, tempfile, tomllib
 
@@ -39,16 +39,16 @@ def _cfn(loader, suffix, node):
     return {name: v}
 CfnLoader.add_multi_constructor("!", _cfn)
 
-cfn = yaml.load(read("cloudformation", "lab-debug.yaml"), Loader=CfnLoader)
+cfn = yaml.load(read("IaC", "cloudformation", "lab-debug.yaml"), Loader=CfnLoader)
 params = cfn["Parameters"]
 res = cfn["Resources"]
 common = read("ops", "lab-common.sh")
-lab_vars = read("terraform", "pipeline", "lab", "variables.tf")
-iam_tf = read("terraform", "pipeline", "lab", "iam.tf")
-tftpl = read("terraform", "pipeline", "lab", "templates", "lab_user_data.sh.tftpl")
-setup = read("lab", "setup.sh")
-lab_sh = read("lab", "lab.sh")
-tg_sh = read("telegraf", "telegraf.sh")
+lab_vars = read("IaC", "terraform", "aws-managed", "pipeline", "lab", "variables.tf")
+iam_tf = read("IaC", "terraform", "aws-managed", "pipeline", "lab", "iam.tf")
+tftpl = read("IaC", "terraform", "aws-managed", "pipeline", "lab", "templates", "lab_user_data.sh.tftpl")
+setup = read("app", "containerlab", "setup.sh")
+lab_sh = read("app", "containerlab", "lab.sh")
+tg_sh = read("app", "telegraf", "telegraf.sh")
 up = read_ops("up")
 down = read_ops("down")
 dbg = read("ops", "lab-debug.sh")
@@ -64,22 +64,22 @@ def sh_const(src, name):
 for cfn_name, tf_name, sh_name in [("ContainerlabVersion", "containerlab_version", "CONTAINERLAB_VERSION"),
                                     ("SrlinuxImageTag", "srlinux_image_tag", "SRLINUX_TAG"),
                                     ("MultitoolImageTag", "multitool_image_tag", "MULTITOOL_TAG")]:
-    check(f"{cfn_name} の既定値 = terraform/pipeline/lab の {tf_name} = ops/lab-common.sh の {sh_name}",
+    check(f"{cfn_name} の既定値 = IaC/terraform/aws-managed/pipeline/lab の {tf_name} = ops/lab-common.sh の {sh_name}",
           str(params[cfn_name]["Default"]) == tf_default(tf_name) == sh_const(common, sh_name) is not None)
-check("InstanceType / VolumeSize / ImageId / AutoStartLab の既定値は terraform/pipeline/lab と同じ",
+check("InstanceType / VolumeSize / ImageId / AutoStartLab の既定値は IaC/terraform/aws-managed/pipeline/lab と同じ",
       params["InstanceType"]["Default"] == tf_default("instance_type")
       and str(params["VolumeSize"]["Default"]) == tf_default("volume_size")
       and params["ImageId"]["Default"] == tf_default("ami_ssm_parameter")
       and params["AutoStartLab"]["Default"] == tf_default("auto_start_lab"))
 check("InstanceType の選べる値は terraform の検査と同じ（arm64 の t4g だけ）",
       params["InstanceType"]["AllowedValues"] == re.findall(r'"(t4g\.\w+)"', re.search(r'contains\(\[([^\]]*)\], var\.instance_type\)', lab_vars).group(1)))
-check("ops/lab-common.sh の TELEGRAF_VERSION = telegraf/Dockerfile の ARG の既定値",
-      sh_const(common, "TELEGRAF_VERSION") == re.search(r"^ARG TELEGRAF_VERSION=(\S+)", read("telegraf", "Dockerfile"), re.M).group(1))
+check("ops/lab-common.sh の TELEGRAF_VERSION = docker/images/telegraf/Dockerfile の ARG の既定値",
+      sh_const(common, "TELEGRAF_VERSION") == re.search(r"^ARG TELEGRAF_VERSION=(\S+)", read("docker", "images", "telegraf", "Dockerfile"), re.M).group(1))
 check("ops/up.sh と ops/lab-debug.sh は ops/lab-common.sh を source し、lab の版を自分では持たない",
       '. "$(dirname "$0")/lab-common.sh"' in up and '. "$(dirname "$0")/lab-common.sh"' in dbg
       and not any(re.search(r"^%s=" % k, s, re.M) for k in ("SRLINUX_TAG", "MULTITOOL_TAG", "CONTAINERLAB_VERSION", "TELEGRAF_VERSION", "CONTAINERLAB_RPM") for s in (up, dbg))
       and not any(re.search(r"^(ecr_has|fetch|dir_tag)\(\)", s, re.M) for s in (up, dbg)))
-check("イメージの作り方（ミラー・Telegraf のビルド・lab/ の置き方）は lab-common.sh の関数を両方が呼ぶ",
+check("イメージの作り方（ミラー・Telegraf のビルド・app/containerlab/ の置き方）は lab-common.sh の関数を両方が呼ぶ",
       all(f in up for f in ("mirror_lab_images ", "build_telegraf ", "upload_lab ", "TELEGRAF_TAG=$(telegraf_tag)"))
       and all(f in dbg for f in ("mirror_lab_images ", "build_telegraf ", "upload_lab ", "TELEGRAF_TAG=$(telegraf_tag)"))
       and "docker pull" not in up.split("# ---- 2. イメージ")[1].split("# ---- 3.")[0].split("NEED_TEMPORAL")[0]
@@ -110,7 +110,7 @@ check("S3 は このスタックのバケットの lab/ だけ（GetObject と p
       and stmts["S3List"]["Condition"] == {"StringLike": {"s3:prefix": "lab/*"}})
 _perim = role["Policies"][1]["Fn::If"]
 _deny = _perim[1]["PolicyDocument"]["Statement"][0]
-_tf_perim = read("terraform", "base", "core", "perimeter.tf")
+_tf_perim = read("IaC", "terraform", "aws-managed", "base", "core", "perimeter.tf")
 check("SSM のマネージドポリシーと、NetworkPerimeter のときだけ境界の Deny（perimeter.tf と同じ Action と条件。SourceVpc はこのスタックの VPC）",
       role["ManagedPolicyArns"] == [{"Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"}]
       and _perim[0] == "HasPerimeter" and _perim[2] == {"Ref": "AWS::NoValue"}
@@ -122,10 +122,10 @@ check("SSM のマネージドポリシーと、NetworkPerimeter のときだけ�
       and 'BoolIfExists            = { "aws:ViaAWSService" = "false" }' in _tf_perim
       and "AmazonSSMManagedInstanceCore" in iam_tf)
 
-# ---- このスタックだけで閉じる（土台 terraform/base/core を使わない）
+# ---- このスタックだけで閉じる（土台 IaC/terraform/aws-managed/base/core を使わない）
 check("パラメータに土台から受け取るもの（サブネット・SG・バケット・境界ポリシー）が無い",
       not {"SubnetId", "SecurityGroupId", "BucketName", "PerimeterPolicyArn"} & set(params)
-      and not re.search(r"ImportValue|base/core の output", read("cloudformation", "lab-debug.yaml")))
+      and not re.search(r"ImportValue|base/core の output", read("IaC", "cloudformation", "lab-debug.yaml")))
 check("VPC はインターネットへの経路を持たない（IGW / NAT / 0.0.0.0/0 の経路が無く、サブネットはパブリック IP を付けない）",
       not any(v["Type"] in ("AWS::EC2::InternetGateway", "AWS::EC2::NatGateway", "AWS::EC2::Route", "AWS::EC2::EgressOnlyInternetGateway") for v in res.values())
       and res["Subnet"]["Properties"]["MapPublicIpOnLaunch"] is False
@@ -167,7 +167,7 @@ check("EC2 は CreateInstance=true のときだけ作り、そのときは Teleg
       and {"SsmEndpoint", "SsmMessagesEndpoint", "EcrApiEndpoint", "EcrDkrEndpoint", "S3Endpoint", "SubnetRouteTable"} <= set(res["Instance"]["DependsOn"])
       and all(cfn["Outputs"][k]["Condition"] == "HasInstance" for k in ("InstanceId", "StartSessionCommand")))
 _up_case = dbg.split("\n  up)\n")[1]
-check("lab-debug.sh up は初回に EC2 の無い器を作り、イメージと lab/ を置いてから EC2 を作る",
+check("lab-debug.sh up は初回に EC2 の無い器を作り、イメージと app/containerlab/ を置いてから EC2 を作る",
       _up_case.index("deploy false") < _up_case.index("mirror_lab_images") < _up_case.index('upload_lab "$BUCKET"') < _up_case.index('deploy true "$TELEGRAF_TAG"'))
 _down_case = dbg.split("\n  down)\n")[1].split(";;")[0]
 check("lab-debug.sh down はバケットを空にしてからスタックを消し、消えるのを待つ",
@@ -178,8 +178,8 @@ check("lab-debug.sh down はバケットを空にしてからスタックを消�
 inst = res["Instance"]["Properties"]
 check("IMDSv2 必須・hop limit 1（コンテナから IMDS に届かせない）。instance.tf と同じ",
       inst["MetadataOptions"] == {"HttpEndpoint": "enabled", "HttpTokens": "required", "HttpPutResponseHopLimit": 1}
-      and 'http_tokens   = "required"' in read("terraform", "pipeline", "lab", "instance.tf")
-      and "http_put_response_hop_limit = 1" in read("terraform", "pipeline", "lab", "instance.tf"))
+      and 'http_tokens   = "required"' in read("IaC", "terraform", "aws-managed", "pipeline", "lab", "instance.tf")
+      and "http_put_response_hop_limit = 1" in read("IaC", "terraform", "aws-managed", "pipeline", "lab", "instance.tf"))
 ebs = inst["BlockDeviceMappings"][0]["Ebs"]
 check("ルートは gp3・暗号化・EC2 と一緒に消える。パブリック IP は付けない",
       ebs["VolumeType"] == "gp3" and ebs["Encrypted"] is True and ebs["DeleteOnTermination"] is True
@@ -206,10 +206,10 @@ env_keys = re.findall(r"^(\w+)=", tftpl.split("<<'__ENV__'")[1].split("__ENV__")
 check("env のキーは 2 つの user_data と setup.sh の頭の一覧で同じ",
       env_keys == re.findall(r"^(\w+)=", ud.split("<<'__ENV__'")[1].split("__ENV__")[0], re.M)
       and env_keys == [k.strip() for k in re.search(r"^# env のキー: (.*)$", setup, re.M).group(1).split("/")])
-check("どちらも起動のたびに流し（cloud-config の always）、lab/ を置き直して setup.sh を exec する",
+check("どちらも起動のたびに流し（cloud-config の always）、app/containerlab/ を置き直して setup.sh を exec する",
       all("- [scripts-user, always]" in s and "exec bash $LAB/src/setup.sh" in s and "aws s3 sync --delete" in s for s in (tftpl, ud)))
 check("lab/ の置き場は upload_lab の宛先と同じ（s3://<バケット>/lab/）",
-      'aws s3 sync --only-show-errors lab/ "s3://$1/lab/"' in common and "s3://${bucket}/lab/ $LAB/src/" in tftpl and "s3://${Bucket}/lab/ $LAB/src/" in ud)
+      'aws s3 sync --only-show-errors app/containerlab/ "s3://$1/lab/"' in common and "s3://${bucket}/lab/ $LAB/src/" in tftpl and "s3://${Bucket}/lab/ $LAB/src/" in ud)
 check("setup.sh は TELEGRAF_IMAGE があるときだけ Telegraf のユニットを作り、無ければ消す（lab の EC2 には残さない）",
       re.search(r'if \[ -n "\$\{TELEGRAF_IMAGE:-\}" \]; then\n\s*cat > "\$TG_UNIT"[\s\S]*?ExecStart=\$SRC/lab\.sh telegraf run[\s\S]*?else\n\s*systemctl disable --now[\s\S]*?rm -f "\$TG_UNIT"', setup) is not None)
 check("setup.sh は lab のユニットを tftpl の前の版と同じ中身で作る（lab.sh up / down、20 分待つ）",
@@ -218,11 +218,11 @@ check("setup.sh は lab のユニットを tftpl の前の版と同じ中身で�
 # ---- Telegraf: 同じ telegraf.conf.in を SINK で描き分ける
 def render(sink, **extra):
     with tempfile.TemporaryDirectory() as d:
-        env = {"PATH": os.environ["PATH"], "TELEGRAF_TEMPLATE": os.path.join(ROOT, "telegraf", "telegraf.conf.in"),
+        env = {"PATH": os.environ["PATH"], "TELEGRAF_TEMPLATE": os.path.join(ROOT, "app", "telegraf", "telegraf.conf.in"),
                "TELEGRAF_CONF": os.path.join(d, "telegraf.conf"), "AWS_REGION": "ap-northeast-1",
                "SNMP_AGENTS": '"udp://203.0.113.11:161", "udp://203.0.113.12:161"', "GNMI_TARGETS": '"203.0.113.11:57400"',
                "GNMI_USERNAME": "u", "GNMI_PASSWORD": "p", "SNMP_COMMUNITY": "c", **({"SINK": sink} if sink else {}), **extra}
-        r = subprocess.run(["bash", os.path.join(ROOT, "telegraf", "telegraf.sh"), "render"], capture_output=True, text=True, env=env)
+        r = subprocess.run(["bash", os.path.join(ROOT, "app", "telegraf", "telegraf.sh"), "render"], capture_output=True, text=True, env=env)
         if r.returncode != 0:
             return None, r.stderr, os.listdir(d)
         with open(env["TELEGRAF_CONF"], "rb") as f:
@@ -247,7 +247,7 @@ check("syslog の形式の既定は RFC3164（本番の Cisco IOS）。SYSLOG_ST
       kafka["inputs"]["syslog"][0]["syslog_standard"] == "RFC3164" and stdout_conf["inputs"]["syslog"][0]["syslog_standard"] == "RFC3164"
       and _rfc5424 is not None and _rfc5424["inputs"]["syslog"][0]["syslog_standard"] == "RFC5424" and "RFC5424" in out5424
       and render("stdout", SYSLOG_STANDARD="rfc3164")[0] is None and render("stdout", SYSLOG_STANDARD="")[0] is not None)
-tpl = read("telegraf", "telegraf.conf.in")
+tpl = read("app", "telegraf", "telegraf.conf.in")
 check("telegraf.conf.in の出力の区間は telegraf.sh の SINKS と同じ名前で、開きと閉じが対になる",
       sorted(re.findall(r"^# >>> sink (\w+)", tpl, re.M)) == sorted(re.findall(r"^# <<< sink (\w+)", tpl, re.M))
       == sorted(re.search(r'^SINKS="([^"]*)"', tg_sh, re.M).group(1).split()))
@@ -311,10 +311,10 @@ check("SNMP_AGENTS を見るのは SNMP_POLL=1（既定）のときだけ（無�
       and render("stdout", SNMP_POLL="0")[0] is not None and render("stdout", SNMP_POLL="yes")[0] is None and render("stdout", SNMP_POLL="true")[0] is None)
 def _tg_test(cmd="test", **extra):  # 描いた設定に入力が無ければ、telegraf を呼ぶ前に分かる言葉で止まる（手元に telegraf は無くてよい）
     with tempfile.TemporaryDirectory() as d:
-        env = {"PATH": os.environ["PATH"], "TELEGRAF_TEMPLATE": os.path.join(ROOT, "telegraf", "telegraf.conf.in"),
+        env = {"PATH": os.environ["PATH"], "TELEGRAF_TEMPLATE": os.path.join(ROOT, "app", "telegraf", "telegraf.conf.in"),
                "TELEGRAF_CONF": os.path.join(d, "telegraf.conf"), "AWS_REGION": "ap-northeast-1", "SINK": "stdout",
                "GNMI_TARGETS": '"203.0.113.11:57400"', "GNMI_USERNAME": "u", "GNMI_PASSWORD": "p", **extra}
-        return subprocess.run(["bash", os.path.join(ROOT, "telegraf", "telegraf.sh"), cmd], capture_output=True, text=True, env=env)
+        return subprocess.run(["bash", os.path.join(ROOT, "app", "telegraf", "telegraf.sh"), cmd], capture_output=True, text=True, env=env)
 _t = _tg_test(SNMP_POLL="0")
 check("tg test はポーリングを止めている（SNMP_POLL=0）と、SNMP_POLL=1 で起こし直すよう言って止まる",
       _t.returncode == 1 and "SNMP_POLL=1" in _t.stderr and "telegraf: command not found" not in _t.stderr)
@@ -370,7 +370,7 @@ check("lab の SR Linux の syslog の形式は lab.sh の LOG_STANDARD = lab-co
 check("lab.sh telegraf run は同じイメージを host ネットワークで SINK=stdout で起こし、ポーリング先は up.sh と同じ lab_topology.py から作る",
       re.search(r"docker run -d --name \"\$TG\" --restart unless-stopped --network host [^\n]*\\\n\s*-e SINK=stdout -e SYSLOG_STANDARD=\"\$LOG_STANDARD\" -e SNMP_POLL=\"\$\{SNMP_POLL:-0\}\" -e AWS_REGION -e SNMP_AGENTS=\"\$agents\" -e GNMI_TARGETS=\"\$gnmi\" \\\n\s*-e GNMI_USERNAME=\"\$GNMI_USERNAME\" -e GNMI_PASSWORD=\"\$GNMI_PASSWORD\" -e SNMP_COMMUNITY=\"\$SNMP_COMMUNITY\" \"\$TELEGRAF_IMAGE\" run", lab_sh) is not None
       and "python3 lab_topology.py . --snmp-agents" in lab_sh and "python3 lab_topology.py . --gnmi-targets" in lab_sh
-      and "lab/lab_topology.py lab --snmp-agents" in up)
+      and "app/containerlab/lab_topology.py app/containerlab --snmp-agents" in up)
 check("lab.sh の forward は TELEGRAF_IMAGE があれば SSM の NLB を見ずに抜ける（デバッグ用の EC2 は stream を使わない。手元の compose の TELEGRAF_LOCAL=1 も同じ分岐。tests/test_local_compose.py が動かして見る）",
       re.search(r'forward\)\n\s*if local_telegraf; then[\s\S]*?exit 0\n\s*fi', lab_sh) is not None
       and 'local_telegraf() { [ -n "${TELEGRAF_IMAGE:-}" ] || ' in lab_sh)
@@ -412,7 +412,7 @@ check("スタック名は <接頭辞>-lab-debug で、ロールとインスタ�
       'STACK="$PREFIX-lab-debug"' in dbg and role["RoleName"] == {"Fn::Sub": "${NamePrefix}-lab-debug"}
       and res["InstanceProfile"]["Properties"]["InstanceProfileName"] == {"Fn::Sub": "${NamePrefix}-lab-debug"})
 for f in (("ops", "lab-common.sh"), ("ops", "lab-debug.sh"), ("ops", "up.sh"), ("ops", "down.sh"),
-          ("ops", "common.sh"), ("ops", "up-common.sh"), ("ops", "down-common.sh"), ("lab", "setup.sh"), ("lab", "lab.sh"), ("telegraf", "telegraf.sh")):
+          ("ops", "common.sh"), ("ops", "up-common.sh"), ("ops", "down-common.sh"), ("app", "containerlab", "setup.sh"), ("app", "containerlab", "lab.sh"), ("app", "telegraf", "telegraf.sh")):
     r = subprocess.run(["bash", "-n", os.path.join(ROOT, *f)], capture_output=True, text=True)
     check(f"{'/'.join(f)} は bash として読める", r.returncode == 0)
 

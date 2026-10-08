@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# lab EC2（terraform/pipeline/lab / デバッグ用は cloudformation/lab-debug.yaml）の上で containerlab を動かす。setup.sh が /usr/local/bin/lab に置くので、SSM セッションから `sudo lab check` で使う。
+# lab EC2（IaC/terraform/aws-managed/pipeline/lab / デバッグ用は IaC/cloudformation/lab-debug.yaml）の上で containerlab を動かす。setup.sh が /usr/local/bin/lab に置くので、SSM セッションから `sudo lab check` で使う。
 #   lab.sh render | pull | up | down | status | check | snmp [node] | logs [node] | cli <node> [cmd...] | fail-main | heal-main | failover | clab <args...>
 #   lab.sh fail-bgp | heal-bgp | trap-test   （Grafana と Splunk のアラートを比べる障害: BGP の隣接 1 本を止める / 戻す、link 以外の trap を 1 通送る）
 #   lab.sh forward | forward-status     （stream: ECS の Telegraf へ SNMP / gNMI / trap / syslog を通す。デバッグ用の EC2 は trap の 162 を 1162 へ向けるだけ。up が毎回呼ぶ）
-#   lab.sh telegraf run | stop | status | test | gnmi | logs [-f]   （デバッグ用の EC2 だけ。この EC2 の Telegraf。中身は telegraf/telegraf.sh、出力は標準出力）
+#   lab.sh telegraf run | stop | status | test | gnmi | logs [-f]   （デバッグ用の EC2 だけ。この EC2 の Telegraf。中身は app/telegraf/telegraf.sh、出力は標準出力）
 # 手元の containerlab と違うのは 3 つ: containerlab を直接呼ぶ（root）、イメージは ECR から取る（pull）、
 # splab.clab.yml はテンプレート（.in）からイメージ URI を埋めて作る（render）。
 # トポロジは Spine-Leaf（gen_lab.py の図。SR Linux 6 台 = leafsw 2 + spine 2 + leaf 2、VM 2 台 = 上流 wan-upstream-01 + アクセス側 dc1-host-01）
@@ -14,17 +14,17 @@ cd "$(dirname "$SELF")"
 LAB=splab
 TOPO=splab.clab.yml
 # containerlab の管理ネットワーク（splab.clab.yml.in の mgmt）と、その上のこの EC2 のアドレス（srlinux/*.cli の trap と syslog の宛先）。
-# Telegraf のタスク（terraform/pipeline/stream の ECS）は VPC のルートでここへ来る（terraform/pipeline/lab の telegraf.tf の local.mgmt_cidr）
+# Telegraf のタスク（IaC/terraform/aws-managed/pipeline/stream の ECS）は VPC のルートでここへ来る（IaC/terraform/aws-managed/pipeline/lab の telegraf.tf の local.mgmt_cidr）
 MGMT=203.0.113.0/24
 MGMT_GW=203.0.113.1
-# trap を受けるポート（telegraf/telegraf.sh の TRAP_PORT。非 root の Telegraf は 162 で待てない）。デバッグ用の EC2 は機器が 162 に送るのをここへ向ける
+# trap を受けるポート（app/telegraf/telegraf.sh の TRAP_PORT。非 root の Telegraf は 162 で待てない）。デバッグ用の EC2 は機器が 162 に送るのをここへ向ける
 TRAP_PORT=1162
 # デバッグ用の EC2 の Telegraf のコンテナ名
 TG=telegraf
-# SR Linux の syslog（RFC 5424 / udp）を Telegraf へ送るポート（srlinux/*.cli の remote-port、telegraf/telegraf.conf.in の inputs.syslog、
-# terraform/pipeline/lab の local.log_port と同じ）
+# SR Linux の syslog（RFC 5424 / udp）を Telegraf へ送るポート（srlinux/*.cli の remote-port、app/telegraf/telegraf.conf.in の inputs.syslog、
+# IaC/terraform/aws-managed/pipeline/lab の local.log_port と同じ）
 LOG_PORT=5140
-# SR Linux の syslog の形式。デバッグ用の EC2 の Telegraf に SYSLOG_STANDARD で渡す（telegraf/telegraf.sh の既定は本番の Cisco に合わせた RFC3164。
+# SR Linux の syslog の形式。デバッグ用の EC2 の Telegraf に SYSLOG_STANDARD で渡す（app/telegraf/telegraf.sh の既定は本番の Cisco に合わせた RFC3164。
 # ops/lab-common.sh の LAB_SYSLOG_STANDARD と同じ）
 LOG_STANDARD=RFC5424
 # containerlab が SR Linux 全台に入れる既定の認証情報（lab だけの公開既定値。ops/lab-common.sh の LAB_GNMI_USERNAME / LAB_GNMI_PASSWORD / LAB_SNMP_COMMUNITY と同じ）。
@@ -46,11 +46,11 @@ BGP_NODE=dc1-leaf-01; BGP_PEER=10.255.0.1
 # trap-test が送る trap の OID（net-snmp の NET-SNMP-EXAMPLES-MIB::netSnmpExampleHeartbeatNotification）。link でも起動の知らせでもないので、
 # Splunk の netops_trap と Grafana の trap ルールがどちらも kind = trap にする
 TEST_TRAP_OID=.1.3.6.1.4.1.8072.2.3.0.1
-# user_data が書く（キーは setup.sh の頭）。TELEGRAF_IMAGE があるのはデバッグ用の EC2（cloudformation/lab-debug.yaml）だけ
+# user_data が書く（キーは setup.sh の頭）。TELEGRAF_IMAGE があるのはデバッグ用の EC2（IaC/cloudformation/lab-debug.yaml）だけ
 ENV_FILE=$(ls /etc/*-lab.env 2>/dev/null | head -1 || true)
 [ -n "$ENV_FILE" ] && set -a && . "$ENV_FILE" && set +a
 
-# VPC にインターネットへの経路が無い（terraform/base/core は NAT Gateway も IGW も作らない）ので、GitHub への版の確かめをしない
+# VPC にインターネットへの経路が無い（IaC/terraform/aws-managed/base/core は NAT Gateway も IGW も作らない）ので、GitHub への版の確かめをしない
 export CLAB_VERSION_CHECK=disable
 clab() { containerlab "$@"; }
 x() { docker exec "clab-$LAB-$1" "${@:2}"; }
@@ -86,7 +86,7 @@ vm_ping() {
     printf '  %-16s -> %-12s %s\n' "${pair%%:*}" "${pair##*:}" "$r"
   done
 }
-# Telegraf がこのホストの host ネットワークにいるか: デバッグ用の EC2（TELEGRAF_IMAGE）か、手元の compose（local/compose/lab.sh が TELEGRAF_LOCAL=1 を渡す）
+# Telegraf がこのホストの host ネットワークにいるか: デバッグ用の EC2（TELEGRAF_IMAGE）か、手元の compose（docker/compose/lab.sh が TELEGRAF_LOCAL=1 を渡す）
 local_telegraf() { [ -n "${TELEGRAF_IMAGE:-}" ] || [ "${TELEGRAF_LOCAL:-0}" = 1 ]; }
 # 障害を入れたあとにどこを見るか。デバッグ用の EC2 はこの EC2 の Telegraf の標準出力、手元は compose の Grafana / Splunk、stream は Grafana / Splunk が SNS のトピックに出すアラート
 hint() {  # hint <デバッグ用の EC2 の文> <stream の文>
@@ -112,7 +112,7 @@ case "${1:-}" in
     ;;
   pull)
     # ECR の認証は 12 時間で切れるので、毎回ログインしてから取る（署名はインスタンスロール）。
-    # REGISTRY が無い（手元。local/compose/lab.sh がイメージを ghcr.io のまま渡す）ならログインせずに取る
+    # REGISTRY が無い（手元。docker/compose/lab.sh がイメージを ghcr.io のまま渡す）ならログインせずに取る
     if [ -n "${REGISTRY:-}" ]; then
       : "${AWS_REGION:?}"
       aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
@@ -238,7 +238,7 @@ case "${1:-}" in
       echo "$w へ: trap 162/udp を $TRAP_PORT/udp へ向けた（syslog $LOG_PORT/udp とポーリングはそのまま）"
       exit 0
     fi
-    # ECS の Telegraf（terraform/pipeline/stream の telegraf.tf）へ 4 つを通す。SSM の $PARAM_PREFIX/telegraf-address（内部 NLB の IP。trap と syslog の DNAT の宛先）と
+    # ECS の Telegraf（IaC/terraform/aws-managed/pipeline/stream の telegraf.tf）へ 4 つを通す。SSM の $PARAM_PREFIX/telegraf-address（内部 NLB の IP。trap と syslog の DNAT の宛先）と
     # $PARAM_PREFIX/telegraf-source-cidr（タスクのサブネット。タスクの IP は作り直すたびに変わるので、ポーリングはサブネットで通す）を読む。
     # 無ければ（stream を作っていない）何もしない。何度打っても同じ規則になる（目印の付いた規則を消してから入れる）
     : "${AWS_REGION:?}" "${PARAM_PREFIX:?}"
@@ -246,7 +246,7 @@ case "${1:-}" in
     s=$(aws ssm get-parameter --region "$AWS_REGION" --name "$PARAM_PREFIX/telegraf-source-cidr" --query Parameter.Value --output text 2>/dev/null) || s=""
     unforward
     if [ -z "$t" ] || [ -z "$s" ]; then
-      echo "SSM $PARAM_PREFIX/telegraf-address か telegraf-source-cidr が無い（terraform/pipeline/stream を作っていない）ので、Telegraf への転送は張らない"
+      echo "SSM $PARAM_PREFIX/telegraf-address か telegraf-source-cidr が無い（IaC/terraform/aws-managed/pipeline/stream を作っていない）ので、Telegraf への転送は張らない"
       exit 0
     fi
     c=(-m comment --comment "$FW_TAG")

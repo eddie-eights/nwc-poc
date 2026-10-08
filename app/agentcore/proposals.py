@@ -1,17 +1,17 @@
-"""修復案（S3 Tables の proposal_events。terraform/workflow のワーカーが書く）を画面に出し、人の承認・却下をワーカーへ送る。
+"""修復案（S3 Tables の proposal_events。IaC/terraform/aws-managed/workflow のワーカーが書く）を画面に出し、人の承認・却下をワーカーへ送る。
 
 2026-09-24 までは DynamoDB の表、2026-10-05 までは Neptune の頂点 proposal だった。いまの置き場は proposal_events だけで、
-ワーカーが作成・承認・却下・適用・確認を 1 行ずつ足し、どの行も修復案の全項目を持つ（列は workflow/rules.py の PROPOSAL_EVENT_COLUMNS）。
+ワーカーが作成・承認・却下・適用・確認を 1 行ずつ足し、どの行も修復案の全項目を持つ（列は app/temporal/rules.py の PROPOSAL_EVENT_COLUMNS）。
 修復案の「いま」は proposal_id ごとに seq が最大の行で、ここは Athena でそれを読む（toolkit.athena_rows。query_history と同じ作り）。
 Athena の設定（ワークグループ・カタログ・namespace・テーブル）と決定のキューの URL は toolkit.Param（環境変数が先、無ければ SSM。
-terraform/workflow の proposals.tf が置く）。どれかが無ければ「まだ配備されていない」を返して、WORKFLOW を作っていない構成でも落ちない。
+IaC/terraform/aws-managed/workflow の proposals.tf が置く）。どれかが無ければ「まだ配備されていない」を返して、WORKFLOW を作っていない構成でも落ちない。
 修復案の項目: proposal_id（= <anomaly_id>#<first_seen>。発生ごとに 1 件。閉じて開き直した次の発生は別の修復案）, anomaly_id, device_id, kind, target,
 first_seen（異常の発生時刻）, status（pending → approved / rejected（人）→ applied → verified / failed（ワーカー）、expired（時間切れ）、
 obsolete（承認のあいだに異常が閉じた・開き直したので打たなかった））,
 cause, action（heal-main / check / none）, command, precheck / precheck_verdict（処置を打つ前の孤立・冗長切れのチェック）, reason, agent_response, workflow_id,
 created_at / updated_at（= その行の event_time）/ decided_at（epoch 秒）, decided_by, apply_output, verify_note。
 
-承認・却下（decide）は行を書かない。決定のキュー（terraform/workflow の events.tf の decisions）に送り、worker がワークフローにシグナルを送る。
+承認・却下（decide）は行を書かない。決定のキュー（IaC/terraform/aws-managed/workflow の events.tf の decisions）に送り、worker がワークフローにシグナルを送る。
 pending かどうかは送る前にも見るが（早く気づかせるため）、最後に決めるのはワークフロー（先に届いた 1 回だけが効く）。
 チャットから承認させない（HITL）のは IAM とコードの両方で守る: 決定のキューに送れるのは Web の EC2 のロールだけ（Runtime には付けない）で、
 decide をエージェントのツール（TOOL_SPECS）に出さない。
@@ -27,7 +27,7 @@ import toolkit
 STATUSES = ("pending", "approved", "rejected", "applied", "verified", "failed", "expired", "obsolete")
 QUERYABLE = STATUSES + ("all",)  # 一覧で指定できる値（all は全部）
 DECISIONS = ("approved", "rejected")  # 人が決められるのはこの 2 つだけ
-NOT_DEPLOYED = "修復案はまだ配備されていない（terraform/pipeline/analytics と terraform/workflow を apply すると使える）"
+NOT_DEPLOYED = "修復案はまだ配備されていない（IaC/terraform/aws-managed/pipeline/analytics と IaC/terraform/aws-managed/workflow を apply すると使える）"
 
 ATHENA_WORKGROUP = toolkit.Param("ATHENA_WORKGROUP", "athena-workgroup")
 ATHENA_CATALOG = toolkit.Param("ATHENA_CATALOG", "athena-catalog")  # s3tablescatalog/<テーブルバケット>
@@ -37,7 +37,7 @@ DECISION_QUEUE_URL = toolkit.Param("DECISION_QUEUE_URL", "decision-queue-url")
 TIMEOUT = 20
 POLL = 0.5  # Athena のクエリの状態を見に行く間隔（秒）
 
-# 列は workflow/rules.py の PROPOSAL_EVENT_COLUMNS と同じ順（tests/test_app.py が突き合わせる）。時刻の列は epoch 秒に直す
+# 列は app/temporal/rules.py の PROPOSAL_EVENT_COLUMNS と同じ順（tests/test_app.py が突き合わせる）。時刻の列は epoch 秒に直す
 COLUMNS = ("event_id", "proposal_id", "anomaly_id", "seq", "event", "status", "device_id", "kind", "target", "first_seen",
            "source", "alert_detail", "cause", "action", "command", "reason", "agent_response", "precheck", "precheck_verdict",
            "decided_by", "decided_at", "apply_output", "verify_note", "detail", "workflow_id", "run_id", "created_at", "event_time")

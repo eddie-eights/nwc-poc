@@ -1,7 +1,7 @@
 # マネージド版の outputs.tf の OSS 版。graph_id と graph_arn（Neptune）の代わりに、Neo4j の URI と SSM のパラメータの名前を出す。
-# terraform/workflow（Worker）は neo4j_uri と neo4j_password_parameter をこの state から読む
+# IaC/terraform/aws-managed/workflow（Worker）は neo4j_uri と neo4j_password_parameter をこの state から読む
 output "neo4j_uri" {
-  description = "Bolt URI of the Neo4j task (Cloud Map name). The workloads pass it to agent/graph.py and workflow/awsio.py as NEO4J_URI with GRAPH_BACKEND=neo4j."
+  description = "Bolt URI of the Neo4j task (Cloud Map name). The workloads pass it to app/agentcore/graph.py and app/temporal/awsio.py as NEO4J_URI with GRAPH_BACKEND=neo4j."
   value       = local.neo4j_uri
 }
 
@@ -16,7 +16,7 @@ output "neo4j_password_parameter" {
 }
 
 output "neo4j_layer_arn" {
-  description = "Lambda layer with the Neo4j Python driver (graph/requirements-oss.txt, python3.13 arm64). The tools Lambda of terraform/workflow attaches the same layer so agent/graph.py can import neo4j."
+  description = "Lambda layer with the Neo4j Python driver (app/graph/requirements-oss.txt, python3.13 arm64). The tools Lambda of IaC/terraform/aws-managed/workflow attaches the same layer so app/agentcore/graph.py can import neo4j."
   value       = aws_lambda_layer_version.neo4j.arn
 }
 

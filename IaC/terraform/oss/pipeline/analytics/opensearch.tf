@@ -1,5 +1,5 @@
 # nwc-oss - OpenSearch of the OSS build (cycle 005). The managed build makes an OpenSearch Serverless TIMESERIES collection
-# (terraform/pipeline/analytics/sinks.tf); this one runs OpenSearch on ECS on Fargate instead: two data nodes and one small
+# (IaC/terraform/aws-managed/pipeline/analytics/sinks.tf); this one runs OpenSearch on ECS on Fargate instead: two data nodes and one small
 # cluster manager node, one ECS service each, with the indexes on the ephemeral storage of the tasks (not on the EFS).
 
 # ---------------------------------------------------------------- OpenSearch（ECS on Fargate）
@@ -14,11 +14,11 @@
 # terraform apply でタスク定義が変わると 3 つのサービスが同時に入れ替わり、インデックスもクラスターの状態も消える。OSS 版の ops/up.sh は、apply の前に
 # 変わる台を plan で調べて 1 台ずつ -target で入れ替え、間で green に戻るのを待つ（oss/ops/roll-nodes.sh。設計の未確定事項 2。OSS_ROLL=0 で一度に入れ替える）。
 # 3 台とも cluster manager になれる（データの台は既定の役割）ので、1 台ずつなら残りの 2 台で投票の過半数が残る。
-# REST（9200）は TLS なしの HTTP で、セキュリティプラグインの Basic 認証（admin）は効く。Spark（spark/snmp_sinks.py）と Grafana の
-# データソース（grafana/provisioning/datasources-oss）に自己署名の証明書を飛ばす設定が無いので、デモの証明書の HTTPS にはしない。
+# REST（9200）は TLS なしの HTTP で、セキュリティプラグインの Basic 認証（admin）は効く。Spark（app/spark/snmp_sinks.py）と Grafana の
+# データソース（app/grafana/provisioning/datasources-oss）に自己署名の証明書を飛ばす設定が無いので、デモの証明書の HTTPS にはしない。
 # 台どうし（9300）はデモの証明書の TLS（どの台も同じ証明書。oss/compose で 3 台が green になるのを確かめた）。
-# 届くのは SG で絞った相手だけ（terraform/base/core の oss.tf の通信の表: Spark・Grafana・AgentCore・Lambda → 9200、OpenSearch どうし 9300）。
-# admin のパスワードは OSS 版の ops/up.sh が作る SSM の SecureString（/<接頭辞>/opensearch-password。agent/evidence.py が読むのと同じ名前）を
+# 届くのは SG で絞った相手だけ（IaC/terraform/aws-managed/base/core の oss.tf の通信の表: Spark・Grafana・AgentCore・Lambda → 9200、OpenSearch どうし 9300）。
+# admin のパスワードは OSS 版の ops/up.sh が作る SSM の SecureString（/<接頭辞>/opensearch-password。app/agentcore/evidence.py が読むのと同じ名前）を
 # secrets で受ける。初めて起きるときにセキュリティプラグインがこの値で admin を作る（強いパスワードでないと起きない）。
 # イメージは opensearchproject/opensearch を ECR の <接頭辞>-opensearch に写したもの（閉域で Docker Hub に届かない。OSS 版の ops/up.sh が写す）
 
@@ -86,7 +86,7 @@ variable "opensearch_ephemeral_storage_gib" {
 locals {
   opensearch_image     = "${try(data.terraform_remote_state.ecr.outputs.oss_repository_urls["opensearch"], "")}:${var.opensearch_image_tag}"
   opensearch_log_group = "/ecs/${local.name_prefix}-opensearch"
-  # 土台（terraform/base/core の oss.tf）の SG。マネージド版の土台や古い state では無いので try にして、precondition で止める
+  # 土台（IaC/terraform/aws-managed/base/core の oss.tf）の SG。マネージド版の土台や古い state では無いので try にして、precondition で止める
   opensearch_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["opensearch"], "")
 
   # 台（node.name の末尾）→ サブネット。データ 2 台が a・b、まとめ役が c
@@ -98,7 +98,7 @@ locals {
   opensearch_host    = "opensearch.${local.service_namespace}"
   opensearch_cm_host = "opensearch-cm.${local.service_namespace}"
 
-  # admin のパスワード。agent/evidence.py が <PARAM_PREFIX>/opensearch-password で読む名前（PARAM_PREFIX は /<接頭辞>）
+  # admin のパスワード。app/agentcore/evidence.py が <PARAM_PREFIX>/opensearch-password で読む名前（PARAM_PREFIX は /<接頭辞>）
   opensearch_password_parameter = "/${local.name_prefix}/opensearch-password"
   opensearch_password_arn       = "${local.ssm_parameter_arn}${local.opensearch_password_parameter}"
 
@@ -204,7 +204,7 @@ resource "aws_ecs_task_definition" "opensearch" {
   lifecycle {
     precondition {
       condition     = try(data.terraform_remote_state.ecr.outputs.oss_repository_urls["opensearch"], "") != ""
-      error_message = "terraform/base/ecr の state に opensearch のリポジトリが無い（project = nwc-oss でない ECR か、古い ECR）。oss/terraform/base/ecr を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/ecr の state に opensearch のリポジトリが無い（project = nwc-oss でない ECR か、古い ECR）。IaC/terraform/oss/base/ecr を先に apply する。"
     }
   }
 }
@@ -239,11 +239,11 @@ resource "aws_ecs_service" "opensearch" {
   lifecycle {
     precondition {
       condition     = local.opensearch_sg_id != ""
-      error_message = "terraform/base/core の state に opensearch の SG が無い（マネージド版の土台か、oss.tf より前の土台）。oss/terraform/base/core を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/core の state に opensearch の SG が無い（マネージド版の土台か、oss.tf より前の土台）。IaC/terraform/oss/base/core を先に apply する。"
     }
     precondition {
       condition     = each.value.subnet != ""
-      error_message = "terraform/base/core の state のサブネットが 3 つ無い（OpenSearch は AZ ごとに 1 台で 3 つ要る）。"
+      error_message = "IaC/terraform/aws-managed/base/core の state のサブネットが 3 つ無い（OpenSearch は AZ ごとに 1 台で 3 つ要る）。"
     }
   }
 
@@ -319,7 +319,7 @@ resource "aws_iam_role_policy" "opensearch_task" {
   })
 }
 
-# terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
+# IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
 resource "aws_iam_role_policy_attachment" "opensearch_execution_perimeter" {
   count = local.sink_opensearch && local.perimeter_policy_arn != "" ? 1 : 0
 
@@ -336,15 +336,15 @@ resource "aws_iam_role_policy_attachment" "opensearch_task_perimeter" {
 
 # ---------------------------------------------------------------- OpenSearch の差し替え口（マネージド版は locals.tf が同じ名前で定義する）
 locals {
-  # Spark のジョブの書き先（spark/snmp_sinks.py が <これ>/<index>/_bulk に送る）と Grafana のデータソースの URL
+  # Spark のジョブの書き先（app/spark/snmp_sinks.py が <これ>/<index>/_bulk に送る）と Grafana のデータソースの URL
   opensearch_endpoint = local.sink_opensearch ? "http://${local.opensearch_host}:9200" : ""
 }
 
 # ---------------------------------------------------------------- outputs
-# terraform/workflow が読む名前はマネージド版の outputs.tf と同じ。opensearch_collection_name / _arn は出さない
-# （terraform/workflow は空のとき OpenSearch Serverless の data access policy と IAM を作らない）
+# IaC/terraform/aws-managed/workflow が読む名前はマネージド版の outputs.tf と同じ。opensearch_collection_name / _arn は出さない
+# （IaC/terraform/aws-managed/workflow は空のとき OpenSearch Serverless の data access policy と IAM を作らない）
 output "opensearch_collection_endpoint" {
-  description = "OpenSearch on ECS the log topics go to (http, Basic authentication as admin; empty unless sinks has opensearch). Same output name as the managed build, which terraform/workflow reads"
+  description = "OpenSearch on ECS the log topics go to (http, Basic authentication as admin; empty unless sinks has opensearch). Same output name as the managed build, which IaC/terraform/aws-managed/workflow reads"
   value       = local.opensearch_endpoint
 }
 
@@ -354,7 +354,7 @@ output "opensearch_index" {
 }
 
 output "opensearch_password_parameter" {
-  description = "SSM parameter (SecureString) holding the admin password of OpenSearch. The OSS ops/up.sh creates it before this root is applied; agent/evidence.py reads the same name"
+  description = "SSM parameter (SecureString) holding the admin password of OpenSearch. The OSS ops/up.sh creates it before this root is applied; app/agentcore/evidence.py reads the same name"
   value       = local.opensearch_password_parameter
 }
 

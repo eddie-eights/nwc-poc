@@ -9,7 +9,7 @@ output "runtime_role_arn" {
 }
 
 output "table_bucket_arn" {
-  description = "S3 Tables table bucket (the Iceberg warehouse of the Spark catalog; terraform/workflow appends proposal_events here)"
+  description = "S3 Tables table bucket (the Iceberg warehouse of the Spark catalog; IaC/terraform/aws-managed/workflow appends proposal_events here)"
   value       = local.table_bucket_arn
 }
 
@@ -24,7 +24,7 @@ output "table_identifier" {
 }
 
 output "script_s3_uri" {
-  description = "Where ops/up.sh puts spark/snmp_sinks.py"
+  description = "Where ops/up.sh puts app/spark/snmp_sinks.py"
   value       = "s3://${local.bucket}/${local.script_key}"
 }
 
@@ -96,7 +96,7 @@ output "configuration_overrides_json" {
     monitoringConfiguration = {
       s3MonitoringConfiguration                 = { logUri = "s3://${local.bucket}/${local.logs_prefix}/" }
       managedPersistenceMonitoringConfiguration = { enabled = false }
-      # CloudWatch Logs へは terraform/base/core の logs のエンドポイントを通る（無い VPC で NAT も無いとジョブが
+      # CloudWatch Logs へは IaC/terraform/aws-managed/base/core の logs のエンドポイントを通る（無い VPC で NAT も無いとジョブが
       # 「Unable to push logs ... Connect timeout on endpoint URL: https://logs...」で FAILED になる。2026-09-17 に実測）
       cloudWatchLoggingConfiguration = {
         enabled      = var.cloudwatch_logging
@@ -203,22 +203,22 @@ output "prometheus_remote_write_url" {
 }
 
 output "table_namespace" {
-  description = "S3 Tables namespace of the tables (terraform/workflow appends proposal_events in it)"
+  description = "S3 Tables namespace of the tables (IaC/terraform/aws-managed/workflow appends proposal_events in it)"
   value       = aws_s3tables_namespace.netops.namespace
 }
 
 output "proposal_events_table_name" {
-  description = "Audit trail of proposals (created / approved / rejected / applied / verified ...), written by the terraform/workflow worker"
+  description = "Audit trail of proposals (created / approved / rejected / applied / verified ...), written by the IaC/terraform/aws-managed/workflow worker"
   value       = aws_s3tables_table.proposal_events.name
 }
 
 output "proposal_events_table_arn" {
-  description = "ARN of proposal_events (terraform/workflow lets the worker append to it)"
+  description = "ARN of proposal_events (IaC/terraform/aws-managed/workflow lets the worker append to it)"
   value       = aws_s3tables_table.proposal_events.arn
 }
 
 output "alert_events_stream_name" {
-  description = "Firehose stream the status Lambda of terraform/pipeline/graph sends the alert notifications to (history.tf; graph builds the same fixed name)"
+  description = "Firehose stream the status Lambda of IaC/terraform/aws-managed/pipeline/graph sends the alert notifications to (history.tf; graph builds the same fixed name)"
   value       = aws_kinesis_firehose_delivery_stream.alert_events.name
 }
 
@@ -228,12 +228,12 @@ output "alert_events_table_name" {
 }
 
 output "alert_events_table_arn" {
-  description = "ARN of alert_events (terraform/workflow lets the query_history tool read only this table)"
+  description = "ARN of alert_events (IaC/terraform/aws-managed/workflow lets the query_history tool read only this table)"
   value       = aws_s3tables_table.alert_events.arn
 }
 
 output "athena_workgroup" {
-  description = "Athena workgroup the query_history and list_proposals of terraform/workflow and the web approve tab run their queries in (results in the Athena managed storage)"
+  description = "Athena workgroup the query_history and list_proposals of IaC/terraform/aws-managed/workflow and the web approve tab run their queries in (results in the Athena managed storage)"
   value       = aws_athena_workgroup.history.name
 }
 
@@ -243,7 +243,7 @@ output "athena_catalog" {
 }
 
 output "opensearch_collection_name" {
-  description = "Name of the OpenSearch Serverless collection (terraform/workflow adds a read-only data access policy for the tools). Empty unless sinks has opensearch"
+  description = "Name of the OpenSearch Serverless collection (IaC/terraform/aws-managed/workflow adds a read-only data access policy for the tools). Empty unless sinks has opensearch"
   value       = local.sink_opensearch ? aws_opensearchserverless_collection.logs[0].name : ""
 }
 

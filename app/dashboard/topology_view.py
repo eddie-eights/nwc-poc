@@ -1,8 +1,8 @@
 """「トポロジ」タブの中身。機器とリンクを SVG に描き、表に出し、Neptune があれば編集する。
 
 元データはエージェントと同じ topology.py（Neptune があればそこから、無ければ data/ の静的データ）。
-Neptune のときだけリンクの追加・削除と静的データからの投入ができる。lab（terraform/pipeline/lab）には触らない。
-Nautobot（terraform/pipeline/nautobot）があるあいだは Nautobot が物理層の正なので、リンクの追加・削除は Nautobot の REST API に書く
+Neptune のときだけリンクの追加・削除と静的データからの投入ができる。lab（IaC/terraform/aws-managed/pipeline/lab）には触らない。
+Nautobot（IaC/terraform/aws-managed/pipeline/nautobot）があるあいだは Nautobot が物理層の正なので、リンクの追加・削除は Nautobot の REST API に書く
 （nautobot_api.py。Nautobot の JobHook の Job が Neptune の物理層と Telegraf の一覧に反映する）。静的データの投入は止める（Job が上書きする）。
 app.py が画面を組むのに要る選択肢は can_edit() / device_choices() / link_choices() で渡す。
 """
@@ -14,7 +14,7 @@ import pandas as pd
 
 from config import log
 
-import graph  # config が sys.path を通したあとで読む（agent/graph.py）
+import graph  # config が sys.path を通したあとで読む（app/agentcore/graph.py）
 import nautobot_api
 import toolkit
 import topology
@@ -47,7 +47,7 @@ def can_seed() -> bool:
 def edit_note() -> str:
     """編集の欄の頭に出す案内。Neptune に直接書けるなら空"""
     if not graph.configured():
-        return "Neptune は未配備。terraform/pipeline/graph を apply して Web を再起動すると使えます。"
+        return "Neptune は未配備。IaC/terraform/aws-managed/pipeline/graph を apply して Web を再起動すると使えます。"
     return NAUTOBOT_NOTE if nautobot_managed() else ""
 
 
@@ -85,7 +85,7 @@ LAYER_LABEL = {"ip_interface": "IP", "isis_adjacency": "IS-IS 隣接", "bgp_sess
 
 
 def _layer_detail(v: dict) -> str:
-    """層の頂点 1 つの要点（lab/lab_topology.py の layers が付ける属性から）"""
+    """層の頂点 1 つの要点（app/containerlab/lab_topology.py の layers が付ける属性から）"""
     lb = v.get("label")
     if lb == "ip_interface":
         return f'{v.get("name", "")} {v.get("address", "")}/{v.get("prefix_length", "")}'
@@ -163,9 +163,9 @@ def topology_svg() -> str:
         out.append(f'<text x="{x:.0f}" y="{y - 3:.0f}" text-anchor="middle" fill="#111827" font-weight="600">{html.escape(dev)}</text>')
         out.append(f'<text x="{x:.0f}" y="{y + 13:.0f}" text-anchor="middle" fill="#6b7480" font-size="10">{html.escape(asn)}</text>')
     out.append("</svg>")
-    src = {"neptune": "Neptune（terraform/pipeline/graph）", "neptune-empty": "Neptune は空。静的データを表示中（下の「静的データを投入」で入る）",
-           "neo4j": "Neo4j（oss/terraform/pipeline/graph）", "neo4j-empty": "Neo4j は空。静的データを表示中（下の「静的データを投入」で入る）"}.get(
-        topology.SOURCE, "静的データ（data/。terraform/pipeline/graph を apply すると Neptune に切り替わる）")
+    src = {"neptune": "Neptune（IaC/terraform/aws-managed/pipeline/graph）", "neptune-empty": "Neptune は空。静的データを表示中（下の「静的データを投入」で入る）",
+           "neo4j": "Neo4j（IaC/terraform/oss/pipeline/graph）", "neo4j-empty": "Neo4j は空。静的データを表示中（下の「静的データを投入」で入る）"}.get(
+        topology.SOURCE, "静的データ（data/。IaC/terraform/aws-managed/pipeline/graph を apply すると Neptune に切り替わる）")
     legend = ('<p style="font-size:12px;color:#6b7480;margin:4px 0 0">'
               '実線 = 主回線 / 破線 = 副回線 / 太線 = 1 Gbps 以上。青 = fabric（Spine - Leaf。IS-IS + iBGP EVPN）、紫 = lag（VM - Leaf の LACP）、灰 = l2。'
               '<span style="color:#c62828">赤</span> = 落ちている（Spark の検知が Neptune の status に反映したもの。復旧すると戻る）。'
@@ -202,7 +202,7 @@ def interface_choices(device):
 def _graph_call(fn, *args, a="", b=""):
     """Neptune の編集。結果のメッセージと、描き直した図・表・選択肢を返す"""
     if not graph.configured():
-        return "Neptune は未配備（terraform/pipeline/graph）", *refresh_topology(a, b)
+        return "Neptune は未配備（IaC/terraform/aws-managed/pipeline/graph）", *refresh_topology(a, b)
     try:
         r = fn(*args)
     except (*graph.errors(), KeyError, ValueError, TypeError) as e:   # OSS 版は Neo4j のドライバの失敗（入れ替え中など）もここで受ける

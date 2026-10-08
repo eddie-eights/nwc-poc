@@ -29,7 +29,7 @@ flowchart LR
 
 できる限り AWS のマネージドサービスで作っている。これとは別に、マネージドの部分を OSS にした版（`oss/`。Kafka・Neo4j・OpenSearch・VictoriaMetrics・Spark を ECS で動かす）も作ってあり、`oss/ops/up.sh` で立てて `oss/ops/down.sh` で消す（2026-10-07 に AWS で 1 回立てて確かめた。マネージド版と同じアカウントに並べて立てるのは未確認）。できること・費用・メンテナンス性の比較は [oss-variant.md](docs/oss-variant.md)。
 
-AWS を使わずに、WSL2 の中だけでパイプライン（lab → Telegraf → Kafka → Spark → OpenSearch / Prometheus / Splunk → Grafana）を一周させる構成もある（`local/compose/`。SNS・Neptune・Nautobot・ワークフロー・エージェントは無い）。手順は [local/compose/README.md](local/compose/README.md)（WSL での通しは未確認）。
+AWS を使わずに、WSL2 の中だけでパイプライン（lab → Telegraf → Kafka → Spark → OpenSearch / Prometheus / Splunk → Grafana）を一周させる構成もある（`docker/compose/`。SNS・Neptune・Nautobot・ワークフロー・エージェントは無い）。手順は [docker/compose/README.md](docker/compose/README.md)（WSL での通しは未確認）。
 
 `deploy.env` で要る機能だけ `1` にする。何も書かなければ土台だけを作る。
 
@@ -67,7 +67,7 @@ unzip ~/nwc-poc-main.zip -d ~ && cd ~/nwc-poc-main
 cp deploy.env.example deploy.env
 ```
 
-   手で書くファイルはこの `deploy.env` だけ。`terraform/<ルート>/terraform.tfvars.example` と `.env.example` は写さなくてよい（terraform を手で打つとき、Web を手元で動かすときにだけ使う。[docs/development.md](docs/development.md)）。
+   手で書くファイルはこの `deploy.env` だけ。`IaC/terraform/aws-managed/<ルート>/terraform.tfvars.example` と `.env.example` は写さなくてよい（terraform を手で打つとき、Web を手元で動かすときにだけ使う。[docs/development.md](docs/development.md)）。
 
 5. 作る。終わると `http://localhost:8080` へのポートフォワーディングが開く。
 
@@ -95,12 +95,12 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 
 | GUI | URL | 要る機能 | ログイン | 開くコマンド（打ったままにする） |
 |---|---|---|---|---|
-| Web（チャット / トポロジ / 承認） | http://localhost:8080/ | 土台（必ず） | 無し | `terraform -chdir=terraform/base/core output -raw start_session_command` |
-| Nautobot（機器とケーブルの台帳、Job の結果） | http://localhost:8081/ | `PIPELINE=1` | `admin` / SSM のパスワード | `terraform -chdir=terraform/pipeline/nautobot output -raw port_forward_command` |
-| Grafana（ダッシュボード、アラート） | http://localhost:3000/ | `PIPELINE=1`（`STORES` の `grafana`。既定で入っている） | `admin` / SSM のパスワード | `terraform -chdir=terraform/pipeline/analytics output -raw grafana_port_forward_command` |
-| Splunk（ログの検索、アラート） | http://localhost:8000/ | `PIPELINE=1`（`STORES` の `splunk`。既定で入っている） | `admin` / SSM のパスワード | `terraform -chdir=terraform/pipeline/analytics output -raw splunk_port_forward_command` |
-| Splunk の cluster manager（indexer のクラスターの状態） | http://localhost:8001/ | `PIPELINE=1` で `SPLUNK_AZ_NUM` が 2 か 3 | `admin` / Splunk と同じパスワード | `terraform -chdir=terraform/pipeline/analytics output -raw splunk_cm_port_forward_command`（`ops/up.sh` の最後には出ない） |
-| Kafbat UI（Kafka のトピックと中身） | http://localhost:8082/ | `PIPELINE=1`（stream） | `admin` / SSM のパスワード | `terraform -chdir=terraform/pipeline/stream output -raw kafka_ui_port_forward_command` |
+| Web（チャット / トポロジ / 承認） | http://localhost:8080/ | 土台（必ず） | 無し | `terraform -chdir=IaC/terraform/aws-managed/base/core output -raw start_session_command` |
+| Nautobot（機器とケーブルの台帳、Job の結果） | http://localhost:8081/ | `PIPELINE=1` | `admin` / SSM のパスワード | `terraform -chdir=IaC/terraform/aws-managed/pipeline/nautobot output -raw port_forward_command` |
+| Grafana（ダッシュボード、アラート） | http://localhost:3000/ | `PIPELINE=1`（`STORES` の `grafana`。既定で入っている） | `admin` / SSM のパスワード | `terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw grafana_port_forward_command` |
+| Splunk（ログの検索、アラート） | http://localhost:8000/ | `PIPELINE=1`（`STORES` の `splunk`。既定で入っている） | `admin` / SSM のパスワード | `terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw splunk_port_forward_command` |
+| Splunk の cluster manager（indexer のクラスターの状態） | http://localhost:8001/ | `PIPELINE=1` で `SPLUNK_AZ_NUM` が 2 か 3 | `admin` / Splunk と同じパスワード | `terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw splunk_cm_port_forward_command`（`ops/up.sh` の最後には出ない） |
+| Kafbat UI（Kafka のトピックと中身） | http://localhost:8082/ | `PIPELINE=1`（stream） | `admin` / SSM のパスワード | `terraform -chdir=IaC/terraform/aws-managed/pipeline/stream output -raw kafka_ui_port_forward_command` |
 | Temporal UI（ワークフローの実行の履歴） | http://localhost:8233/ | `WORKFLOW=1` | 無し | `ops/up.sh` の手順 8-5 が出す（タスクの IP が要る。[workflow.md](docs/workflow.md)） |
 
 - `terraform ... output -raw ...` は「打つコマンド」を表示するだけなので、出てきた `aws ssm start-session ...` をそのまま打つ。
@@ -137,7 +137,7 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | `STORES` | analytics の格納先。`s3`（S3 Tables）/ `grafana`（OpenSearch + Prometheus + Grafana）/ `splunk`（Splunk）をカンマで並べる。既定は 3 つとも（`s3,grafana,splunk`）。外したまとまりは作らない（前に作っていればデータごと消える） |
 | `SNMP_POLL` | stream の Telegraf で SNMP をポーリングするか。既定 `1`（10 秒ごとに ifTable）。`0` なら SNMP は trap だけ受ける |
 | `*_AZ_NUM` | 冗長化用。リソースごとに何 AZ に置くか（`ENDPOINTS_AZ_NUM` / `MSK_AZ_NUM` / `RUNTIME_AZ_NUM` / `SPLUNK_AZ_NUM` など 10 個）。既定は 1（MSK だけ 2）。`SPLUNK_AZ_NUM` を 2 か 3 にすると Splunk が indexer のクラスターになる。ふだんの検証では書かない |
-| `IMAGE_TAG` | `agent/` や `workflow/` を変えたら `v2` などに上げる |
+| `IMAGE_TAG` | `app/agentcore/` や `app/temporal/` を変えたら `v2` などに上げる |
 | `HTTP_SEND` | Spark が HTTP の格納先（OpenSearch / Prometheus / Splunk）へ送る所。既定 `driver`。量が増えたら `executor`（費用は変わらない） |
 | `MAX_OFFSETS_PER_TRIGGER` | Spark の 1 つのクエリが Kafka の 1 回のトリガー（60 秒）に読む件数の上限（全パーティションの合計）。既定 `10000`、`0` で上限なし。格納先ごとに `MAX_OFFSETS_PER_TRIGGER_ICEBERG` / `_SPLUNK` / `_OPENSEARCH` / `_PROMETHEUS` で上書きできる（既定は空 = 共通の値） |
 | `SYSLOG_STANDARD` | stream の Telegraf が受ける syslog の形式。既定 `RFC3164`（本番の Cisco IOS）。lab の SR Linux のログまで見るなら `RFC5424` |
@@ -147,7 +147,7 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 
 ## 注意
 
-- `terraform/<ルート>/terraform.tfstate` を消さない。消すと `ops/down.sh` が消せず、課金が残る。
+- `IaC/terraform/aws-managed/<ルート>/terraform.tfstate` を消さない。消すと `ops/down.sh` が消せず、課金が残る。
 - up と down は同じ PC で打つ。
 - 機能を `0` に戻して打っても、前に作ったものは消えない。消すのは `ops/down.sh` だけ。
 - デバッグ用の EC2 を作ったなら `ops/lab-debug.sh down` も打つ（`ops/down.sh` は消さない）。
@@ -166,7 +166,7 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | [alert-comparison.md](docs/alert-comparison.md) | Splunk と Grafana のアラートを比べる: 4 種類のアラートを両方で書けたか、障害を入れる手順、遅れと取りこぼしを出す Athena のクエリ、結果（2026-10-05 の 1 回分。手順どおりの 3 回の計測と `bgp_down`・`trap` は未実施） |
 | [troubleshooting.md](docs/troubleshooting.md) | うまくいかないとき |
 | [oss-variant.md](docs/oss-variant.md) | マネージドの部分を OSS にした版（`oss/`、`oss/ops/up.sh`）: その目的（マネージドでできて OSS でできないこと、費用、メンテナンス性の比較）、マネージドの部分と OSS の置き換え先の対応、2026-10-07 に AWS で確かめたことと未確認のこと |
-| [local/compose/README.md](local/compose/README.md) | 手元の docker compose（WSL2）: 前提（WSL の docker-ce、`.wslconfig` のメモリ）、立てて障害を入れて見るまでの手順、見る場所、ぶつかりやすいポート、消し方 |
+| [docker/compose/README.md](docker/compose/README.md) | 手元の docker compose（WSL2）: 前提（WSL の docker-ce、`.wslconfig` のメモリ）、立てて障害を入れて見るまでの手順、見る場所、ぶつかりやすいポート、消し方 |
 | [hearing.md](docs/hearing.md) | ヒアリング項目: PoC の設計を決めるために相手に確かめたいこと（格納先の冗長化、保管期間など）と答え |
 | [development.md](docs/development.md) | 手元のテスト、変更するときの決まり、Web を手元で動かす |
 | [faq-fukuda-nwc-poc.md](docs/faq-fukuda-nwc-poc.md) | FAQ: ほかの開発者に説明するときに出る質問と答え（syslog、収集の設定、デバッグ用の EC2、YANG、Spark、Nautobot、Neptune、障害の情報の置き場、格納先とテーブル、Splunk、マネージドを OSS に置き換えるとき、AWS の基礎） |

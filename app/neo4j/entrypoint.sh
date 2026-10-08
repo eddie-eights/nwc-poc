@@ -1,8 +1,8 @@
 #!/bin/bash
-# OSS 版の Neo4j のタスクの入口（neo4j/Dockerfile）。パスワードを NEO4J_AUTH に直してから、公式イメージの entrypoint を同じ形で呼ぶ。
+# OSS 版の Neo4j のタスクの入口（docker/images/neo4j/Dockerfile）。パスワードを NEO4J_AUTH に直してから、公式イメージの entrypoint を同じ形で呼ぶ。
 # 公式の entrypoint は NEO4J_ で始まる環境変数を neo4j.conf の設定に書き写す（NEO4J_AUTH などの決まった名前を除く）。
 # パスワードを NEO4J_ で始まる名前で渡すと設定のファイルに平文で残り、知らない設定として起動も止まるので、ECS の secrets は
-# NEO4J_ で始まらない GRAPH_PASSWORD に入れ（値は SSM の SecureString。oss/terraform/pipeline/graph の neo4j.tf）、ここで NEO4J_AUTH を作って消す。
+# NEO4J_ で始まらない GRAPH_PASSWORD に入れ（値は SSM の SecureString。IaC/terraform/oss/pipeline/graph の neo4j.tf）、ここで NEO4J_AUTH を作って消す。
 # ユーザーは neo4j で固定（公式の entrypoint が neo4j 以外を受けない）。パスワードは 8 文字以上で / を含まないこと（同じく公式の entrypoint の決まり）
 set -euo pipefail
 

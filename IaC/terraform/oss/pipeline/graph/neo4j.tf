@@ -1,20 +1,20 @@
-# nwc-oss - PIPELINE graph root module of the OSS build (cycle 005). The managed build (terraform/pipeline/graph) uses Neptune Analytics
+# nwc-oss - PIPELINE graph root module of the OSS build (cycle 005). The managed build (IaC/terraform/aws-managed/pipeline/graph) uses Neptune Analytics
 # (its neptune.tf); this one runs Neo4j Community Edition with the Graph Data Science library as one ECS task on Fargate instead.
 # locals.tf and the variables are the managed build's files through a symbolic link. access.tf, sync.tf and outputs.tf are real files
 # here: they name the Neptune graph in the managed build (IAM statements, NEPTUNE_GRAPH_ID), and the Neo4j build passes a URI and a password instead.
 
 # ---------------------------------------------------------------- Neo4j（ECS on Fargate、1 台）
-# イメージはリポジトリの neo4j/（公式の neo4j:<版>-community に GDS の jar を焼き込んだもの。OSS 版の ops/up.sh がビルドして ECR の <接頭辞>-neo4j に置く）。
+# イメージはリポジトリの app/neo4j/（公式の neo4j:<版>-community に GDS の jar を焼き込んだもの。OSS 版の ops/up.sh がビルドして ECR の <接頭辞>-neo4j に置く）。
 # データはタスクの一時領域（Fargate のエフェメラルストレージ）。EFS は使わない（Neo4j は NFS の上のデータを支えない。設計 005）。
 # タスクが入れ替わる（terraform apply でタスク定義が変わる・タスクが落ちる）とグラフは空に戻るので、ops/sync-graph.sh --oss で入れ直す
-# （status は全部 UP に戻る）。頂点の id はプロパティ id で、一意制約はアプリ（agent/graph.py の _neo4j_schema）が最初のクエリの前に作る。
-# 届くのは SG で絞った相手だけ（terraform/base/core の oss.tf の通信の表: Web・Runtime・Lambda・Worker・Nautobot → 7687、Web → 7474）。
+# （status は全部 UP に戻る）。頂点の id はプロパティ id で、一意制約はアプリ（app/agentcore/graph.py の _neo4j_schema）が最初のクエリの前に作る。
+# 届くのは SG で絞った相手だけ（IaC/terraform/aws-managed/base/core の oss.tf の通信の表: Web・Runtime・Lambda・Worker・Nautobot → 7687、Web → 7474）。
 # 名前は Cloud Map の neo4j.<接頭辞>-graph.internal。アプリは bolt://（ルーティングしない直結。1 台なので要らない）でつなぐ。
 # 認証はユーザー neo4j とパスワード。パスワードは OSS 版の ops/up.sh が SSM の /<接頭辞>/neo4j-password（SecureString）に 1 回だけ作り、
-# ECS の secrets で渡す（state にも環境変数の値にも書かない）。8 文字以上で / を含まないこと（公式の entrypoint の決まり。neo4j/entrypoint.sh）。
+# ECS の secrets で渡す（state にも環境変数の値にも書かない）。8 文字以上で / を含まないこと（公式の entrypoint の決まり。app/neo4j/entrypoint.sh）。
 
 variable "neo4j_image_tag" {
-  description = "Tag of the Neo4j image in the <prefix>-neo4j repository (built from neo4j/ by the OSS ops/up.sh: <Neo4j version>-<hash of neo4j/>). Same Neo4j version as oss/compose."
+  description = "Tag of the Neo4j image in the <prefix>-neo4j repository (built from app/neo4j/ by the OSS ops/up.sh: <Neo4j version>-<hash of app/neo4j/>). Same Neo4j version as oss/compose."
   type        = string
   default     = "2026.09.0"
 }
@@ -52,7 +52,7 @@ data "terraform_remote_state" "ecr" {
 locals {
   neo4j_image     = "${try(data.terraform_remote_state.ecr.outputs.oss_repository_urls["neo4j"], "")}:${var.neo4j_image_tag}"
   neo4j_log_group = "/ecs/${local.name_prefix}-neo4j"
-  # 土台（terraform/base/core の oss.tf）の SG。マネージド版の土台や古い state では無いので try にして、precondition で止める
+  # 土台（IaC/terraform/aws-managed/base/core の oss.tf）の SG。マネージド版の土台や古い state では無いので try にして、precondition で止める
   neo4j_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["neo4j"], "")
   # 踏み台（Neo4j Browser のポートフォワード。outputs.tf）
   web_instance_id = try(data.terraform_remote_state.main.outputs.web_instance_id, "")
@@ -63,7 +63,7 @@ locals {
 
   graph_service_namespace = "${local.name_prefix}-graph.internal"
   neo4j_host              = "neo4j.${local.graph_service_namespace}"
-  # agent/graph.py と workflow/awsio.py の NEO4J_URI（Web と Runtime は SSM の /<接頭辞>/neo4j-uri、Lambda と Worker は環境変数）
+  # app/agentcore/graph.py と app/temporal/awsio.py の NEO4J_URI（Web と Runtime は SSM の /<接頭辞>/neo4j-uri、Lambda と Worker は環境変数）
   neo4j_uri = "bolt://${local.neo4j_host}:7687"
 
   # 公式イメージは NEO4J_ で始まる環境変数を neo4j.conf に書き写す（NEO4J_server_memory_heap_max__size → server.memory.heap.max_size）。
@@ -95,7 +95,7 @@ resource "aws_cloudwatch_log_group" "neo4j" {
 
 resource "aws_service_discovery_private_dns_namespace" "graph" {
   name        = local.graph_service_namespace
-  description = "Neo4j of ${local.name_prefix} (oss/terraform/pipeline/graph)"
+  description = "Neo4j of ${local.name_prefix} (IaC/terraform/oss/pipeline/graph)"
   vpc         = local.vpc_id
 }
 
@@ -146,7 +146,7 @@ resource "aws_ecs_task_definition" "neo4j" {
       portMappings = [{ containerPort = 7687, protocol = "tcp" }, { containerPort = 7474, protocol = "tcp" }]
       environment  = local.neo4j_environment
       # NEO4J_ で始まらない名前で渡す（NEO4J_ で始まると neo4j.conf に平文で書かれ、知らない設定として起動も止まる）。
-      # イメージの入口（neo4j/entrypoint.sh）が NEO4J_AUTH=neo4j/<パスワード> に直して消す
+      # イメージの入口（app/neo4j/entrypoint.sh）が NEO4J_AUTH=neo4j/<パスワード> に直して消す
       secrets     = [{ name = "GRAPH_PASSWORD", valueFrom = local.neo4j_password_arn }]
       mountPoints = [{ sourceVolume = "data", containerPath = "/data", readOnly = false }]
       # 公式イメージ（Debian）に curl と nc は無く、bash と wget はある。2026-10-08 に neo4j:2026.09.0-community で、起動前は失敗し起動後に通るのを確かめた
@@ -173,7 +173,7 @@ resource "aws_ecs_task_definition" "neo4j" {
   lifecycle {
     precondition {
       condition     = try(data.terraform_remote_state.ecr.outputs.oss_repository_urls["neo4j"], "") != ""
-      error_message = "terraform/base/ecr の state に neo4j のリポジトリが無い（project = nwc-oss でない ECR か、古い ECR）。oss/terraform/base/ecr を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/ecr の state に neo4j のリポジトリが無い（project = nwc-oss でない ECR か、古い ECR）。IaC/terraform/oss/base/ecr を先に apply する。"
     }
   }
 }
@@ -206,7 +206,7 @@ resource "aws_ecs_service" "neo4j" {
   lifecycle {
     precondition {
       condition     = local.neo4j_sg_id != ""
-      error_message = "terraform/base/core の state に neo4j の SG が無い（マネージド版の土台か、oss.tf より前の土台）。oss/terraform/base/core を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/core の state に neo4j の SG が無い（マネージド版の土台か、oss.tf より前の土台）。IaC/terraform/oss/base/core を先に apply する。"
     }
   }
 
@@ -217,13 +217,13 @@ resource "aws_ecs_service" "neo4j" {
   ]
 }
 
-# Web と Runtime の agent/graph.py は NEO4J_URI を SSM の <PARAM_PREFIX>/neo4j-uri から読む（マネージド版の neptune-graph-id の代わり。
+# Web と Runtime の app/agentcore/graph.py は NEO4J_URI を SSM の <PARAM_PREFIX>/neo4j-uri から読む（マネージド版の neptune-graph-id の代わり。
 # 読む権限は access.tf）。Lambda と Worker には環境変数で渡す
 resource "aws_ssm_parameter" "neo4j_uri" {
   name        = "/${local.name_prefix}/neo4j-uri"
   type        = "String"
   value       = local.neo4j_uri
-  description = "Bolt URI of the Neo4j task for the chat runtime and the web (oss/terraform/pipeline/graph)"
+  description = "Bolt URI of the Neo4j task for the chat runtime and the web (IaC/terraform/oss/pipeline/graph)"
 }
 
 # ---------------------------------------------------------------- IAM
@@ -298,7 +298,7 @@ resource "aws_iam_role_policy" "neo4j_task" {
   })
 }
 
-# terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
+# IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
 resource "aws_iam_role_policy_attachment" "neo4j_execution_perimeter" {
   count = local.perimeter_policy_arn != "" ? 1 : 0
 

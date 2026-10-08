@@ -1,5 +1,5 @@
-# nwc-oss - PIPELINE stream root module of the OSS build (cycle 005). The managed build (terraform/pipeline/stream) uses MSK (its msk.tf);
-# this one runs Kafka on ECS on Fargate instead (KRaft, 3 nodes, data on the EFS of terraform/base/core). Everything else of the root -
+# nwc-oss - PIPELINE stream root module of the OSS build (cycle 005). The managed build (IaC/terraform/aws-managed/pipeline/stream) uses MSK (its msk.tf);
+# this one runs Kafka on ECS on Fargate instead (KRaft, 3 nodes, data on the EFS of IaC/terraform/aws-managed/base/core). Everything else of the root -
 # locals.tf, telegraf.tf, kafka_ui.tf, access.tf, outputs.tf and the variables - is the managed build's file through a symbolic link,
 # and what differs between the two Kafkas comes from the kafka_* locals below (msk.tf defines the same names).
 
@@ -8,7 +8,7 @@
 # 台ごとに ECS のサービスを分ける（kafka-1〜3）。どの台も自分の番号（KAFKA_NODE_ID）と自分の EFS のアクセスポイント（/kafka-N）を持つ。
 # 1 つのサービスで 3 タスクにすると、番号と置き場をタスクごとに固定できない。台 N はサブネットの N 番目（a / b / c。AZ ごとに 1 台）。
 # 名前は Cloud Map の kafka-N.<接頭辞>-stream.internal（名前空間は kafka_ui.tf）。認証は無い（クライアントは PLAINTEXT の 9092、controller は 9093）。
-# 届くのは SG で絞った相手だけ（terraform/base/core の oss.tf の通信の表: Telegraf の 2 つ・Spark・Kafbat UI → 9092、Kafka どうし 9092〜9093、Kafka → EFS 2049）。
+# 届くのは SG で絞った相手だけ（IaC/terraform/aws-managed/base/core の oss.tf の通信の表: Telegraf の 2 つ・Spark・Kafbat UI → 9092、Kafka どうし 9092〜9093、Kafka → EFS 2049）。
 # イメージは apache/kafka を ECR の <接頭辞>-kafka に写したもの（閉域で Docker Hub に届かない。OSS 版の ops/up.sh が写す）。
 # CLUSTER_ID は 3 台で同じ値で、OSS 版の ops/up.sh が 1 回だけ作って SSM の /<接頭辞>/kafka/cluster-id（String か SecureString）に置く。
 # ECS の secrets で渡すので、Terraform の state には入らない。
@@ -47,7 +47,7 @@ variable "kafka_task_memory" {
 locals {
   kafka_image     = "${try(data.terraform_remote_state.ecr.outputs.oss_repository_urls["kafka"], "")}:${var.kafka_image_tag}"
   kafka_log_group = "/ecs/${local.name_prefix}-kafka"
-  # 土台（terraform/base/core の oss.tf）の SG と EFS。マネージド版の土台や古い state では無いので try にして、precondition で止める
+  # 土台（IaC/terraform/aws-managed/base/core の oss.tf）の SG と EFS。マネージド版の土台や古い state では無いので try にして、precondition で止める
   kafka_sg_id         = try(data.terraform_remote_state.main.outputs.security_group_ids["kafka"], "")
   efs_file_system_id  = try(data.terraform_remote_state.main.outputs.efs_file_system_id, "")
   efs_file_system_arn = "arn:${local.partition}:elasticfilesystem:${var.region}:${local.account_id}:file-system/${local.efs_file_system_id}"
@@ -79,7 +79,7 @@ locals {
     { name = "KAFKA_TRANSACTION_STATE_LOG_MIN_ISR", value = "2" },
     { name = "KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR", value = "3" },
     { name = "KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR", value = "2" },
-    # ここから 3 つは MSK の configuration（terraform/pipeline/stream/msk.tf の server_properties）と同じ
+    # ここから 3 つは MSK の configuration（IaC/terraform/aws-managed/pipeline/stream/msk.tf の server_properties）と同じ
     { name = "KAFKA_NUM_PARTITIONS", value = "2" },
     { name = "KAFKA_LOG_RETENTION_HOURS", value = "24" },
     { name = "KAFKA_AUTO_CREATE_TOPICS_ENABLE", value = "true" },
@@ -104,7 +104,7 @@ locals {
     Resource = "*"
   }]
   kafka_descriptions = {
-    namespace     = "Kafka and Kafbat UI of ${local.name_prefix} (oss/terraform/pipeline/stream)"
+    namespace     = "Kafka and Kafbat UI of ${local.name_prefix} (IaC/terraform/oss/pipeline/stream)"
     telegraf_task = "Telegraf task - write SNMP / gNMI / trap / syslog / MDT to Kafka (PLAINTEXT, no IAM), ECS Exec"
     kafka_ui_task = "Kafbat UI task - browse the Kafka cluster (PLAINTEXT, no IAM permissions)"
   }
@@ -170,7 +170,7 @@ resource "aws_efs_access_point" "kafka" {
   lifecycle {
     precondition {
       condition     = local.efs_file_system_id != ""
-      error_message = "terraform/base/core の state に efs_file_system_id が無いか空（マネージド版の土台か、oss.tf より前の土台）。oss/terraform/base/core を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/core の state に efs_file_system_id が無いか空（マネージド版の土台か、oss.tf より前の土台）。IaC/terraform/oss/base/core を先に apply する。"
     }
   }
 }
@@ -193,7 +193,7 @@ resource "aws_ecs_task_definition" "kafka" {
     cpu_architecture        = "ARM64"
   }
 
-  # EFS のポリシー（terraform/base/core の oss.tf）が TLS と IAM の無いマウントを拒むので、両方を有効にする
+  # EFS のポリシー（IaC/terraform/aws-managed/base/core の oss.tf）が TLS と IAM の無いマウントを拒むので、両方を有効にする
   volume {
     name = "data"
 
@@ -236,7 +236,7 @@ resource "aws_ecs_task_definition" "kafka" {
   lifecycle {
     precondition {
       condition     = try(data.terraform_remote_state.ecr.outputs.oss_repository_urls["kafka"], "") != ""
-      error_message = "terraform/base/ecr の state に kafka のリポジトリが無い（project = nwc-oss でない ECR か、古い ECR）。oss/terraform/base/ecr を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/ecr の state に kafka のリポジトリが無い（project = nwc-oss でない ECR か、古い ECR）。IaC/terraform/oss/base/ecr を先に apply する。"
     }
   }
 }
@@ -270,11 +270,11 @@ resource "aws_ecs_service" "kafka" {
   lifecycle {
     precondition {
       condition     = local.kafka_sg_id != ""
-      error_message = "terraform/base/core の state に kafka の SG が無い（マネージド版の土台か、oss.tf より前の土台）。oss/terraform/base/core を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/core の state に kafka の SG が無い（マネージド版の土台か、oss.tf より前の土台）。IaC/terraform/oss/base/core を先に apply する。"
     }
     precondition {
       condition     = each.value != ""
-      error_message = "terraform/base/core の state のサブネットが 3 つ無い（Kafka は AZ ごとに 1 台で 3 つ要る）。"
+      error_message = "IaC/terraform/aws-managed/base/core の state のサブネットが 3 つ無い（Kafka は AZ ごとに 1 台で 3 つ要る）。"
     }
   }
 
@@ -352,7 +352,7 @@ resource "aws_iam_role_policy" "kafka_task" {
   })
 }
 
-# terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
+# IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
 resource "aws_iam_role_policy_attachment" "kafka_execution_perimeter" {
   count = local.perimeter_policy_arn != "" ? 1 : 0
 

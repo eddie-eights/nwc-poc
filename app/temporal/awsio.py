@@ -16,7 +16,7 @@ boto3 / pyiceberg / pyarrow は import せず、呼ばれたときに関数の�
 このモジュールを再 import するときに重い依存を引きずらないようにするため。
 
 OSS 版（cycle 005）は GRAPH_BACKEND=neo4j で、トポロジを Neptune Analytics の代わりに Neo4j（NEO4J_URI / NEO4J_USER / NEO4J_PASSWORD /
-NEO4J_DATABASE）から読む。クエリは同じ文字列のまま、送る直前に _dialect で直す（agent/graph.py の _dialect の写し）。
+NEO4J_DATABASE）から読む。クエリは同じ文字列のまま、送る直前に _dialect で直す（app/agentcore/graph.py の _dialect の写し）。
 """
 
 import datetime as dt
@@ -28,18 +28,18 @@ import uuid
 
 import rules  # 判断だけの純粋関数（同じディレクトリ。重い依存は無い）
 
-ANOMALY_QUEUE_URL = os.environ.get("ANOMALY_QUEUE_URL", "")  # terraform/workflow の events.tf（SNS のトピックを購読するキュー）
-DECISION_QUEUE_URL = os.environ.get("DECISION_QUEUE_URL", "")  # terraform/workflow の events.tf（Web の承認・却下が届くキュー。SNS は購読しない）
-NEPTUNE_GRAPH_ID = os.environ.get("NEPTUNE_GRAPH_ID", "")    # Neptune Analytics のグラフの ID（g-xxxxxxxxxx。terraform/pipeline/graph）
-GRAPH_BACKEND = (os.environ.get("GRAPH_BACKEND") or "neptune").strip().lower()   # OSS 版だけ neo4j（agent/graph.py と同じ）
+ANOMALY_QUEUE_URL = os.environ.get("ANOMALY_QUEUE_URL", "")  # IaC/terraform/aws-managed/workflow の events.tf（SNS のトピックを購読するキュー）
+DECISION_QUEUE_URL = os.environ.get("DECISION_QUEUE_URL", "")  # IaC/terraform/aws-managed/workflow の events.tf（Web の承認・却下が届くキュー。SNS は購読しない）
+NEPTUNE_GRAPH_ID = os.environ.get("NEPTUNE_GRAPH_ID", "")    # Neptune Analytics のグラフの ID（g-xxxxxxxxxx。IaC/terraform/aws-managed/pipeline/graph）
+GRAPH_BACKEND = (os.environ.get("GRAPH_BACKEND") or "neptune").strip().lower()   # OSS 版だけ neo4j（app/agentcore/graph.py と同じ）
 if GRAPH_BACKEND not in ("neptune", "neo4j"):
     raise ValueError(f"GRAPH_BACKEND は neptune / neo4j のどれか: {GRAPH_BACKEND!r}")
-NEO4J_URI = os.environ.get("NEO4J_URI", "")                  # OSS 版の Neo4j（bolt://…。oss/terraform/pipeline/graph）
+NEO4J_URI = os.environ.get("NEO4J_URI", "")                  # OSS 版の Neo4j（bolt://…。IaC/terraform/oss/pipeline/graph）
 NEO4J_USER = os.environ.get("NEO4J_USER") or "neo4j"
 NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "")        # ECS の secrets で SSM の SecureString から渡す
 NEO4J_DATABASE = os.environ.get("NEO4J_DATABASE") or "neo4j"
 GRAPH_ENV = "NEO4J_URI" if GRAPH_BACKEND == "neo4j" else "NEPTUNE_GRAPH_ID"   # グラフの接続先の変数の名前（worker.py が起動時に有無を見る）
-AUDIT_TABLE_BUCKET_ARN = os.environ.get("AUDIT_TABLE_BUCKET_ARN", "")  # terraform/pipeline/analytics の S3 Tables のバケット
+AUDIT_TABLE_BUCKET_ARN = os.environ.get("AUDIT_TABLE_BUCKET_ARN", "")  # IaC/terraform/aws-managed/pipeline/analytics の S3 Tables のバケット
 AUDIT_NAMESPACE = os.environ.get("AUDIT_NAMESPACE", "")
 PROPOSAL_EVENTS_TABLE = os.environ.get("PROPOSAL_EVENTS_TABLE", "proposal_events")
 AGENT_RUNTIME_ARN = os.environ.get("AGENT_RUNTIME_ARN", "")
@@ -68,7 +68,7 @@ def _agent_config():
 # ---------------------------------------------------------------- Neptune Analytics（トポロジと status。読むだけ）
 def cypher(q: str, **params) -> list:
     """neptune-graph で openCypher を 1 本打ち、結果の行（dict）の list を返す（IAM 認証の署名は boto3 が付ける）。クライアントは使い回す。
-    値は全部パラメータで渡す（エージェントの答えの本文に何が入ってもクエリは壊れない）。agent/graph.py の query と同じ"""
+    値は全部パラメータで渡す（エージェントの答えの本文に何が入ってもクエリは壊れない）。app/agentcore/graph.py の query と同じ"""
     if GRAPH_BACKEND == "neo4j":
         return _neo4j_cypher(q, params)
     if "neptune" not in _cache:
@@ -81,8 +81,8 @@ def cypher(q: str, **params) -> list:
 
 
 def _dialect(q: str) -> str:
-    """Neptune の openCypher を Neo4j の Cypher に直す。agent/graph.py の _dialect の写し（ワーカーの image は workflow/ だけで、
-    agent/ を持たない）。いまのクエリは id(x) しか使わないが、`~id` や AS from / to を足しても壊れないよう 3 つとも写す。
+    """Neptune の openCypher を Neo4j の Cypher に直す。app/agentcore/graph.py の _dialect の写し（ワーカーの image は app/temporal/ だけで、
+    app/agentcore/ を持たない）。いまのクエリは id(x) しか使わないが、`~id` や AS from / to を足しても壊れないよう 3 つとも写す。
     2 つが同じ答えを返すことは tests/test_oss.py が見る"""
     q = re.sub(r"\bid\((\w+)\)", r"\1.id", q)
     q = q.replace("`~id`", "id")

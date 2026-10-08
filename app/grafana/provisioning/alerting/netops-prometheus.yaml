@@ -1,7 +1,7 @@
 # Grafana のアラートルール（Prometheus = AMP のメトリクスを見るもの）。送り先と本文は netops.yaml。
-# grafana/start.sh が PROMETHEUS_URL と ALERTS_TOPIC_ARN の両方があるときだけ並べる。
+# app/grafana/start.sh が PROMETHEUS_URL と ALERTS_TOPIC_ARN の両方があるときだけ並べる。
 # どのルールもラベル kind（本文の kind）/ target（本文の target）と注釈 detail（本文の detail。末尾の「(grafana: poll)」などで、どの入力から出したかが分かる）を持つ。
-# 機器名のラベル sysName は、SNMP のポーリングなら Telegraf が付け、gNMI なら Spark（spark/snmp_sinks.py）が device map で足す。
+# 機器名のラベル sysName は、SNMP のポーリングなら Telegraf が付け、gNMI なら Spark（app/spark/snmp_sinks.py）が device map で足す。
 # 式は絞り込まず値で判定する（down の値で絞ると、直ったときに系列が消えるだけで、解消が「系列が無い評価 2 回」ぶん遅れる）。
 # データが無い・クエリが失敗したときは直前の状態のまま（分からないときに発火も解消もしない）。
 # 機器ごと止まって系列が途切れたときは、Grafana が古い系列として解消を送る（機器の停止はここでは検知しない）。評価は 1 分ごと（Splunk の保存済みサーチと同じ）

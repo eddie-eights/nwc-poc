@@ -1,9 +1,9 @@
-# lab の材料（イメージの版・containerlab の rpm・S3 に置く lab/）。ops/up.sh（terraform/pipeline/lab と stream の Telegraf）と
-# ops/lab-debug.sh（cloudformation/lab-debug.yaml のデバッグ用の EC2。up.sh とは別のスタックで、バケットと ECR もスタックが持つ）が source する。版と作り方をここ 1 か所にして、2 つの EC2 がずれないようにする。
+# lab の材料（イメージの版・containerlab の rpm・S3 に置く lab/）。ops/up.sh（IaC/terraform/aws-managed/pipeline/lab と stream の Telegraf）と
+# ops/lab-debug.sh（IaC/cloudformation/lab-debug.yaml のデバッグ用の EC2。up.sh とは別のスタックで、バケットと ECR もスタックが持つ）が source する。版と作り方をここ 1 か所にして、2 つの EC2 がずれないようにする。
 # 呼ぶ側が REGION と PY（python の起動の配列）を先に決めておく。
 #
-# SRLINUX_TAG / MULTITOOL_TAG / CONTAINERLAB_VERSION は terraform/pipeline/lab の変数の既定値（*_image_tag / containerlab_version）と
-# cloudformation/lab-debug.yaml のパラメータの既定値に、TELEGRAF_VERSION は telegraf/Dockerfile の ARG の既定値に合わせてある。
+# SRLINUX_TAG / MULTITOOL_TAG / CONTAINERLAB_VERSION は IaC/terraform/aws-managed/pipeline/lab の変数の既定値（*_image_tag / containerlab_version）と
+# IaC/cloudformation/lab-debug.yaml のパラメータの既定値に、TELEGRAF_VERSION は docker/images/telegraf/Dockerfile の ARG の既定値に合わせてある。
 # 変えるときは全部を変える（tests/test_lab_debug.py が見る）
 SRLINUX_TAG=26.7.2   # ghcr.io/nokia/srlinux はマルチアーキ。arm64 を引く
 MULTITOOL_TAG=v0.10.0
@@ -13,11 +13,11 @@ CONTAINERLAB_RPM="containerlab_${CONTAINERLAB_VERSION}_linux_arm64.rpm"
 SRLINUX_UPSTREAM=ghcr.io/nokia/srlinux
 MULTITOOL_UPSTREAM=ghcr.io/srl-labs/network-multitool
 # lab の SR Linux が送る syslog の形式。ops/up.sh の SYSLOG_STANDARD（既定は本番の Cisco に合わせた RFC3164）がこれと違えば up.sh が注意を出す。
-# lab/lab.sh の LOG_STANDARD（デバッグ用の EC2 の Telegraf に渡す）と同じ
+# app/containerlab/lab.sh の LOG_STANDARD（デバッグ用の EC2 の Telegraf に渡す）と同じ
 LAB_SYSLOG_STANDARD=RFC5424
 # containerlab が SR Linux 全台に入れる既定の認証情報（lab だけの公開既定値で、実機の値ではない）。ops/up.sh が SSM の
 # /<接頭辞>/telegraf-dialin/gnmi-username・gnmi-password・snmp-community の最初の値にする（実機を足すなら SSM の値を書き換える）。
-# lab/lab.sh の GNMI_USERNAME / GNMI_PASSWORD / SNMP_COMMUNITY（デバッグ用の EC2 の Telegraf に渡す）と同じ
+# app/containerlab/lab.sh の GNMI_USERNAME / GNMI_PASSWORD / SNMP_COMMUNITY（デバッグ用の EC2 の Telegraf に渡す）と同じ
 LAB_GNMI_USERNAME=admin
 LAB_GNMI_PASSWORD='NokiaSrl1!'
 LAB_SNMP_COMMUNITY=public
@@ -69,15 +69,15 @@ mirror_lab_images() {  # mirror_lab_images <レジストリ> <接頭辞>  lab �
   if ecr_has "$2-lab-multitool" "$MULTITOOL_TAG"; then echo "lab-multitool:$MULTITOOL_TAG はある"
   else mirror_image "$MULTITOOL_UPSTREAM:$MULTITOOL_TAG" "$1/$2-lab-multitool:$MULTITOOL_TAG" || return 1; fi
 }
-telegraf_tag() {  # telegraf_tag  telegraf/ の中身からタグを作る（stream の ECS もデバッグ用の EC2 もこのタグを引く）
-  dir_tag "$TELEGRAF_VERSION" telegraf
+telegraf_tag() {  # telegraf_tag  app/telegraf/ の中身からタグを作る（stream の ECS もデバッグ用の EC2 もこのタグを引く）
+  dir_tag "$TELEGRAF_VERSION" app/telegraf
 }
 build_telegraf() {  # build_telegraf <ECR のイメージ:タグ>  COPY だけなので x86_64 の PC でも QEMU は要らない
-  docker buildx build --platform linux/arm64 --build-arg "TELEGRAF_VERSION=$TELEGRAF_VERSION" -t "$1" --push telegraf
+  docker buildx build --platform linux/arm64 --build-arg "TELEGRAF_VERSION=$TELEGRAF_VERSION" -t "$1" --push -f docker/images/telegraf/Dockerfile app/telegraf/
 }
-upload_lab() {  # upload_lab <バケット>  lab の EC2 は起動のたびに s3://<バケット>/lab/ を読む（lab/setup.sh）。リポジトリの直下で呼ぶ
+upload_lab() {  # upload_lab <バケット>  lab の EC2 は起動のたびに s3://<バケット>/lab/ を読む（app/containerlab/setup.sh）。リポジトリの直下で呼ぶ
   fetch "https://github.com/srl-labs/containerlab/releases/download/v$CONTAINERLAB_VERSION/$CONTAINERLAB_RPM" "$CONTAINERLAB_RPM" \
     || { echo "containerlab の rpm が取れない（社内 PC なら docs/setup.md「社内 PC の CA」）" >&2; return 1; }
-  aws s3 sync --only-show-errors lab/ "s3://$1/lab/" --exclude "splab.clab.yml" --exclude "__pycache__/*" --exclude "*.DS_Store" || return 1
+  aws s3 sync --only-show-errors app/containerlab/ "s3://$1/lab/" --exclude "splab.clab.yml" --exclude "__pycache__/*" --exclude "*.DS_Store" || return 1
   aws s3 cp --only-show-errors "$CONTAINERLAB_RPM" "s3://$1/lab/"
 }

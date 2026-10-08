@@ -8,7 +8,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_DEFAULT_TIMEOUT=100
 
-# 社内ネットワークの SSL インスペクション対策（agent/Dockerfile と同じ理由）
+# 社内ネットワークの SSL インスペクション対策（docker/images/agentcore/Dockerfile と同じ理由）
 ENV PIP_TRUSTED_HOST="pypi.org files.pythonhosted.org pypi.python.org"
 
 WORKDIR /app

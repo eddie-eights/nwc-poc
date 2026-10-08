@@ -1,6 +1,6 @@
-# Grafana のアラートの送り先（連絡先・通知ポリシー・本文のテンプレート）。発火と解消を SNS のトピック（terraform/base/core の alerts.tf）へ publish する。
-# 受け手は SQS → ワークフロー（workflow/worker.py の starter）と、トポロジの status を書く Lambda（graph/status_handler.py）。
-# ルールは格納先ごとに別のファイル（netops-prometheus.yaml / netops-opensearch.yaml）。grafana/start.sh は ALERTS_TOPIC_ARN があるときにこのファイルを、
+# Grafana のアラートの送り先（連絡先・通知ポリシー・本文のテンプレート）。発火と解消を SNS のトピック（IaC/terraform/aws-managed/base/core の alerts.tf）へ publish する。
+# 受け手は SQS → ワークフロー（app/temporal/worker.py の starter）と、トポロジの status を書く Lambda（app/graph/status_handler.py）。
+# ルールは格納先ごとに別のファイル（netops-prometheus.yaml / netops-opensearch.yaml）。app/grafana/start.sh は ALERTS_TOPIC_ARN があるときにこのファイルを、
 # さらにデータソースがあるほうのルールのファイルを並べる。連絡先の ${...} は起動時に Grafana が環境変数で埋める。
 # 下のテンプレートの中の $i / $a はそのまま渡る（$$ と書くと「Invalid format of the submitted template」で Grafana が起動しない。13.2.2 で実測）。
 # ルールのラベルの中の $ は provisioning が環境変数として展開する（'{{ $labels.ifName }}' が '{{ .ifName }}' になる。13.2.2 で実測）ので、
@@ -8,7 +8,7 @@
 # 画面からは変えられない（provisioning したルール・連絡先・ポリシーは読み取り専用。変えるならこのファイルを変えてイメージを作り直す）
 apiVersion: 1
 
-# ---- 連絡先。SNS へ SigV4 で publish する（鍵は書かない = タスクロール。sns へは terraform/base/core のインターフェース型エンドポイントを通る）
+# ---- 連絡先。SNS へ SigV4 で publish する（鍵は書かない = タスクロール。sns へは IaC/terraform/aws-managed/base/core のインターフェース型エンドポイントを通る）
 contactPoints:
   - orgId: 1
     name: nwc-sns
@@ -33,7 +33,7 @@ policies:
     group_interval: 30s
     repeat_interval: 4h
 
-# ---- 本文。workflow/rules.py の alerts_from_message が読む形（Splunk の splunk/netops_alerts/bin/netops_sns.py と同じ形）。
+# ---- 本文。app/temporal/rules.py の alerts_from_message が読む形（Splunk の app/splunk/netops_alerts/bin/netops_sns.py と同じ形）。
 # 種類によらない形: どのルールもラベル kind / target と注釈 detail を持つ。機器は sysName（Spark が device map で足す）、無ければ source（機器の管理 IP。
 # Splunk の coalesce('tags.sysName', …, 'tags.source') と同じ）
 templates:

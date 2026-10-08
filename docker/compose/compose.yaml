@@ -1,8 +1,8 @@
 # 手元の docker compose で動く構成を作る（006）: WSL2（Ubuntu）の docker-ce だけで、lab → Telegraf → Kafka → Spark → 格納先 → Grafana / Splunk が一周する。
 # AWS には触らない。設計は docs/cycles/006-local-compose/design.md、手順は README.md。
-# containerlab（SR Linux 6 台 + VM 2 台）は compose の外（./lab.sh。sudo で lab/lab.sh を呼ぶ）。
+# containerlab（SR Linux 6 台 + VM 2 台）は compose の外（./lab.sh。sudo で app/containerlab/lab.sh を呼ぶ）。
 # パスワードと token は .env（.env.example を写す。試し用の固定値）。lab の値（SNMP_AGENTS / GNMI_TARGETS / DEVICE_MAP）は値に " と , があるので
-# .env に書かず、./up.sh が lab/lab_topology.py から作って環境変数で渡す（docker compose を直に打つと空のまま。Telegraf が形の検査で止まる）。
+# .env に書かず、./up.sh が app/containerlab/lab_topology.py から作って環境変数で渡す（docker compose を直に打つと空のまま。Telegraf が形の検査で止まる）。
 # 片付けは ./down.sh（-v で volume も消す）。
 #
 # 版の正（tests/test_local_compose.py が照合する）:
@@ -28,7 +28,7 @@ x-kafka-env: &kafka-env
   KAFKA_LOG_DIRS: /var/lib/kafka/data
   KAFKA_DEFAULT_REPLICATION_FACTOR: 3
   KAFKA_MIN_INSYNC_REPLICAS: 2
-  KAFKA_NUM_PARTITIONS: 2   # MSK の configuration（terraform/pipeline/stream/msk.tf の num.partitions=2）と同じ。Spark の ensure_topics はこの既定で作る
+  KAFKA_NUM_PARTITIONS: 2   # MSK の configuration（IaC/terraform/aws-managed/pipeline/stream/msk.tf の num.partitions=2）と同じ。Spark の ensure_topics はこの既定で作る
   KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
   KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
   KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
@@ -39,8 +39,10 @@ x-kafka-env: &kafka-env
   KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
 
 x-spark: &spark
-  # spark/Dockerfile のイメージ（Kafka の jar と spark/snmp_sinks.py を焼いてある。Iceberg の jar もあるが、カタログの設定は渡さない）。2 つの service で同じイメージ
-  build: ../../spark
+  # docker/images/spark/Dockerfile のイメージ（Kafka の jar と app/spark/snmp_sinks.py を焼いてある。Iceberg の jar もあるが、カタログの設定は渡さない）。2 つの service で同じイメージ
+  build:
+    context: ../../app/spark
+    dockerfile: ../../docker/images/spark/Dockerfile
   image: nwc-local-spark
   # Splunk が起きる前（起動に数分）は HEC への POST が再試行の後に落ちてジョブが終わる。起こし直して checkpoint の続きから読む（ECS のサービスの代わり）
   restart: on-failure
@@ -56,7 +58,8 @@ services:
     # host のネットワークで受ける（SR Linux は trap と syslog を管理ネットの GW 203.0.113.1 = WSL へ送る）。trap の 162/udp → 1162/udp は ./lab.sh up の forward が iptables で向ける。
     # 待つポート: syslog 5140/udp、trap 1162/udp、MDT 57000/tcp、ヘルスチェック 8080/tcp（host の他のプロセスとぶつかると起きない）
     build:
-      context: ../../telegraf
+      context: ../../app/telegraf
+      dockerfile: ../../docker/images/telegraf/Dockerfile
       args:
         TELEGRAF_VERSION: 1.40.0
     image: nwc-local-telegraf
@@ -115,7 +118,7 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
     ports: ["127.0.0.1:18080:8080"]
 
-  # spark-submit の引数は oss/terraform/pipeline/analytics/spark.tf の並びから、Iceberg のカタログと S3A の設定を抜いたもの。
+  # spark-submit の引数は IaC/terraform/oss/pipeline/analytics/spark.tf の並びから、Iceberg のカタログと S3A の設定を抜いたもの。
   # checkpoint は volume（/opt/spark/work-dir はイメージに在り spark ユーザーが書ける。無いパスに付けると root のものになって書けない）
   spark-splunk:
     <<: *spark
@@ -169,7 +172,8 @@ services:
   splunk:
     # 上流の splunk/splunk は amd64 だけ（WSL の x86_64 はそのまま。Apple Silicon の Mac はエミュレーションで、未確認）。standalone で app netops_alerts が動く
     build:
-      context: ../../splunk
+      context: ../../app/splunk
+      dockerfile: ../../docker/images/splunk/Dockerfile
       args:
         SPLUNK_VERSION: 10.4.3
     image: nwc-local-splunk
@@ -190,12 +194,13 @@ services:
 
   grafana:
     build:
-      context: ../../grafana
+      context: ../../app/grafana
+      dockerfile: ../../docker/images/grafana/Dockerfile
       args:
         GRAFANA_VERSION: 13.2.2
     image: nwc-local-grafana
     environment:
-      # grafana/start.sh が datasources-oss の定義を並べる（uid amp / aoss-logs。ダッシュボードはそのまま）。ALERTS_TOPIC_ARN が無いので、アラートの定義は並べない
+      # app/grafana/start.sh が datasources-oss の定義を並べる（uid amp / aoss-logs。ダッシュボードはそのまま）。ALERTS_TOPIC_ARN が無いので、アラートの定義は並べない
       PROMETHEUS_AUTH: none
       OPENSEARCH_AUTH: basic
       PROMETHEUS_URL: http://prometheus:9090

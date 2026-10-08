@@ -1,16 +1,16 @@
 # ---------------------------------------------------------------- naming
 variable "region" {
-  description = "AWS region. Same value as terraform/base/ecr and terraform/agent."
+  description = "AWS region. Same value as IaC/terraform/aws-managed/base/ecr and IaC/terraform/aws-managed/agent."
   type        = string
   default     = "ap-northeast-1"
 }
 
 variable "owner" {
-  description = "Required. Name of the person who deploys this copy. Resource names and the Project tag are <owner>-nwc-poc (<owner>-nwc-oss in oss/terraform, see project), so each person can find their own resources in the console. Same value in every root module."
+  description = "Required. Name of the person who deploys this copy. Resource names and the Project tag are <owner>-nwc-poc (<owner>-nwc-oss in IaC/terraform/oss, see project), so each person can find their own resources in the console. Same value in every root module."
   type        = string
 
   validation {
-    # 接頭辞は <owner>-nwc-poc。OpenSearch Serverless の data access policy 名が 32 文字までで、一番長い接尾辞は terraform/workflow の <接頭辞>-logs-read（10 文字）なので接頭辞は 22 文字まで。-nwc-poc の 8 文字（OSS 版の -nwc-oss も 8 文字）を引いて owner は 14 文字まで
+    # 接頭辞は <owner>-nwc-poc。OpenSearch Serverless の data access policy 名が 32 文字までで、一番長い接尾辞は IaC/terraform/aws-managed/workflow の <接頭辞>-logs-read（10 文字）なので接頭辞は 22 文字まで。-nwc-poc の 8 文字（OSS 版の -nwc-oss も 8 文字）を引いて owner は 14 文字まで
     # ハイフンの連続と末尾のハイフンも弾く（ECR のリポジトリ名が受け付けない）
     condition     = can(regex("^[a-z][a-z0-9]*(-[a-z0-9]+)*$", var.owner)) && length(var.owner) <= 14
     error_message = "owner must be 1-14 lowercase letters, digits and single hyphens, starting with a letter and not ending with one."
@@ -18,13 +18,13 @@ variable "owner" {
 }
 
 variable "project" {
-  description = "Second half of the resource name prefix and of the Project tag (<owner>-<project>). nwc-poc is the managed-services build (terraform/); nwc-oss is the build that runs open-source services on ECS instead (oss/terraform/, cycle 005), whose oss.auto.tfvars sets it. Same value in every root module."
+  description = "Second half of the resource name prefix and of the Project tag (<owner>-<project>). nwc-poc is the managed-services build (IaC/terraform/aws-managed/); nwc-oss is the build that runs open-source services on ECS instead (IaC/terraform/oss/, cycle 005), whose oss.auto.tfvars sets it. Same value in every root module."
   type        = string
   default     = "nwc-poc"
 
   validation {
     condition     = contains(["nwc-poc", "nwc-oss"], var.project)
-    error_message = "project must be nwc-poc (terraform/) or nwc-oss (oss/terraform/)."
+    error_message = "project must be nwc-poc (IaC/terraform/aws-managed/) or nwc-oss (IaC/terraform/oss/)."
   }
 }
 
@@ -99,7 +99,7 @@ variable "create_s3_gateway_endpoint" {
 }
 
 variable "create_opensearch_endpoint" {
-  description = "Create the OpenSearch Serverless VPC endpoint (endpoints.tf). One per VPC serves every collection: the knowledge base of terraform/agent and the logs collection of terraform/pipeline/analytics, both reachable only through it. ops/up.sh sets true with CREATE_KB, with grafana (OpenSearch) in STORES, or while a collection made before is still in the state of terraform/agent or terraform/pipeline/analytics (NEED_AOSS). About 0.014 USD/h per AZ (endpoints_az_num AZs, the same as the interface endpoints)."
+  description = "Create the OpenSearch Serverless VPC endpoint (endpoints.tf). One per VPC serves every collection: the knowledge base of IaC/terraform/aws-managed/agent and the logs collection of IaC/terraform/aws-managed/pipeline/analytics, both reachable only through it. ops/up.sh sets true with CREATE_KB, with grafana (OpenSearch) in STORES, or while a collection made before is still in the state of IaC/terraform/aws-managed/agent or IaC/terraform/aws-managed/pipeline/analytics (NEED_AOSS). About 0.014 USD/h per AZ (endpoints_az_num AZs, the same as the interface endpoints)."
   type        = bool
   default     = false
 }
@@ -144,7 +144,7 @@ variable "network_perimeter" {
 }
 
 variable "mdt_source_cidrs" {
-  description = "CIDRs of the devices that send Cisco MDT dial-out to the Telegraf NLB (tcp 57000, terraform/pipeline/stream). Empty (default) opens it to nobody - the lab SR Linux cannot send MDT."
+  description = "CIDRs of the devices that send Cisco MDT dial-out to the Telegraf NLB (tcp 57000, IaC/terraform/aws-managed/pipeline/stream). Empty (default) opens it to nobody - the lab SR Linux cannot send MDT."
   type        = list(string)
   default     = []
 

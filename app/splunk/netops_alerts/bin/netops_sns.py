@@ -2,12 +2,12 @@
 
 Splunk は `python netops_sns.py --execute` で起こし、標準入力に JSON（results_file = 結果の CSV（gzip）の場所 など）を渡す。
 結果の 1 行 = アラート 1 件で、列は device / kind / target / status（firing | resolved）/ detail / starts_at（epoch 秒）。
-publish する JSON は Grafana（grafana/provisioning/alerting）と同じ形で、workflow/rules.py の alerts_from_message と graph/status_handler.py が読む:
+publish する JSON は Grafana（app/grafana/provisioning/alerting）と同じ形で、app/temporal/rules.py の alerts_from_message と app/graph/status_handler.py が読む:
   {"source": "splunk", "alerts": [{"status", "device_id", "kind", "target", "detail", "starts_at"}, …]}
 
 - 機器名: gNMI と trap のイベントは機器名でなく管理 IP（tags.source）を持つ。DEVICE_MAP（別名=機器名,…）で名前に直す
 - 認証: ECS のタスクロール（AWS_CONTAINER_CREDENTIALS_RELATIVE_URI から一時的な認証情報を取る）。アクセスキーは置かない
-- 設定: コンテナの環境変数を splunk/entrypoint.sh がファイルに写したもの（splunkd の子プロセスはコンテナの環境変数を引き継がない）。
+- 設定: コンテナの環境変数を app/splunk/entrypoint.sh がファイルに写したもの（splunkd の子プロセスはコンテナの環境変数を引き継がない）。
   boto3 には環境変数でなく引数で渡す（認証情報の口・リージョン・AWS_ENDPOINT_URL_SNS）
 - ライブラリ: boto3 は Splunk の Python が持っているものを使う（Splunk 10.4.3 は python3.13 の site-packages に boto3 1.37.14。
   python.required = 3.13 は default/alert_actions.conf）。app に同梱しない・pip で入れない。Splunk の版を変えたら
@@ -24,7 +24,7 @@ import re
 import sys
 import time
 
-ENV_FILE = "/opt/container_artifact/nwc-alerts.env"   # splunk/entrypoint.sh が書く
+ENV_FILE = "/opt/container_artifact/nwc-alerts.env"   # app/splunk/entrypoint.sh が書く
 ENV_KEYS = ("AWS_REGION", "ALERTS_TOPIC_ARN", "DEVICE_MAP", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
             "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_ENDPOINT_URL_SNS")
 STATUSES = ("firing", "resolved")

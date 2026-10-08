@@ -6,7 +6,7 @@
 # リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、
 # 1 つの AWS アカウントを何人かで使っても、自分の名前で自分のリソースを探せる
 locals {
-  # 末尾は var.project（terraform/ は既定の nwc-poc、OSS 版の oss/terraform/ は oss.auto.tfvars の nwc-oss。cycle 005）
+  # 末尾は var.project（IaC/terraform/aws-managed/ は既定の nwc-poc、OSS 版の IaC/terraform/oss/ は oss.auto.tfvars の nwc-oss。cycle 005）
   name_prefix = "${var.owner}-${var.project}"
 }
 
@@ -16,8 +16,8 @@ locals {
   # ECS で動かすパイプラインの 6 つ（Telegraf と Kafbat UI は pipeline/stream、Grafana と Splunk は pipeline/analytics、Nautobot とその Redis は pipeline/nautobot）。
   # リポジトリに時間課金は無いので、いつも作る
   pipeline_repositories = toset(["telegraf", "kafka-ui", "grafana", "splunk", "nautobot", "redis"])
-  # OSS 版（oss/terraform。var.project = nwc-oss。cycle 005）だけのイメージ。kafka（apache/kafka）・opensearch・vminsert / vmselect / vmstorage
-  # （VictoriaMetrics のクラスター版）は公開イメージをそのまま写し、spark（Spark 3.5 と spark/ のジョブ）と neo4j（Neo4j と GDS）は ops がビルドする。
+  # OSS 版（IaC/terraform/oss。var.project = nwc-oss。cycle 005）だけのイメージ。kafka（apache/kafka）・opensearch・vminsert / vmselect / vmstorage
+  # （VictoriaMetrics のクラスター版）は公開イメージをそのまま写し、spark（Spark 3.5 と app/spark/ のジョブ）と neo4j（Neo4j と GDS）は ops がビルドする。
   # マネージド版では空（リポジトリを作らない）
   oss_repositories = var.project == "nwc-oss" ? toset(["kafka", "opensearch", "vminsert", "vmselect", "vmstorage", "spark", "neo4j"]) : toset([])
 }

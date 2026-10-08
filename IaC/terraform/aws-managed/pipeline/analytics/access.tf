@@ -47,7 +47,7 @@ resource "aws_iam_role_policy" "emr" {
       {
         Sid    = "KafkaTopics"
         Effect = "Allow"
-        # CreateTopic: Spark が起動時に無いトピックを作る（spark/snmp_sinks.py の ensure_topics。Telegraf が最初の trap / syslog を出すまで traps / logs が無い）
+        # CreateTopic: Spark が起動時に無いトピックを作る（app/spark/snmp_sinks.py の ensure_topics。Telegraf が最初の trap / syslog を出すまで traps / logs が無い）
         Action   = ["kafka-cluster:DescribeTopic", "kafka-cluster:ReadData", "kafka-cluster:CreateTopic"]
         Resource = local.topic_arns
       },
@@ -107,7 +107,7 @@ resource "aws_iam_role_policy" "emr" {
         Resource = local.sink_prometheus ? aws_prometheus_workspace.metrics[0].arn : ""
       }] : s if local.sink_prometheus],
       [for s in [{
-        # HEC の token（SSM の SecureString）を起動時に読む（ssm の API へは terraform/base/core の ssm のエンドポイントを通る）。
+        # HEC の token（SSM の SecureString）を起動時に読む（ssm の API へは IaC/terraform/aws-managed/base/core の ssm のエンドポイントを通る）。
         # 復号は SSM の AWS 管理キー aws/ssm のキーポリシーが ssm 経由の呼び出しに許しているので kms:Decrypt は要らない
         # （自分の KMS キーで暗号化したパラメータなら、そのキーに kms:Decrypt を足す）
         Sid      = "SplunkHecToken"
@@ -119,7 +119,7 @@ resource "aws_iam_role_policy" "emr" {
   })
 }
 
-# terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。
+# IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。
 # スクリプト・jar・checkpoint は S3 gateway、S3 Tables は s3tables のエンドポイント、remote write は aps-workspaces、
 # token は ssm のエンドポイントを通る。Splunk の HEC は VPC の中（ECS）
 resource "aws_iam_role_policy_attachment" "emr_perimeter" {

@@ -1,25 +1,25 @@
 # nwc-poc - PIPELINE analytics root module. A Spark streaming job on EMR Serverless reads the Telegraf messages
-# (var.metric_topics metrics / gnmi / mdt and var.log_topics traps / logs) from MSK (terraform/pipeline/stream) and stores them in S3 Tables (Iceberg, all topics), OpenSearch Serverless
+# (var.metric_topics metrics / gnmi / mdt and var.log_topics traps / logs) from MSK (IaC/terraform/aws-managed/pipeline/stream) and stores them in S3 Tables (Iceberg, all topics), OpenSearch Serverless
 # (log topics), Amazon Managed Service for Prometheus (metric topics) and, when asked, the HTTP Event Collector of a Splunk
 # (all topics; Splunk Enterprise on ECS here in splunk.tf, inside the VPC) - see var.sinks. Grafana OSS on ECS (grafana.tf)
 # shows the Prometheus and OpenSearch sinks. The job only stores: detection is done by the Grafana alert rules (metrics) and the
-# Splunk saved searches (logs, traps, telemetry), and both publish the alerts to the SNS topic of terraform/base/core
-# (alerts.tf; terraform/workflow and terraform/pipeline/graph subscribe). Until 2026-10-02 the Spark job detected and put events on EventBridge.
-# The table bucket is the long-term record of the pipeline (raw messages, and proposal_events written by terraform/workflow).
+# Splunk saved searches (logs, traps, telemetry), and both publish the alerts to the SNS topic of IaC/terraform/aws-managed/base/core
+# (alerts.tf; IaC/terraform/aws-managed/workflow and IaC/terraform/aws-managed/pipeline/graph subscribe). Until 2026-10-02 the Spark job detected and put events on EventBridge.
+# The table bucket is the long-term record of the pipeline (raw messages, and proposal_events written by IaC/terraform/aws-managed/workflow).
 # Costs about 0.21 USD per hour per streaming job (up to 3, split by sink: iceberg / splunk / opensearch + prometheus) while it runs
 # (+ about 0.02 for Grafana, + about 0.12 for the Splunk on ECS) - ops/down.sh cancels the jobs and destroys this root.
 
 # リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、
 # 1 つの AWS アカウントを何人かで使っても、自分の名前で自分のリソースを探せる
 locals {
-  # 末尾は var.project（terraform/ は既定の nwc-poc、OSS 版の oss/terraform/ は oss.auto.tfvars の nwc-oss。cycle 005）
+  # 末尾は var.project（IaC/terraform/aws-managed/ は既定の nwc-poc、OSS 版の IaC/terraform/oss/ は oss.auto.tfvars の nwc-oss。cycle 005）
   name_prefix = "${var.owner}-${var.project}"
 }
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
-# VPC / サブネット / SG / バケット / アラートの SNS トピックは terraform/base/core、MSK は terraform/pipeline/stream の state から読む
+# VPC / サブネット / SG / バケット / アラートの SNS トピックは IaC/terraform/aws-managed/base/core、MSK は IaC/terraform/aws-managed/pipeline/stream の state から読む
 data "terraform_remote_state" "main" {
   backend = "local"
 
@@ -32,7 +32,7 @@ data "terraform_remote_state" "main" {
   lifecycle {
     postcondition {
       condition     = can(self.outputs.security_group_ids)
-      error_message = "terraform/base/core の state に security_group_ids が無い（2026-09-29 より前の SG）。先に ops/down.sh で消してから ops/up.sh を打ち直す"
+      error_message = "IaC/terraform/aws-managed/base/core の state に security_group_ids が無い（2026-09-29 より前の SG）。先に ops/down.sh で消してから ops/up.sh を打ち直す"
     }
   }
 }
@@ -45,7 +45,7 @@ data "terraform_remote_state" "stream" {
   }
 }
 
-# Grafana / Splunk のイメージは terraform/base/ecr（ops/up.sh の手順 1 と 2）
+# Grafana / Splunk のイメージは IaC/terraform/aws-managed/base/ecr（ops/up.sh の手順 1 と 2）
 data "terraform_remote_state" "ecr" {
   backend = "local"
 
@@ -73,7 +73,7 @@ locals {
   aoss_vpce_id = try(data.terraform_remote_state.main.outputs.opensearch_vpc_endpoint_id, "")
   bucket       = data.terraform_remote_state.main.outputs.kb_bucket_name
   bucket_arn   = "arn:${local.partition}:s3:::${local.bucket}"
-  # terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
+  # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
   perimeter_policy_arn = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
   # リソースポリシーの Deny から外すプリンシパル（デプロイする人と KB のロール）
   perimeter_exempt_principals = try(data.terraform_remote_state.main.outputs.perimeter_exempt_principals, [])
@@ -82,7 +82,7 @@ locals {
   msk_cluster_arn = try(data.terraform_remote_state.stream.outputs.msk_cluster_arn, "")
   bootstrap       = try(data.terraform_remote_state.stream.outputs.bootstrap_brokers, "")
 
-  # アラートの SNS トピック（terraform/base/core の alerts.tf）。Grafana のコンタクトポイントと Splunk のアラートアクションが publish する。
+  # アラートの SNS トピック（IaC/terraform/aws-managed/base/core の alerts.tf）。Grafana のコンタクトポイントと Splunk のアラートアクションが publish する。
   # 古い state（2026-10-02 より前）には無いので try。空のままタスクを作らないよう grafana.tf / splunk.tf の precondition で止める
   alerts_topic_arn = try(data.terraform_remote_state.main.outputs.alerts_topic_arn, "")
 
@@ -107,7 +107,7 @@ locals {
   # 証跡（tables.tf の proposal_events）があるので、テーブルバケットは iceberg を選ばなくても作る
   table_bucket_arn = aws_s3tables_table_bucket.tables.arn
 
-  # 格納先（sinks.tf。spark/snmp_sinks.py の --sinks と同じ名前）
+  # 格納先（sinks.tf。app/spark/snmp_sinks.py の --sinks と同じ名前）
   sink_iceberg    = contains(var.sinks, "iceberg")
   sink_opensearch = contains(var.sinks, "opensearch")
   sink_prometheus = contains(var.sinks, "prometheus")
@@ -140,12 +140,12 @@ locals {
   create_ecs        = local.create_grafana || local.splunk_on_ecs
   service_namespace = "${local.name_prefix}.internal"
 
-  # どのトピックがメトリクスでどれがログか（spark/snmp_sinks.py の --metric-topics / --log-topics。iceberg は両方、prometheus はメトリクス、opensearch はログ）
+  # どのトピックがメトリクスでどれがログか（app/spark/snmp_sinks.py の --metric-topics / --log-topics。iceberg は両方、prometheus はメトリクス、opensearch はログ）
   metric_topics = join(",", var.metric_topics)
   log_topics    = join(",", var.log_topics)
 
   logs_collection   = "${local.name_prefix}-logs"    # OpenSearch Serverless のコレクション（ログ）
-  opensearch_index  = "snmp-logs"                    # spark/snmp_sinks.py の OPENSEARCH_INDEX と同じ
+  opensearch_index  = "snmp-logs"                    # app/spark/snmp_sinks.py の OPENSEARCH_INDEX と同じ
   metrics_workspace = "${local.name_prefix}-metrics" # Prometheus のワークスペースの alias（メトリクス）
 
   opensearch_endpoint = local.sink_opensearch ? aws_opensearchserverless_collection.logs[0].collection_endpoint : ""

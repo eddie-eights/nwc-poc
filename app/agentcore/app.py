@@ -3,7 +3,7 @@
 1 回の質問でやること:
   1. KNOWLEDGE_BASE_ID があれば Bedrock Knowledge Base の Retrieve をハイブリッド検索（ベクトル + キーワード）で呼び、候補を取る。
      RERANK_MODEL_ARN があれば、同じ Retrieve の中でリランクモデルが候補を並べ替えて上位だけを返す。
-     無ければ（terraform/agent の create_knowledge_base = false。既定）資料なしでモデルとツールだけで答える
+     無ければ（IaC/terraform/aws-managed/agent の create_knowledge_base = false。既定）資料なしでモデルとツールだけで答える
   2. 資料と質問を Strands Agents のエージェントに渡す（モデルは BedrockModel。中身は Converse）。
      ガードレールは質問（guardContent）と回答を判定する。
      モデルがトポロジのツール（topology.py。機器一覧・隣接・影響範囲・全体図。Neptune があればそこから、
@@ -11,7 +11,7 @@
      修復案の履歴（proposals.py。S3 Tables の proposal_events。読むだけで承認はできない）を使うと言ったら、
      Strands のループが結果を返して往復する。ツールは MAX_TOOL_ROUNDS 回まで（ToolLimit のフック）。
      達したら、その旨を断って、そこまでに分かったことで答える。
-     Gateway（MCP。terraform/workflow）があれば
+     Gateway（MCP。IaC/terraform/aws-managed/workflow）があれば
      ツールはそちら（mcp_client.py）から取り、届かなければコンテナ内の関数に戻す
   3. 回答の末尾に参照した資料のファイル名を付けて返す
 
@@ -45,7 +45,7 @@ import proposals
 import topology
 
 MODEL_ID = os.environ["MODEL_ID"]
-# 空ならナレッジベースを引かない（terraform/agent の create_knowledge_base = false。既定）
+# 空ならナレッジベースを引かない（IaC/terraform/aws-managed/agent の create_knowledge_base = false。既定）
 KNOWLEDGE_BASE_ID = os.environ.get("KNOWLEDGE_BASE_ID", "")
 BEDROCK_REGION = os.environ.get("BEDROCK_REGION", "ap-northeast-1")
 NUMBER_OF_RESULTS = int(os.environ.get("NUMBER_OF_RESULTS", "5"))
@@ -67,7 +67,7 @@ TOOL_LIMIT_PREFIX = f"ツールの呼び出しが上限（{MAX_TOOL_ROUNDS} 回�
 TOOL_LIMIT_EMPTY = "答えをまとめる前に止まりました。質問を分けて（たとえば回線と修復案を別々に）聞き直してください。"
 # ツールを持つモジュール。**ここに足せば TOOL_SPECS も run_tool の振り分けも付いてくる**（tools/handler.py にも同じ並びがある）
 MODULES = (topology, evidence, proposals)
-# コンテナ内の関数。Gateway（MCP。terraform/workflow）があれば mcp_client がそちらの一覧を返す
+# コンテナ内の関数。Gateway（MCP。IaC/terraform/aws-managed/workflow）があれば mcp_client がそちらの一覧を返す
 TOOL_SPECS = [spec for m in MODULES for spec in m.TOOL_SPECS]
 
 

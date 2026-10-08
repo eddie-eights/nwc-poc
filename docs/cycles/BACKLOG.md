@@ -9,12 +9,12 @@
 - [ ] OSS 版とマネージド版の時間あたりの費用を測って `docs/oss-variant.md` に書く
 - [ ] OSS 版をマネージド版と並べて立てる（Fargate の vCPU の上限 30 を上げてから。GDS と `neptune.algo.*` の並びの比較もここで）
 - [x] Neo4j の ECS のサービスに healthCheck を付ける（いまは healthStatus が UNKNOWN のままで、Bolt が開くまでの時間が ECS から見えない）（2026-10-08 完了。fix/oss-review-nits、AWS では未確認）
-- [x] status の Lambda のメモリを上げる（AWS で `Max Memory Used` 111 MB / 128 MB。`terraform/pipeline/graph/sync.tf` はマネージド版と共用）（2026-10-08 完了。256 MB。fix/oss-review-nits）
-- [x] `agent/topology.py` の「neptune read failed」のログを、Neo4j のときは graph の名前で出す（OSS 版でも neptune と出る）（2026-10-08 完了。fix/oss-review-nits）
+- [x] status の Lambda のメモリを上げる（AWS で `Max Memory Used` 111 MB / 128 MB。`IaC/terraform/aws-managed/pipeline/graph/sync.tf` はマネージド版と共用）（2026-10-08 完了。256 MB。fix/oss-review-nits）
+- [x] `app/agentcore/topology.py` の「neptune read failed」のログを、Neo4j のときは graph の名前で出す（OSS 版でも neptune と出る）（2026-10-08 完了。fix/oss-review-nits）
 - [x] マネージドを OSS に置き換えた環境を作る → 005-oss-on-ecs（2026-10-07 完了）
-- [x] Neo4j のタスクが入れ替わったあとに一意制約を作り直す（`agent/graph.py` の制約済みフラグを ServiceUnavailable のあとに落とす。005 のレビュー Nit 1）（2026-10-08 完了。fix/oss-review-nits）
-- [x] `workflow/awsio.py` の Cypher の方言の変換を `agent/graph.py` と共用にするかテストで突き合わせる（いまは `id()` しか写していない。005 のレビュー Nit 2）（2026-10-08 完了。fix/oss-review-nits）
-- [x] `spark/Dockerfile` が取る Maven Central の jar のハッシュを照合する（005 のレビュー Nit 4）（2026-10-08 完了。feat/spark-bump）
+- [x] Neo4j のタスクが入れ替わったあとに一意制約を作り直す（`app/agentcore/graph.py` の制約済みフラグを ServiceUnavailable のあとに落とす。005 のレビュー Nit 1）（2026-10-08 完了。fix/oss-review-nits）
+- [x] `app/temporal/awsio.py` の Cypher の方言の変換を `app/agentcore/graph.py` と共用にするかテストで突き合わせる（いまは `id()` しか写していない。005 のレビュー Nit 2）（2026-10-08 完了。fix/oss-review-nits）
+- [x] `docker/images/spark/Dockerfile` が取る Maven Central の jar のハッシュを照合する（005 のレビュー Nit 4）（2026-10-08 完了。feat/spark-bump）
 - [x] `oss/ops/up.sh` の wheel の取り直しを requirements のハッシュで判定する（いまは `.whl` が 1 つでもあれば取り直さない。005 のレビュー Nit 5）（2026-10-08 完了。fix/oss-review-nits）
 - [x] `oss/ops/up.sh` の services-stable の待ちに再試行を付け、`ops/check.sh` の OSS のルートにも `-lockfile=readonly` を付ける（005 のレビュー Nit 6）（2026-10-08 完了。fix/oss-review-nits）
 - [x] 手元の docker compose で動く構成を作る（WSL 用。lab から Splunk と Grafana まで届くこと） → 006-local-compose（2026-10-08 完了。WSL の通し検証はユーザー）
@@ -26,36 +26,36 @@
 - [x] Iceberg を 1.12.0 に上げる（2026-10-08 完了。feat/spark-bump。OSS 版だけ。マネージド版は EMR 同梱の 1.10.1 のまま。AWS では未確認）
 - [ ] lab を IS-IS の spine 2 + a-leaf 2 + s-leaf 2 と各 leaf につなぐ TRex にする（SR-MPLS はライセンスが届いたら `ixr-6e` に差し替え。2026-10-08 の決定）
 - [ ] コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種にする（telegraf-dialin を外し、ifTable の代わりに gNMI の oper-state を使う）
-- [x] `ops/up.sh` が取る jar（`JAR_URLS` 6 本）のハッシュを照合する（`spark/Dockerfile` と compose の分は 2026-10-08 に済んだ）（2026-10-08 完了。fix/up-jar-hash。前の版の jar は jars/ と S3 から消す。S3 の `--delete` は AWS で未確認）
-- [x] `.env.example` と `ops/up.sh` と terraform のコメントの古い記述を直す（2026-10-08 完了。fix/stale-comments。コメントと description だけで動作は変えていない。2026-10-08 の docs 同期で見つけた、コードの側の食い違い: `.env.example:140` の SNMP_POLL の既定、`ops/up.sh:445` の docker の要る先に kafka-ui が無い、`ops/up.sh` の mdt・NEED_AOSS・SINK_*/GRAFANA の古いコメント、`terraform/base/core/endpoints.tf:27`・`perimeter.tf:4-6`・`outputs.tf:58`、`terraform/pipeline/stream/variables.tf:109`、`terraform/pipeline/analytics/locals.tf:1-10`、`agent/evidence.py:3,5`）
-- [x] `terraform/agent/kb.tf` の kb_index のロールにネットワークの境界の条件を付ける（ほかのロールにはあって、これだけ無い。2026-10-08 の docs 同期で見つけた）（2026-10-08 完了。fix/kb-index-firehose。KB のロールはサービス側の例外なので付けない。AWS では未確認）
-- [x] status の Lambda の Firehose の待ちを AZ の数に合わせる（`terraform/pipeline/graph/sync.tf:125` と `graph/status_handler.py:23-24` のコメントは 1 AZ = 15.6 秒の `ops/up.sh:421-423` と合っていない）（2026-10-08 完了。fix/kb-index-firehose。timeout と CONFIG は変えずコメントを 1 / 2 / 3 AZ の秒数に直し、test_sync が up.sh の式と突き合わせる）
+- [x] `ops/up.sh` が取る jar（`JAR_URLS` 6 本）のハッシュを照合する（`docker/images/spark/Dockerfile` と compose の分は 2026-10-08 に済んだ）（2026-10-08 完了。fix/up-jar-hash。前の版の jar は jars/ と S3 から消す。S3 の `--delete` は AWS で未確認）
+- [x] `.env.example` と `ops/up.sh` と terraform のコメントの古い記述を直す（2026-10-08 完了。fix/stale-comments。コメントと description だけで動作は変えていない。2026-10-08 の docs 同期で見つけた、コードの側の食い違い: `.env.example:140` の SNMP_POLL の既定、`ops/up.sh:445` の docker の要る先に kafka-ui が無い、`ops/up.sh` の mdt・NEED_AOSS・SINK_*/GRAFANA の古いコメント、`IaC/terraform/aws-managed/base/core/endpoints.tf:27`・`perimeter.tf:4-6`・`outputs.tf:58`、`IaC/terraform/aws-managed/pipeline/stream/variables.tf:109`、`IaC/terraform/aws-managed/pipeline/analytics/locals.tf:1-10`、`app/agentcore/evidence.py:3,5`）
+- [x] `IaC/terraform/aws-managed/agent/kb.tf` の kb_index のロールにネットワークの境界の条件を付ける（ほかのロールにはあって、これだけ無い。2026-10-08 の docs 同期で見つけた）（2026-10-08 完了。fix/kb-index-firehose。KB のロールはサービス側の例外なので付けない。AWS では未確認）
+- [x] status の Lambda の Firehose の待ちを AZ の数に合わせる（`IaC/terraform/aws-managed/pipeline/graph/sync.tf:125` と `app/graph/status_handler.py:23-24` のコメントは 1 AZ = 15.6 秒の `ops/up.sh:421-423` と合っていない）（2026-10-08 完了。fix/kb-index-firehose。timeout と CONFIG は変えずコメントを 1 / 2 / 3 AZ の秒数に直し、test_sync が up.sh の式と突き合わせる）
 - [ ] 手元の compose の構成のスライドを作る（006 のあと。マネージド版・OSS 版は 2026-10-08 に作った）
-- [ ] Grafana の trap ルールの terms の size か時間の幅を直す（`grafana/provisioning/alerting/netops-opensearch.yaml` の `nwc-trap` が Grafana 13.2.2 で `bucket budget out of bounds: ... up to 13600 buckets` になり、起動からずっと `Normal (Error)` で Grafana 側の trap のアラートが出ない。Splunk 側は通る。2026-10-08 のマネージド版の AWS 検証で見つけた。`docs/verification/20261008-managed-aws.md`）
+- [ ] Grafana の trap ルールの terms の size か時間の幅を直す（`app/grafana/provisioning/alerting/netops-opensearch.yaml` の `nwc-trap` が Grafana 13.2.2 で `bucket budget out of bounds: ... up to 13600 buckets` になり、起動からずっと `Normal (Error)` で Grafana 側の trap のアラートが出ない。Splunk 側は通る。2026-10-08 のマネージド版の AWS 検証で見つけた。`docs/verification/20261008-managed-aws.md`）
 - [ ] graph-status の Lambda が Neptune の `ConflictException` を関数の中でやり直す（同じ秒に resolved が 2 件届くと ExecuteQuery が concurrent operations で落ち、Lambda の非同期の再試行で 54 秒後に反映された。データは失われない。2026-10-08 のマネージド版の AWS 検証で見つけた）
 - [ ] 消えたことの確認と残った VPC の扱いを docs に合わせる（`docs/deploy.md:117` と `docs/troubleshooting.md:102` の「数時間おいて down.sh を打ち直す」は誰も打たず VPC が 3 日残った → 「残っても無料。次の up.sh が使い回す」を既定にする。`docs/deploy.md:38` の KEEP_ECR「月数円」は実測 7.39 GB ≈ 110 円/月。down.sh の最後のタグ API の一覧は何日も前に消えた EMR まで 189 件出るので、消えたかはサービスごとの API で見ると書く。2026-10-08 のマネージド版の AWS 検証で見つけた）
 - [x] `ops/check.sh` の `bash -n` を 1 ファイルずつ打つ（`bash -n a b c` は a しか見ず、b と c は位置引数になる。2026-10-08 に 006 の実装で見つけた。`tests/test_oss.py` の `^bash -n` の正規表現も合わせる）（2026-10-08 完了。fix/local-compose-r2）
 - [ ] `docs/development.md` のテストの本数を数え直す（006 で `tests/test_local_compose.py` が増えた）
 - [ ] Telegraf の health（8080/tcp）と MDT（57000/tcp）のポートを環境変数で変えられるようにする（手元の compose は host ネットワークなので host のほかのプロセスとぶつかる。2026-10-08 に 006 の実装で固定値と確かめた。design.md の未確定事項 6）
-- [ ] containerlab が作る `lab/clab-*/` を `.gitignore` に入れる（手元で `lab.sh up` すると root の持ち物の `lab/clab-splab/` が `git status` に出る。2026-10-08 に 006 の実装で見つけた）
+- [ ] containerlab が作る `app/containerlab/clab-*/` を `.gitignore` に入れる（手元で `lab.sh up` すると root の持ち物の `app/containerlab/clab-splab/` が `git status` に出る。2026-10-08 に 006 の実装で見つけた）
 - [ ] 手元の Telegraf の受け口（8080 / 57000 / 1162 / 5140）を lab の管理ネットと 127.0.0.1 からだけ受ける（host ネットワークなので全部のインターフェースで待ち、WSL の外から偽の trap や syslog を入れられる。2026-10-08 に 006 のセルフレビュー S3 で見つけた。README には書いた）
 - [ ] 手元の `check.sh` で trap と Kafka のメッセージ数まで見る（今はトピックの有無だけで、トピックは Spark が起動のときに作るので Telegraf から届いた証拠にならない。trap は `fail-main` / `trap-test` で人が見る。2026-10-08 に 006 のセルフレビュー S4 で見つけた。README には書いた）
 - [ ] 手元の Prometheus が spark-http の追い付きで逆順のサンプルを捨てないか確かめる（`out_of_order_time_window` が無い。2026-10-08 に 006 のセルフレビュー U1。未確認）
 - [ ] 手元の Splunk のアプリを作り直したとき splunk-etc の volume に写るか確かめる（写らないなら `down.sh -v` まで古いアプリのまま。2026-10-08 に 006 のセルフレビュー U2。未確認）
-- [ ] 手元の `check.sh` と `local/compose/lab.sh` の `.env` の読み方を compose に合わせる（行末の `# メモ`・CRLF・`export` を読み違える。2026-10-08 に 006 のセルフレビュー N1）
+- [ ] 手元の `check.sh` と `docker/compose/lab.sh` の `.env` の読み方を compose に合わせる（行末の `# メモ`・CRLF・`export` を読み違える。2026-10-08 に 006 のセルフレビュー N1）
 - [x] 手元の `check.sh` で Splunk の認証の失敗を「0 件」と分けて出す（401 の応答も `NG Splunk: 0 件` になる。2026-10-08 に 006 のセルフレビュー N2）（2026-10-08 完了。fix/local-compose-r2。messages の FATAL / ERROR はその理由、result が無ければ「result が無い」と出す。本物の Splunk の 401 は未確認）
-- [ ] `lab/lab.sh` の `fail-main` と `heal-bgp` の案内を手元でも合うようにする（EC2 の `lab` コマンドを案内する。2026-10-08 に 006 のセルフレビュー N3）
-- [ ] `lab/lab.sh render` の表示をイメージ名にする（`REGISTRY` が無い手元では「イメージは ?」と出る。2026-10-08 に 006 のセルフレビューの Nit）
-- [ ] `ops/check.sh` の 3 で追跡している `.sh` を全部 `bash -n` する（いまは並べた 19 本だけで、`ops/sync-graph.sh`・`telegraf/telegraf.sh`・`splunk/entrypoint.sh`・`grafana/start.sh`・`neo4j/entrypoint.sh`・`oss/compose/check-*.sh` の 8 本が漏れる。テストは本体の `set -e` を前提にしていて、`bash -n a b` の行が後から足されても見ない。2026-10-08 に 006 の Round 2 のセルフレビュー N1 / N2 / N5）
+- [ ] `app/containerlab/lab.sh` の `fail-main` と `heal-bgp` の案内を手元でも合うようにする（EC2 の `lab` コマンドを案内する。2026-10-08 に 006 のセルフレビュー N3）
+- [ ] `app/containerlab/lab.sh render` の表示をイメージ名にする（`REGISTRY` が無い手元では「イメージは ?」と出る。2026-10-08 に 006 のセルフレビューの Nit）
+- [ ] `ops/check.sh` の 3 で追跡している `.sh` を全部 `bash -n` する（いまは並べた 19 本だけで、`ops/sync-graph.sh`・`app/telegraf/telegraf.sh`・`app/splunk/entrypoint.sh`・`app/grafana/start.sh`・`app/neo4j/entrypoint.sh`・`oss/compose/check-*.sh` の 8 本が漏れる。テストは本体の `set -e` を前提にしていて、`bash -n a b` の行が後から足されても見ない。2026-10-08 に 006 の Round 2 のセルフレビュー N1 / N2 / N5）
 - [ ] 手元の `check.sh` の Splunk の理由を重複なし・長さの上限つき・1 行にする（同じ `ERROR Unauthorized` が 30 件なら 598 字になり、text の改行で NG の行が割れる。2026-10-08 に 006 の Round 2 のセルフレビュー N4）
 - [ ] 手元の `check.sh` の Splunk の判定を本物の応答で確かめる（401 の本文の形と、件数があるのに messages に ERROR が混ざる応答が無いか。Mac ではイメージが amd64 だけで起動していない。2026-10-08 に 006 の Round 2 のセルフレビュー U1 / U2。未確認）
-- [ ] `oss/compose` と `local/compose` の kafka-ui の 18080 を分ける（同じ機械で並べて上げるなら。いまは並べる想定は無く、`oss/compose` を残すか消すかは 007 で決める。2026-10-08 に 006 の cold review Round 2 の Nit 2）
+- [ ] `oss/compose` と `docker/compose` の kafka-ui の 18080 を分ける（同じ機械で並べて上げるなら。いまは並べる想定は無く、`oss/compose` を残すか消すかは 007 で決める。2026-10-08 に 006 の cold review Round 2 の Nit 2）
 - [ ] 手元の compose の telegraf / spark の `restart: on-failure` に回数の上限を付ける（`docker compose` を直に打って `SNMP_AGENTS` が空だと再起動を繰り返す。2026-10-08 に 006 の cold review Round 2 の Nit 3）
-- [ ] `lab/lab.sh` の `hint` と `failover` の案内を実行で確かめるテストを足す（いまは正規表現で文言があるかだけ。`forward` には偽の iptables と sudo の実行の検査がある。2026-10-08 に 006 の cold review Round 2 の Nit 4）
+- [ ] `app/containerlab/lab.sh` の `hint` と `failover` の案内を実行で確かめるテストを足す（いまは正規表現で文言があるかだけ。`forward` には偽の iptables と sudo の実行の検査がある。2026-10-08 に 006 の cold review Round 2 の Nit 4）
 - [ ] `ops/down-common.sh` が Runtime の ENI を探す VPC を state から引く（`destroy_base_core` の 115〜116 行目が `describe-vpcs --filters Name=tag:Name` の `Vpcs[0]` を取るので、同じ名前の VPC が 2 つあると古い方を引き、Runtime の ENI を見落として base/core を全部消しにいく。2026-10-08 の OSS 版の AWS 検証では SG の削除の待ちを 3 回繰り返して rc=1、1 時間 41 分かかった。`docs/verification/20261008-oss-aws.md` の「不具合」5）
 - [ ] `oss/ops/roll-nodes.sh` を端末が無くても動くようにする（`aws ecs execute-command --interactive` が標準入力が端末でないと `Cannot perform start session: EOF` で切れ、`roll_health.py` は 5 分待って「入れ替える前から健全でない」で止まる。`[ -t 0 ]` を見て `script -q /dev/null` で包むか、案内して止める。docs の「Session Manager plugin が要る」に端末が要ることも足す。2026-10-08 の OSS 版の AWS 検証の「不具合」1 と「docs のずれ」5）
 - [ ] Neo4j を起こし直したあとの戻し方を 2 段で docs に書く（`ops/sync-graph.sh --oss` は物理層と IP 層を戻すが変更履歴は 0 件のままで、Nautobot の Job「Telegraf と Neptune に同期」を打って戻った。`ops/sync-graph.sh` の 10〜11 行目と `docs/oss-variant.md`。2026-10-08 の OSS 版の AWS 検証の「不具合」2 と「docs のずれ」4）
-- [x] `oss/terraform/base/ecr` の outputs を import の途中でも評価できるようにする（`aws_ecr_repository.pipeline["<key>"]` を直接引く 6 つの output が、state の無い ECR を 1 本ずつ import する途中で `Error: Invalid index` になる。`try()` にするか import の手順を `oss/ops/` に置く。2026-10-08 の OSS 版の AWS 検証の「不具合」3）（2026-10-08 完了。fix/oss-ecr-outputs-nautobot-job。実体はマネージド版の `terraform/base/ecr/outputs.tf`（`oss/terraform/base/ecr` はリンク）で、pipeline の 6 つを lab / workflow と同じく `try(..., "")` にした。`terraform validate` は通るが、import の途中の挙動は AWS では未確認）
+- [x] `IaC/terraform/oss/base/ecr` の outputs を import の途中でも評価できるようにする（`aws_ecr_repository.pipeline["<key>"]` を直接引く 6 つの output が、state の無い ECR を 1 本ずつ import する途中で `Error: Invalid index` になる。`try()` にするか import の手順を `oss/ops/` に置く。2026-10-08 の OSS 版の AWS 検証の「不具合」3）（2026-10-08 完了。fix/oss-ecr-outputs-nautobot-job。実体はマネージド版の `IaC/terraform/aws-managed/base/ecr/outputs.tf`（`IaC/terraform/oss/base/ecr` はリンク）で、pipeline の 6 つを lab / workflow と同じく `try(..., "")` にした。`terraform validate` は通るが、import の途中の挙動は AWS では未確認）
 - [x] Nautobot の JobHook の最初の変更履歴の detail を変わった値だけにする（prechange が無い機器の 1 件目が全部の項目を `asset_tag: - → -` と並べる。2026-10-08 の OSS 版の AWS 検証の「不具合」4）（2026-10-08 完了。fix/oss-ecr-outputs-nautobot-job。`nb_map.change_detail` が作成と削除は「作成」「削除」だけ、変更前の値が無い update は項目を並べず「変更前の値が無い…」と今の status を出す。AWS では未確認）
 - [x] Nautobot の Job の名前と `root_cause` の source の Neptune を OSS 版では Neo4j にする（Job「Telegraf と Neptune に同期」が OSS 版では Neo4j に書き、`root_cause` の source も `'neptune'` のまま。2026-10-08 の OSS 版の AWS 検証の「docs のずれ」3）（2026-10-08 完了。fix/oss-ecr-outputs-nautobot-job。名前は両方の版で「Telegraf とグラフ DB に同期」「変更のたびに Telegraf とグラフ DB に同期」にし、説明に書き先（Neptune / Neo4j）を出す。`root_cause` と `topology_graph` の source は `graph.BACKEND`（`neo4j` / `neo4j-empty`）。JobHook と bootstrap はクラスの場所で引くので外れない。AWS では未確認）
 - [ ] state を失ったときの VPC と ECR の扱いを docs に書く（state は up.sh を打った worktree にしか無く、worktree を消すと ECR は import が要り VPC は使い回されず新しく作られて溜まる。上の「消えたことの確認と残った VPC の扱いを docs に合わせる」と一緒に直す。2026-10-08 の OSS 版の AWS 検証の「docs のずれ」6）

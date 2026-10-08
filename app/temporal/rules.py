@@ -18,14 +18,14 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 
-# lab EC2 で打ってよいのはこれだけ（lab/lab.sh のサブコマンド）。エージェントが他を言っても none 扱いにする
+# lab EC2 で打ってよいのはこれだけ（app/containerlab/lab.sh のサブコマンド）。エージェントが他を言っても none 扱いにする
 ALLOWED_ACTIONS = {"heal-main": "sudo lab heal-main", "check": "sudo lab check"}
 NO_ACTION = "none"
 JST = timezone(timedelta(hours=9))
 
 
 def jst(epoch) -> str:
-    """epoch 秒を日本時間の「2026-09-18 12:34:56」に（agent/toolkit.py の jst と同じ形）。空や 0 なら空文字"""
+    """epoch 秒を日本時間の「2026-09-18 12:34:56」に（app/agentcore/toolkit.py の jst と同じ形）。空や 0 なら空文字"""
     return datetime.fromtimestamp(int(epoch), JST).strftime("%Y-%m-%d %H:%M:%S") if epoch else ""
 
 
@@ -72,7 +72,7 @@ def normalize_action(action: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------- 事前チェック（処置を打つ前に、孤立と冗長切れを見る。2026-10-04）
-# 処置がトポロジをどう変えるか（lab/lab.sh のサブコマンドの中身）。処置を ALLOWED_ACTIONS に足すときはここにも足す（無い処置は「確認できず」になる）。
+# 処置がトポロジをどう変えるか（app/containerlab/lab.sh のサブコマンドの中身）。処置を ALLOWED_ACTIONS に足すときはここにも足す（無い処置は「確認できず」になる）。
 # いまの 2 つは回線を上げるか見るだけなので、孤立の警告は出ない。落とす処置（機器の再起動・回線の切り離し）を足したときに効く
 ACTION_CHANGES = {"heal-main": [{"op": "link_up", "target": "dc1-leaf-01#ethernet-1/1"}], "check": []}
 PRECHECK_JA = {"ok": "問題なし", "warn": "注意", "danger": "危険", "unknown": "確認できず"}
@@ -83,7 +83,7 @@ def impact(devices: list, links: list, changes: list) -> dict:
     devices = [{device_id, status}]、links = [{a, a_if, b, b_if, status}]、changes = [{op, target}]。
     op は link_down / link_up（target = <機器>#<IF>。どちらの端でもよい）か device_down / device_up（target = 機器名）。
     つながりは DOWN でない回線と機器だけで見て、いちばん大きいかたまりに入っていない機器を「孤立」とする。
-    agent/topology.py と workflow/rules.py に同じものを置く（ワーカーのイメージには agent/ が入らない。tests/test_workflow.py が一致を検査）"""
+    app/agentcore/topology.py と app/temporal/rules.py に同じものを置く（ワーカーのイメージには app/agentcore/ が入らない。tests/test_workflow.py が一致を検査）"""
     dev_down = {d["device_id"] for d in devices if (d.get("status") or "UP") == "DOWN"}
     link_down = {n for n, l in enumerate(links) if (l.get("status") or "UP") == "DOWN"}
     ids = {d["device_id"] for d in devices}
@@ -165,11 +165,11 @@ def precheck(action: str, devices: list, links: list) -> dict:
 
 
 # ---------------------------------------------------------------- アラート（Grafana / Splunk → SNS → SQS）
-# SNS に publish する JSON は送り手（grafana/provisioning/alerting と splunk/netops_alerts）で形を揃えてある:
+# SNS に publish する JSON は送り手（app/grafana/provisioning/alerting と app/splunk/netops_alerts）で形を揃えてある:
 #   {"source": "grafana" | "splunk",
 #    "alerts": [{"status": "firing" | "resolved", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1",
 #                "detail": "ethernet-1/1 is down", "starts_at": 1790000000}]}
-# 同じ形を graph/status_handler.py（トポロジの status を書く Lambda）も読む。形を変えるときは 4 か所を一緒に変える
+# 同じ形を app/graph/status_handler.py（トポロジの status を書く Lambda）も読む。形を変えるときは 4 か所を一緒に変える
 ALERT_STATUSES = ("firing", "resolved")
 # ワークフローを起こす異常の種類。trap（linkDown / linkUp 以外の通知）は「見えた」印で、打つ処置も無いので起こさない
 START_KINDS = {"link_down"}
@@ -275,7 +275,7 @@ def proposal_id(anomaly_id: str, first_seen) -> str:
 # ---------------------------------------------------------------- 修復案（S3 Tables の proposal_events。2026-09-24、全項目の行にしたのは 2026-10-05）
 # 修復案の置き場はこのテーブルだけ（Neptune の頂点 proposal は 2026-10-05 にやめた）。どの行も修復案の全項目を持ち、
 # 修復案の「いま」は proposal_id ごとに seq が最大の行（event_time は秒なので順番に使わない）。
-# 列は terraform/pipeline/analytics/tables.tf の proposal_events と同じ順・同じ型。時刻は epoch 秒で組み、awsio が書くときに tz 付きにする
+# 列は IaC/terraform/aws-managed/pipeline/analytics/tables.tf の proposal_events と同じ順・同じ型。時刻は epoch 秒で組み、awsio が書くときに tz 付きにする
 PROPOSAL_EVENT_COLUMNS = (
     ("event_id", "string"), ("proposal_id", "string"), ("anomaly_id", "string"), ("seq", "int"), ("event", "string"),
     ("status", "string"), ("device_id", "string"), ("kind", "string"), ("target", "string"), ("first_seen", "timestamptz"),
@@ -345,7 +345,7 @@ def _seq(v) -> int:
 
 def latest_proposals(rows: list) -> dict:
     """proposal_events の行の list を {proposal_id: 最新の行} にする。最新は seq が最大の行（同じ seq が再試行で 2 つあれば event_time が遅いほう。
-    agent/proposals.py の Athena のクエリと同じ並べ方）"""
+    app/agentcore/proposals.py の Athena のクエリと同じ並べ方）"""
     out = {}
     for r in rows:
         pid = str(r.get("proposal_id") or "")
@@ -378,8 +378,8 @@ def decision_from_message(body: str, now: int = 0) -> dict | None:
 
 
 # ---------------------------------------------------------------- アラートの通知の履歴（S3 Tables の alert_events。2026-10-04）
-# 書くのは terraform/pipeline/graph の status Lambda（graph/status_handler.py）で、Firehose → S3 Tables。読むのはエージェントの query_history（Athena）。
-# 列は terraform/pipeline/analytics/tables.tf の alert_events と同じ順・同じ型。時刻は ISO 8601 の UTC で送り、Firehose が timestamptz にする
+# 書くのは IaC/terraform/aws-managed/pipeline/graph の status Lambda（app/graph/status_handler.py）で、Firehose → S3 Tables。読むのはエージェントの query_history（Athena）。
+# 列は IaC/terraform/aws-managed/pipeline/analytics/tables.tf の alert_events と同じ順・同じ型。時刻は ISO 8601 の UTC で送り、Firehose が timestamptz にする
 ALERT_EVENT_COLUMNS = (
     ("event_id", "string"), ("anomaly_id", "string"), ("source", "string"), ("status", "string"), ("device_id", "string"),
     ("kind", "string"), ("target", "string"), ("detail", "string"), ("starts_at", "timestamptz"), ("received_at", "timestamptz"),

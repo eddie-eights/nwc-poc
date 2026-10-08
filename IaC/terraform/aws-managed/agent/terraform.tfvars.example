@@ -1,7 +1,7 @@
 # Copy to terraform.tfvars only when the defaults are not right. Every value except owner has a default in variables.tf.
 # ops/up.sh passes owner / agent_image_tag / create_knowledge_base with -var
 # (from OWNER in deploy.env), so set them there rather than here when you run ops/up.sh.
-# region / owner must be the same values as terraform/base/core.
+# region / owner must be the same values as IaC/terraform/aws-managed/base/core.
 # owner is the name of the person who deploys this copy and is REQUIRED: it has no default, so terraform asks for it
 # unless you uncomment the line below (with your own name), export TF_VAR_owner or pass -var owner=<name>.
 # Resource names and the Project tag become <owner>-nwc-poc (up to 14 lowercase letters, digits and single hyphens),
@@ -11,7 +11,7 @@
 # owner       = "yamada"
 #
 # agent_image_tag = "v1"
-# agent_image_uri = ""             # leave empty to use the terraform/base/ecr repository
+# agent_image_uri = ""             # leave empty to use the IaC/terraform/aws-managed/base/ecr repository
 # runtime_name    = ""             # leave empty to derive it from the prefix (owner yamada -> yamada_nwc_poc_agent)
 # model_id        = "jp.amazon.nova-2-lite-v1:0"
 #

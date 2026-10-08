@@ -25,8 +25,8 @@ resource "aws_iam_role_policy_attachment" "web_ssm" {
 }
 
 # 画面のコード・静的データ・wheel は同じバケットの web/ に置く（ops/up.sh の手順 4）。docs/ は読ませない。
-# Runtime の ARN は terraform/agent が /<接頭辞>/runtime-arn に書き、web/app.py が 60 秒ごとに読む（agent を後から入れ替えても再起動が要らない）。
-# InvokeAgentRuntime の許可は terraform/agent がこのロールに足す
+# Runtime の ARN は IaC/terraform/aws-managed/agent が /<接頭辞>/runtime-arn に書き、app/dashboard/app.py が 60 秒ごとに読む（agent を後から入れ替えても再起動が要らない）。
+# InvokeAgentRuntime の許可は IaC/terraform/aws-managed/agent がこのロールに足す
 resource "aws_iam_role_policy" "web_assets" {
   name = "web-assets"
   role = aws_iam_role.web.id
@@ -74,9 +74,9 @@ resource "aws_instance" "web" {
   vpc_security_group_ids      = [aws_security_group.workload["web"].id]
   associate_public_ip_address = false
 
-  # graph_backend: OSS 版（oss/terraform、cycle 005）だけ neo4j。Web の環境変数に GRAPH_BACKEND=neo4j を足し、agent/graph.py が
-  # Neptune の代わりに Neo4j を読む（URI とパスワードは SSM の neo4j-uri / neo4j-password。oss/terraform/pipeline/graph）。
-  # 依存は web/requirements-oss.txt（マネージド版の依存 + Neo4j のドライバ）で入れる。
+  # graph_backend: OSS 版（IaC/terraform/oss、cycle 005）だけ neo4j。Web の環境変数に GRAPH_BACKEND=neo4j を足し、app/agentcore/graph.py が
+  # Neptune の代わりに Neo4j を読む（URI とパスワードは SSM の neo4j-uri / neo4j-password。IaC/terraform/oss/pipeline/graph）。
+  # 依存は app/dashboard/requirements-oss.txt（マネージド版の依存 + Neo4j のドライバ）で入れる。
   # マネージド版は空で、テンプレートはどちらも出さない（user_data は前と 1 文字も変わらず、インスタンスも作り直さない）。
   # テンプレートの中に説明を書かないのは、コメントも user_data に入って、マネージド版のインスタンスが作り直されるから
   user_data = templatefile("${path.module}/templates/web_user_data.sh.tftpl", {

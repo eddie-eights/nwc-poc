@@ -1,15 +1,15 @@
-"""手元の docker compose で動く構成（local/compose。docs/cycles/006-local-compose/design.md）が、元にした定義からずれていないかを見る。
+"""手元の docker compose で動く構成（docker/compose。docs/cycles/006-local-compose/design.md）が、元にした定義からずれていないかを見る。
 - 版: Kafka / Kafbat UI / OpenSearch は oss/compose/compose.yaml、Telegraf と lab のイメージは ops/lab-common.sh、Grafana / Splunk は ops/up-common.sh と同値
-- 契約: Telegraf は telegraf/telegraf.sh render が通る環境、Spark は spark/snmp_sinks.py の parse_args が通る引数、check.sh が見る名前は実物の定義にある
-- lab/lab.sh: REGISTRY が無ければ ECR に触らずに pull、TELEGRAF_LOCAL=1 なら trap の REDIRECT だけ（デバッグ用の EC2 と同じ）。偽の docker / aws / iptables / sudo で動かす
-- local/compose/*.sh: up.sh が lab の値を環境で渡す、lab.sh が 3 つだけを sudo に渡す、check.sh が全部見てから終わりパスワードを引数に載せない
+- 契約: Telegraf は app/telegraf/telegraf.sh render が通る環境、Spark は app/spark/snmp_sinks.py の parse_args が通る引数、check.sh が見る名前は実物の定義にある
+- app/containerlab/lab.sh: REGISTRY が無ければ ECR に触らずに pull、TELEGRAF_LOCAL=1 なら trap の REDIRECT だけ（デバッグ用の EC2 と同じ）。偽の docker / aws / iptables / sudo で動かす
+- docker/compose/*.sh: up.sh が lab の値を環境で渡す、lab.sh が 3 つだけを sudo に渡す、check.sh が全部見てから終わりパスワードを引数に載せない
 実行は uv run --group dev python tests/test_local_compose.py（pyyaml を使う。AWS も docker も要らない）。"""
 import glob, importlib.util, io, json, os, re, shutil, subprocess, sys, tempfile
 
 import yaml
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-LC = os.path.join(ROOT, "local", "compose")
+LC = os.path.join(ROOT, "docker", "compose")
 
 passed = 0
 def check(name, cond):
@@ -30,16 +30,16 @@ def env_file(text):  # .env の KEY=値（コメントと空行は飛ばす）
     return dict(l.split("=", 1) for l in text.splitlines() if l and not l.startswith("#") and "=" in l)
 
 
-compose = yaml.safe_load(read("local", "compose", "compose.yaml"))
+compose = yaml.safe_load(read("docker", "compose", "compose.yaml"))
 svc = compose["services"]
 oss = yaml.safe_load(read("oss", "compose", "compose.yaml"))["services"]
 lab_common, up_common = read("ops", "lab-common.sh"), read("ops", "up-common.sh")
-example = env_file(read("local", "compose", ".env.example"))
-lab_sh = read("lab", "lab.sh")
+example = env_file(read("docker", "compose", ".env.example"))
+lab_sh = read("app", "containerlab", "lab.sh")
 
 # up.sh が lab の定義から作って環境で渡す 3 つ（AWS 版の ops/up.sh と同じ作り方）
 def topology(flag):
-    return subprocess.run([sys.executable, os.path.join(ROOT, "lab", "lab_topology.py"), os.path.join(ROOT, "lab"), flag],
+    return subprocess.run([sys.executable, os.path.join(ROOT, "app", "containerlab", "lab_topology.py"), os.path.join(ROOT, "app", "containerlab"), flag],
                           capture_output=True, text=True, check=True).stdout.strip()
 UP_ENV = {"SNMP_AGENTS": topology("--snmp-agents"), "GNMI_TARGETS": topology("--gnmi-targets"), "DEVICE_MAP": topology("--device-map")}
 
@@ -58,8 +58,12 @@ check("プロジェクト名は nwc-local（ディレクトリ名の compose に
       compose["name"] == "nwc-local" and yaml.safe_load(read("oss", "compose", "compose.yaml"))["name"] != "nwc-local")
 check("compose の ports は全部 127.0.0.1 に縛る（Kafka・Splunk・Grafana・OpenSearch を WSL の外へ出さない。host のネットワークにいる Telegraf の 4 つはこの外）",
       all(p.startswith("127.0.0.1:") for s in svc.values() for p in s.get("ports", [])))
-check("telegraf は network_mode: host で、build の context は ../../telegraf",
-      svc["telegraf"]["network_mode"] == "host" and svc["telegraf"]["build"]["context"] == "../../telegraf" and "ports" not in svc["telegraf"])
+def built(n, name):  # compose の build が app/<name> を context に、docker/images/<name>/Dockerfile を dockerfile にしていて、その Dockerfile が実在する
+    b = svc[n]["build"]
+    return (isinstance(b, dict) and b.get("context") == f"../../app/{name}" and b.get("dockerfile") == f"../../docker/images/{name}/Dockerfile"
+            and os.path.isfile(os.path.join(LC, b["context"], b["dockerfile"])))
+check("telegraf は network_mode: host で、build の context は ../../app/telegraf、dockerfile は ../../docker/images/telegraf/Dockerfile（context からの相対）",
+      svc["telegraf"]["network_mode"] == "host" and built("telegraf", "telegraf") and "ports" not in svc["telegraf"])
 
 # ---- 2. 版の正
 for n in ("kafka-1", "kafka-2", "kafka-3"):
@@ -70,7 +74,7 @@ check("opensearch の image は oss/compose の opensearch-1 と同じ", svc["op
 check("grafana の GRAFANA_VERSION と splunk の SPLUNK_VERSION は ops/up-common.sh の値",
       svc["grafana"]["build"]["args"]["GRAFANA_VERSION"] == sh_const(up_common, "GRAFANA_VERSION")
       and svc["splunk"]["build"]["args"]["SPLUNK_VERSION"] == sh_const(up_common, "SPLUNK_VERSION")
-      and svc["grafana"]["build"]["context"] == "../../grafana" and svc["splunk"]["build"]["context"] == "../../splunk")
+      and built("grafana", "grafana") and built("splunk", "splunk"))
 check("telegraf の TELEGRAF_VERSION は ops/lab-common.sh の値",
       svc["telegraf"]["build"]["args"]["TELEGRAF_VERSION"] == sh_const(lab_common, "TELEGRAF_VERSION"))
 check(".env.example の SRLINUX_IMAGE / MULTITOOL_IMAGE は ops/lab-common.sh の upstream:tag",
@@ -93,7 +97,7 @@ for i, n in enumerate(("kafka-1", "kafka-2", "kafka-3")):
 check("トピックは自動で作る（Telegraf が最初に書く）",
       all(svc[n]["environment"]["KAFKA_AUTO_CREATE_TOPICS_ENABLE"] == "true" for n in ("kafka-1", "kafka-2", "kafka-3")))
 
-# ---- 4. Telegraf: 環境は telegraf/telegraf.sh の契約どおり。up.sh の値を入れると render が通り、出力は host の EXTERNAL の 3 つ
+# ---- 4. Telegraf: 環境は app/telegraf/telegraf.sh の契約どおり。up.sh の値を入れると render が通り、出力は host の EXTERNAL の 3 つ
 _tg = svc["telegraf"]["environment"]
 check("telegraf の KAFKA_BROKERS は 3 台の EXTERNAL（localhost:9094-9096）、KAFKA_AUTH=none、SYSLOG_STANDARD は ops/lab-common.sh の LAB_SYSLOG_STANDARD",
       _tg["KAFKA_BROKERS"] == "localhost:9094,localhost:9095,localhost:9096" and _tg["KAFKA_AUTH"] == "none" and _tg["SINK"] == "kafka"
@@ -104,10 +108,10 @@ check("telegraf の GNMI_USERNAME / GNMI_PASSWORD / SNMP_COMMUNITY は ops/lab-c
 
 def tg_render(env):
     with tempfile.TemporaryDirectory() as d:
-        e = {"PATH": os.environ["PATH"], "TELEGRAF_TEMPLATE": os.path.join(ROOT, "telegraf", "telegraf.conf.in"),
+        e = {"PATH": os.environ["PATH"], "TELEGRAF_TEMPLATE": os.path.join(ROOT, "app", "telegraf", "telegraf.conf.in"),
              "TELEGRAF_CONF": os.path.join(d, "telegraf.conf")}
         e.update({k: subst(str(v), env) for k, v in _tg.items()})
-        r = subprocess.run(["bash", os.path.join(ROOT, "telegraf", "telegraf.sh"), "render"], capture_output=True, text=True, env=e)
+        r = subprocess.run(["bash", os.path.join(ROOT, "app", "telegraf", "telegraf.sh"), "render"], capture_output=True, text=True, env=e)
         conf = open(e["TELEGRAF_CONF"], encoding="utf-8").read() if r.returncode == 0 else ""
         return r, conf
 
@@ -117,10 +121,10 @@ check("up.sh の値を入れた telegraf の環境で telegraf.sh render が通�
       and "sasl_mechanism" not in _conf and "203.0.113." in _conf)
 check("docker compose を直に打つ（SNMP_AGENTS が空）と telegraf.sh は形の検査で止まる（compose.yaml の頭の注意のとおり。up.sh から上げる）",
       tg_render({})[0].returncode != 0)
-_topics = set(re.findall(r'^\s*topic = "(\w+)"', read("telegraf", "telegraf.conf.in"), re.M))
+_topics = set(re.findall(r'^\s*topic = "(\w+)"', read("app", "telegraf", "telegraf.conf.in"), re.M))
 
 # ---- 5. Spark: 1 イメージから 2 サービス。引数は snmp_sinks.py の parse_args が受ける
-spec = importlib.util.spec_from_file_location("snmp_sinks", os.path.join(ROOT, "spark", "snmp_sinks.py"))
+spec = importlib.util.spec_from_file_location("snmp_sinks", os.path.join(ROOT, "app", "spark", "snmp_sinks.py"))
 sinks = importlib.util.module_from_spec(spec); sys.modules["snmp_sinks"] = sinks; spec.loader.exec_module(sinks)
 
 def with_env(env, f):
@@ -149,8 +153,8 @@ def spark_args(name, drop_env=()):
 
 for n in ("spark-splunk", "spark-http"):
     c = svc[n]["command"]
-    check(f"{n}: spark/Dockerfile の同じイメージ、KAFKA_AUTH=none（PLAINTEXT）、--checkpoint は volume の下、iceberg が無い",
-          svc[n]["build"] == "../../spark" and svc[n]["image"] == "nwc-local-spark" and svc[n]["environment"]["KAFKA_AUTH"] == "none"
+    check(f"{n}: docker/images/spark/Dockerfile の同じイメージ、KAFKA_AUTH=none（PLAINTEXT）、--checkpoint は volume の下、iceberg が無い",
+          built(n, "spark") and svc[n]["image"] == "nwc-local-spark" and svc[n]["environment"]["KAFKA_AUTH"] == "none"
           and c[c.index("--checkpoint") + 1] == "file:///opt/spark/work-dir/checkpoint" and "--sinks" in c
           and svc[n]["volumes"] == [f"{n}-ckpt:/opt/spark/work-dir"] and not any("iceberg" in str(a) for a in c))
 _a = spark_args("spark-splunk")
@@ -177,7 +181,7 @@ check("opensearch は single-node、HTTP の TLS を切る（Spark と Grafana �
 check("prometheus は remote write を受け、設定は prometheus.yml（scrape なし）",
       "--web.enable-remote-write-receiver" in svc["prometheus"]["command"]
       and "./prometheus.yml:/etc/prometheus/prometheus.yml:ro" in svc["prometheus"]["volumes"]
-      and "scrape_configs" not in read("local", "compose", "prometheus.yml"))
+      and "scrape_configs" not in read("docker", "compose", "prometheus.yml"))
 _gf = svc["grafana"]["environment"]
 check("grafana は PROMETHEUS_AUTH=none / OPENSEARCH_AUTH=basic で、URL は compose の中の prometheus と opensearch、ALERTS_TOPIC_ARN は渡さない",
       _gf["PROMETHEUS_AUTH"] == "none" and _gf["OPENSEARCH_AUTH"] == "basic" and _gf["PROMETHEUS_URL"] == "http://prometheus:9090"
@@ -187,26 +191,26 @@ check("Spark が書く OpenSearch のインデックスと Grafana が読むイ�
 check("splunk の HEC の token は spark-splunk と同じ .env の値", svc["splunk"]["environment"]["SPLUNK_HEC_TOKEN"] == svc["spark-splunk"]["environment"]["SPLUNK_HEC_TOKEN"])
 
 # ---- 7. 設定（.env.example）と compose の ${VAR}
-_vars = set(re.findall(r"\$\{(\w+)", read("local", "compose", "compose.yaml")))
+_vars = set(re.findall(r"\$\{(\w+)", read("docker", "compose", "compose.yaml")))
 check(".env.example のキーは design.md の 7 つ",
       set(example) == {"SPLUNK_PASSWORD", "SPLUNK_HEC_TOKEN", "OPENSEARCH_PASSWORD", "GF_SECURITY_ADMIN_PASSWORD", "SRLINUX_IMAGE", "MULTITOOL_IMAGE", "AWS_REGION"})
 check("compose.yaml の ${VAR} は全部 .env.example のキーか up.sh が渡す 3 つ（SNMP_AGENTS / GNMI_TARGETS / DEVICE_MAP）",
       _vars and _vars <= set(example) | set(UP_ENV))
 check("SPLUNK_HEC_TOKEN は uuid の形（Splunk のイメージが作る HEC の token。ops/up.sh と同じ形）",
       re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", example["SPLUNK_HEC_TOKEN"]) is not None)
-check("local/compose/.env は git に入らず、.env.example は入る",
-      subprocess.run(["git", "check-ignore", "-q", "local/compose/.env"], cwd=ROOT).returncode == 0
-      and subprocess.run(["git", "check-ignore", "-q", "local/compose/.env.example"], cwd=ROOT).returncode == 1)
-check("local/ の下に .py が無い（ops/check.sh の ast.parse の対象だが、置かない）",
-      not [f for _, _, fs in os.walk(os.path.join(ROOT, "local")) for f in fs if f.endswith(".py")])
+check("docker/compose/.env は git に入らず、.env.example は入る",
+      subprocess.run(["git", "check-ignore", "-q", "docker/compose/.env"], cwd=ROOT).returncode == 0
+      and subprocess.run(["git", "check-ignore", "-q", "docker/compose/.env.example"], cwd=ROOT).returncode == 1)
+check("docker/ の下に .py が無い（ops/check.sh の ast.parse の対象だが、置かない）",
+      not [f for _, _, fs in os.walk(os.path.join(ROOT, "docker")) for f in fs if f.endswith(".py")])
 SCRIPTS = ["up.sh", "down.sh", "check.sh", "lab.sh"]
-check("local/compose の 4 つと lab/lab.sh は実行できる（local/compose/lab.sh は ../../lab/lab.sh を直に呼び、lab.sh も自分を \"$SELF\" で呼ぶ）",
-      all(os.access(os.path.join(LC, s), os.X_OK) for s in SCRIPTS) and os.access(os.path.join(ROOT, "lab", "lab.sh"), os.X_OK))
-check("local/compose の 4 つと lab/lab.sh は 1 つずつ bash -n が通る（bash -n a b は a しか見ない）",
-      all(subprocess.run(["bash", "-n", p]).returncode == 0 for p in [os.path.join(LC, s) for s in SCRIPTS] + [os.path.join(ROOT, "lab", "lab.sh")]))
-check("ops/check.sh の bash -n（1 つずつ打つ for 文）に local/compose/*.sh、.py の find に local がある",
-      re.search(r'^for f in .* local/compose/\*\.sh; do bash -n "\$f"; done$', read("ops", "check.sh"), re.M) is not None
-      and re.search(r"^find .*\blocal\b.* -name '\*\.py'", read("ops", "check.sh"), re.M) is not None)
+check("docker/compose の 4 つと app/containerlab/lab.sh は実行できる（docker/compose/lab.sh は ../../app/containerlab/lab.sh を直に呼び、lab.sh も自分を \"$SELF\" で呼ぶ）",
+      all(os.access(os.path.join(LC, s), os.X_OK) for s in SCRIPTS) and os.access(os.path.join(ROOT, "app", "containerlab", "lab.sh"), os.X_OK))
+check("docker/compose の 4 つと app/containerlab/lab.sh は 1 つずつ bash -n が通る（bash -n a b は a しか見ない）",
+      all(subprocess.run(["bash", "-n", p]).returncode == 0 for p in [os.path.join(LC, s) for s in SCRIPTS] + [os.path.join(ROOT, "app", "containerlab", "lab.sh")]))
+check("ops/check.sh の bash -n（1 つずつ打つ for 文）に docker/compose/*.sh、.py の find に docker がある",
+      re.search(r'^for f in .* docker/compose/\*\.sh; do bash -n "\$f"; done$', read("ops", "check.sh"), re.M) is not None
+      and re.search(r"^find .*\bdocker\b.* -name '\*\.py'", read("ops", "check.sh"), re.M) is not None)
 # ops/check.sh の 3 の 1 行を、並んだファイルを写した木（中身は true）で打つ。1 つずつ構文エラー（if だけ）に替えて、どの位置でも落ちることを見る
 _s3 = re.search(r'^log "3\. .*\n(.*)\n', read("ops", "check.sh"), re.M).group(1)
 _s3_tmp = tempfile.mkdtemp()
@@ -226,7 +230,7 @@ def s3_run(bad=None):  # bad のファイルだけ構文エラーにして 3 の
             f.write("true\n")
     return r.returncode
 check(f"ops/check.sh の 3: 並んだ {len(_s3_files)} ファイルのどれか 1 つ（2 番目以降を含む）が構文エラーなら落ち、全部通れば 0（bash -n a b c は a しか見ず、b と c は位置引数になる）",
-      len(_s3_files) >= 19 and "local/compose/check.sh" in _s3_files and s3_run() == 0
+      len(_s3_files) >= 19 and "docker/compose/check.sh" in _s3_files and s3_run() == 0
       and [f for f in _s3_files if s3_run(f) == 0] == [])
 shutil.rmtree(_s3_tmp)
 
@@ -282,105 +286,106 @@ def run(cmd, **env):
     r = subprocess.run(cmd, env=e, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     return r, open(LOG, encoding="utf-8").read().splitlines()
 
-LAB = os.path.join(ROOT, "lab", "lab.sh")
+LAB = os.path.join(ROOT, "app", "containerlab", "lab.sh")
 SRL, MT = example["SRLINUX_IMAGE"], example["MULTITOOL_IMAGE"]
 PULLS = [f"docker pull -q {SRL}", f"docker pull -q {MT}"]
 REDIRECT = ("iptables -t nat -I PREROUTING 1 -s 203.0.113.0/24 -d 203.0.113.1 -p udp --dport 162 "
             "-m comment --comment nwc-lab-telegraf -j REDIRECT --to-ports 1162")
 
-# lab/lab.sh pull（design.md の lab の切り替え (1)）
+# app/containerlab/lab.sh pull（design.md の lab の切り替え (1)）
 _r, _c = run([LAB, "pull"], SRLINUX_IMAGE=SRL, MULTITOOL_IMAGE=MT)
-check("lab/lab.sh pull: REGISTRY が無ければ aws も docker login も打たず、2 つのイメージを docker pull するだけ", _r.returncode == 0 and _c == PULLS)
+check("app/containerlab/lab.sh pull: REGISTRY が無ければ aws も docker login も打たず、2 つのイメージを docker pull するだけ", _r.returncode == 0 and _c == PULLS)
 _r, _c = run([LAB, "pull"], SRLINUX_IMAGE=SRL, MULTITOOL_IMAGE=MT, REGISTRY="111122223333.dkr.ecr.ap-northeast-1.amazonaws.com", AWS_REGION="ap-northeast-1")
-check("lab/lab.sh pull: REGISTRY があれば（lab の EC2）今までどおり ECR に login してから pull する",
+check("app/containerlab/lab.sh pull: REGISTRY があれば（lab の EC2）今までどおり ECR に login してから pull する",
       _r.returncode == 0 and sorted(_c[:2]) + _c[2:] == ["aws ecr get-login-password --region ap-northeast-1",
                                     "docker login --username AWS --password-stdin 111122223333.dkr.ecr.ap-northeast-1.amazonaws.com"] + PULLS)
 _r, _c = run([LAB, "pull"], SRLINUX_IMAGE=SRL, MULTITOOL_IMAGE=MT, REGISTRY="111122223333.dkr.ecr.ap-northeast-1.amazonaws.com")
-check("lab/lab.sh pull: REGISTRY があって AWS_REGION が無ければ、今までどおり何も取らずに止まる", _r.returncode != 0 and _c == [])
+check("app/containerlab/lab.sh pull: REGISTRY があって AWS_REGION が無ければ、今までどおり何も取らずに止まる", _r.returncode != 0 and _c == [])
 
-# lab/lab.sh forward（(2)。手元とデバッグ用の EC2 は REDIRECT だけ、それ以外は stream の分岐で SSM を読む）
+# app/containerlab/lab.sh forward（(2)。手元とデバッグ用の EC2 は REDIRECT だけ、それ以外は stream の分岐で SSM を読む）
 _r, _c = run([LAB, "forward"], TELEGRAF_LOCAL="1")
-check("lab/lab.sh forward: TELEGRAF_LOCAL=1 なら aws を打たず、trap の 162 → 1162 の REDIRECT を 1 本だけ入れ、案内は「compose の Telegraf へ」",
+check("app/containerlab/lab.sh forward: TELEGRAF_LOCAL=1 なら aws を打たず、trap の 162 → 1162 の REDIRECT を 1 本だけ入れ、案内は「compose の Telegraf へ」",
       _r.returncode == 0 and [c for c in _c if " -I " in c] == [REDIRECT] and not [c for c in _c if c.startswith("aws")]
       and "compose の Telegraf へ: trap 162/udp を 1162/udp へ向けた" in _r.stdout)
 _r, _c = run([LAB, "forward"], TELEGRAF_IMAGE="111122223333.dkr.ecr.ap-northeast-1.amazonaws.com/nwc-telegraf:1")
-check("lab/lab.sh forward: TELEGRAF_IMAGE（デバッグ用の EC2）は今までどおり同じ REDIRECT で、案内は「この EC2 の Telegraf へ」",
+check("app/containerlab/lab.sh forward: TELEGRAF_IMAGE（デバッグ用の EC2）は今までどおり同じ REDIRECT で、案内は「この EC2 の Telegraf へ」",
       _r.returncode == 0 and [c for c in _c if " -I " in c] == [REDIRECT] and "この EC2 の Telegraf へ" in _r.stdout)
 _r, _c = run([LAB, "forward"], TELEGRAF_LOCAL="0")
-check("lab/lab.sh forward: TELEGRAF_LOCAL が 1 でなければ stream の分岐（AWS_REGION が要る）へ行き、REDIRECT を入れない",
+check("app/containerlab/lab.sh forward: TELEGRAF_LOCAL が 1 でなければ stream の分岐（AWS_REGION が要る）へ行き、REDIRECT を入れない",
       _r.returncode != 0 and not [c for c in _c if " -I " in c])
 
 # hint（(2)。障害を入れたあとにどこを見るか）は関数を切り出して呼ぶ
 _fn = re.search(r"^local_telegraf\(\).*?^}\n", lab_sh, re.S | re.M).group(0)
 def hint(**env):
     return run(["bash", "-c", f"FW_TAG=nwc-lab-telegraf\n{_fn}hint 'EC2 の文' 'stream の文'"], **env)[0].stdout
-check("lab/lab.sh hint: TELEGRAF_LOCAL=1 なら compose の Grafana と Splunk を案内し、TELEGRAF_IMAGE と stream と転送なしの案内は変わらない",
+check("app/containerlab/lab.sh hint: TELEGRAF_LOCAL=1 なら compose の Grafana と Splunk を案内し、TELEGRAF_IMAGE と stream と転送なしの案内は変わらない",
       "compose の Telegraf: 数分で Grafana（:3000）と Splunk（:8000）" in hint(TELEGRAF_LOCAL="1")
       and hint(TELEGRAF_IMAGE="x") == "  この EC2 の Telegraf: EC2 の文\n"
       and hint(FAKE_IPT_RULES="-A PREROUTING -m comment --comment nwc-lab-telegraf -j DNAT\n") == "  stream: stream の文\n"
       and "転送が張られていない" in hint())
 _fail = re.search(r"\n  failover\)(.*?)\n    ;;", lab_sh, re.S).group(1)
-check("lab/lab.sh failover（fail-main のあとの案内。TELEGRAF_IMAGE の分岐があるのはここ）: TELEGRAF_IMAGE の次に local_telegraf の分岐があり、compose の Grafana と Splunk を案内する",
+check("app/containerlab/lab.sh failover（fail-main のあとの案内。TELEGRAF_IMAGE の分岐があるのはここ）: TELEGRAF_IMAGE の次に local_telegraf の分岐があり、compose の Grafana と Splunk を案内する",
       re.search(r'if \[ -n "\$\{TELEGRAF_IMAGE:-\}" \]; then.*?elif local_telegraf; then\s+echo "== Telegraf（compose の Telegraf）=="', _fail, re.S) is not None)
-check("lab/lab.sh: /etc/*-lab.env が無くても止まらない（手元。ls が失敗しても || true）",
+check("app/containerlab/lab.sh: /etc/*-lab.env が無くても止まらない（手元。ls が失敗しても || true）",
       'ENV_FILE=$(ls /etc/*-lab.env 2>/dev/null | head -1 || true)' in lab_sh and '[ -n "$ENV_FILE" ] && set -a' in lab_sh)
 
-# 置き場所を写した木（tmp/local/compose と、tmp/lab → リポジトリの lab）で local/compose の 4 つを動かす
+# 置き場所を写した木（tmp/docker/compose と、tmp/app/containerlab → リポジトリの app/containerlab）で docker/compose の 4 つを動かす
 def tree(env=None, files=SCRIPTS, lab_copy=False):
     t = tempfile.mkdtemp(dir=TMP)
-    lc = os.path.join(t, "local", "compose")
+    lc = os.path.join(t, "docker", "compose")
     os.makedirs(lc)
+    os.makedirs(os.path.join(t, "app"))
     for s in files + [".env.example", "compose.yaml"]:
         shutil.copy2(os.path.join(LC, s), lc)
-    if lab_copy:  # lab.sh render が splab.clab.yml を書くので、リポジトリの lab ではなく写しに書かせる
-        shutil.copytree(os.path.join(ROOT, "lab"), os.path.join(t, "lab"), ignore=shutil.ignore_patterns("clab-*", "splab.clab.yml", "__pycache__"))
+    if lab_copy:  # lab.sh render が splab.clab.yml を書くので、リポジトリの app/containerlab ではなく写しに書かせる
+        shutil.copytree(os.path.join(ROOT, "app", "containerlab"), os.path.join(t, "app", "containerlab"), ignore=shutil.ignore_patterns("clab-*", "splab.clab.yml", "__pycache__"))
     else:
-        os.symlink(os.path.join(ROOT, "lab"), os.path.join(t, "lab"))
+        os.symlink(os.path.join(ROOT, "app", "containerlab"), os.path.join(t, "app", "containerlab"))
     if env is not None:  # 試し用の .env（中身はこのテストが書く）
         with open(os.path.join(lc, ".env"), "w") as f:
             f.write(env)
     return lc
 
-# local/compose/lab.sh
+# docker/compose/lab.sh
 _lc = tree()
 _r, _c = run([os.path.join(_lc, "lab.sh"), "pull"], REGISTRY="leak.example.com", AWS_REGION="ap-northeast-1", PARAM_PREFIX="/nwc")
-check("local/compose/lab.sh: .env が無ければ .env.example のイメージと TELEGRAF_LOCAL=1 の 3 つだけを sudo env で lab/lab.sh に渡す（sudo -E にしない）",
+check("docker/compose/lab.sh: .env が無ければ .env.example のイメージと TELEGRAF_LOCAL=1 の 3 つだけを sudo env で app/containerlab/lab.sh に渡す（sudo -E にしない）",
       _r.returncode == 0 and _c[0].split()[:5] == ["sudo", "env", f"SRLINUX_IMAGE={SRL}", f"MULTITOOL_IMAGE={MT}", "TELEGRAF_LOCAL=1"]
       and os.path.realpath(_c[0].split()[5]) == os.path.realpath(LAB) and _c[0].split()[6:] == ["pull"])
-check("local/compose/lab.sh pull: シェルに REGISTRY や AWS_REGION があっても ECR に行かず、ghcr.io の 2 つを取る", _c[1:] == PULLS)
+check("docker/compose/lab.sh pull: シェルに REGISTRY や AWS_REGION があっても ECR に行かず、ghcr.io の 2 つを取る", _c[1:] == PULLS)
 _r, _c = run([os.path.join(_lc, "lab.sh"), "forward"])
-check("local/compose/lab.sh forward: REDIRECT を 1 本入れ、案内は「compose の Telegraf へ」（aws は打たない）",
+check("docker/compose/lab.sh forward: REDIRECT を 1 本入れ、案内は「compose の Telegraf へ」（aws は打たない）",
       _r.returncode == 0 and [c for c in _c if " -I " in c] == [REDIRECT] and "compose の Telegraf へ" in _r.stdout
       and not [c for c in _c if c.startswith("aws")])
 _lc = tree('SRLINUX_IMAGE="example.com/srl:1"\nMULTITOOL_IMAGE=\'example.com/mt:2\'\n')
 _r, _c = run([os.path.join(_lc, "lab.sh"), "status"])
-check("local/compose/lab.sh: .env があればそちらのイメージを使う（値の \" と ' は外す）",
+check("docker/compose/lab.sh: .env があればそちらのイメージを使う（値の \" と ' は外す）",
       _c and _c[0].split()[2:4] == ["SRLINUX_IMAGE=example.com/srl:1", "MULTITOOL_IMAGE=example.com/mt:2"])
 _lc = tree("SRLINUX_IMAGE=example.com/srl:1\n")
 _r, _c = run([os.path.join(_lc, "lab.sh"), "up"])
-check("local/compose/lab.sh: .env に MULTITOOL_IMAGE が無ければ sudo を打たずに止まる", _r.returncode != 0 and _c == [] and "MULTITOOL_IMAGE が無い" in _r.stderr)
-# lab/lab.sh up は splab.clab.yml があると render しないので、gen_lab.py で台数を変えたあとも古い yml で deploy する。ラッパーが毎回 render する
+check("docker/compose/lab.sh: .env に MULTITOOL_IMAGE が無ければ sudo を打たずに止まる", _r.returncode != 0 and _c == [] and "MULTITOOL_IMAGE が無い" in _r.stderr)
+# app/containerlab/lab.sh up は splab.clab.yml があると render しないので、gen_lab.py で台数を変えたあとも古い yml で deploy する。ラッパーが毎回 render する
 _lc = tree(lab_copy=True)
-_yml = os.path.join(os.path.dirname(os.path.dirname(_lc)), "lab", "splab.clab.yml")
+_yml = os.path.join(os.path.dirname(os.path.dirname(_lc)), "app", "containerlab", "splab.clab.yml")
 with open(_yml, "w") as f:
     f.write("古い yml（gen_lab.py の前）\n")
 _r, _c = run([os.path.join(_lc, "lab.sh"), "up"])
-check("local/compose/lab.sh up: lab/lab.sh render を打ってから up し、splab.clab.yml を今の .in と .env のイメージで作り直してから deploy する",
+check("docker/compose/lab.sh up: app/containerlab/lab.sh render を打ってから up し、splab.clab.yml を今の .in と .env のイメージで作り直してから deploy する",
       _r.returncode == 0
       and [c.split()[6] if c.startswith("sudo ") else c for c in _c if c.startswith(("sudo ", "containerlab "))]
       == ["render", "up", "containerlab deploy -t splab.clab.yml --reconfigure"]
-      and open(_yml, encoding="utf-8").read() == read("lab", "splab.clab.yml.in").replace("__SRLINUX_IMAGE__", SRL).replace("__MULTITOOL_IMAGE__", MT))
+      and open(_yml, encoding="utf-8").read() == read("app", "containerlab", "splab.clab.yml.in").replace("__SRLINUX_IMAGE__", SRL).replace("__MULTITOOL_IMAGE__", MT))
 _r, _c = run([os.path.join(_lc, "lab.sh"), "down"])
-check("local/compose/lab.sh: up 以外（down など）は render しない", [c.split()[6] for c in _c if c.startswith("sudo ")] == ["down"])
+check("docker/compose/lab.sh: up 以外（down など）は render しない", [c.split()[6] for c in _c if c.startswith("sudo ")] == ["down"])
 
-# local/compose/up.sh / down.sh
+# docker/compose/up.sh / down.sh
 _lc = tree()
 _r, _c = run([os.path.join(_lc, "up.sh")])
 check("up.sh: .env が無ければ docker を打たずに止まり、cp .env.example .env と、パスワードを変えるなら最初の up.sh の前（あとからなら down.sh -v）を案内する",
       _r.returncode == 1 and _c == [] and "cp .env.example .env" in _r.stderr and "最初の up.sh の前" in _r.stderr and "down.sh -v" in _r.stderr)
-_lc = tree(read("local", "compose", ".env.example"))
+_lc = tree(read("docker", "compose", ".env.example"))
 _r, _c = run([os.path.join(_lc, "up.sh")])
-check("up.sh: lab/lab_topology.py の 3 つ（SNMP_AGENTS / GNMI_TARGETS / DEVICE_MAP）を環境で渡して docker compose up -d --build を打つ",
+check("up.sh: app/containerlab/lab_topology.py の 3 つ（SNMP_AGENTS / GNMI_TARGETS / DEVICE_MAP）を環境で渡して docker compose up -d --build を打つ",
       _r.returncode == 0 and _c == ["docker compose up -d --build",
                                     f"ENV SNMP_AGENTS={UP_ENV['SNMP_AGENTS']} GNMI_TARGETS={UP_ENV['GNMI_TARGETS']} DEVICE_MAP={UP_ENV['DEVICE_MAP']}"]
       and all(UP_ENV.values()))
@@ -389,9 +394,9 @@ check("up.sh: 引数は docker compose up に渡す（up.sh telegraf で Telegra
 _r, _c = run([os.path.join(_lc, "down.sh"), "-v"])
 check("down.sh -v: docker compose down -v", _r.returncode == 0 and _c[0] == "docker compose down -v")
 
-# local/compose/check.sh（design.md の検証方法「WSL」の 4）
+# docker/compose/check.sh（design.md の検証方法「WSL」の 4）
 PW = example["OPENSEARCH_PASSWORD"]
-_lc = tree(read("local", "compose", ".env.example"))
+_lc = tree(read("docker", "compose", ".env.example"))
 _r, _c = run([os.path.join(_lc, "check.sh")])
 _ok = [l for l in _r.stdout.splitlines() if l.startswith("ok  ")]
 check("check.sh: 応答が全部そろえば 6 項目とも ok で「すべて ok」、終了コード 0（メモリが 20 GB 以上なら注意を出さない）",
@@ -402,11 +407,11 @@ check("check.sh: パスワードは curl の引数に載せず（ps に出る）
       len(_argv) == 6 and not [c for c in _argv if PW in c] and _stdin == [f'STDIN user = "admin:{PW}"'] * 4)
 check("check.sh: Splunk の検索は sourcetype=netops:*（Spark の SPLUNK_SOURCETYPE_PREFIX）、Prometheus は Grafana のダッシュボードとアラートが使う snmp_interface_ifOperStatus",
       sinks.SPLUNK_SOURCETYPE_PREFIX == "netops" and any("sourcetype=netops:*" in c for c in _argv)
-      and "snmp_interface_ifOperStatus" in read("grafana", "provisioning", "dashboards", "metrics.json")
+      and "snmp_interface_ifOperStatus" in read("app", "grafana", "provisioning", "dashboards", "metrics.json")
       and any("query=count(snmp_interface_ifOperStatus)" in c for c in _argv))
-check("check.sh: Grafana で見る uid（amp / aoss-logs）は grafana/provisioning/datasources-oss の定義にある",
+check("check.sh: Grafana で見る uid（amp / aoss-logs）は app/grafana/provisioning/datasources-oss の定義にある",
       {m for f in ("prometheus.yaml", "opensearch.yaml")
-       for m in re.findall(r"uid: (\S+)", read("grafana", "provisioning", "datasources-oss", f))} == {"amp", "aoss-logs"})
+       for m in re.findall(r"uid: (\S+)", read("app", "grafana", "provisioning", "datasources-oss", f))} == {"amp", "aoss-logs"})
 check("check.sh: Kafka で見るトピック（metrics / gnmi / traps / logs）は Telegraf が書くトピック",
       {"metrics", "gnmi", "traps", "logs"} <= _topics)
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_OS_COUNT="0", FAKE_MEM="16000")

@@ -1,16 +1,16 @@
 # ---------------------------------------------------------------- naming
 variable "region" {
-  description = "AWS region. Same value as terraform/base/core."
+  description = "AWS region. Same value as IaC/terraform/aws-managed/base/core."
   type        = string
   default     = "ap-northeast-1"
 }
 
 variable "owner" {
-  description = "Required. Name of the person who deploys this copy. Resource names and the Project tag are <owner>-nwc-poc (<owner>-nwc-oss in oss/terraform, see project), so each person can find their own resources in the console. Same value in every root module."
+  description = "Required. Name of the person who deploys this copy. Resource names and the Project tag are <owner>-nwc-poc (<owner>-nwc-oss in IaC/terraform/oss, see project), so each person can find their own resources in the console. Same value in every root module."
   type        = string
 
   validation {
-    # 接頭辞は <owner>-nwc-poc。OpenSearch Serverless の data access policy 名が 32 文字までで、一番長い接尾辞は terraform/workflow の <接頭辞>-logs-read（10 文字）なので接頭辞は 22 文字まで。-nwc-poc の 8 文字（OSS 版の -nwc-oss も 8 文字）を引いて owner は 14 文字まで
+    # 接頭辞は <owner>-nwc-poc。OpenSearch Serverless の data access policy 名が 32 文字までで、一番長い接尾辞は IaC/terraform/aws-managed/workflow の <接頭辞>-logs-read（10 文字）なので接頭辞は 22 文字まで。-nwc-poc の 8 文字（OSS 版の -nwc-oss も 8 文字）を引いて owner は 14 文字まで
     # ハイフンの連続と末尾のハイフンも弾く（ECR のリポジトリ名が受け付けない）
     condition     = can(regex("^[a-z][a-z0-9]*(-[a-z0-9]+)*$", var.owner)) && length(var.owner) <= 14
     error_message = "owner must be 1-14 lowercase letters, digits and single hyphens, starting with a letter and not ending with one."
@@ -18,13 +18,13 @@ variable "owner" {
 }
 
 variable "project" {
-  description = "Second half of the resource name prefix and of the Project tag (<owner>-<project>). nwc-poc is the managed-services build (terraform/); nwc-oss is the build that runs open-source services on ECS instead (oss/terraform/, cycle 005), whose oss.auto.tfvars sets it. Same value in every root module."
+  description = "Second half of the resource name prefix and of the Project tag (<owner>-<project>). nwc-poc is the managed-services build (IaC/terraform/aws-managed/); nwc-oss is the build that runs open-source services on ECS instead (IaC/terraform/oss/, cycle 005), whose oss.auto.tfvars sets it. Same value in every root module."
   type        = string
   default     = "nwc-poc"
 
   validation {
     condition     = contains(["nwc-poc", "nwc-oss"], var.project)
-    error_message = "project must be nwc-poc (terraform/) or nwc-oss (oss/terraform/)."
+    error_message = "project must be nwc-poc (IaC/terraform/aws-managed/) or nwc-oss (IaC/terraform/oss/)."
   }
 }
 
@@ -52,7 +52,7 @@ variable "broker_instance_type" {
 }
 
 variable "msk_az_num" {
-  description = "Number of AZs (subnets a, b, c of terraform/base/core from the front) of the MSK cluster, one broker per AZ. 2 or 3; 1 is not possible because MSK takes client subnets in two or three AZs only (Amazon MSK API Reference, Clusters, BrokerNodeGroupInfo.clientSubnets: https://docs.aws.amazon.com/msk/1.0/apireference/clusters.html, checked 2026-10-04). 2 keeps replication factor 2 / min.insync.replicas 1, 3 uses 3 / 2. Each broker is about 0.271 USD/h (kafka.m5.large). Changing it on a live cluster recreates the cluster (the topics are lost). ops/up.sh passes MSK_AZ_NUM."
+  description = "Number of AZs (subnets a, b, c of IaC/terraform/aws-managed/base/core from the front) of the MSK cluster, one broker per AZ. 2 or 3; 1 is not possible because MSK takes client subnets in two or three AZs only (Amazon MSK API Reference, Clusters, BrokerNodeGroupInfo.clientSubnets: https://docs.aws.amazon.com/msk/1.0/apireference/clusters.html, checked 2026-10-04). 2 keeps replication factor 2 / min.insync.replicas 1, 3 uses 3 / 2. Each broker is about 0.271 USD/h (kafka.m5.large). Changing it on a live cluster recreates the cluster (the topics are lost). ops/up.sh passes MSK_AZ_NUM."
   type        = number
   default     = 2
 
@@ -75,7 +75,7 @@ variable "log_retention_days" {
 
 # ---------------------------------------------------------------- Telegraf (telegraf.tf)
 variable "telegraf_image_tag" {
-  description = "Tag of the Telegraf image in the <prefix>-telegraf repository (telegraf/Dockerfile). ops/up.sh builds it as <telegraf version>-<hash of telegraf/> and passes it."
+  description = "Tag of the Telegraf image in the <prefix>-telegraf repository (docker/images/telegraf/Dockerfile). ops/up.sh builds it as <telegraf version>-<hash of app/telegraf/> and passes it."
   type        = string
   default     = "1.40.0"
 
@@ -86,27 +86,27 @@ variable "telegraf_image_tag" {
 }
 
 variable "snmp_agents" {
-  description = "SNMP polling targets of the Telegraf dial-in task, as the inside of a TOML list (\"udp://<IP>:161\", ...). ops/up.sh makes it from the lab definition (python3 lab/lab_topology.py lab --snmp-agents). Goes to the SSM parameter .../telegraf-dialin/lab/snmp-agents (or only the first value of .../nautobot/snmp-agents with dialin_targets_from_nautobot)."
+  description = "SNMP polling targets of the Telegraf dial-in task, as the inside of a TOML list (\"udp://<IP>:161\", ...). ops/up.sh makes it from the lab definition (python3 app/containerlab/lab_topology.py app/containerlab --snmp-agents). Goes to the SSM parameter .../telegraf-dialin/lab/snmp-agents (or only the first value of .../nautobot/snmp-agents with dialin_targets_from_nautobot)."
   type        = string
 
   validation {
     condition     = can(regex("^\"udp://[0-9.]+:[0-9]+\"(, *\"udp://[0-9.]+:[0-9]+\")*$", var.snmp_agents))
-    error_message = "snmp_agents must look like \"udp://203.0.113.11:161\", \"udp://203.0.113.12:161\" (python3 lab/lab_topology.py lab --snmp-agents)."
+    error_message = "snmp_agents must look like \"udp://203.0.113.11:161\", \"udp://203.0.113.12:161\" (python3 app/containerlab/lab_topology.py app/containerlab --snmp-agents)."
   }
 }
 
 variable "gnmi_targets" {
-  description = "gNMI subscription targets of the Telegraf dial-in task, as the inside of a TOML list (\"<IP>:57400\", ...). ops/up.sh makes it from the lab definition (python3 lab/lab_topology.py lab --gnmi-targets). Goes to the SSM parameter .../telegraf-dialin/lab/gnmi-targets (or only the first value of .../nautobot/gnmi-targets with dialin_targets_from_nautobot)."
+  description = "gNMI subscription targets of the Telegraf dial-in task, as the inside of a TOML list (\"<IP>:57400\", ...). ops/up.sh makes it from the lab definition (python3 app/containerlab/lab_topology.py app/containerlab --gnmi-targets). Goes to the SSM parameter .../telegraf-dialin/lab/gnmi-targets (or only the first value of .../nautobot/gnmi-targets with dialin_targets_from_nautobot)."
   type        = string
 
   validation {
     condition     = can(regex("^\"[0-9.]+:[0-9]+\"(, *\"[0-9.]+:[0-9]+\")*$", var.gnmi_targets))
-    error_message = "gnmi_targets must look like \"203.0.113.11:57400\", \"203.0.113.12:57400\" (python3 lab/lab_topology.py lab --gnmi-targets)."
+    error_message = "gnmi_targets must look like \"203.0.113.11:57400\", \"203.0.113.12:57400\" (python3 app/containerlab/lab_topology.py app/containerlab --gnmi-targets)."
   }
 }
 
 variable "dialin_targets_from_nautobot" {
-  description = "Whether the Nautobot job (terraform/pipeline/nautobot) owns the dial-in targets. true moves them to /<prefix>/telegraf-dialin/nautobot/* (Terraform writes only the first value, from snmp_agents / gnmi_targets, and ignores later changes); false keeps them in /<prefix>/telegraf-dialin/lab/* from the variables. ops/up.sh always passes true (Nautobot is always built with stream since 2026-10-04); false is left for applying this root by hand."
+  description = "Whether the Nautobot job (IaC/terraform/aws-managed/pipeline/nautobot) owns the dial-in targets. true moves them to /<prefix>/telegraf-dialin/nautobot/* (Terraform writes only the first value, from snmp_agents / gnmi_targets, and ignores later changes); false keeps them in /<prefix>/telegraf-dialin/lab/* from the variables. ops/up.sh always passes true (Nautobot is always built with stream since 2026-10-04); false is left for applying this root by hand."
   type        = bool
   default     = false
 }

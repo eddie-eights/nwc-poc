@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------- AgentCore Runtime execution role
-# ロールだけをここに置く。Runtime 本体とその実行ポリシーは terraform/agent（機能 agent）。terraform/pipeline/stream / terraform/pipeline/graph は
+# ロールだけをここに置く。Runtime 本体とその実行ポリシーは IaC/terraform/aws-managed/agent（機能 agent）。IaC/terraform/aws-managed/pipeline/stream / IaC/terraform/aws-managed/pipeline/graph は
 # このロール名を state から読み、Neptune などを読むポリシーを足すので、ロールは agent より長生きする土台に置く
 resource "aws_iam_role" "runtime" {
   name        = "${local.name_prefix}-runtime"

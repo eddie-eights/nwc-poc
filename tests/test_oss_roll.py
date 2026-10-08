@@ -7,7 +7,7 @@ oss/ops/roll_health.py。設計の未確定事項 2・4）の模擬テスト。t
   3. roll_nodes を偽物の道具で通す: リーダーでない台から 1 台ずつ -target で apply し、リーダーは最後。入れ替えた台の中からは見ない。
      変わる台が無い・初めて作る・OSS_ROLL=0 のときは何も入れ替えない。入れ替える前から健全でない・入れ替えたあと戻らない・サービスが安定しない・
      plan が失敗する・Session Manager plugin が無い、のどれでも止まり、残りの台を案内する（plan のファイルは残さない）
-  4. roll-nodes.sh が読む terraform の output とサービス・コンテナの名前が、oss/terraform/ に実在する（ECS Exec が有効なことも）
+  4. roll-nodes.sh が読む terraform の output とサービス・コンテナの名前が、IaC/terraform/oss/ に実在する（ECS Exec が有効なことも）
 実際の ECS Exec（Session Manager の非対話の動き、--command の割り方、入れ替え中の Lag の値）は AWS で確かめていない。
 実行は python3 tests/test_oss_roll.py"""
 import importlib.util, json, os, re, shlex, shutil, subprocess, sys, tempfile
@@ -290,7 +290,7 @@ REGION=ap-northeast-1
 . "$NWC_ROOT/ops/common.sh"
 . "$NWC_ROOT/ops/up-common.sh"
 . "$NWC_ROOT/oss/ops/roll-nodes.sh"
-TF_DIR=oss/terraform; OPS_DIR="$NWC_ROOT/oss/ops"; TF_LOG_NAME=tf-oss; TF_INIT_LOCKFILE=readonly
+TF_DIR=IaC/terraform/oss; OPS_DIR="$NWC_ROOT/oss/ops"; TF_LOG_NAME=tf-oss; TF_INIT_LOCKFILE=readonly
 PY=("$NWC_PY"); PREFIX=x-nwc-oss; OWNER=x
 OSS_ROLL="${OSS_ROLL-1}"; flag_value OSS_ROLL
 ROLL_MINUTES_PRE="${T_MIN_PRE:-$ROLL_MINUTES_PRE}"; ROLL_MINUTES_KAFKA="${T_MIN:-$ROLL_MINUTES_KAFKA}"; ROLL_MINUTES_OPENSEARCH="${T_MIN:-$ROLL_MINUTES_OPENSEARCH}"
@@ -352,7 +352,7 @@ check("roll_nodes kafka（3 台とも変わる。リーダーは 2）: 入れ替
       r.returncode == 0 and applied(r) == ["1", "3", "2"] and execs(r)[0][0] == "exec"
       and "Kafka の台を 1 台ずつ入れ替えた（入れ替えた順: 1 3 2）" in r.stdout)
 check("roll_nodes: plan と apply に呼ぶ側の -var（と owner）を渡し、apply は -target=aws_ecs_service.kafka[\"台\"] の 1 つだけ。init は readonly",
-      plan_call[0] == "-chdir=oss/terraform/pipeline/stream" and "-var" in plan_call and "owner=x" in plan_call and "a=b" in plan_call
+      plan_call[0] == "-chdir=IaC/terraform/oss/pipeline/stream" and "-var" in plan_call and "owner=x" in plan_call and "a=b" in plan_call
       and 'sinks=["x"]' in plan_call and any(a.startswith("-out=") for a in plan_call)
       and "owner=x" in first_apply and "a=b" in first_apply and 'sinks=["x"]' in first_apply
       and [a for a in first_apply if a.startswith("-target=")] == ['-target=aws_ecs_service.kafka["1"]']
@@ -453,13 +453,13 @@ check("roll_nodes: 種類が kafka / opensearch でなければ止まる（terra
       r.returncode == 1 and "roll_nodes の種類は kafka か opensearch" in r.stderr and not os.path.exists(os.path.join(tmp, "log-bad")))
 
 # ---------------------------------------------------------------- 4. terraform の名前と合っている
-stream_tf = read("oss/terraform/pipeline/stream/kafka.tf")
-os_tf = read("oss/terraform/pipeline/analytics/opensearch.tf")
-an_out = read("oss/terraform/pipeline/analytics/outputs.tf")
+stream_tf = read("IaC/terraform/oss/pipeline/stream/kafka.tf")
+os_tf = read("IaC/terraform/oss/pipeline/analytics/opensearch.tf")
+an_out = read("IaC/terraform/oss/pipeline/analytics/outputs.tf")
 def block(text, head):
     i = text.index(head)
     return text[i:text.index("\n}\n", i)]
-check("roll-nodes.sh が読む output（クラスター・サービス名・ロググループ）が oss/terraform/ にあり、サービス名は台をキーにした map",
+check("roll-nodes.sh が読む output（クラスター・サービス名・ロググループ）が IaC/terraform/oss/ にあり、サービス名は台をキーにした map",
       all(f'output "{o}"' in stream_tf for o in ("kafka_ecs_cluster_name", "kafka_service_names", "kafka_log_group_name"))
       and all(f'output "{o}"' in os_tf for o in ("opensearch_service_names", "opensearch_log_group_name"))
       and 'output "analytics_cluster_name"' in an_out

@@ -1,23 +1,23 @@
 AWSTemplateFormatVersion: "2010-09-09"
 # デバッグ用の EC2: lab（containerlab の SR Linux 6 台 + VM 2 台）と Telegraf を 1 台に入れる。MSK / ECS / NLB を作らずに、
-# 機器の設定と Telegraf の設定（telegraf/telegraf.conf.in）を確かめる。Telegraf の出力は標準出力（sudo lab telegraf logs）。
+# 機器の設定と Telegraf の設定（app/telegraf/telegraf.conf.in）を確かめる。Telegraf の出力は標準出力（sudo lab telegraf logs）。
 #
 # このスタックだけで閉じる（2026-10-04 ユーザー決定: ops/up.sh / ops/down.sh と terraform からは作らない・消さない）。
 # 作るのも消すのも ops/lab-debug.sh up / down（スタック名 <接頭辞>-lab-debug）。VPC・エンドポイント・バケット・ECR もここで持つ:
-#   - VPC（VpcCidr。1 AZ・1 サブネット）。インターネットへの経路は無い（NAT も IGW も無い）。terraform/base/core と同じ閉域の形
+#   - VPC（VpcCidr。1 AZ・1 サブネット）。インターネットへの経路は無い（NAT も IGW も無い）。IaC/terraform/aws-managed/base/core と同じ閉域の形
 #   - AWS の API へはインターフェース型エンドポイント 4 本（ssm / ssmmessages: SSM で入る。ecr.api / ecr.dkr: イメージを引く）と
 #     S3 の gateway エンドポイント（lab/ の材料、ECR のレイヤー、AL2023 の dnf リポジトリ。無料）
 #   - バケット <接頭辞>-lab-debug-<アカウント>（lab/ だけを置く）と ECR のリポジトリ 3 つ（<接頭辞>-debug-lab-srlinux / -lab-multitool / -telegraf）。
 #     ECR はスタックを消すとイメージごと消える（EmptyOnDelete）。バケットは ops/lab-debug.sh down が空にしてから消す
-#   - ロールに VPC の外からの呼び出しを拒む Deny（terraform/base/core の perimeter.tf と同じ Action と条件。この VPC を指す）
-# イメージと lab/ を置く前に EC2 を起こしても引けないので、初回は CreateInstance=false で器だけ作り、置いてから true にする（ops/lab-debug.sh up）。
+#   - ロールに VPC の外からの呼び出しを拒む Deny（IaC/terraform/aws-managed/base/core の perimeter.tf と同じ Action と条件。この VPC を指す）
+# イメージと app/containerlab/ を置く前に EC2 を起こしても引けないので、初回は CreateInstance=false で器だけ作り、置いてから true にする（ops/lab-debug.sh up）。
 #
-# terraform/pipeline/lab とずれないようにしてあるところ（tests/test_lab_debug.py が見る）:
+# IaC/terraform/aws-managed/pipeline/lab とずれないようにしてあるところ（tests/test_lab_debug.py が見る）:
 #   - EC2 の中でやることは S3 の lab/setup.sh 1 つ。UserData は env を書いて S3 から lab/ を置き直し、setup.sh を exec するだけ
-#     （terraform/pipeline/lab/templates/lab_user_data.sh.tftpl と同じ形。違うのはリポジトリの名前と TELEGRAF_IMAGE があること）
-#   - パラメータの既定値は terraform/pipeline/lab の変数の既定値と ops/lab-common.sh の版
-#   - ロールの権限は terraform/pipeline/lab/iam.tf と同じ Sid（EcrPull は Telegraf のリポジトリも読む。TelegrafAddress は要らない）
-#   - Telegraf のイメージは stream の ECS と同じ作り方（ops/lab-common.sh の telegraf_tag。telegraf/ の中身からタグを作る）
+#     （IaC/terraform/aws-managed/pipeline/lab/templates/lab_user_data.sh.tftpl と同じ形。違うのはリポジトリの名前と TELEGRAF_IMAGE があること）
+#   - パラメータの既定値は IaC/terraform/aws-managed/pipeline/lab の変数の既定値と ops/lab-common.sh の版
+#   - ロールの権限は IaC/terraform/aws-managed/pipeline/lab/iam.tf と同じ Sid（EcrPull は Telegraf のリポジトリも読む。TelegrafAddress は要らない）
+#   - Telegraf のイメージは stream の ECS と同じ作り方（ops/lab-common.sh の telegraf_tag。app/telegraf/ の中身からタグを作る）
 Description: nwc-poc lab debug EC2 (containerlab + Telegraf to stdout on one instance, in its own closed VPC)
 
 Parameters:
@@ -37,12 +37,12 @@ Parameters:
     Type: String
     Default: 10.20.0.0/24
     AllowedPattern: "^(\\d{1,3}\\.){3}\\d{1,3}/(1[6-9]|2[0-4])$"
-    Description: CIDR of this stack's own VPC (/16 to /24). It is not peered with anything, so it may overlap terraform/base/core
+    Description: CIDR of this stack's own VPC (/16 to /24). It is not peered with anything, so it may overlap IaC/terraform/aws-managed/base/core
   AzId:
     Type: String
     Default: apne1-az1
     AllowedValues: [apne1-az1, apne1-az2, apne1-az4]
-    Description: AZ ID of the subnet (same choices as az_id_a of terraform/base/core; all of them have t4g)
+    Description: AZ ID of the subnet (same choices as az_id_a of IaC/terraform/aws-managed/base/core; all of them have t4g)
   NetworkPerimeter:
     Type: String
     Default: "true"
@@ -73,7 +73,7 @@ Parameters:
   TelegrafImageTag:
     Type: String
     Default: ""
-    Description: "<Telegraf version>-<hash of telegraf/> (ops/lab-common.sh telegraf_tag). Required when CreateInstance is true"
+    Description: "<Telegraf version>-<hash of app/telegraf/> (ops/lab-common.sh telegraf_tag). Required when CreateInstance is true"
   AutoStartLab:
     Type: String
     Default: "true"
@@ -91,7 +91,7 @@ Rules:
         AssertDescription: TelegrafImageTag is required when CreateInstance is true
 
 Resources:
-  # ---------------------------------------------------------------- network（閉域。terraform/base/core の vpc.tf / endpoints.tf と同じ形）
+  # ---------------------------------------------------------------- network（閉域。IaC/terraform/aws-managed/base/core の vpc.tf / endpoints.tf と同じ形）
   Vpc:
     Type: AWS::EC2::VPC
     Properties:
@@ -164,7 +164,7 @@ Resources:
         - { Key: Project, Value: !Ref NamePrefix }
         - { Key: owner, Value: !Ref Owner }
 
-  # S3 の gateway エンドポイント（無料）。ポリシーは付けない（terraform/base/core の endpoints.tf と同じ理由: dnf のリポジトリは匿名の GET、
+  # S3 の gateway エンドポイント（無料）。ポリシーは付けない（IaC/terraform/aws-managed/base/core の endpoints.tf と同じ理由: dnf のリポジトリは匿名の GET、
   # ECR のレイヤーは ECR が署名した URL なので、プリンシパルやバケットで絞ると止まる）
   S3Endpoint:
     Type: AWS::EC2::VPCEndpoint
@@ -291,7 +291,7 @@ Resources:
             Condition:
               Bool: { "aws:SecureTransport": "false" }
 
-  # terraform/base/ecr と同じ設定（タグは上書きできない・push で検査）。名前は base/ecr のもの（<接頭辞>-lab-* / <接頭辞>-telegraf）と別にする
+  # IaC/terraform/aws-managed/base/ecr と同じ設定（タグは上書きできない・push で検査）。名前は base/ecr のもの（<接頭辞>-lab-* / <接頭辞>-telegraf）と別にする
   SrlinuxRepository:
     Type: AWS::ECR::Repository
     Properties:
@@ -360,7 +360,7 @@ Resources:
                 Resource: !GetAtt Bucket.Arn
                 Condition:
                   StringLike: { "s3:prefix": "lab/*" }
-        # terraform/base/core の perimeter.tf の Deny と同じ Action と条件（aws:SourceVpc はこのスタックの VPC）
+        # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny と同じ Action と条件（aws:SourceVpc はこのスタックの VPC）
         - !If
           - HasPerimeter
           - PolicyName: network-perimeter
@@ -416,7 +416,7 @@ Resources:
         - { Key: Name, Value: !Sub "${NamePrefix}-lab-debug" }
         - { Key: Project, Value: !Ref NamePrefix }
         - { Key: owner, Value: !Ref Owner }
-      # 中身は terraform/pipeline/lab/templates/lab_user_data.sh.tftpl と同じ形（env のキーも同じ）。Fn::Sub が ${…} を埋めるので、シェルの変数は $LAB と書く
+      # 中身は IaC/terraform/aws-managed/pipeline/lab/templates/lab_user_data.sh.tftpl と同じ形（env のキーも同じ）。Fn::Sub が ${…} を埋めるので、シェルの変数は $LAB と書く
       UserData:
         Fn::Base64: !Sub |
           Content-Type: multipart/mixed; boundary="==BOUNDARY=="
@@ -436,7 +436,7 @@ Resources:
           Content-Transfer-Encoding: 8bit
 
           #!/bin/bash
-          # 支度の中身は S3 の lab/setup.sh（terraform/pipeline/lab の user_data と共通）。ここは env を書いて置き直し、呼ぶだけ
+          # 支度の中身は S3 の lab/setup.sh（IaC/terraform/aws-managed/pipeline/lab の user_data と共通）。ここは env を書いて置き直し、呼ぶだけ
           set -euo pipefail
           LAB=/opt/${NamePrefix}-lab
           install -d -m 0755 $LAB

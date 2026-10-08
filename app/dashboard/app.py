@@ -1,14 +1,14 @@
 """チャット Web（Gradio）。127.0.0.1 だけで待ち受け、利用者は SSM のポートフォワーディングで開く。
 
 このファイルは画面の組み立てだけ。中身は 4 つのモジュールに分けてある:
-  config.py         環境変数（.env / systemd）の読み出しと、agent/ のモジュールへのパス通し
+  config.py         環境変数（.env / systemd）の読み出しと、app/agentcore/ のモジュールへのパス通し
   chat.py           「チャット」タブ。質問を AgentCore Runtime に送る
   topology_view.py  「トポロジ」タブ。SVG の図・機器の表・Neptune でのリンク編集
   incident_view.py  「承認」タブ。S3 Tables の proposal_events（Athena で読む）と、決定のキューへの送信
 
-agent/ の topology.py / graph.py / proposals.py / toolkit.py をそのまま同じディレクトリに置いて import する
-（terraform/base/core の出力 upload_web_command が web/*.py と一緒に S3 へ上げる）。
-依存（gradio / boto3 / pyyaml）は S3 に置いた wheel から入れる（terraform/base/core の user_data）。インターネットには出ない。
+app/agentcore/ の topology.py / graph.py / proposals.py / toolkit.py をそのまま同じディレクトリに置いて import する
+（IaC/terraform/aws-managed/base/core の出力 upload_web_command が app/dashboard/*.py と一緒に S3 へ上げる）。
+依存（gradio / boto3 / pyyaml）は S3 に置いた wheel から入れる（IaC/terraform/aws-managed/base/core の user_data）。インターネットには出ない。
 """
 
 import gradio as gr
@@ -38,10 +38,10 @@ with gr.Blocks(title=f"{TITLE} チャット") as demo:
         topo_table = gr.Dataframe(tv.device_table(), interactive=False, label="機器")
         layer_table = gr.Dataframe(tv.layer_table(), interactive=False, label="IP 層と EVPN・BGP 層（IS-IS の隣接 / iBGP EVPN のセッション / EVI / Ethernet Segment。下の層の ID で物理層とつながる。gNMI の検知で DOWN になる）")
         topo_refresh = gr.Button("再読み込み")
-        with gr.Accordion("リンクを編集（terraform/pipeline/graph がある間だけ。Nautobot があれば Nautobot に書き、Nautobot の Job が Neptune に反映する）", open=False):
+        with gr.Accordion("リンクを編集（IaC/terraform/aws-managed/pipeline/graph がある間だけ。Nautobot があれば Nautobot に書き、Nautobot の Job が Neptune に反映する）", open=False):
             edit_msg = gr.Markdown(tv.edit_note())
-            gr.Markdown("**静的データを投入** = Neptune の中身をいったん全部消して、`agent/data/` の 8 台・12 本（と IP 層・EVPN 層）に戻す（初回と、編集をやり直したいとき）。"
-                        "機器の追加・削除はこの画面にはないので `agent/data/` を直して投入し直す。リンクは下で 1 本ずつ足す・消す。"
+            gr.Markdown("**静的データを投入** = Neptune の中身をいったん全部消して、`app/agentcore/data/` の 8 台・12 本（と IP 層・EVPN 層）に戻す（初回と、編集をやり直したいとき）。"
+                        "機器の追加・削除はこの画面にはないので `app/agentcore/data/` を直して投入し直す。リンクは下で 1 本ずつ足す・消す。"
                         "変えた内容はエージェントの次の質問から効く。"
                         "Nautobot があるあいだは投入は使えず、リンクの追加・削除は Nautobot に書く（数秒〜十数秒あとに Neptune に出る）。")
             with gr.Row():
@@ -115,7 +115,7 @@ with gr.Blocks(title=f"{TITLE} チャット") as demo:
                           [pr_result, pr_table, pr_id])
         pr_reject.click(lambda i, s, w, ok: iv.decide_proposal(i, "rejected", s, w, ok), [pr_id, pr_status, pr_who, pr_ok],
                           [pr_result, pr_table, pr_id])
-        gr.Markdown("修復案は Temporal のワークフロー（terraform/workflow の ECS Fargate のワーカー）が出し、承認を待っています。"
+        gr.Markdown("修復案は Temporal のワークフロー（IaC/terraform/aws-managed/workflow の ECS Fargate のワーカー）が出し、承認を待っています。"
                     "承認すると同じワークフローが lab EC2 で `sudo lab <コマンド>` を打ち（EC2 への入口は SSM Run Command。SSH は開けていない）、"
                     "アラートの解消（resolved）が届いたら「復旧を確認」にします（verify_timeout_seconds のあいだに届かなければ「失敗」）。却下は何もしません。"
                     "承認には名前と「詳細を読んだ」のチェックが要ります。打つ前にアラートが解消していれば、打たずに「不要（先に解消）」にします。"

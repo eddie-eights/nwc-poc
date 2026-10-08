@@ -1,9 +1,9 @@
 # ---------------------------------------------------------------- Splunk Enterprise（ECS on Fargate）
-# sinks に splunk があるとき、Splunk の公式イメージ（splunk/splunk）にアラートの app を足したもの（splunk/Dockerfile）を 1 タスク立て、
+# sinks に splunk があるとき、Splunk の公式イメージ（splunk/splunk）にアラートの app を足したもの（docker/images/splunk/Dockerfile）を 1 タスク立て、
 # Spark の splunk の格納先が VPC の中の HEC（https://splunk.<名前空間>:8088）へ書く。AWS の外へは出ない（2026-09-28 まであった外の Splunk へ NAT で出る道はやめた）。
 # イメージは amd64 しか無いので X86_64 のタスクにし、ops/up.sh の手順 2 が ECR の <接頭辞>-splunk に入れる（VPC から AWS の外へ出る経路が無いので Docker Hub から引けない）。
 # 検知は app netops_alerts の保存済みサーチ（リンク・BGP・IS-IS・trap）で、アラートアクション netops_sns が土台の SNS トピック
-# （terraform/base/core の alerts.tf）へ publish する。認証はタスクロール（アクセスキーは置かない）で、sns のエンドポイントを通る。
+# （IaC/terraform/aws-managed/base/core の alerts.tf）へ publish する。認証はタスクロール（アクセスキーは置かない）で、sns のエンドポイントを通る。
 # ライセンスは Splunk Enterprise の試用（60 日、1 日 500 MB まで）。SPLUNK_START_ARGS / SPLUNK_GENERAL_TERMS で起動時に Splunk の
 # ライセンスと Splunk General Terms に同意する（イメージがこの 2 つ無しでは起きない）ので、デプロイする人が同意したことになる。
 # index はタスクのエフェメラルストレージにあり、タスクと一緒に消える（PoC。残すなら EFS が要る）。
@@ -14,9 +14,9 @@
 #   - cluster manager 1（splunk-cm）: indexer の登録と複製の指図
 #   - indexer が AZ ごとに 1（splunk-idx）: HEC で受け、互いに複製を送る。複製の数と検索できる複製の数はどちらも indexer の数
 #   - search head 1（いまの splunk のサービス）: 保存済みサーチと UI。indexer を検索する
-# 役割は上流の入口（docker-splunk）の SPLUNK_ROLE で分け、同じイメージを使う。保存済みサーチは search head だけで動く（splunk/entrypoint.sh）。
+# 役割は上流の入口（docker-splunk）の SPLUNK_ROLE で分け、同じイメージを使う。保存済みサーチは search head だけで動く（app/splunk/entrypoint.sh）。
 # indexer が入れ替わって前と同じ IP をもらうと search head が古い GUID のままになるので、search head のヘルスチェックに
-# 突き合わせ（splunk/peers_check.py）を足し、食い違いが続けば ECS に search head を入れ替えさせる
+# 突き合わせ（app/splunk/peers_check.py）を足し、食い違いが続けば ECS に search head を入れ替えさせる
 
 locals {
   splunk_image        = "${try(data.terraform_remote_state.ecr.outputs.splunk_repository_url, "")}:${var.splunk_image_tag}"
@@ -99,7 +99,7 @@ resource "aws_ecs_task_definition" "splunk" {
   cpu                      = var.splunk_task_cpu
   memory                   = var.splunk_task_memory
   execution_role_arn       = aws_iam_role.splunk_execution[0].arn
-  # アラートアクション（splunk/netops_alerts/bin/netops_sns.py）が SNS へ publish する
+  # アラートアクション（app/splunk/netops_alerts/bin/netops_sns.py）が SNS へ publish する
   task_role_arn = aws_iam_role.splunk_task[0].arn
 
   runtime_platform {
@@ -124,20 +124,20 @@ resource "aws_ecs_task_definition" "splunk" {
       environment = concat([
         { name = "SPLUNK_START_ARGS", value = "--accept-license" },
         { name = "SPLUNK_GENERAL_TERMS", value = "--accept-sgt-current-at-splunk-com" },
-        # アラートアクションが読む（splunk/entrypoint.sh がファイルに写す。splunkd の子プロセスはコンテナの環境変数を引き継がない）
+        # アラートアクションが読む（app/splunk/entrypoint.sh がファイルに写す。splunkd の子プロセスはコンテナの環境変数を引き継がない）
         { name = "AWS_REGION", value = var.region },
         { name = "ALERTS_TOPIC_ARN", value = local.alerts_topic_arn },
         # gNMI と trap のイベントは機器の名前でなく管理 IP を持つ。アラートアクションがこの表で名前に直す
         { name = "DEVICE_MAP", value = var.device_map },
         ], local.splunk_cluster ? concat([
           { name = "SPLUNK_ROLE", value = "splunk_search_head" },
-          # 突き合わせ（splunk/peers_check.py）が、Up の indexer がこれより少ないとき degraded と書く
+          # 突き合わせ（app/splunk/peers_check.py）が、Up の indexer がこれより少ないとき degraded と書く
           { name = "NWC_PEERS_EXPECTED", value = tostring(var.splunk_az_num) },
       ], local.splunk_cluster_environment) : [])
       secrets = concat(local.splunk_secrets, local.splunk_cluster ? local.splunk_cluster_secrets : [])
       # 起動（Ansible での初期設定）に数分かかる。ops/up.sh はこれが HEALTHY になってから Spark のジョブを出す
       # （ジョブの HEC への POST は再試行の後に落ちるので、Splunk が起きる前に出すとジョブが止まる）。
-      # クラスターのときは突き合わせ（splunk/peers_check.py）も足す。食い違いが retries の回数（約 5 分）続くと ECS が入れ替える
+      # クラスターのときは突き合わせ（app/splunk/peers_check.py）も足す。食い違いが retries の回数（約 5 分）続くと ECS が入れ替える
       healthCheck = merge({
         command = ["CMD-SHELL", local.splunk_cluster ? "/sbin/checkstate.sh && /sbin/nwc-peers-check.py" : "/sbin/checkstate.sh"]
       }, local.splunk_health_check)
@@ -155,11 +155,11 @@ resource "aws_ecs_task_definition" "splunk" {
   lifecycle {
     precondition {
       condition     = try(data.terraform_remote_state.ecr.outputs.splunk_repository_url, "") != ""
-      error_message = "terraform/base/ecr の state から splunk_repository_url が読めない。terraform/base/ecr を先に apply する（ops/up.sh の手順 1）。"
+      error_message = "IaC/terraform/aws-managed/base/ecr の state から splunk_repository_url が読めない。IaC/terraform/aws-managed/base/ecr を先に apply する（ops/up.sh の手順 1）。"
     }
     precondition {
       condition     = local.alerts_topic_arn != ""
-      error_message = "terraform/base/core の state から alerts_topic_arn が読めない（2026-10-02 より前の土台）。terraform/base/core を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/core の state から alerts_topic_arn が読めない（2026-10-02 より前の土台）。IaC/terraform/aws-managed/base/core を先に apply する。"
     }
   }
 }
@@ -294,7 +294,7 @@ resource "aws_ecs_task_definition" "splunk_idx" {
       { name = "SPLUNK_GENERAL_TERMS", value = "--accept-sgt-current-at-splunk-com" },
       { name = "SPLUNK_ROLE", value = "splunk_indexer" },
     ], local.splunk_cluster_environment)
-    # 止まるまでに手元で 47 秒かかった（Fargate の既定 30 秒では途中で強制終了になる）。入口（splunk/entrypoint.sh）が先に splunk offline を
+    # 止まるまでに手元で 47 秒かかった（Fargate の既定 30 秒では途中で強制終了になる）。入口（app/splunk/entrypoint.sh）が先に splunk offline を
     # 打つようにしてからは 57〜58 秒（offline が 45〜47 秒）。offline を打ち切る秒数（OFFLINE_TIMEOUT）とあわせて test_alerts が検査する
     stopTimeout = 120
     logConfiguration = {

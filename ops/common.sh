@@ -1,14 +1,14 @@
 # ops/up.sh・ops/down.sh と、OSS 版（005）の oss/ops/up.sh・oss/ops/down.sh が読む共通の関数（画面の出し方と terraform の打ち方）。
 # 読む側は、先に REGION を決め、ops/deploy-env.sh を読んでリポジトリの直下へ cd しておく。PREFIX は tf_use_cli_credentials を呼ぶ前に決める。
-# TF_DIR は terraform のルートを置いたディレクトリ（既定 terraform。OSS 版は oss/terraform）。
+# TF_DIR は terraform のルートを置いたディレクトリ（既定 IaC/terraform/aws-managed。OSS 版は IaC/terraform/oss）。
 # OPS_DIR は案内に出す up.sh / down.sh のディレクトリと、ops/up.sh が作った SSM のパラメータのタグ ManagedBy=<OPS_DIR>/up.sh（既定 ops。OSS 版は oss/ops）。
 # どちらも、このファイルを読んだあとに書き換えてよい（関数は呼ばれたときに読む）。
-TF_DIR="${TF_DIR:-terraform}"
+TF_DIR="${TF_DIR:-IaC/terraform/aws-managed}"
 OPS_DIR="${OPS_DIR:-ops}"
 
 log()  { printf '\n\033[1;34m== %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31mNG: %s\033[0m\n' "$*" >&2; exit 1; }
-# terraform に渡す認証情報。もとは terraform/agent の opensearch provider（古い AWS SDK の Go v1）が `aws login` で入ったプロファイル
+# terraform に渡す認証情報。もとは IaC/terraform/aws-managed/agent の opensearch provider（古い AWS SDK の Go v1）が `aws login` で入ったプロファイル
 # （login_session）を読めずに NoCredentialProviders で落ちたための回避（provider は 2026-09-28 に外した。aws provider が
 # login_session を読めるかは確かめていないので残す）。鍵が環境変数に無い（= プロファイルから読む）ときは、AWS CLI から
 # 資格情報を受け取る credential_process だけのプロファイルを一時ファイルに書き、terraform にはそちらを読ませる
@@ -34,12 +34,12 @@ tf() {  # tf <ルート> <terraform のサブコマンドと引数…>
   env ${TF_AWS_ENV[@]+"${TF_AWS_ENV[@]}"} terraform -chdir="$TF_DIR/$root" "$@"
 }
 # tf_init_root <ルート>  マネージド版は「init -input=false」のまま。OSS 版（005）は TF_INIT_LOCKFILE=readonly にして -lockfile=readonly を足す。
-# oss/terraform/<ルート>/.terraform.lock.hcl はマネージド版の lock へのシンボリックリンクで、init が lock を書き換える場面
+# IaC/terraform/oss/<ルート>/.terraform.lock.hcl はマネージド版の lock へのシンボリックリンクで、init が lock を書き換える場面
 # （その PC の OS・CPU のハッシュが lock に無いとき）に、リンクが実ファイルに置き換わる。readonly なら書き換えずに止まる
 tf_init_root() {
   local hint=""
   if [ -n "${TF_INIT_LOCKFILE:-}" ]; then
-    hint="。上に「lock file」のエラーが出ているなら、この PC の OS・CPU のハッシュが lock に無い（-lockfile=$TF_INIT_LOCKFILE では書き足さない）。先にマネージド版のルートを init して lock に足す: terraform -chdir=terraform/$1 init -input=false のあと、もう一度打つ"
+    hint="。上に「lock file」のエラーが出ているなら、この PC の OS・CPU のハッシュが lock に無い（-lockfile=$TF_INIT_LOCKFILE では書き足さない）。先にマネージド版のルートを init して lock に足す: terraform -chdir=IaC/terraform/aws-managed/$1 init -input=false のあと、もう一度打つ"
   fi
   tf "$1" init -input=false ${TF_INIT_LOCKFILE:+"-lockfile=$TF_INIT_LOCKFILE"} >/dev/null \
     || die "$TF_DIR/$1 の init に失敗した（provider の取得。社内 PC は docs/setup.md「社内 PC の CA」）$hint"

@@ -1,4 +1,4 @@
-"""terraform/pipeline/graph の Lambda（<prefix>-graph-status）。Grafana と Splunk のアラート（SNS のトピック <接頭辞>-alerts）を受けて、
+"""IaC/terraform/aws-managed/pipeline/graph の Lambda（<prefix>-graph-status）。Grafana と Splunk のアラート（SNS のトピック <接頭辞>-alerts）を受けて、
 Neptune の機器と回線の動的な状態（property status）を書く。設計の「動的なステータス反映（トラップ / ログ → Lambda → Neptune の属性を UP → DOWN）」。
 
   firing    kind=link_down → 機器 device_id のインタフェース target が付く回線（辺）を DOWN
@@ -7,15 +7,15 @@ Neptune の機器と回線の動的な状態（property status）を書く。設
             それ以外（trap）  → 機器（頂点）を ALARM（トラップは機器が落ちた印ではないので DOWN にしない）
   resolved  同じ要素を UP に戻す（trap の解消は、機器が ALARM のときだけ UP。IF の分からない linkDown の DOWN は上書きしない）
 
-メッセージの形は workflow/rules.py の alerts_from_message が読む（ワーカーの starter と同じ読み手。zip に rules.py として同梱する）。
+メッセージの形は app/temporal/rules.py の alerts_from_message が読む（ワーカーの starter と同じ読み手。zip に rules.py として同梱する）。
 1 通に何件か入っていることがある（Grafana はグループごとに 1 通）。同じ障害を Grafana と Splunk の両方が知らせても、書くのは同じ値なので害は無い。
-zip には agent/graph.py も同梱する（openCypher の組み立てと boto3 の neptune-graph はそちら）。グラフの ID は環境変数 NEPTUNE_GRAPH_ID。
+zip には app/agentcore/graph.py も同梱する（openCypher の組み立てと boto3 の neptune-graph はそちら）。グラフの ID は環境変数 NEPTUNE_GRAPH_ID。
 トポロジに無い機器やインタフェースは捨てずに「未登録」の頂点として Neptune に残し（graph.set_status）、WARNING で UNREGISTERED を
 ログに出す（登録漏れの印。CloudWatch Logs Insights で `filter @message like /UNREGISTERED/` と探す。lab に足した機器は
 ops/sync-graph.sh --replace で登録すると、未登録の頂点は置き換わる）。
 
 届いた通知は 1 件 1 行で、アラートの履歴（S3 Tables の alert_events）にも Firehose で送る（環境変数 ALERT_STREAM。空なら送らない。
-terraform/pipeline/graph の alert_history）。行は rules.alert_event が組み、Neptune で無視した通知（機器の無いものなど）も送る。
+IaC/terraform/aws-managed/pipeline/graph の alert_history）。行は rules.alert_event が組み、Neptune で無視した通知（機器の無いものなど）も送る。
 alerts_from_message が捨てた通知（device_id か kind が無い・status が firing / resolved でない）は行にせず、件数を WARNING で
 ALERT_DROPPED としてログに出す。行を組めない通知（starts_at が 9999 年を超えるなど、rules.alert_event が例外になるもの）も行にせず、
 1 件ずつ ALERT_DROPPED の WARNING に出して Neptune には書く（その 1 件のせいでほかの通知の行と Neptune を落とさない）。ALERT_STREAM が空なら行を組まない。
@@ -59,7 +59,7 @@ FIREHOSE_CONFIG = Config(connect_timeout=2, read_timeout=3, retries={"total_max_
 # ときを 1 回は救う。1 回の呼び出しは長くて 2 ×（接続 3 秒 + 読み 10 秒）+ 再試行の前の待ち 1 秒 = 27 秒、エンドポイントが 2 つの AZ に
 # あれば 2 ×（2 × 3 + 10）+ 1 = 33 秒。Firehose の 21.6 秒と足しても 60 秒に収まるのは問い合わせ 1 回まで。通知 1 件は 1〜5 回問い合わせる。
 # 3 つの AZ なら 2 ×（3 × 3 + 10）+ 1 = 39 秒で、Firehose の 27.6 秒と足すと 66.6 秒になり、問い合わせ 1 回でも 60 秒を超える。
-# そのときは ops/up.sh が注意を出す（2026-10-05 のユーザー決定。timeout とここの待ちは変えない））。agent/graph.py の既定
+# そのときは ops/up.sh が注意を出す（2026-10-05 のユーザー決定。timeout とここの待ちは変えない））。app/agentcore/graph.py の既定
 # （接続 10 秒・読み 60 秒・3 回まで）はエージェントと up.sh が使うので変えず、graph._cache に入れて差し替える
 NEPTUNE_CONFIG = Config(connect_timeout=3, read_timeout=10, retries={"total_max_attempts": 2, "mode": "standard"})
 # OSS 版（GRAPH_BACKEND=neo4j）の Neo4j のドライバも同じ考えで短くする（graph.NEO4J_CONFIG は接続 10 秒・やり直し 15 秒）
@@ -86,7 +86,7 @@ def apply(alert: dict) -> dict:
         return graph.set_status(device_id, "", status)   # どのインタフェースか分からない linkDown は機器に付ける
     if status == "DOWN":
         return graph.set_status(device_id, "", "ALARM")
-    # trap は TTL で閉じる（splunk/ の保存済みサーチ）。そのあいだに機器が DOWN になっていたら、それは linkDown の印なので残す
+    # trap は TTL で閉じる（app/splunk/ の保存済みサーチ）。そのあいだに機器が DOWN になっていたら、それは linkDown の印なので残す
     return graph.set_status(device_id, "", "UP", only_if="ALARM")
 
 

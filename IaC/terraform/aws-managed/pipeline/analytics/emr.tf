@@ -22,7 +22,7 @@ resource "aws_emrserverless_application" "spark" {
     memory = var.max_memory
   }
 
-  # SG は terraform/base/core の spark（network.tf）。サブネットは var.emr_az_num の AZ（a から）
+  # SG は IaC/terraform/aws-managed/base/core の spark（network.tf）。サブネットは var.emr_az_num の AZ（a から）
   network_configuration {
     subnet_ids         = slice(local.subnet_ids, 0, var.emr_az_num)
     security_group_ids = [local.spark_sg_id]
@@ -36,7 +36,7 @@ resource "aws_emrserverless_application" "spark" {
 
     precondition {
       condition     = local.msk_cluster_arn != "" && local.bootstrap != ""
-      error_message = "terraform/pipeline/stream の state（terraform/pipeline/stream/terraform.tfstate）から msk_cluster_arn / bootstrap_brokers が読めない。terraform/pipeline/stream を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/pipeline/stream の state（IaC/terraform/aws-managed/pipeline/stream/terraform.tfstate）から msk_cluster_arn / bootstrap_brokers が読めない。IaC/terraform/aws-managed/pipeline/stream を先に apply する。"
     }
   }
 

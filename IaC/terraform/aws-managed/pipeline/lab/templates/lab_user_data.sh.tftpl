@@ -15,7 +15,7 @@ MIME-Version: 1.0
 Content-Transfer-Encoding: 8bit
 
 #!/bin/bash
-# 支度の中身は S3 の lab/setup.sh（cloudformation/lab-debug.yaml の UserData と共通）。ここは env を書いて置き直し、呼ぶだけ
+# 支度の中身は S3 の lab/setup.sh（IaC/cloudformation/lab-debug.yaml の UserData と共通）。ここは env を書いて置き直し、呼ぶだけ
 set -euo pipefail
 LAB=/opt/${name_prefix}-lab
 install -d -m 0755 $LAB

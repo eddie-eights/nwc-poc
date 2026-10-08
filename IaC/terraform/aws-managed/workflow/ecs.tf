@@ -1,8 +1,8 @@
 # ---------------------------------------------------------------- network
-# タスクの SG は terraform/base/core の workflow。受信は Web の EC2 からの Temporal UI の 8233（SSM のポートフォワーディング。docs/workflow.md
+# タスクの SG は IaC/terraform/aws-managed/base/core の workflow。受信は Web の EC2 からの Temporal UI の 8233（SSM のポートフォワーディング。docs/workflow.md
 # 「Temporal UI を開く」）だけ、送信はエンドポイント（Neptune Analytics もここ）と S3 の 443（security_groups.tf の通信の表）。
 # Temporal の gRPC（7233）はタスクの中の localhost だけで待つ（ワーカーは同じタスク。下の --ip 127.0.0.1）。
-# ECR / logs / SSM / AgentCore / SQS / s3tables へは terraform/base/core のインターフェース型エンドポイント（ops/up.sh が WORKFLOW のときに作らせる）を通る。
+# ECR / logs / SSM / AgentCore / SQS / s3tables へは IaC/terraform/aws-managed/base/core のインターフェース型エンドポイント（ops/up.sh が WORKFLOW のときに作らせる）を通る。
 # 2026-09-26 まではここにタスクの SG と 7 本のルールがあった（7c42b0f）
 
 # ---------------------------------------------------------------- cluster / logs
@@ -93,7 +93,7 @@ resource "aws_ecs_task_definition" "workflow" {
         }
       }
       }, local.graph_neo4j ? {
-      # workflow/awsio.py の NEO4J_PASSWORD（SSM の SecureString。値は state にもタスク定義にも書かない。読む権限は iam.tf の execution_neo4j）
+      # app/temporal/awsio.py の NEO4J_PASSWORD（SSM の SecureString。値は state にもタスク定義にも書かない。読む権限は iam.tf の execution_neo4j）
       secrets = [{ name = "NEO4J_PASSWORD", valueFrom = local.neo4j_password_arn }]
     } : {}),
   ])
@@ -101,19 +101,19 @@ resource "aws_ecs_task_definition" "workflow" {
   lifecycle {
     precondition {
       condition     = local.worker_repository_url != "" && local.temporal_repository_url != ""
-      error_message = "terraform/base/ecr の state から worker_repository_url / temporal_repository_url が読めない。terraform/base/ecr を create_workflow_repositories = true で apply する。"
+      error_message = "IaC/terraform/aws-managed/base/ecr の state から worker_repository_url / temporal_repository_url が読めない。IaC/terraform/aws-managed/base/ecr を create_workflow_repositories = true で apply する。"
     }
     precondition {
       condition     = local.runtime_arn != ""
-      error_message = "terraform/agent の state から agent_runtime_arn が読めない。terraform/agent を先に apply する（deploy.env の AGENT=1）。"
+      error_message = "IaC/terraform/aws-managed/agent の state から agent_runtime_arn が読めない。IaC/terraform/aws-managed/agent を先に apply する（deploy.env の AGENT=1）。"
     }
     precondition {
       condition     = (local.neptune_graph_id != "" && local.neptune_data_arn != "") || local.graph_neo4j
-      error_message = "terraform/pipeline/graph の state から graph_id / graph_arn（OSS 版は neo4j_uri）が読めない。事前チェックと保守中の判定はトポロジ（Neptune。OSS 版は Neo4j）を読むので、terraform/pipeline/graph を先に apply する（2026-09-24 から）。"
+      error_message = "IaC/terraform/aws-managed/pipeline/graph の state から graph_id / graph_arn（OSS 版は neo4j_uri）が読めない。事前チェックと保守中の判定はトポロジ（Neptune。OSS 版は Neo4j）を読むので、IaC/terraform/aws-managed/pipeline/graph を先に apply する（2026-09-24 から）。"
     }
     precondition {
       condition     = local.audit_bucket_arn != "" && local.audit_namespace != "" && local.proposal_events_table_name != ""
-      error_message = "terraform/pipeline/analytics の state から table_bucket_arn / table_namespace / proposal_events_table_name が読めない。修復案は S3 Tables の proposal_events に置くので、terraform/pipeline/analytics を先に apply する（2026-09-24 から）。"
+      error_message = "IaC/terraform/aws-managed/pipeline/analytics の state から table_bucket_arn / table_namespace / proposal_events_table_name が読めない。修復案は S3 Tables の proposal_events に置くので、IaC/terraform/aws-managed/pipeline/analytics を先に apply する（2026-09-24 から）。"
     }
   }
 }

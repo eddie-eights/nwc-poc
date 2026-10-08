@@ -1,12 +1,12 @@
 """cycle 005（マネージドを OSS に置き換えた環境を作る）の oss/ops/（up.sh / down.sh / oss-images.sh）の模擬テスト。
 aws / terraform / docker は偽物（下の FAKE_*）に差し替え、AWS には触れない。
   1. 接頭辞 <owner>-nwc-oss が、どの OWNER の組み合わせでもマネージド版の <owner>-nwc-poc と同じにならない（resolve_name_prefix を bash で呼ぶ）
-  2. oss/ops/down.sh は oss/terraform/ の state と、名前・タグが <owner>-nwc-oss のもの（SSM のパラメータは ManagedBy=oss/ops/up.sh だけ）しか消さない。
+  2. oss/ops/down.sh は IaC/terraform/oss/ の state と、名前・タグが <owner>-nwc-oss のもの（SSM のパラメータは ManagedBy=oss/ops/up.sh だけ）しか消さない。
      いちばん紛らわしい OWNER=x-nwc-oss のマネージド版（接頭辞 x-nwc-oss-nwc-poc。OSS 版の x-nwc-oss と頭が同じ）を同じアカウントに並べて確かめる。
      逆向き（ops/down.sh が OSS 版に触らない）も見る。消したあとに残っているもの（Project タグ）を数えて出す
   3. stream が消えなかったときは Kafka の CLUSTER_ID を残し、残りのルートは消しにいき、終了コード 1 で消えなかったルートを出す
-  4. イメージの名前と版が oss/compose/（正）・spark/ と neo4j/ の Dockerfile・terraform の既定値・ECR のリポジトリに合い、
-     mirror_oss_images が ECR に無いものだけを写す（spark / neo4j はリポジトリの直下の spark/・neo4j/ をビルドする）
+  4. イメージの名前と版が oss/compose/（正）・docker/images/spark/ と docker/images/neo4j/ の Dockerfile・terraform の既定値・ECR のリポジトリに合い、
+     mirror_oss_images が ECR に無いものだけを写す（spark / neo4j は app/spark/・app/neo4j/ を context に、docker/images/<名前>/Dockerfile でビルドする）
   5. ensure_secret の kafka-cluster-id（KRaft の CLUSTER_ID の形）と strong-password（OpenSearch の admin。値は画面に出さない）と、
      oss/ops/ が ops/ の関数を写さず読むこと、up.sh がマネージド版と同じ 9 つのルートを当て、Splunk のイメージと SSM をマネージド版と同じ関数で用意すること
   6. oss/ops/up.sh を偽物の道具で最後まで通す（3 回）。9 つのルートの apply の順番と渡す値、イメージと SSM のパラメータ、Web の部品、
@@ -350,11 +350,12 @@ for d in ("ops", "oss/ops"):
     for f in os.listdir(os.path.join(ROOT, d)):
         if f.endswith(".sh") or f in ("seed_graph.py", "roll_health.py"):
             shutil.copy(os.path.join(ROOT, d, f), os.path.join(REPO, d, f))
-UP_DIRS = ("lab", "web", "agent", "nautobot", "telegraf", "splunk", "spark", "neo4j", "graph", "workflow")
+UP_DIRS = ("app/containerlab", "app/dashboard", "app/agentcore", "app/nautobot", "app/telegraf", "app/splunk", "app/spark", "app/neo4j", "app/graph",
+           "app/temporal", "docker/images")
 for d in UP_DIRS:
     shutil.copytree(os.path.join(ROOT, d), os.path.join(REPO, d), ignore=shutil.ignore_patterns(
         "__pycache__", ".env", ".env.*", "deploy.env", "*.tfvars", "*.rpm", "*.part", "node_modules", ".venv", "splab.clab.yml"))
-for base in ("terraform", "oss/terraform"):
+for base in ("IaC/terraform/aws-managed", "IaC/terraform/oss"):
     for r in ROOTS:
         os.makedirs(os.path.join(REPO, base, r))
         with open(os.path.join(REPO, base, r, "terraform.tfstate"), "w") as f:
@@ -446,9 +447,9 @@ p, cs, inv = run_down("oss/ops/down.sh", "x")
 out = p.stdout + p.stderr
 check("oss/ops/down.sh（OWNER=x）: 終了コード 0", p.returncode == 0)
 check("偽物の aws に知らないコマンドを打っていない", not [c for c in cs if c.get("unknown")])
-check("terraform は oss/terraform/ の下だけを -chdir で触り、terraform/（マネージド版の state）には入らない",
-      tf_calls(cs) and all(chdir_of(c).startswith("oss/terraform/") for c in tf_calls(cs)))
-check("oss/terraform/ の 9 つのルートを全部 destroy した", destroyed(cs) == {f"oss/terraform/{r}" for r in ROOTS})
+check("terraform は IaC/terraform/oss/ の下だけを -chdir で触り、IaC/terraform/aws-managed/（マネージド版の state）には入らない",
+      tf_calls(cs) and all(chdir_of(c).startswith("IaC/terraform/oss/") for c in tf_calls(cs)))
+check("IaC/terraform/oss/ の 9 つのルートを全部 destroy した", destroyed(cs) == {f"IaC/terraform/oss/{r}" for r in ROOTS})
 check("destroy には -var owner=x を渡す",
       all("owner=x" in c["args"] for c in tf_calls(cs) if c["args"][1] == "destroy"))
 check("terraform に渡す認証のプロファイル名は接頭辞から作る（x-nwc-oss-terraform）",
@@ -482,18 +483,18 @@ check("残り: Project=x-nwc-oss（完全一致）だけを数え、ARN を並�
       "残り: 2 件（Project=x-nwc-oss のタグ）" in out
       and "arn:aws:ecs:ap-northeast-1:123456789012:cluster/x-nwc-oss-left" in out
       and "parameter/x-nwc-oss/manual/note" in out and "x-nwc-oss-nwc-poc" not in out and "vpc/vpc-0aaa" not in out)
-check("KEEP_ECR を書かなければ ECR も消す（oss/terraform/base/ecr を destroy した）", "oss/terraform/base/ecr" in destroyed(cs))
+check("KEEP_ECR を書かなければ ECR も消す（IaC/terraform/oss/base/ecr を destroy した）", "IaC/terraform/oss/base/ecr" in destroyed(cs))
 
 # ================================================================ 2'. 逆向き: マネージド版の ops/down.sh は OSS 版に触らない
 p, cs, inv = run_down("ops/down.sh", "x-nwc-oss")
 out = p.stdout + p.stderr
 check("ops/down.sh（OWNER=x-nwc-oss → 接頭辞 x-nwc-oss-nwc-poc）: 終了コード 0", p.returncode == 0)
 check("マネージド版: 偽物の aws に知らないコマンドを打っていない", not [c for c in cs if c.get("unknown")])
-check("マネージド版: terraform は terraform/ の下だけ（oss/terraform/ の state には入らない）",
-      tf_calls(cs) and all(chdir_of(c).startswith("terraform/") for c in tf_calls(cs)))
+check("マネージド版: terraform は IaC/terraform/aws-managed/ の下だけ（IaC/terraform/oss/ の state には入らない）",
+      tf_calls(cs) and all(chdir_of(c).startswith("IaC/terraform/aws-managed/") for c in tf_calls(cs)))
 check("マネージド版: Runtime の ENI が残っているので base/core は -target で ENI に関わらないものだけ消す",
       "Runtime の ENI が残っている" in out
-      and any(chdir_of(c) == "terraform/base/core" and "-target=aws_instance.this" in c["args"] for c in tf_calls(cs)))
+      and any(chdir_of(c) == "IaC/terraform/aws-managed/base/core" and "-target=aws_instance.this" in c["args"] for c in tf_calls(cs)))
 check("マネージド版: SSM は /x-nwc-oss-nwc-poc/ の ManagedBy=ops/up.sh の 2 つだけ消し、OSS 版の 9 つは残す",
       set(inv["ssm"]) == ALL_PARAMS - {"/x-nwc-oss-nwc-poc/kafka-ui/admin-password", "/x-nwc-oss-nwc-poc/nautobot/secret-key"})
 check("マネージド版: Lambda の ENI は x-nwc-oss-nwc-poc の 2 つだけ消し、OSS 版のものは残す",
@@ -517,29 +518,29 @@ check("ops/down.sh（OWNER=x → x-nwc-poc）: 終了コード 0 で、消した
       and "残り: 1 件（Project=x-nwc-poc のタグ）" in out)
 
 # ================================================================ 3. stream が消えなかったとき
-p, cs, inv = run_down("oss/ops/down.sh", "x", {"FAKE_TF_FAIL": "oss/terraform/pipeline/stream", "FAKE_TAG_FAIL": "1", "KEEP_ECR": "1"})
+p, cs, inv = run_down("oss/ops/down.sh", "x", {"FAKE_TF_FAIL": "IaC/terraform/oss/pipeline/stream", "FAKE_TAG_FAIL": "1", "KEEP_ECR": "1"})
 out = p.stdout + p.stderr
 check("stream が消えなかった: 終了コード 1 で「NG: 消えなかったルート: pipeline/stream」と出す",
       p.returncode == 1 and "NG: 消えなかったルート: pipeline/stream（" in out)
 check("stream が消えなかった: 後ろのルート（lab / agent / base/core）は消しにいく",
-      {"oss/terraform/pipeline/lab", "oss/terraform/agent", "oss/terraform/base/core"} <= destroyed(cs))
+      {"IaC/terraform/oss/pipeline/lab", "IaC/terraform/oss/agent", "IaC/terraform/oss/base/core"} <= destroyed(cs))
 check("stream が消えなかった: Kafka の CLUSTER_ID は残し（次の down.sh で消す）、ほかの oss/ops/up.sh のパラメータは消す",
       "/x-nwc-oss/kafka/cluster-id: 残す" in out
       and set(inv["ssm"]) == ALL_PARAMS - set(OSS_MANAGED_PARAMS) | {"/x-nwc-oss/kafka/cluster-id"})
-check("KEEP_ECR=1 なら oss/terraform/base/ecr は destroy しない", "oss/terraform/base/ecr" not in destroyed(cs))
+check("KEEP_ECR=1 なら IaC/terraform/oss/base/ecr は destroy しない", "IaC/terraform/oss/base/ecr" not in destroyed(cs))
 check("残りを数えられなかった（タグの API のエラー）ときは、0 件と言わずに「数えられなかった」と出す",
       "残り: 数えられなかった（上のエラー）" in out and "残り: 0 件" not in out)
 
-p, cs, inv = run_down("oss/ops/down.sh", "x", {"FAKE_TF_FAIL": "oss/terraform/base/core"})
+p, cs, inv = run_down("oss/ops/down.sh", "x", {"FAKE_TF_FAIL": "IaC/terraform/oss/base/core"})
 check("base/core（Kafka のデータの EFS）が消えなかったときも Kafka の CLUSTER_ID は残す",
       p.returncode == 1 and "/x-nwc-oss/kafka/cluster-id" in inv["ssm"] and "/x-nwc-oss/kafka-ui/admin-password" not in inv["ssm"])
 
-p, cs, inv = run_down("oss/ops/down.sh", "x", {"FAKE_TF_FAIL": "oss/terraform/pipeline/nautobot"})
+p, cs, inv = run_down("oss/ops/down.sh", "x", {"FAKE_TF_FAIL": "IaC/terraform/oss/pipeline/nautobot"})
 check("nautobot が消えなかった: 終了コード 1 で、/x-nwc-oss/nautobot/ の下（DB に入っている値と合わせるもの）だけ残し、ほかは Kafka の CLUSTER_ID も消す",
       p.returncode == 1 and "NG: 消えなかったルート: pipeline/nautobot（" in p.stdout + p.stderr
       and set(inv["ssm"]) == ALL_PARAMS - set(OSS_MANAGED_PARAMS) | {"/x-nwc-oss/nautobot/secret-key"})
 check("nautobot が消えなかった: 前後のルート（analytics / graph / stream / base/core）は消しにいく",
-      {f"oss/terraform/{r}" for r in ROOTS} == destroyed(cs))
+      {f"IaC/terraform/oss/{r}" for r in ROOTS} == destroyed(cs))
 
 # ================================================================ 4. イメージの名前と版
 img_sh = read("oss/ops/oss-images.sh")
@@ -552,25 +553,25 @@ check("oss-images.sh の公開イメージ（kafka / kafka-ui / opensearch / Vic
       {f'{V["OSS_KAFKA_IMAGE"]}:{V["OSS_KAFKA_TAG"]}', f'{V["OSS_KAFKA_UI_IMAGE"]}:{V["OSS_KAFKA_UI_TAG"]}',
        f'{V["OSS_OPENSEARCH_IMAGE"]}:{V["OSS_OPENSEARCH_TAG"]}'}
       | {f'victoriametrics/{n}:{V["OSS_VM_TAG"]}' for n in ("vmstorage", "vminsert", "vmselect")} <= compose_images)
-check("ビルドする spark / neo4j の版は spark/・neo4j/ の Dockerfile の ARG の既定値と同じで、oss/compose/<名前>/Dockerfile の FROM とも同じ",
-      re.search(rf'^ARG SPARK_VERSION={re.escape(V["OSS_SPARK_VERSION"])}\s*$', read("spark/Dockerfile"), re.M)
-      and re.search(r'^FROM apache/spark:\$\{SPARK_VERSION\}-java17-python3\s*$', read("spark/Dockerfile"), re.M)
-      and re.search(rf'^ARG NEO4J_VERSION={re.escape(V["OSS_NEO4J_VERSION"])}\s*$', read("neo4j/Dockerfile"), re.M)
-      and re.search(r'^FROM neo4j:\$\{NEO4J_VERSION\}-community\s*$', read("neo4j/Dockerfile"), re.M)
+check("ビルドする spark / neo4j の版は docker/images/spark/・docker/images/neo4j/ の Dockerfile の ARG の既定値と同じで、oss/compose/<名前>/Dockerfile の FROM とも同じ",
+      re.search(rf'^ARG SPARK_VERSION={re.escape(V["OSS_SPARK_VERSION"])}\s*$', read("docker/images/spark/Dockerfile"), re.M)
+      and re.search(r'^FROM apache/spark:\$\{SPARK_VERSION\}-java17-python3\s*$', read("docker/images/spark/Dockerfile"), re.M)
+      and re.search(rf'^ARG NEO4J_VERSION={re.escape(V["OSS_NEO4J_VERSION"])}\s*$', read("docker/images/neo4j/Dockerfile"), re.M)
+      and re.search(r'^FROM neo4j:\$\{NEO4J_VERSION\}-community\s*$', read("docker/images/neo4j/Dockerfile"), re.M)
       and re.search(rf'^FROM apache/spark:{re.escape(V["OSS_SPARK_VERSION"])}-java17-python3\s*$', read("oss/compose/spark/Dockerfile"), re.M)
       and re.search(rf'^FROM neo4j:{re.escape(V["OSS_NEO4J_VERSION"])}-community\s*$', read("oss/compose/neo4j/Dockerfile"), re.M))
-check("Neo4j の版は oss/terraform/pipeline/graph/neo4j.tf の neo4j_image_tag の既定値と同じ",
-      tf_default_early("oss/terraform/pipeline/graph/neo4j.tf", "neo4j_image_tag") == V["OSS_NEO4J_VERSION"])
+check("Neo4j の版は IaC/terraform/oss/pipeline/graph/neo4j.tf の neo4j_image_tag の既定値と同じ",
+      tf_default_early("IaC/terraform/oss/pipeline/graph/neo4j.tf", "neo4j_image_tag") == V["OSS_NEO4J_VERSION"])
 def tf_default(path, var):
     m = re.search(rf'variable\s+"{var}"\s*\{{[^}}]*?default\s*=\s*"([^"]+)"', read(path), re.S)
     return m and m.group(1)
-check("Kafka の版は oss/terraform/pipeline/stream/kafka.tf の kafka_image_tag の既定値と同じ",
-      tf_default("oss/terraform/pipeline/stream/kafka.tf", "kafka_image_tag") == V["OSS_KAFKA_TAG"])
+check("Kafka の版は IaC/terraform/oss/pipeline/stream/kafka.tf の kafka_image_tag の既定値と同じ",
+      tf_default("IaC/terraform/oss/pipeline/stream/kafka.tf", "kafka_image_tag") == V["OSS_KAFKA_TAG"])
 check("Kafbat UI の版はマネージド版の ops/up.sh の KAFKA_UI_TAG と stream の kafka_ui_image_tag の既定値と同じ",
       re.search(r"^KAFKA_UI_TAG=(\S+)", read("ops/up.sh"), re.M).group(1) == V["OSS_KAFKA_UI_TAG"]
-      == tf_default("terraform/pipeline/stream/variables.tf", "kafka_ui_image_tag"))
-m = re.search(r'oss_repositories\s*=.*?toset\(\[([^\]]*)\]\)', read("terraform/base/ecr/main.tf"))
-check("OSS_IMAGES（ECR に写すもの）は terraform/base/ecr の oss_repositories と同じ 7 つ",
+      == tf_default("IaC/terraform/aws-managed/pipeline/stream/variables.tf", "kafka_ui_image_tag"))
+m = re.search(r'oss_repositories\s*=.*?toset\(\[([^\]]*)\]\)', read("IaC/terraform/aws-managed/base/ecr/main.tf"))
+check("OSS_IMAGES（ECR に写すもの）は IaC/terraform/aws-managed/base/ecr の oss_repositories と同じ 7 つ",
       m and set(re.findall(r'"([^"]+)"', m.group(1))) == set(V["OSS_IMAGES"].split()) and len(V["OSS_IMAGES"].split()) == 7)
 
 TAGS_SH = r'''
@@ -585,7 +586,7 @@ p = subprocess.run(["bash", "-c", TAGS_SH], cwd=ROOT, capture_output=True, text=
 T = {r[0]: (r[1], r[2]) for r in (line.split() for line in p.stdout.splitlines()) if len(r) == 3}
 check("oss_image_tag / oss_image_upstream は OSS_IMAGES の 7 つ全部に答え、知らない名前は 1 を返す",
       p.returncode == 0 and p.stdout.rstrip().endswith("END") and set(T) == set(V["OSS_IMAGES"].split()))
-check("spark / neo4j のタグは「<Dockerfile の ARG の版>-<spark/・neo4j/ の中身のハッシュ 12 桁>」で、写す元は無い（ビルドする）",
+check("spark / neo4j のタグは「<Dockerfile の ARG の版>-<app/spark/・app/neo4j/ の中身のハッシュ 12 桁>」で、写す元は無い（ビルドする）",
       re.fullmatch(rf'{re.escape(V["OSS_SPARK_VERSION"])}-[0-9a-f]{{12}}', T["spark"][0])
       and re.fullmatch(rf'{re.escape(V["OSS_NEO4J_VERSION"])}-[0-9a-f]{{12}}', T["neo4j"][0])
       and T["spark"][1] == T["neo4j"][1] == "-")
@@ -610,11 +611,12 @@ check("mirror_oss_images: 公開イメージは arm64 を引いて写す（apach
       {a[-1] for a in docker if a[0] == "pull" and a[1:3] == ["--platform", "linux/arm64"]}
       == {f'{V["OSS_KAFKA_IMAGE"]}:{V["OSS_KAFKA_TAG"]}'} | {f'victoriametrics/{n}:{V["OSS_VM_TAG"]}' for n in ("vmstorage", "vminsert", "vmselect")})
 _builds = {a[-1]: a for a in docker if a[:2] == ["buildx", "build"]}
-check("mirror_oss_images: spark / neo4j はリポジトリの直下の spark/・neo4j/ を linux/arm64 でビルドして push し、版を --build-arg で渡す",
-      sorted(_builds) == ["neo4j", "spark"]
+check("mirror_oss_images: spark / neo4j は app/spark/・app/neo4j/ を context に、docker/images/<名前>/Dockerfile で linux/arm64 でビルドして push し、版を --build-arg で渡す",
+      sorted(_builds) == ["app/neo4j/", "app/spark/"]
       and all(a[2:4] == ["--platform", "linux/arm64"] and "--push" in a for a in _builds.values())
-      and arg_after(_builds["spark"], "--build-arg") == f'SPARK_VERSION={V["OSS_SPARK_VERSION"]}'
-      and arg_after(_builds["neo4j"], "--build-arg") == f'NEO4J_VERSION={V["OSS_NEO4J_VERSION"]}')
+      and all(arg_after(_builds[f"app/{n}/"], "-f") == f"docker/images/{n}/Dockerfile" for n in ("spark", "neo4j"))
+      and arg_after(_builds["app/spark/"], "--build-arg") == f'SPARK_VERSION={V["OSS_SPARK_VERSION"]}'
+      and arg_after(_builds["app/neo4j/"], "--build-arg") == f'NEO4J_VERSION={V["OSS_NEO4J_VERSION"]}')
 p = subprocess.run(["bash", "-c", rf'REGION=ap-northeast-1; PY=(python3); . ops/lab-common.sh; . oss/ops/oss-images.sh; mirror_oss_images {REG} x-nwc-oss bogus'],
                    cwd=ROOT, env=fake_env(), capture_output=True, text=True, timeout=60)
 check("mirror_oss_images: 知らない名前は 1 で止まる", p.returncode == 1 and "知らないイメージ: bogus" in p.stderr)
@@ -682,8 +684,8 @@ check("oss/ops/down.sh は ops/common.sh・ops/down-common.sh・ops/deploy-env.s
 check("マネージド版の ops/up.sh と ops/down.sh も同じ共通のファイルを読む（写しが 2 つにならない）",
       all(s in read("ops/up.sh") for s in (". ops/common.sh", ". ops/up-common.sh"))
       and all(s in read("ops/down.sh") for s in (". ops/common.sh", ". ops/down-common.sh")))
-check("oss/ops/ の 2 つは resolve_name_prefix nwc-oss で接頭辞を作り、TF_DIR=oss/terraform・OPS_DIR=oss/ops・TF_LOG_NAME=tf-oss にする",
-      all("resolve_name_prefix nwc-oss" in t and re.search(r"^TF_DIR=oss/terraform\b", t, re.M)
+check("oss/ops/ の 2 つは resolve_name_prefix nwc-oss で接頭辞を作り、TF_DIR=IaC/terraform/oss・OPS_DIR=oss/ops・TF_LOG_NAME=tf-oss にする",
+      all("resolve_name_prefix nwc-oss" in t and re.search(r"^TF_DIR=IaC/terraform/oss\b", t, re.M)
           and re.search(r"^OPS_DIR=oss/ops\b", t, re.M) and re.search(r"^TF_LOG_NAME=tf-oss\b", t, re.M) for t in (up, down)))
 pos = lambda s: up.find(s)
 _applies = [pos(f"tf_apply {r}") for r in ROOTS]
@@ -707,12 +709,12 @@ check("oss/ops/up.sh は analytics の前に Splunk の SSM（ensure_splunk_secr
       and 0 <= pos("ensure_s3tables_catalog") < pos("tf_apply pipeline/analytics")
       and 'ensure_splunk_secrets "$SPLUNK_AZ_NUM"' in read("ops/up.sh"))
 check("oss/ops/up.sh の Grafana のイメージはマネージド版と同じ関数（ops/up-common.sh の build_grafana。版は GRAFANA_VERSION、タグは dir_tag）で、docker login のあと、analytics より前",
-      'GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" grafana)' in up and 'ecr_has "$PREFIX-grafana" "$GRAFANA_TAG"' in up
+      'GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" app/grafana)' in up and 'ecr_has "$PREFIX-grafana" "$GRAFANA_TAG"' in up
       and pos("aws ecr get-login-password") < pos("    build_grafana") < pos("tf_apply pipeline/analytics")
       and "    build_grafana" in read("ops/up.sh") and "GRAFANA_VERSION=" not in read("ops/up.sh") and "GRAFANA_VERSION=" not in up
       and re.search(r"^GRAFANA_VERSION=(\S+)", read("ops/up-common.sh"), re.M).group(1)
-      == re.search(r"^ARG GRAFANA_VERSION=(\S+)", read("grafana/Dockerfile"), re.M).group(1)
-      and 'docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push grafana/'
+      == re.search(r"^ARG GRAFANA_VERSION=(\S+)", read("docker/images/grafana/Dockerfile"), re.M).group(1)
+      and 'docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push -f docker/images/grafana/Dockerfile app/grafana/'
       in read("ops/up-common.sh"))
 # analytics と stream の -var は配列（ANALYTICS_VARS / STREAM_VARS）にまとめ、1 台ずつの入れ替え（roll_nodes）と apply に同じものを渡す
 _an = up[pos("ANALYTICS_VARS=("):pos('tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"')]
@@ -732,16 +734,16 @@ check("oss/ops/up.sh は analytics に 4 つの格納先と、Spark・OpenSearch
                               '-var "opensearch_image_tag=$OSS_OPENSEARCH_TAG"', '-var "victoriametrics_image_tag=$OSS_VM_TAG"',
                               '-var "splunk_image_tag=$SPLUNK_TAG"', '-var "splunk_index=$SPLUNK_INDEX"', '-var "splunk_az_num=$SPLUNK_AZ_NUM"',
                               '-var "emr_az_num=$EMR_AZ_NUM"', '-var "device_map=$DEVICE_MAP"')))
-check("oss/ops/up.sh は graph の前に SSM の /<接頭辞>/neo4j-password を作り、status の Lambda のレイヤー（graph/requirements-oss.txt を arm64 向けに）を入れ、Neo4j のタグと alert_history=true を渡す",
+check("oss/ops/up.sh は graph の前に SSM の /<接頭辞>/neo4j-password を作り、status の Lambda のレイヤー（app/graph/requirements-oss.txt を arm64 向けに）を入れ、Neo4j のタグと alert_history=true を渡す",
       0 <= pos('ensure_secret "/$PREFIX/neo4j-password" password') < pos("tf_apply pipeline/graph")
-      and 0 <= pos("--target oss/terraform/pipeline/graph/.build/neo4j-layer/python") < pos("tf_apply pipeline/graph")
-      and '--platform "$LAYER_PLATFORM" --python-version "$LAYER_PYVER" -r graph/requirements-oss.txt' in up
+      and 0 <= pos("--target IaC/terraform/oss/pipeline/graph/.build/neo4j-layer/python") < pos("tf_apply pipeline/graph")
+      and '--platform "$LAYER_PLATFORM" --python-version "$LAYER_PYVER" -r app/graph/requirements-oss.txt' in up
       and re.search(r"^LAYER_PLATFORM=manylinux2014_aarch64; LAYER_PYVER=3\.13$", up, re.M)
       # pip に渡す値とハッシュに入れる値は同じ変数（レイヤーの節に platform の文字そのものは定義の 1 回だけ。4-1 の wheel の pip は別）
-      and 'echo "$LAYER_PLATFORM $LAYER_PYVER"' in up and up[pos("LAYER_PLATFORM="):pos('"$LAYER_SHA" > oss/terraform')].count("manylinux") == 1
-      and "shasum" not in up and 0 <= pos("""| "${PY[@]}" -c 'import hashlib, sys; print(hashlib.sha256(""") < pos('"$LAYER_SHA" > oss/terraform/pipeline/graph/.build/neo4j-layer.sha256')
+      and 'echo "$LAYER_PLATFORM $LAYER_PYVER"' in up and up[pos("LAYER_PLATFORM="):pos('"$LAYER_SHA" > IaC/terraform/oss')].count("manylinux") == 1
+      and "shasum" not in up and 0 <= pos("""| "${PY[@]}" -c 'import hashlib, sys; print(hashlib.sha256(""") < pos('"$LAYER_SHA" > IaC/terraform/oss/pipeline/graph/.build/neo4j-layer.sha256')
       and 'tf_apply pipeline/graph -var "neo4j_image_tag=$NEO4J_TAG" -var alert_history=true' in up)
-_sync_tf = read("oss/terraform/pipeline/graph/sync.tf")
+_sync_tf = read("IaC/terraform/oss/pipeline/graph/sync.tf")
 _layer_pyver = re.search(r"^LAYER_PLATFORM=\S+; LAYER_PYVER=(\S+)$", up, re.M).group(1)
 check("oss/ops/up.sh の LAYER_PYVER は sync.tf の Lambda の runtime とレイヤーの compatible_runtimes と同じ版（片方だけ変えると読めないレイヤーになる）",
       f'runtime          = "python{_layer_pyver}"' in _sync_tf and f'compatible_runtimes      = ["python{_layer_pyver}"]' in _sync_tf
@@ -760,7 +762,7 @@ check("oss/ops/up.sh は agent・graph・workflow に lambda_az_num を、agent 
 check("oss/ops/up.sh は analytics に http_send と Spark の 1 回に読む件数（max_offsets_per_trigger とその格納先ごと）を、stream に telegraf_az_num と dialin_targets_from_nautobot=true を渡す",
       '-var "http_send=$HTTP_SEND"' in _an and '-var "max_offsets_per_trigger=' in _an and '-var "max_offsets_per_trigger_by_sink=' in _an
       and '-var "telegraf_az_num=$TELEGRAF_AZ_NUM"' in up and "-var dialin_targets_from_nautobot=true" in up)
-_spark_tf = read("oss/terraform/pipeline/analytics/spark.tf")
+_spark_tf = read("IaC/terraform/oss/pipeline/analytics/spark.tf")
 check("Spark のサービスは Terraform では 0 台で作り（desired_count = 0、あとの変更は見ない）、up.sh が OpenSearch・VictoriaMetrics・Splunk を待ったあとで 1 台にする",
       re.search(r"^\s*desired_count\s*=\s*0$", _spark_tf, re.M) and "ignore_changes = [desired_count]" in _spark_tf
       and 0 <= pos("tf_apply pipeline/analytics") < pos("--services $OS_SERVICES") < pos("--services $VM_SERVICES")
@@ -770,25 +772,25 @@ check("oss/ops/up.sh は Neo4j のサービスが安定してから、Web の EC
       0 <= pos("aws ec2 reboot-instances") < pos("tf_apply pipeline/graph") < pos('--services "$NEO4J_SERVICE"') < pos("base64 < ops/seed_graph.py")
       < pos("tf_apply pipeline/nautobot")
       and "ops/seed_graph.py" in read("ops/up.sh") and "/usr/bin/python3.13 -" in up)
-check("oss/ops/up.sh は Web に Neo4j のドライバーを入れる（web/requirements-oss.txt のホイールを wheels-oss/ に取り、S3 に上げる）。wheels-oss/ は git に入れない",
-      "fetch_wheels wheels-oss web/requirements-oss.txt web/requirements.txt " in up
+check("oss/ops/up.sh は Web に Neo4j のドライバーを入れる（app/dashboard/requirements-oss.txt のホイールを wheels-oss/ に取り、S3 に上げる）。wheels-oss/ は git に入れない",
+      "fetch_wheels wheels-oss app/dashboard/requirements-oss.txt app/dashboard/requirements.txt " in up
       and 'aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels-oss/ "s3://$KB_BUCKET/web/wheels/"' in up
-      and re.search(r"^neo4j==", read("web/requirements-oss.txt"), re.M) and re.search(r"^-r requirements\.txt$", read("web/requirements-oss.txt"), re.M)
-      and re.search(r"^wheels-oss/$", read(".gitignore"), re.M) and re.search(r"^oss/terraform/\*\*/\.build/$", read(".gitignore"), re.M))
+      and re.search(r"^neo4j==", read("app/dashboard/requirements-oss.txt"), re.M) and re.search(r"^-r requirements\.txt$", read("app/dashboard/requirements-oss.txt"), re.M)
+      and re.search(r"^wheels-oss/$", read(".gitignore"), re.M) and re.search(r"^IaC/terraform/\*\*/\.build/$", read(".gitignore"), re.M) and all(subprocess.run(["git", "check-ignore", "-q", f"IaC/terraform/{r}/.build/x"], cwd=ROOT).returncode == 0 for r in ("oss/pipeline/graph", "aws-managed/workflow", "aws-managed/agent")))
 _fw = re.search(r"^fetch_wheels\(\) \{.*?^\}$", read("ops/up-common.sh"), re.M | re.S)
 _fw = _fw.group(0) if _fw else ""
 check("Web の wheel はマネージド版と OSS 版が同じ関数（ops/up-common.sh の fetch_wheels）で取り、requirements と pip の引数のハッシュが置き場の .requirements.sha256 と"
       "違えば置き場を消して取り直す。S3 へは --delete で写し、.sha256 は上げない（005 のレビュー Nit 5）",
       all(w in _fw for w in ('"${WHEEL_ARGS[*]}"', '"${WHEEL_ARGS[@]}"', 'rm -rf "$dir"', '"$dir/.requirements.sha256"', 'cat "${@:2}"'))
       and _fw.index('rm -rf "$dir"') < _fw.index("download") < _fw.index('> "$dir/.requirements.sha256"')
-      and "\nfetch_wheels wheels web/requirements.txt\n" in read("ops/up.sh")
+      and "\nfetch_wheels wheels app/dashboard/requirements.txt\n" in read("ops/up.sh")
       and 'aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels/ "s3://$KB_BUCKET/web/wheels/"' in read("ops/up.sh")
       and "manylinux" not in up[pos('log "4-1.'):pos('log "4-2.')] and "*.whl" not in up and "*.whl" not in read("ops/up.sh"))
-check("oss/ops/up.sh はワーカーのイメージを Neo4j のドライバー入り（workflow/requirements-oss.txt）でビルドする",
-      'build_worker "$IMAGE_TAG" requirements-oss.txt' in up and re.search(r"^neo4j==", read("workflow/requirements-oss.txt"), re.M))
-check("oss/ops/up.sh は agent（Runtime）のイメージも Neo4j のドライバー入り（agent/requirements-oss.txt）でビルドする。マネージド版は既定（requirements.txt）のまま",
-      'build_agent "$REPO:$IMAGE_TAG" requirements-oss.txt' in up and re.search(r"^neo4j==", read("agent/requirements-oss.txt"), re.M)
-      and re.search(r"^ARG REQUIREMENTS=requirements\.txt$", read("agent/Dockerfile"), re.M)
+check("oss/ops/up.sh はワーカーのイメージを Neo4j のドライバー入り（app/temporal/requirements-oss.txt）でビルドする",
+      'build_worker "$IMAGE_TAG" requirements-oss.txt' in up and re.search(r"^neo4j==", read("app/temporal/requirements-oss.txt"), re.M))
+check("oss/ops/up.sh は agent（Runtime）のイメージも Neo4j のドライバー入り（app/agentcore/requirements-oss.txt）でビルドする。マネージド版は既定（requirements.txt）のまま",
+      'build_agent "$REPO:$IMAGE_TAG" requirements-oss.txt' in up and re.search(r"^neo4j==", read("app/agentcore/requirements-oss.txt"), re.M)
+      and re.search(r"^ARG REQUIREMENTS=requirements\.txt$", read("docker/images/agentcore/Dockerfile"), re.M)
       and '--build-arg "REQUIREMENTS=${2:-requirements.txt}"' in read("ops/up-common.sh")
       and re.search(r'^\s*build_agent "\$REPO:\$IMAGE_TAG"(\s+#.*)?$', read("ops/up.sh"), re.M))
 check("oss/ops/up.sh は nautobot の前に ensure_nautobot_secrets（マネージド版と同じ関数）を呼ぶ",
@@ -815,7 +817,7 @@ check("oss/ops/up.sh の lab の既定の認証情報は ensure_fixed_secret に
       all("ensure_fixed_secret" in line for line in up.splitlines() if re.search(r"\$\{?LAB_[A-Z_]*(PASSWORD|COMMUNITY|USERNAME)", line)))
 
 # ================================================================ 6. oss/ops/up.sh を偽物の道具で最後まで通す
-LAB_NODES = len(re.findall(r"^ *kind: (?:nokia_srlinux|linux)$", read("lab/splab.clab.yml.in"), re.M))
+LAB_NODES = len(re.findall(r"^ *kind: (?:nokia_srlinux|linux)$", read("app/containerlab/splab.clab.yml.in"), re.M))
 def run_up(inv, extra=None):
     reset(inv)
     shutil.rmtree(os.path.join(REPO, "ops", "logs"), ignore_errors=True)
@@ -837,7 +839,7 @@ def applies(cs):  # apply を打った順の (ルート, 引数)
 def has_var(a, v):
     return any(a[i] == "-var" and a[i + 1] == v for i in range(len(a) - 1))
 def apply_at(cs, root):
-    return first(cs, lambda c: c["cmd"] == "terraform" and c["args"][:2] == [f"-chdir=oss/terraform/{root}", "apply"])
+    return first(cs, lambda c: c["cmd"] == "terraform" and c["args"][:2] == [f"-chdir=IaC/terraform/oss/{root}", "apply"])
 def is_seed(c):
     return is_aws(c, "ssm", "send-command", "base64 -d | NAME_PREFIX=x-nwc-oss LAB_TOPOLOGY_B64=", "/usr/bin/python3.13 -")
 def spark_starts(cs):
@@ -857,10 +859,10 @@ ap = applies(cs)
 check("up.sh（通し）: 終了コード 0 で最後まで行き、偽物の知らないコマンドを打たず、未定義の変数も踏まない",
       p.returncode == 0 and not [c for c in cs if "unknown" in c] and "unbound variable" not in out and "command not found" not in out
       and "NO_DASHBOARD_PORTFORWARD=1: Web へのポートフォワーディングは開かない" in p.stdout)
-check("up.sh（通し）: oss/terraform/ の 9 つのルートを決めた順に 1 回ずつ apply し、どれにも owner=x を渡す（terraform/ のルートには触らない）",
-      [r for r, _ in ap] == [f"oss/terraform/{r}" for r in ROOTS] and all(has_var(a, "owner=x") for _, a in ap)
-      and all(chdir_of(c).startswith("oss/terraform/") for c in tf_calls(cs)))
-A = {r[len("oss/terraform/"):]: a for r, a in ap}
+check("up.sh（通し）: IaC/terraform/oss/ の 9 つのルートを決めた順に 1 回ずつ apply し、どれにも owner=x を渡す（IaC/terraform/aws-managed/ のルートには触らない）",
+      [r for r, _ in ap] == [f"IaC/terraform/oss/{r}" for r in ROOTS] and all(has_var(a, "owner=x") for _, a in ap)
+      and all(chdir_of(c).startswith("IaC/terraform/oss/") for c in tf_calls(cs)))
+A = {r[len("IaC/terraform/oss/"):]: a for r, a in ap}
 check("up.sh（通し）: base/core にエンドポイント 14 個と、閉域（network_perimeter=true）と endpoints_az_num=1 を渡す",
       "base/core" in A and any(a.startswith("interface_endpoints=") and set(json.loads(a.partition("=")[2])) == UP_ENDPOINTS for a in A["base/core"])
       and has_var(A["base/core"], "network_perimeter=true") and has_var(A["base/core"], "endpoints_az_num=1"))
@@ -880,7 +882,7 @@ check("up.sh（通し）: analytics に 4 つの格納先・http_send=driver・S
                                                                  f'spark_image_tag={T["spark"][0]}', f'opensearch_image_tag={V["OSS_OPENSEARCH_TAG"]}',
                                                                  f'victoriametrics_image_tag={V["OSS_VM_TAG"]}', "splunk_az_num=1", "emr_az_num=1")))
 _gver = re.search(r"^GRAFANA_VERSION=(\S+)", read("ops/up-common.sh"), re.M).group(1)
-_gb = [c["args"] for c in cs if c["cmd"] == "docker" and c["args"][:2] == ["buildx", "build"] and c["args"][-1] == "grafana/"]
+_gb = [c["args"] for c in cs if c["cmd"] == "docker" and c["args"][:2] == ["buildx", "build"] and c["args"][-1] == "app/grafana/"]
 _gtag = arg_after(_gb[0], "-t") if _gb else ""
 check("up.sh（通し）: Grafana のイメージを arm64 でビルドし（版は --build-arg）、同じタグと create_grafana=true を analytics に渡す",
       len(_gb) == 1 and re.fullmatch(re.escape(REG) + r"/x-nwc-oss-grafana:" + re.escape(_gver) + r"-[0-9a-f]+", _gtag)
@@ -907,24 +909,24 @@ check("up.sh（通し）: ワーカーと agent のイメージは Neo4j のド�
       all(any(a[:2] == ["buildx", "build"] and arg_after(a, "-t") == f"{REG}/x-nwc-oss-{n}:v1" and "REQUIREMENTS=requirements-oss.txt" in a
               for a in docker) for n in ("worker", "agent")))
 uv = [c["args"] for c in cs if c["cmd"] == "uv"]
-check("up.sh（通し）: Web のホイール（web/requirements-oss.txt）を wheels-oss/ に取り、Web とエージェントの部品と一緒に S3 に上げてから Web の EC2 を再起動する",
-      any("download" in a and arg_after(a, "-d") == "wheels-oss" and arg_after(a, "-r") == "web/requirements-oss.txt" for a in uv)
-      and 0 <= first(cs, lambda c: is_aws(c, "s3", "cp", "web/requirements-oss.txt"))
+check("up.sh（通し）: Web のホイール（app/dashboard/requirements-oss.txt）を wheels-oss/ に取り、Web とエージェントの部品と一緒に S3 に上げてから Web の EC2 を再起動する",
+      any("download" in a and arg_after(a, "-d") == "wheels-oss" and arg_after(a, "-r") == "app/dashboard/requirements-oss.txt" for a in uv)
+      and 0 <= first(cs, lambda c: is_aws(c, "s3", "cp", "app/dashboard/requirements-oss.txt"))
       < first(cs, lambda c: is_aws(c, "s3", "sync", "wheels-oss/", "/web/wheels/"))
       < first(cs, lambda c: is_aws(c, "ec2", "reboot-instances")) < apply_at(cs, "pipeline/lab"))
-check("up.sh（通し）: status の Lambda のレイヤー（graph/requirements-oss.txt）を arm64 向けに入れてから graph を apply する",
-      any("install" in a and arg_after(a, "--target") == "oss/terraform/pipeline/graph/.build/neo4j-layer/python"
-          and arg_after(a, "--platform") == "manylinux2014_aarch64" and arg_after(a, "-r") == "graph/requirements-oss.txt" for a in uv)
+check("up.sh（通し）: status の Lambda のレイヤー（app/graph/requirements-oss.txt）を arm64 向けに入れてから graph を apply する",
+      any("install" in a and arg_after(a, "--target") == "IaC/terraform/oss/pipeline/graph/.build/neo4j-layer/python"
+          and arg_after(a, "--platform") == "manylinux2014_aarch64" and arg_after(a, "-r") == "app/graph/requirements-oss.txt" for a in uv)
       and 0 <= first(cs, lambda c: c["cmd"] == "uv" and "install" in c["args"]) < apply_at(cs, "pipeline/graph"))
 
-def layer_sha():  # up.sh と同じ計算（graph/requirements-oss.txt + pip に渡す platform / python の版。up.sh の LAYER_PLATFORM / LAYER_PYVER から読む）
+def layer_sha():  # up.sh と同じ計算（app/graph/requirements-oss.txt + pip に渡す platform / python の版。up.sh の LAYER_PLATFORM / LAYER_PYVER から読む）
     m = re.search(r"^LAYER_PLATFORM=(\S+); LAYER_PYVER=(\S+)$", read("oss/ops/up.sh"), re.M)
-    with open(os.path.join(REPO, "graph", "requirements-oss.txt"), "rb") as f:
+    with open(os.path.join(REPO, "app", "graph", "requirements-oss.txt"), "rb") as f:
         return hashlib.sha256(f.read() + f"{m.group(1)} {m.group(2)}\n".encode()).hexdigest()
 
 def wheel_sha():  # ops/up-common.sh の fetch_wheels と同じ計算（requirements を渡した順に + WHEEL_ARGS を空白でつないだ行）
     args = re.search(r"^WHEEL_ARGS=\((.*?)\)$", read("ops/up-common.sh"), re.M | re.S).group(1).split()
-    body = b"".join(open(os.path.join(REPO, "web", n), "rb").read() for n in ("requirements-oss.txt", "requirements.txt"))
+    body = b"".join(open(os.path.join(REPO, "app", "dashboard", n), "rb").read() for n in ("requirements-oss.txt", "requirements.txt"))
     return hashlib.sha256(body + (" ".join(args) + "\n").encode()).hexdigest()
 
 def wheel_stamp():
@@ -936,18 +938,18 @@ def wheel_stamp():
 
 def layer_stamp():
     try:
-        with open(os.path.join(REPO, "oss/terraform/pipeline/graph/.build/neo4j-layer.sha256"), encoding="utf-8") as f:
+        with open(os.path.join(REPO, "IaC/terraform/oss/pipeline/graph/.build/neo4j-layer.sha256"), encoding="utf-8") as f:
             return f.read().strip()
     except FileNotFoundError:
         return None
 
 _wsync = cs[first(cs, lambda c: is_aws(c, "s3", "sync", "wheels-oss/", "/web/wheels/"))]["args"]
-check("up.sh（通し）: ホイールを取ったあと、web/requirements-oss.txt と requirements.txt と pip の引数の SHA-256 を wheels-oss/.requirements.sha256 に残し、"
+check("up.sh（通し）: ホイールを取ったあと、app/dashboard/requirements-oss.txt と requirements.txt と pip の引数の SHA-256 を wheels-oss/.requirements.sha256 に残し、"
       "S3 へは --delete で写して .sha256 は除く",
       wheel_stamp() == wheel_sha() and "--delete" in _wsync and arg_after(_wsync, "--exclude") == ".requirements.sha256"
       and any("download" in a and all(w in a for w in ("--platform", "manylinux_2_28_aarch64", "--abi", "cp313")) for a in uv))
-check("up.sh（通し）: レイヤーを入れたあと、graph/requirements-oss.txt と platform / python の版の SHA-256 を .build/neo4j-layer.sha256 に残す",
-      layer_stamp() == layer_sha() and os.path.isfile(os.path.join(REPO, "oss/terraform/pipeline/graph/.build/neo4j-layer/python/neo4j/__init__.py")))
+check("up.sh（通し）: レイヤーを入れたあと、app/graph/requirements-oss.txt と platform / python の版の SHA-256 を .build/neo4j-layer.sha256 に残す",
+      layer_stamp() == layer_sha() and os.path.isfile(os.path.join(REPO, "IaC/terraform/oss/pipeline/graph/.build/neo4j-layer/python/neo4j/__init__.py")))
 _neo_wait = first(cs, lambda c: is_aws(c, "ecs", "wait", "--services out-graph-neo4j_service_name"))
 check("up.sh（通し）: Neo4j のサービスが安定してから、Web の EC2 に ops/seed_graph.py を 1 回送る（graph の apply のあと、nautobot の apply の前）",
       0 <= apply_at(cs, "pipeline/graph") < _neo_wait < first(cs, is_seed) < apply_at(cs, "pipeline/nautobot")
@@ -955,7 +957,7 @@ check("up.sh（通し）: Neo4j のサービスが安定してから、Web の E
       and arg_after(cs[first(cs, is_seed)]["args"], "--instance-ids") == "out-core-web_instance_id")
 _seed = json.loads(arg_after(cs[first(cs, is_seed)]["args"], "--parameters"))["commands"][-1] if first(cs, is_seed) >= 0 else ""
 _sent = re.search(r"echo (\S+) \| base64 -d \| NAME_PREFIX=x-nwc-oss LAB_TOPOLOGY_B64=(\S+) ", _seed)
-check("up.sh（通し）: 送るのはリポジトリの ops/seed_graph.py そのもので、トポロジは lab/lab_topology.py が lab の定義から作ったもの（機器と回線が入っている）",
+check("up.sh（通し）: 送るのはリポジトリの ops/seed_graph.py そのもので、トポロジは app/containerlab/lab_topology.py が lab の定義から作ったもの（機器と回線が入っている）",
       _sent and base64.b64decode(_sent.group(1)).decode() == read("ops/seed_graph.py")
       and (lambda t: isinstance(t, dict) and len(json.dumps(t)) > 200)(json.loads(base64.b64decode(_sent.group(2)))))
 _os_wait = first(cs, lambda c: is_aws(c, "ecs", "wait", "x-nwc-oss-opensearch-a"))
@@ -996,11 +998,11 @@ check("up.sh（打ち直し）: SSM のパラメータを作り直さない（�
       and all(f"{n} はある（作り直さない）" in p.stdout for n in UP_PARAMS))
 check("up.sh（打ち直し）: status の Lambda のレイヤーは作り直さない（neo4j/ と .sha256 がそろっていれば pip を打たず、「はある」と言う）",
       not [c for c in cs2 if c["cmd"] == "uv" and "install" in c["args"]] and layer_stamp() == layer_sha()
-      and "neo4j-layer）はある（graph/requirements-oss.txt は変わっていない）" in p.stdout)
+      and "neo4j-layer）はある（app/graph/requirements-oss.txt は変わっていない）" in p.stdout)
 check("up.sh（打ち直し）: ホイールは取り直さず（.sha256 が合っていれば「変わっていない」と言う）、9 つのルートは同じ順で apply し直し、同期と Spark の起動もやり直す",
       not [c for c in cs2 if c["cmd"] == "uv" and "download" in c["args"]] and wheel_stamp() == wheel_sha()
-      and "wheels-oss/ に 1 個ある（web/requirements-oss.txt web/requirements.txt は変わっていない）" in p.stdout
-      and [r for r, _ in applies(cs2)] == [f"oss/terraform/{r}" for r in ROOTS]
+      and "wheels-oss/ に 1 個ある（app/dashboard/requirements-oss.txt app/dashboard/requirements.txt は変わっていない）" in p.stdout
+      and [r for r, _ in applies(cs2)] == [f"IaC/terraform/oss/{r}" for r in ROOTS]
       and len([c for c in cs2 if is_seed(c)]) == 1 and spark_starts(cs2) == SPARK_SERVICES)
 _last = cs2[-1]["args"] if cs2 else []
 check("up.sh（打ち直し）: 最後に Web の EC2 へのポートフォワーディング（8080 → LOCAL_PORT の既定 8080）を開く",
@@ -1009,11 +1011,11 @@ check("up.sh（打ち直し）: 最後に Web の EC2 へのポートフォワ�
       and json.loads(arg_after(_last, "--parameters")) == {"portNumber": ["8080"], "localPortNumber": ["8080"]}
       and not [f for f in os.listdir(TMP) if f.startswith("x-nwc-oss-nautobot.")])
 
-# ---- 3 回目: Neo4j と OpenSearch のサービスが安定しない（ついでに graph/requirements-oss.txt を変えて、レイヤーを作り直すことも見る）
+# ---- 3 回目: Neo4j と OpenSearch のサービスが安定しない（ついでに app/graph/requirements-oss.txt を変えて、レイヤーを作り直すことも見る）
 _old_sha, _old_wheel_sha = layer_sha(), wheel_sha()
-with open(os.path.join(REPO, "graph", "requirements-oss.txt"), "a", encoding="utf-8") as f:
+with open(os.path.join(REPO, "app", "graph", "requirements-oss.txt"), "a", encoding="utf-8") as f:
     f.write("# 版を変えたつもり\n")
-with open(os.path.join(REPO, "web", "requirements.txt"), "a", encoding="utf-8") as f:   # -r で読まれる側だけを変える
+with open(os.path.join(REPO, "app", "dashboard", "requirements.txt"), "a", encoding="utf-8") as f:   # -r で読まれる側だけを変える
     f.write("# 版を変えたつもり\n")
 open(os.path.join(REPO, "wheels-oss", "old-0.9-py3-none-any.whl"), "w").close()   # 前の版の wheel
 p, cs3, inv3 = run_up(inv2, {"FAKE_ECR_ALL": "1", "NO_DASHBOARD_PORTFORWARD": "1",
@@ -1022,13 +1024,13 @@ out3 = p.stdout + p.stderr
 check("up.sh（requirements-oss.txt を変えた）: レイヤーを消して pip を打ち直し、新しい SHA-256 を .sha256 に残す",
       [c for c in cs3 if c["cmd"] == "uv" and "install" in c["args"]] and layer_sha() != _old_sha and layer_stamp() == layer_sha()
       and "neo4j-layer）はある" not in out3)
-check("up.sh（web/requirements.txt を変えた）: wheels-oss/ を消して取り直し（前の版の wheel は残らない）、新しい SHA-256 を .requirements.sha256 に残す",
+check("up.sh（app/dashboard/requirements.txt を変えた）: wheels-oss/ を消して取り直し（前の版の wheel は残らない）、新しい SHA-256 を .requirements.sha256 に残す",
       [c for c in cs3 if c["cmd"] == "uv" and "download" in c["args"]] and wheel_sha() != _old_wheel_sha and wheel_stamp() == wheel_sha()
       and sorted(os.listdir(os.path.join(REPO, "wheels-oss"))) == [".requirements.sha256", "fake-1.0-py3-none-any.whl"]
       and "は変わっていない）" not in out3.split("4-1.", 1)[-1].split("4-2.", 1)[0])
 check("up.sh（Neo4j が安定しない）: 同期を送らず、警告（トポロジは入れていない）を出して先へ進む（nautobot・analytics・workflow まで apply する）",
       p.returncode == 0 and not [c for c in cs3 if is_seed(c)] and out3.count("トポロジは入れていない") == 2
-      and [r for r, _ in applies(cs3)] == [f"oss/terraform/{r}" for r in ROOTS])
+      and [r for r, _ in applies(cs3)] == [f"IaC/terraform/oss/{r}" for r in ROOTS])
 check("up.sh（OpenSearch が安定しない）: 警告（どの格納先か）を出し、VictoriaMetrics と Splunk は待ち、Spark は起こす（書き先が上がれば ECS が起こし直す）",
       out3.count("格納先が 20 分たっても上がりきらない: OpenSearch（") == 2 and "VictoriaMetrics（" not in out3.split("上がりきらない:", 1)[-1].split("。Spark は", 1)[0]
       and first(cs3, lambda c: is_aws(c, "ecs", "wait", "x-nwc-oss-victoriametrics-a")) >= 0 and spark_starts(cs3) == SPARK_SERVICES)
@@ -1051,17 +1053,17 @@ check("ops/up.sh（マネージド版）の workflow の待ちも 2 回までで
 p, csd, invd = run_down("oss/ops/down.sh", "x", inv=inv3)
 check("up.sh → down.sh: up.sh が作った SSM のパラメータ 14 個を全部消し、up.sh が apply した 9 つのルートを全部 destroy する",
       p.returncode == 0 and invd["ssm"] == {} and len(aws_calls(csd, "ssm", "delete-parameter")) == 14
-      and destroyed(csd) == {f"oss/terraform/{r}" for r in ROOTS} and "残り: 0 件" in p.stdout)
+      and destroyed(csd) == {f"IaC/terraform/oss/{r}" for r in ROOTS} and "残り: 0 件" in p.stdout)
 
 check("oss/ops/up.sh と down.sh の terraform init は、どのルートも -lockfile=readonly（lock はマネージド版へのシンボリックリンクなので書き換えない）",
       len({tuple(c["args"][:1]) for c in tf_calls(cs) if c["args"][1] == "init"}) == 9
       and all(a == ["init", "-input=false", "-lockfile=readonly"] for a in inits(cs) + inits(csd)) and inits(csd))
-check("oss/terraform/ の .terraform.lock.hcl は、どのルートもマネージド版の lock へのシンボリックリンク（実ファイルにしない）",
-      all(os.path.islink(os.path.join(ROOT, "oss/terraform", r, ".terraform.lock.hcl")) for r in ROOTS))
+check("IaC/terraform/oss/ の .terraform.lock.hcl は、どのルートもマネージド版の lock へのシンボリックリンク（実ファイルにしない）",
+      all(os.path.islink(os.path.join(ROOT, "IaC/terraform/oss", r, ".terraform.lock.hcl")) for r in ROOTS))
 
 # ---- up.sh / down.sh が -var で渡す名前は、どれもそのルートの variable "名" として宣言されている（シンボリックリンク先も読む）
 def tf_variables(root):
-    d = os.path.join(ROOT, "oss/terraform", root)
+    d = os.path.join(ROOT, "IaC/terraform/oss", root)
     names = set()
     for n in os.listdir(d):
         if n.endswith(".tf"):
@@ -1070,20 +1072,20 @@ def tf_variables(root):
     return names
 def var_names(args):
     return {args[i + 1].partition("=")[0] for i in range(len(args) - 1) if args[i] == "-var"}
-_up_vars = {(r[len("oss/terraform/"):], v) for r, a in ap for v in var_names(a)}
-_down_vars = {(chdir_of(c)[len("oss/terraform/"):], v) for c in tf_calls(csd) if c["args"][1] == "destroy" for v in var_names(c["args"])}
-check("up.sh（通し）が 9 つのルートに渡した -var の名前は、どれも oss/terraform/<ルート>/*.tf の variable で宣言されている（owner を含めて全部）",
+_up_vars = {(r[len("IaC/terraform/oss/"):], v) for r, a in ap for v in var_names(a)}
+_down_vars = {(chdir_of(c)[len("IaC/terraform/oss/"):], v) for c in tf_calls(csd) if c["args"][1] == "destroy" for v in var_names(c["args"])}
+check("up.sh（通し）が 9 つのルートに渡した -var の名前は、どれも IaC/terraform/oss/<ルート>/*.tf の variable で宣言されている（owner を含めて全部）",
       _up_vars and {r for r, _ in _up_vars} == set(ROOTS) and not [(r, v) for r, v in _up_vars if v not in tf_variables(r)])
 check("down.sh が destroy に渡した -var（workflow の worker_image_tag、stream の snmp_agents / gnmi_targets、owner）も、そのルートの variable で宣言されている",
       {("workflow", "worker_image_tag"), ("pipeline/stream", "snmp_agents"), ("pipeline/stream", "gnmi_targets")} <= _down_vars
       and not [(r, v) for r, v in _down_vars if v not in tf_variables(r)])
 
 # ---- readonly の init が止まったとき（この PC の OS・CPU のハッシュが lock に無い）
-p, cs, inv = run_up(dict(empty), {"NO_DASHBOARD_PORTFORWARD": "1", "FAKE_TF_INIT_FAIL": "oss/terraform/base/ecr"})
+p, cs, inv = run_up(dict(empty), {"NO_DASHBOARD_PORTFORWARD": "1", "FAKE_TF_INIT_FAIL": "IaC/terraform/oss/base/ecr"})
 out = p.stdout + p.stderr
-check("up.sh: readonly の init が止まったら apply せずに止まり、先にマネージド版のルートを init する案内（terraform -chdir=terraform/base/ecr init）を出す",
-      p.returncode != 0 and not applies(cs) and "oss/terraform/base/ecr の init に失敗した" in out
-      and "terraform -chdir=terraform/base/ecr init -input=false" in out and "-lockfile=readonly" in out)
+check("up.sh: readonly の init が止まったら apply せずに止まり、先にマネージド版のルートを init する案内（terraform -chdir=IaC/terraform/aws-managed/base/ecr init）を出す",
+      p.returncode != 0 and not applies(cs) and "IaC/terraform/oss/base/ecr の init に失敗した" in out
+      and "terraform -chdir=IaC/terraform/aws-managed/base/ecr init -input=false" in out and "-lockfile=readonly" in out)
 
 # ================================================================ 7. ops/sync-graph.sh（--oss で OSS 版の state と接頭辞。up.sh の 7-3b と同じ処理を単独で）
 def run_sync(*args):
@@ -1105,17 +1107,17 @@ def sent_seed(inv):  # 送ったコマンドから (接頭辞, トポロジ JSON
 p, cs, inv = run_sync("--oss")
 _tf = [c["args"] for c in tf_calls(cs)]
 _send = [c for c in cs if is_aws(c, "ssm", "send-command")]
-check("sync-graph.sh --oss: Web の EC2 の id を oss/terraform/base/core の出力から取り、接頭辞 x-nwc-oss と lab のトポロジで ops/seed_graph.py を送る（GRAPH_REPLACE=0）",
-      p.returncode == 0 and _tf == [["-chdir=oss/terraform/base/core", "output", "-raw", "web_instance_id"]]
+check("sync-graph.sh --oss: Web の EC2 の id を IaC/terraform/oss/base/core の出力から取り、接頭辞 x-nwc-oss と lab のトポロジで ops/seed_graph.py を送る（GRAPH_REPLACE=0）",
+      p.returncode == 0 and _tf == [["-chdir=IaC/terraform/oss/base/core", "output", "-raw", "web_instance_id"]]
       and len(_send) == 1 and arg_after(_send[0]["args"], "--instance-ids") == "out-core-web_instance_id"
       and (s := sent_seed(inv)) and s[0] == "x-nwc-oss" and s[2] == "0" and s[3] and len(s[1].get("nodes", s[1].get("devices", []))) == LAB_NODES
       and "再読み込み" in p.stdout)
 p, cs, inv = run_sync("--oss", "--replace")
 check("sync-graph.sh --oss --replace: 同じ送り先で GRAPH_REPLACE=1（入っていても lab の定義で入れ直す）",
-      p.returncode == 0 and [c["args"][0] for c in tf_calls(cs)] == ["-chdir=oss/terraform/base/core"] and sent_seed(inv)[0] == "x-nwc-oss" and sent_seed(inv)[2] == "1")
+      p.returncode == 0 and [c["args"][0] for c in tf_calls(cs)] == ["-chdir=IaC/terraform/oss/base/core"] and sent_seed(inv)[0] == "x-nwc-oss" and sent_seed(inv)[2] == "1")
 p, cs, inv = run_sync()
-check("sync-graph.sh（--oss 無し）: マネージド版の terraform/base/core と接頭辞 x-nwc-poc のまま（OSS 版の追加で変わらない）",
-      p.returncode == 0 and [c["args"][0] for c in tf_calls(cs)] == ["-chdir=terraform/base/core"] and sent_seed(inv)[0] == "x-nwc-poc" and sent_seed(inv)[2] == "0")
+check("sync-graph.sh（--oss 無し）: マネージド版の IaC/terraform/aws-managed/base/core と接頭辞 x-nwc-poc のまま（OSS 版の追加で変わらない）",
+      p.returncode == 0 and [c["args"][0] for c in tf_calls(cs)] == ["-chdir=IaC/terraform/aws-managed/base/core"] and sent_seed(inv)[0] == "x-nwc-poc" and sent_seed(inv)[2] == "0")
 p, cs, inv = run_sync("--oss", "--dry-run")
 check("sync-graph.sh --oss --dry-run: terraform にも aws にも触らず、lab から作ったトポロジ JSON を出すだけ",
       p.returncode == 0 and not tf_calls(cs) and not [c for c in cs if c["cmd"] == "aws"] and not inv.get("cmds")

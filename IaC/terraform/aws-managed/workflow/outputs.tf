@@ -9,7 +9,7 @@ output "service_name" {
 }
 
 output "anomaly_queue_url" {
-  description = "SQS queue the alerts of Grafana / Splunk land in through the SNS topic of terraform/base/core (the worker long-polls it)"
+  description = "SQS queue the alerts of Grafana / Splunk land in through the SNS topic of IaC/terraform/aws-managed/base/core (the worker long-polls it)"
   value       = aws_sqs_queue.anomalies.url
 }
 

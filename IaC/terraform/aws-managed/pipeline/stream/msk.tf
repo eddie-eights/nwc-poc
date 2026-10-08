@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------- MSK
 # マネージド版の Kafka。MSK（var.msk_az_num 台、IAM 認証）。あるあいだ 1 時間に約 0.61 USD かかる - 作った日のうちに消す。
-# OSS 版（cycle 005。oss/terraform/pipeline/stream）にこのファイルは無く、代わりに kafka.tf（ECS の Kafka）がある。どちらも下の kafka_* の locals を
+# OSS 版（cycle 005。IaC/terraform/oss/pipeline/stream）にこのファイルは無く、代わりに kafka.tf（ECS の Kafka）がある。どちらも下の kafka_* の locals を
 # 同じ名前で定義し、2 つの版で共通のファイル（locals.tf・telegraf.tf・kafka_ui.tf・access.tf・outputs.tf。OSS 版はシンボリックリンク）は MSK のリソースでなくそれを使う
 
 locals {
@@ -81,7 +81,7 @@ locals {
   ]
   # IAM ロールと Cloud Map の名前空間の description（名前空間の description は変えると作り直しになるので、今のまま）
   kafka_descriptions = {
-    namespace     = "Kafbat UI of ${local.name_prefix} (terraform/pipeline/stream)"
+    namespace     = "Kafbat UI of ${local.name_prefix} (IaC/terraform/aws-managed/pipeline/stream)"
     telegraf_task = "Telegraf task - write SNMP / gNMI / trap / syslog / MDT to MSK (IAM auth), ECS Exec"
     kafka_ui_task = "Kafbat UI task - browse the MSK cluster, create / alter / delete topics, read and write messages (MSK IAM)"
   }
@@ -169,7 +169,7 @@ resource "aws_ssm_parameter" "bootstrap" {
   description = "MSK bootstrap brokers (SASL/IAM, 9098). The Telegraf task gets them as an environment variable; kept for manual checks."
 }
 
-# terraform/pipeline/analytics（EMR Serverless の Spark）が読む。OSS 版には無い
+# IaC/terraform/aws-managed/pipeline/analytics（EMR Serverless の Spark）が読む。OSS 版には無い
 output "msk_cluster_arn" {
   description = "MSK cluster ARN"
   value       = aws_msk_cluster.stream.arn

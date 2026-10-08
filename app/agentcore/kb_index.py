@@ -1,4 +1,4 @@
-"""Knowledge Base のベクトル索引を作る Lambda（terraform/agent/kb.tf の aws_lambda_invocation.kb_index が apply のときに 1 回呼ぶ）。
+"""Knowledge Base のベクトル索引を作る Lambda（IaC/terraform/aws-managed/agent/kb.tf の aws_lambda_invocation.kb_index が apply のときに 1 回呼ぶ）。
 
 コレクションは VPC エンドポイントからしか届かない（ネットワークポリシーが AllowFromPublic = false）ので、
 Terraform を打つ PC からは索引を作れない。この Lambda は VPC の中（土台の lambda の SG）で動き、

@@ -6,17 +6,17 @@ nautobot も boto3 も import しない純粋な関数だけを置く（手元�
   機器          Device.name = device_id（hostname も同じ）、Location.name = site、Role.name = role（leaf / leafsw / spine / host / upstream）、
                 primary_ip4 = mgmt_ip、custom field asn = asn
   監視対象      その Device に Service があること。gnmi（tcp）があれば gNMI を取りにいき、snmp（udp）があれば SNMP を取りにいく。
-                どちらかがあれば enabled。Telegraf の dialin の一覧（lab/lab_topology.py の --gnmi-targets / --snmp-agents と同じ形）もここから作る
+                どちらかがあれば enabled。Telegraf の dialin の一覧（app/containerlab/lab_topology.py の --gnmi-targets / --snmp-agents と同じ形）もここから作る
   インタフェース Interface.name、address = 最初の IP（長さ無し）、lag = LAG の親の name
-  回線          Cable（両端が Interface）。a < b にそろえ、kind は lab/lab_topology.py と同じ規則で両端から決める。
+  回線          Cable（両端が Interface）。a < b にそろえ、kind は app/containerlab/lab_topology.py と同じ規則で両端から決める。
                 role / bandwidth_mbps は Cable の custom field link_role / bandwidth_mbps
 """
 import ipaddress
 
-VM_ROLES = {"host", "upstream"}   # スイッチでない機器の役割（lab/lab_topology.py と同じ）
-GNMI_SERVICE = ("gnmi", "tcp", 57400)   # Service の name / protocol と、seed で入れるポート（lab/lab_topology.py の GNMI_PORT）
+VM_ROLES = {"host", "upstream"}   # スイッチでない機器の役割（app/containerlab/lab_topology.py と同じ）
+GNMI_SERVICE = ("gnmi", "tcp", 57400)   # Service の name / protocol と、seed で入れるポート（app/containerlab/lab_topology.py の GNMI_PORT）
 SNMP_SERVICE = ("snmp", "udp", 161)     # 同じく SNMP_PORT
-TARGET_KEYS = ("gnmi-targets", "snmp-agents")   # terraform/pipeline/stream の出力 telegraf_dialin_target_parameters のキー
+TARGET_KEYS = ("gnmi-targets", "snmp-agents")   # IaC/terraform/aws-managed/pipeline/stream の出力 telegraf_dialin_target_parameters のキー
 
 
 def _port(row: dict, service: tuple):
@@ -132,7 +132,7 @@ def to_graph(rows: list[dict], cables: list[dict]) -> tuple[list[dict], list[dic
 
 def targets(rows: list[dict]) -> dict:
     """Telegraf の dialin の一覧（TOML のリストの中身）。{"gnmi-targets": '"<IP>:<port>", ...', "snmp-agents": '"udp://<IP>:<port>", ...'}。
-    機器の名前の順（lab/lab_topology.py の gnmi_targets() / snmp_agents() と同じ並び）。管理 IP の無い機器は入らない"""
+    機器の名前の順（app/containerlab/lab_topology.py の gnmi_targets() / snmp_agents() と同じ並び）。管理 IP の無い機器は入らない"""
     out = {k: [] for k in TARGET_KEYS}
     for r in sorted((r for r in rows if r.get("name") and r.get("mgmt_ip")), key=lambda r: r["name"]):
         ip = str(ipaddress.ip_address(r["mgmt_ip"]))   # 一覧は telegraf.conf にそのまま入るので、IP でないものは通さない
@@ -159,7 +159,7 @@ def parent_prefix(address: str) -> str:
 
 
 def seed_plan(lab: dict) -> dict:
-    """lab/lab_topology.py の出力（{"devices", "links"}）から、Nautobot に作るものの一覧。
+    """app/containerlab/lab_topology.py の出力（{"devices", "links"}）から、Nautobot に作るものの一覧。
     {"sites", "roles", "prefixes", "devices": [{name, site, role, vm, asn, mgmt_ip, services: [(name, protocol, port)],
      interfaces: [{name, type, lag, address, mgmt}]}], "cables": [{a, a_if, b, b_if, role, bandwidth_mbps}]}。
     interfaces は LAG の親が先（メンバーが親を指せるように）。to_graph() に戻すと lab と同じ devices / links になる"""

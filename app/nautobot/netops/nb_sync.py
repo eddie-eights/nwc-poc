@@ -1,4 +1,4 @@
-"""Nautobot の中身を読んで、Telegraf の dialin の機器の一覧（SSM）と Neptune（OSS 版は Neo4j）の物理層に合わせる。nautobot/jobs/netops_jobs.py の Job と、
+"""Nautobot の中身を読んで、Telegraf の dialin の機器の一覧（SSM）と Neptune（OSS 版は Neo4j）の物理層に合わせる。app/nautobot/jobs/netops_jobs.py の Job と、
 起動時の bootstrap.py が呼ぶ。対応付けは nb_map.py。
 
   1. 機器の一覧: Service（gnmi / snmp）を持つ機器から作った文字列が SSM の今の値と違うときだけ書き換え、dialin のサービスを作り直す
@@ -9,8 +9,8 @@
 
 同時に 2 つ走ると古い読みが後から書くことがあるので、Redis のロック（Django の cache）の中で「読む → 書く」をする。
 
-環境変数（terraform/pipeline/nautobot がコンテナに渡す）:
-  DIALIN_GNMI_PARAMETER / DIALIN_SNMP_PARAMETER   一覧を書く SSM のパラメータ名（terraform/pipeline/stream の出力）。空なら 1 を飛ばす
+環境変数（IaC/terraform/aws-managed/pipeline/nautobot がコンテナに渡す）:
+  DIALIN_GNMI_PARAMETER / DIALIN_SNMP_PARAMETER   一覧を書く SSM のパラメータ名（IaC/terraform/aws-managed/pipeline/stream の出力）。空なら 1 を飛ばす
   TELEGRAF_CLUSTER / TELEGRAF_DIALIN_SERVICE     作り直す ECS のサービス
   NEPTUNE_GRAPH_ID                               Neptune Analytics のグラフの ID（g-xxxxxxxxxx）。空なら 2 と 3 を飛ばす
   GRAPH_BACKEND / NEO4J_URI / NEO4J_PASSWORD     OSS 版（cycle 005）だけ。NEPTUNE_GRAPH_ID の代わりに Neo4j に書く（パスワードはタスク定義の secrets）。

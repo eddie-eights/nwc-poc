@@ -4,7 +4,7 @@
 # var.sinks に無い格納先は外し、空になったジョブは作らない）。
 # どのタスクも spark-submit --master local[*]（driver も executor も 1 つの JVM）。EMR の STREAMING モードの起こし直しの代わりに、
 # サービス（1 台）がタスクの終わりを見て起こし直す。台数は作るときは 0 で、OSS 版の ops/up.sh が書き先が上がってから 1 にする。
-# イメージは spark/Dockerfile（apache/spark:3.5.9-java17-python3 に Kafka・Iceberg・S3 Tables・S3A の jar と spark/snmp_sinks.py を焼き込む。
+# イメージは docker/images/spark/Dockerfile（apache/spark:3.5.9-java17-python3 に Kafka・Iceberg・S3 Tables・S3A の jar と app/spark/snmp_sinks.py を焼き込む。
 # 閉域で Maven に届かないので、起動時に jar を取りに行かない）。OSS 版の ops/up.sh が作って ECR の <接頭辞>-spark に push する。
 # checkpoint はマネージド版と同じバケットの analytics/checkpoint/ に S3A（s3a://）で書く（EMR の s3:// は EMRFS で、素の Spark には無い）。
 # Kafka は PLAINTEXT（KAFKA_AUTH=none）、OpenSearch は Basic 認証（OPENSEARCH_AUTH=basic）、vminsert は署名なし（PROMETHEUS_AUTH=none）。
@@ -15,7 +15,7 @@
 # Splunk が起きる前（起動に数分）は HEC への POST が再試行の後に落ちてタスクが終わり、サービスが起こし直す（checkpoint の続きから読む）
 
 variable "spark_image_tag" {
-  description = "Tag of the spark/ image in the <prefix>-spark repository (apache/spark with the jars and spark/snmp_sinks.py). The OSS ops/up.sh builds it as <Spark version>-<hash of spark/>."
+  description = "Tag of the app/spark/ image in the <prefix>-spark repository (apache/spark with the jars and app/spark/snmp_sinks.py). The OSS ops/up.sh builds it as <Spark version>-<hash of app/spark/>."
   type        = string
   default     = "3.5.9"
 
@@ -55,12 +55,12 @@ locals {
   spark_services = { for job, sinks in local.spark_jobs : job => sinks if length(sinks) > 0 }
 
   # checkpoint は Kafka の offset を持つ。マネージド版は MSK のクラスタの uuid をパスに入れる（locals.tf の checkpoint_uri）。
-  # OSS 版の Kafka のデータは terraform/base/core の EFS にあるので、EFS が作り直されたら checkpoint も新しくする
+  # OSS 版の Kafka のデータは IaC/terraform/aws-managed/base/core の EFS にあるので、EFS が作り直されたら checkpoint も新しくする
   spark_checkpoint_uri = "s3a://${local.bucket}/${local.checkpoint}/${try(data.terraform_remote_state.main.outputs.efs_file_system_id, "none")}/"
 
   # 宛先（local.opensearch_endpoint・local.prometheus_remote_write_url）は opensearch.tf と victoriametrics.tf が Cloud Map の名前で持つ
   # （マネージド版の locals.tf と同じ名前）。OpenSearch の REST は TLS なしの HTTP（snmp_sinks.py に自己署名の証明書を飛ばす設定が無いため）。
-  # 格納先ごとに ECS の secrets で受ける SSM の SecureString（名前は spark/snmp_sinks.py が読む環境変数）。
+  # 格納先ごとに ECS の secrets で受ける SSM の SecureString（名前は app/spark/snmp_sinks.py が読む環境変数）。
   # OPENSEARCH_PASSWORD は OpenSearch のタスクが admin のパスワードにするのと同じパラメータ（opensearch.tf の opensearch_password_arn）、
   # SPLUNK_HEC_TOKEN は splunk.tf の Splunk のタスクが HEC の token を作るのと同じパラメータ（network.tf の splunk_token_parameter_arn）
   spark_secrets = {
@@ -153,7 +153,7 @@ resource "aws_ecs_task_definition" "spark" {
   lifecycle {
     precondition {
       condition     = try(data.terraform_remote_state.ecr.outputs.oss_repository_urls["spark"], "") != ""
-      error_message = "terraform/base/ecr の state に spark のリポジトリが無い（project = nwc-oss でない ECR か、古い ECR）。oss/terraform/base/ecr を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/ecr の state に spark のリポジトリが無い（project = nwc-oss でない ECR か、古い ECR）。IaC/terraform/oss/base/ecr を先に apply する。"
     }
   }
 }
@@ -187,11 +187,11 @@ resource "aws_ecs_service" "spark" {
     ignore_changes = [desired_count]
     precondition {
       condition     = local.spark_sg_id != ""
-      error_message = "terraform/base/core の state に spark の SG が無い。oss/terraform/base/core を先に apply する。"
+      error_message = "IaC/terraform/aws-managed/base/core の state に spark の SG が無い。IaC/terraform/oss/base/core を先に apply する。"
     }
     precondition {
       condition     = local.bootstrap != ""
-      error_message = "oss/terraform/pipeline/stream の state に bootstrap_brokers が無い。oss/terraform/pipeline/stream を先に apply する。"
+      error_message = "IaC/terraform/oss/pipeline/stream の state に bootstrap_brokers が無い。IaC/terraform/oss/pipeline/stream を先に apply する。"
     }
   }
 
@@ -296,7 +296,7 @@ resource "aws_iam_role_policy" "spark_task" {
   })
 }
 
-# terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
+# IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
 resource "aws_iam_role_policy_attachment" "spark_execution_perimeter" {
   count = local.perimeter_policy_arn != "" ? 1 : 0
 
@@ -318,7 +318,7 @@ output "spark_service_names" {
 }
 
 output "spark_image" {
-  description = "Spark image the tasks run (spark/Dockerfile in the <prefix>-spark repository)"
+  description = "Spark image the tasks run (docker/images/spark/Dockerfile in the <prefix>-spark repository)"
   value       = local.spark_image
 }
 

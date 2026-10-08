@@ -1,15 +1,15 @@
 # ---------------------------------------------------------------- アラートの通知の履歴: Firehose → S3 Tables（alert_events）→ Athena（2026-10-04）
-# terraform/pipeline/graph の status の Lambda（graph/status_handler.py）が、SNS で受けたアラートの通知を 1 件 1 行で
+# IaC/terraform/aws-managed/pipeline/graph の status の Lambda（app/graph/status_handler.py）が、SNS で受けたアラートの通知を 1 件 1 行で
 # このストリームに put_record_batch する（graph の alert_history = true。ops/up.sh が analytics がある回にだけ渡す。今回作るか、state に残っている）。
 # Firehose は 60 秒か 1 MiB ごとに tables.tf の alert_events に追記する（Iceberg。Glue の s3tablescatalog を通す）。
 # s3tablescatalog はアカウントとリージョンに 1 つの Glue のカタログで、無ければ ops/up.sh が作る（down.sh では消さない。docs/deploy.md）。
-# 書けなかった行は土台のバケットの firehose-errors/alert_events/ に落ちる。読むのはエージェントの query_history（agent/evidence.py。
-# 下の Athena のワークグループ。tools の Lambda の権限は terraform/workflow の gateway.tf）。
-# Firehose はロールを引き受けて自分の側（VPC の外）から書くので、このロールは terraform/base/core の perimeter.tf の資源側の Deny の例外
+# 書けなかった行は土台のバケットの firehose-errors/alert_events/ に落ちる。読むのはエージェントの query_history（app/agentcore/evidence.py。
+# 下の Athena のワークグループ。tools の Lambda の権限は IaC/terraform/aws-managed/workflow の gateway.tf）。
+# Firehose はロールを引き受けて自分の側（VPC の外）から書くので、このロールは IaC/terraform/aws-managed/base/core の perimeter.tf の資源側の Deny の例外
 # （perimeter_exempt_principals）に入れてあり、IAM 側の Deny も付けない。ストリームとワークグループの名前は固定
 # （graph の sync.tf と workflow の locals.tf が同じ名前を作る）。
 # Cost: Firehose は取り込んだ量の課金（Iceberg 宛て。PoC の量なら月に数セント）、Athena はスキャン量の課金（1 回 1 GiB で打ち切る）。
-# エンドポイント（kinesis-firehose / athena）は terraform/base/core で数える
+# エンドポイント（kinesis-firehose / athena）は IaC/terraform/aws-managed/base/core で数える
 locals {
   alert_stream      = "${local.name_prefix}-alert-events"
   alert_firehose    = "${local.name_prefix}-alert-firehose"
@@ -148,7 +148,7 @@ resource "aws_kinesis_firehose_delivery_stream" "alert_events" {
   depends_on = [aws_iam_role_policy.alert_firehose]
 }
 
-# query_history（agent/evidence.py）と、修復案の読み取り（agent/proposals.py の list_proposals / get_proposal。Web の承認タブと tools の Lambda。2026-10-05）が投げる。
+# query_history（app/agentcore/evidence.py）と、修復案の読み取り（app/agentcore/proposals.py の list_proposals / get_proposal。Web の承認タブと tools の Lambda。2026-10-05）が投げる。
 # クエリの結果は Athena の管理ストレージに置く（結果用のバケットを作らない）
 resource "aws_athena_workgroup" "history" {
   name          = local.history_workgroup

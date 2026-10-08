@@ -4,9 +4,9 @@
   1. 管理者: NAUTOBOT_SUPERUSER_NAME / NAUTOBOT_SUPERUSER_PASSWORD（SSM の SecureString を ECS が渡す）で作り、パスワードを合わせる。
      上流の NAUTOBOT_CREATE_SUPERUSER は API トークンも要るので使わない
   1b. API のユーザー: NAUTOBOT_API_TOKEN（SSM の SecureString）があれば、ユーザー NAUTOBOT_API_USER（既定 netops-web）とそのトークンを作る。
-      Web の「トポロジ」タブ（web/nautobot_api.py）がこのトークンでケーブルを作る・消す。JobHook は変更者に Job の実行権限が要るので superuser にする
+      Web の「トポロジ」タブ（app/dashboard/nautobot_api.py）がこのトークンでケーブルを作る・消す。JobHook は変更者に Job の実行権限が要るので superuser にする
   2. custom field: Device の asn、Cable の link_role / bandwidth_mbps（nb_map.py の対応付けが読む）
-  3. 最初の seed: 機器が 1 台も無いときだけ、イメージに入れた lab の定義（lab_seed.json = lab/lab_topology.py の出力）から
+  3. 最初の seed: 機器が 1 台も無いときだけ、イメージに入れた lab の定義（lab_seed.json = app/containerlab/lab_topology.py の出力）から
      Location / Role / Device / Interface / IPAddress / Service / Cable を作る。あとは Nautobot が正で、lab を変えてもここは入れ直さない
   4. Job: JOBS_ROOT の netops_jobs の 2 つを登録して有効にし、JobHook（netops-sync）を張る
   5. 起動時の同期: Telegraf の dialin の一覧と Neptune（OSS 版は Neo4j）の物理層を今の Nautobot に合わせる（nb_sync.sync）
@@ -69,7 +69,7 @@ def api_user():
         user.set_unusable_password()   # 画面からは入れない。API のトークンだけ
     user.save()
     Token.objects.filter(user=user).exclude(key=key).delete()   # SSM の値を作り直したら古いトークンは消す
-    Token.objects.get_or_create(user=user, key=key, defaults={"description": "web/nautobot_api.py (created by netops bootstrap)"})
+    Token.objects.get_or_create(user=user, key=key, defaults={"description": "app/dashboard/nautobot_api.py (created by netops bootstrap)"})
     log.info("API のユーザー %s とトークンを%s", name, "作った" if created else "合わせた")
 
 

@@ -1,13 +1,13 @@
 #!/bin/sh
-# Grafana のコンテナ（grafana/Dockerfile）の入口。選んだ格納先のデータソースとダッシュボード、アラートの定義だけを /tmp に並べてから、上流の /run.sh を起こす。
-# ECS のタスク定義の環境変数（terraform/pipeline/analytics の grafana.tf）:
+# Grafana のコンテナ（docker/images/grafana/Dockerfile）の入口。選んだ格納先のデータソースとダッシュボード、アラートの定義だけを /tmp に並べてから、上流の /run.sh を起こす。
+# ECS のタスク定義の環境変数（IaC/terraform/aws-managed/pipeline/analytics の grafana.tf）:
 #   PROMETHEUS_URL    AMP のワークスペース（https://aps-workspaces.<region>.amazonaws.com/workspaces/<id>）。空なら Prometheus を出さない（STORES に grafana が無い）
 #   OPENSEARCH_URL    logs コレクションのエンドポイント。空なら OpenSearch を出さない（STORES に grafana が無い）
-#   OPENSEARCH_INDEX  ログの index（spark/snmp_sinks.py の OPENSEARCH_INDEX）
-#   ALERTS_TOPIC_ARN  アラートを publish する SNS のトピック（terraform/base/core の alerts.tf）。これがあるときだけアラートの定義（provisioning/alerting）を
+#   OPENSEARCH_INDEX  ログの index（app/spark/snmp_sinks.py の OPENSEARCH_INDEX）
+#   ALERTS_TOPIC_ARN  アラートを publish する SNS のトピック（IaC/terraform/aws-managed/base/core の alerts.tf）。これがあるときだけアラートの定義（provisioning/alerting）を
 #                     並べる: 送り先（netops.yaml）と、データソースがあるほうのルール（netops-prometheus.yaml / netops-opensearch.yaml）
 #   AWS_REGION
-#   PROMETHEUS_AUTH / OPENSEARCH_AUTH  OSS 版（cycle 005。oss/terraform）だけ none / basic。データソースを datasources-oss の定義にする
+#   PROMETHEUS_AUTH / OPENSEARCH_AUTH  OSS 版（cycle 005。IaC/terraform/oss）だけ none / basic。データソースを datasources-oss の定義にする
 #                     （VictoriaMetrics の vmselect に署名なし / 自前の OpenSearch に Basic 認証。uid は同じ amp / aoss-logs なので、
 #                     ダッシュボードとアラートのルールはそのまま）。無ければ sigv4（マネージド版）
 #   OPENSEARCH_USER   OPENSEARCH_AUTH=basic のときのユーザー（既定 admin）。パスワード OPENSEARCH_PASSWORD は ECS が SSM の SecureString から入れる

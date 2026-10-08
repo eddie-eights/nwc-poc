@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------- Spark の格納先（var.sinks で選ぶ。Kafka を 4 つの格納先に分ける）
 # iceberg    = 全トピック → tables.tf の S3 Tables（常に作る。テーブルは無料）
-# opensearch = ログのトピック → ここで作る OpenSearch Serverless の TIMESERIES コレクション（terraform/base/core の VPC エンドポイント経由だけ）
-# prometheus = メトリクスのトピック → ここで作る Amazon Managed Service for Prometheus のワークスペース（remote write は terraform/base/core の aps-workspaces のエンドポイント経由）
+# opensearch = ログのトピック → ここで作る OpenSearch Serverless の TIMESERIES コレクション（IaC/terraform/aws-managed/base/core の VPC エンドポイント経由だけ）
+# prometheus = メトリクスのトピック → ここで作る Amazon Managed Service for Prometheus のワークスペース（remote write は IaC/terraform/aws-managed/base/core の aps-workspaces のエンドポイント経由）
 # splunk     = 全トピック → splunk.tf の ECS の Splunk Enterprise の HTTP Event Collector（VPC の中）。
 #              ほかは実行ロールの ssm:GetParameter（token。access.tf）と job_driver の引数（outputs.tf）。
 #              2026-09-26 まで MSK Connect の Splunk Connect for Kafka にする予定だったが、Spark から直接書くことにした（コネクタのワーカー分の費用と VPC エンドポイントが要らない）
@@ -29,7 +29,7 @@ resource "aws_opensearchserverless_security_policy" "logs_network" {
 
   name        = local.logs_collection
   type        = "network"
-  description = "Collection reachable only through the OpenSearch Serverless VPC endpoint of terraform/base/core"
+  description = "Collection reachable only through the OpenSearch Serverless VPC endpoint of IaC/terraform/aws-managed/base/core"
 
   policy = jsonencode([{
     Rules = [{
@@ -43,7 +43,7 @@ resource "aws_opensearchserverless_security_policy" "logs_network" {
   lifecycle {
     precondition {
       condition     = local.aoss_vpce_id != ""
-      error_message = "terraform/base/core に OpenSearch Serverless の VPC エンドポイントが無い。terraform/base/core を -var create_opensearch_endpoint=true で apply し直す（ops/up.sh は STORES に grafana があるとき付ける）。"
+      error_message = "IaC/terraform/aws-managed/base/core に OpenSearch Serverless の VPC エンドポイントが無い。IaC/terraform/aws-managed/base/core を -var create_opensearch_endpoint=true で apply し直す（ops/up.sh は STORES に grafana があるとき付ける）。"
     }
   }
 }
@@ -107,6 +107,6 @@ resource "aws_prometheus_workspace" "metrics" {
   tags = { Name = local.metrics_workspace }
 }
 
-# remote write の API（aps-workspaces）へは terraform/base/core の aps-workspaces のエンドポイントを通る（ops/up.sh が STORES に grafana があるときに作らせる）。
+# remote write の API（aps-workspaces）へは IaC/terraform/aws-managed/base/core の aps-workspaces のエンドポイントを通る（ops/up.sh が STORES に grafana があるときに作らせる）。
 # ワークスペースのリソースポリシーでは VPC の外を拒まない（Prometheus 互換の API の共有用で、Deny と aws:SourceVpc が効くか確かめられない。
-# terraform/base/core の perimeter.tf の IAM 側の Deny だけで止める）
+# IaC/terraform/aws-managed/base/core の perimeter.tf の IAM 側の Deny だけで止める）

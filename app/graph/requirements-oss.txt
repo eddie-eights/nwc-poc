@@ -1,5 +1,5 @@
-# OSS 版（cycle 005）の status Lambda のレイヤーの中身（oss/terraform/pipeline/graph の sync.tf）。agent/graph.py が GRAPH_BACKEND=neo4j で使う。
+# OSS 版（cycle 005）の status Lambda のレイヤーの中身（IaC/terraform/oss/pipeline/graph の sync.tf）。app/agentcore/graph.py が GRAPH_BACKEND=neo4j で使う。
 # マネージド版の Lambda は boto3（Lambda の Python に入っている）しか使わないので、このファイルは読まない。
-# 版は web/requirements-oss.txt と workflow/requirements-oss.txt と同じにする（tests/test_oss.py が見る）。
-# 2026-10-05 に Neo4j 2026.09.0 Community + GDS 2026.09.0 に対して agent/graph.py の seed・一意制約・centrality を手元で確かめた版
+# 版は app/dashboard/requirements-oss.txt と app/temporal/requirements-oss.txt と同じにする（tests/test_oss.py が見る）。
+# 2026-10-05 に Neo4j 2026.09.0 Community + GDS 2026.09.0 に対して app/agentcore/graph.py の seed・一意制約・centrality を手元で確かめた版
 neo4j==6.3.1

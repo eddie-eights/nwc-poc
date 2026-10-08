@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------- AgentCore Runtime
-# 実行ロールそのものは terraform/base/core が持つ（terraform/pipeline/stream / terraform/pipeline/graph がロール名を読んでポリシーを付けるため）。
+# 実行ロールそのものは IaC/terraform/aws-managed/base/core が持つ（IaC/terraform/aws-managed/pipeline/stream / IaC/terraform/aws-managed/pipeline/graph がロール名を読んでポリシーを付けるため）。
 # ここでは Runtime が動くのに要るポリシーを足し、Runtime を作る
 resource "aws_iam_role_policy" "runtime" {
   name = "runtime"
@@ -114,7 +114,7 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
     network_mode = "VPC"
     network_mode_config {
       # サブネット a から var.runtime_az_num 個（1〜3。既定 1 は 2026-10-05 のユーザー決定）。2 以上のときは ops/up.sh が
-      # エンドポイント（terraform/base/core の endpoints_az_num）も同じ数以上にそろえる（そろわないと 2 AZ が見かけだけになる）。
+      # エンドポイント（IaC/terraform/aws-managed/base/core の endpoints_az_num）も同じ数以上にそろえる（そろわないと 2 AZ が見かけだけになる）。
       # API はサブネット 1 つでも受け付ける（AgentCore Control API Reference「VpcConfig」の subnets は 1〜16 個、
       #   https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_VpcConfig.html、2026-10-05 確認）。
       # 手引きは高可用のために別々の AZ のサブネットを 2 つ以上と勧めるが、1 つを禁じる記述は無い
@@ -143,7 +143,7 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
       BEDROCK_REGION    = var.region
       GUARDRAIL_ID      = aws_bedrock_guardrail.this.guardrail_id
       GUARDRAIL_VERSION = aws_bedrock_guardrail_version.r1.version
-      # terraform/pipeline/graph が書く SSM（neptune-graph-id。トポロジ・修復案）の接頭辞。無ければ静的データで動く
+      # IaC/terraform/aws-managed/pipeline/graph が書く SSM（neptune-graph-id。トポロジ・修復案）の接頭辞。無ければ静的データで動く
       PARAM_PREFIX = local.param_prefix
     },
     # KB を作らないときは KNOWLEDGE_BASE_ID を渡さない（agent は Retrieve を飛ばしてモデルとツールだけで答える）
@@ -155,20 +155,20 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
     { for k, v in { RERANK_MODEL_ARN = local.rerank_model_arn } : k => v if local.kb && local.rerank },
     # OSS 版（cycle 005）だけ足す接続先の切り替え。マネージド版では空の map で、上の環境変数だけになる。
     # graph.py は Neptune の代わりに Neo4j を読む（URI とパスワードは PARAM_PREFIX で SSM の neo4j-uri / neo4j-password。読む権限は
-    # oss/terraform/pipeline/graph の access.tf、届く経路は terraform/base/core の oss.tf の runtime → neo4j）。ドライバは agent/requirements-oss.txt。
+    # IaC/terraform/oss/pipeline/graph の access.tf、届く経路は IaC/terraform/aws-managed/base/core の oss.tf の runtime → neo4j）。ドライバは app/agentcore/requirements-oss.txt。
     # evidence.py の認証も OSS 版のもの（Basic / 署名なし）にそろえる。エンドポイントはマネージド版と同じく Runtime には渡さず、
-    # ログとメトリクスは Gateway の tools Lambda（terraform/workflow の gateway.tf）越しに読む
+    # ログとメトリクスは Gateway の tools Lambda（IaC/terraform/aws-managed/workflow の gateway.tf）越しに読む
     local.oss ? { GRAPH_BACKEND = "neo4j", OPENSEARCH_AUTH = "basic", PROMETHEUS_AUTH = "none" } : {},
   )
 
   tags = { Name = "${local.name_prefix}-agent" }
 
-  # イメージ取得とログ出力は AgentCore のサービスがこのロールで行う。コンテナの中から Bedrock / SSM へは terraform/base/core の
+  # イメージ取得とログ出力は AgentCore のサービスがこのロールで行う。コンテナの中から Bedrock / SSM へは IaC/terraform/aws-managed/base/core の
   # インターフェース型エンドポイントを通る（base が先にできている）
   depends_on = [aws_iam_role_policy.runtime]
 }
 
-# この VPC のエンドポイント（bedrock-agentcore）を通らない InvokeAgentRuntime を拒む（terraform/base/core の perimeter.tf の資源側。
+# この VPC のエンドポイント（bedrock-agentcore）を通らない InvokeAgentRuntime を拒む（IaC/terraform/aws-managed/base/core の perimeter.tf の資源側。
 # AgentCore の文書の DenyAllExceptVPC と同じ形）。呼ぶのは Web の EC2 と workflow のワーカーで、どちらも VPC の中。
 # デプロイする人は外れるので、docs/deploy.md の「Runtime だけを CLI で確かめる」は PC から打てる
 resource "aws_bedrockagentcore_resource_policy" "runtime" {
@@ -194,10 +194,10 @@ resource "aws_bedrockagentcore_resource_policy" "runtime" {
 
 # ---------------------------------------------------------------- hand the runtime ARN to the chat web
 # web EC2 は起動時に環境変数で ARN を受け取るのではなく、この SSM パラメータを読む（60 秒キャッシュ）。
-# こうすると agent を後から apply / destroy しても terraform/base/core（web EC2）を作り直さずに済む
+# こうすると agent を後から apply / destroy しても IaC/terraform/aws-managed/base/core（web EC2）を作り直さずに済む
 resource "aws_ssm_parameter" "runtime_arn" {
   name        = "${local.param_prefix}/runtime-arn"
-  description = "ARN of the AgentCore Runtime the chat web invokes (written by terraform/agent)"
+  description = "ARN of the AgentCore Runtime the chat web invokes (written by IaC/terraform/aws-managed/agent)"
   type        = "String"
   value       = aws_bedrockagentcore_agent_runtime.agent.agent_runtime_arn
 

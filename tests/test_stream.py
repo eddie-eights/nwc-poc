@@ -1,10 +1,10 @@
-"""取り込みの経路（lab の機器 → Telegraf（ECS）→ MSK → Spark）の模擬テスト。lab の機器の設定・Telegraf の設定・terraform/pipeline/stream と、
-Spark（spark/snmp_sinks.py）が異常の検知をしなくなったこと（2026-10-02。検知は Grafana のアラートルールと Splunk の保存済みサーチ → tests/test_alerts.py）を確かめる。
+"""取り込みの経路（lab の機器 → Telegraf（ECS）→ MSK → Spark）の模擬テスト。lab の機器の設定・Telegraf の設定・IaC/terraform/aws-managed/pipeline/stream と、
+Spark（app/spark/snmp_sinks.py）が異常の検知をしなくなったこと（2026-10-02。検知は Grafana のアラートルールと Splunk の保存済みサーチ → tests/test_alerts.py）を確かめる。
 実行は python3 tests/test_stream.py（pyspark も boto3 も要らない。snmp_sinks.py は pyspark を関数の中で import する）。"""
 import importlib.util, ipaddress, json, os, re, sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-SRC = os.path.join(ROOT, "spark", "snmp_sinks.py")
+SRC = os.path.join(ROOT, "app", "spark", "snmp_sinks.py")
 
 passed = 0
 def check(name, cond):
@@ -13,20 +13,20 @@ def check(name, cond):
     passed += 1
     print("ok", name)
 
-# ---- terraform/pipeline/stream: 検知の資源（detector Lambda・DynamoDB の異常テーブル）は持たない
-TF_DIR = os.path.join(ROOT, "terraform", "pipeline", "stream")
+# ---- IaC/terraform/aws-managed/pipeline/stream: 検知の資源（detector Lambda・DynamoDB の異常テーブル）は持たない
+TF_DIR = os.path.join(ROOT, "IaC", "terraform", "aws-managed", "pipeline", "stream")
 tf = ""
 for name in sorted(os.listdir(TF_DIR)):
     if name.endswith(".tf"):
         with open(os.path.join(TF_DIR, name), encoding="utf-8") as f:
             tf += f.read() + "\n"
 check("stream/detector.py は無い（検知は Grafana と Splunk）", not os.path.exists(os.path.join(ROOT, "stream", "detector.py")))
-check("terraform/pipeline/stream に detector の Lambda が無い", '"detector"' not in tf and "stream/detector.py" not in tf and "archive_file" not in tf)
-check("terraform/pipeline/stream に lambda のエンドポイントが無い", '.lambda"' not in tf)
-check("terraform/pipeline/stream に MSK Connect の S3 sink が無い（Spark が S3 Tables に入れるので 2026-09-26 に削除。sts のエンドポイントも一緒に）",
+check("IaC/terraform/aws-managed/pipeline/stream に detector の Lambda が無い", '"detector"' not in tf and "stream/detector.py" not in tf and "archive_file" not in tf)
+check("IaC/terraform/aws-managed/pipeline/stream に lambda のエンドポイントが無い", '.lambda"' not in tf)
+check("IaC/terraform/aws-managed/pipeline/stream に MSK Connect の S3 sink が無い（Spark が S3 Tables に入れるので 2026-09-26 に削除。sts のエンドポイントも一緒に）",
       not os.path.exists(os.path.join(TF_DIR, "sink.tf")) and "mskconnect" not in tf and "create_s3_sink" not in tf
       and "kafkaconnect" not in tf and "create_sts_endpoint" not in tf and "aws_vpc_endpoint" not in tf)
-check("terraform/pipeline/stream に DynamoDB が無い（2026-09-24）",
+check("IaC/terraform/aws-managed/pipeline/stream に DynamoDB が無い（2026-09-24）",
       "aws_dynamodb" not in tf and "anomaly_table" not in tf and "dynamodb:" not in tf and ".dynamodb" not in tf
       and not os.path.exists(os.path.join(TF_DIR, "anomalies.tf")))
 check("detector_logs の output は無い", "detector_logs" not in tf)
@@ -36,7 +36,7 @@ check("ブローカーは Kafka 4 が受け付ける m5 / m7g（t3.small は Uns
       re.search(r'variable "broker_instance_type" \{[^}]*default\s*=\s*"kafka\.m5\.large"', tf) is not None
       and '"kafka.t3.small"' not in tf)
 
-# ---- spark/snmp_sinks.py を pyspark 無しで読む
+# ---- app/spark/snmp_sinks.py を pyspark 無しで読む
 spec = importlib.util.spec_from_file_location("snmp_sinks", SRC)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
@@ -69,16 +69,16 @@ def _read(*parts):
 
 def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の oss/ops/ と共通）とつないで見る
     return _read("ops", "common.sh") + _read("ops", f"{name}-common.sh") + _read("ops", f"{name}.sh")
-srl_dir = os.path.join(ROOT, "lab", "srlinux")
+srl_dir = os.path.join(ROOT, "app", "containerlab", "srlinux")
 srl_nodes = sorted(n[:-4] for n in os.listdir(srl_dir) if n.endswith(".cli"))
-srl_cfg = {n: _read("lab", "srlinux", n + ".cli") for n in srl_nodes}
-clab = _read("lab", "splab.clab.yml.in")
-labsh = _read("lab", "lab.sh")
-tele = _read("telegraf", "telegraf.conf.in")
-tgsh = _read("telegraf", "telegraf.sh")
-lab_locals = _read("terraform", "pipeline", "lab", "locals.tf")
-stream_tg = _read("terraform", "pipeline", "stream", "telegraf.tf")
-core_sg = _read("terraform", "base", "core", "security_groups.tf")
+srl_cfg = {n: _read("app", "containerlab", "srlinux", n + ".cli") for n in srl_nodes}
+clab = _read("app", "containerlab", "splab.clab.yml.in")
+labsh = _read("app", "containerlab", "lab.sh")
+tele = _read("app", "telegraf", "telegraf.conf.in")
+tgsh = _read("app", "telegraf", "telegraf.sh")
+lab_locals = _read("IaC", "terraform", "aws-managed", "pipeline", "lab", "locals.tf")
+stream_tg = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "telegraf.tf")
+core_sg = _read("IaC", "terraform", "aws-managed", "base", "core", "security_groups.tf")
 check("SR Linux の 6 台の設定は set / の行だけ（containerlab が候補に流し込んで commit する。enter candidate / commit を書くと二重になる）",
       len(srl_nodes) == 6 and all(all(re.match(r"^(set / |#|\s*$)", l) for l in c.splitlines()) for c in srl_cfg.values()))
 check("containerlab は 6 台とも nokia_srlinux で srlinux/<機器名>.cli を startup-config にする",
@@ -126,10 +126,10 @@ check("管理ネットワークが containerlab・lab.sh・lab の locals・土�
       re.search(rf"^\s*ipv4-subnet: {re.escape(mgmt)}$", clab, re.M) is not None
       and re.search(rf'^\s*mgmt_cidr\s*=\s*"{re.escape(mgmt)}"$', lab_locals, re.M) is not None
       and re.search(rf'^\s*lab_mgmt_cidr\s*=\s*"{re.escape(mgmt)}"$', core_sg, re.M) is not None)
-# ポーリング先は lab の定義から作る（lab/lab_topology.py --snmp-agents → up.sh が stream の snmp_agents → タスクの SNMP_AGENTS → telegraf.sh render が埋める）
-_lt_spec = importlib.util.spec_from_file_location("lab_topology", os.path.join(ROOT, "lab", "lab_topology.py"))
+# ポーリング先は lab の定義から作る（app/containerlab/lab_topology.py --snmp-agents → up.sh が stream の snmp_agents → タスクの SNMP_AGENTS → telegraf.sh render が埋める）
+_lt_spec = importlib.util.spec_from_file_location("lab_topology", os.path.join(ROOT, "app", "containerlab", "lab_topology.py"))
 lt = importlib.util.module_from_spec(_lt_spec); _lt_spec.loader.exec_module(lt)
-_lab_devices, _, _ = lt.load(os.path.join(ROOT, "lab"))
+_lab_devices, _, _ = lt.load(os.path.join(ROOT, "app", "containerlab"))
 _agents_line = lt.snmp_agents(_lab_devices)
 _agents = re.findall(r"udp://([\d.]+):161", _agents_line)
 check("Telegraf のポーリング先は lab の監視対象（enabled）の管理 IP で、全部管理ネットワークの中（VPC のルートで lab の EC2 へ行く）",
@@ -177,7 +177,7 @@ check("性能メトリクスは 2 つめの inputs.gnmi（知らないパスで 
       and all(l in lab_blk for l in ("addresses = [__GNMI_TARGETS__]", 'encoding = "json_ietf"', "tls_enable = true", "insecure_skip_verify = true", 'username = "${GNMI_USERNAME}"', 'password = "${GNMI_PASSWORD}"')))
 _star_proc = re.search(r'\[\[processors\.starlark\]\]\s*\n\s*namepass = \[([^\]]*)\]\s*\n\s*script = "/etc/telegraf/lab_gnmi\.star"', tele)
 _star_aggr = re.search(r'\[\[aggregators\.starlark\]\]\s*\n\s*namepass = \[([^\]]*)\]\s*\n\s*period = "60s"\s*\n\s*grace = "\d+s"\s*\n\s*drop_original = true\s*\n\s*script = "/etc/telegraf/lab_circuits\.star"', tele)
-_dockerfile = _read("telegraf", "Dockerfile")
+_dockerfile = _read("docker", "images", "telegraf", "Dockerfile")
 check("lab_* は processors.starlark（lab_gnmi.star）と aggregators.starlark（lab_circuits.star）で全部受け、Kafka のどの出力にも lab_* を載せない。.star はイメージの /etc/telegraf",
       _star_proc is not None and _star_aggr is not None
       and sorted(re.findall(r'"(\w+)"', _star_proc.group(1)) + re.findall(r'"(\w+)"', _star_aggr.group(1))) == sorted(LAB_SUBS)
@@ -194,14 +194,14 @@ _up = read_ops("up")
 check("syslog の形式は stream の syslog_standard（既定 RFC3164 = 本番の Cisco）→ タスクの SYSLOG_STANDARD → telegraf.conf.in の __SYSLOG_STANDARD__。up.sh も deploy.env の SYSLOG_STANDARD（既定 RFC3164。lab の SR Linux は RFC5424）を渡す",
       re.search(r'^\s*syslog_standard = "__SYSLOG_STANDARD__"$', tele, re.M) is not None and 's#__SYSLOG_STANDARD__#$SYSLOG_STANDARD#' in tgsh
       and '{ name = "SYSLOG_STANDARD", value = var.syslog_standard }' in stream_tg
-      and re.search(r'variable "syslog_standard" \{[^}]*default\s*=\s*"RFC3164"', _read("terraform", "pipeline", "stream", "variables.tf")) is not None
+      and re.search(r'variable "syslog_standard" \{[^}]*default\s*=\s*"RFC3164"', _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "variables.tf")) is not None
       and '-var "syslog_standard=$SYSLOG_STANDARD"' in _up and 'SYSLOG_STANDARD="${SYSLOG_STANDARD:-RFC3164}"' in _up and '[ "$SYSLOG_STANDARD" != "$LAB_SYSLOG_STANDARD" ]' in _up
       and "case \"$SYSLOG_STANDARD\" in RFC3164 | RFC5424) ;;" in _up
       and re.search(r"\bSYSLOG_STANDARD\b", _read("ops", "deploy-env.sh").split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1]) is not None
       and re.search(r"^#SYSLOG_STANDARD=RFC5424$", _read("deploy.env.example"), re.M) is not None and re.search(r"^LAB_SYSLOG_STANDARD=RFC5424\b", _read("ops", "lab-common.sh"), re.M) is not None)
 check("SNMP のポーリングは既定でする（cycle 002。Grafana の link_down と Splunk の netops_poll が見る）: stream の snmp_poll（bool、既定 true）→ タスクの SNMP_POLL（1 / 0）→ "
       "telegraf.sh が「>>> snmp_poll」の区間を残すか消す。up.sh は deploy.env の SNMP_POLL（既定 1）を渡す",
-      re.search(r'variable "snmp_poll" \{[^}]*type\s*=\s*bool[^}]*default\s*=\s*true', _read("terraform", "pipeline", "stream", "variables.tf")) is not None
+      re.search(r'variable "snmp_poll" \{[^}]*type\s*=\s*bool[^}]*default\s*=\s*true', _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "variables.tf")) is not None
       and '{ name = "SNMP_POLL", value = var.snmp_poll ? "1" : "0" }' in stream_tg
       and re.search(r"^SNMP_POLL=\$\{SNMP_POLL:-1\}$", tgsh, re.M) is not None and '/^# >>> snmp_poll/,/^# <<< snmp_poll/d' in tgsh
       and re.search(r"^# >>> snmp_poll[\s\S]*?^\[\[inputs\.snmp\]\][\s\S]*?^# <<< snmp_poll", tele, re.M) is not None
@@ -209,10 +209,10 @@ check("SNMP のポーリングは既定でする（cycle 002。Grafana の link_
       and re.search(r"\bSNMP_POLL\b", _read("ops", "deploy-env.sh").split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1]) is not None
       and re.search(r"^#SNMP_POLL=0$", _read("deploy.env.example"), re.M) is not None)
 check("Telegraf に入るコマンドの既定は tg gnmi（tg test はポーリングを止めていると何も取らない）",
-      "--command 'tg gnmi'" in _read("terraform", "pipeline", "stream", "outputs.tf"))
+      "--command 'tg gnmi'" in _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "outputs.tf"))
 check("up.sh は lab の定義からポーリング先と gNMI の購読先を作り、stream の snmp_agents / gnmi_targets に渡す（S3 には置かない）",
-      'lab/lab_topology.py lab --snmp-agents' in _up and 'lab/lab_topology.py lab --gnmi-targets' in _up
-      and '-var "snmp_agents=$SNMP_AGENTS" -var "gnmi_targets=$GNMI_TARGETS"' in _up and "/telegraf/" not in _up)
+      'app/containerlab/lab_topology.py app/containerlab --snmp-agents' in _up and 'app/containerlab/lab_topology.py app/containerlab --gnmi-targets' in _up
+      and '-var "snmp_agents=$SNMP_AGENTS" -var "gnmi_targets=$GNMI_TARGETS"' in _up and "/telegraf/" not in _up.replace("app/telegraf/", ""))
 check("lab.sh up は毎回 forward を呼び、forward / forward-status がある",
       '"$SELF" forward' in labsh and re.search(r"^\s*forward\)", labsh, re.M) is not None and re.search(r"^\s*forward-status\)", labsh, re.M) is not None)
 check("forward の iptables の規則は全部目印付き（unforward で消せる）",
@@ -228,10 +228,10 @@ check("syslog の hostname を sysName のタグに付け替える（metrics / t
       re.search(r'\[\[processors\.rename\]\]\s*\n\s*namepass = \["device_log"\]\s*\n\s*\[\[processors\.rename\.replace\]\]\s*\n\s*tag = "hostname"\s*\n\s*dest = "sysName"', tele) is not None)
 check("Spark の既定は gnmi / mdt トピックも読む（iceberg / prometheus は metrics,gnmi,mdt、opensearch は traps,logs）", mod.METRIC_TOPICS == "metrics,gnmi,mdt"
       and mod.sink_topics("iceberg", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "metrics,gnmi,mdt,traps,logs" and mod.sink_topics("prometheus", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "metrics,gnmi,mdt")
-_access = _read("terraform", "pipeline", "stream", "access.tf")
-_lab_tg = _read("terraform", "pipeline", "lab", "telegraf.tf")
-# Kafka による違いは msk.tf の kafka_* の locals（OSS 版は oss/terraform/pipeline/stream/kafka.tf。cycle 005）
-_msk = _read("terraform", "pipeline", "stream", "msk.tf")
+_access = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "access.tf")
+_lab_tg = _read("IaC", "terraform", "aws-managed", "pipeline", "lab", "telegraf.tf")
+# Kafka による違いは msk.tf の kafka_* の locals（OSS 版は IaC/terraform/oss/pipeline/stream/kafka.tf。cycle 005）
+_msk = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "msk.tf")
 _msk_code = "\n".join(l for l in _msk.splitlines() if not l.lstrip().startswith("#"))
 _tg_kafka = _msk_code[_msk_code.index("telegraf_kafka_statements = ["):_msk_code.index("kafka_ui_kafka_statements = [")]
 check("Telegraf は stream の ECS で、MSK への書き込みはタスクロール（lab の state のロールに頼らない。2026-09-28）。権限は msk.tf の telegraf_kafka_statements",
@@ -242,7 +242,7 @@ check("Telegraf は stream の ECS で、MSK への書き込みはタスクロ�
       and 'resource "aws_iam_role"' not in _lab_tg and 'resource "aws_instance"' not in _lab_tg)
 check("lab と stream は SG も SG のルールも作らない（ポーリング・trap・syslog のルールは土台の通信の表。2026-09-29）",
       all('resource "aws_security_group"' not in t and "aws_vpc_security_group_" not in t
-          for t in (_lab_tg, lab_locals, stream_tg, _access, _read("terraform", "pipeline", "stream", "msk.tf"), _read("terraform", "pipeline", "lab", "instance.tf")))
+          for t in (_lab_tg, lab_locals, stream_tg, _access, _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "msk.tf"), _read("IaC", "terraform", "aws-managed", "pipeline", "lab", "instance.tf")))
       and 'security_groups = [local.telegraf_dialout_nlb_sg_id]' in stream_tg and 'security_groups  = [local.telegraf_dialout_sg_id]' in stream_tg)
 _td = {k: m.group(0) for k in ("telegraf_dialout", "telegraf_dialin") if (m := re.search(r'resource "aws_ecs_task_definition" "' + k + r'" \{[\s\S]*?^\}', stream_tg, re.M))}
 _svc = {k: m.group(0) for k in ("telegraf_dialout", "telegraf_dialin") if (m := re.search(r'resource "aws_ecs_service" "' + k + r'" \{[\s\S]*?^\}', stream_tg, re.M))}
@@ -259,7 +259,7 @@ check("Telegraf は受ける側（dialout。NLB の後ろ、SG telegraf_dialout�
       and re.search(r"desired_count\s+= 1\b", _svc["telegraf_dialin"]) is not None
       and "deployment_minimum_healthy_percent = 0" in _svc["telegraf_dialin"] and "deployment_maximum_percent         = 100" in _svc["telegraf_dialin"]
       and "enable_execute_command = true" in _svc["telegraf_dialin"]
-      and re.search(r'telegraf_dialin_sg_id\s*=\s*try\(data\.terraform_remote_state\.main\.outputs\.security_group_ids\["telegraf_dialin"\], ""\)', _read("terraform", "pipeline", "stream", "locals.tf")) is not None
+      and re.search(r'telegraf_dialin_sg_id\s*=\s*try\(data\.terraform_remote_state\.main\.outputs\.security_group_ids\["telegraf_dialin"\], ""\)', _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "locals.tf")) is not None
       and '"$TG_DIALOUT_SERVICE" "$TG_DIALIN_SERVICE"' in _up and "telegraf_dialin_list_tasks_command" in _up)
 _exec_pol = re.search(r'resource "aws_iam_role_policy" "telegraf_execution" \{[\s\S]*?^\}', stream_tg, re.M)
 check("取りにいく側は機器の一覧と認証情報を SSM から ECS の secrets で受ける（environment に載せない）。認証情報の SecureString は up.sh が stream の apply の前に作り、実行ロールが読めるのは telegraf-dialin の下だけ",
@@ -272,7 +272,7 @@ check("取りにいく側は機器の一覧と認証情報を SSM から ECS の
       and _exec_pol is not None and "ssm:GetParameters" in _exec_pol.group(0) and "${local.dialin_parameter_prefix}/*" in _exec_pol.group(0)
       and "var.gnmi" not in _exec_pol.group(0))
 check("up.sh は base/core の state に古い Telegraf の SG（telegraf）があり stream が残っていれば、ECR より前に止める（SG のキーを変えると作り直しで、付けたままでは消せない）",
-      """grep -qxF 'aws_security_group.workload["telegraf"]'""" in _up and "[ -s terraform/pipeline/stream/terraform.tfstate ]" in _up
+      """grep -qxF 'aws_security_group.workload["telegraf"]'""" in _up and '[ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ]' in _up
       and _up.index("""'aws_security_group.workload["telegraf"]'""") < _up.index('log "1. ECR リポジトリ'))
 _down = _read("ops", "down.sh")
 check("down.sh は stream の必須変数（snmp_agents / gnmi_targets）に形だけ合う値を渡して destroy する（telegraf.sh の形の検査と同じ）",
@@ -291,7 +291,7 @@ class FakeMetric:
 
 def _star(name):
     g = {"Metric": FakeMetric, "state": {}}
-    exec(compile(_read("telegraf", name), name, "exec"), g)
+    exec(compile(_read("app", "telegraf", name), name, "exec"), g)
     return g
 
 _g = _star("lab_gnmi.star")
@@ -365,14 +365,14 @@ check("circuits: source や name の無いもの、type / oper-state の無い�
                       FakeMetric("lab_if_oper", {"source": S, "name": "ethernet-1/1"}, {"other": "up"})]) == {})
 
 
-# ---- Kafbat UI（terraform/pipeline/stream/kafka_ui.tf。2026-10-05）: MSK の画面。見るだけにせず、画面からトピックを足せる。stream を作る回はいつも作る
-kui =_read("terraform", "pipeline", "stream", "kafka_ui.tf")
+# ---- Kafbat UI（IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf。2026-10-05）: MSK の画面。見るだけにせず、画面からトピックを足せる。stream を作る回はいつも作る
+kui =_read("IaC", "terraform", "aws-managed", "pipeline", "stream", "kafka_ui.tf")
 kui_code = "\n".join(l for l in kui.splitlines() if not l.lstrip().startswith("#"))   # コメントを除いた中身
-stream_vars = _read("terraform", "pipeline", "stream", "variables.tf")
-stream_out = _read("terraform", "pipeline", "stream", "outputs.tf")
+stream_vars = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "variables.tf")
+stream_out = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "outputs.tf")
 up = read_ops("up")
 denv = _read("ops", "deploy-env.sh")
-ecr_tf = _read("terraform", "base", "ecr", "main.tf")
+ecr_tf = _read("IaC", "terraform", "aws-managed", "base", "ecr", "main.tf")
 check("Kafbat UI の資源 12 個は stream の root にいつもある（切り替える変数は無い。2026-10-05 のユーザー決定。count は閉域の Deny の 2 つが perimeter の有無で使うだけ）",
       len(re.findall(r'^resource "', kui, re.M)) == 12
       and re.findall(r'^  count = (.*)$', kui, re.M) == ['local.perimeter_policy_arn != "" ? 1 : 0'] * 2
@@ -435,7 +435,7 @@ check("SG は土台（base/core）の kafka_ui。通信の表に Web の EC2 →
       and re.search(r'\{ from = "web", to = "kafka_ui", protocol = "tcp", port = 8080, why = "[^"]*" \}', _sg_rows) is not None
       and re.search(r'\{ from = "kafka_ui", to = "msk", protocol = "tcp", port = 9098, why = "[^"]*" \}', _sg_rows) is not None
       and not re.search(r'to = "kafka_ui"[^}]*port = (?!8080)', _sg_rows) and not re.search(r'from = "kafka_ui", to = "(?!msk")', _sg_rows)
-      and 'kafka_ui_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["kafka_ui"], "")' in _read("terraform", "pipeline", "stream", "locals.tf")
+      and 'kafka_ui_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["kafka_ui"], "")' in _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "locals.tf")
       and "security_groups  = [local.kafka_ui_sg_id]" in kui and "aws_security_group" not in tf)
 check("開き方は Grafana と同じ（web の EC2 を踏み台にした SSM のポートフォワード）。PC 側は 8082（Web 8080 と Nautobot 8081 とぶつけない）",
       'AWS-StartPortForwardingSessionToRemoteHost --parameters \'{\\"host\\":[\\"kafka-ui.${local.stream_service_namespace}\\"],\\"portNumber\\":[\\"8080\\"],\\"localPortNumber\\":[\\"8082\\"]}\'' in stream_out
@@ -456,11 +456,11 @@ def _in_stream_block(marker):
     i = up.index(marker)
     j = up.rindex('\nif [ -z "$SKIP_STREAM" ]; then\n', 0, i)
     return "\nfi\n" not in up[j:i]
-# KAFKA_UI というキー（と作る・作らないの変数 create_kafka_ui）がどこにも無い: ops/ のシェル・deploy.env.example・terraform/ の .tf
+# KAFKA_UI というキー（と作る・作らないの変数 create_kafka_ui）がどこにも無い: ops/ のシェル・deploy.env.example・IaC/terraform/aws-managed/ の .tf
 _no_switch_files = ["deploy.env.example"] + [os.path.join("ops", n) for n in sorted(os.listdir(os.path.join(ROOT, "ops"))) if n.endswith(".sh")] + [
-    os.path.relpath(os.path.join(d, n), ROOT) for d, _, ns in os.walk(os.path.join(ROOT, "terraform")) if ".terraform" not in d for n in ns if n.endswith(".tf")]
+    os.path.relpath(os.path.join(d, n), ROOT) for d, _, ns in os.walk(os.path.join(ROOT, "IaC", "terraform", "aws-managed")) if ".terraform" not in d for n in ns if n.endswith(".tf")]
 _has_switch = [p for p in _no_switch_files if re.search(r"\bKAFKA_UI\b|create_kafka_ui", _read(p))]
-check(f"スイッチは無い: KAFKA_UI というキーと create_kafka_ui は ops/ と deploy.env.example と terraform/ のどこにも無い（{_has_switch}）。up.sh の冒頭は「stream に入る」と費用の目安だけ",
+check(f"スイッチは無い: KAFKA_UI というキーと create_kafka_ui は ops/ と deploy.env.example と IaC/terraform/aws-managed/ のどこにも無い（{_has_switch}）。up.sh の冒頭は「stream に入る」と費用の目安だけ",
       len(_no_switch_files) > 20 and "ops/deploy-env.sh" in _no_switch_files and _has_switch == []
       and re.search(r"^#   （Kafbat UI）\s+stream を作る回は Kafbat UI[^\n]*\+\$0\.02/h[^\n]*\*\*いつも作る\*\*（切り替える変数は無い[^\n]*\n#   （", up, re.M) is not None
       and "Kafbat UI（約 $0.02/h）もいつも入る" in _read("deploy.env.example"))

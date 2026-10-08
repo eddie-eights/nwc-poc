@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # OSS 版（cycle 005「マネージドを OSS に置き換えた環境を作る」）で作ったものをまとめて消す。oss/ops/up.sh の逆。
-# 消す相手は接頭辞 <owner>-nwc-oss のもので、oss/terraform/<ルート>/terraform.tfstate にリソースが載っているルートだけ。
-# 同じアカウントのマネージド版（<owner>-nwc-poc。terraform/ の state と ops/up.sh が作った SSM のパラメータ）には触らない。
-# 消し方はマネージド版の ops/down.sh と同じ関数（ops/common.sh・ops/down-common.sh）を、ルートの親を oss/terraform にして使う。
+# 消す相手は接頭辞 <owner>-nwc-oss のもので、IaC/terraform/oss/<ルート>/terraform.tfstate にリソースが載っているルートだけ。
+# 同じアカウントのマネージド版（<owner>-nwc-poc。IaC/terraform/aws-managed/ の state と ops/up.sh が作った SSM のパラメータ）には触らない。
+# 消し方はマネージド版の ops/down.sh と同じ関数（ops/common.sh・ops/down-common.sh）を、ルートの親を IaC/terraform/oss にして使う。
 #
 # 使い方（展開したフォルダの直下で。先に AWS CLI の認証を通しておく。IAM ユーザーなら長期キーのまま打つ）:
 #   oss/ops/down.sh              # 全部消す（workflow → analytics → nautobot → graph → stream → lab → agent → base/core → ecr
@@ -12,7 +12,7 @@
 # oss/ops/up.sh と同じ deploy.env（DEPLOY_ENV_FILE=<パス> で別のファイル）を読む。使うキーは OWNER（必須。作ったときと同じ値）、
 # KEEP_ECR、AWS_PROFILE / AWS_CA_BUNDLE。oss/ops/up.sh はいつも 9 つのルート（base/ecr・base/core・agent・pipeline/lab・pipeline/stream・
 # pipeline/graph・pipeline/nautobot・pipeline/analytics・workflow）を作るので、9 つとも消す（途中で止まって作っていないルートは飛ばす）。
-# PC に残るもの（wheels-oss/ と oss/terraform/pipeline/graph/.build/）は消さない（次の oss/ops/up.sh が使い回すか作り直す）。
+# PC に残るもの（wheels-oss/ と IaC/terraform/oss/pipeline/graph/.build/）は消さない（次の oss/ops/up.sh が使い回すか作り直す）。
 # Glue のカタログ s3tablescatalog はアカウントで 1 つをマネージド版と共有するので、マネージド版の ops/down.sh と同じく消さない
 set -uo pipefail
 
@@ -23,7 +23,7 @@ cd "$(dirname "$0")/../.."
 
 . ops/common.sh       # log / die / tf と terraform の認証情報（マネージド版の ops/down.sh と同じもの）
 . ops/down-common.sh  # destroy_root / destroy_agent / destroy_base_core / report_leftovers など
-TF_DIR=oss/terraform  # destroy するルートの親。マネージド版の terraform/ の state には触らない
+TF_DIR=IaC/terraform/oss  # destroy するルートの親。マネージド版の IaC/terraform/aws-managed/ の state には触らない
 OPS_DIR=oss/ops       # 消す SSM のパラメータはタグ ManagedBy=oss/ops/up.sh のものだけ（マネージド版の ManagedBy=ops/up.sh は残る）
 TF_LOG_NAME=tf-oss    # terraform のログは ops/logs/tf-oss-<ルート>-destroy.log
 TF_INIT_LOCKFILE=readonly  # init は lock を書き換えない（lock はマネージド版へのシンボリックリンク。ops/common.sh の tf_init_root）
@@ -43,10 +43,10 @@ command -v aws >/dev/null || die "aws CLI が無い"
 command -v terraform >/dev/null || die "terraform が無い"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text) || die "認証が通っていない（aws configure か aws login で入り直す）"
 echo "ACCOUNT_ID=$ACCOUNT_ID"
-echo "消す相手: 接頭辞と Project タグが $PREFIX のもの（oss/terraform/ の state）。マネージド版（$OWNER-nwc-poc）には触らない"
+echo "消す相手: 接頭辞と Project タグが $PREFIX のもの（IaC/terraform/oss/ の state）。マネージド版（$OWNER-nwc-poc）には触らない"
 tf_use_cli_credentials
 
-log "1. workflow → analytics → nautobot → graph → stream（oss/terraform/ にできていて、state にリソースがあるものだけ）"
+log "1. workflow → analytics → nautobot → graph → stream（IaC/terraform/oss/ にできていて、state にリソースがあるものだけ）"
 # workflow の worker_image_tag は必須変数だが destroy では使われないので、何でもよい値を渡す
 destroy_lambda_root workflow "$PREFIX-tools" -var "worker_image_tag=${IMAGE_TAG:-destroy}"
 destroy_root pipeline/analytics
@@ -58,10 +58,10 @@ destroy_root pipeline/stream -var 'snmp_agents="udp://0.0.0.0:161"' -var 'gnmi_t
 log "2. lab"
 destroy_root pipeline/lab
 
-log "3. agent（oss/terraform/agent に state があるときだけ。base/core のロールにポリシーを付けるので base/core より先）"
+log "3. agent（IaC/terraform/oss/agent に state があるときだけ。base/core のロールにポリシーを付けるので base/core より先）"
 destroy_agent
 
-log "3-2. 土台（oss/terraform/base/core。VPC / Web の EC2 / バケット（中身ごと消える）/ ロール / Kafka のデータの EFS（中身ごと消える））"
+log "3-2. 土台（IaC/terraform/oss/base/core。VPC / Web の EC2 / バケット（中身ごと消える）/ ロール / Kafka のデータの EFS（中身ごと消える））"
 destroy_base_core
 
 if [ "$KEEP_ECR" = 1 ]; then
@@ -84,7 +84,7 @@ log "6. 残っていないか（Project=$PREFIX のタグ）"
 report_leftovers
 echo "（残り 0 件なら全部消えている。ecr を残したときはリポジトリが出る。消した直後の数分は消えたものが出ることがある）"
 if [ "$MAIN_LEFT" = 1 ]; then
-  echo "oss/terraform/base/core の VPC・サブネット・runtime の SG は残した（Runtime の ENI 待ち。時間課金は無い）。"
+  echo "IaC/terraform/oss/base/core の VPC・サブネット・runtime の SG は残した（Runtime の ENI 待ち。時間課金は無い）。"
   echo "すぐ使うなら oss/ops/up.sh がそのまま使い回す。消し切るなら数時間おいて oss/ops/down.sh を打ち直す"
 fi
 if [ -n "$FAILED_ROOTS" ]; then

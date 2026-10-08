@@ -11,11 +11,11 @@
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
-| クラスター | `<prefix>-telegraf` | `terraform/pipeline/stream/telegraf.tf` |
+| クラスター | `<prefix>-telegraf` | `IaC/terraform/aws-managed/pipeline/stream/telegraf.tf` |
 | 受ける側 | サービス `<prefix>-telegraf-dialout`。trap・syslog・MDT を内部 NLB の後ろで受ける。タスク数 = `TELEGRAF_AZ_NUM`（既定 1、1〜3） | `telegraf.tf` の `aws_ecs_service.telegraf_dialout` |
 | 取りにいく側 | サービス `<prefix>-telegraf-dialin`。gNMI の購読と SNMP のポーリング。タスクはいつも 1 つ。NLB には付けない | `telegraf.tf` の `aws_ecs_service.telegraf_dialin` |
 | タスクの大きさ | Fargate ARM、0.25 vCPU / 0.5 GB | 変数 `telegraf_task_cpu`、`telegraf_task_memory` |
-| イメージ | 公式の telegraf 1.40.0 に設定のテンプレートと入口（`tg`）を足したもの。ECR の `<prefix>-telegraf` | `telegraf/Dockerfile`、`ops/lab-common.sh`（版の正）、変数 `telegraf_image_tag` |
+| イメージ | 公式の telegraf 1.40.0 に設定のテンプレートと入口（`tg`）を足したもの。ECR の `<prefix>-telegraf` | `docker/images/telegraf/Dockerfile`、`ops/lab-common.sh`（版の正）、変数 `telegraf_image_tag` |
 | NLB | 内部 NLB `<prefix>-tg`。162/udp → タスクの 1162、5140/udp → 5140、57000/tcp → 57000。ヘルスチェックは HTTP 8080（`outputs.health`） | `telegraf.tf` の `local.telegraf_ports`、`aws_lb.telegraf_dialout` |
 | 機器の一覧 | SSM `/<prefix>/telegraf-dialin/<lab か nautobot>/gnmi-targets`・`snmp-agents`（String） | `telegraf.tf`、変数 `dialin_targets_from_nautobot` |
 | 機器の認証情報 | SSM `/<prefix>/telegraf-dialin/gnmi-username`・`gnmi-password`・`snmp-community`（SecureString。`ops/up.sh` が作る） | `ops/up-common.sh` の `ensure_fixed_secret`（`ops/up.sh` の手順 7 が呼ぶ） |
@@ -38,7 +38,7 @@
 
 - **受ける側と取りにいく側を分けた理由は、台数を増やせるかどうかが違うから（2026-10-04）。**
   受ける側は機器の一覧を持たず、増やしても同じものを 2 回書かない。取りにいく側は 2 つ立てると同じ機器から 2 回取って MSK に 2 回書くので、1 つにしてある。
-  出典: `terraform/pipeline/stream/telegraf.tf` の先頭のコメント。
+  出典: `IaC/terraform/aws-managed/pipeline/stream/telegraf.tf` の先頭のコメント。
 - **DNAT の宛先はタスクではなく NLB の IP にする。**
   タスクの IP は作り直すと変わる。NLB の IP は変わらないので、SSM `/<prefix>/telegraf-address` に書いて lab の EC2 が読む。
   出典: 同上。
@@ -53,7 +53,7 @@
   出典: `telegraf.tf` の `aws_lb_target_group` のコメント、FAQ「SNMP はポーリングと trap のどちらで集めている？ ポーリングは止められる？」。
 - **機器の一覧と認証情報は、タスクを起こすときに読む。**
   SSM の値を変えたら、サービスを作り直さないと効かない。Nautobot の Job はパラメータを書き換えたあと `ecs:UpdateService` で作り直す。
-  出典: `telegraf.tf` の先頭のコメント、`terraform/pipeline/nautobot/access.tf`。
+  出典: `telegraf.tf` の先頭のコメント、`IaC/terraform/aws-managed/pipeline/nautobot/access.tf`。
 - **MSK の IAM 認証には profile の指定が要る。**
   鍵の無い `[default]`（region だけ）を `/tmp/aws_config` に置き、SDK が ECS のタスクロールに落ちるようにしてある。
   出典: [data-stores.md](../../data-stores.md) の「15. ブローカーの渡し方と msk-bootstrap」。

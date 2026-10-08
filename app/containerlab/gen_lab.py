@@ -22,12 +22,12 @@
   SR-MPLS は SR Linux のコンテナでは ixr6e / ixr10e（ライセンスが要る）だけなので、いまは VXLAN。ライセンスが来たら `type:` を ixr6e にして
   トンネルを SR-MPLS に替える（docs/pipeline.md「lab」）。
 
-台数を増やす（大規模化の練習）: python3 lab/gen_lab.py --leaves 4 --spines 3
+台数を増やす（大規模化の練習）: python3 app/containerlab/gen_lab.py --leaves 4 --spines 3
   leaf は 2 台 1 組で、組ごとに VM（dc1-host-0N）が 1 台付く。leafsw と上流 VM はいつも 1 組。書き出した結果はそのまま
   lab_topology.py が読んで Neptune / Telegraf / Spark に配る（機器の一覧は lab の定義 1 か所）。既定の出力は git に入れてあり、
   tests/test_sync.py が「既定で作り直しても同じ」ことを確かめる（手で直すとテストが落ちる。直すならここを直して作り直す）。
 
-使い方: python3 lab/gen_lab.py [--leaves N] [--spines N] [--out <lab のディレクトリ>]
+使い方: python3 app/containerlab/gen_lab.py [--leaves N] [--spines N] [--out <lab のディレクトリ>]
 """
 
 import argparse
@@ -221,8 +221,8 @@ def srl_config(sw: Switch, switches: list, hosts: list) -> str:
 def clab_template(switches: list, hosts: list, links: list, leaves: int, spines: int) -> str:
     tier_ja = {"leafsw": "Leaf-SW（上流側）", "spine": "Spine（EVPN のルートリフレクタ）", "leaf": "Leaf（アクセス側）"}
     out = [
-        "# Spine-Leaf の DC ファブリック（IS-IS underlay + iBGP EVPN + VXLAN。すべて架空のアドレス）。lab/gen_lab.py が作る。**手で直さない**",
-        f"# （python3 lab/gen_lab.py --leaves {leaves} --spines {spines} で作り直す。既定の出力は tests/test_sync.py が確かめる）。",
+        "# Spine-Leaf の DC ファブリック（IS-IS underlay + iBGP EVPN + VXLAN。すべて架空のアドレス）。app/containerlab/gen_lab.py が作る。**手で直さない**",
+        f"# （python3 app/containerlab/gen_lab.py --leaves {leaves} --spines {spines} で作り直す。既定の出力は tests/test_sync.py が確かめる）。",
         "#",
         "# これはテンプレート。__SRLINUX_IMAGE__ などは lab.sh render が ECR の URI に置き換えて splab.clab.yml を作る。",
         "# スイッチは Nokia SR Linux（kind nokia_srlinux、type ixr-d2l = ライセンス不要。SR-MPLS にするときは ixr6e + ライセンス）。",
@@ -243,7 +243,7 @@ def clab_template(switches: list, hosts: list, links: list, leaves: int, spines:
         "",
         "mgmt:",
         "  # 名前と subnet を固定する（EC2 の中だけの docker network）。VPC からは Telegraf のタスクだけが、VPC のルートで lab の EC2 を経由して届く",
-        "  # （terraform/pipeline/lab の locals.tf の mgmt_cidr と lab.sh の MGMT が同じ subnet）",
+        "  # （IaC/terraform/aws-managed/pipeline/lab の locals.tf の mgmt_cidr と lab.sh の MGMT が同じ subnet）",
         "  network: nwc-lab",
         f"  ipv4-subnet: {MGMT_SUBNET}",
         "",

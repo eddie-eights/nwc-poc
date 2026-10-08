@@ -1,8 +1,8 @@
 # ---------------------------------------------------------------- alerts: Grafana / Splunk -> SNS -> SQS (workflow) / Lambda (graph status)
 # 検知は Grafana のアラートルール（メトリクス）と Splunk の保存済みサーチ（ログ・trap・テレメトリ）が行い、どちらも同じ形の JSON をこのトピックへ publish する
-# （形は workflow/rules.py の alerts_from_message）。受け手は 2 つで、どちらも自分のルートがサブスクリプションを作る:
-#   - terraform/workflow        SQS（<接頭辞>-anomalies）→ worker の starter がワークフローを起こす / 解消のシグナルを送る
-#   - terraform/pipeline/graph  Lambda（<接頭辞>-graph-status）→ Neptune の機器・回線の status を書き換える
+# （形は app/temporal/rules.py の alerts_from_message）。受け手は 2 つで、どちらも自分のルートがサブスクリプションを作る:
+#   - IaC/terraform/aws-managed/workflow        SQS（<接頭辞>-anomalies）→ worker の starter がワークフローを起こす / 解消のシグナルを送る
+#   - IaC/terraform/aws-managed/pipeline/graph  Lambda（<接頭辞>-graph-status）→ Neptune の機器・回線の status を書き換える
 # 2026-10-02 までは Spark の detect が EventBridge に put_events し、ルールが同じ 2 つへ流していた。
 # トピックをここ（土台）に置くのは、送り手（analytics）と受け手（workflow / graph）のどれが先に作られても参照できるようにするため。
 # トピックに時間課金は無い（publish 100 万件/月まで無料）ので、機能を作らないときも作る。

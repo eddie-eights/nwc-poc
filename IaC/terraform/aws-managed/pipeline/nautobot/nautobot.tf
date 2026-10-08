@@ -1,8 +1,8 @@
 # ---------------------------------------------------------------- Nautobot (ECS Fargate)
 # 1 つのタスクに 3 つのコンテナ（同じタスクなので互いに localhost で届く）:
-#   web     画面と API（8080）。上流の entrypoint が DB の migrate（post_upgrade）をしてから、nautobot/netops/bootstrap.py が
+#   web     画面と API（8080）。上流の entrypoint が DB の migrate（post_upgrade）をしてから、app/nautobot/netops/bootstrap.py が
 #           管理者・custom field・最初の seed（機器が 0 件のときだけ lab の定義から）・Job の有効化と JobHook を入れ、一度同期して、uwsgi を起こす
-#   worker  Celery のワーカー。Job（nautobot/jobs/netops_jobs.py の「Telegraf とグラフ DB に同期」と、変更のたびに走る JobHook）を回す
+#   worker  Celery のワーカー。Job（app/nautobot/jobs/netops_jobs.py の「Telegraf とグラフ DB に同期」と、変更のたびに走る JobHook）を回す
 #   redis   キャッシュと Celery のブローカー、同期のロック。中身は消えてよい
 # 画面は Web の EC2 を踏み台にした SSM のポートフォワードで開く（outputs.tf のコマンド）。
 
@@ -55,7 +55,7 @@ locals {
     { name = "NAUTOBOT_REDIS_PORT", value = "6379" },
     { name = "NAUTOBOT_SUPERUSER_NAME", value = var.admin_user },
     { name = "AWS_REGION", value = var.region },
-    # Job の書き先（nautobot/netops/nb_sync.py）。空ならその片方を飛ばす
+    # Job の書き先（app/nautobot/netops/nb_sync.py）。空ならその片方を飛ばす
     ], local.graph_neo4j ? [
     { name = "GRAPH_BACKEND", value = "neo4j" },
     { name = "NEO4J_URI", value = local.neo4j_uri },
@@ -74,7 +74,7 @@ locals {
     { name = "NAUTOBOT_SUPERUSER_PASSWORD", valueFrom = local.secret_arns["admin-password"] },
     { name = "NAUTOBOT_API_TOKEN", valueFrom = local.secret_arns["api-token"] },
     ], local.graph_neo4j ? [
-    # agent/graph.py の NEO4J_PASSWORD（OSS 版の oss/ops/up.sh が作る SecureString。値は state にもタスク定義にも書かない）。
+    # app/agentcore/graph.py の NEO4J_PASSWORD（OSS 版の oss/ops/up.sh が作る SecureString。値は state にもタスク定義にも書かない）。
     # web の起動時の同期（bootstrap.py）と worker の Job の両方が書くので、両方に渡す
     { name = "NEO4J_PASSWORD", valueFrom = local.neo4j_password_arn },
   ] : [])
@@ -149,7 +149,7 @@ resource "aws_ecs_task_definition" "nautobot" {
   lifecycle {
     precondition {
       condition     = try(data.terraform_remote_state.ecr.outputs.nautobot_repository_url, "") != "" && try(data.terraform_remote_state.ecr.outputs.redis_repository_url, "") != ""
-      error_message = "terraform/base/ecr の state から nautobot_repository_url / redis_repository_url が読めない。terraform/base/ecr を先に apply する（ops/up.sh の手順 1）。"
+      error_message = "IaC/terraform/aws-managed/base/ecr の state から nautobot_repository_url / redis_repository_url が読めない。IaC/terraform/aws-managed/base/ecr を先に apply する（ops/up.sh の手順 1）。"
     }
   }
 }
@@ -185,7 +185,7 @@ resource "aws_ecs_service" "nautobot" {
   ]
 }
 
-# Web（web/topology_view.py）がここを見て、トポロジのリンクの編集の書き先を Nautobot の REST API にする（Nautobot が正。Neptune には JobHook の Job が反映する）
+# Web（app/dashboard/topology_view.py）がここを見て、トポロジのリンクの編集の書き先を Nautobot の REST API にする（Nautobot が正。Neptune には JobHook の Job が反映する）
 resource "aws_ssm_parameter" "url" {
   name        = "/${local.name_prefix}/nautobot/url"
   description = "URL of Nautobot inside the VPC. While it exists the web UI sends topology edits to Nautobot."

@@ -1,9 +1,9 @@
 # nwc-poc - PIPELINE nautobot root module. Nautobot (source of truth of the devices and cables) on ECS Fargate with PostgreSQL on RDS.
 # One task runs three containers: web (UI / API on 8080), a Celery worker (runs the jobs) and Redis (cache and Celery broker).
-# The NetOps jobs of the image (nautobot/jobs) read the devices and cables of Nautobot and bring two things in line with them:
-#   1. the targets of the Telegraf dial-in task - SSM parameters of terraform/pipeline/stream, then a new deployment of the dial-in service
-#   2. the physical layer of the topology in Neptune (terraform/pipeline/graph), written with openCypher (agent/graph.py sync_physical).
-#      The OSS variant (oss/terraform, cycle 005) writes the same into Neo4j instead: its graph state has neo4j_uri, not graph_id
+# The NetOps jobs of the image (app/nautobot/jobs) read the devices and cables of Nautobot and bring two things in line with them:
+#   1. the targets of the Telegraf dial-in task - SSM parameters of IaC/terraform/aws-managed/pipeline/stream, then a new deployment of the dial-in service
+#   2. the physical layer of the topology in Neptune (IaC/terraform/aws-managed/pipeline/graph), written with openCypher (app/agentcore/graph.py sync_physical).
+#      The OSS variant (IaC/terraform/oss, cycle 005) writes the same into Neo4j instead: its graph state has neo4j_uri, not graph_id
 # A job hook runs the job on every change of a device / interface / cable / IP address / service, and the task runs it once at start.
 # The first start seeds Nautobot from the lab definition (lab_seed.json in the image), so the lab works without typing anything.
 # Costs about 0.13 USD per hour (Fargate ARM 2 vCPU / 4 GB + RDS db.t4g.micro) - ops/down.sh destroys this root, and what was edited in Nautobot goes with it.
@@ -11,14 +11,14 @@
 # リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、
 # 1 つの AWS アカウントを何人かで使っても、自分の名前で自分のリソースを探せる
 locals {
-  # 末尾は var.project（terraform/ は既定の nwc-poc、OSS 版の oss/terraform/ は oss.auto.tfvars の nwc-oss。cycle 005）
+  # 末尾は var.project（IaC/terraform/aws-managed/ は既定の nwc-poc、OSS 版の IaC/terraform/oss/ は oss.auto.tfvars の nwc-oss。cycle 005）
   name_prefix = "${var.owner}-${var.project}"
 }
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
-# VPC / サブネット / SG は terraform/base/core の state から読む
+# VPC / サブネット / SG は IaC/terraform/aws-managed/base/core の state から読む
 data "terraform_remote_state" "main" {
   backend = "local"
 
@@ -31,12 +31,12 @@ data "terraform_remote_state" "main" {
   lifecycle {
     postcondition {
       condition     = can(self.outputs.security_group_ids["nautobot_db"])
-      error_message = "terraform/base/core の state に Nautobot の SG（nautobot / nautobot_db）が無い（2026-10-04 より前の土台）。先に terraform/base/core を apply する（ops/up.sh の手順 3）"
+      error_message = "IaC/terraform/aws-managed/base/core の state に Nautobot の SG（nautobot / nautobot_db）が無い（2026-10-04 より前の土台）。先に IaC/terraform/aws-managed/base/core を apply する（ops/up.sh の手順 3）"
     }
   }
 }
 
-# Nautobot と Redis のイメージは terraform/base/ecr（ops/up.sh の手順 1 と 2）
+# Nautobot と Redis のイメージは IaC/terraform/aws-managed/base/ecr（ops/up.sh の手順 1 と 2）
 data "terraform_remote_state" "ecr" {
   backend = "local"
 
@@ -45,7 +45,7 @@ data "terraform_remote_state" "ecr" {
   }
 }
 
-# Telegraf の dialin の機器の一覧（SSM）とサービスは terraform/pipeline/stream。無ければ Job は一覧を触らない
+# Telegraf の dialin の機器の一覧（SSM）とサービスは IaC/terraform/aws-managed/pipeline/stream。無ければ Job は一覧を触らない
 data "terraform_remote_state" "stream" {
   backend = "local"
 
@@ -54,7 +54,7 @@ data "terraform_remote_state" "stream" {
   }
 }
 
-# Neptune（OSS 版は Neo4j）は terraform/pipeline/graph。無ければ Job はグラフを触らない
+# Neptune（OSS 版は Neo4j）は IaC/terraform/aws-managed/pipeline/graph。無ければ Job はグラフを触らない
 data "terraform_remote_state" "graph" {
   backend = "local"
 
@@ -77,7 +77,7 @@ locals {
   # SG は古い state の destroy でも評価できるように try（空のまま apply に進まないよう remote_state の postcondition で止める）
   nautobot_sg_id    = try(data.terraform_remote_state.main.outputs.security_group_ids["nautobot"], "")
   nautobot_db_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["nautobot_db"], "")
-  # terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 なら空
+  # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 なら空
   perimeter_policy_arn = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
 
   image       = "${try(data.terraform_remote_state.ecr.outputs.nautobot_repository_url, "")}:${var.nautobot_image_tag}"
@@ -93,12 +93,12 @@ locals {
   telegraf_cluster     = local.dialin_from_nautobot ? data.terraform_remote_state.stream.outputs.telegraf_cluster_name : ""
   telegraf_service     = local.dialin_from_nautobot ? data.terraform_remote_state.stream.outputs.telegraf_dialin_service_name : ""
 
-  # Neptune Analytics（graph が無ければ空）。agent/graph.py はグラフの ID（g-xxxxxxxxxx）を受ける
+  # Neptune Analytics（graph が無ければ空）。app/agentcore/graph.py はグラフの ID（g-xxxxxxxxxx）を受ける
   neptune_graph_id  = try(data.terraform_remote_state.graph.outputs.graph_id, "")
   neptune_graph_arn = try(data.terraform_remote_state.graph.outputs.graph_arn, "")
-  # OSS 版（oss/terraform/pipeline/graph。cycle 005）は Neptune の代わりに Neo4j で、state に neo4j_uri がある。あれば Job を
+  # OSS 版（IaC/terraform/oss/pipeline/graph。cycle 005）は Neptune の代わりに Neo4j で、state に neo4j_uri がある。あれば Job を
   # GRAPH_BACKEND=neo4j で Neo4j に向け（nautobot.tf）、パスワード（SSM の SecureString）を ECS の secrets で渡す（access.tf の実行ロール）。
-  # terraform/workflow の locals.tf と同じ読み方
+  # IaC/terraform/aws-managed/workflow の locals.tf と同じ読み方
   neo4j_uri          = try(data.terraform_remote_state.graph.outputs.neo4j_uri, "")
   graph_neo4j        = local.neo4j_uri != ""
   neo4j_password_arn = local.graph_neo4j ? "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${data.terraform_remote_state.graph.outputs.neo4j_password_parameter}" : ""
@@ -106,9 +106,9 @@ locals {
   # ops/up.sh が無ければ乱数で作る SecureString（値は Terraform の state に載せない。ops/down.sh が消す）
   secret_parameters = {
     secret-key     = "/${local.name_prefix}/nautobot/secret-key"     # Django の SECRET_KEY
-    admin-password = "/${local.name_prefix}/nautobot/admin-password" # 画面の管理者（nautobot/netops/bootstrap.py が作る）
+    admin-password = "/${local.name_prefix}/nautobot/admin-password" # 画面の管理者（app/nautobot/netops/bootstrap.py が作る）
     db-password    = "/${local.name_prefix}/nautobot/db-password"    # RDS のマスターユーザー
-    api-token      = "/${local.name_prefix}/nautobot/api-token"      # Web（web/nautobot_api.py）が REST API に使うトークン（bootstrap.py が同じ値で作る）
+    api-token      = "/${local.name_prefix}/nautobot/api-token"      # Web（app/dashboard/nautobot_api.py）が REST API に使うトークン（bootstrap.py が同じ値で作る）
   }
   secret_arns = { for k, v in local.secret_parameters : k => "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${v}" }
 }

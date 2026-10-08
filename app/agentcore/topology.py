@@ -1,12 +1,12 @@
 """トポロジをエージェントのツールとして出す。
 
-元データは 2 通り。Neptune（terraform/pipeline/graph。graph.configured() が真）があればそこから読み、無ければ
+元データは 2 通り。Neptune（IaC/terraform/aws-managed/pipeline/graph。graph.configured() が真）があればそこから読み、無ければ
 静的データ（data/devices.yaml と data/topology.json と data/layers.json。tools Lambda では devices.json）。どちらも中身はローカル lab
-（lab/splab.clab.yml。Spine-Leaf の 8 台）そのもので、すべて架空のアドレス。SNMP や lab には触らない。読み取りだけなので、モデルが何度呼んでも副作用は無い。
+（app/containerlab/splab.clab.yml。Spine-Leaf の 8 台）そのもので、すべて架空のアドレス。SNMP や lab には触らない。読み取りだけなので、モデルが何度呼んでも副作用は無い。
 Neptune のときは TTL 秒ごとに読み直す（画面で編集した結果が次の質問に効く）。
 
 物理層（機器と回線）のほかに、IP 層（ip_interface / isis_adjacency）と EVPN・BGP 層（bgp_session / evpn_instance / ethernet_segment）を
-layers ツールで出す（頂点の id と、下の層を指す interface_id / ip_interface_id で層をまたいで追える。agent/graph.py の docstring）。
+layers ツールで出す（頂点の id と、下の層を指す interface_id / ip_interface_id で層をまたいで追える。app/agentcore/graph.py の docstring）。
 
 Converse の toolConfig に渡す仕様（TOOL_SPECS）と、toolUse を受けて実行する run_tool() を持つ。
 """
@@ -33,7 +33,7 @@ log = logging.getLogger("topology")
 
 def load_static() -> tuple[list[dict], list[dict]]:
     """data/ の静的データ。devices の各行に topology.json の asn を足して返す（Neptune の seed にも使う）"""
-    # tools Lambda（terraform/workflow）には PyYAML が無いので、Terraform が JSON にした devices.json を先に見る
+    # tools Lambda（IaC/terraform/aws-managed/workflow）には PyYAML が無いので、Terraform が JSON にした devices.json を先に見る
     devices_json = os.path.join(DATA_DIR, "devices.json")
     if os.path.exists(devices_json):
         with open(devices_json, encoding="utf-8") as f:
@@ -50,7 +50,7 @@ def load_static() -> tuple[list[dict], list[dict]]:
 
 
 def load_static_layers() -> dict:
-    """data/layers.json（lab/lab_topology.py --layers の出力）。無ければ空"""
+    """data/layers.json（app/containerlab/lab_topology.py --layers の出力）。無ければ空"""
     path = os.path.join(DATA_DIR, "layers.json")
     if not os.path.exists(path):
         return {"vertices": [], "edges": []}
@@ -338,7 +338,7 @@ def impact(devices: list, links: list, changes: list) -> dict:
     devices = [{device_id, status}]、links = [{a, a_if, b, b_if, status}]、changes = [{op, target}]。
     op は link_down / link_up（target = <機器>#<IF>。どちらの端でもよい）か device_down / device_up（target = 機器名）。
     つながりは DOWN でない回線と機器だけで見て、いちばん大きいかたまりに入っていない機器を「孤立」とする。
-    agent/topology.py と workflow/rules.py に同じものを置く（ワーカーのイメージには agent/ が入らない。tests/test_workflow.py が一致を検査）"""
+    app/agentcore/topology.py と app/temporal/rules.py に同じものを置く（ワーカーのイメージには app/agentcore/ が入らない。tests/test_workflow.py が一致を検査）"""
     dev_down = {d["device_id"] for d in devices if (d.get("status") or "UP") == "DOWN"}
     link_down = {n for n, l in enumerate(links) if (l.get("status") or "UP") == "DOWN"}
     ids = {d["device_id"] for d in devices}
@@ -434,7 +434,7 @@ def recent_changes(device_id: str = "", limit: int = 20) -> dict:
             "note": "Nautobot（機器と回線の正）での変更だけ。機器に直接打った設定変更は入らない（ログを search_logs で見る）"}
 
 
-CENTRALITY_NOT_DEPLOYED = "中心性は Neptune Analytics のグラフアルゴリズムで計算する。グラフ（terraform/pipeline/graph）がまだ無い"
+CENTRALITY_NOT_DEPLOYED = "中心性は Neptune Analytics のグラフアルゴリズムで計算する。グラフ（IaC/terraform/aws-managed/pipeline/graph）がまだ無い"
 
 
 def centrality(limit: int = 10) -> dict:

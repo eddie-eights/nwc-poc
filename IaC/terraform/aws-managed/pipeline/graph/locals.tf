@@ -1,18 +1,18 @@
 # nwc-poc - PIPELINE graph root module. One Neptune Analytics graph (IAM auth, 16 m-NCU, no public endpoint) holds the network topology
-# (device vertices, link edges, their dynamic status) and the repair proposals of terraform/workflow. The chat runtime and the web read it through boto3 neptune-graph (openCypher); the web can also edit it.
-# Without this root module both fall back to the static data in agent/data/. Costs about 0.58 USD per hour while it exists (16 m-NCU, Tokyo) - destroy it the same day.
+# (device vertices, link edges, their dynamic status) and the repair proposals of IaC/terraform/aws-managed/workflow. The chat runtime and the web read it through boto3 neptune-graph (openCypher); the web can also edit it.
+# Without this root module both fall back to the static data in app/agentcore/data/. Costs about 0.58 USD per hour while it exists (16 m-NCU, Tokyo) - destroy it the same day.
 
 # リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、
 # 1 つの AWS アカウントを何人かで使っても、自分の名前で自分のリソースを探せる
 locals {
-  # 末尾は var.project（terraform/ は既定の nwc-poc、OSS 版の oss/terraform/ は oss.auto.tfvars の nwc-oss。cycle 005）
+  # 末尾は var.project（IaC/terraform/aws-managed/ は既定の nwc-poc、OSS 版の IaC/terraform/oss/ は oss.auto.tfvars の nwc-oss。cycle 005）
   name_prefix = "${var.owner}-${var.project}"
 }
 
 data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
-# VPC / サブネット / SG / ロール名は terraform/base/core の state から読む
+# VPC / サブネット / SG / ロール名は IaC/terraform/aws-managed/base/core の state から読む
 data "terraform_remote_state" "main" {
   backend = "local"
 
@@ -25,7 +25,7 @@ data "terraform_remote_state" "main" {
   lifecycle {
     postcondition {
       condition     = can(self.outputs.security_group_ids)
-      error_message = "terraform/base/core の state に security_group_ids が無い（2026-09-29 より前の SG）。先に ops/down.sh で消してから ops/up.sh を打ち直す"
+      error_message = "IaC/terraform/aws-managed/base/core の state に security_group_ids が無い（2026-09-29 より前の SG）。先に ops/down.sh で消してから ops/up.sh を打ち直す"
     }
   }
 }
@@ -42,8 +42,8 @@ locals {
   reader_role_ids = toset([data.terraform_remote_state.main.outputs.runtime_role_name, data.terraform_remote_state.main.outputs.web_role_name])
   # Neptune に書けるのは Web の EC2 のロールだけ（access.tf）
   graph_writer_role = data.terraform_remote_state.main.outputs.web_role_name
-  # アラートの SNS トピック（terraform/base/core の alerts.tf）。sync.tf の status Lambda が購読する。古い state なら空で、購読の precondition が止める
+  # アラートの SNS トピック（IaC/terraform/aws-managed/base/core の alerts.tf）。sync.tf の status Lambda が購読する。古い state なら空で、購読の precondition が止める
   alerts_topic_arn = try(data.terraform_remote_state.main.outputs.alerts_topic_arn, "")
-  # terraform/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
+  # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
   perimeter_policy_arn = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
 }

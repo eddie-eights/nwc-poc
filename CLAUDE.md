@@ -2,7 +2,7 @@
 
 このリポジトリの決まりが、下の AWS の規則より優先する。
 
-- インフラは Terraform（`terraform/`）と `ops/up.sh` / `ops/down.sh` で作る。CDK や CloudFormation に置き換えない。
+- インフラは Terraform（`IaC/terraform/aws-managed/`）と `ops/up.sh` / `ops/down.sh` で作る。CDK や CloudFormation に置き換えない。
 - シークレットは `ops/up.sh` が SSM Parameter Store の SecureString として作る。値は読まない・表示しない。
 
 <!-- BEGIN AWS Agent Toolkit rules -->
