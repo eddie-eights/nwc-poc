@@ -120,3 +120,5 @@ commit は「lab の生成（gen_lab / lab_topology / 静的データ）」「la
 6. **ECR のリポジトリが増える（`<prefix>-lab-trex`、`<prefix>-debug-lab-trex`）。** `base/ecr` の state を持つチェックアウト（verify-oss の worktree と main）で次の `up.sh` が `apply` で足す。`down.sh` は ECR を空にして消すので追加の片付けは要らない
 7. **費用。** lab の EC2 が 0.173 → 0.248 $/h（+43%）。1 回の実機確認（2〜3 時間）で +0.2 $ 程度
 8. **他のサイクルとの衝突。** 010（Kafbat UI を Web の EC2 に同居）が `lab.sh` に `graph` / `graph-stop` を足す。先に入った方に合わせてマージする（PM が順番を見る）。008 / 009 も `lab.sh` の案内文を触る（BACKLOG 47 / 48）
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261009-cycle-011-lab-isis-trex-x86-design.html -->
