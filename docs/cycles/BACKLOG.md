@@ -16,3 +16,4 @@
 - [ ] `spark/Dockerfile` が取る Maven Central の jar のハッシュを照合する（005 のレビュー Nit 4）
 - [ ] `oss/ops/up.sh` の wheel の取り直しを requirements のハッシュで判定する（いまは `.whl` が 1 つでもあれば取り直さない。005 のレビュー Nit 5）
 - [ ] `oss/ops/up.sh` の services-stable の待ちに再試行を付け、`ops/check.sh` の OSS のルートにも `-lockfile=readonly` を付ける（005 のレビュー Nit 6）
+- [ ] TRex で後段（Telegraf → MSK → Spark → 格納先、アラート → SNS → graph の Lambda）に負荷をかけて詰まる所を測る（trap / syslog を UDP で撃つ。gNMI / metrics は Kafka の producer で別に流す。TRex は x86 なので lab とは別の EC2 に置く）
