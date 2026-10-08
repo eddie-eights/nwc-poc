@@ -171,3 +171,154 @@ None
 - cold review の 2 回目は PM が PR に対して呼ぶ
 - build.md Round 2 の S5（Spark・Neo4j のタグと wheels-oss のハッシュ）: (a) このまま。方針 6 の補足とリスク 6 に足した
 - build.md Round 2 の D2（README:7 が検証 4 に当たる）: 検証 4 の除外に足した。実装は変えない
+
+## Round 2
+
+- 対象: PR #5（`chore/tidy-root` → `docs/cycle-006-design`）の 36c2633。レビューの範囲は e70f59e..36c2633。実装モデル: opus-5.5（エンジニア1）。レビューモデル: cold reviewer = opus（PM が呼んだ）、確認 = opus-5.5 / xhigh（エンジニア1）
+- cold reviewer に依頼した（完了判定の直前の 2 回目。1 回目のあと方針 7 で実装ファイルが変わったため）
+- check.sh: 36c2633 で rc 0「すべて通過」（16 本の件数は docs/development.md:37 と同じ）
+
+### cold reviewer の結果（PM が呼んだ 017-review-r02.md をそのまま連結）
+
+# 根に残ったものを app/ ops/ docs/ に片付ける（017）cold review 2 回目
+
+対象: e70f59e..36c2633（detached HEAD 36c2633）。レビュアーは既存ファイルを変更していない。
+
+## サマリ
+
+前回のレビューで残っていた Must fix はありませんでした。今回も Must fix は 0 件です。
+
+design.md の検証表で、この手元で確かめられる項目はすべて期待どおりでした。
+
+- 移したファイルはすべて新しい場所にあります。
+  - `git ls-files oss tools GLOSSARY.md` は空です。
+  - 根に残っているのは `CLAUDE.md IaC README.md app deploy.env.example docker docs ops pyproject.toml tests uv.lock` だけです。
+- 古いパスの参照は残っていません。
+  - 検証 4 の grep に残るのは、許された 2 行（`docs/oss-variant.md:66` と `docs/architecture/README.md:7`）だけです。
+  - 検証 4b は 0 行、4c は空でした。
+- 移動の履歴はたどれます。
+  - 検証 5: `git log --follow` で、`ops/oss/up.sh` は f587cb0 まで、`app/gateway/handler.py` は f55feb4 までたどれます。
+  - 検証 6: 9 ファイルとも R（rename）です。fd9918b は 9 ファイル・0 行変更の rename だけの commit です。
+- 検証 7 と 8 も期待どおりです。
+  - 検証 7: 両方のスクリプトに `OPS_DIR=ops/oss` があります。
+  - 検証 8: `created by ops/oss/up.sh` が 8 か所あります。
+- 手元のテスト 16 本は、どれも失敗 0 でした。
+  - 実行コマンド: `PYTHONDONTWRITEBYTECODE=1 <venv>/bin/python tests/test_X.py`
+  - 件数は `docs/development.md:37` と一致します。
+
+| テスト | 通過 | 失敗 |
+|---|---|---|
+| alerts | 169 | 0 |
+| analytics | 504 | 0 |
+| app | 161 | 0 |
+| collectors | 79 | 0 |
+| dashboard_config | 3 | 0 |
+| graph | 78 | 0 |
+| kb_index | 7 | 0 |
+| lab_debug | 104 | 0 |
+| local_compose | 132 | 0 |
+| nautobot | 69 項目すべて | 0 |
+| oss | 173 | 0 |
+| oss_ops | 194 | 0 |
+| oss_roll | 66 | 0 |
+| stream | 96 | 0 |
+| sync | 103 | 0 |
+| workflow | 327 | 0 |
+
+指摘は、機械的な置き換えが過去の手順と過去の結果まで書き換えた箇所です。Should fix が 1 件、Nit が 3 件あります。
+
+### 見た観点
+
+- design.md との整合を見ました。
+  - 方針 1〜7 と、検証 1〜8・4b・4c を確かめました。
+  - 触らない対象（`docs/cycles`、`docs/verification`、pptx）を変更していないことも確かめました。
+- correctness を見ました。
+  - `ops/oss/up.sh` と `ops/oss/down.sh` の相対 source（`../lab-common.sh`、`../deploy-env.sh`）と `cd "$(dirname "$0")/../.."` を確かめました。
+  - `OPS_DIR` を使った SSM のタグ（`ManagedBy=ops/oss/up.sh`）と、`delete_up_ssm_params` が使うフィルタが一致することを確かめました。
+- Terraform のパスを見ました。
+  - `workflow/gateway.tf:10,16,37` の `repo_root` からのパスを確かめました。
+  - zip のエントリ名が `index.py` のままであることを確かめました。
+  - `security_groups.tf:113-114` を確かめました。
+- `ops/check.sh:52` の find の対象を見ました。
+- テストのパス追従を見ました。
+  - 対象は test_workflow / test_oss / test_collectors / test_lab_debug / test_oss_roll / test_oss_ops / test_stream です。
+  - `ops/` 直下と `ops/oss/` の列挙範囲も確かめました。
+- docs の参照の書き換えを見ました。
+  - 対象は deploy.md / oss-variant.md / architecture/README.md / development.md です。
+- security を見ました。
+  - 移動でシークレットや権限の扱いが変わっていないことを確かめました。
+  - SG の `why` は description が変わるだけです。
+- data loss を見ました。
+  - タグ変更の影響範囲は、旧タグの SSM パラメータがすでに 0 件である前提で確かめました。
+
+### 見ていない観点
+
+- `terraform fmt` / `terraform validate`（検証 9）は実行していません。
+  - init を走らせると、追跡されている `.terraform.lock.hcl` が書き換わるおそれがあるためです。
+- `ops/check.sh` の全体は実行していません。
+  - 全 `.sh` の `bash -n` と、全 `.py` の ast 解析を含みます。
+- AWS 上の確認はしていません。
+  - 対象は `ops/oss/up.sh` / `ops/oss/down.sh` の実行、SSM タグでの削除、`terraform plan` での SG description の in-place 更新です。
+- gateway Lambda の zip のハッシュは、実際には比べていません。
+  - エントリ名とソースの中身が変わっていないことから、同じになると推定しただけです。
+- dir_tag ハッシュの変更で起きる Nautobot / Spark / Neo4j のタグの付け替えは、実際には確認していません。
+  - design.md が受け入れている変化です。
+
+## Must fix
+
+None
+
+## Should fix
+
+- [design.md との整合 / correctness（docs）] `docs/deploy.md:183` の 007 の移行手順の文が、`前の配置の ops/down.sh（OSS 版は ops/oss/down.sh）で消す` に書き換わっています。
+  - 「前の配置」（017 より前）の OSS 版の停止スクリプトは `oss/ops/down.sh` で、`ops/oss/down.sh` はその配置には存在しません。
+  - この手順を前の配置のチェックアウトで実行すると、ファイルが見つからずに止まります。
+  - 同じ手順の 181-208 行は `oss/terraform` を残していて、前の配置の話として書かれています。183 行だけが新しいパスになっているので、手順の中で矛盾しています。
+  - 分類の理由: 方針 6（振る舞いを変えない）は過去の手順の意味も変えないことを求めていると読みました。運用者が実際に従う手順が壊れるので Nit ではなく Should にしましたが、現行の配置の実行には影響しないので Must にはしません。
+
+## Nit
+
+- [design.md との整合（docs の履歴）] `docs/oss-variant.md:102` の 2026-10-08 の検証結果の行が、新しいパス `ops/oss/down.sh` に書き換わっています。
+  - その日に実際に実行したのは `oss/ops/down.sh` です。
+  - 分類の理由: 過去の実測の記録が事実と食い違うだけで、手順として実行される箇所ではないので Nit にしました。
+- [correctness（テストのメッセージ）] `tests/test_lab_debug.py` のメッセージ `syslog-ng は cycle 012 で ops/up.sh と ops/oss/up.sh に足した` は、cycle 012 の時点のパス（`oss/ops/up.sh`）と食い違っています。
+  - 分類の理由: 判定には影響せず、失敗したときに出る説明文の歴史の記述がずれるだけなので Nit にしました。
+- [missing tests] `ops/oss/up.sh:32-41` と `ops/oss/down.sh:20-27` の相対 source（`$(dirname "$0")/../lab-common.sh` など）を見ているのは、`tests/test_oss_ops.py` の文字列の形の検査だけです。
+  - スクリプトを実際に起動して source 先が解決できることを確かめるテストはありません。これは design.md のリスク 1 に当たります。
+  - 分類の理由: 今回は手で読んでパスが正しいことを確かめたので、実害は無く、将来の退行の検知が弱いだけです。
+
+## 良かった点
+
+- rename だけの commit（fd9918b。9 ファイル・0 行変更）と、参照を書き換える commit が分かれています。
+  - そのおかげで `git log --follow` と name-status の R で、履歴が切れていないことを機械的に確かめられました。
+- `OPS_DIR=ops/oss` という 1 か所の変数に集めています。
+  - 案内のメッセージ（8 か所の `created by ops/oss/up.sh`）と SSM のタグ、`delete_up_ssm_params` のフィルタがずれない作りになっています。
+- gateway の zip は、`tools_files` のキーだけを `app/gateway/handler.py` に変えています。
+  - 値の `index.py` は残しているので、Lambda のハンドラ名と zip のエントリ名は変わりません。
+- テストの件数は 017 の前後で変わらず、パスの追従だけで済んでいます。
+  - `test_stream.py:753-754` は `ops/` 直下と `ops/oss/` の両方を列挙するようになっていて、検査範囲は狭まっていません。
+- 触らない対象（`docs/cycles`、`docs/verification`、pptx）は変更されていません。
+  - 残すべき古いパスは、許された 2 行に絞られています。
+
+## ユーザーへの質問
+
+- `docs/deploy.md:183` と `docs/oss-variant.md:102` のように過去の手順や過去の結果を書いた箇所は、017 の機械的な置き換えの対象から外す（当時のパスのまま残す）方針でよいですか。
+  - 外すなら、design.md の検証 4 の「許された行」に 2 行を足すことになります。
+
+### 確認（エンジニア1。opus-5.5 / xhigh）
+
+- 件数（cold reviewer の分類）: Must fix 0 / Should fix 1 / Nit 3。確認後も同じ
+- **S1・N1 を再現した**（スクラッチの repro_r02b.sh。読むだけ）
+  - `docs/deploy.md:183` の「OSS 版は …」: 03840c8 は `oss/ops/down.sh`、36c2633 は `ops/oss/down.sh`。03840c8 のツリーにあるのは `oss/ops/down.sh` だけ（`git ls-tree --name-only 03840c8 ops/oss/down.sh oss/ops/down.sh` → `oss/ops/down.sh`）
+  - `docs/oss-variant.md:102`（2026-10-08 の検証結果の行）: 03840c8 は `` `oss/ops/down.sh` で接頭辞 ``、36c2633 は `` `ops/oss/down.sh` で接頭辞 ``
+  - 根本原因: f92399c の機械的な置き換えが、`docs/*.md` の中の過去の手順と過去の実測の記録の行まで対象にした。design.md の方針 6 が除いていたのは `docs/verification/` と `docs/cycles/` のディレクトリ単位だけで、行単位の除外が無かった
+- N2: `tests/test_lab_debug.py:474` の `"syslog-ng は cycle 012 で ops/up.sh と ops/oss/up.sh に足した）",` を確かめた（失敗したときのメッセージだけ。判定には使わない）
+- N3: 読んだだけ（`ops/oss/up.sh` と `ops/oss/down.sh` を起動して source 先を解決するテストは無い。design.md のリスク 1）
+- ほかの `docs/*.md` の書き換えに、過去の手順と過去の実測の記録の行が残っていないか: 03840c8 との diff の `docs/` の行（verification と cycles を除く）を読んだ。過去の手順・実測の行は deploy.md:183 と oss-variant.md:102 の 2 行だけで、ほかは現行の手順と構成の説明だった（読んだだけ）
+
+### PM の判断
+
+- S1（`docs/deploy.md:183` の 007 の移行手順）: 直す。「前の配置」の話なので `oss/ops/down.sh` に戻す。design.md の方針 6 に過去の手順と実測の記録は当時のパスのまま残す 1 文を足し、検証 4 の除外に足した
+- N1（`docs/oss-variant.md:102` の 2026-10-08 の検証結果の行）: S1 と同じ理由で `oss/ops/down.sh` に戻す（過去の実測の記録）。検証 4 の除外に足した
+- N2（`tests/test_lab_debug.py:474` のメッセージ）: 直さない（方針 6・7 どおり）
+- N3（source 先を起動して確かめる test）: 直さない（方針 6・7 どおり。リスク 1 のまま）

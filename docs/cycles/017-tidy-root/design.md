@@ -52,6 +52,7 @@
    - 「イメージの版」は `ops/oss/oss-images.sh` と `IMAGE_TAG` の版のことで、`dir_tag`（build の context の中身のハッシュ）は含まない。コメントもハッシュに入るので、**Nautobot・Spark・Neo4j のタグと wheels-oss のハッシュが 1 回変わる**（`app/nautobot/requirements-oss.txt:2` と、方針 7 の `docker/images/{spark,neo4j}/Dockerfile`・`app/dashboard/requirements-oss.txt:2`）。次の `ops/up.sh` は Nautobot を、`ops/oss/up.sh` は Nautobot・Spark・Neo4j を `KEEP_ECR=1` でも 1 回作り直してタスクを入れ替え、`ops/oss/up.sh` は wheels-oss を 1 回取り直す（Nautobot の DB は RDS なので消えない。Neo4j はリスク 6）。ほかのイメージ・Lambda の zip・neo4j の layer は変わらない（2026-10-09 の cold review と Round 2 のセルフレビューで判明、`tags017.py` で再現）。コメントを戻してまで避けない。
    - `security_groups.tf:113-114` の `why` は `aws_vpc_security_group_ingress_rule` / `egress_rule` の `description` に入るので、次の `base/core` の apply で 4 本（マネージド版の ingress と egress、OSS 版の symlink の同じ 2 本）が **in-place で更新される**（SG 自体の `description` ではないので作り直しにならない。plan は AWS の検証で `up.sh` を打つときに見る。未確認）。これは「Terraform の資源はそのまま」の例外として認める。
    - `docs/verification/` は **当時のパスのまま**（007 の方針、`docs/development.md:7`「`docs/verification/` は当時のパス」）。017 でも書き換えない。
+   - `docs/*.md` の中でも、過去の手順（`docs/deploy.md:183` の 007 の移行手順「前の配置の … `oss/ops/down.sh`」）と過去の実測の記録（`docs/oss-variant.md:102` の 2026-10-08 の検証結果の行）は **当時のパスのまま** 残す（2026-10-09 の cold review の 2 回目で判明）。
 
 7. **「OSS 版の `ops/up.sh`」という言い回しを無くす。** 017 のあとは `ops/up.sh` がマネージド版を指すので、コメント・docstring・test のメッセージの「OSS 版の ops/up.sh」「OSS ops/up.sh」（`down.sh` も同じ）は `ops/oss/up.sh` / `ops/oss/down.sh` に置き換える（`git grep -n -E 'OSS (版の )?ops/(up|down)\.sh' -- . ':!docs/cycles'` で拾う。2026-10-09 の cold review で 15 ファイル 34 か所）。`docs/cycles/**` は触らない。
 
@@ -104,7 +105,7 @@
 | 1 | `bash ops/check.sh` | 最後の行が `すべて通過`。`tests/test_*.py` の 16 本の件数が `docs/development.md:37` と同じ（`test_oss` 173、`test_oss_ops` 194、`test_workflow` 327、`test_collectors` 79 を含む。件数が変わったらそれは意図しない変更） |
 | 2 | `git ls-files oss tools GLOSSARY.md` | 空 |
 | 3 | `ls` | `CLAUDE.md IaC README.md app deploy.env.example docker docs ops pyproject.toml tests uv.lock`（gitignore 対象の `.venv` 等を除く） |
-| 4 | 実装ステップ 2 の `grep` | 0 行（`docs/GLOSSARY.md` 自身の見出しと、`docs/oss-variant.md` の方針 3 の 1 文と、`docs/architecture/README.md:7` の pptx の注を除く） |
+| 4 | 実装ステップ 2 の `grep` | 0 行（`docs/GLOSSARY.md` 自身の見出しと、`docs/oss-variant.md` の方針 3 の 1 文と、`docs/architecture/README.md:7` の pptx の注と、方針 6 の過去の手順と実測の記録の 2 行（`docs/deploy.md:183`・`docs/oss-variant.md:102`）を除く。残るのはこの 4 行） |
 | 4b | `git grep -n -E 'OSS (版の )?ops/(up\|down)\.sh' -- . ':!docs/cycles'` | 0 行（方針 7） |
 | 4c | `git diff --stat 03840c8 -- docs/verification docs/*.pptx` | 空（当時のまま） |
 | 5 | `git log --follow --oneline ops/oss/up.sh \| tail -1` と `git log --follow --oneline app/gateway/handler.py \| tail -1` | 005 以前の最初の commit まで追える（rename で履歴が切れていない） |

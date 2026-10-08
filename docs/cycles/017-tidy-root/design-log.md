@@ -33,3 +33,8 @@ cold review の 1 回目（opus、エンジニア1 が呼んだ。Must fix 0 / S
 
 - **S5（方針 7 で Spark・Neo4j のタグと wheels-oss のハッシュも変わる）**: (a) このまま。S1 と同じ理由でコメントを戻してまで避けない。方針 6 の補足とリスク 6 に足し、実測のタグを残した（立っている環境に打ち直すと Neo4j のグラフが空になるのは未確認）。
 - **D2（`docs/architecture/README.md:7` の注が検証 4 に当たる）**: 検証 4 の期待の除外に足した。実装は変更対象表のとおり。方針 7 の行に、対象は 4b の grep で決める（`outputs.tf:14` を足し、`nautobot.tf:77` と `app/nautobot/requirements-oss.txt:2` は変えない）の 1 文を足した。
+
+## Round 3（2026-10-09、PM の判断。エンジニア1 が chore/tidy-root で書き写した）
+
+- **S1・N1（cold review 2 回目。`docs/deploy.md:183` の 007 の移行手順と `docs/oss-variant.md:102` の 2026-10-08 の検証結果の行が新しいパスになっていた）**: 03840c8 の行に戻す（`oss/ops/down.sh`）。方針 6 に「`docs/*.md` の中でも過去の手順と過去の実測の記録の行は当時のパスのまま」の 1 文を足し、検証 4 の除外に 2 行を足した（残るのは 4 行）。
+- **N2（`tests/test_lab_debug.py:474` のメッセージ）・N3（source 先を起動して確かめる test）**: 直さない（方針 6・7 どおり）。実装ファイルは変わらないので cold review は呼ばない。

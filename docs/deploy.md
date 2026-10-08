@@ -180,7 +180,7 @@ EOF
 
 2026-10-08 の cycle 007 で Terraform のルートを `terraform/` から `IaC/terraform/aws-managed/` へ、`oss/terraform/` を `IaC/terraform/oss/` へ移した。gitignore 対象の `.terraform/`（provider のキャッシュ）・`terraform.tfstate`（と `.backup`、`terraform.tfstate.<時刻>.backup`）・`*.tfvars`・`.build/` は `git mv` で付いて行かず、前のチェックアウトの `terraform/<ルート>/` に残る。
 
-**前の配置で立てた環境は、007 をマージする前に前の配置の `ops/down.sh`（OSS 版は `ops/oss/down.sh`）で消す。** 007 は SG の description（作り直しになる属性）、Web と lab の EC2 の user_data（`user_data_replace_on_change`）、OSS 版の Lambda レイヤーの description の中のパスも書き換えたので、立てたまま 007 の `ops/up.sh` を打つと SG・EC2・レイヤーが作り直しになる（state を移しても同じ）。デバッグ用の EC2（`ops/lab-debug.sh up` のスタック）も UserData のコメントと Telegraf のタグが変わるので、立てたままだと次の `ops/lab-debug.sh up` で EC2 が止まって起き直す。前の配置の `ops/lab-debug.sh down` で一緒に消しておく。
+**前の配置で立てた環境は、007 をマージする前に前の配置の `ops/down.sh`（OSS 版は `oss/ops/down.sh`）で消す。** 007 は SG の description（作り直しになる属性）、Web と lab の EC2 の user_data（`user_data_replace_on_change`）、OSS 版の Lambda レイヤーの description の中のパスも書き換えたので、立てたまま 007 の `ops/up.sh` を打つと SG・EC2・レイヤーが作り直しになる（state を移しても同じ）。デバッグ用の EC2（`ops/lab-debug.sh up` のスタック）も UserData のコメントと Telegraf のタグが変わるので、立てたままだと次の `ops/lab-debug.sh up` で EC2 が止まって起き直す。前の配置の `ops/lab-debug.sh down` で一緒に消しておく。
 
 消したあとも state は残るので、マージのあと `ops/check.sh` や `ops/up.sh` を打つ前に、前のチェックアウトの直下で一度だけ移す（手元の docker compose の `.env` も `local/compose/` から `docker/compose/` へ）。マージの前に打つと何もせずに止まる。
 

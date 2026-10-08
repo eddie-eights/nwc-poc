@@ -605,3 +605,139 @@ test_analytics: 通過 504 / 失敗 0
 - verification と pptx: 検証 4c が 0 行（03840c8 と同じ）。
 - `docs/development.md:7`・`docs/architecture/README.md:7`: 変更対象表の文と同じ（読んで突き合わせた）。
 - Round 1 から変わらないもの: Lambda の zip の材料 5 本、`app/dashboard/requirements.txt`、neo4j の layer、telegraf・syslog-ng・grafana・splunk のタグ（上の `tags017.py`）。
+
+## Round 3
+
+実装モデル: opus-5.5 / effort: xhigh
+
+cold review 2 回目（PM が PR #5 の 36c2633 に対して呼んだ）の S1・N1 への PM の判断を入れたラウンド。実装ファイル（スクリプト・Terraform・tests・app）は変えない。
+
+### commit
+
+| commit | 内容 |
+| :--- | :--- |
+| 36c2633 | `docs/cycle-006-design`（e70f59e）のマージ。衝突なし |
+| （この commit） | S1・N1: `docs/deploy.md:183`（007 の移行手順）と `docs/oss-variant.md:102`（2026-10-08 の検証結果の行）を 03840c8 の行に戻す（`oss/ops/down.sh`）。design.md の方針 6 の 1 文と検証 4 の除外、design-log.md Round 3、review.md Round 2、この build.md Round 3 |
+
+戻した 2 行が 03840c8 と同じこと（`repro_r02b.sh`）:
+
+```
+== 03840c8 deploy.md:183 ==
+OSS 版は `oss/ops/down.sh`
+== 36c2633 deploy.md:183 ==
+OSS 版は `ops/oss/down.sh`
+== 作業ツリー deploy.md:183 ==
+OSS 版は `oss/ops/down.sh`
+== 作業ツリーと 03840c8 の行の一致 ==
+docs/deploy.md:183 一致
+docs/oss-variant.md:102 一致
+```
+
+### 検証（`verify017r3.sh`。36c2633 にこの commit の変更を載せた作業ツリーで取った。build.md はこのあと書いた）
+
+```
+### HEAD と未コミットの変更
+36c2633 Merge branch 'docs/cycle-006-design' into chore/tidy-root
+ M docs/cycles/017-tidy-root/design-log.md
+ M docs/cycles/017-tidy-root/design.md
+ M docs/cycles/017-tidy-root/review.md
+ M docs/deploy.md
+ M docs/oss-variant.md
+### 1 bash ops/check.sh
+rc=0
+通過 169 / 失敗 0
+通過 504 / 失敗 0
+通過 161 / 失敗 0
+通過 79 / 失敗 0
+通過 3 / 失敗 0
+通過 78 / 失敗 0
+通過 7 / 失敗 0
+通過 104 / 失敗 0
+通過 132 / 失敗 0
+69 項目すべて通過
+通過 173 / 失敗 0
+通過 194 / 失敗 0
+通過 66 / 失敗 0
+通過 96 / 失敗 0
+通過 103 / 失敗 0
+通過 327 / 失敗 0
+すべて通過
+### 2 git ls-files oss tools GLOSSARY.md（行数）
+       0
+### 3 ls
+CLAUDE.md
+IaC
+README.md
+app
+deploy.env.example
+docker
+docs
+ops
+pyproject.toml
+tests
+uv.lock
+### 4 実装ステップ 2 の grep
+./docs/oss-variant.md:66:| `ops/oss/up.sh`、`ops/oss/down.sh` | OSS 版の作る・消す。接頭辞は `<owner>-nwc-oss` で、マネージド版と並べて立てられる。SSM のパラメータ
+./docs/oss-variant.md:102:| 全体 | lab でリンクを落とすと、Grafana のアラート → SNS → Lambda → Neo4j の status → Web のトポロジまでつながった。エージェント
+./docs/deploy.md:183:**前の配置で立てた環境は、007 をマージする前に前の配置の `ops/down.sh`（OSS 版は `oss/ops/down.sh`）で消す。** 007 は SG の description（作り
+./docs/architecture/README.md:7:スライドの構成図は 2 本。マネージド版が [architecture-managed.pptx](../architecture-managed.pptx)（10 枚。データの流れ、9 つの Terraform �
+### 4b git grep 'OSS (版の )?ops/(up|down).sh'（行数）
+       0
+### 4c git diff --stat 03840c8 -- docs/verification docs/*.pptx（行数）
+       0
+### 5 git log --follow
+f587cb0 OSS 版（005）の oss/ops/up.sh・down.sh を作り、ops/ の共通の関数を ops/common.sh・up-common.sh・down-common.sh に切り出した
+f55feb4 フェーズ 3 を実装する: Temporal on ECS Fargate のワーカー（terraform/workflow）と AgentCore Gateway（MCP）
+### 6 git diff --stat -M docs/cycle-006-design
+ {tools => app/gateway}/handler.py                  |   0
+ {tools => app/gateway}/tools.json                  |   0
+ GLOSSARY.md => docs/GLOSSARY.md                    |   0
+ {tools => ops}/netflow_send.py                     |   8 +-
+ {oss/ops => ops/oss}/down.sh                       |  30 +-
+ {oss/ops => ops/oss}/oss-images.sh                 |   4 +-
+ {oss/ops => ops/oss}/roll-nodes.sh                 |  10 +-
+ {oss/ops => ops/oss}/roll_health.py                |   2 +-
+ {oss/ops => ops/oss}/up.sh                         |  50 +-
+ 76 files changed, 1234 insertions(+), 292 deletions(-)
+### 7 OPS_DIR
+ops/oss/up.sh:41:OPS_DIR=ops/oss        # SSM のパラメータのタグ ManagedBy=ops/oss/up.sh（ops/oss/down.sh はこのタグのものだけ消す）
+ops/oss/down.sh:27:OPS_DIR=ops/oss       # 消す SSM のパラメータはタグ ManagedBy=ops/oss/up.sh のものだけ（マネージド版の ManagedBy=ops/up.sh は残る）
+### 8 created by
+8
+### 9 terraform validate
+Success! The configuration is valid.
+
+### 10 test_workflow
+通過 327 / 失敗 0
+```
+
+検証 4 は 4 行で、どれも design.md の除外に書いたもの（`docs/oss-variant.md:66`・`docs/oss-variant.md:102`・`docs/deploy.md:183`・`docs/architecture/README.md:7`）。
+
+36c2633（マージの直後、Round 3 の変更の前）に同じ検証を取った出力（`verify017_36c2633.out`）との差（`diff 36c2633 の出力 この出力`）:
+
+```
+1c1
+< ### HEAD
+---
+> ### HEAD と未コミットの変更
+2a3,7
+>  M docs/cycles/017-tidy-root/design-log.md
+>  M docs/cycles/017-tidy-root/design.md
+>  M docs/cycles/017-tidy-root/review.md
+>  M docs/deploy.md
+>  M docs/oss-variant.md
+37a43,44
+> ./docs/oss-variant.md:102:| 全体 | lab でリンクを落とすと、Grafana のアラート → SNS → Lambda → Neo4j の status → Web のトポロジまでつながった。エージェント
+> ./docs/deploy.md:183:**前の配置で立てた環境は、007 をマージする前に前の配置の `ops/down.sh`（OSS 版は `oss/ops/down.sh`）で消す。** 007 は SG の description（作り
+56c63
+<  76 files changed, 1079 insertions(+), 294 deletions(-)
+---
+>  76 files changed, 1234 insertions(+), 292 deletions(-)
+```
+
+検証 6 の行数の差は、docs/cycles/017-tidy-root の design.md・design-log.md・review.md に足した行。
+
+### セルフレビュー
+
+- 実装ファイルが変わらないので、反対弁護人と cold review は呼ばない（PM の指示）
+- 方針 6 の 1 文に当たる行がほかに残っていないか: 03840c8 との diff の `docs/` の行（verification と cycles を除く）を読んだ。過去の手順と過去の実測の記録は deploy.md:183 と oss-variant.md:102 の 2 行だけ（読んだだけ。review.md Round 2 の確認）
