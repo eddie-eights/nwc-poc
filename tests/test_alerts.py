@@ -1125,10 +1125,15 @@ try:
     def _p2(state):
         return lambda: {"status": "success", "data": {"groups": [{"name": "g2", "rules": [grule("b", state, evaluated=f"2026-10-08T14:{_r[0]:02}:00Z")]}]}}
 
-    def _grc_run(base, wait):
-        o = io.StringIO()
+    def _p1e():   # 1 ページ目は _p1 と同じで、トークンだけ違う（2 ページ目が status: error を返す形）
+        body = _p1()
+        body["data"]["groupNextToken"] = "e"
+        return body
+
+    def _grc_run(base, wait):   # 時計は偽（sleep の秒だけ進む）。wait=30 なら 4 回読む
+        o, t = io.StringIO(), [0.0]
         with contextlib.redirect_stdout(o):
-            rc = grc.check(grc.make_fetch(_url + base, _Rules.PW), wait, sleep=lambda s: None)
+            rc = grc.check(grc.make_fetch(_url + base, _Rules.PW), wait, clock=lambda: t[0], sleep=lambda s: t.__setitem__(0, t[0] + s))
         return rc, o.getvalue().splitlines()
 
     _Rules.PAGES.update({"/paged" + _RP: _p1, "/paged" + _RP + "?group_next_token=t%2F1%2B%3D": _p2("Normal")})
@@ -1142,7 +1147,12 @@ try:
                                                                        "groupNextToken": "same"}},
                          "/loop" + _RP + "?group_next_token=same": {"status": "success", "data": {"groups": [], "groupNextToken": "same"}},
                          "/dataarr" + _RP: {"status": "success", "data": ["x"]},
-                         "/tokint" + _RP: {"status": "success", "data": {"groups": [], "groupNextToken": 5}}})
+                         "/tokint" + _RP: {"status": "success", "data": {"groups": [], "groupNextToken": 5}},
+                         "/nostatus" + _RP: {},
+                         "/grpdict" + _RP: {"status": "success", "data": {"groups": {"g": 1}}},
+                         "/p2err" + _RP: _p1e,
+                         "/p2err" + _RP + "?group_next_token=e": {"status": "error", "errorType": "server_error", "error": "boom"}})
+    _p2err = _grc_run("/p2err", 30)
     _Rules.SEEN.clear()
     _loop = _grc_run("/loop", 0)
     _loop_seen = list(_Rules.SEEN)
@@ -1155,7 +1165,7 @@ try:
     _endless_n = len(_Rules.SEEN)
     _endless_run = _grc_run("/endless", 0)
     _odd = []
-    for _base in ("/dataarr", "/tokint"):
+    for _base in ("/dataarr", "/tokint", "/nostatus", "/grpdict"):
         try:
             grc.make_fetch(_url + _base, _Rules.PW)()
             _odd.append(None)
@@ -1185,12 +1195,15 @@ check("ルールの確かめ（ページ分け）: 判定は全部のページ�
 check("ルールの確かめ（ページ分け）: 同じ groupNextToken が 2 回来たら読めなかったとして扱い、待ち切れたら未確認（2）。読んだのは 2 ページだけ",
       _loop == (2, ["判定: 未確認（0 秒待った。Grafana のルールの API が読めない（ValueError: groupNextToken が繰り返された（same）））"])
       and _loop_seen == [("/loop" + _RP, True), ("/loop" + _RP + "?group_next_token=same", True)])
-check("ルールの確かめ（ページ分け）: トークンが毎回変わって終わらなければ 100 ページ（最初の 1 回と合わせて 101 回）で止めて未確認（2）。"
-      "data がオブジェクトでない・トークンが文字列でないも ValueError で未確認（落ちない）",
-      isinstance(_endless, ValueError) and str(_endless) == "ページが 100 を超えた（groupNextToken が終わらない）" and _endless_n == 101
+check("ルールの確かめ（ページ分け）: トークンが毎回変わって終わらなければ 100 ページ（最初の 1 ページを含めて 100 回読む）で止めて未確認（2）。"
+      "data がオブジェクトでない・トークンが文字列でない・status が success でない・data.groups が配列でないも ValueError で未確認（落ちない）",
+      isinstance(_endless, ValueError) and str(_endless) == "ページが 100 を超えた（groupNextToken が終わらない）" and _endless_n == 100
       and _endless_run[0] == 2 and _endless_run[1][-1].endswith("（ValueError: ページが 100 を超えた（groupNextToken が終わらない）））")
-      and _odd == ["data が JSON のオブジェクトでない（list）", "groupNextToken が文字列でない（int）"]
+      and _odd == ["data が JSON のオブジェクトでない（list）", "groupNextToken が文字列でない（int）",
+                   "status が success でない（status=None）", "data.groups が配列でない（dict）"]
       and _dataarr == (2, ["判定: 未確認（0 秒待った。Grafana のルールの API が読めない（ValueError: data が JSON のオブジェクトでない（list）））"]))
+check("ルールの確かめ（ページ分け）: 2 ページ目が 200 で status: error を返し続けたら、1 ページ目のルールだけで OK にせず、待ち切れたら未確認（2）",
+      _p2err == (2, ["判定: 未確認（30 秒待った。Grafana のルールの API が読めない（ValueError: status が success でない（status='error', error=boom）））"]))
 
 _seen, _gout = {}, io.StringIO()
 _orig = (grc.load_web_env, grc.admin_password, grc.make_fetch, grc.check)

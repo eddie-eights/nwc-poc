@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 
 INTERVAL = 10
-MAX_PAGES = 100  # groupNextToken が毎回変わって終わらないときの歯止め
+MAX_PAGES = 100  # groupNextToken が毎回変わって終わらないときの歯止め（読むページの数の上限。最初の 1 ページを含む）
 
 
 def load_web_env(prefix):
@@ -76,26 +76,33 @@ def make_fetch(base_url, password):
             raise
         if not isinstance(body, dict):
             raise ValueError(f"JSON のオブジェクトでない（{type(body).__name__}）")
-        data = body.get("data") or {}
+        # 13.2.2 は 200 の応答に必ず "status": "success" と data.groups の配列を付ける（ルールが 0 本でも。手元で実測）。
+        # 無いか違うページを空のページとしてつなぐと、そのページのルールを見ないまま OK になるので、読めなかったとして扱う
+        if body.get("status") != "success":
+            raise ValueError(f"status が success でない（status={repr(body.get('status'))[:40]}"
+                             f"{', error=' + str(body['error'])[:200] if body.get('error') else ''}）")
+        data = body.get("data")
         if not isinstance(data, dict):
             raise ValueError(f"data が JSON のオブジェクトでない（{type(data).__name__}）")
+        if not isinstance(data.get("groups"), list):
+            raise ValueError(f"data.groups が配列でない（{type(data.get('groups')).__name__}）")
         return data
 
     def fetch():
         data = get(url)
-        groups = list(data.get("groups") or [])
-        seen, pages = set(), 1  # ページの数は seen と別に数える（トークンの重なりの確かめに頼らず、どの形でも 100 ページで止まる）
+        groups = list(data["groups"])
+        seen, pages = set(), 1  # 読んだページの数（最初の 1 ページも数える）。seen と別に数え、トークンの重なりの確かめに頼らず 100 ページで止める
         while token := data.get("groupNextToken"):
             if not isinstance(token, str):
                 raise ValueError(f"groupNextToken が文字列でない（{type(token).__name__}）")
             if token in seen:
                 raise ValueError(f"groupNextToken が繰り返された（{token[:40]}）")
-            if pages > MAX_PAGES:
+            if pages >= MAX_PAGES:
                 raise ValueError(f"ページが {MAX_PAGES} を超えた（groupNextToken が終わらない）")
             seen.add(token)
             data = get(f"{url}?group_next_token={urllib.parse.quote(token, safe='')}")
             pages += 1
-            groups += data.get("groups") or []
+            groups += data["groups"]
         return {"data": {"groups": groups}}
 
     return fetch

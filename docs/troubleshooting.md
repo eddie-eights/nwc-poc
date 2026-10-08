@@ -105,7 +105,7 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 |---|---|---|---|
 | 0 | OK | 全部のルールの打ったあとの評価にエラーが無い | なし |
 | 1 | NG | 評価がエラーのルールがある（`判定: NG`） | Grafana のログ（`Failed to evaluate rule`） |
-| 2 | 未確認 | 確かめに行ったが結果が分からない。`判定: 未確認`（401 / 403、Grafana に届かない・起動中、待ち切れ、ルールが 0 本、SSM の admin のパスワードが読めない、ページのトークンが繰り返す）、SSM Run Command を送れない・失敗した・`SSM_RUN_WAIT` 秒（既定 1800）を過ぎた、`判定:` の行が無い | 確かめ直すコマンド（`ops/check-grafana.sh [--oss]`）。ログの案内は出さない |
+| 2 | 未確認 | 確かめに行ったが結果が分からない。`判定: 未確認`（401 / 403、Grafana に届かない・起動中、待ち切れ、ルールが 0 本、SSM の admin のパスワードが読めない、ページのトークンが繰り返すか 100 ページを超える、応答の `status` が `success` でない）、SSM Run Command を送れない・失敗した・`SSM_RUN_WAIT` 秒（既定 1800）を過ぎた、`判定:` の行が無い | 確かめ直すコマンド（`ops/check-grafana.sh [--oss]`）。ログの案内は出さない |
 | 3 | 確かめる前に止まった | 使い方の誤り、`deploy.env` の誤り、Web の EC2 か Grafana が無い（`tf output` が読めないか空）、`SSM_RUN_WAIT` の値の誤り | `NG:` の赤い行 |
 
 ## 消すとき

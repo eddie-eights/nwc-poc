@@ -59,8 +59,9 @@ PM が決めたこと: 終了コードの値は設計で決めて `docs/troubles
 - `fetch()` は最初のページを引数なしで読み、`data.groupNextToken` が空でない文字列のあいだ `?group_next_token=<トークン>`（`urllib.parse.quote(token, safe="")`）で次のページを読み、`data.groups` をつないで `{"data": {"groups": [...]}}` を返す。`group_limit` は送らない（既定 -1 で全部返る）
 - 次の場合は `ValueError` にする（`check()` が読めなかったとして読み直し、待ち切れたら未確認（2））
   - 同じトークンが 2 回来た（「`groupNextToken` が繰り返された」）
-  - ページが `MAX_PAGES = 100` を超えた（トークンが毎回変わって終わらない場合の歯止め）
+  - ページが `MAX_PAGES = 100` を超えた（読むのは最初の 1 ページを含めて 100 ページまで。トークンが毎回変わって終わらない場合の歯止め）
   - `data` がオブジェクトでない、`groupNextToken` が文字列でない
+  - 応答の `status` が `success` でない、`data.groups` が配列でない（13.2.2 は 200 の応答に必ず `"status": "success"` と `groups` の配列を付ける。手元で実測。どのページでも同じに確かめ、空のページとしてつながない）
 - Authorization は今と同じくどのページにも `add_unredirected_header` で付ける。トークンは例外の文に先頭 40 文字だけ出す
 - 先頭のコメントに「13.2.3 の既定は `group_limit=-1` なのでトークンは来ない。来たときのための道」と書く
 
@@ -141,7 +142,7 @@ PM が決めたこと: 終了コードの値は設計で決めて `docs/troubles
    - 偽サーバーが 1 ページ目にルール 1 本と `groupNextToken: "t/1+="`、2 ページ目にもう 1 本を返すと、`判定: OK（2 本とも評価のエラーなし）` で 0。2 回目の要求のパスが `/api/prometheus/grafana/api/v1/rules?group_next_token=t%2F1%2B%3D` で、2 回とも Authorization が付いている
    - 同じ形で 2 ページ目のルールだけがエラー（`Normal (Error, KeepLast)`）を続けると `判定: NG（2 本のうち 1 本…）` で 1（1 ページしか読まないと OK になる形）
    - 2 ページ目も同じトークンを返すと、`wait=0` で `判定: 未確認（0 秒待った。Grafana のルールの API が読めない（ValueError: groupNextToken が繰り返された…））` で 2
-   - トークンが毎回変わると 100 ページで `ValueError`、未確認で 2。`data` が配列なら未確認で 2（今は `AttributeError` で落ちる）
+   - トークンが毎回変わると 100 ページ（最初の 1 ページを含めて 100 回読む）で `ValueError`、未確認で 2。2 ページ目が 200 で `status: error` を返し続けると、1 ページ目だけで OK にせず未確認で 2。`data` が配列なら未確認で 2（今は `AttributeError` で落ちる）
    - `grafana_rules_check` が OK で 0、NG で 1、`判定: 未確認` で 2、送れないとき 2、判定の行が無いとき 2 を返す
    - `gstep` で NG の警告は今の文（ログの案内と「直したら ops/check-grafana.sh」）、未確認の警告は「確かめられなかった（判定: 未確認（…））。理由は上の出力。確かめ直すのは ops/check-grafana.sh」で `Failed to evaluate rule` を含まない。送れないときは「確かめられなかった（判定の行が無い。上の出力）」
    - 偽の aws が `InProgress` を返し続け、`SSM_RUN_WAIT=1` なら、20 秒以内に終わり、出力に「1 秒たっても分からない（最後の状態: InProgress）」と `aws ssm get-command-invocation --region ap-northeast-1 --command-id cmd-1 --instance-id i-web`、警告は未確認の文
