@@ -4,6 +4,7 @@
 
 - インフラは Terraform（`IaC/terraform/aws-managed/`）と `ops/up.sh` / `ops/down.sh` で作る。CDK や CloudFormation に置き換えない。
 - シークレットは `ops/up.sh` が SSM Parameter Store の SecureString として作る。値は読まない・表示しない。
+- MSK の SCRAM の資格情報だけは例外で、`ops/up.sh` が Secrets Manager（`AmazonMSK_<prefix>-collectors`。顧客管理の KMS の鍵 `alias/<prefix>-msk-scram` で暗号化）に作る（MSK の SCRAM は Secrets Manager しか受けない）。値は読まない・表示しない。
 
 <!-- BEGIN AWS Agent Toolkit rules -->
 # AWS Guidance

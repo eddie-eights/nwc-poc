@@ -40,7 +40,7 @@ output "vpc_cidr" {
 }
 
 output "security_group_ids" {
-  description = "SG of each workload (security_groups.tf), keyed web / lab / telegraf_dialout / telegraf_dialin / telegraf_dialout_nlb / msk / spark / grafana / splunk / nautobot / nautobot_db / lambda / workflow / runtime / endpoints. In the OSS build (IaC/terraform/oss, oss.tf) msk is replaced by kafka / efs / opensearch / victoriametrics / neo4j. Read by IaC/terraform/aws-managed/agent (runtime, lambda), IaC/terraform/aws-managed/pipeline/lab (lab), IaC/terraform/aws-managed/pipeline/stream (telegraf_dialout, telegraf_dialin, telegraf_dialout_nlb, msk), IaC/terraform/aws-managed/pipeline/nautobot (nautobot, nautobot_db), IaC/terraform/aws-managed/pipeline/graph (lambda), IaC/terraform/aws-managed/pipeline/analytics (spark, grafana, splunk) and IaC/terraform/aws-managed/workflow (workflow, lambda)"
+  description = "SG of each workload (security_groups.tf), keyed web / lab / telegraf_dialout / telegraf_dialin / telegraf_dialout_nlb / syslog_ng / goflow2 / msk / spark / grafana / splunk / nautobot / nautobot_db / lambda / workflow / runtime / endpoints. In the OSS build (IaC/terraform/oss, oss.tf) msk is replaced by kafka / efs / opensearch / victoriametrics / neo4j. Read by IaC/terraform/aws-managed/agent (runtime, lambda), IaC/terraform/aws-managed/pipeline/lab (lab), IaC/terraform/aws-managed/pipeline/stream (telegraf_dialout, telegraf_dialin, telegraf_dialout_nlb, syslog_ng, goflow2, msk), IaC/terraform/aws-managed/pipeline/nautobot (nautobot, nautobot_db), IaC/terraform/aws-managed/pipeline/graph (lambda), IaC/terraform/aws-managed/pipeline/analytics (spark, grafana, splunk) and IaC/terraform/aws-managed/workflow (workflow, lambda)"
   value       = local.sg_ids
 }
 

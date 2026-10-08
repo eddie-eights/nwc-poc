@@ -2,7 +2,7 @@
 
 ← [README](../README.md)
 
-機器から何を集めたいか、いまどこまで集めているか、telemetry と性能メトリクスをどう取るか（方針と未決定事項）。2026-10-04 時点。
+機器から何を集めたいか、いまどこまで集めているか、telemetry と性能メトリクスをどう取るか（方針と未決定事項）。2026-10-04 時点。集める側は 2026-10-08（cycle 012）に syslog-ng と GoFlow2 を足し、MDT の受け口を外した。
 
 ## 欲しいもの
 
@@ -20,12 +20,45 @@
 
 | 種類 | 既定で取れるか | 経路 |
 |---|---|---|
-| syslog | 取れる | 機器 → 5140/udp → NLB → Telegraf → `logs`。既定の `SYSLOG_STANDARD=RFC3164` は本番の Cisco 向けで、lab の SR Linux（RFC5424）のログは崩れる（[deploy.md](deploy.md)） |
+| syslog | 取れる | 機器 → 5140/udp → NLB → syslog-ng（2026-10-08 から。それまでは Telegraf）→ `logs`（Telegraf と同じ `device_log` の形）。既定の `SYSLOG_STANDARD=RFC3164` は本番の Cisco 向けで、lab の SR Linux（RFC5424）のログは崩れる（[deploy.md](deploy.md)） |
 | SNMP trap | 取れる | 機器 → 162/udp → NLB → Telegraf → `traps`。異常として上げるのは Grafana（`STORES` の `grafana`。link 以外の trap を `trap` として）と Splunk（`STORES` の `splunk`。linkDown / linkUp を `link_down`、ほかを `trap` として）。linkDown / linkUp の trap から `link_down` を出すのは Splunk だけ |
-| telemetry | 一部 | Telegraf → 機器の gNMI（57400/tcp）で BGP / IS-IS / EVPN / MAC の状態を `gnmi` トピックへ。本番の MDT の受け口（57000/tcp → `mdt` トピック）はあるが、送ってよい機器（`MDT_SOURCE_CIDRS`）が既定で空なので何も届かない |
-| 性能メトリクス | lab だけ | lab の SR Linux から gNMI で CPU・メモリ・IF のカウンタと速度・MAC テーブルの数（セッションの代替）・収容回線数の代替を購読し、Telegraf の中で共通の形（下の「共通の形（仮）」）に変えて `metrics` トピックへ（2026-10-04。実機の lab では未確認）。本番の MDT は受け口だけで、共通の形への変換はまだ無い（`mdt` トピックに生のまま）。SNMP のポーリング（`SNMP_POLL=1`。既定）で取るのは IF の状態と 32 ビットカウンタ、エラー数だけ |
+| NetFlow / sFlow | 受け口だけ（lab の機器からは来ない） | 機器 → 2055/udp（NetFlow）・6343/udp（sFlow）→ NLB → GoFlow2 → `flows`（2026-10-08 から）。Spark が Telegraf と同じ形（measurement `flow`）に読み替え、`traps` / `logs` と同じ格納先（S3 Tables・OpenSearch・Splunk の `sourcetype=netops:flows`）へ流す。lab の SR Linux は NetFlow を送れないので、`tools/netflow_send.py` で 1 パケット送って確かめる |
+| telemetry | 一部 | Telegraf → 機器の gNMI（57400/tcp）で BGP / IS-IS / EVPN / MAC の状態を `gnmi` トピックへ。本番の MDT の受け口（57000/tcp → `mdt` トピック）は 2026-10-08（cycle 012）に外した（下の「方針」） |
+| 性能メトリクス | lab だけ | lab の SR Linux から gNMI で CPU・メモリ・IF のカウンタと速度・MAC テーブルの数（セッションの代替）・収容回線数の代替を購読し、Telegraf の中で共通の形（下の「共通の形（仮）」）に変えて `metrics` トピックへ（2026-10-04。実機の lab では未確認）。本番の MDT の受け口は 2026-10-08 に外した（戻すときは共通の形への変換も要る）。SNMP のポーリング（`SNMP_POLL=1`。既定）で取るのは IF の状態と 32 ビットカウンタ、エラー数だけ |
 
 trap と syslog では性能の時系列は取れない（届くのはイベントか、しきい値を越えたという知らせだけ）。性能メトリクスにはポーリングか telemetry が要る。
+
+**集める側（2026-10-08、cycle 012 から）:** 種類ごとに別のサービスで受ける。どれも stream の ECS（Fargate ARM64、0.25 vCPU / 0.5 GB）で、機器から送ってくるものは同じ内部 NLB の後ろにいる（[telegraf.tf](../IaC/terraform/aws-managed/pipeline/stream/telegraf.tf) の `collector_listeners`、[collectors.tf](../IaC/terraform/aws-managed/pipeline/stream/collectors.tf)）。
+
+| 受けるもの | 集める側 | トピック |
+|---|---|---|
+| gNMI の購読、SNMP のポーリング | Telegraf の取りにいく側（`<prefix>-telegraf-dialin`） | `gnmi`、`metrics` |
+| SNMP trap（162/udp） | Telegraf の受ける側（`<prefix>-telegraf-dialout`） | `traps` |
+| syslog（5140/udp） | syslog-ng（`<prefix>-syslog-ng`。`app/syslog-ng/`） | `logs` |
+| NetFlow（2055/udp）・sFlow（6343/udp） | GoFlow2（`<prefix>-goflow2`） | `flows` |
+
+syslog-ng と GoFlow2 は MSK の IAM 認証を話せないので、SASL/SCRAM（9096/tcp）で書く（資格情報の置き場は [pipeline.md](pipeline.md) の冒頭の箇条書き）。
+
+**syslog の形は Telegraf のときと同じ（2026-10-08 に手元の docker で比べた）:** 同じ RFC5424 の 1 行
+
+```
+<184>1 2026-10-08T12:34:56.000001Z leaf1 app23_0 77 ID23 - msg fac=23 sev=0
+```
+
+を Telegraf 1.40.1（`inputs.syslog` + `processors.rename` で `hostname` → `sysName`）と syslog-ng 4.29.0（`app/syslog-ng/syslog-ng.conf.in`）に送ると、`logs` に書く行はキーの並び以外同じになる。
+
+```
+Telegraf : {"fields":{"facility_code":23,"message":"msg fac=23 sev=0","msgid":"ID23","procid":"77","severity_code":0,"timestamp":1791462896000001000,"version":1},"name":"device_log","tags":{"appname":"app23_0","facility":"local7","severity":"emerg","source":"172.17.0.1","sysName":"leaf1"},"timestamp":1791465836}
+syslog-ng: {"timestamp":1791465836,"tags":{"sysName":"leaf1","source":"172.17.0.1","severity":"emerg","facility":"local7","appname":"app23_0"},"name":"device_log","fields":{"version":1,"timestamp":1791462896000001000,"severity_code":0,"procid":"77","msgid":"ID23","message":"msg fac=23 sev=0","facility_code":23}}
+```
+
+- `tags` は 5 つ（`sysName` / `appname` / `facility` / `severity` / `source`）、`fields` は 7 つ（RFC3164 は `msgid` と `version` が無い）。`severity_code` / `facility_code` / `version` / `timestamp` は数値。`fields.timestamp` は送り元の時刻（ns）、最上位の `timestamp` は受けた時刻（秒）。
+- 全 severity と全 facility を RFC5424 / RFC3164 で 1 行ずつ、壊れた行 2 つと合わせて 34 行ずつ送ると、30 行は値まで同じだった。違ったのは次の 4 種類。
+  - facility 15 の名前: Telegraf は `cron2`、syslog-ng は `solaris-cron`。
+  - 頭の無い行（`garbage line without header`）: Telegraf は捨てる、syslog-ng は facility `user` / severity `notice` / `sysName` に送り元の IP を入れて書く。
+  - RFC5424 の本文の頭の空白: Telegraf は残す、syslog-ng は落とす。
+  - RFC3164 の受け口に来た RFC5424 の行: Telegraf は facility と severity だけの行（本文も `sysName` も無い）を書く、syslog-ng は `appname` に `1`、`sysName` に送り元の IP、本文に残りを入れて書く。
+- キーの集合と型は `tests/test_collectors.py` が conf.in の `format-json` と上の Telegraf の行で突き合わせる。
 
 ## 方針: telemetry と性能メトリクスは Cisco MDT の dial-out で受ける（2026-10-04）
 
@@ -39,9 +72,11 @@ trap と syslog では性能の時系列は取れない（届くのはイベン�
 
 **受け口（2026-10-04 に作った）:** Telegraf の `inputs.cisco_telemetry_mdt`（gRPC、57000/tcp、タグ `collector=mdt`）→ Kafka の `mdt` トピック（生のまま。共通の形への変換は本番の sensor path が決まってから）。NLB に TCP 57000 のリスナーがあり、Telegraf の NLB の SG は `deploy.env` の `MDT_SOURCE_CIDRS`（機器の CIDR をカンマで。既定は空でどこからも受けない。`0.0.0.0/0` は拒む）だけを通す。Spark は `mdt` もメトリクスのトピックとして S3 Tables と Prometheus に流す。TLS と機器側の設定（`telemetry ietf subscription` / `receiver`）は未決定。
 
+**受け口は 2026-10-08（cycle 012）に外した:** 機器を送らせる段取り（本番の機種と TLS）が決まるまで、使わない口を開けておかない。戻すときは `git show ed8edf1^:app/telegraf/telegraf.conf.in`（`inputs.cisco_telemetry_mdt` の区間）と `git show ed8edf1^:IaC/terraform/aws-managed/base/core/variables.tf`（`mdt_source_cidrs`）を元に、NLB の 57000/tcp のリスナー、Telegraf の NLB の SG の行、`ops/up.sh` の `MDT_SOURCE_CIDRS` を足し直す。下の方針（dial-out で受ける）は変えていない。
+
 **選んだ理由: Telegraf を増やしやすい。**
 
-- 機器から送ってくるもの（trap・syslog・MDT）は、NLB が 1 つのタスクにだけ渡すので、タスクを増やしても重複しない。
+- 機器から送ってくるもの（trap・syslog・MDT。2026-10-08 から NetFlow / sFlow も）は、NLB が 1 つのタスクにだけ渡すので、タスクを増やしても重複しない。
 - Telegraf から取りにいくもの（SNMP のポーリング、gNMI の購読）は、タスクごとに同じ機器へ取りにいくので、増やすと MSK に同じデータが何回も入る。取りにいく側のサービス（`<prefix>-telegraf-dialin`）だけを 1 タスクに固定している（[telegraf.tf](../IaC/terraform/aws-managed/pipeline/stream/telegraf.tf) の `desired_count = 1` と `deployment_maximum_percent = 100`）のはこのため（下の「Telegraf を受ける側と取りにいく側に分けた」）。
 - 集める側から機器への通信（161/udp や gNMI の TCP）を本番で開けてもらえるか分からないので、機器 → 集める側の向きだけで済むほうが安全。
 
@@ -58,10 +93,10 @@ trap と syslog では性能の時系列は取れない（届くのはイベン�
 
 | サービス | `TELEGRAF_ROLE` | 入力 | 数 | SG |
 |---|---|---|---|---|
-| `<prefix>-telegraf-dialout` | `dialout` | trap・syslog・MDT（NLB の後ろ） | 増やしてよい（`TELEGRAF_AZ_NUM` の数。既定 1。入れ替えは新しいタスクが立ってから古いものを止める） | `telegraf_dialout`（NLB から受けるだけ） |
+| `<prefix>-telegraf-dialout` | `dialout` | trap（NLB の後ろ。syslog は syslog-ng、NetFlow / sFlow は GoFlow2 の別のサービスで受け、MDT の受け口は外した。2026-10-08 から） | 増やしてよい（`TELEGRAF_AZ_NUM` の数。既定 1。入れ替えは新しいタスクが立ってから古いものを止める） | `telegraf_dialout`（NLB から受けるだけ） |
 | `<prefix>-telegraf-dialin` | `dialin` | gNMI の購読、SNMP のポーリング（`SNMP_POLL=1`。既定）、lab の値を共通の形に変える Starlark | 1 に固定（入れ替えは古いものを止めてから。そのあいだ購読が数十秒切れる） | `telegraf_dialin`（受けない。機器の 161/udp・57400/tcp へ出る） |
 
-Kafka の出力（5 トピック）と health はどちらにもある。Starlark を取りにいく側に置くのは、変える前の `lab_*` を Kafka に載せないので gNMI の入力と同じタスクにいる必要があるから。デバッグ用の EC2 は既定の `all`（両方を 1 つの Telegraf で）。
+Kafka の出力（`metrics` / `gnmi` / `traps` の 3 トピック。`logs` は syslog-ng、`flows` は GoFlow2 が書く）と health はどちらにもある。Starlark を取りにいく側に置くのは、変える前の `lab_*` を Kafka に載せないので gNMI の入力と同じタスクにいる必要があるから。デバッグ用の EC2 は既定の `all`（両方を 1 つの Telegraf で）。
 
 取りにいく側は機器の一覧（`GNMI_TARGETS` / `SNMP_AGENTS`）を持つ。一覧は SSM のパラメータ（`/<prefix>/telegraf-dialin/{lab|nautobot}/{gnmi-targets|snmp-agents}`）に置き、タスクは起動時に ECS の secrets として受ける。持ち主は Nautobot（`…/lab/*` は stream を手で `dialin_targets_from_nautobot=false` にして apply したときだけ使う）。
 
@@ -97,7 +132,7 @@ Kafka の出力（5 トピック）と health はどちらにもある。Starlar
 
 ## lab（SR Linux）での取り方
 
-**lab からは MDT は取れない。** SR Linux は Cisco MDT を話さない（送れるのは gNMI だけ）。lab では Telegraf から gNMI（dial-in、57400/tcp）で購読し、Telegraf の中で本番と同じ共通の形（下の「共通の形（仮）」）に変換する（`app/telegraf/lab_gnmi.star` と `app/telegraf/lab_circuits.star`。2026-10-04 に作った。lab の実機では未確認）。本番の受け口（`inputs.cisco_telemetry_mdt`）の経路は lab では通らない。
+**lab からは MDT は取れない。** SR Linux は Cisco MDT を話さない（送れるのは gNMI だけ）。lab では Telegraf から gNMI（dial-in、57400/tcp）で購読し、Telegraf の中で本番と同じ共通の形（下の「共通の形（仮）」）に変換する（`app/telegraf/lab_gnmi.star` と `app/telegraf/lab_circuits.star`。2026-10-04 に作った。lab の実機では未確認）。本番の MDT の受け口（`inputs.cisco_telemetry_mdt`）は 2026-10-08（cycle 012）に外した。
 gNMI の購読は Telegraf から取りにいくので、lab の値は取りにいく側のタスク（1 つに固定）から来る（上の「Telegraf を受ける側と取りにいく側に分けた」）。
 
 **lab のセッション数と収容回線数は本番の値の代替。** lab の機器には BNG・FW・NAT・IPsec が無いので、本番と同じ役割（今の数・上限・どこが食っているか）を持つ値で代える。エージェントが本番と同じ要素で判断できるかを要素ごとに比べ、揃わない要素は下に書いた（SR Linux 26.7.2 の YANG（[nokia/srlinux-yang-models](https://github.com/nokia/srlinux-yang-models) の `v26.7.2`）で確かめた。`telegraf.conf.in` の 2 つめの `inputs.gnmi`（`lab_*`）で購読しているが、lab の実機で値が出るかは未確認）。
@@ -138,7 +173,7 @@ gNMI の購読は Telegraf から取りにいくので、lab の値は取りに�
 
 ## 共通の形（仮。2026-10-04）
 
-本番の機種が決まるまでの仮の形。lab の gNMI の値はこの形にして `metrics` トピックへ出す（`app/telegraf/lab_gnmi.star` と `app/telegraf/lab_circuits.star`。変えられなかった値は `lab_*` の名前のまま残り、Kafka には載らずデバッグ用の EC2 の標準出力でだけ見える。そこで `lab_*` が見えたら変換の取りこぼし）。本番の MDT もこの形に寄せる予定（未実装）。
+本番の機種が決まるまでの仮の形。lab の gNMI の値はこの形にして `metrics` トピックへ出す（`app/telegraf/lab_gnmi.star` と `app/telegraf/lab_circuits.star`。変えられなかった値は `lab_*` の名前のまま残り、Kafka には載らずデバッグ用の EC2 の標準出力でだけ見える。そこで `lab_*` が見えたら変換の取りこぼし）。本番の MDT もこの形に寄せる予定（未実装。受け口も外してある）。
 
 | measurement | タグ | field |
 |---|---|---|
@@ -157,11 +192,11 @@ gNMI の購読は Telegraf から取りにいくので、lab の値は取りに�
 |---|---|---|
 | 本番の機種と OS の版 | MDT が使えるか（旧来の IOS 15.x などには MDT が無く、SNMP のポーリングしか無い）。使える YANG モデル | ユーザーが確認中 |
 | 集める側から機器へ通信を開けられるか | MDT が使えない機種に、ポーリングの道を残すか | 不明 |
-| 購読するパス（sensor path）と間隔 | 共通の形の項目、Telegraf の受け口の負荷、`mdt` トピックから共通の形への変換 | 本番の版が分かってから |
-| MDT の TLS と機器側の設定 | 受け口は平文の gRPC。証明書を誰が持つか、機器の `receiver` の書き方 | 本番の版が分かってから |
+| 購読するパス（sensor path）と間隔 | 共通の形の項目、Telegraf の受け口の負荷、`mdt` トピックから共通の形への変換（受け口は 2026-10-08 に外したので、まず戻す） | 本番の版が分かってから |
+| MDT の TLS と機器側の設定 | 受け口（2026-10-08 に外した）は平文の gRPC だった。証明書を誰が持つか、機器の `receiver` の書き方 | 本番の版が分かってから |
 | 「セッション」が何のセッションか | 一般的な解釈で候補を上に並べた（BNG の加入者、FW の接続、NAT、IPsec、ハードウェアの表）。本番の機器の役割が分かれば絞れる。lab は MAC の数で代える（上の「lab での取り方」） | 本番は候補まで。lab は決定 |
 | セッションの上限と収容回線数の上限の出どころ | 機器の上限（ライセンス・設定値・機種の上限・ポート数）は多くが MDT で取れる。設計上の上限だけ静的データ（`app/agentcore/data/devices.yaml` か Neptune）。割るのは設定上の上限を先に使う（上の「割る上限の選び方」） | 決定 |
 | 共通の形 | Grafana と Splunk のルールを書く相手。本番の機種が 1 種類なら Cisco の形を正にし、混ざるなら独自の共通の形にする | 仮の形（上の「共通の形（仮）」）で lab を変換している。本番の機種が分かってから決める |
 | lab からどう送るか | gNMI で取って Telegraf の中で共通の形に変換する（上の「lab での取り方」）。変換は作った（lab の実機では未確認） | 決定 |
-| lab に Cisco の機器を足すか | 足せば MDT の受け口（`cisco_telemetry_mdt`）と Cisco の YANG の名前を lab で試せ、IOS XE ならセッションも代替ではなく本物（NAT / FW）が取れる見込み。本番が XR なら XRd（コンテナ。KVM 不要、1 台 2 GiB）、XE なら Cat8000v（VM。KVM が要るので lab の EC2 を Graviton の t4g から x86 の C8i / M8i などのネステッド仮想化か .metal に変える）。どちらも x86 だけ（lab は arm64 で通すと 2026-09-26 に決めているので、その決定を変えることになる）で、入手に Cisco の契約が要る見込み（未確認）。IOL は NETCONF が無く MDT を出せない見込みで、CML の同梱イメージは CML の中でしか使えないライセンス。SR Linux のファブリックは残し、本番と同じ OS の Cisco を 1〜2 台足すのが候補（2026-10-04 に調べた）。XRd の control-plane 版は転送が最小限で leaf の代わりにならず、Nexus（N9Kv）でファブリックを組むと 1 台 6〜10 GB で lab の EC2 が約 $0.17/h（t4g.xlarge）から $0.64〜1.28/h（r7i.2xlarge〜4xlarge）になる。Cat8000v を 2 台足すだけなら m7i.2xlarge で約 $0.52/h（東京のオンデマンド） | **当面は SR Linux のまま**（2026-10-04 決定。費用と arm64 の決定を優先）。本番の機種が分かったら見直す。2026-10-08 に TRex のため lab の EC2 を x86_64（`m6i.xlarge`、約 $0.25/h）にしたので、「x86 だけ」は妨げでなくなった（費用と入手の条件は残る） |
+| lab に Cisco の機器を足すか | 足せば MDT の受け口（`cisco_telemetry_mdt`。2026-10-08 に外したので戻してから）と Cisco の YANG の名前を lab で試せ、IOS XE ならセッションも代替ではなく本物（NAT / FW）が取れる見込み。本番が XR なら XRd（コンテナ。KVM 不要、1 台 2 GiB）、XE なら Cat8000v（VM。KVM が要るので lab の EC2 を Graviton の t4g から x86 の C8i / M8i などのネステッド仮想化か .metal に変える）。どちらも x86 だけ（lab は arm64 で通すと 2026-09-26 に決めているので、その決定を変えることになる）で、入手に Cisco の契約が要る見込み（未確認）。IOL は NETCONF が無く MDT を出せない見込みで、CML の同梱イメージは CML の中でしか使えないライセンス。SR Linux のファブリックは残し、本番と同じ OS の Cisco を 1〜2 台足すのが候補（2026-10-04 に調べた）。XRd の control-plane 版は転送が最小限で leaf の代わりにならず、Nexus（N9Kv）でファブリックを組むと 1 台 6〜10 GB で lab の EC2 が約 $0.17/h（t4g.xlarge）から $0.64〜1.28/h（r7i.2xlarge〜4xlarge）になる。Cat8000v を 2 台足すだけなら m7i.2xlarge で約 $0.52/h（東京のオンデマンド） | **当面は SR Linux のまま**（2026-10-04 決定。費用と arm64 の決定を優先）。本番の機種が分かったら見直す。2026-10-08 に TRex のため lab の EC2 を x86_64（`m6i.xlarge`、約 $0.25/h）にしたので、「x86 だけ」は妨げでなくなった（費用と入手の条件は残る） |
 | Grafana と Splunk の分担 | 同じ指標を両方で見るとルールを 2 か所でそろえることになる（異常の id が同じなので通知は 1 つにまとまる） | 未定 |

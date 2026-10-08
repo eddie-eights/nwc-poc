@@ -133,3 +133,126 @@ None
 - Nit「ワーカーの事前チェックで TRex が中継のまま」（`app/temporal/awsio.py:107`、`rules.py:95` の `END_ROLES` が `role` 無しで効かない）: 読んで確かめた。チャットとワーカーで同じ what-if の答えがずれるので **correctness の Should fix に格上げ**（格上げは推測でよい）→ エンジニア4 に直しを依頼（`n.role` を返す）。
 - 残りの Nit 5 件は直さず BACKLOG へ。`trex start|stop|status` の pgrep の式の不一致だけは、1 の commit のついでに揃えてよいと伝えた。
 - 次: エンジニア4 の Round 2 を待ってマージし、cold reviewer の 2 回目を呼ぶ。
+# lab を IS-IS で組み直し、各 leaf に TRex をつなぎ、lab の EC2 を x86 にする（011）— review r02
+
+## サマリ
+
+2 回目のレビュー。重点は 1 回目のあとの直し（`git diff fa6234f..HEAD`）の 11 ファイル、約 +110 / −20 行。同じ範囲に 014 の変更（`base/ecr/outputs.tf` の kafka_ui、`web_user_data`、`test_stream` など）も混ざっているが、design.md の範囲外なので見ていない。
+
+宿題の 2 件は、どちらも直っている。
+
+- **古い `.cli` が S3 から戻り `lab logs` が止まる（r01 の Should fix）:** 直っている。手当ては 2 段ある。
+  - `upload_lab` と lab の output `upload_lab_command` に `--delete` を付けた。rpm は `--exclude` で消させない。
+  - `routers()` を `srlinux/*.cli` の glob から、`$TOPO.in` の nodes の `kind: nokia_srlinux` を読む形に変えた。
+  - S3 を掃除し直さなくても、EC2 側の機器一覧が古い名前を拾わない。
+- **ワーカーの事前チェックが TRex を中継と見る（PM が Should fix に格上げ）:** 直っている。
+  - `awsio.read_topology` が `n.role AS role` を返すようになった。
+  - `rules.impact` の `END_ROLES` がワーカーの経路でも効く。
+  - docstring と `docs/workflow.md` の「worker は役割を読まない」も直っている。
+
+Must fix・Should fix は無い。Nit が 2 件。
+
+**分類の基準:**
+
+- **Must fix:** design.md に反するか、今の入力・状態で壊れるもの。
+- **Should fix:** 到達できる状態で動作が壊れるか誤るもの。
+- **Nit:** 今は壊れないか、このサイクルより前からあるもの。
+
+### 見た観点 / 見ていない観点
+
+**自分で打って確かめたこと:**
+
+- **テスト 6 本:** `uv run --group dev --group web python tests/<name>.py` で打ち、どれも失敗 0 だった。
+
+  | テスト | 通過 |
+  |---|---|
+  | test_lab_debug | 104 |
+  | test_workflow | 327 |
+  | test_oss | 171 |
+  | test_graph | 78 |
+  | test_sync | 103 |
+  | test_app | 161 |
+
+  本数は `docs/development.md` の値（2026-10-09）と一致した。
+- **routers() の awk:** 実物の `app/containerlab/splab.clab.yml.in` に当てて打った。出力は `dc1-s-leaf-01 / -02 / dc1-spine-01 / -02 / dc1-a-leaf-01 / -02` の 6 行で、TRex（`kind: linux`）は入らない。
+- **シェルの構文:** `bash -n app/containerlab/lab.sh` と `bash -n ops/lab-common.sh` が通った。
+
+**読んで確かめたこと:**
+
+- **upload_lab の --delete は lab/ の外に届かない。**
+  - `lab/` に書き込むのは `upload_lab` だけだった。呼び元は `ops/up.sh:851`、`oss/ops/up.sh:295`、`ops/lab-debug.sh:97/149` で、`grep -rn '/lab/'` で確かめた。
+  - lab の EC2 のロールは `lab/*` に `s3:GetObject` だけで、書かない（`pipeline/lab/iam.tf:42-46`、`lab-debug.yaml:366-369`）。
+  - そのため `--delete` が消すのは、手元から消えた・改名したファイルと古い版の rpm だけになる。
+  - `--exclude "$CONTAINERLAB_RPM"` は送り元から見た相対のキー（`containerlab_<v>_linux_amd64.rpm`）に当たり、S3 側の今の版の rpm を消させない。
+  - arm64 の旧 rpm は消える。setup.sh が rpm を選ぶときの曖昧さも減るので、良い方向の副作用。
+- **routers() の呼び元:**
+  - `logs`（`lab.sh:217`）と `forward-status`（`lab.sh:339`）の 2 か所だけ。
+  - `setup.sh` と `lab.sh` のほかの所に `srlinux/*.cli` の glob は残っていない。
+- **`$TOPO.in` が EC2 と手元の両方にある。**
+  - EC2: `upload_lab` は `splab.clab.yml` だけを除くので、`.in` は送られる。
+  - 手元: `docker/compose/lab.sh` は `app/containerlab/lab.sh` をそのまま呼ぶ。
+- **read_topology の role:**
+  - グラフの device の頂点は `role` を持つ（`app/agentcore/graph.py:244` の `DEVICE_KEYS`）。
+  - 呼び元は `worker.py:102`（precheck）と `:355`（`maintenance_hold`）。キーが 1 つ増えるだけなので、`maintenance_hold` は壊れない。
+- **テストの足し分:**
+  - test_lab_debug: `upload_lab` と output の除外の集合が一致することを見る。偽の docker を置き、古い `dc1-leaf-01.cli` を混ぜた `logs`、`trex stop` / `status` も見る。
+  - test_workflow: `read_topology` の形のまま `rules.impact` に渡すと、TRex が中継にならず `danger` になることを見る。
+  - golden の `neptune_cypher.json`。
+- **lab.sh の TREX_PROC:** r01 の Nit「pgrep の式が start / stop / status で違う」も、`TREX_PROC=t-rex-64` に揃えて直っている。test_lab_debug で検査している。
+
+**見ていない観点:**
+
+- **`bash ops/check.sh` の全体。** 打っていない。`terraform validate` の前の `init` が、追跡している `.terraform.lock.hcl` を書き換えうるため（r01 と同じ理由）。上の 6 本のほか、test_stream / test_local_compose などは、今回の直しに関わらないので打っていない。
+- **`terraform validate` / `fmt`。** 今回の TF の変更は `outputs.tf` の文字列 1 本だけ。test_lab_debug の照合で代わりにした。
+- **shellcheck。** この PC に無い（`which shellcheck` が空）。
+- **AWS の実機。** `aws s3 sync --delete --exclude` の動きを実際のバケットで打ってはいない。「`--exclude` に当たるものは送り先でも消さない」は AWS CLI の仕様として読んだだけ。
+- **014 の変更。** design.md の範囲外。
+
+## Must fix
+
+None
+
+## Should fix
+
+None
+
+## Nit
+
+- [security + runtime bugs] `upload_lab` の除外に、手元の containerlab が作る `app/containerlab/clab-*/` が入っていない。
+  - **該当:** `ops/lab-common.sh:105`。今回のサイクルより前からある抜けで、`--delete` が原因ではない。今回の Round 2 は同じ行の除外を触っている。test_lab_debug は除外の集合を 4 つちょうど（`splab.clab.yml`・`__pycache__/*`・`*.DS_Store`・rpm）に固定しているので、ここで付け足すのが自然。
+  - **起きる条件:** WSL で `docker/compose/lab.sh up` を打ったのと同じチェックアウトで、`ops/up.sh`（か `ops/lab-debug.sh up` / `sync`）を打ったとき。
+    - containerlab は `app/containerlab/clab-splab/` を root の持ち物として作る（`docker/compose/README.md:117`、`.gitignore`）。
+  - **何が起きるか:** どちらか。
+    - 中身を読めれば、`clab-splab/` が `s3://<バケット>/lab/` に上がる。containerlab が作る lab の TLS の秘密鍵と、手元の lab の状態も含む。
+    - root だけが読めるファイルがあれば、`aws s3 sync` が失敗する。`upload_lab` は `return 1` を返し、`up.sh` が「lab の材料を置けなかった」で止まる。
+  - **Nit にした理由:** 手元の compose と AWS を同じチェックアウトから打つ人に限られ、このサイクルで新しく入った経路でもない。
+  - **直すなら:** 除外に `--exclude "clab-*/*"` を足し、`outputs.tf` の `upload_lab_command` と test_lab_debug の期待集合にも足す。
+- [design consistency] review.md の Round 1 に「残りの Nit 5 件は直さず BACKLOG へ」とあるが、`docs/cycles/BACKLOG.md` に該当の行が見当たらない。
+  - 該当の Nit は次の 4 件（pgrep の不一致は直ったので、残りは 4 件）。
+    - デバッグ用の Telegraf の ECR タグにアーキが無い。
+    - `base/ecr/outputs.tf:7/12/17` の `with tag 26.7.2` などが、実際に置くタグ（`-amd64` 付き）と違う。今も残っている。
+    - `trex_cfg` / `edge_ports` / `trex/stl/*.py` のテストが無い。
+    - `telegraf.conf.in` の `evpn_es` の購読が残っている。
+  - 確かめ方: `grep -n 'evpn_es\|trex_cfg\|-amd64\|with tag' docs/cycles/BACKLOG.md` が 0 件。
+  - コードの問題ではなく記録の漏れ。BACKLOG は PM が書く決まりなので、PM が足す。
+
+## 良かった点
+
+- **古い `.cli` の問題を 2 段で直した。** S3 の側は `--delete` で掃除する。EC2 の側は、機器一覧をファイルの有無ではなく、トポロジの定義から取るようにした。片方が漏れても `lab logs` は止まらない。
+- **rpm を `--exclude` で守った理由をコメントとテストの両方に書いた。** `--delete` を付けると、毎回 sync が rpm を消して cp が置き直す。この見落としやすい挙動を、test_lab_debug が除外の集合の一致として見張っている。lab-common.sh と outputs.tf の 2 か所の一致も検査している。
+- **`logs` の回帰テストで実際の状況を再現した。** S3 に残った古い `dc1-leaf-01.cli` を実際に混ぜ、偽の docker の呼び出しが 6 台・この順であることを見ている。
+- **read_topology の直しをテストで閉じた。** 形の検査だけでなく、`read_topology` が返す形のまま `rules.impact` に流し、TRex が 2 台の leaf をつないでいても leaf の孤立と `danger` が出ることまで確かめている。PM が格上げした理由（チャットとワーカーで答えがずれる）を直接閉じるテストになっている。
+
+## ユーザーへの質問
+
+None
+
+## Round 2（PM の確認）
+
+- cold reviewer に依頼した（2 回目。完了判定の直前。モデル opus）。上の r02 がその全文。Must fix 0 / Should fix 0 / Nit 2。
+- Round 1 の Should fix 2 件の解消: `ops/lab-common.sh:103-105` を読み、`--delete` と `--exclude "$CONTAINERLAB_RPM"` が入っているのを確かめた。`bash ops/check.sh` は f766351（Round 2 のマージ直後。実装は不変）で打ち、最後の行が `すべて通過`、`test_lab_debug` 104 / `test_workflow` 327（`logs` の回帰テストと `read_topology` → `rules.impact` のテストを含む）。AWS では打っていない。
+- Nit 1（`upload_lab` の除外に `clab-*/` が無い）: `grep -n 'clab-' ops/lab-common.sh IaC/terraform/aws-managed/pipeline/lab/outputs.tf` が 0 件、`.gitignore:16` に `app/containerlab/clab-*/` があることを確かめた（読んだだけ。S3 には打っていない）。手元の compose と AWS を同じチェックアウトから打つ人に限られるので Nit のまま。BACKLOG に足した。
+- Nit 2（Round 1 の Nit が BACKLOG に無い）: そのとおり。この commit で BACKLOG に足した（セルフレビュー S1 / S2 / N2〜N10 の 11 行と cold review Round 1 の Nit 4 行、Round 2 の Nit 1 行）。
+- サイクル完了。AWS の実機（m6i.xlarge、TRex の起動、`aws s3 sync --delete`）は PM の AWS 検証でまとめて見る。
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261009-cycle-011-lab-isis-trex-x86-review.html -->

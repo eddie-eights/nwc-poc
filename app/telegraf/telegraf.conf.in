@@ -4,7 +4,8 @@
 # SNMP のポーリング（「>>> snmp_poll」〜「<<< snmp_poll」の区間）は SNMP_POLL=1（既定）のときだけ残す。0 なら消して、SNMP は trap だけ受ける。
 # 入力は役割で 2 つに分ける（「>>> role <名前>」〜「<<< role <名前>」の区間。telegraf.sh の TELEGRAF_ROLE）:
 #   dialin   こちらから取りにいく。gNMI の購読・SNMP のポーリングと、lab の gNMI を共通の形に変える Starlark。stream の ECS の telegraf-dialin（1 タスク）
-#   dialout  機器から送ってくるものを受ける。trap・syslog・MDT。stream の ECS の telegraf-dialout（NLB の後ろ。台数を増やしても同じものを 2 回書かない）
+#   dialout  機器から送ってくるものを受ける。trap だけ。stream の ECS の telegraf-dialout（NLB の後ろ。台数を増やしても同じものを 2 回書かない）
+#            機器の syslog は syslog-ng（app/syslog-ng）、NetFlow / sFlow は GoFlow2 が受ける。MDT の受け口は外した（cycle 012。戻し方は docs/collection.md）
 #   all       両方（既定。デバッグ用の EC2 は 1 つの Telegraf で両方やる）
 # 取りにいく入力はタスクを増やすとその数だけ同じ値を MSK に書くので、受ける側と分けて dialin だけを 1 つに保つ。出力と agent はどちらも同じ。
 # ブローカーは IaC/terraform/aws-managed/pipeline/stream が MSK から直接渡す。ポーリング先（inputs.snmp の agents）と gNMI の購読先（inputs.gnmi の addresses）は
@@ -14,20 +15,17 @@
 #（stream の ECS は SSM の SecureString を secrets で受ける。デバッグ用の EC2 は app/containerlab/lab.sh が渡す。値に " と \ は使えない: TOML の文字列が壊れる）。
 #
 # 流れ: Spine-Leaf の SR Linux 6 台からの trap を udp 162 で受ける + gNMI で BGP / IS-IS / EVPN の状態と性能メトリクスを購読
-#       + 機器の syslog を udp 5140 で受ける + 本番の Cisco の MDT（dial-out）を tcp 57000 で受ける
 #       （+ SNMP_POLL=1 なら SNMP を 10 秒ごとにポーリング。ifTable）→ MSK（IAM 認証、TLS）
 #   metrics トピック: 共通の形（仮）の device_cpu / device_memory / if_stats / sessions / circuits（lab では gNMI の lab_* を変換したもの。下の
 #                     processors.starlark と aggregators.starlark）と、SNMP_POLL=1 のときだけ interface（ifName / ifOperStatus / ifInErrors ...）と system
 #   gnmi    トピック: bgp_neighbor（session_state。on_change）/ isis_interface（oper_state。on_change）/ evpn_es / mac_table（1 分ごと）
-#   mdt     トピック: inputs.cisco_telemetry_mdt が受けたもの（measurement は sensor path。共通の形への変換はまだ無い）
 #   traps   トピック: snmp_trap（linkDown / linkUp）
-#   logs    トピック: device_log（機器の syslog。BGP の隣接の up / down など。app/containerlab/srlinux/*.cli の remote-server）
+# （logs トピックの device_log は syslog-ng（app/syslog-ng）、flows トピックは GoFlow2 が書く。cycle 012）
 # 機器は lab の EC2 の中の docker network（203.0.113.0/24）にいる。このコンテナからは次の経路で届く（lab の EC2 で sudo lab forward-status）:
 #   ポーリング  SNMP（161/udp）も gNMI（57400/tcp）も VPC のルートで lab の EC2 へ行き、lab の EC2 が管理ネットワークへ転送する
 #               （タスクの IP は作り直すたびに変わるので、lab の EC2 はタスクのサブネットの CIDR から来たものを通す）
 #   trap        機器は lab の EC2（203.0.113.1:162）へ送り、lab の EC2 が内部 NLB（IP は NLB がある間は変わらない）へ DNAT し、
 #               NLB が 1162 でここへ渡す。NLB は送り元を変えない（UDP のクライアント IP の保持）ので、送り元は機器の管理 IP のまま
-#   syslog      機器は lab の EC2（203.0.113.1:5140/udp）へ送り、trap と同じ仕組みで NLB からここへ届く（rsyslog は使わない）
 # MIB は入れないので OID は数値で書き、名前を明示する（translator が無くても動く）。trap の varbind 名は数値 OID のまま
 # Kafka に載る（ifName の OID を引くのは Splunk の保存済みサーチ。app/splunk/netops_alerts）。
 # SR Linux の ifTable は物理ポート全部（未使用の admin-down も）とサブインタフェース（ethernet-1/1.0）を行に出す。落とすのは Grafana のアラートルール
@@ -92,7 +90,7 @@
       oid = ".1.3.6.1.2.1.2.2.1.20"
 # <<< snmp_poll
 
-# ---- gNMI は lab 用。本番の Cisco は MDT の dial-out で機器から送らせる方針（docs/collection.md。受け口は下の inputs.cisco_telemetry_mdt）だが、
+# ---- gNMI は lab 用。本番の Cisco の MDT（dial-out）の受け口は cycle 012 で外した（送り手が無い。戻し方は docs/collection.md）。
 # lab の SR Linux は MDT を話さないので、ここから gNMI（dial-in）で取りにいく。性能メトリクスは 2 つめの inputs.gnmi で取り、本番と同じ共通の形に変換する。
 # 取りにいく入力なので、これを持つ telegraf-dialin（TELEGRAF_ROLE=dialin）は 1 タスク。
 # ---- gNMI（SR Linux の状態を購読。SNMP には無い BGP / IS-IS / EVPN の層）。containerlab が全ノードで 57400（TLS、自己署名）を開け、
@@ -235,51 +233,19 @@
 # <<< role dialin
 
 # >>> role dialout（telegraf.sh render が TELEGRAF_ROLE=dialin のとき消す）
-# ---- 本番の Cisco の MDT（model-driven telemetry）の dial-out を受ける（docs/collection.md の方針）。機器 → NLB の 57000/tcp → ここ。
-# 機器側は telemetry の destination をこの NLB の 57000 に、protocol を grpc（TLS なし）にする想定（本番の機種と版が分かってから確かめる）。
-# 受け口の 4 つ（MDT・trap・syslog・health）のアドレスとポートは telegraf.sh render が TELEGRAF_BIND（既定は空 = 全部のインターフェース）と
-# MDT_PORT / TRAP_PORT / LOG_PORT / HEALTH_PORT（既定 57000 / 1162 / 5140 / 8080）で埋める。ECS は何も渡さないので既定のまま
-# source タグは機器が名乗る node_id、measurement は sensor path（エンコーディングのパス）。共通の形への変換はまだ無いので、生のまま mdt トピックへ。
-# lab の SR Linux は MDT を送れないので、lab では何も届かない（受け口が開いていることだけ確かめる。ss -ltn に 57000）。
-# collector タグで mdt トピックへ振り分ける（measurement の名前は機器と版で変わるので namepass では書けない）
-[[inputs.cisco_telemetry_mdt]]
-  transport = "grpc"
-  service_address = "__BIND__:__MDT_PORT__"
-  [inputs.cisco_telemetry_mdt.tags]
-    collector = "mdt"
-
+# 受け口の 2 つ（trap・health）のアドレスとポートは telegraf.sh render が TELEGRAF_BIND（既定は空 = 全部のインターフェース）と
+# TRAP_PORT / HEALTH_PORT（既定 1162 / 8080）で埋める。ECS は何も渡さないので既定のまま
 # ---- trap 受信。コンテナは非 root なので 162 ではなく 1162 で待つ（NLB が 162 を 1162 に向ける。telegraf.sh の TRAP_PORT）。
 # source タグは機器の管理 IP（lab の EC2 も NLB も送り元を変えない）
 [[inputs.snmp_trap]]
   service_address = "udp://__BIND__:__TRAP_PORT__"
   version = "2c"
   timeout = "5s"
-
-# ---- 機器のログ（udp。ファシリティは本番の Cisco に合わせて local7）を受ける。ポートは lab.sh の LOG_PORT と
-# IaC/terraform/aws-managed/pipeline/lab の local.log_port と同じ。lab の EC2 が 203.0.113.1:5140 宛てを NLB へ DNAT し、NLB がここへ渡すので、送り元は機器の管理 IP のまま。
-# 形式は telegraf.sh render が SYSLOG_STANDARD で埋める。既定は RFC3164（本番の Cisco IOS の BSD 形式）。lab の SR Linux の
-# system logging remote-server は RFC 5424 なので、app/containerlab/lab.sh telegraf run は RFC5424 を渡す。ops/up.sh（stream の syslog_standard）は deploy.env の
-# SYSLOG_STANDARD（既定 RFC3164）を渡す（lab のログまで見るなら RFC5424）。
-# HOSTNAME は SR Linux の host-name（= sysName）なので、metrics / traps と同じタグ名 sysName に付け替える（下の processors.rename）。
-# Cisco IOS の既定のヘッダー（シーケンス番号や * 付きの時刻、ホスト名の有無）が RFC3164 でどう解析されるかは実機で確かめていない
-# best_effort は形の崩れた行（構造化データ無しなど）も捨てずに載せるため
-[[inputs.syslog]]
-  # inputs.syslog の受け口は server（service_address は 1.40 では未知のキーで起動を拒む。2026-09-27 実測。inputs.snmp_trap は service_address のまま）
-  server = "udp://__BIND__:__LOG_PORT__"
-  syslog_standard = "__SYSLOG_STANDARD__"
-  name_override = "device_log"
-  best_effort = true
-
-[[processors.rename]]
-  namepass = ["device_log"]
-  [[processors.rename.replace]]
-    tag = "hostname"
-    dest = "sysName"
 # <<< role dialout
 
 # >>> sink kafka（telegraf.sh render が SINK で片方だけ残す。既定 kafka）
-# ---- Kafka（MSK。OSS 版は ECS の Kafka）へ。トピックは metric 名で分ける（snmp_trap → traps、device_log → logs、gNMI の 4 つ → gnmi、共通の形と SNMP のポーリング → metrics、
-# MDT → mdt（collector タグ））。lab_* の変換前の値はどれにも載せない。役割に関わらず 5 つとも置く（来ないトピックの出力は何も書かない）
+# ---- Kafka（MSK。OSS 版は ECS の Kafka）へ。トピックは metric 名で分ける（snmp_trap → traps、gNMI の 4 つ → gnmi、共通の形と SNMP のポーリング → metrics）。
+# lab_* の変換前の値はどれにも載せない。役割に関わらず 3 つとも置く（来ないトピックの出力は何も書かない）
 # 「>>> kafka_auth iam」の区間は MSK の IAM 認証の 4 行。telegraf.sh render が KAFKA_AUTH=none（OSS 版の認証なしの Kafka。cycle 005）のとき消す
 # sasl_aws_msk_iam_profile: Telegraf 1.40.0 は profile か role + session のどちらかを書かないと
 # 「both role and session must be set」で落ち、インスタンスプロファイルだけでは起動しない（2026-09-18 に EC2 で確認。plugins/common/kafka/sasl_aws_iam_msk.go）。
@@ -328,37 +294,6 @@
   required_acks = 1
   max_retry = 3
   namepass = ["snmp_trap"]
-
-[[outputs.kafka]]
-  brokers = [__KAFKA_BROKERS__]
-  topic = "logs"
-# >>> kafka_auth iam
-  enable_tls = true
-  sasl_mechanism = "AWS-MSK-IAM"
-  sasl_aws_msk_iam_region = "__AWS_REGION__"
-  sasl_aws_msk_iam_profile = "default"
-# <<< kafka_auth iam
-  data_format = "json"
-  json_timestamp_units = "1s"
-  required_acks = 1
-  max_retry = 3
-  namepass = ["device_log"]
-
-[[outputs.kafka]]
-  brokers = [__KAFKA_BROKERS__]
-  topic = "mdt"
-# >>> kafka_auth iam
-  enable_tls = true
-  sasl_mechanism = "AWS-MSK-IAM"
-  sasl_aws_msk_iam_region = "__AWS_REGION__"
-  sasl_aws_msk_iam_profile = "default"
-# <<< kafka_auth iam
-  data_format = "json"
-  json_timestamp_units = "1s"
-  required_acks = 1
-  max_retry = 3
-  [outputs.kafka.tagpass]
-    collector = ["mdt"]
 # <<< sink kafka
 
 # >>> sink stdout

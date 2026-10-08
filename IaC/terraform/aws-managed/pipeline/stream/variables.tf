@@ -111,17 +111,6 @@ variable "dialin_targets_from_nautobot" {
   default     = false
 }
 
-variable "syslog_standard" {
-  description = "Format of the device syslog that Telegraf parses (inputs.syslog syslog_standard). RFC3164 is the BSD format of Cisco IOS, the production devices. ops/up.sh passes SYSLOG_STANDARD from deploy.env (default RFC3164). The SR Linux lab sends RFC5424 (LAB_SYSLOG_STANDARD in ops/lab-common.sh)."
-  type        = string
-  default     = "RFC3164"
-
-  validation {
-    condition     = contains(["RFC3164", "RFC5424"], var.syslog_standard)
-    error_message = "syslog_standard must be RFC3164 or RFC5424."
-  }
-}
-
 variable "snmp_poll" {
   description = "Whether Telegraf polls SNMP (inputs.snmp, ifTable every 10 seconds) and writes it to the metrics topic. On by default: the Grafana rule link_down and the Splunk saved search netops_poll read the polled ifOperStatus. With false, SNMP comes in as traps only and link down is seen only by the Splunk saved search on traps (splunk in STORES of deploy.env). ops/up.sh passes SNMP_POLL from deploy.env. Becomes SNMP_POLL (1 / 0) of the task."
   type        = bool
@@ -140,7 +129,7 @@ variable "telegraf_az_num" {
 }
 
 variable "telegraf_task_cpu" {
-  description = "Fargate CPU units of the Telegraf task (ARM64). 256 (0.25 vCPU) is enough for 6 SNMP agents, 6 gNMI subscriptions, traps and syslog."
+  description = "Fargate CPU units of the Telegraf task (ARM64). 256 (0.25 vCPU) is enough for 6 SNMP agents, 6 gNMI subscriptions and traps."
   type        = number
   default     = 256
 
@@ -158,6 +147,41 @@ variable "telegraf_task_memory" {
   validation {
     condition     = contains([512, 1024, 2048], var.telegraf_task_memory)
     error_message = "telegraf_task_memory must be 512, 1024 or 2048."
+  }
+}
+
+# ---------------------------------------------------------------- syslog-ng and GoFlow2 (collectors.tf, cycle 012)
+# Always created with this root, behind the NLB of telegraf.tf. Both write to Kafka with SASL/SCRAM on MSK (9096) and PLAINTEXT on the OSS Kafka
+variable "syslog_ng_image_tag" {
+  description = "Tag of the syslog-ng image (AxoSyslog, docker/images/syslog-ng/Dockerfile) in the ECR repository <prefix>-syslog-ng. ops/up.sh builds it as <SYSLOG_NG_VERSION>-<hash of app/syslog-ng/ and docker/images/syslog-ng/Dockerfile> and passes it."
+  type        = string
+  default     = "4.29.0"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$", var.syslog_ng_image_tag))
+    error_message = "syslog_ng_image_tag must be a valid ECR tag (letters, digits, _ . -, up to 128 characters)."
+  }
+}
+
+variable "goflow2_image_tag" {
+  description = "Tag of the GoFlow2 image in the ECR repository <prefix>-goflow2. ops/up.sh mirrors netsampler/goflow2:<GOFLOW2_TAG> with the same tag and passes it."
+  type        = string
+  default     = "v2.2.7"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$", var.goflow2_image_tag))
+    error_message = "goflow2_image_tag must be a valid ECR tag (letters, digits, _ . -, up to 128 characters)."
+  }
+}
+
+variable "syslog_standard" {
+  description = "Format of the device syslog that syslog-ng parses (SYSLOG_STANDARD of the task: RFC5424 reads the network() source with flags(syslog-protocol), RFC3164 without it). RFC3164 is the BSD format of Cisco IOS, the production devices. ops/up.sh passes SYSLOG_STANDARD from deploy.env (default RFC3164). The SR Linux lab sends RFC5424 (LAB_SYSLOG_STANDARD in ops/lab-common.sh). Until cycle 012 Telegraf parsed it (inputs.syslog)."
+  type        = string
+  default     = "RFC3164"
+
+  validation {
+    condition     = contains(["RFC3164", "RFC5424"], var.syslog_standard)
+    error_message = "syslog_standard must be RFC3164 or RFC5424."
   }
 }
 
