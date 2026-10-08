@@ -39,7 +39,7 @@
 
 | design.md | 現物 | どうしたか |
 |---|---|---|
-| `git ls-files` 434、シンボリックリンク 90 | 436、92（`IaC/terraform/oss/` のリンクが 2 本多い） | 数だけの違い。92 本を全部貼り直し、壊れたリンク 0 を確かめた |
+| `git ls-files` 434、シンボリックリンク 90 | 436、92（`IaC/terraform/oss/` のリンクが 2 本多い） | 数だけの違い。92 本を全部貼り直し、壊れたリンク 0 を確かめた。design.md の数（と内訳の `../../../../terraform/` 67 → 69）は cold review の Nit を受けて実数に合わせた |
 | 根に残すファイルの一覧（手順 4 の `ls`） | `deploy.env.example` `GLOSSARY.md` `uv.lock` `.python-version` もある | そのまま根に残した |
 | `relink` の例（`${link/terraform\//…}` の置換） | macOS の bash 3.2 / zsh で置換が効かない | `sed` でパスを作って貼り直した |
 | 落とし穴 2（zip に入れる名前が変わる） | `workflow/gateway.tf` の `tools_files` はキーがパス、値が zip の中の名前 | キー（`app/agentcore/toolkit.py` など）だけ変え、値は変えていない。zip の中身は同じ |

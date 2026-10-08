@@ -20,7 +20,7 @@ PM(fable-5.1) / effort: high
 | 各ディレクトリの `Dockerfile`（8 本） | `docker/images/<app の名前>/Dockerfile`（build の context は `app/<名前>/` のまま） |
 | `local/compose/`（006） | `docker/compose/`（compose.yaml・`.env.example`・up / down / check / lab.sh・README） |
 | `terraform/` | `IaC/terraform/aws-managed/` |
-| `oss/terraform/` | `IaC/terraform/oss/`（シンボリックリンク 90 本を貼り直す） |
+| `oss/terraform/` | `IaC/terraform/oss/`（シンボリックリンク 92 本を貼り直す） |
 | `cloudformation/` | `IaC/cloudformation/` |
 | `ops/ oss/ops/ oss/compose/ tests/ tools/ docs/ jars/ wheels/ pyproject.toml .env.example` | そのまま |
 
@@ -77,9 +77,9 @@ Terraform は `path.module` からの相対で根のファイルを読む。深�
 
 `.build/*.zip` の出力先は `path.module` からの相対なので変わらない。`terraform_remote_state` は隣のルートを相対で読むので、木ごと動けば変わらない。
 
-### シンボリックリンク 90 本
+### シンボリックリンク 92 本
 
-`oss/terraform/` の 90 本は全部 `terraform/` の中を指す（`../../../terraform/…` 21 本、`../../../../terraform/…` 67 本、`../../../../../terraform/…` 2 本）。移動後、リンク元 `IaC/terraform/oss/<root>/X` から見て `../../../` は `IaC/` なので、**リンクの文字列は `terraform/` の直後に `aws-managed/` を挟むだけ**（段数は変えない）。例: `../../../terraform/agent/main.tf` → `../../../terraform/aws-managed/agent/main.tf`。
+`oss/terraform/` の 92 本は全部 `terraform/` の中を指す（`../../../terraform/…` 21 本、`../../../../terraform/…` 69 本、`../../../../../terraform/…` 2 本）。移動後、リンク元 `IaC/terraform/oss/<root>/X` から見て `../../../` は `IaC/` なので、**リンクの文字列は `terraform/` の直後に `aws-managed/` を挟むだけ**（段数は変えない）。例: `../../../terraform/agent/main.tf` → `../../../terraform/aws-managed/agent/main.tf`。
 
 `git mv` はリンクのファイルを動かすだけで文字列は変えないので、動かしたあとに貼り直す:
 
@@ -186,7 +186,7 @@ OSS 版の state（`oss/terraform/base/core` の tfstate）は PM の worktree `
 
 ## 変更対象ファイル
 
-- 動かす（`git mv`）: 上の表の全ディレクトリ、Dockerfile 8 本、`local/compose/` 一式、`oss/terraform/` のシンボリックリンク 90 本（貼り直し）
+- 動かす（`git mv`）: 上の表の全ディレクトリ、Dockerfile 8 本、`local/compose/` 一式、`oss/terraform/` のシンボリックリンク 92 本（貼り直し）
 - 書き換える（コード）: `ops/common.sh` `ops/up.sh` `ops/up-common.sh` `ops/lab-common.sh` `ops/lab-debug.sh` `ops/sync-graph.sh` `ops/check.sh` `ops/seed_graph.py` `oss/ops/up.sh` `oss/ops/down.sh` `oss/ops/oss-images.sh` `oss/compose/compose.yaml` `oss/compose/check_neo4j.py` `oss/compose/check_vm.py` `docker/compose/compose.yaml` `docker/compose/up.sh` `docker/compose/lab.sh` `app/dashboard/config.py` `.env.example` `.gitignore` `pyproject.toml`（コメント）
 - 書き換える（Terraform）: `IaC/terraform/aws-managed/agent/locals.tf` `agent/kb.tf` `agent/outputs.tf` `workflow/locals.tf` `workflow/gateway.tf` `pipeline/graph/sync.tf` `base/core/outputs.tf` `pipeline/lab/outputs.tf` `pipeline/stream/variables.tf`、`IaC/terraform/oss/pipeline/graph/sync.tf`、`IaC/cloudformation/lab-debug.yaml`（コメント）
 - 書き換える（tests）: `tests/test_*.py` 14 本と `tests/check_splunk_image.py`
@@ -202,7 +202,7 @@ OSS 版の state（`oss/terraform/base/core` の tfstate）は PM の worktree `
 
 ## 実装ステップ
 
-0. ブランチは `docs/cycle-006-design` から切る（006 の `local/compose/` が要る）。`bash ops/check.sh` が「すべて通過」で始まることを確かめ、`git ls-files | wc -l`（434）と `git ls-files -s | awk '$1=="120000"' | wc -l`（90）を build.md に書く
+0. ブランチは `docs/cycle-006-design` から切る（006 の `local/compose/` が要る）。`bash ops/check.sh` が「すべて通過」で始まることを確かめ、`git ls-files | wc -l`（436）と `git ls-files -s | awk '$1=="120000"' | wc -l`（92）を build.md に書く
 1. **commit 1（git mv）**: ディレクトリと Dockerfile と `local/compose/` を `git mv`。シンボリックリンクを上のループで貼り直す。`git status` に untracked が無いこと、`find IaC/terraform/oss -type l ! -exec test -e {} \; -print` が空（壊れたリンクが無い）を確かめる
 2. **commit 2（参照）**: 上の 3 つの表のとおり書き換える。置換したあと `git grep -n -E '(^|[^/a-zA-Z0-9_])(agent|workflow|web|lab|kb-docs|local/compose|oss/terraform|cloudformation)/' -- ':!docs/cycles/00[1-6]-*' ':!docs/verification'` で残りを数え、S3 の prefix と「当時の記録」以外が 0 になるまで直す。`bash ops/check.sh` を通す
 3. **commit 3（dir_tag と版上げ）**: `dir_tag` の引数を足し、呼び元 8 か所に Dockerfile を渡す。Grafana と Telegraf を上げる。Splunk は `tests/check_splunk_image.py` の結果で決める。`bash ops/check.sh` を通す
@@ -218,7 +218,7 @@ OSS 版の state（`oss/terraform/base/core` の tfstate）は PM の worktree `
 | 3 | `git log --follow --oneline app/agentcore/app.py \| wc -l` | 2 以上（移動前の履歴が追える。1 なら `git mv` でなくコピーになっている） |
 | 4 | `ls` | `app docker IaC ops oss tests tools docs`（+ gitignore 対象の `jars` `wheels`、`pyproject.toml` `README.md` `CLAUDE.md` `.env.example`）。`agent terraform local cloudformation kb-docs` が無い |
 | 5 | `ls docker/images` | `agentcore grafana nautobot neo4j spark splunk telegraf temporal` の 8 つ。各ディレクトリに `Dockerfile` だけ |
-| 6 | `git ls-files -s IaC/terraform/oss \| awk '$1=="120000"' \| wc -l` と `find IaC/terraform/oss -type l ! -exec test -e {} \; -print` | `90` と空 |
+| 6 | `git ls-files -s IaC/terraform/oss \| awk '$1=="120000"' \| wc -l` と `find IaC/terraform/oss -type l ! -exec test -e {} \; -print` | `92` と空 |
 | 7 | `for r in …9 ルート; do terraform -chdir=IaC/terraform/aws-managed/$r validate; done`（oss も） | 18 回 `Success!`（check.sh の 2 と同じ。state は無いので `plan` は確かめない。理由は下のリスク 1） |
 | 8 | `docker build -f docker/images/telegraf/Dockerfile app/telegraf` と grafana、spark | 3 つとも exit 0（push しない。arm64 のビルドが出来ない PC なら `--platform` 無しでよい） |
 | 9 | `. ops/lab-common.sh; a=$(dir_tag 1 app/telegraf docker/images/telegraf/Dockerfile); echo '# x' >> docker/images/telegraf/Dockerfile; b=$(dir_tag 1 app/telegraf docker/images/telegraf/Dockerfile); git checkout docker/images/telegraf/Dockerfile; [ "$a" != "$b" ] && echo 変わる` | `変わる`（Dockerfile だけ変えてもタグが変わる） |

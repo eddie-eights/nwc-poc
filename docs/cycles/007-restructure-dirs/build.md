@@ -554,3 +554,34 @@ $ git diff --name-status -M docs/cycle-006-design | awk '{print substr($1,1,1)}'
 ```
 
 （A が検証 2 より 1 つ多いのは、この build.md。検証 13 の grep 2 本は取り込む前の HEAD と同じ出力）
+
+### Round 1 の cold review への対応（Nit 5 件）
+
+PM が選んだ Nit 5 件を 1 commit で直した。(1) `app/agentcore/requirements-oss.txt:2`・`app/temporal/requirements-oss.txt:2` のビルド例に `-f docker/images/<名前>/Dockerfile` を足した（同じ形の `app/nautobot/requirements-oss.txt:2` も合わせた）。(2) `ops/up-common.sh:178`・`:230` のコメントを `docker/images/splunk/Dockerfile`・`docker/images/grafana/Dockerfile` にした。(3) design.md のシンボリックリンクの数を実数（92 本、内訳 21 / 69 / 2、`git ls-files` 436）に合わせた（23・80・82・189・205・221 行。design-log の Round 1 の行に一言足した）。(4) `docs/development.md` の「変えたもの」に Dockerfile 8 本の行を足した。(5) `tests/test_dashboard_config.py` を足した（config.py を import せず文字列で照合し、`.env`・相対の `DATA_DIR`・`sys.path` の 3 点を見る）。テストが 15 本になったので、`docs/development.md`「手元で確かめる」の本数と項目数をこの回の check.sh の出力に合わせた。直さなかった Nit（SSM / OpenSearch / Cloud Map / Lambda レイヤーの description の変更で、state のあるスタックが作り直しになる）は PM の判断で記録だけ（deploy.md の「マージの前に down」が覆う）。
+
+```
+--- 注入: .env を 1 段（007 前の深さ）
+-    path = os.environ.get("ENV_FILE") or os.path.join(HERE, "..", "..", ".env")
++    path = os.environ.get("ENV_FILE") or os.path.join(HERE, "..", ".env")
+NG: .env の既定はリポジトリの直下（HERE/../../.env）
+exit=1
+--- 注入: DATA_DIR の起点を 1 段
+-    DATA_DIR = os.path.normpath(os.path.join(HERE, "..", "..", DATA_DIR))
++    DATA_DIR = os.path.normpath(os.path.join(HERE, "..", DATA_DIR))
+NG: 相対の DATA_DIR はリポジトリの直下から（.env.example の DATA_DIR が実在するディレクトリになる）
+exit=1
+--- 注入: sys.path を 007 前の ../agent
+-    sys.path.append(os.path.join(HERE, "..", "agentcore"))
++    sys.path.append(os.path.join(HERE, "..", "agent"))
+NG: 手元ではエージェントのモジュールを app/agentcore/ から読む（sys.path に HERE/../agentcore）
+exit=1
+復元後 diff 空
+通過 3 / 失敗 0
+```
+
+```
+$ bash ops/check.sh
+exit=0
+通過 137 / 失敗 0 通過 489 / 失敗 0 通過 158 / 失敗 0 通過 3 / 失敗 0 通過 72 / 失敗 0 通過 7 / 失敗 0 通過 84 / 失敗 0 通過 77 / 失敗 0 68 項目すべて通過 通過 167 / 失敗 0 通過 144 / 失敗 0 通過 66 / 失敗 0 通過 75 / 失敗 0 通過 96 / 失敗 0 通過 325 / 失敗 0
+すべて通過
+```

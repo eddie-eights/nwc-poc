@@ -175,7 +175,7 @@ ensure_s3tables_catalog() {  # 無ければ作る。あれば設定が想定（I
   esac
 }
 # Splunk Enterprise（analytics の ECS。IaC/terraform/aws-managed/pipeline/analytics の splunk.tf）。マネージド版と OSS 版（設計 005: Splunk は OSS 版でも変えない）が
-# 同じイメージの作り方と同じ SSM のパラメータを使う。SPLUNK_VERSION は app/splunk/ の Dockerfile の ARG の既定値に合わせてある
+# 同じイメージの作り方と同じ SSM のパラメータを使う。SPLUNK_VERSION は docker/images/splunk/Dockerfile の ARG の既定値に合わせてある
 # （変えるときは両方を変える。tests/check_splunk_image.py で、その版の Python の boto3 でアラートを送れるかも確かめる）
 SPLUNK_VERSION=10.4.4   # splunk/splunk は amd64 だけ（ECS のタスクは X86_64）
 splunk_image_check() {  # SPLUNK_TAG を app/splunk/ の中身と docker/images/splunk/Dockerfile から作り、ECR の <接頭辞>-splunk に無ければ NEED_SPLUNK=1。PREFIX を使う
@@ -227,7 +227,7 @@ splunk_cluster_check() {
 # NAUTOBOT_VERSION は docker/images/nautobot/Dockerfile の ARG、REDIS_TAG は IaC/terraform/aws-managed/pipeline/nautobot の redis_image_tag、
 # TEMPORAL_TAG は IaC/terraform/aws-managed/workflow の temporal_image_tag の既定値に合わせてある（変えるときは両方を変える）
 NAUTOBOT_VERSION=3.2.6
-GRAFANA_VERSION=13.2.3   # app/grafana/ の Dockerfile の ARG の既定値に合わせてある（変えるときは両方を変える）
+GRAFANA_VERSION=13.2.3   # docker/images/grafana/Dockerfile の ARG の既定値に合わせてある（変えるときは両方を変える）
 REDIS_TAG=8.10.2-alpine   # 8 系は AGPLv3 も選べる（7.4 は RSALv2 / SSPL だけ）。公式のイメージは Search・JSON などのモジュールを読み込んで起きる
 TEMPORAL_TAG=1.9.1
 nautobot_context() {  # nautobot_context <空のディレクトリ>  Nautobot のイメージのビルドの context を集める（docker/images/nautobot/Dockerfile の頭の説明）
