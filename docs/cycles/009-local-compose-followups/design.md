@@ -31,7 +31,7 @@ Mac では Splunk のイメージが amd64 だけで起動しないので、**Sp
 - `telegraf.conf.in` の固定値 `":57000"`（245 行目）、`"udp://:1162"`（252 行目）、`"http://:8080"`（375 行目）と syslog の `server`（265 行目の注のとおり `service_address` は 1.40 で拒まれる）を、`telegraf.sh` が sed で埋めるプレースホルダ（既存の `__KAFKA_BROKERS__` と同じ `__MDT_PORT__` / `__TRAP_PORT__` / `__LOG_PORT__` / `__HEALTH_PORT__` / `__BIND__`）にする。`telegraf.sh` は `TRAP_PORT=1162`（35 行目）、`MDT_PORT=57000`（37 行目）をいままでどおり既定にしつつ、環境変数が入っていればそれを使う（`: "${MDT_PORT:=57000}"` の形）。`HEALTH_PORT` と `LOG_PORT` も同じ
 - 待つアドレスは新しい変数 `TELEGRAF_BIND`（既定は空 = 全部のインターフェース。AWS の ECS はいままでどおり）。手元の compose は `docker/compose/up.sh` が `TELEGRAF_BIND` を渡す。**Telegraf の 1 つの input は 1 つのアドレスでしか待てない**ので、「管理ネットの GW と 127.0.0.1 の両方」は input を 2 つ書くのではなく、lab の管理ネットの GW `203.0.113.1`（`app/containerlab/lab.sh` の `MGMT_GW`）**だけ**で待ち、`check.sh` もそこへ打つ。127.0.0.1 では待たない（README の「WSL の外から偽の trap を入れられる」の説明を直す）
 - `MGMT_GW` は `lab.sh up` で containerlab が作る bridge に付く。Telegraf が先に上がると bind に失敗するので、`docker/compose/up.sh` が `ip -o -4 addr show` で `203.0.113.1` の有無を見て、無ければ `TELEGRAF_BIND` を空にして全部で待つ（WARNING を出し、`lab.sh up` のあとに `up.sh telegraf` で直すよう案内）。README の手順は `lab.sh up` → `up.sh` の順に並べる
-- `check.sh` の判定に「Telegraf: コンテナが running」を足す（bind の失敗や restart の上限で止まったものを拾う。設計方針 10 のリスク）
+- `check.sh` の判定に「Telegraf: health が 200」を足す（`outputs.health` に打つ。bind の失敗や restart の上限で止まったものは繋がらないので NG になり、running でも health が落ちているものも NG に入る。設計方針 10 のリスク）
 - health の 8080 は `telegraf.sh` の表示（84 行目）にも出す
 - `.env.example` に置くのは `MDT_PORT` と `HEALTH_PORT` の 2 つだけ。trap（1162）と syslog（5140）のポートは `lab.sh` の REDIRECT と SR Linux の設定に揃えるので変えられず、`TELEGRAF_BIND` は `up.sh` が毎回決める（compose の注と README に書く）
 
@@ -63,7 +63,7 @@ Mac では Splunk のイメージが amd64 だけで起動しないので、**Sp
 
 ### 10. compose の `restart`
 
-- `docker/compose/compose.yaml` の spark の anchor（48 行目）と telegraf（68 行目）の `restart: on-failure` を `restart: on-failure:5` にする（compose の文法。swarm の `deploy.restart_policy` は使わない）。README に「5 回で止まるので `docker compose logs telegraf` を見る」を足す。Docker は回数を戻さないので、止まったものは `check.sh`（Telegraf の running、Spark の 2 項目）が NG にする
+- `docker/compose/compose.yaml` の spark の anchor（48 行目）と telegraf（68 行目）の `restart: on-failure` を `restart: on-failure:5` にする（compose の文法。swarm の `deploy.restart_policy` は使わない）。README に「5 回で止まるので `docker compose logs telegraf` を見る」を足す。Docker は回数を戻さないので、止まったものは `check.sh`（Telegraf の health、Spark の 2 項目）が NG にする
 - Spark の 2 つは**送り先が healthy になるまで起こさない**。送り先が起きる前に始めると POST の再試行（約 12 秒）のあとジョブが終わり、5 回の上限を使い切って止まる（手元の Docker で `restartCount` 0→5、80 秒で `exited` を確認）。splunk（`/sbin/checkstate.sh`。上流のイメージの HEALTHCHECK と同じ。`interval 15s / timeout 30s / retries 5 / start_period 10m`）、opensearch（`/` が 200 か 401。`start_period 5m`）、prometheus（`/-/ready`。`start_period 1m`）に healthcheck を足し、`spark-splunk` は `splunk: {condition: service_healthy}`、`spark-http` は `opensearch` と `prometheus` の同じ条件を `depends_on` に書く。`x-spark` のマージキーは `depends_on` を混ぜないので、Kafka 3 つ（`service_started`）と合わせて各 service に書く
 - その代わり `up.sh`（`docker compose up -d --build`）は Splunk が healthy になるまで戻らない（WSL の x86_64 で 2〜3 分の見込み）。healthy にならなければ `dependency failed to start: container nwc-local-splunk-1 is unhealthy` で止まり、Spark は `Created` のまま残る。README に「`logs splunk` で理由を見て直してから `up.sh` を打ち直す」を書く
 
@@ -93,7 +93,7 @@ Mac では Splunk のイメージが amd64 だけで起動しないので、**Sp
 | `docker/compose/.env.example` | `MDT_PORT` と `HEALTH_PORT`、書式の注（1・4） |
 | `docker/compose/README.md` | 受け口、順番、restart の上限、healthy 待ちと失敗の案内、値は 1 行（2・4・10） |
 | `.gitignore` | `app/containerlab/clab-*/`（3） |
-| `docker/compose/check.sh` | `env_get`（compose に読ませる）、Splunk の理由、Kafka のメッセージ数、Telegraf の running、Spark の 2 項目（2・4・5・6・10） |
+| `docker/compose/check.sh` | `env_get`（compose に読ませる）、Splunk の理由、Kafka のメッセージ数、Telegraf の health、Spark の 2 項目（2・4・5・6・10） |
 | `docker/compose/lab.sh` | `env_get`、`LAB_CMD`（4・9） |
 | `ops/check.sh` | `git ls-files '*.sh'`（7） |
 | `app/containerlab/lab.sh` | render の表示、案内の `LAB_CMD`（8・9） |
@@ -131,7 +131,7 @@ Mac では Splunk のイメージが amd64 だけで起動しないので、**Sp
 
 1. Telegraf 1.40 の `inputs.syslog` の `server` が `udp://203.0.113.1:5140` の形を受けるか → `--test` で確かめる。受けなければ syslog だけ全部で待つことにし、README に書く
 2. Telegraf が lab の bridge より先に上がると bind に失敗する → `up.sh` が bridge を見る。見落とすケース（lab を後から作り直したとき）は README に「`docker compose restart telegraf`」と書く
-3. `restart: on-failure:5` は、`SNMP_AGENTS` が空で 5 回落ちたあと人が気付かないと止まったまま → `check.sh` の telegraf の判定（コンテナが running か）で拾う。その判定が無ければ足す
+3. `restart: on-failure:5` は、`SNMP_AGENTS` が空で 5 回落ちたあと人が気付かないと止まったまま → `check.sh` の telegraf の判定（health が 200 か）で拾う。その判定が無ければ足す
 4. `git ls-files '*.sh'` は worktree の index を見るので、追跡していない新しい `.sh` は見ない。これは今までと同じ範囲（並べたリストも追跡済みだけ）
 5. 43 / 44 / 51（Splunk の応答そのもの）は入れない。WSL でユーザーが Splunk を上げたときに別のサイクルで見る
 6. **Splunk の healthcheck（`/sbin/checkstate.sh`）が WSL で healthy になるかは未確認**（Mac では Splunk が amd64 のエミュレーションになる）。上流のイメージの HEALTHCHECK と `IaC/terraform/aws-managed/pipeline/analytics/splunk.tf` と同じコマンドなので受かる見込みだが、外れると `up.sh` が最長 `start_period 10m + 15s × 5` 止まったあと `dependency failed to start` で失敗し、`spark-splunk` が `Created` のまま残る（README に書いた）。WSL の初回の `up.sh` で `docker compose ps` の health と所要時間を記録し、healthy にならなければ `start_period` か healthcheck の形を直す

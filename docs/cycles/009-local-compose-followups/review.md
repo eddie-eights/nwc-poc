@@ -101,3 +101,98 @@ splunk Up 2 minutes (healthy)
 - Nit 3（`messagesCount` が無い / null で NG に倒れる）: `check.sh` の `cnt` の式を Python で再現 → `{"name":"metrics"}` で `KeyError 'messagesCount'`、`null` で `TypeError`。再現した。NG 側に倒れる（見逃しにならない）ので Nit のまま直さない。最終報告に載せる
 - Nit 4（`up.sh spark-splunk` でも bridge の WARNING）/ Nit 5（IPv4 の検査が `999.1.1.1` を通す）/ Nit 6（test_oss の `ops/check.sh` の検査が弱まった）/ Nit 7（シェルの改行入りの変数）: 読んだだけ。直さない。最終報告に載せる
 - 未解消の Must fix / Should fix: 無し（Should fix 1 は design.md、2 は実測で解消）。実装ファイルはこのラウンドで変えていない。次は完了判定の直前の cold reviewer 2 回目
+
+## Round 2
+
+- 対象: `a5097ab^1..aaf1d5c`（Round 1 で実装ファイルは変えていない。aaf1d5c は design.md と review.md だけ）。実装モデル: opus-5.5（エンジニア2）。レビューモデル: cold reviewer = opus、確認 = fable-5.1（PM）
+- cold reviewer に依頼した（完了判定の直前。1 サイクル 2 回目）。入力は design.md と変更ファイル 16 本のパス、未解消の Must fix「無し」、書き出し先だけ
+- 前ラウンドの Must fix: 無し。Should fix 1（design.md）は aaf1d5c の design.md、Should fix 2（Splunk の healthcheck）は Round 1 の実測（121 秒で healthy）で解消したまま
+- テスト: cold reviewer が worktree で 1 本ずつ実行（下に貼ったとおり `test_local_compose` 121 / `test_lab_debug` 84 / `test_stream` 75 / `test_oss` 171、失敗 0）
+
+### cold reviewer の結果（review-r02.md をそのまま連結）
+
+# 手元の compose の残り 2 件を直す（009）: cold reviewer 2 回目
+
+## サマリ
+
+- 範囲: `git diff a5097ab^1 HEAD` のうち指定の 16 ファイル（`.gitignore`、`app/containerlab/lab.sh`、`app/telegraf/telegraf.conf.in`、`app/telegraf/telegraf.sh`、`docker/compose/{.env.example,README.md,check.sh,compose.yaml,lab.sh,up.sh}`、`docs/development.md`、`ops/check.sh`、`tests/{test_lab_debug,test_local_compose,test_oss,test_stream}.py`）。突き合わせた先は `design.md`（11 項目、Round 1 のあとに現行の設計へ書き直したもの）
+- 差分の大きさ: 16 files changed, 566 insertions(+), 143 deletions(-)
+- 総評: design.md の 11 項目は実装とテストに反映されている。前ラウンドの Must は無く、Should 2 件は解消済み。design.md の 1 か所の書きぶりと実装が違う点と、`check.sh` の health の宛先の決め方に小さなずれがある（どちらも Nit）。Round 1 の Nit 7 件は意図して残したもの。新しく効いてくるものは無いので、ここには再掲しない
+
+### 見た観点 / 見ていない観点
+
+見た観点:
+
+- design.md との整合性。11 項目と「変更するファイル」表、検証方法、リスクを実装と突き合わせた
+- Telegraf のテンプレートの置換。`telegraf.sh` がポートと `TELEGRAF_BIND` を検査してから sed で埋めることを確かめた
+  - ECS は何も渡さないので、既定値のままで振る舞いは変わらない
+  - `IaC/` と `ops/` を grep した。ECS のタスク定義（`*.tf`）に `LOG_PORT` / `TRAP_PORT` / `MDT_PORT` / `HEALTH_PORT` / `TELEGRAF_BIND` を渡す箇所は無い（コメント 1 件だけ）
+  - `app/containerlab/lab.sh` の `TRAP_PORT` / `LOG_PORT` は export されておらず、Telegraf 側へは漏れない
+- `.env` を compose 自身に読ませる方式。`check.sh` / `lab.sh` の `ENV_ALL` と `env_get` を見た
+  - `docker compose --env-file .env.example config --environment` を `docker/compose` で実行した（compose v5.1.3）。rc=0、出力は stdout に 74 行、stderr は 0 行だった
+  - `DOCKER_HOST` が届かない状態でも成功し、daemon は要らない
+- `LAB_CMD` の決め方と `hint` の 3 つ目の引数（`fail-bgp` → `heal-bgp`）
+  - EC2 は `setup.sh:29` が `/usr/local/bin/lab` に置き、`ops/up.sh:944` がそのパスで呼ぶ
+  - ラッパーは `docker/compose/lab.sh` から `LAB_CMD="$0"` を渡す
+- compose の `restart: on-failure:5` と healthcheck と `depends_on`
+  - `docker compose -f docker/compose/compose.yaml --env-file docker/compose/.env.example config | grep -c 'on-failure'` は `4` だった（design.md の検証 10 と一致）
+- `check.sh` の 11 項目（WARN が `ng` を増やさないこと、Spark 2 項目、Telegraf health）
+- `ops/check.sh` の `bash -n` の段
+- テストは自分で走らせた。worktree の根で 1 本ずつ実行した:
+  - `uv run python tests/test_local_compose.py`: `通過 121 / 失敗 0`
+  - `uv run python tests/test_lab_debug.py`: `通過 84 / 失敗 0`
+  - `uv run python tests/test_stream.py`: `通過 75 / 失敗 0`
+  - `uv run python tests/test_oss.py`: `通過 171 / 失敗 0`
+  - 変更した 6 本の sh の `bash -n`: 全部通過
+
+見ていない観点:
+
+- WSL の実機での `up.sh` → `lab.sh up` → `check.sh` の通し（design.md のリスク 6、Splunk の healthcheck の WSL での所要時間）。手元では lab も Splunk も上げていない
+- `/sbin/checkstate.sh` そのものの振る舞い
+- `config --environment` を持つ compose の最低版（design.md のリスク 7。README にも未確認と書いてある）
+- `.env` の実ファイル。読まない決まりなので、`.env.example` だけで確かめた
+- `tests/test_oss.py` の差分のうち、Neo4j に関する部分（008 の範囲で、このサイクルの範囲外）
+
+## Must fix
+
+None
+
+## Should fix
+
+None
+
+## Nit
+
+- [design.md との整合性] 実装と design.md の書きぶりが違う。
+  - 実装: `docker/compose/check.sh:95-100` で足した Telegraf の判定は「Telegraf: health が 200」で、`get - -o /dev/null -w '%{http_code}' "http://$tb:${hp:-8080}/"` を打つ。
+  - design.md: `:34` は「`check.sh` の判定に『Telegraf: コンテナが running』を足す」と書く。`:66`（「`check.sh`（Telegraf の running、Spark の 2 項目）が NG にする」）、`:96`（変更するファイル表の「Telegraf の running」）、`:134`（リスク 3「コンテナが running か」）も同じ前提で書いている。
+  - 起こること: 止まったコンテナは health が届かないので NG になり、目的（bind の失敗や restart の上限で止まった Telegraf を拾う）は果たせている。ただし design.md を読んでテストを足したり判定を探したりすると、`running` の判定は見つからない。逆に、コンテナは running でも health が落ちている場合（ポートの衝突など）も同じ NG に入る。この違いは design.md から読み取れない。
+  - Nit にする理由: 振る舞いは設計の意図を満たしており、ずれているのは文書の言い回しだけだから。
+
+- [runtime] Telegraf health の宛先を決める時点が、bind を決めた時点と違う。
+  - 該当: `docker/compose/check.sh:95-96`。health の宛先 `tb` は「`check.sh` を打った時点で host に `203.0.113.1` があるか」で決まる。一方、Telegraf が待つアドレスは `docker/compose/up.sh:16-18` を打った時点で決まっている。
+  - 起こること: lab を上げて `up.sh` を打つと、Telegraf は `203.0.113.1` だけで待つ。そのあと `lab.sh down` すると、`check.sh` は `127.0.0.1` に打って「繋がらない（docker compose ps -a telegraf が Exited なら …）」を出す。Telegraf は動いているので、案内どおり `ps -a` を見ても `Exited` は出ず、理由が分からない。
+  - 補足: README:84 は「lab を作り直したら `restart telegraf`」としか書いていない。lab が無い状態で `check.sh` を打つこと自体が想定外の使い方なので、害は小さい。
+  - Nit にする理由: lab を落としたままの `check.sh` は他の判定も NG になる状況で、誤るのは案内の文だけだから。
+
+## 良かった点
+
+- `.env` を自前で解釈するのをやめ、`docker compose config --environment` に読ませた。クォート、`$` の展開、シェル変数が勝つ順序が compose と必ず一致する。
+  - 読めないときは compose のエラー（値のかけらを含みうる）を捨てて、汎用の文だけ出す。値が端末に漏れない作りになっている。
+  - `test_local_compose.py` は偽の docker と本物の compose（`docker compose version` が通るとき）の両方でこれを確かめている。
+- `telegraf.sh` は sed に渡す前に、ポート（1〜65535、先頭 0 なし）と `TELEGRAF_BIND`（空か IPv4 の形）を検査している。テンプレートへの注入を防ぎつつ、既定値では ECS の設定を 1 文字も変えない。ECS 側に新しい変数を渡していないことも grep で確かめられた。
+- Spark を送り先の `service_healthy` まで待たせる設計で、ジョブが 5 回の上限を使い切る経路を塞いだ。
+  - 根拠に restartCount の実測（build.md:205）がある。
+  - `x-spark` のマージキーが `depends_on` を混ぜない罠を design.md に書き、Kafka 3 つと合わせて各 service に書いている。
+- `LAB_CMD` で「戻すのは …」の案内を呼び方（`sudo lab` / ラッパー / 直のパス）に合わせた。障害を入れたあとの復旧コマンドを、そのまま貼れる形で出している。
+
+## ユーザーへの質問
+
+None
+
+### PM の確認（Round 2）
+
+- Must fix 0 / Should fix 0 / Nit 2
+- Nit 1（design.md の「Telegraf: コンテナが running」と実装の「health が 200」のずれ）: 読んで確かめた。`check.sh:98` は `judge "Telegraf: health が 200"`、`test_local_compose.py:601` も `TH = "Telegraf: health が 200"`。design.md の 34・66・96・134 行目が「running」のままだった（Round 1 で PM が書き直したときの誤り）。**design.md の 4 か所を「health が 200」に直した**（このラウンドと一緒に commit）。コードとテストは変えていない
+- Nit 2（health の宛先を `check.sh` の時点で決めるので、`lab.sh down` のあとは 127.0.0.1 に打って案内が合わない）: 読んで確かめた。`up.sh:16-18` と `check.sh:95-96` が同じ `ip -o -4 addr show` で別々に判定している。lab を落とした状態の `check.sh` は想定外の使い方で、誤るのは案内の文だけ。直さない。最終報告に載せる
+- 未解消の Must fix / Should fix: 無し。cold reviewer 2 回目まで通ったので、サイクル完了（HTML と BACKLOG はこのあと）
