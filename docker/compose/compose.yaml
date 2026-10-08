@@ -45,10 +45,10 @@ x-spark: &spark
     context: ../../app/spark
     dockerfile: ../../docker/images/spark/Dockerfile
   image: nwc-local-spark
-  # Splunk が起きる前（起動に数分）は HEC への POST が再試行の後に落ちてジョブが終わる。起こし直して checkpoint の続きから読む（ECS のサービスの代わり）。
-  # 5 回で止める（設定の誤りで落ち続けるときに回り続けない。止まったら docker compose logs で見る。docker/compose/README.md）
+  # 送り先が起きる前に始めると、送り先への POST が再試行（約 12 秒）の後に落ちてジョブが終わる。送り先は各 service の depends_on で healthy まで待つ
+  # （マージキーは depends_on を混ぜないので、Kafka も含めて各 service に書く）。起きた後に落ちたら起こし直して checkpoint の続きから読む（ECS のサービスの代わり）。
+  # 5 回で止める（設定の誤りで落ち続けるときに回り続けない。Docker は回数を戻さない。止まると docker/compose/check.sh が NG にする。docker/compose/README.md）
   restart: on-failure:5
-  depends_on: [kafka-1, kafka-2, kafka-3]
 
 x-spark-env: &spark-env
   KAFKA_AUTH: none   # PLAINTEXT（既定の iam は MSK の IAM 認証。spark.tf と同じ）
@@ -138,6 +138,11 @@ services:
       <<: *spark-env
       SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN}   # あれば SSM を読まない（--splunk-token-parameter は要らない）
     volumes: [spark-splunk-ckpt:/opt/spark/work-dir]
+    depends_on:
+      kafka-1: {condition: service_started}
+      kafka-2: {condition: service_started}
+      kafka-3: {condition: service_started}
+      splunk: {condition: service_healthy}
 
   spark-http:
     <<: *spark
@@ -152,6 +157,12 @@ services:
       OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD}
       PROMETHEUS_AUTH: none
     volumes: [spark-http-ckpt:/opt/spark/work-dir]
+    depends_on:
+      kafka-1: {condition: service_started}
+      kafka-2: {condition: service_started}
+      kafka-3: {condition: service_started}
+      opensearch: {condition: service_healthy}
+      prometheus: {condition: service_healthy}
 
   opensearch:
     image: opensearchproject/opensearch:3.9.0
@@ -166,6 +177,13 @@ services:
       OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
     volumes: [opensearch:/usr/share/opensearch/data]
     ports: ["127.0.0.1:9200:9200"]
+    # spark-http が待つ。認証なしの / は起動の途中が 503、使えるようになると 401（security が認証を求める。2026-10-08 に手元の 3.9.0 で確認）
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://localhost:9200/ | grep -Eqx '200|401'"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 5m
 
   prometheus:
     # Spark の remote write を受けるだけ（scrape は無い）。Grafana のデータソースは datasources-oss/prometheus.yaml（uid amp）
@@ -175,6 +193,12 @@ services:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus:/prometheus
     ports: ["127.0.0.1:9090:9090"]
+    healthcheck:   # spark-http が待つ
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 1m
 
   splunk:
     # 上流の splunk/splunk は amd64 だけ（WSL の x86_64 はそのまま。Apple Silicon の Mac はエミュレーションで、未確認）。standalone で app netops_alerts が動く
@@ -198,6 +222,14 @@ services:
       - splunk-var:/opt/splunk/var
     # Web 8000（http）と管理 API 8089（https。./check.sh が検索を打つ）。HEC 8088 は compose のネットワークの中だけ
     ports: ["127.0.0.1:8000:8000", "127.0.0.1:8089:8089"]
+    # spark-splunk が待つ。上流のイメージの HEALTHCHECK と同じ checkstate.sh（Ansible の構成（HEC の token を含む）が終わり、管理 API 8089 が応えれば healthy。
+    # IaC/terraform/aws-managed/pipeline/analytics/splunk.tf も同じ）。起動は WSL の x86_64 で 2〜3 分、Apple Silicon のエミュレーションは未確認なので start_period を長めに取る
+    healthcheck:
+      test: ["CMD-SHELL", "/sbin/checkstate.sh"]
+      interval: 15s
+      timeout: 30s
+      retries: 5
+      start_period: 10m
 
   grafana:
     build:

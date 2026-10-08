@@ -19,5 +19,7 @@ else
   echo "WARNING: lab の管理ネット（${MGMT_GW}）がまだ無いので、Telegraf は WSL の全部のインターフェースで待つ。docker/compose/lab.sh up のあとに docker/compose/up.sh telegraf で ${MGMT_GW} だけに直す" >&2
 fi
 export SNMP_AGENTS GNMI_TARGETS DEVICE_MAP TELEGRAF_BIND
+# Spark の 2 つは送り先（Splunk / OpenSearch / Prometheus）が healthy になるまで起こさない（compose.yaml の depends_on）ので、初回はここで 2〜3 分待つ。
+# healthy にならなければ dependency failed to start で止まる（docker/compose/README.md）
 docker compose up -d --build "$@"
-echo "上げた。通しの確認は docker/compose/check.sh（Splunk は healthy まで 2〜3 分）"
+echo "上げた。通しの確認は docker/compose/check.sh"
