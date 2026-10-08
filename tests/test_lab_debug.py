@@ -266,24 +266,22 @@ def render(sink, **extra):
             return tomllib.load(f), r.stdout, os.listdir(d)
 kafka, _, kafka_files = render(None, KAFKA_BROKERS="b-1.example:9098,b-2.example:9098")
 stdout_conf, out, stdout_files = render("stdout")
-check("SINK の既定は kafka（MSK）。outputs.kafka が 5 つ（metrics / traps / gnmi / logs / mdt）で outputs.file は無い", kafka is not None
-      and len(kafka["outputs"]["kafka"]) == 5 and "file" not in kafka["outputs"] and "aws_config" in kafka_files)
+check("SINK の既定は kafka（MSK）。outputs.kafka が 3 つ（metrics / gnmi / traps。logs と mdt は cycle 012 で外した）で outputs.file は無い", kafka is not None
+      and len(kafka["outputs"]["kafka"]) == 3 and "file" not in kafka["outputs"] and "aws_config" in kafka_files)
 check("SINK=stdout は KAFKA_BROKERS が無くても描け、outputs.kafka が無く outputs.file（stdout / json）だけ。aws_config も書かない",
       stdout_conf is not None and "kafka" not in stdout_conf["outputs"]
       and stdout_conf["outputs"]["file"] == [{"files": ["stdout"], "data_format": "json", "json_timestamp_units": "1s"}]
       and "aws_config" not in stdout_files and "sink: stdout" in out)
-check("入力（SNMP / trap / syslog / gNMI ...）と agent と health は kafka と stdout で同じ",
+check("入力（SNMP / trap / gNMI ...）と agent と health は kafka と stdout で同じ",
       stdout_conf["inputs"] == kafka["inputs"] and stdout_conf["agent"] == kafka["agent"]
       and stdout_conf["outputs"]["health"] == kafka["outputs"]["health"])
 check("stdout の json は MSK に載るもの（outputs.kafka）と同じ形（秒の timestamp）",
       all(o.get("data_format") == "json" and o.get("json_timestamp_units") == "1s" for o in kafka["outputs"]["kafka"]))
 check("知らない SINK と、kafka で KAFKA_BROKERS が無いのは描かずに止まる",
       render("s3")[0] is None and render("kafka")[0] is None)
-_rfc5424, out5424, _ = render("stdout", SYSLOG_STANDARD="RFC5424")
-check("syslog の形式の既定は RFC3164（本番の Cisco IOS）。SYSLOG_STANDARD=RFC5424 で lab の SR Linux 向けになり、ほかの値は描かずに止まる",
-      kafka["inputs"]["syslog"][0]["syslog_standard"] == "RFC3164" and stdout_conf["inputs"]["syslog"][0]["syslog_standard"] == "RFC3164"
-      and _rfc5424 is not None and _rfc5424["inputs"]["syslog"][0]["syslog_standard"] == "RFC5424" and "RFC5424" in out5424
-      and render("stdout", SYSLOG_STANDARD="rfc3164")[0] is None and render("stdout", SYSLOG_STANDARD="")[0] is not None)
+check("Telegraf は syslog も MDT も受けない（syslog は syslog-ng。cycle 012）: inputs.syslog / inputs.cisco_telemetry_mdt が無く、SYSLOG_STANDARD / LOG_PORT / MDT_PORT は見ない",
+      all("syslog" not in c["inputs"] and "cisco_telemetry_mdt" not in c["inputs"] for c in (kafka, stdout_conf))
+      and all(render("stdout", **{k: v})[0] == stdout_conf for k, v in (("SYSLOG_STANDARD", "rfc3164"), ("LOG_PORT", "x"), ("MDT_PORT", "x"))))
 tpl = read("app", "telegraf", "telegraf.conf.in")
 check("telegraf.conf.in の出力の区間は telegraf.sh の SINKS と同じ名前で、開きと閉じが対になる",
       sorted(re.findall(r"^# >>> sink (\w+)", tpl, re.M)) == sorted(re.findall(r"^# <<< sink (\w+)", tpl, re.M))
@@ -291,20 +289,20 @@ check("telegraf.conf.in の出力の区間は telegraf.sh の SINKS と同じ名
 # Kafka の認証（cycle 005）: 既定 iam は MSK の IAM（今まで通り）。none は OSS 版の Kafka（PLAINTEXT）向けに outputs.kafka の IAM の行を消す
 _IAM_KEYS = ("enable_tls", "sasl_mechanism", "sasl_aws_msk_iam_region", "sasl_aws_msk_iam_profile")
 _auth_blks = re.findall(r"^# >>> kafka_auth iam\n(.*?)^# <<< kafka_auth iam\n", tpl, re.M | re.S)
-check("telegraf.conf.in の「>>> kafka_auth iam」の区間は outputs.kafka ごとに 1 つ（5 つ）で、どれも IAM の 4 行だけを囲む",
-      len(_auth_blks) == 5 == tpl.count("# >>> kafka_auth iam") == tpl.count("# <<< kafka_auth iam") == tpl.count("[[outputs.kafka]]")
+check("telegraf.conf.in の「>>> kafka_auth iam」の区間は outputs.kafka ごとに 1 つ（3 つ）で、どれも IAM の 4 行だけを囲む",
+      len(_auth_blks) == 3 == tpl.count("# >>> kafka_auth iam") == tpl.count("# <<< kafka_auth iam") == tpl.count("[[outputs.kafka]]")
       and all([l.split("=", 1)[0].strip() for l in b.splitlines()] == list(_IAM_KEYS) for b in _auth_blks)
       and not re.search(r"^\s*(sasl_|enable_tls)", re.sub(r"^# >>> kafka_auth iam\n.*?^# <<< kafka_auth iam\n", "", tpl, flags=re.M | re.S), re.M))
 _iam, out_iam, iam_files = render(None, KAFKA_BROKERS="b-1.example:9098", KAFKA_AUTH="iam")
 _none, out_none, none_files = render(None, KAFKA_BROKERS="kafka-1.example:9092", KAFKA_AUTH="none")
-check("KAFKA_AUTH の既定は iam: 5 つの outputs.kafka に TLS と MSK の IAM の 4 行があり、aws_config を書く。iam を明示しても同じ。ログに kafka auth は出ない",
+check("KAFKA_AUTH の既定は iam: 3 つの outputs.kafka に TLS と MSK の IAM の 4 行があり、aws_config を書く。iam を明示しても同じ。ログに kafka auth は出ない",
       sh_const(tg_sh, "KAFKA_AUTH") == "${KAFKA_AUTH:-iam}"
       and all(o["enable_tls"] is True and o["sasl_mechanism"] == "AWS-MSK-IAM" and o["sasl_aws_msk_iam_region"] == "ap-northeast-1"
               and o["sasl_aws_msk_iam_profile"] == "default" for o in kafka["outputs"]["kafka"])
       and _iam is not None and _iam["outputs"]["kafka"] == [dict(o, brokers=["b-1.example:9098"]) for o in kafka["outputs"]["kafka"]]
       and "aws_config" in iam_files and "kafka auth" not in out_iam)
 check("KAFKA_AUTH=none は outputs.kafka から TLS と SASL の行だけを消し（ほかのキーは iam と同じ）、aws_config を書かない。ログに kafka auth: none",
-      _none is not None and len(_none["outputs"]["kafka"]) == 5
+      _none is not None and len(_none["outputs"]["kafka"]) == 3
       and all(set(_IAM_KEYS).isdisjoint(o) for o in _none["outputs"]["kafka"])
       and [dict(o, brokers=None) for o in _none["outputs"]["kafka"]]
       == [dict({k: v for k, v in o.items() if k not in _IAM_KEYS}, brokers=None) for o in _iam["outputs"]["kafka"]]
@@ -318,26 +316,25 @@ check("知らない KAFKA_AUTH（plaintext / 大文字の IAM）は描かずに�
 # SNMP のポーリングは既定でする（cycle 002。Grafana の link_down と Splunk の netops_poll が見る）。SNMP_POLL=0 で inputs.snmp を消す（trap だけ）
 _poll, out_poll, _ = render("stdout", SNMP_POLL="1")
 _snmp_blk = tpl.split("# >>> snmp_poll", 1)[1].split("# <<< snmp_poll", 1)[0] if "# >>> snmp_poll" in tpl else ""
-check("telegraf.conf.in の inputs.snmp（ポーリング）は「>>> snmp_poll」〜「<<< snmp_poll」の 1 区間に丸ごと入り、trap / gNMI / syslog は外にある",
+check("telegraf.conf.in の inputs.snmp（ポーリング）は「>>> snmp_poll」〜「<<< snmp_poll」の 1 区間に丸ごと入り、trap / gNMI は外にある",
       tpl.count("# >>> snmp_poll") == 1 and tpl.count("# <<< snmp_poll") == 1 and "[[inputs.snmp]]" in _snmp_blk and "agents = [__SNMP_AGENTS__]" in _snmp_blk
       and tpl.count("[[inputs.snmp]]") == 1 and tpl.count("agents = [__SNMP_AGENTS__]") == 1
       and not any(w in _snmp_blk for w in ("[[inputs.snmp_trap]]", "[[inputs.gnmi]]", "[[inputs.syslog]]", "[[outputs.")))
 _nopoll, out_nopoll, _ = render("stdout", SNMP_POLL="0")
-check("SNMP_POLL の既定は 1: kafka でも stdout でも inputs.snmp がある。SNMP_POLL=0 なら inputs.snmp が無く、trap / gNMI / syslog は残る（ログは snmp poll: off）",
+check("SNMP_POLL の既定は 1: kafka でも stdout でも inputs.snmp がある。SNMP_POLL=0 なら inputs.snmp が無く、trap / gNMI は残る（ログは snmp poll: off）",
       sh_const(tg_sh, "SNMP_POLL") == "${SNMP_POLL:-1}"
       and all(len(c["inputs"]["snmp"]) == 1 for c in (kafka, stdout_conf)) and "snmp poll: off" not in out
       and _nopoll is not None and "snmp" not in _nopoll["inputs"] and len(_nopoll["inputs"]["snmp_trap"]) == 1
-      and len(_nopoll["inputs"]["gnmi"]) == 2 and len(_nopoll["inputs"]["syslog"]) == 1
+      and len(_nopoll["inputs"]["gnmi"]) == 2
       and "snmp poll: off" in out_nopoll)
-check("gNMI は 2 つ（状態と lab の性能メトリクス）で、どちらも GNMI_TARGETS を宛先にする。MDT の受け口（57000/tcp）と Starlark の変換は kafka でも stdout でも入る",
+check("gNMI は 2 つ（状態と lab の性能メトリクス）で、どちらも GNMI_TARGETS を宛先にする。Starlark の変換は kafka でも stdout でも入る（MDT の受け口は cycle 012 で外した）",
       all([g["addresses"] for g in c["inputs"]["gnmi"]] == [["203.0.113.11:57400"]] * 2
-          and c["inputs"]["cisco_telemetry_mdt"] == [{"transport": "grpc", "service_address": ":57000", "tags": {"collector": "mdt"}}]
           and [p["script"] for p in c["processors"]["starlark"]] == ["/etc/telegraf/lab_gnmi.star"]
           and [p["script"] for p in c["aggregators"]["starlark"]] == ["/etc/telegraf/lab_circuits.star"]
           for c in (kafka, stdout_conf))
-      and "mdt: 57000/tcp" in out
-      and [o["topic"] for o in kafka["outputs"]["kafka"]] == ["metrics", "gnmi", "traps", "logs", "mdt"]
-      and kafka["outputs"]["kafka"][-1]["tagpass"] == {"collector": ["mdt"]})
+      and "mdt:" not in out
+      and [o["topic"] for o in kafka["outputs"]["kafka"]] == ["metrics", "gnmi", "traps"]
+      and not any("tagpass" in o for o in kafka["outputs"]["kafka"]))
 check("SNMP_POLL=1 は inputs.snmp を残し、agents を SNMP_AGENTS で埋める（ifName をタグにした interface の表と system）",
       _poll is not None and _poll["inputs"]["snmp"][0]["agents"] == ["udp://203.0.113.11:161", "udp://203.0.113.12:161"]
       and _poll["inputs"]["snmp"][0]["name"] == "system" and _poll["inputs"]["snmp"][0]["table"][0]["name"] == "interface"
@@ -365,19 +362,19 @@ check("telegraf.conf.in の役割の区間は telegraf.sh の ROLES と同じ名
       and sh_const(tg_sh, "TELEGRAF_ROLE") == "${TELEGRAF_ROLE:-all}")
 _out_conf, _out_log, _ = render(None, KAFKA_BROKERS="b-1.example:9098,b-2.example:9098", TELEGRAF_ROLE="dialout", GNMI_TARGETS="", SNMP_AGENTS="")
 _in_conf, _in_log, _ = render(None, KAFKA_BROKERS="b-1.example:9098,b-2.example:9098", TELEGRAF_ROLE="dialin", SNMP_POLL="1")
-check("TELEGRAF_ROLE=dialout は trap / syslog / MDT と syslog の rename だけ（gNMI・SNMP のポーリング・Starlark は無く、GNMI_TARGETS / SNMP_AGENTS は要らない）",
-      _out_conf is not None and sorted(_out_conf["inputs"]) == ["cisco_telemetry_mdt", "snmp_trap", "syslog"]
-      and list(_out_conf["processors"]) == ["rename"] and "aggregators" not in _out_conf
-      and "role: dialout" in _out_log and "mdt: 57000/tcp" in _out_log and "gnmi:" not in _out_log)
-check("TELEGRAF_ROLE=dialin は gNMI 2 つ・SNMP のポーリング（SNMP_POLL=1 のとき）・Starlark だけ（trap / syslog / MDT の受け口は無い）",
+check("TELEGRAF_ROLE=dialout は trap だけ（syslog / MDT と syslog の rename は cycle 012 で外した。gNMI・SNMP のポーリング・Starlark は無く、GNMI_TARGETS / SNMP_AGENTS は要らない）",
+      _out_conf is not None and sorted(_out_conf["inputs"]) == ["snmp_trap"]
+      and "processors" not in _out_conf and "aggregators" not in _out_conf
+      and "role: dialout" in _out_log and "trap: 1162/udp" in _out_log and "mdt:" not in _out_log and "gnmi:" not in _out_log)
+check("TELEGRAF_ROLE=dialin は gNMI 2 つ・SNMP のポーリング（SNMP_POLL=1 のとき）・Starlark だけ（trap の受け口は無い）",
       _in_conf is not None and sorted(_in_conf["inputs"]) == ["gnmi", "snmp"] and len(_in_conf["inputs"]["gnmi"]) == 2
       and list(_in_conf["processors"]) == ["starlark"] and list(_in_conf["aggregators"]) == ["starlark"]
       and "role: dialin" in _in_log and "trap:" not in _in_log and "mdt:" not in _in_log
       and render(None, KAFKA_BROKERS="b-1.example:9098,b-2.example:9098", TELEGRAF_ROLE="dialin", GNMI_TARGETS="")[0] is None)
-check("どの役割でも出力（Kafka の 5 つと health）は同じ。知らない TELEGRAF_ROLE は描かずに止まる。既定（all）は両方の入力を持つ",
+check("どの役割でも出力（Kafka の 3 つと health）は同じ。知らない TELEGRAF_ROLE は描かずに止まる。既定（all）は両方の入力を持つ",
       all(c["outputs"] == kafka["outputs"] and c["agent"] == kafka["agent"] for c in (_out_conf, _in_conf))
       and render("stdout", TELEGRAF_ROLE="dial-in")[0] is None and render("stdout", TELEGRAF_ROLE="")[0] is not None
-      and "role: all" in out and {"snmp_trap", "syslog", "cisco_telemetry_mdt", "gnmi"} <= set(stdout_conf["inputs"]))
+      and "role: all" in out and set(stdout_conf["inputs"]) == {"snmp", "snmp_trap", "gnmi"})
 _tg_out = [_tg_test(c, TELEGRAF_ROLE="dialout", GNMI_TARGETS="") for c in ("test", "gnmi")]
 check("受ける側（dialout）のタスクで tg test / tg gnmi を打つと、取りにいく側（telegraf-dialin）で打つよう言って止まる",
       all(r.returncode == 1 and "telegraf-dialin" in r.stderr and "telegraf: command not found" not in r.stderr for r in _tg_out))
@@ -400,10 +397,10 @@ check("lab の認証情報（containerlab の既定）は lab.sh と lab-common.
 check("trap のポートは lab.sh と telegraf.sh で同じ（機器は 162 に送り、デバッグ用の EC2 は REDIRECT で Telegraf の待つポートへ）",
       "${TRAP_PORT:-" + sh_const(lab_sh, "TRAP_PORT") + "}" == sh_const(tg_sh, "TRAP_PORT") == "${TRAP_PORT:-1162}"
       and re.search(r'iptables -t nat -I PREROUTING 1 -s "\$MGMT" -d "\$MGMT_GW" -p udp --dport 162 "\$\{c\[@\]\}" -j REDIRECT --to-ports "\$TRAP_PORT"', lab_sh) is not None)
-check("syslog のポートも lab.sh と telegraf.sh で同じ", "${LOG_PORT:-" + sh_const(lab_sh, "LOG_PORT") + "}" == sh_const(tg_sh, "LOG_PORT") == "${LOG_PORT:-5140}")
-check("lab の SR Linux の syslog の形式は lab.sh の LOG_STANDARD = lab-common.sh の LAB_SYSLOG_STANDARD = RFC5424（Telegraf の既定 RFC3164 を上書きする）",
-      sh_const(lab_sh, "LOG_STANDARD") == sh_const(common, "LAB_SYSLOG_STANDARD") == "RFC5424"
-      and sh_const(tg_sh, "SYSLOG_STANDARD") == "${SYSLOG_STANDARD:-RFC3164}")
+check("syslog は Telegraf が受けない（telegraf.sh に LOG_PORT / SYSLOG_STANDARD が無い。syslog-ng が受ける。cycle 012）。lab.sh の LOG_PORT は SR Linux の送り先のポートとして 5140 のまま",
+      sh_const(lab_sh, "LOG_PORT") == "5140" and sh_const(tg_sh, "LOG_PORT") is None and sh_const(tg_sh, "SYSLOG_STANDARD") is None)
+check("lab の SR Linux の syslog の形式は lab.sh の LOG_STANDARD = lab-common.sh の LAB_SYSLOG_STANDARD = RFC5424",
+      sh_const(lab_sh, "LOG_STANDARD") == sh_const(common, "LAB_SYSLOG_STANDARD") == "RFC5424")
 check("lab.sh telegraf run は同じイメージを host ネットワークで SINK=stdout で起こし、ポーリング先は up.sh と同じ lab_topology.py から作る",
       re.search(r"docker run -d --name \"\$TG\" --restart unless-stopped --network host [^\n]*\\\n\s*-e SINK=stdout -e SYSLOG_STANDARD=\"\$LOG_STANDARD\" -e SNMP_POLL=\"\$\{SNMP_POLL:-0\}\" -e AWS_REGION -e SNMP_AGENTS=\"\$agents\" -e GNMI_TARGETS=\"\$gnmi\" \\\n\s*-e GNMI_USERNAME=\"\$GNMI_USERNAME\" -e GNMI_PASSWORD=\"\$GNMI_PASSWORD\" -e SNMP_COMMUNITY=\"\$SNMP_COMMUNITY\" \"\$TELEGRAF_IMAGE\" run", lab_sh) is not None
       and "python3 lab_topology.py . --snmp-agents" in lab_sh and "python3 lab_topology.py . --gnmi-targets" in lab_sh
@@ -473,10 +470,11 @@ _tag_calls = [m for n in ("lab-common.sh", "up-common.sh", "up.sh") for m in re.
     + [m for n in ("up.sh", "oss-images.sh") for m in re.findall(r'^[^#\n]*?\bdir_tag "\$\w+" ([^)\n;]*)', read("oss", "ops", n), re.M)]
 _tag_df = [re.fullmatch(r'(?:app/([\w-]+)|"\$NAUTOBOT_CTX") docker/images/([\w-]+)/Dockerfile\s*', c) for c in _tag_calls]
 _builds = "".join(read(*p) for p in (("ops", "lab-common.sh"), ("ops", "up-common.sh"), ("oss", "ops", "oss-images.sh")))
-check("dir_tag の呼び元 8 か所は、どれも docker build の -f と同じ docker/images/<名前>/Dockerfile を渡す（context が app/<名前>/ ならその名前と同じ）",
-      len(_tag_calls) == 8 and all(_tag_df)
+check("dir_tag の呼び元 10 か所は、どれも docker build の -f と同じ docker/images/<名前>/Dockerfile を渡す（context が app/<名前>/ ならその名前と同じ。"
+      "syslog-ng は cycle 012 で ops/up.sh と oss/ops/up.sh に足した）",
+      len(_tag_calls) == 10 and all(_tag_df)
       and all(m.group(1) in (None, m.group(2)) for m in _tag_df)
-      and {m.group(2) for m in _tag_df} == {"telegraf", "splunk", "grafana", "nautobot", "spark", "neo4j"}
+      and {m.group(2) for m in _tag_df} == {"telegraf", "splunk", "grafana", "nautobot", "spark", "neo4j", "syslog-ng"}
       and all(f"-f docker/images/{m.group(2)}/Dockerfile " in _builds for m in _tag_df))
 
 # ---- lab.sh graph / graph-stop（cycle 010。containerlab graph を 127.0.0.1:50080 で裏に起こし、手元のポートフォワードで開く）

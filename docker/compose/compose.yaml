@@ -9,6 +9,7 @@
 #   Kafka / Kafbat UI / OpenSearch  oss/ops/oss-images.sh
 #   Telegraf                        ops/lab-common.sh の TELEGRAF_VERSION
 #   Grafana / Splunk                ops/up-common.sh の GRAFANA_VERSION / SPLUNK_VERSION
+#   syslog-ng / GoFlow2             ops/up-common.sh の SYSLOG_NG_VERSION / GOFLOW2_TAG
 #   Prometheus                      この構成にしか無いので、ここが正
 # プロジェクト名を決める（無いとディレクトリ名の compose になり、ほかの compose という名前の構成と volume の名前 compose_* がぶつかる。down.sh -v で相手のも消える）
 name: nwc-local
@@ -57,9 +58,10 @@ x-spark-env: &spark-env
 
 services:
   telegraf:
-    # host のネットワークで受ける（SR Linux は trap と syslog を管理ネットの GW 203.0.113.1 = WSL へ送る）。trap の 162/udp → 1162/udp は ./lab.sh up の forward が iptables で向ける。
-    # 待つポート: syslog 5140/udp、trap 1162/udp、MDT 57000/tcp（.env の MDT_PORT）、ヘルスチェック 8080/tcp（.env の HEALTH_PORT）。host の他のプロセスとぶつかると起きない。
-    # trap と syslog のポートは lab（app/containerlab/lab.sh の TRAP_PORT / LOG_PORT と SR Linux の remote-port）と揃えるので変えない。
+    # host のネットワークで受ける（SR Linux は trap を管理ネットの GW 203.0.113.1 = WSL へ送る）。trap の 162/udp → 1162/udp は ./lab.sh up の forward が iptables で向ける。
+    # 待つポート: trap 1162/udp、ヘルスチェック 8080/tcp（.env の HEALTH_PORT）。host の他のプロセスとぶつかると起きない。
+    # trap のポートは lab（app/containerlab/lab.sh の TRAP_PORT と SR Linux の remote-port）と揃えるので変えない。
+    # syslog は syslog-ng、NetFlow / sFlow は GoFlow2 が受ける。MDT の受け口は外した（cycle 012）
     # 待つアドレスは ./up.sh が TELEGRAF_BIND に渡す（lab の bridge があれば 203.0.113.1 だけ、無ければ空 = 全部のインターフェース）
     build:
       context: ../../app/telegraf
@@ -76,18 +78,51 @@ services:
       KAFKA_AUTH: none
       KAFKA_BROKERS: localhost:9094,localhost:9095,localhost:9096
       TELEGRAF_ROLE: all
-      SYSLOG_STANDARD: RFC5424   # ops/lab-common.sh の LAB_SYSLOG_STANDARD
       SNMP_POLL: "1"
       AWS_REGION: ap-northeast-1   # telegraf.sh が必須にしている（KAFKA_AUTH=none では使わない）
       SNMP_AGENTS: ${SNMP_AGENTS:-}
       GNMI_TARGETS: ${GNMI_TARGETS:-}
       TELEGRAF_BIND: ${TELEGRAF_BIND:-}
-      MDT_PORT: ${MDT_PORT:-57000}
       HEALTH_PORT: ${HEALTH_PORT:-8080}
       # lab の SR Linux だけの公開の既定値（ops/lab-common.sh の LAB_GNMI_USERNAME / LAB_GNMI_PASSWORD / LAB_SNMP_COMMUNITY）
       GNMI_USERNAME: admin
       GNMI_PASSWORD: NokiaSrl1!
       SNMP_COMMUNITY: public
+
+  syslog-ng:
+    # 機器の syslog を host のネットワークの 5140/udp で受けて Kafka の logs へ（cycle 012。docker/images/syslog-ng/Dockerfile。SR Linux は管理ネットの GW 203.0.113.1:5140 へ送る）。
+    # 同じ番号の 5140/tcp も待つ（ECS では NLB のヘルスチェックの口）。待つアドレスは Telegraf と同じく ./up.sh の TELEGRAF_BIND。lab の SR Linux は RFC 5424 で送る
+    build:
+      context: ../../app/syslog-ng
+      dockerfile: ../../docker/images/syslog-ng/Dockerfile
+      args:
+        SYSLOG_NG_VERSION: 4.29.0
+    image: nwc-local-syslog-ng
+    network_mode: host
+    restart: on-failure:5
+    depends_on: [kafka-1, kafka-2, kafka-3]
+    environment:
+      KAFKA_AUTH: none
+      KAFKA_BROKERS: localhost:9094,localhost:9095,localhost:9096
+      SYSLOG_STANDARD: RFC5424
+      SYSLOG_BIND: ${TELEGRAF_BIND:-}
+
+  goflow2:
+    # NetFlow（2055/udp）と sFlow（6343/udp）を host のネットワークで受けて Kafka の flows へ JSON で書く（cycle 012）。lab の SR Linux は NetFlow を出さないので、
+    # 試すときは tools/netflow_send.py で 1 つ送る。/metrics は 8081/tcp（8080 は Telegraf の health）。待つアドレスは Telegraf と同じく ./up.sh の TELEGRAF_BIND。
+    # Kafka が受け付ける前に起きると 1 秒ほどで終わる（終了コード 1）ので、起こし直す。回数はほかの 5 回より多い 10 回: 5 回では Kafka を 9 秒しか待てず
+    # （Mac で Kafka が受け付けるまで約 5 秒、そのあいだに 4 回起こし直した）、10 回なら起こし直しの間隔が倍々に延びて約 110 秒待つ（2026-10-08 に Kafka の無い宛先で測った）
+    image: netsampler/goflow2:v2.2.7
+    network_mode: host
+    restart: on-failure:10
+    depends_on: [kafka-1, kafka-2, kafka-3]
+    command:
+      - -listen=netflow://${TELEGRAF_BIND:-}:2055,sflow://${TELEGRAF_BIND:-}:6343
+      - -transport=kafka
+      - -transport.kafka.brokers=localhost:9094,localhost:9095,localhost:9096
+      - -transport.kafka.topic=flows
+      - -format=json
+      - -addr=${TELEGRAF_BIND:-}:8081
 
   kafka-1:
     image: apache/kafka:4.3.1
@@ -131,7 +166,7 @@ services:
     <<: *spark
     command: [/opt/spark/bin/spark-submit, --master, "local[*]", --driver-memory, 1024m, /opt/nwc/snmp_sinks.py,
               --bootstrap, "kafka-1:9092,kafka-2:9092,kafka-3:9092", --checkpoint, "file:///opt/spark/work-dir/checkpoint",
-              --sinks, splunk, --region, ap-northeast-1, --metric-topics, "metrics,gnmi,mdt", --log-topics, "traps,logs",
+              --sinks, splunk, --region, ap-northeast-1, --metric-topics, "metrics,gnmi", --log-topics, "traps,logs,flows",
               --device-map, "${DEVICE_MAP:-}",
               --splunk-hec-url, "https://splunk:8088", --splunk-skip-verify]
     environment:
@@ -148,7 +183,7 @@ services:
     <<: *spark
     command: [/opt/spark/bin/spark-submit, --master, "local[*]", --driver-memory, 1024m, /opt/nwc/snmp_sinks.py,
               --bootstrap, "kafka-1:9092,kafka-2:9092,kafka-3:9092", --checkpoint, "file:///opt/spark/work-dir/checkpoint",
-              --sinks, "opensearch,prometheus", --region, ap-northeast-1, --metric-topics, "metrics,gnmi,mdt", --log-topics, "traps,logs",
+              --sinks, "opensearch,prometheus", --region, ap-northeast-1, --metric-topics, "metrics,gnmi", --log-topics, "traps,logs,flows",
               --device-map, "${DEVICE_MAP:-}",
               --opensearch-endpoint, "http://opensearch:9200", --opensearch-index, snmp-logs, --prometheus-url, "http://prometheus:9090/api/v1/write"]
     environment:

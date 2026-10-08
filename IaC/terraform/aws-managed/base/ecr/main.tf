@@ -1,5 +1,5 @@
 # ECR repositories of nwc-poc. The agent image, the three lab images (srlinux / multitool / trex, amd64 for the x86_64 lab EC2),
-# the two workflow images (worker / temporal) and the five ECS images of the pipeline (telegraf / grafana / splunk / nautobot / redis) go here.
+# the two workflow images (worker / temporal) and the seven ECS images of the pipeline (telegraf / syslog-ng / goflow2 / grafana / splunk / nautobot / redis) go here.
 # ops/up.sh pushes them in step 2.
 # force_delete = true so that `terraform destroy` removes the repositories together with their images (daily ops/down.sh).
 
@@ -13,10 +13,10 @@ locals {
 locals {
   lab_repositories      = var.create_lab_repositories ? toset(["srlinux", "multitool", "trex"]) : toset([])
   workflow_repositories = var.create_workflow_repositories ? toset(["worker", "temporal"]) : toset([])
-  # パイプラインの 6 つ（Telegraf は pipeline/stream の ECS、Kafbat UI は Web の EC2 の Docker（cycle 010。base/core の web_user_data）、
-  # Grafana と Splunk は pipeline/analytics、Nautobot とその Redis は pipeline/nautobot）。
+  # パイプラインの 8 つ（Telegraf・syslog-ng・GoFlow2 は pipeline/stream の ECS、Kafbat UI は Web の EC2 の Docker（cycle 010。base/core の web_user_data）、
+  # Grafana と Splunk は pipeline/analytics、Nautobot とその Redis は pipeline/nautobot）。syslog-ng と GoFlow2 は cycle 012 で足した
   # リポジトリに時間課金は無いので、いつも作る
-  pipeline_repositories = toset(["telegraf", "kafka-ui", "grafana", "splunk", "nautobot", "redis"])
+  pipeline_repositories = toset(["telegraf", "kafka-ui", "syslog-ng", "goflow2", "grafana", "splunk", "nautobot", "redis"])
   # OSS 版（IaC/terraform/oss。var.project = nwc-oss。cycle 005）だけのイメージ。kafka（apache/kafka）・opensearch・vminsert / vmselect / vmstorage
   # （VictoriaMetrics のクラスター版）は公開イメージをそのまま写し、spark（Spark 3.5 と app/spark/ のジョブ）と neo4j（Neo4j と GDS）は ops がビルドする。
   # マネージド版では空（リポジトリを作らない）

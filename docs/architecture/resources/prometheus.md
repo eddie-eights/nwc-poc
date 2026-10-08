@@ -12,7 +12,7 @@
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
 | ワークスペース | alias `<prefix>-metrics`。1 つ | `IaC/terraform/aws-managed/pipeline/analytics/sinks.tf` の `aws_prometheus_workspace.metrics` |
-| 入るもの | MSK の `metrics` / `gnmi` / `mdt` のトピックの数値。メトリクス名の頭に `snmp_` が付く（例: `snmp_interface_ifOperStatus`、`snmp_bgp_neighbor_session_up`、`snmp_isis_interface_oper_up`） | `app/spark/snmp_sinks.py` |
+| 入るもの | MSK の `metrics` / `gnmi` のトピックの数値。メトリクス名の頭に `snmp_` が付く（例: `snmp_interface_ifOperStatus`、`snmp_bgp_neighbor_session_up`、`snmp_isis_interface_oper_up`） | `app/spark/snmp_sinks.py` |
 | ラベル | Telegraf の tags と `__name__` だけ。`event_id` と Kafka の位置は入れない | `app/spark/snmp_sinks.py` |
 | 書き方 | Spark の remote write（protobuf + snappy を自前で組む）、SigV4 | `app/spark/snmp_sinks.py` |
 | スイッチ | `STORES` の `grafana`（OpenSearch のログ用コレクションと Grafana と一緒に作る） | `deploy.env.example` |

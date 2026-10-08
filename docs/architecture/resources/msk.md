@@ -4,8 +4,8 @@
 
 ## ひとことで
 
-Telegraf が集めた機器のデータを、いったんためておく Kafka（Amazon MSK の Provisioned）。
-書くのは Telegraf、読むのは Spark。ためるのは 24 時間で、履歴の置き場ではない。
+Telegraf・syslog-ng・GoFlow2 が集めた機器のデータを、いったんためておく Kafka（Amazon MSK の Provisioned）。
+書くのは Telegraf・syslog-ng・GoFlow2、読むのは Spark。ためるのは 24 時間で、履歴の置き場ではない。
 
 ## このプロジェクトでの使い方
 
@@ -14,7 +14,8 @@ Telegraf が集めた機器のデータを、いったんためておく Kafka�
 | クラスター | `<prefix>-stream`。KRaft（ZooKeeper なし）、Kafka `4.1.x.kraft` | `IaC/terraform/aws-managed/pipeline/stream/msk.tf`、変数 `kafka_version` |
 | ブローカー | `kafka.m5.large`（ほかに選べるのは `kafka.m7g.large`）、1 AZ に 1 台、EBS 10 GB | 変数 `broker_instance_type`、`msk.tf` |
 | AZ の数 | `MSK_AZ_NUM`（既定 2、2〜3）。ブローカーの数と同じ | `ops/up.sh`、変数 `msk_az_num` |
-| 認証と暗号 | IAM 認証だけ（9098）。クライアントとの間もブローカー同士も TLS | `msk.tf` の `client_authentication`、`encryption_info` |
+| 認証と暗号 | IAM 認証（9098）と SASL/SCRAM（9096。syslog-ng と GoFlow2 だけ。2026-10-08 から）。クライアントとの間もブローカー同士も TLS | `msk.tf` の `client_authentication`、`encryption_info` |
+| SCRAM の資格情報 | Secrets Manager の `AmazonMSK_<prefix>-collectors`（名前は `AmazonMSK_` で始める決まり）。顧客管理の KMS の鍵 `alias/<prefix>-msk-scram` で暗号化する（MSK は既定の鍵の secret を受け付けない）。`ops/up.sh` が stream の apply の前に作り、`ops/down.sh` が消す（鍵は 7 日の削除の予約） | `ops/up-common.sh` の `ensure_msk_scram_key` / `ensure_msk_scram_secret`、`ops/down-common.sh` の `delete_msk_scram`、`msk.tf` の `aws_msk_scram_secret_association` |
 | ブローカーの設定 | `auto.create.topics.enable=true`、`default.replication.factor` = ブローカーの数、`min.insync.replicas` = その 1 つ下、`num.partitions=2`、`log.retention.hours=24` | `msk.tf` の `aws_msk_configuration` |
 | ブローカーのログ | CloudWatch Logs のロググループ `/<prefix>/msk`、保存 7 日 | 変数 `log_retention_days`、`msk.tf` |
 | スイッチ | `PIPELINE=1` で作る。`SKIP_STREAM=1` で作らない（analytics も作らない） | `deploy.env.example` |
@@ -22,19 +23,20 @@ Telegraf が集めた機器のデータを、いったんためておく Kafka�
 
 トピックと中身:
 
-| トピック | 入っているもの | 書く Telegraf |
+| トピック | 入っているもの | 書くもの |
 |---|---|---|
-| `metrics` | SNMP のポーリングの結果（measurement `system` / `interface` など。IF の状態とカウンタ）。`SNMP_POLL=0` では空 | 取りにいく側 |
-| `gnmi` | gNMI の購読（BGP のセッション、IS-IS の IF などの on_change とサンプル） | 取りにいく側 |
-| `mdt` | Cisco の MDT の dial-out（本番向け。lab からは来ない） | 受ける側 |
-| `traps` | SNMP の trap（linkDown / linkUp など） | 受ける側 |
-| `logs` | 機器の syslog | 受ける側 |
+| `metrics` | SNMP のポーリングの結果（measurement `system` / `interface` など。IF の状態とカウンタ）。`SNMP_POLL=0` では空 | Telegraf の取りにいく側 |
+| `gnmi` | gNMI の購読（BGP のセッション、IS-IS の IF などの on_change とサンプル） | Telegraf の取りにいく側 |
+| `traps` | SNMP の trap（linkDown / linkUp など） | Telegraf の受ける側 |
+| `logs` | 機器の syslog（measurement `device_log`） | syslog-ng（2026-10-08 までは Telegraf の受ける側） |
+| `flows` | 機器の NetFlow / sFlow（GoFlow2 の JSON のまま。Spark が共通の形に読み替える） | GoFlow2（2026-10-08 から） |
 
 ## つながり
 
 | 相手 | 向き | ポートと認証 |
 |---|---|---|
 | Telegraf（受ける側 / 取りにいく側） | Telegraf → MSK | 9098/tcp、SASL_SSL + AWS_MSK_IAM。タスクロール `<prefix>-telegraf-task` |
+| syslog-ng / GoFlow2（ECS） | → MSK | 9096/tcp、SASL_SSL + SCRAM-SHA-512。ユーザー名とパスワードは ECS の secrets で Secrets Manager からタスクの環境変数に入る（実行ロール `<prefix>-syslog-ng-exec` / `<prefix>-goflow2-exec`） |
 | Spark（EMR Serverless） | Spark ← MSK | 9098/tcp、同じ認証。ジョブの実行ロール |
 | ブローカー同士 | MSK ↔ MSK | 9092〜9098/tcp |
 | Kafbat UI（Web の EC2 の Docker） | Web → MSK | 9098/tcp、同じ認証。Web の EC2 のロール（stream が足すポリシー `<prefix>-kafka-ui`）は、トピックの読み書き・作成・変更・削除と、グループを見ることまで |

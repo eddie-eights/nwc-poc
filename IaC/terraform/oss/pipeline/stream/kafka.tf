@@ -9,7 +9,7 @@
 # 1 つのサービスで 3 タスクにすると、番号と置き場をタスクごとに固定できない。台 N はサブネットの N 番目（a / b / c。AZ ごとに 1 台）。
 # 名前は Cloud Map の kafka-N.<接頭辞>-stream.internal（名前空間もこのファイル。cycle 010 で Kafbat UI が Web の EC2 に移り、マネージド版から名前空間が無くなった）。
 # 認証は無い（クライアントは PLAINTEXT の 9092、controller は 9093）。
-# 届くのは SG で絞った相手だけ（IaC/terraform/aws-managed/base/core の oss.tf の通信の表: Telegraf の 2 つ・Spark・Web の EC2（Kafbat UI）→ 9092、
+# 届くのは SG で絞った相手だけ（IaC/terraform/aws-managed/base/core の oss.tf の通信の表: Telegraf の 2 つ・syslog-ng・GoFlow2・Spark・Web の EC2（Kafbat UI）→ 9092、
 # Kafka どうし 9092〜9093、Kafka → EFS 2049）。
 # イメージは apache/kafka を ECR の <接頭辞>-kafka に写したもの（閉域で Docker Hub に届かない。OSS 版の ops/up.sh が写す）。
 # CLUSTER_ID は 3 台で同じ値で、OSS 版の ops/up.sh が 1 回だけ作って SSM の /<接頭辞>/kafka/cluster-id（String か SecureString）に置く。
@@ -96,6 +96,11 @@ locals {
   kafka_bootstrap_brokers = join(",", [for n, h in local.kafka_hosts : "${h}:9092"])
   # Kafbat UI はプロトコルで選ぶ（kafka_ui.tf）。認証が無いので PLAINTEXT だけ（oss.auto.tfvars の kafka_ui_security_protocol）
   kafka_bootstrap_by_protocol = { PLAINTEXT = local.kafka_bootstrap_brokers }
+  # syslog-ng と GoFlow2（collectors.tf）の口。マネージド版の SCRAM（secret・KMS・association）は OSS 版には無く、認証なしの 9092 に書く
+  kafka_collector_brokers              = local.kafka_bootstrap_brokers
+  kafka_collector_auth                 = "none"
+  kafka_collector_secrets              = []
+  kafka_collector_execution_statements = []
   # Telegraf のタスクの環境変数に足す。telegraf.sh が outputs.kafka の IAM 認証の行を消し、aws_config も書かない
   kafka_client_environment = [{ name = "KAFKA_AUTH", value = "none" }]
   # Telegraf のタスクロールに足す Kafka の権限。認証が無いので無い
@@ -110,7 +115,7 @@ locals {
   # IAM ロールと Cloud Map の名前空間の description（名前空間の description は変えると作り直しになるので、cycle 010 より前のまま）
   kafka_descriptions = {
     namespace     = "Kafka and Kafbat UI of ${local.name_prefix} (IaC/terraform/oss/pipeline/stream)"
-    telegraf_task = "Telegraf task - write SNMP / gNMI / trap / syslog / MDT to Kafka (PLAINTEXT, no IAM), ECS Exec"
+    telegraf_task = "Telegraf task - write SNMP / gNMI / trap to Kafka (PLAINTEXT, no IAM), ECS Exec"
   }
 }
 
