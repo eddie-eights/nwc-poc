@@ -5,7 +5,8 @@ aws / terraform / docker は偽物（下の FAKE_*）に差し替え、AWS に�
      いちばん紛らわしい OWNER=x-nwc-oss のマネージド版（接頭辞 x-nwc-oss-nwc-poc。OSS 版の x-nwc-oss と頭が同じ）を同じアカウントに並べて確かめる。
      逆向き（ops/down.sh が OSS 版に触らない）も見る。消したあとに残っているもの（Project タグ）を数えて出す
   3. stream が消えなかったときは Kafka の CLUSTER_ID を残し、残りのルートは消しにいき、終了コード 1 で消えなかったルートを出す
-  4. イメージの名前と版が oss/compose/（正）・docker/images/spark/ と docker/images/neo4j/ の Dockerfile・terraform の既定値・ECR のリポジトリに合い、
+  4. イメージの名前と版が oss/ops/oss-images.sh（正）・docker/images/spark/ と docker/images/neo4j/ の Dockerfile・terraform の既定値・
+     手元の docker/compose/compose.yaml・ECR のリポジトリに合い、
      mirror_oss_images が ECR に無いものだけを写す（spark / neo4j は app/spark/・app/neo4j/ を context に、docker/images/<名前>/Dockerfile でビルドする）
   5. ensure_secret の kafka-cluster-id（KRaft の CLUSTER_ID の形）と strong-password（OpenSearch の admin。値は画面に出さない）と、
      oss/ops/ が ops/ の関数を写さず読むこと、up.sh がマネージド版と同じ 9 つのルートを当て、Splunk のイメージと SSM をマネージド版と同じ関数で用意すること
@@ -631,18 +632,18 @@ def tf_default_early(path, var):
     m = re.search(rf'variable\s+"{var}"\s*\{{[^}}]*?default\s*=\s*"([^"]+)"', read(path), re.S)
     return m and m.group(1)
 V = {k: q or b for k, q, b in re.findall(r'^(OSS_[A-Z0-9_]+)=(?:"([^"]*)"|(\S*))', img_sh, re.M)}
-compose_images = set(re.findall(r"^\s*image:\s*(\S+)", read("oss/compose/compose.yaml"), re.M))
-check("oss-images.sh の公開イメージ（kafka / kafka-ui / opensearch / VictoriaMetrics の 3 つ）は oss/compose/compose.yaml の image: と同じ版",
+compose_images = set(re.findall(r"^\s*image:\s*(\S+)", read("docker/compose/compose.yaml"), re.M))
+check("oss-images.sh の公開イメージのうち手元の compose にもあるもの（kafka / kafka-ui / opensearch）は docker/compose/compose.yaml の image: と同じ版",
       {f'{V["OSS_KAFKA_IMAGE"]}:{V["OSS_KAFKA_TAG"]}', f'{V["OSS_KAFKA_UI_IMAGE"]}:{V["OSS_KAFKA_UI_TAG"]}',
-       f'{V["OSS_OPENSEARCH_IMAGE"]}:{V["OSS_OPENSEARCH_TAG"]}'}
-      | {f'victoriametrics/{n}:{V["OSS_VM_TAG"]}' for n in ("vmstorage", "vminsert", "vmselect")} <= compose_images)
-check("ビルドする spark / neo4j の版は docker/images/spark/・docker/images/neo4j/ の Dockerfile の ARG の既定値と同じで、oss/compose/<名前>/Dockerfile の FROM とも同じ",
+       f'{V["OSS_OPENSEARCH_IMAGE"]}:{V["OSS_OPENSEARCH_TAG"]}'} <= compose_images)
+check("OpenSearch と VictoriaMetrics の版は IaC/terraform/oss/pipeline/analytics/ の opensearch_image_tag・victoriametrics_image_tag の既定値と同じ",
+      tf_default_early("IaC/terraform/oss/pipeline/analytics/opensearch.tf", "opensearch_image_tag") == V["OSS_OPENSEARCH_TAG"]
+      and tf_default_early("IaC/terraform/oss/pipeline/analytics/victoriametrics.tf", "victoriametrics_image_tag") == V["OSS_VM_TAG"])
+check("ビルドする spark / neo4j の版は docker/images/spark/・docker/images/neo4j/ の Dockerfile の ARG の既定値と同じで、FROM はその ARG を使う",
       re.search(rf'^ARG SPARK_VERSION={re.escape(V["OSS_SPARK_VERSION"])}\s*$', read("docker/images/spark/Dockerfile"), re.M)
       and re.search(r'^FROM apache/spark:\$\{SPARK_VERSION\}-java17-python3\s*$', read("docker/images/spark/Dockerfile"), re.M)
       and re.search(rf'^ARG NEO4J_VERSION={re.escape(V["OSS_NEO4J_VERSION"])}\s*$', read("docker/images/neo4j/Dockerfile"), re.M)
-      and re.search(r'^FROM neo4j:\$\{NEO4J_VERSION\}-community\s*$', read("docker/images/neo4j/Dockerfile"), re.M)
-      and re.search(rf'^FROM apache/spark:{re.escape(V["OSS_SPARK_VERSION"])}-java17-python3\s*$', read("oss/compose/spark/Dockerfile"), re.M)
-      and re.search(rf'^FROM neo4j:{re.escape(V["OSS_NEO4J_VERSION"])}-community\s*$', read("oss/compose/neo4j/Dockerfile"), re.M))
+      and re.search(r'^FROM neo4j:\$\{NEO4J_VERSION\}-community\s*$', read("docker/images/neo4j/Dockerfile"), re.M))
 check("Neo4j の版は IaC/terraform/oss/pipeline/graph/neo4j.tf の neo4j_image_tag の既定値と同じ",
       tf_default_early("IaC/terraform/oss/pipeline/graph/neo4j.tf", "neo4j_image_tag") == V["OSS_NEO4J_VERSION"])
 def tf_default(path, var):

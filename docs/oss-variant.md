@@ -4,7 +4,7 @@
 
 - **いまの構成は、できる限り AWS のマネージドサービスで作る。**自分で立てるのは、マネージドに相当するものが無いか、このアカウントで使えないものだけ（下の表の「自分で立てているもの」）。
 - **最終的には、いまの構成とは別に、マネージドの部分を OSS に置き換えた版も作る。**いまの構成を書き換えるのではなく、並べて持つ。
-- OSS 版は、手元のコンテナ（`oss/compose/`）での確認と、terraform と ops の実装（`oss/`）が済み、2026-10-07 に AWS で 1 回立てて動作を確かめた（結果は下の「AWS で確かめたこと」）。置き換え先は下の表。設計は [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md)。
+- OSS 版は、手元のコンテナでの確認（005 で使った compose は 2026-10-08 に消した。手元で動かすのは [`docker/compose/`](../docker/compose/)）と、terraform と ops の実装（`oss/`）が済み、2026-10-07 に AWS で 1 回立てて動作を確かめた（結果は下の「AWS で確かめたこと」）。置き換え先は下の表。設計は [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md)。
 - **OSS にするのは、下の表で置き換え先を書いた 5 つだけ。**ほかはマネージドのまま使う。
 - **5 つ以外の道具は、商用で使えるライセンスなら OSS でなくてよい。**
 
@@ -52,9 +52,8 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
 |---|---|
 | `IaC/terraform/oss/` | OSS 版の terraform。ルートごとのディレクトリに、変えないファイルは `IaC/terraform/aws-managed/` のファイルへのシンボリックリンク、OSS 版だけのファイル（`kafka.tf`、`opensearch.tf` など）と `oss.auto.tfvars`（`project = "nwc-oss"`）を置く。state は別 |
 | `oss/ops/up.sh`、`oss/ops/down.sh` | OSS 版の作る・消す。接頭辞は `<owner>-nwc-oss` で、マネージド版と並べて立てられる |
-| `oss/ops/oss-images.sh` | イメージの名前と版（1 か所）。正は `oss/compose/` |
+| `oss/ops/oss-images.sh` | イメージの名前と版の正（1 か所） |
 | `oss/ops/roll-nodes.sh`、`oss/ops/roll_health.py` | Kafka と OpenSearch を 1 台ずつ入れ替える。`oss/ops/up.sh` が stream と analytics の apply の前に打つ |
-| `oss/compose/` | 手元の確認用の compose と、確認の手順 |
 | `docker/images/spark/Dockerfile`、`docker/images/neo4j/Dockerfile` | ECS 向けの Spark と Neo4j（GDS 入り）のイメージ |
 | `ops/common.sh`、`ops/up-common.sh`、`ops/down-common.sh` | マネージド版と OSS 版の共通の関数 |
 

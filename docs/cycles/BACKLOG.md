@@ -19,7 +19,7 @@
 - [x] `oss/ops/up.sh` の services-stable の待ちに再試行を付け、`ops/check.sh` の OSS のルートにも `-lockfile=readonly` を付ける（005 のレビュー Nit 6）（2026-10-08 完了。fix/oss-review-nits）
 - [x] 手元の docker compose で動く構成を作る（WSL 用。lab から Splunk と Grafana まで届くこと） → 006-local-compose（2026-10-08 完了。WSL の通し検証はユーザー）
 - [x] ディレクトリを app/ と docker/ と IaC/ に並べ直す（006 のあと。compose は docker/compose/ へ動かす。app/ の下は agent→agentcore、workflow→temporal、web→dashboard、lab→containerlab に改名。2026-10-08 に順番を入れ替えた） → 007-restructure-dirs（2026-10-08 完了）
-- [ ] `oss/compose/` を消すか決める（007 で `docker/compose/` と役目が重なると分かった。残すなら「OSS 版の部品を 1 つずつ確かめる」用途に絞って README に書く）
+- [x] `oss/compose/` を消すか決める（007 で `docker/compose/` と役目が重なると分かった。残すなら「OSS 版の部品を 1 つずつ確かめる」用途に絞って README に書く）（2026-10-08 完了。消した。版の正は `oss/ops/oss-images.sh` だけ。chore/remove-oss-compose）
 - [ ] Kafbat UI を Web の EC2 に同居させ、lab の EC2 で `containerlab graph` のトポロジ図を見られるようにする（Fargate のタスクと Cloud Map をやめる。EC2 は t4g.medium に上げ、Docker と MSK の IAM 権限と SG の web→MSK 9098 を足す。graph は 50080 を SSM のポートフォワードで。2026-10-08 の決定）
 - [x] Redis を 8 系に上げる（OSS 版）（2026-10-08 完了。feat/oss-redis8-rolling。`REDIS_TAG` は共通なのでマネージド版の Nautobot の Redis も 8.10.2 になる。AWS では未確認）
 - [x] EMR を 7.14.0 に上げ、Spark の jar を合わせる（2026-10-08 完了。feat/spark-bump。AWS では未確認）
@@ -46,10 +46,10 @@
 - [x] 手元の `check.sh` で Splunk の認証の失敗を「0 件」と分けて出す（401 の応答も `NG Splunk: 0 件` になる。2026-10-08 に 006 のセルフレビュー N2）（2026-10-08 完了。fix/local-compose-r2。messages の FATAL / ERROR はその理由、result が無ければ「result が無い」と出す。本物の Splunk の 401 は未確認）
 - [ ] `app/containerlab/lab.sh` の `fail-main` と `heal-bgp` の案内を手元でも合うようにする（EC2 の `lab` コマンドを案内する。2026-10-08 に 006 のセルフレビュー N3） → 009-local-compose-followups
 - [ ] `app/containerlab/lab.sh render` の表示をイメージ名にする（`REGISTRY` が無い手元では「イメージは ?」と出る。2026-10-08 に 006 のセルフレビューの Nit） → 009-local-compose-followups
-- [ ] `ops/check.sh` の 3 で追跡している `.sh` を全部 `bash -n` する（いまは並べた 19 本だけで、`ops/sync-graph.sh`・`app/telegraf/telegraf.sh`・`app/splunk/entrypoint.sh`・`app/grafana/start.sh`・`app/neo4j/entrypoint.sh`・`oss/compose/check-*.sh` の 8 本が漏れる。テストは本体の `set -e` を前提にしていて、`bash -n a b` の行が後から足されても見ない。2026-10-08 に 006 の Round 2 のセルフレビュー N1 / N2 / N5） → 009-local-compose-followups
+- [ ] `ops/check.sh` の 3 で追跡している `.sh` を全部 `bash -n` する（いまは並べた 19 本だけで、`ops/sync-graph.sh`・`app/telegraf/telegraf.sh`・`app/splunk/entrypoint.sh`・`app/grafana/start.sh`・`app/neo4j/entrypoint.sh`・`oss/compose/check-*.sh` の 8 本が漏れる（`oss/compose/` の 3 本は 2026-10-08 に消えたので、いまは 5 本）。テストは本体の `set -e` を前提にしていて、`bash -n a b` の行が後から足されても見ない。2026-10-08 に 006 の Round 2 のセルフレビュー N1 / N2 / N5） → 009-local-compose-followups
 - [ ] 手元の `check.sh` の Splunk の理由を重複なし・長さの上限つき・1 行にする（同じ `ERROR Unauthorized` が 30 件なら 598 字になり、text の改行で NG の行が割れる。2026-10-08 に 006 の Round 2 のセルフレビュー N4） → 009-local-compose-followups
 - [ ] 手元の `check.sh` の Splunk の判定を本物の応答で確かめる（401 の本文の形と、件数があるのに messages に ERROR が混ざる応答が無いか。Mac ではイメージが amd64 だけで起動していない。2026-10-08 に 006 の Round 2 のセルフレビュー U1 / U2。未確認）
-- [ ] `oss/compose` と `docker/compose` の kafka-ui の 18080 を分ける（同じ機械で並べて上げるなら。いまは並べる想定は無く、`oss/compose` を残すか消すかは 007 で決める。2026-10-08 に 006 の cold review Round 2 の Nit 2）
+- [x] `oss/compose` と `docker/compose` の kafka-ui の 18080 を分ける（同じ機械で並べて上げるなら。いまは並べる想定は無く、`oss/compose` を残すか消すかは 007 で決める。2026-10-08 に 006 の cold review Round 2 の Nit 2）（2026-10-08 完了。`oss/compose` を消したので、ぶつかる相手が無くなった。chore/remove-oss-compose）
 - [ ] 手元の compose の telegraf / spark の `restart: on-failure` に回数の上限を付ける（`docker compose` を直に打って `SNMP_AGENTS` が空だと再起動を繰り返す。2026-10-08 に 006 の cold review Round 2 の Nit 3） → 009-local-compose-followups
 - [ ] `app/containerlab/lab.sh` の `hint` と `failover` の案内を実行で確かめるテストを足す（いまは正規表現で文言があるかだけ。`forward` には偽の iptables と sudo の実行の検査がある。2026-10-08 に 006 の cold review Round 2 の Nit 4） → 009-local-compose-followups
 - [x] `ops/down-common.sh` が Runtime の ENI を探す VPC を state から引く（`destroy_base_core` の 115〜116 行目が `describe-vpcs --filters Name=tag:Name` の `Vpcs[0]` を取るので、同じ名前の VPC が 2 つあると古い方を引き、Runtime の ENI を見落として base/core を全部消しにいく。2026-10-08 の OSS 版の AWS 検証では SG の削除の待ちを 3 回繰り返して rc=1、1 時間 41 分かかった。`docs/verification/20261008-oss-aws.md` の「不具合」5）（2026-10-08 完了。fix/oss-ops-vpc-tty。state の aws_vpc.this を先に読み、タグで引くときは全部の VPC を見る。AWS では未確認）

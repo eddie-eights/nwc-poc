@@ -1,7 +1,7 @@
 # OSS 版（cycle 005）の Spark のイメージ。EMR Serverless の代わりに ECS のタスクで spark-submit --master local[*] を打つ
 # （IaC/terraform/oss/pipeline/analytics/spark.tf。マネージド版は使わない。マネージド版の EMR には ops/up.sh が snmp_sinks.py を S3 に置く）。
 # 閉域で Maven に届かないので、jar はここで焼き込む（起動時の --packages は使わない）。
-# jar は oss/compose/spark/Dockerfile で確かめた組み合わせ（Kafka・Iceberg・S3 Tables のカタログ）に、checkpoint を S3 に書く S3A を足す:
+# jar は 005 の手元の compose で確かめた組み合わせ（Kafka・Iceberg・S3 Tables のカタログ）に、checkpoint を S3 に書く S3A を足す:
 #   hadoop-aws はイメージの Hadoop（hadoop-client-api-3.3.4）と同じ版、aws-java-sdk-bundle は hadoop-aws 3.3.4 の pom が指す版。
 # Kafka は PLAINTEXT なので、マネージド版の JAR_URLS にある MSK の IAM 認証の jar は入れない。
 # build の context は app/spark/（OSS 版の ops/up.sh がタグを中身から作る: <Spark の版>-<app/spark/ とこの Dockerfile のハッシュ>）

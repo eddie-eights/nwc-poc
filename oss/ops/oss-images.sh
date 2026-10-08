@@ -1,9 +1,9 @@
 # OSS 版（cycle 005「マネージドを OSS に置き換えた環境を作る」）のイメージの名前と版。oss/ops/up.sh が source する。
-# 版をここ 1 か所に持つ（ops/lab-common.sh と同じ考え方）。正は oss/compose/（手元で起こして確かめた版）で、
-# 公開イメージは compose.yaml の image:、ビルドするもの（spark / neo4j）は oss/compose/<名前>/Dockerfile の FROM に合わせてある。
-# spark / neo4j を ECS 向けにビルドする元は app/spark/ と app/neo4j/（Dockerfile は docker/images/<名前>/。compose で確かめた組み合わせに、ECS で要るもの:
+# 版の正はここ 1 か所（ops/lab-common.sh と同じ考え方）。どれも 005 の手元の compose で起こして確かめた版（その compose は 2026-10-08 に消した）。
+# spark / neo4j を ECS 向けにビルドする元は app/spark/ と app/neo4j/（Dockerfile は docker/images/<名前>/。005 で確かめた組み合わせに、ECS で要るもの:
 # Spark は snmp_sinks.py と S3A の jar、Neo4j はパスワードを渡す entrypoint.sh を足したもの）で、版は Dockerfile の ARG の既定値と同じ。
-# 変えるときは compose と docker/images/spark/・docker/images/neo4j/ の Dockerfile と一緒に変える（tests/test_oss_ops.py が見る）。
+# 変えるときは docker/images/spark/・docker/images/neo4j/ の Dockerfile と、IaC/terraform/oss/ の *_image_tag の既定値と、
+# 手元の docker/compose/compose.yaml の image:（Kafka / Kafbat UI / OpenSearch）と一緒に変える（tests/test_oss_ops.py と tests/test_local_compose.py が見る）。
 # 先に ops/lab-common.sh を読み、REGION と PY を決めておく（ecr_has / mirror_image / dir_tag を使う）。
 #
 # ECR のリポジトリは IaC/terraform/oss/base/ecr（IaC/terraform/aws-managed/base/ecr/main.tf の oss_repositories）が <接頭辞>-<名前> で作る。

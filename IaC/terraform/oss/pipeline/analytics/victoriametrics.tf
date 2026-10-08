@@ -12,13 +12,13 @@
 # 名前は Cloud Map の <名前>.<接頭辞>.internal（名前空間は ecs.tf）。認証は無い（マネージド版の SigV4 の代わり。Spark は PROMETHEUS_AUTH=none）。
 # 届くのは SG で絞った相手だけ（IaC/terraform/aws-managed/base/core の oss.tf の通信の表: Spark → 8480、Grafana・AgentCore・Lambda → 8481、
 # 3 つの部品どうし 8400〜8401、VictoriaMetrics → EFS 2049）。
-# vminsert は起動したとき vmstorage につなぎに行き、3 台につながる前に受けた行は 1 台にしか入らない（エンジニア3 が oss/compose で確かめた）。
+# vminsert は起動したとき vmstorage につなぎに行き、3 台につながる前に受けた行は 1 台にしか入らない（エンジニア3 が 005 の手元の compose で確かめた）。
 # そこで vminsert のタスクに待ちのコンテナ（wait-vmstorage）を置き、3 台が 8400 で受けるまで vminsert を起こさない（ECS のコンテナの dependsOn）。
 # vmstorage の台が止まったままなら、待つのは vmstorage_wait_seconds 秒まで（それを過ぎたら起こす。止まっている台を外して残りの 2 台に書く）。
 # イメージは victoriametrics/{vminsert,vmselect,vmstorage} を ECR の <接頭辞>-<名前> に写したもの（閉域で Docker Hub に届かない。OSS 版の ops/up.sh が写す）
 
 variable "victoriametrics_image_tag" {
-  description = "Tag of the vminsert, vmselect and vmstorage images in the <prefix>-vminsert / -vmselect / -vmstorage repositories (victoriametrics/* copied to ECR by the OSS ops/up.sh). Same version as oss/compose."
+  description = "Tag of the vminsert, vmselect and vmstorage images in the <prefix>-vminsert / -vmselect / -vmstorage repositories (victoriametrics/* copied to ECR by the OSS ops/up.sh). Same version as oss/ops/oss-images.sh."
   type        = string
   default     = "v1.153.0-cluster"
 }
@@ -188,7 +188,7 @@ resource "aws_ecs_task_definition" "vmstorage" {
         { containerPort = 8401, protocol = "tcp" }, # vmselect から
         { containerPort = 8482, protocol = "tcp" }, # 自分の HTTP（/metrics など）
       ]
-      # oss/compose の compose.yaml と同じ
+      # 005 の手元の compose で確かめた値
       command     = ["-storageDataPath=/storage", "-retentionPeriod=30d"]
       mountPoints = [{ sourceVolume = "storage", containerPath = "/storage", readOnly = false }]
       # 止めるときにメモリの中の行を EFS に書き出す時間（Fargate の上限）
