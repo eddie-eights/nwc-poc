@@ -135,19 +135,37 @@ with tempfile.TemporaryDirectory() as tmp:
 check("app/containerlab/splab.clab.yml.in と app/containerlab/srlinux/*.cli は app/containerlab/gen_lab.py の出力と同じ（既定の a-leaf 2・spine 2）",
       set(gen) == {"splab.clab.yml.in"} | {f"srlinux/{n}.cli" for n in ("dc1-s-leaf-01", "dc1-s-leaf-02", "dc1-spine-01", "dc1-spine-02", "dc1-a-leaf-01", "dc1-a-leaf-02")}
       and all(read("app", "containerlab", *rel.split("/")) == text for rel, text in gen.items()))
-# VM（TRex。lab_topology.VM_ROLES）の回線の種別。いまの lab には LAG が無いので、写しの dc1-a-leaf-01.cli で ethernet-1/3 を lag1 に入れて見る
+# VM（TRex。lab_topology.VM_ROLES）の回線の種別と EVPN の ES。いまの lab には LAG / bond / ES が無いので、写しに足して見る:
+# dc1-a-leaf-01 は ethernet-1/3 を lag1 に入れる、TRex は eth1（dc1-s-leaf-01 向き）を bond0 に入れる、
+# dc1-a-leaf-01 / 02 は lag1 に同じ ESI の ES-1 を置く（dc1-a-leaf-02 の lag1 には何も入れない）
+_ES = "set / system network-instance protocols evpn ethernet-segments bgp-instance 1 ethernet-segment ES-1"
+_ESI = "00:11:11:11:11:11:11:00:00:01"
+_es_cli = f"set / interface lag1 admin-state enable\n{_ES} esi {_ESI}\n{_ES} multi-homing-mode all-active\n{_ES} interface lag1\n"
 with tempfile.TemporaryDirectory() as tmp:
     os.makedirs(os.path.join(tmp, "srlinux"))
     for rel in [lt.TOPO_FILE] + [f"srlinux/{fn}" for fn in os.listdir(os.path.join(ROOT, "app", "containerlab", "srlinux")) if fn.endswith(".cli")]:
         text = read("app", "containerlab", *rel.split("/"))
         if rel == "srlinux/dc1-a-leaf-01.cli":
-            text = text.rstrip("\n") + "\nset / interface ethernet-1/3 ethernet aggregate-id lag1\n"
+            text = text.rstrip("\n") + "\nset / interface ethernet-1/3 ethernet aggregate-id lag1\n" + _es_cli
+        elif rel == "srlinux/dc1-a-leaf-02.cli":
+            text = text.rstrip("\n") + "\n" + _es_cli
+        elif rel == lt.TOPO_FILE:
+            text = text.replace("        - ip link set eth1 up\n", "        - ip link set eth1 up\n        - ip link set eth1 master bond0\n", 1)
         with open(os.path.join(tmp, *rel.split("/")), "w", encoding="utf-8") as f:
             f.write(text)
-    _lag_links = lt.load(tmp)[1]
-check("TRex との回線は、Leaf 側の IF が LAG に入れば lag、入らなければ l2（写しの dc1-a-leaf-01 の ethernet-1/3 だけ lag1 に入れる）",
-      sorted((l["a"], l["a_if"], l["b"], l["kind"]) for l in _lag_links if l["b"] == "dc1-trex-01")
-      == [("dc1-a-leaf-01", "ethernet-1/3", "dc1-trex-01", "lag")] + [(f"dc1-{x}", "ethernet-1/3", "dc1-trex-01", "l2") for x in ("a-leaf-02", "s-leaf-01", "s-leaf-02")])
+    _lag_devices, _lag_links, _lag_layers = lt.load(tmp)
+check("TRex との回線は、Leaf 側の IF が LAG に入るか TRex 側が bond のメンバーなら lag、どちらでもなければ l2（写しで dc1-a-leaf-01 の ethernet-1/3 を lag1、TRex の eth1 を bond0 に入れる）",
+      sorted((l["a"], l["a_if"], l["b"], l["b_if"], l["kind"]) for l in _lag_links if l["b"] == "dc1-trex-01")
+      == [("dc1-a-leaf-01", "ethernet-1/3", "dc1-trex-01", "eth3", "lag"), ("dc1-a-leaf-02", "ethernet-1/3", "dc1-trex-01", "eth4", "l2"),
+          ("dc1-s-leaf-01", "ethernet-1/3", "dc1-trex-01", "eth1", "lag"), ("dc1-s-leaf-02", "ethernet-1/3", "dc1-trex-01", "eth2", "l2")]
+      and {i["name"]: i["lag"] for d in _lag_devices if d["device_id"] == "dc1-trex-01" for i in d["interfaces"]}.get("eth1") == "bond0")
+_es_v = sorted((v["id"], v["esi"], v["mode"], v["interface_id"]) for v in _lag_layers["vertices"] if v["label"] == "ethernet_segment")
+_lag_if_ids = {f"{d['device_id']}#{i['name']}" for d in _lag_devices for i in d["interfaces"]}
+check("ES は機器ごとに ethernet_segment の頂点（ESI・mode・lag の IF）になり、lag の IF へ over、同じ ESI の ES 同士は segment でつなぐ",
+      _es_v == [(f"dc1-a-leaf-0{n}#es#ES-1", _ESI, "all-active", f"dc1-a-leaf-0{n}#lag1") for n in (1, 2)]
+      and all(v[3] in _lag_if_ids for v in _es_v)
+      and sorted((e["label"], e["from"], e["to"]) for e in _lag_layers["edges"] if "#es#" in e["from"])
+      == [("over", f"dc1-a-leaf-0{n}#es#ES-1", f"dc1-a-leaf-0{n}#lag1") for n in (1, 2)] + [("segment", "dc1-a-leaf-01#es#ES-1", "dc1-a-leaf-02#es#ES-1")])
 check("PyYAML が無くても同じ結果（自前の読み取り）", d2 == devices and l2 == links and y2 == layers)
 check("自前の YAML 読み取りはコメント・引用符・真偽値・数値・flow list を読む",
       lt.load_yaml('a: "x # y"  # c\nb: [p, "q"]\nc:\n  - d: 1\n    e: true\n  - f\n') == {"a": "x # y", "b": ["p", "q"], "c": [{"d": 1, "e": True}, "f"]})
