@@ -47,3 +47,14 @@ None
 
 - `IaC/terraform/aws-managed/pipeline/stream/msk.tf:118-124` の `server_properties` に `allow.everyone.if.no.acl.found=false` を、このサイクルで足すか、検証 3 の結果を待つか。未確定事項 8 の「(b) 既定の true が SCRAM の主体に効いている」場合、収集器の SCRAM の資格情報で ACL の無いトピック（`metrics` / `gnmi` / `traps` 等）とクラスターに何でもできる。文書どおりなら足しても IAM の主体には効かず変化は無いが、MSK の configuration の改訂（ローリング更新）になる。いまは PM 判断として範囲外になっている。
 - 検証 3 の「ACL の前の認可の失敗」は、stream ができてから analytics のジョブが起きる前に送る必要がある。`ops/up.sh` の流れでその間に人が送れる時間があるか（無ければ「判定できず」になる）を、実行する PM が見込んでいるか。
+
+### PM の確認（2026-10-09、fable-5.1）
+
+cold reviewer は 1 回目（opus、adf6b8c と実装が同じ 5944704 に対して）。Must fix 0 / Should fix 1 / Nit 1。
+
+- **Should fix（docs のマージ衝突）**: adf6b8c で再現しようとしたが、`git show adf6b8c:docs/development.md | sed -n 37p` は 16 本の test を両方の側の件数で列挙しており、`git show adf6b8c:docs/deploy.md` には `SKIP_STREAM` と `SKIP_ANALYTICS` の行が両方ある。Round 2 の docs/cycle-006-design のマージ（a3b1a48）で解消済み。件数の裏付けは、PR #4 のマージ後（ec0bed3）で `bash ops/check.sh` を実行: `terraform fmt` / 18 ルートの validate / `bash -n` / 16 本の test が全部通り、最後の行が `すべて通過`、rc=0。件数は `test_alerts` 169、`test_analytics` 504、`test_app` 161、`test_collectors` 79、`test_dashboard_config` 3、`test_graph` 78、`test_kb_index` 7、`test_lab_debug` 104、`test_local_compose` 132、`test_nautobot` 69、`test_oss` 173、`test_oss_ops` 194、`test_oss_roll` 66、`test_stream` 96、`test_sync` 103、`test_workflow` 327 で、`docs/development.md:37` と同じ。→ 解消
+- **Nit（`docs/architecture/resources/emr-serverless.md:39` と `msk.md:41` の接続表に Spark の `createAcls`（AlterCluster）が無い）**: 読んで確認した（読んだだけ）。012 では直さず、docs の更新（BACKLOG の 111）で一緒に直す
+- **質問 1（`allow.everyone.if.no.acl.found=false` をいま入れるか）**: 入れない。design.md の S1 のとおり、AWS の検証 3 で ACL が効いて書けることを見てから。検証で確かめるのは `describeAcls` が 4 件と、`logs` / `flows` が書けていること
+- **質問 2（stream と analytics のジョブの間に syslog / NetFlow を送る窓があるか）**: `ops/up.sh:300-302`（`SKIP_STREAM` は `SKIP_ANALYTICS` を強制）と `docs/deploy.md` の「あとから `up.sh` を打ち直して足す」で作れる。AWS の検証 3 は、1 回目を `SKIP_ANALYTICS=1` で立てて（stream まで）、syslog（`logger -n <NLB> -P 5140 -d --rfc5424`）と NetFlow（`tools/netflow_send.py <NLB>:2055`）を送り、`/ecs/<prefix>-syslog-ng` と `/ecs/<prefix>-goflow2` に認可の失敗が出るのを見てから、`SKIP_ANALYTICS` 無しで打ち直す。ジョブのあとは 3 ジョブの stderr の ACL の行、失敗が止まること、`logs` / `flows` に書けること、`describeAcls` 4 件、`UnderReplicatedPartitions` 0 を見る（未確定事項 8 / 9 / 10 を埋める）
+
+Must fix 0 なので PR #4 を docs/cycle-006-design にマージした（a964c43）。AWS の検証は design.md の表のまま未確認（2026-10-09 の AWS の検証でまとめて行う）。
