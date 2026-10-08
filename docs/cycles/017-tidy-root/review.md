@@ -169,3 +169,5 @@ None
 - D1: 検証 4 の期待に `oss-variant.md` の方針 3 の 1 文を除外として書いた。実装は変えない
 - Nit N1〜N4: 直さない
 - cold review の 2 回目は PM が PR に対して呼ぶ
+- build.md Round 2 の S5（Spark・Neo4j のタグと wheels-oss のハッシュ）: (a) このまま。方針 6 の補足とリスク 6 に足した
+- build.md Round 2 の D2（README:7 が検証 4 に当たる）: 検証 4 の除外に足した。実装は変えない
