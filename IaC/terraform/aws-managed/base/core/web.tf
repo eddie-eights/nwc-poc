@@ -5,7 +5,7 @@ data "aws_ssm_parameter" "al2023" {
 
 resource "aws_iam_role" "web" {
   name        = "${local.name_prefix}-web"
-  description = "${local.name_prefix} chat web EC2 - SSM managed node, reads web assets from S3 and the runtime ARN from SSM"
+  description = "${local.name_prefix} chat web EC2 - SSM managed node, reads web assets from S3 and the runtime ARN from SSM, pulls the Kafbat UI image from ECR"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -26,7 +26,10 @@ resource "aws_iam_role_policy_attachment" "web_ssm" {
 
 # 画面のコード・静的データ・wheel は同じバケットの web/ に置く（ops/up.sh の手順 4）。docs/ は読ませない。
 # Runtime の ARN は IaC/terraform/aws-managed/agent が /<接頭辞>/runtime-arn に書き、app/dashboard/app.py が 60 秒ごとに読む（agent を後から入れ替えても再起動が要らない）。
-# InvokeAgentRuntime の許可は IaC/terraform/aws-managed/agent がこのロールに足す
+# InvokeAgentRuntime の許可は IaC/terraform/aws-managed/agent がこのロールに足す。
+# Kafbat UI（cycle 010。templates/web_user_data.sh.tftpl の <接頭辞>-kafka-ui.service）のイメージは ECR の <接頭辞>-kafka-ui から引く
+# （ops/up.sh の手順 2 が ghcr.io から写す）。接続先とパスワードも /<接頭辞>/kafka-ui/ の SSM のパラメータで、下の ssm:GetParameter で読める。
+# MSK の権限は IaC/terraform/aws-managed/pipeline/stream の kafka_ui.tf がこのロールに足す
 resource "aws_iam_role_policy" "web_assets" {
   name = "web-assets"
   role = aws_iam_role.web.id
@@ -51,6 +54,16 @@ resource "aws_iam_role_policy" "web_assets" {
         Effect   = "Allow"
         Action   = "ssm:GetParameter"
         Resource = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/${local.name_prefix}/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "ecr:GetAuthorizationToken"
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"]
+        Resource = "arn:${local.partition}:ecr:${var.region}:${local.account_id}:repository/${local.name_prefix}-kafka-ui"
       },
     ]
   })
@@ -87,15 +100,20 @@ resource "aws_instance" "web" {
   })
   user_data_replace_on_change = true
 
+  # hop limit 2: Kafbat UI のコンテナ（Docker の bridge。cycle 010）が MSK の IAM 認証にこのインスタンスロールを IMDSv2 から取る。
+  # bridge を越えると IP の TTL が 1 つ減るので、1 のままだと PUT /latest/api/token の応答がコンテナに届かない
+  # （AWS の文書「Use the Instance Metadata Service to access instance metadata」のコンテナの記述）。
+  # lab の EC2（pipeline/lab/instance.tf）が 1 のままなのは、containerlab のコンテナが IMDS を使わないから
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
-    http_put_response_hop_limit = 1
+    http_put_response_hop_limit = 2
   }
 
+  # 16 GB: Docker と Kafbat UI のイメージ（展開して約 640 MB）の分。8 GB でも入るが余裕が無い
   root_block_device {
     volume_type           = "gp3"
-    volume_size           = 8
+    volume_size           = 16
     encrypted             = true
     delete_on_termination = true
 

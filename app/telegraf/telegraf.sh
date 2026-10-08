@@ -29,12 +29,18 @@ SNMP_POLL=${SNMP_POLL:-1}
 # Kafka の認証。iam = MSK の IAM 認証（既定）/ none = 認証なしの PLAINTEXT（OSS 版の ECS の Kafka。cycle 005。app/spark/snmp_sinks.py と同じ名前と値）。
 # telegraf.conf.in の「>>> kafka_auth iam」の区間。SINK=kafka のときだけ効く
 KAFKA_AUTH=${KAFKA_AUTH:-iam}
+# 受け口のポート。既定は ECS（IaC/terraform/aws-managed/pipeline/stream の telegraf.tf。何も渡さない）と同じで、環境変数があればそれ。telegraf.conf.in の __X_PORT__ を埋める
 # 機器の syslog を受ける UDP のポート（telegraf.conf.in の inputs.syslog と app/containerlab/lab.sh の LOG_PORT と同じ）
-LOG_PORT=5140
-# trap を受ける UDP のポート。機器は 162 に送り、NLB が 1162 に向ける（非 root は 1024 未満で待てない）
-TRAP_PORT=1162
+LOG_PORT=${LOG_PORT:-5140}
+# trap を受ける UDP のポート。機器は 162 に送り、NLB が 1162 に向ける（非 root は 1024 未満で待てない。app/containerlab/lab.sh の TRAP_PORT と同じ）
+TRAP_PORT=${TRAP_PORT:-1162}
 # MDT の dial-out を受ける TCP のポート（telegraf.conf.in の inputs.cisco_telemetry_mdt と IaC/terraform/aws-managed/pipeline/stream の telegraf.tf）
-MDT_PORT=57000
+MDT_PORT=${MDT_PORT:-57000}
+# 生きているかの口（outputs.health）の TCP のポート（IaC/terraform/aws-managed/pipeline/stream の telegraf.tf の NLB のヘルスチェック）
+HEALTH_PORT=${HEALTH_PORT:-8080}
+# 受け口の 4 つを待つ IPv4 アドレス。空（既定）は全部のインターフェース（ECS とデバッグ用の EC2）。
+# 手元の compose は docker/compose/up.sh が lab の管理ネットの GW（203.0.113.1）を渡し、WSL のほかのインターフェースでは待たない
+TELEGRAF_BIND=${TELEGRAF_BIND:-}
 
 render() {
   # ECS のタスク定義の環境変数（IaC/terraform/aws-managed/pipeline/stream の telegraf.tf）を埋めて $CONF を作る:
@@ -49,9 +55,18 @@ render() {
   #                  Telegraf が起きるときに環境変数から読む。stream の ECS は SSM の SecureString（/<接頭辞>/telegraf-dialin/...）を secrets で受け、
   #                  デバッグ用の EC2 は app/containerlab/lab.sh が containerlab の既定を渡す。ここでは有るかだけ見る（TELEGRAF_ROLE=dialout では見ない）
   #   SYSLOG_STANDARD  機器の syslog の形式（既定 RFC3164）。stream の syslog_standard。lab の SR Linux は RFC5424
+  #   LOG_PORT / TRAP_PORT / MDT_PORT / HEALTH_PORT / TELEGRAF_BIND  受け口のポートとアドレス（上の既定。ECS は渡さない。手元の compose は docker/compose/up.sh）
   #   AWS_REGION
   : "${AWS_REGION:?}"
-  local agents="${SNMP_AGENTS:-}" gnmi="${GNMI_TARGETS:-}" q="" s drop=() ins="" auth=""
+  local agents="${SNMP_AGENTS:-}" gnmi="${GNMI_TARGETS:-}" q="" s drop=() ins="" auth="" p
+  # sed で埋めるので、決まった形だけ通す（ポートは 1〜65535 の数字、アドレスは空か IPv4）
+  for p in LOG_PORT TRAP_PORT MDT_PORT HEALTH_PORT; do
+    case "${!p}" in ''|0*|*[!0-9]*) echo "$p は 1〜65535 の数字: ${!p}" >&2; exit 1 ;; esac
+    [ "${!p}" -le 65535 ] || { echo "$p は 1〜65535 の数字: ${!p}" >&2; exit 1; }
+  done
+  if [ -n "$TELEGRAF_BIND" ] && ! printf '%s' "$TELEGRAF_BIND" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+    echo "TELEGRAF_BIND は空（全部のインターフェース）か IPv4 のアドレス: $TELEGRAF_BIND" >&2; exit 1
+  fi
   case " all $ROLES " in *" $TELEGRAF_ROLE "*) ;; *) echo "TELEGRAF_ROLE は all $ROLES のどれか: $TELEGRAF_ROLE" >&2; exit 1 ;; esac
   case " $SINKS " in *" $SINK "*) ;; *) echo "SINK は $SINKS のどれか: $SINK" >&2; exit 1 ;; esac
   case " $SYSLOG_STANDARDS " in *" $SYSLOG_STANDARD "*) ;; *) echo "SYSLOG_STANDARD は $SYSLOG_STANDARDS のどれか: $SYSLOG_STANDARD" >&2; exit 1 ;; esac
@@ -82,6 +97,7 @@ render() {
     ins=" / snmp poll: ${agents:-off} / gnmi: ${gnmi}"
   fi
   [ "$TELEGRAF_ROLE" = dialin ] || ins="$ins / trap: ${TRAP_PORT}/udp / syslog: ${LOG_PORT}/udp ${SYSLOG_STANDARD} / mdt: ${MDT_PORT}/tcp"
+  ins="$ins / health: ${HEALTH_PORT}/tcp${TELEGRAF_BIND:+ / bind: $TELEGRAF_BIND}"
   if [ "$SINK" = kafka ]; then
     : "${KAFKA_BROKERS:?}"
     if ! printf '%s' "$KAFKA_BROKERS" | grep -Eq '^[A-Za-z0-9.-]+:[0-9]+(,[A-Za-z0-9.-]+:[0-9]+)*$'; then
@@ -100,7 +116,8 @@ render() {
   fi
   # 選ばなかった出力の区間を消す
   for s in $SINKS; do [ "$s" = "$SINK" ] || drop+=(-e "/^# >>> sink $s/,/^# <<< sink $s/d"); done
-  sed "${drop[@]}" -e "s#__KAFKA_BROKERS__#$q#" -e "s#__AWS_REGION__#$AWS_REGION#" -e "s#__SNMP_AGENTS__#$agents#" -e "s#__GNMI_TARGETS__#$gnmi#" -e "s#__SYSLOG_STANDARD__#$SYSLOG_STANDARD#" "$TEMPLATE" > "$CONF"
+  sed "${drop[@]}" -e "s#__KAFKA_BROKERS__#$q#" -e "s#__AWS_REGION__#$AWS_REGION#" -e "s#__SNMP_AGENTS__#$agents#" -e "s#__GNMI_TARGETS__#$gnmi#" -e "s#__SYSLOG_STANDARD__#$SYSLOG_STANDARD#" \
+    -e "s#__BIND__#$TELEGRAF_BIND#" -e "s#__LOG_PORT__#$LOG_PORT#" -e "s#__TRAP_PORT__#$TRAP_PORT#" -e "s#__MDT_PORT__#$MDT_PORT#" -e "s#__HEALTH_PORT__#$HEALTH_PORT#" "$TEMPLATE" > "$CONF"
   echo "$CONF を作った（role: ${TELEGRAF_ROLE} / sink: ${SINK}${q:+ / brokers: $KAFKA_BROKERS}${auth}${ins}）"
 }
 

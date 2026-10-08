@@ -13,7 +13,8 @@ locals {
 locals {
   lab_repositories      = var.create_lab_repositories ? toset(["srlinux", "multitool", "trex"]) : toset([])
   workflow_repositories = var.create_workflow_repositories ? toset(["worker", "temporal"]) : toset([])
-  # ECS で動かすパイプラインの 6 つ（Telegraf と Kafbat UI は pipeline/stream、Grafana と Splunk は pipeline/analytics、Nautobot とその Redis は pipeline/nautobot）。
+  # パイプラインの 6 つ（Telegraf は pipeline/stream の ECS、Kafbat UI は Web の EC2 の Docker（cycle 010。base/core の web_user_data）、
+  # Grafana と Splunk は pipeline/analytics、Nautobot とその Redis は pipeline/nautobot）。
   # リポジトリに時間課金は無いので、いつも作る
   pipeline_repositories = toset(["telegraf", "kafka-ui", "grafana", "splunk", "nautobot", "redis"])
   # OSS 版（IaC/terraform/oss。var.project = nwc-oss。cycle 005）だけのイメージ。kafka（apache/kafka）・opensearch・vminsert / vmselect / vmstorage

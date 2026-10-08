@@ -64,10 +64,12 @@ aws ssm start-session --region ap-northeast-1 --target "$LAB_INSTANCE_ID"
 | `sudo lab snmp dc1-a-leaf-01` | 1 台の ifName / ifAdminStatus / ifOperStatus（EC2 から snmpwalk。admin up の IF だけ） |
 | `sudo lab logs` | 機器のログ（`/var/log/srlinux/file/messages`）の末尾。1 台だけなら `sudo lab logs dc1-a-leaf-01`、行数は `LINES=50` を前に付ける |
 | `sudo lab cli dc1-a-leaf-01 "show network-instance default protocols bgp neighbor"` | 1 台に SR Linux の CLI を 1 つ打つ |
+| `sudo lab graph` / `sudo lab graph-stop` | 機器とリンクの図（`containerlab graph`）を EC2 の `127.0.0.1:50080` で裏に起こし、手元で打つポートフォワードのコマンドを出す / 止める（下） |
 | `sudo lab forward-status` | Telegraf（ECS）への転送（iptables の規則と、機器側の remote-server / trap-group）。張り直すのは `sudo lab forward` |
 | `sudo lab trex start` / `stop` / `status` | TRex 本体（stateless のサーバ）を `dc1-trex-01` の中で起こす / 止める / 見る。負荷の撃ち方は `app/containerlab/trex/README.md` |
 | `sudo lab clab inspect --all` | containerlab をそのまま呼ぶ |
 
+- 機器とリンクの図: `sudo lab graph` は `containerlab graph` を systemd の一時ユニット `<prefix>-lab-graph` で起こす（SSM のセッションを閉じても残る。止めるのは `sudo lab graph-stop` か `sudo lab down`）。手元の PC で `terraform -chdir=IaC/terraform/aws-managed/pipeline/lab output -raw graph_port_forward_command` を打ち（`sudo lab graph` も同じコマンドを出す）、`http://localhost:50080/` を開く。lab の EC2 への SSM のポートフォワードなので、SG は開けない。図のページが CDN から部品を読むかは [010 の build.md](cycles/010-kafbat-ui-on-web-ec2/build.md) に書く（閉域では CDN に届かない）。AWS では未確認。
 - 機器の CLI: `sudo docker exec -it clab-splab-dc1-a-leaf-01 sr_cli`（1 行だけなら `sudo lab cli dc1-a-leaf-01 "show ..."`）。設定は `app/containerlab/srlinux/<機器>.cli`（`set /` の行だけ。containerlab が起動時に流し込む。手で直さず `app/containerlab/gen_lab.py` で作り直す）
 - `sudo lab failover` を打つと、trap が 5 秒以内に Kafka に届く（2026-09-27 に EC2 で確認）。そのあと既定（`STORES=s3,grafana,splunk` / `SNMP_POLL=1`）では、Splunk が linkDown の trap とポーリングから `link_down` を、gNMI から `isis_down` を出し、Grafana のルールもポーリングから物理 IF の同じ `link_down` を、gNMI から同じ `isis_down` を出す（同じ機器・種類・対象なので、異常としては 1 つにまとまる）。`STORES` から `splunk` を外して `SNMP_POLL=0` にすると `link_down` は出ない。`sudo lab heal-main` で `resolved` が出る。落としてから通知までは 1〜2 分（下の「アラート」の遅れ）。
   - SR Linux の SNMP の `ifOperStatus` は実際の oper-state より 15〜20 秒遅れる（2026-09-27 実測）。Spark の検知は trap とポーリングを 1 つの状態にまとめていたので、古いポーリングが trap を打ち消さないよう 30 秒の猶予（`POLL_LAG`）を持っていた。いまは送り手ごとに自分の見た状態だけを出し、Grafana は自分が発火させたアラートにしか解消を送らないので、この猶予は要らない。
@@ -151,7 +153,7 @@ ops/lab-debug.sh down          # バケットを空にしてスタックを消�
 
 ## Kafka の画面（Kafbat UI）を開く
 
-stream を作ると、Kafbat UI（`ghcr.io/kafbat/kafka-ui:v1.5.0` を ECR に写したもの）がいつも 1 タスク立つ（`IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf`。切り替えるキーは無く、`SKIP_STREAM=1` のときだけ無い。+$0.02/h）。LB は無いので、Web の EC2 を踏み台にした SSM のポートフォワードで開く。コマンドは `ops/up.sh` の最後に出る。
+stream を作ると、Kafbat UI（`ghcr.io/kafbat/kafka-ui:v1.5.0` を ECR に写したもの）が Web の EC2 の Docker で動く（Kafbat UI を Web の EC2 に同居させる（010）。2026-10-08 のユーザー決定で ECS のタスクから移した）。切り替えるキーは無い。コンテナを起こすのは Web の EC2 の systemd のユニット `<prefix>-kafka-ui`（`IaC/terraform/aws-managed/base/core/templates/web_user_data.sh.tftpl`）で、接続先は stream の `kafka_ui.tf` が書く SSM の String（`/<prefix>/kafka-ui/image`・`bootstrap-servers`・`security-protocol`）。読めるまで 30 秒ごとに起こし直すので、`SKIP_STREAM=1` の回はユニットが待ち続けるだけでコンテナは無い。追加の費用は Web の EC2 を t4g.small から t4g.medium にした差（約 $0.02/h。土台に入っている）。画面は Web の EC2 の `127.0.0.1:8082` だけで待ち、SSM のポートフォワードで開く。コマンドは `ops/up.sh` の最後に出る。
 
 ```bash
 terraform -chdir=IaC/terraform/aws-managed/pipeline/stream output -raw kafka_ui_port_forward_command; echo   # 打って http://localhost:8082/ （ユーザー admin）
@@ -162,13 +164,14 @@ terraform -chdir=IaC/terraform/aws-managed/pipeline/stream output -raw kafka_ui_
 |---|---|
 | 見る | ブローカー、トピックとパーティション、メッセージの中身、コンシューマーグループと遅れ（lag） |
 | 変える | トピックの追加・設定の変更・削除、メッセージの送信（見るだけにはしていない。2026-10-05 のユーザー決定） |
-| できない | コンシューマーグループの変更と削除、ブローカーの設定の変更（タスクロールに付けていない）。時系列のグラフとアラートは Kafbat UI に無い |
+| できない | コンシューマーグループの変更と削除、ブローカーの設定の変更（Web の EC2 のロールに付けていない）。時系列のグラフとアラートは Kafbat UI に無い |
 
-- MSK へは IAM 認証（`SASL_SSL` / `AWS_MSK_IAM`、9098）でつなぐ。
+- MSK へは IAM 認証（`SASL_SSL` / `AWS_MSK_IAM`、9098）でつなぐ。認証情報は Web の EC2 のインスタンスロール（IMDSv2。Docker の bridge を越えるので hop limit は 2）。権限は stream の `kafka_ui.tf` がロールにポリシー `<prefix>-kafka-ui` で足す。
 - 手元のポートは 8082（Web が 8080、Nautobot が 8081）。
-- ヘルスチェックの `/actuator/health` は、Kafka に届かなくても UP を返す。タスクが動いていても、MSK につながっているとは限らない。
-- 2026-10-05 に AWS で確かめた: MSK に IAM でつながる（タスクのログに `Metrics updated for cluster` が出た）。
-- **AWS では未確認**（2026-10-05 時点。画面は開いていない）: 画面に入れるか、画面からトピックを足せるか、タスクロールの権限で足りるか、ポートフォワードで `kafka-ui.<接頭辞>-stream.internal` が引けるか。手元の Docker では起動と画面までを確かめた。
+- ヘルスチェックの `/actuator/health` は、Kafka に届かなくても UP を返す。コンテナが動いていても、MSK につながっているとは限らない。
+- ログは Web の EC2 の `journalctl -u <prefix>-kafka-ui`（CloudWatch には出さない）。admin のパスワードを含む env は `/run/<prefix>-kafka-ui.env`（root だけが読める。ユニットが止まると消える）。
+- 2026-10-05 に AWS で確かめた（ECS のタスクだったとき）: MSK に IAM でつながる（タスクのログに `Metrics updated for cluster` が出た）。
+- **AWS では未確認**（Web の EC2 に移した 010 の形）: コンテナがインスタンスロールで MSK につながるか、画面に入れるか、画面からトピックを足せるか、ロールの権限で足りるか。手元の Docker では起動と画面までを確かめた。
 
 ## Grafana と Splunk を開く
 
@@ -254,6 +257,14 @@ SELECT status, source, device_id, kind, target, starts_at, received_at FROM "s3t
 - gNMI と trap のレコードは機器名を持たないので、Spark が device map（`ops/up.sh` が `app/containerlab/lab_topology.py --device-map` で作り、ジョブの引数 `--device-map` で渡す）で `sysName` を足す。対応表に無い送り元の trap は、IP がそのまま機器名になる。
 - `bgp_down` / `isis_down` は直近 24 時間の最後の値を見る（on_change は変わったときにしか値が来ない）。24 時間を超えて同じ状態のままだと系列が消えて解消が出る（制約。Telegraf がつなぎ直すと今の状態を送り直すので、普段は切れない）。
 - Prometheus のルールは、データが無い・クエリが失敗したときは直前の状態のまま（`KeepLast`。分からないときに発火も解消もしない）。機器ごと止まって系列が途切れると、Grafana は古い系列として解消を送る（機器の停止はここでは検知しない）。`trap` は、数えるものが無いとき（NoData）を OK にする（`KeepLast` だと発火したまま解消しない）。
+- 4 本とも、クエリが失敗したときも直前の状態のまま（`execErrState: KeepLast`）なので、評価がエラーでも画面のルールは Normal に見える。`ops/up.sh`（OSS 版は `oss/ops/up.sh`）は最後の手順 9-2 で、Web の EC2 から Grafana のルールの API を読んで確かめる（打ってから全部のルールがもう 1 回評価されるのを待って判定する。エラーのあったルールは、その次の評価でもエラーなら NG。ルールの間隔は 1 分、待つのは最大 5 分。NG でも止めず、黄色の警告を最後にもう一度出す）。あとで確かめ直すときは次を打つ。理由はログ `/ecs/<prefix>-grafana` の `Failed to evaluate rule`（[architecture/resources/grafana.md](architecture/resources/grafana.md) の「知見」）。
+
+  ```bash
+  ops/check-grafana.sh         # マネージド版
+  ops/check-grafana.sh --oss   # OSS 版
+  ```
+
+  - 打ったあとの評価だけを見る（打ったときに見える評価と、直した直後に 1 回分残る前のエラーでは判定しない）。NoData（クエリが何も返さない）はエラーではないので OK になる。データソースや格納先を直したあと、Grafana のタスクが入れ替わったあと、アラートが来ないと思ったときに打つ。入れ替わりの途中は前のタスクを見ることがあるので、終わってから打つ（up.sh の 9-2 は `aws ecs wait services-stable` で待ってから見る）。
 - 通知は機器・種類・対象ごとに 1 通（`group_by` は alertname / sysName / target）。発火はすぐ、解消は 30 秒以内（`group_interval`）。直らないあいだは 4 時間ごと（`repeat_interval`）に同じ `starts_at` で送り直す。
 - 画面は Alerting → Alert rules。provisioning したルール・連絡先・ポリシーは画面から変えられない。変えるなら `app/grafana/provisioning/alerting/` の `netops-prometheus.yaml` / `netops-opensearch.yaml`（ルール）か `netops.yaml`（送り先、ポリシー、本文のテンプレート）を変えて `ops/up.sh`（イメージから作り直す）。
 - `netops.yaml` のテンプレートの `$` はそのまま書く。`$$` とエスケープすると Grafana が起動しない（`Invalid format of the submitted template`。13.2.2 で実測）。`${ALERTS_TOPIC_ARN}` と `${AWS_REGION}` だけは、起動時に Grafana が環境変数で埋める。

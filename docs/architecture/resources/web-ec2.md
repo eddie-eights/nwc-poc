@@ -5,20 +5,21 @@
 ## ひとことで
 
 運用者の画面（Gradio。チャット / トポロジ / 承認）を動かす EC2。
-パブリック IP も受信ルールも無く、PC からは SSM のポートフォワーディングで開く。Grafana、Splunk、Temporal UI、Nautobot、Kafbat UI を開くときの踏み台も兼ねる。
+パブリック IP も受信ルールも無く、PC からは SSM のポートフォワーディングで開く。Grafana、Splunk、Temporal UI、Nautobot を開くときの踏み台も兼ねる。stream を作る回は Kafbat UI も Docker で同居する（Kafbat UI を Web の EC2 に同居させる（010））。
 
 ## このプロジェクトでの使い方
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
 | 台数と AZ | 1 台。サブネット a。AZ を選ぶキーは無い | `IaC/terraform/aws-managed/base/core/web.tf` の `aws_instance.web` |
-| インスタンス | t4g.small、Amazon Linux 2023（arm64。AMI は SSM の公開パラメータから読む）、gp3 8 GB | `IaC/terraform/aws-managed/base/core/web.tf`、変数 `instance_type`、`ami_ssm_parameter` |
-| メタデータ | IMDSv2 だけ、ホップ数 1 | `IaC/terraform/aws-managed/base/core/web.tf` |
+| インスタンス | t4g.medium（Kafbat UI の JVM の分。t4g.small の 2 GB では足りない）、Amazon Linux 2023（arm64。AMI は SSM の公開パラメータから読む）、gp3 16 GB（Docker とイメージの分） | `IaC/terraform/aws-managed/base/core/web.tf`、変数 `instance_type`、`ami_ssm_parameter` |
+| メタデータ | IMDSv2 だけ、ホップ数 2（Kafbat UI のコンテナが Docker の bridge 越しにインスタンスロールを取る） | `IaC/terraform/aws-managed/base/core/web.tf` |
 | 画面 | Gradio が `127.0.0.1:8080` だけで待つ。systemd のユニット `<prefix>-web` | `app/dashboard/app.py`、`IaC/terraform/aws-managed/base/core/templates/web_user_data.sh.tftpl` |
+| Kafbat UI | Docker のコンテナが `127.0.0.1:8082` だけで待つ。systemd のユニット `<prefix>-kafka-ui`（Restart=always、30 秒ごと）。イメージ・接続先・パスワードは SSM の `/<prefix>/kafka-ui/` から起動のたびに読み、読めなければ待つ（stream が無い回はコンテナが無い）。ログは `journalctl -u <prefix>-kafka-ui` | `IaC/terraform/aws-managed/base/core/templates/web_user_data.sh.tftpl`、`IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf` |
 | 画面のコード | 共有バケット `<prefix>-kb-<アカウント>` の `web/` から起動時に取る | `ops/up.sh` の手順 4、`IaC/terraform/aws-managed/base/core/bucket.tf` |
-| ロール | `<prefix>-web`。SSM の管理、`web/*` の読み取り、`/<prefix>/*` の `ssm:GetParameter`。Runtime と Gateway を呼ぶ許可は agent と workflow のルートが足す。承認タブの許可（決定のキューへの `sqs:SendMessage` と、Athena での `proposal_events` の読み取り）は workflow のルートがポリシー `<prefix>-workflow-web` で足す | `IaC/terraform/aws-managed/base/core/web.tf`、`IaC/terraform/aws-managed/agent/runtime.tf`、`IaC/terraform/aws-managed/workflow/proposals.tf` |
+| ロール | `<prefix>-web`。SSM の管理、`web/*` の読み取り、`/<prefix>/*` の `ssm:GetParameter`。ECR の `<prefix>-kafka-ui` からのイメージの取得。Runtime と Gateway を呼ぶ許可は agent と workflow のルートが足す。MSK の権限（Kafbat UI）は stream のルートがポリシー `<prefix>-kafka-ui` で足す。承認タブの許可（決定のキューへの `sqs:SendMessage` と、Athena での `proposal_events` の読み取り）は workflow のルートがポリシー `<prefix>-workflow-web` で足す | `IaC/terraform/aws-managed/base/core/web.tf`、`IaC/terraform/aws-managed/agent/runtime.tf`、`IaC/terraform/aws-managed/workflow/proposals.tf` |
 | スイッチ | 無い（土台なので必ず作る）。PC 側のポートは `LOCAL_PORT`（既定 8080）、`NO_DASHBOARD_PORTFORWARD=1` で最後のポートフォワーディングを開かない | [deploy.md](../../deploy.md) の「`deploy.env` のキー」 |
-| 費用 | 2.2 セント/時（t4g.small。土台は合わせて約 2 セント/時 + エンドポイント） | `ops/up.sh` の費用の目安（526〜583 行） |
+| 費用 | 4.3 セント/時（t4g.medium。土台は合わせて約 4 セント/時 + エンドポイント） | `ops/up.sh` の費用の目安（526〜583 行） |
 
 ## つながり
 
@@ -31,7 +32,9 @@
 | AgentCore Gateway | 呼んでいない | Web に置くモジュール（`toolkit` / `topology` / `graph` / `proposals`）に Gateway のクライアント（`app/agentcore/mcp_client.py`）は入っていない。ロールにも `InvokeGateway` は付けない（付けるのは Runtime だけ。`IaC/terraform/aws-managed/workflow/proposals.tf` の `reader_access`） |
 | Neptune Analytics | Web → グラフ | neptune-graph-data のエンドポイント、SigV4（トポロジの表示と、最初の投入）。修復案は読まない |
 | Nautobot | Web → Nautobot | 8080/tcp（トポロジの編集を REST API へ。SSM `/<prefix>/nautobot/url` があるあいだ） |
-| Grafana / Splunk / Temporal UI / Nautobot / Kafbat UI | PC → Web → 各タスク | 3000 / 8000 / 8233 / 8080 / 8080（Web を踏み台にしたポートフォワーディング。Kafbat UI は PC 側を 8082 で開く） |
+| Grafana / Splunk / Temporal UI / Nautobot | PC → Web → 各タスク | 3000 / 8000 / 8233 / 8080（Web を踏み台にしたポートフォワーディング） |
+| Kafbat UI | PC → Web の `127.0.0.1:8082` | SSM のポートフォワーディング（`AWS-StartPortForwardingSession`。PC 側も 8082） |
+| MSK | Web → MSK（Kafbat UI） | 9098/tcp、IAM 認証（インスタンスロール） |
 | S3 | Web → バケット | gateway 型エンドポイント（`web/` の取得と dnf） |
 
 ## 知見

@@ -31,7 +31,7 @@ VPC から外へ出る経路が無いので、Fargate も EC2 も Runtime も、
 | `lab-multitool` | `ghcr.io/srl-labs/network-multitool`（写し。containerlab の `linux` kind の既定。いまの lab で使うノードは無い） | lab の EC2 | 上流の版 + `-amd64`（`MULTITOOL_ECR_TAG`） |
 | `lab-trex` | `trexcisco/trex`（写し。amd64 だけ） | lab の EC2（`dc1-trex-01`） | 上流の版 + `-amd64`（`TREX_ECR_TAG`） |
 | `telegraf` | 公式の `telegraf` に設定のテンプレートと `tg` を足す | ECS Fargate（stream） | `<版>-<ディレクトリの中身のハッシュ 12 桁>` |
-| `kafka-ui` | `ghcr.io/kafbat/kafka-ui`（写し） | ECS Fargate（stream） | 上流の版（`ops/up.sh` の `KAFKA_UI_TAG`） |
+| `kafka-ui` | `ghcr.io/kafbat/kafka-ui`（写し） | Web の EC2 の Docker（stream を作る回。010 から） | 上流の版（`ops/up.sh` の `KAFKA_UI_TAG`） |
 | `grafana` | 公式の Grafana OSS に plugin と provisioning を焼き込む | ECS Fargate（analytics） | 同上 |
 | `splunk` | 公式の `splunk/splunk` に検知のアプリと入口のスクリプトを足す（amd64 だけ、約 2〜3 GB） | ECS Fargate x86（analytics） | 同上 |
 | `nautobot` | 公式の Nautobot に Job などを足す | ECS Fargate（nautobot） | 同上（ハッシュは `app/nautobot/` に `app/agentcore/graph.py`・`app/agentcore/toolkit.py` と lab の定義の seed を足したビルドの材料から作る） |

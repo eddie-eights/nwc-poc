@@ -640,3 +640,72 @@ spine-01 DOWN で spine-02 を落とす / rules（worker）: danger iso=['dc1-a-
 
 - Telegraf の Dockerfile のコメントで `TELEGRAF_TAG` が変わり、次の up.sh で作り直しになる（上の「ずれた点」）
 - lab.sh の `${TREX_IMAGE:?}` は見張られていない（自分の注入 6）
+
+### docs/cycle-006-design のマージ（b8f5961）
+
+PM の指示で docs/cycle-006-design の先頭 b8f5961（009 と 010 と 008 (b) が入ったもの。分かれ目は 29dd7ca）を 37fc117 にマージした。向きは「009 / 010 の変更を残し、011 の変更を足す」。
+
+#### 衝突した 11 本の解き方
+
+| ファイル | 解き方 |
+| :--- | :--- |
+| `app/containerlab/lab.sh` | 010 の `LAB_CMD` と `hint()` の 3 つ目の引数、`graph` / `graph-stop` を残す。011 の TRex の展開、`dc1-a-leaf-01`、`trex` のサブコマンドを足す。usage は 7 行目が telegraf、8 行目が trex で、既定は `sed -n '2,8p'` |
+| `docker/compose/lab.sh` | 009 の `--env-file ... config --environment` を残す。`lab()` は 3 つの版と `TELEGRAF_LOCAL=1`、`LAB_CMD="$0"` を渡す（5 行目のコメントは「5 つ」） |
+| `README.md` / `deploy.env.example` | PIPELINE の行は Kafbat UI 抜きの ~$2.81/h。lab は 011 の m6i.xlarge |
+| `docker/compose/README.md` | 011 の「SR Linux が 5 台」と 010 の起こす順。009 の長い本文に、渡す環境の 5 つと TRex の回線の確かめを足す |
+| `docs/data-stores.md` §8 | 011 の x86（Splunk と TRex、`-amd64` の版）を残す。Fargate の ARM64 の一覧から Kafbat UI を抜き、「Web の EC2 は `t4g` だけ（Kafbat UI もこの EC2）」を足す |
+| `docs/deploy.md` | SKIP_LAB は 011 の -$0.25/h、SKIP_STREAM と 7 行目は 010（-$1.78、Kafbat UI は Web の EC2、SSM は `/<prefix>/kafka-ui/`）。7-2 行目は「トポロジ（7 コンテナ）」 |
+| `docs/setup.md` | 「EC2 の m6i.xlarge … ECS Fargate（Telegraf / Grafana / Splunk / Nautobot）」 |
+| `docs/pipeline.md` | lab のコマンドの表は 011 の `dc1-a-leaf-01` / `dc1-trex-01` の行に 010 の `graph` / `graph-stop` の行を足す。010 の図の説明のあとに 011 の CLI の説明 |
+| `tests/test_alerts.py` | 両方の追加を残す |
+| `tests/test_local_compose.py` | 両方の追加を残し、011 側の値に揃える（下） |
+
+費用（README / deploy.md / setup.md）: PIPELINE $2.81、base + PIPELINE $2.88、STORES=s3 $1.96、SKIP_LAB -$0.25、SKIP_STREAM -$1.78。
+
+#### 衝突しなかったが、マージで食い違ったもの
+
+- `tests/test_local_compose.py`
+  - wrapper の引数に `TREX_IMAGE` と `LAB_CMD` が並ぶので、lab.sh の位置は `[7]`、サブコマンドは `[8:]`
+  - `.env.example` の必須キーに `TREX_IMAGE` / `MDT_PORT` / `HEALTH_PORT` を入れる
+  - 010 の `LAB_CMD` の案内のテストは `clab-splab-dc1-a-leaf-01` と「bgp_down（dc1-a-leaf-01 の 10.255.0.1 と」で見る
+  - TREX が無いときに止まるテストを足した
+- `tests/test_graph.py:287-288`: 010 側の neo4j の seed のテストが旧名 `dc1-leaf-01` を待っていた。011 で共有の fixture の名前を変えたので `dc1-a-leaf-01` に揃えた（1 回目の check.sh で落ちた）
+- `tests/test_sync.py:505-545`: 008 (b) 側の ConflictException のテストが `two`（011 で `dc1-a-leaf-01/02` に改名）に旧名 `dc1-leaf-01/02` を待っていた。新しい名前に揃えた（2 回目の check.sh で落ちた）
+- `app/grafana/provisioning/alerting/netops-opensearch.yaml:22`: 010 側で入った `dc1-host-01` を `dc1-trex-01` に直した
+- `docs/development.md:37`: テストの項目数を下の実測に合わせた（app 161、sync 103、lab_debug 97、nautobot 69、local_compose 122）
+
+#### マージ後の検証
+
+`bash -n`（lab.sh、setup.sh、kafka_load.sh、compose の lab.sh / up.sh / check.sh、ops の lab-common.sh / up.sh / up-common.sh / down.sh / check.sh / lab-debug.sh、oss/ops/up.sh の 13 本）は全部 ok、rc=0。
+
+`bash ops/check.sh`（最後の編集は development.md の項目数だけで、これを読むテストは無い）:
+
+```text
+== 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+差分なし
+== 2. 9 つのルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+（18 ルートすべて OK）
+== 3. スクリプトの構文
+bash -n: 30 本
+構文エラーなし
+== 4. 模擬テスト
+通過 158 / 失敗 0    test_alerts
+通過 489 / 失敗 0    test_analytics
+通過 161 / 失敗 0    test_app
+通過 3 / 失敗 0      test_dashboard_config
+通過 78 / 失敗 0     test_graph
+通過 7 / 失敗 0      test_kb_index
+通過 97 / 失敗 0     test_lab_debug
+通過 122 / 失敗 0    test_local_compose
+69 項目すべて通過    test_nautobot
+通過 171 / 失敗 0    test_oss
+通過 156 / 失敗 0    test_oss_ops
+通過 66 / 失敗 0     test_oss_roll
+通過 83 / 失敗 0     test_stream
+通過 103 / 失敗 0    test_sync
+通過 325 / 失敗 0    test_workflow
+すべて通過
+check.sh rc=0
+```
+
+途中の 2 回は落ちた。1 回目は test_graph、2 回目は test_sync で、どちらも上の旧名が原因。

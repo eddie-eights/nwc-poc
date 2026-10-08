@@ -502,6 +502,45 @@ except RuntimeError as e:
     raised = str(e)
 check("Neptune が 1 件目から落ちても、行は全部その前に送ってあり、残りの通知も書いてから最後に RuntimeError",
       order == ["firehose"] + ["neptune"] * 5 and [len(b[1]) for b in ofh.batches] == [5] and raised.count("OSError: neptune unreachable") == 4)
+# Neptune が同時の書き込みとして拒んだとき（ConflictException。AWS で同じ秒に resolved が 2 件届いて起きた。2026-10-08）は関数の中で打ち直す
+from botocore.exceptions import ClientError
+def _refused(times, code="ConflictException"):
+    """先頭の times 回だけ ClientError（code）を投げ、そのあとは書けたことにする set_status。tries は呼ばれた回"""
+    tries = []
+    def f(dev, ifn="", status="DOWN", only_if=""):
+        tries.append((dev, ifn, status))
+        if len(tries) <= times:
+            raise ClientError({"Error": {"Code": code, "Message": "Operation failed due to conflicting concurrent operations"}}, "ExecuteQuery")
+        return {"updated": 1}
+    return f, tries
+_saved_stream = os.environ.pop("ALERT_STREAM", None)   # 履歴の行は見ない（Neptune の打ち直しだけを見る）
+waits.clear(); cap.records.clear()
+fake_graph.set_status, _tries = _refused(1)
+r = h.handler(ev("resolved", device_id="dc1-a-leaf-01", kind="link_down", target="eth1"))
+check("ConflictException が 1 回なら 0.5 秒待って打ち直し、例外にせず結果を返す（打ち直したことを WARNING で 1 行）",
+      r == [{"updated": 1}] and _tries == [("dc1-a-leaf-01", "eth1", "UP")] * 2 and waits == [0.5]
+      and [x.getMessage().count("ConflictException") for x in cap.at(logging.WARNING)] == [1] and cap.at(logging.ERROR) == [])
+waits.clear(); cap.records.clear()
+fake_graph.set_status, _tries = _refused(4)
+try:
+    r = h.handler(two); raised = ""
+except RuntimeError as e:
+    raised = str(e)
+check("ConflictException が続けば CONFLICT_WAITS（0.5・1・2 秒。合わせて 3.5 秒）を待って 4 回で諦め、残りの通知も書いてから RuntimeError（文に ConflictException）",
+      h.CONFLICT_WAITS == (0.5, 1.0, 2.0) and waits == [0.5, 1.0, 2.0] and sum(waits) == 3.5
+      and _tries == [("dc1-a-leaf-01", "eth1", "DOWN")] * 4 + [("dc1-a-leaf-02", "eth2", "UP"), ("dc1-spine-01", "", "ALARM")]
+      and raised.count("ConflictException") == 1 and raised.startswith('neptune {"source": "grafana", "status": "firing", "device_id": "dc1-a-leaf-01"'))
+waits.clear(); cap.records.clear()
+fake_graph.set_status, _tries = _refused(1, "AccessDeniedException")
+try:
+    h.handler(ev("firing", device_id="dc1-a-leaf-01", kind="link_down", target="eth1")); raised = ""
+except RuntimeError as e:
+    raised = str(e)
+check("ほかの ClientError（AccessDeniedException）は打ち直さず、1 回で errors に積んで最後に RuntimeError",
+      len(_tries) == 1 and waits == [] and "AccessDeniedException" in raised and "ConflictException" not in raised
+      and not any("打ち直す" in x.getMessage() for x in cap.records))
+if _saved_stream is not None:
+    os.environ["ALERT_STREAM"] = _saved_stream
 fake_graph.set_status, fake_graph.set_layer_status = _ok_status, _ok_layer
 h.log.removeHandler(lost_order)
 h._cache["firehose"] = fh
@@ -528,8 +567,9 @@ check("Neptune へは NEPTUNE_CONFIG（接続 3 秒・読み 10 秒・試すの�
       [m for m in _made if m[0] == "neptune-graph"] == [("neptune-graph", {"region_name": h.toolkit.REGION, "config": _ncfg})] and fake_graph._cache["client"] is _nep2
       and (_ncfg.connect_timeout, _ncfg.read_timeout, _ncfg.retries) == (3, 10, {"total_max_attempts": 2, "mode": "standard"})
       and 'config=Config(connect_timeout=10, read_timeout=60, retries={"max_attempts": 2}))' in read("app", "agentcore", "graph.py"))
-check(f"Lambda graph-status の timeout は 60 秒で、Firehose の上限と Neptune 1 回の呼び出しの上限の和（{_fh_max + _nep_max:.1f} 秒）より長い",
-      _timeout == 60 and _fh_max + _nep_max < _timeout)
+check(f"Lambda graph-status の timeout は 60 秒で、Firehose の上限と Neptune 1 回の呼び出しの上限と ConflictException の打ち直しの待ち（通知 1 件ぶん）の和"
+      f"（{_fh_max + _nep_max + sum(h.CONFLICT_WAITS):.1f} 秒）より長い",
+      _timeout == 60 and _fh_max + _nep_max + sum(h.CONFLICT_WAITS) < _timeout)
 # 待ちの秒数は AZ の数（ENDPOINTS_AZ_NUM）で変わる。sync.tf の timeout のコメント・status_handler.py の docstring・ops/up.sh の注意の式を、
 # FIREHOSE_CONFIG / NEPTUNE_CONFIG から出した値と突き合わせる（ずれていると、1 AZ の既定でも 22 秒と読める説明が残る）
 _timeout_note = re.search(r"^\s*timeout\s*=\s*\d+\s*#(.*)$", read("IaC", "terraform", "aws-managed", "pipeline", "graph", "sync.tf"), re.M).group(1)
@@ -546,6 +586,8 @@ check("Firehose の上限は AZ の数で変わり、sync.tf の timeout のコ�
       and _up_nep is not None and _up_fh is not None
       and all(_up_wait(n) == round(10 * (_fh_max_of(n) + _nep_max_of(n))) for n in (1, 2, 3))
       and [n for n in (1, 2, 3) if _fh_max_of(n) + _nep_max_of(n) > _timeout] == [3] and 'if [ "$GRAPH_WAIT" -gt 600 ]' in _up)
+check("ConflictException の打ち直しの待ち（通知 1 件ぶん）を足しても 60 秒を超えるのは 3 AZ だけ（ops/up.sh の注意を出す AZ の数は変わらない）",
+      [n for n in (1, 2, 3) if _fh_max_of(n) + _nep_max_of(n) + sum(h.CONFLICT_WAITS) > _timeout] == [3])
 def _no_neptune(service, **kw):
     if service == "neptune-graph":
         raise OSError("neptune-graph のクライアントを作れない")

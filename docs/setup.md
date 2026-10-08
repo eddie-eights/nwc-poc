@@ -19,7 +19,7 @@
 - **OpenSearch Serverless のコレクション（KB と logs）は公開しない。**ネットワークポリシーは `IaC/terraform/aws-managed/base/core` の VPC エンドポイント 1 本（2 つのコレクションで共用）だけを通し、KB はそれに加えて Bedrock のサービス（`bedrock.amazonaws.com`）を通す。エンドポイントを通らない接続は公開側からの扱いになるので、VPC の中からでもエンドポイントが無ければ届かない。KB のベクトルインデックスは VPC の中の Lambda が作り、apply する人の PC は OpenSearch につながない（データアクセスポリシーにも人は入らない。apply と destroy を別の人が打ってもよい）。
 - ガードレールの判定は、東京以外の APAC のリージョン（大阪、ソウル、ムンバイ、シンガポール、シドニー）で行われることがある。データを国内に留める決まりがあるなら使えない。
 - Session Manager の設定で KMS の暗号化を必須にしているなら、インスタンスロールへの `kms:Decrypt` が別に要る（この Terraform には入れていない。`kms` のエンドポイントも NAT Gateway も無いので、`kms` の API へは届かない。そのときは `kms` のエンドポイントを足す）。
-- **PIPELINE は組織の SCP / IAM で止められやすい**（EC2 の m6i.xlarge、Neptune Analytics、MSK、EMR Serverless、S3 Tables、ECS Fargate（Telegraf / Kafbat UI / Grafana / Splunk / Nautobot）と内部 NLB（Telegraf）、RDS（Nautobot）、Cloud Map）。apply が `explicitly denied` で止まったら、管理者に許可を頼むか `SKIP_*` で外す。
+- **PIPELINE は組織の SCP / IAM で止められやすい**（EC2 の m6i.xlarge、Neptune Analytics、MSK、EMR Serverless、S3 Tables、ECS Fargate（Telegraf / Grafana / Splunk / Nautobot）と内部 NLB（Telegraf）、RDS（Nautobot）、Cloud Map）。apply が `explicitly denied` で止まったら、管理者に許可を頼むか `SKIP_*` で外す。
 
 ## 利用者の PC 側
 

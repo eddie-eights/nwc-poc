@@ -19,7 +19,13 @@ groups:
       # net-snmp の nsNotifyShutdown / nsNotifyRestart）。linkDown / linkUp を link_down にするルールは作らない（IF 名の入った varbind の field 名が
       # IF ごとに変わる（"iso.3.6.1.2.1.2.2.1.1.49" の末尾が ifIndex）ので、OpenSearch の集計では取り出せない）。
       # 数えるものが無いとき（どの機器からも trap が来ていない）は NoData。OK にする（KeepLast だと発火したまま解消しない）。
-      # terms の size は 機器 50 × OID 20 まで（プラグインが「terms の組み合わせ × 時間の区切り 20 個」が 65535 を超えるクエリを拒む。100 × 100 だと評価がエラーになる。2.34.4 で実測）
+      # 時間の区切りは 30s に固定し、terms の size は 機器 10 × OID 10 にする（lab は trap の送り元 7 = SR Linux 6 台 + lab.sh の trap-test の dc1-trex-01、
+      # 除いたあとの OID は数種類）。terms は件数の多い順に上位 size 件なので、送り元が 10 を超えると少ない機器の trap が落ちる（tests/test_alerts.py が数を突き合わせる）。
+      # opensearch プラグイン（2.34.4）は interval が auto のときだけ、terms 1 つを shard 1 なら size、2 以上なら shard 数 ×（size × 1.5 + 10）と見積もって掛け、
+      # 65535 × 90% を割って 20 未満なら評価をエラーにする。
+      # AOSS の index は shard 2 として 機器 50 × OID 20 は (2 × 85) × (2 × 40) = 13600 で落ちた（OSS の OpenSearch は shard 1 で 1000 なので通っていた。2026-10-08）。
+      # shard 2 はエラー文の 13600 から逆算した値で、AOSS の shard 数そのものは見ていない。
+      # 10 × 10 は shard 2 で 2500（auto でも通る）、固定の 30s でも 2500 × 区切り 21 個 = 52500 で 65535 に収まる
       - uid: nwc-trap
         title: trap
         condition: C
@@ -51,7 +57,7 @@ groups:
                   type: terms
                   field: tags.sysName.keyword
                   settings:
-                    size: '50'
+                    size: '10'
                     order: desc
                     orderBy: _count
                     min_doc_count: '1'
@@ -59,7 +65,7 @@ groups:
                   type: terms
                   field: tags.oid.keyword
                   settings:
-                    size: '20'
+                    size: '10'
                     order: desc
                     orderBy: _count
                     min_doc_count: '1'
@@ -67,7 +73,7 @@ groups:
                   type: date_histogram
                   field: '@timestamp'
                   settings:
-                    interval: auto
+                    interval: 30s
                     min_doc_count: '0'
           - refId: B
             datasourceUid: __expr__

@@ -37,7 +37,7 @@ locals {
       { from = "telegraf_dialout", to = "kafka", protocol = "tcp", port = 9092, why = "Kafka - Telegraf dial-out writes" },
       { from = "telegraf_dialin", to = "kafka", protocol = "tcp", port = 9092, why = "Kafka - Telegraf dial-in writes" },
       { from = "spark", to = "kafka", protocol = "tcp", port = 9092, why = "Kafka - Spark reads" },
-      { from = "kafka_ui", to = "kafka", protocol = "tcp", port = 9092, why = "Kafka - Kafbat UI" },
+      { from = "web", to = "kafka", protocol = "tcp", port = 9092, why = "Kafka - Kafbat UI on the web EC2" },
       { from = "kafka", to = "kafka", protocol = "tcp", port = 9092, to_port = 9093, why = "Kafka brokers and KRaft controllers talk to each other" },
 
       # EFS（NFS。TLS はマウントヘルパーが 2049 の上でかける。下のファイルシステムポリシーが TLS でない接続を拒む）

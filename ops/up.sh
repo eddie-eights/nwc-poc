@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # deploy.env の PIPELINE / AGENT / WORKFLOW で選んだ機能を 1 本で起こす。機能は互いに独立で、要るものだけ作る（費用を抑えるため）。
-#   土台（必ず作る）  base/ecr + base/core（VPC / Web の EC2 / バケット / ロール。インターネットへの経路は無い）。約 $0.02/h + エンドポイント。
+#   土台（必ず作る）  base/ecr + base/core（VPC / Web の EC2 / バケット / ロール。インターネットへの経路は無い）。約 $0.04/h + エンドポイント。
 #   AGENT（既定 0）   agent での分析。IaC/terraform/aws-managed/agent（AgentCore Runtime + ガードレール。CREATE_KB=1 なら Knowledge Base も）。
 #                     Web の「チャット」タブが使える
 #   PIPELINE          データパイプライン。lab（containerlab）→ stream（MSK と Telegraf（ECS））→ analytics（Spark on EMR Serverless → S3 Tables / OpenSearch / Prometheus / Splunk。
@@ -61,7 +61,7 @@
 #   SNMP_POLL=0             stream の Telegraf で SNMP をポーリングしない（既定 1 = 10 秒ごとに ifTable → metrics トピック。0 なら SNMP は trap だけ受ける）。
 #                           Grafana のアラートルール link_down、Splunk の保存済みサーチ netops_poll、IF のグラフ、エージェントの IF のメトリクスはこのポーリングを見るので、
 #                           0 では空になる（IF の up / down は STORES の splunk の Splunk が trap からだけ出す）。stream の変数 snmp_poll に渡す
-#   （Kafbat UI）           stream を作る回は Kafbat UI（Kafka の画面。ECS Fargate ARM 0.5 vCPU / 1 GB のタスク 1 つ。+$0.02/h）を**いつも作る**（切り替える変数は無い。2026-10-05）。
+#   （Kafbat UI）           stream を作る回は Kafbat UI（Kafka の画面）を**いつも作る**（切り替える変数は無い。2026-10-05）。cycle 010 から Web の EC2 の Docker で動き、費用は Web の EC2（t4g.medium）に入っている。
 #   （Nautobot）            PIPELINE=1 なら Nautobot（IaC/terraform/aws-managed/pipeline/nautobot。ECS Fargate の web + Celery worker + Redis と、RDS の PostgreSQL。+$0.13/h と ecs のエンドポイント）を**いつも作る**（切り替える変数は無い）。
 #                           機器の一覧とケーブルの正を Nautobot にする。最初だけ lab の定義から入り、あとは Nautobot で機器・Service（gnmi / snmp）・ケーブルを変えるたびに、
 #                           Job が Telegraf の取りにいく側（dialin）の機器の一覧（SSM）を書き換えてサービスを作り直し、Neptune の物理層を openCypher で合わせる。
@@ -127,7 +127,7 @@ REGION=ap-northeast-1
 # （デバッグ用の EC2 の ops/lab-debug.sh と共通）。
 # SPLUNK_VERSION・GRAFANA_VERSION・NAUTOBOT_VERSION・REDIS_TAG・TEMPORAL_TAG と、Splunk・Grafana・Agent・worker・Temporal・Nautobot のイメージの作り方は OSS 版と共通なので ops/up-common.sh
 . "$(dirname "$0")/lab-common.sh"
-# Kafbat UI（stream の ECS。ghcr.io/kafbat/kafka-ui を同じタグで ECR に写す）。IaC/terraform/aws-managed/pipeline/stream の kafka_ui_image_tag の既定値に合わせてある
+# Kafbat UI（Web の EC2 の Docker。ghcr.io/kafbat/kafka-ui を同じタグで ECR に写す）。IaC/terraform/aws-managed/pipeline/stream の kafka_ui_image_tag の既定値に合わせてある
 KAFKA_UI_TAG=v1.5.0
 # analytics の Spark ジョブに足す jar（Maven Central。2026-10-08 に 6 本とも取れることを確認）。EMR Serverless 7.14.0 の Spark 3.5.8 に合わせてある。
 # IaC/terraform/aws-managed/pipeline/analytics の emr_release_label を変えるときは spark-sql-kafka とその依存（kafka-clients / commons-pool2 は spark-sql-kafka の pom の版）も変える。
@@ -528,7 +528,7 @@ if [ -n "$GRAFANA$SPLUNK_ON_ECS" ]; then add_endpoints sns; fi   # Grafana / Spl
 endpoint_count() { set -- $ENDPOINTS; echo $#; }
 echo "インターフェース型エンドポイント（$(endpoint_count) 本 × ${ENDPOINTS_AZ_NUM} AZ）: $ENDPOINTS"
 # 待機時の 1 時間あたりの目安（セント。東京リージョンの税抜。単価は 2026-09-14〜15 に Price List API で確認。README の「作るもの」と docs/deploy.md の金額はここから出している）。
-# 土台 = 2（Web の EC2 の t4g.small 2.2。NAT Gateway は 2026-09-28 から作らない）、
+# 土台 = 4（Web の EC2 の t4g.medium 4.3。t4g.small 2.2 の倍。cycle 010 から Kafbat UI も同居する。NAT Gateway は 2026-09-28 から作らない）、
 # インターフェース型エンドポイント = 1 本 1.4 × ENDPOINTS_AZ_NUM（ENDPOINTS。土台の ssm / ssmmessages 2 本と、ルートごとの分。同じサービスはルートをまたいで 1 本。
 #   2026-09-26〜28 は NAT Gateway だけで AWS の API へも出ていたが、閉域（aws:SourceVpc で拒む）にするため戻した。データ処理 $0.01/GB は別）、
 # agent = 0（Runtime は使った分だけ）
@@ -540,9 +540,7 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 #   2026-10-04 までの Neptune Database の db.t4g.medium は 14 だった。レプリカも同じ単価なので × NEPTUNE_AZ_NUM）、
 #   stream = MSK 57（ブローカー 2 台。MSK_AZ_NUM=3 で 1 台 27 を足す）+ Telegraf 5（Fargate ARM 0.25 vCPU / 0.5 GB で 1.2 のタスクが、受ける側 1 つと
 #   取りにいく側 TELEGRAF_AZ_NUM 個（2026-10-04 に分けた）と内部 NLB 2.43。
-#   NLB は 2026-09-28 から。どちらも公表単価からで、Price List API では確かめていない）
-#   + Kafbat UI の 2（Fargate ARM 0.5 vCPU / 1 GB で 2.5。Grafana と同じ大きさ。公表単価からで、Price List API では確かめていない。
-#   Cloud Map の名前空間の Route 53 のホストゾーンは月 $0.50 で入れていない）、
+#   NLB は 2026-09-28 から。どちらも公表単価からで、Price List API では確かめていない。Kafbat UI は cycle 010 から土台の Web の EC2 に入っている）、
 # analytics = Spark のジョブ 1 つにつき 21（ストリーミングのジョブが動いている間の EMR Serverless の 3 vCPU（driver 1 + executor 2。1 vCPU のワーカー 1 台で約 7）。単価は 2026-09-17 に確認。
 #   executor は 2026-10-04 に 1 → 2（Kafka のパーティション 2 つを並列に読む）。ジョブは 2026-10-04 に格納先で 3 つに分けた（7-5）:
 #   STORES の s3 で sinks-s3iceberg、splunk で sinks-splunk、grafana で sinks-grafana（名前は 7-5 の job_name）。3 つとも動けば 63。
@@ -560,7 +558,7 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 # EMR Serverless・Lambda・Runtime は使った分だけなので、AZ の数では変わらない。AZ をまたぐ転送料（$0.01/GB 前後。MSK のブローカー間の複製は無料で、
 #   別の AZ のブローカーへ書く・読む分と NLB のクロスゾーンの分にかかる）はどれも目安に入れていない。
 # ここを変えたら README の「作るもの」と docs/deploy.md の金額も変える
-COST_CENTS=2
+COST_CENTS=4
 COST_CENTS=$((COST_CENTS + ($(endpoint_count) * 14 * ENDPOINTS_AZ_NUM + 5) / 10))
 if [ -n "$AGENT" ] && [ -n "$CREATE_KB" ]; then COST_CENTS=$((COST_CENTS + 33 * OPENSEARCH_AZ_NUM)); fi
 if [ -z "$SKIP_LAB" ]; then COST_CENTS=$((COST_CENTS + 25)); fi
@@ -569,7 +567,6 @@ if [ -z "$SKIP_STREAM" ]; then
   # MSK は kafka.m5.large × 2 で 0.542（Kafka 4 は t3.small を受け付けない。2026-09-18）。3 AZ ならブローカーが 1 台増える
   COST_CENTS=$((COST_CENTS + 57 + 27 * (MSK_AZ_NUM - 2)))
   COST_CENTS=$((COST_CENTS + (12 * (1 + TELEGRAF_AZ_NUM) + 24 + 5) / 10))   # Telegraf（Fargate のタスク 1 + TELEGRAF_AZ_NUM 個と NLB）
-  COST_CENTS=$((COST_CENTS + 2))   # Kafbat UI（Fargate のタスク 1）
 fi
 if [ -z "$SKIP_ANALYTICS" ]; then
   # Spark のジョブ（1 つ 21。格納先で 3 つ）
@@ -691,7 +688,7 @@ else
     mirror_image "redis:$REDIS_TAG" "$REG/$PREFIX-redis:$REDIS_TAG" || die "redis のイメージを ECR に置けなかった"
   fi
   if [ -n "$NEED_KAFKA_UI" ]; then
-    # Kafbat UI（stream の ECS）。Fargate は VPC の中から ECR しか引けないのでミラーする（展開して約 640 MB）
+    # Kafbat UI（Web の EC2 の Docker）。VPC の中から ghcr.io には届かず ECR しか引けないのでミラーする（展開して約 640 MB）
     mirror_image "ghcr.io/kafbat/kafka-ui:$KAFKA_UI_TAG" "$REG/$PREFIX-kafka-ui:$KAFKA_UI_TAG" || die "kafka-ui のイメージを ECR に置けなかった"
   fi
 fi
@@ -918,7 +915,7 @@ if [ -z "$SKIP_STREAM" ]; then
   # Terraform が書くのは最初の値（上の lab の一覧。Nautobot の最初の seed も lab なので同じ）だけ
   DIALIN_FROM_NAUTOBOT=true
   echo "Telegraf の取りにいく側の機器の一覧: Nautobot の Job が書く（上の一覧は最初の値）"
-  # Kafbat UI（stream を作る回はいつも作る）。ログインの admin のパスワードは SSM の SecureString（タスクは ECS の secrets で受ける）
+  # Kafbat UI（stream を作る回はいつも作る）。ログインの admin のパスワードは SSM の SecureString（Web の EC2 のユニットが起動のたびに SSM から読む）
   ensure_secret "/$PREFIX/kafka-ui/admin-password" password "Kafbat UI admin password (created by ops/up.sh)"
   tf_apply pipeline/stream -var "telegraf_image_tag=$TELEGRAF_TAG" -var "kafka_ui_image_tag=$KAFKA_UI_TAG" -var "snmp_agents=$SNMP_AGENTS" -var "gnmi_targets=$GNMI_TARGETS" \
     -var "syslog_standard=$SYSLOG_STANDARD" -var "snmp_poll=$SNMP_POLL_TF" -var "dialin_targets_from_nautobot=$DIALIN_FROM_NAUTOBOT" \
@@ -1267,6 +1264,15 @@ if [ -n "$AGENT" ]; then
     --tags "Project=$PREFIX,owner=$OWNER"
 fi
 
+# ---- 9-2. Grafana のアラートルール ----------------------------------------------------------
+# ルールは評価でエラーになってもアラートを出さず、画面でも Normal に見える（execErrState: KeepLast）。立てたところで 1 回確かめる（ops/up-common.sh の grafana_rules_step）。
+# OK でなくても止めない（警告を最後にもう一度出す）。あとから確かめ直すのは ops/check-grafana.sh
+GRAFANA_WARN=""
+if [ -n "$GRAFANA" ]; then
+  log "9-2. Grafana のアラートルールが評価でエラーになっていないかを確かめる（Web の EC2 から Grafana のルールの API を読む。最大 5 分）"
+  grafana_rules_step "$INSTANCE_ID" "$(tf pipeline/analytics output -raw analytics_cluster_name)" "$(tf pipeline/analytics output -raw grafana_service_name)" ops/check-grafana.sh
+fi
+
 # ---- 10. ポートフォワーディング -------------------------------------------------------------
 log "できた（${ROOTS}）。利用者に配るコマンド:"
 tf base/core output -raw start_session_command; echo
@@ -1295,13 +1301,14 @@ if [ -n "$NAUTOBOT" ]; then
   tf pipeline/nautobot output -raw password_command; echo
 fi
 if [ -z "$SKIP_STREAM" ]; then
-  echo "Kafbat UI（http://localhost:8082/ 。ユーザー admin）を開くポートフォワード（web の EC2 を踏み台にする）と admin のパスワード:"
+  echo "Kafbat UI（http://localhost:8082/ 。ユーザー admin。Web の EC2 の Docker で動く）を開くポートフォワードと admin のパスワード:"
   tf pipeline/stream output -raw kafka_ui_port_forward_command; echo
   tf pipeline/stream output -raw kafka_ui_password_command; echo
 fi
 if [ -n "$LAB_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$LAB_WARN"; fi
 if [ -n "$NAUTOBOT_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$NAUTOBOT_WARN"; fi
 if [ -n "$WF_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$WF_WARN"; fi
+if [ -n "$GRAFANA_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$GRAFANA_WARN"; fi
 printf '\033[1;33m%s\033[0m\n' "$COST_NOTE"
 if [ -n "$NO_DASHBOARD_PORTFORWARD" ]; then exit 0; fi
 log "10. ポートフォワーディング（http://localhost:$LOCAL_PORT/ 。Ctrl+C で閉じる）"

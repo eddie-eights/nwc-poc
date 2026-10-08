@@ -87,8 +87,8 @@ check("EMR / Grafana / Splunk は土台の spark / grafana / splunk の SG を�
 
 _sg_keys = re.search(r'security_groups = \{(.*?)\n  \}', _sg_tf, re.S)
 _sg_keys = set(re.findall(r'^\s+(\w+)\s+=\s+"', _sg_keys.group(1), re.M)) if _sg_keys else set()
-SG_KEYS = {"web", "lab", "telegraf_dialout", "telegraf_dialin", "telegraf_dialout_nlb", "msk", "spark", "grafana", "splunk", "nautobot", "nautobot_db", "lambda", "workflow", "runtime", "kafka_ui"}
-check(f"土台の SG はワークロードごとの 15 個と endpoints（{sorted(_sg_keys)}）",
+SG_KEYS = {"web", "lab", "telegraf_dialout", "telegraf_dialin", "telegraf_dialout_nlb", "msk", "spark", "grafana", "splunk", "nautobot", "nautobot_db", "lambda", "workflow", "runtime"}
+check(f"土台の SG はワークロードごとの 14 個と endpoints（{sorted(_sg_keys)}）",
       _sg_keys == SG_KEYS and re.findall(r'resource "aws_security_group" "(\w+)"', _core) == ["workload", "endpoints"]
       and re.search(r'resource "aws_security_group" "workload" \{\n\s*for_each = local\.workload_security_groups\n', _sg_tf) is not None)
 # 通信の表を読む（from = sg の行は aws_api_clients に展開する）
@@ -98,14 +98,14 @@ _flows = set()
 for _m in re.finditer(r'\{ from = ("?\w+"?), to = "(\w+)", protocol = "(\w+)", port = (\d+)(?:, to_port = (\d+))?(?:, only = "(\w+)")?, why = "([^"]*)" \}', _sg_tf):
     for _from in (_clients if _m.group(1) == "sg" else [_m.group(1).strip('"')]):
         _flows.add((_from, _m.group(2), _m.group(3), int(_m.group(4)), int(_m.group(5) or _m.group(4)), _m.group(6) or ""))
-EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_dialout", "telegraf_dialin", "spark", "grafana", "splunk", "nautobot", "lambda", "workflow", "runtime", "kafka_ui") for t in ("endpoints", "s3")} | {
+EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_dialout", "telegraf_dialin", "spark", "grafana", "splunk", "nautobot", "lambda", "workflow", "runtime") for t in ("endpoints", "s3")} | {
     # Nautobot（IaC/terraform/aws-managed/pipeline/nautobot。2026-10-04）: 画面は Web の EC2 からのポートフォワード、DB は RDS。
     # Neptune は Neptune Analytics にしたので SG が無く、行も無い（neptune-graph-data のエンドポイントの 443 で届く。2026-10-04）
     ("web", "nautobot", "tcp", 8080, 8080, ""), ("nautobot", "nautobot_db", "tcp", 5432, 5432, ""),
     ("web", "grafana", "tcp", 3000, 3000, ""), ("web", "splunk", "tcp", 8000, 8000, ""), ("web", "workflow", "tcp", 8233, 8233, ""),
     ("telegraf_dialout", "msk", "tcp", 9098, 9098, ""), ("telegraf_dialin", "msk", "tcp", 9098, 9098, ""), ("spark", "msk", "tcp", 9098, 9098, ""), ("msk", "msk", "tcp", 9092, 9098, ""),
-    # Kafbat UI（IaC/terraform/aws-managed/pipeline/stream。2026-10-05）: 画面は Web の EC2 からのポートフォワード、MSK へは IAM の 9098
-    ("web", "kafka_ui", "tcp", 8080, 8080, ""), ("kafka_ui", "msk", "tcp", 9098, 9098, ""),
+    # Kafbat UI（IaC/terraform/aws-managed/pipeline/stream。2026-10-05）: cycle 010 から Web の EC2 の Docker で動くので、MSK へは Web から IAM の 9098
+    ("web", "msk", "tcp", 9098, 9098, ""),
     ("spark", "spark", "tcp", 0, 65535, ""), ("spark", "splunk", "tcp", 8088, 8088, ""),
     # Splunk のクラスター（「Splunk をクラスターにする（004）」）: manager・indexer・search head の間だけ
     ("splunk", "splunk", "tcp", 8089, 8089, ""), ("splunk", "splunk", "tcp", 9887, 9887, ""), ("splunk", "splunk", "tcp", 9997, 9997, ""),
@@ -1500,8 +1500,8 @@ check("NAT Gateway / IGW / EIP / パブリックサブネット / 既定ルー�
       not any(f'resource "{t}"' in _core for t in ("aws_nat_gateway", "aws_internet_gateway", "aws_eip", "aws_route"))
       and 'resource "aws_subnet" "public"' not in _core and "create_nat_gateway" not in _core and 'output "nat_gateway"' not in _core
       and "create_nat_gateway" not in up and "CREATE_NAT" not in up and "nat_gateway" not in tf)
-check("費用の目安: 土台は Web の EC2 の 2 セント（NAT Gateway は無い）。ECS の Splunk はタスク 1 つ 12.3（SPLUNK_TASKS 個）、Grafana は 2",
-      "COST_CENTS=2\n" in up and "# NAT Gateway\n" not in up and "COST_CENTS=8" not in up
+check("費用の目安: 土台は Web の EC2（t4g.medium。cycle 010 から Kafbat UI も同居）の 4 セント（NAT Gateway は無い）。ECS の Splunk はタスク 1 つ 12.3（SPLUNK_TASKS 個）、Grafana は 2",
+      "COST_CENTS=4\n" in up and "# NAT Gateway\n" not in up and "COST_CENTS=8" not in up and "COST_CENTS=2\n" not in up
       and 'if [ -n "$GRAFANA" ]; then COST_CENTS=$((COST_CENTS + 2)); fi' in up and 'if [ -n "$SPLUNK_ON_ECS" ]; then COST_CENTS=$((COST_CENTS + 123 * SPLUNK_TASKS / 10)); fi' in up)
 check("lab.sh は containerlab の版の確かめ（GitHub へ出る）をしない", "export CLAB_VERSION_CHECK=disable" in open(os.path.join(ROOT, "app", "containerlab", "lab.sh"), encoding="utf-8").read())
 check("up.sh / deploy-env.sh に共用のエンドポイントと CLIENT_CIDR の扱いは無い",
@@ -1522,7 +1522,7 @@ def _stores(tail=_ST_OUT, **env):
     return r.returncode, r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "", r.stdout
 check("STORES は deploy.env を読んだあと、前のキーの検査のすぐ後で読み、Grafana・WORKFLOW の送り手・費用の検査の前に格納先の変数へ写す",
       up.index("load_deploy_env\n") < up.index('OLD_STORE_KEYS=""') < up.index('STORES_DEFAULT=""') < up.index('SINKS_TF="\\"$(printf')
-      < up.index('GRAFANA=""\nif [ -z "$SKIP_ANALYTICS" ]') < up.index('die "WORKFLOW はアラートの送り手が要る') < up.index("COST_CENTS=2\n"))
+      < up.index('GRAFANA=""\nif [ -z "$SKIP_ANALYTICS" ]') < up.index('die "WORKFLOW はアラートの送り手が要る') < up.index("COST_CENTS=4\n"))
 check("up.sh は SINK_* / GRAFANA をスイッチとして読まない（既定値・flag_value・STORES とのぶつかりの検査が無い）",
       not any(k in up for k in ('SINK_S3="${SINK_S3:-1}"', 'SINK_SPLUNK="${SINK_SPLUNK:-0}"', "flag_value SINK_", 'GRAFANA="${GRAFANA:-1}"',
                                 "flag_value GRAFANA", 'case "${GRAFANA:-}" in', "を一緒に書いている", "SINK_SPLUNK が全部 0")))
@@ -1685,7 +1685,7 @@ check("up.sh: ジョブのキーからジョブ名を引くのは job_name の 1
 check("up.sh は analytics に Spark のジョブ 1 つにつき 21 セント（S3 / Splunk / OpenSearch か Prometheus）と opensearch の OCU を足し、opensearch は analytics を作るときだけ OCU の注意を出す",
       'if [ -n "$SINK_S3" ]; then COST_CENTS=$((COST_CENTS + 21)); fi\n  if [ -n "$SINK_SPLUNK" ]; then COST_CENTS=$((COST_CENTS + 21)); fi\n'
       '  if [ -n "$SINK_OPENSEARCH$SINK_PROMETHEUS" ]; then COST_CENTS=$((COST_CENTS + 21)); fi\n' in up
-      and up.count("COST_CENTS + 21") == 3 and "COST_CENTS=2\n" in up
+      and up.count("COST_CENTS + 21") == 3 and "COST_CENTS=4\n" in up
       and re.search(r'\*,opensearch,\*\) if \[ -z "\$SKIP_ANALYTICS" \]; then printf', up) is not None)
 check("up.sh はジョブごとに同じ SpecHash のものが動いていれば起こさない", "--states SUBMITTED PENDING SCHEDULED RUNNING QUEUED --query 'jobRuns[].[name,id]'" in up
       and "jobRun.tags.SpecHash" in up and 'if [ -z "$KEEP" ] && [ "$spec" = "$JOB_SPEC" ]; then KEEP="$id"; else STALE="$STALE $id"; fi' in up)
@@ -1990,7 +1990,7 @@ check("graph-status: RUNTIME_AZ_NUM=3 で ENDPOINTS_AZ_NUM を 3 に上げたと
 check("graph-status: up.sh と deploy.env.example の ENDPOINTS_AZ_NUM の説明に、3 で注意が出ることを書く（上限の秒は計算と同じ）",
       all(f"待つ時間の上限（{_gs_wait(3)} 秒）が timeout の {_gs_timeout} 秒を超える" in t for t in (_red_up, _red_env)))
 check("AZ_NUM の検査は deploy.env を読んだあと、aws を呼ぶ前・費用の目安より前（何も作る前）",
-      up.index("\nload_deploy_env\n") < up.index(_azblk) < up.index("command -v aws >/dev/null") < up.index("COST_CENTS=2\n"))
+      up.index("\nload_deploy_env\n") < up.index(_azblk) < up.index("command -v aws >/dev/null") < up.index("COST_CENTS=4\n"))
 check("各ルートに *_AZ_NUM を -var で渡す",
       'GRAPH_VARS=(-var "neptune_az_num=$NEPTUNE_AZ_NUM" -var "lambda_az_num=$LAMBDA_AZ_NUM")\n  if analytics_on; then GRAPH_VARS+=(-var alert_history=true); fi\n'
       '  ( tf_apply_only pipeline/graph "${GRAPH_VARS[@]}" )' in up
@@ -2000,7 +2000,7 @@ check("各ルートに *_AZ_NUM を -var で渡す",
       and 'AGENT_VARS=(-var "agent_image_tag=$IMAGE_TAG" -var "runtime_az_num=$RUNTIME_AZ_NUM" -var "lambda_az_num=$LAMBDA_AZ_NUM" -var "opensearch_az_num=$OPENSEARCH_AZ_NUM")' in up
       and 'ANALYTICS_VARS+=(-var "opensearch_az_num=$OPENSEARCH_AZ_NUM")' in up and '-var "emr_az_num=$EMR_AZ_NUM")' in up)
 # 費用の目安の全体を切り出して AZ_NUM ごとに動かす（endpoint_count は 2 本に固定。機能は全部切ってから 1 つずつ入れる）
-_costall = up[up.index("COST_CENTS=2\n"):up.index("COST_NOTE=$(printf")]
+_costall = up[up.index("COST_CENTS=4\n"):up.index("COST_NOTE=$(printf")]
 _COST_OFF = {k: "" for k in ("AGENT", "CREATE_KB", "SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA",
                              "SPLUNK_ON_ECS", "NAUTOBOT", "WORKFLOW")}
 _COST_OFF.update(SKIP_LAB="1", SKIP_GRAPH="1", SKIP_STREAM="1", SKIP_ANALYTICS="1", **dict(zip(_AZ_KEYS, "1211111111")))
@@ -2008,19 +2008,20 @@ def _costaz(**env):
     r = subprocess.run(["bash", "-uc", "endpoint_count() { echo 2; }\n" + _costall + 'echo "OUT: $COST_CENTS"'], capture_output=True, text=True,
                        env={"PATH": os.environ["PATH"], **_COST_OFF, **env})
     return int(r.stdout.split("OUT: ")[1]) if "OUT: " in r.stdout else r.stderr
-check("費用: エンドポイントは 1.4 × 本数 × ENDPOINTS_AZ_NUM（2 本で 1 AZ 3、3 AZ 8）",
-      _costaz() == 2 + 3 and _costaz(ENDPOINTS_AZ_NUM="3") == 2 + 8)
-check("費用: MSK は 2 AZ で 57、3 AZ で +27。Telegraf は受ける側のタスクが AZ ごとに増える（1 AZ 5、3 AZ 7）。Kafbat UI は stream を作る回はいつも 2",
-      _costaz(SKIP_STREAM="") == 5 + 57 + 5 + 2 and _costaz(SKIP_STREAM="", MSK_AZ_NUM="3") == 5 + 84 + 5 + 2
-      and _costaz(SKIP_STREAM="", TELEGRAF_AZ_NUM="3") == 5 + 57 + 7 + 2
-      and "\n  COST_CENTS=$((COST_CENTS + 2))   # Kafbat UI（Fargate のタスク 1）\nfi\n" in _costall)
+check("費用: エンドポイントは 1.4 × 本数 × ENDPOINTS_AZ_NUM（2 本で 1 AZ 3、3 AZ 8）。土台は Web の EC2 の 4",
+      _costaz() == 4 + 3 and _costaz(ENDPOINTS_AZ_NUM="3") == 4 + 8)
+check("費用: MSK は 2 AZ で 57、3 AZ で +27。Telegraf は受ける側のタスクが AZ ごとに増える（1 AZ 5、3 AZ 7）。Kafbat UI は cycle 010 から土台（Web の EC2）に入っていて stream では足さない",
+      _costaz(SKIP_STREAM="") == 7 + 57 + 5 and _costaz(SKIP_STREAM="", MSK_AZ_NUM="3") == 7 + 84 + 5
+      and _costaz(SKIP_STREAM="", TELEGRAF_AZ_NUM="3") == 7 + 57 + 7
+      and "Kafbat UI（Fargate" not in _costall
+      and "\n  COST_CENTS=$((COST_CENTS + (12 * (1 + TELEGRAF_AZ_NUM) + 24 + 5) / 10))   # Telegraf（Fargate のタスク 1 + TELEGRAF_AZ_NUM 個と NLB）\nfi\n" in _costall)
 check("費用: Neptune は 58 × NEPTUNE_AZ_NUM、Nautobot は Multi-AZ で 13 → 16",
-      _costaz(SKIP_GRAPH="") == 5 + 58 and _costaz(SKIP_GRAPH="", NEPTUNE_AZ_NUM="3") == 5 + 174
-      and _costaz(NAUTOBOT="1") == 5 + 13 and _costaz(NAUTOBOT="1", NAUTOBOT_DB_AZ_NUM="2") == 5 + 16)
+      _costaz(SKIP_GRAPH="") == 7 + 58 and _costaz(SKIP_GRAPH="", NEPTUNE_AZ_NUM="3") == 7 + 174
+      and _costaz(NAUTOBOT="1") == 7 + 13 and _costaz(NAUTOBOT="1", NAUTOBOT_DB_AZ_NUM="2") == 7 + 16)
 check("費用: OpenSearch の OCU は 33 × OPENSEARCH_AZ_NUM（KB も logs も）、OpenSearch Serverless のエンドポイントは 1.4 × ENDPOINTS_AZ_NUM（1 AZ 1、2 AZ 3）",
-      _costaz(AGENT="1", CREATE_KB="1") == 5 + 33 + 1 and _costaz(AGENT="1", CREATE_KB="1", OPENSEARCH_AZ_NUM="2") == 5 + 66 + 1
-      and _costaz(AGENT="1", CREATE_KB="1", ENDPOINTS_AZ_NUM="2") == 2 + 6 + 33 + 3
-      and _costaz(SKIP_ANALYTICS="", SINK_OPENSEARCH="1", OPENSEARCH_AZ_NUM="2") == 5 + 21 + 66 + 1)
+      _costaz(AGENT="1", CREATE_KB="1") == 7 + 33 + 1 and _costaz(AGENT="1", CREATE_KB="1", OPENSEARCH_AZ_NUM="2") == 7 + 66 + 1
+      and _costaz(AGENT="1", CREATE_KB="1", ENDPOINTS_AZ_NUM="2") == 4 + 6 + 33 + 3
+      and _costaz(SKIP_ANALYTICS="", SINK_OPENSEARCH="1", OPENSEARCH_AZ_NUM="2") == 7 + 21 + 66 + 1)
 check("費用: EMR / Lambda / Runtime の AZ_NUM では変わらない。AZ をまたぐ転送料は入れず、AZ_NUM を書いたときに 1 行出す",
       _costaz(EMR_AZ_NUM="3", LAMBDA_AZ_NUM="3", RUNTIME_AZ_NUM="3") == _costaz()
       and 'if [ -n "$AZ_NUM_SET" ]; then echo "AZ をまたぐ転送料（' in up)

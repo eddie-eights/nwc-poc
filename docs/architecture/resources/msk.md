@@ -37,7 +37,7 @@ Telegraf が集めた機器のデータを、いったんためておく Kafka�
 | Telegraf（受ける側 / 取りにいく側） | Telegraf → MSK | 9098/tcp、SASL_SSL + AWS_MSK_IAM。タスクロール `<prefix>-telegraf-task` |
 | Spark（EMR Serverless） | Spark ← MSK | 9098/tcp、同じ認証。ジョブの実行ロール |
 | ブローカー同士 | MSK ↔ MSK | 9092〜9098/tcp |
-| Kafbat UI（ECS） | Kafbat UI → MSK | 9098/tcp、同じ認証。タスクロールは、トピックの読み書き・作成・変更・削除と、グループを見ることまで |
+| Kafbat UI（Web の EC2 の Docker） | Web → MSK | 9098/tcp、同じ認証。Web の EC2 のロール（stream が足すポリシー `<prefix>-kafka-ui`）は、トピックの読み書き・作成・変更・削除と、グループを見ることまで |
 | SSM | MSK → パラメータ | ブートストラップの文字列を `/<prefix>/msk-bootstrap`（String）に書く |
 
 ## 知見
@@ -68,8 +68,8 @@ Telegraf が集めた機器のデータを、いったんためておく Kafka�
 - **MSK の IAM 認証には `aws:SourceVpc` の条件キーが無い。**
   閉域の Deny には入れていない。口は VPC の中にしか無い。
   出典: [core.md](../core.md) の「閉域」。
-- **Kafka の画面として Kafbat UI が 1 タスク、いつも立つ。**
-  stream を作る回はスイッチなしで作る（`IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf`。+2 セント/時）。見るだけにはしていない（トピックの追加・変更・削除、メッセージの送信ができる）。画面はログインあり、Web の EC2 を踏み台にして `http://localhost:8082/` で開く。ヘルスチェックの `/actuator/health` は Kafka に届かなくても UP を返すので、タスクが動いていても MSK につながっているとは限らない。
+- **Kafka の画面として Kafbat UI が Web の EC2 で動く。**
+  stream を作る回はスイッチなしで動く（接続先を `IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf` が SSM に書き、Web の EC2 のユニット `<prefix>-kafka-ui` が Docker で起こす。010 から。費用は Web の EC2 を t4g.medium にした差の約 2 セント/時で、土台に入っている）。見るだけにはしていない（トピックの追加・変更・削除、メッセージの送信ができる）。画面はログインあり、Web の EC2 を踏み台にして `http://localhost:8082/` で開く。ヘルスチェックの `/actuator/health` は Kafka に届かなくても UP を返すので、コンテナが動いていても MSK につながっているとは限らない。
   出典: [pipeline.md](../../pipeline.md) の「Kafka の画面（Kafbat UI）を開く」、[005 の経緯](../../cycles/005-oss-on-ecs/design-log.md)。
 - **コンソールでトピックの一覧は見られるが、メッセージの中身は見られない。**
   出典: FAQ「MSK にも Kafbat UI みたいな GUI はある？」。
@@ -78,13 +78,13 @@ Telegraf が集めた機器のデータを、いったんためておく Kafka�
 
 | 項目 | 状態 |
 |---|---|
-| Kafbat UI が MSK に IAM でつながるか | 2026-10-05 に AWS で確かめた（タスクのログに `Metrics updated for cluster`） |
-| Kafbat UI の画面に入れるか、画面からトピックを足せるか、タスクロールの権限で足りるか | 未確認（2026-10-05 の動作確認では画面を開いていない。手元の Docker で起動と画面まで） |
+| Kafbat UI が MSK に IAM でつながるか | ECS のタスクだったときは 2026-10-05 に AWS で確かめた（タスクのログに `Metrics updated for cluster`）。Web の EC2 のインスタンスロール（010）では未確認 |
+| Kafbat UI の画面に入れるか、画面からトピックを足せるか、ロールの権限で足りるか | 未確認（2026-10-05 の動作確認では画面を開いていない。手元の Docker で起動と画面まで） |
 | MSK のコンソールの topic の機能がこのクラスターで開けるか | 未確認（条件には合うはず。FAQ の同じ Q） |
 | 保存期間 | 24 時間。Spark を 24 時間より長く止めると、そのあいだの分は読めない |
 | AZ 間の転送料 | 費用の数字に入れていない |
 
-OSS 版（`IaC/terraform/oss/pipeline/stream`）には MSK が無く、代わりに `kafka.tf` が Apache Kafka（KRaft）を ECS に 3 台立てる（9092、認証なし。データは EFS）。Telegraf と Kafbat UI は同じファイルをシンボリックリンクで使い、書き先だけが変わる。[oss-variant.md](../../oss-variant.md)、[マネージドを OSS に置き換えた環境を作る（005）の設計](../../cycles/005-oss-on-ecs/design.md)。
+OSS 版（`IaC/terraform/oss/pipeline/stream`）には MSK が無く、代わりに `kafka.tf` が Apache Kafka（KRaft）を ECS に 3 台立てる（9092、認証なし。データは EFS）。Telegraf と Kafbat UI の接続先は同じファイルをシンボリックリンクで使い、書き先だけが変わる（Kafbat UI は OSS 版でも Web の EC2 で動き、Kafka の 9092 に平文でつなぐ）。[oss-variant.md](../../oss-variant.md)、[マネージドを OSS に置き換えた環境を作る（005）の設計](../../cycles/005-oss-on-ecs/design.md)。
 
 ## 関連
 

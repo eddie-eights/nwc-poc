@@ -3,6 +3,7 @@
 #   lab.sh render | pull | up | down | status | check | snmp [node] | logs [node] | cli <node> [cmd...] | fail-main | heal-main | failover | clab <args...>
 #   lab.sh fail-bgp | heal-bgp | trap-test   （Grafana と Splunk のアラートを比べる障害: BGP の隣接 1 本を止める / 戻す、link 以外の trap を 1 通送る）
 #   lab.sh forward | forward-status     （stream: ECS の Telegraf へ SNMP / gNMI / trap / syslog を通す。デバッグ用の EC2 は trap の 162 を 1162 へ向けるだけ。up が毎回呼ぶ）
+#   lab.sh graph | graph-stop           （トポロジ図: containerlab graph を 127.0.0.1:50080 で裏に起こし、手元で打つポートフォワードのコマンドを出す / 止める。down も止める）
 #   lab.sh telegraf run | stop | status | test | gnmi | logs [-f]   （デバッグ用の EC2 だけ。この EC2 の Telegraf。中身は app/telegraf/telegraf.sh、出力は標準出力）
 #   lab.sh trex start | stop | status   （dc1-trex-01 の TRex。トポロジを上げても起動しない。負荷試験のときだけ。中身は trex/README.md）
 # 手元の containerlab と違うのは 3 つ: containerlab を直接呼ぶ（root）、イメージは ECR から取る（pull）、
@@ -12,6 +13,12 @@ set -euo pipefail
 # /usr/local/bin/lab（シンボリックリンク）から呼ばれても、テンプレートのある src/ で動く
 SELF=$(readlink -f "$0")
 cd "$(dirname "$SELF")"
+# 案内（「戻すのは …」など）に出す自分の打ち方。手元は docker/compose/lab.sh が自分のパスを渡す（sudo はラッパーが付ける）。
+# EC2 は PATH にある /usr/local/bin/lab なので `sudo lab`。どちらでもなければ呼ばれたパスのまま。中から打つ "$SELF" … にも同じものを渡す
+if [ -z "${LAB_CMD:-}" ]; then
+  if [ "$(command -v "${0##*/}" 2>/dev/null || true)" = "$0" ]; then LAB_CMD="sudo ${0##*/}"; else LAB_CMD="sudo $0"; fi
+fi
+export LAB_CMD
 LAB=splab
 TOPO=splab.clab.yml
 # containerlab の管理ネットワーク（splab.clab.yml.in の mgmt）と、その上のこの EC2 のアドレス（srlinux/*.cli の trap と syslog の宛先）。
@@ -35,6 +42,9 @@ GNMI_PASSWORD='NokiaSrl1!'
 SNMP_COMMUNITY=public
 # gNMI（containerlab が SR Linux 全台で開ける。Telegraf の inputs.gnmi が BGP / IS-IS / EVPN の状態を購読する）
 GNMI_PORT=57400
+# graph（containerlab graph の Web）のポート。127.0.0.1 だけで待ち、手元からは SSM のポートフォワード（IaC/terraform/aws-managed/pipeline/lab の
+# output graph_port_forward_command と同じポート）で開く。SSM のエージェントがこの EC2 の中から繋ぐので SG は開けない
+GRAPH_PORT=50080
 # SR Linux がコンテナの中に書くログ（lab.sh logs が読む。Telegraf へは syslog で別に送る）
 SRL_LOG=/var/log/srlinux/file/messages
 # forward が入れる iptables の規則の目印（入れ直す前にこれの付いた規則を全部消す）
@@ -114,11 +124,15 @@ trex_cfg() {
 # Telegraf がこのホストの host ネットワークにいるか: デバッグ用の EC2（TELEGRAF_IMAGE）か、手元の compose（docker/compose/lab.sh が TELEGRAF_LOCAL=1 を渡す）
 local_telegraf() { [ -n "${TELEGRAF_IMAGE:-}" ] || [ "${TELEGRAF_LOCAL:-0}" = 1 ]; }
 # 障害を入れたあとにどこを見るか。デバッグ用の EC2 はこの EC2 の Telegraf の標準出力、手元は compose の Grafana / Splunk、stream は Grafana / Splunk が SNS のトピックに出すアラート
-hint() {  # hint <デバッグ用の EC2 の文> <stream の文>
-  if [ -n "${TELEGRAF_IMAGE:-}" ]; then echo "  この EC2 の Telegraf: $1"
-  elif local_telegraf; then echo "  compose の Telegraf: 数分で Grafana（:3000）と Splunk（:8000）に出る（SNS のトピックは無い）"
-  elif iptables -t nat -S PREROUTING 2>/dev/null | grep -q -- "--comment $FW_TAG"; then echo "  stream: $2"
-  else echo "  Telegraf への転送が張られていない（sudo lab forward-status）"; fi
+hint() {  # hint <デバッグ用の EC2 の文> <stream の文> [戻すサブコマンド]
+  local back=""
+  [ -z "${3:-}" ] || back="。戻すのは '$LAB_CMD $3'"
+  if [ -n "${TELEGRAF_IMAGE:-}" ]; then echo "  この EC2 の Telegraf: $1$back"
+  elif local_telegraf; then echo "  compose の Telegraf: 数分で Grafana（:3000）と Splunk（:8000）に出る（SNS のトピックは無い）$back"
+  elif iptables -t nat -S PREROUTING 2>/dev/null | grep -q -- "--comment $FW_TAG"; then echo "  stream: $2$back"
+  else echo "  Telegraf への転送が張られていない（$LAB_CMD forward-status）"; fi
+  # 機器とリンクの図は EC2（lab とデバッグ用。env に NAME_PREFIX がある）だけ。手元の compose は containerlab graph を直接打つ
+  if [ -n "${NAME_PREFIX:-}" ]; then echo "  機器とリンクの図: '$LAB_CMD graph'（containerlab graph。手元で打つポートフォワードのコマンドを出す）"; fi
 }
 unforward() {  # forward が入れた規則（目印 ${FW_TAG}）を全部消す
   local t rules r
@@ -133,7 +147,7 @@ case "${1:-}" in
   render)
     : "${SRLINUX_IMAGE:?}" "${MULTITOOL_IMAGE:?}" "${TREX_IMAGE:?}"
     sed -e "s#__SRLINUX_IMAGE__#$SRLINUX_IMAGE#" -e "s#__MULTITOOL_IMAGE__#$MULTITOOL_IMAGE#" -e "s#__TREX_IMAGE__#$TREX_IMAGE#" "$TOPO.in" > "$TOPO"
-    echo "$TOPO を作った（イメージは ${REGISTRY:-?}）"
+    echo "$TOPO を作った（イメージは $SRLINUX_IMAGE と $MULTITOOL_IMAGE と $TREX_IMAGE）"
     ;;
   pull)
     # ECR の認証は 12 時間で切れるので、毎回ログインしてから取る（署名はインスタンスロール）。
@@ -151,16 +165,41 @@ case "${1:-}" in
     clab deploy -t "$TOPO" --reconfigure
     # Docker は管理ネットワークを作るたびに自分の MASQUERADE を nat の先頭に入れるので、deploy のあとに毎回入れ直す。
     # 失敗してもトポロジは上がっている（Telegraf に届かないだけ。sudo lab forward-status で見る）
-    "$SELF" forward || echo "forward に失敗した（トポロジは動いている）。sudo lab forward-status で見る" >&2
+    "$SELF" forward || echo "forward に失敗した（トポロジは動いている）。$LAB_CMD forward-status で見る" >&2
     ;;
-  down)   clab destroy -t "$TOPO" --cleanup ;;
+  down)   "$SELF" graph-stop; clab destroy -t "$TOPO" --cleanup ;;
   status) clab inspect -t "$TOPO" ;;
   clab)   clab "${@:2}" ;;
+  graph)
+    # containerlab graph（トポロジの図を Web で出す）を systemd の一時ユニットで裏に起こす（SSM のセッションを閉じても残る。止めるのは graph-stop か down）。
+    # systemd-run の中では上の clab() が使えないので containerlab を直接呼び、版の確かめを切る環境変数も渡し直す
+    : "${NAME_PREFIX:?lab の EC2 だけ（/etc/*-lab.env が無い。手元は containerlab graph -t $TOPO を直接打つ）}" "${AWS_REGION:?}"
+    [ -f "$TOPO" ] || "$SELF" render
+    if systemctl is-active --quiet "$NAME_PREFIX-lab-graph"; then
+      echo "トポロジ図はもう動いている（$NAME_PREFIX-lab-graph。止めるのは '$LAB_CMD graph-stop'）"
+    else
+      systemd-run --unit="$NAME_PREFIX-lab-graph" --collect --property=WorkingDirectory="$PWD" --setenv=CLAB_VERSION_CHECK=disable \
+        containerlab graph -t "$TOPO" --srv "127.0.0.1:$GRAPH_PORT"
+    fi
+    # 手元で打つコマンドの宛先はこの EC2。instance id は IMDSv2 から取る（取れなければ置き場所だけ出す）
+    id=$(t=$(curl -sf -m 2 -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" http://169.254.169.254/latest/api/token) \
+      && curl -sf -m 2 -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/meta-data/instance-id) || id="<この EC2 の instance id>"
+    echo "手元の PC で打つ（AWS CLI v2 + Session Manager plugin。IaC/terraform/aws-managed/pipeline/lab の output graph_port_forward_command と同じ）:"
+    echo "  aws ssm start-session --region $AWS_REGION --target $id --document-name AWS-StartPortForwardingSession --parameters portNumber=$GRAPH_PORT,localPortNumber=$GRAPH_PORT"
+    echo "ブラウザで http://localhost:$GRAPH_PORT/ を開く。開けなければ 'sudo systemctl status $NAME_PREFIX-lab-graph'。止めるのは '$LAB_CMD graph-stop'"
+    ;;
+  graph-stop)
+    # down（lab の EC2 の systemd の ExecStop）からも呼ぶ。手元の compose（docker/compose/lab.sh）には NAME_PREFIX が無いので何もしない。
+    # 動いていない（一時ユニットが無い）ときの systemctl stop の失敗は無視する
+    if [ -n "${NAME_PREFIX:-}" ] && command -v systemctl >/dev/null; then
+      systemctl stop "$NAME_PREFIX-lab-graph" 2>/dev/null || true
+    fi
+    ;;
   cli)    srl "$2" "${@:3}" ;;
   check)
     echo "== BGP EVPN（dc1-spine-01 = ルートリフレクタ。s-leaf 2 + a-leaf 2 が established なら OK）=="; srl dc1-spine-01 "show network-instance default protocols bgp neighbor"
     echo "== IS-IS の隣接（dc1-a-leaf-01。spine 2 台が Up なら OK）=="; srl dc1-a-leaf-01 "show network-instance default protocols isis adjacency"
-    echo "== TRex の回線（leaf の ethernet-1/3 と $TREX の eth1〜。両端とも up なら OK。L2 の疎通は lab trex start のあと trex/README.md の手順で見る）=="
+    echo "== TRex の回線（leaf の ethernet-1/3 と $TREX の eth1〜。両端とも up なら OK。L2 の疎通は '$LAB_CMD trex start' のあと trex/README.md の手順で見る）=="
     edge_ports
     echo "== SNMP（dc1-a-leaf-01 の ifName + ifOperStatus。admin=up の行だけ）=="
     snmp_if dc1-a-leaf-01
@@ -176,19 +215,19 @@ case "${1:-}" in
     # コンテナの中の veth（e1-1 = ethernet-1/1）を落とす。admin-state は enable のままなので、機器からは回線断（oper down）に見える。
     # IS-IS の隣接（dc1-a-leaf-01 - dc1-spine-01）が落ち、経路は dc1-spine-02 経由に切り替わる。iBGP はループバック同士なので張り直さない
     x dc1-a-leaf-01 ip link set e1-1 down
-    echo "  IS-IS の隣接は数秒で落ちる。切替の確認は 'lab failover' が待ってくれる"
+    echo "  IS-IS の隣接は数秒で落ちる。切替の確認は '$LAB_CMD failover' が待ってくれる。戻すのは '$LAB_CMD heal-main'"
     ;;
   heal-main) echo "DC 側 Leaf の fabric (dc1-a-leaf-01 ethernet-1/1) を戻す"; x dc1-a-leaf-01 ip link set e1-1 up ;;
   fail-bgp)
-    echo "$BGP_NODE の iBGP（EVPN）の隣接 1 本（dc1-spine-01 = $BGP_PEER）を止める"
+    echo "$BGP_NODE の iBGP（EVPN）の隣接 1 本（dc1-spine-01 = ${BGP_PEER}）を止める"
     # neighbor の admin-state を disable にする（回線は落とさない）。$BGP_NODE 側と dc1-spine-01 側（neighbor は $BGP_NODE のループバック）の
     # session-state が established でなくなり、gNMI の on_change（bgp_neighbor）で流れる。EVPN の経路は dc1-spine-02 からも来るので、mac-vrf（TRex のポートのあいだ）は通ったまま
     bgp_admin disable
-    hint "'sudo lab telegraf logs' に bgp_neighbor の session_state（established 以外）が出る。戻すのは 'lab heal-bgp'" \
-      "数分で Grafana と Splunk の両方が bgp_down（$BGP_NODE の $BGP_PEER と、dc1-spine-01 の $BGP_NODE 側）を SNS のトピックに出す。戻すのは 'lab heal-bgp'"
+    hint "'$LAB_CMD telegraf logs' に bgp_neighbor の session_state（established 以外）が出る" \
+      "数分で Grafana と Splunk の両方が bgp_down（$BGP_NODE の $BGP_PEER と、dc1-spine-01 の $BGP_NODE 側）を SNS のトピックに出す" heal-bgp
     ;;
   heal-bgp)
-    echo "$BGP_NODE の iBGP の隣接（$BGP_PEER）を戻す。established に戻るまで数十秒（'lab check' で見る）"
+    echo "$BGP_NODE の iBGP の隣接（${BGP_PEER}）を戻す。established に戻るまで数十秒（'$LAB_CMD check' で見る）"
     bgp_admin enable
     ;;
   trap-test)
@@ -200,7 +239,7 @@ case "${1:-}" in
     pid=$(docker inspect -f '{{.State.Pid}}' "clab-$LAB-$TREX")
     nsenter -t "$pid" -n snmptrap -v2c -c "$SNMP_COMMUNITY" "$MGMT_GW:162" '' "$TEST_TRAP_OID" .1.3.6.1.4.1.8072.2.3.2.1 i 1
     echo "trap $TEST_TRAP_OID を $TREX（$(mgmt_ip "$TREX")）から $MGMT_GW:162 へ送った"
-    hint "'sudo lab telegraf logs' に snmp_trap（oid=$TEST_TRAP_OID）が出る" \
+    hint "'$LAB_CMD telegraf logs' に snmp_trap（oid=${TEST_TRAP_OID}）が出る" \
       "数分で Grafana と Splunk の両方が trap（$TREX の $TEST_TRAP_OID）を出し、次の trap が来なければおよそ 10 分後に両方が解消を出す"
     ;;
   failover)
@@ -235,14 +274,14 @@ case "${1:-}" in
     echo "$w"
     if [ -n "${TELEGRAF_IMAGE:-}" ]; then
       echo "== Telegraf（この EC2。標準出力）=="
-      echo "  'sudo lab telegraf logs' に interface（ifOperStatus）、snmp_trap の linkDown、device_log（syslog）、isis_interface の down が出る。戻すのは 'lab heal-main'"
+      echo "  '$LAB_CMD telegraf logs' に interface（ifOperStatus）、snmp_trap の linkDown、device_log（syslog）、isis_interface の down が出る。戻すのは '$LAB_CMD heal-main'"
     elif local_telegraf; then
       echo "== Telegraf（compose の Telegraf）=="
-      echo "  数分で Grafana（:3000）の metrics ダッシュボードの dc1-a-leaf-01 ethernet-1/1 が DOWN、logs ダッシュボードと Splunk（:8000）に linkDown の trap と syslog が出る。戻すのは 'heal-main'"
+      echo "  数分で Grafana（:3000）の metrics ダッシュボードの dc1-a-leaf-01 ethernet-1/1 が DOWN、logs ダッシュボードと Splunk（:8000）に linkDown の trap と syslog が出る。戻すのは '$LAB_CMD heal-main'"
     elif iptables -t nat -S PREROUTING 2>/dev/null | grep -q -- "--comment $FW_TAG"; then
       echo "== Telegraf（stream。ECS のタスク）=="
       echo "  ポーリング（10 秒周期）と SR Linux の linkDown トラップ、syslog、gNMI の IS-IS の隣接が MSK に流れ、Grafana のアラートルール（ポーリング）と Splunk の保存済みサーチ（trap と gNMI）が SNS のトピックに出す。"
-      echo "  数分で GUI の「トポロジ」の dc1-a-leaf-01 ethernet-1/1 が DOWN になり（link_down と isis_down）、WORKFLOW=1 なら「承認」に修復案が出る。アラートは Grafana / Splunk で見る。戻すのは 'lab heal-main'"
+      echo "  数分で GUI の「トポロジ」の dc1-a-leaf-01 ethernet-1/1 が DOWN になり（link_down と isis_down）、WORKFLOW=1 なら「承認」に修復案が出る。アラートは Grafana / Splunk で見る。戻すのは '$LAB_CMD heal-main'"
     fi
     ;;
   forward)
@@ -312,14 +351,14 @@ case "${1:-}" in
         docker run -d --name "$TG" --restart unless-stopped --network host --log-opt max-size=50m --log-opt max-file=3 \
           -e SINK=stdout -e SYSLOG_STANDARD="$LOG_STANDARD" -e SNMP_POLL="${SNMP_POLL:-0}" -e AWS_REGION -e SNMP_AGENTS="$agents" -e GNMI_TARGETS="$gnmi" \
           -e GNMI_USERNAME="$GNMI_USERNAME" -e GNMI_PASSWORD="$GNMI_PASSWORD" -e SNMP_COMMUNITY="$SNMP_COMMUNITY" "$TELEGRAF_IMAGE" run >/dev/null
-        echo "Telegraf を起こした（$TELEGRAF_IMAGE。出力は 'sudo lab telegraf logs -f'）"
+        echo "Telegraf を起こした（${TELEGRAF_IMAGE}。出力は '$LAB_CMD telegraf logs -f'）"
         ;;
       stop)   docker rm -f "$TG" >/dev/null 2>&1 || true ;;
       status) docker ps -a --filter "name=^$TG\$" --format '{{.Names}}  {{.Status}}  {{.Image}}' ;;
       test)   docker exec "$TG" tg test ;;
       gnmi)   docker exec "$TG" tg gnmi ;;
       logs)   docker logs --tail "${LINES:-50}" "${@:3}" "$TG" ;;
-      *) sed -n '6p' "$SELF"; exit 1 ;;
+      *) sed -n '7p' "$SELF"; exit 1 ;;
     esac
     ;;
   trex)
@@ -329,8 +368,8 @@ case "${1:-}" in
       start)
         mapfile -t ports < <(trex_ports)
         # TRex はポートを 2 本ずつ組にする（0-1、2-3）ので偶数本が要る（gen_lab.py も --leaves を偶数に限る）
-        if [ "${#ports[@]}" -lt 2 ] || [ $(( ${#ports[@]} % 2 )) -ne 0 ]; then echo "$TREX のポートが偶数本でない（${ports[*]:-無し}）。lab check の TRex の回線を見る" >&2; exit 1; fi
-        if x "$TREX" pgrep -f _t-rex-64 >/dev/null 2>&1; then echo "TRex はもう動いている（'lab trex status'。止めるのは 'lab trex stop'）"; exit 0; fi
+        if [ "${#ports[@]}" -lt 2 ] || [ $(( ${#ports[@]} % 2 )) -ne 0 ]; then echo "$TREX のポートが偶数本でない（${ports[*]:-無し}）。'$LAB_CMD check' の TRex の回線を見る" >&2; exit 1; fi
+        if x "$TREX" pgrep -f _t-rex-64 >/dev/null 2>&1; then echo "TRex はもう動いている（'$LAB_CMD trex status'。止めるのは '$LAB_CMD trex stop'）"; exit 0; fi
         trex_cfg "${ports[@]}" | docker exec -i "clab-$LAB-$TREX" sh -c "cat > $TREX_CFG"
         x "$TREX" mkdir -p "$TREX_PROFILES"
         docker cp trex/stl "clab-$LAB-$TREX:$TREX_PROFILES/"
@@ -338,15 +377,15 @@ case "${1:-}" in
         dir=$(x "$TREX" find / -xdev -maxdepth 5 -name t-rex-64 -type f 2>/dev/null | head -1) || true
         [ -n "$dir" ] || { echo "$TREX の中に t-rex-64 が無い（TREX_IMAGE が TRex のイメージか）" >&2; exit 1; }
         docker exec -d "clab-$LAB-$TREX" sh -c 'cd "$1" && exec ./t-rex-64 -i --no-key --iom 0 > "$2" 2>&1' sh "${dir%/*}" "$TREX_LOG"
-        echo "TRex を起こした（ポート ${ports[*]}、設定 $TREX_CFG、出力 $TREX_LOG、プロファイル $TREX_PROFILES/stl）。起動に数十秒。'lab trex status' で見る"
+        echo "TRex を起こした（ポート ${ports[*]}、設定 $TREX_CFG、出力 $TREX_LOG、プロファイル $TREX_PROFILES/stl）。起動に数十秒。'$LAB_CMD trex status' で見る"
         ;;
       stop)   x "$TREX" pkill -f t-rex-64 || echo "TRex は動いていない" ;;
       status)
-        x "$TREX" pgrep -af t-rex-64 || echo "TRex は動いていない（'lab trex start'）"
+        x "$TREX" pgrep -af t-rex-64 || echo "TRex は動いていない（'$LAB_CMD trex start'）"
         x "$TREX" tail -n "${LINES:-20}" "$TREX_LOG" 2>/dev/null || true
         ;;
-      *) sed -n '7p' "$SELF"; exit 1 ;;
+      *) sed -n '8p' "$SELF"; exit 1 ;;
     esac
     ;;
-  *) sed -n '2,7p' "$SELF"; exit 1 ;;
+  *) sed -n '2,8p' "$SELF"; exit 1 ;;
 esac

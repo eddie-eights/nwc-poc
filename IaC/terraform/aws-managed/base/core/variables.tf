@@ -75,9 +75,9 @@ variable "az_id_c" {
 
 # ---------------------------------------------------------------- chat web (EC2)
 variable "instance_type" {
-  description = "Chat web EC2. Gradio with numpy and pandas needs about 400 MB of memory, so t4g.small (2 GB) is the default."
+  description = "Chat web EC2. Gradio with numpy and pandas needs about 400 MB of memory and the Kafbat UI container (JVM) about 1 GB, so t4g.small (2 GB) is not enough and t4g.medium (4 GB) is the default."
   type        = string
-  default     = "t4g.small"
+  default     = "t4g.medium"
 
   validation {
     condition     = contains(["t4g.micro", "t4g.small", "t4g.medium"], var.instance_type)
