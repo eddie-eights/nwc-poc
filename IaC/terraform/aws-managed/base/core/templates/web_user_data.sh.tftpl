@@ -20,6 +20,63 @@ APP=/opt/${name_prefix}-web
 # /usr/bin/python3 は 3.9 のまま（AL2023 の仕様）。3.13 と pip を別に入れる。取得経路は S3 ゲートウェイエンドポイント
 command -v python3.13 >/dev/null || dnf install -y python3.13 python3.13-pip
 install -d -m 0755 $APP
+
+# Kafbat UI（cycle 010）。Web の画面より前に置く（S3 に web/ がまだ無くて下で exit 0 しても動かす）。Docker の取得経路も S3 ゲートウェイエンドポイント。
+# 接続先は IaC/terraform/aws-managed/pipeline/stream の kafka_ui.tf が書く SSM のパラメータで、stream より先にこの EC2 ができるので、
+# 読めるまでスクリプトが 75 で終わり、systemd が 30 秒ごとに起こし直す。値はログに出さず、パスワードを含む env は /run（tmpfs）に置いて止まったら消す
+command -v docker >/dev/null || dnf install -y docker
+systemctl enable --now docker
+cat > /usr/local/bin/${name_prefix}-kafka-ui <<'__KAFKA_UI__'
+#!/bin/bash
+set -euo pipefail
+PARAM=/${name_prefix}/kafka-ui
+ENV_FILE=/run/${name_prefix}-kafka-ui.env
+param() {
+  aws ssm get-parameter --region ${region} --name "$PARAM/$1" --query Parameter.Value --output text "$${@:2}"
+}
+if ! IMAGE=$(param image) || ! SERVERS=$(param bootstrap-servers) || ! PROTOCOL=$(param security-protocol) \
+  || ! PASSWORD=$(param admin-password --with-decryption); then
+  echo "SSM parameters under $PARAM are not readable yet (apply IaC/terraform/aws-managed/pipeline/stream). Retrying." >&2
+  exit 75
+fi
+umask 077
+{
+  printf '%s\n' "KAFKA_CLUSTERS_0_NAME=${name_prefix}" "KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=$SERVERS" \
+    "KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL=$PROTOCOL"
+  if [ "$PROTOCOL" = SASL_SSL ]; then
+    printf '%s\n' "KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM=AWS_MSK_IAM" \
+      "KAFKA_CLUSTERS_0_PROPERTIES_SASL_CLIENT_CALLBACK_HANDLER_CLASS=software.amazon.msk.auth.iam.IAMClientCallbackHandler" \
+      "KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG=software.amazon.msk.auth.iam.IAMLoginModule required;"
+  fi
+  printf '%s\n' "AUTH_TYPE=LOGIN_FORM" "SPRING_SECURITY_USER_NAME=admin" "SPRING_SECURITY_USER_PASSWORD=$PASSWORD" \
+    "GITHUB_RELEASE_INFO_ENABLED=false" "JAVA_OPTS=-XX:MaxRAMPercentage=50"
+} > "$ENV_FILE"
+aws ecr get-login-password --region ${region} | docker login --username AWS --password-stdin "$${IMAGE%%/*}" >/dev/null
+docker pull --quiet "$IMAGE"
+docker rm --force ${name_prefix}-kafka-ui >/dev/null 2>&1 || true
+exec docker run --rm --name ${name_prefix}-kafka-ui --env-file "$ENV_FILE" -p 127.0.0.1:8082:8080 "$IMAGE"
+__KAFKA_UI__
+chmod 0755 /usr/local/bin/${name_prefix}-kafka-ui
+cat > /etc/systemd/system/${name_prefix}-kafka-ui.service <<__KAFKA_UI_UNIT__
+[Unit]
+Description=${name_prefix} Kafbat UI (Docker, 127.0.0.1:8082, reached via SSM port forwarding)
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+ExecStart=/usr/local/bin/${name_prefix}-kafka-ui
+ExecStopPost=/bin/rm -f /run/${name_prefix}-kafka-ui.env
+Restart=always
+RestartSec=30
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+__KAFKA_UI_UNIT__
+systemctl daemon-reload
+systemctl enable --now ${name_prefix}-kafka-ui.service
+
 # 画面のコード（app.py）・静的データ（data/）・依存の wheel（wheels/）を S3 から取る（ops/up.sh の手順 4）
 aws s3 sync --delete --region ${region} s3://${bucket}/web/ $APP/src/
 # バケットは IaC/terraform/aws-managed/base/core が作るので、初回の apply の時点では web/ が空。置いてから reboot-instances すれば、この user_data がもう一度走る

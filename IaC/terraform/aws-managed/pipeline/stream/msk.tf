@@ -21,8 +21,6 @@ locals {
     SASL_SSL  = aws_msk_cluster.stream.bootstrap_brokers_sasl_iam
     PLAINTEXT = aws_msk_cluster.stream.bootstrap_brokers
   }
-  # Kafbat UI の画面に出るクラスタの名前
-  kafka_cluster_name = aws_msk_cluster.stream.cluster_name
   # Telegraf の 2 つのタスクに足す環境変数。MSK は telegraf.sh の既定（KAFKA_AUTH=iam）のままなので何も足さない
   kafka_client_environment = []
   # Telegraf のタスクロールの Kafka の権限（ECS Exec の分は telegraf.tf）
@@ -41,7 +39,7 @@ locals {
       Resource = [aws_msk_cluster.stream.arn, local.topic_arns]
     },
   ]
-  # Kafbat UI のタスクロールの権限。Kafbat UI が使う Kafka の操作だけ。ブローカーの設定の変更（AlterClusterDynamicConfiguration）と
+  # Kafbat UI が動く Web の EC2 のロールに足す権限（kafka_ui.tf）。Kafbat UI が使う Kafka の操作だけ。ブローカーの設定の変更（AlterClusterDynamicConfiguration）と
   # consumer group の変更・削除（AlterGroup / DeleteGroup）は付けない（画面のその操作は権限エラーになる）。メッセージを読むときの consumer は group を使わない（assign）
   kafka_ui_kafka_statements = [
     {
@@ -79,11 +77,9 @@ locals {
       Resource = local.group_arns
     },
   ]
-  # IAM ロールと Cloud Map の名前空間の description（名前空間の description は変えると作り直しになるので、今のまま）
+  # IAM ロールの description（Cloud Map の名前空間は cycle 010 から OSS 版の kafka.tf だけ）
   kafka_descriptions = {
-    namespace     = "Kafbat UI of ${local.name_prefix} (IaC/terraform/aws-managed/pipeline/stream)"
     telegraf_task = "Telegraf task - write SNMP / gNMI / trap / syslog / MDT to MSK (IAM auth), ECS Exec"
-    kafka_ui_task = "Kafbat UI task - browse the MSK cluster, create / alter / delete topics, read and write messages (MSK IAM)"
   }
 }
 
