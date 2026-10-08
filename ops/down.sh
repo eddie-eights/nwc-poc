@@ -3,7 +3,8 @@
 # state（IaC/terraform/aws-managed/<ルート>/terraform.tfstate）にリソースが載っているルートだけを消す。作っていないルートは飛ばす。
 #
 # 使い方（展開したフォルダの直下で。先に AWS CLI の認証を通しておく。IAM ユーザーなら長期キーのまま打つ）:
-#   ops/down.sh              # 全部消す（workflow → analytics → nautobot → graph → stream → lab → agent → base/core → ecr → Runtime のロググループ → ops/up.sh が作った SSM のパラメータ）。KEEP_ECR=0 と同じ
+#   ops/down.sh              # 全部消す（workflow → analytics → nautobot → graph → stream → lab → agent → base/core → ecr → Runtime のロググループ → ops/up.sh が作った SSM のパラメータ
+#                            → MSK の SCRAM の secret と KMS の鍵）。KEEP_ECR=0 と同じ
 #   KEEP_ECR=1 ops/down.sh   # ECR（イメージ）だけ残す。翌日の ops/up.sh でビルドを飛ばせる（保管料は 7.39 GB で月 約 110 円。2026-10-08 の実測）
 #
 # ops/up.sh と同じ deploy.env（DEPLOY_ENV_FILE=<パス> で別のファイル）を読む。環境変数はファイルより優先。
@@ -110,10 +111,16 @@ log "5-2. ops/up.sh が作った SSM のパラメータ（Grafana / Splunk / Nau
 # IaC/terraform/aws-managed/pipeline/nautobot が消えなかったときは、その secrets を残す（ops/down-common.sh の delete_up_ssm_params）
 delete_up_ssm_params
 
+log "5-3. ops/up.sh が作った MSK の SCRAM の secret（Secrets Manager）と KMS の鍵"
+# secret はすぐ消し、鍵は削除を予約して（7 日後に消える。待つあいだは課金されない）alias を外す。中身は読まない。
+# IaC/terraform/aws-managed/pipeline/stream が消えなかったときは両方残す（ops/down-common.sh の delete_msk_scram）
+delete_msk_scram
+
 log "6. 残っていないか（Project=$PREFIX のタグ）"
 report_leftovers
 echo "（この一覧では消えたかを決めない。タグの API は消えたリソースも返す（何日も前に消えた EMR Serverless のジョブランなど）。"
-echo " 消えたかはサービスごとの API で見る。KEEP_ECR=1 なら ECR のリポジトリは実際に残っている。docs/deploy.md の「消したあとに残るもの」）"
+echo " 消えたかはサービスごとの API で見る。KEEP_ECR=1 なら ECR のリポジトリは実際に残っている。MSK の SCRAM の KMS の鍵は削除の予約のまま 7 日残る（課金なし）。
+ docs/deploy.md の「消したあとに残るもの」）"
 if [ "$MAIN_LEFT" = 1 ]; then
   echo "IaC/terraform/aws-managed/base/core の VPC・サブネット・runtime の SG は残した（Runtime の ENI 待ち。時間課金は無い）。"
   echo "そのままでよい。次の ops/up.sh が使い回す（ops/up.sh を打ったのと同じチェックアウトから打つとき。state はここにしか無い）。"

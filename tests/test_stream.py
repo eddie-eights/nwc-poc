@@ -61,7 +61,7 @@ check("空のマイクロバッチでは sender を呼ばない（検知の見�
       re.search(r"\n\s*if records:\n\s*dropped = sender\(records\)", src) is not None and 'name == "detect"' not in src)
 
 
-# ---- ログの経路: SR Linux の system logging remote-server（udp）→ lab の EC2（203.0.113.1:5140 を Telegraf の NLB へ DNAT）→ Telegraf（ECS）の inputs.syslog
+# ---- ログの経路: SR Linux の system logging remote-server（udp）→ lab の EC2（203.0.113.1:5140 を NLB へ DNAT）→ syslog-ng（cycle 012。それまでは Telegraf の inputs.syslog）
 # → Kafka の logs → Spark（2026-09-26。FRR + rsyslog をやめた）
 def _read(*parts):
     with open(os.path.join(ROOT, *parts), encoding="utf-8") as f:
@@ -78,6 +78,7 @@ tele = _read("app", "telegraf", "telegraf.conf.in")
 tgsh = _read("app", "telegraf", "telegraf.sh")
 lab_locals = _read("IaC", "terraform", "aws-managed", "pipeline", "lab", "locals.tf")
 stream_tg = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "telegraf.tf")
+stream_col = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "collectors.tf")
 core_sg = _read("IaC", "terraform", "aws-managed", "base", "core", "security_groups.tf")
 check("SR Linux の 6 台の設定は set / の行だけ（containerlab が候補に流し込んで commit する。enter candidate / commit を書くと二重になる）",
       len(srl_nodes) == 6 and all(all(re.match(r"^(set / |#|\s*$)", l) for l in c.splitlines()) for c in srl_cfg.values()))
@@ -101,26 +102,57 @@ check("containerlab の TRex 1 台は linux で、各 leaf の e1-3 へ 1 本ず
 check("lab.sh forward は syslog の LOG_PORT も trap の 162 と同じ仕組みで DNAT する（rsyslog は無い）",
       re.search(r'-p udp --dport "\$LOG_PORT" "\$\{c\[@\]\}" -j DNAT --to-destination "\$t:\$LOG_PORT"', labsh) is not None
       and "rsyslog" not in labsh and "LOG_DIR" not in labsh and re.search(r"^\s*logs\)", labsh, re.M) is not None)
-# ログのポートは 5 か所で同じ（lab.sh / telegraf.sh / telegraf.conf.in / stream の NLB / 土台の SG の通信の表）。trap は NLB の 162 → タスクの 1162（非 root）
-check("syslog のポートが lab.sh・telegraf.sh・telegraf.conf.in・stream の NLB・土台の通信の表で同じで、trap は NLB の 162 をタスクの 1162 で受ける",
-      re.search(rf"^LOG_PORT=\$\{{LOG_PORT:-{log_port}\}}$", tgsh, re.M) is not None and re.search(r'^\s*server = "udp://__BIND__:__LOG_PORT__"$', tele, re.M) is not None
+# NLB の受け口は stream の collector_listeners の表（cycle 012）。受け口 → サービスとそのタスクのポートで、どれも UDP。trap は NLB の 162 → タスクの 1162（非 root）。
+# 同じ番号が lab.sh（syslog の LOG_PORT と NetFlow / sFlow の DNAT）と土台の SG の通信の表にもある
+_cl_blk = re.search(r"^  collector_listeners = \{\n(.*?)^  \}\n", stream_tg, re.M | re.S)
+_cl = {k: (int(lp), int(cp), sv) for k, lp, cp, sv in re.findall(r'^\s*(\w+)\s*= \{ listener = (\d+), container = (\d+), service = "([\w-]+)" \}$', _cl_blk.group(1), re.M)} if _cl_blk else {}
+_hc_blk = re.search(r"^  collector_health_checks = \{\n(.*?)^  \}\n", stream_tg, re.M | re.S)
+_hc_rows = re.findall(r'^\s*"?([\w-]+)"?\s*= \{ protocol = "(\w+)", port = "(\d+)", path = ("[^"]*"|null) \}$', _hc_blk.group(1), re.M) if _hc_blk else []
+_hc = {k: (pr, int(pt)) for k, pr, pt, _ in _hc_rows}
+_hc_path = {k: pa for k, _, _, pa in _hc_rows}
+_svc_sg = {"telegraf-dialout": "telegraf_dialout", "syslog-ng": "syslog_ng", "goflow2": "goflow2"}
+def _sg_row(a, b, proto, pt):
+    return re.search(rf'\{{ from = "{a}", to = "{b}", protocol = "{proto}", port = {pt},', core_sg) is not None
+check("NLB の受け口（collector_listeners）は trap 162→1162（telegraf-dialout）・syslog は lab.sh の LOG_PORT（syslog-ng）・netflow 2055 と sflow 6343（goflow2）の 4 つで、"
+      "target group も listener も UDP（MDT の 57000/tcp と telegraf_ports は cycle 012 で外した）",
+      _cl == {"trap": (162, 1162, "telegraf-dialout"), "syslog": (int(log_port), int(log_port), "syslog-ng"), "netflow": (2055, 2055, "goflow2"), "sflow": (6343, 6343, "goflow2")}
+      and stream_tg.count("for_each = local.collector_listeners") == 2 and 'protocol    = "UDP"' in stream_tg and 'protocol          = "UDP"' in stream_tg
+      and "preserve_client_ip = true" in stream_tg and "telegraf_ports" not in stream_tg
+      and "57000" not in "\n".join(l for l in (stream_tg + stream_col).splitlines() if not l.lstrip().startswith("#"))
       and re.search(r'^\s*service_address = "udp://__BIND__:__TRAP_PORT__"$', tele, re.M) is not None and re.search(r"^TRAP_PORT=\$\{TRAP_PORT:-1162\}$", tgsh, re.M) is not None
-      and all(re.search(rf'\{{ from = "{a}", to = "{b}", protocol = "udp", port = {pt},', core_sg) is not None
-              for a, b, pt in (("lab_mgmt", "telegraf_dialout_nlb", log_port), ("lab", "telegraf_dialout_nlb", log_port), ("telegraf_dialout_nlb", "telegraf_dialout", log_port),
-                               ("lab_mgmt", "telegraf_dialout_nlb", 162), ("lab", "telegraf_dialout_nlb", 162), ("telegraf_dialout_nlb", "telegraf_dialout", 1162)))
-      and "log_port" not in lab_locals
-      and re.search(rf'syslog = \{{ listener = {log_port}, container = {log_port}, protocol = "UDP" \}}', stream_tg) is not None
-      and re.search(r'trap\s+= \{ listener = 162, container = 1162, protocol = "UDP" \}', stream_tg) is not None)
-# MDT の dial-out は 4 か所で同じポート（telegraf.sh / telegraf.conf.in / stream の NLB とタスク / 土台の通信の表）で TCP。NLB は TCP の送り元を残さない
-check("MDT は tcp 57000 で受ける（inputs.cisco_telemetry_mdt・telegraf.sh・NLB の TCP のリスナー・タスクの portMappings・NLB → タスクの SG）",
-      re.search(r'^MDT_PORT=\$\{MDT_PORT:-57000\}$', tgsh, re.M) is not None
-      and re.search(r'\[\[inputs\.cisco_telemetry_mdt\]\]\s*\n\s*transport = "grpc"\s*\n\s*service_address = "__BIND__:__MDT_PORT__"', tele) is not None
-      and re.search(r'mdt\s+= \{ listener = 57000, container = 57000, protocol = "TCP" \}', stream_tg) is not None
-      and "protocol    = each.value.protocol" in stream_tg and "protocol          = each.value.protocol" in stream_tg
-      and 'preserve_client_ip = each.value.protocol == "UDP"' in stream_tg
-      and '{ containerPort = 57000, protocol = "tcp" }' in stream_tg
-      and re.search(r'\{ from = "telegraf_dialout_nlb", to = "telegraf_dialout", protocol = "tcp", port = 57000,', core_sg) is not None
-      and "57000" not in lab_locals and "57000" not in labsh)
+      and "log_port" not in lab_locals)
+check("土台の SG の通信の表に、受け口ごとの 3 本（管理ネットワーク → NLB、lab の EC2 → NLB、NLB → サービスの SG のタスクのポート）と、サービスごとのヘルスチェックの tcp がある",
+      len(_cl) == 4 and sorted(_hc) == sorted(_svc_sg)
+      and all(_sg_row("lab_mgmt", "telegraf_dialout_nlb", "udp", lp) and _sg_row("lab", "telegraf_dialout_nlb", "udp", lp)
+              and _sg_row("telegraf_dialout_nlb", _svc_sg[sv], "udp", cp) for lp, cp, sv in _cl.values())
+      and all(_sg_row("telegraf_dialout_nlb", _svc_sg[sv], "tcp", pt) for sv, (_, pt) in _hc.items())
+      and _hc == {"telegraf-dialout": ("HTTP", 8080), "syslog-ng": ("TCP", int(log_port)), "goflow2": ("HTTP", 8081)}
+      and _hc_path == {"telegraf-dialout": '"/"', "syslog-ng": "null", "goflow2": '"/__health"'}   # GoFlow2 の / は 404（200 は /__health だけ）
+      and not re.search(r'from = "telegraf_dialout_nlb", to = "telegraf_dialout", protocol = "(udp", port = 5140|tcp", port = 57000)', core_sg))
+_col_td = {k: m.group(0) for k in ("syslog_ng", "goflow2")
+           if (m := re.search(r'^resource "aws_ecs_task_definition" "' + k + r'" \{\n(?:.*\n)*?^\}\n', stream_col, re.M))}
+check("syslog-ng と GoFlow2 のタスク定義は、それぞれの実行ロールで local.kafka_collector_secrets（SCRAM のユーザー名とパスワード）を入れ、"
+      "実行ロールのポリシーは local.kafka_collector_execution_statements。syslog-ng は KAFKA_BROKERS / KAFKA_AUTH、GoFlow2 は引数でブローカーと SCRAM を受ける",
+      sorted(_col_td) == ["goflow2", "syslog_ng"]
+      and all(f"  execution_role_arn       = aws_iam_role.{k}_execution.arn\n" in b and "\n      secrets = local.kafka_collector_secrets\n" in b for k, b in _col_td.items())
+      and all(re.search(r'^resource "aws_iam_role_policy" "' + k + r'_execution" \{\n(?:(?!^\}).*\n)*?\s*Statement = local\.kafka_collector_execution_statements\n', stream_col, re.M)
+              for k in _col_td)
+      and '{ name = "KAFKA_BROKERS", value = local.kafka_collector_brokers },' in _col_td["syslog_ng"]
+      and '{ name = "KAFKA_AUTH", value = local.kafka_collector_auth },' in _col_td["syslog_ng"]
+      and "      command   = local.goflow2_command\n" in _col_td["goflow2"]
+      and '"-transport.kafka.brokers=${local.kafka_collector_brokers}",' in stream_col
+      and 'local.collector_scram ? ["-transport.kafka.tls", "-transport.kafka.sasl=scram-sha512"] : [],' in stream_col
+      and '  collector_scram          = local.kafka_collector_auth == "scram"\n' in stream_col)
+_svc_lb = {k: m.group(1) for k in ("telegraf_dialout", "syslog_ng", "goflow2")
+           if (m := re.search(r'resource "aws_ecs_service" "' + k + r'" \{[^\n]*\n(?:(?!^\}).*\n)*?\s*dynamic "load_balancer" \{\n\s*for_each = (.+)\n', stream_tg + "\n" + stream_col, re.M))}
+check("3 つのサービスは collector_listeners のうち自分の分だけを load_balancer に持つ（同じ target group に 2 つのサービスが入らない）",
+      _svc_lb == {k: f'{{ for k, v in local.collector_listeners : k => v if v.service == "{sv}" }}' for k, sv in (("telegraf_dialout", "telegraf-dialout"), ("syslog_ng", "syslog-ng"), ("goflow2", "goflow2"))})
+# MDT と syslog の受け口は Telegraf から外した（cycle 012。MDT は使う機器が無い、syslog は syslog-ng）
+check("Telegraf（telegraf.conf.in / telegraf.sh）に MDT と syslog の受け口が無い（inputs.cisco_telemetry_mdt / inputs.syslog / MDT_PORT / LOG_PORT / SYSLOG_STANDARD）",
+      "cisco_telemetry_mdt" not in tele and "inputs.syslog" not in tele and "__MDT_PORT__" not in tele and "__LOG_PORT__" not in tele and "__SYSLOG_STANDARD__" not in tele
+      and not any(k in tgsh for k in ("MDT_PORT", "LOG_PORT", "SYSLOG_STANDARD"))
+      and "57000" not in lab_locals and "57000" not in labsh
+      and not re.search(r"containerPort = (5140|57000)", stream_tg) and "SYSLOG_STANDARD" not in stream_tg)
 # 管理ネットワークは 4 か所で同じ（containerlab の mgmt / lab.sh / lab の locals の VPC ルート / 土台の SG の lab_mgmt）
 mgmt = re.search(r"^MGMT=(\S+)$", labsh, re.M).group(1)
 check("管理ネットワークが containerlab・lab.sh・lab の locals・土台の SG の lab_mgmt_cidr で同じ",
@@ -185,16 +217,15 @@ check("lab_* は processors.starlark（lab_gnmi.star）と aggregators.starlark�
       and re.findall(r'"(\w+)"', _star_aggr.group(1)) == ["lab_subif_type", "lab_if_oper"]
       and not any("lab_" in blk.split("# <<< sink", 1)[0] for blk in tele.split("[[outputs.kafka]]")[1:])
       and re.search(r"^COPY telegraf\.conf\.in lab_gnmi\.star lab_circuits\.star /etc/telegraf/$", _dockerfile, re.M) is not None)
-check("MDT は collector タグで mdt トピックへだけ（measurement の名前は機器で変わるので namepass でなく tagpass）",
-      re.search(r'\[\[inputs\.cisco_telemetry_mdt\]\][\s\S]*?\[inputs\.cisco_telemetry_mdt\.tags\]\s*\n\s*collector = "mdt"', tele) is not None
-      and re.search(r'topic = "mdt"[\s\S]*?\[outputs\.kafka\.tagpass\]\s*\n\s*collector = \["mdt"\]\s*\n# <<< sink kafka', tele) is not None
-      and tele.count('topic = "mdt"') == 1)
+check("Telegraf の Kafka の出力は metrics / gnmi / traps の 3 つ（mdt と logs は cycle 012 で外した）",
+      re.findall(r'^\s*topic = "(\w+)"', tele, re.M) == ["metrics", "gnmi", "traps"] and "tagpass" not in tele)
 check("lab.sh forward は gNMI の GNMI_PORT/tcp も SNMP の 161/udp と同じく Telegraf から管理ネットワークへ通す",
       re.search(r'-p tcp --dport "\$GNMI_PORT" "\$\{c\[@\]\}" -j ACCEPT', labsh) is not None and re.search(r"^GNMI_PORT=57400$", labsh, re.M) is not None)
 _up = read_ops("up")
-check("syslog の形式は stream の syslog_standard（既定 RFC3164 = 本番の Cisco）→ タスクの SYSLOG_STANDARD → telegraf.conf.in の __SYSLOG_STANDARD__。up.sh も deploy.env の SYSLOG_STANDARD（既定 RFC3164。lab の SR Linux は RFC5424）を渡す",
-      re.search(r'^\s*syslog_standard = "__SYSLOG_STANDARD__"$', tele, re.M) is not None and 's#__SYSLOG_STANDARD__#$SYSLOG_STANDARD#' in tgsh
-      and '{ name = "SYSLOG_STANDARD", value = var.syslog_standard }' in stream_tg
+_td_sng = re.search(r'resource "aws_ecs_task_definition" "syslog_ng" \{[\s\S]*?^\}', stream_col, re.M)
+check("syslog の形式は stream の syslog_standard（既定 RFC3164 = 本番の Cisco）→ syslog-ng のタスクの SYSLOG_STANDARD（cycle 012。それまでは Telegraf）。"
+      "up.sh も deploy.env の SYSLOG_STANDARD（既定 RFC3164。lab の SR Linux は RFC5424）を渡す",
+      _td_sng is not None and '{ name = "SYSLOG_STANDARD", value = var.syslog_standard }' in _td_sng.group(0) and "syslog_standard" not in stream_tg
       and re.search(r'variable "syslog_standard" \{[^}]*default\s*=\s*"RFC3164"', _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "variables.tf")) is not None
       and '-var "syslog_standard=$SYSLOG_STANDARD"' in _up and 'SYSLOG_STANDARD="${SYSLOG_STANDARD:-RFC3164}"' in _up and '[ "$SYSLOG_STANDARD" != "$LAB_SYSLOG_STANDARD" ]' in _up
       and "case \"$SYSLOG_STANDARD\" in RFC3164 | RFC5424) ;;" in _up
@@ -220,15 +251,12 @@ check("forward の iptables の規則は全部目印付き（unforward で消せ
       all("${c[@]}" in l for l in labsh.splitlines() if re.match(r"\s*iptables .*-I ", l)))
 check("Telegraf はポーリングの IF の鍵を ifName（タグ）にする（SR Linux の ifDescr は description 付き）",
       re.search(r'name = "ifName"\s*\n\s*oid = "\.1\.3\.6\.1\.2\.1\.31\.1\.1\.1\.1"\s*\n\s*is_tag = true', tele) is not None)
-check("Telegraf は機器の syslog を inputs.syslog（udp）で受け、device_log として logs トピックに出す",
-      'name_override = "device_log"' in tele and "[[inputs.tail]]" not in tele and "[[inputs.socket_listener]]" not in tele
-      and re.search(r'topic = "logs"[\s\S]*?namepass = \["device_log"\]|namepass = \["device_log"\][\s\S]*?topic = "logs"', tele) is not None)
-check("metrics / traps / mdt の出力に device_log が混ざらない（namepass / namedrop / tagpass）",
-      all(re.search(r"name(pass|drop)|tagpass", blk) for blk in tele.split("[[outputs.kafka]]")[1:]))
-check("syslog の hostname を sysName のタグに付け替える（metrics / traps と同じ機器名のタグ）",
-      re.search(r'\[\[processors\.rename\]\]\s*\n\s*namepass = \["device_log"\]\s*\n\s*\[\[processors\.rename\.replace\]\]\s*\n\s*tag = "hostname"\s*\n\s*dest = "sysName"', tele) is not None)
-check("Spark の既定は gnmi / mdt トピックも読む（iceberg / prometheus は metrics,gnmi,mdt、opensearch は traps,logs）", mod.METRIC_TOPICS == "metrics,gnmi,mdt"
-      and mod.sink_topics("iceberg", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "metrics,gnmi,mdt,traps,logs" and mod.sink_topics("prometheus", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "metrics,gnmi,mdt")
+check("Telegraf は機器の syslog を受けない（syslog-ng が logs トピックに出す。cycle 012）: device_log / processors.rename / inputs.tail / inputs.socket_listener が無い",
+      not any(re.search(rf"^[^#\n]*{re.escape(k)}", tele, re.M) for k in ("device_log", "processors.rename", "[[inputs.tail]]", "[[inputs.socket_listener]]")))   # コメントの行は数えない
+check("metrics / gnmi / traps の出力は namepass で分ける（ほかの measurement が混ざらない）",
+      all(re.search(r"name(pass|drop)", blk) for blk in tele.split("[[outputs.kafka]]")[1:]))
+check("Spark の既定は gnmi トピックも読む（iceberg は metrics,gnmi,traps,logs,flows、prometheus は metrics,gnmi。mdt は cycle 012 で外した）", mod.METRIC_TOPICS == "metrics,gnmi"
+      and mod.sink_topics("iceberg", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "metrics,gnmi,traps,logs,flows" and mod.sink_topics("prometheus", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "metrics,gnmi")
 _access = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "access.tf")
 _lab_tg = _read("IaC", "terraform", "aws-managed", "pipeline", "lab", "telegraf.tf")
 # Kafka による違いは msk.tf の kafka_* の locals（OSS 版は IaC/terraform/oss/pipeline/stream/kafka.tf。cycle 005）
@@ -243,7 +271,7 @@ check("Telegraf は stream の ECS で、MSK への書き込みはタスクロ�
       and 'resource "aws_iam_role"' not in _lab_tg and 'resource "aws_instance"' not in _lab_tg)
 check("lab と stream は SG も SG のルールも作らない（ポーリング・trap・syslog のルールは土台の通信の表。2026-09-29）",
       all('resource "aws_security_group"' not in t and "aws_vpc_security_group_" not in t
-          for t in (_lab_tg, lab_locals, stream_tg, _access, _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "msk.tf"), _read("IaC", "terraform", "aws-managed", "pipeline", "lab", "instance.tf")))
+          for t in (_lab_tg, lab_locals, stream_tg, stream_col, _access, _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "msk.tf"), _read("IaC", "terraform", "aws-managed", "pipeline", "lab", "instance.tf")))
       and 'security_groups = [local.telegraf_dialout_nlb_sg_id]' in stream_tg and 'security_groups  = [local.telegraf_dialout_sg_id]' in stream_tg)
 _td = {k: m.group(0) for k in ("telegraf_dialout", "telegraf_dialin") if (m := re.search(r'resource "aws_ecs_task_definition" "' + k + r'" \{[\s\S]*?^\}', stream_tg, re.M))}
 _svc = {k: m.group(0) for k in ("telegraf_dialout", "telegraf_dialin") if (m := re.search(r'resource "aws_ecs_service" "' + k + r'" \{[\s\S]*?^\}', stream_tg, re.M))}
@@ -278,8 +306,8 @@ check("up.sh は base/core の state に古い Telegraf の SG（telegraf）が�
 _down = _read("ops", "down.sh")
 check("down.sh は stream の必須変数（snmp_agents / gnmi_targets）に形だけ合う値を渡して destroy する（telegraf.sh の形の検査と同じ）",
       re.search(r"destroy_root pipeline/stream -var 'snmp_agents=\"udp://[0-9.]+:161\"' -var 'gnmi_targets=\"[0-9.]+:57400\"'", _down) is not None)
-check("Spark の既定は logs も読む", mod.LOG_TOPICS == "traps,logs"
-      and mod.sink_topics("opensearch", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "traps,logs")
+check("Spark の既定は logs（syslog-ng）と flows（GoFlow2）も読む", mod.LOG_TOPICS == "traps,logs,flows"
+      and mod.sink_topics("opensearch", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "traps,logs,flows")
 
 # ---- lab_gnmi.star / lab_circuits.star を Python で動かす（Python と Starlark の両方で動く書き方にしてある。Telegraf の Starlark は Metric と state を入れる）
 class _NoLen(dict):   # Telegraf の Metric の tags / fields は len も真偽値も持たない（len(m.fields) は Telegraf で落ちた）
@@ -687,8 +715,8 @@ check("イメージは ghcr.io/kafbat/kafka-ui を ECR の <接頭辞>-kafka-ui 
       and '"kafka-ui"' in re.search(r'pipeline_repositories = toset\(\[([^\]]*)\]\)', ecr_tf).group(1)
       and 'mirror_image "ghcr.io/kafbat/kafka-ui:$KAFKA_UI_TAG" "$REG/$PREFIX-kafka-ui:$KAFKA_UI_TAG"' in up
       and 'ecr_has "$PREFIX-kafka-ui" "$KAFKA_UI_TAG"' in up and '"kafka_ui_image_tag=$KAFKA_UI_TAG"' in up)
-check("Web の EC2 の Kafbat UI が呼ぶ AWS の API（ECR・SSM）は、stream を作る回のエンドポイントで足りる（イメージの層は S3 のゲートウェイ）",
-      "pipeline/stream) add_endpoints ecr.api ecr.dkr logs ;;" in up and "add_endpoints ssm ssmmessages" in up)
+check("Web の EC2 の Kafbat UI が呼ぶ AWS の API（ECR・SSM）と、syslog-ng と GoFlow2 の SCRAM の secret（Secrets Manager。cycle 012）は、stream を作る回のエンドポイントで足りる（イメージの層は S3 のゲートウェイ）",
+      "pipeline/stream) add_endpoints ecr.api ecr.dkr logs secretsmanager ;;" in up and "add_endpoints ssm ssmmessages" in up)
 # stream を作る回だけ（if [ -z "$SKIP_STREAM" ] の中）にあるか。その if より後ろで、間に閉じる fi が無い
 def _in_stream_block(marker):
     i = up.index(marker)
@@ -711,6 +739,32 @@ check("stream を作る回はいつも作る: イメージを ECR に写し、�
       and up.index('ensure_secret "/$PREFIX/kafka-ui/admin-password"') < up.index("  tf_apply pipeline/stream ")
       and '-var "kafka_ui_image_tag=$KAFKA_UI_TAG"' in up[up.index("  tf_apply pipeline/stream "):].split("\n", 1)[0]
       and _in_stream_block('  echo "Kafbat UI（http://localhost:8082/'))
+# ---- MSK の SCRAM の secret と KMS の鍵（cycle 012）。値は ops/up.sh が作り（Terraform の state に入れない）、msk.tf は同じ名前の data source で引く
+_msk_tf = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "msk.tf")
+_upc, _downc = _read("ops", "up-common.sh"), _read("ops", "down-common.sh")
+_up_sh, _down_sh, _oss_up, _oss_down = _read("ops", "up.sh"), _read("ops", "down.sh"), _read("oss", "ops", "up.sh"), _read("oss", "ops", "down.sh")
+check("SCRAM の secret と鍵の名前は、ops/up-common.sh（作る）・ops/down-common.sh（消す）・msk.tf（data source で引く）で同じ（接頭辞は owner-nwc-poc）",
+      'data "aws_secretsmanager_secret" "msk_scram" {\n  name = "AmazonMSK_${local.name_prefix}-collectors"\n}' in _msk_tf
+      and 'data "aws_kms_alias" "msk_scram" {\n  name = "alias/${local.name_prefix}-msk-scram"\n}' in _msk_tf
+      and 'local alias="alias/$PREFIX-msk-scram" out arn state' in _upc and 'local name="AmazonMSK_$PREFIX-collectors" out kms deleted' in _upc
+      and 'local name="AmazonMSK_$PREFIX-collectors" alias="alias/$PREFIX-msk-scram" out arn state' in _downc
+      and 'name_prefix = "${var.owner}-${var.project}"' in _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "locals.tf")
+      and 'PREFIX="$OWNER-${1:-nwc-poc}"' in _read("ops", "deploy-env.sh"))
+_sm_read = [f for f in ([os.path.join("ops", n) for n in sorted(os.listdir(os.path.join(ROOT, "ops"))) if n.endswith(".sh")]
+                        + [os.path.join("oss", "ops", n) for n in sorted(os.listdir(os.path.join(ROOT, "oss", "ops"))) if n.endswith(".sh")])
+            if re.search(r"get-secret-value|batch-get-secret-value", "\n".join(l for l in _read(f).splitlines() if not l.lstrip().startswith("#")))]
+check(f"ops/ と oss/ops/ のシェルは Secrets Manager の secret の中身を読まない（get-secret-value / batch-get-secret-value を打たない。{_sm_read}）", _sm_read == [])
+check("ops/up.sh は stream を作る回だけ、鍵 → secret → stream の apply の順に呼ぶ（msk.tf の data source が apply の時に引く）",
+      _in_stream_block("\n  ensure_msk_scram_key\n")
+      and "\n  ensure_msk_scram_key\n  ensure_msk_scram_secret\n  tf_apply pipeline/stream " in _up_sh
+      and _up_sh.count("ensure_msk_scram_key") == 1 and _up_sh.count("ensure_msk_scram_secret") == 1)
+check("ops/down.sh は 5-3. で delete_msk_scram を呼ぶ（destroy と SSM のパラメータのあと、残りの一覧の前）。OSS 版（MSK が無い）の up.sh / down.sh は呼ばない",
+      re.search(r"^delete_up_ssm_params\n(?:.*\n)*?^delete_msk_scram\n(?:.*\n)*?^report_leftovers$", _down_sh, re.M) is not None
+      and _down_sh.index("\ndestroy_root pipeline/stream ") < _down_sh.index("\ndelete_msk_scram\n")
+      and not re.search(r"msk_scram", _oss_up + _oss_down))
+_lab_flow = re.search(r'^\s*for p in ([\d ]+); do\n\s*iptables -t nat -I PREROUTING 1 -s "\$MGMT" -d "\$MGMT_GW" -p udp --dport "\$p" "\$\{c\[@\]\}" -j DNAT --to-destination "\$t:\$p"$', labsh, re.M)
+check("lab.sh forward の NetFlow / sFlow の DNAT のポートは、NLB の受け口（collector_listeners）の netflow / sflow と同じ（cycle 012）",
+      _lab_flow is not None and sorted(map(int, _lab_flow.group(1).split())) == sorted(_cl[k][0] for k in ("netflow", "sflow")))
 check("ops/down.sh は Kafbat UI のパスワード（ManagedBy=ops/up.sh のタグ）も消す。stream の destroy に Kafbat UI の変数は要らない",
       "Tags" in up[up.index("ensure_secret() {"):up.index("ensure_secret() {") + 2500] and "Key=tag:ManagedBy,Values=$OPS_DIR/up.sh" in read_ops("down") and 'OPS_DIR="${OPS_DIR:-ops}"' in _read("ops", "common.sh")
       and "kafka_ui" not in read_ops("down"))

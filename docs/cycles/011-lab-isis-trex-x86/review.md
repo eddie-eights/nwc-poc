@@ -254,3 +254,5 @@ None
 - Nit 1（`upload_lab` の除外に `clab-*/` が無い）: `grep -n 'clab-' ops/lab-common.sh IaC/terraform/aws-managed/pipeline/lab/outputs.tf` が 0 件、`.gitignore:16` に `app/containerlab/clab-*/` があることを確かめた（読んだだけ。S3 には打っていない）。手元の compose と AWS を同じチェックアウトから打つ人に限られるので Nit のまま。BACKLOG に足した。
 - Nit 2（Round 1 の Nit が BACKLOG に無い）: そのとおり。この commit で BACKLOG に足した（セルフレビュー S1 / S2 / N2〜N10 の 11 行と cold review Round 1 の Nit 4 行、Round 2 の Nit 1 行）。
 - サイクル完了。AWS の実機（m6i.xlarge、TRex の起動、`aws s3 sync --delete`）は PM の AWS 検証でまとめて見る。
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261009-cycle-011-lab-isis-trex-x86-review.html -->

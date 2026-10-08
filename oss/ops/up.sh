@@ -9,7 +9,7 @@
 #   Spark のタスクは、OpenSearch・VictoriaMetrics が安定し Splunk が HEALTHY になってから起こす。最後に Web（8080）へのポートフォワーディングを開く。
 #   格納先はいつも iceberg / opensearch / prometheus / splunk の 4 つ（マネージド版の STORES のようには選ばない）。Grafana もいつも作る。
 #   イメージは ECR に無いタグだけ写すかビルドする（oss/ops/oss-images.sh の mirror_oss_images と、ops/up-common.sh の build_splunk / build_grafana / build_agent /
-#   build_worker / mirror_temporal / build_nautobot）。
+#   build_worker / mirror_temporal / build_nautobot / build_syslog_ng）。
 # 関数は ops/ のもの（ops/common.sh・ops/up-common.sh・ops/lab-common.sh・ops/deploy-env.sh）を読み、写しを作らない。
 # 何度打っても同じ状態に収束する（できているものは Terraform が差分なしで飛ばし、ECR にあるタグは写さない）。
 #
@@ -17,7 +17,7 @@
 #   oss/ops/up.sh                         # deploy.env の OWNER（必須）と下のキーを読む
 #   DEPLOY_ENV_FILE=<パス> oss/ops/up.sh  # 別の設定ファイルを読む
 #
-# 読むキー（deploy.env か環境変数。意味は deploy.env.example）: OWNER / SYSLOG_STANDARD / SNMP_POLL / VPC_CIDR / MDT_SOURCE_CIDRS /
+# 読むキー（deploy.env か環境変数。意味は deploy.env.example）: OWNER / SYSLOG_STANDARD / SNMP_POLL / VPC_CIDR /
 #   NETWORK_PERIMETER / ENDPOINTS_AZ_NUM / TELEGRAF_AZ_NUM / EMR_AZ_NUM（Spark のタスクのサブネット）/ SPLUNK_AZ_NUM / SPLUNK_INDEX /
 #   RUNTIME_AZ_NUM / LAMBDA_AZ_NUM / NAUTOBOT_DB_AZ_NUM / IMAGE_TAG（agent と worker のイメージのタグ。既定 v1）/ HTTP_SEND /
 #   MAX_OFFSETS_PER_TRIGGER と MAX_OFFSETS_PER_TRIGGER_<格納先> / LOCAL_PORT（既定 8080）/ NO_DASHBOARD_PORTFORWARD /
@@ -72,6 +72,7 @@ case "$SYSLOG_STANDARD" in
   *) die "SYSLOG_STANDARD は RFC3164 か RFC5424（大文字）: $SYSLOG_STANDARD。まだ何も作っていない" ;;
 esac
 SNMP_POLL="${SNMP_POLL:-1}"; flag_value SNMP_POLL
+if [ -n "${MDT_SOURCE_CIDRS:-}" ]; then echo "注意: MDT_SOURCE_CIDRS は 2026-10-08 から使わない（cycle 012 で Cisco の MDT の受け口を外した。戻し方は docs/collection.md。deploy.env から消してよい）"; fi
 OSS_ROLL="${OSS_ROLL:-1}"; flag_value OSS_ROLL   # 0 なら Kafka と OpenSearch の台を 1 台ずつ入れ替えない（oss/ops/roll-nodes.sh）
 NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"; flag_value NETWORK_PERIMETER
 case "${ENDPOINTS_MULTI_AZ:-}" in
@@ -159,13 +160,17 @@ REG="${REPO%%/*}"
 # ---- 2. イメージ ----------------------------------------------------------------
 log "2. イメージ（ECR に無いタグだけ写すかビルドする）"
 NEED_LAB=""; NEED_TELEGRAF=""; NEED_KAFKA_UI=""; NEED_OSS=""; NEED_OSS_BUILD=""; NEED_SPLUNK=""
-NEED_AGENT=""; NEED_WORKER=""; NEED_TEMPORAL=""; NEED_NAUTOBOT=""; NEED_REDIS=""; NEED_GRAFANA=""
+NEED_AGENT=""; NEED_WORKER=""; NEED_TEMPORAL=""; NEED_NAUTOBOT=""; NEED_REDIS=""; NEED_GRAFANA=""; NEED_SYSLOG_NG=""; NEED_GOFLOW2=""
 if ! ecr_has "$PREFIX-lab-srlinux" "$SRLINUX_ECR_TAG" || ! ecr_has "$PREFIX-lab-multitool" "$MULTITOOL_ECR_TAG" \
   || ! ecr_has "$PREFIX-lab-trex" "$TREX_ECR_TAG"; then NEED_LAB=1
 else echo "lab-srlinux:$SRLINUX_ECR_TAG と lab-multitool:$MULTITOOL_ECR_TAG と lab-trex:$TREX_ECR_TAG はある"; fi
 TELEGRAF_TAG=$(telegraf_tag) || die "app/telegraf/ のタグを作れなかった"
 if ecr_has "$PREFIX-telegraf" "$TELEGRAF_TAG"; then echo "telegraf:$TELEGRAF_TAG はある"; else NEED_TELEGRAF=1; fi
 if ecr_has "$PREFIX-kafka-ui" "$OSS_KAFKA_UI_TAG"; then echo "kafka-ui:$OSS_KAFKA_UI_TAG はある"; else NEED_KAFKA_UI=1; fi
+# 機器の syslog と NetFlow / sFlow の受け口（cycle 012）。マネージド版と同じイメージ（版は ops/up-common.sh の SYSLOG_NG_VERSION / GOFLOW2_TAG）
+SYSLOG_NG_TAG=$(dir_tag "$SYSLOG_NG_VERSION" app/syslog-ng docker/images/syslog-ng/Dockerfile) || die "app/syslog-ng/ のタグを作れなかった"
+if ecr_has "$PREFIX-syslog-ng" "$SYSLOG_NG_TAG"; then echo "syslog-ng:$SYSLOG_NG_TAG はある"; else NEED_SYSLOG_NG=1; fi
+if ecr_has "$PREFIX-goflow2" "$GOFLOW2_TAG"; then echo "goflow2:$GOFLOW2_TAG はある"; else NEED_GOFLOW2=1; fi
 # ルートが使う OSS のイメージ（oss/ops/oss-images.sh の OSS_IMAGES。stream の kafka、analytics の opensearch / vmstorage vminsert vmselect / spark、graph の neo4j）
 for name in $OSS_IMAGES; do
   tag=$(oss_image_tag "$name") || die "oss/ops/oss-images.sh が $name のタグを作れなかった"
@@ -194,12 +199,12 @@ nautobot_context "$NAUTOBOT_CTX" || die "Nautobot のイメージの材料（app
 NAUTOBOT_TAG=$(dir_tag "$NAUTOBOT_VERSION" "$NAUTOBOT_CTX" docker/images/nautobot/Dockerfile) || die "app/nautobot/ のタグを作れなかった"
 if ecr_has "$PREFIX-nautobot" "$NAUTOBOT_TAG"; then echo "nautobot:$NAUTOBOT_TAG はある"; else NEED_NAUTOBOT=1; fi
 if ecr_has "$PREFIX-redis" "$REDIS_TAG"; then echo "redis:$REDIS_TAG はある"; else NEED_REDIS=1; fi
-if [ -z "$NEED_LAB$NEED_TELEGRAF$NEED_KAFKA_UI$NEED_OSS$NEED_SPLUNK$NEED_GRAFANA$NEED_AGENT$NEED_WORKER$NEED_TEMPORAL$NEED_NAUTOBOT$NEED_REDIS" ]; then
+if [ -z "$NEED_LAB$NEED_TELEGRAF$NEED_KAFKA_UI$NEED_OSS$NEED_SPLUNK$NEED_GRAFANA$NEED_AGENT$NEED_WORKER$NEED_TEMPORAL$NEED_NAUTOBOT$NEED_REDIS$NEED_SYSLOG_NG$NEED_GOFLOW2" ]; then
   echo "写すイメージもビルドするイメージも無い"
 else
   docker info >/dev/null 2>&1 || die "dockerd に接続できない（WSL なら sudo service docker start。docs/setup.md「Terraform を打つ PC 側」）"
   # agent / worker / nautobot / grafana / spark / neo4j は arm64 で RUN があるので、x86_64 の PC では QEMU（binfmt）が要る（写すだけのものと、COPY だけの
-  # telegraf、amd64 の splunk は要らない）。出力は変数で受けてから探す（grep -q が先に閉じると docker が SIGPIPE で落ちることがある）
+  # telegraf と syslog-ng、amd64 の splunk は要らない）。出力は変数で受けてから探す（grep -q が先に閉じると docker が SIGPIPE で落ちることがある）
   BUILDX_LS=$(docker buildx ls 2>/dev/null || true)
   if [ -n "$NEED_AGENT$NEED_WORKER$NEED_NAUTOBOT$NEED_GRAFANA$NEED_OSS_BUILD" ] && ! grep -q 'linux/arm64' <<<"$BUILDX_LS"; then
     die "docker buildx ls の Platforms に linux/arm64 が無い（docs/setup.md「WSL2（Ubuntu）」の binfmt の行）"
@@ -214,6 +219,12 @@ else
   if [ -n "$NEED_KAFKA_UI" ]; then
     # Kafbat UI（Web の EC2 の Docker。cycle 010）。マネージド版と同じイメージを、OSS 版の接頭辞のリポジトリに写す
     mirror_image "$OSS_KAFKA_UI_IMAGE:$OSS_KAFKA_UI_TAG" "$REG/$PREFIX-kafka-ui:$OSS_KAFKA_UI_TAG" || die "kafka-ui のイメージを ECR に置けなかった"
+  fi
+  if [ -n "$NEED_SYSLOG_NG" ]; then
+    build_syslog_ng   # arm64 で COPY だけ（ops/up-common.sh。マネージド版と共通）
+  fi
+  if [ -n "$NEED_GOFLOW2" ]; then
+    mirror_image "netsampler/goflow2:$GOFLOW2_TAG" "$REG/$PREFIX-goflow2:$GOFLOW2_TAG" || die "goflow2 のイメージを ECR に置けなかった"
   fi
   if [ -n "$NEED_OSS" ]; then
     # 公開イメージ（Fargate は VPC の中から ECR しか引けないので写す。arm64）と、app/spark/・app/neo4j/ のビルド（arm64）
@@ -247,7 +258,6 @@ fi
 log "3. 土台（IaC/terraform/oss/base/core。VPC / Web の EC2 / バケット / ロール / Kafka のデータの EFS。初回は 3〜5 分）"
 MAIN_VARS=()
 if [ -n "${VPC_CIDR:-}" ];    then MAIN_VARS+=(-var "vpc_cidr=$VPC_CIDR"); fi
-if [ -n "${MDT_SOURCE_CIDRS:-}" ]; then MAIN_VARS+=(-var "mdt_source_cidrs=[\"$(printf '%s' "$MDT_SOURCE_CIDRS" | tr -d ' ' | sed 's/,/","/g')\"]"); fi
 MAIN_VARS+=(-var "interface_endpoints=[\"$(printf '%s' "$ENDPOINTS" | sed 's/ /","/g')\"]")
 MAIN_VARS+=(-var "network_perimeter=$([ -n "$NETWORK_PERIMETER" ] && echo true || echo false)")
 MAIN_VARS+=(-var "endpoints_az_num=$ENDPOINTS_AZ_NUM")
@@ -313,7 +323,7 @@ else
   echo "Telegraf の SNMP: trap だけ受ける（SNMP_POLL=0）"
 fi
 echo "Telegraf の gNMI の購読先: $GNMI_TARGETS"
-echo "Telegraf の syslog の形式: $SYSLOG_STANDARD"
+echo "syslog-ng の syslog の形式: $SYSLOG_STANDARD"
 if [ "$SYSLOG_STANDARD" != "$LAB_SYSLOG_STANDARD" ]; then
   echo "注意: lab の SR Linux は $LAB_SYSLOG_STANDARD で送るので、SYSLOG_STANDARD=$SYSLOG_STANDARD では lab のログの項目（ホスト名・本文など）が崩れる。lab のログまで見るなら SYSLOG_STANDARD=$LAB_SYSLOG_STANDARD"
 fi
@@ -330,7 +340,7 @@ ensure_secret "/$PREFIX/kafka/cluster-id" kafka-cluster-id "Kafka KRaft CLUSTER_
 STREAM_VARS=(-var "telegraf_image_tag=$TELEGRAF_TAG" -var "kafka_ui_image_tag=$OSS_KAFKA_UI_TAG" -var "kafka_image_tag=$OSS_KAFKA_TAG"
   -var "snmp_agents=$SNMP_AGENTS" -var "gnmi_targets=$GNMI_TARGETS"
   -var "syslog_standard=$SYSLOG_STANDARD" -var "snmp_poll=$SNMP_POLL_TF" -var dialin_targets_from_nautobot=true
-  -var "telegraf_az_num=$TELEGRAF_AZ_NUM")
+  -var "telegraf_az_num=$TELEGRAF_AZ_NUM" -var "syslog_ng_image_tag=$SYSLOG_NG_TAG" -var "goflow2_image_tag=$GOFLOW2_TAG")
 # 打ち直しで Kafka のタスク定義が変わるなら、先に 1 台ずつ入れ替える（3 台が同時に止まると controller の過半数が無くなる）
 roll_nodes kafka pipeline/stream "${STREAM_VARS[@]}"
 tf_apply pipeline/stream "${STREAM_VARS[@]}"
@@ -346,7 +356,7 @@ case " $LAB_STATE " in
     LAB_WARN="lab のトポロジが上がっていない（${LAB_STATE:-状態を読めなかった}。$LAB_NODES コンテナが動いて lab=active になるはず）。SSM セッションで入り、sudo tail -n 50 /var/log/cloud-init-output.log と sudo journalctl -u $PREFIX-lab -n 50 --no-pager を見る（docs/pipeline.md の「動かないとき」）"
     printf '\033[1;33m%s\033[0m\n' "$LAB_WARN" ;;
 esac
-log "7-2b. lab の EC2 から Telegraf（stream の ECS）へ SNMP / gNMI / trap / syslog を通す（lab forward）"
+log "7-2b. lab の EC2 から stream の ECS（Telegraf・syslog-ng・GoFlow2）へ SNMP / gNMI / trap / syslog / NetFlow / sFlow を通す（lab forward）"
 ssm_run "$LAB_INSTANCE_ID" "[ ! -x /usr/local/bin/lab ] || /usr/local/bin/lab forward" \
   || printf '\033[1;33m%s\033[0m\n' "lab forward が失敗した。lab の EC2 で sudo lab forward-status を見る（docs/pipeline.md）"
 # Telegraf は Kafka に書くので、Kafka を先に待つ。3 台は同時に起き、2 台そろえばコントローラーの過半数になる
@@ -368,6 +378,13 @@ if aws ecs wait services-stable --region "$REGION" --cluster "$TG_CLUSTER" --ser
   echo "Telegraf は動いている（ログ: aws logs tail --region $REGION $(tf pipeline/stream output -raw telegraf_log_group_name) --follow。ストリームは受ける側が dialout/、取りにいく側が dialin/）"
 else
   printf '\033[1;33m%s\033[0m\n' "Telegraf のサービスが 10 分たっても安定しない。受ける側は $(tf pipeline/stream output -raw telegraf_dialout_list_tasks_command)、取りにいく側は $(tf pipeline/stream output -raw telegraf_dialin_list_tasks_command) とロググループ $(tf pipeline/stream output -raw telegraf_log_group_name) を見る（docs/troubleshooting.md）"
+fi
+log "7-2e. syslog-ng と GoFlow2 の ECS のサービス（機器の syslog と NetFlow / sFlow の受け口。cycle 012）が安定するのを待つ（1〜3 分）"
+SYSLOG_NG_SERVICE=$(tf pipeline/stream output -raw syslog_ng_service_name); GOFLOW2_SERVICE=$(tf pipeline/stream output -raw goflow2_service_name)
+if aws ecs wait services-stable --region "$REGION" --cluster "$TG_CLUSTER" --services "$SYSLOG_NG_SERVICE" "$GOFLOW2_SERVICE"; then
+  echo "syslog-ng と GoFlow2 は動いている（ログ: aws logs tail --region $REGION $(tf pipeline/stream output -raw syslog_ng_log_group_name) --follow と $(tf pipeline/stream output -raw goflow2_log_group_name)）"
+else
+  printf '\033[1;33m%s\033[0m\n' "syslog-ng か GoFlow2 のサービスが 10 分たっても安定しない。syslog-ng は $(tf pipeline/stream output -raw syslog_ng_list_tasks_command)、GoFlow2 は $(tf pipeline/stream output -raw goflow2_list_tasks_command) とロググループ $(tf pipeline/stream output -raw syslog_ng_log_group_name)・$(tf pipeline/stream output -raw goflow2_log_group_name) を見る（docs/troubleshooting.md）"
 fi
 
 # ---- 7-3. graph ----------------------------------------------------------------------

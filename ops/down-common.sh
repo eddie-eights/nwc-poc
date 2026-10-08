@@ -1,4 +1,4 @@
-# ops/down.sh と OSS 版（005）の oss/ops/down.sh が読む共通の関数（ルートの destroy、消し残しの片付けと数え上げ）。
+# ops/down.sh と OSS 版（005）の oss/ops/down.sh が読む共通の関数（ルートの destroy、消し残しの片付けと数え上げ。MSK の SCRAM の secret と鍵はマネージド版だけ）。
 # 先に ops/common.sh と ops/deploy-env.sh を読む（log / die / tf / tf_logged を使う）。REGION / PREFIX / OWNER は呼ぶ前に決める。
 # 名前で探すものは、どれも接頭辞の完全一致か「接頭辞-」で絞る（OSS 版の <owner>-nwc-oss は、OWNER=<名前>-nwc-oss のマネージド版の
 # <名前>-nwc-oss-nwc-poc の頭と同じ文字列になる。前方一致で探すと相手のものを消す）
@@ -195,6 +195,49 @@ delete_up_ssm_params() {  # up.sh が作った SSM のパラメータ（/<PREFIX
     esac
     aws ssm delete-parameter --region "$REGION" --name "$n" 2>/dev/null && echo "$n: 消した" || echo "$n: 無い"
   done
+}
+delete_msk_scram() {  # ops/up.sh が作った MSK の SCRAM の secret（AmazonMSK_<PREFIX>-collectors）と KMS の鍵（alias/<PREFIX>-msk-scram）を消す。マネージド版だけ
+  # Terraform の管理外（値を state に載せないよう ops/up-common.sh の ensure_msk_scram_key / ensure_msk_scram_secret が作る）。secret の中身は読まない
+  local name="AmazonMSK_$PREFIX-collectors" alias="alias/$PREFIX-msk-scram" out arn state
+  # stream が消えなかったときは両方残す。msk.tf の data source が次の destroy でも 2 つを引くので、消すと打ち直しても stream を消せなくなる
+  case " $FAILED_ROOTS " in *" pipeline/stream "*)
+    echo "$name と $alias: 残す（$TF_DIR/pipeline/stream が消えなかったので、次の $OPS_DIR/down.sh で消す）"; return ;;
+  esac
+  # secret は復旧の待ち（既定 30 日）を置かずに消す（待つあいだは同じ名前で作れず、次の up.sh が止まる）
+  if out=$(aws secretsmanager describe-secret --region "$REGION" --secret-id "$name" --query Name --output text 2>&1); then
+    if aws secretsmanager delete-secret --region "$REGION" --secret-id "$name" --force-delete-without-recovery >/dev/null; then
+      echo "$name: 消した"
+    else
+      echo "$name: 消せなかった（上のエラー）。鍵も残す（消すと secret を復号できなくなる）。手で消す: aws secretsmanager delete-secret --region $REGION --secret-id $name --force-delete-without-recovery"
+      return
+    fi
+  else
+    case "$out" in
+      *ResourceNotFoundException*) echo "$name: 無い" ;;
+      *) echo "$name: 確かめられなかった（${out}）。鍵も残す"; return ;;
+    esac
+  fi
+  # 鍵はすぐには消せない（7 日の待ち。待つあいだは課金されない）。先に削除を予約し、それから alias を外す
+  # （逆の順だと、予約に失敗したとき名前の無い鍵が残り、次の up.sh は別の鍵を作る）
+  if ! out=$(aws kms describe-key --region "$REGION" --key-id "$alias" --query 'KeyMetadata.[Arn,KeyState]' --output text 2>&1); then
+    case "$out" in
+      *NotFoundException*) echo "$alias: 無い" ;;
+      *) echo "$alias: 確かめられなかった（${out}）" ;;
+    esac
+    return
+  fi
+  arn=${out%%$'\t'*}; state=${out##*$'\t'}
+  if [ "$state" != PendingDeletion ]; then
+    if ! aws kms schedule-key-deletion --region "$REGION" --key-id "$arn" --pending-window-in-days 7 >/dev/null; then
+      echo "$alias: 鍵の削除を予約できなかった（上のエラー）。手で予約する: aws kms schedule-key-deletion --region $REGION --key-id $arn --pending-window-in-days 7"
+      return
+    fi
+  fi
+  if aws kms delete-alias --region "$REGION" --alias-name "$alias"; then
+    echo "$alias: 鍵の削除を予約し（7 日後に消える。待つあいだは課金されない）、alias を外した"
+  else
+    echo "$alias: 鍵の削除は予約したが、alias を外せなかった（上のエラー）。次の $OPS_DIR/up.sh は予約を取り消して同じ鍵を使い直す"
+  fi
 }
 report_leftovers() {  # タグ Project=<PREFIX>（完全一致）の付いたリソースの ARN を並べ、数を出す。タグの API は消えたリソースも返すので、消えたかはこれで決めない
   local arns rc=0

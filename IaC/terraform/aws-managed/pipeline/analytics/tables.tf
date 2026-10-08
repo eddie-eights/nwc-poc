@@ -55,7 +55,7 @@ moved {
   to   = aws_s3tables_namespace.netops
 }
 
-# 2026-10-04 に snmp_metrics から改名した（metrics / gnmi / mdt / traps / logs の全トピックが入るので、SNMP のメトリクスだけに見えない名前に）。
+# 2026-10-04 に snmp_metrics から改名した（全トピックが入るので、SNMP のメトリクスだけに見えない名前に。いまは metrics / gnmi / traps / logs / flows。mdt は cycle 012 で外した）。
 # moved で state のアドレスを引き継ぐ。テーブルの名前（var.table_name）も変わるので、古いテーブルを残したまま apply すると
 # 作り直し（中身は消える）になるかもしれない（AWS では未確認。この PoC はその日に消すので構わない）
 moved {

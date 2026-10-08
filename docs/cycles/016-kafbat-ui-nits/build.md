@@ -11,7 +11,8 @@
 | commit | 中身 |
 |---|---|
 | aa6efad | tests: `tests/test_stream.py` の 8-3 / 7-5 の検査を `ValueError` で止まらない形に、描いた user_data の Web のユニットの `Wants=` の check を 1 本 |
-| （この build.md を含む commit。ハッシュは下の「012 のマージ」と PM への報告に書く） | docs とコメント: `docs/deploy.md`、`docs/troubleshooting.md`、`docs/pipeline.md`、`docs/development.md`、`ops/up.sh:506` のコメント。セルフレビューで直した `tests/test_stream.py`（7-5 の `re.fullmatch` とコメント）。`design.md` / `design-log.md` の上書き、この build.md |
+| 309c216 | docs とコメント: `docs/deploy.md`、`docs/troubleshooting.md`、`docs/pipeline.md`、`docs/development.md`、`ops/up.sh:506` のコメント。セルフレビューで直した `tests/test_stream.py`（7-5 の `re.fullmatch` とコメント）。`design.md` / `design-log.md` の上書き、この build.md |
+| （5be0288 のマージ。この節を含む commit。ハッシュは PM への報告に書く） | 5be0288（012 のマージ後の `docs/cycle-006-design`）を取り込み、衝突 3 本を解いた。`docs/development.md` の `test_stream` を 96 に。design.md / design-log.md の数の上書きと、この build.md の「012 のマージ」 |
 
 ### 変更ファイル
 
@@ -423,3 +424,199 @@ $ git diff --stat c4c378a -- ops/up.sh
 - tests の検出力: 変異 (a)〜(c)・(o1)〜(o7)・(p1) を実際に当てた（検証 2〜5）。8-3 の側だけ OC7 の弱さが残る。
 - docs の事実: 手順の番号、ポート、再起動の位置は `ops/up.sh` の該当行を `sed` で読んで合わせた（SR1、OC3）。`Started KafkaUiApplication` と起動時間は手元の Docker で測った（AWS では未計測）。`unmask --runtime`、`could not be found` / `disabled`、コンテナが 75 で終わる場面は AL2023 で確かめていない（読んだだけ）。
 - 全体の退行: `bash ops/check.sh` が `すべて通過`、rc=0（検証 6）。
+
+### 012 のマージ
+
+PM の指示で、`docs/cycle-006-design` の 5be0288（「MSK に SASL/SCRAM を足し、syslog-ng と GoFlow2 を立てる（012）」のマージ。c4c378a から 10 commit、74 ファイル）を `fix/kafbat-ui-nits` にマージした。親は 309c216 と 5be0288。
+
+#### 衝突と解き方
+
+衝突は 3 本。どれも 1 か所で、`scratch` の `resolve.py` が「衝突が 1 か所だけ・行の頭が想定どおり」を assert してから書き換えた。
+
+| ファイル | 衝突した所 | 解き方 |
+|---|---|---|
+| `docs/deploy.md` | 引数の表の `SKIP_LAB` / `SKIP_STREAM` / `SKIP_ANALYTICS` の 3 行 | `SKIP_LAB` と `SKIP_ANALYTICS` は 012 の行。`SKIP_STREAM` は 016 の行（打ち直しの案内）に、012 の中身「MSK、Telegraf・syslog-ng・GoFlow2 の ECS、MSK の SCRAM の secret と KMS の鍵」と `-$1.82/h` を入れた |
+| `docs/development.md` | :37 の `tests/test_*.py` の数の一覧 | 012 の行を取り、`test_stream` を下の実測の 96 に直した（012 の行は 95、016 の行は 89） |
+| `ops/up.sh` | :505 の `pipeline/stream)` のエンドポイントのコメント | 012 のコメント 2 行と `add_endpoints ecr.api ecr.dkr logs secretsmanager` を取り、1 行目の末尾に 016 の文「Web の EC2 の Kafbat UI（Docker）も同じ ecr.api / ecr.dkr で ECR から pull する」を足した |
+
+`docs/pipeline.md`、`docs/troubleshooting.md`、`tests/test_stream.py` ほか 012 のファイルは自動でマージされた。
+
+#### 行の番号の移動
+
+上の「変更ファイル」と検証 7〜9 の行の番号はマージ前のもの。マージ後はこう動いた。
+
+| 場所 | マージ前 | マージ後 |
+|---|---|---|
+| `ops/up.sh` の Kafbat UI の ECR のコメント | :506 | :505 |
+| `ops/up.sh` の `ensure_secret "/$PREFIX/kafka-ui/admin-password"`（手順 7） | :919 | :931 |
+| `oss/ops/up.sh` の同じ行（手順 7） | :324 | :334 |
+| `ops/up.sh` の `log "10.` | :1313 | :1337 |
+| `docs/deploy.md` の手順 10 の下の注記 2 本 | :102-103 | :103-104 |
+| `docs/deploy.md` の 2 つ目の打ち直しの案内 | :276 | :279 |
+| `docs/pipeline.md` の Kafbat UI の訂正 | :156 | :157 |
+| `docs/troubleshooting.md` の表の案内 | :94 | :96 |
+| `docs/troubleshooting.md` の `### Kafbat UI` | :100 | :102 |
+
+#### 範囲
+
+5be0288 との差は 016 のファイルだけ。触らないファイルには差が無い。
+
+```
+$ git diff --stat 5be0288 | tail -12
+ docs/cycles/016-kafbat-ui-nits/build.md      | 425 +++++++++++++++++++++++++++
+ docs/cycles/016-kafbat-ui-nits/design-log.md |  34 +++
+ docs/cycles/016-kafbat-ui-nits/design.md     | 108 ++++---
+ docs/deploy.md                               |   7 +-
+ docs/development.md                          |   2 +-
+ docs/pipeline.md                             |   2 +-
+ docs/troubleshooting.md                      |  30 +-
+ ops/up.sh                                    |   2 +-
+ tests/test_stream.py                         |  20 +-
+ 9 files changed, 575 insertions(+), 55 deletions(-)
+$ git diff --stat 5be0288 -- IaC/terraform/aws-managed/base/core/templates/web_user_data.sh.tftpl IaC/terraform/aws-managed/base/core/web.tf IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf oss/ops/up.sh docs/architecture docs/cycles/BACKLOG.md | wc -l
+       0
+```
+
+（`build.md` の 425 行はこの節を書く前の数。）
+
+#### 検証 1: test_stream
+
+```
+$ uv run --group dev --group web python tests/test_stream.py > m1.log 2>&1; echo "rc=$?" >> m1.log
+$ grep -c '^ok ' m1.log; grep -v '^ok ' m1.log
+96
+通過 96 / 失敗 0
+rc=0
+```
+
+012 が `test_stream` に 7 本足したので 89 → 96。
+
+#### 検証 2〜5: 変異
+
+マージ後のツリーの写し（scratch の `merged/`）に `mut16.py` で同じ変異を当てた。生ログ（`merged-mut.log`）:
+
+```
+[変異なし] assert: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[変異なし] count: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[a] 7-5 の run_on_instance 行の前に空行 / assert: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[a] 7-5 の run_on_instance 行の前に空行 / count: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[a2] 7-5 の log の見出しを 7-6 に変える（_s75 の開始マーカーが外れる） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[a2] 7-5 の log の見出しを 7-6 に変える（_s75 の開始マーカーが外れる） / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[a3] 7-5 の run_on_instance 行を消す / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[a3] 7-5 の run_on_instance 行を消す / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[b] _s83 の開始マーカー # ---- 8-3. Web を # ---- 8-3. web に / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[b] _s83 の開始マーカー # ---- 8-3. Web を # ---- 8-3. web に / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[c] テンプレートの Wants=${name_prefix}-kafka-ui.service を消す / assert: rc=1 | 最後の出力行: ok Kafbat UI は Web の EC2 の systemd のユニットが Docker のコンテナを 127. | stderr: AssertionError: 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8-3（OSS 版は 7-5）の systemctl restart <接頭辞>-web が起こす。弱い依存だけにして、Kafbat UI が落ちても Web を止めない（Requires / BindsTo / PartOf / Requisite にしな
+[c] テンプレートの Wants=${name_prefix}-kafka-ui.service を消す / count: rc=0 | 最後の出力行: 通過 94 / 失敗 2 | NG 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8-3（OSS 版は 7-5）の systemctl restart <接頭辞>-web が起こす。弱い依存だけにして、Ka / NG 描いた user_data の Web のユニットにも Wants=x-nwc-poc-kafka-ui.service があり、kafka-ui を含む行はその 1 行だけ（cycle 016） | 
+[o1] 7-5 の run_on_instance 行の頭に [ -n "${X:-}" ] && を足す / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[o1] 7-5 の run_on_instance 行の頭に [ -n "${X:-}" ] && を足す / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[o2] 7-5 の run_on_instance 行を関数 _x() { … } で包む（呼ばない） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[o2] 7-5 の run_on_instance 行を関数 _x() { … } で包む（呼ばない） / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[o3] 7-5 の run_on_instance 行の前に [ -z "${X:-}" ] || exit 0 / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[o3] 7-5 の run_on_instance 行の前に [ -z "${X:-}" ] || exit 0 / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[o4] 7-5 の run_on_instance 行を while false; do … done で包む / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[o4] 7-5 の run_on_instance 行を while false; do … done で包む / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[o5] 7-5 の run_on_instance 行を : <<'__X__' … __X__ で殺す / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[o5] 7-5 の run_on_instance 行を : <<'__X__' … __X__ で殺す / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[o6] 7-5 の run_on_instance 行の後ろに空行とコメント行（退行ではない） / assert: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[o6] 7-5 の run_on_instance 行の後ろに空行とコメント行（退行ではない） / count: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[o7] 7-5 の run_on_instance 行の前の行に false &&（行の継続） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[o7] 7-5 の run_on_instance 行の前の行に false &&（行の継続） / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[p1] 8-3 の run_on_instance 行を関数 _x() { … } で包む（呼ばない） / assert: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[p1] 8-3 の run_on_instance 行を関数 _x() { … } で包む（呼ばない） / count: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+```
+
+マージ前の同じ表（`final-mut.log`）と、「通過 N / 失敗 M」の N だけを伏せて比べると全行が同じ（どの変異がどの check で落ちるかは変わらない。(p1) は OC7 のとおり通るまま）。
+
+```
+$ python3 - <<'EOF'   # 通過 \d+ を 通過 N にして final-mut.log と merged-mut.log を比べる
+…
+EOF
+28 28 SAME-SHAPE
+```
+
+#### 検証 6: check.sh
+
+```
+$ bash ops/check.sh; echo rc=$?
+== 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+差分なし
+
+== 2. 9 つのルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+IaC/terraform/aws-managed/base/ecr  OK
+IaC/terraform/aws-managed/base/core  OK
+IaC/terraform/aws-managed/agent  OK
+IaC/terraform/aws-managed/pipeline/lab  OK
+IaC/terraform/aws-managed/pipeline/stream  OK
+IaC/terraform/aws-managed/pipeline/analytics  OK
+IaC/terraform/aws-managed/pipeline/graph  OK
+IaC/terraform/aws-managed/pipeline/nautobot  OK
+IaC/terraform/aws-managed/workflow  OK
+IaC/terraform/oss/base/ecr  OK
+IaC/terraform/oss/base/core  OK
+IaC/terraform/oss/agent  OK
+IaC/terraform/oss/pipeline/lab  OK
+IaC/terraform/oss/pipeline/stream  OK
+IaC/terraform/oss/pipeline/analytics  OK
+IaC/terraform/oss/pipeline/graph  OK
+IaC/terraform/oss/pipeline/nautobot  OK
+IaC/terraform/oss/workflow  OK
+
+== 3. スクリプトの構文
+bash -n: 29 本
+構文エラーなし
+…（各テストの最後の行。check3.log の行番号付き）
+188:通過 158 / 失敗 0
+685:通過 495 / 失敗 0
+1260:通過 161 / 失敗 0
+1339:通過 78 / 失敗 0
+1343:通過 3 / 失敗 0
+1423:通過 78 / 失敗 0
+1433:通過 7 / 失敗 0
+1538:通過 104 / 失敗 0
+1671:通過 132 / 失敗 0
+1743:69 項目すべて通過
+1916:通過 172 / 失敗 0
+2098:通過 181 / 失敗 0
+2165:通過 66 / 失敗 0
+2262:通過 96 / 失敗 0
+2381:通過 103 / 失敗 0
+2826:通過 327 / 失敗 0
+…
+ok Temporal UI（8233）は土台の通信の表の web → workflow の 1 行で、workflow にはルールも Web の SG の参照も無く、7233 の行は無い
+ok 修復案の status に obsolete がある（tools.json の説明も）
+通過 327 / 失敗 0
+
+すべて通過
+rc=0
+```
+
+16 本の数は `docs/development.md:37` の一覧と全部同じ。
+
+#### 検証 7〜9: grep
+
+```
+$ grep -c 'Kafbat UI' docs/troubleshooting.md
+5
+$ grep -n '^### Kafbat UI' docs/troubleshooting.md
+102:### Kafbat UI
+$ grep -n 'Kafbat UI のポートフォワード' docs/troubleshooting.md
+96:| Kafbat UI のポートフォワードがつながらない、画面が開かない | 下の「Kafbat UI」を見る |
+$ grep -n 'kafka-ui/admin-password' docs/deploy.md docs/troubleshooting.md docs/pipeline.md | cut -d: -f1,2
+docs/deploy.md:26
+docs/deploy.md:279
+docs/troubleshooting.md:111
+docs/pipeline.md:157
+$ grep -no 'unmask[^`]*' docs/troubleshooting.md docs/pipeline.md
+docs/troubleshooting.md:128:unmask --runtime <prefix>-kafka-ui
+docs/pipeline.md:157:unmask --runtime <prefix>-kafka-ui
+$ sed -n '505p' ops/up.sh
+    # Telegraf・syslog-ng・GoFlow2（ECS）: イメージを ECR から引き、ログを CloudWatch に書く。MSK は VPC の中。Web の EC2 の Kafbat UI（Docker）も同じ ecr.api / ecr.dkr で ECR から pull する
+$ git diff --stat 5be0288 -- ops/up.sh
+ ops/up.sh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+```
+
+#### design.md の上書き
+
+検証方法の数を実測に合わせた（89 / 88 / 87 → 96 / 95 / 94）。9 の行（:506 → :505、差の基準を 5be0288 に）、変更対象の `docs/development.md` の数（95 → 96）、未確定事項の 012 の項目（マージの結果）も直した。方針と範囲は変えていない。design-log.md に 1 行。

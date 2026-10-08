@@ -25,7 +25,7 @@ Athena は、ここのテーブルをエージェントと Web の承認タブ�
 
 | テーブル | 入っているもの | 列 | 書く | 読む |
 |---|---|---|---|---|
-| `raw_telemetry` | 機器から来た生データの全部（metrics / gnmi / mdt / traps / logs）。up か down かを判断せず、そのまま | Terraform の 8 列（`ts`、`topic`、`measurement`、`agent_host`、`host`、`tags_json`、`fields_json`、`ingested_at`）+ Spark が足す 4 列（`event_id`、`kafka_topic`、`kafka_partition`、`kafka_offset`） | Spark の `iceberg`（ジョブ `sinks-s3iceberg`） | まだ読む側が無い |
+| `raw_telemetry` | 機器から来た生データの全部（metrics / gnmi / traps / logs / flows）。up か down かを判断せず、そのまま | Terraform の 8 列（`ts`、`topic`、`measurement`、`agent_host`、`host`、`tags_json`、`fields_json`、`ingested_at`）+ Spark が足す 4 列（`event_id`、`kafka_topic`、`kafka_partition`、`kafka_offset`） | Spark の `iceberg`（ジョブ `sinks-s3iceberg`） | まだ読む側が無い |
 | `alert_events` | アラートの通知 1 件が 1 行（発火と解消） | 10 列（`event_id`、`anomaly_id`、`source`、`status`、`device_id`、`kind`、`target`、`detail`、`starts_at`、`received_at`） | Lambda `<prefix>-graph-status` → Firehose | エージェントの `query_history`（Athena） |
 | `proposal_events` | 修復案（作成・承認・却下・時間切れ・適用・確認・効かなかった決定）。1 段ごとに 1 行で、どの行にも修復案の全項目（異常、原因、コマンド、理由、エージェントの答え、事前チェック、決めた人と時刻、処置の出力、確認のメモ）。「いま」は `proposal_id` ごとに `seq` が最大の行 | 28 列（`event_id`、`proposal_id`、`anomaly_id`、`seq`、`event`、`status`、`device_id`、`kind`、`target`、`first_seen`、`source`、`alert_detail`、`cause`、`action`、`command`、`reason`、`agent_response`、`precheck`、`precheck_verdict`、`decided_by`、`decided_at`、`apply_output`、`verify_note`、`detail`、`workflow_id`、`run_id`、`created_at`、`event_time`）。正は `app/temporal/rules.py` の `PROPOSAL_EVENT_COLUMNS` | Temporal の worker だけ（PyIceberg） | Web の承認タブとエージェントの `list_proposals`（Athena）、worker（PyIceberg） |
 

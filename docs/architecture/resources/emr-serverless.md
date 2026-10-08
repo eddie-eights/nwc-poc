@@ -27,10 +27,10 @@ MSK のトピックを読み、格納先（S3 Tables、OpenSearch、Prometheus�
 
 | ジョブ | クエリ | 読むトピック | 書く先 |
 |---|---|---|---|
-| `sinks-s3iceberg` | iceberg | metrics / gnmi / mdt / traps / logs | S3 Tables の `raw_telemetry` |
-| `sinks-grafana` | prometheus | metrics / gnmi / mdt | Amazon Managed Prometheus（remote write） |
-| `sinks-grafana` | opensearch | traps / logs | OpenSearch Serverless の index `snmp-logs` |
-| `sinks-splunk` | splunk | metrics / gnmi / mdt / traps / logs | Splunk の HEC |
+| `sinks-s3iceberg` | iceberg | metrics / gnmi / traps / logs / flows | S3 Tables の `raw_telemetry` |
+| `sinks-grafana` | prometheus | metrics / gnmi | Amazon Managed Prometheus（remote write） |
+| `sinks-grafana` | opensearch | traps / logs / flows | OpenSearch Serverless の index `snmp-logs` |
+| `sinks-splunk` | splunk | metrics / gnmi / traps / logs / flows | Splunk の HEC |
 
 ## つながり
 
@@ -87,7 +87,7 @@ MSK のトピックを読み、格納先（S3 Tables、OpenSearch、Prometheus�
 |---|---|
 | 同じ秒に中身がまったく同じメッセージが 2 つ来たとき | `event_id` が同じになる（受け入れている） |
 | 1 AZ（既定） | その AZ が止まるとジョブも止まる。AWS で確かめた記録は無い |
-| MDT のトピック | 共通の形への変換がまだ無いので、中身は機器の sensor path のまま |
+| `flows`（GoFlow2） | Telegraf の形ではないので、Spark が読むときに共通の形（measurement `flow`、送り元・宛先・ポートを tags、bytes / packets を fields）に読み替える。AWS の MSK から読んだ記録はまだ無い |
 
 OSS 版（`IaC/terraform/oss/pipeline/analytics`）には EMR Serverless が無く、代わりに `spark.tf` が同じ `app/spark/snmp_sinks.py` を ECS（Fargate）で `local[*]` で動かす（Spark 3.5.9。ジョブの分け方は同じで、格納先ごとに 1 サービス。起こし直しは ECS のサービスがする）。チェックポイントは同じバケットの `analytics/checkpoint/` に S3A で書く。[oss-variant.md](../../oss-variant.md)。
 
