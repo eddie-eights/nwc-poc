@@ -1061,6 +1061,7 @@ check("ルールの確かめ: 401 / 403 は待たずに未確認（2。待って
 class _Rules(http.server.BaseHTTPRequestHandler):
     PW = "pw-" + "q9Z2" * 4   # 偽の値（手元の偽の Grafana が受け付けるパスワード）
     SEEN = []                 # (パス, Authorization が付いていたか)
+    PAGES = {}                # パス（クエリも）→ 返す本文か、本文を返す関数（ページ分けの確かめ）
 
     def do_GET(self):
         import base64
@@ -1070,8 +1071,15 @@ class _Rules(http.server.BaseHTTPRequestHandler):
             return
         ok = self.headers.get("Authorization") == "Basic " + base64.b64encode(f"admin:{self.PW}".encode()).decode()
         rules = "/api/prometheus/grafana/api/v1/rules"
-        code, body = ((200, json.dumps(gbody(grule("a", "Normal")))) if self.path == rules
-                      else (200, "[]") if self.path == "/list" + rules else (404, "{}")) if ok else (401, "{}")
+        if ok and self.path.startswith("/endless" + rules):   # 毎回違うトークンを返す（終わらない）
+            page = {"status": "success", "data": {"groups": [], "groupNextToken": f"n{len(self.SEEN)}"}}
+        else:
+            page = self.PAGES.get(self.path) if ok else None
+        if page is not None:
+            code, body = 200, json.dumps(page() if callable(page) else page)
+        else:
+            code, body = ((200, json.dumps(gbody(grule("a", "Normal")))) if self.path == rules
+                          else (200, "[]") if self.path == "/list" + rules else (404, "{}")) if ok else (401, "{}")
         self.send_response(code); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(body.encode())
 
     def log_message(self, *a):
@@ -1105,18 +1113,84 @@ try:
         _list = None
     except ValueError as e:
         _list = e
+
+    # ページ分け（groupNextToken）。13.2.3 の既定は group_limit=-1 なので来ない。来たときのための道を、偽の Grafana が 2 ページ返す形で縛る
+    _RP, _r = "/api/prometheus/grafana/api/v1/rules", [0]
+
+    def _p1():   # 読むたびに評価が 1 回進む
+        _r[0] += 1
+        return {"status": "success", "data": {"groups": [{"name": "g1", "rules": [grule("a", "Normal", evaluated=f"2026-10-08T14:{_r[0]:02}:00Z")]}],
+                                              "groupNextToken": "t/1+="}}
+
+    def _p2(state):
+        return lambda: {"status": "success", "data": {"groups": [{"name": "g2", "rules": [grule("b", state, evaluated=f"2026-10-08T14:{_r[0]:02}:00Z")]}]}}
+
+    def _grc_run(base, wait):
+        o = io.StringIO()
+        with contextlib.redirect_stdout(o):
+            rc = grc.check(grc.make_fetch(_url + base, _Rules.PW), wait, sleep=lambda s: None)
+        return rc, o.getvalue().splitlines()
+
+    _Rules.PAGES.update({"/paged" + _RP: _p1, "/paged" + _RP + "?group_next_token=t%2F1%2B%3D": _p2("Normal")})
+    _Rules.SEEN.clear()
+    _pg = grc.make_fetch(_url + "/paged", _Rules.PW)()
+    _pg_seen = list(_Rules.SEEN)
+    _pg_ok = _grc_run("/paged", 30)
+    _Rules.PAGES["/paged" + _RP + "?group_next_token=t%2F1%2B%3D"] = _p2("Normal (Error, KeepLast)")
+    _pg_ng = _grc_run("/paged", 30)
+    _Rules.PAGES.update({"/loop" + _RP: {"status": "success", "data": {"groups": [{"name": "g1", "rules": [grule("a", "Normal")]}],
+                                                                       "groupNextToken": "same"}},
+                         "/loop" + _RP + "?group_next_token=same": {"status": "success", "data": {"groups": [], "groupNextToken": "same"}},
+                         "/dataarr" + _RP: {"status": "success", "data": ["x"]},
+                         "/tokint" + _RP: {"status": "success", "data": {"groups": [], "groupNextToken": 5}}})
+    _Rules.SEEN.clear()
+    _loop = _grc_run("/loop", 0)
+    _loop_seen = list(_Rules.SEEN)
+    _Rules.SEEN.clear()
+    try:
+        grc.make_fetch(_url + "/endless", _Rules.PW)()
+        _endless = None
+    except ValueError as e:
+        _endless = e
+    _endless_n = len(_Rules.SEEN)
+    _endless_run = _grc_run("/endless", 0)
+    _odd = []
+    for _base in ("/dataarr", "/tokint"):
+        try:
+            grc.make_fetch(_url + _base, _Rules.PW)()
+            _odd.append(None)
+        except ValueError as e:
+            _odd.append(str(e))
+    _dataarr = _grc_run("/dataarr", 0)
 finally:
     _srv.shutdown()
     for k, v in _saved.items():
         os.environ.pop(k) if v is None else os.environ.__setitem__(k, v)
 check("ルールの確かめ: make_fetch は admin の Basic 認証でルールの API を読み（環境変数のプロキシは通さない）、401 は Unauthorized にする。"
       "パスワードは例外の文にも出力にも出さない",
-      _got == gbody(grule("a", "Normal")) and isinstance(_401, grc.Unauthorized) and _401.__cause__ is None and _401.__suppress_context__
+      _got == {"data": gbody(grule("a", "Normal"))["data"]} and isinstance(_401, grc.Unauthorized) and _401.__cause__ is None and _401.__suppress_context__
       and _Rules.PW not in str(_401) and _rc401 == 2 and _Rules.PW not in _wrong.getvalue() and "HTTP 401" in _wrong.getvalue())
 check("ルールの確かめ: make_fetch はリダイレクト先に Authorization（パスワード）を送らない。JSON がオブジェクトでなければ ValueError（check が待って読み直す）",
       isinstance(_moved, grc.Unauthorized)
       and _moved_seen == [("/moved/api/prometheus/grafana/api/v1/rules", True), ("/api/prometheus/grafana/api/v1/rules", False)]
       and isinstance(_list, ValueError) and "list" in str(_list))
+check("ルールの確かめ（ページ分け）: data.groupNextToken があれば group_next_token（URL エンコードする）で次のページを読み、グループをつなぐ。"
+      "どのページにも Authorization を付け、group_limit は送らない（13.2.3 の既定 -1 は全部を 1 ページで返す）",
+      [g["name"] for g in _pg["data"]["groups"]] == ["g1", "g2"] and [r["name"] for g in _pg["data"]["groups"] for r in g["rules"]] == ["a", "b"]
+      and _pg_seen == [("/paged" + _RP, True), ("/paged" + _RP + "?group_next_token=t%2F1%2B%3D", True)]
+      and "group_limit" not in read("ops", "grafana_rules_check.py").split('"""', 2)[2])
+check("ルールの確かめ（ページ分け）: 判定は全部のページのルールで出す（2 ページ目のルールだけがエラーでも NG。1 ページ目だけなら OK になる形）",
+      _pg_ok[0] == 0 and _pg_ok[1][-1] == "判定: OK（2 本とも評価のエラーなし）" and [l.split(":")[0] for l in _pg_ok[1][:-1]] == ["g1/a", "g2/b"]
+      and _pg_ng[0] == 1 and _pg_ng[1][-1] == "判定: NG（2 本のうち 1 本の評価がエラー: g2/b）")
+check("ルールの確かめ（ページ分け）: 同じ groupNextToken が 2 回来たら読めなかったとして扱い、待ち切れたら未確認（2）。読んだのは 2 ページだけ",
+      _loop == (2, ["判定: 未確認（0 秒待った。Grafana のルールの API が読めない（ValueError: groupNextToken が繰り返された（same）））"])
+      and _loop_seen == [("/loop" + _RP, True), ("/loop" + _RP + "?group_next_token=same", True)])
+check("ルールの確かめ（ページ分け）: トークンが毎回変わって終わらなければ 100 ページ（最初の 1 回と合わせて 101 回）で止めて未確認（2）。"
+      "data がオブジェクトでない・トークンが文字列でないも ValueError で未確認（落ちない）",
+      isinstance(_endless, ValueError) and str(_endless) == "ページが 100 を超えた（groupNextToken が終わらない）" and _endless_n == 101
+      and _endless_run[0] == 2 and _endless_run[1][-1].endswith("（ValueError: ページが 100 を超えた（groupNextToken が終わらない）））")
+      and _odd == ["data が JSON のオブジェクトでない（list）", "groupNextToken が文字列でない（int）"]
+      and _dataarr == (2, ["判定: 未確認（0 秒待った。Grafana のルールの API が読めない（ValueError: data が JSON のオブジェクトでない（list）））"]))
 
 _seen, _gout = {}, io.StringIO()
 _orig = (grc.load_web_env, grc.admin_password, grc.make_fetch, grc.check)

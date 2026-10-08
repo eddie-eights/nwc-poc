@@ -1,6 +1,9 @@
 """ops/up.sh・oss/ops/up.sh の最後と ops/check-grafana.sh が Web の EC2 の上で打つ。Grafana のアラートルールが評価でエラーになっていないかを確かめる。
 
-Grafana のルールの API（/api/prometheus/grafana/api/v1/rules。スケジューラーの評価の結果）を読む。ルールは execErrState: KeepLast なので、
+Grafana のルールの API（/api/prometheus/grafana/api/v1/rules。スケジューラーの評価の結果）を読む。応答の data.groupNextToken が
+あれば group_next_token で次のページを読み、全部のグループをつなぐ。13.2.3 の既定は group_limit=-1（全部を 1 ページで返す）なので
+トークンは来ない。来たときのための道で、同じトークンが 2 回来るか MAX_PAGES を超えたら読めなかったとして扱う（Grafana のルールの検査の
+残りを直す（015））。ルールは execErrState: KeepLast なので、
 評価がエラーでもルールの health は ok、state は inactive のままで、エラーは alerts[].state の「Normal (Error, KeepLast)」にだけ出る
 （AWS 検証で見つけた不具合 3 件を直す（008）で実測。lastError も空）。それで alerts[].state に「(Error」があるか「Error」で始まるもの、
 health が error、lastError が空でないものをエラーとする。KeepLast はエラーの理由を API に残さないので、理由は Grafana のログ
@@ -27,9 +30,11 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 INTERVAL = 10
+MAX_PAGES = 100  # groupNextToken が毎回変わって終わらないときの歯止め
 
 
 def load_web_env(prefix):
@@ -54,23 +59,43 @@ class Unauthorized(Exception):
 
 
 def make_fetch(base_url, password):
-    """ルールの API を 1 回読む関数を返す。パスワードは Authorization ヘッダーにだけ入れ、例外の文にも出さない"""
+    """ルールの API を全部のページまで読む関数を返す。パスワードは Authorization ヘッダーにだけ入れ、例外の文にも出さない"""
     auth = "Basic " + base64.b64encode(f"admin:{password}".encode()).decode()
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # Grafana は VPC の中。プロキシを通さない
+    url = f"{base_url}/api/prometheus/grafana/api/v1/rules"
 
-    def fetch():
-        req = urllib.request.Request(f"{base_url}/api/prometheus/grafana/api/v1/rules")
+    def get(page_url):
+        req = urllib.request.Request(page_url)
         req.add_unredirected_header("Authorization", auth)  # リダイレクト先には送らない
         try:
             with opener.open(req, timeout=10) as r:
                 body = json.load(r)
-            if not isinstance(body, dict):
-                raise ValueError(f"JSON のオブジェクトでない（{type(body).__name__}）")
-            return body
         except urllib.error.HTTPError as e:
             if e.code in (401, 403):
                 raise Unauthorized(f"HTTP {e.code}（admin のパスワードが Grafana と SSM で違う）") from None
             raise
+        if not isinstance(body, dict):
+            raise ValueError(f"JSON のオブジェクトでない（{type(body).__name__}）")
+        data = body.get("data") or {}
+        if not isinstance(data, dict):
+            raise ValueError(f"data が JSON のオブジェクトでない（{type(data).__name__}）")
+        return data
+
+    def fetch():
+        data = get(url)
+        groups = list(data.get("groups") or [])
+        seen = set()
+        while token := data.get("groupNextToken"):
+            if not isinstance(token, str):
+                raise ValueError(f"groupNextToken が文字列でない（{type(token).__name__}）")
+            if token in seen:
+                raise ValueError(f"groupNextToken が繰り返された（{token[:40]}）")
+            if len(seen) >= MAX_PAGES:
+                raise ValueError(f"ページが {MAX_PAGES} を超えた（groupNextToken が終わらない）")
+            seen.add(token)
+            data = get(f"{url}?group_next_token={urllib.parse.quote(token, safe='')}")
+            groups += data.get("groups") or []
+        return {"data": {"groups": groups}}
 
     return fetch
 
