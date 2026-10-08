@@ -11,17 +11,17 @@ VPC の中の通信は、SG の通信の表に書いたものだけが通る。
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
-| VPC | `10.0.0.0/16`。IGW も NAT Gateway も無い | `terraform/base/core/vpc.tf`、変数 `vpc_cidr` |
-| サブネット | プライベートが 3 つ（a / b / c。AZ ID は apne1-az1 / az4 / az2）。1 AZ のものは a に置く | `terraform/base/core/vpc.tf` |
-| S3 のエンドポイント | gateway 型。エンドポイントポリシーは付けない | `terraform/base/core/endpoints.tf` の `aws_vpc_endpoint.s3` |
-| インターフェース型エンドポイント | 作る機能から `ops/up.sh` が選んで渡す。private DNS あり。ポリシーは「このアカウントのプリンシパルだけ」 | `ops/up.sh` の `endpoints_for`、`terraform/base/core/endpoints.tf` の `aws_vpc_endpoint.interface` |
-| OpenSearch Serverless の VPC エンドポイント | KB か `STORES` の `grafana` があるとき、または前に作ったコレクションが agent か analytics の state に残っているときだけ作る（`create_opensearch_endpoint`。`ops/up.sh` の `NEED_AOSS`） | `terraform/base/core/endpoints.tf` の `aws_opensearchserverless_vpc_endpoint.aoss` |
+| VPC | `10.0.0.0/16`。IGW も NAT Gateway も無い | `IaC/terraform/aws-managed/base/core/vpc.tf`、変数 `vpc_cidr` |
+| サブネット | プライベートが 3 つ（a / b / c。AZ ID は apne1-az1 / az4 / az2）。1 AZ のものは a に置く | `IaC/terraform/aws-managed/base/core/vpc.tf` |
+| S3 のエンドポイント | gateway 型。エンドポイントポリシーは付けない | `IaC/terraform/aws-managed/base/core/endpoints.tf` の `aws_vpc_endpoint.s3` |
+| インターフェース型エンドポイント | 作る機能から `ops/up.sh` が選んで渡す。private DNS あり。ポリシーは「このアカウントのプリンシパルだけ」 | `ops/up.sh` の `endpoints_for`、`IaC/terraform/aws-managed/base/core/endpoints.tf` の `aws_vpc_endpoint.interface` |
+| OpenSearch Serverless の VPC エンドポイント | KB か `STORES` の `grafana` があるとき、または前に作ったコレクションが agent か analytics の state に残っているときだけ作る（`create_opensearch_endpoint`。`ops/up.sh` の `NEED_AOSS`） | `IaC/terraform/aws-managed/base/core/endpoints.tf` の `aws_opensearchserverless_vpc_endpoint.aoss` |
 | エンドポイントを置く AZ の数 | `ENDPOINTS_AZ_NUM`（既定 1、1〜3） | `ops/up.sh`、`deploy.env.example` |
-| IAM の Deny | 管理ポリシー `<prefix>-network-perimeter`。ワークロードのロール全部に付ける | `terraform/base/core/perimeter.tf` と各ルートの attachment |
-| リソースポリシーの Deny | バケット、S3 Tables のテーブルバケット、SNS、SQS（本体と DLQ）、AgentCore の Runtime と Gateway | `bucket.tf`、`alerts.tf`、`pipeline/analytics/tables.tf`、`workflow/events.tf`、`workflow/gateway.tf`、`agent/runtime.tf` |
-| Deny から外すプリンシパル | apply した人、KB のロール `<prefix>-kb`、Firehose のロール `<prefix>-alert-firehose` | `terraform/base/core/perimeter.tf` の `perimeter_exempt_principals` |
-| SG | ワークロードごとに 1 つと `endpoints`。ルールは通信の表から作る | `terraform/base/core/security_groups.tf` の `local.sg_flows` |
-| フローログ | VPC の全 ENI。ロググループ `/<prefix>/vpc-flow-logs`、保存 7 日、集約 60 秒 | `terraform/base/core/flow_logs.tf` |
+| IAM の Deny | 管理ポリシー `<prefix>-network-perimeter`。ワークロードのロール全部に付ける | `IaC/terraform/aws-managed/base/core/perimeter.tf` と各ルートの attachment |
+| リソースポリシーの Deny | バケット、S3 Tables のテーブルバケット、SNS、SQS（本体と DLQ）、AgentCore の Runtime と Gateway | `bucket.tf`、`alerts.tf`、`IaC/terraform/aws-managed/pipeline/analytics/tables.tf`、`IaC/terraform/aws-managed/workflow/events.tf`、`IaC/terraform/aws-managed/workflow/gateway.tf`、`IaC/terraform/aws-managed/agent/runtime.tf` |
+| Deny から外すプリンシパル | apply した人、KB のロール `<prefix>-kb`、Firehose のロール `<prefix>-alert-firehose` | `IaC/terraform/aws-managed/base/core/perimeter.tf` の `perimeter_exempt_principals` |
+| SG | ワークロードごとに 1 つと `endpoints`。ルールは通信の表から作る | `IaC/terraform/aws-managed/base/core/security_groups.tf` の `local.sg_flows` |
+| フローログ | VPC の全 ENI。ロググループ `/<prefix>/vpc-flow-logs`、保存 7 日、集約 60 秒 | `IaC/terraform/aws-managed/base/core/flow_logs.tf` |
 | スイッチ | `NETWORK_PERIMETER=0` で Deny を一時的に外す（切り分け用） | `ops/up.sh`、[setup.md](../../setup.md) の「閉域を一時的に外すとき」 |
 | 費用 | インターフェース型エンドポイント 1 つ 1.4 セント/時 × `ENDPOINTS_AZ_NUM`（データは別に $0.01/GB）。OpenSearch Serverless の VPC エンドポイントも 1.4 セント/時 × AZ（公表単価）。SG、ルール、gateway 型は時間課金なし | `ops/up.sh` の費用の目安（526〜583 行） |
 
@@ -60,19 +60,19 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
 
 - **閉域は「経路」「エンドポイントポリシー」「IAM の Deny」「リソースポリシーの Deny」の 4 層で作る。**
   経路だけだと、盗まれた鍵で VPC の外から呼べる。Deny の条件は `aws:SourceVpc` がこの VPC でないこと。
-  出典: [core.md](../core.md) の「閉域」、`terraform/base/core/perimeter.tf`。
+  出典: [core.md](../core.md) の「閉域」、`IaC/terraform/aws-managed/base/core/perimeter.tf`。
 - **S3 の gateway 型エンドポイントにはポリシーを付けない。**
   付けると dnf と ECR のレイヤー（どちらも AWS が持つバケット）が止まる。
   出典: [core.md](../core.md) の「閉域」の表。
 - **エンドポイントが無いサービスを呼ぶと、エラーではなく接続のタイムアウトになる。**
-  インターネットへの経路が無いので、どこにも出られない。足すのは `ops/up.sh` の `endpoints_for` と、`terraform/base/core` の `interface_endpoints` の validation の両方。
+  インターネットへの経路が無いので、どこにも出られない。足すのは `ops/up.sh` の `endpoints_for` と、`IaC/terraform/aws-managed/base/core` の `interface_endpoints` の validation の両方。
   出典: [troubleshooting.md](../../troubleshooting.md) の「閉域（`explicit deny`）」。
 - **機能を外しても、その機能の state が残っているあいだはエンドポイントを残す。**
   先に消すと、残っているワークロードが接続のタイムアウトになる。
   出典: `ops/up.sh` の `endpoints_for` のコメント。
 - **Deny から外すものは 3 種類ある。**
   apply した人（`terraform` を打つ PC は VPC の外。PoC の割り切り）、AWS のサービス自身とサービスが代わりに呼ぶもの（`aws:PrincipalIsAWSService`、`aws:ViaAWSService`）、サービス側で動くロール（KB の `<prefix>-kb`、Firehose の `<prefix>-alert-firehose`）。
-  出典: [core.md](../core.md) の「閉域」、`terraform/pipeline/analytics/history.tf` の先頭のコメント。
+  出典: [core.md](../core.md) の「閉域」、`IaC/terraform/aws-managed/pipeline/analytics/history.tf` の先頭のコメント。
 - **S3 Tables の Iceberg REST は `aws:CalledViaLast = s3tables.amazonaws.com` を Deny から外してある。**
   S3 Tables が裏で呼ぶ API には、元の VPC が付かない。
   出典: [core.md](../core.md) の「閉域」。
@@ -94,7 +94,7 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
   Logs Insights で `filter action = "REJECT"` を打つ（1〜2 分遅れて出る）。
   出典: [troubleshooting.md](../../troubleshooting.md) の「閉域」の「VPC の中の相手への接続がタイムアウトする」の行。
 - **2026-09-28 に、NAT Gateway と AWS の外の Splunk をコードごと消してこの形にした。**
-  出典: `terraform/base/core/perimeter.tf` のコメント、[core.md](../core.md) の「閉域」。
+  出典: `IaC/terraform/aws-managed/base/core/perimeter.tf` のコメント、[core.md](../core.md) の「閉域」。
 
 ## 制約と未確認
 

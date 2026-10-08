@@ -32,7 +32,7 @@ String（ルートをまたいで渡す値）:
 | `/<prefix>/nautobot/url` | Nautobot の URL | nautobot | Web の EC2 |
 | `/<prefix>/decision-queue-url` | 決定のキュー `<prefix>-decisions` の URL | workflow | Web の EC2（承認タブ） |
 | `/<prefix>/athena-workgroup`、`athena-catalog`、`history-namespace`、`proposal-events-table` | 承認タブが Athena で `proposal_events` を読むための設定。値が空のものは作らない | workflow | Web の EC2（tools の Lambda は同じ名前の環境変数が先に効く） |
-| `/<prefix>/neo4j-uri` | Neo4j の bolt の URI（OSS 版だけ） | graph（`oss/terraform/pipeline/graph/neo4j.tf`） | Web、Runtime |
+| `/<prefix>/neo4j-uri` | Neo4j の bolt の URI（OSS 版だけ） | graph（`IaC/terraform/oss/pipeline/graph/neo4j.tf`） | Web、Runtime |
 
 SecureString（`ops/up.sh` が作る）:
 
@@ -69,13 +69,13 @@ SecureString（`ops/up.sh` が作る）:
   出典: [troubleshooting.md](../../troubleshooting.md) の「パイプラインと WORKFLOW」。
 - **ARN や ID を SSM で渡すと、あとから作ったルートを、先に作ったものを作り直さずにつなげる。**
   agent を後から作っても消しても Web の EC2 を作り直さない。stream を後から作っても lab の EC2 を作り直さない。
-  出典: `terraform/agent/runtime.tf` と `terraform/pipeline/lab/telegraf.tf` のコメント。
+  出典: `IaC/terraform/aws-managed/agent/runtime.tf` と `IaC/terraform/aws-managed/pipeline/lab/telegraf.tf` のコメント。
 - **Telegraf の機器の一覧は、Nautobot があるときは Terraform が値の変化を見ない。**
   最初の値は lab の定義から入れ、あとは Nautobot の Job が書き換えてサービスを作り直す（`ignore_changes`）。Nautobot が無い回は `…/lab/…` の名前で Terraform が値を持つ。
-  出典: `terraform/pipeline/stream/telegraf.tf` のコメント。
+  出典: `IaC/terraform/aws-managed/pipeline/stream/telegraf.tf` のコメント。
 - **DB のパスワードは plan にも state にも残らない。**
   Terraform は ephemeral で読み、`password_wo` に渡す。
-  出典: `terraform/pipeline/nautobot/database.tf` のコメント。
+  出典: `IaC/terraform/aws-managed/pipeline/nautobot/database.tf` のコメント。
 - **`ops/down.sh` は、nautobot のルートが消えなかったときは `/<prefix>/nautobot/` の下を残す。**
   RDS のパスワードを Terraform が destroy でも読むので、消すと打ち直しても消せなくなる。次の `ops/down.sh` で消す。
   出典: `ops/down.sh` の手順 5-2 のコメント。

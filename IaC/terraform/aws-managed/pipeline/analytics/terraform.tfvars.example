@@ -1,0 +1,28 @@
+# IaC/terraform/aws-managed/pipeline/analytics の変数の見本。ops/up.sh は -var owner=… で渡すので、手で apply するときだけ terraform.tfvars にコピーして書く
+# owner はデプロイする人の名前。**必須**（既定が無いので、下の行の # を外して自分の名前に書き換えるか、
+# TF_VAR_owner か -var owner=<自分の名前> で渡す。どれも無いと terraform が値を聞いてくる）。
+# リソース名と Project タグは <owner>-nwc-poc になる（英小文字・数字・ハイフンの 14 文字まで）
+# owner = "yamada"
+
+# 変えないのが既定。変えるときは docs/pipeline.md を読む
+# emr_release_label = "emr-7.14.0"
+# namespace         = "netops"
+# table_name        = "raw_telemetry"
+
+# 冗長化（ops/up.sh は deploy.env の EMR_AZ_NUM / OPENSEARCH_AZ_NUM を渡す）
+# emr_az_num        = 1   # EMR Serverless のワーカーを置く AZ の数（1-3）
+# opensearch_az_num = 1   # 2 で logs のコレクションの standby_replicas を ENABLED（1-2。変えると作り直し）
+
+# 4 本目の格納先 splunk（Splunk の HTTP Event Collector。ops/up.sh は deploy.env の STORES に splunk があれば足す）。
+# Splunk Enterprise をここの ECS で立てる（splunk.tf。VPC の中。起動時に Splunk のライセンスと General Terms に同意する）。
+#   管理者のパスワード /<owner>-nwc-poc/splunk/admin-password と HEC の token /<owner>-nwc-poc/splunk/hec-token は ops/up.sh が作る
+# sinks            = ["iceberg", "opensearch", "prometheus", "splunk"]
+# splunk_index     = ""
+# splunk_image_tag = "10.4.4-<hash>"
+# splunk_az_num    = 1   # 2 か 3 で indexer のクラスター（ops/up.sh は deploy.env の SPLUNK_AZ_NUM を渡す）。
+#                        # クラスターの鍵 /<owner>-nwc-poc/splunk/idxc-secret も ops/up.sh が作る。splunk_index は "" のまま
+
+# Grafana OSS を ECS で（grafana.tf。Prometheus / OpenSearch を見る。ops/up.sh は deploy.env の STORES に grafana があれば渡す）。
+# 管理者のパスワード /<owner>-nwc-poc/grafana/admin-password は ops/up.sh が作る
+# create_grafana    = true
+# grafana_image_tag = "13.2.3-<hash>"

@@ -1,0 +1,1 @@
+../../../../terraform/aws-managed/pipeline/stream/access.tf

@@ -11,17 +11,17 @@
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
-| Runtime | `<owner>_nwc_poc_agent`（名前にハイフンが使えないので `-` を `_` にする）。VPC モード、`RUNTIME_AZ_NUM`（既定 1、1〜3） | `terraform/agent/runtime.tf`、`terraform/agent/locals.tf` |
+| Runtime | `<owner>_nwc_poc_agent`（名前にハイフンが使えないので `-` を `_` にする）。VPC モード、`RUNTIME_AZ_NUM`（既定 1、1〜3） | `IaC/terraform/aws-managed/agent/runtime.tf`、`IaC/terraform/aws-managed/agent/locals.tf` |
 | セッション | 放置は 300 秒で畳む。寿命は最大 3600 秒 | `runtime.tf` |
-| コンテナ | `agent/app.py`。イメージは ECR の `<prefix>-agent`（arm64） | `agent/Dockerfile` |
+| コンテナ | `app/agentcore/app.py`。イメージは ECR の `<prefix>-agent`（arm64） | `docker/images/agentcore/Dockerfile` |
 | モデル | `jp.amazon.nova-2-lite-v1:0`（東京と大阪に振り分ける推論プロファイル） | 変数 `model_id` |
-| ガードレール | Standard 階層、フィルタの強さは MEDIUM | `terraform/agent/kb.tf` の `aws_bedrock_guardrail.this` |
+| ガードレール | Standard 階層、フィルタの強さは MEDIUM | `IaC/terraform/aws-managed/agent/kb.tf` の `aws_bedrock_guardrail.this` |
 | Knowledge Base | `CREATE_KB=1` のときだけ。S3 の `docs/` の md → Titan Embeddings v2（1024 次元）→ OpenSearch Serverless の `kb-index`（faiss） | `kb.tf` |
 | 検索 | HYBRID で 20 件取り、`amazon.rerank-v1:0` で 5 件に絞る | 変数 `number_of_results`、`rerank_model_id`、`number_of_reranked_results`、[agent.md](../agent.md) |
 | Runtime の ARN | SSM の String `/<prefix>/runtime-arn`。Web の EC2 が読む（60 秒キャッシュ） | `runtime.tf` |
-| Gateway | `<prefix>-tools`。MCP（`2025-06-18`）、認証は AWS_IAM。URL は SSM の String `/<prefix>/gateway-url` | `terraform/workflow/gateway.tf` |
-| tools の Lambda | `<prefix>-tools`。VPC の中（`LAMBDA_AZ_NUM`、既定 1）。`agent/topology.py`、`agent/evidence.py`、`agent/proposals.py` を動かす | `gateway.tf` |
-| KB の index を作る Lambda | `<prefix>-kb-index`（`agent/kb_index.py`）。apply のときに 1 回呼ぶ | `kb.tf` |
+| Gateway | `<prefix>-tools`。MCP（`2025-06-18`）、認証は AWS_IAM。URL は SSM の String `/<prefix>/gateway-url` | `IaC/terraform/aws-managed/workflow/gateway.tf` |
+| tools の Lambda | `<prefix>-tools`。VPC の中（`LAMBDA_AZ_NUM`、既定 1）。`app/agentcore/topology.py`、`app/agentcore/evidence.py`、`app/agentcore/proposals.py` を動かす | `gateway.tf` |
+| KB の index を作る Lambda | `<prefix>-kb-index`（`app/agentcore/kb_index.py`）。apply のときに 1 回呼ぶ | `kb.tf` |
 | スイッチ | `AGENT=1`（既定 0）。KB は `CREATE_KB=1`。Gateway と tools の Lambda は `WORKFLOW=1` | `deploy.env.example`、`ops/up.sh` |
 | 費用 | KB は 33 セント/時 × `OPENSEARCH_AZ_NUM`（OCU）と、OpenSearch Serverless の VPC エンドポイント 1.4 セント/時 × `ENDPOINTS_AZ_NUM`（logs のコレクションと共用）。インターフェース型エンドポイントは 1 本 1.4 セント/時 × `ENDPOINTS_AZ_NUM`。Runtime は使った分だけ | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`） |
 
@@ -29,14 +29,14 @@
 
 | ツール | 読む先 |
 |---|---|
-| `list_devices`、`neighbors`、`blast_radius`、`root_cause`、`what_if`、`topology_graph`、`layers`、`centrality` | Neptune Analytics のトポロジ（無ければ `agent/data/` の静的な 8 台） |
+| `list_devices`、`neighbors`、`blast_radius`、`root_cause`、`what_if`、`topology_graph`、`layers`、`centrality` | Neptune Analytics のトポロジ（無ければ `app/agentcore/data/` の静的な 8 台） |
 | `recent_changes` | Neptune Analytics の `change` |
 | `list_proposals` | S3 Tables の `proposal_events`（Athena のワークグループ `<prefix>-history`。`proposal_id` ごとに `seq` が最大の行。既定は全部の状態を新しい順に 20 件、最大 100 件） |
 | `search_logs` | OpenSearch Serverless の `snmp-logs`（trap と syslog） |
 | `query_metrics` | Amazon Managed Prometheus（PromQL） |
 | `query_history` | S3 Tables の `alert_events`（Athena のワークグループ `<prefix>-history`。`event_id` で重複を落とし、新しい順に最大 50 件） |
 
-OSS 版（`oss/terraform/`）でも AgentCore と Bedrock はそのまま使う。読む先だけが変わり、Runtime と tools の Lambda に `GRAPH_BACKEND=neo4j`（Neo4j）、`OPENSEARCH_AUTH=basic`（ECS の OpenSearch）、`PROMETHEUS_AUTH=none`（VictoriaMetrics）が入る（`terraform/agent/runtime.tf`、`terraform/workflow/gateway.tf`）。[oss-variant.md](../../oss-variant.md)。
+OSS 版（`IaC/terraform/oss/`）でも AgentCore と Bedrock はそのまま使う。読む先だけが変わり、Runtime と tools の Lambda に `GRAPH_BACKEND=neo4j`（Neo4j）、`OPENSEARCH_AUTH=basic`（ECS の OpenSearch）、`PROMETHEUS_AUTH=none`（VictoriaMetrics）が入る（`IaC/terraform/aws-managed/agent/runtime.tf`、`IaC/terraform/aws-managed/workflow/gateway.tf`）。[oss-variant.md](../../oss-variant.md)。
 
 ## つながり
 
@@ -54,7 +54,7 @@ OSS 版（`oss/terraform/`）でも AgentCore と Bedrock はそのまま使う�
 
 - **Runtime の実行ロールは土台が持つ。**
   stream と graph のルートがロール名を読んでポリシーを付けるため。agent のルートは、Runtime が動くのに要るポリシーを足して Runtime を作る。
-  出典: `terraform/agent/runtime.tf` の先頭のコメント。
+  出典: `IaC/terraform/aws-managed/agent/runtime.tf` の先頭のコメント。
 - **ARN を SSM で渡すので、agent を後から作っても消しても Web の EC2 を作り直さずに済む。**
   Web は環境変数でなく SSM のパラメータを読む。
   出典: `runtime.tf` のコメント。
@@ -63,7 +63,7 @@ OSS 版（`oss/terraform/`）でも AgentCore と Bedrock はそのまま使う�
   出典: `runtime.tf` のコメント、[troubleshooting.md](../../troubleshooting.md) の「チャットの答えがおかしい」。
 - **日本語を判定させるには、ガードレールを Standard 階層にする。**
   Classic 階層は英語・フランス語・スペイン語だけ。Standard はクロスリージョン推論が必須で、判定は APAC のほかのリージョンで行われることがある。
-  出典: `terraform/agent/kb.tf` のコメント。
+  出典: `IaC/terraform/aws-managed/agent/kb.tf` のコメント。
 - **フィルタは MEDIUM にしてある。**
   ネットワーク運用の語（攻撃・遮断・kill など）で誤検知しにくくするため。プロンプト攻撃のフィルタは入力だけに効く（出力側は NONE にする決まり）。
   出典: `kb.tf` のコメント。
@@ -83,16 +83,16 @@ OSS 版（`oss/terraform/`）でも AgentCore と Bedrock はそのまま使う�
   出典: `kb.tf` のコメント。
 - **Runtime も Gateway も、VPC のエンドポイントを通らない呼び出しを拒む。**
   AgentCore の文書の DenyAllExceptVPC と同じ形のリソースポリシー。デプロイする人は外れるので、Runtime だけを PC から CLI で確かめられる。
-  出典: `runtime.tf` と `terraform/workflow/gateway.tf` のコメント。
+  出典: `runtime.tf` と `IaC/terraform/aws-managed/workflow/gateway.tf` のコメント。
 - **承認・却下はツールに出していない。**
   承認・却下は Web が決定のキュー `<prefix>-decisions` に送る。このキューへの `sqs:SendMessage` は Web の EC2 のロールにだけ付け、Runtime と tools の Lambda のロールには付けない。tools の Lambda の権限は Neptune を読むだけ（Write は付けない）で、Athena で読めるテーブルは `alert_events` と `proposal_events` だけ。
-  出典: `gateway.tf` と `terraform/workflow/proposals.tf` のコメント、[workflow.md](../../workflow.md) の「流れ」。
+  出典: `gateway.tf` と `IaC/terraform/aws-managed/workflow/proposals.tf` のコメント、[workflow.md](../../workflow.md) の「流れ」。
 - **Gateway に届かなければ、Runtime はコンテナの中のツールで答える。**
   出典: [workflow.md](../../workflow.md) の「流れ」。
-- **`agent/` のモジュールを増やしたら、3 か所に足す。**
-  tools の Lambda の zip の一覧（`gateway.tf`）、`agent/Dockerfile`、土台の `upload_web_command`。Lambda には PyYAML が無いので `devices.yaml` は JSON にして入れる。
+- **`app/agentcore/` のモジュールを増やしたら、3 か所に足す。**
+  tools の Lambda の zip の一覧（`gateway.tf`）、`docker/images/agentcore/Dockerfile`、土台の `upload_web_command`。Lambda には PyYAML が無いので `devices.yaml` は JSON にして入れる。
   出典: `gateway.tf` のコメント。
-- **`agent/app.py` は Runtime のコンテナで動き、EC2 には置かない。**
+- **`app/agentcore/app.py` は Runtime のコンテナで動き、EC2 には置かない。**
   置くと `KeyError: 'MODEL_ID'` や Web のロールの `AccessDenied` になる。Web のロールに権限を足して直さない。
   出典: [agent.md](../agent.md) の「チャットの経路」、[troubleshooting.md](../../troubleshooting.md) の「チャットの答えがおかしい」。
 - **Runtime の ENI は、消したあと最大 8 時間残る。**

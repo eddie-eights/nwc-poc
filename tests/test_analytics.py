@@ -1,13 +1,13 @@
-"""terraform/pipeline/analytics と spark/snmp_sinks.py の模擬テスト（AWS に触れない）。
-terraform/pipeline/analytics が main と stream の state を読み、S3 Tables のテーブルと EMR Serverless と格納先（sinks）を作ること、
+"""IaC/terraform/aws-managed/pipeline/analytics と app/spark/snmp_sinks.py の模擬テスト（AWS に触れない）。
+IaC/terraform/aws-managed/pipeline/analytics が main と stream の state を読み、S3 Tables のテーブルと EMR Serverless と格納先（sinks）を作ること、
 Spark のスクリプトが Kafka（MSK の IAM 認証）を格納先ごとに読んで Iceberg / OpenSearch Serverless / Prometheus に流すこと、
 テーブルの列がスクリプトと一致すること、remote write の protobuf と snappy が手で復号できることを見る。
 実行は python3 tests/test_analytics.py（依存は無い。pyspark も botocore も要らない。スクリプトは import するが pyspark は関数の中で読む）。"""
 import ast, importlib.util, inspect, io, json, os, re, ssl, struct, sys, zlib
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-SRC = os.path.join(ROOT, "spark", "snmp_sinks.py")
-TF_DIR = os.path.join(ROOT, "terraform", "pipeline", "analytics")
+SRC = os.path.join(ROOT, "app", "spark", "snmp_sinks.py")
+TF_DIR = os.path.join(ROOT, "IaC", "terraform", "aws-managed", "pipeline", "analytics")
 UP = os.path.join(ROOT, "ops", "up.sh")
 DOWN = os.path.join(ROOT, "ops", "down.sh")
 CHECK = os.path.join(ROOT, "ops", "check.sh")
@@ -20,7 +20,7 @@ def check(name, cond):
     passed += 1
     print("ok", name)
 
-# terraform/pipeline/analytics は関心ごとにファイルが分かれているので、ルートの .tf を全部つないで見る
+# IaC/terraform/aws-managed/pipeline/analytics は関心ごとにファイルが分かれているので、ルートの .tf を全部つないで見る
 tf = ""
 tf_files = sorted(n for n in os.listdir(TF_DIR) if n.endswith(".tf"))
 for name in tf_files:
@@ -60,23 +60,23 @@ check("graph の state は読まない（Spark は Neptune に書かない。SKI
       'terraform_remote_state" "graph"' not in tf and not any(w in tf for w in ("neptune_host", "neptune_endpoint", "neptune_resource_id", "neptune-db")))
 check("アラートのトピックの ARN は main の state から try で読む（古い土台では空）",
       'alerts_topic_arn = try(data.terraform_remote_state.main.outputs.alerts_topic_arn, "")' in tf)
-check("stream が無いときは「terraform/pipeline/stream を先に apply する」と出る",
-      re.search(r'precondition\s*\{[\s\S]*?msk_cluster_arn\s*!=\s*""[\s\S]*?terraform/pipeline/stream を先に apply する', tf, re.S) is not None)
+check("stream が無いときは「IaC/terraform/aws-managed/pipeline/stream を先に apply する」と出る",
+      re.search(r'precondition\s*\{[\s\S]*?msk_cluster_arn\s*!=\s*""[\s\S]*?IaC/terraform/aws-managed/pipeline/stream を先に apply する', tf, re.S) is not None)
 # main / stream の .tf に本当にその output があるか（stream の msk_cluster_arn は MSK だけのものなので msk.tf にある。cycle 005）
 for root, outs in (("base/core", ("vpc_id", "subnet_ids", "security_group_ids", "opensearch_vpc_endpoint_id", "kb_bucket_name", "alerts_topic_arn")),
                    ("pipeline/stream", ("msk_cluster_arn", "bootstrap_brokers"))):
-    _dir = os.path.join(ROOT, "terraform", root)
+    _dir = os.path.join(ROOT, "IaC", "terraform", "aws-managed", root)
     other = ""
     for name in sorted(n for n in os.listdir(_dir) if n.endswith(".tf")):
         with open(os.path.join(_dir, name), encoding="utf-8") as f:
             other += f.read() + "\n"
     for out in outs:
-        check(f"terraform/{root} に output {out} がある", re.search(r'^output "' + out + r'"', other, re.M) is not None)
+        check(f"IaC/terraform/aws-managed/{root} に output {out} がある", re.search(r'^output "' + out + r'"', other, re.M) is not None)
 
 # ---- ネットワーク（SG はワークロードごとに土台の security_groups.tf にあり、ルールはそこの通信の表から作る。2026-09-29。
 #      AWS の API は土台のインターフェース型エンドポイントを通し、NAT Gateway は無い）
-_core = "".join(open(os.path.join(ROOT, "terraform", "base", "core", n), encoding="utf-8").read() for n in sorted(os.listdir(os.path.join(ROOT, "terraform", "base", "core"))) if n.endswith(".tf"))
-_sg_tf = open(os.path.join(ROOT, "terraform", "base", "core", "security_groups.tf"), encoding="utf-8").read()
+_core = "".join(open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", n), encoding="utf-8").read() for n in sorted(os.listdir(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core"))) if n.endswith(".tf"))
+_sg_tf = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", "security_groups.tf"), encoding="utf-8").read()
 check("analytics は SG も SG のルールもインターフェース型エンドポイントも作らない（S3 Tables / events / aps / logs の API は土台のエンドポイントを通る）",
       'resource "aws_security_group"' not in tf and 'resource "aws_vpc_endpoint"' not in tf and "aws_vpc_security_group_" not in tf
       and not any(k in tf for k in ("msk_sg_id", "neptune_sg_id", "emr_self", "msk_from_emr", "endpoints_from_emr")))
@@ -99,12 +99,12 @@ for _m in re.finditer(r'\{ from = ("?\w+"?), to = "(\w+)", protocol = "(\w+)", p
     for _from in (_clients if _m.group(1) == "sg" else [_m.group(1).strip('"')]):
         _flows.add((_from, _m.group(2), _m.group(3), int(_m.group(4)), int(_m.group(5) or _m.group(4)), _m.group(6) or ""))
 EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_dialout", "telegraf_dialin", "spark", "grafana", "splunk", "nautobot", "lambda", "workflow", "runtime", "kafka_ui") for t in ("endpoints", "s3")} | {
-    # Nautobot（terraform/pipeline/nautobot。2026-10-04）: 画面は Web の EC2 からのポートフォワード、DB は RDS。
+    # Nautobot（IaC/terraform/aws-managed/pipeline/nautobot。2026-10-04）: 画面は Web の EC2 からのポートフォワード、DB は RDS。
     # Neptune は Neptune Analytics にしたので SG が無く、行も無い（neptune-graph-data のエンドポイントの 443 で届く。2026-10-04）
     ("web", "nautobot", "tcp", 8080, 8080, ""), ("nautobot", "nautobot_db", "tcp", 5432, 5432, ""),
     ("web", "grafana", "tcp", 3000, 3000, ""), ("web", "splunk", "tcp", 8000, 8000, ""), ("web", "workflow", "tcp", 8233, 8233, ""),
     ("telegraf_dialout", "msk", "tcp", 9098, 9098, ""), ("telegraf_dialin", "msk", "tcp", 9098, 9098, ""), ("spark", "msk", "tcp", 9098, 9098, ""), ("msk", "msk", "tcp", 9092, 9098, ""),
-    # Kafbat UI（terraform/pipeline/stream。2026-10-05）: 画面は Web の EC2 からのポートフォワード、MSK へは IAM の 9098
+    # Kafbat UI（IaC/terraform/aws-managed/pipeline/stream。2026-10-05）: 画面は Web の EC2 からのポートフォワード、MSK へは IAM の 9098
     ("web", "kafka_ui", "tcp", 8080, 8080, ""), ("kafka_ui", "msk", "tcp", 9098, 9098, ""),
     ("spark", "spark", "tcp", 0, 65535, ""), ("spark", "splunk", "tcp", 8088, 8088, ""),
     # Splunk のクラスター（「Splunk をクラスターにする（004）」）: manager・indexer・search head の間だけ
@@ -118,7 +118,7 @@ EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_
 }
 check(f"通信の表は決めた流れだけ（多い: {sorted(_flows - EXPECTED_FLOWS)} 足りない: {sorted(EXPECTED_FLOWS - _flows)}）",
       _flows == EXPECTED_FLOWS and _sg_tf.count("{ from = ") == len(EXPECTED_FLOWS) - 2 * len(_clients) + 2 + 1)
-_core_vars = open(os.path.join(ROOT, "terraform", "base", "core", "variables.tf"), encoding="utf-8").read()
+_core_vars = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", "variables.tf"), encoding="utf-8").read()
 check("MDT の送り元は変数 mdt_source_cidrs の CIDR から NLB の 57000/tcp だけ（受信だけ。既定は空、0.0.0.0/0 と重複とネットワークアドレスでない書き方を拒む）",
       re.search(r'\[for c in var\.mdt_source_cidrs :\s*\{ from = "cidr:\$\{c\}", cidr = c, to = "telegraf_dialout_nlb", protocol = "tcp", port = 57000, why = "[^"]*" \}\s*\]', _sg_tf) is not None
       and "cidr     = try(f.cidr, null)" in _sg_tf
@@ -136,10 +136,10 @@ check("ルールは表から for_each で作る。送信は from の SG、受信
       and 'prefix_list_id               = each.value.to == "s3" ? data.aws_ec2_managed_prefix_list.s3.id : null' in _sg_tf
       and 'name = "com.amazonaws.${var.region}.s3"' in _sg_tf
       and _core.count("resource \"aws_vpc_security_group_") == 3)
-_lab_locals = open(os.path.join(ROOT, "terraform", "pipeline", "lab", "locals.tf"), encoding="utf-8").read()
-_lab_sh = open(os.path.join(ROOT, "lab", "lab.sh"), encoding="utf-8").read()
+_lab_locals = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "pipeline", "lab", "locals.tf"), encoding="utf-8").read()
+_lab_sh = open(os.path.join(ROOT, "app", "containerlab", "lab.sh"), encoding="utf-8").read()
 _mgmt = re.search(r'lab_mgmt_cidr = "([^"]+)"', _sg_tf)
-check("土台の lab_mgmt_cidr は terraform/pipeline/lab の mgmt_cidr と lab.sh の MGMT と同じ",
+check("土台の lab_mgmt_cidr は IaC/terraform/aws-managed/pipeline/lab の mgmt_cidr と lab.sh の MGMT と同じ",
       _mgmt is not None and f'mgmt_cidr = "{_mgmt.group(1)}"' in _lab_locals and re.search(r'^MGMT=' + re.escape(_mgmt.group(1)) + r'$', _lab_sh, re.M) is not None)
 check("土台の endpoints SG は表の 443 だけ受け、外へ出さない（インターフェース型と OpenSearch Serverless の VPC エンドポイント用）",
       re.search(r'"endpoints_none"[\s\S]*?security_group_id\s*=\s*aws_security_group\.endpoints\.id[\s\S]*?cidr_ipv4\s*=\s*"127\.0\.0\.1/32"', _sg_tf, re.S) is not None
@@ -149,7 +149,7 @@ check("土台の output security_group_ids は SG のキーと endpoints の map
       and 'sg_ids  = merge({ for k, sg in aws_security_group.workload : k => sg.id }, { endpoints = aws_security_group.endpoints.id })' in _sg_tf
       and "internal_security_group_id" not in _core)
 
-_fl = open(os.path.join(ROOT, "terraform", "base", "core", "flow_logs.tf"), encoding="utf-8").read()
+_fl = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", "flow_logs.tf"), encoding="utf-8").read()
 check("VPC フローログ: 土台の VPC の全通信を 60 秒の集約で CloudWatch Logs へ。ロググループは /<prefix>/vpc-flow-logs で保持期間つき",
       re.search(r'resource "aws_flow_log" "vpc" \{[\s\S]*?vpc_id\s*=\s*aws_vpc\.this\.id[\s\S]*?traffic_type\s*=\s*"ALL"[\s\S]*?log_destination_type\s*=\s*"cloud-watch-logs"'
                 r'[\s\S]*?log_destination\s*=\s*aws_cloudwatch_log_group\.flow_logs\.arn[\s\S]*?max_aggregation_interval\s*=\s*60', _fl) is not None
@@ -159,7 +159,7 @@ check("VPC フローログ: 土台の VPC の全通信を 60 秒の集約で Clo
 check("VPC フローログのロール: 信頼は自アカウントの vpc-flow-log だけ、書けるのはそのロググループだけで CreateLogGroup は無く、閉域の Deny は付けない",
       re.search(r'Principal = \{ Service = "vpc-flow-logs\.amazonaws\.com" \}[\s\S]*?"aws:SourceAccount" = local\.account_id[\s\S]*?"aws:SourceArn" = "arn:\$\{local\.partition\}:ec2:\$\{var\.region\}:\$\{local\.account_id\}:vpc-flow-log/\*"', _fl) is not None
       and 'Resource = "${aws_cloudwatch_log_group.flow_logs.arn}:*"' in _fl and '"logs:CreateLogGroup"' not in _fl
-      and "aws_iam_role.flow_logs" not in open(os.path.join(ROOT, "terraform", "base", "core", "perimeter.tf"), encoding="utf-8").read())
+      and "aws_iam_role.flow_logs" not in open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", "perimeter.tf"), encoding="utf-8").read())
 
 # ---- S3 Tables のテーブル（列はスクリプトと同じでなければ append が落ちる）
 TABLE_COLUMNS = ["ts", "topic", "measurement", "agent_host", "host", "tags_json", "fields_json", "ingested_at"]
@@ -355,12 +355,12 @@ check("runtime role に Neptune と EventBridge の許可は無い（Spark は�
 check("EMR と Neptune の間の SG のルールは analytics にも土台にも無い", "emr_neptune" not in tf and "neptune_from_emr" not in tf
       and re.search(r'from = "spark", to = "neptune"', _sg_tf) is None)
 # 証跡のテーブルは修復案の proposal_events だけ（異常の履歴 anomaly_events は 2026-10-02 に消した。置き場所は保留）
-_rules_tree = ast.parse(open(os.path.join(ROOT, "workflow", "rules.py"), encoding="utf-8").read())
+_rules_tree = ast.parse(open(os.path.join(ROOT, "app", "temporal", "rules.py"), encoding="utf-8").read())
 _pec = next(ast.literal_eval(n.value) for n in _rules_tree.body if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "PROPOSAL_EVENT_COLUMNS")
 _blk = re.search(r'resource "aws_s3tables_table" "proposal_events" \{(.*?)\n\}\n', tf, re.S)
 check("証跡のテーブル proposal_events をいつも作り（count 無し）、列はどれも required = false（PyArrow の列は nullable）",
       _blk is not None and "count" not in _blk.group(1) and "required = true" not in _blk.group(1).replace(" ", "").replace("required=true", "required = true"))
-check("proposal_events の列と順は workflow/rules.py の PROPOSAL_EVENT_COLUMNS と同じ",
+check("proposal_events の列と順は app/temporal/rules.py の PROPOSAL_EVENT_COLUMNS と同じ",
       re.findall(r'name\s*=\s*"(\w+)"\s*\n\s*type\s*=\s*"(\w+)"', _blk.group(1)) == [tuple(c) for c in _pec])
 check("異常の履歴のテーブル anomaly_events は無い（S3 Tables のテーブルは raw_telemetry と proposal_events と alert_events だけ）",
       re.findall(r'resource "aws_s3tables_table" "(\w+)"', tf) == ["raw_telemetry", "proposal_events", "alert_events"] and '"anomaly_events' not in tf and "anomaly_events_table" not in tf
@@ -370,9 +370,9 @@ _aec = next(ast.literal_eval(n.value) for n in _rules_tree.body if isinstance(n,
 _ablk = re.search(r'resource "aws_s3tables_table" "alert_events" \{(.*?)\n\}\n', tf, re.S)
 check("alert_events をいつも作り（count 無し）、列はどれも required = false",
       _ablk is not None and "count" not in _ablk.group(1) and re.search(r'required\s*=\s*true', _ablk.group(1)) is None)
-check("alert_events の列と順は workflow/rules.py の ALERT_EVENT_COLUMNS と同じ",
+check("alert_events の列と順は app/temporal/rules.py の ALERT_EVENT_COLUMNS と同じ",
       re.findall(r'name\s*=\s*"(\w+)"\s*\n\s*type\s*=\s*"(\w+)"', _ablk.group(1)) == [tuple(c) for c in _aec])
-_hist = open(os.path.join(ROOT, "terraform", "pipeline", "analytics", "history.tf"), encoding="utf-8").read()
+_hist = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "pipeline", "analytics", "history.tf"), encoding="utf-8").read()
 _fh = re.search(r'resource "aws_kinesis_firehose_delivery_stream" "alert_events" \{(.*?)\n\}\n', _hist, re.S)
 check("Firehose <接頭辞>-alert-events は iceberg で s3tablescatalog/<テーブルバケット> の alert_events に書き、バッファは 60 秒 / 1 MiB",
       _fh is not None and 'name        = "${local.name_prefix}-alert-events"' in _fh.group(1) and 'destination = "iceberg"' in _fh.group(1)
@@ -1188,11 +1188,11 @@ check("up.sh は 6 本の jar を <sha256>:<Maven のパス> で書き、5-2 で
 def _expand_vars(text, path, assign):  # パスの $NAME / ${NAME} を、text の中の代入（up.sh の NAME=値、Dockerfile の ARG NAME=値）で埋める
     vals = dict(re.findall(assign, text, re.M))
     return re.sub(r"\$\{?(\w+)\}?", lambda m: vals[m.group(1)], path)
-_spark_dock = open(os.path.join(ROOT, "spark", "Dockerfile"), encoding="utf-8").read()
+_spark_dock = open(os.path.join(ROOT, "docker", "images", "spark", "Dockerfile"), encoding="utf-8").read()
 _up_sha = {_expand_vars(up, p, r"^(\w+)=(\S+)$"): s for s, p in _up_jars}
 _dock_sha = {_expand_vars(_spark_dock, p, r"^ARG (\w+)=(\S+)$"): s for s, p in re.findall(r"^ {6}(\S+?):(\S+\.jar)(?:; do)? \\$", _spark_dock, re.M)}
 _same_jars = set(_up_sha) & set(_dock_sha)
-check("up.sh と spark/Dockerfile に同じ jar（版まで同じパス）があれば、sha256 も同じ（いまは kafka-clients / commons-pool2 / S3 Tables のカタログ）",
+check("up.sh と docker/images/spark/Dockerfile に同じ jar（版まで同じパス）があれば、sha256 も同じ（いまは kafka-clients / commons-pool2 / S3 Tables のカタログ）",
       len(_dock_sha) == 9 and len(_same_jars) >= 1 and all(_up_sha[p] == _dock_sha[p] for p in _same_jars))
 import tempfile
 _fjblk = up[up.index("fetch_jars() {"):up.index("\n}\n", up.index("fetch_jars() {")) + 3]
@@ -1240,20 +1240,20 @@ for jar in ("spark-sql-kafka-0-10_2.12", "spark-token-provider-kafka-0-10_2.12",
     check(f"up.sh の jar に {jar}", jar in up)
 check("up.sh の SPARK_VERSION は emr_release_label の Spark（3.5.8）", re.search(r'^SPARK_VERSION=3\.5\.8$', up, re.M) is not None
       and "7.14.0 = Spark 3.5.8" in tf)
-check("up.sh のスクリプトは spark/snmp_sinks.py", re.search(r'^SPARK_SCRIPT=spark/snmp_sinks\.py$', up, re.M) is not None and "snmp_to_iceberg" not in up)
+check("up.sh のスクリプトは app/spark/snmp_sinks.py", re.search(r'^SPARK_SCRIPT=app/spark/snmp_sinks\.py$', up, re.M) is not None and "snmp_to_iceberg" not in up)
 check("up.sh は SPLUNK_INDEX（既定は空）を読み、STORES に splunk があれば（既定）ECS の Splunk の token を SSM に作ってから渡す（値は読まない）。外の Splunk の変数は渡さない",
       re.search(r'^SPLUNK_INDEX="\$\{SPLUNK_INDEX:-\}"$', up, re.M) is not None
       and "get-parameter" not in up and "splunk_hec_url=" not in up and "splunk_skip_tls_verify" not in up and "SPLUNK_TOKEN_PARAM" not in up
       and 'ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX" -var "splunk_az_num=$SPLUNK_AZ_NUM")' in up
       and 'ensure_secret "/$PREFIX/splunk/hec-token" uuid' in up[up.index("ensure_splunk_secrets() {"):]
       and up.index('ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]"') < up.index('    ensure_splunk_secrets "$SPLUNK_AZ_NUM"') < up.index('tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"'))
-check("up.sh は STORES（既定 s3,grafana,splunk）から導いた格納先を terraform/pipeline/analytics の sinks に組んで渡す",
+check("up.sh は STORES（既定 s3,grafana,splunk）から導いた格納先を IaC/terraform/aws-managed/pipeline/analytics の sinks に組んで渡す",
       re.search(r'^if \[ -z "\$\{STORES:-\}" \]; then STORES=s3,grafana,splunk; STORES_DEFAULT=1; fi$', up, re.M) is not None
       and re.search(r'^SINK_S3="\$STORE_S3"; SINK_OPENSEARCH="\$STORE_GRAFANA"; SINK_PROMETHEUS="\$STORE_GRAFANA"; SINK_SPLUNK="\$STORE_SPLUNK"$', up, re.M) is not None
       and 'ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]" ' in up and 'tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"' in up)
-check("up.sh は STORES の splunk に関わらず device map を lab の定義から作って渡す（lab/lab_topology.py --device-map。trap と gNMI には sysName が無い。Splunk の DEVICE_MAP と Spark の --device-map。cycle 002）",
-      re.search(r'  ANALYTICS_VARS=\(-var "sinks=\[\$SINKS_TF\]" [^\n]*\n(?:  ANALYTICS_VARS\+=\(-var "opensearch_az_num=\$OPENSEARCH_AZ_NUM"\)\n)?(?:  ensure_s3tables_catalog [^\n]*\n)?(?:  #[^\n]*\n)*  DEVICE_MAP=\$\("\$\{PY\[@\]\}" lab/lab_topology\.py lab --device-map\) \|\| die [^\n]*\n  ANALYTICS_VARS\+=\(-var "device_map=\$DEVICE_MAP"\)\n  if \[ -n "\$GRAFANA" \]', up) is not None
-      and up.count("lab_topology.py lab --device-map") == 1 and up.count('-var "device_map=$DEVICE_MAP"') == 1)
+check("up.sh は STORES の splunk に関わらず device map を lab の定義から作って渡す（app/containerlab/lab_topology.py --device-map。trap と gNMI には sysName が無い。Splunk の DEVICE_MAP と Spark の --device-map。cycle 002）",
+      re.search(r'  ANALYTICS_VARS=\(-var "sinks=\[\$SINKS_TF\]" [^\n]*\n(?:  ANALYTICS_VARS\+=\(-var "opensearch_az_num=\$OPENSEARCH_AZ_NUM"\)\n)?(?:  ensure_s3tables_catalog [^\n]*\n)?(?:  #[^\n]*\n)*  DEVICE_MAP=\$\("\$\{PY\[@\]\}" app/containerlab/lab_topology\.py app/containerlab --device-map\) \|\| die [^\n]*\n  ANALYTICS_VARS\+=\(-var "device_map=\$DEVICE_MAP"\)\n  if \[ -n "\$GRAFANA" \]', up) is not None
+      and up.count("lab_topology.py app/containerlab --device-map") == 1 and up.count('-var "device_map=$DEVICE_MAP"') == 1)
 check("up.sh は AGENT=0 でも CloudWatch へのログを切らない（CloudWatch Logs へは土台の logs のエンドポイントで届く）",
       "cloudwatch_logging=false" not in up and re.search(r'variable "cloudwatch_logging" \{[^}]*default\s*=\s*true', tf) is not None)
 # 2026-09-26〜28 は NAT Gateway だけで AWS の API に出ていた。2026-09-28 に閉域（エンドポイント + aws:SourceVpc の Deny）にした
@@ -1293,7 +1293,7 @@ _AZ_VARS = {  # (ルート, 変数): (既定, 使える値)
     ("pipeline/nautobot", "nautobot_db_az_num"): (1, [1, 2]), ("workflow", "lambda_az_num"): (1, [1, 2, 3]),
 }
 def _root_tf(root):
-    d = os.path.join(ROOT, "terraform", *root.split("/"))
+    d = os.path.join(ROOT, "IaC", "terraform", "aws-managed", *root.split("/"))
     return "".join(open(os.path.join(d, n), encoding="utf-8").read() for n in sorted(os.listdir(d)) if n.endswith(".tf"))
 def _az_var_ok(root, name, default, allowed):
     m = re.search(r'variable "' + name + r'" \{(.*?)\n\}', _root_tf(root), re.S)
@@ -1331,7 +1331,7 @@ _AZ_SRC = {  # (ルート, 変数, リソースのファイル): 出典の URL
 def _az_src_ok(root, name, fname, url):
     day = "2026-10-05" if name == "runtime_az_num" else "2026-10-04"
     m = re.search(r'variable "' + name + r'" \{\n\s*description\s*=\s*"([^"\n]*)"', _root_tf(root))
-    res = open(os.path.join(ROOT, "terraform", *root.split("/"), fname), encoding="utf-8").read()
+    res = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", *root.split("/"), fname), encoding="utf-8").read()
     return (m is not None and url in m.group(1) and f"checked {day}" in m.group(1)
             and re.search(r"^\s*#.*" + re.escape(url), res, re.M) is not None and f"{day} 確認" in res
             and re.search(r"^#.*" + re.escape(url), up, re.M) is not None)
@@ -1350,7 +1350,7 @@ check("確かめ切れていないことは「未確認」と書く（Runtime �
 _faq = open(os.path.join(ROOT, "docs", "faq-fukuda-nwc-poc.md"), encoding="utf-8").read()
 check("Runtime の 1 AZ を拒んでいた前の決定（2026-10-04）の文が、up.sh・deploy.env.example・terraform・FAQ に残っていない",
       not any(w in t for t in (up, env_example, _root_tf("agent"), _root_tf("base/core"),
-                               open(os.path.join(ROOT, "terraform", "agent", "terraform.tfvars.example"), encoding="utf-8").read(), _faq)
+                               open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "agent", "terraform.tfvars.example"), encoding="utf-8").read(), _faq)
               for w in ("AWS の制約ではなくユーザーの決定", "not by AWS", "refused on purpose", "kept at two", "2 AZ 以上に置く",
                         "AWS の文書が高可用性のため 2 AZ 以上を勧めている", "MSK と Runtime だけ", "MSK と Runtime は", "Runtime needs two AZs"))
       and "既定 1（2026-10-05 のユーザー決定）" in up and "1 つを禁じる記述は無い" in up and "2026-10-05 確認" in up
@@ -1373,8 +1373,8 @@ def _single_ok(root, head, word):
     return word in near and ("AWS では未確認（2026-10-04）" in near or "2026-10-04 確認" in near)
 check("1 台でしか成り立たないリソース（Web / lab / Grafana / Nautobot / workflow / Telegraf の dialin）のそばに、AZ の数のキーを作らない理由と確かめ方（出典か「未確認」）を書く",
       all(_single_ok(r, h, w) for (r, h), w in _SINGLE.items()))
-# ---- 閉域の Deny（terraform/base/core/perimeter.tf と、analytics が付けるもの）
-_perim = open(os.path.join(ROOT, "terraform", "base", "core", "perimeter.tf"), encoding="utf-8").read()
+# ---- 閉域の Deny（IaC/terraform/aws-managed/base/core/perimeter.tf と、analytics が付けるもの）
+_perim = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", "perimeter.tf"), encoding="utf-8").read()
 check("perimeter.tf: aws:SourceVpc がこの VPC でなく、AWS のサービス経由でもない呼び出しを拒む（S3 Tables が裏で呼ぶ分は外す）",
       re.search(r'StringNotEqualsIfExists\s*=\s*\{\s*"aws:SourceVpc"\s*=\s*aws_vpc\.this\.id,\s*"aws:CalledViaLast"\s*=\s*"s3tables\.amazonaws\.com"\s*\}', _perim) is not None
       and re.search(r'BoolIfExists\s*=\s*\{\s*"aws:ViaAWSService"\s*=\s*"false"\s*\}', _perim) is not None
@@ -1503,7 +1503,7 @@ check("NAT Gateway / IGW / EIP / パブリックサブネット / 既定ルー�
 check("費用の目安: 土台は Web の EC2 の 2 セント（NAT Gateway は無い）。ECS の Splunk はタスク 1 つ 12.3（SPLUNK_TASKS 個）、Grafana は 2",
       "COST_CENTS=2\n" in up and "# NAT Gateway\n" not in up and "COST_CENTS=8" not in up
       and 'if [ -n "$GRAFANA" ]; then COST_CENTS=$((COST_CENTS + 2)); fi' in up and 'if [ -n "$SPLUNK_ON_ECS" ]; then COST_CENTS=$((COST_CENTS + 123 * SPLUNK_TASKS / 10)); fi' in up)
-check("lab.sh は containerlab の版の確かめ（GitHub へ出る）をしない", "export CLAB_VERSION_CHECK=disable" in open(os.path.join(ROOT, "lab", "lab.sh"), encoding="utf-8").read())
+check("lab.sh は containerlab の版の確かめ（GitHub へ出る）をしない", "export CLAB_VERSION_CHECK=disable" in open(os.path.join(ROOT, "app", "containerlab", "lab.sh"), encoding="utf-8").read())
 check("up.sh / deploy-env.sh に共用のエンドポイントと CLIENT_CIDR の扱いは無い",
       not any(k in up for k in ("SHARED_ENDPOINTS", "create_shared_endpoints", 'aws_vpc_endpoint.runtime["ecr-api"]', "CLIENT_CIDR"))
       and "CLIENT_CIDR" not in open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read())
@@ -1698,16 +1698,16 @@ check("down.sh は名前で絞らずに動いているジョブを全部 cancel 
 check("down.sh は job を cancel → stop-application → destroy analytics → destroy graph の順",
       down.index("cancel-job-run") < down.index("stop-application") < down.index("destroy_root pipeline/analytics") < down.index("destroy_lambda_root pipeline/graph") < down.index("destroy_root pipeline/stream"))
 # .py は名指しで並べず find で全部見る（名指しだとファイルを足したときに構文検査から漏れる）
-check("check.sh は spark/ の .py を構文検査に入れ、spark/snmp_sinks.py がある",
-      re.search(r"find [\w /]*\bspark\b [^\n]*-name '\*\.py'", checksh) is not None
-      and os.path.isfile(os.path.join(ROOT, "spark", "snmp_sinks.py")) and "snmp_to_iceberg" not in checksh)
+check("check.sh は app/spark/ の .py を構文検査に入れ、app/spark/snmp_sinks.py がある",
+      re.search(r"find [\w /]*\bapp\b [^\n]*-name '\*\.py'", checksh) is not None
+      and os.path.isfile(os.path.join(ROOT, "app", "spark", "snmp_sinks.py")) and "snmp_to_iceberg" not in checksh)
 check("up.sh の WORKFLOW=1 は SKIP_ANALYTICS があれば止まる（Grafana / Splunk のアラートが無いとワーカーが起きない）",
       re.search(r'if \[ -n "\$WORKFLOW" \]; then\n[\s\S]*?-n "\$SKIP_ANALYTICS"[\s\S]*?-n "\$SKIP_GRAPH"[\s\S]*?die "WORKFLOW は lab と stream と analytics と graph が要る', up) is not None)
 check("up.sh は SKIP_GRAPH=1 でも analytics を作る（Spark は Neptune に書かない。2026-10-02）", "analytics は graph が要る" not in up)
 check("up.sh は PIPELINE=0 なら lab / stream / analytics / graph を全部飛ばす",
       re.search(r'else\n\s*SKIP_LAB=1; SKIP_STREAM=1; SKIP_ANALYTICS=1; SKIP_GRAPH=1\n', up) is not None)
 # lab は単独で外せる（2026-10-04 まで、SKIP_LAB=1 で stream を作ると止まっていた）。WORKFLOW と PIPELINE の判定を切り出して動かす
-_skblk = up[up.index('if [ -n "$WORKFLOW" ]; then\n  if [ -z "$AGENT" ]'):up.index("# Nautobot（terraform/pipeline/nautobot）は機器の一覧とケーブルの正")]
+_skblk = up[up.index('if [ -n "$WORKFLOW" ]; then\n  if [ -z "$AGENT" ]'):up.index("# Nautobot（IaC/terraform/aws-managed/pipeline/nautobot）は機器の一覧とケーブルの正")]
 def _skip(**env):
     r = subprocess.run(["bash", "-c", _pre + "flag_value SKIP_LAB; flag_value SKIP_STREAM; flag_value SKIP_ANALYTICS; flag_value SKIP_GRAPH\n" + _skblk
                         + 'echo "OUT: L=${SKIP_LAB:-0} S=${SKIP_STREAM:-0} A=${SKIP_ANALYTICS:-0} G=${SKIP_GRAPH:-0}"'], capture_output=True, text=True,
@@ -1932,9 +1932,9 @@ check("up.sh（クラスター）: いまの search head のタスクのログ�
       and _scc_runs["three"][1] == 1 and _scc_runs["three"][0].rstrip().endswith("END"))
 check("up.sh（クラスター）: 判定の行が 1 つも無ければ成功にせず、24 回（15 秒おき、6 分）待ってから「まだ 1 回も突き合わせていない」と言って止まる",
       _scc_runs["none"][1] == 24 and "END" not in _scc_runs["none"][0]
-      and "DIE: search head のタスク（sh1）は、突き合わせ（splunk/peers_check.py）をまだ 1 回もしていない" in _scc_runs["none"][0])
+      and "DIE: search head のタスク（sh1）は、突き合わせ（app/splunk/peers_check.py）をまだ 1 回もしていない" in _scc_runs["none"][0])
 check("up.sh（クラスター）: 最新の判定が mismatch、または ok でも Up の peer が indexer の数に足りなければ、6 分待ってから最新の判定を出して止まる",
-      all(_scc_runs[k][1] == 24 and "END" not in _scc_runs[k][0] and "DIE: search head の突き合わせ（splunk/peers_check.py）が 6 分たっても ok（Up の indexer が 2 台）にならない" in _scc_runs[k][0]
+      all(_scc_runs[k][1] == 24 and "END" not in _scc_runs[k][0] and "DIE: search head の突き合わせ（app/splunk/peers_check.py）が 6 分たっても ok（Up の indexer が 2 台）にならない" in _scc_runs[k][0]
           for k in ("few", "mismatch"))
       and "最新の判定は「nwc-peer-check state=mismatch reason=lost:idx-b」" in _scc_runs["mismatch"][0]
       and "最新の判定は「nwc-peer-check state=ok reason=peers_up:1」" in _scc_runs["few"][0])
@@ -1955,13 +1955,13 @@ check("書いたキーが ENDPOINTS_AZ_NUM より大きいと注意を 1 行出�
       and _aznum(MSK_AZ_NUM="2").startswith("注意: MSK_AZ_NUM=2 に対して")
       and "注意" not in _aznum(LAMBDA_AZ_NUM="1"))
 # グラフの状態の Lambda（graph-status）の待ちの上限が timeout を超える ENDPOINTS_AZ_NUM で注意を出す（2026-10-05 のユーザー決定）。
-# 上限は graph/status_handler.py の FIREHOSE_CONFIG・RETRY_WAITS・NEPTUNE_CONFIG と sync.tf の timeout から計算し、up.sh の数と比べる
-_sh_vals = {n.targets[0].id: n.value for n in ast.parse(open(os.path.join(ROOT, "graph", "status_handler.py"), encoding="utf-8").read()).body
+# 上限は app/graph/status_handler.py の FIREHOSE_CONFIG・RETRY_WAITS・NEPTUNE_CONFIG と sync.tf の timeout から計算し、up.sh の数と比べる
+_sh_vals = {n.targets[0].id: n.value for n in ast.parse(open(os.path.join(ROOT, "app", "graph", "status_handler.py"), encoding="utf-8").read()).body
             if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)}
 _fhc, _npc = ({k.arg: ast.literal_eval(k.value) for k in _sh_vals[c].keywords} for c in ("FIREHOSE_CONFIG", "NEPTUNE_CONFIG"))
 _rwaits = ast.literal_eval(_sh_vals["RETRY_WAITS"])
 _gs_timeout = int(re.search(r'resource "aws_lambda_function" "status" \{\n(?:  .*\n)*?  timeout\s*=\s*(\d+)',
-                            open(os.path.join(ROOT, "terraform", "pipeline", "graph", "sync.tf"), encoding="utf-8").read()).group(1))
+                            open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "pipeline", "graph", "sync.tf"), encoding="utf-8").read()).group(1))
 def _gs_wait(n, firehose=True):   # n = エンドポイントの IP の数（AZ ごとに 1 つ）。接続の待ちは IP ごとにかかる
     nep = _npc["retries"]["total_max_attempts"] * (n * _npc["connect_timeout"] + _npc["read_timeout"]) + 1   # 再試行の前の待ちは 1 秒まで
     fh = (1 + len(_rwaits)) * _fhc["retries"]["total_max_attempts"] * (n * _fhc["connect_timeout"] + _fhc["read_timeout"]) + sum(_rwaits)
@@ -2321,7 +2321,7 @@ check("7-5: 待っている（QUEUED の）ジョブも動いているものと�
       _rc == 0 and _acts(_st) == ["cancel sinks-grafana:q", "start sinks-grafana STREAMING"])
 # 7-4 の前の「上限が変わるときだけジョブとアプリを止める」を up.sh から切り出し、偽の aws（アプリの状態も持つ）で動かす
 _b74 = up[up.index("  # EMR Serverless のアプリの上限（maximum_capacity。"):up.index('  tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"')]
-_tfv = open(os.path.join(ROOT, "terraform", "pipeline", "analytics", "variables.tf"), encoding="utf-8").read()
+_tfv = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "pipeline", "analytics", "variables.tf"), encoding="utf-8").read()
 _m_cpu = re.search(r'variable "max_cpu" \{[^}]*default\s*=\s*"([^"]+)"', _tfv)
 _m_mem = re.search(r'variable "max_memory" \{[^}]*default\s*=\s*"([^"]+)"', _tfv)
 check("up.sh の EMR_MAX_CPU / EMR_MAX_MEMORY は variables.tf の max_cpu / max_memory の既定値と同じで、tf_apply の前に止める判断がある",
@@ -2386,13 +2386,13 @@ def _run74(app, runs=(), cancel_delay=2, stop_delay=2, state_file=True, emr_az_n
             f.write(_FAKE_AWS74)
         os.chmod(os.path.join(d, "aws"), 0o755)
         if state_file:
-            os.makedirs(os.path.join(d, "terraform", "pipeline", "analytics"))
-            open(os.path.join(d, "terraform", "pipeline", "analytics", "terraform.tfstate"), "w").close()
+            os.makedirs(os.path.join(d, "IaC", "terraform", "aws-managed", "pipeline", "analytics"))
+            open(os.path.join(d, "IaC", "terraform", "aws-managed", "pipeline", "analytics", "terraform.tfstate"), "w").close()
         state = os.path.join(d, "state.json")
         with open(state, "w") as f:
             json.dump({"app": copy.deepcopy(app), "runs": copy.deepcopy(list(runs)), "log": [],
                        "cancel_delay": cancel_delay, "stop_delay": stop_delay}, f)
-        pre = (f'set -euo pipefail\nREGION=r; ANALYTICS_VARS=(-var x=1); EMR_AZ_NUM={emr_az_num}\n'
+        pre = (f'set -euo pipefail\nTF_DIR=IaC/terraform/aws-managed; REGION=r; ANALYTICS_VARS=(-var x=1); EMR_AZ_NUM={emr_az_num}\n'
                'die() { echo "DIE: $*"; exit 1; }\nsleep() { :; }\ntf_init() { :; }\nhas_resources() { return 0; }\n'
                'tf() { case "$4" in application_id) echo app ;; list_job_runs_command) echo LIST ;; *) echo "tf? $*" >&2; exit 9 ;; esac; }\n')
         r = subprocess.run(["bash", "-c", pre + _b74 + '\nprintf "VARS:%s\\n" "${ANALYTICS_VARS[@]}"'], capture_output=True, text=True, cwd=d,

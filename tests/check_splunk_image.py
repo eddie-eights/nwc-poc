@@ -1,13 +1,13 @@
-"""Splunk のイメージ（splunk/Dockerfile）の中で、Splunk の Python が持っている boto3 でアラートを SNS へ送れることを確かめる。
-アラートアクション（splunk/netops_alerts/bin/netops_sns.py）は boto3 を同梱せず、Splunk の Python のものを使う。Splunk の版
-（splunk/Dockerfile の SPLUNK_VERSION）を上げると boto3 が無くなる・変わることがあるので、版を変えたらこれを走らせ、通ったら CHECKED を書き換える
+"""Splunk のイメージ（docker/images/splunk/Dockerfile）の中で、Splunk の Python が持っている boto3 でアラートを SNS へ送れることを確かめる。
+アラートアクション（app/splunk/netops_alerts/bin/netops_sns.py）は boto3 を同梱せず、Splunk の Python のものを使う。Splunk の版
+（docker/images/splunk/Dockerfile の SPLUNK_VERSION）を上げると boto3 が無くなる・変わることがあるので、版を変えたらこれを走らせ、通ったら CHECKED を書き換える
 （tests/test_alerts.py が CHECKED と Dockerfile の版・python.required を突き合わせるので、書き換えないと ops/check.sh が落ちる）。
 boto3 が無くなっていたら、boto3 を app の lib/ に同梱する形（git の ffba169）に戻す。
 
 確かめること（AWS へは出ない。偽の認証情報の口と偽の SNS を、コンテナの中で Splunk の Python で動かす）
   1. 直に: Splunk の Python（alert_actions.conf の python.required の版）で boto3 / botocore を読み、netops_sns の sns_client で
      SNS のクライアントを作り、send で偽の SNS へ 1 通 publish する
-  2. 本物の流れで: 入口（splunk/entrypoint.sh）で起こした Splunk に HEC で link down のイベントを 1 件入れ、保存済みサーチ（netops_poll）→
+  2. 本物の流れで: 入口（app/splunk/entrypoint.sh）で起こした Splunk に HEC で link down のイベントを 1 件入れ、保存済みサーチ（netops_poll）→
      アラートアクション（splunkd が python.required の Python で起こす）→ 偽の SNS に 1 通だけ届く。本文・件名・送った Python と boto3 の版
      （User-Agent）と、splunkd.log の published=1/1 / exit code=0 を見る
   3. boto3 が読めないとき: app の bin/ に読むと失敗する boto3.py を置いて（2 と同じ流れ）、splunkd.log に理由の分かる ERROR が出て、送らないこと
@@ -16,7 +16,7 @@ boto3 が無くなっていたら、boto3 を app の lib/ に同梱する形（
 ops/check.sh には入れない（1.8 GB のイメージを取ってきて Splunk を起こし、毎分のサーチを 3 回待つので数分かかる。splunk/splunk は amd64 だけなので、
 arm64 の PC ではエミュレーションで動かす。2026-10-04 に arm64 の Mac で、healthy まで 80 秒）。
 名前が test_*.py でないのはそのため（ops/check.sh は tests/test_*.py を全部走らせる）。
-使い方: python3 tests/check_splunk_image.py [イメージ]（省略すると splunk/ を linux/amd64 でビルドして nwc-splunk-check:local にする。
+使い方: python3 tests/check_splunk_image.py [イメージ]（省略すると app/splunk/ を linux/amd64 でビルドして nwc-splunk-check:local にする。
 イメージは消さない）。docker が要る。手元の Python は標準ライブラリだけ。Splunk の管理者のパスワードと HEC のトークンはその場で作る乱数で、表示しない
 """
 import json
@@ -28,7 +28,7 @@ import sys
 import time
 import uuid
 
-CHECKED = {"splunk": "10.4.3", "python": "3.13.11", "boto3": "1.37.14"}   # この検査が通った組み合わせ（2026-10-04）
+CHECKED = {"splunk": "10.4.4", "python": "3.13.11", "boto3": "1.37.14"}   # この検査が通った組み合わせ（2026-10-08）
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IMAGE = "nwc-splunk-check:local"
@@ -154,12 +154,13 @@ def ua_versions(ua):
 def main(argv):
     if run("docker", "info", check_rc=False).returncode != 0:
         print("docker が動いていない"); return 2
-    conf = open(os.path.join(ROOT, "splunk", "netops_alerts", "default", "alert_actions.conf"), encoding="utf-8").read()
+    conf = open(os.path.join(ROOT, "app", "splunk", "netops_alerts", "default", "alert_actions.conf"), encoding="utf-8").read()
     required = re.search(r"^python\.required\s*=\s*(\S+)", conf, re.M).group(1)
     image = argv[1] if len(argv) > 1 else IMAGE
     if len(argv) <= 1:
-        print(f"-- splunk/ を linux/amd64 でビルドして {IMAGE} にする")
-        run("docker", "buildx", "build", "--platform", "linux/amd64", "--load", "-t", IMAGE, os.path.join(ROOT, "splunk"))
+        print(f"-- docker/images/splunk/Dockerfile と app/splunk/ を linux/amd64 でビルドして {IMAGE} にする")
+        run("docker", "buildx", "build", "--platform", "linux/amd64", "--load", "-t", IMAGE,
+            "-f", os.path.join(ROOT, "docker", "images", "splunk", "Dockerfile"), os.path.join(ROOT, "app", "splunk"))
     token = str(uuid.uuid4())
     env = dict(os.environ, SPLUNK_PASSWORD=secrets.token_urlsafe(18), SPLUNK_HEC_TOKEN=token)   # docker run の引数に値を書かない（ps に出さない）
     try:
@@ -173,7 +174,7 @@ def main(argv):
         t0 = time.time()
         health = wait("healthy", lambda: (s := run("docker", "inspect", "-f", "{{.State.Status}} {{.State.Health.Status}}", NAME).stdout.split())
                       and (s[0] != "running" or s[1] in ("healthy", "unhealthy")) and s, 1500, 10)
-        check(f"Splunk が入口（splunk/entrypoint.sh）から起きて healthy になる（{int(time.time() - t0)} 秒）", health and health[-1] == "healthy",
+        check(f"Splunk が入口（app/splunk/entrypoint.sh）から起きて healthy になる（{int(time.time() - t0)} 秒）", health and health[-1] == "healthy",
               run("docker", "logs", "--tail", "30", NAME, check_rc=False).stdout)
         version = re.search(r"^VERSION=(\S+)", dexec("cat", "/opt/splunk/etc/splunk.version").stdout, re.M).group(1)
         btool = dexec("/opt/splunk/bin/splunk", "btool", "alert_actions", "list", "netops_sns").stdout

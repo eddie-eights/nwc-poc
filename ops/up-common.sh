@@ -58,7 +58,7 @@ run_on_instance() {  # run_on_instance <インスタンス ID> <コマンド…>
 }
 AZ_NUM_SET=""   # deploy.env か環境変数に書いてあった *_AZ_NUM（ENDPOINTS_AZ_NUM と比べる）
 # Web の EC2 が入れる wheel（arm64 / cp313）。EC2 はインターネットに出ないので PC で取って S3 に置き、user_data が pip install --no-index で入れる
-# （terraform/base/core の web_user_data.sh.tftpl）。requirements（-r で読み込まれる側も）と pip の引数 WHEEL_ARGS のハッシュを <置き場>/.requirements.sha256 に残し、
+# （IaC/terraform/aws-managed/base/core の web_user_data.sh.tftpl）。requirements（-r で読み込まれる側も）と pip の引数 WHEEL_ARGS のハッシュを <置き場>/.requirements.sha256 に残し、
 # 同じで .whl があれば取り直さない。違えば置き場を消して取り直す（.whl が 1 つでもあれば飛ばすと、版を上げても古い wheel のまま進む。005 のレビュー Nit 5）。
 # 置き場を S3 に上げるときは --delete と --exclude .requirements.sha256 を付ける（古い版を EC2 に残さない）。PY を使う
 WHEEL_ARGS=(--only-binary=:all: --platform manylinux2014_aarch64 --platform manylinux_2_17_aarch64 --platform manylinux_2_28_aarch64
@@ -174,19 +174,19 @@ ensure_s3tables_catalog() {  # 無ければ作る。あれば設定が想定（I
     *) printf '\033[1;33m%s\033[0m\n' "Glue のカタログ s3tablescatalog は既にあるが、設定が想定（aws:s3tables / True / IAM_ALLOWED_PRINCIPALS）と違う（${conn} / ${ext} / ${perms}）。ほかの人が Lake Formation で管理しているかもしれない。そのまま使うので、Firehose と Athena が alert_events に届かないことがある（docs/deploy.md の「アラートの通知の履歴」）" ;;
   esac
 }
-# Splunk Enterprise（analytics の ECS。terraform/pipeline/analytics の splunk.tf）。マネージド版と OSS 版（設計 005: Splunk は OSS 版でも変えない）が
-# 同じイメージの作り方と同じ SSM のパラメータを使う。SPLUNK_VERSION は splunk/ の Dockerfile の ARG の既定値に合わせてある
+# Splunk Enterprise（analytics の ECS。IaC/terraform/aws-managed/pipeline/analytics の splunk.tf）。マネージド版と OSS 版（設計 005: Splunk は OSS 版でも変えない）が
+# 同じイメージの作り方と同じ SSM のパラメータを使う。SPLUNK_VERSION は docker/images/splunk/Dockerfile の ARG の既定値に合わせてある
 # （変えるときは両方を変える。tests/check_splunk_image.py で、その版の Python の boto3 でアラートを送れるかも確かめる）
-SPLUNK_VERSION=10.4.3   # splunk/splunk は amd64 だけ（ECS のタスクは X86_64）
-splunk_image_check() {  # SPLUNK_TAG を splunk/ の中身から作り、ECR の <接頭辞>-splunk に無ければ NEED_SPLUNK=1。PREFIX を使う
-  SPLUNK_TAG=$(dir_tag "$SPLUNK_VERSION" splunk) || die "splunk/ のタグを作れなかった"
+SPLUNK_VERSION=10.4.4   # splunk/splunk は amd64 だけ（ECS のタスクは X86_64）
+splunk_image_check() {  # SPLUNK_TAG を app/splunk/ の中身と docker/images/splunk/Dockerfile から作り、ECR の <接頭辞>-splunk に無ければ NEED_SPLUNK=1。PREFIX を使う
+  SPLUNK_TAG=$(dir_tag "$SPLUNK_VERSION" app/splunk docker/images/splunk/Dockerfile) || die "app/splunk/ のタグを作れなかった"
   if ecr_has "$PREFIX-splunk" "$SPLUNK_TAG"; then echo "splunk:$SPLUNK_TAG はある"; else NEED_SPLUNK=1; fi
 }
 build_splunk() {  # docker login 済みで呼ぶ。REG / PREFIX / SPLUNK_TAG（splunk_image_check）を使う
-  # Splunk Enterprise の公式イメージ（amd64 だけ。約 2〜3 GB）に検知のアプリ（splunk/netops_alerts）を足す。
+  # Splunk Enterprise の公式イメージ（amd64 だけ。約 2〜3 GB）に検知のアプリ（app/splunk/netops_alerts）を足す。
   # Fargate は VPC の中から ECR しか引けず、タスクは Splunkbase にも出られないので、アプリはビルドのときに入れる
   # （COPY だけなので、arm64 の PC（Apple シリコン）でもエミュレーション無しで作れる）
-  docker buildx build --platform linux/amd64 --build-arg "SPLUNK_VERSION=$SPLUNK_VERSION" -t "$REG/$PREFIX-splunk:$SPLUNK_TAG" --push splunk/
+  docker buildx build --platform linux/amd64 --build-arg "SPLUNK_VERSION=$SPLUNK_VERSION" -t "$REG/$PREFIX-splunk:$SPLUNK_TAG" --push -f docker/images/splunk/Dockerfile app/splunk/
 }
 ensure_splunk_secrets() {  # ensure_splunk_secrets <SPLUNK_AZ_NUM>  analytics の apply より前に呼ぶ。値は出さない
   # 管理者のパスワードと HEC の token は SSM に乱数で作る（token は Splunk が GUID の形を求める）。
@@ -199,7 +199,7 @@ ensure_splunk_secrets() {  # ensure_splunk_secrets <SPLUNK_AZ_NUM>  analytics �
 # Splunk のクラスター（SPLUNK_AZ_NUM が 2 か 3）は、全タスクの HEALTHY のあとに 2 つ見る。引数はサービス（search head、manager、indexer の順。SP_SERVICES）。
 # REGION / AN_CLUSTER（analytics の ECS のクラスター）/ PREFIX / SPLUNK_AZ_NUM を使う。マネージド版と OSS 版（005）が同じものを呼ぶ。
 # 1. indexer の AZ。AZ に 1 台ずつは Fargate の振り分けに任せている（保証ではない）ので、同じ AZ に 2 台いたら注意だけ出す。
-# 2. search head の突き合わせ（splunk/peers_check.py）の判定。判定が変わるたびに PID 1 の stdout に書く行「nwc-peer-check state=… reason=…」を、
+# 2. search head の突き合わせ（app/splunk/peers_check.py）の判定。判定が変わるたびに PID 1 の stdout に書く行「nwc-peer-check state=… reason=…」を、
 #    いまの search head のタスクのログストリーム（splunk/splunk/<タスク ID>）から読む。state=ok で Up の peer が indexer の数になるまで待ち
 #    （最大 6 分）、ならなければ止まる。行が 1 つも無いのも成功にしない
 splunk_cluster_check() {
@@ -220,33 +220,33 @@ splunk_cluster_check() {
     esac
     sleep 15
   done
-  [ -n "$line" ] || die "search head のタスク（${sh_task##*/}）は、突き合わせ（splunk/peers_check.py）をまだ 1 回もしていない（6 分待っても判定の行「nwc-peer-check …」がロググループ /ecs/$PREFIX-splunk の splunk/splunk/${sh_task##*/} に無い）。search head が入れ替わったばかりなら、HEALTHY になってから打ち直す"
-  die "search head の突き合わせ（splunk/peers_check.py）が 6 分たっても ok（Up の indexer が ${SPLUNK_AZ_NUM} 台）にならない。最新の判定は「$line」（degraded: manager が Up と言う indexer が足りない。reason=peers_up:<Up の数>/<あるはずの数>。mismatch: search head が古い GUID の indexer を持っている。続けば ECS が search head を入れ替える。skip: manager に聞けない。error: search head の peers を読めない）。ロググループ /ecs/$PREFIX-splunk を見る"
+  [ -n "$line" ] || die "search head のタスク（${sh_task##*/}）は、突き合わせ（app/splunk/peers_check.py）をまだ 1 回もしていない（6 分待っても判定の行「nwc-peer-check …」がロググループ /ecs/$PREFIX-splunk の splunk/splunk/${sh_task##*/} に無い）。search head が入れ替わったばかりなら、HEALTHY になってから打ち直す"
+  die "search head の突き合わせ（app/splunk/peers_check.py）が 6 分たっても ok（Up の indexer が ${SPLUNK_AZ_NUM} 台）にならない。最新の判定は「$line」（degraded: manager が Up と言う indexer が足りない。reason=peers_up:<Up の数>/<あるはずの数>。mismatch: search head が古い GUID の indexer を持っている。続けば ECS が search head を入れ替える。skip: manager に聞けない。error: search head の peers を読めない）。ロググループ /ecs/$PREFIX-splunk を見る"
 }
 # Agent（Runtime）・worker・Temporal・Nautobot と Redis のイメージ。マネージド版と OSS 版（005）が同じ作り方をする。どれも docker login 済みで呼び、REG / PREFIX を使う。
-# NAUTOBOT_VERSION は nautobot/Dockerfile の ARG、REDIS_TAG は terraform/pipeline/nautobot の redis_image_tag、
-# TEMPORAL_TAG は terraform/workflow の temporal_image_tag の既定値に合わせてある（変えるときは両方を変える）
+# NAUTOBOT_VERSION は docker/images/nautobot/Dockerfile の ARG、REDIS_TAG は IaC/terraform/aws-managed/pipeline/nautobot の redis_image_tag、
+# TEMPORAL_TAG は IaC/terraform/aws-managed/workflow の temporal_image_tag の既定値に合わせてある（変えるときは両方を変える）
 NAUTOBOT_VERSION=3.2.6
-GRAFANA_VERSION=13.2.2   # grafana/ の Dockerfile の ARG の既定値に合わせてある（変えるときは両方を変える）
+GRAFANA_VERSION=13.2.3   # docker/images/grafana/Dockerfile の ARG の既定値に合わせてある（変えるときは両方を変える）
 REDIS_TAG=8.10.2-alpine   # 8 系は AGPLv3 も選べる（7.4 は RSALv2 / SSPL だけ）。公式のイメージは Search・JSON などのモジュールを読み込んで起きる
 TEMPORAL_TAG=1.9.1
-nautobot_context() {  # nautobot_context <空のディレクトリ>  Nautobot のイメージのビルドの context を集める（nautobot/Dockerfile の頭の説明）
-  # nautobot/ の中身に、グラフへ openCypher で書く agent/graph.py と agent/toolkit.py、最初の seed にする lab の定義を足す。
-  # タグはこのディレクトリの中身から作る（dir_tag）ので、graph.py や lab の定義を変えてもイメージが作り直される
-  cp -R nautobot/. "$1/" && cp agent/graph.py agent/toolkit.py "$1/" || return 1
+nautobot_context() {  # nautobot_context <空のディレクトリ>  Nautobot のイメージのビルドの context を集める（docker/images/nautobot/Dockerfile の頭の説明）
+  # app/nautobot/ の中身に、グラフへ openCypher で書く app/agentcore/graph.py と app/agentcore/toolkit.py、最初の seed にする lab の定義を足す。
+  # タグはこのディレクトリの中身と docker/images/nautobot/Dockerfile から作る（dir_tag）ので、graph.py や lab の定義や Dockerfile を変えてもイメージが作り直される
+  cp -R app/nautobot/. "$1/" && cp app/agentcore/graph.py app/agentcore/toolkit.py "$1/" || return 1
   find "$1" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null
   find "$1" -name .DS_Store -delete 2>/dev/null
-  "${PY[@]}" lab/lab_topology.py lab >"$1/lab_seed.json"
+  "${PY[@]}" app/containerlab/lab_topology.py app/containerlab >"$1/lab_seed.json"
 }
 build_agent() {  # build_agent <リポジトリの URL>:<タグ> [requirements のファイル名]  Runtime のコンテナ（arm64）。OSS 版は requirements-oss.txt（neo4j のドライバー入り）
-  docker buildx build --platform linux/arm64 --build-arg "REQUIREMENTS=${2:-requirements.txt}" -t "$1" --push agent/
+  docker buildx build --platform linux/arm64 --build-arg "REQUIREMENTS=${2:-requirements.txt}" -t "$1" --push -f docker/images/agentcore/Dockerfile app/agentcore/
 }
-build_grafana() {  # REG / PREFIX / GRAFANA_TAG（dir_tag "$GRAFANA_VERSION" grafana）を使う。Grafana OSS（arm64）
+build_grafana() {  # REG / PREFIX / GRAFANA_TAG（dir_tag "$GRAFANA_VERSION" app/grafana docker/images/grafana/Dockerfile）を使う。Grafana OSS（arm64）
   # データソースの plugin をビルドのときに入れる（タスクは AWS の外へ出られず、起動時に grafana.com から落とせない）
-  docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push grafana/
+  docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push -f docker/images/grafana/Dockerfile app/grafana/
 }
 build_worker() {  # build_worker <タグ> [requirements のファイル名]  Temporal の worker（arm64）。OSS 版は requirements-oss.txt（neo4j のドライバー入り）
-  docker buildx build --platform linux/arm64 --build-arg "REQUIREMENTS=${2:-requirements.txt}" -t "$REG/$PREFIX-worker:$1" --push workflow/
+  docker buildx build --platform linux/arm64 --build-arg "REQUIREMENTS=${2:-requirements.txt}" -t "$REG/$PREFIX-worker:$1" --push -f docker/images/temporal/Dockerfile app/temporal/
 }
 mirror_temporal() {  # Temporal の CLI 入りイメージ（temporal server start-dev。arm64 あり）。Fargate は ECR からしか安定して引けないのでミラーする
   docker pull --platform linux/arm64 "temporalio/temporal:$TEMPORAL_TAG"
@@ -254,9 +254,9 @@ mirror_temporal() {  # Temporal の CLI 入りイメージ（temporal server sta
   docker push "$REG/$PREFIX-temporal:$TEMPORAL_TAG"
 }
 build_nautobot() {  # build_nautobot <タグ> <context のディレクトリ> [requirements のファイル名]  Nautobot の公式イメージ（arm64。約 1 GB）に boto3 と Job と対応付けと最初の seed を足す。
-  # OSS 版は requirements-oss.txt（neo4j のドライバー入り。Job が Neo4j に書く）。どちらの requirements も context（nautobot/ の写し）にあるので、タグ（dir_tag）は両方の中身で決まる
+  # OSS 版は requirements-oss.txt（neo4j のドライバー入り。Job が Neo4j に書く）。どちらの requirements も context（app/nautobot/ の写し）にあるので、タグ（dir_tag）は両方の中身で決まる
   docker buildx build --platform linux/arm64 --build-arg "NAUTOBOT_VERSION=$NAUTOBOT_VERSION" --build-arg "REQUIREMENTS=${3:-requirements.txt}" \
-    -t "$REG/$PREFIX-nautobot:$1" --push "$2"
+    -t "$REG/$PREFIX-nautobot:$1" --push -f docker/images/nautobot/Dockerfile "$2"
 }
 ensure_nautobot_secrets() {  # pipeline/nautobot の apply より前に呼ぶ。値は出さない
   # Django の SECRET_KEY・画面の管理者のパスワード・RDS のマスターユーザーのパスワードは SSM に乱数で作る（Terraform の state に載せない）

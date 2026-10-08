@@ -83,7 +83,7 @@ destroy_lambda_root() {  # destroy_lambda_root <ルート> <VPC の中の Lambda
   kill "$reaper" 2>/dev/null; wait "$reaper" 2>/dev/null || true
 }
 LOG_GROUP=""  # agent の state から読んだ Runtime のロググループ（delete_runtime_log_groups が一緒に消す）
-destroy_agent() {  # agent（Runtime / ガードレール / KB）を消す。terraform/base/core のロールにポリシーを付けているので base/core より先
+destroy_agent() {  # agent（Runtime / ガードレール / KB）を消す。IaC/terraform/aws-managed/base/core のロールにポリシーを付けているので base/core より先
   local agent_vars=()
   LOG_GROUP=""
   if has_resources agent; then
@@ -93,12 +93,12 @@ destroy_agent() {  # agent（Runtime / ガードレール / KB）を消す。ter
   if has_resources agent && tf agent state list 2>/dev/null | grep -q '^aws_opensearchserverless_collection\.kb\['; then
     agent_vars+=(-var create_knowledge_base=true)
   fi
-  # KB を作っていれば、ベクトルインデックスを作る Lambda（terraform/agent/kb.tf）が VPC の中にいる。ENI を刈りながら消す
+  # KB を作っていれば、ベクトルインデックスを作る Lambda（IaC/terraform/aws-managed/agent/kb.tf）が VPC の中にいる。ENI を刈りながら消す
   destroy_lambda_root agent "$PREFIX-kb-index" ${agent_vars[@]+"${agent_vars[@]}"}
 }
 # 土台（base/core）を消す。
 # Runtime の ENI（種類 agentic_ai。AWS 側の所有で、自分では外せない）は Runtime を消したあとも最大 8 時間残り、その間はサブネットと
-# runtime の SG（terraform/base/core の security_groups.tf）が DependencyViolation で消えない（terraform は 20 分待ってから落ちる）。
+# runtime の SG（IaC/terraform/aws-managed/base/core の security_groups.tf）が DependencyViolation で消えない（terraform は 20 分待ってから落ちる）。
 # runtime の SG を参照するルール（endpoints の受信、runtime 自身の送信）は別のリソースなので一緒に消え、ほかの SG は消せる。
 # 残っているあいだは、それ以外だけを消して先へ進む（2026-09-28 より前の state なら NAT Gateway・EIP・IGW も。時間課金があるのでこのとき消す）。
 # 残る VPC・サブネット・SG に時間課金は無く、次の up.sh はそのまま使い回す

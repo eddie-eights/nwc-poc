@@ -1,11 +1,11 @@
-"""ops/up.sh と ops/sync-graph.sh が Web の EC2 の上で打つ。lab の定義から作ったトポロジ（lab/lab_topology.py の JSON）をグラフ DB に入れる
-（マネージド版は Neptune、OSS 版（cycle 005）は Neo4j。どちらかは Web の環境変数 GRAPH_BACKEND で決まり、agent/graph.py が切り替える）。
+"""ops/up.sh と ops/sync-graph.sh が Web の EC2 の上で打つ。lab の定義から作ったトポロジ（app/containerlab/lab_topology.py の JSON）をグラフ DB に入れる
+（マネージド版は Neptune、OSS 版（cycle 005）は Neo4j。どちらかは Web の環境変数 GRAPH_BACKEND で決まり、app/agentcore/graph.py が切り替える）。
 
 Web と同じ環境変数（/etc/<prefix>-web.env）と依存（/opt/<prefix>-web/lib）で動かす。GUI の「静的データを投入」と同じ関数（graph.seed）を呼ぶ。
 グラフ DB は出来た直後だとつながらないことがあるので、30 秒おきに 10 回まで試す。
 
 環境変数:
-  LAB_TOPOLOGY_B64  lab/lab_topology.py の出力（{"devices": [...], "links": [...], "layers": {...}}）を base64 にしたもの。無ければ agent/data の静的データ
+  LAB_TOPOLOGY_B64  app/containerlab/lab_topology.py の出力（{"devices": [...], "links": [...], "layers": {...}}）を base64 にしたもの。無ければ app/agentcore/data の静的データ
   GRAPH_REPLACE     1 ならグラフ DB に入っていても入れ直す（lab を変えたあとの同期。動的な status は消えて全部 UP に戻る）。
                     既定は空で、グラフ DB が空のときだけ入れる（初期ロード）
   NAME_PREFIX       **必須。**リソース名の接頭辞（<owner>-nwc-poc か <owner>-nwc-oss。呼ぶ側の ops/up.sh / oss/ops/up.sh / ops/sync-graph.sh が渡す）。
@@ -37,15 +37,15 @@ DB = "Neo4j" if OSS else "Neptune"
 SYNC = "ops/sync-graph.sh --oss --replace" if OSS else "ops/sync-graph.sh --replace"
 if not graph.configured():
     _param = "neo4j-uri" if OSS else "neptune-graph-id"
-    _root = "oss/terraform/pipeline/graph" if OSS else "terraform/pipeline/graph"
+    _root = "IaC/terraform/oss/pipeline/graph" if OSS else "IaC/terraform/aws-managed/pipeline/graph"
     sys.exit(f"SSM の {os.environ.get('PARAM_PREFIX', '')}/{_param} が読めない（{_root} の apply が終わっているか）")
 
 if os.environ.get("LAB_TOPOLOGY_B64"):
     lab = json.loads(base64.b64decode(os.environ["LAB_TOPOLOGY_B64"]))
-    devices, links, layers, source = lab["devices"], lab["links"], lab.get("layers"), "lab の定義（lab/lab_topology.py）"
+    devices, links, layers, source = lab["devices"], lab["links"], lab.get("layers"), "lab の定義（app/containerlab/lab_topology.py）"
 else:
     devices, links = topology.load_static()
-    layers, source = topology.load_static_layers(), "静的データ（agent/data）"
+    layers, source = topology.load_static_layers(), "静的データ（app/agentcore/data）"
 
 last = None
 for attempt in range(1, 11):

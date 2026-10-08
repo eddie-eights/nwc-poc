@@ -11,13 +11,13 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
-| サービス | `<prefix>-grafana`。クラスター `<prefix>-analytics`。1 タスク、サブネット a。AZ を選ぶキーは無い | `terraform/pipeline/analytics/grafana.tf` |
+| サービス | `<prefix>-grafana`。クラスター `<prefix>-analytics`。1 タスク、サブネット a。AZ を選ぶキーは無い | `IaC/terraform/aws-managed/pipeline/analytics/grafana.tf` |
 | タスクの大きさ | Fargate ARM、0.5 vCPU / 1 GB | 変数 `grafana_task_cpu`、`grafana_task_memory` |
-| イメージ | Grafana OSS 13.2.2 にデータソースの plugin と provisioning を焼き込んだもの。ECR の `<prefix>-grafana` | `grafana/Dockerfile`、変数 `grafana_image_tag` |
+| イメージ | Grafana OSS 13.2.3 にデータソースの plugin と provisioning を焼き込んだもの。ECR の `<prefix>-grafana` | `docker/images/grafana/Dockerfile`、変数 `grafana_image_tag` |
 | 名前 | Cloud Map `grafana.<prefix>.internal:3000` | `grafana.tf` |
-| データソース | Prometheus（Amazon Managed Prometheus）と OpenSearch Serverless（`snmp-logs`）。どちらも SigV4（タスクロール） | `grafana/provisioning`、`grafana/start.sh` |
-| アラートルール | 4 本（フォルダ `nwc-alerts`）。1 分ごとに評価、`for: 0s` | `grafana/provisioning/alerting/netops-prometheus.yaml`、`netops-opensearch.yaml` |
-| 送り先 | SNS `<prefix>-alerts`。解消は 30 秒以内（`group_interval`）、直らないあいだは 4 時間ごとに送り直す（`repeat_interval`） | `grafana/provisioning/alerting/netops.yaml` |
+| データソース | Prometheus（Amazon Managed Prometheus）と OpenSearch Serverless（`snmp-logs`）。どちらも SigV4（タスクロール） | `app/grafana/provisioning`、`app/grafana/start.sh` |
+| アラートルール | 4 本（フォルダ `nwc-alerts`）。1 分ごとに評価、`for: 0s` | `app/grafana/provisioning/alerting/netops-prometheus.yaml`、`netops-opensearch.yaml` |
+| 送り先 | SNS `<prefix>-alerts`。解消は 30 秒以内（`group_interval`）、直らないあいだは 4 時間ごとに送り直す（`repeat_interval`） | `app/grafana/provisioning/alerting/netops.yaml` |
 | admin のパスワード | SSM の SecureString `/<prefix>/grafana/admin-password`（`ops/up.sh` が乱数で作る） | `ops/up.sh`、`grafana.tf` の `secrets` |
 | ログ | `/ecs/<prefix>-grafana` | `grafana.tf` |
 | スイッチ | `STORES` の `grafana`（Grafana だけを切り替えるキーは無い） | `deploy.env.example` |
@@ -49,7 +49,7 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
   出典: [pipeline.md](../../pipeline.md) の「Grafana と Splunk を開く」。
 - **OpenSearch Serverless の Dashboards も使えない。**
   VPC エンドポイントだけのコレクションには届かない。それで Grafana を立てている。
-  出典: `terraform/pipeline/analytics/grafana.tf` の先頭のコメント。
+  出典: `IaC/terraform/aws-managed/pipeline/analytics/grafana.tf` の先頭のコメント。
 - **タスクは 1 つだけにしている。増やすと通知が二重になる。**
   アラートルールの評価もタスクの中で動く。HA を組まずに複数台にすると、全部の台が全ルールを評価する。設定もタスクの中の SQLite でタスクごとに別々。2 つにして AWS で試してはいない。
   出典: `grafana.tf` のコメント（Grafana の文書「Configure high availability」、https://grafana.com/docs/grafana/latest/alerting/set-up/configure-high-availability/ 、2026-10-04 確認）。
@@ -57,7 +57,7 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
   AWS の外へ出る経路が無いので、起動時に落とせない。
   出典: [pipeline.md](../../pipeline.md) の「Grafana と Splunk を開く」。
 - **UI で変えたものは、タスクと一緒に消える。**
-  ダッシュボードもルールも provisioning だけ。provisioning したルール・連絡先・ポリシーは画面から変えられない。残すなら `grafana/provisioning` に書いて `ops/up.sh`（イメージから作り直す）。
+  ダッシュボードもルールも provisioning だけ。provisioning したルール・連絡先・ポリシーは画面から変えられない。残すなら `app/grafana/provisioning` に書いて `ops/up.sh`（イメージから作り直す）。
   出典: [pipeline.md](../../pipeline.md) の「Grafana と Splunk を開く」「Grafana のアラート」。
 - **`netops.yaml` のテンプレートの `$` はそのまま書く。**
   `$$` とエスケープすると Grafana が起動しない（`Invalid format of the submitted template`。13.2.2 で実測）。
@@ -77,7 +77,7 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
   SSM の値を変えたら、サービスを作り直さないと効かない。
   出典: `grafana.tf` の `secrets`。
 - **`readonlyRootFilesystem` は付けていない。**
-  Grafana は `/var/lib/grafana` に SQLite を、`grafana/start.sh` は `/tmp` に provisioning を書く。
+  Grafana は `/var/lib/grafana` に SQLite を、`app/grafana/start.sh` は `/tmp` に provisioning を書く。
   出典: `grafana.tf` のコメント。
 
 ## 制約と未確認
@@ -90,7 +90,7 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 | `SNMP_POLL=0` | `link_down` は発火も解消もしない |
 | 1 タスク・1 AZ | 止まっているあいだはルールが評価されない |
 
-OSS 版（`oss/terraform/pipeline/analytics/grafana.tf`）も同じイメージとルールで 1 タスク立てる。データソースだけが VictoriaMetrics の vmselect（署名なし）と ECS の OpenSearch（Basic 認証）に変わる（`grafana/provisioning/datasources-oss`。uid が同じなので、ダッシュボードとアラートルールはそのまま使う）。[oss-variant.md](../../oss-variant.md)。
+OSS 版（`IaC/terraform/oss/pipeline/analytics/grafana.tf`）も同じイメージとルールで 1 タスク立てる。データソースだけが VictoriaMetrics の vmselect（署名なし）と ECS の OpenSearch（Basic 認証）に変わる（`app/grafana/provisioning/datasources-oss`。uid が同じなので、ダッシュボードとアラートルールはそのまま使う）。[oss-variant.md](../../oss-variant.md)。
 
 ## 関連
 

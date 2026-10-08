@@ -1,6 +1,6 @@
 """005 ステップ 1 の 3: VictoriaMetrics のクラスター（vminsert 1、vmselect 1、vmstorage 3、複製数 2）。
 
-Spark と同じ形（spark/snmp_sinks.py の encode_write_request と snappy_compress。remote write）で 100 系列 × 10 サンプルを入れ、
+Spark と同じ形（app/spark/snmp_sinks.py の encode_write_request と snappy_compress。remote write）で 100 系列 × 10 サンプルを入れ、
 vmstorage を 1 台ずつ止めても、全部の系列とサンプルが読め、結果に "isPartial":false が返るかを見る。
 時刻が前後したサンプル（Spark は 1 バッチの中を ts で並べ替えるが、バッチをまたぐと古い時刻が後から届く）を受けるかも見る。
 
@@ -15,7 +15,7 @@ import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "..", "spark"))
+sys.path.insert(0, os.path.join(HERE, "..", "..", "app", "spark"))
 import snmp_sinks  # noqa: E402
 
 INSERT = "http://127.0.0.1:18480/insert/0/prometheus/api/v1/write"

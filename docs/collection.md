@@ -42,7 +42,7 @@ trap と syslog では性能の時系列は取れない（届くのはイベン�
 **選んだ理由: Telegraf を増やしやすい。**
 
 - 機器から送ってくるもの（trap・syslog・MDT）は、NLB が 1 つのタスクにだけ渡すので、タスクを増やしても重複しない。
-- Telegraf から取りにいくもの（SNMP のポーリング、gNMI の購読）は、タスクごとに同じ機器へ取りにいくので、増やすと MSK に同じデータが何回も入る。取りにいく側のサービス（`<prefix>-telegraf-dialin`）だけを 1 タスクに固定している（[telegraf.tf](../terraform/pipeline/stream/telegraf.tf) の `desired_count = 1` と `deployment_maximum_percent = 100`）のはこのため（下の「Telegraf を受ける側と取りにいく側に分けた」）。
+- Telegraf から取りにいくもの（SNMP のポーリング、gNMI の購読）は、タスクごとに同じ機器へ取りにいくので、増やすと MSK に同じデータが何回も入る。取りにいく側のサービス（`<prefix>-telegraf-dialin`）だけを 1 タスクに固定している（[telegraf.tf](../IaC/terraform/aws-managed/pipeline/stream/telegraf.tf) の `desired_count = 1` と `deployment_maximum_percent = 100`）のはこのため（下の「Telegraf を受ける側と取りにいく側に分けた」）。
 - 集める側から機器への通信（161/udp や gNMI の TCP）を本番で開けてもらえるか分からないので、機器 → 集める側の向きだけで済むほうが安全。
 
 **MDT で取れる性能メトリクス:** MDT は機器の運用データ（oper の YANG モデル）を周期（periodic）か変化時（on-change）で送るので、性能の時系列も送れる。どのモデルが使えるかは機種と版で変わる。IOS XE を仮定した例（本番では未確認）:
@@ -54,7 +54,7 @@ trap と syslog では性能の時系列は取れない（届くのはイベン�
 | 帯域・ドロップ・エラー（IF と Port-channel） | `Cisco-IOS-XE-interfaces-oper`（`statistics` の octets / discards / errors、`speed`） |
 | セッション・上限 | 機能ごとに別のモデル（下の「セッションと上限」） |
 
-**Telegraf を受ける側と取りにいく側に分けた（2026-10-04 ユーザー決定）:** stream の ECS は同じイメージで 2 つのサービスを動かし、役割はタスクの環境変数 `TELEGRAF_ROLE`（`telegraf/telegraf.sh` が `telegraf.conf.in` の `# >>> role …` の区間を残すか消す）で分ける。
+**Telegraf を受ける側と取りにいく側に分けた（2026-10-04 ユーザー決定）:** stream の ECS は同じイメージで 2 つのサービスを動かし、役割はタスクの環境変数 `TELEGRAF_ROLE`（`app/telegraf/telegraf.sh` が `telegraf.conf.in` の `# >>> role …` の区間を残すか消す）で分ける。
 
 | サービス | `TELEGRAF_ROLE` | 入力 | 数 | SG |
 |---|---|---|---|---|
@@ -97,7 +97,7 @@ Kafka の出力（5 トピック）と health はどちらにもある。Starlar
 
 ## lab（SR Linux）での取り方
 
-**lab からは MDT は取れない。** SR Linux は Cisco MDT を話さない（送れるのは gNMI だけ）。lab では Telegraf から gNMI（dial-in、57400/tcp）で購読し、Telegraf の中で本番と同じ共通の形（下の「共通の形（仮）」）に変換する（`telegraf/lab_gnmi.star` と `telegraf/lab_circuits.star`。2026-10-04 に作った。lab の実機では未確認）。本番の受け口（`inputs.cisco_telemetry_mdt`）の経路は lab では通らない。
+**lab からは MDT は取れない。** SR Linux は Cisco MDT を話さない（送れるのは gNMI だけ）。lab では Telegraf から gNMI（dial-in、57400/tcp）で購読し、Telegraf の中で本番と同じ共通の形（下の「共通の形（仮）」）に変換する（`app/telegraf/lab_gnmi.star` と `app/telegraf/lab_circuits.star`。2026-10-04 に作った。lab の実機では未確認）。本番の受け口（`inputs.cisco_telemetry_mdt`）の経路は lab では通らない。
 gNMI の購読は Telegraf から取りにいくので、lab の値は取りにいく側のタスク（1 つに固定）から来る（上の「Telegraf を受ける側と取りにいく側に分けた」）。
 
 **lab のセッション数と収容回線数は本番の値の代替。** lab の機器には BNG・FW・NAT・IPsec が無いので、本番と同じ役割（今の数・上限・どこが食っているか）を持つ値で代える。エージェントが本番と同じ要素で判断できるかを要素ごとに比べ、揃わない要素は下に書いた（SR Linux 26.7.2 の YANG（[nokia/srlinux-yang-models](https://github.com/nokia/srlinux-yang-models) の `v26.7.2`）で確かめた。`telegraf.conf.in` の 2 つめの `inputs.gnmi`（`lab_*`）で購読しているが、lab の実機で値が出るかは未確認）。
@@ -138,7 +138,7 @@ gNMI の購読は Telegraf から取りにいくので、lab の値は取りに�
 
 ## 共通の形（仮。2026-10-04）
 
-本番の機種が決まるまでの仮の形。lab の gNMI の値はこの形にして `metrics` トピックへ出す（`telegraf/lab_gnmi.star` と `telegraf/lab_circuits.star`。変えられなかった値は `lab_*` の名前のまま残り、Kafka には載らずデバッグ用の EC2 の標準出力でだけ見える。そこで `lab_*` が見えたら変換の取りこぼし）。本番の MDT もこの形に寄せる予定（未実装）。
+本番の機種が決まるまでの仮の形。lab の gNMI の値はこの形にして `metrics` トピックへ出す（`app/telegraf/lab_gnmi.star` と `app/telegraf/lab_circuits.star`。変えられなかった値は `lab_*` の名前のまま残り、Kafka には載らずデバッグ用の EC2 の標準出力でだけ見える。そこで `lab_*` が見えたら変換の取りこぼし）。本番の MDT もこの形に寄せる予定（未実装）。
 
 | measurement | タグ | field |
 |---|---|---|
@@ -160,7 +160,7 @@ gNMI の購読は Telegraf から取りにいくので、lab の値は取りに�
 | 購読するパス（sensor path）と間隔 | 共通の形の項目、Telegraf の受け口の負荷、`mdt` トピックから共通の形への変換 | 本番の版が分かってから |
 | MDT の TLS と機器側の設定 | 受け口は平文の gRPC。証明書を誰が持つか、機器の `receiver` の書き方 | 本番の版が分かってから |
 | 「セッション」が何のセッションか | 一般的な解釈で候補を上に並べた（BNG の加入者、FW の接続、NAT、IPsec、ハードウェアの表）。本番の機器の役割が分かれば絞れる。lab は MAC の数で代える（上の「lab での取り方」） | 本番は候補まで。lab は決定 |
-| セッションの上限と収容回線数の上限の出どころ | 機器の上限（ライセンス・設定値・機種の上限・ポート数）は多くが MDT で取れる。設計上の上限だけ静的データ（`agent/data/devices.yaml` か Neptune）。割るのは設定上の上限を先に使う（上の「割る上限の選び方」） | 決定 |
+| セッションの上限と収容回線数の上限の出どころ | 機器の上限（ライセンス・設定値・機種の上限・ポート数）は多くが MDT で取れる。設計上の上限だけ静的データ（`app/agentcore/data/devices.yaml` か Neptune）。割るのは設定上の上限を先に使う（上の「割る上限の選び方」） | 決定 |
 | 共通の形 | Grafana と Splunk のルールを書く相手。本番の機種が 1 種類なら Cisco の形を正にし、混ざるなら独自の共通の形にする | 仮の形（上の「共通の形（仮）」）で lab を変換している。本番の機種が分かってから決める |
 | lab からどう送るか | gNMI で取って Telegraf の中で共通の形に変換する（上の「lab での取り方」）。変換は作った（lab の実機では未確認） | 決定 |
 | lab に Cisco の機器を足すか | 足せば MDT の受け口（`cisco_telemetry_mdt`）と Cisco の YANG の名前を lab で試せ、IOS XE ならセッションも代替ではなく本物（NAT / FW）が取れる見込み。本番が XR なら XRd（コンテナ。KVM 不要、1 台 2 GiB）、XE なら Cat8000v（VM。KVM が要るので lab の EC2 を Graviton の t4g から x86 の C8i / M8i などのネステッド仮想化か .metal に変える）。どちらも x86 だけ（lab は arm64 で通すと 2026-09-26 に決めているので、その決定を変えることになる）で、入手に Cisco の契約が要る見込み（未確認）。IOL は NETCONF が無く MDT を出せない見込みで、CML の同梱イメージは CML の中でしか使えないライセンス。SR Linux のファブリックは残し、本番と同じ OS の Cisco を 1〜2 台足すのが候補（2026-10-04 に調べた）。XRd の control-plane 版は転送が最小限で leaf の代わりにならず、Nexus（N9Kv）でファブリックを組むと 1 台 6〜10 GB で lab の EC2 が約 $0.17/h（t4g.xlarge）から $0.64〜1.28/h（r7i.2xlarge〜4xlarge）になる。Cat8000v を 2 台足すだけなら m7i.2xlarge で約 $0.52/h（東京のオンデマンド） | **当面は SR Linux のまま**（2026-10-04 決定。費用と arm64 の決定を優先）。本番の機種が分かったら見直す |

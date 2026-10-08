@@ -11,9 +11,9 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
-| サービス | `<prefix>-nautobot`。1 タスクに 3 コンテナ。Fargate ARM、2 vCPU / 4 GB。AZ を選ぶキーは無い | `terraform/pipeline/nautobot/nautobot.tf` |
-| イメージ | 公式の `networktocode/nautobot:3.2.6-py3.12` に boto3、`nautobot/` の Job、`agent/graph.py`、`lab_seed.json` を足したもの。ECR の `<prefix>-nautobot`。redis は `8.10.2-alpine` を ECR の `<prefix>-redis` に写したもの | `nautobot/Dockerfile`、`ops/up-common.sh` の `NAUTOBOT_VERSION`、`REDIS_TAG` |
-| DB | RDS の PostgreSQL 17、`db.t4g.micro`、gp3 20 GB。バックアップ無し、最後のスナップショット無し。`NAUTOBOT_DB_AZ_NUM`（既定 1、1〜2。2 は Multi-AZ） | `terraform/pipeline/nautobot/database.tf` |
+| サービス | `<prefix>-nautobot`。1 タスクに 3 コンテナ。Fargate ARM、2 vCPU / 4 GB。AZ を選ぶキーは無い | `IaC/terraform/aws-managed/pipeline/nautobot/nautobot.tf` |
+| イメージ | 公式の `networktocode/nautobot:3.2.6-py3.12` に boto3、`app/nautobot/` の Job、`app/agentcore/graph.py`、`lab_seed.json` を足したもの。ECR の `<prefix>-nautobot`。redis は `8.10.2-alpine` を ECR の `<prefix>-redis` に写したもの | `docker/images/nautobot/Dockerfile`、`ops/up-common.sh` の `NAUTOBOT_VERSION`、`REDIS_TAG` |
+| DB | RDS の PostgreSQL 17、`db.t4g.micro`、gp3 20 GB。バックアップ無し、最後のスナップショット無し。`NAUTOBOT_DB_AZ_NUM`（既定 1、1〜2。2 は Multi-AZ） | `IaC/terraform/aws-managed/pipeline/nautobot/database.tf` |
 | 名前 | Cloud Map `nautobot.<prefix>-nautobot.internal:8080`。SSM の String `/<prefix>/nautobot/url` にも書く | `nautobot.tf` |
 | シークレット | SSM の SecureString `/<prefix>/nautobot/{secret-key,admin-password,db-password,api-token}` の 4 つ（`ops/up.sh` が apply の前に乱数で作る） | `ops/up-common.sh` の `ensure_nautobot_secrets`、`nautobot.tf` の `secrets` |
 | ログ | `/ecs/<prefix>-nautobot`。ストリームは `web/`、`worker/`、`redis/` | `nautobot.tf` |
@@ -44,18 +44,18 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 ## 知見
 
 - **web・DB・Job・Celery・Redis は、Nautobot にもともとある組み合わせ。**
-  PostgreSQL と Redis は使う側が用意する決まり。ここでは DB を RDS、Redis をタスクの中のコンテナにした。足したのは `nautobot/` の Job と起動時の用意（`bootstrap.py`）。
+  PostgreSQL と Redis は使う側が用意する決まり。ここでは DB を RDS、Redis をタスクの中のコンテナにした。足したのは `app/nautobot/` の Job と起動時の用意（`bootstrap.py`）。
   出典: [nautobot.md](../../nautobot.md) の「3. 部品ごとの役割」、FAQ「Nautobot はもともと Web・データベース・Job・Celery・Redis がセットになったもの？…」。
 - **タスクは 1 つだけ。2 つにするとキャッシュ・ロック・キューが別々になる。**
   Redis と Celery の worker が同じタスクにあるため。入れ替えのときも、古いほうを止めてから新しいほうを起こす。コードから確かめた理由で、AWS では試していない（2026-10-04）。
-  出典: `terraform/pipeline/nautobot/nautobot.tf` のコメント。
+  出典: `IaC/terraform/aws-managed/pipeline/nautobot/nautobot.tf` のコメント。
 - **Redis は 8 系（`8.10.2-alpine`）。**
   8 系からライセンスに AGPLv3 を選べる（7.4 は RSALv2 / SSPL だけで、OSS のライセンスではなかった）。公式のイメージは Search・JSON・Bloom・TimeSeries のモジュールを読み込んで起きる（使っていない。起きた直後の使用メモリは約 1.4 MB）。持ち続けるデータは無い（`--save "" --appendonly no`）ので、版を上げても移すものは無い。
   2026-10-08 に手元のコンテナで、同じ command と healthCheck（`redis-cli ping`）で起き、Nautobot 3.2.6 のイメージ（redis-py 8.1.0、kombu 5.6.2、Celery 5.6.3、django-redis 7.0.0）からキャッシュの読み書きと Celery のブローカーの送受信ができた。AWS では未確認。
   出典: https://redis.io/legal/licenses/ （ライセンス）、https://redis.io/docs/latest/operate/oss_and_stack/stack-with-enterprise/release-notes/redisce/redisos-8.0-release-notes/ （8.0 の変更は ACL の分類と `GETRANGE` で、ここでは使っていない。2026-10-08 確認）。
 - **DB を 3 AZ にはできない。**
   2 は Multi-AZ の DB インスタンス（待機系 1 台。読めない）。3 AZ は Multi-AZ DB クラスターという別のリソースで、`db.t4g.micro` が使えない。
-  出典: `terraform/pipeline/nautobot/database.tf` のコメント（Amazon RDS User Guide、https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html と https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/multi-az-db-clusters-concepts.html 、2026-10-04 確認）。
+  出典: `IaC/terraform/aws-managed/pipeline/nautobot/database.tf` のコメント（Amazon RDS User Guide、https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html と https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/multi-az-db-clusters-concepts.html 、2026-10-04 確認）。
 - **DB のパスワードは plan にも state にも残らない。**
   `ops/up.sh` が SSM の SecureString に作り、Terraform は ephemeral で読んで write-only の引数（`password_wo`）に渡す。タスクは同じパラメータを ECS の secrets で受ける。
   出典: `database.tf` のコメント。
@@ -103,7 +103,7 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 | Web からの Nautobot への書き込み | AWS では未確認 |
 | 本番の機器の一覧を外から入れる | PoC には未実装（[nautobot.md](../../nautobot.md) の 6 章の (7)） |
 | デバッグ用の EC2（`ops/lab-debug.sh`） | Nautobot を使わない |
-| OSS 版（`oss/terraform/pipeline/nautobot`。同じファイルをシンボリックリンクで使う） | Job は Neo4j に書けない（タスク定義が `GRAPH_BACKEND` などを渡さず、イメージに Neo4j のドライバーが無い）。トポロジは lab の定義から `ops/sync-graph.sh --oss` で入れる（[005 の設計](../../cycles/005-oss-on-ecs/design.md)の「実装の状態」） |
+| OSS 版（`IaC/terraform/oss/pipeline/nautobot`。同じファイルをシンボリックリンクで使う） | Job は Neo4j に書けない（タスク定義が `GRAPH_BACKEND` などを渡さず、イメージに Neo4j のドライバーが無い）。トポロジは lab の定義から `ops/sync-graph.sh --oss` で入れる（[005 の設計](../../cycles/005-oss-on-ecs/design.md)の「実装の状態」） |
 
 ## 関連
 

@@ -1,0 +1,1 @@
+../../../../terraform/aws-managed/pipeline/analytics/ecs.tf

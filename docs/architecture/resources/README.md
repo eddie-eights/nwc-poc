@@ -2,7 +2,7 @@
 
 ← [構成](../README.md)
 
-AWS のリソース 1 つにつき 1 ファイル。FAQ、設計の記録、Terraform と `ops/up.sh` のコメントに散らばっていた事実を、リソースごとに集め直したもの。新しい事実は足していない。書いてあることはコード（`terraform/`、`ops/`、各プログラム）と突き合わせてある（2026-10-08）。
+AWS のリソース 1 つにつき 1 ファイル。FAQ、設計の記録、Terraform と `ops/up.sh` のコメントに散らばっていた事実を、リソースごとに集め直したもの。新しい事実は足していない。書いてあることはコード（`IaC/terraform/aws-managed/`、`ops/`、各プログラム）と突き合わせてある（2026-10-08）。
 
 - どのファイルも見出しは同じ: ひとことで / このプロジェクトでの使い方 / つながり / 知見 / 制約と未確認 / 関連。
 - `<prefix>` は `deploy.env` の `OWNER` から作る接頭辞 `<owner>-nwc-poc`。リージョンは東京（ap-northeast-1）。
@@ -33,7 +33,7 @@ AWS のリソース 1 つにつき 1 ファイル。FAQ、設計の記録、Terr
 
 ## OSS 版
 
-上の表はマネージド版（`terraform/`、接頭辞 `<owner>-nwc-poc`）。マネージドを OSS に置き換えた環境を作る（005）で、別の版（`oss/terraform/`、接頭辞 `<owner>-nwc-oss`）が main に入った（2026-10-07 に AWS で 1 回立てて確かめた）。
+上の表はマネージド版（`IaC/terraform/aws-managed/`、接頭辞 `<owner>-nwc-poc`）。マネージドを OSS に置き換えた環境を作る（005）で、別の版（`IaC/terraform/oss/`、接頭辞 `<owner>-nwc-oss`）が main に入った（2026-10-07 に AWS で 1 回立てて確かめた）。
 OSS 版では次の 5 つを ECS の OSS に置き換え、ほかは同じ。違いの全体は [oss-variant.md](../../oss-variant.md)。
 
 | マネージド版 | OSS 版 | ファイル |

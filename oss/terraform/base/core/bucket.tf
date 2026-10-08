@@ -1,1 +1,0 @@
-../../../../terraform/base/core/bucket.tf

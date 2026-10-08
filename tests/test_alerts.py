@@ -1,14 +1,14 @@
 """アラートの送り手の模擬テスト（AWS にも Splunk にも Grafana にも触れない）。
-Splunk のアラートアクション（splunk/netops_alerts/bin/netops_sns.py）が保存済みサーチの結果を SNS の本文にして publish すること（boto3）、
-保存済みサーチ（default/savedsearches.conf）と Grafana のアラート（grafana/provisioning/alerting/netops*.yaml）が同じ形の本文を出し、
-受け手（workflow/rules.py の alerts_from_message）がそのまま読めること、SNS のトピック（terraform/base/core の alerts.tf）と
-イメージ（splunk/Dockerfile・entrypoint.sh、grafana/start.sh）と ops/up.sh・ops/check.sh がその配線を持つこと。
+Splunk のアラートアクション（app/splunk/netops_alerts/bin/netops_sns.py）が保存済みサーチの結果を SNS の本文にして publish すること（boto3）、
+保存済みサーチ（default/savedsearches.conf）と Grafana のアラート（app/grafana/provisioning/alerting/netops*.yaml）が同じ形の本文を出し、
+受け手（app/temporal/rules.py の alerts_from_message）がそのまま読めること、SNS のトピック（IaC/terraform/aws-managed/base/core の alerts.tf）と
+イメージ（docker/images/splunk/Dockerfile・entrypoint.sh、app/grafana/start.sh）と ops/up.sh・ops/check.sh がその配線を持つこと。
 受け手の側は tests/test_workflow.py（SQS → ワークフロー）と tests/test_sync.py（Lambda → Neptune の status）。
 実行は uv run --group dev python tests/test_alerts.py（boto3 が無くても通る。あれば手元の偽の SNS へ本物の boto3 で publish して確かめる）"""
 import ast, contextlib, csv, glob, gzip, http.server, importlib.util, io, json, os, re, signal, subprocess, sys, tempfile, threading, time, urllib.parse
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-sys.path.insert(0, os.path.join(ROOT, "workflow"))
+sys.path.insert(0, os.path.join(ROOT, "app", "temporal"))
 passed = 0
 
 
@@ -32,9 +32,9 @@ def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数�
     return read("ops", "common.sh") + read("ops", f"{name}-common.sh") + read("ops", f"{name}.sh")
 
 
-ACTION = "splunk/netops_alerts/bin/netops_sns.py"
+ACTION = "app/splunk/netops_alerts/bin/netops_sns.py"
 sns = load(ACTION, "netops_sns")
-import rules   # noqa: E402  受け手（workflow/rules.py）
+import rules   # noqa: E402  受け手（app/temporal/rules.py）
 src = read(ACTION)
 KEYS = ["status", "device_id", "kind", "target", "detail", "starts_at"]
 TOPIC = "arn:aws:sns:ap-northeast-1:111122223333:netops-alerts"
@@ -99,7 +99,7 @@ with tempfile.TemporaryDirectory() as tmp:
           and [a["device_id"] for a in sns.alerts_from_rows(rows, devmap)] == ["dc1-leaf-01", "dc1-leaf-02"])
 
     # ---- 設定（entrypoint.sh が書くファイル）
-    ep = read("splunk", "entrypoint.sh")
+    ep = read("app", "splunk", "entrypoint.sh")
     check("entrypoint.sh がファイルに写す環境変数は、アラートアクションが読むもの（ENV_KEYS）と同じ並び",
           tuple(re.search(r"\nfor k in ([A-Z_ ]+); do\n", ep).group(1).split()) == sns.ENV_KEYS
           and re.search(r'ENV_FILE="\$\{NETOPS_ALERTS_ENV:-([^}]+)\}"', ep).group(1) == sns.ENV_FILE)
@@ -200,7 +200,7 @@ with tempfile.TemporaryDirectory() as tmp:
     check("indexer 以外（search head・manager・standalone）は今までどおり上流の入口へ exec し、SIGTERM は上流がそのまま受ける（offline は打たない）",
           all(rc == 0 and lines[-2:] == ["upstream start-service", "upstream teardown"] and not any("nwc-offline" in l for l in lines)
               for rc, lines, _ in roles.values()) and not os.path.exists(fake_args))
-    stf_idx = read("terraform", "pipeline", "analytics", "splunk.tf").split('resource "aws_ecs_task_definition" "splunk_idx"', 1)[1].split("\nresource ", 1)[0]
+    stf_idx = read("IaC", "terraform", "aws-managed", "pipeline", "analytics", "splunk.tf").split('resource "aws_ecs_task_definition" "splunk_idx"', 1)[1].split("\nresource ", 1)[0]
     stop_timeout = int(re.search(r"\n    stopTimeout = (\d+)\n", stf_idx).group(1))
     offline_timeout = int(re.search(r"\nOFFLINE_TIMEOUT=(\d+)\n", ep).group(1))
     check("offline を打ち切る秒数と、そのあとの splunk stop（手元で 47 秒）が、indexer のタスクの stopTimeout（splunk.tf。Fargate の上限 120 秒）に収まる",
@@ -421,7 +421,7 @@ def parse_conf(text):
     return out
 
 
-APP = ("splunk", "netops_alerts")
+APP = ("app", "splunk", "netops_alerts")
 saved = parse_conf(read(*APP, "default", "savedsearches.conf"))
 actions = parse_conf(read(*APP, "default", "alert_actions.conf"))
 check("保存済みサーチは 4 つ（SNMP のポーリングの IF、gNMI の BGP / IS-IS、trap、trap を時間で閉じる）", list(saved) == ["netops_poll", "netops_gnmi", "netops_trap", "netops_trap_clear"])
@@ -446,7 +446,7 @@ check("イベントは source で選ぶ（Spark の splunk_events が telegraf:<
       pipes["netops_poll"][0].startswith('index=* source="telegraf:interface" ')
       and pipes["netops_gnmi"][0].startswith('index=* (source="telegraf:bgp_neighbor" OR source="telegraf:isis_interface") ')
       and all(pipes[n][0].startswith('index=* source="telegraf:snmp_trap" ') for n in ("netops_trap", "netops_trap_clear"))
-      and 'f"telegraf:{r[\'measurement\'] or \'unknown\'}"' in read("spark", "snmp_sinks.py"))
+      and 'f"telegraf:{r[\'measurement\'] or \'unknown\'}"' in read("app", "spark", "snmp_sinks.py"))
 DEVICE = "eval device=coalesce('tags.sysName', 'tags.agent_host', 'tags.source')"
 check("機器は tags.sysName > tags.agent_host > tags.source（gNMI と trap は IP。アラートアクションが DEVICE_MAP で名前に直す）",
       all(DEVICE in p for p in pipes.values()))
@@ -537,7 +537,7 @@ SKIP_IF = re.search(r'NOT match\(target, "([^"]+)"\)', p).group(1)
 check("ポーリング: 見ない IF は Grafana の link_down と同じ（ループバック・管理ポート・サブインタフェース）",
       [n for n in ("lo0", "mgmt0", "ethernet-1/1.0", "ethernet-1/1", "ethernet-1/49", "irb0") if not re.search(SKIP_IF, n)] == ["ethernet-1/1", "ethernet-1/49", "irb0"]
       and [n for n in ("lo0", "mgmt0", "ethernet-1/1.0", "ethernet-1/1", "ethernet-1/49", "irb0") if not re.fullmatch("(lo|mgmt).*|.*[.].*", n)] == ["ethernet-1/1", "ethernet-1/49", "irb0"]
-      and 'ifName!~"(lo|mgmt).*|.*[.].*"' in read("grafana", "provisioning", "alerting", "netops-prometheus.yaml"))
+      and 'ifName!~"(lo|mgmt).*|.*[.].*"' in read("app", "grafana", "provisioning", "alerting", "netops-prometheus.yaml"))
 g = saved["netops_gnmi"]["search"]
 check("gNMI: BGP は session_state が established 以外で bgp_down、IS-IS は oper_state が up 以外で isis_down",
       'eval kind=if(source=="telegraf:bgp_neighbor", "bgp_down", "isis_down")' in g and "'fields.session_state'" in g and "'fields.oper_state'" in g
@@ -556,7 +556,7 @@ check("gNMI: 前の値と比べて down かどうかが変わったときだけ�
                                               "stats", "where", "eval", "eval", "table"])
 GNMI_BACK = (int(re.search(r"_index_earliest=-(\d+)m@m-10s", _gp[0]).group(1)) - 1) * 60
 check("gNMI の遷移: 参照実装の前の長さは SPL の窓（-1441m@m-10s から今の 1 分を除いた 24 時間。Grafana の last_over_time(...[24h]) と同じ）",
-      GNMI_BACK == 86400 and "[24h]" in read("grafana", "provisioning", "alerting", "netops-prometheus.yaml"))
+      GNMI_BACK == 86400 and "[24h]" in read("app", "grafana", "provisioning", "alerting", "netops-prometheus.yaml"))
 _H = 3600
 check("gNMI: 起動の直後（購読の最初の送信や、Spark が Kafka を頭から読み直した分が今の 1 分にまとめて入る）は、up / established の resolved を出さない。down は firing",
       poll_ref([(65, 10, 0), (66, 20, 0), (67, 30, 1)], 120, GNMI_BACK) == ("firing", 30)
@@ -631,20 +631,20 @@ check("app の中に認証情報や local/ は無い（公開リポジトリ）"
                                                                          for f in ("savedsearches.conf", "alert_actions.conf", "app.conf", "props.conf")))
 
 # ---- Splunk のイメージ
-df = read("splunk", "Dockerfile")
+df = read("docker", "images", "splunk", "Dockerfile")
 dcode = [l for l in df.splitlines() if l.strip() and not l.startswith("#")]
 check("Splunk のイメージは上流の公式イメージに app と入口とヘルスチェックの突き合わせ（peers_check.py）を足すだけ（RUN は無い = arm64 の PC でも QEMU 無しでビルドできる。boto3 は同梱しない）",
-      dcode == ["ARG SPLUNK_VERSION=10.4.3", "FROM splunk/splunk:${SPLUNK_VERSION}", "COPY --chown=splunk:splunk netops_alerts /opt/splunk-etc/apps/netops_alerts",
+      dcode == ["ARG SPLUNK_VERSION=10.4.4", "FROM splunk/splunk:${SPLUNK_VERSION}", "COPY --chown=splunk:splunk netops_alerts /opt/splunk-etc/apps/netops_alerts",
                 "COPY --chmod=0755 entrypoint.sh /sbin/nwc-entrypoint.sh", "COPY --chmod=0755 peers_check.py /sbin/nwc-peers-check.py",
                 'ENTRYPOINT ["/sbin/nwc-entrypoint.sh"]', 'CMD ["start-service"]'])
 
-# ---- search head のヘルスチェックに足す突き合わせ（splunk/peers_check.py。「Splunk をクラスターにする（004）」の手当て A）
-pc = load("splunk/peers_check.py", "peers_check")
-pcsrc = read("splunk", "peers_check.py")
+# ---- search head のヘルスチェックに足す突き合わせ（app/splunk/peers_check.py。「Splunk をクラスターにする（004）」の手当て A）
+pc = load("app/splunk/peers_check.py", "peers_check")
+pcsrc = read("app", "splunk", "peers_check.py")
 check("peers_check.py は OS の /usr/bin/python3 で標準ライブラリだけを読む（Splunk の Python に頼らない）。イメージの /sbin/nwc-peers-check.py を、"
       "クラスターの search head のヘルスチェック（splunk.tf）が checkstate.sh のあとに呼ぶ",
       pcsrc.startswith("#!/usr/bin/python3\n") and imported(ast.walk(ast.parse(pcsrc))) <= set(sys.stdlib_module_names)
-      and '"/sbin/checkstate.sh && /sbin/nwc-peers-check.py"' in read("terraform", "pipeline", "analytics", "splunk.tf"))
+      and '"/sbin/checkstate.sh && /sbin/nwc-peers-check.py"' in read("IaC", "terraform", "aws-managed", "pipeline", "analytics", "splunk.tf"))
 check("peers_check.py: SPLUNK_CLUSTER_MASTER_URL（上流の入口と同じく名前だけ）を管理 API の URL にする（https:// とポート 8089 が無ければ足す）",
       pc.manager_base("splunk-cm.t-nwc-poc.internal") == "https://splunk-cm.t-nwc-poc.internal:8089"
       and pc.manager_base(" https://x:8089/ ") == "https://x:8089" and pc.manager_base("https://x") == "https://x:8089"
@@ -740,7 +740,7 @@ check("peers_check.py: manager が Up と言う peer が NWC_PEERS_EXPECTED（in
                                                           pc.SH_PEERS: [_sh("AAA-1"), _sh("OLD-1")]})[:4:3] == (1, ["nwc-peer-check state=mismatch reason=lost:idx-b"])
       and all(_pc_main(dict(_PCENV, NWC_PEERS_EXPECTED=v), _one_down)[:4:3] == (0, ["nwc-peer-check state=ok reason=peers_up:1"]) for v in ("", "x", "0", "1"))
       and _pc_main(_PCENV, _one_down)[3] == ["nwc-peer-check state=ok reason=peers_up:1"])
-_sh_env = read("terraform", "pipeline", "analytics", "splunk.tf")
+_sh_env = read("IaC", "terraform", "aws-managed", "pipeline", "analytics", "splunk.tf")
 check("splunk.tf: クラスターの search head のタスクだけに NWC_PEERS_EXPECTED（indexer の数 = splunk_az_num）を渡す（manager と indexer の環境変数には入れない）",
       re.search(r'\{ name = "SPLUNK_ROLE", value = "splunk_search_head" \},\n(?:\s*#[^\n]*\n)*\s*\{ name = "NWC_PEERS_EXPECTED", value = tostring\(var\.splunk_az_num\) \},\n'
                 r'\s*\], local\.splunk_cluster_environment\) : \[\]\)', _sh_env) is not None
@@ -787,19 +787,19 @@ check("tests/check_splunk_image.py はコンテナを消すとき、イメージ
 up = read_ops("up")
 check("up.sh の SPLUNK_VERSION / GRAFANA_VERSION は Dockerfile の ARG の既定値と同じ",
       re.search(r"^SPLUNK_VERSION=([\d.]+)", up, re.M).group(1) == re.search(r"ARG SPLUNK_VERSION=([\d.]+)", df).group(1)
-      and re.search(r"^GRAFANA_VERSION=([\d.]+)", up, re.M).group(1) == re.search(r"ARG GRAFANA_VERSION=([\d.]+)", read("grafana", "Dockerfile")).group(1))
+      and re.search(r"^GRAFANA_VERSION=([\d.]+)", up, re.M).group(1) == re.search(r"ARG GRAFANA_VERSION=([\d.]+)", read("docker", "images", "grafana", "Dockerfile")).group(1))
 check("up.sh は Splunk と Grafana のイメージを <版>-<ディレクトリのハッシュ> のタグでビルドする（中身を変えたら別のタグ。Splunk は amd64、Grafana は arm64）",
-      'SPLUNK_TAG=$(dir_tag "$SPLUNK_VERSION" splunk)' in up and 'GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" grafana)' in up
-      and 'docker buildx build --platform linux/amd64 --build-arg "SPLUNK_VERSION=$SPLUNK_VERSION" -t "$REG/$PREFIX-splunk:$SPLUNK_TAG" --push splunk/' in up
-      and 'docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push grafana/' in up)
-stf = read("terraform", "pipeline", "analytics", "splunk.tf")
+      'SPLUNK_TAG=$(dir_tag "$SPLUNK_VERSION" app/splunk docker/images/splunk/Dockerfile)' in up and 'GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" app/grafana docker/images/grafana/Dockerfile)' in up
+      and 'docker buildx build --platform linux/amd64 --build-arg "SPLUNK_VERSION=$SPLUNK_VERSION" -t "$REG/$PREFIX-splunk:$SPLUNK_TAG" --push -f docker/images/splunk/Dockerfile app/splunk/' in up
+      and 'docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push -f docker/images/grafana/Dockerfile app/grafana/' in up)
+stf = read("IaC", "terraform", "aws-managed", "pipeline", "analytics", "splunk.tf")
 check("Splunk のタスクはトピックの ARN と device map を環境変数で受け、タスクロールは土台のトピックへの sns:Publish だけを足す",
       '{ name = "ALERTS_TOPIC_ARN", value = local.alerts_topic_arn }' in stf and re.search(r'\{ name = "DEVICE_MAP", value = var\.device_map \}', stf) is not None
       and re.search(r'Action\s*=\s*\["sns:Publish"\]\s*\n\s*Resource\s*=\s*local\.alerts_topic_arn', stf) is not None and '"sns:*"' not in stf)
-lt = load("lab/lab_topology.py", "lab_topology")
-dm = subprocess.run([sys.executable, os.path.join(ROOT, "lab", "lab_topology.py"), "lab", "--device-map"], capture_output=True, text=True, cwd=ROOT)
+lt = load("app/containerlab/lab_topology.py", "lab_topology")
+dm = subprocess.run([sys.executable, os.path.join(ROOT, "app", "containerlab", "lab_topology.py"), "app/containerlab", "--device-map"], capture_output=True, text=True, cwd=ROOT)
 dmap = sns.parse_device_map(dm.stdout.strip())
-check("device map（lab/lab_topology.py --device-map）は管理 IP と回線の IP を機器名に引ける形で、アラートアクションがそのまま読む",
+check("device map（app/containerlab/lab_topology.py --device-map）は管理 IP と回線の IP を機器名に引ける形で、アラートアクションがそのまま読む",
       dm.returncode == 0 and len(dmap) >= 8 and all(sns.IPV4_RE.match(k) and re.fullmatch(r"[a-z0-9-]+", v) for k, v in dmap.items())
       and sns.device_name("10.255.2.1", dmap) == "dc1-leaf-01" and len(dm.stdout.strip()) < 4000)
 
@@ -808,9 +808,9 @@ def nocomment(text):
     return "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
 
 
-gcode = nocomment(read("grafana", "provisioning", "alerting", "netops.yaml"))
-gpcode = nocomment(read("grafana", "provisioning", "alerting", "netops-prometheus.yaml"))
-gocode = nocomment(read("grafana", "provisioning", "alerting", "netops-opensearch.yaml"))
+gcode = nocomment(read("app", "grafana", "provisioning", "alerting", "netops.yaml"))
+gpcode = nocomment(read("app", "grafana", "provisioning", "alerting", "netops-prometheus.yaml"))
+gocode = nocomment(read("app", "grafana", "provisioning", "alerting", "netops-opensearch.yaml"))
 rcode = gpcode + "\n" + gocode
 tmpl = re.search(r'\{\{ define "netops\.sns" \}\}(.*)\{\{ end \}\}\s*$', gcode, re.S).group(1)
 check("Grafana の本文の項目は Splunk のアラートアクションと同じ 6 つ（同じ順）、source は grafana",
@@ -870,7 +870,7 @@ check("link_down: ifOperStatus が 2 の IF（ループバック・管理ポー�
       "expr: 'snmp_interface_ifOperStatus{ifName!~\"(lo|mgmt).*|.*[.].*\"} unless on (sysName, ifName) (snmp_interface_ifAdminStatus == 2)'" in grules["link_down"]
       and re.search(r"type: within_range\s*\n\s*params: \[1\.5, 2\.5\]", grules["link_down"]) is not None
       and "target: '{{ .Labels.ifName }}'" in grules["link_down"])
-ss = read("spark", "snmp_sinks.py")
+ss = read("app", "spark", "snmp_sinks.py")
 check("bgp_down / isis_down: Spark が書く 1 / 0 の系列の直近 24 時間の最後の値が 0.5 未満なら発火。target は peer_address / interface_name（gNMI の tag）",
       "expr: 'last_over_time(snmp_bgp_neighbor_session_up[24h])'" in grules["bgp_down"] and "target: '{{ .Labels.peer_address }}'" in grules["bgp_down"]
       and "expr: 'last_over_time(snmp_isis_interface_oper_up[24h])'" in grules["isis_down"] and "target: '{{ .Labels.interface_name }}'" in grules["isis_down"]
@@ -878,9 +878,9 @@ check("bgp_down / isis_down: Spark が書く 1 / 0 の系列の直近 24 時間�
       and '("bgp_neighbor", "session_state"): ("session_up", "established")' in ss and '("isis_interface", "oper_state"): ("oper_up", "up")' in ss)
 check("ルールのメトリクス名とラベルは Spark が AMP に書く名前（snmp_<measurement>_<field>、tag はそのままラベル）で、データソースは uid: amp",
       'METRIC_PREFIX = "snmp"' in ss and gpcode.count("datasourceUid: amp") == 3
-      and re.search(r"^\s*uid: amp$", read("grafana", "provisioning", "datasources", "prometheus.yaml"), re.M) is not None
-      and all(f in read("telegraf", "telegraf.conf.in") for f in ("ifOperStatus", "ifAdminStatus", "ifName", "sysName")))
-SPLUNK_TRAP_SKIP = re.findall(r'oid!="([.0-9]+)"', re.search(r"^\[netops_trap\]$(.*?)^\[", read("splunk", "netops_alerts", "default", "savedsearches.conf"), re.S | re.M).group(1))
+      and re.search(r"^\s*uid: amp$", read("app", "grafana", "provisioning", "datasources", "prometheus.yaml"), re.M) is not None
+      and all(f in read("app", "telegraf", "telegraf.conf.in") for f in ("ifOperStatus", "ifAdminStatus", "ifName", "sysName")))
+SPLUNK_TRAP_SKIP = re.findall(r'oid!="([.0-9]+)"', re.search(r"^\[netops_trap\]$(.*?)^\[", read("app", "splunk", "netops_alerts", "default", "savedsearches.conf"), re.S | re.M).group(1))
 check("trap: 過去 10 分の snmp_trap を機器と OID ごとに数える（OpenSearch のデータソース uid: aoss-logs、文字列は .keyword）。除く OID は Splunk の netops_trap と"
       "同じに linkDown / linkUp を足したもの。target は OID",
       "datasourceUid: aoss-logs" in grules["trap"] and "from: 600" in grules["trap"] and "measurement.keyword:snmp_trap AND NOT tags.oid.keyword:(" in grules["trap"]
@@ -889,7 +889,7 @@ check("trap: 過去 10 分の snmp_trap を機器と OID ごとに数える（Op
       and re.findall(r"field: (\S+)", grules["trap"]) == ["tags.sysName.keyword", "tags.oid.keyword", "'@timestamp'"]
       and """sysName: '{{ index .Labels "tags.sysName.keyword" }}'""" in grules["trap"] and """target: '{{ index .Labels "tags.oid.keyword" }}'""" in grules["trap"]
       and re.search(r"type: gt\s*\n\s*params: \[0\]", grules["trap"]) is not None
-      and re.search(r"^\s*uid: aoss-logs$", read("grafana", "provisioning", "datasources", "opensearch.yaml"), re.M) is not None)
+      and re.search(r"^\s*uid: aoss-logs$", read("app", "grafana", "provisioning", "datasources", "opensearch.yaml"), re.M) is not None)
 check("trap の terms は 機器 × OID × 時間の区切り 20 個が 65535 に収まる大きさ（超えると opensearch プラグインが評価をエラーにする）",
       (lambda n: len(n) == 2 and n[0] * n[1] * 20 <= 65535)([int(x) for x in re.findall(r"size: '(\d+)'", grules["trap"])]))
 check("データが無い・クエリが失敗したときは直前の状態のまま（分からないときに発火も解消もしない）。trap だけは数えるものが無ければ解消（10 分来なければ閉じる）",
@@ -902,18 +902,18 @@ check("連絡先は SNS（鍵は書かない = タスクロールで SigV4）。
       and not re.search(r"(?i)access_key|secret_key|assume_role|profile", gcode + rcode) and "groups:" not in gcode)
 check("通知ポリシー: 対象（機器 + target）ごとに 1 通、発火はすぐ、解消は 30 秒以内、直らないあいだは 4 時間ごとに送り直す",
       "receiver: nwc-sns" in gcode and "group_by: ['alertname', 'sysName', 'target']" in gcode and "group_wait: 0s" in gcode and "group_interval: 30s" in gcode and "repeat_interval: 4h" in gcode)
-gdf = read("grafana", "Dockerfile")
+gdf = read("docker", "images", "grafana", "Dockerfile")
 check("Grafana のイメージは provisioning を持ち、SigV4 を既定の認証情報（タスクロール）で使う",
       "COPY provisioning /etc/grafana/netops" in gdf and "GF_AUTH_SIGV4_AUTH_ENABLED=true" in gdf and "GF_AWS_ALLOWED_AUTH_PROVIDERS=default" in gdf)
-gtf = read("terraform", "pipeline", "analytics", "grafana.tf")
+gtf = read("IaC", "terraform", "aws-managed", "pipeline", "analytics", "grafana.tf")
 check("Grafana のタスクはトピックの ARN を環境変数で受け、タスクロールは土台のトピックへの sns:Publish だけを足す",
       '{ name = "ALERTS_TOPIC_ARN", value = local.alerts_topic_arn }' in gtf and re.search(r'Action\s*=\s*\["sns:Publish"\]\s*\n\s*Resource\s*=\s*local\.alerts_topic_arn', gtf) is not None and '"sns:*"' not in gtf)
 
 
 def start_sh(**env):
-    """grafana/start.sh を一時ディレクトリに向けて走らせ、並んだアラートの定義とデータソースを返す"""
+    """app/grafana/start.sh を一時ディレクトリに向けて走らせ、並んだアラートの定義とデータソースを返す"""
     with tempfile.TemporaryDirectory() as tmp:
-        sh = read("grafana", "start.sh").replace("SRC=/etc/grafana/netops", f"SRC={os.path.join(ROOT, 'grafana', 'provisioning')}")
+        sh = read("app", "grafana", "start.sh").replace("SRC=/etc/grafana/netops", f"SRC={os.path.join(ROOT, 'app', 'grafana', 'provisioning')}")
         sh = sh.replace("/tmp/grafana-", f"{tmp}/grafana-").replace('exec /run.sh "$@"', 'echo "run $GF_PATHS_PROVISIONING"')
         assert "/etc/grafana" not in sh and "/tmp/grafana" not in sh.replace(tmp, "") and "exec " not in sh
         r = subprocess.run(["sh", "-c", sh], capture_output=True, text=True, env=dict({"PATH": os.environ["PATH"]}, **env))
@@ -931,7 +931,7 @@ check("start.sh: アラートの定義は ALERTS_TOPIC_ARN があるときだけ
       and start_sh(ALERTS_TOPIC_ARN=TOPIC) == ([], []) and start_sh() == ([], []))
 
 # ---- SNS のトピック（土台）と受け手の配線
-atf = read("terraform", "base", "core", "alerts.tf")
+atf = read("IaC", "terraform", "aws-managed", "base", "core", "alerts.tf")
 acode = "\n".join(l for l in atf.splitlines() if not l.lstrip().startswith("#"))
 check("トピックは土台（base/core）に 1 つ（<接頭辞>-alerts）、保存時の暗号化は AWS 管理の鍵",
       acode.count('resource "aws_sns_topic" ') == 1 and 'name = "${local.name_prefix}-alerts"' in acode and 'kms_master_key_id = "alias/aws/sns"' in acode)
@@ -945,20 +945,20 @@ check("閉域（network_perimeter）のとき、VPC の外からの sns:Publish 
       == [("StringNotEqualsIfExists", "aws:SourceVpc"), ("BoolIfExists", "aws:ViaAWSService"), ("Bool", "aws:PrincipalIsAWSService"), ("ArnNotLike", "aws:PrincipalArn")]
       and "values   = [aws_vpc.this.id]" in deny and "values   = local.perimeter_exempt_principals" in deny)
 check("土台は alerts_topic_arn を出し、閉域の IAM 側の Deny に sns:* がある（events:* はもう無い）",
-      re.search(r'output "alerts_topic_arn" \{[^}]*value\s*=\s*aws_sns_topic\.alerts\.arn', read("terraform", "base", "core", "outputs.tf")) is not None
-      and '"sns:*"' in read("terraform", "base", "core", "perimeter.tf") and '"events:*"' not in read("terraform", "base", "core", "perimeter.tf"))
+      re.search(r'output "alerts_topic_arn" \{[^}]*value\s*=\s*aws_sns_topic\.alerts\.arn', read("IaC", "terraform", "aws-managed", "base", "core", "outputs.tf")) is not None
+      and '"sns:*"' in read("IaC", "terraform", "aws-managed", "base", "core", "perimeter.tf") and '"events:*"' not in read("IaC", "terraform", "aws-managed", "base", "core", "perimeter.tf"))
 TRY = 'alerts_topic_arn = try(data.terraform_remote_state.main.outputs.alerts_topic_arn, "")'
 check("送り手（analytics）と受け手（workflow / graph）は土台の state からトピックを読む（古い土台なら apply の前に理由を言って止まる）",
-      all(TRY in read("terraform", *r, "locals.tf") for r in (("pipeline", "analytics"), ("pipeline", "graph"), ("workflow",)))
-      and all('condition     = local.alerts_topic_arn != ""' in read("terraform", *f) for f in
+      all(TRY in read("IaC", "terraform", "aws-managed", *r, "locals.tf") for r in (("pipeline", "analytics"), ("pipeline", "graph"), ("workflow",)))
+      and all('condition     = local.alerts_topic_arn != ""' in read("IaC", "terraform", "aws-managed", *f) for f in
               (("pipeline", "analytics", "grafana.tf"), ("pipeline", "analytics", "splunk.tf"), ("pipeline", "graph", "sync.tf"), ("workflow", "events.tf"))))
-wtf = read("terraform", "workflow", "events.tf")
+wtf = read("IaC", "terraform", "aws-managed", "workflow", "events.tf")
 check("受け手は 2 つ: SQS（raw message delivery。ワークフロー）と Lambda（status）",
       re.search(r'resource "aws_sns_topic_subscription" "anomalies" \{[^}]*protocol\s*=\s*"sqs"[^}]*raw_message_delivery\s*=\s*true', wtf, re.S) is not None
-      and re.search(r'resource "aws_sns_topic_subscription" "status" \{[^}]*protocol\s*=\s*"lambda"', read("terraform", "pipeline", "graph", "sync.tf"), re.S) is not None)
+      and re.search(r'resource "aws_sns_topic_subscription" "status" \{[^}]*protocol\s*=\s*"lambda"', read("IaC", "terraform", "aws-managed", "pipeline", "graph", "sync.tf"), re.S) is not None)
 check("EventBridge のルールと Spark からの put_events はどこにも無い",
       not any("aws_cloudwatch_event_" in read(f) or "events:PutEvents" in read(f)
-              for f in glob.glob(os.path.join(ROOT, "terraform", "**", "*.tf"), recursive=True) if ".terraform" not in f)
+              for f in glob.glob(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "**", "*.tf"), recursive=True) if ".terraform" not in f)
       and "put_events" not in "\n".join(l for l in ss.splitlines() if not l.lstrip().startswith("#")).split('"""', 2)[2])
 
 # ---- ops/check.sh
@@ -970,14 +970,15 @@ check("check.sh は tests/ の test_*.py を全部走らせる（このテスト
       sorted(listed) == sorted("tests/" + os.path.basename(p) for p in glob.glob(os.path.join(ROOT, "tests", "test_*.py"))) and "tests/test_alerts.py" in listed)
 dirs = re.search(r"\nfind ([a-z ]+) -name '\*\.py'", chk).group(1).split()
 tracked = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "*.py"], capture_output=True, text=True, cwd=ROOT).stdout.split()
-check("check.sh の構文検査は .py のあるディレクトリを全部見る（splunk/ のアラートアクションと graph/ の Lambda も）",
-      {p.split("/")[0] for p in tracked} <= set(dirs) and {"splunk", "graph"} <= set(dirs))
+check("check.sh の構文検査は .py のあるディレクトリを全部見る（app/splunk/ のアラートアクションと app/graph/ の Lambda も。どちらも app/ の下）",
+      {p.split("/")[0] for p in tracked} <= set(dirs) and "app" in dirs
+      and os.path.isdir(os.path.join(ROOT, "app", "splunk")) and os.path.isdir(os.path.join(ROOT, "app", "graph")))
 
 # ---- lab.sh: 比べるための障害（fail-bgp / heal-bgp / trap-test）
-lab = read("lab", "lab.sh")
+lab = read("app", "containerlab", "lab.sh")
 labc = {k: re.search(rf"(?:^|; ){k}=([^;\s]+)", lab, re.M).group(1) for k in ("BGP_NODE", "BGP_PEER", "ACC_VM", "TEST_TRAP_OID")}
 check("lab.sh の fail-bgp / heal-bgp は BGP_NODE の設定にある iBGP の neighbor（BGP_PEER）の admin-state を disable / enable にする。使い方の表示に 3 つが載る",
-      f"set / network-instance default protocols bgp neighbor {labc['BGP_PEER']} peer-group overlay" in read("lab", "srlinux", labc["BGP_NODE"] + ".cli")
+      f"set / network-instance default protocols bgp neighbor {labc['BGP_PEER']} peer-group overlay" in read("app", "containerlab", "srlinux", labc["BGP_NODE"] + ".cli")
       and '"set / network-instance default protocols bgp neighbor $BGP_PEER admin-state $1" "commit now"' in lab
       and all(f"\n    bgp_admin {s}\n" in lab for s in ("disable", "enable"))
       and all(f"\n  {c})\n" in lab for c in ("fail-bgp", "heal-bgp", "trap-test"))
@@ -987,7 +988,7 @@ _ba = lab[lab.index("\nbgp_admin() {"):lab.index("\n}\n", lab.index("\nbgp_admin
 check("lab.sh の fail-bgp / heal-bgp は commit のあと state の admin-state を読み直し、変わっていなければ 1 で止まる（sr_cli の終了コードに頼らない。grep -q は pipe に繋がない）",
       '"info from state / network-instance default protocols bgp neighbor $BGP_PEER admin-state")' in _ba
       and 'grep -qw "admin-state $1" <<<"$st" || {' in _ba and _ba.rstrip().endswith("exit 1; }") and "| grep" not in _ba)
-_dm = dict(kv.split("=") for kv in subprocess.run([sys.executable, os.path.join(ROOT, "lab", "lab_topology.py"), os.path.join(ROOT, "lab"), "--device-map"],
+_dm = dict(kv.split("=") for kv in subprocess.run([sys.executable, os.path.join(ROOT, "app", "containerlab", "lab_topology.py"), os.path.join(ROOT, "app", "containerlab"), "--device-map"],
                                                    capture_output=True, text=True, check=True).stdout.strip().split(","))
 check("lab.sh の trap-test の OID は Splunk の netops_trap も Grafana の trap ルールも除かない（どちらも kind = trap）。管理ネットワークの中（ACC_VM の netns）から"
       "機器の trap と同じ $MGMT_GW:162 へ送り、送り元の管理 IP は device map で ACC_VM になる",

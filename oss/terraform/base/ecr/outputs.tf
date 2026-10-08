@@ -1,1 +1,0 @@
-../../../../terraform/base/ecr/outputs.tf

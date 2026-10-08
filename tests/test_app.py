@@ -1,4 +1,4 @@
-"""agent/app.py の模擬テスト。boto3 のクライアントと bedrock_agentcore を差し替えて、AWS に触れずに流れを確かめる。
+"""app/agentcore/app.py の模擬テスト。boto3 のクライアントと bedrock_agentcore を差し替えて、AWS に触れずに流れを確かめる。
 
 Strands Agents（strands.Agent / BedrockModel）は本物のまま動かす。BedrockModel が作る bedrock-runtime のクライアントを
 FakeClient にすり替えるので、Strands が Converse に渡す中身（messages / toolConfig / guardrailConfig）をそのまま見られる。
@@ -8,8 +8,8 @@ import copy, importlib.util, os, re, sys, time, types
 import boto3
 from botocore.exceptions import BotoCoreError as _BotoCoreError, ClientError as _ClientError
 
-# 引数が無ければ agent/app.py を読む。実行は uv run python tests/test_app.py（docs/development.md「手元で確かめる」）
-APP_PATH = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "agent", "app.py")
+# 引数が無ければ app/agentcore/app.py を読む。実行は uv run python tests/test_app.py（docs/development.md「手元で確かめる」）
+APP_PATH = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "app", "agentcore", "app.py")
 # app.py は同じディレクトリの topology.py を import する（PyYAML が要る: uv sync --group dev）
 sys.path.insert(0, os.path.dirname(os.path.abspath(APP_PATH)))
 
@@ -127,7 +127,7 @@ state.update(retrieve=RET, converse=BotoCoreError("x"), calls=[])
 r = app.invoke({"prompt": "q"})
 check("Converse 失敗は error で履歴に残らない", r["status"] == "error" and len(app.history) == n)
 
-# KNOWLEDGE_BASE_ID が空（terraform/agent の create_knowledge_base = false。既定）なら Retrieve を呼ばずに答える
+# KNOWLEDGE_BASE_ID が空（IaC/terraform/aws-managed/agent の create_knowledge_base = false。既定）なら Retrieve を呼ばずに答える
 app_nokb = load(kb="")
 state.update(retrieve=ClientError("must not be called"), converse=ok_converse("資料なしの回答"), calls=[])
 r = app_nokb.invoke({"prompt": "q"})
@@ -293,7 +293,7 @@ check("link_choices の値は remove_link の引数に戻せる", all(v.count("|
 check("異常一覧のモジュールとツールはもう無い（app.run_tool は unknown を返す）",
       not hasattr(app, "anomalies") and "unknown" in app.run_tool("list_anomalies", {"status": "open"})["error"] and app.run_tool("list_devices", {})["count"] == 8)
 check("app.run_tool は layers を topology に振る", app.run_tool("layers", {"device_id": "dc1-leaf-01", "layer": "ip"})["count"] == 5)
-check("app.run_tool は list_proposals を proposals に振る（Athena の設定が無いので案内）", "terraform/workflow" in app.run_tool("list_proposals", {})["error"])
+check("app.run_tool は list_proposals を proposals に振る（Athena の設定が無いので案内）", "IaC/terraform/aws-managed/workflow" in app.run_tool("list_proposals", {})["error"])
 # 過去の経緯・修復履歴・状態に答えられるようにした（2026-09-18）。2026-10-02 から「いまの異常」は機器・回線・層の status で答える
 check("system prompt はいまの異常 → status、履歴 → list_proposals、アラートの履歴 → query_history（Grafana / Splunk の通知）、承認はしない、と言う",
       "status（UP 以外）" in app.SYSTEM_PROMPT and "list_proposals" in app.SYSTEM_PROMPT and "アラートの履歴は query_history（Grafana / Splunk" in app.SYSTEM_PROMPT
@@ -506,9 +506,9 @@ toolkit._clients.pop("athena", None)
 
 # ---- 修復案（S3 Tables の proposal_events を Athena で読み、承認・却下は決定のキューに送る。2026-10-05）
 import json, proposals  # noqa: E402,E401 - app.py が import した同じモジュール
-_rules_spec = importlib.util.spec_from_file_location("wf_rules", os.path.join(os.path.dirname(__file__), "..", "workflow", "rules.py"))
+_rules_spec = importlib.util.spec_from_file_location("wf_rules", os.path.join(os.path.dirname(__file__), "..", "app", "temporal", "rules.py"))
 wf_rules = importlib.util.module_from_spec(_rules_spec); _rules_spec.loader.exec_module(wf_rules)
-check("proposals.COLUMNS は workflow/rules.py の PROPOSAL_EVENT_COLUMNS と同じ名前・同じ順（列を足したら両方）",
+check("proposals.COLUMNS は app/temporal/rules.py の PROPOSAL_EVENT_COLUMNS と同じ名前・同じ順（列を足したら両方）",
       proposals.COLUMNS == tuple(n for n, _ in wf_rules.PROPOSAL_EVENT_COLUMNS)
       and set(proposals.TIME_COLUMNS) == {n for n, t in wf_rules.PROPOSAL_EVENT_COLUMNS if t == "timestamptz"})
 
@@ -638,7 +638,7 @@ check("decide は pending を確かめてから、決定のキューに type dec
       and isinstance(_body.get("sent_at"), int) and fa.started()[0]["ExecutionParameters"] == [f"'{PID}'"])
 check("decide の返り値は status が sent（まだ approved ではない。行はワーカーがシグナルを受けて足す）",
       r == {"proposal_id": PID, "status": "sent", "decision": "approved", "decided_by": "山田 (web)", "sent_at": _body["sent_at"]})
-check("送った本文は workflow/rules.py の decision_from_message が読める（同じ形）",
+check("送った本文は app/temporal/rules.py の decision_from_message が読める（同じ形）",
       wf_rules.decision_from_message(fs.sent[0]["MessageBody"]) == {"proposal_id": PID, "decision": "approved", "decided_by": "山田 (web)", "decided_at": _body["sent_at"]})
 for _st in ("approved", "verified", "expired"):
     toolkit._clients["athena"] = fa = FakeAthena(rows=[prow(_st, 2, _st)])

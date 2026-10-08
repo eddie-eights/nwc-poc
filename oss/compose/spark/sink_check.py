@@ -1,4 +1,4 @@
-"""005 ステップ 1 の 5: EMR を使わない Spark 3.5（spark-submit --master local[2]）で、spark/snmp_sinks.py の読み方と送り方のまま
+"""005 ステップ 1 の 5: EMR を使わない Spark 3.5（spark-submit --master local[2]）で、app/spark/snmp_sinks.py の読み方と送り方のまま
 compose の Kafka から読み、OpenSearch と vminsert へ書けるか。
 
 snmp_sinks.py は MSK の IAM 認証と SigV4（AMP / OpenSearch Serverless）に決め打ちなので、ここだけ差し替える:
@@ -9,7 +9,7 @@ snmp_sinks.py は MSK の IAM 認証と SigV4（AMP / OpenSearch Serverless）�
 Iceberg は手元の Hadoop カタログ（file://）に iceberg_query のまま書く。S3 Tables は AWS に届かないネットワークの中なので、
 jar のクラスが読めるかと、カタログを開いたときにどこで止まるかだけを見る。
 
-使い方: oss/compose/check-spark.sh から spark-submit で起こす（compose の spark コンテナの中。spark/ は /opt/check、ここは /opt/oss）。
+使い方: oss/compose/check-spark.sh から spark-submit で起こす（compose の spark コンテナの中。app/spark/ は /opt/check、ここは /opt/oss）。
 コンテナの Python は 3.10（apache/spark:3.5.9-java17-python3）なので、f 文字列の {} の中にバックスラッシュを書かない
 """
 import base64
@@ -207,7 +207,7 @@ def main():
     from pyspark.sql import SparkSession
 
     spark = (SparkSession.builder.appName("oss_sink_check")
-             # EMR Serverless の job の設定（terraform/pipeline/analytics/outputs.tf）と同じ Iceberg の拡張
+             # EMR Serverless の job の設定（IaC/terraform/aws-managed/pipeline/analytics/outputs.tf）と同じ Iceberg の拡張
              .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
              # 手元の Iceberg（Hadoop カタログ。ファイルはコンテナの /tmp）
              .config("spark.sql.catalog.local", "org.apache.iceberg.spark.SparkCatalog")

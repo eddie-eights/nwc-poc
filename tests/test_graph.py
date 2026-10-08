@@ -1,8 +1,8 @@
-"""agent/graph.py と topology.py の Neptune 経路の模擬テスト。boto3 を差し替え、送った openCypher（クエリとパラメータ）と読み替えを確かめる。
+"""app/agentcore/graph.py と topology.py の Neptune 経路の模擬テスト。boto3 を差し替え、送った openCypher（クエリとパラメータ）と読み替えを確かめる。
 実行は python3 tests/test_graph.py（PyYAML が要る）。"""
 import importlib.util, io, json, os, sys, types
 
-AGENT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "agent")
+AGENT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app", "agentcore")
 sys.path.insert(0, AGENT)
 
 class ClientError(Exception):
@@ -193,9 +193,9 @@ reset(**{"count(": [{"n": 3}]})
 check("count は登録済みの機器・IF・回線、上の層の頂点と辺、未登録の頂点を数える", graph.count() == {"devices": 3, "interfaces": 3, "links": 3, "layers": 15, "layer_edges": 3, "unregistered": 3}
       and state["queries"][0] == "MATCH (n:device) WHERE n.registered IS NULL RETURN count(n) AS n" and state["queries"][-1] == "MATCH (n) WHERE n.registered = false RETURN count(n) AS n"
       and "MATCH (n:`bgp_session`) WHERE n.registered IS NULL RETURN count(n) AS n" in state["queries"] and len(state["queries"]) == 10)
-spec = importlib.util.spec_from_file_location("lab_topology", os.path.join(AGENT, "..", "lab", "lab_topology.py"))
+spec = importlib.util.spec_from_file_location("lab_topology", os.path.join(AGENT, "..", "containerlab", "lab_topology.py"))
 lt = importlib.util.module_from_spec(spec); spec.loader.exec_module(lt)
-lab_devices, lab_links, lab_layers = lt.load(os.path.join(AGENT, "..", "lab"))
+lab_devices, lab_links, lab_layers = lt.load(os.path.join(AGENT, "..", "containerlab"))
 n_if = sum(len(x["interfaces"]) for x in lab_devices)
 placeholders = [{"id": "dc1-leaf-01", "label": "device", "registered": False, "role": "unknown", "status": "ALARM"},
                 {"id": "dc1-leaf-01#ethernet-1/1", "label": "interface", "registered": False, "device_id": "dc1-leaf-01", "name": "ethernet-1/1", "status": "DOWN"},
@@ -334,7 +334,7 @@ reset(**{DEV: [], IFS: [], LINKS: [], "WHERE id(n) IN $ids RETURN id(n) AS id": 
 r = graph.sync_physical([], [{"a": "x", "a_if": "e", "b": "y", "b_if": "e"}])
 check("端の機器が無い回線は張らずに skipped に理由を出す", r["added"] == 0 and len(r["skipped"]) == 1 and "機器が無い" in r["skipped"][0])
 
-# ---- 動的な状態（graph/status_handler.py が呼ぶ）
+# ---- 動的な状態（app/graph/status_handler.py が呼ぶ）
 EDGE_ST = "MATCH (a)-[l:link]->(b) WHERE (id(a) = $dev AND l.a_if = $ifn) OR (id(b) = $dev AND l.b_if = $ifn) SET l.status = $st RETURN count(l) AS n"
 V_ST = "MATCH (n) WHERE id(n) = $id SET n.status = $st RETURN n.registered AS registered"
 reset(**{"count(l)": [{"n": 1}], SET_ST: [{"registered": None}]})
@@ -372,7 +372,7 @@ check("トポロジに無いインタフェースの異常は、機器（無け�
 reset(**{"count(l)": [{"n": 0}], SET_ST: []})
 r = graph.set_status("zz-ce-09", "eth1", "UP")
 check("UP に戻すだけのときは未登録の頂点を作らない", "unregistered" not in r and not any("MERGE" in q for q in state["queries"]))
-# 上の層の動的な状態（bgp_down / isis_down。graph/status_handler.py が set_layer_status を呼ぶ）
+# 上の層の動的な状態（bgp_down / isis_down。app/graph/status_handler.py が set_layer_status を呼ぶ）
 reset(**{SET_ST: [{"registered": None}]})
 check("set_layer_status は <機器>#bgp#<相手の IP> の bgp_session の頂点に書く",
       graph.set_layer_status("dc1-leaf-01", "bgp", "10.255.0.1", "DOWN") == {"device_id": "dc1-leaf-01", "kind": "bgp", "target": "10.255.0.1", "status": "DOWN", "updated": 1}

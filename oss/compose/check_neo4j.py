@@ -1,6 +1,6 @@
 """005 ステップ 1 の 4: Neo4j Community Edition + GDS（jar はイメージに焼き込み。起動時のダウンロードなし）。
 
-agent/data の静的データ（ops/seed_graph.py が Neptune に入れるのと同じ機器と回線）を入れ、agent/graph.py の centrality() と同じ
+app/agentcore/data の静的データ（ops/seed_graph.py が Neptune に入れるのと同じ機器と回線）を入れ、app/agentcore/graph.py の centrality() と同じ
 3 つ（degree は両向き、closeness、wcc）を GDS で出す。島の数が 1 になるか。
 同じグラフを素の Python（幅優先探索）でも計算し、順位と島の数を突き合わせる（Neptune の値は手元に無いので、定義どおりの値と比べる）。
 
@@ -13,7 +13,7 @@ import subprocess
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(HERE, "..", "..", "agent", "data")
+DATA = os.path.join(HERE, "..", "..", "app", "agentcore", "data")
 PASSWORD = "NwcOss-Trial-2026"   # compose.yaml の試し用の値
 
 
@@ -30,7 +30,7 @@ def cypher(q):
 
 
 def load():
-    """topology.json の機器と回線（agent/topology.py の load_static と同じ。devices.yaml の機器は topology.json の nodes と同じ顔ぶれ）"""
+    """topology.json の機器と回線（app/agentcore/topology.py の load_static と同じ。devices.yaml の機器は topology.json の nodes と同じ顔ぶれ）"""
     with open(os.path.join(DATA, "topology.json"), encoding="utf-8") as f:
         topo = json.load(f)
     devices = [n["device_id"] for n in topo["nodes"]]
@@ -85,7 +85,7 @@ def main():
     cypher(f"UNWIND {rows} AS r MATCH (a:device {{id: r.a}}), (b:device {{id: r.b}}) CREATE (a)-[:link]->(b);")
     print("  ", cypher("MATCH (n:device) WITH count(n) AS devices MATCH ()-[l:link]->() RETURN devices, count(l) AS links;").splitlines()[1:])
 
-    print("== GDS（agent/graph.py の centrality と同じ 3 つ。回線は向きなしで投影）")
+    print("== GDS（app/agentcore/graph.py の centrality と同じ 3 つ。回線は向きなしで投影）")
     cypher("CALL gds.graph.drop('net', false) YIELD graphName RETURN graphName;")
     cypher("CALL gds.graph.project('net', 'device', {link: {orientation: 'UNDIRECTED'}}) YIELD nodeCount, relationshipCount RETURN nodeCount, relationshipCount;")
     got = {}

@@ -27,7 +27,7 @@ x-kafka-env: &kafka-env
   KAFKA_LOG_DIRS: /var/lib/kafka/data
   KAFKA_DEFAULT_REPLICATION_FACTOR: 3
   KAFKA_MIN_INSYNC_REPLICAS: 2
-  KAFKA_NUM_PARTITIONS: 2   # MSK の configuration（terraform/pipeline/stream/msk.tf の num.partitions=2）と同じ。Spark の ensure_topics はこの既定で作る
+  KAFKA_NUM_PARTITIONS: 2   # MSK の configuration（IaC/terraform/aws-managed/pipeline/stream/msk.tf の num.partitions=2）と同じ。Spark の ensure_topics はこの既定で作る
   KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
   KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
   KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
@@ -165,7 +165,7 @@ services:
       AWS_REGION: ap-northeast-1
     # ファイルでなくディレクトリでつなぐ（ファイル 1 つだと、手元で書き換えたときにコンテナから古いファイルが消えて見えなくなる）
     volumes:
-      - ../../spark:/opt/check:ro
+      - ../../app/spark:/opt/check:ro
       - ./spark:/opt/oss:ro
     entrypoint: ["sleep", "infinity"]
 

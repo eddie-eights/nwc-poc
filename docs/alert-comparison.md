@@ -43,7 +43,7 @@
 | `bgp_down` / `isis_down` | 状態が文字列（`established` / `up` など）で、Prometheus に入らない。Spark が 1（正常）/ 0（それ以外）の系列に直す。機器名も無いので、Spark が device map で `sysName` を足す | 整形は要らない。文字列のまま読む。送り元の IP は、アラートアクションが `DEVICE_MAP` で機器名に直す |
 | `trap` | 機器名が無いので、Spark が OpenSearch の文書に `tags.sysName` を足す。まとめる数に上限がある（機器 50 × OID 20） | 整形は要らない。解消を出すためのサーチ（`netops_trap_clear`）がもう 1 本要る |
 
-Spark の整形の中身（`spark/snmp_sinks.py`）:
+Spark の整形の中身（`app/spark/snmp_sinks.py`）:
 
 | 整形 | 中身 | 行き先 |
 |---|---|---|
@@ -90,7 +90,7 @@ date -u +%FT%TZ
 
 「アラートの履歴を残す（001）」で作った履歴を読む。**下のクエリそのものは、まだ実行していない**（2026-10-05 の動作確認では、異常の id・`status`・`source` ごとに最初の `received_at` を取るだけの集計を打った）。
 
-読むのは S3 Tables の `alert_events`。中身は、Lambda `<prefix>-graph-status` が受けたアラートの通知 1 件ごとの行（送り手 `source`、異常の id `anomaly_id`、`status`、説明 `detail`、送り手の `starts_at`、Lambda が受けた時刻 `received_at`）。Athena のワークグループは `<prefix>-history`、カタログは `s3tablescatalog/<テーブルバケットの名前>`（`terraform/pipeline/analytics/history.tf`）。
+読むのは S3 Tables の `alert_events`。中身は、Lambda `<prefix>-graph-status` が受けたアラートの通知 1 件ごとの行（送り手 `source`、異常の id `anomaly_id`、`status`、説明 `detail`、送り手の `starts_at`、Lambda が受けた時刻 `received_at`）。Athena のワークグループは `<prefix>-history`、カタログは `s3tablescatalog/<テーブルバケットの名前>`（`IaC/terraform/aws-managed/pipeline/analytics/history.tf`）。
 
 1 回の試行ごとに、控えた時刻で範囲を絞って打つ。
 
