@@ -322,3 +322,5 @@ None
 - N1（`docs/oss-variant.md:102` の 2026-10-08 の検証結果の行）: S1 と同じ理由で `oss/ops/down.sh` に戻す（過去の実測の記録）。検証 4 の除外に足した
 - N2（`tests/test_lab_debug.py:474` のメッセージ）: 直さない（方針 6・7 どおり）
 - N3（source 先を起動して確かめる test）: 直さない（方針 6・7 どおり。リスク 1 のまま）
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261009-cycle-017-tidy-root-review.html -->
