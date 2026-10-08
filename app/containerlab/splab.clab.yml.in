@@ -4,16 +4,17 @@
 # これはテンプレート。__SRLINUX_IMAGE__ などは lab.sh render が ECR の URI に置き換えて splab.clab.yml を作る。
 # スイッチは Nokia SR Linux（kind nokia_srlinux、type ixr-d2l = ライセンス不要。SR-MPLS にするときは ixr6e + ライセンス）。
 # 設定は srlinux/<機器名>.cli（`set /` の行だけ。containerlab が candidate に流して commit save する）。
-# SNMP（v2c、community public）と gNMI（57400、TLS）は containerlab が全ノードで有効にする。6 台とも trap（linkDown / linkUp）と
+# SNMP（v2c、community public）と gNMI（57400、TLS）は containerlab が SR Linux で有効にする。SR Linux 6 台とも trap（linkDown / linkUp）と
 # syslog の宛先を 203.0.113.1（この管理網の EC2 側）に向け、lab.sh forward がそれを Telegraf（ECS）の NLB へ DNAT する。
 #
-#   wan-upstream-01 ═══ dc1-leafsw-01 / dc1-leafsw-02   （LACP の bond0。leafsw 側は lag1 + EVPN multihoming ES-1）
+#               dc1-s-leaf-01 / dc1-s-leaf-02        （s-leaf。WAN 側）
 #                          ╲  ╳  ╱
 #                   dc1-spine-01 ... dc1-spine-0N        （full mesh。/31 + IS-IS）
 #                          ╱  ╳  ╲
-#   dc1-host-01     ═══ dc1-leaf-01 / dc1-leaf-02       （LACP の bond0。leaf 側は lag1 + EVPN multihoming ES-2）
+#               dc1-a-leaf-01 / dc1-a-leaf-02        （a-leaf。DC 側）
+#   dc1-trex-01: eth1〜eth4 を各 leaf の e1-3 へ 1 本ずつ（leaf 側は mac-vrf の素の subinterface。LAG / ES は無い）
 #
-# 機器名は <site>-<role>-<連番2桁>（role = leafsw / spine / leaf / upstream / host）。SR Linux の host-name（= SNMP の sysName、syslog の
+# 機器名は <site>-<role>-<連番2桁>（role = s-leaf / spine / a-leaf / trex）。SR Linux の host-name（= SNMP の sysName、syslog の
 # hostname）も同じ値なので、collector は SNMP 側の sysName で機器を突き合わせられる。
 # インタフェースは containerlab の endpoints では e1-N、SR Linux の設定と ifTable（ifName）では ethernet-1/N。lab_topology.py が読み替える。
 name: splab
@@ -37,18 +38,18 @@ topology:
       image: __MULTITOOL_IMAGE__
 
   nodes:
-    # ---------- Leaf-SW（上流側） ----------
-    dc1-leafsw-01:
+    # ---------- s-leaf（WAN 側） ----------
+    dc1-s-leaf-01:
       kind: nokia_srlinux
-      group: leafsw
+      group: s-leaf
       mgmt-ipv4: 203.0.113.11
-      startup-config: srlinux/dc1-leafsw-01.cli
+      startup-config: srlinux/dc1-s-leaf-01.cli
 
-    dc1-leafsw-02:
+    dc1-s-leaf-02:
       kind: nokia_srlinux
-      group: leafsw
+      group: s-leaf
       mgmt-ipv4: 203.0.113.12
-      startup-config: srlinux/dc1-leafsw-02.cli
+      startup-config: srlinux/dc1-s-leaf-02.cli
 
     # ---------- Spine（EVPN のルートリフレクタ） ----------
     dc1-spine-01:
@@ -63,58 +64,44 @@ topology:
       mgmt-ipv4: 203.0.113.22
       startup-config: srlinux/dc1-spine-02.cli
 
-    # ---------- Leaf（アクセス側） ----------
-    dc1-leaf-01:
+    # ---------- a-leaf（DC 側） ----------
+    dc1-a-leaf-01:
       kind: nokia_srlinux
-      group: leaf
+      group: a-leaf
       mgmt-ipv4: 203.0.113.31
-      startup-config: srlinux/dc1-leaf-01.cli
+      startup-config: srlinux/dc1-a-leaf-01.cli
 
-    dc1-leaf-02:
+    dc1-a-leaf-02:
       kind: nokia_srlinux
-      group: leaf
+      group: a-leaf
       mgmt-ipv4: 203.0.113.32
-      startup-config: srlinux/dc1-leaf-02.cli
+      startup-config: srlinux/dc1-a-leaf-02.cli
 
-    # ---------- VM（linux。eth1 / eth2 を LACP の bond0 にまとめて leaf の組へ dual-home。EC2 側に bonding モジュールが要る）----------
-    wan-upstream-01:
+    # ---------- TRex（linux。af_packet でポートを直接使うので privileged。本体は lab.sh trex start で起こす）----------
+    dc1-trex-01:
       kind: linux
-      group: upstream
+      image: __TREX_IMAGE__
+      group: trex
       mgmt-ipv4: 203.0.113.101
+      privileged: true
       exec:
-        - ip link add bond0 type bond mode 802.3ad miimon 100 lacp_rate fast
-        - ip link set eth1 down
-        - ip link set eth1 master bond0
-        - ip link set eth2 down
-        - ip link set eth2 master bond0
-        - ip link set bond0 up
-        - ip addr add 10.100.0.10/24 dev bond0
-
-    dc1-host-01:
-      kind: linux
-      group: host
-      mgmt-ipv4: 203.0.113.102
-      exec:
-        - ip link add bond0 type bond mode 802.3ad miimon 100 lacp_rate fast
-        - ip link set eth1 down
-        - ip link set eth1 master bond0
-        - ip link set eth2 down
-        - ip link set eth2 master bond0
-        - ip link set bond0 up
-        - ip addr add 10.100.0.20/24 dev bond0
+        - ip link set eth1 up
+        - ip link set eth2 up
+        - ip link set eth3 up
+        - ip link set eth4 up
 
   links:
-    # fabric（spine - leaf / leafsw の /31。SR Linux 側の e1-N は設定の ethernet-1/N）
-    - endpoints: ["dc1-spine-01:e1-1", "dc1-leafsw-01:e1-1"]   # 172.16.0.0/31 - 172.16.0.1/31
-    - endpoints: ["dc1-spine-01:e1-2", "dc1-leafsw-02:e1-1"]   # 172.16.0.2/31 - 172.16.0.3/31
-    - endpoints: ["dc1-spine-01:e1-3", "dc1-leaf-01:e1-1"]   # 172.16.0.4/31 - 172.16.0.5/31
-    - endpoints: ["dc1-spine-01:e1-4", "dc1-leaf-02:e1-1"]   # 172.16.0.6/31 - 172.16.0.7/31
-    - endpoints: ["dc1-spine-02:e1-1", "dc1-leafsw-01:e1-2"]   # 172.16.0.8/31 - 172.16.0.9/31
-    - endpoints: ["dc1-spine-02:e1-2", "dc1-leafsw-02:e1-2"]   # 172.16.0.10/31 - 172.16.0.11/31
-    - endpoints: ["dc1-spine-02:e1-3", "dc1-leaf-01:e1-2"]   # 172.16.0.12/31 - 172.16.0.13/31
-    - endpoints: ["dc1-spine-02:e1-4", "dc1-leaf-02:e1-2"]   # 172.16.0.14/31 - 172.16.0.15/31
-    # VM の LAG（各 VM から leaf の組へ 2 本）
-    - endpoints: ["wan-upstream-01:eth1", "dc1-leafsw-01:e1-3"]   # wan-upstream-01 bond0 (LACP) member 1
-    - endpoints: ["wan-upstream-01:eth2", "dc1-leafsw-02:e1-3"]   # wan-upstream-01 bond0 (LACP) member 2
-    - endpoints: ["dc1-host-01:eth1", "dc1-leaf-01:e1-3"]   # dc1-host-01 bond0 (LACP) member 1
-    - endpoints: ["dc1-host-01:eth2", "dc1-leaf-02:e1-3"]   # dc1-host-01 bond0 (LACP) member 2
+    # fabric（spine - a-leaf / s-leaf の /31。SR Linux 側の e1-N は設定の ethernet-1/N）
+    - endpoints: ["dc1-spine-01:e1-1", "dc1-s-leaf-01:e1-1"]   # 172.16.0.0/31 - 172.16.0.1/31
+    - endpoints: ["dc1-spine-01:e1-2", "dc1-s-leaf-02:e1-1"]   # 172.16.0.2/31 - 172.16.0.3/31
+    - endpoints: ["dc1-spine-01:e1-3", "dc1-a-leaf-01:e1-1"]   # 172.16.0.4/31 - 172.16.0.5/31
+    - endpoints: ["dc1-spine-01:e1-4", "dc1-a-leaf-02:e1-1"]   # 172.16.0.6/31 - 172.16.0.7/31
+    - endpoints: ["dc1-spine-02:e1-1", "dc1-s-leaf-01:e1-2"]   # 172.16.0.8/31 - 172.16.0.9/31
+    - endpoints: ["dc1-spine-02:e1-2", "dc1-s-leaf-02:e1-2"]   # 172.16.0.10/31 - 172.16.0.11/31
+    - endpoints: ["dc1-spine-02:e1-3", "dc1-a-leaf-01:e1-2"]   # 172.16.0.12/31 - 172.16.0.13/31
+    - endpoints: ["dc1-spine-02:e1-4", "dc1-a-leaf-02:e1-2"]   # 172.16.0.14/31 - 172.16.0.15/31
+    # TRex のポート（各 leaf へ 1 本）
+    - endpoints: ["dc1-trex-01:eth1", "dc1-s-leaf-01:e1-3"]   # TRex port 0 (eth1) - dc1-s-leaf-01 mac-vrf
+    - endpoints: ["dc1-trex-01:eth2", "dc1-s-leaf-02:e1-3"]   # TRex port 1 (eth2) - dc1-s-leaf-02 mac-vrf
+    - endpoints: ["dc1-trex-01:eth3", "dc1-a-leaf-01:e1-3"]   # TRex port 2 (eth3) - dc1-a-leaf-01 mac-vrf
+    - endpoints: ["dc1-trex-01:eth4", "dc1-a-leaf-02:e1-3"]   # TRex port 3 (eth4) - dc1-a-leaf-02 mac-vrf

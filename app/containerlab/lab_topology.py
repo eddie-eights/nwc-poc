@@ -2,30 +2,30 @@
 
 設計の「静的なトポロジ構成の取得・同期（初期 & 定期ロード）」の PoC 版。実機なら LLDP / BGP / NETCONF / gNMI で取るところを、
 PoC では機器の定義そのもの（splab.clab.yml.in の nodes / links と srlinux/<機器>.cli。どちらも app/containerlab/gen_lab.py が作る）から取る。
-出す形は app/agentcore/data（devices.yaml + topology.json + layers.json）と同じで、graph.seed() にそのまま渡せる。app/agentcore/data と同じ 8 台・12 本になることは
+出す形は app/agentcore/data（devices.yaml + topology.json + layers.json）と同じで、graph.seed() にそのまま渡せる。app/agentcore/data と同じ 7 台・12 本になることは
 tests/test_sync.py が確かめる（lab を変えて app/agentcore/data を直し忘れるとテストが落ちる）。
 
 読むもの:
-  - nodes: 名前 <拠点>-<役割>-<連番>（拠点と役割は名前から。group は使わない。役割は leafsw / spine / leaf / upstream / host）、mgmt-ipv4 → mgmt_ip、
+  - nodes: 名前 <拠点>-<役割>-<連番>（拠点と役割は名前から。group は使わない。役割は s-leaf / spine / a-leaf / trex。役割にはハイフンが入る）、mgmt-ipv4 → mgmt_ip、
     srlinux/<機器>.cli に `set / system snmp` がある機器 → enabled（SNMP と gNMI の監視対象。スイッチ 6 台全部）
   - links: endpoints ["x:e1-N", "y:ethM"] → 回線（a < b に正規化）。SR Linux の e1-N は設定と ifTable（ifName）の ethernet-1/N に読み替える
   - srlinux/<機器>.cli: `protocols bgp autonomous-system <ASN>` → asn、`interface ethernet-1/N description` → 主/副（primary / secondary）と
     帯域（… 1G / 100M / 25G）、`subinterface 0 ipv4 address` → そのインタフェースのアドレス、`system name host-name` → 別名、
-    `ethernet aggregate-id lagN` → そのインタフェースが入る LAG（lag）
+    `ethernet aggregate-id lagN` → そのインタフェースが入る LAG（lag。いまの lab には LAG が無い）
   - nodes の exec の `ip addr add <アドレス>/<長さ> dev ethN`（VM 側）→ そのインタフェースのアドレス、`ip link set ethN master bond0` → lag
-  - 回線の種別: spine が付くなら fabric（IS-IS の p2p）、VM が付いて LAG に入る IF なら lag、それ以外は l2
+  - 回線の種別: spine が付くなら fabric（IS-IS の p2p）、VM（TRex）が付いて LAG に入る IF なら lag、それ以外は l2（TRex のポートと leaf の ethernet-1/3）
 
 物理層より上（layers。--layers か JSON の "layers"）は同じ .cli から作る。頂点の id は「機器#種類#対象」で、下の層の id を property に持つ（層をまたぐ紐づけの鍵）:
   - ip_interface   <機器>#<IF>.<n>        interface_id（物理 IF の頂点）、address / prefix_length / network_instance          辺 over → interface
   - isis_adjacency <機器>#isis#<IF>.<n>   ip_interface_id、instance、peer_device                                            辺 over → ip_interface、peer ↔ 相手側
   - bgp_session    <機器>#bgp#<相手の IP>  ip_interface_id（ループバック system0.0）、peer_device、group、afi、asn / peer_as  辺 over → ip_interface、peer ↔ 相手側
-  - evpn_instance  <機器>#evi#<EVI>       ip_interface_id（VTEP）、network_instance、vni、route_target、interfaces           辺 over → ip_interface、attach → interface（LAG）、tunnel ↔ 同じ EVI
-  - ethernet_segment <機器>#es#<名前>     interface_id（LAG）、esi、mode                                                     辺 over → interface、segment ↔ 同じ ESI
+  - evpn_instance  <機器>#evi#<EVI>       ip_interface_id（VTEP）、network_instance、vni、route_target、interfaces           辺 over → ip_interface、attach → interface（mac-vrf に付く IF）、tunnel ↔ 同じ EVI
+  - ethernet_segment <機器>#es#<名前>     interface_id（LAG）、esi、mode                                                     辺 over → interface、segment ↔ 同じ ESI（いまの lab には ES が無いので 0 個）
   頂点の property layer は ip（ip_interface / isis_adjacency）か evpn（bgp_session / evpn_instance / ethernet_segment）。
   検知は bgp_session と isis_adjacency の status に書く（app/graph/status_handler.py の bgp_down / isis_down → graph.set_layer_status）。
 
 機器ごとに、回線の端だけでなく機器が持つインタフェースを全部（interfaces。containerlab の管理 IF（SR Linux は mgmt0、VM は eth0）、
-SR Linux の interface（lag1 も）、exec でアドレスを振る IF。system0 / lo0 は除く）と、機器を指す別名（aliases。device_id / hostname / 管理 IP /
+SR Linux の interface、exec でアドレスを振る IF、回線の端の IF。system0 / lo0 は除く）と、機器を指す別名（aliases。device_id / hostname / 管理 IP /
 全インタフェースとループバックのアドレス。小文字）を付ける。
 検知（Grafana / Splunk のアラート）とトポロジ（Neptune）で機器とインタフェースの名前が合わずに異常がどこにも付かない、を減らすため。
 機器の一覧はここ（lab の定義）1 か所にし、Telegraf のポーリング先と gNMI の接続先、device map（Splunk のアラートアクションの DEVICE_MAP と Spark の --device-map）もここから作る（ops/up.sh）。
@@ -48,7 +48,7 @@ EXEC_ADDR_RE = re.compile(r"^ip addr(?:ess)? add (\S+?)(?:/\d+)? dev (\S+)")
 EXEC_MASTER_RE = re.compile(r"^ip link set (\S+) master (\S+)")   # VM の bond（LACP）のメンバー
 MGMT_IF = {"nokia_srlinux": "mgmt0"}   # containerlab が管理ネットワークにつなぐ IF（kind ごと。それ以外は eth0）
 MGMT_IF_DEFAULT = "eth0"
-VM_ROLES = {"host", "upstream"}   # スイッチでない（linux kind の）ノードの役割
+VM_ROLES = {"trex"}   # スイッチでない（linux kind の）ノードの役割。SNMP / gNMI の対象外
 SNMP_PORT = 161       # SR Linux の SNMP サーバ（containerlab が network-instance mgmt で有効にする）
 GNMI_PORT = 57400     # SR Linux の gNMI サーバ（同じく containerlab が有効にする。TLS、admin / NokiaSrl1!）
 TOPO_FILE = "splab.clab.yml.in"
@@ -290,11 +290,11 @@ def link_role(description: str):
 
 # ---------------------------------------------------------------- 組み立て
 def split_name(name: str) -> tuple[str, str]:
-    """<拠点>-<役割>-<連番> → (拠点, 役割)。dc1-leafsw-01 → (dc1, leafsw)、wan-upstream-01 → (wan, upstream)"""
+    """<拠点>-<役割>-<連番> → (拠点, 役割)。先頭 1 語が拠点、末尾 1 語が連番、あいだ全部が役割。dc1-s-leaf-01 → (dc1, s-leaf)、dc1-trex-01 → (dc1, trex)"""
     parts = name.split("-")
     if len(parts) < 3:
         raise ValueError(f"機器名が <拠点>-<役割>-<連番> の形でない: {name}")
-    return "-".join(parts[:-2]), parts[-2]
+    return parts[0], "-".join(parts[1:-1])
 
 
 def _if_key(name: str):
