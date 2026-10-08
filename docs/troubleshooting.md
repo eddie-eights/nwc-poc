@@ -74,7 +74,7 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 | 症状 | 原因と直し方 |
 |---|---|
 | 回線を落としても Grafana のルール `link_down` が Normal のまま | まず `SNMP_POLL=1` か（既定は 1。`0` にしていると SNMP のポーリングをしないのでルールは発火しない。そのとき IF の up / down は Splunk（`STORES` の `splunk`）が trap からだけ知らせる）。通知まで 2 分ほどかかる（[pipeline.md](pipeline.md) の「アラート」の表）。それでも変わらなければ、Grafana の Explore で `snmp_interface_ifOperStatus` が来ているか見る（来ていなければ Telegraf か Spark。下の行と [pipeline.md](pipeline.md) の「Spark を確かめる」） |
-| `ops/up.sh` の最後に「Grafana のアラートルールの評価を確かめた結果が OK ではない」、またはデータは来ているのに Grafana のアラートが来ない | ルールの評価がエラーでも `KeepLast` で Normal に見える。`ops/check-grafana.sh`（OSS 版は `--oss`）で今の状態を見る。`エラー:` の行がエラーのルール。理由は `aws logs tail /ecs/<prefix>-grafana --since 1h --filter-pattern '"Failed to evaluate rule"'`（出なければ `'"level=error"'`）。`未確認（… 401` は admin のパスワードが SSM と違う（下の「Grafana に入れない」）、`確かめ始めてから評価されていないルール` は Grafana が起動中か止まっている。`エラーのあったルールのもう 1 回の評価を待っている` で終わったら打ち直す。OK でも、ルールの行の `alerts=` が `NoData` だけなら、ルールのクエリが何も返していない（エラーではないので OK になる。メトリクス名・インデックス・ラベルを見る）（[pipeline.md](pipeline.md) の「Grafana のアラート」） |
+| `ops/up.sh` の最後に「Grafana のアラートルールの評価を確かめた結果が OK ではない」か「確かめられなかった」、またはデータは来ているのに Grafana のアラートが来ない | ルールの評価がエラーでも `KeepLast` で Normal に見える。`ops/check-grafana.sh`（OSS 版は `--oss`）で今の状態を見る（終了コードは下の「`ops/check-grafana.sh` の終了コード」）。`エラー:` の行がエラーのルール。理由は `aws logs tail /ecs/<prefix>-grafana --since 1h --filter-pattern '"Failed to evaluate rule"'`（出なければ `'"level=error"'`）。`未確認（… 401` は admin のパスワードが SSM と違う（下の「Grafana に入れない」）、`確かめ始めてから評価されていないルール` は Grafana が起動中か止まっている。`エラーのあったルールのもう 1 回の評価を待っている` で終わったら打ち直す。「確かめられなかった」（未確認）は評価のエラーとは限らない。上の出力の理由（`判定: 未確認（…）`、`SSM Run Command を送れなかった`、`… 秒たっても分からない` など）を見て打ち直す。OK でも、ルールの行の `alerts=` が `NoData` だけなら、ルールのクエリが何も返していない（エラーではないので OK になる。メトリクス名・インデックス・ラベルを見る）（[pipeline.md](pipeline.md) の「Grafana のアラート」） |
 | Splunk のアラートが出ない | `STORES` に `splunk` があるか（既定で入っている。`STORES` を書いて外していないか）。Splunk の検索で `index=* source="telegraf:snmp_trap"`（ポーリングは `source="telegraf:interface"`。`SNMP_POLL=0` では来ない）にイベントが来ているか、保存済みサーチが動いたか（`index=_internal sourcetype=scheduler savedsearch_name=netops_*`）を見る（[pipeline.md](pipeline.md) の「Splunk のアラート」） |
 | アラートは出ているのに SNS に届かない（Grafana の Contact points の `nwc-sns` が失敗、Splunk の `sendmodalert` に `ERROR`） | タイムアウトなら `sns` のインターフェース型エンドポイント（手順 0 の一覧）。`AccessDenied` ならタスクロールの `sns:Publish` と、トピックのポリシー（VPC の外からの publish を拒む）。ログは `/ecs/<prefix>-grafana`、Splunk は検索 `index=_internal sourcetype=splunkd sendmodalert netops_sns` |
 | トポロジに赤い線が出ない | `/aws/lambda/<prefix>-graph-status` のログを見る。呼ばれていなければ送り手か SNS（上の 3 行）。`UNREGISTERED` の警告は、アラートの機器名・IF 名がトポロジに無い（Splunk なら IP を `DEVICE_MAP` で機器名に直せていない。lab に足した機器なら `ops/sync-graph.sh --replace`）。`読めないメッセージ（捨てる）` は本文の形が違う（[pipeline.md](pipeline.md) の「アラート」） |
@@ -98,6 +98,17 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 | 手順 7-4b で「Splunk が 20 分たっても HEALTHY にならない」 | ロググループ `/ecs/<prefix>-splunk` を見る。初回は設定の展開で 5〜10 分かかる（未確認）。ライセンスに同意していない旨で止まるならタスク定義の `SPLUNK_START_ARGS` / `SPLUNK_GENERAL_TERMS`。Spark のジョブはそのまま起きるので、Splunk が起きたあとで落ちていれば `ops/up.sh` を打ち直す |
 | 手順 7-4b で「search head の突き合わせ（app/splunk/peers_check.py）が 6 分たっても ok … にならない」/「まだ 1 回もしていない」 | クラスター（`SPLUNK_AZ_NUM` が 2 か 3）だけ。search head が、いまの indexer を全部は検索できていない。ロググループ `/ecs/<prefix>-splunk` のストリーム `splunk/…` で `nwc-peer-check` の最新の行を見る（`state=ok reason=peers_up:<数>` が正常。`mismatch` は古い indexer を覚えたまま、`degraded` は cluster manager が Up と言う indexer がタスク定義の数より少ない（`reason=peers_up:<Up の数>/<あるはずの数>`。止まっている indexer を見る）、`skip` は cluster manager に聞けていない、`error` は search head が自分の peers を読めていない）。indexer と cluster manager（`splunk-idx/…` / `splunk-cm/…`）が起きているかを見て、`ops/up.sh` を打ち直す。2026-10-05 の AWS（`SPLUNK_AZ_NUM=2`）では `state=ok reason=peers_up:2` になった |
 | 手順 7-4b で「注意: indexer のタスクが同じ AZ に 2 台いる」 | 止まらない。AZ に 1 台ずつは Fargate の振り分け任せで、保証ではない。その AZ が落ちると複製が一緒に無くなる。散らし直すなら indexer のサービス `<prefix>-splunk-idx` を `aws ecs update-service --force-new-deployment` で作り直す（散るかは未確認） |
+
+### `ops/check-grafana.sh` の終了コード
+
+`ops/up.sh`（OSS 版は `oss/ops/up.sh`）の手順 9-2 の警告も同じ分け方（0 は警告なし、1 と 2 は止めずに黄色の警告）。3 に当たるもの（analytics の state の一覧か、Grafana のクラスター・サービスの名前（`tf output`）が読めないか空）も止めず、`aws ecs wait` も確かめも打たずに、「確かめていない（Grafana のサービスが安定するのも待っていない）」と黄色で警告して最後の案内まで進む。止めると、配るコマンドとほかの警告の再掲、ポートフォワーディングまで届かないため（ワーカーが安定しない 8-5 と同じ扱い）。どれが読めないかは、その前の terraform のエラーと赤い `NG:` の行に出る。OSS 版のクラスターの名前は手順 7-4b で読み、読めなければそこで止まる。
+
+| 値 | 意味 | 当たるもの | 出す案内 |
+|---|---|---|---|
+| 0 | OK | 全部のルールの打ったあとの評価にエラーが無い | なし |
+| 1 | NG | 評価がエラーのルールがある（`判定: NG`） | Grafana のログ（`Failed to evaluate rule`） |
+| 2 | 未確認 | 確かめに行ったが結果が分からない。`判定: 未確認`（401 / 403、Grafana に届かない・起動中、待ち切れ、ルールが 0 本、SSM の admin のパスワードが読めない、ページのトークンが繰り返すか 100 ページを超える、応答の `status` が `success` でない）、SSM Run Command を送れない・失敗した・`SSM_RUN_WAIT` 秒（既定 1800）を過ぎた、`判定:` の行が無い | 確かめ直すコマンド（`ops/check-grafana.sh [--oss]`）。ログの案内は出さない |
+| 3 | 確かめる前に止まった | 使い方の誤り、`deploy.env` の誤り、Web の EC2 か Grafana が無い（`tf output` が読めないか空）、`SSM_RUN_WAIT` の値の誤り | `NG:` の赤い行 |
 
 ### Kafbat UI
 

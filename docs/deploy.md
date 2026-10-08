@@ -70,6 +70,7 @@ OpenSearch・Prometheus・Grafana は `grafana` でまとめて作るか作ら�
 - 値は `1` / `0` のほか `true` / `false`、`yes` / `no` も書ける。`KEEP_ECR` は `1` / `0` だけ。
 - 知らないキーや同じキーの 2 回目があると、何も作らずに止まる。
 - `deploy.env` はシェルとして実行しない（値の先頭の `~/` だけ読み替える）。別のファイルを使うなら `DEPLOY_ENV_FILE` にパスを入れる。
+- `SSM_RUN_WAIT`（秒。既定 `1800`）は `deploy.env` のキーではなく、環境変数だけで渡す（`SSM_RUN_WAIT=3600 ops/up.sh`）。`ops/up.sh`・`oss/ops/up.sh`・`ops/check-grafana.sh` が SSM Run Command の結果（cloud-init の待ちを含む）を待つ長さで、過ぎたら待つのをやめ、結果を見る `aws ssm get-command-invocation` のコマンドを出す（インスタンスの上のコマンドは止めない）。
 
 ## `ops/up.sh` がすること
 
