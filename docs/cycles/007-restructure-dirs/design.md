@@ -189,7 +189,7 @@ OSS 版の state（`oss/terraform/base/core` の tfstate）は PM の worktree `
 - 動かす（`git mv`）: 上の表の全ディレクトリ、Dockerfile 8 本、`local/compose/` 一式、`oss/terraform/` のシンボリックリンク 92 本（貼り直し）
 - 書き換える（コード）: `ops/common.sh` `ops/up.sh` `ops/up-common.sh` `ops/lab-common.sh` `ops/lab-debug.sh` `ops/sync-graph.sh` `ops/check.sh` `ops/seed_graph.py` `oss/ops/up.sh` `oss/ops/down.sh` `oss/ops/oss-images.sh` `oss/compose/compose.yaml` `oss/compose/check_neo4j.py` `oss/compose/check_vm.py` `docker/compose/compose.yaml` `docker/compose/up.sh` `docker/compose/lab.sh` `app/dashboard/config.py` `.env.example` `.gitignore` `pyproject.toml`（コメント）
 - 書き換える（Terraform）: `IaC/terraform/aws-managed/agent/locals.tf` `agent/kb.tf` `agent/outputs.tf` `workflow/locals.tf` `workflow/gateway.tf` `pipeline/graph/sync.tf` `base/core/outputs.tf` `pipeline/lab/outputs.tf` `pipeline/stream/variables.tf`、`IaC/terraform/oss/pipeline/graph/sync.tf`、`IaC/cloudformation/lab-debug.yaml`（コメント）
-- 書き換える（tests）: `tests/test_*.py` 14 本と `tests/check_splunk_image.py`
+- 書き換える（tests）: `tests/test_*.py` 14 本と `tests/check_splunk_image.py`。新規に `tests/test_dashboard_config.py`（`app/dashboard/config.py` の段数の検査。Round 1 の cold review の Nit で足した）
 - 書き換える（docs）: 上の「docs の書き換え」の一覧。`docs/deploy.md` に state の移し方、`docs/development.md` に古いサイクルの文書の注記と `DATA_DIR` の変更
 
 ## 再利用するもの
@@ -213,8 +213,8 @@ OSS 版の state（`oss/terraform/base/core` の tfstate）は PM の worktree `
 
 | # | コマンド | 期待 |
 |---|---|---|
-| 1 | `bash ops/check.sh` | 最後に `すべて通過`、exit 0（af6be54 と同じ。fmt 差分なし、18 ルートの validate が `OK`、`bash -n` と ast.parse が通り、`tests/test_*.py` 14 本が全部通る） |
-| 2 | `git diff --stat docs/cycle-006-design -M` | rename 行（`=>`）と参照の書き換えだけ。新規に増えるファイルは無し（`docs/cycles/007-*/build.md` を除く） |
+| 1 | `bash ops/check.sh` | 最後に `すべて通過`、exit 0（af6be54 と同じ。fmt 差分なし、18 ルートの validate が `OK`、`bash -n` と ast.parse が通り、`tests/test_*.py` 15 本（新規の `test_dashboard_config.py` を含む）が全部通る） |
+| 2 | `git diff --stat docs/cycle-006-design -M` | rename 行（`=>`）と参照の書き換えだけ。新規に増えるファイルは `docs/cycles/007-*/build.md` と `tests/test_dashboard_config.py` だけ |
 | 3 | `git log --follow --oneline app/agentcore/app.py \| wc -l` | 2 以上（移動前の履歴が追える。1 なら `git mv` でなくコピーになっている） |
 | 4 | `ls` | `app docker IaC ops oss tests tools docs`（+ gitignore 対象の `jars` `wheels`、`pyproject.toml` `README.md` `CLAUDE.md` `.env.example`）。`agent terraform local cloudformation kb-docs` が無い |
 | 5 | `ls docker/images` | `agentcore grafana nautobot neo4j spark splunk telegraf temporal` の 8 つ。各ディレクトリに `Dockerfile` だけ |

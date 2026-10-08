@@ -18,7 +18,7 @@
 - [x] `oss/ops/up.sh` の wheel の取り直しを requirements のハッシュで判定する（いまは `.whl` が 1 つでもあれば取り直さない。005 のレビュー Nit 5）（2026-10-08 完了。fix/oss-review-nits）
 - [x] `oss/ops/up.sh` の services-stable の待ちに再試行を付け、`ops/check.sh` の OSS のルートにも `-lockfile=readonly` を付ける（005 のレビュー Nit 6）（2026-10-08 完了。fix/oss-review-nits）
 - [x] 手元の docker compose で動く構成を作る（WSL 用。lab から Splunk と Grafana まで届くこと） → 006-local-compose（2026-10-08 完了。WSL の通し検証はユーザー）
-- [ ] ディレクトリを app/ と docker/ と IaC/ に並べ直す（006 のあと。compose は docker/compose/ へ動かす。app/ の下は agent→agentcore、workflow→temporal、web→dashboard、lab→containerlab に改名。2026-10-08 に順番を入れ替えた） → 007-restructure-dirs
+- [x] ディレクトリを app/ と docker/ と IaC/ に並べ直す（006 のあと。compose は docker/compose/ へ動かす。app/ の下は agent→agentcore、workflow→temporal、web→dashboard、lab→containerlab に改名。2026-10-08 に順番を入れ替えた） → 007-restructure-dirs（2026-10-08 完了）
 - [ ] `oss/compose/` を消すか決める（007 で `docker/compose/` と役目が重なると分かった。残すなら「OSS 版の部品を 1 つずつ確かめる」用途に絞って README に書く）
 - [ ] Kafbat UI を Web の EC2 に同居させ、lab の EC2 で `containerlab graph` のトポロジ図を見られるようにする（Fargate のタスクと Cloud Map をやめる。EC2 は t4g.medium に上げ、Docker と MSK の IAM 権限と SG の web→MSK 9098 を足す。graph は 50080 を SSM のポートフォワードで。2026-10-08 の決定）
 - [x] Redis を 8 系に上げる（OSS 版）（2026-10-08 完了。feat/oss-redis8-rolling。`REDIS_TAG` は共通なのでマネージド版の Nautobot の Redis も 8.10.2 になる。AWS では未確認）

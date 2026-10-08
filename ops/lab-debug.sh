@@ -93,7 +93,7 @@ case "$CMD" in
     id=""; if [ -n "$s" ]; then id=$(instance_id) || die "$STACK の出力が読めない（上の出力）"; fi
     [ -n "$id" ] || die "$STACK の EC2 が無い。先に ops/lab-debug.sh up"
     command -v curl >/dev/null || die "curl が無い（containerlab の rpm を取るのに使う）"
-    log "lab/ を s3://$BUCKET/lab/ に置き直して EC2 を再起動する（起動のたびに app/containerlab/setup.sh が置き直す）"
+    log "app/containerlab/ を s3://$BUCKET/lab/ に置き直して EC2 を再起動する（起動のたびに app/containerlab/setup.sh が置き直す）"
     upload_lab "$BUCKET" || die "lab の材料を s3://$BUCKET/lab/ に置けなかった"
     aws ec2 reboot-instances --region "$REGION" --instance-ids "$id"
     echo "$id を再起動した。トポロジが上がるまで 10 分ほど（sudo lab status）"
