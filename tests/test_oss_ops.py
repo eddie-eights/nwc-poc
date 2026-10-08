@@ -87,7 +87,7 @@ log()
 if (svc, op) == ("sts", "get-caller-identity"):
     print("arn:aws:sts::123456789012:assumed-role/Admin/tester" if query == "Arn" else "123456789012")
 # ---- ここから oss/ops/up.sh が打つもの（6.）。送ったコマンドは在庫の cmds に残し、結果を聞かれたら Success と答える
-# （Grafana のルールの確かめは FAKE_GRAFANA=NG のとき Failed と答え、[標準出力, 標準エラー] を本物の --output text と同じくタブでつないで返す）
+# （Grafana のルールの確かめは FAKE_GRAFANA=NG / UNKNOWN のとき Failed と答え、[標準出力, 標準エラー] を本物の --output text と同じくタブでつないで返す）
 elif (svc, op) == ("ecr", "get-login-password"):
     print("fake-ecr-login")
 elif svc == "s3" and op in ("cp", "sync"):
@@ -101,12 +101,13 @@ elif (svc, op) == ("ssm", "send-command"):
 elif (svc, op) == ("ssm", "get-command-invocation"):
     sent = inv["cmds"][int(opt("--command-id")[len("cmd-"):]) - 1]
     if query == "Status":
-        print("Failed" if grafana_check(sent) and os.environ.get("FAKE_GRAFANA") == "NG" else "Success")
+        print("Failed" if grafana_check(sent) and os.environ.get("FAKE_GRAFANA") in ("NG", "UNKNOWN") else "Success")
     elif query == "StandardOutputContent":
         print(f'lab=active containers={os.environ.get("FAKE_LAB_NODES", "0")}' if "containers=" in sent
               else "判定: OK（4 本とも評価のエラーなし）" if grafana_check(sent) else "")
     elif query == "[StandardOutputContent,StandardErrorContent]" and grafana_check(sent):
-        print("nwc-opensearch/trap: health=ok\n判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap）\t")
+        print("判定: 未確認（300 秒待った。Grafana に届かない（URLError: timed out））\t" if os.environ.get("FAKE_GRAFANA") == "UNKNOWN"
+              else "nwc-opensearch/trap: health=ok\n判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap）\t")
     else:
         log({"unknown": "query " + str(query)}); fail("unknown query", 255)
 elif (svc, op) == ("ssm", "start-session"):
@@ -1278,14 +1279,21 @@ check("check-grafana.sh（--oss 無し）: マネージド版の IaC/terraform/a
       and [grafana_sent(c) for c in cs if is_aws(c, "ssm", "send-command")] == [("x-nwc-poc", True)])
 p, cs = run_check("--oss", extra={"FAKE_GRAFANA": "NG"})
 check("check-grafana.sh: NG なら 1 で終わり、判定の行と、理由を見る Grafana のログのコマンド（/ecs/x-nwc-oss-grafana の Failed to evaluate rule）を出す",
-      p.returncode == 1 and "判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap）" in p.stderr
+      p.returncode == 1 and "判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap）" in p.stdout + p.stderr
       and "aws logs tail /ecs/x-nwc-oss-grafana --region ap-northeast-1 --since 1h --filter-pattern '\"Failed to evaluate rule\"'" in p.stderr)
+p, cs = run_check("--oss", extra={"FAKE_GRAFANA": "UNKNOWN"})
+check("check-grafana.sh: 未確認（判定: 未確認。届かない・401・待ち切れ）なら 2 で終わり、判定の行を出す。評価のエラーとは限らないので Grafana のログは案内しない",
+      p.returncode == 2 and "判定: 未確認（300 秒待った。Grafana に届かない（URLError: timed out））" in p.stdout + p.stderr
+      and "Failed to evaluate rule" not in p.stdout + p.stderr)
 p, cs = run_check("--oss", extra={"FAKE_TF_EMPTY": "grafana_service_name"})
-check("check-grafana.sh: Grafana が無い（grafana_service_name が空）なら理由を言って止まり、確かめを送らない",
-      p.returncode != 0 and "Grafana が無い" in p.stderr and not aws_calls(cs, "ssm", "send-command"))
+check("check-grafana.sh: Grafana が無い（grafana_service_name が空）なら理由を言って 3 で止まり、確かめを送らない",
+      p.returncode == 3 and "Grafana が無い" in p.stderr and not aws_calls(cs, "ssm", "send-command"))
+p, cs = run_check("--oss", extra={"DEPLOY_ENV_FILE": os.path.join(TMP, "no-such.env")})
+check("check-grafana.sh: deploy.env の誤り（load_deploy_env の die）も 3 で止まる（ops/common.sh の die の 1 は NG と紛れる）",
+      p.returncode == 3 and "DEPLOY_ENV_FILE のファイルが無い" in p.stderr and not tf_calls(cs) and not [c for c in cs if c["cmd"] == "aws"])
 p, cs = run_check("--yes")
-check("check-grafana.sh: 知らない引数は使い方を出して 2 で止まる（terraform と aws には触らない）",
-      p.returncode == 2 and "使い方" in p.stderr and not tf_calls(cs) and not [c for c in cs if c["cmd"] == "aws"])
+check("check-grafana.sh: 知らない引数は使い方を出して 3 で止まる（terraform と aws には触らない）",
+      p.returncode == 3 and "使い方" in p.stderr and not tf_calls(cs) and not [c for c in cs if c["cmd"] == "aws"])
 
 shutil.rmtree(TMP, ignore_errors=True)
 print(f"通過 {passed} / 失敗 0")

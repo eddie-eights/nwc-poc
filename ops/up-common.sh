@@ -249,24 +249,36 @@ build_grafana() {  # REG / PREFIX / GRAFANA_TAG（dir_tag "$GRAFANA_VERSION" app
 }
 # Grafana のアラートルールは execErrState: KeepLast なので、評価がエラーでもアラートは出ず、ルールの health も ok のまま（008 で実測）。
 # エラーはルールの API の alerts[].state（「Normal (Error, KeepLast)」）にだけ出るので、Web の EC2 の上で ops/grafana_rules_check.py に読ませる
-# （Web と同じ環境変数と boto3 で、SSM の admin のパスワードを読む。値は出さない）。最後の行が「判定: OK / NG / 未確認 …」。OK なら 0、ほかは 1。PREFIX を使う
+# （Web と同じ環境変数と boto3 で、SSM の admin のパスワードを読む。値は出さない）。最後の行が「判定: OK / NG / 未確認 …」。PREFIX を使う。
+# ssm_run の出力（標準エラーも）を受けてから標準出力に出し、最後の「判定:」の行を GRAFANA_VERDICT に置く。返すのは ops/check-grafana.sh の終了コードと同じ
+# 0（OK）/ 1（NG: 評価がエラーのルールがある）/ 2（未確認: 判定: 未確認、判定の行が無い、SSM Run Command が送れない・失敗・締め切り）。表は docs/troubleshooting.md
 grafana_rules_check() {  # grafana_rules_check <Web のインスタンス ID>
-  ssm_run "$1" "echo $(base64 < ops/grafana_rules_check.py | tr -d '\n') | base64 -d | NAME_PREFIX=$PREFIX /usr/bin/python3.13 -"
+  local out rc=0
+  out=$(ssm_run "$1" "echo $(base64 < ops/grafana_rules_check.py | tr -d '\n') | base64 -d | NAME_PREFIX=$PREFIX /usr/bin/python3.13 -" 2>&1) || rc=$?
+  printf '%s\n' "$out"
+  # 失敗のときの ssm_run は標準出力と標準エラーをタブでつないで出すので、タブの手前まで
+  GRAFANA_VERDICT=$(printf '%s\n' "$out" | grep -o '判定: [^[:cntrl:]]*' | tail -1 || true)
+  case "$rc:$GRAFANA_VERDICT" in
+    "0:判定: OK"*) return 0 ;;
+    *":判定: NG"*) return 1 ;;
+  esac
+  return 2
 }
 grafana_rules_step() {  # grafana_rules_step <Web のインスタンス ID> <analytics の ECS のクラスター> <Grafana のサービス> <確かめ直すコマンド>
-  # ops/up.sh と oss/ops/up.sh の最後に打つ。OK でなければ GRAFANA_WARN に警告を入れて黄色で出す（up.sh は止めない。呼ぶ側が最後にもう一度出す）
-  local out verdict
+  # ops/up.sh と oss/ops/up.sh の最後に打つ。OK でなければ GRAFANA_WARN に警告を入れて黄色で出す（up.sh は止めない。呼ぶ側が最後にもう一度出す）。
+  # NG は評価のエラーの理由を見る Grafana のログを、未確認は確かめ直すコマンドを案内する（未確認は評価のエラーとは限らないので、ログは案内しない）
+  local rc=0
   GRAFANA_WARN=""
   # 打ち直しで Grafana のタスクが入れ替わる途中だと、Cloud Map の名前が前のタスクを指していることがある。入れ替わりが終わってから見る
   if ! aws ecs wait services-stable --region "$REGION" --cluster "$2" --services "$3"; then
     GRAFANA_WARN="Grafana のサービス（$3）が 10 分たっても安定しないので、アラートルールの評価を確かめていない。aws ecs list-tasks --region $REGION --cluster $2 --desired-status STOPPED を見て、直ったら $4"
-  elif out=$(grafana_rules_check "$1" 2>&1); then
-    printf '%s\n' "$out"
   else
-    printf '%s\n' "$out"
-    # 失敗のときの ssm_run は標準出力と標準エラーをタブでつないで出すので、タブの手前まで
-    verdict=$(printf '%s\n' "$out" | grep -o '判定: [^[:cntrl:]]*' | tail -1 || true)
-    GRAFANA_WARN="Grafana のアラートルールの評価を確かめた結果が OK ではない（${verdict:-判定の行が無い。上の出力}）。評価のエラーの理由は Grafana のログ（aws logs tail /ecs/$PREFIX-grafana --region $REGION --since 1h --filter-pattern '\"Failed to evaluate rule\"'）。直したら $4"
+    grafana_rules_check "$1" || rc=$?
+    case "$rc" in
+      0) ;;
+      1) GRAFANA_WARN="Grafana のアラートルールの評価を確かめた結果が OK ではない（$GRAFANA_VERDICT）。評価のエラーの理由は Grafana のログ（aws logs tail /ecs/$PREFIX-grafana --region $REGION --since 1h --filter-pattern '\"Failed to evaluate rule\"'）。直したら $4" ;;
+      *) GRAFANA_WARN="Grafana のアラートルールの評価を確かめられなかった（${GRAFANA_VERDICT:-判定の行が無い。上の出力}）。理由は上の出力。確かめ直すのは $4" ;;
+    esac
   fi
   if [ -n "$GRAFANA_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$GRAFANA_WARN"; fi
 }

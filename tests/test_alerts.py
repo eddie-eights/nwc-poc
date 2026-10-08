@@ -1267,9 +1267,17 @@ REGION=ap-northeast-1; PREFIX=x-nwc-poc
 grafana_rules_step i-web cl-an svc-grafana "ops/check-grafana.sh"
 printf 'WARN=[%s]\n' "$GRAFANA_WARN"
 '''
+# grafana_rules_check だけを呼ぶ版（終了コードと GRAFANA_VERDICT。ops/check-grafana.sh はこの終了コードで終わる）
+_GCHK = r'''set -euo pipefail
+REGION=ap-northeast-1; PREFIX=x-nwc-poc
+. ops/common.sh
+. ops/up-common.sh
+rc=0; grafana_rules_check i-web || rc=$?
+printf 'RC=%s VERDICT=[%s]\n' "$rc" "$GRAFANA_VERDICT"
+'''
 
 
-def gstep(**env):
+def gstep(script=_GSTEP, **env):
     """(終了コード か None（20 秒で終わらない）, 出力, 送ったコマンド か None, aws の呼び出し)"""
     with tempfile.TemporaryDirectory() as d:
         os.makedirs(os.path.join(d, "bin"))
@@ -1278,7 +1286,7 @@ def gstep(**env):
                 f.write(body)
             os.chmod(os.path.join(d, "bin", name), 0o755)
         try:
-            r = subprocess.run(["bash", "-c", _GSTEP], cwd=ROOT, capture_output=True, text=True, timeout=20,
+            r = subprocess.run(["bash", "-c", script], cwd=ROOT, capture_output=True, text=True, timeout=20,
                                env=dict({"PATH": os.path.join(d, "bin") + os.pathsep + os.environ["PATH"], "GDIR": d, "G_OUT": "", "G_STATUS": "Success"}, **env))
             rc, out = r.returncode, r.stdout + r.stderr
         except subprocess.TimeoutExpired:
@@ -1311,9 +1319,31 @@ check("9-2: Grafana のサービスが安定しなければ確かめを送らず
       _s_un[0] == 0 and _s_un[2] is None and "Grafana のサービス（svc-grafana）が 10 分たっても安定しないので" in _s_un[1]
       and "--cluster cl-an --desired-status STOPPED" in _s_un[1])
 _s_sf = gstep(G_SEND_FAIL="1")
-check("9-2: SSM Run Command を送れなければ、待ち続けずに（set -e の効かない $( ) の中でも ssm_run が 1 を返す）判定の行が無い旨の警告を出す",
-      _s_sf[0] == 0 and "SSM Run Command を送れなかった" in _s_sf[1] and "（判定の行が無い。上の出力）" in _s_sf[1]
+check("9-2: SSM Run Command を送れなければ、待ち続けずに（set -e の効かない $( ) の中でも ssm_run が 1 を返す）未確認の警告（判定の行が無い。ログの案内なし）を出す",
+      _s_sf[0] == 0 and "SSM Run Command を送れなかった" in _s_sf[1]
+      and "WARN=[Grafana のアラートルールの評価を確かめられなかった（判定の行が無い。上の出力）。理由は上の出力。確かめ直すのは ops/check-grafana.sh]" in _s_sf[1]
+      and "Failed to evaluate rule" not in _s_sf[1]
       and not [c for c in _s_sf[3] if c[:2] == ["ssm", "get-command-invocation"]])
+_s_uk = gstep(G_STATUS="Failed", G_OUT="判定: 未確認（300 秒待った。Grafana に届かない（URLError: timed out））")
+check("9-2: 判定が未確認なら、確かめられなかった旨（判定の行。タブの手前まで）と確かめ直すコマンドを警告に入れる。評価のエラーとは限らないので Grafana のログは案内しない",
+      _s_uk[0] == 0
+      and "WARN=[Grafana のアラートルールの評価を確かめられなかった（判定: 未確認（300 秒待った。Grafana に届かない（URLError: timed out）））。理由は上の出力。確かめ直すのは ops/check-grafana.sh]" in _s_uk[1]
+      and "Failed to evaluate rule" not in _s_uk[1] and "aws logs tail" not in _s_uk[1])
+# grafana_rules_check の終了コード（ops/check-grafana.sh の 0 / 1 / 2）。判定の行と SSM の状態の組み合わせ
+_gc = {k: gstep(_GCHK, **e) for k, e in {
+    "ok": dict(G_OUT="判定: OK（4 本とも評価のエラーなし）"),
+    "ng": dict(G_STATUS="Failed", G_OUT="判定: NG（4 本のうち 1 本の評価がエラー: g/a）"),
+    "unknown": dict(G_STATUS="Failed", G_OUT="判定: 未確認（0 秒待った。Grafana のルールの API が 401（admin のパスワードが Grafana と SSM で違う））"),
+    "noverdict": dict(G_STATUS="Failed", G_OUT="Traceback (most recent call last):"),
+    "okempty": dict(G_OUT=""),
+    "okwithoutok": dict(G_OUT="判定: 未確認（…）"),
+    "sendfail": dict(G_SEND_FAIL="1"),
+}.items()}
+_gcr = {k: re.search(r"RC=(\d) VERDICT=\[(.*)\]", v[1]).groups() if v[0] == 0 and "RC=" in v[1] else None for k, v in _gc.items()}
+check("grafana_rules_check の終了コード: OK の判定で SSM も成功なら 0、NG の判定なら 1、未確認・判定の行が無い・送れないは 2。最後の判定の行を GRAFANA_VERDICT に置く",
+      _gcr == {"ok": ("0", "判定: OK（4 本とも評価のエラーなし）"), "ng": ("1", "判定: NG（4 本のうち 1 本の評価がエラー: g/a）"),
+               "unknown": ("2", "判定: 未確認（0 秒待った。Grafana のルールの API が 401（admin のパスワードが Grafana と SSM で違う））"),
+               "noverdict": ("2", ""), "okempty": ("2", ""), "okwithoutok": ("2", "判定: 未確認（…）"), "sendfail": ("2", "")})
 
 # ---- SNS のトピック（土台）と受け手の配線
 atf = read("IaC", "terraform", "aws-managed", "base", "core", "alerts.tf")
