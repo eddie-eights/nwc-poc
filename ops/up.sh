@@ -503,7 +503,7 @@ endpoints_for() {  # endpoints_for <ルート>  そのルートが呼ぶ AWS の
     agent) add_endpoints bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs ;;
     # lab の EC2 はイメージを ECR から引く（SSM は土台の分）
     pipeline/lab) add_endpoints ecr.api ecr.dkr ;;
-    # Telegraf（ECS）: イメージを ECR から引き、ログを CloudWatch に書く。MSK は VPC の中
+    # Telegraf（ECS）: イメージを ECR から引き、ログを CloudWatch に書く。MSK は VPC の中。Web の EC2 の Kafbat UI（Docker）も同じ ecr.api / ecr.dkr で ECR から pull する
     pipeline/stream) add_endpoints ecr.api ecr.dkr logs ;;
     # Spark: S3 Tables の API、ドライバのログ（MSK は VPC の中で、S3 は gateway）
     pipeline/analytics) add_endpoints s3tables logs ;;

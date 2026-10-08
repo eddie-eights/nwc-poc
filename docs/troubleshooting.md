@@ -91,11 +91,39 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 | デバッグ用の EC2 で Telegraf の出力を見たい | `sudo lab telegraf status` / `logs -f` / `test` / `gnmi`（出力は標準出力。MSK へは送らない）。デバッグ用の EC2 では SNMP のポーリングを既定で止めてあるので（stream の既定とは違う）、`test` やメトリクスの行を見るなら `sudo SNMP_POLL=1 lab telegraf run` で起こし直す |
 | `tg gnmi`（と `tg test`。`SNMP_POLL=0` では `tg test` は使えない。取りにいく側のタスクで打つ）は通るのに trap / syslog が Kafka に来ない | lab の EC2 の DNAT の宛先が古い NLB の IP か、転送が無い。lab の EC2 で `sudo lab forward-status`、無ければ `sudo lab forward`（SSM `/<prefix>/telegraf-address` を読み直す） |
 | Grafana / Splunk のポートフォワードがつながらない | 踏み台は Web の EC2（`Online` か上の「画面に入れない」のコマンドで見る）。タスクが動いているか `aws ecs list-services --cluster <prefix>-analytics` と `describe-services` の `runningCount` を見る。Cloud Map の名前（`grafana.<prefix>.internal` / `splunk.<prefix>.internal`）はタスクが動いていないと引けない。Splunk がクラスター（`SPLUNK_AZ_NUM` が 2 か 3）のとき、画面は search head のサービス `<prefix>-splunk`（cluster manager の画面は `terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw splunk_cm_port_forward_command`）。起きないときはロググループ `/ecs/<prefix>-grafana` / `/ecs/<prefix>-splunk`（クラスターではストリームの頭が `splunk` / `splunk-cm` / `splunk-idx`）と `stoppedReason`（ECR のエンドポイントと、SSM のパスワードが消えていないか） |
-| Kafbat UI のポートフォワードがつながらない、画面が開かない | Kafbat UI は Web の EC2 の Docker（`127.0.0.1:8082`）。Web の EC2 に入って `systemctl status <prefix>-kafka-ui` と `journalctl -u <prefix>-kafka-ui` を見る。journald の 1 行で分ける。`… does not exist (pipeline/stream is not applied …). Not retrying; …`（終了コード 75。failed のまま止まる）は stream がまだ無い（`SKIP_STREAM=1` の回はそれで正しい）。stream を上げたら `sudo systemctl start <prefix>-kafka-ui`（`ops/up.sh` を通せば手順 8-3（OSS 版は 7-5）の Web の再起動で起きる）。`ops/up.sh` が stream の apply（手順 7）のあと、8-3（OSS 版は 7-5）より前で止まった回（graph・nautobot・analytics の apply の失敗など）も 75 のまま残る。直して `ops/up.sh` を打ち直すか、`sudo systemctl start <prefix>-kafka-ui`。`Cannot read … Retrying in 30 s. AWS CLI: …`（69。30 秒ごとに起こし直す）は無いのではなく読めない。後ろの AWS CLI のエラー文で、Web のロールの `ssm:GetParameter`、SSM のエンドポイント、認証情報を見る。ユニットが無い（`Unit … could not be found`）なら user_data の Docker の節が落ちている。`/var/log/cloud-init-output.log`（か `journalctl -u cloud-final`）の `<prefix>-kafka-ui: setup failed` の行とその直前のエラー（`dnf install -y docker` など）を見て、直したら EC2 を再起動する（Gradio の画面はその間も動く）。`docker login` / `docker pull` で落ちるなら ecr.api / ecr.dkr のエンドポイント（stream が足す）と S3 の gateway。起きたのに画面に MSK が出ないなら、メタデータのホップ数が 2 か（コンテナからインスタンスロールが取れない）と、ロールにポリシー `<prefix>-kafka-ui` が付いているか。SSM のパスワードを手で変えたら `sudo systemctl restart <prefix>-kafka-ui`。イメージを変えたとき（`KAFKA_UI_TAG` を上げて stream を apply し、SSM の `/<prefix>/kafka-ui/image` が変わったとき）も同じ。スクリプトはイメージを起動のときに 1 回だけ読むので、restart か EC2 の再起動まで古い版のコンテナが動き続ける（`ops/up.sh` の中の再起動（手順 4-4）は stream の apply（手順 7）より前で、手順 8-3 の Web の再起動は動いている Kafbat UI に触らないので、同じ回では入れ替わらない）。手で止めた（`sudo systemctl stop <prefix>-kafka-ui`。t4g.medium のメモリを Gradio に空けたいとき など）のに戻ってくるのは、Web のユニットの `Wants=` が Web の start / restart（手順 8-3 の打ち直し、手で打つ `systemctl restart <prefix>-web`）のたびに起こすから。止めたままにしたいなら `sudo systemctl mask --runtime <prefix>-kafka-ui`（戻すのは `unmask`。EC2 の再起動で mask は消える） |
+| Kafbat UI のポートフォワードがつながらない、画面が開かない | 下の「Kafbat UI」を見る |
 | Grafana に入れない（パスワードが違う） | admin のパスワードは SSM の値（`grafana_password_command`）。タスクが起きたときに読むので、SSM を手で変えたら `aws ecs update-service --force-new-deployment` で作り直す |
 | 手順 7-4b で「Splunk が 20 分たっても HEALTHY にならない」 | ロググループ `/ecs/<prefix>-splunk` を見る。初回は設定の展開で 5〜10 分かかる（未確認）。ライセンスに同意していない旨で止まるならタスク定義の `SPLUNK_START_ARGS` / `SPLUNK_GENERAL_TERMS`。Spark のジョブはそのまま起きるので、Splunk が起きたあとで落ちていれば `ops/up.sh` を打ち直す |
 | 手順 7-4b で「search head の突き合わせ（app/splunk/peers_check.py）が 6 分たっても ok … にならない」/「まだ 1 回もしていない」 | クラスター（`SPLUNK_AZ_NUM` が 2 か 3）だけ。search head が、いまの indexer を全部は検索できていない。ロググループ `/ecs/<prefix>-splunk` のストリーム `splunk/…` で `nwc-peer-check` の最新の行を見る（`state=ok reason=peers_up:<数>` が正常。`mismatch` は古い indexer を覚えたまま、`degraded` は cluster manager が Up と言う indexer がタスク定義の数より少ない（`reason=peers_up:<Up の数>/<あるはずの数>`。止まっている indexer を見る）、`skip` は cluster manager に聞けていない、`error` は search head が自分の peers を読めていない）。indexer と cluster manager（`splunk-idx/…` / `splunk-cm/…`）が起きているかを見て、`ops/up.sh` を打ち直す。2026-10-05 の AWS（`SPLUNK_AZ_NUM=2`）では `state=ok reason=peers_up:2` になった |
 | 手順 7-4b で「注意: indexer のタスクが同じ AZ に 2 台いる」 | 止まらない。AZ に 1 台ずつは Fargate の振り分け任せで、保証ではない。その AZ が落ちると複製が一緒に無くなる。散らし直すなら indexer のサービス `<prefix>-splunk-idx` を `aws ecs update-service --force-new-deployment` で作り直す（散るかは未確認） |
+
+### Kafbat UI
+
+Kafbat UI は Web の EC2 の Docker で動く（`127.0.0.1:8082`）。Web の EC2 に入って `systemctl status <prefix>-kafka-ui` と `journalctl -u <prefix>-kafka-ui` を見て、journald の行で分ける。
+
+- **ユニットは動いているのに 8082 につながらない**
+  まだ上がっていない（初回の `ops/up.sh` の直後など。イメージの pull と Java の起動を待つ）。上がると journald に `Started KafkaUiApplication` が出る。systemd の `Started <prefix>-kafka-ui.service` はスクリプトが動き出した時点で出るので、上がった合図ではない。
+- **`… does not exist (pipeline/stream is not applied …). Not retrying; …` で止まっている（終了コード 75）**
+  SSM のパラメータが無かった。ユニットは failed のまま止まり、自分では起こし直さない。`does not exist` の前の名前が、最初に無かったパラメータ（読む順は `image`、`bootstrap-servers`、`security-protocol`、`admin-password`）。
+  - `image` など: Web の EC2 が起きたときに stream がまだ無かった。`SKIP_STREAM=1` の回はそれで正しい。stream を足すときは `SKIP_STREAM` を外して `ops/up.sh` を打ち直す（手順 8-3 の Web の再起動で起きる）。OSS 版の `oss/ops/up.sh` は `SKIP_STREAM` を読まず、いつも stream を作って手順 7-5 で起こす。
+  - `admin-password`: stream を terraform だけで上げた。`image` などは stream の Terraform が作るが、ログインのパスワード `/<prefix>/kafka-ui/admin-password` は `ops/up.sh` の手順 7（OSS 版は `oss/ops/up.sh` の手順 7）が作る。このまま `sudo systemctl start <prefix>-kafka-ui` しても同じ 75 で止まる。`ops/up.sh` を打ち直す。
+  - `ops/up.sh` が stream の apply（手順 7）のあと、8-3（OSS 版は 7-5）より前で止まった回（graph・nautobot・analytics の apply の失敗など）も、起きたときの 75 のまま残る。直して `ops/up.sh` を打ち直すか、`sudo systemctl start <prefix>-kafka-ui`。
+- **`systemctl status` が `status=75` で止まっているのに、`does not exist` の行が無い**
+  コンテナ（Kafbat UI）が 75 で終わった。`RestartPreventExitStatus=75` はユニットの main プロセスの終了コードを見る。スクリプトは `exec docker run` するので、コンテナの終了コードがそのまま main プロセスの終了コードになり、75 なら起こし直さない。コンテナは `--rm` で消えているので `docker logs` では見られない。`journalctl -u <prefix>-kafka-ui` の、止まる直前のコンテナの出力を見る。Kafbat UI が 75 で終わる場面は知られていない（未確認）。
+- **`Cannot read … Retrying in 30 s. AWS CLI: …` が 30 秒ごとに出る（終了コード 69）**
+  パラメータが無いのではなく読めない。後ろの AWS CLI のエラー文で、Web のロールの `ssm:GetParameter`、SSM のエンドポイント、認証情報を見る。
+- **ユニットが無い（`Unit <prefix>-kafka-ui.service could not be found`）**
+  user_data の Docker の節が落ちた（ユニットを書く前に落ちたときはこれ。下の `daemon-reload` / `enable --now` で落ちたときもこれになることがある）。`/var/log/cloud-init-output.log`（か `journalctl -u cloud-final`）の `<prefix>-kafka-ui: setup failed` の行と、その直前のエラー（`dnf install -y docker` など）を見る。直したら EC2 を再起動する（user_data がもう一度走る）。Gradio の画面は、この節が落ちても動く。
+- **`setup failed` の行があり、ユニットが動いていない（`daemon-reload` / `enable --now` で落ちた）**
+  ユニットは書けたが、そのあとの `systemctl daemon-reload` か `systemctl enable --now <prefix>-kafka-ui` が落ちた。`systemctl status <prefix>-kafka-ui` は、落ちた場所で `could not be found` か `disabled` になる（どちらになるかは未確認）。直前のエラーを見て直し、手で続きを打つ: `sudo systemctl daemon-reload && sudo systemctl enable --now <prefix>-kafka-ui`。EC2 の再起動でもよい。
+- **`docker login` / `docker pull` で落ちる**
+  ECR に届いていない。ecr.api / ecr.dkr のエンドポイント（stream が足す）と S3 の gateway を見る。
+- **起きたのに画面に MSK が出ない**
+  メタデータのホップ数が 2 か（コンテナからインスタンスロールが取れない）と、ロールにポリシー `<prefix>-kafka-ui` が付いているかを見る。
+- **SSM のパスワードかイメージを変えた**
+  `sudo systemctl restart <prefix>-kafka-ui`。スクリプトはパラメータを起動のときに 1 回だけ読むので、restart か EC2 の再起動まで古い値のコンテナが動き続ける。イメージは、`KAFKA_UI_TAG` を上げて stream を apply すると SSM の `/<prefix>/kafka-ui/image` が変わる。同じ回の `ops/up.sh` の中では入れ替わらない（手順 4-4 の EC2 の再起動は stream の apply（手順 7）より前で、手順 8-3 の Web の再起動は動いている Kafbat UI に触らない）。次に打ち直した回の手順 4-4 の再起動で新しい値を読む（OSS 版の `oss/ops/up.sh` も同じ手順 4-4 で再起動する）。
+- **手で止めたのに戻ってくる**
+  `sudo systemctl stop <prefix>-kafka-ui` で止めても（t4g.medium のメモリを Gradio に空けたいときなど）、Web のユニットの `Wants=` が、Web の start / restart のたびに起こす（手順 8-3 の打ち直し、手で打つ `systemctl restart <prefix>-web`）。止めたままにしたいなら `sudo systemctl mask --runtime <prefix>-kafka-ui`。戻すのは `sudo systemctl unmask --runtime <prefix>-kafka-ui`（`--runtime` を付けないと `/run` の mask は外れない）。EC2 の再起動でも mask は消える。
 
 ## 消すとき
 

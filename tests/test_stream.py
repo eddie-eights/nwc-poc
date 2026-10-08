@@ -476,7 +476,7 @@ check("75 で止まった Kafbat UI は、Web のユニットの Wants= で、op
       and re.findall(r"^\w+=.*kafka-ui.*$", _wunit, re.M) == ["Wants=${name_prefix}-kafka-ui.service"])
 # その restart は stream の apply より後で、stream を作る回はいつも通る: ops/up.sh の 8-3 の if に SKIP_STREAM が空の条件、OSS 版の 7-5 は if の外
 _up_sh, _oss_up_sh = _read("ops", "up.sh"), _read("oss", "ops", "up.sh")
-def _between(text, start, end):  # start から end の手前まで。どちらかが無ければ ""（.index() の ValueError で残りの検査を止めない。cycle 016）
+def _between(text, start, end):  # start から end の手前まで。どちらかが無ければ ""（.index() の ValueError ではなく、それを使う check の名前で落ちる。cycle 016）
     i = text.find(start)
     j = text.find(end, i + len(start)) if i >= 0 else -1
     return text[i:j] if j >= 0 else ""
@@ -487,7 +487,7 @@ check("Kafbat UI を起こす Web の restart は stream の apply より後: op
       and re.match(r'\n# ---- 8-3\. Web -*\nif \[ -z "\$SKIP_STREAM" \] \|\| [^\n]*; then\n', _s83) is not None
       and '\n  run_on_instance "$INSTANCE_ID" "systemctl restart $PREFIX-web.service; $WEB_ACTIVE"\n' in _s83 and _s83.count("\nfi\n") == 1
       and -1 < _oss_up_sh.find('\ntf_apply pipeline/stream "${STREAM_VARS[@]}"\n') < _oss_up_sh.find('\nlog "7-5. ')
-      and '\nrun_on_instance "$INSTANCE_ID" "systemctl restart $PREFIX-web.service; $WEB_ACTIVE"\n' in _s75
+      and re.fullmatch(r'\nlog "7-5\. [^"\n]*"\n(?:[ \t]*(?:#[^\n]*)?\n)*run_on_instance "\$INSTANCE_ID" "systemctl restart \$PREFIX-web\.service; \$WEB_ACTIVE"\n(?:[ \t]*(?:#[^\n]*)?\n)*', _s75) is not None
       and re.findall(r"^(?:if|fi)\b.*$", _between(_oss_up_sh, "\n# ---- 7-4c. ", "\n# ---- 8. workflow "), re.M)
           == ['if [ -n "$STORE_WARN" ]; then', "fi"])
 check("Docker と Kafbat UI の節は、画面のコードの取得（aws s3 sync）より後、S3 に web/ が無くて exit 0 する所より前で、関数 kafka_ui_setup にまとめて"
