@@ -1,6 +1,6 @@
 # ops/up.sh と OSS 版（005）の oss/ops/up.sh が読む共通の関数（terraform の apply、Session Manager でのコマンド、Web の wheel、SSM のシークレット、
-# Glue の s3tablescatalog、Splunk のイメージと SSM のパラメータ、Agent・worker・Temporal・Nautobot のイメージと Nautobot の SSM のパラメータ、
-# Grafana のアラートルールの評価の確かめ）。ops/check-grafana.sh も Grafana のルールの確かめのために読む。
+# Glue の s3tablescatalog、Splunk のイメージと SSM のパラメータ、Agent・worker・Temporal・Nautobot・syslog-ng のイメージと Nautobot の SSM のパラメータ、
+# マネージド版の MSK の SCRAM の secret と KMS の鍵、Grafana のアラートルールの評価の確かめ）。ops/check-grafana.sh も Grafana のルールの確かめのために読む。
 # 先に ops/common.sh と ops/deploy-env.sh を読む（log / die / tf / tf_logged を使う）。Splunk のイメージは ops/lab-common.sh の dir_tag / ecr_has を使う。
 # REGION / PY / PREFIX / OWNER（s3tablescatalog は ACCOUNT_ID も）は呼ぶ前に決める。
 # 環境変数 SSM_RUN_WAIT（秒。既定 1800）は ssm_run が SSM Run Command の結果を待つ長さ（deploy.env のキーではない。docs/deploy.md）。読んだときに確かめる
@@ -250,6 +250,10 @@ NAUTOBOT_VERSION=3.2.6
 GRAFANA_VERSION=13.2.3   # docker/images/grafana/Dockerfile の ARG の既定値に合わせてある（変えるときは両方を変える）
 REDIS_TAG=8.10.2-alpine   # 8 系は AGPLv3 も選べる（7.4 は RSALv2 / SSPL だけ）。公式のイメージは Search・JSON などのモジュールを読み込んで起きる
 TEMPORAL_TAG=1.9.1
+# 機器の syslog と NetFlow / sFlow の受け口（cycle 012）。SYSLOG_NG_VERSION は docker/images/syslog-ng/Dockerfile の ARG の既定値、GOFLOW2_TAG は netsampler/goflow2 のタグ。
+# docker/compose/compose.yaml も同じ値（tests/test_local_compose.py が照合する。変えるときは全部を変える）。どちらも arm64 のイメージがあることを確かめてある
+SYSLOG_NG_VERSION=4.29.0
+GOFLOW2_TAG=v2.2.7
 nautobot_context() {  # nautobot_context <空のディレクトリ>  Nautobot のイメージのビルドの context を集める（docker/images/nautobot/Dockerfile の頭の説明）
   # app/nautobot/ の中身に、グラフへ openCypher で書く app/agentcore/graph.py と app/agentcore/toolkit.py、最初の seed にする lab の定義を足す。
   # タグはこのディレクトリの中身と docker/images/nautobot/Dockerfile から作る（dir_tag）ので、graph.py や lab の定義や Dockerfile を変えてもイメージが作り直される
@@ -264,6 +268,9 @@ build_agent() {  # build_agent <リポジトリの URL>:<タグ> [requirements �
 build_grafana() {  # REG / PREFIX / GRAFANA_TAG（dir_tag "$GRAFANA_VERSION" app/grafana docker/images/grafana/Dockerfile）を使う。Grafana OSS（arm64）
   # データソースの plugin をビルドのときに入れる（タスクは AWS の外へ出られず、起動時に grafana.com から落とせない）
   docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push -f docker/images/grafana/Dockerfile app/grafana/
+}
+build_syslog_ng() {  # REG / PREFIX / SYSLOG_NG_TAG（dir_tag "$SYSLOG_NG_VERSION" app/syslog-ng docker/images/syslog-ng/Dockerfile）を使う。AxoSyslog（arm64）に設定を COPY するだけなので、エミュレーション無しで作れる
+  docker buildx build --platform linux/arm64 --build-arg "SYSLOG_NG_VERSION=$SYSLOG_NG_VERSION" -t "$REG/$PREFIX-syslog-ng:$SYSLOG_NG_TAG" --push -f docker/images/syslog-ng/Dockerfile app/syslog-ng/
 }
 # Grafana のアラートルールは execErrState: KeepLast なので、評価がエラーでもアラートは出ず、ルールの health も ok のまま（008 で実測）。
 # エラーはルールの API の alerts[].state（「Normal (Error, KeepLast)」）にだけ出るので、Web の EC2 の上で ops/grafana_rules_check.py に読ませる
@@ -326,4 +333,71 @@ ensure_nautobot_secrets() {  # pipeline/nautobot の apply より前に呼ぶ。
   ensure_secret "/$PREFIX/nautobot/db-password" password "Nautobot database password (created by $OPS_DIR/up.sh)"
   # Web の「トポロジ」タブがリンクの追加・削除を Nautobot の REST API に書くためのトークン（bootstrap.py が同じ値でユーザー netops-web のトークンを作る）
   ensure_secret "/$PREFIX/nautobot/api-token" token "Nautobot API token of the web UI (created by $OPS_DIR/up.sh)"
+}
+
+# ---- MSK の SASL/SCRAM の資格情報（cycle 012。マネージド版の ops/up.sh だけが呼ぶ。OSS 版の Kafka は認証なしの 9092）
+# syslog-ng と GoFlow2 が MSK に書くときのユーザー名とパスワード。MSK の SCRAM は Secrets Manager の secret（名前が AmazonMSK_ で始まる）しか受けず、
+# その secret は自分で作った KMS の鍵で暗号化しないといけない（AWS が管理する aws/secretsmanager の鍵は使えない）。
+# 値を Terraform の state に入れないよう、両方ここで作る。IaC/terraform/aws-managed/pipeline/stream/msk.tf は同じ名前の data source で ARN だけ引く
+# （名前が揃っていることは tests/test_stream.py が見る）。消すのは ops/down.sh（ops/down-common.sh の delete_msk_scram）。
+# 費用は鍵が月 $1、secret が月 $0.40（どちらも日割り）。1 時間あたり 0.2 セントに満たないので、ops/up.sh の時間あたりの目安には入れていない
+ensure_msk_scram_key() {  # 鍵（alias/<PREFIX>-msk-scram）が無ければ作る。MSK_SCRAM_KEY_ARN に鍵の ARN を入れる
+  local alias="alias/$PREFIX-msk-scram" out arn state
+  if ! out=$(aws kms describe-key --region "$REGION" --key-id "$alias" --query 'KeyMetadata.[Arn,KeyState]' --output text 2>&1); then
+    case "$out" in *NotFoundException*) out="" ;; *) die "$alias を確かめられない: $out" ;; esac
+  fi
+  arn=${out%%$'\t'*}; state=${out##*$'\t'}
+  case "$state" in
+    Enabled) echo "$alias はある（作り直さない）" ;;
+    PendingDeletion | Disabled)
+      # 直前の ops/down.sh が削除を予約したあと alias を外せなかったときなど。予約を取り消して使い直す（取り消すと、待った日数も課金される）
+      if [ "$state" = PendingDeletion ]; then
+        aws kms cancel-key-deletion --region "$REGION" --key-id "$arn" >/dev/null || die "$alias の鍵の削除の予約を取り消せなかった（上のエラー）"
+      fi
+      aws kms enable-key --region "$REGION" --key-id "$arn" || die "$alias の鍵を有効に戻せなかった（上のエラー）"
+      echo "$alias は $state だったので有効に戻した" ;;
+    "")
+      arn=$(aws kms create-key --region "$REGION" --description "MSK SCRAM secret key of $PREFIX (created by $OPS_DIR/up.sh)" \
+        --tags "TagKey=ManagedBy,TagValue=$OPS_DIR/up.sh" "TagKey=Project,TagValue=$PREFIX" "TagKey=owner,TagValue=$OWNER" \
+        --query KeyMetadata.Arn --output text) || die "KMS の鍵を作れなかった（上のエラー）"
+      aws kms create-alias --region "$REGION" --alias-name "$alias" --target-key-id "$arn" \
+        || die "$alias を付けられなかった（上のエラー）。作った鍵は名前なしで残るので、削除を予約する: aws kms schedule-key-deletion --region $REGION --key-id $arn --pending-window-in-days 7"
+      echo "$alias を作った" ;;
+    *) die "$alias の鍵が使えない状態（${state}）" ;;
+  esac
+  MSK_SCRAM_KEY_ARN=$arn
+}
+MSK_SCRAM_INPUT=""  # ensure_msk_scram_secret が値を書く一時ファイル。create-secret の最中に止まっても ops/up.sh の EXIT の trap（on_exit）が消す
+ensure_msk_scram_secret() {  # secret（AmazonMSK_<PREFIX>-collectors）が無ければ作る。先に ensure_msk_scram_key を呼ぶ（MSK_SCRAM_KEY_ARN で暗号化する）。値は出さない
+  local name="AmazonMSK_$PREFIX-collectors" out kms deleted
+  # 中身（ユーザー名とパスワード）は読まない。describe-secret はメタデータ（暗号化の鍵と削除の予約）だけを返す
+  if out=$(aws secretsmanager describe-secret --region "$REGION" --secret-id "$name" --query '[KmsKeyId,DeletedDate]' --output text 2>&1); then
+    kms=${out%%$'\t'*}; deleted=${out##*$'\t'}
+    if [ "$deleted" != None ]; then
+      aws secretsmanager restore-secret --region "$REGION" --secret-id "$name" >/dev/null || die "削除を予約された $name を戻せなかった（上のエラー）"
+      echo "$name は削除の予約中だったので戻した"
+    fi
+    # 別の鍵（作り直す前の鍵や aws/secretsmanager）で暗号化した secret は MSK が受けないので止める
+    case "$kms" in
+      "$MSK_SCRAM_KEY_ARN" | "${MSK_SCRAM_KEY_ARN##*/}" | "alias/$PREFIX-msk-scram" | *":alias/$PREFIX-msk-scram") ;;
+      *) die "$name の暗号化の鍵（${kms}）が alias/$PREFIX-msk-scram の鍵と違う。消してから打ち直す: aws secretsmanager delete-secret --region $REGION --secret-id $name --force-delete-without-recovery" ;;
+    esac
+    echo "$name はある（作り直さない）"
+    return
+  fi
+  case "$out" in *ResourceNotFoundException*) ;; *) die "$name を確かめられない: $out" ;; esac
+  local rc=0
+  MSK_SCRAM_INPUT=$(umask 077; mktemp "${TMPDIR:-/tmp}/nwc-secret.XXXXXX") || die "一時ファイルを作れなかった"
+  # パスワードは乱数（英数字と - _ だけ）。値はコマンドラインにも画面にも出さず、一時ファイル（自分だけが読める）から渡してすぐ消す
+  "${PY[@]}" -c 'import json, secrets, sys
+name, desc, key, prefix, owner, managed_by, path = sys.argv[1:]
+with open(path, "w", encoding="utf-8") as f:
+    json.dump({"Name": name, "Description": desc, "KmsKeyId": key,
+               "SecretString": json.dumps({"username": "collectors", "password": secrets.token_urlsafe(24)}),
+               "Tags": [{"Key": "ManagedBy", "Value": managed_by}, {"Key": "Project", "Value": prefix}, {"Key": "owner", "Value": owner}]}, f)' \
+    "$name" "MSK SCRAM credentials of syslog-ng and GoFlow2 (created by $OPS_DIR/up.sh)" "$MSK_SCRAM_KEY_ARN" "$PREFIX" "$OWNER" "$OPS_DIR/up.sh" "$MSK_SCRAM_INPUT" \
+    && aws secretsmanager create-secret --region "$REGION" --cli-input-json "file://$MSK_SCRAM_INPUT" >/dev/null || rc=$?
+  rm -f -- "${MSK_SCRAM_INPUT:?}"; MSK_SCRAM_INPUT=""
+  [ "$rc" -eq 0 ] || die "Secrets Manager に $name を作れなかった（上のエラー）。直前の $OPS_DIR/down.sh で消したばかりなら、数分おいて打ち直す"
+  echo "$name を作った（値は出さない）"
 }

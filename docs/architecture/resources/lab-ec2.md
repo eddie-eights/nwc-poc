@@ -35,7 +35,7 @@ lab の中身:
 |---|---|---|
 | 利用者の PC | PC → EC2 | SSM Session Manager（`ssm`、`ssmmessages` のエンドポイント） |
 | Telegraf の取りにいく側 | タスク → 機器 | SNMP 161/udp と gNMI 57400/tcp。VPC のルートで管理ネットワーク宛てを lab の EC2 に向ける。認証情報は SSM の SecureString |
-| Telegraf の受ける側（内部 NLB） | 機器 → EC2 → NLB | trap 162/udp、syslog 5140/udp。機器は `203.0.113.1` へ送り、`lab forward` が NLB へ DNAT する |
+| stream の ECS の受ける側（内部 NLB） | 機器 → EC2 → NLB | trap 162/udp（Telegraf）、syslog 5140/udp（syslog-ng）、NetFlow 2055/udp・sFlow 6343/udp（GoFlow2）。機器は `203.0.113.1` へ送り、`lab forward` が NLB へ DNAT する（SR Linux は NetFlow を送れないので、NetFlow は lab の EC2 で `tools/netflow_send.py` を打って試す） |
 | SSM のパラメータ | EC2 → `/<prefix>/telegraf-address`、`/<prefix>/telegraf-source-cidr` | `ssm` のエンドポイント、インスタンスロール（`lab forward` が読む） |
 | ECR と S3 | EC2 → イメージ、`lab/` | `ecr.api`、`ecr.dkr` のエンドポイントと S3 の gateway エンドポイント |
 | worker（Temporal） | worker → SSM → EC2 | Run Command で `sudo lab heal-main` などを打つ |
@@ -84,8 +84,8 @@ lab の中身:
 - **SR Linux の ifTable は、未使用の物理ポートも全部出す。**
   `ifAdminStatus` が down の行。IF の鍵は `ifName`。Grafana のルールは admin down の行、サブインタフェース、ループバック、管理ポートを見ない。
   出典: [pipeline.md](../../pipeline.md) の「lab に入る」。
-- **lab の機器は syslog を RFC 5424 で送る。Telegraf の既定は本番に合わせた RFC3164。**
-  lab のログの項目まで見るなら `SYSLOG_STANDARD` を合わせる。
+- **lab の機器は syslog を RFC 5424 で送る。syslog-ng の既定は本番に合わせた RFC3164。**
+  lab のログの項目まで見るなら `SYSLOG_STANDARD` を合わせる（2026-10-08 から stream の syslog-ng の設定。デバッグ用の EC2 は syslog を受けない）。
   出典: [pipeline.md](../../pipeline.md) の「lab に入る」。
 - **いまは EVPN-VXLAN。SR-MPLS はライセンス待ち。**
   SR Linux のコンテナは SR-MPLS に `ixr6e` / `ixr10e` とライセンスが要る。届いたら `gen_lab.py` を替える。トポロジと Neptune の層は変わらない。

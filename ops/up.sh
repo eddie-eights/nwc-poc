@@ -44,7 +44,7 @@
 #                           書かなかったまとまりは作らない（前に作っていればその格納先はデータごと消える）。格納先を選ぶのはこれだけ
 #                           （SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK / GRAFANA は 2026-10-04 になくし、書いてあれば止まる）。
 #                             s3      = 全トピック → S3 Tables（Iceberg）
-#                             grafana = traps と logs（機器の syslog）→ OpenSearch Serverless、metrics と gnmi と mdt → Amazon Managed Service for Prometheus と、
+#                             grafana = traps と logs（機器の syslog）と flows → OpenSearch Serverless、metrics と gnmi → Amazon Managed Service for Prometheus と、
 #                                       その 2 つを見る Grafana OSS（ECS。+$0.02/h）。Grafana のアラートルールも入り、SNS へ出す（app/grafana/provisioning/alerting。
 #                                       Prometheus の link_down / bgp_down / isis_down と、OpenSearch の trap）。link_down が見る ifOperStatus は SNMP のポーリングの値
 #                                       なので、SNMP_POLL=0 では link_down は発火しない。web の EC2 を踏み台にした SSM のポートフォワードで開く（コマンドは最後に出る）
@@ -55,9 +55,9 @@
 #                                       （値は出さない。見るコマンドを最後に出す）。SPLUNK_INDEX（既定は空 = token の既定の index）は任意。
 #                                       AWS の外の Splunk へ NAT Gateway で送る道は 2026-09-28 にやめた（VPC から AWS の外へ出る経路は作らない）
 #                           IaC/terraform/aws-managed/pipeline/analytics の var.sinks（iceberg / opensearch / prometheus / splunk）と create_grafana に組んで渡す。
-#   SYSLOG_STANDARD         stream の Telegraf が受ける機器の syslog の形式。RFC3164（既定。本番の Cisco IOS の BSD 形式）か RFC5424。
+#   SYSLOG_STANDARD         stream の syslog-ng（2026-10-08 までは Telegraf）が受ける機器の syslog の形式。RFC3164（既定。本番の Cisco IOS の BSD 形式）か RFC5424。
 #                           lab の SR Linux は RFC 5424 で送る（ops/lab-common.sh の LAB_SYSLOG_STANDARD）ので、lab のログの項目まで見るなら RFC5424。
-#                           デバッグ用の EC2（ops/lab-debug.sh。up.sh とは別に作る）の Telegraf はこの値を使わず、app/containerlab/lab.sh の LOG_STANDARD（RFC5424）
+#                           デバッグ用の EC2（ops/lab-debug.sh。up.sh とは別に作る）は syslog を受けない（2026-10-08 に Telegraf から syslog を外した）
 #   SNMP_POLL=0             stream の Telegraf で SNMP をポーリングしない（既定 1 = 10 秒ごとに ifTable → metrics トピック。0 なら SNMP は trap だけ受ける）。
 #                           Grafana のアラートルール link_down、Splunk の保存済みサーチ netops_poll、IF のグラフ、エージェントの IF のメトリクスはこのポーリングを見るので、
 #                           0 では空になる（IF の up / down は STORES の splunk の Splunk が trap からだけ出す）。stream の変数 snmp_poll に渡す
@@ -71,8 +71,6 @@
 #   SKIP_GRAPH=1            PIPELINE=1 で graph（Neptune）を作らない。「トポロジ」は使えず、アラートが届いても status を書く先が無い
 #   IMAGE_TAG               エージェント（WORKFLOW=1 ではワーカーも）のイメージのタグ。既定 v1。ECR にそのタグが無いときだけ PC の docker buildx でビルドして push する（タグは上書きできない）
 #   VPC_CIDR                IaC/terraform/aws-managed/base/core の vpc_cidr（社内と重なるとき）
-#   MDT_SOURCE_CIDRS        Cisco の MDT（dial-out。tcp 57000）を stream の Telegraf の NLB へ送ってよい機器の CIDR（カンマで。例 10.10.0.0/16,10.20.0.0/16）。
-#                           IaC/terraform/aws-managed/base/core の mdt_source_cidrs。既定は空で、どこからも受けない（lab の SR Linux は MDT を送れない）
 #   HTTP_SEND=executor      analytics の Spark のジョブが HTTP の格納先（opensearch / prometheus / splunk）へ executor から送る（foreachPartition）。既定 driver（driver に集めて送る）
 #   MAX_OFFSETS_PER_TRIGGER Spark の 1 つのクエリが Kafka の 1 回のトリガー（60 秒）に読む件数の上限（全パーティションの合計。maxOffsetsPerTrigger）。既定 10000、0 で上限なし
 #   MAX_OFFSETS_PER_TRIGGER_ICEBERG / _SPLUNK / _OPENSEARCH / _PROMETHEUS
@@ -163,6 +161,7 @@ on_exit() {  # 途中で止まっても、バックグラウンドの graph の 
   fi
   if [ -n "$TF_AWS_CONFIG" ]; then rm -f "$TF_AWS_CONFIG"; fi
   if [ -n "$NAUTOBOT_CTX" ]; then rm -rf -- "$NAUTOBOT_CTX"; fi
+  if [ -n "$MSK_SCRAM_INPUT" ]; then rm -f -- "$MSK_SCRAM_INPUT"; fi  # MSK の SCRAM の値を書いた一時ファイル（ops/up-common.sh が secret を作るときに書く）
 }
 trap on_exit EXIT
 
@@ -219,7 +218,7 @@ if [ -n "$OLD_STORE_KEYS" ]; then
 fi
 # 格納先を 3 つのまとまりで選ぶ（STORES=s3,grafana,splunk の形。カンマで並べ、順番と重複は問わない）。既定は s3,grafana,splunk（3 つとも。splunk は cycle 002 で既定に入れた）。
 #   s3      = 全トピック → S3 Tables（Iceberg）の raw_telemetry。アラートの履歴（alert_events と Athena。サイクル 001）は STORES に関わらず analytics を作れば入る
-#   grafana = traps と logs → OpenSearch Serverless、metrics と gnmi と mdt → Amazon Managed Service for Prometheus と、その 2 つを見る Grafana（ECS）
+#   grafana = traps と logs と flows → OpenSearch Serverless、metrics と gnmi → Amazon Managed Service for Prometheus と、その 2 つを見る Grafana（ECS）
 #   splunk  = 全トピック → Splunk の HTTP Event Collector（analytics の ECS に Splunk を立てる。SPLUNK_ON_ECS）
 # 書かなかったまとまりは作らない（前に作っていれば、その格納先はデータごと消える）。空は書いていないのと同じで既定になる
 # （deploy.env の空の値は書いていないのと同じ（ops/deploy-env.sh）なのに合わせる）。
@@ -270,7 +269,7 @@ done
 # 黙って無視すれば開かないつもりのポートフォワーディングを開いて止まらないので、書き換えてもらう
 [ -z "${NO_PORTFORWARD:-}" ] || die "NO_PORTFORWARD は NO_DASHBOARD_PORTFORWARD に変わった（2026-10-04。意味は同じで、1 なら最後の Web へのポートフォワーディングを開かずに終わる）。deploy.env と環境変数の NO_PORTFORWARD=${NO_PORTFORWARD} を NO_DASHBOARD_PORTFORWARD=${NO_PORTFORWARD} に書き換える。まだ何も作っていない"
 flag_value SKIP_LAB; flag_value SKIP_STREAM; flag_value SKIP_ANALYTICS; flag_value SKIP_GRAPH; flag_value NO_DASHBOARD_PORTFORWARD
-# stream の Telegraf の syslog の形式。既定は本番の Cisco に合わせた RFC3164（stream の変数の既定と同じ）
+# stream の syslog-ng の syslog の形式。既定は本番の Cisco に合わせた RFC3164（stream の変数の既定と同じ）
 SYSLOG_STANDARD="${SYSLOG_STANDARD:-RFC3164}"
 case "$SYSLOG_STANDARD" in RFC3164 | RFC5424) ;; *) die "SYSLOG_STANDARD は RFC3164 か RFC5424（大文字）: $SYSLOG_STANDARD。まだ何も作っていない" ;; esac
 # stream の Telegraf の SNMP のポーリング。既定 1（stream の変数 snmp_poll の既定と同じ）。0 なら trap だけ受ける
@@ -293,11 +292,10 @@ fi
 # lab が無くても lab の定義（と、それを最初の seed にする Nautobot）から作る
 if [ -n "$PIPELINE" ]; then
   if [ -n "$SKIP_LAB" ] && [ -z "$SKIP_STREAM" ]; then
-    echo "SKIP_LAB=1 なので lab は作らない。stream の Telegraf の取りにいく側は lab の定義の機器を探しに行き、届かないので gNMI / SNMP のエラーをログに出して繋ぎ直し続ける（タスクは落ちない）。受ける側（trap / syslog / MDT）は送り手がいなければ何も来ない"
-    # trap と syslog を NLB へ送れるのは lab の管理ネットワーク（lab の EC2 の DNAT）だけ、MDT は MDT_SOURCE_CIDRS だけ（IaC/terraform/aws-managed/base/core の security_groups.tf）
-    if [ -z "${MDT_SOURCE_CIDRS:-}" ]; then
-      printf '\033[1;33m%s\033[0m\n' "注意: lab が無く MDT_SOURCE_CIDRS も空なので、この stream には何も届かない（trap と syslog は lab の EC2 からしか来ず、MDT を送ってよい機器も無い）。届けるなら SKIP_LAB を外すか、MDT_SOURCE_CIDRS に機器の CIDR を書く"
-    fi
+    echo "SKIP_LAB=1 なので lab は作らない。stream の Telegraf の取りにいく側は lab の定義の機器を探しに行き、届かないので gNMI / SNMP のエラーをログに出して繋ぎ直し続ける（タスクは落ちない）。受ける側（trap / syslog / NetFlow / sFlow）は送り手がいなければ何も来ない"
+    # NLB へ送れるのは lab の管理ネットワーク（lab の EC2 の DNAT）と lab の EC2 だけ（IaC/terraform/aws-managed/base/core の security_groups.tf。
+    # cycle 012 で、外の機器から受ける MDT の受け口を外した）
+    printf '\033[1;33m%s\033[0m\n' "注意: lab が無いので、この stream には何も届かない（trap・syslog・NetFlow・sFlow は lab の EC2 からしか来ない）。届けるなら SKIP_LAB を外す"
   fi
   if [ -n "$SKIP_STREAM" ] && [ -z "$SKIP_ANALYTICS" ]; then
     echo "SKIP_STREAM=1 なので analytics も作らない（読む Kafka が無い）"
@@ -446,7 +444,7 @@ if command -v python3 >/dev/null; then PY=(python3)
 elif command -v uv >/dev/null; then PY=(uv run --python 3.13 python)
 else die "python3 も uv も無い（docs/setup.md「Terraform を打つ PC 側」）"; fi
 if [ -z "$SKIP_LAB" ] || [ -z "$SKIP_ANALYTICS" ]; then command -v curl >/dev/null || die "curl が無い（lab の containerlab の rpm と analytics の jar を取るのに使う。sudo apt install curl）"; fi
-# docker はイメージ（agent / lab の 2 つ / telegraf / kafka-ui / grafana / splunk / nautobot / redis / worker / temporal）を ECR に置くときだけ要る。土台だけなら要らない
+# docker はイメージ（agent / lab の 2 つ / telegraf / syslog-ng / goflow2 / kafka-ui / grafana / splunk / nautobot / redis / worker / temporal）を ECR に置くときだけ要る。土台だけなら要らない
 NEED_DOCKER="$AGENT$WORKFLOW$GRAFANA$SPLUNK_ON_ECS$NAUTOBOT"; if [ -z "$SKIP_LAB" ] || [ -z "$SKIP_STREAM" ]; then NEED_DOCKER=1; fi
 if [ -n "$NEED_DOCKER" ]; then
   command -v docker >/dev/null || die "docker が無い（イメージのビルドに使う。docs/setup.md「Terraform を打つ PC 側」）"
@@ -472,6 +470,7 @@ for k in ADMIN_ARN OPENSEARCH_CACERT_FILE SPLUNK_SKIP_TLS_VERIFY; do
 done
 # デバッグ用の EC2 は 2026-10-04 から ops/up.sh / ops/down.sh で作らない（ops/lab-debug.sh up / down だけで扱う CloudFormation のスタック）
 case "${LAB_DEBUG:-}" in ''|0|false|no) ;; *) echo "注意: LAB_DEBUG は使わない。デバッグ用の EC2 は ops/lab-debug.sh up / down で作る・消す（deploy.env から消してよい）" ;; esac
+if [ -n "${MDT_SOURCE_CIDRS:-}" ]; then echo "注意: MDT_SOURCE_CIDRS は 2026-10-08 から使わない（cycle 012 で Cisco の MDT の受け口を外した。戻し方は docs/collection.md。deploy.env から消してよい）"; fi
 tf_use_cli_credentials
 ROOTS="base/ecr base/core"
 if [ -n "$AGENT" ]; then ROOTS="$ROOTS agent"; fi
@@ -503,8 +502,9 @@ endpoints_for() {  # endpoints_for <ルート>  そのルートが呼ぶ AWS の
     agent) add_endpoints bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs ;;
     # lab の EC2 はイメージを ECR から引く（SSM は土台の分）
     pipeline/lab) add_endpoints ecr.api ecr.dkr ;;
-    # Telegraf（ECS）: イメージを ECR から引き、ログを CloudWatch に書く。MSK は VPC の中
-    pipeline/stream) add_endpoints ecr.api ecr.dkr logs ;;
+    # Telegraf・syslog-ng・GoFlow2（ECS）: イメージを ECR から引き、ログを CloudWatch に書く。MSK は VPC の中。
+    # syslog-ng と GoFlow2 のタスクは起動時に MSK の SCRAM の secret を Secrets Manager から読む（cycle 012。復号の KMS は Secrets Manager が代わりに呼ぶ）
+    pipeline/stream) add_endpoints ecr.api ecr.dkr logs secretsmanager ;;
     # Spark: S3 Tables の API、ドライバのログ（MSK は VPC の中で、S3 は gateway）
     pipeline/analytics) add_endpoints s3tables logs ;;
     # Neptune Analytics のデータ API（openCypher のクエリ）。グラフは公開しないので、Web / Runtime / Lambda / ワーカー / Nautobot はここからしか届かない。
@@ -538,9 +538,10 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 #   前に作ったコレクションが state に残っているだけで手順 3 の NEED_AOSS が 1 になる回は数えない）、
 # lab = 25（EC2 の m6i.xlarge 24.8。2026-10-08 に Price List API で確認。TRex が amd64 だけなので x86_64。2026-10-08 までの 17 は t4g.xlarge、2026-10-04 までの 9 は t4g.large の単価だった）、graph = 58（Neptune Analytics の 16 m-NCU で 58.1。2026-10-04 に料金のページで確認。Price List API では確かめていない。
 #   2026-10-04 までの Neptune Database の db.t4g.medium は 14 だった。レプリカも同じ単価なので × NEPTUNE_AZ_NUM）、
-#   stream = MSK 57（ブローカー 2 台。MSK_AZ_NUM=3 で 1 台 27 を足す）+ Telegraf 5（Fargate ARM 0.25 vCPU / 0.5 GB で 1.2 のタスクが、受ける側 1 つと
-#   取りにいく側 TELEGRAF_AZ_NUM 個（2026-10-04 に分けた）と内部 NLB 2.43。
-#   NLB は 2026-09-28 から。どちらも公表単価からで、Price List API では確かめていない。Kafbat UI は cycle 010 から土台の Web の EC2 に入っている）、
+#   stream = MSK 57（ブローカー 2 台。MSK_AZ_NUM=3 で 1 台 27 を足す）+ Telegraf と syslog-ng と GoFlow2 で 7（Fargate ARM 0.25 vCPU / 0.5 GB で 1.2 のタスクが、
+#   Telegraf の受ける側 1 つと取りにいく側 TELEGRAF_AZ_NUM 個（2026-10-04 に分けた）、syslog-ng 1 つと GoFlow2 1 つ（2026-10-08 から）と内部 NLB 2.43。
+#   NLB は 2026-09-28 から。どちらも公表単価からで、Price List API では確かめていない。Kafbat UI は cycle 010 から土台の Web の EC2 に入っている。
+#   MSK の SCRAM の KMS の鍵（月 $1）と secret（月 $0.40）は 1 時間あたり 0.2 に満たないので入れていない）、
 # analytics = Spark のジョブ 1 つにつき 21（ストリーミングのジョブが動いている間の EMR Serverless の 3 vCPU（driver 1 + executor 2。1 vCPU のワーカー 1 台で約 7）。単価は 2026-09-17 に確認。
 #   executor は 2026-10-04 に 1 → 2（Kafka のパーティション 2 つを並列に読む）。ジョブは 2026-10-04 に格納先で 3 つに分けた（7-5）:
 #   STORES の s3 で sinks-s3iceberg、splunk で sinks-splunk、grafana で sinks-grafana（名前は 7-5 の job_name）。3 つとも動けば 63。
@@ -566,7 +567,7 @@ if [ -z "$SKIP_GRAPH" ]; then COST_CENTS=$((COST_CENTS + 58 * NEPTUNE_AZ_NUM)); 
 if [ -z "$SKIP_STREAM" ]; then
   # MSK は kafka.m5.large × 2 で 0.542（Kafka 4 は t3.small を受け付けない。2026-09-18）。3 AZ ならブローカーが 1 台増える
   COST_CENTS=$((COST_CENTS + 57 + 27 * (MSK_AZ_NUM - 2)))
-  COST_CENTS=$((COST_CENTS + (12 * (1 + TELEGRAF_AZ_NUM) + 24 + 5) / 10))   # Telegraf（Fargate のタスク 1 + TELEGRAF_AZ_NUM 個と NLB）
+  COST_CENTS=$((COST_CENTS + (12 * (3 + TELEGRAF_AZ_NUM) + 24 + 5) / 10))   # Telegraf・syslog-ng・GoFlow2（Fargate のタスク 3 + TELEGRAF_AZ_NUM 個と NLB）
 fi
 if [ -z "$SKIP_ANALYTICS" ]; then
   # Spark のジョブ（1 つ 21。格納先で 3 つ）
@@ -612,8 +613,9 @@ REG="${REPO%%/*}"
 # ---- 2. イメージ ----------------------------------------------------------------
 log "2. イメージ（ECR に無いタグだけ作る）"
 NEED_AGENT=""; NEED_LAB=""; NEED_WORKER=""; NEED_TEMPORAL=""; NEED_TELEGRAF=""; NEED_GRAFANA=""; NEED_SPLUNK=""; NEED_NAUTOBOT=""; NEED_REDIS=""; NEED_KAFKA_UI=""
-# telegraf / grafana / splunk は app/<名前>/ の中身と docker/images/<名前>/Dockerfile からタグを作る（どちらかを変えれば次の ops/up.sh が作り直す）
-TELEGRAF_TAG=""; GRAFANA_TAG=""; SPLUNK_TAG=""; NAUTOBOT_TAG=""
+NEED_SYSLOG_NG=""; NEED_GOFLOW2=""
+# telegraf / syslog-ng / grafana / splunk は app/<名前>/ の中身と docker/images/<名前>/Dockerfile からタグを作る（どちらかを変えれば次の ops/up.sh が作り直す）
+TELEGRAF_TAG=""; SYSLOG_NG_TAG=""; GRAFANA_TAG=""; SPLUNK_TAG=""; NAUTOBOT_TAG=""
 if [ -n "$AGENT" ]; then
   if ecr_has "$PREFIX-agent" "$IMAGE_TAG"; then echo "agent:$IMAGE_TAG はある（作り直すなら IMAGE_TAG を変える）"; else NEED_AGENT=1; fi
 fi
@@ -630,6 +632,10 @@ if [ -z "$SKIP_STREAM" ]; then
   TELEGRAF_TAG=$(telegraf_tag) || die "app/telegraf/ のタグを作れなかった"
   if ecr_has "$PREFIX-telegraf" "$TELEGRAF_TAG"; then echo "telegraf:$TELEGRAF_TAG はある"; else NEED_TELEGRAF=1; fi
   if ecr_has "$PREFIX-kafka-ui" "$KAFKA_UI_TAG"; then echo "kafka-ui:$KAFKA_UI_TAG はある"; else NEED_KAFKA_UI=1; fi
+  # 機器の syslog と NetFlow / sFlow の受け口（cycle 012）。版は ops/up-common.sh の SYSLOG_NG_VERSION / GOFLOW2_TAG
+  SYSLOG_NG_TAG=$(dir_tag "$SYSLOG_NG_VERSION" app/syslog-ng docker/images/syslog-ng/Dockerfile) || die "app/syslog-ng/ のタグを作れなかった"
+  if ecr_has "$PREFIX-syslog-ng" "$SYSLOG_NG_TAG"; then echo "syslog-ng:$SYSLOG_NG_TAG はある"; else NEED_SYSLOG_NG=1; fi
+  if ecr_has "$PREFIX-goflow2" "$GOFLOW2_TAG"; then echo "goflow2:$GOFLOW2_TAG はある"; else NEED_GOFLOW2=1; fi
 fi
 if [ -n "$GRAFANA" ]; then
   GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" app/grafana docker/images/grafana/Dockerfile) || die "app/grafana/ のタグを作れなかった"
@@ -645,12 +651,12 @@ if [ -n "$NAUTOBOT" ]; then
   if ecr_has "$PREFIX-nautobot" "$NAUTOBOT_TAG"; then echo "nautobot:$NAUTOBOT_TAG はある"; else NEED_NAUTOBOT=1; fi
   if ecr_has "$PREFIX-redis" "$REDIS_TAG"; then echo "redis:$REDIS_TAG はある"; else NEED_REDIS=1; fi
 fi
-if [ -z "$NEED_AGENT$NEED_LAB$NEED_WORKER$NEED_TEMPORAL$NEED_TELEGRAF$NEED_GRAFANA$NEED_SPLUNK$NEED_NAUTOBOT$NEED_REDIS$NEED_KAFKA_UI" ]; then
+if [ -z "$NEED_AGENT$NEED_LAB$NEED_WORKER$NEED_TEMPORAL$NEED_TELEGRAF$NEED_GRAFANA$NEED_SPLUNK$NEED_NAUTOBOT$NEED_REDIS$NEED_KAFKA_UI$NEED_SYSLOG_NG$NEED_GOFLOW2" ]; then
   echo "作るイメージは無い"
 else
   docker info >/dev/null 2>&1 || die "dockerd に接続できない（WSL なら sudo service docker start。docs/setup.md「Terraform を打つ PC 側」）"
-  # agent / worker / grafana / nautobot は RUN があるので、x86_64 の PC では QEMU（binfmt）が要る（lab のイメージは上流の amd64 をミラーするだけで、
-  # telegraf は COPY だけ。splunk も COPY だけで amd64 なので、arm64 の PC（Apple シリコン）でもエミュレーション無しで作れる）
+  # agent / worker / grafana / nautobot は RUN があるので、x86_64 の PC では QEMU（binfmt）が要る（lab のイメージは上流の amd64 を、goflow2 のイメージは上流の arm64 をミラーするだけで、
+  # telegraf と syslog-ng は COPY だけ。splunk も COPY だけで amd64 なので、arm64 の PC（Apple シリコン）でもエミュレーション無しで作れる）
   # 出力は変数で受けてから探す（grep -q が先に閉じると docker が SIGPIPE で落ち、pipefail で「無い」扱いになることがある）
   BUILDX_LS=$(docker buildx ls 2>/dev/null || true)
   if [ -n "$NEED_AGENT$NEED_WORKER$NEED_GRAFANA$NEED_NAUTOBOT" ] && ! grep -q 'linux/arm64' <<<"$BUILDX_LS"; then
@@ -691,13 +697,19 @@ else
     # Kafbat UI（Web の EC2 の Docker）。VPC の中から ghcr.io には届かず ECR しか引けないのでミラーする（展開して約 640 MB）
     mirror_image "ghcr.io/kafbat/kafka-ui:$KAFKA_UI_TAG" "$REG/$PREFIX-kafka-ui:$KAFKA_UI_TAG" || die "kafka-ui のイメージを ECR に置けなかった"
   fi
+  if [ -n "$NEED_SYSLOG_NG" ]; then
+    build_syslog_ng   # 機器の syslog の受け口（stream の ECS。ops/up-common.sh。OSS 版と共通）
+  fi
+  if [ -n "$NEED_GOFLOW2" ]; then
+    # NetFlow / sFlow の受け口（stream の ECS）。Fargate は VPC の中から ECR しか引けないのでミラーする
+    mirror_image "netsampler/goflow2:$GOFLOW2_TAG" "$REG/$PREFIX-goflow2:$GOFLOW2_TAG" || die "goflow2 のイメージを ECR に置けなかった"
+  fi
 fi
 
 # ---- 3. 本体 --------------------------------------------------------------------
 log "3. 土台（IaC/terraform/aws-managed/base/core。VPC / Web の EC2 / バケット / ロール。初回は 3〜5 分）"
 MAIN_VARS=()
 if [ -n "${VPC_CIDR:-}" ];    then MAIN_VARS+=(-var "vpc_cidr=$VPC_CIDR"); fi
-if [ -n "${MDT_SOURCE_CIDRS:-}" ]; then MAIN_VARS+=(-var "mdt_source_cidrs=[\"$(printf '%s' "$MDT_SOURCE_CIDRS" | tr -d ' ' | sed 's/,/","/g')\"]"); fi
 # OpenSearch Serverless の VPC エンドポイントは KB と logs のコレクションで 1 本を共用する（どちらも公開しない）。
 # 今回どちらも作らなくても、前に作ったコレクションが state に残っていれば外さない（外すとそのコレクションに届かなくなる）
 NEED_AOSS=""
@@ -902,7 +914,7 @@ if [ -z "$SKIP_STREAM" ]; then
   fi
   echo "Telegraf の gNMI の購読先: $GNMI_TARGETS"
   # syslog の形式は SYSLOG_STANDARD（既定は本番の Cisco の RFC3164）。lab の SR Linux は ops/lab-common.sh の LAB_SYSLOG_STANDARD（RFC5424）で送る
-  echo "Telegraf の syslog の形式: $SYSLOG_STANDARD"
+  echo "syslog-ng の syslog の形式: $SYSLOG_STANDARD"
   if [ -z "$SKIP_LAB" ] && [ "$SYSLOG_STANDARD" != "$LAB_SYSLOG_STANDARD" ]; then
     echo "注意: lab の SR Linux は $LAB_SYSLOG_STANDARD で送るので、SYSLOG_STANDARD=$SYSLOG_STANDARD では lab のログの項目（ホスト名・本文など）が崩れる。lab のログまで見るなら SYSLOG_STANDARD=$LAB_SYSLOG_STANDARD"
   fi
@@ -917,8 +929,12 @@ if [ -z "$SKIP_STREAM" ]; then
   echo "Telegraf の取りにいく側の機器の一覧: Nautobot の Job が書く（上の一覧は最初の値）"
   # Kafbat UI（stream を作る回はいつも作る）。ログインの admin のパスワードは SSM の SecureString（Web の EC2 のユニットが起動のたびに SSM から読む）
   ensure_secret "/$PREFIX/kafka-ui/admin-password" password "Kafbat UI admin password (created by ops/up.sh)"
+  # syslog-ng と GoFlow2 が MSK に書く SCRAM のユーザー名とパスワード（Secrets Manager。KMS の鍵も作る。ops/up-common.sh）。msk.tf が data source で引くので apply より前
+  ensure_msk_scram_key
+  ensure_msk_scram_secret
   tf_apply pipeline/stream -var "telegraf_image_tag=$TELEGRAF_TAG" -var "kafka_ui_image_tag=$KAFKA_UI_TAG" -var "snmp_agents=$SNMP_AGENTS" -var "gnmi_targets=$GNMI_TARGETS" \
     -var "syslog_standard=$SYSLOG_STANDARD" -var "snmp_poll=$SNMP_POLL_TF" -var "dialin_targets_from_nautobot=$DIALIN_FROM_NAUTOBOT" \
+    -var "syslog_ng_image_tag=$SYSLOG_NG_TAG" -var "goflow2_image_tag=$GOFLOW2_TAG" \
     -var "msk_az_num=$MSK_AZ_NUM" -var "telegraf_az_num=$TELEGRAF_AZ_NUM"
 fi
 
@@ -938,7 +954,7 @@ if [ -n "$LAB_INSTANCE_ID" ]; then
   if [ "${LAB_VARS[1]}" = forward_to_telegraf=true ]; then
     # lab の EC2 の起動時の forward は、stream（Telegraf の NLB のアドレスを SSM に置く）より前だと宛先を読めていない。
     # 何度打っても同じ規則になるので毎回打つ（トポロジが上がっていなければ lab.sh の up がまた打つ）
-    log "7-2b. lab の EC2 から Telegraf（stream の ECS）へ SNMP / gNMI / trap / syslog を通す（lab forward）"
+    log "7-2b. lab の EC2 から stream の ECS（Telegraf・syslog-ng・GoFlow2）へ SNMP / gNMI / trap / syslog / NetFlow / sFlow を通す（lab forward）"
     ssm_run "$LAB_INSTANCE_ID" "[ ! -x /usr/local/bin/lab ] || /usr/local/bin/lab forward" \
       || printf '\033[1;33m%s\033[0m\n' "lab forward が失敗した。lab の EC2 で sudo lab forward-status を見る（docs/pipeline.md）"
   fi
@@ -951,6 +967,13 @@ if [ -z "$SKIP_STREAM" ]; then
     echo "Telegraf は動いている（ログ: aws logs tail --region $REGION $(tf pipeline/stream output -raw telegraf_log_group_name) --follow。ストリームは受ける側が dialout/、取りにいく側が dialin/）"
   else
     printf '\033[1;33m%s\033[0m\n' "Telegraf のサービスが 10 分たっても安定しない。受ける側は $(tf pipeline/stream output -raw telegraf_dialout_list_tasks_command)、取りにいく側は $(tf pipeline/stream output -raw telegraf_dialin_list_tasks_command) とロググループ $(tf pipeline/stream output -raw telegraf_log_group_name) を見る（docs/troubleshooting.md）"
+  fi
+  log "7-2d. syslog-ng と GoFlow2 の ECS のサービス（機器の syslog と NetFlow / sFlow の受け口。cycle 012）が安定するのを待つ（1〜3 分）"
+  SYSLOG_NG_SERVICE=$(tf pipeline/stream output -raw syslog_ng_service_name); GOFLOW2_SERVICE=$(tf pipeline/stream output -raw goflow2_service_name)
+  if aws ecs wait services-stable --region "$REGION" --cluster "$TG_CLUSTER" --services "$SYSLOG_NG_SERVICE" "$GOFLOW2_SERVICE"; then
+    echo "syslog-ng と GoFlow2 は動いている（ログ: aws logs tail --region $REGION $(tf pipeline/stream output -raw syslog_ng_log_group_name) --follow と $(tf pipeline/stream output -raw goflow2_log_group_name)）"
+  else
+    printf '\033[1;33m%s\033[0m\n' "syslog-ng か GoFlow2 のサービスが 10 分たっても安定しない。syslog-ng は $(tf pipeline/stream output -raw syslog_ng_list_tasks_command)、GoFlow2 は $(tf pipeline/stream output -raw goflow2_list_tasks_command) とロググループ $(tf pipeline/stream output -raw syslog_ng_log_group_name)・$(tf pipeline/stream output -raw goflow2_log_group_name) を見る（docs/troubleshooting.md）"
   fi
 fi
 

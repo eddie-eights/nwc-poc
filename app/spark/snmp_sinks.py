@@ -12,14 +12,16 @@ Kafka と S3 Tables の jar、カタログの設定は spark-submit の --conf �
               token は SSM の SecureString（--splunk-token-parameter）から起動時に読む。送り先は analytics の ECS の Splunk Enterprise
               （https://splunk.<prefix>.internal:8088、自己署名なので --splunk-skip-verify。VPC の中。2026-09-28 から AWS の外の Splunk へは送らない）。
               2026-09-26 まで MSK Connect の Splunk Connect for Kafka にする予定だったが、Spark から直接書くことにした）
-どのトピックがメトリクスでどれがログかは --metric-topics / --log-topics（既定は Telegraf の metrics と traps,logs。
-logs は機器の syslog。SR Linux が lab の EC2 へ送り、lab の EC2 が Telegraf（ECS）の内部 NLB へ DNAT する）。格納先ごとに別のストリーミングクエリ（別の Kafka の購読と checkpoint）に
+どのトピックがメトリクスでどれがログかは --metric-topics / --log-topics（既定は metrics,gnmi と traps,logs,flows。
+logs は機器の syslog を syslog-ng（app/syslog-ng）が、flows は NetFlow / sFlow を GoFlow2 が書く。cycle 012）。格納先ごとに別のストリーミングクエリ（別の Kafka の購読と checkpoint）に
 する。1 つが止まったらジョブを 1 で終わらせ、EMR Serverless に起こし直させる（どのクエリも checkpoint の続きから読む）。
 
 Telegraf の JSON 出力（outputs.kafka の data_format = "json"、json_timestamp_units = "1s"）は
   {"fields": {…}, "name": "<measurement>", "tags": {"agent_host": "…", "host": "…", …}, "timestamp": <秒>}
 の形。列に分けるのは timestamp / name / agent_host / host だけで、tags と fields は JSON 文字列のまま入れる
 （機器やメトリクスが増えてもテーブルの列を変えないため。IaC/terraform/aws-managed/pipeline/analytics/tables.tf の列と同じ）。
+syslog-ng も logs にこの形で書く。flows（GoFlow2 の JSON。キーは snake_case で、時刻は time_received_ns のナノ秒）だけは形が違うので、
+read_rows がトピックで分けて同じ形に読み替える（name は flow。FLOW_TAGS / FLOW_FIELDS の表。flow_message が同じ読み替えを Python で書いたもの）。
 
 どの行にも一意の番号 event_id を付ける: Kafka のメッセージの value（from_json の前のバイト列そのまま）の SHA-256 の 16 進 64 文字（F.sha2）。
 中身から作るので、Spark のやり直しで同じメッセージを送り直しても、Telegraf が同じメッセージを Kafka に 2 回入れても同じ値になり、読む側で重複を落とせる
@@ -65,8 +67,15 @@ import time
 import urllib.error
 import urllib.request
 
-METRIC_TOPICS = "metrics,gnmi,mdt"   # metrics = Telegraf の inputs.snmp と lab の gNMI を変えた共通の形、gnmi = inputs.gnmi、mdt = inputs.cisco_telemetry_mdt（app/telegraf/telegraf.conf.in。Telegraf（ECS）で動く）
-LOG_TOPICS = "traps,logs"   # traps = Telegraf の inputs.snmp_trap、logs = inputs.syslog（機器の syslog。measurement は device_log）
+METRIC_TOPICS = "metrics,gnmi"   # metrics = Telegraf の inputs.snmp と lab の gNMI を変えた共通の形、gnmi = inputs.gnmi（app/telegraf/telegraf.conf.in。Telegraf（ECS）で動く。MDT は cycle 012 で外した）
+LOG_TOPICS = "traps,logs,flows"   # traps = Telegraf の inputs.snmp_trap、logs = syslog-ng（機器の syslog。measurement は device_log）、flows = GoFlow2（NetFlow / sFlow）
+# flows（GoFlow2 の JSON）を Telegraf の形に読み替える表（read_rows と flow_message が同じ表を使う）。(Telegraf の形のキー, GoFlow2 のキー)
+FLOW_TOPIC = "flows"
+FLOW_NAME = "flow"
+FLOW_TAGS = (("sampler", "sampler_address"), ("src", "src_addr"), ("dst", "dst_addr"), ("proto", "proto"), ("src_port", "src_port"),
+             ("dst_port", "dst_port"), ("in_if", "in_if"), ("out_if", "out_if"), ("type", "type"))
+FLOW_FIELDS = (("bytes", "bytes"), ("packets", "packets"))
+FLOW_TIME_KEY = "time_received_ns"   # ナノ秒。1e9 で割って小数を切り、秒（Telegraf の timestamp と同じ単位）にする（double の割り算。read_rows と flow_message で同じ）
 SINKS = ("iceberg", "opensearch", "prometheus", "splunk")
 # 接続の認証（先頭が既定 = マネージド版。OSS 版は環境変数で後ろの方にする。モジュールの docstring）
 KAFKA_AUTHS = ("iam", "none")
@@ -209,6 +218,7 @@ def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
     from pyspark.sql import types as T
 
     # Telegraf の JSON のうち、列に分ける部分だけ型を書く。tags / fields は文字列のまま
+    # （値は数値でも JSON の文字のまま文字列で入る。Spark の from_json は StringType に JSON の値の字面を入れる）
     schema = T.StructType([
         T.StructField("timestamp", T.LongType()),
         T.StructField("name", T.StringType()),
@@ -236,9 +246,24 @@ def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
     if max_offsets_per_trigger:
         reader = reader.option("maxOffsetsPerTrigger", str(max_offsets_per_trigger))
     raw = reader.load()
+    value = F.col("value").cast("string")
+    # flows（GoFlow2）は Telegraf の形ではないので、同じ形（timestamp / name / tags / fields）の struct に読み替える（flow_message と同じ表）。
+    # 無いキーは map に入れない（Telegraf の tags / fields と同じく、値が null のキーを持たない）
+    flow = F.from_json(value, T.MapType(T.StringType(), T.StringType()))
+
+    def flow_map(pairs):
+        kv = [c for key, src in pairs for c in (F.lit(key), flow[src])]
+        return F.map_filter(F.create_map(*kv), lambda k, v: v.isNotNull())
+
+    flow_struct = F.struct(
+        (flow[FLOW_TIME_KEY].cast("long") / 1000000000).cast("long").alias("timestamp"),
+        F.lit(FLOW_NAME).alias("name"),
+        flow_map(FLOW_TAGS).alias("tags"),
+        flow_map(FLOW_FIELDS).alias("fields"),
+    )
     parsed = raw.select(
         F.col("topic"),
-        F.from_json(F.col("value").cast("string"), schema).alias("m"),
+        F.when(F.col("topic") == FLOW_TOPIC, flow_struct).otherwise(F.from_json(value, schema)).alias("m"),
         # 一意の番号は from_json の前の value（binary のまま）から作る。同じバイト列なら、いつ何度読んでも同じ値（モジュールの docstring）
         F.sha2(F.col("value"), 256).alias("event_id"),
         F.col("partition").alias("kafka_partition"),
@@ -260,6 +285,23 @@ def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
         F.col("kafka_offset"),
     ).where(F.col("ts").isNotNull())
     return rows
+
+
+def flow_message(m):
+    """GoFlow2 の JSON 1 行（dict）を Telegraf の形（timestamp / name / tags / fields）にする。read_rows が flows のトピックで
+    Spark の列で組むものと同じ読み替え（テストが GoFlow2 の 1 行で確かめる）。値は文字列（Spark の from_json の StringType と同じく、
+    数値は JSON の字面）。無いキーと null は入れない。time_received_ns が整数でなければ timestamp は None（read_rows では ts が null で捨てる）"""
+    def text(v):
+        return v if isinstance(v, str) else json.dumps(v)
+
+    def pick(pairs):
+        return {key: text(m[src]) for key, src in pairs if m.get(src) is not None}
+
+    try:
+        ts = int(int(text(m.get(FLOW_TIME_KEY))) / 1000000000)
+    except (TypeError, ValueError):
+        ts = None
+    return {"timestamp": ts, "name": FLOW_NAME, "tags": pick(FLOW_TAGS), "fields": pick(FLOW_FIELDS)}
 
 
 def row_to_record(row):
@@ -786,11 +828,11 @@ def all_topics(args):
 
 def ensure_topics(spark, bootstrap, topics):
     """無いトピックを作って、作った名前を返す（あるものは触らない）。
-    MSK は auto.create.topics.enable=true だが、それは produce のとき。Telegraf が最初の trap / syslog を出すまで traps / logs は無く
+    MSK は auto.create.topics.enable=true だが、それは produce のとき。Telegraf が最初の trap、syslog-ng が最初の syslog、GoFlow2 が最初のフローを出すまで traps / logs / flows は無く
     （SNMP のポーリングを止めている（Telegraf の SNMP_POLL=0）と metrics もずっと無い）、
     Spark の offset 読み（AdminClient）は無いトピックで UnknownTopicOrPartitionException で落ちて、起こし直しの上限（1 時間 5 回）を
     使い切っていた（2026-09-27 実測）。パーティション数と複製数はブローカーの既定（IaC/terraform/aws-managed/pipeline/stream の MSK configuration）。
-    Telegraf と同時に作って TopicExistsException になっても、あるのだから先へ進む"""
+    Telegraf・syslog-ng・GoFlow2 と同時に作って TopicExistsException になっても、あるのだから先へ進む"""
     jvm = spark._jvm
     props = jvm.java.util.Properties()
     props.put("bootstrap.servers", bootstrap)

@@ -278,9 +278,9 @@ variable "device_map" {
 }
 
 variable "metric_topics" {
-  description = "Kafka topics that carry metrics (Telegraf inputs.snmp and the common shape converted from the lab gNMI -> metrics, inputs.gnmi -> gnmi, inputs.cisco_telemetry_mdt -> mdt). Read by the iceberg, prometheus and splunk sinks"
+  description = "Kafka topics that carry metrics (Telegraf inputs.snmp and the common shape converted from the lab gNMI -> metrics, inputs.gnmi -> gnmi). Read by the iceberg, prometheus and splunk sinks"
   type        = list(string)
-  default     = ["metrics", "gnmi", "mdt"]
+  default     = ["metrics", "gnmi"]
 
   validation {
     condition     = length(var.metric_topics) > 0
@@ -289,9 +289,9 @@ variable "metric_topics" {
 }
 
 variable "log_topics" {
-  description = "Kafka topics that carry logs (traps = Telegraf inputs.snmp_trap, logs = syslog of the SR Linux routers, DNATed by the lab EC2 to the Telegraf NLB). Read by the iceberg and opensearch sinks"
+  description = "Kafka topics that carry logs (traps = Telegraf inputs.snmp_trap, logs = syslog of the routers written by syslog-ng, flows = NetFlow / sFlow written by GoFlow2 and reshaped by the Spark job). Read by the iceberg and opensearch sinks"
   type        = list(string)
-  default     = ["traps", "logs"]
+  default     = ["traps", "logs", "flows"]
 
   validation {
     condition     = length(var.log_topics) > 0

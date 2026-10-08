@@ -87,8 +87,9 @@ check("EMR / Grafana / Splunk は土台の spark / grafana / splunk の SG を�
 
 _sg_keys = re.search(r'security_groups = \{(.*?)\n  \}', _sg_tf, re.S)
 _sg_keys = set(re.findall(r'^\s+(\w+)\s+=\s+"', _sg_keys.group(1), re.M)) if _sg_keys else set()
-SG_KEYS = {"web", "lab", "telegraf_dialout", "telegraf_dialin", "telegraf_dialout_nlb", "msk", "spark", "grafana", "splunk", "nautobot", "nautobot_db", "lambda", "workflow", "runtime"}
-check(f"土台の SG はワークロードごとの 14 個と endpoints（{sorted(_sg_keys)}）",
+SG_KEYS = {"web", "lab", "telegraf_dialout", "telegraf_dialin", "telegraf_dialout_nlb", "syslog_ng", "goflow2", "msk", "spark", "grafana", "splunk", "nautobot", "nautobot_db",
+           "lambda", "workflow", "runtime"}
+check(f"土台の SG はワークロードごとの 16 個（syslog_ng と goflow2 は cycle 012 で足した。kafka_ui は cycle 010 で外した）と endpoints（{sorted(_sg_keys)}）",
       _sg_keys == SG_KEYS and re.findall(r'resource "aws_security_group" "(\w+)"', _core) == ["workload", "endpoints"]
       and re.search(r'resource "aws_security_group" "workload" \{\n\s*for_each = local\.workload_security_groups\n', _sg_tf) is not None)
 # 通信の表を読む（from = sg の行は aws_api_clients に展開する）
@@ -98,35 +99,53 @@ _flows = set()
 for _m in re.finditer(r'\{ from = ("?\w+"?), to = "(\w+)", protocol = "(\w+)", port = (\d+)(?:, to_port = (\d+))?(?:, only = "(\w+)")?, why = "([^"]*)" \}', _sg_tf):
     for _from in (_clients if _m.group(1) == "sg" else [_m.group(1).strip('"')]):
         _flows.add((_from, _m.group(2), _m.group(3), int(_m.group(4)), int(_m.group(5) or _m.group(4)), _m.group(6) or ""))
-EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_dialout", "telegraf_dialin", "spark", "grafana", "splunk", "nautobot", "lambda", "workflow", "runtime") for t in ("endpoints", "s3")} | {
+EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_dialout", "telegraf_dialin", "syslog_ng", "goflow2", "spark", "grafana", "splunk", "nautobot", "lambda",
+                                                         "workflow", "runtime") for t in ("endpoints", "s3")} | {
     # Nautobot（IaC/terraform/aws-managed/pipeline/nautobot。2026-10-04）: 画面は Web の EC2 からのポートフォワード、DB は RDS。
     # Neptune は Neptune Analytics にしたので SG が無く、行も無い（neptune-graph-data のエンドポイントの 443 で届く。2026-10-04）
     ("web", "nautobot", "tcp", 8080, 8080, ""), ("nautobot", "nautobot_db", "tcp", 5432, 5432, ""),
     ("web", "grafana", "tcp", 3000, 3000, ""), ("web", "splunk", "tcp", 8000, 8000, ""), ("web", "workflow", "tcp", 8233, 8233, ""),
     ("telegraf_dialout", "msk", "tcp", 9098, 9098, ""), ("telegraf_dialin", "msk", "tcp", 9098, 9098, ""), ("spark", "msk", "tcp", 9098, 9098, ""), ("msk", "msk", "tcp", 9092, 9098, ""),
+    # syslog-ng と GoFlow2 は MSK の IAM 認証を喋れないので SASL/SCRAM の 9096（cycle 012）
+    ("syslog_ng", "msk", "tcp", 9096, 9096, ""), ("goflow2", "msk", "tcp", 9096, 9096, ""),
     # Kafbat UI（IaC/terraform/aws-managed/pipeline/stream。2026-10-05）: cycle 010 から Web の EC2 の Docker で動くので、MSK へは Web から IAM の 9098
     ("web", "msk", "tcp", 9098, 9098, ""),
     ("spark", "spark", "tcp", 0, 65535, ""), ("spark", "splunk", "tcp", 8088, 8088, ""),
     # Splunk のクラスター（「Splunk をクラスターにする（004）」）: manager・indexer・search head の間だけ
     ("splunk", "splunk", "tcp", 8089, 8089, ""), ("splunk", "splunk", "tcp", 9887, 9887, ""), ("splunk", "splunk", "tcp", 9997, 9997, ""),
-    ("telegraf_dialout_nlb", "telegraf_dialout", "udp", 1162, 1162, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "udp", 5140, 5140, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "tcp", 57000, 57000, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "tcp", 8080, 8080, ""),
+    # NLB → タスク（cycle 012 で syslog を syslog-ng へ移し、NetFlow / sFlow の GoFlow2 を足し、MDT の 57000/tcp を外した）。tcp はヘルスチェック
+    ("telegraf_dialout_nlb", "telegraf_dialout", "udp", 1162, 1162, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "tcp", 8080, 8080, ""),
+    ("telegraf_dialout_nlb", "syslog_ng", "udp", 5140, 5140, ""), ("telegraf_dialout_nlb", "syslog_ng", "tcp", 5140, 5140, ""),
+    ("telegraf_dialout_nlb", "goflow2", "udp", 2055, 2055, ""), ("telegraf_dialout_nlb", "goflow2", "udp", 6343, 6343, ""), ("telegraf_dialout_nlb", "goflow2", "tcp", 8081, 8081, ""),
     ("lab_mgmt", "telegraf_dialout_nlb", "udp", 162, 162, ""), ("lab_mgmt", "telegraf_dialout_nlb", "udp", 5140, 5140, ""),
+    ("lab_mgmt", "telegraf_dialout_nlb", "udp", 2055, 2055, ""), ("lab_mgmt", "telegraf_dialout_nlb", "udp", 6343, 6343, ""),
     ("lab", "telegraf_dialout_nlb", "udp", 162, 162, "egress"), ("lab", "telegraf_dialout_nlb", "udp", 5140, 5140, "egress"),
+    # NetFlow / sFlow は lab の EC2 のホストが自分の IP からも送る（SR Linux は NetFlow を送れないので tools/netflow_send.py で試す）ので両側
+    ("lab", "telegraf_dialout_nlb", "udp", 2055, 2055, ""), ("lab", "telegraf_dialout_nlb", "udp", 6343, 6343, ""),
     # ポーリングと gNMI は取りにいく側（telegraf_dialin）だけ。受ける側（telegraf_dialout）は機器へ出ない（2026-10-04 に分けた）
     ("telegraf_dialin", "lab_mgmt", "udp", 161, 161, ""), ("telegraf_dialin", "lab_mgmt", "tcp", 57400, 57400, ""),
     ("telegraf_dialin", "lab", "udp", 161, 161, "ingress"), ("telegraf_dialin", "lab", "tcp", 57400, 57400, "ingress"),
 }
 check(f"通信の表は決めた流れだけ（多い: {sorted(_flows - EXPECTED_FLOWS)} 足りない: {sorted(EXPECTED_FLOWS - _flows)}）",
-      _flows == EXPECTED_FLOWS and _sg_tf.count("{ from = ") == len(EXPECTED_FLOWS) - 2 * len(_clients) + 2 + 1)
+      _flows == EXPECTED_FLOWS and _sg_tf.count("{ from = ") == len(EXPECTED_FLOWS) - 2 * len(_clients) + 2)
 _core_vars = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", "variables.tf"), encoding="utf-8").read()
-check("MDT の送り元は変数 mdt_source_cidrs の CIDR から NLB の 57000/tcp だけ（受信だけ。既定は空、0.0.0.0/0 と重複とネットワークアドレスでない書き方を拒む）",
-      re.search(r'\[for c in var\.mdt_source_cidrs :\s*\{ from = "cidr:\$\{c\}", cidr = c, to = "telegraf_dialout_nlb", protocol = "tcp", port = 57000, why = "[^"]*" \}\s*\]', _sg_tf) is not None
+def _no_comment(t):
+    return "\n".join(l for l in t.splitlines() if not l.lstrip().startswith("#"))
+_up_src = open(os.path.join(ROOT, "ops", "up.sh"), encoding="utf-8").read()
+_oss_up_src = open(os.path.join(ROOT, "oss", "ops", "up.sh"), encoding="utf-8").read()
+_denv_keys = open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read().split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1]
+_MDT_NOTE = 'if [ -n "${MDT_SOURCE_CIDRS:-}" ]; then echo "注意: MDT_SOURCE_CIDRS は 2026-10-08 から使わない'
+check("MDT の受け口（送り元の変数 mdt_source_cidrs と NLB の 57000/tcp）は cycle 012 で外した。deploy.env の MDT_SOURCE_CIDRS は読むだけ読み（前の deploy.env で止めない）、"
+      "ops/up.sh と oss/ops/up.sh が注意を出す。CIDR の行を書ける表の仕組み（cidr）は残す",
+      "mdt_source_cidrs" not in _no_comment(_sg_tf) + _no_comment(_core_vars) and "57000" not in _no_comment(_sg_tf)
+      and "mdt_source_cidrs" not in _up_src + _oss_up_src and "MDT_SOURCE_CIDRS" not in env_example
       and "cidr     = try(f.cidr, null)" in _sg_tf
-      and re.search(r'variable "mdt_source_cidrs" \{[\s\S]*?type\s*=\s*list\(string\)\s*default\s*=\s*\[\][\s\S]*?cidrsubnet\(c, 0, 0\) == c[\s\S]*?length\(distinct\(var\.mdt_source_cidrs\)\) == length\(var\.mdt_source_cidrs\)'
-                    r'[\s\S]*?!contains\(var\.mdt_source_cidrs, "0\.0\.0\.0/0"\)', _core_vars) is not None
-      and 'MAIN_VARS+=(-var "mdt_source_cidrs=' in open(os.path.join(ROOT, "ops", "up.sh"), encoding="utf-8").read()
-      and "MDT_SOURCE_CIDRS" in open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read())
-check("Temporal の gRPC 7233（workflow）と Splunk の管理 API 8089（splunk。クラスターの splunk どうしは除く）は開けず、CIDR のルールは lab の管理ネットワーク・MDT の送り元・endpoints の送信なしだけ（EMR Serverless は 0.0.0.0/0 の inbound を拒否する）",
+      and re.search(r"(?<![A-Z_])MDT_SOURCE_CIDRS(?![A-Z_])", _denv_keys) is not None
+      and _up_src.count(_MDT_NOTE) == 1 and _oss_up_src.count(_MDT_NOTE) == 1
+      and [l for l in _no_comment(_up_src + _oss_up_src).splitlines() if "MDT_SOURCE_CIDRS" in l] == [l for l in (_up_src + _oss_up_src).splitlines() if l.startswith(_MDT_NOTE)])
+check("閉域の VPC エンドポイントに secretsmanager を書ける（syslog-ng と GoFlow2 の SCRAM の secret を ECS が取りにいく。cycle 012）",
+      re.search(r'"kinesis-firehose", "athena", "secretsmanager",\n\s*\], s\)\]\)', _core_vars) is not None and "athena and secretsmanager." in _core_vars)
+check("Temporal の gRPC 7233（workflow）と Splunk の管理 API 8089（splunk。クラスターの splunk どうしは除く）は開けず、CIDR のルールは lab の管理ネットワーク・表の cidr（cycle 012 で MDT の送り元を外し、いまは行が無い）・endpoints の送信なしだけ（EMR Serverless は 0.0.0.0/0 の inbound を拒否する）",
       not any(t == "workflow" and p <= 7233 <= q or t == "splunk" and f != "splunk" and p <= 8089 <= q for f, t, _, p, q, _ in _flows)
       and sorted(re.findall(r'cidr_ipv4\s*=\s*(.+)', _sg_tf)) == sorted(['each.value.to == "lab_mgmt" ? local.lab_mgmt_cidr : null', 'each.value.from == "lab_mgmt" ? local.lab_mgmt_cidr : each.value.cidr', '"127.0.0.1/32"'])
       and "var.vpc_cidr" not in _sg_tf and "cidr_ipv6" not in _sg_tf)
@@ -195,9 +214,10 @@ check("Kafka のトピック ARN は cluster → topic の置き換え", 'replac
 check("variable sinks は list、既定 3 つ（iceberg / opensearch / prometheus。2026-09-17 ユーザー決定）、validation は splunk を入れた 4 つ",
       re.search(r'variable "sinks"[\s\S]*?type\s*=\s*list\(string\)[\s\S]*?default\s*=\s*\["iceberg",\s*"opensearch",\s*"prometheus"\][\s\S]*?validation', tf, re.S) is not None
       and re.search(r'variable "sinks"[\s\S]*?validation[\s\S]*?\["iceberg",\s*"opensearch",\s*"prometheus",\s*"splunk"\]', tf, re.S) is not None)
-check("variable metric_topics / log_topics（既定 metrics / traps + logs、空を拒否）",
-      re.search(r'variable "metric_topics"[\s\S]*?default\s*=\s*\["metrics",\s*"gnmi",\s*"mdt"\][\s\S]*?validation', tf, re.S) is not None
-      and re.search(r'variable "log_topics"[\s\S]*?default\s*=\s*\["traps",\s*"logs"\][\s\S]*?validation', tf, re.S) is not None)
+check("variable metric_topics / log_topics（既定 metrics,gnmi / traps,logs,flows。mdt は無い（cycle 012）。空を拒否）",
+      re.search(r'variable "metric_topics"[\s\S]*?default\s*=\s*\["metrics",\s*"gnmi"\][\s\S]*?validation', tf, re.S) is not None
+      and re.search(r'variable "log_topics"[\s\S]*?default\s*=\s*\["traps",\s*"logs",\s*"flows"\][\s\S]*?validation', tf, re.S) is not None
+      and '"mdt"' not in tf)
 _splunk_tf = open(os.path.join(TF_DIR, "splunk.tf"), encoding="utf-8").read()
 _grafana_tf = open(os.path.join(TF_DIR, "grafana.tf"), encoding="utf-8").read()
 _ecs_tf = open(os.path.join(TF_DIR, "ecs.tf"), encoding="utf-8").read()
@@ -410,8 +430,9 @@ check("analytics に events / sns のエンドポイントは無い（SNS へは
 check("build の引数は spark / args（格納先ごとに Kafka を読む）", [a.arg for a in funcs["build"].args.args] == ["spark", "args"])
 check("pyspark はモジュールの先頭で import しない（テストと引数の検査を pyspark 無しで動かすため）",
       not any(isinstance(n, (ast.Import, ast.ImportFrom)) and "pyspark" in ast.dump(n) for n in tree.body))
-check("既定のトピックは metrics / gnmi / mdt（メトリクス。gnmi は Telegraf の inputs.gnmi、mdt は inputs.cisco_telemetry_mdt）と traps / logs（ログ。logs は機器の syslog）", re.search(r'^METRIC_TOPICS\s*=\s*"metrics,gnmi,mdt"', src, re.M) is not None
-      and re.search(r'^LOG_TOPICS\s*=\s*"traps,logs"', src, re.M) is not None)
+check("既定のトピックは metrics / gnmi（メトリクス。gnmi は Telegraf の inputs.gnmi。mdt は cycle 012 で外した）と traps / logs / flows（ログ。logs は syslog-ng、flows は GoFlow2）",
+      re.search(r'^METRIC_TOPICS\s*=\s*"metrics,gnmi"', src, re.M) is not None
+      and re.search(r'^LOG_TOPICS\s*=\s*"traps,logs,flows"', src, re.M) is not None)
 check("SINKS は iceberg / opensearch / prometheus / splunk（Terraform の validation と同じ）", re.search(r'^SINKS\s*=\s*\("iceberg", "opensearch", "prometheus", "splunk"\)', src, re.M) is not None)
 check("Kafka を readStream で読み、購読は引数（格納先ごと）", '.readStream.format("kafka")' in src and '.option("subscribe", topics)' in src)
 for k, v in (("kafka.security.protocol", "SASL_SSL"), ("kafka.sasl.mechanism", "AWS_MSK_IAM"),
@@ -445,6 +466,14 @@ check("event_id は from_json の前の value（binary のまま。cast しな�
 check("重複は落とさない（.dropDuplicates( を呼ばない。落とすのは読む側）", ".dropDuplicates(" not in src and ".dropDuplicatesWithinWatermark(" not in src)
 check("timestamp が無い行は捨てる", '.where(F.col("ts").isNotNull())' in src)
 check("tags / fields は JSON 文字列のまま", 'F.to_json(F.col("m.tags")).alias("tags_json")' in src and 'F.to_json(F.col("m.fields")).alias("fields_json")' in src)
+_rr = src[src.index("def read_rows("):src.index("def row_to_record(")]
+check("read_rows: flows のトピックだけ GoFlow2 の JSON を Telegraf の形の struct（timestamp / name / tags / fields）に読み替え、ほかは今の schema のまま（flow_message と同じ表を使う）",
+      'F.when(F.col("topic") == FLOW_TOPIC, flow_struct).otherwise(F.from_json(value, schema)).alias("m")' in _parsed
+      and 'F.from_json(value, T.MapType(T.StringType(), T.StringType()))' in _rr
+      and '(flow[FLOW_TIME_KEY].cast("long") / 1000000000).cast("long").alias("timestamp")' in _rr
+      and 'F.lit(FLOW_NAME).alias("name")' in _rr and 'flow_map(FLOW_TAGS).alias("tags")' in _rr and 'flow_map(FLOW_FIELDS).alias("fields")' in _rr
+      and "F.map_filter(F.create_map(*kv), lambda k, v: v.isNotNull())" in _rr
+      and re.search(r'^FLOW_TOPIC\s*=\s*"flows"$', src, re.M) is not None and re.search(r'^FLOW_NAME\s*=\s*"flow"$', src, re.M) is not None)
 
 # ---- 純粋な関数を本当に動かす（引数の検査、トピックの振り分け、名前の規則、protobuf と snappy の手組み）
 spec = importlib.util.spec_from_file_location("snmp_sinks", SRC)
@@ -467,8 +496,8 @@ def parse_error(argv):
 
 base = ["--bootstrap", "b:9098", "--checkpoint", "s3://bucket/analytics/checkpoint"]
 a = mod.parse_args(base + ["--sinks", "iceberg", "--iceberg-table", "s3tablesbucket.ns.t"])
-check("parse_args: 既定は metrics / traps,logs、checkpoint に / を足す、sinks はリスト",
-      a.metric_topics == "metrics,gnmi,mdt" and a.log_topics == "traps,logs" and a.checkpoint == "s3://bucket/analytics/checkpoint/" and a.sinks == ["iceberg"])
+check("parse_args: 既定は metrics,gnmi / traps,logs,flows、checkpoint に / を足す、sinks はリスト",
+      a.metric_topics == "metrics,gnmi" and a.log_topics == "traps,logs,flows" and a.checkpoint == "s3://bucket/analytics/checkpoint/" and a.sinks == ["iceberg"])
 a = mod.parse_args(base + ["--sinks", "iceberg, prometheus ,opensearch", "--iceberg-table", "t", "--prometheus-url", "https://p/api/v1/remote_write",
                            "--opensearch-endpoint", "https://o", "--metric-topics", " metrics , cpu ", "--log-topics", "traps,logs"])
 check("parse_args: 空白を除いて 3 つ、トピックも空白を除く", a.sinks == ["iceberg", "prometheus", "opensearch"] and a.metric_topics == "metrics,cpu" and a.log_topics == "traps,logs"
@@ -560,10 +589,10 @@ check("prometheus_series: 表に無い IP では sysName を足さない。devma
 
 # ---- トピックを起動時に作る（無いトピックを購読すると offset 読みで落ちる。2026-09-27）
 check("all_topics: 格納先が読むトピックの和（重複なし、引数の順）",
-      mod.all_topics(mod.parse_args(base + ["--sinks", "opensearch", "--opensearch-endpoint", "https://o"])) == ["traps", "logs"]
+      mod.all_topics(mod.parse_args(base + ["--sinks", "opensearch", "--opensearch-endpoint", "https://o"])) == ["traps", "logs", "flows"]
       and mod.all_topics(mod.parse_args(base + ["--sinks", "prometheus,opensearch", "--prometheus-url", "https://p/api/v1/remote_write", "--opensearch-endpoint", "https://o",
                                                  "--metric-topics", "metrics,gnmi", "--log-topics", "gnmi,traps,logs"])) == ["metrics", "gnmi", "traps", "logs"]
-      and mod.all_topics(mod.parse_args(base + ["--sinks", "prometheus", "--prometheus-url", "https://p/api/v1/remote_write"])) == ["metrics", "gnmi", "mdt"])
+      and mod.all_topics(mod.parse_args(base + ["--sinks", "prometheus", "--prometheus-url", "https://p/api/v1/remote_write"])) == ["metrics", "gnmi"])
 
 
 class _Fut:
@@ -934,6 +963,7 @@ class _Any:
     def __getattr__(self, k): return self
     def __call__(self, *a, **kw): return self
     def __getitem__(self, k): return self
+    def __truediv__(self, o): return self   # flows の time_received_ns（ナノ秒）を秒にする割り算
 
 
 class _Reader:
@@ -1180,6 +1210,41 @@ check("prometheus_series: ラベルの名前に event_id / kafka_* が出ない�
       all(not n.startswith(("event_id", "kafka_")) for l, _, _ in mod.prometheus_series(_recs) for n, _ in l)
       and len({tuple(l) for l, _, _ in mod.prometheus_series(_recs[:2])}) == 2)
 
+# ---- flows（GoFlow2 の JSON 1 行）→ 共通の形（cycle 012）。read_rows は同じ表を Spark の列で組む（本物の Spark で同じ結果になることは 012 の build.md）
+_gf = {"type": "NETFLOW_V5", "time_received_ns": 1700000000123456789, "sequence_num": 1, "sampling_rate": 0, "sampler_address": "192.0.2.1",
+       "time_flow_start_ns": 0, "bytes": 1500, "packets": 3, "src_addr": "10.0.0.1", "dst_addr": "10.0.0.2", "etype": "IPv4", "proto": "TCP",
+       "src_port": 443, "dst_port": 50001, "in_if": 1, "out_if": 2, "src_mac": "00:00:00:00:00:00", "as_path": [], "next_hop": ""}
+_gf_tags = {"sampler": "192.0.2.1", "src": "10.0.0.1", "dst": "10.0.0.2", "proto": "TCP", "src_port": "443", "dst_port": "50001",
+            "in_if": "1", "out_if": "2", "type": "NETFLOW_V5"}
+check("flow_message: GoFlow2 の 1 行 → name flow、tags 9 つ（sampler / src / dst / proto / ポート 2 つ / IF 2 つ / type）、fields は bytes / packets、"
+      "timestamp は time_received_ns を秒に（小数を切る）。値は文字列（Spark の from_json の StringType と同じ字面）。表に無いキー（etype / src_mac など）は持ってこない",
+      mod.flow_message(_gf) == {"timestamp": 1700000000, "name": "flow", "tags": _gf_tags, "fields": {"bytes": "1500", "packets": "3"}})
+check("flow_message: 無いキーと null は入れない。time_received_ns が無い・整数でないなら timestamp は None（read_rows では ts が null で捨てる）",
+      mod.flow_message({**{k: v for k, v in _gf.items() if k not in ("in_if", "packets")}, "out_if": None})
+      == {"timestamp": 1700000000, "name": "flow", "tags": {k: v for k, v in _gf_tags.items() if k not in ("in_if", "out_if")}, "fields": {"bytes": "1500"}}
+      and mod.flow_message({"time_received_ns": "abc"})["timestamp"] is None and mod.flow_message({})["timestamp"] is None
+      and mod.flow_message({"time_received_ns": "1700000000000000000"})["timestamp"] == 1700000000)
+check("flows の表: Telegraf の形のキーは重複なし、GoFlow2 のキーは design の 11 個（type / sampler_address / src_addr / dst_addr / proto / src_port / dst_port / in_if / out_if / bytes / packets）",
+      len({k for k, _ in mod.FLOW_TAGS + mod.FLOW_FIELDS}) == 11
+      and {g for _, g in mod.FLOW_TAGS + mod.FLOW_FIELDS} == {"type", "sampler_address", "src_addr", "dst_addr", "proto", "src_port", "dst_port", "in_if", "out_if", "bytes", "packets"}
+      and mod.FLOW_TIME_KEY == "time_received_ns" and "flows" in mod.LOG_TOPICS.split(",") and "flows" not in mod.METRIC_TOPICS.split(","))
+_frow = _kafka_row(json.dumps(mod.flow_message(_gf)).encode(), 20, topic="flows")
+_bodies = {}
+mod.sigv4_headers = lambda method, url, body, service, region, headers: dict(headers)
+mod.http_post = lambda url, body, headers, context=None: (_bodies.setdefault(url, []).append(body), (200, '{"errors":false}'))[1]
+try:
+    mod.make_splunk_sender("https://s:8088", "tok")([mod.row_to_record(_frow)])
+    mod.make_opensearch_sender("https://o", "snmp-logs", "ap-northeast-1")([mod.row_to_record(_frow)])
+finally:
+    mod.http_post, mod.sigv4_headers = _orig_post, _orig_sig
+_f_sp = json.loads(_bodies["https://s:8088/services/collector/event"][0].decode())
+_f_os = [json.loads(x) for x in _bodies["https://o/snmp-logs/_bulk"][0].decode().splitlines()]
+check("flows の行は logs と同じ送り先: Splunk は sourcetype netops:flows / source telegraf:flow、OpenSearch は snmp-logs の索引（表を足さない。012 の build.md の逸脱 a）",
+      _f_sp["sourcetype"] == "netops:flows" and _f_sp["source"] == "telegraf:flow" and _f_sp["event"]["tags"]["src"] == "10.0.0.1"
+      and _f_sp["event"]["fields"] == {"bytes": 1500, "packets": 3}   # 文字列の数値は送り先で数にする（Telegraf の Counter と同じ）
+      and len(_f_os) == 2 and _f_os[1]["topic"] == "flows" and _f_os[1]["measurement"] == "flow" and _f_os[1]["tags"]["sampler"] == "192.0.2.1"
+      and _f_os[1]["fields"] == {"bytes": 1500.0, "packets": 3.0})
+
 # ---- ops/up.sh / ops/down.sh / ops/check.sh / deploy.env.example とのつながり
 _up_jars = re.findall(r'^  "([0-9a-f]{64}):(\S+\.jar)"$', up, re.M)
 check("up.sh は 6 本の jar を <sha256>:<Maven のパス> で書き、5-2 で fetch_jars が取って照合してから S3 に置く。S3 の側も sync --delete で JARS に無い jar を消す",
@@ -1399,12 +1464,13 @@ check("AGENT は bedrock-runtime / bedrock-agentcore / ecr / logs を足し、KB
       _endpoints("base/ecr base/core agent", AGENT="1") == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs | 7"
       and _endpoints("base/ecr base/core agent", AGENT="1", CREATE_KB="1").startswith("OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs bedrock-agent-runtime | 8"))
 _ALL = "base/ecr base/core agent pipeline/lab pipeline/stream pipeline/analytics pipeline/graph workflow"
-check("全部なら 16 本で重複しない（ecr / logs / s3tables / bedrock-agentcore は 1 本ずつ。graph は Neptune Analytics の neptune-graph-data）。events は無く、アラートの送り手がいれば sns",
+check("全部なら 17 本で重複しない（ecr / logs / s3tables / bedrock-agentcore は 1 本ずつ。graph は Neptune Analytics の neptune-graph-data。"
+      "stream の secretsmanager は syslog-ng と GoFlow2 の SCRAM の secret。cycle 012）。events は無く、アラートの送り手がいれば sns",
       _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1", GRAFANA="1")
-      == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs s3tables neptune-graph-data kinesis-firehose sqs bedrock-agentcore.gateway athena bedrock-agent-runtime aps-workspaces sns | 16")
-check("sns のエンドポイントは Grafana か Splunk があるときだけ（Grafana はいつもアラートルールを持つ。どちらも無ければ 15 本。Splunk だけでも足す）",
-      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1").endswith("aps-workspaces | 15")
-      and _endpoints("base/ecr base/core pipeline/lab pipeline/stream pipeline/analytics", SPLUNK_ON_ECS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr logs s3tables sns | 7"
+      == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs secretsmanager s3tables neptune-graph-data kinesis-firehose sqs bedrock-agentcore.gateway athena bedrock-agent-runtime aps-workspaces sns | 17")
+check("sns のエンドポイントは Grafana か Splunk があるときだけ（Grafana はいつもアラートルールを持つ。どちらも無ければ 16 本。Splunk だけでも足す）",
+      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1").endswith("aps-workspaces | 16")
+      and _endpoints("base/ecr base/core pipeline/lab pipeline/stream pipeline/analytics", SPLUNK_ON_ECS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr logs secretsmanager s3tables sns | 8"
       and "events" not in _epblk.replace("events の", ""))
 check("kinesis-firehose（graph の履歴）と athena（workflow の query_history）は analytics を作る回か、analytics が state に残っているときだけ",
       _endpoints("base/ecr base/core pipeline/lab pipeline/graph", SKIP_ANALYTICS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr neptune-graph-data | 5"
@@ -1720,10 +1786,12 @@ check("up.sh は PIPELINE=1 で SKIP_LAB=1 だけなら止まらず、lab 以外
 check("up.sh は SKIP_LAB=1 でも stream を作らないなら lab の注意を出さず、lab を作るときも出さない",
       "lab は作らない" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1") and "lab は作らない" not in _skip(PIPELINE="1")
       and _skip(PIPELINE="1") == "OUT: L=0 S=0 A=0 G=0")
-check("up.sh は lab が無く MDT_SOURCE_CIDRS も空で stream を作るなら「この stream には何も届かない」と注意を出して続ける",
+check("up.sh は lab が無いまま stream を作るなら「この stream には何も届かない」と注意を出して続ける（cycle 012 で MDT を外し、受け口に届くのは lab の EC2 からだけになった。"
+      "前の MDT_SOURCE_CIDRS が書いてあっても出す）",
       "この stream には何も届かない" in _skip(PIPELINE="1", SKIP_LAB="1") and _skip(PIPELINE="1", SKIP_LAB="1").endswith("OUT: L=1 S=0 A=0 G=0")
-      and "何も届かない" not in _skip(PIPELINE="1", SKIP_LAB="1", MDT_SOURCE_CIDRS="10.10.0.0/16")
-      and "何も届かない" not in _skip(PIPELINE="1", MDT_SOURCE_CIDRS="") and "何も届かない" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1"))
+      and "この stream には何も届かない" in _skip(PIPELINE="1", SKIP_LAB="1", MDT_SOURCE_CIDRS="10.10.0.0/16")
+      and "何も届かない" not in _skip(PIPELINE="1") and "何も届かない" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1")
+      and "MDT" not in _skip(PIPELINE="1", SKIP_LAB="1"))
 check("up.sh の「土台だけになる」は SKIP_LAB と SKIP_STREAM と SKIP_GRAPH が全部あるときだけ（lab と graph だけ外しても stream は作る）",
       "土台だけになる" in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1", SKIP_GRAPH="1")
       and _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1", SKIP_GRAPH="1").endswith("OUT: L=1 S=1 A=1 G=1")
@@ -2010,11 +2078,12 @@ def _costaz(**env):
     return int(r.stdout.split("OUT: ")[1]) if "OUT: " in r.stdout else r.stderr
 check("費用: エンドポイントは 1.4 × 本数 × ENDPOINTS_AZ_NUM（2 本で 1 AZ 3、3 AZ 8）。土台は Web の EC2 の 4",
       _costaz() == 4 + 3 and _costaz(ENDPOINTS_AZ_NUM="3") == 4 + 8)
-check("費用: MSK は 2 AZ で 57、3 AZ で +27。Telegraf は受ける側のタスクが AZ ごとに増える（1 AZ 5、3 AZ 7）。Kafbat UI は cycle 010 から土台（Web の EC2）に入っていて stream では足さない",
-      _costaz(SKIP_STREAM="") == 7 + 57 + 5 and _costaz(SKIP_STREAM="", MSK_AZ_NUM="3") == 7 + 84 + 5
-      and _costaz(SKIP_STREAM="", TELEGRAF_AZ_NUM="3") == 7 + 57 + 7
+check("費用: MSK は 2 AZ で 57、3 AZ で +27。Telegraf・syslog-ng・GoFlow2 は Telegraf の受ける側のタスクが AZ ごとに増える（1 AZ 7、3 AZ 10。"
+      "syslog-ng と GoFlow2 の 2 タスクは cycle 012）。Kafbat UI は cycle 010 から土台（Web の EC2）に入っていて stream では足さない",
+      _costaz(SKIP_STREAM="") == 7 + 57 + 7 and _costaz(SKIP_STREAM="", MSK_AZ_NUM="3") == 7 + 84 + 7
+      and _costaz(SKIP_STREAM="", TELEGRAF_AZ_NUM="3") == 7 + 57 + 10
       and "Kafbat UI（Fargate" not in _costall
-      and "\n  COST_CENTS=$((COST_CENTS + (12 * (1 + TELEGRAF_AZ_NUM) + 24 + 5) / 10))   # Telegraf（Fargate のタスク 1 + TELEGRAF_AZ_NUM 個と NLB）\nfi\n" in _costall)
+      and "\n  COST_CENTS=$((COST_CENTS + (12 * (3 + TELEGRAF_AZ_NUM) + 24 + 5) / 10))   # Telegraf・syslog-ng・GoFlow2（Fargate のタスク 3 + TELEGRAF_AZ_NUM 個と NLB）\nfi\n" in _costall)
 check("費用: Neptune は 58 × NEPTUNE_AZ_NUM、Nautobot は Multi-AZ で 13 → 16",
       _costaz(SKIP_GRAPH="") == 7 + 58 and _costaz(SKIP_GRAPH="", NEPTUNE_AZ_NUM="3") == 7 + 174
       and _costaz(NAUTOBOT="1") == 7 + 13 and _costaz(NAUTOBOT="1", NAUTOBOT_DB_AZ_NUM="2") == 7 + 16)
