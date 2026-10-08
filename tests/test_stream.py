@@ -415,7 +415,8 @@ check("MSK へは IAM 認証（SASL_SSL / AWS_MSK_IAM / IAMClientCallbackHandler
       and '"KAFKA_CLUSTERS_0_PROPERTIES_SASL_CLIENT_CALLBACK_HANDLER_CLASS=software.amazon.msk.auth.iam.IAMClientCallbackHandler"' in _kscript
       and '"KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG=software.amazon.msk.auth.iam.IAMLoginModule required;"' in _kscript
       and "awsRoleArn" not in _kscript + kui_code and "sts:" not in kui_code
-      and re.search(r"^\s*http_put_response_hop_limit\s*=\s*2$", web_tf, re.M) is not None)
+      and re.search(r"^\s*http_put_response_hop_limit\s*=\s*2$", web_tf, re.M) is not None
+      and re.search(r'^\s*http_tokens\s*=\s*"required"$', web_tf, re.M) is not None)   # hop limit を広げても IMDSv1（トークン無しの GET）は開けない
 check("認証の違いは kafka_ui_security_protocol だけで切り替わる（SASL_SSL は IAM のブートストラップ、PLAINTEXT は平文。パラメータに書き、Web の EC2 のスクリプトが SASL_SSL のときだけ SASL の 3 つを足す。cycle 005 の OSS 版で使い回す）",
       re.search(r'variable "kafka_ui_security_protocol" \{[\s\S]*?contains\(\["SASL_SSL", "PLAINTEXT"\], var\.kafka_ui_security_protocol\)', stream_vars) is not None
       and 'kafka_ui_bootstrap_servers = lookup(local.kafka_bootstrap_by_protocol, var.kafka_ui_security_protocol, "")' in kui
@@ -459,7 +460,8 @@ check("Kafbat UI は Web の EC2 の systemd のユニットが Docker のコン
       "（stream は base/core より後に作られる）。S3 に web/ が無くて exit 0 する所より前に置く",
       'exec docker run --rm --name ${name_prefix}-kafka-ui --env-file "$ENV_FILE" -p 127.0.0.1:8082:8080 "$IMAGE"' in _kscript
       and "\n  exit 75\n" in _kscript
-      and all(l + "\n" in _kunit for l in ("After=docker.service network-online.target", "Requires=docker.service", "ExecStart=/usr/local/bin/${name_prefix}-kafka-ui",
+      and all(l + "\n" in _kunit for l in ("After=docker.service network-online.target", "Wants=network-online.target", "Requires=docker.service",
+                                           "ExecStart=/usr/local/bin/${name_prefix}-kafka-ui",
                                            "Restart=always", "RestartSec=30", "TimeoutStartSec=0", "WantedBy=multi-user.target"))
       and "command -v docker >/dev/null || dnf install -y docker\nsystemctl enable --now docker\n" in web_ud
       and web_ud.index("systemctl enable --now ${name_prefix}-kafka-ui.service") < web_ud.index("\n  exit 0\n"))
@@ -486,27 +488,36 @@ case "$1 $2" in
     var="FAKE_$(printf '%s' "${name##*/}" | tr 'a-z-' 'A-Z_')"
     [ -n "${!var:-}" ] || { echo "An error occurred (ParameterNotFound)" >&2; exit 254; }
     printf '%s\\n' "${!var}" ;;
-  "ecr get-login-password") echo ecr-token ;;
+  "ecr get-login-password") [ -z "${FAKE_ECR_FAIL:-}" ] || exit 255; echo ecr-token ;;
   *) exit 2 ;;
 esac
 """), ("docker", """#!/bin/bash
 echo "docker $*" >> "$FAKE_LOG"
 if [ "$1" = login ]; then cat > "$FAKE_LOG.stdin"; fi
+[ "$1" != "${FAKE_DOCKER_FAIL:-}" ] || { echo "docker $1 failed" >&2; exit 1; }   # FAKE_DOCKER_FAIL=pull なら pull が落ちる
 """)):
     with open(os.path.join(_kbin, _n), "w") as f:
         f.write(_body)
     os.chmod(os.path.join(_kbin, _n), 0o755)
 _krendered = _render_web_ud()
+# user_data のうちスクリプトを書く所（cat > … <<'__KAFKA_UI__' からユニットを書く手前まで。chmod を含む）を、置き場所だけ差し替えてそのまま打つ
+_kwrite = _krendered[_krendered.index("cat > /usr/local/bin/x-nwc-poc-kafka-ui <<'__KAFKA_UI__'\n"):_krendered.index("cat > /etc/systemd/system/x-nwc-poc-kafka-ui.service")]
 _krun_src = _krendered[_krendered.index("<<'__KAFKA_UI__'\n") + len("<<'__KAFKA_UI__'\n"):_krendered.index("\n__KAFKA_UI__\n")]
+_kmodes = []
 def _krun(**params):
     d = tempfile.mkdtemp(prefix="kafka-ui-run-", dir=_kbin)
     env_file, log = os.path.join(d, "kafka-ui.env"), os.path.join(d, "log")
     script = os.path.join(d, "kafka-ui")
-    with open(script, "w") as f:
-        f.write(_krun_src.replace("ENV_FILE=/run/x-nwc-poc-kafka-ui.env\n", f"ENV_FILE={env_file}\n"))
+    w = subprocess.run(["bash", "-c", "umask 022\n" + _kwrite.replace("/usr/local/bin/x-nwc-poc-kafka-ui", script)
+                        .replace("ENV_FILE=/run/x-nwc-poc-kafka-ui.env\n", f"ENV_FILE={env_file}\n")], capture_output=True, text=True)
+    _kmodes.append((w.returncode, oct(os.stat(script).st_mode & 0o777) if os.path.exists(script) else None))
     env = {"PATH": _kbin + os.pathsep + os.environ["PATH"], "FAKE_LOG": log}
     env.update({"FAKE_" + k.upper(): v for k, v in params.items()})
-    p = subprocess.run(["bash", script], env=env, capture_output=True, text=True)
+    # systemd と同じく、bash を挟まずにスクリプトを直に起こす（shebang と実行権が要る）
+    try:
+        p = subprocess.run([script], env=env, capture_output=True, text=True)
+    except OSError as e:
+        p = subprocess.CompletedProcess([script], f"exec failed: {e}", "", "")
     read = lambda q: open(q).read() if os.path.exists(q) else None
     return p, read(env_file), (oct(os.stat(env_file).st_mode & 0o777) if os.path.exists(env_file) else None), (read(log) or "").splitlines(), read(log + ".stdin")
 _KIMG = "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/x-nwc-poc-kafka-ui:v1.5.0"
@@ -538,6 +549,14 @@ for _leaf in ("image", "bootstrap_servers", "security_protocol", "admin_password
     _kmiss[_leaf] = (_p.returncode, _env, [l for l in _log if l.startswith("docker ")], "pw-Secret_1" in _p.stdout + _p.stderr, "Retrying" in _p.stderr)
 check(f"パラメータが 1 つでも読めなければ 75 で終わり（systemd が 30 秒後に起こし直す）、env も書かず docker も呼ばない（{_kmiss}）",
       all(v == (75, None, [], False, True) for v in _kmiss.values()))
+_kfail = {}
+for _what, _ps in (("ECR のログイン", dict(ecr_fail="1")), ("pull", dict(docker_fail="pull")), ("login", dict(docker_fail="login"))):
+    _p, _, _, _log, _ = _krun(bootstrap_servers="b-1:9098", security_protocol="SASL_SSL", **_KCOMMON, **_ps)
+    _kfail[_what] = (_p.returncode != 0, [l.split()[1] for l in _log if l.startswith("docker ")])
+check(f"ECR のログイン（aws ecr get-login-password と docker login のどちらか）や pull が落ちたら、古いイメージのまま docker run せずに非 0 で終わる（set -euo pipefail。systemd が 30 秒後に起こし直す。{_kfail}）",
+      _kfail == {"ECR のログイン": (True, ["login"]), "pull": (True, ["login", "pull"]), "login": (True, ["login"])})
+check(f"user_data はスクリプトを #!/bin/bash と set -euo pipefail で始めて 0755 にし、systemd のように直に起こせる（書いた結果と mode: {sorted(set(_kmodes))}）",
+      _krun_src.startswith("#!/bin/bash\nset -euo pipefail\n") and set(_kmodes) == {(0, "0o755")})
 shutil.rmtree(_kbin)
 
 check("開き方は Web の EC2 の 127.0.0.1:8082 への SSM のポートフォワード（AWS-StartPortForwardingSession。ToRemoteHost ではない）。PC 側も 8082（Web 8080 と Nautobot 8081 とぶつけない）",
