@@ -6,8 +6,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 ENVF=.env; [ -f "$ENVF" ] || ENVF=.env.example
-# .env の値を読む（docker compose の読み方に合わせる）。docker/compose/check.sh と同じ関数（読み方の説明はそちら。tests/test_local_compose.py が同じ入力で突き合わせる）
-env_get() { tr -d '\r' < "$ENVF" | sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$1=//p" | tail -1 | sed -e "s/^[[:space:]]*\"\([^\"]*\)\".*/\1/;t" -e "s/^[[:space:]]*'\([^']*\)'.*/\1/;t" -e 's/^[[:space:]]*//' -e 's/[[:space:]]\{1,\}#.*//' -e 's/[[:space:]]*$//'; }
+# .env の値は docker compose 自身に読ませる。docker/compose/check.sh と同じ 2 行（読み方の説明はそちら。tests/test_local_compose.py が突き合わせる）。
+# シェルに同じ名前の環境変数があればそちらが勝つ（compose と同じ）
+ENV_ALL=$(docker compose --env-file "$ENVF" config --environment 2>/dev/null) || { echo "docker compose が $ENVF を読めない（書式の誤りか、config --environment の無い古い compose。理由は docker/compose で docker compose --env-file $ENVF config --environment >/dev/null を打って見る。値の一部が出ることがある）" >&2; exit 1; }
+env_get() { printf '%s\n' "$ENV_ALL" | sed -n "s/^$1=//p" | tail -1; }
 SRLINUX_IMAGE=$(env_get SRLINUX_IMAGE)
 MULTITOOL_IMAGE=$(env_get MULTITOOL_IMAGE)
 : "${SRLINUX_IMAGE:?$ENVF に SRLINUX_IMAGE が無い}" "${MULTITOOL_IMAGE:?$ENVF に MULTITOOL_IMAGE が無い}"

@@ -5,10 +5,11 @@ set -euo pipefail
 cd "$(dirname "$0")"
 [ -f .env ] || { echo ".env が無い（up.sh の前に cp .env.example .env）" >&2; exit 1; }
 ENVF=.env
-# .env の値を読む（docker compose の読み方に合わせる）。行頭の export と CRLF の \r を落とし、"…" と '…' は中身だけ（閉じたあとの # メモは捨てる）、
-# クォート無しは空白のあとの # から後ろと前後の空白を落とす（x#y の # は残す）。同じ名前が 2 つあれば後のもの。"…" の中の \ の逃がしと $VAR の展開はしない。
-# docker/compose/lab.sh と同じ関数（tests/test_local_compose.py が同じ入力で突き合わせる）
-env_get() { tr -d '\r' < "$ENVF" | sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$1=//p" | tail -1 | sed -e "s/^[[:space:]]*\"\([^\"]*\)\".*/\1/;t" -e "s/^[[:space:]]*'\([^']*\)'.*/\1/;t" -e 's/^[[:space:]]*//' -e 's/[[:space:]]\{1,\}#.*//' -e 's/[[:space:]]*$//'; }
+# .env の値は docker compose 自身に読ませる（config --environment は compose が compose.yaml の展開に使う値を KEY=値 で 1 行ずつ出す）。クォート、\ の逃がし、
+# $X と $$ の展開、# メモの扱いが compose と同じになり、シェルに同じ名前の環境変数があればそちらが勝つのも compose と同じ。値は 1 行に限る（改行を含む値は読み違える）。
+# compose が読めないときのエラーは値の一部を含むことがあるので出さない。docker/compose/lab.sh と同じ 2 行（tests/test_local_compose.py が突き合わせる）
+ENV_ALL=$(docker compose --env-file "$ENVF" config --environment 2>/dev/null) || { echo "docker compose が $ENVF を読めない（書式の誤りか、config --environment の無い古い compose。理由は docker/compose で docker compose --env-file $ENVF config --environment >/dev/null を打って見る。値の一部が出ることがある）" >&2; exit 1; }
+env_get() { printf '%s\n' "$ENV_ALL" | sed -n "s/^$1=//p" | tail -1; }
 if command -v python3 >/dev/null; then PY=(python3)
 elif command -v uv >/dev/null; then PY=(uv run --python 3.13 python)
 else echo "python3 か uv が要る（応答の JSON を読む）" >&2; exit 1; fi
@@ -40,6 +41,20 @@ if command -v free >/dev/null; then
   m=$(free -m | awk '/^Mem:/{print $2}')
   [ "$m" -ge 19456 ] || echo "注意: メモリが ${m} MiB（20 GB 未満）。.wslconfig の memory を 20GB 以上にするか、lab を減らす（docker/compose/README.md）"
 fi
+
+# Spark の 2 つが動いているか。restart: on-failure:5 で止まったままのときと、依存（splunk / opensearch / prometheus）が healthy にならず Created のままのときを、
+# 下の件数の NG より先に分ける。--format json は 1 行 1 コンテナ（古い compose は配列を 1 行）で、コンテナが無ければ何も出ない。
+# compose の警告（up.sh が渡す SNMP_AGENTS などが無い）は出さない
+ps=$(docker compose ps -a --format json spark-splunk spark-http 2>/dev/null || true)
+for svc in spark-splunk spark-http; do
+  judge "Spark: $svc が動いている" \
+    "(lambda c: 'コンテナが無い（上がっていないか docker に繋がらない。docker/compose/up.sh で上げる）' if not c else 'ok' if all(x['State'] == 'running' for x in c)
+     else '; '.join(sorted({x['State'] + '（' + x['Status'] + '）' for x in c if x['State'] != 'running'})) + (
+       '。依存の splunk / opensearch / prometheus が healthy でない（docker compose -f docker/compose/compose.yaml ps -a で見る）' if all(x['State'] == 'created' for x in c)
+       else '。docker compose -f docker/compose/compose.yaml logs $svc で理由を見て、直してから docker/compose/up.sh $svc'))(
+     [x for v in [json.loads(l) for l in s.splitlines() if l.strip()] for x in (v if isinstance(v, list) else [v]) if x['Service'] == '$svc'])" \
+    <<<"$ps"
+done
 
 # Kafka は Kafbat UI のトピックの一覧を 1 回取って 3 つ見る。messagesCount はトピックの全パーティションのメッセージ数の和
 # （2026-10-08 に手元の compose で kafka-get-offsets.sh の最新オフセットの和と同じ値を確認。docker exec しなくて済む）
@@ -75,11 +90,11 @@ judge "Grafana: amp（Prometheus）の health が OK" \
   "'ok' if json.loads(s).get('status') == 'OK' else json.loads(s).get('message', s[:200])" \
   <<<"$(get GF_SECURITY_ADMIN_PASSWORD 'http://127.0.0.1:3000/api/datasources/uid/amp/health' || true)"
 # Telegraf の health（outputs.health）。up.sh と同じく lab の管理ネットの GW（app/containerlab/lab.sh の MGMT_GW）が host にあればそこ、無ければ 127.0.0.1 に打つ
-# （GW が無いときの Telegraf は全部のインターフェースで待つ）。ポートは compose と同じくシェルの HEALTH_PORT、.env の HEALTH_PORT、8080 の順。
+# （GW が無いときの Telegraf は全部のインターフェースで待つ）。ポートは compose と同じくシェルの HEALTH_PORT、.env の HEALTH_PORT、8080 の順（env_get が前の 2 つ）。
 # restart: on-failure:5 で止まったままのときもここで分かる
 MGMT_GW=203.0.113.1
 tb=127.0.0.1; ip -o -4 addr show 2>/dev/null | grep -q " $MGMT_GW/" && tb=$MGMT_GW
-hp=${HEALTH_PORT:-$(env_get HEALTH_PORT)}
+hp=$(env_get HEALTH_PORT)
 judge "Telegraf: health が 200" \
   "'ok' if s.strip() == '200' else ('繋がらない' if s.strip() in ('', '000') else 'HTTP ' + s.strip()) + '（docker compose ps -a telegraf が Exited なら logs telegraf で理由を見て up.sh telegraf）'" \
   <<<"$(get - -o /dev/null -w '%{http_code}' "http://$tb:${hp:-8080}/" || true)"

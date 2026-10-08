@@ -37,7 +37,7 @@ QEMU（binfmt）は要らない。build するイメージ（Telegraf、Grafana�
 cp docker/compose/.env.example docker/compose/.env
 ```
 
-`.env` の値は手元だけの試し用（パスワード・HEC の token・lab のイメージ）。パスワードと token を変えるなら、最初の `up.sh` の前にここで変える。OpenSearch と Grafana は初回の起動で admin のパスワードを volume に書き込むので、あとから `.env` だけ変えても古い値のまま（新しい値で 401。Spark が OpenSearch へ送るログは 401 で捨てられ、`check.sh` も NG になる。Splunk のパスワードと HEC の token が同じかは未確認）。あとから変えるなら `docker/compose/down.sh -v` で volume ごと消してから上げ直す。`.env` は git に入らない。`check.sh` と `lab.sh` も `.env` を compose と同じように読む（行頭の `export `、CRLF、クォート無しの値の後ろの ` # メモ` は落とす）。
+`.env` の値は手元だけの試し用（パスワード・HEC の token・lab のイメージ）。パスワードと token を変えるなら、最初の `up.sh` の前にここで変える。OpenSearch と Grafana は初回の起動で admin のパスワードを volume に書き込むので、あとから `.env` だけ変えても古い値のまま（新しい値で 401。Spark が OpenSearch へ送るログは 401 で捨てられ、`check.sh` も NG になる。Splunk のパスワードと HEC の token が同じかは未確認）。あとから変えるなら `docker/compose/down.sh -v` で volume ごと消してから上げ直す。`.env` は git に入らない。`check.sh` と `lab.sh` は `.env` の値を `docker compose --env-file .env config --environment` で compose 自身に読ませるので、クォート、`$` の展開、` # メモ` の扱いは compose と同じになる（値に `$` をそのまま入れるなら `$$` と書くか `'…'` で囲む）。シェルに同じ名前の環境変数があればそちらが勝つのも compose と同じ。値は 1 行に限る。書式の誤りで compose が読めないと、2 つとも値を出さずに `docker compose が .env を読めない` で止まる（理由は `docker/compose` で `docker compose --env-file .env config --environment >/dev/null` を打つと出る。値の一部が出ることがある）。`config --environment` が無い古い compose でも同じく止まる（どの版から有るかは未確認。v5.1.3 には有る）。
 
 ```bash
 docker/compose/lab.sh up
@@ -49,7 +49,7 @@ lab を上げる（`sudo` のパスワードを聞かれる）。compose より�
 docker/compose/up.sh
 ```
 
-`app/containerlab/lab_topology.py` から Telegraf のポーリング先・gNMI の購読先・Spark の device map を作り、`docker compose up -d --build` する。Splunk が `healthy` になるまで 2〜3 分。`docker compose -f docker/compose/compose.yaml ps` で 11 サービスが `running` になればよい。`docker compose` を直に打つと `SNMP_AGENTS` が空になり、Telegraf が起動の検査で止まるので、上げ直しも `up.sh` から（`docker/compose/up.sh telegraf` で Telegraf だけ）。Telegraf の 4 つの受け口（下の「ぶつかりやすいポート」）は、host に `203.0.113.1` があればそこだけで待つ（`TELEGRAF_BIND`。`ip -o -4 addr show` で見る）。lab より先に打つと `WARNING: lab の管理ネット（203.0.113.1）がまだ無いので…` が出て、WSL の全部のインターフェースで待つ。そのときは `lab.sh up` のあとに `docker/compose/up.sh telegraf` で `203.0.113.1` だけに直す。
+`app/containerlab/lab_topology.py` から Telegraf のポーリング先・gNMI の購読先・Spark の device map を作り、`docker compose up -d --build` する。Spark の 2 つは送り先（`spark-splunk` は Splunk、`spark-http` は OpenSearch と Prometheus）が `healthy` になるまで起こさない（先に起きると送り先への POST が落ちてジョブが終わる）ので、`up.sh` は Splunk が `healthy` になるまでの 2〜3 分戻らない。`docker compose -f docker/compose/compose.yaml ps` で 11 サービスが `running` になればよい。送り先が `healthy` にならなければ `up.sh` は `dependency failed to start: container nwc-local-splunk-1 is unhealthy` のように止まり、Spark は `Created` のまま残る。`logs splunk`（か `opensearch` / `prometheus`）で理由を見て、直してから `up.sh` を打ち直す。`docker compose` を直に打つと `SNMP_AGENTS` が空になり、Telegraf が起動の検査で止まるので、上げ直しも `up.sh` から（`docker/compose/up.sh telegraf` で Telegraf だけ）。Telegraf の 4 つの受け口（下の「ぶつかりやすいポート」）は、host に `203.0.113.1` があればそこだけで待つ（`TELEGRAF_BIND`。`ip -o -4 addr show` で見る）。lab より先に打つと `WARNING: lab の管理ネット（203.0.113.1）がまだ無いので…` が出て、WSL の全部のインターフェースで待つ。そのときは `lab.sh up` のあとに `docker/compose/up.sh telegraf` で `203.0.113.1` だけに直す。
 
 続けて `docker/compose/lab.sh check` で BGP・IS-IS・EVPN、VM の LAG と ping、SNMP の応答を見る（bond0 が無いと出たら WSL のカーネルに bonding が無い。`uname -r` と `zcat /proc/config.gz | grep BONDING` を控えておく）。
 
@@ -57,7 +57,7 @@ docker/compose/up.sh
 docker/compose/check.sh
 ```
 
-2〜3 分待ってから打つ。Kafka のトピックとメッセージ数、Prometheus の `snmp_interface_ifOperStatus`、OpenSearch の `snmp-logs`、Splunk の `sourcetype=netops:*`、Grafana のデータソース 2 つと Prometheus の health、Telegraf の health（`up.sh` と同じく `203.0.113.1` があればそこ、無ければ `127.0.0.1` の `HEALTH_PORT`）を見て、NG が無ければ `すべて ok`。Kafka のトピックは Spark が起動のときに作るので、Telegraf から届いているかはメッセージ数（Kafbat UI の `messagesCount`）で見る。`metrics` が 0 件なら NG。trap の `traps` は障害を入れるまで来ないので、0 件でも NG にせず `注意` を出す（下の `fail-main` か `trap-test` のあとに打ち直すと `ok` になる）。1 つでも NG なら非 0 で終わるので、`docker compose -f docker/compose/compose.yaml logs <サービス>` で見る。
+2〜3 分待ってから打つ。Spark の 2 つ（`spark-splunk` / `spark-http`）が `running` か、Kafka のトピックとメッセージ数、Prometheus の `snmp_interface_ifOperStatus`、OpenSearch の `snmp-logs`、Splunk の `sourcetype=netops:*`、Grafana のデータソース 2 つと Prometheus の health、Telegraf の health（`up.sh` と同じく `203.0.113.1` があればそこ、無ければ `127.0.0.1` の `HEALTH_PORT`）を見て、NG が無ければ `すべて ok`。Kafka のトピックは Spark が起動のときに作るので、Telegraf から届いているかはメッセージ数（Kafbat UI の `messagesCount`）で見る。`metrics` が 0 件なら NG。trap の `traps` は障害を入れるまで来ないので、0 件でも NG にせず `注意` を出す（下の `fail-main` か `trap-test` のあとに打ち直すと `ok` になる）。1 つでも NG なら非 0 で終わるので、`docker compose -f docker/compose/compose.yaml logs <サービス>` で見る。Spark が `exited` なら `restart: on-failure:5` を使い切って止まっている（`logs spark-splunk` などで理由を見て、直してから `docker/compose/up.sh spark-splunk`）。`created` なら送り先が `healthy` になっていない。
 
 障害を入れて見る:
 
@@ -81,7 +81,7 @@ docker/compose/lab.sh fail-main
 
 ## ぶつかりやすいポート
 
-Telegraf は host のネットワークにいるので、host の次のポートを開ける。待つのは lab の管理ネットの GW `203.0.113.1` だけ（`127.0.0.1` では待たない。lab の外から偽の trap や syslog を入れられないように）。lab が無いときに `up.sh` を打つと全部のインターフェースで待つ（`WARNING` が出る。WSL の外から届くかは WSL のネットワークのモード次第で、未確認）。ほかのプロセスが使っていると Telegraf が起動しない（`docker compose -f docker/compose/compose.yaml logs telegraf`）。`203.0.113.1` が無いとき（lab を `down` したまま）に Telegraf が起こし直されても `bind: cannot assign requested address` で落ちる。telegraf と spark は `restart: on-failure:5` なので、5 回起こし直しても落ちるなら止まったままになる。`docker compose -f docker/compose/compose.yaml ps -a` で `Exited` なら `logs telegraf` で理由を見て、直してから `docker/compose/up.sh telegraf` で起こす（`check.sh` の「Telegraf: health が 200」も NG になる）。lab を `down` / `up` で作り直したあとは、Telegraf が動いていても `docker compose -f docker/compose/compose.yaml restart telegraf` で待ち直させる（作り直した bridge で前の待ち受けが受け続けるかは未確認）。
+Telegraf は host のネットワークにいるので、host の次のポートを開ける。待つのは lab の管理ネットの GW `203.0.113.1` だけ（`127.0.0.1` では待たない。lab の外から偽の trap や syslog を入れられないように）。lab が無いときに `up.sh` を打つと全部のインターフェースで待つ（`WARNING` が出る。WSL の外から届くかは WSL のネットワークのモード次第で、未確認）。ほかのプロセスが使っていると Telegraf が起動しない（`docker compose -f docker/compose/compose.yaml logs telegraf`）。`203.0.113.1` が無いとき（lab を `down` したまま）に Telegraf が起こし直されても `bind: cannot assign requested address` で落ちる。telegraf と spark は `restart: on-failure:5` なので、5 回起こし直しても落ちるなら止まったままになる（Docker は回数を戻さない。spark は `check.sh` の「Spark: … が動いている」が NG になる）。`docker compose -f docker/compose/compose.yaml ps -a` で `Exited` なら `logs telegraf` で理由を見て、直してから `docker/compose/up.sh telegraf` で起こす（`check.sh` の「Telegraf: health が 200」も NG になる）。lab を `down` / `up` で作り直したあとは、Telegraf が動いていても `docker compose -f docker/compose/compose.yaml restart telegraf` で待ち直させる（作り直した bridge で前の待ち受けが受け続けるかは未確認）。
 
 MDT と health のポートは `.env` の `MDT_PORT` / `HEALTH_PORT` で変えられる（変えたら `docker/compose/up.sh telegraf`。`check.sh` も `HEALTH_PORT` に打つ）。trap と syslog は lab の `app/containerlab/lab.sh`（`TRAP_PORT` / `LOG_PORT`）と SR Linux の syslog の送り先に揃えてあるので変えられない。ぶつかったら相手のプロセスを止める。
 
