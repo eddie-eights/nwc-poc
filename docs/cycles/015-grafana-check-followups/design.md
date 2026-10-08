@@ -159,12 +159,12 @@ PM の判断（2026-10-09。Round 1 のセルフレビューの D2・D8）: 9-2 
    - `ops/check-grafana.sh`: OK で 0、NG で 1 とログの案内、偽の aws が `判定: 未確認（…）` で `Failed` を返すと 2 でログの案内なし、`FAKE_TF_EMPTY=grafana_service_name` で 3 と「Grafana が無い」、`--yes` で 3 と「使い方」
    - `oss/ops/up.sh` の通しで `FAKE_TF_EMPTY=grafana_service_name` なら 0 で最後の配るコマンドまで進み、標準エラーに「NG: IaC/terraform/oss/pipeline/analytics の出力 grafana_service_name が空」、警告「IaC/terraform/oss/pipeline/analytics の state か出力が読めない（上のエラー）ので、Grafana のアラートルールの評価を確かめていない（Grafana のサービスが安定するのも待っていない）。確かめ直すのは ops/check-grafana.sh --oss」が 2 回（9-2 と最後）。偽の aws の記録に Grafana の確かめの `send-command` も、空の `--services` の `ecs wait` も無い
    - `ops/up.sh` の 9-2 のブロックを偽の terraform で bash に打つ（`grafana_rules_step` は引数を出すだけ）
-     - `GRAFANA=1` なら state を見ずに出力のクラスターとサービスで `grafana_rules_step` を 1 回。`ANALYTICS_LEFT=1` で state に `aws_ecs_service.grafana[0]` があれば見出しに「前の回の Grafana が残っている」を足して 1 回（state が 64 KB を超えても）。無いか `ANALYTICS_LEFT` が空なら打たない
+     - `GRAFANA=1` なら state を見ずに出力のクラスターとサービスで `grafana_rules_step` を 1 回。`ANALYTICS_LEFT=1` で state に `aws_ecs_service.grafana[0]` があれば見出しに「前の回の Grafana が残っている」を足して 1 回（state が 64 KB を超えても）。無いか `ANALYTICS_LEFT` が空なら打たない。どれも `GRAFANA_WARN` は空のまま（確かめていないの警告を出さない）
      - 出力が空（`GRAFANA=1` の `grafana_service_name`、`ANALYTICS_LEFT=1` の `analytics_cluster_name`）か読めない（rc=1）なら、0 で最後まで進み、`grafana_rules_step` を打たず、`GRAFANA_WARN` は上の文で確かめ直すのは `ops/check-grafana.sh`。標準エラーに `NG: …の出力 <名前> が空` か `…が読めない（上のエラー）` と terraform のエラー
      - `ANALYTICS_LEFT=1` で `state list` が rc=1 なら、0 で最後まで進み、見出しに「前の回の analytics の state が読めない」、出力を読まず（terraform の呼び出しは `state list` だけ）、`grafana_rules_step` を打たず、`GRAFANA_WARN` は同じ文。terraform のエラーは標準エラーに残る
      - 9-2 に `grep -q`（コメントを除く）も `|| exit 1` も無い
 3. `bash ops/check.sh` の最後の行が `すべて通過`
-4. 退行の注入（セルフレビューで実際に落ちるのを見る）: ページの繰り返しを消すと 2 ページの NG のテストが落ちる。`seen` を消すと同じトークンのテストが落ちる（100 ページの歯止めで終わる形でも文が違うので落ちる）。`grafana_rules_step` の 2 の分岐を 1 と同じにすると未確認のテストが落ちる。`ssm_run` の締め切りを消すとテストが 20 秒で切れて落ちる。9-2 の `grafana_skip_warn` を `exit 1` に戻す（`ops/up.sh` と `oss/ops/up.sh` のそれぞれ）と警告のテストが落ちる。`state list` が読めないときの `GF_UNREAD` を消す（黙って飛ばす形）と state list のテストが落ちる。`grafana_skip_warn` の中で `GRAFANA_WARN` を入れないと最後の再掲のテストが落ちる
+4. 退行の注入（セルフレビューで実際に落ちるのを見る）: ページの繰り返しを消すと 2 ページの NG のテストが落ちる。`seen` を消すと同じトークンのテストが落ちる（100 ページの歯止めで終わる形でも文が違うので落ちる）。`grafana_rules_step` の 2 の分岐を 1 と同じにすると未確認のテストが落ちる。`ssm_run` の締め切りを消すとテストが 20 秒で切れて落ちる。9-2 の `grafana_skip_warn` を `exit 1` に戻す（`ops/up.sh` と `oss/ops/up.sh` のそれぞれ）と警告のテストが落ちる。`state list` が読めないときの `GF_UNREAD` を消す（黙って飛ばす形）と state list のテストが落ちる。`grafana_skip_warn` の中で `GRAFANA_WARN` を入れないと最後の再掲のテストが落ちる。9-2 の外側の `if` に `else grafana_skip_warn` を足す（Grafana が無い回にも警告する形）と打たない回のテストが落ちる
 5. 手元の Grafana 13.2.2（`docker run` の使い捨て。`__expr__` の式だけのルールを 2 つのグループに置く）で、引数なしの応答に `groupNextToken` が無く、`?group_limit=1` の応答の `data.groupNextToken` が空でなく、それを `group_next_token` に入れると 2 つ目のグループが返る。終わったら `docker rm -f -v` で消す
 
 ## 未確定事項とリスク

@@ -1225,18 +1225,19 @@ _r = {k: m92(**a) for k, a in {
 _an = "-chdir=IaC/terraform/aws-managed/pipeline/analytics"
 check("ops/up.sh の 9-2: Grafana を今回作る（GRAFANA）なら、state を見ずに analytics の出力のクラスターとサービスで grafana_rules_step を 1 回打つ",
       _r["made"][0].returncode == 0 and _r["made"][0].stdout.count("STEP ") == 1 and _step in _r["made"][0].stdout and _left_msg not in _r["made"][0].stdout
+      and "WARN=[]\n" in _r["made"][0].stdout
       and _r["made"][1] == [f"{_an} output -raw analytics_cluster_name", f"{_an} output -raw grafana_service_name"])
 check("ops/up.sh の 9-2（83）: 今回は analytics を作らない回（PIPELINE=0 など）でも、残った analytics（ANALYTICS_LEFT）の state に Grafana の ECS サービスがあれば、"
       "見出しにそう書いて同じく打つ",
-      _r["left"][0].returncode == 0 and _step in _r["left"][0].stdout and _left_msg in _r["left"][0].stdout
+      _r["left"][0].returncode == 0 and _step in _r["left"][0].stdout and _left_msg in _r["left"][0].stdout and "WARN=[]\n" in _r["left"][0].stdout
       and _r["left"][1][0] == f"{_an} state list")
 check("ops/up.sh の 9-2（83）: 残った analytics に Grafana の ECS サービスが無ければ（aws_ecs_service.grafana[…] だけを見る）打たない。"
       "analytics が残っていなければ state も見ない",
-      all(_r[k][0].returncode == 0 and "STEP" not in _r[k][0].stdout and "9-2." not in _r[k][0].stdout and _r[k][0].stdout.endswith("DONE\n")
+      all(_r[k][0].returncode == 0 and "STEP" not in _r[k][0].stdout and "9-2." not in _r[k][0].stdout and _r[k][0].stdout.endswith("WARN=[]\nDONE\n")
           for k in ("left_nogf", "none"))
       and _r["left_nogf"][1] == [f"{_an} state list"] and _r["none"][1] == [])
 check("ops/up.sh の 9-2（83）: state の一覧が長くても（パイプの 64 KB を超えても）Grafana を見つける（grep -q だと terraform が SIGPIPE で落ち、pipefail で見落とす）",
-      _r["left_big"][0].returncode == 0 and _step in _r["left_big"][0].stdout)
+      _r["left_big"][0].returncode == 0 and _step in _r["left_big"][0].stdout and "WARN=[]\n" in _r["left_big"][0].stdout)
 _skip = ("IaC/terraform/aws-managed/pipeline/analytics の state か出力が読めない（上のエラー）ので、Grafana のアラートルールの評価を確かめていない"
          "（Grafana のサービスが安定するのも待っていない）。確かめ直すのは ops/check-grafana.sh")
 check("ops/up.sh の 9-2（81）: analytics の出力（クラスターかサービスの名前）が空なら、どれのことかを言い（NG: の行）、止めずに（0）確かめていないと警告して先へ進む。"
