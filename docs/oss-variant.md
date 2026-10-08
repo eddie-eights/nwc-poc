@@ -41,7 +41,19 @@
 
 - クラスターは Neo4j Enterprise Edition だけの機能で、Community Edition では組めない。OSS 版の中で、Neo4j だけは 1 台で動く。
 - 止まっているあいだは、トポロジの表示、status の更新、エージェントのトポロジの検索ができない。
-- データはタスクの一時領域にある（Neo4j は NFS を非対応と明記している）。タスクが入れ替わると消えるので、Nautobot と lab の定義から同期し直す。
+- データはタスクの一時領域にある（Neo4j は NFS を非対応と明記している）。タスクが入れ替わると消えるので、下の「Neo4j を起こし直したあとの戻し方」の 2 段で lab の定義と Nautobot から同期し直す。
+
+**Neo4j を起こし直したあとの戻し方**
+
+タスクが HEALTHY になったら（止めてから起こし直すと 1 分ほど）、次の順に打つ。2026-10-08 に AWS で確かめた手順（[verification/20261008-oss-aws.md](verification/20261008-oss-aws.md) の「Neo4j を止める」）。
+
+1. `OWNER=<owner> ops/sync-graph.sh --oss`
+   - lab の定義から、物理層（機器・インタフェース・回線）と IP 層、EVPN・BGP 層を入れる。中心性もこれで答えるようになる。
+   - 変更履歴（`change` の頂点）は入らず、0 件のまま。
+2. Nautobot の Job「Telegraf とグラフ DB に同期」を手で打つ
+   - Nautobot の変更履歴と、Nautobot で足した機器と回線を Neo4j に書く。10-08 は変更履歴が 0 件から 19 件に戻った。
+
+順番はこの順にする。先に Job を打つと機器が入ってグラフが空でなくなり、`--replace` なしの `ops/sync-graph.sh` は何もしない。`--replace` を付けると lab の定義で上書きするので、Job で入れた Nautobot の機器と回線が消える。
 
 自分で立てているもの（マネージド版でも OSS か自前のコンテナ）: Telegraf、Grafana、Temporal、Nautobot（Redis と一緒）、Kafbat UI、containerlab（lab）、Splunk（OSS ではないが、VPC の中の ECS に自分で立てている）。
 Amazon Managed Grafana は、このアカウントに IAM Identity Center が無くて使えないので Grafana OSS にしている（[deploy.md](deploy.md)）。
@@ -62,7 +74,7 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
   `base/ecr`、`base/core`、`agent`、`pipeline/lab`、`pipeline/stream`、`pipeline/graph`、`pipeline/nautobot`、`pipeline/analytics`、`workflow`。Grafana、Web の部品、エージェント、workflow、Neo4j への同期までつないである（何がどう動くかは [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md) の「実装の状態」）。
 - **機能と格納先は選ばない。**
   `AGENT` / `PIPELINE` / `WORKFLOW` / `STORES` などのキーは読まず、ルートはいつも全部、格納先はいつも `iceberg` / `opensearch` / `prometheus` / `splunk` の 4 つ、Grafana もいつも作る。
-- **Nautobot の Job は Neo4j に書く（2026-10-08 に AWS で確かめた。手で打つ Job と JobHook の両方。[verification/20261008-oss-aws.md](verification/20261008-oss-aws.md)）。** Neo4j のタスクが入れ替わると変更履歴も消え、`ops/sync-graph.sh --oss` では戻らないので、そのあと Job「Telegraf とグラフ DB に同期」を打ち直す。Job の名前はマネージド版と同じで、説明に Neo4j と出る。エージェントの `root_cause` と `topology_graph` の `source` は `neo4j`（空なら `neo4j-empty`）
+- **Nautobot の Job は Neo4j に書く（2026-10-08 に AWS で確かめた。手で打つ Job と JobHook の両方。[verification/20261008-oss-aws.md](verification/20261008-oss-aws.md)）。** Neo4j のタスクが入れ替わると変更履歴も消え、`ops/sync-graph.sh --oss` では戻らないので、そのあと Job「Telegraf とグラフ DB に同期」を打ち直す（上の「Neo4j を起こし直したあとの戻し方」）。Job の名前はマネージド版と同じで、説明に Neo4j と出る。エージェントの `root_cause` と `topology_graph` の `source` は `neo4j`（空なら `neo4j-empty`）
   graph の state に `neo4j_uri` があるので、`IaC/terraform/aws-managed/pipeline/nautobot` が `GRAPH_BACKEND=neo4j`・`NEO4J_URI` と secrets の `NEO4J_PASSWORD` を渡し、`oss/ops/up.sh` が Neo4j のドライバー入りのイメージ（`app/nautobot/requirements-oss.txt`）を作る。
 - **打ち直しで Kafka か OpenSearch のタスク定義が変わると、1 台ずつ入れ替える。**
   terraform だけで apply すると、変わった台が同時に入れ替わる（Kafka は controller の過半数を、OpenSearch はインデックスを失う）。`oss/ops/up.sh` は変わる台を plan で拾い、リーダーでない台から 1 台ずつ `-target` で apply して、間でクラスターが健全に戻るのを ECS Exec で待つ（手元に Session Manager plugin が要る）。止まったら `oss/ops/up.sh` を打ち直せば残りの台だけ入れ替える。`OSS_ROLL=0` で一度に入れ替える。2026-10-08 に AWS で打った: 端末の無いシェルからは ECS Exec が `Cannot perform start session: EOF` で切れて止まり（何も入れ替えない）、`script -q /dev/null` で疑似端末を付けた 2 回目は Kafka の 3 台をリーダーでない 1 → 2 → 3 の順に入れ替えて rc=0（13 分 57 秒）。そのため標準入力が端末でないときは、`oss/ops/roll-nodes.sh` が ECS Exec を `script` で包んで疑似端末を付ける（Linux の util-linux の `script -q -c` と macOS の `script -q /dev/null` を見分ける。Linux の形は AWS では未確認）。`script` も打てなければ、何も入れ替えずに「端末から打つか `OSS_ROLL=0`」と出して止まる（手順は [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md) の「Kafka と OpenSearch を 1 台ずつ入れ替える」）。
@@ -86,7 +98,7 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
 | Kafka | EFS に置いた 3 台が組めて、1 時間流して 5 つのトピックに入った。1 台止めても残り 2 台で受け続け、戻ると 3 分以内に under-replicated が 0 に戻った | 日単位で流したときの遅さやロック |
 | OpenSearch | 3.9.0 の 3 台が Fargate で `node.store.allow_mmap=false` で起動し、green。trap が入り、1 台止めても yellow で検索できた。まとめ役（1 GB）は OOM で落ちなかった | なし |
 | VictoriaMetrics | 6 台分 396 系列が入り、Grafana に出た。vmstorage を 1 台止めて戻しても値は抜けなかった | vminsert だけが起き直したとき |
-| Neo4j + GDS | status の Lambda とエージェントの `centrality` が Neo4j を読み書きした。タスクを止めると Web は静的データに落ちて 200 のまま、起こし直して `ops/sync-graph.sh --oss` で戻った | Neptune の結果と同じ並びになるか（マネージド版と並べて立てる必要がある） |
+| Neo4j + GDS | status の Lambda とエージェントの `centrality` が Neo4j を読み書きした。タスクを止めると Web は静的データに落ちて 200 のまま、起こし直して `ops/sync-graph.sh --oss`（物理層と IP 層）と Nautobot の Job（変更履歴）の 2 段で戻った | Neptune の結果と同じ並びになるか（マネージド版と並べて立てる必要がある） |
 | Spark | EMR なしで S3 Tables に書けた（1 時間で 115,719 行）。OpenSearch、vminsert、Splunk にも入った | なし |
 | 全体 | lab でリンクを落とすと、Grafana のアラート → SNS → Lambda → Neo4j の status → Web のトポロジまでつながった。エージェントの `centrality`、`search_logs`、`query_metrics` が答えた。`oss/ops/down.sh` で接頭辞 `efukuda-nwc-oss` のリソースが消えた（設計どおり残るのは、Runtime の ENI が消えるまでの VPC・サブネット・runtime の SG と、`KEEP_ECR=1` の ECR。どちらも時間課金は無い） | マネージド版と並べて立つか（Fargate の vCPU の上限 30 に OSS 版だけで 21.5） |
 

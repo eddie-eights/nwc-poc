@@ -102,7 +102,7 @@
 
 2026-10-05 に、修復案（`proposal`）を S3 Tables の `proposal_events` だけに置き、Neptune をトポロジと `status` だけにした。[修復案を S3 Tables にまとめる（003）の設計](../../cycles/003-proposals-in-s3tables/design.md)。
 
-OSS 版（`IaC/terraform/oss/pipeline/graph`）には Neptune Analytics が無く、代わりに `neo4j.tf` が Neo4j Community Edition 2026.09.0 と Graph Data Science を ECS（Fargate ARM、1 vCPU / 4 GB）に 1 台立てる。データはタスクの一時領域で、タスクが入れ替わるとグラフは空に戻る（`ops/sync-graph.sh --oss` で入れ直す）。アプリは `bolt://`（7687）でユーザー `neo4j` とパスワード（SSM の SecureString `/<prefix>/neo4j-password`）でつなぐ。[oss-variant.md](../../oss-variant.md)、[マネージドを OSS に置き換えた環境を作る（005）の設計](../../cycles/005-oss-on-ecs/design.md)。
+OSS 版（`IaC/terraform/oss/pipeline/graph`）には Neptune Analytics が無く、代わりに `neo4j.tf` が Neo4j Community Edition 2026.09.0 と Graph Data Science を ECS（Fargate ARM、1 vCPU / 4 GB）に 1 台立てる。データはタスクの一時領域で、タスクが入れ替わるとグラフは空に戻る（`ops/sync-graph.sh --oss` で入れ直し、そのあと Nautobot の Job「Telegraf とグラフ DB に同期」で変更履歴を戻す。[oss-variant.md](../../oss-variant.md) の「Neo4j を起こし直したあとの戻し方」）。アプリは `bolt://`（7687）でユーザー `neo4j` とパスワード（SSM の SecureString `/<prefix>/neo4j-password`）でつなぐ。[oss-variant.md](../../oss-variant.md)、[マネージドを OSS に置き換えた環境を作る（005）の設計](../../cycles/005-oss-on-ecs/design.md)。
 
 ## 関連
 

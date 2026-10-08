@@ -8,7 +8,11 @@
 #   ops/sync-graph.sh --replace        # 入っていても入れ直す（Web で編集した内容と、アラートで付いた status は消えて lab の定義に戻る）
 #   ops/sync-graph.sh --dry-run        # グラフ DB には触らず、lab から作ったトポロジ（JSON）を出すだけ
 #   ops/sync-graph.sh --oss [--replace]  # OSS 版（cycle 005。接頭辞 <owner>-nwc-oss、IaC/terraform/oss/ の state、Neo4j）に入れる。
-#                                      # Neo4j はタスクが入れ替わるとグラフが空に戻るので、起こし直したあとにこれを打つ
+#                                      # Neo4j はタスクが入れ替わるとグラフが空に戻る。起こし直したあとは 2 段で戻す:
+#                                      #   1. これ（--oss）で lab の定義から物理層・IP 層・EVPN と BGP 層を入れる（変更履歴は戻らない）
+#                                      #   2. Nautobot の Job「Telegraf とグラフ DB に同期」を打って、変更履歴と Nautobot で足した機器と回線を戻す
+#                                      #   順番はこの順。先に Job を打つと機器が入って空でなくなり、--replace なしのこれは何もしない
+#                                      #   （2026-10-08 に AWS で確認。1 のあと変更履歴は 0 件のまま、2 で 19 件に戻った）
 #
 # 物理層の正は Nautobot（IaC/terraform/aws-managed/pipeline/nautobot。PIPELINE=1 ならいつも立つ）。--replace は lab の定義で上書きするので、Nautobot で足した機器と回線は
 # グラフ DB から消える（Nautobot の Job「Telegraf とグラフ DB に同期」を打てば戻る。OSS 版は同じ Job が Neo4j に書く（2026-10-08 に AWS で確認）。
