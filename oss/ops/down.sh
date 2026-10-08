@@ -7,7 +7,7 @@
 # 使い方（展開したフォルダの直下で。先に AWS CLI の認証を通しておく。IAM ユーザーなら長期キーのまま打つ）:
 #   oss/ops/down.sh              # 全部消す（workflow → analytics → nautobot → graph → stream → lab → agent → base/core → ecr
 #                                #   → Runtime のロググループ → oss/ops/up.sh が作った SSM のパラメータ）。KEEP_ECR=0 と同じ
-#   KEEP_ECR=1 oss/ops/down.sh   # ECR（イメージ）だけ残す。翌日の oss/ops/up.sh で写すのを飛ばせる（保管料は月数円）
+#   KEEP_ECR=1 oss/ops/down.sh   # ECR（イメージ）だけ残す。翌日の oss/ops/up.sh で写すのを飛ばせる（保管料は 14.9 GB で月 約 220 円。2026-10-08 の実測）
 #
 # oss/ops/up.sh と同じ deploy.env（DEPLOY_ENV_FILE=<パス> で別のファイル）を読む。使うキーは OWNER（必須。作ったときと同じ値）、
 # KEEP_ECR、AWS_PROFILE / AWS_CA_BUNDLE。oss/ops/up.sh はいつも 9 つのルート（base/ecr・base/core・agent・pipeline/lab・pipeline/stream・

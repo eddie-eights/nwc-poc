@@ -103,7 +103,7 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 | Web からの Nautobot への書き込み | AWS では未確認 |
 | 本番の機器の一覧を外から入れる | PoC には未実装（[nautobot.md](../../nautobot.md) の 6 章の (7)） |
 | デバッグ用の EC2（`ops/lab-debug.sh`） | Nautobot を使わない |
-| OSS 版（`IaC/terraform/oss/pipeline/nautobot`。同じファイルをシンボリックリンクで使う） | Job は Neo4j に書けない（タスク定義が `GRAPH_BACKEND` などを渡さず、イメージに Neo4j のドライバーが無い）。トポロジは lab の定義から `ops/sync-graph.sh --oss` で入れる（[005 の設計](../../cycles/005-oss-on-ecs/design.md)の「実装の状態」） |
+| OSS 版（`IaC/terraform/oss/pipeline/nautobot`。同じファイルをシンボリックリンクで使う） | Job は Neo4j に書く（graph の state に `neo4j_uri` があるとタスク定義が `GRAPH_BACKEND=neo4j` などを渡し、`oss/ops/up.sh` が Neo4j のドライバー入りのイメージを作る。手で打つ Job と JobHook の両方を 2026-10-08 に AWS で確かめた）。Neo4j を起こし直したあとは 2 段で戻す: `ops/sync-graph.sh --oss` で lab の定義から物理層と IP 層を入れ、そのあと Job「Telegraf とグラフ DB に同期」で変更履歴と Nautobot で足した機器と回線を戻す（[oss-variant.md](../../oss-variant.md) の「Neo4j を起こし直したあとの戻し方」） |
 
 ## 関連
 

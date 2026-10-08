@@ -12,7 +12,7 @@
 | `terraform init` が `x509: certificate signed by unknown authority` | 社内 CA が入っていない（[setup.md](setup.md) の「社内 PC の CA」） |
 | 手順 0 で「IAM ユーザーの一時セッション（get-session-token）で入っている」で止まる / apply が `AccessDenied` / `InvalidClientTokenId`（読み取りは通る） | `sts get-session-token` の一時セッションで打っている。長期キーか SSO のプロファイルで打ち直す |
 | apply が `explicitly denied` で止まる | 組織の SCP / IAM が止めている。管理者に頼むか、`SKIP_*` で外す（lab は `SKIP_LAB=1`、MSK は `SKIP_STREAM=1`、EMR / S3 Tables は `SKIP_ANALYTICS=1`、Neptune は `SKIP_GRAPH=1`）。打ち直さないなら `ops/down.sh` |
-| apply が `EntityAlreadyExists` など「もうある」 | state を消した・別の PC で apply した。[architecture/README.md](architecture/README.md) の get-resources で `Project=<prefix>` を探して手で消す |
+| apply が `EntityAlreadyExists` など「もうある」 | state を消した・別の PC で apply した（up.sh を打った worktree を消した、も同じ）。[architecture/README.md](architecture/README.md) の get-resources で `Project=<prefix>` を探して手で消す。手順 1 の ECR（`RepositoryAlreadyExistsException`）は `KEEP_ECR=1` で残したものなので、消さずに import する（[deploy.md](deploy.md) の「state を失ったとき」） |
 | `does not have an attribute named "…"` | 前のルート（`base/ecr` → `base/core` → …）をこの PC で apply していない、または先に消した。`ops/up.sh` を打ち直す |
 | `Error acquiring the state lock` | 同じルートを別のターミナルで打っている。終わるのを待つ |
 | `aws_lambda_invocation.kb_index` が失敗（CREATE_KB=1） | KB のベクトルインデックスを VPC の中の Lambda `<接頭辞>-kb-index` が作る。ログは CloudWatch Logs の `/aws/lambda/<接頭辞>-kb-index`。403 や接続できないのは 4 分半まで打ち直してから落ちる: 権限の反映待ちなら `ops/up.sh` を打ち直す。続くなら `IaC/terraform/aws-managed/base/core` の OpenSearch Serverless の VPC エンドポイント（`create_opensearch_endpoint`）が ACTIVE か見る |
@@ -99,10 +99,10 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 
 | 症状 | 原因と直し方 |
 |---|---|
-| `DependencyViolation`（SG / サブネット） | Runtime の ENI が残っている（最大 8 時間）。時間をおいて `ops/down.sh` を打ち直す。2026-10-05 の AWS でも、`ops/down.sh` は終了コード 0 で終わったが、VPC・サブネット・SG が残った（時間課金は無い。数時間おいて打ち直す） |
+| `DependencyViolation`（SG / サブネット） | Runtime の ENI が残っている（最大 8 時間）。`ops/down.sh` は VPC・サブネット・Runtime の SG を残して終了コード 0 で終わる。残ったものは無料で、次の `ops/up.sh` が使い回すので、そのままでよい（[deploy.md](deploy.md) の「消したあとに残るもの」）。2026-10-05 と 2026-10-08 の AWS でもこうなった。消し切るときだけ、ENI が外れてから同じチェックアウトで打ち直す |
 | `ops/down.sh` の最後の一覧に `<prefix>-lab-debug` の VPC やバケットが出る | デバッグ用の EC2 のスタック。`ops/down.sh` は消さないので `ops/lab-debug.sh down` |
 | `ops/lab-debug.sh down` が「… を空にできなかった」/「消えなかった」 | 打ち直す。原因は `aws cloudformation describe-stack-events --region ap-northeast-1 --stack-name <prefix>-lab-debug` |
-| `ops/down.sh` の最後に残りが出る | 上と同じなら待つ。それ以外は get-resources で `Project=<prefix>` を探して手で消す |
+| `ops/down.sh` の最後に残りが出る | タグの API の一覧は消えたリソースも返す（2026-10-08 は何日も前に消えた EMR まで 189 件）。実体が残っているかはサービスごとの API で見る（[deploy.md](deploy.md) の「消したあとに残るもの」）。残っていたのが上の VPC 一式と `KEEP_ECR=1` の ECR だけならそのままでよい。それ以外は手で消す |
 
 ## 既知の不具合
 
