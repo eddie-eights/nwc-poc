@@ -565,6 +565,12 @@ aws logs tag-resource --region "$REGION" \
   --resource-arn "arn:aws:logs:$REGION:$ACCOUNT_ID:log-group:$LOG_GROUP" \
   --tags "Project=$PREFIX,owner=$OWNER"
 
+# ---- 9-2. Grafana のアラートルール ----------------------------------------------------------
+# マネージド版と同じ（ops/up-common.sh の grafana_rules_step）。ルールは評価でエラーになってもアラートを出さず、画面でも Normal に見える（execErrState: KeepLast）。
+# OK でなくても止めない（警告を最後にもう一度出す）。あとから確かめ直すのは ops/check-grafana.sh --oss
+log "9-2. Grafana のアラートルールが評価でエラーになっていないかを確かめる（Web の EC2 から Grafana のルールの API を読む。最大 5 分）"
+grafana_rules_step "$INSTANCE_ID" "$AN_CLUSTER" "$(tf pipeline/analytics output -raw grafana_service_name)" "ops/check-grafana.sh --oss"
+
 # ---- 配るコマンド ----------------------------------------------------------------------
 log "できた（${ROOTS}。OSS 版）。利用者に配るコマンド:"
 tf base/core output -raw start_session_command; echo
@@ -599,6 +605,7 @@ if [ -n "$GRAPH_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$GRAPH_WARN"; fi
 if [ -n "$NAUTOBOT_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$NAUTOBOT_WARN"; fi
 if [ -n "$STORE_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$STORE_WARN"; fi
 if [ -n "$WF_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$WF_WARN"; fi
+if [ -n "$GRAFANA_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$GRAFANA_WARN"; fi
 printf '\033[1;33m%s\033[0m\n' "時間課金（Kafka 3 台・Telegraf・Kafbat UI・Spark・OpenSearch 3 台・VictoriaMetrics・Splunk・Grafana・Neo4j・Nautobot・Temporal のワーカーの ECS、Nautobot の DB、AgentCore Runtime、lab と Web の EC2、EFS、エンドポイント 14 種）。使い終わったら当日中に oss/ops/down.sh"
 
 # ---- 10. ポートフォワーディング ------------------------------------------------------------

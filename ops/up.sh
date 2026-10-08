@@ -1266,6 +1266,15 @@ if [ -n "$AGENT" ]; then
     --tags "Project=$PREFIX,owner=$OWNER"
 fi
 
+# ---- 9-2. Grafana のアラートルール ----------------------------------------------------------
+# ルールは評価でエラーになってもアラートを出さず、画面でも Normal に見える（execErrState: KeepLast）。立てたところで 1 回確かめる（ops/up-common.sh の grafana_rules_step）。
+# OK でなくても止めない（警告を最後にもう一度出す）。あとから確かめ直すのは ops/check-grafana.sh
+GRAFANA_WARN=""
+if [ -n "$GRAFANA" ]; then
+  log "9-2. Grafana のアラートルールが評価でエラーになっていないかを確かめる（Web の EC2 から Grafana のルールの API を読む。最大 5 分）"
+  grafana_rules_step "$INSTANCE_ID" "$(tf pipeline/analytics output -raw analytics_cluster_name)" "$(tf pipeline/analytics output -raw grafana_service_name)" ops/check-grafana.sh
+fi
+
 # ---- 10. ポートフォワーディング -------------------------------------------------------------
 log "できた（${ROOTS}）。利用者に配るコマンド:"
 tf base/core output -raw start_session_command; echo
@@ -1301,6 +1310,7 @@ fi
 if [ -n "$LAB_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$LAB_WARN"; fi
 if [ -n "$NAUTOBOT_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$NAUTOBOT_WARN"; fi
 if [ -n "$WF_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$WF_WARN"; fi
+if [ -n "$GRAFANA_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$GRAFANA_WARN"; fi
 printf '\033[1;33m%s\033[0m\n' "$COST_NOTE"
 if [ -n "$NO_DASHBOARD_PORTFORWARD" ]; then exit 0; fi
 log "10. ポートフォワーディング（http://localhost:$LOCAL_PORT/ 。Ctrl+C で閉じる）"
