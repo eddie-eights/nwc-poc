@@ -94,6 +94,7 @@ PM との Round 0（design-log.md）で決めた結論。
 | `docs/troubleshooting.md` | 72・74・75 | Kafbat UI の行 |
 | `docs/pipeline.md` | 75 | Kafbat UI の段落の再試行の書き方 |
 | `docs/verification/20261008-oss-aws.md` | 78 | 注記 2 か所 |
+| `docs/architecture/resources/web-ec2.md`、`docs/architecture/resources/ssm-parameter-store.md` | 72・75 | Kafbat UI の行と、読む側の説明を 75 / 69 / setup failed に合わせる（実装で足した。cold review Round 1 の Nit 2 で一覧に追加） |
 | `docs/cycles/014-kafbat-ui-followups/` | — | design.md / design-log.md / build.md |
 
 触らない: `ops/up.sh`・`oss/ops/up.sh`・`app/containerlab/lab.sh`・`docker/compose/`・`docs/cycles/BACKLOG.md`。
