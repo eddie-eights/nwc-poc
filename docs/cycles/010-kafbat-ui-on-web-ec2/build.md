@@ -15,6 +15,8 @@
 | 556045e | 3: lab の graph（lab.sh の graph / graph-stop / down、lab の outputs.tf、ヘルプの行番号に合わせて test_alerts） | 3 files |
 | 15b3de9 | 4: tests と docs | 21 files |
 | 6eeed4b | セルフレビューの Should fix 2（tests/test_stream.py。user_data のスクリプトを書いて直に起こす、ECR / pull の失敗、http_tokens、Wants。81 → 83 件） | 1 file |
+| 198cbbd | この build.md（検証とセルフレビュー） | 1 file |
+| 3d78db1 | セルフレビューの Should fix 1 を PM の判断で受容として書く（design.md の「未確定事項とリスク」8、workflow/proposals.tf の HITL の境界のコメント 2 行） | 2 files |
 
 ### 設計から逸脱した点
 
@@ -109,16 +111,26 @@ $ sed -n 144,160p cmd/graph.go
 - **結論: CDN は読まない。VPC の中（インターネットに出ない lab の EC2）でも白紙にならない見込み。** `--static-dir` などの代替は要らないので BACKLOG の候補にはしない。lab を deploy していなくても `topology` の定義から図を描く（containers が 0 なら `BuildGraphFromTopo`）
 - AWS での画面の確認は検証 10 で PM がまとめてやる
 
-### 検証（6eeed4b のあと、未コミットは build.md だけの状態で 1〜9 を取り直した）
+### 検証（1 は 3d78db1 で、2〜9 は 6eeed4b のあとに取った）
+
+6eeed4b のあとの差分はコメントと docs だけで、2〜9 の対象（Terraform のリソース、user_data、lab.sh、tests）に触れていない:
+
+```
+$ git diff --stat 6eeed4b..3d78db1
+ IaC/terraform/aws-managed/workflow/proposals.tf |   2 +
+ docs/cycles/010-kafbat-ui-on-web-ec2/build.md   | 414 ++++++++++++++++++++++++
+ docs/cycles/010-kafbat-ui-on-web-ec2/design.md  |  12 +
+ 3 files changed, 428 insertions(+)
+```
 
 #### 1. `bash ops/check.sh`
 
 ```
 $ git rev-parse --short HEAD   # 未コミットは build.md だけ
-6eeed4b
+3d78db1
 $ uv sync --group dev --group web && bash ops/check.sh; echo rc=$?
 Resolved 86 packages in 3ms
-Audited 82 packages in 2ms
+Audited 82 packages in 13ms
 
 == 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
 差分なし
@@ -330,7 +342,7 @@ git status: (clean)
 
 | # | 分類 | [観点] | 場所 | 片付け |
 |---|---|---|---|---|
-| 1 | Should fix | security | web.tf:109-110、web_user_data.sh.tftpl:57、stream/kafka_ui.tf:67、design.md:36・115 | 設計側。PM に判断を上げる（直していない） |
+| 1 | Should fix | security | web.tf:109-110、web_user_data.sh.tftpl:57、stream/kafka_ui.tf:67、design.md:36・115 | 設計側。PM の判断で受容として書いた（3d78db1。権限は変えていない） |
 | 2 | Should fix | missing tests | web_user_data.sh.tftpl:29-30・54-55・59、tests/test_stream.py | 直した（6eeed4b） |
 | 3 | Nit | missing tests | web_user_data.sh.tftpl:78、app/containerlab/lab.sh（ヘルプ・graph の render）、oss/pipeline/stream/kafka.tf:132 | 記録だけ |
 | 4 | Nit | runtime | web_user_data.sh.tftpl:37-57、docs/troubleshooting.md:93 | 記録だけ（BACKLOG 候補） |
@@ -347,6 +359,21 @@ git status: (clean)
 - 確かめたこと: 読んだだけ（Web のロールの inline ポリシーは 7 本: web-assets、invoke-runtime、workflow-access、workflow-web、stream-parameters-read、graph-access、kafka-ui）
 - 重大度の理由: いまは壊れていない。開き方は 127.0.0.1 と SSM のポートフォワードだけで、ログインフォームがある。SSM で入れる人はもともとシェルを持つ。ただし design.md のリスク 2 は「届くか」しか見ておらず、権限の広がりは評価されていない
 - 片付け: design.md:36 が「Web のロールに付ける」と決めているので、実装で吸収しない。PM に判断を上げる。選択肢は (a) リスクとして受け入れて design.md と proposals.tf:9 のコメントに書く、(b) Kafbat UI 専用のロールを `awsRoleArn`（AssumeRole）で使う、(c) user_data で `DOCKER-USER` に 172.17.0.0/16 からの外向きの許可リスト（MSK 9098・IMDS・VPC の DNS だけ）、(d) Web のロールに付ける MSK の権限を読み取りに絞る
+- PM の判断（2026-10-08）:
+  - 最初の指示は (d) + (a)
+  - (d) は 2026-10-05 のユーザー決定（docs/cycles/005-oss-on-ecs/design-log.md:65-68「Kafbat UI は見るだけにしない」。「追加もしたい」）とぶつかる。画面からのトピックの追加が権限エラーになるので、着手前に PM に上げた
+  - PM は (d) を取り下げ、(d0)（MSK の権限は今のまま）+ (a) にした。理由: 重い側（Kafbat UI → HITL の SQS など）はどの案でも受容になり、軽い側（Gradio → MSK）のために文書化されたユーザー決定を覆すのは釣り合わない
+- 直したもの（3d78db1。コメントと design.md だけ）:
+  - design.md の「未確定事項とリスク」8: 共有で届く先（両方向）、受け入れる理由（専用ロールでは消えない、DOCKER-USER は重い、2026-10-05 の決定）、開き方
+  - IaC/terraform/aws-managed/workflow/proposals.tf:11-12: HITL の境界のコメントに、Kafbat UI も同じロールを使えて PoC では受容することを足した
+  - 変えていないもの: kafka_ui.tf、msk.tf の `kafka_ui_kafka_statements`、docs/pipeline.md:165、docs/architecture/resources/msk.md:72、tests/test_stream.py
+- 書いた中身の裏付け:
+  - `git grep` で確かめた:
+    - SQS: workflow/proposals.tf:48-52 の `sqs:SendMessage` on `aws_sqs_queue.decisions`。web_role_name にだけ付く
+    - InvokeAgentRuntime: agent/runtime.tf:209 の `role = local.web_role_name`
+    - Neptune: pipeline/graph/locals.tf:44 の `graph_writer_role = web_role_name`
+    - MSK: pipeline/stream/msk.tf:44-79（Create / Alter / DeleteTopic、WriteData）
+  - 検証: `terraform fmt -check` と `terraform validate`（aws-managed と oss の workflow）が通った。tests/test_workflow.py は通過 325 / 失敗 0。ops/check.sh の取り直しは検証 1 に貼った
 
 **2. Should fix [missing tests] chmod・shebang・set -euo pipefail を消してもテストが通る**
 
@@ -412,3 +439,7 @@ git status: (clean)
 - 「15 個の退行でテストが縛れている」→ 自分が思いつかなかった方向（実行権・shebang・set -e）が素通りだった。直したが、テストが縛るのは注入して落ちたものだけ。AWS の実物（hop limit 2 で届くか、t4g.medium のメモリ、図の画面）は検証 10 まで未確認
 - 「CDN を読まないので VPC の中でも白紙にならない」→ 結論は同じだが理由を直す。設計のリスク 1 の前提（VPC がインターネットに出ないので白紙）は誤り。ページは手元のブラウザが開き、相対の `static/` はポートフォワード越しに lab の EC2 から、仮に CDN の URL があっても手元のブラウザがインターネットから取る。embed なので手元の PC がインターネットに出られなくても白紙にならない
 - 差分: Must fix は 0 のまま。Should fix 2 を直し、Should fix 1 を設計側の判断として PM に上げた。「安全」は「指摘 1 の判断しだい」に、「テストが縛る」は「注入した 24 個について」に狭めた
+- PM の判断のあと:
+  - 指摘 1 は受容として design.md と proposals.tf に書いた（3d78db1）
+  - Kafbat UI が乗っ取られれば HITL の境界（決定のキュー）を越えられる。これは直っておらず、PoC の受容として残る
+  - 画面からトピックを追加できることは、2026-10-05 のユーザー決定どおり残した
