@@ -49,6 +49,11 @@
 5. **docs の構成表を新しい根に合わせる。** `README.md`、`docs/architecture/README.md`（`tools/` の行を `app/gateway/` に）、`docs/deploy.md`、`docs/development.md`、`docs/oss-variant.md`、`docs/architecture/resources/*.md`。「根は `app docker IaC ops tests docs`」と書く所があれば揃える。
 
 6. **動作は変えない。** `up.sh` / `down.sh` の手順・引数・環境変数・Terraform の資源・イメージの版はそのまま。新しい test は足さない（既存の test のパスを直すだけ。件数は変えない）。
+   - 「イメージの版」は `ops/oss/oss-images.sh` と `IMAGE_TAG` の版のことで、`dir_tag`（build の context の中身のハッシュ）は含まない。`app/nautobot/requirements-oss.txt:2` のコメントを書き換えるので **Nautobot のイメージのタグが 1 回変わり**、次の `ops/up.sh` / `ops/oss/up.sh` は `KEEP_ECR=1` でも Nautobot を 1 回作り直してタスクを入れ替える（DB は RDS なので消えない。ほかの 6 つのイメージ・Lambda の zip・wheels のハッシュは変わらない。2026-10-09 の cold review で判明、`tags017.py` で再現）。コメントを戻してまで避けない。
+   - `security_groups.tf:113-114` の `why` は `aws_vpc_security_group_ingress_rule` / `egress_rule` の `description` に入るので、次の `base/core` の apply で 4 本（マネージド版の ingress と egress、OSS 版の symlink の同じ 2 本）が **in-place で更新される**（SG 自体の `description` ではないので作り直しにならない。plan は AWS の検証で `up.sh` を打つときに見る。未確認）。これは「Terraform の資源はそのまま」の例外として認める。
+   - `docs/verification/` は **当時のパスのまま**（007 の方針、`docs/development.md:7`「`docs/verification/` は当時のパス」）。017 でも書き換えない。
+
+7. **「OSS 版の `ops/up.sh`」という言い回しを無くす。** 017 のあとは `ops/up.sh` がマネージド版を指すので、コメント・docstring・test のメッセージの「OSS 版の ops/up.sh」「OSS ops/up.sh」（`down.sh` も同じ）は `ops/oss/up.sh` / `ops/oss/down.sh` に置き換える（`git grep -n -E 'OSS (版の )?ops/(up|down)\.sh' -- . ':!docs/cycles'` で拾う。2026-10-09 の cold review で 15 ファイル 34 か所）。`docs/cycles/**` は触らない。
 
 ## 変更対象ファイル
 
@@ -72,9 +77,11 @@
 | `tests/test_oss_roll.py:32,146,167,338-339`、`tests/test_stream.py`、`tests/test_lab_debug.py:76-81,470-472`、`tests/test_local_compose.py:35`、`tests/test_analytics.py:135,269,273`、`tests/test_nautobot.py:257`、`tests/test_alerts.py`、`tests/test_sync.py` | `oss/ops` のパス |
 | `tests/test_workflow.py:1,105,430,440,449,538,541` | `tools/` → `app/gateway/` |
 | `tests/test_collectors.py:204` | `("tools","netflow_send.py")` → `("ops","netflow_send.py")` |
-| `README.md`、`docs/{deploy.md,development.md,oss-variant.md,collection.md,data-stores.md,pipeline.md,troubleshooting.md,faq-fukuda-nwc-poc.md}`、`docs/architecture/README.md`、`docs/architecture/resources/{grafana.md,lab-ec2.md,nautobot.md,ssm-parameter-store.md}`、`docs/verification/20261008-oss-aws.md` | パスの置換と構成表。`oss-variant.md` に方針 3 の 1 文 |
+| `README.md`、`docs/{deploy.md,development.md,oss-variant.md,collection.md,data-stores.md,pipeline.md,troubleshooting.md,faq-fukuda-nwc-poc.md}`、`docs/architecture/README.md`、`docs/architecture/resources/{grafana.md,lab-ec2.md,nautobot.md,ssm-parameter-store.md}` | パスの置換と構成表。`oss-variant.md` に方針 3 の 1 文。`development.md:7` の 007 の段落の末尾に「2026-10-09 の cycle 017 で、根に残った OSS 版のシェル・Gateway の Lambda の handler・NetFlow の試験用スクリプト・GLOSSARY を `ops/oss/`・`app/gateway/`・`ops/`・`docs/` に動かした（`docs/verification/` と `docs/cycles/` は当時のパスのまま。読み替えは 017 の design.md の表）」の 1 文 |
+| `docs/architecture/README.md:7` | pptx の説明の `ops/oss/up.sh` のあとに「（スライドの中のパスは 017 より前の `oss/ops/`・`oss/terraform/` のまま。作り直しは BACKLOG）」を足す。pptx 自体は触らない |
+| `IaC/terraform/oss/pipeline/{analytics/{grafana.tf,network.tf,opensearch.tf,spark.tf,victoriametrics.tf},graph/{neo4j.tf,sync.tf},stream/kafka.tf}`、`IaC/terraform/aws-managed/pipeline/nautobot/nautobot.tf`、`app/{agentcore,dashboard,nautobot,temporal}/requirements-oss.txt`、`docker/images/{neo4j,spark}/Dockerfile`、`tests/test_oss.py:1899` | 方針 7 の言い回し（`OSS 版の ops/up.sh` 等 → `ops/oss/up.sh`）。コメントと test のメッセージだけ |
 
-`docs/cycles/**` は触らない。
+`docs/cycles/**` と `docs/verification/**` と `docs/*.pptx` は触らない。
 
 ## 再利用するもの
 
@@ -84,7 +91,8 @@
 ## 実装ステップ
 
 1. `git mv` の 4 組（方針 1）。commit 1「rename だけ」。
-2. 参照の置換（方針 2・4・5）。`grep -rn -E 'oss/ops|tools/handler|tools/tools\.json|tools/netflow_send|(^|[^/])GLOSSARY\.md' --exclude-dir=.venv --exclude-dir=.terraform --exclude-dir=.git --exclude-dir=cycles .` が `docs/GLOSSARY.md` 自身以外 0 行になるまで。commit 2「参照の書き換え」。
+2. 参照の置換（方針 2・4・5）。`grep -rn -E 'oss/ops|tools/handler|tools/tools\.json|tools/netflow_send|(^|[^/])GLOSSARY\.md' --exclude-dir=.venv --exclude-dir=.terraform --exclude-dir=.git --exclude-dir=cycles --exclude-dir=verification .` が `docs/GLOSSARY.md` 自身と `docs/oss-variant.md` の方針 3 の 1 文（旧パス `oss/ops/up.sh` を字面で持つ）以外 0 行になるまで。commit 2「参照の書き換え」。
+2b. 方針 7 の言い回しの置換（commit 3「OSS 版の ops/up.sh の言い回しを ops/oss/up.sh にする」。cold review の 1 回目のあとに足した工程）。
 3. `bash ops/check.sh`。`docs/development.md:37` の件数と同じことを確かめる。
 4. 自分の worktree の untracked `oss/terraform/` を消す（`rm -rf oss/terraform`。`oss/` が空になる）。
 5. `build.md` に実測と、セルフレビュー（`/cycle-build` 手順 6）。
@@ -96,7 +104,9 @@
 | 1 | `bash ops/check.sh` | 最後の行が `すべて通過`。`tests/test_*.py` の 16 本の件数が `docs/development.md:37` と同じ（`test_oss` 173、`test_oss_ops` 194、`test_workflow` 327、`test_collectors` 79 を含む。件数が変わったらそれは意図しない変更） |
 | 2 | `git ls-files oss tools GLOSSARY.md` | 空 |
 | 3 | `ls` | `CLAUDE.md IaC README.md app deploy.env.example docker docs ops pyproject.toml tests uv.lock`（gitignore 対象の `.venv` 等を除く） |
-| 4 | 実装ステップ 2 の `grep` | 0 行（`docs/GLOSSARY.md` 自身の見出しを除く） |
+| 4 | 実装ステップ 2 の `grep` | 0 行（`docs/GLOSSARY.md` 自身の見出しと、`docs/oss-variant.md` の方針 3 の 1 文を除く） |
+| 4b | `git grep -n -E 'OSS (版の )?ops/(up\|down)\.sh' -- . ':!docs/cycles'` | 0 行（方針 7） |
+| 4c | `git diff --stat 03840c8 -- docs/verification docs/*.pptx` | 空（当時のまま） |
 | 5 | `git log --follow --oneline ops/oss/up.sh \| tail -1` と `git log --follow --oneline app/gateway/handler.py \| tail -1` | 005 以前の最初の commit まで追える（rename で履歴が切れていない） |
 | 6 | `git diff --stat -M docs/cycle-006-design` | 動かした 9 本が rename（`=>`）で出る |
 | 7 | `grep -n '^OPS_DIR=' ops/oss/up.sh ops/oss/down.sh` | 両方 `OPS_DIR=ops/oss` |
@@ -111,4 +121,6 @@ AWS では確かめない（動作を変えないため）。OSS 版の `ops/oss
 1. **OSS 版を AWS で打ち直していない。** `ops/oss/up.sh` の `. "$(dirname "$0")/../lab-common.sh"` 等の相対パスは `bash -n` では検出できない（存在しないファイルを `.` しても構文は通る）。`tests/test_oss_ops.py` がパスの形を見ているのでそこで拾う。次の OSS 版の AWS 検証で確かめる。
 2. **メインのチェックアウトと `verify-oss-20261008` worktree の `oss/terraform/`** には OSS 版の provider cache と state が残る（追跡されていない）。マージしても git は消さない。`main` へのマージのあと、PM が Terraform の state の `mv` と一緒に片付ける（このサイクルでは触らない）。
 3. **他のエージェントの worktree が `oss/ops/` や `tools/` を触っていればマージで衝突する。** 013（`feat/gnmic-drop-dialin`）は `ops/` を触る。着手は 013 のマージを待たないが、**PR を出す前に `docs/cycle-006-design` の最新（013 のマージ後）を自分のブランチにマージして、check.sh を取り直す**。衝突したら解消せず PM に報告する。
-4. claude-settings の `domain-modeling` スキルの `GLOSSARY.md` の置き場（根 → `docs/`）は別リポジトリ。PM が直す。
+4. claude-settings の `domain-modeling` スキルの `GLOSSARY.md` の置き場（根 → `docs/`）は別リポジトリ。PM が 2026-10-09 に直した（6c15113）。
+5. **`docs/architecture-managed.pptx` と `architecture-oss.pptx` の中のパスは 007 と 017 より前のまま**（`oss/ops/up.sh`、`oss/terraform/`、`terraform/` など）。このサイクルでは作り直さない（BACKLOG「architecture の pptx 2 本を 007 と 017 のあとのパスで作り直す」）。`docs/architecture/README.md:7` に注を足すだけ。
+6. **Nautobot のイメージのタグが 1 回変わる**（方針 6）。次の AWS の検証の `ops/up.sh` で Nautobot が 1 回作り直されるのは織り込む。`security_groups.tf` の rule の `description` の更新が in-place かは、そのときの plan で見る（未確認）。
