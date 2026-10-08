@@ -9,8 +9,10 @@
 #
 # base/core（Web の EC2）と pipeline/analytics の Grafana が出来ていることが前提。Web の EC2 の上で ops/grafana_rules_check.py を SSM Run Command で動かす
 # （ops/up-common.sh の grafana_rules_check）。打ってから全部のルールがもう 1 回評価されるまで（間隔 1 分。エラーのあったルールはその次の評価まで）最大 5 分待つ。出力の最後の行が「判定: OK / NG / 未確認 …」。
-# 終了コードは 0（OK）/ 1（NG か未確認。どちらかは「判定:」の行）/ 2（使い方の誤り）。
-# NG の理由（KeepLast はエラーの文を API に残さない）は Grafana のログを見る（下で出すコマンド）。
+# 終了コード（表は docs/troubleshooting.md の「ops/check-grafana.sh の終了コード」）:
+#   0 OK / 1 NG（評価がエラーのルールがある）/ 2 未確認（401、Grafana に届かない、待ち切れ、SSM Run Command が送れない・失敗・SSM_RUN_WAIT 秒を過ぎた。理由は出力）/
+#   3 確かめる前に止まった（使い方の誤り、deploy.env の誤り、Web の EC2 か Grafana が無い）
+# NG の理由（KeepLast はエラーの文を API に残さない）は Grafana のログを見る（NG のときだけ下で出すコマンド）。
 # Grafana のタスクが入れ替わる途中だと、Cloud Map の名前が前のタスクを指していることがある。そのときは入れ替わりが終わってから打ち直す
 set -uo pipefail
 
@@ -19,7 +21,7 @@ OSS=""
 for a in "$@"; do
   case "$a" in
     --oss) OSS=1 ;;
-    *) echo "使い方: ops/check-grafana.sh [--oss]" >&2; exit 2 ;;
+    *) echo "使い方: ops/check-grafana.sh [--oss]" >&2; exit 3 ;;
   esac
 done
 
@@ -28,6 +30,7 @@ REGION=ap-northeast-1
 . ops/deploy-env.sh
 # shellcheck source=ops/common.sh
 . ops/common.sh      # log / die
+die() { printf '\033[1;31mNG: %s\033[0m\n' "$*" >&2; exit 3; }  # 確かめる前に止まったら 3（NG の 1・未確認の 2 と分ける。ops/common.sh の die は 1）
 # shellcheck source=ops/up-common.sh
 . ops/up-common.sh   # ssm_run / grafana_rules_check
 load_deploy_env >&2
@@ -40,6 +43,9 @@ GRAFANA_SERVICE=$(terraform -chdir="$TF_DIR/pipeline/analytics" output -raw graf
 [ -n "$GRAFANA_SERVICE" ] || die "$TF_DIR/pipeline/analytics に Grafana が無い（出力 grafana_service_name が読めないか空。マネージド版は STORES に grafana を入れて ops/up.sh を打つ）"
 
 log "Grafana（$GRAFANA_SERVICE）のアラートルールを Web の EC2（$INSTANCE_ID）から読む（最大 5 分）"
-if grafana_rules_check "$INSTANCE_ID"; then exit 0; fi
-echo "評価のエラーの理由は Grafana のログ: aws logs tail /ecs/$PREFIX-grafana --region $REGION --since 1h --filter-pattern '\"Failed to evaluate rule\"'" >&2
-exit 1
+rc=0
+grafana_rules_check "$INSTANCE_ID" || rc=$?
+if [ "$rc" = 1 ]; then
+  echo "評価のエラーの理由は Grafana のログ: aws logs tail /ecs/$PREFIX-grafana --region $REGION --since 1h --filter-pattern '\"Failed to evaluate rule\"'" >&2
+fi
+exit "$rc"

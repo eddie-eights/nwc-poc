@@ -1046,3 +1046,72 @@ networks: 0
 （C）の `health=なし` は、手元のコンテナに Docker の HEALTHCHECK が無いだけ（GoFlow2 のイメージ）。MSK の NLB が見る先は上の 2 つ。
 
 ジンテーゼ（反対弁護人のあとで変わったこと）: 「SCRAM のユーザーは ACL が無いと書けない」を事実から「AWS の文書から読んだ想定（MSK では未確認）」に下げた。検証 3 は (a)（ACL が要る）と (b)（既定の true が効く）を見分けられるようになった。実装（`ensure_acls` と `AlterCluster`）は (a)(b) のどちらでも機能として正しいので変えていない。残るリスクは (b) だった場合の権限の広さで、次の一手（`allow.everyone.if.no.acl.found=false`）は PM の判断待ち。
+
+### マージ後（`docs/cycle-006-design` の a3b1a48 を取り込んだ）
+
+PM の指示（2026-10-09）で、PR #4 の衝突を解くために `origin/docs/cycle-006-design`（a3b1a48。015 / 016 と BACKLOG）をこのブランチへマージした（merge-base 2ae0b61）。衝突は 2 ファイル。ベースの変更は docs・`ops/`・`tests/test_{alerts,oss_ops,stream}.py` で、`app/`・`docker/`・`IaC/` には無い（`git diff HEAD --stat`）。
+
+#### 衝突の解き方
+
+- `docs/deploy.md` の 26〜27 行目: `SKIP_STREAM` の行はベース（016 の打ち直しの手順）、`SKIP_ANALYTICS` の行はこちら（ACL が入らない回）
+- `docs/development.md` の 37 行目（テストの本数）: ベースの行に、こちらで変えた `test_analytics` / `test_oss` / `test_collectors` を入れ、下の check.sh の出力と同じであることを確かめた
+- `docs/pipeline.md` と `docs/troubleshooting.md` は自動で混ざった（`Topic authorization failed` の項はどちらにも 1 つずつ残っている）
+- 衝突の解き方は scratchpad の `e3acl/resolve_merge.py`（ブロックが 1 つずつで、行の頭が `SKIP_STREAM` / `SKIP_ANALYTICS` であることを確かめてから入れ替える）
+
+マージで変わったことのうち、このラウンドの記述に効くもの:
+
+- C5 の行番号: マージ後は `ensure_secret` が `ops/up-common.sh:111`、`ensure_fixed_secret` が `:149`（015 の変更で 5〜6 行ずれた。一時ファイルの扱いは変わっていない）
+- design-log.md の Round 2 に PM の判断（S1 の `allow.everyone.if.no.acl.found=false` は検証 3 の結果で決める）を 1 行足した
+
+#### 検証 1・2（手元の compose・syslog の形）
+
+取り直していない。ベースの変更は `app/`・`docker/` に無く、compose と Spark・syslog-ng・GoFlow2 の経路は変わらない。
+
+#### 検証 5. `bash ops/check.sh`（マージ後。衝突を解いたあと。rc=0。全文は scratchpad の `check-r2m.log`（2863 行）。design-log.md の 1 行と build.md はこのあとに書いた。テストはサイクルの docs を読まないので取り直していない）
+
+```
+== 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+差分なし
+== 2. 9 つのルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+IaC/terraform/aws-managed/base/ecr  OK
+IaC/terraform/aws-managed/base/core  OK
+IaC/terraform/aws-managed/agent  OK
+IaC/terraform/aws-managed/pipeline/lab  OK
+IaC/terraform/aws-managed/pipeline/stream  OK
+IaC/terraform/aws-managed/pipeline/analytics  OK
+IaC/terraform/aws-managed/pipeline/graph  OK
+IaC/terraform/aws-managed/pipeline/nautobot  OK
+IaC/terraform/aws-managed/workflow  OK
+IaC/terraform/oss/base/ecr  OK
+IaC/terraform/oss/base/core  OK
+IaC/terraform/oss/agent  OK
+IaC/terraform/oss/pipeline/lab  OK
+IaC/terraform/oss/pipeline/stream  OK
+IaC/terraform/oss/pipeline/analytics  OK
+IaC/terraform/oss/pipeline/graph  OK
+IaC/terraform/oss/pipeline/nautobot  OK
+IaC/terraform/oss/workflow  OK
+== 3. スクリプトの構文
+bash -n: 27 本
+構文エラーなし
+== 4. 模擬テスト
+通過 169 / 失敗 0
+通過 504 / 失敗 0
+通過 161 / 失敗 0
+通過 79 / 失敗 0
+通過 3 / 失敗 0
+通過 78 / 失敗 0
+通過 7 / 失敗 0
+通過 104 / 失敗 0
+通過 132 / 失敗 0
+69 項目すべて通過
+通過 173 / 失敗 0
+通過 194 / 失敗 0
+通過 66 / 失敗 0
+通過 96 / 失敗 0
+通過 103 / 失敗 0
+通過 327 / 失敗 0
+すべて通過
+```
+
+本数（`tests/test_*.py` の glob の順）: `test_alerts` 169、`test_analytics` 504、`test_app` 161、`test_collectors` 79、`test_dashboard_config` 3、`test_graph` 78、`test_kb_index` 7、`test_lab_debug` 104、`test_local_compose` 132、`test_nautobot` 69、`test_oss` 173、`test_oss_ops` 194、`test_oss_roll` 66、`test_stream` 96、`test_sync` 103、`test_workflow` 327（16 本。`docs/development.md` と同じ）。

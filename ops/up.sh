@@ -502,7 +502,7 @@ endpoints_for() {  # endpoints_for <ルート>  そのルートが呼ぶ AWS の
     agent) add_endpoints bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs ;;
     # lab の EC2 はイメージを ECR から引く（SSM は土台の分）
     pipeline/lab) add_endpoints ecr.api ecr.dkr ;;
-    # Telegraf・syslog-ng・GoFlow2（ECS）: イメージを ECR から引き、ログを CloudWatch に書く。MSK は VPC の中。
+    # Telegraf・syslog-ng・GoFlow2（ECS）: イメージを ECR から引き、ログを CloudWatch に書く。MSK は VPC の中。Web の EC2 の Kafbat UI（Docker）も同じ ecr.api / ecr.dkr で ECR から pull する
     # syslog-ng と GoFlow2 のタスクは起動時に MSK の SCRAM の secret を Secrets Manager から読む（cycle 012。復号の KMS は Secrets Manager が代わりに呼ぶ）
     pipeline/stream) add_endpoints ecr.api ecr.dkr logs secretsmanager ;;
     # Spark: S3 Tables の API、ドライバのログ（MSK は VPC の中で、S3 は gateway）
@@ -1289,11 +1289,26 @@ fi
 
 # ---- 9-2. Grafana のアラートルール ----------------------------------------------------------
 # ルールは評価でエラーになってもアラートを出さず、画面でも Normal に見える（execErrState: KeepLast）。立てたところで 1 回確かめる（ops/up-common.sh の grafana_rules_step）。
-# OK でなくても止めない（警告を最後にもう一度出す）。あとから確かめ直すのは ops/check-grafana.sh
+# OK でなくても止めない（警告を最後にもう一度出す）。あとから確かめ直すのは ops/check-grafana.sh。analytics の state の一覧か、クラスターとサービスの名前（tf_output）が
+# 読めないときも止めず、空の名前で aws ecs wait に進まずに、確かめていないと警告する（grafana_skip_warn。止めると最後の案内まで届かない。8-5 と同じ）
 GRAFANA_WARN=""
-if [ -n "$GRAFANA" ]; then
-  log "9-2. Grafana のアラートルールが評価でエラーになっていないかを確かめる（Web の EC2 から Grafana のルールの API を読む。最大 5 分）"
-  grafana_rules_step "$INSTANCE_ID" "$(tf pipeline/analytics output -raw analytics_cluster_name)" "$(tf pipeline/analytics output -raw grafana_service_name)" ops/check-grafana.sh
+# 今回は analytics を作らない回（PIPELINE=0・SKIP_ANALYTICS=1）でも、前の回の Grafana が残っていれば確かめる（手順 3 の ANALYTICS_LEFT と state の一覧）。
+# 一覧は変数に読み切ってから見る（パイプだと state list の失敗と「Grafana が無い」を分けられない。grep -q は先に抜けて書き手が SIGPIPE になる）
+GRAFANA_LEFT=""; GF_UNREAD=""
+if [ -z "$GRAFANA" ] && [ -n "$ANALYTICS_LEFT" ]; then
+  if GF_STATE=$(tf pipeline/analytics state list); then
+    if grep '^aws_ecs_service\.grafana\[' <<<"$GF_STATE" >/dev/null; then GRAFANA_LEFT=1; fi
+  else
+    GF_UNREAD=1   # 黙って飛ばさない（Grafana が無いのか読めないのかは分からない）
+  fi
+fi
+if [ -n "$GRAFANA$GRAFANA_LEFT$GF_UNREAD" ]; then
+  log "9-2. Grafana のアラートルールが評価でエラーになっていないかを確かめる（Web の EC2 から Grafana のルールの API を読む。最大 5 分）${GRAFANA_LEFT:+。今回は analytics を作らないが、前の回の Grafana が残っている}${GF_UNREAD:+。今回は analytics を作らないが、前の回の analytics の state が読めない}"
+  if [ -z "$GF_UNREAD" ] && GF_CLUSTER=$(tf_output pipeline/analytics analytics_cluster_name) && GF_SERVICE=$(tf_output pipeline/analytics grafana_service_name); then
+    grafana_rules_step "$INSTANCE_ID" "$GF_CLUSTER" "$GF_SERVICE" ops/check-grafana.sh
+  else
+    grafana_skip_warn ops/check-grafana.sh
+  fi
 fi
 
 # ---- 10. ポートフォワーディング -------------------------------------------------------------
