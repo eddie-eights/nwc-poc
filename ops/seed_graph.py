@@ -64,3 +64,10 @@ if counts["devices"] and os.environ.get("GRAPH_REPLACE") != "1":
 else:
     n_layers = len((layers or {}).get("vertices") or [])
     print(f"{DB} に {source} を入れた（{len(devices)} 台 / {len(links)} 本 / 上の層 {n_layers} 頂点）: {graph.seed(devices, links, layers)}")
+    if OSS:
+        # 入れた直後は Neo4j の統計が古く、索引（graph._neo4j_schema）があってもラベルを全部読む計画を選ぶことがあるので、
+        # 索引を取り直して計画を作り直させる。投入は済んでいるので、失敗しても WARNING だけ出して終わる
+        try:
+            graph.query("CALL db.prepareForReplanning()")
+        except graph.errors() as e:
+            print(f"WARNING: Neo4j の統計を取り直せない（db.prepareForReplanning。投入は済んでいる）: {e}")
