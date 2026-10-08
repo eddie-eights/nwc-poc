@@ -309,36 +309,45 @@ check("neo4j: スキーマは制約のあとに全ラベルの registered と in
       + ["CREATE INDEX nwc_interface_device_id IF NOT EXISTS FOR (n:`interface`) ON (n.device_id)"]
       and len(_first4) == 17 and _d4.sent == _first4)
 
+class _Neo4jError4(Exception):   # ドライバの Neo4jError の代わり（dev の依存に neo4j は無い）。botocore の ClientError とは別の型
+    pass
+
 def _seed_graph(backend, fail=False):
     """ops/seed_graph.py を Web の EC2 の代わりにここで流す（/etc の env は空の偽物、graph と topology はこのテストが読んだもの）。
+    Neo4j のサーバーの失敗は本番と同じく botocore の型ではない例外で投げ、graph.errors() はそれを Neo4j のときだけ含める。
     (送ったクエリ, 標準出力)"""
     import contextlib, runpy
-    out, path, conf = io.StringIO(), list(sys.path), graph.configured
+    out, path, conf, srv = io.StringIO(), list(sys.path), graph.configured, graph._server_errors
     def _q4(cypher, **params):
         _sent4.append((cypher, params))
         if fail and cypher.startswith("CALL db.prepareForReplanning"):
-            raise ClientError("There is no procedure with the name `db.prepareForReplanning`")
+            raise _Neo4jError4("There is no procedure with the name `db.prepareForReplanning`")
         return [{"n": 0}] if "count(" in cypher else []   # 空のグラフ
     _sent4.clear()
     os.environ.update(NAME_PREFIX="t-nwc-oss", GRAPH_REPLACE="1")
     try:
         graph.BACKEND, graph.query, graph.configured = backend, _q4, lambda: True
+        graph._server_errors = lambda: (_Neo4jError4,) if graph.BACKEND == "neo4j" else ()
         with contextlib.redirect_stdout(out):
-            runpy.run_path(os.path.join(AGENT, "..", "..", "ops", "seed_graph.py"), init_globals={"open": lambda *a, **kw: io.StringIO("# 偽物\n")})
+            try:
+                runpy.run_path(os.path.join(AGENT, "..", "..", "ops", "seed_graph.py"), init_globals={"open": lambda *a, **kw: io.StringIO("# 偽物\n")})
+            except Exception as e:   # seed_graph.py が捕まえ損ねた例外は、テストを止めずに check で落とす
+                print(f"例外 {type(e).__name__}: {e}")
     finally:
-        graph.BACKEND, graph.query, graph.configured, sys.path[:] = "neptune", _q, conf, path
+        graph.BACKEND, graph.query, graph.configured, graph._server_errors, sys.path[:] = "neptune", _q, conf, srv, path
         for k in ("NAME_PREFIX", "GRAPH_REPLACE"):
             os.environ.pop(k, None)
     return [q for q, _ in _sent4], out.getvalue()
 qs4, out4 = _seed_graph("neo4j")
 check("neo4j: ops/seed_graph.py は投入（seed）を全部送ったあとで 1 度だけ db.prepareForReplanning を呼ぶ（統計を取り直して索引を使う計画にする）",
       qs4[-1] == "CALL db.prepareForReplanning()" and qs4.count("CALL db.prepareForReplanning()") == 1
-      and any(q.startswith("UNWIND $rows AS r CREATE (n:`device`") for q in qs4) and "Neo4j に" in out4 and "WARNING" not in out4)
+      and any(q.startswith("UNWIND $rows AS r CREATE (n:`device`") for q in qs4) and "Neo4j に" in out4 and "WARNING" not in out4 and "例外 " not in out4)
 qs4, out4 = _seed_graph("neo4j", fail=True)
-check("neo4j: db.prepareForReplanning が無い・失敗しても、seed_graph.py は WARNING を出すだけで止まらない（投入は済んでいる）",
-      qs4[-1] == "CALL db.prepareForReplanning()" and "WARNING: Neo4j の統計を取り直せない" in out4 and "db.prepareForReplanning" in out4)
+check("neo4j: db.prepareForReplanning が無い・失敗しても（ドライバの Neo4jError）、seed_graph.py は WARNING を出すだけで止まらない（投入は済んでいる）",
+      qs4[-1] == "CALL db.prepareForReplanning()" and "WARNING: Neo4j の統計を取り直せない" in out4 and "db.prepareForReplanning" in out4
+      and "例外 " not in out4)
 qs4, out4 = _seed_graph("neptune")
-check("Neptune では seed_graph.py は db.prepareForReplanning を呼ばない", qs4 and not any("prepareForReplanning" in q for q in qs4) and "Neptune に" in out4)
+check("Neptune では seed_graph.py は db.prepareForReplanning を呼ばない", qs4 and not any("prepareForReplanning" in q for q in qs4) and "Neptune に" in out4 and "例外 " not in out4)
 
 # ---- 差分の同期（Nautobot の Job が呼ぶ。status と上の層は触らない）
 cur_d = [{"id": "a-ce-01", "label": "device", "hostname": "a-ce-01", "site": "a", "role": "leaf", "asn": 65001, "mgmt_ip": "203.0.113.11", "enabled": True, "status": "DOWN"},
