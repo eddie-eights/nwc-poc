@@ -342,7 +342,7 @@ def impact(devices: list, links: list, changes: list) -> dict:
     つながりは DOWN でない回線と機器だけで見て、いちばん大きいかたまりに入っていない機器を「孤立」とする。
     role が END_ROLES の機器（TRex。4 台の leaf につながるが転送しない）は端として扱い、ほかの機器どうしをつなぐ中継にしない。
     端は、つながる相手がかたまりに入っていればかたまりに入る。冗長の本数も、端でない機器は端への回線を数えない（leaf は Spine への本数）。
-    role が無ければ全部を中継として見る（ワーカーの awsio.read_topology は role を読まない。落とす処置を ACTION_CHANGES に足すときは role も読む）。
+    role が無ければ全部を中継として見る（ワーカーの awsio.read_topology も role を読んで渡す）。
     app/agentcore/topology.py と app/temporal/rules.py に同じものを置く（ワーカーのイメージには app/agentcore/ が入らない。tests/test_workflow.py が一致を検査）"""
     dev_down = {d["device_id"] for d in devices if (d.get("status") or "UP") == "DOWN"}
     link_down = {n for n, l in enumerate(links) if (l.get("status") or "UP") == "DOWN"}
