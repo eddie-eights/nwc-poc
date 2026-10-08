@@ -17,7 +17,7 @@
 #   oss/ops/up.sh                         # deploy.env の OWNER（必須）と下のキーを読む
 #   DEPLOY_ENV_FILE=<パス> oss/ops/up.sh  # 別の設定ファイルを読む
 #
-# 読むキー（deploy.env か環境変数。意味は deploy.env.example）: OWNER / SYSLOG_STANDARD / SNMP_POLL / VPC_CIDR / MDT_SOURCE_CIDRS /
+# 読むキー（deploy.env か環境変数。意味は deploy.env.example）: OWNER / SYSLOG_STANDARD / SNMP_POLL / VPC_CIDR /
 #   NETWORK_PERIMETER / ENDPOINTS_AZ_NUM / TELEGRAF_AZ_NUM / EMR_AZ_NUM（Spark のタスクのサブネット）/ SPLUNK_AZ_NUM / SPLUNK_INDEX /
 #   RUNTIME_AZ_NUM / LAMBDA_AZ_NUM / NAUTOBOT_DB_AZ_NUM / IMAGE_TAG（agent と worker のイメージのタグ。既定 v1）/ HTTP_SEND /
 #   MAX_OFFSETS_PER_TRIGGER と MAX_OFFSETS_PER_TRIGGER_<格納先> / LOCAL_PORT（既定 8080）/ NO_DASHBOARD_PORTFORWARD /
@@ -72,6 +72,7 @@ case "$SYSLOG_STANDARD" in
   *) die "SYSLOG_STANDARD は RFC3164 か RFC5424（大文字）: $SYSLOG_STANDARD。まだ何も作っていない" ;;
 esac
 SNMP_POLL="${SNMP_POLL:-1}"; flag_value SNMP_POLL
+if [ -n "${MDT_SOURCE_CIDRS:-}" ]; then echo "注意: MDT_SOURCE_CIDRS は 2026-10-08 から使わない（cycle 012 で Cisco の MDT の受け口を外した。戻し方は docs/collection.md。deploy.env から消してよい）"; fi
 OSS_ROLL="${OSS_ROLL:-1}"; flag_value OSS_ROLL   # 0 なら Kafka と OpenSearch の台を 1 台ずつ入れ替えない（oss/ops/roll-nodes.sh）
 NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"; flag_value NETWORK_PERIMETER
 case "${ENDPOINTS_MULTI_AZ:-}" in
@@ -246,7 +247,6 @@ fi
 log "3. 土台（IaC/terraform/oss/base/core。VPC / Web の EC2 / バケット / ロール / Kafka のデータの EFS。初回は 3〜5 分）"
 MAIN_VARS=()
 if [ -n "${VPC_CIDR:-}" ];    then MAIN_VARS+=(-var "vpc_cidr=$VPC_CIDR"); fi
-if [ -n "${MDT_SOURCE_CIDRS:-}" ]; then MAIN_VARS+=(-var "mdt_source_cidrs=[\"$(printf '%s' "$MDT_SOURCE_CIDRS" | tr -d ' ' | sed 's/,/","/g')\"]"); fi
 MAIN_VARS+=(-var "interface_endpoints=[\"$(printf '%s' "$ENDPOINTS" | sed 's/ /","/g')\"]")
 MAIN_VARS+=(-var "network_perimeter=$([ -n "$NETWORK_PERIMETER" ] && echo true || echo false)")
 MAIN_VARS+=(-var "endpoints_az_num=$ENDPOINTS_AZ_NUM")

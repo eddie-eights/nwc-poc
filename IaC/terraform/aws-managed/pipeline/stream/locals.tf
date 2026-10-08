@@ -1,9 +1,10 @@
-# nwc-poc - PIPELINE stream root module. Kafka receives SNMP polls, gNMI state, traps and syslog from Telegraf (telegraf.tf: two ECS on Fargate tasks - a receiver
+# nwc-poc - PIPELINE stream root module. Kafka receives SNMP polls, gNMI state and traps from Telegraf (telegraf.tf: two ECS on Fargate tasks - a receiver
 # behind an internal NLB and a poller, split on 2026-10-04; it was an EC2 of IaC/terraform/aws-managed/pipeline/lab until 2026-09-28),
+# and device syslog and NetFlow / sFlow from syslog-ng and GoFlow2 behind the same NLB (collectors.tf, cycle 012),
 # and the Spark job of IaC/terraform/aws-managed/pipeline/analytics reads them (raw messages go to S3 Tables, Prometheus, OpenSearch and Splunk; detection is done by Grafana and Splunk since 2026-10-02). The MSK Connect S3 sink that also copied the raw messages to the asset bucket was removed on 2026-09-26
 # (Spark already stores every topic in S3 Tables).
 # Kafka is MSK in this root (msk.tf). The OSS build of cycle 005 (IaC/terraform/oss/pipeline/stream) runs Kafka on ECS instead (its kafka.tf) and uses this file,
-# telegraf.tf, kafka_ui.tf, access.tf and outputs.tf through symbolic links; what differs between the two Kafkas comes from the kafka_* locals of msk.tf / kafka.tf.
+# telegraf.tf, collectors.tf, kafka_ui.tf, access.tf and outputs.tf through symbolic links; what differs between the two Kafkas comes from the kafka_* locals of msk.tf / kafka.tf.
 
 # リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、
 # 1 つの AWS アカウントを何人かで使っても、自分の名前で自分のリソースを探せる
@@ -54,6 +55,9 @@ locals {
   telegraf_dialout_nlb_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["telegraf_dialout_nlb"], "")
   # Kafbat UI（kafka_ui.tf）。2026-10-05 より前の土台には無いので、kafka_ui.tf の precondition で止める
   kafka_ui_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["kafka_ui"], "")
+  # syslog-ng と GoFlow2（collectors.tf、cycle 012）。それより前の土台には無いので、collectors.tf の precondition で止める
+  syslog_ng_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["syslog_ng"], "")
+  goflow2_sg_id   = try(data.terraform_remote_state.main.outputs.security_group_ids["goflow2"], "")
   # Kafbat UI のポートフォワードの踏み台
   web_instance_id   = try(data.terraform_remote_state.main.outputs.web_instance_id, "")
   reader_role_names = toset([data.terraform_remote_state.main.outputs.runtime_role_name, data.terraform_remote_state.main.outputs.web_role_name])

@@ -1,5 +1,8 @@
 # ---------------------------------------------------------------- MSK
-# マネージド版の Kafka。MSK（var.msk_az_num 台、IAM 認証）。あるあいだ 1 時間に約 0.61 USD かかる - 作った日のうちに消す。
+# マネージド版の Kafka。MSK（var.msk_az_num 台、IAM 認証と SASL/SCRAM）。あるあいだ 1 時間に約 0.61 USD かかる - 作った日のうちに消す。
+# SCRAM（9096、cycle 012）は syslog-ng と GoFlow2（collectors.tf）の口。どちらも MSK の IAM 認証を喋れない。資格情報は Secrets Manager の
+# AmazonMSK_<接頭辞>-collectors（顧客管理の KMS キー alias/<接頭辞>-msk-scram で暗号化）で、ops/up.sh が apply の前に作り、ops/down.sh が destroy のあとに消す。
+# Terraform は data source で ARN だけを引き、値には触らない（state に入らない）。
 # OSS 版（cycle 005。IaC/terraform/oss/pipeline/stream）にこのファイルは無く、代わりに kafka.tf（ECS の Kafka）がある。どちらも下の kafka_* の locals を
 # 同じ名前で定義し、2 つの版で共通のファイル（locals.tf・telegraf.tf・kafka_ui.tf・access.tf・outputs.tf。OSS 版はシンボリックリンク）は MSK のリソースでなくそれを使う
 
@@ -23,6 +26,28 @@ locals {
   }
   # Kafbat UI の画面に出るクラスタの名前
   kafka_cluster_name = aws_msk_cluster.stream.cluster_name
+  # syslog-ng と GoFlow2（collectors.tf）の口。SCRAM（9096、TLS）。ユーザー名とパスワードは ECS の secrets で Secrets Manager から入れる
+  kafka_collector_brokers = aws_msk_cluster.stream.bootstrap_brokers_sasl_scram
+  kafka_collector_auth    = "scram"
+  kafka_collector_secrets = [
+    { name = "KAFKA_SASL_USER", valueFrom = "${data.aws_secretsmanager_secret.msk_scram.arn}:username::" },
+    { name = "KAFKA_SASL_PASS", valueFrom = "${data.aws_secretsmanager_secret.msk_scram.arn}:password::" },
+  ]
+  # 2 つの実行ロールに足す権限（ECS のエージェントが起動時に secret を読む。Secrets Manager は呼び手の権限で KMS の復号を頼む）
+  kafka_collector_execution_statements = [
+    {
+      Sid      = "ScramSecret"
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = data.aws_secretsmanager_secret.msk_scram.arn
+    },
+    {
+      Sid      = "ScramSecretKey"
+      Effect   = "Allow"
+      Action   = ["kms:Decrypt"]
+      Resource = data.aws_kms_alias.msk_scram.target_key_arn
+    },
+  ]
   # Telegraf の 2 つのタスクに足す環境変数。MSK は telegraf.sh の既定（KAFKA_AUTH=iam）のままなので何も足さない
   kafka_client_environment = []
   # Telegraf のタスクロールの Kafka の権限（ECS Exec の分は telegraf.tf）
@@ -82,7 +107,7 @@ locals {
   # IAM ロールと Cloud Map の名前空間の description（名前空間の description は変えると作り直しになるので、今のまま）
   kafka_descriptions = {
     namespace     = "Kafbat UI of ${local.name_prefix} (IaC/terraform/aws-managed/pipeline/stream)"
-    telegraf_task = "Telegraf task - write SNMP / gNMI / trap / syslog / MDT to MSK (IAM auth), ECS Exec"
+    telegraf_task = "Telegraf task - write SNMP / gNMI / trap to MSK (IAM auth), ECS Exec"
     kafka_ui_task = "Kafbat UI task - browse the MSK cluster, create / alter / delete topics, read and write messages (MSK IAM)"
   }
 }
@@ -131,8 +156,10 @@ resource "aws_msk_cluster" "stream" {
   client_authentication {
     unauthenticated = false
 
+    # scram は cycle 012 で足した（syslog-ng と GoFlow2。既存のクラスタには in-place の更新のはず。設計の未確定事項 1 → 検証 3）
     sasl {
-      iam = true
+      iam   = true
+      scram = true
     }
   }
 
@@ -160,6 +187,21 @@ resource "aws_msk_cluster" "stream" {
   tags = { Name = "${local.name_prefix}-stream" }
 }
 
+# ---- SASL/SCRAM の資格情報（cycle 012）。secret と KMS キーは ops/up.sh が作る（MSK は名前が AmazonMSK_ で始まり、顧客管理のキーで暗号化した secret しか受け付けない）。
+# MSK が secret にリソースポリシーを付けるので、手で書き換えない
+data "aws_secretsmanager_secret" "msk_scram" {
+  name = "AmazonMSK_${local.name_prefix}-collectors"
+}
+
+data "aws_kms_alias" "msk_scram" {
+  name = "alias/${local.name_prefix}-msk-scram"
+}
+
+resource "aws_msk_scram_secret_association" "collectors" {
+  cluster_arn     = aws_msk_cluster.stream.arn
+  secret_arn_list = [data.aws_secretsmanager_secret.msk_scram.arn]
+}
+
 # ブローカーのアドレスはクラスタ作成後にしか分からない。Telegraf のタスク（telegraf.tf）は環境変数で直接受け取るので、ここは手で調べるときと
 # 手動構築のために置く（2026-09-28 までは Telegraf の EC2 が起動時にここから読んでいた）
 resource "aws_ssm_parameter" "bootstrap" {
@@ -173,4 +215,10 @@ resource "aws_ssm_parameter" "bootstrap" {
 output "msk_cluster_arn" {
   description = "MSK cluster ARN"
   value       = aws_msk_cluster.stream.arn
+}
+
+# 手で調べるとき用（syslog-ng と GoFlow2 はタスク定義で直接受け取る）。OSS 版には無い
+output "bootstrap_brokers_scram" {
+  description = "MSK bootstrap brokers for SASL/SCRAM (9096, TLS) - the port of syslog-ng and GoFlow2"
+  value       = aws_msk_cluster.stream.bootstrap_brokers_sasl_scram
 }

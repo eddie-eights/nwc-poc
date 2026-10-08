@@ -987,8 +987,8 @@ check("ops/check.sh は IaC/terraform/oss のルートを -lockfile=readonly で
 _STREAM = "pipeline/stream"
 _stream_files = git_files(f"IaC/terraform/oss/{_STREAM}")
 _stream_links = sorted(n for n in _stream_files if os.path.islink(os.path.join(ROOT, "IaC", "terraform", "oss", *_STREAM.split("/"), n)))
-_stream_shared = ("locals.tf", "telegraf.tf", "kafka_ui.tf", "access.tf", "outputs.tf")
-check("OSS 版の stream の実ファイルは kafka.tf と oss.auto.tfvars だけで、マネージド版のファイルのうち msk.tf 以外は全部リンク",
+_stream_shared = ("locals.tf", "telegraf.tf", "collectors.tf", "kafka_ui.tf", "access.tf", "outputs.tf")
+check("OSS 版の stream の実ファイルは kafka.tf と oss.auto.tfvars だけで、マネージド版のファイルのうち msk.tf 以外は全部リンク（collectors.tf は cycle 012 で足した）",
       sorted(set(_stream_files) - set(_stream_links)) == ["kafka.tf", "oss.auto.tfvars"]
       and _stream_links == sorted(_shared + _stream_shared) and not links_to_managed(_STREAM, _stream_links)
       and sorted(set(git_files(f"IaC/terraform/aws-managed/{_STREAM}")) - set(_stream_links)) == ["msk.tf"])
@@ -1006,7 +1006,9 @@ def _code(s):
 _m_stream, _o_stream = tf_text("IaC/terraform/aws-managed", _STREAM), tf_text("IaC/terraform/oss", _STREAM)
 _msk_tf, _kafka_tf = _m_stream["msk.tf"], _o_stream["kafka.tf"]
 _IFACE = {"kafka_bootstrap_brokers", "kafka_bootstrap_by_protocol", "kafka_cluster_name", "kafka_client_environment",
-          "telegraf_kafka_statements", "kafka_ui_kafka_statements", "kafka_descriptions"}
+          "telegraf_kafka_statements", "kafka_ui_kafka_statements", "kafka_descriptions",
+          # syslog-ng と GoFlow2（collectors.tf）の口（cycle 012）
+          "kafka_collector_brokers", "kafka_collector_auth", "kafka_collector_secrets", "kafka_collector_execution_statements"}
 _shared_code = "\n".join(_code(_m_stream[n]) for n in _stream_shared)
 _shared_defs = set().union(*(_locals_keys(_m_stream[n]) for n in _stream_shared))
 _shared_refs = set(re.findall(r"\blocal\.(\w+)", _shared_code))
@@ -1018,6 +1020,20 @@ check(f"Kafka の差し替え口（{', '.join(sorted(_IFACE))}）は msk.tf と 
 check("マネージド版の msk.tf の差し替え口は今と同じ値（Telegraf の環境変数は足さない、ブートストラップは IAM の SASL_SSL）",
       "kafka_client_environment = []" in _msk_tf and "kafka_bootstrap_brokers = aws_msk_cluster.stream.bootstrap_brokers_sasl_iam" in _msk_tf
       and 'output "msk_cluster_arn"' in _msk_tf and 'output "msk_cluster_arn"' not in _m_stream["outputs.tf"])
+check("syslog-ng と GoFlow2 の口: マネージド版は MSK の SCRAM（9096 のブートストラップ、secret は AmazonMSK_<接頭辞>-collectors を data source で引いて ECS の secrets で "
+      "ユーザー名とパスワードを入れ、実行ロールに secret と KMS の復号）。OSS 版は認証なしの 9092 で secret も権限も無い",
+      "kafka_collector_brokers = aws_msk_cluster.stream.bootstrap_brokers_sasl_scram" in _msk_tf and 'kafka_collector_auth    = "scram"' in _msk_tf
+      and re.search(r'data "aws_secretsmanager_secret" "msk_scram" \{\n  name = "AmazonMSK_\$\{local\.name_prefix\}-collectors"\n\}', _msk_tf) is not None
+      and re.search(r'data "aws_kms_alias" "msk_scram" \{\n  name = "alias/\$\{local\.name_prefix\}-msk-scram"\n\}', _msk_tf) is not None
+      and '{ name = "KAFKA_SASL_USER", valueFrom = "${data.aws_secretsmanager_secret.msk_scram.arn}:username::" }' in _msk_tf
+      and '{ name = "KAFKA_SASL_PASS", valueFrom = "${data.aws_secretsmanager_secret.msk_scram.arn}:password::" }' in _msk_tf
+      and '"secretsmanager:GetSecretValue"' in _msk_tf and "Resource = data.aws_kms_alias.msk_scram.target_key_arn" in _msk_tf
+      and re.search(r"sasl \{\n\s*iam\s*= true\n\s*scram = true\n\s*\}", _msk_tf) is not None
+      and re.search(r'resource "aws_msk_scram_secret_association" "collectors" \{\n  cluster_arn     = aws_msk_cluster\.stream\.arn\n  secret_arn_list = \[data\.aws_secretsmanager_secret\.msk_scram\.arn\]\n\}', _msk_tf) is not None
+      and 'resource "aws_secretsmanager_secret"' not in _msk_tf and "aws_secretsmanager_secret_version" not in _msk_tf   # 値は Terraform の state に入れない（ops/up.sh が作る）
+      and "kafka_collector_brokers              = local.kafka_bootstrap_brokers" in _kafka_tf and 'kafka_collector_auth                 = "none"' in _kafka_tf
+      and "kafka_collector_secrets              = []" in _kafka_tf and "kafka_collector_execution_statements = []" in _kafka_tf
+      and "secretsmanager" not in _code(_kafka_tf))
 _tg_envs = re.findall(r"^      environment = concat\(\n        \[\n[\s\S]*?^        \],\n        local\.kafka_client_environment,\n      \)\n",
                       _m_stream["telegraf.tf"], re.M)
 check("Telegraf の 2 つのタスク（dialin / dialout）の環境変数は local.kafka_client_environment を足す",
@@ -1856,9 +1872,10 @@ check("OSS 版の 3 つの実体ルート（stream / analytics / graph）の .tf
       all(_oss_env[r] for r in OSS_REAL)
       and not [n for ns in _oss_env.values() for n in ns if any(w in n for w in ("PASSWORD", "TOKEN", "SECRET"))])
 
-# ---- 土台の SG の表は、いまの oss.tf から起こした 31 行と完全に一致する（増えても減っても気づく）
+# ---- 土台の SG の表は、いまの oss.tf から起こした 33 行と完全に一致する（増えても減っても気づく）
 _sg_expected = {(sg, to, 443, 443) for sg in ("kafka", "opensearch", "victoriametrics", "neo4j") for to in ("endpoints", "s3")} | {
     ("telegraf_dialout", "kafka", 9092, 9092), ("telegraf_dialin", "kafka", 9092, 9092), ("spark", "kafka", 9092, 9092),
+    ("syslog_ng", "kafka", 9092, 9092), ("goflow2", "kafka", 9092, 9092),   # syslog-ng と GoFlow2（cycle 012。OSS 版は認証なしの 9092）
     ("kafka_ui", "kafka", 9092, 9092), ("kafka", "kafka", 9092, 9093),
     ("kafka", "efs", 2049, 2049), ("victoriametrics", "efs", 2049, 2049),
     ("spark", "opensearch", 9200, 9200), ("grafana", "opensearch", 9200, 9200), ("runtime", "opensearch", 9200, 9200),
@@ -1868,8 +1885,8 @@ _sg_expected = {(sg, to, 443, 443) for sg in ("kafka", "opensearch", "victoriame
     ("web", "neo4j", 7687, 7687), ("runtime", "neo4j", 7687, 7687), ("lambda", "neo4j", 7687, 7687), ("workflow", "neo4j", 7687, 7687),
     ("nautobot", "neo4j", 7687, 7687), ("web", "neo4j", 7474, 7474)}
 _sg_actual = set(_sg_rows) | {(sg, to, 443, 443) for sg in _oss_api for to in ("endpoints", "s3")}
-check("土台の SG の表（IaC/terraform/aws-managed/base/core/oss.tf の oss_flows）は oss_api_clients 4 × 2（endpoints / s3）+ kafka 5 + efs 2 + opensearch 5 + victoriametrics 5 + neo4j 6（7474 の web→neo4j を含む）= 31 行と完全に一致し、重複は無い",
-      len(_sg_expected) == 31 and _sg_actual == _sg_expected and len(_sg_rows) == 23 == len(set(_sg_rows))
+check("土台の SG の表（IaC/terraform/aws-managed/base/core/oss.tf の oss_flows）は oss_api_clients 4 × 2（endpoints / s3）+ kafka 7（syslog-ng と GoFlow2 は cycle 012 で足した）+ efs 2 + opensearch 5 + victoriametrics 5 + neo4j 6（7474 の web→neo4j を含む）= 33 行と完全に一致し、重複は無い",
+      len(_sg_expected) == 33 and _sg_actual == _sg_expected and len(_sg_rows) == 25 == len(set(_sg_rows))
       and _oss_api == {"kafka", "opensearch", "victoriametrics", "neo4j"})
 
 # ---- ops/check.sh は OSS 版のスクリプトと検査を漏らさない

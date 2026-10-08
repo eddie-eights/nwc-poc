@@ -78,6 +78,7 @@ tele = _read("app", "telegraf", "telegraf.conf.in")
 tgsh = _read("app", "telegraf", "telegraf.sh")
 lab_locals = _read("IaC", "terraform", "aws-managed", "pipeline", "lab", "locals.tf")
 stream_tg = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "telegraf.tf")
+stream_col = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "collectors.tf")
 core_sg = _read("IaC", "terraform", "aws-managed", "base", "core", "security_groups.tf")
 check("SR Linux の 6 台の設定は set / の行だけ（containerlab が候補に流し込んで commit する。enter candidate / commit を書くと二重になる）",
       len(srl_nodes) == 6 and all(all(re.match(r"^(set / |#|\s*$)", l) for l in c.splitlines()) for c in srl_cfg.values()))
@@ -100,20 +101,40 @@ check("containerlab の VM 2 台は linux で、leaf の組へ 2 本（bond）",
 check("lab.sh forward は syslog の LOG_PORT も trap の 162 と同じ仕組みで DNAT する（rsyslog は無い）",
       re.search(r'-p udp --dport "\$LOG_PORT" "\$\{c\[@\]\}" -j DNAT --to-destination "\$t:\$LOG_PORT"', labsh) is not None
       and "rsyslog" not in labsh and "LOG_DIR" not in labsh and re.search(r"^\s*logs\)", labsh, re.M) is not None)
-# ログのポートは 3 か所で同じ（lab.sh / stream の NLB / 土台の SG の通信の表。Telegraf は cycle 012 で syslog を受けなくなった）。trap は NLB の 162 → タスクの 1162（非 root）
-check("syslog のポートが lab.sh・stream の NLB・土台の通信の表で同じで、trap は NLB の 162 をタスクの 1162 で受ける",
-      re.search(r'^\s*service_address = "udp://__BIND__:__TRAP_PORT__"$', tele, re.M) is not None and re.search(r"^TRAP_PORT=\$\{TRAP_PORT:-1162\}$", tgsh, re.M) is not None
-      and all(re.search(rf'\{{ from = "{a}", to = "{b}", protocol = "udp", port = {pt},', core_sg) is not None
-              for a, b, pt in (("lab_mgmt", "telegraf_dialout_nlb", log_port), ("lab", "telegraf_dialout_nlb", log_port), ("telegraf_dialout_nlb", "telegraf_dialout", log_port),
-                               ("lab_mgmt", "telegraf_dialout_nlb", 162), ("lab", "telegraf_dialout_nlb", 162), ("telegraf_dialout_nlb", "telegraf_dialout", 1162)))
-      and "log_port" not in lab_locals
-      and re.search(rf'syslog = \{{ listener = {log_port}, container = {log_port}, protocol = "UDP" \}}', stream_tg) is not None
-      and re.search(r'trap\s+= \{ listener = 162, container = 1162, protocol = "UDP" \}', stream_tg) is not None)
-# MDT と syslog の受け口は Telegraf から外した（cycle 012。MDT は使う機器が無い、syslog は syslog-ng）。NLB とタスクと SG は commit 3 で外す
+# NLB の受け口は stream の collector_listeners の表（cycle 012）。受け口 → サービスとそのタスクのポートで、どれも UDP。trap は NLB の 162 → タスクの 1162（非 root）。
+# 同じ番号が lab.sh（syslog の LOG_PORT）と土台の SG の通信の表にもある。NetFlow / sFlow の DNAT は commit 4 で lab.sh に足す
+_cl_blk = re.search(r"^  collector_listeners = \{\n(.*?)^  \}\n", stream_tg, re.M | re.S)
+_cl = {k: (int(lp), int(cp), sv) for k, lp, cp, sv in re.findall(r'^\s*(\w+)\s*= \{ listener = (\d+), container = (\d+), service = "([\w-]+)" \}$', _cl_blk.group(1), re.M)} if _cl_blk else {}
+_hc_blk = re.search(r"^  collector_health_checks = \{\n(.*?)^  \}\n", stream_tg, re.M | re.S)
+_hc = {k: (pr, int(pt)) for k, pr, pt in re.findall(r'^\s*"?([\w-]+)"?\s*= \{ protocol = "(\w+)", port = "(\d+)", path = [^}]*\}$', _hc_blk.group(1), re.M)} if _hc_blk else {}
+_svc_sg = {"telegraf-dialout": "telegraf_dialout", "syslog-ng": "syslog_ng", "goflow2": "goflow2"}
+def _sg_row(a, b, proto, pt):
+    return re.search(rf'\{{ from = "{a}", to = "{b}", protocol = "{proto}", port = {pt},', core_sg) is not None
+check("NLB の受け口（collector_listeners）は trap 162→1162（telegraf-dialout）・syslog は lab.sh の LOG_PORT（syslog-ng）・netflow 2055 と sflow 6343（goflow2）の 4 つで、"
+      "target group も listener も UDP（MDT の 57000/tcp と telegraf_ports は cycle 012 で外した）",
+      _cl == {"trap": (162, 1162, "telegraf-dialout"), "syslog": (int(log_port), int(log_port), "syslog-ng"), "netflow": (2055, 2055, "goflow2"), "sflow": (6343, 6343, "goflow2")}
+      and stream_tg.count("for_each = local.collector_listeners") == 2 and 'protocol    = "UDP"' in stream_tg and 'protocol          = "UDP"' in stream_tg
+      and "preserve_client_ip = true" in stream_tg and "telegraf_ports" not in stream_tg
+      and "57000" not in "\n".join(l for l in (stream_tg + stream_col).splitlines() if not l.lstrip().startswith("#"))
+      and re.search(r'^\s*service_address = "udp://__BIND__:__TRAP_PORT__"$', tele, re.M) is not None and re.search(r"^TRAP_PORT=\$\{TRAP_PORT:-1162\}$", tgsh, re.M) is not None
+      and "log_port" not in lab_locals)
+check("土台の SG の通信の表に、受け口ごとの 3 本（管理ネットワーク → NLB、lab の EC2 → NLB、NLB → サービスの SG のタスクのポート）と、サービスごとのヘルスチェックの tcp がある",
+      len(_cl) == 4 and sorted(_hc) == sorted(_svc_sg)
+      and all(_sg_row("lab_mgmt", "telegraf_dialout_nlb", "udp", lp) and _sg_row("lab", "telegraf_dialout_nlb", "udp", lp)
+              and _sg_row("telegraf_dialout_nlb", _svc_sg[sv], "udp", cp) for lp, cp, sv in _cl.values())
+      and all(_sg_row("telegraf_dialout_nlb", _svc_sg[sv], "tcp", pt) for sv, (_, pt) in _hc.items())
+      and _hc == {"telegraf-dialout": ("HTTP", 8080), "syslog-ng": ("TCP", int(log_port)), "goflow2": ("HTTP", 8081)}
+      and not re.search(r'from = "telegraf_dialout_nlb", to = "telegraf_dialout", protocol = "(udp", port = 5140|tcp", port = 57000)', core_sg))
+_svc_lb = {k: m.group(1) for k in ("telegraf_dialout", "syslog_ng", "goflow2")
+           if (m := re.search(r'resource "aws_ecs_service" "' + k + r'" \{[^\n]*\n(?:(?!^\}).*\n)*?\s*dynamic "load_balancer" \{\n\s*for_each = (.+)\n', stream_tg + "\n" + stream_col, re.M))}
+check("3 つのサービスは collector_listeners のうち自分の分だけを load_balancer に持つ（同じ target group に 2 つのサービスが入らない）",
+      _svc_lb == {k: f'{{ for k, v in local.collector_listeners : k => v if v.service == "{sv}" }}' for k, sv in (("telegraf_dialout", "telegraf-dialout"), ("syslog_ng", "syslog-ng"), ("goflow2", "goflow2"))})
+# MDT と syslog の受け口は Telegraf から外した（cycle 012。MDT は使う機器が無い、syslog は syslog-ng）
 check("Telegraf（telegraf.conf.in / telegraf.sh）に MDT と syslog の受け口が無い（inputs.cisco_telemetry_mdt / inputs.syslog / MDT_PORT / LOG_PORT / SYSLOG_STANDARD）",
       "cisco_telemetry_mdt" not in tele and "inputs.syslog" not in tele and "__MDT_PORT__" not in tele and "__LOG_PORT__" not in tele and "__SYSLOG_STANDARD__" not in tele
       and not any(k in tgsh for k in ("MDT_PORT", "LOG_PORT", "SYSLOG_STANDARD"))
-      and "57000" not in lab_locals and "57000" not in labsh)
+      and "57000" not in lab_locals and "57000" not in labsh
+      and not re.search(r"containerPort = (5140|57000)", stream_tg) and "SYSLOG_STANDARD" not in stream_tg)
 # 管理ネットワークは 4 か所で同じ（containerlab の mgmt / lab.sh / lab の locals の VPC ルート / 土台の SG の lab_mgmt）
 mgmt = re.search(r"^MGMT=(\S+)$", labsh, re.M).group(1)
 check("管理ネットワークが containerlab・lab.sh・lab の locals・土台の SG の lab_mgmt_cidr で同じ",
@@ -183,9 +204,10 @@ check("Telegraf の Kafka の出力は metrics / gnmi / traps の 3 つ（mdt �
 check("lab.sh forward は gNMI の GNMI_PORT/tcp も SNMP の 161/udp と同じく Telegraf から管理ネットワークへ通す",
       re.search(r'-p tcp --dport "\$GNMI_PORT" "\$\{c\[@\]\}" -j ACCEPT', labsh) is not None and re.search(r"^GNMI_PORT=57400$", labsh, re.M) is not None)
 _up = read_ops("up")
-check("syslog の形式は stream の syslog_standard（既定 RFC3164 = 本番の Cisco）→ タスクの SYSLOG_STANDARD。up.sh も deploy.env の SYSLOG_STANDARD（既定 RFC3164。lab の SR Linux は RFC5424）を渡す"
-      "（Telegraf は cycle 012 で読まなくなった。stream と up.sh は commit 3 / 4 で syslog-ng へ移す）",
-      '{ name = "SYSLOG_STANDARD", value = var.syslog_standard }' in stream_tg
+_td_sng = re.search(r'resource "aws_ecs_task_definition" "syslog_ng" \{[\s\S]*?^\}', stream_col, re.M)
+check("syslog の形式は stream の syslog_standard（既定 RFC3164 = 本番の Cisco）→ syslog-ng のタスクの SYSLOG_STANDARD（cycle 012。それまでは Telegraf）。"
+      "up.sh も deploy.env の SYSLOG_STANDARD（既定 RFC3164。lab の SR Linux は RFC5424）を渡す",
+      _td_sng is not None and '{ name = "SYSLOG_STANDARD", value = var.syslog_standard }' in _td_sng.group(0) and "syslog_standard" not in stream_tg
       and re.search(r'variable "syslog_standard" \{[^}]*default\s*=\s*"RFC3164"', _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "variables.tf")) is not None
       and '-var "syslog_standard=$SYSLOG_STANDARD"' in _up and 'SYSLOG_STANDARD="${SYSLOG_STANDARD:-RFC3164}"' in _up and '[ "$SYSLOG_STANDARD" != "$LAB_SYSLOG_STANDARD" ]' in _up
       and "case \"$SYSLOG_STANDARD\" in RFC3164 | RFC5424) ;;" in _up
@@ -231,7 +253,7 @@ check("Telegraf は stream の ECS で、MSK への書き込みはタスクロ�
       and 'resource "aws_iam_role"' not in _lab_tg and 'resource "aws_instance"' not in _lab_tg)
 check("lab と stream は SG も SG のルールも作らない（ポーリング・trap・syslog のルールは土台の通信の表。2026-09-29）",
       all('resource "aws_security_group"' not in t and "aws_vpc_security_group_" not in t
-          for t in (_lab_tg, lab_locals, stream_tg, _access, _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "msk.tf"), _read("IaC", "terraform", "aws-managed", "pipeline", "lab", "instance.tf")))
+          for t in (_lab_tg, lab_locals, stream_tg, stream_col, _access, _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "msk.tf"), _read("IaC", "terraform", "aws-managed", "pipeline", "lab", "instance.tf")))
       and 'security_groups = [local.telegraf_dialout_nlb_sg_id]' in stream_tg and 'security_groups  = [local.telegraf_dialout_sg_id]' in stream_tg)
 _td = {k: m.group(0) for k in ("telegraf_dialout", "telegraf_dialin") if (m := re.search(r'resource "aws_ecs_task_definition" "' + k + r'" \{[\s\S]*?^\}', stream_tg, re.M))}
 _svc = {k: m.group(0) for k in ("telegraf_dialout", "telegraf_dialin") if (m := re.search(r'resource "aws_ecs_service" "' + k + r'" \{[\s\S]*?^\}', stream_tg, re.M))}

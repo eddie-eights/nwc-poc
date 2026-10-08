@@ -87,8 +87,9 @@ check("EMR / Grafana / Splunk は土台の spark / grafana / splunk の SG を�
 
 _sg_keys = re.search(r'security_groups = \{(.*?)\n  \}', _sg_tf, re.S)
 _sg_keys = set(re.findall(r'^\s+(\w+)\s+=\s+"', _sg_keys.group(1), re.M)) if _sg_keys else set()
-SG_KEYS = {"web", "lab", "telegraf_dialout", "telegraf_dialin", "telegraf_dialout_nlb", "msk", "spark", "grafana", "splunk", "nautobot", "nautobot_db", "lambda", "workflow", "runtime", "kafka_ui"}
-check(f"土台の SG はワークロードごとの 15 個と endpoints（{sorted(_sg_keys)}）",
+SG_KEYS = {"web", "lab", "telegraf_dialout", "telegraf_dialin", "telegraf_dialout_nlb", "syslog_ng", "goflow2", "msk", "spark", "grafana", "splunk", "nautobot", "nautobot_db",
+           "lambda", "workflow", "runtime", "kafka_ui"}
+check(f"土台の SG はワークロードごとの 17 個（syslog_ng と goflow2 は cycle 012 で足した）と endpoints（{sorted(_sg_keys)}）",
       _sg_keys == SG_KEYS and re.findall(r'resource "aws_security_group" "(\w+)"', _core) == ["workload", "endpoints"]
       and re.search(r'resource "aws_security_group" "workload" \{\n\s*for_each = local\.workload_security_groups\n', _sg_tf) is not None)
 # 通信の表を読む（from = sg の行は aws_api_clients に展開する）
@@ -98,35 +99,53 @@ _flows = set()
 for _m in re.finditer(r'\{ from = ("?\w+"?), to = "(\w+)", protocol = "(\w+)", port = (\d+)(?:, to_port = (\d+))?(?:, only = "(\w+)")?, why = "([^"]*)" \}', _sg_tf):
     for _from in (_clients if _m.group(1) == "sg" else [_m.group(1).strip('"')]):
         _flows.add((_from, _m.group(2), _m.group(3), int(_m.group(4)), int(_m.group(5) or _m.group(4)), _m.group(6) or ""))
-EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_dialout", "telegraf_dialin", "spark", "grafana", "splunk", "nautobot", "lambda", "workflow", "runtime", "kafka_ui") for t in ("endpoints", "s3")} | {
+EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_dialout", "telegraf_dialin", "syslog_ng", "goflow2", "spark", "grafana", "splunk", "nautobot", "lambda",
+                                                         "workflow", "runtime", "kafka_ui") for t in ("endpoints", "s3")} | {
     # Nautobot（IaC/terraform/aws-managed/pipeline/nautobot。2026-10-04）: 画面は Web の EC2 からのポートフォワード、DB は RDS。
     # Neptune は Neptune Analytics にしたので SG が無く、行も無い（neptune-graph-data のエンドポイントの 443 で届く。2026-10-04）
     ("web", "nautobot", "tcp", 8080, 8080, ""), ("nautobot", "nautobot_db", "tcp", 5432, 5432, ""),
     ("web", "grafana", "tcp", 3000, 3000, ""), ("web", "splunk", "tcp", 8000, 8000, ""), ("web", "workflow", "tcp", 8233, 8233, ""),
     ("telegraf_dialout", "msk", "tcp", 9098, 9098, ""), ("telegraf_dialin", "msk", "tcp", 9098, 9098, ""), ("spark", "msk", "tcp", 9098, 9098, ""), ("msk", "msk", "tcp", 9092, 9098, ""),
+    # syslog-ng と GoFlow2 は MSK の IAM 認証を喋れないので SASL/SCRAM の 9096（cycle 012）
+    ("syslog_ng", "msk", "tcp", 9096, 9096, ""), ("goflow2", "msk", "tcp", 9096, 9096, ""),
     # Kafbat UI（IaC/terraform/aws-managed/pipeline/stream。2026-10-05）: 画面は Web の EC2 からのポートフォワード、MSK へは IAM の 9098
     ("web", "kafka_ui", "tcp", 8080, 8080, ""), ("kafka_ui", "msk", "tcp", 9098, 9098, ""),
     ("spark", "spark", "tcp", 0, 65535, ""), ("spark", "splunk", "tcp", 8088, 8088, ""),
     # Splunk のクラスター（「Splunk をクラスターにする（004）」）: manager・indexer・search head の間だけ
     ("splunk", "splunk", "tcp", 8089, 8089, ""), ("splunk", "splunk", "tcp", 9887, 9887, ""), ("splunk", "splunk", "tcp", 9997, 9997, ""),
-    ("telegraf_dialout_nlb", "telegraf_dialout", "udp", 1162, 1162, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "udp", 5140, 5140, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "tcp", 57000, 57000, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "tcp", 8080, 8080, ""),
+    # NLB → タスク（cycle 012 で syslog を syslog-ng へ移し、NetFlow / sFlow の GoFlow2 を足し、MDT の 57000/tcp を外した）。tcp はヘルスチェック
+    ("telegraf_dialout_nlb", "telegraf_dialout", "udp", 1162, 1162, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "tcp", 8080, 8080, ""),
+    ("telegraf_dialout_nlb", "syslog_ng", "udp", 5140, 5140, ""), ("telegraf_dialout_nlb", "syslog_ng", "tcp", 5140, 5140, ""),
+    ("telegraf_dialout_nlb", "goflow2", "udp", 2055, 2055, ""), ("telegraf_dialout_nlb", "goflow2", "udp", 6343, 6343, ""), ("telegraf_dialout_nlb", "goflow2", "tcp", 8081, 8081, ""),
     ("lab_mgmt", "telegraf_dialout_nlb", "udp", 162, 162, ""), ("lab_mgmt", "telegraf_dialout_nlb", "udp", 5140, 5140, ""),
+    ("lab_mgmt", "telegraf_dialout_nlb", "udp", 2055, 2055, ""), ("lab_mgmt", "telegraf_dialout_nlb", "udp", 6343, 6343, ""),
     ("lab", "telegraf_dialout_nlb", "udp", 162, 162, "egress"), ("lab", "telegraf_dialout_nlb", "udp", 5140, 5140, "egress"),
+    # NetFlow / sFlow は lab の EC2 のホストが自分の IP からも送る（SR Linux は NetFlow を送れないので tools/netflow_send.py で試す）ので両側
+    ("lab", "telegraf_dialout_nlb", "udp", 2055, 2055, ""), ("lab", "telegraf_dialout_nlb", "udp", 6343, 6343, ""),
     # ポーリングと gNMI は取りにいく側（telegraf_dialin）だけ。受ける側（telegraf_dialout）は機器へ出ない（2026-10-04 に分けた）
     ("telegraf_dialin", "lab_mgmt", "udp", 161, 161, ""), ("telegraf_dialin", "lab_mgmt", "tcp", 57400, 57400, ""),
     ("telegraf_dialin", "lab", "udp", 161, 161, "ingress"), ("telegraf_dialin", "lab", "tcp", 57400, 57400, "ingress"),
 }
 check(f"通信の表は決めた流れだけ（多い: {sorted(_flows - EXPECTED_FLOWS)} 足りない: {sorted(EXPECTED_FLOWS - _flows)}）",
-      _flows == EXPECTED_FLOWS and _sg_tf.count("{ from = ") == len(EXPECTED_FLOWS) - 2 * len(_clients) + 2 + 1)
+      _flows == EXPECTED_FLOWS and _sg_tf.count("{ from = ") == len(EXPECTED_FLOWS) - 2 * len(_clients) + 2)
 _core_vars = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", "variables.tf"), encoding="utf-8").read()
-check("MDT の送り元は変数 mdt_source_cidrs の CIDR から NLB の 57000/tcp だけ（受信だけ。既定は空、0.0.0.0/0 と重複とネットワークアドレスでない書き方を拒む）",
-      re.search(r'\[for c in var\.mdt_source_cidrs :\s*\{ from = "cidr:\$\{c\}", cidr = c, to = "telegraf_dialout_nlb", protocol = "tcp", port = 57000, why = "[^"]*" \}\s*\]', _sg_tf) is not None
+def _no_comment(t):
+    return "\n".join(l for l in t.splitlines() if not l.lstrip().startswith("#"))
+_up_src = open(os.path.join(ROOT, "ops", "up.sh"), encoding="utf-8").read()
+_oss_up_src = open(os.path.join(ROOT, "oss", "ops", "up.sh"), encoding="utf-8").read()
+_denv_keys = open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read().split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1]
+_MDT_NOTE = 'if [ -n "${MDT_SOURCE_CIDRS:-}" ]; then echo "注意: MDT_SOURCE_CIDRS は 2026-10-08 から使わない'
+check("MDT の受け口（送り元の変数 mdt_source_cidrs と NLB の 57000/tcp）は cycle 012 で外した。deploy.env の MDT_SOURCE_CIDRS は読むだけ読み（前の deploy.env で止めない）、"
+      "ops/up.sh と oss/ops/up.sh が注意を出す。CIDR の行を書ける表の仕組み（cidr）は残す",
+      "mdt_source_cidrs" not in _no_comment(_sg_tf) + _no_comment(_core_vars) and "57000" not in _no_comment(_sg_tf)
+      and "mdt_source_cidrs" not in _up_src + _oss_up_src and "MDT_SOURCE_CIDRS" not in env_example
       and "cidr     = try(f.cidr, null)" in _sg_tf
-      and re.search(r'variable "mdt_source_cidrs" \{[\s\S]*?type\s*=\s*list\(string\)\s*default\s*=\s*\[\][\s\S]*?cidrsubnet\(c, 0, 0\) == c[\s\S]*?length\(distinct\(var\.mdt_source_cidrs\)\) == length\(var\.mdt_source_cidrs\)'
-                    r'[\s\S]*?!contains\(var\.mdt_source_cidrs, "0\.0\.0\.0/0"\)', _core_vars) is not None
-      and 'MAIN_VARS+=(-var "mdt_source_cidrs=' in open(os.path.join(ROOT, "ops", "up.sh"), encoding="utf-8").read()
-      and "MDT_SOURCE_CIDRS" in open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read())
-check("Temporal の gRPC 7233（workflow）と Splunk の管理 API 8089（splunk。クラスターの splunk どうしは除く）は開けず、CIDR のルールは lab の管理ネットワーク・MDT の送り元・endpoints の送信なしだけ（EMR Serverless は 0.0.0.0/0 の inbound を拒否する）",
+      and re.search(r"(?<![A-Z_])MDT_SOURCE_CIDRS(?![A-Z_])", _denv_keys) is not None
+      and _up_src.count(_MDT_NOTE) == 1 and _oss_up_src.count(_MDT_NOTE) == 1
+      and [l for l in _no_comment(_up_src + _oss_up_src).splitlines() if "MDT_SOURCE_CIDRS" in l] == [l for l in (_up_src + _oss_up_src).splitlines() if l.startswith(_MDT_NOTE)])
+check("閉域の VPC エンドポイントに secretsmanager を書ける（syslog-ng と GoFlow2 の SCRAM の secret を ECS が取りにいく。cycle 012）",
+      re.search(r'"kinesis-firehose", "athena", "secretsmanager",\n\s*\], s\)\]\)', _core_vars) is not None and "athena and secretsmanager." in _core_vars)
+check("Temporal の gRPC 7233（workflow）と Splunk の管理 API 8089（splunk。クラスターの splunk どうしは除く）は開けず、CIDR のルールは lab の管理ネットワーク・表の cidr（cycle 012 で MDT の送り元を外し、いまは行が無い）・endpoints の送信なしだけ（EMR Serverless は 0.0.0.0/0 の inbound を拒否する）",
       not any(t == "workflow" and p <= 7233 <= q or t == "splunk" and f != "splunk" and p <= 8089 <= q for f, t, _, p, q, _ in _flows)
       and sorted(re.findall(r'cidr_ipv4\s*=\s*(.+)', _sg_tf)) == sorted(['each.value.to == "lab_mgmt" ? local.lab_mgmt_cidr : null', 'each.value.from == "lab_mgmt" ? local.lab_mgmt_cidr : each.value.cidr', '"127.0.0.1/32"'])
       and "var.vpc_cidr" not in _sg_tf and "cidr_ipv6" not in _sg_tf)
@@ -1766,10 +1785,12 @@ check("up.sh は PIPELINE=1 で SKIP_LAB=1 だけなら止まらず、lab 以外
 check("up.sh は SKIP_LAB=1 でも stream を作らないなら lab の注意を出さず、lab を作るときも出さない",
       "lab は作らない" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1") and "lab は作らない" not in _skip(PIPELINE="1")
       and _skip(PIPELINE="1") == "OUT: L=0 S=0 A=0 G=0")
-check("up.sh は lab が無く MDT_SOURCE_CIDRS も空で stream を作るなら「この stream には何も届かない」と注意を出して続ける",
+check("up.sh は lab が無いまま stream を作るなら「この stream には何も届かない」と注意を出して続ける（cycle 012 で MDT を外し、受け口に届くのは lab の EC2 からだけになった。"
+      "前の MDT_SOURCE_CIDRS が書いてあっても出す）",
       "この stream には何も届かない" in _skip(PIPELINE="1", SKIP_LAB="1") and _skip(PIPELINE="1", SKIP_LAB="1").endswith("OUT: L=1 S=0 A=0 G=0")
-      and "何も届かない" not in _skip(PIPELINE="1", SKIP_LAB="1", MDT_SOURCE_CIDRS="10.10.0.0/16")
-      and "何も届かない" not in _skip(PIPELINE="1", MDT_SOURCE_CIDRS="") and "何も届かない" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1"))
+      and "この stream には何も届かない" in _skip(PIPELINE="1", SKIP_LAB="1", MDT_SOURCE_CIDRS="10.10.0.0/16")
+      and "何も届かない" not in _skip(PIPELINE="1") and "何も届かない" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1")
+      and "MDT" not in _skip(PIPELINE="1", SKIP_LAB="1"))
 check("up.sh の「土台だけになる」は SKIP_LAB と SKIP_STREAM と SKIP_GRAPH が全部あるときだけ（lab と graph だけ外しても stream は作る）",
       "土台だけになる" in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1", SKIP_GRAPH="1")
       and _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1", SKIP_GRAPH="1").endswith("OUT: L=1 S=1 A=1 G=1")

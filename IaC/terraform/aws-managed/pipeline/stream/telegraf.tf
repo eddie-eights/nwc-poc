@@ -1,7 +1,9 @@
 # ---------------------------------------------------------------- Telegraf (ECS on Fargate + internal NLB)
-# 機器の SNMP のポーリング・gNMI の購読・trap・syslog・MDT を受けて MSK に書く Telegraf を、Fargate で動かす（2026-09-28 まで IaC/terraform/aws-managed/pipeline/lab の EC2）。
+# 機器の SNMP のポーリング・gNMI の購読・trap を受けて MSK に書く Telegraf を、Fargate で動かす（2026-09-28 まで IaC/terraform/aws-managed/pipeline/lab の EC2）。
+# syslog は syslog-ng、NetFlow / sFlow は GoFlow2 が受ける（どちらも collectors.tf。cycle 012）。MDT の受け口は cycle 012 で外した（戻し方は docs/collection.md）。
+# 下の NLB は 3 つのサービス（telegraf-dialout・syslog-ng・GoFlow2）の共通の受け口で、どの番号をどのサービスへ渡すかは collector_listeners の表。
 # 同じイメージのタスクを役割（app/telegraf/telegraf.sh の TELEGRAF_ROLE）で 2 つのサービスに分ける（2026-10-04 ユーザー決定。名前は dialout / dialin にそろえる）:
-#   telegraf-dialout  機器から送ってくる trap・syslog・MDT を NLB の後ろで受ける。機器の一覧を持たず、台数を増やしても同じものを 2 回書かない
+#   telegraf-dialout  機器から送ってくる trap を NLB の後ろで受ける。機器の一覧を持たず、台数を増やしても同じものを 2 回書かない
 #   telegraf-dialin   gNMI の購読と SNMP のポーリングでこちらから取りにいく（lab の gNMI の変換もここ）。機器の一覧を持ち、
 #                     2 つ立てると同じ機器から 2 回取って MSK に 2 回書くので 1 つ。NLB には付けない
 # dialin の機器の一覧と認証情報は SSM パラメータから ECS の secrets で渡す（タスクを起こすときに読むので、変えたらサービスを作り直す）:
@@ -15,14 +17,14 @@
 #   ポーリング  telegraf-dialin → 機器の SNMP（161/udp）と gNMI（57400/tcp）。送り元はタスクの IP で、作り直すたびに変わるので、lab.sh forward は
 #               タスクのサブネットの CIDR（SSM の /<接頭辞>/telegraf-source-cidr）で通す
 #   trap        機器 → lab の EC2 の 162/udp → DNAT → 下の NLB の 162 → タスクの 1162（非 root は 1024 未満で待てない）
-#   syslog      機器 → lab の EC2 の 5140/udp → DNAT → NLB の 5140 → タスクの 5140
-#   MDT         本番の Cisco → NLB の 57000/tcp → タスクの 57000（dial-out。lab の SR Linux は送れないので lab からは来ない。docs/collection.md）
+#   syslog      機器 → lab の EC2 の 5140/udp → DNAT → NLB の 5140 → syslog-ng のタスクの 5140
+#   NetFlow / sFlow  機器 → lab の EC2 の 2055 / 6343（udp）→ DNAT → NLB の同じ番号 → GoFlow2 のタスクの同じ番号
+#               （lab の SR Linux は NetFlow を送れない。試すときは lab の EC2 のホストから tools/netflow_send.py で NLB へ送る）
 # タスクの IP は作り直すと変わるので、DNAT の宛先は変わらない NLB の IP にする（SSM の /<接頭辞>/telegraf-address）。
 # NLB は UDP の送り元の IP を残す（UDP のターゲットは client IP preservation が既定で、Spark とエージェントは送り元の IP で機器を引く）。
-# MDT（TCP）は残さない（IP のターゲットの既定）。機器は MDT の中で node_id を名乗るので、送り元の IP は要らない。
-# SG は NLB（telegraf_dialout_nlb）と 2 つのタスク（telegraf_dialout / telegraf_dialin）で別々で、ルールは IaC/terraform/aws-managed/base/core の security_groups.tf の通信の表にある:
-#   telegraf_dialout_nlb  管理ネットワークの CIDR から udp 162 / 5140 を、mdt_source_cidrs（土台の変数。既定は空）から tcp 57000 を受け（送り元が機器の管理 IP のまま）、
-#                         telegraf_dialout の SG へ udp 1162 / 5140、tcp 57000 と tcp 8080（ヘルスチェック）を送る
+# SG は NLB（telegraf_dialout_nlb）とタスクごとに別々で、ルールは IaC/terraform/aws-managed/base/core の security_groups.tf の通信の表にある:
+#   telegraf_dialout_nlb  管理ネットワークの CIDR から udp 162 / 5140 / 2055 / 6343 を受け（送り元が機器の管理 IP のまま）、telegraf_dialout へ udp 1162 と
+#                         tcp 8080、syslog_ng へ udp 5140 と tcp 5140、goflow2 へ udp 2055 / 6343 と tcp 8081 を送る（tcp はどれもヘルスチェック）
 #   telegraf_dialout      NLB の SG から受け（送り元の IP が残っても、NLB の SG を参照したルールで通る）、MSK の 9098・エンドポイントと S3 の 443 へ送る
 #   telegraf_dialin       何も受けない。管理ネットワークの udp 161 / tcp 57400・MSK の 9098・エンドポイントと S3 の 443 へ送る
 # OSS 版（cycle 005。IaC/terraform/oss/pipeline/stream）はこのファイルをシンボリックリンクで使う。書き先は ECS の Kafka（kafka-1〜3 の 9092、認証なし）で、
@@ -42,11 +44,23 @@ locals {
   dialin_credentials = { GNMI_USERNAME = "gnmi-username", GNMI_PASSWORD = "gnmi-password", SNMP_COMMUNITY = "snmp-community" }
   ssm_parameter_arn  = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter"
 
-  # NLB の受け口 → タスクのポート（app/telegraf/telegraf.conf.in の inputs.snmp_trap、inputs.syslog と inputs.cisco_telemetry_mdt）
-  telegraf_ports = {
-    trap   = { listener = 162, container = 1162, protocol = "UDP" }
-    syslog = { listener = 5140, container = 5140, protocol = "UDP" }
-    mdt    = { listener = 57000, container = 57000, protocol = "TCP" }
+  # NLB の受け口（どれも UDP）→ 渡すサービスとそのタスクのポート（app/telegraf/telegraf.conf.in の inputs.snmp_trap、app/syslog-ng/syslog-ng.conf.in の
+  # s_device、GoFlow2 の -listen。cycle 012 で syslog を syslog-ng へ移し、NetFlow / sFlow を足し、MDT の 57000/tcp を外した）。
+  # target group はキーごとに 1 つ（名前は <接頭辞>-<キー>）で、各サービスは自分の分だけを load_balancer に持つ
+  collector_listeners = {
+    trap    = { listener = 162, container = 1162, service = "telegraf-dialout" }
+    syslog  = { listener = 5140, container = 5140, service = "syslog-ng" }
+    netflow = { listener = 2055, container = 2055, service = "goflow2" }
+    sflow   = { listener = 6343, container = 6343, service = "goflow2" }
+  }
+  # UDP は応答で生死を見られないので、サービスごとに別の口を見る
+  collector_health_checks = {
+    # Telegraf の outputs.health（telegraf.conf.in）
+    "telegraf-dialout" = { protocol = "HTTP", port = "8080", path = "/" }
+    # syslog の番号の tcp（syslog-ng.conf.in。つないで切るだけで、syslog-ng は何も書かない）
+    "syslog-ng" = { protocol = "TCP", port = "5140", path = null }
+    # GoFlow2 の -addr（collectors.tf）。/__health は 200 を返す（/ と /__ready は 404。v2.2.7 で確かめた）
+    goflow2 = { protocol = "HTTP", port = "8081", path = "/__health" }
   }
 }
 
@@ -86,25 +100,25 @@ data "aws_network_interface" "telegraf_dialout_lb" {
   }
 }
 
+# リソースの名前は telegraf_dialout のまま（syslog の target group と listener を作り直さない）。中身は 3 つのサービスの分
 resource "aws_lb_target_group" "telegraf_dialout" {
-  for_each = local.telegraf_ports
+  for_each = local.collector_listeners
 
   name        = "${local.name_prefix}-${each.key}"
   port        = each.value.container
-  protocol    = each.value.protocol
+  protocol    = "UDP"
   target_type = "ip"
   vpc_id      = local.vpc_id
 
-  # UDP は送り元（機器の管理 IP）を残す。TCP（MDT）は残さない（IP のターゲットの既定。機器は node_id を名乗る）
-  preserve_client_ip = each.value.protocol == "UDP"
+  # 送り元（機器の管理 IP）を残す
+  preserve_client_ip = true
   # タスクを作り直すとき、古いタスクを長く待たない
   deregistration_delay = 10
 
-  # UDP は応答で生死を見られないので、Telegraf の outputs.health（telegraf.conf.in）を見る。TCP（MDT）も同じものを見る
   health_check {
-    protocol            = "HTTP"
-    port                = "8080"
-    path                = "/"
+    protocol            = local.collector_health_checks[each.value.service].protocol
+    port                = local.collector_health_checks[each.value.service].port
+    path                = local.collector_health_checks[each.value.service].path
     interval            = 10
     healthy_threshold   = 2
     unhealthy_threshold = 2
@@ -114,11 +128,11 @@ resource "aws_lb_target_group" "telegraf_dialout" {
 }
 
 resource "aws_lb_listener" "telegraf_dialout" {
-  for_each = local.telegraf_ports
+  for_each = local.collector_listeners
 
   load_balancer_arn = aws_lb.telegraf_dialout.arn
   port              = each.value.listener
-  protocol          = each.value.protocol
+  protocol          = "UDP"
 
   default_action {
     type             = "forward"
@@ -130,7 +144,7 @@ resource "aws_ssm_parameter" "telegraf_address" {
   name        = "/${local.name_prefix}/telegraf-address"
   type        = "String"
   value       = data.aws_network_interface.telegraf_dialout_lb.private_ip
-  description = "Private IP of the Telegraf dial-out NLB. Read by lab.sh forward on the lab EC2 (trap / syslog DNAT target)."
+  description = "Private IP of the collector NLB (Telegraf dial-out, syslog-ng, GoFlow2). Read by lab.sh forward on the lab EC2 (DNAT target)."
 }
 
 resource "aws_ssm_parameter" "telegraf_source_cidr" {
@@ -202,17 +216,14 @@ resource "aws_ecs_task_definition" "telegraf_dialout" {
       image     = local.telegraf_image
       essential = true
       portMappings = [
-        { containerPort = 1162, protocol = "udp" },  # trap（NLB の 162 から）
-        { containerPort = 5140, protocol = "udp" },  # syslog
-        { containerPort = 57000, protocol = "tcp" }, # MDT の dial-out
-        { containerPort = 8080, protocol = "tcp" },  # outputs.health（NLB のヘルスチェック）
+        { containerPort = 1162, protocol = "udp" }, # trap（NLB の 162 から）
+        { containerPort = 8080, protocol = "tcp" }, # outputs.health（NLB のヘルスチェック）
       ]
       environment = concat(
         [
           { name = "TELEGRAF_ROLE", value = "dialout" },
           { name = "AWS_REGION", value = var.region },
           { name = "KAFKA_BROKERS", value = local.kafka_bootstrap_brokers },
-          { name = "SYSLOG_STANDARD", value = var.syslog_standard },
         ],
         local.kafka_client_environment,
       )
@@ -304,7 +315,7 @@ resource "aws_ecs_service" "telegraf_dialout" {
   # aws ecs execute-command でタスクの中に入れる（設定を見る程度。tg test / tg gnmi は telegraf-dialin で打つ）
   enable_execute_command = true
 
-  # 新しいタスクが NLB のヘルスチェックを通ってから古いタスクを外す（入れ替えのあいだも trap と syslog を落とさない）
+  # 新しいタスクが NLB のヘルスチェックを通ってから古いタスクを外す（入れ替えのあいだも trap を落とさない）
   deployment_minimum_healthy_percent = 100
   deployment_maximum_percent         = 200
 
@@ -317,7 +328,7 @@ resource "aws_ecs_service" "telegraf_dialout" {
   }
 
   dynamic "load_balancer" {
-    for_each = local.telegraf_ports
+    for_each = { for k, v in local.collector_listeners : k => v if v.service == "telegraf-dialout" }
     content {
       target_group_arn = aws_lb_target_group.telegraf_dialout[load_balancer.key].arn
       container_name   = "telegraf"
@@ -346,7 +357,7 @@ resource "aws_ecs_service" "telegraf_dialin" {
   # 2 つ同時に立てない（同じ機器を 2 回ポーリング・購読して MSK に 2 回書かない）。入れ替えでは古いタスクを止めてから新しいタスクを起こす。
   # TELEGRAF_AZ_NUM に従わない理由も同じ: どのタスクも機器の一覧の全部を取りにいき、タスクのあいだで機器を分け合う仕組みが無い。
   # コードから確かめた理由で、AWS では未確認（2026-10-04）
-  # gNMI は lab（SR Linux は MDT を送れない）のためのもので、本番の Cisco は MDT の dial-out で送らせる方針（docs/collection.md）
+  # gNMI は lab の SR Linux のためのもの。本番の Cisco の MDT の dial-out は cycle 012 で受け口を外した（戻し方は docs/collection.md）
   deployment_minimum_healthy_percent = 0
   deployment_maximum_percent         = 100
 
