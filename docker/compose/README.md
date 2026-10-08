@@ -27,7 +27,7 @@ bash -c "$(curl -sL https://get.containerlab.dev)"
 
 QEMU（binfmt）は要らない。build するイメージ（Telegraf、Grafana、Spark、Splunk）は WSL の x86_64 のまま作る。SR Linux と multitool も ghcr.io の amd64 を取る。
 
-足りないメモリは lab を減らして空ける。`python3 app/containerlab/gen_lab.py --leaves 2 --spines 1` で 5 台になる（`leaves` は 2 の倍数で 2 以上、`spines` は 1 以上）。戻すのは `--leaves 2 --spines 2`。これは git に入っている lab の定義（`app/containerlab/splab.clab.yml.in` と `app/containerlab/srlinux/*.cli`）を書き換える。lab が上がっているなら先に `docker/compose/lab.sh down` し、打ったあとで `up.sh`（Telegraf のポーリング先と Spark の device map が変わる）と `lab.sh up` をやり直す（`lab.sh up` は毎回 `app/containerlab/splab.clab.yml` を作り直してから deploy する）。spine が 1 台だと leaf の fabric は 1 本だけなので、`fail-main` は切り替わらずに断になる（`failover` の「切替 OK」と VM の疎通は出ない。linkDown の trap と Grafana の DOWN は 6 台のときと同じに出る）。
+足りないメモリは lab を減らして空ける。`python3 app/containerlab/gen_lab.py --leaves 2 --spines 1` で 5 台になる（`leaves` は 2 の倍数で 2 以上、`spines` は 1 以上）。戻すのは `--leaves 2 --spines 2`。これは git に入っている lab の定義（`app/containerlab/splab.clab.yml.in` と `app/containerlab/srlinux/*.cli`）を書き換える。lab が上がっているなら先に `docker/compose/lab.sh down` し、打ったあとで `lab.sh up` と `up.sh`（Telegraf のポーリング先と Spark の device map が変わる）をこの順でやり直す（`lab.sh up` は毎回 `app/containerlab/splab.clab.yml` を作り直してから deploy する）。spine が 1 台だと leaf の fabric は 1 本だけなので、`fail-main` は切り替わらずに断になる（`failover` の「切替 OK」と VM の疎通は出ない。linkDown の trap と Grafana の DOWN は 6 台のときと同じに出る）。
 
 ## 手順
 
@@ -37,25 +37,27 @@ QEMU（binfmt）は要らない。build するイメージ（Telegraf、Grafana�
 cp docker/compose/.env.example docker/compose/.env
 ```
 
-`.env` の値は手元だけの試し用（パスワード・HEC の token・lab のイメージ）。パスワードと token を変えるなら、最初の `up.sh` の前にここで変える。OpenSearch と Grafana は初回の起動で admin のパスワードを volume に書き込むので、あとから `.env` だけ変えても古い値のまま（新しい値で 401。Spark が OpenSearch へ送るログは 401 で捨てられ、`check.sh` も NG になる。Splunk のパスワードと HEC の token が同じかは未確認）。あとから変えるなら `docker/compose/down.sh -v` で volume ごと消してから上げ直す。`.env` は git に入らない。
-
-```bash
-docker/compose/up.sh
-```
-
-`app/containerlab/lab_topology.py` から Telegraf のポーリング先・gNMI の購読先・Spark の device map を作り、`docker compose up -d --build` する。Splunk が `healthy` になるまで 2〜3 分。`docker compose -f docker/compose/compose.yaml ps` で 11 サービスが `running` になればよい。`docker compose` を直に打つと `SNMP_AGENTS` が空になり、Telegraf が起動の検査で止まるので、上げ直しも `up.sh` から（`docker/compose/up.sh telegraf` で Telegraf だけ）。
+`.env` の値は手元だけの試し用（パスワード・HEC の token・lab のイメージ）。パスワードと token を変えるなら、最初の `up.sh` の前にここで変える。OpenSearch と Grafana は初回の起動で admin のパスワードを volume に書き込むので、あとから `.env` だけ変えても古い値のまま（新しい値で 401。Spark が OpenSearch へ送るログは 401 で捨てられ、`check.sh` も NG になる。Splunk のパスワードと HEC の token が同じかは未確認）。あとから変えるなら `docker/compose/down.sh -v` で volume ごと消してから上げ直す。`.env` は git に入らない。`check.sh` と `lab.sh` も `.env` を compose と同じように読む（行頭の `export `、CRLF、クォート無しの値の後ろの ` # メモ` は落とす）。
 
 ```bash
 docker/compose/lab.sh up
 ```
 
-lab を上げる（`sudo` のパスワードを聞かれる）。最後に `compose の Telegraf へ: trap 162/udp を 1162/udp へ向けた` が出ればよい。続けて `docker/compose/lab.sh check` で BGP・IS-IS・EVPN、VM の LAG と ping、SNMP の応答を見る（bond0 が無いと出たら WSL のカーネルに bonding が無い。`uname -r` と `zcat /proc/config.gz | grep BONDING` を控えておく）。サブコマンドは `app/containerlab/lab.sh` と同じ（`check` / `fail-main` / `heal-main` / `trap-test` / `down` など）。このラッパーは `.env` の `SRLINUX_IMAGE` / `MULTITOOL_IMAGE` と `TELEGRAF_LOCAL=1` の 3 つだけを渡すので、シェルに `REGISTRY` や `AWS_REGION` があっても ECR や SSM へは行かない。
+lab を上げる（`sudo` のパスワードを聞かれる）。compose より先に上げる（Telegraf は lab の管理ネットの GW `203.0.113.1` で待つので、containerlab がそのアドレスを付ける bridge が先に要る。下の `up.sh`）。最後に `compose の Telegraf へ: trap 162/udp を 1162/udp へ向けた` が出ればよい（Telegraf がまだ無くても iptables の規則は入る）。サブコマンドは `app/containerlab/lab.sh` と同じ（`check` / `fail-main` / `heal-main` / `trap-test` / `down` など）。障害のあとの案内（「戻すのは …」）もこのラッパーの打ち方で出る。このラッパーは `.env` の `SRLINUX_IMAGE` / `MULTITOOL_IMAGE` と `TELEGRAF_LOCAL=1`、案内に出す自分のパス `LAB_CMD` の 4 つだけを渡すので、シェルに `REGISTRY` や `AWS_REGION` があっても ECR や SSM へは行かない。
+
+```bash
+docker/compose/up.sh
+```
+
+`app/containerlab/lab_topology.py` から Telegraf のポーリング先・gNMI の購読先・Spark の device map を作り、`docker compose up -d --build` する。Splunk が `healthy` になるまで 2〜3 分。`docker compose -f docker/compose/compose.yaml ps` で 11 サービスが `running` になればよい。`docker compose` を直に打つと `SNMP_AGENTS` が空になり、Telegraf が起動の検査で止まるので、上げ直しも `up.sh` から（`docker/compose/up.sh telegraf` で Telegraf だけ）。Telegraf の 4 つの受け口（下の「ぶつかりやすいポート」）は、host に `203.0.113.1` があればそこだけで待つ（`TELEGRAF_BIND`。`ip -o -4 addr show` で見る）。lab より先に打つと `WARNING: lab の管理ネット（203.0.113.1）がまだ無いので…` が出て、WSL の全部のインターフェースで待つ。そのときは `lab.sh up` のあとに `docker/compose/up.sh telegraf` で `203.0.113.1` だけに直す。
+
+続けて `docker/compose/lab.sh check` で BGP・IS-IS・EVPN、VM の LAG と ping、SNMP の応答を見る（bond0 が無いと出たら WSL のカーネルに bonding が無い。`uname -r` と `zcat /proc/config.gz | grep BONDING` を控えておく）。
 
 ```bash
 docker/compose/check.sh
 ```
 
-2〜3 分待ってから打つ。Kafka のトピック、Prometheus の `snmp_interface_ifOperStatus`、OpenSearch の `snmp-logs`、Splunk の `sourcetype=netops:*`、Grafana のデータソース 2 つと Prometheus の health を見て、全部 `ok` なら `すべて ok`。trap は見ない（下の `fail-main` と `trap-test` で見る）。Kafka のトピックは Spark が起動のときに作るので、トピックがあっても Telegraf から届いている証拠にはならない（届いているかは Prometheus・OpenSearch・Splunk の件数で分かる）。1 つでも NG なら非 0 で終わるので、`docker compose -f docker/compose/compose.yaml logs <サービス>` で見る。
+2〜3 分待ってから打つ。Kafka のトピックとメッセージ数、Prometheus の `snmp_interface_ifOperStatus`、OpenSearch の `snmp-logs`、Splunk の `sourcetype=netops:*`、Grafana のデータソース 2 つと Prometheus の health、Telegraf の health（`up.sh` と同じく `203.0.113.1` があればそこ、無ければ `127.0.0.1` の `HEALTH_PORT`）を見て、NG が無ければ `すべて ok`。Kafka のトピックは Spark が起動のときに作るので、Telegraf から届いているかはメッセージ数（Kafbat UI の `messagesCount`）で見る。`metrics` が 0 件なら NG。trap の `traps` は障害を入れるまで来ないので、0 件でも NG にせず `注意` を出す（下の `fail-main` か `trap-test` のあとに打ち直すと `ok` になる）。1 つでも NG なら非 0 で終わるので、`docker compose -f docker/compose/compose.yaml logs <サービス>` で見る。
 
 障害を入れて見る:
 
@@ -67,7 +69,7 @@ docker/compose/lab.sh fail-main
 
 ## 見る場所
 
-下の画面のポートは全部 `127.0.0.1` に出す（WSL の外の LAN からは届かない）。host のネットワークにいる Telegraf の 4 つ（下の「ぶつかりやすいポート」）だけは host の全部のインターフェースで待つ。Windows のブラウザから同じ URL で開けるかは WSL の localhost 転送（`.wslconfig` の `localhostForwarding`、既定で有効）次第で、未確認。
+下の画面のポートは全部 `127.0.0.1` に出す（WSL の外の LAN からは届かない）。host のネットワークにいる Telegraf の 4 つ（下の「ぶつかりやすいポート」）は lab の管理ネットの GW `203.0.113.1` だけで待つ（lab より先に `up.sh` を打ったときだけ全部のインターフェースで、`WARNING` が出る）。Windows のブラウザから同じ URL で開けるかは WSL の localhost 転送（`.wslconfig` の `localhostForwarding`、既定で有効）次第で、未確認。
 
 | 画面 | URL | ログイン |
 |---|---|---|
@@ -79,12 +81,14 @@ docker/compose/lab.sh fail-main
 
 ## ぶつかりやすいポート
 
-Telegraf は host のネットワークにいるので、host の次のポートを開ける（`127.0.0.1` ではなく全部のインターフェース。WSL の外から届くかは WSL のネットワークのモード次第で、未確認）。ほかのプロセスが使っていると Telegraf が起動しない（`docker compose -f docker/compose/compose.yaml logs telegraf`）。ポートは `app/telegraf/telegraf.sh` と `telegraf.conf.in` の固定値で、環境変数では変えられない。ぶつかったら相手のプロセスを止める。
+Telegraf は host のネットワークにいるので、host の次のポートを開ける。待つのは lab の管理ネットの GW `203.0.113.1` だけ（`127.0.0.1` では待たない。lab の外から偽の trap や syslog を入れられないように）。lab が無いときに `up.sh` を打つと全部のインターフェースで待つ（`WARNING` が出る。WSL の外から届くかは WSL のネットワークのモード次第で、未確認）。ほかのプロセスが使っていると Telegraf が起動しない（`docker compose -f docker/compose/compose.yaml logs telegraf`）。`203.0.113.1` が無いとき（lab を `down` したまま）に Telegraf が起こし直されても `bind: cannot assign requested address` で落ちる。telegraf と spark は `restart: on-failure:5` なので、5 回起こし直しても落ちるなら止まったままになる。`docker compose -f docker/compose/compose.yaml ps -a` で `Exited` なら `logs telegraf` で理由を見て、直してから `docker/compose/up.sh telegraf` で起こす（`check.sh` の「Telegraf: health が 200」も NG になる）。lab を `down` / `up` で作り直したあとは、Telegraf が動いていても `docker compose -f docker/compose/compose.yaml restart telegraf` で待ち直させる（作り直した bridge で前の待ち受けが受け続けるかは未確認）。
+
+MDT と health のポートは `.env` の `MDT_PORT` / `HEALTH_PORT` で変えられる（変えたら `docker/compose/up.sh telegraf`。`check.sh` も `HEALTH_PORT` に打つ）。trap と syslog は lab の `app/containerlab/lab.sh`（`TRAP_PORT` / `LOG_PORT`）と SR Linux の syslog の送り先に揃えてあるので変えられない。ぶつかったら相手のプロセスを止める。
 
 | ポート | 用途 |
 |---|---|
-| 8080/tcp | Telegraf の health |
-| 57000/tcp | Cisco の MDT（dial-out）の受け口。lab からは何も来ない |
+| 8080/tcp | Telegraf の health（`.env` の `HEALTH_PORT`） |
+| 57000/tcp | Cisco の MDT（dial-out）の受け口。lab からは何も来ない（`.env` の `MDT_PORT`） |
 | 1162/udp | SNMP trap（機器は 162 に送り、`lab.sh forward` が 1162 へ向ける） |
 | 5140/udp | syslog |
 
@@ -110,4 +114,4 @@ lab の `down` は trap の REDIRECT（目印 `nwc-lab-telegraf`）を残す。�
 sudo iptables -t nat -D PREROUTING -s 203.0.113.0/24 -d 203.0.113.1 -p udp --dport 162 -m comment --comment nwc-lab-telegraf -j REDIRECT --to-ports 1162
 ```
 
-containerlab が `app/containerlab/clab-splab/`（root の持ち物）を作る。git の無視の対象に入っていないので、`git status` に出る。消すなら `sudo rm -rf app/containerlab/clab-splab`。
+containerlab が `app/containerlab/clab-splab/`（root の持ち物）を作る。git の無視の対象（`.gitignore` の `app/containerlab/clab-*/`）なので `git status` には出ない。消すなら `sudo rm -rf app/containerlab/clab-splab`。

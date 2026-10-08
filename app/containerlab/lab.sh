@@ -11,6 +11,12 @@ set -euo pipefail
 # /usr/local/bin/lab（シンボリックリンク）から呼ばれても、テンプレートのある src/ で動く
 SELF=$(readlink -f "$0")
 cd "$(dirname "$SELF")"
+# 案内（「戻すのは …」など）に出す自分の打ち方。手元は docker/compose/lab.sh が自分のパスを渡す（sudo はラッパーが付ける）。
+# EC2 は PATH にある /usr/local/bin/lab なので `sudo lab`。どちらでもなければ呼ばれたパスのまま。中から打つ "$SELF" … にも同じものを渡す
+if [ -z "${LAB_CMD:-}" ]; then
+  if [ "$(command -v "${0##*/}" 2>/dev/null || true)" = "$0" ]; then LAB_CMD="sudo ${0##*/}"; else LAB_CMD="sudo $0"; fi
+fi
+export LAB_CMD
 LAB=splab
 TOPO=splab.clab.yml
 # containerlab の管理ネットワーク（splab.clab.yml.in の mgmt）と、その上のこの EC2 のアドレス（srlinux/*.cli の trap と syslog の宛先）。
@@ -89,11 +95,13 @@ vm_ping() {
 # Telegraf がこのホストの host ネットワークにいるか: デバッグ用の EC2（TELEGRAF_IMAGE）か、手元の compose（docker/compose/lab.sh が TELEGRAF_LOCAL=1 を渡す）
 local_telegraf() { [ -n "${TELEGRAF_IMAGE:-}" ] || [ "${TELEGRAF_LOCAL:-0}" = 1 ]; }
 # 障害を入れたあとにどこを見るか。デバッグ用の EC2 はこの EC2 の Telegraf の標準出力、手元は compose の Grafana / Splunk、stream は Grafana / Splunk が SNS のトピックに出すアラート
-hint() {  # hint <デバッグ用の EC2 の文> <stream の文>
-  if [ -n "${TELEGRAF_IMAGE:-}" ]; then echo "  この EC2 の Telegraf: $1"
-  elif local_telegraf; then echo "  compose の Telegraf: 数分で Grafana（:3000）と Splunk（:8000）に出る（SNS のトピックは無い）"
-  elif iptables -t nat -S PREROUTING 2>/dev/null | grep -q -- "--comment $FW_TAG"; then echo "  stream: $2"
-  else echo "  Telegraf への転送が張られていない（sudo lab forward-status）"; fi
+hint() {  # hint <デバッグ用の EC2 の文> <stream の文> [戻すサブコマンド]
+  local back=""
+  [ -z "${3:-}" ] || back="。戻すのは '$LAB_CMD $3'"
+  if [ -n "${TELEGRAF_IMAGE:-}" ]; then echo "  この EC2 の Telegraf: $1$back"
+  elif local_telegraf; then echo "  compose の Telegraf: 数分で Grafana（:3000）と Splunk（:8000）に出る（SNS のトピックは無い）$back"
+  elif iptables -t nat -S PREROUTING 2>/dev/null | grep -q -- "--comment $FW_TAG"; then echo "  stream: $2$back"
+  else echo "  Telegraf への転送が張られていない（$LAB_CMD forward-status）"; fi
 }
 unforward() {  # forward が入れた規則（目印 ${FW_TAG}）を全部消す
   local t rules r
@@ -108,7 +116,7 @@ case "${1:-}" in
   render)
     : "${SRLINUX_IMAGE:?}" "${MULTITOOL_IMAGE:?}"
     sed -e "s#__SRLINUX_IMAGE__#$SRLINUX_IMAGE#" -e "s#__MULTITOOL_IMAGE__#$MULTITOOL_IMAGE#" "$TOPO.in" > "$TOPO"
-    echo "$TOPO を作った（イメージは ${REGISTRY:-?}）"
+    echo "$TOPO を作った（イメージは $SRLINUX_IMAGE と $MULTITOOL_IMAGE）"
     ;;
   pull)
     # ECR の認証は 12 時間で切れるので、毎回ログインしてから取る（署名はインスタンスロール）。
@@ -128,7 +136,7 @@ case "${1:-}" in
     clab deploy -t "$TOPO" --reconfigure
     # Docker は管理ネットワークを作るたびに自分の MASQUERADE を nat の先頭に入れるので、deploy のあとに毎回入れ直す。
     # 失敗してもトポロジは上がっている（Telegraf に届かないだけ。sudo lab forward-status で見る）
-    "$SELF" forward || echo "forward に失敗した（トポロジは動いている）。sudo lab forward-status で見る" >&2
+    "$SELF" forward || echo "forward に失敗した（トポロジは動いている）。$LAB_CMD forward-status で見る" >&2
     ;;
   down)   clab destroy -t "$TOPO" --cleanup ;;
   status) clab inspect -t "$TOPO" ;;
@@ -156,19 +164,19 @@ case "${1:-}" in
     # コンテナの中の veth（e1-1 = ethernet-1/1）を落とす。admin-state は enable のままなので、機器からは回線断（oper down）に見える。
     # IS-IS の隣接（dc1-leaf-01 - dc1-spine-01）が落ち、経路は dc1-spine-02 経由に切り替わる。iBGP はループバック同士なので張り直さない
     x dc1-leaf-01 ip link set e1-1 down
-    echo "  IS-IS の隣接は数秒で落ちる。切替の確認は 'lab failover' が待ってくれる"
+    echo "  IS-IS の隣接は数秒で落ちる。切替の確認は '$LAB_CMD failover' が待ってくれる。戻すのは '$LAB_CMD heal-main'"
     ;;
   heal-main) echo "アクセス側 Leaf の fabric (dc1-leaf-01 ethernet-1/1) を戻す"; x dc1-leaf-01 ip link set e1-1 up ;;
   fail-bgp)
-    echo "$BGP_NODE の iBGP（EVPN）の隣接 1 本（dc1-spine-01 = $BGP_PEER）を止める"
+    echo "$BGP_NODE の iBGP（EVPN）の隣接 1 本（dc1-spine-01 = ${BGP_PEER}）を止める"
     # neighbor の admin-state を disable にする（回線は落とさない）。$BGP_NODE 側と dc1-spine-01 側（neighbor は $BGP_NODE のループバック）の
     # session-state が established でなくなり、gNMI の on_change（bgp_neighbor）で流れる。EVPN の経路は dc1-spine-02 からも来るので、VM 同士は通ったまま
     bgp_admin disable
-    hint "'sudo lab telegraf logs' に bgp_neighbor の session_state（established 以外）が出る。戻すのは 'lab heal-bgp'" \
-      "数分で Grafana と Splunk の両方が bgp_down（$BGP_NODE の $BGP_PEER と、dc1-spine-01 の $BGP_NODE 側）を SNS のトピックに出す。戻すのは 'lab heal-bgp'"
+    hint "'$LAB_CMD telegraf logs' に bgp_neighbor の session_state（established 以外）が出る" \
+      "数分で Grafana と Splunk の両方が bgp_down（$BGP_NODE の $BGP_PEER と、dc1-spine-01 の $BGP_NODE 側）を SNS のトピックに出す" heal-bgp
     ;;
   heal-bgp)
-    echo "$BGP_NODE の iBGP の隣接（$BGP_PEER）を戻す。established に戻るまで数十秒（'lab check' で見る）"
+    echo "$BGP_NODE の iBGP の隣接（${BGP_PEER}）を戻す。established に戻るまで数十秒（'$LAB_CMD check' で見る）"
     bgp_admin enable
     ;;
   trap-test)
@@ -180,7 +188,7 @@ case "${1:-}" in
     pid=$(docker inspect -f '{{.State.Pid}}' "clab-$LAB-$ACC_VM")
     nsenter -t "$pid" -n snmptrap -v2c -c "$SNMP_COMMUNITY" "$MGMT_GW:162" '' "$TEST_TRAP_OID" .1.3.6.1.4.1.8072.2.3.2.1 i 1
     echo "trap $TEST_TRAP_OID を $ACC_VM（$(mgmt_ip "$ACC_VM")）から $MGMT_GW:162 へ送った"
-    hint "'sudo lab telegraf logs' に snmp_trap（oid=$TEST_TRAP_OID）が出る" \
+    hint "'$LAB_CMD telegraf logs' に snmp_trap（oid=${TEST_TRAP_OID}）が出る" \
       "数分で Grafana と Splunk の両方が trap（$ACC_VM の $TEST_TRAP_OID）を出し、次の trap が来なければおよそ 10 分後に両方が解消を出す"
     ;;
   failover)
@@ -217,14 +225,14 @@ case "${1:-}" in
     echo "$w"
     if [ -n "${TELEGRAF_IMAGE:-}" ]; then
       echo "== Telegraf（この EC2。標準出力）=="
-      echo "  'sudo lab telegraf logs' に interface（ifOperStatus）、snmp_trap の linkDown、device_log（syslog）、isis_interface の down が出る。戻すのは 'lab heal-main'"
+      echo "  '$LAB_CMD telegraf logs' に interface（ifOperStatus）、snmp_trap の linkDown、device_log（syslog）、isis_interface の down が出る。戻すのは '$LAB_CMD heal-main'"
     elif local_telegraf; then
       echo "== Telegraf（compose の Telegraf）=="
-      echo "  数分で Grafana（:3000）の metrics ダッシュボードの dc1-leaf-01 ethernet-1/1 が DOWN、logs ダッシュボードと Splunk（:8000）に linkDown の trap と syslog が出る。戻すのは 'heal-main'"
+      echo "  数分で Grafana（:3000）の metrics ダッシュボードの dc1-leaf-01 ethernet-1/1 が DOWN、logs ダッシュボードと Splunk（:8000）に linkDown の trap と syslog が出る。戻すのは '$LAB_CMD heal-main'"
     elif iptables -t nat -S PREROUTING 2>/dev/null | grep -q -- "--comment $FW_TAG"; then
       echo "== Telegraf（stream。ECS のタスク）=="
       echo "  ポーリング（10 秒周期）と SR Linux の linkDown トラップ、syslog、gNMI の IS-IS の隣接が MSK に流れ、Grafana のアラートルール（ポーリング）と Splunk の保存済みサーチ（trap と gNMI）が SNS のトピックに出す。"
-      echo "  数分で GUI の「トポロジ」の dc1-leaf-01 ethernet-1/1 が DOWN になり（link_down と isis_down）、WORKFLOW=1 なら「承認」に修復案が出る。アラートは Grafana / Splunk で見る。戻すのは 'lab heal-main'"
+      echo "  数分で GUI の「トポロジ」の dc1-leaf-01 ethernet-1/1 が DOWN になり（link_down と isis_down）、WORKFLOW=1 なら「承認」に修復案が出る。アラートは Grafana / Splunk で見る。戻すのは '$LAB_CMD heal-main'"
     fi
     ;;
   forward)
@@ -294,7 +302,7 @@ case "${1:-}" in
         docker run -d --name "$TG" --restart unless-stopped --network host --log-opt max-size=50m --log-opt max-file=3 \
           -e SINK=stdout -e SYSLOG_STANDARD="$LOG_STANDARD" -e SNMP_POLL="${SNMP_POLL:-0}" -e AWS_REGION -e SNMP_AGENTS="$agents" -e GNMI_TARGETS="$gnmi" \
           -e GNMI_USERNAME="$GNMI_USERNAME" -e GNMI_PASSWORD="$GNMI_PASSWORD" -e SNMP_COMMUNITY="$SNMP_COMMUNITY" "$TELEGRAF_IMAGE" run >/dev/null
-        echo "Telegraf を起こした（$TELEGRAF_IMAGE。出力は 'sudo lab telegraf logs -f'）"
+        echo "Telegraf を起こした（${TELEGRAF_IMAGE}。出力は '$LAB_CMD telegraf logs -f'）"
         ;;
       stop)   docker rm -f "$TG" >/dev/null 2>&1 || true ;;
       status) docker ps -a --filter "name=^$TG\$" --format '{{.Names}}  {{.Status}}  {{.Image}}' ;;

@@ -12,6 +12,8 @@ wheels/
 # OSS 版（oss/ops/up.sh の手順 4-1。app/dashboard/requirements-oss.txt のぶん）
 wheels-oss/
 app/containerlab/splab.clab.yml
+# containerlab が lab.sh up で作る（root の持ち物。docker/compose/README.md の「消す」）
+app/containerlab/clab-*/
 *.rpm
 # uv の仮想環境
 .venv/
