@@ -1,8 +1,9 @@
-"""Nautobot の Job（JOBS_ROOT = /opt/nautobot/jobs）。Nautobot を機器の一覧とトポロジの正にして、Telegraf の dialin と Neptune に流す。
-OSS 版（cycle 005）は同じ Job が Neo4j に書く（agent/graph.py が GRAPH_BACKEND=neo4j で切り替える）。Job の名前は両方の版で同じ。
+"""Nautobot の Job（JOBS_ROOT = /opt/nautobot/jobs）。Nautobot を機器の一覧とトポロジの正にして、Telegraf の dialin とグラフ DB（Neptune）に流す。
+OSS 版（cycle 005）は同じ Job が Neo4j に書く（agent/graph.py が GRAPH_BACKEND=neo4j で切り替える）。Job の名前は両方の版で同じ「グラフ DB」で、
+説明だけが書き先の名前（nb_sync.GRAPH_NAME）になる。JobHook と bootstrap.py は Job をクラスの場所（netops_jobs.SyncOnChange）で引くので、名前を変えても外れない。
 中身は /opt/nautobot/netops/nb_sync.py。Job の行と JobHook は起動時の bootstrap.py が作って有効にする。
 
-同期の最後に、Nautobot の変更履歴（ObjectChange）の新しい 50 件を Neptune の頂点 change に写す（エージェントの recent_changes が読む）。
+同期の最後に、Nautobot の変更履歴（ObjectChange）の新しい 50 件をグラフ DB の頂点 change に写す（エージェントの recent_changes が読む）。
 
   SyncTopology   画面から手で打つ同期。IP をインタフェースに付け替えただけのような、JobHook が出ない変更のあとに使う
   SyncOnChange   JobHook が呼ぶ。Device / Interface / Cable / IPAddress / Service / Location / Role の作成・変更・削除のたびに同じ同期をする
@@ -19,8 +20,8 @@ class SyncTopology(Job):
                           description="機器の一覧が変わっていなくても Telegraf の dialin のサービスを作り直す（前回の作り直しが失敗したとき）")
 
     class Meta:
-        name = "Telegraf と Neptune に同期"
-        description = "Service（gnmi / snmp）を持つ機器を Telegraf の dialin の一覧に、機器・インタフェース・ケーブルを Neptune の物理層に合わせる"
+        name = "Telegraf とグラフ DB に同期"
+        description = f"Service（gnmi / snmp）を持つ機器を Telegraf の dialin の一覧に、機器・インタフェース・ケーブルを {nb_sync.GRAPH_NAME} の物理層に合わせる"
         has_sensitive_variables = False
 
     def run(self, redeploy=False):
@@ -29,8 +30,8 @@ class SyncTopology(Job):
 
 class SyncOnChange(JobHookReceiver):
     class Meta:
-        name = "変更のたびに Telegraf と Neptune に同期"
-        description = "JobHook（netops-sync）が呼ぶ。中身は「Telegraf と Neptune に同期」と同じ"
+        name = "変更のたびに Telegraf とグラフ DB に同期"
+        description = f"JobHook（netops-sync）が呼ぶ。中身は「{SyncTopology.Meta.name}」と同じ（グラフ DB は {nb_sync.GRAPH_NAME}）"
         has_sensitive_variables = False
 
     def receive_job_hook(self, change, action, changed_object):

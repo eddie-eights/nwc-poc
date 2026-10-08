@@ -156,10 +156,24 @@ check("sync: 機器があれば Neptune の物理層を合わせる", synced == 
 # ---- 保守中と変更履歴（2026-10-04）
 check("sync: 変更履歴を Neptune に写す（新しい順。id の無い行は落とす。機器が無くても写す）",
       len(changes_synced) == 2 and out["changes"] == {"kept": 2} and [r["change_id"] for r in changes_synced[-1]] == ["change#u2", "change#u1"])
-check("change_rows: 機器名は小文字、差分は「項目: 前 → 後」（last_updated は出さない）、差分が無ければ空",
+check("change_rows: 機器名は小文字、差分は「項目: 前 → 後」（last_updated は出さない）、削除は「削除」、差分が無ければ空",
       changes_synced[-1][1] == {"change_id": "change#u1", "time": 1790000000, "user": "admin", "action": "update", "object_type": "device",
                                 "object": "DC1-Leaf-01", "device_id": "dc1-leaf-01", "detail": "status: Active → Maintenance"}
-      and changes_synced[-1][0]["detail"] == "" and nb_map.change_detail({"removed": {}, "added": {"name": "x"}}) == "name: - → x")
+      and changes_synced[-1][0]["detail"] == "削除" and nb_map.change_detail({"removed": {}, "added": {"name": "x"}}) == "name: - → x"
+      and nb_map.change_detail(None, "update") == nb_map.change_detail({"removed": {}, "added": {}}, "update") == "")
+# 2026-10-08 の OSS 版の検証の「不具合」4: seed で作った機器の最初の変更は prechange が無く、get_snapshots() の差分が {"removed": None, "added": 全部の項目}。
+# 並べると「asset_tag: - → -、clusters: - → []、…」になる
+_full = {"asset_tag": None, "clusters": [], "comments": "", "name": "dc1-leaf-01", "status": {"name": "Maintenance"}, "last_updated": "b"}
+check("change_detail: 作成と削除は項目を並べず「作成」「削除」だけ（差分が全部の項目でも）",
+      nb_map.change_detail({"removed": None, "added": _full}, "create") == "作成" and nb_map.change_detail({"removed": _full, "added": None}, "delete") == "削除")
+check("change_detail: update で prechange が無ければ項目を並べず、前の値が無いことと今の status だけを出す（status が無い物は前の値が無いことだけ）",
+      nb_map.change_detail({"removed": None, "added": _full}, "update") == nb_map.NO_PRECHANGE + "。今の status: Maintenance"
+      and nb_map.change_detail({"removed": None, "added": {"name": "ethernet-1/1", "lag": None}}, "update") == nb_map.NO_PRECHANGE
+      and "asset_tag" not in nb_map.change_detail({"removed": None, "added": _full}) and "→" not in nb_map.change_detail({"removed": None, "added": _full}))
+check("change_rows: action を change_detail に渡す（prechange の無い update の行は前の値が無いことだけ。作成の行は「作成」）",
+      [r["detail"] for r in nb_map.change_rows([{"id": "a", "time": 2, "action": "update", "differences": {"removed": None, "added": _full}},
+                                                {"id": "b", "time": 1, "action": "create", "differences": {"removed": None, "added": _full}}])]
+      == [nb_map.NO_PRECHANGE + "。今の status: Maintenance", "作成"])
 check("change_rows: 新しい順に CHANGES_KEEP 件まで",
       len(nb_map.change_rows([{"id": str(i), "time": i} for i in range(nb_map.CHANGES_KEEP + 5)])) == nb_map.CHANGES_KEEP
       and nb_map.change_rows([{"id": "a", "time": 1}, {"id": "b", "time": 2}])[0]["change_id"] == "change#b")
@@ -212,6 +226,38 @@ check("bootstrap: seed が失敗したら起動時の同期を飛ばし、JobHoo
       "steps_skip.add(first_sync)" in boot and "JobHook.objects.update_or_create" in boot)
 check("bootstrap: Maintenance を機器の Status に選べるようにする（seed より前）",
       "for step in (superuser, api_user, custom_fields, statuses, seed, jobs, first_sync)" in boot and "status.content_types.add(device_ct)" in boot)
+# ---- Job の名前（2026-10-08 の OSS 版の検証の「docs のずれ」3。前は OSS 版でも「Telegraf と Neptune に同期」）
+import importlib.util
+def load_jobs(graph_name):
+    """nautobot/jobs/netops_jobs.py を、Nautobot の Job の基底と nb_sync（GRAPH_NAME だけ）を差し替えて読む。{クラス名: (name, description)}"""
+    stub = types.ModuleType("nautobot.apps.jobs")
+    stub.Job, stub.JobHookReceiver, stub.BooleanVar, stub.register_jobs = type("Job", (), {}), type("JobHookReceiver", (), {}), (lambda **kw: kw), (lambda *c: None)
+    mods = {"nautobot": types.ModuleType("nautobot"), "nautobot.apps": types.ModuleType("nautobot.apps"), "nautobot.apps.jobs": stub,
+            "nb_sync": types.SimpleNamespace(GRAPH_NAME=graph_name)}
+    saved = {k: sys.modules.get(k) for k in mods}
+    sys.modules.update(mods)
+    try:
+        spec = importlib.util.spec_from_file_location("netops_jobs", os.path.join(ROOT, "nautobot", "jobs", "netops_jobs.py"))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return {c: (getattr(m, c).Meta.name, getattr(m, c).Meta.description) for c in ("SyncTopology", "SyncOnChange")}
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+_jobs_nep, _jobs_neo = load_jobs("Neptune"), load_jobs("Neo4j")
+check("Job の名前は両方の版で同じ「Telegraf とグラフ DB に同期」「変更のたびに Telegraf とグラフ DB に同期」で、Neptune とも Neo4j とも書かない",
+      {k: v[0] for k, v in _jobs_nep.items()} == {k: v[0] for k, v in _jobs_neo.items()}
+      == {"SyncTopology": "Telegraf とグラフ DB に同期", "SyncOnChange": "変更のたびに Telegraf とグラフ DB に同期"})
+check("Job の説明は書き先の名前（nb_sync.GRAPH_NAME）を出す。マネージド版は Neptune、OSS 版は Neo4j",
+      all("Neptune" in v[1] and "Neo4j" not in v[1] for v in _jobs_nep.values()) and all("Neo4j" in v[1] and "Neptune" not in v[1] for v in _jobs_neo.values())
+      and "「Telegraf とグラフ DB に同期」と同じ" in _jobs_nep["SyncOnChange"][1])
+_old_name = subprocess.run(["git", "grep", "-n", "-e", "Telegraf と Neptune に同期", "--", "nautobot", "terraform", "oss", "ops", "web", "agent",
+                            "docs/nautobot.md", "docs/oss-variant.md", "docs/pipeline.md", "docs/architecture"], cwd=ROOT, capture_output=True, text=True).stdout
+check(f"Job は名前でなくクラスの場所で引く（bootstrap の JOBS と JobHook の job）ので、名前を変えても外れない。古い名前はコードと docs に残らない（{_old_name.strip()}）",
+      'JOBS = ("netops_jobs.SyncTopology", "netops_jobs.SyncOnChange")' in boot and '"job": models[JOBS[1]]' in boot and _old_name == "")
 
 # ---- 配線
 docker = read("nautobot", "Dockerfile")

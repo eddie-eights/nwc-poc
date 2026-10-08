@@ -82,7 +82,8 @@ _loaded_at = 0.0
 
 
 def reload(force: bool = False) -> str:
-    """Neptune があればそこから、無ければ静的データから組み直す。戻り値は使った元（neptune / static）"""
+    """グラフ DB（Neptune。OSS 版は Neo4j）があればそこから、無ければ静的データから組み直す。
+    戻り値は使った元（graph.BACKEND の neptune / neo4j、空なら neptune-empty / neo4j-empty、無ければ static）。root_cause などの source にも出る"""
     global DEVICES, NODES, LINKS, ADJ, DEVICE_BY_ID, LAYERS, SOURCE, _loaded_at
     if not force and _loaded_at and (SOURCE == "static" or time.time() - _loaded_at < TTL):
         return SOURCE
@@ -90,7 +91,7 @@ def reload(force: bool = False) -> str:
     if graph.configured():
         try:
             devices, links = graph.load_topology()
-            source = "neptune" if devices else "neptune-empty"  # 空なら静的データを見せる（画面の「投入」で入れる）
+            source = graph.BACKEND if devices else f"{graph.BACKEND}-empty"  # 空なら静的データを見せる（画面の「投入」で入れる）
             if devices:
                 layers = graph.load_layers()
         except (*graph.errors(), KeyError, ValueError, TypeError) as e:

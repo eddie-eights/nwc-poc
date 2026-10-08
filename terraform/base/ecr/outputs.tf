@@ -23,34 +23,36 @@ output "temporal_repository_url" {
   value       = try(aws_ecr_repository.workflow["temporal"].repository_url, "")
 }
 
+# pipeline の 6 つも lab / workflow と同じく try() で包む。state を失って残った ECR を 1 本ずつ terraform import すると、まだ state に無いキーを
+# 引いた output が Invalid index で落ちる（2026-10-08 の OSS 版の検証の「不具合」3）。読む側は try() で空を受け、precondition で止まる
 output "telegraf_repository_url" {
   description = "Build telegraf/ (arm64) and push it here with tag <Telegraf version>-<hash of telegraf/> (step 2 of ops/up.sh). terraform/pipeline/stream runs it on ECS."
-  value       = aws_ecr_repository.pipeline["telegraf"].repository_url
+  value       = try(aws_ecr_repository.pipeline["telegraf"].repository_url, "")
 }
 
 output "kafka_ui_repository_url" {
   description = "Push ghcr.io/kafbat/kafka-ui:<KAFKA_UI_TAG of ops/up.sh> (arm64) here with the same tag (step 2, whenever stream is built). terraform/pipeline/stream runs it on ECS."
-  value       = aws_ecr_repository.pipeline["kafka-ui"].repository_url
+  value       = try(aws_ecr_repository.pipeline["kafka-ui"].repository_url, "")
 }
 
 output "grafana_repository_url" {
   description = "Build grafana/ (arm64) and push it here with tag <Grafana version>-<hash of grafana/> (step 2 of ops/up.sh, when STORES has grafana). terraform/pipeline/analytics runs it on ECS."
-  value       = aws_ecr_repository.pipeline["grafana"].repository_url
+  value       = try(aws_ecr_repository.pipeline["grafana"].repository_url, "")
 }
 
 output "splunk_repository_url" {
   description = "ops/up.sh builds splunk/ (splunk/splunk plus the netops_alerts app, amd64 only) and pushes it here as <Splunk version>-<hash of splunk/> (step 2, when STORES has splunk). terraform/pipeline/analytics runs it on ECS."
-  value       = aws_ecr_repository.pipeline["splunk"].repository_url
+  value       = try(aws_ecr_repository.pipeline["splunk"].repository_url, "")
 }
 
 output "nautobot_repository_url" {
   description = "ops/up.sh builds nautobot/ (networktocode/nautobot plus the NetOps jobs, arm64) and pushes it here as <Nautobot version>-<hash of the build context> (step 2, whenever PIPELINE=1). terraform/pipeline/nautobot runs it on ECS."
-  value       = aws_ecr_repository.pipeline["nautobot"].repository_url
+  value       = try(aws_ecr_repository.pipeline["nautobot"].repository_url, "")
 }
 
 output "redis_repository_url" {
   description = "Push redis:<REDIS_TAG of ops/up.sh> (arm64) here with the same tag (step 2, whenever PIPELINE=1). The Redis sidecar of the Nautobot task (cache and Celery broker)."
-  value       = aws_ecr_repository.pipeline["redis"].repository_url
+  value       = try(aws_ecr_repository.pipeline["redis"].repository_url, "")
 }
 
 output "oss_repository_urls" {
