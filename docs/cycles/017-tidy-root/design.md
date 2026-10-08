@@ -110,5 +110,5 @@ AWS では確かめない（動作を変えないため）。OSS 版の `ops/oss
 
 1. **OSS 版を AWS で打ち直していない。** `ops/oss/up.sh` の `. "$(dirname "$0")/../lab-common.sh"` 等の相対パスは `bash -n` では検出できない（存在しないファイルを `.` しても構文は通る）。`tests/test_oss_ops.py` がパスの形を見ているのでそこで拾う。次の OSS 版の AWS 検証で確かめる。
 2. **メインのチェックアウトと `verify-oss-20261008` worktree の `oss/terraform/`** には OSS 版の provider cache と state が残る（追跡されていない）。マージしても git は消さない。`main` へのマージのあと、PM が Terraform の state の `mv` と一緒に片付ける（このサイクルでは触らない）。
-3. **他のエージェントの worktree が `oss/ops/` や `tools/` を触っていればマージで衝突する。** 013（`feat/gnmic-drop-dialin`）は `ops/` を触るので、**013 のマージ後に着手する**（BACKLOG の前提）。
+3. **他のエージェントの worktree が `oss/ops/` や `tools/` を触っていればマージで衝突する。** 013（`feat/gnmic-drop-dialin`）は `ops/` を触る。着手は 013 のマージを待たないが、**PR を出す前に `docs/cycle-006-design` の最新（013 のマージ後）を自分のブランチにマージして、check.sh を取り直す**。衝突したら解消せず PM に報告する。
 4. claude-settings の `domain-modeling` スキルの `GLOSSARY.md` の置き場（根 → `docs/`）は別リポジトリ。PM が直す。
