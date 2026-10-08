@@ -3,6 +3,7 @@
 #   lab.sh render | pull | up | down | status | check | snmp [node] | logs [node] | cli <node> [cmd...] | fail-main | heal-main | failover | clab <args...>
 #   lab.sh fail-bgp | heal-bgp | trap-test   （Grafana と Splunk のアラートを比べる障害: BGP の隣接 1 本を止める / 戻す、link 以外の trap を 1 通送る）
 #   lab.sh forward | forward-status     （stream: ECS の Telegraf へ SNMP / gNMI / trap / syslog を通す。デバッグ用の EC2 は trap の 162 を 1162 へ向けるだけ。up が毎回呼ぶ）
+#   lab.sh graph | graph-stop           （トポロジ図: containerlab graph を 127.0.0.1:50080 で裏に起こし、手元で打つポートフォワードのコマンドを出す / 止める。down も止める）
 #   lab.sh telegraf run | stop | status | test | gnmi | logs [-f]   （デバッグ用の EC2 だけ。この EC2 の Telegraf。中身は app/telegraf/telegraf.sh、出力は標準出力）
 # 手元の containerlab と違うのは 3 つ: containerlab を直接呼ぶ（root）、イメージは ECR から取る（pull）、
 # splab.clab.yml はテンプレート（.in）からイメージ URI を埋めて作る（render）。
@@ -34,6 +35,9 @@ GNMI_PASSWORD='NokiaSrl1!'
 SNMP_COMMUNITY=public
 # gNMI（containerlab が SR Linux 全台で開ける。Telegraf の inputs.gnmi が BGP / IS-IS / EVPN の状態を購読する）
 GNMI_PORT=57400
+# graph（containerlab graph の Web）のポート。127.0.0.1 だけで待ち、手元からは SSM のポートフォワード（IaC/terraform/aws-managed/pipeline/lab の
+# output graph_port_forward_command と同じポート）で開く。SSM のエージェントがこの EC2 の中から繋ぐので SG は開けない
+GRAPH_PORT=50080
 # SR Linux がコンテナの中に書くログ（lab.sh logs が読む。Telegraf へは syslog で別に送る）
 SRL_LOG=/var/log/srlinux/file/messages
 # forward が入れる iptables の規則の目印（入れ直す前にこれの付いた規則を全部消す）
@@ -94,6 +98,8 @@ hint() {  # hint <デバッグ用の EC2 の文> <stream の文>
   elif local_telegraf; then echo "  compose の Telegraf: 数分で Grafana（:3000）と Splunk（:8000）に出る（SNS のトピックは無い）"
   elif iptables -t nat -S PREROUTING 2>/dev/null | grep -q -- "--comment $FW_TAG"; then echo "  stream: $2"
   else echo "  Telegraf への転送が張られていない（sudo lab forward-status）"; fi
+  # 機器とリンクの図は EC2（lab とデバッグ用。env に NAME_PREFIX がある）だけ。手元の compose は containerlab graph を直接打つ
+  if [ -n "${NAME_PREFIX:-}" ]; then echo "  機器とリンクの図: 'sudo lab graph'（containerlab graph。手元で打つポートフォワードのコマンドを出す）"; fi
 }
 unforward() {  # forward が入れた規則（目印 ${FW_TAG}）を全部消す
   local t rules r
@@ -130,9 +136,34 @@ case "${1:-}" in
     # 失敗してもトポロジは上がっている（Telegraf に届かないだけ。sudo lab forward-status で見る）
     "$SELF" forward || echo "forward に失敗した（トポロジは動いている）。sudo lab forward-status で見る" >&2
     ;;
-  down)   clab destroy -t "$TOPO" --cleanup ;;
+  down)   "$SELF" graph-stop; clab destroy -t "$TOPO" --cleanup ;;
   status) clab inspect -t "$TOPO" ;;
   clab)   clab "${@:2}" ;;
+  graph)
+    # containerlab graph（トポロジの図を Web で出す）を systemd の一時ユニットで裏に起こす（SSM のセッションを閉じても残る。止めるのは graph-stop か down）。
+    # systemd-run の中では上の clab() が使えないので containerlab を直接呼び、版の確かめを切る環境変数も渡し直す
+    : "${NAME_PREFIX:?lab の EC2 だけ（/etc/*-lab.env が無い。手元は containerlab graph -t $TOPO を直接打つ）}" "${AWS_REGION:?}"
+    [ -f "$TOPO" ] || "$SELF" render
+    if systemctl is-active --quiet "$NAME_PREFIX-lab-graph"; then
+      echo "トポロジ図はもう動いている（$NAME_PREFIX-lab-graph。止めるのは 'sudo lab graph-stop'）"
+    else
+      systemd-run --unit="$NAME_PREFIX-lab-graph" --collect --property=WorkingDirectory="$PWD" --setenv=CLAB_VERSION_CHECK=disable \
+        containerlab graph -t "$TOPO" --srv "127.0.0.1:$GRAPH_PORT"
+    fi
+    # 手元で打つコマンドの宛先はこの EC2。instance id は IMDSv2 から取る（取れなければ置き場所だけ出す）
+    id=$(t=$(curl -sf -m 2 -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" http://169.254.169.254/latest/api/token) \
+      && curl -sf -m 2 -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/meta-data/instance-id) || id="<この EC2 の instance id>"
+    echo "手元の PC で打つ（AWS CLI v2 + Session Manager plugin。IaC/terraform/aws-managed/pipeline/lab の output graph_port_forward_command と同じ）:"
+    echo "  aws ssm start-session --region $AWS_REGION --target $id --document-name AWS-StartPortForwardingSession --parameters portNumber=$GRAPH_PORT,localPortNumber=$GRAPH_PORT"
+    echo "ブラウザで http://localhost:$GRAPH_PORT/ を開く。開けなければ 'sudo systemctl status $NAME_PREFIX-lab-graph'。止めるのは 'sudo lab graph-stop'"
+    ;;
+  graph-stop)
+    # down（lab の EC2 の systemd の ExecStop）からも呼ぶ。手元の compose（docker/compose/lab.sh）には NAME_PREFIX が無いので何もしない。
+    # 動いていない（一時ユニットが無い）ときの systemctl stop の失敗は無視する
+    if [ -n "${NAME_PREFIX:-}" ] && command -v systemctl >/dev/null; then
+      systemctl stop "$NAME_PREFIX-lab-graph" 2>/dev/null || true
+    fi
+    ;;
   cli)    srl "$2" "${@:3}" ;;
   check)
     echo "== BGP EVPN（dc1-spine-01 = ルートリフレクタ。leafsw 2 + leaf 2 が established なら OK）=="; srl dc1-spine-01 "show network-instance default protocols bgp neighbor"
@@ -301,8 +332,8 @@ case "${1:-}" in
       test)   docker exec "$TG" tg test ;;
       gnmi)   docker exec "$TG" tg gnmi ;;
       logs)   docker logs --tail "${LINES:-50}" "${@:3}" "$TG" ;;
-      *) sed -n '6p' "$SELF"; exit 1 ;;
+      *) sed -n '7p' "$SELF"; exit 1 ;;
     esac
     ;;
-  *) sed -n '2,6p' "$SELF"; exit 1 ;;
+  *) sed -n '2,7p' "$SELF"; exit 1 ;;
 esac

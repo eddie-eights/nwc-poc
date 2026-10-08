@@ -8,6 +8,11 @@ output "start_session_command" {
   value       = "aws ssm start-session --region ${var.region} --target ${aws_instance.lab.id}"
 }
 
+output "graph_port_forward_command" {
+  description = "Run on the user's PC after \"sudo lab graph\" in the SSM session, then open http://localhost:50080/ (containerlab graph, the topology diagram. Port 50080 is GRAPH_PORT of app/containerlab/lab.sh)"
+  value       = "aws ssm start-session --region ${var.region} --target ${aws_instance.lab.id} --document-name AWS-StartPortForwardingSession --parameters portNumber=50080,localPortNumber=50080"
+}
+
 output "stop_command" {
   description = "Stop the instance when not in use (no compute charge while stopped; the EBS volume is still charged)"
   value       = "aws ec2 stop-instances --region ${var.region} --instance-ids ${aws_instance.lab.id}"

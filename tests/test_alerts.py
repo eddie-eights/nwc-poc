@@ -982,8 +982,8 @@ check("lab.sh の fail-bgp / heal-bgp は BGP_NODE の設定にある iBGP の n
       and '"set / network-instance default protocols bgp neighbor $BGP_PEER admin-state $1" "commit now"' in lab
       and all(f"\n    bgp_admin {s}\n" in lab for s in ("disable", "enable"))
       and all(f"\n  {c})\n" in lab for c in ("fail-bgp", "heal-bgp", "trap-test"))
-      and [i for i, l in enumerate(lab.splitlines(), 1) if l.startswith("#   lab.sh ")] == [3, 4, 5, 6] and "fail-bgp | heal-bgp | trap-test" in lab.splitlines()[3]
-      and "  *) sed -n '2,6p' \"$SELF\"; exit 1 ;;" in lab and "      *) sed -n '6p' \"$SELF\"; exit 1 ;;" in lab and "telegraf run" in lab.splitlines()[5])
+      and [i for i, l in enumerate(lab.splitlines(), 1) if l.startswith("#   lab.sh ")] == [3, 4, 5, 6, 7] and "fail-bgp | heal-bgp | trap-test" in lab.splitlines()[3]
+      and "  *) sed -n '2,7p' \"$SELF\"; exit 1 ;;" in lab and "      *) sed -n '7p' \"$SELF\"; exit 1 ;;" in lab and "telegraf run" in lab.splitlines()[6])
 _ba = lab[lab.index("\nbgp_admin() {"):lab.index("\n}\n", lab.index("\nbgp_admin() {"))]
 check("lab.sh の fail-bgp / heal-bgp は commit のあと state の admin-state を読み直し、変わっていなければ 1 で止まる（sr_cli の終了コードに頼らない。grep -q は pipe に繋がない）",
       '"info from state / network-instance default protocols bgp neighbor $BGP_PEER admin-state")' in _ba
