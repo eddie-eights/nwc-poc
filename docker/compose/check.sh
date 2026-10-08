@@ -56,16 +56,20 @@ for svc in spark-splunk spark-http; do
     <<<"$ps"
 done
 
-# Kafka は Kafbat UI のトピックの一覧を 1 回取って 4 つ見る。messagesCount はトピックの全パーティションのメッセージ数の和
+# Kafka は Kafbat UI のトピックの一覧を 1 回取って 5 つ見る。messagesCount はトピックの全パーティションのメッセージ数の和
 # （2026-10-08 に手元の compose で kafka-get-offsets.sh の最新オフセットの和と同じ値を確認。docker exec しなくて済む）
 kafka=$(get - 'http://127.0.0.1:18080/api/clusters/nwc/topics?perPage=100' || true)
 judge "Kafka: トピック metrics / gnmi / traps / logs / flows がある" \
   "(lambda n: 'ok' if not n else '無い: ' + ', '.join(n))(sorted({'metrics', 'gnmi', 'traps', 'logs', 'flows'} - {t['name'] for t in json.loads(s)['topics']}))" \
   <<<"$kafka"
-# トピックは Spark が起動のときに作るので、gnmic・Telegraf・syslog-ng から届いているかはメッセージ数で見る（metrics は gnmic の IF のカウンター）。trap と syslog は障害を入れるまで来ないこともあるので、
+# トピックは Spark が起動のときに作るので、gnmic・Telegraf・syslog-ng から届いているかはメッセージ数で見る（metrics は gnmic の IF のカウンター、
+# gnmi は gnmic の IF・BGP・IS-IS の状態。on-change は購読した直後に今の値を 1 回送るので、gnmic が繋がっていれば 0 にならない）。trap と syslog は障害を入れるまで来ないこともあるので、
 # traps と logs の 0 件は NG にしない。flows は lab の SR Linux が NetFlow を出さないので数を見ない（tools/netflow_send.py で送ったときだけ増える）
 cnt="{t['name']: t['messagesCount'] for t in json.loads(s)['topics']}"
 judge "Kafka: metrics のメッセージ数 > 0" "'ok' if $cnt.get('metrics', 0) > 0 else '0 件'" <<<"$kafka"
+judge "Kafka: gnmi のメッセージ数 > 0" \
+  "'ok' if $cnt.get('gnmi', 0) > 0 else '0 件（gnmic の on-change（IF・BGP・IS-IS の状態）が届いていない。購読した直後に今の値を 1 回送るので、gnmic が繋がっていれば 0 にならない。docker compose logs gnmic）'" \
+  <<<"$kafka"
 judge "Kafka: traps のメッセージ数 > 0" \
   "'ok' if $cnt.get('traps', 0) > 0 else '注意: 0 件（trap は障害を入れるまで来ない。docker/compose/lab.sh fail-main か trap-test のあとに打ち直す）'" \
   <<<"$kafka"

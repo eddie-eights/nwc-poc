@@ -91,7 +91,7 @@ running exit=0
 - lab / compose: `tg test` / `tg gnmi`・`lab.sh telegraf test|gnmi` は案内して exit 1、`LAB_SNMP_COMMUNITY` を消した、compose に `gnmic` を 14 番目のサービスとして足した（第 1 段の時点で compose に `telegraf-dialin` は無く、`telegraf` 1 つが `TELEGRAF_ROLE=all` だった）
 - docs: design.md 4. の docs の全部（collection / pipeline / architecture / data-stores / deploy / troubleshooting / nautobot / workflow / FAQ / README / alert-comparison / hearing / docker/compose/README.md）。`troubleshooting.md` の `-var 'snmp_agents=…'` は変数が無くなって打つと落ちるので消した
 - 設計から足したこと（design.md に先に書き、design-log に記録）: 設計方針 1・4 の事実の直し（1 回取るのは `lab.sh gnmic` ではなく `gnmic_exec_command` の `gn get`）と 4. の「第 2 段の実装で決めた細目」
-- **012 Round 2 の ACL が入るまで、マネージドの gnmic は Kafka に書けない見込み**（SCRAM のユーザーに `gnmi` / `metrics` の Write・Describe が無い。design.md の未確定 7。AWS 未確認。OSS は認証なしなので影響しない）
+- **012 Round 2 の ACL が入るまで、マネージドの gnmic は Kafka に書けない見込み**（SCRAM のユーザーに `gnmi` / `metrics` の Write・Describe が無い。design.md の未確定 7。AWS 未確認。OSS は認証なしなので影響しない） → セルフレビュー F1 で 012 Round 2 を取り込み、`ensure_acls` に `gnmi` / `metrics` を足した（282ea83。下の「セルフレビュー」）
 - 変更ファイル: 85（`git diff --stat`: 1078 insertions / 1523 deletions）＋新規 2（2 つの `gnmic.tf`）。削除 2（`app/telegraf/lab_gnmi.star`・`lab_circuits.star`）
 
 #### テストの期待値を変えたもの（元の期待値が誤りになった理由）
@@ -176,4 +176,171 @@ level=INFO msg="initialized kafka producer" output=kafka name=metrics …
 
 6. `terraform fmt` / `validate`: 上の 1（18 ルートが OK）
 7. / 8. AWS（PM）: 未実行
-- `tests/check_splunk_image.py`: 未実行。セルフレビューで走らせる
+- `tests/check_splunk_image.py`: 57c1b0d で走らせた。そのあと `app/splunk`・`docker/images/splunk`・`tests/check_splunk_image.py` は変わっていない（`git diff --stat 57c1b0d HEAD -- …` が空）
+
+```
+-- docker/images/splunk/Dockerfile と app/splunk/ を linux/amd64 でビルドして nwc-splunk-check:local にする
+-- nwc-splunk-check:local を nwc-splunk-check-73036 で起こした。healthy になるのを待つ（数分）
+ok Splunk が入口（app/splunk/entrypoint.sh）から起きて healthy になる（170 秒）
+ok splunkd が読む設定でも python.required = 3.13（btool）
+ok 偽の認証情報の口と偽の SNS がコンテナの中で動く
+ok 直に: Splunk の Python 3.13 で boto3 / botocore が読め、SNS のクライアントを作れる（app に同梱していない = Splunk の site-packages のもの）
+   python 3.13.11（/opt/splunk/bin/python3.13）boto3 1.37.14 botocore 1.37.14 /opt/splunk/lib/python3.13/site-packages/boto3/__init__.py
+ok 直に: netops_sns.send で偽の SNS へ 1 通届く（認証情報は偽の口から、署名つき、Query API の Publish）
+-- HEC に link down（dc1-a-leaf-01 ethernet-1/1）を入れた。netops_gnmi（毎分）が送るのを待つ
+ok 本物の流れ: アラートアクションが偽の SNS へ 1 通だけ送る（次の回で重ねて送らない）
+ok 本物の流れ: 本文は Grafana と同じ形の JSON（source=splunk、link_down の firing 1 件）、件名は netops alert、form は Publish
+ok 本物の流れ: splunkd は Python 3.13 で起こし、Splunk の boto3 で送っている（User-Agent: Python 3.13.11、boto3 1.37.14）
+ok 本物の流れ: splunkd.log に件数（published=1/1）と exit code=0 が残る
+-- bin/boto3.py を置いて、HEC に link down（ethernet-1/2）を入れた。splunkd.log に理由が出るのを待つ
+ok boto3 が読めないとき: splunkd.log に理由（boto3 を読めない・Splunk の Python の版・確かめ方）が 1 行で出て、exit code=3。送らない
+   etops_sns STDERR -  boto3 を読めない（ModuleNotFoundError: No module named boto3 (check_splunk_image が置いた偽物)）。Splunk の Python 3.13.11（/opt/splunk/bin/python3.13）に boto3 が無い。Splunk の版を変えたなら tests/check_splunk_image.py で確かめ、無ければ boto3 を app の lib/ に同梱する（git の ffba169）
+ok 見えた版が CHECKED と同じ（{'splunk': '10.4.4', 'python': '3.13.11', 'boto3': '1.37.14'}）。違うなら、上が通っているので CHECKED を書き換える（Splunk の版を変えたら Dockerfile・ops/up.sh も）
+すべて通過（11 件）
+
+[exited with code 0]
+```
+
+### セルフレビュー
+
+- 自分: opus-5.5 / xhigh。入力は design.md と bf6860b（ae03dcb..bf6860b）のコード
+- 反対弁護人: opus（Agent の general-purpose、読み取り専用）。渡したのは design.md / build.md のパス、変更ファイルの一覧、選んだ方針と迷った点。返ってきたあとの `git status --porcelain` は自分の未コミットの 2 本（test_oss_ops / test_stream）だけで、増えたものは無い
+- 反対弁護人の指摘は Must 1（F1）/ Should 3（F1b・F3・F5）/ Nit 2（F2・F7）。全部を自分で確かめてから片付けた
+- 直しは 57c1b0d（自分の退行注入で見つけたテストの穴）、282ea83・e8a50ee（F1）、このあとの commit（F5・F2）
+
+#### 自分の退行注入
+
+1 か所ずつ壊してテストを回し、元に戻した。1 回目（M1〜M4・M6・M8）は壊し方（置き換えた文字列が元の文字列を含む）か見るテストの選び方が外れていたので、b で取り直した。b でも落ちなかったものが穴。
+
+| # | 壊したもの | 見たテスト | 結果 |
+|---|---|---|---|
+| M1b | ops/up.sh の `telegraf_dialin` の SG の守りを丸ごと消す | test_stream | 落ちる |
+| M2b | oss/ops/up.sh の同じ守りを丸ごと消す | test_oss_ops | 落ちない → テストを足した（57c1b0d）。足したあと落ちる |
+| M3b | stream の remote_state の postcondition のキーを `telegraf_dialin` に戻す | test_stream | 落ちない → テストを足した（57c1b0d。文字列の検査。F7）。足したあと落ちる |
+| M4b | SG の gnmic → lab_mgmt 57400 を消す | test_analytics | 落ちる（通信の表） |
+| M5 | `nb_map.TARGET_KEYS` に `snmp-agents` を戻す | test_nautobot | 落ちる |
+| M6b | lab.sh forward に udp 161 を戻す | test_stream | 落ちる |
+| M7 | `tg test` / `tg gnmi` の exit 1 を消す | test_lab_debug | 落ちる |
+| M8b | ops/down.sh の stream の destroy に `snmp_agents` を戻す | test_stream | 落ちる |
+| M9 | lab_topology.py に `--snmp-agents` を戻す | test_sync | 落ちる |
+| M10 | compose の gnmic の `KAFKA_AUTH: none` を消す（既定の scram になる） | test_local_compose | 落ちる |
+| G1〜G3 | gnmic.sh get: `shift "$n"` を消す / 既定のパスから admin-state を落とす / render を標準出力へ（57c1b0d の commit メッセージでは M7 / M7b / M7c） | test_stream | 検査が無かった → テストを足した（57c1b0d）。足したあと 3 つとも落ちる |
+| M11 | compose の check.sh から gnmi の件数の判定を消す | test_local_compose | 落ちる（15 項目が ok の検査） |
+| M12 | check.sh の gnmi の判定を 0 件でも ok にする | test_local_compose | 落ちる（F5 で足した検査） |
+| M13 | `SCRAM_TOPICS` を logs / flows に戻す（012 のまま） | test_analytics | 落ちる |
+| M14 | `SCRAM_TOPICS` から metrics を落とす（e70f59e の案） | test_analytics | 落ちる |
+| M15 | `SCRAM_TOPICS` に traps を足す | test_analytics | 落ちる |
+
+M11〜M15 の出力（mut_final.py。最後の編集のあと）:
+
+```
+M11 check.sh から gnmi の件数の判定を消す: rc=1 落ちた | AssertionError: check.sh: 応答が全部そろえば 15 項目とも ok で「すべて ok」、終了コード 0（メモリが 20 GB 以上なら注意を出さない）
+M12 check.sh の gnmi の判定を 0 件でも ok にする: rc=1 落ちた | AssertionError: check.sh: Kafka の gnmi のメッセージ数が 0 なら、metrics が届いていても NG で logs gnmic を案内する（on-change の購読だけが断られた。cycle 013 のセルフレビュー F5）
+M13 SCRAM_TOPICS を logs / flows に戻す: rc=1 落ちた | AssertionError: ensure_acls: User:collectors に logs / flows / gnmi / metrics の WRITE と DESCRIBE（TOPIC・LITERAL・host *・ALLOW）の 8 つを 1 回の createAcls で入れ、入れたものを返す
+M14 SCRAM_TOPICS から metrics だけ落とす（e70f59e の案）: rc=1 落ちた | AssertionError: ensure_acls: User:collectors に logs / flows / gnmi / metrics の WRITE と DESCRIBE（TOPIC・LITERAL・host *・ALLOW）の 8 つを 1 回の createAcls で入れ、入れたものを返す
+M15 SCRAM_TOPICS に traps も足す: rc=1 落ちた | AssertionError: ensure_acls: User:collectors に logs / flows / gnmi / metrics の WRITE と DESCRIBE（TOPIC・LITERAL・host *・ALLOW）の 8 つを 1 回の createAcls で入れ、入れたものを返す
+restored
+```
+
+#### F1（Must）[設計整合性 / correctness]: 012 Round 2 の ACL がこのブランチに無く、入っても gnmi / metrics に付かない
+
+- 場所: `app/spark/snmp_sinks.py`（docs/cycle-006-design 側の `SCRAM_TOPICS = ("logs", "flows")`）、design.md の未確定 7、`IaC/terraform/aws-managed/pipeline/stream/gnmic.tf:10`、上の第 2 段の 94 行目
+- 破綻: マネージドの SCRAM のユーザーに gnmi / metrics の ACL が無いと（MSK が `allow.everyone.if.no.acl.found` を SCRAM の主体に効かせないとき。012 の前提 (a)）、gnmic は Kafka に書けない。Grafana / Splunk の link_down と WORKFLOW が止まる。dialin は IAM で書けていたので、既定ブランチより後退する
+- 確かめた: `git merge-base --is-ancestor 5944704 HEAD` → 1（祖先でない）。docs/cycle-006-design の `SCRAM_TOPICS` は logs / flows だけ。PM の前提（metrics は IAM の Telegraf が書くので ACL は要らない）は誤りで、`gnmic.yaml.in:70` が gnmi、`:85` が metrics、`telegraf.conf.in:43` が traps（PM も確かめて了承）
+- 片付け: 直した。282ea83 で df42f51 を、e8a50ee で e70f59e を取り込み、`SCRAM_TOPICS = ("logs", "flows", "gnmi", "metrics")`（ACL は 8 つ）と test_analytics の検査（M13〜M15 で落ちる）。design.md の設計方針 1 の SCRAM の行と未確定 7 を事実に合わせた。MSK の上で効くかは未確認（検証 7 / 8）
+- 残り: ACL は Spark のジョブの起動（`ensure_acls`）で入るので、それより前にマネージドの gnmic が出した値は落ちる。on-change の最初の同期はそこで失われ、次に状態が変わるまで系列が無い（未確定 7。AWS 未確認。OSS・手元は認証なしなので影響しない）
+
+#### F1b（Should）[security]: SCRAM のユーザー `User:collectors` を syslog-ng / GoFlow2 と共有する
+
+- 場所: `app/spark/snmp_sinks.py:97`、design.md の設計方針 1
+- 破綻: NLB 経由で外から UDP を受ける syslog-ng / GoFlow2 のどちらかが乗っ取られると、同じ資格情報で gnmi に偽の oper-state down を書ける。そこから link_down が鳴り、WORKFLOW が起きる
+- 確かめた: 読んだだけ（3 つのタスクが同じ `local.kafka_collector_secrets` を ECS の secrets で受ける。`collectors.tf:77,169`、`gnmic.tf:92`）
+- 片付け: PM の判断で共有のまま（e70f59e）。ユーザーを分けるのは BACKLOG
+
+#### F3（Should）[runtime / 運用]: up.sh は gnmic が Kafka に書けていなくても「動いている」と出す
+
+- 場所: `ops/up.sh:963-964`、`oss/ops/up.sh:387-388`
+- 破綻: `aws ecs wait services-stable` はタスクが安定しているかだけを見る。gnmic が Kafka に拒まれても落ちずに繋ぎ直すなら、up.sh は成功と表示して先へ進む。up.sh が待ち続けて止まることは無い（10 分で黄色の警告だけ）
+- 確かめた: 読んだだけ。手元では、届かない target / broker でも gnmic は落ちなかった（上の第 1 段の検証 5 の `running exit=0`、第 2 段の `running restarts=0 exit=0`）ので、表示が成功のまま残る見込みは高い。Kafka の認可で拒まれたときは未確認
+- 片付け: 最終報告に回した（PM と合意）。up.sh から Kafka のトピックを読む手段が design に無く、012 の syslog-ng / GoFlow2（`ops/up.sh:970`）も同じ見方をしている。gnmi / metrics に届くかは AWS の検証 8 で見る
+
+#### F5（Should）[missing tests]: compose の check.sh が gnmi の件数を見ない
+
+- 場所: `docker/compose/check.sh:62-72`
+- 破綻: on-change の 3 つ（interface_state / bgp_neighbor / isis_interface）のパスが機器に拒まれても、metrics > 0 で全部 ok になる
+- 確かめた: check.sh を読んだ（件数を見るのは metrics だけだった）
+- 片付け: 直した（このあとの commit）。design.md 4. の「第 2 段の実装で決めた細目」に先に書き、design-log に 1 行。`gnmi のメッセージ数 > 0` を足し、0 なら NG で `docker compose logs gnmic` を案内する。test_local_compose に `FAKE_GNMI` と 0 件の検査を足し、項目の数（14 → 15 / 13 → 14 / 12 → 13）を直した。README も。M11・M12 で落ちる。SR Linux の入った compose では未確認（手元の SR Linux が起きない。未確定 1）
+
+#### F2（Nit）[docs]: `telegraf.tf:219` のコメントが消した output `telegraf_exec_command` を指す
+
+- 確かめた: `git grep -n telegraf_exec_command` でこのコメントだけが出た。直したあとは `-- IaC ops app tests docs/*.md` で 0 件
+- 片付け: 直した（`output telegraf_dialout_list_tasks_command` で探し、`--container telegraf`）
+
+#### F7（Nit）[missing tests]: postcondition の検査は locals.tf の文字列を探すだけ
+
+- 場所: `tests/test_stream.py:280`
+- 破綻: その行をコメント（`#`）にしても `in` で一致して通る
+- 片付け: 最終報告に回した。postcondition は state が無いと評価されず（`terraform validate` では走らない）、tf の検査はこのリポジトリでは文字列で見る形
+
+#### 問題なしとした観点と根拠
+
+- **ECS Exec の `gn get` で資格情報が見えるか:** 同じ SCRAM の secret を持つ syslog-ng / GoFlow2 も ECS Exec を有効にしている（`collectors.tf:105,196` の `enable_execute_command = true`。読んだだけ）ので、新しく見えるものは無い。`gn get` の標準出力に資格情報の値が出ないことは test_stream の `_gnmic_get`（偽の gnmic で実行。G1〜G3 で落ちる）
+- **compose の depends_on:** syslog-ng と同じ形（`compose.yaml:118-119`。反対弁護人が読んだだけ）
+- **`telegraf_source_cidr` の名前:** 変えると lab.sh と lab の IAM まで変わる。description だけ直した（読んだだけ）
+- **古い state からの移り方:** up.sh / oss/ops/up.sh の守り（M1b・M2b）、stream の postcondition（M3b）、down.sh の destroy の変数（M8b）、`/telegraf-dialin/` の SecureString を down-common.sh が ManagedBy で消すこと（読んだだけ）
+- **SG / IAM の範囲:** udp 161 を通さない（M6b）、gnmic から出るのは lab_mgmt の 57400 だけ（M4b）。Nautobot に足した IAM は 1 つの SSM パラメータと 1 つの ECS サービス（読んだだけ）
+
+#### 検証（セルフレビューの直しのあと。build.md 以外の最後の編集のあと、base（e70f59e）に新しい commit が無いのを `git fetch` で確かめてから取り直した）
+
+`bash ops/check.sh`（rc=0、2881 行。下は 1〜3 と、4 の各テストの最後の行。右の括弧は `tests/test_*.py` の glob の順で付けた名前）:
+
+```
+== 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+差分なし
+
+== 2. 9 つのルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+IaC/terraform/aws-managed/base/ecr  OK
+IaC/terraform/aws-managed/base/core  OK
+IaC/terraform/aws-managed/agent  OK
+IaC/terraform/aws-managed/pipeline/lab  OK
+IaC/terraform/aws-managed/pipeline/stream  OK
+IaC/terraform/aws-managed/pipeline/analytics  OK
+IaC/terraform/aws-managed/pipeline/graph  OK
+IaC/terraform/aws-managed/pipeline/nautobot  OK
+IaC/terraform/aws-managed/workflow  OK
+IaC/terraform/oss/base/ecr  OK
+IaC/terraform/oss/base/core  OK
+IaC/terraform/oss/agent  OK
+IaC/terraform/oss/pipeline/lab  OK
+IaC/terraform/oss/pipeline/stream  OK
+IaC/terraform/oss/pipeline/analytics  OK
+IaC/terraform/oss/pipeline/graph  OK
+IaC/terraform/oss/pipeline/nautobot  OK
+IaC/terraform/oss/workflow  OK
+
+== 3. スクリプトの構文
+bash -n: 28 本
+構文エラーなし
+
+== 4. 模擬テスト
+通過 168 / 失敗 0          (test_alerts)
+通過 513 / 失敗 0          (test_analytics)
+通過 161 / 失敗 0          (test_app)
+通過 79 / 失敗 0           (test_collectors)
+通過 3 / 失敗 0            (test_dashboard_config)
+通過 78 / 失敗 0           (test_graph)
+通過 7 / 失敗 0            (test_kb_index)
+通過 97 / 失敗 0           (test_lab_debug)
+通過 138 / 失敗 0          (test_local_compose)
+68 項目すべて通過             (test_nautobot)
+通過 173 / 失敗 0          (test_oss)
+通過 196 / 失敗 0          (test_oss_ops)
+通過 66 / 失敗 0           (test_oss_roll)
+通過 106 / 失敗 0          (test_stream)
+通過 103 / 失敗 0          (test_sync)
+通過 327 / 失敗 0          (test_workflow)
+
+すべて通過
+```
+
+検証方法 7 / 8（AWS）は PM。未実行

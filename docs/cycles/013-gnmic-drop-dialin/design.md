@@ -90,6 +90,7 @@ BACKLOG 28「コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種
   - `tg test` / `tg gnmi` と `lab.sh telegraf test|gnmi` は消さずに「cycle 013 でやめた。gNMI を 1 回取るのは `gn get`（`gnmic_exec_command`）」と出して exit 1（古い手順を打った人を迷わせない）
   - `lab.sh` は gNMI の資格情報を持たない（gnmic が SSM から受ける）。`SNMP_COMMUNITY` は `trap-test` のために残す。`ops/lab-common.sh` の `LAB_SNMP_COMMUNITY` は使う所が無くなるので消す
   - 手元の compose: `gnmic` のサービス（`KAFKA_AUTH=none`。`GNMI_TARGETS` は `docker/compose/up.sh` が lab の定義から作る）
+  - 手元の `docker/compose/check.sh` は `metrics` に加えて `gnmi` のメッセージ数も見て、0 件なら NG（on-change は購読した直後に今の値を 1 回送るので、gnmic が繋がっていれば 0 にならない。`metrics` だけ見ていると、on-change の購読だけが SR Linux に断られたときに気付かない。セルフレビュー F5）
   - `SNMP_POLL`: 前の `deploy.env` で止まらないよう `deploy-env.sh` は読み、`ops/up.sh` / `oss/ops/up.sh` は書いてあれば注意を出すだけ（止めない）。`link_down` の Grafana の sender は `GRAFANA` と `SINK_PROMETHEUS` だけで決まり、`SNMP_POLL` に依らない
   - SG の入れ替えの守り: base/core の state に `telegraf_dialin` の SG が残り、stream がそれを使っていれば、`up.sh` / `oss/ops/up.sh` は何も作る前に止まり `down.sh` を案内する（2026-10-04 の dialout / dialin の改名と同じ形）
   - SSM: `/<prefix>/telegraf-dialin/` の 3 つ（`snmp-community` も）は作らない。前の回の分は `down.sh` が ManagedBy のタグで消す。OSS の `oss/ops/up.sh` は `/<prefix>/gnmic/gnmi-username`・`gnmi-password` を作り、gnmic のイメージを `build_gnmic`（`ops/up-common.sh` の `GNMIC_VERSION`）で作る。OSS の SecureString は 13 個

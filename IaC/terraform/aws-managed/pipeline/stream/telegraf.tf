@@ -216,7 +216,7 @@ resource "aws_ecs_service" "telegraf_dialout" {
   desired_count = var.telegraf_az_num
   launch_type   = "FARGATE"
 
-  # aws ecs execute-command でタスクの中に入れる（設定を見る程度。コマンドは output telegraf_exec_command）
+  # aws ecs execute-command でタスクの中に入れる（設定を見る程度。タスクは output telegraf_dialout_list_tasks_command で探し、--container telegraf）
   enable_execute_command = true
 
   # 新しいタスクが NLB のヘルスチェックを通ってから古いタスクを外す（入れ替えのあいだも trap を落とさない）

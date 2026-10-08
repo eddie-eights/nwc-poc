@@ -449,7 +449,7 @@ exit 0
 ''')
 fake("free", 'printf "               total        used        free\\nMem:  %s  1000  1000\\nSwap:  0  0  0\\n" "${FAKE_MEM:-32000}"\n')
 # check.sh が打つ curl。引数と、-K - で渡された標準入力を書き、URL ごとに決めた応答を返す。FAKE_DOWN=1 なら繋がらない（出力なしで 7）。
-# Splunk の応答は FAKE_SPLUNK があればそれ（認証の失敗は 401 でも curl -sS は本文を出して 0 で終わる）。Kafka の metrics / traps / logs のメッセージ数は FAKE_METRICS / FAKE_TRAPS / FAKE_LOGS、
+# Splunk の応答は FAKE_SPLUNK があればそれ（認証の失敗は 401 でも curl -sS は本文を出して 0 で終わる）。Kafka の metrics / gnmi / traps / logs のメッセージ数は FAKE_METRICS / FAKE_GNMI / FAKE_TRAPS / FAKE_LOGS、
 # Telegraf の health と GoFlow2 の /metrics の HTTP の番号は FAKE_TG_HEALTH / FAKE_GF_METRICS
 fake("curl", r'''prev=; url=
 for a in "$@"; do
@@ -459,7 +459,7 @@ for a in "$@"; do
 done
 [ "${FAKE_DOWN:-0}" = 1 ] && exit 7
 case "$url" in
-  *18080/api/clusters/nwc/topics*) printf '{"topics":[{"name":"metrics","messagesCount":%s},{"name":"gnmi","messagesCount":0},{"name":"traps","messagesCount":%s},{"name":"logs","messagesCount":%s},{"name":"flows","messagesCount":0}]}\n' "${FAKE_METRICS:-120}" "${FAKE_TRAPS:-3}" "${FAKE_LOGS:-9}" ;;
+  *18080/api/clusters/nwc/topics*) printf '{"topics":[{"name":"metrics","messagesCount":%s},{"name":"gnmi","messagesCount":%s},{"name":"traps","messagesCount":%s},{"name":"logs","messagesCount":%s},{"name":"flows","messagesCount":0}]}\n' "${FAKE_METRICS:-120}" "${FAKE_GNMI:-40}" "${FAKE_TRAPS:-3}" "${FAKE_LOGS:-9}" ;;
   *9090/api/v1/query*) echo '{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1760000000,"12"]}]}}' ;;
   *9200/snmp-logs/_count*) echo "{\"count\":${FAKE_OS_COUNT:-5}}" ;;
   *8089/services/search/jobs/export*)
@@ -666,8 +666,8 @@ PW = example["OPENSEARCH_PASSWORD"]
 _lc = tree(read("docker", "compose", ".env.example"))
 _r, _c = run([os.path.join(_lc, "check.sh")])
 _ok = [l for l in _r.stdout.splitlines() if l.startswith("ok  ")]
-check("check.sh: 応答が全部そろえば 14 項目とも ok で「すべて ok」、終了コード 0（メモリが 20 GB 以上なら注意を出さない）",
-      _r.returncode == 0 and len(_ok) == 14 and _r.stdout.splitlines()[-1] == "すべて ok" and "注意" not in _r.stdout)
+check("check.sh: 応答が全部そろえば 15 項目とも ok で「すべて ok」、終了コード 0（メモリが 20 GB 以上なら注意を出さない）",
+      _r.returncode == 0 and len(_ok) == 15 and _r.stdout.splitlines()[-1] == "すべて ok" and "注意" not in _r.stdout)
 check("check.sh: .env は docker compose --env-file .env config --environment で読み、Spark の 2 つは docker compose ps -a --format json で 1 回だけ見る",
       [c for c in _c if c.startswith("docker ")] == ["docker compose --env-file .env config --environment", "docker compose ps -a --format json spark-splunk spark-http"])
 _argv = [c for c in _c if c.startswith("curl ")]
@@ -682,7 +682,7 @@ check("check.sh: Splunk の検索は sourcetype=netops:*（Spark の SPLUNK_SOUR
 check("check.sh: Grafana で見る uid（amp / aoss-logs）は app/grafana/provisioning/datasources-oss の定義にある",
       {m for f in ("prometheus.yaml", "opensearch.yaml")
        for m in re.findall(r"uid: (\S+)", read("app", "grafana", "provisioning", "datasources-oss", f))} == {"amp", "aoss-logs"})
-check("check.sh: Kafka で見るトピック（metrics / gnmi / traps / logs / flows。メッセージ数は metrics と traps と logs）は gnmic（metrics / gnmi）か Telegraf（traps）か syslog-ng（logs）か GoFlow2（flows）が書くトピック（cycle 012・013）",
+check("check.sh: Kafka で見るトピック（metrics / gnmi / traps / logs / flows。メッセージ数は metrics と gnmi と traps と logs）は gnmic（metrics / gnmi）か Telegraf（traps）か syslog-ng（logs）か GoFlow2（flows）が書くトピック（cycle 012・013）",
       "{'metrics', 'gnmi', 'traps', 'logs', 'flows'}" in read("docker", "compose", "check.sh")
       and {"metrics", "gnmi", "traps", "logs", "flows"} == _topics | {"logs", _ga["transport.kafka.topic"]})
 TH, GF, SG = "Telegraf: health が 200", "GoFlow2: /metrics が 200", "syslog-ng: udp 5140 を待っている"
@@ -704,10 +704,14 @@ _r2, _c2 = run([os.path.join(tree(read("docker", "compose", ".env.example")), "c
 check("check.sh: health のポートは compose と同じくシェルの HEALTH_PORT、.env の HEALTH_PORT の順",
       [c.split()[-1] for c in _c if c.startswith("curl ") and "-w" in c] == ["http://127.0.0.1:18081/", "http://127.0.0.1:8081/metrics"]
       and [c.split()[-1] for c in _c2 if c.startswith("curl ") and "-w" in c] == ["http://127.0.0.1:18082/", "http://127.0.0.1:8081/metrics"])
-KM, KT = "Kafka: metrics のメッセージ数 > 0", "Kafka: traps のメッセージ数 > 0"
+KM, KT, KG = "Kafka: metrics のメッセージ数 > 0", "Kafka: traps のメッセージ数 > 0", "Kafka: gnmi のメッセージ数 > 0"
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_METRICS="0")
-check("check.sh: Kafka の metrics のメッセージ数が 0 なら NG（Telegraf から届いていない。トピックは Spark が作るのであっても証拠にならない）",
-      _r.returncode == 1 and f"NG  {KM}: 0 件" in _r.stdout.splitlines() and f"ok  {KT}" in _r.stdout.splitlines())
+check("check.sh: Kafka の metrics のメッセージ数が 0 なら NG（gnmic の sample から届いていない。トピックは Spark が作るのであっても証拠にならない）",
+      _r.returncode == 1 and f"NG  {KM}: 0 件" in _r.stdout.splitlines() and f"ok  {KT}" in _r.stdout.splitlines() and f"ok  {KG}" in _r.stdout.splitlines())
+_r, _c = run([os.path.join(_lc, "check.sh")], FAKE_GNMI="0")
+check("check.sh: Kafka の gnmi のメッセージ数が 0 なら、metrics が届いていても NG で logs gnmic を案内する（on-change の購読だけが断られた。cycle 013 のセルフレビュー F5）",
+      _r.returncode == 1 and f"ok  {KM}" in _r.stdout.splitlines()
+      and [l for l in _r.stdout.splitlines() if KG in l] == [f"NG  {KG}: 0 件（gnmic の on-change（IF・BGP・IS-IS の状態）が届いていない。購読した直後に今の値を 1 回送るので、gnmic が繋がっていれば 0 にならない。docker compose logs gnmic）"])
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_TRAPS="0")
 check("check.sh: Kafka の traps が 0 件なら NG にせず「注意」で fail-main か trap-test を案内し、ほかが ok なら「すべて ok」で 0",
       _r.returncode == 0 and f"ok  {KM}" in _r.stdout.splitlines() and _r.stdout.splitlines()[-1] == "すべて ok"
@@ -734,7 +738,7 @@ check("check.sh: GoFlow2 の /metrics に繋がらなければ NG で ps -a と 
       and _r2.returncode == 1 and any(l.startswith(f"NG  {GF}: HTTP 404（") for l in _r2.stdout.splitlines()))
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_OS_COUNT="0", FAKE_MEM="16000")
 check("check.sh: 1 つが 0 件なら、そこだけ NG にして残りも見てから終了コード 1。メモリが 20 GB 未満なら注意を出す",
-      _r.returncode == 1 and "NG  OpenSearch: snmp-logs の件数 > 0: 0 件" in _r.stdout and len([l for l in _r.stdout.splitlines() if l.startswith("ok  ")]) == 13
+      _r.returncode == 1 and "NG  OpenSearch: snmp-logs の件数 > 0: 0 件" in _r.stdout and len([l for l in _r.stdout.splitlines() if l.startswith("ok  ")]) == 14
       and "注意: メモリが 16000 MiB" in _r.stdout and _r.stdout.splitlines()[-1].startswith("NG がある"))
 SPL = "Splunk: sourcetype=netops:* の直近 10 分の件数 > 0"
 def splunk_line(body):  # Splunk の応答を body にして check.sh を打ち、Splunk の行を返す
@@ -754,8 +758,8 @@ check("check.sh: Splunk の理由は同じものを 1 つにし（ERROR Unauthor
       and splunk_line('{"messages":[{"type":"WARN","text":"a"},{"type":"WARN","text":"a"}]}') == [f"NG  {SPL}: result が無い: WARN a"]
       and len(_ll) == 1 and _ll[0].startswith(f"NG  {SPL}: ERROR b c; FATAL xxx") and len(_ll[0]) - len(f"NG  {SPL}: ") == 200)
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_DOWN="1")
-check("check.sh: どこにも繋がらなくても set -e で途中で落ちず、12 項目とも NG（JSON の 9 つは「読めない応答: 空」、Telegraf と GoFlow2 は「繋がらない」、syslog-ng は「待っていない」）で終了コード 1",
-      _r.returncode == 1 and _r.stdout.count("読めない応答: 空") == 9 and _r.stdout.count("NG  ") == 12 and f"NG  {TH}: 繋がらない（" in _r.stdout
+check("check.sh: どこにも繋がらなくても set -e で途中で落ちず、13 項目とも NG（JSON の 10 は「読めない応答: 空」、Telegraf と GoFlow2 は「繋がらない」、syslog-ng は「待っていない」）で終了コード 1",
+      _r.returncode == 1 and _r.stdout.count("読めない応答: 空") == 10 and _r.stdout.count("NG  ") == 13 and f"NG  {TH}: 繋がらない（" in _r.stdout
       and f"NG  {GF}: 繋がらない（" in _r.stdout and f"NG  {SG}: 待っていない（" in _r.stdout)
 _lc = tree('OPENSEARCH_PASSWORD=a"b\\c\nSPLUNK_PASSWORD=x\nGF_SECURITY_ADMIN_PASSWORD=y\n')
 _r, _c = run([os.path.join(_lc, "check.sh")])
