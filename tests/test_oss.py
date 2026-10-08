@@ -1004,7 +1004,7 @@ def _code(s):
 
 _m_stream, _o_stream = tf_text("IaC/terraform/aws-managed", _STREAM), tf_text("IaC/terraform/oss", _STREAM)
 _msk_tf, _kafka_tf = _m_stream["msk.tf"], _o_stream["kafka.tf"]
-_IFACE = {"kafka_bootstrap_brokers", "kafka_bootstrap_by_protocol", "kafka_cluster_name", "kafka_client_environment",
+_IFACE = {"kafka_bootstrap_brokers", "kafka_bootstrap_by_protocol", "kafka_client_environment",
           "telegraf_kafka_statements", "kafka_ui_kafka_statements", "kafka_descriptions"}
 _shared_code = "\n".join(_code(_m_stream[n]) for n in _stream_shared)
 _shared_defs = set().union(*(_locals_keys(_m_stream[n]) for n in _stream_shared))
@@ -1499,7 +1499,8 @@ check(f"どちらの木もアカウントかリージョンに 1 つの設定を
       and not any(re.search(r"glue (delete|update)-catalog|s3tablescatalog", s) for s in _down.values()))
 check(f"Cloud Map の名前空間は木の中で重ならず、マネージド版と OSS 版でも重ならない（マネージド版 {sorted(_ns.get('IaC/terraform/aws-managed', []))}、"
       f"OSS 版 {sorted(_ns.get('IaC/terraform/oss', []))}）",
-      sorted(_ns["IaC/terraform/aws-managed"]) == sorted(f"o-nwc-poc{s}.internal" for s in ("", "-stream", "-nautobot"))
+      # マネージド版の stream の名前空間は Kafbat UI のためだけにあったので cycle 010 で無くなった（OSS 版の stream は Kafka の台ごとの名前に使う）
+      sorted(_ns["IaC/terraform/aws-managed"]) == sorted(f"o-nwc-poc{s}.internal" for s in ("", "-nautobot"))
       and sorted(_ns["IaC/terraform/oss"]) == sorted(f"{_PREFIX}{s}.internal" for s in ("", "-stream", "-nautobot", "-graph"))
       and all(len(set(v)) == len(v) for v in _ns.values()) and not set(_ns["IaC/terraform/aws-managed"]) & set(_ns["IaC/terraform/oss"]))
 
@@ -1550,11 +1551,11 @@ check(f"OSS 版の bootstrap_brokers は {_brokers}（PLAINTEXT）: outputs.tf �
       and "{ containerPort = 9092, protocol = \"tcp\" }" in _k and _kns == f"{_PREFIX}-stream.internal"
       and re.search(r'^kafka_ui_security_protocol = "PLAINTEXT"$', open(_auto[_STREAM], encoding="utf-8").read(), re.M) is not None)
 check("OSS 版の Spark は stream の state の bootstrap_brokers を --bootstrap で受け、KAFKA_AUTH=none で読む（空なら precondition で止まる）。"
-      "Kafka の 9092 には Spark・Telegraf（dial-out / dial-in）・Kafbat UI の SG の行がある",
+      "Kafka の 9092 には Spark・Telegraf（dial-out / dial-in）・Web（cycle 010 から Kafbat UI が Web の EC2 に同居）の SG の行がある",
       'bootstrap = try(data.terraform_remote_state.stream.outputs.bootstrap_brokers, "")' in _code(_o_an["network.tf"])
       and re.search(r'"--bootstrap",\s*local\.bootstrap', _spark) is not None
       and '{ name = "KAFKA_AUTH", value = "none" }' in _spark and 'condition     = local.bootstrap != ""' in _spark
-      and {"spark", "telegraf_dialout", "telegraf_dialin", "kafka_ui"} <= _from("kafka", 9092))
+      and {"spark", "telegraf_dialout", "telegraf_dialin", "web"} <= _from("kafka", 9092) and "kafka_ui" not in _from("kafka", 9092))
 
 
 # Neo4j・OpenSearch・VictoriaMetrics を使う側の SG
@@ -1858,7 +1859,7 @@ check("OSS 版の 3 つの実体ルート（stream / analytics / graph）の .tf
 # ---- 土台の SG の表は、いまの oss.tf から起こした 31 行と完全に一致する（増えても減っても気づく）
 _sg_expected = {(sg, to, 443, 443) for sg in ("kafka", "opensearch", "victoriametrics", "neo4j") for to in ("endpoints", "s3")} | {
     ("telegraf_dialout", "kafka", 9092, 9092), ("telegraf_dialin", "kafka", 9092, 9092), ("spark", "kafka", 9092, 9092),
-    ("kafka_ui", "kafka", 9092, 9092), ("kafka", "kafka", 9092, 9093),
+    ("web", "kafka", 9092, 9092), ("kafka", "kafka", 9092, 9093),
     ("kafka", "efs", 2049, 2049), ("victoriametrics", "efs", 2049, 2049),
     ("spark", "opensearch", 9200, 9200), ("grafana", "opensearch", 9200, 9200), ("runtime", "opensearch", 9200, 9200),
     ("lambda", "opensearch", 9200, 9200), ("opensearch", "opensearch", 9300, 9300),

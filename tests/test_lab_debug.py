@@ -442,6 +442,56 @@ check("dir_tag の呼び元 8 か所は、どれも docker build の -f と同�
       and {m.group(2) for m in _tag_df} == {"telegraf", "splunk", "grafana", "nautobot", "spark", "neo4j"}
       and all(f"-f docker/images/{m.group(2)}/Dockerfile " in _builds for m in _tag_df))
 
+# ---- lab.sh graph / graph-stop（cycle 010。containerlab graph を 127.0.0.1:50080 で裏に起こし、手元のポートフォワードで開く）
+# lab.sh を一時ディレクトリに写し（src/ の代わり。splab.clab.yml があるので render しない）、偽の systemd-run / systemctl / containerlab / curl を PATH の先に置いて打つ
+def _lab_graph(*args, active=False, **env):
+    with tempfile.TemporaryDirectory() as d:
+        b = os.path.join(d, "bin"); os.mkdir(b)
+        log = os.path.join(d, "calls.log"); open(log, "w").close()
+        bodies = {"systemd-run": "", "containerlab": "",
+                  "systemctl": f'[ "${{1:-}}" = is-active ] && exit {0 if active else 3}\n',
+                  "curl": 'case " $* " in *" PUT "*) echo tok ;; *) echo i-0123456789abcdef0 ;; esac\n'}
+        for n, body in bodies.items():
+            with open(os.path.join(b, n), "w") as f:
+                f.write('#!/usr/bin/env bash\n{ printf %s "$(basename "$0")"; printf " %s" "$@"; echo; } >> "$FAKE_LOG"\n' + body)
+            os.chmod(os.path.join(b, n), 0o755)
+        with open(os.path.join(d, "lab.sh"), "w") as f:
+            f.write(lab_sh)
+        os.chmod(os.path.join(d, "lab.sh"), 0o755)
+        open(os.path.join(d, "splab.clab.yml"), "w").close()
+        e = {k: v for k, v in os.environ.items() if k not in ("NAME_PREFIX", "AWS_REGION", "REGISTRY", "TELEGRAF_IMAGE")}
+        e.update(PATH=b + os.pathsep + os.environ["PATH"], FAKE_LOG=log, **env)
+        r = subprocess.run([os.path.join(d, "lab.sh"), *args], env=e, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
+        return r, open(log, encoding="utf-8").read().splitlines(), os.path.realpath(d)
+_ge = {"NAME_PREFIX": "x-nwc-poc", "AWS_REGION": "ap-northeast-1"}
+_fwd = ("aws ssm start-session --region ap-northeast-1 --target i-0123456789abcdef0 --document-name AWS-StartPortForwardingSession "
+        "--parameters portNumber=50080,localPortNumber=50080")
+_r, _c, _d = _lab_graph("graph", **_ge)
+_run = [c for c in _c if c.startswith("systemd-run ")]
+check("lab.sh graph: systemd-run の一時ユニット（<接頭辞>-lab-graph）で containerlab graph を 127.0.0.1:50080 で起こし、手元で打つポートフォワードのコマンドを出す",
+      _r.returncode == 0 and _run == [f"systemd-run --unit=x-nwc-poc-lab-graph --collect --property=WorkingDirectory={_d} --setenv=CLAB_VERSION_CHECK=disable "
+                                      "containerlab graph -t splab.clab.yml --srv 127.0.0.1:50080"]
+      and "systemctl is-active --quiet x-nwc-poc-lab-graph" in _c and _fwd in _r.stdout and "http://localhost:50080/" in _r.stdout)
+_r, _c, _ = _lab_graph("graph", active=True, **_ge)
+check("lab.sh graph: もう動いていれば systemd-run を打たず（同じ名前のユニットは作れない）、案内とコマンドだけ出す",
+      _r.returncode == 0 and not any(c.startswith("systemd-run ") for c in _c) and "もう動いている" in _r.stdout and _fwd in _r.stdout)
+_r, _c, _ = _lab_graph("graph", AWS_REGION="ap-northeast-1")
+check("lab.sh graph: NAME_PREFIX が無い（/etc/*-lab.env の無い手元）なら何も起こさずに止まる",
+      _r.returncode != 0 and _c == [] and "lab の EC2 だけ" in _r.stderr)
+_r, _c, _ = _lab_graph("graph-stop", **_ge)
+check("lab.sh graph-stop: systemctl stop <接頭辞>-lab-graph を打つ（動いていなくても失敗にしない）",
+      _r.returncode == 0 and _c == ["systemctl stop x-nwc-poc-lab-graph"])
+_r, _c, _ = _lab_graph("down", **_ge)
+check("lab.sh down: graph-stop で図を止めてから containerlab destroy する",
+      _r.returncode == 0 and _c == ["systemctl stop x-nwc-poc-lab-graph", "containerlab destroy -t splab.clab.yml --cleanup"])
+_r, _c, _ = _lab_graph("down")
+check("lab.sh down: NAME_PREFIX が無ければ（手元の compose）systemctl を打たずに destroy だけ",
+      _r.returncode == 0 and _c == ["containerlab destroy -t splab.clab.yml --cleanup"])
+_lab_out = read("IaC", "terraform", "aws-managed", "pipeline", "lab", "outputs.tf")
+check("lab の output graph_port_forward_command は lab.sh graph が出すコマンドと同じ（宛先は aws_instance.lab.id、ポートは lab.sh の GRAPH_PORT）",
+      sh_const(lab_sh, "GRAPH_PORT") == "50080"
+      and 'value       = "' + _fwd.replace("ap-northeast-1", "${var.region}").replace("i-0123456789abcdef0", "${aws_instance.lab.id}") + '"' in _lab_out)
+
 for f in (("ops", "lab-common.sh"), ("ops", "lab-debug.sh"), ("ops", "up.sh"), ("ops", "down.sh"),
           ("ops", "common.sh"), ("ops", "up-common.sh"), ("ops", "down-common.sh"), ("app", "containerlab", "setup.sh"), ("app", "containerlab", "lab.sh"), ("app", "telegraf", "telegraf.sh")):
     r = subprocess.run(["bash", "-n", os.path.join(ROOT, *f)], capture_output=True, text=True)

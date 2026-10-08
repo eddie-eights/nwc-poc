@@ -152,7 +152,7 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 | `telegraf` | [app/telegraf/](../app/telegraf/)（公式の `telegraf:1.40.1` に設定のテンプレートと `tg` を足す） | ECS Fargate（stream。受ける側（内部 NLB の後ろ）と取りにいく側の 2 サービス。役割は環境変数 `TELEGRAF_ROLE`）。デバッグ用の EC2（`ops/lab-debug.sh`）でも同じ作り方のイメージ（スタックの ECR の `<prefix>-debug-telegraf`）を docker で動かす | 機器の gNMI の購読・SNMP のポーリングと trap・syslog を受けて MSK に書く。SNMP のポーリングは `SNMP_POLL=0` で止める（stream の既定は `1`。デバッグ用の EC2 の既定は `0`）（デバッグ用の EC2 では `SINK=stdout` で標準出力に書く）。2026-09-28 まで lab とは別の EC2 で systemd の下に rpm で動いていた |
 | `grafana` | [app/grafana/](../app/grafana/)（公式の Grafana OSS にデータソースの plugin と provisioning を焼き込む） | ECS Fargate（analytics。`STORES` の `grafana`） | Prometheus（AMP）と OpenSearch Serverless を SigV4 で読んで見せる。アラートルール（Prometheus の `link_down` / `bgp_down` / `isis_down` と、OpenSearch の `trap`）を評価して SNS へ出す（`link_down` はポーリングの値を見るので、`SNMP_POLL=0` では発火しない） |
 | `splunk` | [app/splunk/](../app/splunk/)（公式の `splunk/splunk:10.4.4` に検知のアプリ `netops_alerts` と入口のスクリプトを足す。amd64 だけ、約 2〜3 GB） | ECS Fargate x86（analytics。`STORES` に `splunk` があるとき） | Splunk Enterprise（試用ライセンス）。Spark が HEC に全トピックを送り、保存済みサーチが SNMP のポーリング・trap・gNMI から異常を見つけて SNS へ出す |
-| `kafka-ui` | `ghcr.io/kafbat/kafka-ui`（ミラー） | ECS Fargate（stream） | Kafbat UI。MSK のトピック・メッセージ・consumer group を画面で見る（IAM 認証） |
+| `kafka-ui` | `ghcr.io/kafbat/kafka-ui`（ミラー） | Web の EC2 の Docker（stream を作る回。010 から） | Kafbat UI。MSK のトピック・メッセージ・consumer group を画面で見る（IAM 認証） |
 | `nautobot` | [app/nautobot/](../app/nautobot/)（公式の `networktocode/nautobot` に Job と `netops` を足す） | ECS Fargate（pipeline/nautobot。`PIPELINE=1`） | 台帳（Nautobot）。変更を Telegraf の取りにいく先と Neptune に同期する |
 | `redis` | `redis`（ミラー） | ECS Fargate（`nautobot` と同じタスク） | Nautobot のキャッシュと Celery のブローカー |
 
@@ -161,7 +161,7 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 ### 8. arm64 に揃える（Splunk だけ x86）
 
 - **AgentCore Runtime は linux/arm64 のイメージしか動かせない。** x86_64 でビルドしたイメージは起動しない。`docker/images/agentcore/Dockerfile` の冒頭にも書いてある。
-- ほかも arm64 に揃えてある: ECS Fargate は `cpu_architecture = "ARM64"`（[IaC/terraform/aws-managed/workflow/ecs.tf](../IaC/terraform/aws-managed/workflow/ecs.tf)、stream の Telegraf と Kafbat UI、analytics の Grafana、pipeline/nautobot の Nautobot）、EMR Serverless と Lambda も arm64、lab / Web の EC2 は `t4g`（Graviton）だけを受け付ける。
+- ほかも arm64 に揃えてある: ECS Fargate は `cpu_architecture = "ARM64"`（[IaC/terraform/aws-managed/workflow/ecs.tf](../IaC/terraform/aws-managed/workflow/ecs.tf)、stream の Telegraf、analytics の Grafana、pipeline/nautobot の Nautobot）、EMR Serverless と Lambda も arm64、lab / Web の EC2 は `t4g`（Graviton）だけを受け付ける。
 - 例外は `splunk`。公式イメージが amd64 しか無いので、そのタスクだけ `X86_64` にし、`docker buildx build --platform linux/amd64` で作る（公式イメージに COPY するだけなので、arm64 の PC でもエミュレーション無しで作れる）。
 - だから `splunk` のほかは、PC 側の `docker buildx build` は必ず `--platform linux/arm64`、`docker pull` も `--platform linux/arm64`。Mac（Apple Silicon）はそのまま、WSL2 は `binfmt` を入れる（[setup.md](setup.md)）。
 - ミラーの push で「only the available single-platform image was pushed」と出るのは、arm64 だけ push したという意味で問題ない。
@@ -296,7 +296,7 @@ Telegraf・Spark が「どのブローカーにつなぐか」をどう知るか
 |---|---|---|
 | Telegraf（ECS） | タスク定義の環境変数 `KAFKA_BROKERS`（同じ root の MSK の属性） | MSK と同じ root で作られ、タスクは起動のたびに環境変数をもらえるから |
 | Spark（EMR Serverless） | [IaC/terraform/aws-managed/pipeline/analytics](../IaC/terraform/aws-managed/pipeline/analytics) が stream の state の `bootstrap_brokers` を読み、ジョブの引数 `--bootstrap` で渡す（[app/spark/snmp_sinks.py](../app/spark/snmp_sinks.py)） | ジョブは起動のたびに引数をもらえるので、パラメータストアを引く必要が無い |
-| Kafbat UI（ECS） | タスク定義の環境変数 `KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS`（同じ root の MSK の IAM 認証の口。[kafka_ui.tf](../IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf)） | Telegraf と同じ |
+| Kafbat UI（Web の EC2 の Docker） | パラメータストアの String `/<prefix>/kafka-ui/bootstrap-servers`（同じ root の MSK の IAM 認証の口。[kafka_ui.tf](../IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf)）を Web の EC2 のユニットが起動のたびに読み、環境変数 `KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS` で渡す | Web の EC2 は stream より先にでき、stream を作り直しても EC2 は変わらないので、Terraform の値を直接は渡せない |
 
 **確かめ方。** ロググループ `/ecs/<prefix>-telegraf` に「`/tmp/telegraf.conf を作った（role: … / sink: kafka / brokers: …）`」が出ていれば `render` は通っている。ECS Exec で取りにいく側のタスクに入って（[pipeline.md](pipeline.md) の「Telegraf に入る」）`tg gnmi` を打つと gNMI の購読を 20 秒だけ受けて標準出力に出す（MSK には送らない）ので、機器との疎通と MSK との疎通を切り分けられる。`SNMP_POLL=1`（既定）のタスクなら `tg test` でポーリングを 1 回まわして同じように見られる（`SNMP_POLL=0` では「止めてある」と出して終わる）。MSK 側は、Kafka の `WriteData` が拒まれればログに出る。
 

@@ -5,7 +5,7 @@
 `IaC/terraform/aws-managed/base/core` と `IaC/terraform/aws-managed/base/ecr`。どの機能を作るときも必ず作る。
 
 - VPC（プライベートサブネットだけ。NAT Gateway も IGW も無い）、VPC エンドポイント、閉域の Deny、SG、フローログ、バケット、ロール、ECR。
-- Web の EC2: Gradio の画面（チャット / トポロジ / 承認）。パブリック IP も受信ルールも無く、SSM Agent が内側から ssmmessages へつなぐ。PC からは SSM のポートフォワーディングで `localhost:8080` に開く。Web は EC2 のまま。Grafana・Splunk・Temporal UI・Nautobot・Kafbat UI の踏み台も兼ねる（ECS にするとタスクの IP が変わり、踏み台にしにくい）。
+- Web の EC2: Gradio の画面（チャット / トポロジ / 承認）。パブリック IP も受信ルールも無く、SSM Agent が内側から ssmmessages へつなぐ。PC からは SSM のポートフォワーディングで `localhost:8080` に開く。Web は EC2 のまま。Grafana・Splunk・Temporal UI・Nautobot の踏み台も兼ねる（ECS にするとタスクの IP が変わり、踏み台にしにくい）。stream を作る回は Kafbat UI も Docker で同居する（`127.0.0.1:8082`。Kafbat UI を Web の EC2 に同居させる（010））。
 - アラートの SNS トピック `<prefix>-alerts`（`alerts.tf`）: Grafana と Splunk が publish し、graph の Lambda（[pipeline.md](pipeline.md)）と workflow の SQS（[workflow.md](workflow.md)）へ配る。
 
 ## 閉域
@@ -14,9 +14,9 @@ AWS の API へは全部 VPC エンドポイントから行き、この VPC を�
 
 | 層 | 何をする | どこ |
 |---|---|---|
-| 経路 | インターフェース型エンドポイント（private DNS）。`ops/up.sh` の `endpoints_for` が機能から選ぶ: 土台 ssm / ssmmessages、AGENT は bedrock-runtime / bedrock-agentcore / ecr.api / ecr.dkr / logs（KB で bedrock-agent-runtime）、lab は ecr.api / ecr.dkr、stream は ecr.api / ecr.dkr / logs（Telegraf と Kafbat UI の ECS）、analytics は s3tables / logs（Prometheus で aps-workspaces、Grafana か ECS の Splunk で ecr.api / ecr.dkr / sns）、graph は neptune-graph-data（analytics があるときは kinesis-firehose も。アラートの通知の履歴）、nautobot は ecr.api / ecr.dkr / logs / ecs（Job が Telegraf の dialin のサービスを作り直す）、WORKFLOW は sqs / s3tables / ecr.api / ecr.dkr / logs / bedrock-agentcore / bedrock-agentcore.gateway（analytics があるとき athena）。S3 は gateway 型（無料）、OpenSearch Serverless は専用の 1 本（`CREATE_KB` か `STORES` の grafana のとき） | `IaC/terraform/aws-managed/base/core/endpoints.tf`、`ops/up.sh` の `endpoints_for` |
+| 経路 | インターフェース型エンドポイント（private DNS）。`ops/up.sh` の `endpoints_for` が機能から選ぶ: 土台 ssm / ssmmessages、AGENT は bedrock-runtime / bedrock-agentcore / ecr.api / ecr.dkr / logs（KB で bedrock-agent-runtime）、lab は ecr.api / ecr.dkr、stream は ecr.api / ecr.dkr / logs（Telegraf の ECS。Web の EC2 の Kafbat UI も土台の ssm と、stream が足す ecr.api / ecr.dkr を使う）、analytics は s3tables / logs（Prometheus で aps-workspaces、Grafana か ECS の Splunk で ecr.api / ecr.dkr / sns）、graph は neptune-graph-data（analytics があるときは kinesis-firehose も。アラートの通知の履歴）、nautobot は ecr.api / ecr.dkr / logs / ecs（Job が Telegraf の dialin のサービスを作り直す）、WORKFLOW は sqs / s3tables / ecr.api / ecr.dkr / logs / bedrock-agentcore / bedrock-agentcore.gateway（analytics があるとき athena）。S3 は gateway 型（無料）、OpenSearch Serverless は専用の 1 本（`CREATE_KB` か `STORES` の grafana のとき） | `IaC/terraform/aws-managed/base/core/endpoints.tf`、`ops/up.sh` の `endpoints_for` |
 | エンドポイントポリシー | このアカウントのプリンシパルだけ（盗んだ他のアカウントの鍵で VPC から持ち出す経路を塞ぐ）。S3 の gateway は付けない（dnf と ECR のレイヤーが止まる） | 同上 |
-| IAM の Deny | ワークロードのロール全部（Web、Runtime、lab、EMR、ECS（Temporal / Telegraf / Kafbat UI / Grafana / Splunk / Nautobot）、tools Lambda、graph-status の Lambda）に `<prefix>-network-perimeter` を付ける。s3 / s3tables / sqs / sns / ssm / bedrock / aps / athena / firehose / AgentCore の呼び出しで `aws:SourceVpc` がこの VPC でなければ拒む。デバッグ用の EC2（CloudFormation の `<prefix>-lab-debug`）のロールは同じ Action と条件の Deny を自分のスタックの VPC に向けてインラインで持つ | `IaC/terraform/aws-managed/base/core/perimeter.tf`、各ルートの attachment、`IaC/cloudformation/lab-debug.yaml` |
+| IAM の Deny | ワークロードのロール全部（Web、Runtime、lab、EMR、ECS（Temporal / Telegraf / Grafana / Splunk / Nautobot）、tools Lambda、graph-status の Lambda）に `<prefix>-network-perimeter` を付ける。s3 / s3tables / sqs / sns / ssm / bedrock / aps / athena / firehose / AgentCore の呼び出しで `aws:SourceVpc` がこの VPC でなければ拒む。デバッグ用の EC2（CloudFormation の `<prefix>-lab-debug`）のロールは同じ Action と条件の Deny を自分のスタックの VPC に向けてインラインで持つ | `IaC/terraform/aws-managed/base/core/perimeter.tf`、各ルートの attachment、`IaC/cloudformation/lab-debug.yaml` |
 | リソースポリシーの Deny | バケット、S3 Tables のテーブルバケット、SNS のトピック（`sns:Publish`）、SQS（本体と DLQ）、AgentCore の Runtime と Gateway。同じ条件で、どのプリンシパルからでも VPC の外なら拒む | `bucket.tf`、`alerts.tf`、`IaC/terraform/aws-managed/pipeline/analytics/tables.tf`、`IaC/terraform/aws-managed/workflow/events.tf`、`IaC/terraform/aws-managed/workflow/gateway.tf`、`IaC/terraform/aws-managed/agent/runtime.tf` |
 
 - **拒まないもの**: apply した人（`terraform` を打つ PC は VPC の外なので。PoC の割り切り）、AWS のサービス自身（`aws:PrincipalIsAWSService`）とサービスが代わりに呼ぶもの（`aws:ViaAWSService`。SNS → SQS / Lambda、Bedrock → S3 など）、KB のロール `<prefix>-kb`（取り込みは Bedrock のサービス側で動く）。
@@ -31,10 +31,10 @@ AWS の API へは全部 VPC エンドポイントから行き、この VPC を�
 
 | 送る側 | 受ける側 | ポート | 何のため |
 |---|---|---|---|
-| web / lab / telegraf_dialout / telegraf_dialin / kafka_ui / spark / grafana / splunk / nautobot / lambda / workflow / runtime | endpoints / S3（プレフィックスリスト） | 443/tcp | AWS の API（インターフェース型）と S3（gateway 型。ECR のレイヤーと dnf も） |
-| web | grafana / splunk / workflow / nautobot / kafka_ui | 3000 / 8000 / 8233 / 8080 / 8080（tcp） | SSM のポートフォワーディング（Grafana / Splunk Web / Temporal UI / Nautobot / Kafbat UI） |
+| web / lab / telegraf_dialout / telegraf_dialin / spark / grafana / splunk / nautobot / lambda / workflow / runtime | endpoints / S3（プレフィックスリスト） | 443/tcp | AWS の API（インターフェース型）と S3（gateway 型。ECR のレイヤーと dnf も） |
+| web | grafana / splunk / workflow / nautobot | 3000 / 8000 / 8233 / 8080（tcp） | SSM のポートフォワーディング（Grafana / Splunk Web / Temporal UI / Nautobot。Kafbat UI は Web の EC2 の中なので SG を通らない） |
 | nautobot | nautobot_db | 5432/tcp | Nautobot の PostgreSQL（RDS） |
-| telegraf_dialout / telegraf_dialin / spark / kafka_ui | msk | 9098/tcp | Kafka（IAM 認証） |
+| telegraf_dialout / telegraf_dialin / spark / web | msk | 9098/tcp | Kafka（IAM 認証。web は Kafbat UI） |
 | msk | msk | 9092〜9098/tcp | ブローカー同士 |
 | spark | spark | 全部の tcp | 1 つのジョブのドライバとエグゼキュータ |
 | spark | splunk | 8088/tcp | HEC（`STORES` の `splunk`） |

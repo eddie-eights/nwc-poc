@@ -132,7 +132,7 @@ PLAN_MIXED = plan_json([
     ('aws_ecs_service.kafka["5"]', ["delete"]),
     ('aws_ecs_service.kafka["6"]', ["create", "delete"]),
     ('aws_ecs_task_definition.kafka["1"]', ["delete", "create"]),
-    ('aws_ecs_service.kafka_ui', ["update"]),
+    ('aws_ecs_service.telegraf_dialin', ["update"]),
     ('aws_ecs_service.opensearch["cm"]', ["update"]),
     ('data.aws_ecs_service.kafka["9"]', ["read"]),
 ])
@@ -441,7 +441,7 @@ r = roll(plan=plan_json([('aws_ecs_service.kafka["3"]', ["update"]), ('aws_ecs_s
 check("roll_nodes kafka: plan で変わる台（3）だけを入れ替える（変わらない台は apply しない）",
       r.returncode == 0 and applied(r) == ["3"] and "Kafka の変わる台: 3（全部の台: 1 2 3）" in r.stdout)
 
-r = roll(plan=plan_json([('aws_ecs_service.kafka["1"]', ["no-op"]), ('aws_ecs_service.kafka_ui', ["update"])]))
+r = roll(plan=plan_json([('aws_ecs_service.kafka["1"]', ["no-op"]), ('aws_ecs_service.telegraf_dialin', ["update"])]))
 check("roll_nodes kafka: 変わる台が無ければ、ECS Exec も apply もせずに戻る（このあとの tf_apply に任せる）",
       r.returncode == 0 and applied(r) == [] and not any(c["cmd"] == "aws" for c in r.calls) and "Kafka の台は変わらない" in r.stdout
       and r.leftover == [])
@@ -561,7 +561,7 @@ check("roll_nodes opensearch: タスクの中にパスワードの環境変数�
 
 r = subprocess.run([shutil.which("bash"), "-c", HARNESS], cwd=tmp, capture_output=True, text=True, timeout=30,
                    env={"PATH": fake_bin + ":" + os.environ["PATH"], "NWC_ROOT": ROOT, "NWC_PY": sys.executable,
-                        "T_KIND": "kafka_ui", "T_ROOT": "pipeline/stream", "FAKE_LOG": os.path.join(tmp, "log-bad")})
+                        "T_KIND": "telegraf", "T_ROOT": "pipeline/stream", "FAKE_LOG": os.path.join(tmp, "log-bad")})
 check("roll_nodes: 種類が kafka / opensearch でなければ止まる（terraform は打たない）",
       r.returncode == 1 and "roll_nodes の種類は kafka か opensearch" in r.stderr and not os.path.exists(os.path.join(tmp, "log-bad")))
 

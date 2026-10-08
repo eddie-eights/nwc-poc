@@ -35,9 +35,9 @@ AWS を使わずに、WSL2 の中だけでパイプライン（lab → Telegraf 
 
 | 機能 | できること | 待機の時間課金（東京） |
 |---|---|---|
-| 土台（必ず） | VPC、SSM のエンドポイント 2 本、Web の EC2、S3、ECR | 約 $0.05/h |
+| 土台（必ず） | VPC、SSM のエンドポイント 2 本、Web の EC2（t4g.medium。stream を作る回は Kafbat UI も同居）、S3、ECR | 約 $0.07/h |
 | `AGENT=1` | チャット（Runtime + ガードレール）。`CREATE_KB=1` で手順書の検索も | 約 $0.07/h（エンドポイント 5 本。ほかは質問ごとのモデル料金だけ。KB は +$0.35/h） |
-| `PIPELINE=1` | lab → Telegraf（ECS）→ MSK → Spark → S3 Tables / OpenSearch / Prometheus / Splunk（`STORES` の既定は `s3,grafana,splunk` の 3 つとも）、Grafana と Splunk のアラート → SNS、Neptune のトポロジ（アラートで status が変わる）、Nautobot（機器の一覧とケーブルの正。いつも立つ） | 約 $2.75/h（`STORES` が既定のとき。うち Neptune Analytics が $0.58/h、Nautobot が $0.14/h、Kafbat UI が $0.02/h、`STORES` の `grafana` が約 $0.60/h、`splunk` が約 $0.34/h（Spark のジョブ $0.21、ECS の Splunk $0.12、sns のエンドポイント $0.014）） |
+| `PIPELINE=1` | lab → Telegraf（ECS）→ MSK → Spark → S3 Tables / OpenSearch / Prometheus / Splunk（`STORES` の既定は `s3,grafana,splunk` の 3 つとも）、Grafana と Splunk のアラート → SNS、Neptune のトポロジ（アラートで status が変わる）、Nautobot（機器の一覧とケーブルの正。いつも立つ） | 約 $2.73/h（`STORES` が既定のとき。うち Neptune Analytics が $0.58/h、Nautobot が $0.14/h、`STORES` の `grafana` が約 $0.60/h、`splunk` が約 $0.34/h（Spark のジョブ $0.21、ECS の Splunk $0.12、sns のエンドポイント $0.014）） |
 | `WORKFLOW=1` | アラート（SNS → SQS）で Temporal を起こし、調査 → 承認 → 修復。AGENT と PIPELINE と、アラートの送り手（Grafana か Splunk）が要る | 約 $0.09/h |
 
 インターフェース型エンドポイントは 1 本 $0.014/h（既定の 1 AZ のとき。`ENDPOINTS_AZ_NUM` を 2 / 3 にすると AZ の数の倍）で、作る機能が呼ぶ API の分だけ `ops/up.sh` が選ぶ（上の金額に入れてある。同じサービスは機能をまたいで 1 本）。

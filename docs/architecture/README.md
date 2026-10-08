@@ -63,7 +63,7 @@ IaC/terraform/aws-managed/
 ├── agent/         AGENT=1     Runtime / ガードレール / KB
 ├── pipeline/      PIPELINE=1
 │   ├── lab/         containerlab の EC2（stream を作るときは Telegraf への転送も）
-│   ├── stream/      MSK / Telegraf（ECS Fargate + 内部 NLB）/ Kafbat UI（ECS Fargate）
+│   ├── stream/      MSK / Telegraf（ECS Fargate + 内部 NLB）/ Kafbat UI の接続先（SSM）と Web の EC2 のロールへの権限（画面は Web の EC2 の Docker）
 │   ├── analytics/   EMR Serverless / S3 Tables / OpenSearch / Prometheus / Grafana と Splunk（ECS Fargate）/ アラートの通知の履歴の Firehose
 │   ├── graph/       Neptune Analytics のグラフ / status の Lambda（SNS の購読）
 │   └── nautobot/    Nautobot（ECS Fargate）と PostgreSQL（RDS）
@@ -102,7 +102,7 @@ aws resourcegroupstaggingapi get-resources --region ap-northeast-1 \
 | Telegraf | CloudWatch Logs `/ecs/<prefix>-telegraf`（stream の出力 `telegraf_log_group_name`） |
 | Grafana / ECS の Splunk | CloudWatch Logs `/ecs/<prefix>-grafana` / `/ecs/<prefix>-splunk` |
 | Spark（EMR Serverless） | CloudWatch Logs `/aws/emr-serverless/<prefix>` |
-| Kafbat UI / MSK | CloudWatch Logs `/ecs/<prefix>-kafka-ui` / `/<prefix>/msk` |
+| Kafbat UI / MSK | Web の EC2 の `journalctl -u <prefix>-kafka-ui` / CloudWatch Logs `/<prefix>/msk` |
 | status の Lambda | CloudWatch Logs `/aws/lambda/<prefix>-graph-status` |
 | Nautobot | CloudWatch Logs `/ecs/<prefix>-nautobot` |
 | Temporal とワーカー | CloudWatch Logs `/ecs/<prefix>-workflow` |

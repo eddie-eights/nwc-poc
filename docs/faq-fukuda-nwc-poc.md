@@ -2253,8 +2253,8 @@ SDK を使うと、自分で書かなくて済むもの。
 
 - マネージド版の MSK は Provisioned で IAM 認証なので、条件に合うはず（コンソールで開いたことは無い。未確認）。
 - OSS 版（「マネージドを OSS に置き換えた環境を作る（005）」）には Kafbat UI を置いた（認証なしの `PLAINTEXT`）。2026-10-07 に AWS で、ブローカーとトピックが見え、API からトピックの作成と削除ができた（200）。Spark は consumer group を作らないので、lag は出ない。
-- マネージド版の MSK にも Kafbat UI を置いてある（2026-10-05 のユーザーの決定）。ECS に 1 タスクがいつも立つ。`SASL_SSL` と `AWS_MSK_IAM` の設定と、タスクロールへの権限（Kafbat UI が使う `kafka-cluster:` の操作だけ。`IaC/terraform/aws-managed/pipeline/stream/msk.tf` の `kafka_ui_kafka_statements`）で、IAM 認証でつなぐ。ブローカーの設定の変更と consumer group の変更・削除の権限は付けていないので、画面のその操作は権限エラーになる。
-- IAM でつながることは 2026-10-05 に AWS で確かめた。画面に入れるか、画面からトピックを足せるか、タスクロールの権限で足りるかは未確認。
+- マネージド版の MSK にも Kafbat UI を置いてある（2026-10-05 のユーザーの決定）。「Kafbat UI を Web の EC2 に同居させる（010）」から Web の EC2 の Docker で動く（それより前は ECS に 1 タスク）。`SASL_SSL` と `AWS_MSK_IAM` の設定と、Web の EC2 のロールへの権限（Kafbat UI が使う `kafka-cluster:` の操作だけ。`IaC/terraform/aws-managed/pipeline/stream/msk.tf` の `kafka_ui_kafka_statements`）で、IAM 認証でつなぐ。ブローカーの設定の変更と consumer group の変更・削除の権限は付けていないので、画面のその操作は権限エラーになる。
+- IAM でつながることは ECS のタスクだったときに 2026-10-05 に AWS で確かめた（Web の EC2 のインスタンスロールでは未確認）。画面に入れるか、画面からトピックを足せるか、ロールの権限で足りるかは未確認。
 
 **出典**（2026-10-05 に確認）
 
