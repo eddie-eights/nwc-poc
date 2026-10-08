@@ -10,7 +10,7 @@ ENV_FILE=$(ls /etc/*-lab.env 2>/dev/null | head -1 || true)
 [ -n "$ENV_FILE" ] || { echo "/etc/*-lab.env が無い（user_data が書く）" >&2; exit 1; }
 set -a; . "$ENV_FILE"; set +a
 : "${NAME_PREFIX:?}" "${CONTAINERLAB_VERSION:?}" "${AUTO_START_LAB:?}"
-RPM=$SRC/containerlab_${CONTAINERLAB_VERSION}_linux_arm64.rpm
+RPM=$SRC/containerlab_${CONTAINERLAB_VERSION}_linux_amd64.rpm
 
 # Docker は AL2023 のリポジトリから（S3 ゲートウェイエンドポイント経由）。containerlab は S3 に置いた rpm から
 command -v docker >/dev/null || dnf install -y docker

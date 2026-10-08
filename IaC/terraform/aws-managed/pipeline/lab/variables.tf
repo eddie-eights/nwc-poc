@@ -30,20 +30,20 @@ variable "project" {
 
 # ---------------------------------------------------------------- lab EC2
 variable "instance_type" {
-  description = "8 containers (Nokia SR Linux x6, VMs x2). Each SR Linux node takes about 1.5-2.5 GB of RAM at boot, so t4g.xlarge (4 vCPU / 16 GB) is the default; t4g.large (8 GB) is too small for six nodes."
+  description = "7 containers (Nokia SR Linux x6, TRex x1). x86_64 because TRex is amd64 only. Each SR Linux node takes about 1.5-2.5 GB of RAM at boot and TRex 2-4 GB, so m6i.xlarge (4 vCPU / 16 GB) is the default; use m6i.2xlarge (8 vCPU / 32 GB) for load tests."
   type        = string
-  default     = "t4g.xlarge"
+  default     = "m6i.xlarge"
 
   validation {
-    condition     = contains(["t4g.large", "t4g.xlarge", "t4g.2xlarge"], var.instance_type)
-    error_message = "instance_type must be t4g.large, t4g.xlarge or t4g.2xlarge (arm64)."
+    condition     = contains(["m6i.xlarge", "m6i.2xlarge", "c6i.2xlarge", "t3.xlarge", "t3.2xlarge"], var.instance_type)
+    error_message = "instance_type must be m6i.xlarge, m6i.2xlarge, c6i.2xlarge, t3.xlarge or t3.2xlarge (x86_64)."
   }
 }
 
 variable "ami_ssm_parameter" {
-  description = "SSM public parameter that resolves to the AMI. Amazon Linux 2023 arm64 (SSM Agent and AWS CLI v2 are preinstalled; Docker comes from the AL2023 repository)."
+  description = "SSM public parameter that resolves to the AMI. Amazon Linux 2023 x86_64 (SSM Agent and AWS CLI v2 are preinstalled; Docker comes from the AL2023 repository)."
   type        = string
-  default     = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+  default     = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
 
 variable "volume_size" {
@@ -72,7 +72,7 @@ variable "forward_to_telegraf" {
 
 # ---------------------------------------------------------------- assets
 variable "containerlab_version" {
-  description = "containerlab_<version>_linux_arm64.rpm must be uploaded to s3://<kb_bucket_name of IaC/terraform/aws-managed/base/core>/lab/"
+  description = "containerlab_<version>_linux_amd64.rpm must be uploaded to s3://<kb_bucket_name of IaC/terraform/aws-managed/base/core>/lab/"
   type        = string
   default     = "0.79.0"
 
@@ -83,7 +83,7 @@ variable "containerlab_version" {
 }
 
 variable "srlinux_image_tag" {
-  description = "Tag pushed to <prefix>-lab-srlinux (ghcr.io/nokia/srlinux:<tag>, multi-arch; ops/up.sh pulls the arm64 image)."
+  description = "Tag pushed to <prefix>-lab-srlinux (ghcr.io/nokia/srlinux:<tag>, multi-arch; ops/up.sh pulls the amd64 image for the x86_64 EC2)."
   type        = string
   default     = "26.7.2"
 }
@@ -92,4 +92,10 @@ variable "multitool_image_tag" {
   description = "Tag pushed to <prefix>-lab-multitool"
   type        = string
   default     = "v0.10.0"
+}
+
+variable "trex_image_tag" {
+  description = "Tag pushed to <prefix>-lab-trex (trexcisco/trex:<tag>, amd64 only). The traffic generator dc1-trex-01 (app/containerlab/trex/)."
+  type        = string
+  default     = "2.41"
 }

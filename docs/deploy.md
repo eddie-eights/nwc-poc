@@ -22,7 +22,7 @@
 | `PIPELINE` | lab / stream / analytics / graph。既定 `0` |
 | `WORKFLOW` | Temporal での調査と修復。`AGENT=1` と `PIPELINE=1` が要り、`SKIP_LAB` / `SKIP_STREAM` / `SKIP_ANALYTICS` / `SKIP_GRAPH` とは一緒に書けない。ワークフローを起こすのは `link_down` のアラートなので、送り手も要る（`STORES` の `splunk` か、`STORES` の `grafana` と `SNMP_POLL=1`。既定ではどちらもある。両方無いと `ops/up.sh` が止まる） |
 | `CREATE_KB` | ナレッジベース（+$0.35/h。OpenSearch Serverless の OCU $0.33 と、VPC エンドポイント $0.014（`STORES` の `grafana` の logs と共用）と bedrock-agent-runtime のエンドポイント $0.014。エンドポイントは `ENDPOINTS_AZ_NUM` の数の倍、OCU は `OPENSEARCH_AZ_NUM=2` で倍）。`AGENT=1` のとき。既定 `0` |
-| `SKIP_LAB` | lab を作らない（-$0.17/h）。単独で書ける（ほかは lab が無くても作れる。`WORKFLOW=1` とは一緒に書けない）。lab が無いと stream には何も届かない。Telegraf の取りにいく側は lab の定義の機器を探しに行き、届かないのでエラーをログに出して繋ぎ直し続ける（タスクは落ちない）。trap / syslog は lab からしか来ない。MDT は `MDT_SOURCE_CIDRS` を書いたときだけ届く。graph には lab のトポロジを入れないので、Neptune には Nautobot の Job が書く物理層だけが入る（IP 層と EVPN・BGP 層は入らない） |
+| `SKIP_LAB` | lab を作らない（-$0.25/h）。単独で書ける（ほかは lab が無くても作れる。`WORKFLOW=1` とは一緒に書けない）。lab が無いと stream には何も届かない。Telegraf の取りにいく側は lab の定義の機器を探しに行き、届かないのでエラーをログに出して繋ぎ直し続ける（タスクは落ちない）。trap / syslog は lab からしか来ない。MDT は `MDT_SOURCE_CIDRS` を書いたときだけ届く。graph には lab のトポロジを入れないので、Neptune には Nautobot の Job が書く物理層だけが入る（IP 層と EVPN・BGP 層は入らない） |
 | `SKIP_STREAM` | stream（MSK、Telegraf の ECS、Kafka の画面の Kafbat UI）を作らない（-$1.80/h。`STORES` が既定のとき）。analytics も外れる（アラートは出ない） |
 | `SKIP_ANALYTICS` | analytics（Spark と `STORES` の格納先、Grafana / Splunk とそのアラート）を作らない（-$1.16/h。`STORES` が既定のとき。Spark のジョブ 3 つ、OpenSearch の OCU、Grafana、Splunk と、エンドポイント `s3tables` / `aps-workspaces` / `sns` / `kinesis-firehose` / OpenSearch Serverless の分。KB を作るなら OpenSearch Serverless の VPC エンドポイント $0.014 は残る）。アラートの送り手が無くなり、アラートの通知の履歴（`alert_events`）も残らない |
 | `SKIP_GRAPH` | Neptune Analytics のグラフを作らない（-$0.60/h。16 m-NCU の $0.58 と `neptune-graph-data` のエンドポイント。analytics がある回は `kinesis-firehose` のエンドポイントも外れる）。トポロジは静的データになる（アラートで `status` が変わらない） |
@@ -77,7 +77,7 @@ OpenSearch・Prometheus・Grafana は `grafana` でまとめて作るか作ら�
 |---|---|
 | 0 | `deploy.env` と道具と認証を確かめ、作るルート、インターフェース型エンドポイント、費用の目安を出す |
 | 1 | `IaC/terraform/aws-managed/base/ecr` |
-| 2 | ECR に無いタグだけビルドして push（agent、lab の srlinux / multitool のミラー、worker、Temporal のミラー、Telegraf、Grafana、Nautobot、Redis と Kafbat UI のミラーは arm64。ECS の Splunk は amd64 の公式イメージ（約 2〜3 GB）に検知のアプリを足してビルドする）。Telegraf / Grafana / Splunk / Nautobot のタグは `<版>-<ディレクトリの中身のハッシュ 12 文字>` で、`app/telegraf/`・`app/grafana/`・`app/splunk/`・`app/nautobot/`（Nautobot は中に入れる `app/agentcore/graph.py`・`app/agentcore/toolkit.py` と lab の定義も）を変えると次の `ops/up.sh` が作り直す |
+| 2 | ECR に無いタグだけビルドして push（agent、worker、Temporal のミラー、Telegraf、Grafana、Nautobot、Redis と Kafbat UI のミラーは arm64。lab の srlinux / multitool / trex のミラーは、lab の EC2 が x86_64 なので amd64。ECS の Splunk は amd64 の公式イメージ（約 2〜3 GB）に検知のアプリを足してビルドする）。Telegraf / Grafana / Splunk / Nautobot のタグは `<版>-<ディレクトリの中身のハッシュ 12 文字>` で、`app/telegraf/`・`app/grafana/`・`app/splunk/`・`app/nautobot/`（Nautobot は中に入れる `app/agentcore/graph.py`・`app/agentcore/toolkit.py` と lab の定義も）を変えると次の `ops/up.sh` が作り直す |
 | 3 | `IaC/terraform/aws-managed/base/core`（エンドポイントは今回作る機能の分に、state にリソースが残っているルートの分を足す）。graph を作るなら 3-2 で裏で `IaC/terraform/aws-managed/pipeline/graph` を始める（ログは `ops/logs/graph-apply.log`） |
 | 3-3 | `IaC/terraform/aws-managed/agent`（`AGENT=1` のとき） |
 | 4 | 4-1 で Web の wheel を取り（`wheels/` が空のときだけ）、4-2 で Web の部品を S3 に置く。4-3 で `CREATE_KB=1` なら手順書を取り込む。4-4 で Web の EC2 を再起動 |
@@ -130,6 +130,7 @@ flowchart LR
 | SSM のパラメータ（`/<prefix>/` の下） | nautobot のルートが消えなかったときの Nautobot の分（上の手順 5-2） | 無料（標準のパラメータ） | あるものは作り直さない |
 | ECR のリポジトリ（`KEEP_ECR=1` のとき） | 意図して残す | 7.39 GB で月 約 110 円（$0.10/GB・月。2026-10-08 の 11 リポジトリ） | ECR にあるタグはビルドを飛ばす |
 
+- **`KEEP_ECR=1` で残した ECR に、2026-10-08 より前の lab のイメージ（arm64）があるなら、1 回だけ消す。** ECR のタグは上流の版そのままなので、arm64 だった 2026-10-08 より前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が `KEEP_ECR=1` で残っていると、`ops/up.sh` は写しを飛ばし、x86_64 の EC2 が arm64 のイメージを引いて起きない。1 回だけ `KEEP_ECR=0 ops/down.sh` で ECR ごと消すか、`aws ecr batch-delete-image --repository-name <prefix>-lab-srlinux --image-ids imageTag=26.7.2`（multitool は `<prefix>-lab-multitool` と `v0.10.0`）でタグを消してから `ops/up.sh` する。デバッグ用の EC2 は `ops/lab-debug.sh down` でリポジトリごと消える。
 - 2026-10-05 に残した VPC は、前の docs に「数時間おいて打ち直す」と書いてあったが誰も打たず、3 日残った。2026-10-08 の `ops/up.sh` はそれをそのまま使った（VPC の ID が前後で同じ）。
 - 消し切りたいときだけ、ENI が外れてから（数時間後）、`ops/up.sh` を打ったのと同じチェックアウトで `ops/down.sh` を打ち直す。
 - **消えたかは、サービスごとの API で見る。**`ops/down.sh` の最後の一覧（手順 6）はタグの API（`aws resourcegroupstaggingapi get-resources`）で、消えたリソースも返す。

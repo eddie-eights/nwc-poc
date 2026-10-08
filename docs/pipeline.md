@@ -85,7 +85,7 @@ sudo systemctl restart <prefix>-lab
 ```
 
 - ECR からイメージを取れない（`docker pull` がタイムアウトする）: ecr.api / ecr.dkr のエンドポイントが `ops/up.sh` の手順 0 の一覧にあるか、レイヤーを取る S3 の gateway エンドポイントがプライベートのルートテーブルに載っているかを見る。`explicit deny` なら VPC のエンドポイントを通っていない（[troubleshooting.md](troubleshooting.md) の「閉域」）。
-- SR Linux が起きない（`containerlab deploy` が readiness で止まる）: 6 台で 10 GB ほど使うので `free -m` を見る。`t4g.large` では足りない（既定は `t4g.xlarge`）。1 台の起動ログは `sudo docker logs clab-splab-dc1-leaf-01`。
+- SR Linux が起きない（`containerlab deploy` が readiness で止まる）: SR Linux 6 台で 10 GB ほど、TRex を足して 11〜13 GB の見込みなので `free -m` を見る。既定の `m6i.xlarge` は 16 GB。足りなければ `instance_type = "m6i.2xlarge"`（32 GB）にする。1 台の起動ログは `sudo docker logs clab-splab-dc1-leaf-01`。
 - VM の `bond0` が無い（`sudo lab check` の LAG が「bond0 が無い」）: EC2 のカーネルに bonding モジュールが要る。`lsmod | grep bonding`、無ければ `sudo modprobe bonding`（`app/containerlab/setup.sh` が起動時に入れる）。
 - 設定が入らない（deploy が `startup-config` で失敗する）: `app/containerlab/srlinux/<機器>.cli` の行を `sudo lab cli <機器>` で 1 行ずつ流して、どの行で落ちるかを見る。
 
@@ -123,7 +123,7 @@ aws logs tail --region ap-northeast-1 "$(terraform -chdir=IaC/terraform/aws-mana
 
 ## デバッグ用の EC2（lab + Telegraf を 1 台）
 
-MSK / ECS / NLB を作らずに、機器の設定（`app/containerlab/`）と Telegraf の設定（`app/telegraf/`）を確かめる EC2。terraform ではなく CloudFormation のスタック `<prefix>-lab-debug`（[IaC/cloudformation/lab-debug.yaml](../IaC/cloudformation/lab-debug.yaml)）で、作るのも消すのも [ops/lab-debug.sh](../ops/lab-debug.sh) の 1 コマンド。**`ops/up.sh` / `ops/down.sh` とは別**（2026-10-04 から）: スタックが自分の VPC（閉域。既定 `10.20.0.0/24`）、エンドポイント 4 本（ssm / ssmmessages / ecr.api / ecr.dkr）と S3 の gateway、バケット、ECR のリポジトリ 3 つを持つので、`ops/up.sh` で何も作っていなくても立ち、`ops/down.sh` では消えない。lab の EC2 と並べて立ててもよい（管理ネットワーク `203.0.113.0/24` は EC2 の中だけにある）。待機は約 $0.23/h（t4g.xlarge 約 $0.17/h とエンドポイント 4 本 $0.056/h）。要るのは AWS CLI・docker buildx・curl・python3 か uv と、`deploy.env` の `OWNER`（`NETWORK_PERIMETER` も見る）。
+MSK / ECS / NLB を作らずに、機器の設定（`app/containerlab/`）と Telegraf の設定（`app/telegraf/`）を確かめる EC2。terraform ではなく CloudFormation のスタック `<prefix>-lab-debug`（[IaC/cloudformation/lab-debug.yaml](../IaC/cloudformation/lab-debug.yaml)）で、作るのも消すのも [ops/lab-debug.sh](../ops/lab-debug.sh) の 1 コマンド。**`ops/up.sh` / `ops/down.sh` とは別**（2026-10-04 から）: スタックが自分の VPC（閉域。既定 `10.20.0.0/24`）、エンドポイント 4 本（ssm / ssmmessages / ecr.api / ecr.dkr）と S3 の gateway、バケット、ECR のリポジトリ 4 つを持つので、`ops/up.sh` で何も作っていなくても立ち、`ops/down.sh` では消えない。lab の EC2 と並べて立ててもよい（管理ネットワーク `203.0.113.0/24` は EC2 の中だけにある）。待機は約 $0.30/h（m6i.xlarge 約 $0.25/h とエンドポイント 4 本 $0.056/h）。要るのは AWS CLI・docker buildx・curl・python3 か uv と、`deploy.env` の `OWNER`（`NETWORK_PERIMETER` も見る）。
 
 ```bash
 ops/lab-debug.sh up            # 初回は器（VPC・エンドポイント・バケット・ECR）を作り、イメージと lab/ を置いてから EC2 を作る。2 回目からは変わったところだけ
@@ -145,7 +145,7 @@ ops/lab-debug.sh down          # バケットを空にしてスタックを消�
 
 - `app/telegraf/` を変えたら `ops/lab-debug.sh up`（タグが変わるのでイメージを作り直し、スタックの UserData が変わって EC2 が止まって起きる）。`app/containerlab/` だけなら `ops/lab-debug.sh sync`。
 - スタックが `ROLLBACK_COMPLETE` などで止まったら `ops/lab-debug.sh down` してから `up`。原因は `aws cloudformation describe-stack-events --region ap-northeast-1 --stack-name <prefix>-lab-debug`。
-- イメージは土台の ECR（`<prefix>-lab-*` / `<prefix>-telegraf`）と別のリポジトリ（`<prefix>-debug-lab-srlinux` / `-debug-lab-multitool` / `-debug-telegraf`）に置く。SR Linux（約 1 GB）は `ops/up.sh` で置いてあっても、初回の `up` でもう一度 push する。
+- イメージは土台の ECR（`<prefix>-lab-*` / `<prefix>-telegraf`）と別のリポジトリ（`<prefix>-debug-lab-srlinux` / `-debug-lab-multitool` / `-debug-lab-trex` / `-debug-telegraf`）に置く。lab の 3 つと Telegraf は、EC2 が x86_64 なので amd64。SR Linux（約 1 GB）は `ops/up.sh` で置いてあっても、初回の `up` でもう一度 push する。
 - 境界の Deny（`NETWORK_PERIMETER`）は IAM 側だけ（ロールのインライン。IaC/terraform/aws-managed/base/core の `perimeter.tf` と同じ Action と条件をこの VPC に向ける）。バケット側は暗号化されていない経路を拒むだけ（中身は公開のソフトと lab の設定）。
 
 ## Kafka の画面（Kafbat UI）を開く

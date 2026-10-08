@@ -160,8 +160,9 @@ REG="${REPO%%/*}"
 log "2. イメージ（ECR に無いタグだけ写すかビルドする）"
 NEED_LAB=""; NEED_TELEGRAF=""; NEED_KAFKA_UI=""; NEED_OSS=""; NEED_OSS_BUILD=""; NEED_SPLUNK=""
 NEED_AGENT=""; NEED_WORKER=""; NEED_TEMPORAL=""; NEED_NAUTOBOT=""; NEED_REDIS=""; NEED_GRAFANA=""
-if ! ecr_has "$PREFIX-lab-srlinux" "$SRLINUX_TAG" || ! ecr_has "$PREFIX-lab-multitool" "$MULTITOOL_TAG"; then NEED_LAB=1
-else echo "lab-srlinux:$SRLINUX_TAG と lab-multitool:$MULTITOOL_TAG はある"; fi
+if ! ecr_has "$PREFIX-lab-srlinux" "$SRLINUX_TAG" || ! ecr_has "$PREFIX-lab-multitool" "$MULTITOOL_TAG" \
+  || ! ecr_has "$PREFIX-lab-trex" "$TREX_TAG"; then NEED_LAB=1
+else echo "lab-srlinux:$SRLINUX_TAG と lab-multitool:$MULTITOOL_TAG と lab-trex:$TREX_TAG はある"; fi
 TELEGRAF_TAG=$(telegraf_tag) || die "app/telegraf/ のタグを作れなかった"
 if ecr_has "$PREFIX-telegraf" "$TELEGRAF_TAG"; then echo "telegraf:$TELEGRAF_TAG はある"; else NEED_TELEGRAF=1; fi
 if ecr_has "$PREFIX-kafka-ui" "$OSS_KAFKA_UI_TAG"; then echo "kafka-ui:$OSS_KAFKA_UI_TAG はある"; else NEED_KAFKA_UI=1; fi

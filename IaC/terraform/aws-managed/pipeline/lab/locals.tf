@@ -1,5 +1,5 @@
-# nwc-poc - optional lab root module. One EC2 (Amazon Linux 2023 arm64) runs Docker + containerlab with the splab topology
-# (Spine-Leaf: 6 Nokia SR Linux switches with IS-IS + iBGP EVPN-VXLAN, 2 VMs dual-homed with LACP, all fictional addresses. app/containerlab/gen_lab.py). Reached with SSM Session Manager.
+# nwc-poc - optional lab root module. One EC2 (Amazon Linux 2023 x86_64) runs Docker + containerlab with the splab topology
+# (Spine-Leaf: 6 Nokia SR Linux switches with IS-IS + iBGP EVPN-VXLAN, one TRex with a port on each leaf, all fictional addresses. app/containerlab/gen_lab.py). Reached with SSM Session Manager.
 # Images come from ECR (IaC/terraform/aws-managed/base/ecr), the containerlab rpm and configs from the S3 bucket of IaC/terraform/aws-managed/base/core. Stop the instance when not in use.
 # With forward_to_telegraf (telegraf.tf), the VPC routes the lab mgmt network to this EC2 so Telegraf (an ECS task of IaC/terraform/aws-managed/pipeline/stream)
 # can poll the switches over SNMP and gNMI, and lab.sh forward sends their traps and syslog to the Telegraf NLB.

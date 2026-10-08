@@ -288,7 +288,7 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 - EC2 の中では次のコマンドが使える。
   - `sudo lab telegraf logs -f`: Telegraf の出力（MSK に載るのと同じ JSON）
   - `sudo lab telegraf test` / `sudo lab telegraf gnmi`
-- 待機の費用は約 $0.23/h（EC2 $0.17/h とエンドポイント 4 本。スタックが自分の VPC を持つ。この章の最後の Q）。
+- 待機の費用は約 $0.30/h（EC2 $0.25/h とエンドポイント 4 本。スタックが自分の VPC を持つ。この章の最後の Q）。
 
 **共通化したところ**
 
@@ -331,14 +331,14 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 | VPC | 既定 `10.20.0.0/24`、1 AZ・1 サブネット。IGW も NAT も無い閉域。どこともつながないので土台と CIDR が重なってよい |
 | エンドポイント | ssm / ssmmessages（SSM で入る）、ecr.api / ecr.dkr（イメージを引く）の 4 本と、S3 の gateway（無料） |
 | バケット | `<接頭辞>-lab-debug-<アカウント>`。`lab/` だけを置く |
-| ECR | `<接頭辞>-debug-lab-srlinux` / `-debug-lab-multitool` / `-debug-telegraf`。スタックを消すとイメージごと消える |
+| ECR | `<接頭辞>-debug-lab-srlinux` / `-debug-lab-multitool` / `-debug-lab-trex` / `-debug-telegraf`。スタックを消すとイメージごと消える |
 | ロール | 前と同じ権限。`NETWORK_PERIMETER` のときは VPC の外からの呼び出しを拒む Deny を、この VPC に向けて持つ |
 
 - `ops/lab-debug.sh up` の初回は、EC2 の無い器を先に作り、イメージと `app/containerlab/` を置いてから EC2 を作る（置く前に EC2 を起こしても引けないため）。
 - `ops/lab-debug.sh down` はバケットを空にしてからスタックを消す。
 - `deploy.env` の `LAB_DEBUG` は使わない。残っていれば `ops/up.sh` が注意を出すだけ。
 - 代わりに増えたもの:
-  - 待機の費用: 約 $0.20/h → 約 $0.23/h（エンドポイントを土台と共用しなくなった。2026-10-04 に EC2 の単価を t4g.xlarge の $0.17/h に直した値）
+  - 待機の費用: 約 $0.20/h → 約 $0.23/h（エンドポイントを土台と共用しなくなった。2026-10-04 に EC2 の単価を t4g.xlarge の $0.17/h に直した値）。2026-10-08 に EC2 を x86_64 の m6i.xlarge（$0.25/h）にして約 $0.30/h（TRex のイメージが amd64 だけのため）
   - 初回の push: SR Linux（約 1 GB）を別のリポジトリにもう一度置く
 
 ---
@@ -843,7 +843,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 - 立たないのは、`PIPELINE=0` のときと、`SKIP_STREAM` と `SKIP_GRAPH` を両方書いたとき（Job の書き先が無い）。
 - 前の `deploy.env` に `NAUTOBOT=...` が残っていても止まらない。`ops/up.sh` が「もう使わない」と注意を出す。
 - Telegraf の dialin の一覧は、いつも Nautobot の Job が書く SSM のパラメータ（`/<prefix>/telegraf-dialin/nautobot/*`）から受ける。
-- 費用は Nautobot の分（+$0.13/h と `ecs` のエンドポイント $0.014/h）が PIPELINE に入る。`PIPELINE=1` だけ（`STORES` は既定）なら、土台と合わせて約 $2.80/h（README の表）。
+- 費用は Nautobot の分（+$0.13/h と `ecs` のエンドポイント $0.014/h）が PIPELINE に入る。`PIPELINE=1` だけ（`STORES` は既定）なら、土台と合わせて約 $2.88/h（README の表）。
 - デバッグ用の EC2（`ops/lab-debug.sh`）は Nautobot を使わない（lab の定義の一覧のまま）。
 
 ### Q. Nautobot にトポロジの情報を入れているのはシェルスクリプトだと思うけど、どこからの情報を引っ張ってきて入れている？

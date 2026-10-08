@@ -25,7 +25,7 @@ sudo apt-get install -y docker-compose-plugin snmp iptables python3
 bash -c "$(curl -sL https://get.containerlab.dev)"
 ```
 
-QEMU（binfmt）は要らない。build するイメージ（Telegraf、Grafana、Spark、Splunk）は WSL の x86_64 のまま作る。SR Linux と multitool も ghcr.io の amd64 を取る。
+QEMU（binfmt）は要らない。build するイメージ（Telegraf、Grafana、Spark、Splunk）は WSL の x86_64 のまま作る。SR Linux と multitool も ghcr.io の amd64 を取る。TRex（Docker Hub の `trexcisco/trex`）は amd64 しか無いが、WSL の x86_64 ならそのまま動く。
 
 足りないメモリは lab を減らして空ける。`python3 app/containerlab/gen_lab.py --leaves 2 --spines 1` で 5 台になる（`leaves` は 2 の倍数で 2 以上、`spines` は 1 以上）。戻すのは `--leaves 2 --spines 2`。これは git に入っている lab の定義（`app/containerlab/splab.clab.yml.in` と `app/containerlab/srlinux/*.cli`）を書き換える。lab が上がっているなら先に `docker/compose/lab.sh down` し、打ったあとで `up.sh`（Telegraf のポーリング先と Spark の device map が変わる）と `lab.sh up` をやり直す（`lab.sh up` は毎回 `app/containerlab/splab.clab.yml` を作り直してから deploy する）。spine が 1 台だと leaf の fabric は 1 本だけなので、`fail-main` は切り替わらずに断になる（`failover` の「切替 OK」と VM の疎通は出ない。linkDown の trap と Grafana の DOWN は 6 台のときと同じに出る）。
 
