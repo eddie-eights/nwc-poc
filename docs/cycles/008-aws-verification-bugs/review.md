@@ -201,3 +201,5 @@ None
 - Nit 4（BACKLOG の 67 行目）: サイクル完了の報告で `[x] … → 008-aws-verification-bugs` にする
 - Round 1 の Nit 5 件は据え置きのまま。最終報告に載せる
 - 未解消の Must fix / Should fix: 無し。cold reviewer は 2 回呼んだので、次は HTML と BACKLOG
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261008-cycle-008-aws-verification-bugs-review.html -->

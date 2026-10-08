@@ -93,3 +93,5 @@ PM(fable-5.1) / effort: high
 2. `prepareForReplanning()` が Community 版で使えない可能性 → 失敗しても seed を止めない設計なので、使えなければ WARNING のまま。`build.md` に出力を貼る
 3. Neo4j の索引を張るのは `_neo4j_schema()` で、タスクが入れ替わると消えてまた張られる（一意制約と同じ）。張るのに失敗しても `_neo4j_schema()` は WARNING で続ける既存の形に合わせる
 4. ConflictException の打ち直しで Lambda の 60 秒を超える可能性（通知が 10 件以上まとめて来て全部が衝突するとき）→ 今回は件数の上限を付けない。超えれば Lambda の再試行で今までどおり直る
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261008-cycle-008-aws-verification-bugs-design.html -->

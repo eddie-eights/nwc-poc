@@ -4,7 +4,7 @@
 
 - [x] Nautobot の Job を OSS 版の Neo4j につなぐ（2026-10-08 完了。コードとテストのあと、同日の OSS 版の AWS 検証で確認。005 の design.md「実装の状態」、`docs/verification/20261008-oss-aws.md`）
 - [x] Neo4j の id 検索にラベルを付ける（頂点が増えると全走査になる）（2026-10-08 完了。fix/neo4j-id-labels。`_lbl` で Neo4j のときだけ付け、Neptune に送る openCypher は不変。手元の Neo4j で 2000 機器の set_status の dbHits 15014 → 13。AWS の Neo4j / Neptune では未確認）
-- [ ] Neo4j に残る全走査を減らす（`count()` と seed の `MATCH (n) WHERE n.registered = false`、remove_device の `MATCH (n:interface) WHERE n.device_id = $id` は device_id に索引が無い。大量投入の直後は索引の統計が古いので `CALL db.prepareForReplanning()` も検討。2026-10-08 の fix/neo4j-id-labels で見つけた） → 008-aws-verification-bugs
+- [x] Neo4j に残る全走査を減らす（`count()` と seed の `MATCH (n) WHERE n.registered = false`、remove_device の `MATCH (n:interface) WHERE n.device_id = $id` は device_id に索引が無い。大量投入の直後は索引の統計が古いので `CALL db.prepareForReplanning()` も検討。2026-10-08 の fix/neo4j-id-labels で見つけた） → 008-aws-verification-bugs（2026-10-08 完了）
 - [x] Kafka と OpenSearch のタスクを 1 台ずつ入れ替える手順を作る（いまは `terraform apply` で 3 つが同時に入れ替わる）（2026-10-08 完了。feat/oss-redis8-rolling の `oss/ops/roll-nodes.sh`。AWS では未確認）
 - [ ] OSS 版とマネージド版の時間あたりの費用を測って `docs/oss-variant.md` に書く
 - [ ] OSS 版をマネージド版と並べて立てる（Fargate の vCPU の上限 30 を上げてから。GDS と `neptune.algo.*` の並びの比較もここで）
@@ -32,8 +32,8 @@
 - [x] `IaC/terraform/aws-managed/agent/kb.tf` の kb_index のロールにネットワークの境界の条件を付ける（ほかのロールにはあって、これだけ無い。2026-10-08 の docs 同期で見つけた）（2026-10-08 完了。fix/kb-index-firehose。KB のロールはサービス側の例外なので付けない。AWS では未確認）
 - [x] status の Lambda の Firehose の待ちを AZ の数に合わせる（`IaC/terraform/aws-managed/pipeline/graph/sync.tf:125` と `app/graph/status_handler.py:23-24` のコメントは 1 AZ = 15.6 秒の `ops/up.sh:421-423` と合っていない）（2026-10-08 完了。fix/kb-index-firehose。timeout と CONFIG は変えずコメントを 1 / 2 / 3 AZ の秒数に直し、test_sync が up.sh の式と突き合わせる）
 - [ ] 手元の compose の構成のスライドを作る（006 のあと。マネージド版・OSS 版は 2026-10-08 に作った）
-- [ ] Grafana の trap ルールの terms の size か時間の幅を直す（`app/grafana/provisioning/alerting/netops-opensearch.yaml` の `nwc-trap` が Grafana 13.2.2 で `bucket budget out of bounds: ... up to 13600 buckets` になり、起動からずっと `Normal (Error)` で Grafana 側の trap のアラートが出ない。Splunk 側は通る。2026-10-08 のマネージド版の AWS 検証で見つけた。`docs/verification/20261008-managed-aws.md`） → 008-aws-verification-bugs
-- [ ] graph-status の Lambda が Neptune の `ConflictException` を関数の中でやり直す（同じ秒に resolved が 2 件届くと ExecuteQuery が concurrent operations で落ち、Lambda の非同期の再試行で 54 秒後に反映された。データは失われない。2026-10-08 のマネージド版の AWS 検証で見つけた） → 008-aws-verification-bugs
+- [x] Grafana の trap ルールの terms の size か時間の幅を直す（`app/grafana/provisioning/alerting/netops-opensearch.yaml` の `nwc-trap` が Grafana 13.2.2 で `bucket budget out of bounds: ... up to 13600 buckets` になり、起動からずっと `Normal (Error)` で Grafana 側の trap のアラートが出ない。Splunk 側は通る。2026-10-08 のマネージド版の AWS 検証で見つけた。`docs/verification/20261008-managed-aws.md`） → 008-aws-verification-bugs（2026-10-08 完了）
+- [x] graph-status の Lambda が Neptune の `ConflictException` を関数の中でやり直す（同じ秒に resolved が 2 件届くと ExecuteQuery が concurrent operations で落ち、Lambda の非同期の再試行で 54 秒後に反映された。データは失われない。2026-10-08 のマネージド版の AWS 検証で見つけた） → 008-aws-verification-bugs（2026-10-08 完了）
 - [x] 消えたことの確認と残った VPC の扱いを docs に合わせる（`docs/deploy.md:117` と `docs/troubleshooting.md:102` の「数時間おいて down.sh を打ち直す」は誰も打たず VPC が 3 日残った → 「残っても無料。次の up.sh が使い回す」を既定にする。`docs/deploy.md:38` の KEEP_ECR「月数円」は実測 7.39 GB ≈ 110 円/月。down.sh の最後のタグ API の一覧は何日も前に消えた EMR まで 189 件出るので、消えたかはサービスごとの API で見ると書く。2026-10-08 のマネージド版の AWS 検証で見つけた）（2026-10-08 完了。docs/aws-verification-followups）
 - [x] `ops/check.sh` の `bash -n` を 1 ファイルずつ打つ（`bash -n a b c` は a しか見ず、b と c は位置引数になる。2026-10-08 に 006 の実装で見つけた。`tests/test_oss.py` の `^bash -n` の正規表現も合わせる）（2026-10-08 完了。fix/local-compose-r2）
 - [x] `docs/development.md` のテストの本数を数え直す（006 で `tests/test_local_compose.py` が増えた）（2026-10-08 完了。docs/aws-verification-followups で数え直し、895cdb0 でマージ）
@@ -64,5 +64,5 @@
 - [ ] `app/containerlab/lab.sh` と `app/telegraf/telegraf.sh` に残る `$VAR` の直後に全角文字が続く所を `${VAR}` にする（Mac の bash 3.2 だけ 1 バイト食う。2026-10-08 に 009 の実装で見つけた）
 - [ ] `app/containerlab/lab.sh` の failover の `route()` が IS-IS の経路が無いと `set -e` と `pipefail` で止まる（「(IS-IS の経路が無い)」の分岐に来ない。2026-10-08 に 009 の実装で見つけた）
 - [ ] flows（GoFlow2）の Grafana のダッシュボードを作る（012 は Kafka と格納先まで。画面は無い）
-- [ ] Grafana のプラグインの版を `docker/images/grafana/Dockerfile` で固定する（opensearch 2.34.4、amazonprometheus。いまは最新を取るので、プラグインの更新で trap ルールの式の上限（008 の A）が変わっても気付けない。2026-10-08 に 008 の実装で見つけた）
+- [x] Grafana のプラグインの版を `docker/images/grafana/Dockerfile` で固定する（opensearch 2.34.4、amazonprometheus。いまは最新を取るので、プラグインの更新で trap ルールの式の上限（008 の A）が変わっても気付けない。2026-10-08 に 008 の実装で見つけた） → 008-aws-verification-bugs（2026-10-08 完了）
 - [ ] Grafana のアラートルールの Error 状態を ops で検出する（`execErrState: KeepLast` で `Normal (Error)` が隠れ、008 の A の不具合は画面を見るまで分からなかった。ルールの API の `alerts[].state` か、ルールのモデルを `/api/ds/query` に POST して HTTP 200 を見る。2026-10-08 に 008 の実装で見つけた）
