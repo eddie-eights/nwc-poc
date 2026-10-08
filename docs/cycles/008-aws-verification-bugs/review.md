@@ -95,3 +95,109 @@ None
 - Nit 5 件: 直さない。最終報告に載せる
 - 質問への答え: はい。AWS の A の合否は `alerts[].state` に `(Error` が無いこと、または `/api/ds/query` が 200 を返すこと（PM が最後の AWS 検証でこの条件で見る）
 - Round 2 は (a) のマージ後。実装が変わるので cold reviewer の 2 回目（完了判定の直前）をそこで呼ぶ
+
+## Round 2
+
+- 対象: `cde390f..f826f87`（docs/cycle-006-design に e7713dc でマージ済み）。実装モデル: opus-5.5（エンジニア1）。レビューモデル: cold reviewer = opus、確認 = fable-5.1（PM）
+- cold reviewer に依頼した（完了判定の直前。1 サイクル 2 回目）。入力は design.md と変更ファイル 11 本のパス（9c40f87..HEAD）だけ
+
+### 前ラウンドの Should fix の解消
+
+- Should fix 1（送り元の数を縛るテストが無い）: `bash ops/check.sh` を e7713dc で実行 → `test_alerts` は `通過 140 / 失敗 0`（138 から 2 件増。scratchpad `check-008r2.log`）、最終行「すべて通過」exit=0。足した check は `tests/test_alerts.py` の「srlinux/*.cli の trap の宛先が MGMT_GW の台数 + ACC_VM ≤ sysName の size」と「Dockerfile の版 = OPENSEARCH_PLUGIN_COPIED」
+- Should fix 2（プラグインの版の固定）: `grep -n "plugins install" docker/images/grafana/Dockerfile` →
+
+```
+14: && grafana cli --pluginsDir /opt/grafana-plugins plugins install grafana-amazonprometheus-datasource 3.2.0 \
+15: && grafana cli --pluginsDir /opt/grafana-plugins plugins install grafana-opensearch-datasource 2.34.4 \
+```
+
+### cold reviewer の結果（review-r02.md をそのまま連結）
+
+## サマリ
+「AWS 検証で見つけた不具合 3 件を直す（008）」の Round 2 として、`9c40f87..HEAD`（HEAD = e7713dc）の変更ファイル 11 本（+294 −30）をレビューした。内訳は app 4 / docker 1 / ops 1 / docs 2 / tests 4。Round 1 のあとに入ったのは f826f87（Should fix 2 件の直し: Grafana のプラグインの版の固定と、trap の送り元の数を縛るテスト）。A / B / C の本体のコードは Round 1 から変わっていない。
+
+全体の評価: Must fix 無し、Should fix 無し。Round 1 の Should fix 2 件はどちらも直っていて、テストで縛られている。退行の注入（build.md の Round 2）も、版を外す・size を下げる・コメントの数を変えるで落ちる形になっている。残るのは、コメントの参照先の誤り、テストの本数の記載、design.md と BACKLOG に範囲の追加が反映されていないこと、の Nit 4 件だけ。
+
+### 見た観点 / 見ていない観点
+- **design.md との整合性（見た）**
+  - A: `netops-opensearch.yaml` の `interval: 30s`、terms の size `10` / `10`、field の並び（sysName → oid → @timestamp）、`noDataState: OK`、`execErrState: KeepLast` を読んだ。size が design の候補（20 × 10）と違う理由はコメントと build.md にあり、プラグインの式（`tests/test_alerts.py` の `terms_buckets` / `bucket_budget_ok`）で 10 × 10 は auto でも shard 2 で通る
+  - B: `CONFLICT_WAITS = (0.5, 1.0, 2.0)`、`_apply_retrying` が `ClientError` の `Error.Code == "ConflictException"` のときだけ打ち直すこと、4 回で諦めること、ほかの例外はそのまま投げて `handler()` が errors に積むことを読んだ。docstring の 1〜2 文の追記もある
+  - C: `_INDEXES`（registered 8 個 + interface.device_id 1 個）、`_unregistered()` が Neo4j のときだけラベルごとに分けること、`seed_graph.py` が OSS のときだけ `db.prepareForReplanning()` を呼び、失敗は WARNING にすることを読んだ
+  - Round 2 の追加分: Dockerfile の版の固定（amazonprometheus 3.2.0、opensearch 2.34.4）と、`test_alerts.py` の `OPENSEARCH_PLUGIN_COPIED` との突き合わせ、送り元の数の check。design.md の変更対象の表には入っていない（Nit 3）
+- **correctness（見た）**
+  - `graph.query()` の Neptune の経路は `execute_query` の `ClientError` を包まずに上げる（`app/agentcore/graph.py:128-135`）。なので、本番の ConflictException は `_apply_retrying` に届く
+  - 打ち直しの冪等性: `apply()` が呼ぶ `set_status` / `set_layer_status` は、status を置く SET と、`MERGE ... ON CREATE SET` の未登録の頂点だけ。途中の 1 本が 409 で落ちて頭から打ち直しても、結果は同じ
+  - Neptune の `seed()` はラベル無しで全ラベルの未登録を読む。ただしループが見るのは `label == "device"` / `"interface"` だけ。なので、Neo4j で 2 ラベルに絞っても挙動は同じ
+  - `count()` の unregistered: Neo4j で数えるのは `_LABELS` の 8 ラベルだけ。未登録の頂点を作るのは `_upsert_unregistered`（device / interface / bgp_session / isis_adjacency）だけで、全部 `_LABELS` に入っている
+  - 新しいテストの正規表現: Dockerfile の `plugins install (\S+) (\S+?) ?\\?$` は、版の無い行では `\` を版として拾い、dict が合わなくなって落ちる。コメントの `(\S+)、` は、バックトラックで機器名だけを取る
+- **security（見た）**
+  - 文字列に埋め込む新しい値は、`_ident()` を通したラベルと定数の property 名だけ
+  - WARNING に出す `line` は source / status / device_id / kind / target だけで、機密は入らない
+  - Dockerfile は版を固定したので、ビルドの日によって中身が変わることが無くなった（供給元は変わらず grafana.com）
+- **runtime bugs（見た）**
+  - `_unregistered` の既定の引数 `_LABELS` は、定義（250 行目）より後ろ（320 行目）で評価される
+  - `_neo4j_schema` の索引の名前（`nwc_<label>_registered`、`nwc_interface_device_id`）は、制約の名前（`nwc_<label>_id`）とぶつからない
+  - `seed_graph.py` の `graph.errors()` は、Neo4j のときは Neo4jError と DriverError を含む
+- **data loss（見た）**
+  - `seed()` が消すものは変わらない（device / interface の登録済みと、置き換える未登録だけ）
+- **API compatibility（見た）**
+  - `count()` の戻り値の形は変わらない
+  - Neptune に送る openCypher は不変。`test_oss.py` の golden の照合と `_SPLIT4` で確かめた
+  - Dockerfile の `ARG GRAFANA_VERSION` はそのままで、`tests/test_oss_ops.py:807` の突き合わせも通る
+- **missing tests（見た）**
+  - B: 1 回で成功、使い切って失敗、ほかの ClientError は打ち直さない、の 3 件と、予算の式
+  - C: 索引の DDL、ラベル分け、seed_graph.py の 3 件、索引の Neo4jError / DriverError
+  - A: 式の写しがエラー文の 13600 を再現すること
+  - Round 2: 版の固定、送り元の数 ≤ size、コメントの数
+- **テストの実行（自分で走らせた。HEAD の作業ツリー）**
+  - `uv run --group dev python tests/test_alerts.py` → `通過 140 / 失敗 0`
+  - `tests/test_graph.py` → `通過 78 / 失敗 0`
+  - `tests/test_oss.py` → `通過 171 / 失敗 0`
+  - `tests/test_sync.py` → `通過 100 / 失敗 0`
+  - Dockerfile を参照するテストも走らせた。`tests/test_oss_ops.py` → `通過 148 / 失敗 0`、`tests/test_local_compose.py` → `通過 111 / 失敗 0`
+- **見ていない観点**
+  - `bash ops/check.sh` の全体（terraform validate を含む）は走らせていない。全体が通ったという根拠は、f826f87 の commit メッセージと build.md の記載だけ
+  - 本物の Neo4j と Grafana は動かしていない。`SHOW INDEXES` / `PROFILE` の NodeIndexSeek、手元の Grafana の `/api/ds/query`、版を固定した Dockerfile のビルドは、build.md の生ログを読んだだけ
+  - AWS（AOSS の shard の実数、ECS の上で 3.2.0 / 2.34.4 が動くこと、Lambda の ConflictException の打ち直しの実地）は見ていない。design どおり AWS は対象外
+  - プラグインのソース（`lucene_handler.go` / `interval.go`）を自分では取り直していない。Round 1 の cold reviewer が突き合わせた結果と、build.md の引用を前提にした
+  - Round 1 の Nit 5 件（予算の式に打ち直しの問い合わせの時間が無い、待ちに揺らぎが無い、区切りの数の決め打ち、`_seed_graph` の後始末 など）は、PM が「直さない」と決めたとおり変わっていない。ここでは再掲しない
+
+## Must fix
+None
+
+## Should fix
+None
+
+## Nit
+- **[design.md との整合性（コメントの正確さ）] Dockerfile のコメントが、dir_tag の場所を間違えている**
+  - 場所: `docker/images/grafana/Dockerfile:6`「イメージのタグ（ops/up-common.sh の dir_tag。このファイルのハッシュ）」
+  - 中身: `dir_tag()` が定義されているのは `ops/lab-common.sh:44` で、`ops/up-common.sh` には無い。版を上げる人がタグの仕組みを追うときに、1 回空振りする
+  - Nit にした理由: 動作には関係しない。読む人が少し迷うだけ
+- **[docs] HEAD の `docs/development.md:37` の `test_alerts` の本数が 138 のまま（実測は 140）**
+  - 中身: f826f87 で check が 2 つ増えた（上の実行で `通過 140`）。HEAD の記載は 138 のまま。作業ツリーには、140 に直す未コミットの変更がすでにある（`git diff docs/development.md`）
+  - Nit にした理由: その未コミットの変更を commit すれば解消する。コードには関係しない
+- **[design.md との整合性] Round 2 で足した範囲（プラグインの版の固定）が design.md に入っていない**
+  - 中身: design.md の「変更対象ファイル」（51 行目からの表）に、`docker/images/grafana/Dockerfile`、`docs/architecture/resources/grafana.md`、`tests/test_oss.py` が無い。決まりも書かれていない（「opensearch プラグインの版は、test_alerts の式を写した版に固定する。上げるときは式を読み直す」）
+  - 経緯は review.md の PM の確認と build.md でたどれる。ただ、仕様の正本は design.md なので、次のサイクルで design.md だけを読む人には、この決まりが見えない
+  - Nit にした理由: 実装とテストはそろっていて、壊れるものは無い。追跡もできる。正本に 1〜2 行足せば済む
+- **[design.md との整合性（BACKLOG）] `docs/cycles/BACKLOG.md:67`「Grafana のプラグインの版を…固定する」が、このサイクルで済んだのに未着手のまま**
+  - 中身: f826f87 で固定が入ったのに、行は `- [ ]` のままで、`→ 008-aws-verification-bugs` も付いていない。BACKLOG は PM だけが書くので、サイクル完了の報告のときにチェックを付ける必要がある
+  - Nit にした理由: 完了の手順の中で直る。コードには関係しない
+
+## 良かった点
+- Round 1 の Should fix 1（送り元の数と size）を、コメントの数だけでなく lab の実物から数えて縛っている。`srlinux/*.cli` の trap の宛先が `MGMT_GW` か、`splab.clab.yml.in` の nokia_srlinux の数、`ACC_VM` を見ている。lab に機器を足すと、テストが落ちて気づける
+- Should fix 2（版の固定）は、版を ARG にしない理由まで書いてある（`--build-arg` で替えると dir_tag が変わらない）。テストも「版の無い install」「ARG の追加」「写した版の定数だけ上げる」を全部落とすようにしていて、式の写しと実物の版がずれる経路をふさいでいる
+- amazonprometheus の版を、GitHub の最新（3.3.0）ではなく、AWS で実際に動かしたイメージの実測値（3.2.0）にした。挙動を変えない選び方になっている
+
+## ユーザーへの質問
+None
+
+### PM の確認（Round 2）
+
+- Must fix 0 / Should fix 0。Nit 4 件
+- Nit 1（Dockerfile:6 のコメントの `ops/up-common.sh` は誤りで、`dir_tag()` は `ops/lab-common.sh:44`）: `grep -n "dir_tag()" ops/*.sh` で確かめた。Nit のまま直さない。最終報告に載せる
+- Nit 2（development.md の 138）: PM が 140 に直して、このラウンドと一緒に commit する
+- Nit 3（design.md に版の固定の範囲が無い）: PM が design.md の「変更対象ファイル」に Dockerfile・test_alerts の追加・grafana.md の 3 行を足した（このラウンドと一緒に commit）
+- Nit 4（BACKLOG の 67 行目）: サイクル完了の報告で `[x] … → 008-aws-verification-bugs` にする
+- Round 1 の Nit 5 件は据え置きのまま。最終報告に載せる
+- 未解消の Must fix / Should fix: 無し。cold reviewer は 2 回呼んだので、次は HTML と BACKLOG

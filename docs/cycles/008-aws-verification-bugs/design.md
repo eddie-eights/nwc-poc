@@ -59,6 +59,9 @@ PM(fable-5.1) / effort: high
 | `app/agentcore/graph.py` | `_neo4j_schema()` の索引、`count()` と 373 行目のラベル分け（C） |
 | `tests/test_graph.py` | Neo4j のときのラベル分けと索引の DDL。Neptune の文字列は不変のまま通ること（C） |
 | `ops/seed_graph.py` | `db.prepareForReplanning()`（C） |
+| `docker/images/grafana/Dockerfile` | Round 1 の cold review で足した範囲。プラグインの版を固定する（opensearch は `tests/test_alerts.py` が bucket budget の式を写した版 2.34.4、amazonprometheus は AWS で動かしたイメージの実測 3.2.0）。ARG にしない（`--build-arg` で替えても dir_tag が変わらない）。opensearch を上げるときはプラグインの式を読み直し、テストの `OPENSEARCH_PLUGIN_COPIED` も変える（A） |
+| `tests/test_alerts.py`（追加） | Dockerfile の版と `OPENSEARCH_PLUGIN_COPIED` の突き合わせ。lab の trap の送り元の数（`srlinux/*.cli` の宛先が `MGMT_GW` の台数 + `ACC_VM`）が sysName の `size` 以下であること（A） |
+| `docs/architecture/resources/grafana.md` | イメージの行にプラグインの版を書く |
 | `docs/cycles/BACKLOG.md` | PM が直す。エンジニアは触らない |
 
 ## 再利用するもの
