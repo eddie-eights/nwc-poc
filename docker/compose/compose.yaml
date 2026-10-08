@@ -61,7 +61,7 @@ services:
       context: ../../app/telegraf
       dockerfile: ../../docker/images/telegraf/Dockerfile
       args:
-        TELEGRAF_VERSION: 1.40.0
+        TELEGRAF_VERSION: 1.40.1
     image: nwc-local-telegraf
     network_mode: host
     # Kafka が受け付ける前に起きると出力の接続で落ちるので、起こし直す
@@ -175,7 +175,7 @@ services:
       context: ../../app/splunk
       dockerfile: ../../docker/images/splunk/Dockerfile
       args:
-        SPLUNK_VERSION: 10.4.3
+        SPLUNK_VERSION: 10.4.4
     image: nwc-local-splunk
     platform: linux/amd64
     environment:
@@ -197,7 +197,7 @@ services:
       context: ../../app/grafana
       dockerfile: ../../docker/images/grafana/Dockerfile
       args:
-        GRAFANA_VERSION: 13.2.2
+        GRAFANA_VERSION: 13.2.3
     image: nwc-local-grafana
     environment:
       # app/grafana/start.sh が datasources-oss の定義を並べる（uid amp / aoss-logs。ダッシュボードはそのまま）。ALERTS_TOPIC_ARN が無いので、アラートの定義は並べない

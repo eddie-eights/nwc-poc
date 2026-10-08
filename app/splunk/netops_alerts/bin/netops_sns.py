@@ -9,7 +9,7 @@ publish する JSON は Grafana（app/grafana/provisioning/alerting）と同じ�
 - 認証: ECS のタスクロール（AWS_CONTAINER_CREDENTIALS_RELATIVE_URI から一時的な認証情報を取る）。アクセスキーは置かない
 - 設定: コンテナの環境変数を app/splunk/entrypoint.sh がファイルに写したもの（splunkd の子プロセスはコンテナの環境変数を引き継がない）。
   boto3 には環境変数でなく引数で渡す（認証情報の口・リージョン・AWS_ENDPOINT_URL_SNS）
-- ライブラリ: boto3 は Splunk の Python が持っているものを使う（Splunk 10.4.3 は python3.13 の site-packages に boto3 1.37.14。
+- ライブラリ: boto3 は Splunk の Python が持っているものを使う（Splunk 10.4.4 は python3.13 の site-packages に boto3 1.37.14。
   python.required = 3.13 は default/alert_actions.conf）。app に同梱しない・pip で入れない。Splunk の版を変えたら
   tests/check_splunk_image.py で、その版の Python に boto3 があり publish できることを確かめる（無くなっていたら app の lib/ に同梱する形に戻す。git の ffba169）。
   boto3 は publish のときに読むので、boto3 の無い PC でもテストできる

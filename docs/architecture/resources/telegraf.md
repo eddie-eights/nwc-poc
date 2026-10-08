@@ -15,7 +15,7 @@
 | 受ける側 | サービス `<prefix>-telegraf-dialout`。trap・syslog・MDT を内部 NLB の後ろで受ける。タスク数 = `TELEGRAF_AZ_NUM`（既定 1、1〜3） | `telegraf.tf` の `aws_ecs_service.telegraf_dialout` |
 | 取りにいく側 | サービス `<prefix>-telegraf-dialin`。gNMI の購読と SNMP のポーリング。タスクはいつも 1 つ。NLB には付けない | `telegraf.tf` の `aws_ecs_service.telegraf_dialin` |
 | タスクの大きさ | Fargate ARM、0.25 vCPU / 0.5 GB | 変数 `telegraf_task_cpu`、`telegraf_task_memory` |
-| イメージ | 公式の telegraf 1.40.0 に設定のテンプレートと入口（`tg`）を足したもの。ECR の `<prefix>-telegraf` | `docker/images/telegraf/Dockerfile`、`ops/lab-common.sh`（版の正）、変数 `telegraf_image_tag` |
+| イメージ | 公式の telegraf 1.40.1 に設定のテンプレートと入口（`tg`）を足したもの。ECR の `<prefix>-telegraf` | `docker/images/telegraf/Dockerfile`、`ops/lab-common.sh`（版の正）、変数 `telegraf_image_tag` |
 | NLB | 内部 NLB `<prefix>-tg`。162/udp → タスクの 1162、5140/udp → 5140、57000/tcp → 57000。ヘルスチェックは HTTP 8080（`outputs.health`） | `telegraf.tf` の `local.telegraf_ports`、`aws_lb.telegraf_dialout` |
 | 機器の一覧 | SSM `/<prefix>/telegraf-dialin/<lab か nautobot>/gnmi-targets`・`snmp-agents`（String） | `telegraf.tf`、変数 `dialin_targets_from_nautobot` |
 | 機器の認証情報 | SSM `/<prefix>/telegraf-dialin/gnmi-username`・`gnmi-password`・`snmp-community`（SecureString。`ops/up.sh` が作る） | `ops/up-common.sh` の `ensure_fixed_secret`（`ops/up.sh` の手順 7 が呼ぶ） |

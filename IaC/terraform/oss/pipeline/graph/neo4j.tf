@@ -14,7 +14,7 @@
 # ECS の secrets で渡す（state にも環境変数の値にも書かない）。8 文字以上で / を含まないこと（公式の entrypoint の決まり。app/neo4j/entrypoint.sh）。
 
 variable "neo4j_image_tag" {
-  description = "Tag of the Neo4j image in the <prefix>-neo4j repository (built from app/neo4j/ by the OSS ops/up.sh: <Neo4j version>-<hash of app/neo4j/>). Same Neo4j version as oss/compose."
+  description = "Tag of the Neo4j image in the <prefix>-neo4j repository (built from app/neo4j/ by the OSS ops/up.sh: <Neo4j version>-<hash of app/neo4j/ and docker/images/neo4j/Dockerfile>). Same Neo4j version as oss/compose."
   type        = string
   default     = "2026.09.0"
 }

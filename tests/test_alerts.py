@@ -634,7 +634,7 @@ check("app の中に認証情報や local/ は無い（公開リポジトリ）"
 df = read("docker", "images", "splunk", "Dockerfile")
 dcode = [l for l in df.splitlines() if l.strip() and not l.startswith("#")]
 check("Splunk のイメージは上流の公式イメージに app と入口とヘルスチェックの突き合わせ（peers_check.py）を足すだけ（RUN は無い = arm64 の PC でも QEMU 無しでビルドできる。boto3 は同梱しない）",
-      dcode == ["ARG SPLUNK_VERSION=10.4.3", "FROM splunk/splunk:${SPLUNK_VERSION}", "COPY --chown=splunk:splunk netops_alerts /opt/splunk-etc/apps/netops_alerts",
+      dcode == ["ARG SPLUNK_VERSION=10.4.4", "FROM splunk/splunk:${SPLUNK_VERSION}", "COPY --chown=splunk:splunk netops_alerts /opt/splunk-etc/apps/netops_alerts",
                 "COPY --chmod=0755 entrypoint.sh /sbin/nwc-entrypoint.sh", "COPY --chmod=0755 peers_check.py /sbin/nwc-peers-check.py",
                 'ENTRYPOINT ["/sbin/nwc-entrypoint.sh"]', 'CMD ["start-service"]'])
 
@@ -789,7 +789,7 @@ check("up.sh の SPLUNK_VERSION / GRAFANA_VERSION は Dockerfile の ARG の既�
       re.search(r"^SPLUNK_VERSION=([\d.]+)", up, re.M).group(1) == re.search(r"ARG SPLUNK_VERSION=([\d.]+)", df).group(1)
       and re.search(r"^GRAFANA_VERSION=([\d.]+)", up, re.M).group(1) == re.search(r"ARG GRAFANA_VERSION=([\d.]+)", read("docker", "images", "grafana", "Dockerfile")).group(1))
 check("up.sh は Splunk と Grafana のイメージを <版>-<ディレクトリのハッシュ> のタグでビルドする（中身を変えたら別のタグ。Splunk は amd64、Grafana は arm64）",
-      'SPLUNK_TAG=$(dir_tag "$SPLUNK_VERSION" app/splunk)' in up and 'GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" app/grafana)' in up
+      'SPLUNK_TAG=$(dir_tag "$SPLUNK_VERSION" app/splunk docker/images/splunk/Dockerfile)' in up and 'GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" app/grafana docker/images/grafana/Dockerfile)' in up
       and 'docker buildx build --platform linux/amd64 --build-arg "SPLUNK_VERSION=$SPLUNK_VERSION" -t "$REG/$PREFIX-splunk:$SPLUNK_TAG" --push -f docker/images/splunk/Dockerfile app/splunk/' in up
       and 'docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push -f docker/images/grafana/Dockerfile app/grafana/' in up)
 stf = read("IaC", "terraform", "aws-managed", "pipeline", "analytics", "splunk.tf")

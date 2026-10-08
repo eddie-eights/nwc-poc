@@ -15,7 +15,7 @@
 # log_retention_days   = 7
 # msk_az_num           = 2                 # 2 か 3（1 にはできない）。ops/up.sh は MSK_AZ_NUM を渡す
 #
-# telegraf_image_tag   = "1.40.0"          # ops/up.sh passes <telegraf version>-<hash of app/telegraf/>
+# telegraf_image_tag   = "1.40.1"          # ops/up.sh passes <telegraf version>-<hash of app/telegraf/ and docker/images/telegraf/Dockerfile>
 # snmp_agents          = "\"udp://203.0.113.11:161\", ..."   # python3 app/containerlab/lab_topology.py app/containerlab --snmp-agents
 # gnmi_targets         = "\"203.0.113.11:57400\", ..."       # python3 app/containerlab/lab_topology.py app/containerlab --gnmi-targets
 # syslog_standard      = "RFC3164"       # Cisco IOS (BSD format). ops/up.sh passes SYSLOG_STANDARD (default RFC3164; RFC5424 for the SR Linux lab logs)

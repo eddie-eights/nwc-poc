@@ -15,7 +15,7 @@
 # Splunk が起きる前（起動に数分）は HEC への POST が再試行の後に落ちてタスクが終わり、サービスが起こし直す（checkpoint の続きから読む）
 
 variable "spark_image_tag" {
-  description = "Tag of the app/spark/ image in the <prefix>-spark repository (apache/spark with the jars and app/spark/snmp_sinks.py). The OSS ops/up.sh builds it as <Spark version>-<hash of app/spark/>."
+  description = "Tag of the app/spark/ image in the <prefix>-spark repository (apache/spark with the jars and app/spark/snmp_sinks.py). The OSS ops/up.sh builds it as <Spark version>-<hash of app/spark/ and docker/images/spark/Dockerfile>."
   type        = string
   default     = "3.5.9"
 

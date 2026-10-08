@@ -4,7 +4,7 @@
 # jar は oss/compose/spark/Dockerfile で確かめた組み合わせ（Kafka・Iceberg・S3 Tables のカタログ）に、checkpoint を S3 に書く S3A を足す:
 #   hadoop-aws はイメージの Hadoop（hadoop-client-api-3.3.4）と同じ版、aws-java-sdk-bundle は hadoop-aws 3.3.4 の pom が指す版。
 # Kafka は PLAINTEXT なので、マネージド版の JAR_URLS にある MSK の IAM 認証の jar は入れない。
-# build の context は app/spark/（OSS 版の ops/up.sh がタグを中身から作る: <Spark の版>-<app/spark/ のハッシュ>）
+# build の context は app/spark/（OSS 版の ops/up.sh がタグを中身から作る: <Spark の版>-<app/spark/ とこの Dockerfile のハッシュ>）
 ARG SPARK_VERSION=3.5.9
 # Iceberg 1.12 のクラスは Java 17 向け（class ファイルの版 61）なので、Java 11 の apache/spark:<版> ではなく Java 17 のもの（Python 3 入り）
 FROM apache/spark:${SPARK_VERSION}-java17-python3

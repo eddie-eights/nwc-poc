@@ -615,7 +615,7 @@ REG="${REPO%%/*}"
 # ---- 2. イメージ ----------------------------------------------------------------
 log "2. イメージ（ECR に無いタグだけ作る）"
 NEED_AGENT=""; NEED_LAB=""; NEED_WORKER=""; NEED_TEMPORAL=""; NEED_TELEGRAF=""; NEED_GRAFANA=""; NEED_SPLUNK=""; NEED_NAUTOBOT=""; NEED_REDIS=""; NEED_KAFKA_UI=""
-# telegraf / grafana / splunk は Dockerfile のあるディレクトリの中身からタグを作る（中身を変えれば次の ops/up.sh が作り直す）
+# telegraf / grafana / splunk は app/<名前>/ の中身と docker/images/<名前>/Dockerfile からタグを作る（どちらかを変えれば次の ops/up.sh が作り直す）
 TELEGRAF_TAG=""; GRAFANA_TAG=""; SPLUNK_TAG=""; NAUTOBOT_TAG=""
 if [ -n "$AGENT" ]; then
   if ecr_has "$PREFIX-agent" "$IMAGE_TAG"; then echo "agent:$IMAGE_TAG はある（作り直すなら IMAGE_TAG を変える）"; else NEED_AGENT=1; fi
@@ -634,7 +634,7 @@ if [ -z "$SKIP_STREAM" ]; then
   if ecr_has "$PREFIX-kafka-ui" "$KAFKA_UI_TAG"; then echo "kafka-ui:$KAFKA_UI_TAG はある"; else NEED_KAFKA_UI=1; fi
 fi
 if [ -n "$GRAFANA" ]; then
-  GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" app/grafana) || die "app/grafana/ のタグを作れなかった"
+  GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" app/grafana docker/images/grafana/Dockerfile) || die "app/grafana/ のタグを作れなかった"
   if ecr_has "$PREFIX-grafana" "$GRAFANA_TAG"; then echo "grafana:$GRAFANA_TAG はある"; else NEED_GRAFANA=1; fi
 fi
 if [ -n "$SPLUNK_ON_ECS" ]; then
@@ -643,7 +643,7 @@ fi
 if [ -n "$NAUTOBOT" ]; then
   NAUTOBOT_CTX=$(mktemp -d "${TMPDIR:-/tmp}/$PREFIX-nautobot.XXXXXX") || die "一時ディレクトリを作れない（TMPDIR）"
   nautobot_context "$NAUTOBOT_CTX" || die "Nautobot のイメージの材料（app/nautobot/ と app/agentcore/graph.py・toolkit.py と lab の定義）を集められなかった"
-  NAUTOBOT_TAG=$(dir_tag "$NAUTOBOT_VERSION" "$NAUTOBOT_CTX") || die "app/nautobot/ のタグを作れなかった"
+  NAUTOBOT_TAG=$(dir_tag "$NAUTOBOT_VERSION" "$NAUTOBOT_CTX" docker/images/nautobot/Dockerfile) || die "app/nautobot/ のタグを作れなかった"
   if ecr_has "$PREFIX-nautobot" "$NAUTOBOT_TAG"; then echo "nautobot:$NAUTOBOT_TAG はある"; else NEED_NAUTOBOT=1; fi
   if ecr_has "$PREFIX-redis" "$REDIS_TAG"; then echo "redis:$REDIS_TAG はある"; else NEED_REDIS=1; fi
 fi

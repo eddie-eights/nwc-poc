@@ -15,7 +15,7 @@ OSS_KAFKA_UI_TAG=v1.5.0              # マネージド版の ops/up.sh の KAFKA
 OSS_OPENSEARCH_IMAGE=opensearchproject/opensearch
 OSS_OPENSEARCH_TAG=3.9.0
 OSS_VM_TAG=v1.153.0-cluster          # VictoriaMetrics のクラスター版の 3 つ（victoriametrics/vmstorage・vminsert・vmselect）は同じ版
-OSS_SPARK_VERSION=3.5.9              # docker/images/spark/Dockerfile の ARG SPARK_VERSION（FROM apache/spark:<版>-java17-python3）。タグは dir_tag で app/spark/ の中身のハッシュを足す
+OSS_SPARK_VERSION=3.5.9              # docker/images/spark/Dockerfile の ARG SPARK_VERSION（FROM apache/spark:<版>-java17-python3）。タグは dir_tag で app/spark/ の中身と Dockerfile のハッシュを足す
 OSS_NEO4J_VERSION=2026.09.0          # docker/images/neo4j/Dockerfile の ARG NEO4J_VERSION（FROM neo4j:<版>-community。GDS は公式イメージの products/ から写す）
 # ECR に写すもの（IaC/terraform/aws-managed/base/ecr の oss_repositories と同じ 7 つ）
 OSS_IMAGES="kafka opensearch vmstorage vminsert vmselect spark neo4j"
@@ -25,8 +25,8 @@ oss_image_tag() {  # oss_image_tag <名前>  ECR に置くタグ。知らない�
     kafka) echo "$OSS_KAFKA_TAG" ;;
     opensearch) echo "$OSS_OPENSEARCH_TAG" ;;
     vmstorage|vminsert|vmselect) echo "$OSS_VM_TAG" ;;
-    spark) dir_tag "$OSS_SPARK_VERSION" app/spark ;;  # ECR のタグは上書きできないので、app/spark/ の中身（snmp_sinks.py も）を変えたら別のタグにする
-    neo4j) dir_tag "$OSS_NEO4J_VERSION" app/neo4j ;;
+    spark) dir_tag "$OSS_SPARK_VERSION" app/spark docker/images/spark/Dockerfile ;;  # ECR のタグは上書きできないので、app/spark/ の中身（snmp_sinks.py も）か Dockerfile を変えたら別のタグにする
+    neo4j) dir_tag "$OSS_NEO4J_VERSION" app/neo4j docker/images/neo4j/Dockerfile ;;
     *) return 1 ;;
   esac
 }

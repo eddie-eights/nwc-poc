@@ -179,18 +179,18 @@ SPARK_TAG=$(oss_image_tag spark) || die "app/spark/ のタグを作れなかっ�
 NEO4J_TAG=$(oss_image_tag neo4j) || die "app/neo4j/ のタグを作れなかった"
 # Splunk はマネージド版と同じイメージ（app/splunk/ をビルドして <接頭辞>-splunk に置く）。SPLUNK_TAG と NEED_SPLUNK（ops/up-common.sh）
 splunk_image_check
-# Grafana もマネージド版と同じイメージ（app/grafana/ をビルドして <接頭辞>-grafana に置く。タグは <版>-<app/grafana/ のハッシュ>）。OSS 版はいつも作る
-GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" app/grafana) || die "app/grafana/ のタグを作れなかった"
+# Grafana もマネージド版と同じイメージ（app/grafana/ をビルドして <接頭辞>-grafana に置く。タグは <版>-<app/grafana/ と Dockerfile のハッシュ>）。OSS 版はいつも作る
+GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" app/grafana docker/images/grafana/Dockerfile) || die "app/grafana/ のタグを作れなかった"
 if ecr_has "$PREFIX-grafana" "$GRAFANA_TAG"; then echo "grafana:$GRAFANA_TAG はある"; else NEED_GRAFANA=1; fi
 # agent・worker・Temporal・Nautobot・Redis はマネージド版と同じ中身を、OSS 版の接頭辞のリポジトリに置く（関数は ops/up-common.sh）。
 # agent と worker は依存が違う（app/agentcore/・app/temporal/ の requirements-oss.txt。Neo4j のドライバー入り）
 if ecr_has "$PREFIX-agent" "$IMAGE_TAG"; then echo "agent:$IMAGE_TAG はある（作り直すなら IMAGE_TAG を変える）"; else NEED_AGENT=1; fi
 if ecr_has "$PREFIX-worker" "$IMAGE_TAG"; then echo "worker:$IMAGE_TAG はある"; else NEED_WORKER=1; fi
 if ecr_has "$PREFIX-temporal" "$TEMPORAL_TAG"; then echo "temporal:$TEMPORAL_TAG はある"; else NEED_TEMPORAL=1; fi
-# Nautobot のタグは、イメージに入る材料（app/nautobot/ と app/agentcore/graph.py・toolkit.py と lab の定義）の中身から作る
+# Nautobot のタグは、イメージに入る材料（app/nautobot/ と app/agentcore/graph.py・toolkit.py と lab の定義）の中身と docker/images/nautobot/Dockerfile から作る
 NAUTOBOT_CTX=$(mktemp -d "${TMPDIR:-/tmp}/$PREFIX-nautobot.XXXXXX") || die "一時ディレクトリを作れない（TMPDIR）"
 nautobot_context "$NAUTOBOT_CTX" || die "Nautobot のイメージの材料（app/nautobot/ と app/agentcore/graph.py・toolkit.py と lab の定義）を集められなかった"
-NAUTOBOT_TAG=$(dir_tag "$NAUTOBOT_VERSION" "$NAUTOBOT_CTX") || die "app/nautobot/ のタグを作れなかった"
+NAUTOBOT_TAG=$(dir_tag "$NAUTOBOT_VERSION" "$NAUTOBOT_CTX" docker/images/nautobot/Dockerfile) || die "app/nautobot/ のタグを作れなかった"
 if ecr_has "$PREFIX-nautobot" "$NAUTOBOT_TAG"; then echo "nautobot:$NAUTOBOT_TAG はある"; else NEED_NAUTOBOT=1; fi
 if ecr_has "$PREFIX-redis" "$REDIS_TAG"; then echo "redis:$REDIS_TAG はある"; else NEED_REDIS=1; fi
 if [ -z "$NEED_LAB$NEED_TELEGRAF$NEED_KAFKA_UI$NEED_OSS$NEED_SPLUNK$NEED_GRAFANA$NEED_AGENT$NEED_WORKER$NEED_TEMPORAL$NEED_NAUTOBOT$NEED_REDIS" ]; then

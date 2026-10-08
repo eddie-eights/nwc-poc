@@ -3,7 +3,7 @@
 # 上流の公式イメージに、AMP と OpenSearch のデータソースのプラグイン・データソースとダッシュボードの定義（provisioning/）・入口（start.sh）を足す。
 # タスクは VPC の外へ出られない（NAT が無い）ので、プラグインはビルドのときに入れておく。/var/lib/grafana は上流で VOLUME なので、
 # RUN で書いても残らない。/opt/grafana-plugins に入れて GF_PATHS_PLUGINS で指す（RUN があるので x86_64 の PC では QEMU（binfmt）が要る）
-ARG GRAFANA_VERSION=13.2.2
+ARG GRAFANA_VERSION=13.2.3
 FROM grafana/grafana:${GRAFANA_VERSION}
 
 USER root

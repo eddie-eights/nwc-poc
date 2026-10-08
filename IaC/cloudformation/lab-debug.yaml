@@ -17,7 +17,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 #     （IaC/terraform/aws-managed/pipeline/lab/templates/lab_user_data.sh.tftpl と同じ形。違うのはリポジトリの名前と TELEGRAF_IMAGE があること）
 #   - パラメータの既定値は IaC/terraform/aws-managed/pipeline/lab の変数の既定値と ops/lab-common.sh の版
 #   - ロールの権限は IaC/terraform/aws-managed/pipeline/lab/iam.tf と同じ Sid（EcrPull は Telegraf のリポジトリも読む。TelegrafAddress は要らない）
-#   - Telegraf のイメージは stream の ECS と同じ作り方（ops/lab-common.sh の telegraf_tag。app/telegraf/ の中身からタグを作る）
+#   - Telegraf のイメージは stream の ECS と同じ作り方（ops/lab-common.sh の telegraf_tag。app/telegraf/ の中身と docker/images/telegraf/Dockerfile からタグを作る）
 Description: nwc-poc lab debug EC2 (containerlab + Telegraf to stdout on one instance, in its own closed VPC)
 
 Parameters:
@@ -73,7 +73,7 @@ Parameters:
   TelegrafImageTag:
     Type: String
     Default: ""
-    Description: "<Telegraf version>-<hash of app/telegraf/> (ops/lab-common.sh telegraf_tag). Required when CreateInstance is true"
+    Description: "<Telegraf version>-<hash of app/telegraf/ and docker/images/telegraf/Dockerfile> (ops/lab-common.sh telegraf_tag). Required when CreateInstance is true"
   AutoStartLab:
     Type: String
     Default: "true"

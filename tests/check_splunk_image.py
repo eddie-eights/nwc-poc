@@ -28,7 +28,7 @@ import sys
 import time
 import uuid
 
-CHECKED = {"splunk": "10.4.3", "python": "3.13.11", "boto3": "1.37.14"}   # この検査が通った組み合わせ（2026-10-04）
+CHECKED = {"splunk": "10.4.4", "python": "3.13.11", "boto3": "1.37.14"}   # この検査が通った組み合わせ（2026-10-08）
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IMAGE = "nwc-splunk-check:local"

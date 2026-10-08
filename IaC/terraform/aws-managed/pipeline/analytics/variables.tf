@@ -176,9 +176,9 @@ variable "splunk_index" {
 }
 
 variable "splunk_image_tag" {
-  description = "Tag of the app/splunk/ image (splunk/splunk plus the netops_alerts app) in the ECR repository <prefix>-splunk. ops/up.sh builds it as <Splunk version>-<hash of app/splunk/> (amd64 only, so the task is X86_64). Used only when sinks has splunk"
+  description = "Tag of the app/splunk/ image (splunk/splunk plus the netops_alerts app) in the ECR repository <prefix>-splunk. ops/up.sh builds it as <Splunk version>-<hash of app/splunk/ and docker/images/splunk/Dockerfile> (amd64 only, so the task is X86_64). Used only when sinks has splunk"
   type        = string
-  default     = "10.4.3"
+  default     = "10.4.4"
 
   validation {
     condition     = can(regex("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$", var.splunk_image_tag))
@@ -238,9 +238,9 @@ variable "create_grafana" {
 }
 
 variable "grafana_image_tag" {
-  description = "Tag of the app/grafana/ image in the ECR repository <prefix>-grafana. ops/up.sh builds it as <Grafana version>-<hash of app/grafana/>"
+  description = "Tag of the app/grafana/ image in the ECR repository <prefix>-grafana. ops/up.sh builds it as <Grafana version>-<hash of app/grafana/ and docker/images/grafana/Dockerfile>"
   type        = string
-  default     = "13.2.2"
+  default     = "13.2.3"
 
   validation {
     condition     = can(regex("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$", var.grafana_image_tag))

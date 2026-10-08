@@ -8,7 +8,7 @@
 SRLINUX_TAG=26.7.2   # ghcr.io/nokia/srlinux はマルチアーキ。arm64 を引く
 MULTITOOL_TAG=v0.10.0
 CONTAINERLAB_VERSION=0.79.0
-TELEGRAF_VERSION=1.40.0
+TELEGRAF_VERSION=1.40.1
 CONTAINERLAB_RPM="containerlab_${CONTAINERLAB_VERSION}_linux_arm64.rpm"
 SRLINUX_UPSTREAM=ghcr.io/nokia/srlinux
 MULTITOOL_UPSTREAM=ghcr.io/srl-labs/network-multitool
@@ -41,10 +41,14 @@ fetch() {  # fetch <URL> <ファイル名>  展開したフォルダの直下に
   curl -fL --retry 3 -o "$2.part" "$1" || { rm -f "$2.part"; return 1; }
   mv "$2.part" "$2"
 }
-dir_tag() {  # dir_tag <版> <ディレクトリ>  "<版>-<ディレクトリの中身のハッシュ 12 桁>"。ECR のタグは上書きできないので、中身を変えたら別のタグにする
-  "${PY[@]}" - "$1" "$2" <<'PY'
+dir_tag() {  # dir_tag <版> <ディレクトリ> [ファイル...]  "<版>-<ディレクトリの中身のハッシュ 12 桁>"。ECR のタグは上書きできないので、中身を変えたら別のタグにする
+  # 3 つ目からのファイル（ディレクトリの外にある docker/images/<名前>/Dockerfile）は、リポジトリの根からの相対パスと中身をディレクトリの後ろに足す。
+  # Dockerfile だけ変えてもタグが変わるように、呼ぶ側は build の -f と同じファイルを渡す。リポジトリの直下で呼ぶ
+  "${PY[@]}" - "$@" <<'PY'
 import hashlib, os, sys
-ver, root = sys.argv[1], sys.argv[2]
+ver, root, extra = sys.argv[1], sys.argv[2], sys.argv[3:]
+if not os.path.isdir(root):
+    sys.exit(f"dir_tag: {root} がディレクトリでない")
 h = hashlib.sha256()
 for d, dirs, files in os.walk(root):
     dirs[:] = sorted(x for x in dirs if x != "__pycache__")
@@ -55,6 +59,10 @@ for d, dirs, files in os.walk(root):
         h.update(os.path.relpath(path, root).encode() + b"\0")
         with open(path, "rb") as fh:
             h.update(fh.read())
+for path in extra:
+    h.update(os.path.relpath(path).encode() + b"\0")
+    with open(path, "rb") as fh:
+        h.update(fh.read())
 print(f"{ver}-{h.hexdigest()[:12]}")
 PY
 }
@@ -69,8 +77,8 @@ mirror_lab_images() {  # mirror_lab_images <レジストリ> <接頭辞>  lab �
   if ecr_has "$2-lab-multitool" "$MULTITOOL_TAG"; then echo "lab-multitool:$MULTITOOL_TAG はある"
   else mirror_image "$MULTITOOL_UPSTREAM:$MULTITOOL_TAG" "$1/$2-lab-multitool:$MULTITOOL_TAG" || return 1; fi
 }
-telegraf_tag() {  # telegraf_tag  app/telegraf/ の中身からタグを作る（stream の ECS もデバッグ用の EC2 もこのタグを引く）
-  dir_tag "$TELEGRAF_VERSION" app/telegraf
+telegraf_tag() {  # telegraf_tag  app/telegraf/ の中身と docker/images/telegraf/Dockerfile からタグを作る（stream の ECS もデバッグ用の EC2 もこのタグを引く）
+  dir_tag "$TELEGRAF_VERSION" app/telegraf docker/images/telegraf/Dockerfile
 }
 build_telegraf() {  # build_telegraf <ECR のイメージ:タグ>  COPY だけなので x86_64 の PC でも QEMU は要らない
   docker buildx build --platform linux/arm64 --build-arg "TELEGRAF_VERSION=$TELEGRAF_VERSION" -t "$1" --push -f docker/images/telegraf/Dockerfile app/telegraf/

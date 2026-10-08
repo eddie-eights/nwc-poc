@@ -350,7 +350,7 @@ for d in ("ops", "oss/ops"):
     for f in os.listdir(os.path.join(ROOT, d)):
         if f.endswith(".sh") or f in ("seed_graph.py", "roll_health.py"):
             shutil.copy(os.path.join(ROOT, d, f), os.path.join(REPO, d, f))
-UP_DIRS = ("app/containerlab", "app/dashboard", "app/agentcore", "app/nautobot", "app/telegraf", "app/splunk", "app/spark", "app/neo4j", "app/graph",
+UP_DIRS = ("app/containerlab", "app/dashboard", "app/agentcore", "app/nautobot", "app/telegraf", "app/splunk", "app/grafana", "app/spark", "app/neo4j", "app/graph",
            "app/temporal", "docker/images")
 for d in UP_DIRS:
     shutil.copytree(os.path.join(ROOT, d), os.path.join(REPO, d), ignore=shutil.ignore_patterns(
@@ -709,7 +709,7 @@ check("oss/ops/up.sh は analytics の前に Splunk の SSM（ensure_splunk_secr
       and 0 <= pos("ensure_s3tables_catalog") < pos("tf_apply pipeline/analytics")
       and 'ensure_splunk_secrets "$SPLUNK_AZ_NUM"' in read("ops/up.sh"))
 check("oss/ops/up.sh の Grafana のイメージはマネージド版と同じ関数（ops/up-common.sh の build_grafana。版は GRAFANA_VERSION、タグは dir_tag）で、docker login のあと、analytics より前",
-      'GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" app/grafana)' in up and 'ecr_has "$PREFIX-grafana" "$GRAFANA_TAG"' in up
+      'GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" app/grafana docker/images/grafana/Dockerfile)' in up and 'ecr_has "$PREFIX-grafana" "$GRAFANA_TAG"' in up
       and pos("aws ecr get-login-password") < pos("    build_grafana") < pos("tf_apply pipeline/analytics")
       and "    build_grafana" in read("ops/up.sh") and "GRAFANA_VERSION=" not in read("ops/up.sh") and "GRAFANA_VERSION=" not in up
       and re.search(r"^GRAFANA_VERSION=(\S+)", read("ops/up-common.sh"), re.M).group(1)

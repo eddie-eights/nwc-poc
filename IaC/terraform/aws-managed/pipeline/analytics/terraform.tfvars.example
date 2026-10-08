@@ -18,11 +18,11 @@
 #   管理者のパスワード /<owner>-nwc-poc/splunk/admin-password と HEC の token /<owner>-nwc-poc/splunk/hec-token は ops/up.sh が作る
 # sinks            = ["iceberg", "opensearch", "prometheus", "splunk"]
 # splunk_index     = ""
-# splunk_image_tag = "10.4.3-<hash>"
+# splunk_image_tag = "10.4.4-<hash>"
 # splunk_az_num    = 1   # 2 か 3 で indexer のクラスター（ops/up.sh は deploy.env の SPLUNK_AZ_NUM を渡す）。
 #                        # クラスターの鍵 /<owner>-nwc-poc/splunk/idxc-secret も ops/up.sh が作る。splunk_index は "" のまま
 
 # Grafana OSS を ECS で（grafana.tf。Prometheus / OpenSearch を見る。ops/up.sh は deploy.env の STORES に grafana があれば渡す）。
 # 管理者のパスワード /<owner>-nwc-poc/grafana/admin-password は ops/up.sh が作る
 # create_grafana    = true
-# grafana_image_tag = "13.2.2-<hash>"
+# grafana_image_tag = "13.2.3-<hash>"

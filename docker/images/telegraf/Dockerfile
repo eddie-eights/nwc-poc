@@ -4,7 +4,7 @@
 # 上流の /entrypoint.sh は root で起きて setpriv で telegraf に落とすが、ここでは初めから telegraf（非 root）で起こす。
 # 非 root は 1024 未満のポートで待てないので、trap は 1162 で受ける（NLB が 162 を 1162 に向ける。IaC/terraform/aws-managed/pipeline/stream の telegraf.tf）。
 # 受け口は trap 1162/udp、syslog 5140/udp、MDT 57000/tcp、outputs.health 8080/tcp
-ARG TELEGRAF_VERSION=1.40.0
+ARG TELEGRAF_VERSION=1.40.1
 FROM telegraf:${TELEGRAF_VERSION}
 
 COPY telegraf.conf.in lab_gnmi.star lab_circuits.star /etc/telegraf/

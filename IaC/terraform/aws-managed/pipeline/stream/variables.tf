@@ -75,9 +75,9 @@ variable "log_retention_days" {
 
 # ---------------------------------------------------------------- Telegraf (telegraf.tf)
 variable "telegraf_image_tag" {
-  description = "Tag of the Telegraf image in the <prefix>-telegraf repository (docker/images/telegraf/Dockerfile). ops/up.sh builds it as <telegraf version>-<hash of app/telegraf/> and passes it."
+  description = "Tag of the Telegraf image in the <prefix>-telegraf repository (docker/images/telegraf/Dockerfile). ops/up.sh builds it as <telegraf version>-<hash of app/telegraf/ and docker/images/telegraf/Dockerfile> and passes it."
   type        = string
-  default     = "1.40.0"
+  default     = "1.40.1"
 
   validation {
     condition     = can(regex("^[A-Za-z0-9._-]{1,128}$", var.telegraf_image_tag))

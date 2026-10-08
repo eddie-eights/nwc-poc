@@ -411,6 +411,37 @@ check("cfn_stack_status は「無い」（空・0）と「読めない」（認�
 check("スタック名は <接頭辞>-lab-debug で、ロールとインスタンスプロファイルは lab の EC2（<接頭辞>-lab）と別の名前",
       'STACK="$PREFIX-lab-debug"' in dbg and role["RoleName"] == {"Fn::Sub": "${NamePrefix}-lab-debug"}
       and res["InstanceProfile"]["Properties"]["InstanceProfileName"] == {"Fn::Sub": "${NamePrefix}-lab-debug"})
+# ---- dir_tag（Dockerfile は docker/images/<名前>/ にあり context の外なので、3 つ目の引数で渡してハッシュに入れる）
+def _dir_tag(cwd, *args):
+    r = subprocess.run(["bash", "-c", f'PY=(python3); . {shlex.quote(os.path.join(ROOT, "ops", "lab-common.sh"))}; dir_tag "$@"', "_", *args],
+                       capture_output=True, text=True, cwd=cwd)
+    return r.stdout.strip(), r.returncode
+with tempfile.TemporaryDirectory() as d:
+    os.makedirs(os.path.join(d, "app", "x")); os.makedirs(os.path.join(d, "docker", "images", "x"))
+    with open(os.path.join(d, "app", "x", "a.txt"), "w") as f:
+        f.write("a\n")
+    df_path = os.path.join("docker", "images", "x", "Dockerfile")
+    with open(os.path.join(d, df_path), "w") as f:
+        f.write("FROM scratch\n")
+    _t0, _t1 = _dir_tag(d, "1", "app/x"), _dir_tag(d, "1", "app/x", df_path)
+    _t1b = _dir_tag(d, "1", "app/x", df_path)
+    with open(os.path.join(d, df_path), "a") as f:
+        f.write("# x\n")
+    _t2 = _dir_tag(d, "1", "app/x", df_path)
+    _missing = _dir_tag(d, "1", "app/none", df_path)
+check("dir_tag は 3 つ目からのファイルもハッシュに入れる（Dockerfile だけ変えてもタグが変わり、同じ中身なら同じタグ。ディレクトリが無ければ失敗）",
+      all(rc == 0 and re.fullmatch(r"1-[0-9a-f]{12}", t) for t, rc in (_t0, _t1, _t2))
+      and _t1 == _t1b and _t0[0] != _t1[0] and _t1[0] != _t2[0] and _missing[1] != 0)
+_tag_calls = [m for n in ("lab-common.sh", "up-common.sh", "up.sh") for m in re.findall(r'^[^#\n]*?\bdir_tag "\$\w+" ([^)\n;]*)', read("ops", n), re.M)] \
+    + [m for n in ("up.sh", "oss-images.sh") for m in re.findall(r'^[^#\n]*?\bdir_tag "\$\w+" ([^)\n;]*)', read("oss", "ops", n), re.M)]
+_tag_df = [re.fullmatch(r'(?:app/([\w-]+)|"\$NAUTOBOT_CTX") docker/images/([\w-]+)/Dockerfile\s*', c) for c in _tag_calls]
+_builds = "".join(read(*p) for p in (("ops", "lab-common.sh"), ("ops", "up-common.sh"), ("oss", "ops", "oss-images.sh")))
+check("dir_tag の呼び元 8 か所は、どれも docker build の -f と同じ docker/images/<名前>/Dockerfile を渡す（context が app/<名前>/ ならその名前と同じ）",
+      len(_tag_calls) == 8 and all(_tag_df)
+      and all(m.group(1) in (None, m.group(2)) for m in _tag_df)
+      and {m.group(2) for m in _tag_df} == {"telegraf", "splunk", "grafana", "nautobot", "spark", "neo4j"}
+      and all(f"-f docker/images/{m.group(2)}/Dockerfile " in _builds for m in _tag_df))
+
 for f in (("ops", "lab-common.sh"), ("ops", "lab-debug.sh"), ("ops", "up.sh"), ("ops", "down.sh"),
           ("ops", "common.sh"), ("ops", "up-common.sh"), ("ops", "down-common.sh"), ("app", "containerlab", "setup.sh"), ("app", "containerlab", "lab.sh"), ("app", "telegraf", "telegraf.sh")):
     r = subprocess.run(["bash", "-n", os.path.join(ROOT, *f)], capture_output=True, text=True)

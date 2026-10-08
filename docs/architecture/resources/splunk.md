@@ -15,7 +15,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | サービス | `<prefix>-splunk`（1 台のときは全部の役目、クラスターのときは search head）。ECS のクラスター `<prefix>-analytics`。1 タスク、サブネット a | `IaC/terraform/aws-managed/pipeline/analytics/splunk.tf` |
 | クラスターのサービス | `SPLUNK_AZ_NUM` が 2 か 3 のときだけ。`<prefix>-splunk-cm`（cluster manager、1 タスク、サブネット a）と `<prefix>-splunk-idx`（indexer、`SPLUNK_AZ_NUM` タスク、サブネット a から `SPLUNK_AZ_NUM` 個） | `splunk.tf`、`deploy.env.example` の `SPLUNK_AZ_NUM`（既定 1、1〜3） |
 | タスクの大きさ | Fargate x86、2 vCPU / 4 GB、エフェメラルストレージ 40 GiB | 変数 `splunk_task_cpu`、`splunk_task_memory`、`splunk_ephemeral_storage_gib` |
-| イメージ | Splunk Enterprise 10.4.3 の公式イメージ + app `netops_alerts`。ECR の `<prefix>-splunk` | `docker/images/splunk/Dockerfile`、変数 `splunk_image_tag` |
+| イメージ | Splunk Enterprise 10.4.4 の公式イメージ + app `netops_alerts`。ECR の `<prefix>-splunk` | `docker/images/splunk/Dockerfile`、変数 `splunk_image_tag` |
 | 名前とポート | Cloud Map `splunk.<prefix>.internal`。Web 8000（http）、HEC 8088（https、自己署名）。クラスターのときは `splunk-cm.<prefix>.internal`（manager）と `splunk-idx.<prefix>.internal`（indexer。A レコードが indexer の数だけ）が増え、HEC の宛先は `splunk-idx` になる | `splunk.tf`、`locals.tf` の `splunk_hec_url` |
 | Splunk どうしのポート | 管理と検索 8089、複製 9887、転送の受け口 9997。SG `splunk` から `splunk` へだけ開けてある（1 台のときも規則はある。相手がいないだけ）。ほかの SG からは 8089 に届かない | `IaC/terraform/aws-managed/base/core/security_groups.tf` |
 | 入るもの | 5 つのトピックの全部。sourcetype は `netops:<トピック>`。index は `main`（HEC の token の既定） | `app/spark/snmp_sinks.py`、変数 `SPLUNK_INDEX`（既定は空） |
@@ -103,7 +103,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
   index はタスクの中にあり、引き継がない。
   出典: `deploy.env.example`、004 の設計。
 - **アラートは、Splunk の Python が持っている boto3 で SNS に publish する。**
-  10.4.3 は python3.13 に boto3 1.37.14。app には同梱しない。Splunk の版を変えたら `tests/check_splunk_image.py` で確かめる。1 通に 50 件まで、失敗は 3 回まで試す。
+  10.4.4 は python3.13 に boto3 1.37.14。app には同梱しない。Splunk の版を変えたら `tests/check_splunk_image.py` で確かめる。1 通に 50 件まで、失敗は 3 回まで試す。
   出典: [pipeline.md](../../pipeline.md) の「Splunk のアラート」。
 - **splunkd は、コンテナの環境変数を子プロセスに引き継がない。**
   `app/splunk/entrypoint.sh` が、要る値（リージョン、トピックの ARN、`DEVICE_MAP`、認証情報の取り出し口の URI）を `/opt/container_artifact/nwc-alerts.env` に写す。鍵そのものは書かない。

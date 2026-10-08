@@ -177,9 +177,9 @@ ensure_s3tables_catalog() {  # 無ければ作る。あれば設定が想定（I
 # Splunk Enterprise（analytics の ECS。IaC/terraform/aws-managed/pipeline/analytics の splunk.tf）。マネージド版と OSS 版（設計 005: Splunk は OSS 版でも変えない）が
 # 同じイメージの作り方と同じ SSM のパラメータを使う。SPLUNK_VERSION は app/splunk/ の Dockerfile の ARG の既定値に合わせてある
 # （変えるときは両方を変える。tests/check_splunk_image.py で、その版の Python の boto3 でアラートを送れるかも確かめる）
-SPLUNK_VERSION=10.4.3   # splunk/splunk は amd64 だけ（ECS のタスクは X86_64）
-splunk_image_check() {  # SPLUNK_TAG を app/splunk/ の中身から作り、ECR の <接頭辞>-splunk に無ければ NEED_SPLUNK=1。PREFIX を使う
-  SPLUNK_TAG=$(dir_tag "$SPLUNK_VERSION" app/splunk) || die "app/splunk/ のタグを作れなかった"
+SPLUNK_VERSION=10.4.4   # splunk/splunk は amd64 だけ（ECS のタスクは X86_64）
+splunk_image_check() {  # SPLUNK_TAG を app/splunk/ の中身と docker/images/splunk/Dockerfile から作り、ECR の <接頭辞>-splunk に無ければ NEED_SPLUNK=1。PREFIX を使う
+  SPLUNK_TAG=$(dir_tag "$SPLUNK_VERSION" app/splunk docker/images/splunk/Dockerfile) || die "app/splunk/ のタグを作れなかった"
   if ecr_has "$PREFIX-splunk" "$SPLUNK_TAG"; then echo "splunk:$SPLUNK_TAG はある"; else NEED_SPLUNK=1; fi
 }
 build_splunk() {  # docker login 済みで呼ぶ。REG / PREFIX / SPLUNK_TAG（splunk_image_check）を使う
@@ -227,12 +227,12 @@ splunk_cluster_check() {
 # NAUTOBOT_VERSION は docker/images/nautobot/Dockerfile の ARG、REDIS_TAG は IaC/terraform/aws-managed/pipeline/nautobot の redis_image_tag、
 # TEMPORAL_TAG は IaC/terraform/aws-managed/workflow の temporal_image_tag の既定値に合わせてある（変えるときは両方を変える）
 NAUTOBOT_VERSION=3.2.6
-GRAFANA_VERSION=13.2.2   # app/grafana/ の Dockerfile の ARG の既定値に合わせてある（変えるときは両方を変える）
+GRAFANA_VERSION=13.2.3   # app/grafana/ の Dockerfile の ARG の既定値に合わせてある（変えるときは両方を変える）
 REDIS_TAG=8.10.2-alpine   # 8 系は AGPLv3 も選べる（7.4 は RSALv2 / SSPL だけ）。公式のイメージは Search・JSON などのモジュールを読み込んで起きる
 TEMPORAL_TAG=1.9.1
 nautobot_context() {  # nautobot_context <空のディレクトリ>  Nautobot のイメージのビルドの context を集める（docker/images/nautobot/Dockerfile の頭の説明）
   # app/nautobot/ の中身に、グラフへ openCypher で書く app/agentcore/graph.py と app/agentcore/toolkit.py、最初の seed にする lab の定義を足す。
-  # タグはこのディレクトリの中身から作る（dir_tag）ので、graph.py や lab の定義を変えてもイメージが作り直される
+  # タグはこのディレクトリの中身と docker/images/nautobot/Dockerfile から作る（dir_tag）ので、graph.py や lab の定義や Dockerfile を変えてもイメージが作り直される
   cp -R app/nautobot/. "$1/" && cp app/agentcore/graph.py app/agentcore/toolkit.py "$1/" || return 1
   find "$1" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null
   find "$1" -name .DS_Store -delete 2>/dev/null
@@ -241,7 +241,7 @@ nautobot_context() {  # nautobot_context <空のディレクトリ>  Nautobot �
 build_agent() {  # build_agent <リポジトリの URL>:<タグ> [requirements のファイル名]  Runtime のコンテナ（arm64）。OSS 版は requirements-oss.txt（neo4j のドライバー入り）
   docker buildx build --platform linux/arm64 --build-arg "REQUIREMENTS=${2:-requirements.txt}" -t "$1" --push -f docker/images/agentcore/Dockerfile app/agentcore/
 }
-build_grafana() {  # REG / PREFIX / GRAFANA_TAG（dir_tag "$GRAFANA_VERSION" app/grafana）を使う。Grafana OSS（arm64）
+build_grafana() {  # REG / PREFIX / GRAFANA_TAG（dir_tag "$GRAFANA_VERSION" app/grafana docker/images/grafana/Dockerfile）を使う。Grafana OSS（arm64）
   # データソースの plugin をビルドのときに入れる（タスクは AWS の外へ出られず、起動時に grafana.com から落とせない）
   docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push -f docker/images/grafana/Dockerfile app/grafana/
 }
