@@ -26,7 +26,7 @@ output "graph_cluster_name" {
 }
 
 output "neo4j_service_name" {
-  description = "ECS service of the Neo4j task. The graph is empty again after the task is replaced: run ops/sync-graph.sh --oss"
+  description = "ECS service of the Neo4j task. The graph is empty again after the task is replaced: run ops/sync-graph.sh --oss, then the Nautobot job that syncs to Telegraf and the graph DB to restore the change history (docs/oss-variant.md)"
   value       = aws_ecs_service.neo4j.name
 }
 
@@ -36,7 +36,7 @@ output "neo4j_log_group_name" {
 }
 
 output "next_step" {
-  description = "Run on the web EC2 after apply (SSM session) so the web reads neo4j-uri, then load the topology with ops/sync-graph.sh --oss (also after every replacement of the Neo4j task: its data lives in the task)"
+  description = "Run on the web EC2 after apply (SSM session) so the web reads neo4j-uri, then load the topology with ops/sync-graph.sh --oss (also after every replacement of the Neo4j task: its data lives in the task; after a replacement, run the Nautobot job that syncs to Telegraf and the graph DB next)"
   value       = "sudo systemctl restart ${local.name_prefix}-web"
 }
 

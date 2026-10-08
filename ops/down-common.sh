@@ -196,7 +196,7 @@ delete_up_ssm_params() {  # up.sh が作った SSM のパラメータ（/<PREFIX
     aws ssm delete-parameter --region "$REGION" --name "$n" 2>/dev/null && echo "$n: 消した" || echo "$n: 無い"
   done
 }
-report_leftovers() {  # タグ Project=<PREFIX>（完全一致）の付いた、まだ残っているリソースの ARN を並べ、数を出す
+report_leftovers() {  # タグ Project=<PREFIX>（完全一致）の付いたリソースの ARN を並べ、数を出す。タグの API は消えたリソースも返すので、消えたかはこれで決めない
   local arns rc=0
   arns=$(aws resourcegroupstaggingapi get-resources --region "$REGION" --tag-filters "Key=Project,Values=$PREFIX" \
     --query 'ResourceTagMappingList[].ResourceARN' --output text) || rc=$?

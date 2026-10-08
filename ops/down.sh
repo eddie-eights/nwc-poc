@@ -112,10 +112,12 @@ delete_up_ssm_params
 
 log "6. 残っていないか（Project=$PREFIX のタグ）"
 report_leftovers
-echo "（残り 0 件なら全部消えている。ecr を残したときはリポジトリが出る。消した直後の数分は消えたものが出ることがある）"
+echo "（この一覧では消えたかを決めない。タグの API は消えたリソースも返す（何日も前に消えた EMR Serverless のジョブランなど）。"
+echo " 消えたかはサービスごとの API で見る。KEEP_ECR=1 なら ECR のリポジトリは実際に残っている。docs/deploy.md の「消したあとに残るもの」）"
 if [ "$MAIN_LEFT" = 1 ]; then
   echo "IaC/terraform/aws-managed/base/core の VPC・サブネット・runtime の SG は残した（Runtime の ENI 待ち。時間課金は無い）。"
-  echo "すぐ使うなら ops/up.sh がそのまま使い回す。消し切るなら数時間おいて ops/down.sh を打ち直す"
+  echo "そのままでよい。次の ops/up.sh が使い回す（ops/up.sh を打ったのと同じチェックアウトから打つとき。state はここにしか無い）。"
+  echo "消し切るときだけ、ENI が外れてから（最大 8 時間）同じチェックアウトで ops/down.sh を打ち直す"
 fi
 if [ -n "$FAILED_ROOTS" ]; then
   echo
