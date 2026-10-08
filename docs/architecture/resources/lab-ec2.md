@@ -55,7 +55,7 @@ lab の中身:
   terraform の変数とデバッグ用のスタックの既定値も同じ値にしてある。
   出典: `ops/lab-common.sh`、[pipeline.md](../../pipeline.md) の「デバッグ用の EC2（lab + Telegraf を 1 台）」。
 - **stream がある回は、EC2 の `source_dest_check` を切ってある。**
-  送り元や宛先が管理ネットワーク（`203.0.113.x`）のパケットを、Telegraf のタスクや NLB とのあいだで通すため。変数 `forward_to_telegraf`（既定 false）を、`ops/up.sh` が stream を作るか残すときに true にする。
+  送り元や宛先が管理ネットワーク（`203.0.113.x`）のパケットを、gnmic のタスクや、Telegraf・syslog-ng・GoFlow2 の NLB とのあいだで通すため。変数 `forward_to_telegraf`（既定 false）を、`ops/up.sh` が stream を作るか残すときに true にする。
   出典: `instance.tf` と `IaC/terraform/aws-managed/pipeline/lab/telegraf.tf` のコメント。
 - **trap と syslog は、送り元の IP を機器の管理 IP のまま届ける。**
   Docker の MASQUERADE にかけず、NLB も送り元を残す。Spark とエージェントが送り元の IP で機器を引くため。
@@ -81,8 +81,8 @@ lab の中身:
 - **SR Linux の SNMP の `ifOperStatus` は、実際の状態より 15〜20 秒遅れる。**
   2026-09-27 の実測。
   出典: [pipeline.md](../../pipeline.md) の「lab に入る」。
-- **SR Linux の ifTable は、未使用の物理ポートも全部出す。**
-  `ifAdminStatus` が down の行。IF の鍵は `ifName`。Grafana のルールは admin down の行、サブインタフェース、ループバック、管理ポートを見ない。
+- **SR Linux は、未使用の物理ポートも IF として全部出す。**
+  gNMI の `admin-state` が disable の IF（2026-10-09 までの SNMP のポーリングでは `ifAdminStatus` が down の行）。IF の鍵は `ifName`。Grafana と Splunk の `link_down` は admin-state が disable の IF、サブインタフェース、ループバック、管理ポートを見ない。
   出典: [pipeline.md](../../pipeline.md) の「lab に入る」。
 - **lab の機器は syslog を RFC 5424 で送る。syslog-ng の既定は本番に合わせた RFC3164。**
   lab のログの項目まで見るなら `SYSLOG_STANDARD` を合わせる（2026-10-08 から stream の syslog-ng の設定。デバッグ用の EC2 は syslog を受けない）。

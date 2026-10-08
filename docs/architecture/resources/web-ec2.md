@@ -19,7 +19,7 @@
 | 画面のコード | 共有バケット `<prefix>-kb-<アカウント>` の `web/` から起動時に取る | `ops/up.sh` の手順 4、`IaC/terraform/aws-managed/base/core/bucket.tf` |
 | ロール | `<prefix>-web`。SSM の管理、`web/*` の読み取り、`/<prefix>/*` の `ssm:GetParameter`。ECR の `<prefix>-kafka-ui` からのイメージの取得。Runtime と Gateway を呼ぶ許可は agent と workflow のルートが足す。MSK の権限（Kafbat UI）は stream のルートがポリシー `<prefix>-kafka-ui` で足す。承認タブの許可（決定のキューへの `sqs:SendMessage` と、Athena での `proposal_events` の読み取り）は workflow のルートがポリシー `<prefix>-workflow-web` で足す | `IaC/terraform/aws-managed/base/core/web.tf`、`IaC/terraform/aws-managed/agent/runtime.tf`、`IaC/terraform/aws-managed/workflow/proposals.tf` |
 | スイッチ | 無い（土台なので必ず作る）。PC 側のポートは `LOCAL_PORT`（既定 8080）、`NO_DASHBOARD_PORTFORWARD=1` で最後のポートフォワーディングを開かない | [deploy.md](../../deploy.md) の「`deploy.env` のキー」 |
-| 費用 | 4.3 セント/時（t4g.medium。土台は合わせて約 4 セント/時 + エンドポイント） | `ops/up.sh` の費用の目安（526〜583 行） |
+| 費用 | 4.3 セント/時（t4g.medium。土台は合わせて約 4 セント/時 + エンドポイント） | `ops/up.sh` の費用の目安（524〜584 行） |
 
 ## つながり
 

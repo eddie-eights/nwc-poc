@@ -7,8 +7,8 @@
 ## AWS 側
 
 - **VPC は `IaC/terraform/aws-managed/base/core` が作る。**既定は `10.0.0.0/16` に `/24` のプライベートサブネット 3 つ（a = `apne1-az1` / b = `apne1-az4` / c = `apne1-az2`）。3 つともいつも作り、各リソースが何 AZ を使うかは `deploy.env` の `*_AZ_NUM` で選ぶ（既定は a だけ。MSK だけ a と b。[deploy.md](deploy.md)）。インターネットへの経路は無い（NAT Gateway も IGW もパブリックサブネットも作らない。外から入る経路も無い）。社内のネットワークと重なるなら `deploy.env` の `VPC_CIDR` を変える（`/16`〜`/24`）。
-- **SG はワークロードごとに 1 つ（15 個）と、VPC エンドポイント用の `endpoints`。**全部 `IaC/terraform/aws-managed/base/core` の `security_groups.tf` が作り、ルールはそこの通信の表から作る。表に無い通信は VPC の中でも通らない（送信も絞る）。表は [architecture/core.md](architecture/core.md) の「SG」。VPC の全 ENI の通信は VPC フローログ（ロググループ `/<prefix>/vpc-flow-logs`、保存 7 日）に残る。
-- AWS の API（SSM / ECR / CloudWatch Logs / Bedrock / AgentCore（Gateway を含む）/ S3 Tables / Neptune Analytics / Firehose / ECS / Athena / SNS / SQS / Prometheus。作るルートの分だけ）へはインターフェース型エンドポイントで届き、VPC の外からの呼び出しは Deny で拒む（[architecture/core.md](architecture/core.md) の「閉域」）。ほかに S3 の Gateway 型（無料。ポリシーは付けない）と、KB か logs のコレクションを作るときの OpenSearch Serverless の 1 本（既定の 1 AZ で約 $0.014/h。`ENDPOINTS_AZ_NUM` の数の倍）。エンドポイントの無い API へは届かない（NAT Gateway が無いので Deny より先に接続のタイムアウトになる）。
+- **SG はワークロードごとに 1 つ（16 個）と、VPC エンドポイント用の `endpoints`。**全部 `IaC/terraform/aws-managed/base/core` の `security_groups.tf` が作り、ルールはそこの通信の表から作る。表に無い通信は VPC の中でも通らない（送信も絞る）。表は [architecture/core.md](architecture/core.md) の「SG」。VPC の全 ENI の通信は VPC フローログ（ロググループ `/<prefix>/vpc-flow-logs`、保存 7 日）に残る。
+- AWS の API（SSM / ECR / CloudWatch Logs / Bedrock / AgentCore（Gateway を含む）/ S3 Tables / Neptune Analytics / Firehose / ECS / Athena / SNS / SQS / Prometheus / Secrets Manager。作るルートの分だけ）へはインターフェース型エンドポイントで届き、VPC の外からの呼び出しは Deny で拒む（[architecture/core.md](architecture/core.md) の「閉域」）。ほかに S3 の Gateway 型（無料。ポリシーは付けない）と、KB か logs のコレクションを作るときの OpenSearch Serverless の 1 本（既定の 1 AZ で約 $0.014/h。`ENDPOINTS_AZ_NUM` の数の倍）。エンドポイントの無い API へは届かない（NAT Gateway が無いので Deny より先に接続のタイムアウトになる）。
 - 組織の SCP で `aws:SourceVpc` の Deny をすでに掛けているなら、この Terraform の Deny と重なっても害は無い。逆に VPC エンドポイントの作成を SCP で止めていると、手順 3 で落ちる。
 - 使うモデル: Nova 2 Lite（`jp.amazon.nova-2-lite-v1:0`）、Titan Text Embeddings V2、Rerank（`amazon.rerank-v1:0`）。どれも Amazon のモデルなので Marketplace の購読は要らない。SCP や IAM でモデルを絞っているなら、この 3 つを許可する。
 - apply する人に要る権限（管理者権限なら足りる）:
@@ -19,7 +19,7 @@
 - **OpenSearch Serverless のコレクション（KB と logs）は公開しない。**ネットワークポリシーは `IaC/terraform/aws-managed/base/core` の VPC エンドポイント 1 本（2 つのコレクションで共用）だけを通し、KB はそれに加えて Bedrock のサービス（`bedrock.amazonaws.com`）を通す。エンドポイントを通らない接続は公開側からの扱いになるので、VPC の中からでもエンドポイントが無ければ届かない。KB のベクトルインデックスは VPC の中の Lambda が作り、apply する人の PC は OpenSearch につながない（データアクセスポリシーにも人は入らない。apply と destroy を別の人が打ってもよい）。
 - ガードレールの判定は、東京以外の APAC のリージョン（大阪、ソウル、ムンバイ、シンガポール、シドニー）で行われることがある。データを国内に留める決まりがあるなら使えない。
 - Session Manager の設定で KMS の暗号化を必須にしているなら、インスタンスロールへの `kms:Decrypt` が別に要る（この Terraform には入れていない。`kms` のエンドポイントも NAT Gateway も無いので、`kms` の API へは届かない。そのときは `kms` のエンドポイントを足す）。
-- **PIPELINE は組織の SCP / IAM で止められやすい**（EC2 の m6i.xlarge、Neptune Analytics、MSK、EMR Serverless、S3 Tables、ECS Fargate（Telegraf / Grafana / Splunk / Nautobot）と内部 NLB（Telegraf）、RDS（Nautobot）、Cloud Map）。apply が `explicitly denied` で止まったら、管理者に許可を頼むか `SKIP_*` で外す。
+- **PIPELINE は組織の SCP / IAM で止められやすい**（EC2 の m6i.xlarge、Neptune Analytics、MSK、EMR Serverless、S3 Tables、ECS Fargate（Telegraf / gnmic / syslog-ng / GoFlow2 / Grafana / Splunk / Nautobot）と内部 NLB（Telegraf・syslog-ng・GoFlow2）、RDS（Nautobot）、Cloud Map）。apply が `explicitly denied` で止まったら、管理者に許可を頼むか `SKIP_*` で外す。
 
 ## 利用者の PC 側
 

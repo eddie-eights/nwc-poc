@@ -16,7 +16,7 @@
 | SecureString | `ops/up.sh` が `ensure_secret`（乱数）と `ensure_fixed_secret`（決まった値）で作る。タグ `ManagedBy=ops/up.sh`（OSS 版は `ops/oss/up.sh` が作り、タグは `ManagedBy=ops/oss/up.sh`） | `ops/up-common.sh` の `ensure_secret`、`ensure_fixed_secret` |
 | 消す | `ops/down.sh` の手順 5-2 が、タグ `ManagedBy=ops/up.sh` の付いたものだけ消す（OSS 版は `ops/oss/down.sh` の手順 5-2 が `ManagedBy=ops/oss/up.sh` のものを消す） | `ops/down.sh`、`ops/down-common.sh` の `delete_up_ssm_params` |
 | エンドポイント | `ssm`（土台の分。`ssmmessages` と一緒にいつも作る） | `ops/up.sh` の手順 0 |
-| 費用 | エンドポイントが 1 本 1.4 セント/時 × `ENDPOINTS_AZ_NUM` | `ops/up.sh` の費用の目安（526〜583 行） |
+| 費用 | エンドポイントが 1 本 1.4 セント/時 × `ENDPOINTS_AZ_NUM` | `ops/up.sh` の費用の目安（524〜584 行） |
 
 String（ルートをまたいで渡す値）:
 
@@ -24,7 +24,7 @@ String（ルートをまたいで渡す値）:
 |---|---|---|---|
 | `/<prefix>/runtime-arn` | AgentCore Runtime の ARN | agent | Web の EC2（60 秒キャッシュ） |
 | `/<prefix>/gateway-url` | AgentCore Gateway の URL | workflow | Runtime |
-| `/<prefix>/msk-bootstrap` | MSK のブローカーの一覧 | stream | だれも読まない。手で確かめるときと手動構築のために残してある（Telegraf は環境変数、Spark はジョブの引数でもらう。[msk.md](msk.md)） |
+| `/<prefix>/msk-bootstrap` | MSK のブローカーの一覧 | stream | だれも読まない。手で確かめるときと手動構築のために残してある（Telegraf・gnmic・syslog-ng・GoFlow2 は環境変数、Spark はジョブの引数でもらう。[msk.md](msk.md)） |
 | `/<prefix>/telegraf-address` | Telegraf の内部 NLB のアドレス | stream | lab の EC2（`lab forward`） |
 | `/<prefix>/telegraf-source-cidr` | gnmic のタスクのサブネットの CIDR（名前は Telegraf の取りにいく側のときのまま） | stream | lab の EC2（`lab forward`） |
 | `/<prefix>/gnmic/<lab か nautobot>/gnmi-targets` | gnmic が購読する機器の一覧 | stream（最初の値）。`nautobot` のほうは Nautobot の Job が書き換える | gnmic のタスク（ECS の secrets） |
@@ -71,9 +71,9 @@ SecureString（`ops/up.sh` が作る）:
 - **ARN や ID を SSM で渡すと、あとから作ったルートを、先に作ったものを作り直さずにつなげる。**
   agent を後から作っても消しても Web の EC2 を作り直さない。stream を後から作っても lab の EC2 を作り直さない。
   出典: `IaC/terraform/aws-managed/agent/runtime.tf` と `IaC/terraform/aws-managed/pipeline/lab/telegraf.tf` のコメント。
-- **Telegraf の機器の一覧は、Nautobot があるときは Terraform が値の変化を見ない。**
+- **gnmic の機器の一覧（`gnmi-targets`）は、Nautobot があるときは Terraform が値の変化を見ない。**
   最初の値は lab の定義から入れ、あとは Nautobot の Job が書き換えてサービスを作り直す（`ignore_changes`）。Nautobot が無い回は `…/lab/…` の名前で Terraform が値を持つ。
-  出典: `IaC/terraform/aws-managed/pipeline/stream/telegraf.tf` のコメント。
+  出典: `IaC/terraform/aws-managed/pipeline/stream/gnmic.tf` のコメント。
 - **DB のパスワードは plan にも state にも残らない。**
   Terraform は ephemeral で読み、`password_wo` に渡す。
   出典: `IaC/terraform/aws-managed/pipeline/nautobot/database.tf` のコメント。
@@ -92,7 +92,7 @@ SecureString（`ops/up.sh` が作る）:
 | 項目 | 状態 |
 |---|---|
 | シークレットの入れ替え（ローテーション） | 仕組みは作っていない。手で変えたらサービスを作り直す |
-| Secrets Manager | 使っていない（シークレットは SSM の SecureString に置く決まり） |
+| Secrets Manager | MSK の SCRAM の資格情報（`AmazonMSK_<prefix>-collectors`）だけで使う（MSK の SCRAM は Secrets Manager しか受けない。2026-10-08、cycle 012 から。[msk.md](msk.md)）。ほかのシークレットは SSM の SecureString に置く決まり |
 | 機器の認証情報 | lab では containerlab の既定値。本番の機器につなぐときは SSM の値を書き換える（`ops/up.sh` は、あれば触らない） |
 
 ## 関連

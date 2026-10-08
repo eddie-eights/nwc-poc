@@ -18,7 +18,7 @@ Temporal の開発用サーバー（`start-dev`）と Python の worker を、Fa
 | 待ち時間 | 承認待ち 120 分（`APPROVAL_TIMEOUT_MINUTES`）、解消の確認 300 秒（`VERIFY_TIMEOUT`）、閉じずに待つ 1440 分（`HOLD_MINUTES`） | 変数 `approval_timeout_minutes`、`verify_timeout_seconds`、`hold_minutes` |
 | ワークフローの id | `investigate-<anomaly_id>`（発生の時刻を入れない） | `app/temporal/worker.py`、`app/temporal/rules.py` |
 | スイッチ | `WORKFLOW=1`。`AGENT=1` と `PIPELINE=1` が要り、`SKIP_LAB` / `SKIP_STREAM` / `SKIP_ANALYTICS` / `SKIP_GRAPH` は書けない | `ops/up.sh` |
-| 費用 | 5 セント/時 | `ops/up.sh` の費用の目安（526〜583 行） |
+| 費用 | 5 セント/時 | `ops/up.sh` の費用の目安（524〜584 行） |
 
 worker が読み書きするもの:
 
@@ -60,7 +60,7 @@ worker が読み書きするもの:
   発生はワークフローそのもの、解消はシグナル `resolved` で持つ。
   出典: [workflow.md](../../workflow.md) の「流れ」。
 - **確認（verify）は Neptune を見に行かず、解消の通知を待つ。**
-  通知は「機器 → Telegraf → MSK → Spark → Prometheus / Splunk → ルールの評価 → SNS → SQS」を通るので、直ってから届くまで 1〜2 分かかる。300 秒待つ。
+  通知は「機器 → gnmic → MSK → Spark → Prometheus / Splunk → ルールの評価 → SNS → SQS」を通るので、直ってから届くまで 1〜2 分かかる。300 秒待つ。
   出典: [workflow.md](../../workflow.md) の「修復案の状態」。
 - **`rejected` / `expired` / `failed` で終わるときは、解消の通知が来るまでワークフローを閉じない。**
   閉じると、まだ直っていない同じ異常の次の通知がもう一度調査を起こすため。長くて 1440 分。

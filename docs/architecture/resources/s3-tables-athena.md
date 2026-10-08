@@ -19,7 +19,7 @@ Athena は、ここのテーブルをエージェントと Web の承認タブ�
 | Athena から見たカタログ名 | `s3tablescatalog/<テーブルバケット>`（analytics の output `athena_catalog`） | `history.tf` の `local.athena_catalog` |
 | 閉域 | テーブルバケットのポリシーに、この VPC の外からの呼び出しの Deny | `tables.tf`、[vpc-perimeter.md](vpc-perimeter.md) |
 | スイッチ | `STORES` の `s3`（`raw_telemetry` と Spark のジョブ `sinks-s3iceberg` だけがこれに従う）、`SKIP_ANALYTICS=1` | `deploy.env.example` |
-| 費用 | テーブルは時間課金なし。`STORES` の `s3` は Spark のジョブ 1 つ分で +$0.21/h。Athena はスキャンした量の課金（PoC の量なら月に数セント） | `ops/up.sh` の費用の目安（526〜583 行）、`deploy.env.example`、`history.tf` のコメント |
+| 費用 | テーブルは時間課金なし。`STORES` の `s3` は Spark のジョブ 1 つ分で +$0.21/h。Athena はスキャンした量の課金（PoC の量なら月に数セント） | `ops/up.sh` の費用の目安（524〜584 行）、`deploy.env.example`、`history.tf` のコメント |
 
 テーブルと中身:
 

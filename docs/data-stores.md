@@ -160,7 +160,7 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 | `nautobot` | [app/nautobot/](../app/nautobot/)（公式の `networktocode/nautobot` に Job と `netops` を足す） | ECS Fargate（pipeline/nautobot。`PIPELINE=1`） | 台帳（Nautobot）。変更を gnmic の購読先と Neptune に同期する |
 | `redis` | `redis`（ミラー） | ECS Fargate（`nautobot` と同じタスク） | Nautobot のキャッシュと Celery のブローカー |
 
-分けて見ると、監視される側が `lab-srlinux`、負荷をかける側が `lab-trex`（`lab-multitool` は containerlab の既定のイメージ）、集める側が `telegraf` / `syslog-ng` / `goflow2`、考える側が `agent`、実行する側が `temporal` / `worker`、見る側と見つける側が `grafana` / `splunk`。
+分けて見ると、監視される側が `lab-srlinux`、負荷をかける側が `lab-trex`（`lab-multitool` は containerlab の既定のイメージ）、集める側が `telegraf` / `gnmic` / `syslog-ng` / `goflow2`、考える側が `agent`、実行する側が `temporal` / `worker`、見る側と見つける側が `grafana` / `splunk`。
 
 ### 8. アーキテクチャは全体で揃えない（同じホストの中だけ揃える）
 
@@ -168,7 +168,7 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 
 - **arm64 が必須なのは AgentCore Runtime のエージェントだけ。** Runtime は linux/arm64 のイメージしか動かせず、x86_64 でビルドしたイメージは起動しない。`docker/images/agentcore/Dockerfile` の冒頭にも書いてある。
 - **x86 が必須なのは Splunk と TRex。** どちらも公式イメージが amd64 しか無い。`splunk` は ECS Fargate のそのタスクだけ `X86_64` にし、`docker buildx build --platform linux/amd64` で作る（公式イメージに COPY するだけなので、arm64 の PC でもエミュレーション無しで作れる）。TRex（`trexcisco/trex`）は lab の EC2 で動くので、lab の EC2 を x86_64（既定 `m6i.xlarge`）にした。
-- **Fargate のほかのサービスは安い arm64。** `cpu_architecture = "ARM64"`（[IaC/terraform/aws-managed/workflow/ecs.tf](../IaC/terraform/aws-managed/workflow/ecs.tf)、stream の Telegraf・syslog-ng・GoFlow2、analytics の Grafana、pipeline/nautobot の Nautobot）。EMR Serverless と Lambda も arm64、Web の EC2 は `t4g`（Graviton）だけを受け付ける（Kafbat UI もこの EC2 で動く）。
+- **Fargate のほかのサービスは安い arm64。** `cpu_architecture = "ARM64"`（[IaC/terraform/aws-managed/workflow/ecs.tf](../IaC/terraform/aws-managed/workflow/ecs.tf)、stream の Telegraf・gnmic・syslog-ng・GoFlow2、analytics の Grafana、pipeline/nautobot の Nautobot）。EMR Serverless と Lambda も arm64、Web の EC2 は `t4g`（Graviton）だけを受け付ける（Kafbat UI もこの EC2 で動く）。
 - **同じホストの中は揃える。** lab の EC2 では SR Linux / multitool / TRex が全部 amd64（`ops/lab-common.sh` の `mirror_lab_images` が `linux/amd64` で写す）。デバッグ用の EC2（`ops/lab-debug.sh`）で同じホストに載る Telegraf も amd64 でビルドする（`build_telegraf` の第 2 引数。stream の ECS の Telegraf は arm64 のままで、リポジトリが別）。
 - **`--platform` はイメージごとに指定する。** PC 側の `docker buildx build` と `docker pull` は、動く場所に合わせて `linux/arm64` か `linux/amd64` を必ず書く。Mac（Apple Silicon）は arm64 のビルドがそのまま、x86_64 の PC（WSL2）は `binfmt` を入れる（[setup.md](setup.md)）。lab のイメージは pull して写すだけなので、どちらの PC でもエミュレーションは要らない。
 - ミラーの push で「only the available single-platform image was pushed」と出るのは、指定した 1 つのアーキテクチャだけ push したという意味で問題ない。
@@ -177,8 +177,8 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 ### 9. タグ
 
 - ECR のリポジトリは `IMMUTABLE`（[IaC/terraform/aws-managed/base/ecr/main.tf](../IaC/terraform/aws-managed/base/ecr/main.tf)）。同じタグへの上書きはできないので、コードを変えたらタグを進める。
-- 自前ビルドの `agent` / `worker` は `IMAGE_TAG`（既定 `v1`）。ミラーは上流の版そのまま（`ops/up-common.sh` の `TEMPORAL_TAG` / `REDIS_TAG`、`ops/up.sh` の `KAFKA_UI_TAG`）。lab の 3 つだけは上流の版に `-amd64` を付ける（`ops/lab-common.sh` の `SRLINUX_ECR_TAG` / `MULTITOOL_ECR_TAG` / `TREX_ECR_TAG`。2026-10-08 より前の arm64 の写しと名前を分ける）。
-- `telegraf` / `syslog-ng` / `grafana` / `splunk` / `nautobot` は `<版>-<ディレクトリの中身の sha256 の先頭 12 文字>`（`ops/lab-common.sh` の `dir_tag`）。中身を変えれば自動でタグが変わるので、`IMAGE_TAG` を上げなくてよい。
+- 自前ビルドの `agent` / `worker` は `IMAGE_TAG`（既定 `v1`）。ミラーは上流の版そのまま（`ops/up-common.sh` の `TEMPORAL_TAG` / `REDIS_TAG` / `GOFLOW2_TAG`、`ops/up.sh` の `KAFKA_UI_TAG`）。lab の 3 つだけは上流の版に `-amd64` を付ける（`ops/lab-common.sh` の `SRLINUX_ECR_TAG` / `MULTITOOL_ECR_TAG` / `TREX_ECR_TAG`。2026-10-08 より前の arm64 の写しと名前を分ける）。
+- `telegraf` / `gnmic` / `syslog-ng` / `grafana` / `splunk` / `nautobot` は `<版>-<ディレクトリの中身の sha256 の先頭 12 文字>`（`ops/lab-common.sh` の `dir_tag`）。中身を変えれば自動でタグが変わるので、`IMAGE_TAG` を上げなくてよい。
 - `ops/up.sh` は ECR にそのタグが無いときだけビルドして push する（手順 2）。
 
 ### 10. コードの入口
@@ -190,7 +190,7 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 | lab のどの機器がどのイメージか | [app/containerlab/splab.clab.yml.in](../app/containerlab/splab.clab.yml.in)（[app/containerlab/gen_lab.py](../app/containerlab/gen_lab.py) が作る） |
 | Runtime がどのイメージを指すか | [IaC/terraform/aws-managed/agent/variables.tf](../IaC/terraform/aws-managed/agent/variables.tf) の `agent_image_tag` |
 | Fargate のタスク定義（temporal と worker の 2 コンテナ） | [IaC/terraform/aws-managed/workflow/ecs.tf](../IaC/terraform/aws-managed/workflow/ecs.tf) |
-| Telegraf / syslog-ng / GoFlow2 / Grafana / Splunk のタスク定義 | [IaC/terraform/aws-managed/pipeline/stream/telegraf.tf](../IaC/terraform/aws-managed/pipeline/stream/telegraf.tf)、[IaC/terraform/aws-managed/pipeline/stream/collectors.tf](../IaC/terraform/aws-managed/pipeline/stream/collectors.tf)、[IaC/terraform/aws-managed/pipeline/analytics/grafana.tf](../IaC/terraform/aws-managed/pipeline/analytics/grafana.tf)、[IaC/terraform/aws-managed/pipeline/analytics/splunk.tf](../IaC/terraform/aws-managed/pipeline/analytics/splunk.tf) |
+| Telegraf / gnmic / syslog-ng / GoFlow2 / Grafana / Splunk のタスク定義 | [IaC/terraform/aws-managed/pipeline/stream/telegraf.tf](../IaC/terraform/aws-managed/pipeline/stream/telegraf.tf)、[IaC/terraform/aws-managed/pipeline/stream/gnmic.tf](../IaC/terraform/aws-managed/pipeline/stream/gnmic.tf)、[IaC/terraform/aws-managed/pipeline/stream/collectors.tf](../IaC/terraform/aws-managed/pipeline/stream/collectors.tf)、[IaC/terraform/aws-managed/pipeline/analytics/grafana.tf](../IaC/terraform/aws-managed/pipeline/analytics/grafana.tf)、[IaC/terraform/aws-managed/pipeline/analytics/splunk.tf](../IaC/terraform/aws-managed/pipeline/analytics/splunk.tf) |
 
 ## Neptune の層
 
@@ -273,11 +273,11 @@ flowchart LR
 
 ## MSK とクライアントのつなぎ
 
-Telegraf・Spark が「どのブローカーにつなぐか」をどう知るか。2026-09-25 に手動構築（手順 5）で確かめた内容を、2026-09-28 に Telegraf を ECS に移したのに合わせて直した。
+集める側（Telegraf・gnmic・syslog-ng・GoFlow2）と Spark が「どのブローカーにつなぐか」をどう知るか。2026-09-25 に手動構築（手順 5）で確かめた内容を、2026-09-28 に Telegraf を ECS に移したのに合わせて直した。
 
 ### 15. ブローカーの渡し方と msk-bootstrap
 
-**ブートストラップサーバーとは。** Kafka のクライアントは、クラスターにつなぐときに「最初に話しかけるブローカーのアドレス一覧」が要る。これがブートストラップサーバーで、`b-1.<クラスター>.kafka.ap-northeast-1.amazonaws.com:9098,b-2.<クラスター>...:9098` のような文字列。クライアントはここに一度つなぐと、クラスター全体の構成（どのブローカーがどのパーティションを持つか）を教えてもらい、以降はそれに従って直接つなぐ。だから全ブローカーを列挙する必要は無いが、MSK はふつう全部を返す。ポート 9098 は SASL/IAM 用（9092 が平文、9094 が TLS、9096 が SASL/SCRAM）。この PoC は IAM だけを有効にしているので 9098 しか使わない。
+**ブートストラップサーバーとは。** Kafka のクライアントは、クラスターにつなぐときに「最初に話しかけるブローカーのアドレス一覧」が要る。これがブートストラップサーバーで、`b-1.<クラスター>.kafka.ap-northeast-1.amazonaws.com:9098,b-2.<クラスター>...:9098` のような文字列。クライアントはここに一度つなぐと、クラスター全体の構成（どのブローカーがどのパーティションを持つか）を教えてもらい、以降はそれに従って直接つなぐ。だから全ブローカーを列挙する必要は無いが、MSK はふつう全部を返す。ポート 9098 は SASL/IAM 用（9092 が平文、9094 が TLS、9096 が SASL/SCRAM）。この PoC は IAM と SASL/SCRAM を有効にしていて（SCRAM は 2026-10-08、cycle 012 から）、Telegraf・Spark・Kafbat UI は 9098、syslog-ng・GoFlow2・gnmic は 9096 を使う。
 
 **Telegraf は環境変数でもらう。** この文字列はクラスターを作り終えるまで決まらない（クラスター名から推測できない乱数が入る）。2026-09-28 までは Telegraf の EC2 が [IaC/terraform/aws-managed/pipeline/lab](../IaC/terraform/aws-managed/pipeline/lab) で MSK より先に作られたので、起動時に SSM の `/<prefix>/msk-bootstrap` を読んでいた。いまの Telegraf は MSK と同じ [IaC/terraform/aws-managed/pipeline/stream](../IaC/terraform/aws-managed/pipeline/stream) の ECS のタスクなので、[telegraf.tf](../IaC/terraform/aws-managed/pipeline/stream/telegraf.tf) がタスク定義の環境変数 `KAFKA_BROKERS` に `aws_msk_cluster.stream.bootstrap_brokers_sasl_iam` をそのまま入れる。SSM は読まない。
 
