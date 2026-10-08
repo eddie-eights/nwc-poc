@@ -58,8 +58,15 @@ def multi(name):  # --filters a b c のように、次の --… までの値を�
         out.append(a)
     return out
 
-def kv(item):  # "Key=Path,Option=Recursive,Values=/x/" → {"Key": "Path", ...}
-    return dict(part.partition("=")[::2] for part in item.split(","))
+def kv(item):  # "Key=Path,Option=Recursive,Values=/x/" → {"Key": "Path", ...}。「Values=a,b」の b（= が無い）は前の値に足す
+    d, last = {}, None
+    for part in item.split(","):
+        k, eq, v = part.partition("=")
+        if eq:
+            d[k], last = v, k
+        else:
+            d[last] += "," + part
+    return d
 
 def save():
     with open(inv_path, "w", encoding="utf-8") as f:
@@ -155,17 +162,21 @@ elif (svc, op) == ("ssm", "put-parameter"):
         d = json.load(f)
     inv["ssm"][d["Name"]] = {"type": d["Type"], "value": d["Value"], "tags": {t["Key"]: t["Value"] for t in d.get("Tags", [])}}
     save()
-elif (svc, op) == ("ec2", "describe-vpcs"):
+elif (svc, op) == ("ec2", "describe-vpcs"):  # 在庫の値は ID 1 つか、同じ名前の VPC が並ぶときは古い順の list
     f = [kv(x) for x in multi("--filters")]
     if [x["Name"] for x in f] != ["tag:Name"]:
         log({"unknown": "vpc filter"}); fail("unknown filter", 255)
-    print(inv["vpcs"].get(f[0]["Values"], "None"))
+    ids = inv["vpcs"].get(f[0]["Values"], [])
+    ids = [ids] if isinstance(ids, str) else ids
+    if query != "Vpcs[].VpcId":
+        log({"unknown": "query " + str(query)}); fail("unknown query", 255)
+    print("\t".join(ids))
 elif (svc, op) == ("ec2", "describe-network-interfaces"):
     fs = {x["Name"]: x["Values"] for x in map(kv, multi("--filters"))}
     if "group-id" in fs:
         print("")
     elif set(fs) == {"vpc-id"} and query == "NetworkInterfaces[?InterfaceType=='agentic_ai'].NetworkInterfaceId":
-        print("\t".join(e["id"] for e in inv["enis"] if e["vpc"] == fs["vpc-id"] and e["type"] == "agentic_ai"))
+        print("\t".join(e["id"] for e in inv["enis"] if e["vpc"] in fs["vpc-id"].split(",") and e["type"] == "agentic_ai"))
     elif set(fs) == {"description", "status"} and query == "NetworkInterfaces[].NetworkInterfaceId":
         print("\t".join(e["id"] for e in inv["enis"]
                         if fnmatch.fnmatchcase(e["desc"], fs["description"]) and e["status"] == fs["status"]))
@@ -206,7 +217,8 @@ else:
     fail(f"fake aws: unknown {svc} {op}", 255)
 '''
 
-# ---- 偽物の terraform。state にはいつも 1 つ載っている（state list）。FAKE_TF_FAIL の -chdir の destroy だけ落ちる
+# ---- 偽物の terraform。state にはいつも 1 つ載っている（state list）。state show aws_vpc.this は FAKE_TF_VPC（{-chdir の値: VPC の ID}）に
+# 載っているルートだけ本物と同じ形で答え、ほかは本物と同じく rc=1。FAKE_TF_FAIL の -chdir の destroy だけ落ちる
 # （DependencyViolation は出さないので打ち直さない）。VPC の中に Lambda がいるルートは 1 秒かけて、ENI を刈る裏の処理を回す
 FAKE_TF = r'''#!/usr/bin/env python3
 import json, os, sys, time
@@ -224,6 +236,28 @@ if verb == "init":
     sys.exit(0)
 if rest[:2] == ["state", "list"]:
     print("aws_instance.this")
+    sys.exit(0)
+if rest[:2] == ["state", "show"]:
+    vpc = json.loads(os.environ.get("FAKE_TF_VPC", "{}")).get(chdir)
+    if rest[2:] != ["aws_vpc.this"] or not vpc:
+        print("Error: No instance found for the given address!", file=sys.stderr)
+        sys.exit(1)
+    # 本物（hashicorp/aws 6.x）の形。id の前に *_id の行が並ぶ（行頭の空白のあとが id のものだけ拾えているか）
+    print("\n".join([
+        "# aws_vpc.this:",
+        'resource "aws_vpc" "this" {',
+        f'    arn                                  = "arn:aws:ec2:ap-northeast-1:123456789012:vpc/{vpc}"',
+        '    cidr_block                           = "10.0.0.0/16"',
+        '    default_security_group_id            = "sg-0default"',
+        '    dhcp_options_id                      = "dopt-0aaa"',
+        "    enable_dns_hostnames                 = true",
+        f'    id                                   = "{vpc}"',
+        "    ipv6_association_id                  = null",
+        '    owner_id                             = "123456789012"',
+        "    tags                                 = {",
+        '        "Name" = "x-vpc"',
+        "    }",
+        "}"]))
     sys.exit(0)
 if verb == "apply":
     print("Apply complete! Resources: 1 added, 0 changed, 0 destroyed.")
@@ -474,8 +508,10 @@ check("ENI の絞り込みは「AWS Lambda VPC ENI-<接頭辞>-<関数>-*」で�
       {arg_after(a, "--filters") for a in aws_calls(cs, "ec2", "describe-network-interfaces") if "Name=status,Values=available" in a}
       <= {"Name=description,Values=AWS Lambda VPC ENI-x-nwc-oss-tools-*", "Name=description,Values=AWS Lambda VPC ENI-x-nwc-oss-graph-status-*",
           "Name=description,Values=AWS Lambda VPC ENI-x-nwc-oss-kb-index-*"})
-check("VPC はタグ Name=x-nwc-oss-vpc（完全一致）で引き、Runtime の ENI は無いと出す",
-      [arg_after(a, "--filters") for a in aws_calls(cs, "ec2", "describe-vpcs")] == ["Name=tag:Name,Values=x-nwc-oss-vpc"]
+check("VPC は state の aws_vpc.this から読めないときタグ Name=x-nwc-oss-vpc（完全一致）で全部（Vpcs[].VpcId）引き、Runtime の ENI は無いと出す",
+      [(arg_after(a, "--filters"), arg_after(a, "--query")) for a in aws_calls(cs, "ec2", "describe-vpcs")]
+      == [("Name=tag:Name,Values=x-nwc-oss-vpc", "Vpcs[].VpcId")]
+      and "Runtime の ENI を探す VPC: vpc-0055（タグ Name=x-nwc-oss-vpc）" in out
       and "Runtime の ENI の確認: VPC=vpc-0055 残り=なし" in out)
 check("Runtime のロググループ: x_nwc_oss_agent- のものだけ消し、x_nwc_oss_nwc_poc_agent- と x_nwc_poc_agent- は残す",
       set(inv["log_groups"]) == ALL_LOG_GROUPS - {"/aws/bedrock-agentcore/runtimes/x_nwc_oss_agent-AAA-DEFAULT"})
@@ -516,6 +552,53 @@ check("ops/down.sh（OWNER=x → x-nwc-poc）: 終了コード 0 で、消した
       and eni_ids(inv) == ALL_ENIS
       and set(inv["log_groups"]) == ALL_LOG_GROUPS - {"/aws/bedrock-agentcore/runtimes/x_nwc_poc_agent-CCC-DEFAULT"}
       and "残り: 1 件（Project=x-nwc-poc のタグ）" in out)
+
+# ================================================================ 2''. 同じ名前の VPC が 2 つあるとき（2026-10-08 の OSS 版の検証の不具合 1）
+# 古い方（前の打ち直しの残り。ENI は無い）が先に返り、今回の VPC に Runtime の ENI が残っている。1 つ目だけ見ると全部消しにいき、
+# SG の削除待ちを繰り返して落ちる。どちらの down.sh も destroy_base_core（ops/down-common.sh）を通る
+def runtime_eni(vpc):
+    return {"id": f"eni-runtime-{vpc}", "desc": "agentic", "status": "in-use", "type": "agentic_ai", "vpc": vpc}
+
+def twin_vpcs(name, new, eni_in):  # name の VPC を [古い, 新しい] の 2 つにし、Runtime の ENI を eni_in の VPC の 1 つだけにする
+    inv = inventory()
+    inv["vpcs"][name] = ["vpc-0old", new]
+    inv["enis"] = [e for e in inv["enis"] if e["type"] != "agentic_ai"] + [runtime_eni(eni_in)]
+    return inv
+
+def base_core_destroys(cs, tf_dir):
+    return [c["args"] for c in tf_calls(cs) if chdir_of(c) == f"{tf_dir}/base/core" and c["args"][1] == "destroy"]
+
+def kept_base_core(cs, tf_dir):  # base/core は -target で ENI に関わらないものだけ消し、全部は消しにいかない
+    ds = base_core_destroys(cs, tf_dir)
+    return bool(ds) and all(any(x.startswith("-target=") for x in a) for a in ds)
+
+for script, owner, prefix, tf_dir, new in (("oss/ops/down.sh", "x", "x-nwc-oss", "IaC/terraform/oss", "vpc-0055"),
+                                           ("ops/down.sh", "x-nwc-oss", "x-nwc-oss-nwc-poc", "IaC/terraform/aws-managed", "vpc-0aaa")):
+    p, cs, inv = run_down(script, owner, inv=twin_vpcs(f"{prefix}-vpc", new, new))
+    out = p.stdout + p.stderr
+    check(f"{script}（VPC が 2 つ、state から読めない）: タグで当たった 2 つを両方見て、新しい方の Runtime の ENI で base/core を残す",
+          p.returncode == 0 and not [c for c in cs if c.get("unknown")]
+          and f"Runtime の ENI を探す VPC: vpc-0old,{new}（タグ Name={prefix}-vpc）" in out
+          and [arg_after(a, "--filters") for a in aws_calls(cs, "ec2", "describe-network-interfaces") if "Name=vpc-id" in arg_after(a, "--filters")]
+          == [f"Name=vpc-id,Values=vpc-0old,{new}"]
+          and f"Runtime の ENI が残っている: eni-runtime-{new}" in out and kept_base_core(cs, tf_dir))
+
+    p, cs, inv = run_down(script, owner, {"FAKE_TF_VPC": json.dumps({f"{tf_dir}/base/core": new})},
+                          inv=twin_vpcs(f"{prefix}-vpc", new, new))
+    out = p.stdout + p.stderr
+    check(f"{script}（VPC が 2 つ、state に aws_vpc.this がある）: state の ID だけを見て（タグでは引かない）base/core を残す",
+          p.returncode == 0 and not aws_calls(cs, "ec2", "describe-vpcs")
+          and f"Runtime の ENI を探す VPC: {new}（state の aws_vpc.this）" in out
+          and f"Runtime の ENI が残っている: eni-runtime-{new}" in out and kept_base_core(cs, tf_dir))
+
+# state の VPC に ENI が無ければ、同じ名前の別の VPC（前の打ち直しの残り）に ENI があっても全部消す（state が優先）
+p, cs, inv = run_down("oss/ops/down.sh", "x", {"FAKE_TF_VPC": json.dumps({"IaC/terraform/oss/base/core": "vpc-0055"})},
+                      inv=twin_vpcs("x-nwc-oss-vpc", "vpc-0055", "vpc-0old"))
+out = p.stdout + p.stderr
+check("oss/ops/down.sh（state の VPC に ENI が無く、同じ名前の古い VPC にだけある）: state を信じて base/core を全部消す",
+      p.returncode == 0 and not aws_calls(cs, "ec2", "describe-vpcs")
+      and "Runtime の ENI の確認: VPC=vpc-0055 残り=なし" in out
+      and base_core_destroys(cs, "IaC/terraform/oss") and not kept_base_core(cs, "IaC/terraform/oss"))
 
 # ================================================================ 3. stream が消えなかったとき
 p, cs, inv = run_down("oss/ops/down.sh", "x", {"FAKE_TF_FAIL": "IaC/terraform/oss/pipeline/stream", "FAKE_TAG_FAIL": "1", "KEEP_ECR": "1"})

@@ -6,11 +6,15 @@ oss/ops/roll_health.py。設計の未確定事項 2・4）の模擬テスト。t
      印と終了コードが roll_health.py の読める形で出ること（--command の「/bin/bash -c '<コマンド>'」が 3 つの引数に割れることも）
   3. roll_nodes を偽物の道具で通す: リーダーでない台から 1 台ずつ -target で apply し、リーダーは最後。入れ替えた台の中からは見ない。
      変わる台が無い・初めて作る・OSS_ROLL=0 のときは何も入れ替えない。入れ替える前から健全でない・入れ替えたあと戻らない・サービスが安定しない・
-     plan が失敗する・Session Manager plugin が無い、のどれでも止まり、残りの台を案内する（plan のファイルは残さない）
+     plan が失敗する・Session Manager plugin が無い、のどれでも止まり、残りの台を案内する（plan のファイルは残さない）。
+     標準入力が端末でなければ、ECS Exec を script（util-linux の -q -c の形と BSD の形を出力の印で見分ける）で包み、script が無いか
+     どちらの形でも打てなければ、何も入れ替えずに「端末から打つか OSS_ROLL=0」と案内して止まる。ECS Exec が
+     「Cannot perform start session: EOF」で切れたら、roll_health.py はその行と同じ案内を理由にする
   4. roll-nodes.sh が読む terraform の output とサービス・コンテナの名前が、IaC/terraform/oss/ に実在する（ECS Exec が有効なことも）
-実際の ECS Exec（Session Manager の非対話の動き、--command の割り方、入れ替え中の Lag の値）は AWS で確かめていない。
+実際の ECS Exec（Session Manager の非対話の動き、--command の割り方、入れ替え中の Lag の値）は AWS で確かめていない
+（2026-10-08 に macOS から up.sh ごと script -q /dev/null で包んで一度通した。util-linux の script で包む形は AWS で確かめていない）。
 実行は python3 tests/test_oss_roll.py"""
-import importlib.util, json, os, re, shlex, shutil, subprocess, sys, tempfile
+import importlib.util, json, os, pty, re, shlex, shutil, subprocess, sys, tempfile
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
@@ -143,6 +147,18 @@ def run_health(args, stdin):
                           capture_output=True, text=True, timeout=30)
 r_ok, r_ng, r_use = run_health(["kafka"] + KAFKA_NODES, wrap(kafka_out(leader="1"))), run_health(["opensearch"] + OS_NODES, os_out(status="red")), run_health(["kafka"], "")
 r_plan = run_health(["plan", "kafka"], PLAN_MIXED)
+EOF_OUT = "==nwc-roll brokers\nCannot perform start session: EOF\n"
+eof_reason, other_reason = rh.kafka(wrap(EOF_OUT), KAFKA_NODES)[1] or "", rh.opensearch(wrap("Cannot perform start session: unexpected status 403\n"), OS_NODES)[1] or ""
+check("roll_health.py: ECS Exec が「Cannot perform start session」で切れたら節の有無より先にその行を理由にし、EOF なら「端末から打つか OSS_ROLL=0」を足す",
+      "ECS Exec のセッションを始められない（Cannot perform start session: EOF）" in eof_reason and "端末から打つか" in eof_reason
+      and "OSS_ROLL=0" in eof_reason and "urp の節が無い" not in eof_reason
+      and "Cannot perform start session: unexpected status 403" in other_reason and "端末から打つか" not in other_reason)
+EOT = "^D\x08\x08"   # macOS の script が標準入力の EOF を疑似端末に渡したときの写し
+check("roll_health.py: script の EOF の写し（^D と後退 2 つ）が出力の頭や行の頭に混ざっても読める。理由の先頭の数行にも出さない",
+      rh.kafka(EOT + wrap(kafka_out()), KAFKA_NODES) == ("2", None)
+      and rh.kafka(wrap(kafka_out()).replace("==nwc-roll urp", EOT + "==nwc-roll urp"), KAFKA_NODES) == ("2", None)
+      and rh.opensearch(EOT + wrap(os_out()), OS_NODES) == ("cm", None)
+      and rh.head(EOT + "\r\nAn error occurred (AccessDeniedException)\r\n") == "An error occurred (AccessDeniedException)")
 check("roll_health.py（コマンド）: 健全ならリーダーを出して 0、健全でなければ理由を出して 1、使い方の誤りは 2、plan は空白区切り",
       (r_ok.returncode, r_ok.stdout) == (0, "1\n") and r_ng.returncode == 1 and "status=red" in r_ng.stdout
       and r_use.returncode == 2 and "使い方" in r_use.stderr and (r_plan.returncode, r_plan.stdout) == (0, "1 3 6\n"))
@@ -284,6 +300,36 @@ for f in ("terraform", "aws", "sleep"):
 for tool in ("awk", "cat", "env", "grep", "mkdir", "mktemp", "rm", "tee", "dirname", "sed", "tr"):
     os.symlink(shutil.which(tool), os.path.join(bare_bin, tool))
 
+# 偽物の script。呼ばれた引数と SHELL・AWS_PAGER を FAKE_LOG に残す。FAKE_SCRIPT_FORM=linux は util-linux（-q -c "<文字列>" /dev/null を
+# $SHELL -c で打つ。BSD の形は 0 で終わってコマンドを打たない）、bsd は macOS（-q /dev/null <コマンド…> を打ち、頭に ^D の写しを出す。
+# -c は知らない）、それ以外はどちらの形も打てない
+FAKE_SCRIPT = f'''#!{sys.executable}
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as f:
+    f.write(json.dumps({{"cmd": "script", "args": args, "shell": os.environ.get("SHELL"), "pager": os.environ.get("AWS_PAGER")}}) + "\\n")
+form = os.environ.get("FAKE_SCRIPT_FORM", "")
+if form == "linux" and len(args) == 4 and args[:2] == ["-q", "-c"] and args[3] == "/dev/null":
+    os.execv(os.environ["SHELL"], [os.environ["SHELL"], "-c", args[2]])
+if form == "linux" and args[:2] == ["-q", "/dev/null"]:
+    sys.exit(0)
+if form == "bsd" and len(args) >= 3 and args[:2] == ["-q", "/dev/null"]:
+    sys.stdout.write("^D\\x08\\x08")
+    sys.stdout.flush()
+    os.execvp(args[2], args[2:])
+sys.stderr.write("script: illegal option\\n")
+sys.exit(1)
+'''
+script_bin = os.path.join(tmp, "script-bin")
+os.makedirs(script_bin)
+write_exe(os.path.join(script_bin, "script"), FAKE_SCRIPT)
+# script の無い PATH（Session Manager plugin はある）
+noscript_bin = os.path.join(tmp, "noscript-bin")
+os.makedirs(noscript_bin)
+for f in os.listdir(bare_bin):
+    os.symlink(os.path.realpath(os.path.join(bare_bin, f)), os.path.join(noscript_bin, f))
+os.symlink(os.path.join(fake_bin, "session-manager-plugin"), os.path.join(noscript_bin, "session-manager-plugin"))
+
 HARNESS = r'''set -euo pipefail
 REGION=ap-northeast-1
 . "$NWC_ROOT/ops/deploy-env.sh"
@@ -299,7 +345,8 @@ echo "==roll done plan=[$ROLL_PLAN]"
 '''
 
 case_no = 0
-def roll(kind="kafka", plan=None, seq=None, state=None, path_bin=fake_bin, **env_extra):
+def roll(kind="kafka", plan=None, seq=None, state=None, path_bin=fake_bin, tty=True, pre_path=None, **env_extra):
+    """tty=True なら標準入力を疑似端末にする（端末から打ったとき）。False なら /dev/null（CI やエージェントのシェル）。pre_path は PATH の頭に足す"""
     global case_no
     case_no += 1
     d = os.path.join(tmp, f"case{case_no}")
@@ -316,7 +363,15 @@ def roll(kind="kafka", plan=None, seq=None, state=None, path_bin=fake_bin, **env
            "FAKE_PLAN_JSON": os.path.join(d, "plan.json"), "FAKE_EXEC_SEQ": os.path.join(d, "seq.json"),
            "FAKE_NODES": json.dumps({n: f"x-nwc-oss-{kind}-{n}" for n in nodes}), "T_KIND": kind,
            "T_ROOT": "pipeline/stream" if kind == "kafka" else "pipeline/analytics", **env_extra}
-    r = subprocess.run([shutil.which("bash"), "-c", HARNESS], cwd=d, env=env, capture_output=True, text=True, timeout=60)
+    if pre_path:
+        env["PATH"] = pre_path + ":" + env["PATH"]
+    master, slave = pty.openpty() if tty else (None, None)
+    try:
+        r = subprocess.run([shutil.which("bash"), "-c", HARNESS], cwd=d, env=env, capture_output=True, text=True, timeout=60,
+                           stdin=slave if tty else subprocess.DEVNULL)
+    finally:
+        if tty:
+            os.close(master); os.close(slave)
     calls = []
     if os.path.exists(env["FAKE_LOG"]):
         with open(env["FAKE_LOG"], encoding="utf-8") as f:
@@ -432,6 +487,64 @@ r = roll(path_bin=bare_bin)
 check("roll_nodes: 変わる台があるのに Session Manager plugin が無ければ、ECS Exec も apply もせずに止まり、OSS_ROLL=0 の逃げ道を出す",
       r.returncode == 1 and applied(r) == [] and not any(c["cmd"] == "aws" for c in r.calls)
       and "Session Manager plugin が無い" in r.stderr and "OSS_ROLL=0" in r.stderr)
+
+def scripts(r):
+    """偽物の script の呼び出しのうち、ECS Exec を包んだもの（印で形を見分ける呼び出しは除く）"""
+    return [c for c in r.calls if c["cmd"] == "script" and "nwc-roll-tty" not in " ".join(c["args"])]
+def exec_args_ok(r, probe_cmd=None):
+    """偽物の aws に届いた execute-command の引数が、包まずに打ったときと同じ（--command が 1 つの引数のまま）"""
+    ex = [c["args"] for c in r.calls if c["args"][:2] == ["ecs", "execute-command"]]
+    return len(ex) > 0 and all(a[a.index("--command") + 1] == f"/bin/bash -c '{probe_cmd or PROBE_KAFKA}'" and "--interactive" in a
+                               and a[a.index("--task") + 1].startswith("arn:aws:ecs:") for a in ex)
+
+r = roll(tty=True, pre_path=script_bin, FAKE_SCRIPT_FORM="linux")
+check("roll_nodes: 標準入力が端末なら script を打たない（ECS Exec をそのまま打つ）",
+      r.returncode == 0 and applied(r) == ["1", "3", "2"] and not any(c["cmd"] == "script" for c in r.calls) and "疑似端末" not in r.stdout)
+
+r = roll(tty=False, pre_path=script_bin, FAKE_SCRIPT_FORM="linux")
+sc = scripts(r)
+check("roll_nodes: 標準入力が端末でなく script が util-linux の形なら、ECS Exec を script -q -c \"<文字列>\" /dev/null で包み"
+      "（文字列はいまの bash が割る。AWS_PAGER は空）、--command の引数は崩れずに届いて、端末から打ったときと同じ順に入れ替える",
+      r.returncode == 0 and applied(r) == ["1", "3", "2"] and "script で疑似端末を付けて打つ（linux の形）" in r.stdout
+      and len(sc) == len([c for c in r.calls if c["args"][:2] == ["ecs", "execute-command"]]) > 0
+      and all(c["args"][:2] == ["-q", "-c"] and c["args"][3] == "/dev/null" and os.path.basename(c["shell"] or "") == "bash"
+              and c["pager"] == "" for c in sc)
+      and exec_args_ok(r))
+
+r = roll(tty=False, pre_path=script_bin, FAKE_SCRIPT_FORM="bsd")
+sc = scripts(r)
+check("roll_nodes: 標準入力が端末でなく script が BSD（macOS）の形なら、script -q /dev/null <コマンド…> で包み（AWS_PAGER は空）、"
+      "出力の頭の ^D の写しがあっても健全と読んで入れ替える",
+      r.returncode == 0 and applied(r) == ["1", "3", "2"] and "script で疑似端末を付けて打つ（bsd の形）" in r.stdout
+      and len(sc) > 0 and all(c["args"][:4] == ["-q", "/dev/null", "aws", "ecs"] and c["pager"] == "" for c in sc)
+      and exec_args_ok(r))
+
+r = roll(kind="opensearch", tty=False, pre_path=script_bin, FAKE_SCRIPT_FORM="linux", seq=[os_out(manager="cm")])
+check("roll_nodes opensearch: 端末が無く util-linux の形でも、--command（パスワードの環境変数を読むコマンド）は崩れずに届く",
+      r.returncode == 0 and applied(r) == ["1", "2", "cm"] and exec_args_ok(r, PROBE_OS))
+
+if shutil.which("script"):
+    r = roll(tty=False)
+    check(f"roll_nodes: 端末が無いとき、この PC の本物の script（{shutil.which('script')}）で形を見分けて包み、入れ替える",
+          r.returncode == 0 and applied(r) == ["1", "3", "2"] and "script で疑似端末を付けて打つ" in r.stdout and exec_args_ok(r))
+else:
+    print("skip: この PC に script が無いので、本物の script で包むケースは見ない")
+
+r = roll(tty=False, path_bin=noscript_bin)
+check("roll_nodes: 端末が無く script も無ければ、ECS Exec も apply もせずに止まり、「端末から打つか OSS_ROLL=0」を出す",
+      r.returncode == 1 and applied(r) == [] and not any(c["args"][:2] == ["ecs", "execute-command"] for c in r.calls)
+      and "標準入力が端末でなく" in r.stderr and "端末から打つか" in r.stderr and "OSS_ROLL=0" in r.stderr
+      and "まだ何も入れ替えていない" in r.stderr and r.leftover == [])
+
+r = roll(tty=False, pre_path=script_bin, FAKE_SCRIPT_FORM="none")
+check("roll_nodes: 端末が無く script がどちらの形でも打てなければ（印が出ない）、同じく何も入れ替えずに止まる",
+      r.returncode == 1 and applied(r) == [] and not any(c["args"][:2] == ["ecs", "execute-command"] for c in r.calls)
+      and len([c for c in r.calls if c["cmd"] == "script"]) == 2 and "端末から打つか" in r.stderr)
+
+r = roll(seq=[EOF_OUT], T_MIN_PRE="0")
+check("roll_nodes: ECS Exec が「Cannot perform start session: EOF」で切れたら、入れ替える前に止まり、理由に原因と「端末から打つか」を出す",
+      r.returncode == 1 and applied(r) == [] and "入れ替える前から健全でない" in r.stderr
+      and "ECS Exec のセッションを始められない（Cannot perform start session: EOF）" in r.stderr and "端末から打つか" in r.stderr)
 
 r = roll(kind="opensearch", seq=[os_out(manager="cm"), os_out(status="yellow"), os_out(manager="cm")])
 ex = [c["args"] for c in r.calls if c["args"][:2] == ["ecs", "execute-command"]]

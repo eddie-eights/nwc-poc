@@ -16,6 +16,7 @@
 #   健全さは ECS Exec（aws ecs execute-command）でタスクの中のコマンドを打って見る。Kafka の 9092 と OpenSearch の 9200 は
 #   VPC の外からも Web の EC2 からも届かない（SG で絞っている）ため。読むのは oss/ops/roll_health.py（判定の条件もそちら）。
 #   ECS Exec は手元に Session Manager plugin が要り、タスクの中のコマンドの終了コードを返さないので、終了コードは出力に印で書く。
+#   ECS Exec（--interactive）は標準入力が端末でないと切れるので、端末が無いときは script で疑似端末を付けて打つ（script も打てなければ止まる）。
 #   OpenSearch の admin のパスワードは、タスクの secrets の環境変数（OPENSEARCH_INITIAL_ADMIN_PASSWORD）をタスクの中で読む（手元には持ってこない）。
 # 先に ops/common.sh・ops/deploy-env.sh・ops/up-common.sh を読む（log / die / tf / tf_logged / tf_log_file / tf_init / tf_apply_only を使う）。
 # REGION / PY / PREFIX / OWNER / OPS_DIR / OSS_ROLL は呼ぶ前に決める。plan のファイル ROLL_PLAN は、読む側の EXIT の trap でも消す
@@ -33,21 +34,29 @@ ROLL_SVCS=""     # 「台 サービス名」の行
 ROLL_NODES=""    # 全部の台（空白区切り）
 ROLL_LEADER=""   # roll_wait が健全と見たときのリーダーの台
 ROLL_REASON=""   # roll_wait が健全でないと見た最後の理由
+ROLL_TTY=""      # 標準入力が端末でないときに ECS Exec を包む script の形（linux / bsd。空なら包まずに打つ）
 
 roll_service() {  # roll_service <台>  その台の ECS のサービス名
   printf '%s\n' "$ROLL_SVCS" | awk -v k="$1" '$1 == k { print $2 }'
 }
 roll_exec() {  # roll_exec <サービス名>  そのサービスの動いているタスクで ROLL_PROBE を打ち、出力（Session Manager の案内も混ざる）を出す
-  local task
+  local task cmd
   task=$(aws ecs list-tasks --region "$REGION" --cluster "$ROLL_CLUSTER" --service-name "$1" --desired-status RUNNING \
     --query 'taskArns[0]' --output text 2>&1) || task=""
   case "$task" in
     arn:aws:ecs:*) ;;
     *) echo "$1 に動いているタスクが無い（${task:-空}）"; return 0 ;;
   esac
-  # 標準入力はつなげたまま（--interactive の Session Manager plugin が読む）
-  aws ecs execute-command --region "$REGION" --cluster "$ROLL_CLUSTER" --task "$task" --container "$ROLL_CONTAINER" \
-    --interactive --command "/bin/bash -c '$ROLL_PROBE'" 2>&1 || true
+  # 標準入力はつなげたまま（--interactive の Session Manager plugin が読む）。端末が無いときは roll_nodes が決めた形の script で疑似端末を付ける。
+  # 疑似端末の中では aws の出力がページャに回りうるので AWS_PAGER を空にする
+  cmd=(aws ecs execute-command --region "$REGION" --cluster "$ROLL_CLUSTER" --task "$task" --container "$ROLL_CONTAINER" \
+    --interactive --command "/bin/bash -c '$ROLL_PROBE'")
+  case "$ROLL_TTY" in
+    # util-linux の script は -c の文字列を $SHELL -c で読むので、いま動いている bash に printf %q で割らせる
+    linux) AWS_PAGER="" SHELL="$BASH" script -q -c "$(printf '%q ' "${cmd[@]}")" /dev/null 2>&1 || true ;;
+    bsd) AWS_PAGER="" script -q /dev/null "${cmd[@]}" 2>&1 || true ;;
+    *) "${cmd[@]}" 2>&1 || true ;;
+  esac
 }
 roll_wait() {  # roll_wait <分> [<除く台>]  除く台以外から順に見て、健全なら ROLL_LEADER を決めて 0。時間切れなら ROLL_REASON を残して 1
   local limit=$(($1 * 60)) skip="${2:-}" start=$SECONDS i=0 k out last=""
@@ -108,6 +117,22 @@ roll_nodes() {  # roll_nodes <kafka|opensearch> <ルート> [-var 名前=値 …
   fi
   command -v session-manager-plugin >/dev/null \
     || die "Session Manager plugin が無い（$ROLL_LABEL の台を 1 台ずつ入れ替えるとき、ECS Exec でクラスターの様子を見るのに使う。docs/setup.md「Terraform を打つ PC 側」）。まだ何も入れ替えていない。待たずに一度に入れ替えるなら OSS_ROLL=0 $OPS_DIR/up.sh"
+  # ECS Exec の --interactive は、標準入力が端末でない（CI、nohup、< /dev/null、エージェントのシェル）と「Cannot perform start session: EOF」で
+  # 出力が返る前に切れる（2026-10-08 の OSS 版の検証。入れ替える前の確認が 5 分空回りして止まった）。端末が無ければ script で疑似端末を付ける。
+  # script の形は 2 つある（util-linux は script -q -c "<文字列>" <ファイル>、macOS などの BSD は script -q <ファイル> <コマンド…>）。
+  # util-linux は BSD の形を渡しても 0 で終わる（コマンドを無視して対話のシェルを起こす）ので、終了コードではなく出力の印で見分ける
+  ROLL_TTY=""
+  if [ ! -t 0 ]; then
+    if command -v script >/dev/null; then
+      case "$(SHELL="$BASH" script -q -c 'echo nwc-roll-tty' /dev/null </dev/null 2>/dev/null)" in
+        *nwc-roll-tty*) ROLL_TTY=linux ;;
+        *) case "$(script -q /dev/null echo nwc-roll-tty </dev/null 2>/dev/null)" in *nwc-roll-tty*) ROLL_TTY=bsd ;; esac ;;
+      esac
+    fi
+    [ -n "$ROLL_TTY" ] \
+      || die "標準入力が端末でなく、疑似端末を付ける script も打てない（$ROLL_LABEL の台を 1 台ずつ入れ替えるとき、ECS Exec の --interactive は端末が無いと「Cannot perform start session: EOF」で切れる）。まだ何も入れ替えていない。端末から打つか、待たずに一度に入れ替えるなら OSS_ROLL=0 $OPS_DIR/up.sh"
+    echo "標準入力が端末でないので、ECS Exec は script で疑似端末を付けて打つ（$ROLL_TTY の形）"
+  fi
   case "$kind" in
     kafka)
       ROLL_CLUSTER=$(tf "$root" output -raw kafka_ecs_cluster_name) || die "$TF_DIR/$root の output kafka_ecs_cluster_name を読めなかった"

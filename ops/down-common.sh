@@ -104,24 +104,39 @@ destroy_agent() {  # agent（Runtime / ガードレール / KB）を消す。IaC
 # 残る VPC・サブネット・SG に時間課金は無く、次の up.sh はそのまま使い回す
 MAIN_LEFT=0
 destroy_base_core() {
-  local vpc_id agent_enis addr main_targets=()
+  local vpcs="" src v out agent_enis addr main_targets=()
   if ! has_resources base/core; then
     echo "$TF_DIR/base/core: 無い（state が無いか空）"
     return 0
   fi
   # 確認そのものが落ちたときに黙って全部消しにいくと 20 分待ちに戻るので、結果は必ず表示し、エラーも隠さない
-  # VPC は terraform の output でなくタグで引く。destroy が途中で落ちた state には output が残らず（terraform は output を先に外す）、
-  # `terraform output -raw` は空を返して成功するので、打ち直しのとき（= いちばん要るとき）に読めない
-  vpc_id=$(aws ec2 describe-vpcs --region "$REGION" --filters "Name=tag:Name,Values=$PREFIX-vpc" \
-    --query 'Vpcs[0].VpcId' --output text) || { echo "注意: VPC を引けなかった（上のエラー）"; vpc_id=""; }
-  if [ "$vpc_id" = None ]; then vpc_id=""; fi
+  # VPC はこのルートの state の aws_vpc.this から読む。terraform の output は使わない（destroy が途中で落ちた state には output が残らず
+  # （terraform は output を先に外す）、`terraform output -raw` は空を返して成功するので、打ち直しのとき = いちばん要るときに読めない）。
+  # タグ Name で引くのは state から読めないときだけ。同じ名前の VPC が 2 つあると 1 つ目だけでは古い方を引くことがある
+  # （2026-10-08 の OSS 版の検証。今回の VPC の Runtime の ENI を見落として全部消しにいき、SG の削除待ちを 3 回繰り返して落ちた）ので、
+  # 当たったものを全部見て、どれか 1 つにでも ENI があれば残す側に倒す
+  vpcs=$(tf base/core state show aws_vpc.this 2>/dev/null \
+    | awk -F'"' '/^[[:space:]]*id[[:space:]]*=/ && v == "" { v = $2 } END { print v }') || vpcs=""
+  case "$vpcs" in vpc-*) src="state の aws_vpc.this" ;; *) vpcs="" ;; esac
+  if [ -z "$vpcs" ]; then
+    src="タグ Name=$PREFIX-vpc"
+    if out=$(aws ec2 describe-vpcs --region "$REGION" --filters "Name=tag:Name,Values=$PREFIX-vpc" \
+        --query 'Vpcs[].VpcId' --output text); then
+      for v in $out; do
+        case "$v" in vpc-*) vpcs="${vpcs:+$vpcs,}$v" ;; esac
+      done
+    else
+      echo "注意: VPC を引けなかった（上のエラー）"
+    fi
+  fi
+  echo "Runtime の ENI を探す VPC: ${vpcs:-（読めない）}（$src）"
   agent_enis=""
-  if [ -n "$vpc_id" ]; then
-    agent_enis=$(aws ec2 describe-network-interfaces --region "$REGION" --filters "Name=vpc-id,Values=$vpc_id" \
+  if [ -n "$vpcs" ]; then
+    agent_enis=$(aws ec2 describe-network-interfaces --region "$REGION" --filters "Name=vpc-id,Values=$vpcs" \
       --query "NetworkInterfaces[?InterfaceType=='agentic_ai'].NetworkInterfaceId" --output text) \
       || echo "注意: ENI の確認に失敗した（上のエラー）。残っていない扱いで進む"
   fi
-  echo "Runtime の ENI の確認: VPC=${vpc_id:-（読めない）} 残り=${agent_enis:-なし}"
+  echo "Runtime の ENI の確認: VPC=${vpcs:-（読めない）} 残り=${agent_enis:-なし}"
   if [ -n "$agent_enis" ] && [ "$agent_enis" != None ]; then
     MAIN_LEFT=1
     echo "Runtime の ENI が残っている: $agent_enis"
