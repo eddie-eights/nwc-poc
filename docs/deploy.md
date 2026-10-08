@@ -136,6 +136,38 @@ flowchart LR
   - 2026-10-08 は「残り 189 件」と出た。中身は消した直後のリソースと、何日も前に消えた EMR Serverless のアプリやジョブランで、実体が残っていたのは上の表の VPC 一式と ECR だけだった。
   - 見る API の例: `aws ecs list-clusters`、`aws emr-serverless list-applications`（`TERMINATED` 以外）、`aws kafka list-clusters-v2`、`aws neptune-graph list-graphs`、`aws lambda list-functions`、`aws s3api list-buckets`、`aws ssm describe-parameters`（`/<prefix>/` の下）、`aws ec2 describe-instances`（`terminated` 以外）/ `describe-vpcs`、`aws ecr describe-repositories`。名前が `<prefix>` で始まるものを探す。
 
+### state を失ったとき
+
+上の「使い回す」は、`ops/up.sh` を打ったのと同じチェックアウトから打つときだけ成り立つ。Terraform の state は 9 つのルートとも local backend で、`ops/up.sh` を打ったチェックアウトの `IaC/terraform/aws-managed/<ルート>/terraform.tfstate` にしか無い（OSS 版は `IaC/terraform/oss/<ルート>/`）。worktree で `ops/up.sh` を打ってその worktree を消すと、state も一緒に消える（OSS 版の `oss/ops/up.sh` / `oss/ops/down.sh` も同じ）。**残したものがあるあいだは、up.sh を打ったチェックアウトを消さない。**worktree で立てたなら、worktree を消す前に、そこから `ops/down.sh` を打って消し切る。
+
+state を失ったまま次の `ops/up.sh` を打つと、残したものはこう扱われる（2026-10-08 の OSS 版の AWS 検証。[verification/20261008-oss-aws.md](verification/20261008-oss-aws.md) の「state の扱い」）。
+
+- **VPC は使い回されず、新しく作られて溜まる。**
+  - 残った VPC・サブネット・SG は state に無いので、`ops/up.sh` は同じ名前（`<prefix>-vpc`）の VPC をもう 1 つ作る。2026-10-08 は `efukuda-nwc-oss-vpc` が 2 つになった。
+  - state の無い VPC は、どのチェックアウトの `ops/down.sh` でも消えない。ENI が外れてから手で消す（SG → サブネット → VPC の順。`aws ec2 delete-security-group` / `delete-subnet` / `delete-vpc`）。
+  - 同じ名前の VPC が 2 つあると、前の `ops/down.sh` は Runtime の ENI を古い方の VPC で探して見落とし、base/core を全部消しにいって `DependencyViolation` で止まった（2026-10-08、終了コード 1）。いまは VPC の ID を base/core の state から読み、読めないときだけ名前で引いて当たった VPC を全部見る（`ops/down-common.sh` の `destroy_base_core`）。
+- **ECR は import が要る。**残ったリポジトリは state に無いので、そのまま `ops/up.sh` を打つと、手順 1 の apply が同じ名前のリポジトリを作ろうとしてぶつかる。
+
+ECR を残して state を失ったときは、`ops/up.sh` の前に、up.sh を打つチェックアウトの直下で、残ったリポジトリを base/ecr の state に import する。`OWNER` は `deploy.env` の値、`AWS_PROFILE` は up.sh と同じものを export しておく。下はマネージド版で、OSS 版は 1 行目を `OWNER=<owner> PROJECT=nwc-oss TF_DIR=IaC/terraform/oss TF_INIT_LOCKFILE=readonly bash <<'EOF'` にする（最後の `for` が OSS 版だけのリポジトリも入れる）。残していないリポジトリの行は「Cannot import non-existent remote object」で落ちるだけなので、そのままでよい。
+
+```bash
+OWNER=<owner> PROJECT=nwc-poc TF_DIR=IaC/terraform/aws-managed bash <<'EOF'
+PREFIX=$OWNER-$PROJECT
+. ops/common.sh; trap 'rm -f "$TF_AWS_CONFIG"' EXIT
+tf_use_cli_credentials; tf_init_root base/ecr
+imp() { tf base/ecr import -input=false -var "owner=$OWNER" "$1" "$PREFIX-$2"; }
+imp aws_ecr_repository.agent agent
+imp aws_ecr_lifecycle_policy.agent agent
+for k in srlinux multitool; do imp "aws_ecr_repository.lab[\"$k\"]" "lab-$k"; done
+for k in worker temporal; do imp "aws_ecr_repository.workflow[\"$k\"]" "$k"; done
+for k in telegraf kafka-ui grafana splunk nautobot redis; do imp "aws_ecr_repository.pipeline[\"$k\"]" "$k"; done
+if [ "$PROJECT" = nwc-oss ]; then for k in kafka opensearch vminsert vmselect vmstorage spark neo4j; do imp "aws_ecr_repository.oss[\"$k\"]" "$k"; done; fi
+tf base/ecr state list
+EOF
+```
+
+2026-10-08 の OSS 版は、同じアドレスとリポジトリ名で 18 リポジトリとライフサイクルのポリシーを import した。`plan` は `0 to add, 18 to change, 0 to destroy` だった（変わるのは、import では入らない `force_delete` だけ）。そのときは `pipeline` の 6 本が `Error: Invalid index` で落ちたので、一時的な override で通した。いまは `base/ecr/outputs.tf` が `try()` で包むので、override は要らない。ただし `try()` にしてからの import と、マネージド版の import は AWS で未確認。
+
 ## 007 で並べ直したとき（state の移し方）
 
 2026-10-08 の cycle 007 で Terraform のルートを `terraform/` から `IaC/terraform/aws-managed/` へ、`oss/terraform/` を `IaC/terraform/oss/` へ移した。gitignore 対象の `.terraform/`（provider のキャッシュ）・`terraform.tfstate`（と `.backup`、`terraform.tfstate.<時刻>.backup`）・`*.tfvars`・`.build/` は `git mv` で付いて行かず、前のチェックアウトの `terraform/<ルート>/` に残る。
