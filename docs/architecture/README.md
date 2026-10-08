@@ -4,7 +4,7 @@
 
 `<prefix>` は `deploy.env` の `OWNER` から作る接頭辞 `<owner>-nwc-poc`。
 
-スライドの構成図は 2 本。マネージド版が [architecture-managed.pptx](../architecture-managed.pptx)（10 枚。データの流れ、9 つの Terraform ルート、6 段の処理、収集から格納まで、検知から修復まで、SG、費用、消す順、画面の開き方）、OSS 版が [architecture-oss.pptx](../architecture-oss.pptx)（10 枚。置き換えた 5 つ、1 対 1 の対応、Fargate のタスク、ルート、6 段の処理、SG、`oss/ops/up.sh`、AWS で確かめたこと、未確認）。
+スライドの構成図は 2 本。マネージド版が [architecture-managed.pptx](../architecture-managed.pptx)（10 枚。データの流れ、9 つの Terraform ルート、6 段の処理、収集から格納まで、検知から修復まで、SG、費用、消す順、画面の開き方）、OSS 版が [architecture-oss.pptx](../architecture-oss.pptx)（10 枚。置き換えた 5 つ、1 対 1 の対応、Fargate のタスク、ルート、6 段の処理、SG、`ops/oss/up.sh`、AWS で確かめたこと、未確認）。
 
 構成の説明は terraform のルートに合わせて 4 つに分けてある。
 
@@ -46,14 +46,14 @@
 | `app/graph/` | アラート（SNS）を受けて Neptune（Neptune Analytics）の `status` を書き、通知の履歴を Firehose へ送る Lambda（`status_handler.py`） |
 | `app/neo4j/` | OSS 版の Neo4j（+ GDS）の `entrypoint.sh`（OSS 版の graph の ECS のタスクで動く） |
 | `app/resources/` | ナレッジベースに入れる手順書 |
+| `app/gateway/` | Gateway（MCP）の tools Lambda（`handler.py` と、ツールの定義 `tools.json`） |
 | `docker/images/<名前>/Dockerfile` | イメージの `Dockerfile`（agentcore / temporal / grafana / splunk / nautobot / telegraf / syslog-ng / spark / neo4j）。ビルドのコンテキストは `app/<名前>/` で、`docker buildx build -f docker/images/<名前>/Dockerfile app/<名前>/` の形で使う。Splunk は公式イメージ + 検知のアプリ、Nautobot は公式イメージ + boto3 |
 | `docker/compose/` | 手元の docker compose（WSL2 の中だけで lab から Grafana / Splunk まで一周させる。AWS は使わない。[README](../../docker/compose/README.md)） |
 | `IaC/terraform/aws-managed/` | AWS にリソースを作るのはここだけ（下のツリー） |
 | `IaC/terraform/oss/` | OSS 版の同じ 9 つのルート（下の段落） |
 | `IaC/cloudformation/` | デバッグ用の EC2 のスタック（`lab-debug.yaml`。下の段落） |
-| `tools/` | Gateway（MCP）の tools Lambda |
 | `ops/` | `up.sh` / `down.sh` / `check.sh` / `lab-debug.sh` / `sync-graph.sh` など |
-| `oss/` | OSS 版の操作（`oss/ops/up.sh` / `down.sh`）とイメージの版（`oss/ops/oss-images.sh`）（[oss-variant.md](../oss-variant.md)） |
+| `ops/oss/` | OSS 版の操作（`ops/oss/up.sh` / `down.sh`）とイメージの版（`ops/oss/oss-images.sh`）（[oss-variant.md](../oss-variant.md)） |
 | `tests/` | 模擬テスト（AWS を呼ばない） |
 
 ```
@@ -73,7 +73,7 @@ IaC/terraform/aws-managed/
 
 ルートは 9 つで、`ops/up.sh` の `ROOTS` と `ops/check.sh` ではこの順に並ぶ: `base/ecr` → `base/core` → `agent` → `pipeline/lab` → `pipeline/stream` → `pipeline/analytics` → `pipeline/graph` → `pipeline/nautobot` → `workflow`。apply の順は少し違い、graph は手順 3-2 で裏で始めて手順 7-3 で待ち、nautobot は analytics の前（手順 7-3c）。Nautobot は `PIPELINE=1` ならいつも作る（stream と graph を両方外したときだけ作らない）。
 
-OSS 版（`oss/ops/up.sh`）は `IaC/terraform/oss/` に同じ 9 つのルートを持つ（多くのファイルは `IaC/terraform/aws-managed/` へのシンボリックリンクで、違いは各ルートの `oss.auto.tfvars` と OSS 版だけのファイル）。接頭辞は `<owner>-nwc-oss`、state も `IaC/terraform/oss/<ルート>/terraform.tfstate` で、マネージド版とは別（[oss-variant.md](../oss-variant.md)）。
+OSS 版（`ops/oss/up.sh`）は `IaC/terraform/oss/` に同じ 9 つのルートを持つ（多くのファイルは `IaC/terraform/aws-managed/` へのシンボリックリンクで、違いは各ルートの `oss.auto.tfvars` と OSS 版だけのファイル）。接頭辞は `<owner>-nwc-oss`、state も `IaC/terraform/oss/<ルート>/terraform.tfstate` で、マネージド版とは別（[oss-variant.md](../oss-variant.md)）。
 
 デバッグ用の EC2（lab + Telegraf を 1 台）だけは terraform ではなく CloudFormation の `IaC/cloudformation/lab-debug.yaml`（スタック `<prefix>-lab-debug`）。作るのも消すのも `ops/lab-debug.sh up` / `down` だけで、`ops/up.sh` / `ops/down.sh` は触らない（2026-10-04 から）。土台（base/core）は使わず、自分の VPC（既定 `10.20.0.0/24`。どこともつながないので base/core と重なってよい。IGW / NAT は無い）、インターフェース型エンドポイント 4 本（ssm / ssmmessages / ecr.api / ecr.dkr）と S3 の gateway、バケット `<prefix>-lab-debug-<アカウント>`、ECR のリポジトリ 4 つ（`<prefix>-debug-lab-srlinux` / `-lab-multitool` / `-lab-trex` / `-telegraf`。スタックと一緒に消える）を持つ。
 

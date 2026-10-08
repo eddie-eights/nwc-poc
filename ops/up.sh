@@ -149,7 +149,7 @@ SPARK_SCRIPT=app/spark/snmp_sinks.py
 resolve_deploy_env_file  # DEPLOY_ENV_FILE の相対パスは、下の cd の前の場所から見る
 cd "$(dirname "$0")/.."
 
-. ops/common.sh     # log / die / tf と terraform の認証情報（OSS 版の oss/ops/up.sh と同じものを読む）
+. ops/common.sh     # log / die / tf と terraform の認証情報（OSS 版の ops/oss/up.sh と同じものを読む）
 . ops/up-common.sh  # tf_apply / has_resources / ssm_run / ensure_secret / ensure_s3tables_catalog / Splunk・Agent・worker・Temporal・Nautobot のイメージと SSM など
 NAUTOBOT_CTX=""
 GRAPH_PID=""
@@ -354,7 +354,7 @@ case "${ENDPOINTS_MULTI_AZ:-}" in
   0|false|no) die "ENDPOINTS_MULTI_AZ は ENDPOINTS_AZ_NUM に変わった（2026-10-04。AZ の数で書く）。ENDPOINTS_MULTI_AZ=${ENDPOINTS_MULTI_AZ} は既定（ENDPOINTS_AZ_NUM=1）と同じなので、deploy.env と環境変数から消す。まだ何も作っていない" ;;
   *) die "ENDPOINTS_MULTI_AZ は ENDPOINTS_AZ_NUM に変わった（2026-10-04。AZ の数で書く）。deploy.env と環境変数の ENDPOINTS_MULTI_AZ=${ENDPOINTS_MULTI_AZ} を ENDPOINTS_AZ_NUM=2 と書き換える。まだ何も作っていない" ;;
 esac
-# az_num と、書いてあったキーを溜める AZ_NUM_SET は ops/up-common.sh（OSS 版の oss/ops/up.sh と共通）
+# az_num と、書いてあったキーを溜める AZ_NUM_SET は ops/up-common.sh（OSS 版の ops/oss/up.sh と共通）
 # 範囲の理由と出典（AWS の文書は 2026-10-04 に確かめた。AWS で試していないものは「未確認」）:
 #   上限 3 はどれも base/core のサブネットの数（a / b / c。IaC/terraform/aws-managed/base/core の vpc.tf）
 az_num ENDPOINTS_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"

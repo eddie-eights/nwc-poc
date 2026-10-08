@@ -16,10 +16,10 @@
 # ECS の secrets で渡すので、Terraform の state には入らない。
 # terraform apply でタスク定義が変わると 3 つのサービスが同時に入れ替わり、そのあいだ controller の過半数が無い（データは EFS に残るので戻る）。
 # OSS 版の ops/up.sh は、apply の前に変わる台を plan で調べて 1 台ずつ -target で入れ替え、間で controller と複製がそろうのを待つ
-# （oss/ops/roll-nodes.sh。設計の未確定事項 4。OSS_ROLL=0 で一度に入れ替える）
+# （ops/oss/roll-nodes.sh。設計の未確定事項 4。OSS_ROLL=0 で一度に入れ替える）
 
 variable "kafka_image_tag" {
-  description = "Tag of the Kafka image in the <prefix>-kafka repository (apache/kafka copied to ECR by the OSS ops/up.sh). Same version as oss/ops/oss-images.sh."
+  description = "Tag of the Kafka image in the <prefix>-kafka repository (apache/kafka copied to ECR by the OSS ops/up.sh). Same version as ops/oss/oss-images.sh."
   type        = string
   default     = "4.3.1"
 }
@@ -389,7 +389,7 @@ output "kafka_ecs_cluster_name" {
 }
 
 output "kafka_service_names" {
-  description = "ECS service of each Kafka node, keyed by node.id (1 to 3). Replace them one at a time - the controllers need two of the three. The OSS ops/up.sh does it (oss/ops/roll-nodes.sh)."
+  description = "ECS service of each Kafka node, keyed by node.id (1 to 3). Replace them one at a time - the controllers need two of the three. The OSS ops/up.sh does it (ops/oss/roll-nodes.sh)."
   value       = { for n, s in aws_ecs_service.kafka : n => s.name }
 }
 

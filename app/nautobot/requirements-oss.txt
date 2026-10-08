@@ -1,5 +1,5 @@
 # OSS 版（cycle 005）の Nautobot: マネージド版の依存に Neo4j のドライバ（Job が app/agentcore/graph.py を GRAPH_BACKEND=neo4j で使う）を足す。
-# docker buildx build --platform linux/arm64 --build-arg REQUIREMENTS=requirements-oss.txt -f docker/images/nautobot/Dockerfile <context>（OSS 版の oss/ops/up.sh の build_nautobot）
+# docker buildx build --platform linux/arm64 --build-arg REQUIREMENTS=requirements-oss.txt -f docker/images/nautobot/Dockerfile <context>（OSS 版の ops/oss/up.sh の build_nautobot）
 # 版は app/graph/・app/dashboard/・app/temporal/・app/agentcore/ の requirements-oss.txt と同じにする（tests/test_oss.py が見る）
 -r requirements.txt
 neo4j==6.3.1

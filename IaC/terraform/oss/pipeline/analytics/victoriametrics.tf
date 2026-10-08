@@ -18,7 +18,7 @@
 # イメージは victoriametrics/{vminsert,vmselect,vmstorage} を ECR の <接頭辞>-<名前> に写したもの（閉域で Docker Hub に届かない。OSS 版の ops/up.sh が写す）
 
 variable "victoriametrics_image_tag" {
-  description = "Tag of the vminsert, vmselect and vmstorage images in the <prefix>-vminsert / -vmselect / -vmstorage repositories (victoriametrics/* copied to ECR by the OSS ops/up.sh). Same version as oss/ops/oss-images.sh."
+  description = "Tag of the vminsert, vmselect and vmstorage images in the <prefix>-vminsert / -vmselect / -vmstorage repositories (victoriametrics/* copied to ECR by the OSS ops/up.sh). Same version as ops/oss/oss-images.sh."
   type        = string
   default     = "v1.153.0-cluster"
 }

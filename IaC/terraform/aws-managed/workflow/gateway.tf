@@ -7,13 +7,13 @@
 # Without graph / analytics the topology comes from data/ and the evidence tools say so.
 
 locals {
-  tools = jsondecode(file("${local.repo_root}/tools/tools.json"))
+  tools = jsondecode(file("${local.repo_root}/app/gateway/tools.json"))
 
   # Lambda の zip に入れるファイル（リポジトリの根からの場所 = zip の中の名前）。
   # handler.py だけ名前が変わる（Lambda のハンドラが index.handler）。proposals.py は読むだけで、承認・却下はツールに出していない。
   # app/agentcore/ のモジュールを増やしたらここにも足す（同じ一覧が docker/images/agentcore/Dockerfile と IaC/terraform/aws-managed/base/core の upload_web_command にもある）
   tools_files = {
-    "tools/handler.py"                 = "index.py"
+    "app/gateway/handler.py"           = "index.py"
     "app/agentcore/toolkit.py"         = "toolkit.py"
     "app/agentcore/topology.py"        = "topology.py"
     "app/agentcore/graph.py"           = "graph.py"

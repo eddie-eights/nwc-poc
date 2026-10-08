@@ -1,5 +1,5 @@
 """手元の docker compose で動く構成（docker/compose。docs/cycles/006-local-compose/design.md）が、元にした定義からずれていないかを見る。
-- 版: Kafka / Kafbat UI / OpenSearch は oss/ops/oss-images.sh、Telegraf と lab のイメージは ops/lab-common.sh、Grafana / Splunk は ops/up-common.sh と同値
+- 版: Kafka / Kafbat UI / OpenSearch は ops/oss/oss-images.sh、Telegraf と lab のイメージは ops/lab-common.sh、Grafana / Splunk は ops/up-common.sh と同値
 - 契約: Telegraf は app/telegraf/telegraf.sh render が通る環境、Spark は app/spark/snmp_sinks.py の parse_args が通る引数、check.sh が見る名前は実物の定義にある
 - app/containerlab/lab.sh: REGISTRY が無ければ ECR に触らずに pull、TELEGRAF_LOCAL=1 なら trap の REDIRECT だけ（デバッグ用の EC2 と同じ）。偽の docker / aws / iptables / sudo で動かす
 - docker/compose/*.sh: up.sh が lab の値を環境で渡す、lab.sh が 3 つだけを sudo に渡す、check.sh が全部見てから終わりパスワードを引数に載せない
@@ -32,7 +32,7 @@ def env_file(text):  # .env の KEY=値（コメントと空行は飛ばす）
 
 compose = yaml.safe_load(read("docker", "compose", "compose.yaml"))
 svc = compose["services"]
-oss_images = read("oss", "ops", "oss-images.sh")
+oss_images = read("ops", "oss", "oss-images.sh")
 lab_common, up_common = read("ops", "lab-common.sh"), read("ops", "up-common.sh")
 example = env_file(read("docker", "compose", ".env.example"))
 lab_sh = read("app", "containerlab", "lab.sh")
@@ -69,11 +69,11 @@ check("syslog-ng は network_mode: host で、build の context は ../../app/sy
       and svc["syslog-ng"]["image"] == "nwc-local-syslog-ng" and "ports" not in svc["syslog-ng"] and "ports" not in svc["goflow2"])
 
 # ---- 2. 版の正
-def oss_image(name):  # oss/ops/oss-images.sh の OSS_<name>_IMAGE:OSS_<name>_TAG
+def oss_image(name):  # ops/oss/oss-images.sh の OSS_<name>_IMAGE:OSS_<name>_TAG
     return f"{sh_const(oss_images, f'OSS_{name}_IMAGE')}:{sh_const(oss_images, f'OSS_{name}_TAG')}"
 for n in ("kafka-1", "kafka-2", "kafka-3"):
-    check(f"{n} の image は oss/ops/oss-images.sh の Kafka と同じ（{oss_image('KAFKA')}）", svc[n]["image"] == oss_image("KAFKA"))
-check("kafka-ui の image は oss/ops/oss-images.sh の Kafbat UI と同じで、127.0.0.1:18080 に出す",
+    check(f"{n} の image は ops/oss/oss-images.sh の Kafka と同じ（{oss_image('KAFKA')}）", svc[n]["image"] == oss_image("KAFKA"))
+check("kafka-ui の image は ops/oss/oss-images.sh の Kafbat UI と同じで、127.0.0.1:18080 に出す",
       svc["kafka-ui"]["image"] == oss_image("KAFKA_UI") and svc["kafka-ui"]["ports"] == ["127.0.0.1:18080:8080"])
 check("kafka-ui に渡すのはクラスターの名前と 3 台の PLAINTEXT の宛先だけ（AUTH_TYPE は書かない。宛先は各台の advertised の PLAINTEXT）",
       svc["kafka-ui"]["environment"] == {
@@ -81,7 +81,7 @@ check("kafka-ui に渡すのはクラスターの名前と 3 台の PLAINTEXT �
           "KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS": ",".join(re.search(r"PLAINTEXT://([^,]+)", svc[n]["environment"]["KAFKA_ADVERTISED_LISTENERS"]).group(1)
                                                          for n in ("kafka-1", "kafka-2", "kafka-3"))}
       and svc["kafka-ui"]["environment"]["KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS"] == "kafka-1:9092,kafka-2:9092,kafka-3:9092")
-check("opensearch の image は oss/ops/oss-images.sh の OpenSearch と同じ", svc["opensearch"]["image"] == oss_image("OPENSEARCH"))
+check("opensearch の image は ops/oss/oss-images.sh の OpenSearch と同じ", svc["opensearch"]["image"] == oss_image("OPENSEARCH"))
 check("grafana の GRAFANA_VERSION と splunk の SPLUNK_VERSION は ops/up-common.sh の値",
       svc["grafana"]["build"]["args"]["GRAFANA_VERSION"] == sh_const(up_common, "GRAFANA_VERSION")
       and svc["splunk"]["build"]["args"]["SPLUNK_VERSION"] == sh_const(up_common, "SPLUNK_VERSION")

@@ -12,7 +12,7 @@
 # インデックスはタスクのエフェメラルストレージにあり、タスクと一緒に消える（OpenSearch の公式がネットワークファイルシステムを避けるよう書いているので EFS に置かない）。
 # 1 台が入れ替わっても、もう 1 台のレプリカ（OpenSearch の既定のレプリカ数 1）から戻る。データ 2 台が同時に落ちるとインデックスは消える。
 # terraform apply でタスク定義が変わると 3 つのサービスが同時に入れ替わり、インデックスもクラスターの状態も消える。OSS 版の ops/up.sh は、apply の前に
-# 変わる台を plan で調べて 1 台ずつ -target で入れ替え、間で green に戻るのを待つ（oss/ops/roll-nodes.sh。設計の未確定事項 2。OSS_ROLL=0 で一度に入れ替える）。
+# 変わる台を plan で調べて 1 台ずつ -target で入れ替え、間で green に戻るのを待つ（ops/oss/roll-nodes.sh。設計の未確定事項 2。OSS_ROLL=0 で一度に入れ替える）。
 # 3 台とも cluster manager になれる（データの台は既定の役割）ので、1 台ずつなら残りの 2 台で投票の過半数が残る。
 # REST（9200）は TLS なしの HTTP で、セキュリティプラグインの Basic 認証（admin）は効く。Spark（app/spark/snmp_sinks.py）と Grafana の
 # データソース（app/grafana/provisioning/datasources-oss）に自己署名の証明書を飛ばす設定が無いので、デモの証明書の HTTPS にはしない。
@@ -23,7 +23,7 @@
 # イメージは opensearchproject/opensearch を ECR の <接頭辞>-opensearch に写したもの（閉域で Docker Hub に届かない。OSS 版の ops/up.sh が写す）
 
 variable "opensearch_image_tag" {
-  description = "Tag of the OpenSearch image in the <prefix>-opensearch repository (opensearchproject/opensearch copied to ECR by the OSS ops/up.sh). Same version as oss/ops/oss-images.sh."
+  description = "Tag of the OpenSearch image in the <prefix>-opensearch repository (opensearchproject/opensearch copied to ECR by the OSS ops/up.sh). Same version as ops/oss/oss-images.sh."
   type        = string
   default     = "3.9.0"
 }
@@ -359,7 +359,7 @@ output "opensearch_password_parameter" {
 }
 
 output "opensearch_service_names" {
-  description = "ECS service of each OpenSearch node, keyed by 1, 2 (data) and cm (cluster manager). Replace the data nodes one at a time and wait for green in between - the indexes are on the ephemeral storage. The OSS ops/up.sh does it (oss/ops/roll-nodes.sh)"
+  description = "ECS service of each OpenSearch node, keyed by 1, 2 (data) and cm (cluster manager). Replace the data nodes one at a time and wait for green in between - the indexes are on the ephemeral storage. The OSS ops/up.sh does it (ops/oss/roll-nodes.sh)"
   value       = { for n, s in aws_ecs_service.opensearch : n => s.name }
 }
 

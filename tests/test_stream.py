@@ -67,7 +67,7 @@ def _read(*parts):
     with open(os.path.join(ROOT, *parts), encoding="utf-8") as f:
         return f.read()
 
-def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の oss/ops/ と共通）とつないで見る
+def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の ops/oss/ と共通）とつないで見る
     return _read("ops", "common.sh") + _read("ops", f"{name}-common.sh") + _read("ops", f"{name}.sh")
 srl_dir = os.path.join(ROOT, "app", "containerlab", "srlinux")
 srl_nodes = sorted(n[:-4] for n in os.listdir(srl_dir) if n.endswith(".cli"))
@@ -503,7 +503,7 @@ check("75 で止まった Kafbat UI は、Web のユニットの Wants= で、op
       and _wunit.index("Wants=${name_prefix}-kafka-ui.service") < _wunit.index("[Service]")
       and re.findall(r"^\w+=.*kafka-ui.*$", _wunit, re.M) == ["Wants=${name_prefix}-kafka-ui.service"])
 # その restart は stream の apply より後で、stream を作る回はいつも通る: ops/up.sh の 8-3 の if に SKIP_STREAM が空の条件、OSS 版の 7-5 は if の外
-_up_sh, _oss_up_sh = _read("ops", "up.sh"), _read("oss", "ops", "up.sh")
+_up_sh, _oss_up_sh = _read("ops", "up.sh"), _read("ops", "oss", "up.sh")
 def _between(text, start, end):  # start から end の手前まで。どちらかが無ければ ""（.index() の ValueError ではなく、それを使う check の名前で落ちる。cycle 016）
     i = text.find(start)
     j = text.find(end, i + len(start)) if i >= 0 else -1
@@ -742,7 +742,7 @@ check("stream を作る回はいつも作る: イメージを ECR に写し、�
 # ---- MSK の SCRAM の secret と KMS の鍵（cycle 012）。値は ops/up.sh が作り（Terraform の state に入れない）、msk.tf は同じ名前の data source で引く
 _msk_tf = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "msk.tf")
 _upc, _downc = _read("ops", "up-common.sh"), _read("ops", "down-common.sh")
-_up_sh, _down_sh, _oss_up, _oss_down = _read("ops", "up.sh"), _read("ops", "down.sh"), _read("oss", "ops", "up.sh"), _read("oss", "ops", "down.sh")
+_up_sh, _down_sh, _oss_up, _oss_down = _read("ops", "up.sh"), _read("ops", "down.sh"), _read("ops", "oss", "up.sh"), _read("ops", "oss", "down.sh")
 check("SCRAM の secret と鍵の名前は、ops/up-common.sh（作る）・ops/down-common.sh（消す）・msk.tf（data source で引く）で同じ（接頭辞は owner-nwc-poc）",
       'data "aws_secretsmanager_secret" "msk_scram" {\n  name = "AmazonMSK_${local.name_prefix}-collectors"\n}' in _msk_tf
       and 'data "aws_kms_alias" "msk_scram" {\n  name = "alias/${local.name_prefix}-msk-scram"\n}' in _msk_tf
@@ -751,9 +751,9 @@ check("SCRAM の secret と鍵の名前は、ops/up-common.sh（作る）・ops/
       and 'name_prefix = "${var.owner}-${var.project}"' in _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "locals.tf")
       and 'PREFIX="$OWNER-${1:-nwc-poc}"' in _read("ops", "deploy-env.sh"))
 _sm_read = [f for f in ([os.path.join("ops", n) for n in sorted(os.listdir(os.path.join(ROOT, "ops"))) if n.endswith(".sh")]
-                        + [os.path.join("oss", "ops", n) for n in sorted(os.listdir(os.path.join(ROOT, "oss", "ops"))) if n.endswith(".sh")])
+                        + [os.path.join("ops", "oss", n) for n in sorted(os.listdir(os.path.join(ROOT, "ops", "oss"))) if n.endswith(".sh")])
             if re.search(r"get-secret-value|batch-get-secret-value", "\n".join(l for l in _read(f).splitlines() if not l.lstrip().startswith("#")))]
-check(f"ops/ と oss/ops/ のシェルは Secrets Manager の secret の中身を読まない（get-secret-value / batch-get-secret-value を打たない。{_sm_read}）", _sm_read == [])
+check(f"ops/ と ops/oss/ のシェルは Secrets Manager の secret の中身を読まない（get-secret-value / batch-get-secret-value を打たない。{_sm_read}）", _sm_read == [])
 check("ops/up.sh は stream を作る回だけ、鍵 → secret → stream の apply の順に呼ぶ（msk.tf の data source が apply の時に引く）",
       _in_stream_block("\n  ensure_msk_scram_key\n")
       and "\n  ensure_msk_scram_key\n  ensure_msk_scram_secret\n  tf_apply pipeline/stream " in _up_sh

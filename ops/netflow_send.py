@@ -1,11 +1,11 @@
 """NetFlow v5 のパケットを 1 つ（フローは 1 本）UDP で送る。GoFlow2 の受け口（cycle 012。2055/udp）を試す。
 
 lab の SR Linux は NetFlow を出さない（sFlow だけ。コンテナ版で出るかは未確認）ので、GoFlow2 → Kafka の flows → Spark の経路はこれで確かめる。
-標準ライブラリだけで動く（lab の EC2 のホストの python3 でも打てる）。この tools/ は tools Lambda の場所でもあるが、Lambda の zip に入るのは
-IaC/terraform/aws-managed/workflow/gateway.tf の tools_files に書いたものだけなので、これは入らない。
+標準ライブラリだけで動く（lab の EC2 のホストの python3 でも打てる）。試験用のスクリプトで、Lambda の zip には入らない
+（入るのは IaC/terraform/aws-managed/workflow/gateway.tf の tools_files に書いたものだけ）。
 
-    uv run python tools/netflow_send.py 127.0.0.1 2055     # 手元の compose の GoFlow2
-    python3 tools/netflow_send.py <NLB の DNS 名>:2055       # AWS（lab の EC2 のホストから）
+    uv run python ops/netflow_send.py 127.0.0.1 2055     # 手元の compose の GoFlow2
+    python3 ops/netflow_send.py <NLB の DNS 名>:2055       # AWS（lab の EC2 のホストから）
 
 送るフロー: 10.0.0.1:12345 → 10.0.0.2:443 の TCP、10 パケット 8400 バイト、入力 if 1 → 出力 if 2。GoFlow2 の JSON では
 type NETFLOW_V5 / src_addr 10.0.0.1 / dst_addr 10.0.0.2 / proto TCP（数でなく名前） / src_port 12345 / dst_port 443 / packets 10 / bytes 8400 / in_if 1 / out_if 2 になる。

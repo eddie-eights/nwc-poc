@@ -1,4 +1,4 @@
-# OSS 版（cycle 005）の oss/ops/up.sh が読む。Kafka（pipeline/stream）と OpenSearch（pipeline/analytics）の ECS のサービスを
+# OSS 版（cycle 005）の ops/oss/up.sh が読む。Kafka（pipeline/stream）と OpenSearch（pipeline/analytics）の ECS のサービスを
 # 1 台ずつ入れ替える（設計の未確定事項 2・4）。どちらも台ごとにサービスが分かれ、入れ替えでは古いタスクを止めてから新しいタスクを起こす
 # （deployment_minimum_healthy_percent = 0）。そのまま terraform apply するとタスク定義が変わった台が同時に入れ替わり、
 # Kafka は controller の過半数を、OpenSearch は（インデックスがタスクの中にあるので）インデックスを失う。
@@ -10,11 +10,11 @@
 #          その台のサービスだけ -target で apply して、サービスが安定するのを待ち、ほかの台から見てクラスターが健全に戻るのを待つ
 #          （Kafka 15 分・OpenSearch 30 分。OpenSearch は入れ替えた台のシャードが複製し直されて green になるまで）
 #       3. 残りの台で 2 を繰り返す（リーダーは最後）
-#     止まったときは、もう一度 oss/ops/up.sh を打てば残りの台だけ入れ替える（plan で変わる台だけを拾うので）。
+#     止まったときは、もう一度 ops/oss/up.sh を打てば残りの台だけ入れ替える（plan で変わる台だけを拾うので）。
 #     初めて作るとき（state にその種類のサービスが無い）と、変わる台が無いときは何もしない。
-#     OSS_ROLL が空（oss/ops/up.sh の flag_value で 0 は空になる）なら何もせず、このあとの apply が変わる台を一度に入れ替える。
+#     OSS_ROLL が空（ops/oss/up.sh の flag_value で 0 は空になる）なら何もせず、このあとの apply が変わる台を一度に入れ替える。
 #   健全さは ECS Exec（aws ecs execute-command）でタスクの中のコマンドを打って見る。Kafka の 9092 と OpenSearch の 9200 は
-#   VPC の外からも Web の EC2 からも届かない（SG で絞っている）ため。読むのは oss/ops/roll_health.py（判定の条件もそちら）。
+#   VPC の外からも Web の EC2 からも届かない（SG で絞っている）ため。読むのは ops/oss/roll_health.py（判定の条件もそちら）。
 #   ECS Exec は手元に Session Manager plugin が要り、タスクの中のコマンドの終了コードを返さないので、終了コードは出力に印で書く。
 #   ECS Exec（--interactive）は標準入力が端末でないと切れるので、端末が無いときは script で疑似端末を付けて打つ（script も打てなければ止まる）。
 #   OpenSearch の admin のパスワードは、タスクの secrets の環境変数（OPENSEARCH_INITIAL_ADMIN_PASSWORD）をタスクの中で読む（手元には持ってこない）。
@@ -25,7 +25,7 @@ ROLL_MINUTES_PRE=5          # 入れ替える前の健全さを待つ時間（�
 ROLL_MINUTES_KAFKA=15       # Kafka の台を入れ替えたあと、健全に戻るのを待つ時間（分。EFS のログに追いつくまで）
 ROLL_MINUTES_OPENSEARCH=30  # OpenSearch の台を入れ替えたあと、green に戻るのを待つ時間（分。シャードの複製し直しまで）
 # タスクの中で打つコマンド。ECS Exec の --command に「/bin/bash -c '<これ>'」で渡すので、シングルクォートとバックスラッシュを使わない。
-# 節ごとに「==nwc-roll <節>」と「==nwc-rc <終了コード>」を出す（oss/ops/roll_health.py が読む）。bootstrap はその台の 9092（どの台も broker）
+# 節ごとに「==nwc-roll <節>」と「==nwc-rc <終了コード>」を出す（ops/oss/roll_health.py が読む）。bootstrap はその台の 9092（どの台も broker）
 ROLL_PROBE_KAFKA='B=/opt/kafka/bin; S=localhost:9092; echo "==nwc-roll brokers"; timeout 60 $B/kafka-broker-api-versions.sh --bootstrap-server $S 2>&1 | grep -E "[(]id: |Error|Exception"; echo "==nwc-rc ${PIPESTATUS[0]}"; echo "==nwc-roll urp"; timeout 60 $B/kafka-topics.sh --bootstrap-server $S --describe --under-replicated-partitions 2>&1; echo "==nwc-rc $?"; echo "==nwc-roll quorum"; timeout 60 $B/kafka-metadata-quorum.sh --bootstrap-server $S describe --replication 2>&1; echo "==nwc-rc $?"; echo "==nwc-roll end"'
 ROLL_PROBE_OPENSEARCH='P=${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-}; if [ -z "$P" ]; then echo "==nwc-roll nopass"; exit 0; fi; echo "==nwc-roll health"; curl -s -m 20 -u "admin:$P" http://localhost:9200/_cluster/health; R=$?; echo; echo "==nwc-rc $R"; echo "==nwc-roll manager"; curl -s -m 20 -u "admin:$P" "http://localhost:9200/_cat/cluster_manager?h=node"; R=$?; echo; echo "==nwc-rc $R"; echo "==nwc-roll end"'
 # roll_nodes が決める（roll_service / roll_exec / roll_wait が読む）

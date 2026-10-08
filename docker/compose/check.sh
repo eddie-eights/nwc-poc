@@ -63,7 +63,7 @@ judge "Kafka: トピック metrics / gnmi / traps / logs / flows がある" \
   "(lambda n: 'ok' if not n else '無い: ' + ', '.join(n))(sorted({'metrics', 'gnmi', 'traps', 'logs', 'flows'} - {t['name'] for t in json.loads(s)['topics']}))" \
   <<<"$kafka"
 # トピックは Spark が起動のときに作るので、Telegraf と syslog-ng から届いているかはメッセージ数で見る。trap と syslog は障害を入れるまで来ないこともあるので、
-# traps と logs の 0 件は NG にしない。flows は lab の SR Linux が NetFlow を出さないので数を見ない（tools/netflow_send.py で送ったときだけ増える）
+# traps と logs の 0 件は NG にしない。flows は lab の SR Linux が NetFlow を出さないので数を見ない（ops/netflow_send.py で送ったときだけ増える）
 cnt="{t['name']: t['messagesCount'] for t in json.loads(s)['topics']}"
 judge "Kafka: metrics のメッセージ数 > 0" "'ok' if $cnt.get('metrics', 0) > 0 else '0 件'" <<<"$kafka"
 judge "Kafka: traps のメッセージ数 > 0" \

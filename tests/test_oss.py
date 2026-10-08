@@ -1467,7 +1467,7 @@ check(f"Neo4j のドライバの版は Lambda の層・Web・Worker・Nautobot �
       and all("ARG REQUIREMENTS=requirements.txt" in open(os.path.join(ROOT, "docker", "images", d, "Dockerfile"), encoding="utf-8").read() for d in ("temporal", "nautobot")))
 # Nautobot の Job（app/nautobot/netops/nb_sync.py）は app/agentcore/graph.py をそのまま使うので、OSS 版は Worker と同じ読み方（graph の state の neo4j_uri）で Neo4j に向ける
 _nb = {n: _code(s) for n, s in tf_text("IaC/terraform/aws-managed", "pipeline/nautobot").items()}
-_nb_up = {t: open(os.path.join(ROOT, *t, "up.sh"), encoding="utf-8").read() for t in (("ops",), ("oss", "ops"))}
+_nb_up = {t: open(os.path.join(ROOT, *t, "up.sh"), encoding="utf-8").read() for t in (("ops",), ("ops", "oss"))}
 _nb_dock = open(os.path.join(ROOT, "docker", "images", "nautobot", "Dockerfile"), encoding="utf-8").read()
 check("Nautobot: OSS 版（graph の state に neo4j_uri がある）だけ NEPTUNE_GRAPH_ID の代わりに GRAPH_BACKEND=neo4j と NEO4J_URI を受け、パスワードは "
       "secrets で web と worker の両方に渡し（環境変数に値を置かない）、実行ロールはそのパラメータを足して読む。イメージは OSS 版の up.sh だけ "
@@ -1479,7 +1479,7 @@ check("Nautobot: OSS 版（graph の state に neo4j_uri がある）だけ NEPT
       and re.search(r'local\.graph_neo4j \? \[\n\s+\{ name = "NEO4J_PASSWORD", valueFrom = local\.neo4j_password_arn \},\n\s+\] : \[\]\)', _nb["nautobot.tf"])
       and '!contains(["NAUTOBOT_SUPERUSER_PASSWORD", "NAUTOBOT_API_TOKEN"], s.name)' in _nb["nautobot.tf"]
       and "Resource = concat(values(local.secret_arns), local.graph_neo4j ? [local.neo4j_password_arn] : [])" in _nb["access.tf"]
-      and re.search(r'^\s+build_nautobot "\$NAUTOBOT_TAG" "\$NAUTOBOT_CTX" requirements-oss\.txt\s', _nb_up[("oss", "ops")], re.M)
+      and re.search(r'^\s+build_nautobot "\$NAUTOBOT_TAG" "\$NAUTOBOT_CTX" requirements-oss\.txt\s', _nb_up[("ops", "oss")], re.M)
       and re.search(r'^\s+build_nautobot "\$NAUTOBOT_TAG" "\$NAUTOBOT_CTX"$', _nb_up[("ops",)], re.M)
       and '--build-arg "REQUIREMENTS=${3:-requirements.txt}"' in open(os.path.join(ROOT, "ops", "up-common.sh"), encoding="utf-8").read()
       and '-r "/tmp/netops-requirements/$REQUIREMENTS"' in _nb_dock and "COPY requirements*.txt /tmp/netops-requirements/" in _nb_dock
@@ -1549,7 +1549,7 @@ check(f"マネージド版と OSS 版を同じアカウントに並べても名�
       f"project の 2 つの値（{_projects}）は同じ長さ（名前の長さの上限で切れ方が変わらない）",
       all(_named.get(b) for b in _TREES) and not _unprefixed and sorted(_projects) == ["nwc-oss", "nwc-poc"] and len({len(p) for p in _projects}) == 1)
 _single = {b: sorted(t for t in v if _SINGLETON.match(t)) for b, v in _types.items()}
-_down = {n: _code(open(os.path.join(ROOT, *n.split("/")), encoding="utf-8").read()) for n in ("ops/down.sh", "ops/down-common.sh", "oss/ops/down.sh")}
+_down = {n: _code(open(os.path.join(ROOT, *n.split("/")), encoding="utf-8").read()) for n in ("ops/down.sh", "ops/down-common.sh", "ops/oss/down.sh")}
 _ensure = re.search(r"^ensure_s3tables_catalog\(\) \{.*?^\}$", open(os.path.join(ROOT, "ops", "up-common.sh"), encoding="utf-8").read(), re.M | re.S)
 check(f"どちらの木もアカウントかリージョンに 1 つの設定を Terraform で作らない（{ {b: v for b, v in _single.items() if v} }）。"
       "Glue のカタログ s3tablescatalog は ops/up-common.sh が無いときだけ作り、どちらの down も消さない（テーブルバケットの名前は接頭辞つき）",
@@ -1893,7 +1893,7 @@ check("アラートの経路はマネージド版と同じ: 連絡先は SNS（�
       and all(_topic_expr in _code(tf_text("IaC/terraform/oss", r)[n]) for r, n in (("pipeline/analytics", "network.tf"), ("pipeline/graph", "locals.tf"), ("workflow", "locals.tf"))))
 
 # 土台の SG と VPC エンドポイント
-_ep = set(re.search(r'^ENDPOINTS="([^"]*)"$', open(os.path.join(ROOT, "oss", "ops", "up.sh"), encoding="utf-8").read(), re.M).group(1).split())
+_ep = set(re.search(r'^ENDPOINTS="([^"]*)"$', open(os.path.join(ROOT, "ops", "oss", "up.sh"), encoding="utf-8").read(), re.M).group(1).split())
 _ecr_repos = re.search(r"pipeline_repositories = toset\(\[(.*)\]\)", tf_text("IaC/terraform/aws-managed", "base/ecr")["main.tf"]).group(1)
 check(f"Grafana のタスクは grafana の SG（{_sg_keys('IaC/terraform/oss', _AN, 'grafana.tf')}）を付け、土台の SG で OpenSearch の 9200・vmselect の 8481・AWS の API へ出られ、"
       f"web の EC2 から 3000 で開ける。OSS 版の ops/up.sh が作る VPC エンドポイント（{sorted(_ep)}）に ECR・ログ・SSM（secrets）・SNS（アラート）がある。イメージの置き場は土台の ECR の grafana",
@@ -1936,9 +1936,9 @@ check("土台の SG の表（IaC/terraform/aws-managed/base/core/oss.tf の oss_
 _chk_bash_n = re.search(r"^SH=\$\(git ls-files '\*\.sh'\)$", _chk, re.M)
 _chk_sh = set(subprocess.run(["git", "ls-files", "*.sh"], capture_output=True, text=True, cwd=ROOT, check=True).stdout.split())
 _chk_find = re.search(r"^find (.*?) -name '\*\.py'", _chk, re.M)
-check("ops/check.sh: bash -n は git ls-files '*.sh' の全部で、そこに oss/ops の 4 つ（oss-images.sh / up.sh / down.sh / roll-nodes.sh）があり、.py の find に oss があり、モックの検査は tests/test_*.py のグロブで回す（名前を 1 つずつ並べない）",
-      _chk_bash_n and {"oss/ops/oss-images.sh", "oss/ops/up.sh", "oss/ops/down.sh", "oss/ops/roll-nodes.sh"} <= _chk_sh
-      and _chk_find and "oss" in _chk_find.group(1).split()
+check("ops/check.sh: bash -n は git ls-files '*.sh' の全部で、そこに ops/oss の 4 つ（oss-images.sh / up.sh / down.sh / roll-nodes.sh）があり、.py の find に ops があり、モックの検査は tests/test_*.py のグロブで回す（名前を 1 つずつ並べない）",
+      _chk_bash_n and {"ops/oss/oss-images.sh", "ops/oss/up.sh", "ops/oss/down.sh", "ops/oss/roll-nodes.sh"} <= _chk_sh
+      and _chk_find and "ops" in _chk_find.group(1).split()
       and re.search(r"^\s*for t in tests/test_\*\.py; do$", _chk, re.M) is not None
       and "for t in tests/test_app.py" not in _chk)
 

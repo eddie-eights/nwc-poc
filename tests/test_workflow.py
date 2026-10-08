@@ -1,4 +1,4 @@
-"""機能 WORKFLOW（IaC/terraform/aws-managed/workflow、app/temporal/（rules / awsio / worker）、app/agentcore/proposals.py、app/agentcore/mcp_client.py、tools/）の模擬テスト。
+"""機能 WORKFLOW（IaC/terraform/aws-managed/workflow、app/temporal/（rules / awsio / worker）、app/agentcore/proposals.py、app/agentcore/mcp_client.py、app/gateway/）の模擬テスト。
 AWS にも Temporal にも触れない。temporalio と boto3 を差し替えて 3 つのモジュールを読み、純粋な関数（プロンプト・JSON の読み取り・
 許可リスト・アラート（SNS → SQS）の読み取りと起こす判定 = rules）と AWS 呼び出しの形（awsio）、ワークフローと starter の振る舞い（worker）、
 proposals.decide の条件、mcp_client の応答の読み取り、
@@ -19,7 +19,7 @@ def read(*parts):
     with open(os.path.join(ROOT, *parts), encoding="utf-8") as f:
         return f.read()
 
-def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の oss/ops/ と共通）とつないで見る
+def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の ops/oss/ と共通）とつないで見る
     return read("ops", "common.sh") + read("ops", f"{name}-common.sh") + read("ops", f"{name}.sh")
 
 # ---- 差し替え: boto3 / botocore（呼ばれた内容を記録する）
@@ -102,7 +102,7 @@ os.environ.update({"NEPTUNE_GRAPH_ID": "g-abc1234567", "AUDIT_TABLE_BUCKET_ARN":
                    "LAB_INSTANCE_ID": "i-0123456789abcdef0", "PARAM_PREFIX": ""})
 sys.path.insert(0, os.path.join(ROOT, "app", "temporal"))
 sys.path.insert(0, os.path.join(ROOT, "app", "agentcore"))
-sys.path.insert(0, os.path.join(ROOT, "tools"))
+sys.path.insert(0, os.path.join(ROOT, "app", "gateway"))
 import worker  # noqa: E402 - Temporal のワークフローとアクティビティ
 import awsio  # noqa: E402 - 環境変数と AWS 呼び出し
 import rules  # noqa: E402 - 判断だけの純粋関数
@@ -427,7 +427,7 @@ check("Gateway の URL が無ければツール一覧は空（app.py はコン�
 check("Gateway に無いツールの call はエラーの辞書", "error" in mcp_client.call("neighbors", {}))
 
 # ---- tools.json と Python の TOOL_SPECS
-tools = json.loads(read("tools", "tools.json"))
+tools = json.loads(read("app", "gateway", "tools.json"))
 py_specs = {s["toolSpec"]["name"]: s["toolSpec"] for s in topology.TOOL_SPECS + evidence.TOOL_SPECS + proposals.TOOL_SPECS}
 check("tools.json の 13 個は topology / evidence / proposals の TOOL_SPECS と同じ名前（list_anomalies は 2026-10-02 にやめた）",
       {t["name"] for t in tools} == set(py_specs) and len(tools) == 13 and "list_anomalies" not in py_specs
@@ -437,7 +437,7 @@ check("evidence のツールは search_logs / query_metrics / query_history", {s
 check("evidence.HISTORY_COLUMNS は rules.ALERT_EVENT_COLUMNS の列名と同じ順",
       evidence.HISTORY_COLUMNS == tuple(n for n, _ in rules.ALERT_EVENT_COLUMNS))
 check("handler は topology / evidence / proposals のツールを名前で振り分ける",
-      "MODULES = (topology, evidence, proposals)" in read("tools", "handler.py"))
+      "MODULES = (topology, evidence, proposals)" in read("app", "gateway", "handler.py"))
 for t in tools:
     js = py_specs[t["name"]]["inputSchema"]["json"]
     check(f"{t['name']} の引数と必須が Python と同じ",
@@ -446,7 +446,7 @@ for t in tools:
 check("tools.json の型は string / integer だけ（Gateway の inline schema が受ける形）",
       all(p["type"] in ("string", "integer") for t in tools for p in t["inputSchema"]["properties"].values()))
 
-# ---- tools/handler.py
+# ---- app/gateway/handler.py
 class Ctx:
     client_context = types.SimpleNamespace(custom={"bedrockAgentCoreToolName": "tools___list_devices"})
 check("Lambda は client_context のツール名から <target>___ を外す", handler.tool_name(Ctx()) == "list_devices")
@@ -535,16 +535,16 @@ check("Runtime と Web のロールに SSM の読み取りを付け、Gateway �
 # 承認・却下を書けるのはコードの上では web だけ（decide はツールにしない）。Neptune の IAM は頂点ごとに絞れないので、線はコードで引く
 check("修復案を決める専用の IAM（decide_access）はもう無い", "decide_access" not in tf)
 check("Gateway は AWS_IAM 認可の MCP で、2025-06-18 を話す", 'authorizer_type = "AWS_IAM"' in tf and 'protocol_type   = "MCP"' in tf and '"2025-06-18"' in tf)
-check("Gateway のターゲットは tools.json から inline schema を作る", 'jsondecode(file("${local.repo_root}/tools/tools.json"))' in tf and 'dynamic "inline_payload"' in tf)
+check("Gateway のターゲットは tools.json から inline schema を作る", 'jsondecode(file("${local.repo_root}/app/gateway/tools.json"))' in tf and 'dynamic "inline_payload"' in tf)
 check("tools Lambda は python3.13 arm64 で、handler.py / toolkit / topology / evidence / proposals / graph / data を zip にする（anomalies は入れない）",
       'runtime          = "python3.13"' in tf and 'architectures    = ["arm64"]' in tf
-      and all(f'"{p}"' in tf or f'{{local.repo_root}}/{p}"' in tf for p in ("tools/handler.py", "app/agentcore/toolkit.py", "app/agentcore/topology.py", "app/agentcore/evidence.py", "app/agentcore/proposals.py", "app/agentcore/graph.py", "app/agentcore/data/topology.json", "app/agentcore/data/devices.yaml", "app/agentcore/data/layers.json"))
+      and all(f'"{p}"' in tf or f'{{local.repo_root}}/{p}"' in tf for p in ("app/gateway/handler.py", "app/agentcore/toolkit.py", "app/agentcore/topology.py", "app/agentcore/evidence.py", "app/agentcore/proposals.py", "app/agentcore/graph.py", "app/agentcore/data/topology.json", "app/agentcore/data/devices.yaml", "app/agentcore/data/layers.json"))
       and "app/agentcore/anomalies.py" not in tf)
 # 入れ忘れても apply も plan も通り、実行時に ModuleNotFoundError になる。だから「入っている」ではなく「足りていないものが無い」を見る:
 # zip に入れたモジュールが import する app/agentcore/ のモジュールが、全部 tools_files に並んでいるか
 zipped = set(re.findall(r'^\s+"app/agentcore/(\w+)\.py"\s+=', tf, re.M))
 needed = set()
-for src in [("tools", "handler.py")] + [("app", "agentcore", m + ".py") for m in zipped]:
+for src in [("app", "gateway", "handler.py")] + [("app", "agentcore", m + ".py") for m in zipped]:
     needed |= {i for i in re.findall(r"^import (\w+)$", read(*src), re.M) if os.path.exists(os.path.join(ROOT, "app", "agentcore", i + ".py"))}
 check(f"tools.zip は入れたモジュールが import する app/agentcore/ のモジュールを全部入れる（足りない: {sorted(needed - zipped)}）", zipped and not (needed - zipped))
 check("tools Lambda は VPC の中（Neptune / OpenSearch / Prometheus に届く）で、OPENSEARCH_ENDPOINT / PROMETHEUS_QUERY_URL を渡す",

@@ -9,7 +9,7 @@ __pycache__/
 deploy.env
 # pip download の置き場（ops/up.sh の手順 4）
 wheels/
-# OSS 版（oss/ops/up.sh の手順 4-1。app/dashboard/requirements-oss.txt のぶん）
+# OSS 版（ops/oss/up.sh の手順 4-1。app/dashboard/requirements-oss.txt のぶん）
 wheels-oss/
 app/containerlab/splab.clab.yml
 # containerlab が lab.sh up で作る（root の持ち物。docker/compose/README.md の「消す」）

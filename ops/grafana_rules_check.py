@@ -1,4 +1,4 @@
-"""ops/up.sh・oss/ops/up.sh の最後と ops/check-grafana.sh が Web の EC2 の上で打つ。Grafana のアラートルールが評価でエラーになっていないかを確かめる。
+"""ops/up.sh・ops/oss/up.sh の最後と ops/check-grafana.sh が Web の EC2 の上で打つ。Grafana のアラートルールが評価でエラーになっていないかを確かめる。
 
 Grafana のルールの API（/api/prometheus/grafana/api/v1/rules。スケジューラーの評価の結果）を読む。応答の data.groupNextToken が
 あれば group_next_token で次のページを読み、全部のグループをつなぐ。13.2.3 の既定は group_limit=-1（全部を 1 ページで返す）なので

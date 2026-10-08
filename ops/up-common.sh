@@ -1,4 +1,4 @@
-# ops/up.sh と OSS 版（005）の oss/ops/up.sh が読む共通の関数（terraform の apply、Session Manager でのコマンド、Web の wheel、SSM のシークレット、
+# ops/up.sh と OSS 版（005）の ops/oss/up.sh が読む共通の関数（terraform の apply、Session Manager でのコマンド、Web の wheel、SSM のシークレット、
 # Glue の s3tablescatalog、Splunk のイメージと SSM のパラメータ、Agent・worker・Temporal・Nautobot・syslog-ng のイメージと Nautobot の SSM のパラメータ、
 # マネージド版の MSK の SCRAM の secret と KMS の鍵、Grafana のアラートルールの評価の確かめ）。ops/check-grafana.sh も Grafana のルールの確かめのために読む。
 # 先に ops/common.sh と ops/deploy-env.sh を読む（log / die / tf / tf_logged を使う）。Splunk のイメージは ops/lab-common.sh の dir_tag / ecr_has を使う。
@@ -290,7 +290,7 @@ grafana_rules_check() {  # grafana_rules_check <Web のインスタンス ID>
   return 2
 }
 grafana_rules_step() {  # grafana_rules_step <Web のインスタンス ID> <analytics の ECS のクラスター> <Grafana のサービス> <確かめ直すコマンド>
-  # ops/up.sh と oss/ops/up.sh の最後に打つ。OK でなければ GRAFANA_WARN に警告を入れて黄色で出す（up.sh は止めない。呼ぶ側が最後にもう一度出す）。
+  # ops/up.sh と ops/oss/up.sh の最後に打つ。OK でなければ GRAFANA_WARN に警告を入れて黄色で出す（up.sh は止めない。呼ぶ側が最後にもう一度出す）。
   # NG は評価のエラーの理由を見る Grafana のログを、未確認は確かめ直すコマンドを案内する（未確認は評価のエラーとは限らないので、ログは案内しない）
   local rc=0
   GRAFANA_WARN=""
