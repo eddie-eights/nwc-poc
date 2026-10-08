@@ -79,6 +79,11 @@ FLOW_TIME_KEY = "time_received_ns"   # ナノ秒。1e9 で割って小数を切�
 SINKS = ("iceberg", "opensearch", "prometheus", "splunk")
 # 接続の認証（先頭が既定 = マネージド版。OSS 版は環境変数で後ろの方にする。モジュールの docstring）
 KAFKA_AUTHS = ("iam", "none")
+# SASL/SCRAM で書く収集器（syslog-ng → logs、GoFlow2 → flows）の Kafka のユーザーとトピック。AWS の文書は MSK の IAM のアクセス制御では
+# allow.everyone.if.no.acl.found が効かないとするので、SCRAM のユーザーは ACL が無いと書けない想定（MSK では未確認。cycle 012 Round 2。ensure_acls が付ける）
+SCRAM_USER = "collectors"            # ops/up-common.sh の ensure_msk_scram_secret の username
+SCRAM_TOPICS = ("logs", "flows")     # app/syslog-ng/syslog-ng.conf.in の topic("logs")、IaC/terraform/aws-managed/pipeline/stream/collectors.tf の -transport.kafka.topic=flows
+SCRAM_OPS = ("WRITE", "DESCRIBE")    # CREATE は付けない（トピックは ensure_topics が作る）。CLUSTER の ACL（IDEMPOTENT_WRITE 等）も付けない
 OPENSEARCH_AUTHS = ("sigv4", "basic")
 PROMETHEUS_AUTHS = ("sigv4", "none")
 HTTP_SEND = ("driver", "executor")   # HTTP の格納先（opensearch / prometheus / splunk）へ送る所。--http-send（既定 driver）
@@ -826,19 +831,26 @@ def all_topics(args):
     return seen
 
 
-def ensure_topics(spark, bootstrap, topics):
-    """無いトピックを作って、作った名前を返す（あるものは触らない）。
-    MSK は auto.create.topics.enable=true だが、それは produce のとき。Telegraf が最初の trap、syslog-ng が最初の syslog、GoFlow2 が最初のフローを出すまで traps / logs / flows は無く
-    （SNMP のポーリングを止めている（Telegraf の SNMP_POLL=0）と metrics もずっと無い）、
-    Spark の offset 読み（AdminClient）は無いトピックで UnknownTopicOrPartitionException で落ちて、起こし直しの上限（1 時間 5 回）を
-    使い切っていた（2026-09-27 実測）。パーティション数と複製数はブローカーの既定（IaC/terraform/aws-managed/pipeline/stream の MSK configuration）。
-    Telegraf・syslog-ng・GoFlow2 と同時に作って TopicExistsException になっても、あるのだから先へ進む"""
+def admin_client(spark, bootstrap):
+    """Kafka の AdminClient（認証は kafka_admin_props）。使い終わったら close する"""
     jvm = spark._jvm
     props = jvm.java.util.Properties()
     props.put("bootstrap.servers", bootstrap)
     for k, v in kafka_admin_props().items():
         props.put(k, v)
-    admin = jvm.org.apache.kafka.clients.admin.AdminClient.create(props)
+    return jvm.org.apache.kafka.clients.admin.AdminClient.create(props)
+
+
+def ensure_topics(spark, bootstrap, topics):
+    """無いトピックを作って、作った名前を返す（あるものは触らない）。
+    MSK は auto.create.topics.enable=true だが、それは produce のとき。Telegraf が最初の trap を出すまで traps は無く
+    （SNMP のポーリングを止めている（Telegraf の SNMP_POLL=0）と metrics もずっと無い）、
+    Spark の offset 読み（AdminClient）は無いトピックで UnknownTopicOrPartitionException で落ちて、起こし直しの上限（1 時間 5 回）を
+    使い切っていた（2026-09-27 実測）。logs / flows は、書く syslog-ng・GoFlow2（SASL/SCRAM）に CREATE の ACL を付けないので、AWS の文書どおりなら自動では作られず（MSK では未確認）、ここで作る。
+    パーティション数と複製数はブローカーの既定（IaC/terraform/aws-managed/pipeline/stream の MSK configuration）。
+    ほかのジョブや Telegraf と同時に作って TopicExistsException になっても、あるのだから先へ進む"""
+    jvm = spark._jvm
+    admin = admin_client(spark, bootstrap)
     try:
         have = set(admin.listTopics().names().get())
         missing = [t for t in topics if t not in have]
@@ -855,6 +867,33 @@ def ensure_topics(spark, bootstrap, topics):
         return missing
     finally:
         admin.close()
+
+
+def ensure_acls(spark, bootstrap):
+    """SASL/SCRAM の収集器のユーザー（SCRAM_USER）に、SCRAM_TOPICS の SCRAM_OPS を ALLOW する ACL を入れ、入れたものを「操作 トピック」で返す。
+    MSK は IAM と SCRAM を併用していて、AWS の文書（iam-access-control.html）は IAM のアクセス制御では allow.everyone.if.no.acl.found が効かないとする。
+    そのとおりなら、ACL が無いと syslog-ng / GoFlow2 は Topic authorization failed で書けない（syslog-ng はキューで持ち、GoFlow2 はその間のフローを捨てる。
+    MSK で本当にそうなるかは未確認。cycle 012 の design.md の未確定事項 8）。
+    createAcls は同じものを何度入れても同じなので、3 本のジョブが起動のたびに入れてよい（ACL はトピックより先にあってもよい）。
+    IAM の権限は EMR の実行ロールの kafka-cluster:AlterCluster（IaC/terraform/aws-managed/pipeline/analytics/access.tf）。
+    KAFKA_AUTH=none（OSS 版の ECS の Kafka と手元の compose。authorizer が無い）は何もせず [] を返す。失敗は上げる（ジョブが起動で落ち、原因が stderr に出る）"""
+    if env_choice("KAFKA_AUTH", KAFKA_AUTHS) == "none":
+        return []
+    jvm = spark._jvm
+    acl, res = jvm.org.apache.kafka.common.acl, jvm.org.apache.kafka.common.resource
+    bindings = jvm.java.util.ArrayList()
+    made = []
+    for t in SCRAM_TOPICS:
+        pattern = res.ResourcePattern(res.ResourceType.TOPIC, t, res.PatternType.LITERAL)
+        for op in SCRAM_OPS:
+            bindings.add(acl.AclBinding(pattern, acl.AccessControlEntry("User:" + SCRAM_USER, "*", getattr(acl.AclOperation, op), acl.AclPermissionType.ALLOW)))
+            made.append(f"{op} {t}")
+    admin = admin_client(spark, bootstrap)
+    try:
+        admin.createAcls(bindings).all().get()
+    finally:
+        admin.close()
+    return made
 
 
 def build(spark, args):
@@ -891,6 +930,9 @@ def main(argv):
     spark = SparkSession.builder.appName("snmp_sinks").getOrCreate()
     made = ensure_topics(spark, args.bootstrap, all_topics(args))
     log("トピック: " + ", ".join(all_topics(args)) + (f"（作った: {', '.join(made)}）" if made else "（全部あった）"))
+    acls = ensure_acls(spark, args.bootstrap)
+    if acls:
+        log(f"ACL: User:{SCRAM_USER} に " + ", ".join(acls))
     queries = build(spark, args)
     log("格納先: " + ", ".join(f"{s}({sink_topics(s, args.metric_topics, args.log_topics)}。1 回 {max_offsets(args, s) or '上限なし'} 件まで)" for s in args.sinks)
         + f"。HTTP の送信: {args.http_send}")

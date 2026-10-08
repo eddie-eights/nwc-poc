@@ -707,3 +707,342 @@ bash -n: 27 本
 ```
 
 本数（`tests/test_*.py` の glob の順）: `test_alerts` 158、`test_analytics` 495、`test_app` 161、`test_collectors` 78、`test_dashboard_config` 3、`test_graph` 78、`test_kb_index` 7、`test_lab_debug` 104、`test_local_compose` 132、`test_nautobot` 69、`test_oss` 172、`test_oss_ops` 181、`test_oss_roll` 66、`test_stream` 95、`test_sync` 103、`test_workflow` 327（16 本。`docs/development.md` も合わせた）。全文は scratchpad の `v3/merge/check.out`（2827 行）。
+
+## Round 2
+
+実装モデル: claude-opus-5-5 / effort: xhigh（このセッションの値。`set_session_effort` はこのセッションを指せない）
+
+エンジニア3（PM の指示。Round 1 のセルフレビューの C1 を PM が Must fix で確定し、design.md を上書きした Round 2）。同じブランチ `feat/collectors-scram-syslog-goflow`。AWS には何も立てていない・触っていない（検証 3 / 4 は PM がまとめて打つ）。Secrets Manager の値・`.env`・`deploy.env` は読んでいない。手元の検証の使い捨ての資格情報（scratchpad の `e3acl/cred.env`）も表示していない。`docs/cycles/BACKLOG.md` は触っていない。
+
+### commit
+
+| commit | design の実装ステップ | 変えたファイル |
+|---|---|---|
+| （この commit） | design.md の上書き（方針 7・検証 6・未確定事項 8〜13）と Round 2 の 1〜3 | `app/spark/snmp_sinks.py`、`IaC/terraform/aws-managed/pipeline/analytics/access.tf`、`app/syslog-ng/syslog-ng.conf.in`、`tests/{test_analytics,test_collectors,test_oss}.py`、`docs/{deploy,development,pipeline,troubleshooting}.md`、`docs/architecture/resources/msk.md`、`docs/cycles/012-msk-scram-syslog-ng-goflow2/{design,design-log,build}.md`（design-log.md は新規）（14 files） |
+
+### 設計から逸脱した点
+
+なし（`tests/test_oss.py` の 1 項目は design.md の変更対象と実装ステップ 1 に書き足してから入れた。design-log.md の Round 2 に 1 行）。
+
+### 検証
+
+#### 検証 1・2（手元の compose・syslog の形）
+
+Round 1 で取得済み。取り直していない。Round 2 で compose に効くのは `ensure_acls` の `KAFKA_AUTH=none` の分岐だけ（compose の Spark は `KAFKA_AUTH: none`。`docker/compose/compose.yaml:55`）で、`tests/test_oss.py` と `tests/test_analytics.py` が実物の関数で縛る（検証 5）。
+
+#### 検証 3・4（AWS）
+
+未実行（PM がまとめて打つ）。
+
+#### 検証 5. `bash ops/check.sh`（セルフレビューの直しまで入れた、コード・docs・design.md の最後の編集のあと。rc=0。全文は scratchpad の `check-r2d.log`（2838 行）。テストは build.md を読まないので、このあとの build.md の追記では取り直していない）
+
+```
+== 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+差分なし
+== 2. 9 つのルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+IaC/terraform/aws-managed/base/ecr  OK
+IaC/terraform/aws-managed/base/core  OK
+IaC/terraform/aws-managed/agent  OK
+IaC/terraform/aws-managed/pipeline/lab  OK
+IaC/terraform/aws-managed/pipeline/stream  OK
+IaC/terraform/aws-managed/pipeline/analytics  OK
+IaC/terraform/aws-managed/pipeline/graph  OK
+IaC/terraform/aws-managed/pipeline/nautobot  OK
+IaC/terraform/aws-managed/workflow  OK
+IaC/terraform/oss/base/ecr  OK
+IaC/terraform/oss/base/core  OK
+IaC/terraform/oss/agent  OK
+IaC/terraform/oss/pipeline/lab  OK
+IaC/terraform/oss/pipeline/stream  OK
+IaC/terraform/oss/pipeline/analytics  OK
+IaC/terraform/oss/pipeline/graph  OK
+IaC/terraform/oss/pipeline/nautobot  OK
+IaC/terraform/oss/workflow  OK
+== 3. スクリプトの構文
+bash -n: 27 本
+構文エラーなし
+== 4. 模擬テスト
+通過 158 / 失敗 0
+通過 504 / 失敗 0
+通過 161 / 失敗 0
+通過 79 / 失敗 0
+通過 3 / 失敗 0
+通過 78 / 失敗 0
+通過 7 / 失敗 0
+通過 104 / 失敗 0
+通過 132 / 失敗 0
+69 項目すべて通過
+通過 173 / 失敗 0
+通過 181 / 失敗 0
+通過 66 / 失敗 0
+通過 95 / 失敗 0
+通過 103 / 失敗 0
+通過 327 / 失敗 0
+すべて通過
+```
+
+本数（`tests/test_*.py` の glob の順）: `test_alerts` 158、`test_analytics` 504、`test_app` 161、`test_collectors` 79、`test_dashboard_config` 3、`test_graph` 78、`test_kb_index` 7、`test_lab_debug` 104、`test_local_compose` 132、`test_nautobot` 69、`test_oss` 173、`test_oss_ops` 181、`test_oss_roll` 66、`test_stream` 95、`test_sync` 103、`test_workflow` 327（16 本。`docs/development.md` も合わせた）。
+
+#### 退行の注入（scratchpad の `mutate.py`。1 つずつ入れて、縛っているはずのテストを走らせ、毎回もとに戻す）
+
+```
+M1 SCRAM_OPS から DESCRIBE を抜く → test_analytics: rc=1 AssertionError: ensure_acls: User:collectors に logs / flows の WRITE と DESCRIBE（TOPIC・LITERAL・host *・ALLOW）の 4 つを 1 回の createAcls で入れ、入れたものを返す
+M2 SCRAM_OPS に CREATE を足す → test_analytics: rc=1 AssertionError: ensure_acls: User:collectors に logs / flows の WRITE と DESCRIBE（TOPIC・LITERAL・host *・ALLOW）の 4 つを 1 回の createAcls で入れ、入れたものを返す
+M3 SCRAM_USER の綴り違い → test_analytics: rc=1 AssertionError: ensure_acls: User:collectors に logs / flows の WRITE と DESCRIBE（TOPIC・LITERAL・host *・ALLOW）の 4 つを 1 回の createAcls で入れ、入れたものを返す
+M4 SCRAM_TOPICS から flows を抜く → test_analytics: rc=1 AssertionError: ensure_acls: User:collectors に logs / flows の WRITE と DESCRIBE（TOPIC・LITERAL・host *・ALLOW）の 4 つを 1 回の createAcls で入れ、入れたものを返す
+M5 KAFKA_AUTH=none でも ACL を入れる → test_analytics: rc=1 AssertionError: ensure_acls: KAFKA_AUTH=none（OSS 版・手元の compose。authorizer が無い）は何もしない（AdminClient を作らず [] を返す）
+M5 KAFKA_AUTH=none でも ACL を入れる → test_oss: rc=1 AttributeError: 'types.SimpleNamespace' object has no attribute '_jvm'
+M6 close しない → test_analytics: rc=1 AssertionError: ensure_acls: AdminClient は SASL_SSL / AWS_MSK_IAM で bootstrap に繋ぎ、終わったら close。トピックは作らない（CREATE も CLUSTER の ACL も付けない）
+M7 createAcls の失敗を握りつぶす → test_analytics: rc=1 AssertionError: ensure_acls: createAcls の失敗（AlterCluster が無い等）は上げる（ジョブが起動で落ち、原因が stderr に出る）。close はする
+M8 PREFIXED にする → test_analytics: rc=1 AssertionError: ensure_acls: User:collectors に logs / flows の WRITE と DESCRIBE（TOPIC・LITERAL・host *・ALLOW）の 4 つを 1 回の createAcls で入れ、入れたものを返す
+M9 host を限る → test_analytics: rc=1 AssertionError: ensure_acls: User:collectors に logs / flows の WRITE と DESCRIBE（TOPIC・LITERAL・host *・ALLOW）の 4 つを 1 回の createAcls で入れ、入れたものを返す
+M10 main で ensure_acls を呼ばない → test_analytics: rc=1 AssertionError: main: ensure_topics のあとに ensure_acls を呼び、入れた ACL を「ACL: User:collectors に …」で stderr に出してから格納先を起こす
+M11 main で ensure_acls を ensure_topics より先に呼ぶ → test_analytics: rc=1 AssertionError: main: ensure_topics のあとに ensure_acls を呼び、入れた ACL を「ACL: User:collectors に …」で stderr に出してから格納先を起こす
+M12 AlterCluster を外す → test_analytics: rc=1 AssertionError: runtime role の kafka-cluster:AlterCluster は クラスターの ARN の文だけ（SCRAM の収集器の ACL を入れる。cycle 012 Round 2）
+M13 AlterCluster をトピックの文へ移す → test_analytics: rc=1 AssertionError: runtime role の kafka-cluster:AlterCluster は クラスターの ARN の文だけ（SCRAM の収集器の ACL を入れる。cycle 012 Round 2）
+M14 conf.in に log-fifo-size を足す → test_collectors: rc=1 AssertionError: Kafka の宛先のキューと再送は既定のまま（log-fifo-size / retries / time-reopen / disk-buffer / librdkafka の待ちと再送を指定しない。cycle 012 Round 2）
+M15 conf.in に message.timeout.ms を足す → test_collectors: rc=1 AssertionError: KAFKA_AUTH の既定は scram: config() に SASL_SSL / SCRAM-SHA-512 と、名前をバッククォートで囲んだ KAFKA_SASL_USER / KAFKA_SASL_PASS（syslog-ng が環境変数から入れる）
+戻した:  True
+M15b conf.in の topic の次に librdkafka の message.timeout.ms → test_collectors: rc=1 AssertionError: Kafka の宛先のキューと再送は既定のまま（log-fifo-size / retries / time-reopen / disk-buffer / librdkafka の待ちと再送を指定しない。cycle 012 Round 2）
+M16 conf.in に retries を足す → test_collectors: rc=1 AssertionError: Kafka の宛先のキューと再送は既定のまま（log-fifo-size / retries / time-reopen / disk-buffer / librdkafka の待ちと再送を指定しない。cycle 012 Round 2）
+戻した:  True
+```
+
+M15 は `message.timeout.ms` を config() の中に入れたので、キューの検査より先に SCRAM の config() の検査で落ちた（それでも落ちる）。M15b で キューの検査そのものが落ちることを確かめた。17 個すべて落ちた。
+
+#### 検証 6. 手元の実コードの ACL（scratchpad の `e3acl/real.sh`）
+
+apache/kafka:4.3.1（StandardAuthorizer、`allow.everyone.if.no.acl.found=false`、PLAINTEXT 9092 は super user の `User:ANONYMOUS`、SASL_PLAINTEXT 9096 は SCRAM-SHA-512）、Round 1 のイメージの syslog-ng（SCRAM）と GoFlow2（SCRAM）。`nwc-local-spark` で worktree の `app/spark/snmp_sinks.py` を読み、実物の `ensure_topics` と `ensure_acls` を 2 回呼んだ（`kafka_admin_props` だけ PLAINTEXT に差し替え、`KAFKA_AUTH` は空 = iam の分岐）。
+
+```
+#### 立てる 2026-10-08T18:28:41Z
+e3-acl-goflow2 Up Less than a second
+e3-acl-sng Up Less than a second (health: starting)
+e3-acl-kafka Up 7 seconds
+#### ACL 無しで送る（syslog 1 行 + NetFlow 1 つ） 2026-10-08T18:29:08Z
+sent 1
+dst.kafka;d_kafka#0;kafka,logs;a;dropped;0
+dst.kafka;d_kafka#0;kafka,logs;a;queued;1
+dst.kafka;d_kafka#0;kafka,logs;a;written;0
+dst.kafka;d_kafka#0;kafka,logs,kafka,logs;a;processed;1
+destination;d_kafka;;a;processed;1
+syslog-ng の認可の失敗の行: 33
+GoFlow2 の認可の失敗の行: 1
+トピック（ACL の前）:
+
+ACL（前）:
+#### worktree の ensure_topics / ensure_acls を実物の Spark で 2 回呼ぶ 2026-10-08T18:29:22Z
+[snmp_sinks] [1 回目] トピック: logs, flows（作った: logs, flows）
+[snmp_sinks] [1 回目] ACL: User:collectors に WRITE logs, DESCRIBE logs, WRITE flows, DESCRIBE flows
+[snmp_sinks] [2 回目] トピック: logs, flows（全部あった）
+[snmp_sinks] [2 回目] ACL: User:collectors に WRITE logs, DESCRIBE logs, WRITE flows, DESCRIBE flows
+real.py: 終わり
+spark-submit の終了コード: 0
+#### ACL のあとに送る（syslog 1 行 + NetFlow 1 つ） 2026-10-08T18:29:46Z
+sent 2
+#### 結果 2026-10-08T18:30:02Z
+/e3-acl-sng running restarts=0 exit=0
+/e3-acl-goflow2 running restarts=0 exit=0
+dst.kafka;d_kafka#0;kafka,logs;a;dropped;0
+dst.kafka;d_kafka#0;kafka,logs;a;queued;0
+dst.kafka;d_kafka#0;kafka,logs;a;written;2
+dst.kafka;d_kafka#0;kafka,logs,kafka,logs;a;processed;2
+destination;d_kafka;;a;processed;2
+syslog-ng の最後の認可の失敗:
+2026-10-08T18:29:26.147443002Z syslog-ng: err kafka: failed to publish message; topic='logs', error='Broker: Topic authorization failed', driver='d_kafka#0', location='/out/sng.conf:40:3'
+トピック（あと）:
+Topic: flows	TopicId: sWXLY1CGSGeKcZUQLiPBcg	PartitionCount: 2	ReplicationFactor: 1	Configs: min.insync.replicas=1
+Topic: logs	TopicId: KBqt-8-4QRi0DCHH7s4MmA	PartitionCount: 2	ReplicationFactor: 1	Configs: min.insync.replicas=1
+logs:
+The consumer rebalance protocol (KIP-848) is production-ready! Set group.protocol=consumer to try it out. See https://kafka.apache.org/documentation/#consumer_rebalance_protocol
+{"timestamp":1791484149,"tags":{"sysName":"leaf1","source":"172.20.0.5","severity":"info","facility":"user","appname":"app"},"name":"device_log","fields":{"version":1,"timestamp":1791481500000000000,"severity_code":6,"message":"e3-acl test 1","facility_code":1
+{"timestamp":1791484187,"tags":{"sysName":"leaf1","source":"172.20.0.5","severity":"info","facility":"user","appname":"app"},"name":"device_log","fields":{"version":1,"timestamp":1791481500000000000,"severity_code":6,"message":"e3-acl test 2","facility_code":1
+[2026-10-08 18:30:18,540] ERROR Error processing message, terminating consumer process:  (org.apache.kafka.tools.consumer.ConsoleConsumer)
+Processed a total of 2 messages
+flows:
+The consumer rebalance protocol (KIP-848) is production-ready! Set group.protocol=consumer to try it out. See https://kafka.apache.org/documentation/#consumer_rebalance_protocol
+{"type":"NETFLOW_V5","time_received_ns":1791484187060322012,"sequence_num":2,"sampling_rate":0,"sampler_address":"172.20.0.5","time_flow_start_ns":1791484186000000000,"time_flow_end_ns":17914841865000
+[2026-10-08 18:30:33,203] ERROR Error processing message, terminating consumer process:  (org.apache.kafka.tools.consumer.ConsoleConsumer)
+Processed a total of 1 messages
+ACL（あと）:
+Current ACLs for resource `ResourcePattern(resourceType=TOPIC, name=logs, patternType=LITERAL)`:
+	(principal=User:collectors, host=*, operation=DESCRIBE, permissionType=ALLOW)
+	(principal=User:collectors, host=*, operation=WRITE, permissionType=ALLOW)
+
+Current ACLs for resource `ResourcePattern(resourceType=TOPIC, name=flows, patternType=LITERAL)`:
+	(principal=User:collectors, host=*, operation=DESCRIBE, permissionType=ALLOW)
+	(principal=User:collectors, host=*, operation=WRITE, permissionType=ALLOW)
+
+GoFlow2 のログ（最後の 5 行）:
+time=2026-10-08T18:28:48.877Z level=INFO msg="starting GoFlow2"
+time=2026-10-08T18:28:48.877Z level=INFO msg="starting collection" scheme=netflow hostname="" port=2055 count=1 workers=2 blocking=false queue_size=1000000
+time=2026-10-08T18:29:09.089Z level=ERROR msg="transport error" error="kafka transport kafka: Failed to produce message to topic flows: kafka server: The client is not authorized to access this topic"
+#### 片付け
+containers: 0
+networks: 0
+#### 終わり 2026-10-08T18:30:35Z
+```
+
+期待との突き合わせ: `ensure_acls` が 4 つを返し 2 回目も例外なし ✓、`kafka-acls --list` に `User:collectors` の `logs` / `flows` の WRITE と DESCRIBE だけ ✓、syslog-ng の stats が dropped 0 で ACL の前の分も written（written 2）✓、`logs` に ACL の前（test 1）と後（test 2）✓、`flows` に ACL のあとの NetFlow 1 件（sequence_num 2。ACL の前の 1 つは捨てた）✓、どちらの再起動も 0 ✓、コンテナとネットワークが 0 ✓。consumer の `ERROR Error processing message, terminating consumer process` は `--timeout-ms` が切れたときの終わり方。
+
+#### ACL の待ちが 300 秒を超えたとき（design-log.md の「ACL の待ちが librdkafka の `message.timeout.ms`（既定 300 秒）を超えたとき」と design.md の方針 7 の表の生ログ。scratchpad の `e3acl/gap.sh`。送ってから ACL まで約 340 秒。ACL はここだけ `kafka-acls.sh` で入れた）
+
+```
+#### 立てる 2026-10-08T18:03:17Z
+e3-acl-goflow2 Up Less than a second
+e3-acl-sng Up Less than a second (health: starting)
+e3-acl-kafka Up 8 seconds
+#### ACL 無しで送る（syslog 3 行 + NetFlow 3 つ） 2026-10-08T18:03:45Z
+sent 1
+sent 2
+sent 3
+#### 330 秒待つ 2026-10-08T18:03:53Z
+#### 待ったあと 2026-10-08T18:09:23Z
+/e3-acl-sng running restarts=0 exit=0
+/e3-acl-goflow2 running restarts=0 exit=0
+dst.kafka;d_kafka#0;kafka,logs;a;dropped;0
+dst.kafka;d_kafka#0;kafka,logs;a;queued;3
+dst.kafka;d_kafka#0;kafka,logs;a;written;0
+dst.kafka;d_kafka#0;kafka,logs;a;memory_usage;2136
+dst.kafka;d_kafka#0;kafka,logs,kafka,logs;a;processed;3
+destination;d_kafka;;a;processed;3
+syslog-ng の認可の失敗の行: 1011
+syslog-ng の最初と最後の認可の失敗:
+syslog-ng: err kafka: failed to publish message; topic='logs', error='Broker: Topic authorization failed', driver='d_kafka#0', location='/out/sng.conf:40:3'
+syslog-ng: err kafka: failed to publish message; topic='logs', error='Broker: Topic authorization failed', driver='d_kafka#0', location='/out/sng.conf:40:3'
+syslog-ng の dropped / lost / timed out の行:
+GoFlow2 のログ:
+time=2026-10-08T18:03:25.794Z level=INFO msg="starting GoFlow2"
+time=2026-10-08T18:03:25.794Z level=INFO msg="starting collection" scheme=netflow hostname="" port=2055 count=1 workers=2 blocking=false queue_size=1000000
+time=2026-10-08T18:03:46.372Z level=ERROR msg="transport error" error="kafka transport kafka: Failed to produce message to topic flows: kafka server: The client is not authorized to access this topic"
+time=2026-10-08T18:03:48.997Z level=ERROR msg="transport error" error="kafka transport kafka: Failed to produce message to topic flows: kafka server: The client is not authorized to access this topic"
+time=2026-10-08T18:03:51.692Z level=ERROR msg="transport error" error="kafka transport kafka: Failed to produce message to topic flows: kafka server: The client is not authorized to access this topic"
+トピック（ACL の前）:
+
+#### トピックと ACL を入れる 2026-10-08T18:09:25Z
+Created topic logs.
+Created topic flows.
+#### ACL のあとに送る（syslog 1 行 + NetFlow 1 つ） 2026-10-08T18:09:51Z
+sent 4
+#### 結果 2026-10-08T18:10:06Z
+/e3-acl-sng running restarts=0 exit=0
+/e3-acl-goflow2 running restarts=0 exit=0
+dst.kafka;d_kafka#0;kafka,logs;a;dropped;0
+dst.kafka;d_kafka#0;kafka,logs;a;queued;0
+dst.kafka;d_kafka#0;kafka,logs;a;written;4
+dst.kafka;d_kafka#0;kafka,logs;a;memory_usage;0
+dst.kafka;d_kafka#0;kafka,logs,kafka,logs;a;processed;4
+destination;d_kafka;;a;processed;4
+syslog-ng の最後の認可の失敗:
+syslog-ng: err kafka: failed to publish message; topic='logs', error='Broker: Topic authorization failed', driver='d_kafka#0', location='/out/sng.conf:40:3'
+logs:
+The consumer rebalance protocol (KIP-848) is production-ready! Set group.protocol=consumer to try it out. See https://kafka.apache.org/documentation/#consumer_rebalance_protocol
+{"timestamp":1791482991,"tags":{"sysName":"leaf1","source":"172.20.0.5","severity":"info","facility":"user","appname":"app"},"name":"device_log","fields":{"version":1,"timestamp":1791481500000000000,"severity_code":6,"message":"e3-acl test 4","facility_code":1
+{"timestamp":1791482626,"tags":{"sysName":"leaf1","source":"172.20.0.5","severity":"info","facility":"user","appname":"app"},"name":"device_log","fields":{"version":1,"timestamp":1791481500000000000,"severity_code":6,"message":"e3-acl test 1","facility_code":1
+{"timestamp":1791482628,"tags":{"sysName":"leaf1","source":"172.20.0.5","severity":"info","facility":"user","appname":"app"},"name":"device_log","fields":{"version":1,"timestamp":1791481500000000000,"severity_code":6,"message":"e3-acl test 2","facility_code":1
+{"timestamp":1791482631,"tags":{"sysName":"leaf1","source":"172.20.0.5","severity":"info","facility":"user","appname":"app"},"name":"device_log","fields":{"version":1,"timestamp":1791481500000000000,"severity_code":6,"message":"e3-acl test 3","facility_code":1
+[2026-10-08 18:10:21,815] ERROR Error processing message, terminating consumer process:  (org.apache.kafka.tools.consumer.ConsoleConsumer)
+Processed a total of 4 messages
+flows:
+The consumer rebalance protocol (KIP-848) is production-ready! Set group.protocol=consumer to try it out. See https://kafka.apache.org/documentation/#consumer_rebalance_protocol
+{"type":"NETFLOW_V5","time_received_ns":1791482991653943543,"sequence_num":4,"sampling_rate":0,"sampler_address":"172.20.0.5","time_flow_start_ns":1791482990000000000,"time_flow_end_ns":17914829905000
+[2026-10-08 18:10:36,474] ERROR Error processing message, terminating consumer process:  (org.apache.kafka.tools.consumer.ConsoleConsumer)
+Processed a total of 1 messages
+ACL:
+Current ACLs for resource `ResourcePattern(resourceType=TOPIC, name=logs, patternType=LITERAL)`:
+	(principal=User:collectors, host=*, operation=DESCRIBE, permissionType=ALLOW)
+	(principal=User:collectors, host=*, operation=WRITE, permissionType=ALLOW)
+
+Current ACLs for resource `ResourcePattern(resourceType=TOPIC, name=flows, patternType=LITERAL)`:
+	(principal=User:collectors, host=*, operation=DESCRIBE, permissionType=ALLOW)
+	(principal=User:collectors, host=*, operation=WRITE, permissionType=ALLOW)
+
+GoFlow2 のログ（ACL のあと）:
+#### 片付け
+containers: 0
+networks: 0
+#### 終わり 2026-10-08T18:10:39Z
+```
+
+### セルフレビュー
+
+自分: claude-opus-5-5 / effort: xhigh（このセッションの値）。反対弁護人: `Agent`（`subagent_type: general-purpose`、`model: opus`）/ 読み取り専用。渡した文脈は、design.md と build.md のパス、変更ファイルの一覧、方針 7 の選択とその理由、迷った点（ACL の前の欠損・同時実行・`AlterCluster` の幅）、ここまでの自分の結論と取り下げた判断。返ってきたあとの `git status --porcelain -uall` は自分の 14 ファイル（13 M + 1 ??）だけで、反対弁護人が作ったものは無い。
+
+結論: Must fix 0、Should fix 1（直した）、Nit 4（3 つ直した、1 つは範囲外で据え置き）。
+
+| # | 出所 | 分類 | [観点] | 場所 | 破綻シナリオ | 確かめたもの | 片付け |
+|---|---|---|---|---|---|---|---|
+| S1 | 反対弁護人 | Should fix | [security] [設計整合性] | `docs/architecture/resources/msk.md:59-60`、`docs/pipeline.md:36-37`、`docs/deploy.md:27`、`app/spark/snmp_sinks.py:83,849,874`、`app/syslog-ng/syslog-ng.conf.in:31`、`IaC/terraform/aws-managed/pipeline/analytics/access.tf:54`、design.md の検証 3 と未確定事項 8 | MSK が SCRAM の主体に既定の `allow.everyone.if.no.acl.found=true` を効かせていたら（(b)）、ACL の前から収集器は書け、ACL のあとも検証 3 の ACL の項目は全部通る。そのとき `User:collectors` は ACL の無い `metrics` / `gnmi` / `traps`、consumer group、CLUSTER に何でもできる（読む・消す・自動作成・ACL の作成）。その資格情報は外から UDP を受ける 2 つのタスクの環境変数にある。docs が「ACL が無いと何もできない」と言い切っているので、検証で気付けない | aws-mcp で文書を読み直した（2026-10-09）。`iam-access-control.html`: "The `allow.everyone.if.no.acl.found` Apache Kafka setting has no effect if your cluster uses IAM access control."。`msk-acls.html`: "Amazon MSK sets it to true by default."。併用のとき SCRAM の主体にどちらが効くかを書いた文書は無い。`stream/msk.tf:118-124` の `server_properties` はこの項目を設定していない。指摘は成り立つ | 直した。design.md の背景・検証 3・未確定事項 8 に足し、design-log.md に 1 行（設計方針と範囲は変えない堅牢化）。言い切りは「AWS の文書から読んだ想定。MSK では未確認」に弱めた。検証 3 に「ACL の前の認可の失敗」を足した（ジョブの前に syslog と NetFlow を 1 つずつ送る。失敗が出なければ止めて報告）。MSK の設定に `allow.everyone.if.no.acl.found=false` を足すかは設計方針なので PM に回した（このサイクルでは入れない） |
+| N1 | 反対弁護人 | Nit | [security] [保守性] | `access.tf:43`、`msk.md:60`、design.md:88・168（方針 7 の IAM、未確定事項 10） | `AlterCluster` の幅を「ACL の削除・パーティションの再配置・リーダー選出」と書いていた。実際は Kafka の ALTER CLUSTER と同じ幅で、どの主体・資源への ACL の作成（DENY も含む）、SCRAM の資格情報の変更、UpdateFeatures なども入る。読む人が幅を狭く見積もる | `kafka-actions.html` を読んだ（"equivalent to Apache Kafka's ALTER CLUSTER ACL"）。MSK がこのうちどれを止めているかの文書は見つからない | 直した。「Kafka の ALTER CLUSTER と同じ幅。MSK でどれが効くかは未確認」に書き換えた。design-log.md に 1 行 |
+| N2 | 反対弁護人 | Nit | [data loss] [文書の整合] | `docs/deploy.md:27`、`docs/troubleshooting.md:91` | `SKIP_ANALYTICS=1` の回の書き方が「キューで持ち続け」で、あとで analytics を足せば全部書かれると読める。実際のキューは既定 10000 件までで、syslog-ng が起こし直すと消える | design.md:100 と `pipeline.md:37` は上限を書いている（読んだだけ） | 直した（「既定 10000 件まで。syslog-ng が起こし直すと消える」。troubleshooting には「キューに収まらなかった分は戻らない」を足した）。design.md は元から合っていたので変えていない |
+| N3 | 反対弁護人 | Nit | [保守性] | build.md の Round 2 | セルフレビューの節が無く、(A)(B)(C) の証拠が残っていない | `grep '^### '` | この節で片付けた（下の生ログ） |
+| N4 | 自分 | Nit | [保守性] | `app/spark/snmp_sinks.py:862-867` | 3 本のジョブが同時に起きると、`createTopics` が `TopicExistsException` になったジョブも、作れなかったトピックを `missing` として返す。そのため、いくつかのジョブの stderr に「作った: logs, flows」が出る。ずれるのはログの文言だけで、トピックと ACL は正しい | sr2 の (A): 3 本とも `['logs', 'flows']` を返した（下の生ログ） | 直さない（Round 2 より前からの挙動で、012 の範囲外）。BACKLOG の候補として PM に報告する |
+
+C5（Round 1 のセルフレビュー。範囲外。PM が BACKLOG に書く）: `ensure_secret`（`ops/up-common.sh:106`）と `ensure_fixed_secret`（`:143`）は、SSM の SecureString の値を `${TMPDIR:-/tmp}/nwc-secret.XXXXXX`（0600）に書いてから `put-parameter` に渡す。消すのは関数の最後の `rm` だけで、MSK の SCRAM の一時ファイルと違い `ops/up.sh` の `on_exit` は消さない。そのため、その最中に Ctrl+C や kill で止まると、平文の値を書いたファイルが残り、誰も消さない（本人しか読めないが、平文のシークレットがディスクに残り続ける）。
+
+反対弁護人が反証を試みて成り立たなかったもの（自分の結論と合う）:
+
+- IAM のクライアント（Spark、Kafbat UI、Telegraf）は ACL の影響を受けない。`iam-access-control.html` の "Apache Kafka ACLs have no effect on authorization for IAM identities." による
+- ブローカー間の複製は止まらない。トピックの LITERAL の ACL は CLUSTER に ACL を作らず、ブローカーは super user（`msk-acls.html`）。MSK では検証 3 の `UnderReplicatedPartitions` で見る
+- ACL の失敗でジョブが落ちる（起こし直しの上限を使う）のは、`ensure_topics` と同じ扱いで受け入れたリスク（design.md の未確定事項、`docs/troubleshooting.md:91`）
+- ACL が入るまでの syslog の欠損は無い（gap.log。約 340 秒待って dropped 0、written 4）。GoFlow2 がその間のフローを捨てるのは、design.md の方針 7 の表のとおり
+- 権限が無いときの例外は `ClusterAuthorizationException` になる（sr2 の (B)）。troubleshooting の対応付けと合う
+- テストの偽 JVM だけに頼っていない。検証 6 は実物の Spark で走らせた（`nwc-local-spark` の kafka-clients は 3.4.1 で、EMR に上げる jar と同じ版）
+- 3 本の同時実行（sr2 の (A)）。冪等な producer は、KIP-679 によりトピックの WRITE が IDEMPOTENT_WRITE を含む。KMS の鍵は ARN で渡している（Round 1 の範囲）
+
+「問題なし」とした観点と、実行したもの:
+
+| 観点 | 実行したもの | 結果 |
+|---|---|---|
+| 設計整合性（実装ステップ 1〜3） | design.md を読み直して diff と突き合わせた（読んだだけ）。加えて検証 5 | 逸脱なし |
+| correctness（ACL の中身と冪等性） | 検証 6（`e3acl/real.sh`、実物の Spark で 2 回呼ぶ） | 4 つ入り、2 回目も例外なし |
+| テストが退行を縛っているか | 退行の注入（`mutate.py`、17 個） | 全部落ちた |
+| 並行実行 | sr2 の (A)（Barrier で 3 スレッドを同時に、トピックの無い Kafka に） | 3 本とも ok、ACL は 4 つ |
+| 異常な権限 | sr2 の (B)（ALTER の無い SCRAM の主体で `ensure_acls`） | `ClusterAuthorizationException` が上がる（握りつぶさない） |
+| ACL の無いあいだのヘルスチェック | sr2 の (C)（NLB のヘルスチェックと同じ先。syslog-ng は TCP 5140、GoFlow2 は HTTP 8081 `/__health`。`stream/telegraf.tf:57-63`） | つながる / 200。再起動なし |
+| data loss（ACL までが 300 秒を超える） | gap.log | dropped 0、ACL のあと written 4 |
+| security（シークレット） | `cred.env` と `out/sng.conf` を表示していない。`get-secret-value` を打っていない | — |
+
+sr2 の生ログ（scratchpad の `e3acl/sr2.sh` / `sr2.py`。使い捨ての Kafka は 検証 6 と同じ構成。最後に片付けた）:
+
+```
+#### 立てる 2026-10-08T18:36:18Z
+e3-acl-goflow2 Up Less than a second
+e3-acl-sng Up Less than a second (health: starting)
+e3-acl-kafka Up 8 seconds
+#### (C) ACL の無いあいだのヘルスチェック 2026-10-08T18:37:01Z
+syslog-ng tcp 5140: つながる
+goflow2 /__health: 200
+/e3-acl-sng health=starting
+/e3-acl-goflow2 health=なし
+syslog-ng の認可の失敗の行: 18
+#### (A)(B) 2026-10-08T18:37:01Z
+[sr2] (A) ジョブ 1: ('ok', ['logs', 'flows'], ['WRITE logs', 'DESCRIBE logs', 'WRITE flows', 'DESCRIBE flows'])
+[sr2] (A) ジョブ 2: ('ok', ['logs', 'flows'], ['WRITE logs', 'DESCRIBE logs', 'WRITE flows', 'DESCRIBE flows'])
+[sr2] (A) ジョブ 3: ('ok', ['logs', 'flows'], ['WRITE logs', 'DESCRIBE logs', 'WRITE flows', 'DESCRIBE flows'])
+[sr2] (B) 資格情報が環境にある: True
+[sr2] (B) 上がった: Py4JJavaError / ['ClusterAuthorizationException']
+[sr2] (B)   : java.util.concurrent.ExecutionException: org.apache.kafka.common.errors.ClusterAuthorizationException: Request Request(processor=2, connectionId=172.20.0.2:9093-172.20.0.2:54054-2-0, session=org.apache.kafka.network.Se
+[sr2] 終わり
+spark-submit の終了コード: 0
+トピック:
+Topic: flows	TopicId: Cupe-8O8T2G71v1Ikm5ivA	PartitionCount: 2	ReplicationFactor: 1	Configs: min.insync.replicas=1
+Topic: logs	TopicId: h2JqOPJ_QNOomk7J7BCbNw	PartitionCount: 2	ReplicationFactor: 1	Configs: min.insync.replicas=1
+ACL の数: 4
+Current ACLs for resource `ResourcePattern(resourceType=TOPIC, name=logs, patternType=LITERAL)`:
+	(principal=User:collectors, host=*, operation=DESCRIBE, permissionType=ALLOW)
+	(principal=User:collectors, host=*, operation=WRITE, permissionType=ALLOW)
+
+Current ACLs for resource `ResourcePattern(resourceType=TOPIC, name=flows, patternType=LITERAL)`:
+	(principal=User:collectors, host=*, operation=DESCRIBE, permissionType=ALLOW)
+	(principal=User:collectors, host=*, operation=WRITE, permissionType=ALLOW)
+
+#### 片付け
+containers: 0
+networks: 0
+#### 終わり 2026-10-08T18:37:11Z
+```
+
+（C）の `health=なし` は、手元のコンテナに Docker の HEALTHCHECK が無いだけ（GoFlow2 のイメージ）。MSK の NLB が見る先は上の 2 つ。
+
+ジンテーゼ（反対弁護人のあとで変わったこと）: 「SCRAM のユーザーは ACL が無いと書けない」を事実から「AWS の文書から読んだ想定（MSK では未確認）」に下げた。検証 3 は (a)（ACL が要る）と (b)（既定の true が効く）を見分けられるようになった。実装（`ensure_acls` と `AlterCluster`）は (a)(b) のどちらでも機能として正しいので変えていない。残るリスクは (b) だった場合の権限の広さで、次の一手（`allow.everyone.if.no.acl.found=false`）は PM の判断待ち。

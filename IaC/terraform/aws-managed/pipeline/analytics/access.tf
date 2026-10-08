@@ -38,16 +38,20 @@ resource "aws_iam_role_policy" "emr" {
         Resource = local.bucket_arn
       },
       {
-        # Kafka を読む（consumer group は spark-kafka-source-* で Spark が付ける）
+        # Kafka を読む（consumer group は spark-kafka-source-* で Spark が付ける）。
+        # AlterCluster: SASL/SCRAM の収集器（syslog-ng / GoFlow2）のユーザーに logs / flows の ACL を入れる（app/spark/snmp_sinks.py の ensure_acls の createAcls。cycle 012）。
+        # ACL の作成に要る権限はこれだけで、Kafka の ALTER CLUSTER と同じ幅（どの主体・資源への ACL の作成と削除、パーティションの再配置、
+        # リーダー選出、SCRAM の資格情報の変更 等。MSK でどれが効くかは未確認）を許す（docs/architecture/resources/msk.md）
         Sid      = "KafkaCluster"
         Effect   = "Allow"
-        Action   = ["kafka-cluster:Connect", "kafka-cluster:DescribeCluster"]
+        Action   = ["kafka-cluster:Connect", "kafka-cluster:DescribeCluster", "kafka-cluster:AlterCluster"]
         Resource = local.msk_cluster_arn
       },
       {
         Sid    = "KafkaTopics"
         Effect = "Allow"
-        # CreateTopic: Spark が起動時に無いトピックを作る（app/spark/snmp_sinks.py の ensure_topics。Telegraf が最初の trap / syslog を出すまで traps / logs が無い）
+        # CreateTopic: Spark が起動時に無いトピックを作る（app/spark/snmp_sinks.py の ensure_topics。Telegraf が最初の trap を出すまで traps が無く、
+        # SASL/SCRAM の syslog-ng / GoFlow2 には CREATE の ACL を付けないので、AWS の文書どおりなら logs / flows を自動で作れない）
         Action   = ["kafka-cluster:DescribeTopic", "kafka-cluster:ReadData", "kafka-cluster:CreateTopic"]
         Resource = local.topic_arns
       },

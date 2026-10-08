@@ -706,6 +706,8 @@ check("KAFKA_AUTH=none: PLAINTEXT だけ（SASL の項目は付けない）",
 check("環境変数が無いとき、トピックを作る AdminClient も MSK の IAM 認証のまま。KAFKA_AUTH=none なら PLAINTEXT",
       admin_props() == {"bootstrap.servers": "b:9098", **sinks.KAFKA_IAM_PROPS}
       and admin_props(KAFKA_AUTH="none") == {"bootstrap.servers": "b:9098", "security.protocol": "PLAINTEXT"})
+check("KAFKA_AUTH=none: SASL/SCRAM の収集器の ACL は入れない（OSS 版の Kafka に authorizer は無い。jvm に触らず [] を返す）",
+      with_env({"KAFKA_AUTH": "none"}, lambda: sinks.ensure_acls(types.SimpleNamespace(), "kafka-1:9092")) == [])
 
 rec = {"ts": 1700000000.5, "topic": "metrics", "measurement": "interface", "agent_host": "r1", "host": "h",
        "tags": {"agent_host": "r1", "ifName": "Gi0/1"}, "fields": {"ifInOctets": "123", "ifOperStatus": 1}}
