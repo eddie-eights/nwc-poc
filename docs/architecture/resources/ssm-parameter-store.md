@@ -13,8 +13,8 @@
 |---|---|---|
 | 名前 | どれも `/<prefix>/…` の下 | 各ルート、`ops/up.sh` |
 | String | Terraform の各ルートが作る（下の表） | 各ルートの `aws_ssm_parameter` |
-| SecureString | `ops/up.sh` が `ensure_secret`（乱数）と `ensure_fixed_secret`（決まった値）で作る。タグ `ManagedBy=ops/up.sh`（OSS 版は `oss/ops/up.sh` が作り、タグは `ManagedBy=oss/ops/up.sh`） | `ops/up-common.sh` の `ensure_secret`、`ensure_fixed_secret` |
-| 消す | `ops/down.sh` の手順 5-2 が、タグ `ManagedBy=ops/up.sh` の付いたものだけ消す（OSS 版は `oss/ops/down.sh` の手順 5-2 が `ManagedBy=oss/ops/up.sh` のものを消す） | `ops/down.sh`、`ops/down-common.sh` の `delete_up_ssm_params` |
+| SecureString | `ops/up.sh` が `ensure_secret`（乱数）と `ensure_fixed_secret`（決まった値）で作る。タグ `ManagedBy=ops/up.sh`（OSS 版は `ops/oss/up.sh` が作り、タグは `ManagedBy=ops/oss/up.sh`） | `ops/up-common.sh` の `ensure_secret`、`ensure_fixed_secret` |
+| 消す | `ops/down.sh` の手順 5-2 が、タグ `ManagedBy=ops/up.sh` の付いたものだけ消す（OSS 版は `ops/oss/down.sh` の手順 5-2 が `ManagedBy=ops/oss/up.sh` のものを消す） | `ops/down.sh`、`ops/down-common.sh` の `delete_up_ssm_params` |
 | エンドポイント | `ssm`（土台の分。`ssmmessages` と一緒にいつも作る） | `ops/up.sh` の手順 0 |
 | 費用 | エンドポイントが 1 本 1.4 セント/時 × `ENDPOINTS_AZ_NUM` | `ops/up.sh` の費用の目安（526〜583 行） |
 
@@ -45,7 +45,7 @@ SecureString（`ops/up.sh` が作る）:
 | `/<prefix>/splunk/idxc-secret` | Splunk のクラスターの合言葉（cluster manager・indexer・search head が互いを確かめる） | 乱数（`SPLUNK_AZ_NUM` が 2 か 3 のとき） | Splunk のタスク（どの役割も同じ値） |
 | `/<prefix>/gnmic/gnmi-username`、`gnmi-password` | 機器の gNMI の認証情報 | 決まった値（containerlab の既定値を最初の値にする） | gnmic のタスク（2026-10-09 まではTelegraf の取りにいく側の `/<prefix>/telegraf-dialin/` に SNMP の community と 3 つ。前の回の分は `ops/down.sh` が消す） |
 | `/<prefix>/kafka-ui/admin-password` | Kafbat UI の admin のパスワード | 乱数（stream を作るとき） | Web の EC2 のユニット `<prefix>-kafka-ui`（復号して `/run` の env に書き、止まると消す） |
-| `/<prefix>/kafka/cluster-id`、`/<prefix>/neo4j-password`、`/<prefix>/opensearch-password` | Kafka（KRaft）の CLUSTER_ID、Neo4j と OpenSearch のパスワード（OSS 版だけ。`oss/ops/up.sh` が作る） | 乱数 | Kafka・Neo4j・OpenSearch のタスクと、それを読む側 |
+| `/<prefix>/kafka/cluster-id`、`/<prefix>/neo4j-password`、`/<prefix>/opensearch-password` | Kafka（KRaft）の CLUSTER_ID、Neo4j と OpenSearch のパスワード（OSS 版だけ。`ops/oss/up.sh` が作る） | 乱数 | Kafka・Neo4j・OpenSearch のタスクと、それを読む側 |
 
 ## つながり
 

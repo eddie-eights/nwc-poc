@@ -22,7 +22,7 @@
 |---|---|---|
 | syslog | 取れる | 機器 → 5140/udp → NLB → syslog-ng（2026-10-08 から。それまでは Telegraf）→ `logs`（Telegraf と同じ `device_log` の形）。既定の `SYSLOG_STANDARD=RFC3164` は本番の Cisco 向けで、lab の SR Linux（RFC5424）のログは崩れる（[deploy.md](deploy.md)） |
 | SNMP trap | 取れる | 機器 → 162/udp → NLB → Telegraf → `traps`。異常として上げるのは Grafana（`STORES` の `grafana`。link 以外の trap を `trap` として）と Splunk（`STORES` の `splunk`。linkDown / linkUp を `link_down`、ほかを `trap` として）。linkDown / linkUp の trap から `link_down` を出すのは Splunk だけ |
-| NetFlow / sFlow | 受け口だけ（lab の機器からは来ない） | 機器 → 2055/udp（NetFlow）・6343/udp（sFlow）→ NLB → GoFlow2 → `flows`（2026-10-08 から）。Spark が Telegraf と同じ形（measurement `flow`）に読み替え、`traps` / `logs` と同じ格納先（S3 Tables・OpenSearch・Splunk の `sourcetype=netops:flows`）へ流す。lab の SR Linux は NetFlow を送れないので、`tools/netflow_send.py` で 1 パケット送って確かめる |
+| NetFlow / sFlow | 受け口だけ（lab の機器からは来ない） | 機器 → 2055/udp（NetFlow）・6343/udp（sFlow）→ NLB → GoFlow2 → `flows`（2026-10-08 から）。Spark が Telegraf と同じ形（measurement `flow`）に読み替え、`traps` / `logs` と同じ格納先（S3 Tables・OpenSearch・Splunk の `sourcetype=netops:flows`）へ流す。lab の SR Linux は NetFlow を送れないので、`ops/netflow_send.py` で 1 パケット送って確かめる |
 | telemetry | 一部 | gnmic → 機器の gNMI（57400/tcp）で IF / BGP / IS-IS の状態を `gnmi` トピックへ（2026-10-09、cycle 013 から。それまでは Telegraf で、EVPN と MAC も取っていた）。本番の MDT の受け口（57000/tcp → `mdt` トピック）は 2026-10-08（cycle 012）に外した（下の「方針」） |
 | 性能メトリクス | lab だけ（CPU・メモリ・IF のカウンタ） | gnmic → lab の SR Linux の gNMI で CPU・メモリ・IF のカウンタ（`statistics`）を 60 秒ごとに `metrics` トピックへ（2026-10-09、cycle 013 から。AWS では未確認）。セッション数と収容回線数の代替（MAC テーブルの数、お客さま向けの IF の数）と、それを変換した共通の形（`device_cpu` など）は cycle 013 でやめた。本番の MDT の受け口は 2026-10-08 に外した。SNMP のポーリング（IF の状態と 32 ビットカウンタ、エラー数）も cycle 013 でやめた |
 

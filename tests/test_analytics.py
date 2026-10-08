@@ -32,7 +32,7 @@ with open(UP, encoding="utf-8") as f:
     up = f.read()
 with open(DOWN, encoding="utf-8") as f:
     down = f.read()
-# up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/up-common.sh / down-common.sh。OSS 版の oss/ops/ と共通）とつないで見る
+# up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/up-common.sh / down-common.sh。OSS 版の ops/oss/ と共通）とつないで見る
 def _ops_common(kind):
     return "".join(open(os.path.join(ROOT, "ops", n), encoding="utf-8").read() for n in ("common.sh", f"{kind}-common.sh"))
 up = _ops_common("up") + up
@@ -122,7 +122,7 @@ EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_
     ("lab_mgmt", "telegraf_dialout_nlb", "udp", 162, 162, ""), ("lab_mgmt", "telegraf_dialout_nlb", "udp", 5140, 5140, ""),
     ("lab_mgmt", "telegraf_dialout_nlb", "udp", 2055, 2055, ""), ("lab_mgmt", "telegraf_dialout_nlb", "udp", 6343, 6343, ""),
     ("lab", "telegraf_dialout_nlb", "udp", 162, 162, "egress"), ("lab", "telegraf_dialout_nlb", "udp", 5140, 5140, "egress"),
-    # NetFlow / sFlow は lab の EC2 のホストが自分の IP からも送る（SR Linux は NetFlow を送れないので tools/netflow_send.py で試す）ので両側
+    # NetFlow / sFlow は lab の EC2 のホストが自分の IP からも送る（SR Linux は NetFlow を送れないので ops/netflow_send.py で試す）ので両側
     ("lab", "telegraf_dialout_nlb", "udp", 2055, 2055, ""), ("lab", "telegraf_dialout_nlb", "udp", 6343, 6343, ""),
     # 機器へ取りにいくのは gnmic の gNMI（57400）だけ。SNMP のポーリング（161/udp）は cycle 013 でやめた。受ける側（telegraf_dialout）は機器へ出ない
     ("gnmic", "lab_mgmt", "tcp", 57400, 57400, ""), ("gnmic", "lab", "tcp", 57400, 57400, "ingress"),
@@ -133,11 +133,11 @@ _core_vars = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", 
 def _no_comment(t):
     return "\n".join(l for l in t.splitlines() if not l.lstrip().startswith("#"))
 _up_src = open(os.path.join(ROOT, "ops", "up.sh"), encoding="utf-8").read()
-_oss_up_src = open(os.path.join(ROOT, "oss", "ops", "up.sh"), encoding="utf-8").read()
+_oss_up_src = open(os.path.join(ROOT, "ops", "oss", "up.sh"), encoding="utf-8").read()
 _denv_keys = open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read().split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1]
 _MDT_NOTE = 'if [ -n "${MDT_SOURCE_CIDRS:-}" ]; then echo "注意: MDT_SOURCE_CIDRS は 2026-10-08 から使わない'
 check("MDT の受け口（送り元の変数 mdt_source_cidrs と NLB の 57000/tcp）は cycle 012 で外した。deploy.env の MDT_SOURCE_CIDRS は読むだけ読み（前の deploy.env で止めない）、"
-      "ops/up.sh と oss/ops/up.sh が注意を出す。CIDR の行を書ける表の仕組み（cidr）は残す",
+      "ops/up.sh と ops/oss/up.sh が注意を出す。CIDR の行を書ける表の仕組み（cidr）は残す",
       "mdt_source_cidrs" not in _no_comment(_sg_tf) + _no_comment(_core_vars) and "57000" not in _no_comment(_sg_tf)
       and "mdt_source_cidrs" not in _up_src + _oss_up_src and "MDT_SOURCE_CIDRS" not in env_example
       and "cidr     = try(f.cidr, null)" in _sg_tf

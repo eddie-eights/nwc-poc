@@ -22,7 +22,7 @@ def read(*p):
     with open(os.path.join(ROOT, *p), encoding="utf-8") as f:
         return f.read()
 
-def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の oss/ops/ と共通）とつないで見る
+def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の ops/oss/ と共通）とつないで見る
     return read("ops", "common.sh") + read("ops", f"{name}-common.sh") + read("ops", f"{name}.sh")
 
 # CloudFormation の短縮形（!Sub / !Ref / !If ...）を {"Fn::Sub": ...} の形で読む
@@ -73,11 +73,11 @@ for n, repo, cfn_name, tf_name in LAB_IMAGES:
     check(f"{cfn_name} の既定値 = IaC/terraform/aws-managed/pipeline/lab の {tf_name} = ops/lab-common.sh の {n}_TAG + -amd64（上流の版そのままでない）",
           str(params[cfn_name]["Default"]) == tf_default(tf_name) == f"{sh_const(common, n + '_TAG')}-amd64"
           and sh_const(common, n + "_TAG") not in (None, tf_default(tf_name)))
-_oss_up = read("oss", "ops", "up.sh")
-_ecr_has_lab = [(f, m) for f, s in (("ops/lab-common.sh", common), ("ops/up.sh", up), ("oss/ops/up.sh", _oss_up), ("ops/lab-debug.sh", dbg))
+_oss_up = read("ops", "oss", "up.sh")
+_ecr_has_lab = [(f, m) for f, s in (("ops/lab-common.sh", common), ("ops/up.sh", up), ("ops/oss/up.sh", _oss_up), ("ops/lab-debug.sh", dbg))
                 for m in re.findall(r'ecr_has "\$\w+-lab-(\w+)" "\$(\w+)"', s)]
-check("ECR に lab のイメージがあるかは *_ECR_TAG で見る（lab-common.sh の mirror_lab_images、ops/up.sh、oss/ops/up.sh、ops/lab-debug.sh で 3 つずつ）",
-      sorted(_ecr_has_lab) == sorted((f, (repo, f"{n}_ECR_TAG")) for f in ("ops/lab-common.sh", "ops/up.sh", "oss/ops/up.sh", "ops/lab-debug.sh")
+check("ECR に lab のイメージがあるかは *_ECR_TAG で見る（lab-common.sh の mirror_lab_images、ops/up.sh、ops/oss/up.sh、ops/lab-debug.sh で 3 つずつ）",
+      sorted(_ecr_has_lab) == sorted((f, (repo, f"{n}_ECR_TAG")) for f in ("ops/lab-common.sh", "ops/up.sh", "ops/oss/up.sh", "ops/lab-debug.sh")
                                      for n, repo, *_ in LAB_IMAGES))
 check("mirror_lab_images は上流の <upstream>:<版> を linux/$LAB_ARCH で引き、ECR の <接頭辞>-lab-<名前>:<*_ECR_TAG> に置く",
       all(f'mirror_image "${n}_UPSTREAM:${n}_TAG" "$1/$2-lab-{repo}:${n}_ECR_TAG" "linux/$LAB_ARCH"' in common for n, repo, *_ in LAB_IMAGES))
@@ -425,11 +425,11 @@ check("dir_tag は 3 つ目からのファイルもハッシュに入れる（Do
       all(rc == 0 and re.fullmatch(r"1-[0-9a-f]{12}", t) for t, rc in (_t0, _t1, _t2))
       and _t1 == _t1b and _t0[0] != _t1[0] and _t1[0] != _t2[0] and _missing[1] != 0)
 _tag_calls = [m for n in ("lab-common.sh", "up-common.sh", "up.sh") for m in re.findall(r'^[^#\n]*?\bdir_tag "\$\w+" ([^)\n;]*)', read("ops", n), re.M)] \
-    + [m for n in ("up.sh", "oss-images.sh") for m in re.findall(r'^[^#\n]*?\bdir_tag "\$\w+" ([^)\n;]*)', read("oss", "ops", n), re.M)]
+    + [m for n in ("up.sh", "oss-images.sh") for m in re.findall(r'^[^#\n]*?\bdir_tag "\$\w+" ([^)\n;]*)', read("ops", "oss", n), re.M)]
 _tag_df = [re.fullmatch(r'(?:app/([\w-]+)|"\$NAUTOBOT_CTX") docker/images/([\w-]+)/Dockerfile\s*', c) for c in _tag_calls]
-_builds = "".join(read(*p) for p in (("ops", "lab-common.sh"), ("ops", "up-common.sh"), ("oss", "ops", "oss-images.sh")))
+_builds = "".join(read(*p) for p in (("ops", "lab-common.sh"), ("ops", "up-common.sh"), ("ops", "oss", "oss-images.sh")))
 check("dir_tag の呼び元 12 か所は、どれも docker build の -f と同じ docker/images/<名前>/Dockerfile を渡す（context が app/<名前>/ ならその名前と同じ。"
-      "syslog-ng は cycle 012、gnmic は cycle 013 で ops/up.sh と oss/ops/up.sh に足した）",
+      "syslog-ng は cycle 012、gnmic は cycle 013 で ops/up.sh と ops/oss/up.sh に足した）",
       len(_tag_calls) == 12 and all(_tag_df)
       and all(m.group(1) in (None, m.group(2)) for m in _tag_df)
       and {m.group(2) for m in _tag_df} == {"telegraf", "splunk", "grafana", "nautobot", "spark", "neo4j", "syslog-ng", "gnmic"}

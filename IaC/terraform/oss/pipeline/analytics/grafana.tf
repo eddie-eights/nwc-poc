@@ -12,7 +12,7 @@
 #   （IaC/terraform/aws-managed/workflow の events.tf）が受ける。SigV4 が要るのは SNS だけで、データソースの認証の違いは環境変数で吸収する
 # - Grafana から OpenSearch の 9200 と vmselect の 8481 への SG の行は土台の oss.tf にある
 # 作るかどうかはマネージド版と同じ var.create_grafana（既定 false。network.tf の local.create_grafana）。イメージを <接頭辞>-grafana に push し、
-# admin のパスワードの SecureString を作ってから true にする（OSS 版の ops/up.sh の仕事）
+# admin のパスワードの SecureString を作ってから true にする（ops/oss/up.sh の仕事）
 
 locals {
   grafana_image        = "${try(data.terraform_remote_state.ecr.outputs.grafana_repository_url, "")}:${var.grafana_image_tag}"
@@ -100,7 +100,7 @@ resource "aws_ecs_task_definition" "grafana" {
   lifecycle {
     precondition {
       condition     = try(data.terraform_remote_state.ecr.outputs.grafana_repository_url, "") != ""
-      error_message = "IaC/terraform/oss/base/ecr の state から grafana_repository_url が読めない。IaC/terraform/oss/base/ecr を先に apply する（OSS 版の ops/up.sh）。"
+      error_message = "IaC/terraform/oss/base/ecr の state から grafana_repository_url が読めない。IaC/terraform/oss/base/ecr を先に apply する（ops/oss/up.sh）。"
     }
     precondition {
       condition     = local.alerts_topic_arn != ""

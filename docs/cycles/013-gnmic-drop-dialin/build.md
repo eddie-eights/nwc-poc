@@ -344,3 +344,126 @@ bash -n: 28 本
 ```
 
 検証方法 7 / 8（AWS）は PM。未実行
+
+### マージのラウンド（fcae1d2。根の片付け（017）を取り込む）
+
+base の docs/cycle-006-design に 017（PR #5、fcae1d2）が入ったので `git merge fcae1d2` した。16 ファイルが衝突。初回は解消せずに `git merge --abort` して PM に報告し、PM の判断（案 A: 013 側の文を取り、パスだけ 017 の新しい名前にする）で diff3 で取り直した。
+
+#### 衝突と解き方
+
+23 塊のうち 21 塊は、017 側の変更がパスの付け替えだけだった。base の塊に下の付け替えを当てると 017 の塊と一字一句同じになることをスクリプトで確かめてから、013 の塊に同じ付け替えを当てた。
+
+- `oss/ops/` → `ops/oss/`、`("oss", "ops",` → `("ops", "oss",`
+- `tools/netflow_send.py` → `ops/netflow_send.py`、`tools/{handler.py,tools.json}` → `app/gateway/`
+
+| ファイル | 塊 | 解き方 |
+| :--- | ---: | :--- |
+| docker/compose/check.sh | 1 | パスだけ |
+| docs/architecture/README.md | 1 | 手で: 017 の `app/gateway/` の行と 013 の Dockerfile の行（gnmic 入り）を両方残す |
+| docs/architecture/resources/lab-ec2.md | 1 | パスだけ |
+| docs/architecture/resources/nautobot.md | 1 | パスだけ |
+| docs/collection.md | 1 | パスだけ |
+| docs/data-stores.md | 1 | パスだけ |
+| docs/deploy.md | 1 | パスだけ |
+| docs/oss-variant.md | 1 | パスだけ |
+| docs/pipeline.md | 1 | パスだけ |
+| docs/troubleshooting.md | 1 | パスだけ |
+| ops/deploy-env.sh | 1 | パスだけ |
+| ops/oss/down.sh | 1 | パスだけ |
+| ops/oss/up.sh | 5 | パスだけ |
+| tests/test_lab_debug.py | 1 | パスだけ |
+| tests/test_nautobot.py | 1 | 手で: 013 の検索語（「gnmic とグラフ DB に同期」）と、017 の pathspec（`"oss",` を外す）を合わせる |
+| tests/test_oss_ops.py | 3 | パスだけ |
+
+衝突しなかったが 013 が足した文で古いパスのまま残っていた 3 か所を、PM の指示で直した。
+
+- `ops/oss/up.sh:152`: telegraf_dialin の守りの「先に oss/ops/down.sh で消す」を `ops/oss/down.sh` にした。
+- `tests/test_oss_ops.py:1097,1100`: 同じ守りの check の名前と期待する文字列。
+
+docs の「当時のパス」の行（deploy.md:183 など）と architecture/README.md の app/gateway の行は触っていない。名前の変更（oss/ops/up.sh と down.sh → ops/oss/、tools/tools.json → app/gateway/tools.json）は git が rename として追った。
+
+#### grep（017 の検証 2 / 4 / 8 を、マージした木で取り直した）
+
+`grep -rn -E 'oss/ops|tools/handler|tools/tools\.json|tools/netflow_send|(^|[^/])GLOSSARY\.md' --exclude-dir=.venv --exclude-dir=.terraform --exclude-dir=.git --exclude-dir=cycles --exclude-dir=verification . | cut -d: -f1,2`:
+
+```
+./docs/oss-variant.md:66
+./docs/oss-variant.md:102
+./docs/deploy.md:183
+./docs/architecture/README.md:7
+```
+
+上の 4 行は fcae1d2 の木で同じコマンドを打った結果と同じ 4 行。017 の design.md 検証 4 で、当時の記録として残す行。
+
+- `git grep -n -E 'OSS (版の )?ops/(up|down)\.sh' -- . ':!docs/cycles' | wc -l` → `0`
+- `git ls-files oss tools GLOSSARY.md | wc -l` → `0`
+- docs/cycles と docs/verification に残る古いパス: `git grep -c -E 'oss/ops|tools/netflow_send|tools/tools\.json|tools/handler' -- docs/cycles docs/verification | awk -F: '{n+=$2; f++} END {print f" ファイル "n" 行"}'` → `44 ファイル 325 行`（この節を足す前に数えた。当時の記録なので触らない）
+- 017 の検証 8 `grep -c 'created by ops/oss/up.sh' ops/oss/up.sh`: マージした木では 7、fcae1d2 では 8 だった。差の 1 は 013 のパラメータの変更による。013 は dial-in のパラメータ 3 つ（fcae1d2 の `telegraf-dialin/` の gnmi-username、gnmi-password、snmp-community）を gnmic の 2 つ（`/gnmic/gnmi-username` と `/gnmic/gnmi-password`）に置き換えている。`created by oss/ops` は 0。
+
+```
+$ grep -c 'created by ops/oss/up.sh' ops/oss/up.sh; git show fcae1d2:ops/oss/up.sh | grep -c 'created by ops/oss/up.sh'; git show fcae1d2:ops/oss/up.sh | grep -c 'telegraf-dialin/'; grep -c 'created by oss/ops' ops/oss/up.sh
+7
+8
+3
+0
+```
+
+#### 検証（マージの解消のあと。check.sh のあとに木を変えていないことを `find -newer` で確かめた）
+
+`bash ops/check.sh`（rc=0、2881 行）:
+
+```
+== 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+差分なし
+
+== 2. 9 つのルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+IaC/terraform/aws-managed/base/ecr  OK
+IaC/terraform/aws-managed/base/core  OK
+IaC/terraform/aws-managed/agent  OK
+IaC/terraform/aws-managed/pipeline/lab  OK
+IaC/terraform/aws-managed/pipeline/stream  OK
+IaC/terraform/aws-managed/pipeline/analytics  OK
+IaC/terraform/aws-managed/pipeline/graph  OK
+IaC/terraform/aws-managed/pipeline/nautobot  OK
+IaC/terraform/aws-managed/workflow  OK
+IaC/terraform/oss/base/ecr  OK
+IaC/terraform/oss/base/core  OK
+IaC/terraform/oss/agent  OK
+IaC/terraform/oss/pipeline/lab  OK
+IaC/terraform/oss/pipeline/stream  OK
+IaC/terraform/oss/pipeline/analytics  OK
+IaC/terraform/oss/pipeline/graph  OK
+IaC/terraform/oss/pipeline/nautobot  OK
+IaC/terraform/oss/workflow  OK
+
+== 3. スクリプトの構文
+bash -n: 36 本
+構文エラーなし
+
+== 4. 模擬テスト
+通過 168 / 失敗 0          (test_alerts)
+通過 513 / 失敗 0          (test_analytics)
+通過 161 / 失敗 0          (test_app)
+通過 79 / 失敗 0           (test_collectors)
+通過 3 / 失敗 0            (test_dashboard_config)
+通過 78 / 失敗 0           (test_graph)
+通過 7 / 失敗 0            (test_kb_index)
+通過 97 / 失敗 0           (test_lab_debug)
+通過 138 / 失敗 0          (test_local_compose)
+68 項目すべて通過             (test_nautobot)
+通過 173 / 失敗 0          (test_oss)
+通過 196 / 失敗 0          (test_oss_ops)
+通過 66 / 失敗 0           (test_oss_roll)
+通過 106 / 失敗 0          (test_stream)
+通過 103 / 失敗 0          (test_sync)
+通過 327 / 失敗 0          (test_workflow)
+
+すべて通過
+```
+
+#### 範囲外で気付いたこと（直していない）
+
+- `docs/development.md:37` の各テストの件数が、実際の件数と合わない。
+  - 書いてある件数: stream 96、analytics 504、alerts 169、lab_debug 104、nautobot 69、oss_ops 194、local_compose 132。
+  - 上の check.sh の実際の件数: 106、513、168、97、68、196、138。
+  - 013 の設計の範囲外なので PM に報告した。

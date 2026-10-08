@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # OSS 版（cycle 005「マネージドを OSS に置き換えた環境を作る」）を 1 本で起こす。マネージド版（ops/up.sh）と同じアカウントに並べて立てられる。
 #   リソース名の接頭辞と Project タグは <owner>-nwc-oss（マネージド版は <owner>-nwc-poc）。ルートは IaC/terraform/oss/ の下で、
-#   state も IaC/terraform/oss/<ルート>/terraform.tfstate に置く（マネージド版の IaC/terraform/aws-managed/ の state とは別）。消すのは oss/ops/down.sh。
+#   state も IaC/terraform/oss/<ルート>/terraform.tfstate に置く（マネージド版の IaC/terraform/aws-managed/ の state とは別）。消すのは ops/oss/down.sh。
 #   作るのはマネージド版の AGENT=1 PIPELINE=1 WORKFLOW=1 と同じ範囲で、いつも全部: base/ecr → base/core → agent（AgentCore Runtime）→ Web の部品
 #   → pipeline/lab → pipeline/stream（Kafka は MSK でなく ECS の KRaft 3 台。IaC/terraform/oss/pipeline/stream/kafka.tf）
 #   → pipeline/graph（Neo4j + GDS の ECS と status の Lambda。上がったら lab の定義からトポロジを入れる）→ pipeline/nautobot
 #   → pipeline/analytics（Spark・OpenSearch・VictoriaMetrics・Splunk の ECS と S3 Tables）→ workflow（Temporal のワーカーと AgentCore Gateway）。
 #   Spark のタスクは、OpenSearch・VictoriaMetrics が安定し Splunk が HEALTHY になってから起こす。最後に Web（8080）へのポートフォワーディングを開く。
 #   格納先はいつも iceberg / opensearch / prometheus / splunk の 4 つ（マネージド版の STORES のようには選ばない）。Grafana もいつも作る。
-#   イメージは ECR に無いタグだけ写すかビルドする（oss/ops/oss-images.sh の mirror_oss_images と、ops/up-common.sh の build_splunk / build_grafana / build_agent /
+#   イメージは ECR に無いタグだけ写すかビルドする（ops/oss/oss-images.sh の mirror_oss_images と、ops/up-common.sh の build_splunk / build_grafana / build_agent /
 #   build_worker / mirror_temporal / build_nautobot / build_syslog_ng / build_gnmic）。
 # 関数は ops/ のもの（ops/common.sh・ops/up-common.sh・ops/lab-common.sh・ops/deploy-env.sh）を読み、写しを作らない。
 # 何度打っても同じ状態に収束する（できているものは Terraform が差分なしで飛ばし、ECR にあるタグは写さない）。
 #
 # 使い方（展開したフォルダの直下で。先に AWS CLI の認証を通しておく。IAM ユーザーなら長期キーのまま打つ）:
-#   oss/ops/up.sh                         # deploy.env の OWNER（必須）と下のキーを読む
-#   DEPLOY_ENV_FILE=<パス> oss/ops/up.sh  # 別の設定ファイルを読む
+#   ops/oss/up.sh                         # deploy.env の OWNER（必須）と下のキーを読む
+#   DEPLOY_ENV_FILE=<パス> ops/oss/up.sh  # 別の設定ファイルを読む
 #
 # 読むキー（deploy.env か環境変数。意味は deploy.env.example）: OWNER / SYSLOG_STANDARD / VPC_CIDR /
 #   NETWORK_PERIMETER / ENDPOINTS_AZ_NUM / TELEGRAF_AZ_NUM / EMR_AZ_NUM（Spark のタスクのサブネット）/ SPLUNK_AZ_NUM / SPLUNK_INDEX /
@@ -23,22 +23,22 @@
 #   MAX_OFFSETS_PER_TRIGGER と MAX_OFFSETS_PER_TRIGGER_<格納先> / LOCAL_PORT（既定 8080）/ NO_DASHBOARD_PORTFORWARD /
 #   TF_VERBOSE / AWS_PROFILE / AWS_CA_BUNDLE。
 #   OSS_ROLL（環境変数だけ。deploy.env には書かない。既定 1）: 打ち直しで Kafka か OpenSearch のタスク定義が変わるとき、台を 1 台ずつ入れ替え、
-#   間でクラスターが健全に戻るのを ECS Exec で確かめる（oss/ops/roll-nodes.sh）。OSS_ROLL=0 なら待たずに、変わる台を apply で一度に入れ替える
+#   間でクラスターが健全に戻るのを ECS Exec で確かめる（ops/oss/roll-nodes.sh）。OSS_ROLL=0 なら待たずに、変わる台を apply で一度に入れ替える
 #   機能を選ぶキー（AGENT / PIPELINE / WORKFLOW / SKIP_* / STORES など）と、OSS 版に相手がいない NEPTUNE_AZ_NUM / OPENSEARCH_AZ_NUM / MSK_AZ_NUM は
 #   マネージド版のもので、ここでは読まない（書いてあれば注意を出す）。Knowledge Base（CREATE_KB）は OSS 版では作らない。
 #   同じ deploy.env をマネージド版と共有するので、VPC_CIDR を書くと両方の VPC が同じ CIDR になる（VPC どうしをつながないので重なってよい）
 set -euo pipefail
 REGION=ap-northeast-1
-. "$(dirname "$0")/../../ops/lab-common.sh"   # lab と telegraf の版と、ecr_has / mirror_image / dir_tag / upload_lab
+. "$(dirname "$0")/../lab-common.sh"          # lab と telegraf の版と、ecr_has / mirror_image / dir_tag / upload_lab
 . "$(dirname "$0")/oss-images.sh"             # OSS 版のイメージの名前と版（版の正はここ）と mirror_oss_images
-. "$(dirname "$0")/../../ops/deploy-env.sh"
+. "$(dirname "$0")/../deploy-env.sh"
 resolve_deploy_env_file   # 相対の DEPLOY_ENV_FILE を cd の前の場所で解決する
 cd "$(dirname "$0")/../.."
 . ops/common.sh
 . ops/up-common.sh
-. oss/ops/roll-nodes.sh   # Kafka と OpenSearch の台を 1 台ずつ入れ替える（roll_nodes。手順 7-2 と 7-4）
+. ops/oss/roll-nodes.sh   # Kafka と OpenSearch の台を 1 台ずつ入れ替える（roll_nodes。手順 7-2 と 7-4）
 TF_DIR=IaC/terraform/oss   # tf / tf_apply が -chdir で入るルートの親。マネージド版の IaC/terraform/aws-managed/ には触らない
-OPS_DIR=oss/ops        # SSM のパラメータのタグ ManagedBy=oss/ops/up.sh（oss/ops/down.sh はこのタグのものだけ消す）
+OPS_DIR=ops/oss        # SSM のパラメータのタグ ManagedBy=ops/oss/up.sh（ops/oss/down.sh はこのタグのものだけ消す）
 TF_LOG_NAME=tf-oss     # terraform のログは ops/logs/tf-oss-<ルート>-<apply|destroy>.log
 TF_INIT_LOCKFILE=readonly  # init は lock を書き換えない（lock はマネージド版へのシンボリックリンク。ops/common.sh の tf_init_root）
 NAUTOBOT_CTX=""        # Nautobot のイメージの材料を集める一時ディレクトリ（手順 2）。終わるときに消す
@@ -76,7 +76,7 @@ if [ -n "${SNMP_POLL:-}" ]; then
   echo "注意: SNMP_POLL は使わない（2026-10-09 に SNMP のポーリングをやめ、IF の状態は gnmic が gNMI で取る。Grafana の link_down も gNMI から出る）。deploy.env から消してよい"
 fi
 if [ -n "${MDT_SOURCE_CIDRS:-}" ]; then echo "注意: MDT_SOURCE_CIDRS は 2026-10-08 から使わない（cycle 012 で Cisco の MDT の受け口を外した。戻し方は docs/collection.md。deploy.env から消してよい）"; fi
-OSS_ROLL="${OSS_ROLL:-1}"; flag_value OSS_ROLL   # 0 なら Kafka と OpenSearch の台を 1 台ずつ入れ替えない（oss/ops/roll-nodes.sh）
+OSS_ROLL="${OSS_ROLL:-1}"; flag_value OSS_ROLL   # 0 なら Kafka と OpenSearch の台を 1 台ずつ入れ替えない（ops/oss/roll-nodes.sh）
 NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"; flag_value NETWORK_PERIMETER
 case "${ENDPOINTS_MULTI_AZ:-}" in
   '') ;;
@@ -149,7 +149,7 @@ if [ -f "$TF_DIR/base/core/terraform.tfstate" ]; then
   tf_init base/core
   if tf base/core state list 2>/dev/null | grep -qxF 'aws_security_group.workload["telegraf_dialin"]' \
     && [ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ] && { tf_init pipeline/stream; [ -n "$(tf pipeline/stream state list 2>/dev/null)" ]; }; then
-    die "IaC/terraform/oss/base/core の state に 2026-10-09 より前の取りにいく側の Telegraf の SG（telegraf_dialin）が残っていて、stream がそれを使っている。先に oss/ops/down.sh で消す（stream だけ先に消してもよい）。まだ何も作っていない"
+    die "IaC/terraform/oss/base/core の state に 2026-10-09 より前の取りにいく側の Telegraf の SG（telegraf_dialin）が残っていて、stream がそれを使っている。先に ops/oss/down.sh で消す（stream だけ先に消してもよい）。まだ何も作っていない"
   fi
 fi
 ROOTS="base/ecr base/core agent pipeline/lab pipeline/stream pipeline/graph pipeline/nautobot pipeline/analytics workflow"
@@ -186,9 +186,9 @@ if ecr_has "$PREFIX-goflow2" "$GOFLOW2_TAG"; then echo "goflow2:$GOFLOW2_TAG は
 # 機器の gNMI の購読（cycle 013）。マネージド版と同じイメージ（版は ops/up-common.sh の GNMIC_VERSION）
 GNMIC_TAG=$(dir_tag "$GNMIC_VERSION" app/gnmic docker/images/gnmic/Dockerfile) || die "app/gnmic/ のタグを作れなかった"
 if ecr_has "$PREFIX-gnmic" "$GNMIC_TAG"; then echo "gnmic:$GNMIC_TAG はある"; else NEED_GNMIC=1; fi
-# ルートが使う OSS のイメージ（oss/ops/oss-images.sh の OSS_IMAGES。stream の kafka、analytics の opensearch / vmstorage vminsert vmselect / spark、graph の neo4j）
+# ルートが使う OSS のイメージ（ops/oss/oss-images.sh の OSS_IMAGES。stream の kafka、analytics の opensearch / vmstorage vminsert vmselect / spark、graph の neo4j）
 for name in $OSS_IMAGES; do
-  tag=$(oss_image_tag "$name") || die "oss/ops/oss-images.sh が $name のタグを作れなかった"
+  tag=$(oss_image_tag "$name") || die "ops/oss/oss-images.sh が $name のタグを作れなかった"
   if ecr_has "$PREFIX-$name" "$tag"; then
     echo "$name:$tag はある"
   else
@@ -339,12 +339,12 @@ if [ "$SYSLOG_STANDARD" != "$LAB_SYSLOG_STANDARD" ]; then
   echo "注意: lab の SR Linux は $LAB_SYSLOG_STANDARD で送るので、SYSLOG_STANDARD=$SYSLOG_STANDARD では lab のログの項目（ホスト名・本文など）が崩れる。lab のログまで見るなら SYSLOG_STANDARD=$LAB_SYSLOG_STANDARD"
 fi
 # 機器の認証情報（最初の値は lab の公開既定値。ops/lab-common.sh）。もうあれば触らない
-ensure_fixed_secret "/$PREFIX/gnmic/gnmi-username" "$LAB_GNMI_USERNAME" "gNMI username of the gnmic task (created by oss/ops/up.sh with the containerlab default)"
-ensure_fixed_secret "/$PREFIX/gnmic/gnmi-password" "$LAB_GNMI_PASSWORD" "gNMI password of the gnmic task (created by oss/ops/up.sh with the containerlab default)"
-ensure_secret "/$PREFIX/kafka-ui/admin-password" password "Kafbat UI admin password (created by oss/ops/up.sh)"
+ensure_fixed_secret "/$PREFIX/gnmic/gnmi-username" "$LAB_GNMI_USERNAME" "gNMI username of the gnmic task (created by ops/oss/up.sh with the containerlab default)"
+ensure_fixed_secret "/$PREFIX/gnmic/gnmi-password" "$LAB_GNMI_PASSWORD" "gNMI password of the gnmic task (created by ops/oss/up.sh with the containerlab default)"
+ensure_secret "/$PREFIX/kafka-ui/admin-password" password "Kafbat UI admin password (created by ops/oss/up.sh)"
 # Kafka の KRaft の CLUSTER_ID（3 台で同じ値）。stream の apply より前に 1 回だけ作り、kafka.tf がタスクの secrets で渡す。
-# 作り直すと EFS に書いたデータと合わなくなるので、あれば触らない（消すのは oss/ops/down.sh）。値は画面にもログにも出さない
-ensure_secret "/$PREFIX/kafka/cluster-id" kafka-cluster-id "Kafka KRaft CLUSTER_ID shared by the three nodes (created by oss/ops/up.sh)"
+# 作り直すと EFS に書いたデータと合わなくなるので、あれば触らない（消すのは ops/oss/down.sh）。値は画面にもログにも出さない
+ensure_secret "/$PREFIX/kafka/cluster-id" kafka-cluster-id "Kafka KRaft CLUSTER_ID shared by the three nodes (created by ops/oss/up.sh)"
 # gnmic の購読先の一覧は Nautobot の Job が書く（7-3c。マネージド版と同じ gnmi_targets_from_nautobot=true。Terraform は最初の値として
 # lab の一覧を置き、あとは触らない）
 STREAM_VARS=(-var "telegraf_image_tag=$TELEGRAF_TAG" -var "kafka_ui_image_tag=$OSS_KAFKA_UI_TAG" -var "kafka_image_tag=$OSS_KAFKA_TAG"
@@ -401,7 +401,7 @@ fi
 # Nautobot と workflow が graph の output（neo4j_uri）を読むので、その 2 つより前に当てる（マネージド版の Neptune と同じ位置）
 log "7-3. graph（IaC/terraform/oss/pipeline/graph。Neo4j + GDS の ECS と status の Lambda）"
 # neo4j ユーザーのパスワード（Neo4j のタスクが ECS の secrets で受け、status の Lambda と Web が SSM から読む）。値は出さない
-ensure_secret "/$PREFIX/neo4j-password" password "Neo4j password of the neo4j user (created by oss/ops/up.sh)"
+ensure_secret "/$PREFIX/neo4j-password" password "Neo4j password of the neo4j user (created by ops/oss/up.sh)"
 # status の Lambda（arm64）のレイヤーの中身。ドライバは純 Python なので、どの PC でも同じものができる（sync.tf の locals の注記）。
 # app/graph/requirements-oss.txt と pip に渡す platform / python の版のハッシュを .build/neo4j-layer.sha256 に残し、同じなら作り直さない
 # （毎回 pip を回さない。zip の中身は変わらない。版を変えたらハッシュが変わって作り直す）。
@@ -437,7 +437,7 @@ if aws ecs wait services-stable --region "$REGION" --cluster "$GRAPH_CLUSTER" --
   LAB_TOPOLOGY_B64=$("${PY[@]}" app/containerlab/lab_topology.py app/containerlab | base64 | tr -d '\n') || die "app/containerlab/lab_topology.py が lab の定義を読めなかった"
   run_on_instance "$INSTANCE_ID" "echo $(base64 < ops/seed_graph.py | tr -d '\n') | base64 -d | NAME_PREFIX=$PREFIX LAB_TOPOLOGY_B64=$LAB_TOPOLOGY_B64 /usr/bin/python3.13 -"
 else
-  GRAPH_WARN="Neo4j のサービス（$NEO4J_SERVICE）が 10 分たっても安定しない。トポロジは入れていない。aws ecs list-tasks --region $REGION --cluster $GRAPH_CLUSTER --desired-status STOPPED とロググループ $(tf pipeline/graph output -raw neo4j_log_group_name) を見て、直ったら oss/ops/up.sh を打ち直す"
+  GRAPH_WARN="Neo4j のサービス（$NEO4J_SERVICE）が 10 分たっても安定しない。トポロジは入れていない。aws ecs list-tasks --region $REGION --cluster $GRAPH_CLUSTER --desired-status STOPPED とロググループ $(tf pipeline/graph output -raw neo4j_log_group_name) を見て、直ったら ops/oss/up.sh を打ち直す"
   printf '\033[1;33m%s\033[0m\n' "$GRAPH_WARN"
 fi
 
@@ -464,12 +464,12 @@ fi
 log "7-4. analytics（IaC/terraform/oss/pipeline/analytics。Spark・OpenSearch 3 台・VictoriaMetrics・Splunk の ECS と S3 Tables。格納先: iceberg / opensearch / prometheus / splunk）"
 # OpenSearch の admin のパスワード（2.12 からの OPENSEARCH_INITIAL_ADMIN_PASSWORD は大文字・小文字・数字・記号を求める）。OpenSearch のタスクと
 # Spark のタスクが ECS の secrets で受ける。値は Terraform の state にも画面にも出さない（ops/up-common.sh）
-ensure_secret "/$PREFIX/opensearch-password" strong-password "OpenSearch admin password (created by oss/ops/up.sh)"
+ensure_secret "/$PREFIX/opensearch-password" strong-password "OpenSearch admin password (created by ops/oss/up.sh)"
 # Splunk の管理者のパスワードと HEC の token（クラスターなら合言葉も）。マネージド版と同じ関数（ops/up-common.sh）
 echo "Splunk Enterprise（splunk/splunk:$SPLUNK_VERSION・試用ライセンス）を立てる。Splunk のライセンスと Splunk General Terms に同意して起動する"
 ensure_splunk_secrets "$SPLUNK_AZ_NUM"
 # Grafana の admin のパスワード。Grafana のタスクが ECS の secrets で受ける（grafana.tf。マネージド版と同じ名前）
-ensure_secret "/$PREFIX/grafana/admin-password" password "Grafana admin password (created by oss/ops/up.sh)"
+ensure_secret "/$PREFIX/grafana/admin-password" password "Grafana admin password (created by ops/oss/up.sh)"
 ensure_s3tables_catalog   # alert_events への Firehose（マネージド版の history.tf へのリンク）はこのカタログ越しにテーブルを引く
 # device map（別名=機器名,...）。Splunk のアラートアクションと Spark の prometheus / opensearch の sysName に使う（マネージド版と同じ）
 DEVICE_MAP=$("${PY[@]}" app/containerlab/lab_topology.py app/containerlab --device-map) || die "app/containerlab/lab_topology.py が lab の定義から device map を作れなかった"
@@ -576,14 +576,14 @@ if aws ecs wait services-stable --region "$REGION" --cluster "$WF_CLUSTER" --ser
     --query 'tasks[0].attachments[0].details[?name==`privateIPv4Address`].value | [0]' --output text)
   echo "WF_TASK=${WF_TASK##*/} WF_TASK_IP=$WF_TASK_IP"
 else
-  WF_WARN="workflow のワーカーのサービス（$WF_SERVICE）が 20 分たっても安定しない。ワーカーのログ（$(tf workflow output -raw worker_logs_command)）と aws ecs list-tasks --region $REGION --cluster $WF_CLUSTER --desired-status STOPPED を見て、直ったら oss/ops/up.sh を打ち直す"
+  WF_WARN="workflow のワーカーのサービス（$WF_SERVICE）が 20 分たっても安定しない。ワーカーのログ（$(tf workflow output -raw worker_logs_command)）と aws ecs list-tasks --region $REGION --cluster $WF_CLUSTER --desired-status STOPPED を見て、直ったら ops/oss/up.sh を打ち直す"
   printf '\033[1;33m%s\033[0m\n' "$WF_WARN"
 fi
 log "8-2. Web を起こし直す（workflow の Gateway の値を読ませる）"
 run_on_instance "$INSTANCE_ID" "systemctl restart $PREFIX-web.service; $WEB_ACTIVE"
 
 # ---- 9. Runtime のロググループ ------------------------------------------------------------
-# AgentCore が作るロググループに保持期間とタグを付ける（まだ無ければ先に作る。消すのは oss/ops/down.sh の delete_runtime_log_groups）
+# AgentCore が作るロググループに保持期間とタグを付ける（まだ無ければ先に作る。消すのは ops/oss/down.sh の delete_runtime_log_groups）
 log "9. Runtime のロググループ（$LOG_GROUP）の保持期間を 7 日にする"
 if ! aws logs put-retention-policy --region "$REGION" --log-group-name "$LOG_GROUP" --retention-in-days 7 2>/dev/null; then
   aws logs create-log-group --region "$REGION" --log-group-name "$LOG_GROUP"
@@ -639,7 +639,7 @@ if [ -n "$NAUTOBOT_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$NAUTOBOT_WARN"
 if [ -n "$STORE_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$STORE_WARN"; fi
 if [ -n "$WF_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$WF_WARN"; fi
 if [ -n "$GRAFANA_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$GRAFANA_WARN"; fi
-printf '\033[1;33m%s\033[0m\n' "時間課金（Kafka 3 台・Telegraf・gnmic・Spark・OpenSearch 3 台・VictoriaMetrics・Splunk・Grafana・Neo4j・Nautobot・Temporal のワーカーの ECS、Nautobot の DB、AgentCore Runtime、lab と Web の EC2（Web に Kafbat UI が同居）、EFS、エンドポイント 14 種）。使い終わったら当日中に oss/ops/down.sh"
+printf '\033[1;33m%s\033[0m\n' "時間課金（Kafka 3 台・Telegraf・gnmic・Spark・OpenSearch 3 台・VictoriaMetrics・Splunk・Grafana・Neo4j・Nautobot・Temporal のワーカーの ECS、Nautobot の DB、AgentCore Runtime、lab と Web の EC2（Web に Kafbat UI が同居）、EFS、エンドポイント 14 種）。使い終わったら当日中に ops/oss/down.sh"
 
 # ---- 10. ポートフォワーディング ------------------------------------------------------------
 if [ -n "$NO_DASHBOARD_PORTFORWARD" ]; then

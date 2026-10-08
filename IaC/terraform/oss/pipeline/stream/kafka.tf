@@ -11,15 +11,15 @@
 # 認証は無い（クライアントは PLAINTEXT の 9092、controller は 9093）。
 # 届くのは SG で絞った相手だけ（IaC/terraform/aws-managed/base/core の oss.tf の通信の表: Telegraf・gnmic・syslog-ng・GoFlow2・Spark・Web の EC2（Kafbat UI）→ 9092、
 # Kafka どうし 9092〜9093、Kafka → EFS 2049）。
-# イメージは apache/kafka を ECR の <接頭辞>-kafka に写したもの（閉域で Docker Hub に届かない。OSS 版の ops/up.sh が写す）。
-# CLUSTER_ID は 3 台で同じ値で、OSS 版の ops/up.sh が 1 回だけ作って SSM の /<接頭辞>/kafka/cluster-id（String か SecureString）に置く。
+# イメージは apache/kafka を ECR の <接頭辞>-kafka に写したもの（閉域で Docker Hub に届かない。ops/oss/up.sh が写す）。
+# CLUSTER_ID は 3 台で同じ値で、ops/oss/up.sh が 1 回だけ作って SSM の /<接頭辞>/kafka/cluster-id（String か SecureString）に置く。
 # ECS の secrets で渡すので、Terraform の state には入らない。
 # terraform apply でタスク定義が変わると 3 つのサービスが同時に入れ替わり、そのあいだ controller の過半数が無い（データは EFS に残るので戻る）。
-# OSS 版の ops/up.sh は、apply の前に変わる台を plan で調べて 1 台ずつ -target で入れ替え、間で controller と複製がそろうのを待つ
-# （oss/ops/roll-nodes.sh。設計の未確定事項 4。OSS_ROLL=0 で一度に入れ替える）
+# ops/oss/up.sh は、apply の前に変わる台を plan で調べて 1 台ずつ -target で入れ替え、間で controller と複製がそろうのを待つ
+# （ops/oss/roll-nodes.sh。設計の未確定事項 4。OSS_ROLL=0 で一度に入れ替える）
 
 variable "kafka_image_tag" {
-  description = "Tag of the Kafka image in the <prefix>-kafka repository (apache/kafka copied to ECR by the OSS ops/up.sh). Same version as oss/ops/oss-images.sh."
+  description = "Tag of the Kafka image in the <prefix>-kafka repository (apache/kafka copied to ECR by ops/oss/up.sh). Same version as ops/oss/oss-images.sh."
   type        = string
   default     = "4.3.1"
 }
@@ -389,12 +389,12 @@ output "kafka_ecs_cluster_name" {
 }
 
 output "kafka_service_names" {
-  description = "ECS service of each Kafka node, keyed by node.id (1 to 3). Replace them one at a time - the controllers need two of the three. The OSS ops/up.sh does it (oss/ops/roll-nodes.sh)."
+  description = "ECS service of each Kafka node, keyed by node.id (1 to 3). Replace them one at a time - the controllers need two of the three. ops/oss/up.sh does it (ops/oss/roll-nodes.sh)."
   value       = { for n, s in aws_ecs_service.kafka : n => s.name }
 }
 
 output "kafka_cluster_id_parameter" {
-  description = "SSM parameter holding the CLUSTER_ID of Kafka (the same for the three nodes). The OSS ops/up.sh creates it once, before this root is applied."
+  description = "SSM parameter holding the CLUSTER_ID of Kafka (the same for the three nodes). ops/oss/up.sh creates it once, before this root is applied."
   value       = local.kafka_cluster_id_parameter
 }
 

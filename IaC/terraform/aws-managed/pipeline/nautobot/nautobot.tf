@@ -73,7 +73,7 @@ locals {
     { name = "NAUTOBOT_SUPERUSER_PASSWORD", valueFrom = local.secret_arns["admin-password"] },
     { name = "NAUTOBOT_API_TOKEN", valueFrom = local.secret_arns["api-token"] },
     ], local.graph_neo4j ? [
-    # app/agentcore/graph.py の NEO4J_PASSWORD（OSS 版の oss/ops/up.sh が作る SecureString。値は state にもタスク定義にも書かない）。
+    # app/agentcore/graph.py の NEO4J_PASSWORD（OSS 版の ops/oss/up.sh が作る SecureString。値は state にもタスク定義にも書かない）。
     # web の起動時の同期（bootstrap.py）と worker の Job の両方が書くので、両方に渡す
     { name = "NEO4J_PASSWORD", valueFrom = local.neo4j_password_arn },
   ] : [])

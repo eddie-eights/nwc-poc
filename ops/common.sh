@@ -1,7 +1,7 @@
-# ops/up.sh・ops/down.sh と、OSS 版（005）の oss/ops/up.sh・oss/ops/down.sh が読む共通の関数（画面の出し方と terraform の打ち方）。
+# ops/up.sh・ops/down.sh と、OSS 版（005）の ops/oss/up.sh・ops/oss/down.sh が読む共通の関数（画面の出し方と terraform の打ち方）。
 # 読む側は、先に REGION を決め、ops/deploy-env.sh を読んでリポジトリの直下へ cd しておく。PREFIX は tf_use_cli_credentials を呼ぶ前に決める。
 # TF_DIR は terraform のルートを置いたディレクトリ（既定 IaC/terraform/aws-managed。OSS 版は IaC/terraform/oss）。
-# OPS_DIR は案内に出す up.sh / down.sh のディレクトリと、ops/up.sh が作った SSM のパラメータのタグ ManagedBy=<OPS_DIR>/up.sh（既定 ops。OSS 版は oss/ops）。
+# OPS_DIR は案内に出す up.sh / down.sh のディレクトリと、ops/up.sh が作った SSM のパラメータのタグ ManagedBy=<OPS_DIR>/up.sh（既定 ops。OSS 版は ops/oss）。
 # どちらも、このファイルを読んだあとに書き換えてよい（関数は呼ばれたときに読む）。
 TF_DIR="${TF_DIR:-IaC/terraform/aws-managed}"
 OPS_DIR="${OPS_DIR:-ops}"

@@ -32,7 +32,7 @@ data "terraform_remote_state" "stream" {
   }
 }
 
-# Spark（docker/images/spark/Dockerfile。OSS 版の ops/up.sh が作って <接頭辞>-spark に push する）と OpenSearch・VictoriaMetrics（OSS 版の ops/up.sh が
+# Spark（docker/images/spark/Dockerfile。ops/oss/up.sh が作って <接頭辞>-spark に push する）と OpenSearch・VictoriaMetrics（ops/oss/up.sh が
 # ECR に写す）のイメージは IaC/terraform/oss/base/ecr
 data "terraform_remote_state" "ecr" {
   backend = "local"

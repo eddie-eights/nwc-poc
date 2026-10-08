@@ -28,7 +28,7 @@ def read(*p):
     with open(os.path.join(ROOT, *p), encoding="utf-8") as f:
         return f.read()
 
-def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の oss/ops/ と共通）とつないで見る
+def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の ops/oss/ と共通）とつないで見る
     return read("ops", "common.sh") + read("ops", f"{name}-common.sh") + read("ops", f"{name}.sh")
 
 
@@ -979,7 +979,7 @@ check("start.sh: アラートの定義は ALERTS_TOPIC_ARN があるときだけ
       and start_sh(PROMETHEUS_URL=AMP, OPENSEARCH_URL="https://x") == ([], ["opensearch.yaml", "prometheus.yaml"])
       and start_sh(ALERTS_TOPIC_ARN=TOPIC) == ([], []) and start_sh() == ([], []))
 
-# ---- ルールの評価のエラーを ops で見る（ops/grafana_rules_check.py。ops/up.sh・oss/ops/up.sh の 9-2 と ops/check-grafana.sh が Web の EC2 で動かす）
+# ---- ルールの評価のエラーを ops で見る（ops/grafana_rules_check.py。ops/up.sh・ops/oss/up.sh の 9-2 と ops/check-grafana.sh が Web の EC2 で動かす）
 # execErrState: KeepLast だと評価のエラーは alerts[].state の「Normal (Error, KeepLast)」にだけ出る（health は ok、lastError は空。手元の Grafana 13.2.2 で実測）
 grc = load("ops/grafana_rules_check.py", "grafana_rules_check")
 

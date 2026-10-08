@@ -22,7 +22,7 @@
 | `PIPELINE` | lab / stream / analytics / graph。既定 `0` |
 | `WORKFLOW` | Temporal での調査と修復。`AGENT=1` と `PIPELINE=1` が要り、`SKIP_LAB` / `SKIP_STREAM` / `SKIP_ANALYTICS` / `SKIP_GRAPH` とは一緒に書けない。ワークフローを起こすのは `link_down` のアラートなので、送り手も要る（`STORES` の `splunk` か `grafana`。既定ではどちらもある。両方無いと `ops/up.sh` が止まる） |
 | `CREATE_KB` | ナレッジベース（+$0.35/h。OpenSearch Serverless の OCU $0.33 と、VPC エンドポイント $0.014（`STORES` の `grafana` の logs と共用）と bedrock-agent-runtime のエンドポイント $0.014。エンドポイントは `ENDPOINTS_AZ_NUM` の数の倍、OCU は `OPENSEARCH_AZ_NUM=2` で倍）。`AGENT=1` のとき。既定 `0` |
-| `SKIP_LAB` | lab を作らない（-$0.25/h）。単独で書ける（ほかは lab が無くても作れる。`WORKFLOW=1` とは一緒に書けない）。lab が無いと stream には何も届かない。stream の gnmic は lab の定義の機器を探しに行き、届かないので gNMI のエラーをログに出して 10 秒ごとに繋ぎ直す（タスクは落ちない。手元の docker で確かめた。ECS では未確認）。trap / syslog は lab からしか来ない（NetFlow / sFlow は lab の SR Linux が出さないので、`tools/netflow_send.py` で送ったときだけ来る）。graph には lab のトポロジを入れないので、Neptune には Nautobot の Job が書く物理層だけが入る（IP 層と EVPN・BGP 層は入らない） |
+| `SKIP_LAB` | lab を作らない（-$0.25/h）。単独で書ける（ほかは lab が無くても作れる。`WORKFLOW=1` とは一緒に書けない）。lab が無いと stream には何も届かない。stream の gnmic は lab の定義の機器を探しに行き、届かないので gNMI のエラーをログに出して 10 秒ごとに繋ぎ直す（タスクは落ちない。手元の docker で確かめた。ECS では未確認）。trap / syslog は lab からしか来ない（NetFlow / sFlow は lab の SR Linux が出さないので、`ops/netflow_send.py` で送ったときだけ来る）。graph には lab のトポロジを入れないので、Neptune には Nautobot の Job が書く物理層だけが入る（IP 層と EVPN・BGP 層は入らない） |
 | `SKIP_STREAM` | stream（MSK、Telegraf・syslog-ng・GoFlow2 の ECS、MSK の SCRAM の secret と KMS の鍵）を作らない。Kafka の画面の Kafbat UI も動かない（Web の EC2 のユニットは接続先の SSM のパラメータが無いので 1 回で止まり、起こし直さない。あとで stream を足すときは `SKIP_STREAM` を外して `ops/up.sh` を打ち直す。手順 7 で `/<prefix>/kafka-ui/admin-password` を作り、手順 8-3 の Web の再起動で Kafbat UI が起きる。terraform だけで stream を上げると `admin-password` が無い（Terraform ではなく `ops/up.sh` が作る）ので、`sudo systemctl start <prefix>-kafka-ui` しても 75 で止まる）（-$1.82/h。`STORES` が既定のとき）。analytics も外れる（アラートは出ない） |
 | `SKIP_ANALYTICS` | analytics（Spark と `STORES` の格納先、Grafana / Splunk とそのアラート）を作らない（-$1.17/h。`STORES` が既定のとき。Spark のジョブ 3 つ、OpenSearch の OCU、Grafana、Splunk と、エンドポイント `s3tables` / `aps-workspaces` / `sns` / `kinesis-firehose` / OpenSearch Serverless の分。KB を作るなら OpenSearch Serverless の VPC エンドポイント $0.014 は残る）。アラートの送り手が無くなり、アラートの通知の履歴（`alert_events`）も残らない。Kafka のトピック `logs` / `flows` / `gnmi` / `metrics` と、SASL/SCRAM の収集器のユーザーの ACL も Spark が起動時に入れるものなので入らず、AWS の文書どおりなら stream があっても syslog-ng・GoFlow2・gnmic は MSK に書けない（`Topic authorization failed`。MSK では未確認。syslog-ng は syslog をメモリのキュー（既定 10000 件まで。syslog-ng が起こし直すと消える）で持ち、GoFlow2 はフローを、gnmic は値を捨てる。どれも落ちない。cycle 012、gnmic は 013） |
 | `SKIP_GRAPH` | Neptune Analytics のグラフを作らない（-$0.60/h。16 m-NCU の $0.58 と `neptune-graph-data` のエンドポイント。analytics がある回は `kinesis-firehose` のエンドポイントも外れる）。トポロジは静的データになる（アラートで `status` が変わらない） |
@@ -70,7 +70,7 @@ OpenSearch・Prometheus・Grafana は `grafana` でまとめて作るか作ら�
 - 値は `1` / `0` のほか `true` / `false`、`yes` / `no` も書ける。`KEEP_ECR` は `1` / `0` だけ。
 - 知らないキーや同じキーの 2 回目があると、何も作らずに止まる。
 - `deploy.env` はシェルとして実行しない（値の先頭の `~/` だけ読み替える）。別のファイルを使うなら `DEPLOY_ENV_FILE` にパスを入れる。
-- `SSM_RUN_WAIT`（秒。既定 `1800`）は `deploy.env` のキーではなく、環境変数だけで渡す（`SSM_RUN_WAIT=3600 ops/up.sh`）。`ops/up.sh`・`oss/ops/up.sh`・`ops/check-grafana.sh` が SSM Run Command の結果（cloud-init の待ちを含む）を待つ長さで、過ぎたら待つのをやめ、結果を見る `aws ssm get-command-invocation` のコマンドを出す（インスタンスの上のコマンドは止めない）。
+- `SSM_RUN_WAIT`（秒。既定 `1800`）は `deploy.env` のキーではなく、環境変数だけで渡す（`SSM_RUN_WAIT=3600 ops/up.sh`）。`ops/up.sh`・`ops/oss/up.sh`・`ops/check-grafana.sh` が SSM Run Command の結果（cloud-init の待ちを含む）を待つ長さで、過ぎたら待つのをやめ、結果を見る `aws ssm get-command-invocation` のコマンドを出す（インスタンスの上のコマンドは止めない）。
 
 ## `ops/up.sh` がすること
 
@@ -103,7 +103,7 @@ OpenSearch・Prometheus・Grafana は `grafana` でまとめて作るか作ら�
 - スクリプトの中は `-auto-approve`。できているものは飛ばすので、落ちたら打ち直せばよい。
 - 手順 10 が自分で開くのは Web（EC2 の 8080）のポートフォワードだけで、Kafbat UI（EC2 の 8082）は表示されたコマンド（`kafka_ui_port_forward_command`）を別のターミナルで打って開く。初回の `ops/up.sh` では、手順 10 の直後に開いても Kafbat UI がまだ上がっていないことがある（手順 8-3 で起こした直後。イメージの pull を含めて 1〜2 分の見込みで、AWS では未計測。手元の Docker では pull 済みのイメージで起動に 7 秒）。つながらなければ少し待ってからブラウザで開き直す。ポートフォワードが閉じていたら、そのコマンドを打ち直す。上がったかは Web の EC2 の `journalctl -u <prefix>-kafka-ui` に `Started KafkaUiApplication` が出たかで見る（systemd の `Started <prefix>-kafka-ui.service` はスクリプトが動き出した時点で出るので、上がった合図ではない）。
 - user_data を変えたサイクルより前に立てたままの環境は、次の `IaC/terraform/aws-managed/base/core` の apply で Web の EC2 が作り直される（`IaC/terraform/aws-managed/base/core/web.tf` の `user_data_replace_on_change = true`）。いまのところ「Kafbat UI を Web の EC2 に同居させる（010）」と「Kafbat UI を Web の EC2 に移した残りを直す（014）」。010 より前の環境は、user_data のほかにインスタンスタイプ・メタデータのホップ数・ボリュームも変わる。インスタンス ID が変わるので、`start_session_command` とポートフォワードのコマンドは手順 10 の表示から取り直す。
-- 010 より前に作って、ECS（Fargate）の Kafbat UI（クラスター `<prefix>-telegraf` のサービス `<prefix>-kafka-ui`）が動いたままの環境では、手順 3 の `IaC/terraform/aws-managed/base/core` の apply が SG `<prefix>-kafka-ui` を消すところで `DependencyViolation` になる（そのタスクの ENI がまだ SG を使っている。Fargate のサービスを消すのは手順 7 の stream で、手順 3 の方が先）。どれだけ待って落ちるかは未確認（AWS では再現していない。010 のレビューで読んだ順番から）。先に `ops/down.sh` で消すか、`aws ecs delete-service --region <region> --cluster <prefix>-telegraf --service <prefix>-kafka-ui --force` でサービスを消し、タスクが止まって ENI が消えるのを待ってから打ち直す。OSS 版（`oss/ops/up.sh`）も順番は同じ。
+- 010 より前に作って、ECS（Fargate）の Kafbat UI（クラスター `<prefix>-telegraf` のサービス `<prefix>-kafka-ui`）が動いたままの環境では、手順 3 の `IaC/terraform/aws-managed/base/core` の apply が SG `<prefix>-kafka-ui` を消すところで `DependencyViolation` になる（そのタスクの ENI がまだ SG を使っている。Fargate のサービスを消すのは手順 7 の stream で、手順 3 の方が先）。どれだけ待って落ちるかは未確認（AWS では再現していない。010 のレビューで読んだ順番から）。先に `ops/down.sh` で消すか、`aws ecs delete-service --region <region> --cluster <prefix>-telegraf --service <prefix>-kafka-ui --force` でサービスを消し、タスクが止まって ENI が消えるのを待ってから打ち直す。OSS 版（`ops/oss/up.sh`）も順番は同じ。
 - 途中で落ちたときは、裏の graph の apply が終わるまで待ってから止まる。その間ターミナルを閉じない。
 
 ## `ops/down.sh` がすること
@@ -146,7 +146,7 @@ flowchart LR
 
 ### state を失ったとき
 
-上の「使い回す」は、`ops/up.sh` を打ったのと同じチェックアウトから打つときだけ成り立つ。Terraform の state は 9 つのルートとも local backend で、`ops/up.sh` を打ったチェックアウトの `IaC/terraform/aws-managed/<ルート>/terraform.tfstate` にしか無い（OSS 版は `IaC/terraform/oss/<ルート>/`）。worktree で `ops/up.sh` を打ってその worktree を消すと、state も一緒に消える（OSS 版の `oss/ops/up.sh` / `oss/ops/down.sh` も同じ）。**残したものがあるあいだは、up.sh を打ったチェックアウトを消さない。**worktree で立てたなら、worktree を消す前に、そこから `ops/down.sh` を打って消し切る。
+上の「使い回す」は、`ops/up.sh` を打ったのと同じチェックアウトから打つときだけ成り立つ。Terraform の state は 9 つのルートとも local backend で、`ops/up.sh` を打ったチェックアウトの `IaC/terraform/aws-managed/<ルート>/terraform.tfstate` にしか無い（OSS 版は `IaC/terraform/oss/<ルート>/`）。worktree で `ops/up.sh` を打ってその worktree を消すと、state も一緒に消える（OSS 版の `ops/oss/up.sh` / `ops/oss/down.sh` も同じ）。**残したものがあるあいだは、up.sh を打ったチェックアウトを消さない。**worktree で立てたなら、worktree を消す前に、そこから `ops/down.sh` を打って消し切る。
 
 state を失ったまま次の `ops/up.sh` を打つと、残したものはこう扱われる（2026-10-08 の OSS 版の AWS 検証。[verification/20261008-oss-aws.md](verification/20261008-oss-aws.md) の「state の扱い」）。
 

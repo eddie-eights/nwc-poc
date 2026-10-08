@@ -1,4 +1,4 @@
 # OSS 版（cycle 005）のワーカー: マネージド版の依存に Neo4j のドライバ（app/temporal/awsio.py が GRAPH_BACKEND=neo4j で使う）を足す。
-# docker buildx build --platform linux/arm64 --build-arg REQUIREMENTS=requirements-oss.txt -f docker/images/temporal/Dockerfile app/temporal/（OSS 版の ops/up.sh）
+# docker buildx build --platform linux/arm64 --build-arg REQUIREMENTS=requirements-oss.txt -f docker/images/temporal/Dockerfile app/temporal/（ops/oss/up.sh）
 -r requirements.txt
 neo4j==6.3.1

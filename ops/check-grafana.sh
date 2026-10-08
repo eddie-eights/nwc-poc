@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Grafana のアラートルールが評価でエラーになっていないかを確かめる。ops/up.sh（OSS 版は oss/ops/up.sh）の 9-2 と同じ確かめを単独で打つ版。
+# Grafana のアラートルールが評価でエラーになっていないかを確かめる。ops/up.sh（OSS 版は ops/oss/up.sh）の 9-2 と同じ確かめを単独で打つ版。
 # ルールは execErrState: KeepLast なので、評価がエラーでもアラートは出ず、画面のルールも Normal に見える。up.sh の確かめはそのときの評価だけなので、
 # データソースや格納先を直したあと、Grafana のタスクが入れ替わったあと、アラートが来ないと思ったときに打つ。
 #

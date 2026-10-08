@@ -1,19 +1,19 @@
-"""cycle 005（マネージドを OSS に置き換えた環境を作る）の oss/ops/（up.sh / down.sh / oss-images.sh）の模擬テスト。
+"""cycle 005（マネージドを OSS に置き換えた環境を作る）の ops/oss/（up.sh / down.sh / oss-images.sh）の模擬テスト。
 aws / terraform / docker は偽物（下の FAKE_*）に差し替え、AWS には触れない。
   1. 接頭辞 <owner>-nwc-oss が、どの OWNER の組み合わせでもマネージド版の <owner>-nwc-poc と同じにならない（resolve_name_prefix を bash で呼ぶ）
-  2. oss/ops/down.sh は IaC/terraform/oss/ の state と、名前・タグが <owner>-nwc-oss のもの（SSM のパラメータは ManagedBy=oss/ops/up.sh だけ）しか消さない。
+  2. ops/oss/down.sh は IaC/terraform/oss/ の state と、名前・タグが <owner>-nwc-oss のもの（SSM のパラメータは ManagedBy=ops/oss/up.sh だけ）しか消さない。
      いちばん紛らわしい OWNER=x-nwc-oss のマネージド版（接頭辞 x-nwc-oss-nwc-poc。OSS 版の x-nwc-oss と頭が同じ）を同じアカウントに並べて確かめる。
      逆向き（ops/down.sh が OSS 版に触らない）も見る。消したあとに残っているもの（Project タグ）を数えて出す
   3. stream が消えなかったときは Kafka の CLUSTER_ID を残し、残りのルートは消しにいき、終了コード 1 で消えなかったルートを出す
-  4. イメージの名前と版が oss/ops/oss-images.sh（正）・docker/images/spark/ と docker/images/neo4j/ の Dockerfile・terraform の既定値・
+  4. イメージの名前と版が ops/oss/oss-images.sh（正）・docker/images/spark/ と docker/images/neo4j/ の Dockerfile・terraform の既定値・
      手元の docker/compose/compose.yaml・ECR のリポジトリに合い、
      mirror_oss_images が ECR に無いものだけを写す（spark / neo4j は app/spark/・app/neo4j/ を context に、docker/images/<名前>/Dockerfile でビルドする）
   5. ensure_secret の kafka-cluster-id（KRaft の CLUSTER_ID の形）と strong-password（OpenSearch の admin。値は画面に出さない）と、
-     oss/ops/ が ops/ の関数を写さず読むこと、up.sh がマネージド版と同じ 9 つのルートを当て、Splunk のイメージと SSM をマネージド版と同じ関数で用意すること
-  6. oss/ops/up.sh を偽物の道具で最後まで通す（3 回）。9 つのルートの apply の順番と渡す値、イメージと SSM のパラメータ、Web の部品、
+     ops/oss/ が ops/ の関数を写さず読むこと、up.sh がマネージド版と同じ 9 つのルートを当て、Splunk のイメージと SSM をマネージド版と同じ関数で用意すること
+  6. ops/oss/up.sh を偽物の道具で最後まで通す（3 回）。9 つのルートの apply の順番と渡す値、イメージと SSM のパラメータ、Web の部品、
      Neo4j が安定してからの同期、OpenSearch・VictoriaMetrics・Splunk が上がってからの Spark、ポートフォワードの案内と、
      打ち直し（イメージもパラメータも作り直さない）、サービスが安定しなかったとき（同期を飛ばし、Spark は起こし、警告を出す）。
-     そのあと oss/ops/down.sh が、up.sh の作ったパラメータを全部消す
+     そのあと ops/oss/down.sh が、up.sh の作ったパラメータを全部消す
 実行は python3 tests/test_oss_ops.py"""
 import base64, hashlib, json, os, re, shutil, subprocess, tempfile, types
 
@@ -86,7 +86,7 @@ query = opt("--query")
 log()
 if (svc, op) == ("sts", "get-caller-identity"):
     print("arn:aws:sts::123456789012:assumed-role/Admin/tester" if query == "Arn" else "123456789012")
-# ---- ここから oss/ops/up.sh が打つもの（6.）。送ったコマンドは在庫の cmds に残し、結果を聞かれたら Success と答える
+# ---- ここから ops/oss/up.sh が打つもの（6.）。送ったコマンドは在庫の cmds に残し、結果を聞かれたら Success と答える
 # （Grafana のルールの確かめは FAKE_GRAFANA=NG / UNKNOWN のとき Failed と答え、[標準出力, 標準エラー] を本物の --output text と同じくタブでつないで返す）
 elif (svc, op) == ("ecr", "get-login-password"):
     print("fake-ecr-login")
@@ -423,7 +423,7 @@ with open(args[args.index("-o") + 1], "w") as f:
     f.write("fake")
 '''
 
-# oss/ops/up.sh が apply する順番
+# ops/oss/up.sh が apply する順番
 ROOTS = ["base/ecr", "base/core", "agent", "pipeline/lab", "pipeline/stream", "pipeline/graph",
          "pipeline/nautobot", "pipeline/analytics", "workflow"]
 
@@ -446,7 +446,7 @@ OSS_MANAGED_PARAMS = ["/x-nwc-oss/kafka/cluster-id", "/x-nwc-oss/kafka-ui/admin-
 def inventory():
     return {
         "ssm": {
-            **{n: ssm_param("oss/ops/up.sh", "x-nwc-oss") for n in OSS_MANAGED_PARAMS},
+            **{n: ssm_param("ops/oss/up.sh", "x-nwc-oss") for n in OSS_MANAGED_PARAMS},
             "/x-nwc-oss/manual/note": ssm_param(None, "x-nwc-oss"),  # 手で入れたもの（ManagedBy が無い）は残す
             # /x-nwc-oss/ の下でもマネージド版の ops/up.sh のタグのものは残す（Path だけで消さない）。Project は「残り」の数に入らない別の名前
             "/x-nwc-oss/shared/from-managed": ssm_param("ops/up.sh", "y-nwc-poc"),
@@ -484,10 +484,10 @@ for name, body in (("aws", FAKE_AWS), ("terraform", FAKE_TF), ("docker", FAKE_DO
     os.chmod(os.path.join(BIN, name), 0o755)
 LOG, INV = os.path.join(TMP, "calls.jsonl"), os.path.join(TMP, "inv.json")
 
-# down.sh と up.sh を打つ場所（リポジトリの写し）。ops/ と oss/ops/ のスクリプトと、9 つのルートの state と、
+# down.sh と up.sh を打つ場所（リポジトリの写し）。ops/ と ops/oss/ のスクリプトと、9 つのルートの state と、
 # up.sh が読む材料（イメージの元、Web とエージェントの部品、lab の定義）を置く。設定と秘密のファイルは写さない
 REPO = os.path.join(TMP, "repo")
-for d in ("ops", "oss/ops"):
+for d in ("ops", "ops/oss"):
     os.makedirs(os.path.join(REPO, d))
     for f in os.listdir(os.path.join(ROOT, d)):
         if f.endswith(".sh") or f in ("seed_graph.py", "roll_health.py", "grafana_rules_check.py"):
@@ -584,10 +584,10 @@ p = subprocess.run(["bash", "-c", ". ops/common.sh; . ops/deploy-env.sh; OWNER=a
                    cwd=ROOT, capture_output=True, text=True, timeout=60)
 check("OWNER が 15 文字なら OSS 版でも止まる", p.returncode == 1 and "NOT-REACHED" not in p.stdout)
 
-# ================================================================ 2. oss/ops/down.sh は OSS 版だけを消す
-p, cs, inv = run_down("oss/ops/down.sh", "x")
+# ================================================================ 2. ops/oss/down.sh は OSS 版だけを消す
+p, cs, inv = run_down("ops/oss/down.sh", "x")
 out = p.stdout + p.stderr
-check("oss/ops/down.sh（OWNER=x）: 終了コード 0", p.returncode == 0)
+check("ops/oss/down.sh（OWNER=x）: 終了コード 0", p.returncode == 0)
 check("偽物の aws に知らないコマンドを打っていない", not [c for c in cs if c.get("unknown")])
 check("OSS 版は MSK を持たないので、Secrets Manager にも KMS にも触らない（マネージド版の SCRAM の secret と鍵はそのまま。cycle 012）",
       not [c for c in cs if c["cmd"] == "aws" and c["args"][0] in ("secretsmanager", "kms")]
@@ -601,14 +601,14 @@ check("terraform に渡す認証のプロファイル名は接頭辞から作る
       {c["profile"] for c in tf_calls(cs)} == {"x-nwc-oss-terraform"})
 check("terraform のログは ops/logs/tf-oss-*（マネージド版の tf-* を上書きしない）",
       logs_made() and all(f.startswith("tf-oss-") for f in logs_made()) and "tf-oss-pipeline-stream-destroy.log" in logs_made())
-check("SSM: oss/ops/up.sh が作った 8 つ（Kafka の CLUSTER_ID、OpenSearch・Splunk・Neo4j・Nautobot のものを含む）を消し、手で入れたものとマネージド版のものは残す",
+check("SSM: ops/oss/up.sh が作った 8 つ（Kafka の CLUSTER_ID、OpenSearch・Splunk・Neo4j・Nautobot のものを含む）を消し、手で入れたものとマネージド版のものは残す",
       set(inv["ssm"]) == ALL_PARAMS - set(OSS_MANAGED_PARAMS))
 check("SSM: delete-parameter は /x-nwc-oss/ の下にしか打っていない",
       all(arg_after(a, "--name").startswith("/x-nwc-oss/") for a in aws_calls(cs, "ssm", "delete-parameter")))
-check("SSM の絞り込みは、describe-parameters のどの呼び出しも Path=/x-nwc-oss/（末尾の / まで）と ManagedBy=oss/ops/up.sh の両方を付ける",
+check("SSM の絞り込みは、describe-parameters のどの呼び出しも Path=/x-nwc-oss/（末尾の / まで）と ManagedBy=ops/oss/up.sh の両方を付ける",
       aws_calls(cs, "ssm", "describe-parameters")
       and all(a[a.index("--parameter-filters") + 1:a.index("--parameter-filters") + 3]
-              == ["Key=Path,Option=Recursive,Values=/x-nwc-oss/", "Key=tag:ManagedBy,Values=oss/ops/up.sh"]
+              == ["Key=Path,Option=Recursive,Values=/x-nwc-oss/", "Key=tag:ManagedBy,Values=ops/oss/up.sh"]
               for a in aws_calls(cs, "ssm", "describe-parameters")))
 check("SSM: /x-nwc-oss/ の下にあってもタグ ManagedBy=ops/up.sh（マネージド版）のパラメータは消さない",
       "/x-nwc-oss/shared/from-managed" in inv["ssm"]
@@ -731,7 +731,7 @@ def kept_base_core(cs, tf_dir):  # base/core は -target で ENI に関わらな
     ds = base_core_destroys(cs, tf_dir)
     return bool(ds) and all(any(x.startswith("-target=") for x in a) for a in ds)
 
-for script, owner, prefix, tf_dir, new in (("oss/ops/down.sh", "x", "x-nwc-oss", "IaC/terraform/oss", "vpc-0055"),
+for script, owner, prefix, tf_dir, new in (("ops/oss/down.sh", "x", "x-nwc-oss", "IaC/terraform/oss", "vpc-0055"),
                                            ("ops/down.sh", "x-nwc-oss", "x-nwc-oss-nwc-poc", "IaC/terraform/aws-managed", "vpc-0aaa")):
     p, cs, inv = run_down(script, owner, inv=twin_vpcs(f"{prefix}-vpc", new, new))
     out = p.stdout + p.stderr
@@ -756,33 +756,33 @@ for script, owner, prefix, tf_dir, new in (("oss/ops/down.sh", "x", "x-nwc-oss",
           and f"Runtime の ENI が残っている: eni-runtime-{new}" in out and kept_base_core(cs, tf_dir))
 
 # state の VPC に ENI が無ければ、同じ名前の別の VPC（前の打ち直しの残り）に ENI があっても全部消す（state が優先）
-p, cs, inv = run_down("oss/ops/down.sh", "x", {"FAKE_TF_VPC": json.dumps({"IaC/terraform/oss/base/core": "vpc-0055"})},
+p, cs, inv = run_down("ops/oss/down.sh", "x", {"FAKE_TF_VPC": json.dumps({"IaC/terraform/oss/base/core": "vpc-0055"})},
                       inv=twin_vpcs("x-nwc-oss-vpc", "vpc-0055", "vpc-0old"))
 out = p.stdout + p.stderr
-check("oss/ops/down.sh（state の VPC に ENI が無く、同じ名前の古い VPC にだけある）: state を信じて base/core を全部消す",
+check("ops/oss/down.sh（state の VPC に ENI が無く、同じ名前の古い VPC にだけある）: state を信じて base/core を全部消す",
       p.returncode == 0 and not aws_calls(cs, "ec2", "describe-vpcs")
       and "Runtime の ENI の確認: VPC=vpc-0055 残り=なし" in out
       and base_core_destroys(cs, "IaC/terraform/oss") and not kept_base_core(cs, "IaC/terraform/oss"))
 
 # ================================================================ 3. stream が消えなかったとき
-p, cs, inv = run_down("oss/ops/down.sh", "x", {"FAKE_TF_FAIL": "IaC/terraform/oss/pipeline/stream", "FAKE_TAG_FAIL": "1", "KEEP_ECR": "1"})
+p, cs, inv = run_down("ops/oss/down.sh", "x", {"FAKE_TF_FAIL": "IaC/terraform/oss/pipeline/stream", "FAKE_TAG_FAIL": "1", "KEEP_ECR": "1"})
 out = p.stdout + p.stderr
 check("stream が消えなかった: 終了コード 1 で「NG: 消えなかったルート: pipeline/stream」と出す",
       p.returncode == 1 and "NG: 消えなかったルート: pipeline/stream（" in out)
 check("stream が消えなかった: 後ろのルート（lab / agent / base/core）は消しにいく",
       {"IaC/terraform/oss/pipeline/lab", "IaC/terraform/oss/agent", "IaC/terraform/oss/base/core"} <= destroyed(cs))
-check("stream が消えなかった: Kafka の CLUSTER_ID は残し（次の down.sh で消す）、ほかの oss/ops/up.sh のパラメータは消す",
+check("stream が消えなかった: Kafka の CLUSTER_ID は残し（次の down.sh で消す）、ほかの ops/oss/up.sh のパラメータは消す",
       "/x-nwc-oss/kafka/cluster-id: 残す" in out
       and set(inv["ssm"]) == ALL_PARAMS - set(OSS_MANAGED_PARAMS) | {"/x-nwc-oss/kafka/cluster-id"})
 check("KEEP_ECR=1 なら IaC/terraform/oss/base/ecr は destroy しない", "IaC/terraform/oss/base/ecr" not in destroyed(cs))
 check("残りを数えられなかった（タグの API のエラー）ときは、0 件と言わずに「数えられなかった」と出す",
       "残り: 数えられなかった（上のエラー）" in out and "残り: 0 件" not in out)
 
-p, cs, inv = run_down("oss/ops/down.sh", "x", {"FAKE_TF_FAIL": "IaC/terraform/oss/base/core"})
+p, cs, inv = run_down("ops/oss/down.sh", "x", {"FAKE_TF_FAIL": "IaC/terraform/oss/base/core"})
 check("base/core（Kafka のデータの EFS）が消えなかったときも Kafka の CLUSTER_ID は残す",
       p.returncode == 1 and "/x-nwc-oss/kafka/cluster-id" in inv["ssm"] and "/x-nwc-oss/kafka-ui/admin-password" not in inv["ssm"])
 
-p, cs, inv = run_down("oss/ops/down.sh", "x", {"FAKE_TF_FAIL": "IaC/terraform/oss/pipeline/nautobot"})
+p, cs, inv = run_down("ops/oss/down.sh", "x", {"FAKE_TF_FAIL": "IaC/terraform/oss/pipeline/nautobot"})
 check("nautobot が消えなかった: 終了コード 1 で、/x-nwc-oss/nautobot/ の下（DB に入っている値と合わせるもの）だけ残し、ほかは Kafka の CLUSTER_ID も消す",
       p.returncode == 1 and "NG: 消えなかったルート: pipeline/nautobot（" in p.stdout + p.stderr
       and set(inv["ssm"]) == ALL_PARAMS - set(OSS_MANAGED_PARAMS) | {"/x-nwc-oss/nautobot/secret-key"})
@@ -790,7 +790,7 @@ check("nautobot が消えなかった: 前後のルート（analytics / graph / 
       {f"IaC/terraform/oss/{r}" for r in ROOTS} == destroyed(cs))
 
 # ================================================================ 4. イメージの名前と版
-img_sh = read("oss/ops/oss-images.sh")
+img_sh = read("ops/oss/oss-images.sh")
 def tf_default_early(path, var):
     m = re.search(rf'variable\s+"{var}"\s*\{{[^}}]*?default\s*=\s*"([^"]+)"', read(path), re.S)
     return m and m.group(1)
@@ -823,7 +823,7 @@ check("OSS_IMAGES（ECR に写すもの）は IaC/terraform/aws-managed/base/ecr
 
 TAGS_SH = r'''
 REGION=ap-northeast-1; PY=(python3)
-. ops/lab-common.sh; . oss/ops/oss-images.sh
+. ops/lab-common.sh; . ops/oss/oss-images.sh
 for n in $OSS_IMAGES; do t=$(oss_image_tag "$n") || exit 1; u=$(oss_image_upstream "$n") || exit 1; echo "$n $t ${u:--}"; done
 oss_image_tag bogus && exit 1
 oss_image_upstream bogus && exit 1
@@ -844,7 +844,7 @@ reset(inv0)
 REG = "123456789012.dkr.ecr.ap-northeast-1.amazonaws.com"
 MIRROR_SH = rf'''
 REGION=ap-northeast-1; PY=(python3)
-. ops/lab-common.sh; . oss/ops/oss-images.sh
+. ops/lab-common.sh; . ops/oss/oss-images.sh
 mirror_oss_images {REG} x-nwc-oss $OSS_IMAGES || exit 1
 echo END
 '''
@@ -864,15 +864,15 @@ check("mirror_oss_images: spark / neo4j は app/spark/・app/neo4j/ を context 
       and all(arg_after(_builds[f"app/{n}/"], "-f") == f"docker/images/{n}/Dockerfile" for n in ("spark", "neo4j"))
       and arg_after(_builds["app/spark/"], "--build-arg") == f'SPARK_VERSION={V["OSS_SPARK_VERSION"]}'
       and arg_after(_builds["app/neo4j/"], "--build-arg") == f'NEO4J_VERSION={V["OSS_NEO4J_VERSION"]}')
-p = subprocess.run(["bash", "-c", rf'REGION=ap-northeast-1; PY=(python3); . ops/lab-common.sh; . oss/ops/oss-images.sh; mirror_oss_images {REG} x-nwc-oss bogus'],
+p = subprocess.run(["bash", "-c", rf'REGION=ap-northeast-1; PY=(python3); . ops/lab-common.sh; . ops/oss/oss-images.sh; mirror_oss_images {REG} x-nwc-oss bogus'],
                    cwd=ROOT, env=fake_env(), capture_output=True, text=True, timeout=60)
 check("mirror_oss_images: 知らない名前は 1 で止まる", p.returncode == 1 and "知らないイメージ: bogus" in p.stderr)
 
-# ================================================================ 5. CLUSTER_ID と、oss/ops/ の作り
+# ================================================================ 5. CLUSTER_ID と、ops/oss/ の作り
 reset(inventory())
 SECRET_SH = r'''
 REGION=ap-northeast-1; PY=(python3); PREFIX=x-nwc-oss; OWNER=x
-. ops/common.sh; . ops/up-common.sh; OPS_DIR=oss/ops
+. ops/common.sh; . ops/up-common.sh; OPS_DIR=ops/oss
 ensure_secret /x-nwc-oss/kafka/new-id kafka-cluster-id "test" || exit 1
 ensure_secret /x-nwc-oss/kafka/new-id kafka-cluster-id "test" || exit 1
 '''
@@ -888,8 +888,8 @@ check("ensure_secret kafka-cluster-id: 値は 16 バイトの base64url（22 文
       and len(base64.urlsafe_b64decode(value + "==")) == 16)
 check("ensure_secret kafka-cluster-id: 値は画面にもコマンドラインにも出さない",
       value and value not in p.stdout + p.stderr and not any(value in " ".join(c["args"]) for c in calls()))
-check("ensure_secret kafka-cluster-id: タグは ManagedBy=oss/ops/up.sh・Project=x-nwc-oss・owner=x（oss/ops/down.sh が消せる）",
-      made.get("tags") == {"ManagedBy": "oss/ops/up.sh", "Project": "x-nwc-oss", "owner": "x"})
+check("ensure_secret kafka-cluster-id: タグは ManagedBy=ops/oss/up.sh・Project=x-nwc-oss・owner=x（ops/oss/down.sh が消せる）",
+      made.get("tags") == {"ManagedBy": "ops/oss/up.sh", "Project": "x-nwc-oss", "owner": "x"})
 check("ensure_secret: 値を書いた一時ファイルを残さない", not [f for f in os.listdir(TMP) if f.startswith("nwc-secret.")])
 
 # 先頭が「-」になる乱数を引いたら引き直す（Kafka の Uuid.randomUuid と同じ）。up-common.sh の Python をそのまま動かす
@@ -903,7 +903,7 @@ check("kafka_cluster_id: 先頭が - になる値は捨てて引き直す", not 
 reset(inventory())
 STRONG_SH = r'''
 REGION=ap-northeast-1; PY=(python3); PREFIX=x-nwc-oss; OWNER=x
-. ops/common.sh; . ops/up-common.sh; OPS_DIR=oss/ops
+. ops/common.sh; . ops/up-common.sh; OPS_DIR=ops/oss
 for i in 1 2 3 4 5 6 7 8; do ensure_secret "/x-nwc-oss/os/p$i" strong-password "test" || exit 1; done
 '''
 p = subprocess.run(["bash", "-c", STRONG_SH], cwd=ROOT, env=fake_env(), capture_output=True, text=True, timeout=120)
@@ -914,9 +914,9 @@ check("ensure_secret strong-password: SecureString で、値は大文字・小�
       p.returncode == 0 and len(vals) == 8 and all(m.get("type") == "SecureString" for m in made.values())
       and all(len(x) == 32 and re.search(r"[A-Z]", x) and re.search(r"[a-z]", x) and re.search(r"[0-9]", x) and re.search(r"[-_]", x) for x in vals)
       and len(set(vals)) == 8)
-check("ensure_secret strong-password: 値は画面にもコマンドラインにも出さず、タグは ManagedBy=oss/ops/up.sh",
+check("ensure_secret strong-password: 値は画面にもコマンドラインにも出さず、タグは ManagedBy=ops/oss/up.sh",
       all(x not in p.stdout + p.stderr and not any(x in " ".join(c["args"]) for c in calls()) for x in vals)
-      and all(m.get("tags", {}).get("ManagedBy") == "oss/ops/up.sh" for m in made.values()))
+      and all(m.get("tags", {}).get("ManagedBy") == "ops/oss/up.sh" for m in made.values()))
 
 # ---- MSK の SCRAM の鍵と secret（cycle 012。マネージド版の ops/up.sh が stream の apply の前に呼ぶ ops/up-common.sh の関数）
 SCRAM_SH = r'''
@@ -1001,44 +1001,44 @@ check("ensure_msk_scram_key: describe-key が NotFound 以外で落ちたら、�
       p.returncode != 0 and not aws_calls(cs, "kms", "create-key") and not aws_calls(cs, "secretsmanager", "create-secret")
       and "alias/x-nwc-poc-msk-scram を確かめられない: An error occurred (AccessDeniedException)" in p.stderr)
 
-up, down = read("oss/ops/up.sh"), read("oss/ops/down.sh")
+up, down = read("ops/oss/up.sh"), read("ops/oss/down.sh")
 def funcs(text):
     return set(re.findall(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{", text, re.M))
 ops_funcs = set().union(*(funcs(read(f"ops/{f}")) for f in os.listdir(os.path.join(ROOT, "ops")) if f.endswith(".sh")))
-check("oss/ops/up.sh と down.sh は関数を定義しない（ops/ の共通の関数を読む）", not funcs(up) and not funcs(down))
-check("oss/ops/oss-images.sh は ops/ にある関数を書き直していない（写しを作らない）", not funcs(img_sh) & ops_funcs)
-check("oss/ops/up.sh は ops/common.sh・ops/up-common.sh・ops/lab-common.sh・ops/deploy-env.sh を読む",
-      all(s in up for s in (". ops/common.sh", ". ops/up-common.sh", '/../../ops/lab-common.sh"', '/../../ops/deploy-env.sh"')))
-check("oss/ops/down.sh は ops/common.sh・ops/down-common.sh・ops/deploy-env.sh を読む",
-      all(s in down for s in (". ops/common.sh", ". ops/down-common.sh", '/../../ops/deploy-env.sh"')))
+check("ops/oss/up.sh と down.sh は関数を定義しない（ops/ の共通の関数を読む）", not funcs(up) and not funcs(down))
+check("ops/oss/oss-images.sh は ops/ にある関数を書き直していない（写しを作らない）", not funcs(img_sh) & ops_funcs)
+check("ops/oss/up.sh は ops/common.sh・ops/up-common.sh・ops/lab-common.sh・ops/deploy-env.sh を読む",
+      all(s in up for s in (". ops/common.sh", ". ops/up-common.sh", '/../lab-common.sh"', '/../deploy-env.sh"')))
+check("ops/oss/down.sh は ops/common.sh・ops/down-common.sh・ops/deploy-env.sh を読む",
+      all(s in down for s in (". ops/common.sh", ". ops/down-common.sh", '/../deploy-env.sh"')))
 check("マネージド版の ops/up.sh と ops/down.sh も同じ共通のファイルを読む（写しが 2 つにならない）",
       all(s in read("ops/up.sh") for s in (". ops/common.sh", ". ops/up-common.sh"))
       and all(s in read("ops/down.sh") for s in (". ops/common.sh", ". ops/down-common.sh")))
-check("oss/ops/ の 2 つは resolve_name_prefix nwc-oss で接頭辞を作り、TF_DIR=IaC/terraform/oss・OPS_DIR=oss/ops・TF_LOG_NAME=tf-oss にする",
+check("ops/oss/ の 2 つは resolve_name_prefix nwc-oss で接頭辞を作り、TF_DIR=IaC/terraform/oss・OPS_DIR=ops/oss・TF_LOG_NAME=tf-oss にする",
       all("resolve_name_prefix nwc-oss" in t and re.search(r"^TF_DIR=IaC/terraform/oss\b", t, re.M)
-          and re.search(r"^OPS_DIR=oss/ops\b", t, re.M) and re.search(r"^TF_LOG_NAME=tf-oss\b", t, re.M) for t in (up, down)))
+          and re.search(r"^OPS_DIR=ops/oss\b", t, re.M) and re.search(r"^TF_LOG_NAME=tf-oss\b", t, re.M) for t in (up, down)))
 pos = lambda s: up.find(s)
 _applies = [pos(f"tf_apply {r}") for r in ROOTS]
-check("oss/ops/up.sh はルートを base/ecr → base/core → agent → pipeline/lab → pipeline/stream → pipeline/graph → pipeline/nautobot → pipeline/analytics → workflow の順に当て、ROOTS もその 9 つ（マネージド版と同じ範囲）",
+check("ops/oss/up.sh はルートを base/ecr → base/core → agent → pipeline/lab → pipeline/stream → pipeline/graph → pipeline/nautobot → pipeline/analytics → workflow の順に当て、ROOTS もその 9 つ（マネージド版と同じ範囲）",
       _applies[0] >= 0 and _applies == sorted(_applies) and len(set(_applies)) == 9
       and re.search(r'^ROOTS="' + " ".join(ROOTS) + r'"$', up, re.M))
-check("oss/ops/down.sh は up.sh の 9 つのルートを全部消す（base/core は destroy_base_core、agent は destroy_agent）",
+check("ops/oss/down.sh は up.sh の 9 つのルートを全部消す（base/core は destroy_base_core、agent は destroy_agent）",
       all(re.search(rf"^\s*destroy_(lambda_)?root {re.escape(r)}\b", down, re.M) for r in ROOTS if r not in ("base/core", "agent"))
       and re.search(r"^destroy_agent$", down, re.M) and re.search(r"^destroy_base_core$", down, re.M))
-check("oss/ops/up.sh は OSS_NOW を持たず、oss-images.sh の OSS_IMAGES（7 つ）をそのまま使って、ECR ができてから OSS のイメージを写すかビルドし、stream より先に済ませる",
+check("ops/oss/up.sh は OSS_NOW を持たず、oss-images.sh の OSS_IMAGES（7 つ）をそのまま使って、ECR ができてから OSS のイメージを写すかビルドし、stream より先に済ませる",
       "OSS_NOW" not in up and len(V["OSS_IMAGES"].split()) == 7 and re.search(r"^for name in \$OSS_IMAGES; do$", up, re.M) is not None
       and 0 <= pos("tf_apply base/ecr") < pos('mirror_oss_images "$REG" "$PREFIX" $OSS_IMAGES') < pos("tf_apply pipeline/stream"))
-check("oss/ops/up.sh の Splunk のイメージはマネージド版と同じ関数（ops/up-common.sh の splunk_image_check / build_splunk）で、docker login のあと、analytics より前",
+check("ops/oss/up.sh の Splunk のイメージはマネージド版と同じ関数（ops/up-common.sh の splunk_image_check / build_splunk）で、docker login のあと、analytics より前",
       "splunk_image_check" in up and "$NEED_SPLUNK" in up
       and pos("aws ecr get-login-password") < pos("    build_splunk") < pos("tf_apply pipeline/analytics")
       and "splunk_image_check" in read("ops/up.sh") and "build_splunk" in read("ops/up.sh")
       and "docker buildx build" not in up)
-check("oss/ops/up.sh は analytics の前に Splunk の SSM（ensure_splunk_secrets。マネージド版と同じ関数）と OpenSearch の admin（strong-password）と s3tablescatalog を用意する",
+check("ops/oss/up.sh は analytics の前に Splunk の SSM（ensure_splunk_secrets。マネージド版と同じ関数）と OpenSearch の admin（strong-password）と s3tablescatalog を用意する",
       0 <= pos('ensure_secret "/$PREFIX/opensearch-password" strong-password') < pos("tf_apply pipeline/analytics")
       and 0 <= pos('ensure_splunk_secrets "$SPLUNK_AZ_NUM"') < pos("tf_apply pipeline/analytics")
       and 0 <= pos("ensure_s3tables_catalog") < pos("tf_apply pipeline/analytics")
       and 'ensure_splunk_secrets "$SPLUNK_AZ_NUM"' in read("ops/up.sh"))
-check("oss/ops/up.sh の Grafana のイメージはマネージド版と同じ関数（ops/up-common.sh の build_grafana。版は GRAFANA_VERSION、タグは dir_tag）で、docker login のあと、analytics より前",
+check("ops/oss/up.sh の Grafana のイメージはマネージド版と同じ関数（ops/up-common.sh の build_grafana。版は GRAFANA_VERSION、タグは dir_tag）で、docker login のあと、analytics より前",
       'GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" app/grafana docker/images/grafana/Dockerfile)' in up and 'ecr_has "$PREFIX-grafana" "$GRAFANA_TAG"' in up
       and pos("aws ecr get-login-password") < pos("    build_grafana") < pos("tf_apply pipeline/analytics")
       and "    build_grafana" in read("ops/up.sh") and "GRAFANA_VERSION=" not in read("ops/up.sh") and "GRAFANA_VERSION=" not in up
@@ -1049,22 +1049,22 @@ check("oss/ops/up.sh の Grafana のイメージはマネージド版と同じ�
 # analytics と stream の -var は配列（ANALYTICS_VARS / STREAM_VARS）にまとめ、1 台ずつの入れ替え（roll_nodes）と apply に同じものを渡す
 _an = up[pos("ANALYTICS_VARS=("):pos('tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"')]
 _st = up[pos("STREAM_VARS=("):pos('tf_apply pipeline/stream "${STREAM_VARS[@]}"')]
-check("oss/ops/up.sh は stream と analytics の apply の前に roll_nodes（oss/ops/roll-nodes.sh）を同じ -var の配列で打つ",
-      ". oss/ops/roll-nodes.sh" in up and 0 <= pos(". ops/up-common.sh") < pos(". oss/ops/roll-nodes.sh")
+check("ops/oss/up.sh は stream と analytics の apply の前に roll_nodes（ops/oss/roll-nodes.sh）を同じ -var の配列で打つ",
+      ". ops/oss/roll-nodes.sh" in up and 0 <= pos(". ops/up-common.sh") < pos(". ops/oss/roll-nodes.sh")
       and 0 <= pos("STREAM_VARS=(") < pos('roll_nodes kafka pipeline/stream "${STREAM_VARS[@]}"\ntf_apply pipeline/stream "${STREAM_VARS[@]}"\n')
       and 0 <= pos("ANALYTICS_VARS=(") < pos('roll_nodes opensearch pipeline/analytics "${ANALYTICS_VARS[@]}"\ntf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"\n')
       and _an.count("\n\n") == 0 and _st.count("\n\n") == 0 and up.count("roll_nodes ") == 2
       and re.search(r'^OSS_ROLL="\$\{OSS_ROLL:-1\}"; flag_value OSS_ROLL\b', up, re.M) is not None
       and 'if [ -n "$ROLL_PLAN" ]; then rm -f "$ROLL_PLAN"; fi' in up[pos("\ntrap '"):up.index("\n", pos("\ntrap '") + 1)])
-check("oss/ops/up.sh は analytics の前に Grafana の admin のパスワードを SSM に作り、analytics に create_grafana=true と Grafana のタグを渡す（OSS 版はいつも Grafana を作る）",
+check("ops/oss/up.sh は analytics の前に Grafana の admin のパスワードを SSM に作り、analytics に create_grafana=true と Grafana のタグを渡す（OSS 版はいつも Grafana を作る）",
       0 <= pos('ensure_secret "/$PREFIX/grafana/admin-password" password') < pos("tf_apply pipeline/analytics")
       and "-var create_grafana=true" in _an and '-var "grafana_image_tag=$GRAFANA_TAG"' in _an)
-check("oss/ops/up.sh は analytics に 4 つの格納先と、Spark・OpenSearch・VictoriaMetrics・Splunk のタグ、Splunk の台数と index、Spark のサブネット、device map を渡す",
+check("ops/oss/up.sh は analytics に 4 つの格納先と、Spark・OpenSearch・VictoriaMetrics・Splunk のタグ、Splunk の台数と index、Spark のサブネット、device map を渡す",
       all(v in _an for v in ("-var 'sinks=[" + '"iceberg","opensearch","prometheus","splunk"' + "]'", '-var "spark_image_tag=$SPARK_TAG"',
                               '-var "opensearch_image_tag=$OSS_OPENSEARCH_TAG"', '-var "victoriametrics_image_tag=$OSS_VM_TAG"',
                               '-var "splunk_image_tag=$SPLUNK_TAG"', '-var "splunk_index=$SPLUNK_INDEX"', '-var "splunk_az_num=$SPLUNK_AZ_NUM"',
                               '-var "emr_az_num=$EMR_AZ_NUM"', '-var "device_map=$DEVICE_MAP"')))
-check("oss/ops/up.sh は graph の前に SSM の /<接頭辞>/neo4j-password を作り、status の Lambda のレイヤー（app/graph/requirements-oss.txt を arm64 向けに）を入れ、Neo4j のタグと alert_history=true を渡す",
+check("ops/oss/up.sh は graph の前に SSM の /<接頭辞>/neo4j-password を作り、status の Lambda のレイヤー（app/graph/requirements-oss.txt を arm64 向けに）を入れ、Neo4j のタグと alert_history=true を渡す",
       0 <= pos('ensure_secret "/$PREFIX/neo4j-password" password') < pos("tf_apply pipeline/graph")
       and 0 <= pos("--target IaC/terraform/oss/pipeline/graph/.build/neo4j-layer/python") < pos("tf_apply pipeline/graph")
       and '--platform "$LAYER_PLATFORM" --python-version "$LAYER_PYVER" -r app/graph/requirements-oss.txt' in up
@@ -1075,40 +1075,40 @@ check("oss/ops/up.sh は graph の前に SSM の /<接頭辞>/neo4j-password を
       and 'tf_apply pipeline/graph -var "neo4j_image_tag=$NEO4J_TAG" -var alert_history=true' in up)
 _sync_tf = read("IaC/terraform/oss/pipeline/graph/sync.tf")
 _layer_pyver = re.search(r"^LAYER_PLATFORM=\S+; LAYER_PYVER=(\S+)$", up, re.M).group(1)
-check("oss/ops/up.sh の LAYER_PYVER は sync.tf の Lambda の runtime とレイヤーの compatible_runtimes と同じ版（片方だけ変えると読めないレイヤーになる）",
+check("ops/oss/up.sh の LAYER_PYVER は sync.tf の Lambda の runtime とレイヤーの compatible_runtimes と同じ版（片方だけ変えると読めないレイヤーになる）",
       f'runtime          = "python{_layer_pyver}"' in _sync_tf and f'compatible_runtimes      = ["python{_layer_pyver}"]' in _sync_tf
       and _sync_tf.count("python3.") == 2)
 UP_ENDPOINTS = {"ssm", "ssmmessages", "ecr.api", "ecr.dkr", "logs", "s3tables", "sns", "kinesis-firehose",
                 "bedrock-runtime", "bedrock-agentcore", "ecs", "sqs", "bedrock-agentcore.gateway", "athena"}
-check("oss/ops/up.sh のエンドポイントは 14 個: 土台の 5 つ、analytics と graph の s3tables・sns・kinesis-firehose、agent の bedrock-runtime・bedrock-agentcore、"
+check("ops/oss/up.sh のエンドポイントは 14 個: 土台の 5 つ、analytics と graph の s3tables・sns・kinesis-firehose、agent の bedrock-runtime・bedrock-agentcore、"
       "nautobot の ecs、workflow の sqs・bedrock-agentcore.gateway・athena",
       (m := re.search(r'^ENDPOINTS="([^"]*)"$', up, re.M)) and UP_ENDPOINTS == set(m.group(1).split()) and len(m.group(1).split()) == 14)
-check("oss/ops/up.sh は agent・graph・workflow に lambda_az_num を、agent に runtime_az_num を、nautobot に nautobot_db_az_num を渡す（マネージド版が渡している値）",
+check("ops/oss/up.sh は agent・graph・workflow に lambda_az_num を、agent に runtime_az_num を、nautobot に nautobot_db_az_num を渡す（マネージド版が渡している値）",
       all(re.search(rf'^az_num {k} 1 1 ', up, re.M) for k in ("RUNTIME_AZ_NUM", "LAMBDA_AZ_NUM", "NAUTOBOT_DB_AZ_NUM"))
       and 'tf_apply agent -var "agent_image_tag=$IMAGE_TAG" -var "runtime_az_num=$RUNTIME_AZ_NUM" -var "lambda_az_num=$LAMBDA_AZ_NUM"' in up
       and 'tf_apply pipeline/graph -var "neo4j_image_tag=$NEO4J_TAG" -var alert_history=true -var "lambda_az_num=$LAMBDA_AZ_NUM"' in up
       and 'tf_apply workflow -var "worker_image_tag=$IMAGE_TAG" -var "lambda_az_num=$LAMBDA_AZ_NUM"' in up
       and 'tf_apply pipeline/nautobot -var "nautobot_image_tag=$NAUTOBOT_TAG" -var "redis_image_tag=$REDIS_TAG" -var "nautobot_db_az_num=$NAUTOBOT_DB_AZ_NUM"' in up)
-check("oss/ops/up.sh は analytics に http_send と Spark の 1 回に読む件数（max_offsets_per_trigger とその格納先ごと）を、stream に telegraf_az_num と gnmi_targets_from_nautobot=true を渡す"
+check("ops/oss/up.sh は analytics に http_send と Spark の 1 回に読む件数（max_offsets_per_trigger とその格納先ごと）を、stream に telegraf_az_num と gnmi_targets_from_nautobot=true を渡す"
       "（dialin_targets_from_nautobot・snmp_agents・snmp_poll は cycle 013 でやめた）",
       '-var "http_send=$HTTP_SEND"' in _an and '-var "max_offsets_per_trigger=' in _an and '-var "max_offsets_per_trigger_by_sink=' in _an
       and '-var "telegraf_az_num=$TELEGRAF_AZ_NUM"' in up and "-var gnmi_targets_from_nautobot=true" in up
       and not any(w in up for w in ("dialin_targets_from_nautobot", "snmp_agents", "snmp_poll=", "--snmp-agents")))
-check("oss/ops/up.sh は base/core の state に古い取りにいく側の Telegraf の SG（telegraf_dialin、2026-10-09 より前）があり stream が残っていれば、ECR より前に止める"
+check("ops/oss/up.sh は base/core の state に古い取りにいく側の Telegraf の SG（telegraf_dialin、2026-10-09 より前）があり stream が残っていれば、ECR より前に止める"
       "（マネージド版の ops/up.sh と同じ守り。SG のキーを変えると作り直しで、付けたままでは消せない）",
       0 <= pos("""grep -qxF 'aws_security_group.workload["telegraf_dialin"]'""") < pos('log "1. ECR リポジトリ')
-      and '[ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ] && { tf_init pipeline/stream;' in up and "先に oss/ops/down.sh で消す" in up)
+      and '[ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ] && { tf_init pipeline/stream;' in up and "先に ops/oss/down.sh で消す" in up)
 _spark_tf = read("IaC/terraform/oss/pipeline/analytics/spark.tf")
 check("Spark のサービスは Terraform では 0 台で作り（desired_count = 0、あとの変更は見ない）、up.sh が OpenSearch・VictoriaMetrics・Splunk を待ったあとで 1 台にする",
       re.search(r"^\s*desired_count\s*=\s*0$", _spark_tf, re.M) and "ignore_changes = [desired_count]" in _spark_tf
       and 0 <= pos("tf_apply pipeline/analytics") < pos("--services $OS_SERVICES") < pos("--services $VM_SERVICES")
       < pos("'tasks[].healthStatus'") < pos('echo "Splunk は起動した"') < pos("--desired-count 1")
       and up.count("--desired-count 1") == 1)
-check("oss/ops/up.sh は Neo4j のサービスが安定してから、Web の EC2（部品を入れ直したあと）で ops/seed_graph.py を流す（マネージド版が Neptune に入れるのと同じスクリプト）",
+check("ops/oss/up.sh は Neo4j のサービスが安定してから、Web の EC2（部品を入れ直したあと）で ops/seed_graph.py を流す（マネージド版が Neptune に入れるのと同じスクリプト）",
       0 <= pos("aws ec2 reboot-instances") < pos("tf_apply pipeline/graph") < pos('--services "$NEO4J_SERVICE"') < pos("base64 < ops/seed_graph.py")
       < pos("tf_apply pipeline/nautobot")
       and "ops/seed_graph.py" in read("ops/up.sh") and "/usr/bin/python3.13 -" in up)
-check("oss/ops/up.sh は Web に Neo4j のドライバーを入れる（app/dashboard/requirements-oss.txt のホイールを wheels-oss/ に取り、S3 に上げる）。wheels-oss/ は git に入れない",
+check("ops/oss/up.sh は Web に Neo4j のドライバーを入れる（app/dashboard/requirements-oss.txt のホイールを wheels-oss/ に取り、S3 に上げる）。wheels-oss/ は git に入れない",
       "fetch_wheels wheels-oss app/dashboard/requirements-oss.txt app/dashboard/requirements.txt " in up
       and 'aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels-oss/ "s3://$KB_BUCKET/web/wheels/"' in up
       and re.search(r"^neo4j==", read("app/dashboard/requirements-oss.txt"), re.M) and re.search(r"^-r requirements\.txt$", read("app/dashboard/requirements-oss.txt"), re.M)
@@ -1122,37 +1122,37 @@ check("Web の wheel はマネージド版と OSS 版が同じ関数（ops/up-co
       and "\nfetch_wheels wheels app/dashboard/requirements.txt\n" in read("ops/up.sh")
       and 'aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels/ "s3://$KB_BUCKET/web/wheels/"' in read("ops/up.sh")
       and "manylinux" not in up[pos('log "4-1.'):pos('log "4-2.')] and "*.whl" not in up and "*.whl" not in read("ops/up.sh"))
-check("oss/ops/up.sh はワーカーのイメージを Neo4j のドライバー入り（app/temporal/requirements-oss.txt）でビルドする",
+check("ops/oss/up.sh はワーカーのイメージを Neo4j のドライバー入り（app/temporal/requirements-oss.txt）でビルドする",
       'build_worker "$IMAGE_TAG" requirements-oss.txt' in up and re.search(r"^neo4j==", read("app/temporal/requirements-oss.txt"), re.M))
-check("oss/ops/up.sh は agent（Runtime）のイメージも Neo4j のドライバー入り（app/agentcore/requirements-oss.txt）でビルドする。マネージド版は既定（requirements.txt）のまま",
+check("ops/oss/up.sh は agent（Runtime）のイメージも Neo4j のドライバー入り（app/agentcore/requirements-oss.txt）でビルドする。マネージド版は既定（requirements.txt）のまま",
       'build_agent "$REPO:$IMAGE_TAG" requirements-oss.txt' in up and re.search(r"^neo4j==", read("app/agentcore/requirements-oss.txt"), re.M)
       and re.search(r"^ARG REQUIREMENTS=requirements\.txt$", read("docker/images/agentcore/Dockerfile"), re.M)
       and '--build-arg "REQUIREMENTS=${2:-requirements.txt}"' in read("ops/up-common.sh")
       and re.search(r'^\s*build_agent "\$REPO:\$IMAGE_TAG"(\s+#.*)?$', read("ops/up.sh"), re.M))
-check("oss/ops/up.sh は nautobot の前に ensure_nautobot_secrets（マネージド版と同じ関数）を呼ぶ",
+check("ops/oss/up.sh は nautobot の前に ensure_nautobot_secrets（マネージド版と同じ関数）を呼ぶ",
       0 <= pos("\nensure_nautobot_secrets") < pos("tf_apply pipeline/nautobot") and "ensure_nautobot_secrets" in read("ops/up.sh"))
-check("oss/ops/up.sh は最後に Web へのポートフォワーディングを開く（NO_DASHBOARD_PORTFORWARD=1 なら開かずに終わる）。exec の前に一時ファイルを片付ける",
+check("ops/oss/up.sh は最後に Web へのポートフォワーディングを開く（NO_DASHBOARD_PORTFORWARD=1 なら開かずに終わる）。exec の前に一時ファイルを片付ける",
       0 <= pos("tf_apply workflow") < pos('if [ -n "$NO_DASHBOARD_PORTFORWARD" ]; then') < pos("\ntrap - EXIT") < pos("\nexec aws ssm start-session")
       and "--document-name AWS-StartPortForwardingSession" in up[pos("\nexec aws ssm start-session"):]
       and up.rstrip().endswith('--parameters "{\\"portNumber\\":[\\"8080\\"],\\"localPortNumber\\":[\\"$LOCAL_PORT\\"]}"'))
-check("oss/ops/up.sh はポートフォワードの案内（Web・lab・Kafbat UI・Nautobot・Splunk・Grafana・Neo4j のブラウザと Bolt）を、パスワードの値ではなく取り方で出す",
+check("ops/oss/up.sh はポートフォワードの案内（Web・lab・Kafbat UI・Nautobot・Splunk・Grafana・Neo4j のブラウザと Bolt）を、パスワードの値ではなく取り方で出す",
       all(f"output -raw {o}" in up for o in ("start_session_command", "kafka_ui_port_forward_command", "kafka_ui_password_command", "port_forward_command",
                                               "password_command", "splunk_port_forward_command", "splunk_password_command", "grafana_port_forward_command",
                                               "grafana_password_command", "opensearch_password_parameter",
                                               "neo4j_password_parameter", "neo4j_browser_port_forward_command", "neo4j_bolt_port_forward_command")))
-check("oss/ops/up.sh は SPLUNK_AZ_NUM が 2 以上（クラスター）なら SPLUNK_INDEX を書けない（マネージド版と同じ）",
+check("ops/oss/up.sh は SPLUNK_AZ_NUM が 2 以上（クラスター）なら SPLUNK_INDEX を書けない（マネージド版と同じ）",
       re.search(r'^az_num SPLUNK_AZ_NUM 1 1 3 ', up, re.M) and re.search(r'^az_num EMR_AZ_NUM 1 1 3 ', up, re.M)
       and re.search(r'^SPLUNK_INDEX="\$\{SPLUNK_INDEX:-\}"$', up, re.M)
       and 'SPLUNK_INDEX を消すか、SPLUNK_AZ_NUM=1 にする' in up)
-check("oss/ops/up.sh は stream の前に SSM の /<接頭辞>/kafka/cluster-id を kafka-cluster-id で作り、stream に Kafka の版を渡す",
+check("ops/oss/up.sh は stream の前に SSM の /<接頭辞>/kafka/cluster-id を kafka-cluster-id で作り、stream に Kafka の版を渡す",
       0 <= pos('ensure_secret "/$PREFIX/kafka/cluster-id" kafka-cluster-id') < pos("tf_apply pipeline/stream")
       and '-var "kafka_image_tag=$OSS_KAFKA_TAG"' in up)
-check("oss/ops/ はシークレットの値を読まない（get-parameter / --with-decryption を打たない）",
+check("ops/oss/ はシークレットの値を読まない（get-parameter / --with-decryption を打たない）",
       not re.search(r"get-parameter\b|--with-decryption", up + down + img_sh))
-check("oss/ops/up.sh の lab の既定の認証情報は ensure_fixed_secret にだけ渡す（echo しない）",
+check("ops/oss/up.sh の lab の既定の認証情報は ensure_fixed_secret にだけ渡す（echo しない）",
       all("ensure_fixed_secret" in line for line in up.splitlines() if re.search(r"\$\{?LAB_[A-Z_]*(PASSWORD|COMMUNITY|USERNAME)", line)))
 
-# ================================================================ 6. oss/ops/up.sh を偽物の道具で最後まで通す
+# ================================================================ 6. ops/oss/up.sh を偽物の道具で最後まで通す
 LAB_NODES = len(re.findall(r"^ *kind: (?:nokia_srlinux|linux)$", read("app/containerlab/splab.clab.yml.in"), re.M))
 def run_up(inv, extra=None):
     reset(inv)
@@ -1160,7 +1160,7 @@ def run_up(inv, extra=None):
     envfile = os.path.join(TMP, "owner-x.env")
     with open(envfile, "w", encoding="utf-8") as f:
         f.write("OWNER=x\n")
-    p = subprocess.run(["bash", "oss/ops/up.sh"], cwd=REPO, capture_output=True, text=True, timeout=600,
+    p = subprocess.run(["bash", "ops/oss/up.sh"], cwd=REPO, capture_output=True, text=True, timeout=600,
                        env=fake_env({"DEPLOY_ENV_FILE": envfile, "FAKE_TF_UP": "1", "FAKE_LAB_NODES": str(LAB_NODES), **(extra or {})}))
     with open(INV, encoding="utf-8") as f:
         inv = json.load(f)
@@ -1227,8 +1227,8 @@ check("up.sh（通し）: Grafana のイメージを arm64 でビルドし（版
       and _gb[0][2:4] == ["--platform", "linux/arm64"] and "--push" in _gb[0] and arg_after(_gb[0], "--build-arg") == f"GRAFANA_VERSION={_gver}"
       and has_var(A.get("pipeline/analytics", []), "create_grafana=true")
       and has_var(A.get("pipeline/analytics", []), "grafana_image_tag=" + _gtag.rsplit(":", 1)[-1]))
-check("up.sh（通し）: SSM のパラメータを 13 個、全部 SecureString で、ManagedBy=oss/ops/up.sh・Project=x-nwc-oss のタグを付けて作る（oss/ops/down.sh が消せる）",
-      set(inv["ssm"]) == UP_PARAMS and all(m["type"] == "SecureString" and m["tags"].get("ManagedBy") == "oss/ops/up.sh"
+check("up.sh（通し）: SSM のパラメータを 13 個、全部 SecureString で、ManagedBy=ops/oss/up.sh・Project=x-nwc-oss のタグを付けて作る（ops/oss/down.sh が消せる）",
+      set(inv["ssm"]) == UP_PARAMS and all(m["type"] == "SecureString" and m["tags"].get("ManagedBy") == "ops/oss/up.sh"
                                            and m["tags"].get("Project") == "x-nwc-oss" for m in inv["ssm"].values()))
 _secrets = [m.get("value", "") for n, m in inv["ssm"].items() if "/gnmic/" not in n]
 check("up.sh（通し）: 乱数で作ったシークレット（11 個）の値を、画面にも、aws・terraform・docker の引数にも出さない",
@@ -1288,7 +1288,7 @@ check("up.sh（通し）: status の Lambda のレイヤー（app/graph/requirem
       and 0 <= first(cs, lambda c: c["cmd"] == "uv" and "install" in c["args"]) < apply_at(cs, "pipeline/graph"))
 
 def layer_sha():  # up.sh と同じ計算（app/graph/requirements-oss.txt + pip に渡す platform / python の版。up.sh の LAYER_PLATFORM / LAYER_PYVER から読む）
-    m = re.search(r"^LAYER_PLATFORM=(\S+); LAYER_PYVER=(\S+)$", read("oss/ops/up.sh"), re.M)
+    m = re.search(r"^LAYER_PLATFORM=(\S+); LAYER_PYVER=(\S+)$", read("ops/oss/up.sh"), re.M)
     with open(os.path.join(REPO, "app", "graph", "requirements-oss.txt"), "rb") as f:
         return hashlib.sha256(f.read() + f"{m.group(1)} {m.group(2)}\n".encode()).hexdigest()
 
@@ -1529,7 +1529,7 @@ check("ops/up.sh の 9-2（81）: terraform が読めなくても up.sh を止�
 p4, cs4, _ = run_up(inv3, {"FAKE_ECR_ALL": "1", "NO_DASHBOARD_PORTFORWARD": "1", "FAKE_TF_EMPTY": "grafana_service_name"})
 _skip_oss = ("IaC/terraform/oss/pipeline/analytics の state か出力が読めない（上のエラー）ので、Grafana のアラートルールの評価を確かめていない"
              "（Grafana のサービスが安定するのも待っていない）。確かめ直すのは ops/check-grafana.sh --oss")
-check("oss/ops/up.sh（81）: 9-2 で analytics の出力 grafana_service_name が空なら、どれのことかを言い（NG: の行）、止めずに（0）確かめていないと警告して"
+check("ops/oss/up.sh（81）: 9-2 で analytics の出力 grafana_service_name が空なら、どれのことかを言い（NG: の行）、止めずに（0）確かめていないと警告して"
       "配るコマンドまで進み、警告は最後にもう一度出す。ecs wait も確かめの送信も打たない",
       p4.returncode == 0 and "9-2. Grafana のアラートルール" in p4.stdout and "利用者に配るコマンド" in p4.stdout
       and "NG: IaC/terraform/oss/pipeline/analytics の出力 grafana_service_name が空" in p4.stderr
@@ -1537,7 +1537,7 @@ check("oss/ops/up.sh（81）: 9-2 で analytics の出力 grafana_service_name �
       and not [c for c in cs4 if grafana_sent(c)]
       and not [c for c in cs4 if is_aws(c, "ecs", "wait") and ("" in multi_of(c["args"], "--services") or not multi_of(c["args"], "--services"))]
       and not [c for c in cs4 if is_aws(c, "ecs", "wait", "grafana")])
-check("oss/ops/up.sh（81）: 7-4b の analytics のクラスターの名前も tf_output で読み、読めない・空なら 7-4b で止まる（9-2 もこのクラスター）。"
+check("ops/oss/up.sh（81）: 7-4b の analytics のクラスターの名前も tf_output で読み、読めない・空なら 7-4b で止まる（9-2 もこのクラスター）。"
       "9-2 のサービスの名前は読めなくても止めず、grafana_skip_warn で警告する",
       "AN_CLUSTER=$(tf_output pipeline/analytics analytics_cluster_name) || exit 1" in up
       and "if GF_SERVICE=$(tf_output pipeline/analytics grafana_service_name); then" in up
@@ -1545,13 +1545,13 @@ check("oss/ops/up.sh（81）: 7-4b の analytics のクラスターの名前も 
       and "GF_SERVICE=$(tf_output pipeline/analytics grafana_service_name) || exit 1" not in up
       and "tf pipeline/analytics output -raw analytics_cluster_name" not in up and "tf pipeline/analytics output -raw grafana_service_name" not in up)
 
-# ---- up.sh の作ったものを oss/ops/down.sh が消す（同じ在庫から）
-p, csd, invd = run_down("oss/ops/down.sh", "x", inv=inv3)
+# ---- up.sh の作ったものを ops/oss/down.sh が消す（同じ在庫から）
+p, csd, invd = run_down("ops/oss/down.sh", "x", inv=inv3)
 check("up.sh → down.sh: up.sh が作った SSM のパラメータ 13 個を全部消し、up.sh が apply した 9 つのルートを全部 destroy する",
       p.returncode == 0 and invd["ssm"] == {} and len(aws_calls(csd, "ssm", "delete-parameter")) == 13
       and destroyed(csd) == {f"IaC/terraform/oss/{r}" for r in ROOTS} and "残り: 0 件" in p.stdout)
 
-check("oss/ops/up.sh と down.sh の terraform init は、どのルートも -lockfile=readonly（lock はマネージド版へのシンボリックリンクなので書き換えない）",
+check("ops/oss/up.sh と down.sh の terraform init は、どのルートも -lockfile=readonly（lock はマネージド版へのシンボリックリンクなので書き換えない）",
       len({tuple(c["args"][:1]) for c in tf_calls(cs) if c["args"][1] == "init"}) == 9
       and all(a == ["init", "-input=false", "-lockfile=readonly"] for a in inits(cs) + inits(csd)) and inits(csd))
 check("IaC/terraform/oss/ の .terraform.lock.hcl は、どのルートもマネージド版の lock へのシンボリックリンク（実ファイルにしない）",

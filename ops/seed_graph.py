@@ -8,7 +8,7 @@ Web と同じ環境変数（/etc/<prefix>-web.env）と依存（/opt/<prefix>-we
   LAB_TOPOLOGY_B64  app/containerlab/lab_topology.py の出力（{"devices": [...], "links": [...], "layers": {...}}）を base64 にしたもの。無ければ app/agentcore/data の静的データ
   GRAPH_REPLACE     1 ならグラフ DB に入っていても入れ直す（lab を変えたあとの同期。動的な status は消えて全部 UP に戻る）。
                     既定は空で、グラフ DB が空のときだけ入れる（初期ロード）
-  NAME_PREFIX       **必須。**リソース名の接頭辞（<owner>-nwc-poc か <owner>-nwc-oss。呼ぶ側の ops/up.sh / oss/ops/up.sh / ops/sync-graph.sh が渡す）。
+  NAME_PREFIX       **必須。**リソース名の接頭辞（<owner>-nwc-poc か <owner>-nwc-oss。呼ぶ側の ops/up.sh / ops/oss/up.sh / ops/sync-graph.sh が渡す）。
                     Web の置き場と設定ファイルの名前に入る
 """
 import base64

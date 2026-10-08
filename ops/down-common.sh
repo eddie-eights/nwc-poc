@@ -1,4 +1,4 @@
-# ops/down.sh と OSS 版（005）の oss/ops/down.sh が読む共通の関数（ルートの destroy、消し残しの片付けと数え上げ。MSK の SCRAM の secret と鍵はマネージド版だけ）。
+# ops/down.sh と OSS 版（005）の ops/oss/down.sh が読む共通の関数（ルートの destroy、消し残しの片付けと数え上げ。MSK の SCRAM の secret と鍵はマネージド版だけ）。
 # 先に ops/common.sh と ops/deploy-env.sh を読む（log / die / tf / tf_logged を使う）。REGION / PREFIX / OWNER は呼ぶ前に決める。
 # 名前で探すものは、どれも接頭辞の完全一致か「接頭辞-」で絞る（OSS 版の <owner>-nwc-oss は、OWNER=<名前>-nwc-oss のマネージド版の
 # <名前>-nwc-oss-nwc-poc の頭と同じ文字列になる。前方一致で探すと相手のものを消す）

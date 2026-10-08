@@ -29,7 +29,7 @@ REGION=ap-northeast-1
 resolve_deploy_env_file  # DEPLOY_ENV_FILE の相対パスは、下の cd の前の場所から見る
 cd "$(dirname "$0")/.."
 
-. ops/common.sh       # log / die / tf と terraform の認証情報（OSS 版の oss/ops/down.sh と同じものを読む）
+. ops/common.sh       # log / die / tf と terraform の認証情報（OSS 版の ops/oss/down.sh と同じものを読む）
 . ops/down-common.sh  # destroy_root / destroy_agent / destroy_base_core / report_leftovers など
 trap 'if [ -n "$TF_AWS_CONFIG" ]; then rm -f "$TF_AWS_CONFIG"; fi' EXIT  # tf_use_cli_credentials の一時ファイル
 
