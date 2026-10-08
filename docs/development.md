@@ -34,7 +34,7 @@ uv sync --group dev --group web
 bash ops/check.sh
 ```
 
-`web` のグループ（gradio・boto3・pyyaml。pandas は gradio と一緒に入る）も入れるのは、`test_nautobot` が Web の画面のモジュールを読むため。最後の行が `すべて通過` なら健全。中身は `terraform fmt`（`IaC/terraform/aws-managed/` と `IaC/terraform/oss/`）、9 ルートの `terraform validate`（`IaC/terraform/aws-managed/` と `IaC/terraform/oss/` の両方で 18 回）、git が追跡している `.sh` 全部（`git ls-files '*.sh'`）の `bash -n` と `.py` 全部の構文、`tests/test_*.py` の全部（2026-10-09 で 15 本。`test_app` 161 項目、`test_graph` 78、`test_stream` 88、`test_sync` 103、`test_analytics` 489、`test_workflow` 327、`test_alerts` 158、`test_kb_index` 7、`test_lab_debug` 104、`test_nautobot` 69、`test_oss` 171、`test_oss_ops` 156、`test_oss_roll` 66、`test_local_compose` 122、`test_dashboard_config` 3）。途中で落ちたらそこで止まる。
+`web` のグループ（gradio・boto3・pyyaml。pandas は gradio と一緒に入る）も入れるのは、`test_nautobot` が Web の画面のモジュールを読むため。最後の行が `すべて通過` なら健全。中身は `terraform fmt`（`IaC/terraform/aws-managed/` と `IaC/terraform/oss/`）、9 ルートの `terraform validate`（`IaC/terraform/aws-managed/` と `IaC/terraform/oss/` の両方で 18 回）、git が追跡している `.sh` 全部（`git ls-files '*.sh'`）の `bash -n` と `.py` 全部の構文、`tests/test_*.py` の全部（2026-10-09 で 15 本。`test_app` 161 項目、`test_graph` 78、`test_stream` 88、`test_sync` 103、`test_analytics` 489、`test_workflow` 327、`test_alerts` 169、`test_kb_index` 7、`test_lab_debug` 104、`test_nautobot` 69、`test_oss` 171、`test_oss_ops` 167、`test_oss_roll` 66、`test_local_compose` 122、`test_dashboard_config` 3）。途中で落ちたらそこで止まる。
 
 ## Web を手元で動かす
 
