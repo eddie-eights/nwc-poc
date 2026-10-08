@@ -3,7 +3,7 @@
 # /etc/<接頭辞>-lab.env を書いて S3 から置き直し、これを exec するだけ（中身はここに 1 つだけ。tests/test_lab_debug.py が見る）:
 #   IaC/terraform/aws-managed/pipeline/lab/templates/lab_user_data.sh.tftpl   lab の EC2（Telegraf は stream の ECS。TELEGRAF_IMAGE は空）
 #   IaC/cloudformation/lab-debug.yaml の UserData                 デバッグ用の EC2（Telegraf もこの EC2 で動かす。TELEGRAF_IMAGE がある）
-# env のキー: NAME_PREFIX / AWS_REGION / REGISTRY / SRLINUX_IMAGE / MULTITOOL_IMAGE / TELEGRAF_IMAGE / PARAM_PREFIX / CONTAINERLAB_VERSION / AUTO_START_LAB
+# env のキー: NAME_PREFIX / AWS_REGION / REGISTRY / SRLINUX_IMAGE / MULTITOOL_IMAGE / TREX_IMAGE / TELEGRAF_IMAGE / PARAM_PREFIX / CONTAINERLAB_VERSION / AUTO_START_LAB
 set -euo pipefail
 SRC=$(dirname "$(readlink -f "$0")")
 ENV_FILE=$(ls /etc/*-lab.env 2>/dev/null | head -1 || true)
@@ -17,9 +17,6 @@ command -v docker >/dev/null || dnf install -y docker
 # snmpwalk は lab.sh check / snmp が EC2 から機器の ifTable を引くのに使う。入らなくてもトポロジは上げる
 command -v snmpwalk >/dev/null || dnf install -y net-snmp-utils || echo "net-snmp-utils could not be installed. \"lab snmp\" will not work." >&2
 systemctl enable --now docker
-# VM（linux ノード）の bond0（LACP。leaf の組へ dual-home）はカーネルの bonding モジュールが要る。コンテナからは読み込めないので EC2 側で。再起動後も lab.sh up が modprobe する
-echo bonding > /etc/modules-load.d/nwc-lab-bonding.conf
-modprobe bonding || echo "bonding module could not be loaded. The VMs cannot build bond0." >&2
 if [ ! -f "$SRC/lab.sh" ] || [ ! -f "$RPM" ]; then
   echo "lab/ or the containerlab rpm is not in S3 (lab/) yet. Run ops/up.sh (or ops/lab-debug.sh up) and reboot." >&2
   exit 0
