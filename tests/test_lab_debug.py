@@ -61,12 +61,32 @@ def sh_const(src, name):
     return m.group(1).strip('"') if m else None
 
 # ---- 版と既定値
-for cfn_name, tf_name, sh_name in [("ContainerlabVersion", "containerlab_version", "CONTAINERLAB_VERSION"),
-                                    ("SrlinuxImageTag", "srlinux_image_tag", "SRLINUX_TAG"),
-                                    ("MultitoolImageTag", "multitool_image_tag", "MULTITOOL_TAG"),
-                                    ("TrexImageTag", "trex_image_tag", "TREX_TAG")]:
-    check(f"{cfn_name} の既定値 = IaC/terraform/aws-managed/pipeline/lab の {tf_name} = ops/lab-common.sh の {sh_name}",
-          str(params[cfn_name]["Default"]) == tf_default(tf_name) == sh_const(common, sh_name) is not None)
+check("ContainerlabVersion の既定値 = IaC/terraform/aws-managed/pipeline/lab の containerlab_version = ops/lab-common.sh の CONTAINERLAB_VERSION",
+      str(params["ContainerlabVersion"]["Default"]) == tf_default("containerlab_version") == sh_const(common, "CONTAINERLAB_VERSION") is not None)
+# lab のイメージの ECR のタグは上流の版 + -amd64（2026-10-08 より前の arm64 の写しが KEEP_ECR=1 で同じ名前のまま残っていても、写しを飛ばさない）
+LAB_IMAGES = [("SRLINUX", "srlinux", "SrlinuxImageTag", "srlinux_image_tag"), ("MULTITOOL", "multitool", "MultitoolImageTag", "multitool_image_tag"),
+              ("TREX", "trex", "TrexImageTag", "trex_image_tag")]
+check("ops/lab-common.sh: lab の EC2 のアーキ LAB_ARCH は amd64 で、ECR のタグ *_ECR_TAG は上流の版 *_TAG の後ろに -$LAB_ARCH",
+      sh_const(common, "LAB_ARCH") == "amd64"
+      and all(sh_const(common, f"{n}_ECR_TAG") == f"${n}_TAG-$LAB_ARCH" for n, *_ in LAB_IMAGES))
+for n, repo, cfn_name, tf_name in LAB_IMAGES:
+    check(f"{cfn_name} の既定値 = IaC/terraform/aws-managed/pipeline/lab の {tf_name} = ops/lab-common.sh の {n}_TAG + -amd64（上流の版そのままでない）",
+          str(params[cfn_name]["Default"]) == tf_default(tf_name) == f"{sh_const(common, n + '_TAG')}-amd64"
+          and sh_const(common, n + "_TAG") not in (None, tf_default(tf_name)))
+_oss_up = read("oss", "ops", "up.sh")
+_ecr_has_lab = [(f, m) for f, s in (("ops/lab-common.sh", common), ("ops/up.sh", up), ("oss/ops/up.sh", _oss_up), ("ops/lab-debug.sh", dbg))
+                for m in re.findall(r'ecr_has "\$\w+-lab-(\w+)" "\$(\w+)"', s)]
+check("ECR に lab のイメージがあるかは *_ECR_TAG で見る（lab-common.sh の mirror_lab_images、ops/up.sh、oss/ops/up.sh、ops/lab-debug.sh で 3 つずつ）",
+      sorted(_ecr_has_lab) == sorted((f, (repo, f"{n}_ECR_TAG")) for f in ("ops/lab-common.sh", "ops/up.sh", "oss/ops/up.sh", "ops/lab-debug.sh")
+                                     for n, repo, *_ in LAB_IMAGES))
+check("mirror_lab_images は上流の <upstream>:<版> を linux/$LAB_ARCH で引き、ECR の <接頭辞>-lab-<名前>:<*_ECR_TAG> に置く",
+      all(f'mirror_image "${n}_UPSTREAM:${n}_TAG" "$1/$2-lab-{repo}:${n}_ECR_TAG" "linux/$LAB_ARCH"' in common for n, repo, *_ in LAB_IMAGES))
+check("lab-debug.sh が CloudFormation に渡す lab のイメージのタグは *_ECR_TAG",
+      all(f'"{cfn_name}=${n}_ECR_TAG"' in dbg for n, _, cfn_name, _ in LAB_IMAGES))
+check("base/ecr の lab のリポジトリ（lab_repositories）は mirror_lab_images が置く先と同じ（ECR に無いリポジトリへは push できない）",
+      set(re.findall(r'"(\w+)"', re.search(r"lab_repositories\s*=\s*var\.create_lab_repositories \? toset\(\[([^\]]*)\]\)",
+                                           read("IaC", "terraform", "aws-managed", "base", "ecr", "main.tf")).group(1)))
+      == set(re.findall(r'"\$1/\$2-lab-([a-z]+):', common)) == {repo for _, repo, *_ in LAB_IMAGES})
 check("InstanceType / VolumeSize / ImageId / AutoStartLab の既定値は IaC/terraform/aws-managed/pipeline/lab と同じ",
       params["InstanceType"]["Default"] == tf_default("instance_type")
       and str(params["VolumeSize"]["Default"]) == tf_default("volume_size")
@@ -78,7 +98,8 @@ check("ops/lab-common.sh の TELEGRAF_VERSION = docker/images/telegraf/Dockerfil
       sh_const(common, "TELEGRAF_VERSION") == re.search(r"^ARG TELEGRAF_VERSION=(\S+)", read("docker", "images", "telegraf", "Dockerfile"), re.M).group(1))
 check("ops/up.sh と ops/lab-debug.sh は ops/lab-common.sh を source し、lab の版を自分では持たない",
       '. "$(dirname "$0")/lab-common.sh"' in up and '. "$(dirname "$0")/lab-common.sh"' in dbg
-      and not any(re.search(r"^%s=" % k, s, re.M) for k in ("SRLINUX_TAG", "MULTITOOL_TAG", "TREX_TAG", "CONTAINERLAB_VERSION", "TELEGRAF_VERSION", "CONTAINERLAB_RPM") for s in (up, dbg))
+      and not any(re.search(r"^%s=" % k, s, re.M) for k in ("SRLINUX_TAG", "MULTITOOL_TAG", "TREX_TAG", "LAB_ARCH", "SRLINUX_ECR_TAG", "MULTITOOL_ECR_TAG", "TREX_ECR_TAG",
+                                                         "CONTAINERLAB_VERSION", "TELEGRAF_VERSION", "CONTAINERLAB_RPM") for s in (up, dbg))
       and not any(re.search(r"^(ecr_has|fetch|dir_tag)\(\)", s, re.M) for s in (up, dbg)))
 check("イメージの作り方（ミラー・Telegraf のビルド・app/containerlab/ の置き方）は lab-common.sh の関数を両方が呼ぶ",
       all(f in up for f in ("mirror_lab_images ", "build_telegraf ", "upload_lab ", "TELEGRAF_TAG=$(telegraf_tag)"))

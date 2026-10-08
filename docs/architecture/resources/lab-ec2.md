@@ -49,7 +49,7 @@ lab の中身:
   SR Linux 6 台で 10 GB ほど使う。`m6i.xlarge` は 16 GB。足りないと `containerlab deploy` が readiness で止まるので、`m6i.2xlarge`（32 GB）に上げる。
   出典: [pipeline.md](../../pipeline.md) の「動かないとき」、[app/containerlab/trex/README.md](../../../app/containerlab/trex/README.md)。
 - **2026-10-08 より前に ECR に置いた lab のイメージは arm64。**
-  ECR のタグは上流の版そのままなので、arm64 だった 2026-10-08 より前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が `KEEP_ECR=1` で残っていると、`ops/up.sh` は写しを飛ばし、x86_64 の EC2 が arm64 のイメージを引いて起きない。1 回だけ `KEEP_ECR=0 ops/down.sh` で ECR ごと消すか、`aws ecr batch-delete-image --repository-name <prefix>-lab-srlinux --image-ids imageTag=26.7.2`（multitool は `<prefix>-lab-multitool` と `v0.10.0`）でタグを消してから `ops/up.sh` する。デバッグ用の EC2 は `ops/lab-debug.sh down` でリポジトリごと消える。
+  いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）なので、`KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が残っていても名前がぶつからず、`ops/up.sh` は amd64 を写し直す。前のタグは使われずに残るだけで、消さなくてよい（保管料は残したぶんだけかかる）。
   出典: [ecr.md](ecr.md)。
 - **版の正は `ops/lab-common.sh`。**
   terraform の変数とデバッグ用のスタックの既定値も同じ値にしてある。

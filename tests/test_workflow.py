@@ -123,7 +123,7 @@ check("プロンプトはまず root_cause で根本原因かどうかを確か�
 # ---- 事前チェック（2026-10-04）
 import asyncio, inspect  # noqa: E402
 check("impact は app/agentcore/topology.py と app/temporal/rules.py で同じ（ワーカーのイメージには app/agentcore/ が入らないので 2 か所に置く）",
-      inspect.getsource(rules.impact) == inspect.getsource(topology.impact))
+      inspect.getsource(rules.impact) == inspect.getsource(topology.impact) and rules.END_ROLES == topology.END_ROLES == ("trex",))
 check("事前チェックの対応表は許可リストの処置を全部持つ", set(rules.ACTION_CHANGES) == set(rules.ALLOWED_ACTIONS))
 _pd = [{"device_id": x, "status": None} for x in ("dc1-a-leaf-01", "dc1-spine-01", "dc1-spine-02")]
 _pl = [{"a": "dc1-a-leaf-01", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/3", "status": "DOWN"},

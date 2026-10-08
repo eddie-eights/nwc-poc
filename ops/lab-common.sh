@@ -2,12 +2,20 @@
 # ops/lab-debug.sh（IaC/cloudformation/lab-debug.yaml のデバッグ用の EC2。up.sh とは別のスタックで、バケットと ECR もスタックが持つ）が source する。版と作り方をここ 1 か所にして、2 つの EC2 がずれないようにする。
 # 呼ぶ側が REGION と PY（python の起動の配列）を先に決めておく。
 #
-# SRLINUX_TAG / MULTITOOL_TAG / TREX_TAG / CONTAINERLAB_VERSION は IaC/terraform/aws-managed/pipeline/lab の変数の既定値（*_image_tag / containerlab_version）と
-# IaC/cloudformation/lab-debug.yaml のパラメータの既定値に、TELEGRAF_VERSION は docker/images/telegraf/Dockerfile の ARG の既定値に合わせてある。
+# SRLINUX_TAG / MULTITOOL_TAG / TREX_TAG は上流の版（docker/compose/.env.example の手元の lab もこの版を引く）。ECR に置くタグはその後ろに -$LAB_ARCH を付けた
+# *_ECR_TAG で、IaC/terraform/aws-managed/pipeline/lab の変数の既定値（*_image_tag）と IaC/cloudformation/lab-debug.yaml のパラメータの既定値はこちら。
+# CONTAINERLAB_VERSION は同じ 2 つの containerlab_version / ContainerlabVersion に、TELEGRAF_VERSION は docker/images/telegraf/Dockerfile の ARG の既定値に合わせてある。
 # 変えるときは全部を変える（tests/test_lab_debug.py が見る）。lab の EC2 は x86_64（TRex が amd64 だけのため）なので、lab のイメージと rpm は amd64 を引く
 SRLINUX_TAG=26.7.2   # ghcr.io/nokia/srlinux はマルチアーキ。amd64 を引く
 MULTITOOL_TAG=v0.10.0
 TREX_TAG=2.41        # trexcisco/trex は amd64 だけ（latest = 2.41）
+# ECR のタグにアーキを入れるのは、2026-10-08 より前（lab の EC2 が arm64 だったころ）に上流の版そのままのタグで置いた arm64 の写しが
+# KEEP_ECR=1 で残っていても、名前がぶつからないようにするため（タグがあれば写しを飛ばすので、同じ名前だと x86_64 の EC2 が arm64 を引いて起きない。
+# リポジトリは IMMUTABLE なので同じタグへ上書きもできない）。前の arm64 のタグは使われずに残るだけ
+LAB_ARCH=amd64
+SRLINUX_ECR_TAG="$SRLINUX_TAG-$LAB_ARCH"
+MULTITOOL_ECR_TAG="$MULTITOOL_TAG-$LAB_ARCH"
+TREX_ECR_TAG="$TREX_TAG-$LAB_ARCH"
 CONTAINERLAB_VERSION=0.79.0
 TELEGRAF_VERSION=1.40.1
 CONTAINERLAB_RPM="containerlab_${CONTAINERLAB_VERSION}_linux_amd64.rpm"
@@ -75,12 +83,12 @@ mirror_image() {  # mirror_image <上流のイメージ:タグ> <ECR のイメ�
   docker push "$2"
 }
 mirror_lab_images() {  # mirror_lab_images <レジストリ> <接頭辞>  lab の 3 つ（SR Linux 約 1 GB、linux kind の既定の multitool、TRex）のうち ECR に無いタグだけ。lab の EC2 は x86_64 なので amd64
-  if ecr_has "$2-lab-srlinux" "$SRLINUX_TAG"; then echo "lab-srlinux:$SRLINUX_TAG はある"
-  else mirror_image "$SRLINUX_UPSTREAM:$SRLINUX_TAG" "$1/$2-lab-srlinux:$SRLINUX_TAG" linux/amd64 || return 1; fi
-  if ecr_has "$2-lab-multitool" "$MULTITOOL_TAG"; then echo "lab-multitool:$MULTITOOL_TAG はある"
-  else mirror_image "$MULTITOOL_UPSTREAM:$MULTITOOL_TAG" "$1/$2-lab-multitool:$MULTITOOL_TAG" linux/amd64 || return 1; fi
-  if ecr_has "$2-lab-trex" "$TREX_TAG"; then echo "lab-trex:$TREX_TAG はある"
-  else mirror_image "$TREX_UPSTREAM:$TREX_TAG" "$1/$2-lab-trex:$TREX_TAG" linux/amd64 || return 1; fi
+  if ecr_has "$2-lab-srlinux" "$SRLINUX_ECR_TAG"; then echo "lab-srlinux:$SRLINUX_ECR_TAG はある"
+  else mirror_image "$SRLINUX_UPSTREAM:$SRLINUX_TAG" "$1/$2-lab-srlinux:$SRLINUX_ECR_TAG" "linux/$LAB_ARCH" || return 1; fi
+  if ecr_has "$2-lab-multitool" "$MULTITOOL_ECR_TAG"; then echo "lab-multitool:$MULTITOOL_ECR_TAG はある"
+  else mirror_image "$MULTITOOL_UPSTREAM:$MULTITOOL_TAG" "$1/$2-lab-multitool:$MULTITOOL_ECR_TAG" "linux/$LAB_ARCH" || return 1; fi
+  if ecr_has "$2-lab-trex" "$TREX_ECR_TAG"; then echo "lab-trex:$TREX_ECR_TAG はある"
+  else mirror_image "$TREX_UPSTREAM:$TREX_TAG" "$1/$2-lab-trex:$TREX_ECR_TAG" "linux/$LAB_ARCH" || return 1; fi
 }
 telegraf_tag() {  # telegraf_tag  app/telegraf/ の中身と docker/images/telegraf/Dockerfile からタグを作る（stream の ECS もデバッグ用の EC2 もこのタグを引く）
   dir_tag "$TELEGRAF_VERSION" app/telegraf docker/images/telegraf/Dockerfile

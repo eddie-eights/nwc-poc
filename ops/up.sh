@@ -123,7 +123,7 @@ set -euo pipefail
 REGION=ap-northeast-1
 # デプロイする人の名前 OWNER は deploy.env に書くので、OWNER と接頭辞 PREFIX=<owner>-nwc-poc が確定するのは
 # load_deploy_env のあと（手順 0 の resolve_name_prefix。必須なので、無ければそこで止まる。形の検査も ops/deploy-env.sh）
-# lab と Telegraf の版（SRLINUX_TAG / MULTITOOL_TAG / TREX_TAG / CONTAINERLAB_VERSION / TELEGRAF_VERSION）と作り方は ops/lab-common.sh
+# lab と Telegraf の版（SRLINUX_TAG / MULTITOOL_TAG / TREX_TAG と ECR のタグの *_ECR_TAG / CONTAINERLAB_VERSION / TELEGRAF_VERSION）と作り方は ops/lab-common.sh
 # （デバッグ用の EC2 の ops/lab-debug.sh と共通）。
 # SPLUNK_VERSION・GRAFANA_VERSION・NAUTOBOT_VERSION・REDIS_TAG・TEMPORAL_TAG と、Splunk・Grafana・Agent・worker・Temporal・Nautobot のイメージの作り方は OSS 版と共通なので ops/up-common.sh
 . "$(dirname "$0")/lab-common.sh"
@@ -621,9 +621,9 @@ if [ -n "$AGENT" ]; then
   if ecr_has "$PREFIX-agent" "$IMAGE_TAG"; then echo "agent:$IMAGE_TAG はある（作り直すなら IMAGE_TAG を変える）"; else NEED_AGENT=1; fi
 fi
 if [ -z "$SKIP_LAB" ]; then
-  if ! ecr_has "$PREFIX-lab-srlinux" "$SRLINUX_TAG" || ! ecr_has "$PREFIX-lab-multitool" "$MULTITOOL_TAG" \
-    || ! ecr_has "$PREFIX-lab-trex" "$TREX_TAG"; then NEED_LAB=1
-  else echo "lab-srlinux:$SRLINUX_TAG と lab-multitool:$MULTITOOL_TAG と lab-trex:$TREX_TAG はある"; fi
+  if ! ecr_has "$PREFIX-lab-srlinux" "$SRLINUX_ECR_TAG" || ! ecr_has "$PREFIX-lab-multitool" "$MULTITOOL_ECR_TAG" \
+    || ! ecr_has "$PREFIX-lab-trex" "$TREX_ECR_TAG"; then NEED_LAB=1
+  else echo "lab-srlinux:$SRLINUX_ECR_TAG と lab-multitool:$MULTITOOL_ECR_TAG と lab-trex:$TREX_ECR_TAG はある"; fi
 fi
 if [ -n "$WORKFLOW" ]; then
   if ecr_has "$PREFIX-worker" "$IMAGE_TAG"; then echo "worker:$IMAGE_TAG はある"; else NEED_WORKER=1; fi

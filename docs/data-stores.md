@@ -169,12 +169,12 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 - **同じホストの中は揃える。** lab の EC2 では SR Linux / multitool / TRex が全部 amd64（`ops/lab-common.sh` の `mirror_lab_images` が `linux/amd64` で写す）。デバッグ用の EC2（`ops/lab-debug.sh`）で同じホストに載る Telegraf も amd64 でビルドする（`build_telegraf` の第 2 引数。stream の ECS の Telegraf は arm64 のままで、リポジトリが別）。
 - **`--platform` はイメージごとに指定する。** PC 側の `docker buildx build` と `docker pull` は、動く場所に合わせて `linux/arm64` か `linux/amd64` を必ず書く。Mac（Apple Silicon）は arm64 のビルドがそのまま、x86_64 の PC（WSL2）は `binfmt` を入れる（[setup.md](setup.md)）。lab のイメージは pull して写すだけなので、どちらの PC でもエミュレーションは要らない。
 - ミラーの push で「only the available single-platform image was pushed」と出るのは、指定した 1 つのアーキテクチャだけ push したという意味で問題ない。
-- **前の arm64 のタグが ECR に残っていたら消す。** ECR のタグは上流の版そのままなので、arm64 だった 2026-10-08 より前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が `KEEP_ECR=1` で残っていると、`ops/up.sh` は写しを飛ばし、x86_64 の EC2 が arm64 のイメージを引いて起きない。1 回だけ `KEEP_ECR=0 ops/down.sh` で ECR ごと消すか、`aws ecr batch-delete-image --repository-name <prefix>-lab-srlinux --image-ids imageTag=26.7.2`（multitool は `<prefix>-lab-multitool` と `v0.10.0`）でタグを消してから `ops/up.sh` する。デバッグ用の EC2 は `ops/lab-debug.sh down` でリポジトリごと消える。
+- **前の arm64 のタグは残っていてよい。** いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）なので、`KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が残っていても名前がぶつからず、`ops/up.sh` は amd64 を写し直す。前のタグは使われずに残るだけで、消さなくてよい（保管料は残したぶんだけかかる）。
 
 ### 9. タグ
 
 - ECR のリポジトリは `IMMUTABLE`（[IaC/terraform/aws-managed/base/ecr/main.tf](../IaC/terraform/aws-managed/base/ecr/main.tf)）。同じタグへの上書きはできないので、コードを変えたらタグを進める。
-- 自前ビルドの `agent` / `worker` は `IMAGE_TAG`（既定 `v1`）。ミラーは上流の版そのまま（`ops/lab-common.sh` の `SRLINUX_TAG` / `MULTITOOL_TAG` / `TREX_TAG`、`ops/up-common.sh` の `TEMPORAL_TAG` / `REDIS_TAG`、`ops/up.sh` の `KAFKA_UI_TAG`）。
+- 自前ビルドの `agent` / `worker` は `IMAGE_TAG`（既定 `v1`）。ミラーは上流の版そのまま（`ops/up-common.sh` の `TEMPORAL_TAG` / `REDIS_TAG`、`ops/up.sh` の `KAFKA_UI_TAG`）。lab の 3 つだけは上流の版に `-amd64` を付ける（`ops/lab-common.sh` の `SRLINUX_ECR_TAG` / `MULTITOOL_ECR_TAG` / `TREX_ECR_TAG`。2026-10-08 より前の arm64 の写しと名前を分ける）。
 - `telegraf` / `grafana` / `splunk` / `nautobot` は `<版>-<ディレクトリの中身の sha256 の先頭 12 文字>`（`ops/lab-common.sh` の `dir_tag`）。中身を変えれば自動でタグが変わるので、`IMAGE_TAG` を上げなくてよい。
 - `ops/up.sh` は ECR にそのタグが無いときだけビルドして push する（手順 2）。
 

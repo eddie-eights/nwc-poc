@@ -27,9 +27,9 @@ VPC から外へ出る経路が無いので、Fargate も EC2 も Runtime も、
 | `agent` | `app/agentcore/`（自前ビルド） | AgentCore Runtime | `IMAGE_TAG`（既定 `v1`） |
 | `worker` | `app/temporal/`（自前ビルド） | ECS Fargate（workflow） | `IMAGE_TAG` |
 | `temporal` | `temporalio/temporal`（写し） | ECS Fargate（workflow） | 上流の版（`ops/up-common.sh` の `TEMPORAL_TAG`） |
-| `lab-srlinux` | `ghcr.io/nokia/srlinux`（写し。約 1 GB） | lab の EC2 | 上流の版（`ops/lab-common.sh` の `SRLINUX_TAG`） |
-| `lab-multitool` | `ghcr.io/srl-labs/network-multitool`（写し。containerlab の `linux` kind の既定。いまの lab で使うノードは無い） | lab の EC2 | 上流の版（`MULTITOOL_TAG`） |
-| `lab-trex` | `trexcisco/trex`（写し。amd64 だけ） | lab の EC2（`dc1-trex-01`） | 上流の版（`TREX_TAG`） |
+| `lab-srlinux` | `ghcr.io/nokia/srlinux`（写し。約 1 GB） | lab の EC2 | 上流の版 + `-amd64`（`ops/lab-common.sh` の `SRLINUX_ECR_TAG`） |
+| `lab-multitool` | `ghcr.io/srl-labs/network-multitool`（写し。containerlab の `linux` kind の既定。いまの lab で使うノードは無い） | lab の EC2 | 上流の版 + `-amd64`（`MULTITOOL_ECR_TAG`） |
+| `lab-trex` | `trexcisco/trex`（写し。amd64 だけ） | lab の EC2（`dc1-trex-01`） | 上流の版 + `-amd64`（`TREX_ECR_TAG`） |
 | `telegraf` | 公式の `telegraf` に設定のテンプレートと `tg` を足す | ECS Fargate（stream） | `<版>-<ディレクトリの中身のハッシュ 12 桁>` |
 | `kafka-ui` | `ghcr.io/kafbat/kafka-ui`（写し） | ECS Fargate（stream） | 上流の版（`ops/up.sh` の `KAFKA_UI_TAG`） |
 | `grafana` | 公式の Grafana OSS に plugin と provisioning を焼き込む | ECS Fargate（analytics） | 同上 |
@@ -72,7 +72,7 @@ OSS 版だけのリポジトリ（`oss_repositories`。マネージド版では�
   指定した 1 つのアーキテクチャだけ push したという意味。
   出典: 同上。
 - **2026-10-08 より前の `lab-srlinux` / `lab-multitool` のタグは arm64。**
-  タグは上流の版そのままなので、x86 にしたあとも同じ名前になる。`KEEP_ECR=1` で残っていると `ops/up.sh` は写しを飛ばし、x86_64 の lab の EC2 が arm64 のイメージを引いて起きない。1 回だけ `KEEP_ECR=0 ops/down.sh` で ECR ごと消すか、`aws ecr batch-delete-image --repository-name <prefix>-lab-srlinux --image-ids imageTag=26.7.2`（multitool は `<prefix>-lab-multitool` と `v0.10.0`）でタグを消してから `ops/up.sh` する。デバッグ用の EC2 は `ops/lab-debug.sh down` でリポジトリごと消える。
+  いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）なので、`KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が残っていても名前がぶつからず、`ops/up.sh` は amd64 を写し直す。前のタグは使われずに残るだけで、消さなくてよい（保管料は残したぶんだけかかる）。
   出典: `ops/lab-common.sh` の `mirror_lab_images`（タグがあれば飛ばす）、同上。
 - **`KEEP_ECR=1` で残すと、翌日の `ops/up.sh` でビルドを飛ばせる。**
   保管料は 7.39 GB（11 リポジトリ）で月 約 110 円（2026-10-08 の実測）。

@@ -352,5 +352,12 @@ check("Web: トークンは SecureString として読み（decrypt）、API の�
 check("API のトークンは worker のコンテナには渡さない", '!contains(["NAUTOBOT_SUPERUSER_PASSWORD", "NAUTOBOT_API_TOKEN"], s.name)' in nb_tf)
 graph.configured = lambda: False
 check("Web: Neptune が無いときの案内は今までどおり", "未配備" in tv.edit_note())
+tv.topology.reload(force=True)
+_rows = {}
+for _y, _dev in re.findall(r'<rect x="[^"]*" y="(-?\d+)"[^>]*><title>(\S+) ', tv.topology_svg()):
+    _rows.setdefault(int(_y), []).append(_dev)
+check("Web の図（静的データ）の段は上から Spine / Leaf（s-leaf を a-leaf と同じ段に置く。ROW_OF）/ TRex",
+      [sorted(v) for _, v in sorted(_rows.items())]
+      == [["dc1-spine-01", "dc1-spine-02"], ["dc1-a-leaf-01", "dc1-a-leaf-02", "dc1-s-leaf-01", "dc1-s-leaf-02"], ["dc1-trex-01"]])
 
 print(f"\n{passed} 項目すべて通過")

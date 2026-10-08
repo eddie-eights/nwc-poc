@@ -54,6 +54,8 @@ check("機器（hostname / site / role / asn / mgmt_ip / enabled）が app/agent
 check("回線（両端の IF / 種別 / 主副 / 帯域）が app/agentcore/data の静的データと同じ", same(static_devices, links))
 check("回線は a < b に正規化", all(l["a"] < l["b"] for l in links))
 check("監視対象は SNMP（trap-group）の設定を持つ SR Linux の 6 台（TRex は対象外）", all(d["enabled"] == (d["role"] in ("s-leaf", "spine", "a-leaf")) for d in devices) and sum(d["enabled"] for d in devices) == 6)
+check("lab の機器の役割は全部 app/agentcore/topology.py の ROLE_ORDER にある（ツールの並びと Web の図の段。無い役割は図の最後に回る）",
+      {d["role"] for d in devices} == {"s-leaf", "spine", "a-leaf", "trex"} and {d["role"] for d in devices} <= set(topology.ROLE_ORDER))
 check("帯域は SR Linux の interface description の 1G / 100M / 10G から", lt.bandwidth_mbps("core 10G") == 10000 and lt.bandwidth_mbps("WAN 100M") == 100
       and lt.bandwidth_mbps("LAN") is None and lt.bandwidth_mbps("to pe-01 2.5G") == 2500 and lt.bandwidth_mbps("fabric to dc1-spine-01 25G") == 25000)
 check("主副は description の primary / secondary から", lt.link_role("WAN secondary to x") == "secondary" and lt.link_role("dc1-a-leaf-01 primary access") == "primary" and lt.link_role("LAN") is None)
@@ -133,6 +135,19 @@ with tempfile.TemporaryDirectory() as tmp:
 check("app/containerlab/splab.clab.yml.in と app/containerlab/srlinux/*.cli は app/containerlab/gen_lab.py の出力と同じ（既定の a-leaf 2・spine 2）",
       set(gen) == {"splab.clab.yml.in"} | {f"srlinux/{n}.cli" for n in ("dc1-s-leaf-01", "dc1-s-leaf-02", "dc1-spine-01", "dc1-spine-02", "dc1-a-leaf-01", "dc1-a-leaf-02")}
       and all(read("app", "containerlab", *rel.split("/")) == text for rel, text in gen.items()))
+# VM（TRex。lab_topology.VM_ROLES）の回線の種別。いまの lab には LAG が無いので、写しの dc1-a-leaf-01.cli で ethernet-1/3 を lag1 に入れて見る
+with tempfile.TemporaryDirectory() as tmp:
+    os.makedirs(os.path.join(tmp, "srlinux"))
+    for rel in [lt.TOPO_FILE] + [f"srlinux/{fn}" for fn in os.listdir(os.path.join(ROOT, "app", "containerlab", "srlinux")) if fn.endswith(".cli")]:
+        text = read("app", "containerlab", *rel.split("/"))
+        if rel == "srlinux/dc1-a-leaf-01.cli":
+            text = text.rstrip("\n") + "\nset / interface ethernet-1/3 ethernet aggregate-id lag1\n"
+        with open(os.path.join(tmp, *rel.split("/")), "w", encoding="utf-8") as f:
+            f.write(text)
+    _lag_links = lt.load(tmp)[1]
+check("TRex との回線は、Leaf 側の IF が LAG に入れば lag、入らなければ l2（写しの dc1-a-leaf-01 の ethernet-1/3 だけ lag1 に入れる）",
+      sorted((l["a"], l["a_if"], l["b"], l["kind"]) for l in _lag_links if l["b"] == "dc1-trex-01")
+      == [("dc1-a-leaf-01", "ethernet-1/3", "dc1-trex-01", "lag")] + [(f"dc1-{x}", "ethernet-1/3", "dc1-trex-01", "l2") for x in ("a-leaf-02", "s-leaf-01", "s-leaf-02")])
 check("PyYAML が無くても同じ結果（自前の読み取り）", d2 == devices and l2 == links and y2 == layers)
 check("自前の YAML 読み取りはコメント・引用符・真偽値・数値・flow list を読む",
       lt.load_yaml('a: "x # y"  # c\nb: [p, "q"]\nc:\n  - d: 1\n    e: true\n  - f\n') == {"a": "x # y", "b": ["p", "q"], "c": [{"d": 1, "e": True}, "f"]})

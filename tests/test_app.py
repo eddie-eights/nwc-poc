@@ -228,15 +228,22 @@ _with_status()
 check("status を戻せば原因なし", t.root_cause()["fault_count"] == 0)
 # ---- 事前チェック（what_if。2026-10-04）
 w = t.what_if("link_down", "dc1-a-leaf-01#ethernet-1/1")
-check("what_if: 全部 UP で fabric を 1 本落としても孤立は出ず、冗長が切れる機器も無ければ ok（Leaf には TRex への回線も残る）",
-      w["source"] == "static" and w["newly_isolated"] == [] and w["unknown"] == [] and w["verdict"] == "ok")
+check("what_if: 全部 UP で fabric を 1 本落とすと孤立は出ないが、Spine への回線が 1 本になる Leaf は冗長切れで warn（TRex への回線は冗長に数えない）",
+      w["source"] == "static" and w["newly_isolated"] == [] and w["unknown"] == [] and w["verdict"] == "warn" and w["redundancy_lost"] == ["dc1-a-leaf-01"])
 w = t.what_if("device_down", "dc1-a-leaf-01")
 check("what_if: Leaf を 1 台落としても、TRex（4 本）も Spine（4 本）も 2 本以上残るので ok（落とした機器自身は数えない）",
       w["verdict"] == "ok" and w["redundancy_lost"] == [] and w["newly_isolated"] == [] and "冗長が切れる機器も無い" in w["summary"])
+check("what_if: TRex の回線や TRex 自身を落としても、Leaf どうしは Spine でつながっているので ok",
+      t.what_if("link_down", "dc1-a-leaf-01#ethernet-1/3")["verdict"] == "ok" and t.what_if("device_down", "dc1-trex-01")["verdict"] == "ok")
 _with_status([("dc1-a-leaf-01", "ethernet-1/1")])
 w = t.what_if("link_down", "dc1-a-leaf-01#ethernet-1/2")
-check("what_if: fabric の片系が DOWN のまま残りの 1 本を落とすと、TRex への 1 本だけになる Leaf は冗長切れで warn",
-      w["verdict"] == "warn" and w["redundancy_lost"] == ["dc1-a-leaf-01"] and w["newly_isolated"] == [] and "冗長が切れる機器" in w["summary"])
+check("what_if: fabric の片系が DOWN のまま残りの 1 本を落とすと、TRex への回線が残っても Leaf は孤立で danger（TRex は転送しないので中継にしない）",
+      w["verdict"] == "danger" and w["newly_isolated"] == ["dc1-a-leaf-01"] and w["redundancy_lost"] == [] and "孤立する機器: dc1-a-leaf-01" in w["summary"])
+_with_status(devices={"dc1-spine-01": "DOWN"})
+w = t.what_if("device_down", "dc1-spine-02")
+check("what_if: Spine-01 が DOWN のまま Spine-02 を落とすと、Leaf はばらばらになり danger（4 台の Leaf につながる TRex を通り道にしない）",
+      w["verdict"] == "danger" and len(w["newly_isolated"]) == 3
+      and set(w["newly_isolated"]) < {"dc1-a-leaf-01", "dc1-a-leaf-02", "dc1-s-leaf-01", "dc1-s-leaf-02"})
 _with_status()
 check("what_if: 相手の端の名前でも同じ回線に当たる", t.what_if("link_down", "dc1-spine-01#ethernet-1/3")["unknown"] == [])
 check("what_if: 無い対象は unknown、op が違えば error",

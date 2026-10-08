@@ -130,7 +130,7 @@ flowchart LR
 | SSM のパラメータ（`/<prefix>/` の下） | nautobot のルートが消えなかったときの Nautobot の分（上の手順 5-2） | 無料（標準のパラメータ） | あるものは作り直さない |
 | ECR のリポジトリ（`KEEP_ECR=1` のとき） | 意図して残す | 7.39 GB で月 約 110 円（$0.10/GB・月。2026-10-08 の 11 リポジトリ） | ECR にあるタグはビルドを飛ばす |
 
-- **`KEEP_ECR=1` で残した ECR に、2026-10-08 より前の lab のイメージ（arm64）があるなら、1 回だけ消す。** ECR のタグは上流の版そのままなので、arm64 だった 2026-10-08 より前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が `KEEP_ECR=1` で残っていると、`ops/up.sh` は写しを飛ばし、x86_64 の EC2 が arm64 のイメージを引いて起きない。1 回だけ `KEEP_ECR=0 ops/down.sh` で ECR ごと消すか、`aws ecr batch-delete-image --repository-name <prefix>-lab-srlinux --image-ids imageTag=26.7.2`（multitool は `<prefix>-lab-multitool` と `v0.10.0`）でタグを消してから `ops/up.sh` する。デバッグ用の EC2 は `ops/lab-debug.sh down` でリポジトリごと消える。
+- **`KEEP_ECR=1` で残した ECR に 2026-10-08 より前の lab のイメージ（arm64）があっても、消さなくてよい。** いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）なので、`KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が残っていても名前がぶつからず、`ops/up.sh` は amd64 を写し直す。前のタグは使われずに残るだけで、消さなくてよい（保管料は残したぶんだけかかる）。
 - 2026-10-05 に残した VPC は、前の docs に「数時間おいて打ち直す」と書いてあったが誰も打たず、3 日残った。2026-10-08 の `ops/up.sh` はそれをそのまま使った（VPC の ID が前後で同じ）。
 - 消し切りたいときだけ、ENI が外れてから（数時間後）、`ops/up.sh` を打ったのと同じチェックアウトで `ops/down.sh` を打ち直す。
 - **消えたかは、サービスごとの API で見る。**`ops/down.sh` の最後の一覧（手順 6）はタグの API（`aws resourcegroupstaggingapi get-resources`）で、消えたリソースも返す。

@@ -83,19 +83,19 @@ variable "containerlab_version" {
 }
 
 variable "srlinux_image_tag" {
-  description = "Tag pushed to <prefix>-lab-srlinux (ghcr.io/nokia/srlinux:<tag>, multi-arch; ops/up.sh pulls the amd64 image for the x86_64 EC2)."
+  description = "Tag pushed to <prefix>-lab-srlinux: the upstream ghcr.io/nokia/srlinux version plus -amd64 (ops/lab-common.sh SRLINUX_ECR_TAG; multi-arch upstream, ops/up.sh pulls the amd64 image for the x86_64 EC2)."
   type        = string
-  default     = "26.7.2"
+  default     = "26.7.2-amd64"
 }
 
 variable "multitool_image_tag" {
-  description = "Tag pushed to <prefix>-lab-multitool"
+  description = "Tag pushed to <prefix>-lab-multitool: the upstream version plus -amd64 (ops/lab-common.sh MULTITOOL_ECR_TAG)."
   type        = string
-  default     = "v0.10.0"
+  default     = "v0.10.0-amd64"
 }
 
 variable "trex_image_tag" {
-  description = "Tag pushed to <prefix>-lab-trex (trexcisco/trex:<tag>, amd64 only). The traffic generator dc1-trex-01 (app/containerlab/trex/)."
+  description = "Tag pushed to <prefix>-lab-trex: the upstream trexcisco/trex version (amd64 only) plus -amd64 (ops/lab-common.sh TREX_ECR_TAG). The traffic generator dc1-trex-01 (app/containerlab/trex/)."
   type        = string
-  default     = "2.41"
+  default     = "2.41-amd64"
 }

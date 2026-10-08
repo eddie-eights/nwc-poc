@@ -66,13 +66,13 @@ Parameters:
     Default: "0.79.0"
   SrlinuxImageTag:
     Type: String
-    Default: "26.7.2"
+    Default: "26.7.2-amd64"
   MultitoolImageTag:
     Type: String
-    Default: "v0.10.0"
+    Default: "v0.10.0-amd64"
   TrexImageTag:
     Type: String
-    Default: "2.41"
+    Default: "2.41-amd64"
   TelegrafImageTag:
     Type: String
     Default: ""

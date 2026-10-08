@@ -331,17 +331,23 @@ def root_cause(device_id: str = "") -> dict:
 
 # ---------------------------------------------------------------- 事前チェック（what-if。2026-10-04）
 WHAT_IF_OPS = ("link_down", "link_up", "device_down", "device_up")
+# 端の役割（つながりの中継にしない機器）。app/temporal/rules.py の END_ROLES と同じ（tests/test_workflow.py が一致を検査）
+END_ROLES = ("trex",)
 
 
 def impact(devices: list, links: list, changes: list) -> dict:
     """回線・機器を落とした / 上げたと仮定して、孤立する機器と冗長が切れる機器を出す（修復を打つ前の事前チェック）。
-    devices = [{device_id, status}]、links = [{a, a_if, b, b_if, status}]、changes = [{op, target}]。
+    devices = [{device_id, status, role}]、links = [{a, a_if, b, b_if, status}]、changes = [{op, target}]。
     op は link_down / link_up（target = <機器>#<IF>。どちらの端でもよい）か device_down / device_up（target = 機器名）。
     つながりは DOWN でない回線と機器だけで見て、いちばん大きいかたまりに入っていない機器を「孤立」とする。
+    role が END_ROLES の機器（TRex。4 台の leaf につながるが転送しない）は端として扱い、ほかの機器どうしをつなぐ中継にしない。
+    端は、つながる相手がかたまりに入っていればかたまりに入る。冗長の本数も、端でない機器は端への回線を数えない（leaf は Spine への本数）。
+    role が無ければ全部を中継として見る（ワーカーの awsio.read_topology は role を読まない。落とす処置を ACTION_CHANGES に足すときは role も読む）。
     app/agentcore/topology.py と app/temporal/rules.py に同じものを置く（ワーカーのイメージには app/agentcore/ が入らない。tests/test_workflow.py が一致を検査）"""
     dev_down = {d["device_id"] for d in devices if (d.get("status") or "UP") == "DOWN"}
     link_down = {n for n, l in enumerate(links) if (l.get("status") or "UP") == "DOWN"}
     ids = {d["device_id"] for d in devices}
+    ends = {d["device_id"] for d in devices if d.get("role") in END_ROLES}
 
     def view(dd: set, ld: set):
         adj = {i: [] for i in sorted(ids - dd)}
@@ -351,18 +357,19 @@ def impact(devices: list, links: list, changes: list) -> dict:
                 adj[l["b"]].append(l["a"])
         seen, main = set(), set()
         for start in adj:
-            if start in seen:
+            if start in seen or start in ends:
                 continue
             comp, stack = {start}, [start]
             while stack:
                 for o in adj[stack.pop()]:
-                    if o not in comp:
+                    if o not in comp and o not in ends:
                         comp.add(o)
                         stack.append(o)
             seen |= comp
             if len(comp) > len(main):
                 main = comp
-        return set(adj) - main, {i: len(v) for i, v in adj.items()}
+        main |= {i for i in ends & set(adj) if any(o in main for o in adj[i])}
+        return set(adj) - main, {i: sum(1 for o in v if i in ends or o not in ends) for i, v in adj.items()}
 
     iso0, deg0 = view(dev_down, link_down)
     dd, ld, unknown, targets = set(dev_down), set(link_down), [], set()

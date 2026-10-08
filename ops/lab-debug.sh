@@ -52,7 +52,7 @@ deploy() {  # deploy <CreateInstance> [<TelegrafImageTag>]  版は ops/lab-commo
     --parameter-overrides \
       "NamePrefix=$PREFIX" "Owner=$OWNER" "CreateInstance=$1" "TelegrafImageTag=${2:-}" \
       "NetworkPerimeter=$([ -n "$NETWORK_PERIMETER" ] && echo true || echo false)" \
-      "ContainerlabVersion=$CONTAINERLAB_VERSION" "SrlinuxImageTag=$SRLINUX_TAG" "MultitoolImageTag=$MULTITOOL_TAG" "TrexImageTag=$TREX_TAG" \
+      "ContainerlabVersion=$CONTAINERLAB_VERSION" "SrlinuxImageTag=$SRLINUX_ECR_TAG" "MultitoolImageTag=$MULTITOOL_ECR_TAG" "TrexImageTag=$TREX_ECR_TAG" \
     --tags "Project=$PREFIX" "owner=$OWNER" \
     || die "$STACK を作れなかった（aws cloudformation describe-stack-events --region $REGION --stack-name $STACK）"
 }
@@ -135,8 +135,8 @@ case "$CMD" in
       aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REG"
       LOGGED_IN=1
     }
-    if ! ecr_has "$REPO_PREFIX-lab-srlinux" "$SRLINUX_TAG" || ! ecr_has "$REPO_PREFIX-lab-multitool" "$MULTITOOL_TAG" \
-      || ! ecr_has "$REPO_PREFIX-lab-trex" "$TREX_TAG"; then login; fi
+    if ! ecr_has "$REPO_PREFIX-lab-srlinux" "$SRLINUX_ECR_TAG" || ! ecr_has "$REPO_PREFIX-lab-multitool" "$MULTITOOL_ECR_TAG" \
+      || ! ecr_has "$REPO_PREFIX-lab-trex" "$TREX_ECR_TAG"; then login; fi
     mirror_lab_images "$REG" "$REPO_PREFIX" || die "lab のイメージを ECR に置けなかった"
     if ecr_has "$REPO_PREFIX-telegraf" "$TELEGRAF_TAG"; then echo "telegraf:$TELEGRAF_TAG はある"
     else
