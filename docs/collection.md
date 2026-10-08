@@ -62,15 +62,17 @@ syslog-ng: {"timestamp":1791465836,"tags":{"sysName":"leaf1","source":"172.17.0.
 
 ## 方針: telemetry と性能メトリクスは Cisco MDT の dial-out で受ける（2026-10-04）
 
-機器のほうから Telegraf へ送らせる（dial-out）。Telegraf は `inputs.cisco_telemetry_mdt` で受ける。
+機器のほうから送らせる（dial-out）方針は変えていない。ただし受け口（Telegraf の `inputs.cisco_telemetry_mdt`）は 2026-10-04 に作り、2026-10-08（cycle 012）に外した。いまの受け口は次のとおりで、MDT を受ける口は無い。
 
 ```
-機器 ─ trap 162/udp ────────┐
-     ─ syslog 5140/udp ─────┼─→ NLB ─→ Telegraf の受ける側（何台でもよい）─→ MSK
-     ─ MDT dial-out（TCP）──┘          inputs.cisco_telemetry_mdt
+機器 ─ trap 162/udp ─────────────────→ NLB ─→ Telegraf の受ける側（1162。何台でもよい）─→ MSK
+     ─ syslog 5140/udp ──────────────→ NLB ─→ syslog-ng ─→ MSK
+     ─ NetFlow 2055/udp・sFlow 6343/udp → NLB ─→ GoFlow2 ─→ MSK
+     ─ MDT dial-out（TCP 57000）  ×  2026-10-08 に外した
+（NLB は 3 つとも同じ <prefix>-tg）
 ```
 
-**受け口（2026-10-04 に作った）:** Telegraf の `inputs.cisco_telemetry_mdt`（gRPC、57000/tcp、タグ `collector=mdt`）→ Kafka の `mdt` トピック（生のまま。共通の形への変換は本番の sensor path が決まってから）。NLB に TCP 57000 のリスナーがあり、Telegraf の NLB の SG は `deploy.env` の `MDT_SOURCE_CIDRS`（機器の CIDR をカンマで。既定は空でどこからも受けない。`0.0.0.0/0` は拒む）だけを通す。Spark は `mdt` もメトリクスのトピックとして S3 Tables と Prometheus に流す。TLS と機器側の設定（`telemetry ietf subscription` / `receiver`）は未決定。
+**受け口（2026-10-04 に作り、2026-10-08 に外した。当時の形）:** Telegraf の `inputs.cisco_telemetry_mdt`（gRPC、57000/tcp、タグ `collector=mdt`）→ Kafka の `mdt` トピック（生のまま。共通の形への変換は本番の sensor path が決まってから）。NLB に TCP 57000 のリスナーを置き、Telegraf の NLB の SG は `deploy.env` の `MDT_SOURCE_CIDRS`（機器の CIDR をカンマで。既定は空でどこからも受けない。`0.0.0.0/0` は拒む）だけを通していた。Spark は `mdt` もメトリクスのトピックとして S3 Tables と Prometheus に流していた。TLS と機器側の設定（`telemetry ietf subscription` / `receiver`）は未決定。
 
 **受け口は 2026-10-08（cycle 012）に外した:** 機器を送らせる段取り（本番の機種と TLS）が決まるまで、使わない口を開けておかない。戻すときは `git show ed8edf1^:app/telegraf/telegraf.conf.in`（`inputs.cisco_telemetry_mdt` の区間）と `git show ed8edf1^:IaC/terraform/aws-managed/base/core/variables.tf`（`mdt_source_cidrs`）を元に、NLB の 57000/tcp のリスナー、Telegraf の NLB の SG の行、`ops/up.sh` の `MDT_SOURCE_CIDRS` を足し直す。下の方針（dial-out で受ける）は変えていない。
 

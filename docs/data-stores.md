@@ -281,7 +281,7 @@ flowchart LR
 
 **Telegraf は環境変数でもらう。** この文字列はクラスターを作り終えるまで決まらない（クラスター名から推測できない乱数が入る）。2026-09-28 までは Telegraf の EC2 が [IaC/terraform/aws-managed/pipeline/lab](../IaC/terraform/aws-managed/pipeline/lab) で MSK より先に作られたので、起動時に SSM の `/<prefix>/msk-bootstrap` を読んでいた。いまの Telegraf は MSK と同じ [IaC/terraform/aws-managed/pipeline/stream](../IaC/terraform/aws-managed/pipeline/stream) の ECS のタスクなので、[telegraf.tf](../IaC/terraform/aws-managed/pipeline/stream/telegraf.tf) がタスク定義の環境変数 `KAFKA_BROKERS` に `aws_msk_cluster.stream.bootstrap_brokers_sasl_iam` をそのまま入れる。SSM は読まない。
 
-**`msk-bootstrap` は残す。** [IaC/terraform/aws-managed/pipeline/stream/msk.tf](../IaC/terraform/aws-managed/pipeline/stream/msk.tf) は今もクラスターを作った直後に `/<prefix>/msk-bootstrap`（String）へ書く。手動構築と確かめるときに使う（手動構築では `aws kafka get-bootstrap-brokers` の `BootstrapBrokerStringSaslIam` を `aws ssm put-parameter` で入れる。手順 5-5）。Runtime と Web のロールに付く `<prefix>-stream-parameters-read` は `parameter/<prefix>/*` の読み取りだけで、Kafka の権限は無い（この 2 つは MSK に書かない）。
+**`msk-bootstrap` は残す。** [IaC/terraform/aws-managed/pipeline/stream/msk.tf](../IaC/terraform/aws-managed/pipeline/stream/msk.tf) は今もクラスターを作った直後に `/<prefix>/msk-bootstrap`（String）へ書く。手動構築と確かめるときに使う（手動構築では `aws kafka get-bootstrap-brokers` の `BootstrapBrokerStringSaslIam` を `aws ssm put-parameter` で入れる。2026-09-25 の手動構築の手順 5-5。その手順書はこのリポジトリに無い）。Runtime と Web のロールに付く `<prefix>-stream-parameters-read` は `parameter/<prefix>/*` の読み取りだけで、Kafka の権限は無い（この 2 つは MSK に書かない）。
 
 **Telegraf 側の流れ**（[app/telegraf/telegraf.sh](../app/telegraf/telegraf.sh) の `render`。コンテナの入口 `tg run` が最初に呼ぶ）。
 
@@ -335,7 +335,7 @@ flowchart LR
 | 機器 → Telegraf・gnmic・syslog-ng・GoFlow2（trap、gNMI、syslog、NetFlow / sFlow） | 多くて 1 回 | trap と syslog と NetFlow / sFlow は UDP で、届かなければそれきり。gNMI の sample（カウンター）は、gnmic が止まっているか繋ぎ直しているあいだの回が抜ける（on-change の状態は、繋ぎ直したときに今の値を全部送り直すので、あいだの変化だけが抜ける）。Telegraf・gnmic・syslog-ng・GoFlow2 が止まっているあいだの分 | 無い（gnmic が繋ぎ直したときに状態を送り直すのは、同じ値の新しい知らせ） |
 | Telegraf → Kafka（MSK） | 少なくとも 1 回 | Telegraf の手元のバッファがあふれた分。`required_acks = 1` なので、受け取ったリーダーが複製の前に落ちた分 | 返事が届かず送り直した分。失敗したまとまりを次の回に送り直した分 |
 | Kafka → Spark | 少なくとも 1 回 | 無い（checkpoint の offset から読み直す）。Kafka の保存期間を過ぎた分は読めない | マイクロバッチのやり直しで、同じ offset をもう一度読む |
-| Spark → S3 Tables（Iceberg） | ちょうど 1 回 | 無い | 無い（バッチの番号で、同じバッチは 1 回しか確定しない）。Telegraf が Kafka に 2 回入れた分は、2 行になる |
+| Spark → S3 Tables（Iceberg） | ちょうど 1 回 | 無い | 無い（バッチの番号で、同じバッチは 1 回しか確定しない）。集める側（Telegraf・gnmic・syslog-ng・GoFlow2）が Kafka に 2 回入れた分は、2 行になる（Spark は重複を落とさない。`event_id` が同じになるので読む側で落とせる） |
 | Spark → Prometheus | 少なくとも 1 回で送り、結果はちょうど 1 回 | 4xx で断られたサンプルは捨てる（時刻が戻ったもの、古すぎるもの）。数は driver のログに出る | 無い（同じ系列と時刻は 1 つ） |
 | Spark → OpenSearch | 少なくとも 1 回 | 4xx で断られたドキュメントは捨てる | やり直しの分が残る（TIMESERIES 型は ID を付けられない） |
 | Spark → Splunk（HEC） | 少なくとも 1 回 | 4xx で断られたイベントは捨てる | やり直しの分が残る（HEC は来たものを全部入れる） |

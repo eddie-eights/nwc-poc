@@ -61,7 +61,7 @@
 #   （SNMP_POLL）           2026-10-09 から使わない（cycle 013 で SNMP のポーリングをやめ、IF の状態とカウンターは gnmic が gNMI で取る）。
 #                           前の deploy.env で止まらないよう読むだけ読み、書いてあれば注意を出す
 #   （Kafbat UI）           stream を作る回は Kafbat UI（Kafka の画面）を**いつも作る**（切り替える変数は無い。2026-10-05）。cycle 010 から Web の EC2 の Docker で動き、費用は Web の EC2（t4g.medium）に入っている。
-#   （Nautobot）            PIPELINE=1 なら Nautobot（IaC/terraform/aws-managed/pipeline/nautobot。ECS Fargate の web + Celery worker + Redis と、RDS の PostgreSQL。+$0.13/h と ecs のエンドポイント）を**いつも作る**（切り替える変数は無い）。
+#   （Nautobot）            PIPELINE=1 なら Nautobot（IaC/terraform/aws-managed/pipeline/nautobot。ECS Fargate の web + Celery worker + Redis と、RDS の PostgreSQL。+$0.13/h と ecs のエンドポイント）を**いつも作る**（切り替える変数は無い。作らないのは SKIP_STREAM と SKIP_GRAPH を両方付けた回だけ）。
 #                           機器の一覧とケーブルの正を Nautobot にする。最初だけ lab の定義から入り、あとは Nautobot で機器・Service（gnmi）・ケーブルを変えるたびに、
 #                           Job が gnmic の購読先の一覧（SSM）を書き換えてサービスを作り直し、Neptune の物理層を openCypher で合わせる。
 #                           Job の書き先が要るので、SKIP_STREAM と SKIP_GRAPH の両方があるときだけ作らない。管理者のパスワード・SECRET_KEY・DB のパスワードは SSM の SecureString に作る（値は出さない）。
