@@ -77,7 +77,7 @@ LB は無い。閉域なので、画面は Web の EC2 を踏み台にしたポ�
 
 | ファイル | 役割 |
 |---|---|
-| `jobs/netops_jobs.py` | Job 2 つ。`SyncTopology`「Telegraf と Neptune に同期」（手で打つ）と `SyncOnChange`「変更のたびに…」（JobHook `netops-sync` が呼ぶ）。中身は同じ |
+| `jobs/netops_jobs.py` | Job 2 つ。`SyncTopology`「Telegraf とグラフ DB に同期」（手で打つ）と `SyncOnChange`「変更のたびに Telegraf とグラフ DB に同期」（JobHook `netops-sync` が呼ぶ）。中身は同じ。名前はマネージド版（Neptune）と OSS 版（Neo4j）で同じで、説明に書き先の名前が出る（`nb_sync.GRAPH_NAME`）。JobHook と bootstrap は Job を名前でなくクラスの場所（`netops_jobs.SyncOnChange`）で引くので、名前を変えても外れない |
 | `netops/nb_sync.py` | 同期の本体。台帳を読む → ① Telegraf の一覧（SSM）と dialin の作り直し → ② Neptune の物理層 |
 | `netops/nb_map.py` | 台帳とトポロジの対応付け（Nautobot に依らない純粋な関数。`tests/test_nautobot.py` が検査する） |
 | `netops/bootstrap.py` | web の起動時に 1 回走る用意（下の 4） |
@@ -140,7 +140,7 @@ Role の名前は `leaf` / `leafsw` / `spine` / `host` / `upstream` を使う（
 ### 同期を確かめる・手で打つ
 
 - 画面の Jobs → Job Results に、変更 1 件ごとの結果（機器と回線の数、書き換えた一覧、Neptune に足した・変えた・消した数）が出る。
-- 手で打つ: Jobs → 「Telegraf と Neptune に同期」。JobHook が出ない変更（IP をインタフェースに付け替えただけ、など）のあとに使う。「Telegraf を作り直す」にチェックすると、一覧が同じでも dialin を作り直す。
+- 手で打つ: Jobs → 「Telegraf とグラフ DB に同期」。JobHook が出ない変更（IP をインタフェースに付け替えただけ、など）のあとに使う。「Telegraf を作り直す」にチェックすると、一覧が同じでも dialin を作り直す。
 - ログ: `aws logs tail /ecs/<prefix>-nautobot --follow`（`worker/` が Job）。
 - Neptune の側は、Web の「トポロジ」タブで見る。
 
@@ -228,7 +228,7 @@ Nautobot は変更のたびに ObjectChange（だれが・いつ・何を・ど�
 
 ### (7) 本番の機器の一覧を外から入れる（PoC には未実装）
 
-- 外のシステム（SDN コントローラや構成管理のワーカー）が Nautobot の API で書く。JobHook は API からの変更でも出るので、Telegraf と Neptune への反映は今のまま動く。
+- 外のシステム（SDN コントローラや構成管理のワーカー）が Nautobot の API で書く。JobHook は API からの変更でも出るので、Telegraf とグラフ DB（Neptune。OSS 版は Neo4j）への反映は今のまま動く。
 - Nautobot の側から取りにいく（SSoT アプリや Device Onboarding アプリ。中身は Job）。
 - どちらでも、5 の表の形（Service `gnmi` / `snmp`、custom field）で入れること。今は閉域で、外から Nautobot へ届く経路と API トークンの用意は入っていない。
 

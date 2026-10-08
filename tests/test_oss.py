@@ -507,6 +507,17 @@ check("neo4j の topology.py: 失敗しなければ GDS の結果に note を付
 state["answer"], state["calls"] = dict(ALGO, **{"gds.closeness": RuntimeError("ドライバが包まない失敗")}), []
 check("neo4j の topology.py: ドライバが包まない失敗（RuntimeError 等）は graph.errors() の範囲外なので、そのまま上がる（握りつぶさない）",
       raises(RuntimeError, topology4.centrality))
+# 元データの名前（root_cause などの source）は書き先の名前。前は OSS 版でも neptune（2026-10-08 の OSS 版の検証の「docs のずれ」3）
+state["answer"], state["calls"] = {DEV: nodes(devs), IFS: nodes(ifs), LINKS: edges(links[:2]), LAYER_E: [], "RETURN n": []}, []
+_src_full = topology4.reload(force=True)
+_src_rc, _src_graph = topology4.root_cause()["source"], topology4.topology_graph()["source"]
+state["answer"] = {LINKS: [], LAYER_E: [], "RETURN n": []}
+_src_empty = topology4.reload(force=True)
+check(f"neo4j の topology.py: 元データは neo4j（root_cause と topology_graph の source も）、Neo4j が空なら neo4j-empty（{_src_full} / {_src_rc} / {_src_empty}）",
+      _src_full == _src_rc == _src_graph == "neo4j" and _src_empty == "neo4j-empty" and len(topology4.DEVICES) == 8)
+_tv = open(os.path.join(ROOT, "web", "topology_view.py"), encoding="utf-8").read()
+check("Web のトポロジの元データの表示は neo4j / neo4j-empty も Neo4j と書く（静的データの案内に落ちない）",
+      '"neo4j": "Neo4j（oss/terraform/pipeline/graph）"' in _tv and '"neo4j-empty": "Neo4j は空。' in _tv)
 
 # 一意制約の張り直し（005 のレビューの Nit 1）。Neo4j のタスクが入れ替わると制約も消えるので、時間がたつか、ドライバが失敗したら張り直す。
 # 時計は graph4.time を差し替えて進め、WARNING は graph4.log を差し替えて拾う
@@ -950,7 +961,16 @@ _ecr = tf_text("terraform", "base/ecr")["main.tf"]
 check("OSS 版のイメージのリポジトリは project = nwc-oss のときだけ（kafka / opensearch / vminsert / vmselect / vmstorage / spark / neo4j）",
       'oss_repositories = var.project == "nwc-oss" ? toset(["kafka", "opensearch", "vminsert", "vmselect", "vmstorage", "spark", "neo4j"]) : toset([])' in _ecr
       and re.search(r'resource "aws_ecr_repository" "oss" \{\n  for_each = local\.oss_repositories\n', _ecr) is not None)
-_chk = open(os.path.join(ROOT, "ops", "check.sh"), encoding="utf-8").read()
+# state を失って残った ECR を 1 本ずつ import すると、まだ state に無いキーを引いた output が Invalid index で落ちる（2026-10-08 の OSS 版の検証の「不具合」3）
+_ecr_each = set(re.findall(r'resource "aws_ecr_repository" "(\w+)" \{\n  for_each = ', _ecr))
+_ecr_out = {m.group(1): m.group(2).strip() for m in re.finditer(r'output "(\w+)" \{[^}]*?\n  value\s+= (.+)\n', tf_text("oss/terraform", "base/ecr")["outputs.tf"])}
+_ecr_bare = sorted(n for n, v in _ecr_out.items() if re.search(r"aws_ecr_repository\.(\w+)\[", v)
+                   and not re.fullmatch(r'try\(aws_ecr_repository\.\w+\["[\w-]+"\]\.repository_url, ""\)', v))
+check(f"ECR の output は for_each のリポジトリ（{sorted(_ecr_each)}）をキーで引くとき try(…, \"\") で包む（import の途中でも評価できる。包んでいない: {_ecr_bare}）",
+      _ecr_each == {"lab", "workflow", "pipeline", "oss"} and not _ecr_bare
+      and sum(f'try(aws_ecr_repository.pipeline["{k}"].repository_url, "")' in v for v in _ecr_out.values()
+              for k in ("telegraf", "kafka-ui", "grafana", "splunk", "nautobot", "redis")) == 6)
+_chk =open(os.path.join(ROOT, "ops", "check.sh"), encoding="utf-8").read()
 check("ops/check.sh は terraform/ と oss/terraform/ の両方に fmt と validate を打つ",
       "TF_BASES=(terraform oss/terraform)" in _chk and 'terraform fmt -check -recursive "$base"' in _chk and 'terraform -chdir="$base/$r" validate' in _chk)
 check("ops/check.sh は oss/terraform のルートを -lockfile=readonly で init する（lock はマネージド版へのシンボリックリンク。書くと実ファイルになる。005 のレビュー Nit 6）",

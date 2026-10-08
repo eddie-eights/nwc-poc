@@ -2,7 +2,7 @@
 # 1 つのタスクに 3 つのコンテナ（同じタスクなので互いに localhost で届く）:
 #   web     画面と API（8080）。上流の entrypoint が DB の migrate（post_upgrade）をしてから、nautobot/netops/bootstrap.py が
 #           管理者・custom field・最初の seed（機器が 0 件のときだけ lab の定義から）・Job の有効化と JobHook を入れ、一度同期して、uwsgi を起こす
-#   worker  Celery のワーカー。Job（nautobot/jobs/netops_jobs.py の「Telegraf と Neptune に同期」と、変更のたびに走る JobHook）を回す
+#   worker  Celery のワーカー。Job（nautobot/jobs/netops_jobs.py の「Telegraf とグラフ DB に同期」と、変更のたびに走る JobHook）を回す
 #   redis   キャッシュと Celery のブローカー、同期のロック。中身は消えてよい
 # 画面は Web の EC2 を踏み台にした SSM のポートフォワードで開く（outputs.tf のコマンド）。
 

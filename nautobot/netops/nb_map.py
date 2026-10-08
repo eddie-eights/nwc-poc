@@ -49,9 +49,21 @@ def _plain(v) -> str:
     return "" if v is None else str(v)
 
 
-def change_detail(differences: dict | None) -> str:
-    """ObjectChange.get_snapshots()["differences"]（{"removed": {項目: 前の値}, "added": {項目: 後の値}}）を「status: Active → Maintenance」の形に"""
-    removed, added = (differences or {}).get("removed") or {}, (differences or {}).get("added") or {}
+CHANGE_ACTION_DETAIL = {"create": "作成", "delete": "削除"}   # 作成と削除は項目を並べない（差分は「- → 全部の値」か「全部の値 → -」になる）
+NO_PRECHANGE = "変更前の値が無い（Nautobot にこれより前の記録が無いので、差分は次の変更から出る）"
+
+
+def change_detail(differences: dict | None, action: str = "") -> str:
+    """ObjectChange.get_snapshots()["differences"]（{"removed": {項目: 前の値}, "added": {項目: 後の値}}）を「status: Active → Maintenance」の形に。
+    作成と削除は「作成」「削除」だけ。update でも変更前の値（prechange）が無いと removed が None で added が全部の項目になる（その物の最初の記録。
+    bootstrap.py の seed が変更の記録を残さずに作った機器を初めて変えたとき）ので、項目は並べず NO_PRECHANGE と今の status だけを出す"""
+    if action in CHANGE_ACTION_DETAIL:
+        return CHANGE_ACTION_DETAIL[action]
+    removed, added = (differences or {}).get("removed"), (differences or {}).get("added") or {}
+    if removed is None and added:
+        status = _plain(added.get("status"))
+        return NO_PRECHANGE + (f"。今の status: {status}" if status else "")
+    removed = removed or {}
     parts = [f"{k}: {_plain(removed.get(k)) or '-'} → {_plain(added.get(k)) or '-'}"
              for k in sorted(set(removed) | set(added)) if k not in DETAIL_SKIP]
     return "、".join(parts)[:300]
@@ -67,7 +79,7 @@ def change_rows(changes: list[dict]) -> list[dict]:
         rows.append({
             "change_id": f"change#{c['id']}", "time": int(c.get("time") or 0), "user": str(c.get("user") or "")[:80],
             "action": str(c.get("action") or ""), "object_type": str(c.get("object_type") or ""), "object": str(c.get("object") or "")[:200],
-            "device_id": str(c.get("device") or "").strip().lower(), "detail": change_detail(c.get("differences")),
+            "device_id": str(c.get("device") or "").strip().lower(), "detail": change_detail(c.get("differences"), str(c.get("action") or "")),
         })
     rows.sort(key=lambda r: (-r["time"], r["change_id"]))
     return rows[:CHANGES_KEEP]

@@ -163,7 +163,8 @@ def topology_svg() -> str:
         out.append(f'<text x="{x:.0f}" y="{y - 3:.0f}" text-anchor="middle" fill="#111827" font-weight="600">{html.escape(dev)}</text>')
         out.append(f'<text x="{x:.0f}" y="{y + 13:.0f}" text-anchor="middle" fill="#6b7480" font-size="10">{html.escape(asn)}</text>')
     out.append("</svg>")
-    src = {"neptune": "Neptune（terraform/pipeline/graph）", "neptune-empty": "Neptune は空。静的データを表示中（下の「静的データを投入」で入る）"}.get(
+    src = {"neptune": "Neptune（terraform/pipeline/graph）", "neptune-empty": "Neptune は空。静的データを表示中（下の「静的データを投入」で入る）",
+           "neo4j": "Neo4j（oss/terraform/pipeline/graph）", "neo4j-empty": "Neo4j は空。静的データを表示中（下の「静的データを投入」で入る）"}.get(
         topology.SOURCE, "静的データ（data/。terraform/pipeline/graph を apply すると Neptune に切り替わる）")
     legend = ('<p style="font-size:12px;color:#6b7480;margin:4px 0 0">'
               '実線 = 主回線 / 破線 = 副回線 / 太線 = 1 Gbps 以上。青 = fabric（Spine - Leaf。IS-IS + iBGP EVPN）、紫 = lag（VM - Leaf の LACP）、灰 = l2。'
