@@ -55,7 +55,7 @@
 
 順番はこの順にする。先に Job を打つと機器が入ってグラフが空でなくなり、`--replace` なしの `ops/sync-graph.sh` は何もしない。`--replace` を付けると lab の定義で上書きするので、Job で入れた Nautobot の機器と回線が消える。
 
-自分で立てているもの（マネージド版でも OSS か自前のコンテナ）: Telegraf、Grafana、Temporal、Nautobot（Redis と一緒）、Kafbat UI、containerlab（lab）、Splunk（OSS ではないが、VPC の中の ECS に自分で立てている）。
+自分で立てているもの（マネージド版でも OSS か自前のコンテナ）: Telegraf、gnmic、syslog-ng（AxoSyslog）、GoFlow2、Grafana、Temporal、Nautobot（Redis と一緒）、Kafbat UI、containerlab（lab）、Splunk（OSS ではないが、VPC の中の ECS に自分で立てている）。
 Amazon Managed Grafana は、このアカウントに IAM Identity Center が無くて使えないので Grafana OSS にしている（[deploy.md](deploy.md)）。
 
 ## OSS 版の実装の置き場と、いまの状態

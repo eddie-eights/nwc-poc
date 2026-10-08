@@ -12,8 +12,8 @@
 |---|---|
 | `app/dashboard/` の `.py`、手順書 | `ops/up.sh` を打つ（手順 4 で S3 に置き直して Web を再起動する）。apply は要らない |
 | `app/agentcore/`（`app/agentcore/data/` を含む）、`app/temporal/` | `deploy.env` の `IMAGE_TAG` を上げて `ops/up.sh`。同じタグのままだとビルドを飛ばす |
-| `app/telegraf/`、`app/grafana/`（アラートのルール `provisioning/alerting/` を含む）、`app/splunk/`（保存済みサーチとアラートアクションを含む）、`app/nautobot/` | `ops/up.sh` を打つ。イメージのタグがディレクトリの中身から決まるので、作り直してタスクが入れ替わる（タグを上げる操作は要らない） |
-| Dockerfile（8 本。007 で各ソースのディレクトリから `docker/images/<名前>/Dockerfile` へ移した。build の context は `app/<名前>/` のままなので、手で打つときは `-f docker/images/<名前>/Dockerfile app/<名前>/`） | `agentcore`・`temporal` は `app/agentcore/` と同じく `IMAGE_TAG` を上げて `ops/up.sh`。ほかの 6 本（`telegraf`・`grafana`・`splunk`・`nautobot`、OSS 版の `spark`・`neo4j`）はタグのハッシュに Dockerfile も入るので、`ops/up.sh`（`spark`・`neo4j` は `ops/oss/up.sh`）を打つだけ |
+| `app/telegraf/`、`app/gnmic/`、`app/syslog-ng/`、`app/grafana/`（アラートのルール `provisioning/alerting/` を含む）、`app/splunk/`（保存済みサーチとアラートアクションを含む）、`app/nautobot/` | `ops/up.sh` を打つ。イメージのタグがディレクトリの中身から決まるので、作り直してタスクが入れ替わる（タグを上げる操作は要らない） |
+| Dockerfile（10 本。`docker/images/<名前>/Dockerfile`。007 で各ソースのディレクトリから移し、`syslog-ng` は 012、`gnmic` は 013 で足した。build の context は `app/<名前>/` なので、手で打つときは `-f docker/images/<名前>/Dockerfile app/<名前>/`） | `agentcore`・`temporal` は `app/agentcore/` と同じく `IMAGE_TAG` を上げて `ops/up.sh`。ほかの 8 本（`telegraf`・`gnmic`・`syslog-ng`・`grafana`・`splunk`・`nautobot`、OSS 版の `spark`・`neo4j`）はタグのハッシュに Dockerfile も入るので、`ops/up.sh`（`spark`・`neo4j` は `ops/oss/up.sh`）を打つだけ |
 | ガードレール（`IaC/terraform/aws-managed/agent/kb.tf`） | `aws_bedrock_guardrail_version.r1` の `description` の末尾を `r2` のように上げて `ops/up.sh`。上げないと Runtime は古い版のまま判定する |
 | `templates/*.sh.tftpl` | シェルの `${…}` は `$${…}`、`%{` は `%%{` と書く（`templatefile` を通るため）。user_data は 16 KB まで |
 | 変数の既定 | `IaC/terraform/aws-managed/<ルート>/terraform.tfvars.example` を `terraform.tfvars` に写して書く |

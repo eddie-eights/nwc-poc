@@ -14,7 +14,7 @@ Telegraf・gnmic・syslog-ng・GoFlow2 が集めた機器のデータを、い�
 | クラスター | `<prefix>-stream`。KRaft（ZooKeeper なし）、Kafka `4.1.x.kraft` | `IaC/terraform/aws-managed/pipeline/stream/msk.tf`、変数 `kafka_version` |
 | ブローカー | `kafka.m5.large`（ほかに選べるのは `kafka.m7g.large`）、1 AZ に 1 台、EBS 10 GB | 変数 `broker_instance_type`、`msk.tf` |
 | AZ の数 | `MSK_AZ_NUM`（既定 2、2〜3）。ブローカーの数と同じ | `ops/up.sh`、変数 `msk_az_num` |
-| 認証と暗号 | IAM 認証（9098）と SASL/SCRAM（9096。syslog-ng と GoFlow2 だけ。2026-10-08 から）。クライアントとの間もブローカー同士も TLS | `msk.tf` の `client_authentication`、`encryption_info` |
+| 認証と暗号 | IAM 認証（9098）と SASL/SCRAM（9096。syslog-ng と GoFlow2（2026-10-08 から）と gnmic（2026-10-09 から）だけ）。クライアントとの間もブローカー同士も TLS | `msk.tf` の `client_authentication`、`encryption_info` |
 | SCRAM の資格情報 | Secrets Manager の `AmazonMSK_<prefix>-collectors`（名前は `AmazonMSK_` で始める決まり）。顧客管理の KMS の鍵 `alias/<prefix>-msk-scram` で暗号化する（MSK は既定の鍵の secret を受け付けない）。`ops/up.sh` が stream の apply の前に作り、`ops/down.sh` が消す（鍵は 7 日の削除の予約） | `ops/up-common.sh` の `ensure_msk_scram_key` / `ensure_msk_scram_secret`、`ops/down-common.sh` の `delete_msk_scram`、`msk.tf` の `aws_msk_scram_secret_association` |
 | SCRAM のユーザーの ACL | `User:collectors` に `logs` / `flows` / `gnmi` / `metrics` の `WRITE` と `DESCRIBE`（`LITERAL`、host `*`）。`CREATE` と CLUSTER の ACL は付けない。Spark のジョブが起動のたびに入れる（同じものを入れても変わらない）。それまで syslog-ng・GoFlow2・gnmic は書けない（2026-10-09 から。`gnmi` / `metrics` は cycle 013） | `app/spark/snmp_sinks.py` の `ensure_acls`、EMR の実行ロールの `kafka-cluster:AlterCluster`（`IaC/terraform/aws-managed/pipeline/analytics/access.tf`） |
 | ブローカーの設定 | `auto.create.topics.enable=true`、`default.replication.factor` = ブローカーの数、`min.insync.replicas` = その 1 つ下、`num.partitions=2`、`log.retention.hours=24` | `msk.tf` の `aws_msk_configuration` |
@@ -65,7 +65,7 @@ Telegraf・gnmic・syslog-ng・GoFlow2 が集めた機器のデータを、い�
   2 台なら 1 なので、1 台止まっても書ける。
   出典: `IaC/terraform/aws-managed/pipeline/stream/msk.tf` の `aws_msk_configuration` の上のコメント。
 - **ブートストラップの文字列は、クラスターを作り終えるまで決まらない。**
-  Telegraf はタスク定義の環境変数 `KAFKA_BROKERS`、Spark はジョブの引数 `--bootstrap` でもらう。どちらも SSM は読まない。`/<prefix>/msk-bootstrap` は手で確かめるときのために残してある。
+  Telegraf・gnmic・syslog-ng・GoFlow2 はタスク定義の環境変数 `KAFKA_BROKERS`（Telegraf は IAM の口、ほかは SCRAM の口）、Spark はジョブの引数 `--bootstrap` でもらう。どちらも SSM は読まない。`/<prefix>/msk-bootstrap` は手で確かめるときのために残してある。
   出典: [data-stores.md](../../data-stores.md) の「15.」。
 - **Telegraf から Kafka は「少なくとも 1 回」。**
   `required_acks = 1` なので、受け取ったリーダーが複製の前に落ちた分は失う。返事が届かず送り直した分は重複する。idempotent producer は使っていない。

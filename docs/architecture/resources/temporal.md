@@ -60,7 +60,7 @@ worker が読み書きするもの:
   発生はワークフローそのもの、解消はシグナル `resolved` で持つ。
   出典: [workflow.md](../../workflow.md) の「流れ」。
 - **確認（verify）は Neptune を見に行かず、解消の通知を待つ。**
-  通知は「機器 → Telegraf → MSK → Spark → Prometheus / Splunk → ルールの評価 → SNS → SQS」を通るので、直ってから届くまで 1〜2 分かかる。300 秒待つ。
+  通知は「機器 → gnmic → MSK → Spark → Prometheus / Splunk → ルールの評価 → SNS → SQS」を通るので、直ってから届くまで 1〜2 分かかる。300 秒待つ。
   出典: [workflow.md](../../workflow.md) の「修復案の状態」。
 - **`rejected` / `expired` / `failed` で終わるときは、解消の通知が来るまでワークフローを閉じない。**
   閉じると、まだ直っていない同じ異常の次の通知がもう一度調査を起こすため。長くて 1440 分。

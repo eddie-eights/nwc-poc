@@ -32,7 +32,7 @@ VPC の中の通信は、SG の通信の表に書いたものだけが通る。
 | 土台 | ssm、ssmmessages（`endpoints_for` の外で足す） |
 | agent | bedrock-runtime、bedrock-agentcore、ecr.api、ecr.dkr、logs（`CREATE_KB=1` で bedrock-agent-runtime。`endpoints_for` の外で足す） |
 | lab | ecr.api、ecr.dkr |
-| stream | ecr.api、ecr.dkr、logs |
+| stream | ecr.api、ecr.dkr、logs、secretsmanager |
 | analytics | s3tables、logs（`STORES` の `grafana` で aps-workspaces、Grafana か Splunk で ecr.api / ecr.dkr / sns。この 3 つは `endpoints_for` の外で足す） |
 | graph | neptune-graph-data（analytics があるとき kinesis-firehose） |
 | nautobot | ecr.api、ecr.dkr、logs、ecs |

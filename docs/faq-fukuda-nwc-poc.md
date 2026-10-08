@@ -176,7 +176,7 @@ PRI = ファシリティの番号 × 8 + 重要度
 
 - `app/containerlab/gen_lab.py` が `set / system logging subsystem-facility local7` を書く（定数 `LOG_FACILITY`）。`app/containerlab/srlinux/*.cli` はそこから生成する。
 - `tests/test_stream.py` が「6 台とも local7」を確かめる。
-- Telegraf と Spark はファシリティの値を見ていないので、その先には影響しない。
+- syslog-ng と Spark はファシリティの値で絞っていないので、その先には影響しない。
 - 実機ではまだ確かめていない。次に lab を立てたら、lab の EC2 で受信を見て、informational が `<190>1 ...` になっていることを確かめる。
 
   ```bash
@@ -189,7 +189,7 @@ PRI = ファシリティの番号 × 8 + 重要度
 
 ### Q. 本番の Cisco の `logging host <IPアドレス | ホスト名>` には、AWS の NLB を書く？
 
-**A. はい。Telegraf を今の構成（ECS + 内部 NLB）のまま使うなら、NLB の IP を書く。**
+**A. はい。syslog-ng を今の構成（ECS + 内部 NLB。NLB は Telegraf・syslog-ng・GoFlow2 で共通）のまま使うなら、NLB の IP を書く。**
 
 - **今の lab は NLB を直接指していない。**
   - SR Linux の宛先は lab の EC2 の docker ネットワークのゲートウェイ `203.0.113.1:5140`。
@@ -279,7 +279,7 @@ SYSLOG_STANDARD=RFC5424 PIPELINE=1 ops/up.sh   # lab の SR Linux のログま�
 
 - EC2 の中では次のコマンドが使える。
   - `sudo lab telegraf logs -f`: Telegraf の出力（MSK に載るのと同じ JSON）
-  - `sudo lab telegraf test` / `sudo lab telegraf gnmi`
+  - `sudo lab telegraf run` / `stop` / `status`: この EC2 の Telegraf（trap だけ受ける）を起こす・止める・状態を見る
 - 待機の費用は約 $0.30/h（EC2 $0.25/h とエンドポイント 4 本。スタックが自分の VPC を持つ。この章の最後の Q）。
 
 **共通化したところ**
@@ -399,7 +399,7 @@ container interfaces {
 
 **このプロジェクトでは**
 
-- Telegraf の `path = "/interface[name=*]/statistics"` などは、SR Linux 独自の YANG モデルの木をたどったパス（`app/telegraf/telegraf.conf.in`）。
+- gnmic の購読の `/interface[name=*]/statistics` などは、SR Linux 独自の YANG モデルの木をたどったパス（`app/gnmic/gnmic.yaml.in`）。
 - SNMP での MIB にあたるものが、gNMI での YANG モデル。MIB は OID（数字の並び）で、YANG は名前のパスで値を指す。
 
 **出典**
@@ -426,7 +426,7 @@ container interfaces {
 
 同じ値でも、独自のモデルではベンダーごとにパスが違う。OpenConfig なら 1 つのパスで済む。
 
-| 取りたい値 | SR Linux 独自のパス（いまの Telegraf） | OpenConfig のパス |
+| 取りたい値 | SR Linux 独自のパス（いまの gnmic） | OpenConfig のパス |
 |---|---|---|
 | インターフェースのカウンター | `/interface[name=*]/statistics` | `/interfaces/interface[name=*]/state/counters` |
 | インターフェースの up / down | `/interface[name=*]/oper-state` | `/interfaces/interface[name=*]/state/oper-status` |
@@ -436,7 +436,7 @@ container interfaces {
 
 - OpenConfig のモデルは「何を」（値の名前と住所）を決める。
 - gNMI は「どう運ぶか」（プロトコル）を決める。gNMI も OpenConfig のプロジェクトが作った。
-- gNMI は独自のモデルも運べる。いまの Telegraf は、gNMI で SR Linux 独自のモデルを読んでいる。
+- gNMI は独自のモデルも運べる。いまの gnmic は、gNMI で SR Linux 独自のモデルを読んでいる。
 
 **メリットとデメリット**
 
@@ -527,11 +527,11 @@ vrnetlab のページには、このほかに Cisco vIOS と Cisco ASAv も載�
 
 **このプロジェクトへの影響**
 
-いまの Telegraf は、2 種類の取り方をしている（`app/telegraf/telegraf.conf.in`）。
+いまは gnmic が gNMI を取り（`app/gnmic/gnmic.yaml.in`）、Telegraf は SNMP の trap だけを受けている（`app/telegraf/telegraf.conf.in`。SNMP のポーリングは 2026-10-09 の cycle 013 でやめた）。
 
 | いま集めているもの | シスコを足したとき |
 |---|---|
-| SNMP の標準 MIB（sysName、sysUpTime、ifName、ifAdminStatus、ifOperStatus、ifInOctets など） | そのまま使える見込み |
+| SNMP の trap（linkDown / linkUp などの標準の通知） | そのまま受けられる見込み。ただし Cisco の linkDown の varbind には ifName が無い（「2. 収集の設定」の最初の Q） |
 | gNMI の SR Linux 独自のパス（`/network-instance[name=default]/protocols/bgp/neighbor[...]/session-state`、`/platform/control[...]/cpu[...]`、`/interface[name=*]/statistics` など） | 使えない。OS ごとにパスを書き直す |
 
 - パスが変わると、メトリクスの名前とラベルも変わる。Grafana のアラートルール、Splunk の検索、gnmic の購読と Spark の読み替え（`app/spark/snmp_sinks.py`。2026-10-09 までは Telegraf の `lab_gnmi.star`）も、機器の種類ごとに直すことになる。
@@ -861,7 +861,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 - **取り込み方。**
   外のワーカーが API で書くほかに、Nautobot の側から取りにいく方法がある（次の Q）。
 - **Job が読む項目に合わせる。**
-  Job は Device の Service `gnmi` / `snmp` を監視対象の印にし、ケーブルの主 / 副と帯域、ASN などを決まった場所から読む（対応は `app/nautobot/netops/nb_map.py`）。同じ形で入れないと Telegraf や Neptune に映らない。
+  Job は Device の Service `gnmi` / `snmp` を監視対象の印にし、ケーブルの主 / 副と帯域、ASN などを決まった場所から読む（対応は `app/nautobot/netops/nb_map.py`）。同じ形で入れないと gnmic の購読先や Neptune に映らない。
 - 今の構成は閉域で、Nautobot は VPC の中からしか届かない。外のワーカーから書くなら経路と API トークン（発行と SSM での保管）が要る。PoC にはどちらも入っていない。
 
 ### Q. 「Nautobot の側から取りにいく」とは、Nautobot の Job が取りにいくということ？
@@ -913,7 +913,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 ### Q. Web（運用管理者ダッシュボード）からのトポロジの変更は、Nautobot に書いて、Nautobot の Job が Neptune に反映する構成になっている？
 
-**A. なっている。** Web の「トポロジ」タブのリンクの追加・削除は Nautobot の REST API に書き、Nautobot の JobHook が呼ぶ Job が Neptune の物理層（と Telegraf の一覧）に反映する。Web が Neptune の物理層を直接書くことは無くなった。
+**A. なっている。** Web の「トポロジ」タブのリンクの追加・削除は Nautobot の REST API に書き、Nautobot の JobHook が呼ぶ Job が Neptune の物理層（と gnmic の購読先の一覧）に反映する。Web が Neptune の物理層を直接書くことは無くなった。
 
 ```mermaid
 flowchart LR
@@ -1163,7 +1163,7 @@ Lambda から書く経路は 2 案あった。
 
 - `ts`、`ingested_at`: 時刻
 - `topic`: どのトピックから来たか。メトリクスとログはこの列で見分ける
-- `measurement`、`agent_host`、`host`: Telegraf が付ける名前と送り元
+- `measurement`、`agent_host`、`host`: Telegraf の JSON の形の名前と送り元（syslog-ng はこの形で書き、gnmic と GoFlow2 の行は Spark が読み替えて埋める）
 - `tags_json`、`fields_json`: 中身。JSON の文字列のまま
 - `event_id`、`kafka_topic`、`kafka_partition`、`kafka_offset`: Spark が足す 4 列。一意の番号と、元のメッセージの Kafka の位置
 

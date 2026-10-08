@@ -12,7 +12,7 @@
 |---|---|---|
 | [core.md](core.md) | `base/core`、`base/ecr` | 土台: VPC、Web の EC2、アラートの SNS トピック、閉域（エンドポイント + Deny）、SG（通信の表） |
 | [agent.md](agent.md) | `app/agentcore/`（`AGENT=1`） | チャットの経路: Web → AgentCore Runtime → Nova 2 Lite・ガードレール・KB・ツール |
-| [pipeline.md](pipeline.md) | `pipeline/`（`PIPELINE=1`） | lab → Telegraf・syslog-ng・GoFlow2 → MSK → Spark → 格納先、Grafana と Splunk のアラート、Neptune のトポロジ、Nautobot |
+| [pipeline.md](pipeline.md) | `pipeline/`（`PIPELINE=1`） | lab → Telegraf・gnmic・syslog-ng・GoFlow2 → MSK → Spark → 格納先、Grafana と Splunk のアラート、Neptune のトポロジ、Nautobot |
 | [workflow.md](workflow.md) | `app/temporal/`（`WORKFLOW=1`） | アラート（SNS → SQS）→ Temporal の調査・承認・修復、Gateway（MCP） |
 
 リソースごとの知見（使い方、つながり、はまりどころ、制約）は [resources/README.md](resources/README.md)。
@@ -64,8 +64,8 @@ IaC/terraform/aws-managed/
 │   └── core/        VPC / VPC エンドポイント / 閉域の Deny（perimeter.tf）/ SG（ワークロードごと。通信の表は security_groups.tf）/ フローログ / バケット / アラートの SNS トピック（alerts.tf）/ ロール / Web の EC2
 ├── agent/         AGENT=1     Runtime / ガードレール / KB
 ├── pipeline/      PIPELINE=1
-│   ├── lab/         containerlab の EC2（stream を作るときは Telegraf・syslog-ng・GoFlow2 への転送も）
-│   ├── stream/      MSK（IAM + SASL/SCRAM）/ Telegraf・syslog-ng・GoFlow2（ECS Fargate + 内部 NLB）/ Kafbat UI の接続先（SSM）と Web の EC2 のロールへの権限（画面は Web の EC2 の Docker）
+│   ├── lab/         containerlab の EC2（stream を作るときは Telegraf・gnmic・syslog-ng・GoFlow2 とのあいだの転送も）
+│   ├── stream/      MSK（IAM + SASL/SCRAM）/ Telegraf・gnmic・syslog-ng・GoFlow2（ECS Fargate。gnmic 以外は内部 NLB の後ろ）/ Kafbat UI の接続先（SSM）と Web の EC2 のロールへの権限（画面は Web の EC2 の Docker）
 │   ├── analytics/   EMR Serverless / S3 Tables / OpenSearch / Prometheus / Grafana と Splunk（ECS Fargate）/ アラートの通知の履歴の Firehose
 │   ├── graph/       Neptune Analytics のグラフ / status の Lambda（SNS の購読）
 │   └── nautobot/    Nautobot（ECS Fargate）と PostgreSQL（RDS）
