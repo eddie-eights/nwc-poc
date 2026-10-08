@@ -4,17 +4,17 @@
 # here: they name the Neptune graph in the managed build (IAM statements, NEPTUNE_GRAPH_ID), and the Neo4j build passes a URI and a password instead.
 
 # ---------------------------------------------------------------- Neo4j（ECS on Fargate、1 台）
-# イメージはリポジトリの app/neo4j/（公式の neo4j:<版>-community に GDS の jar を焼き込んだもの。OSS 版の ops/up.sh がビルドして ECR の <接頭辞>-neo4j に置く）。
+# イメージはリポジトリの app/neo4j/（公式の neo4j:<版>-community に GDS の jar を焼き込んだもの。ops/oss/up.sh がビルドして ECR の <接頭辞>-neo4j に置く）。
 # データはタスクの一時領域（Fargate のエフェメラルストレージ）。EFS は使わない（Neo4j は NFS の上のデータを支えない。設計 005）。
 # タスクが入れ替わる（terraform apply でタスク定義が変わる・タスクが落ちる）とグラフは空に戻るので、ops/sync-graph.sh --oss で入れ直し、
 # そのあと Nautobot の Job「Telegraf とグラフ DB に同期」で変更履歴を戻す（status は全部 UP に戻る。docs/oss-variant.md の「Neo4j を起こし直したあとの戻し方」）。頂点の id はプロパティ id で、一意制約はアプリ（app/agentcore/graph.py の _neo4j_schema）が最初のクエリの前に作る。
 # 届くのは SG で絞った相手だけ（IaC/terraform/aws-managed/base/core の oss.tf の通信の表: Web・Runtime・Lambda・Worker・Nautobot → 7687、Web → 7474）。
 # 名前は Cloud Map の neo4j.<接頭辞>-graph.internal。アプリは bolt://（ルーティングしない直結。1 台なので要らない）でつなぐ。
-# 認証はユーザー neo4j とパスワード。パスワードは OSS 版の ops/up.sh が SSM の /<接頭辞>/neo4j-password（SecureString）に 1 回だけ作り、
+# 認証はユーザー neo4j とパスワード。パスワードは ops/oss/up.sh が SSM の /<接頭辞>/neo4j-password（SecureString）に 1 回だけ作り、
 # ECS の secrets で渡す（state にも環境変数の値にも書かない）。8 文字以上で / を含まないこと（公式の entrypoint の決まり。app/neo4j/entrypoint.sh）。
 
 variable "neo4j_image_tag" {
-  description = "Tag of the Neo4j image in the <prefix>-neo4j repository (built from app/neo4j/ by the OSS ops/up.sh: <Neo4j version>-<hash of app/neo4j/ and docker/images/neo4j/Dockerfile>). Same Neo4j version as ops/oss/oss-images.sh."
+  description = "Tag of the Neo4j image in the <prefix>-neo4j repository (built from app/neo4j/ by ops/oss/up.sh: <Neo4j version>-<hash of app/neo4j/ and docker/images/neo4j/Dockerfile>). Same Neo4j version as ops/oss/oss-images.sh."
   type        = string
   default     = "2026.09.0"
 }

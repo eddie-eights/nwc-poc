@@ -1896,7 +1896,7 @@ check("アラートの経路はマネージド版と同じ: 連絡先は SNS（�
 _ep = set(re.search(r'^ENDPOINTS="([^"]*)"$', open(os.path.join(ROOT, "ops", "oss", "up.sh"), encoding="utf-8").read(), re.M).group(1).split())
 _ecr_repos = re.search(r"pipeline_repositories = toset\(\[(.*)\]\)", tf_text("IaC/terraform/aws-managed", "base/ecr")["main.tf"]).group(1)
 check(f"Grafana のタスクは grafana の SG（{_sg_keys('IaC/terraform/oss', _AN, 'grafana.tf')}）を付け、土台の SG で OpenSearch の 9200・vmselect の 8481・AWS の API へ出られ、"
-      f"web の EC2 から 3000 で開ける。OSS 版の ops/up.sh が作る VPC エンドポイント（{sorted(_ep)}）に ECR・ログ・SSM（secrets）・SNS（アラート）がある。イメージの置き場は土台の ECR の grafana",
+      f"web の EC2 から 3000 で開ける。ops/oss/up.sh が作る VPC エンドポイント（{sorted(_ep)}）に ECR・ログ・SSM（secrets）・SNS（アラート）がある。イメージの置き場は土台の ECR の grafana",
       _sg_keys("IaC/terraform/oss", _AN, "grafana.tf") == _sg_keys("IaC/terraform/aws-managed", _AN, "grafana.tf") == {"grafana"}
       and "grafana" in _from("opensearch", _port(OS_URL)) and "grafana" in _from("victoriametrics", _port(SELECT_URL)) and "grafana" in _api
       and '{ from = "web", to = "grafana", protocol = "tcp", port = 3000,' in tf_text("IaC/terraform/aws-managed", "base/core")["security_groups.tf"]
