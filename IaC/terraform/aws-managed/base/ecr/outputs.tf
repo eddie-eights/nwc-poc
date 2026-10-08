@@ -28,7 +28,7 @@ output "temporal_repository_url" {
   value       = try(aws_ecr_repository.workflow["temporal"].repository_url, "")
 }
 
-# pipeline の 8 つも lab / workflow と同じく try() で包む。state を失って残った ECR を 1 本ずつ terraform import すると、まだ state に無いキーを
+# pipeline の 9 つも lab / workflow と同じく try() で包む。state を失って残った ECR を 1 本ずつ terraform import すると、まだ state に無いキーを
 # 引いた output が Invalid index で落ちる（2026-10-08 の OSS 版の検証の「不具合」3）。読む側は try() で空を受け、precondition で止まる
 output "telegraf_repository_url" {
   description = "Build app/telegraf/ (arm64) and push it here with tag <Telegraf version>-<hash of app/telegraf/ and docker/images/telegraf/Dockerfile> (step 2 of ops/up.sh). IaC/terraform/aws-managed/pipeline/stream runs it on ECS."
@@ -38,6 +38,11 @@ output "telegraf_repository_url" {
 output "kafka_ui_repository_url" {
   description = "Push ghcr.io/kafbat/kafka-ui:<KAFKA_UI_TAG of ops/up.sh> (arm64) here with the same tag (step 2, whenever stream is built). IaC/terraform/aws-managed/pipeline/stream writes <this URL>:<tag> to the SSM parameter /<prefix>/kafka-ui/image, and Docker on the Web EC2 (systemd unit <prefix>-kafka-ui) pulls it from here."
   value       = try(aws_ecr_repository.pipeline["kafka-ui"].repository_url, "")
+}
+
+output "gnmic_repository_url" {
+  description = "Build app/gnmic/ (the official gnmic with the config template and the entrypoint, arm64) and push it here with tag <GNMIC_VERSION of ops/up-common.sh>-<hash of app/gnmic/ and docker/images/gnmic/Dockerfile> (step 2, whenever stream is built; cycle 013). IaC/terraform/aws-managed/pipeline/stream runs it on ECS."
+  value       = try(aws_ecr_repository.pipeline["gnmic"].repository_url, "")
 }
 
 output "syslog_ng_repository_url" {

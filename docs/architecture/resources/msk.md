@@ -4,8 +4,8 @@
 
 ## ひとことで
 
-Telegraf・syslog-ng・GoFlow2 が集めた機器のデータを、いったんためておく Kafka（Amazon MSK の Provisioned）。
-書くのは Telegraf・syslog-ng・GoFlow2、読むのは Spark。ためるのは 24 時間で、履歴の置き場ではない。
+Telegraf・gnmic・syslog-ng・GoFlow2 が集めた機器のデータを、いったんためておく Kafka（Amazon MSK の Provisioned）。
+書くのは Telegraf・gnmic・syslog-ng・GoFlow2、読むのは Spark。ためるのは 24 時間で、履歴の置き場ではない。
 
 ## このプロジェクトでの使い方
 
@@ -25,8 +25,8 @@ Telegraf・syslog-ng・GoFlow2 が集めた機器のデータを、いったん�
 
 | トピック | 入っているもの | 書くもの |
 |---|---|---|
-| `metrics` | SNMP のポーリングの結果（measurement `system` / `interface` など。IF の状態とカウンタ）。`SNMP_POLL=0` では空 | Telegraf の取りにいく側 |
-| `gnmi` | gNMI の購読（BGP のセッション、IS-IS の IF などの on_change とサンプル） | Telegraf の取りにいく側 |
+| `metrics` | gNMI のカウンター（IF の統計、CPU、メモリ。60 秒ごと。gnmic の event の形のまま。2026-10-09 まではSNMP のポーリングの結果） | gnmic（2026-10-09 から。それまでは Telegraf の取りにいく側） |
+| `gnmi` | gNMI の状態（IF の oper-state / admin-state、BGP のセッション、IS-IS の IF。on-change。gnmic の event の形のまま） | gnmic（2026-10-09 から。それまでは Telegraf の取りにいく側） |
 | `traps` | SNMP の trap（linkDown / linkUp など） | Telegraf の受ける側 |
 | `logs` | 機器の syslog（measurement `device_log`） | syslog-ng（2026-10-08 までは Telegraf の受ける側） |
 | `flows` | 機器の NetFlow / sFlow（GoFlow2 の JSON のまま。Spark が共通の形に読み替える） | GoFlow2（2026-10-08 から） |
@@ -35,7 +35,8 @@ Telegraf・syslog-ng・GoFlow2 が集めた機器のデータを、いったん�
 
 | 相手 | 向き | ポートと認証 |
 |---|---|---|
-| Telegraf（受ける側 / 取りにいく側） | Telegraf → MSK | 9098/tcp、SASL_SSL + AWS_MSK_IAM。タスクロール `<prefix>-telegraf-task` |
+| Telegraf（受ける側） | Telegraf → MSK | 9098/tcp、SASL_SSL + AWS_MSK_IAM。タスクロール `<prefix>-telegraf-task` |
+| gnmic（ECS） | gnmic → MSK | 9096/tcp、SASL_SSL + SCRAM-SHA-512。syslog-ng・GoFlow2 と同じ secret（`AmazonMSK_<prefix>-collectors`）を ECS の secrets で受ける（実行ロール `<prefix>-gnmic-exec`）。Kafka の ACL が入るまでマネージドでは書けない見込み |
 | syslog-ng / GoFlow2（ECS） | → MSK | 9096/tcp、SASL_SSL + SCRAM-SHA-512。ユーザー名とパスワードは ECS の secrets で Secrets Manager からタスクの環境変数に入る（実行ロール `<prefix>-syslog-ng-exec` / `<prefix>-goflow2-exec`） |
 | Spark（EMR Serverless） | Spark ← MSK | 9098/tcp、同じ認証。ジョブの実行ロール |
 | ブローカー同士 | MSK ↔ MSK | 9092〜9098/tcp |
@@ -53,8 +54,8 @@ Telegraf・syslog-ng・GoFlow2 が集めた機器のデータを、いったん�
 - **4.1.x が Standard ブローカーの最新で、4.2.x は Express ブローカーだけ。**
   出典: `IaC/terraform/aws-managed/pipeline/stream/variables.tf` の `kafka_version` の説明。
 - **トピックは最初の書き込みで自動でできる。**
-  `auto.create.topics.enable=true`。そのため Telegraf のタスクロールに `kafka-cluster:CreateTopic` が要る。Spark も、無いトピックを起動時に作る（`ensure_topics`）ので、`SNMP_POLL=0` で `metrics` が無くても落ちない。
-  出典: [data-stores.md](../../data-stores.md) の「15. ブローカーの渡し方と msk-bootstrap」、FAQ「SNMP はポーリングと trap のどちらで集めている？ ポーリングは止められる？」。
+  `auto.create.topics.enable=true`。そのため Telegraf のタスクロールに `kafka-cluster:CreateTopic` が要る。Spark も、無いトピックを起動時に作る（`ensure_topics`）ので、gnmic がまだ書いていなくて `metrics` / `gnmi` が無くても落ちない。
+  出典: [data-stores.md](../../data-stores.md) の「15. ブローカーの渡し方と msk-bootstrap」。
 - **`min.insync.replicas` はブローカーの数の 1 つ下。**
   2 台なら 1 なので、1 台止まっても書ける。
   出典: `IaC/terraform/aws-managed/pipeline/stream/msk.tf` の `aws_msk_configuration` の上のコメント。

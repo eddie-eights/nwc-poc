@@ -26,8 +26,8 @@ String（ルートをまたいで渡す値）:
 | `/<prefix>/gateway-url` | AgentCore Gateway の URL | workflow | Runtime |
 | `/<prefix>/msk-bootstrap` | MSK のブローカーの一覧 | stream | だれも読まない。手で確かめるときと手動構築のために残してある（Telegraf は環境変数、Spark はジョブの引数でもらう。[msk.md](msk.md)） |
 | `/<prefix>/telegraf-address` | Telegraf の内部 NLB のアドレス | stream | lab の EC2（`lab forward`） |
-| `/<prefix>/telegraf-source-cidr` | 取りにいく側のタスクのサブネットの CIDR | stream | lab の EC2（`lab forward`） |
-| `/<prefix>/telegraf-dialin/<lab か nautobot>/gnmi-targets`、`snmp-agents` | Telegraf が取りにいく機器の一覧 | stream（最初の値）。`nautobot` のほうは Nautobot の Job が書き換える | Telegraf の取りにいく側（ECS の secrets） |
+| `/<prefix>/telegraf-source-cidr` | gnmic のタスクのサブネットの CIDR（名前は Telegraf の取りにいく側のときのまま） | stream | lab の EC2（`lab forward`） |
+| `/<prefix>/gnmic/<lab か nautobot>/gnmi-targets` | gnmic が購読する機器の一覧 | stream（最初の値）。`nautobot` のほうは Nautobot の Job が書き換える | gnmic のタスク（ECS の secrets） |
 | `/<prefix>/kafka-ui/image`、`bootstrap-servers`、`security-protocol` | Kafbat UI のイメージ（ECR）、Kafka のブートストラップ、`SASL_SSL`（MSK の IAM）か `PLAINTEXT`（OSS 版） | stream（`kafka_ui.tf`） | Web の EC2 のユニット `<prefix>-kafka-ui`（起動のたびに読む。無ければ 1 回で止まって Web の再起動で起き、それ以外で読めなければ 30 秒ごとに起こし直す） |
 | `/<prefix>/neptune-graph-id` | Neptune Analytics のグラフの ID | graph | Runtime、Web、tools の Lambda（graph-status の Lambda、worker、Nautobot のタスクは同じ値を環境変数 `NEPTUNE_GRAPH_ID` でもらう） |
 | `/<prefix>/nautobot/url` | Nautobot の URL | nautobot | Web の EC2 |
@@ -43,7 +43,7 @@ SecureString（`ops/up.sh` が作る）:
 | `/<prefix>/grafana/admin-password` | Grafana の admin のパスワード | 乱数（`STORES` に `grafana` があるとき） | Grafana のタスク |
 | `/<prefix>/splunk/admin-password`、`hec-token` | Splunk の admin のパスワード、HEC の token | 乱数、uuid（`STORES` に `splunk` があるとき） | Splunk のタスク |
 | `/<prefix>/splunk/idxc-secret` | Splunk のクラスターの合言葉（cluster manager・indexer・search head が互いを確かめる） | 乱数（`SPLUNK_AZ_NUM` が 2 か 3 のとき） | Splunk のタスク（どの役割も同じ値） |
-| `/<prefix>/telegraf-dialin/gnmi-username`、`gnmi-password`、`snmp-community` | 機器の gNMI と SNMP の認証情報 | 決まった値（containerlab の既定値を最初の値にする） | Telegraf の取りにいく側のタスク |
+| `/<prefix>/gnmic/gnmi-username`、`gnmi-password` | 機器の gNMI の認証情報 | 決まった値（containerlab の既定値を最初の値にする） | gnmic のタスク（2026-10-09 まではTelegraf の取りにいく側の `/<prefix>/telegraf-dialin/` に SNMP の community と 3 つ。前の回の分は `ops/down.sh` が消す） |
 | `/<prefix>/kafka-ui/admin-password` | Kafbat UI の admin のパスワード | 乱数（stream を作るとき） | Web の EC2 のユニット `<prefix>-kafka-ui`（復号して `/run` の env に書き、止まると消す） |
 | `/<prefix>/kafka/cluster-id`、`/<prefix>/neo4j-password`、`/<prefix>/opensearch-password` | Kafka（KRaft）の CLUSTER_ID、Neo4j と OpenSearch のパスワード（OSS 版だけ。`oss/ops/up.sh` が作る） | 乱数 | Kafka・Neo4j・OpenSearch のタスクと、それを読む側 |
 
@@ -51,10 +51,10 @@ SecureString（`ops/up.sh` が作る）:
 
 | 相手 | 向き | ポートと認証 |
 |---|---|---|
-| ECS のタスク（Telegraf、Grafana、Splunk、Nautobot） | タスクの起動時に ECS が読む | タスク定義の `secrets`（`valueFrom` にパラメータの ARN） |
+| ECS のタスク（gnmic、Grafana、Splunk、Nautobot） | タスクの起動時に ECS が読む | タスク定義の `secrets`（`valueFrom` にパラメータの ARN） |
 | Web の EC2、Runtime、Lambda、worker、lab の EC2 | 各自 → パラメータ | `ssm` のエンドポイント、それぞれのロール（`/<prefix>/*` か、名前を絞った許可） |
 | RDS（Nautobot の DB） | Terraform → RDS | ephemeral で読み、write-only の引数（`password_wo`）に渡す |
-| Nautobot の Job | Job → `telegraf-dialin/nautobot/*` | `ssm` のエンドポイント、タスクロール |
+| Nautobot の Job | Job → `gnmic/nautobot/*` | `ssm` のエンドポイント、タスクロール |
 | `ops/up.sh`、`ops/down.sh` | PC → SSM | デプロイする人の認証。値は画面にもログにも出さない |
 
 ## 知見

@@ -29,6 +29,7 @@ BACKLOG 28「コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種
 ### 1. gnmic（`app/gnmic/`、`docker/images/gnmic/Dockerfile`）
 
 - `gnmic.yaml.in`（設定のひな形）と `gnmic.sh`（入口。alpine なので POSIX sh）。`gnmic.sh` は環境変数からひな形を埋めて `/tmp/gnmic.yaml` に書き、`exec /app/gnmic --config /tmp/gnmic.yaml subscribe`
+  - 見るだけの手当ては `gn get [パス ...]`（`telegraf-dialin` の `tg gnmi` の代わり）: 同じ設定で `gnmic get --type STATE --format event` を 1 回打ち、標準出力に出す。パスを渡さなければ状態の 4 つ（`interface_state` / `bgp_neighbor` / `isis_interface` のパス）。subscribe は設定の `outputs`（Kafka）に書くので使わない（`get` は `outputs` を使わない。v0.49.0 のイメージで確かめた）
   - `GNMI_TARGETS`（いまと同じ形 `"<IP>:57400", ...`。SSM の値も `lab_topology.py --gnmi-targets` もそのまま）→ `targets:` に `<IP>: {address: <IP>:57400}`（名前は IP、PM の決定 1）。形が違えば止まる
   - 資格情報は値を書かない: target は `username: ${GNMI_USERNAME}` / `password: ${GNMI_PASSWORD}`、Kafka は `sasl: {user: ${KAFKA_SASL_USER}, password: ${KAFKA_SASL_PASS}, mechanism: SCRAM-SHA-512}`（gnmic が読むときに展開する）
   - `KAFKA_AUTH=scram` なら `sasl:` と `tls: {}`（CA はイメージの束）、`none`（OSS・手元）なら書かない。`KAFKA_BROKERS` はカンマ区切りのまま
@@ -81,8 +82,19 @@ BACKLOG 28「コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種
 - Terraform: `telegraf.tf` の dialin（タスク定義・サービス・`aws_ssm_parameter.dialin_targets_*`・`SNMP_COMMUNITY`・実行ロールの `/telegraf-dialin/*`）、`variables.tf` の `snmp_agents` / `snmp_poll`、`outputs.tf` の `telegraf_dialin_*`。gnmic は 012 の `collectors.tf` の形（`kafka_collector_*` の locals、arm64、1 タスク）で足し、SSM のパスは `/<prefix>/gnmic/<出どころ>/gnmi-targets` と `/<prefix>/gnmic/gnmi-username・gnmi-password`。SG `telegraf_dialin` → `gnmic`（何も受けない。管理ネットの tcp 57400、MSK 9096 / OSS は Kafka 9092、エンドポイントへ）。ECR `<prefix>-gnmic`
 - Nautobot: `nb_map.TARGET_KEYS = ("gnmi-targets",)`、`nb_sync` の入れ替え先を gnmic のサービスに、`pipeline/nautobot` の IAM と locals（SSM のパスとサービス名）
 - ops: `up.sh` の `SNMP_POLL` / `snmp-community` / `-var snmp_agents` / `snmp_poll` / `link_down` の sender の分岐（gnmi に固定）と gnmic のイメージ、`deploy.env.example` / `.env.example` / `deploy-env.sh`、`down.sh`、`oss/ops/up.sh` / `down.sh`
-- lab: `lab.sh forward` の udp 161、`lab.sh telegraf` は trap だけに、`lab.sh gnmic`（gnmic のタスクに入って 1 回 subscribe する手当て）。`lab_topology.py --snmp-agents`。SR Linux の `snmp-server` は trap のために残す。`failover` / `check` の手元の snmpwalk は残す
+- lab: `lab.sh forward` の udp 161、`lab.sh telegraf` は trap だけに（`telegraf test` / `gnmi` を消す）。gnmic のタスクに入って 1 回取る手当ては `lab.sh` ではなく stream の output `gnmic_exec_command`（PC から ECS Exec で `gn get`。設計方針 1）。lab の EC2 のロールは ECS Exec も gnmic の ECR も持たないため。`lab_topology.py --snmp-agents`。SR Linux の `snmp-server` は trap のために残す。`failover` / `check` の手元の snmpwalk は残す
 - 手元の compose: `telegraf-dialin` → `gnmic` のサービス、`up.sh` の `SNMP_AGENTS`（`check.sh` の `count(snmp_interface_ifOperStatus)` → `count(snmp_interface_oper_up)` は系列名の変更と一緒に第 1 段で済ませる）
+- 第 2 段の実装で決めた細目（方針・範囲は上のまま）
+  - Telegraf は受ける側（trap）だけになるので、`TELEGRAF_ROLE` ごと外す（`# >>> role` の区間も、`telegraf.sh` の役割の分岐も無くす）。`outputs.kafka` の `metrics` / `gnmi` も外す（書くのは trap の `traps` だけ）。`telegraf.sh render` は up.sh の値を受けない
+  - `tg test` / `tg gnmi` と `lab.sh telegraf test|gnmi` は消さずに「cycle 013 でやめた。gNMI を 1 回取るのは `gn get`（`gnmic_exec_command`）」と出して exit 1（古い手順を打った人を迷わせない）
+  - `lab.sh` は gNMI の資格情報を持たない（gnmic が SSM から受ける）。`SNMP_COMMUNITY` は `trap-test` のために残す。`ops/lab-common.sh` の `LAB_SNMP_COMMUNITY` は使う所が無くなるので消す
+  - 手元の compose: `gnmic` のサービス（`KAFKA_AUTH=none`。`GNMI_TARGETS` は `docker/compose/up.sh` が lab の定義から作る）
+  - `SNMP_POLL`: 前の `deploy.env` で止まらないよう `deploy-env.sh` は読み、`ops/up.sh` / `oss/ops/up.sh` は書いてあれば注意を出すだけ（止めない）。`link_down` の Grafana の sender は `GRAFANA` と `SINK_PROMETHEUS` だけで決まり、`SNMP_POLL` に依らない
+  - SG の入れ替えの守り: base/core の state に `telegraf_dialin` の SG が残り、stream がそれを使っていれば、`up.sh` / `oss/ops/up.sh` は何も作る前に止まり `down.sh` を案内する（2026-10-04 の dialout / dialin の改名と同じ形）
+  - SSM: `/<prefix>/telegraf-dialin/` の 3 つ（`snmp-community` も）は作らない。前の回の分は `down.sh` が ManagedBy のタグで消す。OSS の `oss/ops/up.sh` は `/<prefix>/gnmic/gnmi-username`・`gnmi-password` を作り、gnmic のイメージを `build_gnmic`（`ops/up-common.sh` の `GNMIC_VERSION`）で作る。OSS の SecureString は 13 個
+  - Nautobot の seed は機器の SNMP のサービス（udp 161）を残す（機器が SNMP を喋る印で `enabled` を決める。取りにはいかない）。`nb_sync` が書き替えるのは gnmic の `gnmi-targets` だけ
+  - `SKIP_LAB=1` の案内: gnmic は届かない target に 10 秒ごとに繋ぎ直し、プロセスは落ちない（2026-10-09 に手元の docker で 80 秒見た。ECS では未確認）。`up.sh` の文言と `deploy.env.example` はこの事実で書く
+  - `gnmic.tf` のサービスは 1 タスク（gnmic のクラスタリング / locker は使わない。2 つ動くと同じ機器を 2 回購読して Kafka に重複が出る）
 - docs: `collection.md`（共通の形の節を消し gnmic の event と読み替えの表に）、`pipeline.md`、`architecture/`（README / core / pipeline / resources の telegraf・grafana・splunk・prometheus・msk・nautobot・ssm-parameter-store・lab-ec2・vpc-perimeter）、`alert-comparison.md`、`data-stores.md`、`deploy.md`、`troubleshooting.md`、`nautobot.md`、`workflow.md`、FAQ、README、`docker/compose/README.md`
 
 ## 変更対象ファイル

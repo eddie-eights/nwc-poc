@@ -1,13 +1,14 @@
-# 手元の docker compose で動く構成を作る（006）: WSL2（Ubuntu）の docker-ce だけで、lab → Telegraf → Kafka → Spark → 格納先 → Grafana / Splunk が一周する。
+# 手元の docker compose で動く構成を作る（006）: WSL2（Ubuntu）の docker-ce だけで、lab → gnmic / Telegraf → Kafka → Spark → 格納先 → Grafana / Splunk が一周する。
 # AWS には触らない。設計は docs/cycles/006-local-compose/design.md、手順は README.md。
 # containerlab（SR Linux 6 台 + TRex 1 台）は compose の外（./lab.sh。sudo で app/containerlab/lab.sh を呼ぶ）。
-# パスワードと token は .env（.env.example を写す。試し用の固定値）。lab の値（SNMP_AGENTS / GNMI_TARGETS / DEVICE_MAP）は値に " と , があるので
-# .env に書かず、./up.sh が app/containerlab/lab_topology.py から作って環境変数で渡す（docker compose を直に打つと空のまま。Telegraf が形の検査で止まる）。
+# パスワードと token は .env（.env.example を写す。試し用の固定値）。lab の値（GNMI_TARGETS / DEVICE_MAP）は値に " と , があるので
+# .env に書かず、./up.sh が app/containerlab/lab_topology.py から作って環境変数で渡す（docker compose を直に打つと空のまま。gnmic が形の検査で止まる）。
 # 片付けは ./down.sh（-v で volume も消す）。
 #
 # 版の正（tests/test_local_compose.py が照合する）:
 #   Kafka / Kafbat UI / OpenSearch  oss/ops/oss-images.sh
 #   Telegraf                        ops/lab-common.sh の TELEGRAF_VERSION
+#   gnmic                           ops/up-common.sh の GNMIC_VERSION
 #   Grafana / Splunk                ops/up-common.sh の GRAFANA_VERSION / SPLUNK_VERSION
 #   syslog-ng / GoFlow2             ops/up-common.sh の SYSLOG_NG_VERSION / GOFLOW2_TAG
 #   Prometheus                      この構成にしか無いので、ここが正
@@ -16,8 +17,8 @@ name: nwc-local
 
 x-kafka-env: &kafka-env
   # OSS 版の ECS（IaC/terraform/oss/pipeline/stream/kafka.tf の kafka_environment）と同じ値（tests/test_local_compose.py が突き合わせる）。
-  # 違いは host の Telegraf 向けの EXTERNAL リスナー（KAFKA_LISTENERS は台ごとに番号が違うので各 service へ）と、ホスト名（voter と advertised）・ヒープ・
-  # 保持期間（手元は既定の 168 時間）。トピックは自動で作る（Telegraf が最初に書いたときに作る。Spark の ensure_topics も無いものを作る）
+  # 違いは host の Telegraf・gnmic 向けの EXTERNAL リスナー（KAFKA_LISTENERS は台ごとに番号が違うので各 service へ）と、ホスト名（voter と advertised）・ヒープ・
+  # 保持期間（手元は既定の 168 時間）。トピックは自動で作る（Telegraf・gnmic が最初に書いたときに作る。Spark の ensure_topics も無いものを作る）
   # 公式イメージ（apache/kafka）は KAFKA_* の環境変数を server.properties に変える。1 つでも書くと既定のファイルは使われないので、要るものは全部書く
   KAFKA_PROCESS_ROLES: broker,controller
   KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
@@ -61,7 +62,8 @@ services:
     # host のネットワークで受ける（SR Linux は trap を管理ネットの GW 203.0.113.1 = WSL へ送る）。trap の 162/udp → 1162/udp は ./lab.sh up の forward が iptables で向ける。
     # 待つポート: trap 1162/udp、ヘルスチェック 8080/tcp（.env の HEALTH_PORT）。host の他のプロセスとぶつかると起きない。
     # trap のポートは lab（app/containerlab/lab.sh の TRAP_PORT と SR Linux の remote-port）と揃えるので変えない。
-    # syslog は syslog-ng、NetFlow / sFlow は GoFlow2 が受ける。MDT の受け口は外した（cycle 012）
+    # syslog は syslog-ng、NetFlow / sFlow は GoFlow2 が受ける。MDT の受け口は外した（cycle 012）。受けるのは trap だけで、gNMI は gnmic のサービスが取る
+    # （SNMP のポーリングと gNMI の購読は cycle 013 でやめた）
     # 待つアドレスは ./up.sh が TELEGRAF_BIND に渡す（lab の bridge があれば 203.0.113.1 だけ、無ければ空 = 全部のインターフェース）
     build:
       context: ../../app/telegraf
@@ -77,17 +79,31 @@ services:
       SINK: kafka
       KAFKA_AUTH: none
       KAFKA_BROKERS: localhost:9094,localhost:9095,localhost:9096
-      TELEGRAF_ROLE: all
-      SNMP_POLL: "1"
       AWS_REGION: ap-northeast-1   # telegraf.sh が必須にしている（KAFKA_AUTH=none では使わない）
-      SNMP_AGENTS: ${SNMP_AGENTS:-}
-      GNMI_TARGETS: ${GNMI_TARGETS:-}
       TELEGRAF_BIND: ${TELEGRAF_BIND:-}
       HEALTH_PORT: ${HEALTH_PORT:-8080}
-      # lab の SR Linux だけの公開の既定値（ops/lab-common.sh の LAB_GNMI_USERNAME / LAB_GNMI_PASSWORD / LAB_SNMP_COMMUNITY）
+
+  gnmic:
+    # 機器の gNMI を購読して Kafka の gnmi / metrics トピックへ書く（cycle 013。docker/images/gnmic/Dockerfile。中身は app/gnmic/gnmic.sh と gnmic.yaml.in）。
+    # host のネットワークで lab の管理ネット（203.0.113.0/24）の SR Linux の 57400/tcp へ繋ぐ。待ち受けるポートは無い。
+    # 購読先は ./up.sh が lab の定義から作って GNMI_TARGETS に渡す（docker compose を直に打つと空のまま。gn run が形の検査で止まる）
+    build:
+      context: ../../app/gnmic
+      dockerfile: ../../docker/images/gnmic/Dockerfile
+      args:
+        GNMIC_VERSION: 0.49.0
+    image: nwc-local-gnmic
+    network_mode: host
+    # 起動の検査で止まったとき（GNMI_TARGETS が空など）に回り続けないよう 5 回で止める（Kafka が受け付ける前に起きたときの振る舞いは未確認）
+    restart: on-failure:5
+    depends_on: [kafka-1, kafka-2, kafka-3]
+    environment:
+      KAFKA_AUTH: none   # PLAINTEXT（既定の scram は MSK の SASL/SCRAM）
+      KAFKA_BROKERS: localhost:9094,localhost:9095,localhost:9096
+      GNMI_TARGETS: ${GNMI_TARGETS:-}
+      # lab の SR Linux だけの公開の既定値（ops/lab-common.sh の LAB_GNMI_USERNAME / LAB_GNMI_PASSWORD）
       GNMI_USERNAME: admin
       GNMI_PASSWORD: NokiaSrl1!
-      SNMP_COMMUNITY: public
 
   syslog-ng:
     # 機器の syslog を host のネットワークの 5140/udp で受けて Kafka の logs へ（cycle 012。docker/images/syslog-ng/Dockerfile。SR Linux は管理ネットの GW 203.0.113.1:5140 へ送る）。

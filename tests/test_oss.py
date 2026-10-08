@@ -1028,8 +1028,8 @@ check("ops/check.sh は IaC/terraform/oss のルートを -lockfile=readonly で
 _STREAM = "pipeline/stream"
 _stream_files = git_files(f"IaC/terraform/oss/{_STREAM}")
 _stream_links = sorted(n for n in _stream_files if os.path.islink(os.path.join(ROOT, "IaC", "terraform", "oss", *_STREAM.split("/"), n)))
-_stream_shared = ("locals.tf", "telegraf.tf", "collectors.tf", "kafka_ui.tf", "access.tf", "outputs.tf")
-check("OSS 版の stream の実ファイルは kafka.tf と oss.auto.tfvars だけで、マネージド版のファイルのうち msk.tf 以外は全部リンク（collectors.tf は cycle 012 で足した）",
+_stream_shared = ("locals.tf", "telegraf.tf", "collectors.tf", "gnmic.tf", "kafka_ui.tf", "access.tf", "outputs.tf")
+check("OSS 版の stream の実ファイルは kafka.tf と oss.auto.tfvars だけで、マネージド版のファイルのうち msk.tf 以外は全部リンク（collectors.tf は cycle 012、gnmic.tf は cycle 013 で足した）",
       sorted(set(_stream_files) - set(_stream_links)) == ["kafka.tf", "oss.auto.tfvars"]
       and _stream_links == sorted(_shared + _stream_shared) and not links_to_managed(_STREAM, _stream_links)
       and sorted(set(git_files(f"IaC/terraform/aws-managed/{_STREAM}")) - set(_stream_links)) == ["msk.tf"])
@@ -1078,8 +1078,11 @@ check("syslog-ng と GoFlow2 の口: マネージド版は MSK の SCRAM（9096 
       and "secretsmanager" not in _code(_kafka_tf))
 _tg_envs = re.findall(r"^      environment = concat\(\n        \[\n[\s\S]*?^        \],\n        local\.kafka_client_environment,\n      \)\n",
                       _m_stream["telegraf.tf"], re.M)
-check("Telegraf の 2 つのタスク（dialin / dialout）の環境変数は local.kafka_client_environment を足す",
-      len(_tg_envs) == 2 == _m_stream["telegraf.tf"].count("local.kafka_client_environment"))
+check("Telegraf のタスク（dialout の 1 つ。dialin は cycle 013 で gnmic に替えた）の環境変数は local.kafka_client_environment を足し、gnmic は collectors.tf と同じ kafka_collector_* を使う",
+      len(_tg_envs) == 1 == _m_stream["telegraf.tf"].count("local.kafka_client_environment")
+      and "kafka_client_environment" not in _m_stream["gnmic.tf"]
+      and '{ name = "KAFKA_BROKERS", value = local.kafka_collector_brokers }' in _m_stream["gnmic.tf"]
+      and '{ name = "KAFKA_AUTH", value = local.kafka_collector_auth }' in _m_stream["gnmic.tf"])
 
 _k = _code(_kafka_tf)
 check("OSS 版の Kafka は 3 台（kafka_nodes の 1〜3）で、台ごとに ECS のサービス・タスク定義・Cloud Map の名前・EFS のアクセスポイントを持つ",
@@ -1610,11 +1613,11 @@ check(f"OSS 版の bootstrap_brokers は {_brokers}（PLAINTEXT）: outputs.tf �
       and "{ containerPort = 9092, protocol = \"tcp\" }" in _k and _kns == f"{_PREFIX}-stream.internal"
       and re.search(r'^kafka_ui_security_protocol = "PLAINTEXT"$', open(_auto[_STREAM], encoding="utf-8").read(), re.M) is not None)
 check("OSS 版の Spark は stream の state の bootstrap_brokers を --bootstrap で受け、KAFKA_AUTH=none で読む（空なら precondition で止まる）。"
-      "Kafka の 9092 には Spark・Telegraf（dial-out / dial-in）・Web（cycle 010 から Kafbat UI が Web の EC2 に同居）の SG の行がある",
+      "Kafka の 9092 には Spark・Telegraf（dial-out）・gnmic（cycle 013）・Web（cycle 010 から Kafbat UI が Web の EC2 に同居）の SG の行がある",
       'bootstrap = try(data.terraform_remote_state.stream.outputs.bootstrap_brokers, "")' in _code(_o_an["network.tf"])
       and re.search(r'"--bootstrap",\s*local\.bootstrap', _spark) is not None
       and '{ name = "KAFKA_AUTH", value = "none" }' in _spark and 'condition     = local.bootstrap != ""' in _spark
-      and {"spark", "telegraf_dialout", "telegraf_dialin", "web"} <= _from("kafka", 9092) and "kafka_ui" not in _from("kafka", 9092))
+      and {"spark", "telegraf_dialout", "gnmic", "web"} <= _from("kafka", 9092) and "kafka_ui" not in _from("kafka", 9092) and "telegraf_dialin" not in _from("kafka", 9092))
 
 
 # Neo4j・OpenSearch・VictoriaMetrics を使う側の SG
@@ -1917,7 +1920,7 @@ check("OSS 版の 3 つの実体ルート（stream / analytics / graph）の .tf
 
 # ---- 土台の SG の表は、いまの oss.tf から起こした 33 行と完全に一致する（増えても減っても気づく）
 _sg_expected = {(sg, to, 443, 443) for sg in ("kafka", "opensearch", "victoriametrics", "neo4j") for to in ("endpoints", "s3")} | {
-    ("telegraf_dialout", "kafka", 9092, 9092), ("telegraf_dialin", "kafka", 9092, 9092), ("spark", "kafka", 9092, 9092),
+    ("telegraf_dialout", "kafka", 9092, 9092), ("gnmic", "kafka", 9092, 9092), ("spark", "kafka", 9092, 9092),   # gnmic は cycle 013 で telegraf_dialin に替えた
     ("syslog_ng", "kafka", 9092, 9092), ("goflow2", "kafka", 9092, 9092),   # syslog-ng と GoFlow2（cycle 012。OSS 版は認証なしの 9092）
     ("web", "kafka", 9092, 9092), ("kafka", "kafka", 9092, 9093),
     ("kafka", "efs", 2049, 2049), ("victoriametrics", "efs", 2049, 2049),

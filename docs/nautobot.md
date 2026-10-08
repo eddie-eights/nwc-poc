@@ -1,7 +1,7 @@
 # Nautobot（構成・部品・使い方・Neptune と組み合わせた使いどころ）
 
 Nautobot は、機器の一覧とケーブルの**正**（台帳）。`PIPELINE=1` ならいつも立つ（`IaC/terraform/aws-managed/pipeline/nautobot`）。
-Nautobot で機器・インタフェース・ケーブルを変えると、Nautobot の中の Job が Telegraf の取りにいく先と Neptune のトポロジを合わせる。
+Nautobot で機器・インタフェース・ケーブルを変えると、Nautobot の中の Job が gnmic の購読先と Neptune のトポロジを合わせる。
 OSS 版（[oss-variant.md](oss-variant.md)）では、同じ Job が Neptune の代わりに Neo4j に書く（2026-10-08 に AWS で確かめた。[verification/20261008-oss-aws.md](verification/20261008-oss-aws.md)）。この文書の「Neptune」は、OSS 版では Neo4j と読み替える。
 
 反映の決まりと注意の細かい一覧は [pipeline.md の「Nautobot」](pipeline.md#nautobot機器の一覧とケーブルの正)、質問と答えは [FAQ の 6 章](faq-fukuda-nwc-poc.md#6-nautobot機器の一覧とケーブルの正)。
@@ -26,7 +26,7 @@ OSS 版（[oss-variant.md](oss-variant.md)）では、同じ Job が Neptune の
 | 読む人 | 運用者、Job | AI エージェント、Web の「トポロジ」タブ |
 | 得意なこと | 入力の検査、変更の履歴、権限 | つながりをたどる（隣、影響の範囲、層をまたぐ紐づけ） |
 
-人が編集する場所を Nautobot の 1 か所にし、機械が読む場所（Telegraf の一覧と Neptune）へは Job が写す。
+人が編集する場所を Nautobot の 1 か所にし、機械が読む場所（gnmic の一覧と Neptune）へは Job が写す。
 
 ## 2. 構成（コンテナと AWS のリソース）
 
@@ -43,9 +43,9 @@ flowchart LR
   EC2 -->|"「トポロジ」タブのリンクの編集<br/>REST API（トークン）"| WEB
   WEB --- DB[("RDS PostgreSQL<br/>db.t4g.micro<br/>台帳")]
   WORKER --- DB
-  WORKER -->|"① 一覧を書き換え"| SSM["SSM のパラメータ<br/>gnmi-targets / snmp-agents"]
-  WORKER -->|"① サービスを作り直す"| DIALIN["Telegraf dialin（ECS）"]
-  SSM -.->|"起動時に読む"| DIALIN
+  WORKER -->|"① 一覧を書き換え"| SSM["SSM のパラメータ<br/>gnmi-targets"]
+  WORKER -->|"① サービスを作り直す"| GNMIC["gnmic（ECS）"]
+  SSM -.->|"起動時に読む"| GNMIC
   WORKER -->|"② openCypher（差分）"| NEP[("Neptune<br/>物理層")]
 ```
 
@@ -77,8 +77,8 @@ LB は無い。閉域なので、画面は Web の EC2 を踏み台にしたポ�
 
 | ファイル | 役割 |
 |---|---|
-| `jobs/netops_jobs.py` | Job 2 つ。`SyncTopology`「Telegraf とグラフ DB に同期」（手で打つ）と `SyncOnChange`「変更のたびに Telegraf とグラフ DB に同期」（JobHook `netops-sync` が呼ぶ）。中身は同じ。名前はマネージド版（Neptune）と OSS 版（Neo4j）で同じで、説明に書き先の名前が出る（`nb_sync.GRAPH_NAME`）。JobHook と bootstrap は Job を名前でなくクラスの場所（`netops_jobs.SyncOnChange`）で引くので、名前を変えても外れない |
-| `netops/nb_sync.py` | 同期の本体。台帳を読む → ① Telegraf の一覧（SSM）と dialin の作り直し → ② Neptune の物理層 |
+| `jobs/netops_jobs.py` | Job 2 つ。`SyncTopology`「gnmic とグラフ DB に同期」（手で打つ）と `SyncOnChange`「変更のたびに gnmic とグラフ DB に同期」（JobHook `netops-sync` が呼ぶ）。中身は同じ。名前はマネージド版（Neptune）と OSS 版（Neo4j）で同じで、説明に書き先の名前が出る（`nb_sync.GRAPH_NAME`）。JobHook と bootstrap は Job を名前でなくクラスの場所（`netops_jobs.SyncOnChange`）で引くので、名前を変えても外れない |
+| `netops/nb_sync.py` | 同期の本体。台帳を読む → ① gnmic の一覧（SSM）と gnmic の作り直し → ② Neptune の物理層 |
 | `netops/nb_map.py` | 台帳とトポロジの対応付け（Nautobot に依らない純粋な関数。`tests/test_nautobot.py` が検査する） |
 | `netops/bootstrap.py` | web の起動時に 1 回走る用意（下の 4） |
 | `Dockerfile` | 公式イメージに上のファイルと `app/agentcore/graph.py`（Neptune へ openCypher で書く関数）、`lab_seed.json` を足す |
@@ -90,7 +90,7 @@ sequenceDiagram
   participant W as web（bootstrap.py）
   participant D as PostgreSQL
   participant K as worker（Job）
-  participant T as SSM / Telegraf dialin
+  participant T as SSM / gnmic
   participant N as Neptune
   W->>D: migrate（最初は 5〜10 分）
   W->>D: 管理者、custom field（asn / link_role / bandwidth_mbps）
@@ -100,12 +100,12 @@ sequenceDiagram
   W->>N: 起動時の同期（物理層）
   Note over W: ここから画面が開く
   D-->>K: 台帳が変わる → JobHook → Job
-  K->>T: 一覧が変わったときだけ書き換え、dialin を作り直す
+  K->>T: 一覧が変わったときだけ書き換え、gnmic を作り直す
   K->>N: 物理層を差分で合わせる
 ```
 
 - 最初の中身は、リポジトリの lab の定義（`app/containerlab/splab.clab.yml.in` と `app/containerlab/srlinux/*.cli`）を `app/containerlab/lab_topology.py` が JSON にしたもの。2 回目からは seed を飛ばし、Nautobot の中身が正になる。
-- 同期は Redis のロックの中で「読む → 書く」をするので、Job が重なっても順に走る。片方（Telegraf / Neptune）が失敗しても、もう片方はやる。
+- 同期は Redis のロックの中で「読む → 書く」をするので、Job が重なっても順に走る。片方（gnmic / Neptune）が失敗しても、もう片方はやる。
 
 ## 5. 使い方
 
@@ -127,8 +127,8 @@ terraform -chdir=IaC/terraform/aws-managed/pipeline/nautobot output -raw passwor
 
 | Nautobot で変えるもの | 映る先 |
 |---|---|
-| Device の Service `gnmi`（tcp） | Telegraf が gNMI を取りにいく先 `<primary IPv4>:<ポート>` |
-| Device の Service `snmp`（udp） | Telegraf が SNMP を取りにいく先（`SNMP_POLL=1`（既定）のとき使う） |
+| Device の Service `gnmi`（tcp） | gnmic が gNMI を購読する先 `<primary IPv4>:<ポート>` |
+| Device の Service `snmp`（udp） | 購読先には入れない（機器が SNMP を喋る印。2026-10-09（cycle 013）に SNMP のポーリングをやめるまでは、Telegraf が SNMP を取りにいく先だった） |
 | Device（名前、Location、Role、primary IPv4、custom field `asn`） | Neptune の `device`。Service がどちらかあれば「監視」 |
 | Interface（名前、最初の IP、LAG の親） | Neptune の `interface` |
 | Cable（両端が Interface。custom field `link_role` / `bandwidth_mbps`） | Neptune の回線。種類（fabric / l2 / lag）は両端の Role と LAG から決まる |
@@ -140,7 +140,7 @@ Role の名前は `spine` / `a-leaf` / `s-leaf` / `trex` を使う（回線の�
 ### 同期を確かめる・手で打つ
 
 - 画面の Jobs → Job Results に、変更 1 件ごとの結果（機器と回線の数、書き換えた一覧、Neptune に足した・変えた・消した数）が出る。
-- 手で打つ: Jobs → 「Telegraf とグラフ DB に同期」。JobHook が出ない変更（IP をインタフェースに付け替えただけ、など）のあとに使う。「Telegraf を作り直す」にチェックすると、一覧が同じでも dialin を作り直す。
+- 手で打つ: Jobs → 「gnmic とグラフ DB に同期」。JobHook が出ない変更（IP をインタフェースに付け替えただけ、など）のあとに使う。「gnmic を作り直す」にチェックすると、一覧が同じでも gnmic を作り直す。
 - ログ: `aws logs tail /ecs/<prefix>-nautobot --follow`（`worker/` が Job）。
 - Neptune の側は、Web の「トポロジ」タブで見る。
 
@@ -180,7 +180,7 @@ sequenceDiagram
 ### (1) 機器を監視に入れる
 
 1. Nautobot で Device を作り、管理用の Interface に IP を付けて primary IPv4 にし、Service `gnmi`（tcp 57400）を足す。
-2. Job が SSM の `gnmi-targets` に `<IP>:57400` を足し、Telegraf dialin を作り直す（購読が数十秒切れる）→ その機器の telemetry が流れ始める。
+2. Job が SSM の `gnmi-targets` に `<IP>:57400` を足し、gnmic を作り直す（購読が数十秒切れる）→ その機器の telemetry が流れ始める。
 3. 同じ Job が Neptune に `device` と `interface` を足す → Web の「トポロジ」に出て、エージェントの `list_devices` に入る。
 
 台帳に 1 回書くだけで、「集める対象」と「トポロジの上の位置」が同時にそろう。監視から外すときは Service を消す（機器は Neptune に残り、「監視」だけ外れる）。
@@ -228,7 +228,7 @@ Nautobot は変更のたびに ObjectChange（だれが・いつ・何を・ど�
 
 ### (7) 本番の機器の一覧を外から入れる（PoC には未実装）
 
-- 外のシステム（SDN コントローラや構成管理のワーカー）が Nautobot の API で書く。JobHook は API からの変更でも出るので、Telegraf とグラフ DB（Neptune。OSS 版は Neo4j）への反映は今のまま動く。
+- 外のシステム（SDN コントローラや構成管理のワーカー）が Nautobot の API で書く。JobHook は API からの変更でも出るので、gnmic の一覧とグラフ DB（Neptune。OSS 版は Neo4j）への反映は今のまま動く。
 - Nautobot の側から取りにいく（SSoT アプリや Device Onboarding アプリ。中身は Job）。
 - どちらでも、5 の表の形（Service `gnmi` / `snmp`、custom field）で入れること。今は閉域で、外から Nautobot へ届く経路と API トークンの用意は入っていない。
 
@@ -252,7 +252,7 @@ Web の「トポロジ」タブのリンクの追加・削除は、Neptune で�
 - `ops/down.sh` で DB ごと消える。Nautobot で編集した内容は残らず、作り直すと lab の定義から入り直す。
 - 機器が 1 台も無いときは Neptune を触らない（空で合わせると物理層が全部消えるため）。
 - 機器の名前を変えると、Neptune では別の機器になる（名前が頂点の ID）。その機器の `status` と上の層へのつながりは消える。
-- 一括で変えると、変更 1 件ごとに Job が走り、一覧が変わるたびに dialin が作り直される。大きく変えるときは JobHook `netops-sync` を止めてから変え、最後に手で Job を打つ。
+- 一括で変えると、変更 1 件ごとに Job が走り、一覧が変わるたびに gnmic が作り直される。大きく変えるときは JobHook `netops-sync` を止めてから変え、最後に手で Job を打つ。
 - `ops/sync-graph.sh --replace` は lab の定義で上書きする。Nautobot で足したものは、Job を打つまで Neptune から消える。
 - デバッグ用の EC2（`ops/lab-debug.sh`）は Nautobot を使わない。
-- AWS で確かめたのは、起動・seed・Job と JobHook の登録・起動時の同期まで。Nautobot での変更 → JobHook → SSM / dialin / Neptune と、Web からの Nautobot への書き込みは、まだ AWS では確かめていない（手元のテスト `tests/test_nautobot.py` と、手元の Docker で起こした Nautobot 3.2.6 への REST API だけ）。
+- AWS で確かめたのは、起動・seed・Job と JobHook の登録・起動時の同期まで。Nautobot での変更 → JobHook → SSM / gnmic / Neptune と、Web からの Nautobot への書き込みは、まだ AWS では確かめていない（手元のテスト `tests/test_nautobot.py` と、手元の Docker で起こした Nautobot 3.2.6 への REST API だけ）。

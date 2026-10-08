@@ -2,7 +2,7 @@
 
 ← [README](../README.md)
 
-`<prefix>` は `deploy.env` の `OWNER` から作る接頭辞 `<owner>-nwc-poc`。`deploy.env` に `AGENT=1`、`PIPELINE=1`、`WORKFLOW=1` を書いて `ops/up.sh` を打つと、下の全部ができる。アラート（ワークフローを起こす `link_down`）の送り手が要る: Splunk（`STORES` の `splunk`。linkDown の trap と SNMP のポーリングから検知する）か、Grafana のアラート（`STORES` の `grafana` に `SNMP_POLL=1`。SNMP のポーリングから検知する）。既定（`STORES=s3,grafana,splunk` / `SNMP_POLL=1`）では両方ある。`STORES` から `splunk` を外して `SNMP_POLL=0` にすると送り手が無く、`ops/up.sh` が止まる。
+`<prefix>` は `deploy.env` の `OWNER` から作る接頭辞 `<owner>-nwc-poc`。`deploy.env` に `AGENT=1`、`PIPELINE=1`、`WORKFLOW=1` を書いて `ops/up.sh` を打つと、下の全部ができる。アラート（ワークフローを起こす `link_down`）の送り手が要る: Splunk（`STORES` の `splunk`。gNMI の IF の状態と linkDown の trap から検知する）か、Grafana のアラート（`STORES` の `grafana`。gNMI の IF の状態から検知する）。既定（`STORES=s3,grafana,splunk`）では両方ある。`STORES` に `splunk` も `grafana` も無いと送り手が無く、`ops/up.sh` が止まる。
 
 ## 流れ
 
@@ -61,7 +61,7 @@ stateDiagram-v2
 - 承認待ちは、シグナル `decide` か `resolved` が届くまで待つ（見に行かない）。120 分（`APPROVAL_TIMEOUT_MINUTES`）で `expired`。
 - `expired` になる道は 3 つ: 120 分の時間切れ、同じ異常の新しい修復案ができた、決定が届いたがワークフローがもう無い。理由は行の `verify_note` に入る。
 - 図の状態のほかに、行の `event` には `ignored`（効かなかった決定）がある。`status` を変えないので図には無い。
-- 確認（verify）は Neptune を見に行かず、解消の通知（`resolved` のアラート）を 300 秒（`VERIFY_TIMEOUT`）まで待つ。通知は「機器 → Telegraf → MSK → Spark → Prometheus / Splunk → ルールの評価 → SNS → SQS」を通るので、直ってから届くまで 1〜2 分かかる。
+- 確認（verify）は Neptune を見に行かず、解消の通知（`resolved` のアラート）を 300 秒（`VERIFY_TIMEOUT`）まで待つ。通知は「機器 → gnmic（gNMI。trap なら Telegraf）→ MSK → Spark → Prometheus / Splunk → ルールの評価 → SNS → SQS」を通るので、直ってから届くまで 1〜2 分かかる。
 - `rejected` / `expired` / `failed` で終わるときは、解消の通知が来るまで（長くて 1440 分。`HOLD_MINUTES`）ワークフローを閉じない。閉じると、まだ直っていない同じ異常の次の通知がもう一度調査を起こすため。
 - 環境変数の既定は `app/temporal/worker.py`、タスクに渡す値は `IaC/terraform/aws-managed/workflow/ecs.tf`。
 
@@ -81,7 +81,7 @@ stateDiagram-v2
 ## 試す
 
 1. lab に入り（[pipeline.md](pipeline.md) の「lab に入る」）、`sudo lab fail-main` で DC 側 Leaf の fabric（`dc1-a-leaf-01 ethernet-1/1`）を落とす。
-2. 1〜2 分で `link_down` のアラートが出て（既定では Grafana と Splunk の両方から。Grafana は Alerting → Alert rules で Firing、Splunk は linkDown の trap とポーリングから。`SNMP_POLL=0` では Splunk の trap からだけ。Web の「トポロジ」タブではその回線が `DOWN` になる）、数十秒で「承認」タブに修復案（原因・打つコマンド・理由）が `pending` で並ぶ。
+2. 1〜2 分で `link_down` のアラートが出て（既定では Grafana と Splunk の両方から。Grafana は Alerting → Alert rules で Firing、Splunk は gNMI と linkDown の trap から。Web の「トポロジ」タブではその回線が `DOWN` になる）、数十秒で「承認」タブに修復案（原因・打つコマンド・理由）が `pending` で並ぶ。
 3. 下の詳細（原因・コマンド・事前チェック・理由）を読み、名前を入れて「詳細を読んだ」にチェックを入れてから「承認して直す」を押すと `approved` → `applied` → `verified` / `failed` と進む（`verified` は、直ったあとの解消の通知が届いてから。1〜2 分）。名前は「決めた人」の列に `<名前> (web)` で残る（Web には認証が無いので、名乗ってもらう）。
 
 ## Temporal UI を開く

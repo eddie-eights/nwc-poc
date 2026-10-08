@@ -12,8 +12,8 @@
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
 | ワークスペース | alias `<prefix>-metrics`。1 つ | `IaC/terraform/aws-managed/pipeline/analytics/sinks.tf` の `aws_prometheus_workspace.metrics` |
-| 入るもの | MSK の `metrics` / `gnmi` のトピックの数値。メトリクス名の頭に `snmp_` が付く（例: `snmp_interface_ifOperStatus`、`snmp_bgp_neighbor_session_up`、`snmp_isis_interface_oper_up`） | `app/spark/snmp_sinks.py` |
-| ラベル | Telegraf の tags と `__name__` だけ。`event_id` と Kafka の位置は入れない | `app/spark/snmp_sinks.py` |
+| 入るもの | MSK の `metrics` / `gnmi` のトピックの数値（gnmic の event を Spark が Telegraf の形に読み替えたもの）。メトリクス名の頭に `snmp_` が付く（例: `snmp_interface_oper_up`、`snmp_interface_in_octets`、`snmp_bgp_neighbor_session_up`、`snmp_isis_interface_oper_up`） | `app/spark/snmp_sinks.py` |
+| ラベル | Telegraf の形の tags（gnmic の tags を Spark が `sysName` / `ifName` などに読み替える）と `__name__` だけ。`event_id` と Kafka の位置は入れない | `app/spark/snmp_sinks.py` |
 | 書き方 | Spark の remote write（protobuf + snappy を自前で組む）、SigV4 | `app/spark/snmp_sinks.py` |
 | スイッチ | `STORES` の `grafana`（OpenSearch のログ用コレクションと Grafana と一緒に作る） | `deploy.env.example` |
 | AZ | 選ぶものが無い（サービス側で動く）。入口は `aps-workspaces` のエンドポイント（`ENDPOINTS_AZ_NUM`） | `ops/up.sh` の手順 0（`endpoints_for` のあとで `STORES` の `grafana` のときに足す） |
@@ -50,9 +50,9 @@
 - **ワークスペースのリソースポリシーでは、VPC の外を拒んでいない。**
   Deny と `aws:SourceVpc` が効くか確かめられないため。IAM 側の Deny（`<prefix>-network-perimeter`）だけで止めている。
   出典: `IaC/terraform/aws-managed/pipeline/analytics/sinks.tf` のコメント。
-- **`SNMP_POLL=0` では `snmp_interface_ifOperStatus` が無い。**
-  ダッシュボード「netops / SNMP metrics」、`query_metrics`、ルール `link_down` が動かない。
-  出典: FAQ「SNMP はポーリングと trap のどちらで集めている？ ポーリングは止められる？」。
+- **2026-10-09（cycle 013）から `snmp_interface_ifOperStatus` は入らない。**
+  SNMP のポーリングをやめ、IF の状態は gnmic の gNMI から `snmp_interface_oper_up`（1 が up）と `snmp_interface_admin_up` で入る。ダッシュボード、`query_metrics`、ルール `link_down` はこちらを見る。
+  出典: [collection.md](../../collection.md) の「gnmic の event と読み替え」。
 
 ## 制約と未確認
 

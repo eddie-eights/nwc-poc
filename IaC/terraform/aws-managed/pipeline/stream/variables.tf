@@ -85,40 +85,8 @@ variable "telegraf_image_tag" {
   }
 }
 
-variable "snmp_agents" {
-  description = "SNMP polling targets of the Telegraf dial-in task, as the inside of a TOML list (\"udp://<IP>:161\", ...). ops/up.sh makes it from the lab definition (python3 app/containerlab/lab_topology.py app/containerlab --snmp-agents). Goes to the SSM parameter .../telegraf-dialin/lab/snmp-agents (or only the first value of .../nautobot/snmp-agents with dialin_targets_from_nautobot)."
-  type        = string
-
-  validation {
-    condition     = can(regex("^\"udp://[0-9.]+:[0-9]+\"(, *\"udp://[0-9.]+:[0-9]+\")*$", var.snmp_agents))
-    error_message = "snmp_agents must look like \"udp://203.0.113.11:161\", \"udp://203.0.113.12:161\" (python3 app/containerlab/lab_topology.py app/containerlab --snmp-agents)."
-  }
-}
-
-variable "gnmi_targets" {
-  description = "gNMI subscription targets of the Telegraf dial-in task, as the inside of a TOML list (\"<IP>:57400\", ...). ops/up.sh makes it from the lab definition (python3 app/containerlab/lab_topology.py app/containerlab --gnmi-targets). Goes to the SSM parameter .../telegraf-dialin/lab/gnmi-targets (or only the first value of .../nautobot/gnmi-targets with dialin_targets_from_nautobot)."
-  type        = string
-
-  validation {
-    condition     = can(regex("^\"[0-9.]+:[0-9]+\"(, *\"[0-9.]+:[0-9]+\")*$", var.gnmi_targets))
-    error_message = "gnmi_targets must look like \"203.0.113.11:57400\", \"203.0.113.12:57400\" (python3 app/containerlab/lab_topology.py app/containerlab --gnmi-targets)."
-  }
-}
-
-variable "dialin_targets_from_nautobot" {
-  description = "Whether the Nautobot job (IaC/terraform/aws-managed/pipeline/nautobot) owns the dial-in targets. true moves them to /<prefix>/telegraf-dialin/nautobot/* (Terraform writes only the first value, from snmp_agents / gnmi_targets, and ignores later changes); false keeps them in /<prefix>/telegraf-dialin/lab/* from the variables. ops/up.sh always passes true (Nautobot is always built with stream since 2026-10-04); false is left for applying this root by hand."
-  type        = bool
-  default     = false
-}
-
-variable "snmp_poll" {
-  description = "Whether Telegraf polls SNMP (inputs.snmp, ifTable every 10 seconds) and writes it to the metrics topic. On by default: the Grafana rule link_down and the Splunk saved search netops_poll read the polled ifOperStatus. With false, SNMP comes in as traps only and link down is seen only by the Splunk saved search on traps (splunk in STORES of deploy.env). ops/up.sh passes SNMP_POLL from deploy.env. Becomes SNMP_POLL (1 / 0) of the task."
-  type        = bool
-  default     = true
-}
-
 variable "telegraf_az_num" {
-  description = "Number of AZs (subnets a, b, c from the front) of the Telegraf dial-out side: the NLB subnets and the number of dial-out tasks (one per AZ). 1, 2 or 3. The dial-in task stays one in subnet a (two would poll and subscribe twice). SSM /<prefix>/telegraf-address stays the NLB address in subnet a (the lab DNATs to it); real devices should send to output telegraf_dialout_dns_name. With 2 or 3 the NLB balances across zones, so subnet a's address still reaches the tasks in b / c. ops/up.sh passes TELEGRAF_AZ_NUM."
+  description = "Number of AZs (subnets a, b, c from the front) of the Telegraf dial-out side: the NLB subnets and the number of dial-out tasks (one per AZ). 1, 2 or 3. The gnmic task (gnmic.tf) stays one in subnet a (two would subscribe twice). SSM /<prefix>/telegraf-address stays the NLB address in subnet a (the lab DNATs to it); real devices should send to output telegraf_dialout_dns_name. With 2 or 3 the NLB balances across zones, so subnet a's address still reaches the tasks in b / c. ops/up.sh passes TELEGRAF_AZ_NUM."
   type        = number
   default     = 1
 
@@ -129,7 +97,7 @@ variable "telegraf_az_num" {
 }
 
 variable "telegraf_task_cpu" {
-  description = "Fargate CPU units of the Telegraf task (ARM64). 256 (0.25 vCPU) is enough for 6 SNMP agents, 6 gNMI subscriptions and traps."
+  description = "Fargate CPU units of the Telegraf dial-out task (ARM64). 256 (0.25 vCPU) is enough for the traps."
   type        = number
   default     = 256
 
@@ -140,7 +108,7 @@ variable "telegraf_task_cpu" {
 }
 
 variable "telegraf_task_memory" {
-  description = "Fargate memory (MiB) of the Telegraf task. Must be a valid pair with telegraf_task_cpu (256 takes 512-2048)."
+  description = "Fargate memory (MiB) of the Telegraf dial-out task. Must be a valid pair with telegraf_task_cpu (256 takes 512-2048)."
   type        = number
   default     = 512
 
@@ -148,6 +116,35 @@ variable "telegraf_task_memory" {
     condition     = contains([512, 1024, 2048], var.telegraf_task_memory)
     error_message = "telegraf_task_memory must be 512, 1024 or 2048."
   }
+}
+
+# ---------------------------------------------------------------- gnmic (gnmic.tf, cycle 013)
+# Always created with this root. Subscribes to the devices over gNMI and writes to Kafka with SASL/SCRAM on MSK (9096) and PLAINTEXT on the OSS Kafka
+variable "gnmic_image_tag" {
+  description = "Tag of the gnmic image (docker/images/gnmic/Dockerfile) in the ECR repository <prefix>-gnmic. ops/up.sh builds it as <GNMIC_VERSION>-<hash of app/gnmic/ and docker/images/gnmic/Dockerfile> and passes it."
+  type        = string
+  default     = "0.49.0"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$", var.gnmic_image_tag))
+    error_message = "gnmic_image_tag must be a valid ECR tag (letters, digits, _ . -, up to 128 characters)."
+  }
+}
+
+variable "gnmi_targets" {
+  description = "gNMI subscription targets of the gnmic task, as \"<IP>:57400\", ... (the inside of a YAML flow list). ops/up.sh makes it from the lab definition (python3 app/containerlab/lab_topology.py app/containerlab --gnmi-targets). Goes to the SSM parameter /<prefix>/gnmic/lab/gnmi-targets (or only the first value of .../nautobot/gnmi-targets with gnmi_targets_from_nautobot)."
+  type        = string
+
+  validation {
+    condition     = can(regex("^\"[0-9.]+:[0-9]+\"(, *\"[0-9.]+:[0-9]+\")*$", var.gnmi_targets))
+    error_message = "gnmi_targets must look like \"203.0.113.11:57400\", \"203.0.113.12:57400\" (python3 app/containerlab/lab_topology.py app/containerlab --gnmi-targets)."
+  }
+}
+
+variable "gnmi_targets_from_nautobot" {
+  description = "Whether the Nautobot job (IaC/terraform/aws-managed/pipeline/nautobot) owns the gNMI targets. true moves them to /<prefix>/gnmic/nautobot/gnmi-targets (Terraform writes only the first value, from gnmi_targets, and ignores later changes); false keeps them in /<prefix>/gnmic/lab/gnmi-targets from the variable. ops/up.sh always passes true (Nautobot is always built with stream since 2026-10-04); false is left for applying this root by hand."
+  type        = bool
+  default     = false
 }
 
 # ---------------------------------------------------------------- syslog-ng and GoFlow2 (collectors.tf, cycle 012)

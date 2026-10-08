@@ -236,6 +236,9 @@ TEMPORAL_TAG=1.9.1
 # docker/compose/compose.yaml も同じ値（tests/test_local_compose.py が照合する。変えるときは全部を変える）。どちらも arm64 のイメージがあることを確かめてある
 SYSLOG_NG_VERSION=4.29.0
 GOFLOW2_TAG=v2.2.7
+# 機器の gNMI の購読（cycle 013）。docker/images/gnmic/Dockerfile の ARG の既定値と docker/compose/compose.yaml のタグに合わせてある（tests/test_local_compose.py が照合する）。
+# 公式イメージ ghcr.io/openconfig/gnmic に arm64 があることを確かめてある
+GNMIC_VERSION=0.49.0
 nautobot_context() {  # nautobot_context <空のディレクトリ>  Nautobot のイメージのビルドの context を集める（docker/images/nautobot/Dockerfile の頭の説明）
   # app/nautobot/ の中身に、グラフへ openCypher で書く app/agentcore/graph.py と app/agentcore/toolkit.py、最初の seed にする lab の定義を足す。
   # タグはこのディレクトリの中身と docker/images/nautobot/Dockerfile から作る（dir_tag）ので、graph.py や lab の定義や Dockerfile を変えてもイメージが作り直される
@@ -250,6 +253,9 @@ build_agent() {  # build_agent <リポジトリの URL>:<タグ> [requirements �
 build_grafana() {  # REG / PREFIX / GRAFANA_TAG（dir_tag "$GRAFANA_VERSION" app/grafana docker/images/grafana/Dockerfile）を使う。Grafana OSS（arm64）
   # データソースの plugin をビルドのときに入れる（タスクは AWS の外へ出られず、起動時に grafana.com から落とせない）
   docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push -f docker/images/grafana/Dockerfile app/grafana/
+}
+build_gnmic() {  # REG / PREFIX / GNMIC_TAG（dir_tag "$GNMIC_VERSION" app/gnmic docker/images/gnmic/Dockerfile）を使う。公式イメージ（arm64）に設定のひな形と入口を COPY するだけ
+  docker buildx build --platform linux/arm64 --build-arg "GNMIC_VERSION=$GNMIC_VERSION" -t "$REG/$PREFIX-gnmic:$GNMIC_TAG" --push -f docker/images/gnmic/Dockerfile app/gnmic/
 }
 build_syslog_ng() {  # REG / PREFIX / SYSLOG_NG_TAG（dir_tag "$SYSLOG_NG_VERSION" app/syslog-ng docker/images/syslog-ng/Dockerfile）を使う。AxoSyslog（arm64）に設定を COPY するだけなので、エミュレーション無しで作れる
   docker buildx build --platform linux/arm64 --build-arg "SYSLOG_NG_VERSION=$SYSLOG_NG_VERSION" -t "$REG/$PREFIX-syslog-ng:$SYSLOG_NG_TAG" --push -f docker/images/syslog-ng/Dockerfile app/syslog-ng/
@@ -300,7 +306,7 @@ ensure_nautobot_secrets() {  # pipeline/nautobot の apply より前に呼ぶ。
 }
 
 # ---- MSK の SASL/SCRAM の資格情報（cycle 012。マネージド版の ops/up.sh だけが呼ぶ。OSS 版の Kafka は認証なしの 9092）
-# syslog-ng と GoFlow2 が MSK に書くときのユーザー名とパスワード。MSK の SCRAM は Secrets Manager の secret（名前が AmazonMSK_ で始まる）しか受けず、
+# syslog-ng と GoFlow2 と gnmic（cycle 013）が MSK に書くときのユーザー名とパスワード。MSK の SCRAM は Secrets Manager の secret（名前が AmazonMSK_ で始まる）しか受けず、
 # その secret は自分で作った KMS の鍵で暗号化しないといけない（AWS が管理する aws/secretsmanager の鍵は使えない）。
 # 値を Terraform の state に入れないよう、両方ここで作る。IaC/terraform/aws-managed/pipeline/stream/msk.tf は同じ名前の data source で ARN だけ引く
 # （名前が揃っていることは tests/test_stream.py が見る）。消すのは ops/down.sh（ops/down-common.sh の delete_msk_scram）。
@@ -359,7 +365,7 @@ with open(path, "w", encoding="utf-8") as f:
     json.dump({"Name": name, "Description": desc, "KmsKeyId": key,
                "SecretString": json.dumps({"username": "collectors", "password": secrets.token_urlsafe(24)}),
                "Tags": [{"Key": "ManagedBy", "Value": managed_by}, {"Key": "Project", "Value": prefix}, {"Key": "owner", "Value": owner}]}, f)' \
-    "$name" "MSK SCRAM credentials of syslog-ng and GoFlow2 (created by $OPS_DIR/up.sh)" "$MSK_SCRAM_KEY_ARN" "$PREFIX" "$OWNER" "$OPS_DIR/up.sh" "$MSK_SCRAM_INPUT" \
+    "$name" "MSK SCRAM credentials of syslog-ng, GoFlow2 and gnmic (created by $OPS_DIR/up.sh)" "$MSK_SCRAM_KEY_ARN" "$PREFIX" "$OWNER" "$OPS_DIR/up.sh" "$MSK_SCRAM_INPUT" \
     && aws secretsmanager create-secret --region "$REGION" --cli-input-json "file://$MSK_SCRAM_INPUT" >/dev/null || rc=$?
   rm -f -- "${MSK_SCRAM_INPUT:?}"; MSK_SCRAM_INPUT=""
   [ "$rc" -eq 0 ] || die "Secrets Manager に $name を作れなかった（上のエラー）。直前の $OPS_DIR/down.sh で消したばかりなら、数分おいて打ち直す"

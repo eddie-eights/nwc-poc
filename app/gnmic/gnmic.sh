@@ -2,6 +2,7 @@
 # gnmic のコンテナ（IaC/terraform/aws-managed/pipeline/stream の ECS。docker/images/gnmic/Dockerfile）の入口。イメージの /usr/local/bin/gn。
 #   gn run     （既定。ECS が起こす）設定を作って gnmic の subscribe を起こす
 #   gn render  設定を作るだけ（中身を見る。tests/test_stream.py も手元でこれを回す）
+#   gn get [パス ...]  （ECS Exec でタスクに入って打つ。コマンドは stream の output gnmic_exec_command）状態を get で 1 回取り、Kafka と同じ event の形で標準出力に出す
 # 機器の gNMI を購読して Kafka の gnmi / metrics トピックへ書く（cycle 013。それまでは Telegraf の inputs.gnmi = telegraf-dialin）。イメージ（alpine）に bash が無いので POSIX sh で書く
 set -eu
 TEMPLATE=${GNMIC_TEMPLATE:-/etc/gnmic/gnmic.yaml.in}
@@ -16,7 +17,7 @@ die() { echo "$*" >&2; exit 1; }
 render() {
   # ECS のタスク定義の環境変数を埋めて $CONF を作る:
   #   KAFKA_BROKERS  Kafka のブローカー（host:port をカンマで。MSK は SASL/SCRAM の口の 9096、OSS 版は kafka-N.<名前空間>:9092）
-  #   GNMI_TARGETS   購読先（"<IP>:57400", ...。telegraf-dialin と同じ形）。ops/up.sh が lab の定義から作る（app/containerlab/lab_topology.py --gnmi-targets）。
+  #   GNMI_TARGETS   購読先（"<IP>:57400", ...。cycle 013 より前の telegraf-dialin と同じ形）。ops/up.sh が lab の定義から作る（app/containerlab/lab_topology.py --gnmi-targets）。
   #                  target の名前は IP（event の tags.source。Spark が device map で機器名 sysName を引く）
   #   KAFKA_AUTH     上の既定
   #   GNMI_USERNAME / GNMI_PASSWORD  機器の認証情報。KAFKA_SASL_USER / KAFKA_SASL_PASS  MSK の SCRAM の資格情報（KAFKA_AUTH=scram のとき）。
@@ -66,5 +67,19 @@ case "${1:-run}" in
     exec /app/gnmic --config "$CONF" subscribe
     ;;
   render) render ;;
-  *) sed -n '2,4p' "$0"; exit 1 ;;
+  get)
+    # subscribe は設定の outputs（Kafka）に書くので、見るだけのときは get にする（outputs を使わない）。形は Kafka と同じ event（format: event）。
+    # パスを渡さなければ状態の 4 つ（interface_state / bgp_neighbor / isis_interface の購読と同じパス）。機器に届かないときは lab の EC2 の forward-status を見る
+    shift
+    render >&2
+    [ $# -gt 0 ] || set -- '/interface[name=*]/oper-state' '/interface[name=*]/admin-state' \
+      '/network-instance[name=default]/protocols/bgp/neighbor[peer-address=*]/session-state' \
+      '/network-instance[name=default]/protocols/isis/instance[name=main]/interface[interface-name=*]/oper-state'
+    # パスの [ ] を glob にしないよう、引数の並びのまま --path を挟む
+    n=$#
+    for p in "$@"; do set -- "$@" --path "$p"; done
+    shift "$n"
+    exec /app/gnmic --config "$CONF" get --type STATE --format event "$@"
+    ;;
+  *) sed -n '2,5p' "$0"; exit 1 ;;
 esac

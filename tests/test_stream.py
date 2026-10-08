@@ -159,68 +159,36 @@ check("管理ネットワークが containerlab・lab.sh・lab の locals・土�
       re.search(rf"^\s*ipv4-subnet: {re.escape(mgmt)}$", clab, re.M) is not None
       and re.search(rf'^\s*mgmt_cidr\s*=\s*"{re.escape(mgmt)}"$', lab_locals, re.M) is not None
       and re.search(rf'^\s*lab_mgmt_cidr\s*=\s*"{re.escape(mgmt)}"$', core_sg, re.M) is not None)
-# ポーリング先は lab の定義から作る（app/containerlab/lab_topology.py --snmp-agents → up.sh が stream の snmp_agents → タスクの SNMP_AGENTS → telegraf.sh render が埋める）
+# gNMI の購読先は lab の定義から作る（app/containerlab/lab_topology.py --gnmi-targets → up.sh が stream の gnmi_targets → SSM のパラメータ → gnmic のタスクの
+# GNMI_TARGETS → gnmic.sh render が埋める）。SNMP のポーリング先（--snmp-agents）は cycle 013 でやめた
 _lt_spec = importlib.util.spec_from_file_location("lab_topology", os.path.join(ROOT, "app", "containerlab", "lab_topology.py"))
 lt = importlib.util.module_from_spec(_lt_spec); _lt_spec.loader.exec_module(lt)
 _lab_devices, _, _ = lt.load(os.path.join(ROOT, "app", "containerlab"))
-_agents_line = lt.snmp_agents(_lab_devices)
-_agents = re.findall(r"udp://([\d.]+):161", _agents_line)
-check("Telegraf のポーリング先は lab の監視対象（enabled）の管理 IP で、全部管理ネットワークの中（VPC のルートで lab の EC2 へ行く）",
-      len(_agents) == 6 and sorted(_agents) == sorted(d["mgmt_ip"] for d in _lab_devices if d["enabled"])
-      and all(ipaddress.ip_address(a) in ipaddress.ip_network(mgmt) for a in _agents))
-check("telegraf.conf.in の agents は __SNMP_AGENTS__ を telegraf.sh render がタスクの SNMP_AGENTS で埋める（形を確かめてから）",
-      re.search(r"^\s*agents = \[__SNMP_AGENTS__\]$", tele, re.M) is not None and 's#__SNMP_AGENTS__#$agents#' in tgsh
-      and 'agents="${SNMP_AGENTS:-}"' in tgsh and '{ name = "SNMP_AGENTS", valueFrom = "${local.ssm_parameter_arn}${local.dialin_target_names["snmp-agents"]}" }' in stream_tg and '"snmp-agents" = var.snmp_agents' in stream_tg
-      and re.fullmatch(r'"udp://[0-9.]+:[0-9]+"(, *"udp://[0-9.]+:[0-9]+")*', _agents_line) is not None)
 _gnmi_line = lt.gnmi_targets(_lab_devices)
-check("gNMI の購読先は同じ 6 台の管理 IP:57400 で、telegraf.conf.in の __GNMI_TARGETS__ を telegraf.sh render がタスクの GNMI_TARGETS で埋める",
-      re.findall(r"([\d.]+):57400", _gnmi_line) == _agents and re.search(r"^\s*addresses = \[__GNMI_TARGETS__\]$", tele, re.M) is not None
-      and 's#__GNMI_TARGETS__#$gnmi#' in tgsh and 'gnmi="${GNMI_TARGETS:-}"' in tgsh and '{ name = "GNMI_TARGETS", valueFrom = "${local.ssm_parameter_arn}${local.dialin_target_names["gnmi-targets"]}" }' in stream_tg and '"gnmi-targets" = var.gnmi_targets' in stream_tg
+_gnmi_ips = re.findall(r"([\d.]+):57400", _gnmi_line)
+stream_gn = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "gnmic.tf")
+check("gNMI の購読先は lab の監視対象（enabled）6 台の管理 IP:57400 で、全部管理ネットワークの中（VPC のルートで lab の EC2 へ行く）。形は gnmic.sh の検査と同じ",
+      len(_gnmi_ips) == 6 and sorted(_gnmi_ips) == sorted(d["mgmt_ip"] for d in _lab_devices if d["enabled"])
+      and all(ipaddress.ip_address(a) in ipaddress.ip_network(mgmt) for a in _gnmi_ips)
       and re.fullmatch(r'"[0-9.]+:[0-9]+"(, *"[0-9.]+:[0-9]+")*', _gnmi_line) is not None)
-gnmi_blk = tele.split("[[inputs.gnmi]]", 1)[1].split("# ----", 1)[0]
-check("inputs.gnmi は TLS（自己署名）で bgp_neighbor / isis_interface（IS-IS の IF の oper-state。隣接そのものは消えるので取らない）を on_change、evpn_es / mac_table を 1 分の sample で購読する",
-      re.search(r'^\s*tls_enable = true$', gnmi_blk, re.M) is not None and re.search(r'^\s*enable_tls', gnmi_blk, re.M) is None and 'insecure_skip_verify = true' in gnmi_blk and 'encoding = "json_ietf"' in gnmi_blk
-      and re.search(r'name = "bgp_neighbor"\s*\n\s*path = "/network-instance\[name=default\]/protocols/bgp/neighbor\[peer-address=\*\]/session-state"\s*\n\s*subscription_mode = "on_change"', gnmi_blk)
-      and re.search(r'name = "isis_interface"\s*\n\s*path = "/network-instance\[name=default\]/protocols/isis/instance\[name=main\]/interface\[interface-name=\*\]/oper-state"\s*\n\s*subscription_mode = "on_change"', gnmi_blk)
-      and 'name = "isis_adjacency"' not in gnmi_blk
-      and gnmi_blk.count('subscription_mode = "sample"') == 2 and gnmi_blk.count('sample_interval = "60s"') == 2)
-check("gNMI の 4 つは gnmi トピックへ（metrics には混ざらない）",
-      re.search(r'topic = "gnmi"[\s\S]*?namepass = \["bgp_neighbor", "isis_interface", "evpn_es", "mac_table"\]', tele) is not None
-      and re.search(r'topic = "metrics"[\s\S]*?namepass = \["device_cpu", "device_memory", "if_stats", "sessions", "circuits", "system", "interface"\]', tele) is not None)
-# ---- lab の性能メトリクス（2 つめの inputs.gnmi → Starlark で共通の形（仮）へ → metrics トピック）
-LAB_SUBS = {
-    "lab_cpu": "/platform/control[slot=*]/cpu[index=*]/total/instant",
-    "lab_memory": "/platform/control[slot=*]/memory",
-    "lab_if_counters": "/interface[name=*]/statistics",
-    "lab_port_speed": "/interface[name=*]/ethernet/port-speed",
-    "lab_lag_speed": "/interface[name=*]/lag/lag-speed",
-    "lab_ni_mac_active": "/network-instance[name=*]/bridge-table/statistics/active-entries",
-    "lab_ni_mac_limit": "/network-instance[name=*]/bridge-table/mac-limit",
-    "lab_subif_mac_active": "/interface[name=*]/subinterface[index=*]/bridge-table/statistics/active-entries",
-    "lab_subif_mac_limit": "/interface[name=*]/subinterface[index=*]/bridge-table/mac-limit",
-    "lab_subif_type": "/interface[name=*]/subinterface[index=*]/type",
-    "lab_if_oper": "/interface[name=*]/oper-state",
-}
-_gnmi_blocks = tele.split("[[inputs.gnmi]]")[1:]
-lab_blk = _gnmi_blocks[1].split("# ----", 1)[0] if len(_gnmi_blocks) == 2 else ""
-_lab_subs = dict(re.findall(r'name = "(lab_\w+)"\s*\n\s*path = "([^"]+)"\s*\n\s*subscription_mode = "sample"\s*\n\s*sample_interval = "60s"', lab_blk))
-check("性能メトリクスは 2 つめの inputs.gnmi（知らないパスで BGP / IS-IS の購読を巻き込まない）で、lab_* の 11 本を 1 分の sample。宛先・認証・TLS は 1 つめと同じ",
-      len(_gnmi_blocks) == 2 and _lab_subs == LAB_SUBS and lab_blk.count("[[inputs.gnmi.subscription]]") == len(LAB_SUBS)
-      and "name = \"lab_" not in gnmi_blk
-      and all(l in lab_blk for l in ("addresses = [__GNMI_TARGETS__]", 'encoding = "json_ietf"', "tls_enable = true", "insecure_skip_verify = true", 'username = "${GNMI_USERNAME}"', 'password = "${GNMI_PASSWORD}"')))
-_star_proc = re.search(r'\[\[processors\.starlark\]\]\s*\n\s*namepass = \[([^\]]*)\]\s*\n\s*script = "/etc/telegraf/lab_gnmi\.star"', tele)
-_star_aggr = re.search(r'\[\[aggregators\.starlark\]\]\s*\n\s*namepass = \[([^\]]*)\]\s*\n\s*period = "60s"\s*\n\s*grace = "\d+s"\s*\n\s*drop_original = true\s*\n\s*script = "/etc/telegraf/lab_circuits\.star"', tele)
+check("SNMP のポーリング先は作らない（lab_topology.py に snmp_agents も --snmp-agents も無い。Telegraf の設定にも __SNMP_AGENTS__ / __GNMI_TARGETS__ が無い）",
+      not hasattr(lt, "snmp_agents") and "--snmp-agents" not in lt.FLAGS
+      and not any(k in tele + tgsh for k in ("__SNMP_AGENTS__", "__GNMI_TARGETS__", "SNMP_AGENTS", "GNMI_TARGETS")))
+check("gnmic のタスクの GNMI_TARGETS は SSM のパラメータ（/<接頭辞>/gnmic/<lab|nautobot>/gnmi-targets）から ECS の secrets で受け、lab のときは stream の gnmi_targets を Terraform が書く",
+      '[{ name = "GNMI_TARGETS", valueFrom = "${local.ssm_parameter_arn}${local.gnmic_targets_name}" }],' in stream_gn
+      and 'gnmic_targets_name     = "${local.gnmic_parameter_prefix}/${local.gnmic_target_source}/gnmi-targets"' in stream_gn
+      and 'gnmic_target_source    = var.gnmi_targets_from_nautobot ? "nautobot" : "lab"' in stream_gn
+      and stream_gn.count("value       = var.gnmi_targets\n") == 2 and "ignore_changes = [value]" in stream_gn)
 _dockerfile = _read("docker", "images", "telegraf", "Dockerfile")
-check("lab_* は processors.starlark（lab_gnmi.star）と aggregators.starlark（lab_circuits.star）で全部受け、Kafka のどの出力にも lab_* を載せない。.star はイメージの /etc/telegraf",
-      _star_proc is not None and _star_aggr is not None
-      and sorted(re.findall(r'"(\w+)"', _star_proc.group(1)) + re.findall(r'"(\w+)"', _star_aggr.group(1))) == sorted(LAB_SUBS)
-      and re.findall(r'"(\w+)"', _star_aggr.group(1)) == ["lab_subif_type", "lab_if_oper"]
-      and not any("lab_" in blk.split("# <<< sink", 1)[0] for blk in tele.split("[[outputs.kafka]]")[1:])
-      and re.search(r"^COPY telegraf\.conf\.in lab_gnmi\.star lab_circuits\.star /etc/telegraf/$", _dockerfile, re.M) is not None)
-check("Telegraf の Kafka の出力は metrics / gnmi / traps の 3 つ（mdt と logs は cycle 012 で外した）",
-      re.findall(r'^\s*topic = "(\w+)"', tele, re.M) == ["metrics", "gnmi", "traps"] and "tagpass" not in tele)
-check("lab.sh forward は gNMI の GNMI_PORT/tcp も SNMP の 161/udp と同じく Telegraf から管理ネットワークへ通す",
-      re.search(r'-p tcp --dport "\$GNMI_PORT" "\$\{c\[@\]\}" -j ACCEPT', labsh) is not None and re.search(r"^GNMI_PORT=57400$", labsh, re.M) is not None)
+check("Telegraf は trap だけ受ける: inputs は snmp_trap だけ（inputs.snmp / inputs.gnmi / Starlark は cycle 013 で外した）。.star はリポジトリにもイメージにも無い",
+      re.findall(r"^\[\[(inputs\.\w+)\]\]", tele, re.M) == ["inputs.snmp_trap"] and "starlark" not in tele
+      and not os.path.exists(os.path.join(ROOT, "app", "telegraf", "lab_gnmi.star")) and not os.path.exists(os.path.join(ROOT, "app", "telegraf", "lab_circuits.star"))
+      and re.findall(r"^COPY .*$", _dockerfile, re.M) == ["COPY telegraf.conf.in /etc/telegraf/", "COPY --chmod=0755 telegraf.sh /usr/local/bin/tg"])
+check("Telegraf の Kafka の出力は traps の 1 つ（mdt と logs は cycle 012、metrics と gnmi は cycle 013 で外した。metrics / gnmi は gnmic が書く）",
+      re.findall(r'^\s*topic = "(\w+)"', tele, re.M) == ["traps"] and "tagpass" not in tele)
+check("lab.sh forward は gNMI の GNMI_PORT/tcp を stream（gnmic）から管理ネットワークへ通し、SNMP の 161/udp は通さない（ポーリングは cycle 013 でやめた）",
+      re.search(r'-p tcp --dport "\$GNMI_PORT" "\$\{c\[@\]\}" -j ACCEPT', labsh) is not None and re.search(r"^GNMI_PORT=57400$", labsh, re.M) is not None
+      and "--dport 161" not in labsh)
 _up = read_ops("up")
 _td_sng = re.search(r'resource "aws_ecs_task_definition" "syslog_ng" \{[\s\S]*?^\}', stream_col, re.M)
 check("syslog の形式は stream の syslog_standard（既定 RFC3164 = 本番の Cisco）→ syslog-ng のタスクの SYSLOG_STANDARD（cycle 012。それまでは Telegraf）。"
@@ -231,29 +199,30 @@ check("syslog の形式は stream の syslog_standard（既定 RFC3164 = 本番�
       and "case \"$SYSLOG_STANDARD\" in RFC3164 | RFC5424) ;;" in _up
       and re.search(r"\bSYSLOG_STANDARD\b", _read("ops", "deploy-env.sh").split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1]) is not None
       and re.search(r"^#SYSLOG_STANDARD=RFC5424$", _read("deploy.env.example"), re.M) is not None and re.search(r"^LAB_SYSLOG_STANDARD=RFC5424\b", _read("ops", "lab-common.sh"), re.M) is not None)
-check("SNMP のポーリングは既定でする（cycle 002。Grafana の link_down と Splunk の netops_poll が見る）: stream の snmp_poll（bool、既定 true）→ タスクの SNMP_POLL（1 / 0）→ "
-      "telegraf.sh が「>>> snmp_poll」の区間を残すか消す。up.sh は deploy.env の SNMP_POLL（既定 1）を渡す",
-      re.search(r'variable "snmp_poll" \{[^}]*type\s*=\s*bool[^}]*default\s*=\s*true', _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "variables.tf")) is not None
-      and '{ name = "SNMP_POLL", value = var.snmp_poll ? "1" : "0" }' in stream_tg
-      and re.search(r"^SNMP_POLL=\$\{SNMP_POLL:-1\}$", tgsh, re.M) is not None and '/^# >>> snmp_poll/,/^# <<< snmp_poll/d' in tgsh
-      and re.search(r"^# >>> snmp_poll[\s\S]*?^\[\[inputs\.snmp\]\][\s\S]*?^# <<< snmp_poll", tele, re.M) is not None
-      and 'SNMP_POLL="${SNMP_POLL:-1}"; flag_value SNMP_POLL' in _up and '-var "snmp_poll=$SNMP_POLL_TF"' in _up
+check("SNMP_POLL は cycle 013 から読まない: stream に snmp_poll の変数もタスクの SNMP_POLL も無く、telegraf.sh にも telegraf.conf.in にも無い。"
+      "deploy.env に書いてあると up.sh は注意を出すだけ（前の deploy.env で止まらないよう deploy-env.sh は読む）",
+      "snmp_poll" not in _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "variables.tf") and "SNMP_POLL" not in stream_tg + stream_gn
+      and "SNMP_POLL" not in "\n".join(l for l in tgsh.splitlines() if not l.lstrip().startswith("#")) and "snmp_poll" not in tele
+      and 'if [ -n "${SNMP_POLL:-}" ]; then\n  echo "注意: SNMP_POLL は使わない' in _up and "snmp_poll=" not in _up
       and re.search(r"\bSNMP_POLL\b", _read("ops", "deploy-env.sh").split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1]) is not None
-      and re.search(r"^#SNMP_POLL=0$", _read("deploy.env.example"), re.M) is not None)
-check("Telegraf に入るコマンドの既定は tg gnmi（tg test はポーリングを止めていると何も取らない）",
-      "--command 'tg gnmi'" in _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "outputs.tf"))
-check("up.sh は lab の定義からポーリング先と gNMI の購読先を作り、stream の snmp_agents / gnmi_targets に渡す（S3 には置かない）",
-      'app/containerlab/lab_topology.py app/containerlab --snmp-agents' in _up and 'app/containerlab/lab_topology.py app/containerlab --gnmi-targets' in _up
-      and '-var "snmp_agents=$SNMP_AGENTS" -var "gnmi_targets=$GNMI_TARGETS"' in _up and "/telegraf/" not in _up.replace("app/telegraf/", ""))
+      and re.search(r"^#?SNMP_POLL=", _read("deploy.env.example"), re.M) is None)
+_stream_out = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "outputs.tf")
+check("機器の状態を 1 回取って見るのは gnmic のタスクの gn get（stream の output の gnmic_exec_command）。Telegraf の tg test / gnmi と取りにいく側の output は無い",
+      "--container gnmic --interactive --command 'gn get'" in _stream_out and "'tg gnmi'" not in _stream_out and "'tg test'" not in _stream_out
+      and "telegraf_dialin" not in _stream_out and 'output "gnmic_list_tasks_command"' in _stream_out
+      and re.search(r"^  test \| gnmi\)\n.*cycle 013 でやめた.*\n\s*exit 1$", tgsh, re.M) is not None)
+check("up.sh は lab の定義から gNMI の購読先を作り、stream の gnmi_targets に渡す（S3 には置かない。SNMP のポーリング先は作らない）",
+      'app/containerlab/lab_topology.py app/containerlab --gnmi-targets' in _up and "--snmp-agents" not in _up and "snmp_agents" not in _up
+      and '-var "gnmi_targets=$GNMI_TARGETS"' in _up and "/telegraf/" not in _up.replace("app/telegraf/", ""))
 check("lab.sh up は毎回 forward を呼び、forward / forward-status がある",
       '"$SELF" forward' in labsh and re.search(r"^\s*forward\)", labsh, re.M) is not None and re.search(r"^\s*forward-status\)", labsh, re.M) is not None)
 check("forward の iptables の規則は全部目印付き（unforward で消せる）",
       all("${c[@]}" in l for l in labsh.splitlines() if re.match(r"\s*iptables .*-I ", l)))
-check("Telegraf はポーリングの IF の鍵を ifName（タグ）にする（SR Linux の ifDescr は description 付き）",
-      re.search(r'name = "ifName"\s*\n\s*oid = "\.1\.3\.6\.1\.2\.1\.31\.1\.1\.1\.1"\s*\n\s*is_tag = true', tele) is not None)
+check("Telegraf は ifName の OID も SNMP のポーリングも持たない（inputs.snmp は cycle 013 で外した。trap の ifName は Spark が varbind から取る）",
+      "[[inputs.snmp]]" not in tele and "1.3.6.1.2.1.31.1.1.1.1" not in tele)
 check("Telegraf は機器の syslog を受けない（syslog-ng が logs トピックに出す。cycle 012）: device_log / processors.rename / inputs.tail / inputs.socket_listener が無い",
       not any(re.search(rf"^[^#\n]*{re.escape(k)}", tele, re.M) for k in ("device_log", "processors.rename", "[[inputs.tail]]", "[[inputs.socket_listener]]")))   # コメントの行は数えない
-check("metrics / gnmi / traps の出力は namepass で分ける（ほかの measurement が混ざらない）",
+check("traps の出力は namepass で分ける（ほかの measurement が混ざらない）",
       all(re.search(r"name(pass|drop)", blk) for blk in tele.split("[[outputs.kafka]]")[1:]))
 check("Spark の既定は gnmi トピックも読む（iceberg は metrics,gnmi,traps,logs,flows、prometheus は metrics,gnmi。mdt は cycle 012 で外した）", mod.METRIC_TOPICS == "metrics,gnmi"
       and mod.sink_topics("iceberg", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "metrics,gnmi,traps,logs,flows" and mod.sink_topics("prometheus", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "metrics,gnmi")
@@ -269,43 +238,47 @@ check("Telegraf は stream の ECS で、MSK への書き込みはタスクロ�
       and "Statement = concat(local.telegraf_kafka_statements, [" in stream_tg and "kafka-cluster" not in stream_tg
       and "stream_produce" not in _access and "telegraf_role_name" not in _access
       and 'resource "aws_iam_role"' not in _lab_tg and 'resource "aws_instance"' not in _lab_tg)
-check("lab と stream は SG も SG のルールも作らない（ポーリング・trap・syslog のルールは土台の通信の表。2026-09-29）",
+check("lab と stream は SG も SG のルールも作らない（trap・syslog・gNMI のルールは土台の通信の表。2026-09-29）",
       all('resource "aws_security_group"' not in t and "aws_vpc_security_group_" not in t
-          for t in (_lab_tg, lab_locals, stream_tg, stream_col, _access, _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "msk.tf"), _read("IaC", "terraform", "aws-managed", "pipeline", "lab", "instance.tf")))
-      and 'security_groups = [local.telegraf_dialout_nlb_sg_id]' in stream_tg and 'security_groups  = [local.telegraf_dialout_sg_id]' in stream_tg)
-_td = {k: m.group(0) for k in ("telegraf_dialout", "telegraf_dialin") if (m := re.search(r'resource "aws_ecs_task_definition" "' + k + r'" \{[\s\S]*?^\}', stream_tg, re.M))}
-_svc = {k: m.group(0) for k in ("telegraf_dialout", "telegraf_dialin") if (m := re.search(r'resource "aws_ecs_service" "' + k + r'" \{[\s\S]*?^\}', stream_tg, re.M))}
-check("Telegraf は受ける側（dialout。NLB の後ろ、SG telegraf_dialout）と取りにいく側（dialin。1 タスク固定、NLB なし、SG telegraf_dialin）の 2 サービス（2026-10-04 ユーザー決定）",
-      len(_td) == 2 and len(_svc) == 2
-      and '{ name = "TELEGRAF_ROLE", value = "dialout" }' in _td["telegraf_dialout"] and '{ name = "TELEGRAF_ROLE", value = "dialin" }' in _td["telegraf_dialin"]
-      and "portMappings = [" in _td["telegraf_dialout"] and "portMappings = [" not in _td["telegraf_dialin"]
+          for t in (_lab_tg, lab_locals, stream_tg, stream_col, stream_gn, _access, _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "msk.tf"), _read("IaC", "terraform", "aws-managed", "pipeline", "lab", "instance.tf")))
+      and 'security_groups = [local.telegraf_dialout_nlb_sg_id]' in stream_tg and 'security_groups  = [local.telegraf_dialout_sg_id]' in stream_tg
+      and 'security_groups  = [local.gnmic_sg_id]' in stream_gn)
+_td = {k: m.group(0) for k, t in (("telegraf_dialout", stream_tg), ("gnmic", stream_gn)) if (m := re.search(r'resource "aws_ecs_task_definition" "' + k + r'" \{[\s\S]*?^\}', t, re.M))}
+_svc = {k: m.group(0) for k, t in (("telegraf_dialout", stream_tg), ("gnmic", stream_gn)) if (m := re.search(r'resource "aws_ecs_service" "' + k + r'" \{[\s\S]*?^\}', t, re.M))}
+check("Telegraf は受ける側（dialout。NLB の後ろ、SG telegraf_dialout）の 1 サービスだけで、取りにいく側（telegraf_dialin）は gnmic に置き換えた（cycle 013。"
+      "gnmic は 1 タスク固定、NLB なし、SG gnmic）。TELEGRAF_ROLE は無い",
+      len(_td) == 2 and len(_svc) == 2 and stream_tg.count('resource "aws_ecs_task_definition"') == 1 and stream_tg.count('resource "aws_ecs_service"') == 1
+      and "telegraf_dialin" not in "\n".join(l for l in stream_tg.splitlines() if not l.lstrip().startswith("#")) and "TELEGRAF_ROLE" not in _td["telegraf_dialout"]
+      and "portMappings = [" in _td["telegraf_dialout"] and "portMappings" not in _td["gnmic"].replace("portMappings なし", "")
       and all(v not in _td["telegraf_dialout"] for v in ("SNMP_AGENTS", "GNMI_TARGETS", "SNMP_POLL"))
-      and all(v in _td["telegraf_dialin"] for v in ("SNMP_AGENTS", "GNMI_TARGETS", "SNMP_POLL")) and "SYSLOG_STANDARD" not in _td["telegraf_dialin"]
-      and 'awslogs-stream-prefix = "dialout"' in _td["telegraf_dialout"] and 'awslogs-stream-prefix = "dialin"' in _td["telegraf_dialin"]
-      and "load_balancer" in _svc["telegraf_dialout"] and "load_balancer" not in _svc["telegraf_dialin"]
-      and "security_groups  = [local.telegraf_dialin_sg_id]" in _svc["telegraf_dialin"]
+      and 'awslogs-stream-prefix = "dialout"' in _td["telegraf_dialout"] and 'awslogs-stream-prefix = "gnmic"' in _td["gnmic"]
+      and "load_balancer" in _svc["telegraf_dialout"] and "load_balancer" not in _svc["gnmic"]
       # 購読を二重にしない: 入れ替えでも 1 タスクを超えない
-      and re.search(r"desired_count\s+= 1\b", _svc["telegraf_dialin"]) is not None
-      and "deployment_minimum_healthy_percent = 0" in _svc["telegraf_dialin"] and "deployment_maximum_percent         = 100" in _svc["telegraf_dialin"]
-      and "enable_execute_command = true" in _svc["telegraf_dialin"]
-      and re.search(r'telegraf_dialin_sg_id\s*=\s*try\(data\.terraform_remote_state\.main\.outputs\.security_group_ids\["telegraf_dialin"\], ""\)', _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "locals.tf")) is not None
-      and '"$TG_DIALOUT_SERVICE" "$TG_DIALIN_SERVICE"' in _up and "telegraf_dialin_list_tasks_command" in _up)
-_exec_pol = re.search(r'resource "aws_iam_role_policy" "telegraf_execution" \{[\s\S]*?^\}', stream_tg, re.M)
-check("取りにいく側は機器の一覧と認証情報を SSM から ECS の secrets で受ける（environment に載せない）。認証情報の SecureString は up.sh が stream の apply の前に作り、実行ロールが読めるのは telegraf-dialin の下だけ",
-      "secrets" not in _td["telegraf_dialout"] and "secrets = concat(" in _td["telegraf_dialin"]
-      and not re.search(r'name = "(SNMP_AGENTS|GNMI_TARGETS|GNMI_USERNAME|GNMI_PASSWORD|SNMP_COMMUNITY)", value =', stream_tg)
-      and 'dialin_credentials = { GNMI_USERNAME = "gnmi-username", GNMI_PASSWORD = "gnmi-password", SNMP_COMMUNITY = "snmp-community" }' in stream_tg
-      and 'dialin_parameter_prefix = "/${local.name_prefix}/telegraf-dialin"' in stream_tg
-      and all(f'ensure_fixed_secret "/$PREFIX/telegraf-dialin/{leaf}" "$LAB_{var}"' in _up and _up.index(f'ensure_fixed_secret "/$PREFIX/telegraf-dialin/{leaf}"') < _up.index("tf_apply pipeline/stream ")
-              for leaf, var in (("gnmi-username", "GNMI_USERNAME"), ("gnmi-password", "GNMI_PASSWORD"), ("snmp-community", "SNMP_COMMUNITY")))
-      and _exec_pol is not None and "ssm:GetParameters" in _exec_pol.group(0) and "${local.dialin_parameter_prefix}/*" in _exec_pol.group(0)
-      and "var.gnmi" not in _exec_pol.group(0))
-check("up.sh は base/core の state に古い Telegraf の SG（telegraf）があり stream が残っていれば、ECR より前に止める（SG のキーを変えると作り直しで、付けたままでは消せない）",
-      """grep -qxF 'aws_security_group.workload["telegraf"]'""" in _up and '[ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ]' in _up
-      and _up.index("""'aws_security_group.workload["telegraf"]'""") < _up.index('log "1. ECR リポジトリ'))
+      and re.search(r"desired_count\s+= 1\b", _svc["gnmic"]) is not None
+      and "deployment_minimum_healthy_percent = 0" in _svc["gnmic"] and "deployment_maximum_percent         = 100" in _svc["gnmic"]
+      and "enable_execute_command = true" in _svc["gnmic"] and "subnets          = [local.telegraf_subnet_id]" in _svc["gnmic"]
+      and re.search(r'gnmic_sg_id\s*=\s*try\(data\.terraform_remote_state\.main\.outputs\.security_group_ids\["gnmic"\], ""\)', _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "locals.tf")) is not None
+      and '"$TG_DIALOUT_SERVICE" "$GNMIC_SERVICE"' in _up and "TG_DIALIN" not in _up and "telegraf_dialin_list_tasks_command" not in _up)
+_exec_pol = re.search(r'resource "aws_iam_role_policy" "gnmic_execution" \{[\s\S]*?^\}', stream_gn, re.M)
+check("gnmic は機器の一覧と gNMI の資格情報を SSM から ECS の secrets で受ける（environment に載せない）。資格情報の SecureString は up.sh が stream の apply の前に作り、"
+      "実行ロールが読めるのは /<接頭辞>/gnmic の下だけ。Telegraf のタスクは secrets を持たない（SNMP の community も無い）",
+      "secrets" not in _td["telegraf_dialout"] and "secrets = concat(" in _td["gnmic"]
+      and not re.search(r'name = "(GNMI_TARGETS|GNMI_USERNAME|GNMI_PASSWORD|SNMP_COMMUNITY)", value =', stream_tg + stream_gn) and "SNMP_COMMUNITY" not in stream_tg + stream_gn
+      and 'gnmic_credentials = { GNMI_USERNAME = "gnmi-username", GNMI_PASSWORD = "gnmi-password" }' in stream_gn
+      and 'gnmic_parameter_prefix = "/${local.name_prefix}/gnmic"' in stream_gn
+      and all(f'ensure_fixed_secret "/$PREFIX/gnmic/{leaf}" "$LAB_{var}"' in _up and _up.index(f'ensure_fixed_secret "/$PREFIX/gnmic/{leaf}"') < _up.index("tf_apply pipeline/stream ")
+              for leaf, var in (("gnmi-username", "GNMI_USERNAME"), ("gnmi-password", "GNMI_PASSWORD")))
+      and "ensure_fixed_secret \"/$PREFIX/telegraf-dialin/" not in _up and "LAB_SNMP_COMMUNITY" not in _up + _read("ops", "lab-common.sh")
+      and _exec_pol is not None and "ssm:GetParameters" in _exec_pol.group(0) and "${local.gnmic_parameter_prefix}/*" in _exec_pol.group(0)
+      and "local.kafka_collector_execution_statements" in _exec_pol.group(0))
+check("up.sh は base/core の state に古い Telegraf の SG（telegraf、2026-10-04 より前。telegraf_dialin、2026-10-09 より前）があり stream が残っていれば、ECR より前に止める"
+      "（SG のキーを変えると作り直しで、付けたままでは消せない）",
+      all(f"""grep -qxF 'aws_security_group.workload["{k}"]'""" in _up and _up.index(f"""'aws_security_group.workload["{k}"]'""") < _up.index('log "1. ECR リポジトリ')
+          for k in ("telegraf", "telegraf_dialin"))
+      and _up.count('[ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ] && { tf_init pipeline/stream;') >= 2)
 _down = _read("ops", "down.sh")
-check("down.sh は stream の必須変数（snmp_agents / gnmi_targets）に形だけ合う値を渡して destroy する（telegraf.sh の形の検査と同じ）",
-      re.search(r"destroy_root pipeline/stream -var 'snmp_agents=\"udp://[0-9.]+:161\"' -var 'gnmi_targets=\"[0-9.]+:57400\"'", _down) is not None)
+check("down.sh は stream の必須変数（gnmi_targets）に形だけ合う値を渡して destroy する（variables.tf の形の検査と同じ。snmp_agents は cycle 013 で無くした）",
+      re.search(r"destroy_root pipeline/stream -var 'gnmi_targets=\"[0-9.]+:57400\"'$", _down, re.M) is not None and "snmp_agents" not in _down)
 check("Spark の既定は logs（syslog-ng）と flows（GoFlow2）も読む", mod.LOG_TOPICS == "traps,logs,flows"
       and mod.sink_topics("opensearch", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "traps,logs,flows")
 
@@ -446,91 +419,6 @@ check("gnmic の Dockerfile: 公式イメージ（版は ARG GNMIC_VERSION）に
 check("gnmic.sh の既定の置き場はイメージの COPY 先と同じ（/etc/gnmic/gnmic.yaml.in、書くのは /tmp）。run は render のあと gnmic を exec する",
       "TEMPLATE=${GNMIC_TEMPLATE:-/etc/gnmic/gnmic.yaml.in}" in _read("app", "gnmic", "gnmic.sh") and "CONF=${GNMIC_CONF:-/tmp/gnmic.yaml}" in _read("app", "gnmic", "gnmic.sh")
       and re.search(r'run\)\n\s*render\n\s*exec /app/gnmic --config "\$CONF" subscribe\n', _read("app", "gnmic", "gnmic.sh")) is not None)
-
-# ---- lab_gnmi.star / lab_circuits.star を Python で動かす（Python と Starlark の両方で動く書き方にしてある。Telegraf の Starlark は Metric と state を入れる）
-class _NoLen(dict):   # Telegraf の Metric の tags / fields は len も真偽値も持たない（len(m.fields) は Telegraf で落ちた）
-    def __len__(self):
-        raise TypeError("Telegraf の tags / fields に len は無い")
-
-class FakeMetric:
-    def __init__(self, name, tags=None, fields=None, time=0):
-        self.name, self.tags, self.fields, self.time = name, _NoLen(tags or {}), _NoLen(fields or {}), time
-
-def _star(name):
-    g = {"Metric": FakeMetric, "state": {}}
-    exec(compile(_read("app", "telegraf", name), name, "exec"), g)
-    return g
-
-_g = _star("lab_gnmi.star")
-_apply = _g["apply"]
-S = "203.0.113.11"
-_m = _apply(FakeMetric("lab_cpu", {"source": S, "slot": "A", "index": "all"}, {"instant": 7}, time=123))
-check("lab_cpu: index all だけを device_cpu（used_pct は float、component は slot、time と source を引き継ぐ）にし、コアごとは落とす",
-      _m.name == "device_cpu" and _m.tags == {"source": S, "component": "A"} and _m.fields == {"used_pct": 7.0} and _m.time == 123
-      and _apply(FakeMetric("lab_cpu", {"source": S, "slot": "A", "index": "0"}, {"instant": 9})) is None)
-_m = _apply(FakeMetric("lab_memory", {"source": S, "slot": "A"}, {"physical": "8000000000", "free": "6000000000", "reserved": "1", "srl_nokia-platform-control:utilization": 25}))
-_m2 = _apply(FakeMetric("lab_memory", {"source": S, "slot": "A"}, {"memory/physical": "1000", "memory/free": "250"}))
-check("lab_memory: uint64 の文字列を数にし、utilization が無ければ (total - free) / total。名前空間の接頭辞とパスの前置きを外して比べる",
-      _m.name == "device_memory" and _m.fields == {"total_bytes": 8000000000, "free_bytes": 6000000000, "used_pct": 25.0}
-      and _m2.fields == {"total_bytes": 1000, "free_bytes": 250, "used_pct": 75.0})
-_none = _apply(FakeMetric("lab_port_speed", {"source": S, "name": "ethernet-1/1"}, {"port_speed": "25G"}))
-_none2 = _apply(FakeMetric("lab_lag_speed", {"source": S, "name": "lag1"}, {"lag_speed": "50000"}))
-_m = _apply(FakeMetric("lab_if_counters", {"source": S, "name": "ethernet-1/1"},
-                       {"in_octets": "123456789012345678", "out_octets": "5", "in_discarded_packets": "1", "out_discarded_packets": "2",
-                        "in_error_packets": "3", "out_error_packets": "4", "in_unicast_packets": "9"}))
-_m2 = _apply(FakeMetric("lab_if_counters", {"source": S, "name": "lag1"}, {"in_octets": 1.0}))
-_m3 = _apply(FakeMetric("lab_if_counters", {"source": S, "name": "mgmt0"}, {"in_octets": "1"}))
-check("lab_if_counters: if_stats（discarded / error の名前を共通の形に）。速度は先に届いた port-speed（25G）/ lag-speed（Mbps）を覚えて speed_bps に付け、速度の metric は落とす",
-      _none is None and _none2 is None and _m.name == "if_stats" and _m.tags == {"source": S, "if_name": "ethernet-1/1"}
-      and _m.fields == {"in_octets": 123456789012345678, "out_octets": 5, "in_discards": 1, "out_discards": 2, "in_errors": 3, "out_errors": 4, "speed_bps": 25000000000}
-      and _m2.fields == {"in_octets": 1, "speed_bps": 50000000000} and _m3.fields == {"in_octets": 1})
-_none = _apply(FakeMetric("lab_ni_mac_limit", {"source": S, "name": "mac-vrf-1"}, {"maximum_entries": 250, "warning_threshold_pct": 95}))
-_m = _apply(FakeMetric("lab_ni_mac_active", {"source": S, "name": "mac-vrf-1"}, {"active_entries": "10"}))
-_none2 = _apply(FakeMetric("lab_subif_mac_limit", {"source": S, "name": "ethernet-1/1", "index": "1"}, {"maximum_entries": "100"}))
-_m2 = _apply(FakeMetric("lab_subif_mac_active", {"source": S, "name": "ethernet-1/1", "index": "1"}, {"active_entries": 5}))
-_m3 = _apply(FakeMetric("lab_subif_mac_active", {"source": "203.0.113.12", "name": "ethernet-1/1", "index": "1"}, {"active_entries": 5}))
-check("MAC の数: sessions（kind mac、scope network_instance / subinterface、owner は mac-vrf かサブ IF）。上限は機器と owner ごとに覚えて limit / warning_pct / used_pct に",
-      _none is None and _none2 is None
-      and _m.name == "sessions" and _m.tags == {"source": S, "kind": "mac", "scope": "network_instance", "owner": "mac-vrf-1"}
-      and _m.fields == {"active": 10, "limit": 250, "used_pct": 4.0, "warning_pct": 95}
-      and _m2.tags == {"source": S, "kind": "mac", "scope": "subinterface", "owner": "ethernet-1/1.1"} and _m2.fields == {"active": 5, "limit": 100, "used_pct": 5.0}
-      and _m3.fields == {"active": 5})
-_raw = [FakeMetric("lab_cpu", {"source": S, "index": "all"}, {"instant": "n/a"}), FakeMetric("lab_memory", {"source": S}, {"x": 1}),
-        FakeMetric("lab_if_counters", {"source": S}, {"in_octets": 1}), FakeMetric("lab_port_speed", {"source": S, "name": "e"}, {"port_speed": "fast"}),
-        FakeMetric("lab_ni_mac_active", {"source": S, "name": "v"}, {"other": 1}), FakeMetric("other", {}, {"v": 1})]
-check("変換できないものは lab_* のまま返す（Kafka には載らず、デバッグ用の EC2 の標準出力で見える）",
-      all(_apply(m) is m for m in _raw))
-check("数の文字列: 負・小数・桁あふれ（19 桁以上は float）・数でないもの", _g["_num"]("-3") == -3 and _g["_num"]("2.5") == 2.5 and _g["_num"](".5") == 0.5
-      and _g["_num"]("12345678901234567890") == 12345678901234567890.0 and _g["_num"]("1e3") is None and _g["_num"]("") is None and _g["_num"](None) is None
-      and _g["_speed_bps"]("2.5G") == 2500000000 and _g["_speed_bps"]("100M") == 100000000 and _g["_speed_bps"]("G") is None)
-
-_c = _star("lab_circuits.star")
-def _circuit_round(metrics):
-    for m in metrics:
-        _c["add"](m)
-    out = _c["push"]()
-    _c["reset"]()
-    return {m.tags["source"]: m.fields for m in out}
-def _subif(src, name, idx, kind):
-    return FakeMetric("lab_subif_type", {"source": src, "name": name, "index": idx}, {"type": kind})
-def _oper(src, name, st):
-    return FakeMetric("lab_if_oper", {"source": src, "name": name}, {"oper_state": st})
-_r1 = _circuit_round([_oper(S, "ethernet-1/1", "up"), _oper(S, "ethernet-1/2", "down"), _oper(S, "ethernet-1/3", "up"), _oper(S, "lag1", "up"), _oper(S, "mgmt0", "up"),
-                      _subif(S, "ethernet-1/1", "0", "routed"), _subif(S, "ethernet-1/2", "1", "srl_nokia-interfaces:bridged"),
-                      _subif(S, "ethernet-1/2", "2", "bridged"), _subif(S, "lag1", "1", "bridged"),
-                      _oper("203.0.113.12", "ethernet-1/1", "up")])
-check("circuits: 機器ごとに active（bridged のサブ IF を持つ IF。lag も数える）/ up（そのうち oper up）/ capacity（ethernet-*）/ used_pct",
-      _r1 == {S: {"active": 2, "up": 1, "capacity": 3, "used_pct": 2 * 100.0 / 3}, "203.0.113.12": {"active": 0, "up": 0, "capacity": 1, "used_pct": 0.0}})
-_r2 = _circuit_round([_oper(S, "ethernet-1/1", "up")])
-_r3 = _circuit_round([_oper(S, "ethernet-1/1", "up")])
-_r4 = _circuit_round([_oper(S, "ethernet-1/1", "up")])
-check("circuits: 届かなくなった IF / サブ IF / 機器は EXPIRE（3）回の push で数えなくなる（gNMI の delete は Telegraf が載せない）",
-      _c["EXPIRE"] == 3 and _r2 == _r1 and _r3 == _r1 and _r4 == {S: {"active": 0, "up": 0, "capacity": 1, "used_pct": 0.0}}
-      and [_circuit_round([]) for _ in range(3)] == [_r4, _r4, {}] and _c["state"]["devices"] == {})
-check("circuits: source や name の無いもの、type / oper-state の無いものは数えない",
-      _circuit_round([FakeMetric("lab_if_oper", {"name": "ethernet-1/1"}, {"oper_state": "up"}), FakeMetric("lab_subif_type", {"source": S, "name": "ethernet-1/1"}, {"type": "bridged"}),
-                      FakeMetric("lab_if_oper", {"source": S, "name": "ethernet-1/1"}, {"other": "up"})]) == {})
-
 
 # ---- Kafbat UI（IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf。2026-10-05）: MSK の画面。見るだけにせず、画面からトピックを足せる。stream を作る回はいつも作る。
 # cycle 010（2026-10-08 のユーザー決定）から ECS のタスクと Cloud Map をやめ、Web の EC2（base/core）の Docker で動く。stream は接続先を SSM のパラメータに書き、

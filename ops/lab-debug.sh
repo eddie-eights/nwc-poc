@@ -158,7 +158,7 @@ case "$CMD" in
       echo "スタックは変わらなかった。置き直した app/containerlab/ を EC2 に入れるなら ops/lab-debug.sh sync（再起動する）"
     fi
 
-    log "できた。デバッグ用の EC2 に入るコマンド（中で sudo lab status / sudo lab check / sudo lab telegraf logs -f / sudo lab telegraf test）:"
+    log "できた。デバッグ用の EC2 に入るコマンド（中で sudo lab status / sudo lab check / sudo lab telegraf logs -f / sudo lab trap-test）:"
     stack_output StartSessionCommand
     echo "使い終わったら ops/lab-debug.sh down（待機だけで約 \$0.30/h。ops/down.sh では消えない）"
     ;;

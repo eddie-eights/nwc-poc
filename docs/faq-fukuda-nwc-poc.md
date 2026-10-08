@@ -242,31 +242,23 @@ SYSLOG_STANDARD=RFC5424 PIPELINE=1 ops/up.sh   # lab の SR Linux のログま�
 
 ### Q. SNMP はポーリングと trap のどちらで集めている？ ポーリングは止められる？
 
-**A. 両方。Telegraf は 10 秒ごとのポーリング（`inputs.snmp`）と trap（`inputs.snmp_trap`）を受ける。`SNMP_POLL=0` にするとポーリングだけ止まり、SNMP は trap だけになる。** gNMI と syslog は変わらない。
+**A. いまは trap だけ（2026-10-09、サイクル「gNMI を gnmic に移し、SNMP のポーリングと telegraf-dialin を外す（013）」から）。SNMP のポーリングはやめ、IF の状態とカウンターは gnmic が gNMI で取る。** 止めるスイッチ（`SNMP_POLL`）も無くなった。
 
-| どこ | 中身 |
-|---|---|
-| `app/telegraf/telegraf.conf.in` | `[[inputs.snmp]]` を `# >>> snmp_poll` 〜 `# <<< snmp_poll` で囲んである |
-| `app/telegraf/telegraf.sh` | `SNMP_POLL`（既定 `1`。`0` / `1` 以外は止まる）が `0` ならその区間を消す。`SNMP_AGENTS` を見るのは `1` のときだけ。`tg test` は `0` なら「止めてある」と出して終わる |
-| `IaC/terraform/aws-managed/pipeline/stream` | 変数 `snmp_poll`（bool、既定 `true`）をタスクの環境変数 `SNMP_POLL`（`1` / `0`）に渡す。ECS Exec の既定のコマンド（出力 `telegraf_exec_command`）は、取りにいく側のタスク（`telegraf-dialin`）で打つ `tg gnmi` |
-| `ops/up.sh` / `ops/deploy-env.sh` / `deploy.env.example` | `deploy.env` の `SNMP_POLL`（`1` / `0`、`true` / `false` も可。既定 `1`）を stream の `snmp_poll` に渡す |
-| `app/containerlab/lab.sh` | デバッグ用の EC2 の Telegraf にも `SNMP_POLL` を渡す。こちらは既定 `0`（trap だけ） |
+| 何を | 誰が | どう | トピック |
+|---|---|---|---|
+| IF・BGP・IS-IS の状態 | gnmic（`app/gnmic/gnmic.yaml.in`） | gNMI の on-change | `gnmi` |
+| IF の統計・CPU・メモリ | gnmic | gNMI の sample（60 秒ごと） | `metrics` |
+| SNMP の trap | Telegraf（`inputs.snmp_trap`） | 機器から送られてくるのを受ける | `traps` |
 
-```bash
-SNMP_POLL=0 PIPELINE=1 ops/up.sh     # ポーリングを止めるとき（deploy.env に SNMP_POLL=0 でもよい）
-sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリングありで起こし直す
-```
-
-- **止めると空になるもの**
-  - `metrics` トピック（measurement `system` / `interface`）が出なくなる。
-  - Grafana の IF のグラフ（ダッシュボード「netops / SNMP metrics」）、エージェントの `query_metrics`、S3 Tables のポーリングの行が空になる。
 - **アラート**
-  - Grafana のルール `link_down` と Splunk の保存済みサーチ `netops_poll` は、ポーリングの `ifOperStatus` を見るので発火しない。
-  - IF の up / down は、trap から Splunk（`STORES` の `splunk`）が `link_down` を出す。
-  - そのため `ops/up.sh` は Grafana を `SNMP_POLL=1` のときだけアラートの送り手に数える。`WORKFLOW=1` で送り手が 1 つも無いと「`STORES` に `splunk` を入れるか `SNMP_POLL=1` にする」と出して止まる。`STORES` に `grafana` があって `SNMP_POLL=0` のときは注意を出す。
-- NLB のヘルスチェック（`outputs.health`）が見るのは受ける側のタスク（`telegraf-dialout`）だけ。ポーリングは取りにいく側のタスク（`telegraf-dialin`）で動くので、止めてもヘルスチェックには関わらない。Spark は無いトピックを作るので、`metrics` が無くても動く。
-- 変えて打ち直すと、ECS の Telegraf の取りにいく側のタスク（`telegraf-dialin`）が入れ替わる（環境変数が変わるので）。
-- 当時は既定が `0`（trap だけ）だった。いまは Grafana の `link_down` と Splunk の `netops_poll` がポーリングを見るので、既定は `1`。
+  - Grafana のルール `link_down` は、gnmic の IF の状態（系列 `snmp_interface_oper_up`）を見る。
+  - Splunk の保存済みサーチ `netops_poll` はやめ、`netops_gnmi`（gNMI の IF・BGP・IS-IS）と `netops_trap`（linkDown / linkUp）が `link_down` を出す。
+  - そのため `ops/up.sh` は、`STORES` に `grafana` か `splunk` があればアラートの送り手に数える。
+- 系列名（`snmp_interface_*` など）は Telegraf のころのまま。gnmic は event の形のまま書き、Spark が読み替える（[collection.md](collection.md) の「gnmic の event と読み替え」）。
+- 機器との疎通を見るのは、gnmic のタスクに ECS Exec で入って打つ `gn get`。Telegraf の `tg test` / `tg gnmi` はやめた（打つと案内を出して終わる）。
+- `deploy.env` に `SNMP_POLL` が残っていても止まらない。`ops/up.sh` が「使わない」と注意を出すだけ（消してよい）。
+
+当時（2026-10-09 まで）は、Telegraf の取りにいく側（`telegraf-dialin`）が 10 秒ごとにポーリングし（`inputs.snmp`）、`SNMP_POLL=0` で止められた。既定は `1` で、その前は `0`（trap だけ）だった。デバッグ用の EC2 の Telegraf の既定は `0` だった。
 
 ---
 
@@ -542,7 +534,7 @@ vrnetlab のページには、このほかに Cisco vIOS と Cisco ASAv も載�
 | SNMP の標準 MIB（sysName、sysUpTime、ifName、ifAdminStatus、ifOperStatus、ifInOctets など） | そのまま使える見込み |
 | gNMI の SR Linux 独自のパス（`/network-instance[name=default]/protocols/bgp/neighbor[...]/session-state`、`/platform/control[...]/cpu[...]`、`/interface[name=*]/statistics` など） | 使えない。OS ごとにパスを書き直す |
 
-- パスが変わると、メトリクスの名前とラベルも変わる。Grafana のアラートルール、Splunk の検索、`lab_gnmi.star` の変換も、機器の種類ごとに直すことになる。
+- パスが変わると、メトリクスの名前とラベルも変わる。Grafana のアラートルール、Splunk の検索、gnmic の購読と Spark の読み替え（`app/spark/snmp_sinks.py`。2026-10-09 までは Telegraf の `lab_gnmi.star`）も、機器の種類ごとに直すことになる。
 - 複数のベンダーを混ぜるなら、OpenConfig のパスに寄せると、直す場所が減る。SR Linux も OpenConfig に対応している（有効にする設定が要る）。
 
 **未確認**
@@ -834,7 +826,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 - 修復案は Neptune に書かない（2026-10-05 から。置き場は S3 Tables の `proposal_events` だけ。7 章）。当時（2026-10-04 まで）はワークフローと Web が修復案の頂点を書いていた。
 - Job は `status` と IP 層より上には触らない。IP 層・EVPN/BGP 層は Nautobot からは入らない。
-- Job は Neptune のほかに、Telegraf の取りにいく側（dialin）の機器の一覧（SSM のパラメータ）も書き換える。
+- Job は Neptune のほかに、gnmic の購読先の一覧（SSM のパラメータ）も書き換える。
 
 ### Q. Nautobot は、いつ立つ？ 環境変数でオン・オフを切り替えられる？
 
@@ -842,7 +834,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 - 立たないのは、`PIPELINE=0` のときと、`SKIP_STREAM` と `SKIP_GRAPH` を両方書いたとき（Job の書き先が無い）。
 - 前の `deploy.env` に `NAUTOBOT=...` が残っていても止まらない。`ops/up.sh` が「もう使わない」と注意を出す。
-- Telegraf の dialin の一覧は、いつも Nautobot の Job が書く SSM のパラメータ（`/<prefix>/telegraf-dialin/nautobot/*`）から受ける。
+- gnmic の購読先の一覧は、いつも Nautobot の Job が書く SSM のパラメータ（`/<prefix>/gnmic/nautobot/gnmi-targets`）から受ける。
 - 費用は Nautobot の分（+$0.13/h と `ecs` のエンドポイント $0.014/h）が PIPELINE に入る。`PIPELINE=1` だけ（`STORES` は既定）なら、土台と合わせて約 $2.92/h（README の表）。
 - デバッグ用の EC2（`ops/lab-debug.sh`）は Nautobot を使わない（lab の定義の一覧のまま）。
 
@@ -1354,7 +1346,7 @@ Kafka が持っている番号。
 - **有効にするなら、3 つを合わせて変える。**
   `idempotent_writes = true`、`required_acks = -1`（全部の複製が受け取るまで待つ）、MSK の IAM の権限（冪等な書き込みの許可）。そのぶん送信が少し遅くなる。
 - **時刻は秒まで（`json_timestamp_units = "1s"`）。**
-  中身から番号を作る場合、同じ秒の中の 2 つの出来事は時刻で区別できない。メトリクスは決まった間隔で届くので困らない（SNMP のポーリングは 10 秒、gNMI の sample は 60 秒）。変化のたびに届くもの（gNMI の on_change、trap、syslog）は、同じ秒に同じ中身が 2 回あると 1 つに見える。
+  中身から番号を作る場合、同じ秒の中の 2 つの出来事は時刻で区別できない。メトリクスは決まった間隔で届くので困らない（gNMI の sample は 60 秒。2026-10-09 までの SNMP のポーリングは 10 秒）。変化のたびに届くもの（gNMI の on_change、trap、syslog）は、同じ秒に同じ中身が 2 回あると 1 つに見える。
 
 idempotent producer の動き、Telegraf の `idempotent_writes` の設定名、MSK の権限は、記憶から書いた。
 
@@ -1428,7 +1420,7 @@ Splunk の中で重複を扱う方法。
 - **クラスターにして複製しても、取り込み量は増えない。**
   数えるのは最初に取り込んだ 1 回だけで、indexer の間の複製は数えない。増えるのはディスクと台数（AWS の費用）。
 - **取り込み量を減らす手は、Splunk に送るトピックを絞ること。**
-  いまは全部のトピックを Splunk に送っている。S3 に全部あるので、Splunk にはアラートに使うもの（ポーリング、trap、gNMI の BGP と IS-IS）だけ送る、という分け方ができる。
+  いまは全部のトピックを Splunk に送っている。S3 に全部あるので、Splunk にはアラートに使うもの（trap、gNMI の IF・BGP・IS-IS）だけ送る、という分け方ができる。
 
 料金の形は記憶から書いた。契約の前に Splunk の料金のページで確かめる。
 
@@ -1487,18 +1479,17 @@ Splunk の中で重複を扱う方法。
 | 順 | 何が起きるか | どこに書いてあるか |
 |---|---|---|
 | 1 | Spark が HEC でイベントを Splunk に入れる | `app/spark/snmp_sinks.py` |
-| 2 | 保存済みサーチが毎分走り、直前の 1 分に index に入ったイベントを読む（ポーリングと gNMI は、比べる相手としてその前も読む）。結果の 1 行がアラート 1 件 | `app/splunk/netops_alerts/default/savedsearches.conf` |
+| 2 | 保存済みサーチが毎分走り、直前の 1 分に index に入ったイベントを読む（gNMI は、比べる相手としてその前も読む）。結果の 1 行がアラート 1 件 | `app/splunk/netops_alerts/default/savedsearches.conf` |
 | 3 | 結果が 1 行以上あると、Splunk がスクリプトを `--execute` で起こす。結果の CSV の場所を標準入力で渡す | `savedsearches.conf` の `action.netops_sns = 1`、`alert_actions.conf` |
 | 4 | スクリプトが CSV を読み、IP を機器名に直し（`DEVICE_MAP`）、Grafana と同じ形の JSON にする。1 通に最大 50 件 | `app/splunk/netops_alerts/bin/netops_sns.py` |
 | 5 | タスクロールの一時的な認証情報を取り、Splunk の Python が持っている boto3 で SNS の Publish を呼ぶ（署名は boto3 がする）。失敗したら 3 回まで試す | 同じファイル |
 | 6 | SNS のトピック `<接頭辞>-alerts` に届く。ここから先は Grafana のアラートと同じ道 | `IaC/terraform/aws-managed/base/core` の `alerts.tf` |
 
-保存済みサーチは 4 本ある。
+保存済みサーチは 3 本ある（2026-10-09 に `netops_poll` をやめた）。
 
 | 名前 | 見るもの | 出すアラート |
 |---|---|---|
-| `netops_poll` | SNMP のポーリング（IF の `ifOperStatus`） | `link_down` の firing と resolved |
-| `netops_gnmi` | gNMI の on_change（BGP のセッション、IS-IS の IF） | `bgp_down`、`isis_down` の firing と resolved |
+| `netops_gnmi` | gNMI の on_change（IF の oper / admin、BGP のセッション、IS-IS の IF） | `link_down`、`bgp_down`、`isis_down` の firing と resolved |
 | `netops_trap` | SNMP の trap | linkDown は `link_down` の firing、linkUp は resolved。ほかの trap は `trap` の firing |
 | `netops_trap_clear` | 「直った」の知らせが無い trap | 時間が経ったら resolved |
 
@@ -1692,7 +1683,7 @@ Fargate をやめて、ECS の EC2（または EC2 そのもの）にボリュ�
 | Kafka | EFS | タスクが入れ替わってもログを残す。Kafka の公式の文書に NFS / EFS の記述は無い。2026-10-07 に AWS で 1 時間ほど流して、1 台止めて戻すまで遅さやロックの不具合は出なかった（日単位で長く流したときは未確認） |
 | VictoriaMetrics（vmstorage） | EFS | 公式の文書が「Amazon EFS などの NFS に置ける」と書いている |
 | OpenSearch | タスクの一時領域 | 公式の文書がネットワークファイルシステムを避けるよう書いている。データの 2 台が同時に落ちると消える |
-| Neo4j | タスクの一時領域 | NFS は非対応と明記。消えたら 2 段で同期し直す（`ops/sync-graph.sh --oss` で lab の定義から、そのあと Nautobot の Job「Telegraf とグラフ DB に同期」で変更履歴。[oss-variant.md](oss-variant.md) の「Neo4j を起こし直したあとの戻し方」） |
+| Neo4j | タスクの一時領域 | NFS は非対応と明記。消えたら 2 段で同期し直す（`ops/sync-graph.sh --oss` で lab の定義から、そのあと Nautobot の Job「gnmic とグラフ DB に同期」で変更履歴。[oss-variant.md](oss-variant.md) の「Neo4j を起こし直したあとの戻し方」） |
 
 - EFS は、台ごとにアクセスポイント（ディレクトリ）を分ける。1 つのディレクトリに書くのは 1 つのタスクだけなので、NFS で問題になりやすい同時書き込みが起きない。
 - 「NFS は勧めない」という注意は、マネージドと OSS を比べるときの材料として残す（自前で持つと、置き場の選び方まで自分の責任になる）。
@@ -1979,7 +1970,7 @@ VictoriaMetrics と同じ作り手のログ用データベース。ライセン�
 - 障害の status の更新（Lambda graph-status）が失敗する。
 - エージェントが「隣の機器」などトポロジを引けない。
 
-修復案の置き場は「修復案を S3 Tables にまとめる（003）」で S3 Tables に移ったので、Neo4j が止まっても修復の流れは進む。ECS のサービスなので、タスクが落ちれば自動で立ち上がり直す。データが一時領域なら、そのあと `ops/sync-graph.sh --oss` で lab の定義から同期し直す。2026-10-07 に AWS で Neo4j のタスクを止めると、ECS が 1 分で起こし直してグラフは空になり、同期で 8 台 / 38 インターフェース / 12 リンクに戻った。2026-10-08 の検証では、変更履歴は `ops/sync-graph.sh --oss` では 0 件のままで、そのあと Nautobot の Job「Telegraf とグラフ DB に同期」を打って 19 件に戻った（[oss-variant.md](oss-variant.md) の「Neo4j を起こし直したあとの戻し方」）。
+修復案の置き場は「修復案を S3 Tables にまとめる（003）」で S3 Tables に移ったので、Neo4j が止まっても修復の流れは進む。ECS のサービスなので、タスクが落ちれば自動で立ち上がり直す。データが一時領域なら、そのあと `ops/sync-graph.sh --oss` で lab の定義から同期し直す。2026-10-07 に AWS で Neo4j のタスクを止めると、ECS が 1 分で起こし直してグラフは空になり、同期で 8 台 / 38 インターフェース / 12 リンクに戻った。2026-10-08 の検証では、変更履歴は `ops/sync-graph.sh --oss` では 0 件のままで、そのあと Nautobot の Job（当時の名前は「Telegraf とグラフ DB に同期」。cycle 013 で「gnmic とグラフ DB に同期」に改めた）を打って 19 件に戻った（[oss-variant.md](oss-variant.md) の「Neo4j を起こし直したあとの戻し方」）。
 
 **クラスターが要るのは**
 

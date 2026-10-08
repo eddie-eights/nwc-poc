@@ -87,9 +87,9 @@ check("EMR / Grafana / Splunk は土台の spark / grafana / splunk の SG を�
 
 _sg_keys = re.search(r'security_groups = \{(.*?)\n  \}', _sg_tf, re.S)
 _sg_keys = set(re.findall(r'^\s+(\w+)\s+=\s+"', _sg_keys.group(1), re.M)) if _sg_keys else set()
-SG_KEYS = {"web", "lab", "telegraf_dialout", "telegraf_dialin", "telegraf_dialout_nlb", "syslog_ng", "goflow2", "msk", "spark", "grafana", "splunk", "nautobot", "nautobot_db",
+SG_KEYS = {"web", "lab", "telegraf_dialout", "gnmic", "telegraf_dialout_nlb", "syslog_ng", "goflow2", "msk", "spark", "grafana", "splunk", "nautobot", "nautobot_db",
            "lambda", "workflow", "runtime"}
-check(f"土台の SG はワークロードごとの 16 個（syslog_ng と goflow2 は cycle 012 で足した。kafka_ui は cycle 010 で外した）と endpoints（{sorted(_sg_keys)}）",
+check(f"土台の SG はワークロードごとの 16 個（syslog_ng と goflow2 は cycle 012 で足した。kafka_ui は cycle 010 で外した。telegraf_dialin は cycle 013 で gnmic に替えた）と endpoints（{sorted(_sg_keys)}）",
       _sg_keys == SG_KEYS and re.findall(r'resource "aws_security_group" "(\w+)"', _core) == ["workload", "endpoints"]
       and re.search(r'resource "aws_security_group" "workload" \{\n\s*for_each = local\.workload_security_groups\n', _sg_tf) is not None)
 # 通信の表を読む（from = sg の行は aws_api_clients に展開する）
@@ -99,15 +99,17 @@ _flows = set()
 for _m in re.finditer(r'\{ from = ("?\w+"?), to = "(\w+)", protocol = "(\w+)", port = (\d+)(?:, to_port = (\d+))?(?:, only = "(\w+)")?, why = "([^"]*)" \}', _sg_tf):
     for _from in (_clients if _m.group(1) == "sg" else [_m.group(1).strip('"')]):
         _flows.add((_from, _m.group(2), _m.group(3), int(_m.group(4)), int(_m.group(5) or _m.group(4)), _m.group(6) or ""))
-EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_dialout", "telegraf_dialin", "syslog_ng", "goflow2", "spark", "grafana", "splunk", "nautobot", "lambda",
+EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_dialout", "gnmic", "syslog_ng", "goflow2", "spark", "grafana", "splunk", "nautobot", "lambda",
                                                          "workflow", "runtime") for t in ("endpoints", "s3")} | {
     # Nautobot（IaC/terraform/aws-managed/pipeline/nautobot。2026-10-04）: 画面は Web の EC2 からのポートフォワード、DB は RDS。
     # Neptune は Neptune Analytics にしたので SG が無く、行も無い（neptune-graph-data のエンドポイントの 443 で届く。2026-10-04）
     ("web", "nautobot", "tcp", 8080, 8080, ""), ("nautobot", "nautobot_db", "tcp", 5432, 5432, ""),
     ("web", "grafana", "tcp", 3000, 3000, ""), ("web", "splunk", "tcp", 8000, 8000, ""), ("web", "workflow", "tcp", 8233, 8233, ""),
-    ("telegraf_dialout", "msk", "tcp", 9098, 9098, ""), ("telegraf_dialin", "msk", "tcp", 9098, 9098, ""), ("spark", "msk", "tcp", 9098, 9098, ""), ("msk", "msk", "tcp", 9092, 9098, ""),
+    ("telegraf_dialout", "msk", "tcp", 9098, 9098, ""), ("spark", "msk", "tcp", 9098, 9098, ""), ("msk", "msk", "tcp", 9092, 9098, ""),
     # syslog-ng と GoFlow2 は MSK の IAM 認証を喋れないので SASL/SCRAM の 9096（cycle 012）
     ("syslog_ng", "msk", "tcp", 9096, 9096, ""), ("goflow2", "msk", "tcp", 9096, 9096, ""),
+    # gnmic も SCRAM の 9096（cycle 013。012 の collectors.tf と同じ形。IAM の 9098 の行は telegraf_dialin とともに無くなった）
+    ("gnmic", "msk", "tcp", 9096, 9096, ""),
     # Kafbat UI（IaC/terraform/aws-managed/pipeline/stream。2026-10-05）: cycle 010 から Web の EC2 の Docker で動くので、MSK へは Web から IAM の 9098
     ("web", "msk", "tcp", 9098, 9098, ""),
     ("spark", "spark", "tcp", 0, 65535, ""), ("spark", "splunk", "tcp", 8088, 8088, ""),
@@ -122,9 +124,8 @@ EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_
     ("lab", "telegraf_dialout_nlb", "udp", 162, 162, "egress"), ("lab", "telegraf_dialout_nlb", "udp", 5140, 5140, "egress"),
     # NetFlow / sFlow は lab の EC2 のホストが自分の IP からも送る（SR Linux は NetFlow を送れないので tools/netflow_send.py で試す）ので両側
     ("lab", "telegraf_dialout_nlb", "udp", 2055, 2055, ""), ("lab", "telegraf_dialout_nlb", "udp", 6343, 6343, ""),
-    # ポーリングと gNMI は取りにいく側（telegraf_dialin）だけ。受ける側（telegraf_dialout）は機器へ出ない（2026-10-04 に分けた）
-    ("telegraf_dialin", "lab_mgmt", "udp", 161, 161, ""), ("telegraf_dialin", "lab_mgmt", "tcp", 57400, 57400, ""),
-    ("telegraf_dialin", "lab", "udp", 161, 161, "ingress"), ("telegraf_dialin", "lab", "tcp", 57400, 57400, "ingress"),
+    # 機器へ取りにいくのは gnmic の gNMI（57400）だけ。SNMP のポーリング（161/udp）は cycle 013 でやめた。受ける側（telegraf_dialout）は機器へ出ない
+    ("gnmic", "lab_mgmt", "tcp", 57400, 57400, ""), ("gnmic", "lab", "tcp", 57400, 57400, "ingress"),
 }
 check(f"通信の表は決めた流れだけ（多い: {sorted(_flows - EXPECTED_FLOWS)} 足りない: {sorted(EXPECTED_FLOWS - _flows)}）",
       _flows == EXPECTED_FLOWS and _sg_tf.count("{ from = ") == len(EXPECTED_FLOWS) - 2 * len(_clients) + 2)
@@ -1470,7 +1471,7 @@ _SINGLE = {  # (ルート, リソースの見出し): 理由に書く言葉
     ("pipeline/analytics", 'resource "aws_ecs_service" "grafana"'): "https://grafana.com/docs/grafana/latest/alerting/set-up/configure-high-availability/",
     ("pipeline/nautobot", 'resource "aws_ecs_service" "nautobot"'): "Redis と Celery のワーカーが同じタスク",
     ("workflow", 'resource "aws_ecs_service" "workflow"'): "Temporal の開発用サーバー",
-    ("pipeline/stream", 'resource "aws_ecs_service" "telegraf_dialin"'): "TELEGRAF_AZ_NUM に従わない理由",
+    ("pipeline/stream", 'resource "aws_ecs_service" "gnmic"'): "TELEGRAF_AZ_NUM に従わない理由",   # cycle 013 で telegraf_dialin から替えた
 }
 def _single_ok(root, head, word):
     t = _root_tf(root)
@@ -1480,7 +1481,7 @@ def _single_ok(root, head, word):
     j = t.find("\n}\n", i)
     near = t[max(0, t.rfind("\n\n", 0, i)):j]  # 見出しの直前のコメントから、そのリソースの終わりまで
     return word in near and ("AWS では未確認（2026-10-04）" in near or "2026-10-04 確認" in near)
-check("1 台でしか成り立たないリソース（Web / lab / Grafana / Nautobot / workflow / Telegraf の dialin）のそばに、AZ の数のキーを作らない理由と確かめ方（出典か「未確認」）を書く",
+check("1 台でしか成り立たないリソース（Web / lab / Grafana / Nautobot / workflow / gnmic）のそばに、AZ の数のキーを作らない理由と確かめ方（出典か「未確認」）を書く",
       all(_single_ok(r, h, w) for (r, h), w in _SINGLE.items()))
 # ---- 閉域の Deny（IaC/terraform/aws-managed/base/core/perimeter.tf と、analytics が付けるもの）
 _perim = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", "perimeter.tf"), encoding="utf-8").read()
@@ -1585,19 +1586,21 @@ def _senders(**env):
     r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $1"; exit 1; }\n' + _sndblk + 'echo "OUT: ${LINK_DOWN_SENDERS:-none}"'],
                        capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env})
     return r.stdout.strip().splitlines()[-1][:40] if r.stdout.strip() else r.stderr
-check("Grafana が link_down の送り手になるのは（STORES の grafana から導いた）GRAFANA と SINK_PROMETHEUS と SNMP_POLL があるときだけ（link_down はポーリングの ifOperStatus を見る）。Splunk は SPLUNK_ON_ECS（STORES の splunk）で",
-      _senders(GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: grafana" and _senders(GRAFANA="1", SINK_PROMETHEUS="1") == "OUT: none"
+check("Grafana が link_down の送り手になるのは（STORES の grafana から導いた）GRAFANA と SINK_PROMETHEUS があるときだけ（link_down は gnmic が取る gNMI の IF の状態を見る。"
+      "cycle 013 から SNMP_POLL は数えない）。Splunk は SPLUNK_ON_ECS（STORES の splunk）で",
+      _senders(GRAFANA="1", SINK_PROMETHEUS="1") == "OUT: grafana" and _senders(GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="0") == "OUT: grafana"
       and _senders(GRAFANA="1", SNMP_POLL="1") == "OUT: none" and _senders(SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: none"
-      and _senders(SPLUNK_ON_ECS="1") == "OUT: splunk" and _senders(GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1", SPLUNK_ON_ECS="1") == "OUT: grafana,splunk")
-check("up.sh の WORKFLOW=1 は link_down の送り手（Grafana か Splunk）が 1 つも無ければ、何も作る前に止まる（SNMP_POLL=0 では Grafana は数えない）",
+      and _senders(SPLUNK_ON_ECS="1") == "OUT: splunk" and _senders(GRAFANA="1", SINK_PROMETHEUS="1", SPLUNK_ON_ECS="1") == "OUT: grafana,splunk")
+check("up.sh の WORKFLOW=1 は link_down の送り手（Grafana か Splunk）が 1 つも無ければ、何も作る前に止まる",
       _senders(WORKFLOW="1", GRAFANA="1").startswith("DIE: WORKFLOW はアラートの送り手が要る") and _senders(WORKFLOW="1").startswith("DIE: WORKFLOW はアラートの送り手が要る")
-      and _senders(WORKFLOW="1", GRAFANA="1", SINK_PROMETHEUS="1").startswith("DIE: WORKFLOW はアラートの送り手が要る")
-      and _senders(WORKFLOW="1", GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: grafana" and _senders(WORKFLOW="1", SPLUNK_ON_ECS="1") == "OUT: splunk"
+      and _senders(WORKFLOW="1", GRAFANA="1", SINK_PROMETHEUS="1") == "OUT: grafana" and _senders(WORKFLOW="1", SPLUNK_ON_ECS="1") == "OUT: splunk"
       and up.index('die "WORKFLOW はアラートの送り手が要る') < up.index("ENDPOINTS=\"\""))
 _r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $1"; exit 1; }\n' + _sndblk], capture_output=True, text=True,
-                    env={"PATH": os.environ["PATH"], "GRAFANA": "1", "SINK_PROMETHEUS": "1", "SPLUNK_ON_ECS": "1"})
-check("SNMP_POLL=0 で Grafana の link_down が黙るときは注意を出す（Splunk があれば trap からだけ知らせると言う）",
-      "注意: SNMP_POLL=0 なので Grafana のアラートルール link_down と Splunk の netops_poll は発火しない" in _r.stdout)
+                    env={"PATH": os.environ["PATH"], "GRAFANA": "1", "SINK_PROMETHEUS": "1", "SPLUNK_ON_ECS": "1", "SNMP_POLL": "0"})
+check("SNMP_POLL=0 の注意（Grafana の link_down が黙る）は cycle 013 でやめた: 送り手の決め方は SNMP_POLL を見ず、注意も出さない。"
+      "前の deploy.env に SNMP_POLL があれば、使わないことだけ言う",
+      _r.returncode == 0 and _r.stdout == "" and "SNMP_POLL" not in _no_comment(_sndblk)
+      and "注意: SNMP_POLL は使わない" in up and "注意: SNMP_POLL=0" not in up)
 check("up.sh は base/core に interface_endpoints / network_perimeter / endpoints_az_num を渡し、state に残るルートの分も足す",
       'MAIN_VARS+=(-var "interface_endpoints=[' in up and 'MAIN_VARS+=(-var "network_perimeter=' in up
       and 'MAIN_VARS+=(-var "endpoints_az_num=$ENDPOINTS_AZ_NUM")' in up and "endpoints_multi_az" not in up
@@ -1708,14 +1711,14 @@ check("STORES と一緒になくしたキーが書いてあっても止まり、
       and all(_stores(STORES="splunk", **{k: "0"})[0] == 1 for k in ("SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA")))
 check("なくしたキーの空の値（SINK_S3= / GRAFANA=）は書いていないのと同じ（deploy.env の空の値と同じ扱い）",
       _stores(STORES="s3", SINK_S3="", GRAFANA="")[:2] == (0, "OUT: iceberg | G=0 ECS=0") and _stores(SINK_SPLUNK="")[:2] == _stores()[:2])
-check("STORES で選んだあとも今の検査が効く（grafana だけでは SNMP_POLL=1 でないと WORKFLOW の送り手が無く止まる。splunk なら通る）",
-      _stores(_sndblk + _ST_OUT, STORES="s3,grafana", WORKFLOW="1", SNMP_POLL="")[1].startswith("DIE: WORKFLOW はアラートの送り手が要る")
-      and _stores(_sndblk + _ST_OUT, STORES="s3,grafana", WORKFLOW="1", SNMP_POLL="1")[:2] == (0, "OUT: iceberg,opensearch,prometheus | G=1 ECS=0")
+check("STORES で選んだあとも今の検査が効く（s3 だけでは WORKFLOW の送り手が無く止まる。grafana か splunk なら通る。cycle 013 から grafana は SNMP_POLL が無くても送り手）",
+      _stores(_sndblk + _ST_OUT, STORES="s3", WORKFLOW="1")[1].startswith("DIE: WORKFLOW はアラートの送り手が要る")
+      and _stores(_sndblk + _ST_OUT, STORES="s3,grafana", WORKFLOW="1")[:2] == (0, "OUT: iceberg,opensearch,prometheus | G=1 ECS=0")
       and _stores(_sndblk + _ST_OUT, STORES="splunk", WORKFLOW="1")[:2] == (0, "OUT: splunk | G=0 ECS=1"))
 # 既定（deploy.env に何も書かない）で WORKFLOW=1 にすると、link_down の送り手は Grafana と Splunk の両方になる（設計の検証。cycle 002）
-_snmp_line = up[up.index('SNMP_POLL="${SNMP_POLL:-1}"'):].split("\n", 1)[0] + "\n"
-check("既定のまま WORKFLOW=1 なら送り手は grafana,splunk、格納先は 4 つ（STORES は s3,grafana,splunk、SNMP_POLL は 1 が既定）",
-      _stores(_snmp_line + _sndblk + 'echo "OUT: ${LINK_DOWN_SENDERS:-none} | $SINKS"', WORKFLOW="1")[:2]
+check("既定のまま WORKFLOW=1 なら送り手は grafana,splunk、格納先は 4 つ（STORES は s3,grafana,splunk。SNMP_POLL の既定は cycle 013 でなくした）",
+      'SNMP_POLL="${SNMP_POLL:-1}"' not in up
+      and _stores(_sndblk + 'echo "OUT: ${LINK_DOWN_SENDERS:-none} | $SINKS"', WORKFLOW="1")[:2]
       == (0, "OUT: grafana,splunk | iceberg,opensearch,prometheus,splunk"))
 check("SKIP_ANALYTICS=1 なら STORES に grafana / splunk があっても Grafana と ECS の Splunk は作らない",
       _stores(STORES="grafana,splunk", SKIP_ANALYTICS="1")[:2] == (0, "OUT: opensearch,prometheus,splunk | G=0 ECS=0"))
@@ -1823,7 +1826,7 @@ def _skip(**env):
                         + 'echo "OUT: L=${SKIP_LAB:-0} S=${SKIP_STREAM:-0} A=${SKIP_ANALYTICS:-0} G=${SKIP_GRAPH:-0}"'], capture_output=True, text=True,
                        env={"PATH": os.environ["PATH"], **env})
     return r.stdout.strip()
-check("up.sh は PIPELINE=1 で SKIP_LAB=1 だけなら止まらず、lab 以外を作る（Telegraf の取りにいく側が届かないことを言う）",
+check("up.sh は PIPELINE=1 で SKIP_LAB=1 だけなら止まらず、lab 以外を作る（gnmic が届かず繋ぎ直すことを言う）",
       _skip(PIPELINE="1", SKIP_LAB="1").endswith("OUT: L=1 S=0 A=0 G=0") and "SKIP_LAB=1 なので lab は作らない" in _skip(PIPELINE="1", SKIP_LAB="1")
       and "タスクは落ちない" in _skip(PIPELINE="1", SKIP_LAB="1") and "DIE" not in _skip(PIPELINE="1", SKIP_LAB="1")
       and "stream は lab が要る" not in up)
@@ -2122,12 +2125,12 @@ def _costaz(**env):
     return int(r.stdout.split("OUT: ")[1]) if "OUT: " in r.stdout else r.stderr
 check("費用: エンドポイントは 1.4 × 本数 × ENDPOINTS_AZ_NUM（2 本で 1 AZ 3、3 AZ 8）。土台は Web の EC2 の 4",
       _costaz() == 4 + 3 and _costaz(ENDPOINTS_AZ_NUM="3") == 4 + 8)
-check("費用: MSK は 2 AZ で 57、3 AZ で +27。Telegraf・syslog-ng・GoFlow2 は Telegraf の受ける側のタスクが AZ ごとに増える（1 AZ 7、3 AZ 10。"
-      "syslog-ng と GoFlow2 の 2 タスクは cycle 012）。Kafbat UI は cycle 010 から土台（Web の EC2）に入っていて stream では足さない",
+check("費用: MSK は 2 AZ で 57、3 AZ で +27。Telegraf・gnmic・syslog-ng・GoFlow2 は Telegraf の受ける側のタスクが AZ ごとに増える（1 AZ 7、3 AZ 10。"
+      "syslog-ng と GoFlow2 の 2 タスクは cycle 012、gnmic は cycle 013 で Telegraf の取りにいく側と入れ替え）。Kafbat UI は cycle 010 から土台（Web の EC2）に入っていて stream では足さない",
       _costaz(SKIP_STREAM="") == 7 + 57 + 7 and _costaz(SKIP_STREAM="", MSK_AZ_NUM="3") == 7 + 84 + 7
       and _costaz(SKIP_STREAM="", TELEGRAF_AZ_NUM="3") == 7 + 57 + 10
       and "Kafbat UI（Fargate" not in _costall
-      and "\n  COST_CENTS=$((COST_CENTS + (12 * (3 + TELEGRAF_AZ_NUM) + 24 + 5) / 10))   # Telegraf・syslog-ng・GoFlow2（Fargate のタスク 3 + TELEGRAF_AZ_NUM 個と NLB）\nfi\n" in _costall)
+      and "\n  COST_CENTS=$((COST_CENTS + (12 * (3 + TELEGRAF_AZ_NUM) + 24 + 5) / 10))   # Telegraf・gnmic・syslog-ng・GoFlow2（Fargate のタスク 3 + TELEGRAF_AZ_NUM 個と NLB）\nfi\n" in _costall)
 check("費用: Neptune は 58 × NEPTUNE_AZ_NUM、Nautobot は Multi-AZ で 13 → 16",
       _costaz(SKIP_GRAPH="") == 7 + 58 and _costaz(SKIP_GRAPH="", NEPTUNE_AZ_NUM="3") == 7 + 174
       and _costaz(NAUTOBOT="1") == 7 + 13 and _costaz(NAUTOBOT="1", NAUTOBOT_DB_AZ_NUM="2") == 7 + 16)

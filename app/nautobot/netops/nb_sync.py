@@ -1,8 +1,9 @@
-"""Nautobot の中身を読んで、Telegraf の dialin の機器の一覧（SSM）と Neptune（OSS 版は Neo4j）の物理層に合わせる。app/nautobot/jobs/netops_jobs.py の Job と、
+"""Nautobot の中身を読んで、gnmic の購読先の一覧（SSM）と Neptune（OSS 版は Neo4j）の物理層に合わせる。app/nautobot/jobs/netops_jobs.py の Job と、
 起動時の bootstrap.py が呼ぶ。対応付けは nb_map.py。
 
-  1. 機器の一覧: Service（gnmi / snmp）を持つ機器から作った文字列が SSM の今の値と違うときだけ書き換え、dialin のサービスを作り直す
-     （ECS は起動時に secrets を読むので、書き換えただけでは反映されない）。空の一覧は書かない（Telegraf が起動できなくなる）
+  1. 機器の一覧: Service gnmi を持つ機器から作った文字列が SSM の今の値と違うときだけ書き換え、gnmic のサービスを作り直す
+     （ECS は起動時に secrets を読むので、書き換えただけでは反映されない）。空の一覧は書かない（gnmic が起動できなくなる）。
+     cycle 013 で Telegraf の dialin（gNMI と SNMP の 2 つの一覧）から gnmic（gNMI の 1 つ）に替えた
   2. Neptune（OSS 版は Neo4j。graph.py が GRAPH_BACKEND で切り替える）: graph.sync_physical()（openCypher）で物理層だけを差分で合わせる。status と上の層は残る。機器が 1 台も無いときは触らない（全部消えるので）
      機器の Status が Maintenance なら maintenance = true を付ける（保守中。ワークフローが起こさない）
   3. 変更履歴: 直近の ObjectChange（誰が・いつ・何を・どう変えたか）を graph.sync_changes() で label change の頂点に写す（エージェントの recent_changes）
@@ -10,8 +11,8 @@
 同時に 2 つ走ると古い読みが後から書くことがあるので、Redis のロック（Django の cache）の中で「読む → 書く」をする。
 
 環境変数（IaC/terraform/aws-managed/pipeline/nautobot がコンテナに渡す）:
-  DIALIN_GNMI_PARAMETER / DIALIN_SNMP_PARAMETER   一覧を書く SSM のパラメータ名（IaC/terraform/aws-managed/pipeline/stream の出力）。空なら 1 を飛ばす
-  TELEGRAF_CLUSTER / TELEGRAF_DIALIN_SERVICE     作り直す ECS のサービス
+  GNMI_TARGETS_PARAMETER                         一覧を書く SSM のパラメータ名（IaC/terraform/aws-managed/pipeline/stream の出力 gnmic_target_parameter）。空なら 1 を飛ばす
+  TELEGRAF_CLUSTER / GNMIC_SERVICE               作り直す ECS のサービス（クラスターは stream の telegraf_cluster_name）
   NEPTUNE_GRAPH_ID                               Neptune Analytics のグラフの ID（g-xxxxxxxxxx）。空なら 2 と 3 を飛ばす
   GRAPH_BACKEND / NEO4J_URI / NEO4J_PASSWORD     OSS 版（cycle 005）だけ。NEPTUNE_GRAPH_ID の代わりに Neo4j に書く（パスワードはタスク定義の secrets）。
                                                  NEO4J_URI が空なら 2 と 3 を飛ばす。Job の戻り値の鍵は graph.BACKEND（neptune / neo4j）
@@ -77,11 +78,11 @@ def read_changes(limit: int = nb_map.CHANGES_KEEP) -> list[dict]:
 
 
 def push_targets(rows: list[dict], log, force_redeploy: bool = False) -> dict:
-    """dialin の一覧を SSM に合わせ、変わったら（か force_redeploy なら）dialin のサービスを作り直す"""
-    names = {"gnmi-targets": os.environ.get("DIALIN_GNMI_PARAMETER", ""), "snmp-agents": os.environ.get("DIALIN_SNMP_PARAMETER", "")}
-    cluster, service = os.environ.get("TELEGRAF_CLUSTER", ""), os.environ.get("TELEGRAF_DIALIN_SERVICE", "")
+    """gnmic の購読先の一覧を SSM に合わせ、変わったら（か force_redeploy なら）gnmic のサービスを作り直す"""
+    names = {"gnmi-targets": os.environ.get("GNMI_TARGETS_PARAMETER", "")}
+    cluster, service = os.environ.get("TELEGRAF_CLUSTER", ""), os.environ.get("GNMIC_SERVICE", "")
     if not all(names.values()) or not cluster or not service:
-        log.warning("dialin の一覧の書き先が渡されていない（stream が dialin_targets_from_nautobot でない）。Telegraf の一覧は触らない")
+        log.warning("gnmic の一覧の書き先が渡されていない（stream が gnmi_targets_from_nautobot でない）。gnmic の一覧は触らない")
         return {"skipped": True}
     ssm, changed = toolkit.client("ssm"), []
     for key, value in nb_map.targets(rows).items():
@@ -95,12 +96,12 @@ def push_targets(rows: list[dict], log, force_redeploy: bool = False) -> dict:
         log.info("%s を書き換えた: %s", names[key], value)
     if changed or force_redeploy:
         toolkit.client("ecs").update_service(cluster=cluster, service=service, forceNewDeployment=True)
-        log.info("Telegraf の dialin（%s）を作り直す", service)
+        log.info("gnmic（%s）を作り直す", service)
     return {"changed": changed, "redeployed": bool(changed or force_redeploy)}
 
 
 def sync(log, force_redeploy: bool = False) -> dict:
-    """Nautobot → Telegraf の一覧と Neptune（OSS 版は Neo4j）。片方が失敗してももう片方はやり、最後に失敗をまとめて上げる（Job が失敗になる）"""
+    """Nautobot → gnmic の一覧と Neptune（OSS 版は Neo4j）。片方が失敗してももう片方はやり、最後に失敗をまとめて上げる（Job が失敗になる）"""
     from django.core.cache import cache
 
     with cache.lock(LOCK, timeout=LOCK_TIMEOUT, blocking_timeout=LOCK_WAIT):
@@ -110,9 +111,9 @@ def sync(log, force_redeploy: bool = False) -> dict:
             log.warning(w)
         out, errors = {"devices": len(devices), "links": len(links)}, []
         try:
-            out["telegraf"] = push_targets(rows, log, force_redeploy)
+            out["gnmic"] = push_targets(rows, log, force_redeploy)
         except Exception as e:  # SSM / ECS の失敗。グラフは続ける
-            errors.append(f"Telegraf の一覧: {e}")
+            errors.append(f"gnmic の一覧: {e}")
         try:
             if not devices:
                 # 空のまま合わせるとグラフの物理層が（status と上の層への辺ごと）全部消える。seed の失敗や入れ直しの途中を、消す指示とは読まない

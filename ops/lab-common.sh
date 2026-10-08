@@ -26,11 +26,10 @@ TREX_UPSTREAM=trexcisco/trex
 # app/containerlab/lab.sh の LOG_STANDARD（デバッグ用の EC2 の Telegraf に渡す）と同じ
 LAB_SYSLOG_STANDARD=RFC5424
 # containerlab が SR Linux 全台に入れる既定の認証情報（lab だけの公開既定値で、実機の値ではない）。ops/up.sh が SSM の
-# /<接頭辞>/telegraf-dialin/gnmi-username・gnmi-password・snmp-community の最初の値にする（実機を足すなら SSM の値を書き換える）。
-# app/containerlab/lab.sh の GNMI_USERNAME / GNMI_PASSWORD / SNMP_COMMUNITY（デバッグ用の EC2 の Telegraf に渡す）と同じ
+# /<接頭辞>/gnmic/gnmi-username・gnmi-password の最初の値にする（実機を足すなら SSM の値を書き換える）。
+# docker/compose/compose.yaml の gnmic の GNMI_USERNAME / GNMI_PASSWORD と同じ。SNMP の community は cycle 013 で SNMP のポーリングをやめたので持たない
 LAB_GNMI_USERNAME=admin
 LAB_GNMI_PASSWORD='NokiaSrl1!'
-LAB_SNMP_COMMUNITY=public
 
 cfn_stack_status() {  # cfn_stack_status <スタック名>  状態を出す。無ければ空。読めない（認証切れ・スロットリングなど）なら理由を stderr に出して 1
   # 「無い」と「読めない」を分ける（読めないのを無いと扱うと、ops/lab-debug.sh down が消さずに終わり、up が器を作り直そうとする）

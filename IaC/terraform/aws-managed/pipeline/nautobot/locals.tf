@@ -1,7 +1,7 @@
 # nwc-poc - PIPELINE nautobot root module. Nautobot (source of truth of the devices and cables) on ECS Fargate with PostgreSQL on RDS.
 # One task runs three containers: web (UI / API on 8080), a Celery worker (runs the jobs) and Redis (cache and Celery broker).
 # The NetOps jobs of the image (app/nautobot/jobs) read the devices and cables of Nautobot and bring two things in line with them:
-#   1. the targets of the Telegraf dial-in task - SSM parameters of IaC/terraform/aws-managed/pipeline/stream, then a new deployment of the dial-in service
+#   1. the gNMI targets of the gnmic task - an SSM parameter of IaC/terraform/aws-managed/pipeline/stream, then a new deployment of the gnmic service
 #   2. the physical layer of the topology in Neptune (IaC/terraform/aws-managed/pipeline/graph), written with openCypher (app/agentcore/graph.py sync_physical).
 #      The OSS variant (IaC/terraform/oss, cycle 005) writes the same into Neo4j instead: its graph state has neo4j_uri, not graph_id
 # A job hook runs the job on every change of a device / interface / cable / IP address / service, and the task runs it once at start.
@@ -45,7 +45,7 @@ data "terraform_remote_state" "ecr" {
   }
 }
 
-# Telegraf の dialin の機器の一覧（SSM）とサービスは IaC/terraform/aws-managed/pipeline/stream。無ければ Job は一覧を触らない
+# gnmic の購読先の一覧（SSM）とサービスは IaC/terraform/aws-managed/pipeline/stream。無ければ Job は一覧を触らない
 data "terraform_remote_state" "stream" {
   backend = "local"
 
@@ -87,11 +87,12 @@ locals {
   service_namespace = "${local.name_prefix}-nautobot.internal"
   url               = "http://nautobot.${local.service_namespace}:8080"
 
-  # stream の dialin（Nautobot が一覧を持つ形 = dialin_targets_from_nautobot で apply されているときだけ）。違えば空で、Job は一覧を触らない
-  dialin_from_nautobot = try(data.terraform_remote_state.stream.outputs.telegraf_dialin_targets_source, "") == "nautobot"
-  dialin_parameters    = local.dialin_from_nautobot ? data.terraform_remote_state.stream.outputs.telegraf_dialin_target_parameters : {}
-  telegraf_cluster     = local.dialin_from_nautobot ? data.terraform_remote_state.stream.outputs.telegraf_cluster_name : ""
-  telegraf_service     = local.dialin_from_nautobot ? data.terraform_remote_state.stream.outputs.telegraf_dialin_service_name : ""
+  # stream の gnmic（Nautobot が一覧を持つ形 = gnmi_targets_from_nautobot で apply されているときだけ。cycle 013 で Telegraf の dialin から替えた）。
+  # 違えば空で、Job は一覧を触らない
+  gnmic_from_nautobot     = try(data.terraform_remote_state.stream.outputs.gnmic_targets_source, "") == "nautobot"
+  gnmic_targets_parameter = local.gnmic_from_nautobot ? data.terraform_remote_state.stream.outputs.gnmic_target_parameter : ""
+  telegraf_cluster        = local.gnmic_from_nautobot ? data.terraform_remote_state.stream.outputs.telegraf_cluster_name : ""
+  gnmic_service           = local.gnmic_from_nautobot ? data.terraform_remote_state.stream.outputs.gnmic_service_name : ""
 
   # Neptune Analytics（graph が無ければ空）。app/agentcore/graph.py はグラフの ID（g-xxxxxxxxxx）を受ける
   neptune_graph_id  = try(data.terraform_remote_state.graph.outputs.graph_id, "")

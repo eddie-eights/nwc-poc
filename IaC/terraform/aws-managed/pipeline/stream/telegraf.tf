@@ -1,21 +1,15 @@
 # ---------------------------------------------------------------- Telegraf (ECS on Fargate + internal NLB)
-# 機器の SNMP のポーリング・gNMI の購読・trap を受けて MSK に書く Telegraf を、Fargate で動かす（2026-09-28 まで IaC/terraform/aws-managed/pipeline/lab の EC2）。
+# 機器から送ってくる SNMP trap を受けて MSK に書く Telegraf（telegraf-dialout）を、Fargate で動かす（2026-09-28 まで IaC/terraform/aws-managed/pipeline/lab の EC2）。
 # syslog は syslog-ng、NetFlow / sFlow は GoFlow2 が受ける（どちらも collectors.tf。cycle 012）。MDT の受け口は cycle 012 で外した（戻し方は docs/collection.md）。
+# gNMI は gnmic が取りにいく（gnmic.tf。cycle 013 で telegraf-dialin の gNMI の購読と SNMP のポーリングを置き換えた）。
 # 下の NLB は 3 つのサービス（telegraf-dialout・syslog-ng・GoFlow2）の共通の受け口で、どの番号をどのサービスへ渡すかは collector_listeners の表。
-# 同じイメージのタスクを役割（app/telegraf/telegraf.sh の TELEGRAF_ROLE）で 2 つのサービスに分ける（2026-10-04 ユーザー決定。名前は dialout / dialin にそろえる）:
-#   telegraf-dialout  機器から送ってくる trap を NLB の後ろで受ける。機器の一覧を持たず、台数を増やしても同じものを 2 回書かない
-#   telegraf-dialin   gNMI の購読と SNMP のポーリングでこちらから取りにいく（lab の gNMI の変換もここ）。機器の一覧を持ち、
-#                     2 つ立てると同じ機器から 2 回取って MSK に 2 回書くので 1 つ。NLB には付けない
-# dialin の機器の一覧と認証情報は SSM パラメータから ECS の secrets で渡す（タスクを起こすときに読むので、変えたらサービスを作り直す）:
-#   /<接頭辞>/telegraf-dialin/<出どころ>/gnmi-targets・snmp-agents   String。出どころは lab（var.gnmi_targets / var.snmp_agents。Terraform が書く）か
-#                     nautobot（var.dialin_targets_from_nautobot。最初の値だけ Terraform が書き、あとは IaC/terraform/aws-managed/pipeline/nautobot の Job が書き換えて
-#                     サービスを作り直す。Terraform は値の変化を見ない）
-#   /<接頭辞>/telegraf-dialin/gnmi-username・gnmi-password・snmp-community   SecureString。ops/up.sh が作る（値を state に入れない）
+# telegraf-dialout は機器の一覧を持たず、台数を増やしても同じものを 2 回書かない（名前の dialout は 2026-10-04 のユーザー決定のまま。入力を役割で分けていた
+# TELEGRAF_ROLE は、取りにいく側の telegraf-dialin と一緒に cycle 013 で外した）。
 # イメージは docker/images/telegraf/Dockerfile（公式の telegraf に設定のテンプレートと入口を足したもの）で、ops/up.sh が ECR の <接頭辞>-telegraf に置く。
 # lab の管理ネットワーク（203.0.113.0/24）は lab の EC2 の中の docker network なので、IaC/terraform/aws-managed/pipeline/lab（forward_to_telegraf）が VPC のルートと
 # lab.sh forward で届ける:
-#   ポーリング  telegraf-dialin → 機器の SNMP（161/udp）と gNMI（57400/tcp）。送り元はタスクの IP で、作り直すたびに変わるので、lab.sh forward は
-#               タスクのサブネットの CIDR（SSM の /<接頭辞>/telegraf-source-cidr）で通す
+#   gNMI        gnmic → 機器の gNMI（57400/tcp）。送り元はタスクの IP で、作り直すたびに変わるので、lab.sh forward は
+#               タスクのサブネットの CIDR（SSM の /<接頭辞>/telegraf-source-cidr。名前は Telegraf のときのまま）で通す
 #   trap        機器 → lab の EC2 の 162/udp → DNAT → 下の NLB の 162 → タスクの 1162（非 root は 1024 未満で待てない）
 #   syslog      機器 → lab の EC2 の 5140/udp → DNAT → NLB の 5140 → syslog-ng のタスクの 5140
 #   NetFlow / sFlow  機器 → lab の EC2 の 2055 / 6343（udp）→ DNAT → NLB の同じ番号 → GoFlow2 のタスクの同じ番号
@@ -26,7 +20,7 @@
 #   telegraf_dialout_nlb  管理ネットワークの CIDR から udp 162 / 5140 / 2055 / 6343 を受け（送り元が機器の管理 IP のまま）、telegraf_dialout へ udp 1162 と
 #                         tcp 8080、syslog_ng へ udp 5140 と tcp 5140、goflow2 へ udp 2055 / 6343 と tcp 8081 を送る（tcp はどれもヘルスチェック）
 #   telegraf_dialout      NLB の SG から受け（送り元の IP が残っても、NLB の SG を参照したルールで通る）、MSK の 9098・エンドポイントと S3 の 443 へ送る
-#   telegraf_dialin       何も受けない。管理ネットワークの udp 161 / tcp 57400・MSK の 9098・エンドポイントと S3 の 443 へ送る
+#   gnmic                 gnmic.tf の注記
 # OSS 版（cycle 005。IaC/terraform/oss/pipeline/stream）はこのファイルをシンボリックリンクで使う。書き先は ECS の Kafka（kafka-1〜3 の 9092、認証なし）で、
 # KAFKA_BROKERS・KAFKA_AUTH=none（telegraf.sh が outputs.kafka の IAM の行を消す）・Kafka の権限は kafka.tf の kafka_* の locals が渡す。SG の行は土台の oss.tf
 
@@ -35,14 +29,6 @@ locals {
   telegraf_image          = "${local.telegraf_repository_url}:${var.telegraf_image_tag}"
   telegraf_log_group      = "/ecs/${local.name_prefix}-telegraf"
 
-  # dialin の SSM パラメータ（上の注記）。機器の一覧は出どころでパスを分ける（切り替えると Terraform が古い方を消し、タスクの参照先も変わる）
-  dialin_parameter_prefix = "/${local.name_prefix}/telegraf-dialin"
-  dialin_target_source    = var.dialin_targets_from_nautobot ? "nautobot" : "lab"
-  dialin_targets          = { "gnmi-targets" = var.gnmi_targets, "snmp-agents" = var.snmp_agents }
-  dialin_target_names     = { for k, _ in local.dialin_targets : k => "${local.dialin_parameter_prefix}/${local.dialin_target_source}/${k}" }
-  # ops/up.sh の ensure_fixed_secret が作る SecureString（タスクの環境変数名 → パラメータの名前の最後）
-  dialin_credentials = { GNMI_USERNAME = "gnmi-username", GNMI_PASSWORD = "gnmi-password", SNMP_COMMUNITY = "snmp-community" }
-  ssm_parameter_arn  = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter"
 
   # NLB の受け口（どれも UDP）→ 渡すサービスとそのタスクのポート（app/telegraf/telegraf.conf.in の inputs.snmp_trap、app/syslog-ng/syslog-ng.conf.in の
   # s_device、GoFlow2 の -listen。cycle 012 で syslog を syslog-ng へ移し、NetFlow / sFlow を足し、MDT の 57000/tcp を外した）。
@@ -147,36 +133,12 @@ resource "aws_ssm_parameter" "telegraf_address" {
   description = "Private IP of the collector NLB (Telegraf dial-out, syslog-ng, GoFlow2). Read by lab.sh forward on the lab EC2 (DNAT target)."
 }
 
+# 名前は Telegraf のときのまま（lab の EC2 の IAM と lab.sh forward が読む）。中身は gnmic のタスクのサブネット（gnmic.tf）
 resource "aws_ssm_parameter" "telegraf_source_cidr" {
   name        = "/${local.name_prefix}/telegraf-source-cidr"
   type        = "String"
   value       = data.aws_subnet.telegraf.cidr_block
-  description = "CIDR of the subnet of the Telegraf dial-in task (its IP changes on every replacement). Read by lab.sh forward on the lab EC2 (SNMP / gNMI polling source)."
-}
-
-# dialin の機器の一覧（lab から）。Terraform が値を持つ
-resource "aws_ssm_parameter" "dialin_targets_lab" {
-  for_each = var.dialin_targets_from_nautobot ? {} : local.dialin_targets
-
-  name        = local.dialin_target_names[each.key]
-  type        = "String"
-  value       = each.value
-  description = "${each.key} of the Telegraf dial-in task, from the lab definition (python3 app/containerlab/lab_topology.py app/containerlab --${each.key}). ECS secrets of the task."
-}
-
-# dialin の機器の一覧（Nautobot から）。最初の値は lab から（Nautobot の最初の seed も lab なので同じ）で、あとは IaC/terraform/aws-managed/pipeline/nautobot の Job
-# （app/nautobot/jobs の dialin の同期）が書き換えてサービスを作り直す。Terraform は値の変化を見ない
-resource "aws_ssm_parameter" "dialin_targets_nautobot" {
-  for_each = var.dialin_targets_from_nautobot ? local.dialin_targets : {}
-
-  name        = local.dialin_target_names[each.key]
-  type        = "String"
-  value       = each.value
-  description = "${each.key} of the Telegraf dial-in task, written by the Nautobot job (IaC/terraform/aws-managed/pipeline/nautobot). ECS secrets of the task."
-
-  lifecycle {
-    ignore_changes = [value]
-  }
+  description = "CIDR of the subnet of the gnmic task (its IP changes on every replacement). Read by lab.sh forward on the lab EC2 (gNMI subscription source)."
 }
 
 # ---------------------------------------------------------------- ECS
@@ -194,8 +156,7 @@ resource "aws_cloudwatch_log_group" "telegraf" {
   retention_in_days = var.log_retention_days
 }
 
-# ECS Exec（tg test / tg gnmi）を使うので readonlyRootFilesystem は付けない（ECS Exec が対応していない）。telegraf.sh が書くのは /tmp だけ。
-# どちらのタスクも同じイメージ・同じロール・同じロググループで、ログのストリームの頭（dialout / dialin）で見分ける
+# ECS Exec（tg render で設定を見る）を使うので readonlyRootFilesystem は付けない（ECS Exec が対応していない）。telegraf.sh が書くのは /tmp だけ
 resource "aws_ecs_task_definition" "telegraf_dialout" {
   family                   = "${local.name_prefix}-telegraf-dialout"
   requires_compatibilities = ["FARGATE"]
@@ -221,7 +182,6 @@ resource "aws_ecs_task_definition" "telegraf_dialout" {
       ]
       environment = concat(
         [
-          { name = "TELEGRAF_ROLE", value = "dialout" },
           { name = "AWS_REGION", value = var.region },
           { name = "KAFKA_BROKERS", value = local.kafka_bootstrap_brokers },
         ],
@@ -246,62 +206,6 @@ resource "aws_ecs_task_definition" "telegraf_dialout" {
   }
 }
 
-resource "aws_ecs_task_definition" "telegraf_dialin" {
-  family                   = "${local.name_prefix}-telegraf-dialin"
-  requires_compatibilities = ["FARGATE"]
-  network_mode             = "awsvpc"
-  cpu                      = var.telegraf_task_cpu
-  memory                   = var.telegraf_task_memory
-  execution_role_arn       = aws_iam_role.telegraf_execution.arn
-  task_role_arn            = aws_iam_role.telegraf_task.arn
-
-  runtime_platform {
-    operating_system_family = "LINUX"
-    cpu_architecture        = "ARM64"
-  }
-
-  # 受け口は無い（portMappings なし。outputs.health の 8080 は開くが、見る NLB は無い）
-  container_definitions = jsonencode([
-    {
-      name      = "telegraf"
-      image     = local.telegraf_image
-      essential = true
-      environment = concat(
-        [
-          { name = "TELEGRAF_ROLE", value = "dialin" },
-          { name = "AWS_REGION", value = var.region },
-          { name = "KAFKA_BROKERS", value = local.kafka_bootstrap_brokers },
-          { name = "SNMP_POLL", value = var.snmp_poll ? "1" : "0" },
-        ],
-        local.kafka_client_environment,
-      )
-      # 機器の一覧（String）と認証情報（SecureString）。telegraf.conf.in は ${GNMI_USERNAME} などで読み、SNMP_AGENTS / GNMI_TARGETS は telegraf.sh が埋める
-      secrets = concat(
-        [
-          { name = "GNMI_TARGETS", valueFrom = "${local.ssm_parameter_arn}${local.dialin_target_names["gnmi-targets"]}" },
-          { name = "SNMP_AGENTS", valueFrom = "${local.ssm_parameter_arn}${local.dialin_target_names["snmp-agents"]}" },
-        ],
-        [for env, leaf in local.dialin_credentials : { name = env, valueFrom = "${local.ssm_parameter_arn}${local.dialin_parameter_prefix}/${leaf}" }],
-      )
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = aws_cloudwatch_log_group.telegraf.name
-          awslogs-region        = var.region
-          awslogs-stream-prefix = "dialin"
-        }
-      }
-    },
-  ])
-
-  lifecycle {
-    precondition {
-      condition     = local.telegraf_repository_url != ""
-      error_message = "IaC/terraform/aws-managed/base/ecr の state から telegraf_repository_url が読めない。IaC/terraform/aws-managed/base/ecr を先に apply する（ops/up.sh の手順 1）。"
-    }
-  }
-}
-
 # 受ける側（dialout）。NLB の後ろ
 resource "aws_ecs_service" "telegraf_dialout" {
   name            = "${local.name_prefix}-telegraf-dialout"
@@ -312,7 +216,7 @@ resource "aws_ecs_service" "telegraf_dialout" {
   desired_count = var.telegraf_az_num
   launch_type   = "FARGATE"
 
-  # aws ecs execute-command でタスクの中に入れる（設定を見る程度。tg test / tg gnmi は telegraf-dialin で打つ）
+  # aws ecs execute-command でタスクの中に入れる（設定を見る程度。コマンドは output telegraf_exec_command）
   enable_execute_command = true
 
   # 新しいタスクが NLB のヘルスチェックを通ってから古いタスクを外す（入れ替えのあいだも trap を落とさない）
@@ -343,39 +247,6 @@ resource "aws_ecs_service" "telegraf_dialout" {
   ]
 }
 
-# 取りにいく側（dialin）。NLB に付けない。telegraf_az_num に従わず、いつもサブネット a に 1 つ。IaC/terraform/aws-managed/pipeline/nautobot の Job が機器の一覧を書き換えたあと、このサービスを作り直す（force-new-deployment）
-resource "aws_ecs_service" "telegraf_dialin" {
-  name            = "${local.name_prefix}-telegraf-dialin"
-  cluster         = aws_ecs_cluster.telegraf.id
-  task_definition = aws_ecs_task_definition.telegraf_dialin.arn
-  desired_count   = 1
-  launch_type     = "FARGATE"
-
-  # aws ecs execute-command でタスクの中に入れる（tg test / tg gnmi。コマンドは output telegraf_exec_command）
-  enable_execute_command = true
-
-  # 2 つ同時に立てない（同じ機器を 2 回ポーリング・購読して MSK に 2 回書かない）。入れ替えでは古いタスクを止めてから新しいタスクを起こす。
-  # TELEGRAF_AZ_NUM に従わない理由も同じ: どのタスクも機器の一覧の全部を取りにいき、タスクのあいだで機器を分け合う仕組みが無い。
-  # コードから確かめた理由で、AWS では未確認（2026-10-04）
-  # gNMI は lab の SR Linux のためのもの。本番の Cisco の MDT の dial-out は cycle 012 で受け口を外した（戻し方は docs/collection.md）
-  deployment_minimum_healthy_percent = 0
-  deployment_maximum_percent         = 100
-
-  network_configuration {
-    subnets          = [local.telegraf_subnet_id]
-    security_groups  = [local.telegraf_dialin_sg_id]
-    assign_public_ip = false
-  }
-
-  depends_on = [
-    aws_iam_role_policy.telegraf_task,
-    aws_iam_role_policy.telegraf_execution,
-    aws_iam_role_policy_attachment.telegraf_execution,
-    aws_ssm_parameter.dialin_targets_lab,
-    aws_ssm_parameter.dialin_targets_nautobot,
-  ]
-}
-
 # ---------------------------------------------------------------- IAM
 data "aws_iam_policy_document" "ecs_tasks_trust" {
   statement {
@@ -396,29 +267,13 @@ data "aws_iam_policy_document" "ecs_tasks_trust" {
 
 resource "aws_iam_role" "telegraf_execution" {
   name               = "${local.name_prefix}-telegraf-exec"
-  description        = "ECS task execution role of the Telegraf tasks (ECR pull, CloudWatch Logs, dial-in targets and credentials from SSM)"
+  description        = "ECS task execution role of the Telegraf dial-out task (ECR pull, CloudWatch Logs)"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
 }
 
 resource "aws_iam_role_policy_attachment" "telegraf_execution" {
   role       = aws_iam_role.telegraf_execution.name
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
-}
-
-# dialin の secrets（機器の一覧と SecureString の認証情報。AWS 管理の aws/ssm キーなので kms:Decrypt は要らない）
-resource "aws_iam_role_policy" "telegraf_execution" {
-  name = "${local.name_prefix}-telegraf-exec"
-  role = aws_iam_role.telegraf_execution.name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid      = "DialinParameters"
-      Effect   = "Allow"
-      Action   = ["ssm:GetParameters"]
-      Resource = "${local.ssm_parameter_arn}${local.dialin_parameter_prefix}/*"
-    }]
-  })
 }
 
 resource "aws_iam_role" "telegraf_task" {

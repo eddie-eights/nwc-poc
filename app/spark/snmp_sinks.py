@@ -904,7 +904,7 @@ def all_topics(args):
 def ensure_topics(spark, bootstrap, topics):
     """無いトピックを作って、作った名前を返す（あるものは触らない）。
     MSK は auto.create.topics.enable=true だが、それは produce のとき。Telegraf が最初の trap、syslog-ng が最初の syslog、GoFlow2 が最初のフローを出すまで traps / logs / flows は無く
-    （SNMP のポーリングを止めている（Telegraf の SNMP_POLL=0）と metrics もずっと無い）、
+    （gnmic が止まっていると metrics もずっと無い）、
     Spark の offset 読み（AdminClient）は無いトピックで UnknownTopicOrPartitionException で落ちて、起こし直しの上限（1 時間 5 回）を
     使い切っていた（2026-09-27 実測）。パーティション数と複製数はブローカーの既定（IaC/terraform/aws-managed/pipeline/stream の MSK configuration）。
     Telegraf・syslog-ng・GoFlow2 と同時に作って TopicExistsException になっても、あるのだから先へ進む"""

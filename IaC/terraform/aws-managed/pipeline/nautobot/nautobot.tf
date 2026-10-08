@@ -2,7 +2,7 @@
 # 1 つのタスクに 3 つのコンテナ（同じタスクなので互いに localhost で届く）:
 #   web     画面と API（8080）。上流の entrypoint が DB の migrate（post_upgrade）をしてから、app/nautobot/netops/bootstrap.py が
 #           管理者・custom field・最初の seed（機器が 0 件のときだけ lab の定義から）・Job の有効化と JobHook を入れ、一度同期して、uwsgi を起こす
-#   worker  Celery のワーカー。Job（app/nautobot/jobs/netops_jobs.py の「Telegraf とグラフ DB に同期」と、変更のたびに走る JobHook）を回す
+#   worker  Celery のワーカー。Job（app/nautobot/jobs/netops_jobs.py の「gnmic とグラフ DB に同期」と、変更のたびに走る JobHook）を回す
 #   redis   キャッシュと Celery のブローカー、同期のロック。中身は消えてよい
 # 画面は Web の EC2 を踏み台にした SSM のポートフォワードで開く（outputs.tf のコマンド）。
 
@@ -62,10 +62,9 @@ locals {
     ] : [
     { name = "NEPTUNE_GRAPH_ID", value = local.neptune_graph_id },
     ], [
-    { name = "DIALIN_GNMI_PARAMETER", value = lookup(local.dialin_parameters, "gnmi-targets", "") },
-    { name = "DIALIN_SNMP_PARAMETER", value = lookup(local.dialin_parameters, "snmp-agents", "") },
+    { name = "GNMI_TARGETS_PARAMETER", value = local.gnmic_targets_parameter },
     { name = "TELEGRAF_CLUSTER", value = local.telegraf_cluster },
-    { name = "TELEGRAF_DIALIN_SERVICE", value = local.telegraf_service },
+    { name = "GNMIC_SERVICE", value = local.gnmic_service },
   ])
   # SSM の SecureString（ops/up.sh が作る）。ECS のエージェントが実行ロールで読んでコンテナの環境変数にする
   nautobot_secrets = concat([

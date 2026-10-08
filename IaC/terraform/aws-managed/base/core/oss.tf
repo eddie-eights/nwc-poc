@@ -33,9 +33,9 @@ locals {
     ]],
     [
       # Kafka（KRaft の 3 ノードがブローカーとコントローラーを兼ねる。9092 がクライアント、9093 がコントローラー）。
-      # 認証なしの PLAINTEXT なので、絞り込みは SG だけ（MSK の 9098 の IAM 認証と、syslog-ng / GoFlow2 の 9096 の SCRAM の代わり）
+      # 認証なしの PLAINTEXT なので、絞り込みは SG だけ（MSK の 9098 の IAM 認証と、syslog-ng / GoFlow2 / gnmic の 9096 の SCRAM の代わり）
       { from = "telegraf_dialout", to = "kafka", protocol = "tcp", port = 9092, why = "Kafka - Telegraf dial-out writes" },
-      { from = "telegraf_dialin", to = "kafka", protocol = "tcp", port = 9092, why = "Kafka - Telegraf dial-in writes" },
+      { from = "gnmic", to = "kafka", protocol = "tcp", port = 9092, why = "Kafka - gnmic writes" },
       { from = "syslog_ng", to = "kafka", protocol = "tcp", port = 9092, why = "Kafka - syslog-ng writes" },
       { from = "goflow2", to = "kafka", protocol = "tcp", port = 9092, why = "Kafka - GoFlow2 writes" },
       { from = "spark", to = "kafka", protocol = "tcp", port = 9092, why = "Kafka - Spark reads" },

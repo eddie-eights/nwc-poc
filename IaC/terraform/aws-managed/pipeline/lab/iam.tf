@@ -54,7 +54,7 @@ resource "aws_iam_role_policy" "lab_assets" {
         }
       },
       {
-        # lab.sh forward が Telegraf の NLB のアドレスとタスクのサブネットの CIDR を読む（IaC/terraform/aws-managed/pipeline/stream の telegraf.tf。無ければ何もしない）
+        # lab.sh forward が Telegraf の NLB のアドレスと gnmic のタスクのサブネットの CIDR を読む（IaC/terraform/aws-managed/pipeline/stream の telegraf.tf。無ければ何もしない）
         Sid    = "TelegrafAddress"
         Effect = "Allow"
         Action = "ssm:GetParameter"

@@ -34,7 +34,7 @@ lab の中身:
 | 相手 | 向き | ポートと認証 |
 |---|---|---|
 | 利用者の PC | PC → EC2 | SSM Session Manager（`ssm`、`ssmmessages` のエンドポイント） |
-| Telegraf の取りにいく側 | タスク → 機器 | SNMP 161/udp と gNMI 57400/tcp。VPC のルートで管理ネットワーク宛てを lab の EC2 に向ける。認証情報は SSM の SecureString |
+| gnmic（stream の ECS） | タスク → 機器 | gNMI 57400/tcp。VPC のルートで管理ネットワーク宛てを lab の EC2 に向ける。認証情報は SSM の SecureString。2026-10-09（cycle 013）に Telegraf の取りにいく側を置き換え、SNMP 161/udp は通さなくなった |
 | stream の ECS の受ける側（内部 NLB） | 機器 → EC2 → NLB | trap 162/udp（Telegraf）、syslog 5140/udp（syslog-ng）、NetFlow 2055/udp・sFlow 6343/udp（GoFlow2）。機器は `203.0.113.1` へ送り、`lab forward` が NLB へ DNAT する（SR Linux は NetFlow を送れないので、NetFlow は lab の EC2 で `tools/netflow_send.py` を打って試す） |
 | SSM のパラメータ | EC2 → `/<prefix>/telegraf-address`、`/<prefix>/telegraf-source-cidr` | `ssm` のエンドポイント、インスタンスロール（`lab forward` が読む） |
 | ECR と S3 | EC2 → イメージ、`lab/` | `ecr.api`、`ecr.dkr` のエンドポイントと S3 の gateway エンドポイント |
@@ -60,7 +60,7 @@ lab の中身:
 - **trap と syslog は、送り元の IP を機器の管理 IP のまま届ける。**
   Docker の MASQUERADE にかけず、NLB も送り元を残す。Spark とエージェントが送り元の IP で機器を引くため。
   出典: `telegraf.tf` のコメント。
-- **ポーリングを通す穴は、タスクのサブネットの CIDR で開ける。**
+- **gNMI を通す穴は、gnmic のタスクのサブネットの CIDR で開ける。**
   タスクの IP は作り直すたびに変わるため。CIDR は stream が SSM の `/<prefix>/telegraf-source-cidr` に書く。
   出典: `telegraf.tf` のコメント。
 - **stream を後から作っても、lab の EC2 は作り直さない。**
@@ -102,7 +102,7 @@ lab の中身:
 | 項目 | 状態 |
 |---|---|
 | 2 台構成 | できない（上の知見。AWS では未確認） |
-| `SKIP_LAB=1` のとき | Telegraf の取りにいく側は lab の定義の機器を探しに行き、届かないのでエラーを出して繋ぎ直し続ける（タスクは落ちない）。trap と syslog は来ない |
+| `SKIP_LAB=1` のとき | gnmic は lab の定義の機器を探しに行き、届かないので gNMI のエラーをログに出して 10 秒ごとに繋ぎ直す（タスクは落ちない。手元の docker で確かめた。ECS では未確認）。trap と syslog は来ない |
 | 機器の認証情報 | containerlab の既定値を最初の値にする（SSM の SecureString。[ssm-parameter-store.md](ssm-parameter-store.md)） |
 | 処置の種類 | worker が打つのは `heal-main`（回線を上げる）と `check`（見るだけ）だけ |
 

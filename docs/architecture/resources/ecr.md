@@ -11,7 +11,7 @@ VPC から外へ出る経路が無いので、Fargate も EC2 も Runtime も、
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
-| リポジトリ | 12 個（下の表）。時間課金が無いので、スイッチに関わらずいつも作る。OSS 版（`IaC/terraform/oss/`、`project = nwc-oss`）はこれに 7 個を足す（下の「OSS 版だけのリポジトリ」） | `IaC/terraform/aws-managed/base/ecr/main.tf` |
+| リポジトリ | 15 個（下の表）。時間課金が無いので、スイッチに関わらずいつも作る。OSS 版（`IaC/terraform/oss/`、`project = nwc-oss`）はこれに 7 個を足す（下の「OSS 版だけのリポジトリ」） | `IaC/terraform/aws-managed/base/ecr/main.tf` |
 | タグ | `IMMUTABLE`（同じタグに上書きできない） | `main.tf` |
 | 消し方 | `force_delete = true`。destroy でイメージごと消える | `main.tf` |
 | スキャン | `scan_on_push = true` | `main.tf` |
@@ -31,6 +31,9 @@ VPC から外へ出る経路が無いので、Fargate も EC2 も Runtime も、
 | `lab-multitool` | `ghcr.io/srl-labs/network-multitool`（写し。containerlab の `linux` kind の既定。いまの lab で使うノードは無い） | lab の EC2 | 上流の版 + `-amd64`（`MULTITOOL_ECR_TAG`） |
 | `lab-trex` | `trexcisco/trex`（写し。amd64 だけ） | lab の EC2（`dc1-trex-01`） | 上流の版 + `-amd64`（`TREX_ECR_TAG`） |
 | `telegraf` | 公式の `telegraf` に設定のテンプレートと `tg` を足す | ECS Fargate（stream） | `<版>-<ディレクトリの中身のハッシュ 12 桁>` |
+| `gnmic` | 公式の `ghcr.io/openconfig/gnmic` に設定のテンプレートと `gn` を足す（2026-10-09 から） | ECS Fargate（stream） | 同上（版は `ops/up-common.sh` の `GNMIC_VERSION`） |
+| `syslog-ng` | 公式の AxoSyslog に設定のテンプレートと `sng` を足す（2026-10-08 から） | ECS Fargate（stream） | 同上（版は `ops/up-common.sh` の `SYSLOG_NG_VERSION`） |
+| `goflow2` | `netsampler/goflow2`（写し。2026-10-08 から） | ECS Fargate（stream） | 上流の版（`ops/up-common.sh` の `GOFLOW2_TAG`） |
 | `kafka-ui` | `ghcr.io/kafbat/kafka-ui`（写し） | Web の EC2 の Docker（stream を作る回。010 から） | 上流の版（`ops/up.sh` の `KAFKA_UI_TAG`） |
 | `grafana` | 公式の Grafana OSS に plugin と provisioning を焼き込む | ECS Fargate（analytics） | 同上 |
 | `splunk` | 公式の `splunk/splunk` に検知のアプリと入口のスクリプトを足す（amd64 だけ、約 2〜3 GB） | ECS Fargate x86（analytics） | 同上 |
@@ -56,7 +59,7 @@ OSS 版だけのリポジトリ（`oss_repositories`。マネージド版では�
 - **コードを変えたら、タグを進める。**
   リポジトリが `IMMUTABLE` なので、同じタグには push できない。自前ビルドの `agent` と `worker` は `IMAGE_TAG` を変える。
   出典: [data-stores.md](../../data-stores.md) の「9. タグ」、`IaC/terraform/aws-managed/base/ecr/main.tf` のコメント。
-- **`telegraf` / `grafana` / `splunk` / `nautobot` は、中身を変えれば自動でタグが変わる。**
+- **`telegraf` / `gnmic` / `syslog-ng` / `grafana` / `splunk` / `nautobot` は、中身を変えれば自動でタグが変わる。**
   タグにディレクトリの中身のハッシュが入る（`ops/lab-common.sh` の `dir_tag`）。`IMAGE_TAG` を上げなくてよい。
   出典: [data-stores.md](../../data-stores.md) の「9. タグ」、`ops/up.sh` のコメント。
 - **`ops/up.sh` は、ECR にそのタグが無いときだけビルドして push する。**
@@ -88,7 +91,7 @@ OSS 版だけのリポジトリ（`oss_repositories`。マネージド版では�
 
 | 項目 | 状態 |
 |---|---|
-| ライフサイクルポリシー（古いイメージを消す） | `agent` だけにある（新しい 5 個を残す）。ほかの 11 個（OSS 版はさらに 7 個）には無い（`IaC/terraform/aws-managed/base/ecr/main.tf`） |
+| ライフサイクルポリシー（古いイメージを消す） | `agent` だけにある（新しい 5 個を残す）。ほかの 14 個（OSS 版はさらに 7 個）には無い（`IaC/terraform/aws-managed/base/ecr/main.tf`） |
 | スキャンの結果の扱い | リポジトリに記述が無い（push のときにスキャンが走る設定だけ） |
 
 ## 関連

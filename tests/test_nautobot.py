@@ -1,6 +1,6 @@
 """Nautobot 連携（app/nautobot/、IaC/terraform/aws-managed/pipeline/nautobot、ops/up.sh が PIPELINE=1 でいつも作る）の模擬テスト。AWS にも Nautobot にも触れない。
-- 対応付け（app/nautobot/netops/nb_map.py）: lab の定義 → seed_plan → Nautobot → to_graph / targets と一周すると、lab と同じ機器・回線・Telegraf の一覧に戻る
-- 同期（nb_sync.push_targets）: 変わったときだけ SSM を書いて dialin を作り直す。空の一覧は書かない
+- 対応付け（app/nautobot/netops/nb_map.py）: lab の定義 → seed_plan → Nautobot → to_graph / targets と一周すると、lab と同じ機器・回線・gnmic の購読先に戻る
+- 同期（nb_sync.push_targets）: 変わったときだけ SSM を書いて gnmic を作り直す。空の一覧は書かない
 - Web: Nautobot があるあいだは、リンクの追加・削除を Nautobot の REST API に書く（app/dashboard/topology_view.py、app/dashboard/nautobot_api.py）。静的データの投入は止める
 - 配線: Dockerfile・Terraform・ops/up.sh・ops/down.sh の名前と順序がそろっている
 実行は uv run --group dev --group web python tests/test_nautobot.py（app/dashboard/topology_view.py が gradio と pandas を読む）。"""
@@ -66,11 +66,11 @@ check("一周: 機器が lab と同じ（device_id / site / role / mgmt_ip / asn
       devices == sorted((strip(d) for d in lab["devices"]), key=lambda d: d["device_id"]))
 check("一周: 回線が lab と同じ（端・kind・role・bandwidth_mbps）", links == sorted(lab["links"], key=key))
 t = nb_map.targets(rows)
-check("一周: gNMI の一覧が app/containerlab/lab_topology.py --gnmi-targets と同じ文字列（最初の同期で Telegraf を作り直さない）",
+check("一周: gNMI の一覧が app/containerlab/lab_topology.py --gnmi-targets と同じ文字列（最初の同期で gnmic を作り直さない）",
       t["gnmi-targets"] == lab_cli("--gnmi-targets"))
-check("一周: SNMP の一覧が app/containerlab/lab_topology.py --snmp-agents と同じ文字列", t["snmp-agents"] == lab_cli("--snmp-agents"))
-check("targets のキーは IaC/terraform/aws-managed/pipeline/stream の出力のキーと同じ",
-      tuple(t) == nb_map.TARGET_KEYS and all(f'"{k}"' in read("IaC", "terraform", "aws-managed", "pipeline", "stream", "telegraf.tf") for k in t))
+check("targets のキーは gNMI の 1 つだけ（SNMP のポーリングは cycle 013 でやめた）で、IaC/terraform/aws-managed/pipeline/stream の gnmic.tf の SSM パラメータの名前の末尾",
+      tuple(t) == nb_map.TARGET_KEYS == ("gnmi-targets",)
+      and all(f'/{k}"' in read("IaC", "terraform", "aws-managed", "pipeline", "stream", "gnmic.tf") for k in t))
 
 # ---- to_graph / targets の規則
 R = lambda name, role="a-leaf", ip="", services=(), ifs=(): {"name": name, "site": "s", "role": role, "mgmt_ip": ip, "asn": "",
@@ -88,15 +88,15 @@ check("to_graph: a < b にそろえ、同じ機器どうし・知らない機器
 check("to_graph: asn の空文字は None、Service が無ければ enabled でない", d2[0]["asn"] is None and d2[0]["enabled"] is False)
 t2 = nb_map.targets([R("z", ip="10.0.0.2", services=[("gNMI", "tcp", 6030)]), R("y", ip="10.0.0.1", services=[("snmp", "udp", 161), ("gnmi", "udp", 1)]),
                      R("x", services=[("gnmi", "tcp", 57400)]), R("w", ip="10.0.0.9")])
-check("targets: 名前の順、Service の名前は大文字小文字を問わず protocol は合わせる、ポートは Service の値、管理 IP の無い機器は入らない",
-      t2 == {"gnmi-targets": '"10.0.0.2:6030"', "snmp-agents": '"udp://10.0.0.1:161"'})
-check("targets: 機器が無ければ空文字（nb_sync が書かない）", nb_map.targets([]) == {"gnmi-targets": "", "snmp-agents": ""})
+check("targets: 名前の順、Service の名前は大文字小文字を問わず protocol は合わせる、ポートは Service の値、管理 IP の無い機器と snmp だけの機器は入らない",
+      t2 == {"gnmi-targets": '"10.0.0.2:6030"'})
+check("targets: 機器が無ければ空文字（nb_sync が書かない）", nb_map.targets([]) == {"gnmi-targets": ""})
 try:
     nb_map.targets([R("bad", ip='1.1.1.1", "x', services=[("gnmi", "tcp", 1)])])
     bad = False
 except ValueError:
     bad = True
-check("targets: IP でない管理 IP は通さない（telegraf.conf にそのまま入るので）", bad)
+check("targets: IP でない管理 IP は通さない（gnmic の設定に入るので）", bad)
 
 # ---- nb_sync.push_targets（boto3 を差し替える）
 import toolkit
@@ -113,19 +113,19 @@ log.setLevel(logging.CRITICAL)
 def push(values, rows, force=False, env=True):
     ssm, ecs = Ssm(values), Ecs()
     toolkit.client = lambda name: {"ssm": ssm, "ecs": ecs}[name]
-    for k, v in {"DIALIN_GNMI_PARAMETER": "/p/gnmi", "DIALIN_SNMP_PARAMETER": "/p/snmp", "TELEGRAF_CLUSTER": "c", "TELEGRAF_DIALIN_SERVICE": "s"}.items():
+    for k, v in {"GNMI_TARGETS_PARAMETER": "/p/gnmi", "TELEGRAF_CLUSTER": "c", "GNMIC_SERVICE": "s"}.items():
         os.environ[k] = v if env else ""
     return nb_sync.push_targets(rows, log, force), ssm, ecs
-out, ssm, ecs = push({"/p/gnmi": t["gnmi-targets"], "/p/snmp": t["snmp-agents"]}, rows)
+out, ssm, ecs = push({"/p/gnmi": t["gnmi-targets"]}, rows)
 check("push_targets: 同じなら SSM も ECS も触らない", out == {"changed": [], "redeployed": False} and not ssm.puts and not ecs.calls)
-out, ssm, ecs = push({"/p/gnmi": "old", "/p/snmp": t["snmp-agents"]}, rows)
-check("push_targets: 変わったものだけ String で上書きし、dialin を 1 回作り直す",
+out, ssm, ecs = push({"/p/gnmi": "old"}, rows)
+check("push_targets: 変わったら String で上書きし、gnmic を 1 回作り直す",
       out == {"changed": ["gnmi-targets"], "redeployed": True}
       and ssm.puts == [{"Name": "/p/gnmi", "Value": t["gnmi-targets"], "Type": "String", "Overwrite": True}]
       and ecs.calls == [{"cluster": "c", "service": "s", "forceNewDeployment": True}])
-out, ssm, ecs = push({"/p/gnmi": "old", "/p/snmp": "old"}, [])
-check("push_targets: 空の一覧は書かない（Telegraf が起動できなくなる）", not ssm.puts and not ecs.calls)
-out, ssm, ecs = push({"/p/gnmi": t["gnmi-targets"], "/p/snmp": t["snmp-agents"]}, rows, force=True)
+out, ssm, ecs = push({"/p/gnmi": "old"}, [])
+check("push_targets: 空の一覧は書かない（gnmic が起動できなくなる）", not ssm.puts and not ecs.calls)
+out, ssm, ecs = push({"/p/gnmi": t["gnmi-targets"]}, rows, force=True)
 check("push_targets: force_redeploy なら変わっていなくても作り直す", not ssm.puts and len(ecs.calls) == 1)
 out, ssm, ecs = push({}, rows, env=False)
 check("push_targets: 書き先が渡されていなければ何もしない", out == {"skipped": True} and not ecs.calls)
@@ -139,7 +139,7 @@ sys.modules.update({"django": types.ModuleType("django"), "django.core": types.M
 synced = []
 graph.configured = lambda: True
 graph.sync_physical = lambda devices, links: synced.append((len(devices), len(links))) or {"devices": len(devices)}
-toolkit.client = lambda name: {"ssm": Ssm({"/p/gnmi": "old", "/p/snmp": "old"}), "ecs": Ecs()}[name]
+toolkit.client = lambda name: {"ssm": Ssm({"/p/gnmi": "old"}), "ecs": Ecs()}[name]
 _changes = [{"id": "u1", "time": 1790000000, "user": "admin", "action": "update", "object_type": "device", "object": "DC1-A-Leaf-01", "device": "DC1-A-Leaf-01",
              "differences": {"removed": {"status": {"name": "Active"}, "last_updated": "a"}, "added": {"status": {"name": "Maintenance"}, "last_updated": "b"}}},
             {"id": "u2", "time": 1790000100, "user": "netops-web", "action": "delete", "object_type": "cable", "object": "x <> y", "device": "", "differences": None},
@@ -226,7 +226,7 @@ check("bootstrap: seed が失敗したら起動時の同期を飛ばし、JobHoo
       "steps_skip.add(first_sync)" in boot and "JobHook.objects.update_or_create" in boot)
 check("bootstrap: Maintenance を機器の Status に選べるようにする（seed より前）",
       "for step in (superuser, api_user, custom_fields, statuses, seed, jobs, first_sync)" in boot and "status.content_types.add(device_ct)" in boot)
-# ---- Job の名前（2026-10-08 の OSS 版の検証の「docs のずれ」3。前は OSS 版でも「Telegraf と Neptune に同期」）
+# ---- Job の名前（2026-10-08 の OSS 版の検証の「docs のずれ」3。前は OSS 版でも「Telegraf と Neptune に同期」。cycle 013 で Telegraf → gnmic）
 import importlib.util
 def load_jobs(graph_name):
     """app/nautobot/jobs/netops_jobs.py を、Nautobot の Job の基底と nb_sync（GRAPH_NAME だけ）を差し替えて読む。{クラス名: (name, description)}"""
@@ -248,13 +248,13 @@ def load_jobs(graph_name):
             else:
                 sys.modules[k] = v
 _jobs_nep, _jobs_neo = load_jobs("Neptune"), load_jobs("Neo4j")
-check("Job の名前は両方の版で同じ「Telegraf とグラフ DB に同期」「変更のたびに Telegraf とグラフ DB に同期」で、Neptune とも Neo4j とも書かない",
+check("Job の名前は両方の版で同じ「gnmic とグラフ DB に同期」「変更のたびに gnmic とグラフ DB に同期」で、Neptune とも Neo4j とも書かない",
       {k: v[0] for k, v in _jobs_nep.items()} == {k: v[0] for k, v in _jobs_neo.items()}
-      == {"SyncTopology": "Telegraf とグラフ DB に同期", "SyncOnChange": "変更のたびに Telegraf とグラフ DB に同期"})
+      == {"SyncTopology": "gnmic とグラフ DB に同期", "SyncOnChange": "変更のたびに gnmic とグラフ DB に同期"})
 check("Job の説明は書き先の名前（nb_sync.GRAPH_NAME）を出す。マネージド版は Neptune、OSS 版は Neo4j",
       all("Neptune" in v[1] and "Neo4j" not in v[1] for v in _jobs_nep.values()) and all("Neo4j" in v[1] and "Neptune" not in v[1] for v in _jobs_neo.values())
-      and "「Telegraf とグラフ DB に同期」と同じ" in _jobs_nep["SyncOnChange"][1])
-_old_name = subprocess.run(["git", "grep", "-n", "-e", "Telegraf と Neptune に同期", "--", "app", "IaC", "oss", "ops",
+      and "「gnmic とグラフ DB に同期」と同じ" in _jobs_nep["SyncOnChange"][1])
+_old_name = subprocess.run(["git", "grep", "-n", "-e", "Telegraf と Neptune に同期", "-e", "Telegraf とグラフ DB に同期", "--", "app", "IaC", "oss", "ops",
                             "docs/nautobot.md", "docs/oss-variant.md", "docs/pipeline.md", "docs/architecture"], cwd=ROOT, capture_output=True, text=True).stdout
 check(f"Job は名前でなくクラスの場所で引く（bootstrap の JOBS と JobHook の job）ので、名前を変えても外れない。古い名前はコードと docs に残らない（{_old_name.strip()}）",
       'JOBS = ("netops_jobs.SyncTopology", "netops_jobs.SyncOnChange")' in boot and '"job": models[JOBS[1]]' in boot and _old_name == "")
@@ -292,13 +292,13 @@ order = [m.start() for m in (re.search(p, down, re.M) for p in (r"^destroy_root 
 check("ops/down.sh は nautobot を graph と stream より先に消す（state を読む相手が残っているうちに）", len(order) == 4 and order == sorted(order))
 check("ops/down.sh は nautobot が消えなかったとき、その secrets を残す", 'case "$n" in "/$PREFIX/nautobot/"*)' in down and "pipeline/nautobot" in down.split("5-2.")[1])
 check("ops/up.sh: stream に一覧の持ち主を渡し、nautobot は graph の seed（7-3b）の後・analytics（7-4）の前",
-      '-var "dialin_targets_from_nautobot=$DIALIN_FROM_NAUTOBOT"' in up
+      '-var "gnmi_targets_from_nautobot=$GNMI_FROM_NAUTOBOT"' in up
       and up.index('log "7-3b.') < up.index("# ---- 7-3c. Nautobot") < up.index("# ---- 7-4. analytics"))
-check("ops/up.sh: エンドポイントに ecs（Job が dialin を作り直す）", "pipeline/nautobot) add_endpoints ecr.api ecr.dkr logs ecs ;;" in up)
+check("ops/up.sh: エンドポイントに ecs（Job が gnmic を作り直す）", "pipeline/nautobot) add_endpoints ecr.api ecr.dkr logs ecs ;;" in up)
 check("ops/check.sh が nautobot のルートとこのテストを回す（モックの検査は tests/test_*.py のグロブ）", "pipeline/nautobot" in chk and "for t in tests/test_*.py; do" in chk)
 check("Nautobot は PIPELINE=1 ならいつも作る（切り替える変数は無い）",
       'if [ -n "$PIPELINE" ] && { [ -z "$SKIP_STREAM" ] || [ -z "$SKIP_GRAPH" ]; }; then NAUTOBOT=1; fi' in up
-      and "flag_value NAUTOBOT" not in up and "NAUTOBOT=1" not in read("deploy.env.example") and "DIALIN_FROM_NAUTOBOT=false" not in up)
+      and "flag_value NAUTOBOT" not in up and "NAUTOBOT=1" not in read("deploy.env.example") and "GNMI_FROM_NAUTOBOT=false" not in up)
 check("前の deploy.env の NAUTOBOT で止まらない（読むだけ読んで注意を出す）", "NAUTOBOT" in read("ops", "deploy-env.sh").split() and "注意: NAUTOBOT=0 は効かない" in up)
 check("デバッグ用の EC2 は Nautobot を使わない", "nautobot" not in read("ops", "lab-debug.sh").lower() and "nautobot" not in read("IaC", "cloudformation", "lab-debug.yaml").lower())
 
