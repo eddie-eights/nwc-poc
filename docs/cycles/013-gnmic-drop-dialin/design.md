@@ -118,7 +118,8 @@ BACKLOG 28「コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種
 4. `python3 tests/test_alerts.py`: `link_down` の式としきい値、保存済みサーチが `netops_gnmi` / `netops_trap` / `netops_trap_clear`、`netops_gnmi` の link_down が参照実装と同じ答え（oper と admin が別の event、admin disable、ループバック除外）。`grep -rn "ifOperStatus\|netops_poll" app/grafana app/splunk` が 0 件
 5. gnmic のイメージ: `docker build` が通り、`docker run` で設定の読み込みまで進む（target に届かない・Kafka が無い前提で、設定の誤りのエラーが出ないこと）。手元の SR Linux は動かない（未確定 1）ので、subscribe の実物はここでは取らない
 6. （第 2 段）`terraform fmt` / `validate`（`ops/check.sh` に入っている）
-7. AWS（マネージド、PM）: `ops/up.sh` → `gnmic` が `runningCount 1`、`telegraf-dialin` が無い。Kafbat UI の `gnmi` / `metrics` に gnmic の event。AMP で `snmp_interface_oper_up{sysName="dc1-a-leaf-01",ifName="ethernet-1/1"}` が 1。`sudo lab fail-main` で 0 になり、Grafana と Splunk の `link_down` と `isis_down` が SNS に出て、Web のトポロジの `dc1-a-leaf-01 ethernet-1/1` が DOWN。`heal-main` で resolved。終わったら `ops/down.sh`
+7. AWS（マネージド、PM）: gnmic の event の実物を Kafbat UI の `gnmi` と `metrics` から 1 行ずつ取り、検証 2 の入力（ソースから組んだ形）と照合する（values のキーの接頭辞、カウンターが文字列か数か、`oper-state` / `admin-state` の値の綴り、tags のキー）。違えば `tests/test_stream.py` の入力を実物に替える（未確定 1）
+8. AWS（マネージド、PM）: `ops/up.sh` → `gnmic` が `runningCount 1`、`telegraf-dialin` が無い。Kafbat UI の `gnmi` / `metrics` に gnmic の event。AMP で `snmp_interface_oper_up{sysName="dc1-a-leaf-01",ifName="ethernet-1/1"}` が 1。`sudo lab fail-main` で 0 になり、Grafana と Splunk の `link_down` と `isis_down` が SNS に出て、Web のトポロジの `dc1-a-leaf-01 ethernet-1/1` が DOWN。`heal-main` で resolved。終わったら `ops/down.sh`
 
 ## 未確定事項とリスク
 

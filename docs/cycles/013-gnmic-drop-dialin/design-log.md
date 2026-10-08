@@ -48,3 +48,9 @@ PM（SendMessage）との要件のやりとりの要約。PM の下書き（desi
 - on-change に `heartbeat-interval` を付けない（SR Linux が受けるか確かめていない。いまの bgp / isis と同じ扱い）
 - 足したもの: IF の流量・エラーと CPU・メモリのパネル、`app/containerlab/trex/kafka_load.sh` / README、`app/agentcore/evidence.py` / `tools/tools.json`、`docker/compose/{check.sh,up.sh,compose.yaml}`、`tests/check_splunk_image.py`、`test_lab_debug` / `test_local_compose` / `test_nautobot` / `test_sync` / `test_oss` / `test_oss_ops` / `test_oss_roll`、Nautobot の IAM と locals（`pipeline/nautobot/`）、`docker/images/telegraf/Dockerfile`（star の COPY）、`.env.example` / `ops/deploy-env.sh` / `ops/down.sh` / `oss/ops/down.sh`
 - 実装を 2 段に分けた（第 1 段 = 012 に依らないもの、第 2 段 = 012 のマージのあと Terraform / ops / docs）
+
+### 新しい判断への PM の回答（c00e91b のあと）
+
+- Splunk の `sysName`: **承認。** bgp / isis の Splunk の機器名が IP から機器名に変わる副作用は、Grafana と揃う方向なので受け入れる。設計本文に書き（design.md の設計方針 2）、`sysName` が付くことをテストで 1 件確かめる
+- `heartbeat-interval` を付けない（Grafana は `last_over_time` 24h + `lt 0.5`、Splunk は 24 時間）: **承認**
+- event の実物が取れない件: build.md に「ソースから組んだ形」と書き、design.md の未確定事項の筆頭に残す。AWS で実物を取って照合する項目を design.md の検証方法に足す（検証 7）

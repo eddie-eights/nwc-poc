@@ -21,6 +21,13 @@ Telegraf の JSON 出力（outputs.kafka の data_format = "json"、json_timesta
 の形。列に分けるのは timestamp / name / agent_host / host だけで、tags と fields は JSON 文字列のまま入れる
 （機器やメトリクスが増えてもテーブルの列を変えないため。IaC/terraform/aws-managed/pipeline/analytics/tables.tf の列と同じ）。
 
+gnmic（cycle 013。機器の gNMI を購読する。app/gnmic）の event（format: event。split-events で 1 メッセージ 1 件）は
+  {"name": "<subscription の名前>", "timestamp": <ナノ秒>, "tags": {"source": "<機器の IP>", "interface_name": "…", …}, "values": {"/interface/oper-state": "…"}}
+の形（消えたときは values が無く deletes だけ）。read_rows が形で見分けて（fields が無く、values か deletes がある）Telegraf の形に読み替える
+（トピックでは分けない。gnmi と metrics のどちらに来ても同じ）: timestamp は秒、name は GNMI_MEASUREMENTS で measurement に、tags のキーは接頭辞（…:）を落として
+GNMI_TAGS で名前を替え、values のキーは最後の要素の接頭辞を落として - を _ に（/interface/oper-state → oper_state）、agent_host の列は tags.source。
+deletes だけの event は捨てる。gnmic_message が同じ読み替えを Python で書いたもの（tests/test_stream.py が縛る）。読み替えた形がどの格納先にも入る（S3 Tables も）。
+
 どの行にも一意の番号 event_id を付ける: Kafka のメッセージの value（from_json の前のバイト列そのまま）の SHA-256 の 16 進 64 文字（F.sha2）。
 中身から作るので、Spark のやり直しで同じメッセージを送り直しても、Telegraf が同じメッセージを Kafka に 2 回入れても同じ値になり、読む側で重複を落とせる
 （ここでは dropDuplicates しない）。Telegraf の timestamp は秒（json_timestamp_units = "1s"）なので、同じ秒に同じ中身の別の出来事も同じ event_id になる（受け入れる）。
@@ -29,13 +36,16 @@ Telegraf の JSON 出力（outputs.kafka の data_format = "json"、json_timesta
 splunk（event の項目）。prometheus には入れない（ラベルにすると 1 サンプルごとに別の系列になる）。
 
 異常の検知はここではしない（2026-10-02 にやめた。detect のクエリと Neptune の anomaly 頂点、S3 Tables の anomaly_events、EventBridge への put_events を消した）。
-検知と相関は格納先の側でする: Grafana のアラートルール（AMP のポーリングの ifOperStatus と gNMI の BGP / IS-IS、OpenSearch の trap。
-app/grafana/provisioning/alerting）と Splunk の保存済みサーチ（ポーリング・trap・gNMI の BGP / IS-IS。app/splunk/netops_alerts）が同じ 4 種類を
-SNS のトピック <接頭辞>-alerts に出し、ワークフロー（SQS）とトポロジの status（graph の Lambda）がそれを受ける（cycle 002 で両方に揃えた）。
-そのために格納先に合わせた整形だけはここでする（Telegraf・Kafka・S3 Tables の生データと Splunk へ送るものは変えない）:
-  prometheus  文字列の状態を 1 / 0 の系列にする（STATE_FIELDS。bgp_neighbor の session_state → session_up、isis_interface の oper_state → oper_up）
-  prometheus / opensearch  sysName の無いレコード（gNMI と trap。source が機器の管理 IP）に、--device-map で引いた機器名を sysName として足す
-                           （opensearch は表に無い機器でも source の IP をそのまま sysName にする。Grafana の trap のルールが tags.sysName で束ねるため）
+検知と相関は格納先の側でする: Grafana のアラートルール（AMP の gNMI の IF / BGP / IS-IS、OpenSearch の trap。
+app/grafana/provisioning/alerting）と Splunk の保存済みサーチ（gNMI の IF / BGP / IS-IS と trap。app/splunk/netops_alerts）が同じ 4 種類を
+SNS のトピック <接頭辞>-alerts に出し、ワークフロー（SQS）とトポロジの status（graph の Lambda）がそれを受ける（cycle 002 で両方に揃えた。
+IF の up / down は cycle 013 で SNMP のポーリングの ifOperStatus から gNMI の oper-state に替えた）。
+そのために格納先に合わせた整形だけはここでする（Kafka の生データと S3 Tables へ書くものは、上の gnmic の読み替えのほかは変えない）:
+  prometheus  文字列の状態を 1 / 0 の系列にする（STATE_FIELDS。interface の oper_state → oper_up と admin_state → admin_up、
+              bgp_neighbor の session_state → session_up、isis_interface の oper_state → oper_up）
+  prometheus / opensearch / splunk  sysName の無いレコード（gNMI と trap。source が機器の管理 IP）に、--device-map で引いた機器名を sysName として足す
+                           （opensearch は表に無い機器でも source の IP をそのまま sysName にする。Grafana の trap のルールが tags.sysName で束ねるため。
+                           splunk は cycle 013 から。Grafana と同じ機器名にして、アラートの anomaly_id（device#kind#target）を両方で揃える）
 
 HTTP の送信は既定で driver でまとめて行う（マイクロバッチを collect する。PoC の量（機器数台、10 秒間隔）なら 1 分に数百行）。
 量が増えたら --http-send executor で foreachPartition に切り替える（集めずに、パーティションごとに executor が送る）。remote write の protobuf と snappy は外部ライブラリ無しで組む
@@ -90,7 +100,16 @@ SPLUNK_SOURCETYPE_PREFIX = "netops"             # sourcetype は netops:<トピ�
 STATE_FIELDS = {
     ("bgp_neighbor", "session_state"): ("session_up", "established"),
     ("isis_interface", "oper_state"): ("oper_up", "up"),
+    # gnmic の interface_state（cycle 013。Grafana の link_down が snmp_interface_oper_up と snmp_interface_admin_up を読む）
+    ("interface", "oper_state"): ("oper_up", "up"),
+    ("interface", "admin_state"): ("admin_up", "enable"),
 }
+# gnmic の event を Telegraf の形に読み替える表（read_rows と gnmic_message が同じ表を使う。cycle 013。モジュールの docstring）。
+# event の name（subscription の名前）→ measurement。表に無い名前（bgp_neighbor / isis_interface / system）はそのまま
+GNMI_MEASUREMENTS = {"interface_state": "interface", "interface_stats": "interface"}
+# tags のキー（接頭辞「…:」を落としたもの）→ Telegraf のころの名前（Grafana / Splunk のルールとダッシュボードが読む）。表に無いタグ（source、subscription-name …）はそのまま
+GNMI_TAGS = {"interface_name": "ifName", "neighbor_peer-address": "peer_address", "interface_interface-name": "interface_name", "control_slot": "slot"}
+GNMI_NS = 1000000000   # event の timestamp はナノ秒。割って小数を切り、秒（Telegraf の timestamp と同じ単位）にする（double の割り算。read_rows と gnmic_message で同じ）
 
 # S3 Tables の表に、ジョブが起動時に足す列（tables.tf の列のあとに、この順。名前と Spark SQL の型）。tables.tf の schema には書かない:
 # aws provider（6.64）の aws_s3tables_table は metadata の schema を変えると表を作り直す（RequiresReplace）ので、いまある行が消える。
@@ -122,9 +141,9 @@ def parse_args(argv):
                                                                  "環境変数 SPLUNK_HEC_TOKEN があれば要らない）")
     p.add_argument("--splunk-index", default="", help="splunk: イベントを入れる index（空なら token の既定の index）")
     p.add_argument("--splunk-skip-verify", action="store_true", help="splunk: HEC の TLS 証明書を検証しない（自己署名の Splunk Enterprise の検証用。既定は検証する）")
-    p.add_argument("--device-map", default="", help="prometheus / opensearch: sysName の無いレコードの source（機器の管理 IP）を機器名に引く表"
+    p.add_argument("--device-map", default="", help="prometheus / opensearch / splunk: sysName の無いレコードの source（機器の管理 IP）を機器名に引く表"
                                                      "（別名=機器名,…。Splunk の DEVICE_MAP と同じ。app/containerlab/lab_topology.py --device-map。"
-                                                     "表に無いとき prometheus は足さず、opensearch は source をそのまま sysName にする）")
+                                                     "表に無いとき prometheus と splunk は足さず、opensearch は source をそのまま sysName にする）")
     args = p.parse_args(argv)
     args.sinks = [s.strip() for s in args.sinks.split(",") if s.strip()]
     bad = [s for s in args.sinks if s not in SINKS]
@@ -208,12 +227,15 @@ def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
     from pyspark.sql import functions as F
     from pyspark.sql import types as T
 
-    # Telegraf の JSON のうち、列に分ける部分だけ型を書く。tags / fields は文字列のまま
+    # Telegraf の JSON のうち、列に分ける部分だけ型を書く。tags / fields は文字列のまま。
+    # values / deletes は gnmic の event（fields の代わりに values を持ち、消えたときは deletes だけ。cycle 013）を見分けて読み替えるため
     schema = T.StructType([
         T.StructField("timestamp", T.LongType()),
         T.StructField("name", T.StringType()),
         T.StructField("tags", T.MapType(T.StringType(), T.StringType())),
         T.StructField("fields", T.MapType(T.StringType(), T.StringType())),
+        T.StructField("values", T.MapType(T.StringType(), T.StringType())),
+        T.StructField("deletes", T.ArrayType(T.StringType())),
     ])
     reader = (
         spark.readStream.format("kafka")
@@ -236,9 +258,17 @@ def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
     if max_offsets_per_trigger:
         reader = reader.option("maxOffsetsPerTrigger", str(max_offsets_per_trigger))
     raw = reader.load()
+    value = F.col("value").cast("string")
+    msg = F.from_json(value, schema)
+    # gnmic の event は形で見分け、Telegraf の形（timestamp / name / tags / fields）の struct に読み替える（gnmic_struct。gnmic_message と同じ表）。
+    # Telegraf の行も同じ 4 つの項目の struct にする（F.when の両側は同じ型でなければならない）
+    gnmic = msg["fields"].isNull() & (msg["values"].isNotNull() | msg["deletes"].isNotNull())
+    telegraf = F.struct(*(msg[k].alias(k) for k in ("timestamp", "name", "tags", "fields")))
     parsed = raw.select(
         F.col("topic"),
-        F.from_json(F.col("value").cast("string"), schema).alias("m"),
+        F.when(gnmic, gnmic_struct(F, msg)).otherwise(telegraf).alias("m"),
+        # agent_host の列: gnmic は機器の IP（tags.source = target の名前）、Telegraf は tags.agent_host（trap と syslog は無い）
+        F.when(gnmic, msg["tags"]["source"]).otherwise(msg["tags"]["agent_host"]).alias("agent_host"),
         # 一意の番号は from_json の前の value（binary のまま）から作る。同じバイト列なら、いつ何度読んでも同じ値（モジュールの docstring）
         F.sha2(F.col("value"), 256).alias("event_id"),
         F.col("partition").alias("kafka_partition"),
@@ -248,7 +278,7 @@ def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
         F.to_timestamp(F.from_unixtime(F.col("m.timestamp"))).alias("ts"),
         F.col("topic"),
         F.col("m.name").alias("measurement"),
-        F.col("m.tags")["agent_host"].alias("agent_host"),
+        F.col("agent_host"),
         F.col("m.tags")["host"].alias("host"),
         F.to_json(F.col("m.tags")).alias("tags_json"),
         F.to_json(F.col("m.fields")).alias("fields_json"),
@@ -260,6 +290,51 @@ def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
         F.col("kafka_offset"),
     ).where(F.col("ts").isNotNull())
     return rows
+
+
+def gnmic_struct(F, msg):
+    """read_rows の gnmic の分岐: from_json した event の列 msg を、Telegraf の形（timestamp 秒 / name / tags / fields）の struct にする
+    （gnmic_message と同じ読み替え）。values の無い event（deletes だけ）は timestamp を null にして、read_rows の where で捨てる。
+    読み替えたキーが重なったら後勝ち（build が spark.sql.mapKeyDedupPolicy=LAST_WIN にする。既定の EXCEPTION ではクエリが落ちる）"""
+    def strip(c):   # 接頭辞（srl_nokia-…:）を落とす
+        return F.regexp_replace(c, "^.*:", "")
+
+    def lookup(table, c):   # 表にあれば替え、無ければそのまま（when を連ねる）
+        out = None
+        for k, v in table.items():
+            out = F.when(c == k, v) if out is None else out.when(c == k, v)
+        return out.otherwise(c)
+
+    return F.struct(
+        F.when(msg["values"].isNotNull(), (msg["timestamp"] / GNMI_NS).cast("long")).alias("timestamp"),
+        lookup(GNMI_MEASUREMENTS, msg["name"]).alias("name"),
+        F.transform_keys(msg["tags"], lambda k, v: lookup(GNMI_TAGS, strip(k))).alias("tags"),
+        F.transform_keys(msg["values"], lambda k, v: F.translate(strip(F.element_at(F.split(k, "/"), -1)), "-", "_")).alias("fields"),
+    )
+
+
+def gnmic_message(m):
+    """gnmic の event 1 件（dict）を Telegraf の形（timestamp / name / tags / fields）にする。read_rows が Spark の列で組むもの（gnmic_struct）と
+    同じ読み替え（GNMI_MEASUREMENTS / GNMI_TAGS。tests/test_stream.py が event で確かめる）。値は文字列（Spark の from_json の StringType と同じく、
+    文字列でない値は JSON の字面。null は null のまま）。読み替えたキーが重なったら後勝ち（build の mapKeyDedupPolicy=LAST_WIN と同じ）。
+    values の無い event（消えたときの deletes だけ）と、timestamp が整数でないものは None（read_rows では ts が null で捨てる）。
+    Telegraf の形（fields がある）は読み替えない（read_rows はそのまま通す）ので、ここには渡さない"""
+    def text(v):
+        return v if v is None or isinstance(v, str) else json.dumps(v, separators=(",", ":"), ensure_ascii=False)
+
+    def strip(k):
+        return re.sub(r"^.*:", "", k)
+
+    ts, values = m.get("timestamp"), m.get("values")
+    if not isinstance(values, dict) or not isinstance(ts, int) or isinstance(ts, bool):
+        return None
+    name = m.get("name")
+    return {
+        "timestamp": int(ts / GNMI_NS),
+        "name": GNMI_MEASUREMENTS.get(name, name),
+        "tags": {GNMI_TAGS.get(strip(k), strip(k)): text(v) for k, v in (m.get("tags") or {}).items()},
+        "fields": {strip(k.split("/")[-1]).replace("-", "_"): text(v) for k, v in values.items()},
+    }
 
 
 def row_to_record(row):
@@ -460,11 +535,12 @@ def _splunk_value(v):
     return v
 
 
-def splunk_events(records, index=""):
+def splunk_events(records, index="", devmap=None):
     """HEC の JSON イベント（1 行 1 イベント。HEC は本文に並べた複数のイベントを 1 回で受ける）。
     time は epoch 秒、host は機器（無ければ Telegraf の agent_host）、sourcetype は netops:<トピック>、event に measurement / tags / fields と
     一意の番号 event_id、Kafka の位置（kafka_topic / kafka_partition / kafka_offset）。
-    fields の数値の文字列は数値にする（Splunk が検索で数として扱えるように）"""
+    fields の数値の文字列は数値にする（Splunk が検索で数として扱えるように）。
+    sysName の無い tags（gNMI と trap）は devmap で機器名を足す（表に無ければ足さない。cycle 013。保存済みサーチの device が Grafana と同じ機器名になる）"""
     lines = []
     for r in records:
         ev = {
@@ -476,7 +552,7 @@ def splunk_events(records, index=""):
                 "topic": r["topic"],
                 "measurement": r["measurement"],
                 "agent_host": r.get("agent_host"),
-                "tags": r["tags"],
+                "tags": with_sysname(r["tags"], devmap),
                 "fields": {k: _splunk_value(v) for k, v in r["fields"].items()},
                 **kafka_ids(r),
             },
@@ -499,7 +575,7 @@ def splunk_token(parameter, region):
     return os.environ.get("SPLUNK_HEC_TOKEN") or read_ssm_parameter(parameter, region)
 
 
-def make_splunk_sender(url, token, index="", skip_verify=False):
+def make_splunk_sender(url, token, index="", skip_verify=False, devmap=None):
     url = splunk_hec_url(url)
     headers = {"Authorization": f"Splunk {token}", "Content-Type": "application/json"}
     context = None
@@ -509,7 +585,7 @@ def make_splunk_sender(url, token, index="", skip_verify=False):
 
     def send(records):
         """送り、捨てたイベントの数を返す"""
-        lines = splunk_events(records, index)
+        lines = splunk_events(records, index, devmap)
         dropped = 0
         for i in range(0, len(lines), BULK_SIZE):
             body = "\n".join(lines[i:i + BULK_SIZE]).encode("utf-8")
@@ -523,12 +599,12 @@ def make_splunk_sender(url, token, index="", skip_verify=False):
     return send
 
 
-def make_splunk_sender_on_executor(url, token_parameter, region, index="", skip_verify=False):
+def make_splunk_sender_on_executor(url, token_parameter, region, index="", skip_verify=False, devmap=None):
     """--http-send executor の splunk の sender。token は driver から運ばず（Spark のタスクに載せない）、送るたびに executor が
     SSM（OSS 版は環境変数 SPLUNK_HEC_TOKEN）から読む。
-    送り方（BULK_SIZE ごと、4xx は捨てる、TLS）は make_splunk_sender のまま。持つのは文字列と bool だけ（executor へ pickle で運ぶ）"""
+    送り方（BULK_SIZE ごと、4xx は捨てる、TLS、devmap の sysName）は make_splunk_sender のまま。持つのは文字列と bool と device map の dict だけ（executor へ pickle で運ぶ）"""
     def send(records):
-        return make_splunk_sender(url, splunk_token(token_parameter, region), index, skip_verify)(records)
+        return make_splunk_sender(url, splunk_token(token_parameter, region), index, skip_verify, devmap)(records)
     return send
 
 
@@ -819,6 +895,8 @@ def build(spark, args):
     """引数の格納先ぶんのストリーミングクエリを起こして返す"""
     queries = []
     devmap = parse_device_map(args.device_map)
+    # read_rows の gnmic の読み替えで map のキーが重なったら後勝ち（既定の EXCEPTION だとクエリが落ちる。gnmic_struct）。クエリを起こす前に決める
+    spark.conf.set("spark.sql.mapKeyDedupPolicy", "LAST_WIN")
     for s in args.sinks:
         rows = read_rows(spark, args.bootstrap, sink_topics(s, args.metric_topics, args.log_topics), max_offsets(args, s))
         if s == "iceberg":
@@ -834,11 +912,11 @@ def build(spark, args):
             # 起動時に読めるかだけ確かめる（読めなければ driver のときと同じく起動で落ちる）。値は捨て、executor が送るたびに読み直す
             splunk_token(args.splunk_token_parameter, args.region)
             queries.append(http_query(rows, s, args.checkpoint, make_splunk_sender_on_executor(
-                args.splunk_hec_url, args.splunk_token_parameter, args.region, args.splunk_index, args.splunk_skip_verify), args.http_send))
+                args.splunk_hec_url, args.splunk_token_parameter, args.region, args.splunk_index, args.splunk_skip_verify, devmap), args.http_send))
         elif s == "splunk":
             # token は起動時に 1 回だけ読む（driver の中に置く。ログにも引数にも出ない）。読めなければジョブが起動で落ち、原因が stderr に出る
             token = splunk_token(args.splunk_token_parameter, args.region)
-            queries.append(http_query(rows, s, args.checkpoint, make_splunk_sender(args.splunk_hec_url, token, args.splunk_index, args.splunk_skip_verify)))
+            queries.append(http_query(rows, s, args.checkpoint, make_splunk_sender(args.splunk_hec_url, token, args.splunk_index, args.splunk_skip_verify, devmap)))
     return queries
 
 
