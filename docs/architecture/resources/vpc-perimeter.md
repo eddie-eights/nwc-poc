@@ -23,7 +23,7 @@ VPC の中の通信は、SG の通信の表に書いたものだけが通る。
 | SG | ワークロードごとに 1 つと `endpoints`。ルールは通信の表から作る | `IaC/terraform/aws-managed/base/core/security_groups.tf` の `local.sg_flows` |
 | フローログ | VPC の全 ENI。ロググループ `/<prefix>/vpc-flow-logs`、保存 7 日、集約 60 秒 | `IaC/terraform/aws-managed/base/core/flow_logs.tf` |
 | スイッチ | `NETWORK_PERIMETER=0` で Deny を一時的に外す（切り分け用） | `ops/up.sh`、[setup.md](../../setup.md) の「閉域を一時的に外すとき」 |
-| 費用 | インターフェース型エンドポイント 1 つ 1.4 セント/時 × `ENDPOINTS_AZ_NUM`（データは別に $0.01/GB）。OpenSearch Serverless の VPC エンドポイントも 1.4 セント/時 × AZ（公表単価）。SG、ルール、gateway 型は時間課金なし | `ops/up.sh` の費用の目安（526〜583 行） |
+| 費用 | インターフェース型エンドポイント 1 つ 1.4 セント/時 × `ENDPOINTS_AZ_NUM`（データは別に $0.01/GB）。OpenSearch Serverless の VPC エンドポイントも 1.4 セント/時 × AZ（公表単価）。SG、ルール、gateway 型は時間課金なし | `ops/up.sh` の費用の目安（524〜584 行） |
 
 機能ごとのエンドポイント（`ops/up.sh` の `endpoints_for`）:
 

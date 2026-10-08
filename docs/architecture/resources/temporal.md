@@ -18,7 +18,7 @@ Temporal の開発用サーバー（`start-dev`）と Python の worker を、Fa
 | 待ち時間 | 承認待ち 120 分（`APPROVAL_TIMEOUT_MINUTES`）、解消の確認 300 秒（`VERIFY_TIMEOUT`）、閉じずに待つ 1440 分（`HOLD_MINUTES`） | 変数 `approval_timeout_minutes`、`verify_timeout_seconds`、`hold_minutes` |
 | ワークフローの id | `investigate-<anomaly_id>`（発生の時刻を入れない） | `app/temporal/worker.py`、`app/temporal/rules.py` |
 | スイッチ | `WORKFLOW=1`。`AGENT=1` と `PIPELINE=1` が要り、`SKIP_LAB` / `SKIP_STREAM` / `SKIP_ANALYTICS` / `SKIP_GRAPH` は書けない | `ops/up.sh` |
-| 費用 | 5 セント/時 | `ops/up.sh` の費用の目安（526〜583 行） |
+| 費用 | 5 セント/時 | `ops/up.sh` の費用の目安（524〜584 行） |
 
 worker が読み書きするもの:
 

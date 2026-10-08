@@ -22,7 +22,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | ライセンス | 試用（60 日、1 日 500 MB まで）。起動時に環境変数で同意する | `splunk.tf` の `SPLUNK_START_ARGS`、`SPLUNK_GENERAL_TERMS` |
 | シークレット | SSM の SecureString `/<prefix>/splunk/admin-password`、`/<prefix>/splunk/hec-token`。クラスターのときは `/<prefix>/splunk/idxc-secret`（manager・indexer・search head が互いを確かめる合言葉）も。どれも `ops/up.sh` が作る。値は Terraform も state も持たない | `ops/up-common.sh` の `ensure_splunk_secrets`（`ops/up.sh` の手順 7-4 が呼ぶ）、`splunk.tf` の `secrets` |
 | スイッチ | `STORES` の `splunk`。クラスターにするかは `SPLUNK_AZ_NUM` | `deploy.env.example` |
-| 費用 | 1 タスク 12 セント/時（`STORES` の `splunk` 全体では Spark のジョブと合わせて約 +$0.34/h）。`SPLUNK_AZ_NUM=2` は 4 タスクで 49 セント/時（+$0.37/h）、`3` は 5 タスクで 61 セント/時（+$0.49/h）。AZ をまたぐ複製の通信料は入っていない | `ops/up.sh` の費用の目安（526〜583 行）、`deploy.env.example` |
+| 費用 | 1 タスク 12 セント/時（`STORES` の `splunk` 全体では Spark のジョブと合わせて約 +$0.34/h）。`SPLUNK_AZ_NUM=2` は 4 タスクで 49 セント/時（+$0.37/h）、`3` は 5 タスクで 61 セント/時（+$0.49/h）。AZ をまたぐ複製の通信料は入っていない | `ops/up.sh` の費用の目安（524〜584 行）、`deploy.env.example` |
 
 `SPLUNK_AZ_NUM` と構成:
 

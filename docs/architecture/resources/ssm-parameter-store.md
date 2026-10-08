@@ -16,7 +16,7 @@
 | SecureString | `ops/up.sh` が `ensure_secret`（乱数）と `ensure_fixed_secret`（決まった値）で作る。タグ `ManagedBy=ops/up.sh`（OSS 版は `ops/oss/up.sh` が作り、タグは `ManagedBy=ops/oss/up.sh`） | `ops/up-common.sh` の `ensure_secret`、`ensure_fixed_secret` |
 | 消す | `ops/down.sh` の手順 5-2 が、タグ `ManagedBy=ops/up.sh` の付いたものだけ消す（OSS 版は `ops/oss/down.sh` の手順 5-2 が `ManagedBy=ops/oss/up.sh` のものを消す） | `ops/down.sh`、`ops/down-common.sh` の `delete_up_ssm_params` |
 | エンドポイント | `ssm`（土台の分。`ssmmessages` と一緒にいつも作る） | `ops/up.sh` の手順 0 |
-| 費用 | エンドポイントが 1 本 1.4 セント/時 × `ENDPOINTS_AZ_NUM` | `ops/up.sh` の費用の目安（526〜583 行） |
+| 費用 | エンドポイントが 1 本 1.4 セント/時 × `ENDPOINTS_AZ_NUM` | `ops/up.sh` の費用の目安（524〜584 行） |
 
 String（ルートをまたいで渡す値）:
 

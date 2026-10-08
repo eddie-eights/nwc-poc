@@ -81,7 +81,7 @@ LB は無い。閉域なので、画面は Web の EC2 を踏み台にしたポ�
 | `netops/nb_sync.py` | 同期の本体。台帳を読む → ① gnmic の一覧（SSM）と gnmic の作り直し → ② Neptune の物理層 |
 | `netops/nb_map.py` | 台帳とトポロジの対応付け（Nautobot に依らない純粋な関数。`tests/test_nautobot.py` が検査する） |
 | `netops/bootstrap.py` | web の起動時に 1 回走る用意（下の 4） |
-| `Dockerfile` | 公式イメージに上のファイルと `app/agentcore/graph.py`（Neptune へ openCypher で書く関数）、`lab_seed.json` を足す |
+| `docker/images/nautobot/Dockerfile`（007 で `app/nautobot/` から移した） | 公式イメージに上のファイルと `app/agentcore/graph.py`（Neptune へ openCypher で書く関数）・`app/agentcore/toolkit.py`、`lab_seed.json` を足す |
 
 ## 4. 起動してから同期するまで
 

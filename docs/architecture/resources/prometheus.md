@@ -17,7 +17,7 @@
 | 書き方 | Spark の remote write（protobuf + snappy を自前で組む）、SigV4 | `app/spark/snmp_sinks.py` |
 | スイッチ | `STORES` の `grafana`（OpenSearch のログ用コレクションと Grafana と一緒に作る） | `deploy.env.example` |
 | AZ | 選ぶものが無い（サービス側で動く）。入口は `aps-workspaces` のエンドポイント（`ENDPOINTS_AZ_NUM`） | `ops/up.sh` の手順 0（`endpoints_for` のあとで `STORES` の `grafana` のときに足す） |
-| 費用 | ワークスペースは 0。取り込んだサンプル数と保存量の課金が別にある | `ops/up.sh` の費用の目安（526〜583 行）、`sinks.tf` のコメント |
+| 費用 | ワークスペースは 0。取り込んだサンプル数と保存量の課金が別にある | `ops/up.sh` の費用の目安（524〜584 行）、`sinks.tf` のコメント |
 
 ## つながり
 
