@@ -245,7 +245,7 @@ def scenario(graph, with_algo=True):
 
 
 def awsio_scenario(awsio):
-    state["answer"] = {"MATCH (n:device) RETURN": [{"id": "a-ce-01", "status": "DOWN", "maintenance": True}, {"id": "b-ce-01", "status": None}],
+    state["answer"] = {"MATCH (n:device) RETURN": [{"id": "a-ce-01", "status": "DOWN", "maintenance": True, "role": "ce"}, {"id": "b-ce-01", "status": None}],
                        "MATCH (a)-[l:link]->(b) RETURN": [{"a": "a-ce-01", "b": "b-ce-01", "a_if": "eth1", "b_if": "eth1", "status": "DOWN"}]}
     return awsio.read_topology()
 

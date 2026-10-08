@@ -139,14 +139,25 @@ _g = []
 def _fake_cypher(q, **params):
     _g.append(q)
     if "(n:device)" in q:
-        return [{"id": "dc1-a-leaf-01", "status": "ALARM", "maintenance": True}, {"id": "dc1-spine-01", "status": None, "maintenance": None}]
+        return [{"id": "dc1-a-leaf-01", "status": "ALARM", "maintenance": True, "role": "leaf"}, {"id": "dc1-spine-01", "status": None, "maintenance": None}]
     return [{"a": "dc1-a-leaf-01", "b": "dc1-spine-01", "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}]
 _gs, awsio.cypher = awsio.cypher, _fake_cypher
-check("awsio.read_topology は機器（id・status・maintenance）と回線（両端・IF・status）を読む",
-      awsio.read_topology() == ([{"device_id": "dc1-a-leaf-01", "status": "ALARM", "maintenance": True}, {"device_id": "dc1-spine-01", "status": None, "maintenance": False}],
+check("awsio.read_topology は機器（id・status・maintenance・role）と回線（両端・IF・status）を読む",
+      awsio.read_topology() == ([{"device_id": "dc1-a-leaf-01", "status": "ALARM", "maintenance": True, "role": "leaf"},
+                                 {"device_id": "dc1-spine-01", "status": None, "maintenance": False, "role": None}],
                                 [{"a": "dc1-a-leaf-01", "b": "dc1-spine-01", "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}])
-      and _g == ["MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance",
+      and _g == ["MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance, n.role AS role",
                  "MATCH (a)-[l:link]->(b) RETURN id(a) AS a, id(b) AS b, l.a_if AS a_if, l.b_if AS b_if, l.status AS status"])
+check("read_topology の機器の openCypher は role を返す（n.role AS role。rules.impact が END_ROLES の TRex を端として扱うのに使う）",
+      "n.role AS role" in _g[0] and all("role" in d for d in awsio.read_topology()[0]))
+# read_topology の形のまま rules.impact に渡す: TRex（role trex）が 2 台の leaf につながっていても、leaf の Spine への最後の回線を落とせば孤立と出る
+_tp = {"(n:device)": [{"id": "dc1-a-leaf-01", "role": "leaf"}, {"id": "dc1-a-leaf-02", "role": "leaf"}, {"id": "dc1-spine-01", "role": "spine"}, {"id": "dc1-trex-01", "role": "trex"}],
+       "link": [{"a": "dc1-a-leaf-01", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/1"}, {"a": "dc1-a-leaf-02", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/2"},
+                {"a": "dc1-trex-01", "a_if": "eth1", "b": "dc1-a-leaf-01", "b_if": "ethernet-1/10"}, {"a": "dc1-trex-01", "a_if": "eth2", "b": "dc1-a-leaf-02", "b_if": "ethernet-1/10"}]}
+awsio.cypher = lambda q, **params: _tp["(n:device)" if "(n:device)" in q else "link"]
+_imp = rules.impact(*awsio.read_topology(), [{"op": "link_down", "target": "dc1-a-leaf-01#ethernet-1/1"}])
+check("read_topology が返す role で、rules.impact は TRex を中継にしない（leaf の Spine への最後の回線を落とすと leaf が孤立する）",
+      _imp["newly_isolated"] == ["dc1-a-leaf-01"] and _imp["verdict"] == "danger")
 awsio.cypher = _gs
 _ask, _rt = awsio.ask_agent, awsio.read_topology
 awsio.ask_agent = lambda prompt: '{"cause": "c", "action": "heal-main", "reason": "r"}'
@@ -246,10 +257,10 @@ check("awsio は修復案を Neptune に読み書きしない（read_proposal / 
 check("awsio は異常の頂点（label anomaly）を読まない",
       not hasattr(awsio, "read_anomaly") and not hasattr(awsio, "list_open_anomalies") and ":anomaly" not in _awsio_src)
 calls.clear(); clients.clear(); awsio._cache.pop("neptune", None)
-fake["execute_query"] = cyrows({"id": "hq-ce-01", "status": "DOWN", "maintenance": True})
+fake["execute_query"] = cyrows({"id": "hq-ce-01", "status": "DOWN", "maintenance": True, "role": "ce"})
 awsio.read_topology()
 check("Neptune Analytics は neptune-graph の execute_query（openCypher、グラフ ID 指定、endpoint_url なし）で読む",
-      gq()[0] == "MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance"
+      gq()[0] == "MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance, n.role AS role"
       and calls[-1][2]["graphIdentifier"] == "g-abc1234567" and calls[-1][2]["language"] == "OPEN_CYPHER"
       and clients[-1][0] == "neptune-graph" and "endpoint_url" not in clients[-1][1])
 fake["execute_query"] = cyrows()

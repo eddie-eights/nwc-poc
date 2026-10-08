@@ -103,9 +103,10 @@ def _neo4j_cypher(q: str, params: dict) -> list:
 
 def read_topology() -> tuple[list, list]:
     """(devices, links)。事前チェック（rules.precheck）と保守中の判定（rules.maintenance_hold）に渡す形だけ読む:
-    機器は id・status・maintenance、回線は両端の機器・IF と status"""
-    devices = [{"device_id": r.get("id"), "status": r.get("status"), "maintenance": bool(r.get("maintenance"))}
-               for r in cypher("MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance")]
+    機器は id・status・maintenance・role、回線は両端の機器・IF と status。
+    role は rules.impact が END_ROLES の機器（TRex）を端として扱うのに使う。読まないと TRex が 4 台の leaf をつなぐ中継に見え、leaf の孤立を隠す"""
+    devices = [{"device_id": r.get("id"), "status": r.get("status"), "maintenance": bool(r.get("maintenance")), "role": r.get("role")}
+               for r in cypher("MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance, n.role AS role")]
     links = [{k: r.get(k) for k in ("a", "b", "a_if", "b_if", "status")}
              for r in cypher("MATCH (a)-[l:link]->(b) RETURN id(a) AS a, id(b) AS b, l.a_if AS a_if, l.b_if AS b_if, l.status AS status")]
     return devices, links
