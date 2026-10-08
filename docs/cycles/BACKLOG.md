@@ -24,7 +24,7 @@
 - [x] Redis を 8 系に上げる（OSS 版）（2026-10-08 完了。feat/oss-redis8-rolling。`REDIS_TAG` は共通なのでマネージド版の Nautobot の Redis も 8.10.2 になる。AWS では未確認）
 - [x] EMR を 7.14.0 に上げ、Spark の jar を合わせる（2026-10-08 完了。feat/spark-bump。AWS では未確認）
 - [x] Iceberg を 1.12.0 に上げる（2026-10-08 完了。feat/spark-bump。OSS 版だけ。マネージド版は EMR 同梱の 1.10.1 のまま。AWS では未確認）
-- [ ] lab を IS-IS の spine 2 + a-leaf 2 + s-leaf 2 と各 leaf につなぐ TRex にする（SR-MPLS はライセンスが届いたら `ixr-6e` に差し替え。2026-10-08 の決定）
+- [ ] lab を IS-IS の spine 2 + a-leaf 2 + s-leaf 2 と各 leaf につなぐ TRex にする（SR-MPLS はライセンスが届いたら `ixr-6e` に差し替え。2026-10-08 の決定） → 011-lab-isis-trex-x86
 - [ ] コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種にする（telegraf-dialin を外し、ifTable の代わりに gNMI の oper-state を使う）
 - [x] `ops/up.sh` が取る jar（`JAR_URLS` 6 本）のハッシュを照合する（`docker/images/spark/Dockerfile` と compose の分は 2026-10-08 に済んだ）（2026-10-08 完了。fix/up-jar-hash。前の版の jar は jars/ と S3 から消す。S3 の `--delete` は AWS で未確認）
 - [x] `.env.example` と `ops/up.sh` と terraform のコメントの古い記述を直す（2026-10-08 完了。fix/stale-comments。コメントと description だけで動作は変えていない。2026-10-08 の docs 同期で見つけた、コードの側の食い違い: `.env.example:140` の SNMP_POLL の既定、`ops/up.sh:445` の docker の要る先に kafka-ui が無い、`ops/up.sh` の mdt・NEED_AOSS・SINK_*/GRAFANA の古いコメント、`IaC/terraform/aws-managed/base/core/endpoints.tf:27`・`perimeter.tf:4-6`・`outputs.tf:58`、`IaC/terraform/aws-managed/pipeline/stream/variables.tf:109`、`IaC/terraform/aws-managed/pipeline/analytics/locals.tf:1-10`、`app/agentcore/evidence.py:3,5`）
@@ -35,7 +35,7 @@
 - [ ] graph-status の Lambda が Neptune の `ConflictException` を関数の中でやり直す（同じ秒に resolved が 2 件届くと ExecuteQuery が concurrent operations で落ち、Lambda の非同期の再試行で 54 秒後に反映された。データは失われない。2026-10-08 のマネージド版の AWS 検証で見つけた） → 008-aws-verification-bugs
 - [x] 消えたことの確認と残った VPC の扱いを docs に合わせる（`docs/deploy.md:117` と `docs/troubleshooting.md:102` の「数時間おいて down.sh を打ち直す」は誰も打たず VPC が 3 日残った → 「残っても無料。次の up.sh が使い回す」を既定にする。`docs/deploy.md:38` の KEEP_ECR「月数円」は実測 7.39 GB ≈ 110 円/月。down.sh の最後のタグ API の一覧は何日も前に消えた EMR まで 189 件出るので、消えたかはサービスごとの API で見ると書く。2026-10-08 のマネージド版の AWS 検証で見つけた）（2026-10-08 完了。docs/aws-verification-followups）
 - [x] `ops/check.sh` の `bash -n` を 1 ファイルずつ打つ（`bash -n a b c` は a しか見ず、b と c は位置引数になる。2026-10-08 に 006 の実装で見つけた。`tests/test_oss.py` の `^bash -n` の正規表現も合わせる）（2026-10-08 完了。fix/local-compose-r2）
-- [ ] `docs/development.md` のテストの本数を数え直す（006 で `tests/test_local_compose.py` が増えた）
+- [x] `docs/development.md` のテストの本数を数え直す（006 で `tests/test_local_compose.py` が増えた）（2026-10-08 完了。docs/aws-verification-followups で数え直し、895cdb0 でマージ）
 - [ ] Telegraf の health（8080/tcp）と MDT（57000/tcp）のポートを環境変数で変えられるようにする（手元の compose は host ネットワークなので host のほかのプロセスとぶつかる。2026-10-08 に 006 の実装で固定値と確かめた。design.md の未確定事項 6） → 009-local-compose-followups
 - [ ] containerlab が作る `app/containerlab/clab-*/` を `.gitignore` に入れる（手元で `lab.sh up` すると root の持ち物の `app/containerlab/clab-splab/` が `git status` に出る。2026-10-08 に 006 の実装で見つけた） → 009-local-compose-followups
 - [ ] 手元の Telegraf の受け口（8080 / 57000 / 1162 / 5140）を lab の管理ネットと 127.0.0.1 からだけ受ける（host ネットワークなので全部のインターフェースで待ち、WSL の外から偽の trap や syslog を入れられる。2026-10-08 に 006 のセルフレビュー S3 で見つけた。README には書いた） → 009-local-compose-followups
@@ -59,4 +59,4 @@
 - [x] Nautobot の JobHook の最初の変更履歴の detail を変わった値だけにする（prechange が無い機器の 1 件目が全部の項目を `asset_tag: - → -` と並べる。2026-10-08 の OSS 版の AWS 検証の「不具合」4）（2026-10-08 完了。fix/oss-ecr-outputs-nautobot-job。`nb_map.change_detail` が作成と削除は「作成」「削除」だけ、変更前の値が無い update は項目を並べず「変更前の値が無い…」と今の status を出す。AWS では未確認）
 - [x] Nautobot の Job の名前と `root_cause` の source の Neptune を OSS 版では Neo4j にする（Job「Telegraf と Neptune に同期」が OSS 版では Neo4j に書き、`root_cause` の source も `'neptune'` のまま。2026-10-08 の OSS 版の AWS 検証の「docs のずれ」3）（2026-10-08 完了。fix/oss-ecr-outputs-nautobot-job。名前は両方の版で「Telegraf とグラフ DB に同期」「変更のたびに Telegraf とグラフ DB に同期」にし、説明に書き先（Neptune / Neo4j）を出す。`root_cause` と `topology_graph` の source は `graph.BACKEND`（`neo4j` / `neo4j-empty`）。JobHook と bootstrap はクラスの場所で引くので外れない。AWS では未確認）
 - [x] state を失ったときの VPC と ECR の扱いを docs に書く（state は up.sh を打った worktree にしか無く、worktree を消すと ECR は import が要り VPC は使い回されず新しく作られて溜まる。上の「消えたことの確認と残った VPC の扱いを docs に合わせる」と一緒に直す。2026-10-08 の OSS 版の AWS 検証の「docs のずれ」6）（2026-10-08 完了。docs/aws-verification-followups）
-- [ ] TRex で後段（Telegraf → MSK → Spark → 格納先、アラート → SNS → graph の Lambda）に負荷をかける準備をする（試験そのものはまだやらない。lab の EC2 に TRex を置き、撃つプロファイルと測り方を用意して、やると決めたときにすぐ回せる状態にする。trap / syslog を UDP で撃つ。gNMI / metrics は Kafka の producer で別に流す。TRex は x86 なので lab の EC2 を x86 にする。arm64 に揃える必要は無い）
+- [ ] TRex で後段（Telegraf → MSK → Spark → 格納先、アラート → SNS → graph の Lambda）に負荷をかける準備をする（試験そのものはまだやらない。lab の EC2 に TRex を置き、撃つプロファイルと測り方を用意して、やると決めたときにすぐ回せる状態にする。trap / syslog を UDP で撃つ。gNMI / metrics は Kafka の producer で別に流す。TRex は x86 なので lab の EC2 を x86 にする。arm64 に揃える必要は無い） → 011-lab-isis-trex-x86
