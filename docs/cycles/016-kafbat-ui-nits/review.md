@@ -99,3 +99,4 @@ None
 - BACKLOG へ回したもの: 8-3 の検査（`_s83.count("\nfi\n") == 1`）が `fi` と `# ---- 8-5.` の間の空行を消すと落ちる（014 の c4c378a からある。7-5 と同じ形の弱さ）と、Round 1 の OC7（`run_on_instance` を呼ばない関数で包む形を通す）
 - 結果: Must fix 0 / Should fix 0 / Nit 2 見送り。PR #3 を docs/cycle-006-design へマージした（2c8e59d）
 - AWS で未確認のまま: Kafbat UI が上がるまでの時間、`status` の文言（`could not be found` / `disabled`）、コンテナの 75、AL2023 の `unmask --runtime`
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261009-cycle-016-kafbat-ui-nits-review.html -->
