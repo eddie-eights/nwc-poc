@@ -529,3 +529,28 @@ oss/ops/oss-images.sh:56  -f neo4j  context app/neo4j/
   - テストは `-f` と context の組を縛っていない（いまは合っている）
 - 結論の言い直し: 実装は design.md の 14 項目を満たし、Must fix は無い。ただしマージしてよいのは、前の配置で立てた環境（`ops/down.sh`・`oss/ops/down.sh`・`ops/lab-debug.sh down`）を消したあとで、マージしたら `ops/check.sh` より前に state を移すことが条件。`terraform plan` は未確認
 - 差分: deploy.md に注記と見張りを足し、置換しすぎた 4 か所を戻した。コードの動きは変えていない
+
+### docs/cycle-006-design（248db1b）の取り込み（e60918b、merge commit）
+
+PM の指示で `git merge docs/cycle-006-design` を打った（squash・rebase はしていない）。ぶつかった BACKLOG.md と `tests/test_oss_roll.py` は上の「マージの見込み」のパッチで解き、`tests/test_oss_ops.py:575/576/595/601` の `tf_dir` を `IaC/terraform/oss`・`IaC/terraform/aws-managed` にした。直す前の自動マージのままの `tests/test_oss_ops.py` は落ちる:
+
+```
+直す前 exit=1
+AssertionError: oss/ops/down.sh（VPC が 2 つ、state から読めない）: タグで当たった 2 つを両方見て、新しい方の Runtime の ENI で base/core を残す
+```
+
+e60918b で、未コミットの変更が無い状態で取り直した:
+
+```
+$ bash ops/check.sh
+exit=0
+通過 137 / 失敗 0 通過 489 / 失敗 0 通過 158 / 失敗 0 通過 72 / 失敗 0 通過 7 / 失敗 0 通過 84 / 失敗 0 通過 77 / 失敗 0 通過 167 / 失敗 0 通過 144 / 失敗 0 通過 66 / 失敗 0 通過 75 / 失敗 0 通過 96 / 失敗 0 通過 325 / 失敗 0 すべて通過
+$ git log --follow --oneline app/agentcore/app.py | wc -l
+      24
+$ git diff --stat=200 docs/cycle-006-design -M | tail -1
+ 496 files changed, 3326 insertions(+), 2666 deletions(-)
+$ git diff --name-status -M docs/cycle-006-design | awk '{print substr($1,1,1)}' | sort | uniq -c
+ 105 A  104 D   81 M  206 R
+```
+
+（A が検証 2 より 1 つ多いのは、この build.md。検証 13 の grep 2 本は取り込む前の HEAD と同じ出力）
