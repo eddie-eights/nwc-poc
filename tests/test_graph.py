@@ -259,6 +259,87 @@ reset(**{"RETURN n": [], "RETURN id(n) AS id": [], "count(": [{"n": 1}]})
 r = graph.seed_layers({"vertices": [{"id": "x#bgp#1", "label": "bgp_session", "device_id": "x"}], "edges": [{"label": "over", "from": "x#bgp#1", "to": "x#eth0.0"}]})
 check("seed_layers は片端の無い辺を張らずに skipped_edges に数える", r.get("skipped_edges") == 1 and not any("]->(b)" in q and q.startswith("UNWIND") for q in state["queries"]))
 
+# ---- Neo4j（OSS 版）の索引と未登録の頂点の読み（2026-10-08）。Neo4j はラベルの無い property の索引を持てないので、ラベルごとに分けて送る
+_q, _sent4, _ans4 = graph.query, [], {}
+def _query4(cypher, **params):
+    _sent4.append((cypher, params))
+    for key, val in _ans4.items():   # 判定は辞書の順（先に書いた鍵が勝つ）
+        if key in cypher:
+            return val
+    return [{"n": 0}]
+UNREG4 = "MATCH (n:`{}`) WHERE n.registered = false RETURN {}"
+try:
+    graph.BACKEND, graph.query = "neo4j", _query4
+    _ans4.update({UNREG4.format("device", "count"): [{"n": 2}], UNREG4.format("bgp_session", "count"): [{"n": 3}]})
+    r = graph.count()
+    unreg4 = [q for q, _ in _sent4 if "registered = false" in q]
+    check("neo4j: count は未登録の頂点をラベルごとに数えて足す（ラベル無しの MATCH (n) は registered の索引を使えず全部の頂点を読む）",
+          r["unregistered"] == 5 and unreg4 == [UNREG4.format(x, "count(n) AS n") for x in graph._LABELS]
+          and not any(q.startswith("MATCH (n) WHERE n.registered") for q, _ in _sent4))
+    _sent4.clear(); _ans4.clear()
+    _ans4.update({UNREG4.format("device", "n"): nodes([placeholders[0], placeholders[2]]), UNREG4.format("interface", "n"): nodes([placeholders[1]]),
+                  SET_ST: [{"registered": None}]})
+    graph.seed(lab_devices, lab_links)
+    qs4 = [q for q, _ in _sent4]
+    check("neo4j: seed は置き換える機器とインタフェースだけ、ラベルごとに未登録の頂点を読み、置き換えるものをラベルごとに消す",
+          qs4[:2] == [UNREG4.format("device", "n"), UNREG4.format("interface", "n")]
+          and not any(q.startswith("MATCH (n) WHERE n.registered") for q in qs4)
+          and ("MATCH (n:`device`) WHERE id(n) IN $ids DETACH DELETE n", {"ids": ["dc1-leaf-01"]}) in _sent4
+          and ("MATCH (n:`interface`) WHERE id(n) IN $ids DETACH DELETE n", {"ids": ["dc1-leaf-01#ethernet-1/1"]}) in _sent4
+          and sorted(p["st"] for _, p in _sent4 if p.get("st")) == ["ALARM", "DOWN", "DOWN"])
+finally:
+    graph.BACKEND, graph.query = "neptune", _q
+
+class _Driver4:
+    def __init__(self):
+        self.sent = []
+    def execute_query(self, q, database_=None, **kw):
+        self.sent.append(q)
+_d4 = _Driver4()
+graph._cache["schema"] = None
+try:
+    graph._neo4j_schema(_d4)
+    _first4 = list(_d4.sent)
+    graph._neo4j_schema(_d4)
+finally:
+    graph._cache["schema"] = None
+check("neo4j: スキーマは制約のあとに全ラベルの registered と interface の device_id の索引を張り（IF NOT EXISTS）、SCHEMA_TTL の内は張り直さない",
+      _first4 == [f"CREATE CONSTRAINT nwc_{x}_id IF NOT EXISTS FOR (n:`{x}`) REQUIRE n.id IS UNIQUE" for x in graph._LABELS]
+      + [f"CREATE INDEX nwc_{x}_registered IF NOT EXISTS FOR (n:`{x}`) ON (n.registered)" for x in graph._LABELS]
+      + ["CREATE INDEX nwc_interface_device_id IF NOT EXISTS FOR (n:`interface`) ON (n.device_id)"]
+      and len(_first4) == 17 and _d4.sent == _first4)
+
+def _seed_graph(backend, fail=False):
+    """ops/seed_graph.py を Web の EC2 の代わりにここで流す（/etc の env は空の偽物、graph と topology はこのテストが読んだもの）。
+    (送ったクエリ, 標準出力)"""
+    import contextlib, runpy
+    out, path, conf = io.StringIO(), list(sys.path), graph.configured
+    def _q4(cypher, **params):
+        _sent4.append((cypher, params))
+        if fail and cypher.startswith("CALL db.prepareForReplanning"):
+            raise ClientError("There is no procedure with the name `db.prepareForReplanning`")
+        return [{"n": 0}] if "count(" in cypher else []   # 空のグラフ
+    _sent4.clear()
+    os.environ.update(NAME_PREFIX="t-nwc-oss", GRAPH_REPLACE="1")
+    try:
+        graph.BACKEND, graph.query, graph.configured = backend, _q4, lambda: True
+        with contextlib.redirect_stdout(out):
+            runpy.run_path(os.path.join(AGENT, "..", "..", "ops", "seed_graph.py"), init_globals={"open": lambda *a, **kw: io.StringIO("# 偽物\n")})
+    finally:
+        graph.BACKEND, graph.query, graph.configured, sys.path[:] = "neptune", _q, conf, path
+        for k in ("NAME_PREFIX", "GRAPH_REPLACE"):
+            os.environ.pop(k, None)
+    return [q for q, _ in _sent4], out.getvalue()
+qs4, out4 = _seed_graph("neo4j")
+check("neo4j: ops/seed_graph.py は投入（seed）を全部送ったあとで 1 度だけ db.prepareForReplanning を呼ぶ（統計を取り直して索引を使う計画にする）",
+      qs4[-1] == "CALL db.prepareForReplanning()" and qs4.count("CALL db.prepareForReplanning()") == 1
+      and any(q.startswith("UNWIND $rows AS r CREATE (n:`device`") for q in qs4) and "Neo4j に" in out4 and "WARNING" not in out4)
+qs4, out4 = _seed_graph("neo4j", fail=True)
+check("neo4j: db.prepareForReplanning が無い・失敗しても、seed_graph.py は WARNING を出すだけで止まらない（投入は済んでいる）",
+      qs4[-1] == "CALL db.prepareForReplanning()" and "WARNING: Neo4j の統計を取り直せない" in out4 and "db.prepareForReplanning" in out4)
+qs4, out4 = _seed_graph("neptune")
+check("Neptune では seed_graph.py は db.prepareForReplanning を呼ばない", qs4 and not any("prepareForReplanning" in q for q in qs4) and "Neptune に" in out4)
+
 # ---- 差分の同期（Nautobot の Job が呼ぶ。status と上の層は触らない）
 cur_d = [{"id": "a-ce-01", "label": "device", "hostname": "a-ce-01", "site": "a", "role": "leaf", "asn": 65001, "mgmt_ip": "203.0.113.11", "enabled": True, "status": "DOWN"},
          {"id": "old-ce-01", "label": "device", "hostname": "old-ce-01", "site": "a", "role": "leaf", "enabled": False},

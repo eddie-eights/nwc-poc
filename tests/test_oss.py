@@ -189,6 +189,15 @@ changes = [{"change_id": "change#keep", "time": 1}, {"change_id": "change#new", 
                                                      "object_type": "device", "object": "a", "device_id": "a", "detail": ""}]
 
 
+def unreg_count(n):
+    """count() の未登録の頂点の数を n にする答え（n >= 1）。Neptune はラベル無しの 1 本で n、Neo4j はラベルごとに分けて送る
+    （graph._unregistered）ので device に n - 1・bgp_session に 1・ほかのラベルは 0 にして、足すと同じ n になるようにする"""
+    return {"MATCH (n) WHERE n.registered = false RETURN count": [{"n": n}],
+            "MATCH (n:`device`) WHERE n.registered = false RETURN count": [{"n": n - 1}],
+            "MATCH (n:`bgp_session`) WHERE n.registered = false RETURN count": [{"n": 1}],
+            "WHERE n.registered = false RETURN count": [{"n": 0}]}
+
+
 def scenario(graph, with_algo=True):
     """graph の読み書きの関数を全部、決まった答えで呼ぶ。[(呼んだもの, 戻り値)]"""
     out = []
@@ -200,14 +209,16 @@ def scenario(graph, with_algo=True):
             "MATCH (n:`bgp_session`) RETURN n": nodes(lv_bgp), LAYER_E: le, "RETURN n": []}
     run("load_topology", graph.load_topology, **topo)
     run("load_layers", graph.load_layers, **topo)
-    run("count", graph.count, **{"count(": [{"n": 2}]})
+    run("count", graph.count, **{**unreg_count(2), "count(": [{"n": 2}]})
     run("seed", lambda: graph.seed(want_devs, want_links, layers),
-        **{"MATCH (n:`bgp_session`) WHERE n.registered = false RETURN n": nodes(lv_bgp), UNREG: nodes([devs[2]]), "RETURN n": [],
-           SET_ST: [{"registered": None}], "count(": [{"n": 1}]})
-    run("seed_layers", lambda: graph.seed_layers(layers), **{"MATCH (n:interface) RETURN": [{"id": "a-ce-01#eth1"}], "RETURN n": [], "count(": [{"n": 1}]})
+        **{"MATCH (n:`bgp_session`) WHERE n.registered = false RETURN n": nodes(lv_bgp),
+           "MATCH (n:`interface`) WHERE n.registered = false RETURN n": [], UNREG: nodes([devs[2]]), "RETURN n": [],
+           SET_ST: [{"registered": None}], **unreg_count(1), "count(": [{"n": 1}]})
+    run("seed_layers", lambda: graph.seed_layers(layers),
+        **{"MATCH (n:interface) RETURN": [{"id": "a-ce-01#eth1"}], "RETURN n": [], **unreg_count(1), "count(": [{"n": 1}]})
     run("sync_physical", lambda: graph.sync_physical(want_devs, want_links),
         **{DEV: nodes(devs), IFS: nodes(ifs), LINKS: edges(links), "IN $ids RETURN": [{"id": "a-ce-01"}], "count(l)": [{"n": 0}],
-           SET_ST: [{"registered": None}], "count(": [{"n": 1}]})
+           SET_ST: [{"registered": None}], **unreg_count(1), "count(": [{"n": 1}]})
     run("sync_changes", lambda: graph.sync_changes(changes), **{"MATCH (n:change) RETURN": [{"id": "change#old"}, {"id": "change#keep"}]})
     run("add_device", lambda: graph.add_device("c-ce-01", "c", "leaf", "203.0.113.15", 65003), **{REG: []})
     run("add_device_replace", lambda: graph.add_device("zz-ce-09", "zz", "ce"), **{REG: [{"registered": False}], "RETURN n.status AS status": [{"status": "ALARM"}]})
@@ -304,7 +315,8 @@ results4 = scenario(graph4, with_algo=False)
 calls4 = state["calls"]
 labels = ("device", "interface", "change") + graph4.LAYER_LABELS
 schema = [q for q, _ in calls4 if q.startswith("CREATE CONSTRAINT")]
-body4 = [c for c in calls4 if not c[0].startswith("CREATE CONSTRAINT")]
+index = [q for q, _ in calls4 if q.startswith("CREATE INDEX")]
+body4 = [c for c in calls4 if not c[0].startswith(("CREATE CONSTRAINT", "CREATE INDEX"))]
 n4 = len(body4)
 _LBL = re.compile(r"\((\w+):`(\w+)`\)")   # ラベルだけのノード (v:`label`)（_lbl が付けるもの）
 # Neo4j だけ書き方を変えた文（Neptune の文 → Neo4j で送る文）。a 側か b 側かの OR が 2 つの頂点にまたがると、ラベルがあっても
@@ -313,13 +325,22 @@ _REWRITE4 = {
     "MATCH (a)-[l:link]->(b) WHERE (id(a) = $dev AND l.a_if = $ifn) OR (id(b) = $dev AND l.b_if = $ifn) SET l.status = $st RETURN count(l) AS n":
     "MATCH (d:`device`)-[l:link]-(:`device`) WHERE d.id = $dev AND ((startNode(l) = d AND l.a_if = $ifn) OR (endNode(l) = d AND l.b_if = $ifn)) "
     "SET l.status = $st RETURN count(DISTINCT l) AS n"}
+# Neo4j だけラベルごとに分けて送る文（Neptune の 1 文 → Neo4j の何文か。ラベル無しの MATCH (n) は registered の索引を使えないので、
+# graph._unregistered が分ける。seed が読むのは置き換える機器とインタフェースだけ）
+_SPLIT4 = {"MATCH (n) WHERE n.registered = false RETURN count(n) AS n":
+           [f"MATCH (n:`{x}`) WHERE n.registered = false RETURN count(n) AS n" for x in labels],
+           "MATCH (n) WHERE n.registered = false RETURN n":
+           [f"MATCH (n:`{x}`) WHERE n.registered = false RETURN n" for x in ("device", "interface")]}
+golden4 = [(q, p, q4) for q, p in golden["graph"] for q4 in _SPLIT4.get(q, [None])]   # q4 は分けた文（分けない文は None）
 check("neo4j: 送るのは golden（Neptune の openCypher）を _dialect で直し、id で引く頂点にラベル（_lbl）を足したものだけで、"
-      "パラメータも順番も同じ（centrality より前の全関数。_REWRITE4 の 1 文だけは決めた書き方に替える）",
-      len(golden["graph"]) - n4 == 3 and all("neptune.algo." in q for q, _ in golden["graph"][n4:])
-      and sum(q in _REWRITE4 for q, _ in golden["graph"]) >= 2
-      and all((q4 == _REWRITE4[q] if q in _REWRITE4 else _LBL.sub(r"(\1)", q4) == _LBL.sub(r"(\1)", graph4._dialect(q))
+      "パラメータも順番も同じ（centrality より前の全関数。_REWRITE4 の 1 文だけは決めた書き方に替え、_SPLIT4 の 2 文はラベルごとに分ける）",
+      len(golden4) - n4 == 3 and all("neptune.algo." in q for q, _, _ in golden4[n4:])
+      and sum(q in _REWRITE4 for q, _ in golden["graph"]) >= 2 and {q for q, _ in golden["graph"]} >= set(_SPLIT4)
+      and all((q4 == split if split else q4 == _REWRITE4[q] if q in _REWRITE4 else _LBL.sub(r"(\1)", q4) == _LBL.sub(r"(\1)", graph4._dialect(q))
                and set(_LBL.findall(graph4._dialect(q))) <= set(_LBL.findall(q4))) and p4 == p
-              for (q, p), (q4, p4) in zip(golden["graph"], body4)))
+              for (q, p, split), (q4, p4) in zip(golden4, body4)))
+check("neo4j: ラベル無しで未登録の頂点を読む文（MATCH (n) WHERE n.registered）を送らない（全部の頂点を読む）",
+      not any(q.startswith("MATCH (n) WHERE n.registered") for q, _ in calls4) and any(q.startswith("MATCH (n) WHERE n.registered") for q, _ in golden["graph"]))
 
 # ラベル無しの id 検索（BACKLOG の「Neo4j の id 検索にラベルを付ける」）。Neo4j の一意制約と索引はラベルごとなので、
 # (n) WHERE n.id = $id のようにラベルが無いと索引を使えず、全部の頂点を読む。Neptune の ~id はグラフ全体で一意なので要らない
@@ -417,6 +438,10 @@ check("neo4j: _dialect は id(x) を x.id に、`~id` を id に、AS from / to 
 check("neo4j: 頂点の id の一意制約を、最初のクエリの前に 1 度だけ、ラベルごとに作る（IF NOT EXISTS）",
       [q for q, _ in calls4[:len(schema)]] == schema and len(schema) == len(labels)
       and all(f"FOR (n:`{l}`) REQUIRE n.id IS UNIQUE" in q and "IF NOT EXISTS" in q for l, q in zip(labels, schema)))
+check("neo4j: 制約のすぐあとに、全ラベルの registered と interface の device_id の索引を 1 度だけ張る（IF NOT EXISTS）",
+      [q for q, _ in calls4[len(schema):len(schema) + len(index)]] == index
+      and index == [f"CREATE INDEX nwc_{l}_registered IF NOT EXISTS FOR (n:`{l}`) ON (n.registered)" for l in labels]
+      + ["CREATE INDEX nwc_interface_device_id IF NOT EXISTS FOR (n:`interface`) ON (n.device_id)"])
 check("neo4j: 同じグラフの中身（Neptune の答えと同じもの）から、centrality 以外の全関数が Neptune と同じ結果を返す",
       results4 == [r for r in neptune_results if r[0] != "centrality"])
 _d = FakeDriver.made
@@ -556,6 +581,20 @@ _sent = state["calls"]
 state["answer"] = {}
 check("neo4j: 制約を張る途中のドライバの失敗（DriverError）はそのまま上げてクエリを打たず、張ったことにしない（次のクエリでまた張る）",
       isinstance(_err, DriverError) and len(_sent) == 1 and _sent[0][0].startswith("CREATE CONSTRAINT") and _schema_sent() == _first)
+_clock[0] += graph4.SCHEMA_TTL
+_warns.clear()
+state["answer"], state["calls"] = {"CREATE INDEX nwc_interface_device_id": Neo4jError("Index already exists with different name")}, []
+_rows = graph4.query(_q)
+check("neo4j: 張れない索引（Neo4jError）も WARNING に出して先に進み、制約・ほかの索引・クエリは打つ",
+      [q for q, _ in state["calls"]] == schema + index + [_q] and _rows == [{"n": 1}]
+      and len(_warns) == 1 and "interface.device_id" in _warns[0] and "60 秒後" in _warns[0])
+_clock[0] += graph4.SCHEMA_TTL
+state["answer"], state["calls"] = {"CREATE INDEX": DriverError("切れた")}, []
+_err = _catch(lambda: graph4.query(_q))
+_sent_idx = state["calls"]
+state["answer"] = {}
+check("neo4j: 索引を張る途中のドライバの失敗（DriverError）もそのまま上げてクエリを打たず、張ったことにしない（次のクエリでまた張る）",
+      isinstance(_err, DriverError) and [q for q, _ in _sent_idx] == schema + index[:1] and _schema_sent() == _first)
 graph4.time, graph4.log = _real_time, _real_log
 del sys.modules["neo4j.exceptions"]; del neo4j.exceptions; del sys.modules["topology"]
 with open(os.path.join(AGENT, "topology.py"), encoding="utf-8") as f:
