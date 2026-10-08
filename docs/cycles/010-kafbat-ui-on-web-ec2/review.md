@@ -87,10 +87,10 @@ None
 - Must 0 / Should 0 / Nit 5。Nit は 5 件とも再現した。分類は cold reviewer のまま（格上げ・格下げなし）。Nit なのでこのサイクルでは直さない
 - Nit 1 [design整合] design.md:64・:108 の `clab graph` / `$SRC` と lab.sh:150-151 の `containerlab graph` / `"$PWD"` のずれ
   - 再現（読んだだけ）: design.md:108 は `clab graph -t splab.clab.yml --srv 127.0.0.1:50080` を期待し、lab.sh:150-151 は `--property=WorkingDirectory="$PWD" --setenv=CLAB_VERSION_CHECK=disable \` と `containerlab graph -t "$TOPO" --srv "127.0.0.1:$GRAPH_PORT"`
-  - 片付け: build.md の「設計から逸脱した点」1 行目に理由ごと記録済み。design.md の書き換えは最終報告に回す
+  - 片付け: build.md の「設計から逸脱した点」1 行目に理由ごと記録済み。design.md の B と検証 8 を実装の形に直した
 - Nit 2 [design整合] design.md:103 の検証 3 は `IaC/terraform/aws-managed` 全体で 0 件を期待するが、範囲外の 17 件が残る
   - 再現: `git grep -c 'service_discovery' IaC/terraform/aws-managed` → analytics/ecs.tf:1、grafana.tf:3、splunk.tf:9、nautobot/nautobot.tf:4。同じコマンドを 895cdb0 で打つと同じ 4 本に加えて stream/kafka_ui.tf:4。`git grep -c 'service_discovery' IaC/terraform/aws-managed/pipeline/stream` → 0 件（rc=1）
-  - 片付け: build.md の「設計から逸脱した点」4 行目に記録済み。design.md の書き換えは最終報告に回す
+  - 片付け: build.md の「設計から逸脱した点」4 行目に記録済み。design.md の検証 3 を stream に絞った形に直した
 - Nit 3 [docs] IaC/terraform/aws-managed/base/ecr/outputs.tf:34 の `kafka_ui_repository_url` の description が「pipeline/stream runs it on ECS.」のまま
   - 再現: `sed -n '34p'` で上の文言を確認。design.md の変更対象にも docs の一覧にも無い
   - 片付け: 最終報告と BACKLOG の候補に回す（BACKLOG.md は PM が書く）
@@ -154,11 +154,13 @@ rc=0
 
 ### cold review の 2 回目
 
-- 依頼しない。1 回目のあと実装ファイルは 1 バイトも変わっていない（`git diff --stat 91ab2f6..HEAD` は空。このあと足すのは review.md だけ）。Must / Should が 0 なので、完了判定の直前の状態は 1 回目と同じ
+- 依頼しない。1 回目のあと実装ファイルは 1 バイトも変わっていない（`git diff --stat 91ab2f6..HEAD` は空。このあと変えるのは docs/cycles/010 の design.md と review.md だけ）。Must / Should が 0 なので、完了判定の直前の状態は 1 回目と同じ
 
 ### 完了判定
 
 - Must fix 0 / Should fix 0（cold review）。セルフレビューの Should fix 2 件は上で取り直した
-- **サイクルはまだ完了にしない。** design.md の検証 10（AWS で立てて画面を見る）が未実施で、PM がまとめて行う
-- HTML（cycle-review 手順 6）は検証 10 の結果が入ってから書く。BACKLOG.md の行は PM が書く
-- 直さない Nit: cold review の 5 件（上。Nit 1・2 は build.md の逸脱、Nit 4 はセルフレビューの Nit 5 と重なる。新しく出たのは Nit 3 と Nit 5）と、build.md のセルフレビューの Nit 3〜10
+- Nit 5 件は最終報告に載せる。コードは直さない。Nit 1・2（design.md と実装のずれ）は、design.md を現行の設計に書き直して片付けた（PM の指示。009 と同じく、build.md の「設計から逸脱した点」を design.md に取り込んだ）
+- design.md の検証 10（AWS で立てて画面を見る）は未実施。PM が 008・011・012 とまとめて AWS で 1 回で行う
+- サイクルは検証 10 を除いて完了。HTML は書いた（下のパス）
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261008-cycle-010-kafbat-ui-on-web-ec2-review.html -->

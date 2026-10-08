@@ -2,6 +2,8 @@
 
 設計: PM(fable-5.1) / effort: high
 
+この文書は現行の設計だけを書く。実装（build.md の Round 1）とセルフレビュー・cold review（review.md の Round 1）で変わった点は、この文書に取り込んである（2026-10-08、cold review の Nit 1・2 を受けて）。最初の案との差は build.md の「設計から逸脱した点」と git の履歴にある。
+
 ## 背景
 
 Kafbat UI は `IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf` が ECS Fargate のタスク 1 つ（0.5 vCPU / 1 GiB、arm64）として立て、Cloud Map の名前空間 `<prefix>-stream.internal` の `kafka-ui` で名前を引き、Web の EC2 を踏み台に `AWS-StartPortForwardingSessionToRemoteHost` で手元の 8082 に出している。Fargate のタスク（$0.02/h）と Cloud Map の名前空間（Route 53 のホストゾーン $0.50/月）を、画面を 1 つ開くためだけに持っている。
@@ -20,7 +22,7 @@ Kafbat UI は `IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf` が ECS Fa
 - VPC エンドポイント: `ops/up.sh:507` が stream を作るときに `ecr.api ecr.dkr logs` を足す（Kafbat UI はいつも作るので、いつも足される）
 - `ops/up.sh`: `KAFKA_UI_TAG=v1.5.0`（:130）、`mirror_image` で ECR の `<prefix>-kafka-ui` に写す（:692）、`ensure_secret`（:921）、`tf_apply pipeline/stream -var kafka_ui_image_tag`（:922）、出力（:1297-1299）。ECS の待ちは Telegraf だけで Kafbat UI には無い。費用は `COST_CENTS=2`（web、:563）と `+ 2  # Kafbat UI（Fargate のタスク 1）`（:572）
 - lab の EC2（`pipeline/lab/instance.tf:7`）: `t4g.xlarge`、`app/containerlab/setup.sh` が docker と containerlab 0.79.0 を入れ、`lab.sh` を `/usr/local/bin/lab` に張る。`lab.sh` に `graph` は無く、`clab <args>` の素通しだけ（:135）。`outputs.tf` にポートフォワードの出力は無い
-- `containerlab graph` の実物は手元に Linux が無く未確認（下の「未確定事項とリスク」1）
+- `containerlab graph` の実物は手元に Linux が無く動かしていない。画面が外のアセットを読むかはソースで確かめた（下の「未確定事項とリスク」1）
 
 ## 設計方針
 
@@ -46,26 +48,29 @@ Kafbat UI は `IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf` が ECS Fa
 - `web.tf`: ルートボリュームを 8 → 16 GB（Docker と Kafbat UI のイメージ 約 640 MB の展開分。8 GB でも入るが余裕が無い）。IAM の inline `web-assets` に ECR の pull を足す: `ecr:GetAuthorizationToken` on `*`、`ecr:BatchGetImage` / `ecr:GetDownloadUrlForLayer` / `ecr:BatchCheckLayerAvailability` on `arn:aws:ecr:<region>:<account>:repository/<prefix>-kafka-ui`
 - `templates/web_user_data.sh.tftpl` に足す（**コメント以外は ASCII だけ**）:
   1. `command -v docker >/dev/null || dnf install -y docker`、`systemctl enable --now docker`
-  2. `/usr/local/bin/<prefix>-kafka-ui` スクリプトを書く。やること: `aws ssm get-parameter` で `image` / `bootstrap-servers` / `security-protocol` を読む（無ければ `exit 75`、systemd が再試行）。`admin-password` を `--with-decryption` で読む。`/run/<prefix>-kafka-ui.env` を `umask 077` で書く（`KAFKA_CLUSTERS_0_NAME`、`KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS`、`KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL`、SASL_SSL のときだけ `..._SASL_MECHANISM=AWS_MSK_IAM` / `..._SASL_CLIENT_CALLBACK_HANDLER_CLASS` / `..._SASL_JAAS_CONFIG`、`AUTH_TYPE=LOGIN_FORM`、`SPRING_SECURITY_USER_NAME=admin`、`SPRING_SECURITY_USER_PASSWORD`、`GITHUB_RELEASE_INFO_ENABLED=false`、`JAVA_OPTS=-XX:MaxRAMPercentage=50`）。`aws ecr get-login-password | docker login --username AWS --password-stdin <registry>`。`docker pull`。`docker run --rm --name <prefix>-kafka-ui --env-file /run/<prefix>-kafka-ui.env -p 127.0.0.1:8082:8080 <image>`（フォアグラウンド。`--rm` で古いコンテナを残さない）
+  2. `/usr/local/bin/<prefix>-kafka-ui` スクリプトを書く（`#!/bin/bash` と `set -euo pipefail`、`chmod 0755`。ヒアドキュメントはクォートして、`$` を user_data の時点で展開させない）。やること: `aws ssm get-parameter` で `image` / `bootstrap-servers` / `security-protocol` を読む（無ければ `exit 75`、systemd が再試行）。`admin-password` を `--with-decryption` で読む。`/run/<prefix>-kafka-ui.env` を `umask 077` で書く（`KAFKA_CLUSTERS_0_NAME`、`KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS`、`KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL`、SASL_SSL のときだけ `..._SASL_MECHANISM=AWS_MSK_IAM` / `..._SASL_CLIENT_CALLBACK_HANDLER_CLASS` / `..._SASL_JAAS_CONFIG`、`AUTH_TYPE=LOGIN_FORM`、`SPRING_SECURITY_USER_NAME=admin`、`SPRING_SECURITY_USER_PASSWORD`、`GITHUB_RELEASE_INFO_ENABLED=false`、`JAVA_OPTS=-XX:MaxRAMPercentage=50`）。`aws ecr get-login-password | docker login --username AWS --password-stdin <registry>`。`docker pull --quiet`。`docker rm --force <prefix>-kafka-ui`（前のコンテナが残っていれば消す。無くても失敗にしない）。`exec docker run --rm --name <prefix>-kafka-ui --env-file /run/<prefix>-kafka-ui.env -p 127.0.0.1:8082:8080 <image>`（フォアグラウンド。`--rm` で古いコンテナを残さない）
+     - ECR のログインか pull が落ちたら、`set -e` で `docker run` まで行かずに非 0 で終わる（古いイメージのまま起こさない。systemd が 30 秒後に起こし直す）
      - 値を `echo` や `set -x` で出さない。env ファイルは `/run`（tmpfs）で、ユニットの `ExecStopPost` で消す
      - `KAFKA_CLUSTERS_0_NAME` は stream が決めていた `local.kafka_cluster_name` をパラメータにしないで、`<prefix>` 固定でよい（画面に出る名前だけ）
-  3. systemd ユニット `<prefix>-kafka-ui.service`: `After=docker.service network-online.target`、`Requires=docker.service`、`ExecStart=/usr/local/bin/<prefix>-kafka-ui`、`ExecStopPost=/bin/rm -f /run/<prefix>-kafka-ui.env`、`Restart=always`、`RestartSec=30`、`TimeoutStartSec=0`。`systemctl enable --now`
+  3. systemd ユニット `<prefix>-kafka-ui.service`: `After=docker.service network-online.target`、`Wants=network-online.target`、`Requires=docker.service`、`ExecStart=/usr/local/bin/<prefix>-kafka-ui`、`ExecStopPost=/bin/rm -f /run/<prefix>-kafka-ui.env`、`Restart=always`、`RestartSec=30`、`TimeoutStartSec=0`。`systemctl enable --now`
   - 既存の `web/` が S3 に無いときの `exit 0`（テンプレート :29）より**前**に Docker とユニットの部分を置く（Web の画面が無くても Kafbat UI は動く）
 - MSK の IAM 認証は既定の資格情報チェーン → インスタンスロール。IMDSv2 の hop limit 1 のままだと **コンテナの中から IMDS に届かない**（Docker の bridge で 1 hop 増える）。`web.tf:90-94` の `http_put_response_hop_limit` を 2 にする（lab の EC2 で containerlab のコンテナが IMDS を使わないのとは事情が違う。理由をコメントに書く）
 - SG（`base/core/security_groups.tf`）: `kafka_ui` を SG の一覧と `aws_api_clients` から消し、行 `web → kafka_ui 8080` と `kafka_ui → msk 9098` を消し、**`{ from = "web", to = "msk", protocol = "tcp", port = 9098, why = "Kafka IAM - Kafbat UI on the web EC2" }`** を足す。`oss.tf:40` は `{ from = "web", to = "kafka", protocol = "tcp", port = 9092, why = "Kafka - Kafbat UI on the web EC2" }` に替える。`kafka_ui` の SG が消えるので base/core の apply で SG が 1 つ減る
-- `ops/up.sh`: `mirror_image` / `ecr_has` / `ensure_secret` / `-var kafka_ui_image_tag` は**そのまま**（イメージは ECR 経由のまま。ghcr.io に VPC から届かない）。費用の行を `COST_CENTS=4`（web t4g.medium 約 4.3 セント）にし、`+ 2  # Kafbat UI` の行とコメント（:64, :531, :543-545, :572）を消す。出力（:1297-1299）の説明を「Web の EC2 の Docker」に直す。`add_endpoints ecr.api ecr.dkr logs` は Telegraf の ECS が要るので残す
-- `deploy.env.example` の「Kafbat UI（約 $0.02/h）もいつも入る」の文を「Kafbat UI は Web の EC2 に同居（追加の費用は t4g.small → t4g.medium の差 約 $0.02/h）」に直す（`tests/test_stream.py:466` が文字列を見ているので、テストも一緒に）
-- `oss/ops/up.sh` の `kafka_ui_image_tag` / `ensure_secret` / 出力（:167, :213-215, :323, :329）は形を変えない。`oss/ops/roll-nodes.sh` と `tests/test_oss_roll.py` から `aws_ecs_service.kafka_ui`（`T_KIND=kafka_ui`）を外す
+- `ops/up.sh`: `mirror_image` / `ecr_has` / `ensure_secret` / `-var kafka_ui_image_tag` は**そのまま**（イメージは ECR 経由のまま。ghcr.io に VPC から届かない）。費用の行を `COST_CENTS=4`（web t4g.medium 約 4.3 セント）にし、`+ 2  # Kafbat UI` の行とコメント（:531, :543-545, :572）を消す。:64 の Kafbat UI の行は消さずに書き直す（stream を作る回はいつも作ること・切り替える変数が無いことは残し、Web の EC2 の Docker で動くことと費用を書く）。出力（:1297-1299）の説明を「Web の EC2 の Docker」に直す。`add_endpoints ecr.api ecr.dkr logs` は Telegraf の ECS が要るので残す
+- `deploy.env.example` の「Kafbat UI（約 $0.02/h）もいつも入る」の文を「Kafbat UI は Web の EC2 に同居（追加の費用は t4g.small → t4g.medium の差 約 $0.02/h）」に直す（`tests/test_stream.py:466` が文字列を見ているので、テストも一緒に）。`SKIP_STREAM` で下がる額は $1.80 → $1.78/h（Kafbat UI の 2 セントが stream から土台へ移る。`tests/test_analytics.py` の `_pipeline_cents` と同じ計算）
+- `oss/ops/up.sh` の `kafka_ui_image_tag` / `ensure_secret` / 出力（:167, :213-215, :323, :329）は形を変えない。`oss/ops/roll-nodes.sh` は `aws_ecs_service.$kind[` の汎用の形で Kafbat UI の記述が無いので変えない。`tests/test_oss_roll.py` の例の `T_KIND=kafka_ui` は `telegraf_dialin` に替える
 - `ops/down.sh` は変えない（stream の destroy で SSM パラメータとポリシーが消え、base/core の destroy で EC2 が消える。`admin-password` は今までどおり `delete_up_ssm_params`）
 
 ### B. lab の EC2 で `containerlab graph` を見る
 
 - `app/containerlab/lab.sh` に `graph` と `graph-stop` を足す:
-  - `graph`: `systemd-run --unit="$NAME_PREFIX-lab-graph" --collect --property=WorkingDirectory=$SRC clab graph -t "$TOPO" --srv 127.0.0.1:50080`（既に動いていれば案内だけ）。終わりに、手元で打つポートフォワードのコマンド（`aws ssm start-session --region <region> --target <self instance id> --document-name AWS-StartPortForwardingSession --parameters portNumber=50080,localPortNumber=50080`。instance id は IMDSv2 から取る）と `http://localhost:50080/` を出す
-  - `graph-stop`: `systemctl stop "$NAME_PREFIX-lab-graph"`
+  - `graph`: `systemd-run --unit="$NAME_PREFIX-lab-graph" --collect --property=WorkingDirectory="$PWD" --setenv=CLAB_VERSION_CHECK=disable containerlab graph -t "$TOPO" --srv "127.0.0.1:$GRAPH_PORT"`（`GRAPH_PORT=50080`。既に動いていれば案内だけ。`NAME_PREFIX` が無い手元では案内を出して止まる）。
+    - `clab` は lab.sh のシェル関数で、systemd-run の一時ユニットからは見えず lab.sh の `export` も届かない。なので `containerlab` を直に呼び、版の確かめを切る環境変数を `--setenv` で渡し直す。lab.sh は自分の src に cd 済みなので作業ディレクトリは `$PWD`
+    - 終わりに、手元で打つポートフォワードのコマンド（`aws ssm start-session --region <region> --target <self instance id> --document-name AWS-StartPortForwardingSession --parameters portNumber=50080,localPortNumber=50080`。instance id は IMDSv2 から取る）と `http://localhost:50080/` を出す
+  - `graph-stop`: `systemctl stop "$NAME_PREFIX-lab-graph"`（動いていなくても失敗にしない）。`NAME_PREFIX` か `systemctl` が無ければ何もしない（手元の compose の `lab down` を壊さない）
   - `lab down` で `graph-stop` も呼ぶ
   - 127.0.0.1 に bind する。SSM のポートフォワードはエージェントがローカルで繋ぐので SG の変更は要らない
-  - ヘルプ（:3-6）と `hint` の案内に足す
+  - ヘルプ（:3-6）と `hint` の案内に足す。ヘルプが 1 行増えるので、`tests/test_alerts.py` のヘルプの行番号の検査も直す
 - `pipeline/lab/outputs.tf` に `graph_port_forward_command` を足す（上と同じコマンド。`aws_instance.lab.id` で）
 - `tests/test_lab_debug.py`（または lab のテストがある場所）に、`lab.sh` の `graph` / `graph-stop` が `systemd-run` と `127.0.0.1:50080` を使うこと、`down` が `graph-stop` を呼ぶこと、outputs に `50080` のコマンドがあることを足す。`forward` にある偽の `iptables` / `sudo` の実行の検査と同じ形で、偽の `systemd-run` / `systemctl` を PATH に置いて `graph` / `graph-stop` を実行で確かめる
 
@@ -75,9 +80,14 @@ Kafbat UI は `IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf` が ECS Fa
 - `IaC/terraform/oss/pipeline/stream/kafka.tf`（名前空間を受け取る）、`IaC/terraform/oss/base/core/oss.tf` は無い → `IaC/terraform/aws-managed/base/core/oss.tf:40`
 - `IaC/terraform/aws-managed/base/core/web.tf`、`variables.tf`、`security_groups.tf`、`templates/web_user_data.sh.tftpl`
 - `IaC/terraform/aws-managed/pipeline/lab/outputs.tf`、`app/containerlab/lab.sh`
-- `ops/up.sh`（費用と出力）、`deploy.env.example`、`oss/ops/roll-nodes.sh`
+- `ops/up.sh`（費用と出力）、`deploy.env.example`
 - tests: `tests/test_stream.py:368-476`（Kafbat UI の節を全部書き直す）、`tests/test_analytics.py:90-108`（SG_KEYS 14 本、EXPECTED_FLOWS の `web → msk 9098`）と `:1503` / `:2013-2016`（費用）、`tests/test_oss.py:989,1008,1500,1553-1557,1861`、`tests/test_oss_roll.py:135,444,564`、`tests/test_oss_ops.py:886-887,1062-1065`（出力の名前は同じなので変わらないはず。確かめる）、`tests/test_workflow.py:644-648`（ASCII の検査はそのまま通ること）、`tests/test_lab_debug.py`
 - docs（Explore の一覧。「Fargate」「Cloud Map」「ToRemoteHost」「/ecs/<prefix>-kafka-ui」「t4g.small」「2.2」を直す）: `docs/pipeline.md:151-170`、`docs/deploy.md:26,80,86,99,113,224`、`docs/architecture/core.md:19,34-37`、`docs/architecture/resources/web-ec2.md:15,21,34`、`msk.md:40,71-82`、`vpc-perimeter.md:47-50`、`ssm-parameter-store.md:46,53`（パラメータ 3 本を足す）、`ecr.md:33`、`docs/architecture/pipeline.md:5,31`、`docs/architecture/README.md:66,105`、`docs/data-stores.md:155,299`、`docs/oss-variant.md:27`、`docs/faq-fukuda-nwc-poc.md:2226-2262`、`docs/troubleshooting.md:92`。lab の graph は `docs/lab.md`（あれば）と `docs/deploy.md` の lab の節に 1 段落
+- 上の一覧に加えて直すもの（実装で見つかった）:
+  - tests: `tests/test_oss.py`（Cloud Map と web → kafka 9092）、`tests/test_analytics.py`（費用と SG の数）、`tests/test_stream.py`（Fargate が無いこと）、`tests/test_oss_roll.py`、`tests/test_alerts.py`（ヘルプの行番号）
+  - docs: `README.md`、`docs/setup.md`、`docs/pipeline.md`
+  - コメントと説明文だけ: `perimeter.tf`、`base/core/outputs.tf`、`terraform.tfvars.example`、`base/ecr/main.tf`、`oss/ops/up.sh`・`down.sh`、`ops/up.sh:3` と `deploy.env.example:26` の土台の金額、Web のロールの description（ECR の pull）
+- lab の図の段落は `docs/pipeline.md` の「lab に入る」に置く（`docs/lab.md` は無く、`docs/deploy.md` に lab の節が無い）
 - `docs/verification/*.md` は記録なので直さない
 
 ## 再利用するもの
@@ -90,7 +100,7 @@ Kafbat UI は `IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf` が ECS Fa
 ## 実装ステップ（commit はこの単位）
 
 1. **stream と base/core の Terraform**（A の kafka_ui.tf / locals / outputs / variables、OSS kafka.tf への名前空間の移動、web.tf / variables / SG / oss.tf、user_data）。`terraform validate` を managed と oss の `base/core` と `pipeline/stream` で通す
-2. **ops と費用**（up.sh、deploy.env.example、roll-nodes.sh）
+2. **ops と費用**（up.sh、deploy.env.example、oss/ops の文言）
 3. **lab の graph**（lab.sh、lab の outputs）
 4. **tests と docs**。`bash ops/check.sh` が全部通る
 
@@ -100,18 +110,18 @@ Kafbat UI は `IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf` が ECS Fa
 
 1. `bash ops/check.sh` の最後が `すべて通過`、exit 0（いま 325 項目。件数は増えてよい）
 2. `terraform -chdir=IaC/terraform/aws-managed/pipeline/stream validate` と `.../oss/pipeline/stream`、`.../aws-managed/base/core`、`.../oss/base/core` の 4 つが `Success!`
-3. `git grep -n 'service_discovery' IaC/terraform/aws-managed` が **0 件**、`git grep -n 'service_discovery' IaC/terraform/oss/pipeline/stream/kafka.tf` が名前空間と service の 2 か所以上
+3. `git grep -n 'service_discovery' IaC/terraform/aws-managed/pipeline/stream` が **0 件**（`IaC/terraform/aws-managed` 全体では analytics の Splunk / Grafana と nautobot の Cloud Map が残るので 0 件にならない。それらはこのサイクルの範囲外）、`git grep -n 'service_discovery' IaC/terraform/oss/pipeline/stream/kafka.tf` が名前空間と service の 2 か所以上
 4. `git grep -n 'aws_ecs\|Fargate' IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf` が 0 件
 5. `grep -n 'from = "web", to = "msk"' IaC/terraform/aws-managed/base/core/security_groups.tf` が 1 件、`grep -c kafka_ui IaC/terraform/aws-managed/base/core/security_groups.tf` が 0
 6. user_data の ASCII の検査: `python3 -c "import sys;[print(i,l) for i,l in enumerate(open('IaC/terraform/aws-managed/base/core/templates/web_user_data.sh.tftpl').read().splitlines(),1) if not l.lstrip().startswith('#') and not l.isascii()]"` が何も出さない
 7. user_data のスクリプト部分を手元で `bash -n`（テンプレート変数を仮置きして。`tests/` の既存の `tftpl` の検査の形があればそれで）
-8. `lab.sh graph` の偽コマンドのテスト: 偽 `systemd-run` が受けた引数に `clab graph -t splab.clab.yml --srv 127.0.0.1:50080` が含まれ、`graph-stop` が偽 `systemctl stop <prefix>-lab-graph` を呼ぶこと
+8. `lab.sh graph` の偽コマンドのテスト: 偽 `systemd-run` が受けた引数が `--unit=<prefix>-lab-graph --collect --property=WorkingDirectory=<lab.sh を打った場所> --setenv=CLAB_VERSION_CHECK=disable containerlab graph -t splab.clab.yml --srv 127.0.0.1:50080` で、`graph-stop` が偽 `systemctl stop <prefix>-lab-graph` を呼ぶこと
 9. `ops/up.sh` の費用の合計の行（`COST_CENTS`）がテスト `tests/test_analytics.py` の期待と一致すること
-10. **AWS は未確認のまま渡す。** PM がまとめて `ops/up.sh` で立て、`kafka_ui_port_forward_command` で 8082 が開き admin でログインでき、トピック一覧が出ること、`lab graph` で 50080 にトポロジ図が出ることを確かめる
+10. **未実施（PM が AWS でまとめて行う。008 の Grafana のプラグイン固定、011、012 と一緒に 1 回で回す）。** PM がまとめて `ops/up.sh` で立て、`kafka_ui_port_forward_command` で 8082 が開き admin でログインでき、トピック一覧が出ること、`lab graph` で 50080 にトポロジ図が出ることを確かめる
 
 ## 未確定事項とリスク
 
-1. **`containerlab graph` の画面が CDN からアセットを読むかもしれない（未確認）。** VPC はインターネットに出ないので、読むなら白紙になる。実装者は AWS で確かめられないので、containerlab 0.79.0 のソース（`cmd/graph.go` と `graph/` のテンプレート）を読んで、外部 URL（`https://`）を参照していないか build.md に引用する。参照していたら `--static-dir` などの代替を調べて書き、BACKLOG 行の候補として報告する（この cycle では直さない）
+1. **`containerlab graph` の画面が CDN からアセットを読むか。** VPC はインターネットに出ないので、読むなら白紙になる。containerlab v0.79.0 のソース（`cmd/graph.go`、`core/graph.go`、`core/graph_templates/`）を読んだ結果は「読まない」: 画面が読むのは `go:embed` でバイナリに入った `static/` だけで、外部 URL はライセンスのコメントと名前空間だけ（引用は build.md の「未確定事項 1」）。`--static-dir` などの代替は要らない。AWS での画面は検証 10 で確かめる
 2. **IMDS の hop limit。** Docker の bridge 越しに IMDSv2 に届くには hop limit 2 が要る、という理解は AWS の文書「Retrieve instance metadata」の「containers」の記述に基づく。`--network host` にすれば 1 のままでよいが、ポートの衝突を避けるため bridge + hop limit 2 を採る。AWS で未確認
 3. **Web の EC2 の作り直し。** user_data と instance_type の変更で `aws_instance.web` が replace される。いまは AWS に何も立っていない（down.sh 済み）ので実害は無いが、docs/deploy.md に「010 以降の最初の apply で Web が作り直される」と 1 行書く
 4. **メモリ。** t4g.medium 4 GB に Gradio 約 400 MB + Kafbat UI の JVM（`MaxRAMPercentage=50` で最大約 2 GB）。足りるはずだが AWS で未確認。足りなければ `JAVA_OPTS` を `-Xmx1g` にする
@@ -130,3 +140,5 @@ Kafbat UI は `IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf` が ECS Fa
      - `DOCKER-USER` で外向きの通信を絞るのは、PoC には重い
      - MSK の権限は絞らない。2026-10-05 のユーザー決定（`docs/cycles/005-oss-on-ecs/design-log.md` の「Kafbat UI は見るだけにしない」）で、画面からの変更を要るとしている
    - 開き方は 127.0.0.1 と SSM のポートフォワードだけで、画面はログインフォーム
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261008-cycle-010-kafbat-ui-on-web-ec2-design.html -->
