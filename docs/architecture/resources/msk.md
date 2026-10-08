@@ -39,6 +39,7 @@ Telegraf・syslog-ng・GoFlow2 が集めた機器のデータを、いったん�
 | Telegraf（受ける側 / 取りにいく側） | Telegraf → MSK | 9098/tcp、SASL_SSL + AWS_MSK_IAM。タスクロール `<prefix>-telegraf-task` |
 | syslog-ng / GoFlow2（ECS） | → MSK | 9096/tcp、SASL_SSL + SCRAM-SHA-512。ユーザー名とパスワードは ECS の secrets で Secrets Manager からタスクの環境変数に入る（実行ロール `<prefix>-syslog-ng-exec` / `<prefix>-goflow2-exec`） |
 | Spark（EMR Serverless） | Spark ← MSK | 9098/tcp、同じ認証。ジョブの実行ロール |
+| Spark（EMR Serverless、ACL） | Spark → MSK | 9098/tcp、同じ認証。起動のたびに `User:collectors` の `logs` / `flows` の `WRITE` と `DESCRIBE` を `createAcls` で入れる（実行ロールの `kafka-cluster:AlterCluster`。cycle 012） |
 | ブローカー同士 | MSK ↔ MSK | 9092〜9098/tcp |
 | Kafbat UI（Web の EC2 の Docker） | Web → MSK | 9098/tcp、同じ認証。Web の EC2 のロール（stream が足すポリシー `<prefix>-kafka-ui`）は、トピックの読み書き・作成・変更・削除と、グループを見ることまで |
 | SSM | MSK → パラメータ | ブートストラップの文字列を `/<prefix>/msk-bootstrap`（String）に書く |
