@@ -208,6 +208,9 @@ check("runtime role は emr-serverless から assume（SourceAccount の条件�
       re.search(r'"emr-serverless\.amazonaws\.com"', tf) is not None and '"aws:SourceAccount"' in tf)
 for act in ("s3tables:GetTableMetadataLocation", "s3tables:UpdateTableMetadataLocation", "s3tables:PutTableData", "kafka-cluster:ReadData", "kafka-cluster:Connect", "kafka-cluster:CreateTopic"):
     check(f"runtime role に {act}", f'"{act}"' in tf)
+check("runtime role の kafka-cluster:AlterCluster は クラスターの ARN の文だけ（SCRAM の収集器の ACL を入れる。cycle 012 Round 2）",
+      re.search(r'Sid\s*=\s*"KafkaCluster"[^}]*?Action\s*=\s*\[[^\]]*"kafka-cluster:AlterCluster"[^\]]*\]\s*\n\s*Resource\s*=\s*local\.msk_cluster_arn\n', tf) is not None
+      and tf.count('"kafka-cluster:AlterCluster"') == 1)
 check("Kafka のトピック ARN は cluster → topic の置き換え", 'replace(local.msk_cluster_arn, ":cluster/", ":topic/")' in tf)
 
 # ---- 格納先（var.sinks。Kafka から 4 つに分ける。splunk は Spark から HEC に書く。2026-09-26 に MSK Connect をやめた）
@@ -604,11 +607,14 @@ class _Fut:
 
 class _Admin:
     made = []
-    def __init__(self, have, err=None): self.have, self.err, self.closed = have, err, False
+    def __init__(self, have, err=None, acl_err=None): self.have, self.err, self.acl_err, self.closed, self.acls = have, err, acl_err, False, None
     def listTopics(self): return type("R", (), {"names": lambda _s: _Fut(self.have)})()
     def createTopics(self, lst):
         _Admin.made.extend(t.name for t in lst)
         return type("R", (), {"all": lambda _s: _Fut(None, self.err)})()
+    def createAcls(self, bindings):
+        self.acls = (self.acls or []) + list(bindings)
+        return type("R", (), {"all": lambda _s: _Fut(None, self.acl_err)})()
     def close(self): self.closed = True
 
 
@@ -622,9 +628,20 @@ class _JVM:
             def add(self, x): self.append(x)
         class NewTopic:
             def __init__(self, name, p, r): self.name = name
+        # ACL は (resourceType, name, patternType, principal, host, operation, permissionType) のタプルにする（Kafka の enum は名前の文字列）
+        enum = lambda *names: type("E", (), {n: n for n in names})
+        acl = type("Acl", (), {"AclBinding": staticmethod(lambda pattern, entry: pattern + entry),
+                               "AccessControlEntry": staticmethod(lambda principal, host, op, perm: (principal, host, op, perm)),
+                               "AclOperation": enum("ANY", "ALL", "READ", "WRITE", "CREATE", "DELETE", "ALTER", "DESCRIBE", "CLUSTER_ACTION",
+                                                    "DESCRIBE_CONFIGS", "ALTER_CONFIGS", "IDEMPOTENT_WRITE"),
+                               "AclPermissionType": enum("ANY", "DENY", "ALLOW")})()
+        res = type("Res", (), {"ResourcePattern": staticmethod(lambda rtype, name, ptype: (rtype, name, ptype)),
+                               "ResourceType": enum("ANY", "TOPIC", "GROUP", "CLUSTER", "TRANSACTIONAL_ID"),
+                               "PatternType": enum("ANY", "MATCH", "LITERAL", "PREFIXED")})()
         self.java = type("J", (), {"util": type("U", (), {"Properties": Props, "ArrayList": ArrayList, "Optional": type("O", (), {"empty": staticmethod(lambda: None)})})})()
         self.org = type("O", (), {"apache": type("A", (), {"kafka": type("K", (), {"clients": type("C", (), {"admin": type("Ad", (), {
-            "AdminClient": type("AC", (), {"create": staticmethod(lambda props: (setattr(j, "props", props), admin)[1])}), "NewTopic": NewTopic})()})()})()})()})()
+            "AdminClient": type("AC", (), {"create": staticmethod(lambda props: (setattr(j, "props", props), admin)[1])}), "NewTopic": NewTopic})()})(),
+            "common": type("Cm", (), {"acl": acl, "resource": res})()})()})()})()
 
 
 _admin = _Admin({"metrics", "gnmi"})
@@ -643,6 +660,54 @@ try:
     mod.ensure_topics(type("S", (), {"_jvm": _JVM(_admin4)})(), "b", ["traps"]); _raised = False
 except Exception: _raised = True
 check("ensure_topics: TopicExists 以外の失敗は上げる（権限が無いのを黙って通さない）。close はする", _raised and _admin4.closed)
+
+# ---- SASL/SCRAM の収集器の ACL（AWS の文書は MSK の IAM のアクセス制御では allow.everyone.if.no.acl.found が効かないとする。MSK では未確認。cycle 012 Round 2）
+def _kafka_auth(v, f):
+    """KAFKA_AUTH を v にして f() を呼び、元に戻す（None は消す）"""
+    saved = os.environ.get("KAFKA_AUTH")
+    os.environ.pop("KAFKA_AUTH", None) if v is None else os.environ.__setitem__("KAFKA_AUTH", v)
+    try:
+        return f()
+    finally:
+        os.environ.pop("KAFKA_AUTH", None) if saved is None else os.environ.__setitem__("KAFKA_AUTH", saved)
+
+
+_Admin.made = []
+_adm5 = _Admin(set())
+_sp5 = type("S", (), {"_jvm": _JVM(_adm5)})()
+_r5 = _kafka_auth(None, lambda: mod.ensure_acls(_sp5, "b-1:9098"))
+check("ensure_acls: User:collectors に logs / flows の WRITE と DESCRIBE（TOPIC・LITERAL・host *・ALLOW）の 4 つを 1 回の createAcls で入れ、入れたものを返す",
+      _r5 == ["WRITE logs", "DESCRIBE logs", "WRITE flows", "DESCRIBE flows"]
+      and _adm5.acls == [("TOPIC", t, "LITERAL", "User:collectors", "*", op, "ALLOW") for t in ("logs", "flows") for op in ("WRITE", "DESCRIBE")])
+check("ensure_acls: AdminClient は SASL_SSL / AWS_MSK_IAM で bootstrap に繋ぎ、終わったら close。トピックは作らない（CREATE も CLUSTER の ACL も付けない）",
+      _adm5.closed and _sp5._jvm.props["bootstrap.servers"] == "b-1:9098" and _sp5._jvm.props["security.protocol"] == "SASL_SSL"
+      and _sp5._jvm.props["sasl.mechanism"] == "AWS_MSK_IAM" and _Admin.made == []
+      and not any(a[5] in ("CREATE", "ALL") or a[0] != "TOPIC" for a in _adm5.acls))
+_adm6 = _Admin(set())
+_sp6 = type("S", (), {"_jvm": _JVM(_adm6)})()
+check("ensure_acls: KAFKA_AUTH=none（OSS 版・手元の compose。authorizer が無い）は何もしない（AdminClient を作らず [] を返す）",
+      _kafka_auth("none", lambda: mod.ensure_acls(_sp6, "kafka-1:9092")) == [] and _adm6.acls is None and not hasattr(_sp6._jvm, "props"))
+try:
+    _kafka_auth("plaintext", lambda: mod.ensure_acls(type("S", (), {"_jvm": _JVM(_Admin(set()))})(), "b")); _raised = False
+except ValueError: _raised = True
+check("ensure_acls: KAFKA_AUTH の綴り違いは ValueError（黙って MSK の扱いにしない）", _raised)
+_adm7 = _Admin(set(), acl_err="org.apache.kafka.common.errors.ClusterAuthorizationException: Cluster authorization failed.")
+try:
+    _kafka_auth(None, lambda: mod.ensure_acls(type("S", (), {"_jvm": _JVM(_adm7)})(), "b")); _raised = False
+except Exception as e: _raised = "ClusterAuthorizationException" in str(e)
+check("ensure_acls: createAcls の失敗（AlterCluster が無い等）は上げる（ジョブが起動で落ち、原因が stderr に出る）。close はする", _raised and _adm7.closed)
+_conf_in = open(os.path.join(ROOT, "app", "syslog-ng", "syslog-ng.conf.in"), encoding="utf-8").read()
+_collectors_tf = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "pipeline", "stream", "collectors.tf"), encoding="utf-8").read()
+check("ensure_acls のユーザーとトピックは書く側と同じ（up-common.sh の SCRAM の username、syslog-ng の topic、GoFlow2 の -transport.kafka.topic）",
+      mod.SCRAM_USER == "collectors" and '"username": "collectors"' in _ops_common("up")
+      and mod.SCRAM_TOPICS == ("logs", "flows") and 'topic("logs")' in _conf_in and '"-transport.kafka.topic=flows"' in _collectors_tf)
+check("ensure_acls のトピックは Spark が作るトピック（log_topics の既定）に入っている（ACL だけあってトピックが無いままにならない）",
+      set(mod.SCRAM_TOPICS) <= set(mod.LOG_TOPICS.split(","))
+      and re.search(r'variable "log_topics"[\s\S]*?default\s*=\s*\["traps",\s*"logs",\s*"flows"\]', tf) is not None)
+_main_src = inspect.getsource(mod.main)
+check("main: ensure_topics のあとに ensure_acls を呼び、入れた ACL を「ACL: User:collectors に …」で stderr に出してから格納先を起こす",
+      0 < _main_src.find("ensure_topics(spark") < _main_src.find("ensure_acls(spark, args.bootstrap)") < _main_src.find("build(spark, args)")
+      and 'log(f"ACL: User:{SCRAM_USER} に " + ", ".join(acls))' in _main_src)
 
 # ---- Splunk HEC（Spark から直接。2026-09-26）
 check("splunk_hec_url: 末尾の / を除き、/services/collector/event を足す（すでに付いていればそのまま、/services/collector なら /event を足す）",

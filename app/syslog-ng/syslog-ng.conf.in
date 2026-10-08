@@ -27,7 +27,10 @@ source s_device {
   network(transport("tcp") ip("__BIND__") port(__LOG_PORT__) __SYSLOG_FLAGS__);
 };
 
-# ---- Kafka の logs トピックへ（kafka-c() = librdkafka。トピックは MSK / Kafka が自動で作る）。メッセージは Telegraf の device_log の形:
+# ---- Kafka の logs トピックへ（kafka-c() = librdkafka）。MSK では、トピックと SCRAM のユーザーの ACL（WRITE / DESCRIBE）は Spark が起動時に入れる
+# （app/spark/snmp_sinks.py の ensure_topics / ensure_acls）。AWS の文書どおりなら、それまでは Topic authorization failed で書けず（MSK では未確認）、
+# メッセージはキューで持って入ったら書く。
+# キューの大きさや再送の設定は既定のまま（書けない間の振る舞いはこの既定で測った。tests/test_collectors.py）。メッセージは Telegraf の device_log の形:
 #   name       device_log
 #   tags       sysName（HOST）/ appname（PROGRAM）/ facility（local7 など）/ severity（err / notice など）/ source（送り元の IP）
 #   fields     message（前後の空白を落とす）/ severity_code / facility_code（数値）/ procid / msgid / version（RFC5424 だけ。1）/
