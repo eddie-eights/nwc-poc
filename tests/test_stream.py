@@ -309,6 +309,144 @@ check("down.sh は stream の必須変数（snmp_agents / gnmi_targets）に形�
 check("Spark の既定は logs（syslog-ng）と flows（GoFlow2）も読む", mod.LOG_TOPICS == "traps,logs,flows"
       and mod.sink_topics("opensearch", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "traps,logs,flows")
 
+# ---- gnmic（cycle 013）: event → Telegraf の形の読み替え（gnmic_message。read_rows の gnmic_struct と同じ表。test_analytics が gnmic_struct を見る）
+# 入力の event はソースから組んだ形（gnmic v0.49.0 の event の形。実物ではない。design.md の未確定 1、AWS で実物と照合する = 検証 7）
+_ge = {"name": "interface_state", "timestamp": 1700000000123456789,
+       "tags": {"interface_name": "ethernet-1/1", "source": "203.0.113.31", "subscription-name": "interface_state"},
+       "values": {"/srl_nokia-interfaces:interface/oper-state": "down"}}
+_gm = mod.gnmic_message(_ge)
+check("gnmic_message: interface_state の event → timestamp は秒（ns を切り捨て）、name は interface、tags の interface_name は ifName（source / subscription-name は残す）、"
+      "values のキーは最後の要素で接頭辞を落とし - を _ に（oper_state）",
+      _gm == {"timestamp": 1700000000, "name": "interface", "tags": {"ifName": "ethernet-1/1", "source": "203.0.113.31", "subscription-name": "interface_state"},
+              "fields": {"oper_state": "down"}})
+
+
+def _grec(m):   # gnmic_message の答えを read_rows → row_to_record のあとの形にする（agent_host の列は tags.source）
+    return {"ts": float(m["timestamp"]), "topic": "gnmi", "measurement": m["name"], "agent_host": m["tags"].get("source", ""), "host": "", "tags": m["tags"], "fields": m["fields"]}
+
+
+def _prom_text(series):   # prometheus_series の答えを Prometheus の字面（name{label="v",…} 値）にする
+    return ["%s{%s} %g" % (dict(l)["__name__"], ",".join(f'{k}="{x}"' for k, x in l if k != "__name__"), v) for l, v, _ in series]
+
+
+_gdm = mod.parse_device_map("203.0.113.31=dc1-a-leaf-01")
+check("gnmic の interface_state を prometheus_series（device map 203.0.113.31 → dc1-a-leaf-01）に通すと snmp_interface_oper_up が 0 で、sysName が機器名（Grafana の link_down が読む）",
+      _prom_text(mod.prometheus_series([_grec(_gm)], _gdm))
+      == ['snmp_interface_oper_up{ifName="ethernet-1/1",source="203.0.113.31",subscription_name="interface_state",sysName="dc1-a-leaf-01"} 0'])
+_gst = [mod.gnmic_message(dict(_ge, values={k: v})) for k, v in (("/interface/oper-state", "UP"), ("/srl_nokia-interfaces:interface/admin-state", "enable"),
+                                                                    ("/interface/admin-state", "disable"))]
+check("gnmic の oper-state / admin-state は snmp_interface_oper_up（up が 1。大文字小文字は見ない）と snmp_interface_admin_up（enable が 1、disable が 0）",
+      [(dict(l)["__name__"], v) for l, v, _ in mod.prometheus_series([_grec(m) for m in _gst], _gdm)]
+      == [("snmp_interface_oper_up", 1.0), ("snmp_interface_admin_up", 1.0), ("snmp_interface_admin_up", 0.0)])
+_gstats = mod.gnmic_message({"name": "interface_stats", "timestamp": 1700000060000000000, "tags": {"interface_name": "ethernet-1/1", "source": "203.0.113.31"},
+                             "values": {"/srl_nokia-interfaces:interface/statistics/in-octets": "123456789012", "/interface/statistics/out-error-packets": 3}})
+_gsys = mod.gnmic_message({"name": "system", "timestamp": 1700000060000000000, "tags": {"control_slot": "A", "cpu_index": "all", "source": "203.0.113.31"},
+                           "values": {"/srl_nokia-platform:platform/control/srl_nokia-platform-cpu:cpu/total/instant": "7",
+                                      "/platform/control/memory/utilization": 41}})
+check("gnmic の interface_stats / system（metrics トピック）: measurement は interface / system、control_slot は slot（cpu_index は表に無いので残す）、"
+      "数は文字列のまま（64 bit の整数は json_ietf で文字列。数で来たら JSON の字面）",
+      _gstats == {"timestamp": 1700000060, "name": "interface", "tags": {"ifName": "ethernet-1/1", "source": "203.0.113.31"},
+                  "fields": {"in_octets": "123456789012", "out_error_packets": "3"}}
+      and _gsys == {"timestamp": 1700000060, "name": "system", "tags": {"slot": "A", "cpu_index": "all", "source": "203.0.113.31"},
+                    "fields": {"instant": "7", "utilization": "41"}})
+check("gnmic の interface_stats / system を prometheus_series に通すと、ダッシュボードが読む系列名（snmp_interface_in_octets / out_error_packets、snmp_system_instant / utilization）",
+      sorted((dict(l)["__name__"], v, dict(l)["sysName"]) for l, v, _ in mod.prometheus_series([_grec(_gstats), _grec(_gsys)], _gdm))
+      == [("snmp_interface_in_octets", 123456789012.0, "dc1-a-leaf-01"), ("snmp_interface_out_error_packets", 3.0, "dc1-a-leaf-01"),
+          ("snmp_system_instant", 7.0, "dc1-a-leaf-01"), ("snmp_system_utilization", 41.0, "dc1-a-leaf-01")])
+check("gnmic_message: bgp_neighbor / isis_interface は name のまま、neighbor_peer-address は peer_address、interface_interface-name は interface_name"
+      "（Grafana の bgp_down / isis_down と Splunk の netops_gnmi が読む名前）。表に無いタグ（network-instance_name など）は残す",
+      mod.gnmic_message({"name": "bgp_neighbor", "timestamp": 1, "tags": {"network-instance_name": "default", "neighbor_peer-address": "10.255.0.1", "source": "s"},
+                         "values": {"/network-instance/protocols/bgp/neighbor/session-state": "established"}})
+      == {"timestamp": 0, "name": "bgp_neighbor", "tags": {"network-instance_name": "default", "peer_address": "10.255.0.1", "source": "s"},
+          "fields": {"session_state": "established"}}
+      and mod.gnmic_message({"name": "isis_interface", "timestamp": 1, "tags": {"instance_name": "main", "interface_interface-name": "ethernet-1/1.0"},
+                             "values": {"/srl_nokia-network-instance:network-instance/protocols/srl_nokia-isis:isis/instance/interface/oper-state": "up"}})["tags"]
+      == {"instance_name": "main", "interface_name": "ethernet-1/1.0"})
+check("gnmic_message: タグのキーの接頭辞（origin:）も落としてから表を引く。値の null は null のまま、入れ子は JSON の字面",
+      mod.gnmic_message(dict(_ge, tags={"srl_nokia:interface_name": "ethernet-1/2"}, values={"/interface/description": None, "/interface/x": {"a": 1}}))
+      == {"timestamp": 1700000000, "name": "interface", "tags": {"ifName": "ethernet-1/2"}, "fields": {"description": None, "x": '{"a":1}'}})
+check("gnmic_message: 読み替えたキーが重なったら後勝ち（build の spark.sql.mapKeyDedupPolicy=LAST_WIN と同じ）",
+      mod.gnmic_message(dict(_ge, tags={"interface_name": "a", "ifName": "b"}, values={"/interface/oper-state": "up", "/srl_nokia-interfaces:interface/oper-state": "down"}))
+      == {"timestamp": 1700000000, "name": "interface", "tags": {"ifName": "b"}, "fields": {"oper_state": "down"}})
+check("gnmic_message: 消えた event（deletes だけ）・values が dict でない・timestamp が整数でない（文字列、小数、真偽値、無い）は None（read_rows では ts が null で捨てる）",
+      all(mod.gnmic_message(e) is None for e in (
+          {"name": "interface_state", "timestamp": 1700000000123456789, "tags": _ge["tags"], "deletes": ["/interface/oper-state"]},
+          dict(_ge, values=None), dict(_ge, values=["down"]), dict(_ge, timestamp="1700000000123456789"), dict(_ge, timestamp=1.7e18),
+          dict(_ge, timestamp=True), {k: v for k, v in _ge.items() if k != "timestamp"})))
+check("gnmic_message: 入力の event を書き換えない", _ge["tags"] == {"interface_name": "ethernet-1/1", "source": "203.0.113.31", "subscription-name": "interface_state"}
+      and list(_ge["values"]) == ["/srl_nokia-interfaces:interface/oper-state"])
+
+# ---- gnmic（cycle 013）: gnmic.sh render が gnmic.yaml.in から作る設定（手元の sh で回す。イメージの中は alpine の sh。検証 5 は docker run）
+import yaml   # PyYAML（uv の dev グループ。ops/check.sh が入れる）
+
+GNMIC_DIR = os.path.join(ROOT, "app", "gnmic")
+_GNMIC_ENV = {"GNMI_TARGETS": '"203.0.113.31:57400", "203.0.113.32:57400"', "KAFKA_BROKERS": "b-1.example:9096,b-2.example:9096",
+              "GNMI_USERNAME": "fake-gnmi-user", "GNMI_PASSWORD": "fake-gnmi-pass", "KAFKA_SASL_USER": "fake-sasl-user", "KAFKA_SASL_PASS": "fake-sasl-pass"}
+
+
+def _gnmic_render(**env):
+    """gnmic.sh render を偽の環境変数で回す。(終了コード, 標準出力 + 標準エラー, 作った設定の字面 or None)"""
+    with tempfile.TemporaryDirectory() as d:
+        conf = os.path.join(d, "gnmic.yaml")
+        e = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "GNMIC_TEMPLATE": os.path.join(GNMIC_DIR, "gnmic.yaml.in"), "GNMIC_CONF": conf}
+        e.update({k: v for k, v in dict(_GNMIC_ENV, **env).items() if v is not None})
+        p = subprocess.run(["sh", os.path.join(GNMIC_DIR, "gnmic.sh"), "render"], env=e, capture_output=True, text=True)
+        text = open(conf, encoding="utf-8").read() if os.path.exists(conf) else None
+        return p.returncode, p.stdout + p.stderr, text, sorted(os.listdir(d))
+
+
+_rc, _out, _gtext, _gfiles = _gnmic_render()
+_gy = yaml.safe_load(_gtext) if _gtext else {}
+_GSUBS = {"interface_state": (["/interface[name=*]/oper-state", "/interface[name=*]/admin-state"], "on-change", "gnmi"),
+          "interface_stats": (["/interface[name=*]/statistics"], "sample", "metrics"),
+          "bgp_neighbor": (["/network-instance[name=default]/protocols/bgp/neighbor[peer-address=*]/session-state"], "on-change", "gnmi"),
+          "isis_interface": (["/network-instance[name=default]/protocols/isis/instance[name=main]/interface[interface-name=*]/oper-state"], "on-change", "gnmi"),
+          "system": (["/platform/control[slot=*]/cpu[index=all]/total", "/platform/control[slot=*]/memory"], "sample", "metrics")}
+check("gnmic.sh render（KAFKA_AUTH=scram が既定）: 設定を作り、作業のファイル（.targets）を残さない。全体は json_ietf・skip-verify・port 57400",
+      _rc == 0 and _gtext is not None and _gfiles == ["gnmic.yaml"] and "kafka auth: SASL/SCRAM-SHA-512" in _out
+      and _gy.get("encoding") == "json_ietf" and _gy.get("skip-verify") is True and _gy.get("port") == 57400)
+check("gnmic.yaml: subscription は 5 つだけ（evpn_es / mac_table / lab_* は無い）。パスとモードと出力のトピックは design.md の表のとおり、sample は 60s、on-change に heartbeat は無い",
+      set(_gy.get("subscriptions", {})) == set(_GSUBS)
+      and all(_gy["subscriptions"][n].get("paths") == p and _gy["subscriptions"][n].get("mode") == "stream" and _gy["subscriptions"][n].get("stream-mode") == sm
+              and _gy["subscriptions"][n].get("outputs") == [o] and "heartbeat-interval" not in _gy["subscriptions"][n]
+              and (_gy["subscriptions"][n].get("sample-interval") == "60s") == (sm == "sample")
+              for n, (p, sm, o) in _GSUBS.items()))
+check("gnmic.yaml: 出力は gnmi / metrics の 2 つ（Kafka、同じブローカー、format event、split-events）。scram では SASL/SCRAM-SHA-512 と TLS（イメージの CA の束）",
+      set(_gy.get("outputs", {})) == {"gnmi", "metrics"}
+      and all(o["type"] == "kafka" and o["address"] == _GNMIC_ENV["KAFKA_BROKERS"] and o["topic"] == n and o["format"] == "event" and o["split-events"] is True
+              and o.get("sasl") == {"user": "${KAFKA_SASL_USER}", "password": "${KAFKA_SASL_PASS}", "mechanism": "SCRAM-SHA-512"}
+              and o.get("tls") == {"ca-file": "/etc/ssl/certs/ca-certificates.crt"}
+              for n, o in _gy.get("outputs", {}).items()))
+check("gnmic.yaml: target の名前は IP（tags.source = device map のキー）、address は GNMI_TARGETS の host:port、資格情報は target ごとに ${…} のまま",
+      _gy.get("targets") == {ip: {"address": f"{ip}:57400", "username": "${GNMI_USERNAME}", "password": "${GNMI_PASSWORD}"} for ip in ("203.0.113.31", "203.0.113.32")})
+_gcode = "\n".join(l for l in _gtext.splitlines() if not l.lstrip().startswith("#"))   # コメントの行（ひな形の説明に __X__ がある）を除いたもの
+check("gnmic.sh render: 資格情報の値を設定にも標準出力にも書かない。印の行（>>> / <<< kafka_auth）は消え、__X__ は全部埋まる",
+      not any(v in _gtext + _out for k, v in _GNMIC_ENV.items() if k.startswith(("GNMI_USER", "GNMI_PASS", "KAFKA_SASL")))
+      and "kafka_auth" not in _gtext and not re.search(r"__[A-Z_]+__", _gcode))
+_rc_n, _out_n, _gtext_n, _ = _gnmic_render(KAFKA_AUTH="none", KAFKA_SASL_USER=None, KAFKA_SASL_PASS=None, KAFKA_BROKERS="kafka-0.netops:9092")
+_gy_n = yaml.safe_load(_gtext_n) if _gtext_n else {}
+check("gnmic.sh render（KAFKA_AUTH=none。OSS 版と手元）: SCRAM の資格情報が無くても作れ、出力に sasl も tls も無い（ほかは scram と同じ）",
+      _rc_n == 0 and "kafka auth: none" in _out_n and "sasl" not in _gtext_n and "tls" not in _gtext_n and "kafka_auth" not in _gtext_n
+      and all(o["address"] == "kafka-0.netops:9092" and set(o) == {"type", "address", "topic", "format", "split-events"} for o in _gy_n.get("outputs", {}).values())
+      and _gy_n.get("subscriptions") == _gy.get("subscriptions") and _gy_n.get("targets") == _gy.get("targets"))
+_gbad = {"GNMI_TARGETS が無い": dict(GNMI_TARGETS=None), "GNMI_TARGETS の形が違う": dict(GNMI_TARGETS="203.0.113.31:57400"),
+         "GNMI_TARGETS に同じ IP が 2 回": dict(GNMI_TARGETS='"203.0.113.31:57400", "203.0.113.31:57401"'),
+         "KAFKA_BROKERS の形が違う": dict(KAFKA_BROKERS="b-1.example:9096;rm"), "GNMI_PASSWORD が無い": dict(GNMI_PASSWORD=None),
+         "scram で KAFKA_SASL_PASS が無い": dict(KAFKA_SASL_PASS=None), "KAFKA_AUTH が scram / none のどちらでもない": dict(KAFKA_AUTH="plain")}
+_gbad_res = {k: _gnmic_render(**v) for k, v in _gbad.items()}
+check("gnmic.sh render: " + " / ".join(_gbad) + " は 0 以外で止まり、設定を作らない（作業のファイルも残さない）",
+      all(rc != 0 and text is None and files == [] for rc, _, text, files in _gbad_res.values()))
+check("gnmic.sh render: 資格情報が無いときの案内に出どころ（SSM の SecureString / Secrets Manager の AmazonMSK_<接頭辞>-collectors）を書く",
+      "SSM の SecureString" in _gbad_res["GNMI_PASSWORD が無い"][1] and "AmazonMSK_<接頭辞>-collectors" in _gbad_res["scram で KAFKA_SASL_PASS が無い"][1])
+_gdock = _read("docker", "images", "gnmic", "Dockerfile")
+check("gnmic の Dockerfile: 公式イメージ（版は ARG GNMIC_VERSION）に gnmic.yaml.in と gnmic.sh（/usr/local/bin/gn）を足し、nobody で gn run を起こす",
+      re.search(r"^ARG GNMIC_VERSION=\d+\.\d+\.\d+$", _gdock, re.M) is not None and "FROM ghcr.io/openconfig/gnmic:${GNMIC_VERSION}\n" in _gdock
+      and "COPY gnmic.yaml.in /etc/gnmic/\n" in _gdock and "COPY --chmod=0755 gnmic.sh /usr/local/bin/gn\n" in _gdock
+      and "USER 65534:65534\n" in _gdock and 'ENTRYPOINT ["/usr/local/bin/gn"]' in _gdock and 'CMD ["run"]' in _gdock)
+check("gnmic.sh の既定の置き場はイメージの COPY 先と同じ（/etc/gnmic/gnmic.yaml.in、書くのは /tmp）。run は render のあと gnmic を exec する",
+      "TEMPLATE=${GNMIC_TEMPLATE:-/etc/gnmic/gnmic.yaml.in}" in _read("app", "gnmic", "gnmic.sh") and "CONF=${GNMIC_CONF:-/tmp/gnmic.yaml}" in _read("app", "gnmic", "gnmic.sh")
+      and re.search(r'run\)\n\s*render\n\s*exec /app/gnmic --config "\$CONF" subscribe\n', _read("app", "gnmic", "gnmic.sh")) is not None)
+
 # ---- lab_gnmi.star / lab_circuits.star を Python で動かす（Python と Starlark の両方で動く書き方にしてある。Telegraf の Starlark は Metric と state を入れる）
 class _NoLen(dict):   # Telegraf の Metric の tags / fields は len も真偽値も持たない（len(m.fields) は Telegraf で落ちた）
     def __len__(self):

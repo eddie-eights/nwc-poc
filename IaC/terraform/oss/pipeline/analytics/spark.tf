@@ -95,7 +95,7 @@ locals {
     [for a in ["--prometheus-url", local.prometheus_remote_write_url] : a if contains(sinks, "prometheus")],
     [for a in ["--splunk-hec-url", local.splunk_hec_url, "--splunk-index", var.splunk_index] : a if contains(sinks, "splunk")],
     [for a in ["--splunk-skip-verify"] : a if contains(sinks, "splunk") && local.splunk_skip_tls_verify],
-    [for a in ["--device-map", var.device_map] : a if var.device_map != "" && (contains(sinks, "prometheus") || contains(sinks, "opensearch"))],
+    [for a in ["--device-map", var.device_map] : a if var.device_map != "" && (contains(sinks, "prometheus") || contains(sinks, "opensearch") || contains(sinks, "splunk"))],
   ) }
 }
 

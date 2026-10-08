@@ -25,10 +25,10 @@
         },
         "query": {
           "qryType": 1,
-          "query": "label_values(snmp_interface_ifOperStatus, sysName)",
+          "query": "label_values(snmp_interface_oper_up, sysName)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
-        "definition": "label_values(snmp_interface_ifOperStatus, sysName)",
+        "definition": "label_values(snmp_interface_oper_up, sysName)",
         "includeAll": true,
         "multi": true,
         "current": {
@@ -44,7 +44,7 @@
     {
       "id": 1,
       "type": "state-timeline",
-      "title": "IF の状態（ifOperStatus。1 = up / 2 = down）",
+      "title": "IF の状態（gNMI の oper-state。1 = up / 0 = down）",
       "datasource": {
         "type": "grafana-amazonprometheus-datasource",
         "uid": "amp"
@@ -61,13 +61,13 @@
             {
               "type": "value",
               "options": {
+                "0": {
+                  "text": "down",
+                  "color": "red"
+                },
                 "1": {
                   "text": "up",
                   "color": "green"
-                },
-                "2": {
-                  "text": "down",
-                  "color": "red"
                 }
               }
             }
@@ -79,16 +79,12 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
               },
               {
-                "color": "red",
-                "value": 2
-              },
-              {
-                "color": "orange",
-                "value": 3
+                "color": "green",
+                "value": 1
               }
             ]
           }
@@ -107,7 +103,7 @@
             "type": "grafana-amazonprometheus-datasource",
             "uid": "amp"
           },
-          "expr": "snmp_interface_ifOperStatus{sysName=~\"$device\", ifName=~\"ethernet-.*\"}",
+          "expr": "last_over_time(snmp_interface_oper_up{sysName=~\"$device\", ifName=~\"ethernet-.*\"}[24h])",
           "legendFormat": "{{sysName}} {{ifName}}"
         }
       ]
@@ -149,7 +145,7 @@
             "type": "grafana-amazonprometheus-datasource",
             "uid": "amp"
           },
-          "expr": "rate(snmp_interface_ifInOctets{sysName=~\"$device\", ifName=~\"ethernet-.*\"}[2m]) * 8",
+          "expr": "rate(snmp_interface_in_octets{sysName=~\"$device\", ifName=~\"ethernet-.*\"}[5m]) * 8",
           "legendFormat": "{{sysName}} {{ifName}}"
         }
       ]
@@ -191,7 +187,7 @@
             "type": "grafana-amazonprometheus-datasource",
             "uid": "amp"
           },
-          "expr": "rate(snmp_interface_ifOutOctets{sysName=~\"$device\", ifName=~\"ethernet-.*\"}[2m]) * 8",
+          "expr": "rate(snmp_interface_out_octets{sysName=~\"$device\", ifName=~\"ethernet-.*\"}[5m]) * 8",
           "legendFormat": "{{sysName}} {{ifName}}"
         }
       ]
@@ -233,7 +229,7 @@
             "type": "grafana-amazonprometheus-datasource",
             "uid": "amp"
           },
-          "expr": "rate(snmp_interface_ifInErrors{sysName=~\"$device\", ifName=~\"ethernet-.*\"}[5m])",
+          "expr": "rate(snmp_interface_in_error_packets{sysName=~\"$device\", ifName=~\"ethernet-.*\"}[5m])",
           "legendFormat": "{{sysName}} {{ifName}}"
         }
       ]
@@ -275,15 +271,15 @@
             "type": "grafana-amazonprometheus-datasource",
             "uid": "amp"
           },
-          "expr": "rate(snmp_interface_ifOutErrors{sysName=~\"$device\", ifName=~\"ethernet-.*\"}[5m])",
+          "expr": "rate(snmp_interface_out_error_packets{sysName=~\"$device\", ifName=~\"ethernet-.*\"}[5m])",
           "legendFormat": "{{sysName}} {{ifName}}"
         }
       ]
     },
     {
       "id": 6,
-      "type": "stat",
-      "title": "稼働時間（sysUpTime）",
+      "type": "timeseries",
+      "title": "CPU（%。全コアの合計）",
       "datasource": {
         "type": "grafana-amazonprometheus-datasource",
         "uid": "amp"
@@ -291,25 +287,26 @@
       "gridPos": {
         "x": 0,
         "y": 26,
-        "w": 24,
-        "h": 5
+        "w": 12,
+        "h": 8
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "s"
+          "unit": "percent",
+          "min": 0,
+          "max": 100
         },
         "overrides": []
       },
       "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
         },
-        "colorMode": "none",
-        "textMode": "value_and_name"
+        "tooltip": {
+          "mode": "multi"
+        }
       },
       "targets": [
         {
@@ -318,8 +315,52 @@
             "type": "grafana-amazonprometheus-datasource",
             "uid": "amp"
           },
-          "expr": "snmp_system_sysUpTime{sysName=~\"$device\"} / 100",
-          "legendFormat": "{{sysName}}"
+          "expr": "snmp_system_instant{sysName=~\"$device\"}",
+          "legendFormat": "{{sysName}} {{slot}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "メモリ（使用率 %）",
+      "datasource": {
+        "type": "grafana-amazonprometheus-datasource",
+        "uid": "amp"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 26,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-amazonprometheus-datasource",
+            "uid": "amp"
+          },
+          "expr": "snmp_system_utilization{sysName=~\"$device\"}",
+          "legendFormat": "{{sysName}} {{slot}}"
         }
       ]
     }

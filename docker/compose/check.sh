@@ -72,9 +72,9 @@ judge "Kafka: traps のメッセージ数 > 0" \
 judge "Kafka: logs のメッセージ数 > 0" \
   "'ok' if $cnt.get('logs', 0) > 0 else '注意: 0 件（syslog は機器が出すまで来ない。docker/compose/lab.sh fail-main のあとに打ち直す。来ないままなら docker compose logs syslog-ng）'" \
   <<<"$kafka"
-judge "Prometheus: count(snmp_interface_ifOperStatus) > 0" \
+judge "Prometheus: count(snmp_interface_oper_up) > 0" \
   "(lambda r: 'ok' if r and float(r[0]['value'][1]) > 0 else '0 件')(json.loads(s)['data']['result'])" \
-  <<<"$(get - 'http://127.0.0.1:9090/api/v1/query' --data-urlencode 'query=count(snmp_interface_ifOperStatus)' -G || true)"
+  <<<"$(get - 'http://127.0.0.1:9090/api/v1/query' --data-urlencode 'query=count(snmp_interface_oper_up)' -G || true)"
 judge "OpenSearch: snmp-logs の件数 > 0" \
   "'ok' if json.loads(s)['count'] > 0 else '0 件'" \
   <<<"$(get OPENSEARCH_PASSWORD 'http://127.0.0.1:9200/snmp-logs/_count' || true)"

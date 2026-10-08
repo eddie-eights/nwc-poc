@@ -7,7 +7,7 @@ lab の `dc1-trex-01`（containerlab の `kind: linux`、イメージは `trexci
 | `trex_cfg.yaml.in` | TRex の設定の型。`lab trex start` がポート（`eth1`〜`eth4`）とアドレスを埋めて、コンテナの `/etc/trex_cfg.yaml` に書く |
 | `stl/udp_trap.py` | SR Linux の linkDown と同じ形の SNMPv2c trap（sysUpTime、snmpTrapOID = linkDown、ifIndex、ifAdminStatus = up、ifOperStatus = down、ifName）を UDP で撃ち続ける STL プロファイル |
 | `stl/udp_syslog.py` | SR Linux と同じ RFC 5424 / `local7` の syslog 1 行（既定は BGP の隣接が落ちた体の文）を UDP で撃ち続ける STL プロファイル |
-| `kafka_load.sh` | MSK の `metrics` / `gnmi` に、Telegraf が書くのと同じ形の JSON を `kafka-producer-perf-test` で流す（ポーリングと gNMI は UDP ではないので TRex では作れない） |
+| `kafka_load.sh` | MSK の `metrics` / `gnmi` に、gnmic が書くのと同じ形の event（JSON）を `kafka-producer-perf-test` で流す（gNMI は UDP ではないので TRex では作れない） |
 
 ## lab の中の配線
 
@@ -100,7 +100,7 @@ sudo bash /opt/<prefix>-lab/src/trex/kafka_load.sh metrics 100000 1000   # metri
 sudo bash /opt/<prefix>-lab/src/trex/kafka_load.sh gnmi 50000 -1         # gnmi に 5 万件を上限なしで
 ```
 
-レコードは lab の SR Linux 6 台（`../splab.clab.yml.in` から読む）の名前と管理 IP を使う。`metrics` は機器ごとに `ethernet-1/1`〜`1/3` の `interface`（カウンタは乱数）、`gnmi` は `bgp_neighbor` の `session_state = established`（`bgp_down` は発火しない）。timestamp は作った時刻で固定。
+レコードは gnmic の event の形（`format: event`、ナノ秒の timestamp。Spark が Telegraf の形に読み替える）で、lab の SR Linux 6 台（`../splab.clab.yml.in` から読む）の管理 IP を `tags.source` に使う（機器名は Spark が device map で足す）。`metrics` は機器ごとに `ethernet-1/1`〜`1/3` の `interface_stats`（カウンタは乱数）、`gnmi` は `bgp_neighbor` の `session-state = established`（`bgp_down` は発火しない）。timestamp は作った時刻で固定。event の形は gnmic のソースから組んだもので、実物と照合していない（cycle 013 の design.md の未確定 1）。
 
 ### 前提（このサイクルでは揃えていない）
 

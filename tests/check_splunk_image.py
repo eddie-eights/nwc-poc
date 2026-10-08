@@ -7,7 +7,7 @@ boto3 が無くなっていたら、boto3 を app の lib/ に同梱する形（
 確かめること（AWS へは出ない。偽の認証情報の口と偽の SNS を、コンテナの中で Splunk の Python で動かす）
   1. 直に: Splunk の Python（alert_actions.conf の python.required の版）で boto3 / botocore を読み、netops_sns の sns_client で
      SNS のクライアントを作り、send で偽の SNS へ 1 通 publish する
-  2. 本物の流れで: 入口（app/splunk/entrypoint.sh）で起こした Splunk に HEC で link down のイベントを 1 件入れ、保存済みサーチ（netops_poll）→
+  2. 本物の流れで: 入口（app/splunk/entrypoint.sh）で起こした Splunk に HEC で link down のイベント（gnmic の interface_state を Spark が読み替えた形）を 1 件入れ、保存済みサーチ（netops_gnmi）→
      アラートアクション（splunkd が python.required の Python で起こす）→ 偽の SNS に 1 通だけ届く。本文・件名・送った Python と boto3 の版
      （User-Agent）と、splunkd.log の published=1/1 / exit code=0 を見る
   3. boto3 が読めないとき: app の bin/ に読むと失敗する boto3.py を置いて（2 と同じ流れ）、splunkd.log に理由の分かる ERROR が出て、送らないこと
@@ -136,11 +136,12 @@ def wait(what, cond, timeout, step=5):
 
 
 def hec_link_down(token, if_name):
-    """HEC に link down（ifOperStatus=2）のイベントを 1 件入れる（Telegraf の SNMP の interface と同じ形）"""
-    ev = {"time": int(time.time()), "host": "203.0.113.11", "source": "telegraf:interface", "sourcetype": "netops:metrics",
-          "event": {"topic": "metrics", "measurement": "interface", "agent_host": "203.0.113.11",
-                    "tags": {"agent_host": "203.0.113.11", "ifName": if_name, "sysName": "dc1-a-leaf-01"},
-                    "fields": {"ifOperStatus": 2, "ifAdminStatus": 1, "ifDescr": if_name}}}
+    """HEC に link down（oper_state=down）のイベントを 1 件入れる。gnmic の interface_state（on-change。トピック gnmi）を Spark の splunk_events が
+    書く形（app/spark/snmp_sinks.py。tags.source は機器の IP、sysName は --device-map で足したもの）"""
+    ev = {"time": int(time.time()), "host": "203.0.113.11", "source": "telegraf:interface", "sourcetype": "netops:gnmi",
+          "event": {"topic": "gnmi", "measurement": "interface", "agent_host": "203.0.113.11",
+                    "tags": {"ifName": if_name, "source": "203.0.113.11", "subscription-name": "interface_state", "sysName": "dc1-a-leaf-01"},
+                    "fields": {"oper_state": "down"}}}
     out = dexec("curl", "-sk", "https://127.0.0.1:8088/services/collector/event", "-H", f"Authorization: Splunk {token}", "-d", json.dumps(ev)).stdout
     if '"code":0' not in out.replace(" ", ""):
         raise RuntimeError(f"HEC が受けなかった: {out[:300]}")
@@ -198,10 +199,10 @@ def main(argv):
               direct["sent"] == 1 and len(got) == 1 and got[0]["form"].get("Action") == "Publish" and got[0]["form"].get("TopicArn") == TOPIC
               and got[0]["token"] == "local-test-token" and any(x["kind"] == "creds" and x["path"] == "/creds" for x in posts()), json.dumps(got, ensure_ascii=False))
 
-        # ---- 2. 本物の流れ（HEC → netops_poll → アラートアクション → 偽の SNS）
+        # ---- 2. 本物の流れ（HEC → netops_gnmi → アラートアクション → 偽の SNS）
         before = len(publishes())
         hec_link_down(token, "ethernet-1/1")
-        print("-- HEC に link down（dc1-a-leaf-01 ethernet-1/1）を入れた。netops_poll（毎分）が送るのを待つ")
+        print("-- HEC に link down（dc1-a-leaf-01 ethernet-1/1）を入れた。netops_gnmi（毎分）が送るのを待つ")
         wait("publish", lambda: len(publishes()) > before, 240)
         time.sleep(75)   # 次の回で重ねて送らないこと（サーチは毎分）
         got = publishes()[before:]
@@ -212,14 +213,14 @@ def main(argv):
               got[0]["form"].get("Action") == "Publish" and got[0]["form"].get("Subject") == "netops alert" and got[0]["form"].get("TopicArn") == TOPIC
               and got[0]["content_type"].startswith("application/x-www-form-urlencoded") and msg.get("source") == "splunk" and len(msg.get("alerts", [])) == 1
               and {k: alerts[0].get(k) for k in ("status", "device_id", "kind", "target", "detail")}
-              == {"status": "firing", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "detail": "ethernet-1/1 is down (splunk: poll)"}
+              == {"status": "firing", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "detail": "ethernet-1/1 is down (splunk: gnmi)"}
               and isinstance(alerts[0].get("starts_at"), int), json.dumps(got, ensure_ascii=False))
         ua_py, ua_boto3 = ua_versions(got[0]["user_agent"])
         check(f"本物の流れ: splunkd は Python {required} で起こし、Splunk の boto3 で送っている（User-Agent: Python {ua_py}、boto3 {ua_boto3}）",
               ua_py == direct["python"] and ua_boto3 == direct["boto3"], got[0]["user_agent"])
         lines = action_lines()
         check("本物の流れ: splunkd.log に件数（published=1/1）と exit code=0 が残る",
-              any("STDERR" in l and "search=netops_poll rows=1 alerts=1 published=1/1" in l for l in lines) and any("exit code=0" in l for l in lines),
+              any("STDERR" in l and "search=netops_gnmi rows=1 alerts=1 published=1/1" in l for l in lines) and any("exit code=0" in l for l in lines),
               "\n".join(lines[-10:]))
 
         # ---- 3. boto3 が読めないとき（app の bin/ に読むと失敗する boto3.py を置く。sys.path の先頭は bin/ なので site-packages より先に読まれる）

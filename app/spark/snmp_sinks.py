@@ -77,7 +77,7 @@ import time
 import urllib.error
 import urllib.request
 
-METRIC_TOPICS = "metrics,gnmi"   # metrics = Telegraf の inputs.snmp と lab の gNMI を変えた共通の形、gnmi = inputs.gnmi（app/telegraf/telegraf.conf.in。Telegraf（ECS）で動く。MDT は cycle 012 で外した）
+METRIC_TOPICS = "metrics,gnmi"   # metrics = gnmic の sample 60s（interface_stats / system）、gnmi = gnmic の on-change（interface_state / bgp_neighbor / isis_interface）。app/gnmic/gnmic.yaml.in（cycle 013。gnmic の event は read_rows / gnmic_message が Telegraf の形に読み替える）
 LOG_TOPICS = "traps,logs,flows"   # traps = Telegraf の inputs.snmp_trap、logs = syslog-ng（機器の syslog。measurement は device_log）、flows = GoFlow2（NetFlow / sFlow）
 # flows（GoFlow2 の JSON）を Telegraf の形に読み替える表（read_rows と flow_message が同じ表を使う）。(Telegraf の形のキー, GoFlow2 のキー)
 FLOW_TOPIC = "flows"

@@ -424,7 +424,8 @@ def parse_conf(text):
 APP = ("app", "splunk", "netops_alerts")
 saved = parse_conf(read(*APP, "default", "savedsearches.conf"))
 actions = parse_conf(read(*APP, "default", "alert_actions.conf"))
-check("保存済みサーチは 4 つ（SNMP のポーリングの IF、gNMI の BGP / IS-IS、trap、trap を時間で閉じる）", list(saved) == ["netops_poll", "netops_gnmi", "netops_trap", "netops_trap_clear"])
+check("保存済みサーチは 3 つ（gNMI の IF / BGP / IS-IS、trap、trap を時間で閉じる。SNMP のポーリングの netops_poll は cycle 013 で外した）",
+      list(saved) == ["netops_gnmi", "netops_trap", "netops_trap_clear"])
 COMMON = {"enableSched": "1", "cron_schedule": "* * * * *", "realtime_schedule": "0", "dispatch.latest_time": "+5m", "alert.track": "0", "alert.digest_mode": "1",
           "alert.suppress": "0", "counttype": "number of events", "relation": "greater than", "quantity": "0", "action.netops_sns": "1"}
 check("どのサーチも毎分走り、遅れても飛ばさず（realtime_schedule = 0）、結果が 1 行でもあれば全部の行をまとめて 1 回アクションへ渡す（digest）。抑制はしない",
@@ -436,46 +437,61 @@ check("どのサーチも _raw だけにしてから spath で項目を取る（
 check("どのサーチも最後は table device kind target status detail starts_at（アラートアクションが読む列）",
       all(p[-1] == "table device kind target status detail starts_at" for p in pipes.values())
       and all(re.search(rf"r\.get\(\"{c}\"\)", src) for c in ("device", "kind", "target", "status", "detail", "starts_at")))
-check("窓は索引に入った時刻で切る（直前の 1 分を 10 秒手前にずらして 1 回だけ読む。前の値としてポーリングはその前の 10 分、gNMI は 24 時間も読む。"
+check("窓は索引に入った時刻で切る（直前の 1 分を 10 秒手前にずらして 1 回だけ読む。前の値として gNMI はその前の 24 時間も読む。"
       "イベントの時刻の窓 dispatch.earliest_time は広く取る）",
       pipes["netops_trap"][0].endswith("_index_earliest=-1m@m-10s _index_latest=@m-10s") and saved["netops_trap"]["dispatch.earliest_time"] == "-1h"
-      and pipes["netops_poll"][0].endswith("_index_earliest=-11m@m-10s _index_latest=@m-10s") and saved["netops_poll"]["dispatch.earliest_time"] == "-1h"
       and pipes["netops_gnmi"][0].endswith("_index_earliest=-1441m@m-10s _index_latest=@m-10s") and saved["netops_gnmi"]["dispatch.earliest_time"] == "-25h"
       and pipes["netops_trap_clear"][0].endswith("_index_earliest=-70m@m-10s _index_latest=@m-10s") and saved["netops_trap_clear"]["dispatch.earliest_time"] == "-3h")
-check("イベントは source で選ぶ（Spark の splunk_events が telegraf:<measurement> を付ける）。index は決め打ちしない（SPLUNK_INDEX で変わる）",
-      pipes["netops_poll"][0].startswith('index=* source="telegraf:interface" ')
-      and pipes["netops_gnmi"][0].startswith('index=* (source="telegraf:bgp_neighbor" OR source="telegraf:isis_interface") ')
+check("イベントは source で選ぶ（Spark の splunk_events が telegraf:<measurement> を付ける）。index は決め打ちしない（SPLUNK_INDEX で変わる）。"
+      "IF の状態は 60 秒ごとのカウンター（interface_stats）と同じ telegraf:interface なので、Spark が付ける field の名前（oper_state / admin_state）の語で先に絞る",
+      pipes["netops_gnmi"][0].startswith('index=* (source="telegraf:bgp_neighbor" OR source="telegraf:isis_interface" '
+                                         'OR (source="telegraf:interface" (oper_state OR admin_state))) ')
+      and all(f in read("app", "spark", "snmp_sinks.py") for f in ('("interface", "oper_state"): ("oper_up", "up")', '("interface", "admin_state"): ("admin_up", "enable")'))
       and all(pipes[n][0].startswith('index=* source="telegraf:snmp_trap" ') for n in ("netops_trap", "netops_trap_clear"))
       and 'f"telegraf:{r[\'measurement\'] or \'unknown\'}"' in read("app", "spark", "snmp_sinks.py"))
 DEVICE = "eval device=coalesce('tags.sysName', 'tags.agent_host', 'tags.source')"
-check("機器は tags.sysName > tags.agent_host > tags.source（gNMI と trap は IP。アラートアクションが DEVICE_MAP で名前に直す）",
+check("機器は tags.sysName > tags.agent_host > tags.source（gNMI と trap は IP。Spark が device map で sysName を足し、表に無い機器はアラートアクションが DEVICE_MAP で名前に直す）",
       all(DEVICE in p for p in pipes.values()))
-p = saved["netops_poll"]["search"]
-check("ポーリング: ifOperStatus が 2 なら down（admin-state が disable の IF は down と数えない）。target は ifName（linkDown trap と同じ anomaly_id）",
-      "eval target='tags.ifName', oper=tonumber('fields.ifOperStatus'), admin=coalesce(tonumber('fields.ifAdminStatus'), 1)" in p
-      and 'eval down=if(oper==2 AND admin!=2, 1, 0), in_now=if(_indextime >= relative_time(now(), "-1m@m-10s"), 1, 0)' in p)
-check("ポーリング: 前 = 今の 1 分より前に入った最後の値、今 = 読んだ 11 分ぶんの最後の値（イベントの時刻で）、starts_at = 今の状態になった時刻",
-      'eval prev_down=if(in_now==0, down, null()), down_time=if(down==1, _time, null()), up_time=if(down==0, _time, null())' in p
-      and "eventstats max(down_time) as last_down max(up_time) as last_up by device target" in p
-      and "eval now_down=if(coalesce(last_down, 0) > coalesce(last_up, 0), 1, 0)" in p
-      and "eval run_time=if(_time > coalesce(if(now_down==1, last_up, last_down), 0), _time, null())" in p
-      and "stats latest(prev_down) as prev_down max(now_down) as now_down max(in_now) as arrived latest(admin) as now_admin min(run_time) as starts_at by device target" in p
-      and 'eval kind="link_down", status=if(now_down==1, "firing", "resolved")' in p)
-check("ポーリング: down のまま admin-state を disable にして閉じたときは、detail を is up ではなく is admin down にする",
-      'eval detail=target." is ".if(status=="firing", "down", if(now_admin==2, "admin down", "up"))." (splunk: poll)"' in p)
+g = saved["netops_gnmi"]["search"]
+_gp = pipes["netops_gnmi"]
+check("gNMI: IF は oper_state が up 以外で link_down（admin_state が disable の IF は down と数えない）、BGP は session_state が established 以外で bgp_down、"
+      "IS-IS は oper_state が up 以外で isis_down",
+      'eval kind=case(source=="telegraf:bgp_neighbor", "bgp_down", source=="telegraf:isis_interface", "isis_down", true(), "link_down")' in _gp
+      and "eval state=lower(if(kind==\"bgp_down\", 'fields.session_state', 'fields.oper_state')), admin=if(kind==\"link_down\", lower('fields.admin_state'), null())" in _gp
+      and 'eval down=case(kind=="bgp_down", if(cur_state=="established", 0, 1), kind=="isis_down", if(cur_state=="up", 0, 1), '
+          'true(), if(cur_state!="up" AND coalesce(cur_admin, "")!="disable", 1, 0))' in _gp)
+check("gNMI: target は IF が ifName（linkDown trap と同じ anomaly_id）、BGP がピアのアドレス、IS-IS が IF 名（status Lambda の set_layer_status が引く名前）",
+      "eval target=case(kind==\"bgp_down\", coalesce('tags.peer_address', 'tags.neighbor_peer_address'), kind==\"isis_down\", 'tags.interface_name', true(), 'tags.ifName')" in _gp)
+_si = _gp.index("sort 0 _time")
+check("gNMI: IF の oper_state と admin_state は別のイベントで来ることがあるので、時刻の順に並べて対象ごとに前の値を持ち越す（oper_state がまだ 1 つも無い IF は見ない）",
+      _gp[_si + 1] == "streamstats last(state) as cur_state last(admin) as cur_admin by device kind target" and _gp[_si + 2] == "where isnotnull(cur_state)"
+      and _gp[_si - 1] == 'where isnotnull(device) AND isnotnull(target) AND (isnotnull(state) OR isnotnull(admin)) AND (kind!="link_down" OR NOT match(target, "^(lo|mgmt)|[.]"))')
+check("gNMI: 前の値と比べて down かどうかが変わったときだけ出す（前 = 今の 1 分より前に入った最後の値、今 = 読んだ全部のうち最後の値（イベントの時刻で）、"
+      "starts_at = 今の状態になった時刻）。detail の state は最後の値（link_down は down / up）",
+      'eval in_now=if(_indextime >= relative_time(now(), "-1m@m-10s"), 1, 0)' in _gp
+      and 'eval prev_down=if(in_now==0, down, null()), down_time=if(down==1, _time, null()), up_time=if(down==0, _time, null())' in _gp
+      and "eventstats max(down_time) as last_down max(up_time) as last_up by device kind target" in _gp
+      and "eval now_down=if(coalesce(last_down, 0) > coalesce(last_up, 0), 1, 0)" in _gp
+      and "eval run_time=if(_time > coalesce(if(now_down==1, last_up, last_down), 0), _time, null())" in _gp
+      and "stats latest(prev_down) as prev_down max(now_down) as now_down max(in_now) as arrived latest(cur_state) as state min(run_time) as starts_at by device kind target" in _gp
+      and 'eval status=if(now_down==1, "firing", "resolved")' in _gp
+      and 'eval detail=case(kind=="bgp_down", "bgp session to ".target." is ".state, kind=="isis_down", "isis interface ".target." is ".state, '
+          'true(), target." is ".if(status=="firing", "down", "up"))." (splunk: gnmi)"' in _gp
+      and [x.split(" ")[0] for x in _gp] == ["index=*", "fields", "spath", "eval", "eval", "eval", "eval", "where", "sort", "streamstats", "where", "eval", "eval", "eval",
+                                              "eventstats", "eval", "eval", "stats", "where", "eval", "eval", "table"])
 
-# ---- ポーリングの遷移（SPL は動かせないので、表と参照実装と where の条件を突き合わせる）
-# 前（null = 今の 1 分より前の 10 分に値が無い / 0 / 1）× 今（0 / 1 / null = 今の 1 分に値が入っていない）→ firing / なし（None）/ resolved
-POLL_TABLE = {
+# ---- gNMI の遷移（SPL は動かせないので、表と参照実装と where の条件を突き合わせる。本物の Splunk では tests/check_splunk_image.py が link_down を 1 件通す）
+# 前（null = 今の 1 分より前の 24 時間に値が無い / 0 / 1）× 今（0 / 1 / null = 今の 1 分に値が入っていない）→ firing / なし（None）/ resolved
+GNMI_TABLE = {
     (None, 0): None, (None, 1): "firing", (None, None): None,
     (0, 0): None, (0, 1): "firing", (0, None): None,
     (1, 0): "resolved", (1, 1): None, (1, None): None,
 }
-POLL_BACK = (int(re.search(r"_index_earliest=-(\d+)m@m-10s", pipes["netops_poll"][0]).group(1)) - 1) * 60   # 前として読む秒数（今の 1 分を除く）
+GNMI_BACK = (int(re.search(r"_index_earliest=-(\d+)m@m-10s", _gp[0]).group(1)) - 1) * 60   # 前として読む秒数（今の 1 分を除く）
 
 
-def poll_ref(events, T, back=POLL_BACK):
-    """netops_poll の参照実装（IF 1 つぶん）。events = [(索引の時刻, イベントの時刻, down 0/1)]、T = その回の窓の終わり（@m-10s）。
+def gnmi_ref(events, T, back=GNMI_BACK):
+    """netops_gnmi の参照実装（対象 1 つぶん）。events = [(索引の時刻, イベントの時刻, down 0/1)]、T = その回の窓の終わり（@m-10s）。
     今の 1 分 = 索引の時刻が [T-60, T)、前 = [T-60-back, T-60)。返すのは (status, starts_at)。出さないときは (None, None)"""
     seen = [e for e in events if T - 60 - back <= e[0] < T]
     if not any(e[0] >= T - 60 for e in seen):
@@ -490,22 +506,22 @@ def poll_ref(events, T, back=POLL_BACK):
     return status, min(e[1] for e in seen if e[1] > changed)
 
 
-def poll_runs(events, n, back=POLL_BACK):
-    return [poll_ref(events, 60 * k, back) for k in range(1, n + 1)]
+def gnmi_runs(events, n, back=GNMI_BACK):
+    return [gnmi_ref(events, 60 * k, back) for k in range(1, n + 1)]
 
 
-def ev(t, down, delay=2):   # Telegraf の時刻 t のポーリング 1 回（delay 秒後に索引に入る）
+def ev(t, down, delay=2):   # 機器の時刻 t の on-change 1 件（delay 秒後に索引に入る）
     return (t + delay, t, down)
 
 
-check("ポーリングの遷移: 参照実装が表のとおり（前の値は今の 1 分より前に入った最後のもの、今の 1 分に値が無ければ出さない）",
-      all(poll_ref(([(10, 10, pd)] if pd is not None else []) + ([(70, 70, nd)] if nd is not None else []), 120)[0] == want
-          for (pd, nd), want in POLL_TABLE.items()))
-_pw = next(x for x in pipes["netops_poll"] if x.startswith("where arrived"))[len("where "):]
+check("gNMI の遷移: 参照実装が表のとおり（前の値は今の 1 分より前に入った最後のもの、今の 1 分に値が無ければ出さない）",
+      all(gnmi_ref(([(10, 10, pd)] if pd is not None else []) + ([(70, 70, nd)] if nd is not None else []), 120)[0] == want
+          for (pd, nd), want in GNMI_TABLE.items()))
+_pw = next(x for x in _gp if x.startswith("where arrived"))[len("where "):]
 _py = re.sub(r"isnull\((\w+)\)", r"(\1 is None)", re.sub(r"isnotnull\((\w+)\)", r"(\1 is not None)", _pw)).replace(" AND ", " and ").replace(" OR ", " or ")
 
 
-def poll_spl(prev_down, now):
+def gnmi_spl(prev_down, now):
     """SPL の where と status を同じ値で評価する。今が null（今の 1 分に値が無い）なら arrived = 0 で、now_down は前の値（前も無ければ 0 と 1 の両方）"""
     outs = set()
     for now_down in ([now] if now is not None else [prev_down] if prev_down is not None else [0, 1]):
@@ -514,64 +530,67 @@ def poll_spl(prev_down, now):
     return outs
 
 
-check("ポーリングの遷移: SPL の where（と status=if(now_down==1, …)）が表と同じ組み合わせで出す",
+check("gNMI の遷移: SPL の where（と status=if(now_down==1, …)）が表と同じ組み合わせで出す",
       _pw == "arrived==1 AND ((isnull(prev_down) AND now_down==1) OR (isnotnull(prev_down) AND prev_down!=now_down))"
-      and all(poll_spl(pd, nd) == {want} for (pd, nd), want in POLL_TABLE.items()))
-check("ポーリングの遷移: 参照実装の前の長さは SPL の窓（-11m@m-10s から今の 1 分を除いた 10 分）", POLL_BACK == 600)
-check("ポーリング: 前の 1 分が空（Spark のバッチが境界の前後に揺れた）でも、down が続いている IF の firing を出し直さない",
-      poll_runs([ev(10, 0), ev(70, 1), ev(80, 1), ev(190, 1), ev(250, 1)], 5) == [(None, None), ("firing", 70), (None, None), (None, None), (None, None)])
-check("ポーリング: 前の 1 分が空のあいだに up に戻った IF も resolved を出す（starts_at は up に戻った時刻）",
-      poll_runs([ev(10, 0), ev(70, 1), ev(190, 0), ev(250, 0)], 5) == [(None, None), ("firing", 70), (None, None), ("resolved", 190), (None, None)])
-check("ポーリング: 直前の 1 分だけと比べる形（前の長さ 60 秒）だと、上の 2 つで firing の出し直しと resolved の取りこぼしが起きる（この検査で見分けられる）",
-      poll_runs([ev(10, 0), ev(70, 1), ev(190, 1)], 4, back=60)[3] == ("firing", 190)
-      and poll_runs([ev(10, 0), ev(70, 1), ev(190, 0)], 4, back=60)[3] == (None, None))
-check("ポーリング: starts_at は down になった時刻（1 分に何回 down を読んでも、最初の down。直前に up があればそのあと）",
-      poll_runs([ev(10, 0), ev(65, 0), ev(75, 1), ev(85, 1), ev(95, 1)], 2)[1] == ("firing", 75)
-      and poll_runs([ev(5, 1), ev(15, 1)], 1)[0] == ("firing", 5))
-check("ポーリング: 送り直しの重複（前に入った古い down がもう一度入る）で、up に戻った IF を down にしない",
-      poll_runs([ev(10, 1), ev(70, 0), (130, 10, 1)], 3) == [("firing", 10), ("resolved", 70), (None, None)])
-check("ポーリング: 10 分を超えて値が途切れたあとも down が続いていれば、新しい発生として出し直す（限界。starts_at は途切れたあとの最初の値）",
-      poll_runs([ev(10, 1), ev(70, 1), ev(790, 1)], 14)[13] == ("firing", 790)
-      and poll_runs([ev(10, 1), ev(70, 1), ev(670, 1)], 12)[11] == (None, None))
-SKIP_IF = re.search(r'NOT match\(target, "([^"]+)"\)', p).group(1)
-check("ポーリング: 見ない IF は Grafana の link_down と同じ（ループバック・管理ポート・サブインタフェース）",
-      [n for n in ("lo0", "mgmt0", "ethernet-1/1.0", "ethernet-1/1", "ethernet-1/49", "irb0") if not re.search(SKIP_IF, n)] == ["ethernet-1/1", "ethernet-1/49", "irb0"]
-      and [n for n in ("lo0", "mgmt0", "ethernet-1/1.0", "ethernet-1/1", "ethernet-1/49", "irb0") if not re.fullmatch("(lo|mgmt).*|.*[.].*", n)] == ["ethernet-1/1", "ethernet-1/49", "irb0"]
-      and 'ifName!~"(lo|mgmt).*|.*[.].*"' in read("app", "grafana", "provisioning", "alerting", "netops-prometheus.yaml"))
-g = saved["netops_gnmi"]["search"]
-check("gNMI: BGP は session_state が established 以外で bgp_down、IS-IS は oper_state が up 以外で isis_down",
-      'eval kind=if(source=="telegraf:bgp_neighbor", "bgp_down", "isis_down")' in g and "'fields.session_state'" in g and "'fields.oper_state'" in g
-      and 'eval down=if((kind=="bgp_down" AND state=="established") OR (kind=="isis_down" AND state=="up"), 0, 1), '
-          'in_now=if(_indextime >= relative_time(now(), "-1m@m-10s"), 1, 0)' in g)
-check("gNMI: target は BGP がピアのアドレス、IS-IS が IF 名（status Lambda の set_layer_status が引く名前）",
-      "coalesce('tags.peer_address', 'tags.neighbor_peer_address'), 'tags.interface_name'" in g)
-_gp = pipes["netops_gnmi"]
-_pp = [x.replace("by device target", "by device kind target") for x in pipes["netops_poll"]]
-check("gNMI: 前の値と比べて down かどうかが変わったときだけ出す。比べ方（前・今・出す条件・starts_at）はポーリングと同じ行（対象は device kind target）。"
-      "detail の state は最後の値",
-      all(x in _gp for x in _pp if x.startswith(("eval prev_down=", "eventstats ", "eval now_down=", "eval run_time=", "where arrived")))
-      and "stats latest(prev_down) as prev_down max(now_down) as now_down max(in_now) as arrived latest(state) as state min(run_time) as starts_at by device kind target" in _gp
-      and 'eval status=if(now_down==1, "firing", "resolved")' in _gp
-      and [x.split(" ")[0] for x in _gp] == ["index=*", "fields", "spath", "eval", "eval", "eval", "eval", "where", "eval", "eval", "eventstats", "eval", "eval",
-                                              "stats", "where", "eval", "eval", "table"])
-GNMI_BACK = (int(re.search(r"_index_earliest=-(\d+)m@m-10s", _gp[0]).group(1)) - 1) * 60
+      and all(gnmi_spl(pd, nd) == {want} for (pd, nd), want in GNMI_TABLE.items()))
 check("gNMI の遷移: 参照実装の前の長さは SPL の窓（-1441m@m-10s から今の 1 分を除いた 24 時間。Grafana の last_over_time(...[24h]) と同じ）",
       GNMI_BACK == 86400 and "[24h]" in read("app", "grafana", "provisioning", "alerting", "netops-prometheus.yaml"))
+check("gNMI: 前の 1 分が空（Spark のバッチが境界の前後に揺れた）でも、down が続いている対象の firing を出し直さない",
+      gnmi_runs([ev(10, 0), ev(70, 1), ev(80, 1), ev(190, 1), ev(250, 1)], 5) == [(None, None), ("firing", 70), (None, None), (None, None), (None, None)])
+check("gNMI: 前の 1 分が空のあいだに戻った対象も resolved を出す（starts_at は戻った時刻）",
+      gnmi_runs([ev(10, 0), ev(70, 1), ev(190, 0), ev(250, 0)], 5) == [(None, None), ("firing", 70), (None, None), ("resolved", 190), (None, None)])
+check("gNMI: 直前の 1 分だけと比べる形（前の長さ 60 秒）だと、上の 2 つで firing の出し直しと resolved の取りこぼしが起きる（この検査で見分けられる）",
+      gnmi_runs([ev(10, 0), ev(70, 1), ev(190, 1)], 4, back=60)[3] == ("firing", 190)
+      and gnmi_runs([ev(10, 0), ev(70, 1), ev(190, 0)], 4, back=60)[3] == (None, None))
+check("gNMI: starts_at は down になった時刻（1 分に何回 down を読んでも、最初の down。直前に up があればそのあと）",
+      gnmi_runs([ev(10, 0), ev(65, 0), ev(75, 1), ev(85, 1), ev(95, 1)], 2)[1] == ("firing", 75)
+      and gnmi_runs([ev(5, 1), ev(15, 1)], 1)[0] == ("firing", 5))
+check("gNMI: 送り直しの重複（前に入った古い down がもう一度入る）で、戻った対象を down にしない",
+      gnmi_runs([ev(10, 1), ev(70, 0), (130, 10, 1)], 3) == [("firing", 10), ("resolved", 70), (None, None)])
 _H = 3600
 check("gNMI: 起動の直後（購読の最初の送信や、Spark が Kafka を頭から読み直した分が今の 1 分にまとめて入る）は、up / established の resolved を出さない。down は firing",
-      poll_ref([(65, 10, 0), (66, 20, 0), (67, 30, 1)], 120, GNMI_BACK) == ("firing", 30)
-      and poll_ref([(65, 10, 1), (66, 20, 0)], 120, GNMI_BACK) == (None, None)
-      and poll_ref([(65, 10, 0)], 120, GNMI_BACK) == (None, None))
-check("gNMI: Telegraf がつなぎ直して今の状態を送り直しても、前と同じなら出さない（24 時間以内）。down のまま送り直しても firing を出し直さない",
-      poll_runs([ev(10, 0), ev(6 * _H + 10, 0)], 6 * 60 + 1, GNMI_BACK)[-1] == (None, None)
-      and poll_runs([ev(10, 1), ev(6 * _H + 10, 1)], 6 * 60 + 1, GNMI_BACK)[-1] == (None, None))
-check("gNMI: 変わったときは前の値が何時間前でも出す（down から 2 時間後に established → resolved。ポーリングの 10 分なら前が無くて出せない）",
-      poll_runs([ev(10, 1), ev(2 * _H + 10, 0)], 2 * 60 + 1, GNMI_BACK)[-1] == ("resolved", 2 * _H + 10)
-      and poll_runs([ev(10, 1), ev(2 * _H + 10, 0)], 2 * 60 + 1)[-1] == (None, None))
+      gnmi_ref([(65, 10, 0), (66, 20, 0), (67, 30, 1)], 120) == ("firing", 30)
+      and gnmi_ref([(65, 10, 1), (66, 20, 0)], 120) == (None, None)
+      and gnmi_ref([(65, 10, 0)], 120) == (None, None))
+check("gNMI: gnmic がつなぎ直して今の状態を送り直しても、前と同じなら出さない（24 時間以内）。down のまま送り直しても firing を出し直さない",
+      gnmi_runs([ev(10, 0), ev(6 * _H + 10, 0)], 6 * 60 + 1)[-1] == (None, None)
+      and gnmi_runs([ev(10, 1), ev(6 * _H + 10, 1)], 6 * 60 + 1)[-1] == (None, None))
+check("gNMI: 変わったときは前の値が何時間前でも出す（down から 2 時間後に戻る → resolved。前を 10 分しか読まないと出せない）",
+      gnmi_runs([ev(10, 1), ev(2 * _H + 10, 0)], 2 * 60 + 1)[-1] == ("resolved", 2 * _H + 10)
+      and gnmi_runs([ev(10, 1), ev(2 * _H + 10, 0)], 2 * 60 + 1, back=600)[-1] == (None, None))
 check("gNMI: 24 時間を超えて down が続いたあとの resolved は出さない。down を送り直すと firing を出し直す（限界。Grafana が閉じる）",
-      poll_runs([ev(10, 1), ev(25 * _H + 10, 0)], 25 * 60 + 1, GNMI_BACK)[-1] == (None, None)
-      and poll_runs([ev(10, 1), ev(25 * _H + 10, 1)], 25 * 60 + 1, GNMI_BACK)[-1] == ("firing", 25 * _H + 10))
+      gnmi_runs([ev(10, 1), ev(25 * _H + 10, 0)], 25 * 60 + 1)[-1] == (None, None)
+      and gnmi_runs([ev(10, 1), ev(25 * _H + 10, 1)], 25 * 60 + 1)[-1] == ("firing", 25 * _H + 10))
 
+# ---- link_down の持ち越し（oper_state と admin_state が別のイベントで来る）。SPL の down の式（link_down の枝）を Python で評価し、streamstats last() の持ち越し
+# （null は飛ばす）を写した参照実装に通す
+_ld = re.search(r'true\(\), if\((cur_state!="up" AND coalesce\(cur_admin, ""\)!="disable"), 1, 0\)\)$',
+                next(x for x in _gp if x.startswith("eval down=")))
+_ldpy = _ld.group(1).replace('coalesce(cur_admin, "")', '(cur_admin if cur_admin is not None else "")').replace(" AND ", " and ")
+
+
+def link_down_ref(events):
+    """[(イベントの時刻, oper_state か None, admin_state か None)] → イベントごとの down（0 / 1。oper_state がまだ無ければ None = where で落ちる）"""
+    out, cur_state, cur_admin = [], None, None
+    for _, o, a in sorted(events, key=lambda e: e[0]):
+        cur_state = o.lower() if o is not None else cur_state
+        cur_admin = a.lower() if a is not None else cur_admin
+        out.append(None if cur_state is None else int(eval(_ldpy, {}, {"cur_state": cur_state, "cur_admin": cur_admin})))
+    return out
+
+
+check("link_down の持ち越し: oper が down のあと別のイベントで admin が disable になると down でなくなる（resolved。管理で止めた IF は異常ではない）",
+      link_down_ref([(10, "down", None), (20, None, "disable")]) == [1, 0])
+check("link_down の持ち越し: admin を disable にしてから oper が down になっても down にしない。enable に戻して oper が down のままなら down",
+      link_down_ref([(10, "up", "enable"), (20, None, "disable"), (30, "down", None), (40, None, "enable")]) == [0, 0, 0, 1])
+check("link_down の持ち越し: admin_state が 1 つも無い IF は enable として扱う。oper_state がまだ無い IF（admin だけ）は見ない。大文字でも同じ",
+      link_down_ref([(10, None, "enable"), (20, "DOWN", None), (30, "up", None)]) == [None, 1, 0])
+SKIP_IF = re.search(r'NOT match\(target, "([^"]+)"\)', g).group(1)
+check("gNMI の link_down: 見ない IF は Grafana の link_down と同じ（ループバック・管理ポート・サブインタフェース）。BGP / IS-IS には当てない",
+      [n for n in ("lo0", "mgmt0", "ethernet-1/1.0", "ethernet-1/1", "ethernet-1/49", "irb0") if not re.search(SKIP_IF, n)] == ["ethernet-1/1", "ethernet-1/49", "irb0"]
+      and [n for n in ("lo0", "mgmt0", "ethernet-1/1.0", "ethernet-1/1", "ethernet-1/49", "irb0") if not re.fullmatch("(lo|mgmt).*|.*[.].*", n)] == ["ethernet-1/1", "ethernet-1/49", "irb0"]
+      and 'ifName!~"(lo|mgmt).*|.*[.].*"' in read("app", "grafana", "provisioning", "alerting", "netops-prometheus.yaml")
+      and f'(kind!="link_down" OR NOT match(target, "{SKIP_IF}"))' in g)
 
 def norm(oid, search):
     """サーチの中の OID の正規化（replace(replace(x, "^iso\\.", ".1."), "^1\\.", ".1.")）を同じ正規表現で写す"""
@@ -588,7 +607,7 @@ LINK = [".1.3.6.1.6.3.1.1.5.3", ".1.3.6.1.6.3.1.1.5.4"]
 excluded = lambda s: re.findall(r'oid!="(\.[0-9.]+)"', s)   # noqa: E731
 check("trap: 機器が起きた知らせ（coldStart / warmStart / nsNotifyShutdown / nsNotifyRestart）は異常にしない", excluded(t) == IGNORED)
 _tskip = re.search(r'where kind!="link_down" OR NOT match\(target, "([^"]+)"\)', t)
-check("trap: linkDown / linkUp でも、ポーリングと同じ IF（ループバック・管理ポート・サブインタフェース）は見ない。link 以外の trap の target（OID）は落とさない",
+check("trap: linkDown / linkUp でも、gNMI の link_down と同じ IF（ループバック・管理ポート・サブインタフェース）は見ない。link 以外の trap の target（OID）は落とさない",
       _tskip is not None and _tskip.group(1) == SKIP_IF
       and pipes["netops_trap"].index(_tskip.group(0)) == pipes["netops_trap"].index('eval target=if(kind=="link_down", coalesce(if_name, if_descr, if_index, "?"), oid)') + 1
       and [n for n in ("ethernet-1/1.0", "lo0", "mgmt0", "ethernet-1/1", "5", "?") if not re.search(_tskip.group(1), n)] == ["ethernet-1/1", "5", "?"])
@@ -612,10 +631,10 @@ check("trap の解消: link の trap は対象にしない（linkUp が閉じる
 check("trap の解消の target は trap の firing と同じ（OID）なので、同じ anomaly_id を閉じる",
       "target=oid" in c and 'coalesce(if_name, if_descr, if_index, "?"), oid)' in t)
 check("サーチが出す kind は受け手が知っているものだけ（link_down はワークフローを起こし、bgp_down / isis_down / trap は status だけ）",
-      set(re.findall(r'"(link_down|bgp_down|isis_down|trap)"', p + g + t + c)) == {"link_down", "bgp_down", "isis_down", "trap"} and rules.START_KINDS == {"link_down"})
-check("detail の末尾でどの入力から出したかが分かる（Grafana は (grafana: …)）: ポーリングは (splunk: poll)、gNMI は (splunk: gnmi)、"
+      set(re.findall(r'"(link_down|bgp_down|isis_down|trap)"', g + t + c)) == {"link_down", "bgp_down", "isis_down", "trap"} and rules.START_KINDS == {"link_down"})
+check("detail の末尾でどの入力から出したかが分かる（Grafana は (grafana: …)）: gNMI は (splunk: gnmi)、"
       "link の trap は (splunk: linkDown trap) / (splunk: linkUp trap)、ほかの trap は (splunk: trap)",
-      re.findall(r"\((splunk[^)]*)\)", p + g + t + c) == ["splunk: poll", "splunk: gnmi", "splunk: linkUp trap", "splunk: linkDown trap", "splunk: trap", "splunk: trap"])
+      re.findall(r"\((splunk[^)]*)\)", g + t + c) == ["splunk: gnmi", "splunk: linkUp trap", "splunk: linkDown trap", "splunk: trap", "splunk: trap"])
 check("アラートアクションの定義: カスタム、標準入力は JSON、Python は 3.13 と書く（boto3 は Splunk の Python のもの。latest だと Splunk を上げたとき黙って替わる）",
       actions == {"netops_sns": dict(actions["netops_sns"], **{"is_custom": "1", "payload_format": "json", "python.required": "3.13"})}
       and os.path.exists(os.path.join(ROOT, *APP, "bin", "netops_sns.py")) and os.path.exists(os.path.join(ROOT, *APP, "default", "data", "ui", "alerts", "netops_sns.html")))
@@ -832,14 +851,14 @@ def render(alerts):
 
 
 body = render([{"status": "firing", "labels": {"sysName": "dc1-a-leaf-01", "ifName": "ethernet-1/49", "kind": "link_down", "target": "ethernet-1/49"},
-                "annotations": {"detail": "ethernet-1/49 is down (grafana: poll)"}, "starts_at": 1790000000},
+                "annotations": {"detail": "ethernet-1/49 is down (grafana: gnmi)"}, "starts_at": 1790000000},
                {"status": "resolved", "labels": {"sysName": "DC1-Spine-01", "kind": "link_down", "target": 'eth"x'},
-                "annotations": {"detail": 'eth"x is down (grafana: poll)'}, "starts_at": 1790000030},
+                "annotations": {"detail": 'eth"x is down (grafana: gnmi)'}, "starts_at": 1790000030},
                {"status": "firing", "labels": {"source": "203.0.113.99", "peer_address": "10.255.0.9", "kind": "bgp_down", "target": "10.255.0.9"},
                 "annotations": {"detail": "bgp session to 10.255.0.9 is not established (grafana: gnmi)"}, "starts_at": 1790000060}])
 check("Grafana の本文は埋めたあと JSON になる（テンプレートの構文は全部埋まる。値の中の \" も壊さない。機器名が無ければ送り元の IP）",
       "{{" not in body and [(a["device_id"], a["target"], a["detail"]) for a in json.loads(body)["alerts"]]
-      == [("dc1-a-leaf-01", "ethernet-1/49", "ethernet-1/49 is down (grafana: poll)"), ("DC1-Spine-01", 'eth"x', 'eth"x is down (grafana: poll)'),
+      == [("dc1-a-leaf-01", "ethernet-1/49", "ethernet-1/49 is down (grafana: gnmi)"), ("DC1-Spine-01", 'eth"x', 'eth"x is down (grafana: gnmi)'),
           ("203.0.113.99", "10.255.0.9", "bgp session to 10.255.0.9 is not established (grafana: gnmi)")]
       and all(list(a) == KEYS for a in json.loads(body)["alerts"]))
 check("受け手がそのまま読める: Grafana の link_down は Splunk の linkDown trap と同じ anomaly_id（同じ障害は 1 つのワークフロー）",
@@ -865,10 +884,12 @@ check("どのルールもラベル kind（= title）/ target と注釈 detail（
       all(re.search(rf"labels:\s*\n\s*kind: {t}\n\s*(sysName: .*\n\s*)?target: '\{{\{{ .+ \}}\}}'\n", r) and "condition: C" in r and "for: 0s" in r
           for t, r in grules.items())
       and {t: re.search(r"detail: '.*\((grafana: \w+)\)'", r).group(1) for t, r in grules.items()}
-      == {"link_down": "grafana: poll", "bgp_down": "grafana: gnmi", "isis_down": "grafana: gnmi", "trap": "grafana: trap"})
-check("link_down: ifOperStatus が 2 の IF（ループバック・管理ポート・サブ IF・admin down は見ない。値で判定するので直れば次の評価で解消）。target は ifName",
-      "expr: 'snmp_interface_ifOperStatus{ifName!~\"(lo|mgmt).*|.*[.].*\"} unless on (sysName, ifName) (snmp_interface_ifAdminStatus == 2)'" in grules["link_down"]
-      and re.search(r"type: within_range\s*\n\s*params: \[1\.5, 2\.5\]", grules["link_down"]) is not None
+      == {"link_down": "grafana: gnmi", "bgp_down": "grafana: gnmi", "isis_down": "grafana: gnmi", "trap": "grafana: trap"})
+check("link_down: gNMI の oper-state（Spark の 1 / 0 の系列）の直近 24 時間の最後の値が 0.5 未満の IF（ループバック・管理ポート・サブ IF と、"
+      "admin-state が disable の IF は見ない。値で判定するので直れば次の評価で解消）。target は ifName",
+      "expr: 'last_over_time(snmp_interface_oper_up{ifName!~\"(lo|mgmt).*|.*[.].*\"}[24h]) unless on (sysName, ifName) (last_over_time(snmp_interface_admin_up[24h]) == 0)'"
+      in grules["link_down"]
+      and re.search(r"type: lt\s*\n\s*params: \[0\.5\]", grules["link_down"]) is not None
       and "target: '{{ .Labels.ifName }}'" in grules["link_down"])
 ss = read("app", "spark", "snmp_sinks.py")
 check("bgp_down / isis_down: Spark が書く 1 / 0 の系列の直近 24 時間の最後の値が 0.5 未満なら発火。target は peer_address / interface_name（gNMI の tag）",
@@ -879,7 +900,9 @@ check("bgp_down / isis_down: Spark が書く 1 / 0 の系列の直近 24 時間�
 check("ルールのメトリクス名とラベルは Spark が AMP に書く名前（snmp_<measurement>_<field>、tag はそのままラベル）で、データソースは uid: amp",
       'METRIC_PREFIX = "snmp"' in ss and gpcode.count("datasourceUid: amp") == 3
       and re.search(r"^\s*uid: amp$", read("app", "grafana", "provisioning", "datasources", "prometheus.yaml"), re.M) is not None
-      and all(f in read("app", "telegraf", "telegraf.conf.in") for f in ("ifOperStatus", "ifAdminStatus", "ifName", "sysName")))
+      and '("interface", "oper_state"): ("oper_up", "up")' in ss and '("interface", "admin_state"): ("admin_up", "enable")' in ss
+      and '"interface_name": "ifName"' in ss.split("GNMI_TAGS = ", 1)[1].split("\n", 1)[0]
+      and all(f in read("app", "gnmic", "gnmic.yaml.in") for f in ("/interface[name=*]/oper-state", "/interface[name=*]/admin-state")))
 SPLUNK_TRAP_SKIP = re.findall(r'oid!="([.0-9]+)"', re.search(r"^\[netops_trap\]$(.*?)^\[", read("app", "splunk", "netops_alerts", "default", "savedsearches.conf"), re.S | re.M).group(1))
 check("trap: 過去 10 分の snmp_trap を機器と OID ごとに数える（OpenSearch のデータソース uid: aoss-logs、文字列は .keyword）。除く OID は Splunk の netops_trap と"
       "同じに linkDown / linkUp を足したもの。target は OID",

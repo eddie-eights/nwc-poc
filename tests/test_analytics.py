@@ -336,8 +336,8 @@ check("job_driver の格納先の引数は、そのジョブの格納先にあ�
       and re.search(r'\["--splunk-hec-url",\s*local\.splunk_hec_url,\s*"--splunk-token-parameter",\s*local\.splunk_token_parameter,\s*"--splunk-index",\s*var\.splunk_index\] : a if contains\(sinks, "splunk"\)', args_block.group(1)) is not None
       and re.search(r'\["--splunk-skip-verify"\] : a if contains\(sinks, "splunk"\) && local\.splunk_skip_tls_verify', args_block.group(1)) is not None
       and "local.sink_" not in args_block.group(1))
-check("job_driver は device map が空でなく、そのジョブに prometheus か opensearch があるときだけ --device-map を渡す（cycle 002。sysName の無い gNMI と trap に機器名を足す）",
-      re.search(r'\["--device-map",\s*var\.device_map\] : a if var\.device_map != "" && \(contains\(sinks, "prometheus"\) \|\| contains\(sinks, "opensearch"\)\)', args_block.group(1)) is not None)
+check("job_driver は device map が空でなく、そのジョブに prometheus か opensearch か splunk があるときだけ --device-map を渡す（cycle 002。sysName の無い gNMI と trap に機器名を足す。splunk は cycle 013）",
+      re.search(r'\["--device-map",\s*var\.device_map\] : a if var\.device_map != "" && \(contains\(sinks, "prometheus"\) \|\| contains\(sinks, "opensearch"\) \|\| contains\(sinks, "splunk"\)\)', args_block.group(1)) is not None)
 check("job_driver の引数に token の値は無い（SSM のパラメータ名だけ）", "hec-token" not in args_block.group(1) and "splunk_hec_token" not in args_block.group(1))
 check("--sinks はそのジョブの格納先（var.sinks にあるものだけ）をカンマでつなぐ", '"--sinks", join(",", sinks)' in args_block.group(1) and "var.sinks" not in args_block.group(1))
 check("--checkpoint は s3://<バケット>/analytics/checkpoint/<MSK の uuid>/（MSK を作り直したら checkpoint も新しく。格納先ごとに下を切るのはスクリプト）",
@@ -468,12 +468,28 @@ check("timestamp が無い行は捨てる", '.where(F.col("ts").isNotNull())' in
 check("tags / fields は JSON 文字列のまま", 'F.to_json(F.col("m.tags")).alias("tags_json")' in src and 'F.to_json(F.col("m.fields")).alias("fields_json")' in src)
 _rr = src[src.index("def read_rows("):src.index("def row_to_record(")]
 check("read_rows: flows のトピックだけ GoFlow2 の JSON を Telegraf の形の struct（timestamp / name / tags / fields）に読み替え、ほかは今の schema のまま（flow_message と同じ表を使う）",
-      'F.when(F.col("topic") == FLOW_TOPIC, flow_struct).otherwise(F.from_json(value, schema)).alias("m")' in _parsed
+      'F.when(F.col("topic") == FLOW_TOPIC, flow_struct).when(gnmic, gnmic_struct(F, msg)).otherwise(telegraf).alias("m")' in _parsed
       and 'F.from_json(value, T.MapType(T.StringType(), T.StringType()))' in _rr
       and '(flow[FLOW_TIME_KEY].cast("long") / 1000000000).cast("long").alias("timestamp")' in _rr
       and 'F.lit(FLOW_NAME).alias("name")' in _rr and 'flow_map(FLOW_TAGS).alias("tags")' in _rr and 'flow_map(FLOW_FIELDS).alias("fields")' in _rr
       and "F.map_filter(F.create_map(*kv), lambda k, v: v.isNotNull())" in _rr
       and re.search(r'^FLOW_TOPIC\s*=\s*"flows"$', src, re.M) is not None and re.search(r'^FLOW_NAME\s*=\s*"flow"$', src, re.M) is not None)
+# cycle 013: gnmic の event は形で見分けて読み替える（gnmic_struct。表は gnmic_message と同じ。gnmic_message の答えは tests/test_stream.py）
+_gs = src[src.index("def gnmic_struct("):src.index("def gnmic_message(")]
+check("read_rows: schema に gnmic の values（文字列の map）と deletes（文字列の配列）を足す",
+      'T.StructField("values", T.MapType(T.StringType(), T.StringType()))' in _rr and 'T.StructField("deletes", T.ArrayType(T.StringType()))' in _rr)
+check("read_rows: fields が無く values か deletes がある行を gnmic の event とする（トピックでは分けない）。Telegraf の行は今の 4 項目の struct のまま",
+      'gnmic = msg["fields"].isNull() & (msg["values"].isNotNull() | msg["deletes"].isNotNull())' in _rr
+      and 'telegraf = F.struct(*(msg[k].alias(k) for k in ("timestamp", "name", "tags", "fields")))' in _rr)
+check("read_rows: agent_host の列は gnmic なら tags.source、ほかは tags.agent_host（rows は m.tags ではなくこの列を読む）",
+      'F.when(gnmic, msg["tags"]["source"]).otherwise(msg["tags"]["agent_host"]).alias("agent_host")' in _parsed
+      and re.search(r'^\s*F\.col\("agent_host"\),$', block, re.M) is not None and 'm.tags")["agent_host"]' not in src)
+check("gnmic_struct: timestamp は values があるときだけ ns を秒に（deletes だけなら null で where が捨てる）、name / tags のキーは表で替え、values のキーは最後の要素の接頭辞を落として - を _ に",
+      'F.when(msg["values"].isNotNull(), (msg["timestamp"] / GNMI_NS).cast("long")).alias("timestamp")' in _gs
+      and 'lookup(GNMI_MEASUREMENTS, msg["name"]).alias("name")' in _gs
+      and 'F.transform_keys(msg["tags"], lambda k, v: lookup(GNMI_TAGS, strip(k))).alias("tags")' in _gs
+      and 'F.transform_keys(msg["values"], lambda k, v: F.translate(strip(F.element_at(F.split(k, "/"), -1)), "-", "_")).alias("fields")' in _gs
+      and 'F.regexp_replace(c, "^.*:", "")' in _gs and re.search(r'^GNMI_NS\s*=\s*1000000000\s', src, re.M) is not None)
 
 # ---- 純粋な関数を本当に動かす（引数の検査、トピックの振り分け、名前の規則、protobuf と snappy の手組み）
 spec = importlib.util.spec_from_file_location("snmp_sinks", SRC)
@@ -685,7 +701,7 @@ finally:
     mod.http_post = _orig_post
 check("make_splunk_sender: HEC が 4xx を返したらそのまとまりを捨てて続け（例外にしない。ジョブを止めない）、捨てた件数を返す", _dropped == 3)
 check("build: splunk は起動時に SSM から token を読み（WithDecryption。環境変数 SPLUNK_HEC_TOKEN が無ければ）、make_splunk_sender で http_query に流す",
-      re.search(r'elif s == "splunk":\s*\n(\s*#[^\n]*\n)*\s*token = splunk_token\(args\.splunk_token_parameter, args\.region\)\s*\n\s*queries\.append\(http_query\(rows, s, args\.checkpoint, make_splunk_sender\(args\.splunk_hec_url, token, args\.splunk_index, args\.splunk_skip_verify\)\)\)', src) is not None
+      re.search(r'elif s == "splunk":\s*\n(\s*#[^\n]*\n)*\s*token = splunk_token\(args\.splunk_token_parameter, args\.region\)\s*\n\s*queries\.append\(http_query\(rows, s, args\.checkpoint, make_splunk_sender\(args\.splunk_hec_url, token, args\.splunk_index, args\.splunk_skip_verify, devmap\)\)\)', src) is not None
       and re.search(r'def splunk_token\(parameter, region\):[\s\S]*?return os\.environ\.get\("SPLUNK_HEC_TOKEN"\) or read_ssm_parameter\(parameter, region\)\n', src) is not None
       and re.search(r'def read_ssm_parameter\(name, region\):[\s\S]*?get_parameter\(Name=name, WithDecryption=True\)', src) is not None)
 check("http_post は context（SSL）を urlopen に渡せる", re.search(r'def http_post\(url, body, headers, context=None\)', src) is not None and "context=context" in src)
@@ -773,18 +789,20 @@ mod.read_ssm_parameter = lambda name, region: (_ssm.append((name, region)), "tok
 mod.http_post = lambda url, body, headers, context=None: (_posts.append((url, body, headers, context)), (403, b'{"text":"Invalid token","code":4}'))[1]
 _posts.clear()
 try:
-    _send = mod.make_splunk_sender_on_executor("https://s:8088", "/p/splunk/hec-token", "ap-northeast-1", "netops", True)
+    _send = mod.make_splunk_sender_on_executor("https://s:8088", "/p/splunk/hec-token", "ap-northeast-1", "netops", True, {"r1": "dc1-a-leaf-01"})
     _ssm_at_make = list(_ssm)
     _cells = [c.cell_contents for c in (_send.__closure__ or ())]
-    _n, _err = _stderr(lambda: mod.send_partition("splunk", _send, 3, iter([_row(2.0), _row(1.0)])))
+    _n, _err = _stderr(lambda: mod.send_partition("splunk", _send, 3, iter([dict(_row(2.0), tags_json='{"source":"r1","ifName":"Gi0/1"}'), _row(1.0)])))
 finally:
     mod.http_post, mod.read_ssm_parameter = _orig_post, _orig_ssm
-check("make_splunk_sender_on_executor: 作るときは SSM を読まず、持つのは URL / パラメータ名 / region / index / skip_verify の文字列と bool だけ（token も SSL の context も executor へ運ばない）",
-      _ssm_at_make == [] and sorted(map(repr, _cells)) == sorted(map(repr, ["https://s:8088", "/p/splunk/hec-token", "ap-northeast-1", "netops", True])))
+check("make_splunk_sender_on_executor: 作るときは SSM を読まず、持つのは URL / パラメータ名 / region / index / skip_verify の文字列と bool と device map の辞書だけ（token も SSL の context も executor へ運ばない）",
+      _ssm_at_make == [] and sorted(map(repr, _cells)) == sorted(map(repr, ["https://s:8088", "/p/splunk/hec-token", "ap-northeast-1", "netops", True, {"r1": "dc1-a-leaf-01"}])))
 check("make_splunk_sender_on_executor: 送るときに SSM から token を読み、Authorization: Splunk <token> で HEC に送る。index と skip_verify（検証しない context）も今の sender と同じ",
       _ssm == [("/p/splunk/hec-token", "ap-northeast-1")] and len(_posts) == 1 and _posts[0][0] == "https://s:8088/services/collector/event"
       and _posts[0][2]["Authorization"] == "Splunk tok-from-ssm" and _posts[0][3] is not None and _posts[0][3].verify_mode == ssl.CERT_NONE
       and [json.loads(x)["time"] for x in _posts[0][1].decode().split("\n")] == [1.0, 2.0] and json.loads(_posts[0][1].decode().split("\n")[0])["index"] == "netops")
+check("make_splunk_sender_on_executor: device map で sysName を足す（source のある行だけ。cycle 013）",
+      [json.loads(x)["event"]["tags"].get("sysName") for x in _posts[0][1].decode().split("\n")] == [None, "dc1-a-leaf-01"])
 check("make_splunk_sender_on_executor: 4xx は捨てて続け（例外にしない）、ログに token の値を出さない",
       _n == (2, 2) and "splunk: HEC が 403 を返した" in _err and "partition -1 で 2 行を送り、2 件を捨てた（4xx など）" in _err and "tok-from-ssm" not in _err)
 check("executor へ運ぶ opensearch / prometheus の sender が持つのは文字列と辞書（と None）だけ（pickle できないものを持たない）",
@@ -913,7 +931,14 @@ check("executor の分岐（each_batch_on_executors と send_partition）は行�
       and "foreachPartition" in _attrs(_inner["each_batch_on_executors"]) and "collect" in _attrs(_inner["each_batch"]))
 
 # build: どの HTTP の格納先にも http_send を渡す。splunk は executor のとき token を持たない sender にする
+class _Conf:
+    """spark.conf の偽物（set を覚え、log に "conf" を足す。_Spark は readStream で "read" を足すので順番が分かる）"""
+    def __init__(self, log=None): self.sets, self.log = [], (log if log is not None else [])
+    def set(self, k, v): self.sets.append((k, v)); self.log.append("conf")
+
+
 _hq = []
+_bsp = type("S", (), {"conf": _Conf()})()
 _orig_build = (mod.read_rows, mod.read_ssm_parameter, mod.http_query)
 mod.read_rows = lambda spark, bootstrap, topics, *a: _Rows()
 mod.read_ssm_parameter = lambda name, region: (_ssm.append(name), "tok-from-ssm")[1]
@@ -922,10 +947,10 @@ _ba = base + ["--sinks", "splunk,prometheus,opensearch", "--splunk-hec-url", "ht
               "--prometheus-url", "https://p/api/v1/remote_write", "--opensearch-endpoint", "https://o"]
 try:
     _ssm.clear()
-    mod.build(None, mod.parse_args(_ba + ["--http-send", "executor"]))
+    mod.build(_bsp, mod.parse_args(_ba + ["--http-send", "executor"]))
     _exec, _ssm_exec = list(_hq), list(_ssm)
     _hq.clear(), _ssm.clear()
-    mod.build(None, mod.parse_args(_ba))
+    mod.build(_bsp, mod.parse_args(_ba + ["--device-map", "203.0.113.31=dc1-a-leaf-01"]))
     _drv, _ssm_drv = list(_hq), list(_ssm)
 finally:
     mod.read_rows, mod.read_ssm_parameter, mod.http_query = _orig_build
@@ -935,6 +960,11 @@ check("build executor: splunk / prometheus / opensearch に executor を渡す�
 check("build driver（既定）: 今のまま（splunk は起動時に読んだ token を持つ sender、http_send は driver）",
       [(n, h) for n, _, h in _drv] == [("splunk", "driver"), ("prometheus", "driver"), ("opensearch", "driver")] and _ssm_drv == ["/p/t"]
       and "Splunk tok-from-ssm" in repr([c.cell_contents for c in (_drv[0][1].__closure__ or ())]))
+check("build: クエリを組む前に spark.sql.mapKeyDedupPolicy を LAST_WIN にする（gnmic の読み替えで map のキーが重なってもクエリを落とさない。起動ごとに 1 回）",
+      _bsp.conf.sets == [("spark.sql.mapKeyDedupPolicy", "LAST_WIN")] * 2)
+check("build: --device-map を splunk の sender にも渡す（driver は make_splunk_sender、executor は make_splunk_sender_on_executor の中身に device map の辞書）",
+      {"203.0.113.31": "dc1-a-leaf-01"} in [c.cell_contents for c in (_drv[0][1].__closure__ or ())]
+      and {} in [c.cell_contents for c in (_exec[0][1].__closure__ or ())])
 check("main は HTTP の送信先（driver / executor）を起動時のログに出す", '+ f"。HTTP の送信: {args.http_send}"' in src)
 
 # ---- Kafka の 1 回のトリガーに 1 つのクエリが読む件数の上限（--max-offsets-per-trigger と格納先ごとの --max-offsets-per-trigger-by-sink。2026-10-04）
@@ -963,7 +993,9 @@ class _Any:
     def __getattr__(self, k): return self
     def __call__(self, *a, **kw): return self
     def __getitem__(self, k): return self
-    def __truediv__(self, o): return self   # flows の time_received_ns（ナノ秒）を秒にする割り算
+    def __truediv__(self, o): return self   # flows の time_received_ns と gnmic の timestamp（ナノ秒）を秒にする割り算
+    def __and__(self, o): return self       # gnmic の event の見分け（fields が無く、values か deletes がある）
+    def __or__(self, o): return self
 
 
 class _Reader:
@@ -976,10 +1008,12 @@ class _Reader:
 class _Spark:
     """readStream は option を覚え、table(名前).schema.fields は have の列、sql は文を覚える（ensure_iceberg_columns 用）"""
     def __init__(self, have=None):
-        self.readers, self.sqls, self.tables = [], [], []
+        self.readers, self.sqls, self.tables, self.log = [], [], [], []
         self.have = list(TABLE_COLUMNS if have is None else have)
+        self.conf = _Conf(self.log)
     @property
     def readStream(self):
+        self.log.append("read")
         self.readers.append(_Reader())
         return self.readers[-1]
     def table(self, name):
@@ -1051,6 +1085,8 @@ check("build iceberg: 列の足りない表（tables.tf の 8 列）には icebe
       _sp_old.tables == ["s3tables.netops.raw_telemetry"] and _alter_at == [1]
       and _sp_old.sqls == ["ALTER TABLE s3tables.netops.raw_telemetry ADD COLUMNS (event_id string, kafka_topic string, kafka_partition int, kafka_offset bigint)"]
       and "iceberg: s3tables.netops.raw_telemetry に列 event_id, kafka_topic, kafka_partition, kafka_offset を足した（いまある行は null）" in _alter_out)
+check("build: mapKeyDedupPolicy は Kafka を読む前（どのクエリよりも先）に 1 回だけ決める",
+      _sp_new.conf.sets == [("spark.sql.mapKeyDedupPolicy", "LAST_WIN")] and _sp_new.log[0] == "conf" and _sp_new.log.count("read") == 4)
 check("build iceberg: 列がそろっていれば ALTER も列のログも出さない（2 回目の起動から）", _sp_new.sqls == [] and "を足した" not in _new_out)
 check("build: iceberg が無ければ表を見ない（HTTP の格納先のジョブは S3 Tables に触らない）", _sp_http.tables == [] and _sp_http.sqls == [])
 check("ICEBERG_ADDED_COLUMNS は event_id string / kafka_topic string / kafka_partition int / kafka_offset bigint（Kafka の partition は int、offset は long）",
@@ -1143,13 +1179,21 @@ check("opensearch_docs: sysName の無い snmp_trap は tags.sysName に機器�
 check("opensearch_docs: devmap を渡さなくても sysName の無い trap は source を入れる。sysName のあるレコード（ポーリング）と source の無いレコードは変えない",
       json.loads(mod.opensearch_docs([_trap])[1])["tags"]["sysName"] == "203.0.113.31" and mod.opensearch_docs([rec], mod.parse_device_map("203.0.113.31=x")) == docs
       and json.loads(mod.opensearch_docs([dict(_trap, tags={"source": "203.0.113.31", "sysName": "x"})], mod.parse_device_map("203.0.113.31=dc1-a-leaf-01"))[1])["tags"]["sysName"] == "x")
-check("splunk_events は device map を受けず、sysName を足さない（Splunk のアラートアクションが DEVICE_MAP で引く。cycle 002 でも出力は変えない）",
-      list(inspect.signature(mod.splunk_events).parameters) == ["records", "index"]
-      and "sysName" not in json.loads(mod.splunk_events([_trap])[0])["event"]["tags"])
-check("build は device map を prometheus と opensearch の sender にだけ渡す",
+# cycle 013: Splunk にも sysName を足す（保存済みサーチの device が Grafana と同じ機器名になる。PM 承認）
+_sdm = mod.parse_device_map("203.0.113.31=dc1-a-leaf-01")
+_gnmi_rec = {"ts": 1700000000.0, "topic": "gnmi", "measurement": "interface", "agent_host": "203.0.113.31", "host": None,
+             "tags": {"ifName": "ethernet-1/1", "source": "203.0.113.31", "subscription-name": "interface_state"}, "fields": {"oper_state": "down"}}
+_sev = [json.loads(x)["event"]["tags"] for x in mod.splunk_events([_trap, _gnmi_rec, dict(_trap, tags=dict(_trap["tags"], source="203.0.113.99")), rec], "", _sdm)]
+check("splunk_events: device map を渡すと sysName の無い trap と gNMI の tags に機器名が入る（dc1-a-leaf-01）。表に無い IP には足さない（opensearch と違い IP を入れない）。元のレコードは変えない",
+      list(inspect.signature(mod.splunk_events).parameters) == ["records", "index", "devmap"]
+      and _sev[0] == dict(_trap["tags"], sysName="dc1-a-leaf-01") and _sev[1] == dict(_gnmi_rec["tags"], sysName="dc1-a-leaf-01")
+      and "sysName" not in _sev[2] and _sev[3] == rec["tags"] and "sysName" not in _trap["tags"] and "sysName" not in _gnmi_rec["tags"])
+check("splunk_events: device map を渡さなければ今までどおり（sysName を足さない）",
+      "sysName" not in json.loads(mod.splunk_events([_trap])[0])["event"]["tags"] and "sysName" not in json.loads(mod.splunk_events([_gnmi_rec], "netops")[0])["event"]["tags"])
+check("build は device map を prometheus / opensearch / splunk（driver と executor）の sender に渡す",
       "devmap = parse_device_map(args.device_map)" in src
       and re.search(r'make_prometheus_sender\([^)]*devmap\)', src) is not None and re.search(r'make_opensearch_sender\([^)]*devmap\)', src) is not None
-      and re.search(r'make_splunk_sender\([^)]*devmap', src) is None)
+      and re.search(r'make_splunk_sender\([^)]*, devmap\)\)\)', src) is not None and re.search(r'make_splunk_sender_on_executor\([^)]*, devmap\)', src) is not None)
 
 import datetime as dt
 r = mod.row_to_record({"ts": dt.datetime(2023, 11, 14, 22, 13, 20, tzinfo=dt.timezone.utc), "topic": "traps", "measurement": "snmp_trap",
@@ -2196,9 +2240,10 @@ check("共通 0: どのジョブにも --max-offsets-per-trigger 0 を渡し、�
           for j in ("iceberg", "splunk", "http")))
 _dmap = "203.0.113.31=dc1-a-leaf-01,203.0.113.21=dc1-spine-01"
 _dj = {j: _job_args(j, _ALL4, device_map=_dmap) for j in ("iceberg", "splunk", "http")}
-check("device map があれば http のジョブ（opensearch / prometheus）にだけ --device-map を渡し、スクリプトはそれを読む。iceberg と splunk のジョブ、device map が空のときは渡さない（cycle 002）",
+check("device map があれば http のジョブ（opensearch / prometheus）と splunk のジョブに --device-map を渡し、スクリプトはそれを読む。iceberg のジョブ、device map が空のときは渡さない（cycle 002。splunk は cycle 013）",
       _val(_dj["http"], "--device-map") == _dmap and mod.parse_args(_dj["http"]).device_map == _dmap
-      and _dj["iceberg"] == _ji and _dj["splunk"] == _js and "--device-map" not in _jh
+      and _val(_dj["splunk"], "--device-map") == _dmap and mod.parse_args(_dj["splunk"]).device_map == _dmap
+      and _dj["iceberg"] == _ji and "--device-map" not in _jh and "--device-map" not in _js
       and _val(_job_args("http", ["prometheus"], device_map=_dmap), "--device-map") == _dmap)
 check("variable max_offsets_per_trigger は number で既定 10000、0 以上の整数だけ通す",
       re.search(r'variable "max_offsets_per_trigger" \{\s*description[^\n]*\n\s*type\s*=\s*number\s*\n\s*default\s*=\s*10000\s*\n\s*validation \{\s*\n'

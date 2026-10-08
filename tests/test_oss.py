@@ -651,6 +651,8 @@ class AnyObj:
     def __call__(self, *a, **kw): return self
     def __getitem__(self, k): return self
     def __truediv__(self, o): return self   # flows の time_received_ns（ナノ秒）を秒にする割り算（snmp_sinks.read_rows）
+    def __or__(self, o): return self        # gnmic の event かを見る条件の組み立て（snmp_sinks.read_rows。cycle 013）
+    def __and__(self, o): return self
 
 
 class Reader:

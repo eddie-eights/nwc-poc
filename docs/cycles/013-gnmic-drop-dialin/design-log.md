@@ -54,3 +54,18 @@ PM（SendMessage）との要件のやりとりの要約。PM の下書き（desi
 - Splunk の `sysName`: **承認。** bgp / isis の Splunk の機器名が IP から機器名に変わる副作用は、Grafana と揃う方向なので受け入れる。設計本文に書き（design.md の設計方針 2）、`sysName` が付くことをテストで 1 件確かめる
 - `heartbeat-interval` を付けない（Grafana は `last_over_time` 24h + `lt 0.5`、Splunk は 24 時間）: **承認**
 - event の実物が取れない件: build.md に「ソースから組んだ形」と書き、design.md の未確定事項の筆頭に残す。AWS で実物を取って照合する項目を design.md の検証方法に足す（検証 7）
+
+### 012 のマージと、build 中に設計へ足したこと（2026-10-09）
+
+- docs/cycle-006-design（5be0288。012 の MSK SCRAM・syslog-ng・GoFlow2）を bd10786 で取り込んだ。衝突は `snmp_sinks.py` の read_rows（012 の flows の分岐と 013 の gnmic の分岐）だけで、`F.when(flows).when(gnmic).otherwise(telegraf)` の 1 本に解いた
+- gnmic の SCRAM（`gnmic.yaml.in` の `# >>> kafka_auth scram`、`gnmic.sh` の `KAFKA_SASL_USER` / `KAFKA_SASL_PASS` と Secrets Manager `AmazonMSK_<接頭辞>-collectors` の案内）は 012 の `syslog-ng.sh` と同じ形。gnmic は設定を読んだあとに環境変数を展開するので、syslog-ng の文字の検査は要らない。Terraform 側（SSM の経路・SG・Secrets Manager の鍵）は第 2 段で `collectors.tf` に揃える
+- 設計方針 2 に足した: `--device-map` を渡す Terraform の条件（`job_driver`）に `splunk` を足す。sinks を分けると splunk のジョブに devmap が届かず、Splunk の sysName（PM 承認済みの決定）が効かないため。変更対象にマネージドの `outputs.tf` / `variables.tf` と OSS の `spark.tf` を足した（設計方針・範囲は変えない、承認済みの決定を効かせるための堅牢化）
+- 未確定 7 に足した（PM の指示）: gnmic の Kafka の ACL は 012 Round 2 の仕組みに乗せる（`gnmi` と `metrics` の Write・Describe）
+- 第 1 段の変更対象に足した: `docker/compose/{check.sh,README.md}` の Prometheus の系列名（系列名を変えると第 2 段まで手元の check.sh が 0 件で NG になるため、第 2 段から前倒し）と、`test_oss.py` の偽の pyspark（read_rows の gnmic の条件が `|` / `&` を使い、`ops/check.sh` で落ちたため）。方針・範囲は変えない
+- 設計方針 3 のダッシュボードに足した: IF の状態のパネルを `last_over_time(…[24h])` で包む（on-change は 5 分で線が切れる。`link_down` と同じ理由）、rate の窓を `[5m]`（sample 60 秒で `[2m]` は点が 2 つ）、題名と uid はそのまま。方針・範囲は変えない堅牢化
+
+### PM から受けた運用の指示（2026-10-09）
+
+- レビューの完了条件: Must fix は 0。cold review の Should fix は直さずに件名・ファイル:行・設計の箇所を添えて PM に報告。cold reviewer の 2 回目は実装ファイルが変わったときだけ
+- セルフレビューの指摘を直すかどうかはエンジニアが決め、見送った理由は build.md に残す。cold review の指摘は PM が決める
+- 直すなら先に design.md に入れる: (1) 実装が design.md からずれている → 直す、(2) design.md が事実と違う → design.md を上書きしてから直す、(3) design.md に無い勧め → 採るなら先に design.md に書き足してから直す（セルフレビュー由来で設計方針・範囲を変えないものはエンジニアが足して design-log に 1 行、方針・範囲・外部仕様に関わるものは PM へ）。採らないなら理由を build.md / review.md に残す

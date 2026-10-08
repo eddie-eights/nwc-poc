@@ -60,12 +60,13 @@ BACKLOG 28「コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種
 - Python の双子 `gnmic_message(m)`: 1 件の dict を Telegraf の形（`timestamp` 秒 / `name` / `tags` / `fields`）にする。同じ表（`GNMI_MEASUREMENTS` / `GNMI_TAGS`）を使う。消えた event と timestamp が整数でないものは None
 - `STATE_FIELDS` に `("interface","oper_state"): ("oper_up","up")` と `("interface","admin_state"): ("admin_up","enable")` を足す（`snmp_interface_oper_up` / `snmp_interface_admin_up` が 1 / 0）
 - **Splunk にも `sysName` を足す**: `splunk_events(records, index, devmap)` が `with_sysname(tags, devmap)` を通す（`make_splunk_sender` / `make_splunk_sender_on_executor` に devmap を渡す）。Grafana と同じ機器名になり、temporal の `anomaly_id`（`device#kind#target`）が Grafana と Splunk で揃う（bgp_down / isis_down も IP から機器名に変わる）
+  - Spark のジョブへ `--device-map` を渡す Terraform の条件（`job_driver`。マネージドは `pipeline/analytics/outputs.tf`、OSS は `oss/pipeline/analytics/spark.tf`）に `splunk` を足す。いまは prometheus / opensearch のジョブにしか渡さないので、splunk のジョブ（sinks を分けたとき）は devmap が空のまま IP になる
 - docstring の SNMP のポーリングの説明を gnmic に替える。`METRIC_TOPICS` は 012 の `"metrics,gnmi"` のまま
 
 ### 3. Grafana / Splunk
 
 - Grafana `link_down`（uid `nwc-link-down`）: `last_over_time(snmp_interface_oper_up{ifName!~"(lo|mgmt).*|.*[.].*"}[24h]) unless on (sysName, ifName) (last_over_time(snmp_interface_admin_up[24h]) == 0)`、しきい値は `lt 0.5`（bgp_down / isis_down と同じ）。`target` は `{{ .Labels.ifName }}` のまま、detail は `… is down (grafana: gnmi)`。冒頭のコメントを直す
-- ダッシュボード `metrics.json`: 変数を `label_values(snmp_interface_oper_up, sysName)`、IF の状態のパネルを `snmp_interface_oper_up`（値の対応 1 = up / 0 = down）、流量を `rate(snmp_interface_in_octets / out_octets[…]) * 8`、エラーを `rate(snmp_interface_in_error_packets / out_error_packets[…])`、`sysUpTime` のパネルを CPU（`snmp_system_instant`）とメモリ（`snmp_system_utilization`）に替える
+- ダッシュボード `metrics.json`: 変数を `label_values(snmp_interface_oper_up, sysName)`、IF の状態のパネルを `snmp_interface_oper_up`（値の対応 1 = up / 0 = down。on-change で 5 分を超えると線が切れるので `last_over_time(…[24h])` で包む。`link_down` と同じ理由）、流量を `rate(snmp_interface_in_octets / out_octets[5m]) * 8`、エラーを `rate(snmp_interface_in_error_packets / out_error_packets[5m])`（sample が 60 秒になったので、10 秒ごとのポーリングのときの `[2m]` では点が 2 つしか入らない）、`sysUpTime` のパネルを CPU（`snmp_system_instant`）とメモリ（`snmp_system_utilization`）に替える。題名「netops / SNMP metrics」と uid はそのまま（系列の接頭辞が `snmp_` のままなのと同じ）
 - Splunk: `netops_poll` の stanza とコメントを消し、`netops_gnmi` に `link_down` を足す
   - 対象: `source="telegraf:interface" (oper_state OR admin_state)`（語で先に絞る。60 秒ごとのカウンターを読まない）
   - target は `tags.ifName`。ループバック・管理ポート・サブインタフェースは見ない（いまの `netops_poll` / trap と同じ）
@@ -81,15 +82,15 @@ BACKLOG 28「コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種
 - Nautobot: `nb_map.TARGET_KEYS = ("gnmi-targets",)`、`nb_sync` の入れ替え先を gnmic のサービスに、`pipeline/nautobot` の IAM と locals（SSM のパスとサービス名）
 - ops: `up.sh` の `SNMP_POLL` / `snmp-community` / `-var snmp_agents` / `snmp_poll` / `link_down` の sender の分岐（gnmi に固定）と gnmic のイメージ、`deploy.env.example` / `.env.example` / `deploy-env.sh`、`down.sh`、`oss/ops/up.sh` / `down.sh`
 - lab: `lab.sh forward` の udp 161、`lab.sh telegraf` は trap だけに、`lab.sh gnmic`（gnmic のタスクに入って 1 回 subscribe する手当て）。`lab_topology.py --snmp-agents`。SR Linux の `snmp-server` は trap のために残す。`failover` / `check` の手元の snmpwalk は残す
-- 手元の compose: `telegraf-dialin` → `gnmic` のサービス、`up.sh` の `SNMP_AGENTS`、`check.sh` の `count(snmp_interface_ifOperStatus)` → `count(snmp_interface_oper_up)`
+- 手元の compose: `telegraf-dialin` → `gnmic` のサービス、`up.sh` の `SNMP_AGENTS`（`check.sh` の `count(snmp_interface_ifOperStatus)` → `count(snmp_interface_oper_up)` は系列名の変更と一緒に第 1 段で済ませる）
 - docs: `collection.md`（共通の形の節を消し gnmic の event と読み替えの表に）、`pipeline.md`、`architecture/`（README / core / pipeline / resources の telegraf・grafana・splunk・prometheus・msk・nautobot・ssm-parameter-store・lab-ec2・vpc-perimeter）、`alert-comparison.md`、`data-stores.md`、`deploy.md`、`troubleshooting.md`、`nautobot.md`、`workflow.md`、FAQ、README、`docker/compose/README.md`
 
 ## 変更対象ファイル
 
 - 第 1 段（012 を待たない）
   - 新規: `app/gnmic/gnmic.yaml.in`、`app/gnmic/gnmic.sh`、`docker/images/gnmic/Dockerfile`
-  - `app/spark/snmp_sinks.py`、`app/grafana/provisioning/alerting/netops-prometheus.yaml`、`app/grafana/provisioning/dashboards/metrics.json`、`app/splunk/netops_alerts/default/{savedsearches.conf,props.conf}`、`app/agentcore/evidence.py`、`tools/tools.json`、`app/containerlab/trex/{kafka_load.sh,README.md}`（`metrics` に流す見本を gnmic の event に）
-  - テスト: `tests/test_stream.py`（`gnmic_message` と `gnmic.yaml.in` / `gnmic.sh`）、`test_analytics.py`（read_rows の偽の pyspark、splunk の sysName）、`test_alerts.py`（`link_down` の式、保存済みサーチ 3 + trap_clear、`netops_gnmi` の参照実装に link_down）、`test_local_compose.py`（`metrics.json` の参照だけ）、`tests/check_splunk_image.py`（HEC に入れる event と `netops_gnmi`）
+  - `app/spark/snmp_sinks.py`、`IaC/terraform/aws-managed/pipeline/analytics/{outputs.tf,variables.tf}` と `IaC/terraform/oss/pipeline/analytics/spark.tf`（`--device-map` を splunk のジョブにも。設計方針 2）、`app/grafana/provisioning/alerting/netops-prometheus.yaml`、`app/grafana/provisioning/dashboards/metrics.json`、`app/splunk/netops_alerts/default/{savedsearches.conf,props.conf}`、`app/agentcore/evidence.py`、`tools/tools.json`、`app/containerlab/trex/{kafka_load.sh,README.md}`（`metrics` に流す見本を gnmic の event に）
+  - テスト: `tests/test_stream.py`（`gnmic_message` と `gnmic.yaml.in` / `gnmic.sh`）、`test_analytics.py`（read_rows の偽の pyspark、splunk の sysName）、`test_alerts.py`（`link_down` の式、保存済みサーチ 3 + trap_clear、`netops_gnmi` の参照実装に link_down）、`test_local_compose.py`（`metrics.json` の参照と、`docker/compose/{check.sh,README.md}` の `count(snmp_interface_oper_up)`）、`tests/check_splunk_image.py`（HEC に入れる event と `netops_gnmi`）、`test_oss.py`（read_rows を回す偽の pyspark の列に `|` / `&` を足す）
 - 第 2 段（012 のマージのあと）: 4. の全部。テストは `test_stream`（dialin と star の検査を消す）、`test_lab_debug`、`test_local_compose`、`test_nautobot`、`test_sync`、`test_oss`、`test_oss_ops`、`test_oss_roll`
 
 ## 再利用するもの
@@ -129,3 +130,4 @@ BACKLOG 28「コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種
 4. **012 との衝突**: 012 は `snmp_sinks.py`・`lab.sh`・`test_analytics` / `test_stream` / `test_lab_debug` / `test_local_compose`・`docker/compose/{check.sh,compose.yaml}` も変える。第 1 段の変更は別の関数と小さい塊に留め、マージで解く
 5. Splunk の `link_down` の機器名は Spark が付ける `sysName` に依る。device map に無い機器は `tags.source`（IP）になる（いまの trap と同じ）
 6. `system` の CPU は `cpu[index=all]` を指す（SR Linux は `all` を集計の行として持つ。いまの lab_* は `*`）。無ければ `*` に替える（AWS で確かめる）
+7. **gnmic の Kafka の ACL**: マネージドは IAM と SCRAM の併用なので、SCRAM のユーザーには Kafka の ACL が要る（012 の Must fix。012 Round 2 で Spark の `ensure_topics` に ACL を足す方向）。ACL は 012 Round 2 の仕組みに乗せる（`gnmi` と `metrics` のトピックの Write・Describe を `User:collectors` か別のユーザーに）。012 Round 2 がマージされたら揃える。それまでのマネージドの gnmic は Kafka に書けない見込み（OSS は認証なしなので影響しない）
