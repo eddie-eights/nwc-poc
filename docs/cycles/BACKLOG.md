@@ -2,7 +2,7 @@
 
 1 行 1 件、タイトルは動詞で書く。実装の手順と検証はここに書かず、サイクルの `design.md` に書く。
 
-- [x] Nautobot の Job を OSS 版の Neo4j につなぐ（2026-10-08 完了。コードとテストまでで、AWS では未確認。005 の design.md「実装の状態」）
+- [x] Nautobot の Job を OSS 版の Neo4j につなぐ（2026-10-08 完了。コードとテストのあと、同日の OSS 版の AWS 検証で確認。005 の design.md「実装の状態」、`docs/verification/20261008-oss-aws.md`）
 - [x] Neo4j の id 検索にラベルを付ける（頂点が増えると全走査になる）（2026-10-08 完了。fix/neo4j-id-labels。`_lbl` で Neo4j のときだけ付け、Neptune に送る openCypher は不変。手元の Neo4j で 2000 機器の set_status の dbHits 15014 → 13。AWS の Neo4j / Neptune では未確認）
 - [ ] Neo4j に残る全走査を減らす（`count()` と seed の `MATCH (n) WHERE n.registered = false`、remove_device の `MATCH (n:interface) WHERE n.device_id = $id` は device_id に索引が無い。大量投入の直後は索引の統計が古いので `CALL db.prepareForReplanning()` も検討。2026-10-08 の fix/neo4j-id-labels で見つけた）
 - [x] Kafka と OpenSearch のタスクを 1 台ずつ入れ替える手順を作る（いまは `terraform apply` で 3 つが同時に入れ替わる）（2026-10-08 完了。feat/oss-redis8-rolling の `oss/ops/roll-nodes.sh`。AWS では未確認）
@@ -51,3 +51,10 @@
 - [ ] `oss/compose` と `local/compose` の kafka-ui の 18080 を分ける（同じ機械で並べて上げるなら。いまは並べる想定は無く、`oss/compose` を残すか消すかは 007 で決める。2026-10-08 に 006 の cold review Round 2 の Nit 2）
 - [ ] 手元の compose の telegraf / spark の `restart: on-failure` に回数の上限を付ける（`docker compose` を直に打って `SNMP_AGENTS` が空だと再起動を繰り返す。2026-10-08 に 006 の cold review Round 2 の Nit 3）
 - [ ] `lab/lab.sh` の `hint` と `failover` の案内を実行で確かめるテストを足す（いまは正規表現で文言があるかだけ。`forward` には偽の iptables と sudo の実行の検査がある。2026-10-08 に 006 の cold review Round 2 の Nit 4）
+- [ ] `ops/down-common.sh` が Runtime の ENI を探す VPC を state から引く（`destroy_base_core` の 115〜116 行目が `describe-vpcs --filters Name=tag:Name` の `Vpcs[0]` を取るので、同じ名前の VPC が 2 つあると古い方を引き、Runtime の ENI を見落として base/core を全部消しにいく。2026-10-08 の OSS 版の AWS 検証では SG の削除の待ちを 3 回繰り返して rc=1、1 時間 41 分かかった。`docs/verification/20261008-oss-aws.md` の「不具合」5）
+- [ ] `oss/ops/roll-nodes.sh` を端末が無くても動くようにする（`aws ecs execute-command --interactive` が標準入力が端末でないと `Cannot perform start session: EOF` で切れ、`roll_health.py` は 5 分待って「入れ替える前から健全でない」で止まる。`[ -t 0 ]` を見て `script -q /dev/null` で包むか、案内して止める。docs の「Session Manager plugin が要る」に端末が要ることも足す。2026-10-08 の OSS 版の AWS 検証の「不具合」1 と「docs のずれ」5）
+- [ ] Neo4j を起こし直したあとの戻し方を 2 段で docs に書く（`ops/sync-graph.sh --oss` は物理層と IP 層を戻すが変更履歴は 0 件のままで、Nautobot の Job「Telegraf と Neptune に同期」を打って戻った。`ops/sync-graph.sh` の 10〜11 行目と `docs/oss-variant.md`。2026-10-08 の OSS 版の AWS 検証の「不具合」2 と「docs のずれ」4）
+- [ ] `oss/terraform/base/ecr` の outputs を import の途中でも評価できるようにする（`aws_ecr_repository.pipeline["<key>"]` を直接引く 6 つの output が、state の無い ECR を 1 本ずつ import する途中で `Error: Invalid index` になる。`try()` にするか import の手順を `oss/ops/` に置く。2026-10-08 の OSS 版の AWS 検証の「不具合」3）
+- [ ] Nautobot の JobHook の最初の変更履歴の detail を変わった値だけにする（prechange が無い機器の 1 件目が全部の項目を `asset_tag: - → -` と並べる。2026-10-08 の OSS 版の AWS 検証の「不具合」4）
+- [ ] Nautobot の Job の名前と `root_cause` の source の Neptune を OSS 版では Neo4j にする（Job「Telegraf と Neptune に同期」が OSS 版では Neo4j に書き、`root_cause` の source も `'neptune'` のまま。2026-10-08 の OSS 版の AWS 検証の「docs のずれ」3）
+- [ ] state を失ったときの VPC と ECR の扱いを docs に書く（state は up.sh を打った worktree にしか無く、worktree を消すと ECR は import が要り VPC は使い回されず新しく作られて溜まる。上の「消えたことの確認と残った VPC の扱いを docs に合わせる」と一緒に直す。2026-10-08 の OSS 版の AWS 検証の「docs のずれ」6）

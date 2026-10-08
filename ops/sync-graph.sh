@@ -11,7 +11,7 @@
 #                                      # Neo4j はタスクが入れ替わるとグラフが空に戻るので、起こし直したあとにこれを打つ
 #
 # 物理層の正は Nautobot（terraform/pipeline/nautobot。PIPELINE=1 ならいつも立つ）。--replace は lab の定義で上書きするので、Nautobot で足した機器と回線は
-# グラフ DB から消える（Nautobot の Job「Telegraf と Neptune に同期」を打てば戻る。OSS 版は同じ Job が Neo4j に書く（2026-10-08。AWS では未確認）。
+# グラフ DB から消える（Nautobot の Job「Telegraf と Neptune に同期」を打てば戻る。OSS 版は同じ Job が Neo4j に書く（2026-10-08 に AWS で確認）。
 # IP 層と EVPN・BGP 層は Nautobot に無いので lab からだけ入る）。
 #
 # base/core（Web の EC2）と pipeline/graph（Neptune か Neo4j）が出来ていることが前提。Web の EC2 の上で ops/seed_graph.py を SSM Run Command で動かす

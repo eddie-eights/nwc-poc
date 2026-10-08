@@ -62,10 +62,10 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
   `base/ecr`、`base/core`、`agent`、`pipeline/lab`、`pipeline/stream`、`pipeline/graph`、`pipeline/nautobot`、`pipeline/analytics`、`workflow`。Grafana、Web の部品、エージェント、workflow、Neo4j への同期までつないである（何がどう動くかは [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md) の「実装の状態」）。
 - **機能と格納先は選ばない。**
   `AGENT` / `PIPELINE` / `WORKFLOW` / `STORES` などのキーは読まず、ルートはいつも全部、格納先はいつも `iceberg` / `opensearch` / `prometheus` / `splunk` の 4 つ、Grafana もいつも作る。
-- **Nautobot の Job は Neo4j に書く（2026-10-08。AWS ではまだ確かめていない）。**
+- **Nautobot の Job は Neo4j に書く（2026-10-08 に AWS で確かめた。手で打つ Job と JobHook の両方。[verification/20261008-oss-aws.md](verification/20261008-oss-aws.md)）。** Neo4j のタスクが入れ替わると変更履歴も消え、`ops/sync-graph.sh --oss` では戻らないので、そのあと Job を打ち直す。
   graph の state に `neo4j_uri` があるので、`terraform/pipeline/nautobot` が `GRAPH_BACKEND=neo4j`・`NEO4J_URI` と secrets の `NEO4J_PASSWORD` を渡し、`oss/ops/up.sh` が Neo4j のドライバー入りのイメージ（`nautobot/requirements-oss.txt`）を作る。
 - **打ち直しで Kafka か OpenSearch のタスク定義が変わると、1 台ずつ入れ替える。**
-  terraform だけで apply すると、変わった台が同時に入れ替わる（Kafka は controller の過半数を、OpenSearch はインデックスを失う）。`oss/ops/up.sh` は変わる台を plan で拾い、リーダーでない台から 1 台ずつ `-target` で apply して、間でクラスターが健全に戻るのを ECS Exec で待つ（手元に Session Manager plugin が要る）。止まったら `oss/ops/up.sh` を打ち直せば残りの台だけ入れ替える。`OSS_ROLL=0` で一度に入れ替える。**AWS ではまだ打っていない**（手順は [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md) の「Kafka と OpenSearch を 1 台ずつ入れ替える」）。
+  terraform だけで apply すると、変わった台が同時に入れ替わる（Kafka は controller の過半数を、OpenSearch はインデックスを失う）。`oss/ops/up.sh` は変わる台を plan で拾い、リーダーでない台から 1 台ずつ `-target` で apply して、間でクラスターが健全に戻るのを ECS Exec で待つ（手元に Session Manager plugin が要る）。止まったら `oss/ops/up.sh` を打ち直せば残りの台だけ入れ替える。`OSS_ROLL=0` で一度に入れ替える。2026-10-08 に AWS で打った: 端末の無いシェルからは ECS Exec が `Cannot perform start session: EOF` で切れて止まり（何も入れ替えない）、`script -q /dev/null` で疑似端末を付けた 2 回目は Kafka の 3 台をリーダーでない 1 → 2 → 3 の順に入れ替えて rc=0（13 分 57 秒）。**端末から打つこと**（手順は [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md) の「Kafka と OpenSearch を 1 台ずつ入れ替える」）。
 - **Splunk は OSS 版でも変えない。**
   マネージド版と同じ Splunk を立てる。Spark は Splunk の token を、ECS の secrets（SSM の SecureString）から環境変数 `SPLUNK_HEC_TOKEN` で受ける（マネージド版は、ジョブが SSM から読む）。
 

@@ -233,7 +233,7 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 | Web | EC2 に部品（Web の `.py` と `web/requirements-oss.txt` の wheel）を置き、`GRAPH_BACKEND=neo4j` で動く。手順書は Knowledge Base を作らないので置かない |
 | Neo4j への同期 | `oss/ops/up.sh` の 7-3b が `ops/seed_graph.py` を Web の EC2 で打つ（空のときだけ）。入れ直しは `ops/sync-graph.sh --oss [--replace]` |
 | エージェント | `agent` のイメージを Neo4j のドライバー入りでビルドし、`GRAPH_BACKEND=neo4j` で Neo4j を引く |
-| Nautobot の Job から Neo4j | コードとテストまで済み（2026-10-08）。**AWS ではまだ確かめていない。** `terraform/pipeline/nautobot` は graph の state に `neo4j_uri` があれば、`NEPTUNE_GRAPH_ID` の代わりに `GRAPH_BACKEND=neo4j` と `NEO4J_URI` を渡す（worker と同じ読み方）。パスワードは ECS の secrets の `NEO4J_PASSWORD` で web と worker に渡し、実行ロールがそのパラメータを読む。`oss/ops/up.sh` は Nautobot のイメージを `nautobot/requirements-oss.txt`（Neo4j のドライバー入り）でビルドする。Job の名前は「Telegraf と Neptune に同期」のままで、OSS 版では Neo4j に書く。マネージド版のタスク定義とイメージの依存は変わらない |
+| Nautobot の Job から Neo4j | コードとテストまで済み（2026-10-08）。AWS でも確かめた（2026-10-08 の 2 回目。手で打つ Job と JobHook の両方が Neo4j の物理層と変更履歴を書いた。`docs/verification/20261008-oss-aws.md`）。`terraform/pipeline/nautobot` は graph の state に `neo4j_uri` があれば、`NEPTUNE_GRAPH_ID` の代わりに `GRAPH_BACKEND=neo4j` と `NEO4J_URI` を渡す（worker と同じ読み方）。パスワードは ECS の secrets の `NEO4J_PASSWORD` で web と worker に渡し、実行ロールがそのパラメータを読む。`oss/ops/up.sh` は Nautobot のイメージを `nautobot/requirements-oss.txt`（Neo4j のドライバー入り）でビルドする。Job の名前は「Telegraf と Neptune に同期」のままで、OSS 版では Neo4j に書く。マネージド版のタスク定義とイメージの依存は変わらない |
 | Kafka と OpenSearch の入れ替え | タスク定義が変わる打ち直しでは、`oss/ops/up.sh` が `oss/ops/roll-nodes.sh` で 1 台ずつ入れ替える（上の「Kafka と OpenSearch を 1 台ずつ入れ替える」。`OSS_ROLL=0` で一度に）。手元のテストだけで、AWS ではまだ打っていない |
 | 格納先の選択 | `oss/ops/up.sh` は読まない。いつも iceberg、opensearch、prometheus、splunk の 4 つを `sinks` に渡す（マネージド版の `STORES` は読まない）。terraform の変数 `sinks` はマネージド版と共用なので、手で絞ればその分のジョブは作られない |
 
@@ -304,7 +304,7 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 | Kafka（EFS） | 3 台が組めて、5 つのトピックに流れた。1 台止めても残り 2 台で受け続け（under-replicated 2）、戻ると 3 分以内に 0 に戻った。遅さやロックの不具合は出なかった |
 | Spark → S3 Tables | EMR なしで `netops.raw_telemetry` に行が増えた（Athena で 1 時間に 115,719 行） |
 | 道具の Lambda と Runtime | python3.13 のレイヤーで Neo4j のドライバを読み込めた。SSM のパスワードで Neo4j と OpenSearch に入り、vmselect を読めた（`centrality`、`search_logs`、`query_metrics` が答えを返した） |
-| status の Lambda | Grafana と Splunk の両方の経路のアラートで Neo4j の status を変えた。`REPORT` の `Max Memory Used` は 111 MB / 128 MB（余裕が無い。下の「未確定事項とリスク」） |
+| status の Lambda | Grafana と Splunk の両方の経路のアラートで Neo4j の status を変えた。`REPORT` の `Max Memory Used` は 128 MB のとき 111 MB で余裕が無かったので 256 MB に上げ、2026-10-08 の 2 回目は 139 MB / 256 MB（下の「未確定事項とリスク」） |
 | Kafbat UI | KRaft の 3 台とトピックを表示でき、API でトピックを作って消せた（画面は開いていない）。Spark の consumer group は出ない（Spark は group を作らずに offset を checkpoint に持つ） |
 | Grafana | `datasources-oss` の `opensearch.yaml` の `version` 3.9.0 が、立てた OpenSearch と同じ。両方のデータソースの health が OK |
 
@@ -354,7 +354,7 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 3. `oss/terraform/` の骨組み（シンボリックリンク、接頭辞の変数、SG、ECR、EFS）。（済み）
 4. Kafka と Telegraf。（済み）
 5. OpenSearch、VictoriaMetrics、Spark、Grafana。（済み。Grafana も `oss/ops/up.sh` が作る）
-6. Neo4j と status の Lambda。（済み）worker、Web、エージェントを `oss/ops/up.sh` につなぐ。（済み）Nautobot の Job を Neo4j につなぐ。（済み。2026-10-08 にコードとテストまで。AWS では未確認）
+6. Neo4j と status の Lambda。（済み）worker、Web、エージェントを `oss/ops/up.sh` につなぐ。（済み）Nautobot の Job を Neo4j につなぐ。（済み。2026-10-08 にコードとテスト、同日の 2 回目の AWS で確認）
 7. `oss/ops/up.sh` と `down.sh`、`ops/check.sh`。（済み。作るのは上の「実装の状態」の 9 ルート）
 8. AWS での確認。（済み。2026-10-07 に 1 回。結果は「検証方法」の AWS の表と「AWS で確かめたこと」）
 9. docs（こちらで書く）。
@@ -391,10 +391,10 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 8. 立てたあとに見る、机上では確かめられない点（**どれも見た**。結果は「AWS で確かめたこと」）:
    - OpenSearch の 2 つの ECS サービス（データとまとめ役）が 1 つの Cloud Map の名前 `opensearch` に入り、`discovery.seed_hosts` が両方を引く。
    - まとめ役（1 GB のタスク、heap 512m）が exit 137（OOM）で落ちない。
-   - status の Lambda（128 MB、Neo4j のレイヤー付き）の `REPORT` の `Max Memory Used` に余裕がある（111 MB で、余裕は無かった）。
+   - status の Lambda（128 MB、Neo4j のレイヤー付き）の `REPORT` の `Max Memory Used` に余裕がある（128 MB では 111 MB で余裕が無かった。256 MB に上げた 2 回目は 139 MB）。
    - Grafana の `datasources-oss` の `opensearch.yaml` の `version` が、立てた OpenSearch の版と合っている（違うとクエリの文法で失敗する）。
 
-3 の Nautobot の Job からの同期は、2026-10-07 の時点ではつないでいなかったので確かめていない（lab の定義からの同期で代えた）。2026-10-08 にコードをつないだので、次に AWS で立てるときに、Nautobot で機器を変えたあと Job が Neo4j の物理層と変更履歴を書くかを確かめる。
+3 の Nautobot の Job からの同期は、2026-10-07 の時点ではつないでいなかった（lab の定義からの同期で代えた）。2026-10-08 にコードをつなぎ、同日の 2 回目の AWS で、Nautobot で機器を変えたあと手で打つ Job と JobHook の両方が Neo4j の物理層と変更履歴を書くことを確かめた（`docs/verification/20261008-oss-aws.md`）。Neo4j を起こし直したあとは `ops/sync-graph.sh --oss` だけでは変更履歴が戻らず、Job を打ち直して戻った。
 
 ### down.sh のあと（2026-10-07 05:14Z に `OWNER=efukuda KEEP_ECR=1 oss/ops/down.sh` が rc 0 で終わった。その 10 分後に AWS CLI で名指しで見た）
 
@@ -447,7 +447,7 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 8. **シンボリックリンクの terraform。**
    変えないルートが、変えるルートの output や IAM を参照している。「空なら作らない」の分岐が多くなるなら、そのルートは複製に切り替える。`agent`、`workflow`、`pipeline/nautobot` は `oss/ops/up.sh` から apply し、AWS で動いた。
 9. **Lambda から Neo4j へ。**
-   ドライバはレイヤーで入れた。AWS で、Grafana と Splunk の両方のアラートで status が変わり、Neo4j を止めて戻したあとも書けた。ただし status の Lambda は `Max Memory Used` が 111 MB / 128 MB で、余裕が無かった。2026-10-08 に `memory_size` を 256 MB に上げた（マネージド版の `terraform/pipeline/graph/sync.tf` と、OSS 版の写し `oss/terraform/pipeline/graph/sync.tf` の両方。`tests/test_oss.py` が同じ値かを見る）。256 MB での `REPORT` は、AWS ではまだ見ていない。
+   ドライバはレイヤーで入れた。AWS で、Grafana と Splunk の両方のアラートで status が変わり、Neo4j を止めて戻したあとも書けた。ただし status の Lambda は `Max Memory Used` が 111 MB / 128 MB で、余裕が無かった。2026-10-08 に `memory_size` を 256 MB に上げた（マネージド版の `terraform/pipeline/graph/sync.tf` と、OSS 版の写し `oss/terraform/pipeline/graph/sync.tf` の両方。`tests/test_oss.py` が同じ値かを見る）。256 MB での `REPORT` は、2026-10-08 の 2 回目の AWS で 139 MB だった。
 10. **並べて立てたときの上限。**
     Fargate の vCPU の上限（30）に OSS 版だけで 21.5 なので、マネージド版と並べるには上限を上げる。並べたときの VPC とエンドポイントの上限は未確認。
 11. **Neo4j の ECS の healthCheck は、Bolt のポートが開いているかしか見ない。**
