@@ -3,6 +3,9 @@
 # Grafana のアラートルールの評価の確かめ）。ops/check-grafana.sh も Grafana のルールの確かめのために読む。
 # 先に ops/common.sh と ops/deploy-env.sh を読む（log / die / tf / tf_logged を使う）。Splunk のイメージは ops/lab-common.sh の dir_tag / ecr_has を使う。
 # REGION / PY / PREFIX / OWNER（s3tablescatalog は ACCOUNT_ID も）は呼ぶ前に決める。
+# 環境変数 SSM_RUN_WAIT（秒。既定 1800）は ssm_run が SSM Run Command の結果を待つ長さ（deploy.env のキーではない。docs/deploy.md）。読んだときに確かめる
+SSM_RUN_WAIT=${SSM_RUN_WAIT:-1800}
+[[ "$SSM_RUN_WAIT" =~ ^[1-9][0-9]*$ ]] || die "SSM_RUN_WAIT は SSM Run Command の結果を待つ秒数（1 以上の整数。既定 1800）。いまは「${SSM_RUN_WAIT}」"
 tf_init() {  # tf_init <ルート>
   tf_init_root "$1"  # ops/common.sh。OSS 版は -lockfile=readonly が付く
 }
@@ -30,24 +33,32 @@ wait_ssm_online() {  # wait_ssm_online <インスタンス ID>
   done
   die "$1 が 10 分たっても Session Manager に Online にならない（docs/troubleshooting.md の「画面に入れない」）"
 }
-ssm_run() {  # ssm_run <インスタンス ID> <コマンド…>  cloud-init（user_data）が終わるのを待ってから打ち、標準出力を出す。失敗なら 1
+ssm_run() {  # ssm_run <インスタンス ID> <コマンド…>  cloud-init（user_data）が終わるのを待ってから打ち、標準出力を出す。失敗なら 1、SSM_RUN_WAIT 秒たっても結果が分からなければ 2
   # コマンドは JSON の文字列に埋めるので、ダブルクォートとバックスラッシュを含めない
   local id="$1"; shift
-  local cmd_id status
+  local cmd_id status deadline
   # 送れなければ 1 を返す（if や $( ) の中で呼ばれると set -e が効かず、空の cmd_id で下の Pending を待ち続ける。grafana_rules_step がそう呼ぶ）
   cmd_id=$(aws ssm send-command --region "$REGION" --instance-ids "$id" \
     --document-name AWS-RunShellScript --timeout-seconds 900 \
     --parameters "{\"commands\":[\"cloud-init status --wait >/dev/null || true\",\"$*\"]}" \
     --query Command.CommandId --output text) || { echo "SSM Run Command を送れなかった（上のエラー）" >&2; return 1; }
+  # 締め切りで返しても、インスタンスの上のコマンドは止めない（cancel-command は打たない。案内する get-command-invocation で結果を見る）
+  deadline=$((SECONDS + SSM_RUN_WAIT))
   while :; do
+    # 送った直後は get-command-invocation がまだ失敗することがある。そのあいだは「読めない」として読み直す
     status=$(aws ssm get-command-invocation --region "$REGION" --command-id "$cmd_id" --instance-id "$id" \
-      --query Status --output text 2>/dev/null || echo Pending)
+      --query Status --output text 2>/dev/null || echo 読めない)
     case "$status" in
       Success)
         aws ssm get-command-invocation --region "$REGION" --command-id "$cmd_id" --instance-id "$id" \
           --query StandardOutputContent --output text | sed '/^$/d'
         return 0 ;;
-      Pending|InProgress|Delayed) sleep 10 ;;
+      Pending|InProgress|Delayed|読めない)
+        if [ "$SECONDS" -ge "$deadline" ]; then
+          echo "SSM Run Command（$cmd_id）の結果が $SSM_RUN_WAIT 秒たっても分からない（最後の状態: $status）。あとで見るのは aws ssm get-command-invocation --region $REGION --command-id $cmd_id --instance-id $id（待つ秒数は SSM_RUN_WAIT）" >&2
+          return 2
+        fi
+        sleep 10 ;;
       *) aws ssm get-command-invocation --region "$REGION" --command-id "$cmd_id" --instance-id "$id" \
            --query '[StandardOutputContent,StandardErrorContent]' --output text >&2
          echo "インスタンス上のコマンドが $status" >&2

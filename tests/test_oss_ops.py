@@ -1291,6 +1291,9 @@ check("check-grafana.sh: Grafana が無い（grafana_service_name が空）な�
 p, cs = run_check("--oss", extra={"DEPLOY_ENV_FILE": os.path.join(TMP, "no-such.env")})
 check("check-grafana.sh: deploy.env の誤り（load_deploy_env の die）も 3 で止まる（ops/common.sh の die の 1 は NG と紛れる）",
       p.returncode == 3 and "DEPLOY_ENV_FILE のファイルが無い" in p.stderr and not tf_calls(cs) and not [c for c in cs if c["cmd"] == "aws"])
+p, cs = run_check("--oss", extra={"SSM_RUN_WAIT": "0"})
+check("check-grafana.sh: SSM_RUN_WAIT の値の誤りも 3 で止まる（確かめを送らない）",
+      p.returncode == 3 and "SSM_RUN_WAIT は SSM Run Command の結果を待つ秒数" in p.stderr and not [c for c in cs if c["cmd"] == "aws"])
 p, cs = run_check("--yes")
 check("check-grafana.sh: 知らない引数は使い方を出して 3 で止まる（terraform と aws には触らない）",
       p.returncode == 3 and "使い方" in p.stderr and not tf_calls(cs) and not [c for c in cs if c["cmd"] == "aws"])

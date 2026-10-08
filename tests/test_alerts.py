@@ -1248,6 +1248,11 @@ if a[:2] == ["ssm", "send-command"]:
 if a[:2] == ["ssm", "get-command-invocation"]:
     if a[a.index("--command-id") + 1] != "cmd-1":
         print("An error occurred (ValidationException)", file=sys.stderr); sys.exit(254)
+    # G_INV_FAIL=<n>: 最初の n 回は読めない（送った直後の InvocationDoesNotExist）
+    with open(os.path.join(d, "calls.jsonl"), encoding="utf-8") as f:
+        n = sum(1 for line in f if '"get-command-invocation"' in line)
+    if n <= int(os.environ.get("G_INV_FAIL", "0")):
+        print("An error occurred (InvocationDoesNotExist)", file=sys.stderr); sys.exit(254)
     out = os.environ["G_OUT"]
     if q == "Status":
         print(os.environ["G_STATUS"])
@@ -1293,8 +1298,8 @@ def gstep(script=_GSTEP, **env):
             rc, out = None, ""
         p = os.path.join(d, "params.json")
         sent = json.load(open(p, encoding="utf-8"))["commands"] if os.path.exists(p) else None
-        with open(os.path.join(d, "calls.jsonl"), encoding="utf-8") as f:
-            calls = [json.loads(line) for line in f]
+        c = os.path.join(d, "calls.jsonl")
+        calls = [json.loads(line) for line in open(c, encoding="utf-8")] if os.path.exists(c) else []
         return rc, out, sent, calls
 
 
@@ -1338,12 +1343,31 @@ _gc = {k: gstep(_GCHK, **e) for k, e in {
     "okempty": dict(G_OUT=""),
     "okwithoutok": dict(G_OUT="判定: 未確認（…）"),
     "sendfail": dict(G_SEND_FAIL="1"),
+    "deadline": dict(G_STATUS="InProgress", SSM_RUN_WAIT="1"),
 }.items()}
 _gcr = {k: re.search(r"RC=(\d) VERDICT=\[(.*)\]", v[1]).groups() if v[0] == 0 and "RC=" in v[1] else None for k, v in _gc.items()}
 check("grafana_rules_check の終了コード: OK の判定で SSM も成功なら 0、NG の判定なら 1、未確認・判定の行が無い・送れないは 2。最後の判定の行を GRAFANA_VERDICT に置く",
       _gcr == {"ok": ("0", "判定: OK（4 本とも評価のエラーなし）"), "ng": ("1", "判定: NG（4 本のうち 1 本の評価がエラー: g/a）"),
                "unknown": ("2", "判定: 未確認（0 秒待った。Grafana のルールの API が 401（admin のパスワードが Grafana と SSM で違う））"),
-               "noverdict": ("2", ""), "okempty": ("2", ""), "okwithoutok": ("2", "判定: 未確認（…）"), "sendfail": ("2", "")})
+               "noverdict": ("2", ""), "okempty": ("2", ""), "okwithoutok": ("2", "判定: 未確認（…）"), "sendfail": ("2", ""), "deadline": ("2", "")})
+# ssm_run の締め切り（SSM_RUN_WAIT 秒。既定 1800）。偽の sleep は 0.05 秒なので、締め切りが無ければ 20 秒で切れる
+_s_dl = gstep(G_STATUS="InProgress", SSM_RUN_WAIT="1")
+check("ssm_run: InProgress のまま SSM_RUN_WAIT 秒を過ぎたら、待つのをやめて結果の見方（get-command-invocation）を出し、9-2 は未確認の警告にする",
+      _s_dl[0] == 0
+      and "SSM Run Command（cmd-1）の結果が 1 秒たっても分からない（最後の状態: InProgress）。あとで見るのは aws ssm get-command-invocation --region ap-northeast-1 --command-id cmd-1 --instance-id i-web（待つ秒数は SSM_RUN_WAIT）" in _s_dl[1]
+      and "WARN=[Grafana のアラートルールの評価を確かめられなかった（判定の行が無い。上の出力）。理由は上の出力。確かめ直すのは ops/check-grafana.sh]" in _s_dl[1]
+      and not [c for c in _s_dl[3] if c[:2] == ["ssm", "cancel-command"]])
+_s_rf = gstep(G_INV_FAIL="100000", SSM_RUN_WAIT="1")
+check("ssm_run: get-command-invocation が読めないまま SSM_RUN_WAIT 秒を過ぎても同じく返す（最後の状態: 読めない）",
+      _s_rf[0] == 0 and "の結果が 1 秒たっても分からない（最後の状態: 読めない）" in _s_rf[1] and "確かめられなかった（判定の行が無い。上の出力）" in _s_rf[1])
+_s_r2 = gstep(G_INV_FAIL="2", G_OUT="判定: OK（4 本とも評価のエラーなし）")
+check("ssm_run: 送った直後に get-command-invocation が読めなくても、読めるまで読み直す（締め切りの中なら OK になる）",
+      _s_r2[0] == 0 and "WARN=[]" in _s_r2[1] and "分からない" not in _s_r2[1]
+      and [c[:2] for c in _s_r2[3]].count(["ssm", "get-command-invocation"]) == 4)
+_s_bad = {v: gstep(SSM_RUN_WAIT=v) for v in ("abc", "0", "-5", "01", "1.5")}
+check("SSM_RUN_WAIT が 1 以上の整数でなければ、ops/up-common.sh を読んだところで理由を言って止まる（aws には触らない）",
+      all(r[0] == 1 and f"SSM_RUN_WAIT は SSM Run Command の結果を待つ秒数（1 以上の整数。既定 1800）。いまは「{v}」" in r[1] and not r[3] for v, r in _s_bad.items()),
+      )
 
 # ---- SNS のトピック（土台）と受け手の配線
 atf = read("IaC", "terraform", "aws-managed", "base", "core", "alerts.tf")
