@@ -5,7 +5,7 @@ Splunk のアラートアクション（app/splunk/netops_alerts/bin/netops_sns.
 イメージ（docker/images/splunk/Dockerfile・entrypoint.sh、app/grafana/start.sh）と ops/up.sh・ops/check.sh がその配線を持つこと。
 受け手の側は tests/test_workflow.py（SQS → ワークフロー）と tests/test_sync.py（Lambda → Neptune の status）。
 実行は uv run --group dev python tests/test_alerts.py（boto3 が無くても通る。あれば手元の偽の SNS へ本物の boto3 で publish して確かめる）"""
-import ast, contextlib, csv, glob, gzip, http.server, importlib.util, io, json, os, re, signal, subprocess, sys, tempfile, threading, time, urllib.parse
+import ast, contextlib, csv, glob, gzip, http.server, importlib.util, io, json, math, os, re, signal, subprocess, sys, tempfile, threading, time, urllib.parse
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, os.path.join(ROOT, "app", "temporal"))
@@ -890,8 +890,29 @@ check("trap: 過去 10 分の snmp_trap を機器と OID ごとに数える（Op
       and """sysName: '{{ index .Labels "tags.sysName.keyword" }}'""" in grules["trap"] and """target: '{{ index .Labels "tags.oid.keyword" }}'""" in grules["trap"]
       and re.search(r"type: gt\s*\n\s*params: \[0\]", grules["trap"]) is not None
       and re.search(r"^\s*uid: aoss-logs$", read("app", "grafana", "provisioning", "datasources", "opensearch.yaml"), re.M) is not None)
-check("trap の terms は 機器 × OID × 時間の区切り 20 個が 65535 に収まる大きさ（超えると opensearch プラグインが評価をエラーにする）",
-      (lambda n: len(n) == 2 and n[0] * n[1] * 20 <= 65535)([int(x) for x in re.findall(r"size: '(\d+)'", grules["trap"])]))
+OPENSEARCH_PLUGIN_COPIED = "2.34.4"  # 下の 2 つの関数が写した grafana-opensearch-datasource の版（Dockerfile が入れる版と突き合わせる）
+
+
+def terms_buckets(sizes, shards):
+    """grafana-opensearch-datasource（OPENSEARCH_PLUGIN_COPIED）の termsBucketProduct / termsBucketEstimate（pkg/opensearch/lucene_handler.go）を写す。
+    terms 1 つを shard 1 なら size、2 以上なら shards * (int(size * 1.5) + 10) と見積もって掛ける"""
+    return math.prod(n if shards <= 1 else shards * (int(n * 1.5) + 10) for n in sizes)
+
+
+def bucket_budget_ok(sizes, interval, shards, max_buckets=65535):
+    """同じく bucketFloorInterval（pkg/tsdb/interval.go）。検査は date_histogram の interval が auto のときだけで、
+    max_buckets * 90 / 100 を terms の見積もりで割って 20 未満なら「bucket budget out of bounds」"""
+    return interval != "auto" or max_buckets * 90 // 100 // terms_buckets(sizes, shards) >= 20
+
+
+tsizes = [int(x) for x in re.findall(r"size: '(\d+)'", grules["trap"])]
+tinterval = re.search(r"^\s*interval: (\S+)$", grules["trap"], re.M).group(1)
+check("trap の bucket budget の写しは AWS で見たエラーを再現する（AOSS の index は shard 2 で、機器 50 × OID 20 が 13600 になり auto で落ちる。shard 1 の OSS では通る）",
+      terms_buckets([50, 20], 2) == 13600 and not bucket_budget_ok([50, 20], "auto", 2) and bucket_budget_ok([50, 20], "auto", 1))
+check("trap の時間の区切りは固定の 30s（10 分を 20 個。auto だと terms の見積もりが shard の数で変わり、プラグインが評価をエラーにしうる）。"
+      "terms は auto だったとしても shard 2 で通る大きさで、固定の区切り 21 個（端を含む）を掛けても 65535 に収まる",
+      tinterval == "30s" and len(tsizes) == 2 and all(bucket_budget_ok(tsizes, i, s) for i in (tinterval, "auto") for s in (1, 2))
+      and terms_buckets(tsizes, 2) * (600 // 30 + 1) <= 65535)
 check("データが無い・クエリが失敗したときは直前の状態のまま（分からないときに発火も解消もしない）。trap だけは数えるものが無ければ解消（10 分来なければ閉じる）",
       all("noDataState: KeepLast" in grules[t] for t in ("link_down", "bgp_down", "isis_down")) and "noDataState: OK" in grules["trap"]
       and all("execErrState: KeepLast" in r for r in grules.values()))
@@ -903,6 +924,11 @@ check("連絡先は SNS（鍵は書かない = タスクロールで SigV4）。
 check("通知ポリシー: 対象（機器 + target）ごとに 1 通、発火はすぐ、解消は 30 秒以内、直らないあいだは 4 時間ごとに送り直す",
       "receiver: nwc-sns" in gcode and "group_by: ['alertname', 'sysName', 'target']" in gcode and "group_wait: 0s" in gcode and "group_interval: 30s" in gcode and "repeat_interval: 4h" in gcode)
 gdf = read("docker", "images", "grafana", "Dockerfile")
+gplugins = dict(re.findall(r"plugins install (\S+) (\S+?) ?\\?$", gdf, re.M))
+check(f"Grafana のプラグインは版を固定して入れ、opensearch は bucket budget の式を写した版（{OPENSEARCH_PLUGIN_COPIED}）と同じ。"
+      "amazonprometheus は AWS で動かしたイメージの版。版の無い install も ARG で替えられる版も無い",
+      gplugins == {"grafana-amazonprometheus-datasource": "3.2.0", "grafana-opensearch-datasource": OPENSEARCH_PLUGIN_COPIED}
+      and gdf.count("plugins install") == 2 and re.findall(r"^ARG (\w+)", gdf, re.M) == ["GRAFANA_VERSION"])
 check("Grafana のイメージは provisioning を持ち、SigV4 を既定の認証情報（タスクロール）で使う",
       "COPY provisioning /etc/grafana/netops" in gdf and "GF_AUTH_SIGV4_AUTH_ENABLED=true" in gdf and "GF_AWS_ALLOWED_AUTH_PROVIDERS=default" in gdf)
 gtf = read("IaC", "terraform", "aws-managed", "pipeline", "analytics", "grafana.tf")
@@ -997,4 +1023,16 @@ check("lab.sh の trap-test の OID は Splunk の netops_trap も Grafana の t
       and """nsenter -t "$pid" -n snmptrap -v2c -c "$SNMP_COMMUNITY" "$MGMT_GW:162" '' "$TEST_TRAP_OID" """ in lab
       and """pid=$(docker inspect -f '{{.State.Pid}}' "clab-$LAB-$ACC_VM")""" in lab
       and [ip for ip, n in _dm.items() if n == labc["ACC_VM"] and ip.startswith("203.0.113.")] == ["203.0.113.102"])
+_mgmt_gw = re.search(r'^MGMT_GW = "([0-9.]+)"', read("app", "containerlab", "gen_lab.py"), re.M).group(1)
+_srl = {os.path.basename(p)[:-4] for p in glob.glob(os.path.join(ROOT, "app", "containerlab", "srlinux", "*.cli"))}
+_trap_srl = {n for n in _srl if f"trap-group telegraf destination telegraf address {_mgmt_gw}\n" in read("app", "containerlab", "srlinux", n + ".cli")}
+_trap_senders = _trap_srl | {labc["ACC_VM"]}
+_sys_size = int(re.search(r"field: tags\.sysName\.keyword\s*\n\s*settings:\s*\n\s*size: '(\d+)'", grules["trap"]).group(1))
+check("trap のルールの機器の terms（上位 size 件）は lab の trap の送り元（trap を lab の EC2 へ送る SR Linux（全台）+ trap-test の ACC_VM）を全部返せる。"
+      "yaml のコメントの送り元の数も同じ",
+      _trap_srl == _srl and len(_srl) == read("app", "containerlab", "splab.clab.yml.in").count("kind: nokia_srlinux")
+      and labc["ACC_VM"] not in _trap_srl and len(_trap_senders) <= _sys_size
+      and re.search(r"lab は trap の送り元 (\d+) = SR Linux (\d+) 台 \+ lab\.sh の trap-test の (\S+)、",
+                    read("app", "grafana", "provisioning", "alerting", "netops-opensearch.yaml")).groups()
+      == (str(len(_trap_senders)), str(len(_trap_srl)), labc["ACC_VM"]))
 print(f"通過 {passed} / 失敗 0")

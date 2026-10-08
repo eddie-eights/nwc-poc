@@ -520,6 +520,8 @@ check("残り: Project=x-nwc-oss（完全一致）だけを数え、ARN を並�
       "残り: 2 件（Project=x-nwc-oss のタグ）" in out
       and "arn:aws:ecs:ap-northeast-1:123456789012:cluster/x-nwc-oss-left" in out
       and "parameter/x-nwc-oss/manual/note" in out and "x-nwc-oss-nwc-poc" not in out and "vpc/vpc-0aaa" not in out)
+check("残りの一覧のあとは「この一覧では消えたかを決めない」と出し、「全部消えている」とは言わない。base/core を全部消したので VPC の案内は出さない",
+      "この一覧では消えたかを決めない" in out and "全部消えている" not in out and "使い回す" not in out)
 check("KEEP_ECR を書かなければ ECR も消す（IaC/terraform/oss/base/ecr を destroy した）", "IaC/terraform/oss/base/ecr" in destroyed(cs))
 
 # ================================================================ 2'. 逆向き: マネージド版の ops/down.sh は OSS 版に触らない
@@ -583,6 +585,11 @@ for script, owner, prefix, tf_dir, new in (("oss/ops/down.sh", "x", "x-nwc-oss",
           and [arg_after(a, "--filters") for a in aws_calls(cs, "ec2", "describe-network-interfaces") if "Name=vpc-id" in arg_after(a, "--filters")]
           == [f"Name=vpc-id,Values=vpc-0old,{new}"]
           and f"Runtime の ENI が残っている: eni-runtime-{new}" in out and kept_base_core(cs, tf_dir))
+    up = script.replace("down.sh", "up.sh")
+    check(f"{script}（Runtime の ENI で base/core を残した）: 最後の案内は「そのままでよい。次の {up} が使い回す」と、"
+          "タグの一覧では消えたかを決めないこと（「数時間おいて打ち直す」「全部消えている」は出さない。2026-10-08 の AWS 検証）",
+          f"そのままでよい。次の {up} が使い回す" in out and "この一覧では消えたかを決めない" in out
+          and "数時間おいて" not in out and "全部消えている" not in out)
 
     p, cs, inv = run_down(script, owner, {"FAKE_TF_VPC": json.dumps({f"{tf_dir}/base/core": new})},
                           inv=twin_vpcs(f"{prefix}-vpc", new, new))

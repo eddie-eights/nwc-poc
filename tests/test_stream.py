@@ -102,8 +102,8 @@ check("lab.sh forward は syslog の LOG_PORT も trap の 162 と同じ仕組�
       and "rsyslog" not in labsh and "LOG_DIR" not in labsh and re.search(r"^\s*logs\)", labsh, re.M) is not None)
 # ログのポートは 5 か所で同じ（lab.sh / telegraf.sh / telegraf.conf.in / stream の NLB / 土台の SG の通信の表）。trap は NLB の 162 → タスクの 1162（非 root）
 check("syslog のポートが lab.sh・telegraf.sh・telegraf.conf.in・stream の NLB・土台の通信の表で同じで、trap は NLB の 162 をタスクの 1162 で受ける",
-      re.search(rf"^LOG_PORT={log_port}$", tgsh, re.M) is not None and re.search(rf'^\s*server = "udp://:{log_port}"$', tele, re.M) is not None
-      and re.search(r'^\s*service_address = "udp://:1162"$', tele, re.M) is not None and re.search(r"^TRAP_PORT=1162$", tgsh, re.M) is not None
+      re.search(rf"^LOG_PORT=\$\{{LOG_PORT:-{log_port}\}}$", tgsh, re.M) is not None and re.search(r'^\s*server = "udp://__BIND__:__LOG_PORT__"$', tele, re.M) is not None
+      and re.search(r'^\s*service_address = "udp://__BIND__:__TRAP_PORT__"$', tele, re.M) is not None and re.search(r"^TRAP_PORT=\$\{TRAP_PORT:-1162\}$", tgsh, re.M) is not None
       and all(re.search(rf'\{{ from = "{a}", to = "{b}", protocol = "udp", port = {pt},', core_sg) is not None
               for a, b, pt in (("lab_mgmt", "telegraf_dialout_nlb", log_port), ("lab", "telegraf_dialout_nlb", log_port), ("telegraf_dialout_nlb", "telegraf_dialout", log_port),
                                ("lab_mgmt", "telegraf_dialout_nlb", 162), ("lab", "telegraf_dialout_nlb", 162), ("telegraf_dialout_nlb", "telegraf_dialout", 1162)))
@@ -112,8 +112,8 @@ check("syslog のポートが lab.sh・telegraf.sh・telegraf.conf.in・stream �
       and re.search(r'trap\s+= \{ listener = 162, container = 1162, protocol = "UDP" \}', stream_tg) is not None)
 # MDT の dial-out は 4 か所で同じポート（telegraf.sh / telegraf.conf.in / stream の NLB とタスク / 土台の通信の表）で TCP。NLB は TCP の送り元を残さない
 check("MDT は tcp 57000 で受ける（inputs.cisco_telemetry_mdt・telegraf.sh・NLB の TCP のリスナー・タスクの portMappings・NLB → タスクの SG）",
-      re.search(r'^MDT_PORT=57000$', tgsh, re.M) is not None
-      and re.search(r'\[\[inputs\.cisco_telemetry_mdt\]\]\s*\n\s*transport = "grpc"\s*\n\s*service_address = ":57000"', tele) is not None
+      re.search(r'^MDT_PORT=\$\{MDT_PORT:-57000\}$', tgsh, re.M) is not None
+      and re.search(r'\[\[inputs\.cisco_telemetry_mdt\]\]\s*\n\s*transport = "grpc"\s*\n\s*service_address = "__BIND__:__MDT_PORT__"', tele) is not None
       and re.search(r'mdt\s+= \{ listener = 57000, container = 57000, protocol = "TCP" \}', stream_tg) is not None
       and "protocol    = each.value.protocol" in stream_tg and "protocol          = each.value.protocol" in stream_tg
       and 'preserve_client_ip = each.value.protocol == "UDP"' in stream_tg

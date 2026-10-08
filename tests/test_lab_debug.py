@@ -361,9 +361,9 @@ check("lab の認証情報（containerlab の既定）は lab.sh と lab-common.
 
 # ---- lab.sh: この EC2 の Telegraf
 check("trap のポートは lab.sh と telegraf.sh で同じ（機器は 162 に送り、デバッグ用の EC2 は REDIRECT で Telegraf の待つポートへ）",
-      sh_const(lab_sh, "TRAP_PORT") == sh_const(tg_sh, "TRAP_PORT") == "1162"
+      "${TRAP_PORT:-" + sh_const(lab_sh, "TRAP_PORT") + "}" == sh_const(tg_sh, "TRAP_PORT") == "${TRAP_PORT:-1162}"
       and re.search(r'iptables -t nat -I PREROUTING 1 -s "\$MGMT" -d "\$MGMT_GW" -p udp --dport 162 "\$\{c\[@\]\}" -j REDIRECT --to-ports "\$TRAP_PORT"', lab_sh) is not None)
-check("syslog のポートも lab.sh と telegraf.sh で同じ", sh_const(lab_sh, "LOG_PORT") == sh_const(tg_sh, "LOG_PORT") == "5140")
+check("syslog のポートも lab.sh と telegraf.sh で同じ", "${LOG_PORT:-" + sh_const(lab_sh, "LOG_PORT") + "}" == sh_const(tg_sh, "LOG_PORT") == "${LOG_PORT:-5140}")
 check("lab の SR Linux の syslog の形式は lab.sh の LOG_STANDARD = lab-common.sh の LAB_SYSLOG_STANDARD = RFC5424（Telegraf の既定 RFC3164 を上書きする）",
       sh_const(lab_sh, "LOG_STANDARD") == sh_const(common, "LAB_SYSLOG_STANDARD") == "RFC5424"
       and sh_const(tg_sh, "SYSLOG_STANDARD") == "${SYSLOG_STANDARD:-RFC3164}")

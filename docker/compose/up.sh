@@ -10,6 +10,16 @@ else echo "python3 か uv が要る（app/containerlab/lab_topology.py を動か
 SNMP_AGENTS=$("${PY[@]}" ../../app/containerlab/lab_topology.py ../../app/containerlab --snmp-agents)
 GNMI_TARGETS=$("${PY[@]}" ../../app/containerlab/lab_topology.py ../../app/containerlab --gnmi-targets)
 DEVICE_MAP=$("${PY[@]}" ../../app/containerlab/lab_topology.py ../../app/containerlab --device-map)
-export SNMP_AGENTS GNMI_TARGETS DEVICE_MAP
+# Telegraf（host のネットワーク）が待つアドレス。lab の管理ネットの GW（app/containerlab/lab.sh の MGMT_GW。lab.sh up で containerlab の bridge に付く）が
+# host にあればそこだけで待つ。無ければ bind に失敗するので空（全部のインターフェース）にする。docker/compose/check.sh も同じ見方で health に打つ
+MGMT_GW=203.0.113.1
+if ip -o -4 addr show 2>/dev/null | grep -q " $MGMT_GW/"; then TELEGRAF_BIND=$MGMT_GW
+else
+  TELEGRAF_BIND=
+  echo "WARNING: lab の管理ネット（${MGMT_GW}）がまだ無いので、Telegraf は WSL の全部のインターフェースで待つ。docker/compose/lab.sh up のあとに docker/compose/up.sh telegraf で ${MGMT_GW} だけに直す" >&2
+fi
+export SNMP_AGENTS GNMI_TARGETS DEVICE_MAP TELEGRAF_BIND
+# Spark の 2 つは送り先（Splunk / OpenSearch / Prometheus）が healthy になるまで起こさない（compose.yaml の depends_on）ので、初回はここで 2〜3 分待つ。
+# healthy にならなければ dependency failed to start で止まる（docker/compose/README.md）
 docker compose up -d --build "$@"
-echo "上げた。lab は docker/compose/lab.sh up、通しの確認は docker/compose/check.sh（Splunk は healthy まで 2〜3 分）"
+echo "上げた。通しの確認は docker/compose/check.sh"

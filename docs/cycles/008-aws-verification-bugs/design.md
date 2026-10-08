@@ -59,6 +59,9 @@ PM(fable-5.1) / effort: high
 | `app/agentcore/graph.py` | `_neo4j_schema()` の索引、`count()` と 373 行目のラベル分け（C） |
 | `tests/test_graph.py` | Neo4j のときのラベル分けと索引の DDL。Neptune の文字列は不変のまま通ること（C） |
 | `ops/seed_graph.py` | `db.prepareForReplanning()`（C） |
+| `docker/images/grafana/Dockerfile` | Round 1 の cold review で足した範囲。プラグインの版を固定する（opensearch は `tests/test_alerts.py` が bucket budget の式を写した版 2.34.4、amazonprometheus は AWS で動かしたイメージの実測 3.2.0）。ARG にしない（`--build-arg` で替えても dir_tag が変わらない）。opensearch を上げるときはプラグインの式を読み直し、テストの `OPENSEARCH_PLUGIN_COPIED` も変える（A） |
+| `tests/test_alerts.py`（追加） | Dockerfile の版と `OPENSEARCH_PLUGIN_COPIED` の突き合わせ。lab の trap の送り元の数（`srlinux/*.cli` の宛先が `MGMT_GW` の台数 + `ACC_VM`）が sysName の `size` 以下であること（A） |
+| `docs/architecture/resources/grafana.md` | イメージの行にプラグインの版を書く |
 | `docs/cycles/BACKLOG.md` | PM が直す。エンジニアは触らない |
 
 ## 再利用するもの
@@ -90,3 +93,5 @@ PM(fable-5.1) / effort: high
 2. `prepareForReplanning()` が Community 版で使えない可能性 → 失敗しても seed を止めない設計なので、使えなければ WARNING のまま。`build.md` に出力を貼る
 3. Neo4j の索引を張るのは `_neo4j_schema()` で、タスクが入れ替わると消えてまた張られる（一意制約と同じ）。張るのに失敗しても `_neo4j_schema()` は WARNING で続ける既存の形に合わせる
 4. ConflictException の打ち直しで Lambda の 60 秒を超える可能性（通知が 10 件以上まとめて来て全部が衝突するとき）→ 今回は件数の上限を付けない。超えれば Lambda の再試行で今までどおり直る
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261008-cycle-008-aws-verification-bugs-design.html -->

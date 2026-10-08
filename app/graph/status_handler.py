@@ -29,6 +29,8 @@ status の正しさを履歴の完全さより優先する（design.md の決定
 と探して戻せる）。Neptune への書き込みが 1 件でも失敗したら、残りの通知も書いてから最後に例外で落とす。Neptune の途中で timeout したときも
 同じく、Lambda の非同期のやり直しに任せる（status は遅れる。やり直しは書けた通知も流し直すので、そのあいだに届いた通知の値を古い値に
 戻すこともある（design.md のリスク 10）。やり直しで履歴に二重に入った行は、読む側が event_id で落とす）。
+ただし Neptune が同時の書き込みとして拒んだとき（ConflictException。同じ秒に通知が 2 件届くと起きる）は、関数の中で CONFLICT_WAITS の
+秒数（通知 1 件あたり長くて 3.5 秒）だけ待って打ち直し、使い切ってから諦める（関数の時間は長くて 3.5 秒 × 通知の件数だけ延びる）。
 """
 import json
 import logging
@@ -37,6 +39,7 @@ import time
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 import graph
 import rules
@@ -49,6 +52,9 @@ STATUS_OF = {"firing": "DOWN", "resolved": "UP"}
 LAYER_KIND = {"bgp_down": "bgp", "isis_down": "isis"}   # アラートの kind → graph.set_layer_status の kind（頂点の id の真ん中）
 BATCH = 500   # put_record_batch の 1 回の上限（件数）。SNS の 1 通は多くて 50 件（Splunk）なので、ふつうは 1 回で済む
 RETRY_WAITS = (0.2, 0.4)   # Firehose の送り直しの前に待つ秒数。1 回目と合わせて 3 回まで試す
+# Neptune が ConflictException（同時の書き込み。HTTP 409）で拒んだときに、打ち直す前に待つ秒数。1 回目と合わせて 4 回まで試す。
+# botocore の standard の再試行はこれを打ち直さない。apply() は status を置くだけなので、同じ通知を 2 回当てても結果は同じ
+CONFLICT_WAITS = (0.5, 1.0, 2.0)
 # Firehose のクライアントは botocore の再試行を切り、早めにあきらめる。既定（5 回まで・接続の待ちが 60 秒）のままだと、エンドポイントに
 # 届かないとき 1 回目の呼び出しだけで Lambda の timeout を使い切り、残った行を ERROR に書く前に（Neptune にも書かずに）タイムアウトする。
 # 3 回でも 3 ×（接続 2 秒 + 読み 3 秒）+ 待ち 0.6 秒 = 15.6 秒に収まり、60 秒のうち 44 秒は Neptune に残る。接続の待ちはエンドポイントの
@@ -88,6 +94,19 @@ def apply(alert: dict) -> dict:
         return graph.set_status(device_id, "", "ALARM")
     # trap は TTL で閉じる（app/splunk/ の保存済みサーチ）。そのあいだに機器が DOWN になっていたら、それは linkDown の印なので残す
     return graph.set_status(device_id, "", "UP", only_if="ALARM")
+
+
+def _apply_retrying(alert: dict, line: str) -> dict:
+    """apply() を、Neptune が ConflictException で拒んだときだけ CONFLICT_WAITS の秒数を待って打ち直す。
+    それ以外の例外と、待ちを使い切ったあとの ConflictException はそのまま投げる（handler が errors に積む）"""
+    for wait in CONFLICT_WAITS + (None,):
+        try:
+            return apply(alert)
+        except ClientError as e:
+            if wait is None or e.response.get("Error", {}).get("Code") != "ConflictException":
+                raise
+            log.warning("Neptune が同時の書き込みとして拒んだ（ConflictException）。%.1f 秒待って打ち直す: %s", wait, line)
+            time.sleep(wait)
 
 
 def _firehose():
@@ -184,7 +203,7 @@ def handler(event, context=None):
         line = json.dumps({k: a.get(k) for k in ("source", "status", "device_id", "kind", "target")}, ensure_ascii=False)
         try:
             _neptune()
-            r = apply(a)
+            r = _apply_retrying(a, line)
         except Exception as e:  # noqa: BLE001 - 1 件が落ちても残りの通知は書く
             log.exception("Neptune に書けなかった: %s", line)
             errors.append(f"neptune {line}: {type(e).__name__}: {e}")

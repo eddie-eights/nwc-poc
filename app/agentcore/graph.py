@@ -37,7 +37,8 @@ NEO4J_PASSWORD（無ければ SSM の <PARAM_PREFIX>/neo4j-password。SecureStri
 クエリは Neptune の openCypher のまま組み、Neo4j に送る直前に _dialect() が 1 か所で書き換える（頂点の id は property id に置き、
 ラベルごとに一意の制約を張る。id(n) → n.id、`~id` → id）。結果の頂点と辺は Neptune と同じ形（~id / ~labels / ~properties）に戻すので、
 ほかの関数は 2 つのグラフを区別しない。違うのはアルゴリズム（centrality。neptune.algo.* の代わりに GDS）と、id で頂点を引くパターンの
-ラベル（_lbl。Neo4j だけに付け、一意制約の索引を使わせる。Neptune に送る openCypher は変えない）だけ。
+ラベル（_lbl。Neo4j だけに付け、一意制約の索引を使わせる。Neptune に送る openCypher は変えない）と、ラベル無しで読んでいた未登録の頂点
+（_unregistered。Neo4j だけラベルごとに分けて registered の索引を使わせる）だけ。
 """
 
 import contextlib
@@ -175,17 +176,24 @@ def _neo4j_schema(driver) -> None:
     一意制約の無いまま MERGE が走り、同じ id のアラートが同時に来ると頂点が 2 つできる。そこで時間がたったら張り直し、ドライバの失敗
     （DriverError）のあとはすぐ張り直す（_neo4j_query）。IF NOT EXISTS なので、残っていれば何も起きない。
     重複がすでにあって張れないラベル（サーバーの失敗。Neo4jError）は WARNING に出して先に進む（そこで止めると、重複を消すはずの
-    ops/sync-graph.sh --oss の seed まで落ちる）。張れなかったラベルは次の張り直しでまた試す。つながらない失敗はそのまま上げる"""
+    ops/sync-graph.sh --oss の seed まで落ちる）。張れなかったラベルは次の張り直しでまた試す。つながらない失敗はそのまま上げる。
+    制約のあとで、_INDEXES の property の索引も同じ形で張る（未登録の印 registered と、interface の device_id。2026-10-08）"""
     now = time.monotonic()
     if _cache["schema"] is not None and now - _cache["schema"] < SCHEMA_TTL:
         return
-    for label in ("device", "interface", "change") + LAYER_LABELS:
+    for label in _LABELS:
         try:
             driver.execute_query(f"CREATE CONSTRAINT nwc_{label}_id IF NOT EXISTS FOR (n:{_ident(label)}) REQUIRE n.id IS UNIQUE",
                                  database_=NEO4J_DATABASE)
         except _server_errors() as e:
             log.warning("Neo4j の %s の一意制約を張れない（同じ id の頂点が 2 つ以上ある等。%d 秒後にまた試す）: %s",
                         label, SCHEMA_TTL, str(e)[:200])
+    for label, prop in _INDEXES:
+        try:
+            driver.execute_query(f"CREATE INDEX nwc_{label}_{prop} IF NOT EXISTS FOR (n:{_ident(label)}) ON (n.{prop})",
+                                 database_=NEO4J_DATABASE)
+        except _server_errors() as e:
+            log.warning("Neo4j の %s.%s の索引を張れない（%d 秒後にまた試す）: %s", label, prop, SCHEMA_TTL, str(e)[:200])
     _cache["schema"] = now
 
 
@@ -239,6 +247,9 @@ IF_KEYS = ("device_id", "name", "address", "lag", "status")
 LINK_KEYS = ("a_if", "b_if", "kind", "role", "bandwidth_mbps", "status")
 STATUSES = ("UP", "DOWN", "ALARM")
 LAYER_LABELS = ("ip_interface", "isis_adjacency", "bgp_session", "evpn_instance", "ethernet_segment")
+_LABELS = ("device", "interface", "change") + LAYER_LABELS   # 頂点のラベル全部（Neo4j の一意制約と索引はラベルごと。_neo4j_schema）
+# Neo4j で張る property の索引（ラベル, property）。未登録の頂点の読み（_unregistered）と、remove_device が消すインタフェース（device_id）
+_INDEXES = tuple((x, "registered") for x in _LABELS) + (("interface", "device_id"),)
 LAYER_EDGES = ("over", "peer", "tunnel", "attach", "segment")
 LAYER_KIND = {"bgp": "bgp_session", "isis": "isis_adjacency"}   # set_layer_status の kind（id の真ん中）→ label
 _LAYER_EDGE_TYPES = "|".join(LAYER_EDGES)   # 辺の型の「どれか」（[e:over|peer|…]）
@@ -306,6 +317,15 @@ def _count(cypher: str) -> int:
     return int(query(cypher)[0]["n"])
 
 
+def _unregistered(ret: str, labels: tuple = _LABELS) -> list:
+    """未登録の頂点（registered = false）を MATCH して RETURN {ret} した行。Neptune は今まで通りラベル無しの 1 本（送る openCypher を変えない）。
+    Neo4j はラベルの無い property の索引を持てず、MATCH (n) は全部の頂点を読むので、labels のラベルごとに 1 本ずつ送り
+    （索引 nwc_<ラベル>_registered。_neo4j_schema）、行をつなぐ"""
+    if BACKEND != "neo4j":
+        return query(f"MATCH (n) WHERE n.registered = false RETURN {ret}")
+    return [r for x in labels for r in query(f"MATCH (n:{_ident(x)}) WHERE n.registered = false RETURN {ret}")]
+
+
 def count() -> dict:
     """登録済みの機器・インタフェース・回線の数、上の層の頂点と辺の数、未登録の頂点の数（ops/seed_graph.py は devices が 0 なら空とみなす）"""
     return {"devices": _count("MATCH (n:device) WHERE n.registered IS NULL RETURN count(n) AS n"),
@@ -313,7 +333,7 @@ def count() -> dict:
             "links": _count("MATCH ()-[l:link]->() RETURN count(l) AS n"),
             "layers": sum(_count(f"MATCH (n:{_ident(x)}) WHERE n.registered IS NULL RETURN count(n) AS n") for x in LAYER_LABELS),
             "layer_edges": _count(f"MATCH ()-[e:{_LAYER_EDGE_TYPES}]->() RETURN count(e) AS n"),
-            "unregistered": _count("MATCH (n) WHERE n.registered = false RETURN count(n) AS n")}
+            "unregistered": sum(int(r["n"]) for r in _unregistered("count(n) AS n"))}
 
 
 def load_layers() -> dict:
@@ -370,7 +390,7 @@ def seed(devices: list[dict], links: list[dict], layers: dict | None = None) -> 
     dev_ids = {d["device_id"] for d in devices}
     if_ids = {_if_id(d["device_id"], i["name"]) for d in devices for i in d.get("interfaces") or [] if i.get("name")}
     carry, replaced = [], []
-    for r in query("MATCH (n) WHERE n.registered = false RETURN n"):
+    for r in _unregistered("n", ("device", "interface")):   # 置き換えるのは機器とインタフェースだけ（上の層は seed_layers が読む）
         m = _node(r["n"])
         vid = m.get("id")
         if vid in dev_ids and m.get("label") == "device":
