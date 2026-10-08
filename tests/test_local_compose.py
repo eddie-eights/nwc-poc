@@ -276,7 +276,7 @@ fake("containerlab")
 fake("modprobe")
 fake("free", 'printf "               total        used        free\\nMem:  %s  1000  1000\\nSwap:  0  0  0\\n" "${FAKE_MEM:-32000}"\n')
 # check.sh が打つ curl。引数と、-K - で渡された標準入力を書き、URL ごとに決めた応答を返す。FAKE_DOWN=1 なら繋がらない（出力なしで 7）。
-# Splunk の応答は FAKE_SPLUNK があればそれ（認証の失敗は 401 でも curl -sS は本文を出して 0 で終わる）
+# Splunk の応答は FAKE_SPLUNK があればそれ（認証の失敗は 401 でも curl -sS は本文を出して 0 で終わる）。Kafka の metrics / traps のメッセージ数は FAKE_METRICS / FAKE_TRAPS
 fake("curl", r'''prev=; url=
 for a in "$@"; do
   case "$a" in http*) url=$a ;; esac
@@ -285,7 +285,7 @@ for a in "$@"; do
 done
 [ "${FAKE_DOWN:-0}" = 1 ] && exit 7
 case "$url" in
-  *18080/api/clusters/nwc/topics*) echo '{"topics":[{"name":"metrics"},{"name":"gnmi"},{"name":"traps"},{"name":"logs"},{"name":"mdt"}]}' ;;
+  *18080/api/clusters/nwc/topics*) printf '{"topics":[{"name":"metrics","messagesCount":%s},{"name":"gnmi","messagesCount":0},{"name":"traps","messagesCount":%s},{"name":"logs","messagesCount":9},{"name":"mdt","messagesCount":0}]}\n' "${FAKE_METRICS:-120}" "${FAKE_TRAPS:-3}" ;;
   *9090/api/v1/query*) echo '{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1760000000,"12"]}]}}' ;;
   *9200/snmp-logs/_count*) echo "{\"count\":${FAKE_OS_COUNT:-5}}" ;;
   *8089/services/search/jobs/export*)
@@ -297,7 +297,8 @@ esac
 ''')
 LOG = os.path.join(TMP, "calls.log")
 CLEAN = ("REGISTRY", "AWS_REGION", "PARAM_PREFIX", "TELEGRAF_IMAGE", "TELEGRAF_LOCAL", "SRLINUX_IMAGE", "MULTITOOL_IMAGE",
-         "SNMP_AGENTS", "GNMI_TARGETS", "DEVICE_MAP", "FAKE_IPT_RULES", "FAKE_MEM", "FAKE_DOWN", "FAKE_OS_COUNT", "FAKE_SPLUNK")
+         "SNMP_AGENTS", "GNMI_TARGETS", "DEVICE_MAP", "FAKE_IPT_RULES", "FAKE_MEM", "FAKE_DOWN", "FAKE_OS_COUNT", "FAKE_SPLUNK",
+         "FAKE_METRICS", "FAKE_TRAPS")
 
 def run(cmd, **env):
     """偽のコマンドを先に置いた PATH で cmd を打ち、(結果, 呼ばれたコマンドの行) を返す。lab に効く環境変数は消してから env を足す"""
@@ -382,6 +383,10 @@ _lc = tree('SRLINUX_IMAGE="example.com/srl:1"\nMULTITOOL_IMAGE=\'example.com/mt:
 _r, _c = run([os.path.join(_lc, "lab.sh"), "status"])
 check("docker/compose/lab.sh: .env があればそちらのイメージを使う（値の \" と ' は外す）",
       _c and _c[0].split()[2:4] == ["SRLINUX_IMAGE=example.com/srl:1", "MULTITOOL_IMAGE=example.com/mt:2"])
+_lc = tree('export SRLINUX_IMAGE=example.com/srl:1 # メモ\r\nMULTITOOL_IMAGE="example.com/mt:2" # メモ\r\n')
+_r, _c = run([os.path.join(_lc, "lab.sh"), "status"])
+check("docker/compose/lab.sh: .env の行頭の export、CRLF、行末の # メモは compose と同じく落とす",
+      _c and _c[0].split()[2:4] == ["SRLINUX_IMAGE=example.com/srl:1", "MULTITOOL_IMAGE=example.com/mt:2"])
 _lc = tree("SRLINUX_IMAGE=example.com/srl:1\n")
 _r, _c = run([os.path.join(_lc, "lab.sh"), "up"])
 check("docker/compose/lab.sh: .env に MULTITOOL_IMAGE が無ければ sudo を打たずに止まる", _r.returncode != 0 and _c == [] and "MULTITOOL_IMAGE が無い" in _r.stderr)
@@ -422,12 +427,12 @@ PW = example["OPENSEARCH_PASSWORD"]
 _lc = tree(read("docker", "compose", ".env.example"))
 _r, _c = run([os.path.join(_lc, "check.sh")])
 _ok = [l for l in _r.stdout.splitlines() if l.startswith("ok  ")]
-check("check.sh: 応答が全部そろえば 6 項目とも ok で「すべて ok」、終了コード 0（メモリが 20 GB 以上なら注意を出さない）",
-      _r.returncode == 0 and len(_ok) == 6 and _r.stdout.splitlines()[-1] == "すべて ok" and "注意" not in _r.stdout)
+check("check.sh: 応答が全部そろえば 8 項目とも ok で「すべて ok」、終了コード 0（メモリが 20 GB 以上なら注意を出さない）",
+      _r.returncode == 0 and len(_ok) == 8 and _r.stdout.splitlines()[-1] == "すべて ok" and "注意" not in _r.stdout)
 _argv = [c for c in _c if c.startswith("curl ")]
 _stdin = [c for c in _c if c.startswith("STDIN ")]
-check("check.sh: パスワードは curl の引数に載せず（ps に出る）、-K - の標準入力で user = \"admin:…\" として渡す（OpenSearch・Splunk・Grafana 2 つの 4 回）",
-      len(_argv) == 6 and not [c for c in _argv if PW in c] and _stdin == [f'STDIN user = "admin:{PW}"'] * 4)
+check("check.sh: パスワードは curl の引数に載せず（ps に出る）、-K - の標準入力で user = \"admin:…\" として渡す（OpenSearch・Splunk・Grafana 2 つの 4 回）。Kafka のトピックの一覧は 1 回だけ取る",
+      len(_argv) == 6 and len([c for c in _argv if "18080/api/clusters/nwc/topics" in c]) == 1 and not [c for c in _argv if PW in c] and _stdin == [f'STDIN user = "admin:{PW}"'] * 4)
 check("check.sh: Splunk の検索は sourcetype=netops:*（Spark の SPLUNK_SOURCETYPE_PREFIX）、Prometheus は Grafana のダッシュボードとアラートが使う snmp_interface_ifOperStatus",
       sinks.SPLUNK_SOURCETYPE_PREFIX == "netops" and any("sourcetype=netops:*" in c for c in _argv)
       and "snmp_interface_ifOperStatus" in read("app", "grafana", "provisioning", "dashboards", "metrics.json")
@@ -435,11 +440,20 @@ check("check.sh: Splunk の検索は sourcetype=netops:*（Spark の SPLUNK_SOUR
 check("check.sh: Grafana で見る uid（amp / aoss-logs）は app/grafana/provisioning/datasources-oss の定義にある",
       {m for f in ("prometheus.yaml", "opensearch.yaml")
        for m in re.findall(r"uid: (\S+)", read("app", "grafana", "provisioning", "datasources-oss", f))} == {"amp", "aoss-logs"})
-check("check.sh: Kafka で見るトピック（metrics / gnmi / traps / logs）は Telegraf が書くトピック",
+check("check.sh: Kafka で見るトピック（metrics / gnmi / traps / logs。メッセージ数は metrics と traps）は Telegraf が書くトピック",
       {"metrics", "gnmi", "traps", "logs"} <= _topics)
+KM, KT = "Kafka: metrics のメッセージ数 > 0", "Kafka: traps のメッセージ数 > 0"
+_r, _c = run([os.path.join(_lc, "check.sh")], FAKE_METRICS="0")
+check("check.sh: Kafka の metrics のメッセージ数が 0 なら NG（Telegraf から届いていない。トピックは Spark が作るのであっても証拠にならない）",
+      _r.returncode == 1 and f"NG  {KM}: 0 件" in _r.stdout.splitlines() and f"ok  {KT}" in _r.stdout.splitlines())
+_r, _c = run([os.path.join(_lc, "check.sh")], FAKE_TRAPS="0")
+check("check.sh: Kafka の traps が 0 件なら NG にせず「注意」で fail-main か trap-test を案内し、ほかが ok なら「すべて ok」で 0",
+      _r.returncode == 0 and f"ok  {KM}" in _r.stdout.splitlines() and _r.stdout.splitlines()[-1] == "すべて ok"
+      and [l for l in _r.stdout.splitlines() if KT in l]
+      == [f"注意 {KT}: 0 件（trap は障害を入れるまで来ない。docker/compose/lab.sh fail-main か trap-test のあとに打ち直す）"])
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_OS_COUNT="0", FAKE_MEM="16000")
 check("check.sh: 1 つが 0 件なら、そこだけ NG にして残りも見てから終了コード 1。メモリが 20 GB 未満なら注意を出す",
-      _r.returncode == 1 and "NG  OpenSearch: snmp-logs の件数 > 0: 0 件" in _r.stdout and len([l for l in _r.stdout.splitlines() if l.startswith("ok  ")]) == 5
+      _r.returncode == 1 and "NG  OpenSearch: snmp-logs の件数 > 0: 0 件" in _r.stdout and len([l for l in _r.stdout.splitlines() if l.startswith("ok  ")]) == 7
       and "注意: メモリが 16000 MiB" in _r.stdout and _r.stdout.splitlines()[-1].startswith("NG がある"))
 SPL = "Splunk: sourcetype=netops:* の直近 10 分の件数 > 0"
 def splunk_line(body):  # Splunk の応答を body にして check.sh を打ち、Splunk の行を返す
@@ -451,12 +465,36 @@ check("check.sh: Splunk の認証の失敗（messages の FATAL / ERROR）は「
       and splunk_line('{"messages":[{"type":"WARN","text":"call not properly authenticated"}]}') == [f"NG  {SPL}: result が無い: WARN call not properly authenticated"]
       and splunk_line('{"result":{"count":0}}') == [f"NG  {SPL}: 0 件"]
       and splunk_line('{"result":{"count":3}}') == [f"ok  {SPL}"])
+_dup = '{"messages":[' + ",".join(['{"type":"ERROR","text":"Unauthorized"}'] * 30) + ']}'
+_long = '{"messages":[{"type":"FATAL","text":"' + "x" * 300 + '\\n  y"},{"type":"ERROR","text":"b\\nc"}]}'
+_ll = splunk_line(_long)
+check("check.sh: Splunk の理由は同じものを 1 つにし（ERROR Unauthorized × 30 → 1 つ）、改行は空白にして 1 行、理由は 200 字まで",
+      splunk_line(_dup) == [f"NG  {SPL}: ERROR Unauthorized"]
+      and splunk_line('{"messages":[{"type":"WARN","text":"a"},{"type":"WARN","text":"a"}]}') == [f"NG  {SPL}: result が無い: WARN a"]
+      and len(_ll) == 1 and _ll[0].startswith(f"NG  {SPL}: ERROR b c; FATAL xxx") and len(_ll[0]) - len(f"NG  {SPL}: ") == 200)
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_DOWN="1")
-check("check.sh: どこにも繋がらなくても set -e で途中で落ちず、6 項目とも「読めない応答: 空」の NG で終了コード 1",
-      _r.returncode == 1 and _r.stdout.count("読めない応答: 空") == 6)
+check("check.sh: どこにも繋がらなくても set -e で途中で落ちず、8 項目とも「読めない応答: 空」の NG で終了コード 1",
+      _r.returncode == 1 and _r.stdout.count("読めない応答: 空") == 8 and _r.stdout.count("NG  ") == 8)
 _lc = tree('OPENSEARCH_PASSWORD=a"b\\c\nSPLUNK_PASSWORD=x\nGF_SECURITY_ADMIN_PASSWORD=y\n')
 _r, _c = run([os.path.join(_lc, "check.sh")])
 check("check.sh: パスワードの \" と \\ は curl の設定の書き方で逃がす", 'STDIN user = "admin:a\\"b\\\\c"' in _c)
+_lc = tree("export OPENSEARCH_PASSWORD='p#w' # メモ\r\nSPLUNK_PASSWORD=s1 # メモ\r\nGF_SECURITY_ADMIN_PASSWORD=\"g 1\"\r\n")
+_r, _c = run([os.path.join(_lc, "check.sh")])
+check("check.sh: .env の行頭の export、CRLF、行末の # メモは compose と同じく落とす（クォートの中の # と空白は残す）",
+      [c for c in _c if c.startswith("STDIN ")] == ['STDIN user = "admin:p#w"', 'STDIN user = "admin:s1"', 'STDIN user = "admin:g 1"', 'STDIN user = "admin:g 1"'])
+# 2 つの env_get を同じ入力で打ち、docker compose config（v5.1.3。2026-10-08 に同じ入力で確かめた）が読む値と同じになることを見る
+_eg = [re.search(r"^env_get\(\) \{.*\}$", read("docker", "compose", s), re.M).group(0) for s in ("check.sh", "lab.sh")]
+ENV_IN = 'export A="x"\nB=y # memo\nC=z\r\nD="p # q" # memo\nE=x#y\nF=\'s # t\' # m\n  export G=g  \nH=a"b\\c\nI=\nJ="j"\nK=1\nK=2\n'
+ENV_WANT = {"A": "x", "B": "y", "C": "z", "D": "p # q", "E": "x#y", "F": "s # t", "G": "g", "H": 'a"b\\c', "I": "", "J": "j", "K": "2"}
+def env_get_all(fn):
+    p = os.path.join(TMP, "env_in")
+    with open(p, "w", newline="") as f:
+        f.write(ENV_IN)
+    r = subprocess.run(["bash", "-c", f'ENVF="$1"\n{fn}\nfor k in {" ".join(ENV_WANT)}; do printf "%s=[%s]\\n" "$k" "$(env_get "$k")"; done', "_", p],
+                       capture_output=True, text=True, check=True)
+    return dict(re.fullmatch(r"(\w+)=\[(.*)\]", l).groups() for l in r.stdout.splitlines())
+check("docker/compose/check.sh と lab.sh の env_get は同じ定義で、export / \" \" / ' ' / CRLF / 行末の # メモ / x#y / 2 回目の定義を docker compose と同じに読む",
+      _eg[0] == _eg[1] and env_get_all(_eg[0]) == ENV_WANT and env_get_all(_eg[1]) == ENV_WANT)
 _lc = tree()
 _r, _c = run([os.path.join(_lc, "check.sh")])
 check("check.sh: .env が無ければ curl を打たずに止まる", _r.returncode == 1 and _c == [])

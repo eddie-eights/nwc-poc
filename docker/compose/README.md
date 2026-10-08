@@ -37,7 +37,7 @@ QEMU（binfmt）は要らない。build するイメージ（Telegraf、Grafana�
 cp docker/compose/.env.example docker/compose/.env
 ```
 
-`.env` の値は手元だけの試し用（パスワード・HEC の token・lab のイメージ）。パスワードと token を変えるなら、最初の `up.sh` の前にここで変える。OpenSearch と Grafana は初回の起動で admin のパスワードを volume に書き込むので、あとから `.env` だけ変えても古い値のまま（新しい値で 401。Spark が OpenSearch へ送るログは 401 で捨てられ、`check.sh` も NG になる。Splunk のパスワードと HEC の token が同じかは未確認）。あとから変えるなら `docker/compose/down.sh -v` で volume ごと消してから上げ直す。`.env` は git に入らない。
+`.env` の値は手元だけの試し用（パスワード・HEC の token・lab のイメージ）。パスワードと token を変えるなら、最初の `up.sh` の前にここで変える。OpenSearch と Grafana は初回の起動で admin のパスワードを volume に書き込むので、あとから `.env` だけ変えても古い値のまま（新しい値で 401。Spark が OpenSearch へ送るログは 401 で捨てられ、`check.sh` も NG になる。Splunk のパスワードと HEC の token が同じかは未確認）。あとから変えるなら `docker/compose/down.sh -v` で volume ごと消してから上げ直す。`.env` は git に入らない。`check.sh` と `lab.sh` も `.env` を compose と同じように読む（行頭の `export `、CRLF、クォート無しの値の後ろの ` # メモ` は落とす）。
 
 ```bash
 docker/compose/up.sh
@@ -55,7 +55,7 @@ lab を上げる（`sudo` のパスワードを聞かれる）。最後に `comp
 docker/compose/check.sh
 ```
 
-2〜3 分待ってから打つ。Kafka のトピック、Prometheus の `snmp_interface_ifOperStatus`、OpenSearch の `snmp-logs`、Splunk の `sourcetype=netops:*`、Grafana のデータソース 2 つと Prometheus の health を見て、全部 `ok` なら `すべて ok`。trap は見ない（下の `fail-main` と `trap-test` で見る）。Kafka のトピックは Spark が起動のときに作るので、トピックがあっても Telegraf から届いている証拠にはならない（届いているかは Prometheus・OpenSearch・Splunk の件数で分かる）。1 つでも NG なら非 0 で終わるので、`docker compose -f docker/compose/compose.yaml logs <サービス>` で見る。
+2〜3 分待ってから打つ。Kafka のトピックとメッセージ数、Prometheus の `snmp_interface_ifOperStatus`、OpenSearch の `snmp-logs`、Splunk の `sourcetype=netops:*`、Grafana のデータソース 2 つと Prometheus の health を見て、NG が無ければ `すべて ok`。Kafka のトピックは Spark が起動のときに作るので、Telegraf から届いているかはメッセージ数（Kafbat UI の `messagesCount`）で見る。`metrics` が 0 件なら NG。trap の `traps` は障害を入れるまで来ないので、0 件でも NG にせず `注意` を出す（下の `fail-main` か `trap-test` のあとに打ち直すと `ok` になる）。1 つでも NG なら非 0 で終わるので、`docker compose -f docker/compose/compose.yaml logs <サービス>` で見る。
 
 障害を入れて見る:
 
