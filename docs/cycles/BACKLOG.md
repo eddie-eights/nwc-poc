@@ -20,7 +20,7 @@
 - [x] 手元の docker compose で動く構成を作る（WSL 用。lab から Splunk と Grafana まで届くこと） → 006-local-compose（2026-10-08 完了。WSL の通し検証はユーザー）
 - [x] ディレクトリを app/ と docker/ と IaC/ に並べ直す（006 のあと。compose は docker/compose/ へ動かす。app/ の下は agent→agentcore、workflow→temporal、web→dashboard、lab→containerlab に改名。2026-10-08 に順番を入れ替えた） → 007-restructure-dirs（2026-10-08 完了）
 - [x] `oss/compose/` を消すか決める（007 で `docker/compose/` と役目が重なると分かった。残すなら「OSS 版の部品を 1 つずつ確かめる」用途に絞って README に書く）（2026-10-08 完了。消した。版の正は `oss/ops/oss-images.sh` だけ。chore/remove-oss-compose）
-- [ ] Kafbat UI を Web の EC2 に同居させ、lab の EC2 で `containerlab graph` のトポロジ図を見られるようにする（Fargate のタスクと Cloud Map をやめる。EC2 は t4g.medium に上げ、Docker と MSK の IAM 権限と SG の web→MSK 9098 を足す。graph は 50080 を SSM のポートフォワードで。2026-10-08 の決定） → 010-kafbat-ui-on-web-ec2
+- [x] Kafbat UI を Web の EC2 に同居させ、lab の EC2 で `containerlab graph` のトポロジ図を見られるようにする（Fargate のタスクと Cloud Map をやめる。EC2 は t4g.medium に上げ、Docker と MSK の IAM 権限と SG の web→MSK 9098 を足す。graph は 50080 を SSM のポートフォワードで。2026-10-08 の決定） → 010-kafbat-ui-on-web-ec2（2026-10-08 完了。AWS の検証 10 は未実施、PM がまとめて行う）
 - [x] Redis を 8 系に上げる（OSS 版）（2026-10-08 完了。feat/oss-redis8-rolling。`REDIS_TAG` は共通なのでマネージド版の Nautobot の Redis も 8.10.2 になる。AWS では未確認）
 - [x] EMR を 7.14.0 に上げ、Spark の jar を合わせる（2026-10-08 完了。feat/spark-bump。AWS では未確認）
 - [x] Iceberg を 1.12.0 に上げる（2026-10-08 完了。feat/spark-bump。OSS 版だけ。マネージド版は EMR 同梱の 1.10.1 のまま。AWS では未確認）
@@ -68,3 +68,11 @@
 - [ ] Grafana のアラートルールの Error 状態を ops で検出する（`execErrState: KeepLast` で `Normal (Error)` が隠れ、008 の A の不具合は画面を見るまで分からなかった。ルールの API の `alerts[].state` か、ルールのモデルを `/api/ds/query` に POST して HTTP 200 を見る。2026-10-08 に 008 の実装で見つけた）
 - [ ] 手元の `check.sh` の Kafka のメッセージ数の判定で `messagesCount` が無い・null の応答を NG の理由つきで扱う（いまは Python の KeyError / TypeError で NG に倒れ、理由が読めない。2026-10-08 に 009 の cold review Round 1 の Nit 3）
 - [ ] 手元の `check.sh` の Telegraf の health の宛先を `up.sh` が決めた bind に合わせる（いまは `check.sh` を打った時点で 203.0.113.1 の有無を見直すので、`lab.sh down` のあとは 127.0.0.1 に打って案内が合わない。2026-10-08 に 009 の cold review Round 2 の Nit 2）
+- [ ] `IaC/terraform/aws-managed/base/ecr/outputs.tf` の `kafka_ui_repository_url` の description「pipeline/stream runs it on ECS.」を Web の EC2 の Docker が pull する形に直す（2026-10-08 に 010 の cold review の Nit 3）
+- [ ] Web の EC2 の user_data で Docker の `dnf install` / `systemctl enable --now docker` が落ちても Gradio の設定（`aws s3 sync`）まで進むようにする（いまは `set -e` で Gradio より前に止まる。2026-10-08 に 010 のセルフレビューの Nit 5 と cold review の Nit 4）
+- [ ] `docs/deploy.md` の 010 より前の環境の注意に、Fargate の kafka_ui が動いたままだと base/core の SG の削除が DependencyViolation で止まることを足す（2026-10-08 に 010 の cold review の Nit 5）
+- [ ] Kafbat UI の SSM の image を変えたときに Web の EC2 のコンテナを入れ替える手順を `docs/troubleshooting.md` に書く（いまはパスワードを変えたときの restart しか無く、起動時に 1 回読むだけなので restart か reboot まで旧版のまま。2026-10-08 に 010 のセルフレビューの Nit 4）
+- [ ] `SKIP_STREAM=1` のとき Web の EC2 の Kafbat UI の systemd ユニットが 30 秒ごとに再試行し続けるのを止める手段を作る（exit 75 の文言も AccessDenied やエンドポイント不達で「stream がまだ無い」と言う。2026-10-08 に 010 のセルフレビューの Nit 8）
+- [ ] `lab graph` の案内の `sudo systemctl status <prefix>-lab-graph` を `journalctl -u` にする（`systemd-run --collect` なので containerlab graph がすぐ落ちると一時ユニットが消え「could not be found」になる。起動の成否を見ずに案内を出す。2026-10-08 に 010 のセルフレビューの Nit 7）
+- [ ] `ops/up.sh` の stream の ECR エンドポイントのコメントに Web の EC2 の Kafbat UI の pull も使うことを足す（いまは Telegraf だけ。2026-10-08 に 010 のセルフレビューの Nit 10）
+- [ ] Kafbat UI のクラスター名を `<prefix>-stream` から `<prefix>` にしたことを `docs/verification/20261008-oss-aws.md` の手筋（`kafka-ui.<名前空間>:8080` と `efukuda-nwc-oss-stream`）に注記する（REST の `/api/clusters/{name}/…` の識別子でもある。2026-10-08 に 010 のセルフレビューの Nit 6）
