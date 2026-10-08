@@ -41,17 +41,21 @@ if command -v free >/dev/null; then
   [ "$m" -ge 19456 ] || echo "注意: メモリが ${m} MiB（20 GB 未満）。.wslconfig の memory を 20GB 以上にするか、lab を減らす（docker/compose/README.md）"
 fi
 
-# Kafka は Kafbat UI のトピックの一覧を 1 回取って 3 つ見る。messagesCount はトピックの全パーティションのメッセージ数の和
+# Kafka は Kafbat UI のトピックの一覧を 1 回取って 4 つ見る。messagesCount はトピックの全パーティションのメッセージ数の和
 # （2026-10-08 に手元の compose で kafka-get-offsets.sh の最新オフセットの和と同じ値を確認。docker exec しなくて済む）
 kafka=$(get - 'http://127.0.0.1:18080/api/clusters/nwc/topics?perPage=100' || true)
-judge "Kafka: トピック metrics / gnmi / traps / logs がある" \
-  "(lambda n: 'ok' if not n else '無い: ' + ', '.join(n))(sorted({'metrics', 'gnmi', 'traps', 'logs'} - {t['name'] for t in json.loads(s)['topics']}))" \
+judge "Kafka: トピック metrics / gnmi / traps / logs / flows がある" \
+  "(lambda n: 'ok' if not n else '無い: ' + ', '.join(n))(sorted({'metrics', 'gnmi', 'traps', 'logs', 'flows'} - {t['name'] for t in json.loads(s)['topics']}))" \
   <<<"$kafka"
-# トピックは Spark が起動のときに作るので、Telegraf から届いているかはメッセージ数で見る。trap は障害を入れるまで来ないので、traps の 0 件は NG にしない
+# トピックは Spark が起動のときに作るので、Telegraf と syslog-ng から届いているかはメッセージ数で見る。trap と syslog は障害を入れるまで来ないこともあるので、
+# traps と logs の 0 件は NG にしない。flows は lab の SR Linux が NetFlow を出さないので数を見ない（tools/netflow_send.py で送ったときだけ増える）
 cnt="{t['name']: t['messagesCount'] for t in json.loads(s)['topics']}"
 judge "Kafka: metrics のメッセージ数 > 0" "'ok' if $cnt.get('metrics', 0) > 0 else '0 件'" <<<"$kafka"
 judge "Kafka: traps のメッセージ数 > 0" \
   "'ok' if $cnt.get('traps', 0) > 0 else '注意: 0 件（trap は障害を入れるまで来ない。docker/compose/lab.sh fail-main か trap-test のあとに打ち直す）'" \
+  <<<"$kafka"
+judge "Kafka: logs のメッセージ数 > 0" \
+  "'ok' if $cnt.get('logs', 0) > 0 else '注意: 0 件（syslog は機器が出すまで来ない。docker/compose/lab.sh fail-main のあとに打ち直す。来ないままなら docker compose logs syslog-ng）'" \
   <<<"$kafka"
 judge "Prometheus: count(snmp_interface_ifOperStatus) > 0" \
   "(lambda r: 'ok' if r and float(r[0]['value'][1]) > 0 else '0 件')(json.loads(s)['data']['result'])" \
@@ -83,6 +87,14 @@ hp=${HEALTH_PORT:-$(env_get HEALTH_PORT)}
 judge "Telegraf: health が 200" \
   "'ok' if s.strip() == '200' else ('繋がらない' if s.strip() in ('', '000') else 'HTTP ' + s.strip()) + '（docker compose ps -a telegraf が Exited なら logs telegraf で理由を見て up.sh telegraf）'" \
   <<<"$(get - -o /dev/null -w '%{http_code}' "http://$tb:${hp:-8080}/" || true)"
+# syslog-ng と GoFlow2 も host のネットワークで、Telegraf と同じアドレス（up.sh の TELEGRAF_BIND）で待つ。syslog-ng は 5140/udp を待っているか（ss の 4 列目が
+# 待っているアドレス:ポート）、GoFlow2 は /metrics（8081。8080 は Telegraf の health）を見る
+judge "syslog-ng: udp 5140 を待っている" \
+  "'ok' if any(l.split()[3].endswith(':5140') for l in s.splitlines() if len(l.split()) > 3) else '待っていない（docker compose ps -a syslog-ng が Exited なら logs syslog-ng で理由を見て up.sh syslog-ng）'" \
+  <<<"$(ss -Hlun 2>/dev/null || true)"
+judge "GoFlow2: /metrics が 200" \
+  "'ok' if s.strip() == '200' else ('繋がらない' if s.strip() in ('', '000') else 'HTTP ' + s.strip()) + '（docker compose ps -a goflow2 が Exited なら logs goflow2 で理由を見て up.sh goflow2）'" \
+  <<<"$(get - -o /dev/null -w '%{http_code}' "http://$tb:8081/metrics" || true)"
 
 if [ "$ng" = 0 ]; then echo "すべて ok"; else echo "NG がある（docker compose logs <サービス> で見る）"; fi
 exit "$ng"

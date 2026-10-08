@@ -10,13 +10,13 @@ else echo "python3 か uv が要る（app/containerlab/lab_topology.py を動か
 SNMP_AGENTS=$("${PY[@]}" ../../app/containerlab/lab_topology.py ../../app/containerlab --snmp-agents)
 GNMI_TARGETS=$("${PY[@]}" ../../app/containerlab/lab_topology.py ../../app/containerlab --gnmi-targets)
 DEVICE_MAP=$("${PY[@]}" ../../app/containerlab/lab_topology.py ../../app/containerlab --device-map)
-# Telegraf（host のネットワーク）が待つアドレス。lab の管理ネットの GW（app/containerlab/lab.sh の MGMT_GW。lab.sh up で containerlab の bridge に付く）が
-# host にあればそこだけで待つ。無ければ bind に失敗するので空（全部のインターフェース）にする。docker/compose/check.sh も同じ見方で health に打つ
+# Telegraf・syslog-ng・GoFlow2（host のネットワーク）が待つアドレス。lab の管理ネットの GW（app/containerlab/lab.sh の MGMT_GW。lab.sh up で containerlab の bridge に付く）が
+# host にあればそこだけで待つ。無ければ bind に失敗するので空（全部のインターフェース）にする。docker/compose/check.sh も同じ見方で health と /metrics に打つ
 MGMT_GW=203.0.113.1
 if ip -o -4 addr show 2>/dev/null | grep -q " $MGMT_GW/"; then TELEGRAF_BIND=$MGMT_GW
 else
   TELEGRAF_BIND=
-  echo "WARNING: lab の管理ネット（${MGMT_GW}）がまだ無いので、Telegraf は WSL の全部のインターフェースで待つ。docker/compose/lab.sh up のあとに docker/compose/up.sh telegraf で ${MGMT_GW} だけに直す" >&2
+  echo "WARNING: lab の管理ネット（${MGMT_GW}）がまだ無いので、Telegraf・syslog-ng・GoFlow2 は WSL の全部のインターフェースで待つ。docker/compose/lab.sh up のあとに docker/compose/up.sh telegraf syslog-ng goflow2 で ${MGMT_GW} だけに直す" >&2
 fi
 export SNMP_AGENTS GNMI_TARGETS DEVICE_MAP TELEGRAF_BIND
 docker compose up -d --build "$@"

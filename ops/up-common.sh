@@ -230,6 +230,10 @@ NAUTOBOT_VERSION=3.2.6
 GRAFANA_VERSION=13.2.3   # docker/images/grafana/Dockerfile の ARG の既定値に合わせてある（変えるときは両方を変える）
 REDIS_TAG=8.10.2-alpine   # 8 系は AGPLv3 も選べる（7.4 は RSALv2 / SSPL だけ）。公式のイメージは Search・JSON などのモジュールを読み込んで起きる
 TEMPORAL_TAG=1.9.1
+# 機器の syslog と NetFlow / sFlow の受け口（cycle 012）。SYSLOG_NG_VERSION は docker/images/syslog-ng/Dockerfile の ARG の既定値、GOFLOW2_TAG は netsampler/goflow2 のタグ。
+# docker/compose/compose.yaml も同じ値（tests/test_local_compose.py が照合する。変えるときは全部を変える）。どちらも arm64 のイメージがあることを確かめてある
+SYSLOG_NG_VERSION=4.29.0
+GOFLOW2_TAG=v2.2.7
 nautobot_context() {  # nautobot_context <空のディレクトリ>  Nautobot のイメージのビルドの context を集める（docker/images/nautobot/Dockerfile の頭の説明）
   # app/nautobot/ の中身に、グラフへ openCypher で書く app/agentcore/graph.py と app/agentcore/toolkit.py、最初の seed にする lab の定義を足す。
   # タグはこのディレクトリの中身と docker/images/nautobot/Dockerfile から作る（dir_tag）ので、graph.py や lab の定義や Dockerfile を変えてもイメージが作り直される
