@@ -112,3 +112,4 @@
 - [ ] architecture の pptx 2 本を 007 と 017 のあとのパスで作り直す（`docs/architecture-managed.pptx` と `architecture-oss.pptx` の中の `terraform/`・`oss/terraform/`・`oss/ops/up.sh` が当時のまま。`docs/architecture/README.md:7` の注を外す。2026-10-09 に 017 の cold review Round 1 の Should fix S3）
 - [ ] `ensure_secret` / `ensure_fixed_secret` の一時ファイルを `on_exit` でも消す（`ops/up-common.sh:111` と `:149` は SecureString の値を 0600 の一時ファイルに書き、消すのは関数の最後の `rm` だけ。`put-parameter` の最中に Ctrl+C や kill で止まると平文のファイルが残る。2026-10-09 に 012 の Round 2 のセルフレビューの C5）
 - [ ] `ensure_topics` のログを TopicExists のときに「作った」と出さないようにする（`app/spark/snmp_sinks.py:862-867`。3 本のジョブが同時に起きると、作っていないジョブも「作った: logs, flows」と出す。ずれるのは文言だけでトピックと ACL は正しい。2026-10-09 に 012 の Round 2 のセルフレビューの N4）
+- [ ] コレクターごとに SCRAM のユーザーを分ける（いまは syslog-ng / GoFlow2 / gnmic が `User:collectors` を共有し、`logs` / `flows` / `gnmi` の全部に書ける。ユーザーを 3 つにして secret と ACL をコレクターごとに絞る。2026-10-09 に 013 のセルフレビュー F1b の残リスク）
