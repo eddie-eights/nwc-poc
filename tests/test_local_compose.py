@@ -81,6 +81,8 @@ check(".env.example の SRLINUX_IMAGE / MULTITOOL_IMAGE は ops/lab-common.sh �
       example["SRLINUX_IMAGE"] == f"{sh_const(lab_common, 'SRLINUX_UPSTREAM')}:{sh_const(lab_common, 'SRLINUX_TAG')}"
       and example["MULTITOOL_IMAGE"] == f"{sh_const(lab_common, 'MULTITOOL_UPSTREAM')}:{sh_const(lab_common, 'MULTITOOL_TAG')}")
 check("splunk は linux/amd64（上流が amd64 だけ）", svc["splunk"]["platform"] == "linux/amd64")
+check("telegraf と spark-splunk / spark-http は restart: on-failure:5（起こし直しは 5 回まで。swarm の deploy.restart_policy は使わない）",
+      all(svc[n].get("restart") == "on-failure:5" and "deploy" not in svc[n] for n in ("telegraf", "spark-splunk", "spark-http")))
 
 # ---- 3. Kafka: oss/compose の x-kafka-env の写しに EXTERNAL リスナーを足しただけ
 _oss_env = oss["kafka-1"]["environment"]
@@ -201,6 +203,9 @@ check("SPLUNK_HEC_TOKEN は uuid の形（Splunk のイメージが作る HEC �
 check("docker/compose/.env は git に入らず、.env.example は入る",
       subprocess.run(["git", "check-ignore", "-q", "docker/compose/.env"], cwd=ROOT).returncode == 0
       and subprocess.run(["git", "check-ignore", "-q", "docker/compose/.env.example"], cwd=ROOT).returncode == 1)
+check("containerlab が作る app/containerlab/clab-splab/ は git に入らない（.gitignore の app/containerlab/clab-*/）",
+      subprocess.run(["git", "check-ignore", "-q", "app/containerlab/clab-splab/topology-data.json"], cwd=ROOT).returncode == 0
+      and subprocess.run(["git", "check-ignore", "-q", "app/containerlab/lab.sh"], cwd=ROOT).returncode == 1)
 check("docker/ の下に .py が無い（ops/check.sh の ast.parse の対象だが、置かない）",
       not [f for _, _, fs in os.walk(os.path.join(ROOT, "docker")) for f in fs if f.endswith(".py")])
 SCRIPTS = ["up.sh", "down.sh", "check.sh", "lab.sh"]
@@ -208,31 +213,47 @@ check("docker/compose の 4 つと app/containerlab/lab.sh は実行できる（
       all(os.access(os.path.join(LC, s), os.X_OK) for s in SCRIPTS) and os.access(os.path.join(ROOT, "app", "containerlab", "lab.sh"), os.X_OK))
 check("docker/compose の 4 つと app/containerlab/lab.sh は 1 つずつ bash -n が通る（bash -n a b は a しか見ない）",
       all(subprocess.run(["bash", "-n", p]).returncode == 0 for p in [os.path.join(LC, s) for s in SCRIPTS] + [os.path.join(ROOT, "app", "containerlab", "lab.sh")]))
-check("ops/check.sh の bash -n（1 つずつ打つ for 文）に docker/compose/*.sh、.py の find に docker がある",
-      re.search(r'^for f in .* docker/compose/\*\.sh; do bash -n "\$f"; done$', read("ops", "check.sh"), re.M) is not None
+check("ops/check.sh の bash -n は git ls-files '*.sh' の全部（ファイルを並べない）、.py の find に docker がある",
+      re.search(r"^SH=\$\(git ls-files '\*\.sh'\)$", read("ops", "check.sh"), re.M) is not None
+      and "docker/compose/*.sh" not in read("ops", "check.sh")
       and re.search(r"^find .*\bdocker\b.* -name '\*\.py'", read("ops", "check.sh"), re.M) is not None)
-# ops/check.sh の 3 の 1 行を、並んだファイルを写した木（中身は true）で打つ。1 つずつ構文エラー（if だけ）に替えて、どの位置でも落ちることを見る
-_s3 = re.search(r'^log "3\. .*\n(.*)\n', read("ops", "check.sh"), re.M).group(1)
+# ops/check.sh の 3 の .sh の部分（log "3. の次の行から .py の前まで）を、git の木で打つ。追跡している .sh（中身は true）を 1 つずつ構文エラー（if だけ）に替えて、
+# どの位置でも落ちることを見る。追跡していない .sh（構文エラーのまま）は見ない
+_s3 = re.search(r'^log "3\. .*\n((?:.*\n)*?)if command -v python3', read("ops", "check.sh"), re.M).group(1)
+def s3_run(cwd):
+    return subprocess.run(["bash", "-c", 'set -euo pipefail\ndie() { echo "$*" >&2; exit 1; }\n' + _s3], cwd=cwd, capture_output=True, text=True)
+def s3_write(d, f, body):
+    os.makedirs(os.path.join(d, os.path.dirname(f)), exist_ok=True)
+    with open(os.path.join(d, f), "w") as fh:
+        fh.write(body)
 _s3_tmp = tempfile.mkdtemp()
-_s3_files = sorted({os.path.relpath(f, ROOT) for p in _s3.replace(";", " ").split() if p.endswith(".sh")
-                    for f in glob.glob(os.path.join(ROOT, p))})
+_s3_files = ["a.sh", "b/c.sh", "b/d e.sh"]
+subprocess.run(["git", "init", "-q", _s3_tmp], check=True)
 for _f in _s3_files:
-    os.makedirs(os.path.join(_s3_tmp, os.path.dirname(_f)), exist_ok=True)
-    with open(os.path.join(_s3_tmp, _f), "w") as f:
-        f.write("true\n")
-def s3_run(bad=None):  # bad のファイルだけ構文エラーにして 3 の 1 行を打ち、終了コードを返す
-    if bad:
-        with open(os.path.join(_s3_tmp, bad), "w") as f:
-            f.write("if\n")
-    r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + _s3], cwd=_s3_tmp, capture_output=True, text=True)
-    if bad:
-        with open(os.path.join(_s3_tmp, bad), "w") as f:
-            f.write("true\n")
-    return r.returncode
-check(f"ops/check.sh の 3: 並んだ {len(_s3_files)} ファイルのどれか 1 つ（2 番目以降を含む）が構文エラーなら落ち、全部通れば 0（bash -n a b c は a しか見ず、b と c は位置引数になる）",
-      len(_s3_files) >= 19 and "docker/compose/check.sh" in _s3_files and s3_run() == 0
-      and [f for f in _s3_files if s3_run(f) == 0] == [])
+    s3_write(_s3_tmp, _f, "true\n")
+s3_write(_s3_tmp, "untracked.sh", "if\n")
+subprocess.run(["git", "add", "--", *_s3_files], cwd=_s3_tmp, check=True)
+def s3_bad(bad):  # bad のファイルだけ構文エラーにして打ち、終了コードを返す
+    s3_write(_s3_tmp, bad, "if\n")
+    r = s3_run(_s3_tmp).returncode
+    s3_write(_s3_tmp, bad, "true\n")
+    return r
+_r = s3_run(_s3_tmp)
+check("ops/check.sh の 3: git が追跡している .sh のどれか 1 つ（2 番目以降と、名前に空白のあるものを含む）が構文エラーなら落ち、全部通れば 0 で本数を出す（bash -n a b c は a しか見ない。追跡していない .sh は見ない）",
+      _r.returncode == 0 and "bash -n: 3 本" in _r.stdout and [f for f in _s3_files if s3_bad(f) == 0] == [])
 shutil.rmtree(_s3_tmp)
+_s3_tmp = tempfile.mkdtemp()
+_r = s3_run(_s3_tmp)
+subprocess.run(["git", "init", "-q", _s3_tmp], check=True)
+_r2 = s3_run(_s3_tmp)
+check("ops/check.sh の 3: git の外か、追跡している .sh が 1 つも無ければ、何も見ずに「通過」にせず止まる",
+      _r.returncode != 0 and _r2.returncode != 0 and "git ls-files で .sh が取れない" in _r2.stderr)
+shutil.rmtree(_s3_tmp)
+_tracked_sh = subprocess.run(["git", "ls-files", "*.sh"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.splitlines()
+_r = s3_run(ROOT)
+check(f"ops/check.sh の 3: このリポジトリで通り、本数は git ls-files '*.sh' と同じ {len(_tracked_sh)} 本（docker/compose の 4 つと app/containerlab/lab.sh を含む）",
+      _r.returncode == 0 and f"bash -n: {len(_tracked_sh)} 本" in _r.stdout
+      and {f"docker/compose/{s}" for s in SCRIPTS} | {"app/containerlab/lab.sh"} <= set(_tracked_sh))
 
 # ---- 8. 偽のコマンドで動かす（呼ばれたコマンドを FAKE_LOG に 1 行ずつ書く）
 TMP = tempfile.mkdtemp()
@@ -375,6 +396,8 @@ check("docker/compose/lab.sh up: app/containerlab/lab.sh render を打ってか�
       and [c.split()[6] if c.startswith("sudo ") else c for c in _c if c.startswith(("sudo ", "containerlab "))]
       == ["render", "up", "containerlab deploy -t splab.clab.yml --reconfigure"]
       and open(_yml, encoding="utf-8").read() == read("app", "containerlab", "splab.clab.yml.in").replace("__SRLINUX_IMAGE__", SRL).replace("__MULTITOOL_IMAGE__", MT))
+check("app/containerlab/lab.sh render: 作った splab.clab.yml のイメージ名（SRLINUX_IMAGE と MULTITOOL_IMAGE）を出す（手元は REGISTRY が無い）",
+      f"splab.clab.yml を作った（イメージは {SRL} と {MT}）" in _r.stdout)
 _r, _c = run([os.path.join(_lc, "lab.sh"), "down"])
 check("docker/compose/lab.sh: up 以外（down など）は render しない", [c.split()[6] for c in _c if c.startswith("sudo ")] == ["down"])
 

@@ -44,8 +44,9 @@ x-spark: &spark
     context: ../../app/spark
     dockerfile: ../../docker/images/spark/Dockerfile
   image: nwc-local-spark
-  # Splunk が起きる前（起動に数分）は HEC への POST が再試行の後に落ちてジョブが終わる。起こし直して checkpoint の続きから読む（ECS のサービスの代わり）
-  restart: on-failure
+  # Splunk が起きる前（起動に数分）は HEC への POST が再試行の後に落ちてジョブが終わる。起こし直して checkpoint の続きから読む（ECS のサービスの代わり）。
+  # 5 回で止める（設定の誤りで落ち続けるときに回り続けない。止まったら docker compose logs で見る。docker/compose/README.md）
+  restart: on-failure:5
   depends_on: [kafka-1, kafka-2, kafka-3]
 
 x-spark-env: &spark-env
@@ -64,8 +65,8 @@ services:
         TELEGRAF_VERSION: 1.40.1
     image: nwc-local-telegraf
     network_mode: host
-    # Kafka が受け付ける前に起きると出力の接続で落ちるので、起こし直す
-    restart: on-failure
+    # Kafka が受け付ける前に起きると出力の接続で落ちるので、起こし直す。5 回で止める（ポートがぶつかるなど、起こし直しても直らないとき）
+    restart: on-failure:5
     depends_on: [kafka-1, kafka-2, kafka-3]
     environment:
       SINK: kafka

@@ -79,7 +79,7 @@ docker/compose/lab.sh fail-main
 
 ## ぶつかりやすいポート
 
-Telegraf は host のネットワークにいるので、host の次のポートを開ける（`127.0.0.1` ではなく全部のインターフェース。WSL の外から届くかは WSL のネットワークのモード次第で、未確認）。ほかのプロセスが使っていると Telegraf が起動しない（`docker compose -f docker/compose/compose.yaml logs telegraf`）。ポートは `app/telegraf/telegraf.sh` と `telegraf.conf.in` の固定値で、環境変数では変えられない。ぶつかったら相手のプロセスを止める。
+Telegraf は host のネットワークにいるので、host の次のポートを開ける（`127.0.0.1` ではなく全部のインターフェース。WSL の外から届くかは WSL のネットワークのモード次第で、未確認）。ほかのプロセスが使っていると Telegraf が起動しない（`docker compose -f docker/compose/compose.yaml logs telegraf`）。telegraf と spark は `restart: on-failure:5` なので、5 回起こし直しても落ちるなら止まったままになる。`docker compose -f docker/compose/compose.yaml ps -a` で `Exited` なら `logs telegraf` で理由を見て、直してから `docker/compose/up.sh` で起こす。ポートは `app/telegraf/telegraf.sh` と `telegraf.conf.in` の固定値で、環境変数では変えられない。ぶつかったら相手のプロセスを止める。
 
 | ポート | 用途 |
 |---|---|
@@ -110,4 +110,4 @@ lab の `down` は trap の REDIRECT（目印 `nwc-lab-telegraf`）を残す。�
 sudo iptables -t nat -D PREROUTING -s 203.0.113.0/24 -d 203.0.113.1 -p udp --dport 162 -m comment --comment nwc-lab-telegraf -j REDIRECT --to-ports 1162
 ```
 
-containerlab が `app/containerlab/clab-splab/`（root の持ち物）を作る。git の無視の対象に入っていないので、`git status` に出る。消すなら `sudo rm -rf app/containerlab/clab-splab`。
+containerlab が `app/containerlab/clab-splab/`（root の持ち物）を作る。git の無視の対象（`.gitignore` の `app/containerlab/clab-*/`）なので `git status` には出ない。消すなら `sudo rm -rf app/containerlab/clab-splab`。

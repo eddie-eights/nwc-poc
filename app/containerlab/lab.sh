@@ -108,7 +108,7 @@ case "${1:-}" in
   render)
     : "${SRLINUX_IMAGE:?}" "${MULTITOOL_IMAGE:?}"
     sed -e "s#__SRLINUX_IMAGE__#$SRLINUX_IMAGE#" -e "s#__MULTITOOL_IMAGE__#$MULTITOOL_IMAGE#" "$TOPO.in" > "$TOPO"
-    echo "$TOPO を作った（イメージは ${REGISTRY:-?}）"
+    echo "$TOPO を作った（イメージは $SRLINUX_IMAGE と $MULTITOOL_IMAGE）"
     ;;
   pull)
     # ECR の認証は 12 時間で切れるので、毎回ログインしてから取る（署名はインスタンスロール）。
