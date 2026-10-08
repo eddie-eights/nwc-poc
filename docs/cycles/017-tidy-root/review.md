@@ -159,4 +159,13 @@ None
 
 ### PM の判断
 
-（未。報告を送った）
+2026-10-09。PM が先に design.md を直した（df42f51）。実装は build.md の Round 2。
+
+- Should fix 1（Nautobot のタグ）: (b) このまま。方針 6 に「イメージの版に `dir_tag` は含まない。Nautobot は次の up.sh で 1 回作り直す」。実装は変えない
+- S1（verification）: 戻す。`docs/verification/20261008-oss-aws.md` を 03840c8 の内容にし、`docs/development.md:7` を変更対象表の文にする（0ae2439）
+- S2（`security_groups.tf`）: (a) このまま。方針 6 に in-place の例外として書いた
+- S3（README と pptx）: (b) pptx は触らない。`docs/architecture/README.md:7` に注を足す（0ae2439）。BACKLOG は PM が足した
+- S4（言い回し）: このサイクルで直す。方針 7、commit 3（2dc6237）
+- D1: 検証 4 の期待に `oss-variant.md` の方針 3 の 1 文を除外として書いた。実装は変えない
+- Nit N1〜N4: 直さない
+- cold review の 2 回目は PM が PR に対して呼ぶ

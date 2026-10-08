@@ -396,3 +396,212 @@ tests が拾わなかった R7・R8 を、検証 4 と検証 8 が拾うか（in
 - 機械置換のやりすぎ: verification（S1）のほかは見つからなかった。MCP の `"tools/list"`・`"tools/call"`（`app/agentcore/mcp_client.py`）は置換されていない（反対弁護人が確認）。
 - tests の弱化: `test_nautobot.py:257` の pathspec から `oss` を外したのは同値（`git ls-files oss` が 0 行。検証 2）。`test_oss.py:1941` の「find に `ops`」は `roll_health.py` が `ops/oss/` に移ったので意味が保たれる。R1 で落ちることを確かめた。
 - CI（`.github`）、`.dockerignore`、Makefile は追跡ファイルに無い。`pyproject.toml` にパスの参照は無い（反対弁護人が確認）。
+
+## Round 2
+
+実装モデル: opus-5.5 / effort: xhigh（high へ下げる手段が無い）
+
+cold review 1 回目の Should fix 5 件への PM の判断（design.md df42f51）を入れたラウンド。`docs/cycle-006-design` の df42f51 をマージしてから作業した（cd72989）。
+
+### commit
+
+| commit | 内容 |
+| :--- | :--- |
+| cd72989 | `docs/cycle-006-design`（df42f51）のマージ |
+| 0ae2439 | S1・S3: `docs/verification/20261008-oss-aws.md` を 03840c8 の内容に戻す（`git checkout 03840c8 --`）。`docs/development.md:7` の 017 の 1 文を変更対象表の文にする。`docs/architecture/README.md:7` に pptx の注を足す |
+| 2dc6237 | S4: 方針 7。「OSS 版の ops/up.sh」「(the) OSS ops/up.sh」（down.sh も）を `ops/oss/up.sh` / `ops/oss/down.sh` に置き換える（15 ファイル 34 か所） |
+| （この commit） | build.md Round 2 と review.md の PM の判断 |
+
+### 変更ファイル（`git diff --name-status -M cd72989 2dc6237`）
+
+```
+M	IaC/terraform/oss/pipeline/analytics/grafana.tf
+M	IaC/terraform/oss/pipeline/analytics/network.tf
+M	IaC/terraform/oss/pipeline/analytics/opensearch.tf
+M	IaC/terraform/oss/pipeline/analytics/spark.tf
+M	IaC/terraform/oss/pipeline/analytics/victoriametrics.tf
+M	IaC/terraform/oss/pipeline/graph/neo4j.tf
+M	IaC/terraform/oss/pipeline/graph/outputs.tf
+M	IaC/terraform/oss/pipeline/graph/sync.tf
+M	IaC/terraform/oss/pipeline/stream/kafka.tf
+M	app/agentcore/requirements-oss.txt
+M	app/dashboard/requirements-oss.txt
+M	app/temporal/requirements-oss.txt
+M	docker/images/neo4j/Dockerfile
+M	docker/images/spark/Dockerfile
+M	docs/architecture/README.md
+M	docs/development.md
+M	docs/verification/20261008-oss-aws.md
+M	tests/test_oss.py
+```
+
+方針 7 の置換の内訳（`policy7.py` の出力。正規表現は `OSS 版の ops/(up|down)\.sh` → `ops/oss/\1.sh` と `(?:[Tt]he )?OSS ops/(up|down)\.sh` → `ops/oss/\1.sh`）:
+
+```
+analytics/grafana.tf 2 / analytics/network.tf 2 / analytics/opensearch.tf 6 / analytics/spark.tf 4 / analytics/victoriametrics.tf 2
+graph/neo4j.tf 3 / graph/outputs.tf 1 / graph/sync.tf 2 / stream/kafka.tf 6
+app/agentcore/requirements-oss.txt 1 / app/dashboard/requirements-oss.txt 1 / app/temporal/requirements-oss.txt 1
+docker/images/neo4j/Dockerfile 1 / docker/images/spark/Dockerfile 1 / tests/test_oss.py 1
+files 15 / places 34
+```
+
+置き換えたのはコメント、Terraform の variable / output の `description`、precondition の `error_message`（grafana.tf と sync.tf の 1 か所ずつ）、`tests/test_oss.py:1899` の check の見出しだけ。
+
+### 検証（`verify017r2.sh`。HEAD 2dc6237 で取った）
+
+```
+### HEAD
+2dc6237 根に残ったものを app/ ops/ docs/ に片付ける（017）: OSS 版の ops/up.sh の言い回しを ops/oss/up.sh にする
+### 1 bash ops/check.sh
+rc=0
+通過 169 / 失敗 0
+通過 504 / 失敗 0
+通過 161 / 失敗 0
+通過 79 / 失敗 0
+通過 3 / 失敗 0
+通過 78 / 失敗 0
+通過 7 / 失敗 0
+通過 104 / 失敗 0
+通過 132 / 失敗 0
+69 項目すべて通過
+通過 173 / 失敗 0
+通過 194 / 失敗 0
+通過 66 / 失敗 0
+通過 96 / 失敗 0
+通過 103 / 失敗 0
+通過 327 / 失敗 0
+すべて通過
+### 2 git ls-files oss tools GLOSSARY.md（行数）
+       0
+### 3 ls
+CLAUDE.md
+IaC
+README.md
+app
+deploy.env.example
+docker
+docs
+ops
+pyproject.toml
+tests
+uv.lock
+### 4 実装ステップ 2 の grep
+./docs/oss-variant.md:66:| `ops/oss/up.sh`、`ops/oss/down.sh` | OSS 版の作る・消す。接頭辞は `<owner>-nwc-oss` で、マネージド版と並べて立てられる。SSM のパラメータ
+./docs/architecture/README.md:7:スライドの構成図は 2 本。マネージド版が [architecture-managed.pptx](../architecture-managed.pptx)（10 枚。データの流れ、9 つの Terraform �
+### 4b git grep 'OSS (版の )?ops/(up|down).sh'（行数）
+       0
+### 4c git diff --stat 03840c8 -- docs/verification docs/*.pptx（行数）
+       0
+### 5 git log --follow
+f587cb0 OSS 版（005）の oss/ops/up.sh・down.sh を作り、ops/ の共通の関数を ops/common.sh・up-common.sh・down-common.sh に切り出した
+f55feb4 フェーズ 3 を実装する: Temporal on ECS Fargate のワーカー（terraform/workflow）と AgentCore Gateway（MCP）
+### 6 git diff --stat -M docs/cycle-006-design
+ {tools => app/gateway}/handler.py                  |   0
+ {tools => app/gateway}/tools.json                  |   0
+ GLOSSARY.md => docs/GLOSSARY.md                    |   0
+ {tools => ops}/netflow_send.py                     |   8 +-
+ {oss/ops => ops/oss}/down.sh                       |  30 +-
+ {oss/ops => ops/oss}/oss-images.sh                 |   4 +-
+ {oss/ops => ops/oss}/roll-nodes.sh                 |  10 +-
+ {oss/ops => ops/oss}/roll_health.py                |   2 +-
+ {oss/ops => ops/oss}/up.sh                         |  50 +--
+ 76 files changed, 850 insertions(+), 292 deletions(-)
+### 7 OPS_DIR
+ops/oss/up.sh:41:OPS_DIR=ops/oss        # SSM のパラメータのタグ ManagedBy=ops/oss/up.sh（ops/oss/down.sh はこのタグのものだけ消す）
+ops/oss/down.sh:27:OPS_DIR=ops/oss       # 消す SSM のパラメータはタグ ManagedBy=ops/oss/up.sh のものだけ（マネージド版の ManagedBy=ops/up.sh は残る）
+### 8 created by
+8
+### 9 terraform validate
+Success! The configuration is valid.
+
+### 10 test_workflow
+通過 327 / 失敗 0
+```
+
+- 1: 16 本の件数は Round 1 と同じ（173 / 194 / 327 / 79 を含む）。
+- 4: 2 行。`oss-variant.md:66` は期待どおりの除外。`architecture/README.md:7` は期待の除外に無い（下の「設計からの逸脱」2）。当たっているのは変更対象表のとおりに足した注の `oss/ops/` で、`grep -n -o -E '.{0,40}oss/ops.{0,40}'` の出力は「SG、`ops/oss/up.sh`（スライドの中のパスは 017 より前の `oss/ops/`・`oss/terraform/` のまま。作り直しは BACKLOG）、A」。
+- 6: 基準の `docs/cycle-006-design` は e70f59e（013 の design.md の commit。まだマージしていない）。rename は同じ 9 本。
+- 9: check.sh も `terraform fmt -check` と `validate` を aws-managed と oss の両方に打つ（check.sh:3-6、25-31）。方針 7 で `description` と `error_message` を書き換えた Terraform も通っている。
+
+#### 中身のハッシュで決まるもの（`tags017.py`。03840c8 と HEAD の比較）
+
+```
+== dir_tag のイメージ（版の部分は X）
+  telegraf   03840c8 X-5e4849f9cbd4  HEAD X-5e4849f9cbd4  同じ
+  syslog-ng  03840c8 X-90f5978c4447  HEAD X-90f5978c4447  同じ
+  grafana    03840c8 X-b8d6d51ee31d  HEAD X-b8d6d51ee31d  同じ
+  splunk     03840c8 X-071b361034b8  HEAD X-071b361034b8  同じ
+  spark      03840c8 X-384311cb6a49  HEAD X-aba177ebac64  違う
+  neo4j      03840c8 X-e8013fd894bf  HEAD X-6964f3a5a2a6  違う
+  nautobot   03840c8 X-83eb721caa36  HEAD X-0cad931cdd12  違う
+  nautobot の context の diff -r:
+    diff -r <tmp>/ctx_old/requirements-oss.txt <tmp>/ctx_new/requirements-oss.txt
+    2c2
+    < # docker buildx build --platform linux/arm64 --build-arg REQUIREMENTS=requirements-oss.txt -f docker/images/nautobot/Dockerfile <context>（OSS 版の oss/ops/up.sh の build_nautobot）
+    ---
+    > # docker buildx build --platform linux/arm64 --build-arg REQUIREMENTS=requirements-oss.txt -f docker/images/nautobot/Dockerfile <context>（OSS 版の ops/oss/up.sh の build_nautobot）
+== Lambda の zip の材料・wheels の requirements（ファイルの sha256 の頭 12 桁）
+  graph status（index.py）: 213544924d3b / 213544924d3b  同じ
+  graph status（graph.py）: 128950c1c02e / 128950c1c02e  同じ
+  kb_index（index.py）: 8983e6f2a422 / 8983e6f2a422  同じ
+  gateway tools（handler）: 7609a12ecad1 / 7609a12ecad1  同じ
+  gateway tools（tools.json）: 81199b62871f / 81199b62871f  同じ
+  wheels app/dashboard/requirements.txt: c3d165a5952f / c3d165a5952f  同じ
+  wheels app/dashboard/requirements-oss.txt: 4a08a1a3a581 / b921876e2ce0  違う
+  neo4j layer app/graph/requirements-oss.txt: 58a699ad13bd / 58a699ad13bd  同じ
+== lab の S3（app/containerlab/ の木）
+  0a0c1db518c5 / ffd2cf07ca7d  違う
+```
+
+Round 1 と比べて spark・neo4j・wheels（`app/dashboard/requirements-oss.txt`）の 3 つが新しく「違う」になった（下のセルフレビューの S5）。
+
+### 設計からの逸脱
+
+1. **方針 7 の対象は変更対象表ではなく 4b の grep で決めた。**
+   - 表に無い `IaC/terraform/oss/pipeline/graph/outputs.tf:14` は grep が拾うので入れた。
+   - 表にある `IaC/terraform/aws-managed/pipeline/nautobot/nautobot.tf:77` と `app/nautobot/requirements-oss.txt:2` は「OSS 版の ops/oss/up.sh」で、grep に当たらないので変えていない。`app/nautobot/requirements-oss.txt` を変えると Nautobot のタグがもう 1 回変わる。
+2. **D2: 検証 4 の期待に `docs/architecture/README.md:7` の除外が無い。** 変更対象表（README:7 の注）が `oss/ops/` を字面で入れるので、検証 4 は 2 行になる。設計どうしの食い違いで、実装は表のとおり。PM に報告する。
+
+### セルフレビュー
+
+自分: opus-5.5 / effort xhigh。反対弁護人は呼んでいない（このラウンドの変更はコメントと docs だけで、Round 1 で呼んだ。cold review の 2 回目は PM が PR に対して呼ぶ）。
+
+#### PM の判断に回したもの
+
+**S5 Should fix ［設計どうしの食い違い・次の up.sh の動き］ 方針 7 で Spark と Neo4j のイメージのタグと wheels-oss のハッシュが変わる**
+
+- 場所: `docker/images/spark/Dockerfile:7`、`docker/images/neo4j/Dockerfile:6`、`app/dashboard/requirements-oss.txt:2`（2dc6237 で書き換えたコメント）。設計は方針 6 の 1 つめの補足（design.md:52「ほかの 6 つのイメージ・Lambda の zip・wheels のハッシュは変わらない」）とリスク 6（Nautobot だけを織り込む）。
+- 原因: Dockerfile は `dir_tag` の材料（`ops/oss/oss-images.sh:23-31` の `dir_tag "$OSS_SPARK_VERSION" app/spark docker/images/spark/Dockerfile` と neo4j の同じ形）。`fetch_wheels`（`ops/up-common.sh:86-97`）のハッシュは requirements のファイルの中身。方針 7 はコメントだけと書くが、コメントもハッシュに入る。
+- 破綻シナリオ（読んだだけ。AWS では確かめていない）:
+  - 次の `ops/oss/up.sh` は、`KEEP_ECR=1` で ECR を残していても `ecr_has` が外れ（`ops/oss/up.sh:176-183`）、`NEED_OSS_BUILD=1` で Spark と Neo4j のイメージを 1 回ビルドし直す。
+  - 立っている環境に打ち直すと、`tf_apply pipeline/graph -var "neo4j_image_tag=$NEO4J_TAG"`（`:415`）で Neo4j のタスクが入れ替わる。Neo4j のデータは残らない（`neo4j.tf:8-10`）。トポロジは 7-3b（`:424-428`）が空を見て入れ直す。変更履歴は Nautobot の Job「Telegraf とグラフ DB に同期」を打ち直すまで戻らない。Spark も `:468` の `spark_image_tag` でタスク定義が変わる。
+  - `fetch_wheels wheels-oss`（`:281`）は手元の `wheels-oss/` を消して取り直す（1 回だけ）。Web の EC2 の user_data には requirements のハッシュが無い（`web.tf:95-101`）ので EC2 は入れ替わらない。
+  - down.sh のあとに立て直す普段の流れでは、タスクはどのみち新しいので、増えるのはビルドの時間だけ。
+- 退行の注入: 方針 7 の言い回しを 1 か所戻しても tests は落ちない（`inject017r2.sh`。下）。言い回しを縛るのは 4b の grep だけ。
+- 選べる形: (a) このまま。方針 6 の補足とリスク 6 に Spark・Neo4j・wheels-oss を足す。(b) Dockerfile 2 本と `app/dashboard/requirements-oss.txt` のコメントを戻し、4b の除外に足す。
+- 片付け: 直していない（設計の文の変更になる。PM の判断）。
+
+**D2** は上の「設計からの逸脱」2。
+
+#### 退行の注入（`inject017r2.sh`）
+
+`IaC/terraform/oss/pipeline/analytics/spark.tf` の 1 か所を「OSS 版の ops/up.sh」に戻して、4b と tests を見た。最後に戻した。
+
+```
+注入:  1 file changed, 1 insertion(+), 1 deletion(-)
+4b: 1 行
+test_oss: 通過 173 / 失敗 0
+test_oss_ops: 通過 194 / 失敗 0
+test_analytics: 通過 504 / 失敗 0
+戻した: 0 行
+```
+
+方針 6 が新しい test を足さないと決めているので、tests が拾わないのは設計どおり（N1 と同じ形）。
+
+#### 問題なしとした観点と根拠
+
+- tests の件数: 検証 1 の 16 本が Round 1 と同じ。`tests/test_oss.py:1899` は check の見出しの文字列だけで、件数は変わらない。
+- Terraform: 書き換えたのは variable / output の `description`、precondition の `error_message`、コメント。どれも資源の属性ではなく state に入らないので plan に差分は出ない（Terraform の決まり。AWS が要るので plan は打っていない）。fmt と validate は検証 1 の check.sh が両方の根に打って通っている。
+- verification と pptx: 検証 4c が 0 行（03840c8 と同じ）。
+- `docs/development.md:7`・`docs/architecture/README.md:7`: 変更対象表の文と同じ（読んで突き合わせた）。
+- Round 1 から変わらないもの: Lambda の zip の材料 5 本、`app/dashboard/requirements.txt`、neo4j の layer、telegraf・syslog-ng・grafana・splunk のタグ（上の `tags017.py`）。
