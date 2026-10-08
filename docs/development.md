@@ -4,7 +4,7 @@
 
 `<prefix>` は `deploy.env` の `OWNER` から作る接頭辞 `<owner>-nwc-poc`。
 
-2026-10-08 の cycle 007 でディレクトリを `app/`（コード）・`docker/`（Dockerfile と compose）・`IaC/`（Terraform と CloudFormation）に並べ直した。**007 より前のサイクルの文書（`docs/cycles/001`〜`006`）と `docs/verification/` は当時のパス**（`agent/` `workflow/` `web/` `terraform/` `oss/terraform/` `local/compose/` など）で書かれている。読み替えは [007 の design.md](cycles/007-restructure-dirs/design.md) の表。前のチェックアウトに残った state の移し方は [deploy.md](deploy.md) の「007 で並べ直したとき」。2026-10-09 の cycle 017 で、根に残った OSS 版のシェル・Gateway の Lambda の handler・NetFlow の試験用スクリプト・GLOSSARY を `ops/oss/`・`app/gateway/`・`ops/`・`docs/` に動かした。このときは `docs/verification/` の中のスクリプトのパスも書き換えた（`docs/cycles/` は当時のまま。読み替えは [017 の design.md](cycles/017-tidy-root/design.md) の表）。
+2026-10-08 の cycle 007 でディレクトリを `app/`（コード）・`docker/`（Dockerfile と compose）・`IaC/`（Terraform と CloudFormation）に並べ直した。**007 より前のサイクルの文書（`docs/cycles/001`〜`006`）と `docs/verification/` は当時のパス**（`agent/` `workflow/` `web/` `terraform/` `oss/terraform/` `local/compose/` など）で書かれている。読み替えは [007 の design.md](cycles/007-restructure-dirs/design.md) の表。前のチェックアウトに残った state の移し方は [deploy.md](deploy.md) の「007 で並べ直したとき」。2026-10-09 の cycle 017 で、根に残った OSS 版のシェル・Gateway の Lambda の handler・NetFlow の試験用スクリプト・GLOSSARY を `ops/oss/`・`app/gateway/`・`ops/`・`docs/` に動かした（`docs/verification/` と `docs/cycles/` は当時のパスのまま。読み替えは [017 の design.md](cycles/017-tidy-root/design.md) の表）。
 
 ## 変更するとき
 
