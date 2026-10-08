@@ -32,7 +32,7 @@ BACKLOG 28「コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種
   - 見るだけの手当ては `gn get [パス ...]`（`telegraf-dialin` の `tg gnmi` の代わり）: 同じ設定で `gnmic get --type STATE --format event` を 1 回打ち、標準出力に出す。パスを渡さなければ状態の 4 つ（`interface_state` / `bgp_neighbor` / `isis_interface` のパス）。subscribe は設定の `outputs`（Kafka）に書くので使わない（`get` は `outputs` を使わない。v0.49.0 のイメージで確かめた）
   - `GNMI_TARGETS`（いまと同じ形 `"<IP>:57400", ...`。SSM の値も `lab_topology.py --gnmi-targets` もそのまま）→ `targets:` に `<IP>: {address: <IP>:57400}`（名前は IP、PM の決定 1）。形が違えば止まる
   - 資格情報は値を書かない: target は `username: ${GNMI_USERNAME}` / `password: ${GNMI_PASSWORD}`、Kafka は `sasl: {user: ${KAFKA_SASL_USER}, password: ${KAFKA_SASL_PASS}, mechanism: SCRAM-SHA-512}`（gnmic が読むときに展開する）
-  - `KAFKA_AUTH=scram` なら `sasl:` と `tls: {}`（CA はイメージの束）、`none`（OSS・手元）なら書かない。`KAFKA_BROKERS` はカンマ区切りのまま
+  - `KAFKA_AUTH=scram` なら `sasl:` と `tls: ca-file: /etc/ssl/certs/ca-certificates.crt`（イメージ（alpine）の CA の束。gnmic は ca-file / skip-verify / 証明書のどれかが無いと TLS を張らない）、`none`（OSS・手元）なら書かない。`KAFKA_BROKERS` はカンマ区切りのまま
   - 全体: `encoding: json_ietf`、`skip-verify: true`（lab の自己署名）、`port: 57400`
 - SCRAM のユーザーは 012 の `User:collectors` を**共有**する（SCRAM のユーザーを増やさない。syslog-ng / GoFlow2 / gnmic は同じ「コレクター」の役で、secret も `AmazonMSK_<prefix>-collectors` の 1 本のまま）。gnmic は `gnmi`（on-change）と `metrics`（sample）の 2 つに SCRAM で書くので、012 Round 2 の ACL（a964c43 の `app/spark/snmp_sinks.py` `SCRAM_TOPICS`）に `gnmi` と `metrics` を足し、`User:collectors` の ACL は 8 つ（`logs` / `flows` / `gnmi` / `metrics` の WRITE と DESCRIBE）。**Telegraf が書くのは `traps` だけ（`AWS-MSK-IAM`）**なので、`traps` には SCRAM の ACL を付けない。012 のログの 1 行と、`SCRAM_TOPICS` を突き合わせる test も `gnmi` / `metrics` を含める。残リスク: `User:collectors` を持つ syslog-ng / GoFlow2 も `gnmi` / `metrics` に書ける（2026-10-09 の PM の判断。別ユーザーにするのは BACKLOG）。ACL は Spark のジョブの起動（`ensure_acls`）で入るので、それより前に gnmic が出した値は落ちる（on-change の最初の同期を失う。未確定 7）
 - subscribe（5 つ。パスは SR Linux 26.7 の YANG）
@@ -75,7 +75,7 @@ BACKLOG 28「コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種
   - oper と admin は別の event で来ることがあるので、`sort 0 _time | streamstats last(state) as cur_state last(admin) as cur_admin by device kind target` で前の値を持ち越す。`link_down` の down は `cur_state!="up" AND coalesce(cur_admin,"")!="disable"`
   - detail は `<ifName> is down|up (splunk: gnmi)`。以降の前 / 今の比べ方は今の `netops_gnmi` のまま
   - `props.conf` のコメント（`fields.ifOperStatus` → `fields.oper_state`）
-- `app/agentcore/evidence.py` と `tools/tools.json` の PromQL の例を `snmp_interface_oper_up{sysName="dc1-a-leaf-01"}` に
+- `app/agentcore/evidence.py` と `app/gateway/tools.json` の PromQL の例を `snmp_interface_oper_up{sysName="dc1-a-leaf-01"}` に
 
 ### 4. 消すもの（第 2 段）
 
@@ -103,7 +103,7 @@ BACKLOG 28「コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種
 
 - 第 1 段（012 を待たない）
   - 新規: `app/gnmic/gnmic.yaml.in`、`app/gnmic/gnmic.sh`、`docker/images/gnmic/Dockerfile`
-  - `app/spark/snmp_sinks.py`、`IaC/terraform/aws-managed/pipeline/analytics/{outputs.tf,variables.tf}` と `IaC/terraform/oss/pipeline/analytics/spark.tf`（`--device-map` を splunk のジョブにも。設計方針 2）、`app/grafana/provisioning/alerting/netops-prometheus.yaml`、`app/grafana/provisioning/dashboards/metrics.json`、`app/splunk/netops_alerts/default/{savedsearches.conf,props.conf}`、`app/agentcore/evidence.py`、`tools/tools.json`、`app/containerlab/trex/{kafka_load.sh,README.md}`（`metrics` に流す見本を gnmic の event に）
+  - `app/spark/snmp_sinks.py`、`IaC/terraform/aws-managed/pipeline/analytics/{outputs.tf,variables.tf}` と `IaC/terraform/oss/pipeline/analytics/spark.tf`（`--device-map` を splunk のジョブにも。設計方針 2）、`app/grafana/provisioning/alerting/netops-prometheus.yaml`、`app/grafana/provisioning/dashboards/metrics.json`、`app/splunk/netops_alerts/default/{savedsearches.conf,props.conf}`、`app/agentcore/evidence.py`、`app/gateway/tools.json`、`app/containerlab/trex/{kafka_load.sh,README.md}`（`metrics` に流す見本を gnmic の event に）
   - テスト: `tests/test_stream.py`（`gnmic_message` と `gnmic.yaml.in` / `gnmic.sh`）、`test_analytics.py`（read_rows の偽の pyspark、splunk の sysName）、`test_alerts.py`（`link_down` の式、保存済みサーチ 3 + trap_clear、`netops_gnmi` の参照実装に link_down）、`test_local_compose.py`（`metrics.json` の参照と、`docker/compose/{check.sh,README.md}` の `count(snmp_interface_oper_up)`）、`tests/check_splunk_image.py`（HEC に入れる event と `netops_gnmi`）、`test_oss.py`（read_rows を回す偽の pyspark の列に `|` / `&` を足す）
 - 第 2 段（012 のマージのあと）: 4. の全部。テストは `test_stream`（dialin と star の検査を消す）、`test_lab_debug`、`test_local_compose`、`test_nautobot`、`test_sync`、`test_oss`、`test_oss_ops`、`test_oss_roll`
 
