@@ -467,3 +467,58 @@ bash -n: 36 本
   - 書いてある件数: stream 96、analytics 504、alerts 169、lab_debug 104、nautobot 69、oss_ops 194、local_compose 132。
   - 上の check.sh の実際の件数: 106、513、168、97、68、196、138。
   - 013 の設計の範囲外なので PM に報告した。
+
+#### base の e5dda8b を取り込む
+
+上のマージの commit（c3e52d6）のあと、push の前の `git fetch` で base に e5dda8b が入っていた。017 のサイクル完了の commit で、変えたのは docs/cycles/017-tidy-root/design.md と review.md、docs/cycles/BACKLOG.md の 5 行。`git merge-tree` で衝突が無いことを確かめてから `git merge` した（b4351e1）。check.sh を取り直した。
+
+`bash ops/check.sh`（rc=0、2881 行）:
+
+```
+== 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+差分なし
+
+== 2. 9 つのルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+IaC/terraform/aws-managed/base/ecr  OK
+IaC/terraform/aws-managed/base/core  OK
+IaC/terraform/aws-managed/agent  OK
+IaC/terraform/aws-managed/pipeline/lab  OK
+IaC/terraform/aws-managed/pipeline/stream  OK
+IaC/terraform/aws-managed/pipeline/analytics  OK
+IaC/terraform/aws-managed/pipeline/graph  OK
+IaC/terraform/aws-managed/pipeline/nautobot  OK
+IaC/terraform/aws-managed/workflow  OK
+IaC/terraform/oss/base/ecr  OK
+IaC/terraform/oss/base/core  OK
+IaC/terraform/oss/agent  OK
+IaC/terraform/oss/pipeline/lab  OK
+IaC/terraform/oss/pipeline/stream  OK
+IaC/terraform/oss/pipeline/analytics  OK
+IaC/terraform/oss/pipeline/graph  OK
+IaC/terraform/oss/pipeline/nautobot  OK
+IaC/terraform/oss/workflow  OK
+
+== 3. スクリプトの構文
+bash -n: 28 本
+構文エラーなし
+
+== 4. 模擬テスト
+通過 168 / 失敗 0          (test_alerts)
+通過 513 / 失敗 0          (test_analytics)
+通過 161 / 失敗 0          (test_app)
+通過 79 / 失敗 0           (test_collectors)
+通過 3 / 失敗 0            (test_dashboard_config)
+通過 78 / 失敗 0           (test_graph)
+通過 7 / 失敗 0            (test_kb_index)
+通過 97 / 失敗 0           (test_lab_debug)
+通過 138 / 失敗 0          (test_local_compose)
+68 項目すべて通過             (test_nautobot)
+通過 173 / 失敗 0          (test_oss)
+通過 196 / 失敗 0          (test_oss_ops)
+通過 66 / 失敗 0           (test_oss_roll)
+通過 106 / 失敗 0          (test_stream)
+通過 103 / 失敗 0          (test_sync)
+通過 327 / 失敗 0          (test_workflow)
+
+すべて通過
+```
