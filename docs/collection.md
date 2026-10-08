@@ -39,6 +39,27 @@ trap と syslog では性能の時系列は取れない（届くのはイベン�
 
 syslog-ng と GoFlow2 は MSK の IAM 認証を話せないので、SASL/SCRAM（9096/tcp）で書く（資格情報の置き場は [pipeline.md](pipeline.md) の冒頭の箇条書き）。
 
+**syslog の形は Telegraf のときと同じ（2026-10-08 に手元の docker で比べた）:** 同じ RFC5424 の 1 行
+
+```
+<184>1 2026-10-08T12:34:56.000001Z leaf1 app23_0 77 ID23 - msg fac=23 sev=0
+```
+
+を Telegraf 1.40.1（`inputs.syslog` + `processors.rename` で `hostname` → `sysName`）と syslog-ng 4.29.0（`app/syslog-ng/syslog-ng.conf.in`）に送ると、`logs` に書く行はキーの並び以外同じになる。
+
+```
+Telegraf : {"fields":{"facility_code":23,"message":"msg fac=23 sev=0","msgid":"ID23","procid":"77","severity_code":0,"timestamp":1791462896000001000,"version":1},"name":"device_log","tags":{"appname":"app23_0","facility":"local7","severity":"emerg","source":"172.17.0.1","sysName":"leaf1"},"timestamp":1791465836}
+syslog-ng: {"timestamp":1791465836,"tags":{"sysName":"leaf1","source":"172.17.0.1","severity":"emerg","facility":"local7","appname":"app23_0"},"name":"device_log","fields":{"version":1,"timestamp":1791462896000001000,"severity_code":0,"procid":"77","msgid":"ID23","message":"msg fac=23 sev=0","facility_code":23}}
+```
+
+- `tags` は 5 つ（`sysName` / `appname` / `facility` / `severity` / `source`）、`fields` は 7 つ（RFC3164 は `msgid` と `version` が無い）。`severity_code` / `facility_code` / `version` / `timestamp` は数値。`fields.timestamp` は送り元の時刻（ns）、最上位の `timestamp` は受けた時刻（秒）。
+- 全 severity と全 facility を RFC5424 / RFC3164 で 1 行ずつ、壊れた行 2 つと合わせて 34 行ずつ送ると、30 行は値まで同じだった。違ったのは次の 4 種類。
+  - facility 15 の名前: Telegraf は `cron2`、syslog-ng は `solaris-cron`。
+  - 頭の無い行（`garbage line without header`）: Telegraf は捨てる、syslog-ng は facility `user` / severity `notice` / `sysName` に送り元の IP を入れて書く。
+  - RFC5424 の本文の頭の空白: Telegraf は残す、syslog-ng は落とす。
+  - RFC3164 の受け口に来た RFC5424 の行: Telegraf は facility と severity だけの行（本文も `sysName` も無い）を書く、syslog-ng は `appname` に `1`、`sysName` に送り元の IP、本文に残りを入れて書く。
+- キーの集合と型は `tests/test_collectors.py` が conf.in の `format-json` と上の Telegraf の行で突き合わせる。
+
 ## 方針: telemetry と性能メトリクスは Cisco MDT の dial-out で受ける（2026-10-04）
 
 機器のほうから Telegraf へ送らせる（dial-out）。Telegraf は `inputs.cisco_telemetry_mdt` で受ける。

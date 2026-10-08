@@ -33,7 +33,7 @@ def read(path):
 # ---- 偽物の aws。呼ばれた引数を FAKE_LOG に 1 行ずつ JSON で残し、FAKE_INV の在庫（JSON）を読み書きする。
 # 名前の絞り込みは本物より緩い側（SSM の Path は文字列の前方一致）で真似る。知らないコマンドは 255 で落ち、ログに unknown を残す
 FAKE_AWS = r'''#!/usr/bin/env python3
-import fcntl, fnmatch, json, os, sys
+import fcntl, fnmatch, json, os, signal, sys
 
 args = sys.argv[1:]
 inv_path = os.environ["FAKE_INV"]
@@ -220,6 +220,10 @@ elif (svc, op) == ("secretsmanager", "create-secret"):
     src = opt("--cli-input-json")
     if not src or not src.startswith("file://"):
         log({"unknown": "create-secret without file://"}); fail("create-secret には file:// で渡す", 255)
+    if os.environ.get("FAKE_SM_CREATE_SIGNAL"):  # 作っている最中に止められた。端末の Ctrl+C（kill -<sig> -<プロセスグループ>）と同じく、呼んだ shell と自分の両方に届く
+        sig = getattr(signal, "SIG" + os.environ["FAKE_SM_CREATE_SIGNAL"])
+        os.kill(os.getppid(), sig)
+        signal.signal(sig, signal.SIG_DFL); os.kill(os.getpid(), sig)
     with open(src[len("file://"):], encoding="utf-8") as f:
         d = json.load(f)
     if d["Name"] in inv.setdefault("secrets", {}):
@@ -939,6 +943,16 @@ check("ensure_msk_scram_secret: 中身は JSON の username / password（MSK の
 check("ensure_msk_scram_secret: パスワードは画面にもコマンドラインにも出さず、値を書いた一時ファイルを残さず、中身を読むコマンド（get-secret-value）は打たない",
       _val.get("password") and _val["password"] not in out and not any(_val["password"] in " ".join(c["args"]) for c in cs)
       and not [f for f in os.listdir(TMP) if f.startswith("nwc-secret.")] and not aws_calls(cs, "secretsmanager", "get-secret-value"))
+# create-secret の最中に止められても、値を書いた一時ファイルは ops/up.sh の EXIT の trap（on_exit）が消す。on_exit は ops/up.sh のものをそのまま使う
+_on_exit = re.search(r"^on_exit\(\) \{.*?^\}\ntrap on_exit EXIT\n", read("ops/up.sh"), re.S | re.M).group(0)
+for _sig in ("INT", "TERM"):
+    for _f in [f for f in os.listdir(TMP) if f.startswith("nwc-secret.")]:
+        os.remove(os.path.join(TMP, _f))
+    _p, _cs, _inv = run_scram(no_scram(), {"FAKE_SM_CREATE_SIGNAL": _sig},
+                              SCRAM_SH.replace("OPS_DIR=ops\n", "OPS_DIR=ops\nGRAPH_PID=\"\"; NAUTOBOT_CTX=\"\"\n" + _on_exit, 1))
+    check(f"ensure_msk_scram_secret: create-secret の最中に SIG{_sig} で止まっても、値を書いた一時ファイルを残さない（ops/up.sh の on_exit が消す）",
+          _p.returncode < 0 and len(aws_calls(_cs, "secretsmanager", "create-secret")) == 1 and "AmazonMSK_x-nwc-poc-collectors" not in _inv["secrets"]
+          and not [f for f in os.listdir(TMP) if f.startswith("nwc-secret.")])
 check("ensure_msk_scram_key / secret: x-nwc-oss-nwc-poc の secret と鍵には触らない",
       inv["secrets"]["AmazonMSK_x-nwc-oss-nwc-poc-collectors"] == inventory()["secrets"]["AmazonMSK_x-nwc-oss-nwc-poc-collectors"]
       and inv["kms"]["alias/x-nwc-oss-nwc-poc-msk-scram"] == KEY_MGD and inv["kms_keys"][KEY_MGD] == "Enabled")

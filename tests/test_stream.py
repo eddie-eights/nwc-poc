@@ -106,7 +106,9 @@ check("lab.sh forward は syslog の LOG_PORT も trap の 162 と同じ仕組�
 _cl_blk = re.search(r"^  collector_listeners = \{\n(.*?)^  \}\n", stream_tg, re.M | re.S)
 _cl = {k: (int(lp), int(cp), sv) for k, lp, cp, sv in re.findall(r'^\s*(\w+)\s*= \{ listener = (\d+), container = (\d+), service = "([\w-]+)" \}$', _cl_blk.group(1), re.M)} if _cl_blk else {}
 _hc_blk = re.search(r"^  collector_health_checks = \{\n(.*?)^  \}\n", stream_tg, re.M | re.S)
-_hc = {k: (pr, int(pt)) for k, pr, pt in re.findall(r'^\s*"?([\w-]+)"?\s*= \{ protocol = "(\w+)", port = "(\d+)", path = [^}]*\}$', _hc_blk.group(1), re.M)} if _hc_blk else {}
+_hc_rows = re.findall(r'^\s*"?([\w-]+)"?\s*= \{ protocol = "(\w+)", port = "(\d+)", path = ("[^"]*"|null) \}$', _hc_blk.group(1), re.M) if _hc_blk else []
+_hc = {k: (pr, int(pt)) for k, pr, pt, _ in _hc_rows}
+_hc_path = {k: pa for k, _, _, pa in _hc_rows}
 _svc_sg = {"telegraf-dialout": "telegraf_dialout", "syslog-ng": "syslog_ng", "goflow2": "goflow2"}
 def _sg_row(a, b, proto, pt):
     return re.search(rf'\{{ from = "{a}", to = "{b}", protocol = "{proto}", port = {pt},', core_sg) is not None
@@ -124,7 +126,22 @@ check("土台の SG の通信の表に、受け口ごとの 3 本（管理ネッ
               and _sg_row("telegraf_dialout_nlb", _svc_sg[sv], "udp", cp) for lp, cp, sv in _cl.values())
       and all(_sg_row("telegraf_dialout_nlb", _svc_sg[sv], "tcp", pt) for sv, (_, pt) in _hc.items())
       and _hc == {"telegraf-dialout": ("HTTP", 8080), "syslog-ng": ("TCP", int(log_port)), "goflow2": ("HTTP", 8081)}
+      and _hc_path == {"telegraf-dialout": '"/"', "syslog-ng": "null", "goflow2": '"/__health"'}   # GoFlow2 の / は 404（200 は /__health だけ）
       and not re.search(r'from = "telegraf_dialout_nlb", to = "telegraf_dialout", protocol = "(udp", port = 5140|tcp", port = 57000)', core_sg))
+_col_td = {k: m.group(0) for k in ("syslog_ng", "goflow2")
+           if (m := re.search(r'^resource "aws_ecs_task_definition" "' + k + r'" \{\n(?:.*\n)*?^\}\n', stream_col, re.M))}
+check("syslog-ng と GoFlow2 のタスク定義は、それぞれの実行ロールで local.kafka_collector_secrets（SCRAM のユーザー名とパスワード）を入れ、"
+      "実行ロールのポリシーは local.kafka_collector_execution_statements。syslog-ng は KAFKA_BROKERS / KAFKA_AUTH、GoFlow2 は引数でブローカーと SCRAM を受ける",
+      sorted(_col_td) == ["goflow2", "syslog_ng"]
+      and all(f"  execution_role_arn       = aws_iam_role.{k}_execution.arn\n" in b and "\n      secrets = local.kafka_collector_secrets\n" in b for k, b in _col_td.items())
+      and all(re.search(r'^resource "aws_iam_role_policy" "' + k + r'_execution" \{\n(?:(?!^\}).*\n)*?\s*Statement = local\.kafka_collector_execution_statements\n', stream_col, re.M)
+              for k in _col_td)
+      and '{ name = "KAFKA_BROKERS", value = local.kafka_collector_brokers },' in _col_td["syslog_ng"]
+      and '{ name = "KAFKA_AUTH", value = local.kafka_collector_auth },' in _col_td["syslog_ng"]
+      and "      command   = local.goflow2_command\n" in _col_td["goflow2"]
+      and '"-transport.kafka.brokers=${local.kafka_collector_brokers}",' in stream_col
+      and 'local.collector_scram ? ["-transport.kafka.tls", "-transport.kafka.sasl=scram-sha512"] : [],' in stream_col
+      and '  collector_scram          = local.kafka_collector_auth == "scram"\n' in stream_col)
 _svc_lb = {k: m.group(1) for k in ("telegraf_dialout", "syslog_ng", "goflow2")
            if (m := re.search(r'resource "aws_ecs_service" "' + k + r'" \{[^\n]*\n(?:(?!^\}).*\n)*?\s*dynamic "load_balancer" \{\n\s*for_each = (.+)\n', stream_tg + "\n" + stream_col, re.M))}
 check("3 つのサービスは collector_listeners のうち自分の分だけを load_balancer に持つ（同じ target group に 2 つのサービスが入らない）",

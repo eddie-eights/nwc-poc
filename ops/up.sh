@@ -161,6 +161,7 @@ on_exit() {  # 途中で止まっても、バックグラウンドの graph の 
   fi
   if [ -n "$TF_AWS_CONFIG" ]; then rm -f "$TF_AWS_CONFIG"; fi
   if [ -n "$NAUTOBOT_CTX" ]; then rm -rf -- "$NAUTOBOT_CTX"; fi
+  if [ -n "$MSK_SCRAM_INPUT" ]; then rm -f -- "$MSK_SCRAM_INPUT"; fi  # MSK の SCRAM の値を書いた一時ファイル（ops/up-common.sh が secret を作るときに書く）
 }
 trap on_exit EXIT
 

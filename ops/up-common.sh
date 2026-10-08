@@ -307,6 +307,7 @@ ensure_msk_scram_key() {  # 鍵（alias/<PREFIX>-msk-scram）が無ければ作�
   esac
   MSK_SCRAM_KEY_ARN=$arn
 }
+MSK_SCRAM_INPUT=""  # ensure_msk_scram_secret が値を書く一時ファイル。create-secret の最中に止まっても ops/up.sh の EXIT の trap（on_exit）が消す
 ensure_msk_scram_secret() {  # secret（AmazonMSK_<PREFIX>-collectors）が無ければ作る。先に ensure_msk_scram_key を呼ぶ（MSK_SCRAM_KEY_ARN で暗号化する）。値は出さない
   local name="AmazonMSK_$PREFIX-collectors" out kms deleted
   # 中身（ユーザー名とパスワード）は読まない。describe-secret はメタデータ（暗号化の鍵と削除の予約）だけを返す
@@ -325,8 +326,8 @@ ensure_msk_scram_secret() {  # secret（AmazonMSK_<PREFIX>-collectors）が無�
     return
   fi
   case "$out" in *ResourceNotFoundException*) ;; *) die "$name を確かめられない: $out" ;; esac
-  local input rc=0
-  input=$(umask 077; mktemp "${TMPDIR:-/tmp}/nwc-secret.XXXXXX") || die "一時ファイルを作れなかった"
+  local rc=0
+  MSK_SCRAM_INPUT=$(umask 077; mktemp "${TMPDIR:-/tmp}/nwc-secret.XXXXXX") || die "一時ファイルを作れなかった"
   # パスワードは乱数（英数字と - _ だけ）。値はコマンドラインにも画面にも出さず、一時ファイル（自分だけが読める）から渡してすぐ消す
   "${PY[@]}" -c 'import json, secrets, sys
 name, desc, key, prefix, owner, managed_by, path = sys.argv[1:]
@@ -334,9 +335,9 @@ with open(path, "w", encoding="utf-8") as f:
     json.dump({"Name": name, "Description": desc, "KmsKeyId": key,
                "SecretString": json.dumps({"username": "collectors", "password": secrets.token_urlsafe(24)}),
                "Tags": [{"Key": "ManagedBy", "Value": managed_by}, {"Key": "Project", "Value": prefix}, {"Key": "owner", "Value": owner}]}, f)' \
-    "$name" "MSK SCRAM credentials of syslog-ng and GoFlow2 (created by $OPS_DIR/up.sh)" "$MSK_SCRAM_KEY_ARN" "$PREFIX" "$OWNER" "$OPS_DIR/up.sh" "$input" \
-    && aws secretsmanager create-secret --region "$REGION" --cli-input-json "file://$input" >/dev/null || rc=$?
-  rm -f -- "${input:?}"
+    "$name" "MSK SCRAM credentials of syslog-ng and GoFlow2 (created by $OPS_DIR/up.sh)" "$MSK_SCRAM_KEY_ARN" "$PREFIX" "$OWNER" "$OPS_DIR/up.sh" "$MSK_SCRAM_INPUT" \
+    && aws secretsmanager create-secret --region "$REGION" --cli-input-json "file://$MSK_SCRAM_INPUT" >/dev/null || rc=$?
+  rm -f -- "${MSK_SCRAM_INPUT:?}"; MSK_SCRAM_INPUT=""
   [ "$rc" -eq 0 ] || die "Secrets Manager に $name を作れなかった（上のエラー）。直前の $OPS_DIR/down.sh で消したばかりなら、数分おいて打ち直す"
   echo "$name を作った（値は出さない）"
 }

@@ -1027,7 +1027,8 @@ check("syslog-ng と GoFlow2 の口: マネージド版は MSK の SCRAM（9096 
       and re.search(r'data "aws_kms_alias" "msk_scram" \{\n  name = "alias/\$\{local\.name_prefix\}-msk-scram"\n\}', _msk_tf) is not None
       and '{ name = "KAFKA_SASL_USER", valueFrom = "${data.aws_secretsmanager_secret.msk_scram.arn}:username::" }' in _msk_tf
       and '{ name = "KAFKA_SASL_PASS", valueFrom = "${data.aws_secretsmanager_secret.msk_scram.arn}:password::" }' in _msk_tf
-      and '"secretsmanager:GetSecretValue"' in _msk_tf and "Resource = data.aws_kms_alias.msk_scram.target_key_arn" in _msk_tf
+      and re.search(r'Sid      = "ScramSecret"\n\s*Effect   = "Allow"\n\s*Action   = \["secretsmanager:GetSecretValue"\]\n\s*Resource = data\.aws_secretsmanager_secret\.msk_scram\.arn\n', _msk_tf) is not None
+      and re.search(r'Sid      = "ScramSecretKey"\n\s*Effect   = "Allow"\n\s*Action   = \["kms:Decrypt"\]\n\s*Resource = data\.aws_kms_alias\.msk_scram\.target_key_arn\n', _msk_tf) is not None
       and re.search(r"sasl \{\n\s*iam\s*= true\n\s*scram = true\n\s*\}", _msk_tf) is not None
       and re.search(r'resource "aws_msk_scram_secret_association" "collectors" \{\n  cluster_arn     = aws_msk_cluster\.stream\.arn\n  secret_arn_list = \[data\.aws_secretsmanager_secret\.msk_scram\.arn\]\n\}', _msk_tf) is not None
       and 'resource "aws_secretsmanager_secret"' not in _msk_tf and "aws_secretsmanager_secret_version" not in _msk_tf   # 値は Terraform の state に入れない（ops/up.sh が作る）
