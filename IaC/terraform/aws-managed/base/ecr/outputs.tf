@@ -31,7 +31,7 @@ output "telegraf_repository_url" {
 }
 
 output "kafka_ui_repository_url" {
-  description = "Push ghcr.io/kafbat/kafka-ui:<KAFKA_UI_TAG of ops/up.sh> (arm64) here with the same tag (step 2, whenever stream is built). IaC/terraform/aws-managed/pipeline/stream runs it on ECS."
+  description = "Push ghcr.io/kafbat/kafka-ui:<KAFKA_UI_TAG of ops/up.sh> (arm64) here with the same tag (step 2, whenever stream is built). IaC/terraform/aws-managed/pipeline/stream writes <this URL>:<tag> to the SSM parameter /<prefix>/kafka-ui/image, and Docker on the Web EC2 (systemd unit <prefix>-kafka-ui) pulls it from here."
   value       = try(aws_ecr_repository.pipeline["kafka-ui"].repository_url, "")
 }
 

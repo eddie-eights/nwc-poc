@@ -379,8 +379,8 @@ ecr_tf = _read("IaC", "terraform", "aws-managed", "base", "ecr", "main.tf")
 web_tf = _read("IaC", "terraform", "aws-managed", "base", "core", "web.tf")
 core_vars = _read("IaC", "terraform", "aws-managed", "base", "core", "variables.tf")
 web_ud = _read("IaC", "terraform", "aws-managed", "base", "core", "templates", "web_user_data.sh.tftpl")
-_kscript = web_ud[web_ud.index("<<'__KAFKA_UI__'\n"):web_ud.index("\n__KAFKA_UI__\n")]          # /usr/local/bin/<接頭辞>-kafka-ui
-_kunit = web_ud[web_ud.index("<<__KAFKA_UI_UNIT__\n"):web_ud.index("\n__KAFKA_UI_UNIT__\n") + 1]  # <接頭辞>-kafka-ui.service（最後の改行まで）
+_kscript = web_ud[web_ud.index("<<'__KAFKA_UI__' || return 1\n"):web_ud.index("\n__KAFKA_UI__\n")]          # /usr/local/bin/<接頭辞>-kafka-ui
+_kunit = web_ud[web_ud.index("<<__KAFKA_UI_UNIT__ || return 1\n"):web_ud.index("\n__KAFKA_UI_UNIT__\n") + 1]  # <接頭辞>-kafka-ui.service（最後の改行まで）
 check("Kafbat UI の資源は stream の root の SSM の String 3 本（image / bootstrap-servers / security-protocol）と Web のロールへの Kafka の権限 1 つだけ。"
       "ECS・Cloud Map・ロググループ・ロールは持たず、切り替える変数も count も無い（cycle 010。2026-10-05 のユーザー決定でいつも作る）",
       re.findall(r'^resource "(\w+)" "(\w+)"', kui, re.M) == [("aws_ssm_parameter", "kafka_ui_image"), ("aws_ssm_parameter", "kafka_ui_bootstrap_servers"),
@@ -399,12 +399,13 @@ check("Web の EC2 のスクリプトが読むパラメータは stream が書�
       and 'kafka_ui_password_parameter = "${local.kafka_ui_parameter_prefix}/admin-password"' in kui
       and 'ensure_secret "/$PREFIX/kafka-ui/admin-password" password ' in up
       and re.search(r'Action\s*=\s*"ssm:GetParameter"\s*\n\s*Resource\s*=\s*"arn:\$\{local\.partition\}:ssm:\$\{var\.region\}:\$\{local\.account_id\}:parameter/\$\{local\.name_prefix\}/\*"', web_tf) is not None)
-check("admin のパスワードは --with-decryption で読み、/run（tmpfs）の env ファイル（umask 077）にだけ書いて docker に --env-file で渡す。止まったら消し、値を echo しない",
+check("admin のパスワードは --with-decryption で読み、/run（tmpfs）の env ファイル（umask 077）にだけ書いて docker に --env-file で渡す。止まったら消し（読めなかったときの AWS CLI のエラーも）、値を echo しない",
       "PASSWORD=$(param admin-password --with-decryption)" in _kscript and _kscript.count("--with-decryption") == 1
       and "ENV_FILE=/run/${name_prefix}-kafka-ui.env\n" in _kscript and _kscript.index("umask 077") < _kscript.index('} > "$ENV_FILE"')
       and '"SPRING_SECURITY_USER_PASSWORD=$PASSWORD"' in _kscript and '--env-file "$ENV_FILE"' in _kscript
       and "set -x" not in _kscript and not re.search(r"echo[^\n]*\$\{?(PASSWORD|SERVERS|IMAGE)", _kscript)
-      and "ExecStopPost=/bin/rm -f /run/${name_prefix}-kafka-ui.env\n" in _kunit)
+      and "ERR_FILE=/run/${name_prefix}-kafka-ui.err\n" in _kscript and _kscript.index("umask 077") < _kscript.index('2>"$ERR_FILE"')
+      and "ExecStopPost=/bin/rm -f /run/${name_prefix}-kafka-ui.env /run/${name_prefix}-kafka-ui.err\n" in _kunit)
 check("画面はログインフォーム（AUTH_TYPE=LOGIN_FORM、ユーザー admin）で、GitHub に版を聞きにいかない。READONLY は付けず、DYNAMIC_CONFIG_ENABLED は既定（false）のまま。JVM はメモリの半分まで",
       all(f'"{e}"' in _kscript for e in ("AUTH_TYPE=LOGIN_FORM", "SPRING_SECURITY_USER_NAME=admin", "GITHUB_RELEASE_INFO_ENABLED=false", "JAVA_OPTS=-XX:MaxRAMPercentage=50"))
       and all("READONLY" not in s and "DYNAMIC_CONFIG" not in s for s in (_kscript, kui_code)) and "READONLY" not in up)
@@ -456,15 +457,45 @@ check("Web の EC2 は t4g.medium（Gradio 約 400 MB + Kafbat UI の JVM）で�
       and re.search(r'Action\s*=\s*\["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"\]\s*\n\s*'
                     r'Resource\s*=\s*"arn:\$\{local\.partition\}:ecr:\$\{var\.region\}:\$\{local\.account_id\}:repository/\$\{local\.name_prefix\}-kafka-ui"', web_tf) is not None
       and not re.search(r'"ecr:(Put|Upload|Initiate|Complete|Delete)', web_tf))
-check("Kafbat UI は Web の EC2 の systemd のユニットが Docker のコンテナを 127.0.0.1:8082 に出す。パラメータが読めるまで 75 で終わり 30 秒ごとに起こし直す"
-      "（stream は base/core より後に作られる）。S3 に web/ が無くて exit 0 する所より前に置く",
+check("Kafbat UI は Web の EC2 の systemd のユニットが Docker のコンテナを 127.0.0.1:8082 に出す（stream は base/core より後に作られる）。"
+      "パラメータが無い（標準エラーに (ParameterNotFound)）と 75 で終わって起こし直さず（RestartPreventExitStatus。cycle 014）、それ以外で読めないと 69 で終わって 30 秒ごとに起こし直す",
       'exec docker run --rm --name ${name_prefix}-kafka-ui --env-file "$ENV_FILE" -p 127.0.0.1:8082:8080 "$IMAGE"' in _kscript
-      and "\n  exit 75\n" in _kscript
+      and "\n  exit 75\n" in _kscript and "\n    exit 69\n" in _kscript and """  if ! grep -qF '(ParameterNotFound)' "$ERR_FILE"; then\n""" in _kscript
+      and all(f"{v}=$(param {n}) || exit $?\n" in _kscript for v, n in (("IMAGE", "image"), ("SERVERS", "bootstrap-servers"), ("PROTOCOL", "security-protocol"),
+                                                                     ("PASSWORD", "admin-password --with-decryption")))
       and all(l + "\n" in _kunit for l in ("After=docker.service network-online.target", "Wants=network-online.target", "Requires=docker.service",
                                            "ExecStart=/usr/local/bin/${name_prefix}-kafka-ui",
-                                           "Restart=always", "RestartSec=30", "TimeoutStartSec=0", "WantedBy=multi-user.target"))
-      and "command -v docker >/dev/null || dnf install -y docker\nsystemctl enable --now docker\n" in web_ud
-      and web_ud.index("systemctl enable --now ${name_prefix}-kafka-ui.service") < web_ud.index("\n  exit 0\n"))
+                                           "Restart=always", "RestartSec=30", "RestartPreventExitStatus=75", "TimeoutStartSec=0", "WantedBy=multi-user.target"))
+      and re.findall(r"^RestartPreventExitStatus=.*$", _kunit, re.M) == ["RestartPreventExitStatus=75"])
+_wunit = web_ud[web_ud.index("<<__UNIT__\n"):web_ud.index("\n__UNIT__\n") + 1]  # <接頭辞>-web.service
+check("75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8-3（OSS 版は 7-5）の systemctl restart <接頭辞>-web が起こす。"
+      "弱い依存だけにして、Kafbat UI が落ちても Web を止めない（Requires / BindsTo / PartOf / Requisite にしない。cycle 014）",
+      "Wants=network-online.target\nWants=${name_prefix}-kafka-ui.service\n" in _wunit
+      and _wunit.index("Wants=${name_prefix}-kafka-ui.service") < _wunit.index("[Service]")
+      and re.findall(r"^\w+=.*kafka-ui.*$", _wunit, re.M) == ["Wants=${name_prefix}-kafka-ui.service"])
+# その restart は stream の apply より後で、stream を作る回はいつも通る: ops/up.sh の 8-3 の if に SKIP_STREAM が空の条件、OSS 版の 7-5 は if の外
+_up_sh, _oss_up_sh = _read("ops", "up.sh"), _read("oss", "ops", "up.sh")
+_s83 = _up_sh[_up_sh.index("\n# ---- 8-3. Web "):_up_sh.index("\n# ---- 8-5. ")]
+_s75 = _oss_up_sh[_oss_up_sh.index('\nlog "7-5. '):_oss_up_sh.index("\n# ---- 8. workflow ")]
+check("Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z \"$SKIP_STREAM\" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）",
+      _up_sh.index("\n  tf_apply pipeline/stream ") < _up_sh.index("\n# ---- 8-3. Web ")
+      and re.match(r'\n# ---- 8-3\. Web -*\nif \[ -z "\$SKIP_STREAM" \] \|\| [^\n]*; then\n', _s83) is not None
+      and '\n  run_on_instance "$INSTANCE_ID" "systemctl restart $PREFIX-web.service; $WEB_ACTIVE"\n' in _s83 and _s83.count("\nfi\n") == 1
+      and _oss_up_sh.index('\ntf_apply pipeline/stream "${STREAM_VARS[@]}"\n') < _oss_up_sh.index('\nlog "7-5. ')
+      and _s75.split("\n")[2] == 'run_on_instance "$INSTANCE_ID" "systemctl restart $PREFIX-web.service; $WEB_ACTIVE"'
+      and re.findall(r"^(?:if|fi)\b.*$", _oss_up_sh[_oss_up_sh.index("\n# ---- 7-4c. "):_oss_up_sh.index("\n# ---- 8. workflow ")], re.M)
+          == ['if [ -n "$STORE_WARN" ]; then', "fi"])
+check("Docker と Kafbat UI の節は、画面のコードの取得（aws s3 sync）より後、S3 に web/ が無くて exit 0 する所より前で、関数 kafka_ui_setup にまとめて"
+      " 1 行ずつ || return 1 で繋ぎ、|| echo で呼ぶ（落ちても user_data を止めない。cycle 014）",
+      web_ud.index("\naws s3 sync --delete ") < web_ud.index("\nkafka_ui_setup() {\n") < web_ud.index("\nkafka_ui_setup || echo ") < web_ud.index("\n  exit 0\n")
+      and web_ud.count("kafka_ui_setup") == 2 and "command -v docker" not in web_ud[:web_ud.index("\nkafka_ui_setup() {\n")]
+      and "\nkafka_ui_setup() {\n  command -v docker >/dev/null || dnf install -y docker || return 1\n  systemctl enable --now docker || return 1\n"
+          "  cat > /usr/local/bin/${name_prefix}-kafka-ui <<'__KAFKA_UI__' || return 1\n" in web_ud
+      and "\n__KAFKA_UI__\n  chmod 0755 /usr/local/bin/${name_prefix}-kafka-ui || return 1\n"
+          "  cat > /etc/systemd/system/${name_prefix}-kafka-ui.service <<__KAFKA_UI_UNIT__ || return 1\n" in web_ud
+      and "\n__KAFKA_UI_UNIT__\n  systemctl daemon-reload || return 1\n  systemctl enable --now ${name_prefix}-kafka-ui.service\n}\n" in web_ud
+      and re.search(r'\nkafka_ui_setup \|\| echo "\$\{name_prefix\}-kafka-ui: setup failed [^"\n]*" >&2\n', web_ud) is not None
+      and "logger" not in "\n".join(l for l in web_ud.splitlines() if not l.lstrip().startswith("#")))
 
 # user_data を描いて（テンプレートの変数を仮置き）、シェルの部分を bash -n にかけ、Kafbat UI のスクリプトを偽の aws / docker で動かす
 def _render_web_ud(graph_backend=""):
@@ -486,7 +517,14 @@ case "$1 $2" in
   "ssm get-parameter")
     name=""; for a in "$@"; do [ "$prev" = --name ] && name=$a; prev=$a; done
     var="FAKE_$(printf '%s' "${name##*/}" | tr 'a-z-' 'A-Z_')"
-    [ -n "${!var:-}" ] || { echo "An error occurred (ParameterNotFound)" >&2; exit 254; }
+    # 読めないときの AWS CLI の形（aws-cli 2.36.34 を偽のエンドポイントに当てて実測。標準エラーは空行から始まる）。pnf-old は [ERROR] の前置きが無い古い版
+    [ -n "${!var:-}" ] || case "${FAKE_SSM_ERROR:-pnf}" in
+      pnf) printf '\\naws: [ERROR]: An error occurred (ParameterNotFound) when calling the GetParameter operation (reached max retries: 0): \\n' >&2; exit 254 ;;
+      pnf-old) printf '\\nAn error occurred (ParameterNotFound) when calling the GetParameter operation: \\n' >&2; exit 254 ;;
+      deny) printf '\\naws: [ERROR]: An error occurred (AccessDeniedException) when calling the GetParameter operation (reached max retries: 0): User: arn:aws:sts::123456789012:assumed-role/x-nwc-poc-web/i-0 is not authorized to perform: ssm:GetParameter on resource: arn:aws:ssm:ap-northeast-1:123456789012:parameter%s\\n' "$name" >&2; exit 254 ;;
+      unreachable) printf '\\naws: [ERROR]: Could not connect to the endpoint URL: "https://ssm.ap-northeast-1.amazonaws.com/"\\n' >&2; exit 255 ;;
+      nocreds) printf '\\naws: [ERROR]: An error occurred (NoCredentials): Unable to locate credentials. You can configure credentials by running "aws login".\\n' >&2; exit 253 ;;
+    esac
     printf '%s\\n' "${!var}" ;;
   "ecr get-login-password") [ -z "${FAKE_ECR_FAIL:-}" ] || exit 255; echo ecr-token ;;
   *) exit 2 ;;
@@ -501,15 +539,16 @@ if [ "$1" = login ]; then cat > "$FAKE_LOG.stdin"; fi
     os.chmod(os.path.join(_kbin, _n), 0o755)
 _krendered = _render_web_ud()
 # user_data のうちスクリプトを書く所（cat > … <<'__KAFKA_UI__' からユニットを書く手前まで。chmod を含む）を、置き場所だけ差し替えてそのまま打つ
-_kwrite = _krendered[_krendered.index("cat > /usr/local/bin/x-nwc-poc-kafka-ui <<'__KAFKA_UI__'\n"):_krendered.index("cat > /etc/systemd/system/x-nwc-poc-kafka-ui.service")]
-_krun_src = _krendered[_krendered.index("<<'__KAFKA_UI__'\n") + len("<<'__KAFKA_UI__'\n"):_krendered.index("\n__KAFKA_UI__\n")]
+_kwrite = _krendered[_krendered.index("cat > /usr/local/bin/x-nwc-poc-kafka-ui <<'__KAFKA_UI__' || return 1\n"):_krendered.index("cat > /etc/systemd/system/x-nwc-poc-kafka-ui.service")]
+_krun_src = _krendered[_krendered.index("<<'__KAFKA_UI__' || return 1\n") + len("<<'__KAFKA_UI__' || return 1\n"):_krendered.index("\n__KAFKA_UI__\n")]
 _kmodes = []
 def _krun(**params):
     d = tempfile.mkdtemp(prefix="kafka-ui-run-", dir=_kbin)
-    env_file, log = os.path.join(d, "kafka-ui.env"), os.path.join(d, "log")
+    env_file, err_file, log = os.path.join(d, "kafka-ui.env"), os.path.join(d, "kafka-ui.err"), os.path.join(d, "log")
     script = os.path.join(d, "kafka-ui")
     w = subprocess.run(["bash", "-c", "umask 022\n" + _kwrite.replace("/usr/local/bin/x-nwc-poc-kafka-ui", script)
-                        .replace("ENV_FILE=/run/x-nwc-poc-kafka-ui.env\n", f"ENV_FILE={env_file}\n")], capture_output=True, text=True)
+                        .replace("ENV_FILE=/run/x-nwc-poc-kafka-ui.env\n", f"ENV_FILE={env_file}\n")
+                        .replace("ERR_FILE=/run/x-nwc-poc-kafka-ui.err\n", f"ERR_FILE={err_file}\n")], capture_output=True, text=True)
     _kmodes.append((w.returncode, oct(os.stat(script).st_mode & 0o777) if os.path.exists(script) else None))
     env = {"PATH": _kbin + os.pathsep + os.environ["PATH"], "FAKE_LOG": log}
     env.update({"FAKE_" + k.upper(): v for k, v in params.items()})
@@ -541,14 +580,32 @@ check("SASL_SSL: env は名前・ブートストラップ・SASL の 3 つ・ロ
 _p, _env, _mode, _log, _ = _krun(bootstrap_servers="kafka-1.x:9092", security_protocol="PLAINTEXT", **_KCOMMON)
 check("PLAINTEXT（OSS 版の Kafka）: SASL の行を書かない", _p.returncode == 0 and "SASL" not in _env
       and "KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL=PLAINTEXT" in _env.splitlines() and "SPRING_SECURITY_USER_PASSWORD=pw-Secret_1" in _env.splitlines())
-_kmiss = {}
-for _leaf in ("image", "bootstrap_servers", "security_protocol", "admin_password"):
+_KLEAVES = ("image", "bootstrap_servers", "security_protocol", "admin_password")  # スクリプトが読む順
+def _kunreadable(leaf, **ps):
+    """leaf のパラメータだけ読めない（FAKE_SSM_ERROR の形で落ちる）ときの (終了コード, env, docker の呼び出し, 読んだ数, 値が出たか, 標準エラー)"""
     _ps = dict(_KCOMMON, bootstrap_servers="b-1:9098", security_protocol="SASL_SSL")
-    del _ps[_leaf]
-    _p, _env, _, _log, _ = _krun(**_ps)
-    _kmiss[_leaf] = (_p.returncode, _env, [l for l in _log if l.startswith("docker ")], "pw-Secret_1" in _p.stdout + _p.stderr, "Retrying" in _p.stderr)
-check(f"パラメータが 1 つでも読めなければ 75 で終わり（systemd が 30 秒後に起こし直す）、env も書かず docker も呼ばない（{_kmiss}）",
-      all(v == (75, None, [], False, True) for v in _kmiss.values()))
+    del _ps[leaf]
+    _p, _env, _, _log, _ = _krun(**_ps, **ps)
+    return (_p.returncode, _env, [l for l in _log if l.startswith("docker ")], len([l for l in _log if l.startswith("aws ssm ")]),
+            "pw-Secret_1" in _p.stdout + _p.stderr or "b-1:9098" in _p.stdout + _p.stderr, _p.stderr)
+_kmiss = {}
+for _leaf in _KLEAVES:
+    for _style in ("pnf", "pnf-old"):
+        *_r, _err = _kunreadable(_leaf, ssm_error=_style)
+        _kmiss[_leaf, _style] = (*_r, _err.count("\n") == 1 and f"/x-nwc-poc/kafka-ui/{_leaf.replace('_', '-')} does not exist" in _err
+                                 and "Not retrying" in _err and "'sudo systemctl start x-nwc-poc-kafka-ui'" in _err and "Retrying in 30 s" not in _err)
+check(f"パラメータが無い（ParameterNotFound。stream がまだ無い・SKIP_STREAM=1）と、どれか 1 つでもそこで 75 で終わり（systemd は起こし直さない）、"
+      f"env も書かず docker も呼ばず、後ろのパラメータを読まない。標準エラーは 1 行で「無い・再試行しない・起こし方」（古い AWS CLI の形でも同じ。{_kmiss}）",
+      _kmiss == {(l, st): (75, None, [], i + 1, False, True) for i, l in enumerate(_KLEAVES) for st in ("pnf", "pnf-old")})
+_kerr = {}
+for _leaf in _KLEAVES:
+    for _style, _aws in (("deny", "(AccessDeniedException)"), ("unreachable", "Could not connect to the endpoint URL"), ("nocreds", "(NoCredentials)")):
+        *_r, _err = _kunreadable(_leaf, ssm_error=_style)
+        _kerr[_leaf, _style] = (*_r, _err.count("\n") == 1 and f"Cannot read /x-nwc-poc/kafka-ui/{_leaf.replace('_', '-')} (not a missing parameter" in _err
+                                and "Retrying in 30 s. AWS CLI: aws: [ERROR]: " in _err and _aws in _err and "Not retrying" not in _err)
+check(f"ParameterNotFound 以外で読めない（AccessDenied 254・エンドポイント不達 255・認証情報がまだ無い 253）と 69 で終わり（systemd が 30 秒後に起こし直す）、"
+      f"「stream が無い」とは言わずに AWS CLI のエラー文を 1 行に添える。env も書かず docker も呼ばない（{_kerr}）",
+      _kerr == {(l, st): (69, None, [], i + 1, False, True) for i, l in enumerate(_KLEAVES) for st in ("deny", "unreachable", "nocreds")})
 _kfail = {}
 for _what, _ps in (("ECR のログイン", dict(ecr_fail="1")), ("pull", dict(docker_fail="pull")), ("login", dict(docker_fail="login"))):
     _p, _, _, _log, _ = _krun(bootstrap_servers="b-1:9098", security_protocol="SASL_SSL", **_KCOMMON, **_ps)
@@ -557,6 +614,55 @@ check(f"ECR のログイン（aws ecr get-login-password と docker login のど
       _kfail == {"ECR のログイン": (True, ["login"]), "pull": (True, ["login", "pull"]), "login": (True, ["login"])})
 check(f"user_data はスクリプトを #!/bin/bash と set -euo pipefail で始めて 0755 にし、systemd のように直に起こせる（書いた結果と mode: {sorted(set(_kmodes))}）",
       _krun_src.startswith("#!/bin/bash\nset -euo pipefail\n") and set(_kmodes) == {(0, "0o755")})
+# Docker と Kafbat UI の節（関数 kafka_ui_setup と、それを || echo で呼ぶ行）を set -euo pipefail の下で打ち、どの段で落ちても user_data が先へ進むことを見る。
+# PATH には cat と偽の dnf / systemctl / chmod（と、docker がある場合の偽の docker）だけを置く
+_ksetup = _krendered[_krendered.index("\nkafka_ui_setup() {\n") + 1:]
+_ksetup = _ksetup[:_ksetup.index("\n", _ksetup.index("\nkafka_ui_setup || echo ") + 1) + 1]
+_ksbin = tempfile.mkdtemp(prefix="kafka-ui-setup-", dir=_kbin)
+os.symlink(shutil.which("cat"), os.path.join(_ksbin, "cat"))
+for _n, _body in (("dnf", '[ "$FAIL" != dnf ] || exit 1\n'),
+                  ("chmod", '[ "$FAIL" != chmod ] || exit 1\nexec ' + shutil.which("chmod") + ' "$@"\n'),
+                  ("systemctl", 'case "$*" in "enable --now docker") k=enable-docker ;; daemon-reload) k=daemon-reload ;; '
+                                '"enable --now x-nwc-poc-kafka-ui.service") k=enable-kafka-ui ;; *) k=other ;; esac\n[ "$FAIL" != "$k" ] || exit 1\n')):
+    with open(os.path.join(_ksbin, _n), "w") as f:
+        f.write(f'#!/bin/bash\necho "{_n} $*" >> "$FAKE_LOG"\n' + _body)
+    os.chmod(os.path.join(_ksbin, _n), 0o755)
+def _ksetup_run(fail="", docker=False, bad_dir=""):
+    d = tempfile.mkdtemp(prefix="run-", dir=_ksbin)
+    bindir = os.path.join(d, "bin")
+    os.mkdir(bindir)
+    if docker:
+        with open(os.path.join(bindir, "docker"), "w") as f:
+            f.write("#!/bin/bash\nexit 0\n")
+        os.chmod(os.path.join(bindir, "docker"), 0o755)
+    script, unit, log = os.path.join(d, "kafka-ui"), os.path.join(d, "kafka-ui.service"), os.path.join(d, "log")
+    if bad_dir == "script":
+        script = os.path.join(d, "missing", "kafka-ui")
+    if bad_dir == "unit":
+        unit = os.path.join(d, "missing", "kafka-ui.service")
+    src = _ksetup.replace("/usr/local/bin/x-nwc-poc-kafka-ui", script).replace("/etc/systemd/system/x-nwc-poc-kafka-ui.service", unit)
+    p = subprocess.run(["/bin/bash", "-c", "set -euo pipefail\n" + src + "echo REACHED\n"], capture_output=True, text=True,
+                       env={"PATH": bindir + os.pathsep + _ksbin, "FAKE_LOG": log, "FAIL": fail})
+    calls = [l.split(" ", 1)[0] if l.startswith(("dnf", "chmod")) else l for l in (open(log).read().splitlines() if os.path.exists(log) else [])]
+    return (p.returncode, p.stdout, "x-nwc-poc-kafka-ui: setup failed" in p.stderr, calls,
+            os.path.exists(script), os.path.exists(unit))
+_KSTEPS = ["dnf", "systemctl enable --now docker", "chmod", "systemctl daemon-reload", "systemctl enable --now x-nwc-poc-kafka-ui.service"]
+_ksres = {"ok": _ksetup_run(), "ok-docker": _ksetup_run(docker=True)}
+for _fail, _n in (("dnf", 1), ("enable-docker", 2), ("chmod", 3), ("daemon-reload", 4), ("enable-kafka-ui", 5)):
+    _ksres[_fail] = _ksetup_run(fail=_fail)
+_ksres["script-write"] = _ksetup_run(bad_dir="script")
+_ksres["unit-write"] = _ksetup_run(bad_dir="unit")
+check(f"Docker と Kafbat UI の節は、どの段（dnf・docker の起動・スクリプトの書き込み・chmod・ユニットの書き込み・daemon-reload・enable）で落ちても、"
+      f"そこで止めて後ろの段を打たず、「setup failed」を 1 行出して user_data の先（Gradio）へ進む。docker があれば dnf を呼ばない（{_ksres}）",
+      _ksres == {"ok": (0, "REACHED\n", False, _KSTEPS, True, True),
+                 "ok-docker": (0, "REACHED\n", False, _KSTEPS[1:], True, True),
+                 "dnf": (0, "REACHED\n", True, _KSTEPS[:1], False, False),
+                 "enable-docker": (0, "REACHED\n", True, _KSTEPS[:2], False, False),
+                 "chmod": (0, "REACHED\n", True, _KSTEPS[:3], True, False),
+                 "daemon-reload": (0, "REACHED\n", True, _KSTEPS[:4], True, True),
+                 "enable-kafka-ui": (0, "REACHED\n", True, _KSTEPS, True, True),
+                 "script-write": (0, "REACHED\n", True, _KSTEPS[:2], False, False),
+                 "unit-write": (0, "REACHED\n", True, _KSTEPS[:3], True, False)})
 shutil.rmtree(_kbin)
 
 check("開き方は Web の EC2 の 127.0.0.1:8082 への SSM のポートフォワード（AWS-StartPortForwardingSession。ToRemoteHost ではない）。PC 側も 8082（Web 8080 と Nautobot 8081 とぶつけない）",
