@@ -28,7 +28,7 @@ String（ルートをまたいで渡す値）:
 | `/<prefix>/telegraf-address` | Telegraf の内部 NLB のアドレス | stream | lab の EC2（`lab forward`） |
 | `/<prefix>/telegraf-source-cidr` | 取りにいく側のタスクのサブネットの CIDR | stream | lab の EC2（`lab forward`） |
 | `/<prefix>/telegraf-dialin/<lab か nautobot>/gnmi-targets`、`snmp-agents` | Telegraf が取りにいく機器の一覧 | stream（最初の値）。`nautobot` のほうは Nautobot の Job が書き換える | Telegraf の取りにいく側（ECS の secrets） |
-| `/<prefix>/kafka-ui/image`、`bootstrap-servers`、`security-protocol` | Kafbat UI のイメージ（ECR）、Kafka のブートストラップ、`SASL_SSL`（MSK の IAM）か `PLAINTEXT`（OSS 版） | stream（`kafka_ui.tf`） | Web の EC2 のユニット `<prefix>-kafka-ui`（起動のたびに読む。読めなければ 30 秒ごとに起こし直す） |
+| `/<prefix>/kafka-ui/image`、`bootstrap-servers`、`security-protocol` | Kafbat UI のイメージ（ECR）、Kafka のブートストラップ、`SASL_SSL`（MSK の IAM）か `PLAINTEXT`（OSS 版） | stream（`kafka_ui.tf`） | Web の EC2 のユニット `<prefix>-kafka-ui`（起動のたびに読む。無ければ 1 回で止まって Web の再起動で起き、それ以外で読めなければ 30 秒ごとに起こし直す） |
 | `/<prefix>/neptune-graph-id` | Neptune Analytics のグラフの ID | graph | Runtime、Web、tools の Lambda（graph-status の Lambda、worker、Nautobot のタスクは同じ値を環境変数 `NEPTUNE_GRAPH_ID` でもらう） |
 | `/<prefix>/nautobot/url` | Nautobot の URL | nautobot | Web の EC2 |
 | `/<prefix>/decision-queue-url` | 決定のキュー `<prefix>-decisions` の URL | workflow | Web の EC2（承認タブ） |
