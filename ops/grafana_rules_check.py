@@ -9,7 +9,10 @@ health が error、lastError が空でないものをエラーとする。KeepLa
 Web と同じ環境変数（/etc/<prefix>-web.env）と依存（/opt/<prefix>-web/lib の boto3）で動かす。admin のパスワードは SSM の
 /<prefix>/grafana/admin-password から読む（表示しない）。Grafana は Cloud Map の grafana.<prefix>.internal:3000（SG で Web から届く）。
 
-全部のルールが 1 回は評価されるまで 10 秒おきに読み直す（立てた直後は Grafana が起動中か、まだ評価していない）。
+確かめ始めてから全部のルールがもう 1 回評価されるまで 10 秒おきに読み直す（立てた直後は Grafana が起動中か、まだ評価していない。
+最初に読めたときの評価は、データソースを直す前のものかもしれないので判定に使わない。ルールの間隔は 1 分なので最大 1 分ほど延びる）。
+エラーのあったルールは、もう 1 回評価されてもエラーなら NG にする。エラーの評価が作った状態は、直したあとの成功した評価に 1 回分残り、
+その次の評価で消える（Grafana の stale の扱い。13.2.2 で実測）ので、NG は 1 分ほど遅れて出る。
 最後の行は「判定: OK / NG / 未確認 …」。終了コードは 0（エラーのルールが無い）/ 1（エラーのルールがある）/ 2（確かめられなかった）。
 
 環境変数:
@@ -18,6 +21,7 @@ Web と同じ環境変数（/etc/<prefix>-web.env）と依存（/opt/<prefix>-we
 """
 import base64
 import collections
+import http.client
 import json
 import os
 import sys
@@ -55,10 +59,14 @@ def make_fetch(base_url, password):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # Grafana は VPC の中。プロキシを通さない
 
     def fetch():
-        req = urllib.request.Request(f"{base_url}/api/prometheus/grafana/api/v1/rules", headers={"Authorization": auth})
+        req = urllib.request.Request(f"{base_url}/api/prometheus/grafana/api/v1/rules")
+        req.add_unredirected_header("Authorization", auth)  # リダイレクト先には送らない
         try:
             with opener.open(req, timeout=10) as r:
-                return json.load(r)
+                body = json.load(r)
+            if not isinstance(body, dict):
+                raise ValueError(f"JSON のオブジェクトでない（{type(body).__name__}）")
+            return body
         except urllib.error.HTTPError as e:
             if e.code in (401, 403):
                 raise Unauthorized(f"HTTP {e.code}（admin のパスワードが Grafana と SSM で違う）") from None
@@ -96,8 +104,14 @@ def line(group, rule):
 
 
 def check(fetch, wait, clock=time.monotonic, sleep=time.sleep, out=print):
-    """ルールの API を読み、全部のルールが評価されたら判定する。0 / 1 / 2 を返す"""
+    """ルールの API を読み、確かめ始めてから全部のルールが評価されたら判定する。0 / 1 / 2 を返す"""
     deadline = clock() + wait
+    first = None  # 最初に読めたときの各ルールの lastEvaluation。これと違う評価（新しい評価）だけで判定する
+    erred = {}  # 新しい評価でエラーがあったルールの、その評価の lastEvaluation。これと違う評価でもエラーなら NG
+
+    def fresh(group, rule):
+        return evaluated(rule) and rule.get("lastEvaluation") != first.get((group, rule.get("name")))
+
     while True:
         why = ""
         try:
@@ -105,26 +119,33 @@ def check(fetch, wait, clock=time.monotonic, sleep=time.sleep, out=print):
         except Unauthorized as e:
             out(f"判定: 未確認（Grafana のルールの API が {e}）")
             return 2
-        except (OSError, ValueError) as e:  # 起動中（つながらない・502）と、JSON でない応答。HTTPError も URLError も OSError
+        except (OSError, ValueError, http.client.HTTPException) as e:  # 起動中（つながらない・502・途中で切れる）と、JSON でない応答。HTTPError も URLError も OSError
             rules, why = None, f"Grafana のルールの API が読めない（{type(e).__name__}: {e}）"
         if rules is not None:
+            if first is None:
+                first = {(g, r.get("name")): r.get("lastEvaluation") or "" for g, r in rules}
             if not rules:
                 why = "ルールが 0 本（app/grafana/start.sh が ALERTS_TOPIC_ARN とデータソースの URL のあるときだけ並べる）"
-            elif all(evaluated(r) for _, r in rules):
-                for g, r in rules:
-                    out(line(g, r))
+            elif all(fresh(g, r) for g, r in rules):
                 bad = [(f"{g}/{r.get('name')}", p) for g, r in rules if (p := problems(r))]
-                if not bad:
-                    out(f"判定: OK（{len(rules)} 本とも評価のエラーなし）")
-                    return 0
-                for name, p in bad:
-                    out(f"エラー: {name}（{'、'.join(p)}）")
-                names = "、".join(name for name, _ in bad)
-                out(f"判定: NG（{len(rules)} 本のうち {len(bad)} 本の評価がエラー: {names}）")
-                return 1
+                # エラーを初めて見た評価なら覚えて待つ（setdefault）。覚えた評価と違う評価でもエラーなら確か
+                once = [f"{g}/{r.get('name')}" for g, r in rules if problems(r)
+                        and erred.setdefault((g, r.get("name")), r.get("lastEvaluation")) == r.get("lastEvaluation")]
+                if not once:
+                    for g, r in rules:
+                        out(line(g, r))
+                    if not bad:
+                        out(f"判定: OK（{len(rules)} 本とも評価のエラーなし）")
+                        return 0
+                    for name, p in bad:
+                        out(f"エラー: {name}（{'、'.join(p)}）")
+                    names = "、".join(name for name, _ in bad)
+                    out(f"判定: NG（{len(rules)} 本のうち {len(bad)} 本の評価がエラー: {names}）")
+                    return 1
+                why = f"エラーのあったルールのもう 1 回の評価を待っている（直した直後は前の評価のエラーが 1 回分残る）: {'、'.join(once)}"
             else:
-                waiting = [f"{g}/{r.get('name')}" for g, r in rules if not evaluated(r)]
-                why = f"まだ評価されていないルール: {'、'.join(waiting)}"
+                waiting = [f"{g}/{r.get('name')}" for g, r in rules if not fresh(g, r)]
+                why = f"確かめ始めてから評価されていないルール: {'、'.join(waiting)}"
         if clock() >= deadline:
             out(f"判定: 未確認（{wait} 秒待った。{why}）")
             return 2

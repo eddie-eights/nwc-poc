@@ -970,6 +970,22 @@ def gbody(*rules):
     return {"status": "success", "data": {"groups": [{"name": "nwc-prometheus", "rules": list(rules)}]}}
 
 
+def before(body, at="2026-10-08T13:27:50Z"):
+    """body の 1 回前の評価（check を打ったときに見える評価）。check はこれと lastEvaluation が違う評価だけで判定する"""
+    return {"status": "success", "data": {"groups": [dict(g, rules=[dict(r, lastEvaluation=at) for r in g["rules"]])
+                                                     for g in body["data"]["groups"]]}}
+
+
+def again(body):
+    """body の 1 回あとの評価。エラーはこの評価でも出たら NG になる"""
+    return before(body, at="2026-10-08T13:29:50Z")
+
+
+def ngrun(body, **kw):
+    """打ったときの評価 → body → その次の評価（body と同じ状態）と答えて check を回す"""
+    return grun(before(body), body, again(body), **kw)
+
+
 def grun(*answers, wait=30):
     """answers を順に返す（例外なら投げる。尽きたら最後のものを返し続ける）偽の fetch で check を回す。(終了コード, 出力の行, fetch の回数, 待った秒数)"""
     t, out, n = [0.0], [], [0]
@@ -990,25 +1006,52 @@ def grun(*answers, wait=30):
 
 _ok = gbody(grule("link_down", "Normal"), grule("bgp_down", "Normal (NoData)"), grule("isis_down", "Normal (NoData, KeepLast)"),
             grule("trap", "Alerting", "Normal"), grule("quiet"))
-check("ルールの確かめ: Normal・NoData（KeepLast も）・Alerting・アラート無しはエラーではない。全部評価済みなら 1 回読んで OK（0）",
-      grun(_ok)[0] == 0 and grun(_ok)[1][-1] == "判定: OK（5 本とも評価のエラーなし）" and grun(_ok)[2] == 1 and len(grun(_ok)[1]) == 6)
-_ng = grun(gbody(grule("link_down", "Normal (Error, KeepLast)", "Normal (Error, KeepLast)"), grule("trap", "Normal")))
-check("ルールの確かめ: 「Normal (Error, KeepLast)」が 1 つでもあれば NG（1）。どのルールか、状態ごとの数も出す",
+check("ルールの確かめ: Normal・NoData（KeepLast も）・Alerting・アラート無しはエラーではない。打ったあとの評価が全部そろえば OK（0）",
+      grun(before(_ok), _ok)[0] == 0 and grun(before(_ok), _ok)[1][-1] == "判定: OK（5 本とも評価のエラーなし）"
+      and grun(before(_ok), _ok)[2:] == (2, 10) and len(grun(before(_ok), _ok)[1]) == 6)
+_ngb = gbody(grule("link_down", "Normal (Error, KeepLast)", "Normal (Error, KeepLast)"), grule("trap", "Normal"))
+_ng = ngrun(_ngb)
+check("ルールの確かめ: 「Normal (Error, KeepLast)」が打ったあとの 2 回の評価で続けば NG（1）。どのルールか、状態ごとの数も出す",
       _ng[0] == 1 and _ng[1][-1] == "判定: NG（2 本のうち 1 本の評価がエラー: nwc-prometheus/link_down）"
-      and "エラー: nwc-prometheus/link_down（Normal (Error, KeepLast) ×2）" in _ng[1])
-check("ルールの確かめ: health が error、lastError が空でない、state が Error で始まる（execErrState: Error のとき）も NG",
-      [grun(gbody(r))[0] for r in (grule("a", health="error"), grule("a", last_error="x" * 500), grule("a", "Error"), grule("a", "Alerting (Error)"))]
-      == [1, 1, 1, 1] and any(len(l) < 400 and "lastError=" in l for l in grun(gbody(grule("a", last_error="x" * 500)))[1]))
+      and "エラー: nwc-prometheus/link_down（Normal (Error, KeepLast) ×2）" in _ng[1] and _ng[2:] == (3, 20))
+check("ルールの確かめ: health が error、lastError が空でない、state が Error で始まる（execErrState: Error のとき）、"
+      "系列のあるルールのエラー（Alerting (Error, KeepLast)）も NG",
+      [ngrun(gbody(r))[0] for r in (grule("a", health="error"), grule("a", last_error="x" * 500), grule("a", "Error"),
+                                    grule("a", "Alerting (Error)"), grule("a", "Alerting (Error, KeepLast)"))]
+      == [1, 1, 1, 1, 1] and any(len(l) < 400 and "lastError=" in l for l in ngrun(gbody(grule("a", last_error="x" * 500)))[1]))
+_was_ng = grun(gbody(grule("trap", "Normal (Error, KeepLast)", evaluated="2026-10-08T13:57:50Z")),
+               gbody(grule("trap", "Alerting", evaluated="2026-10-08T13:58:50Z")))
+_was_ok = grun(gbody(grule("trap", "Alerting", evaluated="2026-10-08T13:57:50Z")),
+               gbody(grule("trap", "Alerting (Error, KeepLast)", evaluated="2026-10-08T13:58:50Z")),
+               gbody(grule("trap", "Alerting (Error, KeepLast)", evaluated="2026-10-08T13:59:50Z")))
+check("ルールの確かめ: 打ったときに見える評価（データソースを直す前・壊れる前のものかもしれない）では判定せず、lastEvaluation が変わる（次の評価）まで待つ",
+      _was_ng[0] == 0 and _was_ng[2:] == (2, 10) and _was_ok[0] == 1 and _was_ok[2:] == (3, 20))
+# 手元の 13.2.2 で実測: 14:12:11 に OpenSearch を戻すと、14:13:00 の評価は Alerting（系列）と Normal (Error, KeepLast)（前の評価の残り。
+# ラベルはルールのものだけ）が並び、14:14:00 の評価で Alerting だけになった
+_left = gbody(grule("trap", "Alerting", "Normal (Error, KeepLast)"))
+_stale = grun(before(_left), _left, again(gbody(grule("trap", "Alerting"))))
+_flaky = grun(before(_ngb), _ngb, again(gbody(grule("link_down", "Normal"), grule("trap", "Normal"))))
+_slow = grun(before(_ngb), _ngb, gbody(grule("link_down", "Normal (Error, KeepLast)"), grule("trap", "Normal", evaluated="2026-10-08T13:29:50Z")),
+             again(_ngb))
+check("ルールの確かめ: エラーは、そのルールがもう 1 回評価されてもエラーのときだけ NG。直した直後に 1 回分残るエラーでは NG にしない",
+      _stale[0] == 0 and _stale[1][-1] == "判定: OK（1 本とも評価のエラーなし）" and _stale[2:] == (3, 20)
+      and _flaky[0] == 0 and _slow[0] == 1 and _slow[2:] == (4, 30)
+      and grun(before(_ngb), _ngb)[1][-1] == "判定: 未確認（30 秒待った。エラーのあったルールのもう 1 回の評価を待っている"
+                                              "（直した直後は前の評価のエラーが 1 回分残る）: nwc-prometheus/link_down）")
 _late = grun(gbody(grule("link_down", evaluated="0001-01-01T00:00:00Z")), gbody(grule("link_down", evaluated="")), gbody(grule("link_down", "Normal")))
-check("ルールの確かめ: まだ評価されていない（lastEvaluation が 0001- か空）ルールがあれば 10 秒おきに読み直し、全部そろってから判定する",
+check("ルールの確かめ: まだ評価されていない（lastEvaluation が 0001- か空）ルールがあれば 10 秒おきに読み直し、全部そろってから判定する"
+      "（立てた直後は最初の評価で判定する）",
       _late[:1] == (0,) and _late[2] == 3 and _late[3] == 20)
-_never = grun(gbody(grule("link_down", "Normal"), grule("trap", evaluated="0001-01-01T00:00:00Z")))
+_never = grun(gbody(grule("link_down", "Normal", evaluated="2026-10-08T13:27:50Z"), grule("trap", evaluated="0001-01-01T00:00:00Z")),
+              gbody(grule("link_down", "Normal"), grule("trap", evaluated="0001-01-01T00:00:00Z")))
 check("ルールの確かめ: 待つ秒数（GRAFANA_WAIT）までに評価がそろわなければ未確認（2）。どのルールを待っていたかを出す",
-      _never[0] == 2 and _never[1][-1] == "判定: 未確認（30 秒待った。まだ評価されていないルール: nwc-prometheus/trap）" and _never[3] == 30
+      _never[0] == 2 and _never[1][-1] == "判定: 未確認（30 秒待った。確かめ始めてから評価されていないルール: nwc-prometheus/trap）"
+      and _never[3] == 30 and grun(gbody(grule("a", "Normal")))[1][-1] == "判定: 未確認（30 秒待った。確かめ始めてから評価されていないルール: nwc-prometheus/a）"
       and grun(gbody(), wait=10)[1][-1].startswith("判定: 未確認（10 秒待った。ルールが 0 本"))
-_down = grun(grc.urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")), ValueError("Expecting value"), gbody(grule("a", "Normal")))
-check("ルールの確かめ: Grafana が起動中（つながらない）・JSON でない応答は待って読み直し、ずっと読めなければ理由を付けて未確認（2）",
-      _down[0] == 0 and _down[2] == 3
+_down = grun(grc.urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")), ValueError("Expecting value"),
+             grc.http.client.IncompleteRead(b"{"), before(gbody(grule("a", "Normal"))), gbody(grule("a", "Normal")), wait=60)
+check("ルールの確かめ: Grafana が起動中（つながらない）・途中で切れた応答・JSON でない応答は待って読み直し、ずっと読めなければ理由を付けて未確認（2）",
+      _down[0] == 0 and _down[2] == 5
       and grun(grc.urllib.error.URLError("x"), wait=20)[1][-1] == "判定: 未確認（20 秒待った。Grafana のルールの API が読めない（URLError: <urlopen error x>））")
 _unauth = grun(grc.Unauthorized("HTTP 401（admin のパスワードが Grafana と SSM で違う）"), gbody(grule("a", "Normal")))
 check("ルールの確かめ: 401 / 403 は待たずに未確認（2。待っても直らない）",
@@ -1017,11 +1060,18 @@ check("ルールの確かめ: 401 / 403 は待たずに未確認（2。待って
 
 class _Rules(http.server.BaseHTTPRequestHandler):
     PW = "pw-" + "q9Z2" * 4   # 偽の値（手元の偽の Grafana が受け付けるパスワード）
+    SEEN = []                 # (パス, Authorization が付いていたか)
 
     def do_GET(self):
         import base64
+        self.SEEN.append((self.path, "Authorization" in self.headers))
+        if self.path.startswith("/moved/"):   # 別の場所へのリダイレクト
+            self.send_response(302); self.send_header("Location", self.path[len("/moved"):]); self.end_headers()
+            return
         ok = self.headers.get("Authorization") == "Basic " + base64.b64encode(f"admin:{self.PW}".encode()).decode()
-        code, body = ((200, json.dumps(gbody(grule("a", "Normal")))) if self.path == "/api/prometheus/grafana/api/v1/rules" else (404, "{}")) if ok else (401, "{}")
+        rules = "/api/prometheus/grafana/api/v1/rules"
+        code, body = ((200, json.dumps(gbody(grule("a", "Normal")))) if self.path == rules
+                      else (200, "[]") if self.path == "/list" + rules else (404, "{}")) if ok else (401, "{}")
         self.send_response(code); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(body.encode())
 
     def log_message(self, *a):
@@ -1043,6 +1093,18 @@ try:
     _wrong = io.StringIO()
     with contextlib.redirect_stdout(_wrong):
         _rc401 = grc.check(grc.make_fetch(_url, "wrong-" + _Rules.PW), 30, sleep=lambda s: None)
+    _Rules.SEEN.clear()
+    try:
+        grc.make_fetch(_url + "/moved", _Rules.PW)()
+        _moved = None
+    except grc.Unauthorized as e:
+        _moved = e
+    _moved_seen = list(_Rules.SEEN)
+    try:
+        grc.make_fetch(_url + "/list", _Rules.PW)()
+        _list = None
+    except ValueError as e:
+        _list = e
 finally:
     _srv.shutdown()
     for k, v in _saved.items():
@@ -1051,6 +1113,10 @@ check("ルールの確かめ: make_fetch は admin の Basic 認証でルール�
       "パスワードは例外の文にも出力にも出さない",
       _got == gbody(grule("a", "Normal")) and isinstance(_401, grc.Unauthorized) and _401.__cause__ is None and _401.__suppress_context__
       and _Rules.PW not in str(_401) and _rc401 == 2 and _Rules.PW not in _wrong.getvalue() and "HTTP 401" in _wrong.getvalue())
+check("ルールの確かめ: make_fetch はリダイレクト先に Authorization（パスワード）を送らない。JSON がオブジェクトでなければ ValueError（check が待って読み直す）",
+      isinstance(_moved, grc.Unauthorized)
+      and _moved_seen == [("/moved/api/prometheus/grafana/api/v1/rules", True), ("/api/prometheus/grafana/api/v1/rules", False)]
+      and isinstance(_list, ValueError) and "list" in str(_list))
 
 _seen, _gout = {}, io.StringIO()
 _orig = (grc.load_web_env, grc.admin_password, grc.make_fetch, grc.check)
@@ -1085,7 +1151,7 @@ check("ルールの確かめ（main）: NAME_PREFIX が無ければ止まる。G
 _gsrc = read("ops", "grafana_rules_check.py")
 check("ルールの確かめ: 読むのは SSM の /<接頭辞>/grafana/admin-password（Web の EC2 のロールが読める範囲）と Web と同じ環境変数・boto3。標準ライブラリのほかは boto3 だけ",
       'Name=f"/{prefix}/grafana/admin-password", WithDecryption=True' in _gsrc and 'open(f"/etc/{prefix}-web.env"' in _gsrc
-      and imported(ast.parse(_gsrc).body) <= {"base64", "collections", "json", "os", "sys", "time", "urllib"}
+      and imported(ast.parse(_gsrc).body) <= {"base64", "collections", "http", "json", "os", "sys", "time", "urllib"}
       and imported(ast.walk(ast.parse(_gsrc))) - imported(ast.parse(_gsrc).body) == {"boto3"}
       and re.search(r'parameter/\$\{local\.name_prefix\}/\*', read("IaC", "terraform", "aws-managed", "base", "core", "web.tf")) is not None)
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Grafana のアラートルールが評価でエラーになっていないかを確かめる。ops/up.sh（OSS 版は oss/ops/up.sh）の 9-2 と同じ確かめを単独で打つ版。
-# ルールは execErrState: KeepLast なので、評価がエラーでもアラートは出ず、画面のルールも Normal に見える。up.sh の確かめは打ったときの結果だけなので、
+# ルールは execErrState: KeepLast なので、評価がエラーでもアラートは出ず、画面のルールも Normal に見える。up.sh の確かめはそのときの評価だけなので、
 # データソースや格納先を直したあと、Grafana のタスクが入れ替わったあと、アラートが来ないと思ったときに打つ。
 #
 # 使い方（展開したフォルダの直下で。ops/up.sh と同じ deploy.env と AWS の認証情報）:
@@ -8,7 +8,7 @@
 #   ops/check-grafana.sh --oss   # OSS 版（cycle 005。接頭辞 <owner>-nwc-oss、IaC/terraform/oss/ の state）
 #
 # base/core（Web の EC2）と pipeline/analytics の Grafana が出来ていることが前提。Web の EC2 の上で ops/grafana_rules_check.py を SSM Run Command で動かす
-# （ops/up-common.sh の grafana_rules_check）。全部のルールが 1 回評価されるまで最大 5 分待つ。出力の最後の行が「判定: OK / NG / 未確認 …」。
+# （ops/up-common.sh の grafana_rules_check）。打ってから全部のルールがもう 1 回評価されるまで（間隔 1 分。エラーのあったルールはその次の評価まで）最大 5 分待つ。出力の最後の行が「判定: OK / NG / 未確認 …」。
 # 終了コードは 0（OK）/ 1（NG か未確認。どちらかは「判定:」の行）/ 2（使い方の誤り）。
 # NG の理由（KeepLast はエラーの文を API に残さない）は Grafana のログを見る（下で出すコマンド）。
 # Grafana のタスクが入れ替わる途中だと、Cloud Map の名前が前のタスクを指していることがある。そのときは入れ替わりが終わってから打ち直す

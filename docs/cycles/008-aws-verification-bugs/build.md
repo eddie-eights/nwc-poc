@@ -496,3 +496,213 @@ gone: nwc-pin-test-grafana:local
 
 - AWS のビルド（`build_grafana` の buildx で arm64 を ECR に push）と、ECS の上で 3.2.0 / 2.34.4 が動くこと。Dockerfile が変わったのでタグが変わり、次の `ops/up.sh` / `oss/ops/up.sh` で作り直しになる
 - `docs/development.md` のテストの本数（test_alerts 138）は 140 になった。PM のブランチ（afecd19）が同じ行を直しているので、ここでは直していない
+
+## Round 3
+
+実装モデル: claude-opus-5-5 / effort: xhigh（セッションのまま。実装の high には切り替えていない）
+
+エンジニア1（PM の指示）。「Grafana のプラグインの版を固定し、ルールの Error 状態を ops で検出する」の 2 つめ（Grafana のアラートルールの評価のエラーを ops で見つける）。
+同じブランチ `fix/grafana-plugin-pin-error-state` で、078b241 で作り、セルフレビューの指摘を次の commit で直した。design.md の範囲の外の修正ブランチの作業。AWS には触っていない。BACKLOG.md は触っていない。
+
+### 直したこと
+
+| commit | 中身 |
+|---|---|
+| 078b241 | `ops/grafana_rules_check.py`（新規。Web の EC2 の上で Grafana のルールの API を admin の Basic 認証で読み、`alerts[].state` の `(Error`・`health=error`・空でない `lastError` で NG）、`ops/up-common.sh` の `grafana_rules_check` / `grafana_rules_step` と `ssm_run` の `return 1`、`ops/up.sh`（GRAFANA のとき）と `oss/ops/up.sh` の手順 9-2、`ops/check-grafana.sh`（新規。`--oss`）。理由と実測は commit メッセージ |
+| 次の commit（セルフレビュー） | 打ったあとの評価だけで判定する（S1）。直した直後に 1 回分残るエラーでは NG にしない（R1）。途中で切れた応答と配列の JSON は読み直す（N1）。Authorization をリダイレクト先に送らない（N3）。NoData は OK になることを文書に書く（S2） |
+
+### 検証
+
+#### 1. `uv sync --group dev --group web` → `bash ops/check.sh`（最後の編集のあと）
+
+```
+HEAD 078b241 / 未コミット: [ M docs/architecture/resources/grafana.md
+ M docs/pipeline.md
+ M docs/troubleshooting.md
+ M ops/check-grafana.sh
+ M ops/grafana_rules_check.py
+ M tests/test_alerts.py]
+Resolved 86 packages in 3ms
+Audited 82 packages in 6ms
+--- ops/check.sh の最後 2 行
+
+すべて通過
+exit=0
+```
+
+check.sh の全 2646 行のうち、段の見出しと各テストの結果行（行番号: 中身。188 が test_alerts、1942 が test_oss_ops）:
+
+```
+2: == 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+5: == 2. 9 つのルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+25: == 3. スクリプトの構文
+29: == 4. 模擬テスト
+188: 通過 158 / 失敗 0
+679: 通過 489 / 失敗 0
+1251: 通過 158 / 失敗 0
+1255: 通過 3 / 失敗 0
+1335: 通過 78 / 失敗 0
+1345: 通過 7 / 失敗 0
+1430: 通過 84 / 失敗 0
+1542: 通過 111 / 失敗 0
+1613: 68 項目すべて通過
+1785: 通過 171 / 失敗 0
+1942: 通過 156 / 失敗 0
+2009: 通過 66 / 失敗 0
+2085: 通過 75 / 失敗 0
+2201: 通過 100 / 失敗 0
+2644: 通過 325 / 失敗 0
+2646: すべて通過
+```
+
+test_alerts は 140 → 155（078b241）→ 158（セルフレビュー。打つ前の評価で判定しない / 直した直後に 1 回分残るエラーでは NG にせず、2 回の評価で続けば NG / リダイレクト先に Authorization を送らない・配列の JSON）。test_oss_ops は 148 → 156（078b241）。
+
+#### 2. 退行を入れてテストが落ちること（scratchpad の `inject_b3.py` 16 件と `inject_b4.py` 1 件。ファイルを書き換えて流し、毎回元に戻す）
+
+```
+落ちた: ssm_run の送れなかったときの return 1 を外す / tests/test_alerts.py: AssertionError: 9-2: SSM Run Command を送れなければ、待ち続けずに（set -e の効かない $( ) の中でも ssm_run が 1 を返す）判定の行が無い旨の警告を出す
+落ちた: 判定の行の grep をタブの手前で止めない / tests/test_alerts.py: AssertionError: 9-2: NG なら止めずに（0）、判定の行（タブの手前まで）とログの見方（/ecs/<接頭辞>-grafana の Failed to evaluate rule）と確かめ直すコマンドを警告に入れ、黄色で出す
+落ちた: 判定の行の grep をタブの手前で止めない / tests/test_oss_ops.py: AssertionError: up.sh（Grafana のルールの評価がエラー）: 止めずに（0）警告を出し、最後にもう一度出す。警告には判定の行（タブの手前まで）とログの見方（/ecs/x-nwc-oss-grafana）と確かめ直すコマンド（ops/check-grafana.sh --oss）
+落ちた: alerts[].state の (Error を見ない / tests/test_alerts.py: AssertionError: ルールの確かめ: 「Normal (Error, KeepLast)」が打ったあとの 2 回の評価で続けば NG（1）。どのルールか、状態ごとの数も出す
+落ちた: プロキシを通す（ProxyHandler を外す） / tests/test_alerts.py: urllib.error.URLError: <urlopen error [Errno 61] Connection refused>
+落ちた: 401 の例外に元の HTTPError を付ける / tests/test_alerts.py: AssertionError: ルールの確かめ: make_fetch は admin の Basic 認証でルールの API を読み（環境変数のプロキシは通さない）、401 は Unauthorized にする。パスワードは例外の文にも出力にも出さない
+落ちた: 未評価のルールを待たない / tests/test_alerts.py: AssertionError: ルールの確かめ: Normal・NoData（KeepLast も）・Alerting・アラート無しはエラーではない。打ったあとの評価が全部そろえば OK（0）
+落ちた: 打ったときに見える評価で判定する（新しい評価を待たない） / tests/test_alerts.py: AssertionError: ルールの確かめ: Normal・NoData（KeepLast も）・Alerting・アラート無しはエラーではない。打ったあとの評価が全部そろえば OK（0）
+落ちた: エラーを 1 回の評価で NG にする（直した直後に残る前のエラーを待たない） / tests/test_alerts.py: AssertionError: ルールの確かめ: 「Normal (Error, KeepLast)」が打ったあとの 2 回の評価で続けば NG（1）。どのルールか、状態ごとの数も出す
+落ちた: 覚えたエラーの評価を毎回上書きする（もう 1 回の評価を待ち続ける） / tests/test_alerts.py: AssertionError: ルールの確かめ: Normal・NoData（KeepLast も）・Alerting・アラート無しはエラーではない。打ったあとの評価が全部そろえば OK（0）
+落ちた: リダイレクト先に Authorization を送る / tests/test_alerts.py: AssertionError: ルールの確かめ: make_fetch はリダイレクト先に Authorization（パスワード）を送らない。JSON がオブジェクトでなければ ValueError（check が待って読み直す）
+落ちた: 途中で切れた応答（HTTPException）を待たない / tests/test_alerts.py: http.client.IncompleteRead: IncompleteRead(1 bytes read)
+落ちた: JSON のオブジェクトでない応答を通す / tests/test_alerts.py: AssertionError: ルールの確かめ: make_fetch はリダイレクト先に Authorization（パスワード）を送らない。JSON がオブジェクトでなければ ValueError（check が待って読み直す）
+落ちた: OSS 版の 9-2 を打たない / tests/test_oss_ops.py: AssertionError: up.sh（通し）: 終了コード 0 で最後まで行き、偽物の知らないコマンドを打たず、未定義の変数も踏まない
+落ちた: OSS 版の最後に警告をもう一度出さない / tests/test_oss_ops.py: AssertionError: up.sh（Grafana のルールの評価がエラー）: 止めずに（0）警告を出し、最後にもう一度出す。警告には判定の行（タブの手前まで）とログの見方（/ecs/x-nwc-oss-grafana）と確かめ直すコマンド（ops/check-grafana.sh --oss）
+落ちた: マネージド版の 9-2 を GRAFANA の外で打つ / tests/test_oss_ops.py: AssertionError: ops/up.sh（マネージド版）も Grafana を立てたとき（GRAFANA）だけ、Runtime のロググループのあと（9-2）に同じ確かめを打ち、OK でなければ警告（GRAFANA_WARN）を最後にもう一度出す
+落ちた: check-grafana.sh の --oss が state を替えない / tests/test_oss_ops.py: AssertionError: check-grafana.sh --oss: Web の EC2 と Grafana のサービスを IaC/terraform/oss の出力から取り、接頭辞 x-nwc-oss で ops/grafana_rules_check.py を 1 回送る。OK なら 0
+ 6 files changed, 129 insertions(+), 42 deletions(-)
+$ python3 -u scratchpad/inject_b4.py
+落ちた: 覚えたエラーの評価を毎回上書きする（括弧付き。エラーが続いても待ち続ける） / tests/test_alerts.py: AssertionError: ルールの確かめ: 「Normal (Error, KeepLast)」が打ったあとの 2 回の評価で続けば NG（1）。どのルールか、状態ごとの数も出す
+ 6 files changed, 129 insertions(+), 42 deletions(-)
+```
+
+inject_b3 の「覚えたエラーの評価を毎回上書きする」は `X or Y == Z` が `X or (Y == Z)` になり「いつも待つ」退行を入れていた（_ok で落ちたのはそのため。写しで確かめた: 元は `(2, 10.0)` で OK、注入後は `(4, 30.0)` で未確認）。括弧を付けた inject_b4 で、意図した退行（エラーが続いても待ち続ける）でも落ちることを確かめた。注入の前後の `git diff --stat` は同じ（129 insertions, 42 deletions）で、`ops/grafana_rules_check.py` は注入前の写しと `cmp` で同じ。
+
+#### 3. 手元の E2E（Grafana 13.2.2 + OpenSearch + Prometheus。`docker compose -p nwc-gfc`、Splunk は使わない。scratchpad の `b_e2e5.sh`。確かめは注入と並ぶので `grafana_rules_check.py` の写しを読む）
+
+1 = 最初からデータソースに届かない → NG。2 = 戻して trap を 1 件入れ、すぐ確かめる → 前の評価のエラーが残っても OK。3 = trap が Alerting のところから OpenSearch を止めてすぐ確かめる → NG。
+
+```
+== 1. 最初から届かない（14:21:37。130 秒待ってから check）
+  | nwc-opensearch/trap: health=ok state=inactive 評価=2026-10-08T14:25:40Z alerts=Normal (Error, KeepLast) ×1
+  | nwc-prometheus/link_down: health=ok state=inactive 評価=2026-10-08T14:25:20Z alerts=Normal (Error, KeepLast) ×1
+  | nwc-prometheus/bgp_down: health=ok state=inactive 評価=2026-10-08T14:25:20Z alerts=Normal (Error, KeepLast) ×1
+  | nwc-prometheus/isis_down: health=ok state=inactive 評価=2026-10-08T14:25:20Z alerts=Normal (Error, KeepLast) ×1
+  | エラー: nwc-opensearch/trap（Normal (Error, KeepLast) ×1）
+  | エラー: nwc-prometheus/link_down（Normal (Error, KeepLast) ×1）
+  | エラー: nwc-prometheus/bgp_down（Normal (Error, KeepLast) ×1）
+  | エラー: nwc-prometheus/isis_down（Normal (Error, KeepLast) ×1）
+  | 判定: NG（4 本のうち 4 本の評価がエラー: nwc-opensearch/trap、nwc-prometheus/link_down、nwc-prometheus/bgp_down、nwc-prometheus/isis_down）
+  終了コード 1 / 120 秒 / 出力にパスワード: False
+  raw nwc-opensearch trap 2026-10-08T14:25:40Z [('Normal (Error, KeepLast)', 5)]
+  raw nwc-prometheus link_down 2026-10-08T14:25:20Z [('Normal (Error, KeepLast)', 4)]
+  raw nwc-prometheus bgp_down 2026-10-08T14:25:20Z [('Normal (Error, KeepLast)', 4)]
+  raw nwc-prometheus isis_down 2026-10-08T14:25:20Z [('Normal (Error, KeepLast)', 4)]
+== 2. 戻す（14:25:48）
+ Container nwc-gfc-prometheus-1 Started 
+   doc created
+   OpenSearch が応答し trap を 1 件入れた（14:26:03）。すぐ check
+  | nwc-opensearch/trap: health=ok state=firing 評価=2026-10-08T14:27:40Z alerts=Alerting ×1
+  | nwc-prometheus/link_down: health=ok state=inactive 評価=2026-10-08T14:27:20Z alerts=Normal (NoData, KeepLast) ×1
+  | nwc-prometheus/bgp_down: health=ok state=inactive 評価=2026-10-08T14:27:20Z alerts=Normal (NoData, KeepLast) ×1
+  | nwc-prometheus/isis_down: health=ok state=inactive 評価=2026-10-08T14:27:20Z alerts=Normal (NoData, KeepLast) ×1
+  | 判定: OK（4 本とも評価のエラーなし）
+  終了コード 0 / 100 秒 / 出力にパスワード: False
+  raw nwc-opensearch trap 2026-10-08T14:27:40Z [('Alerting', 7)]
+  raw nwc-prometheus link_down 2026-10-08T14:27:20Z [('Normal (NoData, KeepLast)', 4)]
+  raw nwc-prometheus bgp_down 2026-10-08T14:27:20Z [('Normal (NoData, KeepLast)', 4)]
+  raw nwc-prometheus isis_down 2026-10-08T14:27:20Z [('Normal (NoData, KeepLast)', 4)]
+== 3. 系列があるところから OpenSearch を止める（14:27:43）。すぐ check
+ Container nwc-gfc-opensearch-1 Stopped 
+  | nwc-opensearch/trap: health=ok state=firing 評価=2026-10-08T14:29:40Z alerts=Alerting (Error, KeepLast) ×1
+  | nwc-prometheus/link_down: health=ok state=inactive 評価=2026-10-08T14:29:20Z alerts=Normal (NoData, KeepLast) ×1
+  | nwc-prometheus/bgp_down: health=ok state=inactive 評価=2026-10-08T14:29:20Z alerts=Normal (NoData, KeepLast) ×1
+  | nwc-prometheus/isis_down: health=ok state=inactive 評価=2026-10-08T14:29:20Z alerts=Normal (NoData, KeepLast) ×1
+  | エラー: nwc-opensearch/trap（Alerting (Error, KeepLast) ×1）
+  | 判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap）
+  終了コード 1 / 120 秒 / 出力にパスワード: False
+  raw nwc-opensearch trap 2026-10-08T14:29:40Z [('Alerting (Error, KeepLast)', 7)]
+  raw nwc-prometheus link_down 2026-10-08T14:29:20Z [('Normal (NoData, KeepLast)', 4)]
+  raw nwc-prometheus bgp_down 2026-10-08T14:29:20Z [('Normal (NoData, KeepLast)', 4)]
+  raw nwc-prometheus isis_down 2026-10-08T14:29:20Z [('Normal (NoData, KeepLast)', 4)]
+== 片付け
+ Volume nwc-gfc_prometheus Removed 
+ Volume nwc-gfc_opensearch Removed 
+ Network nwc-local Removed 
+残ったコンテナ 0 / ボリューム 0
+```
+
+`raw` の行は API の `alerts[]` の state ごとの（状態の数, ラベルの数）。2 の trap は Alerting だけで、ラベルの数 7（ルールのラベル + 機器のラベル）。エラーの状態はラベルの数 5（ルールのラベルだけ）。
+
+#### 4. 直した直後に残るエラーの実測（scratchpad の `b_e2e4.sh`。S1 を直したあと、R1 を直す前の確かめ。2 の抜粋と、続けて打った確かめの最初）
+
+```
+== 2. 戻す（14:12:11）
+ Container nwc-gfc-opensearch-1 Started 
+   doc created
+   OpenSearch が応答し trap を 1 件入れた（14:12:24）。すぐ check
+  | nwc-opensearch/trap: health=ok state=firing 評価=2026-10-08T14:13:00Z alerts=Alerting ×1、Normal (Error, KeepLast) ×1
+  | nwc-prometheus/link_down: health=ok state=inactive 評価=2026-10-08T14:12:20Z alerts=Normal (NoData, KeepLast) ×1
+  | nwc-prometheus/bgp_down: health=ok state=inactive 評価=2026-10-08T14:13:20Z alerts=Normal (NoData, KeepLast) ×1
+  | nwc-prometheus/isis_down: health=ok state=inactive 評価=2026-10-08T14:13:20Z alerts=Normal (NoData, KeepLast) ×1
+  | エラー: nwc-opensearch/trap（Normal (Error, KeepLast) ×1）
+  | 判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap）
+  終了コード 1 / 60 秒 / 出力にパスワード: False
+  raw nwc-opensearch trap 2026-10-08T14:13:00Z [('Normal (Error, KeepLast)', 5), ('Alerting', 7)]
+-- 14:13:54
+  | nwc-opensearch/trap: health=ok state=firing 評価=2026-10-08T14:14:00Z alerts=Alerting ×1
+  | 判定: OK（4 本とも評価のエラーなし）
+  終了コード 0 / 40 秒 / 出力にパスワード: False
+  raw nwc-opensearch trap 2026-10-08T14:14:00Z [('Alerting', 7)]
+```
+
+14:15:04・14:16:34・14:18:05・14:19:35 の確かめも OK（終了コード 0）。片付けは「残ったコンテナ 0 / ボリューム 0」。
+
+### セルフレビュー
+
+- 自分: claude-opus-5-5 / effort xhigh（`/robust` の頑健化ループ）
+- 反対弁護人: opus（Agent の general-purpose。effort は指定していない）。design 相当の意図（KeepLast は `alerts[].state` にだけ出る、API を選んだ理由）、迷った点（1 回分の評価で決めること、待ちの長さ、パスワードの扱い）、自分の結論を渡し、読み取り専用で頼んだ。最後の check.sh の前の `git status --porcelain -uall` は上の 6 ファイルの M だけ（反対弁護人はファイルを足していない）
+- 反対弁護人の指摘は、テストか手元の Grafana で再現してから直した
+
+#### 指摘と片付け
+
+| # | 分類 | 観点 | 場所 | 破綻シナリオ | 再現 | 片付け |
+|---|---|---|---|---|---|---|
+| S1 | Should fix | correctness | ops/grafana_rules_check.py:129（直す前は「全部のルールが一度でも評価されていれば」最初の読み取りで判定） | データソースを直した直後に打つと直す前のエラーで NG、壊した直後に打つと壊す前の評価で OK | テスト（打つ前の評価だけを返す応答）。注入「打ったときに見える評価で判定する」で落ちる | 直した。最初に読めたときの各ルールの lastEvaluation を覚え、全部のルールの評価が変わってから判定（打ってから最大 1 分延びる） |
+| R1 | Should fix | correctness | ops/grafana_rules_check.py:133 | S1 を直したあとも、直してすぐ打つと NG。エラーの評価が作った状態（ラベルがルールのものだけ）が、直したあとの成功した評価に 1 回分残る | 実測（検証の 4。14:12:11 に直し、14:13:00 の評価は Alerting と Normal (Error, KeepLast)、14:14:00 で Alerting だけ） | 直した。エラーのあったルールはその lastEvaluation を覚え、違う評価でもエラーなら NG。NG は OK より 1 分ほど遅い。打ったあとの評価で 1 回でもエラーになったルールは、すぐ直っても次の評価にエラーが残るので NG（docs に書いた） |
+| S2 | Should fix | 文書 | docs/troubleshooting.md:76 | NoData（クエリが空）はエラーではないので OK。「データは来ているのにアラートが来ない」の行がこの確かめに案内していたので、OK を見て原因から外す | 078b241 の実測（インデックスが無いだけなら NoData）と検証の 3 の 2（NoData, KeepLast で OK） | 文書を直した（troubleshooting.md、pipeline.md、grafana.md の制約の行） |
+| N1 | Nit → 直した | runtime | ops/grafana_rules_check.py:67、122 | 途中で切れた応答（IncompleteRead）と配列の JSON でトレースバック、終了コード 1（NG）として誤報 | テスト（IncompleteRead、`[]` を返す `/list`）。注入「HTTPException を待たない」「JSON のオブジェクトでない応答を通す」で落ちる | 直した（読み直しの対象。最後は「未確認」） |
+| N2 | Nit | correctness | ops/grafana_rules_check.py:61 | rules API がページ分け（group_limit / groupNextToken）や alerts の欠落で返すと、見ていないルールのエラーで OK | 再現していない。13.2.2 は引数なしで 2 グループ 4 本を全部返した（検証の 3） | 最終報告に回した |
+| N3 | Nit → 直した | security | ops/grafana_rules_check.py:63 | Grafana がリダイレクトを返すと、Authorization（admin のパスワード）がリダイレクト先にも送られる | テスト（302 で `/moved/` へ。届いた Authorization を記録）。注入「リダイレクト先に Authorization を送る」で落ちる | 直した（`add_unredirected_header`） |
+| N4 | Nit | 運用 | ops/check-grafana.sh:44-45 | 未確認（401・届かない）でも「Failed to evaluate rule」のログを案内する。die と未確認と NG が同じ終了コード 1 | 読んだだけ | 最終報告に回した |
+| N5 | Nit | 運用 | ops/up.sh:1275、oss/ops/up.sh:572 | `tf output` が失敗すると空の引数で `aws ecs wait` に進み、「10 分たっても安定しない」と出る（止めはしない） | 読んだだけ | 最終報告に回した |
+| N6 | Nit | runtime | ops/up-common.sh:42-44 | `ssm_run` の読み直しに全体の締め切りが無い（失敗は全部 Pending 扱い。前からある） | 読んだだけ | 最終報告に回した |
+| N7 | Nit | 運用 | ops/up.sh:1273 | 前の回の analytics が残っている回（PIPELINE=0 など）は 9-2 を打たない（反対弁護人の読み） | 読んだだけ | 最終報告に回した |
+| N8 | Nit | 文書 | docs/architecture/resources/grafana.md | 測った版は 13.2.2、AWS のイメージは 13.2.3。「画面のルールは Normal に見える」はルールの行のことで、インスタンスの一覧では理由が見えるかもしれない | 未確認 | 最終報告に回した |
+
+#### 問題なしとした観点と根拠
+
+- 状態の文字列: KeepLast のエラーは `alerts[].state` の `Normal (Error, KeepLast)`（検証の 3 の 1）、系列があるルールは `Alerting (Error, KeepLast)`（検証の 3 の 3）。どちらも NG になった（実測）
+- `(Error` の部分一致の誤検知: state は決まった状態と理由の組み合わせで、ラベルの値は入らない（読んだだけ。反対弁護人も反証できなかった）
+- 待ちの長さ（最大 5 分）: NG は 120 秒、OK は 100 秒で終わった（検証の 3。実測）
+- パスワード: E2E の各回で「出力にパスワード: False」（実測）。401 は 1 回で止まる（テスト）
+- SSM のパラメータの大きさ（base64 で約 10 KB）、Web の EC2 の python3.13 と boto3、IAM（ssm:GetParameter）、SG（web → grafana の tcp 3000）、Cloud Map の名前、`ssm_run` の JSON のエスケープ（PREFIX は英小文字・数字・ハイフン。deploy-env.sh:127）: 反対弁護人がコードを読んで反証を試み、崩れなかった（読んだだけ。AWS では打っていない）
+
+#### ジンテーゼ
+
+- 前（078b241）: 全部のルールが評価されていれば、打ったときに見える評価で判定し、1 回のエラーで NG
+- 後: 打ったあとの評価だけで判定し、エラーは同じルールの違う評価で続いたときだけ NG。R1 は S1 を直して手元で確かめるまで見えなかった。NG は OK より 1 分ほど遅い
+- 残るリスク: AWS（13.2.3）で同じ状態の文字列・同じ残り方か（未確認）。Grafana の版で残り方が変わり、エラーの状態が 2 回以上の評価に残るようになると、直した直後に誤って NG と出る（見逃しではなく空振りの側。打ち直せば消える）。N2
+
+### 未確認の項目
+
+- AWS で 9-2 と `ops/check-grafana.sh`（`--oss` も）を打つこと（AWS には触らない指示）
+- 13.2.3 での状態の文字列と、直した直後に残るエラーの残り方（手元は 13.2.2）。N8 の画面のインスタンスの一覧
+- `docs/development.md` のテストの本数（test_alerts 158、test_oss_ops 156）。PM のブランチが同じ行を直しているので、ここでは直していない
