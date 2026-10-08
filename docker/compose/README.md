@@ -43,7 +43,7 @@ cp docker/compose/.env.example docker/compose/.env
 docker/compose/lab.sh up
 ```
 
-lab を上げる（`sudo` のパスワードを聞かれる）。compose より先に上げる（Telegraf は lab の管理ネットの GW `203.0.113.1` で待つので、containerlab がそのアドレスを付ける bridge が先に要る。下の `up.sh`）。最後に `compose の Telegraf へ: trap 162/udp を 1162/udp へ向けた` が出ればよい（Telegraf がまだ無くても iptables の規則は入る）。サブコマンドは `app/containerlab/lab.sh` と同じ（`check` / `fail-main` / `heal-main` / `trap-test` / `down` など）。このラッパーは `.env` の `SRLINUX_IMAGE` / `MULTITOOL_IMAGE` と `TELEGRAF_LOCAL=1` の 3 つだけを渡すので、シェルに `REGISTRY` や `AWS_REGION` があっても ECR や SSM へは行かない。
+lab を上げる（`sudo` のパスワードを聞かれる）。compose より先に上げる（Telegraf は lab の管理ネットの GW `203.0.113.1` で待つので、containerlab がそのアドレスを付ける bridge が先に要る。下の `up.sh`）。最後に `compose の Telegraf へ: trap 162/udp を 1162/udp へ向けた` が出ればよい（Telegraf がまだ無くても iptables の規則は入る）。サブコマンドは `app/containerlab/lab.sh` と同じ（`check` / `fail-main` / `heal-main` / `trap-test` / `down` など）。障害のあとの案内（「戻すのは …」）もこのラッパーの打ち方で出る。このラッパーは `.env` の `SRLINUX_IMAGE` / `MULTITOOL_IMAGE` と `TELEGRAF_LOCAL=1`、案内に出す自分のパス `LAB_CMD` の 4 つだけを渡すので、シェルに `REGISTRY` や `AWS_REGION` があっても ECR や SSM へは行かない。
 
 ```bash
 docker/compose/up.sh

@@ -293,11 +293,20 @@ def fake(name, body=""):
     os.chmod(p, 0o755)
 fake("aws", "echo pw\n")
 # docker login は --password-stdin を読む（読まないと aws の側が SIGPIPE で落ち、pipefail で lab.sh が止まる）
-fake("docker", '[ "${1:-}" = login ] && cat >/dev/null\nif [ "${1:-}" = compose ]; then echo "ENV SNMP_AGENTS=${SNMP_AGENTS-unset} GNMI_TARGETS=${GNMI_TARGETS-unset} DEVICE_MAP=${DEVICE_MAP-unset} TELEGRAF_BIND=${TELEGRAF_BIND-unset}" >> "$FAKE_LOG"; fi\n')
+# SR Linux の CLI（docker exec -i … sr_cli -d）は標準入力を読む。lab.sh の bgp_admin が state を読み直す行には admin-state FAKE_BGP_ADMIN を返し、
+# failover の route が たどる dc1-leaf-01 → 10.255.1.1/32 の経路は dc1-spine-02（172.16.0.12）だけ（切替のあと）を返す
+fake("docker", '[ "${1:-}" = login ] && cat >/dev/null\n'
+     'if [ "${1:-}" = exec ] && [ "${2:-}" = -i ]; then case "$(cat)" in\n'
+     '  *"info from state / network-instance default protocols bgp neighbor"*) echo "admin-state ${FAKE_BGP_ADMIN:-}" ;;\n'
+     '  *"route-table ipv4-unicast route 10.255.1.1/32"*) echo "next-hop-group 7" ;;\n'
+     '  *"next-hop-group 7 next-hop * next-hop"*) echo "    next-hop 9" ;;\n'
+     '  *"route-table next-hop 9"*) echo "ip-address 172.16.0.12 subinterface ethernet-1/2.0" ;;\n'
+     'esac; fi\n'
+     'if [ "${1:-}" = compose ]; then echo "ENV SNMP_AGENTS=${SNMP_AGENTS-unset} GNMI_TARGETS=${GNMI_TARGETS-unset} DEVICE_MAP=${DEVICE_MAP-unset} TELEGRAF_BIND=${TELEGRAF_BIND-unset}" >> "$FAKE_LOG"; fi\n')
 # -S（規則の一覧）には FAKE_IPT_RULES を返す
 fake("iptables", 'case " $* " in *" -S"*) printf "%s" "${FAKE_IPT_RULES:-}" ;; esac\n')
-# 本物の sudo は環境を消す（env_reset）。PATH と FAKE_LOG だけ残して、渡された引数を打つ
-fake("sudo", 'exec env -i PATH="$PATH" FAKE_LOG="$FAKE_LOG" "$@"\n')
+# 本物の sudo は環境を消す（env_reset）。PATH と FAKE_LOG（と偽の docker が返す FAKE_BGP_ADMIN）だけ残して、渡された引数を打つ
+fake("sudo", 'exec env -i PATH="$PATH" FAKE_LOG="$FAKE_LOG" FAKE_BGP_ADMIN="${FAKE_BGP_ADMIN:-}" "$@"\n')
 # lab.sh up が打つ（containerlab は deploy を書くだけ、modprobe は何もしない）
 fake("containerlab")
 fake("modprobe")
@@ -307,6 +316,9 @@ echo "5: eth0    inet 203.0.113.10/24 brd 203.0.113.255 scope global eth0\      
 [ "${FAKE_GW:-0}" = 1 ] && echo "7: br-1a2b3c4d5e6f    inet 203.0.113.1/24 brd 203.0.113.255 scope global br-1a2b3c4d5e6f\       valid_lft forever preferred_lft forever"
 exit 0
 ''')
+# lab.sh failover が待つ sleep と、断を見る snmpwalk（何も返さないので、down が見えるまで 10 回 sleep 1 する）
+fake("sleep")
+fake("snmpwalk")
 fake("free", 'printf "               total        used        free\\nMem:  %s  1000  1000\\nSwap:  0  0  0\\n" "${FAKE_MEM:-32000}"\n')
 # check.sh が打つ curl。引数と、-K - で渡された標準入力を書き、URL ごとに決めた応答を返す。FAKE_DOWN=1 なら繋がらない（出力なしで 7）。
 # Splunk の応答は FAKE_SPLUNK があればそれ（認証の失敗は 401 でも curl -sS は本文を出して 0 で終わる）。Kafka の metrics / traps のメッセージ数は FAKE_METRICS / FAKE_TRAPS
@@ -332,14 +344,15 @@ esac
 LOG = os.path.join(TMP, "calls.log")
 CLEAN = ("REGISTRY", "AWS_REGION", "PARAM_PREFIX", "TELEGRAF_IMAGE", "TELEGRAF_LOCAL", "SRLINUX_IMAGE", "MULTITOOL_IMAGE",
          "SNMP_AGENTS", "GNMI_TARGETS", "DEVICE_MAP", "FAKE_IPT_RULES", "FAKE_MEM", "FAKE_DOWN", "FAKE_OS_COUNT", "FAKE_SPLUNK",
-         "FAKE_METRICS", "FAKE_TRAPS", "FAKE_GW", "FAKE_TG_HEALTH", "TELEGRAF_BIND", "MDT_PORT", "HEALTH_PORT", "LOG_PORT", "TRAP_PORT")
+         "FAKE_METRICS", "FAKE_TRAPS", "FAKE_GW", "FAKE_TG_HEALTH", "TELEGRAF_BIND", "MDT_PORT", "HEALTH_PORT", "LOG_PORT", "TRAP_PORT",
+         "LAB_CMD", "FAKE_BGP_ADMIN")
 
-def run(cmd, **env):
+def run(cmd, cwd=None, **env):
     """偽のコマンドを先に置いた PATH で cmd を打ち、(結果, 呼ばれたコマンドの行) を返す。lab に効く環境変数は消してから env を足す"""
     e = {k: v for k, v in os.environ.items() if k not in CLEAN}
     e.update(PATH=BIN + os.pathsep + os.environ["PATH"], FAKE_LOG=LOG, **env)
     open(LOG, "w").close()
-    r = subprocess.run(cmd, env=e, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    r = subprocess.run(cmd, env=e, cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     return r, open(LOG, encoding="utf-8").read().splitlines()
 
 LAB = os.path.join(ROOT, "app", "containerlab", "lab.sh")
@@ -405,9 +418,9 @@ def tree(env=None, files=SCRIPTS, lab_copy=False):
 # docker/compose/lab.sh
 _lc = tree()
 _r, _c = run([os.path.join(_lc, "lab.sh"), "pull"], REGISTRY="leak.example.com", AWS_REGION="ap-northeast-1", PARAM_PREFIX="/nwc")
-check("docker/compose/lab.sh: .env が無ければ .env.example のイメージと TELEGRAF_LOCAL=1 の 3 つだけを sudo env で app/containerlab/lab.sh に渡す（sudo -E にしない）",
-      _r.returncode == 0 and _c[0].split()[:5] == ["sudo", "env", f"SRLINUX_IMAGE={SRL}", f"MULTITOOL_IMAGE={MT}", "TELEGRAF_LOCAL=1"]
-      and os.path.realpath(_c[0].split()[5]) == os.path.realpath(LAB) and _c[0].split()[6:] == ["pull"])
+check("docker/compose/lab.sh: .env が無ければ .env.example のイメージと TELEGRAF_LOCAL=1、案内に出す自分のパス LAB_CMD の 4 つだけを sudo env で app/containerlab/lab.sh に渡す（sudo -E にしない）",
+      _r.returncode == 0 and _c[0].split()[:6] == ["sudo", "env", f"SRLINUX_IMAGE={SRL}", f"MULTITOOL_IMAGE={MT}", "TELEGRAF_LOCAL=1", f"LAB_CMD={_lc}/lab.sh"]
+      and os.path.realpath(_c[0].split()[6]) == os.path.realpath(LAB) and _c[0].split()[7:] == ["pull"])
 check("docker/compose/lab.sh pull: シェルに REGISTRY や AWS_REGION があっても ECR に行かず、ghcr.io の 2 つを取る", _c[1:] == PULLS)
 _r, _c = run([os.path.join(_lc, "lab.sh"), "forward"])
 check("docker/compose/lab.sh forward: REDIRECT を 1 本入れ、案内は「compose の Telegraf へ」（aws は打たない）",
@@ -432,13 +445,61 @@ with open(_yml, "w") as f:
 _r, _c = run([os.path.join(_lc, "lab.sh"), "up"])
 check("docker/compose/lab.sh up: app/containerlab/lab.sh render を打ってから up し、splab.clab.yml を今の .in と .env のイメージで作り直してから deploy する",
       _r.returncode == 0
-      and [c.split()[6] if c.startswith("sudo ") else c for c in _c if c.startswith(("sudo ", "containerlab "))]
+      and [c.split()[7] if c.startswith("sudo ") else c for c in _c if c.startswith(("sudo ", "containerlab "))]
       == ["render", "up", "containerlab deploy -t splab.clab.yml --reconfigure"]
       and open(_yml, encoding="utf-8").read() == read("app", "containerlab", "splab.clab.yml.in").replace("__SRLINUX_IMAGE__", SRL).replace("__MULTITOOL_IMAGE__", MT))
 check("app/containerlab/lab.sh render: 作った splab.clab.yml のイメージ名（SRLINUX_IMAGE と MULTITOOL_IMAGE）を出す（手元は REGISTRY が無い）",
       f"splab.clab.yml を作った（イメージは {SRL} と {MT}）" in _r.stdout)
 _r, _c = run([os.path.join(_lc, "lab.sh"), "down"])
-check("docker/compose/lab.sh: up 以外（down など）は render しない", [c.split()[6] for c in _c if c.startswith("sudo ")] == ["down"])
+check("docker/compose/lab.sh: up 以外（down など）は render しない", [c.split()[7] for c in _c if c.startswith("sudo ")] == ["down"])
+
+# app/containerlab/lab.sh の障害と戻しの案内（(9)・(11)）。偽の docker / iptables / sleep / snmpwalk で fail-main / fail-bgp / heal-bgp / failover を打つ。
+# 「戻すのは …」などの打ち方は呼ばれ方で決まる: 手元はラッパーが渡す LAB_CMD、EC2 は PATH の lab（sudo lab）、それ以外は呼ばれたパス（sudo <パス>）
+_lc = tree()
+_W = os.path.join(_lc, "lab.sh")
+os.symlink(LAB, os.path.join(BIN, "lab"))
+_r, _c = run([_W, "fail-bgp"], FAKE_BGP_ADMIN="disable")
+check("docker/compose/lab.sh fail-bgp: 隣接を止め、compose の Grafana と Splunk を案内し、戻すのは 'docker/compose/lab.sh heal-bgp'（ラッパーの打ち方。EC2 の lab ではない）",
+      _r.returncode == 0 and f"compose の Telegraf: 数分で Grafana（:3000）と Splunk（:8000）に出る（SNS のトピックは無い）。戻すのは '{_W} heal-bgp'\n" in _r.stdout
+      and "dc1-spine-01 = 10.255.0.1）を止める" in _r.stdout and "'lab " not in _r.stdout and "sudo" not in _r.stdout)
+_r, _c = run([_W, "heal-bgp"], FAKE_BGP_ADMIN="enable")
+check("docker/compose/lab.sh heal-bgp: 隣接を戻し、確かめるのは 'docker/compose/lab.sh check'",
+      _r.returncode == 0 and f"（10.255.0.1）を戻す。established に戻るまで数十秒（'{_W} check' で見る）" in _r.stdout)
+_r, _c = run([_W, "fail-bgp"], FAKE_BGP_ADMIN="enable")
+check("lab.sh fail-bgp: 読み直した admin-state が disable でなければ案内を出さずに 1 で止まる", _r.returncode == 1 and "戻すのは" not in _r.stdout)
+_r, _c = run([_W, "fail-main"])
+check("docker/compose/lab.sh fail-main: 回線を落とし、切替の確認は 'docker/compose/lab.sh failover'、戻すのは 'docker/compose/lab.sh heal-main'",
+      _r.returncode == 0 and "docker exec clab-splab-dc1-leaf-01 ip link set e1-1 down" in _c
+      and f"切替の確認は '{_W} failover' が待ってくれる。戻すのは '{_W} heal-main'" in _r.stdout)
+_r, _c = run([_W, "failover"])
+check("docker/compose/lab.sh failover: fail-main を打って切替を見て、SNMP の断を待ち（sleep）、最後に compose の Grafana と Splunk を案内し、戻すのは 'docker/compose/lab.sh heal-main'",
+      _r.returncode == 0 and "docker exec clab-splab-dc1-leaf-01 ip link set e1-1 down" in _c and "  切替 OK（5 秒以内）" in _r.stdout and _c.count("sleep 1") == 10
+      and "== Telegraf（compose の Telegraf）==" in _r.stdout
+      and _r.stdout.rstrip("\n").endswith(f"Splunk（:8000）に linkDown の trap と syslog が出る。戻すのは '{_W} heal-main'"))
+_r, _c = run(["bash", "app/containerlab/lab.sh", "fail-bgp"], cwd=ROOT, FAKE_BGP_ADMIN="disable", TELEGRAF_LOCAL="1")
+_r2, _c2 = run(["bash", "app/containerlab/lab.sh", "failover"], cwd=ROOT, TELEGRAF_LOCAL="1")
+_r3, _c3 = run(["bash", "app/containerlab/lab.sh", "fail-bgp"], cwd=ROOT, FAKE_BGP_ADMIN="disable")
+_r4, _c4 = run(["bash", "app/containerlab/lab.sh", "fail-bgp"], cwd=ROOT, FAKE_BGP_ADMIN="disable", TELEGRAF_IMAGE="x")
+_r5, _c5 = run(["bash", "app/containerlab/lab.sh", "failover"], cwd=ROOT, TELEGRAF_IMAGE="x")
+check("app/containerlab/lab.sh を直に打つ（LAB_CMD なし、PATH に無い）と、案内は呼ばれたパスに sudo を付けた 'sudo app/containerlab/lab.sh …'（design.md の検証方法 8・9・11）",
+      _r.returncode == 0 and "。戻すのは 'sudo app/containerlab/lab.sh heal-bgp'\n" in _r.stdout
+      and _r2.returncode == 0 and "切替の確認は 'sudo app/containerlab/lab.sh failover' が待ってくれる。戻すのは 'sudo app/containerlab/lab.sh heal-main'" in _r2.stdout
+      and _r2.stdout.rstrip("\n").endswith("戻すのは 'sudo app/containerlab/lab.sh heal-main'")
+      and _r3.returncode == 0 and _r3.stdout.endswith("  Telegraf への転送が張られていない（sudo app/containerlab/lab.sh forward-status）\n")
+      and _r4.returncode == 0 and _r4.stdout.endswith("  この EC2 の Telegraf: 'sudo app/containerlab/lab.sh telegraf logs' に bgp_neighbor の session_state（established 以外）が出る。戻すのは 'sudo app/containerlab/lab.sh heal-bgp'\n")
+      and _r5.returncode == 0 and _r5.stdout.rstrip("\n").endswith("'sudo app/containerlab/lab.sh telegraf logs' に interface（ifOperStatus）、snmp_trap の linkDown、device_log（syslog）、isis_interface の down が出る。戻すのは 'sudo app/containerlab/lab.sh heal-main'"))
+_r, _c = run(["lab", "fail-bgp"], FAKE_BGP_ADMIN="disable", TELEGRAF_IMAGE="x")
+_r2, _c2 = run(["lab", "failover"], TELEGRAF_IMAGE="x")
+_r3, _c3 = run(["lab", "fail-bgp"], FAKE_BGP_ADMIN="disable", FAKE_IPT_RULES="-A PREROUTING -m comment --comment nwc-lab-telegraf -j DNAT\n")
+_r4, _c4 = run(["lab", "fail-bgp"], FAKE_BGP_ADMIN="disable")
+check("EC2（PATH の lab で打つ）は今までどおり 'sudo lab …': デバッグ用の EC2 は Telegraf のログと heal-bgp / heal-main、stream は SNS と heal-bgp、転送なしは forward-status",
+      _r.stdout.endswith("  この EC2 の Telegraf: 'sudo lab telegraf logs' に bgp_neighbor の session_state（established 以外）が出る。戻すのは 'sudo lab heal-bgp'\n")
+      and _r2.stdout.rstrip("\n").endswith("'sudo lab telegraf logs' に interface（ifOperStatus）、snmp_trap の linkDown、device_log（syslog）、isis_interface の down が出る。戻すのは 'sudo lab heal-main'")
+      and "切替の確認は 'sudo lab failover' が待ってくれる。戻すのは 'sudo lab heal-main'" in _r2.stdout
+      and _r3.stdout.endswith("を SNS のトピックに出す。戻すのは 'sudo lab heal-bgp'\n") and "  stream: 数分で Grafana と Splunk の両方が bgp_down（dc1-leaf-01 の 10.255.0.1 と" in _r3.stdout
+      and _r4.stdout.endswith("  Telegraf への転送が張られていない（sudo lab forward-status）\n")
+      and all(r.returncode == 0 for r in (_r, _r2, _r3, _r4)))
+os.remove(os.path.join(BIN, "lab"))
 
 # docker/compose/up.sh / down.sh
 _lc = tree()
