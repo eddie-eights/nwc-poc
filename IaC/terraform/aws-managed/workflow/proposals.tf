@@ -8,6 +8,8 @@
 #
 # 「チャットからは承認できない」（HITL）は IAM で守る: 決定のキューに送れるのは Web の EC2 のロールだけで、Runtime のロールには
 # sqs:SendMessage も Athena も付けない（reader_role_names には Runtime が入っているので、下の web_access は web_role_name にだけ付ける）。
+# Web の EC2 の Docker の Kafbat UI（cycle 010）も同じロールを IMDSv2（hop limit 2）で使えるので、乗っ取られれば決定のキューにも送れる。PoC では受容
+# （docs/cycles/010-kafbat-ui-on-web-ec2/design.md の「未確定事項とリスク」8。開き方は SSM のポートフォワードだけで、画面はログインあり）。
 # コードでも、app/agentcore/proposals.py の decide を呼ぶのは Web の承認タブだけで、チャットのツール（TOOL_SPECS）には decide が無い。
 
 # ---------------------------------------------------------------- access for the chat runtime and the web EC2 (IaC/terraform/aws-managed/base/core roles)

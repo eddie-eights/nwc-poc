@@ -118,3 +118,15 @@ Kafbat UI は `IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf` が ECS Fa
 5. **OSS 版の web ロールに Deny の inline が付く。** `kafka_ui_kafka_statements` が Deny `kafka-cluster:*` なので、OSS 版の web ロールに「MSK を使えない」Deny が付く。OSS 版では MSK が無いので無害だが、`tests/test_oss.py` の IAM の検査が新しい inline を拾って落ちるかもしれない。落ちたらその検査を直す
 6. **`kafka_ui_bootstrap_servers` が OSS 版では Kafka（ECS）の名前。** stream の apply で Cloud Map の名前が決まるのは今と同じなので順序の問題は無い
 7. `tests/test_oss_ops.py:886-887,1062-1065` の `kafka_ui_port_forward_command` は output 名が同じなので通るはず。通らなければ直す
+8. **Kafbat UI と Gradio が Web の EC2 のインスタンスロールを共有する（PoC では受容。2026-10-08 に PM が判断、build.md のセルフレビューの指摘 1）。**
+   - Kafbat UI のコンテナは IMDSv2（hop limit 2）でロールの資格情報に届く。乗っ取られたときに届く先:
+     - 決定のキューへの `sqs:SendMessage`（`IaC/terraform/aws-managed/workflow/proposals.tf` の HITL の境界）
+     - `/<prefix>/*` の SSM SecureString
+     - Neptune の書き込み
+     - InvokeAgentRuntime
+   - 逆に Gradio（と Web の EC2 上のどのプロセスも）は、`kafka_ui_web` の権限で MSK のトピックの作成・変更・削除とメッセージの送信ができる
+   - 受容する理由:
+     - 専用のロールを `awsRoleArn` で AssumeRole しても、元はインスタンスロールなので、Kafbat UI がインスタンスロールを使える事実は消えない
+     - `DOCKER-USER` で外向きの通信を絞るのは、PoC には重い
+     - MSK の権限は絞らない。2026-10-05 のユーザー決定（`docs/cycles/005-oss-on-ecs/design-log.md` の「Kafbat UI は見るだけにしない」）で、画面からの変更を要るとしている
+   - 開き方は 127.0.0.1 と SSM のポートフォワードだけで、画面はログインフォーム
