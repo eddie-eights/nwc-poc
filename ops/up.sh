@@ -502,7 +502,7 @@ endpoints_for() {  # endpoints_for <ルート>  そのルートが呼ぶ AWS の
     agent) add_endpoints bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs ;;
     # lab の EC2 はイメージを ECR から引く（SSM は土台の分）
     pipeline/lab) add_endpoints ecr.api ecr.dkr ;;
-    # Telegraf・syslog-ng・GoFlow2（ECS）: イメージを ECR から引き、ログを CloudWatch に書く。MSK は VPC の中。
+    # Telegraf・syslog-ng・GoFlow2（ECS）: イメージを ECR から引き、ログを CloudWatch に書く。MSK は VPC の中。Web の EC2 の Kafbat UI（Docker）も同じ ecr.api / ecr.dkr で ECR から pull する
     # syslog-ng と GoFlow2 のタスクは起動時に MSK の SCRAM の secret を Secrets Manager から読む（cycle 012。復号の KMS は Secrets Manager が代わりに呼ぶ）
     pipeline/stream) add_endpoints ecr.api ecr.dkr logs secretsmanager ;;
     # Spark: S3 Tables の API、ドライバのログ（MSK は VPC の中で、S3 は gateway）
