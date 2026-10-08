@@ -148,3 +148,5 @@ PM との Round 0（design-log.md）で決めた結論。
 - **`ops/up.sh` が stream の apply のあと、8-3（OSS 版は 7-5）の restart より前で止まると、Kafbat UI は 75 のまま残る**（graph・nautobot・analytics の apply の失敗や `die` で。初回の起動は stream より前なので、その回の Kafbat UI はもう 75 で止まっている）。直して `ops/up.sh` を打ち直せば 8-3 / 7-5 で起きる。打ち直さないなら `sudo systemctl start <prefix>-kafka-ui`。docs/troubleshooting.md の Kafbat UI の行に書く。restart が stream の apply より後にあって、stream を作る回はいつも通ること（8-3 の if に `[ -z "$SKIP_STREAM" ]`、7-5 は if の外）は tests/test_stream.py で縛る（up.sh には触らない）。
 - **010 より前の環境の DependencyViolation** は 010 の cold review の読みで、AWS で再現していない。どれだけ待って失敗するか（Terraform の SG の削除の既定のタイムアウト）も未確認として書く。
 - `/run/<prefix>-kafka-ui.err` に入るのは AWS CLI のエラー文だけ（値は標準出力に分けている）なので秘密は入らないが、スクリプトの頭の `umask 077` で 0600 にする。止まったら `ExecStopPost` で消す。エラー文はスクリプトの 1 行（69 / 75）に添えて journald に出すので、ファイルを読みに行く必要は無い。
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261009-cycle-014-kafbat-ui-followups-design.html -->

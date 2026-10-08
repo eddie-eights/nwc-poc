@@ -100,3 +100,5 @@ None
 - reviewer の質問（AL2023 の AWS CLI の `(ParameterNotFound)` の形）は、最後の AWS 検証の項目に入れる: `SKIP_STREAM=1` で `journalctl -u <prefix>-kafka-ui` に `Not retrying` が 1 回、`NRestarts=0`
 - テスト: Should fix は docs だけなので、関係する `tests/test_stream.py` を走らせ直した（下に出力）
   - `uv run --group dev --group web python tests/test_stream.py` → `通過 88 / 失敗 0`
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261009-cycle-014-kafbat-ui-followups-review.html -->
