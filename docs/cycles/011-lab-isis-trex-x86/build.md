@@ -709,3 +709,169 @@ check.sh rc=0
 ```
 
 途中の 2 回は落ちた。1 回目は test_graph、2 回目は test_sync で、どちらも上の旧名が原因。
+
+## Round 2
+
+実装モデル: Opus 5.5 / effort: xhigh（Round 1 と同じ。既定は high。自分のセッションの effort は set_session_effort で変えられないので xhigh のまま）
+
+起点は fa6234f。cold review の Should fix 2 件を PM の指示で直した。Nit 6 件は直さない（PM が BACKLOG へ回す）。AWS には立てていない。
+
+### commit と変更ファイル
+
+| commit | 中身 | 変更ファイル |
+| :--- | :--- | :--- |
+| e28e1a0 | 1 件目（runtime bugs）。S3 に残った古い `.cli` で `sudo lab logs` が止まる | `ops/lab-common.sh`（`upload_lab` の sync に `--delete` と `--exclude "$CONTAINERLAB_RPM"`）、`IaC/terraform/aws-managed/pipeline/lab/outputs.tf`（`upload_lab_command` も同じ）、`app/containerlab/lab.sh`（`routers()` は `$TOPO.in` の `kind: nokia_srlinux`。TRex の pgrep / pkill は `TREX_PROC=t-rex-64` に揃える）、`tests/test_lab_debug.py`（97 → 104） |
+| dd8f787 | 2 件目（correctness）。ワーカーの `awsio.read_topology` が role を読まず、事前チェックで TRex を中継に数える | `app/temporal/awsio.py`（`n.role AS role` と dict の `role`、docstring）、`app/temporal/rules.py` / `app/agentcore/topology.py`（impact の docstring の 1 文。2 か所は同じ文字列）、`docs/workflow.md:30`、`tests/test_workflow.py`（325 → 327）、`tests/test_oss.py`（`awsio_scenario` の答えに role）、`tests/golden/neptune_cypher.json`（`--write-golden` で取り直した。差分は awsio の機器のクエリ 1 行だけ） |
+| （この commit） | build.md の Round 2、`docs/development.md:37` の項目数（`test_workflow` 327、`test_lab_debug` 104） | `docs/cycles/011-lab-isis-trex-x86/build.md`、`docs/development.md` |
+
+### 1 件目: `--delete` でも `--exclude` に当たるものは消えない根拠
+
+AWS CLI の `aws s3 sync` の `--delete` の説明（https://docs.aws.amazon.com/cli/latest/reference/s3/sync.html）:「Note that files excluded by filters are excluded from deletion.」。実機の S3 では確かめていない。反対弁護人も read_documentation で同じ文を確かめた。
+
+- `splab.clab.yml`（EC2 で描く）といまの版の rpm（直後の `aws s3 cp` で置く）は除外に入っているので、sync は消さない
+- 手元の古い `.cli` は gen_lab.py が消す（`app/containerlab/gen_lab.py:299-301`）ので、`--delete` で改名が S3 まで届く。EC2 の user_data も S3 → `$LAB/src/` を `--delete` で読む
+
+### 検証
+
+`bash -n`、`terraform fmt -check`、テストは下の check.sh に入っている。e28e1a0 の時点の test_lab_debug は通過 104 / 失敗 0、dd8f787 の時点の test_workflow は通過 327 / 失敗 0、test_oss は通過 171 / 失敗 0。
+
+#### 退行の注入
+
+1 件目（inject1.log。ops/lab-common.sh・lab.sh・outputs.tf に 1 つずつ入れて test_lab_debug を打ち、元に戻す）:
+
+```text
+M1 upload_lab の --delete を外す: rc=1 AssertionError: lab/ の置き場は upload_lab の宛先と同じ（s3://<バケット>/lab/）
+M2 rpm の除外を外す: rc=1 AssertionError: upload_lab の sync は --delete 付きで、除くのは描いた splab.clab.yml・__pycache__・.DS_Store と、下の cp で置く rpm（$CONTAINERLAB_RPM）
+M3 routers() を glob に戻す: rc=1 AssertionError: lab.sh の routers() は srlinux/*.cli を数えず（glob を使わない）、トポロジのテンプレート（$TOPO.in）を読む
+M3b routers() が kind を見ない（nodes を全部出す）: rc=1 AssertionError: lab.sh logs: 打つ機器はテンプレートの nodes の kind: nokia_srlinux（6 台、この順）だけで、srlinux/ に残った古い .cli の機器（dc1-leaf-01）は打たない
+M4 trex start の pgrep を _t-rex-64 に戻す: rc=1 AssertionError: lab.sh trex: start / stop / status は同じ式（TREX_PROC=t-rex-64。ラッパーと子の _t-rex-64 の両方に当たる）で pgrep / pkill する
+M5 trex stop を式の直書きに戻す: rc=1 AssertionError: lab.sh trex: start / stop / status は同じ式（TREX_PROC=t-rex-64。ラッパーと子の _t-rex-64 の両方に当たる）で pgrep / pkill する
+M6 outputs.tf の --delete を外す: rc=1 AssertionError: lab の output upload_lab_command も同じ --delete と同じ除外（rpm は var.containerlab_version の名前）
+M7 outputs.tf の rpm の除外を外す: rc=1 AssertionError: lab の output upload_lab_command も同じ --delete と同じ除外（rpm は var.containerlab_version の名前）
+```
+
+テンプレートの書き方が変わって `routers()` が黙って台数を落とす場合（inject3.log。`splab.clab.yml.in` を変えて test_lab_debug を打つ）:
+
+```text
+T1 kind の行末にコメントを付ける（1 台目）: rc=1 AssertionError: lab.sh logs: 打つ機器はテンプレートの nodes の kind: nokia_srlinux（6 台、この順）だけで、srlinux/ に残った古い .cli の機器（dc1-leaf-01）は打たない
+T2 nodes を 1 段深くする（全部）: rc=1 AssertionError: lab.sh logs: 打つ機器はテンプレートの nodes の kind: nokia_srlinux（6 台、この順）だけで、srlinux/ に残った古い .cli の機器（dc1-leaf-01）は打たない
+```
+
+2 件目（inject2.log。awsio.py に 1 つずつ入れて test_workflow と test_oss を打ち、元に戻す）:
+
+```text
+N1 機器の openCypher から n.role AS role を外す / tests/test_workflow.py: rc=1 AssertionError: awsio.read_topology は機器（id・status・maintenance・role）と回線（両端・IF・status）を読む
+N1 機器の openCypher から n.role AS role を外す / tests/test_oss.py: rc=1 AssertionError: 環境変数が無いとき、app/temporal/awsio.py の read_topology の openCypher も同じ
+N2 dict に role を入れない / tests/test_workflow.py: rc=1 AssertionError: awsio.read_topology は機器（id・status・maintenance・role）と回線（両端・IF・status）を読む
+N2 dict に role を入れない / tests/test_oss.py: rc=0 （落ちない）
+N3 role を別のキー名で返す / tests/test_workflow.py: rc=1 AssertionError: awsio.read_topology は機器（id・status・maintenance・role）と回線（両端・IF・status）を読む
+N3 role を別のキー名で返す / tests/test_oss.py: rc=0 （落ちない）
+```
+
+test_oss は Neptune と Neo4j の read_topology の答えを比べるので、両方で role が欠けても落ちない。role の有無は test_workflow が見る。
+
+新しい impact のチェック（read_topology の形のまま渡す）が role の有無で答えを変えることは、role を落とした形でも確かめた（dbg2.py。`app/temporal/rules.py` を直接呼ぶ）:
+
+```text
+role あり: verdict=danger newly_isolated=['dc1-a-leaf-01'] redundancy_lost=['dc1-spine-01']
+role なし（Round 1 の read_topology の形）: verdict=warn newly_isolated=[] redundancy_lost=['dc1-a-leaf-01', 'dc1-spine-01']
+```
+
+#### check.sh
+
+`bash ops/check.sh`（最後の編集は development.md の項目数と、この build.md。どちらもテストは読まない。`git grep -n -E 'development\.md|docs/cycles|build\.md' -- tests ops/check.sh` で出るのはコメントと docstring だけ）:
+
+```text
+== 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+差分なし
+== 2. 9 つのルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+（18 ルートすべて OK）
+== 3. スクリプトの構文
+bash -n: 26 本
+構文エラーなし
+== 4. 模擬テスト
+通過 158 / 失敗 0    test_alerts
+通過 489 / 失敗 0    test_analytics
+通過 161 / 失敗 0    test_app
+通過 3 / 失敗 0      test_dashboard_config
+通過 78 / 失敗 0     test_graph
+通過 7 / 失敗 0      test_kb_index
+通過 104 / 失敗 0    test_lab_debug
+通過 122 / 失敗 0    test_local_compose
+69 項目すべて通過    test_nautobot
+通過 171 / 失敗 0    test_oss
+通過 156 / 失敗 0    test_oss_ops
+通過 66 / 失敗 0     test_oss_roll
+通過 83 / 失敗 0     test_stream
+通過 103 / 失敗 0    test_sync
+通過 327 / 失敗 0    test_workflow
+すべて通過
+check.sh rc=0
+```
+
+`bash -n` は 26 本。Round 2 は .sh を足し引きしていない（`git ls-tree -r --name-only fa6234f | grep -c '\.sh$'` も 26）。Round 1 のマージ後の記録の 30 本と違う理由は確かめていない。
+
+### セルフレビュー
+
+- 自分: Opus 5.5 / xhigh。入力は cold review の 2 件と e28e1a0 / dd8f787 のコード
+- 反対弁護人: opus（Agent の general-purpose、読み取り専用）。渡したのは design.md / build.md のパス、2 つの commit、変更ファイルの一覧、選んだ方針と根拠、迷った点 9 つ。返ってきたあとの `git status --porcelain -uall` は空で、増えたファイルは無い（反対弁護人の検証用のスクリプトはリポジトリの外の scratchpad）
+- 反対弁護人の指摘は Must 0 / Should 2 / Nit 10。S1 は自分の経路（awsio → rules.precheck）で再現した
+
+#### 指摘 S1（Should）[correctness / 事前チェック]: 回線を上げるだけの heal-main に「危険」と出る状態が変わる
+
+- 場所: `app/temporal/awsio.py:104-112`（role を読む）、`app/temporal/rules.py:83-157`（impact は変更後の本流を「いちばん大きいかたまり」で選ぶ）
+- 破綻: worker が TRex を通り道に数えなくなったので、グラフが割れやすくなる。回線を 1 本上げただけで本流が入れ替わり、前の本流の機器が「孤立する」と出る。heal-main は回線を上げるだけなので、この「危険」は全部誤報
+- 確かめた: s1_repro.py。ワーカーの経路（偽の cypher → `awsio.read_topology` → `rules.precheck("heal-main")`）で、静的トポロジの 2^19 通りを Neptune が role を返す / 返さない形で比べた（s1_repro.log）:
+
+```text
+組み合わせ 524288 (role あり, role 無し): {('danger', 'danger'): 1850, ('danger', 'ok'): 1126, ('ok', 'danger'): 1849, ('ok', 'ok'): 519463}
+危険と出る数: role あり 2976 / role 無し 3699
+最小の例 / role あり: 【危険】dc1-a-leaf-01#ethernet-1/1 を上げると仮定: 孤立する機器: dc1-a-leaf-02, dc1-spine-02。つながり直す機器: dc1-a-leaf-01, dc1-spine-01
+最小の例 / role 無し: 【問題なし】dc1-a-leaf-01#ethernet-1/1 を上げると仮定: 孤立する機器も、冗長が切れる機器も無い。つながり直す機器: dc1-spine-01。冗長が戻る機器: dc1-a-leaf-01
+```
+
+- 片付け: 最終報告に回した（PM へ）
+  - 原因は impact の本流の選び方で、Round 1 の指摘 2 の「残り」と同じもの。011 より前（29dd7ca）でも 14959 / 1048576 通りが危険と出る（Round 1 の healmain_old.log）
+  - role を読むと、誤報の総数は 3699 → 2976 に減る。そのうち 1126 通りは、role を読んだことで新たに危険と出る
+  - 直すには impact の本流の選び方を変える（Round 1 の案は「変更後の本流は、前の本流の機器をいちばん多く含むかたまりにする」）。PM から頼まれた 2 件の範囲の外なので、ここでは直さない
+  - precheck_verdict は記録して承認画面に出すだけで、処置は止めない（`app/temporal/worker.py:101-108`。`git grep -n precheck_verdict -- app` に処置を分ける行は無い）
+
+#### 指摘 S2（Should）[ドキュメント]:「いまの処置では警告（注意・危険）は出ない」が S1 と食い違う
+
+- 場所: `docs/workflow.md:30`、`app/temporal/rules.py:76`、`docs/architecture/resources/temporal.md:102`
+- 破綻: heal-main でも危険が出る（S1）のに、3 か所とも出ないと書いている。workflow.md:30 は dd8f787 で role の文言を直した同じ行
+- 片付け: 最終報告に回した（S1 と一緒に直すもの）。Round 1 でも「011 より前からの誤り」として残りに書いた
+
+#### 指摘 N1（Nit）[ドキュメント]: Round 1 の記述が Round 2 で事実でなくなった
+
+- 「worker の `rules.impact` には役割が渡らない」（Round 1 の指摘 2 の残り）: dd8f787 から worker も役割を読む
+- 「`git grep -n 'trex/README\|pgrep' -- tests/` で 0 件」（Round 1 のセルフレビューの冒頭）: e28e1a0 から test_lab_debug が pgrep / pkill の式を読む
+- 片付け: ここで訂正した（Round 1 は上書きしない）
+
+#### 指摘 N2〜N10（Nit）
+
+| # | [観点] 場所 | 破綻 | 確かめた | 片付け |
+| :--- | :--- | :--- | :--- | :--- |
+| N2 | [routers() の壊れやすさ] `app/containerlab/lab.sh:77-82` | kind の行末のコメント、`kinds:` の既定、インデントの変更で `routers()` が黙って台数を落とし、`lab logs` は rc=0。`$TOPO.in` が無いときも rc=0 | テンプレートを変える 2 通り（inject3.log）は test_lab_debug の logs のチェックが落とす。`$TOPO.in` が無い場合と `kinds:` は打っていない | 最終報告に回した |
+| N3 | [--delete と rpm] `ops/lab-common.sh:105-106`、`outputs.tf:28` | `-var containerlab_version=` で lab-common.sh の版とずらすと、片方の sync がもう片方の rpm を消す。版を上げた直後、sync が古い rpm を消してから cp が新しいものを置くまで rpm が無い | 読んだだけ（反対弁護人も） | 最終報告に回した |
+| N4 | [除外の漏れ] `ops/lab-common.sh:105` | 手元で containerlab を回してできる `clab-*/`（root 所有、証明書と鍵）を除いていない。011 より前から。テストが除外の一覧を等号で固定したので、足すときはテストも直す | 読んだだけ。`.gitignore:16` に `app/containerlab/clab-*/` がある | 最終報告に回した |
+| N5 | [除外] 同上 | `__pycache__/*` は同期元の根にしか当たらず、`trex/stl/__pycache__/` などは送られる。011 より前から | AWS CLI のフィルタの説明を読んだだけ | 最終報告に回した |
+| N6 | [運用] 同上 | OWNER が同じなら worktree が違っても同じバケット。別ブランチから up.sh / `lab-debug.sh sync` を打つと、`--delete` で相手のファイルが消える | 読んだだけ | 最終報告に回した（意図どおりの動き） |
+| N7 | [trex] `app/containerlab/lab.sh:380,390,392` | `pgrep -f t-rex-64` は、別のシェルで同時に走る start の `find / -name t-rex-64` や、exec の前の `sh -c '… ./t-rex-64 …'` にも当たる | 読んだだけ。pgrep は `docker exec` から直に打つので自分自身には当たらない（pgrep は自分を除く）。stop の式は Round 1 から `t-rex-64` で変わっていない | 最終報告に回した |
+| N8 | [役割の値] `app/temporal/rules.py:80` | Nautobot で role 名を「TRex」などに変えると END_ROLES と合わず、黙って通り道に戻る | 読んだだけ。いまはどの経路（lab_topology、topology.json、devices.yaml、Nautobot の bootstrap、graph の DEVICE_KEYS）でも `trex`（反対弁護人） | 最終報告に回した |
+| N9 | [手元の古い .cli] `app/containerlab/lab_topology.py:504-515` | `load()` は `srlinux/*.cli` を全部読むので、手元に古い .cli があると `--layers` に古い頂点が出る。EC2 はこの関数を使わない。011 より前から | 反対弁護人が写しで実行（76 件） | 最終報告に回した |
+| N10 | [logs] `app/containerlab/lab.sh:216-220` | 実ルーターのコンテナが 1 台でも無いと、`set -e` で logs が止まる。011 より前から | 読んだだけ | 最終報告に回した |
+
+#### 問題なしとした観点
+
+- `--delete` と除外: AWS CLI の文書の文（上）。S3 の `lab/` に書くのは `upload_lab` と `upload_lab_command` の 2 つだけ（反対弁護人の git grep）
+- EC2 に古い描画が残らない: user_data（tftpl と CFn）は起動のたびに `sync --delete` で src を置き直し、setup.sh は毎回描き直す（読んだだけ。自分と反対弁護人）
+- `routers()` の答え: 偽の docker で `lab.sh logs` を打ち、古い `dc1-leaf-01.cli` を混ぜても、打つのは yaml で読んだ nokia_srlinux の 6 台だけ（test_lab_debug。期待値は yaml.safe_load で取り、awk とは別の実装）。もう 1 つの利用者 forward-status（lab.sh:339）も同じ 6 台（反対弁護人が BSD awk で実行）
+- role を読んでも変わらないもの: `maintenance_hold` は role を使わない（`rules.py:258`、`worker.py:355`）。role が欠けても `r.get("role")` が None になり、全部を通り道と見る前の動き
+- OSS 版（Neo4j）: `awsio._dialect` が書き換えるのは `id(x)` だけで、`n.role` はそのまま通る（test_oss の golden の比較が通る）
+- テストがトートロジーでない: 上の退行の注入。impact のチェックは dbg2.py で role の有無で答えが変わることを確かめた
+
+#### 最終報告に回すもの
+
+- S1・S2（事前チェックの本流の選び方と「警告は出ない」の文言）
+- N2〜N10
