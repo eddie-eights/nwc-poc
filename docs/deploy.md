@@ -35,7 +35,7 @@
 | `SNMP_POLL` | stream の Telegraf（ECS）で SNMP をポーリングするか。**既定 `1`** で、10 秒ごとに ifTable を取って `metrics` トピックに出す（stream の変数 `snmp_poll` → タスクの環境変数 `SNMP_POLL`）。`0` なら SNMP は trap だけ受ける（gNMI と syslog は変わらない）。`0` では、Grafana のアラートルール `link_down`、Splunk の保存済みサーチ `netops_poll`、Grafana の IF のグラフ、エージェントが見る IF のメトリクスが空になる（IF の up / down を知らせるのは `STORES` の `splunk` の trap だけ。`ops/up.sh` が注意を出す）。変えて打ち直すと Telegraf のタスクが入れ替わる（費用は変わらない）。デバッグ用の EC2 の Telegraf は既定 `0`（`sudo SNMP_POLL=1 lab telegraf run` で起こし直す） |
 | `LAB_DEBUG` | 2026-10-04 から使わない。書いてあれば `ops/up.sh` が注意を出すだけ。デバッグ用の EC2 は `ops/lab-debug.sh up` / `down` で作る・消す（`ops/up.sh` / `ops/down.sh` とは別。[pipeline.md](pipeline.md) の「デバッグ用の EC2」） |
 | `IMAGE_TAG` | エージェントとワーカーのイメージのタグ。既定 `v1` |
-| `KEEP_ECR` | `1` で `ops/down.sh` が ECR を残す（保管料は月数円） |
+| `KEEP_ECR` | `1` で `ops/down.sh` が ECR を残す（保管料は 7.39 GB で月 約 110 円。2026-10-08 の実測。下の「消したあとに残るもの」） |
 | `AWS_PROFILE` / `LOCAL_PORT` / `NO_DASHBOARD_PORTFORWARD` | プロファイル / PC 側のポート（既定 8080）/ `1` で最後の Web へのポートフォワーディングを開かずに終わる |
 | `VPC_CIDR` | VPC の CIDR。既定 `10.0.0.0/16`（[setup.md](setup.md)） |
 | `MDT_SOURCE_CIDRS` | Cisco の MDT（dial-out。tcp 57000）を Telegraf の NLB へ送ってよい機器の CIDR（カンマで）。既定は空で、どこからも受けない（[collection.md](collection.md)） |
@@ -112,13 +112,29 @@ flowchart LR
 
 - 手順 5-2 で、`ops/up.sh` が作った SSM のパラメータ（`/<prefix>/` の下でタグ `ManagedBy=ops/up.sh` のもの。Grafana / Splunk / Nautobot の admin のパスワード、Splunk の HEC の token とクラスターの合言葉（`/<prefix>/splunk/idxc-secret`）、Nautobot の SECRET_KEY と DB のパスワードと API トークン、Kafbat UI の admin のパスワード、Telegraf の取りにいく側の機器の認証情報（`/<prefix>/telegraf-dialin/` の下の 3 つ））を消す。手で入れたパラメータは消さない。nautobot のルートが消えなかったときは Nautobot の分だけ残す（Terraform が destroy でも DB のパスワードを読むので。打ち直せば消える）。
 - Nautobot の RDS は最後のスナップショットを取らずに消す。Nautobot で編集した内容は残らない（次の `ops/up.sh` でまた lab の定義から入る）。
-- 最後に `Project=<prefix>` のタグが残っているものを出す。何も出なければ全部消えている。
+- 最後に `Project=<prefix>` のタグが残っているものを出す（手順 6）。**この一覧では、消えたかを決めない。**消えたリソースも出る（下の「消したあとに残るもの」）。
 - デバッグ用の EC2（CloudFormation の `<prefix>-lab-debug`）は消さない。`ops/lab-debug.sh down` で消す（同じ `Project` タグなので、残っていれば上の一覧に出る）。
-- **Runtime の ENI は最大 8 時間残る。**その間は VPC、サブネット、Runtime の SG（`<prefix>-runtime`）を残して他を消す。時間をおいて打ち直す。2026-10-05 の AWS でもこうなった（`ops/down.sh` は終了コード 0 で終わり、ENI が外れるまで VPC・サブネット・SG が残った。残った分に時間課金は無い。数時間おいて打ち直す）。
+- **Runtime の ENI は最大 8 時間残る。**その間は VPC、サブネット、Runtime の SG（`<prefix>-runtime`）を残して他を消し、終了コード 0 で終わる。残った分に時間課金は無く、次の `ops/up.sh` が使い回すので、打ち直さなくてよい（下の「消したあとに残るもの」）。2026-10-05 と 2026-10-08 の AWS でもこうなった。
 - graph / workflow / KB（`<prefix>-kb-index`）の Lambda の ENI（20〜40 分残る）は裏で消す。
 - `KEEP_ECR=1 ops/down.sh` で ECR を残すと、翌朝のビルドを飛ばせる。
 - analytics を消してから graph を消すまでのあいだ、graph の Lambda は Firehose へ送れずにやり直す（ログに ERROR が出る）。片付けの途中なので害は無い。
 - Glue のカタログ `s3tablescatalog` は消さない（下の「アラートの通知の履歴」）。
+
+## 消したあとに残るもの
+
+`ops/down.sh` が終了コード 0 で終わっても、次のものは残ることがある。どれも時間課金は無い。**既定では打ち直して消し切らず、そのままにする。**次の `ops/up.sh` が使い回す。
+
+| 残るもの | 残る理由 | 費用 | 次の `ops/up.sh` |
+|---|---|---|---|
+| VPC・サブネット・Runtime の SG（`<prefix>-runtime`） | AgentCore Runtime の ENI（InterfaceType `agentic_ai`）が外れるまで消せない（最大 8 時間） | 無料 | base/core の state に残っているので、同じ VPC に残りを作り足す |
+| SSM のパラメータ（`/<prefix>/` の下） | nautobot のルートが消えなかったときの Nautobot の分（上の手順 5-2） | 無料（標準のパラメータ） | あるものは作り直さない |
+| ECR のリポジトリ（`KEEP_ECR=1` のとき） | 意図して残す | 7.39 GB で月 約 110 円（$0.10/GB・月。2026-10-08 の 11 リポジトリ） | ECR にあるタグはビルドを飛ばす |
+
+- 2026-10-05 に残した VPC は、前の docs に「数時間おいて打ち直す」と書いてあったが誰も打たず、3 日残った。2026-10-08 の `ops/up.sh` はそれをそのまま使った（VPC の ID が前後で同じ）。
+- 消し切りたいときだけ、ENI が外れてから（数時間後）、`ops/up.sh` を打ったのと同じチェックアウトで `ops/down.sh` を打ち直す。
+- **消えたかは、サービスごとの API で見る。**`ops/down.sh` の最後の一覧（手順 6）はタグの API（`aws resourcegroupstaggingapi get-resources`）で、消えたリソースも返す。
+  - 2026-10-08 は「残り 189 件」と出た。中身は消した直後のリソースと、何日も前に消えた EMR Serverless のアプリやジョブランで、実体が残っていたのは上の表の VPC 一式と ECR だけだった。
+  - 見る API の例: `aws ecs list-clusters`、`aws emr-serverless list-applications`（`TERMINATED` 以外）、`aws kafka list-clusters-v2`、`aws neptune-graph list-graphs`、`aws lambda list-functions`、`aws s3api list-buckets`、`aws ssm describe-parameters`（`/<prefix>/` の下）、`aws ec2 describe-instances`（`terminated` 以外）/ `describe-vpcs`、`aws ecr describe-repositories`。名前が `<prefix>` で始まるものを探す。
 
 ## 007 で並べ直したとき（state の移し方）
 

@@ -71,8 +71,8 @@ OSS 版だけのリポジトリ（`oss_repositories`。マネージド版では�
   arm64 だけ push したという意味。
   出典: 同上。
 - **`KEEP_ECR=1` で残すと、翌日の `ops/up.sh` でビルドを飛ばせる。**
-  保管料は月数円。
-  出典: `ops/down.sh` の先頭のコメント。
+  保管料は 7.39 GB（11 リポジトリ）で月 約 110 円（2026-10-08 の実測）。
+  出典: [deploy.md](../../deploy.md) の「消したあとに残るもの」、`ops/down.sh` の先頭のコメント。
 - **`docker pull` がタイムアウトするときは、エンドポイントを見る。**
   `ecr.api` / `ecr.dkr` が `ops/up.sh` の手順 0 の一覧にあるか、S3 の gateway エンドポイントがプライベートのルートテーブルに載っているか。`explicit deny` なら VPC のエンドポイントを通っていない。
   出典: [pipeline.md](../../pipeline.md) の「動かないとき」。

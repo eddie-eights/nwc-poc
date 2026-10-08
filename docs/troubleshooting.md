@@ -99,10 +99,10 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 
 | 症状 | 原因と直し方 |
 |---|---|
-| `DependencyViolation`（SG / サブネット） | Runtime の ENI が残っている（最大 8 時間）。時間をおいて `ops/down.sh` を打ち直す。2026-10-05 の AWS でも、`ops/down.sh` は終了コード 0 で終わったが、VPC・サブネット・SG が残った（時間課金は無い。数時間おいて打ち直す） |
+| `DependencyViolation`（SG / サブネット） | Runtime の ENI が残っている（最大 8 時間）。`ops/down.sh` は VPC・サブネット・Runtime の SG を残して終了コード 0 で終わる。残ったものは無料で、次の `ops/up.sh` が使い回すので、そのままでよい（[deploy.md](deploy.md) の「消したあとに残るもの」）。2026-10-05 と 2026-10-08 の AWS でもこうなった。消し切るときだけ、ENI が外れてから同じチェックアウトで打ち直す |
 | `ops/down.sh` の最後の一覧に `<prefix>-lab-debug` の VPC やバケットが出る | デバッグ用の EC2 のスタック。`ops/down.sh` は消さないので `ops/lab-debug.sh down` |
 | `ops/lab-debug.sh down` が「… を空にできなかった」/「消えなかった」 | 打ち直す。原因は `aws cloudformation describe-stack-events --region ap-northeast-1 --stack-name <prefix>-lab-debug` |
-| `ops/down.sh` の最後に残りが出る | 上と同じなら待つ。それ以外は get-resources で `Project=<prefix>` を探して手で消す |
+| `ops/down.sh` の最後に残りが出る | タグの API の一覧は消えたリソースも返す（2026-10-08 は何日も前に消えた EMR まで 189 件）。実体が残っているかはサービスごとの API で見る（[deploy.md](deploy.md) の「消したあとに残るもの」）。残っていたのが上の VPC 一式と `KEEP_ECR=1` の ECR だけならそのままでよい。それ以外は手で消す |
 
 ## 既知の不具合
 
