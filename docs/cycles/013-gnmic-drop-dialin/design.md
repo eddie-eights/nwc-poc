@@ -34,6 +34,7 @@ BACKLOG 28「コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種
   - 資格情報は値を書かない: target は `username: ${GNMI_USERNAME}` / `password: ${GNMI_PASSWORD}`、Kafka は `sasl: {user: ${KAFKA_SASL_USER}, password: ${KAFKA_SASL_PASS}, mechanism: SCRAM-SHA-512}`（gnmic が読むときに展開する）
   - `KAFKA_AUTH=scram` なら `sasl:` と `tls: {}`（CA はイメージの束）、`none`（OSS・手元）なら書かない。`KAFKA_BROKERS` はカンマ区切りのまま
   - 全体: `encoding: json_ietf`、`skip-verify: true`（lab の自己署名）、`port: 57400`
+- SCRAM のユーザーは 012 の `User:collectors` を**共有**する（SCRAM のユーザーを増やさない。syslog-ng / GoFlow2 / gnmic は同じ「コレクター」の役で、secret も `AmazonMSK_<prefix>-collectors` の 1 本のまま）。gnmic は `gnmi`（on-change）と `metrics`（sample）の 2 つに SCRAM で書くので、012 Round 2 の ACL（a964c43 の `app/spark/snmp_sinks.py` `SCRAM_TOPICS`）に `gnmi` と `metrics` を足し、`User:collectors` の ACL は 8 つ（`logs` / `flows` / `gnmi` / `metrics` の WRITE と DESCRIBE）。**Telegraf が書くのは `traps` だけ（`AWS-MSK-IAM`）**なので、`traps` には SCRAM の ACL を付けない。012 のログの 1 行と、`SCRAM_TOPICS` を突き合わせる test も `gnmi` / `metrics` を含める。残リスク: `User:collectors` を持つ syslog-ng / GoFlow2 も `gnmi` / `metrics` に書ける（2026-10-09 の PM の判断。別ユーザーにするのは BACKLOG）。ACL は Spark のジョブの起動（`ensure_acls`）で入るので、それより前に gnmic が出した値は落ちる（on-change の最初の同期を失う。未確定 7）
 - subscribe（5 つ。パスは SR Linux 26.7 の YANG）
 
   | 名前 | パス | モード | 出力（トピック） |
@@ -142,4 +143,4 @@ BACKLOG 28「コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種
 4. **012 との衝突**: 012 は `snmp_sinks.py`・`lab.sh`・`test_analytics` / `test_stream` / `test_lab_debug` / `test_local_compose`・`docker/compose/{check.sh,compose.yaml}` も変える。第 1 段の変更は別の関数と小さい塊に留め、マージで解く
 5. Splunk の `link_down` の機器名は Spark が付ける `sysName` に依る。device map に無い機器は `tags.source`（IP）になる（いまの trap と同じ）
 6. `system` の CPU は `cpu[index=all]` を指す（SR Linux は `all` を集計の行として持つ。いまの lab_* は `*`）。無ければ `*` に替える（AWS で確かめる）
-7. **gnmic の Kafka の ACL**: マネージドは IAM と SCRAM の併用なので、SCRAM のユーザーには Kafka の ACL が要る（012 の Must fix。012 Round 2 で Spark の `ensure_topics` に ACL を足す方向）。ACL は 012 Round 2 の仕組みに乗せる（`gnmi` と `metrics` のトピックの Write・Describe を `User:collectors` か別のユーザーに）。012 Round 2 がマージされたら揃える。それまでのマネージドの gnmic は Kafka に書けない見込み（OSS は認証なしなので影響しない）
+7. **gnmic の Kafka の ACL**: マネージドは IAM と SCRAM の併用なので、SCRAM のユーザーには Kafka の ACL が要る（012 の Must fix）。012 Round 2 の `ensure_acls`（Spark のジョブの起動で入れる）に `gnmi` と `metrics` を足した（設計方針 1。`User:collectors` を共有）。**ACL が入るまで（Spark のジョブが上がるまで）にマネージドの gnmic が出した値は落ちる**: on-change（`interface_state` / `bgp_neighbor` / `isis_interface`）の最初の同期はそこで失われ、次に状態が変わるまで系列が無い（AWS で未確認。ACL のあとの変化は届く）。OSS・手元は認証なしなので影響しない

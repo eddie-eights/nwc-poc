@@ -73,4 +73,5 @@ PM（SendMessage）との要件のやりとりの要約。PM の下書き（desi
 ### 第 2 段で設計へ足したこと（2026-10-09）
 
 - 設計方針 1 と 4 を事実に合わせて直した: 「`lab.sh gnmic`（gnmic のタスクに入って 1 回 subscribe）」は、subscribe が設定の outputs（Kafka）に書き、lab の EC2 のロールが ECS Exec も gnmic の ECR も持たないので成り立たない。`gn get`（`gnmic get --type STATE --format event`。outputs を使わない）を足し、入口は stream の output `gnmic_exec_command`（PC から ECS Exec）にした。方針・範囲は変えない
+- 設計方針 1 の SCRAM の行（e70f59e）を事実に合わせて直した: gnmic は `gnmi` と `metrics` の両方に SCRAM で書き（`app/gnmic/gnmic.yaml.in` の outputs）、Telegraf（IAM）が書くのは `traps` だけなので、ACL は `metrics` も足して 8 つ（PM 了承済み）。未確定 7 を「ACL が入るまでの値は落ちる」残リスクに書き替えた。方針・範囲は変えない
 - 設計方針 4 に「第 2 段の実装で決めた細目」を足した（TELEGRAF_ROLE を外す、tg / lab.sh の古い手順は案内して exit 1、SNMP_POLL は注意だけ、SG の入れ替えの守り、古い SSM の掃除、OSS の gnmic のイメージと SSM 13 個、Nautobot の seed の SNMP は残す、SKIP_LAB の繋ぎ直しは手元の docker で確かめた事実、gnmic は 1 タスク）。どれも 4. の範囲の中の実装の決め事で、方針・範囲は変えない
