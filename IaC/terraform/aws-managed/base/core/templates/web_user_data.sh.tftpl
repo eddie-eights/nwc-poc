@@ -20,8 +20,81 @@ APP=/opt/${name_prefix}-web
 # /usr/bin/python3 は 3.9 のまま（AL2023 の仕様）。3.13 と pip を別に入れる。取得経路は S3 ゲートウェイエンドポイント
 command -v python3.13 >/dev/null || dnf install -y python3.13 python3.13-pip
 install -d -m 0755 $APP
+
 # 画面のコード（app.py）・静的データ（data/）・依存の wheel（wheels/）を S3 から取る（ops/up.sh の手順 4）
 aws s3 sync --delete --region ${region} s3://${bucket}/web/ $APP/src/
+
+# Kafbat UI（cycle 010・014）。画面のコードの取得（上の s3 sync）より後、web/ がまだ無くて下で exit 0 する所より前に置く。Docker の取得経路も S3 ゲートウェイエンドポイント。
+# この節は落ちても user_data を止めない（Gradio の画面を先に守る）。関数を || の左で呼ぶと中では set -e が効かないので、1 行ずつ || return 1 で繋ぐ。
+# 落ちたら標準エラー（/var/log/cloud-init-output.log と journalctl -u cloud-final）に 1 行出して進む。logger は AL2023 に無いことがある（util-linux）ので使わない。
+# 接続先は IaC/terraform/aws-managed/pipeline/stream の kafka_ui.tf が書く SSM のパラメータで、stream より先にこの EC2 ができる。
+# パラメータが無い（ParameterNotFound。stream がまだ無い、SKIP_STREAM=1）ならスクリプトは 75 で終わり、systemd は起こし直さない（RestartPreventExitStatus）。
+# それ以外で読めない（AccessDenied・エンドポイント不達・認証情報がまだ無い）なら 69 で終わり、30 秒ごとに起こし直す。
+# 75 で止まったものは、下の Web のユニットの Wants= で、ops/up.sh の手順 8-3（OSS 版は 7-5）の systemctl restart <接頭辞>-web が起こす。
+# 値はログに出さず、パスワードを含む env は /run（tmpfs）に置いて止まったら消す
+kafka_ui_setup() {
+  command -v docker >/dev/null || dnf install -y docker || return 1
+  systemctl enable --now docker || return 1
+  cat > /usr/local/bin/${name_prefix}-kafka-ui <<'__KAFKA_UI__' || return 1
+#!/bin/bash
+set -euo pipefail
+umask 077
+PARAM=/${name_prefix}/kafka-ui
+ENV_FILE=/run/${name_prefix}-kafka-ui.env
+ERR_FILE=/run/${name_prefix}-kafka-ui.err
+param() {
+  aws ssm get-parameter --region ${region} --name "$PARAM/$1" --query Parameter.Value --output text "$${@:2}" 2>"$ERR_FILE" && return 0
+  if ! grep -qF '(ParameterNotFound)' "$ERR_FILE"; then
+    echo "Cannot read $PARAM/$1 (not a missing parameter: e.g. AccessDenied, SSM endpoint unreachable, no credentials yet). Retrying in 30 s. AWS CLI:$(tr -s '\n' ' ' < "$ERR_FILE")" >&2
+    exit 69
+  fi
+  echo "$PARAM/$1 does not exist (pipeline/stream is not applied, e.g. SKIP_STREAM=1). Not retrying; restarting ${name_prefix}-web (ops/up.sh does) or 'sudo systemctl start ${name_prefix}-kafka-ui' starts it again." >&2
+  exit 75
+}
+IMAGE=$(param image) || exit $?
+SERVERS=$(param bootstrap-servers) || exit $?
+PROTOCOL=$(param security-protocol) || exit $?
+PASSWORD=$(param admin-password --with-decryption) || exit $?
+{
+  printf '%s\n' "KAFKA_CLUSTERS_0_NAME=${name_prefix}" "KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=$SERVERS" \
+    "KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL=$PROTOCOL"
+  if [ "$PROTOCOL" = SASL_SSL ]; then
+    printf '%s\n' "KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM=AWS_MSK_IAM" \
+      "KAFKA_CLUSTERS_0_PROPERTIES_SASL_CLIENT_CALLBACK_HANDLER_CLASS=software.amazon.msk.auth.iam.IAMClientCallbackHandler" \
+      "KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG=software.amazon.msk.auth.iam.IAMLoginModule required;"
+  fi
+  printf '%s\n' "AUTH_TYPE=LOGIN_FORM" "SPRING_SECURITY_USER_NAME=admin" "SPRING_SECURITY_USER_PASSWORD=$PASSWORD" \
+    "GITHUB_RELEASE_INFO_ENABLED=false" "JAVA_OPTS=-XX:MaxRAMPercentage=50"
+} > "$ENV_FILE"
+aws ecr get-login-password --region ${region} | docker login --username AWS --password-stdin "$${IMAGE%%/*}" >/dev/null
+docker pull --quiet "$IMAGE"
+docker rm --force ${name_prefix}-kafka-ui >/dev/null 2>&1 || true
+exec docker run --rm --name ${name_prefix}-kafka-ui --env-file "$ENV_FILE" -p 127.0.0.1:8082:8080 "$IMAGE"
+__KAFKA_UI__
+  chmod 0755 /usr/local/bin/${name_prefix}-kafka-ui || return 1
+  cat > /etc/systemd/system/${name_prefix}-kafka-ui.service <<__KAFKA_UI_UNIT__ || return 1
+[Unit]
+Description=${name_prefix} Kafbat UI (Docker, 127.0.0.1:8082, reached via SSM port forwarding)
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+ExecStart=/usr/local/bin/${name_prefix}-kafka-ui
+ExecStopPost=/bin/rm -f /run/${name_prefix}-kafka-ui.env /run/${name_prefix}-kafka-ui.err
+Restart=always
+RestartSec=30
+RestartPreventExitStatus=75
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+__KAFKA_UI_UNIT__
+  systemctl daemon-reload || return 1
+  systemctl enable --now ${name_prefix}-kafka-ui.service
+}
+kafka_ui_setup || echo "${name_prefix}-kafka-ui: setup failed (see the error above). Continuing with the web UI; fix it and reboot the instance." >&2
+
 # バケットは IaC/terraform/aws-managed/base/core が作るので、初回の apply の時点では web/ が空。置いてから reboot-instances すれば、この user_data がもう一度走る
 if [ ! -f $APP/src/requirements.txt ]; then
   echo "web/ is not in s3://${bucket} yet. Upload it (output upload_web_command) and reboot the instance." >&2
@@ -55,11 +128,14 @@ GRAPH_BACKEND=${graph_backend}
 %{ endif ~}
 __ENV__
 
+# Wants= の Kafbat UI は、Web を start / restart するたびに（75 で failed のまま止まっていても）一緒に起こされる。動いていれば何もしない。
+# 弱い依存なので、Kafbat UI が落ちても無くても Web は止まらない（cycle 014。手元の systemd で実測）
 cat > /etc/systemd/system/${name_prefix}-web.service <<__UNIT__
 [Unit]
 Description=${name_prefix} chat web (Gradio, 127.0.0.1:8080, reached via SSM port forwarding)
 After=network-online.target
 Wants=network-online.target
+Wants=${name_prefix}-kafka-ui.service
 
 [Service]
 EnvironmentFile=/etc/${name_prefix}-web.env

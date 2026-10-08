@@ -2,7 +2,7 @@
 
 ← [構成](README.md)
 
-`IaC/terraform/aws-managed/pipeline`（`PIPELINE=1`）。lab（`app/containerlab/`）、stream（MSK と Telegraf と syslog-ng と GoFlow2 と Kafbat UI）、analytics（Spark・格納先・Grafana・Splunk・アラートの通知の履歴の Firehose）、graph（Neptune Analytics のグラフと status の Lambda）、nautobot（Nautobot と RDS の PostgreSQL）の 5 ルート。使い方は [pipeline.md](../pipeline.md)、機器から集めるデータと集め方の方針は [collection.md](../collection.md)。
+`IaC/terraform/aws-managed/pipeline`（`PIPELINE=1`）。lab（`app/containerlab/`）、stream（MSK と Telegraf と syslog-ng と GoFlow2 と、Web の EC2 で動く Kafbat UI の接続先）、analytics（Spark・格納先・Grafana・Splunk・アラートの通知の履歴の Firehose）、graph（Neptune Analytics のグラフと status の Lambda）、nautobot（Nautobot と RDS の PostgreSQL）の 5 ルート。使い方は [pipeline.md](../pipeline.md)、機器から集めるデータと集め方の方針は [collection.md](../collection.md)。
 
 ```mermaid
 flowchart LR
@@ -32,5 +32,5 @@ flowchart LR
 - Grafana と ECS の Splunk は analytics の ECS クラスタ `<prefix>-analytics` のタスクで、Cloud Map の `grafana.<prefix>.internal:3000` / `splunk.<prefix>.internal` で引く。Splunk は `SPLUNK_AZ_NUM` が 2 か 3 のとき indexer のクラスターになり、cluster manager（`splunk-cm`）、AZ ごとの indexer（`splunk-idx`。HEC の宛先）、search head（`splunk`）のタスクに分かれる（[resources/splunk.md](resources/splunk.md)）。LB は無く、PC からは Web の EC2 を踏み台にした SSM のポートフォワード（`AWS-StartPortForwardingSessionToRemoteHost`）で開く。
 - 異常を見つけるのは Grafana と Splunk（2026-10-02 に Spark の検知をやめた。Spark は格納先へ流すだけ）。既定（`STORES=s3,grafana,splunk`）では両方を作り、同じ 4 種類（`link_down` / `bgp_down` / `isis_down` / `trap`）を出す。どちらも同じ形の JSON を SNS のトピック `<prefix>-alerts`（土台）へ publish し、トピックが graph の Lambda（Neptune の `status`）と workflow の SQS（ワークフローの起動と解消）へ配る。アラートを 1 か所に集めるのは、同じ障害を別の送り手が知らせても 1 つの異常にまとめる（相関）ため。分担と遅れは [pipeline.md](../pipeline.md) の「アラート」。
 - Neptune（2026-10-04 から Neptune Analytics。問い合わせは openCypher、口は VPC エンドポイント `neptune-graph-data`。2026-10-05 に AWS で確かめた）に置くのはトポロジ（と、その動的な `status`）と、Nautobot の変更履歴の写し（頂点 `change`。エージェントの `recent_changes` が読む）だけ。修復案は 2026-10-05 から S3 Tables の `proposal_events` だけに置く（[workflow.md](workflow.md)）。異常の頂点と S3 Tables の `anomaly_events` はやめた。障害の履歴は、Lambda `graph-status` が Firehose で S3 Tables の `alert_events` に追記する（2026-10-04。[data-stores.md](../data-stores.md)）。
-- Kafbat UI（stream の ECS。`<prefix>-kafka-ui`、1 タスク）は MSK の中（トピック・メッセージ・consumer group）を見る画面。MSK へは IAM 認証の 9098 で、PC からは Grafana と同じく Web の EC2 を踏み台にしたポートフォワード（8080）で開く。
+- Kafbat UI（Web の EC2 の Docker。systemd のユニット `<prefix>-kafka-ui`。Kafbat UI を Web の EC2 に同居させる（010））は MSK の中（トピック・メッセージ・consumer group）を見る画面。MSK へは Web の EC2 のインスタンスロールで IAM 認証の 9098 につなぐ。接続先は stream が SSM の `/<prefix>/kafka-ui/` に書く。PC からは Web の EC2 の `127.0.0.1:8082` への SSM のポートフォワードで開く。
 - Nautobot（`IaC/terraform/aws-managed/pipeline/nautobot`。ECS の `<prefix>-nautobot` と RDS の PostgreSQL）は機器とケーブルの正。`PIPELINE=1` ならいつも作る。Job が Nautobot の中身に合わせて、Telegraf の取りにいく側の宛先（SSM のパラメータ）と Neptune の物理層を書き直す（[nautobot.md](../nautobot.md)）。

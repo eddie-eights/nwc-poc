@@ -27,7 +27,7 @@ flowchart LR
 - Web の承認・却下は、決定専用の SQS `<prefix>-decisions` に 1 通送るだけ（`{"type":"decision","proposal_id","decision","decided_by","sent_at"}`）。worker の 2 つ目のループがこのキューを読み、ワークフローにシグナル `decide` を送る。ワークフローは待ち時間なしで続きに進む。押してから「承認」タブに出るまで数秒〜20 秒。
 - 決定は最初の 1 通だけが効く。同じ修復案に内容の違う決定が後から届くと、`ignored` の行を足す（`status` は変わらない）。同じ内容の重複（SQS の配り直し）は捨てる。
 - ワークフローがもう無いのに `pending` の修復案へ決定が届くと、worker が `expired` の行を足して閉じる。同じ異常の新しい修復案を作るときも、古い `pending` を `expired` で閉じてから `created` を足す（1 回のコミット）。
-- 修復案には事前チェックが付く（`precheck`。「承認」タブの詳細に出る）。worker がその処置をいまの Neptune のトポロジに重ね、孤立する機器と冗長が切れる機器（残りの回線が 1 本）を出す。処置がグラフをどう変えるかは `app/temporal/rules.py` の `ACTION_CHANGES`。いまの処置は回線を上げる `heal-main` と見るだけの `check` なので、警告（注意・危険）は出ない。落とす処置を足したときに効く。同じ計算をチャットから `what_if` で引ける。
+- 修復案には事前チェックが付く（`precheck`。「承認」タブの詳細に出る）。worker がその処置をいまの Neptune のトポロジに重ね、孤立する機器と冗長が切れる機器（残りの回線が 1 本）を出す。処置がグラフをどう変えるかは `app/temporal/rules.py` の `ACTION_CHANGES`。いまの処置は回線を上げる `heal-main` と見るだけの `check` なので、警告（注意・危険）は出ない。落とす処置を足したときに効く。同じ計算をチャットから `what_if` で引ける（チャットの側も worker の側も機器の役割を読み、TRex を Leaf どうしの通り道に数えない。worker は `awsio.read_topology` で役割を読む）。
 - 承認・却下はチャットのツールに出していない。決定のキューに送れるのは Web の EC2 のロールだけで（`IaC/terraform/aws-managed/workflow/proposals.tf` の `<prefix>-workflow-web`）、Runtime と tools の Lambda のロールには `sqs:SendMessage` が無い。コード（ツールに出さない）と IAM の両方で線を引いている。
 - アラートは Grafana と Splunk が同じ形の JSON で SNS のトピック `<prefix>-alerts` に出す（`{"source", "alerts": [{"status", "device_id", "kind", "target", "detail", "starts_at"}]}`。読むのは `app/temporal/rules.py` の `alerts_from_message`）。異常の id は `<device_id>#<kind>#<target>`。
 - ワークフローは異常ごとに 1 つ（id は `investigate-<anomaly_id>`。発生の時刻を入れない）。Grafana と Splunk が同じ障害を知らせても、同じ id なので Temporal が二重起動を弾く。修復案は発生ごと（`<anomaly_id>#<first_seen>`。`first_seen` はアラートの `starts_at`）で、直ってからもう一度起きた次の発生は、前の修復案とは別の `proposal_id` になる。
@@ -80,7 +80,7 @@ stateDiagram-v2
 
 ## 試す
 
-1. lab に入り（[pipeline.md](pipeline.md) の「lab に入る」）、`sudo lab fail-main` でアクセス側 Leaf の fabric（`dc1-leaf-01 ethernet-1/1`）を落とす。
+1. lab に入り（[pipeline.md](pipeline.md) の「lab に入る」）、`sudo lab fail-main` で DC 側 Leaf の fabric（`dc1-a-leaf-01 ethernet-1/1`）を落とす。
 2. 1〜2 分で `link_down` のアラートが出て（既定では Grafana と Splunk の両方から。Grafana は Alerting → Alert rules で Firing、Splunk は linkDown の trap とポーリングから。`SNMP_POLL=0` では Splunk の trap からだけ。Web の「トポロジ」タブではその回線が `DOWN` になる）、数十秒で「承認」タブに修復案（原因・打つコマンド・理由）が `pending` で並ぶ。
 3. 下の詳細（原因・コマンド・事前チェック・理由）を読み、名前を入れて「詳細を読んだ」にチェックを入れてから「承認して直す」を押すと `approved` → `applied` → `verified` / `failed` と進む（`verified` は、直ったあとの解消の通知が届いてから。1〜2 分）。名前は「決めた人」の列に `<名前> (web)` で残る（Web には認証が無いので、名乗ってもらう）。
 

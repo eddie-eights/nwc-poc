@@ -1,4 +1,5 @@
 # Telegraf のコンテナ（IaC/terraform/aws-managed/pipeline/stream の ECS。Fargate の arm64）。ops/up.sh の手順 2 がビルドして ECR の <接頭辞>-telegraf に置く。
+# デバッグ用の EC2（ops/lab-debug.sh）は同じ Dockerfile を linux/amd64 でビルドする（x86_64 の lab と同じホストに載るため。リポジトリは <接頭辞>-debug-telegraf）。
 # 上流の公式イメージに、設定のテンプレート（telegraf.conf.in）、lab の gNMI を共通の形に変える Starlark（lab_*.star）と
 # 入口（telegraf.sh → /usr/local/bin/tg）を足すだけ。
 # 上流の /entrypoint.sh は root で起きて setpriv で telegraf に落とすが、ここでは初めから telegraf（非 root）で起こす。

@@ -1,6 +1,6 @@
 # ops/up.sh と OSS 版（005）の oss/ops/up.sh が読む共通の関数（terraform の apply、Session Manager でのコマンド、Web の wheel、SSM のシークレット、
 # Glue の s3tablescatalog、Splunk のイメージと SSM のパラメータ、Agent・worker・Temporal・Nautobot・syslog-ng のイメージと Nautobot の SSM のパラメータ、
-# マネージド版の MSK の SCRAM の secret と KMS の鍵）。
+# マネージド版の MSK の SCRAM の secret と KMS の鍵、Grafana のアラートルールの評価の確かめ）。ops/check-grafana.sh も Grafana のルールの確かめのために読む。
 # 先に ops/common.sh と ops/deploy-env.sh を読む（log / die / tf / tf_logged を使う）。Splunk のイメージは ops/lab-common.sh の dir_tag / ecr_has を使う。
 # REGION / PY / PREFIX / OWNER（s3tablescatalog は ACCOUNT_ID も）は呼ぶ前に決める。
 tf_init() {  # tf_init <ルート>
@@ -34,10 +34,11 @@ ssm_run() {  # ssm_run <インスタンス ID> <コマンド…>  cloud-init（u
   # コマンドは JSON の文字列に埋めるので、ダブルクォートとバックスラッシュを含めない
   local id="$1"; shift
   local cmd_id status
+  # 送れなければ 1 を返す（if や $( ) の中で呼ばれると set -e が効かず、空の cmd_id で下の Pending を待ち続ける。grafana_rules_step がそう呼ぶ）
   cmd_id=$(aws ssm send-command --region "$REGION" --instance-ids "$id" \
     --document-name AWS-RunShellScript --timeout-seconds 900 \
     --parameters "{\"commands\":[\"cloud-init status --wait >/dev/null || true\",\"$*\"]}" \
-    --query Command.CommandId --output text)
+    --query Command.CommandId --output text) || { echo "SSM Run Command を送れなかった（上のエラー）" >&2; return 1; }
   while :; do
     status=$(aws ssm get-command-invocation --region "$REGION" --command-id "$cmd_id" --instance-id "$id" \
       --query Status --output text 2>/dev/null || echo Pending)
@@ -252,6 +253,29 @@ build_grafana() {  # REG / PREFIX / GRAFANA_TAG（dir_tag "$GRAFANA_VERSION" app
 }
 build_syslog_ng() {  # REG / PREFIX / SYSLOG_NG_TAG（dir_tag "$SYSLOG_NG_VERSION" app/syslog-ng docker/images/syslog-ng/Dockerfile）を使う。AxoSyslog（arm64）に設定を COPY するだけなので、エミュレーション無しで作れる
   docker buildx build --platform linux/arm64 --build-arg "SYSLOG_NG_VERSION=$SYSLOG_NG_VERSION" -t "$REG/$PREFIX-syslog-ng:$SYSLOG_NG_TAG" --push -f docker/images/syslog-ng/Dockerfile app/syslog-ng/
+}
+# Grafana のアラートルールは execErrState: KeepLast なので、評価がエラーでもアラートは出ず、ルールの health も ok のまま（008 で実測）。
+# エラーはルールの API の alerts[].state（「Normal (Error, KeepLast)」）にだけ出るので、Web の EC2 の上で ops/grafana_rules_check.py に読ませる
+# （Web と同じ環境変数と boto3 で、SSM の admin のパスワードを読む。値は出さない）。最後の行が「判定: OK / NG / 未確認 …」。OK なら 0、ほかは 1。PREFIX を使う
+grafana_rules_check() {  # grafana_rules_check <Web のインスタンス ID>
+  ssm_run "$1" "echo $(base64 < ops/grafana_rules_check.py | tr -d '\n') | base64 -d | NAME_PREFIX=$PREFIX /usr/bin/python3.13 -"
+}
+grafana_rules_step() {  # grafana_rules_step <Web のインスタンス ID> <analytics の ECS のクラスター> <Grafana のサービス> <確かめ直すコマンド>
+  # ops/up.sh と oss/ops/up.sh の最後に打つ。OK でなければ GRAFANA_WARN に警告を入れて黄色で出す（up.sh は止めない。呼ぶ側が最後にもう一度出す）
+  local out verdict
+  GRAFANA_WARN=""
+  # 打ち直しで Grafana のタスクが入れ替わる途中だと、Cloud Map の名前が前のタスクを指していることがある。入れ替わりが終わってから見る
+  if ! aws ecs wait services-stable --region "$REGION" --cluster "$2" --services "$3"; then
+    GRAFANA_WARN="Grafana のサービス（$3）が 10 分たっても安定しないので、アラートルールの評価を確かめていない。aws ecs list-tasks --region $REGION --cluster $2 --desired-status STOPPED を見て、直ったら $4"
+  elif out=$(grafana_rules_check "$1" 2>&1); then
+    printf '%s\n' "$out"
+  else
+    printf '%s\n' "$out"
+    # 失敗のときの ssm_run は標準出力と標準エラーをタブでつないで出すので、タブの手前まで
+    verdict=$(printf '%s\n' "$out" | grep -o '判定: [^[:cntrl:]]*' | tail -1 || true)
+    GRAFANA_WARN="Grafana のアラートルールの評価を確かめた結果が OK ではない（${verdict:-判定の行が無い。上の出力}）。評価のエラーの理由は Grafana のログ（aws logs tail /ecs/$PREFIX-grafana --region $REGION --since 1h --filter-pattern '\"Failed to evaluate rule\"'）。直したら $4"
+  fi
+  if [ -n "$GRAFANA_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$GRAFANA_WARN"; fi
 }
 build_worker() {  # build_worker <タグ> [requirements のファイル名]  Temporal の worker（arm64）。OSS 版は requirements-oss.txt（neo4j のドライバー入り）
   docker buildx build --platform linux/arm64 --build-arg "REQUIREMENTS=${2:-requirements.txt}" -t "$REG/$PREFIX-worker:$1" --push -f docker/images/temporal/Dockerfile app/temporal/

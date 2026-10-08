@@ -26,7 +26,7 @@
 |---|---|---|
 | 物理 | 頂点 `device`、`interface`、辺 `link` | 機器、IF、ケーブル |
 | IP | `ip_interface`、`isis_adjacency` | IF のアドレス、IS-IS の隣接 |
-| EVPN/BGP | `bgp_session`、`evpn_instance`、`ethernet_segment` | BGP のセッション、EVPN のインスタンス、ES |
+| EVPN/BGP | `bgp_session`、`evpn_instance`、`ethernet_segment` | BGP のセッション、EVPN のインスタンス、ES（いまの lab には無い） |
 | 状態 | 各頂点・辺のプロパティ `status` | UP / DOWN / ALARM。アラートが届くと Lambda `<prefix>-graph-status` が書き換える |
 | 変更 | `change`（id は `change#<id>`） | Nautobot の変更の履歴の新しい 50 件 |
 

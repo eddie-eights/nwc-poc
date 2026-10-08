@@ -88,9 +88,10 @@ check("grafana の GRAFANA_VERSION と splunk の SPLUNK_VERSION は ops/up-comm
       and built("grafana", "grafana") and built("splunk", "splunk"))
 check("telegraf の TELEGRAF_VERSION は ops/lab-common.sh の値",
       svc["telegraf"]["build"]["args"]["TELEGRAF_VERSION"] == sh_const(lab_common, "TELEGRAF_VERSION"))
-check(".env.example の SRLINUX_IMAGE / MULTITOOL_IMAGE は ops/lab-common.sh の upstream:tag",
+check(".env.example の SRLINUX_IMAGE / MULTITOOL_IMAGE / TREX_IMAGE は ops/lab-common.sh の upstream:tag",
       example["SRLINUX_IMAGE"] == f"{sh_const(lab_common, 'SRLINUX_UPSTREAM')}:{sh_const(lab_common, 'SRLINUX_TAG')}"
-      and example["MULTITOOL_IMAGE"] == f"{sh_const(lab_common, 'MULTITOOL_UPSTREAM')}:{sh_const(lab_common, 'MULTITOOL_TAG')}")
+      and example["MULTITOOL_IMAGE"] == f"{sh_const(lab_common, 'MULTITOOL_UPSTREAM')}:{sh_const(lab_common, 'MULTITOOL_TAG')}"
+      and example["TREX_IMAGE"] == f"{sh_const(lab_common, 'TREX_UPSTREAM')}:{sh_const(lab_common, 'TREX_TAG')}")
 check("splunk は linux/amd64（上流が amd64 だけ）", svc["splunk"]["platform"] == "linux/amd64")
 check("syslog-ng の SYSLOG_NG_VERSION と goflow2 のタグは ops/up-common.sh の SYSLOG_NG_VERSION / GOFLOW2_TAG で、Dockerfile の ARG の既定値も同じ（cycle 012）",
       svc["syslog-ng"]["build"]["args"]["SYSLOG_NG_VERSION"] == sh_const(up_common, "SYSLOG_NG_VERSION") is not None
@@ -100,6 +101,19 @@ check("telegraf・syslog-ng と spark-splunk / spark-http は restart: on-failur
       all(svc[n].get("restart") == "on-failure:5" and "deploy" not in svc[n] for n in ("telegraf", "syslog-ng", "spark-splunk", "spark-http")))
 check("goflow2 は restart: on-failure:10（Kafka が無いと 1 秒ほどで終わるので、5 回では 9 秒しか待てない。10 回で約 110 秒。cycle 012）",
       svc["goflow2"].get("restart") == "on-failure:10" and "deploy" not in svc["goflow2"])
+# Spark は送り先が起きる前に始めると POST の再試行（app/spark/snmp_sinks.py の HTTP_RETRIES）のあとに落ちてジョブが終わるので、送り先が healthy になるまで起こさない。
+# マージキー（<<: *spark）は depends_on を混ぜないので、x-spark には書かず各 service に Kafka ごと書く
+_kafka = {f"kafka-{i}": {"condition": "service_started"} for i in (1, 2, 3)}
+check("spark-splunk は Kafka の 3 つが起き、Splunk が healthy になってから起こす（x-spark に depends_on は無い）",
+      svc["spark-splunk"]["depends_on"] == {**_kafka, "splunk": {"condition": "service_healthy"}} and "depends_on" not in compose["x-spark"])
+check("spark-http は Kafka の 3 つが起き、OpenSearch と Prometheus が healthy になってから起こす",
+      svc["spark-http"]["depends_on"] == {**_kafka, "opensearch": {"condition": "service_healthy"}, "prometheus": {"condition": "service_healthy"}})
+_hc = {n: svc[n].get("healthcheck", {}) for n in ("splunk", "opensearch", "prometheus")}
+check("splunk / opensearch / prometheus の healthcheck: splunk はイメージの /sbin/checkstate.sh、opensearch は / が 200 か 401（security が認証を求める）、prometheus は /-/ready",
+      _hc["splunk"].get("test") == ["CMD-SHELL", "/sbin/checkstate.sh"]
+      and _hc["opensearch"].get("test") == ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://localhost:9200/ | grep -Eqx '200|401'"]
+      and _hc["prometheus"].get("test") == ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9090/-/ready"]
+      and all(h.get("start_period") and h.get("retries") for h in _hc.values()))
 
 # ---- 3. Kafka: OSS 版の ECS（IaC/terraform/oss/pipeline/stream/kafka.tf の kafka_environment）と同じ値に、EXTERNAL リスナーを足しただけ
 # 比べるのは kafka.tf で文字どおりの値のもの。違うと決めてあるのはホスト名（voter と advertised）・ヒープ・保持期間（手元は既定の 168 時間）
@@ -255,7 +269,7 @@ check("spark-http の引数と環境で parse_args が通る（opensearch,promet
       and _a.opensearch_endpoint == "http://opensearch:9200" and svc["spark-http"]["environment"]["OPENSEARCH_AUTH"] == "basic"
       and svc["spark-http"]["environment"]["PROMETHEUS_AUTH"] == "none")
 check("up.sh の DEVICE_MAP を Spark の --device-map に入れると、lab の機器の管理 IP が機器名に引ける",
-      "dc1-leaf-01" in sinks.parse_device_map(_a.device_map).values())
+      "dc1-a-leaf-01" in sinks.parse_device_map(_a.device_map).values())
 check("Spark の --metric-topics と --log-topics は Telegraf が書くトピック（metrics / gnmi / traps）と、syslog-ng の logs・GoFlow2 の flows だけ（cycle 012）",
       set(_a.metric_topics.split(",")) | set(_a.log_topics.split(",")) == _topics | {"logs", "flows"} and _topics == {"metrics", "gnmi", "traps"})
 
@@ -280,8 +294,8 @@ check("splunk の HEC の token は spark-splunk と同じ .env の値", svc["sp
 
 # ---- 7. 設定（.env.example）と compose の ${VAR}
 _vars = set(re.findall(r"\$\{(\w+)", read("docker", "compose", "compose.yaml")))
-check(".env.example のキーは design.md の 7 つと Telegraf の HEALTH_PORT（009。trap と syslog は lab と揃えるので出さない。MDT_PORT は cycle 012 で外した）",
-      set(example) == {"SPLUNK_PASSWORD", "SPLUNK_HEC_TOKEN", "OPENSEARCH_PASSWORD", "GF_SECURITY_ADMIN_PASSWORD", "SRLINUX_IMAGE", "MULTITOOL_IMAGE", "AWS_REGION",
+check(".env.example のキーは design.md の 7 つと Telegraf の HEALTH_PORT（009。trap と syslog は lab と揃えるので出さない。MDT_PORT は cycle 012 で外した）と TRex のイメージ（011）",
+      set(example) == {"SPLUNK_PASSWORD", "SPLUNK_HEC_TOKEN", "OPENSEARCH_PASSWORD", "GF_SECURITY_ADMIN_PASSWORD", "SRLINUX_IMAGE", "MULTITOOL_IMAGE", "TREX_IMAGE", "AWS_REGION",
                        "HEALTH_PORT"})
 check("compose.yaml の ${VAR} は全部 .env.example のキーか up.sh が渡す 4 つ（SNMP_AGENTS / GNMI_TARGETS / DEVICE_MAP / TELEGRAF_BIND）",
       _vars and _vars <= set(example) | set(UP_ENV) | {"TELEGRAF_BIND"} and "TELEGRAF_BIND" in _vars)
@@ -354,7 +368,7 @@ def fake(name, body=""):
 fake("aws", "echo pw\n")
 # docker login は --password-stdin を読む（読まないと aws の側が SIGPIPE で落ち、pipefail で lab.sh が止まる）
 # SR Linux の CLI（docker exec -i … sr_cli -d）は標準入力を読む。lab.sh の bgp_admin が state を読み直す行には admin-state FAKE_BGP_ADMIN を返し、
-# failover の route が たどる dc1-leaf-01 → 10.255.1.1/32 の経路は dc1-spine-02（172.16.0.12）だけ（切替のあと）を返す
+# failover の route が たどる dc1-a-leaf-01 → 10.255.1.1/32 の経路は dc1-spine-02（172.16.0.12）だけ（切替のあと）を返す
 fake("docker", '[ "${1:-}" = login ] && cat >/dev/null\n'
      'if [ "${1:-}" = exec ] && [ "${2:-}" = -i ]; then case "$(cat)" in\n'
      '  *"info from state / network-instance default protocols bgp neighbor"*) echo "admin-state ${FAKE_BGP_ADMIN:-}" ;;\n'
@@ -362,7 +376,20 @@ fake("docker", '[ "${1:-}" = login ] && cat >/dev/null\n'
      '  *"next-hop-group 7 next-hop * next-hop"*) echo "    next-hop 9" ;;\n'
      '  *"route-table next-hop 9"*) echo "ip-address 172.16.0.12 subinterface ethernet-1/2.0" ;;\n'
      'esac; fi\n'
-     'if [ "${1:-}" = compose ]; then echo "ENV SNMP_AGENTS=${SNMP_AGENTS-unset} GNMI_TARGETS=${GNMI_TARGETS-unset} DEVICE_MAP=${DEVICE_MAP-unset} TELEGRAF_BIND=${TELEGRAF_BIND-unset}" >> "$FAKE_LOG"; fi\n')
+     # docker compose: config --environment は --env-file の KEY=値 の行をそのまま（クォートも # メモも外さない。本物の読み方は下の本物の compose のテスト）、
+     # 続けて自分の環境を出す（あとの方が勝つので、本物と同じくシェルが勝つ）。FAKE_CONFIG_FAIL=1 なら値のかけらを標準エラーに出して 15 で落ちる。
+     # ps は FAKE_PS（無ければ spark-splunk と spark-http が running の 2 行）。ほか（up / down）は渡された環境を書く
+     'if [ "${1:-}" = compose ]; then case " $* " in\n'
+     '  *" config --environment "*) f=; prev=; for a in "$@"; do [ "$prev" = --env-file ] && f=$a; prev=$a; done\n'
+     '    [ "${FAKE_CONFIG_FAIL:-0}" = 1 ] && { echo "failed to read $f: line 3: unterminated quoted value \\"SECRETFRAG" >&2; exit 15; }\n'
+     '    grep -E "^[A-Za-z_][A-Za-z0-9_]*=" "$f"; env ;;\n'
+     '  *" ps "*) if [ -n "${FAKE_PS+x}" ]; then printf "%s\\n" "$FAKE_PS"; else cat <<\'J\'\n'
+     '{"Service":"spark-http","State":"running","Status":"Up 5 minutes","ExitCode":0,"Health":""}\n'
+     '{"Service":"spark-splunk","State":"running","Status":"Up 5 minutes","ExitCode":0,"Health":""}\n'
+     'J\n'
+     '    fi ;;\n'
+     '  *) echo "ENV SNMP_AGENTS=${SNMP_AGENTS-unset} GNMI_TARGETS=${GNMI_TARGETS-unset} DEVICE_MAP=${DEVICE_MAP-unset} TELEGRAF_BIND=${TELEGRAF_BIND-unset}" >> "$FAKE_LOG" ;;\n'
+     'esac; fi\n')
 # -S（規則の一覧）には FAKE_IPT_RULES を返す
 fake("iptables", 'case " $* " in *" -S"*) printf "%s" "${FAKE_IPT_RULES:-}" ;; esac\n')
 # 本物の sudo は環境を消す（env_reset）。PATH と FAKE_LOG（と偽の docker が返す FAKE_BGP_ADMIN）だけ残して、渡された引数を打つ
@@ -411,10 +438,10 @@ case "$url" in
 esac
 ''')
 LOG = os.path.join(TMP, "calls.log")
-CLEAN = ("REGISTRY", "AWS_REGION", "PARAM_PREFIX", "TELEGRAF_IMAGE", "TELEGRAF_LOCAL", "SRLINUX_IMAGE", "MULTITOOL_IMAGE",
+CLEAN = ("REGISTRY", "AWS_REGION", "PARAM_PREFIX", "TELEGRAF_IMAGE", "TELEGRAF_LOCAL", "SRLINUX_IMAGE", "MULTITOOL_IMAGE", "TREX_IMAGE",
          "SNMP_AGENTS", "GNMI_TARGETS", "DEVICE_MAP", "FAKE_IPT_RULES", "FAKE_MEM", "FAKE_DOWN", "FAKE_OS_COUNT", "FAKE_SPLUNK",
          "FAKE_METRICS", "FAKE_TRAPS", "FAKE_LOGS", "FAKE_GW", "FAKE_TG_HEALTH", "FAKE_GF_METRICS", "FAKE_SNG", "FAKE_SNG_ADDR", "TELEGRAF_BIND", "HEALTH_PORT", "LOG_PORT", "TRAP_PORT",
-         "LAB_CMD", "FAKE_BGP_ADMIN")
+         "LAB_CMD", "FAKE_BGP_ADMIN", "FAKE_PS", "FAKE_CONFIG_FAIL") + tuple(example)   # .env.example の名前もシェルにあれば .env より勝つので消す
 
 def run(cmd, cwd=None, **env):
     """偽のコマンドを先に置いた PATH で cmd を打ち、(結果, 呼ばれたコマンドの行) を返す。lab に効く環境変数は消してから env を足す"""
@@ -425,19 +452,19 @@ def run(cmd, cwd=None, **env):
     return r, open(LOG, encoding="utf-8").read().splitlines()
 
 LAB = os.path.join(ROOT, "app", "containerlab", "lab.sh")
-SRL, MT = example["SRLINUX_IMAGE"], example["MULTITOOL_IMAGE"]
-PULLS = [f"docker pull -q {SRL}", f"docker pull -q {MT}"]
+SRL, MT, TREX = example["SRLINUX_IMAGE"], example["MULTITOOL_IMAGE"], example["TREX_IMAGE"]
+PULLS = [f"docker pull -q {SRL}", f"docker pull -q {MT}", f"docker pull -q {TREX}"]
 REDIRECT = ("iptables -t nat -I PREROUTING 1 -s 203.0.113.0/24 -d 203.0.113.1 -p udp --dport 162 "
             "-m comment --comment nwc-lab-telegraf -j REDIRECT --to-ports 1162")
 
 # app/containerlab/lab.sh pull（design.md の lab の切り替え (1)）
-_r, _c = run([LAB, "pull"], SRLINUX_IMAGE=SRL, MULTITOOL_IMAGE=MT)
-check("app/containerlab/lab.sh pull: REGISTRY が無ければ aws も docker login も打たず、2 つのイメージを docker pull するだけ", _r.returncode == 0 and _c == PULLS)
-_r, _c = run([LAB, "pull"], SRLINUX_IMAGE=SRL, MULTITOOL_IMAGE=MT, REGISTRY="111122223333.dkr.ecr.ap-northeast-1.amazonaws.com", AWS_REGION="ap-northeast-1")
+_r, _c = run([LAB, "pull"], SRLINUX_IMAGE=SRL, MULTITOOL_IMAGE=MT, TREX_IMAGE=TREX)
+check("app/containerlab/lab.sh pull: REGISTRY が無ければ aws も docker login も打たず、3 つのイメージを docker pull するだけ", _r.returncode == 0 and _c == PULLS)
+_r, _c = run([LAB, "pull"], SRLINUX_IMAGE=SRL, MULTITOOL_IMAGE=MT, TREX_IMAGE=TREX, REGISTRY="111122223333.dkr.ecr.ap-northeast-1.amazonaws.com", AWS_REGION="ap-northeast-1")
 check("app/containerlab/lab.sh pull: REGISTRY があれば（lab の EC2）今までどおり ECR に login してから pull する",
       _r.returncode == 0 and sorted(_c[:2]) + _c[2:] == ["aws ecr get-login-password --region ap-northeast-1",
                                     "docker login --username AWS --password-stdin 111122223333.dkr.ecr.ap-northeast-1.amazonaws.com"] + PULLS)
-_r, _c = run([LAB, "pull"], SRLINUX_IMAGE=SRL, MULTITOOL_IMAGE=MT, REGISTRY="111122223333.dkr.ecr.ap-northeast-1.amazonaws.com")
+_r, _c = run([LAB, "pull"], SRLINUX_IMAGE=SRL, MULTITOOL_IMAGE=MT, TREX_IMAGE=TREX, REGISTRY="111122223333.dkr.ecr.ap-northeast-1.amazonaws.com")
 check("app/containerlab/lab.sh pull: REGISTRY があって AWS_REGION が無ければ、今までどおり何も取らずに止まる", _r.returncode != 0 and _c == [])
 
 # app/containerlab/lab.sh forward（(2)。手元とデバッグ用の EC2 は REDIRECT だけ、それ以外は stream の分岐で SSM を読む）
@@ -487,25 +514,34 @@ def tree(env=None, files=SCRIPTS, lab_copy=False):
 # docker/compose/lab.sh
 _lc = tree()
 _r, _c = run([os.path.join(_lc, "lab.sh"), "pull"], REGISTRY="leak.example.com", AWS_REGION="ap-northeast-1", PARAM_PREFIX="/nwc")
-check("docker/compose/lab.sh: .env が無ければ .env.example のイメージと TELEGRAF_LOCAL=1、案内に出す自分のパス LAB_CMD の 4 つだけを sudo env で app/containerlab/lab.sh に渡す（sudo -E にしない）",
-      _r.returncode == 0 and _c[0].split()[:6] == ["sudo", "env", f"SRLINUX_IMAGE={SRL}", f"MULTITOOL_IMAGE={MT}", "TELEGRAF_LOCAL=1", f"LAB_CMD={_lc}/lab.sh"]
-      and os.path.realpath(_c[0].split()[6]) == os.path.realpath(LAB) and _c[0].split()[7:] == ["pull"])
-check("docker/compose/lab.sh pull: シェルに REGISTRY や AWS_REGION があっても ECR に行かず、ghcr.io の 2 つを取る", _c[1:] == PULLS)
+check("docker/compose/lab.sh: .env が無ければ .env.example を docker compose config --environment で読み、そのイメージ 3 つと TELEGRAF_LOCAL=1、案内に出す自分のパス LAB_CMD の 5 つだけを sudo env で app/containerlab/lab.sh に渡す（sudo -E にしない）",
+      _r.returncode == 0 and _c[0] == "docker compose --env-file .env.example config --environment"
+      and _c[1].split()[:7] == ["sudo", "env", f"SRLINUX_IMAGE={SRL}", f"MULTITOOL_IMAGE={MT}", f"TREX_IMAGE={TREX}", "TELEGRAF_LOCAL=1", f"LAB_CMD={_lc}/lab.sh"]
+      and os.path.realpath(_c[1].split()[7]) == os.path.realpath(LAB) and _c[1].split()[8:] == ["pull"])
+check("docker/compose/lab.sh pull: シェルに REGISTRY や AWS_REGION があっても ECR に行かず、上流（ghcr.io と Docker Hub）の 3 つを取る", _c[2:] == PULLS)
 _r, _c = run([os.path.join(_lc, "lab.sh"), "forward"])
 check("docker/compose/lab.sh forward: REDIRECT を 1 本入れ、案内は「compose の Telegraf へ」（aws は打たない）",
       _r.returncode == 0 and [c for c in _c if " -I " in c] == [REDIRECT] and "compose の Telegraf へ" in _r.stdout
       and not [c for c in _c if c.startswith("aws")])
-_lc = tree('SRLINUX_IMAGE="example.com/srl:1"\nMULTITOOL_IMAGE=\'example.com/mt:2\'\n')
+_lc = tree("SRLINUX_IMAGE=example.com/srl:1\nMULTITOOL_IMAGE=example.com/mt:2\nTREX_IMAGE=example.com/trex:3\n")
 _r, _c = run([os.path.join(_lc, "lab.sh"), "status"])
-check("docker/compose/lab.sh: .env があればそちらのイメージを使う（値の \" と ' は外す）",
-      _c and _c[0].split()[2:4] == ["SRLINUX_IMAGE=example.com/srl:1", "MULTITOOL_IMAGE=example.com/mt:2"])
-_lc = tree('export SRLINUX_IMAGE=example.com/srl:1 # メモ\r\nMULTITOOL_IMAGE="example.com/mt:2" # メモ\r\n')
-_r, _c = run([os.path.join(_lc, "lab.sh"), "status"])
-check("docker/compose/lab.sh: .env の行頭の export、CRLF、行末の # メモは compose と同じく落とす",
-      _c and _c[0].split()[2:4] == ["SRLINUX_IMAGE=example.com/srl:1", "MULTITOOL_IMAGE=example.com/mt:2"])
+_r2, _c2 = run([os.path.join(_lc, "lab.sh"), "status"], SRLINUX_IMAGE="example.com/shell:9")
+check("docker/compose/lab.sh: .env があればそれを読んでそのイメージを使い、シェルに同じ名前があればそちらが勝つ（compose と同じ。クォートや # メモの読み方は下の本物の compose のテスト）",
+      _c[0] == "docker compose --env-file .env config --environment"
+      and _c[1].split()[2:5] == ["SRLINUX_IMAGE=example.com/srl:1", "MULTITOOL_IMAGE=example.com/mt:2", "TREX_IMAGE=example.com/trex:3"]
+      and _c2[1].split()[2:5] == ["SRLINUX_IMAGE=example.com/shell:9", "MULTITOOL_IMAGE=example.com/mt:2", "TREX_IMAGE=example.com/trex:3"])
 _lc = tree("SRLINUX_IMAGE=example.com/srl:1\n")
 _r, _c = run([os.path.join(_lc, "lab.sh"), "up"])
-check("docker/compose/lab.sh: .env に MULTITOOL_IMAGE が無ければ sudo を打たずに止まる", _r.returncode != 0 and _c == [] and "MULTITOOL_IMAGE が無い" in _r.stderr)
+check("docker/compose/lab.sh: .env に MULTITOOL_IMAGE が無ければ sudo を打たずに止まる",
+      _r.returncode != 0 and _c == ["docker compose --env-file .env config --environment"] and "MULTITOOL_IMAGE が無い" in _r.stderr)
+_lc = tree("SRLINUX_IMAGE=example.com/srl:1\nMULTITOOL_IMAGE=example.com/mt:2\n")
+_r, _c = run([os.path.join(_lc, "lab.sh"), "up"])
+check("docker/compose/lab.sh: .env に TREX_IMAGE が無ければ（011 より前の .env）sudo を打たずに止まる",
+      _r.returncode != 0 and _c == ["docker compose --env-file .env config --environment"] and "TREX_IMAGE が無い" in _r.stderr)
+_r, _c = run([os.path.join(tree(), "lab.sh"), "up"], FAKE_CONFIG_FAIL="1")
+check("docker/compose/lab.sh: compose が .env を読めなければ sudo を打たずに止まり、compose のエラー（値のかけらを含むことがある）は出さない",
+      _r.returncode == 1 and _c == ["docker compose --env-file .env.example config --environment"]
+      and "docker compose が .env.example を読めない" in _r.stderr and "SECRETFRAG" not in _r.stdout + _r.stderr)
 # app/containerlab/lab.sh up は splab.clab.yml があると render しないので、gen_lab.py で台数を変えたあとも古い yml で deploy する。ラッパーが毎回 render する
 _lc = tree(lab_copy=True)
 _yml = os.path.join(os.path.dirname(os.path.dirname(_lc)), "app", "containerlab", "splab.clab.yml")
@@ -514,13 +550,13 @@ with open(_yml, "w") as f:
 _r, _c = run([os.path.join(_lc, "lab.sh"), "up"])
 check("docker/compose/lab.sh up: app/containerlab/lab.sh render を打ってから up し、splab.clab.yml を今の .in と .env のイメージで作り直してから deploy する",
       _r.returncode == 0
-      and [c.split()[7] if c.startswith("sudo ") else c for c in _c if c.startswith(("sudo ", "containerlab "))]
+      and [c.split()[8] if c.startswith("sudo ") else c for c in _c if c.startswith(("sudo ", "containerlab "))]
       == ["render", "up", "containerlab deploy -t splab.clab.yml --reconfigure"]
-      and open(_yml, encoding="utf-8").read() == read("app", "containerlab", "splab.clab.yml.in").replace("__SRLINUX_IMAGE__", SRL).replace("__MULTITOOL_IMAGE__", MT))
-check("app/containerlab/lab.sh render: 作った splab.clab.yml のイメージ名（SRLINUX_IMAGE と MULTITOOL_IMAGE）を出す（手元は REGISTRY が無い）",
-      f"splab.clab.yml を作った（イメージは {SRL} と {MT}）" in _r.stdout)
+      and open(_yml, encoding="utf-8").read() == read("app", "containerlab", "splab.clab.yml.in").replace("__SRLINUX_IMAGE__", SRL).replace("__MULTITOOL_IMAGE__", MT).replace("__TREX_IMAGE__", TREX))
+check("app/containerlab/lab.sh render: 作った splab.clab.yml のイメージ名（SRLINUX_IMAGE と MULTITOOL_IMAGE と TREX_IMAGE）を出す（手元は REGISTRY が無い）",
+      f"splab.clab.yml を作った（イメージは {SRL} と {MT} と {TREX}）" in _r.stdout)
 _r, _c = run([os.path.join(_lc, "lab.sh"), "down"])
-check("docker/compose/lab.sh: up 以外（down など）は render しない", [c.split()[7] for c in _c if c.startswith("sudo ")] == ["down"])
+check("docker/compose/lab.sh: up 以外（down など）は render しない", [c.split()[8] for c in _c if c.startswith("sudo ")] == ["down"])
 
 # app/containerlab/lab.sh の障害と戻しの案内（(9)・(11)）。偽の docker / iptables / sleep / snmpwalk で fail-main / fail-bgp / heal-bgp / failover を打つ。
 # 「戻すのは …」などの打ち方は呼ばれ方で決まる: 手元はラッパーが渡す LAB_CMD、EC2 は PATH の lab（sudo lab）、それ以外は呼ばれたパス（sudo <パス>）
@@ -538,11 +574,11 @@ _r, _c = run([_W, "fail-bgp"], FAKE_BGP_ADMIN="enable")
 check("lab.sh fail-bgp: 読み直した admin-state が disable でなければ案内を出さずに 1 で止まる", _r.returncode == 1 and "戻すのは" not in _r.stdout)
 _r, _c = run([_W, "fail-main"])
 check("docker/compose/lab.sh fail-main: 回線を落とし、切替の確認は 'docker/compose/lab.sh failover'、戻すのは 'docker/compose/lab.sh heal-main'",
-      _r.returncode == 0 and "docker exec clab-splab-dc1-leaf-01 ip link set e1-1 down" in _c
+      _r.returncode == 0 and "docker exec clab-splab-dc1-a-leaf-01 ip link set e1-1 down" in _c
       and f"切替の確認は '{_W} failover' が待ってくれる。戻すのは '{_W} heal-main'" in _r.stdout)
 _r, _c = run([_W, "failover"])
 check("docker/compose/lab.sh failover: fail-main を打って切替を見て、SNMP の断を待ち（sleep）、最後に compose の Grafana と Splunk を案内し、戻すのは 'docker/compose/lab.sh heal-main'",
-      _r.returncode == 0 and "docker exec clab-splab-dc1-leaf-01 ip link set e1-1 down" in _c and "  切替 OK（5 秒以内）" in _r.stdout and _c.count("sleep 1") == 10
+      _r.returncode == 0 and "docker exec clab-splab-dc1-a-leaf-01 ip link set e1-1 down" in _c and "  切替 OK（5 秒以内）" in _r.stdout and _c.count("sleep 1") == 10
       and "== Telegraf（compose の Telegraf）==" in _r.stdout
       and _r.stdout.rstrip("\n").endswith(f"Splunk（:8000）に linkDown の trap と syslog が出る。戻すのは '{_W} heal-main'"))
 _r, _c = run(["bash", "app/containerlab/lab.sh", "fail-bgp"], cwd=ROOT, FAKE_BGP_ADMIN="disable", TELEGRAF_LOCAL="1")
@@ -565,7 +601,7 @@ check("EC2（PATH の lab で打つ）は今までどおり 'sudo lab …': デ�
       _r.stdout.endswith("  この EC2 の Telegraf: 'sudo lab telegraf logs' に bgp_neighbor の session_state（established 以外）が出る。戻すのは 'sudo lab heal-bgp'\n")
       and _r2.stdout.rstrip("\n").endswith("'sudo lab telegraf logs' に interface（ifOperStatus）、snmp_trap の linkDown、device_log（syslog）、isis_interface の down が出る。戻すのは 'sudo lab heal-main'")
       and "切替の確認は 'sudo lab failover' が待ってくれる。戻すのは 'sudo lab heal-main'" in _r2.stdout
-      and _r3.stdout.endswith("を SNS のトピックに出す。戻すのは 'sudo lab heal-bgp'\n") and "  stream: 数分で Grafana と Splunk の両方が bgp_down（dc1-leaf-01 の 10.255.0.1 と" in _r3.stdout
+      and _r3.stdout.endswith("を SNS のトピックに出す。戻すのは 'sudo lab heal-bgp'\n") and "  stream: 数分で Grafana と Splunk の両方が bgp_down（dc1-a-leaf-01 の 10.255.0.1 と" in _r3.stdout
       and _r4.stdout.endswith("  Telegraf への転送が張られていない（sudo lab forward-status）\n")
       and all(r.returncode == 0 for r in (_r, _r2, _r3, _r4)))
 os.remove(os.path.join(BIN, "lab"))
@@ -596,8 +632,10 @@ PW = example["OPENSEARCH_PASSWORD"]
 _lc = tree(read("docker", "compose", ".env.example"))
 _r, _c = run([os.path.join(_lc, "check.sh")])
 _ok = [l for l in _r.stdout.splitlines() if l.startswith("ok  ")]
-check("check.sh: 応答が全部そろえば 12 項目とも ok で「すべて ok」、終了コード 0（メモリが 20 GB 以上なら注意を出さない）",
-      _r.returncode == 0 and len(_ok) == 12 and _r.stdout.splitlines()[-1] == "すべて ok" and "注意" not in _r.stdout)
+check("check.sh: 応答が全部そろえば 14 項目とも ok で「すべて ok」、終了コード 0（メモリが 20 GB 以上なら注意を出さない）",
+      _r.returncode == 0 and len(_ok) == 14 and _r.stdout.splitlines()[-1] == "すべて ok" and "注意" not in _r.stdout)
+check("check.sh: .env は docker compose --env-file .env config --environment で読み、Spark の 2 つは docker compose ps -a --format json で 1 回だけ見る",
+      [c for c in _c if c.startswith("docker ")] == ["docker compose --env-file .env config --environment", "docker compose ps -a --format json spark-splunk spark-http"])
 _argv = [c for c in _c if c.startswith("curl ")]
 _stdin = [c for c in _c if c.startswith("STDIN ")]
 check("check.sh: パスワードは curl の引数に載せず（ps に出る）、-K - の標準入力で user = \"admin:…\" として渡す（OpenSearch・Splunk・Grafana 2 つの 4 回）。Kafka のトピックの一覧は 1 回だけ取る",
@@ -626,7 +664,7 @@ check("check.sh: Telegraf の health に繋がらない（restart の上限で�
       == [f"NG  {TH}: 繋がらない（docker compose ps -a telegraf が Exited なら logs telegraf で理由を見て up.sh telegraf）"])
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_TG_HEALTH="503")
 check("check.sh: Telegraf の health が 200 以外なら HTTP の番号を出して NG", _r.returncode == 1 and any(l.startswith(f"NG  {TH}: HTTP 503（") for l in _r.stdout.splitlines()))
-_r, _c = run([os.path.join(tree(read("docker", "compose", ".env.example").replace("HEALTH_PORT=8080", "HEALTH_PORT=18081 # メモ")), "check.sh")])
+_r, _c = run([os.path.join(tree(read("docker", "compose", ".env.example").replace("HEALTH_PORT=8080", "HEALTH_PORT=18081")), "check.sh")])
 _r2, _c2 = run([os.path.join(tree(read("docker", "compose", ".env.example")), "check.sh")], HEALTH_PORT="18082")
 check("check.sh: health のポートは compose と同じくシェルの HEALTH_PORT、.env の HEALTH_PORT の順",
       [c.split()[-1] for c in _c if c.startswith("curl ") and "-w" in c] == ["http://127.0.0.1:18081/", "http://127.0.0.1:8081/metrics"]
@@ -661,7 +699,7 @@ check("check.sh: GoFlow2 の /metrics に繋がらなければ NG で ps -a と 
       and _r2.returncode == 1 and any(l.startswith(f"NG  {GF}: HTTP 404（") for l in _r2.stdout.splitlines()))
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_OS_COUNT="0", FAKE_MEM="16000")
 check("check.sh: 1 つが 0 件なら、そこだけ NG にして残りも見てから終了コード 1。メモリが 20 GB 未満なら注意を出す",
-      _r.returncode == 1 and "NG  OpenSearch: snmp-logs の件数 > 0: 0 件" in _r.stdout and len([l for l in _r.stdout.splitlines() if l.startswith("ok  ")]) == 11
+      _r.returncode == 1 and "NG  OpenSearch: snmp-logs の件数 > 0: 0 件" in _r.stdout and len([l for l in _r.stdout.splitlines() if l.startswith("ok  ")]) == 13
       and "注意: メモリが 16000 MiB" in _r.stdout and _r.stdout.splitlines()[-1].startswith("NG がある"))
 SPL = "Splunk: sourcetype=netops:* の直近 10 分の件数 > 0"
 def splunk_line(body):  # Splunk の応答を body にして check.sh を打ち、Splunk の行を返す
@@ -687,23 +725,56 @@ check("check.sh: どこにも繋がらなくても set -e で途中で落ちず�
 _lc = tree('OPENSEARCH_PASSWORD=a"b\\c\nSPLUNK_PASSWORD=x\nGF_SECURITY_ADMIN_PASSWORD=y\n')
 _r, _c = run([os.path.join(_lc, "check.sh")])
 check("check.sh: パスワードの \" と \\ は curl の設定の書き方で逃がす", 'STDIN user = "admin:a\\"b\\\\c"' in _c)
-_lc = tree("export OPENSEARCH_PASSWORD='p#w' # メモ\r\nSPLUNK_PASSWORD=s1 # メモ\r\nGF_SECURITY_ADMIN_PASSWORD=\"g 1\"\r\n")
-_r, _c = run([os.path.join(_lc, "check.sh")])
-check("check.sh: .env の行頭の export、CRLF、行末の # メモは compose と同じく落とす（クォートの中の # と空白は残す）",
-      [c for c in _c if c.startswith("STDIN ")] == ['STDIN user = "admin:p#w"', 'STDIN user = "admin:s1"', 'STDIN user = "admin:g 1"', 'STDIN user = "admin:g 1"'])
-# 2 つの env_get を同じ入力で打ち、docker compose config（v5.1.3。2026-10-08 に同じ入力で確かめた）が読む値と同じになることを見る
-_eg = [re.search(r"^env_get\(\) \{.*\}$", read("docker", "compose", s), re.M).group(0) for s in ("check.sh", "lab.sh")]
-ENV_IN = 'export A="x"\nB=y # memo\nC=z\r\nD="p # q" # memo\nE=x#y\nF=\'s # t\' # m\n  export G=g  \nH=a"b\\c\nI=\nJ="j"\nK=1\nK=2\n'
-ENV_WANT = {"A": "x", "B": "y", "C": "z", "D": "p # q", "E": "x#y", "F": "s # t", "G": "g", "H": 'a"b\\c', "I": "", "J": "j", "K": "2"}
-def env_get_all(fn):
-    p = os.path.join(TMP, "env_in")
-    with open(p, "w", newline="") as f:
-        f.write(ENV_IN)
-    r = subprocess.run(["bash", "-c", f'ENVF="$1"\n{fn}\nfor k in {" ".join(ENV_WANT)}; do printf "%s=[%s]\\n" "$k" "$(env_get "$k")"; done', "_", p],
-                       capture_output=True, text=True, check=True)
-    return dict(re.fullmatch(r"(\w+)=\[(.*)\]", l).groups() for l in r.stdout.splitlines())
-check("docker/compose/check.sh と lab.sh の env_get は同じ定義で、export / \" \" / ' ' / CRLF / 行末の # メモ / x#y / 2 回目の定義を docker compose と同じに読む",
-      _eg[0] == _eg[1] and env_get_all(_eg[0]) == ENV_WANT and env_get_all(_eg[1]) == ENV_WANT)
+# Spark の 2 つ（restart: on-failure:5 で止まった、依存が healthy にならず Created のまま、コンテナが無い）
+SPK = [f"Spark: {n} が動いている" for n in ("spark-splunk", "spark-http")]
+def ps_json(*rows):  # docker compose ps --format json の 1 行 1 コンテナ
+    return "\n".join(json.dumps({"Service": n, "State": st, "Status": stt, "ExitCode": ec, "Health": ""}) for n, st, stt, ec in rows)
+def spark_lines(**env):
+    _r, _c = run([os.path.join(_lc, "check.sh")], **env)
+    return _r.returncode, [l for l in _r.stdout.splitlines() if l.startswith(("ok  Spark:", "NG  Spark:"))]
+_lc = tree(read("docker", "compose", ".env.example"))
+check("check.sh: Spark の 2 つが running なら ok（1 行 1 コンテナでも、古い compose の配列 1 行でも）",
+      spark_lines() == (0, [f"ok  {SPK[0]}", f"ok  {SPK[1]}"])
+      and spark_lines(FAKE_PS=json.dumps([{"Service": n, "State": "running", "Status": "Up 1 minute", "ExitCode": 0, "Health": ""} for n in ("spark-splunk", "spark-http")]))
+      == (0, [f"ok  {SPK[0]}", f"ok  {SPK[1]}"]))
+check("check.sh: Spark が exited（on-failure:5 を使い切った）や restarting なら、状態と Status を出して logs と up.sh <service> を案内して NG、終了コード 1",
+      spark_lines(FAKE_PS=ps_json(("spark-splunk", "exited", "Exited (1) 3 minutes ago", 1), ("spark-http", "restarting", "Restarting (1) 10 seconds ago", 1)))
+      == (1, [f"NG  {SPK[0]}: exited（Exited (1) 3 minutes ago）。docker compose -f docker/compose/compose.yaml logs spark-splunk で理由を見て、直してから docker/compose/up.sh spark-splunk",
+              f"NG  {SPK[1]}: restarting（Restarting (1) 10 seconds ago）。docker compose -f docker/compose/compose.yaml logs spark-http で理由を見て、直してから docker/compose/up.sh spark-http"]))
+check("check.sh: Spark が created（依存が healthy にならず up が止まった）なら、依存を見るよう案内して NG。片方だけ止まっていればそちらだけ NG",
+      spark_lines(FAKE_PS=ps_json(("spark-splunk", "created", "Created", 0), ("spark-http", "running", "Up 5 minutes", 0)))
+      == (1, [f"NG  {SPK[0]}: created（Created）。依存の splunk / opensearch / prometheus が healthy でない（docker compose -f docker/compose/compose.yaml ps -a で見る）", f"ok  {SPK[1]}"]))
+check("check.sh: Spark のコンテナが無い（ps が何も返さない。上がっていないか docker に繋がらない）なら NG で up.sh を案内する",
+      spark_lines(FAKE_PS="") == (1, [f"NG  {s}: コンテナが無い（上がっていないか docker に繋がらない。docker/compose/up.sh で上げる）" for s in SPK]))
+_r, _c = run([os.path.join(_lc, "check.sh")], FAKE_CONFIG_FAIL="1")
+check("check.sh: compose が .env を読めなければ curl を打たずに止まり、compose のエラー（値のかけらを含むことがある）は出さない",
+      _r.returncode == 1 and _c == ["docker compose --env-file .env config --environment"]
+      and "docker compose が .env を読めない" in _r.stderr and "SECRETFRAG" not in _r.stdout + _r.stderr)
+# check.sh と lab.sh の .env の読み方（ENV_ALL と env_get の 2 行）を、本物の docker compose で試し用の .env に打つ（config --environment は daemon が無くても動く。
+# 2026-10-08 に v5.1.3 で確かめた）。export / CRLF / クォート / \" / # メモ / $$ / $VAR / ${VAR} / = のまわりの空白 / 2 回目の定義、シェルが勝つこと、読めない書式で値を出さないこと
+_two = [re.search(r"^ENV_ALL=.*\n^env_get\(\) \{.*\}$", read("docker", "compose", s), re.M).group(0) for s in ("check.sh", "lab.sh")]
+check("docker/compose/check.sh と lab.sh の .env の読み方（ENV_ALL と env_get の 2 行）は同じ", _two[0] == _two[1])
+ENV_IN = ('export A="x"\nB=y # memo\nC=z\r\nD="p # q" # memo\nE=x#y\nF=\'s # t\' # m\n  export G=g  \nH=a"b\\c\nI=\nJ="j"\nK=1\nK=2\n'
+          'P1=pa$$word\nP2=ab$HOME\nP3="a\\"b"\nP4 = spaced\nP5=val\t# memo\nP7=a\nP9=${P7}z\nP11="q$$r"\nP12=\'s$$t\'\nOVR=fromfile\n')
+ENV_WANT = {"A": "x", "B": "y", "C": "z", "D": "p # q", "E": "x#y", "F": "s # t", "G": "g", "H": 'a"b\\c', "I": "", "J": "j", "K": "2",
+            "P1": "pa$word", "P2": "ab" + os.environ.get("HOME", ""), "P3": 'a"b', "P4": "spaced", "P5": "val\t# memo", "P7": "a", "P9": "az",
+            "P11": "q$r", "P12": "s$$t", "OVR": "fromshell"}
+def env_read(text, **shell):  # 試し用の .env を置いた木で 2 行を打ち、(結果, {名前: 値}) を返す。名前はシェルから消し、shell だけ足す
+    lc = tree(text)
+    e = {k: v for k, v in os.environ.items() if k not in ENV_WANT and k not in CLEAN}
+    e.update(shell)
+    r = subprocess.run(["bash", "-c", f'set -euo pipefail\ncd "$1"\nENVF=.env\n{_two[0]}\nfor k in {" ".join(ENV_WANT)}; do printf "%s=[%s]\\n" "$k" "$(env_get "$k")"; done', "_", lc],
+                       env=e, capture_output=True, text=True)
+    return r, dict(re.fullmatch(r"(\w+)=\[(.*)\]", l, re.S).groups() for l in r.stdout.splitlines() if re.fullmatch(r"(\w+)=\[(.*)\]", l, re.S))
+if subprocess.run(["docker", "compose", "version"], capture_output=True).returncode if shutil.which("docker") else 1:
+    print("飛ばした: docker compose が無いので、.env の読み方を本物の compose で試すテスト（2 つ）を打っていない")
+else:
+    _r, _got = env_read(ENV_IN, OVR="fromshell")
+    check("check.sh と lab.sh は .env を docker compose と同じに読む（export / CRLF / クォート / \\\" / # メモ / $$ と $VAR と ${VAR} の展開 / ' ' の中は展開しない / = のまわりの空白 / 2 回目の定義）。シェルに同じ名前があればそちらが勝つ",
+          _r.returncode == 0 and _got == ENV_WANT)
+    _r, _got = env_read('A=1\nSECRETVAL="never closed MARKER123\nB=2\n')
+    check("check.sh と lab.sh: compose が読めない .env（閉じないクォート）なら値を出さずに止まり、compose のエラー（値のかけらを含む）は出さない",
+          _r.returncode == 1 and "docker compose が .env を読めない" in _r.stderr and "MARKER123" not in _r.stdout + _r.stderr and _got == {})
 _lc = tree()
 _r, _c = run([os.path.join(_lc, "check.sh")])
 check("check.sh: .env が無ければ curl を打たずに止まる", _r.returncode == 1 and _c == [])

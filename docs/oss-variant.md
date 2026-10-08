@@ -24,7 +24,7 @@
 | モデルとガードレール | Bedrock（Amazon Nova 2 Lite、ガードレール） | 変えない（マネージドのまま） |
 | 手順書の検索 | Bedrock のナレッジベース + OpenSearch Serverless | 変えない（マネージドのまま）。ただし `oss/ops/up.sh` はナレッジベースを作らない（OpenSearch Serverless を使うので OSS 版には入れない。`CREATE_KB` も読まない） |
 | Kafka | MSK | Apache Kafka（KRaft）を ECS に 3 台。データは EFS |
-| Kafka の監視の画面 | MSK のコンソールと CloudWatch | Kafbat UI（Apache 2.0）を ECS に 1 台。ブローカー、トピック、メッセージを見る。トピックの追加とメッセージの送信も画面からできる。コンシューマーの遅れは出ない（Spark は consumer group を作らず、offset を checkpoint に持つ） |
+| Kafka の監視の画面 | MSK のコンソールと CloudWatch | Kafbat UI（Apache 2.0）を Web の EC2 の Docker に 1 つ（「Kafbat UI を Web の EC2 に同居させる（010）」から。それより前は ECS に 1 台）。ブローカー、トピック、メッセージを見る。トピックの追加とメッセージの送信も画面からできる。コンシューマーの遅れは出ない（Spark は consumer group を作らず、offset を checkpoint に持つ） |
 | ストリーム処理 | EMR Serverless（Spark） | Apache Spark 3.5 を ECS に（ジョブごとに 1 タスクで 3 つ。`iceberg`、`splunk`、OpenSearch と VictoriaMetrics に書く `http`）。Splunk へはマネージド版と同じ HEC に書く |
 | 生データの表 | S3 Tables（Iceberg） | 変えない（マネージドのまま） |
 | ログの検索 | OpenSearch Serverless | OpenSearch を ECS に 3 台（データ 2 台でレプリカ 1、まとめ役だけの小さい 1 台）。データは 3 台ともタスクの一時領域（公式の文書がネットワークファイルシステムを避けるよう書いている）。データの 2 台が同時に落ちると消える。候補として VictoriaLogs を残す |

@@ -1,8 +1,8 @@
 # ---------------------------------------------------------------- network perimeter (2026-09-28)
 # AWS の API は全部 VPC エンドポイント（endpoints.tf）を通すので、正しいリクエストには aws:SourceVpc = この VPC が付く。
 # それが付かないリクエスト（盗んだ認証情報を VPC の外で使った）を 2 か所で拒む:
-#   1. IAM 側   ワークロードのロールに付ける Deny（下の network_perimeter）。付け先は web / runtime（ここ）、lab（pipeline/lab）、
-#               Telegraf / Kafbat UI（pipeline/stream）、Spark / Grafana / Splunk（pipeline/analytics）、Nautobot（pipeline/nautobot）、
+#   1. IAM 側   ワークロードのロールに付ける Deny（下の network_perimeter）。付け先は web（cycle 010 から Kafbat UI も）/ runtime（ここ）、lab（pipeline/lab）、
+#               Telegraf（pipeline/stream）、Spark / Grafana / Splunk（pipeline/analytics）、Nautobot（pipeline/nautobot）、
 #               ワーカーとツールの Lambda（workflow）、アラートの状態と履歴を書く Lambda（pipeline/graph の graph-status）、
 #               KB の索引を作る Lambda（agent の kb-index）。
 #               OSS 版（IaC/terraform/oss）は自前の ECS のタスク（Kafka / Neo4j / OpenSearch / VictoriaMetrics / Spark / Grafana）のロールにも付ける

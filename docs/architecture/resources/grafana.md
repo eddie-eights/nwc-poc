@@ -13,7 +13,7 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 |---|---|---|
 | サービス | `<prefix>-grafana`。クラスター `<prefix>-analytics`。1 タスク、サブネット a。AZ を選ぶキーは無い | `IaC/terraform/aws-managed/pipeline/analytics/grafana.tf` |
 | タスクの大きさ | Fargate ARM、0.5 vCPU / 1 GB | 変数 `grafana_task_cpu`、`grafana_task_memory` |
-| イメージ | Grafana OSS 13.2.3 にデータソースの plugin と provisioning を焼き込んだもの。ECR の `<prefix>-grafana` | `docker/images/grafana/Dockerfile`、変数 `grafana_image_tag` |
+| イメージ | Grafana OSS 13.2.3 にデータソースの plugin（amazonprometheus 3.2.0、opensearch 2.34.4。版は固定）と provisioning を焼き込んだもの。ECR の `<prefix>-grafana` | `docker/images/grafana/Dockerfile`、変数 `grafana_image_tag` |
 | 名前 | Cloud Map `grafana.<prefix>.internal:3000` | `grafana.tf` |
 | データソース | Prometheus（Amazon Managed Prometheus）と OpenSearch Serverless（`snmp-logs`）。どちらも SigV4（タスクロール） | `app/grafana/provisioning`、`app/grafana/start.sh` |
 | アラートルール | 4 本（フォルダ `nwc-alerts`）。1 分ごとに評価、`for: 0s` | `app/grafana/provisioning/alerting/netops-prometheus.yaml`、`netops-opensearch.yaml` |
@@ -65,6 +65,12 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 - **データが無いときの扱いは、ルールで分けてある。**
   Prometheus の 3 本は直前の状態のまま（`KeepLast`。分からないときに発火も解消もしない）。`trap` は NoData を OK にする（`KeepLast` だと発火したまま解消しない）。
   出典: [pipeline.md](../../pipeline.md) の「Grafana のアラート」。
+- **評価がエラーでも、画面のルールは Normal に見える。ルールの API で確かめる。**
+  4 本とも `execErrState: KeepLast` なので、クエリが失敗してもアラートは出ない。エラーはルールの API（`/api/prometheus/grafana/api/v1/rules`）の `alerts[].state` に `Normal (Error, KeepLast)`（発火中の系列なら `Alerting (Error, KeepLast)`）と出るだけで、`health` は `ok`、`lastError` は空のまま（13.2.2 で実測）。インデックスが無いだけなら NoData で、エラーにはならない。
+  それで `ops/up.sh`（OSS 版は `oss/ops/up.sh`）の手順 9-2 と `ops/check-grafana.sh [--oss]` が、Web の EC2 から SSM Run Command でこの API を読み、`(Error` を含むか `Error` で始まる状態、`health=error`、空でない `lastError` のどれかがあるルールを NG にする（`ops/grafana_rules_check.py`）。判定に使うのは、打ってから全部のルールがもう 1 回評価された結果（`lastEvaluation` が変わったもの）。打ったときに見える評価は、データソースを直す前・壊れる前のものかもしれない。そのうえで、エラーのあったルールはもう 1 回評価されるのを待ち、そこでもエラーなら NG にする。エラーの評価が作った状態（ラベルがルールのラベルだけのもの）は、直したあとの成功した評価に 1 回分残り、その次の評価で消える（Grafana の stale の扱い。13.2.2 で実測: 14:12:11 に直し、14:13:00 の評価は `Alerting` と `Normal (Error, KeepLast)` が並び、14:14:00 の評価で `Alerting` だけになった）。それで NG は OK より 1 分ほど遅く出る。up.sh は止めず、黄色の警告を最後にもう一度出す。
+  ルールのクエリを `/api/ds/query` に投げて HTTP 200 を見る方法は取らなかった。スケジューラーの実際の評価ではなくクエリ A だけを別の時間範囲で投げ直すことになり、ルールを足すたびに確かめる側も足す必要がある。API の GET 1 回なら、今あるルールも後で足すルールも同じに見られる。
+  理由の文は API に残らないので、ログ（`/ecs/<prefix>-grafana` の `Failed to evaluate rule`）で見る。この行は Grafana がやり直すエラーの 1・2 回目（3 回まで）に出る（13.2.2 で実測）。
+  出典: `ops/grafana_rules_check.py` の先頭のコメント、`ops/up-common.sh` の `grafana_rules_step`。
 - **linkDown / linkUp の trap から `link_down` を出すのは Splunk だけ。**
   IF 名の入った varbind の名前が IF ごとに変わり、OpenSearch の集計では取り出せない。
   出典: [pipeline.md](../../pipeline.md) の「アラート」。
@@ -89,6 +95,8 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 | 機器ごと止まったとき | 検知しない（系列が途切れると解消を送る） |
 | `SNMP_POLL=0` | `link_down` は発火も解消もしない |
 | 1 タスク・1 AZ | 止まっているあいだはルールが評価されない |
+| ルールの評価のエラーの確かめ（手順 9-2、`ops/check-grafana.sh`） | 打ったあとの評価だけを見る（あとで壊れたら打ち直す）。打ってから全部のルールが評価されるまで最大 1 分、エラーがあればもう 1 回の評価まで 1 分ほど延びる。打ったあとの評価で 1 回でもエラーになったルールは、すぐ直っても NG になる（次の評価にエラーが残るため）。NoData はエラーではないので OK になる。待つのは最大 5 分で、評価されないルール（止めたルールなど）があれば「未確認」。マネージド版は `STORES` に `grafana` があるときだけ打つ。AWS では未実行（API の形とログは手元の 13.2.2 で確かめた） |
+| Grafana がやり直さないエラーでも `Failed to evaluate rule` がログに出るか | 未確認。出なければ `--filter-pattern '"level=error"'` で探す |
 
 OSS 版（`IaC/terraform/oss/pipeline/analytics/grafana.tf`）も同じイメージとルールで 1 タスク立てる。データソースだけが VictoriaMetrics の vmselect（署名なし）と ECS の OpenSearch（Basic 認証）に変わる（`app/grafana/provisioning/datasources-oss`。uid が同じなので、ダッシュボードとアラートルールはそのまま使う）。[oss-variant.md](../../oss-variant.md)。
 

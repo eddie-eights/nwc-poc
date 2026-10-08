@@ -4,7 +4,7 @@
 
 - [x] Nautobot の Job を OSS 版の Neo4j につなぐ（2026-10-08 完了。コードとテストのあと、同日の OSS 版の AWS 検証で確認。005 の design.md「実装の状態」、`docs/verification/20261008-oss-aws.md`）
 - [x] Neo4j の id 検索にラベルを付ける（頂点が増えると全走査になる）（2026-10-08 完了。fix/neo4j-id-labels。`_lbl` で Neo4j のときだけ付け、Neptune に送る openCypher は不変。手元の Neo4j で 2000 機器の set_status の dbHits 15014 → 13。AWS の Neo4j / Neptune では未確認）
-- [ ] Neo4j に残る全走査を減らす（`count()` と seed の `MATCH (n) WHERE n.registered = false`、remove_device の `MATCH (n:interface) WHERE n.device_id = $id` は device_id に索引が無い。大量投入の直後は索引の統計が古いので `CALL db.prepareForReplanning()` も検討。2026-10-08 の fix/neo4j-id-labels で見つけた） → 008-aws-verification-bugs
+- [x] Neo4j に残る全走査を減らす（`count()` と seed の `MATCH (n) WHERE n.registered = false`、remove_device の `MATCH (n:interface) WHERE n.device_id = $id` は device_id に索引が無い。大量投入の直後は索引の統計が古いので `CALL db.prepareForReplanning()` も検討。2026-10-08 の fix/neo4j-id-labels で見つけた） → 008-aws-verification-bugs（2026-10-08 完了）
 - [x] Kafka と OpenSearch のタスクを 1 台ずつ入れ替える手順を作る（いまは `terraform apply` で 3 つが同時に入れ替わる）（2026-10-08 完了。feat/oss-redis8-rolling の `oss/ops/roll-nodes.sh`。AWS では未確認）
 - [ ] OSS 版とマネージド版の時間あたりの費用を測って `docs/oss-variant.md` に書く
 - [ ] OSS 版をマネージド版と並べて立てる（Fargate の vCPU の上限 30 を上げてから。GDS と `neptune.algo.*` の並びの比較もここで）
@@ -20,11 +20,11 @@
 - [x] 手元の docker compose で動く構成を作る（WSL 用。lab から Splunk と Grafana まで届くこと） → 006-local-compose（2026-10-08 完了。WSL の通し検証はユーザー）
 - [x] ディレクトリを app/ と docker/ と IaC/ に並べ直す（006 のあと。compose は docker/compose/ へ動かす。app/ の下は agent→agentcore、workflow→temporal、web→dashboard、lab→containerlab に改名。2026-10-08 に順番を入れ替えた） → 007-restructure-dirs（2026-10-08 完了）
 - [x] `oss/compose/` を消すか決める（007 で `docker/compose/` と役目が重なると分かった。残すなら「OSS 版の部品を 1 つずつ確かめる」用途に絞って README に書く）（2026-10-08 完了。消した。版の正は `oss/ops/oss-images.sh` だけ。chore/remove-oss-compose）
-- [ ] Kafbat UI を Web の EC2 に同居させ、lab の EC2 で `containerlab graph` のトポロジ図を見られるようにする（Fargate のタスクと Cloud Map をやめる。EC2 は t4g.medium に上げ、Docker と MSK の IAM 権限と SG の web→MSK 9098 を足す。graph は 50080 を SSM のポートフォワードで。2026-10-08 の決定） → 010-kafbat-ui-on-web-ec2
+- [x] Kafbat UI を Web の EC2 に同居させ、lab の EC2 で `containerlab graph` のトポロジ図を見られるようにする（Fargate のタスクと Cloud Map をやめる。EC2 は t4g.medium に上げ、Docker と MSK の IAM 権限と SG の web→MSK 9098 を足す。graph は 50080 を SSM のポートフォワードで。2026-10-08 の決定） → 010-kafbat-ui-on-web-ec2（2026-10-08 完了。AWS の検証 10 は未実施、PM がまとめて行う）
 - [x] Redis を 8 系に上げる（OSS 版）（2026-10-08 完了。feat/oss-redis8-rolling。`REDIS_TAG` は共通なのでマネージド版の Nautobot の Redis も 8.10.2 になる。AWS では未確認）
 - [x] EMR を 7.14.0 に上げ、Spark の jar を合わせる（2026-10-08 完了。feat/spark-bump。AWS では未確認）
 - [x] Iceberg を 1.12.0 に上げる（2026-10-08 完了。feat/spark-bump。OSS 版だけ。マネージド版は EMR 同梱の 1.10.1 のまま。AWS では未確認）
-- [ ] lab を IS-IS の spine 2 + a-leaf 2 + s-leaf 2 と各 leaf につなぐ TRex にする（SR-MPLS はライセンスが届いたら `ixr-6e` に差し替え。2026-10-08 の決定） → 011-lab-isis-trex-x86
+- [x] lab を IS-IS の spine 2 + a-leaf 2 + s-leaf 2 と各 leaf につなぐ TRex にする（SR-MPLS はライセンスが届いたら `ixr-6e` に差し替え。2026-10-08 の決定） → 011-lab-isis-trex-x86（2026-10-09 完了。AWS では未確認）
 - [ ] コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種にする（telegraf-dialin を外し、ifTable の代わりに gNMI の oper-state を使う） → 012-msk-scram-syslog-ng-goflow2（MSK の SCRAM、syslog-ng、GoFlow2、MDT を外す）
 - [ ] gNMI を gnmic に移し、SNMP のポーリングと telegraf-dialin を外す（Grafana / Splunk の link_down を gNMI の oper-state に乗せ替える。011 と 012 のあと） → 013-gnmic-drop-dialin
 - [x] `ops/up.sh` が取る jar（`JAR_URLS` 6 本）のハッシュを照合する（`docker/images/spark/Dockerfile` と compose の分は 2026-10-08 に済んだ）（2026-10-08 完了。fix/up-jar-hash。前の版の jar は jars/ と S3 から消す。S3 の `--delete` は AWS で未確認）
@@ -32,27 +32,27 @@
 - [x] `IaC/terraform/aws-managed/agent/kb.tf` の kb_index のロールにネットワークの境界の条件を付ける（ほかのロールにはあって、これだけ無い。2026-10-08 の docs 同期で見つけた）（2026-10-08 完了。fix/kb-index-firehose。KB のロールはサービス側の例外なので付けない。AWS では未確認）
 - [x] status の Lambda の Firehose の待ちを AZ の数に合わせる（`IaC/terraform/aws-managed/pipeline/graph/sync.tf:125` と `app/graph/status_handler.py:23-24` のコメントは 1 AZ = 15.6 秒の `ops/up.sh:421-423` と合っていない）（2026-10-08 完了。fix/kb-index-firehose。timeout と CONFIG は変えずコメントを 1 / 2 / 3 AZ の秒数に直し、test_sync が up.sh の式と突き合わせる）
 - [ ] 手元の compose の構成のスライドを作る（006 のあと。マネージド版・OSS 版は 2026-10-08 に作った）
-- [ ] Grafana の trap ルールの terms の size か時間の幅を直す（`app/grafana/provisioning/alerting/netops-opensearch.yaml` の `nwc-trap` が Grafana 13.2.2 で `bucket budget out of bounds: ... up to 13600 buckets` になり、起動からずっと `Normal (Error)` で Grafana 側の trap のアラートが出ない。Splunk 側は通る。2026-10-08 のマネージド版の AWS 検証で見つけた。`docs/verification/20261008-managed-aws.md`） → 008-aws-verification-bugs
-- [ ] graph-status の Lambda が Neptune の `ConflictException` を関数の中でやり直す（同じ秒に resolved が 2 件届くと ExecuteQuery が concurrent operations で落ち、Lambda の非同期の再試行で 54 秒後に反映された。データは失われない。2026-10-08 のマネージド版の AWS 検証で見つけた） → 008-aws-verification-bugs
+- [x] Grafana の trap ルールの terms の size か時間の幅を直す（`app/grafana/provisioning/alerting/netops-opensearch.yaml` の `nwc-trap` が Grafana 13.2.2 で `bucket budget out of bounds: ... up to 13600 buckets` になり、起動からずっと `Normal (Error)` で Grafana 側の trap のアラートが出ない。Splunk 側は通る。2026-10-08 のマネージド版の AWS 検証で見つけた。`docs/verification/20261008-managed-aws.md`） → 008-aws-verification-bugs（2026-10-08 完了）
+- [x] graph-status の Lambda が Neptune の `ConflictException` を関数の中でやり直す（同じ秒に resolved が 2 件届くと ExecuteQuery が concurrent operations で落ち、Lambda の非同期の再試行で 54 秒後に反映された。データは失われない。2026-10-08 のマネージド版の AWS 検証で見つけた） → 008-aws-verification-bugs（2026-10-08 完了）
 - [x] 消えたことの確認と残った VPC の扱いを docs に合わせる（`docs/deploy.md:117` と `docs/troubleshooting.md:102` の「数時間おいて down.sh を打ち直す」は誰も打たず VPC が 3 日残った → 「残っても無料。次の up.sh が使い回す」を既定にする。`docs/deploy.md:38` の KEEP_ECR「月数円」は実測 7.39 GB ≈ 110 円/月。down.sh の最後のタグ API の一覧は何日も前に消えた EMR まで 189 件出るので、消えたかはサービスごとの API で見ると書く。2026-10-08 のマネージド版の AWS 検証で見つけた）（2026-10-08 完了。docs/aws-verification-followups）
 - [x] `ops/check.sh` の `bash -n` を 1 ファイルずつ打つ（`bash -n a b c` は a しか見ず、b と c は位置引数になる。2026-10-08 に 006 の実装で見つけた。`tests/test_oss.py` の `^bash -n` の正規表現も合わせる）（2026-10-08 完了。fix/local-compose-r2）
 - [x] `docs/development.md` のテストの本数を数え直す（006 で `tests/test_local_compose.py` が増えた）（2026-10-08 完了。docs/aws-verification-followups で数え直し、895cdb0 でマージ）
-- [ ] Telegraf の health（8080/tcp）と MDT（57000/tcp）のポートを環境変数で変えられるようにする（手元の compose は host ネットワークなので host のほかのプロセスとぶつかる。2026-10-08 に 006 の実装で固定値と確かめた。design.md の未確定事項 6） → 009-local-compose-followups
-- [ ] containerlab が作る `app/containerlab/clab-*/` を `.gitignore` に入れる（手元で `lab.sh up` すると root の持ち物の `app/containerlab/clab-splab/` が `git status` に出る。2026-10-08 に 006 の実装で見つけた） → 009-local-compose-followups
-- [ ] 手元の Telegraf の受け口（8080 / 57000 / 1162 / 5140）を lab の管理ネットと 127.0.0.1 からだけ受ける（host ネットワークなので全部のインターフェースで待ち、WSL の外から偽の trap や syslog を入れられる。2026-10-08 に 006 のセルフレビュー S3 で見つけた。README には書いた） → 009-local-compose-followups
-- [ ] 手元の `check.sh` で trap と Kafka のメッセージ数まで見る（今はトピックの有無だけで、トピックは Spark が起動のときに作るので Telegraf から届いた証拠にならない。trap は `fail-main` / `trap-test` で人が見る。2026-10-08 に 006 のセルフレビュー S4 で見つけた。README には書いた） → 009-local-compose-followups
+- [x] Telegraf の health（8080/tcp）と MDT（57000/tcp）のポートを環境変数で変えられるようにする（手元の compose は host ネットワークなので host のほかのプロセスとぶつかる。2026-10-08 に 006 の実装で固定値と確かめた。design.md の未確定事項 6） → 009-local-compose-followups（2026-10-08 完了）
+- [x] containerlab が作る `app/containerlab/clab-*/` を `.gitignore` に入れる（手元で `lab.sh up` すると root の持ち物の `app/containerlab/clab-splab/` が `git status` に出る。2026-10-08 に 006 の実装で見つけた） → 009-local-compose-followups（2026-10-08 完了）
+- [x] 手元の Telegraf の受け口（8080 / 57000 / 1162 / 5140）を lab の管理ネットと 127.0.0.1 からだけ受ける（host ネットワークなので全部のインターフェースで待ち、WSL の外から偽の trap や syslog を入れられる。2026-10-08 に 006 のセルフレビュー S3 で見つけた。README には書いた） → 009-local-compose-followups（2026-10-08 完了）
+- [x] 手元の `check.sh` で trap と Kafka のメッセージ数まで見る（今はトピックの有無だけで、トピックは Spark が起動のときに作るので Telegraf から届いた証拠にならない。trap は `fail-main` / `trap-test` で人が見る。2026-10-08 に 006 のセルフレビュー S4 で見つけた。README には書いた） → 009-local-compose-followups（2026-10-08 完了）
 - [ ] 手元の Prometheus が spark-http の追い付きで逆順のサンプルを捨てないか確かめる（`out_of_order_time_window` が無い。2026-10-08 に 006 のセルフレビュー U1。未確認）
 - [ ] 手元の Splunk のアプリを作り直したとき splunk-etc の volume に写るか確かめる（写らないなら `down.sh -v` まで古いアプリのまま。2026-10-08 に 006 のセルフレビュー U2。未確認）
-- [ ] 手元の `check.sh` と `docker/compose/lab.sh` の `.env` の読み方を compose に合わせる（行末の `# メモ`・CRLF・`export` を読み違える。2026-10-08 に 006 のセルフレビュー N1） → 009-local-compose-followups
+- [x] 手元の `check.sh` と `docker/compose/lab.sh` の `.env` の読み方を compose に合わせる（行末の `# メモ`・CRLF・`export` を読み違える。2026-10-08 に 006 のセルフレビュー N1） → 009-local-compose-followups（2026-10-08 完了）
 - [x] 手元の `check.sh` で Splunk の認証の失敗を「0 件」と分けて出す（401 の応答も `NG Splunk: 0 件` になる。2026-10-08 に 006 のセルフレビュー N2）（2026-10-08 完了。fix/local-compose-r2。messages の FATAL / ERROR はその理由、result が無ければ「result が無い」と出す。本物の Splunk の 401 は未確認）
-- [ ] `app/containerlab/lab.sh` の `fail-main` と `heal-bgp` の案内を手元でも合うようにする（EC2 の `lab` コマンドを案内する。2026-10-08 に 006 のセルフレビュー N3） → 009-local-compose-followups
-- [ ] `app/containerlab/lab.sh render` の表示をイメージ名にする（`REGISTRY` が無い手元では「イメージは ?」と出る。2026-10-08 に 006 のセルフレビューの Nit） → 009-local-compose-followups
-- [ ] `ops/check.sh` の 3 で追跡している `.sh` を全部 `bash -n` する（いまは並べた 19 本だけで、`ops/sync-graph.sh`・`app/telegraf/telegraf.sh`・`app/splunk/entrypoint.sh`・`app/grafana/start.sh`・`app/neo4j/entrypoint.sh`・`oss/compose/check-*.sh` の 8 本が漏れる（`oss/compose/` の 3 本は 2026-10-08 に消えたので、いまは 5 本）。テストは本体の `set -e` を前提にしていて、`bash -n a b` の行が後から足されても見ない。2026-10-08 に 006 の Round 2 のセルフレビュー N1 / N2 / N5） → 009-local-compose-followups
-- [ ] 手元の `check.sh` の Splunk の理由を重複なし・長さの上限つき・1 行にする（同じ `ERROR Unauthorized` が 30 件なら 598 字になり、text の改行で NG の行が割れる。2026-10-08 に 006 の Round 2 のセルフレビュー N4） → 009-local-compose-followups
+- [x] `app/containerlab/lab.sh` の `fail-main` と `heal-bgp` の案内を手元でも合うようにする（EC2 の `lab` コマンドを案内する。2026-10-08 に 006 のセルフレビュー N3） → 009-local-compose-followups（2026-10-08 完了）
+- [x] `app/containerlab/lab.sh render` の表示をイメージ名にする（`REGISTRY` が無い手元では「イメージは ?」と出る。2026-10-08 に 006 のセルフレビューの Nit） → 009-local-compose-followups（2026-10-08 完了）
+- [x] `ops/check.sh` の 3 で追跡している `.sh` を全部 `bash -n` する（いまは並べた 19 本だけで、`ops/sync-graph.sh`・`app/telegraf/telegraf.sh`・`app/splunk/entrypoint.sh`・`app/grafana/start.sh`・`app/neo4j/entrypoint.sh`・`oss/compose/check-*.sh` の 8 本が漏れる（`oss/compose/` の 3 本は 2026-10-08 に消えたので、いまは 5 本）。テストは本体の `set -e` を前提にしていて、`bash -n a b` の行が後から足されても見ない。2026-10-08 に 006 の Round 2 のセルフレビュー N1 / N2 / N5） → 009-local-compose-followups（2026-10-08 完了）
+- [x] 手元の `check.sh` の Splunk の理由を重複なし・長さの上限つき・1 行にする（同じ `ERROR Unauthorized` が 30 件なら 598 字になり、text の改行で NG の行が割れる。2026-10-08 に 006 の Round 2 のセルフレビュー N4） → 009-local-compose-followups（2026-10-08 完了）
 - [ ] 手元の `check.sh` の Splunk の判定を本物の応答で確かめる（401 の本文の形と、件数があるのに messages に ERROR が混ざる応答が無いか。Mac ではイメージが amd64 だけで起動していない。2026-10-08 に 006 の Round 2 のセルフレビュー U1 / U2。未確認）
 - [x] `oss/compose` と `docker/compose` の kafka-ui の 18080 を分ける（同じ機械で並べて上げるなら。いまは並べる想定は無く、`oss/compose` を残すか消すかは 007 で決める。2026-10-08 に 006 の cold review Round 2 の Nit 2）（2026-10-08 完了。`oss/compose` を消したので、ぶつかる相手が無くなった。chore/remove-oss-compose）
-- [ ] 手元の compose の telegraf / spark の `restart: on-failure` に回数の上限を付ける（`docker compose` を直に打って `SNMP_AGENTS` が空だと再起動を繰り返す。2026-10-08 に 006 の cold review Round 2 の Nit 3） → 009-local-compose-followups
-- [ ] `app/containerlab/lab.sh` の `hint` と `failover` の案内を実行で確かめるテストを足す（いまは正規表現で文言があるかだけ。`forward` には偽の iptables と sudo の実行の検査がある。2026-10-08 に 006 の cold review Round 2 の Nit 4） → 009-local-compose-followups
+- [x] 手元の compose の telegraf / spark の `restart: on-failure` に回数の上限を付ける（`docker compose` を直に打って `SNMP_AGENTS` が空だと再起動を繰り返す。2026-10-08 に 006 の cold review Round 2 の Nit 3） → 009-local-compose-followups（2026-10-08 完了）
+- [x] `app/containerlab/lab.sh` の `hint` と `failover` の案内を実行で確かめるテストを足す（いまは正規表現で文言があるかだけ。`forward` には偽の iptables と sudo の実行の検査がある。2026-10-08 に 006 の cold review Round 2 の Nit 4） → 009-local-compose-followups（2026-10-08 完了）
 - [x] `ops/down-common.sh` が Runtime の ENI を探す VPC を state から引く（`destroy_base_core` の 115〜116 行目が `describe-vpcs --filters Name=tag:Name` の `Vpcs[0]` を取るので、同じ名前の VPC が 2 つあると古い方を引き、Runtime の ENI を見落として base/core を全部消しにいく。2026-10-08 の OSS 版の AWS 検証では SG の削除の待ちを 3 回繰り返して rc=1、1 時間 41 分かかった。`docs/verification/20261008-oss-aws.md` の「不具合」5）（2026-10-08 完了。fix/oss-ops-vpc-tty。state の aws_vpc.this を先に読み、タグで引くときは全部の VPC を見る。AWS では未確認）
 - [x] `oss/ops/roll-nodes.sh` を端末が無くても動くようにする（`aws ecs execute-command --interactive` が標準入力が端末でないと `Cannot perform start session: EOF` で切れ、`roll_health.py` は 5 分待って「入れ替える前から健全でない」で止まる。`[ -t 0 ]` を見て `script -q /dev/null` で包むか、案内して止める。docs の「Session Manager plugin が要る」に端末が要ることも足す。2026-10-08 の OSS 版の AWS 検証の「不具合」1 と「docs のずれ」5）（2026-10-08 完了。fix/oss-ops-vpc-tty。端末が無ければ script で疑似端末を付け、打てなければ案内して止まる。Linux の形は AWS では未確認）
 - [x] Neo4j を起こし直したあとの戻し方を 2 段で docs に書く（`ops/sync-graph.sh --oss` は物理層と IP 層を戻すが変更履歴は 0 件のままで、Nautobot の Job「Telegraf と Neptune に同期」を打って戻った。`ops/sync-graph.sh` の 10〜11 行目と `docs/oss-variant.md`。2026-10-08 の OSS 版の AWS 検証の「不具合」2 と「docs のずれ」4）（2026-10-08 完了。docs/aws-verification-followups）
@@ -60,7 +60,49 @@
 - [x] Nautobot の JobHook の最初の変更履歴の detail を変わった値だけにする（prechange が無い機器の 1 件目が全部の項目を `asset_tag: - → -` と並べる。2026-10-08 の OSS 版の AWS 検証の「不具合」4）（2026-10-08 完了。fix/oss-ecr-outputs-nautobot-job。`nb_map.change_detail` が作成と削除は「作成」「削除」だけ、変更前の値が無い update は項目を並べず「変更前の値が無い…」と今の status を出す。AWS では未確認）
 - [x] Nautobot の Job の名前と `root_cause` の source の Neptune を OSS 版では Neo4j にする（Job「Telegraf と Neptune に同期」が OSS 版では Neo4j に書き、`root_cause` の source も `'neptune'` のまま。2026-10-08 の OSS 版の AWS 検証の「docs のずれ」3）（2026-10-08 完了。fix/oss-ecr-outputs-nautobot-job。名前は両方の版で「Telegraf とグラフ DB に同期」「変更のたびに Telegraf とグラフ DB に同期」にし、説明に書き先（Neptune / Neo4j）を出す。`root_cause` と `topology_graph` の source は `graph.BACKEND`（`neo4j` / `neo4j-empty`）。JobHook と bootstrap はクラスの場所で引くので外れない。AWS では未確認）
 - [x] state を失ったときの VPC と ECR の扱いを docs に書く（state は up.sh を打った worktree にしか無く、worktree を消すと ECR は import が要り VPC は使い回されず新しく作られて溜まる。上の「消えたことの確認と残った VPC の扱いを docs に合わせる」と一緒に直す。2026-10-08 の OSS 版の AWS 検証の「docs のずれ」6）（2026-10-08 完了。docs/aws-verification-followups）
-- [ ] TRex で後段（Telegraf → MSK → Spark → 格納先、アラート → SNS → graph の Lambda）に負荷をかける準備をする（試験そのものはまだやらない。lab の EC2 に TRex を置き、撃つプロファイルと測り方を用意して、やると決めたときにすぐ回せる状態にする。trap / syslog を UDP で撃つ。gNMI / metrics は Kafka の producer で別に流す。TRex は x86 なので lab の EC2 を x86 にする。arm64 に揃える必要は無い） → 011-lab-isis-trex-x86
+- [x] TRex で後段（Telegraf → MSK → Spark → 格納先、アラート → SNS → graph の Lambda）に負荷をかける準備をする（試験そのものはまだやらない。lab の EC2 に TRex を置き、撃つプロファイルと測り方を用意して、やると決めたときにすぐ回せる状態にする。trap / syslog を UDP で撃つ。gNMI / metrics は Kafka の producer で別に流す。TRex は x86 なので lab の EC2 を x86 にする。arm64 に揃える必要は無い） → 011-lab-isis-trex-x86（2026-10-09 完了。AWS では未確認）
 - [ ] `app/containerlab/lab.sh` と `app/telegraf/telegraf.sh` に残る `$VAR` の直後に全角文字が続く所を `${VAR}` にする（Mac の bash 3.2 だけ 1 バイト食う。2026-10-08 に 009 の実装で見つけた）
 - [ ] `app/containerlab/lab.sh` の failover の `route()` が IS-IS の経路が無いと `set -e` と `pipefail` で止まる（「(IS-IS の経路が無い)」の分岐に来ない。2026-10-08 に 009 の実装で見つけた）
 - [ ] flows（GoFlow2）の Grafana のダッシュボードを作る（012 は Kafka と格納先まで。画面は無い）
+- [x] Grafana のプラグインの版を `docker/images/grafana/Dockerfile` で固定する（opensearch 2.34.4、amazonprometheus。いまは最新を取るので、プラグインの更新で trap ルールの式の上限（008 の A）が変わっても気付けない。2026-10-08 に 008 の実装で見つけた） → 008-aws-verification-bugs（2026-10-08 完了）
+- [x] Grafana のアラートルールの Error 状態を ops で検出する（`execErrState: KeepLast` で `Normal (Error)` が隠れ、008 の A の不具合は画面を見るまで分からなかった。ルールの API の `alerts[].state` か、ルールのモデルを `/api/ds/query` に POST して HTTP 200 を見る。2026-10-08 に 008 の実装で見つけた） → 008-aws-verification-bugs（2026-10-08 完了。fix/grafana-plugin-pin-error-state の Round 3。`ops/check-grafana.sh` と `ops/grafana_rules_check.py`。AWS では未確認）
+- [ ] 手元の `check.sh` の Kafka のメッセージ数の判定で `messagesCount` が無い・null の応答を NG の理由つきで扱う（いまは Python の KeyError / TypeError で NG に倒れ、理由が読めない。2026-10-08 に 009 の cold review Round 1 の Nit 3）
+- [ ] 手元の `check.sh` の Telegraf の health の宛先を `up.sh` が決めた bind に合わせる（いまは `check.sh` を打った時点で 203.0.113.1 の有無を見直すので、`lab.sh down` のあとは 127.0.0.1 に打って案内が合わない。2026-10-08 に 009 の cold review Round 2 の Nit 2）
+- [x] `IaC/terraform/aws-managed/base/ecr/outputs.tf` の `kafka_ui_repository_url` の description「pipeline/stream runs it on ECS.」を Web の EC2 の Docker が pull する形に直す（2026-10-08 に 010 の cold review の Nit 3） → 014-kafbat-ui-followups（2026-10-09 完了。AWS では未確認）
+- [x] Web の EC2 の user_data で Docker の `dnf install` / `systemctl enable --now docker` が落ちても Gradio の設定（`aws s3 sync`）まで進むようにする（いまは `set -e` で Gradio より前に止まる。2026-10-08 に 010 のセルフレビューの Nit 5 と cold review の Nit 4） → 014-kafbat-ui-followups（2026-10-09 完了。AWS では未確認）
+- [x] `docs/deploy.md` の 010 より前の環境の注意に、Fargate の kafka_ui が動いたままだと base/core の SG の削除が DependencyViolation で止まることを足す（2026-10-08 に 010 の cold review の Nit 5） → 014-kafbat-ui-followups（2026-10-09 完了。AWS では未確認）
+- [x] Kafbat UI の SSM の image を変えたときに Web の EC2 のコンテナを入れ替える手順を `docs/troubleshooting.md` に書く（いまはパスワードを変えたときの restart しか無く、起動時に 1 回読むだけなので restart か reboot まで旧版のまま。2026-10-08 に 010 のセルフレビューの Nit 4） → 014-kafbat-ui-followups（2026-10-09 完了。AWS では未確認）
+- [x] `SKIP_STREAM=1` のとき Web の EC2 の Kafbat UI の systemd ユニットが 30 秒ごとに再試行し続けるのを止める手段を作る（exit 75 の文言も AccessDenied やエンドポイント不達で「stream がまだ無い」と言う。2026-10-08 に 010 のセルフレビューの Nit 8） → 014-kafbat-ui-followups（2026-10-09 完了。AWS では未確認）
+- [ ] `lab graph` の案内の `sudo systemctl status <prefix>-lab-graph` を `journalctl -u` にする（`systemd-run --collect` なので containerlab graph がすぐ落ちると一時ユニットが消え「could not be found」になる。起動の成否を見ずに案内を出す。2026-10-08 に 010 のセルフレビューの Nit 7）
+- [ ] `ops/up.sh` の stream の ECR エンドポイントのコメントに Web の EC2 の Kafbat UI の pull も使うことを足す（いまは Telegraf だけ。2026-10-08 に 010 のセルフレビューの Nit 10） → 016-kafbat-ui-nits
+- [x] Kafbat UI のクラスター名を `<prefix>-stream` から `<prefix>` にしたことを `docs/verification/20261008-oss-aws.md` の手筋（`kafka-ui.<名前空間>:8080` と `efukuda-nwc-oss-stream`）に注記する（REST の `/api/clusters/{name}/…` の識別子でもある。2026-10-08 に 010 のセルフレビューの Nit 6） → 014-kafbat-ui-followups（2026-10-09 完了。AWS では未確認）
+- [ ] `ops/grafana_rules_check.py` が rules API のページ分け（`group_limit` / `groupNextToken`）を追う（いまは 1 ページだけ見るので、見ていないルールのエラーで OK になる。13.2.2 では引数なしで全部返った。2026-10-08 に 008 (b) のセルフレビューの Nit N2）
+- [ ] `ops/check-grafana.sh` の未確認（401・届かない）と NG と die の終了コードを分け、未確認のときは「Failed to evaluate rule」のログを案内しない（2026-10-08 に 008 (b) のセルフレビューの Nit N4）
+- [ ] `ops/up.sh` と `oss/ops/up.sh` の 9-2 で `tf output` が失敗したら空の引数で `aws ecs wait` に進まず止める（いまは「10 分たっても安定しない」と出る。2026-10-08 に 008 (b) のセルフレビューの Nit N5）
+- [ ] `ops/up-common.sh` の `ssm_run` の読み直しに全体の締め切りを付ける（失敗が全部 Pending 扱いで待ち続ける。前からある。2026-10-08 に 008 (b) のセルフレビューの Nit N6）
+- [ ] 前の回の analytics が残っている回（`PIPELINE=0` など）でも 9-2 の Grafana のルールの検査を打つ（いまは analytics を作った回しか打たない。2026-10-08 に 008 (b) のセルフレビューの Nit N7）
+- [ ] 初回デプロイの最後のポートフォワーディングの時点で Kafbat UI がまだ上がっていないことがあるのを `docs/deploy.md` に書く（8-3 の restart の直後に起きる。2026-10-09 に 014 のセルフレビューの Nit 4） → 016-kafbat-ui-nits
+- [ ] Kafbat UI のユニットが 75 で failed のまま残ると `systemctl is-system-running` が degraded になるのを AWS で測る（`SuccessExitStatus=75` にする案。未計測。2026-10-09 に 014 のセルフレビューの Nit 5）
+- [ ] `SKIP_STREAM=1` で立てたあと terraform だけで stream を上げたとき admin-password の SSM が無いのを埋める（2026-10-09 に 014 のセルフレビューの Nit 6） → 016-kafbat-ui-nits
+- [ ] reboot のときに Kafbat UI の 69 の待ちが `enable --now` を最大 30 秒止めるのを AWS で測る（未計測。2026-10-09 に 014 のセルフレビューの Nit 8）
+- [ ] `tests/test_stream.py` の 8-3 / 7-5 の検査が行の位置（`_s75.split("\n")[2]`）と完全一致の文字列に依り、`.index()` の ValueError で残りの検査が止まるのを直す（変異 5 個は ValueError での検出。2026-10-09 に 014 のセルフレビューの Nit 9 と cold review の Nit 5） → 016-kafbat-ui-nits
+- [ ] `docs/troubleshooting.md` の Kafbat UI の行に `daemon-reload` / `enable` の失敗の形を足し、長すぎる行を小節に分ける（2026-10-09 に 014 のセルフレビューの Nit 10 と cold review の Nit 6） → 016-kafbat-ui-nits
+- [ ] `tests/test_stream.py` に、描いた user_data（`_krendered`）で Web のユニットの `Wants=x-nwc-poc-kafka-ui.service` を見る行を足す（いまはテンプレート `_wunit` だけ見る。2026-10-09 に 014 の cold review の Nit 1） → 016-kafbat-ui-nits
+- [x] 014 の design.md の変更対象に `docs/architecture/resources/web-ec2.md` と `ssm-parameter-store.md` を足す（実装で直したが一覧に無い。2026-10-09 に 014 の cold review の Nit 2）（2026-10-09 完了。PM が design.md に足した。9667bcc）
+- [ ] `docs/deploy.md` に、user_data を変えたので立てたままの環境は次の base/core の apply で Web の EC2 が作り直される（`web.tf:101` の `user_data_replace_on_change`。インスタンス ID が変わるので `start_session_command` を配り直す）ことを書く（2026-10-09 に 014 の cold review の Nit 3） → 016-kafbat-ui-nits
+- [ ] Kafbat UI のユニットの `RestartPreventExitStatus=75` が `exec docker run` したコンテナの 75 にも効くのを docs か設定で扱う（Kafbat UI が 75 で終わる筋は知られていない。2026-10-09 に 014 の cold review の Nit 4） → 016-kafbat-ui-nits
+- [ ] heal-main と孤立の同点を解く（spine 2 台とも落とすと `rules.impact` が最大の成分を選ぶので newly_isolated に 3 台しか出ず、heal-main の what-if が danger のまま。`app/temporal/rules.py` と `app/agentcore/topology.py` の両方とテスト。2026-10-09 に 011 のセルフレビュー S1）
+- [ ] `docs/workflow.md:30` と `app/temporal/rules.py:76` と `docs/architecture/resources/temporal.md:102` の文言を lab の IS-IS 構成に合わせる（互いに食い違う。2026-10-09 に 011 のセルフレビュー S2）
+- [ ] `docker/compose/lab.sh` の down / check でも `TREX_IMAGE` を要らなくするか、README に「既存の `.env` に足す」を書く（2026-10-09 に 011 のセルフレビュー N2）
+- [ ] lag / ES の名残を消す（Telegraf の `evpn_es` の購読、`lab_lag_speed`、`nb_map` の分岐、ダッシュボードの文言。lab に ES が無い。2026-10-09 に 011 のセルフレビュー N3 と cold review の Nit）
+- [ ] 使われない multitool のイメージを lab から外す（2026-10-09 に 011 のセルフレビュー N4）
+- [ ] 011 の design.md:27 の `ROLE_ORDER` の記述を `app/agentcore/topology.py` を正本にして揃える（2026-10-09 に 011 のセルフレビュー N5）
+- [ ] `kafka_load.sh` の gnmi の peer の固定を lab の構成から取る（2026-10-09 に 011 のセルフレビュー N6）
+- [ ] `TELEGRAF_TAG` が Dockerfile のコメントの変更でも変わり、次の `up.sh` がイメージを作り直すのを docs に書くか、ハッシュの入力を絞る（2026-10-09 に 011 のセルフレビュー N7）
+- [ ] `app/containerlab/lab.sh` の `${TREX_IMAGE:?}` を見張るテストを足す（2026-10-09 に 011 のセルフレビュー N8）
+- [ ] TRex 2.41 が af_packet で起動することを AWS で確かめる（m6i.xlarge。always-on のガード `allowed_instance_types` に m6i.xlarge を足す。2026-10-09 に 011 のセルフレビュー N9。未確認）
+- [ ] ECR の lab の版の `-amd64` の付け方を docs に書く（2026-10-09 に 011 のセルフレビュー N10）
+- [ ] デバッグ用の Telegraf の ECR タグにも `-$LAB_ARCH` を付ける（`ops/lab-debug.sh:141-145`。lab の 3 イメージと同じ仕組みで守る。2026-10-09 に 011 の cold review Round 1 の Nit）
+- [ ] `IaC/terraform/aws-managed/base/ecr/outputs.tf:7/12/17` の説明のタグ（`with tag 26.7.2` 等）を実際に置く `*_ECR_TAG`（`26.7.2-amd64` 等）に合わせる（2026-10-09 に 011 の cold review Round 1 の Nit）
+- [ ] `app/containerlab/lab.sh` の `trex_cfg` / `edge_ports` / `trex/stl/*.py` をテストで見張る（port_limit、interfaces、default_gw が組の相手。2026-10-09 に 011 の cold review Round 1 の Nit）
+- [ ] `upload_lab` の除外に手元の containerlab が作る `app/containerlab/clab-*/` を足す（`ops/lab-common.sh:105`。WSL の compose と AWS を同じチェックアウトから打つと、lab の TLS の秘密鍵を含む `clab-splab/` が S3 に上がるか、root だけが読めるファイルで sync が落ちる。`outputs.tf` の `upload_lab_command` と test_lab_debug の期待集合にも足す。2026-10-09 に 011 の cold review Round 2 の Nit 1）

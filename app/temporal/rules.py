@@ -40,7 +40,7 @@ def build_prompt(anomaly: dict) -> str:
         f"異常: device_id={anomaly.get('device_id', '')} kind={anomaly.get('kind', '')} target={anomaly.get('target', '')} "
         f"detail={anomaly.get('detail', '')} first_seen_jst={jst(anomaly.get('first_seen'))}\n"
         '返す形: {"cause": "原因（日本語 1〜2 文）", "action": "heal-main | check | none", "reason": "その処置を選んだ理由"}\n'
-        "action は、アクセス側 Leaf dc1-leaf-01 の ethernet-1/1（dc1-spine-01 との fabric）が落ちている（link_down か、その上の isis_down）なら heal-main、状況を見るだけでよいなら check、"
+        "action は、Leaf dc1-a-leaf-01 の ethernet-1/1（dc1-spine-01 との fabric）が落ちている（link_down か、その上の isis_down）なら heal-main、状況を見るだけでよいなら check、"
         "人が別の手で直すべきなら none。"
     )
 
@@ -74,19 +74,25 @@ def normalize_action(action: str) -> tuple[str, str]:
 # ---------------------------------------------------------------- 事前チェック（処置を打つ前に、孤立と冗長切れを見る。2026-10-04）
 # 処置がトポロジをどう変えるか（app/containerlab/lab.sh のサブコマンドの中身）。処置を ALLOWED_ACTIONS に足すときはここにも足す（無い処置は「確認できず」になる）。
 # いまの 2 つは回線を上げるか見るだけなので、孤立の警告は出ない。落とす処置（機器の再起動・回線の切り離し）を足したときに効く
-ACTION_CHANGES = {"heal-main": [{"op": "link_up", "target": "dc1-leaf-01#ethernet-1/1"}], "check": []}
+ACTION_CHANGES = {"heal-main": [{"op": "link_up", "target": "dc1-a-leaf-01#ethernet-1/1"}], "check": []}
 PRECHECK_JA = {"ok": "問題なし", "warn": "注意", "danger": "危険", "unknown": "確認できず"}
+# 端の役割（つながりの中継にしない機器）。app/agentcore/topology.py の END_ROLES と同じ
+END_ROLES = ("trex",)
 
 
 def impact(devices: list, links: list, changes: list) -> dict:
     """回線・機器を落とした / 上げたと仮定して、孤立する機器と冗長が切れる機器を出す（修復を打つ前の事前チェック）。
-    devices = [{device_id, status}]、links = [{a, a_if, b, b_if, status}]、changes = [{op, target}]。
+    devices = [{device_id, status, role}]、links = [{a, a_if, b, b_if, status}]、changes = [{op, target}]。
     op は link_down / link_up（target = <機器>#<IF>。どちらの端でもよい）か device_down / device_up（target = 機器名）。
     つながりは DOWN でない回線と機器だけで見て、いちばん大きいかたまりに入っていない機器を「孤立」とする。
+    role が END_ROLES の機器（TRex。4 台の leaf につながるが転送しない）は端として扱い、ほかの機器どうしをつなぐ中継にしない。
+    端は、つながる相手がかたまりに入っていればかたまりに入る。冗長の本数も、端でない機器は端への回線を数えない（leaf は Spine への本数）。
+    role が無ければ全部を中継として見る（ワーカーの awsio.read_topology も role を読んで渡す）。
     app/agentcore/topology.py と app/temporal/rules.py に同じものを置く（ワーカーのイメージには app/agentcore/ が入らない。tests/test_workflow.py が一致を検査）"""
     dev_down = {d["device_id"] for d in devices if (d.get("status") or "UP") == "DOWN"}
     link_down = {n for n, l in enumerate(links) if (l.get("status") or "UP") == "DOWN"}
     ids = {d["device_id"] for d in devices}
+    ends = {d["device_id"] for d in devices if d.get("role") in END_ROLES}
 
     def view(dd: set, ld: set):
         adj = {i: [] for i in sorted(ids - dd)}
@@ -96,18 +102,19 @@ def impact(devices: list, links: list, changes: list) -> dict:
                 adj[l["b"]].append(l["a"])
         seen, main = set(), set()
         for start in adj:
-            if start in seen:
+            if start in seen or start in ends:
                 continue
             comp, stack = {start}, [start]
             while stack:
                 for o in adj[stack.pop()]:
-                    if o not in comp:
+                    if o not in comp and o not in ends:
                         comp.add(o)
                         stack.append(o)
             seen |= comp
             if len(comp) > len(main):
                 main = comp
-        return set(adj) - main, {i: len(v) for i, v in adj.items()}
+        main |= {i for i in ends & set(adj) if any(o in main for o in adj[i])}
+        return set(adj) - main, {i: sum(1 for o in v if i in ends or o not in ends) for i, v in adj.items()}
 
     iso0, deg0 = view(dev_down, link_down)
     dd, ld, unknown, targets = set(dev_down), set(link_down), [], set()
@@ -167,7 +174,7 @@ def precheck(action: str, devices: list, links: list) -> dict:
 # ---------------------------------------------------------------- アラート（Grafana / Splunk → SNS → SQS）
 # SNS に publish する JSON は送り手（app/grafana/provisioning/alerting と app/splunk/netops_alerts）で形を揃えてある:
 #   {"source": "grafana" | "splunk",
-#    "alerts": [{"status": "firing" | "resolved", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1",
+#    "alerts": [{"status": "firing" | "resolved", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1",
 #                "detail": "ethernet-1/1 is down", "starts_at": 1790000000}]}
 # 同じ形を app/graph/status_handler.py（トポロジの status を書く Lambda）も読む。形を変えるときは 4 か所を一緒に変える
 ALERT_STATUSES = ("firing", "resolved")

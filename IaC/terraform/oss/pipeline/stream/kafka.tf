@@ -7,8 +7,10 @@
 # apache/kafka を 3 台。どの台も broker と controller を兼ねる（KRaft の combined。ZooKeeper は無い）。
 # 台ごとに ECS のサービスを分ける（kafka-1〜3）。どの台も自分の番号（KAFKA_NODE_ID）と自分の EFS のアクセスポイント（/kafka-N）を持つ。
 # 1 つのサービスで 3 タスクにすると、番号と置き場をタスクごとに固定できない。台 N はサブネットの N 番目（a / b / c。AZ ごとに 1 台）。
-# 名前は Cloud Map の kafka-N.<接頭辞>-stream.internal（名前空間は kafka_ui.tf）。認証は無い（クライアントは PLAINTEXT の 9092、controller は 9093）。
-# 届くのは SG で絞った相手だけ（IaC/terraform/aws-managed/base/core の oss.tf の通信の表: Telegraf の 2 つ・syslog-ng・GoFlow2・Spark・Kafbat UI → 9092、Kafka どうし 9092〜9093、Kafka → EFS 2049）。
+# 名前は Cloud Map の kafka-N.<接頭辞>-stream.internal（名前空間もこのファイル。cycle 010 で Kafbat UI が Web の EC2 に移り、マネージド版から名前空間が無くなった）。
+# 認証は無い（クライアントは PLAINTEXT の 9092、controller は 9093）。
+# 届くのは SG で絞った相手だけ（IaC/terraform/aws-managed/base/core の oss.tf の通信の表: Telegraf の 2 つ・syslog-ng・GoFlow2・Spark・Web の EC2（Kafbat UI）→ 9092、
+# Kafka どうし 9092〜9093、Kafka → EFS 2049）。
 # イメージは apache/kafka を ECR の <接頭辞>-kafka に写したもの（閉域で Docker Hub に届かない。OSS 版の ops/up.sh が写す）。
 # CLUSTER_ID は 3 台で同じ値で、OSS 版の ops/up.sh が 1 回だけ作って SSM の /<接頭辞>/kafka/cluster-id（String か SecureString）に置く。
 # ECS の secrets で渡すので、Terraform の state には入らない。
@@ -47,6 +49,8 @@ variable "kafka_task_memory" {
 locals {
   kafka_image     = "${try(data.terraform_remote_state.ecr.outputs.oss_repository_urls["kafka"], "")}:${var.kafka_image_tag}"
   kafka_log_group = "/ecs/${local.name_prefix}-kafka"
+  # Cloud Map の名前空間（Kafka の kafka-1〜3 が名前を登録する）
+  stream_service_namespace = "${local.name_prefix}-stream.internal"
   # 土台（IaC/terraform/aws-managed/base/core の oss.tf）の SG と EFS。マネージド版の土台や古い state では無いので try にして、precondition で止める
   kafka_sg_id         = try(data.terraform_remote_state.main.outputs.security_group_ids["kafka"], "")
   efs_file_system_id  = try(data.terraform_remote_state.main.outputs.efs_file_system_id, "")
@@ -92,7 +96,6 @@ locals {
   kafka_bootstrap_brokers = join(",", [for n, h in local.kafka_hosts : "${h}:9092"])
   # Kafbat UI はプロトコルで選ぶ（kafka_ui.tf）。認証が無いので PLAINTEXT だけ（oss.auto.tfvars の kafka_ui_security_protocol）
   kafka_bootstrap_by_protocol = { PLAINTEXT = local.kafka_bootstrap_brokers }
-  kafka_cluster_name          = "${local.name_prefix}-stream"
   # syslog-ng と GoFlow2（collectors.tf）の口。マネージド版の SCRAM（secret・KMS・association）は OSS 版には無く、認証なしの 9092 に書く
   kafka_collector_brokers              = local.kafka_bootstrap_brokers
   kafka_collector_auth                 = "none"
@@ -102,21 +105,21 @@ locals {
   kafka_client_environment = [{ name = "KAFKA_AUTH", value = "none" }]
   # Telegraf のタスクロールに足す Kafka の権限。認証が無いので無い
   telegraf_kafka_statements = []
-  # Kafbat UI のタスクロールの権限。認証が無いので要るものは無いが、ポリシーは空にできないので MSK を拒む Deny だけ置く
+  # Kafbat UI が動く Web の EC2 のロールに足す権限（kafka_ui.tf）。認証が無いので要るものは無いが、ポリシーは空にできないので MSK を拒む Deny だけ置く
   kafka_ui_kafka_statements = [{
     Sid      = "NoMsk"
     Effect   = "Deny"
     Action   = ["kafka-cluster:*"]
     Resource = "*"
   }]
+  # IAM ロールと Cloud Map の名前空間の description（名前空間の description は変えると作り直しになるので、cycle 010 より前のまま）
   kafka_descriptions = {
     namespace     = "Kafka and Kafbat UI of ${local.name_prefix} (IaC/terraform/oss/pipeline/stream)"
     telegraf_task = "Telegraf task - write SNMP / gNMI / trap to Kafka (PLAINTEXT, no IAM), ECS Exec"
-    kafka_ui_task = "Kafbat UI task - browse the Kafka cluster (PLAINTEXT, no IAM permissions)"
   }
 }
 
-# Telegraf・Kafbat UI と分ける（aws ecs list-services で Kafka の 3 台だけが見える）
+# Telegraf と分ける（aws ecs list-services で Kafka の 3 台だけが見える）
 resource "aws_ecs_cluster" "kafka" {
   name = "${local.name_prefix}-kafka"
 
@@ -129,6 +132,12 @@ resource "aws_ecs_cluster" "kafka" {
 resource "aws_cloudwatch_log_group" "kafka" {
   name              = local.kafka_log_group
   retention_in_days = var.log_retention_days
+}
+
+resource "aws_service_discovery_private_dns_namespace" "stream" {
+  name        = local.stream_service_namespace
+  description = local.kafka_descriptions.namespace
+  vpc         = local.vpc_id
 }
 
 resource "aws_service_discovery_service" "kafka" {

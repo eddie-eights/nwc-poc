@@ -61,23 +61,45 @@ def sh_const(src, name):
     return m.group(1).strip('"') if m else None
 
 # ---- 版と既定値
-for cfn_name, tf_name, sh_name in [("ContainerlabVersion", "containerlab_version", "CONTAINERLAB_VERSION"),
-                                    ("SrlinuxImageTag", "srlinux_image_tag", "SRLINUX_TAG"),
-                                    ("MultitoolImageTag", "multitool_image_tag", "MULTITOOL_TAG")]:
-    check(f"{cfn_name} の既定値 = IaC/terraform/aws-managed/pipeline/lab の {tf_name} = ops/lab-common.sh の {sh_name}",
-          str(params[cfn_name]["Default"]) == tf_default(tf_name) == sh_const(common, sh_name) is not None)
+check("ContainerlabVersion の既定値 = IaC/terraform/aws-managed/pipeline/lab の containerlab_version = ops/lab-common.sh の CONTAINERLAB_VERSION",
+      str(params["ContainerlabVersion"]["Default"]) == tf_default("containerlab_version") == sh_const(common, "CONTAINERLAB_VERSION") is not None)
+# lab のイメージの ECR のタグは上流の版 + -amd64（2026-10-08 より前の arm64 の写しが KEEP_ECR=1 で同じ名前のまま残っていても、写しを飛ばさない）
+LAB_IMAGES = [("SRLINUX", "srlinux", "SrlinuxImageTag", "srlinux_image_tag"), ("MULTITOOL", "multitool", "MultitoolImageTag", "multitool_image_tag"),
+              ("TREX", "trex", "TrexImageTag", "trex_image_tag")]
+check("ops/lab-common.sh: lab の EC2 のアーキ LAB_ARCH は amd64 で、ECR のタグ *_ECR_TAG は上流の版 *_TAG の後ろに -$LAB_ARCH",
+      sh_const(common, "LAB_ARCH") == "amd64"
+      and all(sh_const(common, f"{n}_ECR_TAG") == f"${n}_TAG-$LAB_ARCH" for n, *_ in LAB_IMAGES))
+for n, repo, cfn_name, tf_name in LAB_IMAGES:
+    check(f"{cfn_name} の既定値 = IaC/terraform/aws-managed/pipeline/lab の {tf_name} = ops/lab-common.sh の {n}_TAG + -amd64（上流の版そのままでない）",
+          str(params[cfn_name]["Default"]) == tf_default(tf_name) == f"{sh_const(common, n + '_TAG')}-amd64"
+          and sh_const(common, n + "_TAG") not in (None, tf_default(tf_name)))
+_oss_up = read("oss", "ops", "up.sh")
+_ecr_has_lab = [(f, m) for f, s in (("ops/lab-common.sh", common), ("ops/up.sh", up), ("oss/ops/up.sh", _oss_up), ("ops/lab-debug.sh", dbg))
+                for m in re.findall(r'ecr_has "\$\w+-lab-(\w+)" "\$(\w+)"', s)]
+check("ECR に lab のイメージがあるかは *_ECR_TAG で見る（lab-common.sh の mirror_lab_images、ops/up.sh、oss/ops/up.sh、ops/lab-debug.sh で 3 つずつ）",
+      sorted(_ecr_has_lab) == sorted((f, (repo, f"{n}_ECR_TAG")) for f in ("ops/lab-common.sh", "ops/up.sh", "oss/ops/up.sh", "ops/lab-debug.sh")
+                                     for n, repo, *_ in LAB_IMAGES))
+check("mirror_lab_images は上流の <upstream>:<版> を linux/$LAB_ARCH で引き、ECR の <接頭辞>-lab-<名前>:<*_ECR_TAG> に置く",
+      all(f'mirror_image "${n}_UPSTREAM:${n}_TAG" "$1/$2-lab-{repo}:${n}_ECR_TAG" "linux/$LAB_ARCH"' in common for n, repo, *_ in LAB_IMAGES))
+check("lab-debug.sh が CloudFormation に渡す lab のイメージのタグは *_ECR_TAG",
+      all(f'"{cfn_name}=${n}_ECR_TAG"' in dbg for n, _, cfn_name, _ in LAB_IMAGES))
+check("base/ecr の lab のリポジトリ（lab_repositories）は mirror_lab_images が置く先と同じ（ECR に無いリポジトリへは push できない）",
+      set(re.findall(r'"(\w+)"', re.search(r"lab_repositories\s*=\s*var\.create_lab_repositories \? toset\(\[([^\]]*)\]\)",
+                                           read("IaC", "terraform", "aws-managed", "base", "ecr", "main.tf")).group(1)))
+      == set(re.findall(r'"\$1/\$2-lab-([a-z]+):', common)) == {repo for _, repo, *_ in LAB_IMAGES})
 check("InstanceType / VolumeSize / ImageId / AutoStartLab の既定値は IaC/terraform/aws-managed/pipeline/lab と同じ",
       params["InstanceType"]["Default"] == tf_default("instance_type")
       and str(params["VolumeSize"]["Default"]) == tf_default("volume_size")
       and params["ImageId"]["Default"] == tf_default("ami_ssm_parameter")
       and params["AutoStartLab"]["Default"] == tf_default("auto_start_lab"))
-check("InstanceType の選べる値は terraform の検査と同じ（arm64 の t4g だけ）",
-      params["InstanceType"]["AllowedValues"] == re.findall(r'"(t4g\.\w+)"', re.search(r'contains\(\[([^\]]*)\], var\.instance_type\)', lab_vars).group(1)))
+check("InstanceType の選べる値は terraform の検査と同じ（x86_64 だけ。TRex のイメージが amd64 だけのため）",
+      params["InstanceType"]["AllowedValues"] == re.findall(r'"([a-z0-9]+\.\w+)"', re.search(r'contains\(\[([^\]]*)\], var\.instance_type\)', lab_vars).group(1)))
 check("ops/lab-common.sh の TELEGRAF_VERSION = docker/images/telegraf/Dockerfile の ARG の既定値",
       sh_const(common, "TELEGRAF_VERSION") == re.search(r"^ARG TELEGRAF_VERSION=(\S+)", read("docker", "images", "telegraf", "Dockerfile"), re.M).group(1))
 check("ops/up.sh と ops/lab-debug.sh は ops/lab-common.sh を source し、lab の版を自分では持たない",
       '. "$(dirname "$0")/lab-common.sh"' in up and '. "$(dirname "$0")/lab-common.sh"' in dbg
-      and not any(re.search(r"^%s=" % k, s, re.M) for k in ("SRLINUX_TAG", "MULTITOOL_TAG", "CONTAINERLAB_VERSION", "TELEGRAF_VERSION", "CONTAINERLAB_RPM") for s in (up, dbg))
+      and not any(re.search(r"^%s=" % k, s, re.M) for k in ("SRLINUX_TAG", "MULTITOOL_TAG", "TREX_TAG", "LAB_ARCH", "SRLINUX_ECR_TAG", "MULTITOOL_ECR_TAG", "TREX_ECR_TAG",
+                                                         "CONTAINERLAB_VERSION", "TELEGRAF_VERSION", "CONTAINERLAB_RPM") for s in (up, dbg))
       and not any(re.search(r"^(ecr_has|fetch|dir_tag)\(\)", s, re.M) for s in (up, dbg)))
 check("イメージの作り方（ミラー・Telegraf のビルド・app/containerlab/ の置き方）は lab-common.sh の関数を両方が呼ぶ",
       all(f in up for f in ("mirror_lab_images ", "build_telegraf ", "upload_lab ", "TELEGRAF_TAG=$(telegraf_tag)"))
@@ -87,7 +109,7 @@ check("イメージの作り方（ミラー・Telegraf のビルド・app/contai
 _pass = re.findall(r'"(\w+)=\$', dbg.split("--parameter-overrides")[1].split("--tags")[0])
 check("lab-debug.sh は既定値の無いパラメータと版を全部渡す（版は lab-common.sh から）",
       {k for k, v in params.items() if "Default" not in v} <= set(_pass)
-      and {"ContainerlabVersion", "SrlinuxImageTag", "MultitoolImageTag", "TelegrafImageTag", "CreateInstance", "NetworkPerimeter"} <= set(_pass)
+      and {"ContainerlabVersion", "SrlinuxImageTag", "MultitoolImageTag", "TrexImageTag", "TelegrafImageTag", "CreateInstance", "NetworkPerimeter"} <= set(_pass)
       and set(_pass) <= set(params))
 
 # ---- ロール（iam.tf と同じ Sid と Action）
@@ -103,8 +125,8 @@ check("ロールの Sid は iam.tf と同じ（TelegrafAddress は stream の NL
       set(stmts) == set(tf_sids) - {"TelegrafAddress"} and "ssm:GetParameter" not in str(stmts))
 check("Sid ごとの Action は iam.tf と同じ", all(as_list(stmts[s]["Action"]) == tf_actions(s) for s in stmts))
 repos = {k: v["Properties"] for k, v in res.items() if v["Type"] == "AWS::ECR::Repository"}
-check("ECR はこのスタックのリポジトリ 3 つ（lab の 2 つと Telegraf）だけを読む",
-      stmts["EcrPull"]["Resource"] == [{"Fn::GetAtt": f"{k}.Arn"} for k in ("SrlinuxRepository", "MultitoolRepository", "TelegrafRepository")])
+check("ECR はこのスタックのリポジトリ 4 つ（lab の 3 つと Telegraf）だけを読む",
+      stmts["EcrPull"]["Resource"] == [{"Fn::GetAtt": f"{k}.Arn"} for k in ("SrlinuxRepository", "MultitoolRepository", "TrexRepository", "TelegrafRepository")])
 check("S3 は このスタックのバケットの lab/ だけ（GetObject と prefix 付きの ListBucket）",
       stmts["S3Read"]["Resource"] == {"Fn::Sub": "${Bucket.Arn}/lab/*"} and stmts["S3List"]["Resource"] == {"Fn::GetAtt": "Bucket.Arn"}
       and stmts["S3List"]["Condition"] == {"StringLike": {"s3:prefix": "lab/*"}})
@@ -149,7 +171,7 @@ check("EC2 の SG は受信無し・送信 443 だけ。エンドポイントの
 check("ECR のリポジトリはタグを上書きできず、スタックを消すとイメージごと消える（base/ecr の <接頭辞>-lab-* と別の名前）",
       {k: r["RepositoryName"]["Fn::Sub"] for k, r in repos.items()}
       == {"SrlinuxRepository": "${NamePrefix}-debug-lab-srlinux", "MultitoolRepository": "${NamePrefix}-debug-lab-multitool",
-          "TelegrafRepository": "${NamePrefix}-debug-telegraf"}
+          "TrexRepository": "${NamePrefix}-debug-lab-trex", "TelegrafRepository": "${NamePrefix}-debug-telegraf"}
       and all(r["ImageTagMutability"] == "IMMUTABLE" and r["EmptyOnDelete"] is True and r["ImageScanningConfiguration"] == {"ScanOnPush": True}
               for r in repos.values()))
 _bkt = res["Bucket"]["Properties"]
@@ -160,7 +182,7 @@ check("バケットは <接頭辞>-lab-debug-<アカウント>で、公開を全
 check("lab-debug.sh のバケットとリポジトリの名前はテンプレートと同じ作り方（down は Outputs を読まずに空にできる）",
       'BUCKET="$PREFIX-lab-debug-$ACCOUNT_ID"' in dbg and 'REPO_PREFIX="$PREFIX-debug"' in dbg
       and cfn["Outputs"]["RepositoryPrefix"]["Value"]["Fn::Sub"].endswith("/${NamePrefix}-debug")
-      and 'mirror_lab_images "$REG" "$REPO_PREFIX"' in dbg and 'build_telegraf "$REG/$REPO_PREFIX-telegraf:$TELEGRAF_TAG"' in dbg)
+      and 'mirror_lab_images "$REG" "$REPO_PREFIX"' in dbg and 'build_telegraf "$REG/$REPO_PREFIX-telegraf:$TELEGRAF_TAG" linux/amd64' in dbg)
 check("EC2 は CreateInstance=true のときだけ作り、そのときは TelegrafImageTag が要る（Rules）。エンドポイントができてから起こす",
       res["Instance"]["Condition"] == "HasInstance" and cfn["Conditions"]["HasInstance"] == {"Fn::Equals": [{"Ref": "CreateInstance"}, "true"]}
       and cfn["Rules"]["TelegrafTagWithInstance"]["Assertions"][0]["Assert"] == {"Fn::Not": [{"Fn::Equals": [{"Ref": "TelegrafImageTag"}, ""]}]}
@@ -191,13 +213,14 @@ check("Project と owner のタグ（Terraform の default_tags と同じ）を 
 ud = inst["UserData"]["Fn::Base64"]["Fn::Sub"]
 TF2CFN = {"name_prefix": "NamePrefix", "region": "AWS::Region", "account_id": "AWS::AccountId", "bucket": "Bucket",
           "containerlab_version": "ContainerlabVersion", "srlinux_image_tag": "SrlinuxImageTag",
-          "multitool_image_tag": "MultitoolImageTag", "auto_start_lab": "AutoStartLab"}
+          "multitool_image_tag": "MultitoolImageTag", "trex_image_tag": "TrexImageTag", "auto_start_lab": "AutoStartLab"}
 def body(s):  # コメントと、2 つで違ってよい行（TELEGRAF_IMAGE と、案内のコマンド名）を外し、リポジトリの名前（-debug- が付く）をそろえる
     s = re.sub(r"\$\{(\w+)\}", lambda m: "${" + TF2CFN.get(m.group(1), m.group(1)) + "}", s).replace("${NamePrefix}-debug-lab-", "${NamePrefix}-lab-")
     return [l for l in s.strip().splitlines()
             if not (l.startswith("# ") or l.startswith("TELEGRAF_IMAGE=") or "is not in s3://" in l)]
 check("UserData は terraform の user_data（tftpl）と、変数の置き換えとリポジトリの名前と TELEGRAF_IMAGE の行のほかは同じ",
-      body(tftpl) == body(ud) and "/${NamePrefix}-debug-lab-srlinux:${SrlinuxImageTag}\n" in ud and "/${NamePrefix}-debug-lab-multitool:${MultitoolImageTag}\n" in ud)
+      body(tftpl) == body(ud) and "/${NamePrefix}-debug-lab-srlinux:${SrlinuxImageTag}\n" in ud and "/${NamePrefix}-debug-lab-multitool:${MultitoolImageTag}\n" in ud
+      and "/${NamePrefix}-debug-lab-trex:${TrexImageTag}\n" in ud)
 check("UserData の ${…} はパラメータか疑似パラメータかこのスタックのバケットだけ（シェルの変数は $LAB と書く）",
       all(v in params or v.startswith("AWS::") or v == "Bucket" for v in re.findall(r"\$\{([\w:]+)\}", ud)))
 check("TELEGRAF_IMAGE は lab の EC2 では空、デバッグ用の EC2 ではこのスタックのリポジトリ（<接頭辞>-debug-telegraf。stream と同じ作り方のイメージ）",
@@ -209,7 +232,21 @@ check("env のキーは 2 つの user_data と setup.sh の頭の一覧で同じ
 check("どちらも起動のたびに流し（cloud-config の always）、app/containerlab/ を置き直して setup.sh を exec する",
       all("- [scripts-user, always]" in s and "exec bash $LAB/src/setup.sh" in s and "aws s3 sync --delete" in s for s in (tftpl, ud)))
 check("lab/ の置き場は upload_lab の宛先と同じ（s3://<バケット>/lab/）",
-      'aws s3 sync --only-show-errors app/containerlab/ "s3://$1/lab/"' in common and "s3://${bucket}/lab/ $LAB/src/" in tftpl and "s3://${Bucket}/lab/ $LAB/src/" in ud)
+      'aws s3 sync --only-show-errors --delete app/containerlab/ "s3://$1/lab/"' in common and "s3://${bucket}/lab/ $LAB/src/" in tftpl and "s3://${Bucket}/lab/ $LAB/src/" in ud)
+# upload_lab の sync は --delete（手元で消した・改名した srlinux/*.cli を S3 に残さない。EC2 も --delete で読むので、残ると古い機器名が戻って lab logs が止まる）。
+# --exclude に当たるものは S3 側でも消さない（aws s3 sync の --delete の説明）。別の cp で置く rpm を除かないと、毎回 sync が消して cp が置き直す
+_ul = re.search(r"^upload_lab\(\) \{.*?^\}", common, re.M | re.S).group(0)
+_ul_sync = [l for l in _ul.splitlines() if l.strip().startswith("aws s3 sync ")]
+_ul_ex = lambda l: set(re.findall(r'--exclude "([^"]+)"', l))
+check("upload_lab の sync は --delete 付きで、除くのは描いた splab.clab.yml・__pycache__・.DS_Store と、下の cp で置く rpm（$CONTAINERLAB_RPM）",
+      len(_ul_sync) == 1 and " --delete " in _ul_sync[0]
+      and _ul_ex(_ul_sync[0]) == {"splab.clab.yml", "__pycache__/*", "*.DS_Store", "$CONTAINERLAB_RPM"}
+      and 'aws s3 cp --only-show-errors "$CONTAINERLAB_RPM" "s3://$1/lab/"' in _ul)
+_ulc = re.search(r'output "upload_lab_command" \{.*?value\s*=\s*"(.*)"\n', read("IaC", "terraform", "aws-managed", "pipeline", "lab", "outputs.tf"), re.S).group(1).replace('\\"', '"')
+check("lab の output upload_lab_command も同じ --delete と同じ除外（rpm は var.containerlab_version の名前）",
+      _ulc.startswith("aws s3 sync --delete app/containerlab/ ")
+      and _ul_ex(_ulc.split(" && ")[0]) == {"splab.clab.yml", "__pycache__/*", "*.DS_Store", "containerlab_${var.containerlab_version}_linux_amd64.rpm"}
+      and sh_const(common, "CONTAINERLAB_RPM") == "containerlab_${CONTAINERLAB_VERSION}_linux_amd64.rpm")
 check("setup.sh は TELEGRAF_IMAGE があるときだけ Telegraf のユニットを作り、無ければ消す（lab の EC2 には残さない）",
       re.search(r'if \[ -n "\$\{TELEGRAF_IMAGE:-\}" \]; then\n\s*cat > "\$TG_UNIT"[\s\S]*?ExecStart=\$SRC/lab\.sh telegraf run[\s\S]*?else\n\s*systemctl disable --now[\s\S]*?rm -f "\$TG_UNIT"', setup) is not None)
 check("setup.sh は lab のユニットを tftpl の前の版と同じ中身で作る（lab.sh up / down、20 分待つ）",
@@ -371,8 +408,8 @@ check("lab.sh telegraf run は同じイメージを host ネットワークで S
 check("lab.sh の forward は TELEGRAF_IMAGE があれば SSM の NLB を見ずに抜ける（デバッグ用の EC2 は stream を使わない。手元の compose の TELEGRAF_LOCAL=1 も同じ分岐。tests/test_local_compose.py が動かして見る）",
       re.search(r'forward\)\n\s*if local_telegraf; then[\s\S]*?exit 0\n\s*fi', lab_sh) is not None
       and 'local_telegraf() { [ -n "${TELEGRAF_IMAGE:-}" ] || ' in lab_sh)
-check("lab.sh pull は TELEGRAF_IMAGE があるときだけ Telegraf も引く",
-      'for i in "$SRLINUX_IMAGE" "$MULTITOOL_IMAGE" ${TELEGRAF_IMAGE:+"$TELEGRAF_IMAGE"}; do docker pull -q "$i"; done' in lab_sh)
+check("lab.sh pull は lab の 3 つ（SR Linux / multitool / TRex）を引き、TELEGRAF_IMAGE があるときだけ Telegraf も引く",
+      'for i in "$SRLINUX_IMAGE" "$MULTITOOL_IMAGE" "$TREX_IMAGE" ${TELEGRAF_IMAGE:+"$TELEGRAF_IMAGE"}; do docker pull -q "$i"; done' in lab_sh)
 
 # ---- ops: up.sh / down.sh とは別（2026-10-04 ユーザー決定）
 def _code(src):  # コメント行と echo の案内を外した、実際に動く行
@@ -439,6 +476,101 @@ check("dir_tag の呼び元 10 か所は、どれも docker build の -f と同�
       and all(m.group(1) in (None, m.group(2)) for m in _tag_df)
       and {m.group(2) for m in _tag_df} == {"telegraf", "splunk", "grafana", "nautobot", "spark", "neo4j", "syslog-ng"}
       and all(f"-f docker/images/{m.group(2)}/Dockerfile " in _builds for m in _tag_df))
+
+# ---- lab.sh graph / graph-stop（cycle 010。containerlab graph を 127.0.0.1:50080 で裏に起こし、手元のポートフォワードで開く）
+# lab.sh を一時ディレクトリに写し（src/ の代わり。splab.clab.yml があるので render しない）、偽の systemd-run / systemctl / containerlab / curl を PATH の先に置いて打つ
+def _lab_graph(*args, active=False, **env):
+    with tempfile.TemporaryDirectory() as d:
+        b = os.path.join(d, "bin"); os.mkdir(b)
+        log = os.path.join(d, "calls.log"); open(log, "w").close()
+        bodies = {"systemd-run": "", "containerlab": "",
+                  "systemctl": f'[ "${{1:-}}" = is-active ] && exit {0 if active else 3}\n',
+                  "curl": 'case " $* " in *" PUT "*) echo tok ;; *) echo i-0123456789abcdef0 ;; esac\n'}
+        for n, body in bodies.items():
+            with open(os.path.join(b, n), "w") as f:
+                f.write('#!/usr/bin/env bash\n{ printf %s "$(basename "$0")"; printf " %s" "$@"; echo; } >> "$FAKE_LOG"\n' + body)
+            os.chmod(os.path.join(b, n), 0o755)
+        with open(os.path.join(d, "lab.sh"), "w") as f:
+            f.write(lab_sh)
+        os.chmod(os.path.join(d, "lab.sh"), 0o755)
+        open(os.path.join(d, "splab.clab.yml"), "w").close()
+        e = {k: v for k, v in os.environ.items() if k not in ("NAME_PREFIX", "AWS_REGION", "REGISTRY", "TELEGRAF_IMAGE")}
+        e.update(PATH=b + os.pathsep + os.environ["PATH"], FAKE_LOG=log, **env)
+        r = subprocess.run([os.path.join(d, "lab.sh"), *args], env=e, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
+        return r, open(log, encoding="utf-8").read().splitlines(), os.path.realpath(d)
+_ge = {"NAME_PREFIX": "x-nwc-poc", "AWS_REGION": "ap-northeast-1"}
+_fwd = ("aws ssm start-session --region ap-northeast-1 --target i-0123456789abcdef0 --document-name AWS-StartPortForwardingSession "
+        "--parameters portNumber=50080,localPortNumber=50080")
+_r, _c, _d = _lab_graph("graph", **_ge)
+_run = [c for c in _c if c.startswith("systemd-run ")]
+check("lab.sh graph: systemd-run の一時ユニット（<接頭辞>-lab-graph）で containerlab graph を 127.0.0.1:50080 で起こし、手元で打つポートフォワードのコマンドを出す",
+      _r.returncode == 0 and _run == [f"systemd-run --unit=x-nwc-poc-lab-graph --collect --property=WorkingDirectory={_d} --setenv=CLAB_VERSION_CHECK=disable "
+                                      "containerlab graph -t splab.clab.yml --srv 127.0.0.1:50080"]
+      and "systemctl is-active --quiet x-nwc-poc-lab-graph" in _c and _fwd in _r.stdout and "http://localhost:50080/" in _r.stdout)
+_r, _c, _ = _lab_graph("graph", active=True, **_ge)
+check("lab.sh graph: もう動いていれば systemd-run を打たず（同じ名前のユニットは作れない）、案内とコマンドだけ出す",
+      _r.returncode == 0 and not any(c.startswith("systemd-run ") for c in _c) and "もう動いている" in _r.stdout and _fwd in _r.stdout)
+_r, _c, _ = _lab_graph("graph", AWS_REGION="ap-northeast-1")
+check("lab.sh graph: NAME_PREFIX が無い（/etc/*-lab.env の無い手元）なら何も起こさずに止まる",
+      _r.returncode != 0 and _c == [] and "lab の EC2 だけ" in _r.stderr)
+_r, _c, _ = _lab_graph("graph-stop", **_ge)
+check("lab.sh graph-stop: systemctl stop <接頭辞>-lab-graph を打つ（動いていなくても失敗にしない）",
+      _r.returncode == 0 and _c == ["systemctl stop x-nwc-poc-lab-graph"])
+_r, _c, _ = _lab_graph("down", **_ge)
+check("lab.sh down: graph-stop で図を止めてから containerlab destroy する",
+      _r.returncode == 0 and _c == ["systemctl stop x-nwc-poc-lab-graph", "containerlab destroy -t splab.clab.yml --cleanup"])
+_r, _c, _ = _lab_graph("down")
+check("lab.sh down: NAME_PREFIX が無ければ（手元の compose）systemctl を打たずに destroy だけ",
+      _r.returncode == 0 and _c == ["containerlab destroy -t splab.clab.yml --cleanup"])
+# ---- lab.sh logs / trex stop / trex status（011 Round 2）。lab.sh・テンプレート・srlinux/*.cli を一時ディレクトリに写し、偽の docker を PATH の先に置く。
+# srlinux/ には S3 に残った古い .cli（dc1-leaf-01。011 で dc1-a-leaf-01 に改名した名前）を 1 本混ぜる
+def _lab_docker(*args, running=False):
+    with tempfile.TemporaryDirectory() as d:
+        b = os.path.join(d, "bin"); os.mkdir(b)
+        log = os.path.join(d, "calls.log"); open(log, "w").close()
+        with open(os.path.join(b, "docker"), "w") as f:
+            f.write('#!/usr/bin/env bash\n{ printf docker; printf " %s" "$@"; echo; } >> "$FAKE_LOG"\n'
+                    'case " $* " in *" pgrep "*|*" pkill "*) [ -n "${FAKE_RUNNING:-}" ] || exit 1; echo "42 /bin/bash ./t-rex-64 -i" ;; esac\n')
+        os.chmod(os.path.join(b, "docker"), 0o755)
+        with open(os.path.join(d, "lab.sh"), "w") as f:
+            f.write(lab_sh)
+        os.chmod(os.path.join(d, "lab.sh"), 0o755)
+        with open(os.path.join(d, "splab.clab.yml.in"), "w") as f:
+            f.write(read("app", "containerlab", "splab.clab.yml.in"))
+        open(os.path.join(d, "splab.clab.yml"), "w").close()
+        os.mkdir(os.path.join(d, "srlinux"))
+        for n in [*sorted(os.listdir(os.path.join(ROOT, "app", "containerlab", "srlinux"))), "dc1-leaf-01.cli"]:
+            open(os.path.join(d, "srlinux", n), "w").close()
+        e = {k: v for k, v in os.environ.items() if k not in ("NAME_PREFIX", "AWS_REGION", "LINES")}
+        e.update(PATH=b + os.pathsep + os.environ["PATH"], FAKE_LOG=log, **({"FAKE_RUNNING": "1"} if running else {}))
+        r = subprocess.run([os.path.join(d, "lab.sh"), *args], env=e, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
+        return r, open(log, encoding="utf-8").read().splitlines()
+_srl_nodes = [n for n, v in yaml.safe_load(read("app", "containerlab", "splab.clab.yml.in"))["topology"]["nodes"].items() if v.get("kind") == "nokia_srlinux"]
+_routers = re.search(r"^routers\(\) \{.*?^\}", lab_sh, re.M | re.S)
+check("lab.sh の routers() は srlinux/*.cli を数えず（glob を使わない）、トポロジのテンプレート（$TOPO.in）を読む",
+      _routers is not None and "*.cli" not in _routers.group(0) and '"$TOPO.in"' in _routers.group(0))
+_r, _c = _lab_docker("logs")
+check("lab.sh logs: 打つ機器はテンプレートの nodes の kind: nokia_srlinux（6 台、この順）だけで、srlinux/ に残った古い .cli の機器（dc1-leaf-01）は打たない",
+      _r.returncode == 0 and len(_srl_nodes) == 6
+      and _c == [f"docker exec clab-splab-{n} tail -n 20 /var/log/srlinux/file/messages" for n in _srl_nodes])
+_trex_case = re.search(r"^  trex\)\n.*?^    ;;$", lab_sh, re.M | re.S).group(0)
+check("lab.sh trex: start / stop / status は同じ式（TREX_PROC=t-rex-64。ラッパーと子の _t-rex-64 の両方に当たる）で pgrep / pkill する",
+      sh_const(lab_sh, "TREX_PROC") == "t-rex-64"
+      and re.findall(r"\b(pgrep|pkill) (-[a-z]+) (\S+)", _trex_case) == [("pgrep", "-f", '"$TREX_PROC"'), ("pkill", "-f", '"$TREX_PROC"'), ("pgrep", "-af", '"$TREX_PROC"')])
+_r, _c = _lab_docker("trex", "stop", running=True)
+_r2, _c2 = _lab_docker("trex", "stop")
+check("lab.sh trex stop: dc1-trex-01 の中で pkill -f t-rex-64。動いていなければ（pkill が 1）止まらずに案内を出す",
+      _r.returncode == 0 and _c == ["docker exec clab-splab-dc1-trex-01 pkill -f t-rex-64"]
+      and _r2.returncode == 0 and _c2 == _c and "TRex は動いていない" in _r2.stdout)
+_r, _c = _lab_docker("trex", "status", running=True)
+check("lab.sh trex status: pgrep -af t-rex-64 のあとに出力の末尾（/var/log/trex.log）を出す",
+      _r.returncode == 0 and _c == ["docker exec clab-splab-dc1-trex-01 pgrep -af t-rex-64", "docker exec clab-splab-dc1-trex-01 tail -n 20 /var/log/trex.log"]
+      and "./t-rex-64 -i" in _r.stdout)
+
+_lab_out = read("IaC", "terraform", "aws-managed", "pipeline", "lab", "outputs.tf")
+check("lab の output graph_port_forward_command は lab.sh graph が出すコマンドと同じ（宛先は aws_instance.lab.id、ポートは lab.sh の GRAPH_PORT）",
+      sh_const(lab_sh, "GRAPH_PORT") == "50080"
+      and 'value       = "' + _fwd.replace("ap-northeast-1", "${var.region}").replace("i-0123456789abcdef0", "${aws_instance.lab.id}") + '"' in _lab_out)
 
 for f in (("ops", "lab-common.sh"), ("ops", "lab-debug.sh"), ("ops", "up.sh"), ("ops", "down.sh"),
           ("ops", "common.sh"), ("ops", "up-common.sh"), ("ops", "down-common.sh"), ("app", "containerlab", "setup.sh"), ("app", "containerlab", "lab.sh"), ("app", "telegraf", "telegraf.sh")):

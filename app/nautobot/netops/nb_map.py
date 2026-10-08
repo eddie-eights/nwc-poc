@@ -3,7 +3,7 @@
 nautobot も boto3 も import しない純粋な関数だけを置く（手元の tests/test_nautobot.py で検査できるように。ORM を読むのは nb_sync.py）。
 
 対応:
-  機器          Device.name = device_id（hostname も同じ）、Location.name = site、Role.name = role（leaf / leafsw / spine / host / upstream）、
+  機器          Device.name = device_id（hostname も同じ）、Location.name = site、Role.name = role（spine / a-leaf / s-leaf / trex）、
                 primary_ip4 = mgmt_ip、custom field asn = asn
   監視対象      その Device に Service があること。gnmi（tcp）があれば gNMI を取りにいき、snmp（udp）があれば SNMP を取りにいく。
                 どちらかがあれば enabled。Telegraf の dialin の一覧（app/containerlab/lab_topology.py の --gnmi-targets / --snmp-agents と同じ形）もここから作る
@@ -13,7 +13,7 @@ nautobot も boto3 も import しない純粋な関数だけを置く（手元�
 """
 import ipaddress
 
-VM_ROLES = {"host", "upstream"}   # スイッチでない機器の役割（app/containerlab/lab_topology.py と同じ）
+VM_ROLES = {"trex"}   # スイッチでない機器の役割（app/containerlab/lab_topology.py と同じ）
 GNMI_SERVICE = ("gnmi", "tcp", 57400)   # Service の name / protocol と、seed で入れるポート（app/containerlab/lab_topology.py の GNMI_PORT）
 SNMP_SERVICE = ("snmp", "udp", 161)     # 同じく SNMP_PORT
 TARGET_KEYS = ("gnmi-targets", "snmp-agents")   # IaC/terraform/aws-managed/pipeline/stream の出力 telegraf_dialin_target_parameters のキー

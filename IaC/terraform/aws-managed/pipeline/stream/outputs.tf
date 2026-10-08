@@ -89,14 +89,9 @@ output "telegraf_exec_command" {
   value       = "aws ecs execute-command --region ${var.region} --cluster ${aws_ecs_cluster.telegraf.name} --task TASK_ID --container telegraf --interactive --command 'tg gnmi'"
 }
 
-output "kafka_ui_service_name" {
-  description = "ECS service of the Kafbat UI task"
-  value       = aws_ecs_service.kafka_ui.name
-}
-
 output "kafka_ui_port_forward_command" {
-  description = "Open Kafbat UI at http://localhost:8082 through the web EC2 (SSM port forward; user admin, password from kafka_ui_password_command). Local port 8082 because the web uses 8080 and Nautobot 8081"
-  value       = "aws ssm start-session --region ${var.region} --target ${local.web_instance_id} --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{\"host\":[\"kafka-ui.${local.stream_service_namespace}\"],\"portNumber\":[\"8080\"],\"localPortNumber\":[\"8082\"]}'"
+  description = "Open Kafbat UI at http://localhost:8082 (SSM port forward to 127.0.0.1:8082 of the web EC2, where its Docker container listens; user admin, password from kafka_ui_password_command). Port 8082 because the web uses 8080 and Nautobot 8081"
+  value       = "aws ssm start-session --region ${var.region} --target ${local.web_instance_id} --document-name AWS-StartPortForwardingSession --parameters portNumber=8082,localPortNumber=8082"
 }
 
 output "kafka_ui_password_command" {

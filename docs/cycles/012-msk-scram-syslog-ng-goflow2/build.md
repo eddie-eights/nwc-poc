@@ -535,3 +535,175 @@ bash -n: 25 本
 
 すべて通過
 ```
+
+### マージ後（`docs/cycle-006-design` の 68bb25c を取り込んだ）
+
+PM の指示は bb24acf だったが、取り込む時点で `docs/cycle-006-design` は 68bb25c まで進んでいたので最新を取り込んだ（merge-base 9c40f87）。衝突は 30 ファイル。
+
+#### 衝突の解き方
+
+- 費用: theirs の値に、012 で増えた分（ours − base）を足した。lab は theirs（`m6i.xlarge`、25 セント）。stream は MSK 57 + Telegraf・syslog-ng・GoFlow2 と NLB の `(12*(3+TELEGRAF_AZ_NUM)+24+5)/10`。Kafbat UI の +2 は外した（010 で Web の EC2 に移った）。合計 約 $2.92/h、`STORES=s3` で 約 $1.99/h、SKIP_STREAM -$1.82/h、SKIP_ANALYTICS -$1.17/h、SKIP_LAB -$0.25/h。差分の足し算なので、四捨五入で ±$0.01 ずれることがある
+- SG と通信の表: theirs の web → msk 9098（Kafbat UI）に、ours の syslog_ng / goflow2 → msk 9096 を足した。kafka_ui の SG は theirs どおり無い
+- VPC エンドポイント: stream は ecr.api / ecr.dkr / logs / secretsmanager（theirs の Kafbat UI の分は外し、ours の secretsmanager は残した）
+- lab: 機器名（dc1-a-leaf-0N / dc1-s-leaf-0N / dc1-trex-01）・TRex・x86 は theirs のまま。`app/containerlab/lab.sh` の forward は 011 の形で、2055 / 6343 の DNAT と DOCKER-USER の行が入っている
+- compose: theirs の Spark の depends_on と healthcheck に、ours の syslog-ng / goflow2 を足した。`docker/compose/check.sh` は theirs の Spark の判定に ours の 3 項目を足して 14 項目
+- tests: 両側の検査を両方残した（`test_analytics` の SG_KEYS は 16 個。kafka_ui を外し、syslog_ng と goflow2 を足した）
+- docs: theirs の文に ours の syslog-ng・GoFlow2・SCRAM の語を足した。`docs/deploy.md` の手順の順は theirs（7-2 → 7 → 7-2b）
+- 消えたはずの名前（`aws_security_group.kafka_ui`、`MDT_PORT`、`MDT_SOURCE_CIDRS`、`MDT`、旧い機器名 `dc1-leaf-0`、旧い費用 $2.81 / $2.88 / $1.96 / $1.78）が、ファイルごとに ours と theirs のどちらの数も超えていないことを `v3/merge/stale.py` で確かめた
+
+#### 検証 1. 手元の compose（マージ後、全文）
+
+`v3/verify1.sh` をそのまま回した。syslog-ng の librdkafka の Connection refused と goflow2 の `run out of available brokers` は Kafka より先に起きたため（goflow2 は restart で戻る）。Spark の読み替えと syslog-ng の HEALTHCHECK の個別の確認は取り直していない（theirs が変えたのは `app/spark/snmp_sinks.py` の docstring の機器名と、compose の Spark の depends_on / healthcheck だけで、読み替えの経路は変わらない。syslog-ng は下の ps で healthy）。
+
+```
+==== up
+ Container nwc012v-goflow2-1 Created 
+ Container nwc012v-syslog-ng-1 Created 
+ Container nwc012v-kafka-1-1 Starting 
+ Container nwc012v-kafka-3-1 Starting 
+ Container nwc012v-kafka-2-1 Starting 
+ Container nwc012v-kafka-3-1 Started 
+ Container nwc012v-kafka-2-1 Started 
+ Container nwc012v-kafka-1-1 Started 
+ Container nwc012v-goflow2-1 Starting 
+ Container nwc012v-syslog-ng-1 Starting 
+ Container nwc012v-syslog-ng-1 Started 
+ Container nwc012v-goflow2-1 Started 
+==== kafka を待つ
+kafka ok (1)
+time="2026-10-09T02:24:37+09:00" level=warning msg="The \"SPLUNK_HEC_TOKEN\" variable is not set. Defaulting to a blank string."
+time="2026-10-09T02:24:37+09:00" level=warning msg="The \"OPENSEARCH_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-10-09T02:24:37+09:00" level=warning msg="The \"SPLUNK_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-10-09T02:24:37+09:00" level=warning msg="The \"SPLUNK_HEC_TOKEN\" variable is not set. Defaulting to a blank string."
+time="2026-10-09T02:24:37+09:00" level=warning msg="The \"AWS_REGION\" variable is not set. Defaulting to a blank string."
+time="2026-10-09T02:24:37+09:00" level=warning msg="The \"AWS_REGION\" variable is not set. Defaulting to a blank string."
+time="2026-10-09T02:24:37+09:00" level=warning msg="The \"OPENSEARCH_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-10-09T02:24:37+09:00" level=warning msg="The \"GF_SECURITY_ADMIN_PASSWORD\" variable is not set. Defaulting to a blank string."
+time="2026-10-09T02:24:37+09:00" level=warning msg="The \"OPENSEARCH_PASSWORD\" variable is not set. Defaulting to a blank string."
+goflow2 running Up 6 seconds
+kafka-1 running Up 14 seconds
+kafka-2 running Up 14 seconds
+kafka-3 running Up 14 seconds
+syslog-ng running Up 14 seconds (healthy)
+==== 起こし直した回数（Kafka より先に起きた goflow2 / syslog-ng が終わって restart で戻ったか）
+syslog-ng RestartCount=0
+goflow2 RestartCount=5
+time=2026-10-08T17:24:24.637Z level=INFO msg="kafka: client has run out of available brokers to talk to: 3 errors occurred:\n\t* dial tcp [::1]:9096: connect: connection refused\n\t* dial tcp [::1]:9094: connect: connection refused\n\t* dial tcp [::1]:9095: connect: connection refused\n for kafka transport"
+time=2026-10-08T17:24:25.689Z level=INFO msg="kafka: client has run out of available brokers to talk to: 3 errors occurred:\n\t* dial tcp [::1]:9095: connect: connection refused\n\t* dial tcp [::1]:9096: connect: connection refused\n\t* dial tcp [::1]:9094: connect: connection refused\n for kafka transport"
+time=2026-10-08T17:24:26.819Z level=INFO msg="kafka: client has run out of available brokers to talk to: 3 errors occurred:\n\t* dial tcp [::1]:9094: connect: connection refused\n\t* dial tcp [::1]:9095: connect: connection refused\n\t* dial tcp [::1]:9096: connect: connection refused\n for kafka transport"
+time=2026-10-08T17:24:28.081Z level=INFO msg="kafka: client has run out of available brokers to talk to: 3 errors occurred:\n\t* dial tcp [::1]:9096: connect: connection refused\n\t* dial tcp [::1]:9094: connect: connection refused\n\t* dial tcp [::1]:9095: connect: connection refused\n for kafka transport"
+time=2026-10-08T17:24:29.790Z level=INFO msg="kafka: client has run out of available brokers to talk to: 3 errors occurred:\n\t* dial tcp [::1]:9096: connect: connection refused\n\t* dial tcp [::1]:9094: connect: connection refused\n\t* dial tcp [::1]:9095: connect: connection refused\n for kafka transport"
+==== syslog-ng の起動ログ
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9095/bootstrap]: localhost:9095/bootstrap: Connect to ipv4#127.0.0.1:9095 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9094/bootstrap]: localhost:9094/bootstrap: Connect to ipv6#[::1]:9094 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9094/bootstrap]: localhost:9094/bootstrap: Connect to ipv4#127.0.0.1:9094 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9094/bootstrap]: localhost:9094/bootstrap: Connect to ipv6#[::1]:9094 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9094/bootstrap]: localhost:9094/bootstrap: Connect to ipv4#127.0.0.1:9094 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9095/bootstrap]: localhost:9095/bootstrap: Connect to ipv6#[::1]:9095 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9096/bootstrap]: localhost:9096/bootstrap: Connect to ipv4#127.0.0.1:9096 failed: Connection refused (after 0ms in state CONNECT, 1 identical error(s) suppressed);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9094/bootstrap]: localhost:9094/bootstrap: Connect to ipv6#[::1]:9094 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9096/bootstrap]: localhost:9096/bootstrap: Connect to ipv6#[::1]:9096 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9094/bootstrap]: localhost:9094/bootstrap: Connect to ipv4#127.0.0.1:9094 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9096/bootstrap]: localhost:9096/bootstrap: Connect to ipv4#127.0.0.1:9096 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9095/bootstrap]: localhost:9095/bootstrap: Connect to ipv4#127.0.0.1:9095 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9096/bootstrap]: localhost:9096/bootstrap: Connect to ipv6#[::1]:9096 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9095/bootstrap]: localhost:9095/bootstrap: Connect to ipv6#[::1]:9095 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9095/bootstrap]: localhost:9095/bootstrap: Connect to ipv4#127.0.0.1:9095 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9094/bootstrap]: localhost:9094/bootstrap: Connect to ipv4#127.0.0.1:9094 failed: Connection refused (after 0ms in state CONNECT, 1 identical error(s) suppressed);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9095/bootstrap]: localhost:9095/bootstrap: Connect to ipv6#[::1]:9095 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9094/bootstrap]: localhost:9094/bootstrap: Connect to ipv6#[::1]:9094 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9094/1]: localhost:9094/1: Connect to ipv6#[::1]:9094 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9095/2]: localhost:9095/2: Connect to ipv6#[::1]:9095 failed: Connection refused (after 0ms in state CONNECT);
+==== goflow2 の起動ログ
+time=2026-10-08T17:24:24.637Z level=INFO msg="kafka: client has run out of available brokers to talk to: 3 errors occurred:\n\t* dial tcp [::1]:9096: connect: connection refused\n\t* dial tcp [::1]:9094: connect: connection refused\n\t* dial tcp [::1]:9095: connect: connection refused\n for kafka transport"
+time=2026-10-08T17:24:25.689Z level=INFO msg="kafka: client has run out of available brokers to talk to: 3 errors occurred:\n\t* dial tcp [::1]:9095: connect: connection refused\n\t* dial tcp [::1]:9096: connect: connection refused\n\t* dial tcp [::1]:9094: connect: connection refused\n for kafka transport"
+time=2026-10-08T17:24:26.819Z level=INFO msg="kafka: client has run out of available brokers to talk to: 3 errors occurred:\n\t* dial tcp [::1]:9094: connect: connection refused\n\t* dial tcp [::1]:9095: connect: connection refused\n\t* dial tcp [::1]:9096: connect: connection refused\n for kafka transport"
+time=2026-10-08T17:24:28.081Z level=INFO msg="kafka: client has run out of available brokers to talk to: 3 errors occurred:\n\t* dial tcp [::1]:9096: connect: connection refused\n\t* dial tcp [::1]:9094: connect: connection refused\n\t* dial tcp [::1]:9095: connect: connection refused\n for kafka transport"
+time=2026-10-08T17:24:29.790Z level=INFO msg="kafka: client has run out of available brokers to talk to: 3 errors occurred:\n\t* dial tcp [::1]:9096: connect: connection refused\n\t* dial tcp [::1]:9094: connect: connection refused\n\t* dial tcp [::1]:9095: connect: connection refused\n for kafka transport"
+time=2026-10-08T17:24:31.508Z level=INFO msg="starting GoFlow2"
+time=2026-10-08T17:24:31.508Z level=INFO msg="starting collection" scheme=netflow hostname="" port=2055 count=1 workers=2 blocking=false queue_size=1000000
+time=2026-10-08T17:24:31.513Z level=INFO msg="starting collection" scheme=sflow hostname="" port=6343 count=1 workers=2 blocking=false queue_size=1000000
+==== 送る（host のネットワークのコンテナから）
+sent: <189>1 2026-10-08T12:34:56.789012+09:00 leaf1 sr_bgp_mgr 1234 BGP001 - BGP neighbor 10.0.0.2 state changed to IDLE
+sent: <187>1 2026-10-08T12:34:57.000001Z spine1 sr_linux - - - interface ethernet-1/1 down
+tcp: connect+close
+NetFlow v5 を 1 つ送った: 127.0.0.1:2055/udp（10.0.0.1:12345 → 10.0.0.2:443 proto 6、10 パケット 8400 バイト）
+==== GoFlow2 の /metrics
+200
+goflow2_flow_process_nf_total{router="127.0.0.1",version="5"} 1
+goflow2_flow_traffic_packets_total{local_ip="::",local_port="2055",remote_ip="127.0.0.1",type="netflow"} 1
+==== logs トピック
+The consumer rebalance protocol (KIP-848) is production-ready! Set group.protocol=consumer to try it out. See https://kafka.apache.org/documentation/#consumer_rebalance_protocol
+{"timestamp":1791480278,"tags":{"sysName":"leaf1","source":"127.0.0.1","severity":"notice","facility":"local7","appname":"sr_bgp_mgr"},"name":"device_log","fields":{"version":1,"timestamp":1791430496789012000,"severity_code":5,"procid":"1234","msgid":"BGP001","message":"BGP neighbor 10.0.0.2 state changed to IDLE","facility_code":23}}
+{"timestamp":1791480278,"tags":{"sysName":"spine1","source":"127.0.0.1","severity":"err","facility":"local7","appname":"sr_linux"},"name":"device_log","fields":{"version":1,"timestamp":1791462897000001000,"severity_code":3,"message":"interface ethernet-1/1 down","facility_code":23}}
+==== flows トピック
+The consumer rebalance protocol (KIP-848) is production-ready! Set group.protocol=consumer to try it out. See https://kafka.apache.org/documentation/#consumer_rebalance_protocol
+{"type":"NETFLOW_V5","time_received_ns":1791480278443272180,"sequence_num":1,"sampling_rate":0,"sampler_address":"127.0.0.1","time_flow_start_ns":1791480277443079471,"time_flow_end_ns":1791480278443079471,"bytes":8400,"packets":10,"src_addr":"10.0.0.1","dst_addr":"10.0.0.2","etype":"IPv4","proto":"TCP","src_port":12345,"dst_port":443,"in_if":1,"out_if":2,"src_mac":"00:00:00:00:00:00","dst_mac":"00:00:00:00:00:00","src_vlan":0,"dst_vlan":0,"vlan_id":0,"ip_tos":0,"forwarding_status":0,"ip_ttl":0,"ip_flags":0,"tcp_flags":24,"icmp_type":0,"icmp_code":0,"ipv6_flow_label":0,"fragment_id":0,"fragment_offset":0,"src_as":0,"dst_as":0,"next_hop":"10.0.0.254","next_hop_as":0,"src_net":"10.0.0.0/24","dst_net":"10.0.0.0/24","bgp_next_hop":"","bgp_communities":[],"as_path":[],"mpls_ttl":[],"mpls_label":[],"mpls_ip":[],"observation_domain_id":0,"observation_point_id":0,"layer_stack":[],"layer_size":[],"ipv6_routing_header_addresses":[],"ipv6_routing_header_seg_left":0}
+==== syslog-ng の自身のログ（tcp の accepted / closed が出ていないこと）
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9094/bootstrap: Connect to ipv4#127.0.0.1:9094 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9094/bootstrap: Connect to ipv6#[::1]:9094 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9094/bootstrap: Connect to ipv4#127.0.0.1:9094 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9095/bootstrap: Connect to ipv6#[::1]:9095 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9096/bootstrap: Connect to ipv4#127.0.0.1:9096 failed: Connection refused (after 0ms in state CONNECT, 1 identical error(s) suppressed);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9094/bootstrap: Connect to ipv6#[::1]:9094 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9096/bootstrap: Connect to ipv6#[::1]:9096 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9094/bootstrap: Connect to ipv4#127.0.0.1:9094 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9096/bootstrap: Connect to ipv4#127.0.0.1:9096 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9095/bootstrap: Connect to ipv4#127.0.0.1:9095 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9096/bootstrap: Connect to ipv6#[::1]:9096 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9095/bootstrap: Connect to ipv6#[::1]:9095 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9095/bootstrap: Connect to ipv4#127.0.0.1:9095 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9094/bootstrap: Connect to ipv4#127.0.0.1:9094 failed: Connection refused (after 0ms in state CONNECT, 1 identical error(s) suppressed);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9095/bootstrap: Connect to ipv6#[::1]:9095 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9094/bootstrap: Connect to ipv6#[::1]:9094 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9094/1: Connect to ipv6#[::1]:9094 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9095/2: Connect to ipv6#[::1]:9095 failed: Connection refused (after 0ms in state CONNECT);
+syslog-ng: err librdkafka: FAIL(3): [thrd:localhost:9094/1]: localhost:9094/1: Connect to ipv6#[::1]:9094 failed: Connection refused (after 0ms in state CONNECT, 1 identical error(s) suppressed);
+syslog-ng: err librdkafka: ERROR(3): [thrd:app]: rdkafka#producer-1: localhost:9094/1: Connect to ipv6#[::1]:9094 failed: Connection refused (after 0ms in state CONNECT, 1 identical error(s) suppressed);
+==== down
+ Container nwc012v-kafka-1-1 Removed 
+ Container nwc012v-kafka-3-1 Stopped 
+ Container nwc012v-kafka-3-1 Removing 
+ Container nwc012v-kafka-3-1 Removed 
+ Network nwc-local Removing 
+ Volume nwc012v_kafka-3 Removing 
+ Volume nwc012v_kafka-2 Removing 
+ Volume nwc012v_kafka-1 Removing 
+ Volume nwc012v_kafka-2 Removed 
+ Volume nwc012v_kafka-1 Removed 
+ Volume nwc012v_kafka-3 Removed 
+ Network nwc-local Removed 
+==== 終わり
+```
+
+#### 検証 5. `bash ops/check.sh`（マージ後。docs/development.md の本数と build.md を直したあとに取り直し、直す前の回と同じ出力）
+
+```
+== 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+差分なし
+== 2. 9 つのルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+（18 ルートとも OK）
+== 3. スクリプトの構文
+bash -n: 27 本
+構文エラーなし
+== 4. 模擬テスト
+通過 158 / 失敗 0
+通過 495 / 失敗 0
+通過 161 / 失敗 0
+通過 78 / 失敗 0
+通過 3 / 失敗 0
+通過 78 / 失敗 0
+通過 7 / 失敗 0
+通過 104 / 失敗 0
+通過 132 / 失敗 0
+69 項目すべて通過
+通過 172 / 失敗 0
+通過 181 / 失敗 0
+通過 66 / 失敗 0
+通過 95 / 失敗 0
+通過 103 / 失敗 0
+通過 327 / 失敗 0
+すべて通過
+```
+
+本数（`tests/test_*.py` の glob の順）: `test_alerts` 158、`test_analytics` 495、`test_app` 161、`test_collectors` 78、`test_dashboard_config` 3、`test_graph` 78、`test_kb_index` 7、`test_lab_debug` 104、`test_local_compose` 132、`test_nautobot` 69、`test_oss` 172、`test_oss_ops` 181、`test_oss_roll` 66、`test_stream` 95、`test_sync` 103、`test_workflow` 327（16 本。`docs/development.md` も合わせた）。全文は scratchpad の `v3/merge/check.out`（2827 行）。

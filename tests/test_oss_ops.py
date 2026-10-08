@@ -33,7 +33,7 @@ def read(path):
 # ---- 偽物の aws。呼ばれた引数を FAKE_LOG に 1 行ずつ JSON で残し、FAKE_INV の在庫（JSON）を読み書きする。
 # 名前の絞り込みは本物より緩い側（SSM の Path は文字列の前方一致）で真似る。知らないコマンドは 255 で落ち、ログに unknown を残す
 FAKE_AWS = r'''#!/usr/bin/env python3
-import fcntl, fnmatch, json, os, signal, sys
+import base64, fcntl, fnmatch, json, os, re, signal, sys
 
 args = sys.argv[1:]
 inv_path = os.environ["FAKE_INV"]
@@ -77,12 +77,17 @@ def fail(msg, rc=254):
     print(msg, file=sys.stderr)
     sys.exit(rc)
 
+def grafana_check(sent):  # 送ったのが ops/grafana_rules_check.py（9-2・ops/check-grafana.sh）か
+    m = re.fullmatch(r"echo (\S+) \| base64 -d \| NAME_PREFIX=\S+ /usr/bin/python3\.13 -", json.loads(sent)["commands"][-1])
+    return bool(m) and b"api/v1/rules" in base64.b64decode(m.group(1))
+
 svc, op = (args + ["", ""])[:2]
 query = opt("--query")
 log()
 if (svc, op) == ("sts", "get-caller-identity"):
     print("arn:aws:sts::123456789012:assumed-role/Admin/tester" if query == "Arn" else "123456789012")
 # ---- ここから oss/ops/up.sh が打つもの（6.）。送ったコマンドは在庫の cmds に残し、結果を聞かれたら Success と答える
+# （Grafana のルールの確かめは FAKE_GRAFANA=NG のとき Failed と答え、[標準出力, 標準エラー] を本物の --output text と同じくタブでつないで返す）
 elif (svc, op) == ("ecr", "get-login-password"):
     print("fake-ecr-login")
 elif svc == "s3" and op in ("cp", "sync"):
@@ -96,9 +101,12 @@ elif (svc, op) == ("ssm", "send-command"):
 elif (svc, op) == ("ssm", "get-command-invocation"):
     sent = inv["cmds"][int(opt("--command-id")[len("cmd-"):]) - 1]
     if query == "Status":
-        print("Success")
+        print("Failed" if grafana_check(sent) and os.environ.get("FAKE_GRAFANA") == "NG" else "Success")
     elif query == "StandardOutputContent":
-        print(f'lab=active containers={os.environ.get("FAKE_LAB_NODES", "0")}' if "containers=" in sent else "")
+        print(f'lab=active containers={os.environ.get("FAKE_LAB_NODES", "0")}' if "containers=" in sent
+              else "判定: OK（4 本とも評価のエラーなし）" if grafana_check(sent) else "")
+    elif query == "[StandardOutputContent,StandardErrorContent]" and grafana_check(sent):
+        print("nwc-opensearch/trap: health=ok\n判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap）\t")
     else:
         log({"unknown": "query " + str(query)}); fail("unknown query", 255)
 elif (svc, op) == ("ssm", "start-session"):
@@ -356,6 +364,8 @@ if verb == "apply":
     sys.exit(0)
 if verb == "output" and os.environ.get("FAKE_TF_UP"):  # up.sh（6.）にだけ答える。値は「out-<ルートの末尾>-<output の名前>」
     name = rest[-1]
+    if name in os.environ.get("FAKE_TF_EMPTY", "").split(","):  # 空の出力（Grafana を作っていない analytics の grafana_service_name）
+        sys.exit(0)
     if "-json" in rest:
         if name.endswith("_service_names"):
             print(json.dumps({k: f'x-nwc-oss-{name[:-len("_service_names")]}-{k}' for k in ("c", "a", "b")}))
@@ -479,7 +489,7 @@ REPO = os.path.join(TMP, "repo")
 for d in ("ops", "oss/ops"):
     os.makedirs(os.path.join(REPO, d))
     for f in os.listdir(os.path.join(ROOT, d)):
-        if f.endswith(".sh") or f in ("seed_graph.py", "roll_health.py"):
+        if f.endswith(".sh") or f in ("seed_graph.py", "roll_health.py", "grafana_rules_check.py"):
             shutil.copy(os.path.join(ROOT, d, f), os.path.join(REPO, d, f))
 UP_DIRS = ("app/containerlab", "app/dashboard", "app/agentcore", "app/nautobot", "app/telegraf", "app/syslog-ng", "app/splunk", "app/grafana", "app/spark", "app/neo4j", "app/graph",
            "app/temporal", "docker/images")
@@ -1327,6 +1337,22 @@ check("up.sh（通し）: PC に残すのは wheels-oss/ とレイヤーの .bui
       os.path.isdir(os.path.join(REPO, "wheels-oss")) and not [f for f in os.listdir(TMP) if f.startswith("x-nwc-oss-nautobot.")]
       and any(f.startswith("tf-oss-") and f.endswith("-apply.log") for f in logs_made()))
 
+def grafana_sent(c):  # ops/grafana_rules_check.py を送った send-command なら (接頭辞, リポジトリのものそのものか)。違えば None
+    if not is_aws(c, "ssm", "send-command"):
+        return None
+    m = re.fullmatch(r"echo (\S+) \| base64 -d \| NAME_PREFIX=(\S+) /usr/bin/python3\.13 -", json.loads(arg_after(c["args"], "--parameters"))["commands"][-1])
+    body = base64.b64decode(m.group(1)) if m else b""
+    return (m.group(2), body.decode() == read("ops/grafana_rules_check.py")) if b"api/v1/rules" in body else None
+
+_g = [i for i, c in enumerate(cs) if grafana_sent(c)]
+_gwait = first(cs, lambda c: is_aws(c, "ecs", "wait", "--services out-analytics-grafana_service_name"))
+check("up.sh（通し）: 最後（9-2）に Grafana のサービスが安定してから、Web の EC2 に ops/grafana_rules_check.py そのものを接頭辞 x-nwc-oss で 1 回送る。OK なら警告は出ない",
+      len(_g) == 1 and grafana_sent(cs[_g[0]]) == ("x-nwc-oss", True) and arg_after(cs[_g[0]]["args"], "--instance-ids") == "out-core-web_instance_id"
+      and 0 <= apply_at(cs, "workflow") < _gwait < _g[0]
+      and arg_after(cs[_gwait]["args"], "--cluster") == "out-analytics-analytics_cluster_name"
+      and multi_of(cs[_gwait]["args"], "--services") == ["out-analytics-grafana_service_name"]
+      and "判定: OK（4 本とも評価のエラーなし）" in p.stdout and "アラートルールの評価を確かめた結果が OK ではない" not in out)
+
 # ---- 2 回目: 打ち直し（イメージも SSM のパラメータもある）。最後にポートフォワーディングを開く
 made_values = {n: m.get("value") for n, m in inv["ssm"].items()}
 p, cs2, inv2 = run_up(inv, {"FAKE_ECR_ALL": "1"})
@@ -1358,7 +1384,7 @@ with open(os.path.join(REPO, "app", "graph", "requirements-oss.txt"), "a", encod
 with open(os.path.join(REPO, "app", "dashboard", "requirements.txt"), "a", encoding="utf-8") as f:   # -r で読まれる側だけを変える
     f.write("# 版を変えたつもり\n")
 open(os.path.join(REPO, "wheels-oss", "old-0.9-py3-none-any.whl"), "w").close()   # 前の版の wheel
-p, cs3, inv3 = run_up(inv2, {"FAKE_ECR_ALL": "1", "NO_DASHBOARD_PORTFORWARD": "1",
+p, cs3, inv3 = run_up(inv2, {"FAKE_ECR_ALL": "1", "NO_DASHBOARD_PORTFORWARD": "1", "FAKE_GRAFANA": "NG",
                              "FAKE_ECS_UNSTABLE": "out-graph-neo4j_service_name,x-nwc-oss-opensearch-b,out-workflow-service_name"})
 out3 = p.stdout + p.stderr
 check("up.sh（requirements-oss.txt を変えた）: レイヤーを消して pip を打ち直し、新しい SHA-256 を .sha256 に残す",
@@ -1382,12 +1408,24 @@ check("up.sh（workflow のワーカーが安定しない）: 2 回待ち（1 �
       and not [c for c in cs3 if is_aws(c, "ecs", "list-tasks", "out-workflow-service_name")]
       and max(i for i, c in enumerate(cs3) if is_aws(c, "ssm", "send-command", "systemctl restart x-nwc-oss-web.service")) > _wf_waits[-1]
       and "Temporal の UI" not in out3 and "Temporal の UI" in out)
+_gw = "Grafana のアラートルールの評価を確かめた結果が OK ではない（判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap））。"
+check("up.sh（Grafana のルールの評価がエラー）: 止めずに（0）警告を出し、最後にもう一度出す。警告には判定の行（タブの手前まで）とログの見方（/ecs/x-nwc-oss-grafana）と"
+      "確かめ直すコマンド（ops/check-grafana.sh --oss）",
+      p.returncode == 0 and out3.count(_gw) == 2 and out3.count("aws logs tail /ecs/x-nwc-oss-grafana --region ap-northeast-1") == 2
+      and out3.count("直したら ops/check-grafana.sh --oss\033[0m") == 2 and len([c for c in cs3 if grafana_sent(c)]) == 1)
 _mup = read("ops/up.sh")
 _m85 = _mup[_mup.index("# ---- 8-5. workflow"):_mup.index("# ---- 9. Runtime")]
 check("ops/up.sh（マネージド版）の workflow の待ちも 2 回までで、安定しなければ警告（WF_WARN）を出して先へ進み、最後にもう一度出す",
       _m85.count('aws ecs wait services-stable --region "$REGION" --cluster "$WF_CLUSTER" --services "$WF_SERVICE"') == 2
       and 'WF_WARN="workflow のワーカーのサービス' in _m85 and re.search(r'^WF_WARN=""$', _mup, re.M)
       and """if [ -n "$WF_WARN" ]; then printf '\\033[1;33m%s\\033[0m\\n' "$WF_WARN"; fi""" in _mup)
+_m92 = _mup[_mup.index("# ---- 9-2. Grafana"):_mup.index("# ---- 10. ポートフォワーディング")]
+check("ops/up.sh（マネージド版）も Grafana を立てたとき（GRAFANA）だけ、Runtime のロググループのあと（9-2）に同じ確かめを打ち、OK でなければ警告（GRAFANA_WARN）を最後にもう一度出す",
+      _mup.index("# ---- 9. Runtime") < _mup.index("# ---- 9-2. Grafana") and re.search(r'^GRAFANA_WARN=""$', _mup, re.M)
+      and 'if [ -n "$GRAFANA" ]; then' in _m92
+      and ('grafana_rules_step "$INSTANCE_ID" "$(tf pipeline/analytics output -raw analytics_cluster_name)" '
+           '"$(tf pipeline/analytics output -raw grafana_service_name)" ops/check-grafana.sh') in _m92
+      and """if [ -n "$GRAFANA_WARN" ]; then printf '\\033[1;33m%s\\033[0m\\n' "$GRAFANA_WARN"; fi""" in _mup)
 
 # ---- up.sh の作ったものを oss/ops/down.sh が消す（同じ在庫から）
 p, csd, invd = run_down("oss/ops/down.sh", "x", inv=inv3)
@@ -1465,6 +1503,38 @@ check("sync-graph.sh --oss --dry-run: terraform にも aws にも触らず、lab
 p, cs, inv = run_sync("--oss", "--yes")
 check("sync-graph.sh: 知らない引数は使い方を出して 2 で止まる（terraform と aws には触らない）",
       p.returncode == 2 and "使い方" in p.stderr and not tf_calls(cs) and not inv.get("cmds"))
+
+# ================================================================ 8. ops/check-grafana.sh（--oss で OSS 版の state と接頭辞。up.sh の 9-2 と同じ確かめを単独で）
+def run_check(*args, extra=None):
+    reset(inventory())
+    envfile = os.path.join(TMP, "owner-x.env")
+    with open(envfile, "w", encoding="utf-8") as f:
+        f.write("OWNER=x\n")
+    p = subprocess.run(["bash", "ops/check-grafana.sh", *args], cwd=REPO, capture_output=True, text=True, timeout=300,
+                       env=fake_env({"DEPLOY_ENV_FILE": envfile, "FAKE_TF_UP": "1", **(extra or {})}))
+    return p, calls()
+
+p, cs = run_check("--oss")
+_send = [c for c in cs if is_aws(c, "ssm", "send-command")]
+check("check-grafana.sh --oss: Web の EC2 と Grafana のサービスを IaC/terraform/oss の出力から取り、接頭辞 x-nwc-oss で ops/grafana_rules_check.py を 1 回送る。OK なら 0",
+      p.returncode == 0 and [c["args"] for c in tf_calls(cs)] == [["-chdir=IaC/terraform/oss/base/core", "output", "-raw", "web_instance_id"],
+                                                                   ["-chdir=IaC/terraform/oss/pipeline/analytics", "output", "-raw", "grafana_service_name"]]
+      and len(_send) == 1 and grafana_sent(_send[0]) == ("x-nwc-oss", True) and arg_after(_send[0]["args"], "--instance-ids") == "out-core-web_instance_id"
+      and p.stdout.rstrip().endswith("判定: OK（4 本とも評価のエラーなし）") and not aws_calls(cs, "ecs", "wait"))
+p, cs = run_check()
+check("check-grafana.sh（--oss 無し）: マネージド版の IaC/terraform/aws-managed と接頭辞 x-nwc-poc",
+      p.returncode == 0 and {chdir_of(c) for c in tf_calls(cs)} == {"IaC/terraform/aws-managed/base/core", "IaC/terraform/aws-managed/pipeline/analytics"}
+      and [grafana_sent(c) for c in cs if is_aws(c, "ssm", "send-command")] == [("x-nwc-poc", True)])
+p, cs = run_check("--oss", extra={"FAKE_GRAFANA": "NG"})
+check("check-grafana.sh: NG なら 1 で終わり、判定の行と、理由を見る Grafana のログのコマンド（/ecs/x-nwc-oss-grafana の Failed to evaluate rule）を出す",
+      p.returncode == 1 and "判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap）" in p.stderr
+      and "aws logs tail /ecs/x-nwc-oss-grafana --region ap-northeast-1 --since 1h --filter-pattern '\"Failed to evaluate rule\"'" in p.stderr)
+p, cs = run_check("--oss", extra={"FAKE_TF_EMPTY": "grafana_service_name"})
+check("check-grafana.sh: Grafana が無い（grafana_service_name が空）なら理由を言って止まり、確かめを送らない",
+      p.returncode != 0 and "Grafana が無い" in p.stderr and not aws_calls(cs, "ssm", "send-command"))
+p, cs = run_check("--yes")
+check("check-grafana.sh: 知らない引数は使い方を出して 2 で止まる（terraform と aws には触らない）",
+      p.returncode == 2 and "使い方" in p.stderr and not tf_calls(cs) and not [c for c in cs if c["cmd"] == "aws"])
 
 shutil.rmtree(TMP, ignore_errors=True)
 print(f"通過 {passed} / 失敗 0")

@@ -44,10 +44,10 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
 
 | 送る側 | 受ける側 | ポート | 何のため |
 |---|---|---|---|
-| AWS の API を呼ぶワークロードの SG（`local.aws_api_clients`。web、lab、telegraf_dialout、telegraf_dialin、syslog_ng、goflow2、kafka_ui、spark、grafana、splunk、nautobot、lambda、workflow、runtime） | endpoints、S3（プレフィックスリスト） | 443/tcp | AWS の API と S3 |
-| web | grafana / splunk / workflow / nautobot / kafka_ui | 3000 / 8000 / 8233 / 8080 / 8080（tcp） | SSM のポートフォワーディングで画面を開く |
+| AWS の API を呼ぶワークロードの SG（`local.aws_api_clients`。web、lab、telegraf_dialout、telegraf_dialin、syslog_ng、goflow2、spark、grafana、splunk、nautobot、lambda、workflow、runtime） | endpoints、S3（プレフィックスリスト） | 443/tcp | AWS の API と S3 |
+| web | grafana / splunk / workflow / nautobot | 3000 / 8000 / 8233 / 8080（tcp） | SSM のポートフォワーディングで画面を開く（Kafbat UI は Web の EC2 の中なので SG を通らない） |
 | nautobot | nautobot_db | 5432/tcp | PostgreSQL |
-| telegraf_dialout / telegraf_dialin / spark / kafka_ui | msk | 9098/tcp | Kafka（IAM 認証） |
+| telegraf_dialout / telegraf_dialin / spark / web | msk | 9098/tcp | Kafka（IAM 認証。web は Kafbat UI） |
 | syslog_ng / goflow2 | msk | 9096/tcp | Kafka（SASL/SCRAM。2026-10-08 から） |
 | msk | msk | 9092〜9098/tcp | ブローカー同士 |
 | spark | spark | 全部の tcp | 1 つのジョブの driver と executor |

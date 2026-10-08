@@ -35,19 +35,19 @@ AWS を使わずに、WSL2 の中だけでパイプライン（lab → Telegraf 
 
 | 機能 | できること | 待機の時間課金（東京） |
 |---|---|---|
-| 土台（必ず） | VPC、SSM のエンドポイント 2 本、Web の EC2、S3、ECR | 約 $0.05/h |
+| 土台（必ず） | VPC、SSM のエンドポイント 2 本、Web の EC2（t4g.medium。stream を作る回は Kafbat UI も同居）、S3、ECR | 約 $0.07/h |
 | `AGENT=1` | チャット（Runtime + ガードレール）。`CREATE_KB=1` で手順書の検索も | 約 $0.07/h（エンドポイント 5 本。ほかは質問ごとのモデル料金だけ。KB は +$0.35/h） |
-| `PIPELINE=1` | lab → Telegraf・syslog-ng・GoFlow2（ECS）→ MSK → Spark → S3 Tables / OpenSearch / Prometheus / Splunk（`STORES` の既定は `s3,grafana,splunk` の 3 つとも）、Grafana と Splunk のアラート → SNS、Neptune のトポロジ（アラートで status が変わる）、Nautobot（機器の一覧とケーブルの正。いつも立つ） | 約 $2.79/h（`STORES` が既定のとき。うち Neptune Analytics が $0.58/h、Nautobot が $0.14/h、Kafbat UI が $0.02/h、`STORES` の `grafana` が約 $0.60/h、`splunk` が約 $0.34/h（Spark のジョブ $0.21、ECS の Splunk $0.12、sns のエンドポイント $0.014）） |
+| `PIPELINE=1` | lab → Telegraf・syslog-ng・GoFlow2（ECS）→ MSK → Spark → S3 Tables / OpenSearch / Prometheus / Splunk（`STORES` の既定は `s3,grafana,splunk` の 3 つとも）、Grafana と Splunk のアラート → SNS、Neptune のトポロジ（アラートで status が変わる）、Nautobot（機器の一覧とケーブルの正。いつも立つ） | 約 $2.85/h（`STORES` が既定のとき。うち Neptune Analytics が $0.58/h、Nautobot が $0.14/h、`STORES` の `grafana` が約 $0.60/h、`splunk` が約 $0.34/h（Spark のジョブ $0.21、ECS の Splunk $0.12、sns のエンドポイント $0.014）） |
 | `WORKFLOW=1` | アラート（SNS → SQS）で Temporal を起こし、調査 → 承認 → 修復。AGENT と PIPELINE と、アラートの送り手（Grafana か Splunk）が要る | 約 $0.09/h |
 
 インターフェース型エンドポイントは 1 本 $0.014/h（既定の 1 AZ のとき。`ENDPOINTS_AZ_NUM` を 2 / 3 にすると AZ の数の倍）で、作る機能が呼ぶ API の分だけ `ops/up.sh` が選ぶ（上の金額に入れてある。同じサービスは機能をまたいで 1 本）。
 OpenSearch Serverless のコレクション（KB と logs）も公開せず、VPC エンドポイント 1 本（$0.014/h。両方作っても 1 本。これも `ENDPOINTS_AZ_NUM` の数の倍）からだけ届く。
 
-`PIPELINE=1` だけ（`STORES` は既定の `s3,grafana,splunk`）なら、土台と合わせて約 $2.84/h。`STORES=s3` に絞れば約 $1.91/h。**既定のまま 1 か月置くと約 $2,000（約 30 万円）になるので、使い終わったら当日中に消す。**
+`PIPELINE=1` だけ（`STORES` は既定の `s3,grafana,splunk`）なら、土台と合わせて約 $2.92/h。`STORES=s3` に絞れば約 $1.99/h。**既定のまま 1 か月置くと約 $2,100（約 32 万円）になるので、使い終わったら当日中に消す。**
 
 何 AZ に置くかはリソースごとの `*_AZ_NUM` で選ぶ（既定は 1 AZ。MSK だけ 2 AZ。[deploy.md](docs/deploy.md)）。上の金額は既定の AZ の数のときのもの。
 
-デバッグ用の EC2（lab + Telegraf を 1 台。Telegraf の出力は標準出力。MSK / ECS を作らずに機器と Telegraf の設定を確かめる）は `deploy.env` の機能ではなく、`ops/lab-debug.sh up` / `down` だけで作る・消す CloudFormation のスタック。自分の VPC・エンドポイント 4 本・バケット・ECR を持ち、`ops/up.sh` / `ops/down.sh` とは別（`ops/down.sh` では消えない）。待機は約 $0.23/h（[pipeline.md](docs/pipeline.md)）。
+デバッグ用の EC2（lab + Telegraf を 1 台。Telegraf の出力は標準出力。MSK / ECS を作らずに機器と Telegraf の設定を確かめる）は `deploy.env` の機能ではなく、`ops/lab-debug.sh up` / `down` だけで作る・消す CloudFormation のスタック。自分の VPC・エンドポイント 4 本・バケット・ECR を持ち、`ops/up.sh` / `ops/down.sh` とは別（`ops/down.sh` では消えない）。待機は約 $0.30/h（[pipeline.md](docs/pipeline.md)）。
 
 ## 手順
 
@@ -170,4 +170,4 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | [hearing.md](docs/hearing.md) | ヒアリング項目: PoC の設計を決めるために相手に確かめたいこと（格納先の冗長化、保管期間など）と答え |
 | [development.md](docs/development.md) | 手元のテスト、変更するときの決まり、Web を手元で動かす |
 | [faq-fukuda-nwc-poc.md](docs/faq-fukuda-nwc-poc.md) | FAQ: ほかの開発者に説明するときに出る質問と答え（syslog、収集の設定、デバッグ用の EC2、YANG、Spark、Nautobot、Neptune、障害の情報の置き場、格納先とテーブル、Splunk、マネージドを OSS に置き換えるとき、AWS の基礎） |
-| [data-stores.md](docs/data-stores.md) | 勉強会メモ: データの置き場（Neptune にトポロジと `status`、S3 Tables の `proposal_events` に修復案の状態と証跡、`alert_events` にアラートの通知の履歴）と DynamoDB をやめた理由、コンテナイメージの役目と arm64 に揃える理由（Splunk だけ x86）、Neptune Analytics の基礎（Neptune Database との違い、AZ 冗長、トポロジをグラフにする意味）、MSK のブートストラップサーバーと、Telegraf・Spark がそれをどう受け取るか（`msk-bootstrap` を残す理由） |
+| [data-stores.md](docs/data-stores.md) | 勉強会メモ: データの置き場（Neptune にトポロジと `status`、S3 Tables の `proposal_events` に修復案の状態と証跡、`alert_events` にアラートの通知の履歴）と DynamoDB をやめた理由、コンテナイメージの役目とアーキテクチャの選び方（arm64 が要るのは AgentCore、x86 が要るのは Splunk と TRex。同じホストの中だけ揃える）、Neptune Analytics の基礎（Neptune Database との違い、AZ 冗長、トポロジをグラフにする意味）、MSK のブートストラップサーバーと、Telegraf・Spark がそれをどう受け取るか（`msk-bootstrap` を残す理由） |

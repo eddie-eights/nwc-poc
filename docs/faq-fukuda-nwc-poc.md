@@ -288,7 +288,7 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 - EC2 の中では次のコマンドが使える。
   - `sudo lab telegraf logs -f`: Telegraf の出力（MSK に載るのと同じ JSON）
   - `sudo lab telegraf test` / `sudo lab telegraf gnmi`
-- 待機の費用は約 $0.23/h（EC2 $0.17/h とエンドポイント 4 本。スタックが自分の VPC を持つ。この章の最後の Q）。
+- 待機の費用は約 $0.30/h（EC2 $0.25/h とエンドポイント 4 本。スタックが自分の VPC を持つ。この章の最後の Q）。
 
 **共通化したところ**
 
@@ -331,14 +331,14 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 | VPC | 既定 `10.20.0.0/24`、1 AZ・1 サブネット。IGW も NAT も無い閉域。どこともつながないので土台と CIDR が重なってよい |
 | エンドポイント | ssm / ssmmessages（SSM で入る）、ecr.api / ecr.dkr（イメージを引く）の 4 本と、S3 の gateway（無料） |
 | バケット | `<接頭辞>-lab-debug-<アカウント>`。`lab/` だけを置く |
-| ECR | `<接頭辞>-debug-lab-srlinux` / `-debug-lab-multitool` / `-debug-telegraf`。スタックを消すとイメージごと消える |
+| ECR | `<接頭辞>-debug-lab-srlinux` / `-debug-lab-multitool` / `-debug-lab-trex` / `-debug-telegraf`。スタックを消すとイメージごと消える |
 | ロール | 前と同じ権限。`NETWORK_PERIMETER` のときは VPC の外からの呼び出しを拒む Deny を、この VPC に向けて持つ |
 
 - `ops/lab-debug.sh up` の初回は、EC2 の無い器を先に作り、イメージと `app/containerlab/` を置いてから EC2 を作る（置く前に EC2 を起こしても引けないため）。
 - `ops/lab-debug.sh down` はバケットを空にしてからスタックを消す。
 - `deploy.env` の `LAB_DEBUG` は使わない。残っていれば `ops/up.sh` が注意を出すだけ。
 - 代わりに増えたもの:
-  - 待機の費用: 約 $0.20/h → 約 $0.23/h（エンドポイントを土台と共用しなくなった。2026-10-04 に EC2 の単価を t4g.xlarge の $0.17/h に直した値）
+  - 待機の費用: 約 $0.20/h → 約 $0.23/h（エンドポイントを土台と共用しなくなった。2026-10-04 に EC2 の単価を t4g.xlarge の $0.17/h に直した値）。2026-10-08 に EC2 を x86_64 の m6i.xlarge（$0.25/h）にして約 $0.30/h（TRex のイメージが amd64 だけのため）
   - 初回の push: SR Linux（約 1 GB）を別のリポジトリにもう一度置く
 
 ---
@@ -843,7 +843,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 - 立たないのは、`PIPELINE=0` のときと、`SKIP_STREAM` と `SKIP_GRAPH` を両方書いたとき（Job の書き先が無い）。
 - 前の `deploy.env` に `NAUTOBOT=...` が残っていても止まらない。`ops/up.sh` が「もう使わない」と注意を出す。
 - Telegraf の dialin の一覧は、いつも Nautobot の Job が書く SSM のパラメータ（`/<prefix>/telegraf-dialin/nautobot/*`）から受ける。
-- 費用は Nautobot の分（+$0.13/h と `ecs` のエンドポイント $0.014/h）が PIPELINE に入る。`PIPELINE=1` だけ（`STORES` は既定）なら、土台と合わせて約 $2.84/h（README の表）。
+- 費用は Nautobot の分（+$0.13/h と `ecs` のエンドポイント $0.014/h）が PIPELINE に入る。`PIPELINE=1` だけ（`STORES` は既定）なら、土台と合わせて約 $2.92/h（README の表）。
 - デバッグ用の EC2（`ops/lab-debug.sh`）は Nautobot を使わない（lab の定義の一覧のまま）。
 
 ### Q. Nautobot にトポロジの情報を入れているのはシェルスクリプトだと思うけど、どこからの情報を引っ張ってきて入れている？
@@ -851,7 +851,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 **A. リポジトリの中の lab の定義ファイルから。** 実機や AWS から取ってきてはいない。入れるのはシェルではなく、コンテナの中の Python。
 
 1. 元の情報: `app/containerlab/splab.clab.yml.in`（containerlab の機器と配線）と `app/containerlab/srlinux/<機器>.cli`（SR Linux の設定）。
-2. 変換: `ops/up.sh` がイメージを作るときに手元で `app/containerlab/lab_topology.py` を実行し、機器 8 台・回線 12 本を `lab_seed.json` にしてイメージに入れる。
+2. 変換: `ops/up.sh` がイメージを作るときに手元で `app/containerlab/lab_topology.py` を実行し、機器 7 台・回線 12 本を `lab_seed.json` にしてイメージに入れる。
 3. 投入: コンテナが起動時に `app/nautobot/netops/bootstrap.py` を実行し、**機器が 1 台も無いときだけ** `lab_seed.json` から入れる。
 
 - 入るもの: 拠点、役割、機器、インタフェース（LAG を含む）、アドレス、管理 IP、ASN、Service（`gnmi` / `snmp`）、ケーブル（主 / 副と帯域）。
@@ -2253,8 +2253,8 @@ SDK を使うと、自分で書かなくて済むもの。
 
 - マネージド版の MSK は Provisioned で IAM 認証なので、条件に合うはず（コンソールで開いたことは無い。未確認）。
 - OSS 版（「マネージドを OSS に置き換えた環境を作る（005）」）には Kafbat UI を置いた（認証なしの `PLAINTEXT`）。2026-10-07 に AWS で、ブローカーとトピックが見え、API からトピックの作成と削除ができた（200）。Spark は consumer group を作らないので、lag は出ない。
-- マネージド版の MSK にも Kafbat UI を置いてある（2026-10-05 のユーザーの決定）。ECS に 1 タスクがいつも立つ。`SASL_SSL` と `AWS_MSK_IAM` の設定と、タスクロールへの権限（Kafbat UI が使う `kafka-cluster:` の操作だけ。`IaC/terraform/aws-managed/pipeline/stream/msk.tf` の `kafka_ui_kafka_statements`）で、IAM 認証でつなぐ。ブローカーの設定の変更と consumer group の変更・削除の権限は付けていないので、画面のその操作は権限エラーになる。
-- IAM でつながることは 2026-10-05 に AWS で確かめた。画面に入れるか、画面からトピックを足せるか、タスクロールの権限で足りるかは未確認。
+- マネージド版の MSK にも Kafbat UI を置いてある（2026-10-05 のユーザーの決定）。「Kafbat UI を Web の EC2 に同居させる（010）」から Web の EC2 の Docker で動く（それより前は ECS に 1 タスク）。`SASL_SSL` と `AWS_MSK_IAM` の設定と、Web の EC2 のロールへの権限（Kafbat UI が使う `kafka-cluster:` の操作だけ。`IaC/terraform/aws-managed/pipeline/stream/msk.tf` の `kafka_ui_kafka_statements`）で、IAM 認証でつなぐ。ブローカーの設定の変更と consumer group の変更・削除の権限は付けていないので、画面のその操作は権限エラーになる。
+- IAM でつながることは ECS のタスクだったときに 2026-10-05 に AWS で確かめた（Web の EC2 のインスタンスロールでは未確認）。画面に入れるか、画面からトピックを足せるか、ロールの権限で足りるかは未確認。
 
 **出典**（2026-10-05 に確認）
 

@@ -58,7 +58,7 @@ def load_env(path=ENV_FILE, environ=None):
 
 
 def parse_device_map(text):
-    """"203.0.113.31=dc1-leaf-01,dc1-leaf-01.example.net=dc1-leaf-01" → {別名（小文字）: 機器名}。= の無い要素は捨てる"""
+    """"203.0.113.31=dc1-a-leaf-01,dc1-a-leaf-01.example.net=dc1-a-leaf-01" → {別名（小文字）: 機器名}。= の無い要素は捨てる"""
     out = {}
     for p in (text or "").split(","):
         k, sep, v = p.partition("=")

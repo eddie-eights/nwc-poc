@@ -123,15 +123,15 @@ check("プロンプトはまず root_cause で根本原因かどうかを確か�
 # ---- 事前チェック（2026-10-04）
 import asyncio, inspect  # noqa: E402
 check("impact は app/agentcore/topology.py と app/temporal/rules.py で同じ（ワーカーのイメージには app/agentcore/ が入らないので 2 か所に置く）",
-      inspect.getsource(rules.impact) == inspect.getsource(topology.impact))
+      inspect.getsource(rules.impact) == inspect.getsource(topology.impact) and rules.END_ROLES == topology.END_ROLES == ("trex",))
 check("事前チェックの対応表は許可リストの処置を全部持つ", set(rules.ACTION_CHANGES) == set(rules.ALLOWED_ACTIONS))
-_pd = [{"device_id": x, "status": None} for x in ("dc1-leaf-01", "dc1-spine-01", "dc1-spine-02")]
-_pl = [{"a": "dc1-leaf-01", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/3", "status": "DOWN"},
-       {"a": "dc1-leaf-01", "a_if": "ethernet-1/2", "b": "dc1-spine-02", "b_if": "ethernet-1/3", "status": "UP"},
+_pd = [{"device_id": x, "status": None} for x in ("dc1-a-leaf-01", "dc1-spine-01", "dc1-spine-02")]
+_pl = [{"a": "dc1-a-leaf-01", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/3", "status": "DOWN"},
+       {"a": "dc1-a-leaf-01", "a_if": "ethernet-1/2", "b": "dc1-spine-02", "b_if": "ethernet-1/3", "status": "UP"},
        {"a": "dc1-spine-01", "a_if": "ethernet-1/9", "b": "dc1-spine-02", "b_if": "ethernet-1/9", "status": None}]
 pc = rules.precheck("heal-main", _pd, _pl)
 check("heal-main の事前チェックは「上げる」と仮定して問題なし、冗長が戻る機器を出す",
-      pc["verdict"] == "ok" and pc["text"].startswith("【問題なし】dc1-leaf-01#ethernet-1/1 を上げると仮定") and "冗長が戻る機器: dc1-leaf-01" in pc["text"])
+      pc["verdict"] == "ok" and pc["text"].startswith("【問題なし】dc1-a-leaf-01#ethernet-1/1 を上げると仮定") and "冗長が戻る機器: dc1-a-leaf-01" in pc["text"])
 check("check は何も変えないので問題なし、none は空", rules.precheck("check", _pd, _pl)["verdict"] == "ok" and rules.precheck("none", _pd, _pl) == {"verdict": "", "text": ""})
 check("対象の回線がグラフに無ければ「確認できず」", rules.precheck("heal-main", _pd, _pl[1:])["verdict"] == "unknown" and "【確認できず】" in rules.precheck("heal-main", _pd, _pl[1:])["text"])
 check("対応表に無い処置は「確認できず」", rules.precheck("reboot", _pd, _pl)["verdict"] == "unknown")
@@ -139,34 +139,45 @@ _g = []
 def _fake_cypher(q, **params):
     _g.append(q)
     if "(n:device)" in q:
-        return [{"id": "dc1-leaf-01", "status": "ALARM", "maintenance": True}, {"id": "dc1-spine-01", "status": None, "maintenance": None}]
-    return [{"a": "dc1-leaf-01", "b": "dc1-spine-01", "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}]
+        return [{"id": "dc1-a-leaf-01", "status": "ALARM", "maintenance": True, "role": "leaf"}, {"id": "dc1-spine-01", "status": None, "maintenance": None}]
+    return [{"a": "dc1-a-leaf-01", "b": "dc1-spine-01", "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}]
 _gs, awsio.cypher = awsio.cypher, _fake_cypher
-check("awsio.read_topology は機器（id・status・maintenance）と回線（両端・IF・status）を読む",
-      awsio.read_topology() == ([{"device_id": "dc1-leaf-01", "status": "ALARM", "maintenance": True}, {"device_id": "dc1-spine-01", "status": None, "maintenance": False}],
-                                [{"a": "dc1-leaf-01", "b": "dc1-spine-01", "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}])
-      and _g == ["MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance",
+check("awsio.read_topology は機器（id・status・maintenance・role）と回線（両端・IF・status）を読む",
+      awsio.read_topology() == ([{"device_id": "dc1-a-leaf-01", "status": "ALARM", "maintenance": True, "role": "leaf"},
+                                 {"device_id": "dc1-spine-01", "status": None, "maintenance": False, "role": None}],
+                                [{"a": "dc1-a-leaf-01", "b": "dc1-spine-01", "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}])
+      and _g == ["MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance, n.role AS role",
                  "MATCH (a)-[l:link]->(b) RETURN id(a) AS a, id(b) AS b, l.a_if AS a_if, l.b_if AS b_if, l.status AS status"])
+check("read_topology の機器の openCypher は role を返す（n.role AS role。rules.impact が END_ROLES の TRex を端として扱うのに使う）",
+      "n.role AS role" in _g[0] and all("role" in d for d in awsio.read_topology()[0]))
+# read_topology の形のまま rules.impact に渡す: TRex（role trex）が 2 台の leaf につながっていても、leaf の Spine への最後の回線を落とせば孤立と出る
+_tp = {"(n:device)": [{"id": "dc1-a-leaf-01", "role": "leaf"}, {"id": "dc1-a-leaf-02", "role": "leaf"}, {"id": "dc1-spine-01", "role": "spine"}, {"id": "dc1-trex-01", "role": "trex"}],
+       "link": [{"a": "dc1-a-leaf-01", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/1"}, {"a": "dc1-a-leaf-02", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/2"},
+                {"a": "dc1-trex-01", "a_if": "eth1", "b": "dc1-a-leaf-01", "b_if": "ethernet-1/10"}, {"a": "dc1-trex-01", "a_if": "eth2", "b": "dc1-a-leaf-02", "b_if": "ethernet-1/10"}]}
+awsio.cypher = lambda q, **params: _tp["(n:device)" if "(n:device)" in q else "link"]
+_imp = rules.impact(*awsio.read_topology(), [{"op": "link_down", "target": "dc1-a-leaf-01#ethernet-1/1"}])
+check("read_topology が返す role で、rules.impact は TRex を中継にしない（leaf の Spine への最後の回線を落とすと leaf が孤立する）",
+      _imp["newly_isolated"] == ["dc1-a-leaf-01"] and _imp["verdict"] == "danger")
 awsio.cypher = _gs
 _ask, _rt = awsio.ask_agent, awsio.read_topology
 awsio.ask_agent = lambda prompt: '{"cause": "c", "action": "heal-main", "reason": "r"}'
 awsio.read_topology = lambda: (_pd, _pl)
-f = asyncio.run(worker.investigate({"device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1"}))
+f = asyncio.run(worker.investigate({"device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1"}))
 check("investigate は処置の事前チェックを finding に付ける", f["action"] == "heal-main" and f["precheck_verdict"] == "ok" and f["precheck"].startswith("【問題なし】"))
 def _boom():
     raise RuntimeError("neptune down")
 awsio.read_topology = _boom
-f = asyncio.run(worker.investigate({"device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1"}))
+f = asyncio.run(worker.investigate({"device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1"}))
 check("トポロジを読めなくても調査は落とさず、「確認できず」を付ける", f["action"] == "heal-main" and f["precheck_verdict"] == "unknown" and "neptune down" in f["precheck"])
 awsio.ask_agent = lambda prompt: '{"cause": "c", "action": "none", "reason": "r"}'
 f = asyncio.run(worker.investigate({"device_id": "x", "kind": "link_down", "target": "y"}))
 check("処置が none ならトポロジを読まず、事前チェックは空", f["precheck"] == "" and f["precheck_verdict"] == "")
 awsio.ask_agent, awsio.read_topology = _ask, _rt
 # ---- 保守中（Nautobot の Status が Maintenance → Neptune の maintenance。2026-10-04）
-_al = {"device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1"}
+_al = {"device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1"}
 _m = lambda *names: [dict(d, maintenance=d["device_id"] in names) for d in _pd]
 check("保守中でなければ止めない", rules.maintenance_hold(_al, _m(), _pl) == [])
-check("アラートの機器が保守中なら止める", rules.maintenance_hold(_al, _m("dc1-leaf-01"), _pl) == ["dc1-leaf-01"])
+check("アラートの機器が保守中なら止める", rules.maintenance_hold(_al, _m("dc1-a-leaf-01"), _pl) == ["dc1-a-leaf-01"])
 check("回線の相手が保守中でも止める（相手を止めればこちらの回線が落ちる）", rules.maintenance_hold(_al, _m("dc1-spine-01"), _pl) == ["dc1-spine-01"])
 check("別の回線の相手が保守中なら止めない", rules.maintenance_hold(_al, _m("dc1-spine-02"), _pl) == [])
 check("プロンプトは直前の構成変更を recent_changes で見させる", "recent_changes（Nautobot の変更履歴）" in prompt)
@@ -209,12 +220,12 @@ check("読めない本文・alerts が list でない本文は []",
       rules.alerts_from_message("garbage") == [] and rules.alerts_from_message("") == [] and rules.alerts_from_message("[1]") == []
       and rules.alerts_from_message(json.dumps({"alerts": "x"})) == [] and rules.alerts_from_message(None) == [])
 _many = rules.alerts_from_message(json.dumps({"source": "splunk", "alerts": [
-    {**_alert, "device_id": "DC1-Leaf-01.example.net", "status": "RESOLVED", "starts_at": "1700000001.7"},
+    {**_alert, "device_id": "DC1-A-Leaf-01.example.net", "status": "RESOLVED", "starts_at": "1700000001.7"},
     {**_alert, "device_id": "172.20.20.99", "kind": "trap", "target": ".1.3.6.1.4.1.1", "starts_at": None},
     {**_alert, "device_id": ""}, {**_alert, "kind": ""}, {**_alert, "status": "pending"}, "x", {**_alert, "detail": "d" * 5000}]}), now=42)
 check("機器名は小文字の短い名前に（IPv4 はそのまま）、status は小文字に、starts_at が無ければ now、detail は 1000 字で切る",
       [(a["device_id"], a["status"], a["first_seen"]) for a in _many]
-      == [("dc1-leaf-01", "resolved", 1700000001), ("172.20.20.99", "firing", 42), ("hq-ce-01", "firing", 1700000000)]
+      == [("dc1-a-leaf-01", "resolved", 1700000001), ("172.20.20.99", "firing", 42), ("hq-ce-01", "firing", 1700000000)]
       and _many[1]["anomaly_id"] == "172.20.20.99#trap#.1.3.6.1.4.1.1" and len(_many[2]["detail"]) == 1000
       and all(a["source"] == "splunk" for a in _many))
 check("形の合わない要素（機器か種類が無い・status が firing / resolved でない・dict でない）は捨てる", len(_many) == 3)
@@ -246,10 +257,10 @@ check("awsio は修復案を Neptune に読み書きしない（read_proposal / 
 check("awsio は異常の頂点（label anomaly）を読まない",
       not hasattr(awsio, "read_anomaly") and not hasattr(awsio, "list_open_anomalies") and ":anomaly" not in _awsio_src)
 calls.clear(); clients.clear(); awsio._cache.pop("neptune", None)
-fake["execute_query"] = cyrows({"id": "hq-ce-01", "status": "DOWN", "maintenance": True})
+fake["execute_query"] = cyrows({"id": "hq-ce-01", "status": "DOWN", "maintenance": True, "role": "ce"})
 awsio.read_topology()
 check("Neptune Analytics は neptune-graph の execute_query（openCypher、グラフ ID 指定、endpoint_url なし）で読む",
-      gq()[0] == "MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance"
+      gq()[0] == "MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance, n.role AS role"
       and calls[-1][2]["graphIdentifier"] == "g-abc1234567" and calls[-1][2]["language"] == "OPEN_CYPHER"
       and clients[-1][0] == "neptune-graph" and "endpoint_url" not in clients[-1][1])
 fake["execute_query"] = cyrows()
@@ -338,11 +349,11 @@ check("status に出てくる出来事は全部 PROPOSAL_EVENTS にある", set(
 check("append_proposal_events は空なら何もしない（pyiceberg を読まない）", awsio.append_proposal_events([], rules.PROPOSAL_EVENT_COLUMNS) is None)
 # アラートの通知の履歴（S3 Tables の alert_events。書くのは app/graph/status_handler.py）
 al = rules.alerts_from_message(json.dumps({"source": "grafana", "alerts": [
-    {"status": "firing", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "detail": "oper-state down", "starts_at": 1790000000},
+    {"status": "firing", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "detail": "oper-state down", "starts_at": 1790000000},
     {"status": "resolved", "device_id": "?", "kind": "trap", "target": "?", "detail": ""}]}))
 ae = [rules.alert_event(a, 1790000123.5) for a in al]
 check("alert_event の event_id は <anomaly_id>#<source>#<status>#<starts_at の epoch 秒>",
-      ae[0]["event_id"] == "dc1-leaf-01#link_down#ethernet-1/1#grafana#firing#1790000000" and ae[0]["anomaly_id"] == "dc1-leaf-01#link_down#ethernet-1/1")
+      ae[0]["event_id"] == "dc1-a-leaf-01#link_down#ethernet-1/1#grafana#firing#1790000000" and ae[0]["anomaly_id"] == "dc1-a-leaf-01#link_down#ethernet-1/1")
 check("alert_event の列は ALERT_EVENT_COLUMNS と同じ順、時刻は ISO 8601 の UTC（マイクロ秒と Z）",
       list(ae[0]) == [n for n, _ in rules.ALERT_EVENT_COLUMNS]
       and ae[0]["starts_at"] == "2026-09-21T14:13:20.000000Z" and ae[0]["received_at"] == "2026-09-21T14:15:23.500000Z"

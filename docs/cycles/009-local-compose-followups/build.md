@@ -195,3 +195,59 @@ Mac では確かめられなかったもの:
 - failover の `route()` が IS-IS の経路が無いと止まる
   - `nhg=$(srl … | grep -oE … | head -1 | awk …)` で grep が何も当たらないと、`set -e` と `pipefail` で lab.sh ごと終わる。
   - そのため「(IS-IS の経路が無い)」の分岐に来ない。
+
+### セルフレビュー
+
+PM（fable-5.1）が 2026-10-08 に実施。`/robust` の手順で diff（a5097ab のマージ、17 ファイル）を読み、反対弁護人（opus、文脈なし）に反証させた 9 件を自分で再現して分類した。実装は変えていない（直すものはエンジニア2 の `fix/009-spark-restart-env-get` に回した）。
+
+| # | 指摘 | 分類 | 再現 | 扱い |
+|---|---|---|---|---|
+| 1 | `x-spark` の `restart: on-failure:5`（compose.yaml:50）が Splunk の起動（2〜3 分）を待たない。`http_post`（snmp_sinks.py:341-358、`HTTP_RETRIES=3`）は約 12 秒で `RuntimeError` → クエリが止まり `main` が 1 で終わる。5 回使い切ると Exited のまま。check.sh に Spark のコンテナを見る項目が無い | **Should fix**（runtime） | 実測: `docker run --restart on-failure:5 alpine sh -c 'sleep 12; exit 1'` → 10 秒ごとに restartCount 0,1,2,3,4,4,5 と増え、80 秒で `status=exited exitCode=1 restartCount=5`。12 秒以上走っても回数は戻らない。compose は `depends_on: [kafka-1, kafka-2, kafka-3]` だけで Splunk / OpenSearch の healthy を待たない（compose.yaml:51、grep `service_healthy` は 0 件） | 直す。splunk / opensearch の healthcheck と `depends_on … condition: service_healthy`（または待ちループ）＋ check.sh に spark の running 判定＋テスト |
+| 2 | `env_get`（check.sh:11、lab.sh:10）の読み方が compose と違う | **Should fix**（correctness） | 合成の .env を `docker compose config` と並べた（scratchpad `envt/`）: `pa$$word` → compose `pa$word` / env_get `pa$$word`、`ab$HOME` → 展開 / そのまま、`"a\"b"` → `a"b` / `a\`、`P4 = spaced` → `spaced` / 空、`val<TAB># memo` → `val\t# memo` / `val`、`${P7}z` → `az` / `${P7}z`。`.env.example` の既定値では一致する | 直す。`$` `\` `=` の周りの空白・TAB の後の `#` がある行に注意を出し `.env.example` に制約を書く、または `docker compose config` で compose の解釈を読む（エンジニアが選ぶ）＋テスト |
+| 3 | failover の `route()`（lab.sh:199/215）は IS-IS の経路が無いと `grep … \| head -1` の rc=1 を `set -e` + `pipefail` が拾い、「(IS-IS の経路が無い)」の分岐に来ずに終わる。テストは経路を偽装しているので検出しない | Should fix（runtime）だが **009 の範囲外** | `/bin/bash -c 'set -euo pipefail; f(){ local x; x=$(echo a\|grep b\|head -1); echo after; }; f'` → 何も出ず rc=1 | 009 より前からの不具合で、build.md の「PM への候補」と BACKLOG に既にある。lab.sh は 011 が大きく組み直すので、そちらのあとで別に直す |
+| 4 | check.sh の Kafka の判定は `messagesCount` が累積なので、volume が残っていると Telegraf が死んでも ok | Nit | 読んだだけ（Kafbat の `messagesCount` はトピックの総数）。design 6 は「件数 > 0」を要件にしている | 直さない。最終報告に載せる |
+| 5 | up.sh:16 / check.sh:79 の `ip … \| grep -q` は SIGPIPE で偽になり得る（fail-open）。`.` が未エスケープ。Mac には `ip` が無い | Nit | 読んだだけ。`grep -q` は最初の一致で閉じるので `ip` 側が SIGPIPE を受けるが、`grep -q` 自身の rc は 0。pipefail の無い up.sh では `$?` は grep のもの | 直さない |
+| 6 | `app/containerlab` で `sudo bash lab.sh` と打つと案内が `sudo lab.sh heal-bgp` になる | Nit | 読んだだけ（`LAB_CMD` は `$0` から決める。README の打ち方は `sudo app/containerlab/lab.sh …` か `sudo lab`） | 直さない。build.md の「未確認」に EC2 の `$0` が既にある |
+| 7 | ops/check.sh:44-48 の `git ls-files` は非 ASCII のファイル名を引用符付きで返し `bash -n` が die する | Nit | `git ls-files '*.sh' \| grep -c '"'` → 0（該当ファイルなし） | 直さない |
+| 8 | テストが文字列の照合だけ（test_local_compose.py:420 / :636、test_stream、test_lab_debug） | 据え置き | design.md「検証方法」がテストの手段を文字列の検査と偽の curl / docker で定めている。2 の修正で合成の .env を使う検査が入る | 2 の修正に合成 .env の検査を含める。残りは直さない |
+| 9 | telegraf.sh の BIND の正規表現が `999.999.999.999` を通す | Nit | 読んだだけ（bind に失敗して Telegraf が止まり、check.sh の health で拾う） | 直さない |
+
+反対弁護人が不成立とした 6 件（`$VAR` + 全角、bash 3.2 の `${!p}`、sed インジェクション、Kafbat の 8080、on-failure の 4 か所、`restart telegraf` の BIND）は PM も同意。
+
+テスト: 反対弁護人が `uv run python tests/test_local_compose.py` 111 / 0、`test_stream` 75 / 0、`test_lab_debug` 84 / 0 を実行。PM は a5097ab のマージ後に `bash ops/check.sh` → 最終行「すべて通過」（scratchpad `check-008.log`、cde390f 時点）。
+
+未解消: 1 と 2（エンジニア2 が直す）。解消したら cold reviewer #1 を呼ぶ（`/cycle-review`）。
+
+## Round 2（セルフレビューの Should fix 2 件の修正）
+
+- 実装モデル: opus-5.5（エンジニア2）。commit: 468fd46（`fix/009-spark-restart-env-get`、61d475c から 1 commit）。PM が docs/cycle-006-design にマージ
+- エンジニア2 の報告（SendMessage）をそのまま写す。PM は `bash ops/check.sh` をマージ後に打ち直した（結果は review.md の Round 1）
+
+### 1. Spark が送り先より先に起きて落ちる件（Should fix 1）
+
+- splunk / opensearch / prometheus に healthcheck を足した（splunk: `/sbin/checkstate.sh`、opensearch: `/` が 200 か 401、prometheus: `/-/ready`）
+- `depends_on` に `service_healthy` を足した。spark-splunk は splunk を、spark-http は opensearch と prometheus を待つ。`x-spark` のマージキーは `depends_on` を混ぜないので、Kafka 3 つと合わせて各 service に書いた
+- check.sh に「Spark: spark-splunk / spark-http が動いている」の 2 項目を足した（`docker compose ps -a --format json` を 1 回）。exited / restarting は状態を出して logs と `up.sh <service>` を案内、created は依存が healthy でないことを案内、コンテナが無ければ up.sh を案内
+- 手元で prometheus と opensearch を別プロジェクト名で上げ、2 つとも healthy になるのを見てから `down -v` で消した。opensearch の `/` は 401 だった
+
+### 2. env_get の件（Should fix 2）は案 (b)
+
+- check.sh と lab.sh は `docker compose --env-file F config --environment` の出力から値を取る
+- 本物の compose（v5.1.3）に試し用の .env を読ませるテストを足した。P1〜P9 のすべてと、シェルが勝つことを確かめる
+- compose が読めない .env では値のかけらが stderr に出るので、出さずに汎用の文言で止まり、sudo も curl も打たない（テストあり）
+- `tests/test_local_compose.py` は 121 通過（111 から 10 件増）
+
+### 検証
+
+- `ops/check.sh`: 325 通過・失敗 0、最後の行「すべて通過」（エンジニア2）
+
+### 未確認・挙動の変化
+
+- `config --environment` が使える compose の最小の版は未確認（v5.1.3 にはある）
+- 改行を含む値は読み違える（README と .env.example に「値は 1 行」と書いた）
+- Splunk を含む全体の healthy の待ち時間は未確認（WSL でも Apple Silicon でも）。splunk の healthcheck は手元で走らせていない
+- lab.sh でもシェルの `SRLINUX_IMAGE` / `MULTITOOL_IMAGE` が .env より勝つようになった（compose と同じ。前は .env が勝っていた）
+
+### セルフレビュー
+
+Round 1 の `### セルフレビュー` の Should fix 1・2 がこの修正で解消。未解消の Must fix / Should fix: 無し。Nit 4/5/6/7/9 と据え置きの 8、範囲外の 3 は Round 1 のまま最終報告へ。

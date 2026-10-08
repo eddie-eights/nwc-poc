@@ -19,7 +19,7 @@
 - **OpenSearch Serverless のコレクション（KB と logs）は公開しない。**ネットワークポリシーは `IaC/terraform/aws-managed/base/core` の VPC エンドポイント 1 本（2 つのコレクションで共用）だけを通し、KB はそれに加えて Bedrock のサービス（`bedrock.amazonaws.com`）を通す。エンドポイントを通らない接続は公開側からの扱いになるので、VPC の中からでもエンドポイントが無ければ届かない。KB のベクトルインデックスは VPC の中の Lambda が作り、apply する人の PC は OpenSearch につながない（データアクセスポリシーにも人は入らない。apply と destroy を別の人が打ってもよい）。
 - ガードレールの判定は、東京以外の APAC のリージョン（大阪、ソウル、ムンバイ、シンガポール、シドニー）で行われることがある。データを国内に留める決まりがあるなら使えない。
 - Session Manager の設定で KMS の暗号化を必須にしているなら、インスタンスロールへの `kms:Decrypt` が別に要る（この Terraform には入れていない。`kms` のエンドポイントも NAT Gateway も無いので、`kms` の API へは届かない。そのときは `kms` のエンドポイントを足す）。
-- **PIPELINE は組織の SCP / IAM で止められやすい**（EC2 の t4g.xlarge、Neptune Analytics、MSK、EMR Serverless、S3 Tables、ECS Fargate（Telegraf / Kafbat UI / Grafana / Splunk / Nautobot）と内部 NLB（Telegraf）、RDS（Nautobot）、Cloud Map）。apply が `explicitly denied` で止まったら、管理者に許可を頼むか `SKIP_*` で外す。
+- **PIPELINE は組織の SCP / IAM で止められやすい**（EC2 の m6i.xlarge、Neptune Analytics、MSK、EMR Serverless、S3 Tables、ECS Fargate（Telegraf / Grafana / Splunk / Nautobot）と内部 NLB（Telegraf）、RDS（Nautobot）、Cloud Map）。apply が `explicitly denied` で止まったら、管理者に許可を頼むか `SKIP_*` で外す。
 
 ## 利用者の PC 側
 
@@ -30,8 +30,8 @@ AWS CLI v2 と Session Manager plugin を入れる。PC から `ssm.ap-northeast
 
 - AWS CLI v2、Terraform 1.11 以上、Docker buildx（arm64）、Session Manager plugin（`NO_DASHBOARD_PORTFORWARD=1` なら要らない。OSS 版で Kafka / OpenSearch を 1 台ずつ入れ替えるときは ECS Exec に使う。端末の無いシェルから打つなら `script` も使う。macOS と Linux（util-linux）には入っている）、uv（`python3` があれば up.sh はそちらを使う）、curl（lab・analytics・デバッグ用の EC2 のときに containerlab の rpm と jar を取る）。
 - `registry.terraform.io` に 443 で届くこと（OpenSearch Serverless には PC からつながない）。
-- イメージをビルドするので、インターネットに出られること。`STORES` に `splunk` を入れると、Docker Hub から `splunk/splunk` の amd64 のイメージ（約 2〜3 GB）を引き、検知のアプリを足して ECR に push する。
-- x86_64 の PC では、agent / worker / Grafana / Nautobot のビルドに QEMU（binfmt）が要る（下の WSL2 の `binfmt` の行。Telegraf と Splunk は COPY だけなので要らない）。
+- イメージをビルドするので、インターネットに出られること。`STORES` に `splunk` を入れると、Docker Hub から `splunk/splunk` の amd64 のイメージ（約 2〜3 GB）を引き、検知のアプリを足して ECR に push する。lab（`PIPELINE=1`）とデバッグ用の EC2 は、SR Linux・multitool・TRex（Docker Hub の `trexcisco/trex`）の amd64 を引いて ECR に写す。
+- x86_64 の PC では、agent / worker / Grafana / Nautobot のビルドに QEMU（binfmt）が要る（下の WSL2 の `binfmt` の行。Telegraf と Splunk は COPY だけ、lab のイメージは写すだけなので要らない）。
 
 ### Mac
 

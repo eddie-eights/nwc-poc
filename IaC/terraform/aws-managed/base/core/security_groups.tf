@@ -28,7 +28,6 @@ locals {
     syslog_ng            = "syslog-ng ECS task - device syslog behind the NLB to Kafka (IaC/terraform/aws-managed/pipeline/stream)"
     goflow2              = "GoFlow2 ECS task - NetFlow and sFlow behind the NLB to Kafka (IaC/terraform/aws-managed/pipeline/stream)"
     msk                  = "MSK brokers (IaC/terraform/aws-managed/pipeline/stream)"
-    kafka_ui             = "Kafbat UI ECS task (IaC/terraform/aws-managed/pipeline/stream)"
     spark                = "EMR Serverless workers (IaC/terraform/aws-managed/pipeline/analytics)"
     grafana              = "Grafana ECS task (IaC/terraform/aws-managed/pipeline/analytics)"
     splunk               = "Splunk ECS task (IaC/terraform/aws-managed/pipeline/analytics)"
@@ -45,8 +44,9 @@ locals {
   lab_mgmt_cidr = "203.0.113.0/24"
 
   # AWS の API（インターフェース型と OpenSearch Serverless の VPC エンドポイント）と S3（ゲートウェイエンドポイント。S3 Tables のデータ・ECR のレイヤー・
-  # AL2023 の dnf もここ）へ出るワークロード。Fargate のタスクは ECR のイメージ・SSM と Secrets Manager のシークレット・ログもタスクの ENI で取りに行く
-  aws_api_clients = ["web", "lab", "telegraf_dialout", "telegraf_dialin", "syslog_ng", "goflow2", "kafka_ui", "spark", "grafana", "splunk", "nautobot", "lambda", "workflow", "runtime"]
+  # AL2023 の dnf もここ）へ出るワークロード。Fargate のタスクは ECR のイメージ・SSM と Secrets Manager のシークレット・ログもタスクの ENI で取りに行く。
+  # Web の EC2 は Kafbat UI（cycle 010）のイメージもここ（ECR と S3）から引く
+  aws_api_clients = ["web", "lab", "telegraf_dialout", "telegraf_dialin", "syslog_ng", "goflow2", "spark", "grafana", "splunk", "nautobot", "lambda", "workflow", "runtime"]
 
   # 通信の表。1 行が 1 つの流れで、from が送り、to が受ける（応答は SG の接続追跡で通るので書かない）。from / to は上の SG のキーか endpoints、
   # または SG でない相手の s3（S3 のマネージドプレフィックスリスト）と lab_mgmt（local.lab_mgmt_cidr）。
@@ -68,7 +68,6 @@ locals {
       { from = "web", to = "splunk", protocol = "tcp", port = 8000, why = "Splunk Web through SSM port forwarding" },
       { from = "web", to = "workflow", protocol = "tcp", port = 8233, why = "Temporal UI through SSM port forwarding" },
       { from = "web", to = "nautobot", protocol = "tcp", port = 8080, why = "Nautobot UI through SSM port forwarding" },
-      { from = "web", to = "kafka_ui", protocol = "tcp", port = 8080, why = "Kafbat UI through SSM port forwarding" },
 
       # Nautobot（IaC/terraform/aws-managed/pipeline/nautobot）→ RDS の PostgreSQL
       { from = "nautobot", to = "nautobot_db", protocol = "tcp", port = 5432, why = "PostgreSQL - Nautobot database" },
@@ -77,7 +76,7 @@ locals {
       { from = "telegraf_dialout", to = "msk", protocol = "tcp", port = 9098, why = "Kafka IAM - Telegraf dial-out writes" },
       { from = "telegraf_dialin", to = "msk", protocol = "tcp", port = 9098, why = "Kafka IAM - Telegraf dial-in writes" },
       { from = "spark", to = "msk", protocol = "tcp", port = 9098, why = "Kafka IAM - Spark reads" },
-      { from = "kafka_ui", to = "msk", protocol = "tcp", port = 9098, why = "Kafka IAM - Kafbat UI" },
+      { from = "web", to = "msk", protocol = "tcp", port = 9098, why = "Kafka IAM - Kafbat UI on the web EC2" },
       # SASL/SCRAM の 9096（cycle 012。syslog-ng と GoFlow2 は MSK の IAM 認証を喋れない）
       { from = "syslog_ng", to = "msk", protocol = "tcp", port = 9096, why = "Kafka SCRAM - syslog-ng writes" },
       { from = "goflow2", to = "msk", protocol = "tcp", port = 9096, why = "Kafka SCRAM - GoFlow2 writes" },
