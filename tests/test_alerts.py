@@ -51,28 +51,28 @@ check("アラートアクションはモジュールの頭では標準ライブ�
       "app に同梱せず、sys.path も足さない。boto3 の無い PC でもテストできる）",
       top <= set(sys.stdlib_module_names) and imported(ast.walk(ast.parse(src))) - top == {"boto3", "botocore"}
       and "sys.path" not in src and not hasattr(sns, "APP_LIB"))
-devmap = sns.parse_device_map(" 203.0.113.31=dc1-leaf-01 ,DC1-Leaf-02.Example.Net=dc1-leaf-02,壊れた要素,=x,y=,203.0.113.101=")
+devmap = sns.parse_device_map(" 203.0.113.31=dc1-a-leaf-01 ,DC1-A-Leaf-02.Example.Net=dc1-a-leaf-02,壊れた要素,=x,y=,203.0.113.101=")
 check("device map は「別名=機器名」をカンマで並べたもの。別名は小文字にし、= の無い要素と片方が空の要素は捨てる",
-      devmap == {"203.0.113.31": "dc1-leaf-01", "dc1-leaf-02.example.net": "dc1-leaf-02"} and sns.parse_device_map("") == {} and sns.parse_device_map(None) == {})
+      devmap == {"203.0.113.31": "dc1-a-leaf-01", "dc1-a-leaf-02.example.net": "dc1-a-leaf-02"} and sns.parse_device_map("") == {} and sns.parse_device_map(None) == {})
 check("機器名は device map を引き、無ければ小文字にしてドメインを落とす（IPv4 は落とさない）",
-      [sns.device_name(n, devmap) for n in ("203.0.113.31", "DC1-LEAF-02.example.net", "Dc1-Spine-01.lab.local", "198.51.100.7", " dc1-leaf-01 ", "", None)]
-      == ["dc1-leaf-01", "dc1-leaf-02", "dc1-spine-01", "198.51.100.7", "dc1-leaf-01", "", ""])
+      [sns.device_name(n, devmap) for n in ("203.0.113.31", "DC1-A-LEAF-02.example.net", "Dc1-Spine-01.lab.local", "198.51.100.7", " dc1-a-leaf-01 ", "", None)]
+      == ["dc1-a-leaf-01", "dc1-a-leaf-02", "dc1-spine-01", "198.51.100.7", "dc1-a-leaf-01", "", ""])
 check("受け手（rules.device_name）も同じ規則で揃える（device map を通ったあとの名前はそのまま通る）",
-      all(rules.device_name(n) == sns.device_name(n, {}) for n in ("DC1-LEAF-02.example.net", "198.51.100.7", "dc1-leaf-01", "")))
+      all(rules.device_name(n) == sns.device_name(n, {}) for n in ("DC1-A-LEAF-02.example.net", "198.51.100.7", "dc1-a-leaf-01", "")))
 check("starts_at は epoch 秒の整数にする（小数は切り捨て、読めない値と負の値は 0）",
       [sns._epoch(v) for v in ("1790000000.9", 1790000000, "", None, "x", "-5")] == [1790000000, 1790000000, 0, 0, 0, 0])
 ROWS = [
     {"device": "203.0.113.31", "kind": "bgp_down", "target": "10.255.0.1", "status": "firing", "detail": "bgp session to 10.255.0.1 is active (splunk: gnmi)", "starts_at": "1790000000.5"},
     {"device": "DC1-SPINE-01.lab", "kind": "link_down", "target": " ethernet-1/1 ", "status": "RESOLVED", "detail": "", "starts_at": ""},
     {"device": "", "kind": "trap", "target": ".1.3", "status": "firing"},
-    {"device": "dc1-leaf-01", "kind": "", "target": "x", "status": "firing"},
-    {"device": "dc1-leaf-01", "kind": "trap", "target": ".1.3", "status": "pending"},
-    {"device": "dc1-leaf-01", "kind": "trap", "status": "firing", "detail": "x" * 3000},
+    {"device": "dc1-a-leaf-01", "kind": "", "target": "x", "status": "firing"},
+    {"device": "dc1-a-leaf-01", "kind": "trap", "target": ".1.3", "status": "pending"},
+    {"device": "dc1-a-leaf-01", "kind": "trap", "status": "firing", "detail": "x" * 3000},
 ]
 alerts = sns.alerts_from_rows(ROWS, devmap)
 check("結果の 1 行 = アラート 1 件。機器か種類が無い行と、status が firing / resolved でない行は捨てる",
       [(a["device_id"], a["kind"], a["target"], a["status"], a["starts_at"]) for a in alerts]
-      == [("dc1-leaf-01", "bgp_down", "10.255.0.1", "firing", 1790000000), ("dc1-spine-01", "link_down", "ethernet-1/1", "resolved", 0), ("dc1-leaf-01", "trap", "", "firing", 0)])
+      == [("dc1-a-leaf-01", "bgp_down", "10.255.0.1", "firing", 1790000000), ("dc1-spine-01", "link_down", "ethernet-1/1", "resolved", 0), ("dc1-a-leaf-01", "trap", "", "firing", 0)])
 check("アラートの項目は 6 つで、detail は 1000 字で切る", all(list(a) == KEYS for a in alerts) and len(alerts[2]["detail"]) == 1000)
 texts = sns.messages(alerts)
 check("本文は {\"source\": \"splunk\", \"alerts\": […]} の JSON 1 通（空白を入れない）",
@@ -84,19 +84,19 @@ check("50 件ごとに 1 通に分ける（SNS の本文は 256 KB まで）。0
 got = rules.alerts_from_message(texts[0], now=1790000123)
 check("受け手（rules.alerts_from_message）がそのまま読める: anomaly_id は <機器>#<種類>#<対象>、starts_at が無ければ受けた時刻",
       [(a["anomaly_id"], a["status"], a["first_seen"], a["source"]) for a in got]
-      == [("dc1-leaf-01#bgp_down#10.255.0.1", "firing", 1790000000, "splunk"), ("dc1-spine-01#link_down#ethernet-1/1", "resolved", 1790000123, "splunk"),
-          ("dc1-leaf-01#trap#", "firing", 1790000123, "splunk")])
+      == [("dc1-a-leaf-01#bgp_down#10.255.0.1", "firing", 1790000000, "splunk"), ("dc1-spine-01#link_down#ethernet-1/1", "resolved", 1790000123, "splunk"),
+          ("dc1-a-leaf-01#trap#", "firing", 1790000123, "splunk")])
 with tempfile.TemporaryDirectory() as tmp:
     RESULTS = os.path.join(tmp, "results.csv.gz")
     with gzip.open(RESULTS, "wt", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["device", "kind", "target", "status", "detail", "starts_at", "__mv_device"])
         w.writeheader()
         w.writerow(dict(ROWS[0], __mv_device=""))
-        w.writerow({"device": "dc1-leaf-02", "kind": "trap", "target": ".1.3.6.1.4.1.9.9.41.2.0.1", "status": "resolved", "detail": "改行\nとカンマ, を含む", "starts_at": "1790000060"})
+        w.writerow({"device": "dc1-a-leaf-02", "kind": "trap", "target": ".1.3.6.1.4.1.9.9.41.2.0.1", "status": "resolved", "detail": "改行\nとカンマ, を含む", "starts_at": "1790000060"})
     rows = sns.read_rows(RESULTS)
     check("結果のファイル（gzip の CSV。Splunk が results_file で渡す）を行の dict にする（余分な列は無視、改行とカンマ入りの値も読む）",
           len(rows) == 2 and rows[0]["device"] == "203.0.113.31" and rows[1]["detail"] == "改行\nとカンマ, を含む"
-          and [a["device_id"] for a in sns.alerts_from_rows(rows, devmap)] == ["dc1-leaf-01", "dc1-leaf-02"])
+          and [a["device_id"] for a in sns.alerts_from_rows(rows, devmap)] == ["dc1-a-leaf-01", "dc1-a-leaf-02"])
 
     # ---- 設定（entrypoint.sh が書くファイル）
     ep = read("app", "splunk", "entrypoint.sh")
@@ -108,7 +108,7 @@ with tempfile.TemporaryDirectory() as tmp:
     check("認証情報そのもの（AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN）はファイルに写さない",
           not any(k in ep or k in sns.ENV_KEYS for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")))
     ENVF = os.path.join(tmp, "nwc-alerts.env")
-    DM = "203.0.113.31=dc1-leaf-01,10.255.2.2=dc1-leaf-02"
+    DM = "203.0.113.31=dc1-a-leaf-01,10.255.2.2=dc1-a-leaf-02"
     stub = os.path.join(tmp, "entrypoint.sh")
     with open(stub, "w", encoding="utf-8") as f:
         f.write(ep.replace('exec /sbin/entrypoint.sh "$@"', 'echo "upstream $*"'))
@@ -376,7 +376,7 @@ with tempfile.TemporaryDirectory() as tmp:
     PAYLOAD = json.dumps({"search_name": "netops_gnmi", "results_file": RESULTS, "session_key": "must-not-be-logged"})
     rc, published, err = run_main(["netops_sns.py", "--execute"], PAYLOAD)
     check("main: 結果のファイルを読んで publish し、0 で終わる（件数を 1 行で残す）",
-          rc == 0 and len(published) == 1 and [a["device_id"] for a in json.loads(published[0])["alerts"]] == ["dc1-leaf-01", "dc1-leaf-02"]
+          rc == 0 and len(published) == 1 and [a["device_id"] for a in json.loads(published[0])["alerts"]] == ["dc1-a-leaf-01", "dc1-a-leaf-02"]
           and "INFO search=netops_gnmi rows=2 alerts=2 published=1/1" in err)
     check("main: Splunk のセッションキーはログに出さない", "must-not-be-logged" not in err)
     check("main: --execute 以外では何もしない（1）", run_main(["netops_sns.py"], PAYLOAD)[0] == 1 and run_main(["netops_sns.py", "--other"], PAYLOAD)[:2] == (1, []))
@@ -801,7 +801,7 @@ dm = subprocess.run([sys.executable, os.path.join(ROOT, "app", "containerlab", "
 dmap = sns.parse_device_map(dm.stdout.strip())
 check("device map（app/containerlab/lab_topology.py --device-map）は管理 IP と回線の IP を機器名に引ける形で、アラートアクションがそのまま読む",
       dm.returncode == 0 and len(dmap) >= 8 and all(sns.IPV4_RE.match(k) and re.fullmatch(r"[a-z0-9-]+", v) for k, v in dmap.items())
-      and sns.device_name("10.255.2.1", dmap) == "dc1-leaf-01" and len(dm.stdout.strip()) < 4000)
+      and sns.device_name("10.255.2.1", dmap) == "dc1-a-leaf-01" and len(dm.stdout.strip()) < 4000)
 
 # ---- Grafana のアラート（送り先と本文は netops.yaml、ルールは格納先ごとに netops-prometheus.yaml / netops-opensearch.yaml）
 def nocomment(text):
@@ -831,7 +831,7 @@ def render(alerts):
     return m.group(1) + "".join(out) + m.group(3)
 
 
-body = render([{"status": "firing", "labels": {"sysName": "dc1-leaf-01", "ifName": "ethernet-1/49", "kind": "link_down", "target": "ethernet-1/49"},
+body = render([{"status": "firing", "labels": {"sysName": "dc1-a-leaf-01", "ifName": "ethernet-1/49", "kind": "link_down", "target": "ethernet-1/49"},
                 "annotations": {"detail": "ethernet-1/49 is down (grafana: poll)"}, "starts_at": 1790000000},
                {"status": "resolved", "labels": {"sysName": "DC1-Spine-01", "kind": "link_down", "target": 'eth"x'},
                 "annotations": {"detail": 'eth"x is down (grafana: poll)'}, "starts_at": 1790000030},
@@ -839,14 +839,14 @@ body = render([{"status": "firing", "labels": {"sysName": "dc1-leaf-01", "ifName
                 "annotations": {"detail": "bgp session to 10.255.0.9 is not established (grafana: gnmi)"}, "starts_at": 1790000060}])
 check("Grafana の本文は埋めたあと JSON になる（テンプレートの構文は全部埋まる。値の中の \" も壊さない。機器名が無ければ送り元の IP）",
       "{{" not in body and [(a["device_id"], a["target"], a["detail"]) for a in json.loads(body)["alerts"]]
-      == [("dc1-leaf-01", "ethernet-1/49", "ethernet-1/49 is down (grafana: poll)"), ("DC1-Spine-01", 'eth"x', 'eth"x is down (grafana: poll)'),
+      == [("dc1-a-leaf-01", "ethernet-1/49", "ethernet-1/49 is down (grafana: poll)"), ("DC1-Spine-01", 'eth"x', 'eth"x is down (grafana: poll)'),
           ("203.0.113.99", "10.255.0.9", "bgp session to 10.255.0.9 is not established (grafana: gnmi)")]
       and all(list(a) == KEYS for a in json.loads(body)["alerts"]))
 check("受け手がそのまま読める: Grafana の link_down は Splunk の linkDown trap と同じ anomaly_id（同じ障害は 1 つのワークフロー）",
       [(a["anomaly_id"], a["status"], a["first_seen"], a["source"]) for a in rules.alerts_from_message(body)][:2]
-      == [("dc1-leaf-01#link_down#ethernet-1/49", "firing", 1790000000, "grafana"), ("dc1-spine-01#link_down#eth\"x", "resolved", 1790000030, "grafana")]
+      == [("dc1-a-leaf-01#link_down#ethernet-1/49", "firing", 1790000000, "grafana"), ("dc1-spine-01#link_down#eth\"x", "resolved", 1790000030, "grafana")]
       and rules.alerts_from_message(sns.messages(sns.alerts_from_rows([{"device": "10.255.2.1", "kind": "link_down", "target": "ethernet-1/49", "status": "firing"}], dmap))[0], now=1)[0]["anomaly_id"]
-      == "dc1-leaf-01#link_down#ethernet-1/49")
+      == "dc1-a-leaf-01#link_down#ethernet-1/49")
 check("$ は二重にしない（$$ と書くと Grafana 13.2.2 が起動しない）。${…} は連絡先の環境変数 2 つだけ。ルールのファイルは $ を持たない"
       "（provisioning がラベルの $labels を環境変数として消すので .Labels で書く）",
       "$$" not in gcode and set(re.findall(r"\$\{(\w+)\}", gcode)) == {"ALERTS_TOPIC_ARN", "AWS_REGION"} and "$" not in rcode)
@@ -976,25 +976,26 @@ check("check.sh の構文検査は .py のあるディレクトリを全部見�
 
 # ---- lab.sh: 比べるための障害（fail-bgp / heal-bgp / trap-test）
 lab = read("app", "containerlab", "lab.sh")
-labc = {k: re.search(rf"(?:^|; ){k}=([^;\s]+)", lab, re.M).group(1) for k in ("BGP_NODE", "BGP_PEER", "ACC_VM", "TEST_TRAP_OID")}
-check("lab.sh の fail-bgp / heal-bgp は BGP_NODE の設定にある iBGP の neighbor（BGP_PEER）の admin-state を disable / enable にする。使い方の表示に 3 つが載る",
+labc = {k: re.search(rf"(?:^|; ){k}=([^;\s]+)", lab, re.M).group(1) for k in ("BGP_NODE", "BGP_PEER", "TREX", "TEST_TRAP_OID")}
+check("lab.sh の fail-bgp / heal-bgp は BGP_NODE の設定にある iBGP の neighbor（BGP_PEER）の admin-state を disable / enable にする。使い方の表示に 3 つが載る（011 で trex の行が 7 行目に増えた）",
       f"set / network-instance default protocols bgp neighbor {labc['BGP_PEER']} peer-group overlay" in read("app", "containerlab", "srlinux", labc["BGP_NODE"] + ".cli")
       and '"set / network-instance default protocols bgp neighbor $BGP_PEER admin-state $1" "commit now"' in lab
       and all(f"\n    bgp_admin {s}\n" in lab for s in ("disable", "enable"))
       and all(f"\n  {c})\n" in lab for c in ("fail-bgp", "heal-bgp", "trap-test"))
-      and [i for i, l in enumerate(lab.splitlines(), 1) if l.startswith("#   lab.sh ")] == [3, 4, 5, 6] and "fail-bgp | heal-bgp | trap-test" in lab.splitlines()[3]
-      and "  *) sed -n '2,6p' \"$SELF\"; exit 1 ;;" in lab and "      *) sed -n '6p' \"$SELF\"; exit 1 ;;" in lab and "telegraf run" in lab.splitlines()[5])
+      and [i for i, l in enumerate(lab.splitlines(), 1) if l.startswith("#   lab.sh ")] == [3, 4, 5, 6, 7] and "fail-bgp | heal-bgp | trap-test" in lab.splitlines()[3]
+      and "  *) sed -n '2,7p' \"$SELF\"; exit 1 ;;" in lab and "      *) sed -n '6p' \"$SELF\"; exit 1 ;;" in lab and "telegraf run" in lab.splitlines()[5]
+      and "      *) sed -n '7p' \"$SELF\"; exit 1 ;;" in lab and "trex start | stop | status" in lab.splitlines()[6])
 _ba = lab[lab.index("\nbgp_admin() {"):lab.index("\n}\n", lab.index("\nbgp_admin() {"))]
 check("lab.sh の fail-bgp / heal-bgp は commit のあと state の admin-state を読み直し、変わっていなければ 1 で止まる（sr_cli の終了コードに頼らない。grep -q は pipe に繋がない）",
       '"info from state / network-instance default protocols bgp neighbor $BGP_PEER admin-state")' in _ba
       and 'grep -qw "admin-state $1" <<<"$st" || {' in _ba and _ba.rstrip().endswith("exit 1; }") and "| grep" not in _ba)
 _dm = dict(kv.split("=") for kv in subprocess.run([sys.executable, os.path.join(ROOT, "app", "containerlab", "lab_topology.py"), os.path.join(ROOT, "app", "containerlab"), "--device-map"],
                                                    capture_output=True, text=True, check=True).stdout.strip().split(","))
-check("lab.sh の trap-test の OID は Splunk の netops_trap も Grafana の trap ルールも除かない（どちらも kind = trap）。管理ネットワークの中（ACC_VM の netns）から"
-      "機器の trap と同じ $MGMT_GW:162 へ送り、送り元の管理 IP は device map で ACC_VM になる",
+check("lab.sh の trap-test の OID は Splunk の netops_trap も Grafana の trap ルールも除かない（どちらも kind = trap）。管理ネットワークの中（TREX の netns）から"
+      "機器の trap と同じ $MGMT_GW:162 へ送り、送り元の管理 IP は device map で TREX（dc1-trex-01）になる",
       labc["TEST_TRAP_OID"] not in set(SPLUNK_TRAP_SKIP) | {".1.3.6.1.6.3.1.1.5.3", ".1.3.6.1.6.3.1.1.5.4"}
       and labc["TEST_TRAP_OID"] not in re.search(r"tags\.oid\.keyword:\((.*?)\)", grules["trap"]).group(1)
       and """nsenter -t "$pid" -n snmptrap -v2c -c "$SNMP_COMMUNITY" "$MGMT_GW:162" '' "$TEST_TRAP_OID" """ in lab
-      and """pid=$(docker inspect -f '{{.State.Pid}}' "clab-$LAB-$ACC_VM")""" in lab
-      and [ip for ip, n in _dm.items() if n == labc["ACC_VM"] and ip.startswith("203.0.113.")] == ["203.0.113.102"])
+      and """pid=$(docker inspect -f '{{.State.Pid}}' "clab-$LAB-$TREX")""" in lab
+      and [ip for ip, n in _dm.items() if n == labc["TREX"] and ip.startswith("203.0.113.")] == ["203.0.113.101"])
 print(f"通過 {passed} / 失敗 0")

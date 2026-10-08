@@ -96,7 +96,8 @@ check("trap の宛先は 6 台とも lab.sh の MGMT_GW:162（Spine-Leaf の全�
 check("6 台とも IS-IS（instance main）と iBGP EVPN（AS 65100）を持ち、Spine だけ route-reflector",
       all("protocols isis instance main" in c and "protocols bgp autonomous-system 65100" in c and "afi-safi evpn admin-state enable" in c for c in srl_cfg.values())
       and all(("route-reflector client true" in srl_cfg[n]) == ("-spine-" in n) for n in srl_nodes))
-check("containerlab の VM 2 台は linux で、leaf の組へ 2 本（bond）", len(re.findall(r"^\s*kind: linux$", clab, re.M)) == 2 and "bond0" in clab)
+check("containerlab の TRex 1 台は linux で、各 leaf の e1-3 へ 1 本ずつ（bond は組まない）", len(re.findall(r"^\s*kind: linux$", clab, re.M)) == 1 and "bond" not in clab
+      and all(f'"dc1-trex-01:eth{i}", "dc1-{l}:e1-3"' in clab for i, l in enumerate(("s-leaf-01", "s-leaf-02", "a-leaf-01", "a-leaf-02"), 1)))
 check("lab.sh forward は syslog の LOG_PORT も trap の 162 と同じ仕組みで DNAT する（rsyslog は無い）",
       re.search(r'-p udp --dport "\$LOG_PORT" "\$\{c\[@\]\}" -j DNAT --to-destination "\$t:\$LOG_PORT"', labsh) is not None
       and "rsyslog" not in labsh and "LOG_DIR" not in labsh and re.search(r"^\s*logs\)", labsh, re.M) is not None)

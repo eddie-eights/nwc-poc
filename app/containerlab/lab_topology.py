@@ -12,7 +12,7 @@ tests/test_sync.py が確かめる（lab を変えて app/agentcore/data を直�
   - srlinux/<機器>.cli: `protocols bgp autonomous-system <ASN>` → asn、`interface ethernet-1/N description` → 主/副（primary / secondary）と
     帯域（… 1G / 100M / 25G）、`subinterface 0 ipv4 address` → そのインタフェースのアドレス、`system name host-name` → 別名、
     `ethernet aggregate-id lagN` → そのインタフェースが入る LAG（lag。いまの lab には LAG が無い）
-  - nodes の exec の `ip addr add <アドレス>/<長さ> dev ethN`（VM 側）→ そのインタフェースのアドレス、`ip link set ethN master bond0` → lag
+  - nodes の exec の `ip addr add <アドレス>/<長さ> dev ethN`（VM 側）→ そのインタフェースのアドレス、`ip link set ethN master <bond>` → lag
   - 回線の種別: spine が付くなら fabric（IS-IS の p2p）、VM（TRex）が付いて LAG に入る IF なら lag、それ以外は l2（TRex のポートと leaf の ethernet-1/3）
 
 物理層より上（layers。--layers か JSON の "layers"）は同じ .cli から作る。頂点の id は「機器#種類#対象」で、下の層の id を property に持つ（層をまたぐ紐づけの鍵）:

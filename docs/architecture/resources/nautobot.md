@@ -63,7 +63,7 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
   ヘルスチェックは合わせて 15 分まで待つ。`bootstrap.py` が落ちても画面は上げる（ログに理由が出る）。
   出典: `nautobot.tf` のコメント。
 - **最初の中身は lab の定義から入れる。2 回目からは Nautobot の中身が正。**
-  機器が 0 台のときだけ、イメージに入れた `lab_seed.json`（8 台 / 12 本）から seed する。
+  機器が 0 台のときだけ、イメージに入れた `lab_seed.json`（7 台 / 12 本）から seed する。
   出典: [nautobot.md](../../nautobot.md) の「4. 起動してから同期するまで」。
 - **同期は Redis のロックの中で「読む → 書く」をする。**
   Job が重なっても順に走る。Telegraf とグラフ DB（Neptune。OSS 版は Neo4j）の片方が失敗しても、もう片方はやる。

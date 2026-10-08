@@ -489,8 +489,8 @@ _grab = type("Grab", (logging.Handler,), {"emit": lambda self, r: _topo_warns.ap
 _topo_log.addHandler(_grab)
 topology4 = load(os.path.join(AGENT, "topology.py"), "topology")
 _topo_log.removeHandler(_grab)
-check("neo4j の topology.py: 読み込みが DriverError で落ちたら 500 にせず静的データに戻る（SOURCE が static、機器は data/ の 8 台）",
-      topology4.SOURCE == "static" and len(topology4.DEVICES) == 8 and any("device" in q for q, _ in state["calls"]))
+check("neo4j の topology.py: 読み込みが DriverError で落ちたら 500 にせず静的データに戻る（SOURCE が static、機器は data/ の 7 台）",
+      topology4.SOURCE == "static" and len(topology4.DEVICES) == 7 and any("device" in q for q, _ in state["calls"]))
 check("neo4j の topology.py: 読めなかったときの WARNING は graph の名前（neo4j）で出し、neptune とは書かない",
       _topo_warns == ["neo4j read failed, using static data: 切れた"])
 _cent_err = {}
@@ -514,7 +514,7 @@ _src_rc, _src_graph = topology4.root_cause()["source"], topology4.topology_graph
 state["answer"] = {LINKS: [], LAYER_E: [], "RETURN n": []}
 _src_empty = topology4.reload(force=True)
 check(f"neo4j の topology.py: 元データは neo4j（root_cause と topology_graph の source も）、Neo4j が空なら neo4j-empty（{_src_full} / {_src_rc} / {_src_empty}）",
-      _src_full == _src_rc == _src_graph == "neo4j" and _src_empty == "neo4j-empty" and len(topology4.DEVICES) == 8)
+      _src_full == _src_rc == _src_graph == "neo4j" and _src_empty == "neo4j-empty" and len(topology4.DEVICES) == 7)
 _tv = open(os.path.join(ROOT, "app", "dashboard", "topology_view.py"), encoding="utf-8").read()
 check("Web のトポロジの元データの表示は neo4j / neo4j-empty も Neo4j と書く（静的データの案内に落ちない）",
       '"neo4j": "Neo4j（IaC/terraform/oss/pipeline/graph）"' in _tv and '"neo4j-empty": "Neo4j は空。' in _tv)

@@ -40,7 +40,7 @@ def build_prompt(anomaly: dict) -> str:
         f"異常: device_id={anomaly.get('device_id', '')} kind={anomaly.get('kind', '')} target={anomaly.get('target', '')} "
         f"detail={anomaly.get('detail', '')} first_seen_jst={jst(anomaly.get('first_seen'))}\n"
         '返す形: {"cause": "原因（日本語 1〜2 文）", "action": "heal-main | check | none", "reason": "その処置を選んだ理由"}\n'
-        "action は、アクセス側 Leaf dc1-leaf-01 の ethernet-1/1（dc1-spine-01 との fabric）が落ちている（link_down か、その上の isis_down）なら heal-main、状況を見るだけでよいなら check、"
+        "action は、Leaf dc1-a-leaf-01 の ethernet-1/1（dc1-spine-01 との fabric）が落ちている（link_down か、その上の isis_down）なら heal-main、状況を見るだけでよいなら check、"
         "人が別の手で直すべきなら none。"
     )
 
@@ -74,7 +74,7 @@ def normalize_action(action: str) -> tuple[str, str]:
 # ---------------------------------------------------------------- 事前チェック（処置を打つ前に、孤立と冗長切れを見る。2026-10-04）
 # 処置がトポロジをどう変えるか（app/containerlab/lab.sh のサブコマンドの中身）。処置を ALLOWED_ACTIONS に足すときはここにも足す（無い処置は「確認できず」になる）。
 # いまの 2 つは回線を上げるか見るだけなので、孤立の警告は出ない。落とす処置（機器の再起動・回線の切り離し）を足したときに効く
-ACTION_CHANGES = {"heal-main": [{"op": "link_up", "target": "dc1-leaf-01#ethernet-1/1"}], "check": []}
+ACTION_CHANGES = {"heal-main": [{"op": "link_up", "target": "dc1-a-leaf-01#ethernet-1/1"}], "check": []}
 PRECHECK_JA = {"ok": "問題なし", "warn": "注意", "danger": "危険", "unknown": "確認できず"}
 
 
@@ -167,7 +167,7 @@ def precheck(action: str, devices: list, links: list) -> dict:
 # ---------------------------------------------------------------- アラート（Grafana / Splunk → SNS → SQS）
 # SNS に publish する JSON は送り手（app/grafana/provisioning/alerting と app/splunk/netops_alerts）で形を揃えてある:
 #   {"source": "grafana" | "splunk",
-#    "alerts": [{"status": "firing" | "resolved", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1",
+#    "alerts": [{"status": "firing" | "resolved", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1",
 #                "detail": "ethernet-1/1 is down", "starts_at": 1790000000}]}
 # 同じ形を app/graph/status_handler.py（トポロジの status を書く Lambda）も読む。形を変えるときは 4 か所を一緒に変える
 ALERT_STATUSES = ("firing", "resolved")

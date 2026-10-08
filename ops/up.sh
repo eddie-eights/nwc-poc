@@ -536,8 +536,7 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 # OpenSearch Serverless の VPC エンドポイント = 1.4 × ENDPOINTS_AZ_NUM（2026-10-04 までは 2 AZ 固定で 3。公表単価からで Price List API では確かめていない。
 #   KB と logs のコレクションを公開しないために作り、両方で 1 本を共用する。CREATE_KB か STORES の grafana のときだけ数える。
 #   前に作ったコレクションが state に残っているだけで手順 3 の NEED_AOSS が 1 になる回は数えない）、
-# lab = 25（EC2 の m6i.xlarge 24.8。2026-10-08 に Price List API で確認。TRex が amd64 だけなので x86_64。2026-10-08 までの 17 は t4g.xlarge、
-#   2026-10-04 までの 9 は t4g.large の単価だった）、graph = 58（Neptune Analytics の 16 m-NCU で 58.1。2026-10-04 に料金のページで確認。Price List API では確かめていない。
+# lab = 25（EC2 の m6i.xlarge 24.8。2026-10-08 に Price List API で確認。TRex が amd64 だけなので x86_64。2026-10-08 までの 17 は t4g.xlarge、2026-10-04 までの 9 は t4g.large の単価だった）、graph = 58（Neptune Analytics の 16 m-NCU で 58.1。2026-10-04 に料金のページで確認。Price List API では確かめていない。
 #   2026-10-04 までの Neptune Database の db.t4g.medium は 14 だった。レプリカも同じ単価なので × NEPTUNE_AZ_NUM）、
 #   stream = MSK 57（ブローカー 2 台。MSK_AZ_NUM=3 で 1 台 27 を足す）+ Telegraf 5（Fargate ARM 0.25 vCPU / 0.5 GB で 1.2 のタスクが、受ける側 1 つと
 #   取りにいく側 TELEGRAF_AZ_NUM 個（2026-10-04 に分けた）と内部 NLB 2.43。
@@ -665,7 +664,7 @@ else
     build_agent "$REPO:$IMAGE_TAG"   # ops/up-common.sh（OSS 版と共通）
   fi
   if [ -n "$NEED_LAB" ]; then
-    # Nokia SR Linux（公開イメージ。約 1 GB）と VM の multitool。ECR にミラーして lab の EC2 が VPC の中から引けるようにする（ops/lab-common.sh）
+    # Nokia SR Linux（公開イメージ。約 1 GB）と TRex（Docker Hub。amd64）と linux kind の既定の multitool。ECR にミラーして lab の EC2 が VPC の中から引けるようにする（ops/lab-common.sh）
     mirror_lab_images "$REG" "$PREFIX" || die "lab のイメージを ECR に置けなかった"
   fi
   if [ -n "$NEED_WORKER" ]; then
@@ -882,7 +881,7 @@ fi
 
 # ---- 6. lab ---------------------------------------------------------------------
 LAB_INSTANCE_ID=""; LAB_WARN=""
-LAB_NODES=$(grep -cE '^ *kind: (nokia_srlinux|linux)$' app/containerlab/splab.clab.yml.in)   # containerlab のノードの数（8。SR Linux 6 + VM 2）
+LAB_NODES=$(grep -cE '^ *kind: (nokia_srlinux|linux)$' app/containerlab/splab.clab.yml.in)   # containerlab のノードの数（7。SR Linux 6 + TRex 1）
 if [ -z "$SKIP_LAB" ]; then
   log "6. lab（IaC/terraform/aws-managed/pipeline/lab。EC2 の中でトポロジが上がるまで 10 分ほど（SR Linux 6 台の起動）。${LAB_VARS[1]}）"
   tf_apply pipeline/lab "${LAB_VARS[@]}"

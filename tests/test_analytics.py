@@ -518,23 +518,23 @@ _ord = mod.prometheus_series([dict(rec, ts=1700000002.0, fields={"a": 2}), dict(
 check("prometheus_series: サンプルは時刻の順（同じ系列が 1 バッチに逆順で来ても AMP が out-of-order で拒まない）。同じ時刻なら元の順",
       [(dict(l)["__name__"][-1], v, ms) for l, v, ms in _ord] == [("a", 1.0, 1700000001000), ("b", 1.0, 1700000001000), ("a", 2.0, 1700000002000), ("a", 3.0, 1700000002000)])
 # cycle 002: gNMI の BGP / IS-IS の文字列の状態を 1 / 0 にし、sysName の無いレコードに device map で機器名を足す
-_dm = mod.parse_device_map(" 203.0.113.31 = dc1-leaf-01 ,203.0.113.32=dc1-leaf-02,bad,=x,y=")
+_dm = mod.parse_device_map(" 203.0.113.31 = dc1-a-leaf-01 ,203.0.113.32=dc1-a-leaf-02,bad,=x,y=")
 check("parse_device_map: 別名=機器名,… を {別名（小文字）: 機器名}。= の無い要素と空の側は捨てる",
-      _dm == {"203.0.113.31": "dc1-leaf-01", "203.0.113.32": "dc1-leaf-02"} and mod.parse_device_map("") == {} and mod.parse_device_map(None) == {}
-      and mod.parse_device_map("Leaf1=dc1-leaf-01") == {"leaf1": "dc1-leaf-01"})
+      _dm == {"203.0.113.31": "dc1-a-leaf-01", "203.0.113.32": "dc1-a-leaf-02"} and mod.parse_device_map("") == {} and mod.parse_device_map(None) == {}
+      and mod.parse_device_map("Leaf1=dc1-a-leaf-01") == {"leaf1": "dc1-a-leaf-01"})
 _t = {"source": "203.0.113.31", "peer_address": "10.255.0.1"}
 check("with_sysname: sysName が無ければ source を引いて足した写し。表に無い・sysName がある・表が空ならそのまま",
-      mod.with_sysname(_t, _dm) == dict(_t, sysName="dc1-leaf-01") and "sysName" not in _t
+      mod.with_sysname(_t, _dm) == dict(_t, sysName="dc1-a-leaf-01") and "sysName" not in _t
       and mod.with_sysname({"source": "203.0.113.99"}, _dm) == {"source": "203.0.113.99"}
       and mod.with_sysname({"source": "203.0.113.31", "sysName": "x"}, _dm)["sysName"] == "x"
-      and mod.with_sysname({"source": "203.0.113.31", "sysName": ""}, _dm)["sysName"] == "dc1-leaf-01"
+      and mod.with_sysname({"source": "203.0.113.31", "sysName": ""}, _dm)["sysName"] == "dc1-a-leaf-01"
       and mod.with_sysname(_t, {}) is _t and mod.with_sysname(_t, None) is _t
-      and mod.with_sysname({"source": " 203.0.113.31 "}, _dm)["sysName"] == "dc1-leaf-01")
+      and mod.with_sysname({"source": " 203.0.113.31 "}, _dm)["sysName"] == "dc1-a-leaf-01")
 check("with_sysname(fallback_source=True): 表に無い（表が空・無いときも）source はそのまま sysName にする。source も無ければそのまま",
       mod.with_sysname({"source": " 203.0.113.99 "}, _dm, fallback_source=True) == {"source": " 203.0.113.99 ", "sysName": "203.0.113.99"}
       and mod.with_sysname(_t, {}, fallback_source=True) == dict(_t, sysName="203.0.113.31")
       and mod.with_sysname(_t, None, fallback_source=True) == dict(_t, sysName="203.0.113.31")
-      and mod.with_sysname(_t, _dm, fallback_source=True)["sysName"] == "dc1-leaf-01"
+      and mod.with_sysname(_t, _dm, fallback_source=True)["sysName"] == "dc1-a-leaf-01"
       and mod.with_sysname({"source": "203.0.113.31", "sysName": "x"}, _dm, fallback_source=True)["sysName"] == "x"
       and mod.with_sysname({"agent_host": "r1"}, _dm, fallback_source=True) == {"agent_host": "r1"} and "sysName" not in _t)
 def _gnmi(meas, field, value, **tags):
@@ -544,7 +544,7 @@ _bgp = mod.prometheus_series([_gnmi("bgp_neighbor", "session_state", "establishe
 check("prometheus_series: bgp_neighbor の session_state は snmp_bgp_neighbor_session_up（established が 1、ほかは 0）で、sysName が機器名",
       [(dict(l)["__name__"], dict(l)["peer_address"], v) for l, v, _ in _bgp]
       == [("snmp_bgp_neighbor_session_up", "10.255.0.1", 1.0), ("snmp_bgp_neighbor_session_up", "10.255.0.2", 0.0)]
-      and all(dict(l)["sysName"] == "dc1-leaf-01" and dict(l)["source"] == "203.0.113.31" for l, _, _ in _bgp))
+      and all(dict(l)["sysName"] == "dc1-a-leaf-01" and dict(l)["source"] == "203.0.113.31" for l, _, _ in _bgp))
 _isis = mod.prometheus_series([_gnmi("isis_interface", "oper_state", v, interface_name="ethernet-1/1.0") for v in ("up", "DOWN", " Up ")], _dm)
 check("prometheus_series: isis_interface の oper_state は snmp_isis_interface_oper_up（up が 1、ほかは 0。大文字小文字と前後の空白は見ない）",
       [(dict(l)["__name__"], v) for l, v, _ in _isis] == [("snmp_isis_interface_oper_up", 1.0), ("snmp_isis_interface_oper_up", 0.0), ("snmp_isis_interface_oper_up", 1.0)]
@@ -1105,14 +1105,14 @@ check("opensearch_docs: action 行と document 行の対、@timestamp は ISO �
       and json.loads(docs[1])["tags"]["ifName"] == "Gi0/1")
 _trap = {"ts": 1700000000.0, "topic": "traps", "measurement": "snmp_trap", "agent_host": "", "host": "h",
          "tags": {"source": "203.0.113.31", "oid": ".1.3.6.1.6.3.1.1.5.3", "name": "linkDown"}, "fields": {"sysUpTimeInstance": 1}}
-_tdocs = mod.opensearch_docs([_trap, dict(_trap, tags=dict(_trap["tags"], source="203.0.113.99"))], mod.parse_device_map("203.0.113.31=dc1-leaf-01"))
+_tdocs = mod.opensearch_docs([_trap, dict(_trap, tags=dict(_trap["tags"], source="203.0.113.99"))], mod.parse_device_map("203.0.113.31=dc1-a-leaf-01"))
 check("opensearch_docs: sysName の無い snmp_trap は tags.sysName に機器名が入る。表に無い IP では IP をそのまま入れる（Grafana の trap のルールの集計に出す）。元のレコードは変えない",
-      json.loads(_tdocs[1])["tags"] == dict(_trap["tags"], sysName="dc1-leaf-01")
+      json.loads(_tdocs[1])["tags"] == dict(_trap["tags"], sysName="dc1-a-leaf-01")
       and json.loads(_tdocs[3])["tags"] == dict(_trap["tags"], source="203.0.113.99", sysName="203.0.113.99")
       and "sysName" not in _trap["tags"])
 check("opensearch_docs: devmap を渡さなくても sysName の無い trap は source を入れる。sysName のあるレコード（ポーリング）と source の無いレコードは変えない",
       json.loads(mod.opensearch_docs([_trap])[1])["tags"]["sysName"] == "203.0.113.31" and mod.opensearch_docs([rec], mod.parse_device_map("203.0.113.31=x")) == docs
-      and json.loads(mod.opensearch_docs([dict(_trap, tags={"source": "203.0.113.31", "sysName": "x"})], mod.parse_device_map("203.0.113.31=dc1-leaf-01"))[1])["tags"]["sysName"] == "x")
+      and json.loads(mod.opensearch_docs([dict(_trap, tags={"source": "203.0.113.31", "sysName": "x"})], mod.parse_device_map("203.0.113.31=dc1-a-leaf-01"))[1])["tags"]["sysName"] == "x")
 check("splunk_events は device map を受けず、sysName を足さない（Splunk のアラートアクションが DEVICE_MAP で引く。cycle 002 でも出力は変えない）",
       list(inspect.signature(mod.splunk_events).parameters) == ["records", "index"]
       and "sysName" not in json.loads(mod.splunk_events([_trap])[0])["event"]["tags"])
@@ -2124,7 +2124,7 @@ check("格納先ごとの値は、その格納先を選んでいなければ渡�
 check("共通 0: どのジョブにも --max-offsets-per-trigger 0 を渡し、スクリプトは上限なしになる",
       all(_val(_job_args(j, _ALL4, max_offsets=0), "--max-offsets-per-trigger") == "0" and mod.parse_args(_job_args(j, _ALL4, max_offsets=0)).max_offsets_per_trigger == 0
           for j in ("iceberg", "splunk", "http")))
-_dmap = "203.0.113.31=dc1-leaf-01,203.0.113.21=dc1-spine-01"
+_dmap = "203.0.113.31=dc1-a-leaf-01,203.0.113.21=dc1-spine-01"
 _dj = {j: _job_args(j, _ALL4, device_map=_dmap) for j in ("iceberg", "splunk", "http")}
 check("device map があれば http のジョブ（opensearch / prometheus）にだけ --device-map を渡し、スクリプトはそれを読む。iceberg と splunk のジョブ、device map が空のときは渡さない（cycle 002）",
       _val(_dj["http"], "--device-map") == _dmap and mod.parse_args(_dj["http"]).device_map == _dmap

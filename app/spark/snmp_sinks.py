@@ -303,7 +303,7 @@ def _loads(s):
 
 
 def parse_device_map(text):
-    """"203.0.113.31=dc1-leaf-01,…" → {別名（小文字）: 機器名}。= の無い要素は捨てる（app/splunk/netops_alerts/bin/netops_sns.py の parse_device_map と同じ読み方）"""
+    """"203.0.113.31=dc1-a-leaf-01,…" → {別名（小文字）: 機器名}。= の無い要素は捨てる（app/splunk/netops_alerts/bin/netops_sns.py の parse_device_map と同じ読み方）"""
     out = {}
     for p in (text or "").split(","):
         k, sep, v = p.partition("=")

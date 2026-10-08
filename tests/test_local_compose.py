@@ -85,9 +85,10 @@ check("grafana の GRAFANA_VERSION と splunk の SPLUNK_VERSION は ops/up-comm
       and built("grafana", "grafana") and built("splunk", "splunk"))
 check("telegraf の TELEGRAF_VERSION は ops/lab-common.sh の値",
       svc["telegraf"]["build"]["args"]["TELEGRAF_VERSION"] == sh_const(lab_common, "TELEGRAF_VERSION"))
-check(".env.example の SRLINUX_IMAGE / MULTITOOL_IMAGE は ops/lab-common.sh の upstream:tag",
+check(".env.example の SRLINUX_IMAGE / MULTITOOL_IMAGE / TREX_IMAGE は ops/lab-common.sh の upstream:tag",
       example["SRLINUX_IMAGE"] == f"{sh_const(lab_common, 'SRLINUX_UPSTREAM')}:{sh_const(lab_common, 'SRLINUX_TAG')}"
-      and example["MULTITOOL_IMAGE"] == f"{sh_const(lab_common, 'MULTITOOL_UPSTREAM')}:{sh_const(lab_common, 'MULTITOOL_TAG')}")
+      and example["MULTITOOL_IMAGE"] == f"{sh_const(lab_common, 'MULTITOOL_UPSTREAM')}:{sh_const(lab_common, 'MULTITOOL_TAG')}"
+      and example["TREX_IMAGE"] == f"{sh_const(lab_common, 'TREX_UPSTREAM')}:{sh_const(lab_common, 'TREX_TAG')}")
 check("splunk は linux/amd64（上流が amd64 だけ）", svc["splunk"]["platform"] == "linux/amd64")
 
 # ---- 3. Kafka: OSS 版の ECS（IaC/terraform/oss/pipeline/stream/kafka.tf の kafka_environment）と同じ値に、EXTERNAL リスナーを足しただけ
@@ -191,7 +192,7 @@ check("spark-http の引数と環境で parse_args が通る（opensearch,promet
       and _a.opensearch_endpoint == "http://opensearch:9200" and svc["spark-http"]["environment"]["OPENSEARCH_AUTH"] == "basic"
       and svc["spark-http"]["environment"]["PROMETHEUS_AUTH"] == "none")
 check("up.sh の DEVICE_MAP を Spark の --device-map に入れると、lab の機器の管理 IP が機器名に引ける",
-      "dc1-leaf-01" in sinks.parse_device_map(_a.device_map).values())
+      "dc1-a-leaf-01" in sinks.parse_device_map(_a.device_map).values())
 check("Spark の --metric-topics と --log-topics は Telegraf が書くトピックだけ",
       set(_a.metric_topics.split(",")) | set(_a.log_topics.split(",")) == _topics)
 
@@ -216,8 +217,8 @@ check("splunk の HEC の token は spark-splunk と同じ .env の値", svc["sp
 
 # ---- 7. 設定（.env.example）と compose の ${VAR}
 _vars = set(re.findall(r"\$\{(\w+)", read("docker", "compose", "compose.yaml")))
-check(".env.example のキーは design.md の 7 つ",
-      set(example) == {"SPLUNK_PASSWORD", "SPLUNK_HEC_TOKEN", "OPENSEARCH_PASSWORD", "GF_SECURITY_ADMIN_PASSWORD", "SRLINUX_IMAGE", "MULTITOOL_IMAGE", "AWS_REGION"})
+check(".env.example のキーは design.md の 7 つと TRex のイメージ（011）の 8 つ",
+      set(example) == {"SPLUNK_PASSWORD", "SPLUNK_HEC_TOKEN", "OPENSEARCH_PASSWORD", "GF_SECURITY_ADMIN_PASSWORD", "SRLINUX_IMAGE", "MULTITOOL_IMAGE", "TREX_IMAGE", "AWS_REGION"})
 check("compose.yaml の ${VAR} は全部 .env.example のキーか up.sh が渡す 3 つ（SNMP_AGENTS / GNMI_TARGETS / DEVICE_MAP）",
       _vars and _vars <= set(example) | set(UP_ENV))
 check("SPLUNK_HEC_TOKEN は uuid の形（Splunk のイメージが作る HEC の token。ops/up.sh と同じ形）",
@@ -299,7 +300,7 @@ case "$url" in
 esac
 ''')
 LOG = os.path.join(TMP, "calls.log")
-CLEAN = ("REGISTRY", "AWS_REGION", "PARAM_PREFIX", "TELEGRAF_IMAGE", "TELEGRAF_LOCAL", "SRLINUX_IMAGE", "MULTITOOL_IMAGE",
+CLEAN = ("REGISTRY", "AWS_REGION", "PARAM_PREFIX", "TELEGRAF_IMAGE", "TELEGRAF_LOCAL", "SRLINUX_IMAGE", "MULTITOOL_IMAGE", "TREX_IMAGE",
          "SNMP_AGENTS", "GNMI_TARGETS", "DEVICE_MAP", "FAKE_IPT_RULES", "FAKE_MEM", "FAKE_DOWN", "FAKE_OS_COUNT", "FAKE_SPLUNK")
 
 def run(cmd, **env):
@@ -311,19 +312,19 @@ def run(cmd, **env):
     return r, open(LOG, encoding="utf-8").read().splitlines()
 
 LAB = os.path.join(ROOT, "app", "containerlab", "lab.sh")
-SRL, MT = example["SRLINUX_IMAGE"], example["MULTITOOL_IMAGE"]
-PULLS = [f"docker pull -q {SRL}", f"docker pull -q {MT}"]
+SRL, MT, TREX = example["SRLINUX_IMAGE"], example["MULTITOOL_IMAGE"], example["TREX_IMAGE"]
+PULLS = [f"docker pull -q {SRL}", f"docker pull -q {MT}", f"docker pull -q {TREX}"]
 REDIRECT = ("iptables -t nat -I PREROUTING 1 -s 203.0.113.0/24 -d 203.0.113.1 -p udp --dport 162 "
             "-m comment --comment nwc-lab-telegraf -j REDIRECT --to-ports 1162")
 
 # app/containerlab/lab.sh pull（design.md の lab の切り替え (1)）
-_r, _c = run([LAB, "pull"], SRLINUX_IMAGE=SRL, MULTITOOL_IMAGE=MT)
-check("app/containerlab/lab.sh pull: REGISTRY が無ければ aws も docker login も打たず、2 つのイメージを docker pull するだけ", _r.returncode == 0 and _c == PULLS)
-_r, _c = run([LAB, "pull"], SRLINUX_IMAGE=SRL, MULTITOOL_IMAGE=MT, REGISTRY="111122223333.dkr.ecr.ap-northeast-1.amazonaws.com", AWS_REGION="ap-northeast-1")
+_r, _c = run([LAB, "pull"], SRLINUX_IMAGE=SRL, MULTITOOL_IMAGE=MT, TREX_IMAGE=TREX)
+check("app/containerlab/lab.sh pull: REGISTRY が無ければ aws も docker login も打たず、3 つのイメージを docker pull するだけ", _r.returncode == 0 and _c == PULLS)
+_r, _c = run([LAB, "pull"], SRLINUX_IMAGE=SRL, MULTITOOL_IMAGE=MT, TREX_IMAGE=TREX, REGISTRY="111122223333.dkr.ecr.ap-northeast-1.amazonaws.com", AWS_REGION="ap-northeast-1")
 check("app/containerlab/lab.sh pull: REGISTRY があれば（lab の EC2）今までどおり ECR に login してから pull する",
       _r.returncode == 0 and sorted(_c[:2]) + _c[2:] == ["aws ecr get-login-password --region ap-northeast-1",
                                     "docker login --username AWS --password-stdin 111122223333.dkr.ecr.ap-northeast-1.amazonaws.com"] + PULLS)
-_r, _c = run([LAB, "pull"], SRLINUX_IMAGE=SRL, MULTITOOL_IMAGE=MT, REGISTRY="111122223333.dkr.ecr.ap-northeast-1.amazonaws.com")
+_r, _c = run([LAB, "pull"], SRLINUX_IMAGE=SRL, MULTITOOL_IMAGE=MT, TREX_IMAGE=TREX, REGISTRY="111122223333.dkr.ecr.ap-northeast-1.amazonaws.com")
 check("app/containerlab/lab.sh pull: REGISTRY があって AWS_REGION が無ければ、今までどおり何も取らずに止まる", _r.returncode != 0 and _c == [])
 
 # app/containerlab/lab.sh forward（(2)。手元とデバッグ用の EC2 は REDIRECT だけ、それ以外は stream の分岐で SSM を読む）
@@ -373,21 +374,24 @@ def tree(env=None, files=SCRIPTS, lab_copy=False):
 # docker/compose/lab.sh
 _lc = tree()
 _r, _c = run([os.path.join(_lc, "lab.sh"), "pull"], REGISTRY="leak.example.com", AWS_REGION="ap-northeast-1", PARAM_PREFIX="/nwc")
-check("docker/compose/lab.sh: .env が無ければ .env.example のイメージと TELEGRAF_LOCAL=1 の 3 つだけを sudo env で app/containerlab/lab.sh に渡す（sudo -E にしない）",
-      _r.returncode == 0 and _c[0].split()[:5] == ["sudo", "env", f"SRLINUX_IMAGE={SRL}", f"MULTITOOL_IMAGE={MT}", "TELEGRAF_LOCAL=1"]
-      and os.path.realpath(_c[0].split()[5]) == os.path.realpath(LAB) and _c[0].split()[6:] == ["pull"])
-check("docker/compose/lab.sh pull: シェルに REGISTRY や AWS_REGION があっても ECR に行かず、ghcr.io の 2 つを取る", _c[1:] == PULLS)
+check("docker/compose/lab.sh: .env が無ければ .env.example のイメージ 3 つと TELEGRAF_LOCAL=1 の 4 つだけを sudo env で app/containerlab/lab.sh に渡す（sudo -E にしない）",
+      _r.returncode == 0 and _c[0].split()[:6] == ["sudo", "env", f"SRLINUX_IMAGE={SRL}", f"MULTITOOL_IMAGE={MT}", f"TREX_IMAGE={TREX}", "TELEGRAF_LOCAL=1"]
+      and os.path.realpath(_c[0].split()[6]) == os.path.realpath(LAB) and _c[0].split()[7:] == ["pull"])
+check("docker/compose/lab.sh pull: シェルに REGISTRY や AWS_REGION があっても ECR に行かず、上流（ghcr.io と Docker Hub）の 3 つを取る", _c[1:] == PULLS)
 _r, _c = run([os.path.join(_lc, "lab.sh"), "forward"])
 check("docker/compose/lab.sh forward: REDIRECT を 1 本入れ、案内は「compose の Telegraf へ」（aws は打たない）",
       _r.returncode == 0 and [c for c in _c if " -I " in c] == [REDIRECT] and "compose の Telegraf へ" in _r.stdout
       and not [c for c in _c if c.startswith("aws")])
-_lc = tree('SRLINUX_IMAGE="example.com/srl:1"\nMULTITOOL_IMAGE=\'example.com/mt:2\'\n')
+_lc = tree('SRLINUX_IMAGE="example.com/srl:1"\nMULTITOOL_IMAGE=\'example.com/mt:2\'\nTREX_IMAGE=example.com/trex:3\n')
 _r, _c = run([os.path.join(_lc, "lab.sh"), "status"])
 check("docker/compose/lab.sh: .env があればそちらのイメージを使う（値の \" と ' は外す）",
-      _c and _c[0].split()[2:4] == ["SRLINUX_IMAGE=example.com/srl:1", "MULTITOOL_IMAGE=example.com/mt:2"])
+      _c and _c[0].split()[2:5] == ["SRLINUX_IMAGE=example.com/srl:1", "MULTITOOL_IMAGE=example.com/mt:2", "TREX_IMAGE=example.com/trex:3"])
 _lc = tree("SRLINUX_IMAGE=example.com/srl:1\n")
 _r, _c = run([os.path.join(_lc, "lab.sh"), "up"])
 check("docker/compose/lab.sh: .env に MULTITOOL_IMAGE が無ければ sudo を打たずに止まる", _r.returncode != 0 and _c == [] and "MULTITOOL_IMAGE が無い" in _r.stderr)
+_lc = tree("SRLINUX_IMAGE=example.com/srl:1\nMULTITOOL_IMAGE=example.com/mt:2\n")
+_r, _c = run([os.path.join(_lc, "lab.sh"), "up"])
+check("docker/compose/lab.sh: .env に TREX_IMAGE が無ければ（011 より前の .env）sudo を打たずに止まる", _r.returncode != 0 and _c == [] and "TREX_IMAGE が無い" in _r.stderr)
 # app/containerlab/lab.sh up は splab.clab.yml があると render しないので、gen_lab.py で台数を変えたあとも古い yml で deploy する。ラッパーが毎回 render する
 _lc = tree(lab_copy=True)
 _yml = os.path.join(os.path.dirname(os.path.dirname(_lc)), "app", "containerlab", "splab.clab.yml")
@@ -396,11 +400,11 @@ with open(_yml, "w") as f:
 _r, _c = run([os.path.join(_lc, "lab.sh"), "up"])
 check("docker/compose/lab.sh up: app/containerlab/lab.sh render を打ってから up し、splab.clab.yml を今の .in と .env のイメージで作り直してから deploy する",
       _r.returncode == 0
-      and [c.split()[6] if c.startswith("sudo ") else c for c in _c if c.startswith(("sudo ", "containerlab "))]
+      and [c.split()[7] if c.startswith("sudo ") else c for c in _c if c.startswith(("sudo ", "containerlab "))]
       == ["render", "up", "containerlab deploy -t splab.clab.yml --reconfigure"]
-      and open(_yml, encoding="utf-8").read() == read("app", "containerlab", "splab.clab.yml.in").replace("__SRLINUX_IMAGE__", SRL).replace("__MULTITOOL_IMAGE__", MT))
+      and open(_yml, encoding="utf-8").read() == read("app", "containerlab", "splab.clab.yml.in").replace("__SRLINUX_IMAGE__", SRL).replace("__MULTITOOL_IMAGE__", MT).replace("__TREX_IMAGE__", TREX))
 _r, _c = run([os.path.join(_lc, "lab.sh"), "down"])
-check("docker/compose/lab.sh: up 以外（down など）は render しない", [c.split()[6] for c in _c if c.startswith("sudo ")] == ["down"])
+check("docker/compose/lab.sh: up 以外（down など）は render しない", [c.split()[7] for c in _c if c.startswith("sudo ")] == ["down"])
 
 # docker/compose/up.sh / down.sh
 _lc = tree()

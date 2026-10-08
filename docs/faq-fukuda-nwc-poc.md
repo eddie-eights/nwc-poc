@@ -851,7 +851,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 **A. リポジトリの中の lab の定義ファイルから。** 実機や AWS から取ってきてはいない。入れるのはシェルではなく、コンテナの中の Python。
 
 1. 元の情報: `app/containerlab/splab.clab.yml.in`（containerlab の機器と配線）と `app/containerlab/srlinux/<機器>.cli`（SR Linux の設定）。
-2. 変換: `ops/up.sh` がイメージを作るときに手元で `app/containerlab/lab_topology.py` を実行し、機器 8 台・回線 12 本を `lab_seed.json` にしてイメージに入れる。
+2. 変換: `ops/up.sh` がイメージを作るときに手元で `app/containerlab/lab_topology.py` を実行し、機器 7 台・回線 12 本を `lab_seed.json` にしてイメージに入れる。
 3. 投入: コンテナが起動時に `app/nautobot/netops/bootstrap.py` を実行し、**機器が 1 台も無いときだけ** `lab_seed.json` から入れる。
 
 - 入るもの: 拠点、役割、機器、インタフェース（LAG を含む）、アドレス、管理 IP、ASN、Service（`gnmi` / `snmp`）、ケーブル（主 / 副と帯域）。

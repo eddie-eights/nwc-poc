@@ -49,14 +49,14 @@ def same(devices, links):
 
 
 devices, links, layers = lt.load(os.path.join(ROOT, "app", "containerlab"))
-check("lab の定義から 8 台と 12 本（Leaf-SW 2 + Spine 2 + Leaf 2 + VM 2）", len(devices) == 8 and len(links) == 12)
+check("lab の定義から 7 台と 12 本（s-leaf 2 + Spine 2 + a-leaf 2 + TRex 1。fabric 8 本と TRex から各 leaf への 4 本）", len(devices) == 7 and len(links) == 12)
 check("機器（hostname / site / role / asn / mgmt_ip / enabled）が app/agentcore/data の静的データと同じ", same(devices, static_links))
 check("回線（両端の IF / 種別 / 主副 / 帯域）が app/agentcore/data の静的データと同じ", same(static_devices, links))
 check("回線は a < b に正規化", all(l["a"] < l["b"] for l in links))
-check("監視対象は SNMP（trap-group）の設定を持つ SR Linux の 6 台（VM は対象外）", all(d["enabled"] == (d["role"] in ("leafsw", "spine", "leaf")) for d in devices) and sum(d["enabled"] for d in devices) == 6)
+check("監視対象は SNMP（trap-group）の設定を持つ SR Linux の 6 台（TRex は対象外）", all(d["enabled"] == (d["role"] in ("s-leaf", "spine", "a-leaf")) for d in devices) and sum(d["enabled"] for d in devices) == 6)
 check("帯域は SR Linux の interface description の 1G / 100M / 10G から", lt.bandwidth_mbps("core 10G") == 10000 and lt.bandwidth_mbps("WAN 100M") == 100
       and lt.bandwidth_mbps("LAN") is None and lt.bandwidth_mbps("to pe-01 2.5G") == 2500 and lt.bandwidth_mbps("fabric to dc1-spine-01 25G") == 25000)
-check("主副は description の primary / secondary から", lt.link_role("WAN secondary to x") == "secondary" and lt.link_role("dc1-leaf-01 primary access") == "primary" and lt.link_role("LAN") is None)
+check("主副は description の primary / secondary から", lt.link_role("WAN secondary to x") == "secondary" and lt.link_role("dc1-a-leaf-01 primary access") == "primary" and lt.link_role("LAN") is None)
 check("SR Linux の設定（set / の行）から asn と interface の description、SNMP の有無",
       lt.parse_srl('set / interface ethernet-1/1 description "a 1G"\nset / interface ethernet-1/1 admin-state enable\n'
                    'set / network-instance default protocols bgp autonomous-system 65001\nset / system snmp trap-group t admin-state enable\n')
@@ -74,17 +74,17 @@ try:
     d2, l2, y2 = lt.load(os.path.join(ROOT, "app", "containerlab"))
 finally:
     builtins.__import__ = real_import
-leaf = next(d for d in devices if d["device_id"] == "dc1-leaf-01")
+leaf = next(d for d in devices if d["device_id"] == "dc1-a-leaf-01")
 check("インタフェースはリンクの両端だけでなく全部（管理の mgmt0 が先頭、SR Linux / exec のアドレス付き）",
       [(i["name"], i["address"]) for i in leaf["interfaces"]][:2] == [("mgmt0", "203.0.113.31"), ("ethernet-1/1", "172.16.0.5")]
       and all({"name", "address"} <= set(i) for d in devices for i in d["interfaces"])
       and all(any(i["name"] == (l["a_if"] if l["a"] == d["device_id"] else l["b_if"]) for i in d["interfaces"])
               for l in links for d in devices if d["device_id"] in (l["a"], l["b"])))
-check("別名は device_id / hostname / 管理 IP / 全インタフェースのアドレスを小文字で", {"dc1-leaf-01", "203.0.113.31", "172.16.0.5"} <= set(leaf["aliases"])
+check("別名は device_id / hostname / 管理 IP / 全インタフェースのアドレスを小文字で", {"dc1-a-leaf-01", "203.0.113.31", "172.16.0.5"} <= set(leaf["aliases"])
       and all(a == a.lower() for d in devices for a in d["aliases"]))
 dm = lt.parse_device_map(lt.device_map(devices)) if hasattr(lt, "parse_device_map") else dict(x.split("=", 1) for x in lt.device_map(devices).split(","))
 check("device map は別名 → device_id（device_id 自身は省く）で、全機器の管理 IP を含む",
-      dm["172.16.0.5"] == "dc1-leaf-01" and "dc1-leaf-01" not in dm and all(dm.get(d["mgmt_ip"]) == d["device_id"] for d in devices if d["mgmt_ip"]))
+      dm["172.16.0.5"] == "dc1-a-leaf-01" and "dc1-a-leaf-01" not in dm and all(dm.get(d["mgmt_ip"]) == d["device_id"] for d in devices if d["mgmt_ip"]))
 try:
     lt.device_map([{"device_id": "a", "aliases": ["10.0.0.1"]}, {"device_id": "b", "aliases": ["10.0.0.1"]}])
     dup = False
@@ -103,25 +103,24 @@ check("gnmi targets は監視対象（enabled）の管理 IP:57400（Telegraf �
 # 上の層（IP 層 / EVPN・BGP 層）。物理層の頂点 <機器>#<IF> を interface_id / ip_interface_id で指す
 lv = {v["id"]: v for v in layers["vertices"]}
 if_ids = {f'{d["device_id"]}#{i["name"]}' for d in devices for i in d["interfaces"]}
-check("上の層は 62 頂点・84 辺で、頂点の id は機器ごとに一意", len(lv) == 62 == len(layers["vertices"]) and len(layers["edges"]) == 84)
+check("上の層は 58 頂点・78 辺で、頂点の id は機器ごとに一意", len(lv) == 58 == len(layers["vertices"]) and len(layers["edges"]) == 78)
 check("ip_interface は物理層の interface を interface_id で指し、over の辺でつながる（ループバック system0.0 は物理層に無いので空。IS-IS の隣接は ip_interface_id も）",
       all((v["interface_id"] in if_ids) == (not v["name"].startswith("system0")) for v in lv.values() if v["label"] == "ip_interface")
       and all(v["interface_id"] == "" for v in lv.values() if v["label"] == "ip_interface" and v["name"].startswith("system0"))
       and all(v["ip_interface_id"] in lv and v["interface_id"] in if_ids for v in lv.values() if v["label"] == "isis_adjacency")
       and all(e["to"] in if_ids or e["to"] in lv for e in layers["edges"] if e["label"] == "over"))
-check("EVPN・BGP 層は loopback の ip_interface を ip_interface_id で指し、ES は lag の interface を指す",
+check("EVPN・BGP 層は loopback の ip_interface を ip_interface_id で指す（LAG を組まないので ES は無い）",
       all(v["ip_interface_id"].endswith("#system0.0") and v["ip_interface_id"] in lv for v in lv.values() if v["label"] in ("bgp_session", "evpn_instance"))
-      and all(v["interface_id"].endswith("#lag1") and v["interface_id"] in if_ids for v in lv.values() if v["label"] == "ethernet_segment"))
-check("iBGP EVPN は Leaf-SW / Leaf から Spine 2 台へ（Spine は RR。AS 65100）",
+      and not any(v["label"] == "ethernet_segment" for v in lv.values()))
+check("iBGP EVPN は s-leaf / a-leaf から Spine 2 台へ（Spine は RR。AS 65100）",
       {(v["device_id"], v["peer_device"]) for v in lv.values() if v["label"] == "bgp_session" and v["role"] == "client"}
-      == {(f"dc1-{r}-0{i}", f"dc1-spine-0{s}") for r in ("leafsw", "leaf") for i in (1, 2) for s in (1, 2)}
+      == {(f"dc1-{r}-0{i}", f"dc1-spine-0{s}") for r in ("s-leaf", "a-leaf") for i in (1, 2) for s in (1, 2)}
       and all(v["asn"] == 65100 == v["peer_as"] for v in lv.values() if v["label"] == "bgp_session"))
 check("IS-IS の隣接は fabric の 8 本の両端（peer の辺）", sum(1 for v in lv.values() if v["label"] == "isis_adjacency") == 16
       and sum(1 for e in layers["edges"] if e["label"] == "peer" and e["from"].split("#")[1] == "isis") == 8)
-check("EVI 100 は 4 台で同じ RT / VNI、ES は Leaf-SW の組と Leaf の組で同じ ESI",
+check("EVI 100 は 4 台（s-leaf 2 + a-leaf 2）で同じ RT / VNI",
       {(v["evi"], v["vni"], v["route_target"]) for v in lv.values() if v["label"] == "evpn_instance"} == {(100, 100, "target:65100:100")}
-      and len({v["esi"] for v in lv.values() if v["label"] == "ethernet_segment" and v["device_id"].startswith("dc1-leaf-")}) == 1
-      and len({v["esi"] for v in lv.values() if v["label"] == "ethernet_segment"}) == 2)
+      and sorted(v["device_id"] for v in lv.values() if v["label"] == "evpn_instance") == ["dc1-a-leaf-01", "dc1-a-leaf-02", "dc1-s-leaf-01", "dc1-s-leaf-02"])
 check("app/agentcore/data/layers.json は lab の定義から作った上の層と同じ", topology.load_static_layers() == layers)
 # lab の定義は app/containerlab/gen_lab.py の出力そのもの（手で直さない。台数を変えるときは gen_lab.py を回す）
 with tempfile.TemporaryDirectory() as tmp:
@@ -131,8 +130,8 @@ with tempfile.TemporaryDirectory() as tmp:
         for fn in fns:
             p = os.path.join(dp, fn)
             gen[os.path.relpath(p, tmp)] = open(p, encoding="utf-8").read()
-check("app/containerlab/splab.clab.yml.in と app/containerlab/srlinux/*.cli は app/containerlab/gen_lab.py の出力と同じ（既定の leaf 2・spine 2）",
-      set(gen) == {"splab.clab.yml.in"} | {f"srlinux/{n}.cli" for n in ("dc1-leafsw-01", "dc1-leafsw-02", "dc1-spine-01", "dc1-spine-02", "dc1-leaf-01", "dc1-leaf-02")}
+check("app/containerlab/splab.clab.yml.in と app/containerlab/srlinux/*.cli は app/containerlab/gen_lab.py の出力と同じ（既定の a-leaf 2・spine 2）",
+      set(gen) == {"splab.clab.yml.in"} | {f"srlinux/{n}.cli" for n in ("dc1-s-leaf-01", "dc1-s-leaf-02", "dc1-spine-01", "dc1-spine-02", "dc1-a-leaf-01", "dc1-a-leaf-02")}
       and all(read("app", "containerlab", *rel.split("/")) == text for rel, text in gen.items()))
 check("PyYAML が無くても同じ結果（自前の読み取り）", d2 == devices and l2 == links and y2 == layers)
 check("自前の YAML 読み取りはコメント・引用符・真偽値・数値・flow list を読む",
@@ -167,45 +166,45 @@ def ev(status, source="grafana", **a):
     return {"Records": [{"EventSource": "aws:sns", "Sns": {"Message": json.dumps({"source": source, "alerts": [dict(a, status=status)]})}}]}
 
 
-h.handler(ev("firing", device_id="dc1-leaf-01", kind="link_down", target="eth1"))
-check("firing の link_down は機器の IF の回線を DOWN", calls[-1] == ("dc1-leaf-01", "eth1", "DOWN"))
-h.handler(ev("resolved", device_id="dc1-leaf-01", kind="link_down", target="eth1"))
-check("resolved は同じ回線を UP", calls[-1] == ("dc1-leaf-01", "eth1", "UP"))
-h.handler(ev("firing", "splunk", device_id="dc1-leaf-01", kind="trap", target=".1.3.6.1.6.3.1.1.5.1"))
-check("それ以外の trap は機器を ALARM", calls[-1] == ("dc1-leaf-01", "", "ALARM"))
-h.handler(ev("resolved", "splunk", device_id="dc1-leaf-01", kind="trap", target="x"))
-check("trap の解消は機器が ALARM のときだけ UP（linkDown の DOWN は上書きしない）", calls[-1] == ("dc1-leaf-01", "", "UP", "ALARM"))
-h.handler(ev("firing", "splunk", device_id="dc1-leaf-01", kind="link_down", target="?"))
-check("IF が分からない linkDown は機器に付ける", calls[-1] == ("dc1-leaf-01", "", "DOWN"))
+h.handler(ev("firing", device_id="dc1-a-leaf-01", kind="link_down", target="eth1"))
+check("firing の link_down は機器の IF の回線を DOWN", calls[-1] == ("dc1-a-leaf-01", "eth1", "DOWN"))
+h.handler(ev("resolved", device_id="dc1-a-leaf-01", kind="link_down", target="eth1"))
+check("resolved は同じ回線を UP", calls[-1] == ("dc1-a-leaf-01", "eth1", "UP"))
+h.handler(ev("firing", "splunk", device_id="dc1-a-leaf-01", kind="trap", target=".1.3.6.1.6.3.1.1.5.1"))
+check("それ以外の trap は機器を ALARM", calls[-1] == ("dc1-a-leaf-01", "", "ALARM"))
+h.handler(ev("resolved", "splunk", device_id="dc1-a-leaf-01", kind="trap", target="x"))
+check("trap の解消は機器が ALARM のときだけ UP（linkDown の DOWN は上書きしない）", calls[-1] == ("dc1-a-leaf-01", "", "UP", "ALARM"))
+h.handler(ev("firing", "splunk", device_id="dc1-a-leaf-01", kind="link_down", target="?"))
+check("IF が分からない linkDown は機器に付ける", calls[-1] == ("dc1-a-leaf-01", "", "DOWN"))
 n = len(calls)
-h.handler(ev("firing", "splunk", device_id="dc1-leaf-01", kind="bgp_down", target="10.255.0.1"))
-check("bgp_down（gNMI）は BGP のセッションの頂点を set_layer_status で DOWN（set_status は呼ばない）", layer_calls[-1] == ("dc1-leaf-01", "bgp", "10.255.0.1", "DOWN") and len(calls) == n)
-h.handler(ev("resolved", "splunk", device_id="dc1-leaf-01", kind="bgp_down", target="10.255.0.1"))
-check("bgp_down の解消は同じ頂点を UP", layer_calls[-1] == ("dc1-leaf-01", "bgp", "10.255.0.1", "UP"))
-h.handler(ev("firing", "splunk", device_id="dc1-leaf-01", kind="isis_down", target="ethernet-1/1.0"))
-check("isis_down は IS-IS の隣接の頂点（target = サブインタフェース）", layer_calls[-1] == ("dc1-leaf-01", "isis", "ethernet-1/1.0", "DOWN"))
+h.handler(ev("firing", "splunk", device_id="dc1-a-leaf-01", kind="bgp_down", target="10.255.0.1"))
+check("bgp_down（gNMI）は BGP のセッションの頂点を set_layer_status で DOWN（set_status は呼ばない）", layer_calls[-1] == ("dc1-a-leaf-01", "bgp", "10.255.0.1", "DOWN") and len(calls) == n)
+h.handler(ev("resolved", "splunk", device_id="dc1-a-leaf-01", kind="bgp_down", target="10.255.0.1"))
+check("bgp_down の解消は同じ頂点を UP", layer_calls[-1] == ("dc1-a-leaf-01", "bgp", "10.255.0.1", "UP"))
+h.handler(ev("firing", "splunk", device_id="dc1-a-leaf-01", kind="isis_down", target="ethernet-1/1.0"))
+check("isis_down は IS-IS の隣接の頂点（target = サブインタフェース）", layer_calls[-1] == ("dc1-a-leaf-01", "isis", "ethernet-1/1.0", "DOWN"))
 m = len(layer_calls)
 check("target の無い bgp_down / isis_down は何もしない",
-      "ignored" in h.apply({"status": "firing", "device_id": "dc1-leaf-01", "kind": "isis_down", "target": "?"})
-      and "ignored" in h.apply({"status": "firing", "device_id": "dc1-leaf-01", "kind": "bgp_down", "target": ""}) and len(layer_calls) == m and len(calls) == n)
+      "ignored" in h.apply({"status": "firing", "device_id": "dc1-a-leaf-01", "kind": "isis_down", "target": "?"})
+      and "ignored" in h.apply({"status": "firing", "device_id": "dc1-a-leaf-01", "kind": "bgp_down", "target": ""}) and len(layer_calls) == m and len(calls) == n)
 check("機器が無い・firing でも resolved でもない status は何もしない",
       "ignored" in h.apply({"status": "firing", "device_id": "?", "kind": "link_down", "target": "eth1"})
       and "ignored" in h.apply({"status": "firing", "device_id": "", "kind": "link_down", "target": "eth1"})
-      and "ignored" in h.apply({"status": "pending", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "eth1"}) and len(calls) == n)
+      and "ignored" in h.apply({"status": "pending", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "eth1"}) and len(calls) == n)
 # 機器名は受け手（rules.alerts_from_message）が短い小文字の名前に揃える。Grafana は sysName、Splunk は DEVICE_MAP を通した名前で来る
-h.handler(ev("firing", device_id="DC1-LEAF-02.lab.example", kind="link_down", target="ethernet-1/2"))
-check("機器名は FQDN でも大文字でも、短い小文字の名前で Neptune を引く", calls[-1] == ("dc1-leaf-02", "ethernet-1/2", "DOWN"))
+h.handler(ev("firing", device_id="DC1-A-LEAF-02.lab.example", kind="link_down", target="ethernet-1/2"))
+check("機器名は FQDN でも大文字でも、短い小文字の名前で Neptune を引く", calls[-1] == ("dc1-a-leaf-02", "ethernet-1/2", "DOWN"))
 n = len(calls)
 two = {"Records": [{"Sns": {"Message": json.dumps({"source": "grafana", "alerts": [
-    {"status": "firing", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "eth1"},
-    {"status": "resolved", "device_id": "dc1-leaf-02", "kind": "link_down", "target": "eth2"}]})}},
+    {"status": "firing", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "eth1"},
+    {"status": "resolved", "device_id": "dc1-a-leaf-02", "kind": "link_down", "target": "eth2"}]})}},
     {"Sns": {"Message": json.dumps({"source": "splunk", "alerts": [{"status": "firing", "device_id": "dc1-spine-01", "kind": "trap", "target": "x"}]})}}]}
 check("1 通に何件か入っていても、Records が何件あっても、全部を順に書く（Grafana はグループごとに 1 通）",
-      h.handler(two) == [{"updated": 1}] * 3 and calls[n:] == [("dc1-leaf-01", "eth1", "DOWN"), ("dc1-leaf-02", "eth2", "UP"), ("dc1-spine-01", "", "ALARM")])
+      h.handler(two) == [{"updated": 1}] * 3 and calls[n:] == [("dc1-a-leaf-01", "eth1", "DOWN"), ("dc1-a-leaf-02", "eth2", "UP"), ("dc1-spine-01", "", "ALARM")])
 n = len(calls)
 check("読めないメッセージ（JSON でない・alerts が無い・Records が無い）は捨てて例外にしない（再試行しても読めない）",
       h.handler({"Records": [{"Sns": {"Message": "not json"}}, {"Sns": {"Message": json.dumps({"source": "grafana"})}}, {}]}) == []
-      and h.handler({}) == [] and h.handler({"detail-type": "AnomalyOpened", "detail": {"device_id": "dc1-leaf-01", "kind": "link_down", "target": "eth1"}}) == []
+      and h.handler({}) == [] and h.handler({"detail-type": "AnomalyOpened", "detail": {"device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "eth1"}}) == []
       and len(calls) == n)
 
 
@@ -215,7 +214,7 @@ def _boom(*a, **k):
 
 fake_graph.set_status = _boom
 try:
-    h.handler(ev("firing", device_id="dc1-leaf-01", kind="link_down", target="eth1")); raised = ""
+    h.handler(ev("firing", device_id="dc1-a-leaf-01", kind="link_down", target="eth1")); raised = ""
 except RuntimeError as e:
     raised = str(e)
 check("Neptune に書けなければ最後に RuntimeError で落とす（Lambda の非同期の再試行に任せる。やり直しの合間に後の通知が来ると古い値に戻る）",
@@ -253,14 +252,14 @@ class _Cap(logging.Handler):
 cap = _Cap(); h.log.addHandler(cap)
 fake_graph.set_status = lambda dev, ifn="", status="DOWN", only_if="": (calls.append((dev, ifn, status) + ((only_if,) if only_if else ())) or {"updated": 1})
 os.environ.pop("ALERT_STREAM", None)
-h.handler(ev("firing", device_id="dc1-leaf-01", kind="link_down", target="ethernet-1/1", starts_at=1790000000))
+h.handler(ev("firing", device_id="dc1-a-leaf-01", kind="link_down", target="ethernet-1/1", starts_at=1790000000))
 check("ALERT_STREAM が空なら Firehose に送らない（alert_history=false の配備）", fh.batches == [])
 os.environ["ALERT_STREAM"] = "nwc-alert-events"
 pair = {"Records": [{"Sns": {"Message": json.dumps({"source": "grafana", "alerts": [
-    {"status": "firing", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "detail": "down", "starts_at": 1790000000},
-    {"status": "resolved", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "detail": "up", "starts_at": 1790000000}]})}}]}
+    {"status": "firing", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "detail": "down", "starts_at": 1790000000},
+    {"status": "resolved", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "detail": "up", "starts_at": 1790000000}]})}}]}
 h.handler(pair)
-_ids = ["dc1-leaf-01#link_down#ethernet-1/1#grafana#firing#1790000000", "dc1-leaf-01#link_down#ethernet-1/1#grafana#resolved#1790000000"]
+_ids = ["dc1-a-leaf-01#link_down#ethernet-1/1#grafana#firing#1790000000", "dc1-a-leaf-01#link_down#ethernet-1/1#grafana#resolved#1790000000"]
 check("Grafana の firing と resolved（starts_at は同じ）は 1 回の put_record_batch に 2 行、event_id は status で分かれる",
       len(fh.batches) == 1 and fh.batches[0][0] == "nwc-alert-events" and [r["event_id"] for r in fh.batches[0][1]] == _ids)
 check("行の列は rules.ALERT_EVENT_COLUMNS と同じ、時刻は ISO 8601 の UTC（starts_at は通知のまま、received_at は受けた時刻）",
@@ -338,9 +337,9 @@ check("device_id の無いアラートは put_record_batch に送らず、WARNIN
       fh.calls == c and len(warns) == 1 and "ALERT_DROPPED" in warns[0].getMessage() and "1 件" in warns[0].getMessage())
 cap.records.clear()
 h.handler({"Records": [{"Sns": {"Message": json.dumps({"source": "grafana", "alerts": [
-    {"status": "firing", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "eth1", "starts_at": 1790000000},
-    {"status": "firing", "device_id": "dc1-leaf-01", "target": "eth1"},
-    {"status": "pending", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "eth1"}, "x"]})}}]})
+    {"status": "firing", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "eth1", "starts_at": 1790000000},
+    {"status": "firing", "device_id": "dc1-a-leaf-01", "target": "eth1"},
+    {"status": "pending", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "eth1"}, "x"]})}}]})
 warns = cap.at(logging.WARNING)
 check("形の合わない要素（kind が無い・status が pending・dict でない）は数えて WARNING 1 回に、正しい 1 件だけ行にする",
       [len(b[1]) for b in fh.batches] == [1] and fh.batches[0][1][0]["kind"] == "link_down"
@@ -352,7 +351,7 @@ check("未登録の機器・IF の異常は WARNING で UNREGISTERED をログ�
       and cap.records[-1].levelno == logging.WARNING and "UNREGISTERED" in cap.records[-1].getMessage())
 check("未登録の機器の通知も履歴には 1 行送る", [len(b[1]) for b in fh.batches] == [1] and fh.batches[0][1][0]["device_id"] == "zz-ce-09")
 fake_graph.set_status = lambda dev, ifn="", status="DOWN", only_if="": (calls.append((dev, ifn, status) + ((only_if,) if only_if else ())) or {"updated": 1})
-h.handler(ev("resolved", device_id="dc1-leaf-01", kind="link_down", target="eth1"))
+h.handler(ev("resolved", device_id="dc1-a-leaf-01", kind="link_down", target="eth1"))
 check("登録済みなら INFO（どの送り手のどのアラートかをログに残す）", cap.records[-1].levelno == logging.INFO and '"source": "grafana"' in cap.records[-1].getMessage())
 cap.records.clear()
 h.handler({"Records": [{"Sns": {"Message": "not json"}}]})
@@ -361,16 +360,16 @@ check("読めないメッセージは WARNING でログに出す（ALERT_DROPPED
       and "ALERT_DROPPED" not in cap.records[-1].getMessage())
 # ---- 行を組めない通知・UTF-8 にできない文字（1 件のせいで、ほかの通知の行と Neptune、バッチ全体、ERROR の書き出しを落とさない）
 _poison = {"Records": [{"Sns": {"Message": json.dumps({"source": "splunk", "alerts": [
-    {"status": "firing", "device_id": f"dc1-leaf-0{i}", "kind": "link_down", "target": "ethernet-1/1", "starts_at": s}
+    {"status": "firing", "device_id": f"dc1-a-leaf-0{i}", "kind": "link_down", "target": "ethernet-1/1", "starts_at": s}
     for i, s in ((1, 1790000000), (2, 1790000000000), (3, 1790000000))]})}}]}   # 2 件目の starts_at は epoch ミリ秒（9999 年を超えて行を組めない）
 fh.batches.clear(); cap.records.clear()
 n = len(calls)
 r = h.handler(_poison)
 warns = [x.getMessage() for x in cap.at(logging.WARNING)]
 check("行を組めない通知（starts_at が範囲外）は行にせず ALERT_DROPPED の WARNING を 1 回、ほかの 2 件の行は送り、3 件とも Neptune に書く（例外にしない）",
-      [[row["device_id"] for row in b[1]] for b in fh.batches] == [["dc1-leaf-01", "dc1-leaf-03"]] and r == [{"updated": 1}] * 3
-      and [x[0] for x in calls[n:]] == ["dc1-leaf-01", "dc1-leaf-02", "dc1-leaf-03"]
-      and len(warns) == 1 and warns[0].startswith("ALERT_DROPPED") and "dc1-leaf-02" in warns[0])
+      [[row["device_id"] for row in b[1]] for b in fh.batches] == [["dc1-a-leaf-01", "dc1-a-leaf-03"]] and r == [{"updated": 1}] * 3
+      and [x[0] for x in calls[n:]] == ["dc1-a-leaf-01", "dc1-a-leaf-02", "dc1-a-leaf-03"]
+      and len(warns) == 1 and warns[0].startswith("ALERT_DROPPED") and "dc1-a-leaf-02" in warns[0])
 os.environ["ALERT_STREAM"] = ""
 fh.batches.clear(); cap.records.clear()
 n = len(calls)
@@ -379,15 +378,15 @@ check("ALERT_STREAM が空なら行を組まない（starts_at が範囲外で�
       fh.batches == [] and r == [{"updated": 1}] * 3 and len(calls) == n + 3 and cap.at(logging.WARNING) == [])
 os.environ["ALERT_STREAM"] = "nwc-alert-events"
 _odd = {"Records": [{"Sns": {"Message": json.dumps({"source": "splunk", "alerts": [
-    {"status": "firing", "device_id": f"dc1-leaf-0{i}", "kind": "link_down", "target": "ethernet-1/1", "starts_at": 1790000000, "detail": "\udcff" if i == 2 else "x"}
+    {"status": "firing", "device_id": f"dc1-a-leaf-0{i}", "kind": "link_down", "target": "ethernet-1/1", "starts_at": 1790000000, "detail": "\udcff" if i == 2 else "x"}
     for i in (1, 2, 3)]})}}]}   # 2 件目の detail は孤立したサロゲート（JSON の \udcff。そのままでは UTF-8 にできない）
 fh.batches.clear(); cap.records.clear(); waits.clear()
 r = h.handler(_odd)
 check("UTF-8 にできない文字を含む行も、ほかの行と同じ 1 回の put_record_batch で送る（その行だけ \\u でエスケープし、読み戻すと同じ値）",
-      [[row["device_id"] for row in b[1]] for b in fh.batches] == [["dc1-leaf-01", "dc1-leaf-02", "dc1-leaf-03"]]
+      [[row["device_id"] for row in b[1]] for b in fh.batches] == [["dc1-a-leaf-01", "dc1-a-leaf-02", "dc1-a-leaf-03"]]
       and fh.batches[0][1][1]["detail"] == "\udcff" and waits == [] and cap.at(logging.ERROR) == [] and r == [{"updated": 1}] * 3)
 _inf = {"Records": [{"Sns": {"Message": json.dumps({"source": "splunk", "alerts": [
-    {"status": "firing", "device_id": f"dc1-leaf-0{i}", "kind": "link_down", "target": "ethernet-1/1", "starts_at": s}
+    {"status": "firing", "device_id": f"dc1-a-leaf-0{i}", "kind": "link_down", "target": "ethernet-1/1", "starts_at": s}
     for i, s in ((1, "__BIG__"), (2, "inf"), (3, 1790000000))]}).replace('"__BIG__"', "1e400")}}]}   # 1 件目は JSON の数 1e400（読むと float の無限大）
 fh.batches.clear(); cap.records.clear()
 n = len(calls)
@@ -445,7 +444,7 @@ def _seen(fn):
 _ok_status = fake_graph.set_status
 _ok_layer = fake_graph.set_layer_status
 _mixed = {"Records": [{"Sns": {"Message": json.dumps({"source": "splunk", "alerts": [
-    {"status": "firing", "device_id": f"dc1-leaf-0{i}", "kind": "link_down", "target": "ethernet-1/1", "starts_at": 1790000000} for i in (1, 2, 3, 4)]})}},
+    {"status": "firing", "device_id": f"dc1-a-leaf-0{i}", "kind": "link_down", "target": "ethernet-1/1", "starts_at": 1790000000} for i in (1, 2, 3, 4)]})}},
     {"Sns": {"Message": json.dumps({"source": "grafana", "alerts": [
         {"status": "firing", "device_id": "dc1-spine-01", "kind": "bgp_down", "target": "10.255.0.1", "starts_at": 1790000000}]})}}]}
 ofh, lost_order = _Ordered(), _LostOrder()

@@ -29,7 +29,7 @@
 
 | ツール | 読む先 |
 |---|---|
-| `list_devices`、`neighbors`、`blast_radius`、`root_cause`、`what_if`、`topology_graph`、`layers`、`centrality` | Neptune Analytics のトポロジ（無ければ `app/agentcore/data/` の静的な 8 台） |
+| `list_devices`、`neighbors`、`blast_radius`、`root_cause`、`what_if`、`topology_graph`、`layers`、`centrality` | Neptune Analytics のトポロジ（無ければ `app/agentcore/data/` の静的な 7 台） |
 | `recent_changes` | Neptune Analytics の `change` |
 | `list_proposals` | S3 Tables の `proposal_events`（Athena のワークグループ `<prefix>-history`。`proposal_id` ごとに `seq` が最大の行。既定は全部の状態を新しい順に 20 件、最大 100 件） |
 | `search_logs` | OpenSearch Serverless の `snmp-logs`（trap と syslog） |

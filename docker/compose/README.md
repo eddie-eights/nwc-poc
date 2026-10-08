@@ -11,7 +11,7 @@ WSL2 の Ubuntu に次を入れる。
 | もの | 理由 |
 |---|---|
 | Docker Engine（docker-ce と docker-compose-plugin。Docker Desktop の WSL 統合は使わない） | Telegraf は `network_mode: host` で lab の管理ネット（203.0.113.0/24）に届き、`iptables` の REDIRECT で trap を受ける。Docker Desktop はエンジンが別の distro にいるので、host が Ubuntu のネットワークにならない |
-| containerlab | lab（SR Linux 6 台 + VM 2 台）。`app/containerlab/lab.sh` が `sudo` で呼ぶ |
+| containerlab | lab（SR Linux 6 台 + TRex 1 台）。`app/containerlab/lab.sh` が `sudo` で呼ぶ |
 | `snmp`（snmpwalk / snmptrap）、`iptables`、`python3` | `lab check` / `trap-test`、trap の REDIRECT、`app/containerlab/lab_topology.py` |
 | `.wslconfig` の `memory=20GB` 以上 | 見積もりは 16〜19 GB（SR Linux 6 台、Kafka 3 台、Splunk、OpenSearch、Spark 2 つ）。`check.sh` が 20 GB 未満なら注意を出す |
 
@@ -27,7 +27,7 @@ bash -c "$(curl -sL https://get.containerlab.dev)"
 
 QEMU（binfmt）は要らない。build するイメージ（Telegraf、Grafana、Spark、Splunk）は WSL の x86_64 のまま作る。SR Linux と multitool も ghcr.io の amd64 を取る。TRex（Docker Hub の `trexcisco/trex`）は amd64 しか無いが、WSL の x86_64 ならそのまま動く。
 
-足りないメモリは lab を減らして空ける。`python3 app/containerlab/gen_lab.py --leaves 2 --spines 1` で 5 台になる（`leaves` は 2 の倍数で 2 以上、`spines` は 1 以上）。戻すのは `--leaves 2 --spines 2`。これは git に入っている lab の定義（`app/containerlab/splab.clab.yml.in` と `app/containerlab/srlinux/*.cli`）を書き換える。lab が上がっているなら先に `docker/compose/lab.sh down` し、打ったあとで `up.sh`（Telegraf のポーリング先と Spark の device map が変わる）と `lab.sh up` をやり直す（`lab.sh up` は毎回 `app/containerlab/splab.clab.yml` を作り直してから deploy する）。spine が 1 台だと leaf の fabric は 1 本だけなので、`fail-main` は切り替わらずに断になる（`failover` の「切替 OK」と VM の疎通は出ない。linkDown の trap と Grafana の DOWN は 6 台のときと同じに出る）。
+足りないメモリは lab を減らして空ける。`python3 app/containerlab/gen_lab.py --leaves 2 --spines 1` で SR Linux が 5 台になる（`leaves` は 2 の倍数で 2 以上、`spines` は 1 以上）。戻すのは `--leaves 2 --spines 2`。これは git に入っている lab の定義（`app/containerlab/splab.clab.yml.in` と `app/containerlab/srlinux/*.cli`）を書き換える。lab が上がっているなら先に `docker/compose/lab.sh down` し、打ったあとで `up.sh`（Telegraf のポーリング先と Spark の device map が変わる）と `lab.sh up` をやり直す（`lab.sh up` は毎回 `app/containerlab/splab.clab.yml` を作り直してから deploy する）。spine が 1 台だと leaf の fabric は 1 本だけなので、`fail-main` は切り替わらずに断になる（`failover` の「切替 OK」は出ない。linkDown の trap と Grafana の DOWN は 6 台のときと同じに出る）。
 
 ## 手順
 
@@ -49,7 +49,7 @@ docker/compose/up.sh
 docker/compose/lab.sh up
 ```
 
-lab を上げる（`sudo` のパスワードを聞かれる）。最後に `compose の Telegraf へ: trap 162/udp を 1162/udp へ向けた` が出ればよい。続けて `docker/compose/lab.sh check` で BGP・IS-IS・EVPN、VM の LAG と ping、SNMP の応答を見る（bond0 が無いと出たら WSL のカーネルに bonding が無い。`uname -r` と `zcat /proc/config.gz | grep BONDING` を控えておく）。サブコマンドは `app/containerlab/lab.sh` と同じ（`check` / `fail-main` / `heal-main` / `trap-test` / `down` など）。このラッパーは `.env` の `SRLINUX_IMAGE` / `MULTITOOL_IMAGE` と `TELEGRAF_LOCAL=1` の 3 つだけを渡すので、シェルに `REGISTRY` や `AWS_REGION` があっても ECR や SSM へは行かない。
+lab を上げる（`sudo` のパスワードを聞かれる）。最後に `compose の Telegraf へ: trap 162/udp を 1162/udp へ向けた` が出ればよい。続けて `docker/compose/lab.sh check` で BGP・IS-IS、TRex の回線（各 leaf の `ethernet-1/3` と TRex の `eth1`〜`eth4`）、SNMP の応答を見る。サブコマンドは `app/containerlab/lab.sh` と同じ（`check` / `fail-main` / `heal-main` / `trap-test` / `down` など）。このラッパーは `.env` の `SRLINUX_IMAGE` / `MULTITOOL_IMAGE` / `TREX_IMAGE` と `TELEGRAF_LOCAL=1` の 4 つだけを渡すので、シェルに `REGISTRY` や `AWS_REGION` があっても ECR や SSM へは行かない。
 
 ```bash
 docker/compose/check.sh
@@ -63,7 +63,7 @@ docker/compose/check.sh
 docker/compose/lab.sh fail-main
 ```
 
-数分で Grafana の `metrics` ダッシュボードの `dc1-leaf-01 ethernet-1/1` が DOWN、`logs` ダッシュボードと Splunk（`index=* source="telegraf:snmp_trap"`）に linkDown の trap と syslog が出る。戻すのは `docker/compose/lab.sh heal-main`。`docker/compose/lab.sh trap-test` は link 以外の trap を 1 通送る（Splunk の保存済みサーチ `netops_trap` が次の実行で 1 件）。
+数分で Grafana の `metrics` ダッシュボードの `dc1-a-leaf-01 ethernet-1/1` が DOWN、`logs` ダッシュボードと Splunk（`index=* source="telegraf:snmp_trap"`）に linkDown の trap と syslog が出る。戻すのは `docker/compose/lab.sh heal-main`。`docker/compose/lab.sh trap-test` は link 以外の trap を 1 通送る（Splunk の保存済みサーチ `netops_trap` が次の実行で 1 件）。
 
 ## 見る場所
 

@@ -114,7 +114,7 @@ gNMI の購読は Telegraf から取りにいくので、lab の値は取りに�
 | どこが食っているか | 加入者ごと、内側の IF ごと | サブインターフェースごと: `/interface[name=*]/subinterface[index=*]/bridge-table/statistics/active-entries` と上限 `…/bridge-table/mac-limit/maximum-entries`（1〜8192、既定 250） | 揃う（このパスも購読する） |
 | 上限で断った数 | NAT の `limit-entry-add-fail` など | **無い。**`failed-entries` はデータパスへの書き込みに失敗した数で、上限で断った数ではないので使わない | 揃わない。今の数が上限に達したら「上限に当たっている」とみなす。断った件数は出ない |
 | 上限に当たったときの影響 | 新しい通信・加入者が入れない | 新しい MAC を覚えない（覚えていない端末宛はフラッディングになるのが一般的な L2 の動き。SR Linux では確かめていない） | 揃わない。影響の説明は機能ごとに KB に書く |
-| 値の動き | 時間帯で増減する | lab の host は 2 台なので数個のまま動かない | 揃わない。host で MAC を増やす仕掛け（macvlan を足すなど）が要る（まだ無い） |
+| 値の動き | 時間帯で増減する | lab の mac-vrf にいるのは TRex のポート 4 本なので、数個のまま動かない | 揃わない。MAC を増やす仕掛け（TRex で送り元の MAC を変えて撃つプロファイルなど）が要る（まだ無い） |
 
 - しきい値を試すときは、lab の `mac-limit maximum-entries` を小さくすれば到達率を上げられる。
 
@@ -122,7 +122,7 @@ gNMI の購読は Telegraf から取りにいくので、lab の値は取りに�
 
 | エージェントが使う要素 | 本番（Cisco） | lab の代替（SR Linux） | 揃うか |
 |---|---|---|---|
-| 今の数 | お客さま向けの IF の数（何をお客さま向けとみなすかは未決定） | `type bridged` のサブインターフェースを持つ IF（lab では host へ向かう `lag1`。fabric の IF は routed なので数えない）。`/interface[name=*]/subinterface[index=*]/type` と `oper-state` | 数え方は揃う。ただ「お客さま向け」の決め方が機器の設定に依存する。本番と lab で同じ決め方（トポロジで相手が host やお客さまの IF）にすると揃う |
+| 今の数 | お客さま向けの IF の数（何をお客さま向けとみなすかは未決定） | `type bridged` のサブインターフェースを持つ IF（lab では TRex へ向かう `ethernet-1/3`。fabric の IF は routed なので数えない）。`/interface[name=*]/subinterface[index=*]/type` と `oper-state` | 数え方は揃う。ただ「お客さま向け」の決め方が機器の設定に依存する。本番と lab で同じ決め方（トポロジで相手が host やお客さまの IF）にすると揃う |
 | 上限 | 物理ポート数 | 物理ポート数（`/interface[name=ethernet-*]` の数。SR Linux は未使用のポートも状態に出す）。設定上の上限は無いので機器の上限を使う | 揃う |
 | 値の動き | 開通・解約で変わる（ほぼ静的） | 設定を変えたときだけ変わる | 揃う |
 

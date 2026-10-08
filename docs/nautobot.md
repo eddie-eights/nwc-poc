@@ -94,7 +94,7 @@ sequenceDiagram
   participant N as Neptune
   W->>D: migrate（最初は 5〜10 分）
   W->>D: 管理者、custom field（asn / link_role / bandwidth_mbps）
-  W->>D: 機器が 0 台のときだけ lab の定義から seed（8 台 / 12 本）
+  W->>D: 機器が 0 台のときだけ lab の定義から seed（7 台 / 12 本）
   W->>D: Job 2 つを有効にし、JobHook netops-sync を張る
   W->>T: 起動時の同期（一覧）
   W->>N: 起動時の同期（物理層）
@@ -135,7 +135,7 @@ terraform -chdir=IaC/terraform/aws-managed/pipeline/nautobot output -raw passwor
 | Device の Status を `Maintenance` にする | Neptune の `device` の `maintenance`。保守中の機器の異常ではワークフローを起こさない（6 章の (5)） |
 | どれかを作る・変える・消す（Nautobot の変更履歴 ObjectChange） | Neptune の頂点 `change`（新しい順に 50 件）。エージェントの `recent_changes` が読む（6 章の (6)） |
 
-Role の名前は `leaf` / `leafsw` / `spine` / `host` / `upstream` を使う（回線の種類と Web の図の並びがこれを見る）。
+Role の名前は `spine` / `a-leaf` / `s-leaf` / `trex` を使う（回線の種類と Web の図の並びがこれを見る）。
 
 ### 同期を確かめる・手で打つ
 

@@ -160,29 +160,30 @@ check("リランクありでも参照元の組み立ては同じ", r["sources"] 
 
 # ---- トポロジのツール
 t = app.topology
-check("機器は 8 台で community を出さない", t.list_devices()["count"] == 8 and "snmp_community" not in t.list_devices()["devices"][0])
-check("site で絞れる", [d["device_id"] for d in t.list_devices(site="wan")["devices"]] == ["wan-upstream-01"] and t.list_devices(site="dc1")["count"] == 7)
-check("role で絞れる（leafsw / spine / leaf / upstream / host）", [d["device_id"] for d in t.list_devices(role="spine")["devices"]] == ["dc1-spine-01", "dc1-spine-02"] and t.list_devices(role="host")["count"] == 1)
-nb = t.neighbors("dc1-leaf-01")["neighbors"]
-check("dc1-leaf-01 の隣接は Spine 2 台とアクセス側の VM", sorted(n["device_id"] for n in nb) == ["dc1-host-01", "dc1-spine-01", "dc1-spine-02"])
-check("隣接に両端の IF と種別（fabric / lag）が付く", {(n["device_id"], n["local_if"], n["remote_if"], n["kind"]) for n in nb} >= {("dc1-spine-01", "ethernet-1/1", "ethernet-1/3", "fabric"), ("dc1-spine-02", "ethernet-1/2", "ethernet-1/3", "fabric"), ("dc1-host-01", "ethernet-1/3", "eth1", "lag")})
+check("機器は 7 台で community を出さない", t.list_devices()["count"] == 7 and "snmp_community" not in t.list_devices()["devices"][0])
+check("site で絞れる（lab は dc1 だけ）", t.list_devices(site="wan")["devices"] == [] and t.list_devices(site="dc1")["count"] == 7)
+check("role で絞れる（spine / a-leaf / s-leaf / trex）", [d["device_id"] for d in t.list_devices(role="spine")["devices"]] == ["dc1-spine-01", "dc1-spine-02"]
+      and [d["device_id"] for d in t.list_devices(role="s-leaf")["devices"]] == ["dc1-s-leaf-01", "dc1-s-leaf-02"] and t.list_devices(role="trex")["count"] == 1)
+nb = t.neighbors("dc1-a-leaf-01")["neighbors"]
+check("dc1-a-leaf-01 の隣接は Spine 2 台と TRex", sorted(n["device_id"] for n in nb) == ["dc1-spine-01", "dc1-spine-02", "dc1-trex-01"])
+check("隣接に両端の IF と種別（fabric / l2）が付く", {(n["device_id"], n["local_if"], n["remote_if"], n["kind"]) for n in nb} >= {("dc1-spine-01", "ethernet-1/1", "ethernet-1/3", "fabric"), ("dc1-spine-02", "ethernet-1/2", "ethernet-1/3", "fabric"), ("dc1-trex-01", "ethernet-1/3", "eth3", "l2")})
 br = t.blast_radius("dc1-spine-02", 1)
-check("Spine-02 が落ちると 1 ホップで Leaf-SW 2 台と Leaf 2 台（VM とは直接つながらない）", sorted(a["device_id"] for a in br["affected"]) == ["dc1-leaf-01", "dc1-leaf-02", "dc1-leafsw-01", "dc1-leafsw-02"])
-check("2 ホップなら VM まで届く", any(a["device_id"] == "dc1-host-01" and a["hops"] == 2 for a in t.blast_radius("dc1-spine-02")["affected"]))
-check("知らない機器は error と候補", "error" in t.neighbors("nope") and "dc1-leaf-01" in t.neighbors("nope")["known"])
-check("run_tool は余計な引数を捨てる", t.run_tool("list_devices", {"site": "wan", "x": 1})["count"] == 1)
-check("全体図はノード 8 リンク 12（物理層）", len(t.topology_graph()["nodes"]) == 8 and len(t.topology_graph()["links"]) == 12)
+check("Spine-02 が落ちると 1 ホップで a-leaf 2 台と s-leaf 2 台（TRex とは直接つながらない）", sorted(a["device_id"] for a in br["affected"]) == ["dc1-a-leaf-01", "dc1-a-leaf-02", "dc1-s-leaf-01", "dc1-s-leaf-02"])
+check("2 ホップなら TRex まで届く", any(a["device_id"] == "dc1-trex-01" and a["hops"] == 2 for a in t.blast_radius("dc1-spine-02")["affected"]))
+check("知らない機器は error と候補", "error" in t.neighbors("nope") and "dc1-a-leaf-01" in t.neighbors("nope")["known"])
+check("run_tool は余計な引数を捨てる", t.run_tool("list_devices", {"role": "trex", "x": 1})["count"] == 1)
+check("全体図はノード 7 リンク 12（物理層）", len(t.topology_graph()["nodes"]) == 7 and len(t.topology_graph()["links"]) == 12)
 ly = t.layers()
-check("layers は物理層より上の頂点（ip / evpn）を辺付きで返し、下の層を指す ID を持つ", ly["count"] == 62 and len(ly["edges"]) == 84
+check("layers は物理層より上の頂点（ip / evpn）を辺付きで返し、下の層を指す ID を持つ", ly["count"] == 58 and len(ly["edges"]) == 78
       and {v["layer"] for v in ly["vertices"]} == {"ip", "evpn"} and all(v["status"] == "UP" for v in ly["vertices"])
       and all(v.get("interface_id") or v.get("ip_interface_id") or v["name"] == "system0.0" for v in ly["vertices"]))
-check("layers は機器と層で絞れる（dc1-leaf-01 の evpn = BGP 2 + EVI 1 + ES 1）", t.layers("dc1-leaf-01", "evpn")["count"] == 4 and t.layers("dc1-leaf-01")["count"] == 9
-      and sorted(v["label"] for v in t.layers("dc1-leaf-01", "evpn")["vertices"]) == ["bgp_session", "bgp_session", "ethernet_segment", "evpn_instance"])
-check("layers の BGP のセッションは相手の機器と Spine の RR を持つ", any(v["id"] == "dc1-leaf-01#bgp#10.255.0.1" and v["peer_device"] == "dc1-spine-01" for v in ly["vertices"]))
+check("layers は機器と層で絞れる（dc1-a-leaf-01 の evpn = BGP 2 + EVI 1。LAG が無いので ES は無い）", t.layers("dc1-a-leaf-01", "evpn")["count"] == 3 and t.layers("dc1-a-leaf-01")["count"] == 8
+      and sorted(v["label"] for v in t.layers("dc1-a-leaf-01", "evpn")["vertices"]) == ["bgp_session", "bgp_session", "evpn_instance"])
+check("layers の BGP のセッションは相手の機器と Spine の RR を持つ", any(v["id"] == "dc1-a-leaf-01#bgp#10.255.0.1" and v["peer_device"] == "dc1-spine-01" for v in ly["vertices"]))
 check("layers は知らない機器・層なら error", "error" in t.layers("nope") and "error" in t.layers("", "mpls") and "known" in t.layers("nope"))
 check("Neptune が無ければ元データは static", t.SOURCE == "static" and t.topology_graph()["source"] == "static" and not app.graph.configured())
 check("load_static は asn を機器に足す", any(d.get("asn") for d in t.load_static()[0]))
-check("interfaces は機器につながるリンクの自分側の IF 名", t.interfaces("dc1-leaf-01") == ["ethernet-1/1", "ethernet-1/2", "ethernet-1/3"] and t.interfaces("dc1-spine-02") == ["ethernet-1/1", "ethernet-1/2", "ethernet-1/3", "ethernet-1/4"])
+check("interfaces は機器につながるリンクの自分側の IF 名", t.interfaces("dc1-a-leaf-01") == ["ethernet-1/1", "ethernet-1/2", "ethernet-1/3"] and t.interfaces("dc1-spine-02") == ["ethernet-1/1", "ethernet-1/2", "ethernet-1/3", "ethernet-1/4"])
 check("interfaces は知らない機器なら空", t.interfaces("nope") == [] and t.interfaces("") == [])
 # ---- 根本原因（層をまたいで下へ辿る。2026-10-04）
 def _with_status(links=(), layers=(), devices=None):
@@ -195,46 +196,51 @@ def _with_status(links=(), layers=(), devices=None):
     for d in devs:
         if d["device_id"] in (devices or {}): d["status"] = devices[d["device_id"]]
     t.DEVICES, t.NODES, t.LINKS, t.ADJ = t._build(devs, lks); t.DEVICE_BY_ID = t.NODES; t.LAYERS = ly
-MAIN = "dc1-leaf-01#ethernet-1/1--dc1-spine-01#ethernet-1/3"
+MAIN = "dc1-a-leaf-01#ethernet-1/1--dc1-spine-01#ethernet-1/3"
 check("root_cause は全部 UP なら原因なし", t.root_cause() == {"source": "static", "device_id": "", "fault_count": 0, "root_cause_count": 0, "root_causes": [], "note": "UP でない要素は無い"})
-_with_status([("dc1-leaf-01", "ethernet-1/1")], ["dc1-leaf-01#isis#ethernet-1/1.0", "dc1-spine-01#isis#ethernet-1/3.0"])
+_with_status([("dc1-a-leaf-01", "ethernet-1/1")], ["dc1-a-leaf-01#isis#ethernet-1/1.0", "dc1-spine-01#isis#ethernet-1/3.0"])
 rc = t.root_cause()
 check("回線と、その上の IS-IS の隣接 2 つが落ちていれば、原因は回線 1 本（途中の UP の IF は通り抜ける）",
       rc["fault_count"] == 3 and rc["root_cause_count"] == 1 and rc["root_causes"][0]["id"] == MAIN and rc["root_causes"][0]["type"] == "link"
-      and [e["id"] for e in rc["root_causes"][0]["explains"]] == ["dc1-leaf-01#isis#ethernet-1/1.0", "dc1-spine-01#isis#ethernet-1/3.0"]
+      and [e["id"] for e in rc["root_causes"][0]["explains"]] == ["dc1-a-leaf-01#isis#ethernet-1/1.0", "dc1-spine-01#isis#ethernet-1/3.0"]
       and rc["root_causes"][0]["lower_layers_up"] is False and "isis_adjacency 2" in rc["root_causes"][0]["note"])
 check("also_on_it はまだ UP のままその回線に乗っている要素（両端の IF とサブ IF）",
-      rc["root_causes"][0]["also_on_it"] == ["dc1-leaf-01#ethernet-1/1", "dc1-leaf-01#ethernet-1/1.0", "dc1-spine-01#ethernet-1/3", "dc1-spine-01#ethernet-1/3.0"])
+      rc["root_causes"][0]["also_on_it"] == ["dc1-a-leaf-01#ethernet-1/1", "dc1-a-leaf-01#ethernet-1/1.0", "dc1-spine-01#ethernet-1/3", "dc1-spine-01#ethernet-1/3.0"])
 check("root_cause は機器で絞れる（関わらない機器なら原因なしと、ほかの異常の数）",
-      t.root_cause("dc1-spine-01")["root_cause_count"] == 1 and t.root_cause("dc1-leafsw-01")["root_causes"] == [] and "3 個" in t.root_cause("dc1-leafsw-01")["note"]
+      t.root_cause("dc1-spine-01")["root_cause_count"] == 1 and t.root_cause("dc1-s-leaf-01")["root_causes"] == [] and "3 個" in t.root_cause("dc1-s-leaf-01")["note"]
       and "error" in t.root_cause("nope"))
-_with_status([("dc1-leaf-01", "ethernet-1/1")], ["dc1-leaf-01#bgp#10.255.0.1"], {"dc1-leaf-02": "ALARM"})
+_with_status([("dc1-a-leaf-01", "ethernet-1/1")], ["dc1-a-leaf-01#bgp#10.255.0.1"], {"dc1-a-leaf-02": "ALARM"})
 rc = {r["id"]: r for r in t.root_cause()["root_causes"]}
 check("BGP は fabric の別の経路で相手に届くなら回線のせいにしない（下の層は UP = その層を疑う）",
-      set(rc) == {MAIN, "dc1-leaf-02", "dc1-leaf-01#bgp#10.255.0.1"} and rc["dc1-leaf-01#bgp#10.255.0.1"]["lower_layers_up"] is True
-      and "この層の設定やプロセスを疑う" in rc["dc1-leaf-01#bgp#10.255.0.1"]["note"] and rc[MAIN]["explains"] == [])
-check("ALARM の機器はそれ自身が原因で、上の要素を巻き込まない", rc["dc1-leaf-02"]["status"] == "ALARM" and rc["dc1-leaf-02"]["also_on_it"] == [])
-_with_status([("dc1-leaf-01", "ethernet-1/1"), ("dc1-leaf-01", "ethernet-1/2")], ["dc1-leaf-01#bgp#10.255.0.1", "dc1-leaf-01#bgp#10.255.0.2"])
+      set(rc) == {MAIN, "dc1-a-leaf-02", "dc1-a-leaf-01#bgp#10.255.0.1"} and rc["dc1-a-leaf-01#bgp#10.255.0.1"]["lower_layers_up"] is True
+      and "この層の設定やプロセスを疑う" in rc["dc1-a-leaf-01#bgp#10.255.0.1"]["note"] and rc[MAIN]["explains"] == [])
+check("ALARM の機器はそれ自身が原因で、上の要素を巻き込まない", rc["dc1-a-leaf-02"]["status"] == "ALARM" and rc["dc1-a-leaf-02"]["also_on_it"] == [])
+_with_status([("dc1-a-leaf-01", "ethernet-1/1"), ("dc1-a-leaf-01", "ethernet-1/2")], ["dc1-a-leaf-01#bgp#10.255.0.1", "dc1-a-leaf-01#bgp#10.255.0.2"])
 rc = t.root_cause()["root_causes"]
 check("fabric の回線が 2 本とも落ちて相手に届かなければ、BGP の 2 つは切れ目の回線 2 本で説明する",
       [r["type"] for r in rc] == ["link", "link"] and all(r["explains_count"] == 2 and {e["type"] for e in r["explains"]} == {"bgp_session"} for r in rc))
-_with_status([], ["dc1-leaf-01#bgp#10.255.0.1", "dc1-leaf-02#bgp#10.255.0.1"], {"dc1-spine-01": "DOWN"})
+_with_status([], ["dc1-a-leaf-01#bgp#10.255.0.1", "dc1-a-leaf-02#bgp#10.255.0.1"], {"dc1-spine-01": "DOWN"})
 rc = t.root_cause()["root_causes"]
 check("相手の機器が DOWN なら、そこへの BGP は機器 1 台で説明する", len(rc) == 1 and rc[0]["id"] == "dc1-spine-01" and rc[0]["explains_count"] == 2
-      and "dc1-leafsw-01#bgp#10.255.0.1" in rc[0]["also_on_it"])
-check("app.run_tool は root_cause を topology に振る", app.run_tool("root_cause", {"device_id": "dc1-leaf-01"})["root_cause_count"] == 1)
+      and "dc1-s-leaf-01#bgp#10.255.0.1" in rc[0]["also_on_it"])
+check("app.run_tool は root_cause を topology に振る", app.run_tool("root_cause", {"device_id": "dc1-a-leaf-01"})["root_cause_count"] == 1)
 _with_status()
 check("status を戻せば原因なし", t.root_cause()["fault_count"] == 0)
 # ---- 事前チェック（what_if。2026-10-04）
-w = t.what_if("link_down", "dc1-leaf-01#ethernet-1/1")
-check("what_if: 全部 UP で fabric を 1 本落としても孤立は出ず、冗長が切れる機器も無ければ ok（Leaf には host 側の回線も残る）",
-      w["source"] == "static" and w["newly_isolated"] == [] and w["unknown"] == [] and w["verdict"] in ("ok", "warn"))
-w = t.what_if("device_down", "dc1-leaf-01")
-check("what_if: Leaf を 1 台落とすと、両方の Leaf につながる host は孤立せず冗長切れで warn（落とした機器自身は数えない）",
-      w["verdict"] == "warn" and "dc1-host-01" in w["redundancy_lost"] and w["newly_isolated"] == [] and "冗長が切れる機器" in w["summary"])
+w = t.what_if("link_down", "dc1-a-leaf-01#ethernet-1/1")
+check("what_if: 全部 UP で fabric を 1 本落としても孤立は出ず、冗長が切れる機器も無ければ ok（Leaf には TRex への回線も残る）",
+      w["source"] == "static" and w["newly_isolated"] == [] and w["unknown"] == [] and w["verdict"] == "ok")
+w = t.what_if("device_down", "dc1-a-leaf-01")
+check("what_if: Leaf を 1 台落としても、TRex（4 本）も Spine（4 本）も 2 本以上残るので ok（落とした機器自身は数えない）",
+      w["verdict"] == "ok" and w["redundancy_lost"] == [] and w["newly_isolated"] == [] and "冗長が切れる機器も無い" in w["summary"])
+_with_status([("dc1-a-leaf-01", "ethernet-1/1")])
+w = t.what_if("link_down", "dc1-a-leaf-01#ethernet-1/2")
+check("what_if: fabric の片系が DOWN のまま残りの 1 本を落とすと、TRex への 1 本だけになる Leaf は冗長切れで warn",
+      w["verdict"] == "warn" and w["redundancy_lost"] == ["dc1-a-leaf-01"] and w["newly_isolated"] == [] and "冗長が切れる機器" in w["summary"])
+_with_status()
 check("what_if: 相手の端の名前でも同じ回線に当たる", t.what_if("link_down", "dc1-spine-01#ethernet-1/3")["unknown"] == [])
 check("what_if: 無い対象は unknown、op が違えば error",
-      t.what_if("link_down", "dc1-leaf-01#nope")["verdict"] == "unknown" and "error" in t.what_if("reboot", "dc1-leaf-01"))
+      t.what_if("link_down", "dc1-a-leaf-01#nope")["verdict"] == "unknown" and "error" in t.what_if("reboot", "dc1-a-leaf-01"))
 _d = [{"device_id": x} for x in "abc"]
 _l = [{"a": "a", "a_if": "1", "b": "b", "b_if": "1"}, {"a": "a", "a_if": "2", "b": "b", "b_if": "2", "status": "DOWN"}, {"a": "b", "a_if": "3", "b": "c", "b_if": "1"}]
 r = t.impact(_d, _l, [{"op": "link_down", "target": "a#1"}])
@@ -245,14 +251,14 @@ r = t.impact(_d, [dict(l, status="UP") for l in _l], [{"op": "link_down", "targe
 check("impact: 2 本のうち 1 本を落とすと冗長切れで warn", r["verdict"] == "warn" and r["redundancy_lost"] == ["a"] and r["newly_isolated"] == [])
 r = t.impact(_d, [dict(_l[0], status="DOWN"), _l[1], _l[2]], [{"op": "link_up", "target": "a#1"}])
 check("impact: 孤立していた機器が、上げるとつながり直す", r["reconnected"] == ["a"] and r["verdict"] == "ok")
-check("app.run_tool は what_if を topology に振る", app.run_tool("what_if", {"op": "device_down", "target": "dc1-leaf-01"})["verdict"] == "warn")
+check("app.run_tool は what_if を topology に振る", app.run_tool("what_if", {"op": "device_down", "target": "dc1-a-leaf-01"})["verdict"] == "ok")
 # ---- Nautobot の保守中と変更履歴（2026-10-04）
 check("list_devices は maintenance を出す（静的データでは全部 false）", all(d["maintenance"] is False for d in t.list_devices()["devices"]))
 check("recent_changes は Neptune が無ければ案内を返す", "Nautobot" in t.recent_changes()["error"] and t.recent_changes()["changes"] == [])
 _cfg, _lr = t.graph.configured, t.graph.list_records
 t.graph.configured = lambda: True
-_rows = [{"change_id": "change#2", "time": 1790000100, "user": "admin", "action": "update", "object_type": "device", "object": "dc1-leaf-01", "device_id": "dc1-leaf-01", "detail": "status: Active → Maintenance"},
-         {"change_id": "change#1", "time": 1790000000, "user": "netops-web", "action": "delete", "object_type": "cable", "object": "dc1-leaf-02 ethernet-1/1 <> dc1-spine-01", "device_id": ""}]
+_rows = [{"change_id": "change#2", "time": 1790000100, "user": "admin", "action": "update", "object_type": "device", "object": "dc1-a-leaf-01", "device_id": "dc1-a-leaf-01", "detail": "status: Active → Maintenance"},
+         {"change_id": "change#1", "time": 1790000000, "user": "netops-web", "action": "delete", "object_type": "cable", "object": "dc1-a-leaf-02 ethernet-1/1 <> dc1-spine-01", "device_id": ""}]
 _asked = []
 t.graph.list_records = lambda label, key, order, **kw: _asked.append((label, key, order, kw)) or list(_rows)
 rc = t.recent_changes()
@@ -260,7 +266,7 @@ check("recent_changes は label change を time の新しい順に読み、JST �
       _asked == [("change", "change_id", "time", {"limit": 50})] and rc["count"] == 2 and rc["changes"][0]["detail"] == "status: Active → Maintenance"
       and rc["changes"][0]["time_jst"] == t.toolkit.jst(1790000100) and "change_id" not in rc["changes"][0])
 check("recent_changes は機器で絞れる（device_id が同じか、名前にその機器を含むもの）",
-      [c["object_type"] for c in t.recent_changes("dc1-leaf-02")["changes"]] == ["cable"] and t.recent_changes("dc1-spine-02")["count"] == 0
+      [c["object_type"] for c in t.recent_changes("dc1-a-leaf-02")["changes"]] == ["cable"] and t.recent_changes("dc1-spine-02")["count"] == 0
       and t.recent_changes(limit=1)["count"] == 1)
 t.graph.configured, t.graph.list_records = _cfg, _lr
 # ---- 中心性（Neptune Analytics のアルゴリズム。2026-10-04）
@@ -286,13 +292,13 @@ check("root_cause は原因に関わる保守中の機器を出す", rc["id"] ==
 t.DEVICES, t.NODES, t.LINKS, t.ADJ = t._build([{k: v for k, v in d.items() if k != "maintenance"} for d in t.DEVICES], [{k: v for k, v in l.items() if k != "status"} for l in t.LINKS])
 t.DEVICE_BY_ID = t.NODES
 lc = t.link_choices()
-check("link_choices は 12 本の (表示, a|a_if|b)", len(lc) == 12 and ("dc1-leaf-01 ethernet-1/1 - dc1-spine-01 ethernet-1/3  [fabric]", "dc1-leaf-01|ethernet-1/1|dc1-spine-01") in lc)
-check("VM との LACP は lag", ("dc1-host-01 eth1 - dc1-leaf-01 ethernet-1/3  [lag]", "dc1-host-01|eth1|dc1-leaf-01") in lc)
+check("link_choices は 12 本の (表示, a|a_if|b)", len(lc) == 12 and ("dc1-a-leaf-01 ethernet-1/1 - dc1-spine-01 ethernet-1/3  [fabric]", "dc1-a-leaf-01|ethernet-1/1|dc1-spine-01") in lc)
+check("TRex との回線は l2", ("dc1-a-leaf-01 ethernet-1/3 - dc1-trex-01 eth3  [l2]", "dc1-a-leaf-01|ethernet-1/3|dc1-trex-01") in lc)
 check("link_choices の値は remove_link の引数に戻せる", all(v.count("|") == 2 and v.split("|")[0] < v.split("|")[2] for _, v in lc))
 # 異常の頂点（label anomaly）と list_anomalies は 2026-10-02 にやめた（Neptune はトポロジと修復案だけ。検知は Grafana / Splunk）
 check("異常一覧のモジュールとツールはもう無い（app.run_tool は unknown を返す）",
-      not hasattr(app, "anomalies") and "unknown" in app.run_tool("list_anomalies", {"status": "open"})["error"] and app.run_tool("list_devices", {})["count"] == 8)
-check("app.run_tool は layers を topology に振る", app.run_tool("layers", {"device_id": "dc1-leaf-01", "layer": "ip"})["count"] == 5)
+      not hasattr(app, "anomalies") and "unknown" in app.run_tool("list_anomalies", {"status": "open"})["error"] and app.run_tool("list_devices", {})["count"] == 7)
+check("app.run_tool は layers を topology に振る", app.run_tool("layers", {"device_id": "dc1-a-leaf-01", "layer": "ip"})["count"] == 5)
 check("app.run_tool は list_proposals を proposals に振る（Athena の設定が無いので案内）", "IaC/terraform/aws-managed/workflow" in app.run_tool("list_proposals", {})["error"])
 # 過去の経緯・修復履歴・状態に答えられるようにした（2026-09-18）。2026-10-02 から「いまの異常」は機器・回線・層の status で答える
 check("system prompt はいまの異常 → status、履歴 → list_proposals、アラートの履歴 → query_history（Grafana / Splunk の通知）、承認はしない、と言う",
@@ -305,15 +311,15 @@ check(f"system prompt に出てくるツール名は全部 TOOL_SPECS にある�
 
 # ---- ツールの往復
 app.history.clear()
-state.update(retrieve=RET, converse=[tool_converse("neighbors", {"device_id": "dc1-leaf-01"}), ok_converse("dc1-leaf-01 は Spine 2 台につながる")], calls=[])
-r = app.invoke({"prompt": "dc1-leaf-01 の隣は"})
+state.update(retrieve=RET, converse=[tool_converse("neighbors", {"device_id": "dc1-a-leaf-01"}), ok_converse("dc1-a-leaf-01 は Spine 2 台につながる")], calls=[])
+r = app.invoke({"prompt": "dc1-a-leaf-01 の隣は"})
 convs = [c[1] for c in state["calls"] if c[0] == "converse"]
-check("tool_use なら結果を返して 2 回目を呼ぶ", len(convs) == 2 and r["response"].startswith("dc1-leaf-01 は Spine 2 台につながる"))
+check("tool_use なら結果を返して 2 回目を呼ぶ", len(convs) == 2 and r["response"].startswith("dc1-a-leaf-01 は Spine 2 台につながる"))
 tr = convs[1]["messages"][-1]
 check("2 回目の末尾は toolResult（success、json）", tr["role"] == "user" and tr["content"][0]["toolResult"]["toolUseId"] == "tu1" and tr["content"][0]["toolResult"]["status"] == "success" and "neighbors" in tr["content"][0]["toolResult"]["content"][0]["json"])
 check("2 回目の直前は assistant の toolUse", convs[1]["messages"][-2]["content"][0]["toolUse"]["name"] == "neighbors")
 check("1 本目の結果には上限の指示を添えない（toolResult だけ）", len(convs[1]["messages"][-1]["content"]) == 1)
-check("履歴には質問と最終回答だけ", app.history == [{"role": "user", "content": [{"text": "dc1-leaf-01 の隣は"}]}, {"role": "assistant", "content": [{"text": "dc1-leaf-01 は Spine 2 台につながる"}]}])
+check("履歴には質問と最終回答だけ", app.history == [{"role": "user", "content": [{"text": "dc1-a-leaf-01 の隣は"}]}, {"role": "assistant", "content": [{"text": "dc1-a-leaf-01 は Spine 2 台につながる"}]}])
 
 state.update(converse=[tool_converse("neighbors", {"device_id": "zzz"}), ok_converse("そんな機器は無い")], calls=[])
 r = app.invoke({"prompt": "zzz の隣は"})
@@ -374,7 +380,7 @@ check("4 本で答えたら断りを付けない", r["response"].startswith("4 �
 
 # ---- Strands に載せ替えて（2026-10-05）増えた道。Converse を直に回していたときと同じ結果になること
 _hist = copy.deepcopy(app.history)
-state.update(converse=[tool_converse("neighbors", {"device_id": "dc1-leaf-01"}), ok_converse("途中で切れた本", "max_tokens")], calls=[])
+state.update(converse=[tool_converse("neighbors", {"device_id": "dc1-a-leaf-01"}), ok_converse("途中で切れた本", "max_tokens")], calls=[])
 r = app.invoke({"prompt": "長い答え"})
 check("max_tokens で切れたら、そこまでの本文を返して履歴に残す（Strands は例外を投げるが落とさない）",
       r["status"] == "success" and r["response"].startswith("途中で切れた本") and app.history[-1]["content"][0]["text"] == "途中で切れた本")
@@ -397,7 +403,7 @@ r = app.invoke({"prompt": "q"})
 check("スロットリングは Strands では呼び直さずに error（boto3 の再試行だけ。Web を待たせない）",
       r["status"] == "error" and len([c for c in state["calls"] if c[0] == "converse"]) == 1 and len(app.history) == n)
 
-state.update(converse=[tool_converse("neighbors", {"device_id": "dc1-leaf-01"}), BotoCoreError("x")], calls=[])
+state.update(converse=[tool_converse("neighbors", {"device_id": "dc1-a-leaf-01"}), BotoCoreError("x")], calls=[])
 n = len(app.history)
 r = app.invoke({"prompt": "q"})
 check("2 回目の Converse 失敗も error で履歴に残らない", r["status"] == "error" and len(app.history) == n)
@@ -430,7 +436,7 @@ class FakeAthena:
 _hist_env = ("ATHENA_WORKGROUP", "ATHENA_CATALOG", "HISTORY_NAMESPACE", "ALERT_EVENTS_TABLE")
 _hist_saved = {k: getattr(evidence, k) for k in _hist_env + ("TIMEOUT", "POLL")}
 toolkit._clients["athena"] = fa = FakeAthena()
-r = evidence.query_history("dc1-leaf-01")
+r = evidence.query_history("dc1-a-leaf-01")
 check("query_history は環境変数が無ければ rows == [] で「未配備」を返し、Athena を呼ばない",
       r["rows"] == [] and "まだ配備していない" in r["error"] and fa.calls == [])
 for _missing in _hist_env:
@@ -441,12 +447,12 @@ for k, v in zip(_hist_env, ("nwc-history", "s3tablescatalog/tb", "netops", "aler
     setattr(evidence, k, v)
 evidence.POLL = 0
 
-_row1 = ("dc1-leaf-01#link_down#ethernet-1/1#grafana#resolved#1790000000", "dc1-leaf-01#link_down#ethernet-1/1", "grafana", "resolved", "dc1-leaf-01",
+_row1 = ("dc1-a-leaf-01#link_down#ethernet-1/1#grafana#resolved#1790000000", "dc1-a-leaf-01#link_down#ethernet-1/1", "grafana", "resolved", "dc1-a-leaf-01",
          "link_down", "ethernet-1/1", "ethernet-1/1 is down (grafana)", "2026-09-21 14:13:20.000000 UTC", "2026-09-21 14:20:00.123456 UTC")
-_row2 = ("dc1-leaf-01#link_down#ethernet-1/1#splunk#firing#0", "dc1-leaf-01#link_down#ethernet-1/1", "splunk", "firing", "dc1-leaf-01",
+_row2 = ("dc1-a-leaf-01#link_down#ethernet-1/1#splunk#firing#0", "dc1-a-leaf-01#link_down#ethernet-1/1", "splunk", "firing", "dc1-a-leaf-01",
          "link_down", "ethernet-1/1", "", None, "2026-09-21 14:10:00.000000 UTC")
 toolkit._clients["athena"] = fa = FakeAthena(rows=[_row1, _row2])
-r = evidence.query_history("dc1-leaf-01")
+r = evidence.query_history("dc1-a-leaf-01")
 _q = fa.started()[0]
 check("query_history の SQL は event_id で重複を落とし（row_number() OVER (PARTITION BY event_id）、新しい順に LIMIT 50",
       "row_number() OVER (PARTITION BY event_id ORDER BY received_at)" in _q["QueryString"] and "WHERE rn = 1 ORDER BY received_at DESC LIMIT 50" in _q["QueryString"])
@@ -454,7 +460,7 @@ check("query_history は \"<catalog>\".\"<namespace>\".\"<table>\" を読み、1
       'FROM "s3tablescatalog/tb"."netops"."alert_events"' in _q["QueryString"]
       and _q["QueryString"].startswith("SELECT event_id, anomaly_id, source, status, device_id, kind, target, detail, starts_at, received_at FROM"))
 check("device_id は ExecutionParameters（'…' で囲んだ文字列の式）で渡り、SQL の文字列には現れない",
-      _q["ExecutionParameters"] == ["'dc1-leaf-01'"] and "AND device_id = ?" in _q["QueryString"] and "dc1-leaf-01" not in _q["QueryString"])
+      _q["ExecutionParameters"] == ["'dc1-a-leaf-01'"] and "AND device_id = ?" in _q["QueryString"] and "dc1-a-leaf-01" not in _q["QueryString"])
 check("クエリはワークグループ指定で打つ（結果の置き場はワークグループの管理ストレージ）", _q["WorkGroup"] == "nwc-history" and "ResultConfiguration" not in _q)
 check("既定は 24 時間", "received_at > current_timestamp - interval '24' hour" in _q["QueryString"] and r["hours"] == 24)
 check("RUNNING のあいだ待って、SUCCEEDED で結果を読む", [c[0] for c in fa.calls] == ["start", "get", "get", "results"])
@@ -474,7 +480,7 @@ check("hours は 1 より小さくしない", evidence.query_history(hours=0)["h
 
 toolkit._clients["athena"] = fa = FakeAthena()
 r = evidence.query_history("x' OR '1'='1")
-r2 = evidence.query_history("dc1-leaf-01'")
+r2 = evidence.query_history("dc1-a-leaf-01'")
 check("引用符の入った device_id は Athena に投げずにエラー（引用符 1 文字だけでも）",
       "使えない文字" in r.get("error", "") and "使えない文字" in r2.get("error", "") and r["rows"] == r2["rows"] == [] and fa.calls == [])
 toolkit._clients["athena"] = fa = FakeAthena()
@@ -483,22 +489,22 @@ check("toolkit.athena_rows も既定は狭い検査（空白も通さない）�
       and toolkit.athena_rows("SELECT ?", "wg", ["a'b"], param_re=toolkit.ATHENA_TEXT_RE)[1].startswith("使えない文字") and fa.calls == [])
 
 toolkit._clients["athena"] = fa = FakeAthena(states=("FAILED",), reason="TABLE_NOT_FOUND: alert_events")
-r = evidence.query_history("dc1-leaf-01")
+r = evidence.query_history("dc1-a-leaf-01")
 check("FAILED は理由つきのエラーで rows == []（結果は読まない）", "FAILED" in r["error"] and "TABLE_NOT_FOUND" in r["error"] and r["rows"] == [] and "results" not in [c[0] for c in fa.calls])
 
 evidence.TIMEOUT = 0
 toolkit._clients["athena"] = fa = FakeAthena(states=("RUNNING",))
-r = evidence.query_history("dc1-leaf-01")
+r = evidence.query_history("dc1-a-leaf-01")
 check("時間内に終わらなければ stop_query_execution で止めてエラー", "終わらなかった" in r["error"] and r["rows"] == [] and [c[0] for c in fa.calls] == ["start", "get", "stop"]
       and fa.calls[-1][1] == {"QueryExecutionId": "q1"})
 evidence.TIMEOUT = _hist_saved["TIMEOUT"]
 
 toolkit._clients["athena"] = fa = FakeAthena(start_error=ClientError("AccessDenied"))
-r = evidence.query_history("dc1-leaf-01")
+r = evidence.query_history("dc1-a-leaf-01")
 check("Athena の ClientError はエラーの辞書（落ちない）", "Athena を呼べない" in r["error"] and r["rows"] == [])
 
 toolkit._clients["athena"] = fa = FakeAthena(rows=[_row1])
-r = app.run_tool("query_history", {"device_id": "dc1-leaf-01", "hours": 48, "extra": 1})
+r = app.run_tool("query_history", {"device_id": "dc1-a-leaf-01", "hours": 48, "extra": 1})
 check("app.run_tool は query_history を evidence に振る（仕様に無い引数は落とす）", r["count"] == 1 and "interval '48' hour" in fa.started()[0]["QueryString"])
 for k, v in _hist_saved.items():
     setattr(evidence, k, v)
@@ -537,27 +543,27 @@ check("get_proposal は設定が無ければ空の辞書", proposals.get_proposa
 os.environ.update(_prop_env)
 proposals.POLL = 0
 
-PID = "dc1-leaf-01#link_down#ethernet-1/1#1790000000"
+PID = "dc1-a-leaf-01#link_down#ethernet-1/1#1790000000"
 def prow(status="pending", seq=1, event="created", pid=PID, **over):
     """proposal_events の 1 行（COLUMNS の順のセル。Athena の答えと同じく数も文字列、NULL は None）"""
     r = {"event_id": f"{pid}#{event}", "proposal_id": pid, "anomaly_id": pid.rsplit("#", 1)[0], "seq": str(seq), "event": event, "status": status,
-         "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "first_seen": "2026-09-21 14:13:20.000000 UTC",
+         "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "first_seen": "2026-09-21 14:13:20.000000 UTC",
          "source": "grafana", "alert_detail": "ethernet-1/1 is down", "cause": "c", "action": "heal-main", "command": "sudo lab heal-main",
          "reason": "r", "agent_response": "{}", "precheck": "ok", "precheck_verdict": "ok", "decided_by": None, "decided_at": None,
          "apply_output": None, "verify_note": None, "detail": "r", "workflow_id": "investigate-x", "run_id": "run-1",
          "created_at": "2026-09-21 14:14:00.000000 UTC", "event_time": "2026-09-21 14:15:00.123456 UTC", **over}
     return tuple(r[c] for c in proposals.COLUMNS)
 
-toolkit._clients["athena"] = fa = FakeAthena(rows=[prow(), prow("approved", 2, "approved", pid="dc1-leaf-02#link_down#ethernet-1/2#1790000100",
+toolkit._clients["athena"] = fa = FakeAthena(rows=[prow(), prow("approved", 2, "approved", pid="dc1-a-leaf-02#link_down#ethernet-1/2#1790000100",
                                                                  decided_by="山田 (web)", decided_at="2026-09-21 14:20:00.000000 UTC")])
-r = proposals.list_proposals(status="pending", device_id="dc1-leaf-01")
+r = proposals.list_proposals(status="pending", device_id="dc1-a-leaf-01")
 _q = fa.started()[0]
 check("list_proposals の SQL は proposal_id ごとに最新の行（seq、同じなら event_time が遅いほう）を選び、status は外側、device_id は内側で絞る",
       "row_number() OVER (PARTITION BY proposal_id ORDER BY seq DESC, event_time DESC) AS rn" in _q["QueryString"]
       and 'FROM "s3tablescatalog/tb"."netops"."proposal_events" WHERE device_id = ?)' in _q["QueryString"]
       and "WHERE rn = 1 AND status = ? ORDER BY event_time DESC LIMIT 50" in _q["QueryString"])
 check("値は ExecutionParameters で device_id → status の順に渡り、SQL の文字列には現れない。ワークグループ指定で打つ",
-      _q["ExecutionParameters"] == ["'dc1-leaf-01'", "'pending'"] and "dc1-leaf-01" not in _q["QueryString"] and "'pending'" not in _q["QueryString"]
+      _q["ExecutionParameters"] == ["'dc1-a-leaf-01'", "'pending'"] and "dc1-a-leaf-01" not in _q["QueryString"] and "'pending'" not in _q["QueryString"]
       and _q["WorkGroup"] == "nwc-history" and "ResultConfiguration" not in _q)
 check("list_proposals は 28 列を選ぶ（COLUMNS の順）", _q["QueryString"].startswith("SELECT " + ", ".join(proposals.COLUMNS) + " FROM (SELECT "))
 # 同じ SQL を sqlite で走らせて意味を確かめる（窓関数の書き方は同じ。Athena の方言の確認ではない）。
@@ -611,7 +617,7 @@ check("get_proposal は proposal_id を内側で絞って 1 件（LIMIT 1）",
 toolkit._clients["athena"] = fa = FakeAthena()
 check("get_proposal は無ければ空の辞書、使えない文字なら Athena を呼ばずに空", proposals.get_proposal(PID) == {} and proposals.get_proposal("a'b") == {} and len(fa.calls) == 4)
 # target はアラートの送り手が付けた文字列そのもの（Splunk なら ifName か ifDescr）。空白・[]・日本語・128 文字超えでも承認できること
-_WIDE = "dc1-leaf-01#link_down#Ethernet Interface [1/1] 上位回線#1790000000"
+_WIDE = "dc1-a-leaf-01#link_down#Ethernet Interface [1/1] 上位回線#1790000000"
 toolkit._clients["athena"] = fa = FakeAthena(rows=[prow(pid=_WIDE)])
 toolkit._clients["sqs"] = fs = FakeSQS()
 _g = proposals.get_proposal(_WIDE)
@@ -621,7 +627,7 @@ check("空白・[]・日本語の入った proposal_id も詳細を引けて、�
       and [q["ExecutionParameters"] for q in fa.started()] == [[f"'{_WIDE}'"]] * 2 and _WIDE not in fa.started()[0]["QueryString"])
 toolkit._clients["athena"] = fa = FakeAthena(rows=[prow()])
 toolkit._clients["sqs"] = fs = FakeSQS()
-_long = "dc1-leaf-01#link_down#" + "x" * 200 + "#1790000000"
+_long = "dc1-a-leaf-01#link_down#" + "x" * 200 + "#1790000000"
 proposals.get_proposal(_long)
 check("128 文字を超える proposal_id も Athena に渡す。' ・改行・1000 文字超えは渡さない",
       [q["ExecutionParameters"] for q in fa.started()] == [[f"'{_long}'"]]
@@ -709,9 +715,9 @@ check("チャットのツール（TOOL_SPECS）に decide は無く、list_propo
       and "unknown" in proposals.run_tool("decide", {"proposal_id": PID, "decision": "approved"})["error"])
 toolkit._clients["athena"] = fa = FakeAthena()
 toolkit._clients["sqs"] = fs = FakeSQS()
-r = app.run_tool("list_proposals", {"device_id": "dc1-leaf-01"})
+r = app.run_tool("list_proposals", {"device_id": "dc1-a-leaf-01"})
 check("app.run_tool の list_proposals は status を書かなければ all（履歴）で、決定のキューには触らない",
-      r["status"] == "all" and fa.started()[0]["ExecutionParameters"] == ["'dc1-leaf-01'"] and "status = ?" not in fa.started()[0]["QueryString"] and fs.sent == [])
+      r["status"] == "all" and fa.started()[0]["ExecutionParameters"] == ["'dc1-a-leaf-01'"] and "status = ?" not in fa.started()[0]["QueryString"] and fs.sent == [])
 check("app.run_tool に decide は無い", "unknown" in app.run_tool("decide", {"proposal_id": PID, "decision": "approved"})["error"] and fs.sent == [])
 proposals.POLL = _prop_poll
 for k, v in _prop_saved_env.items():

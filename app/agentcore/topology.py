@@ -2,7 +2,7 @@
 
 元データは 2 通り。Neptune（IaC/terraform/aws-managed/pipeline/graph。graph.configured() が真）があればそこから読み、無ければ
 静的データ（data/devices.yaml と data/topology.json と data/layers.json。tools Lambda では devices.json）。どちらも中身はローカル lab
-（app/containerlab/splab.clab.yml。Spine-Leaf の 8 台）そのもので、すべて架空のアドレス。SNMP や lab には触らない。読み取りだけなので、モデルが何度呼んでも副作用は無い。
+（app/containerlab/splab.clab.yml。Spine-Leaf の SR Linux 6 台と TRex 1 台）そのもので、すべて架空のアドレス。SNMP や lab には触らない。読み取りだけなので、モデルが何度呼んでも副作用は無い。
 Neptune のときは TTL 秒ごとに読み直す（画面で編集した結果が次の質問に効く）。
 
 物理層（機器と回線）のほかに、IP 層（ip_interface / isis_adjacency）と EVPN・BGP 層（bgp_session / evpn_instance / ethernet_segment）を
@@ -23,8 +23,8 @@ import graph
 import toolkit
 
 DATA_DIR = os.environ.get("TOPOLOGY_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
-# 段の順（上が上流）。Web の図の段もこれ。unknown は検知が先に来た未登録の機器（graph.set_status が作る）
-ROLE_ORDER = ["upstream", "leafsw", "spine", "leaf", "host", "unknown"]
+# 段の順（上から）。Web の図の段もこれ（a-leaf と s-leaf は図では同じ段）。unknown は検知が先に来た未登録の機器（graph.set_status が作る）
+ROLE_ORDER = ["spine", "a-leaf", "s-leaf", "trex", "unknown"]
 LAYER_NAMES = ("ip", "evpn")
 MAX_HOPS = 6
 TTL = int(os.environ.get("TOPOLOGY_TTL", "60"))
@@ -475,15 +475,15 @@ TOOL_SPECS = [
         "name": "list_devices",
         "description": "監視対象ネットワークの機器一覧（拠点 site、役割 role、管理 IP、AS 番号、いまの状態 status = UP / DOWN / ALARM、maintenance = true は Nautobot で保守中にしてある機器、registered = false はトポロジに未登録で検知だけが来た機器 role=unknown）。site や role で絞れる。",
         "inputSchema": {"json": {"type": "object", "properties": {
-            "site": {"type": "string", "description": "拠点名で絞る（dc1 / wan）。空なら全部"},
-            "role": {"type": "string", "description": "役割で絞る（leafsw = 上流側の Leaf / spine / leaf = アクセス側の Leaf / upstream = 上流の VM / host = アクセス側の VM / unknown）。空なら全部"},
+            "site": {"type": "string", "description": "拠点名で絞る（dc1）。空なら全部"},
+            "role": {"type": "string", "description": "役割で絞る（spine / a-leaf / s-leaf（どちらも Leaf）/ trex = 負荷をかける TRex / unknown）。空なら全部"},
         }}},
     }},
     {"toolSpec": {
         "name": "neighbors",
-        "description": "機器の隣接（接続先の機器、両端のインタフェース名、回線の種別 fabric = Spine と Leaf のあいだ / lag = VM と Leaf の LACP / l2、主副、帯域、回線のいまの状態 status = UP / DOWN）。",
+        "description": "機器の隣接（接続先の機器、両端のインタフェース名、回線の種別 fabric = Spine と Leaf のあいだ / l2 = TRex と Leaf のあいだ / lag = LACP（いまの lab には無い）、主副、帯域、回線のいまの状態 status = UP / DOWN）。",
         "inputSchema": {"json": {"type": "object", "required": ["device_id"], "properties": {
-            "device_id": {"type": "string", "description": "機器名（例 dc1-leaf-01）"},
+            "device_id": {"type": "string", "description": "機器名（例 dc1-a-leaf-01）"},
         }}},
     }},
     {"toolSpec": {
@@ -498,7 +498,7 @@ TOOL_SPECS = [
         "name": "root_cause",
         "description": "いま UP でない要素（機器・回線・インタフェース・IS-IS の隣接・BGP のセッションなど）を、層をまたいで下へ辿って根本原因ごとにまとめる。root_causes の各行が原因（下の層に DOWN が無い要素）で、explains はその原因で説明できる異常、also_on_it はまだ UP のままその上に乗っている要素、lower_layers_up = true は下の層が生きているのにその層だけ落ちている（設定やプロセスを疑う）。アラートが何本も出ているときや「原因は」「なぜ落ちた」と聞かれたら、まずこれを使う。",
         "inputSchema": {"json": {"type": "object", "properties": {
-            "device_id": {"type": "string", "description": "機器名（例 dc1-leaf-01）。その機器に関わる原因だけにする。空なら全部"},
+            "device_id": {"type": "string", "description": "機器名（例 dc1-a-leaf-01）。その機器に関わる原因だけにする。空なら全部"},
         }}},
     }},
     {"toolSpec": {
@@ -506,7 +506,7 @@ TOOL_SPECS = [
         "description": "回線か機器を 1 つ落とした / 上げたと仮定して、いまの状態に重ねたときの影響を出す（作業や処置の前の事前チェック）。newly_isolated = 孤立する機器、redundancy_lost = 残りの回線が 1 本になる機器、reconnected / redundancy_restored = 上げたときに戻る機器、verdict = danger（孤立が出る）/ warn（冗長が切れる）/ ok / unknown（対象がトポロジに無い）。実際には何も変えない。",
         "inputSchema": {"json": {"type": "object", "required": ["op", "target"], "properties": {
             "op": {"type": "string", "description": "link_down / link_up / device_down / device_up"},
-            "target": {"type": "string", "description": "回線なら <機器>#<インタフェース>（例 dc1-leaf-01#ethernet-1/1。どちらの端でもよい）、機器なら機器名"},
+            "target": {"type": "string", "description": "回線なら <機器>#<インタフェース>（例 dc1-a-leaf-01#ethernet-1/1。どちらの端でもよい）、機器なら機器名"},
         }}},
     }},
     {"toolSpec": {
@@ -516,9 +516,9 @@ TOOL_SPECS = [
     }},
     {"toolSpec": {
         "name": "layers",
-        "description": "物理層より上の情報。IP 層（ip_interface = サブインタフェースのアドレス、isis_adjacency = IS-IS の隣接）と EVPN・BGP 層（bgp_session = iBGP EVPN のセッション（Spine がルートリフレクタ）、evpn_instance = EVI / VNI / VTEP、ethernet_segment = LACP の multihoming の ESI）。各頂点は interface_id / ip_interface_id で下の層の頂点を指し、辺 over / peer / tunnel / attach / segment でつながる。各頂点のいまの状態 status = UP / DOWN 付き。「BGP のセッションは」「IS-IS の隣接は」「EVPN は」と聞かれたら使う。",
+        "description": "物理層より上の情報。IP 層（ip_interface = サブインタフェースのアドレス、isis_adjacency = IS-IS の隣接）と EVPN・BGP 層（bgp_session = iBGP EVPN のセッション（Spine がルートリフレクタ）、evpn_instance = EVI / VNI / VTEP、ethernet_segment = LACP の multihoming の ESI。いまの lab には無い）。各頂点は interface_id / ip_interface_id で下の層の頂点を指し、辺 over / peer / tunnel / attach / segment でつながる。各頂点のいまの状態 status = UP / DOWN 付き。「BGP のセッションは」「IS-IS の隣接は」「EVPN は」と聞かれたら使う。",
         "inputSchema": {"json": {"type": "object", "properties": {
-            "device_id": {"type": "string", "description": "機器名（例 dc1-leaf-01）。空なら全機器"},
+            "device_id": {"type": "string", "description": "機器名（例 dc1-a-leaf-01）。空なら全機器"},
             "layer": {"type": "string", "description": "ip か evpn。空なら両方"},
         }}},
     }},
@@ -526,7 +526,7 @@ TOOL_SPECS = [
         "name": "recent_changes",
         "description": "Nautobot（機器と回線の正）で直近に変えたもの（新しい順。いつ time_jst、誰が user、create / update / delete、何を object_type と object、どう変えたか detail = 「status: Active → Maintenance」の形）。異常の直前に構成を変えていないかを確かめるのに使う。機器に直接打った設定変更は入らない。",
         "inputSchema": {"json": {"type": "object", "properties": {
-            "device_id": {"type": "string", "description": "機器名（例 dc1-leaf-01）。その機器に関わる変更だけにする。空なら全部"},
+            "device_id": {"type": "string", "description": "機器名（例 dc1-a-leaf-01）。その機器に関わる変更だけにする。空なら全部"},
             "limit": {"type": "integer", "description": "件数（既定 20、最大 50）"},
         }}},
     }},

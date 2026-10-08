@@ -78,7 +78,7 @@ import boto3, botocore
 import netops_sns as sns
 env = sns.load_env()
 client = sns.sns_client(env)
-alert = {"status": "firing", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/9", "detail": "check_splunk_image (direct)", "starts_at": 1}
+alert = {"status": "firing", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/9", "detail": "check_splunk_image (direct)", "starts_at": 1}
 sent = sns.send(env, sns.messages([alert]))
 print(json.dumps({"python": sys.version.split()[0], "executable": sys.executable, "boto3": boto3.__version__, "botocore": botocore.__version__,
                   "boto3_file": boto3.__file__, "service": client.meta.service_model.service_name, "endpoint": client.meta.endpoint_url, "sent": sent}))
@@ -139,7 +139,7 @@ def hec_link_down(token, if_name):
     """HEC に link down（ifOperStatus=2）のイベントを 1 件入れる（Telegraf の SNMP の interface と同じ形）"""
     ev = {"time": int(time.time()), "host": "203.0.113.11", "source": "telegraf:interface", "sourcetype": "netops:metrics",
           "event": {"topic": "metrics", "measurement": "interface", "agent_host": "203.0.113.11",
-                    "tags": {"agent_host": "203.0.113.11", "ifName": if_name, "sysName": "dc1-leaf-01"},
+                    "tags": {"agent_host": "203.0.113.11", "ifName": if_name, "sysName": "dc1-a-leaf-01"},
                     "fields": {"ifOperStatus": 2, "ifAdminStatus": 1, "ifDescr": if_name}}}
     out = dexec("curl", "-sk", "https://127.0.0.1:8088/services/collector/event", "-H", f"Authorization: Splunk {token}", "-d", json.dumps(ev)).stdout
     if '"code":0' not in out.replace(" ", ""):
@@ -167,7 +167,7 @@ def main(argv):
         run("docker", "run", "-d", "--name", NAME, "--platform", "linux/amd64",
             "-e", "SPLUNK_START_ARGS=--accept-license", "-e", "SPLUNK_GENERAL_TERMS=--accept-sgt-current-at-splunk-com",
             "-e", "SPLUNK_PASSWORD", "-e", "SPLUNK_HEC_TOKEN",
-            "-e", f"ALERTS_TOPIC_ARN={TOPIC}", "-e", "AWS_REGION=ap-northeast-1", "-e", "DEVICE_MAP=203.0.113.11=dc1-leaf-01",
+            "-e", f"ALERTS_TOPIC_ARN={TOPIC}", "-e", "AWS_REGION=ap-northeast-1", "-e", "DEVICE_MAP=203.0.113.11=dc1-a-leaf-01",
             "-e", f"AWS_CONTAINER_CREDENTIALS_FULL_URI=http://127.0.0.1:{PORT}/creds", "-e", f"AWS_ENDPOINT_URL_SNS=http://127.0.0.1:{PORT}/",
             image, env=env)
         print(f"-- {image} を {NAME} で起こした。healthy になるのを待つ（数分）")
@@ -201,7 +201,7 @@ def main(argv):
         # ---- 2. 本物の流れ（HEC → netops_poll → アラートアクション → 偽の SNS）
         before = len(publishes())
         hec_link_down(token, "ethernet-1/1")
-        print("-- HEC に link down（dc1-leaf-01 ethernet-1/1）を入れた。netops_poll（毎分）が送るのを待つ")
+        print("-- HEC に link down（dc1-a-leaf-01 ethernet-1/1）を入れた。netops_poll（毎分）が送るのを待つ")
         wait("publish", lambda: len(publishes()) > before, 240)
         time.sleep(75)   # 次の回で重ねて送らないこと（サーチは毎分）
         got = publishes()[before:]
@@ -212,7 +212,7 @@ def main(argv):
               got[0]["form"].get("Action") == "Publish" and got[0]["form"].get("Subject") == "netops alert" and got[0]["form"].get("TopicArn") == TOPIC
               and got[0]["content_type"].startswith("application/x-www-form-urlencoded") and msg.get("source") == "splunk" and len(msg.get("alerts", [])) == 1
               and {k: alerts[0].get(k) for k in ("status", "device_id", "kind", "target", "detail")}
-              == {"status": "firing", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "detail": "ethernet-1/1 is down (splunk: poll)"}
+              == {"status": "firing", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "detail": "ethernet-1/1 is down (splunk: poll)"}
               and isinstance(alerts[0].get("starts_at"), int), json.dumps(got, ensure_ascii=False))
         ua_py, ua_boto3 = ua_versions(got[0]["user_agent"])
         check(f"本物の流れ: splunkd は Python {required} で起こし、Splunk の boto3 で送っている（User-Agent: Python {ua_py}、boto3 {ua_boto3}）",

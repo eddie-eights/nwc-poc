@@ -7,18 +7,18 @@
       "properties": {
         "site": {
           "type": "string",
-          "description": "拠点名で絞る（dc1 / wan）。空なら全部"
+          "description": "拠点名で絞る（dc1）。空なら全部"
         },
         "role": {
           "type": "string",
-          "description": "役割で絞る（leafsw = 上流側の Leaf / spine / leaf = アクセス側の Leaf / upstream = 上流の VM / host = アクセス側の VM / unknown）。空なら全部"
+          "description": "役割で絞る（spine / a-leaf / s-leaf（どちらも Leaf）/ trex = 負荷をかける TRex / unknown）。空なら全部"
         }
       }
     }
   },
   {
     "name": "neighbors",
-    "description": "機器の隣接（接続先の機器、両端のインタフェース名、回線の種別 fabric = Spine と Leaf のあいだ / lag = VM と Leaf の LACP / l2、主副、帯域、回線のいまの状態 status = UP / DOWN）。",
+    "description": "機器の隣接（接続先の機器、両端のインタフェース名、回線の種別 fabric = Spine と Leaf のあいだ / l2 = TRex と Leaf のあいだ / lag = LACP（いまの lab には無い）、主副、帯域、回線のいまの状態 status = UP / DOWN）。",
     "inputSchema": {
       "type": "object",
       "required": [
@@ -27,7 +27,7 @@
       "properties": {
         "device_id": {
           "type": "string",
-          "description": "機器名（例 dc1-leaf-01）"
+          "description": "機器名（例 dc1-a-leaf-01）"
         }
       }
     }
@@ -60,7 +60,7 @@
       "properties": {
         "device_id": {
           "type": "string",
-          "description": "機器名（例 dc1-leaf-01）。その機器に関わる原因だけにする。空なら全部"
+          "description": "機器名（例 dc1-a-leaf-01）。その機器に関わる原因だけにする。空なら全部"
         }
       }
     }
@@ -81,7 +81,7 @@
         },
         "target": {
           "type": "string",
-          "description": "回線なら <機器>#<インタフェース>（例 dc1-leaf-01#ethernet-1/1。どちらの端でもよい）、機器なら機器名"
+          "description": "回線なら <機器>#<インタフェース>（例 dc1-a-leaf-01#ethernet-1/1。どちらの端でもよい）、機器なら機器名"
         }
       }
     }
@@ -96,13 +96,13 @@
   },
   {
     "name": "layers",
-    "description": "物理層より上の情報。IP 層（ip_interface = サブインタフェースのアドレス、isis_adjacency = IS-IS の隣接）と EVPN・BGP 層（bgp_session = iBGP EVPN のセッション（Spine がルートリフレクタ）、evpn_instance = EVI / VNI / VTEP、ethernet_segment = LACP の multihoming の ESI）。各頂点は interface_id / ip_interface_id で下の層の頂点を指し、辺 over / peer / tunnel / attach / segment でつながる。各頂点のいまの状態 status = UP / DOWN 付き。「BGP のセッションは」「IS-IS の隣接は」「EVPN は」と聞かれたら使う。",
+    "description": "物理層より上の情報。IP 層（ip_interface = サブインタフェースのアドレス、isis_adjacency = IS-IS の隣接）と EVPN・BGP 層（bgp_session = iBGP EVPN のセッション（Spine がルートリフレクタ）、evpn_instance = EVI / VNI / VTEP、ethernet_segment = LACP の multihoming の ESI。いまの lab には無い）。各頂点は interface_id / ip_interface_id で下の層の頂点を指し、辺 over / peer / tunnel / attach / segment でつながる。各頂点のいまの状態 status = UP / DOWN 付き。「BGP のセッションは」「IS-IS の隣接は」「EVPN は」と聞かれたら使う。",
     "inputSchema": {
       "type": "object",
       "properties": {
         "device_id": {
           "type": "string",
-          "description": "機器名（例 dc1-leaf-01）。空なら全機器"
+          "description": "機器名（例 dc1-a-leaf-01）。空なら全機器"
         },
         "layer": {
           "type": "string",
@@ -119,7 +119,7 @@
       "properties": {
         "device_id": {
           "type": "string",
-          "description": "機器名（例 dc1-leaf-01）。その機器に関わる変更だけにする。空なら全部"
+          "description": "機器名（例 dc1-a-leaf-01）。その機器に関わる変更だけにする。空なら全部"
         },
         "limit": {
           "type": "integer",
@@ -149,7 +149,7 @@
       "properties": {
         "device_id": {
           "type": "string",
-          "description": "機器名（例 dc1-leaf-01）。空なら全機器"
+          "description": "機器名（例 dc1-a-leaf-01）。空なら全機器"
         },
         "minutes": {
           "type": "integer",
@@ -164,7 +164,7 @@
   },
   {
     "name": "query_metrics",
-    "description": "監視メトリクス（Prometheus）に PromQL を投げる。インタフェースの状態やトラフィックの推移を見るのに使う。例: interface_ifOperStatus{sysName=\"dc1-leaf-01\"}",
+    "description": "監視メトリクス（Prometheus）に PromQL を投げる。インタフェースの状態やトラフィックの推移を見るのに使う。例: interface_ifOperStatus{sysName=\"dc1-a-leaf-01\"}",
     "inputSchema": {
       "type": "object",
       "required": [
@@ -190,7 +190,7 @@
       "properties": {
         "device_id": {
           "type": "string",
-          "description": "機器名（例 dc1-leaf-01）。空なら全機器"
+          "description": "機器名（例 dc1-a-leaf-01）。空なら全機器"
         },
         "hours": {
           "type": "integer",
@@ -215,7 +215,7 @@
         },
         "device_id": {
           "type": "string",
-          "description": "機器名（例 dc1-leaf-01）で絞る。空なら全機器"
+          "description": "機器名（例 dc1-a-leaf-01）で絞る。空なら全機器"
         }
       }
     }

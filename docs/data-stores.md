@@ -47,12 +47,12 @@ flowchart LR
 
 ### 2. 1 回の障害で何が書かれるか
 
-`sudo lab fail-main` でアクセス側 Leaf の fabric（`dc1-leaf-01 ethernet-1/1`）を落としたときの流れ（既定の `STORES=s3,grafana,splunk` / `SNMP_POLL=1`）。1〜3 は Grafana の道を書いた。既定では Splunk も同じ id の `link_down` を SNS に出す（保存済みサーチ `netops_poll` がポーリングから、`netops_trap` が linkDown の trap から。4 から先は同じで、異常としては 1 つにまとまる）。`SNMP_POLL=0` ではポーリングをしないので 1〜3 が起きず、Splunk が trap からだけ知らせる。`STORES` に `splunk` も無ければアラートは出ない。
+`sudo lab fail-main` で DC 側 Leaf の fabric（`dc1-a-leaf-01 ethernet-1/1`）を落としたときの流れ（既定の `STORES=s3,grafana,splunk` / `SNMP_POLL=1`）。1〜3 は Grafana の道を書いた。既定では Splunk も同じ id の `link_down` を SNS に出す（保存済みサーチ `netops_poll` がポーリングから、`netops_trap` が linkDown の trap から。4 から先は同じで、異常としては 1 つにまとまる）。`SNMP_POLL=0` ではポーリングをしないので 1〜3 が起きず、Splunk が trap からだけ知らせる。`STORES` に `splunk` も無ければアラートは出ない。
 
 1. **ポーリング（10 秒ごと）:** Telegraf が `ifOperStatus=down` を拾い、MSK の `metrics` に出す。
 2. **Spark:** `iceberg` が行をそのまま `raw_telemetry` に追記し、`prometheus` が同じ値を Prometheus に書く。どちらも up か down かを判断しない。
-3. **Grafana:** ルール `link_down` が 1 分ごとに `ifOperStatus` を見て、down の IF を `firing` として SNS のトピック `<prefix>-alerts` に出す。異常の id は `dc1-leaf-01#link_down#ethernet-1/1`。ここでは頂点も行も書かない。
-4. **Lambda `graph-status`:** SNS から受け取り、Neptune の回線（辺 `link`）と IF の頂点の `status` を `DOWN` にする。同じ回線の IS-IS の隣接も Grafana と Splunk の `isis_down`（gNMI）で届き、頂点 `dc1-leaf-01#isis#ethernet-1/1.0` も `DOWN` になる。同じ通知を Firehose にも送り、60 秒ほどで `alert_events` に `firing` の行が入る（event_id は `<anomaly_id>#<source>#<status>#<starts_at の epoch 秒>`）。
+3. **Grafana:** ルール `link_down` が 1 分ごとに `ifOperStatus` を見て、down の IF を `firing` として SNS のトピック `<prefix>-alerts` に出す。異常の id は `dc1-a-leaf-01#link_down#ethernet-1/1`。ここでは頂点も行も書かない。
+4. **Lambda `graph-status`:** SNS から受け取り、Neptune の回線（辺 `link`）と IF の頂点の `status` を `DOWN` にする。同じ回線の IS-IS の隣接も Grafana と Splunk の `isis_down`（gNMI）で届き、頂点 `dc1-a-leaf-01#isis#ethernet-1/1.0` も `DOWN` になる。同じ通知を Firehose にも送り、60 秒ほどで `alert_events` に `firing` の行が入る（event_id は `<anomaly_id>#<source>#<status>#<starts_at の epoch 秒>`）。
 5. **worker:** SQS から受け取り、異常ごとに Temporal のワークフロー `investigate-<anomaly_id>` を起こす。
 6. **修復案:** worker が `proposal_events` に `created` の行を足す（`status` は `pending`。`proposal_id` は `<anomaly_id>#<first_seen>`。`first_seen` はアラートの `starts_at`）。Neptune には書かない。
    Web で承認すると、決定が SQS `<prefix>-decisions` に 1 通入る。worker がそれを受け取ってワークフローにシグナル `decide` を送り、ワークフローが `approved` の行を足す。`heal-main` を打つと `applied`、解消の通知が届くと `verified` の行が続く。
@@ -145,7 +145,7 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 | イメージ（`<prefix>-…`） | 元 | 動く場所 | 役目 |
 |---|---|---|---|
 | `agent` | [app/agentcore/](../app/agentcore/)（自前ビルド） | AgentCore Runtime | チャットの本体。Bedrock のモデルを呼び、Neptune のトポロジ、OpenSearch / Prometheus の証拠を集めて答え、承認待ちの修復案を作る |
-| `lab-srlinux` | `ghcr.io/nokia/srlinux`（ミラー。約 1 GB） | lab の EC2（containerlab） | スイッチ（Nokia SR Linux、`ixr-d2l`）。`app/containerlab/splab.clab.yml.in` の 6 台（Leaf-SW 2 / Spine 2 / Leaf 2）がこれで立ち、`app/containerlab/srlinux/<機器>.cli` で IS-IS・iBGP EVPN・VXLAN・LAG・SNMP の trap・syslog が入る。SNMP エージェントと gNMI は機器に内蔵（containerlab が v2c の `public` と `57400/tcp` を入れる）。監視される「機器」そのもので、**trap の宛先（`system snmp trap-group`）を書いた機器が監視対象**（いまは 6 台全部） |
+| `lab-srlinux` | `ghcr.io/nokia/srlinux`（ミラー。約 1 GB） | lab の EC2（containerlab） | スイッチ（Nokia SR Linux、`ixr-d2l`）。`app/containerlab/splab.clab.yml.in` の 6 台（s-leaf 2 / Spine 2 / a-leaf 2）がこれで立ち、`app/containerlab/srlinux/<機器>.cli` で IS-IS・iBGP EVPN・VXLAN・SNMP の trap・syslog が入る。SNMP エージェントと gNMI は機器に内蔵（containerlab が v2c の `public` と `57400/tcp` を入れる）。監視される「機器」そのもので、**trap の宛先（`system snmp trap-group`）を書いた機器が監視対象**（いまは 6 台全部） |
 | `lab-multitool` | `ghcr.io/srl-labs/network-multitool`（ミラー） | lab の EC2（containerlab） | containerlab の `linux` kind の既定のイメージ（ping / traceroute / tcpdump 入り）。いまの lab で使うノードは無い（`dc1-trex-01` は `lab-trex` で上書きする）。疎通を見る箱を足すときにそのまま使える |
 | `lab-trex` | `trexcisco/trex`（Docker Hub のミラー。amd64 だけ） | lab の EC2（containerlab） | トラフィックジェネレータ（Cisco TRex 2.41）の `dc1-trex-01`。`eth1`〜`eth4` を各 leaf の `ethernet-1/3`（mac-vrf の素の subinterface）へ 1 本ずつつなぐ。トポロジを上げても TRex 本体は起きず、`sudo lab trex start` で起こす。後段（Telegraf → MSK → Spark → 格納先、アラート）の負荷試験に使う（[app/containerlab/trex/README.md](../app/containerlab/trex/README.md)） |
 | `temporal` | `temporalio/temporal`（ミラー） | ECS Fargate（WORKFLOW=1） | Temporal のサーバー。`server start-dev` で 1 コンテナで動く。Fargate はプライベート網から Docker Hub を引けないので ECR にミラーする |
@@ -195,12 +195,12 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 
 | 層 | 頂点（label） | id | 下の層を指す property | 同じ層の辺 |
 |---|---|---|---|---|
-| 物理 | `device` / `interface` | `dc1-leaf-01` / `dc1-leaf-01#ethernet-1/1` | — | `link`（機器 ⇄ 機器。`a_if` / `b_if`、kind は fabric / lag / l2 / mgmt） |
-| IP | `ip_interface` | `dc1-leaf-01#ethernet-1/1.0` | `interface_id` → `interface`（辺 `over`。ループバック `system0.0` は物理層に無いので空） | — |
-| IP | `isis_adjacency` | `dc1-leaf-01#isis#ethernet-1/1.0` | `ip_interface_id` / `interface_id`（辺 `over`） | `peer`（両端の隣接） |
-| EVPN・BGP | `bgp_session` | `dc1-leaf-01#bgp#10.255.0.1` | `ip_interface_id` → ループバック `system0.0`（辺 `over`） | `peer`（Leaf ⇄ Spine の RR） |
-| EVPN・BGP | `evpn_instance` | `dc1-leaf-01#evi#100` | `ip_interface_id` → VTEP のループバック（辺 `over`）、`interfaces`（`lag1.0`。辺 `attach` → `ip_interface`） | `tunnel`（同じ EVI の VTEP 同士） |
-| EVPN・BGP | `ethernet_segment` | `dc1-leaf-01#es#ES-2` | `interface_id` → `lag1`（辺 `over`） | `segment`（同じ ESI の 2 台） |
+| 物理 | `device` / `interface` | `dc1-a-leaf-01` / `dc1-a-leaf-01#ethernet-1/1` | — | `link`（機器 ⇄ 機器。`a_if` / `b_if`、kind は fabric / lag / l2 / mgmt） |
+| IP | `ip_interface` | `dc1-a-leaf-01#ethernet-1/1.0` | `interface_id` → `interface`（辺 `over`。ループバック `system0.0` は物理層に無いので空） | — |
+| IP | `isis_adjacency` | `dc1-a-leaf-01#isis#ethernet-1/1.0` | `ip_interface_id` / `interface_id`（辺 `over`） | `peer`（両端の隣接） |
+| EVPN・BGP | `bgp_session` | `dc1-a-leaf-01#bgp#10.255.0.1` | `ip_interface_id` → ループバック `system0.0`（辺 `over`） | `peer`（Leaf ⇄ Spine の RR） |
+| EVPN・BGP | `evpn_instance` | `dc1-a-leaf-01#evi#100` | `ip_interface_id` → VTEP のループバック（辺 `over`）、`interfaces`（`ethernet-1/3.0`。辺 `attach` → `ip_interface`） | `tunnel`（同じ EVI の VTEP 同士） |
+| EVPN・BGP | `ethernet_segment` | `<機器>#es#<名前>`（いまの lab には無い。LAG の multihoming を組んだときだけ） | `interface_id` → LAG の IF（辺 `over`） | `segment`（同じ ESI の 2 台） |
 
 - 頂点はどれも `layer`（`ip` / `evpn`）と `device_id` を持ち、動的な `status`（`UP` / `DOWN`。無ければ UP）は Lambda `graph-status` が Grafana と Splunk のアラート（gNMI の `bgp_down` / `isis_down`）から書く。`STORES` に `grafana` も `splunk` も無いとこのアラートが出ないので変わらない。エージェントの `layers` ツールと Web の層の表は、id と `interface_id` / `ip_interface_id` で下の層へ追える。
 - 未登録の扱いは物理層と同じ。トポロジに無い BGP のセッションが落ちたら `registered=false` の頂点を作って残し、`ops/sync-graph.sh --replace` で置き換わる。
@@ -249,10 +249,10 @@ AWS が運用を持つグラフデータベース。データを頂点と辺で�
 ```mermaid
 flowchart LR
   subgraph now["いま"]
-    D1["device dc1-leaf-01<br/>status=ALARM"] --- I1["interface dc1-leaf-01#ethernet-1/1<br/>status=DOWN"]
+    D1["device dc1-a-leaf-01<br/>status=ALARM"] --- I1["interface dc1-a-leaf-01#ethernet-1/1<br/>status=DOWN"]
   end
   subgraph idea["障害を頂点にして辺を張るなら（案）"]
-    I2["interface dc1-leaf-01#ethernet-1/1"] -- "occurred_on" --- X2["incident（発生 1 回ごと）"]
+    I2["interface dc1-a-leaf-01#ethernet-1/1"] -- "occurred_on" --- X2["incident（発生 1 回ごと）"]
     X2 -- "handled_by" --> P2["proposal"]
   end
 ```
@@ -266,7 +266,7 @@ flowchart LR
 
 **グラフにしても得をしない問い:** 月の件数、機器ごとのランキング、時系列（表と Athena が向く）。障害 1 件の長いログ（S3 に置き、頂点には場所だけ持たせる）。似た障害のベクトル検索は、Neptune Analytics にベクトル検索があるが使っていない（手順書の検索は Knowledge Bases と OpenSearch Serverless）。
 
-**この PoC では:** 8 台のラボで単発の回線断が中心なので、効いているのは影響範囲だけ。複数機器の同時障害（Spine 障害で配下の Leaf がまとめて落ちる）を扱うか、エージェントに原因の推定までさせるなら、辺を張る価値が出る。障害の履歴の置き場を決めるときは、この案（Neptune に発生ごとの頂点）と、表（S3 Tables）や Splunk に置く案を比べる。Neptune にはトポロジだけを置く方針（5）とぶつかるので、辺を張るなら方針から見直すことになる。
+**この PoC では:** 7 台のラボで単発の回線断が中心なので、効いているのは影響範囲だけ。複数機器の同時障害（Spine 障害で配下の Leaf がまとめて落ちる）を扱うか、エージェントに原因の推定までさせるなら、辺を張る価値が出る。障害の履歴の置き場を決めるときは、この案（Neptune に発生ごとの頂点）と、表（S3 Tables）や Splunk に置く案を比べる。Neptune にはトポロジだけを置く方針（5）とぶつかるので、辺を張るなら方針から見直すことになる。
 
 ## MSK とクライアントのつなぎ
 

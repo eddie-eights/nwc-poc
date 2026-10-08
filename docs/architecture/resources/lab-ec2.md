@@ -4,7 +4,7 @@
 
 ## ひとことで
 
-監視される側のネットワークを 1 台の EC2 の中に作る検証用の lab。containerlab が SR Linux 6 台と VM 役 2 台をコンテナで立てる。
+監視される側のネットワークを 1 台の EC2 の中に作る検証用の lab。containerlab が SR Linux 6 台と TRex 1 台をコンテナで立てる。
 Web やエージェントとはつながっていない。使うのは SNMP・gNMI・trap・syslog の発生源としてと、修復のコマンドを打つ先としてだけ。
 
 ## このプロジェクトでの使い方
@@ -25,9 +25,9 @@ lab の中身:
 
 | 役 | 台数 | 中身 |
 |---|---|---|
-| スイッチ | 6 台（Leaf-SW 2、Spine 2、Leaf 2） | Nokia SR Linux（`ixr-d2l`）。fabric は IS-IS、その上に iBGP EVPN-VXLAN。SNMP の trap と syslog を出す。設定は `app/containerlab/srlinux/<機器>.cli` |
-| VM 役 | 2 台（`wan-upstream-01`、`dc1-host-01`） | multitool。Leaf の組へ `bond0`（LACP）で 2 本ずつ。疎通確認と障害の再現に使う |
-| 回線 | 12 本 | Leaf-SW・Leaf と Spine のフルメッシュ（fabric）、VM への LAG（EVPN マルチホーミング） |
+| スイッチ | 6 台（s-leaf 2、Spine 2、a-leaf 2） | Nokia SR Linux（`ixr-d2l`）。fabric は IS-IS、その上に iBGP EVPN-VXLAN。SNMP の trap と syslog を出す。設定は `app/containerlab/srlinux/<機器>.cli` |
+| TRex | 1 台（`dc1-trex-01`） | `trexcisco/trex`（amd64 だけ）。`eth1`〜`eth4` を各 leaf の `ethernet-1/3` へ 1 本ずつ。後段の負荷試験に使う。トポロジを上げても TRex 本体は起きない（`sudo lab trex start`） |
+| 回線 | 12 本 | s-leaf・a-leaf と Spine のフルメッシュ（fabric 8 本）、TRex と各 leaf（l2 4 本。LAG も EVPN マルチホーミングも無い） |
 
 ## つながり
 
@@ -90,9 +90,9 @@ lab の中身:
 - **いまは EVPN-VXLAN。SR-MPLS はライセンス待ち。**
   SR Linux のコンテナは SR-MPLS に `ixr6e` / `ixr10e` とライセンスが要る。届いたら `gen_lab.py` を替える。トポロジと Neptune の層は変わらない。
   出典: [pipeline.md](../../pipeline.md) の「lab を変える」。
-- **VM の `bond0` には、EC2 のカーネルの bonding モジュールが要る。**
-  `app/containerlab/setup.sh` が起動時に入れる。
-  出典: [pipeline.md](../../pipeline.md) の「動かないとき」。
+- **TRex は置いてあるだけで、負荷はまだ撃っていない。**
+  この lab で起動するかも確かめていない（2026-10-08）。撃つ手順と確かめていないことは `app/containerlab/trex/README.md`。
+  出典: [pipeline.md](../../pipeline.md) の「lab に入る」。
 - **デバッグ用の EC2 は別物。**
   `ops/lab-debug.sh` が CloudFormation のスタック `<prefix>-lab-debug` で作る（lab + Telegraf を 1 台、自分の VPC）。`ops/up.sh` / `ops/down.sh` とは別で、Nautobot を使わない。中身の支度は lab の EC2 と同じ `app/containerlab/setup.sh`。
   出典: [pipeline.md](../../pipeline.md) の「デバッグ用の EC2（lab + Telegraf を 1 台）」。
