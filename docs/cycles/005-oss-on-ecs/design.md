@@ -183,7 +183,7 @@ flowchart LR
 | OpenSearch | `_cluster/health` が `green` で `number_of_nodes` が 3。`_cat/cluster_manager` が 3 台のどれか |
 
 - **健全さは ECS Exec でタスクの中から見る。**
-  Kafka の 9092 と OpenSearch の 9200 は、PC からも Web の EC2 からも届かない（SG で絞っている）ため。手元に Session Manager plugin が要る（無ければ止まる）。ECS Exec はタスクの中のコマンドの終了コードを返さないので、コマンドが出力に印（`==nwc-roll <節>` と `==nwc-rc <終了コード>`）を書き、`roll_health.py` は印の中だけを読む。
+  Kafka の 9092 と OpenSearch の 9200 は、PC からも Web の EC2 からも届かない（SG で絞っている）ため。手元に Session Manager plugin が要る（無ければ止まる）。ECS Exec の `--interactive` は標準入力が端末でないと「Cannot perform start session: EOF」で切れるので、端末が無いときは `script` で疑似端末を付けて打ち、`script` も打てなければ止まる（2026-10-08 の AWS の検証で見つけて足した）。ECS Exec はタスクの中のコマンドの終了コードを返さないので、コマンドが出力に印（`==nwc-roll <節>` と `==nwc-rc <終了コード>`）を書き、`roll_health.py` は印の中だけを読む。
 - **OpenSearch の admin のパスワードは手元に持ってこない。**
   タスクの secrets の環境変数（`OPENSEARCH_INITIAL_ADMIN_PASSWORD`）をタスクの中で読む。
 - **`OSS_ROLL=0` で、1 台ずつ入れ替えずに apply で一度に入れ替える。**

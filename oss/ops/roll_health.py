@@ -10,6 +10,9 @@
 
 ECS Exec はタスクの中のコマンドの終了コードを返さず、出力の前後に Session Manager の案内の行が付く（行末に \\r が付くこともある）。
 そこでタスクの中で「==nwc-roll <節>」の印と「==nwc-rc <終了コード>」を出し、印の中だけを読む。
+標準入力が端末でないとき roll-nodes.sh は ECS Exec を script で包み、macOS の script は行のどこかに EOF の写し（^D と後退 2 つ）を混ぜるので、
+それは消してから読む。ECS Exec が「Cannot perform start session」で切れたときは、印の有無より先にその行を理由にする
+（EOF なら、標準入力が端末でないのが原因）。
 健全の条件:
   Kafka       どのコマンドも 0 で終わり、kafka-broker-api-versions.sh に全部の台が fenced でなく載り、
               kafka-topics.sh --under-replicated-partitions が 1 行も出さず、kafka-metadata-quorum.sh describe --replication に
@@ -22,12 +25,14 @@ import sys
 
 # KRaft の metadata のログは何も無くても一定の間隔で進むので、0 ちょうどは求めない（入れ替えた台が追いついていない間は数百〜数千になる）
 ROLL_KAFKA_MAX_LAG = 100
+# macOS の script が、標準入力の EOF を疑似端末に渡したときに出る写し
+SCRIPT_EOF_ECHO = "^D\x08\x08"
 
 
 def sections(text):
     """印（==nwc-roll <節>）ごとの行と、節ごとの終了コード（==nwc-rc <数>）。印の外の行（Session Manager の案内）は捨てる"""
     secs, rcs, cur = {}, {}, None
-    for raw in text.splitlines():
+    for raw in text.replace(SCRIPT_EOF_ECHO, "").splitlines():
         line = raw.rstrip("\r")
         m = re.match(r"^==nwc-roll (\S+)\s*$", line)
         if m:
@@ -45,12 +50,19 @@ def sections(text):
 
 def head(text, n=3):
     """印が無いとき（ECS Exec がつながらない、など）に理由として見せる先頭の数行"""
-    lines = [l.rstrip("\r") for l in text.splitlines() if l.strip() and not l.startswith(("The Session Manager plugin", "Starting session", "Exiting session"))]
+    lines = [l.rstrip("\r") for l in text.replace(SCRIPT_EOF_ECHO, "").splitlines()
+             if l.strip() and not l.startswith(("The Session Manager plugin", "Starting session", "Exiting session"))]
     return " / ".join(lines[:n]) or "（出力が空）"
 
 
 def need(secs, rcs, text, names):
     """names の節が全部あり、終了コードが付いているものは 0。足りなければ理由"""
+    broken = next((l.strip() for l in text.replace(SCRIPT_EOF_ECHO, "").splitlines() if "Cannot perform start session" in l), None)
+    if broken:
+        reason = f"ECS Exec のセッションを始められない（{broken[:200]}）"
+        if "EOF" in broken:
+            reason += "。標準入力が端末でないと EOF で切れる。端末から打つか、待たずに一度に入れ替えるなら OSS_ROLL=0"
+        return reason
     if not secs:
         return f"ECS Exec の出力に印が無い（{head(text)}）"
     for name in names:
