@@ -169,5 +169,6 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | [docker/compose/README.md](docker/compose/README.md) | 手元の docker compose（WSL2）: 前提（WSL の docker-ce、`.wslconfig` のメモリ）、立てて障害を入れて見るまでの手順、見る場所、ぶつかりやすいポート、消し方 |
 | [hearing.md](docs/hearing.md) | ヒアリング項目: PoC の設計を決めるために相手に確かめたいこと（格納先の冗長化、保管期間など）と答え |
 | [development.md](docs/development.md) | 手元のテスト、変更するときの決まり、Web を手元で動かす |
+| [ai-dev-flow.md](docs/ai-dev-flow.md) | AI 開発フロー: PM とエンジニアの AI セッションがサイクル（設計 → 実装 → レビュー）を回す流れの図（Mermaid）、役割の分担、正本は `design.md` だけという決まり、成果物の置き場 |
 | [faq-fukuda-nwc-poc.md](docs/faq-fukuda-nwc-poc.md) | FAQ: ほかの開発者に説明するときに出る質問と答え（syslog、収集の設定、デバッグ用の EC2、YANG、Spark、Nautobot、Neptune、障害の情報の置き場、格納先とテーブル、Splunk、マネージドを OSS に置き換えるとき、AWS の基礎） |
 | [data-stores.md](docs/data-stores.md) | 勉強会メモ: データの置き場（Neptune にトポロジと `status`、S3 Tables の `proposal_events` に修復案の状態と証跡、`alert_events` にアラートの通知の履歴）と DynamoDB をやめた理由、コンテナイメージの役目とアーキテクチャの選び方（arm64 が要るのは AgentCore、x86 が要るのは Splunk と TRex。同じホストの中だけ揃える）、Neptune Analytics の基礎（Neptune Database との違い、AZ 冗長、トポロジをグラフにする意味）、MSK のブートストラップサーバーと、Telegraf・Spark がそれをどう受け取るか（`msk-bootstrap` を残す理由） |
