@@ -1,1 +1,0 @@
-../../../../terraform/pipeline/stream/variables.tf

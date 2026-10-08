@@ -1,0 +1,1 @@
+../../../../terraform/aws-managed/pipeline/lab/instance.tf
