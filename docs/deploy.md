@@ -122,13 +122,36 @@ flowchart LR
 
 ## 007 で並べ直したとき（state の移し方）
 
-2026-10-08 の cycle 007 で Terraform のルートを `terraform/` から `IaC/terraform/aws-managed/` へ、`oss/terraform/` を `IaC/terraform/oss/` へ移した。gitignore 対象の `.terraform/`（provider のキャッシュ）・`terraform.tfstate`・`terraform.tfvars`・`.build/` は `git mv` で付いて行かず、前のチェックアウトの `terraform/<ルート>/` に残る。state を持ったまま `ops/down.sh` を打てるよう、マージのあとに前のチェックアウトの直下で一度だけ移す（手元の docker compose の `.env` も `local/compose/` から `docker/compose/` へ）。消す前に何が残っているかを見る（`terraform.tfvars` など手で書いたものを `rm -rf` で失わないため）。OSS 版の state は 2026-10-08 の検証で使った worktree にしか無く、リソースは消えているので移さない。
+2026-10-08 の cycle 007 で Terraform のルートを `terraform/` から `IaC/terraform/aws-managed/` へ、`oss/terraform/` を `IaC/terraform/oss/` へ移した。gitignore 対象の `.terraform/`（provider のキャッシュ）・`terraform.tfstate`（と `.backup`、`terraform.tfstate.<時刻>.backup`）・`*.tfvars`・`.build/` は `git mv` で付いて行かず、前のチェックアウトの `terraform/<ルート>/` に残る。
+
+**前の配置で立てた環境は、007 をマージする前に前の配置の `ops/down.sh`（OSS 版は `oss/ops/down.sh`）で消す。** 007 は SG の description（作り直しになる属性）、Web と lab の EC2 の user_data（`user_data_replace_on_change`）、OSS 版の Lambda レイヤーの description の中のパスも書き換えたので、立てたまま 007 の `ops/up.sh` を打つと SG・EC2・レイヤーが作り直しになる（state を移しても同じ）。デバッグ用の EC2（`ops/lab-debug.sh up` のスタック）も UserData のコメントと Telegraf のタグが変わるので、立てたままだと次の `ops/lab-debug.sh up` で EC2 が止まって起き直す。前の配置の `ops/lab-debug.sh down` で一緒に消しておく。
+
+消したあとも state は残るので、マージのあと `ops/check.sh` や `ops/up.sh` を打つ前に、前のチェックアウトの直下で一度だけ移す（手元の docker compose の `.env` も `local/compose/` から `docker/compose/` へ）。マージの前に打つと何もせずに止まる。
 
 ```bash
-for r in base/ecr base/core agent pipeline/lab pipeline/stream pipeline/analytics pipeline/graph pipeline/nautobot workflow; do for f in .terraform terraform.tfstate terraform.tfstate.backup terraform.tfvars .build; do [ -e "terraform/$r/$f" ] && mv "terraform/$r/$f" "IaC/terraform/aws-managed/$r/$f"; done; done; [ -e local/compose/.env ] && mv local/compose/.env docker/compose/.env; find terraform local -type f 2>/dev/null
+if [ -n "$(git ls-files terraform oss/terraform local)" ]; then echo "まだ 007 をマージしていない（前の配置のファイルが git にある）。マージしてから打つ"; else
+  mv_new() { if [ ! -e "$1" ]; then :; elif [ -e "$2" ]; then echo "移し先にもうある（移していない）: $2"; else mv "$1" "$2"; fi; }
+  find terraform oss/terraform \( -name .terraform -o -name 'terraform.tfstate*' -o -name .terraform.tfstate.lock.info -o -name '*.tfvars' -o -name .build \) -prune -print 2>/dev/null |
+    while IFS= read -r p; do
+      case "$p" in
+        terraform/*) mv_new "$p" "IaC/terraform/aws-managed/${p#terraform/}" ;;
+        oss/terraform/*) mv_new "$p" "IaC/terraform/oss/${p#oss/terraform/}" ;;
+      esac
+    done
+  mv_new local/compose/.env docker/compose/.env
+  find agent cloudformation grafana graph kb-docs lab local nautobot neo4j spark splunk telegraf terraform web workflow oss/terraform \
+    -type f -not -name .DS_Store -not -path '*/__pycache__/*' -not -path '*/.terraform/*' 2>/dev/null
+fi
 ```
 
-最後の `find` が何も出さなければ、空のフォルダだけなので `rm -rf terraform local` で消してよい。
+移し先に同じ名前がもうあるもの（先に `check.sh` の `terraform init` を打った、など）は移さずに名前を出す。そのまま `mv` すると `.terraform` が `.terraform/.terraform` に入れ子になり、`*.tfvars` や state は上書きされる。出たものが `.terraform` だけなら provider のキャッシュなので前の方は捨ててよい。`*.tfvars`・state・`.env` が出たら、2 つを見比べて残す方を決めてから前の方を消す。
+
+最後の `find` が何も出さなければ、前の配置のフォルダに残っているのは空のフォルダ・`.DS_Store`・`__pycache__`・移さなかった `.terraform` だけなので、まとめて消してよい（同じ検査をもう一度してから消す）。
+
+```bash
+D="agent cloudformation grafana graph kb-docs lab local nautobot neo4j spark splunk telegraf terraform web workflow oss/terraform"
+if [ -z "$(git ls-files $(echo $D))" ] && [ -z "$(find $(echo $D) -type f -not -name .DS_Store -not -path '*/__pycache__/*' -not -path '*/.terraform/*' 2>/dev/null)" ]; then rm -rf $(echo $D); else echo "消さなかった（マージの前か、上の find がまだ何か出している）"; fi
+```
 
 ## アラートの通知の履歴（Firehose と Athena）
 
