@@ -95,7 +95,7 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 | 機器ごと止まったとき | 検知しない（系列が途切れると解消を送る） |
 | `SNMP_POLL=0` | `link_down` は発火も解消もしない |
 | 1 タスク・1 AZ | 止まっているあいだはルールが評価されない |
-| ルールの評価のエラーの確かめ（手順 9-2、`ops/check-grafana.sh`） | 打ったあとの評価だけを見る（あとで壊れたら打ち直す）。打ってから全部のルールが評価されるまで最大 1 分、エラーがあればもう 1 回の評価まで 1 分ほど延びる。打ったあとの評価で 1 回でもエラーになったルールは、すぐ直っても NG になる（次の評価にエラーが残るため）。NoData はエラーではないので OK になる。待つのは最大 5 分で、評価されないルール（止めたルールなど）があれば「未確認」。SSM Run Command の結果を待つのは `SSM_RUN_WAIT` 秒（既定 1800）までで、過ぎたら未確認。マネージド版は `STORES` に `grafana` があるときと、今回は analytics を作らない回（`PIPELINE=0`・`SKIP_ANALYTICS=1`）でも前の回の Grafana の ECS サービスが state に残っているときに打つ。Grafana のクラスターとサービスの名前（`tf output`）が読めないか空なら、確かめずに止まる。AWS では未実行（API の形とログは手元の 13.2.2 で確かめた） |
+| ルールの評価のエラーの確かめ（手順 9-2、`ops/check-grafana.sh`） | 打ったあとの評価だけを見る（あとで壊れたら打ち直す）。打ってから全部のルールが評価されるまで最大 1 分、エラーがあればもう 1 回の評価まで 1 分ほど延びる。打ったあとの評価で 1 回でもエラーになったルールは、すぐ直っても NG になる（次の評価にエラーが残るため）。NoData はエラーではないので OK になる。待つのは最大 5 分で、評価されないルール（止めたルールなど）があれば「未確認」。SSM Run Command の結果を待つのは `SSM_RUN_WAIT` 秒（既定 1800）までで、過ぎたら未確認。マネージド版は `STORES` に `grafana` があるときと、今回は analytics を作らない回（`PIPELINE=0`・`SKIP_ANALYTICS=1`）でも前の回の Grafana の ECS サービスが state に残っているときに打つ。analytics の state の一覧か、Grafana のクラスターとサービスの名前（`tf output`）が読めないか空なら、確かめず（`aws ecs wait` も打たず）に黄色の警告を出して先へ進む（最後の案内まで届かせる）。AWS では未実行（API の形とログは手元の 13.2.2 で確かめた） |
 | Grafana がやり直さないエラーでも `Failed to evaluate rule` がログに出るか | 未確認。出なければ `--filter-pattern '"level=error"'` で探す |
 
 OSS 版（`IaC/terraform/oss/pipeline/analytics/grafana.tf`）も同じイメージとルールで 1 タスク立てる。データソースだけが VictoriaMetrics の vmselect（署名なし）と ECS の OpenSearch（Basic 認証）に変わる（`app/grafana/provisioning/datasources-oss`。uid が同じなので、ダッシュボードとアラートルールはそのまま使う）。[oss-variant.md](../../oss-variant.md)。

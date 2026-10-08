@@ -2,7 +2,7 @@
 
 設計: main(opus-5.5) / effort: xhigh
 
-この文書は現行の設計だけを書く。PM と前提を合わせたやりとりは design-log.md の Round 0。
+この文書は現行の設計だけを書く。PM と前提を合わせたやりとりは design-log.md の Round 0、セルフレビューの D2・D8 の PM の判断は Round 1。
 
 ## 背景
 
@@ -11,10 +11,12 @@ PM の依頼（2026-10-08）。対象は BACKLOG の 79〜83 で、どれも「A
 - 79（N2）: `ops/grafana_rules_check.py` が rules API のページ分け（`groupNextToken`）を追う
 - 80（N4）: `ops/check-grafana.sh` の NG・未確認・止まった（die）の終了コードを分け、未確認では「Failed to evaluate rule」のログを案内しない。`ops/up.sh` と `oss/ops/up.sh` の 9-2 の受け側（`grafana_rules_step`）もこの値で警告を変える
 - 82（N6）: `ops/up-common.sh` の `ssm_run` の読み直しに全体の締め切りを付け、超えたら未確認として返す
-- 81（N5）: 9-2 で `tf output` が失敗したら止める
+- 81（N5）: 9-2 で `tf output` が失敗・空のとき、空の引数で `aws ecs wait` に進まない（止めずに警告する。下の PM の判断）
 - 83（N7）: 前の回の analytics が残っている回（`PIPELINE=0` など）でも 9-2 を打つ
 
 PM が決めたこと: 終了コードの値は設計で決めて `docs/troubleshooting.md` に 4 つの値の表を 1 つ書く。締め切りは環境変数で変えられる形（`deploy.env` のキーにはしない。`.env.example` にも書かず、`docs/deploy.md` に 1 行）。N2 は「13.2.3 の既定は `group_limit=-1` なのでトークンは来ない。来たときのための道」と書き、テストの偽サーバーで 2 ページ返す形と、同じトークン 2 回で未確認になる形で縛る。81・83 は `docs/cycle-006-design` に先に入る「MSK を SCRAM にし…（012）」と同じ `ops/up.sh` / `oss/ops/up.sh` を触るので、commit を最後にする。触らない: `docker/compose/`、`app/containerlab/lab.sh`、`docs/cycles/BACKLOG.md`。
+
+PM の判断（2026-10-09。Round 1 のセルフレビューの D2・D8）: 9-2 で terraform が読めないとき（`tf output` の失敗・空、`state list` の失敗のどちらも）は `exit 1` にしない。`GRAFANA_WARN` に「state が読めず Grafana のルールを確かめていない。Grafana が安定するのも待っていない。確かめ直すのは `ops/check-grafana.sh`」を入れ、9-2 の `aws ecs wait` とルールの検査を飛ばして最後の案内まで進む。理由: 81 の「止める」の意図は「空の引数で `aws ecs wait` に進まない」で、up.sh 全体を止めることではない。`ops/up.sh` の 8-5 の方針（「set -e で up.sh ごと止まると、Web の再起動と最後の案内まで届かない」）に揃える。D8 の「黙って飛ばす」も無くし、同じ警告にする。
 
 調査で分かった事実（実物を読んだもの）:
 
@@ -51,7 +53,7 @@ PM が決めたこと: 終了コードの値は設計で決めて `docs/troubles
 | 3 | 確かめる前に止まった | 使い方の誤り、`deploy.env` の誤り、Web の EC2 か Grafana が無い（`tf output` が読めないか空）、`SSM_RUN_WAIT` の値の誤り | `NG:` の赤い行（`die`） |
 
 - 使い方の誤りは 2 から 3 に変わる（未確認と分けるため）
-- `ops/up.sh` / `oss/ops/up.sh` の 9-2 では、3 に当たるもの（`tf output` が読めない・空）は止める（81）。1 と 2 は止めずに警告を変える
+- `ops/up.sh` / `oss/ops/up.sh` の 9-2 では、1 と 2 は止めずに警告を変える。3 に当たるもの（analytics の `tf output` が読めない・空、`state list` が読めない）も止めず、確かめていないと警告する（E）
 
 ### A. ページを追う（N2、`ops/grafana_rules_check.py`）
 
@@ -91,31 +93,36 @@ PM が決めたこと: 終了コードの値は設計で決めて `docs/troubles
 - 既定 1800 秒の理由: 待つのは cloud-init（Web の EC2 は 3〜5 分、lab は 10 分ほど）とコマンド本体（Grafana の確かめは最大 5 分、`seed_graph.py` は数分）。その 3 倍ほどを取り、届けるまでの 900 秒より長く、実行の締め切り 3600 秒より短くする（3600 秒を待つなら SSM 自身が `TimedOut` にする）
 - 締め切りで返っても、インスタンスの上のコマンドは止めない（`cancel-command` は打たない。表示した `get-command-invocation` で結果を見られる）
 
-### E. 9-2 で `tf output` が読めなければ止める（81）
+### E. 9-2 で terraform が読めなければ、確かめずに警告して先へ進む（81、PM の判断）
 
-- `ops/up-common.sh` に `tf_output <ルート> <出力名>` を足す。`tf <ルート> output -raw <名前>` が失敗すれば「`$TF_DIR/<ルート>` の出力 <名前> が読めない（上のエラー）」、空なら「…が空」で `die`、読めれば値を出す。呼ぶ側は `X=$(tf_output …) || exit 1`（`$( )` の中の `die` はサブシェルだけを抜けるので、呼ぶ側で止める）
-- `ops/up.sh` の 9-2 は `GF_CLUSTER` / `GF_SERVICE` を `tf_output` で読んでから `grafana_rules_step` に渡す
-- `oss/ops/up.sh` は `:463` の `AN_CLUSTER` を `tf_output` で読む（9-2 のクラスターの引数はこの値。7-4b の待ちも同じ値を使うので、空ならそこで止まる）。9-2 の `GF_SERVICE` も `tf_output` で読む
+- `ops/up-common.sh` に `tf_output <ルート> <出力名>` を足す。`tf <ルート> output -raw <名前>` が失敗すれば「`$TF_DIR/<ルート>` の出力 <名前> が読めない（上のエラー）」、空なら「…が空」で `die`、読めれば値を出す。`$( )` の中の `die` はサブシェルだけを抜けるので、止めるかどうかは呼ぶ側が決める（`X=$(tf_output …) || exit 1` か `if X=$(tf_output …); then`）。どちらでも、どの出力が読めない・空かを赤い `NG:` の行で出す
+- `ops/up-common.sh` に `grafana_skip_warn <確かめ直すコマンド>` を足す。`GRAFANA_WARN` に「`$TF_DIR`/pipeline/analytics の state か出力が読めない（上のエラー）ので、Grafana のアラートルールの評価を確かめていない（Grafana のサービスが安定するのも待っていない）。確かめ直すのは <コマンド>」を入れて黄色で出す。最後の再掲は今の `GRAFANA_WARN` の行が出す
+- `ops/up.sh` の 9-2: F の state の一覧が読めない（`GF_UNREAD`）か、`GF_CLUSTER` / `GF_SERVICE` を `tf_output` で読めない・空なら `grafana_skip_warn ops/check-grafana.sh`。`aws ecs wait` も確かめの送信も打たない。読めたら今までどおり `grafana_rules_step`
+- `oss/ops/up.sh` の 9-2: `GF_SERVICE` を `tf_output` で読めない・空なら `grafana_skip_warn "ops/check-grafana.sh --oss"`、読めたら `grafana_rules_step`
+- `oss/ops/up.sh` の `:464`（7-4b）の `AN_CLUSTER` は `tf_output … || exit 1` のまま止める。7-4b の手順で、すぐ下の同じ state の `opensearch_service_names` / `victoriametrics_service_names` も読めなければ `die` で止まる（PM の判断の範囲は 9-2）。9-2 のクラスターはこの値なので、9-2 に来たときは空でない
+- 9-2 のあと（10 の案内とポートフォワーディング）は変えない
 
 ### F. 前の回の Grafana も確かめる（83、`ops/up.sh` だけ）
 
-- 9-2 の前で `GRAFANA_LEFT` を決める: `GRAFANA` が空で `ANALYTICS_LEFT=1`、かつ `tf pipeline/analytics state list` に `aws_ecs_service.grafana[` で始まる行があれば 1。`grep -q` は使わず `grep … >/dev/null`（読み切るので `pipefail` の `SIGPIPE` に当たらない）
-- 9-2 は `GRAFANA` か `GRAFANA_LEFT` があれば打つ。`GRAFANA_LEFT` のときはログの見出しに「今回は analytics を作らないが、前の回の Grafana が残っている」を足す
+- 9-2 の前で `GRAFANA_LEFT` と `GF_UNREAD` を決める。`GRAFANA` が空で `ANALYTICS_LEFT=1` のときだけ `tf pipeline/analytics state list` を読む（標準エラーは捨てない。読めないときの理由として出す）
+  - 読めて、`aws_ecs_service.grafana[` で始まる行があれば `GRAFANA_LEFT=1`。一覧は変数に読み切ってから `grep … >/dev/null` で見る（`state list` の失敗と「Grafana が無い」を分けるため、パイプにしない。`grep -q` も使わない）
+  - 読めなければ `GF_UNREAD=1`（D8。黙って 9-2 を飛ばさない）。Grafana が残っていなくても、無いのか読めないのかを分けられないので警告する
+- 9-2 は `GRAFANA` か `GRAFANA_LEFT` か `GF_UNREAD` があれば打つ。ログの見出しに、`GRAFANA_LEFT` なら「今回は analytics を作らないが、前の回の Grafana が残っている」、`GF_UNREAD` なら「今回は analytics を作らないが、前の回の analytics の state が読めない」を足す
 - 最後の Grafana のポートフォワードの案内（`if [ -n "$GRAFANA" ]`）は変えない（83 の範囲は 9-2 だけ）
 - OSS 版は analytics をいつも作るので変えない
 
 ## 変更対象ファイル
 
 - `ops/grafana_rules_check.py`（A。先頭のコメントも）
-- `ops/up-common.sh`（B・D・E。`ssm_run`、`grafana_rules_check`、`grafana_rules_step`、`tf_output`、`SSM_RUN_WAIT` の確かめ、先頭のコメント）
+- `ops/up-common.sh`（B・D・E。`ssm_run`、`grafana_rules_check`、`grafana_rules_step`、`tf_output`、`grafana_skip_warn`、`SSM_RUN_WAIT` の確かめ、先頭のコメント）
 - `ops/check-grafana.sh`（C）
 - `ops/up.sh`（E・F。9-2 だけ）
-- `oss/ops/up.sh`（E。`:463` と 9-2）
+- `oss/ops/up.sh`（E。`:464`（7-4b）と 9-2）
 - `tests/test_alerts.py`（A・B・D の単体）
 - `tests/test_oss_ops.py`（C の `ops/check-grafana.sh`、E の OSS 版の通し、`ops/up.sh` の 9-2 の形）
-- `docs/troubleshooting.md`（4 つの値の表と、Grafana の行）
+- `docs/troubleshooting.md`（4 つの値の表と、9-2 での受け方）
 - `docs/deploy.md`（`SSM_RUN_WAIT` の 1 行）
-- `docs/architecture/resources/grafana.md`（ページを追うこと、`PIPELINE=0` の回も打つこと、終了コード）
+- `docs/architecture/resources/grafana.md`（ページを追うこと、`PIPELINE=0` の回も打つこと、終了コード、terraform が読めないときは警告して進むこと）
 - `docs/pipeline.md`（「Grafana のアラート」の `ops/check-grafana.sh` の説明に終了コードの表への参照）
 - `docs/development.md`（テストの本数）
 - `docs/cycles/015-grafana-check-followups/`（design.md、design-log.md、build.md）
@@ -133,7 +140,7 @@ PM が決めたこと: 終了コードの値は設計で決めて `docs/troubles
 2. B・C: `grafana_rules_check` / `grafana_rules_step` / `ops/check-grafana.sh` の終了コードと、テスト（`test_alerts.py` の `gstep`、`test_oss_ops.py` の `ops/check-grafana.sh`）
 3. D: `ssm_run` の締め切りと `SSM_RUN_WAIT` の確かめ、テスト
 4. docs（表・`SSM_RUN_WAIT`・grafana.md・pipeline.md）
-5. E・F（81・83）: `tf_output`、`ops/up.sh` / `oss/ops/up.sh` の 9-2、テスト、docs の 83 の分。**このときまでに `docs/cycle-006-design` に 012 が入っていれば、先にマージしてから書く**（入っていなければ書いてから、報告の前にマージして衝突を解く）
+5. E・F（81・83）: `tf_output`、`grafana_skip_warn`、`ops/up.sh` / `oss/ops/up.sh` の 9-2、テスト、docs の 81・83 の分。**このときまでに `docs/cycle-006-design` に 012 が入っていれば、先にマージしてから書く**（入っていなければ書いてから、報告の前にマージして衝突を解く）
 6. build.md（テストの本数を `docs/development.md` に合わせる）、セルフレビュー
 
 ## 検証方法（期待出力まで）
@@ -150,10 +157,14 @@ PM が決めたこと: 終了コードの値は設計で決めて `docs/troubles
    - `SSM_RUN_WAIT=abc` で `ops/up-common.sh` を読むと `NG: SSM_RUN_WAIT は…` で止まる
 2. `uv run --group dev --group web python tests/test_oss_ops.py` が全部通り、次を含む
    - `ops/check-grafana.sh`: OK で 0、NG で 1 とログの案内、偽の aws が `判定: 未確認（…）` で `Failed` を返すと 2 でログの案内なし、`FAKE_TF_EMPTY=grafana_service_name` で 3 と「Grafana が無い」、`--yes` で 3 と「使い方」
-   - `oss/ops/up.sh` の通しで `FAKE_TF_EMPTY=grafana_service_name` なら 1 で終わり、標準エラーに「IaC/terraform/oss/pipeline/analytics の出力 grafana_service_name が空」、偽の aws の記録に Grafana の確かめの `send-command` も Grafana の `ecs wait` も無い
-   - `ops/up.sh` の 9-2 が `tf_output` で読み、`GRAFANA_LEFT` の条件（`ANALYTICS_LEFT` と `aws_ecs_service.grafana[` と `grep -q` を使わないこと）を持つ
+   - `oss/ops/up.sh` の通しで `FAKE_TF_EMPTY=grafana_service_name` なら 0 で最後の配るコマンドまで進み、標準エラーに「NG: IaC/terraform/oss/pipeline/analytics の出力 grafana_service_name が空」、警告「IaC/terraform/oss/pipeline/analytics の state か出力が読めない（上のエラー）ので、Grafana のアラートルールの評価を確かめていない（Grafana のサービスが安定するのも待っていない）。確かめ直すのは ops/check-grafana.sh --oss」が 2 回（9-2 と最後）。偽の aws の記録に Grafana の確かめの `send-command` も、空の `--services` の `ecs wait` も無い
+   - `ops/up.sh` の 9-2 のブロックを偽の terraform で bash に打つ（`grafana_rules_step` は引数を出すだけ）
+     - `GRAFANA=1` なら state を見ずに出力のクラスターとサービスで `grafana_rules_step` を 1 回。`ANALYTICS_LEFT=1` で state に `aws_ecs_service.grafana[0]` があれば見出しに「前の回の Grafana が残っている」を足して 1 回（state が 64 KB を超えても）。無いか `ANALYTICS_LEFT` が空なら打たない
+     - 出力が空（`GRAFANA=1` の `grafana_service_name`、`ANALYTICS_LEFT=1` の `analytics_cluster_name`）か読めない（rc=1）なら、0 で最後まで進み、`grafana_rules_step` を打たず、`GRAFANA_WARN` は上の文で確かめ直すのは `ops/check-grafana.sh`。標準エラーに `NG: …の出力 <名前> が空` か `…が読めない（上のエラー）` と terraform のエラー
+     - `ANALYTICS_LEFT=1` で `state list` が rc=1 なら、0 で最後まで進み、見出しに「前の回の analytics の state が読めない」、出力を読まず（terraform の呼び出しは `state list` だけ）、`grafana_rules_step` を打たず、`GRAFANA_WARN` は同じ文。terraform のエラーは標準エラーに残る
+     - 9-2 に `grep -q`（コメントを除く）も `|| exit 1` も無い
 3. `bash ops/check.sh` の最後の行が `すべて通過`
-4. 退行の注入（セルフレビューで実際に落ちるのを見る）: ページの繰り返しを消すと 2 ページの NG のテストが落ちる。`seen` を消すと同じトークンのテストが落ちる（100 ページの歯止めで終わる形でも文が違うので落ちる）。`grafana_rules_step` の 2 の分岐を 1 と同じにすると未確認のテストが落ちる。`ssm_run` の締め切りを消すとテストが 20 秒で切れて落ちる
+4. 退行の注入（セルフレビューで実際に落ちるのを見る）: ページの繰り返しを消すと 2 ページの NG のテストが落ちる。`seen` を消すと同じトークンのテストが落ちる（100 ページの歯止めで終わる形でも文が違うので落ちる）。`grafana_rules_step` の 2 の分岐を 1 と同じにすると未確認のテストが落ちる。`ssm_run` の締め切りを消すとテストが 20 秒で切れて落ちる。9-2 の `grafana_skip_warn` を `exit 1` に戻す（`ops/up.sh` と `oss/ops/up.sh` のそれぞれ）と警告のテストが落ちる。`state list` が読めないときの `GF_UNREAD` を消す（黙って飛ばす形）と state list のテストが落ちる。`grafana_skip_warn` の中で `GRAFANA_WARN` を入れないと最後の再掲のテストが落ちる
 5. 手元の Grafana 13.2.2（`docker run` の使い捨て。`__expr__` の式だけのルールを 2 つのグループに置く）で、引数なしの応答に `groupNextToken` が無く、`?group_limit=1` の応答の `data.groupNextToken` が空でなく、それを `group_next_token` に入れると 2 つ目のグループが返る。終わったら `docker rm -f -v` で消す
 
 ## 未確定事項とリスク
@@ -162,6 +173,7 @@ PM が決めたこと: 終了コードの値は設計で決めて `docs/troubles
 2. **締め切りで返してもリモートのコマンドは動き続ける。** Grafana の確かめは最大 5 分で害は無い。`run_on_instance`（Web の再起動・グラフの初期ロード）が締め切りで止まると、up.sh は止まるが EC2 の上では続いている。案内した `get-command-invocation` で結果を見て、打ち直す
 3. **1800 秒が足りない場合。** lab の cloud-init は 10 分ほどの見積もりで、AWS での実測はこの設計では取っていない。足りなければ `SSM_RUN_WAIT` で延ばす（`docs/deploy.md` に書く）
 4. **使い方の誤りの終了コードが 2 から 3 に変わる。** `ops/check-grafana.sh` を呼ぶのは人と docs だけ（リポジトリの中に終了コードを見るスクリプトは無い）
-5. **83 の判定は state の一覧に頼る。** state にサービスが載っていても、Grafana のタスクが止まっている・データソースが消えている場合は `aws ecs wait` か評価で未確認・NG になる（そのときの警告は正しい）
-6. **012 との衝突。** 012 は `ops/up.sh` と `oss/ops/up.sh` の MDT の行を消す。9-2 と `:463` に近ければ衝突するので、マージで解き、`test_oss_ops.py` の通しを取り直す
+5. **83 の判定は state の一覧に頼る。** state にサービスが載っていても、Grafana のタスクが止まっている・データソースが消えている場合は `aws ecs wait` か評価で未確認・NG になる（そのときの警告は正しい）。一覧が読めないときは、Grafana が残っていなくても「確かめていない」と警告する（無いのか読めないのかを分けられない）
+6. **012 との衝突。** 012 は `ops/up.sh` と `oss/ops/up.sh` の MDT の行を消す。9-2 と `:464` に近ければ衝突するので、マージで解き、`test_oss_ops.py` の通しを取り直す
 7. **AWS では確かめない**（PM の指示）。実物で確かめるのは手元の Grafana 13.2.2 だけ
+8. **9-2 で terraform が読めなくても up.sh は 0 で終わる。** 黄色の警告は 9-2 と最後に出るが、終了コードだけを見る呼び出し元は Grafana を確かめていないことに気付かない（9-2 の NG・未確認と同じ扱い）。`tf_output` の赤い `NG:` の行が出ても止まらないので、読む人には「止まった」と見えるかもしれない。続けて黄色の警告で「確かめていない」と言う

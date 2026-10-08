@@ -21,7 +21,8 @@ tf_apply() {  # tf_apply <ルート> [-var 名前=値 …]
 has_resources() {  # has_resources <ルート>  state があり、リソースが 1 つ以上載っている（init 済みが前提）
   [ -f "$TF_DIR/$1/terraform.tfstate" ] && [ -n "$(tf "$1" state list 2>/dev/null)" ]
 }
-tf_output() {  # tf_output <ルート> <出力名>  出力を 1 つ読んで出す。読めない・空なら die。呼ぶ側は X=$(tf_output …) || exit 1（$( ) の中の die はサブシェルだけを抜ける）
+tf_output() {  # tf_output <ルート> <出力名>  出力を 1 つ読んで出す。読めない・空なら die（赤い NG: の行）。$( ) の中の die はサブシェルだけを抜けるので、
+  # 止めるかどうかは呼ぶ側が決める（止めるなら X=$(tf_output …) || exit 1、止めないなら if X=$(tf_output …); then …）
   local v
   v=$(tf "$1" output -raw "$2") || die "$TF_DIR/$1 の出力 $2 が読めない（上のエラー）"
   [ -n "$v" ] || die "$TF_DIR/$1 の出力 $2 が空"
@@ -298,6 +299,12 @@ grafana_rules_step() {  # grafana_rules_step <Web のインスタンス ID> <ana
     esac
   fi
   if [ -n "$GRAFANA_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$GRAFANA_WARN"; fi
+}
+grafana_skip_warn() {  # grafana_skip_warn <確かめ直すコマンド>
+  # 9-2 で analytics の state の一覧か Grafana のクラスター・サービスの名前が読めないとき。止めず（最後の案内まで届かせる）、空の名前で aws ecs wait に進まず、
+  # 確かめていないことを GRAFANA_WARN に入れて黄色で出す（呼ぶ側が最後にもう一度出す）。どれが読めないかは、その前の terraform のエラーと tf_output の NG: の行
+  GRAFANA_WARN="$TF_DIR/pipeline/analytics の state か出力が読めない（上のエラー）ので、Grafana のアラートルールの評価を確かめていない（Grafana のサービスが安定するのも待っていない）。確かめ直すのは $1"
+  printf '\033[1;33m%s\033[0m\n' "$GRAFANA_WARN"
 }
 build_worker() {  # build_worker <タグ> [requirements のファイル名]  Temporal の worker（arm64）。OSS 版は requirements-oss.txt（neo4j のドライバー入り）
   docker buildx build --platform linux/arm64 --build-arg "REQUIREMENTS=${2:-requirements.txt}" -t "$REG/$PREFIX-worker:$1" --push -f docker/images/temporal/Dockerfile app/temporal/

@@ -26,3 +26,25 @@
 - **締め切りで `aws ssm cancel-command` を打つ。** Web の再起動やグラフの初期ロードを途中で切ると、EC2 の上の状態が中途半端になる。止めずに `get-command-invocation` のコマンドを案内する形にした
 - **`SSM_RUN_WAIT` を `deploy.env` のキーにする。** PM の指示で環境変数のまま
 - **`grafana_rules_check.py` で `group_limit` を明示して小さなページで読む。** 13.2.3 の既定（-1）で 1 回で全部返るので、要求の回数を増やすだけになる
+
+## Round 1（2026-10-09）
+
+Round 1 のセルフレビューの D2・D8 を PM に回し、判断をもらった。プランモードには入らず、design.md を上書きした（差し戻しからの再設計）。
+
+### PM の判断
+
+- 9-2 で terraform が読めないとき（`tf output` の失敗・空、`state list` の失敗のどちらも）は `exit 1` にしない。`GRAFANA_WARN` に「state が読めず Grafana のルールを確かめていない。Grafana が安定するのも待っていない。確かめ直すのは `ops/check-grafana.sh`」を入れ、9-2 の `aws ecs wait` とルールの検査を飛ばして最後の案内まで進む
+- 理由: BACKLOG 81 の「止める」の意図は「空の引数で `aws ecs wait` に進まない」で、up.sh 全体を止めることではない。`ops/up.sh` の 8-5（:1235）の方針（最後の案内まで届かせる）に揃える。D8 の「黙って飛ばす」は無くし、D2 と同じ警告にする
+- design.md の設計方針と検証方法、`docs/troubleshooting.md` の理由をこの判断に合わせて直す。テストは「tf output 失敗 / 空」「state list 失敗」の両方で警告が入り `ecs wait` に進まないことを見る
+
+### 自分で決めたこと
+
+- **`oss/ops/up.sh` の 7-4b の `AN_CLUSTER` は止めるまま。** 7-4b の手順で、すぐ下の同じ state の `opensearch_service_names` / `victoriametrics_service_names` も読めなければ `die` で止まる。ここだけ警告にしても次の行で止まる。PM の判断の範囲は 9-2。9-2 に来たときは、この値は空でない
+- **`state list` は変数に読み切ってから grep する。** パイプのままだと `pipefail` の偽が「`state list` の失敗」と「Grafana が無い」のどちらか分からない
+- **警告の文は 1 つにまとめる（`grafana_skip_warn`）。** state の一覧か出力のどれが読めなかったかは、その前の terraform のエラーと `tf_output` の赤い `NG:` の行に出る
+
+### 却下した案
+
+- **Round 0 の決定どおり止める（`|| exit 1`）。** 10 の配るコマンド、ほかの警告（`LAB_WARN` / `NAUTOBOT_WARN` / `WF_WARN` / `COST_NOTE`）の再掲、ポートフォワーディングに届かない。8-5 の方針と食い違う（D2）
+- **`state list` が読めないときは今のまま黙って 9-2 を飛ばす。** 確かめていないことが利用者に分からない（D8）
+- **9-2 だけ `tf_output` の `NG:` を黄色にする（止めない版の `tf_output` を作る）。** 呼ぶ所は 9-2 の 3 か所だけで、続けて黄色の警告が「確かめていない」と言うので、関数を増やすほどではない

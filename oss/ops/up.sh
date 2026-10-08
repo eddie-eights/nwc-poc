@@ -568,10 +568,14 @@ aws logs tag-resource --region "$REGION" \
 
 # ---- 9-2. Grafana のアラートルール ----------------------------------------------------------
 # マネージド版と同じ（ops/up-common.sh の grafana_rules_step）。ルールは評価でエラーになってもアラートを出さず、画面でも Normal に見える（execErrState: KeepLast）。
-# OK でなくても止めない（警告を最後にもう一度出す）。あとから確かめ直すのは ops/check-grafana.sh --oss。サービスの名前が読めなければ止まる（tf_output）
+# OK でなくても止めない（警告を最後にもう一度出す）。あとから確かめ直すのは ops/check-grafana.sh --oss。サービスの名前（tf_output）が読めないか空のときも止めず、
+# 空の名前で aws ecs wait に進まずに、確かめていないと警告する（grafana_skip_warn）。クラスターは 7-4b の AN_CLUSTER（読めなければ 7-4b で止まっている）
 log "9-2. Grafana のアラートルールが評価でエラーになっていないかを確かめる（Web の EC2 から Grafana のルールの API を読む。最大 5 分）"
-GF_SERVICE=$(tf_output pipeline/analytics grafana_service_name) || exit 1
-grafana_rules_step "$INSTANCE_ID" "$AN_CLUSTER" "$GF_SERVICE" "ops/check-grafana.sh --oss"
+if GF_SERVICE=$(tf_output pipeline/analytics grafana_service_name); then
+  grafana_rules_step "$INSTANCE_ID" "$AN_CLUSTER" "$GF_SERVICE" "ops/check-grafana.sh --oss"
+else
+  grafana_skip_warn "ops/check-grafana.sh --oss"
+fi
 
 # ---- 配るコマンド ----------------------------------------------------------------------
 log "できた（${ROOTS}。OSS 版）。利用者に配るコマンド:"
