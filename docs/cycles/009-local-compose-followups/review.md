@@ -196,3 +196,5 @@ None
 - Nit 1（design.md の「Telegraf: コンテナが running」と実装の「health が 200」のずれ）: 読んで確かめた。`check.sh:98` は `judge "Telegraf: health が 200"`、`test_local_compose.py:601` も `TH = "Telegraf: health が 200"`。design.md の 34・66・96・134 行目が「running」のままだった（Round 1 で PM が書き直したときの誤り）。**design.md の 4 か所を「health が 200」に直した**（このラウンドと一緒に commit）。コードとテストは変えていない
 - Nit 2（health の宛先を `check.sh` の時点で決めるので、`lab.sh down` のあとは 127.0.0.1 に打って案内が合わない）: 読んで確かめた。`up.sh:16-18` と `check.sh:95-96` が同じ `ip -o -4 addr show` で別々に判定している。lab を落とした状態の `check.sh` は想定外の使い方で、誤るのは案内の文だけ。直さない。最終報告に載せる
 - 未解消の Must fix / Should fix: 無し。cold reviewer 2 回目まで通ったので、サイクル完了（HTML と BACKLOG はこのあと）
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261008-cycle-009-local-compose-followups-review.html -->

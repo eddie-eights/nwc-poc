@@ -136,3 +136,5 @@ Mac では Splunk のイメージが amd64 だけで起動しないので、**Sp
 5. 43 / 44 / 51（Splunk の応答そのもの）は入れない。WSL でユーザーが Splunk を上げたときに別のサイクルで見る
 6. **Splunk の healthcheck（`/sbin/checkstate.sh`）が WSL で healthy になるかは未確認**（Mac では Splunk が amd64 のエミュレーションになる）。上流のイメージの HEALTHCHECK と `IaC/terraform/aws-managed/pipeline/analytics/splunk.tf` と同じコマンドなので受かる見込みだが、外れると `up.sh` が最長 `start_period 10m + 15s × 5` 止まったあと `dependency failed to start` で失敗し、`spark-splunk` が `Created` のまま残る（README に書いた）。WSL の初回の `up.sh` で `docker compose ps` の health と所要時間を記録し、healthy にならなければ `start_period` か healthcheck の形を直す
 7. `docker compose config --environment` の無い古い compose では `check.sh` と `lab.sh` が止まる（汎用の文言で案内）。使える最小の版は未確認（v5.1.3 にはある）。改行を含む値は読み違える（値は 1 行に限る）
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261008-cycle-009-local-compose-followups-design.html -->
