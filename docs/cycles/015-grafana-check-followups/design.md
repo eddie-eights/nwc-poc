@@ -177,3 +177,4 @@ PM の判断（2026-10-09。Round 1 のセルフレビューの D2・D8）: 9-2 
 6. **012 との衝突。** 012 は `ops/up.sh` と `oss/ops/up.sh` の MDT の行を消す。9-2 と `:464` に近ければ衝突するので、マージで解き、`test_oss_ops.py` の通しを取り直す
 7. **AWS では確かめない**（PM の指示）。実物で確かめるのは手元の Grafana 13.2.2 だけ
 8. **9-2 で terraform が読めなくても up.sh は 0 で終わる。** 黄色の警告は 9-2 と最後に出るが、終了コードだけを見る呼び出し元は Grafana を確かめていないことに気付かない（9-2 の NG・未確認と同じ扱い）。`tf_output` の赤い `NG:` の行が出ても止まらないので、読む人には「止まった」と見えるかもしれない。続けて黄色の警告で「確かめていない」と言う
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261009-cycle-015-grafana-check-followups-design.html -->
