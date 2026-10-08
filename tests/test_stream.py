@@ -276,6 +276,8 @@ check("up.sh は base/core の state に古い Telegraf の SG（telegraf、2026
       all(f"""grep -qxF 'aws_security_group.workload["{k}"]'""" in _up and _up.index(f"""'aws_security_group.workload["{k}"]'""") < _up.index('log "1. ECR リポジトリ')
           for k in ("telegraf", "telegraf_dialin"))
       and _up.count('[ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ] && { tf_init pipeline/stream;') >= 2)
+check("stream は base/core の state に gnmic の SG が無ければ（cycle 013 より前の state）apply の前に止める（remote_state の postcondition が見るキーが gnmic）",
+      'condition     = can(self.outputs.security_group_ids["gnmic"])' in _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "locals.tf"))
 _down = _read("ops", "down.sh")
 check("down.sh は stream の必須変数（gnmi_targets）に形だけ合う値を渡して destroy する（variables.tf の形の検査と同じ。snmp_agents は cycle 013 で無くした）",
       re.search(r"destroy_root pipeline/stream -var 'gnmi_targets=\"[0-9.]+:57400\"'$", _down, re.M) is not None and "snmp_agents" not in _down)
@@ -419,6 +421,30 @@ check("gnmic の Dockerfile: 公式イメージ（版は ARG GNMIC_VERSION）に
 check("gnmic.sh の既定の置き場はイメージの COPY 先と同じ（/etc/gnmic/gnmic.yaml.in、書くのは /tmp）。run は render のあと gnmic を exec する",
       "TEMPLATE=${GNMIC_TEMPLATE:-/etc/gnmic/gnmic.yaml.in}" in _read("app", "gnmic", "gnmic.sh") and "CONF=${GNMIC_CONF:-/tmp/gnmic.yaml}" in _read("app", "gnmic", "gnmic.sh")
       and re.search(r'run\)\n\s*render\n\s*exec /app/gnmic --config "\$CONF" subscribe\n', _read("app", "gnmic", "gnmic.sh")) is not None)
+
+
+def _gnmic_get(*paths):
+    """gnmic.sh get を偽の gnmic（引数を 1 行ずつ出す）で回す。(終了コード, 標準出力の行, 標準エラー, 期待する --config 以下の頭)"""
+    with tempfile.TemporaryDirectory() as d:
+        fake, sh, conf = os.path.join(d, "gnmic"), os.path.join(d, "gn"), os.path.join(d, "gnmic.yaml")
+        with open(fake, "w", encoding="utf-8") as f:
+            f.write('#!/bin/sh\nfor a in "$@"; do echo "$a"; done\n')
+        os.chmod(fake, 0o755)
+        with open(sh, "w", encoding="utf-8") as f:
+            f.write(_read("app", "gnmic", "gnmic.sh").replace("exec /app/gnmic ", f"exec {fake} "))
+        e = dict(_GNMIC_ENV, PATH=os.environ.get("PATH", "/usr/bin:/bin"), GNMIC_TEMPLATE=os.path.join(GNMIC_DIR, "gnmic.yaml.in"), GNMIC_CONF=conf)
+        p = subprocess.run(["sh", sh, "get", *paths], env=e, capture_output=True, text=True)
+        return p.returncode, p.stdout.splitlines(), p.stderr, ["--config", conf, "get", "--type", "STATE", "--format", "event"]
+
+
+_get_state = [p for k in ("interface_state", "bgp_neighbor", "isis_interface") for p in _GSUBS[k][0]]
+_grc, _gout, _gerr, _ghead = _gnmic_get()
+_grc2, _gout2, _gerr2, _ghead2 = _gnmic_get("/system/name", "/interface[name=mgmt0]/oper-state")
+check("gnmic.sh get（gn get。stream の output gnmic_exec_command）: 設定を作り（render の出力は標準エラーへ）、gnmic get --type STATE --format event を 1 回打つ。"
+      "パスを渡さなければ状態の 4 つ（subscribe の interface_state / bgp_neighbor / isis_interface と同じパス）、渡せばそれだけ。標準出力は gnmic の出力だけで、資格情報の値を出さない",
+      len(_get_state) == 4 and _grc == 0 and _gout == _ghead + [a for p in _get_state for a in ("--path", p)]
+      and _grc2 == 0 and _gout2 == _ghead2 + ["--path", "/system/name", "--path", "/interface[name=mgmt0]/oper-state"]
+      and not any(v in _gerr + _gerr2 + "".join(_gout + _gout2) for v in ("fake-gnmi-pass", "fake-sasl-pass")))
 
 # ---- Kafbat UI（IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf。2026-10-05）: MSK の画面。見るだけにせず、画面からトピックを足せる。stream を作る回はいつも作る。
 # cycle 010（2026-10-08 のユーザー決定）から ECS のタスクと Cloud Map をやめ、Web の EC2（base/core）の Docker で動く。stream は接続先を SSM のパラメータに書き、

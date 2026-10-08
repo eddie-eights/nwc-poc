@@ -1093,6 +1093,10 @@ check("oss/ops/up.sh は analytics に http_send と Spark の 1 回に読む件
       '-var "http_send=$HTTP_SEND"' in _an and '-var "max_offsets_per_trigger=' in _an and '-var "max_offsets_per_trigger_by_sink=' in _an
       and '-var "telegraf_az_num=$TELEGRAF_AZ_NUM"' in up and "-var gnmi_targets_from_nautobot=true" in up
       and not any(w in up for w in ("dialin_targets_from_nautobot", "snmp_agents", "snmp_poll=", "--snmp-agents")))
+check("oss/ops/up.sh は base/core の state に古い取りにいく側の Telegraf の SG（telegraf_dialin、2026-10-09 より前）があり stream が残っていれば、ECR より前に止める"
+      "（マネージド版の ops/up.sh と同じ守り。SG のキーを変えると作り直しで、付けたままでは消せない）",
+      0 <= pos("""grep -qxF 'aws_security_group.workload["telegraf_dialin"]'""") < pos('log "1. ECR リポジトリ')
+      and '[ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ] && { tf_init pipeline/stream;' in up and "先に oss/ops/down.sh で消す" in up)
 _spark_tf = read("IaC/terraform/oss/pipeline/analytics/spark.tf")
 check("Spark のサービスは Terraform では 0 台で作り（desired_count = 0、あとの変更は見ない）、up.sh が OpenSearch・VictoriaMetrics・Splunk を待ったあとで 1 台にする",
       re.search(r"^\s*desired_count\s*=\s*0$", _spark_tf, re.M) and "ignore_changes = [desired_count]" in _spark_tf
