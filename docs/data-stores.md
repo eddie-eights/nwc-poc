@@ -293,7 +293,7 @@ Telegraf・Spark が「どのブローカーにつなぐか」をどう知るか
 
 1. タスクの環境変数 `KAFKA_BROKERS`（同じ root の MSK の SCRAM の口 `bootstrap_brokers_sasl_scram`）・`KAFKA_AUTH`（scram / none、既定 scram）と、ECS の secrets で受ける `GNMI_TARGETS`（SSM の `/<prefix>/gnmic/<lab か nautobot>/gnmi-targets`）・`GNMI_USERNAME` / `GNMI_PASSWORD`（SSM の SecureString `/<prefix>/gnmic/gnmi-username`・`gnmi-password`）・`KAFKA_SASL_USER` / `KAFKA_SASL_PASS`（Secrets Manager の `AmazonMSK_<prefix>-collectors`）を確かめる。購読先の形が違う・同じ IP が 2 回ある・認証情報が無いときはそこで終わり、ECS がタスクを立て直す（ログに理由が出る）。
 2. `gnmic.yaml.in` の `__KAFKA_BROKERS__` と購読先（target の名前は IP）を埋めて `/tmp/gnmic.yaml` を作る。認証情報は設定に書かず、gnmic が設定を読むときに環境変数から入れる。出力は Kafka の 2 つ（状態の購読は `gnmi`、カウンターの購読は `metrics`）。`KAFKA_AUTH=none`（OSS 版と手元の compose）なら SASL と TLS の行を消す。
-3. Kafka の認証は SASL/SCRAM-SHA-512 だけで、タスクロール `<prefix>-gnmic-task` に Kafka の権限は無い。マネージドの MSK は IAM と SCRAM の併用なので、SCRAM のユーザーには Kafka の ACL が要る（cycle 012 の Round 2 の仕組みに乗せるまで、マネージドの gnmic は Kafka に書けない見込み。AWS では未確認）。
+3. Kafka の認証は SASL/SCRAM-SHA-512 だけで、タスクロール `<prefix>-gnmic-task` に Kafka の権限は無い。マネージドの MSK は IAM と SCRAM の併用なので、SCRAM のユーザーには Kafka の ACL が要る想定（`gnmi` / `metrics` の ACL は Spark が起動時に入れ、それまでマネージドの gnmic は Kafka に書けない見込み。AWS では未確認）。
 
 **IAM は 1 段。** タスクロールのポリシー `<prefix>-telegraf-task`（[telegraf.tf](../IaC/terraform/aws-managed/pipeline/stream/telegraf.tf)）は次の 2 文。前の `<prefix>-stream-produce` にあった `Bootstrap`（`ssm:GetParameter`）は要らなくなったので消した。
 

@@ -488,7 +488,7 @@ tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"
 # ---- 7-4b. 格納先が上がるのを待つ ---------------------------------------------------------
 # OpenSearch と VictoriaMetrics は ECS の healthCheck を持たないので、サービスが安定するのを待つ。Splunk は healthCheck があるので HEALTHY を待つ
 STORE_WARN=""
-AN_CLUSTER=$(tf pipeline/analytics output -raw analytics_cluster_name)
+AN_CLUSTER=$(tf_output pipeline/analytics analytics_cluster_name) || exit 1  # 9-2 の Grafana の確かめもこのクラスター
 log "7-4b. OpenSearch（3 台）と VictoriaMetrics（vmstorage / vminsert / vmselect）の ECS のサービスが安定するのを待つ"
 OS_SERVICES=$(tf pipeline/analytics output -json opensearch_service_names \
   | "${PY[@]}" -c 'import json, sys; print(" ".join(v for _, v in sorted(json.load(sys.stdin).items())))') \
@@ -595,9 +595,14 @@ aws logs tag-resource --region "$REGION" \
 
 # ---- 9-2. Grafana のアラートルール ----------------------------------------------------------
 # マネージド版と同じ（ops/up-common.sh の grafana_rules_step）。ルールは評価でエラーになってもアラートを出さず、画面でも Normal に見える（execErrState: KeepLast）。
-# OK でなくても止めない（警告を最後にもう一度出す）。あとから確かめ直すのは ops/check-grafana.sh --oss
+# OK でなくても止めない（警告を最後にもう一度出す）。あとから確かめ直すのは ops/check-grafana.sh --oss。サービスの名前（tf_output）が読めないか空のときも止めず、
+# 空の名前で aws ecs wait に進まずに、確かめていないと警告する（grafana_skip_warn）。クラスターは 7-4b の AN_CLUSTER（読めなければ 7-4b で止まっている）
 log "9-2. Grafana のアラートルールが評価でエラーになっていないかを確かめる（Web の EC2 から Grafana のルールの API を読む。最大 5 分）"
-grafana_rules_step "$INSTANCE_ID" "$AN_CLUSTER" "$(tf pipeline/analytics output -raw grafana_service_name)" "ops/check-grafana.sh --oss"
+if GF_SERVICE=$(tf_output pipeline/analytics grafana_service_name); then
+  grafana_rules_step "$INSTANCE_ID" "$AN_CLUSTER" "$GF_SERVICE" "ops/check-grafana.sh --oss"
+else
+  grafana_skip_warn "ops/check-grafana.sh --oss"
+fi
 
 # ---- 配るコマンド ----------------------------------------------------------------------
 log "できた（${ROOTS}。OSS 版）。利用者に配るコマンド:"

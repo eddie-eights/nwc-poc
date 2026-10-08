@@ -87,7 +87,7 @@ log()
 if (svc, op) == ("sts", "get-caller-identity"):
     print("arn:aws:sts::123456789012:assumed-role/Admin/tester" if query == "Arn" else "123456789012")
 # ---- ここから oss/ops/up.sh が打つもの（6.）。送ったコマンドは在庫の cmds に残し、結果を聞かれたら Success と答える
-# （Grafana のルールの確かめは FAKE_GRAFANA=NG のとき Failed と答え、[標準出力, 標準エラー] を本物の --output text と同じくタブでつないで返す）
+# （Grafana のルールの確かめは FAKE_GRAFANA=NG / UNKNOWN のとき Failed と答え、[標準出力, 標準エラー] を本物の --output text と同じくタブでつないで返す）
 elif (svc, op) == ("ecr", "get-login-password"):
     print("fake-ecr-login")
 elif svc == "s3" and op in ("cp", "sync"):
@@ -101,12 +101,13 @@ elif (svc, op) == ("ssm", "send-command"):
 elif (svc, op) == ("ssm", "get-command-invocation"):
     sent = inv["cmds"][int(opt("--command-id")[len("cmd-"):]) - 1]
     if query == "Status":
-        print("Failed" if grafana_check(sent) and os.environ.get("FAKE_GRAFANA") == "NG" else "Success")
+        print("Failed" if grafana_check(sent) and os.environ.get("FAKE_GRAFANA") in ("NG", "UNKNOWN") else "Success")
     elif query == "StandardOutputContent":
         print(f'lab=active containers={os.environ.get("FAKE_LAB_NODES", "0")}' if "containers=" in sent
               else "判定: OK（4 本とも評価のエラーなし）" if grafana_check(sent) else "")
     elif query == "[StandardOutputContent,StandardErrorContent]" and grafana_check(sent):
-        print("nwc-opensearch/trap: health=ok\n判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap）\t")
+        print("判定: 未確認（300 秒待った。Grafana に届かない（URLError: timed out））\t" if os.environ.get("FAKE_GRAFANA") == "UNKNOWN"
+              else "nwc-opensearch/trap: health=ok\n判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap）\t")
     else:
         log({"unknown": "query " + str(query)}); fail("unknown query", 255)
 elif (svc, op) == ("ssm", "start-session"):
@@ -1437,12 +1438,112 @@ check("ops/up.sh（マネージド版）の workflow の待ちも 2 回までで
       and 'WF_WARN="workflow のワーカーのサービス' in _m85 and re.search(r'^WF_WARN=""$', _mup, re.M)
       and """if [ -n "$WF_WARN" ]; then printf '\\033[1;33m%s\\033[0m\\n' "$WF_WARN"; fi""" in _mup)
 _m92 = _mup[_mup.index("# ---- 9-2. Grafana"):_mup.index("# ---- 10. ポートフォワーディング")]
-check("ops/up.sh（マネージド版）も Grafana を立てたとき（GRAFANA）だけ、Runtime のロググループのあと（9-2）に同じ確かめを打ち、OK でなければ警告（GRAFANA_WARN）を最後にもう一度出す",
+check("ops/up.sh（マネージド版）も Runtime のロググループのあと（9-2）に同じ確かめを打ち、OK でなければ警告（GRAFANA_WARN）を最後にもう一度出す。"
+      "state の一覧は grep -q で見ない（先に抜けると terraform が SIGPIPE になり、pipefail で偽になる）",
       _mup.index("# ---- 9. Runtime") < _mup.index("# ---- 9-2. Grafana") and re.search(r'^GRAFANA_WARN=""$', _mup, re.M)
-      and 'if [ -n "$GRAFANA" ]; then' in _m92
-      and ('grafana_rules_step "$INSTANCE_ID" "$(tf pipeline/analytics output -raw analytics_cluster_name)" '
-           '"$(tf pipeline/analytics output -raw grafana_service_name)" ops/check-grafana.sh') in _m92
+      and not [l for l in _m92.splitlines() if "grep -q" in l and not l.lstrip().startswith("#")]
       and """if [ -n "$GRAFANA_WARN" ]; then printf '\\033[1;33m%s\\033[0m\\n' "$GRAFANA_WARN"; fi""" in _mup)
+
+# ---- ops/up.sh の 9-2 だけを bash で打つ（015 の 81・83）。terraform は偽物（state list は M92_DIR/state の中身、output は out-<名前>。
+# M92_EMPTY の出力は空、M92_FAIL の出力は rc=1、M92_STATE_FAIL=1 なら state list が rc=1）。grafana_rules_step は引数を出すだけ。
+# 最後に GRAFANA_WARN の値を出す（最後の再掲が出すのはこの値。黄色の 1 回目の表示だけでは入れたかどうか分からない）
+M92_DIR = os.path.join(TMP, "m92")
+os.makedirs(os.path.join(M92_DIR, "bin"))
+with open(os.path.join(M92_DIR, "bin", "terraform"), "w", encoding="utf-8") as f:
+    f.write("""#!/bin/sh
+echo "$*" >> "$M92_DIR/calls"
+case "$2 $3" in
+  "state list") [ -z "$M92_STATE_FAIL" ] || { echo "Error: Error acquiring the state lock" >&2; exit 1; }; cat "$M92_DIR/state"; exit $? ;;
+  "output -raw")
+    case ",$M92_FAIL," in *",$4,"*) echo "Error: Output \\"$4\\" not found" >&2; exit 1 ;; esac
+    case ",$M92_EMPTY," in *",$4,"*) exit 0 ;; esac
+    printf 'out-%s' "$4"; exit 0 ;;
+esac
+echo "fake terraform: unknown $*" >&2; exit 9
+""")
+os.chmod(os.path.join(M92_DIR, "bin", "terraform"), 0o755)
+def m92(state="", grafana="", left="", **env):
+    with open(os.path.join(M92_DIR, "state"), "w", encoding="utf-8") as f:
+        f.write(state)
+    open(os.path.join(M92_DIR, "calls"), "w").close()
+    script = ("set -euo pipefail\nREGION=ap-northeast-1; PREFIX=x-nwc-poc\n. ops/common.sh\n. ops/up-common.sh\n"
+              'grafana_rules_step() { echo "STEP $*"; }\n'
+              f'INSTANCE_ID=i-web; GRAFANA="{grafana}"; ANALYTICS_LEFT="{left}"\n' + _m92 + "printf 'WARN=[%s]\\nDONE\\n' \"$GRAFANA_WARN\"\n")
+    p = subprocess.run(["bash", "-c", script], cwd=ROOT, capture_output=True, text=True, timeout=120,
+                       env={"PATH": os.path.join(M92_DIR, "bin") + os.pathsep + os.environ["PATH"], "HOME": TMP, "M92_DIR": M92_DIR,
+                            "M92_EMPTY": "", "M92_FAIL": "", "M92_STATE_FAIL": "", **env})
+    with open(os.path.join(M92_DIR, "calls"), encoding="utf-8") as f:
+        return p, f.read().splitlines()
+_step = "STEP i-web out-analytics_cluster_name out-grafana_service_name ops/check-grafana.sh"
+_left_msg = "。今回は analytics を作らないが、前の回の Grafana が残っている"
+_st_gf = "aws_ecs_cluster.analytics\naws_ecs_service.grafana[0]\naws_ecs_service.opensearch[0]\n"
+_r = {k: m92(**a) for k, a in {
+    "made": dict(grafana="1", left="1", state=_st_gf),
+    "left": dict(left="1", state=_st_gf),
+    "left_nogf": dict(left="1", state="aws_ecs_cluster.analytics\naws_ecs_service.grafana_x\naws_ecs_service.opensearch[0]\n"),
+    "none": dict(state=_st_gf),
+    "left_big": dict(left="1", state="aws_ecs_service.grafana[0]\n" + "".join(f"aws_cloudwatch_log_group.x[{i}]\n" for i in range(200000))),
+    "empty": dict(grafana="1", M92_EMPTY="grafana_service_name"),
+    "left_empty": dict(left="1", state=_st_gf, M92_EMPTY="analytics_cluster_name"),
+    "fail": dict(grafana="1", M92_FAIL="analytics_cluster_name"),
+    "left_unread": dict(left="1", state=_st_gf, M92_STATE_FAIL="1"),
+}.items()}
+_an = "-chdir=IaC/terraform/aws-managed/pipeline/analytics"
+check("ops/up.sh の 9-2: Grafana を今回作る（GRAFANA）なら、state を見ずに analytics の出力のクラスターとサービスで grafana_rules_step を 1 回打つ",
+      _r["made"][0].returncode == 0 and _r["made"][0].stdout.count("STEP ") == 1 and _step in _r["made"][0].stdout and _left_msg not in _r["made"][0].stdout
+      and "WARN=[]\n" in _r["made"][0].stdout
+      and _r["made"][1] == [f"{_an} output -raw analytics_cluster_name", f"{_an} output -raw grafana_service_name"])
+check("ops/up.sh の 9-2（83）: 今回は analytics を作らない回（PIPELINE=0 など）でも、残った analytics（ANALYTICS_LEFT）の state に Grafana の ECS サービスがあれば、"
+      "見出しにそう書いて同じく打つ",
+      _r["left"][0].returncode == 0 and _step in _r["left"][0].stdout and _left_msg in _r["left"][0].stdout and "WARN=[]\n" in _r["left"][0].stdout
+      and _r["left"][1][0] == f"{_an} state list")
+check("ops/up.sh の 9-2（83）: 残った analytics に Grafana の ECS サービスが無ければ（aws_ecs_service.grafana[…] だけを見る）打たない。"
+      "analytics が残っていなければ state も見ない",
+      all(_r[k][0].returncode == 0 and "STEP" not in _r[k][0].stdout and "9-2." not in _r[k][0].stdout and _r[k][0].stdout.endswith("WARN=[]\nDONE\n")
+          for k in ("left_nogf", "none"))
+      and _r["left_nogf"][1] == [f"{_an} state list"] and _r["none"][1] == [])
+check("ops/up.sh の 9-2（83）: state の一覧が長くても（パイプの 64 KB を超えても）Grafana を見つける（grep -q だと terraform が SIGPIPE で落ち、pipefail で見落とす）",
+      _r["left_big"][0].returncode == 0 and _step in _r["left_big"][0].stdout and "WARN=[]\n" in _r["left_big"][0].stdout)
+_skip = ("IaC/terraform/aws-managed/pipeline/analytics の state か出力が読めない（上のエラー）ので、Grafana のアラートルールの評価を確かめていない"
+         "（Grafana のサービスが安定するのも待っていない）。確かめ直すのは ops/check-grafana.sh")
+check("ops/up.sh の 9-2（81）: analytics の出力（クラスターかサービスの名前）が空なら、どれのことかを言い（NG: の行）、止めずに（0）確かめていないと警告して先へ進む。"
+      "grafana_rules_step（aws ecs wait と確かめ）は打たない",
+      all(_r[k][0].returncode == 0 and f"NG: IaC/terraform/aws-managed/pipeline/analytics の出力 {n} が空" in _r[k][0].stderr
+          and "STEP" not in _r[k][0].stdout and _r[k][0].stdout.endswith("DONE\n") and f"WARN=[{_skip}]" in _r[k][0].stdout
+          for k, n in (("empty", "grafana_service_name"), ("left_empty", "analytics_cluster_name"))))
+check("ops/up.sh の 9-2（81）: analytics の出力が読めない（terraform output が rc≠0）なら、terraform のエラーを残し、止めずに（0）確かめていないと警告して先へ進む",
+      _r["fail"][0].returncode == 0 and 'Error: Output "analytics_cluster_name" not found' in _r["fail"][0].stderr
+      and "NG: IaC/terraform/aws-managed/pipeline/analytics の出力 analytics_cluster_name が読めない（上のエラー）" in _r["fail"][0].stderr
+      and "STEP" not in _r["fail"][0].stdout and _r["fail"][0].stdout.endswith("DONE\n") and f"WARN=[{_skip}]" in _r["fail"][0].stdout
+      and _r["fail"][1] == [f"{_an} output -raw analytics_cluster_name"])
+check("ops/up.sh の 9-2（83・D8）: 今回は analytics を作らない回で、残った analytics の state の一覧が読めない（state list が rc≠0）なら、黙って飛ばさず、"
+      "見出しにそう書いて、止めずに（0）確かめていないと警告する。出力は読まず、grafana_rules_step も打たない",
+      _r["left_unread"][0].returncode == 0 and "Error: Error acquiring the state lock" in _r["left_unread"][0].stderr
+      and "。今回は analytics を作らないが、前の回の analytics の state が読めない" in _r["left_unread"][0].stdout
+      and "STEP" not in _r["left_unread"][0].stdout and _r["left_unread"][0].stdout.endswith("DONE\n") and f"WARN=[{_skip}]" in _r["left_unread"][0].stdout
+      and _r["left_unread"][1] == [f"{_an} state list"])
+check("ops/up.sh の 9-2（81）: terraform が読めなくても up.sh を止めない（|| exit 1 を書かない。止めると配るコマンドと警告の再掲まで届かない。8-5 と同じ）",
+      "|| exit 1" not in _m92 and "grafana_skip_warn ops/check-grafana.sh" in _m92)
+
+# ---- 4 回目（81）: Grafana のサービスの名前の出力が空なら、9-2 は確かめずに警告して先へ進む（空の --services で ecs wait を打ったり、確かめを送ったりしない）
+p4, cs4, _ = run_up(inv3, {"FAKE_ECR_ALL": "1", "NO_DASHBOARD_PORTFORWARD": "1", "FAKE_TF_EMPTY": "grafana_service_name"})
+_skip_oss = ("IaC/terraform/oss/pipeline/analytics の state か出力が読めない（上のエラー）ので、Grafana のアラートルールの評価を確かめていない"
+             "（Grafana のサービスが安定するのも待っていない）。確かめ直すのは ops/check-grafana.sh --oss")
+check("oss/ops/up.sh（81）: 9-2 で analytics の出力 grafana_service_name が空なら、どれのことかを言い（NG: の行）、止めずに（0）確かめていないと警告して"
+      "配るコマンドまで進み、警告は最後にもう一度出す。ecs wait も確かめの送信も打たない",
+      p4.returncode == 0 and "9-2. Grafana のアラートルール" in p4.stdout and "利用者に配るコマンド" in p4.stdout
+      and "NG: IaC/terraform/oss/pipeline/analytics の出力 grafana_service_name が空" in p4.stderr
+      and (p4.stdout + p4.stderr).count(_skip_oss) == 2
+      and not [c for c in cs4 if grafana_sent(c)]
+      and not [c for c in cs4 if is_aws(c, "ecs", "wait") and ("" in multi_of(c["args"], "--services") or not multi_of(c["args"], "--services"))]
+      and not [c for c in cs4 if is_aws(c, "ecs", "wait", "grafana")])
+check("oss/ops/up.sh（81）: 7-4b の analytics のクラスターの名前も tf_output で読み、読めない・空なら 7-4b で止まる（9-2 もこのクラスター）。"
+      "9-2 のサービスの名前は読めなくても止めず、grafana_skip_warn で警告する",
+      "AN_CLUSTER=$(tf_output pipeline/analytics analytics_cluster_name) || exit 1" in up
+      and "if GF_SERVICE=$(tf_output pipeline/analytics grafana_service_name); then" in up
+      and 'grafana_skip_warn "ops/check-grafana.sh --oss"' in up
+      and "GF_SERVICE=$(tf_output pipeline/analytics grafana_service_name) || exit 1" not in up
+      and "tf pipeline/analytics output -raw analytics_cluster_name" not in up and "tf pipeline/analytics output -raw grafana_service_name" not in up)
 
 # ---- up.sh の作ったものを oss/ops/down.sh が消す（同じ在庫から）
 p, csd, invd = run_down("oss/ops/down.sh", "x", inv=inv3)
@@ -1544,14 +1645,24 @@ check("check-grafana.sh（--oss 無し）: マネージド版の IaC/terraform/a
       and [grafana_sent(c) for c in cs if is_aws(c, "ssm", "send-command")] == [("x-nwc-poc", True)])
 p, cs = run_check("--oss", extra={"FAKE_GRAFANA": "NG"})
 check("check-grafana.sh: NG なら 1 で終わり、判定の行と、理由を見る Grafana のログのコマンド（/ecs/x-nwc-oss-grafana の Failed to evaluate rule）を出す",
-      p.returncode == 1 and "判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap）" in p.stderr
+      p.returncode == 1 and "判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap）" in p.stdout + p.stderr
       and "aws logs tail /ecs/x-nwc-oss-grafana --region ap-northeast-1 --since 1h --filter-pattern '\"Failed to evaluate rule\"'" in p.stderr)
+p, cs = run_check("--oss", extra={"FAKE_GRAFANA": "UNKNOWN"})
+check("check-grafana.sh: 未確認（判定: 未確認。届かない・401・待ち切れ）なら 2 で終わり、判定の行を出す。評価のエラーとは限らないので Grafana のログは案内しない",
+      p.returncode == 2 and "判定: 未確認（300 秒待った。Grafana に届かない（URLError: timed out））" in p.stdout + p.stderr
+      and "Failed to evaluate rule" not in p.stdout + p.stderr)
 p, cs = run_check("--oss", extra={"FAKE_TF_EMPTY": "grafana_service_name"})
-check("check-grafana.sh: Grafana が無い（grafana_service_name が空）なら理由を言って止まり、確かめを送らない",
-      p.returncode != 0 and "Grafana が無い" in p.stderr and not aws_calls(cs, "ssm", "send-command"))
+check("check-grafana.sh: Grafana が無い（grafana_service_name が空）なら理由を言って 3 で止まり、確かめを送らない",
+      p.returncode == 3 and "Grafana が無い" in p.stderr and not aws_calls(cs, "ssm", "send-command"))
+p, cs = run_check("--oss", extra={"DEPLOY_ENV_FILE": os.path.join(TMP, "no-such.env")})
+check("check-grafana.sh: deploy.env の誤り（load_deploy_env の die）も 3 で止まる（ops/common.sh の die の 1 は NG と紛れる）",
+      p.returncode == 3 and "DEPLOY_ENV_FILE のファイルが無い" in p.stderr and not tf_calls(cs) and not [c for c in cs if c["cmd"] == "aws"])
+p, cs = run_check("--oss", extra={"SSM_RUN_WAIT": "0"})
+check("check-grafana.sh: SSM_RUN_WAIT の値の誤りも 3 で止まる（確かめを送らない）",
+      p.returncode == 3 and "SSM_RUN_WAIT は SSM Run Command の結果を待つ秒数" in p.stderr and not [c for c in cs if c["cmd"] == "aws"])
 p, cs = run_check("--yes")
-check("check-grafana.sh: 知らない引数は使い方を出して 2 で止まる（terraform と aws には触らない）",
-      p.returncode == 2 and "使い方" in p.stderr and not tf_calls(cs) and not [c for c in cs if c["cmd"] == "aws"])
+check("check-grafana.sh: 知らない引数は使い方を出して 3 で止まる（terraform と aws には触らない）",
+      p.returncode == 3 and "使い方" in p.stderr and not tf_calls(cs) and not [c for c in cs if c["cmd"] == "aws"])
 
 shutil.rmtree(TMP, ignore_errors=True)
 print(f"通過 {passed} / 失敗 0")

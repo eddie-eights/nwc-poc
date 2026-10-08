@@ -3,6 +3,9 @@
 # マネージド版の MSK の SCRAM の secret と KMS の鍵、Grafana のアラートルールの評価の確かめ）。ops/check-grafana.sh も Grafana のルールの確かめのために読む。
 # 先に ops/common.sh と ops/deploy-env.sh を読む（log / die / tf / tf_logged を使う）。Splunk のイメージは ops/lab-common.sh の dir_tag / ecr_has を使う。
 # REGION / PY / PREFIX / OWNER（s3tablescatalog は ACCOUNT_ID も）は呼ぶ前に決める。
+# 環境変数 SSM_RUN_WAIT（秒。既定 1800）は ssm_run が SSM Run Command の結果を待つ長さ（deploy.env のキーではない。docs/deploy.md）。読んだときに確かめる
+SSM_RUN_WAIT=${SSM_RUN_WAIT:-1800}
+[[ "$SSM_RUN_WAIT" =~ ^[1-9][0-9]*$ ]] || die "SSM_RUN_WAIT は SSM Run Command の結果を待つ秒数（1 以上の整数。既定 1800）。いまは「${SSM_RUN_WAIT}」"
 tf_init() {  # tf_init <ルート>
   tf_init_root "$1"  # ops/common.sh。OSS 版は -lockfile=readonly が付く
 }
@@ -18,6 +21,13 @@ tf_apply() {  # tf_apply <ルート> [-var 名前=値 …]
 has_resources() {  # has_resources <ルート>  state があり、リソースが 1 つ以上載っている（init 済みが前提）
   [ -f "$TF_DIR/$1/terraform.tfstate" ] && [ -n "$(tf "$1" state list 2>/dev/null)" ]
 }
+tf_output() {  # tf_output <ルート> <出力名>  出力を 1 つ読んで出す。読めない・空なら die（赤い NG: の行）。$( ) の中の die はサブシェルだけを抜けるので、
+  # 止めるかどうかは呼ぶ側が決める（止めるなら X=$(tf_output …) || exit 1、止めないなら if X=$(tf_output …); then …）
+  local v
+  v=$(tf "$1" output -raw "$2") || die "$TF_DIR/$1 の出力 $2 が読めない（上のエラー）"
+  [ -n "$v" ] || die "$TF_DIR/$1 の出力 $2 が空"
+  printf '%s' "$v"
+}
 wait_ssm_online() {  # wait_ssm_online <インスタンス ID>
   local i
   for i in $(seq 1 60); do
@@ -30,24 +40,32 @@ wait_ssm_online() {  # wait_ssm_online <インスタンス ID>
   done
   die "$1 が 10 分たっても Session Manager に Online にならない（docs/troubleshooting.md の「画面に入れない」）"
 }
-ssm_run() {  # ssm_run <インスタンス ID> <コマンド…>  cloud-init（user_data）が終わるのを待ってから打ち、標準出力を出す。失敗なら 1
+ssm_run() {  # ssm_run <インスタンス ID> <コマンド…>  cloud-init（user_data）が終わるのを待ってから打ち、標準出力を出す。失敗なら 1、SSM_RUN_WAIT 秒たっても結果が分からなければ 2
   # コマンドは JSON の文字列に埋めるので、ダブルクォートとバックスラッシュを含めない
   local id="$1"; shift
-  local cmd_id status
+  local cmd_id status deadline
   # 送れなければ 1 を返す（if や $( ) の中で呼ばれると set -e が効かず、空の cmd_id で下の Pending を待ち続ける。grafana_rules_step がそう呼ぶ）
   cmd_id=$(aws ssm send-command --region "$REGION" --instance-ids "$id" \
     --document-name AWS-RunShellScript --timeout-seconds 900 \
     --parameters "{\"commands\":[\"cloud-init status --wait >/dev/null || true\",\"$*\"]}" \
     --query Command.CommandId --output text) || { echo "SSM Run Command を送れなかった（上のエラー）" >&2; return 1; }
+  # 締め切りで返しても、インスタンスの上のコマンドは止めない（cancel-command は打たない。案内する get-command-invocation で結果を見る）
+  deadline=$((SECONDS + SSM_RUN_WAIT))
   while :; do
+    # 送った直後は get-command-invocation がまだ失敗することがある。そのあいだは「読めない」として読み直す
     status=$(aws ssm get-command-invocation --region "$REGION" --command-id "$cmd_id" --instance-id "$id" \
-      --query Status --output text 2>/dev/null || echo Pending)
+      --query Status --output text 2>/dev/null || echo 読めない)
     case "$status" in
       Success)
         aws ssm get-command-invocation --region "$REGION" --command-id "$cmd_id" --instance-id "$id" \
           --query StandardOutputContent --output text | sed '/^$/d'
         return 0 ;;
-      Pending|InProgress|Delayed) sleep 10 ;;
+      Pending|InProgress|Delayed|読めない)
+        if [ "$SECONDS" -ge "$deadline" ]; then
+          echo "SSM Run Command（$cmd_id）の結果が $SSM_RUN_WAIT 秒たっても分からない（最後の状態: $status）。あとで見るのは aws ssm get-command-invocation --region $REGION --command-id $cmd_id --instance-id $id（待つ秒数は SSM_RUN_WAIT）" >&2
+          return 2
+        fi
+        sleep 10 ;;
       *) aws ssm get-command-invocation --region "$REGION" --command-id "$cmd_id" --instance-id "$id" \
            --query '[StandardOutputContent,StandardErrorContent]' --output text >&2
          echo "インスタンス上のコマンドが $status" >&2
@@ -262,26 +280,44 @@ build_syslog_ng() {  # REG / PREFIX / SYSLOG_NG_TAG（dir_tag "$SYSLOG_NG_VERSIO
 }
 # Grafana のアラートルールは execErrState: KeepLast なので、評価がエラーでもアラートは出ず、ルールの health も ok のまま（008 で実測）。
 # エラーはルールの API の alerts[].state（「Normal (Error, KeepLast)」）にだけ出るので、Web の EC2 の上で ops/grafana_rules_check.py に読ませる
-# （Web と同じ環境変数と boto3 で、SSM の admin のパスワードを読む。値は出さない）。最後の行が「判定: OK / NG / 未確認 …」。OK なら 0、ほかは 1。PREFIX を使う
+# （Web と同じ環境変数と boto3 で、SSM の admin のパスワードを読む。値は出さない）。最後の行が「判定: OK / NG / 未確認 …」。PREFIX を使う。
+# ssm_run の出力（標準エラーも）を受けてから標準出力に出し、最後の「判定:」の行を GRAFANA_VERDICT に置く。返すのは ops/check-grafana.sh の終了コードと同じ
+# 0（OK）/ 1（NG: 評価がエラーのルールがある）/ 2（未確認: 判定: 未確認、判定の行が無い、SSM Run Command が送れない・失敗・締め切り）。表は docs/troubleshooting.md
 grafana_rules_check() {  # grafana_rules_check <Web のインスタンス ID>
-  ssm_run "$1" "echo $(base64 < ops/grafana_rules_check.py | tr -d '\n') | base64 -d | NAME_PREFIX=$PREFIX /usr/bin/python3.13 -"
+  local out rc=0
+  out=$(ssm_run "$1" "echo $(base64 < ops/grafana_rules_check.py | tr -d '\n') | base64 -d | NAME_PREFIX=$PREFIX /usr/bin/python3.13 -" 2>&1) || rc=$?
+  printf '%s\n' "$out"
+  # 失敗のときの ssm_run は標準出力と標準エラーをタブでつないで出すので、タブの手前まで
+  GRAFANA_VERDICT=$(printf '%s\n' "$out" | grep -o '判定: [^[:cntrl:]]*' | tail -1 || true)
+  case "$rc:$GRAFANA_VERDICT" in
+    "0:判定: OK"*) return 0 ;;
+    *":判定: NG"*) return 1 ;;
+  esac
+  return 2
 }
 grafana_rules_step() {  # grafana_rules_step <Web のインスタンス ID> <analytics の ECS のクラスター> <Grafana のサービス> <確かめ直すコマンド>
-  # ops/up.sh と oss/ops/up.sh の最後に打つ。OK でなければ GRAFANA_WARN に警告を入れて黄色で出す（up.sh は止めない。呼ぶ側が最後にもう一度出す）
-  local out verdict
+  # ops/up.sh と oss/ops/up.sh の最後に打つ。OK でなければ GRAFANA_WARN に警告を入れて黄色で出す（up.sh は止めない。呼ぶ側が最後にもう一度出す）。
+  # NG は評価のエラーの理由を見る Grafana のログを、未確認は確かめ直すコマンドを案内する（未確認は評価のエラーとは限らないので、ログは案内しない）
+  local rc=0
   GRAFANA_WARN=""
   # 打ち直しで Grafana のタスクが入れ替わる途中だと、Cloud Map の名前が前のタスクを指していることがある。入れ替わりが終わってから見る
   if ! aws ecs wait services-stable --region "$REGION" --cluster "$2" --services "$3"; then
     GRAFANA_WARN="Grafana のサービス（$3）が 10 分たっても安定しないので、アラートルールの評価を確かめていない。aws ecs list-tasks --region $REGION --cluster $2 --desired-status STOPPED を見て、直ったら $4"
-  elif out=$(grafana_rules_check "$1" 2>&1); then
-    printf '%s\n' "$out"
   else
-    printf '%s\n' "$out"
-    # 失敗のときの ssm_run は標準出力と標準エラーをタブでつないで出すので、タブの手前まで
-    verdict=$(printf '%s\n' "$out" | grep -o '判定: [^[:cntrl:]]*' | tail -1 || true)
-    GRAFANA_WARN="Grafana のアラートルールの評価を確かめた結果が OK ではない（${verdict:-判定の行が無い。上の出力}）。評価のエラーの理由は Grafana のログ（aws logs tail /ecs/$PREFIX-grafana --region $REGION --since 1h --filter-pattern '\"Failed to evaluate rule\"'）。直したら $4"
+    grafana_rules_check "$1" || rc=$?
+    case "$rc" in
+      0) ;;
+      1) GRAFANA_WARN="Grafana のアラートルールの評価を確かめた結果が OK ではない（$GRAFANA_VERDICT）。評価のエラーの理由は Grafana のログ（aws logs tail /ecs/$PREFIX-grafana --region $REGION --since 1h --filter-pattern '\"Failed to evaluate rule\"'）。直したら $4" ;;
+      *) GRAFANA_WARN="Grafana のアラートルールの評価を確かめられなかった（${GRAFANA_VERDICT:-判定の行が無い。上の出力}）。理由は上の出力。確かめ直すのは $4" ;;
+    esac
   fi
   if [ -n "$GRAFANA_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$GRAFANA_WARN"; fi
+}
+grafana_skip_warn() {  # grafana_skip_warn <確かめ直すコマンド>
+  # 9-2 で analytics の state の一覧か Grafana のクラスター・サービスの名前が読めないとき。止めず（最後の案内まで届かせる）、空の名前で aws ecs wait に進まず、
+  # 確かめていないことを GRAFANA_WARN に入れて黄色で出す（呼ぶ側が最後にもう一度出す）。どれが読めないかは、その前の terraform のエラーと tf_output の NG: の行
+  GRAFANA_WARN="$TF_DIR/pipeline/analytics の state か出力が読めない（上のエラー）ので、Grafana のアラートルールの評価を確かめていない（Grafana のサービスが安定するのも待っていない）。確かめ直すのは $1"
+  printf '\033[1;33m%s\033[0m\n' "$GRAFANA_WARN"
 }
 build_worker() {  # build_worker <タグ> [requirements のファイル名]  Temporal の worker（arm64）。OSS 版は requirements-oss.txt（neo4j のドライバー入り）
   docker buildx build --platform linux/arm64 --build-arg "REQUIREMENTS=${2:-requirements.txt}" -t "$REG/$PREFIX-worker:$1" --push -f docker/images/temporal/Dockerfile app/temporal/

@@ -81,7 +81,7 @@ Telegraf は機器から送られてくる SNMP trap を受ける（受ける側
 | 項目 | 状態 |
 |---|---|
 | gnmic は 1 タスク・1 AZ | 増やすと二重に書くので増やせない。止まっているあいだのカウンターは抜ける（状態は繋ぎ直したときに今の値を全部送り直す） |
-| gnmic の Kafka の ACL | マネージドの MSK は IAM と SCRAM の併用なので、SCRAM のユーザーには `gnmi` と `metrics` へ書く ACL が要る。cycle 012 の Round 2 の仕組みに乗せるまで、マネージドの gnmic は Kafka に書けない見込み（OSS 版は認証なしなので当たらない） |
+| gnmic の Kafka の ACL | マネージドの MSK は IAM と SCRAM の併用なので、SCRAM のユーザーには `gnmi` と `metrics` へ書く ACL が要る想定。Spark のジョブが起動時に `User:collectors`（syslog-ng・GoFlow2 と同じユーザー）へ入れる（cycle 012 の `ensure_acls`）。それまでの値を gnmic は捨てるので、on-change の購読の直後の今の状態は Kafka に残らない。AWS では未確認（OSS 版は認証なしなので当たらない） |
 | gnmic を ECS で動かした記録 | まだ無い（AWS では未確認。手元の docker と compose だけ） |
 | MDT の受け口 | 2026-10-08（cycle 012）に外した。本番の Cisco の MDT を受けるなら戻す（[collection.md](../../collection.md)） |
 

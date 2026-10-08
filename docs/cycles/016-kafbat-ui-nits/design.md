@@ -112,3 +112,4 @@ AWS では確かめない（docs・コメント・tests だけ）。
 - 8-3 は `if` の中の `run_on_instance` 行の有無と `fi` の数を見るだけで、7-5 のように行を包む変異（関数で包むなど）は落とせない。c4c378a の tests も同じで、このサイクルでは広げない（次の候補）。
 - `docs/troubleshooting.md` の表の行を小節に移すと、`tests/` に表の行の文言を見る検査があれば落ちる。実装の最初に `grep -rn 'Kafbat UI のポートフォワード\|mask --runtime' tests/` で確かめ、あれば小節の文言に合わせる。
 - 012（`feat/collectors-scram-syslog-goflow`）が `docs/deploy.md` / `docs/troubleshooting.md` / `ops/up.sh` / `tests/test_stream.py` / `docs/development.md` / `docs/pipeline.md` を触っている。PM の指示で、エンジニア2 が `docs/cycle-006-design`（5be0288。012 のマージ後）を `fix/kafbat-ui-nits` へマージし、両方の中身を残して衝突を解いた（衝突は `docs/deploy.md` / `docs/development.md` / `ops/up.sh`。結果は build.md の「012 のマージ」）。マージ後も 8-3 / 7-5 の節はこの検査に合い、変異 (a)〜(c)・(o1)〜(o7)・(p1) の落ち方はマージ前と同じだった。
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261009-cycle-016-kafbat-ui-nits-design.html -->

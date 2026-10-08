@@ -175,6 +175,11 @@ check("conf.in のバッククォートは KAFKA_SASL_USER と KAFKA_SASL_PASS �
 check("conf.in の区間の印は 1 組（render の sed が見る形: 行頭の # >>> / # <<< kafka_auth scram）",
       len(re.findall(r"^# >>> kafka_auth scram$", conf_in, re.M)) == 1 and len(re.findall(r"^# <<< kafka_auth scram$", conf_in, re.M)) == 1)
 check("conf.in の @version は 4.x（AxoSyslog 4 の書き方）", re.match(r"@version: 4\.\d+\n", conf_in) is not None)
+# MSK の ACL が入るまで（Spark の ensure_acls）は Topic authorization failed で書けない想定（AWS の文書から。MSK では未確認）。その間メッセージを捨てずに持つのは
+# この既定で測った（docs/cycles/012-msk-scram-syslog-ng-goflow2/build.md の Round 2）。キューや再送を変えるなら測り直す
+check("Kafka の宛先のキューと再送は既定のまま（log-fifo-size / retries / time-reopen / disk-buffer / librdkafka の待ちと再送を指定しない。cycle 012 Round 2）",
+      not any(k in conf_in for k in ("log-fifo-size(", "retries(", "time-reopen(", "disk-buffer(", "flush-lines(", "message.timeout.ms",
+                                     "delivery.timeout.ms", "message.send.max.retries", "retries\" =>", "queue.buffering")))
 check("syslog-ng 自身のログは notice 以上を標準出力へ（ECS のロググループ）",
       re.search(r"source \{ internal\(\); \};\s*filter \{ level\(notice\.\.emerg\); \};\s*destination\(d_self\);", conf_in) is not None
       and 'file("/dev/stdout"' in conf_in)

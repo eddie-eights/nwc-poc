@@ -1084,6 +1084,7 @@ check("ルールの確かめ: 401 / 403 は待たずに未確認（2。待って
 class _Rules(http.server.BaseHTTPRequestHandler):
     PW = "pw-" + "q9Z2" * 4   # 偽の値（手元の偽の Grafana が受け付けるパスワード）
     SEEN = []                 # (パス, Authorization が付いていたか)
+    PAGES = {}                # パス（クエリも）→ 返す本文か、本文を返す関数（ページ分けの確かめ）
 
     def do_GET(self):
         import base64
@@ -1093,8 +1094,15 @@ class _Rules(http.server.BaseHTTPRequestHandler):
             return
         ok = self.headers.get("Authorization") == "Basic " + base64.b64encode(f"admin:{self.PW}".encode()).decode()
         rules = "/api/prometheus/grafana/api/v1/rules"
-        code, body = ((200, json.dumps(gbody(grule("a", "Normal")))) if self.path == rules
-                      else (200, "[]") if self.path == "/list" + rules else (404, "{}")) if ok else (401, "{}")
+        if ok and self.path.startswith("/endless" + rules):   # 毎回違うトークンを返す（終わらない）
+            page = {"status": "success", "data": {"groups": [], "groupNextToken": f"n{len(self.SEEN)}"}}
+        else:
+            page = self.PAGES.get(self.path) if ok else None
+        if page is not None:
+            code, body = 200, json.dumps(page() if callable(page) else page)
+        else:
+            code, body = ((200, json.dumps(gbody(grule("a", "Normal")))) if self.path == rules
+                          else (200, "[]") if self.path == "/list" + rules else (404, "{}")) if ok else (401, "{}")
         self.send_response(code); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(body.encode())
 
     def log_message(self, *a):
@@ -1128,18 +1136,97 @@ try:
         _list = None
     except ValueError as e:
         _list = e
+
+    # ページ分け（groupNextToken）。13.2.3 の既定は group_limit=-1 なので来ない。来たときのための道を、偽の Grafana が 2 ページ返す形で縛る
+    _RP, _r = "/api/prometheus/grafana/api/v1/rules", [0]
+
+    def _p1():   # 読むたびに評価が 1 回進む
+        _r[0] += 1
+        return {"status": "success", "data": {"groups": [{"name": "g1", "rules": [grule("a", "Normal", evaluated=f"2026-10-08T14:{_r[0]:02}:00Z")]}],
+                                              "groupNextToken": "t/1+="}}
+
+    def _p2(state):
+        return lambda: {"status": "success", "data": {"groups": [{"name": "g2", "rules": [grule("b", state, evaluated=f"2026-10-08T14:{_r[0]:02}:00Z")]}]}}
+
+    def _p1e():   # 1 ページ目は _p1 と同じで、トークンだけ違う（2 ページ目が status: error を返す形）
+        body = _p1()
+        body["data"]["groupNextToken"] = "e"
+        return body
+
+    def _grc_run(base, wait):   # 時計は偽（sleep の秒だけ進む）。wait=30 なら 4 回読む
+        o, t = io.StringIO(), [0.0]
+        with contextlib.redirect_stdout(o):
+            rc = grc.check(grc.make_fetch(_url + base, _Rules.PW), wait, clock=lambda: t[0], sleep=lambda s: t.__setitem__(0, t[0] + s))
+        return rc, o.getvalue().splitlines()
+
+    _Rules.PAGES.update({"/paged" + _RP: _p1, "/paged" + _RP + "?group_next_token=t%2F1%2B%3D": _p2("Normal")})
+    _Rules.SEEN.clear()
+    _pg = grc.make_fetch(_url + "/paged", _Rules.PW)()
+    _pg_seen = list(_Rules.SEEN)
+    _pg_ok = _grc_run("/paged", 30)
+    _Rules.PAGES["/paged" + _RP + "?group_next_token=t%2F1%2B%3D"] = _p2("Normal (Error, KeepLast)")
+    _pg_ng = _grc_run("/paged", 30)
+    _Rules.PAGES.update({"/loop" + _RP: {"status": "success", "data": {"groups": [{"name": "g1", "rules": [grule("a", "Normal")]}],
+                                                                       "groupNextToken": "same"}},
+                         "/loop" + _RP + "?group_next_token=same": {"status": "success", "data": {"groups": [], "groupNextToken": "same"}},
+                         "/dataarr" + _RP: {"status": "success", "data": ["x"]},
+                         "/tokint" + _RP: {"status": "success", "data": {"groups": [], "groupNextToken": 5}},
+                         "/nostatus" + _RP: {},
+                         "/grpdict" + _RP: {"status": "success", "data": {"groups": {"g": 1}}},
+                         "/p2err" + _RP: _p1e,
+                         "/p2err" + _RP + "?group_next_token=e": {"status": "error", "errorType": "server_error", "error": "boom"}})
+    _p2err = _grc_run("/p2err", 30)
+    _Rules.SEEN.clear()
+    _loop = _grc_run("/loop", 0)
+    _loop_seen = list(_Rules.SEEN)
+    _Rules.SEEN.clear()
+    try:
+        grc.make_fetch(_url + "/endless", _Rules.PW)()
+        _endless = None
+    except ValueError as e:
+        _endless = e
+    _endless_n = len(_Rules.SEEN)
+    _endless_run = _grc_run("/endless", 0)
+    _odd = []
+    for _base in ("/dataarr", "/tokint", "/nostatus", "/grpdict"):
+        try:
+            grc.make_fetch(_url + _base, _Rules.PW)()
+            _odd.append(None)
+        except ValueError as e:
+            _odd.append(str(e))
+    _dataarr = _grc_run("/dataarr", 0)
 finally:
     _srv.shutdown()
     for k, v in _saved.items():
         os.environ.pop(k) if v is None else os.environ.__setitem__(k, v)
 check("ルールの確かめ: make_fetch は admin の Basic 認証でルールの API を読み（環境変数のプロキシは通さない）、401 は Unauthorized にする。"
       "パスワードは例外の文にも出力にも出さない",
-      _got == gbody(grule("a", "Normal")) and isinstance(_401, grc.Unauthorized) and _401.__cause__ is None and _401.__suppress_context__
+      _got == {"data": gbody(grule("a", "Normal"))["data"]} and isinstance(_401, grc.Unauthorized) and _401.__cause__ is None and _401.__suppress_context__
       and _Rules.PW not in str(_401) and _rc401 == 2 and _Rules.PW not in _wrong.getvalue() and "HTTP 401" in _wrong.getvalue())
 check("ルールの確かめ: make_fetch はリダイレクト先に Authorization（パスワード）を送らない。JSON がオブジェクトでなければ ValueError（check が待って読み直す）",
       isinstance(_moved, grc.Unauthorized)
       and _moved_seen == [("/moved/api/prometheus/grafana/api/v1/rules", True), ("/api/prometheus/grafana/api/v1/rules", False)]
       and isinstance(_list, ValueError) and "list" in str(_list))
+check("ルールの確かめ（ページ分け）: data.groupNextToken があれば group_next_token（URL エンコードする）で次のページを読み、グループをつなぐ。"
+      "どのページにも Authorization を付け、group_limit は送らない（13.2.3 の既定 -1 は全部を 1 ページで返す）",
+      [g["name"] for g in _pg["data"]["groups"]] == ["g1", "g2"] and [r["name"] for g in _pg["data"]["groups"] for r in g["rules"]] == ["a", "b"]
+      and _pg_seen == [("/paged" + _RP, True), ("/paged" + _RP + "?group_next_token=t%2F1%2B%3D", True)]
+      and "group_limit" not in read("ops", "grafana_rules_check.py").split('"""', 2)[2])
+check("ルールの確かめ（ページ分け）: 判定は全部のページのルールで出す（2 ページ目のルールだけがエラーでも NG。1 ページ目だけなら OK になる形）",
+      _pg_ok[0] == 0 and _pg_ok[1][-1] == "判定: OK（2 本とも評価のエラーなし）" and [l.split(":")[0] for l in _pg_ok[1][:-1]] == ["g1/a", "g2/b"]
+      and _pg_ng[0] == 1 and _pg_ng[1][-1] == "判定: NG（2 本のうち 1 本の評価がエラー: g2/b）")
+check("ルールの確かめ（ページ分け）: 同じ groupNextToken が 2 回来たら読めなかったとして扱い、待ち切れたら未確認（2）。読んだのは 2 ページだけ",
+      _loop == (2, ["判定: 未確認（0 秒待った。Grafana のルールの API が読めない（ValueError: groupNextToken が繰り返された（same）））"])
+      and _loop_seen == [("/loop" + _RP, True), ("/loop" + _RP + "?group_next_token=same", True)])
+check("ルールの確かめ（ページ分け）: トークンが毎回変わって終わらなければ 100 ページ（最初の 1 ページを含めて 100 回読む）で止めて未確認（2）。"
+      "data がオブジェクトでない・トークンが文字列でない・status が success でない・data.groups が配列でないも ValueError で未確認（落ちない）",
+      isinstance(_endless, ValueError) and str(_endless) == "ページが 100 を超えた（groupNextToken が終わらない）" and _endless_n == 100
+      and _endless_run[0] == 2 and _endless_run[1][-1].endswith("（ValueError: ページが 100 を超えた（groupNextToken が終わらない）））")
+      and _odd == ["data が JSON のオブジェクトでない（list）", "groupNextToken が文字列でない（int）",
+                   "status が success でない（status=None）", "data.groups が配列でない（dict）"]
+      and _dataarr == (2, ["判定: 未確認（0 秒待った。Grafana のルールの API が読めない（ValueError: data が JSON のオブジェクトでない（list）））"]))
+check("ルールの確かめ（ページ分け）: 2 ページ目が 200 で status: error を返し続けたら、1 ページ目のルールだけで OK にせず、待ち切れたら未確認（2）",
+      _p2err == (2, ["判定: 未確認（30 秒待った。Grafana のルールの API が読めない（ValueError: status が success でない（status='error', error=boom）））"]))
 
 _seen, _gout = {}, io.StringIO()
 _orig = (grc.load_web_env, grc.admin_password, grc.make_fetch, grc.check)
@@ -1197,6 +1284,11 @@ if a[:2] == ["ssm", "send-command"]:
 if a[:2] == ["ssm", "get-command-invocation"]:
     if a[a.index("--command-id") + 1] != "cmd-1":
         print("An error occurred (ValidationException)", file=sys.stderr); sys.exit(254)
+    # G_INV_FAIL=<n>: 最初の n 回は読めない（送った直後の InvocationDoesNotExist）
+    with open(os.path.join(d, "calls.jsonl"), encoding="utf-8") as f:
+        n = sum(1 for line in f if '"get-command-invocation"' in line)
+    if n <= int(os.environ.get("G_INV_FAIL", "0")):
+        print("An error occurred (InvocationDoesNotExist)", file=sys.stderr); sys.exit(254)
     out = os.environ["G_OUT"]
     if q == "Status":
         print(os.environ["G_STATUS"])
@@ -1216,9 +1308,17 @@ REGION=ap-northeast-1; PREFIX=x-nwc-poc
 grafana_rules_step i-web cl-an svc-grafana "ops/check-grafana.sh"
 printf 'WARN=[%s]\n' "$GRAFANA_WARN"
 '''
+# grafana_rules_check だけを呼ぶ版（終了コードと GRAFANA_VERDICT。ops/check-grafana.sh はこの終了コードで終わる）
+_GCHK = r'''set -euo pipefail
+REGION=ap-northeast-1; PREFIX=x-nwc-poc
+. ops/common.sh
+. ops/up-common.sh
+rc=0; grafana_rules_check i-web || rc=$?
+printf 'RC=%s VERDICT=[%s]\n' "$rc" "$GRAFANA_VERDICT"
+'''
 
 
-def gstep(**env):
+def gstep(script=_GSTEP, **env):
     """(終了コード か None（20 秒で終わらない）, 出力, 送ったコマンド か None, aws の呼び出し)"""
     with tempfile.TemporaryDirectory() as d:
         os.makedirs(os.path.join(d, "bin"))
@@ -1227,15 +1327,15 @@ def gstep(**env):
                 f.write(body)
             os.chmod(os.path.join(d, "bin", name), 0o755)
         try:
-            r = subprocess.run(["bash", "-c", _GSTEP], cwd=ROOT, capture_output=True, text=True, timeout=20,
+            r = subprocess.run(["bash", "-c", script], cwd=ROOT, capture_output=True, text=True, timeout=20,
                                env=dict({"PATH": os.path.join(d, "bin") + os.pathsep + os.environ["PATH"], "GDIR": d, "G_OUT": "", "G_STATUS": "Success"}, **env))
             rc, out = r.returncode, r.stdout + r.stderr
         except subprocess.TimeoutExpired:
             rc, out = None, ""
         p = os.path.join(d, "params.json")
         sent = json.load(open(p, encoding="utf-8"))["commands"] if os.path.exists(p) else None
-        with open(os.path.join(d, "calls.jsonl"), encoding="utf-8") as f:
-            calls = [json.loads(line) for line in f]
+        c = os.path.join(d, "calls.jsonl")
+        calls = [json.loads(line) for line in open(c, encoding="utf-8")] if os.path.exists(c) else []
         return rc, out, sent, calls
 
 
@@ -1260,9 +1360,50 @@ check("9-2: Grafana のサービスが安定しなければ確かめを送らず
       _s_un[0] == 0 and _s_un[2] is None and "Grafana のサービス（svc-grafana）が 10 分たっても安定しないので" in _s_un[1]
       and "--cluster cl-an --desired-status STOPPED" in _s_un[1])
 _s_sf = gstep(G_SEND_FAIL="1")
-check("9-2: SSM Run Command を送れなければ、待ち続けずに（set -e の効かない $( ) の中でも ssm_run が 1 を返す）判定の行が無い旨の警告を出す",
-      _s_sf[0] == 0 and "SSM Run Command を送れなかった" in _s_sf[1] and "（判定の行が無い。上の出力）" in _s_sf[1]
+check("9-2: SSM Run Command を送れなければ、待ち続けずに（set -e の効かない $( ) の中でも ssm_run が 1 を返す）未確認の警告（判定の行が無い。ログの案内なし）を出す",
+      _s_sf[0] == 0 and "SSM Run Command を送れなかった" in _s_sf[1]
+      and "WARN=[Grafana のアラートルールの評価を確かめられなかった（判定の行が無い。上の出力）。理由は上の出力。確かめ直すのは ops/check-grafana.sh]" in _s_sf[1]
+      and "Failed to evaluate rule" not in _s_sf[1]
       and not [c for c in _s_sf[3] if c[:2] == ["ssm", "get-command-invocation"]])
+_s_uk = gstep(G_STATUS="Failed", G_OUT="判定: 未確認（300 秒待った。Grafana に届かない（URLError: timed out））")
+check("9-2: 判定が未確認なら、確かめられなかった旨（判定の行。タブの手前まで）と確かめ直すコマンドを警告に入れる。評価のエラーとは限らないので Grafana のログは案内しない",
+      _s_uk[0] == 0
+      and "WARN=[Grafana のアラートルールの評価を確かめられなかった（判定: 未確認（300 秒待った。Grafana に届かない（URLError: timed out）））。理由は上の出力。確かめ直すのは ops/check-grafana.sh]" in _s_uk[1]
+      and "Failed to evaluate rule" not in _s_uk[1] and "aws logs tail" not in _s_uk[1])
+# grafana_rules_check の終了コード（ops/check-grafana.sh の 0 / 1 / 2）。判定の行と SSM の状態の組み合わせ
+_gc = {k: gstep(_GCHK, **e) for k, e in {
+    "ok": dict(G_OUT="判定: OK（4 本とも評価のエラーなし）"),
+    "ng": dict(G_STATUS="Failed", G_OUT="判定: NG（4 本のうち 1 本の評価がエラー: g/a）"),
+    "unknown": dict(G_STATUS="Failed", G_OUT="判定: 未確認（0 秒待った。Grafana のルールの API が 401（admin のパスワードが Grafana と SSM で違う））"),
+    "noverdict": dict(G_STATUS="Failed", G_OUT="Traceback (most recent call last):"),
+    "okempty": dict(G_OUT=""),
+    "okwithoutok": dict(G_OUT="判定: 未確認（…）"),
+    "sendfail": dict(G_SEND_FAIL="1"),
+    "deadline": dict(G_STATUS="InProgress", SSM_RUN_WAIT="1"),
+}.items()}
+_gcr = {k: re.search(r"RC=(\d) VERDICT=\[(.*)\]", v[1]).groups() if v[0] == 0 and "RC=" in v[1] else None for k, v in _gc.items()}
+check("grafana_rules_check の終了コード: OK の判定で SSM も成功なら 0、NG の判定なら 1、未確認・判定の行が無い・送れないは 2。最後の判定の行を GRAFANA_VERDICT に置く",
+      _gcr == {"ok": ("0", "判定: OK（4 本とも評価のエラーなし）"), "ng": ("1", "判定: NG（4 本のうち 1 本の評価がエラー: g/a）"),
+               "unknown": ("2", "判定: 未確認（0 秒待った。Grafana のルールの API が 401（admin のパスワードが Grafana と SSM で違う））"),
+               "noverdict": ("2", ""), "okempty": ("2", ""), "okwithoutok": ("2", "判定: 未確認（…）"), "sendfail": ("2", ""), "deadline": ("2", "")})
+# ssm_run の締め切り（SSM_RUN_WAIT 秒。既定 1800）。偽の sleep は 0.05 秒なので、締め切りが無ければ 20 秒で切れる
+_s_dl = gstep(G_STATUS="InProgress", SSM_RUN_WAIT="1")
+check("ssm_run: InProgress のまま SSM_RUN_WAIT 秒を過ぎたら、待つのをやめて結果の見方（get-command-invocation）を出し、9-2 は未確認の警告にする",
+      _s_dl[0] == 0
+      and "SSM Run Command（cmd-1）の結果が 1 秒たっても分からない（最後の状態: InProgress）。あとで見るのは aws ssm get-command-invocation --region ap-northeast-1 --command-id cmd-1 --instance-id i-web（待つ秒数は SSM_RUN_WAIT）" in _s_dl[1]
+      and "WARN=[Grafana のアラートルールの評価を確かめられなかった（判定の行が無い。上の出力）。理由は上の出力。確かめ直すのは ops/check-grafana.sh]" in _s_dl[1]
+      and not [c for c in _s_dl[3] if c[:2] == ["ssm", "cancel-command"]])
+_s_rf = gstep(G_INV_FAIL="100000", SSM_RUN_WAIT="1")
+check("ssm_run: get-command-invocation が読めないまま SSM_RUN_WAIT 秒を過ぎても同じく返す（最後の状態: 読めない）",
+      _s_rf[0] == 0 and "の結果が 1 秒たっても分からない（最後の状態: 読めない）" in _s_rf[1] and "確かめられなかった（判定の行が無い。上の出力）" in _s_rf[1])
+_s_r2 = gstep(G_INV_FAIL="2", G_OUT="判定: OK（4 本とも評価のエラーなし）")
+check("ssm_run: 送った直後に get-command-invocation が読めなくても、読めるまで読み直す（締め切りの中なら OK になる）",
+      _s_r2[0] == 0 and "WARN=[]" in _s_r2[1] and "分からない" not in _s_r2[1]
+      and [c[:2] for c in _s_r2[3]].count(["ssm", "get-command-invocation"]) == 4)
+_s_bad = {v: gstep(SSM_RUN_WAIT=v) for v in ("abc", "0", "-5", "01", "1.5")}
+check("SSM_RUN_WAIT が 1 以上の整数でなければ、ops/up-common.sh を読んだところで理由を言って止まる（aws には触らない）",
+      all(r[0] == 1 and f"SSM_RUN_WAIT は SSM Run Command の結果を待つ秒数（1 以上の整数。既定 1800）。いまは「{v}」" in r[1] and not r[3] for v, r in _s_bad.items()),
+      )
 
 # ---- SNS のトピック（土台）と受け手の配線
 atf = read("IaC", "terraform", "aws-managed", "base", "core", "alerts.tf")

@@ -278,7 +278,7 @@ variable "device_map" {
 }
 
 variable "metric_topics" {
-  description = "Kafka topics that carry metrics (Telegraf inputs.snmp and the common shape converted from the lab gNMI -> metrics, inputs.gnmi -> gnmi). Read by the iceberg, prometheus and splunk sinks"
+  description = "Kafka topics that carry metrics (gnmic: sampled counters -> metrics, on-change state -> gnmi). Read by the iceberg, prometheus and splunk sinks"
   type        = list(string)
   default     = ["metrics", "gnmi"]
 

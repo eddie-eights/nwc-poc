@@ -37,7 +37,7 @@ trap と syslog では性能の時系列は取れない（届くのはイベン�
 | syslog（5140/udp） | syslog-ng（`<prefix>-syslog-ng`。`app/syslog-ng/`） | `logs` |
 | NetFlow（2055/udp）・sFlow（6343/udp） | GoFlow2（`<prefix>-goflow2`） | `flows` |
 
-syslog-ng と GoFlow2 と gnmic は MSK の IAM 認証を話せないので、SASL/SCRAM（9096/tcp）で書く（gnmic の書き込みは、Kafka の ACL が入るまで通らない見込み。[pipeline.md](pipeline.md)）（資格情報の置き場は [pipeline.md](pipeline.md) の冒頭の箇条書き）。
+syslog-ng と GoFlow2 と gnmic は MSK の IAM 認証を話せないので、SASL/SCRAM（9096/tcp）で書く（Kafka の ACL は Spark が起動時に入れ、それまでは書けない見込み。[pipeline.md](pipeline.md)）（資格情報の置き場は [pipeline.md](pipeline.md) の冒頭の箇条書き）。
 
 **syslog の形は Telegraf のときと同じ（2026-10-08 に手元の docker で比べた）:** 同じ RFC5424 の 1 行
 
