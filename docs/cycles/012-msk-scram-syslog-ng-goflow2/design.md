@@ -169,3 +169,5 @@ commit は Round 2 で 1 つ以上。各 commit で `bash ops/check.sh` が `す
 11. **ACL の失敗でジョブが落ちる**: `createAcls` が決まって失敗する（権限が無い等）と、3 本のジョブが起動で落ち、起こし直しの上限（1 時間 5 回）を使い切る。黙って通すと収集器が書けないまま気付けないので、落とす方を採る。原因は stderr と `docs/troubleshooting.md`。`log_topics` から `logs` / `flows` を外すと、そのトピックは作られず ACL だけが入る（収集器は書けない。既定では両方ある）
 12. **ACL が入るまでの間**（数十分）: GoFlow2 はその間のフローを捨てる（流量の統計なので許容）。syslog-ng は持つが、上限はメモリのキュー（既定 10000）で、syslog-ng が再起動するとキューは消える。librdkafka が受け取ったあとに配送が失敗した分（起動の直後の数秒にだけ当たりうる）も捨てる。lab の syslog の量なら 10000 には届かない見込み（未測定）
 13. 手元の検証の Kafka（apache/kafka 4.3.1、SASL_PLAINTEXT）は MSK（4.1.x、SASL_SSL、IAM と併用）と同じではない。手元で確かめたのは ACL の付け方と収集器の振る舞いまで
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261009-cycle-012-msk-scram-syslog-ng-goflow2-design.html -->

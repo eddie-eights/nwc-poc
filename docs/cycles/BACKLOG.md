@@ -25,7 +25,7 @@
 - [x] EMR を 7.14.0 に上げ、Spark の jar を合わせる（2026-10-08 完了。feat/spark-bump。AWS では未確認）
 - [x] Iceberg を 1.12.0 に上げる（2026-10-08 完了。feat/spark-bump。OSS 版だけ。マネージド版は EMR 同梱の 1.10.1 のまま。AWS では未確認）
 - [x] lab を IS-IS の spine 2 + a-leaf 2 + s-leaf 2 と各 leaf につなぐ TRex にする（SR-MPLS はライセンスが届いたら `ixr-6e` に差し替え。2026-10-08 の決定） → 011-lab-isis-trex-x86（2026-10-09 完了。AWS では未確認）
-- [ ] コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種にする（telegraf-dialin を外し、ifTable の代わりに gNMI の oper-state を使う） → 012-msk-scram-syslog-ng-goflow2（MSK の SCRAM、syslog-ng、GoFlow2、MDT を外す）
+- [x] コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種にする（telegraf-dialin を外し、ifTable の代わりに gNMI の oper-state を使う） → 012-msk-scram-syslog-ng-goflow2（MSK の SCRAM、syslog-ng、GoFlow2、MDT を外す。2026-10-09 完了。AWS の検証は未確認）
 - [ ] gNMI を gnmic に移し、SNMP のポーリングと telegraf-dialin を外す（Grafana / Splunk の link_down を gNMI の oper-state に乗せ替える。011 と 012 のあと） → 013-gnmic-drop-dialin
 - [x] `ops/up.sh` が取る jar（`JAR_URLS` 6 本）のハッシュを照合する（`docker/images/spark/Dockerfile` と compose の分は 2026-10-08 に済んだ）（2026-10-08 完了。fix/up-jar-hash。前の版の jar は jars/ と S3 から消す。S3 の `--delete` は AWS で未確認）
 - [x] `.env.example` と `ops/up.sh` と terraform のコメントの古い記述を直す（2026-10-08 完了。fix/stale-comments。コメントと description だけで動作は変えていない。2026-10-08 の docs 同期で見つけた、コードの側の食い違い: `.env.example:140` の SNMP_POLL の既定、`ops/up.sh:445` の docker の要る先に kafka-ui が無い、`ops/up.sh` の mdt・NEED_AOSS・SINK_*/GRAFANA の古いコメント、`IaC/terraform/aws-managed/base/core/endpoints.tf:27`・`perimeter.tf:4-6`・`outputs.tf:58`、`IaC/terraform/aws-managed/pipeline/stream/variables.tf:109`、`IaC/terraform/aws-managed/pipeline/analytics/locals.tf:1-10`、`app/agentcore/evidence.py:3,5`）
