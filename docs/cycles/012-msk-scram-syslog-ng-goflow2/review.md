@@ -58,3 +58,5 @@ cold reviewer は 1 回目（opus、adf6b8c と実装が同じ 5944704 に対し
 - **質問 2（stream と analytics のジョブの間に syslog / NetFlow を送る窓があるか）**: `ops/up.sh:300-302`（`SKIP_STREAM` は `SKIP_ANALYTICS` を強制）と `docs/deploy.md` の「あとから `up.sh` を打ち直して足す」で作れる。AWS の検証 3 は、1 回目を `SKIP_ANALYTICS=1` で立てて（stream まで）、syslog（`logger -n <NLB> -P 5140 -d --rfc5424`）と NetFlow（`tools/netflow_send.py <NLB>:2055`）を送り、`/ecs/<prefix>-syslog-ng` と `/ecs/<prefix>-goflow2` に認可の失敗が出るのを見てから、`SKIP_ANALYTICS` 無しで打ち直す。ジョブのあとは 3 ジョブの stderr の ACL の行、失敗が止まること、`logs` / `flows` に書けること、`describeAcls` 4 件、`UnderReplicatedPartitions` 0 を見る（未確定事項 8 / 9 / 10 を埋める）
 
 Must fix 0 なので PR #4 を docs/cycle-006-design にマージした（a964c43）。AWS の検証は design.md の表のまま未確認（2026-10-09 の AWS の検証でまとめて行う）。
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261009-cycle-012-msk-scram-syslog-ng-goflow2-review.html -->
