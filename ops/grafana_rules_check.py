@@ -84,16 +84,17 @@ def make_fetch(base_url, password):
     def fetch():
         data = get(url)
         groups = list(data.get("groups") or [])
-        seen = set()
+        seen, pages = set(), 1  # ページの数は seen と別に数える（トークンの重なりの確かめに頼らず、どの形でも 100 ページで止まる）
         while token := data.get("groupNextToken"):
             if not isinstance(token, str):
                 raise ValueError(f"groupNextToken が文字列でない（{type(token).__name__}）")
             if token in seen:
                 raise ValueError(f"groupNextToken が繰り返された（{token[:40]}）")
-            if len(seen) >= MAX_PAGES:
+            if pages > MAX_PAGES:
                 raise ValueError(f"ページが {MAX_PAGES} を超えた（groupNextToken が終わらない）")
             seen.add(token)
             data = get(f"{url}?group_next_token={urllib.parse.quote(token, safe='')}")
+            pages += 1
             groups += data.get("groups") or []
         return {"data": {"groups": groups}}
 
