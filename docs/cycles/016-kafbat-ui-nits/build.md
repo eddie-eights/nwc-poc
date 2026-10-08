@@ -620,3 +620,292 @@ $ git diff --stat 5be0288 -- ops/up.sh
 #### design.md の上書き
 
 検証方法の数を実測に合わせた（89 / 88 / 87 → 96 / 95 / 94）。9 の行（:506 → :505、差の基準を 5be0288 に）、変更対象の `docs/development.md` の数（95 → 96）、未確定事項の 012 の項目（マージの結果）も直した。方針と範囲は変えていない。design-log.md に 1 行。
+
+## Round 2
+
+実装モデル: claude-opus-5-5 / effort: セッションの既定のまま（Round 1 と同じ。`set_session_effort` が使えない）
+
+エンジニア2。cold review（Must 0 / Should 1 / Nit 2）の Should fix 1 件だけを直す。Nit 2 件は PM の判断で直さない。design.md は変えていない。AWS は使っていない。
+
+### commit
+
+| commit | 中身 |
+|---|---|
+| （この節を含む commit。ハッシュは PM への報告に書く） | `tests/test_stream.py:518` の 7-5 の正規表現。この build.md の Round 2 |
+
+### 変更ファイル
+
+- `tests/test_stream.py`（1 行）
+- `docs/cycles/016-kafbat-ui-nits/build.md`（この節）
+
+`test_stream` の check の数は 96 のまま（直した 1 本の中の正規表現だけ）。`docs/development.md:37` は直さない。
+
+### 原因と直したこと
+
+- 原因: `_s75` は終わりの印 `\n# ---- 8. workflow ` の頭の `\n` の手前で切る。`# ---- 8.` の行の直前が空行でないと、`_s75` は `…$WEB_ACTIVE"` か最後のコメント行で終わり、末尾に `\n` が無い。`re.fullmatch` は `run_on_instance` 行と、その後ろの空行・コメント行のそれぞれに行末の `\n` を求めていたので None になる。design.md 実装ステップ 5 の 7-5（「空行・コメントの出し入れは通す」）から実装がずれていた
+- 直したこと: `run_on_instance` 行より後ろを `\n(?:[ \t]*(?:#[^\n]*)?\n)*` から `(?:\n[ \t]*(?:#[^\n]*)?)*\n?` にした。各行の `\n` を行頭の側に置き、最後の `\n` を任意にした。`_s75` の切り方、`run_on_instance` 行より前の正規表現、check の名前は変えていない
+
+```
+-      and re.fullmatch(r'\nlog "7-5\. [^"\n]*"\n(?:[ \t]*(?:#[^\n]*)?\n)*run_on_instance "\$INSTANCE_ID" "systemctl restart \$PREFIX-web\.service; \$WEB_ACTIVE"\n(?:[ \t]*(?:#[^\n]*)?\n)*', _s75) is not None
++      and re.fullmatch(r'\nlog "7-5\. [^"\n]*"\n(?:[ \t]*(?:#[^\n]*)?\n)*run_on_instance "\$INSTANCE_ID" "systemctl restart \$PREFIX-web\.service; \$WEB_ACTIVE"(?:\n[ \t]*(?:#[^\n]*)?)*\n?', _s75) is not None
+```
+
+### 変異の道具に足したもの
+
+`mut16.py`（scratch。worktree には入れない）に次を足した。写し（`git archive` で展開し、直したあとは `tests/test_stream.py` だけ worktree のものを `cp`）の `oss/ops/up.sh` / `ops/up.sh` だけを書き換えて打つ。
+
+- (d1) 7-5 の `run_on_instance` 行と `# ---- 8. workflow` の間の空行を消す（退行ではない。通るべき）
+- (d2) `run_on_instance` 行の直後にコメント行 `# memo`、空行なしで `# ---- 8. workflow`（退行ではない。通るべき）
+- (e1) (o1) と (d1) を重ねる / (e2) (o2) と (d1) を重ねる（閉じ括弧の直後に `# ---- 8.`）/ (e3) (a3) と (d1) を重ねる / (e4) `run_on_instance` 行の末尾に ` \`（行の継続）を足して (d1)。末尾の `\n` を任意にしたことで新しく通ってしまう形が無いかを見る。落ちるべき
+- (q1) `ops/up.sh` の 8-3 の `fi` と `# ---- 8-5.` の間の空行を消す（観察。直していない。下の「観察」）
+
+### 直す前に落ちることを確かめた
+
+7bd1c35（= 41bbedd の tests）の写し `r2pre` で打った。
+
+```
+$ python3 mut16.py r2pre none,d1,d2,q1
+[変異なし] assert: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[変異なし] count: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[d1] 7-5 の run_on_instance 行と # ---- 8. workflow の間の空行を消す（退行ではない。Round 2） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[d1] 7-5 の run_on_instance 行と # ---- 8. workflow の間の空行を消す（退行ではない。Round 2） / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[d2] 7-5 の run_on_instance 行の直後にコメント行、空行なしで # ---- 8. workflow（退行ではない。Round 2） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[d2] 7-5 の run_on_instance 行の直後にコメント行、空行なしで # ---- 8. workflow（退行ではない。Round 2） / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[q1] 8-3 の fi と # ---- 8-5. の間の空行を消す（Round 2 の観察。014 からの 8-3 の検査） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[q1] 8-3 の fi と # ---- 8-5. の間の空行を消す（Round 2 の観察。014 からの 8-3 の検査） / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+```
+
+(e1)〜(e4) も直す前に落ちる（直す前から落ちる形が、直したあとも落ちるかを下の検証 4 で見る）:
+
+```
+$ python3 mut16.py r2pre e1,e2,e3,e4 assert
+[e1] (o1) と (d1) を重ねる: 行の頭に [ -n "${X:-}" ] && を足し、# ---- 8. の前の空行を消す（Round 2） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[e2] (o2) と (d1) を重ねる: 関数 _x() { … } で包み、閉じ括弧の直後に # ---- 8.（Round 2） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[e3] (a3) と (d1) を重ねる: run_on_instance 行と空行を消す（Round 2） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[e4] run_on_instance 行の末尾に \（行の継続）を足し、# ---- 8. の前の空行を消す（Round 2） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+```
+
+### 検証 1: test_stream（worktree。直したあと）
+
+worktree は 7bd1c35 に直した 1 行を足したもの。7bd1c35 と 41bbedd の差は `README.md` と `docs/ai-dev-flow.md` だけ（`git diff --stat 7bd1c35 41bbedd`）なので、41bbedd の中身で打ったのと同じ。
+
+```
+$ uv run --group dev --group web python tests/test_stream.py > r2-m1.log 2>&1; echo "rc=$?" >> r2-m1.log
+$ grep -c '^ok ' r2-m1.log; grep -v '^ok ' r2-m1.log
+96
+通過 96 / 失敗 0
+rc=0
+```
+
+### 検証 2: 空行を消しても、コメント行のあと空行なしでも通る
+
+直したあとの写し `r2post`（7bd1c35 の `git archive` に worktree の `tests/test_stream.py` を `cp`。`cmp` で同じことを確かめた）で打った。直す前は上のとおり 95 / 1 で落ちていた。
+
+```
+[d1] 7-5 の run_on_instance 行と # ---- 8. workflow の間の空行を消す（退行ではない。Round 2） / assert: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[d1] 7-5 の run_on_instance 行と # ---- 8. workflow の間の空行を消す（退行ではない。Round 2） / count: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[d2] 7-5 の run_on_instance 行の直後にコメント行、空行なしで # ---- 8. workflow（退行ではない。Round 2） / assert: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[d2] 7-5 の run_on_instance 行の直後にコメント行、空行なしで # ---- 8. workflow（退行ではない。Round 2） / count: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+```
+
+### 検証 3: 包む・消す変異は引き続き落ちる（変異の行列の全部）
+
+```
+$ python3 mut16.py r2post none,d1,d2,o6,a,o1,o3,o5,o7,a3,a2,o2,o4,b,c,p1,q1; echo "mut rc=$?"
+[変異なし] assert: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[変異なし] count: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[d1] 7-5 の run_on_instance 行と # ---- 8. workflow の間の空行を消す（退行ではない。Round 2） / assert: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[d1] 7-5 の run_on_instance 行と # ---- 8. workflow の間の空行を消す（退行ではない。Round 2） / count: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[d2] 7-5 の run_on_instance 行の直後にコメント行、空行なしで # ---- 8. workflow（退行ではない。Round 2） / assert: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[d2] 7-5 の run_on_instance 行の直後にコメント行、空行なしで # ---- 8. workflow（退行ではない。Round 2） / count: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[o6] 7-5 の run_on_instance 行の後ろに空行とコメント行（退行ではない） / assert: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[o6] 7-5 の run_on_instance 行の後ろに空行とコメント行（退行ではない） / count: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[a] 7-5 の run_on_instance 行の前に空行 / assert: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[a] 7-5 の run_on_instance 行の前に空行 / count: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[o1] 7-5 の run_on_instance 行の頭に [ -n "${X:-}" ] && を足す / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[o1] 7-5 の run_on_instance 行の頭に [ -n "${X:-}" ] && を足す / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[o3] 7-5 の run_on_instance 行の前に [ -z "${X:-}" ] || exit 0 / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[o3] 7-5 の run_on_instance 行の前に [ -z "${X:-}" ] || exit 0 / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[o5] 7-5 の run_on_instance 行を : <<'__X__' … __X__ で殺す / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[o5] 7-5 の run_on_instance 行を : <<'__X__' … __X__ で殺す / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[o7] 7-5 の run_on_instance 行の前の行に false &&（行の継続） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[o7] 7-5 の run_on_instance 行の前の行に false &&（行の継続） / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[a3] 7-5 の run_on_instance 行を消す / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[a3] 7-5 の run_on_instance 行を消す / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[a2] 7-5 の log の見出しを 7-6 に変える（_s75 の開始マーカーが外れる） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[a2] 7-5 の log の見出しを 7-6 に変える（_s75 の開始マーカーが外れる） / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[o2] 7-5 の run_on_instance 行を関数 _x() { … } で包む（呼ばない） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[o2] 7-5 の run_on_instance 行を関数 _x() { … } で包む（呼ばない） / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[o4] 7-5 の run_on_instance 行を while false; do … done で包む / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[o4] 7-5 の run_on_instance 行を while false; do … done で包む / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[b] _s83 の開始マーカー # ---- 8-3. Web を # ---- 8-3. web に / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[b] _s83 の開始マーカー # ---- 8-3. Web を # ---- 8-3. web に / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[c] テンプレートの Wants=${name_prefix}-kafka-ui.service を消す / assert: rc=1 | 最後の出力行: ok Kafbat UI は Web の EC2 の systemd のユニットが Docker のコンテナを 127. | stderr: AssertionError: 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8-3（OSS 版は 7-5）の systemctl restart <接頭辞>-web が起こす。弱い依存だけにして、Kafbat UI が落ちても Web を止めない（Requires / BindsTo / PartOf / Requisite にしな
+[c] テンプレートの Wants=${name_prefix}-kafka-ui.service を消す / count: rc=0 | 最後の出力行: 通過 94 / 失敗 2 | NG 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8-3（OSS 版は 7-5）の systemctl restart <接頭辞>-web が起こす。弱い依存だけにして、Ka / NG 描いた user_data の Web のユニットにも Wants=x-nwc-poc-kafka-ui.service があり、kafka-ui を含む行はその 1 行だけ（cycle 016） | 
+[p1] 8-3 の run_on_instance 行を関数 _x() { … } で包む（呼ばない） / assert: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[p1] 8-3 の run_on_instance 行を関数 _x() { … } で包む（呼ばない） / count: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[q1] 8-3 の fi と # ---- 8-5. の間の空行を消す（Round 2 の観察。014 からの 8-3 の検査） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[q1] 8-3 の fi と # ---- 8-5. の間の空行を消す（Round 2 の観察。014 からの 8-3 の検査） / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+mut rc=0
+```
+
+(d1)(d2)(q1) を除いた 28 行は、Round 1 の 012 のマージ後の行列（`merged-mut.log`）と行の順を除いて同じ:
+
+```
+$ grep -v -e '^\[d1\]' -e '^\[d2\]' -e '^\[q1\]' -e '^mut rc' r2-post-mut.log | sort > r2-cmp-post.txt; sort merged-mut.log > r2-cmp-merged.txt
+$ wc -l < r2-cmp-post.txt; wc -l < r2-cmp-merged.txt; cmp r2-cmp-post.txt r2-cmp-merged.txt && echo SAME-SHAPE
+      28
+      28
+SAME-SHAPE
+```
+
+### 検証 4: 末尾の `\n` を任意にしたことで新しく通る形が無い
+
+```
+$ python3 mut16.py r2post-e e1,e2,e3,e4
+[e1] (o1) と (d1) を重ねる: 行の頭に [ -n "${X:-}" ] && を足し、# ---- 8. の前の空行を消す（Round 2） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[e1] (o1) と (d1) を重ねる: 行の頭に [ -n "${X:-}" ] && を足し、# ---- 8. の前の空行を消す（Round 2） / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[e2] (o2) と (d1) を重ねる: 関数 _x() { … } で包み、閉じ括弧の直後に # ---- 8.（Round 2） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[e2] (o2) と (d1) を重ねる: 関数 _x() { … } で包み、閉じ括弧の直後に # ---- 8.（Round 2） / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[e3] (a3) と (d1) を重ねる: run_on_instance 行と空行を消す（Round 2） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[e3] (a3) と (d1) を重ねる: run_on_instance 行と空行を消す（Round 2） / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[e4] run_on_instance 行の末尾に \（行の継続）を足し、# ---- 8. の前の空行を消す（Round 2） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[e4] run_on_instance 行の末尾に \（行の継続）を足し、# ---- 8. の前の空行を消す（Round 2） / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+```
+
+### 検証 5: check.sh（worktree）
+
+```
+$ bash ops/check.sh > r2-check.log 2>&1; echo "rc=$?" >> r2-check.log
+
+== 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+差分なし
+
+== 2. 9 つのルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+IaC/terraform/aws-managed/base/ecr  OK
+IaC/terraform/aws-managed/base/core  OK
+IaC/terraform/aws-managed/agent  OK
+IaC/terraform/aws-managed/pipeline/lab  OK
+IaC/terraform/aws-managed/pipeline/stream  OK
+IaC/terraform/aws-managed/pipeline/analytics  OK
+IaC/terraform/aws-managed/pipeline/graph  OK
+IaC/terraform/aws-managed/pipeline/nautobot  OK
+IaC/terraform/aws-managed/workflow  OK
+IaC/terraform/oss/base/ecr  OK
+IaC/terraform/oss/base/core  OK
+IaC/terraform/oss/agent  OK
+IaC/terraform/oss/pipeline/lab  OK
+IaC/terraform/oss/pipeline/stream  OK
+IaC/terraform/oss/pipeline/analytics  OK
+IaC/terraform/oss/pipeline/graph  OK
+IaC/terraform/oss/pipeline/nautobot  OK
+IaC/terraform/oss/workflow  OK
+
+== 3. スクリプトの構文
+bash -n: 27 本
+構文エラーなし
+…（各テストの最後の行。r2-check.log の行番号付き）
+188:通過 158 / 失敗 0
+685:通過 495 / 失敗 0
+1260:通過 161 / 失敗 0
+1339:通過 78 / 失敗 0
+1343:通過 3 / 失敗 0
+1423:通過 78 / 失敗 0
+1433:通過 7 / 失敗 0
+1538:通過 104 / 失敗 0
+1671:通過 132 / 失敗 0
+1743:69 項目すべて通過
+1916:通過 172 / 失敗 0
+2098:通過 181 / 失敗 0
+2165:通過 66 / 失敗 0
+2262:通過 96 / 失敗 0
+2381:通過 103 / 失敗 0
+2826:通過 327 / 失敗 0
+…
+通過 327 / 失敗 0
+
+すべて通過
+rc=0
+```
+
+### 観察: 8-3 の側の空行（直していない。BACKLOG の候補として PM に渡す）
+
+(q1) `ops/up.sh` の 8-3 の `fi` と `# ---- 8-5. workflow` の間の空行を消すと、同じ check が落ちる。直したあとの写し（上の検証 3 の `[q1]` の 2 行）でも、直す前の 7bd1c35 の写し（上の「直す前に落ちることを確かめた」の `[q1]` の 2 行）でも、016 の前の c4c378a の写しでも同じ:
+
+```
+$ python3 mut16.py r2c4c q1 assert
+[q1] 8-3 の fi と # ---- 8-5. の間の空行を消す（Round 2 の観察。014 からの 8-3 の検査） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+```
+
+- 原因（読んだだけ）: `tests/test_stream.py:516` の `_s83.count("\nfi\n") == 1`。`_s83` は終わりの印 `\n# ---- 8-5. ` の頭の `\n` の手前で切るので、`fi` の直後が `# ---- 8-5.` だと `_s83` が `\nfi` で終わり、`\nfi\n` が 0 個になる。7-5 で直したのと同じ形の弱さ
+- 014 からある。design.md の「空行・コメントの出し入れは通す」は 7-5 についての文なので、016 の範囲では直していない（PM の指示どおり、変えたのは 7-5 の 1 行だけ）
+- Round 1 の OC7（8-3 の検査が if の中の `&&` / 字下げした if / 呼ばない関数で包む形を通す）と同じ `_s83` の検査の話なので、まとめて次の候補になる
+
+### 補足: Round 1 の「012 のマージ」の検証 6 の `bash -n: 29 本`
+
+いまの `bash -n` は 27 本（検証 5）。Round 1 の 29 本は、`ops/up.sh` の衝突を `git add` する前の index で数えたもの。`git ls-files` は衝突中のファイルを stage 1〜3 の 3 行で出す。scratch の clone で同じマージをやり直して確かめた:
+
+```
+$ git clone -q --shared --no-checkout <worktree> mt; git -C mt checkout -q 309c216; git -C mt merge --no-edit 5be0288
+（衝突。merge rc=1）
+$ git -C mt ls-files '*.sh' | wc -l
+      29
+$ git -C mt ls-files -u '*.sh'
+100755 7788f8297f2246c1dcd18dadeb5a9266aa829557 1	ops/up.sh
+100755 6fedb995e7a702b294c8ff4f70cd0716b821cc82 2	ops/up.sh
+100755 300669fd019a309a504b3eb4c33136625ad2523f 3	ops/up.sh
+$ git ls-tree -r --name-only 41bbedd | grep -c '\.sh$'
+27
+```
+
+Round 1 の生ログはそのまま残す。27 本は 5be0288（012 のマージ）とも 41bbedd とも同じ。
+
+### セルフレビュー
+
+- 自分: claude-opus-5-5 / effort はセッションの既定のまま（Round 1 と同じ）。入力は design.md の実装ステップ 5 の 7-5 の文と、直した 1 行と、上の変異の出力
+- 反対弁護人: 起こしていない。直したのは正規表現の 1 行で、直し方（`re.fullmatch` を空行の出し入れで落ちないようにする）と確かめる 4 項目を PM が指定した。新しく通る形が無いことは (e1)〜(e4) を打って確かめた（検証 4）
+- cold reviewer: PM の指示で 2 回目は呼ばない
+
+件数: **Must fix 0 / Should fix 0 / Nit 0**（このラウンドの直しについて）。8-3 の空行の弱さ（上の観察）は 016 の範囲の外で、PM に渡す。cold review の Nit 2 件は PM の判断で直していない。
+
+#### 問題なしとした観点と根拠
+
+- correctness: (d1)(d2) が直す前は 95 / 1 で落ち、直したあとは 96 / 0 で通る（「直す前に落ちることを確かめた」と検証 2。実行した）
+- 検出力が落ちていない: 包む・消す変異は全部、直す前と同じ check で落ちる。(d1)(d2)(q1) を除いた 28 行が Round 1 の `merged-mut.log` と同じ（検証 3。実行した）
+- 緩めたことで新しく通る形: 末尾を `(?:\n[ \t]*(?:#[^\n]*)?)*\n?` にしたので、`run_on_instance` 行の後ろに来てよいのは空行とコメント行だけ。閉じ括弧・行の継続・前置きの `&&` と空行の削除を重ねた (e1)〜(e4) は、直す前も直したあとも落ちる（検証 4。実行した）
+- base の最新との組み合わせ: PR の先の docs/cycle-006-design は 41bbedd のあと Grafana のルール検査の残りを直す（015）が入って 66d4e95 になった（`ops/up.sh` と `oss/ops/up.sh` に 015 の差がある。7-5 と 8-3 の行は変わっていない）。66d4e95 の写しに直した `tests/test_stream.py` を重ねて打った（下。実行した）
+- 範囲: 変えたのは `tests/test_stream.py` の 1 行とこの build.md だけ（実行した）
+
+  ```
+  $ git diff --stat -- tests/
+   tests/test_stream.py | 2 +-
+   1 file changed, 1 insertion(+), 1 deletion(-)
+  $ git diff --stat 7bd1c35 -- . ':!tests/test_stream.py' ':!docs/cycles/016-kafbat-ui-nits/build.md' | wc -l
+         0
+  ```
+
+  design.md と `docs/development.md` は変えていない（`test_stream` は 96 のまま）。
+- 全体の退行: `bash ops/check.sh` が `すべて通過`、rc=0（検証 5。実行した）
+
+66d4e95（docs/cycle-006-design の最新）の写し `r2base` に、直した `tests/test_stream.py` を `cp` して打った:
+
+```
+$ python3 mut16.py r2base none,d1,d2,o1,o3,o5,o7,a3; echo "mut rc=$?"
+[変異なし] assert: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[変異なし] count: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[d1] 7-5 の run_on_instance 行と # ---- 8. workflow の間の空行を消す（退行ではない。Round 2） / assert: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[d1] 7-5 の run_on_instance 行と # ---- 8. workflow の間の空行を消す（退行ではない。Round 2） / count: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[d2] 7-5 の run_on_instance 行の直後にコメント行、空行なしで # ---- 8. workflow（退行ではない。Round 2） / assert: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[d2] 7-5 の run_on_instance 行の直後にコメント行、空行なしで # ---- 8. workflow（退行ではない。Round 2） / count: rc=0 | 最後の出力行: 通過 96 / 失敗 0 | 
+[o1] 7-5 の run_on_instance 行の頭に [ -n "${X:-}" ] && を足す / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[o1] 7-5 の run_on_instance 行の頭に [ -n "${X:-}" ] && を足す / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[o3] 7-5 の run_on_instance 行の前に [ -z "${X:-}" ] || exit 0 / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[o3] 7-5 の run_on_instance 行の前に [ -z "${X:-}" ] || exit 0 / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[o5] 7-5 の run_on_instance 行を : <<'__X__' … __X__ で殺す / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[o5] 7-5 の run_on_instance 行を : <<'__X__' … __X__ で殺す / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[o7] 7-5 の run_on_instance 行の前の行に false &&（行の継続） / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[o7] 7-5 の run_on_instance 行の前の行に false &&（行の継続） / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+[a3] 7-5 の run_on_instance 行を消す / assert: rc=1 | 最後の出力行: ok 75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8- | stderr: AssertionError: Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）
+[a3] 7-5 の run_on_instance 行を消す / count: rc=0 | 最後の出力行: 通過 95 / 失敗 1 | NG Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z "$SKIP_STREAM" ] || … の中、OSS 版の手順 7-5  | 
+mut rc=0
+```

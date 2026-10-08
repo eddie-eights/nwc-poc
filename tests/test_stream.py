@@ -515,7 +515,7 @@ check("Kafbat UI を起こす Web の restart は stream の apply より後: op
       and re.match(r'\n# ---- 8-3\. Web -*\nif \[ -z "\$SKIP_STREAM" \] \|\| [^\n]*; then\n', _s83) is not None
       and '\n  run_on_instance "$INSTANCE_ID" "systemctl restart $PREFIX-web.service; $WEB_ACTIVE"\n' in _s83 and _s83.count("\nfi\n") == 1
       and -1 < _oss_up_sh.find('\ntf_apply pipeline/stream "${STREAM_VARS[@]}"\n') < _oss_up_sh.find('\nlog "7-5. ')
-      and re.fullmatch(r'\nlog "7-5\. [^"\n]*"\n(?:[ \t]*(?:#[^\n]*)?\n)*run_on_instance "\$INSTANCE_ID" "systemctl restart \$PREFIX-web\.service; \$WEB_ACTIVE"\n(?:[ \t]*(?:#[^\n]*)?\n)*', _s75) is not None
+      and re.fullmatch(r'\nlog "7-5\. [^"\n]*"\n(?:[ \t]*(?:#[^\n]*)?\n)*run_on_instance "\$INSTANCE_ID" "systemctl restart \$PREFIX-web\.service; \$WEB_ACTIVE"(?:\n[ \t]*(?:#[^\n]*)?)*\n?', _s75) is not None
       and re.findall(r"^(?:if|fi)\b.*$", _between(_oss_up_sh, "\n# ---- 7-4c. ", "\n# ---- 8. workflow "), re.M)
           == ['if [ -n "$STORE_WARN" ]; then', "fi"])
 check("Docker と Kafbat UI の節は、画面のコードの取得（aws s3 sync）より後、S3 に web/ が無くて exit 0 する所より前で、関数 kafka_ui_setup にまとめて"
