@@ -123,9 +123,9 @@ check("トピックは自動で作る（Telegraf が最初に書く）",
 
 # ---- 4. Telegraf: 環境は app/telegraf/telegraf.sh の契約どおり。up.sh の値を入れると render が通り、出力は host の EXTERNAL の 3 つ
 _tg = svc["telegraf"]["environment"]
-check("telegraf の KAFKA_BROKERS は 3 台の EXTERNAL（localhost:9094-9096）、KAFKA_AUTH=none、SYSLOG_STANDARD は ops/lab-common.sh の LAB_SYSLOG_STANDARD",
+check("telegraf の KAFKA_BROKERS は 3 台の EXTERNAL（localhost:9094-9096）、KAFKA_AUTH=none。SYSLOG_STANDARD / MDT_PORT は渡さない（syslog は syslog-ng、MDT は外した。cycle 012）",
       _tg["KAFKA_BROKERS"] == "localhost:9094,localhost:9095,localhost:9096" and _tg["KAFKA_AUTH"] == "none" and _tg["SINK"] == "kafka"
-      and _tg["SYSLOG_STANDARD"] == sh_const(lab_common, "LAB_SYSLOG_STANDARD"))
+      and "SYSLOG_STANDARD" not in _tg and "MDT_PORT" not in _tg)
 check("telegraf の GNMI_USERNAME / GNMI_PASSWORD / SNMP_COMMUNITY は ops/lab-common.sh の lab の公開既定値",
       (_tg["GNMI_USERNAME"], _tg["GNMI_PASSWORD"], _tg["SNMP_COMMUNITY"])
       == (sh_const(lab_common, "LAB_GNMI_USERNAME"), sh_const(lab_common, "LAB_GNMI_PASSWORD"), sh_const(lab_common, "LAB_SNMP_COMMUNITY")))
@@ -141,34 +141,34 @@ def tg_render(env, extra=None):  # env は compose の ${X} を埋める値、ex
         return r, conf
 
 _r, _conf = tg_render(UP_ENV)
-check("up.sh の値を入れた telegraf の環境で telegraf.sh render が通り、出力 5 つが localhost:9094-9096 へ書き、IAM の設定が無い",
-      _r.returncode == 0 and _conf.count('brokers = ["localhost:9094","localhost:9095","localhost:9096"]') == 5
+check("up.sh の値を入れた telegraf の環境で telegraf.sh render が通り、出力 3 つ（metrics / gnmi / traps）が localhost:9094-9096 へ書き、IAM の設定が無い",
+      _r.returncode == 0 and _conf.count('brokers = ["localhost:9094","localhost:9095","localhost:9096"]') == 3
       and "sasl_mechanism" not in _conf and "203.0.113." in _conf)
 check("docker compose を直に打つ（SNMP_AGENTS が空）と telegraf.sh は形の検査で止まる（compose.yaml の頭の注意のとおり。up.sh から上げる）",
       tg_render({})[0].returncode != 0)
-# 受け口の 4 つ（MDT・trap・syslog・health）。TELEGRAF_BIND が空なら今までどおり全部のインターフェース（ECS は何も渡さない）
-_listen = lambda b, mdt="57000", hp="8080": [f'service_address = "{b}:{mdt}"', f'service_address = "udp://{b}:1162"',
-                                             f'server = "udp://{b}:5140"', f'service_address = "http://{b}:{hp}"']
-check("TELEGRAF_BIND が空なら受け口の 4 つは今までどおり全部のインターフェース（:57000 / udp://:1162 / udp://:5140 / http://:8080）で、__ が残らない",
-      all(x in _conf for x in _listen("")) and "__" not in _conf and "/ bind:" not in _r.stdout)
+# 受け口の 2 つ（trap・health。syslog と MDT は cycle 012 で外した）。TELEGRAF_BIND が空なら今までどおり全部のインターフェース（ECS は何も渡さない）
+_listen = lambda b, hp="8080": [f'service_address = "udp://{b}:1162"', f'service_address = "http://{b}:{hp}"']
+check("TELEGRAF_BIND が空なら受け口の 2 つは今までどおり全部のインターフェース（udp://:1162 / http://:8080）で、__ が残らず、syslog と MDT の受け口は無い",
+      all(x in _conf for x in _listen("")) and "__" not in _conf and "/ bind:" not in _r.stdout
+      and "5140" not in _conf and "57000" not in _conf)
 _r, _conf = tg_render({**UP_ENV, "TELEGRAF_BIND": "203.0.113.1"})
-check("TELEGRAF_BIND=203.0.113.1（docker/compose/up.sh が lab の管理ネットの GW を渡す）なら受け口の 4 つともそのアドレスだけで待ち、起動の 1 行に bind が出る",
+check("TELEGRAF_BIND=203.0.113.1（docker/compose/up.sh が lab の管理ネットの GW を渡す）なら受け口の 2 つともそのアドレスだけで待ち、起動の 1 行に bind が出る",
       _r.returncode == 0 and all(x in _conf for x in _listen("203.0.113.1")) and "__" not in _conf
       and "/ health: 8080/tcp / bind: 203.0.113.1" in _r.stdout)
-_r, _conf = tg_render({**UP_ENV, "TELEGRAF_BIND": "127.0.0.1", "MDT_PORT": "57001", "HEALTH_PORT": "18081"})
-check("MDT_PORT / HEALTH_PORT（.env）を変えると MDT と health の受け口がそのポートになる（design.md の検証方法 1・2）",
-      _r.returncode == 0 and all(x in _conf for x in _listen("127.0.0.1", "57001", "18081")) and "__" not in _conf
-      and "mdt: 57001/tcp / health: 18081/tcp" in _r.stdout)
-_bad = [{"MDT_PORT": v} for v in ("0", "65536", "08080", "80a", "-1")] + [{"HEALTH_PORT": "99999"}, {"LOG_PORT": "x"}, {"TRAP_PORT": "0"}] \
+_r, _conf = tg_render({**UP_ENV, "TELEGRAF_BIND": "127.0.0.1", "HEALTH_PORT": "18081"})
+check("HEALTH_PORT（.env）を変えると health の受け口がそのポートになる（009 の design.md の検証方法 1・2。MDT_PORT は cycle 012 で外した）",
+      _r.returncode == 0 and all(x in _conf for x in _listen("127.0.0.1", "18081")) and "__" not in _conf
+      and "trap: 1162/udp / health: 18081/tcp" in _r.stdout)
+_bad = [{"HEALTH_PORT": v} for v in ("0", "65536", "08080", "80a", "-1", "99999")] + [{"TRAP_PORT": "0"}] \
     + [{"TELEGRAF_BIND": v} for v in ("::1", "localhost", "203.0.113.1 ", "1.2.3", "1.2.3.4#x")]
 _badr = [tg_render(UP_ENV, b)[0] for b in _bad]
 check("telegraf.sh render: ポートが 1〜65535 の数字でない（0 / 65536 / 先頭の 0 / 数字以外）か、TELEGRAF_BIND が空でも IPv4 でもなければ、名前を出して止まる",
       all(r.returncode != 0 and next(iter(b)) in r.stderr for r, b in zip(_badr, _bad)))
 _tgsh = read("app", "telegraf", "telegraf.sh")
-check("MDT_PORT / HEALTH_PORT の既定は compose・.env.example・telegraf.sh（ECS）で同じ（57000 / 8080）。TELEGRAF_BIND の既定は空",
-      (_tg["MDT_PORT"], _tg["HEALTH_PORT"], _tg["TELEGRAF_BIND"]) == ("${MDT_PORT:-57000}", "${HEALTH_PORT:-8080}", "${TELEGRAF_BIND:-}")
-      and (example["MDT_PORT"], example["HEALTH_PORT"]) == ("57000", "8080")
-      and (sh_const(_tgsh, "MDT_PORT"), sh_const(_tgsh, "HEALTH_PORT"), sh_const(_tgsh, "TELEGRAF_BIND")) == ("${MDT_PORT:-57000}", "${HEALTH_PORT:-8080}", "${TELEGRAF_BIND:-}"))
+check("HEALTH_PORT の既定は compose・.env.example・telegraf.sh（ECS）で同じ（8080）。TELEGRAF_BIND の既定は空。MDT_PORT はどこにも無い（cycle 012）",
+      (_tg["HEALTH_PORT"], _tg["TELEGRAF_BIND"]) == ("${HEALTH_PORT:-8080}", "${TELEGRAF_BIND:-}") and example["HEALTH_PORT"] == "8080"
+      and (sh_const(_tgsh, "HEALTH_PORT"), sh_const(_tgsh, "TELEGRAF_BIND")) == ("${HEALTH_PORT:-8080}", "${TELEGRAF_BIND:-}")
+      and "MDT_PORT" not in example and sh_const(_tgsh, "MDT_PORT") is None)
 check("lab の管理ネットの GW は docker/compose/up.sh・check.sh と app/containerlab/lab.sh で同じ（203.0.113.1）",
       sh_const(read("docker", "compose", "up.sh"), "MGMT_GW") == sh_const(read("docker", "compose", "check.sh"), "MGMT_GW") == sh_const(lab_sh, "MGMT_GW") == "203.0.113.1")
 _topics = set(re.findall(r'^\s*topic = "(\w+)"', read("app", "telegraf", "telegraf.conf.in"), re.M))
@@ -220,8 +220,8 @@ check("spark-http の引数と環境で parse_args が通る（opensearch,promet
       and svc["spark-http"]["environment"]["PROMETHEUS_AUTH"] == "none")
 check("up.sh の DEVICE_MAP を Spark の --device-map に入れると、lab の機器の管理 IP が機器名に引ける",
       "dc1-leaf-01" in sinks.parse_device_map(_a.device_map).values())
-check("Spark の --metric-topics と --log-topics は Telegraf が書くトピックだけ",
-      set(_a.metric_topics.split(",")) | set(_a.log_topics.split(",")) == _topics)
+check("Spark の --metric-topics と --log-topics は Telegraf が書くトピック（metrics / gnmi / traps）と、syslog-ng の logs・GoFlow2 の flows だけ（cycle 012）",
+      set(_a.metric_topics.split(",")) | set(_a.log_topics.split(",")) == _topics | {"logs", "flows"} and _topics == {"metrics", "gnmi", "traps"})
 
 # ---- 6. OpenSearch / Prometheus / Grafana / Splunk
 _os = svc["opensearch"]["environment"]
@@ -244,9 +244,9 @@ check("splunk の HEC の token は spark-splunk と同じ .env の値", svc["sp
 
 # ---- 7. 設定（.env.example）と compose の ${VAR}
 _vars = set(re.findall(r"\$\{(\w+)", read("docker", "compose", "compose.yaml")))
-check(".env.example のキーは design.md の 7 つと Telegraf の MDT_PORT / HEALTH_PORT（009。trap と syslog は lab と揃えるので出さない）",
+check(".env.example のキーは design.md の 7 つと Telegraf の HEALTH_PORT（009。trap と syslog は lab と揃えるので出さない。MDT_PORT は cycle 012 で外した）",
       set(example) == {"SPLUNK_PASSWORD", "SPLUNK_HEC_TOKEN", "OPENSEARCH_PASSWORD", "GF_SECURITY_ADMIN_PASSWORD", "SRLINUX_IMAGE", "MULTITOOL_IMAGE", "AWS_REGION",
-                       "MDT_PORT", "HEALTH_PORT"})
+                       "HEALTH_PORT"})
 check("compose.yaml の ${VAR} は全部 .env.example のキーか up.sh が渡す 4 つ（SNMP_AGENTS / GNMI_TARGETS / DEVICE_MAP / TELEGRAF_BIND）",
       _vars and _vars <= set(example) | set(UP_ENV) | {"TELEGRAF_BIND"} and "TELEGRAF_BIND" in _vars)
 check("SPLUNK_HEC_TOKEN は uuid の形（Splunk のイメージが作る HEC の token。ops/up.sh と同じ形）",
@@ -354,7 +354,7 @@ for a in "$@"; do
 done
 [ "${FAKE_DOWN:-0}" = 1 ] && exit 7
 case "$url" in
-  *18080/api/clusters/nwc/topics*) printf '{"topics":[{"name":"metrics","messagesCount":%s},{"name":"gnmi","messagesCount":0},{"name":"traps","messagesCount":%s},{"name":"logs","messagesCount":9},{"name":"mdt","messagesCount":0}]}\n' "${FAKE_METRICS:-120}" "${FAKE_TRAPS:-3}" ;;
+  *18080/api/clusters/nwc/topics*) printf '{"topics":[{"name":"metrics","messagesCount":%s},{"name":"gnmi","messagesCount":0},{"name":"traps","messagesCount":%s},{"name":"logs","messagesCount":9},{"name":"flows","messagesCount":0}]}\n' "${FAKE_METRICS:-120}" "${FAKE_TRAPS:-3}" ;;
   *9090/api/v1/query*) echo '{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1760000000,"12"]}]}}' ;;
   *9200/snmp-logs/_count*) echo "{\"count\":${FAKE_OS_COUNT:-5}}" ;;
   *8089/services/search/jobs/export*)
@@ -368,7 +368,7 @@ esac
 LOG = os.path.join(TMP, "calls.log")
 CLEAN = ("REGISTRY", "AWS_REGION", "PARAM_PREFIX", "TELEGRAF_IMAGE", "TELEGRAF_LOCAL", "SRLINUX_IMAGE", "MULTITOOL_IMAGE",
          "SNMP_AGENTS", "GNMI_TARGETS", "DEVICE_MAP", "FAKE_IPT_RULES", "FAKE_MEM", "FAKE_DOWN", "FAKE_OS_COUNT", "FAKE_SPLUNK",
-         "FAKE_METRICS", "FAKE_TRAPS", "FAKE_GW", "FAKE_TG_HEALTH", "TELEGRAF_BIND", "MDT_PORT", "HEALTH_PORT", "LOG_PORT", "TRAP_PORT",
+         "FAKE_METRICS", "FAKE_TRAPS", "FAKE_GW", "FAKE_TG_HEALTH", "TELEGRAF_BIND", "HEALTH_PORT", "LOG_PORT", "TRAP_PORT",
          "LAB_CMD", "FAKE_BGP_ADMIN")
 
 def run(cmd, cwd=None, **env):
@@ -563,8 +563,8 @@ check("check.sh: Splunk の検索は sourcetype=netops:*（Spark の SPLUNK_SOUR
 check("check.sh: Grafana で見る uid（amp / aoss-logs）は app/grafana/provisioning/datasources-oss の定義にある",
       {m for f in ("prometheus.yaml", "opensearch.yaml")
        for m in re.findall(r"uid: (\S+)", read("app", "grafana", "provisioning", "datasources-oss", f))} == {"amp", "aoss-logs"})
-check("check.sh: Kafka で見るトピック（metrics / gnmi / traps / logs。メッセージ数は metrics と traps）は Telegraf が書くトピック",
-      {"metrics", "gnmi", "traps", "logs"} <= _topics)
+check("check.sh: Kafka で見るトピック（metrics / gnmi / traps / logs。メッセージ数は metrics と traps）は Telegraf か syslog-ng（logs。cycle 012）が書くトピック",
+      {"metrics", "gnmi", "traps", "logs"} <= _topics | {"logs"})
 TH = "Telegraf: health が 200"
 check("check.sh: Telegraf の health は 203.0.113.1 が無ければ 127.0.0.1 の .env の HEALTH_PORT（8080）に、認証なしで打つ",
       [c for c in _argv if c.endswith(":8080/")] == ["curl -sS --max-time 60 -o /dev/null -w %{http_code} http://127.0.0.1:8080/"] and f"ok  {TH}" in _ok)

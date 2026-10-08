@@ -57,9 +57,10 @@ x-spark-env: &spark-env
 
 services:
   telegraf:
-    # host のネットワークで受ける（SR Linux は trap と syslog を管理ネットの GW 203.0.113.1 = WSL へ送る）。trap の 162/udp → 1162/udp は ./lab.sh up の forward が iptables で向ける。
-    # 待つポート: syslog 5140/udp、trap 1162/udp、MDT 57000/tcp（.env の MDT_PORT）、ヘルスチェック 8080/tcp（.env の HEALTH_PORT）。host の他のプロセスとぶつかると起きない。
-    # trap と syslog のポートは lab（app/containerlab/lab.sh の TRAP_PORT / LOG_PORT と SR Linux の remote-port）と揃えるので変えない。
+    # host のネットワークで受ける（SR Linux は trap を管理ネットの GW 203.0.113.1 = WSL へ送る）。trap の 162/udp → 1162/udp は ./lab.sh up の forward が iptables で向ける。
+    # 待つポート: trap 1162/udp、ヘルスチェック 8080/tcp（.env の HEALTH_PORT）。host の他のプロセスとぶつかると起きない。
+    # trap のポートは lab（app/containerlab/lab.sh の TRAP_PORT と SR Linux の remote-port）と揃えるので変えない。
+    # syslog は syslog-ng、NetFlow / sFlow は GoFlow2 が受ける。MDT の受け口は外した（cycle 012）
     # 待つアドレスは ./up.sh が TELEGRAF_BIND に渡す（lab の bridge があれば 203.0.113.1 だけ、無ければ空 = 全部のインターフェース）
     build:
       context: ../../app/telegraf
@@ -76,13 +77,11 @@ services:
       KAFKA_AUTH: none
       KAFKA_BROKERS: localhost:9094,localhost:9095,localhost:9096
       TELEGRAF_ROLE: all
-      SYSLOG_STANDARD: RFC5424   # ops/lab-common.sh の LAB_SYSLOG_STANDARD
       SNMP_POLL: "1"
       AWS_REGION: ap-northeast-1   # telegraf.sh が必須にしている（KAFKA_AUTH=none では使わない）
       SNMP_AGENTS: ${SNMP_AGENTS:-}
       GNMI_TARGETS: ${GNMI_TARGETS:-}
       TELEGRAF_BIND: ${TELEGRAF_BIND:-}
-      MDT_PORT: ${MDT_PORT:-57000}
       HEALTH_PORT: ${HEALTH_PORT:-8080}
       # lab の SR Linux だけの公開の既定値（ops/lab-common.sh の LAB_GNMI_USERNAME / LAB_GNMI_PASSWORD / LAB_SNMP_COMMUNITY）
       GNMI_USERNAME: admin
@@ -131,7 +130,7 @@ services:
     <<: *spark
     command: [/opt/spark/bin/spark-submit, --master, "local[*]", --driver-memory, 1024m, /opt/nwc/snmp_sinks.py,
               --bootstrap, "kafka-1:9092,kafka-2:9092,kafka-3:9092", --checkpoint, "file:///opt/spark/work-dir/checkpoint",
-              --sinks, splunk, --region, ap-northeast-1, --metric-topics, "metrics,gnmi,mdt", --log-topics, "traps,logs",
+              --sinks, splunk, --region, ap-northeast-1, --metric-topics, "metrics,gnmi", --log-topics, "traps,logs,flows",
               --device-map, "${DEVICE_MAP:-}",
               --splunk-hec-url, "https://splunk:8088", --splunk-skip-verify]
     environment:
@@ -143,7 +142,7 @@ services:
     <<: *spark
     command: [/opt/spark/bin/spark-submit, --master, "local[*]", --driver-memory, 1024m, /opt/nwc/snmp_sinks.py,
               --bootstrap, "kafka-1:9092,kafka-2:9092,kafka-3:9092", --checkpoint, "file:///opt/spark/work-dir/checkpoint",
-              --sinks, "opensearch,prometheus", --region, ap-northeast-1, --metric-topics, "metrics,gnmi,mdt", --log-topics, "traps,logs",
+              --sinks, "opensearch,prometheus", --region, ap-northeast-1, --metric-topics, "metrics,gnmi", --log-topics, "traps,logs,flows",
               --device-map, "${DEVICE_MAP:-}",
               --opensearch-endpoint, "http://opensearch:9200", --opensearch-index, snmp-logs, --prometheus-url, "http://prometheus:9090/api/v1/write"]
     environment:

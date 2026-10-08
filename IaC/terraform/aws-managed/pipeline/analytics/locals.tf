@@ -1,5 +1,5 @@
 # nwc-poc - PIPELINE analytics root module. A Spark streaming job on EMR Serverless reads the Telegraf messages
-# (var.metric_topics metrics / gnmi / mdt and var.log_topics traps / logs) from MSK (IaC/terraform/aws-managed/pipeline/stream) and stores them in S3 Tables (Iceberg, all topics), OpenSearch Serverless
+# (var.metric_topics metrics / gnmi and var.log_topics traps / logs / flows; logs from syslog-ng, flows from GoFlow2) from MSK (IaC/terraform/aws-managed/pipeline/stream) and stores them in S3 Tables (Iceberg, all topics), OpenSearch Serverless
 # (log topics), Amazon Managed Service for Prometheus (metric topics) and, when asked, the HTTP Event Collector of a Splunk
 # (all topics; Splunk Enterprise on ECS here in splunk.tf, inside the VPC) - see var.sinks. Grafana OSS on ECS (grafana.tf)
 # shows the Prometheus and OpenSearch sinks. The job only stores: detection is done by the Grafana alert rules (metrics) and the

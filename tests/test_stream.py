@@ -61,7 +61,7 @@ check("空のマイクロバッチでは sender を呼ばない（検知の見�
       re.search(r"\n\s*if records:\n\s*dropped = sender\(records\)", src) is not None and 'name == "detect"' not in src)
 
 
-# ---- ログの経路: SR Linux の system logging remote-server（udp）→ lab の EC2（203.0.113.1:5140 を Telegraf の NLB へ DNAT）→ Telegraf（ECS）の inputs.syslog
+# ---- ログの経路: SR Linux の system logging remote-server（udp）→ lab の EC2（203.0.113.1:5140 を NLB へ DNAT）→ syslog-ng（cycle 012。それまでは Telegraf の inputs.syslog）
 # → Kafka の logs → Spark（2026-09-26。FRR + rsyslog をやめた）
 def _read(*parts):
     with open(os.path.join(ROOT, *parts), encoding="utf-8") as f:
@@ -100,25 +100,19 @@ check("containerlab の VM 2 台は linux で、leaf の組へ 2 本（bond）",
 check("lab.sh forward は syslog の LOG_PORT も trap の 162 と同じ仕組みで DNAT する（rsyslog は無い）",
       re.search(r'-p udp --dport "\$LOG_PORT" "\$\{c\[@\]\}" -j DNAT --to-destination "\$t:\$LOG_PORT"', labsh) is not None
       and "rsyslog" not in labsh and "LOG_DIR" not in labsh and re.search(r"^\s*logs\)", labsh, re.M) is not None)
-# ログのポートは 5 か所で同じ（lab.sh / telegraf.sh / telegraf.conf.in / stream の NLB / 土台の SG の通信の表）。trap は NLB の 162 → タスクの 1162（非 root）
-check("syslog のポートが lab.sh・telegraf.sh・telegraf.conf.in・stream の NLB・土台の通信の表で同じで、trap は NLB の 162 をタスクの 1162 で受ける",
-      re.search(rf"^LOG_PORT=\$\{{LOG_PORT:-{log_port}\}}$", tgsh, re.M) is not None and re.search(r'^\s*server = "udp://__BIND__:__LOG_PORT__"$', tele, re.M) is not None
-      and re.search(r'^\s*service_address = "udp://__BIND__:__TRAP_PORT__"$', tele, re.M) is not None and re.search(r"^TRAP_PORT=\$\{TRAP_PORT:-1162\}$", tgsh, re.M) is not None
+# ログのポートは 3 か所で同じ（lab.sh / stream の NLB / 土台の SG の通信の表。Telegraf は cycle 012 で syslog を受けなくなった）。trap は NLB の 162 → タスクの 1162（非 root）
+check("syslog のポートが lab.sh・stream の NLB・土台の通信の表で同じで、trap は NLB の 162 をタスクの 1162 で受ける",
+      re.search(r'^\s*service_address = "udp://__BIND__:__TRAP_PORT__"$', tele, re.M) is not None and re.search(r"^TRAP_PORT=\$\{TRAP_PORT:-1162\}$", tgsh, re.M) is not None
       and all(re.search(rf'\{{ from = "{a}", to = "{b}", protocol = "udp", port = {pt},', core_sg) is not None
               for a, b, pt in (("lab_mgmt", "telegraf_dialout_nlb", log_port), ("lab", "telegraf_dialout_nlb", log_port), ("telegraf_dialout_nlb", "telegraf_dialout", log_port),
                                ("lab_mgmt", "telegraf_dialout_nlb", 162), ("lab", "telegraf_dialout_nlb", 162), ("telegraf_dialout_nlb", "telegraf_dialout", 1162)))
       and "log_port" not in lab_locals
       and re.search(rf'syslog = \{{ listener = {log_port}, container = {log_port}, protocol = "UDP" \}}', stream_tg) is not None
       and re.search(r'trap\s+= \{ listener = 162, container = 1162, protocol = "UDP" \}', stream_tg) is not None)
-# MDT の dial-out は 4 か所で同じポート（telegraf.sh / telegraf.conf.in / stream の NLB とタスク / 土台の通信の表）で TCP。NLB は TCP の送り元を残さない
-check("MDT は tcp 57000 で受ける（inputs.cisco_telemetry_mdt・telegraf.sh・NLB の TCP のリスナー・タスクの portMappings・NLB → タスクの SG）",
-      re.search(r'^MDT_PORT=\$\{MDT_PORT:-57000\}$', tgsh, re.M) is not None
-      and re.search(r'\[\[inputs\.cisco_telemetry_mdt\]\]\s*\n\s*transport = "grpc"\s*\n\s*service_address = "__BIND__:__MDT_PORT__"', tele) is not None
-      and re.search(r'mdt\s+= \{ listener = 57000, container = 57000, protocol = "TCP" \}', stream_tg) is not None
-      and "protocol    = each.value.protocol" in stream_tg and "protocol          = each.value.protocol" in stream_tg
-      and 'preserve_client_ip = each.value.protocol == "UDP"' in stream_tg
-      and '{ containerPort = 57000, protocol = "tcp" }' in stream_tg
-      and re.search(r'\{ from = "telegraf_dialout_nlb", to = "telegraf_dialout", protocol = "tcp", port = 57000,', core_sg) is not None
+# MDT と syslog の受け口は Telegraf から外した（cycle 012。MDT は使う機器が無い、syslog は syslog-ng）。NLB とタスクと SG は commit 3 で外す
+check("Telegraf（telegraf.conf.in / telegraf.sh）に MDT と syslog の受け口が無い（inputs.cisco_telemetry_mdt / inputs.syslog / MDT_PORT / LOG_PORT / SYSLOG_STANDARD）",
+      "cisco_telemetry_mdt" not in tele and "inputs.syslog" not in tele and "__MDT_PORT__" not in tele and "__LOG_PORT__" not in tele and "__SYSLOG_STANDARD__" not in tele
+      and not any(k in tgsh for k in ("MDT_PORT", "LOG_PORT", "SYSLOG_STANDARD"))
       and "57000" not in lab_locals and "57000" not in labsh)
 # 管理ネットワークは 4 か所で同じ（containerlab の mgmt / lab.sh / lab の locals の VPC ルート / 土台の SG の lab_mgmt）
 mgmt = re.search(r"^MGMT=(\S+)$", labsh, re.M).group(1)
@@ -184,16 +178,14 @@ check("lab_* は processors.starlark（lab_gnmi.star）と aggregators.starlark�
       and re.findall(r'"(\w+)"', _star_aggr.group(1)) == ["lab_subif_type", "lab_if_oper"]
       and not any("lab_" in blk.split("# <<< sink", 1)[0] for blk in tele.split("[[outputs.kafka]]")[1:])
       and re.search(r"^COPY telegraf\.conf\.in lab_gnmi\.star lab_circuits\.star /etc/telegraf/$", _dockerfile, re.M) is not None)
-check("MDT は collector タグで mdt トピックへだけ（measurement の名前は機器で変わるので namepass でなく tagpass）",
-      re.search(r'\[\[inputs\.cisco_telemetry_mdt\]\][\s\S]*?\[inputs\.cisco_telemetry_mdt\.tags\]\s*\n\s*collector = "mdt"', tele) is not None
-      and re.search(r'topic = "mdt"[\s\S]*?\[outputs\.kafka\.tagpass\]\s*\n\s*collector = \["mdt"\]\s*\n# <<< sink kafka', tele) is not None
-      and tele.count('topic = "mdt"') == 1)
+check("Telegraf の Kafka の出力は metrics / gnmi / traps の 3 つ（mdt と logs は cycle 012 で外した）",
+      re.findall(r'^\s*topic = "(\w+)"', tele, re.M) == ["metrics", "gnmi", "traps"] and "tagpass" not in tele)
 check("lab.sh forward は gNMI の GNMI_PORT/tcp も SNMP の 161/udp と同じく Telegraf から管理ネットワークへ通す",
       re.search(r'-p tcp --dport "\$GNMI_PORT" "\$\{c\[@\]\}" -j ACCEPT', labsh) is not None and re.search(r"^GNMI_PORT=57400$", labsh, re.M) is not None)
 _up = read_ops("up")
-check("syslog の形式は stream の syslog_standard（既定 RFC3164 = 本番の Cisco）→ タスクの SYSLOG_STANDARD → telegraf.conf.in の __SYSLOG_STANDARD__。up.sh も deploy.env の SYSLOG_STANDARD（既定 RFC3164。lab の SR Linux は RFC5424）を渡す",
-      re.search(r'^\s*syslog_standard = "__SYSLOG_STANDARD__"$', tele, re.M) is not None and 's#__SYSLOG_STANDARD__#$SYSLOG_STANDARD#' in tgsh
-      and '{ name = "SYSLOG_STANDARD", value = var.syslog_standard }' in stream_tg
+check("syslog の形式は stream の syslog_standard（既定 RFC3164 = 本番の Cisco）→ タスクの SYSLOG_STANDARD。up.sh も deploy.env の SYSLOG_STANDARD（既定 RFC3164。lab の SR Linux は RFC5424）を渡す"
+      "（Telegraf は cycle 012 で読まなくなった。stream と up.sh は commit 3 / 4 で syslog-ng へ移す）",
+      '{ name = "SYSLOG_STANDARD", value = var.syslog_standard }' in stream_tg
       and re.search(r'variable "syslog_standard" \{[^}]*default\s*=\s*"RFC3164"', _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "variables.tf")) is not None
       and '-var "syslog_standard=$SYSLOG_STANDARD"' in _up and 'SYSLOG_STANDARD="${SYSLOG_STANDARD:-RFC3164}"' in _up and '[ "$SYSLOG_STANDARD" != "$LAB_SYSLOG_STANDARD" ]' in _up
       and "case \"$SYSLOG_STANDARD\" in RFC3164 | RFC5424) ;;" in _up
@@ -219,15 +211,12 @@ check("forward の iptables の規則は全部目印付き（unforward で消せ
       all("${c[@]}" in l for l in labsh.splitlines() if re.match(r"\s*iptables .*-I ", l)))
 check("Telegraf はポーリングの IF の鍵を ifName（タグ）にする（SR Linux の ifDescr は description 付き）",
       re.search(r'name = "ifName"\s*\n\s*oid = "\.1\.3\.6\.1\.2\.1\.31\.1\.1\.1\.1"\s*\n\s*is_tag = true', tele) is not None)
-check("Telegraf は機器の syslog を inputs.syslog（udp）で受け、device_log として logs トピックに出す",
-      'name_override = "device_log"' in tele and "[[inputs.tail]]" not in tele and "[[inputs.socket_listener]]" not in tele
-      and re.search(r'topic = "logs"[\s\S]*?namepass = \["device_log"\]|namepass = \["device_log"\][\s\S]*?topic = "logs"', tele) is not None)
-check("metrics / traps / mdt の出力に device_log が混ざらない（namepass / namedrop / tagpass）",
-      all(re.search(r"name(pass|drop)|tagpass", blk) for blk in tele.split("[[outputs.kafka]]")[1:]))
-check("syslog の hostname を sysName のタグに付け替える（metrics / traps と同じ機器名のタグ）",
-      re.search(r'\[\[processors\.rename\]\]\s*\n\s*namepass = \["device_log"\]\s*\n\s*\[\[processors\.rename\.replace\]\]\s*\n\s*tag = "hostname"\s*\n\s*dest = "sysName"', tele) is not None)
-check("Spark の既定は gnmi / mdt トピックも読む（iceberg / prometheus は metrics,gnmi,mdt、opensearch は traps,logs）", mod.METRIC_TOPICS == "metrics,gnmi,mdt"
-      and mod.sink_topics("iceberg", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "metrics,gnmi,mdt,traps,logs" and mod.sink_topics("prometheus", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "metrics,gnmi,mdt")
+check("Telegraf は機器の syslog を受けない（syslog-ng が logs トピックに出す。cycle 012）: device_log / processors.rename / inputs.tail / inputs.socket_listener が無い",
+      not any(re.search(rf"^[^#\n]*{re.escape(k)}", tele, re.M) for k in ("device_log", "processors.rename", "[[inputs.tail]]", "[[inputs.socket_listener]]")))   # コメントの行は数えない
+check("metrics / gnmi / traps の出力は namepass で分ける（ほかの measurement が混ざらない）",
+      all(re.search(r"name(pass|drop)", blk) for blk in tele.split("[[outputs.kafka]]")[1:]))
+check("Spark の既定は gnmi トピックも読む（iceberg は metrics,gnmi,traps,logs,flows、prometheus は metrics,gnmi。mdt は cycle 012 で外した）", mod.METRIC_TOPICS == "metrics,gnmi"
+      and mod.sink_topics("iceberg", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "metrics,gnmi,traps,logs,flows" and mod.sink_topics("prometheus", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "metrics,gnmi")
 _access = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "access.tf")
 _lab_tg = _read("IaC", "terraform", "aws-managed", "pipeline", "lab", "telegraf.tf")
 # Kafka による違いは msk.tf の kafka_* の locals（OSS 版は IaC/terraform/oss/pipeline/stream/kafka.tf。cycle 005）
@@ -277,8 +266,8 @@ check("up.sh は base/core の state に古い Telegraf の SG（telegraf）が�
 _down = _read("ops", "down.sh")
 check("down.sh は stream の必須変数（snmp_agents / gnmi_targets）に形だけ合う値を渡して destroy する（telegraf.sh の形の検査と同じ）",
       re.search(r"destroy_root pipeline/stream -var 'snmp_agents=\"udp://[0-9.]+:161\"' -var 'gnmi_targets=\"[0-9.]+:57400\"'", _down) is not None)
-check("Spark の既定は logs も読む", mod.LOG_TOPICS == "traps,logs"
-      and mod.sink_topics("opensearch", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "traps,logs")
+check("Spark の既定は logs（syslog-ng）と flows（GoFlow2）も読む", mod.LOG_TOPICS == "traps,logs,flows"
+      and mod.sink_topics("opensearch", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "traps,logs,flows")
 
 # ---- lab_gnmi.star / lab_circuits.star を Python で動かす（Python と Starlark の両方で動く書き方にしてある。Telegraf の Starlark は Metric と state を入れる）
 class _NoLen(dict):   # Telegraf の Metric の tags / fields は len も真偽値も持たない（len(m.fields) は Telegraf で落ちた）

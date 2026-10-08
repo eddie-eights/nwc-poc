@@ -38,11 +38,11 @@ BACKLOG 28「コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種
   ```
   {"fields":{"message":"<本文>","severity_code":<0-7>,"facility_code":<0-23>,"procid":"<PROGRAM の pid>","msgid":"<MSGID>","version":1,"timestamp":<送信元の時刻 ns>},
    "name":"device_log",
-   "tags":{"hostname":"<HOST>","appname":"<PROGRAM>","facility":"<FACILITY>","severity":"<LEVEL>","source":"<SOURCEIP>"},
+   "tags":{"sysName":"<HOST>","appname":"<PROGRAM>","facility":"<FACILITY>","severity":"<LEVEL>","source":"<SOURCEIP>"},
    "timestamp":<受信時刻 秒>}
   ```
 
-  `$(format-json --scope rfc5424 …)` で作る（キーの名前は Telegraf の `inputs.syslog` が出すものと同じにして、Grafana の logs のダッシュボードと Splunk の保存済みサーチ（`device_log` の `hostname` / `severity` / `message`）を変えない。**Telegraf が出す実物の 1 行を手元の compose で取って `docs/collection.md` に貼り、syslog-ng の出力と見比べる**（検証 2）。`timestamp` は Telegraf の `json_timestamp_units` の既定と同じ秒）
+  `$(format-json --scope rfc5424 …)` で作る（キーの名前は Telegraf の `inputs.syslog` が出すものと同じにして、Grafana の logs のダッシュボードと Splunk の保存済みサーチ（`device_log` の `sysName` / `severity` / `message`。Telegraf は `processors.rename` で `hostname` を `sysName` にしていた）を変えない。**Telegraf が出す実物の 1 行を手元の compose で取って `docs/collection.md` に貼り、syslog-ng の出力と見比べる**（検証 2）。`timestamp` は Telegraf の `json_timestamp_units` の既定と同じ秒）
 - Kafka の設定（`kafka-c()`。**キーの名前は未確認**（未確定事項 3）。一般の librdkafka の名前で書く）: `bootstrap-servers("<KAFKA_BROKERS>")`、`topic("logs")`、`config("security.protocol" => "SASL_SSL", "sasl.mechanism" => "SCRAM-SHA-512", "sasl.username" => "<env>", "sasl.password" => "<env>")`。`KAFKA_AUTH=none`（OSS 版・手元）では `config()` を書かない。設定は `app/syslog-ng/syslog-ng.conf.in` + `app/syslog-ng/syslog-ng.sh`（`telegraf.sh` と同じく環境変数を sed で埋めて起動。`KAFKA_AUTH` は `scram` / `none`）。Dockerfile は要らない（公式イメージに conf をマウント … ではなく、閉域で ECS に渡す都合上、`docker/images/syslog-ng/Dockerfile` で conf.in と sh を COPY したものを ECR に置く。タグは `dir_tag` で決める = `telegraf` と同じ手筋）
 - ECS: `IaC/terraform/aws-managed/pipeline/stream/collectors.tf`（新規。telegraf.tf と同じ構造: タスク定義（ARM64、0.25 vCPU / 0.5 GB）、サービス（`desired_count = 1`、NLB の target group）、実行ロール（secret と KMS）、タスクロール（EcsExec と perimeter）、ログは `/ecs/<prefix>-syslog-ng`）。SG は `syslog_ng`（新規。`telegraf_dialout` と同じ: NLB から udp 5140 を受け、msk 9096 とエンドポイントへ）
 
@@ -55,7 +55,7 @@ BACKLOG 28「コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種
 ### 4. Spark: `flows` を読む
 
 - `app/spark/snmp_sinks.py`: `LOG_TOPICS = "traps,logs,flows"`。`read_rows()` の JSON スキーマは Telegraf の形（`name` / `tags` / `fields` / `timestamp`）なので、`flows` のときだけ**読み替えの列**を足す: `name = "flow"`、`tags = {sampler: sampler_address, src: src_addr, dst: dst_addr, proto, src_port, dst_port, in_if, out_if, type}`、`fields = {bytes, packets}`、`timestamp = time_received_ns / 1e9`。実装は `from_json` のスキーマをトピックで分ける（`kafka_topic == "flows"` で `when`）。`ts isNotNull` の filter はそのまま
-- 格納先: `logs` と同じ経路（Iceberg の `raw_telemetry`、OpenSearch の `<prefix>-flows-*`、Splunk の sourcetype `nwc:flow`）。`INDEX_PREFIX` / `SOURCETYPE` の表（L84-87）に `flows` を足す
+- 格納先: `logs` と同じ経路（Iceberg の `raw_telemetry`、OpenSearch の `<prefix>-snmp-logs-*`、Splunk の `sourcetype=netops:flows` / `source=telegraf:flow`）。ログのトピックはどれも同じ索引と `netops:<トピック>` に入るので、表を足す必要は無い（実装時に確かめた。PM 了承）
 - `IaC/terraform/aws-managed/pipeline/analytics/variables.tf` の `log_topics` の既定に `flows` を足し、`metric_topics` の既定から `mdt` を外す（`locals.tf` L2 / `tables.tf` L58 のコメントも）
 - 手元の compose（`docker/compose/compose.yaml`）: spark の `--log-topics` に `flows`。Grafana / Splunk のダッシュボードは触らない（flows の画面は BACKLOG に積む）
 
@@ -108,7 +108,7 @@ commit は 4 つ（ステップごと）。各 commit で `bash ops/check.sh` �
 
 1. **手元の compose（Mac で可）**: `docker compose up -d kafka-1 kafka-2 kafka-3 syslog-ng goflow2` → `logger -n 127.0.0.1 -P 5140 --rfc5424 -t test "hello"`（または `python3 -c` で RFC 5424 の 1 行を udp 5140 へ）と `uv run python tools/netflow_send.py 127.0.0.1 2055` → Kafbat UI（または `kafka-console-consumer`）で `logs` に `{"fields":{"message":"hello",…},"name":"device_log",…}` が 1 件、`flows` に `{"type":"NETFLOW_V5",…,"src_addr":"10.0.0.1",…}` が 1 件。期待出力を `build.md` に貼る
 2. **syslog の形の一致**: Telegraf 1.40.1（009 の手順で `--test`）が出す `device_log` の 1 行（`tags` のキー 5 つ、`fields` のキー 7 つ）と、syslog-ng の出力の 1 行を並べて、**キーの集合が同じ**であること（値の型: `severity_code` / `facility_code` / `version` は数値、`timestamp` は数値）。`tests/test_collectors.py` が conf.in の `format-json` のキーと Telegraf のキーの表を突き合わせる
-3. **AWS（マネージド）**: `ops/up.sh` のあと、`aws kafka describe-cluster` の `ClientAuthentication.Sasl` が `{"Scram":{"Enabled":true},"Iam":{"Enabled":true}}`、`list-scram-secrets` に `AmazonMSK_<prefix>-collectors` が 1 つ、`ecs describe-services` で `syslog-ng` と `goflow2` が `runningCount 1`、`bootstrap_brokers_sasl_scram` の output が `:9096` で 3 つ。既存のクラスタに scram を足したときの apply が **in-place**（plan に `~ update in-place` で `aws_msk_cluster.stream`。`-/+` が出たら止めて報告）。lab の EC2 から `sudo lab fail-main` → Splunk / Grafana の logs に `device_log`（syslog-ng 経由）が出る。NetFlow は lab から送れないので、lab の EC2 のホストで `tools/netflow_send.py <NLB>:2055` を 1 回打って Splunk に `nwc:flow` が 1 件。**終わったら `ops/down.sh`。** secret が消え、KMS キーが `PendingDeletion` になったことを確かめる（`describe-key` の `KeyState`）
+3. **AWS（マネージド）**: `ops/up.sh` のあと、`aws kafka describe-cluster` の `ClientAuthentication.Sasl` が `{"Scram":{"Enabled":true},"Iam":{"Enabled":true}}`、`list-scram-secrets` に `AmazonMSK_<prefix>-collectors` が 1 つ、`ecs describe-services` で `syslog-ng` と `goflow2` が `runningCount 1`、`bootstrap_brokers_sasl_scram` の output が `:9096` で 3 つ。既存のクラスタに scram を足したときの apply が **in-place**（plan に `~ update in-place` で `aws_msk_cluster.stream`。`-/+` が出たら止めて報告）。lab の EC2 から `sudo lab fail-main` → Splunk / Grafana の logs に `device_log`（syslog-ng 経由）が出る。NetFlow は lab から送れないので、lab の EC2 のホストで `tools/netflow_send.py <NLB>:2055` を 1 回打って Splunk に `sourcetype=netops:flows` が 1 件。**終わったら `ops/down.sh`。** secret が消え、KMS キーが `PendingDeletion` になったことを確かめる（`describe-key` の `KeyState`）
 4. **AWS（OSS）**: 011 や他のサイクルの検証と一緒に 1 回。`syslog-ng` / `goflow2` が ECS の Kafka（9092）に書く。別立てで時間を取らない
 5. `bash ops/check.sh` が `すべて通過`。`docs/development.md` の本数を直す
 
