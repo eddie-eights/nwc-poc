@@ -103,3 +103,9 @@ None
   - 設計との関わり: design.md A（:61「`data.groupNextToken` が空でない文字列のあいだ」、:65「`groupNextToken` が文字列でない」→ `ValueError`）。:65 の字面からは実装のずれ（PM の決まりの (1)）とも読める
   - 実害: design.md :27 の Grafana のソース（`NextToken string json:"groupNextToken,omitempty"`）では文字列か省略しか来ないので、今の Grafana では起きない（ソースを読んだだけ。偽の値を返す Grafana は再現していない）
   - 扱い: Nit のまま直さない。直すかどうかは PM が決める（直すと実装ファイルが変わるので cold reviewer の 2 回目が要る）
+
+### PM の判断（2026-10-09）
+
+- **Nit（`ops/grafana_rules_check.py:95` の `while token := data.get("groupNextToken")` が、偽の非文字列 0 / false / [] で str の検査を抜ける）: 見送り。** design.md A の「`groupNextToken` が文字列でない → ValueError」からはずれているが、Grafana 13.2.3 の `NextToken string json:"groupNextToken,omitempty"`（design.md「読んだ実物」）は文字列しか返さず、偽の非文字列は来ない。真の非文字列は str の検査で ValueError になる。直すと実装ファイルが変わって cold reviewer の 2 回目が要るので、実害の無いこの 1 件のためには回さない。
+- **#1（手順 10 の `tf pipeline/analytics output` に守りが無い。`ops/up.sh:1328`、`oss/ops/up.sh:615`）: 見送り。** 手順 10 は手順 8 で analytics を apply した直後なので、apply が通った state が手順 10 で丸ごと読めなくなる形は up.sh の 1 回の実行の中では起きない。Splunk の行も同じ形で 015 より前からある。design.md の範囲外。
+- **#9（`ops/check-grafana.sh:42-43` の `2>/dev/null` が terraform のエラーを捨てる）: 見送り。** exit 3 の文は「読めないか空」で偽の OK にはならない（test_oss_ops に検査あり）。015 より前からある形で design.md の範囲外。
