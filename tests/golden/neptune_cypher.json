@@ -999,7 +999,7 @@
  ],
  "awsio": [
   [
-   "MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance",
+   "MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance, n.role AS role",
    {}
   ],
   [

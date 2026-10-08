@@ -56,6 +56,9 @@ TREX_NET=10.100.0; TREX_IP_BASE=11
 # lab trex start がコンテナの中に書く設定（TRex の既定の置き場。t-rex-64 は --cfg 無しでこれを読む）、TRex の出力の置き場、
 # trex/stl のプロファイルを写す先（trex-console の start -f に渡すパス。trex/README.md）
 TREX_CFG=/etc/trex_cfg.yaml; TREX_LOG=/var/log/trex.log; TREX_PROFILES=/opt/nwc-trex
+# trex start / stop / status が pgrep / pkill -f で探す式。t-rex-64 は bash のラッパーで、trex-cfg などを済ませてから子の _t-rex-64 を起こす。
+# この式は両方に当たるので、起動の途中（ラッパーだけの間）も「動いている」と見る
+TREX_PROC=t-rex-64
 # fail-bgp / heal-bgp が止める iBGP（EVPN）の隣接: dc1-a-leaf-01 から dc1-spine-01 のループバックへの 1 本（srlinux/dc1-a-leaf-01.cli の bgp neighbor）
 BGP_NODE=dc1-a-leaf-01; BGP_PEER=10.255.0.1
 # trap-test が送る trap の OID（net-snmp の NET-SNMP-EXAMPLES-MIB::netSnmpExampleHeartbeatNotification）。link でも起動の知らせでもないので、
@@ -71,7 +74,12 @@ clab() { containerlab "$@"; }
 x() { docker exec "clab-$LAB-$1" "${@:2}"; }
 # SR Linux の CLI。引数を 1 行ずつ流す（sr_cli "a" "b" は 1 行に繋がるので stdin から）
 srl() { printf '%s\n' "${@:2}" | docker exec -i "clab-$LAB-$1" sr_cli -d; }
-routers() { for f in srlinux/*.cli; do basename "$f" .cli; done; }
+# SR Linux の機器名: トポロジ（$TOPO.in の nodes）の kind: nokia_srlinux。srlinux/*.cli を数えると、S3 に残った古い .cli の機器も入り、logs が止まる
+routers() {
+  awk '/^  nodes:/ { on = 1; next } on && /^  [^ ]/ { on = 0 }
+       on && /^    [^ #][^ ]*:[[:space:]]*$/ { n = $1; sub(/:$/, "", n) }
+       on && n != "" && /^      kind: nokia_srlinux[[:space:]]*$/ { print n; n = "" }' "$TOPO.in"
+}
 mgmt_ip() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "clab-$LAB-$1"; }
 # $BGP_NODE の neighbor $BGP_PEER の admin-state を enable / disable にし、state を読み直して変わったことを確かめる。
 # commit が通らなかったとき sr_cli -d が 0 以外で終わるかは確かめていないので、終了コードに頼らない。読み直した出力は変数に取ってから grep する
@@ -369,7 +377,7 @@ case "${1:-}" in
         mapfile -t ports < <(trex_ports)
         # TRex はポートを 2 本ずつ組にする（0-1、2-3）ので偶数本が要る（gen_lab.py も --leaves を偶数に限る）
         if [ "${#ports[@]}" -lt 2 ] || [ $(( ${#ports[@]} % 2 )) -ne 0 ]; then echo "$TREX のポートが偶数本でない（${ports[*]:-無し}）。'$LAB_CMD check' の TRex の回線を見る" >&2; exit 1; fi
-        if x "$TREX" pgrep -f _t-rex-64 >/dev/null 2>&1; then echo "TRex はもう動いている（'$LAB_CMD trex status'。止めるのは '$LAB_CMD trex stop'）"; exit 0; fi
+        if x "$TREX" pgrep -f "$TREX_PROC" >/dev/null 2>&1; then echo "TRex はもう動いている（'$LAB_CMD trex status'。止めるのは '$LAB_CMD trex stop'）"; exit 0; fi
         trex_cfg "${ports[@]}" | docker exec -i "clab-$LAB-$TREX" sh -c "cat > $TREX_CFG"
         x "$TREX" mkdir -p "$TREX_PROFILES"
         docker cp trex/stl "clab-$LAB-$TREX:$TREX_PROFILES/"
@@ -379,9 +387,9 @@ case "${1:-}" in
         docker exec -d "clab-$LAB-$TREX" sh -c 'cd "$1" && exec ./t-rex-64 -i --no-key --iom 0 > "$2" 2>&1' sh "${dir%/*}" "$TREX_LOG"
         echo "TRex を起こした（ポート ${ports[*]}、設定 $TREX_CFG、出力 $TREX_LOG、プロファイル $TREX_PROFILES/stl）。起動に数十秒。'$LAB_CMD trex status' で見る"
         ;;
-      stop)   x "$TREX" pkill -f t-rex-64 || echo "TRex は動いていない" ;;
+      stop)   x "$TREX" pkill -f "$TREX_PROC" || echo "TRex は動いていない" ;;
       status)
-        x "$TREX" pgrep -af t-rex-64 || echo "TRex は動いていない（'$LAB_CMD trex start'）"
+        x "$TREX" pgrep -af "$TREX_PROC" || echo "TRex は動いていない（'$LAB_CMD trex start'）"
         x "$TREX" tail -n "${LINES:-20}" "$TREX_LOG" 2>/dev/null || true
         ;;
       *) sed -n '8p' "$SELF"; exit 1 ;;

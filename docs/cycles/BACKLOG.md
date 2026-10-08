@@ -68,16 +68,26 @@
 - [x] Grafana のアラートルールの Error 状態を ops で検出する（`execErrState: KeepLast` で `Normal (Error)` が隠れ、008 の A の不具合は画面を見るまで分からなかった。ルールの API の `alerts[].state` か、ルールのモデルを `/api/ds/query` に POST して HTTP 200 を見る。2026-10-08 に 008 の実装で見つけた） → 008-aws-verification-bugs（2026-10-08 完了。fix/grafana-plugin-pin-error-state の Round 3。`ops/check-grafana.sh` と `ops/grafana_rules_check.py`。AWS では未確認）
 - [ ] 手元の `check.sh` の Kafka のメッセージ数の判定で `messagesCount` が無い・null の応答を NG の理由つきで扱う（いまは Python の KeyError / TypeError で NG に倒れ、理由が読めない。2026-10-08 に 009 の cold review Round 1 の Nit 3）
 - [ ] 手元の `check.sh` の Telegraf の health の宛先を `up.sh` が決めた bind に合わせる（いまは `check.sh` を打った時点で 203.0.113.1 の有無を見直すので、`lab.sh down` のあとは 127.0.0.1 に打って案内が合わない。2026-10-08 に 009 の cold review Round 2 の Nit 2）
-- [ ] `IaC/terraform/aws-managed/base/ecr/outputs.tf` の `kafka_ui_repository_url` の description「pipeline/stream runs it on ECS.」を Web の EC2 の Docker が pull する形に直す（2026-10-08 に 010 の cold review の Nit 3）
-- [ ] Web の EC2 の user_data で Docker の `dnf install` / `systemctl enable --now docker` が落ちても Gradio の設定（`aws s3 sync`）まで進むようにする（いまは `set -e` で Gradio より前に止まる。2026-10-08 に 010 のセルフレビューの Nit 5 と cold review の Nit 4）
-- [ ] `docs/deploy.md` の 010 より前の環境の注意に、Fargate の kafka_ui が動いたままだと base/core の SG の削除が DependencyViolation で止まることを足す（2026-10-08 に 010 の cold review の Nit 5）
-- [ ] Kafbat UI の SSM の image を変えたときに Web の EC2 のコンテナを入れ替える手順を `docs/troubleshooting.md` に書く（いまはパスワードを変えたときの restart しか無く、起動時に 1 回読むだけなので restart か reboot まで旧版のまま。2026-10-08 に 010 のセルフレビューの Nit 4）
-- [ ] `SKIP_STREAM=1` のとき Web の EC2 の Kafbat UI の systemd ユニットが 30 秒ごとに再試行し続けるのを止める手段を作る（exit 75 の文言も AccessDenied やエンドポイント不達で「stream がまだ無い」と言う。2026-10-08 に 010 のセルフレビューの Nit 8）
+- [x] `IaC/terraform/aws-managed/base/ecr/outputs.tf` の `kafka_ui_repository_url` の description「pipeline/stream runs it on ECS.」を Web の EC2 の Docker が pull する形に直す（2026-10-08 に 010 の cold review の Nit 3） → 014-kafbat-ui-followups（2026-10-09 完了。AWS では未確認）
+- [x] Web の EC2 の user_data で Docker の `dnf install` / `systemctl enable --now docker` が落ちても Gradio の設定（`aws s3 sync`）まで進むようにする（いまは `set -e` で Gradio より前に止まる。2026-10-08 に 010 のセルフレビューの Nit 5 と cold review の Nit 4） → 014-kafbat-ui-followups（2026-10-09 完了。AWS では未確認）
+- [x] `docs/deploy.md` の 010 より前の環境の注意に、Fargate の kafka_ui が動いたままだと base/core の SG の削除が DependencyViolation で止まることを足す（2026-10-08 に 010 の cold review の Nit 5） → 014-kafbat-ui-followups（2026-10-09 完了。AWS では未確認）
+- [x] Kafbat UI の SSM の image を変えたときに Web の EC2 のコンテナを入れ替える手順を `docs/troubleshooting.md` に書く（いまはパスワードを変えたときの restart しか無く、起動時に 1 回読むだけなので restart か reboot まで旧版のまま。2026-10-08 に 010 のセルフレビューの Nit 4） → 014-kafbat-ui-followups（2026-10-09 完了。AWS では未確認）
+- [x] `SKIP_STREAM=1` のとき Web の EC2 の Kafbat UI の systemd ユニットが 30 秒ごとに再試行し続けるのを止める手段を作る（exit 75 の文言も AccessDenied やエンドポイント不達で「stream がまだ無い」と言う。2026-10-08 に 010 のセルフレビューの Nit 8） → 014-kafbat-ui-followups（2026-10-09 完了。AWS では未確認）
 - [ ] `lab graph` の案内の `sudo systemctl status <prefix>-lab-graph` を `journalctl -u` にする（`systemd-run --collect` なので containerlab graph がすぐ落ちると一時ユニットが消え「could not be found」になる。起動の成否を見ずに案内を出す。2026-10-08 に 010 のセルフレビューの Nit 7）
 - [ ] `ops/up.sh` の stream の ECR エンドポイントのコメントに Web の EC2 の Kafbat UI の pull も使うことを足す（いまは Telegraf だけ。2026-10-08 に 010 のセルフレビューの Nit 10）
-- [ ] Kafbat UI のクラスター名を `<prefix>-stream` から `<prefix>` にしたことを `docs/verification/20261008-oss-aws.md` の手筋（`kafka-ui.<名前空間>:8080` と `efukuda-nwc-oss-stream`）に注記する（REST の `/api/clusters/{name}/…` の識別子でもある。2026-10-08 に 010 のセルフレビューの Nit 6）
+- [x] Kafbat UI のクラスター名を `<prefix>-stream` から `<prefix>` にしたことを `docs/verification/20261008-oss-aws.md` の手筋（`kafka-ui.<名前空間>:8080` と `efukuda-nwc-oss-stream`）に注記する（REST の `/api/clusters/{name}/…` の識別子でもある。2026-10-08 に 010 のセルフレビューの Nit 6） → 014-kafbat-ui-followups（2026-10-09 完了。AWS では未確認）
 - [ ] `ops/grafana_rules_check.py` が rules API のページ分け（`group_limit` / `groupNextToken`）を追う（いまは 1 ページだけ見るので、見ていないルールのエラーで OK になる。13.2.2 では引数なしで全部返った。2026-10-08 に 008 (b) のセルフレビューの Nit N2）
 - [ ] `ops/check-grafana.sh` の未確認（401・届かない）と NG と die の終了コードを分け、未確認のときは「Failed to evaluate rule」のログを案内しない（2026-10-08 に 008 (b) のセルフレビューの Nit N4）
 - [ ] `ops/up.sh` と `oss/ops/up.sh` の 9-2 で `tf output` が失敗したら空の引数で `aws ecs wait` に進まず止める（いまは「10 分たっても安定しない」と出る。2026-10-08 に 008 (b) のセルフレビューの Nit N5）
 - [ ] `ops/up-common.sh` の `ssm_run` の読み直しに全体の締め切りを付ける（失敗が全部 Pending 扱いで待ち続ける。前からある。2026-10-08 に 008 (b) のセルフレビューの Nit N6）
 - [ ] 前の回の analytics が残っている回（`PIPELINE=0` など）でも 9-2 の Grafana のルールの検査を打つ（いまは analytics を作った回しか打たない。2026-10-08 に 008 (b) のセルフレビューの Nit N7）
+- [ ] 初回デプロイの最後のポートフォワーディングの時点で Kafbat UI がまだ上がっていないことがあるのを `docs/deploy.md` に書く（8-3 の restart の直後に起きる。2026-10-09 に 014 のセルフレビューの Nit 4）
+- [ ] Kafbat UI のユニットが 75 で failed のまま残ると `systemctl is-system-running` が degraded になるのを AWS で測る（`SuccessExitStatus=75` にする案。未計測。2026-10-09 に 014 のセルフレビューの Nit 5）
+- [ ] `SKIP_STREAM=1` で立てたあと terraform だけで stream を上げたとき admin-password の SSM が無いのを埋める（2026-10-09 に 014 のセルフレビューの Nit 6）
+- [ ] reboot のときに Kafbat UI の 69 の待ちが `enable --now` を最大 30 秒止めるのを AWS で測る（未計測。2026-10-09 に 014 のセルフレビューの Nit 8）
+- [ ] `tests/test_stream.py` の 8-3 / 7-5 の検査が行の位置（`_s75.split("\n")[2]`）と完全一致の文字列に依り、`.index()` の ValueError で残りの検査が止まるのを直す（変異 5 個は ValueError での検出。2026-10-09 に 014 のセルフレビューの Nit 9 と cold review の Nit 5）
+- [ ] `docs/troubleshooting.md` の Kafbat UI の行に `daemon-reload` / `enable` の失敗の形を足し、長すぎる行を小節に分ける（2026-10-09 に 014 のセルフレビューの Nit 10 と cold review の Nit 6）
+- [ ] `tests/test_stream.py` に、描いた user_data（`_krendered`）で Web のユニットの `Wants=x-nwc-poc-kafka-ui.service` を見る行を足す（いまはテンプレート `_wunit` だけ見る。2026-10-09 に 014 の cold review の Nit 1）
+- [ ] 014 の design.md の変更対象に `docs/architecture/resources/web-ec2.md` と `ssm-parameter-store.md` を足す（実装で直したが一覧に無い。2026-10-09 に 014 の cold review の Nit 2）
+- [ ] `docs/deploy.md` に、user_data を変えたので立てたままの環境は次の base/core の apply で Web の EC2 が作り直される（`web.tf:101` の `user_data_replace_on_change`。インスタンス ID が変わるので `start_session_command` を配り直す）ことを書く（2026-10-09 に 014 の cold review の Nit 3）
+- [ ] Kafbat UI のユニットの `RestartPreventExitStatus=75` が `exec docker run` したコンテナの 75 にも効くのを docs か設定で扱う（Kafbat UI が 75 で終わる筋は知られていない。2026-10-09 に 014 の cold review の Nit 4）
