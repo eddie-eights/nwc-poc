@@ -13,7 +13,7 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 |---|---|---|
 | サービス | `<prefix>-grafana`。クラスター `<prefix>-analytics`。1 タスク、サブネット a。AZ を選ぶキーは無い | `IaC/terraform/aws-managed/pipeline/analytics/grafana.tf` |
 | タスクの大きさ | Fargate ARM、0.5 vCPU / 1 GB | 変数 `grafana_task_cpu`、`grafana_task_memory` |
-| イメージ | Grafana OSS 13.2.3 にデータソースの plugin と provisioning を焼き込んだもの。ECR の `<prefix>-grafana` | `docker/images/grafana/Dockerfile`、変数 `grafana_image_tag` |
+| イメージ | Grafana OSS 13.2.3 にデータソースの plugin（amazonprometheus 3.2.0、opensearch 2.34.4。版は固定）と provisioning を焼き込んだもの。ECR の `<prefix>-grafana` | `docker/images/grafana/Dockerfile`、変数 `grafana_image_tag` |
 | 名前 | Cloud Map `grafana.<prefix>.internal:3000` | `grafana.tf` |
 | データソース | Prometheus（Amazon Managed Prometheus）と OpenSearch Serverless（`snmp-logs`）。どちらも SigV4（タスクロール） | `app/grafana/provisioning`、`app/grafana/start.sh` |
 | アラートルール | 4 本（フォルダ `nwc-alerts`）。1 分ごとに評価、`for: 0s` | `app/grafana/provisioning/alerting/netops-prometheus.yaml`、`netops-opensearch.yaml` |

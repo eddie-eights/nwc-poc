@@ -3,13 +3,16 @@
 # 上流の公式イメージに、AMP と OpenSearch のデータソースのプラグイン・データソースとダッシュボードの定義（provisioning/）・入口（start.sh）を足す。
 # タスクは VPC の外へ出られない（NAT が無い）ので、プラグインはビルドのときに入れておく。/var/lib/grafana は上流で VOLUME なので、
 # RUN で書いても残らない。/opt/grafana-plugins に入れて GF_PATHS_PLUGINS で指す（RUN があるので x86_64 の PC では QEMU（binfmt）が要る）
+# プラグインの版は固定する（指定しないとビルドした日の最新が入り、イメージのタグ（ops/up-common.sh の dir_tag。このファイルのハッシュ）も変わらない）。
+# opensearch は tests/test_alerts.py が bucket budget の式を写した版（上げるときはプラグインの式を読み直し、テストの OPENSEARCH_PLUGIN_COPIED も変える）。
+# amazonprometheus は 2026-09-28〜10-07 にビルドして AWS で動かしたイメージに入っていた版。ARG にしない（--build-arg で替えてもタグが変わらない）
 ARG GRAFANA_VERSION=13.2.3
 FROM grafana/grafana:${GRAFANA_VERSION}
 
 USER root
 RUN mkdir -p /opt/grafana-plugins \
- && grafana cli --pluginsDir /opt/grafana-plugins plugins install grafana-amazonprometheus-datasource \
- && grafana cli --pluginsDir /opt/grafana-plugins plugins install grafana-opensearch-datasource \
+ && grafana cli --pluginsDir /opt/grafana-plugins plugins install grafana-amazonprometheus-datasource 3.2.0 \
+ && grafana cli --pluginsDir /opt/grafana-plugins plugins install grafana-opensearch-datasource 2.34.4 \
  && chown -R 472:0 /opt/grafana-plugins
 COPY provisioning /etc/grafana/netops
 COPY --chmod=0755 start.sh /usr/local/bin/nwc-grafana

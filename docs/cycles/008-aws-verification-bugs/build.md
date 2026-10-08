@@ -363,3 +363,136 @@ WARNING も例外も出なかった。認証ありの Neo4j と、長い書き�
 - 前: Must fix 無し。プラグインの版は範囲外の Nit。seed_graph.py の失敗はテストの 3 件目で確かめたとしていた
 - 後: Must fix 無しは変わらない。A の「直った」は「プラグイン 2.34.4 と interval の固定のもとで」の条件付きにした。2026-10-08 の最新は 2.34.4 なので今日ビルドすれば同じだが、版を固定しない限り保証は無い（#1。Should fix に上げ、PM に BACKLOG の候補として出す）。KeepLast のため、AWS の確認は rules API の `health` ではなく `state` か `/api/ds/query` で見る（#2）。seed_graph.py の失敗の型をテストが縛っていなかったのは直した（#3、e517ae5）
 - 残るリスク: AWS の全部、認証ありの Neo4j、size 10 の余裕（#4）、打ち直しの時間と揺らぎ（#5、#6）
+
+## Round 2
+
+実装モデル: claude-opus-5-5 / effort: 既定のまま（切り替えていない）
+
+エンジニア1（PM の指示）。review.md の Round 1 の Should fix 2 件と Nit の「shard 2 は推測」を、ブランチ `fix/grafana-plugin-pin-error-state`（cde390f から）で直した。
+同じブランチの次の commit（ルールの Error 状態の検出）とは別 commit。AWS には触っていない。BACKLOG.md は触っていない。
+
+### 直したこと
+
+| 指摘 | 直したこと |
+|---|---|
+| Should fix 1（trap の送り元が size を超える） | `netops-opensearch.yaml` のコメントを「lab は trap の送り元 7 = SR Linux 6 台 + lab.sh の trap-test の dc1-host-01」にし、上位 size 件なので超えると落ちることを書いた。`tests/test_alerts.py` に check を 1 つ: `srlinux/*.cli` のうち trap の宛先が gen_lab の `MGMT_GW` のもの（全台で、`splab.clab.yml.in` の nokia_srlinux の数と同じ）と `ACC_VM` を足した数が sysName の size 以下。コメントの数・台数・機器名もそれと同じ |
+| Should fix 2（プラグインの版） | `docker/images/grafana/Dockerfile` で amazonprometheus 3.2.0、opensearch 2.34.4 に固定（ARG にしない。`--build-arg` で替えてもタグ（dir_tag）が変わらないので）。`tests/test_alerts.py` に `OPENSEARCH_PLUGIN_COPIED = "2.34.4"`（式を写した版）を置き、Dockerfile の版と突き合わせる check を 1 つ |
+| Nit（yaml 23 行目の shard 2） | 「shard 2 はエラー文の 13600 から逆算した値で、AOSS の shard 数そのものは見ていない」を 1 行足した |
+| （ついで） | `docs/architecture/resources/grafana.md` のイメージの行に 2 つの版を書いた |
+
+amazonprometheus の版は手元のイメージで実測した（AWS には当たっていない。ECR の名前のタグは手元に残っていたもの）。GitHub の最新は v3.3.0（2026-10-06）だが、10-07 のビルドにも入っていないので、AWS で動かした 3.2.0 にした。
+
+```
+$ gh api repos/grafana/grafana-amazonprometheus-datasource/releases/latest --jq '.tag_name + " " + .published_at'
+v3.3.0 2026-10-06T18:02:22Z
+$ bash scratchpad/plugin_versions.sh   # 手元のイメージの /opt/grafana-plugins/*/plugin.json の version
+== nwc-local-grafana:latest (created 2026-10-07T03:12:35.846726087Z)
+/opt/grafana-plugins/grafana-amazonprometheus-datasource/plugin.json "version": "3.2.0"
+/opt/grafana-plugins/grafana-opensearch-datasource/plugin.json "version": "2.34.4"
+== 493116771193.dkr.ecr.ap-northeast-1.amazonaws.com/efukuda-nwc-poc-grafana:13.2.2-8bc87b12c3d6 (created 2026-10-07T03:12:35.846726087Z)
+/opt/grafana-plugins/grafana-amazonprometheus-datasource/plugin.json "version": "3.2.0"
+/opt/grafana-plugins/grafana-opensearch-datasource/plugin.json "version": "2.34.4"
+== 493116771193.dkr.ecr.ap-northeast-1.amazonaws.com/efukuda-nwc-oss-grafana:13.2.2-8bc87b12c3d6 (created 2026-10-07T03:12:35.846726087Z)
+/opt/grafana-plugins/grafana-amazonprometheus-datasource/plugin.json "version": "3.2.0"
+/opt/grafana-plugins/grafana-opensearch-datasource/plugin.json "version": "2.34.4"
+== 493116771193.dkr.ecr.ap-northeast-1.amazonaws.com/efukuda-nwc-poc-grafana:13.2.2-b00e47ea43ca (created 2026-10-05T01:30:29.411140294Z)
+/opt/grafana-plugins/grafana-amazonprometheus-datasource/plugin.json "version": "3.2.0"
+/opt/grafana-plugins/grafana-opensearch-datasource/plugin.json "version": "2.34.4"
+== 493116771193.dkr.ecr.ap-northeast-1.amazonaws.com/efukuda-nwc-poc-grafana:13.2.2-c1806714ce6a (created 2026-09-28T07:42:02.834936801Z)
+/opt/grafana-plugins/grafana-amazonprometheus-datasource/plugin.json "version": "3.2.0"
+/opt/grafana-plugins/grafana-opensearch-datasource/plugin.json "version": "2.34.4"
+```
+
+### 検証
+
+#### 1. `uv sync --group dev --group web` → `bash ops/check.sh`
+
+```
+HEAD cde390f / 未コミット: [ M app/grafana/provisioning/alerting/netops-opensearch.yaml
+ M docker/images/grafana/Dockerfile
+ M docs/architecture/resources/grafana.md
+ M docs/cycles/008-aws-verification-bugs/build.md
+ M tests/test_alerts.py]
+Resolved 86 packages in 2ms
+Audited 82 packages in 1ms
+--- ops/check.sh の最後 2 行
+
+すべて通過
+exit=0
+```
+
+check.sh の全 2620 行のうち、段の見出しと各テストの結果行（行番号: 中身）:
+
+```
+2: == 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+5: == 2. 9 つのルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+25: == 3. スクリプトの構文
+29: == 4. 模擬テスト
+170: 通過 140 / 失敗 0
+661: 通過 489 / 失敗 0
+1233: 通過 158 / 失敗 0
+1237: 通過 3 / 失敗 0
+1317: 通過 78 / 失敗 0
+1327: 通過 7 / 失敗 0
+1412: 通過 84 / 失敗 0
+1524: 通過 111 / 失敗 0
+1767: 通過 171 / 失敗 0
+1916: 通過 148 / 失敗 0
+1983: 通過 66 / 失敗 0
+2059: 通過 75 / 失敗 0
+2175: 通過 100 / 失敗 0
+2618: 通過 325 / 失敗 0
+2620: すべて通過
+```
+
+#### 2. 足した check（`uv run --group dev python tests/test_alerts.py`。138 → 140）
+
+```
+ok Grafana のプラグインは版を固定して入れ、opensearch は bucket budget の式を写した版（2.34.4）と同じ。amazonprometheus は AWS で動かしたイメージの版。版の無い install も ARG で替えられる版も無い
+ok trap のルールの機器の terms（上位 size 件）は lab の trap の送り元（trap を lab の EC2 へ送る SR Linux（全台）+ trap-test の ACC_VM）を全部返せる。yaml のコメントの送り元の数も同じ
+通過 140 / 失敗 0
+```
+
+#### 3. 退行を入れて test_alerts.py が落ちること（scratchpad の `inject_a.py`。ファイルを書き換えて流し、元に戻す）
+
+```
+落ちた rc=1 opensearch の版を外す: AssertionError: Grafana のプラグインは版を固定して入れ、opensearch は bucket budget の式を写した版（2.34.4）と同じ。amazonprometheus は AWS で動かしたイメージの版。版の無い install も ARG で替えられる版も無い
+落ちた rc=1 amazonprometheus の版を外す: AssertionError: Grafana のプラグインは版を固定して入れ、opensearch は bucket budget の式を写した版（2.34.4）と同じ。amazonprometheus は AWS で動かしたイメージの版。版の無い install も ARG で替えられる版も無い
+落ちた rc=1 opensearch を 2.35.0 にする: AssertionError: Grafana のプラグインは版を固定して入れ、opensearch は bucket budget の式を写した版（2.34.4）と同じ。amazonprometheus は AWS で動かしたイメージの版。版の無い install も ARG で替えられる版も無い
+落ちた rc=1 版を ARG にする: AssertionError: Grafana のプラグインは版を固定して入れ、opensearch は bucket budget の式を写した版（2.34.4）と同じ。amazonprometheus は AWS で動かしたイメージの版。版の無い install も ARG で替えられる版も無い
+落ちた rc=1 ARG を足す: AssertionError: Grafana のプラグインは版を固定して入れ、opensearch は bucket budget の式を写した版（2.34.4）と同じ。amazonprometheus は AWS で動かしたイメージの版。版の無い install も ARG で替えられる版も無い
+落ちた rc=1 写した版の定数だけ上げる: AssertionError: Grafana のプラグインは版を固定して入れ、opensearch は bucket budget の式を写した版（2.35.0）と同じ。amazonprometheus は AWS で動かしたイメージの版。版の無い install も ARG で替えられる版も無い
+落ちた rc=1 sysName の size を 6 にする（送り元 7 > 6）: AssertionError: trap のルールの機器の terms（上位 size 件）は lab の trap の送り元（trap を lab の EC2 へ送る SR Linux（全台）+ trap-test の ACC_VM）を全部返せる。yaml のコメントの送り元の数も同じ
+落ちた rc=1 コメントの送り元を 6 のままにする: AssertionError: trap のルールの機器の terms（上位 size 件）は lab の trap の送り元（trap を lab の EC2 へ送る SR Linux（全台）+ trap-test の ACC_VM）を全部返せる。yaml のコメントの送り元の数も同じ
+落ちた rc=1 コメントの機器名を変える: AssertionError: trap のルールの機器の terms（上位 size 件）は lab の trap の送り元（trap を lab の EC2 へ送る SR Linux（全台）+ trap-test の ACC_VM）を全部返せる。yaml のコメントの送り元の数も同じ
+落ちた rc=1 1 台の trap の宛先を消す: AssertionError: trap のルールの機器の terms（上位 size 件）は lab の trap の送り元（trap を lab の EC2 へ送る SR Linux（全台）+ trap-test の ACC_VM）を全部返せる。yaml のコメントの送り元の数も同じ
+戻したあと: M app/grafana/provisioning/alerting/netops-opensearch.yaml |  M docker/images/grafana/Dockerfile |  M docs/architecture/resources/grafana.md |  M tests/test_alerts.py
+元のまま: 通過 140 / 失敗 0 rc 0
+```
+
+#### 4. 版を固定した Dockerfile を手元でビルドする（`docker build -f docker/images/grafana/Dockerfile app/grafana/`、arm64。入った版を読んでからイメージを消す）
+
+```
+#1 DONE 0.0s
+#2 DONE 1.3s
+#3 DONE 0.0s
+#4 DONE 0.0s
+#6 [2/4] RUN mkdir -p /opt/grafana-plugins  && grafana cli --pluginsDir /opt/grafana-plugins plugins install grafana-amazonprometheus-datasource 3.2.0  && grafana cli --pluginsDir /opt/grafana-plugins plugins install grafana-opensearch-datasource 2.34.4  && chown -R 472:0 /opt/grafana-plugins
+#6 0.396 logger=settings t=2026-10-08T12:51:26.319088841Z level=info msg="Starting Grafana" version=13.2.3 commit=90ffed056f0884267356c12a0eeb72a022af53f1 branch=release-13.2.3#patched compiled=2026-09-28T20:55:24Z
+#6 3.726 logger=settings t=2026-10-08T12:51:29.649190051Z level=info msg="Starting Grafana" version=13.2.3 commit=90ffed056f0884267356c12a0eeb72a022af53f1 branch=release-13.2.3#patched compiled=2026-09-28T20:55:24Z
+#6 DONE 6.3s
+#7 DONE 0.0s
+#8 DONE 0.0s
+#9 DONE 1.7s
+build exit=0
+grafana version 13.2.3
+/opt/grafana-plugins/grafana-amazonprometheus-datasource/plugin.json "version": "3.2.0"
+/opt/grafana-plugins/grafana-opensearch-datasource/plugin.json "version": "2.34.4"
+image removed
+gone: nwc-pin-test-grafana:local
+```
+
+### 未確認の項目
+
+- AWS のビルド（`build_grafana` の buildx で arm64 を ECR に push）と、ECS の上で 3.2.0 / 2.34.4 が動くこと。Dockerfile が変わったのでタグが変わり、次の `ops/up.sh` / `oss/ops/up.sh` で作り直しになる
+- `docs/development.md` のテストの本数（test_alerts 138）は 140 になった。PM のブランチ（afecd19）が同じ行を直しているので、ここでは直していない
