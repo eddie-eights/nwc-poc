@@ -74,7 +74,7 @@ IaC/terraform/aws-managed/
 
 OSS 版（`oss/ops/up.sh`）は `IaC/terraform/oss/` に同じ 9 つのルートを持つ（多くのファイルは `IaC/terraform/aws-managed/` へのシンボリックリンクで、違いは各ルートの `oss.auto.tfvars` と OSS 版だけのファイル）。接頭辞は `<owner>-nwc-oss`、state も `IaC/terraform/oss/<ルート>/terraform.tfstate` で、マネージド版とは別（[oss-variant.md](../oss-variant.md)）。
 
-デバッグ用の EC2（lab + Telegraf を 1 台）だけは terraform ではなく CloudFormation の `IaC/cloudformation/lab-debug.yaml`（スタック `<prefix>-lab-debug`）。作るのも消すのも `ops/lab-debug.sh up` / `down` だけで、`ops/up.sh` / `ops/down.sh` は触らない（2026-10-04 から）。土台（base/core）は使わず、自分の VPC（既定 `10.20.0.0/24`。どこともつながないので base/core と重なってよい。IGW / NAT は無い）、インターフェース型エンドポイント 4 本（ssm / ssmmessages / ecr.api / ecr.dkr）と S3 の gateway、バケット `<prefix>-lab-debug-<アカウント>`、ECR のリポジトリ 3 つ（`<prefix>-debug-lab-srlinux` / `-lab-multitool` / `-telegraf`。スタックと一緒に消える）を持つ。
+デバッグ用の EC2（lab + Telegraf を 1 台）だけは terraform ではなく CloudFormation の `IaC/cloudformation/lab-debug.yaml`（スタック `<prefix>-lab-debug`）。作るのも消すのも `ops/lab-debug.sh up` / `down` だけで、`ops/up.sh` / `ops/down.sh` は触らない（2026-10-04 から）。土台（base/core）は使わず、自分の VPC（既定 `10.20.0.0/24`。どこともつながないので base/core と重なってよい。IGW / NAT は無い）、インターフェース型エンドポイント 4 本（ssm / ssmmessages / ecr.api / ecr.dkr）と S3 の gateway、バケット `<prefix>-lab-debug-<アカウント>`、ECR のリポジトリ 4 つ（`<prefix>-debug-lab-srlinux` / `-lab-multitool` / `-lab-trex` / `-telegraf`。スタックと一緒に消える）を持つ。
 
 1 ディレクトリ = 1 state。state は各ルートの `terraform.tfstate`（ローカル）。変数を変えたいときは `terraform.tfvars.example` を `terraform.tfvars` に写す。
 

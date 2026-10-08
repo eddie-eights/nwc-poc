@@ -49,7 +49,7 @@ check("seed: インタフェースの IP は全部、親の Prefix に入る",
       all(nb_map.parent_prefix(i["address"]) in plan["prefixes"] for d in plan["devices"] for i in d["interfaces"] if i["address"]))
 check("parent_prefix: v4 は /24、v6 は /64", nb_map.parent_prefix("203.0.113.11") == "203.0.113.0/24"
       and nb_map.parent_prefix("2001:db8:1:2::5") == "2001:db8:1:2::/64")
-check("interface_type", nb_map.interface_type("bond0", {"bond0"}) == "lag" and nb_map.interface_type("ethernet-1/1", set()) == "25gbase-x-sfp28"
+check("interface_type", nb_map.interface_type("lag1", {"lag1"}) == "lag" and nb_map.interface_type("ethernet-1/1", set()) == "25gbase-x-sfp28"
       and nb_map.interface_type("mgmt0", set()) == "1000base-t")
 
 # ---- 一周（seed したとおりに Nautobot が持っているとして、nb_sync.read() が返す形に直す）
@@ -73,11 +73,11 @@ check("targets のキーは IaC/terraform/aws-managed/pipeline/stream の出力�
       tuple(t) == nb_map.TARGET_KEYS and all(f'"{k}"' in read("IaC", "terraform", "aws-managed", "pipeline", "stream", "telegraf.tf") for k in t))
 
 # ---- to_graph / targets の規則
-R = lambda name, role="leaf", ip="", services=(), ifs=(): {"name": name, "site": "s", "role": role, "mgmt_ip": ip, "asn": "",
+R = lambda name, role="a-leaf", ip="", services=(), ifs=(): {"name": name, "site": "s", "role": role, "mgmt_ip": ip, "asn": "",
     "interfaces": [{"name": n, "address": "", "lag": lag} for n, lag in ifs], "services": [{"name": s, "protocol": p, "ports": [port]} for s, p, port in services]}
-check("kind: spine が入れば fabric、スイッチどうしは l2、VM は LAG のメンバーなら lag・そうでなければ l2",
-      (nb_map.link_kind("leaf", "spine", "", ""), nb_map.link_kind("leaf", "leafsw", "", ""), nb_map.link_kind("host", "leaf", "bond0", ""),
-       nb_map.link_kind("leaf", "upstream", "", "")) == ("fabric", "l2", "lag", "l2"))
+check("kind: spine が入れば fabric、スイッチどうしは l2、TRex（VM_ROLES）は LAG のメンバーなら lag・そうでなければ l2",
+      (nb_map.link_kind("a-leaf", "spine", "", ""), nb_map.link_kind("a-leaf", "s-leaf", "", ""), nb_map.link_kind("trex", "a-leaf", "lag1", ""),
+       nb_map.link_kind("a-leaf", "trex", "", "")) == ("fabric", "l2", "lag", "l2"))
 d2, l2, w2 = nb_map.to_graph(
     [R("b", ifs=[("e1", "")]), R("a", "spine", ifs=[("e1", ""), ("e2", "")]), R("a"), R("")],
     [{"a": "b", "a_if": "e1", "b": "a", "b_if": "e1"}, {"a": "a", "a_if": "e1", "b": "b", "b_if": "e9"},
@@ -140,7 +140,7 @@ synced = []
 graph.configured = lambda: True
 graph.sync_physical = lambda devices, links: synced.append((len(devices), len(links))) or {"devices": len(devices)}
 toolkit.client = lambda name: {"ssm": Ssm({"/p/gnmi": "old", "/p/snmp": "old"}), "ecs": Ecs()}[name]
-_changes = [{"id": "u1", "time": 1790000000, "user": "admin", "action": "update", "object_type": "device", "object": "DC1-Leaf-01", "device": "DC1-Leaf-01",
+_changes = [{"id": "u1", "time": 1790000000, "user": "admin", "action": "update", "object_type": "device", "object": "DC1-A-Leaf-01", "device": "DC1-A-Leaf-01",
              "differences": {"removed": {"status": {"name": "Active"}, "last_updated": "a"}, "added": {"status": {"name": "Maintenance"}, "last_updated": "b"}}},
             {"id": "u2", "time": 1790000100, "user": "netops-web", "action": "delete", "object_type": "cable", "object": "x <> y", "device": "", "differences": None},
             {"id": "", "time": 1}]
@@ -158,12 +158,12 @@ check("sync: 変更履歴を Neptune に写す（新しい順。id の無い行�
       len(changes_synced) == 2 and out["changes"] == {"kept": 2} and [r["change_id"] for r in changes_synced[-1]] == ["change#u2", "change#u1"])
 check("change_rows: 機器名は小文字、差分は「項目: 前 → 後」（last_updated は出さない）、削除は「削除」、差分が無ければ空",
       changes_synced[-1][1] == {"change_id": "change#u1", "time": 1790000000, "user": "admin", "action": "update", "object_type": "device",
-                                "object": "DC1-Leaf-01", "device_id": "dc1-leaf-01", "detail": "status: Active → Maintenance"}
+                                "object": "DC1-A-Leaf-01", "device_id": "dc1-a-leaf-01", "detail": "status: Active → Maintenance"}
       and changes_synced[-1][0]["detail"] == "削除" and nb_map.change_detail({"removed": {}, "added": {"name": "x"}}) == "name: - → x"
       and nb_map.change_detail(None, "update") == nb_map.change_detail({"removed": {}, "added": {}}, "update") == "")
 # 2026-10-08 の OSS 版の検証の「不具合」4: seed で作った機器の最初の変更は prechange が無く、get_snapshots() の差分が {"removed": None, "added": 全部の項目}。
 # 並べると「asset_tag: - → -、clusters: - → []、…」になる
-_full = {"asset_tag": None, "clusters": [], "comments": "", "name": "dc1-leaf-01", "status": {"name": "Maintenance"}, "last_updated": "b"}
+_full = {"asset_tag": None, "clusters": [], "comments": "", "name": "dc1-a-leaf-01", "status": {"name": "Maintenance"}, "last_updated": "b"}
 check("change_detail: 作成と削除は項目を並べず「作成」「削除」だけ（差分が全部の項目でも）",
       nb_map.change_detail({"removed": None, "added": _full}, "create") == "作成" and nb_map.change_detail({"removed": _full, "added": None}, "delete") == "削除")
 check("change_detail: update で prechange が無ければ項目を並べず、前の値が無いことと今の status だけを出す（status が無い物は前の値が無いことだけ）",
@@ -352,5 +352,12 @@ check("Web: トークンは SecureString として読み（decrypt）、API の�
 check("API のトークンは worker のコンテナには渡さない", '!contains(["NAUTOBOT_SUPERUSER_PASSWORD", "NAUTOBOT_API_TOKEN"], s.name)' in nb_tf)
 graph.configured = lambda: False
 check("Web: Neptune が無いときの案内は今までどおり", "未配備" in tv.edit_note())
+tv.topology.reload(force=True)
+_rows = {}
+for _y, _dev in re.findall(r'<rect x="[^"]*" y="(-?\d+)"[^>]*><title>(\S+) ', tv.topology_svg()):
+    _rows.setdefault(int(_y), []).append(_dev)
+check("Web の図（静的データ）の段は上から Spine / Leaf（s-leaf を a-leaf と同じ段に置く。ROW_OF）/ TRex",
+      [sorted(v) for _, v in sorted(_rows.items())]
+      == [["dc1-spine-01", "dc1-spine-02"], ["dc1-a-leaf-01", "dc1-a-leaf-02", "dc1-s-leaf-01", "dc1-s-leaf-02"], ["dc1-trex-01"]])
 
 print(f"\n{passed} 項目すべて通過")

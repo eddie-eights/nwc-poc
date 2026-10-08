@@ -1,6 +1,6 @@
 # 手元の docker compose で動く構成を作る（006）: WSL2（Ubuntu）の docker-ce だけで、lab → Telegraf → Kafka → Spark → 格納先 → Grafana / Splunk が一周する。
 # AWS には触らない。設計は docs/cycles/006-local-compose/design.md、手順は README.md。
-# containerlab（SR Linux 6 台 + VM 2 台）は compose の外（./lab.sh。sudo で app/containerlab/lab.sh を呼ぶ）。
+# containerlab（SR Linux 6 台 + TRex 1 台）は compose の外（./lab.sh。sudo で app/containerlab/lab.sh を呼ぶ）。
 # パスワードと token は .env（.env.example を写す。試し用の固定値）。lab の値（SNMP_AGENTS / GNMI_TARGETS / DEVICE_MAP）は値に " と , があるので
 # .env に書かず、./up.sh が app/containerlab/lab_topology.py から作って環境変数で渡す（docker compose を直に打つと空のまま。Telegraf が形の検査で止まる）。
 # 片付けは ./down.sh（-v で volume も消す）。

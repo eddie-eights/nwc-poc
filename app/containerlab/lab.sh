@@ -5,9 +5,10 @@
 #   lab.sh forward | forward-status     （stream: ECS の Telegraf へ SNMP / gNMI / trap / syslog を通す。デバッグ用の EC2 は trap の 162 を 1162 へ向けるだけ。up が毎回呼ぶ）
 #   lab.sh graph | graph-stop           （トポロジ図: containerlab graph を 127.0.0.1:50080 で裏に起こし、手元で打つポートフォワードのコマンドを出す / 止める。down も止める）
 #   lab.sh telegraf run | stop | status | test | gnmi | logs [-f]   （デバッグ用の EC2 だけ。この EC2 の Telegraf。中身は app/telegraf/telegraf.sh、出力は標準出力）
+#   lab.sh trex start | stop | status   （dc1-trex-01 の TRex。トポロジを上げても起動しない。負荷試験のときだけ。中身は trex/README.md）
 # 手元の containerlab と違うのは 3 つ: containerlab を直接呼ぶ（root）、イメージは ECR から取る（pull）、
 # splab.clab.yml はテンプレート（.in）からイメージ URI を埋めて作る（render）。
-# トポロジは Spine-Leaf（gen_lab.py の図。SR Linux 6 台 = leafsw 2 + spine 2 + leaf 2、VM 2 台 = 上流 wan-upstream-01 + アクセス側 dc1-host-01）
+# トポロジは Spine-Leaf（gen_lab.py の図。SR Linux 6 台 = s-leaf 2 + spine 2 + a-leaf 2、TRex 1 台 = dc1-trex-01（各 leaf の ethernet-1/3 に eth1〜eth4 で 1 本ずつ））
 set -euo pipefail
 # /usr/local/bin/lab（シンボリックリンク）から呼ばれても、テンプレートのある src/ で動く
 SELF=$(readlink -f "$0")
@@ -48,11 +49,15 @@ GRAPH_PORT=50080
 SRL_LOG=/var/log/srlinux/file/messages
 # forward が入れる iptables の規則の目印（入れ直す前にこれの付いた規則を全部消す）
 FW_TAG=nwc-lab-telegraf
-# 上流 VM とアクセス側 VM（同じ mac-vrf。EVPN が通っていれば L2 で届く）
-UP_VM=wan-upstream-01; UP_IP=10.100.0.10
-ACC_VM=dc1-host-01;    ACC_IP=10.100.0.20
-# fail-bgp / heal-bgp が止める iBGP（EVPN）の隣接: dc1-leaf-01 から dc1-spine-01 のループバックへの 1 本（srlinux/dc1-leaf-01.cli の bgp neighbor）
-BGP_NODE=dc1-leaf-01; BGP_PEER=10.255.0.1
+# TRex（負荷生成。各 leaf の mac-vrf に 1 本ずつ。trap-test の送り元にも使う）。ポート n（ethN+1）のアドレスは $TREX_NET.(TREX_IP_BASE+n) で、
+# default_gw は組の相手（0-1、2-3）のアドレス。どれも同じ mac-vrf（VNI 100）にいるので、EVPN が通っていれば ARP が解ける
+TREX=dc1-trex-01
+TREX_NET=10.100.0; TREX_IP_BASE=11
+# lab trex start がコンテナの中に書く設定（TRex の既定の置き場。t-rex-64 は --cfg 無しでこれを読む）、TRex の出力の置き場、
+# trex/stl のプロファイルを写す先（trex-console の start -f に渡すパス。trex/README.md）
+TREX_CFG=/etc/trex_cfg.yaml; TREX_LOG=/var/log/trex.log; TREX_PROFILES=/opt/nwc-trex
+# fail-bgp / heal-bgp が止める iBGP（EVPN）の隣接: dc1-a-leaf-01 から dc1-spine-01 のループバックへの 1 本（srlinux/dc1-a-leaf-01.cli の bgp neighbor）
+BGP_NODE=dc1-a-leaf-01; BGP_PEER=10.255.0.1
 # trap-test が送る trap の OID（net-snmp の NET-SNMP-EXAMPLES-MIB::netSnmpExampleHeartbeatNotification）。link でも起動の知らせでもないので、
 # Splunk の netops_trap と Grafana の trap ルールがどちらも kind = trap にする
 TEST_TRAP_OID=.1.3.6.1.4.1.8072.2.3.0.1
@@ -88,13 +93,33 @@ snmp_if() {
         <(snmpwalk -v2c -c public -Oqn "$ip" 1.3.6.1.2.1.2.2.1.8 | sed 's/^[.0-9]*\.\([0-9]*\) /\1\t/' | sort)) \
   | awk -F'\t' '$3 == "up" || $3 == 1 { printf "  ifIndex %-11s %-16s admin=%s oper=%s\n", $1, $2, $3, $4 }'
 }
-# VM 同士の ping（EVPN の L2 が通っているか）
-vm_ping() {
-  local r
-  for pair in "$ACC_VM:$UP_IP" "$UP_VM:$ACC_IP"; do
-    if x "${pair%%:*}" ping -c1 -W2 "${pair##*:}" >/dev/null 2>&1; then r=ok; else r=NG; fi
-    printf '  %-16s -> %-12s %s\n' "${pair%%:*}" "${pair##*:}" "$r"
+# TRex のポート（コンテナの eth1〜。eth0 は管理ネットワーク）を番号順に
+trex_ports() { x "$TREX" ls /sys/class/net | grep -E '^eth[1-9][0-9]*$' | sort -V; }
+# TRex の回線の両端が up か: leaf 側（splab.clab.yml.in の links で $TREX につながる SR Linux の e1-N = ethernet-1/N）の oper-state と、TRex 側の ethN。
+# TRex のポートの L2 が leaf のあいだを通るか（EVPN）は、lab trex start のあとに leaf の bridge-table で見る（trex/README.md）
+edge_ports() {
+  local tp node n st
+  while read -r tp node n; do
+    st=$(srl "$node" "info from state / interface ethernet-1/$n oper-state" 2>/dev/null | grep -oE 'oper-state [a-z-]+' | head -1) || true
+    printf '  %-14s %-14s %s\n' "$node" "ethernet-1/$n" "${st:-（読めない）}"
+  done < <(grep -oE "\"$TREX:eth[0-9]+\", *\"[^\"]+:e1-[0-9]+\"" "$TOPO.in" | sed -E 's/^"[^:]+:(eth[0-9]+)", *"([^:]+):e1-([0-9]+)"$/\1 \2 \3/')
+  for tp in $(trex_ports); do
+    printf '  %-14s %-14s %s\n' "$TREX" "$tp" "oper-state $(x "$TREX" cat "/sys/class/net/$tp/operstate" 2>/dev/null || echo '（読めない）')"
   done
+}
+# trex/trex_cfg.yaml.in を埋めて標準出力へ。引数はポートの IF 名（eth1 eth2 …。この順が TRex のポート 0, 1, …）
+trex_cfg() {
+  local n=$# i list="" line
+  for ((i = 1; i <= n; i++)); do list+="${list:+, }'${!i}'"; done
+  while IFS= read -r line; do
+    if [ "$line" = __PORT_INFO__ ]; then
+      for ((i = 0; i < n; i++)); do
+        printf '    - ip: %s.%d\n      default_gw: %s.%d\n' "$TREX_NET" $((TREX_IP_BASE + i)) "$TREX_NET" $((TREX_IP_BASE + (i ^ 1)))
+      done
+    else
+      line=${line//__PORT_LIMIT__/$n}; printf '%s\n' "${line//__INTERFACES__/$list}"
+    fi
+  done < trex/trex_cfg.yaml.in
 }
 # Telegraf がこのホストの host ネットワークにいるか: デバッグ用の EC2（TELEGRAF_IMAGE）か、手元の compose（docker/compose/lab.sh が TELEGRAF_LOCAL=1 を渡す）
 local_telegraf() { [ -n "${TELEGRAF_IMAGE:-}" ] || [ "${TELEGRAF_LOCAL:-0}" = 1 ]; }
@@ -120,9 +145,9 @@ unforward() {  # forward が入れた規則（目印 ${FW_TAG}）を全部消す
 
 case "${1:-}" in
   render)
-    : "${SRLINUX_IMAGE:?}" "${MULTITOOL_IMAGE:?}"
-    sed -e "s#__SRLINUX_IMAGE__#$SRLINUX_IMAGE#" -e "s#__MULTITOOL_IMAGE__#$MULTITOOL_IMAGE#" "$TOPO.in" > "$TOPO"
-    echo "$TOPO を作った（イメージは $SRLINUX_IMAGE と $MULTITOOL_IMAGE）"
+    : "${SRLINUX_IMAGE:?}" "${MULTITOOL_IMAGE:?}" "${TREX_IMAGE:?}"
+    sed -e "s#__SRLINUX_IMAGE__#$SRLINUX_IMAGE#" -e "s#__MULTITOOL_IMAGE__#$MULTITOOL_IMAGE#" -e "s#__TREX_IMAGE__#$TREX_IMAGE#" "$TOPO.in" > "$TOPO"
+    echo "$TOPO を作った（イメージは $SRLINUX_IMAGE と $MULTITOOL_IMAGE と $TREX_IMAGE）"
     ;;
   pull)
     # ECR の認証は 12 時間で切れるので、毎回ログインしてから取る（署名はインスタンスロール）。
@@ -131,13 +156,11 @@ case "${1:-}" in
       : "${AWS_REGION:?}"
       aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
     fi
-    for i in "$SRLINUX_IMAGE" "$MULTITOOL_IMAGE" ${TELEGRAF_IMAGE:+"$TELEGRAF_IMAGE"}; do docker pull -q "$i"; done
+    for i in "$SRLINUX_IMAGE" "$MULTITOOL_IMAGE" "$TREX_IMAGE" ${TELEGRAF_IMAGE:+"$TELEGRAF_IMAGE"}; do docker pull -q "$i"; done
     ;;
   up)
     [ -f "$TOPO" ] || "$SELF" render
     docker image inspect "$SRLINUX_IMAGE" >/dev/null 2>&1 || "$SELF" pull
-    # VM の bond0（LACP）はカーネルの bonding モジュールが要る（コンテナからは読み込めない。user_data も modules-load.d に書く）
-    modprobe bonding || echo "bonding モジュールが無い（VM の bond0 が作れず、VM と leaf のあいだが通らない）" >&2
     # SR Linux は 1 台の起動に 1〜2 分かかる（containerlab が 6 台とも起動して設定が入るまで待つ。上限は 1 台 5 分）
     clab deploy -t "$TOPO" --reconfigure
     # Docker は管理ネットワークを作るたびに自分の MASQUERADE を nat の先頭に入れるので、deploy のあとに毎回入れ直す。
@@ -174,34 +197,31 @@ case "${1:-}" in
     ;;
   cli)    srl "$2" "${@:3}" ;;
   check)
-    echo "== BGP EVPN（dc1-spine-01 = ルートリフレクタ。leafsw 2 + leaf 2 が established なら OK）=="; srl dc1-spine-01 "show network-instance default protocols bgp neighbor"
-    echo "== IS-IS の隣接（dc1-leaf-01。spine 2 台が Up なら OK）=="; srl dc1-leaf-01 "show network-instance default protocols isis adjacency"
-    echo "== EVPN の ethernet-segment（dc1-leaf-01。ES-2 が up なら OK）=="; srl dc1-leaf-01 "show system network-instance ethernet-segments"
-    echo "== VM の LAG（$ACC_VM の bond0。LACP が組めていれば Slave 2 本とも up）=="
-    x "$ACC_VM" cat /proc/net/bonding/bond0 2>/dev/null | grep -E 'Slave Interface|MII Status|Aggregator ID' || echo "  bond0 が無い（modprobe bonding）"
-    echo "== VM 同士の ping（上流 VM ⇄ アクセス側 VM。EVPN の L2 が通っていれば ok）=="
-    vm_ping
-    echo "== SNMP（dc1-leaf-01 の ifName + ifOperStatus。admin=up の行だけ）=="
-    snmp_if dc1-leaf-01
+    echo "== BGP EVPN（dc1-spine-01 = ルートリフレクタ。s-leaf 2 + a-leaf 2 が established なら OK）=="; srl dc1-spine-01 "show network-instance default protocols bgp neighbor"
+    echo "== IS-IS の隣接（dc1-a-leaf-01。spine 2 台が Up なら OK）=="; srl dc1-a-leaf-01 "show network-instance default protocols isis adjacency"
+    echo "== TRex の回線（leaf の ethernet-1/3 と $TREX の eth1〜。両端とも up なら OK。L2 の疎通は '$LAB_CMD trex start' のあと trex/README.md の手順で見る）=="
+    edge_ports
+    echo "== SNMP（dc1-a-leaf-01 の ifName + ifOperStatus。admin=up の行だけ）=="
+    snmp_if dc1-a-leaf-01
     ;;
-  snmp) snmp_if "${2:-dc1-leaf-01}" ;;
+  snmp) snmp_if "${2:-dc1-a-leaf-01}" ;;
   logs)
     for n in ${2:-$(routers)}; do
       echo "== $n =="; x "$n" tail -n "${LINES:-20}" "$SRL_LOG"
     done
     ;;
   fail-main)
-    echo "アクセス側 Leaf の fabric (dc1-leaf-01 ethernet-1/1 / dc1-spine-01) を落とす"
+    echo "DC 側 Leaf の fabric (dc1-a-leaf-01 ethernet-1/1 / dc1-spine-01) を落とす"
     # コンテナの中の veth（e1-1 = ethernet-1/1）を落とす。admin-state は enable のままなので、機器からは回線断（oper down）に見える。
-    # IS-IS の隣接（dc1-leaf-01 - dc1-spine-01）が落ち、経路は dc1-spine-02 経由に切り替わる。iBGP はループバック同士なので張り直さない
-    x dc1-leaf-01 ip link set e1-1 down
+    # IS-IS の隣接（dc1-a-leaf-01 - dc1-spine-01）が落ち、経路は dc1-spine-02 経由に切り替わる。iBGP はループバック同士なので張り直さない
+    x dc1-a-leaf-01 ip link set e1-1 down
     echo "  IS-IS の隣接は数秒で落ちる。切替の確認は '$LAB_CMD failover' が待ってくれる。戻すのは '$LAB_CMD heal-main'"
     ;;
-  heal-main) echo "アクセス側 Leaf の fabric (dc1-leaf-01 ethernet-1/1) を戻す"; x dc1-leaf-01 ip link set e1-1 up ;;
+  heal-main) echo "DC 側 Leaf の fabric (dc1-a-leaf-01 ethernet-1/1) を戻す"; x dc1-a-leaf-01 ip link set e1-1 up ;;
   fail-bgp)
     echo "$BGP_NODE の iBGP（EVPN）の隣接 1 本（dc1-spine-01 = ${BGP_PEER}）を止める"
     # neighbor の admin-state を disable にする（回線は落とさない）。$BGP_NODE 側と dc1-spine-01 側（neighbor は $BGP_NODE のループバック）の
-    # session-state が established でなくなり、gNMI の on_change（bgp_neighbor）で流れる。EVPN の経路は dc1-spine-02 からも来るので、VM 同士は通ったまま
+    # session-state が established でなくなり、gNMI の on_change（bgp_neighbor）で流れる。EVPN の経路は dc1-spine-02 からも来るので、mac-vrf（TRex のポートのあいだ）は通ったまま
     bgp_admin disable
     hint "'$LAB_CMD telegraf logs' に bgp_neighbor の session_state（established 以外）が出る" \
       "数分で Grafana と Splunk の両方が bgp_down（$BGP_NODE の $BGP_PEER と、dc1-spine-01 の $BGP_NODE 側）を SNS のトピックに出す" heal-bgp
@@ -212,29 +232,29 @@ case "${1:-}" in
     ;;
   trap-test)
     # link 以外の trap を 1 通送る。機器（SR Linux）には出させず、この EC2 の net-snmp の snmptrap（setup.sh が入れる net-snmp-utils）を
-    # $ACC_VM の network namespace で動かす。送り元は $ACC_VM の管理 IP になり、機器の trap と同じく $MGMT_GW の 162 に届くので、forward の規則
+    # $TREX の network namespace で動かす。送り元は $TREX の管理 IP になり、機器の trap と同じく $MGMT_GW の 162 に届くので、forward の規則
     # （デバッグ用の EC2 は REDIRECT、stream は NLB への DNAT）に乗る。この EC2 から直接送ると PREROUTING を通らないので乗らない。
-    # 機器名は Spark（--device-map）と Splunk のアラートアクション（DEVICE_MAP）が送り元の IP から引く（$ACC_VM になる）
+    # 機器名は Spark（--device-map）と Splunk のアラートアクション（DEVICE_MAP）が送り元の IP から引く（$TREX になる）
     command -v snmptrap >/dev/null || { echo "snmptrap が無い（net-snmp-utils）" >&2; exit 1; }
-    pid=$(docker inspect -f '{{.State.Pid}}' "clab-$LAB-$ACC_VM")
+    pid=$(docker inspect -f '{{.State.Pid}}' "clab-$LAB-$TREX")
     nsenter -t "$pid" -n snmptrap -v2c -c "$SNMP_COMMUNITY" "$MGMT_GW:162" '' "$TEST_TRAP_OID" .1.3.6.1.4.1.8072.2.3.2.1 i 1
-    echo "trap $TEST_TRAP_OID を $ACC_VM（$(mgmt_ip "$ACC_VM")）から $MGMT_GW:162 へ送った"
+    echo "trap $TEST_TRAP_OID を $TREX（$(mgmt_ip "$TREX")）から $MGMT_GW:162 へ送った"
     hint "'$LAB_CMD telegraf logs' に snmp_trap（oid=${TEST_TRAP_OID}）が出る" \
-      "数分で Grafana と Splunk の両方が trap（$ACC_VM の $TEST_TRAP_OID）を出し、次の trap が来なければおよそ 10 分後に両方が解消を出す"
+      "数分で Grafana と Splunk の両方が trap（$TREX の $TEST_TRAP_OID）を出し、次の trap が来なければおよそ 10 分後に両方が解消を出す"
     ;;
   failover)
-    # dc1-leaf-01 から dc1-leafsw-01 のループバック（10.255.1.1）への経路。切替前は spine 2 台（172.16.0.4 / 172.16.0.12）の ECMP、切替後は 172.16.0.12 だけ
+    # dc1-a-leaf-01 から dc1-s-leaf-01 のループバック（10.255.1.1）への経路。切替前は spine 2 台（172.16.0.4 / 172.16.0.12）の ECMP、切替後は 172.16.0.12 だけ
     # 26.7.2 の sr_cli には "show … route-table ipv4-unicast prefix …" が無い（Unknown token 'ipv4-unicast'。2026-09-27 実測）ので、state の経路 → next-hop-group → next-hop の ip-address をたどる
     route() {
       local nhg i
-      nhg=$(srl dc1-leaf-01 "info from state network-instance default route-table ipv4-unicast route 10.255.1.1/32 id * route-type isis route-owner * origin-network-instance * next-hop-group" 2>/dev/null | grep -oE 'next-hop-group [0-9]+' | head -1 | awk '{print $2}')
+      nhg=$(srl dc1-a-leaf-01 "info from state network-instance default route-table ipv4-unicast route 10.255.1.1/32 id * route-type isis route-owner * origin-network-instance * next-hop-group" 2>/dev/null | grep -oE 'next-hop-group [0-9]+' | head -1 | awk '{print $2}')
       [ -n "$nhg" ] || { echo "  (IS-IS の経路が無い)"; return 0; }
-      for i in $(srl dc1-leaf-01 "info from state network-instance default route-table next-hop-group $nhg next-hop * next-hop" 2>/dev/null | grep -E '^ *next-hop [0-9]+ *$' | awk '{print $2}' | sort -u); do
-        srl dc1-leaf-01 "info from state network-instance default route-table next-hop $i" 2>/dev/null | grep -oE 'ip-address [0-9.]+|subinterface [^ ]+' | tr '\n' ' ' || true
+      for i in $(srl dc1-a-leaf-01 "info from state network-instance default route-table next-hop-group $nhg next-hop * next-hop" 2>/dev/null | grep -E '^ *next-hop [0-9]+ *$' | awk '{print $2}' | sort -u); do
+        srl dc1-a-leaf-01 "info from state network-instance default route-table next-hop $i" 2>/dev/null | grep -oE 'ip-address [0-9.]+|subinterface [^ ]+' | tr '\n' ' ' || true
         echo
       done
     }
-    echo "== 切替前: dc1-leaf-01 -> dc1-leafsw-01 (10.255.1.1) の経路 =="; route
+    echo "== 切替前: dc1-a-leaf-01 -> dc1-s-leaf-01 (10.255.1.1) の経路 =="; route
     "$SELF" fail-main
     echo "== dc1-spine-02 だけに切り替わるのを待つ（最大 60 秒）=="
     for i in $(seq 12); do
@@ -243,13 +263,11 @@ case "${1:-}" in
       fi
       sleep 5
     done
-    echo "== 切替後: dc1-leaf-01 -> dc1-leafsw-01 の経路 =="; route
-    echo "== 切替後: VM 同士の疎通（片側の spine だけでも通る）=="
-    vm_ping
-    echo "== SNMP で断が見えるか（dc1-leaf-01）=="
+    echo "== 切替後: dc1-a-leaf-01 -> dc1-s-leaf-01 の経路 =="; route
+    echo "== SNMP で断が見えるか（dc1-a-leaf-01）=="
     # ifOperStatus は実際のリンク状態から数秒遅れる。down が見えるまで最大 10 秒待つ
     for i in $(seq 10); do
-      w=$(snmp_if dc1-leaf-01)
+      w=$(snmp_if dc1-a-leaf-01)
       grep -qE 'ethernet-1/1 +admin=up oper=down' <<<"$w" && break
       sleep 1
     done
@@ -259,11 +277,11 @@ case "${1:-}" in
       echo "  '$LAB_CMD telegraf logs' に interface（ifOperStatus）、snmp_trap の linkDown、device_log（syslog）、isis_interface の down が出る。戻すのは '$LAB_CMD heal-main'"
     elif local_telegraf; then
       echo "== Telegraf（compose の Telegraf）=="
-      echo "  数分で Grafana（:3000）の metrics ダッシュボードの dc1-leaf-01 ethernet-1/1 が DOWN、logs ダッシュボードと Splunk（:8000）に linkDown の trap と syslog が出る。戻すのは '$LAB_CMD heal-main'"
+      echo "  数分で Grafana（:3000）の metrics ダッシュボードの dc1-a-leaf-01 ethernet-1/1 が DOWN、logs ダッシュボードと Splunk（:8000）に linkDown の trap と syslog が出る。戻すのは '$LAB_CMD heal-main'"
     elif iptables -t nat -S PREROUTING 2>/dev/null | grep -q -- "--comment $FW_TAG"; then
       echo "== Telegraf（stream。ECS のタスク）=="
       echo "  ポーリング（10 秒周期）と SR Linux の linkDown トラップ、syslog、gNMI の IS-IS の隣接が MSK に流れ、Grafana のアラートルール（ポーリング）と Splunk の保存済みサーチ（trap と gNMI）が SNS のトピックに出す。"
-      echo "  数分で GUI の「トポロジ」の dc1-leaf-01 ethernet-1/1 が DOWN になり（link_down と isis_down）、WORKFLOW=1 なら「承認」に修復案が出る。アラートは Grafana / Splunk で見る。戻すのは '$LAB_CMD heal-main'"
+      echo "  数分で GUI の「トポロジ」の dc1-a-leaf-01 ethernet-1/1 が DOWN になり（link_down と isis_down）、WORKFLOW=1 なら「承認」に修復案が出る。アラートは Grafana / Splunk で見る。戻すのは '$LAB_CMD heal-main'"
     fi
     ;;
   forward)
@@ -343,5 +361,31 @@ case "${1:-}" in
       *) sed -n '7p' "$SELF"; exit 1 ;;
     esac
     ;;
-  *) sed -n '2,7p' "$SELF"; exit 1 ;;
+  trex)
+    # TRex 本体（t-rex-64 -i = stateless のサーバ。RPC は 4501 / 4507）を $TREX の中で起こす。ポートは Linux の IF を af_packet で使う（hugepages 不要、1 コア、~1 Mpps）。
+    # 負荷を撃つのは trex-console か trex/stl のプロファイル（trex/README.md）。トポロジを上げても起動しないのは、負荷試験をやると決めるまで CPU を取らせないため
+    case "${2:-status}" in
+      start)
+        mapfile -t ports < <(trex_ports)
+        # TRex はポートを 2 本ずつ組にする（0-1、2-3）ので偶数本が要る（gen_lab.py も --leaves を偶数に限る）
+        if [ "${#ports[@]}" -lt 2 ] || [ $(( ${#ports[@]} % 2 )) -ne 0 ]; then echo "$TREX のポートが偶数本でない（${ports[*]:-無し}）。'$LAB_CMD check' の TRex の回線を見る" >&2; exit 1; fi
+        if x "$TREX" pgrep -f _t-rex-64 >/dev/null 2>&1; then echo "TRex はもう動いている（'$LAB_CMD trex status'。止めるのは '$LAB_CMD trex stop'）"; exit 0; fi
+        trex_cfg "${ports[@]}" | docker exec -i "clab-$LAB-$TREX" sh -c "cat > $TREX_CFG"
+        x "$TREX" mkdir -p "$TREX_PROFILES"
+        docker cp trex/stl "clab-$LAB-$TREX:$TREX_PROFILES/"
+        # t-rex-64 は自分の置き場（イメージの版のディレクトリ）から打つ。置き場はイメージで違うので探す
+        dir=$(x "$TREX" find / -xdev -maxdepth 5 -name t-rex-64 -type f 2>/dev/null | head -1) || true
+        [ -n "$dir" ] || { echo "$TREX の中に t-rex-64 が無い（TREX_IMAGE が TRex のイメージか）" >&2; exit 1; }
+        docker exec -d "clab-$LAB-$TREX" sh -c 'cd "$1" && exec ./t-rex-64 -i --no-key --iom 0 > "$2" 2>&1' sh "${dir%/*}" "$TREX_LOG"
+        echo "TRex を起こした（ポート ${ports[*]}、設定 $TREX_CFG、出力 $TREX_LOG、プロファイル $TREX_PROFILES/stl）。起動に数十秒。'$LAB_CMD trex status' で見る"
+        ;;
+      stop)   x "$TREX" pkill -f t-rex-64 || echo "TRex は動いていない" ;;
+      status)
+        x "$TREX" pgrep -af t-rex-64 || echo "TRex は動いていない（'$LAB_CMD trex start'）"
+        x "$TREX" tail -n "${LINES:-20}" "$TREX_LOG" 2>/dev/null || true
+        ;;
+      *) sed -n '8p' "$SELF"; exit 1 ;;
+    esac
+    ;;
+  *) sed -n '2,8p' "$SELF"; exit 1 ;;
 esac

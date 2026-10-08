@@ -19,7 +19,7 @@ groups:
       # net-snmp の nsNotifyShutdown / nsNotifyRestart）。linkDown / linkUp を link_down にするルールは作らない（IF 名の入った varbind の field 名が
       # IF ごとに変わる（"iso.3.6.1.2.1.2.2.1.1.49" の末尾が ifIndex）ので、OpenSearch の集計では取り出せない）。
       # 数えるものが無いとき（どの機器からも trap が来ていない）は NoData。OK にする（KeepLast だと発火したまま解消しない）。
-      # 時間の区切りは 30s に固定し、terms の size は 機器 10 × OID 10 にする（lab は trap の送り元 7 = SR Linux 6 台 + lab.sh の trap-test の dc1-host-01、
+      # 時間の区切りは 30s に固定し、terms の size は 機器 10 × OID 10 にする（lab は trap の送り元 7 = SR Linux 6 台 + lab.sh の trap-test の dc1-trex-01、
       # 除いたあとの OID は数種類）。terms は件数の多い順に上位 size 件なので、送り元が 10 を超えると少ない機器の trap が落ちる（tests/test_alerts.py が数を突き合わせる）。
       # opensearch プラグイン（2.34.4）は interval が auto のときだけ、terms 1 つを shard 1 なら size、2 以上なら shard 数 ×（size × 1.5 + 10）と見積もって掛け、
       # 65535 × 90% を割って 20 未満なら評価をエラーにする。

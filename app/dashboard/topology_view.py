@@ -20,7 +20,9 @@ import toolkit
 import topology
 
 ROLE_ORDER = topology.ROLE_ORDER
-ROLE_LABEL = {"upstream": "上流 VM", "leafsw": "Leaf-SW（上流側）", "spine": "Spine", "leaf": "Leaf（アクセス側）", "host": "VM（アクセス側）", "unknown": "未登録"}
+ROLE_LABEL = {"spine": "Spine", "a-leaf": "Leaf（a-leaf / s-leaf）", "trex": "TRex", "unknown": "未登録"}   # 図の段の見出し
+# 図では s-leaf を a-leaf と同じ段に並べる（別の段にすると spine から s-leaf への線が a-leaf の箱の下を通り、つながって見える）
+ROW_OF = {"s-leaf": "a-leaf"}
 DOWN_COLOR = "#c62828"
 
 
@@ -119,7 +121,7 @@ def topology_svg() -> str:
     topology.reload()
     layers = {}
     for n in topology.DEVICES:
-        layers.setdefault(n["role"], []).append(n["device_id"])
+        layers.setdefault(ROW_OF.get(n["role"], n["role"]), []).append(n["device_id"])
     roles = [r for r in ROLE_ORDER if r in layers] + sorted(r for r in layers if r not in ROLE_ORDER)  # 知らない役割も描く
     width, row_h, top, left, node_w, node_h = 860, 150, 50, 70, 132, 44
     pos = {}
@@ -152,7 +154,7 @@ def topology_svg() -> str:
                    f'{html.escape((l.get("a_if") or "") + "/" + (l.get("b_if") or ""))}</text>')
     for dev, (x, y) in pos.items():
         n = topology.NODES[dev]
-        fill = {"spine": "#e8f0fe", "leafsw": "#e6f4ea", "leaf": "#e6f4ea", "upstream": "#f3f4f6", "host": "#f3f4f6", "unknown": "#fff4e5"}.get(n["role"], "#fff")
+        fill = {"spine": "#e8f0fe", "a-leaf": "#e6f4ea", "s-leaf": "#e6f4ea", "trex": "#f3f4f6", "unknown": "#fff4e5"}.get(n["role"], "#fff")
         asn = f'AS {n["asn"]}' if n.get("asn") else n["site"]
         st = n.get("status") or "UP"
         border = f'stroke="{DOWN_COLOR}" stroke-width="2.5"' if st != "UP" else 'stroke="#374151" stroke-width="1.2"'
@@ -167,7 +169,7 @@ def topology_svg() -> str:
            "neo4j": "Neo4j（IaC/terraform/oss/pipeline/graph）", "neo4j-empty": "Neo4j は空。静的データを表示中（下の「静的データを投入」で入る）"}.get(
         topology.SOURCE, "静的データ（data/。IaC/terraform/aws-managed/pipeline/graph を apply すると Neptune に切り替わる）")
     legend = ('<p style="font-size:12px;color:#6b7480;margin:4px 0 0">'
-              '実線 = 主回線 / 破線 = 副回線 / 太線 = 1 Gbps 以上。青 = fabric（Spine - Leaf。IS-IS + iBGP EVPN）、紫 = lag（VM - Leaf の LACP）、灰 = l2。'
+              '実線 = 主回線 / 破線 = 副回線 / 太線 = 1 Gbps 以上。青 = fabric（Spine - Leaf。IS-IS + iBGP EVPN）、灰 = l2（TRex - Leaf）、紫 = lag（LACP。いまの lab には無い）。'
               '<span style="color:#c62828">赤</span> = 落ちている（Spark の検知が Neptune の status に反映したもの。復旧すると戻る）。'
               '橙の点線の枠 = 未登録（トポロジに無い機器から検知だけが来た。lab に足したなら ops/sync-graph.sh --replace で登録する）。'
               f'アドレスと帯域はすべて架空（lab と同じ）。IP 層（IS-IS）と EVPN・BGP 層は下の表。元データ: {html.escape(src)}</p>')

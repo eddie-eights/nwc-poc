@@ -64,22 +64,22 @@ date -u +%FT%TZ
 
 | 種類 | 入れる | 戻す | 出るはずの異常の id |
 |---|---|---|---|
-| `link_down` と `isis_down` | `sudo lab fail-main` | `sudo lab heal-main` | `dc1-leaf-01#link_down#ethernet-1/1` と、`dc1-leaf-01` の `isis_down` |
-| `bgp_down` | `sudo lab fail-bgp` | `sudo lab heal-bgp` | `dc1-leaf-01#bgp_down#10.255.0.1` と、`dc1-spine-01` の `bgp_down`（相手は `dc1-leaf-01` のループバック） |
-| `trap` | `sudo lab trap-test` | 無い（下） | `dc1-host-01#trap#.1.3.6.1.4.1.8072.2.3.0.1` |
+| `link_down` と `isis_down` | `sudo lab fail-main` | `sudo lab heal-main` | `dc1-a-leaf-01#link_down#ethernet-1/1` と、`dc1-a-leaf-01` の `isis_down` |
+| `bgp_down` | `sudo lab fail-bgp` | `sudo lab heal-bgp` | `dc1-a-leaf-01#bgp_down#10.255.0.1` と、`dc1-spine-01` の `bgp_down`（相手は `dc1-a-leaf-01` のループバック） |
+| `trap` | `sudo lab trap-test` | 無い（下） | `dc1-trex-01#trap#.1.3.6.1.4.1.8072.2.3.0.1` |
 
 - `fail-main`
 
-  `dc1-leaf-01` の `ethernet-1/1`（`dc1-spine-01` との fabric）を落とす。admin-state は enable のままなので、機器からは回線断に見える。IS-IS の隣接も落ちる。iBGP はループバック同士なので落ちない。
+  `dc1-a-leaf-01` の `ethernet-1/1`（`dc1-spine-01` との fabric）を落とす。admin-state は enable のままなので、機器からは回線断に見える。IS-IS の隣接も落ちる。iBGP はループバック同士なので落ちない。
 - `fail-bgp`
 
-  `dc1-leaf-01` から `dc1-spine-01`（`10.255.0.1`）への iBGP の隣接 1 本を、admin-state を disable にして止める。回線は落とさない。両側のセッションが `established` でなくなる。VM 同士の通信は `dc1-spine-02` 経由で通ったまま。
+  `dc1-a-leaf-01` から `dc1-spine-01`（`10.255.0.1`）への iBGP の隣接 1 本を、admin-state を disable にして止める。回線は落とさない。両側のセッションが `established` でなくなる。TRex のポートのあいだの mac-vrf は `dc1-spine-02` 経由で通ったまま。
 - `heal-bgp`
 
   `established` に戻るまで数十秒かかる。`sudo lab check` で見る。
 - `trap-test`
 
-  link でも起動の知らせでもない trap（`netSnmpExampleHeartbeatNotification`）を 1 通、`dc1-host-01` の管理 IP から送る。戻すコマンドは無い。次の trap が来なければ、およそ 10 分後に両方が解消を出す。**次の回は解消が出てから打つ**（13 分ほど空ける）。10 分以内に打つと、解消が先へ延びる。
+  link でも起動の知らせでもない trap（`netSnmpExampleHeartbeatNotification`）を 1 通、`dc1-trex-01` の管理 IP から送る。戻すコマンドは無い。次の trap が来なければ、およそ 10 分後に両方が解消を出す。**次の回は解消が出てから打つ**（13 分ほど空ける）。10 分以内に打つと、解消が先へ延びる。
 
 待つ時間を 2 分にした根拠（[pipeline.md](pipeline.md) の「アラート」の表）:
 
@@ -139,6 +139,8 @@ ORDER BY anomaly_id, status
 **1 回分だけある。手順どおりの 3 回はまだ。**
 
 ### 2026-10-05 の 1 回（AWS の全体の動作確認）
+
+機器の名前は 2026-10-08 に lab を組み直す前のもの（`dc1-leaf-01` は今の `dc1-a-leaf-01`、`dc1-spine-01` は同じ）。
 
 `sudo lab fail-main` を 02:36:59（UTC）に打った。遅れは、打ってから Lambda が最初の `firing` を受けるまでの秒。
 
@@ -258,7 +260,7 @@ ORDER BY anomaly_id, status
 | Grafana が OpenSearch Serverless を SigV4 でルールの評価に使えるか | 未確認。ダッシュボードで読めることは 2026-09-28 に確認済み |
 | SR Linux が出す trap の OID の形（`.1.3.6.1.…` で入るか） | 未確認。手元では net-snmp の `snmptrap` で確かめた |
 | `lab fail-bgp` / `lab heal-bgp` / `lab trap-test` の実際の動き | 未確認。lab の EC2 で打っていない |
-| `lab trap-test` で `dc1-host-01` が `ALARM` になるか | 未確認。送り元の IP が device map で `dc1-host-01` に直る前提 |
+| `lab trap-test` で `dc1-trex-01` が `ALARM` になるか | 未確認。送り元の IP が device map で `dc1-trex-01` に直る前提 |
 | SR Linux の linkDown の trap に IF 名が載るか | 未確認。載らないと Splunk の trap の `target` が IF 名にならず、ポーリングの `link_down` と別の異常の id になる |
 | `link_down` で 2 つ目のワークフローが起きるか | 2026-10-05 に確かめた。1 本の回線断でワークフローが 4 本起きた（「4. 結果」）。trap ではなく、Splunk がサブインターフェースの `link_down` も出すことと、回線の両端が別の異常になることによる |
 | 上の Athena のクエリ | 未実行。`alert_events` を Athena で読めることは 2026-10-05 に確かめた |

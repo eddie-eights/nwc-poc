@@ -22,6 +22,7 @@ resource "aws_instance" "lab" {
     containerlab_version = var.containerlab_version
     srlinux_image_tag    = var.srlinux_image_tag
     multitool_image_tag  = var.multitool_image_tag
+    trex_image_tag       = var.trex_image_tag
     auto_start_lab       = var.auto_start_lab ? "true" : "false"
   })
   user_data_replace_on_change = true

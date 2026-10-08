@@ -123,7 +123,7 @@ set -euo pipefail
 REGION=ap-northeast-1
 # デプロイする人の名前 OWNER は deploy.env に書くので、OWNER と接頭辞 PREFIX=<owner>-nwc-poc が確定するのは
 # load_deploy_env のあと（手順 0 の resolve_name_prefix。必須なので、無ければそこで止まる。形の検査も ops/deploy-env.sh）
-# lab と Telegraf の版（SRLINUX_TAG / MULTITOOL_TAG / CONTAINERLAB_VERSION / TELEGRAF_VERSION）と作り方は ops/lab-common.sh
+# lab と Telegraf の版（SRLINUX_TAG / MULTITOOL_TAG / TREX_TAG と ECR のタグの *_ECR_TAG / CONTAINERLAB_VERSION / TELEGRAF_VERSION）と作り方は ops/lab-common.sh
 # （デバッグ用の EC2 の ops/lab-debug.sh と共通）。
 # SPLUNK_VERSION・GRAFANA_VERSION・NAUTOBOT_VERSION・REDIS_TAG・TEMPORAL_TAG と、Splunk・Grafana・Agent・worker・Temporal・Nautobot のイメージの作り方は OSS 版と共通なので ops/up-common.sh
 . "$(dirname "$0")/lab-common.sh"
@@ -536,7 +536,7 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 # OpenSearch Serverless の VPC エンドポイント = 1.4 × ENDPOINTS_AZ_NUM（2026-10-04 までは 2 AZ 固定で 3。公表単価からで Price List API では確かめていない。
 #   KB と logs のコレクションを公開しないために作り、両方で 1 本を共用する。CREATE_KB か STORES の grafana のときだけ数える。
 #   前に作ったコレクションが state に残っているだけで手順 3 の NEED_AOSS が 1 になる回は数えない）、
-# lab = 17（EC2 の t4g.xlarge 17.28。2026-10-04 に公開の料金ファイルで確認。それまでの 9 は t4g.large の単価だった）、graph = 58（Neptune Analytics の 16 m-NCU で 58.1。2026-10-04 に料金のページで確認。Price List API では確かめていない。
+# lab = 25（EC2 の m6i.xlarge 24.8。2026-10-08 に Price List API で確認。TRex が amd64 だけなので x86_64。2026-10-08 までの 17 は t4g.xlarge、2026-10-04 までの 9 は t4g.large の単価だった）、graph = 58（Neptune Analytics の 16 m-NCU で 58.1。2026-10-04 に料金のページで確認。Price List API では確かめていない。
 #   2026-10-04 までの Neptune Database の db.t4g.medium は 14 だった。レプリカも同じ単価なので × NEPTUNE_AZ_NUM）、
 #   stream = MSK 57（ブローカー 2 台。MSK_AZ_NUM=3 で 1 台 27 を足す）+ Telegraf 5（Fargate ARM 0.25 vCPU / 0.5 GB で 1.2 のタスクが、受ける側 1 つと
 #   取りにいく側 TELEGRAF_AZ_NUM 個（2026-10-04 に分けた）と内部 NLB 2.43。
@@ -561,7 +561,7 @@ echo "インターフェース型エンドポイント（$(endpoint_count) 本 �
 COST_CENTS=4
 COST_CENTS=$((COST_CENTS + ($(endpoint_count) * 14 * ENDPOINTS_AZ_NUM + 5) / 10))
 if [ -n "$AGENT" ] && [ -n "$CREATE_KB" ]; then COST_CENTS=$((COST_CENTS + 33 * OPENSEARCH_AZ_NUM)); fi
-if [ -z "$SKIP_LAB" ]; then COST_CENTS=$((COST_CENTS + 17)); fi
+if [ -z "$SKIP_LAB" ]; then COST_CENTS=$((COST_CENTS + 25)); fi
 if [ -z "$SKIP_GRAPH" ]; then COST_CENTS=$((COST_CENTS + 58 * NEPTUNE_AZ_NUM)); fi
 if [ -z "$SKIP_STREAM" ]; then
   # MSK は kafka.m5.large × 2 で 0.542（Kafka 4 は t3.small を受け付けない。2026-09-18）。3 AZ ならブローカーが 1 台増える
@@ -618,8 +618,9 @@ if [ -n "$AGENT" ]; then
   if ecr_has "$PREFIX-agent" "$IMAGE_TAG"; then echo "agent:$IMAGE_TAG はある（作り直すなら IMAGE_TAG を変える）"; else NEED_AGENT=1; fi
 fi
 if [ -z "$SKIP_LAB" ]; then
-  if ! ecr_has "$PREFIX-lab-srlinux" "$SRLINUX_TAG" || ! ecr_has "$PREFIX-lab-multitool" "$MULTITOOL_TAG"; then NEED_LAB=1
-  else echo "lab-srlinux:$SRLINUX_TAG と lab-multitool:$MULTITOOL_TAG はある"; fi
+  if ! ecr_has "$PREFIX-lab-srlinux" "$SRLINUX_ECR_TAG" || ! ecr_has "$PREFIX-lab-multitool" "$MULTITOOL_ECR_TAG" \
+    || ! ecr_has "$PREFIX-lab-trex" "$TREX_ECR_TAG"; then NEED_LAB=1
+  else echo "lab-srlinux:$SRLINUX_ECR_TAG と lab-multitool:$MULTITOOL_ECR_TAG と lab-trex:$TREX_ECR_TAG はある"; fi
 fi
 if [ -n "$WORKFLOW" ]; then
   if ecr_has "$PREFIX-worker" "$IMAGE_TAG"; then echo "worker:$IMAGE_TAG はある"; else NEED_WORKER=1; fi
@@ -648,7 +649,7 @@ if [ -z "$NEED_AGENT$NEED_LAB$NEED_WORKER$NEED_TEMPORAL$NEED_TELEGRAF$NEED_GRAFA
   echo "作るイメージは無い"
 else
   docker info >/dev/null 2>&1 || die "dockerd に接続できない（WSL なら sudo service docker start。docs/setup.md「Terraform を打つ PC 側」）"
-  # agent / worker / grafana / nautobot は RUN があるので、x86_64 の PC では QEMU（binfmt）が要る（lab のイメージは上流の arm64 をミラーするだけで、
+  # agent / worker / grafana / nautobot は RUN があるので、x86_64 の PC では QEMU（binfmt）が要る（lab のイメージは上流の amd64 をミラーするだけで、
   # telegraf は COPY だけ。splunk も COPY だけで amd64 なので、arm64 の PC（Apple シリコン）でもエミュレーション無しで作れる）
   # 出力は変数で受けてから探す（grep -q が先に閉じると docker が SIGPIPE で落ち、pipefail で「無い」扱いになることがある）
   BUILDX_LS=$(docker buildx ls 2>/dev/null || true)
@@ -660,7 +661,7 @@ else
     build_agent "$REPO:$IMAGE_TAG"   # ops/up-common.sh（OSS 版と共通）
   fi
   if [ -n "$NEED_LAB" ]; then
-    # Nokia SR Linux（公開イメージ。約 1 GB）と VM の multitool。ECR にミラーして lab の EC2 が VPC の中から引けるようにする（ops/lab-common.sh）
+    # Nokia SR Linux（公開イメージ。約 1 GB）と TRex（Docker Hub。amd64）と linux kind の既定の multitool。ECR にミラーして lab の EC2 が VPC の中から引けるようにする（ops/lab-common.sh）
     mirror_lab_images "$REG" "$PREFIX" || die "lab のイメージを ECR に置けなかった"
   fi
   if [ -n "$NEED_WORKER" ]; then
@@ -877,7 +878,7 @@ fi
 
 # ---- 6. lab ---------------------------------------------------------------------
 LAB_INSTANCE_ID=""; LAB_WARN=""
-LAB_NODES=$(grep -cE '^ *kind: (nokia_srlinux|linux)$' app/containerlab/splab.clab.yml.in)   # containerlab のノードの数（8。SR Linux 6 + VM 2）
+LAB_NODES=$(grep -cE '^ *kind: (nokia_srlinux|linux)$' app/containerlab/splab.clab.yml.in)   # containerlab のノードの数（7。SR Linux 6 + TRex 1）
 if [ -z "$SKIP_LAB" ]; then
   log "6. lab（IaC/terraform/aws-managed/pipeline/lab。EC2 の中でトポロジが上がるまで 10 分ほど（SR Linux 6 台の起動）。${LAB_VARS[1]}）"
   tf_apply pipeline/lab "${LAB_VARS[@]}"

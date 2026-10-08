@@ -11,7 +11,7 @@
 # ops/up.sh / ops/down.sh / terraform とは独立（2026-10-04 ユーザー決定: CloudFormation だけで扱う）。up.sh で何も作っていなくても動き、
 # down.sh はこれを消さない。VPC もエンドポイントもバケットも ECR もスタックが持つので、土台（IaC/terraform/aws-managed/base/core）は要らない。
 # IaC/terraform/aws-managed/pipeline/lab の EC2 とずれないよう、版とイメージと app/containerlab/ の置き方は ops/lab-common.sh、EC2 の中の支度は app/containerlab/setup.sh を共有する。
-# 待機の費用は約 $0.23/h（EC2 t4g.xlarge 約 $0.17/h + インターフェース型エンドポイント 4 本 $0.056/h）。使い終わったら down。
+# 待機の費用は約 $0.30/h（EC2 m6i.xlarge 約 $0.25/h + インターフェース型エンドポイント 4 本 $0.056/h）。使い終わったら down。
 set -euo pipefail
 
 REGION=ap-northeast-1
@@ -34,7 +34,7 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text) || die "
 REG="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
 # スタックが持つバケットと ECR のリポジトリの名前（テンプレートと同じ作り方。down は Outputs が読めなくても消せるよう、ここで作る）
 BUCKET="$PREFIX-lab-debug-$ACCOUNT_ID"
-REPO_PREFIX="$PREFIX-debug"   # <これ>-lab-srlinux / -lab-multitool / -telegraf
+REPO_PREFIX="$PREFIX-debug"   # <これ>-lab-srlinux / -lab-multitool / -lab-trex / -telegraf
 # VPC の外からの呼び出しを拒む Deny（ops/up.sh の NETWORK_PERIMETER と同じキー。既定 1）
 NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"
 flag_value NETWORK_PERIMETER
@@ -52,7 +52,7 @@ deploy() {  # deploy <CreateInstance> [<TelegrafImageTag>]  版は ops/lab-commo
     --parameter-overrides \
       "NamePrefix=$PREFIX" "Owner=$OWNER" "CreateInstance=$1" "TelegrafImageTag=${2:-}" \
       "NetworkPerimeter=$([ -n "$NETWORK_PERIMETER" ] && echo true || echo false)" \
-      "ContainerlabVersion=$CONTAINERLAB_VERSION" "SrlinuxImageTag=$SRLINUX_TAG" "MultitoolImageTag=$MULTITOOL_TAG" \
+      "ContainerlabVersion=$CONTAINERLAB_VERSION" "SrlinuxImageTag=$SRLINUX_ECR_TAG" "MultitoolImageTag=$MULTITOOL_ECR_TAG" "TrexImageTag=$TREX_ECR_TAG" \
     --tags "Project=$PREFIX" "owner=$OWNER" \
     || die "$STACK を作れなかった（aws cloudformation describe-stack-events --region $REGION --stack-name $STACK）"
 }
@@ -125,7 +125,7 @@ case "$CMD" in
       log "1. $STACK はある（$s）"
     fi
 
-    log "2. イメージ（ECR に無いタグだけ作る。lab の 2 つと、stream の ECS と同じ作り方の Telegraf）"
+    log "2. イメージ（ECR に無いタグだけ作る。lab の 3 つと、stream の ECS と同じ作り方の Telegraf。どれも x86_64 の EC2 に載るので amd64）"
     TELEGRAF_TAG=$(telegraf_tag) || die "app/telegraf/ のタグを作れなかった"
     LOGGED_IN=""
     login() {
@@ -135,13 +135,14 @@ case "$CMD" in
       aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REG"
       LOGGED_IN=1
     }
-    if ! ecr_has "$REPO_PREFIX-lab-srlinux" "$SRLINUX_TAG" || ! ecr_has "$REPO_PREFIX-lab-multitool" "$MULTITOOL_TAG"; then login; fi
+    if ! ecr_has "$REPO_PREFIX-lab-srlinux" "$SRLINUX_ECR_TAG" || ! ecr_has "$REPO_PREFIX-lab-multitool" "$MULTITOOL_ECR_TAG" \
+      || ! ecr_has "$REPO_PREFIX-lab-trex" "$TREX_ECR_TAG"; then login; fi
     mirror_lab_images "$REG" "$REPO_PREFIX" || die "lab のイメージを ECR に置けなかった"
     if ecr_has "$REPO_PREFIX-telegraf" "$TELEGRAF_TAG"; then echo "telegraf:$TELEGRAF_TAG はある"
     else
       login
       docker buildx version >/dev/null 2>&1 || die "docker buildx が無い（docs/setup.md「Terraform を打つ PC 側」）"
-      build_telegraf "$REG/$REPO_PREFIX-telegraf:$TELEGRAF_TAG"
+      build_telegraf "$REG/$REPO_PREFIX-telegraf:$TELEGRAF_TAG" linux/amd64   # stream の ECS（arm64）とはリポジトリが別
     fi
 
     log "3. lab の材料（containerlab の rpm とトポロジ）を s3://$BUCKET/lab/ に置く"
@@ -159,6 +160,6 @@ case "$CMD" in
 
     log "できた。デバッグ用の EC2 に入るコマンド（中で sudo lab status / sudo lab check / sudo lab telegraf logs -f / sudo lab telegraf test）:"
     stack_output StartSessionCommand
-    echo "使い終わったら ops/lab-debug.sh down（待機だけで約 \$0.23/h。ops/down.sh では消えない）"
+    echo "使い終わったら ops/lab-debug.sh down（待機だけで約 \$0.30/h。ops/down.sh では消えない）"
     ;;
 esac

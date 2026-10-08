@@ -7,7 +7,7 @@
 ```mermaid
 flowchart LR
   subgraph LABEC2["lab の EC2（IaC/terraform/aws-managed/pipeline/lab）"]
-    CLAB["containerlab<br/>Nokia SR Linux（Spine-Leaf）6 台 + VM 2 台"]
+    CLAB["containerlab<br/>Nokia SR Linux（Spine-Leaf）6 台 + TRex 1 台"]
   end
   CLAB -->|"SNMP trap / gNMI 購読 / syslog<br/>SNMP ポーリング 10 秒（SNMP_POLL=0 で止める）"| TG["Telegraf（ECS Fargate + 内部 NLB）<br/>（IaC/terraform/aws-managed/pipeline/stream）"]
   TG --> MSK["MSK（stream）<br/>metrics / gnmi / mdt / traps / logs"]
@@ -29,7 +29,7 @@ flowchart LR
 - Telegraf は stream の ECS（Fargate ARM64、0.25 vCPU / 0.5 GB）で、同じイメージを 2 つのサービスで動かす（`IaC/terraform/aws-managed/pipeline/stream/telegraf.tf`。2026-09-28 に IaC/terraform/aws-managed/pipeline/lab の Telegraf 用の EC2 から移し、2026-10-04 に 2 つに分けた）。受ける側（`<prefix>-telegraf-dialout`、`TELEGRAF_ROLE=dialout`）は内部 NLB の後ろで trap・syslog・MDT を受け、取りにいく側（`<prefix>-telegraf-dialin`、`TELEGRAF_ROLE=dialin`、1 タスク固定、NLB なし）は gNMI の購読と SNMP のポーリングをする（[collection.md](collection.md) の「Telegraf を受ける側と取りにいく側に分けた」）。イメージは `docker/images/telegraf/Dockerfile`（公式の `telegraf:1.40.1` に `telegraf.conf.in` と `tg` を入れたもの）で、`ops/up.sh` が ECR の `<prefix>-telegraf:<版>-<ディレクトリのハッシュ 12 文字>` に作る。ポーリング先と gNMI の購読先は SSM の `/<prefix>/telegraf-dialin/nautobot/{snmp-agents,gnmi-targets}` にあり、取りにいく側のタスクが ECS の secrets で環境変数 `SNMP_AGENTS` / `GNMI_TARGETS` として受ける。最初の値は `ops/up.sh` が lab の定義から作って stream の変数 `snmp_agents` / `gnmi_targets` に渡したもので、そのあとは Nautobot の Job が書き換える（Terraform は値の変化を見ない。下の「Nautobot」）。MSK のブローカーは環境変数 `KAFKA_BROKERS`。起動時に `tg run` が設定を埋める。
 - **SNMP のポーリングは既定で動かす**（`deploy.env` の `SNMP_POLL`。既定 `1`）。`ops/up.sh` が stream の変数 `snmp_poll = true` を渡し、タスクの環境変数 `SNMP_POLL=1` で `tg run` が `telegraf.conf.in` の `>>> snmp_poll` の区間（`inputs.snmp`。10 秒ごとに ifTable）を残す。`SNMP_POLL=0` はその区間ごと消すので（SNMP は trap だけ受ける）、`SNMP_AGENTS` は渡っても使わない。止めているあいだは `metrics` トピックにポーリングの行（measurement `system` / `interface`）が載らず（lab の gNMI を変えた共通の形は載る）、S3 Tables の `raw_telemetry` のポーリングの行、Grafana のダッシュボード「netops / SNMP metrics」、エージェントの `query_metrics`（`interface_ifOperStatus` など）は空のまま。Grafana のアラートルール `link_down` と Splunk の保存済みサーチ `netops_poll` も発火しない。そのとき IF の up / down は、Splunk が linkDown / linkUp の trap からだけ知らせる（`STORES` に `splunk` があるとき）。gNMI と syslog はこの値によらず受ける。
 - ポーリングが二重にならないよう、作り直すときは古いタスクを止めてから新しいタスクを立てる。
-- lab は Spine-Leaf（EVPN-VXLAN）。上流側の Leaf-SW 2 台と アクセス側の Leaf 2 台が Spine 2 台とフルメッシュ（fabric。IS-IS）、上流 VM は Leaf-SW の組へ、アクセス側 VM は Leaf の組へ LAG（EVPN マルチホーミング）で 2 本ずつ。機器の定義は `app/containerlab/gen_lab.py` が作る（[lab を変える](#lab-を変える)）。SR-MPLS は SR Linux のコンテナが `ixr6e` / `ixr10e` + ライセンスを要るので、ライセンスが届くまで license 不要の `ixr-d2l` で EVPN-VXLAN にしている。
+- lab は Spine-Leaf（EVPN-VXLAN）。WAN 側の s-leaf 2 台と DC 側の a-leaf 2 台が Spine 2 台とフルメッシュ（fabric。IS-IS）。負荷をかける TRex 1 台（`dc1-trex-01`）が各 leaf の `ethernet-1/3` に 1 本ずつつながる（LAG も EVPN マルチホーミングも無い。TRex 本体は `sudo lab trex start` まで動かない）。機器の定義は `app/containerlab/gen_lab.py` が作る（[lab を変える](#lab-を変える)）。SR-MPLS は SR Linux のコンテナが `ixr6e` / `ixr10e` + ライセンスを要るので、ライセンスが届くまで license 不要の `ixr-d2l` で EVPN-VXLAN にしている。
 - 機器は lab の EC2 の中の docker network（`203.0.113.0/24`）にいる。Telegraf の取りにいく側のタスクからの SNMP のポーリング（`161/udp`。`SNMP_POLL=0` では行かない）と gNMI の購読（`57400/tcp`）は VPC のルートで lab の EC2 を通り（タスクの IP は作り直すたびに変わるので、送り元はタスクのサブネットの CIDR（SSM `/<prefix>/telegraf-source-cidr`）で通す）、trap（`162/udp`）と syslog（`5140/udp`）は機器が lab の EC2（`203.0.113.1`）へ送り、lab の EC2 が Telegraf の NLB の IP（SSM `/<prefix>/telegraf-address`）へ DNAT する。NLB は trap をタスクの `1162/udp` へ、syslog を `5140/udp` へ渡す（UDP なので送り元の IP はそのまま）。この 4 つは lab の EC2 で `sudo lab forward` が張る（`lab up` が毎回呼び、`ops/up.sh` も手順 7-2b で打つ。lab の変数 `forward_to_telegraf`）。
 - gNMI（Telegraf の `inputs.gnmi`）は BGP の `session-state` と IS-IS の IF の `oper-state`（隣接そのもの（`interface/adjacency`）は落ちると down を経ずに消え、Telegraf は gNMI の delete を載せないので取らない）を on_change で、EVPN の ethernet-segment の `oper-state` と MAC テーブルを 1 分おきに取り、トピック `gnmi` に出す。2 つめの `inputs.gnmi`（購読名 `lab_*`、1 分おき）は CPU・メモリ・IF のカウンタと速度・MAC テーブルの数と上限・サブ IF の種類と IF の状態を取り、`app/telegraf/lab_gnmi.star` と `lab_circuits.star` が共通の形（`device_cpu` / `device_memory` / `if_stats` / `sessions` / `circuits`。[collection.md](collection.md) の「共通の形（仮）」）に変えてトピック `metrics` に出す（1 つめと分けるのは、SR Linux が知らないパスが 1 つでもあると購読ごと断るため）。本番の Cisco の MDT は `inputs.cisco_telemetry_mdt`（57000/tcp）で受けてトピック `mdt` に出す（`MDT_SOURCE_CIDRS` が空のあいだは何も届かない）。Grafana のルール `bgp_down` / `isis_down`（`STORES` に `grafana` があるとき）と Splunk の保存済みサーチ `netops_gnmi`（`STORES` に `splunk` があるとき）は、ここから `bgp_down`（相手の IP が対象）と `isis_down`（サブインタフェースが対象）を出す（下の「アラート」）。
 - Spark は起動時に、読むトピック（`metrics` / `gnmi` / `mdt` / `traps` / `logs`）のうち無いものを作る（`snmp_sinks.py` の `ensure_topics`。EMR のロールに `kafka-cluster:CreateTopic`）。MSK の `auto.create.topics.enable=true` は書き込みのときにしか効かず、Telegraf が最初の trap / syslog を出すまで `traps` / `logs` が無い。無いトピックを購読するとジョブは offset 読みで落ちて、起こし直しの上限（1 時間 5 回）を使い切る（2026-09-27 に実測）。
@@ -55,26 +55,27 @@ aws ssm start-session --region ap-northeast-1 --target "$LAB_INSTANCE_ID"
 
 | コマンド | 何をする |
 |---|---|
-| `sudo lab status` | 8 コンテナが running か |
-| `sudo lab check` | BGP EVPN の隣接（Spine の RR）、IS-IS の隣接、EVPN の ethernet-segment、VM の LAG（bond0）、VM 同士の ping、SNMP |
-| `sudo lab failover` | アクセス側 Leaf の fabric（`dc1-leaf-01 ethernet-1/1`）を落とし、経路が `dc1-spine-02` だけに切り替わるのを見る（最大 60 秒） |
+| `sudo lab status` | 7 コンテナが running か |
+| `sudo lab check` | BGP EVPN の隣接（Spine の RR）、IS-IS の隣接、TRex の回線（各 leaf の `ethernet-1/3` と `dc1-trex-01` の `eth1`〜`eth4` が up か）、SNMP |
+| `sudo lab failover` | DC 側 Leaf の fabric（`dc1-a-leaf-01 ethernet-1/1`）を落とし、経路が `dc1-spine-02` だけに切り替わるのを見る（最大 60 秒） |
 | `sudo lab heal-main` / `sudo lab fail-main` | その fabric を戻す / 落とすだけ |
-| `sudo lab fail-bgp` / `sudo lab heal-bgp` | `dc1-leaf-01` の iBGP（EVPN）の隣接 1 本（`dc1-spine-01` = `10.255.0.1`）の neighbor を disable / enable にする（回線は落とさない。`bgp_down` を出す） |
-| `sudo lab trap-test` | link 以外の trap（`.1.3.6.1.4.1.8072.2.3.0.1`）を `dc1-host-01` から 1 通送る（`trap` を出す） |
-| `sudo lab snmp dc1-leaf-01` | 1 台の ifName / ifAdminStatus / ifOperStatus（EC2 から snmpwalk。admin up の IF だけ） |
-| `sudo lab logs` | 機器のログ（`/var/log/srlinux/file/messages`）の末尾。1 台だけなら `sudo lab logs dc1-leaf-01`、行数は `LINES=50` を前に付ける |
-| `sudo lab cli dc1-leaf-01 "show network-instance default protocols bgp neighbor"` | 1 台に SR Linux の CLI を 1 つ打つ |
+| `sudo lab fail-bgp` / `sudo lab heal-bgp` | `dc1-a-leaf-01` の iBGP（EVPN）の隣接 1 本（`dc1-spine-01` = `10.255.0.1`）の neighbor を disable / enable にする（回線は落とさない。`bgp_down` を出す） |
+| `sudo lab trap-test` | link 以外の trap（`.1.3.6.1.4.1.8072.2.3.0.1`）を `dc1-trex-01` から 1 通送る（`trap` を出す） |
+| `sudo lab snmp dc1-a-leaf-01` | 1 台の ifName / ifAdminStatus / ifOperStatus（EC2 から snmpwalk。admin up の IF だけ） |
+| `sudo lab logs` | 機器のログ（`/var/log/srlinux/file/messages`）の末尾。1 台だけなら `sudo lab logs dc1-a-leaf-01`、行数は `LINES=50` を前に付ける |
+| `sudo lab cli dc1-a-leaf-01 "show network-instance default protocols bgp neighbor"` | 1 台に SR Linux の CLI を 1 つ打つ |
 | `sudo lab graph` / `sudo lab graph-stop` | 機器とリンクの図（`containerlab graph`）を EC2 の `127.0.0.1:50080` で裏に起こし、手元で打つポートフォワードのコマンドを出す / 止める（下） |
 | `sudo lab forward-status` | Telegraf（ECS）への転送（iptables の規則と、機器側の remote-server / trap-group）。張り直すのは `sudo lab forward` |
+| `sudo lab trex start` / `stop` / `status` | TRex 本体（stateless のサーバ）を `dc1-trex-01` の中で起こす / 止める / 見る。負荷の撃ち方は `app/containerlab/trex/README.md` |
 | `sudo lab clab inspect --all` | containerlab をそのまま呼ぶ |
 
 - 機器とリンクの図: `sudo lab graph` は `containerlab graph` を systemd の一時ユニット `<prefix>-lab-graph` で起こす（SSM のセッションを閉じても残る。止めるのは `sudo lab graph-stop` か `sudo lab down`）。手元の PC で `terraform -chdir=IaC/terraform/aws-managed/pipeline/lab output -raw graph_port_forward_command` を打ち（`sudo lab graph` も同じコマンドを出す）、`http://localhost:50080/` を開く。lab の EC2 への SSM のポートフォワードなので、SG は開けない。図のページが CDN から部品を読むかは [010 の build.md](cycles/010-kafbat-ui-on-web-ec2/build.md) に書く（閉域では CDN に届かない）。AWS では未確認。
-- 機器の CLI: `sudo docker exec -it clab-splab-dc1-leaf-01 sr_cli`（1 行だけなら `sudo lab cli dc1-leaf-01 "show ..."`）。設定は `app/containerlab/srlinux/<機器>.cli`（`set /` の行だけ。containerlab が起動時に流し込む。手で直さず `app/containerlab/gen_lab.py` で作り直す）
+- 機器の CLI: `sudo docker exec -it clab-splab-dc1-a-leaf-01 sr_cli`（1 行だけなら `sudo lab cli dc1-a-leaf-01 "show ..."`）。設定は `app/containerlab/srlinux/<機器>.cli`（`set /` の行だけ。containerlab が起動時に流し込む。手で直さず `app/containerlab/gen_lab.py` で作り直す）
 - `sudo lab failover` を打つと、trap が 5 秒以内に Kafka に届く（2026-09-27 に EC2 で確認）。そのあと既定（`STORES=s3,grafana,splunk` / `SNMP_POLL=1`）では、Splunk が linkDown の trap とポーリングから `link_down` を、gNMI から `isis_down` を出し、Grafana のルールもポーリングから物理 IF の同じ `link_down` を、gNMI から同じ `isis_down` を出す（同じ機器・種類・対象なので、異常としては 1 つにまとまる）。`STORES` から `splunk` を外して `SNMP_POLL=0` にすると `link_down` は出ない。`sudo lab heal-main` で `resolved` が出る。落としてから通知までは 1〜2 分（下の「アラート」の遅れ）。
   - SR Linux の SNMP の `ifOperStatus` は実際の oper-state より 15〜20 秒遅れる（2026-09-27 実測）。Spark の検知は trap とポーリングを 1 つの状態にまとめていたので、古いポーリングが trap を打ち消さないよう 30 秒の猶予（`POLL_LAG`）を持っていた。いまは送り手ごとに自分の見た状態だけを出し、Grafana は自分が発火させたアラートにしか解消を送らないので、この猶予は要らない。
 - 機器のログは SR Linux の `system logging remote-server`（RFC 5424、udp）で lab の EC2 へ出て、Telegraf の `inputs.syslog` が受け、トピック `logs` に出す（measurement は `device_log`。hostname は `sysName` タグに付け替える）。送る subsystem は bgp / chassis / evpn / isis / lag / linux / netinst / xdp（informational 以上）。ファシリティは本番の Cisco（IOS の既定）に合わせて `local7`（`system logging subsystem-facility`。SR Linux の既定は `local6`）。
 - syslog の形式は Telegraf の `SYSLOG_STANDARD`（stream の変数 `syslog_standard`、`inputs.syslog` の `syslog_standard`）で選ぶ。既定は本番の Cisco IOS の BSD 形式 `RFC3164`。`ops/up.sh` は `deploy.env` の `SYSLOG_STANDARD`（空なら同じ `RFC3164`）を渡す。lab の SR Linux は RFC 5424 で送る（`ops/lab-common.sh` の `LAB_SYSLOG_STANDARD`）ので、lab のログの項目まで見るなら `SYSLOG_STANDARD=RFC5424`。デバッグ用の EC2 は `app/containerlab/lab.sh` の `LOG_STANDARD` を渡す。Cisco IOS の既定のヘッダー（シーケンス番号や `*` 付きの時刻）が RFC3164 でどう解析されるかは実機で確かめていない。
-- SNMP は containerlab が全ノードに v2c の community `public` を入れ、gNMI も全ノードで `57400/tcp`（TLS、containerlab の既定の admin）に開く。Telegraf の取りにいく側は、この認証情報を SSM の SecureString（`/<prefix>/telegraf-dialin/gnmi-username`・`gnmi-password`・`snmp-community`。`ops/up.sh` が lab の既定値で作り、あれば触らない）から受ける。実機を足すなら SSM の値を書き換えて、サービスを作り直す（`aws ecs update-service --force-new-deployment`）。監視対象は `app/containerlab/srlinux/<機器>.cli` の `system snmp trap-group`（trap の宛先）の有無で決まり、いまは SR Linux の 6 台全部。VM 2 台は対象外。
+- SNMP は containerlab が全ノードに v2c の community `public` を入れ、gNMI も全ノードで `57400/tcp`（TLS、containerlab の既定の admin）に開く。Telegraf の取りにいく側は、この認証情報を SSM の SecureString（`/<prefix>/telegraf-dialin/gnmi-username`・`gnmi-password`・`snmp-community`。`ops/up.sh` が lab の既定値で作り、あれば触らない）から受ける。実機を足すなら SSM の値を書き換えて、サービスを作り直す（`aws ecs update-service --force-new-deployment`）。監視対象は `app/containerlab/srlinux/<機器>.cli` の `system snmp trap-group`（trap の宛先）の有無で決まり、いまは SR Linux の 6 台全部。TRex は対象外。
 - SR Linux の ifTable は未使用の物理ポートも全部出す（`ifAdminStatus` が down）。IF の鍵は `ifName`（`ifDescr` は「名前 + description」）。Grafana のルールは admin down の行、サブインタフェース（`ethernet-1/1.0`）、ループバック、管理ポートを見ない。
 
 ### 動かないとき
@@ -87,8 +88,8 @@ sudo systemctl restart <prefix>-lab
 ```
 
 - ECR からイメージを取れない（`docker pull` がタイムアウトする）: ecr.api / ecr.dkr のエンドポイントが `ops/up.sh` の手順 0 の一覧にあるか、レイヤーを取る S3 の gateway エンドポイントがプライベートのルートテーブルに載っているかを見る。`explicit deny` なら VPC のエンドポイントを通っていない（[troubleshooting.md](troubleshooting.md) の「閉域」）。
-- SR Linux が起きない（`containerlab deploy` が readiness で止まる）: 6 台で 10 GB ほど使うので `free -m` を見る。`t4g.large` では足りない（既定は `t4g.xlarge`）。1 台の起動ログは `sudo docker logs clab-splab-dc1-leaf-01`。
-- VM の `bond0` が無い（`sudo lab check` の LAG が「bond0 が無い」）: EC2 のカーネルに bonding モジュールが要る。`lsmod | grep bonding`、無ければ `sudo modprobe bonding`（`app/containerlab/setup.sh` が起動時に入れる）。
+- SR Linux が起きない（`containerlab deploy` が readiness で止まる）: SR Linux 6 台で 10 GB ほど、TRex を足して 11〜13 GB の見込みなので `free -m` を見る。既定の `m6i.xlarge` は 16 GB。足りなければ `instance_type = "m6i.2xlarge"`（32 GB）にする。1 台の起動ログは `sudo docker logs clab-splab-dc1-a-leaf-01`。
+- TRex が起きない（`sudo lab trex status` に `t-rex-64` が無い）: 出力の末尾（`/var/log/trex.log`）を `LINES=50 sudo lab trex status` で見る。設定は `lab trex start` が書く `/etc/trex_cfg.yaml`。この lab で TRex が起動するかはまだ確かめていない（`app/containerlab/trex/README.md`）。
 - 設定が入らない（deploy が `startup-config` で失敗する）: `app/containerlab/srlinux/<機器>.cli` の行を `sudo lab cli <機器>` で 1 行ずつ流して、どの行で落ちるかを見る。
 
 ### 止める・起動する
@@ -125,7 +126,7 @@ aws logs tail --region ap-northeast-1 "$(terraform -chdir=IaC/terraform/aws-mana
 
 ## デバッグ用の EC2（lab + Telegraf を 1 台）
 
-MSK / ECS / NLB を作らずに、機器の設定（`app/containerlab/`）と Telegraf の設定（`app/telegraf/`）を確かめる EC2。terraform ではなく CloudFormation のスタック `<prefix>-lab-debug`（[IaC/cloudformation/lab-debug.yaml](../IaC/cloudformation/lab-debug.yaml)）で、作るのも消すのも [ops/lab-debug.sh](../ops/lab-debug.sh) の 1 コマンド。**`ops/up.sh` / `ops/down.sh` とは別**（2026-10-04 から）: スタックが自分の VPC（閉域。既定 `10.20.0.0/24`）、エンドポイント 4 本（ssm / ssmmessages / ecr.api / ecr.dkr）と S3 の gateway、バケット、ECR のリポジトリ 3 つを持つので、`ops/up.sh` で何も作っていなくても立ち、`ops/down.sh` では消えない。lab の EC2 と並べて立ててもよい（管理ネットワーク `203.0.113.0/24` は EC2 の中だけにある）。待機は約 $0.23/h（t4g.xlarge 約 $0.17/h とエンドポイント 4 本 $0.056/h）。要るのは AWS CLI・docker buildx・curl・python3 か uv と、`deploy.env` の `OWNER`（`NETWORK_PERIMETER` も見る）。
+MSK / ECS / NLB を作らずに、機器の設定（`app/containerlab/`）と Telegraf の設定（`app/telegraf/`）を確かめる EC2。terraform ではなく CloudFormation のスタック `<prefix>-lab-debug`（[IaC/cloudformation/lab-debug.yaml](../IaC/cloudformation/lab-debug.yaml)）で、作るのも消すのも [ops/lab-debug.sh](../ops/lab-debug.sh) の 1 コマンド。**`ops/up.sh` / `ops/down.sh` とは別**（2026-10-04 から）: スタックが自分の VPC（閉域。既定 `10.20.0.0/24`）、エンドポイント 4 本（ssm / ssmmessages / ecr.api / ecr.dkr）と S3 の gateway、バケット、ECR のリポジトリ 4 つを持つので、`ops/up.sh` で何も作っていなくても立ち、`ops/down.sh` では消えない。lab の EC2 と並べて立ててもよい（管理ネットワーク `203.0.113.0/24` は EC2 の中だけにある）。待機は約 $0.30/h（m6i.xlarge 約 $0.25/h とエンドポイント 4 本 $0.056/h）。要るのは AWS CLI・docker buildx・curl・python3 か uv と、`deploy.env` の `OWNER`（`NETWORK_PERIMETER` も見る）。
 
 ```bash
 ops/lab-debug.sh up            # 初回は器（VPC・エンドポイント・バケット・ECR）を作り、イメージと lab/ を置いてから EC2 を作る。2 回目からは変わったところだけ
@@ -147,7 +148,7 @@ ops/lab-debug.sh down          # バケットを空にしてスタックを消�
 
 - `app/telegraf/` を変えたら `ops/lab-debug.sh up`（タグが変わるのでイメージを作り直し、スタックの UserData が変わって EC2 が止まって起きる）。`app/containerlab/` だけなら `ops/lab-debug.sh sync`。
 - スタックが `ROLLBACK_COMPLETE` などで止まったら `ops/lab-debug.sh down` してから `up`。原因は `aws cloudformation describe-stack-events --region ap-northeast-1 --stack-name <prefix>-lab-debug`。
-- イメージは土台の ECR（`<prefix>-lab-*` / `<prefix>-telegraf`）と別のリポジトリ（`<prefix>-debug-lab-srlinux` / `-debug-lab-multitool` / `-debug-telegraf`）に置く。SR Linux（約 1 GB）は `ops/up.sh` で置いてあっても、初回の `up` でもう一度 push する。
+- イメージは土台の ECR（`<prefix>-lab-*` / `<prefix>-telegraf`）と別のリポジトリ（`<prefix>-debug-lab-srlinux` / `-debug-lab-multitool` / `-debug-lab-trex` / `-debug-telegraf`）に置く。lab の 3 つと Telegraf は、EC2 が x86_64 なので amd64。SR Linux（約 1 GB）は `ops/up.sh` で置いてあっても、初回の `up` でもう一度 push する。
 - 境界の Deny（`NETWORK_PERIMETER`）は IAM 側だけ（ロールのインライン。IaC/terraform/aws-managed/base/core の `perimeter.tf` と同じ Action と条件をこの VPC に向ける）。バケット側は暗号化されていない経路を拒むだけ（中身は公開のソフトと lab の設定）。
 
 ## Kafka の画面（Kafbat UI）を開く
@@ -334,7 +335,7 @@ LOG_GROUP=$(terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output
 
 ## Neptune のトポロジ
 
-Neptune に入れる機器・インタフェース・回線（物理層）と、その上の IP 層・EVPN/BGP 層は、lab の定義（`app/containerlab/splab.clab.yml.in` と `app/containerlab/srlinux/<機器>.cli`）から `app/containerlab/lab_topology.py` が作る。インタフェースはリンクの両端だけでなく管理の `mgmt0` や `lag1` も全部入れる（ループバック `system0` は物理層に数えない）。IF 名は機器の名前（`ethernet-1/1`。containerlab の `e1-1` から直す）。`ops/up.sh` は Spark のジョブを起こす前に、Neptune が空のときだけ入れる。
+Neptune に入れる機器・インタフェース・回線（物理層）と、その上の IP 層・EVPN/BGP 層は、lab の定義（`app/containerlab/splab.clab.yml.in` と `app/containerlab/srlinux/<機器>.cli`）から `app/containerlab/lab_topology.py` が作る。インタフェースはリンクの両端だけでなく管理の `mgmt0` や LAG（いまの lab には無い）も全部入れる（ループバック `system0` は物理層に数えない）。IF 名は機器の名前（`ethernet-1/1`。containerlab の `e1-1` から直す）。`ops/up.sh` は Spark のジョブを起こす前に、Neptune が空のときだけ入れる。
 
 層は 3 つで、上の層の頂点は下の層の頂点の id を property に持つ（層をまたいで追える ID。[data-stores.md](data-stores.md#neptune-の層)）。
 
@@ -342,7 +343,7 @@ Neptune に入れる機器・インタフェース・回線（物理層）と、
 |---|---|---|---|
 | 物理 | `device` / `interface` | `<機器>` / `<機器>#<IF>` | — |
 | IP | `ip_interface`（アドレス付きサブインタフェース） / `isis_adjacency` | `<機器>#<IF>.0` / `<機器>#isis#<IF>.0` | `interface_id` / `ip_interface_id` |
-| EVPN・BGP | `bgp_session` / `evpn_instance` / `ethernet_segment` | `<機器>#bgp#<相手の IP>` / `<機器>#evi#<EVI>` / `<機器>#es#<名前>` | `ip_interface_id`（ループバック `system0.0`） / `interface_id`（`lag1`） |
+| EVPN・BGP | `bgp_session` / `evpn_instance` / `ethernet_segment` | `<機器>#bgp#<相手の IP>` / `<機器>#evi#<EVI>` / `<機器>#es#<名前>` | `ip_interface_id`（ループバック `system0.0`） / `interface_id`（LAG の IF。いまの lab には ES が無い） |
 
 同じ定義から、Telegraf のポーリング先（`--snmp-agents` → stream の変数 `snmp_agents`。`SNMP_POLL=0` では使わない）、gNMI の購読先（`--gnmi-targets` → stream の変数 `gnmi_targets`）と、gNMI と trap の送り元を機器名に直す device map（`--device-map`。hostname・管理 IP・全インタフェースのアドレス → 機器名。Splunk のアラートアクションはタスクの環境変数 `DEVICE_MAP` で、Spark のジョブは引数 `--device-map` で受ける）も作る。機器の一覧はこの 1 か所だけにある。ただし Telegraf のポーリング先と購読先はここからは最初の値だけで、そのあとの正は Nautobot（下の「Nautobot」）。
 
@@ -409,11 +410,11 @@ aws logs tail /ecs/<prefix>-nautobot --follow                                   
 `app/containerlab/splab.clab.yml.in` と `app/containerlab/srlinux/*.cli` は `app/containerlab/gen_lab.py` の出力で、手で直さない（`tests/test_sync.py` が出力と同じことを確かめる）。台数を変えるときは回し直して、`app/agentcore/data/` の静的データも作り直す。
 
 ```bash
-uv run python app/containerlab/gen_lab.py --leaves 2 --spines 2      # 既定と同じ。--leaves 4 なら Leaf 4 台
+uv run python app/containerlab/gen_lab.py --leaves 2 --spines 2      # 既定と同じ。--leaves 4 なら a-leaf 4 台
 uv run python app/containerlab/lab_topology.py app/containerlab --layers > app/agentcore/data/layers.json
 ```
 
-- 大きくするときは Leaf を増やす（2 台 1 組。EVPN マルチホーミングの組ごとに VM が 1 台付く）。Spine は `--spines`。実機に置き換えるときは Leaf 2 台を想定している。
+- 大きくするときは a-leaf を増やす（`--leaves` は 2 の倍数。s-leaf は 2 台のまま）。TRex は 1 台のままで、leaf 1 台に 1 ポートずつ増える（TRex はポートを 2 本ずつ組にするので、偶数本に保つ）。Spine は `--spines`。実機に置き換えるときは Leaf 2 台を想定している。
 - SR-MPLS に替えるとき（ライセンスが届いたら）: `gen_lab.py` の `type: ixr-d2l` を `ixr6e` にし、VXLAN の `vxlan-interface` / `tunnel-interface` を SR（IS-IS の segment-routing）と `mpls` の network-instance に置き換える。トポロジと Neptune の層は変わらない。
 
 ## 変えたとき

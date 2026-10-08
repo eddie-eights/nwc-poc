@@ -1,4 +1,4 @@
-# ECR repositories of nwc-poc. The agent image, the two lab images (srlinux / multitool),
+# ECR repositories of nwc-poc. The agent image, the three lab images (srlinux / multitool / trex, amd64 for the x86_64 lab EC2),
 # the two workflow images (worker / temporal) and the five ECS images of the pipeline (telegraf / grafana / splunk / nautobot / redis) go here.
 # ops/up.sh pushes them in step 2.
 # force_delete = true so that `terraform destroy` removes the repositories together with their images (daily ops/down.sh).
@@ -11,7 +11,7 @@ locals {
 }
 
 locals {
-  lab_repositories      = var.create_lab_repositories ? toset(["srlinux", "multitool"]) : toset([])
+  lab_repositories      = var.create_lab_repositories ? toset(["srlinux", "multitool", "trex"]) : toset([])
   workflow_repositories = var.create_workflow_repositories ? toset(["worker", "temporal"]) : toset([])
   # パイプラインの 6 つ（Telegraf は pipeline/stream の ECS、Kafbat UI は Web の EC2 の Docker（cycle 010。base/core の web_user_data）、
   # Grafana と Splunk は pipeline/analytics、Nautobot とその Redis は pipeline/nautobot）。

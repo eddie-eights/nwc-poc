@@ -114,7 +114,7 @@ gNMI の購読は Telegraf から取りにいくので、lab の値は取りに�
 | どこが食っているか | 加入者ごと、内側の IF ごと | サブインターフェースごと: `/interface[name=*]/subinterface[index=*]/bridge-table/statistics/active-entries` と上限 `…/bridge-table/mac-limit/maximum-entries`（1〜8192、既定 250） | 揃う（このパスも購読する） |
 | 上限で断った数 | NAT の `limit-entry-add-fail` など | **無い。**`failed-entries` はデータパスへの書き込みに失敗した数で、上限で断った数ではないので使わない | 揃わない。今の数が上限に達したら「上限に当たっている」とみなす。断った件数は出ない |
 | 上限に当たったときの影響 | 新しい通信・加入者が入れない | 新しい MAC を覚えない（覚えていない端末宛はフラッディングになるのが一般的な L2 の動き。SR Linux では確かめていない） | 揃わない。影響の説明は機能ごとに KB に書く |
-| 値の動き | 時間帯で増減する | lab の host は 2 台なので数個のまま動かない | 揃わない。host で MAC を増やす仕掛け（macvlan を足すなど）が要る（まだ無い） |
+| 値の動き | 時間帯で増減する | lab の mac-vrf にいるのは TRex のポート 4 本なので、数個のまま動かない | 揃わない。MAC を増やす仕掛け（TRex で送り元の MAC を変えて撃つプロファイルなど）が要る（まだ無い） |
 
 - しきい値を試すときは、lab の `mac-limit maximum-entries` を小さくすれば到達率を上げられる。
 
@@ -122,7 +122,7 @@ gNMI の購読は Telegraf から取りにいくので、lab の値は取りに�
 
 | エージェントが使う要素 | 本番（Cisco） | lab の代替（SR Linux） | 揃うか |
 |---|---|---|---|
-| 今の数 | お客さま向けの IF の数（何をお客さま向けとみなすかは未決定） | `type bridged` のサブインターフェースを持つ IF（lab では host へ向かう `lag1`。fabric の IF は routed なので数えない）。`/interface[name=*]/subinterface[index=*]/type` と `oper-state` | 数え方は揃う。ただ「お客さま向け」の決め方が機器の設定に依存する。本番と lab で同じ決め方（トポロジで相手が host やお客さまの IF）にすると揃う |
+| 今の数 | お客さま向けの IF の数（何をお客さま向けとみなすかは未決定） | `type bridged` のサブインターフェースを持つ IF（lab では TRex へ向かう `ethernet-1/3`。fabric の IF は routed なので数えない）。`/interface[name=*]/subinterface[index=*]/type` と `oper-state` | 数え方は揃う。ただ「お客さま向け」の決め方が機器の設定に依存する。本番と lab で同じ決め方（トポロジで相手が host やお客さまの IF）にすると揃う |
 | 上限 | 物理ポート数 | 物理ポート数（`/interface[name=ethernet-*]` の数。SR Linux は未使用のポートも状態に出す）。設定上の上限は無いので機器の上限を使う | 揃う |
 | 値の動き | 開通・解約で変わる（ほぼ静的） | 設定を変えたときだけ変わる | 揃う |
 
@@ -163,5 +163,5 @@ gNMI の購読は Telegraf から取りにいくので、lab の値は取りに�
 | セッションの上限と収容回線数の上限の出どころ | 機器の上限（ライセンス・設定値・機種の上限・ポート数）は多くが MDT で取れる。設計上の上限だけ静的データ（`app/agentcore/data/devices.yaml` か Neptune）。割るのは設定上の上限を先に使う（上の「割る上限の選び方」） | 決定 |
 | 共通の形 | Grafana と Splunk のルールを書く相手。本番の機種が 1 種類なら Cisco の形を正にし、混ざるなら独自の共通の形にする | 仮の形（上の「共通の形（仮）」）で lab を変換している。本番の機種が分かってから決める |
 | lab からどう送るか | gNMI で取って Telegraf の中で共通の形に変換する（上の「lab での取り方」）。変換は作った（lab の実機では未確認） | 決定 |
-| lab に Cisco の機器を足すか | 足せば MDT の受け口（`cisco_telemetry_mdt`）と Cisco の YANG の名前を lab で試せ、IOS XE ならセッションも代替ではなく本物（NAT / FW）が取れる見込み。本番が XR なら XRd（コンテナ。KVM 不要、1 台 2 GiB）、XE なら Cat8000v（VM。KVM が要るので lab の EC2 を Graviton の t4g から x86 の C8i / M8i などのネステッド仮想化か .metal に変える）。どちらも x86 だけ（lab は arm64 で通すと 2026-09-26 に決めているので、その決定を変えることになる）で、入手に Cisco の契約が要る見込み（未確認）。IOL は NETCONF が無く MDT を出せない見込みで、CML の同梱イメージは CML の中でしか使えないライセンス。SR Linux のファブリックは残し、本番と同じ OS の Cisco を 1〜2 台足すのが候補（2026-10-04 に調べた）。XRd の control-plane 版は転送が最小限で leaf の代わりにならず、Nexus（N9Kv）でファブリックを組むと 1 台 6〜10 GB で lab の EC2 が約 $0.17/h（t4g.xlarge）から $0.64〜1.28/h（r7i.2xlarge〜4xlarge）になる。Cat8000v を 2 台足すだけなら m7i.2xlarge で約 $0.52/h（東京のオンデマンド） | **当面は SR Linux のまま**（2026-10-04 決定。費用と arm64 の決定を優先）。本番の機種が分かったら見直す |
+| lab に Cisco の機器を足すか | 足せば MDT の受け口（`cisco_telemetry_mdt`）と Cisco の YANG の名前を lab で試せ、IOS XE ならセッションも代替ではなく本物（NAT / FW）が取れる見込み。本番が XR なら XRd（コンテナ。KVM 不要、1 台 2 GiB）、XE なら Cat8000v（VM。KVM が要るので lab の EC2 を Graviton の t4g から x86 の C8i / M8i などのネステッド仮想化か .metal に変える）。どちらも x86 だけ（lab は arm64 で通すと 2026-09-26 に決めているので、その決定を変えることになる）で、入手に Cisco の契約が要る見込み（未確認）。IOL は NETCONF が無く MDT を出せない見込みで、CML の同梱イメージは CML の中でしか使えないライセンス。SR Linux のファブリックは残し、本番と同じ OS の Cisco を 1〜2 台足すのが候補（2026-10-04 に調べた）。XRd の control-plane 版は転送が最小限で leaf の代わりにならず、Nexus（N9Kv）でファブリックを組むと 1 台 6〜10 GB で lab の EC2 が約 $0.17/h（t4g.xlarge）から $0.64〜1.28/h（r7i.2xlarge〜4xlarge）になる。Cat8000v を 2 台足すだけなら m7i.2xlarge で約 $0.52/h（東京のオンデマンド） | **当面は SR Linux のまま**（2026-10-04 決定。費用と arm64 の決定を優先）。本番の機種が分かったら見直す。2026-10-08 に TRex のため lab の EC2 を x86_64（`m6i.xlarge`、約 $0.25/h）にしたので、「x86 だけ」は妨げでなくなった（費用と入手の条件は残る） |
 | Grafana と Splunk の分担 | 同じ指標を両方で見るとルールを 2 か所でそろえることになる（異常の id が同じなので通知は 1 つにまとまる） | 未定 |

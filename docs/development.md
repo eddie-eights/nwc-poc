@@ -34,7 +34,7 @@ uv sync --group dev --group web
 bash ops/check.sh
 ```
 
-`web` のグループ（gradio・boto3・pyyaml。pandas は gradio と一緒に入る）も入れるのは、`test_nautobot` が Web の画面のモジュールを読むため。最後の行が `すべて通過` なら健全。中身は `terraform fmt`（`IaC/terraform/aws-managed/` と `IaC/terraform/oss/`）、9 ルートの `terraform validate`（`IaC/terraform/aws-managed/` と `IaC/terraform/oss/` の両方で 18 回）、git が追跡している `.sh` 全部（`git ls-files '*.sh'`）の `bash -n` と `.py` 全部の構文、`tests/test_*.py` の全部（2026-10-08 で 15 本。`test_app` 158 項目、`test_graph` 78、`test_stream` 83、`test_sync` 100、`test_analytics` 489、`test_workflow` 325、`test_alerts` 158、`test_kb_index` 7、`test_lab_debug` 91、`test_nautobot` 68、`test_oss` 171、`test_oss_ops` 156、`test_oss_roll` 66、`test_local_compose` 121、`test_dashboard_config` 3）。途中で落ちたらそこで止まる。
+`web` のグループ（gradio・boto3・pyyaml。pandas は gradio と一緒に入る）も入れるのは、`test_nautobot` が Web の画面のモジュールを読むため。最後の行が `すべて通過` なら健全。中身は `terraform fmt`（`IaC/terraform/aws-managed/` と `IaC/terraform/oss/`）、9 ルートの `terraform validate`（`IaC/terraform/aws-managed/` と `IaC/terraform/oss/` の両方で 18 回）、git が追跡している `.sh` 全部（`git ls-files '*.sh'`）の `bash -n` と `.py` 全部の構文、`tests/test_*.py` の全部（2026-10-09 で 15 本。`test_app` 161 項目、`test_graph` 78、`test_stream` 83、`test_sync` 103、`test_analytics` 489、`test_workflow` 325、`test_alerts` 158、`test_kb_index` 7、`test_lab_debug` 97、`test_nautobot` 69、`test_oss` 171、`test_oss_ops` 156、`test_oss_roll` 66、`test_local_compose` 122、`test_dashboard_config` 3）。途中で落ちたらそこで止まる。
 
 ## Web を手元で動かす
 
@@ -62,7 +62,7 @@ uv run python app/dashboard/app.py
 
 - 会話の永続化。履歴は Runtime のセッションの中にだけあり、画面を再読み込みすると消える。
 - Temporal の永続化と UI の認証。履歴はタスクと一緒に消え、UI にはポートフォワーディングでしか届かない。
-- 実機への修復。打てるのは lab の `sudo lab heal-main`（`dc1-leaf-01 ethernet-1/1` の fabric を戻す）と `sudo lab check` だけ。
+- 実機への修復。打てるのは lab の `sudo lab heal-main`（`dc1-a-leaf-01 ethernet-1/1` の fabric を戻す）と `sudo lab check` だけ。
 - 生データ（`raw_telemetry`）の検索。エージェントの `query_history` が Athena で読むのはアラートの通知の履歴（`alert_events`）だけ。analytics が無ければ案内だけ返す。
 - Web の画面の中のグラフ。修復案は S3 Tables の `proposal_events` を Athena で読んで、そのまま表に出す（メトリクスとログのグラフは 2026-09-28 から Grafana（`STORES` の `grafana`）で見る）。
 - Web の異常一覧と、障害の履歴を見る画面。2026-10-02 に検知を Grafana と Splunk へ移したときにやめた（[data-stores.md](data-stores.md) の「5. 経緯」）。いまの異常は「トポロジ」タブの `status`、アラートは Grafana / Splunk の画面で見る。通知の履歴は 2026-10-04 から S3 Tables の `alert_events` に残り、エージェントの `query_history` で引ける。

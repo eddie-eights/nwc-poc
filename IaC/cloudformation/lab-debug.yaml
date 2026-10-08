@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-# デバッグ用の EC2: lab（containerlab の SR Linux 6 台 + VM 2 台）と Telegraf を 1 台に入れる。MSK / ECS / NLB を作らずに、
+# デバッグ用の EC2: lab（containerlab の SR Linux 6 台 + TRex 1 台。x86_64）と Telegraf を 1 台に入れる。MSK / ECS / NLB を作らずに、
 # 機器の設定と Telegraf の設定（app/telegraf/telegraf.conf.in）を確かめる。Telegraf の出力は標準出力（sudo lab telegraf logs）。
 #
 # このスタックだけで閉じる（2026-10-04 ユーザー決定: ops/up.sh / ops/down.sh と terraform からは作らない・消さない）。
@@ -7,7 +7,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 #   - VPC（VpcCidr。1 AZ・1 サブネット）。インターネットへの経路は無い（NAT も IGW も無い）。IaC/terraform/aws-managed/base/core と同じ閉域の形
 #   - AWS の API へはインターフェース型エンドポイント 4 本（ssm / ssmmessages: SSM で入る。ecr.api / ecr.dkr: イメージを引く）と
 #     S3 の gateway エンドポイント（lab/ の材料、ECR のレイヤー、AL2023 の dnf リポジトリ。無料）
-#   - バケット <接頭辞>-lab-debug-<アカウント>（lab/ だけを置く）と ECR のリポジトリ 3 つ（<接頭辞>-debug-lab-srlinux / -lab-multitool / -telegraf）。
+#   - バケット <接頭辞>-lab-debug-<アカウント>（lab/ だけを置く）と ECR のリポジトリ 4 つ（<接頭辞>-debug-lab-srlinux / -lab-multitool / -lab-trex / -telegraf）。
 #     ECR はスタックを消すとイメージごと消える（EmptyOnDelete）。バケットは ops/lab-debug.sh down が空にしてから消す
 #   - ロールに VPC の外からの呼び出しを拒む Deny（IaC/terraform/aws-managed/base/core の perimeter.tf と同じ Action と条件。この VPC を指す）
 # イメージと app/containerlab/ を置く前に EC2 を起こしても引けないので、初回は CreateInstance=false で器だけ作り、置いてから true にする（ops/lab-debug.sh up）。
@@ -42,7 +42,7 @@ Parameters:
     Type: String
     Default: apne1-az1
     AllowedValues: [apne1-az1, apne1-az2, apne1-az4]
-    Description: AZ ID of the subnet (same choices as az_id_a of IaC/terraform/aws-managed/base/core; all of them have t4g)
+    Description: AZ ID of the subnet (same choices as az_id_a of IaC/terraform/aws-managed/base/core; all of them offer every InstanceType below)
   NetworkPerimeter:
     Type: String
     Default: "true"
@@ -50,12 +50,12 @@ Parameters:
     Description: Deny AWS API calls of the instance role that do not come through this VPC (same as NETWORK_PERIMETER of ops/up.sh)
   ImageId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
   InstanceType:
     Type: String
-    Default: t4g.xlarge
-    AllowedValues: [t4g.large, t4g.xlarge, t4g.2xlarge]
-    Description: Six SR Linux nodes need about 1.5-2.5 GB each at boot, plus Telegraf
+    Default: m6i.xlarge
+    AllowedValues: [m6i.xlarge, m6i.2xlarge, c6i.2xlarge, t3.xlarge, t3.2xlarge]
+    Description: x86_64 (TRex is amd64 only). Six SR Linux nodes need about 1.5-2.5 GB each at boot, TRex 2-4 GB, plus Telegraf
   VolumeSize:
     Type: Number
     Default: 24
@@ -66,10 +66,13 @@ Parameters:
     Default: "0.79.0"
   SrlinuxImageTag:
     Type: String
-    Default: "26.7.2"
+    Default: "26.7.2-amd64"
   MultitoolImageTag:
     Type: String
-    Default: "v0.10.0"
+    Default: "v0.10.0-amd64"
+  TrexImageTag:
+    Type: String
+    Default: "2.41-amd64"
   TelegrafImageTag:
     Type: String
     Default: ""
@@ -312,6 +315,16 @@ Resources:
       Tags:
         - { Key: Project, Value: !Ref NamePrefix }
         - { Key: owner, Value: !Ref Owner }
+  TrexRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "${NamePrefix}-debug-lab-trex"
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration: { ScanOnPush: true }
+      EmptyOnDelete: true
+      Tags:
+        - { Key: Project, Value: !Ref NamePrefix }
+        - { Key: owner, Value: !Ref Owner }
   TelegrafRepository:
     Type: AWS::ECR::Repository
     Properties:
@@ -345,7 +358,7 @@ Resources:
               - Sid: EcrPull
                 Effect: Allow
                 Action: [ecr:BatchGetImage, ecr:GetDownloadUrlForLayer, ecr:BatchCheckLayerAvailability]
-                Resource: [!GetAtt SrlinuxRepository.Arn, !GetAtt MultitoolRepository.Arn, !GetAtt TelegrafRepository.Arn]
+                Resource: [!GetAtt SrlinuxRepository.Arn, !GetAtt MultitoolRepository.Arn, !GetAtt TrexRepository.Arn, !GetAtt TelegrafRepository.Arn]
               - Sid: EcrToken
                 Effect: Allow
                 Action: ecr:GetAuthorizationToken
@@ -446,6 +459,7 @@ Resources:
           REGISTRY=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
           SRLINUX_IMAGE=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${NamePrefix}-debug-lab-srlinux:${SrlinuxImageTag}
           MULTITOOL_IMAGE=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${NamePrefix}-debug-lab-multitool:${MultitoolImageTag}
+          TREX_IMAGE=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${NamePrefix}-debug-lab-trex:${TrexImageTag}
           TELEGRAF_IMAGE=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${NamePrefix}-debug-telegraf:${TelegrafImageTag}
           PARAM_PREFIX=/${NamePrefix}
           CONTAINERLAB_VERSION=${ContainerlabVersion}
@@ -464,7 +478,7 @@ Outputs:
     Description: lab/ goes to s3://<this>/lab/ (ops/lab-debug.sh)
     Value: !Ref Bucket
   RepositoryPrefix:
-    Description: "<registry>/<this>-lab-srlinux, -lab-multitool, -telegraf"
+    Description: "<registry>/<this>-lab-srlinux, -lab-multitool, -lab-trex, -telegraf"
     Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${NamePrefix}-debug"
   InstanceId:
     Condition: HasInstance

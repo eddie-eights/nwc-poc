@@ -4,30 +4,30 @@
 
 ## ひとことで
 
-監視される側のネットワークを 1 台の EC2 の中に作る検証用の lab。containerlab が SR Linux 6 台と VM 役 2 台をコンテナで立てる。
+監視される側のネットワークを 1 台の EC2 の中に作る検証用の lab。containerlab が SR Linux 6 台と TRex 1 台をコンテナで立てる。
 Web やエージェントとはつながっていない。使うのは SNMP・gNMI・trap・syslog の発生源としてと、修復のコマンドを打つ先としてだけ。
 
 ## このプロジェクトでの使い方
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
-| EC2 | Amazon Linux 2023 arm64、`t4g.xlarge`（`t4g.large` / `t4g.xlarge` / `t4g.2xlarge` から選ぶ）、EBS 24 GB。1 台だけ（サブネット a）で、AZ を選ぶキーは無い | `IaC/terraform/aws-managed/pipeline/lab/instance.tf`、変数 `instance_type`、`volume_size` |
-| 版 | containerlab 0.79.0、SR Linux 26.7.2、multitool v0.10.0。正は `ops/lab-common.sh` | `ops/lab-common.sh`、`IaC/terraform/aws-managed/pipeline/lab/variables.tf`（同じ値） |
-| イメージ | ECR の `<prefix>-lab-srlinux`、`<prefix>-lab-multitool`（公開のイメージの写し） | `IaC/terraform/aws-managed/base/ecr/main.tf`、`ops/lab-common.sh` |
+| EC2 | Amazon Linux 2023 x86_64、`m6i.xlarge`（`m6i.xlarge` / `m6i.2xlarge` / `c6i.2xlarge` / `t3.xlarge` / `t3.2xlarge` から選ぶ。TRex のイメージが amd64 だけのため、2026-10-08 に `t4g` から替えた）、EBS 24 GB。1 台だけ（サブネット a）で、AZ を選ぶキーは無い | `IaC/terraform/aws-managed/pipeline/lab/instance.tf`、変数 `instance_type`、`volume_size` |
+| 版 | containerlab 0.79.0、SR Linux 26.7.2、multitool v0.10.0、TRex 2.41。正は `ops/lab-common.sh` | `ops/lab-common.sh`、`IaC/terraform/aws-managed/pipeline/lab/variables.tf`（同じ値） |
+| イメージ | ECR の `<prefix>-lab-srlinux`、`<prefix>-lab-multitool`、`<prefix>-lab-trex`（公開のイメージの amd64 の写し） | `IaC/terraform/aws-managed/base/ecr/main.tf`、`ops/lab-common.sh` |
 | 材料 | containerlab の rpm とトポロジ。S3 の `lab/`（土台のバケット）に `ops/up.sh` の手順 5-1 が置く | `ops/up.sh`、`app/containerlab/setup.sh` |
 | 起動 | systemd の `<prefix>-lab`。起動のたびに S3 の `lab/` を置き直して流す | `instance.tf` のコメント、`app/containerlab/setup.sh` |
 | 管理ネットワーク | `203.0.113.0/24`（EC2 の中の docker network。VPC からは見えない） | `IaC/terraform/aws-managed/pipeline/lab/locals.tf` の `mgmt_cidr`、`app/containerlab/splab.clab.yml.in` |
 | 入り方 | SSM Session Manager（管理者用のシェルセッション）。中では `sudo lab <コマンド>` | [pipeline.md](../../pipeline.md) の「lab に入る」 |
 | スイッチ | `PIPELINE=1`。`SKIP_LAB=1` で外す（`WORKFLOW=1` では外せない） | `ops/up.sh` |
-| 費用 | 17 セント/時。止めている間は EBS の保管料だけ | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`）、[pipeline.md](../../pipeline.md) の「止める・起動する」 |
+| 費用 | 25 セント/時（`m6i.xlarge`）。止めている間は EBS の保管料だけ | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`）、[pipeline.md](../../pipeline.md) の「止める・起動する」 |
 
 lab の中身:
 
 | 役 | 台数 | 中身 |
 |---|---|---|
-| スイッチ | 6 台（Leaf-SW 2、Spine 2、Leaf 2） | Nokia SR Linux（`ixr-d2l`）。fabric は IS-IS、その上に iBGP EVPN-VXLAN。SNMP の trap と syslog を出す。設定は `app/containerlab/srlinux/<機器>.cli` |
-| VM 役 | 2 台（`wan-upstream-01`、`dc1-host-01`） | multitool。Leaf の組へ `bond0`（LACP）で 2 本ずつ。疎通確認と障害の再現に使う |
-| 回線 | 12 本 | Leaf-SW・Leaf と Spine のフルメッシュ（fabric）、VM への LAG（EVPN マルチホーミング） |
+| スイッチ | 6 台（s-leaf 2、Spine 2、a-leaf 2） | Nokia SR Linux（`ixr-d2l`）。fabric は IS-IS、その上に iBGP EVPN-VXLAN。SNMP の trap と syslog を出す。設定は `app/containerlab/srlinux/<機器>.cli` |
+| TRex | 1 台（`dc1-trex-01`） | `trexcisco/trex`（amd64 だけ）。`eth1`〜`eth4` を各 leaf の `ethernet-1/3` へ 1 本ずつ。後段の負荷試験に使う。トポロジを上げても TRex 本体は起きない（`sudo lab trex start`） |
+| 回線 | 12 本 | s-leaf・a-leaf と Spine のフルメッシュ（fabric 8 本）、TRex と各 leaf（l2 4 本。LAG も EVPN マルチホーミングも無い） |
 
 ## つながり
 
@@ -45,9 +45,12 @@ lab の中身:
 - **1 台だけで、2 台にはできない。**
   containerlab の 1 台の中に全部の機器があり、管理ネットワークへの VPC のルートもこの 1 台の ENI を向く。2 台にすると別々の lab になる。コードから確かめた理由で、AWS では試していない（2026-10-04）。
   出典: `IaC/terraform/aws-managed/pipeline/lab/instance.tf` のコメント。
-- **`t4g.large` では足りない。**
-  SR Linux 6 台で 10 GB ほど使う。足りないと `containerlab deploy` が readiness で止まる。
-  出典: [pipeline.md](../../pipeline.md) の「動かないとき」。
+- **メモリは SR Linux 6 台と TRex で 11〜13 GB の見込み（推定。EC2 では測っていない）。**
+  SR Linux 6 台で 10 GB ほど使う。`m6i.xlarge` は 16 GB。足りないと `containerlab deploy` が readiness で止まるので、`m6i.2xlarge`（32 GB）に上げる。
+  出典: [pipeline.md](../../pipeline.md) の「動かないとき」、[app/containerlab/trex/README.md](../../../app/containerlab/trex/README.md)。
+- **2026-10-08 より前に ECR に置いた lab のイメージは arm64。**
+  いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）なので、`KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が残っていても名前がぶつからず、`ops/up.sh` は amd64 を写し直す。前のタグは使われずに残るだけで、消さなくてよい（保管料は残したぶんだけかかる）。
+  出典: [ecr.md](ecr.md)。
 - **版の正は `ops/lab-common.sh`。**
   terraform の変数とデバッグ用のスタックの既定値も同じ値にしてある。
   出典: `ops/lab-common.sh`、[pipeline.md](../../pipeline.md) の「デバッグ用の EC2（lab + Telegraf を 1 台）」。
@@ -87,9 +90,9 @@ lab の中身:
 - **いまは EVPN-VXLAN。SR-MPLS はライセンス待ち。**
   SR Linux のコンテナは SR-MPLS に `ixr6e` / `ixr10e` とライセンスが要る。届いたら `gen_lab.py` を替える。トポロジと Neptune の層は変わらない。
   出典: [pipeline.md](../../pipeline.md) の「lab を変える」。
-- **VM の `bond0` には、EC2 のカーネルの bonding モジュールが要る。**
-  `app/containerlab/setup.sh` が起動時に入れる。
-  出典: [pipeline.md](../../pipeline.md) の「動かないとき」。
+- **TRex は置いてあるだけで、負荷はまだ撃っていない。**
+  この lab で起動するかも確かめていない（2026-10-08）。撃つ手順と確かめていないことは `app/containerlab/trex/README.md`。
+  出典: [pipeline.md](../../pipeline.md) の「lab に入る」。
 - **デバッグ用の EC2 は別物。**
   `ops/lab-debug.sh` が CloudFormation のスタック `<prefix>-lab-debug` で作る（lab + Telegraf を 1 台、自分の VPC）。`ops/up.sh` / `ops/down.sh` とは別で、Nautobot を使わない。中身の支度は lab の EC2 と同じ `app/containerlab/setup.sh`。
   出典: [pipeline.md](../../pipeline.md) の「デバッグ用の EC2（lab + Telegraf を 1 台）」。

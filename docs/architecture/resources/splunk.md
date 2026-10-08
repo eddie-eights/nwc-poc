@@ -62,8 +62,8 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 ## 知見
 
 - **イメージは amd64 しか無い。**
-  ほかのコンテナは arm64 にそろえてあるが、Splunk だけ x86 のタスクにしている。
-  出典: `IaC/terraform/aws-managed/pipeline/analytics/splunk.tf` の先頭のコメント、[data-stores.md](../../data-stores.md) の「8. arm64 に揃える（Splunk だけ x86）」。
+  Fargate のほかのタスクは arm64 だが、Splunk だけ x86 のタスクにしている（x86 が要るのは、ほかに lab の EC2 の TRex）。
+  出典: `IaC/terraform/aws-managed/pipeline/analytics/splunk.tf` の先頭のコメント、[data-stores.md](../../data-stores.md) の「8. アーキテクチャは全体で揃えない（同じホストの中だけ揃える）」。
 - **ライセンスと Splunk General Terms には、デプロイする人が同意したことになる。**
   イメージは `SPLUNK_START_ARGS=--accept-license` と `SPLUNK_GENERAL_TERMS` が無いと起きない。Splunk のサイトへの登録は要らない。
   出典: `splunk.tf` の先頭のコメント、FAQ「Splunk のライセンスは、Splunk のサイトでメールアドレスを登録しないと使えない？」。
