@@ -135,6 +135,20 @@ check("heal-main の事前チェックは「上げる」と仮定して問題な
 check("check は何も変えないので問題なし、none は空", rules.precheck("check", _pd, _pl)["verdict"] == "ok" and rules.precheck("none", _pd, _pl) == {"verdict": "", "text": ""})
 check("対象の回線がグラフに無ければ「確認できず」", rules.precheck("heal-main", _pd, _pl[1:])["verdict"] == "unknown" and "【確認できず】" in rules.precheck("heal-main", _pd, _pl[1:])["text"])
 check("対応表に無い処置は「確認できず」", rules.precheck("reboot", _pd, _pl)["verdict"] == "unknown")
+# 総当たり: 静的データ（7 台・12 本）で spine 2 台の状態 4 通り × 回線の DOWN の組み合わせ 2^12 通り。上げるだけの heal-main は孤立も冗長切れも出さない（027）
+_hm_devs, _hm_links = topology.load_static()
+_hm_spines = [d for d in _hm_devs if d["device_id"] in ("dc1-spine-01", "dc1-spine-02")]
+_hm_seen = {}
+for _hm_links_down in range(1 << len(_hm_links)):
+    for _i, _x in enumerate(_hm_links):
+        _x["status"] = "DOWN" if _hm_links_down >> _i & 1 else "UP"
+    for _hm_spines_down in range(1 << len(_hm_spines)):
+        for _i, _x in enumerate(_hm_spines):
+            _x["status"] = "DOWN" if _hm_spines_down >> _i & 1 else None
+        _v = rules.precheck("heal-main", _hm_devs, _hm_links)["verdict"]
+        _hm_seen[_v] = _hm_seen.get(_v, 0) + 1
+check("heal-main の事前チェックは、spine 2 台の状態 4 通り × 回線 12 本の DOWN の組み合わせ 2^12 通りのどれでも問題なし（危険にも注意にもならない）",
+      len(_hm_links) == 12 and len(_hm_spines) == 2 and _hm_seen == {"ok": 16384})
 _g = []
 def _fake_cypher(q, **params):
     _g.append(q)
