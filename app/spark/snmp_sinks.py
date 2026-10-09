@@ -291,7 +291,7 @@ def parse_rows(raw):
     # gnmic の event は形で見分け（fields が無い）、Telegraf の形（timestamp / name / tags / fields）の struct に読み替える（gnmic_struct。gnmic_message と同じ表）。
     # Telegraf の JSON（trap / syslog-ng / telegraf）は必ず fields を持ち、flows はトピックで先に分ける。values の無い event（deletes だけ、values も deletes も無い。
     # 2026-10-09 の AWS で metrics の 400 件中 359 件）も gnmic_struct に送り、timestamp が null になって下の where で捨てる（cycle 025。それまでは
-    # values か deletes を要求していたので、values も deletes も無い event が Telegraf の行としてナノ秒を秒と読まれ、sinks の collect() が年 173875 で落ちていた）。
+    # values と deletes のどちらかを要求していたので、values も deletes も無い event が Telegraf の行としてナノ秒を秒と読まれ、sinks の collect() が年 173875 で落ちていた）。
     # Telegraf の行も同じ 4 つの項目の struct にする（F.when の分岐は同じ型でなければならない）
     gnmic = msg["fields"].isNull()
     telegraf = F.struct(*(msg[k].alias(k) for k in ("timestamp", "name", "tags", "fields")))

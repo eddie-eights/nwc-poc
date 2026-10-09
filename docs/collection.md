@@ -224,14 +224,14 @@ gnmic は購読した値を event の形で Kafka に書く（`app/gnmic/gnmic.y
 
 - values のキーはモジュールの接頭辞つきの絶対パス、カウンターは文字列。
   tags のキーは `interface_name` / `source` / `subscription-name` / `control_slot` / `cpu_index`。
-- values の無い event（tags だけ。400 件のうち 358 件）もあり、`gnmic_message` はこれを捨てる。
+- values の無い event（tags だけ。400 件のうち 359 件）もあり、`read_rows` も `gnmic_message` もこれを捨てる（025 で `read_rows` の判定を直した。それまでは Telegraf の行として通り、sinks が落ちていた）。
 - `gnmi`（`interface_state` など）の event は無かったので、oper-state / admin-state の綴りは見ていない（`docs/verification/20261009-aws-managed.md` の「B.」）。
 
 ```
 {"name": "interface_state", "timestamp": 1700000000123456789, "tags": {"source": "203.0.113.31", "interface_name": "ethernet-1/1", "subscription-name": "interface_state"}, "values": {"/srl_nokia-interfaces:interface/oper-state": "down"}}
 ```
 
-Spark が、形で見分けて（`fields` が無く `values` か `deletes` がある）Telegraf の形（`timestamp` / `name` / `tags` / `fields`）に読み替えてから格納先へ流す。
+Spark が、形で見分けて（`fields` が無い）Telegraf の形（`timestamp` / `name` / `tags` / `fields`）に読み替えてから格納先へ流す。
 読み替えは `app/spark/snmp_sinks.py` の `read_rows`。同じ読み替えを Python で書いた `gnmic_message` を `tests/test_stream.py` が縛る。
 S3 Tables にも読み替えた形で入る（Kafka には event のまま）。
 

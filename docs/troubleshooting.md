@@ -114,6 +114,7 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 | Neptune の `status` が変わらず、ログに `Task timed out` か `Neptune に書けなかった` がある | Neptune が遅いか届かない（上の「閉域」の Neptune の行を見る）。履歴の行は Neptune より先に送ってある（`status` が遅れて変わるわけは表の下の `Neptune の status`） |
 | BGP / IS-IS の層や機器の `ALARM` が変わらない | 出すのは Grafana と Splunk のアラート（`bgp_down` / `isis_down` / `trap`）。`STORES` に `grafana` も `splunk` も無ければ出ない（仕様）（あるのに変わらないときは表の下の `ALARM`） |
 | Grafana のダッシュボード「nwc / SNMP metrics」が空、エージェントの `query_metrics` が何も返さない | `metrics` トピックの IF の統計・CPU・メモリは gnmic が 60 秒ごとに書く（見る所は表の下の `metrics`） |
+| `sinks-splunk` / `sinks-grafana` のジョブが数分で落ちて立ち直りを繰り返し、ログに `ValueError: year 173875 is out of range` | gnmic の values の無い event を Telegraf の行として読んでいた（025 で直した）。直す前のイメージ（`snmp_sinks.py` のハッシュ）で立っていないかを見る |
 | トポロジは赤くなるのに修復案が出ない | SNS → SQS か、ワーカー。`WORKFLOW=1` か、起こす種類か（ワークフローを起こすのは `link_down` だけ）を見る（DLQ とワーカーのログは表の下の `修復案`） |
 | 承認を押しても `pending` のまま | 反映まで数秒〜20 秒かかる（Web → SQS `<prefix>-decisions` → worker → ワークフロー → `proposal_events` → Athena）。「更新」を押す（実測と、1 分たっても変わらないときは表の下の `pending`） |
 | 承認を押したら `expired` になった | ワークフローがもう無かった（worker のタスクが入れ替わった）。処置は打たれない。まだ落ちていれば、次の通知で別の修復案が出る（[workflow.md](workflow.md)） |
