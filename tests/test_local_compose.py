@@ -249,8 +249,8 @@ check("goflow2 の引数: NetFlow 2055/udp と sFlow 6343/udp を TELEGRAF_BIND 
       and _ga["format"] == "json" and _ga["addr"] == "${TELEGRAF_BIND:-}:8081" and example["HEALTH_PORT"] != "8081")
 check("syslog-ng の 5140 は app/containerlab/lab.sh の LOG_PORT（SR Linux の syslog の送り先）と同じ",
       sh_const(lab_sh, "LOG_PORT") == "5140")
-check("lab の管理ネットの GW は docker/compose/up.sh・check.sh と app/containerlab/lab.sh で同じ（203.0.113.1）",
-      sh_const(read("docker", "compose", "up.sh"), "MGMT_GW") == sh_const(read("docker", "compose", "check.sh"), "MGMT_GW") == sh_const(lab_sh, "MGMT_GW") == "203.0.113.1")
+check("lab の管理ネットの GW は docker/compose/up.sh と app/containerlab/lab.sh で同じ（203.0.113.1）。check.sh は GW を持たず、動いているコンテナの bind を読む（cycle 027）",
+      sh_const(read("docker", "compose", "up.sh"), "MGMT_GW") == sh_const(lab_sh, "MGMT_GW") == "203.0.113.1" and "MGMT_GW" not in read("docker", "compose", "check.sh"))
 _tg_topics = set(re.findall(r'^\s*topic = "(\w+)"', read("app", "telegraf", "telegraf.conf.in"), re.M))
 _gn_topics = set(re.findall(r'^\s*topic: (\w+)$', read("app", "gnmic", "gnmic.yaml.in"), re.M))
 _topics = _tg_topics | _gn_topics
@@ -411,17 +411,28 @@ fake("docker", '[ "${1:-}" = login ] && cat >/dev/null\n'
      'esac; fi\n'
      # docker compose: config --environment は --env-file の KEY=値 の行をそのまま（クォートも # メモも外さない。本物の読み方は下の本物の compose のテスト）、
      # 続けて自分の環境を出す（あとの方が勝つので、本物と同じくシェルが勝つ）。FAKE_CONFIG_FAIL=1 なら値のかけらを標準エラーに出して 15 で落ちる。
+     # ps -a -q <サービス> は telegraf なら FAKE_TG_ID、goflow2 なら FAKE_GF_ID のコンテナ ID（空ならコンテナ無しで何も出さない。check.sh が bind とポートを読む。cycle 027）。
      # ps は FAKE_PS（無ければ spark-splunk と spark-http が running の 2 行）。ほか（up / down）は渡された環境を書く
      'if [ "${1:-}" = compose ]; then case " $* " in\n'
      '  *" config --environment "*) f=; prev=; for a in "$@"; do [ "$prev" = --env-file ] && f=$a; prev=$a; done\n'
      '    [ "${FAKE_CONFIG_FAIL:-0}" = 1 ] && { echo "failed to read $f: line 3: unterminated quoted value \\"SECRETFRAG" >&2; exit 15; }\n'
      '    grep -E "^[A-Za-z_][A-Za-z0-9_]*=" "$f"; env ;;\n'
+     '  *" ps -a -q "*) case "${*: -1}" in telegraf) id=${FAKE_TG_ID-0a1b2c3d4e5f} ;; goflow2) id=${FAKE_GF_ID-6a7b8c9d0e1f} ;; *) id= ;; esac\n'
+     '    [ -z "$id" ] || echo "$id" ;;\n'
      '  *" ps "*) if [ -n "${FAKE_PS+x}" ]; then printf "%s\\n" "$FAKE_PS"; else cat <<\'J\'\n'
      '{"Service":"spark-http","State":"running","Status":"Up 5 minutes","ExitCode":0,"Health":""}\n'
      '{"Service":"spark-splunk","State":"running","Status":"Up 5 minutes","ExitCode":0,"Health":""}\n'
      'J\n'
      '    fi ;;\n'
      '  *) echo "ENV SNMP_AGENTS=${SNMP_AGENTS-unset} GNMI_TARGETS=${GNMI_TARGETS-unset} DEVICE_MAP=${DEVICE_MAP-unset} TELEGRAF_BIND=${TELEGRAF_BIND-unset}" >> "$FAKE_LOG" ;;\n'
+     'esac; fi\n'
+     # docker inspect --format … <id>: .Config.Env（1 行 1 つ）は telegraf のコンテナの FAKE_TG_ENV（無ければ bind が空で HEALTH_PORT=8080）、
+     # .Config.Cmd（JSON の配列）は goflow2 のコンテナの FAKE_GF_CMD（無ければ compose.yaml の command を bind が空で展開したもの）。ほかの ID は無いものとして 1 で落ちる
+     'if [ "${1:-}" = inspect ]; then case "$*:${*: -1}" in\n'
+     '  *.Config.Env*:"${FAKE_TG_ID-0a1b2c3d4e5f}") if [ -n "${FAKE_TG_ENV+x}" ]; then printf "%s\\n" "$FAKE_TG_ENV"\n'
+     '    else printf "%s\\n" PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin SINK=kafka TELEGRAF_BIND= HEALTH_PORT=8080; fi; echo ;;\n'
+     '  *.Config.Cmd*:"${FAKE_GF_ID-6a7b8c9d0e1f}") printf "%s\\n" "${FAKE_GF_CMD-[\\"-listen=netflow://:2055,sflow://:6343\\",\\"-transport=kafka\\",\\"-format=json\\",\\"-addr=:8081\\"]}" ;;\n'
+     '  *) echo "Error: No such object: ${*: -1}" >&2; exit 1 ;;\n'
      'esac; fi\n')
 # -S（規則の一覧）には FAKE_IPT_RULES を返す
 fake("iptables", 'case " $* " in *" -S"*) printf "%s" "${FAKE_IPT_RULES:-}" ;; esac\n')
@@ -478,7 +489,8 @@ esac
 LOG = os.path.join(TMP, "calls.log")
 CLEAN = ("REGISTRY", "AWS_REGION", "PARAM_PREFIX", "TELEGRAF_IMAGE", "TELEGRAF_LOCAL", "SRLINUX_IMAGE", "TREX_IMAGE",
          "SNMP_AGENTS", "GNMI_TARGETS", "DEVICE_MAP", "FAKE_IPT_RULES", "FAKE_MEM", "FAKE_DOWN", "FAKE_OS_COUNT", "FAKE_SPLUNK",
-         "FAKE_METRICS", "FAKE_GNMI", "FAKE_TRAPS", "FAKE_LOGS", "FAKE_KAFKA_SHAPE", "FAKE_GW", "FAKE_TG_HEALTH", "FAKE_GF_METRICS", "FAKE_SNG", "FAKE_SNG_ADDR", "TELEGRAF_BIND", "HEALTH_PORT", "LOG_PORT", "TRAP_PORT",
+         "FAKE_METRICS", "FAKE_GNMI", "FAKE_TRAPS", "FAKE_LOGS", "FAKE_KAFKA_SHAPE", "FAKE_GW", "FAKE_TG_HEALTH", "FAKE_GF_METRICS",
+         "FAKE_TG_ID", "FAKE_GF_ID", "FAKE_TG_ENV", "FAKE_GF_CMD", "FAKE_SNG", "FAKE_SNG_ADDR", "TELEGRAF_BIND", "HEALTH_PORT", "LOG_PORT", "TRAP_PORT",
          "LAB_CMD", "FAKE_BGP_ADMIN", "FAKE_PS", "FAKE_CONFIG_FAIL") + tuple(example)   # .env.example の名前もシェルにあれば .env より勝つので消す
 
 def run(cmd, cwd=None, **env):
@@ -673,8 +685,11 @@ _r, _c = run([os.path.join(_lc, "check.sh")])
 _ok = [l for l in _r.stdout.splitlines() if l.startswith("ok  ")]
 check("check.sh: 応答が全部そろえば 15 項目とも ok で「すべて ok」、終了コード 0（メモリが 20 GB 以上なら注意を出さない）",
       _r.returncode == 0 and len(_ok) == 15 and _r.stdout.splitlines()[-1] == "すべて ok" and "注意" not in _r.stdout)
-check("check.sh: .env は docker compose --env-file .env config --environment で読み、Spark の 2 つは docker compose ps -a --format json で 1 回だけ見る",
-      [c for c in _c if c.startswith("docker ")] == ["docker compose --env-file .env config --environment", "docker compose ps -a --format json spark-splunk spark-http"])
+check("check.sh: .env は docker compose --env-file .env config --environment で読み、Spark の 2 つは docker compose ps -a --format json で 1 回だけ見る。"
+      "Telegraf と GoFlow2 は docker compose ps -a -q でコンテナを引き、docker inspect で環境（.Config.Env）と引数（.Config.Cmd）を読む（cycle 027）",
+      [c for c in _c if c.startswith("docker ")] == ["docker compose --env-file .env config --environment", "docker compose ps -a --format json spark-splunk spark-http",
+                                                     "docker compose ps -a -q telegraf", "docker inspect --format {{range .Config.Env}}{{println .}}{{end}} 0a1b2c3d4e5f",
+                                                     "docker compose ps -a -q goflow2", "docker inspect --format {{json .Config.Cmd}} 6a7b8c9d0e1f"])
 _argv = [c for c in _c if c.startswith("curl ")]
 _stdin = [c for c in _c if c.startswith("STDIN ")]
 check("check.sh: パスワードは curl の引数に載せず（ps に出る）、-K - の標準入力で user = \"admin:…\" として渡す（OpenSearch・Splunk・Grafana 2 つの 4 回）。Kafka のトピックの一覧は 1 回だけ取る",
@@ -691,24 +706,43 @@ check("check.sh: Kafka で見るトピック（metrics / gnmi / traps / logs / f
       "{'metrics', 'gnmi', 'traps', 'logs', 'flows'}" in read("docker", "compose", "check.sh")
       and {"metrics", "gnmi", "traps", "logs", "flows"} == _topics | {"logs", _ga["transport.kafka.topic"]})
 TH, GF, SG = "Telegraf: health が 200", "GoFlow2: /metrics が 200", "syslog-ng: udp 5140 を待っている"
-check("check.sh: Telegraf の health は 203.0.113.1 が無ければ 127.0.0.1 の .env の HEALTH_PORT（8080）に、GoFlow2 の /metrics は 127.0.0.1:8081 に、認証なしで打つ",
+def hc_urls(c):  # Telegraf の health と GoFlow2 の /metrics に打った URL（-w %{http_code} を付けた curl の最後の引数）
+    return [x.split()[-1] for x in c if x.startswith("curl ") and "-w" in x]
+_r2, _c2 = run([os.path.join(_lc, "check.sh")], FAKE_GW="1")
+check("check.sh: 動いているコンテナの bind が空（全部のインターフェースで待つ）なら、203.0.113.1 が host にあっても無くても 127.0.0.1 の、"
+      "コンテナの HEALTH_PORT（8080）に Telegraf の health を、8081 に GoFlow2 の /metrics を、認証なしで打つ（cycle 027）",
       [c for c in _argv if c.endswith(":8080/")] == ["curl -sS --max-time 60 -o /dev/null -w %{http_code} http://127.0.0.1:8080/"] and f"ok  {TH}" in _ok
       and [c for c in _argv if "8081" in c] == ["curl -sS --max-time 60 -o /dev/null -w %{http_code} http://127.0.0.1:8081/metrics"] and f"ok  {GF}" in _ok
-      and f"ok  {SG}" in _ok)
-_r, _c = run([os.path.join(_lc, "check.sh")], FAKE_GW="1")
-check("check.sh: 203.0.113.1 があれば（up.sh が TELEGRAF_BIND にしたアドレス）そこの Telegraf の health と GoFlow2 の /metrics に打つ",
-      _r.returncode == 0 and [c.split()[-1] for c in _c if c.startswith("curl ") and "-w" in c] == ["http://203.0.113.1:8080/", "http://203.0.113.1:8081/metrics"])
+      and f"ok  {SG}" in _ok and _r2.returncode == 0 and hc_urls(_c2) == ["http://127.0.0.1:8080/", "http://127.0.0.1:8081/metrics"])
+BIND = {"FAKE_TG_ENV": "PATH=/usr/bin:/bin\nTELEGRAF_BIND=203.0.113.1\nHEALTH_PORT=8080",
+        "FAKE_GF_CMD": '["-listen=netflow://203.0.113.1:2055,sflow://203.0.113.1:6343","-transport=kafka","-format=json","-addr=203.0.113.1:8081"]'}
+_r, _c = run([os.path.join(_lc, "check.sh")], FAKE_GW="1", **BIND)
+check("check.sh: コンテナの bind が 203.0.113.1（up.sh が lab の管理ネットの GW を TELEGRAF_BIND にした）で、それが host にあれば、そこの Telegraf の health と GoFlow2 の /metrics に打つ（cycle 027）",
+      _r.returncode == 0 and hc_urls(_c) == ["http://203.0.113.1:8080/", "http://203.0.113.1:8081/metrics"] and f"ok  {TH}" in _r.stdout.splitlines())
+_r, _c = run([os.path.join(_lc, "check.sh")], **BIND)
+check("check.sh: コンテナの bind が 203.0.113.1 なのに host に無い（up.sh のあとに lab.sh down した）なら、curl を打たずに Telegraf と GoFlow2 を NG にし、"
+      "「host に無い」と lab.sh up か up.sh telegraf syslog-ng goflow2 を案内する。終了コード 1（cycle 027）",
+      _r.returncode == 1 and hc_urls(_c) == [] and "ip -o -4 addr show" in _c
+      and [l for l in _r.stdout.splitlines() if TH in l or GF in l]
+      == [f"NG  {n}: 203.0.113.1 が host に無い（lab.sh down のあとなら docker/compose/lab.sh up で戻すか、docker/compose/up.sh telegraf syslog-ng goflow2 で上げ直す）" for n in (TH, GF)])
+_r, _c = run([os.path.join(_lc, "check.sh")], FAKE_TG_ID="", FAKE_GF_ID="")
+check("check.sh: Telegraf と GoFlow2 のコンテナが無い（ps -a -q が何も返さない）なら、inspect も curl も打たずに NG にして up.sh <サービス> を案内する。終了コード 1（cycle 027）",
+      _r.returncode == 1 and hc_urls(_c) == [] and not [c for c in _c if c.startswith("docker inspect")]
+      and [l for l in _r.stdout.splitlines() if TH in l or GF in l]
+      == [f"NG  {TH}: コンテナが無い（docker/compose/up.sh telegraf で上げる）", f"NG  {GF}: コンテナが無い（docker/compose/up.sh goflow2 で上げる）"])
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_TG_HEALTH="000")
 check("check.sh: Telegraf の health に繋がらない（restart の上限で止まった、bind に失敗した）なら NG で、ps -a と logs telegraf と up.sh telegraf を案内する",
       _r.returncode == 1 and [l for l in _r.stdout.splitlines() if TH in l]
       == [f"NG  {TH}: 繋がらない（docker compose ps -a telegraf が Exited なら logs telegraf で理由を見て up.sh telegraf）"])
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_TG_HEALTH="503")
 check("check.sh: Telegraf の health が 200 以外なら HTTP の番号を出して NG", _r.returncode == 1 and any(l.startswith(f"NG  {TH}: HTTP 503（") for l in _r.stdout.splitlines()))
-_r, _c = run([os.path.join(tree(read("docker", "compose", ".env.example").replace("HEALTH_PORT=8080", "HEALTH_PORT=18081")), "check.sh")])
-_r2, _c2 = run([os.path.join(tree(read("docker", "compose", ".env.example")), "check.sh")], HEALTH_PORT="18082")
-check("check.sh: health のポートは compose と同じくシェルの HEALTH_PORT、.env の HEALTH_PORT の順",
-      [c.split()[-1] for c in _c if c.startswith("curl ") and "-w" in c] == ["http://127.0.0.1:18081/", "http://127.0.0.1:8081/metrics"]
-      and [c.split()[-1] for c in _c2 if c.startswith("curl ") and "-w" in c] == ["http://127.0.0.1:18082/", "http://127.0.0.1:8081/metrics"])
+_lc2 = tree(read("docker", "compose", ".env.example").replace("HEALTH_PORT=8080", "HEALTH_PORT=18082"))
+_r, _c = run([os.path.join(_lc2, "check.sh")], FAKE_TG_ENV="TELEGRAF_BIND=\nHEALTH_PORT=18081")
+_r2, _c2 = run([os.path.join(_lc2, "check.sh")], FAKE_TG_ENV="TELEGRAF_BIND=\nHEALTH_PORT=18081", HEALTH_PORT="18083")
+_r3, _c3 = run([os.path.join(_lc2, "check.sh")], FAKE_TG_ENV="PATH=/usr/bin:/bin\nTELEGRAF_BIND=")
+check("check.sh: health のポートは動いているコンテナの HEALTH_PORT（18081）で、.env（18082）やシェル（18083）の HEALTH_PORT ではない。コンテナに無ければ 8080（cycle 027）",
+      hc_urls(_c) == hc_urls(_c2) == ["http://127.0.0.1:18081/", "http://127.0.0.1:8081/metrics"]
+      and hc_urls(_c3) == ["http://127.0.0.1:8080/", "http://127.0.0.1:8081/metrics"])
 KM, KT, KG = "Kafka: metrics のメッセージ数 > 0", "Kafka: traps のメッセージ数 > 0", "Kafka: gnmi のメッセージ数 > 0"
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_METRICS="0")
 check("check.sh: Kafka の metrics のメッセージ数が 0 なら NG（gnmic の sample から届いていない。トピックは Spark が作るのであっても証拠にならない）",

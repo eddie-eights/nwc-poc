@@ -115,8 +115,11 @@ docker/compose/check.sh
 - Kafka のトピックとメッセージ数
 - Prometheus の `snmp_interface_oper_up`、OpenSearch の `snmp-logs`、Splunk の `sourcetype=nwc:*`
 - Grafana のデータソース 2 つと Prometheus の health
-- Telegraf の health（`up.sh` と同じく `203.0.113.1` があればそこ、無ければ `127.0.0.1` の `HEALTH_PORT`）
-- syslog-ng が 5140/udp で待っているか、GoFlow2 の `/metrics`（8081）
+- Telegraf の health と GoFlow2 の `/metrics`（8081）
+  - 宛先は動いているコンテナの設定（`docker inspect`）から読む。Telegraf は環境の `TELEGRAF_BIND` と `HEALTH_PORT`（無ければ 8080）、GoFlow2 は引数の `-addr`。
+  - bind が空なら `127.0.0.1` に打つ。`203.0.113.1` なのに host に無ければ（`up.sh` のあとに `lab.sh down` した）、打たずに NG で `lab.sh up` か `up.sh telegraf syslog-ng goflow2` を案内する。
+  - コンテナが無ければ NG で `up.sh telegraf`（`up.sh goflow2`）を案内する。
+- syslog-ng が 5140/udp で待っているか
 
 Kafka のトピックは Spark が起動のときに作るので、gnmic と Telegraf から届いているかはメッセージ数（Kafbat UI の `messagesCount`）で見る。
 
@@ -189,7 +192,7 @@ Telegraf・syslog-ng・GoFlow2 は host のネットワークにいるので、h
 - lab を `down` / `up` で作り直したあとは、Telegraf が動いていても次で待ち直させる（作り直した bridge で前の待ち受けが受け続けるかは未確認）。
   `docker compose -f docker/compose/compose.yaml restart telegraf syslog-ng goflow2`
 
-health のポートは `.env` の `HEALTH_PORT` で変えられる（変えたら `docker/compose/up.sh telegraf`。`check.sh` も `HEALTH_PORT` に打つ）。
+health のポートは `.env` の `HEALTH_PORT` で変えられる（変えたら `docker/compose/up.sh telegraf`。`check.sh` は `.env` でなく動いている Telegraf のコンテナの `HEALTH_PORT` に打つ）。
 trap と syslog は lab の `app/containerlab/lab.sh`（`TRAP_PORT` / `LOG_PORT`）と SR Linux の syslog の送り先に揃えてあるので変えられない。
 ぶつかったら相手のプロセスを止める。
 
