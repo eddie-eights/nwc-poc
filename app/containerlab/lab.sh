@@ -193,7 +193,7 @@ case "${1:-}" in
       && curl -sf -m 2 -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/meta-data/instance-id) || id="<この EC2 の instance id>"
     echo "手元の PC で打つ（AWS CLI v2 + Session Manager plugin。IaC/terraform/aws-managed/pipeline/lab の output graph_port_forward_command と同じ）:"
     echo "  aws ssm start-session --region $AWS_REGION --target $id --document-name AWS-StartPortForwardingSession --parameters portNumber=$GRAPH_PORT,localPortNumber=$GRAPH_PORT"
-    echo "ブラウザで http://localhost:$GRAPH_PORT/ を開く。開けなければ 'sudo systemctl status $NAME_PREFIX-lab-graph'。止めるのは '$LAB_CMD graph-stop'"
+    echo "ブラウザで http://localhost:$GRAPH_PORT/ を開く。開けなければ 'sudo journalctl -u $NAME_PREFIX-lab-graph'。止めるのは '$LAB_CMD graph-stop'"
     ;;
   graph-stop)
     # down（lab の EC2 の systemd の ExecStop）からも呼ぶ。手元の compose（docker/compose/lab.sh）には NAME_PREFIX が無いので何もしない。

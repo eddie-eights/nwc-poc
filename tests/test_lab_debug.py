@@ -464,7 +464,9 @@ _run = [c for c in _c if c.startswith("systemd-run ")]
 check("lab.sh graph: systemd-run の一時ユニット（<接頭辞>-lab-graph）で containerlab graph を 127.0.0.1:50080 で起こし、手元で打つポートフォワードのコマンドを出す",
       _r.returncode == 0 and _run == [f"systemd-run --unit=x-nwc-poc-lab-graph --collect --property=WorkingDirectory={_d} --setenv=CLAB_VERSION_CHECK=disable "
                                       "containerlab graph -t splab.clab.yml --srv 127.0.0.1:50080"]
-      and "systemctl is-active --quiet x-nwc-poc-lab-graph" in _c and _fwd in _r.stdout and "http://localhost:50080/" in _r.stdout)
+      and "systemctl is-active --quiet x-nwc-poc-lab-graph" in _c and _fwd in _r.stdout and "http://localhost:50080/" in _r.stdout
+      # 開けないときの案内は journalctl -u（--collect の一時ユニットはすぐ落ちると消え、systemctl status は could not be found になる。024 B）
+      and "sudo journalctl -u x-nwc-poc-lab-graph" in _r.stdout and "systemctl status" not in _r.stdout)
 _r, _c, _ = _lab_graph("graph", active=True, **_ge)
 check("lab.sh graph: もう動いていれば systemd-run を打たず（同じ名前のユニットは作れない）、案内とコマンドだけ出す",
       _r.returncode == 0 and not any(c.startswith("systemd-run ") for c in _c) and "もう動いている" in _r.stdout and _fwd in _r.stdout)
