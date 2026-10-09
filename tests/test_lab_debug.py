@@ -564,6 +564,44 @@ check("kafka_load.sh の gnmi のレコード: neighbor_peer-address は peer() 
       and _r.returncode == 0 and [(r["tags"]["source"], r["tags"]["neighbor_peer-address"]) for r in _kl_recs]
       == [(ip, _kl_peers[n]) for n, ip in _kl_nodes])
 
+# ---- lab.sh の trex_cfg() / edge_ports() と trex/stl の 2 つ（024 J）。関数を抜き出し、lab.sh の定数の定義行を前に置いて cwd を app/containerlab で打つ
+_trex_line = re.search(r"^TREX_NET=\S+; TREX_IP_BASE=\d+$", lab_sh, re.M).group(0)
+_trex_net, _trex_base = re.fullmatch(r"TREX_NET=(\S+); TREX_IP_BASE=(\d+)", _trex_line).groups()
+_trex_pre = "\n".join(("TREX=" + sh_const(lab_sh, "TREX"), _trex_line, "TOPO=" + sh_const(lab_sh, "TOPO")))
+def _trex_fn(name):
+    return re.search(r"^%s\(\) \{.*?^\}" % name, lab_sh, re.M | re.S).group(0)
+def _trex_run(script):
+    return subprocess.run(["bash", "-c", "set -euo pipefail\n" + _trex_pre + "\n" + script], capture_output=True, text=True,
+                          cwd=os.path.join(ROOT, "app", "containerlab"), stdin=subprocess.DEVNULL, timeout=30)
+_r = _trex_run(_trex_fn("trex_cfg") + "\ntrex_cfg eth1 eth2 eth3 eth4")
+_tc = yaml.safe_load(_r.stdout) if _r.returncode == 0 else None
+_ips = ["%s.%d" % (_trex_net, int(_trex_base) + i) for i in range(4)]
+check("lab.sh の trex_cfg eth1〜eth4: port_limit 4、interfaces はその順、port_info の ip は $TREX_NET.(TREX_IP_BASE+i)、default_gw は組の相手（0↔1、2↔3）",
+      _tc is not None and _tc[0]["port_limit"] == 4 and _tc[0]["interfaces"] == ["eth1", "eth2", "eth3", "eth4"]
+      and _ips == ["10.100.0.11", "10.100.0.12", "10.100.0.13", "10.100.0.14"]
+      and [(p["ip"], p["default_gw"]) for p in _tc[0]["port_info"]] == [(_ips[0], _ips[1]), (_ips[1], _ips[0]), (_ips[2], _ips[3]), (_ips[3], _ips[2])])
+_r = _trex_run("srl() { echo \"oper-state up\"; }\nx() { :; }\ntrex_ports() { :; }\n" + _trex_fn("edge_ports") + "\nedge_ports")
+check("lab.sh の edge_ports: splab.clab.yml.in の TRex のリンク 4 本（eth1〜4 ↔ s-leaf-01/02・a-leaf-01/02 の ethernet-1/3）を読み、leaf ごとに srl の oper-state を出す",
+      _r.returncode == 0 and [l.split() for l in _r.stdout.splitlines()]
+      == [[n, "ethernet-1/3", "oper-state", "up"] for n in ("dc1-s-leaf-01", "dc1-s-leaf-02", "dc1-a-leaf-01", "dc1-a-leaf-02")])
+sys.path.insert(0, os.path.join(ROOT, "app", "containerlab", "trex", "stl"))
+sys.dont_write_bytecode = True  # app/containerlab/ は upload_lab が S3 へ丸ごと送るので、__pycache__ を作らない
+import udp_syslog, udp_trap  # TRex（trex_stl_lib）無しで import できること自体も見ている
+check("trex/stl/udp_syslog.py の syslog_payload: RFC 5424 の形で PRI は local7（23*8+severity）",
+      udp_syslog.syslog_payload("dc1-trex-01", "sr_bgp_mgr", 5, "msg") == b"<189>1 - dc1-trex-01 sr_bgp_mgr - - - msg")
+try:
+    udp_syslog.syslog_payload("dc1-trex-01", "sr_bgp_mgr", 8, "msg")
+    _bad = False
+except ValueError:
+    _bad = True
+check("trex/stl/udp_syslog.py の syslog_payload: severity が 0〜7 の外（8）なら ValueError", _bad)
+_tp = udp_trap.trap_payload()
+check("trex/stl/udp_trap.py の trap_payload: bytes で、先頭は BER の SEQUENCE（0x30）",
+      isinstance(_tp, bytes) and len(_tp) > 2 and _tp[0] == 0x30)
+check("trex/stl の既定の宛先: syslog は lab.sh の MGMT_GW:LOG_PORT（5140）、trap は MGMT_GW:162（lab.sh forward が NLB へ DNAT する口）",
+      udp_syslog.DEFAULTS["dst"] == udp_trap.DEFAULTS["dst"] == sh_const(lab_sh, "MGMT_GW")
+      and udp_syslog.DEFAULTS["dport"] == sh_const(lab_sh, "LOG_PORT") == "5140" and udp_trap.DEFAULTS["dport"] == "162")
+
 _lab_out =read("IaC", "terraform", "aws-managed", "pipeline", "lab", "outputs.tf")
 check("lab の output graph_port_forward_command は lab.sh graph が出すコマンドと同じ（宛先は aws_instance.lab.id、ポートは lab.sh の GRAPH_PORT）",
       sh_const(lab_sh, "GRAPH_PORT") == "50080"
