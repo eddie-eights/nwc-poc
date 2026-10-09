@@ -8,7 +8,7 @@ import copy, importlib.util, os, re, sys, time, types
 import boto3
 from botocore.exceptions import BotoCoreError as _BotoCoreError, ClientError as _ClientError
 
-# 引数が無ければ app/agentcore/app.py を読む。実行は uv run python tests/test_app.py（docs/development.md「手元で確かめる」）
+# 引数が無ければ app/agentcore/app.py を読む。実行は uv run python tests/test_agentcore.py（docs/development.md「手元で確かめる」）
 APP_PATH = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "app", "agentcore", "app.py")
 # app.py は同じディレクトリの topology.py を import する（PyYAML が要る: uv sync --group dev）
 sys.path.insert(0, os.path.dirname(os.path.abspath(APP_PATH)))

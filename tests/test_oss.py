@@ -1945,7 +1945,7 @@ check("ops/check.sh: bash -n は git ls-files '*.sh' の全部で、そこに op
       _chk_bash_n and {"ops/oss/oss-images.sh", "ops/oss/up.sh", "ops/oss/down.sh", "ops/oss/roll-nodes.sh"} <= _chk_sh
       and _chk_find and "ops" in _chk_find.group(1).split()
       and re.search(r"^\s*for t in tests/test_\*\.py; do$", _chk, re.M) is not None
-      and "for t in tests/test_app.py" not in _chk)
+      and "for t in tests/test_agentcore.py" not in _chk)
 
 # ---- app/neo4j/entrypoint.sh: GRAPH_PASSWORD を NEO4J_AUTH に直してから公式の entrypoint を呼ぶ（偽物の tini と entrypoint で通す）
 def neo4j_entrypoint(**env):

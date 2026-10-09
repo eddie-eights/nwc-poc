@@ -37,7 +37,7 @@ DECISION_QUEUE_URL = toolkit.Param("DECISION_QUEUE_URL", "decision-queue-url")
 TIMEOUT = 20
 POLL = 0.5  # Athena のクエリの状態を見に行く間隔（秒）
 
-# 列は app/temporal/rules.py の PROPOSAL_EVENT_COLUMNS と同じ順（tests/test_app.py が突き合わせる）。時刻の列は epoch 秒に直す
+# 列は app/temporal/rules.py の PROPOSAL_EVENT_COLUMNS と同じ順（tests/test_agentcore.py が突き合わせる）。時刻の列は epoch 秒に直す
 COLUMNS = ("event_id", "proposal_id", "anomaly_id", "seq", "event", "status", "device_id", "kind", "target", "first_seen",
            "source", "alert_detail", "cause", "action", "command", "reason", "agent_response", "precheck", "precheck_verdict",
            "decided_by", "decided_at", "apply_output", "verify_note", "detail", "workflow_id", "run_id", "created_at", "event_time")

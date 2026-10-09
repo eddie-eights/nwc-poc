@@ -400,7 +400,7 @@ check("異常の頂点を見るアクティビティ（get_anomaly / still_open 
 check("Neptune の修復案を見に行くアクティビティ（get_decision / record_decision / set_status）と、決定を待つ間隔 DECISION_POLL はもう無い（決定はシグナルで届く）",
       not any(hasattr(worker, f) for f in ("get_decision", "record_decision", "set_status", "DECISION_POLL")))
 
-# ---- proposals.py（S3 Tables の proposal_events を Athena で読み、決定は SQS の決定のキューに送る。Athena と SQS の振る舞いは tests/test_app.py）
+# ---- proposals.py（S3 Tables の proposal_events を Athena で読み、決定は SQS の決定のキューに送る。Athena と SQS の振る舞いは tests/test_agentcore.py）
 # このテストは Athena の設定も決定のキューの URL も置かない（PARAM_PREFIX が空なので SSM も引かない）
 calls.clear()
 check("Athena の設定が無ければ一覧・1 件・承認とも「未配備」を返し、AWS を呼ばない（Neptune も見ない）",
