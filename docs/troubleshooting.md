@@ -122,6 +122,7 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 | BGP / IS-IS の層や機器の `ALARM` が変わらない | 出すのは Grafana と Splunk のアラート（`bgp_down` / `isis_down` / `trap`）。`STORES` に `grafana` も `splunk` も無ければ出ない（仕様）（あるのに変わらないときは表の下の `ALARM`） |
 | Grafana のダッシュボード「nwc / SNMP metrics」が空、エージェントの `query_metrics` が何も返さない | `metrics` トピックの IF の統計・CPU・メモリは gnmic が 60 秒ごとに書く（見る所は表の下の `metrics`） |
 | `sinks-splunk` / `sinks-grafana` のジョブが数分で落ちて立ち直りを繰り返し、ログに `ValueError: year 173875 is out of range` | gnmic の values の無い event を Telegraf の行として読んでいた（025 で直した）。直す前のイメージ（`snmp_sinks.py` のハッシュ）で立っていないかを見る |
+| `gnmi` トピックに on-change の購読（`interface_state` / `bgp_neighbor` / `isis_interface`）の初回値が無い（値が変われば書かれる） | 購読の直後の初期同期を Kafka の producer が出来る前に捨てている。gnmic の設定の出力に `buffer-size` / `timeout` があるか（030）。古いイメージなら作り直す（[pipeline.md](pipeline.md) の「gnmic の購読」） |
 | トポロジは赤くなるのに修復案が出ない | SNS → SQS か、ワーカー。`WORKFLOW=1` か、起こす種類か（ワークフローを起こすのは `link_down` だけ）を見る（DLQ とワーカーのログは表の下の `修復案`） |
 | 承認を押しても `pending` のまま | 反映まで数秒〜20 秒かかる（Web → SQS `<prefix>-decisions` → worker → ワークフロー → `proposal_events` → Athena）。「更新」を押す（実測と、1 分たっても変わらないときは表の下の `pending`） |
 | 承認を押したら `expired` になった | ワークフローがもう無かった（worker のタスクが入れ替わった）。処置は打たれない。まだ落ちていれば、次の通知で別の修復案が出る（[workflow.md](workflow.md)） |

@@ -410,8 +410,17 @@ _rc_n, _out_n, _gtext_n, _ = _gnmic_render(KAFKA_AUTH="none", KAFKA_SASL_USER=No
 _gy_n = yaml.safe_load(_gtext_n) if _gtext_n else {}
 check("gnmic.sh render（KAFKA_AUTH=none。OSS 版と手元）: SCRAM の資格情報が無くても作れ、出力に sasl も tls も無い（ほかは scram と同じ）",
       _rc_n == 0 and "kafka auth: none" in _out_n and "sasl" not in _gtext_n and "tls" not in _gtext_n and "kafka_auth" not in _gtext_n
-      and all(o["address"] == "kafka-0.nwc:9092" and set(o) == {"type", "address", "topic", "format", "split-events"} for o in _gy_n.get("outputs", {}).values())
+      and all(o["address"] == "kafka-0.nwc:9092" and set(o) == {"type", "address", "topic", "format", "split-events", "buffer-size", "timeout", "event-processors"}
+              for o in _gy_n.get("outputs", {}).values())
       and _gy_n.get("subscriptions") == _gy.get("subscriptions") and _gy_n.get("targets") == _gy.get("targets"))
+# cycle 030: 購読直後の初期同期（on-change の全状態）を producer（TLS + SCRAM）が出来るまで抱える（既定の buffer-size 0 / timeout 5s は黙って捨てる）。
+# values の無い event（metrics の 9 割、deletes だけの event）は output 側の event-drop で捨てる。scram と none の両方で同じ
+check("gnmic.yaml（cycle 030）: gnmi / metrics の両方が buffer-size 10000・timeout 60s・event-processors [drop-empty]（scram と none の両方）",
+      all(set(y.get("outputs", {})) == {"gnmi", "metrics"}
+          and all(o.get("buffer-size") == 10000 and o.get("timeout") == "60s" and o.get("event-processors") == ["drop-empty"] for o in y["outputs"].values())
+          for y in (_gy, _gy_n)))
+check("gnmic.yaml（cycle 030）: processor は drop-empty の 1 つだけで、event-drop の condition は values が null か空のとき（scram と none の両方）",
+      all(y.get("processors") == {"drop-empty": {"event-drop": {"condition": ".values == null or (.values | length) == 0"}}} for y in (_gy, _gy_n)))
 _gbad = {"GNMI_TARGETS が無い": dict(GNMI_TARGETS=None), "GNMI_TARGETS の形が違う": dict(GNMI_TARGETS="203.0.113.31:57400"),
          "GNMI_TARGETS に同じ IP が 2 回": dict(GNMI_TARGETS='"203.0.113.31:57400", "203.0.113.31:57401"'),
          "KAFKA_BROKERS の形が違う": dict(KAFKA_BROKERS="b-1.example:9096;rm"), "GNMI_PASSWORD が無い": dict(GNMI_PASSWORD=None),
