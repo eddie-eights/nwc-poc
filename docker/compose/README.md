@@ -246,9 +246,10 @@ containerlab が `app/containerlab/clab-splab/`（root の持ち物）を作る�
   - Spark（`spark-http`）は 4xx を打ち直さずに捨てるので、lag が溜まったあとの追い付きで同じ系列の古いサンプルが後から届くと欠ける。
 - `prometheus.yml` に `storage.tsdb.out_of_order_time_window: 1h` を足すと、同じ送り方で 2 回とも `204` になり、2 つとも入った。
   - 3.15.0 にはこれを変える起動の引数が無いので、`compose.yaml` でなく `prometheus.yml` に書いた。
-  - 1 時間より古いサンプルは今までどおり捨てる（追い付きの最大を 1 時間と見積もった）。
+  - Prometheus が持っている最新の時刻より 1 時間以上古いサンプルは、これまでどおり `400` で捨てる（追い付きの最大を 1 時間と見積もった）。
 - 前から上げている Prometheus は設定ファイルを読み直さないので、`docker compose -f docker/compose/compose.yaml restart prometheus` で起こし直す。
   - volume は消さなくてよい（前の設定で書いた volume のまま新しい設定で起こし直し、時刻が戻るサンプルが `204` で入るのを確かめた）。
+  - 確かめたのは単体の Prometheus のコンテナを同じ volume で作り直した形で、`restart` そのものは打っていない。
 
 **Splunk のアプリを作り直しても、volume `splunk-etc` には写らない**
 
@@ -259,7 +260,10 @@ containerlab が `app/containerlab/clab-splab/`（root の持ち物）を作る�
   - 上流のイメージの `/sbin/updateetc.sh` は、イメージと volume の `splunk.version` が違うときだけ `/opt/splunk-etc` を volume へ写す。同じ版のまま作り直しても写らない。
 - アプリ（`app/splunk/`）を変えたら、Splunk の `etc` の volume を消してから上げる。
   - `docker/compose/down.sh -v` で全部消す（Kafka・OpenSearch・Prometheus・Grafana・Spark の checkpoint も消える）。
-  - Splunk だけなら次の 2 つのあとに `docker/compose/up.sh`。`splunk-etc` だけを消して上げ直すと変更が写り、admin のパスワードも `.env` の値で入れ直されるのを確かめた（`splunk-var` の検索データは残る）。
+  - Splunk だけなら次の 2 つのあとに `docker/compose/up.sh`。
+    - `splunk-etc` だけを消して上げ直すと変更が写り、admin のパスワードも `.env` の値で入れ直されるのを確かめた（`splunk-var` の検索データは残る）。確かめたのは別のプロジェクト名の `docker compose up` で、`up.sh` そのものと、`spark-splunk` が動いたままの `rm` は打っていない。
+    - Web で作ったサーチやダッシュボード、`local/` の設定も `splunk-etc` と一緒に消える。
+    - Splunk が `healthy` に戻るまで（2〜3 分）`spark-splunk` は HEC に書けない。止まっていたら `up.sh`（引数なし）でまとめて上げ直す。
 
     ```bash
     docker compose -f docker/compose/compose.yaml rm -s -f splunk

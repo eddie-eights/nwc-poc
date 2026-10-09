@@ -87,7 +87,7 @@ judge "OpenSearch: snmp-logs の件数 > 0" \
   <<<"$(get OPENSEARCH_PASSWORD 'http://127.0.0.1:9200/snmp-logs/_count' || true)"
 # 認証の失敗などで result が無い応答を 0 件と分ける。messages の FATAL / ERROR はその理由（同じものは 1 つに）、
 # ほかは「result が無い」、JSON でなければ「読めない応答」。本物の応答（034 で 10.4.4 に打った）: パスワード違いは 401 で {"messages":[{"type":"ERROR","text":"Unauthorized"}]}、
-# 検索の書き誤りは 400 で messages の FATAL、通れば 200 で {"preview":false,"offset":0,"lastrow":true,"result":{"count":"N"}}（count は文字列）
+# 知らないコマンドなどは 400 で messages の FATAL、eval の引数の誤りや無い lookup は 200 で空の本文、通れば 200 で {"preview":false,"offset":0,"lastrow":true,"result":{"count":"N"}}（count は文字列）
 judge "Splunk: sourcetype=nwc:* の直近 10 分の件数 > 0" \
   "(lambda o: (lambda m, c: '; '.join(sorted({e for t, e in m if t in ('FATAL', 'ERROR')}))
      or (('ok' if max(c) > 0 else '0 件') if c else 'result が無い' + (': ' + '; '.join(sorted({e for _, e in m})) if m else '')))(
