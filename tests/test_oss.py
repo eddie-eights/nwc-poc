@@ -1854,10 +1854,10 @@ _g_m = grafana_files(AWS_REGION="ap-northeast-1", PROMETHEUS_URL="https://aps-wo
 # ルールとダッシュボードのデータソースの参照を持つファイルは app/grafana/provisioning の中だけ（docs と tests は除く）
 _g_copies = subprocess.run(["git", "grep", "-l", "--untracked", "-e", "datasourceUid", "-e", '"uid": "amp"', "-e", '"uid": "aoss-logs"',
                             "--", ".", ":!docs", ":!tests", ":!app/grafana/provisioning"], capture_output=True, text=True, cwd=ROOT).stdout.split()
-_G_FILES = {"datasources/prometheus.yaml", "datasources/opensearch.yaml", "dashboards/metrics.json", "dashboards/logs.json",
+_G_FILES = {"datasources/prometheus.yaml", "datasources/opensearch.yaml", "dashboards/metrics.json", "dashboards/logs.json", "dashboards/flows.json",
             "alerting/nwc.yaml", "alerting/nwc-prometheus.yaml", "alerting/nwc-opensearch.yaml"}
 check(f"OSS 版の環境変数（PROMETHEUS_URL={_g_oss_env['PROMETHEUS_URL']}、OPENSEARCH_URL={_g_oss_env['OPENSEARCH_URL']}）で start.sh は datasources-oss の 2 つと、"
-      "マネージド版と同じダッシュボード 2 つ・アラートの定義 3 つ（app/grafana/provisioning のファイルそのもの）を並べる。ダッシュボードとルールの写しはリポジトリに無い",
+      "マネージド版と同じダッシュボード 3 つ・アラートの定義 3 つ（app/grafana/provisioning のファイルそのもの）を並べる。ダッシュボードとルールの写しはリポジトリに無い",
       set(_g_oss) == set(_g_m) == _G_FILES
       and _g_oss_env["PROMETHEUS_URL"] == SELECT_URL and _g_oss_env["OPENSEARCH_URL"] == OS_URL and _g_oss_env["OPENSEARCH_INDEX"] == _index
       and all(_g_oss[f"datasources/{n}"] == provisioning("datasources-oss", n) for n in ("prometheus.yaml", "opensearch.yaml"))
@@ -1882,6 +1882,27 @@ check(f"ダッシュボードとアラートのルールが引くデータソー
 _g_vars = set(re.findall(r"\$\{(\w+)\}", "".join(s for f, s in _g_oss.items() if f.endswith(".yaml"))))
 check(f"並べた定義が起動時に読む環境変数（{sorted(_g_vars)}）は、どれもタスク定義の環境変数か secrets か start.sh の既定（OPENSEARCH_USER）で入る",
       _g_vars and _g_vars <= set(_g_env["IaC/terraform/oss"]) | {n for n, _ in _g_sec} | {"OPENSEARCH_USER"})
+
+# flows（GoFlow2）のダッシュボード（cycle 033）。logs.json と同じデータソース・同じ index（topic: flows）で、名前は snmp_sinks.py の FLOW_TAGS / FLOW_FIELDS
+_fl = json.loads(provisioning("dashboards", "flows.json"))
+_fl_t = [t for p in _fl["panels"] for t in p["targets"]]
+_fl_aggs = [a.get("field") for t in _fl_t for a in t["metrics"] + t["bucketAggs"] if a.get("field")]
+_sinks = open(os.path.join(ROOT, "app", "spark", "snmp_sinks.py"), encoding="utf-8").read()
+_fl_tags = set(re.findall(r'\("(\w+)", "\w+"\)', re.search(r"^FLOW_TAGS = (.*?)\n(?=\S)", _sinks, re.M | re.S).group(1)))
+_fl_fields = set(re.findall(r'\("(\w+)", "\w+"\)', re.search(r"^FLOW_FIELDS = (.*)$", _sinks, re.M).group(1)))
+check(f"flows.json: uid nwc-flows、panel 6 つ、どの panel と query もデータソース aoss-logs（logs.json と同じ）、query は lucene の topic:flows、timeField は @timestamp。"
+      f"集計のフィールド（{sorted(set(_fl_aggs))}）は snmp_sinks.py の flow の tags（文字列なので .keyword）と fields の名前（cycle 033）",
+      _fl["uid"] == "nwc-flows" and _fl["title"] == "nwc / flows" and _fl["editable"] is False and len(_fl["panels"]) == 6 == len(_fl_t)
+      and len({p["id"] for p in _fl["panels"]}) == 6
+      and all(p["datasource"] == t["datasource"] == {"type": "grafana-opensearch-datasource", "uid": "aoss-logs"} for p in _fl["panels"] for t in p["targets"])
+      and all(t["queryType"] == "lucene" and t["query"] == "topic:flows" and t["timeField"] == "@timestamp" for t in _fl_t)
+      and {"tags.src.keyword", "tags.dst.keyword", "tags.proto.keyword", "tags.sampler.keyword", "fields.bytes"} <= set(_fl_aggs)
+      and all(f == "@timestamp" or f in {f"tags.{n}.keyword" for n in _fl_tags} | {f"fields.{n}" for n in _fl_fields} for f in _fl_aggs)
+      and {"src", "dst", "proto", "sampler"} <= _fl_tags and "bytes" in _fl_fields
+      and [p["type"] for p in _fl["panels"]].count("logs") == 1
+      and any(m == {"id": "1", "type": "logs", "settings": {"limit": "100"}} for t in _fl_t for m in t["metrics"]))
+check("flows.json は start.sh が OPENSEARCH_URL のあるときだけ並べる（Prometheus だけなら metrics.json だけ。cycle 033）",
+      "dashboards/flows.json" in _g_m and {f for f in grafana_files(AWS_REGION="ap-northeast-1", PROMETHEUS_URL="https://x") if f.startswith("dashboards/")} == {"dashboards/metrics.json"})
 
 # アラートの経路: Grafana の連絡先 → 土台の SNS のトピック → status の Lambda（OSS 版の graph の sync.tf）と SQS → ワークフロー（IaC/terraform/aws-managed/workflow の events.tf）
 _nets = _g_oss["alerting/nwc.yaml"]

@@ -417,6 +417,7 @@ terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw splunk
 - OpenSearch Serverless のデータソースは、設定画面の「Save & test」（ヘルスチェック）が中身の無い ERROR を返すことがある。
   それでもダッシュボードとクエリは読める（2026-09-28 に確認）。
 - データソースの plugin はイメージに焼き込んである（AWS の外へ出る経路が無いので起動時に落とせない）。
+- ダッシュボードは `app/grafana/provisioning/dashboards` の `metrics.json`（Prometheus）、`logs.json`（OpenSearch の traps / logs）、`flows.json`（OpenSearch の flows。GoFlow2 の bytes を送信元・宛先・プロトコル・sampler ごとに）。
 - ダッシュボードは `app/grafana/provisioning` だけで、UI で変えたものはタスクと一緒に消える。
   残すなら provisioning に書いて `ops/up.sh`（ディレクトリのハッシュが変わるのでイメージから作り直す）。
 - admin のパスワードは `ops/up.sh` が SSM の SecureString `/<prefix>/grafana/admin-password` に乱数で作り、`ops/down.sh` が消す（タグ `ManagedBy=ops/up.sh`）。
