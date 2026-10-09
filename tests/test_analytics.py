@@ -1621,8 +1621,8 @@ def _faq_toc_ok(text):
             i += 1
         if toc != qs:
             return False
-    return len(secs) == 12 and all(a in anchors for a in links)
-check("FAQ: 12 の節の直下に、その節の質問（###）を順に並べた目次があり、FAQ の中のアンカーが全部見出しに当たる",
+    return len(secs) == 13 and all(a in anchors for a in links)
+check("FAQ: 13 の節の直下に、その節の質問（###）を順に並べた目次があり、FAQ の中のアンカーが全部見出しに当たる",
       _faq_toc_ok(_faq) and len(re.findall(r"^### ", _faq, re.M)) == len(re.findall(r"^- \[.*\]\(#q-", _faq, re.M)))
 def _faq_heads_ok(text):
     """FAQ の見出しが、_gh_slug と GitHub で差が出る書き方を使っていない（028。縛る文字は _gh_slug の上のコメント）"""
