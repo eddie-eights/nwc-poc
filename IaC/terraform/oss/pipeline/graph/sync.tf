@@ -137,6 +137,18 @@ resource "aws_cloudwatch_log_group" "status" {
   retention_in_days = var.log_retention_days
 }
 
+# Lambda は作成時に実行ロールで ENI を作れるかを検査する。ポリシーの作成完了の直後に作ると IAM の伝播前で
+# InsufficientRolePermissions になった（2026-10-10 の AWS 検証）。analytics の Firehose と同じく 30 秒待つ（推定。足りなければ延ばす）。
+# triggers はロールが作り直されたら待ちも作り直すため
+resource "time_sleep" "status_iam" {
+  create_duration = "30s"
+  triggers = {
+    role = aws_iam_role.status.unique_id
+  }
+
+  depends_on = [aws_iam_role.status, aws_iam_role_policy.status]
+}
+
 resource "aws_lambda_function" "status" {
   function_name    = "${local.name_prefix}-graph-status"
   role             = aws_iam_role.status.arn
@@ -164,7 +176,7 @@ resource "aws_lambda_function" "status" {
     }
   }
 
-  depends_on = [aws_cloudwatch_log_group.status, aws_iam_role_policy.status]
+  depends_on = [aws_cloudwatch_log_group.status, aws_iam_role_policy.status, time_sleep.status_iam]
 }
 
 # SNS は Lambda を非同期で呼ぶ。Lambda の側の失敗は Lambda が 2 回まで再試行し、SNS の側の配信の失敗は SNS が再試行する
