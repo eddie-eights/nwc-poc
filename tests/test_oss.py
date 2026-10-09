@@ -1887,9 +1887,11 @@ check(f"並べた定義が起動時に読む環境変数（{sorted(_g_vars)}）�
 _fl = json.loads(provisioning("dashboards", "flows.json"))
 _fl_t = [t for p in _fl["panels"] for t in p["targets"]]
 _fl_aggs = [a.get("field") for t in _fl_t for a in t["metrics"] + t["bucketAggs"] if a.get("field")]
-_sinks = open(os.path.join(ROOT, "app", "spark", "snmp_sinks.py"), encoding="utf-8").read()
-_fl_tags = set(re.findall(r'\("(\w+)", "\w+"\)', re.search(r"^FLOW_TAGS = (.*?)\n(?=\S)", _sinks, re.M | re.S).group(1)))
-_fl_fields = set(re.findall(r'\("(\w+)", "\w+"\)', re.search(r"^FLOW_FIELDS = (.*)$", _sinks, re.M).group(1)))
+_sinks_spec = importlib.util.spec_from_file_location("snmp_sinks_033", os.path.join(ROOT, "app", "spark", "snmp_sinks.py"))
+_sinks = importlib.util.module_from_spec(_sinks_spec)
+_sinks_spec.loader.exec_module(_sinks)   # 標準ライブラリだけで読める（pyspark は関数の中で import する）
+_fl_tags = {n for n, _ in _sinks.FLOW_TAGS}
+_fl_fields = {n for n, _ in _sinks.FLOW_FIELDS}
 check(f"flows.json: uid nwc-flows、panel 6 つ、どの panel と query もデータソース aoss-logs（logs.json と同じ）、query は lucene の topic:flows、timeField は @timestamp。"
       f"集計のフィールド（{sorted(set(_fl_aggs))}）は snmp_sinks.py の flow の tags（文字列なので .keyword）と fields の名前（cycle 033）",
       _fl["uid"] == "nwc-flows" and _fl["title"] == "nwc / flows" and _fl["editable"] is False and len(_fl["panels"]) == 6 == len(_fl_t)
@@ -1898,11 +1900,29 @@ check(f"flows.json: uid nwc-flows、panel 6 つ、どの panel と query もデ�
       and all(t["queryType"] == "lucene" and t["query"] == "topic:flows" and t["timeField"] == "@timestamp" for t in _fl_t)
       and {"tags.src.keyword", "tags.dst.keyword", "tags.proto.keyword", "tags.sampler.keyword", "fields.bytes"} <= set(_fl_aggs)
       and all(f == "@timestamp" or f in {f"tags.{n}.keyword" for n in _fl_tags} | {f"fields.{n}" for n in _fl_fields} for f in _fl_aggs)
-      and {"src", "dst", "proto", "sampler"} <= _fl_tags and "bytes" in _fl_fields
-      and [p["type"] for p in _fl["panels"]].count("logs") == 1
-      and any(m == {"id": "1", "type": "logs", "settings": {"limit": "100"}} for t in _fl_t for m in t["metrics"]))
-check("flows.json は start.sh が OPENSEARCH_URL のあるときだけ並べる（Prometheus だけなら metrics.json だけ。cycle 033）",
-      "dashboards/flows.json" in _g_m and {f for f in grafana_files(AWS_REGION="ap-northeast-1", PROMETHEUS_URL="https://x") if f.startswith("dashboards/")} == {"dashboards/metrics.json"})
+      and {"src", "dst", "proto", "sampler"} <= _fl_tags and "bytes" in _fl_fields)
+# panel ごとの中身は設計の表どおり: (型, title に入る語, bucketAggs の (type, field) の並び)。metric は 1〜5 が sum(fields.bytes)、6 が logs の 100 件。
+# terms は size 10・降順で、並べる基準（orderBy）は同じ query の sum の id。値の単位は decbytes（bytes の合計。/s に直さない）
+_FL_SPEC = [("timeseries", "bytes", [("date_histogram", "@timestamp")]),
+            ("table", "送信元", [("terms", "tags.src.keyword")]),
+            ("table", "宛先", [("terms", "tags.dst.keyword")]),
+            ("piechart", "プロトコル", [("terms", "tags.proto.keyword")]),
+            ("timeseries", "sampler", [("terms", "tags.sampler.keyword"), ("date_histogram", "@timestamp")]),
+            ("logs", "生の flow", [])]
+def _fl_panel_ok(p, spec):
+    typ, word, aggs = spec
+    (t,) = p["targets"]
+    terms_ok = all(a["settings"]["size"] == "10" and a["settings"]["order"] == "desc" and a["settings"]["orderBy"] == t["metrics"][0]["id"]
+                   for a in t["bucketAggs"] if a["type"] == "terms")
+    metric_ok = (t["metrics"] == [{"id": "1", "type": "logs", "settings": {"limit": "100"}}] if typ == "logs"
+                 else t["metrics"] == [{"id": "1", "type": "sum", "field": "fields.bytes"}] and p["fieldConfig"]["defaults"]["unit"] == "decbytes")
+    return p["type"] == typ and word in p["title"] and [(a["type"], a["field"]) for a in t["bucketAggs"]] == aggs and terms_ok and metric_ok
+check("flows.json の panel ごとの中身は設計の表どおり: 1 bytes の合計 × 時間、2 / 3 送信元 / 宛先の上位 10（table）、4 プロトコル別（piechart）、"
+      "5 sampler 別 × 時間、6 生の flow（logs、100 件）。1〜5 は sum(fields.bytes) で単位 decbytes、terms は sum の降順（cycle 033）",
+      [p["id"] for p in _fl["panels"]] == [1, 2, 3, 4, 5, 6] and all(_fl_panel_ok(p, s) for p, s in zip(_fl["panels"], _FL_SPEC)))
+check("flows.json は start.sh が OPENSEARCH_URL のあるときだけ並べる（Prometheus だけなら metrics.json だけ、OpenSearch だけなら logs.json と flows.json だけ。cycle 033）",
+      "dashboards/flows.json" in _g_m and {f for f in grafana_files(AWS_REGION="ap-northeast-1", PROMETHEUS_URL="https://x") if f.startswith("dashboards/")} == {"dashboards/metrics.json"}
+      and {f for f in grafana_files(AWS_REGION="ap-northeast-1", OPENSEARCH_URL="https://x") if f.startswith("dashboards/")} == {"dashboards/logs.json", "dashboards/flows.json"})
 
 # アラートの経路: Grafana の連絡先 → 土台の SNS のトピック → status の Lambda（OSS 版の graph の sync.tf）と SQS → ワークフロー（IaC/terraform/aws-managed/workflow の events.tf）
 _nets = _g_oss["alerting/nwc.yaml"]

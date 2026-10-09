@@ -1,4 +1,4 @@
-# OpenSearch Serverless の logs コレクション（traps と機器の syslog。app/spark/snmp_sinks.py が _bulk で書く）。
+# OpenSearch Serverless の logs コレクション（traps・機器の syslog・flows。app/spark/snmp_sinks.py が _bulk で書く）。
 # コレクションは公開しておらず、IaC/terraform/aws-managed/base/core の OpenSearch Serverless の VPC エンドポイントからだけ届く。
 # 読めるのはデータアクセスポリシー（IaC/terraform/aws-managed/pipeline/analytics の grafana.tf）でタスクロールに許した読み取りだけ
 apiVersion: 1

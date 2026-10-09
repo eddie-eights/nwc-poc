@@ -18,6 +18,7 @@
       "id": 1,
       "type": "timeseries",
       "title": "bytes（合計 / 区間）",
+      "description": "GoFlow2 が受けた flow の bytes をそのまま足した値。sFlow / IPFIX のサンプリング率は掛けていない（実際の流量はおよそその倍）。lab の機器は flow を出さないので、ふだんは空（ops/netflow_send.py で 1 本送ると出る）",
       "datasource": {
         "type": "grafana-opensearch-datasource",
         "uid": "aoss-logs"
@@ -73,6 +74,7 @@
       "id": 2,
       "type": "table",
       "title": "上位の送信元（bytes の合計）",
+      "description": "GoFlow2 が受けた flow の bytes をそのまま足した値。sFlow / IPFIX のサンプリング率は掛けていない（実際の流量はおよそその倍）。lab の機器は flow を出さないので、ふだんは空（ops/netflow_send.py で 1 本送ると出る）",
       "datasource": {
         "type": "grafana-opensearch-datasource",
         "uid": "aoss-logs"
@@ -126,6 +128,7 @@
       "id": 3,
       "type": "table",
       "title": "上位の宛先（bytes の合計）",
+      "description": "GoFlow2 が受けた flow の bytes をそのまま足した値。sFlow / IPFIX のサンプリング率は掛けていない（実際の流量はおよそその倍）。lab の機器は flow を出さないので、ふだんは空（ops/netflow_send.py で 1 本送ると出る）",
       "datasource": {
         "type": "grafana-opensearch-datasource",
         "uid": "aoss-logs"
@@ -179,6 +182,7 @@
       "id": 4,
       "type": "piechart",
       "title": "プロトコル別（bytes の合計）",
+      "description": "GoFlow2 が受けた flow の bytes をそのまま足した値。sFlow / IPFIX のサンプリング率は掛けていない（実際の流量はおよそその倍）。lab の機器は flow を出さないので、ふだんは空（ops/netflow_send.py で 1 本送ると出る）",
       "datasource": {
         "type": "grafana-opensearch-datasource",
         "uid": "aoss-logs"
@@ -245,6 +249,7 @@
       "id": 5,
       "type": "timeseries",
       "title": "sampler 別 bytes（合計 / 区間）",
+      "description": "GoFlow2 が受けた flow の bytes をそのまま足した値。sFlow / IPFIX のサンプリング率は掛けていない（実際の流量はおよそその倍）。lab の機器は flow を出さないので、ふだんは空（ops/netflow_send.py で 1 本送ると出る）",
       "datasource": {
         "type": "grafana-opensearch-datasource",
         "uid": "aoss-logs"
