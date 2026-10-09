@@ -146,3 +146,5 @@ None
 - N2（design.md の `tools/tools.json` 2 か所）: 017 のあとのパス `app/gateway/tools.json` に書き換える
 - N3（lab.sh:296 のコメント「デバッグ用の EC2 に gnmic」）: 直さない。文言だけで動作は変わらず、実装ファイルを変えると cold review 2 回目が要るので据え置き
 - N4（lab.sh:290 の案内文「IS-IS の隣接」）: 直さない（N3 と同じ理由）。正しくは「IS-IS の IF の oper-state」
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261009-cycle-013-gnmic-drop-dialin-review.html -->

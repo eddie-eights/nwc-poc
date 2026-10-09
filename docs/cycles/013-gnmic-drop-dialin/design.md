@@ -145,3 +145,5 @@ BACKLOG 28「コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種
 5. Splunk の `link_down` の機器名は Spark が付ける `sysName` に依る。device map に無い機器は `tags.source`（IP）になる（いまの trap と同じ）
 6. `system` の CPU は `cpu[index=all]` を指す（SR Linux は `all` を集計の行として持つ。いまの lab_* は `*`）。無ければ `*` に替える（AWS で確かめる）
 7. **gnmic の Kafka の ACL**: マネージドは IAM と SCRAM の併用なので、SCRAM のユーザーには Kafka の ACL が要る（012 の Must fix）。012 Round 2 の `ensure_acls`（Spark のジョブの起動で入れる）に `gnmi` と `metrics` を足した（設計方針 1。`User:collectors` を共有）。**ACL が入るまで（Spark のジョブが上がるまで）にマネージドの gnmic が出した値は落ちる**: on-change（`interface_state` / `bgp_neighbor` / `isis_interface`）の最初の同期はそこで失われ、次に状態が変わるまで系列が無い（AWS で未確認。ACL のあとの変化は届く）。OSS・手元は認証なしなので影響しない
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261009-cycle-013-gnmic-drop-dialin-design.html -->
