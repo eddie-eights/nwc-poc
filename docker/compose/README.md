@@ -235,6 +235,58 @@ sudo iptables -t nat -D PREROUTING -s 203.0.113.0/24 -d 203.0.113.1 -p udp --dpo
 
 containerlab が `app/containerlab/clab-splab/`（root の持ち物）を作る。git の無視の対象（`.gitignore` の `app/containerlab/clab-*/`）なので `git status` には出ない。消すなら `sudo rm -rf app/containerlab/clab-splab`。
 
+## 確かめたこと
+
+「手元の compose の未確認を確かめる（034）」で、Mac（Apple Silicon、Docker Desktop）の docker で確かめた結果。
+
+**Prometheus は Kafka の追い付きで時刻が戻るサンプルを 1 時間まで受ける**
+
+- 確かめた日と版: 2026-10-10、`prom/prometheus:v3.15.0`（`compose.yaml` と同じ版）を単体で立てた。
+- 同じ系列に `t=now`、`t=now-60s` の順で remote write すると、既定（`out_of_order_time_window` が 0）では 2 回目が `400` `out of order sample` で捨てられた。
+  - Spark（`spark-http`）は 4xx を打ち直さずに捨てるので、lag が溜まったあとの追い付きで同じ系列の古いサンプルが後から届くと欠ける。
+- `prometheus.yml` に `storage.tsdb.out_of_order_time_window: 1h` を足すと、同じ送り方で 2 回とも `204` になり、2 つとも入った。
+  - 3.15.0 にはこれを変える起動の引数が無いので、`compose.yaml` でなく `prometheus.yml` に書いた。
+  - Prometheus が持っている最新の時刻より 1 時間以上古いサンプルは、これまでどおり `400` で捨てる（追い付きの最大を 1 時間と見積もった）。
+- 前から上げている Prometheus は設定ファイルを読み直さないので、`docker compose -f docker/compose/compose.yaml restart prometheus` で起こし直す。
+  - volume は消さなくてよい（前の設定で書いた volume のまま新しい設定で起こし直し、時刻が戻るサンプルが `204` で入るのを確かめた）。
+  - 確かめたのは単体の Prometheus のコンテナを同じ volume で作り直した形で、`restart` そのものは打っていない。
+
+**Splunk のアプリを作り直しても、volume `splunk-etc` には写らない**
+
+- 確かめた日と版: 2026-10-10、Splunk 10.4.4（`compose.yaml` の splunk を、ほかの構成とぶつからない別のプロジェクト名で 1 つだけ上げた）。
+  - Mac のエミュレーション（`platform: linux/amd64`）でも立ち、`healthy` まで 2〜3 分（起動から 120〜165 秒）だった。
+- `app/splunk/nwc_alerts/default/savedsearches.conf` に 1 行足してイメージを build し直し、`up -d` でコンテナを作り直した。
+  - イメージの `/opt/splunk-etc/apps/nwc_alerts` には写ったが、volume の `/opt/splunk/etc/apps/nwc_alerts` は前のままだった。
+  - 上流のイメージの `/sbin/updateetc.sh` は、イメージと volume の `splunk.version` が違うときだけ `/opt/splunk-etc` を volume へ写す。同じ版のまま作り直しても写らない。
+- アプリ（`app/splunk/`）を変えたら、Splunk の `etc` の volume を消してから上げる。
+  - `docker/compose/down.sh -v` で全部消す（Kafka・OpenSearch・Prometheus・Grafana・Spark の checkpoint も消える）。
+  - Splunk だけなら次の 2 つのあとに `docker/compose/up.sh`。
+    - `splunk-etc` だけを消して上げ直すと変更が写り、admin のパスワードも `.env` の値で入れ直されるのを確かめた（`splunk-var` の検索データは残る）。確かめたのは別のプロジェクト名の `docker compose up` で、`up.sh` そのものと、`spark-splunk` が動いたままの `rm` は打っていない。
+    - Web で作ったサーチやダッシュボード、`local/` の設定も `splunk-etc` と一緒に消える。
+    - Splunk が `healthy` に戻るまで（2〜3 分）`spark-splunk` は HEC に書けない。止まっていたら `up.sh`（引数なし）でまとめて上げ直す。
+
+    ```bash
+    docker compose -f docker/compose/compose.yaml rm -s -f splunk
+    ```
+
+    ```bash
+    docker volume rm nwc-local_splunk-etc
+    ```
+
+**`check.sh` の Splunk の判定は本物の応答と合う**
+
+上と同じ Splunk 10.4.4 に、`check.sh` と同じ `curl`（`/services/search/jobs/export`、`output_mode=json`）を打った本文に、`check.sh` の判定の式を当てた。`check.sh` は変えていない。
+
+| 打ち方 | HTTP | 本文 | 判定 |
+|---|---|---|---|
+| パスワード違い | 401 | `{"messages":[{"type":"ERROR","text":"Unauthorized"}]}` | `NG … ERROR Unauthorized` |
+| `check.sh` の検索（まだ何も入っていない） | 200 | `{"preview":false,"offset":0,"lastrow":true,"result":{"count":"0"}}` | `NG … 0 件` |
+| `index=_internal … \| head 1 \| stats count` | 200 | 上と同じ形で `"count":"1"` | `ok` |
+| 知らないコマンド（`\| nosuchcmd`） | 400 | `{"messages":[{"type":"FATAL","text":"Unknown search command 'nosuchcmd'."}]}` | `NG … FATAL Unknown search command 'nosuchcmd'.` |
+| `eval` の引数の誤りや、無い lookup | 200 | 空 | `NG … 読めない応答: 空` |
+
+- `result` と `messages` の `ERROR` が 1 つの応答に混ざる形は、試した打ち方（失敗する subsearch、無い index への `collect` など）では出なかった。混ざったときの判定（`ERROR` を理由に NG）はテストの偽の応答でだけ確かめている。
+
 ## 経緯
 
 - 2026-10-09（019）: Splunk のアプリの名前を `nwc_alerts` に揃えた（「名前を nwc に揃える（019）」）。

@@ -377,7 +377,7 @@ EC2 の再起動でも mask は消える。
 - `splunk-etc`:
   - compose は SNS の topic を渡さないので、SNS には届かず失敗のログが 2 回出る。
   - ECS の Splunk は volume を持たないので起きない。
-  - コードを読んだだけで、再現はしていない。
+  - 同じ版のまま作り直したアプリが volume に写らないことは 034 で再現した（上流の `/sbin/updateetc.sh` は `splunk.version` が違うときだけ写す。[docker/compose/README.md](../docker/compose/README.md) の「確かめたこと」）。前の名前のアプリが残る場面そのものは再現していない。
 
 ## 消すとき
 

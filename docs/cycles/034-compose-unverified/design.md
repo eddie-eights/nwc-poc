@@ -25,7 +25,7 @@
 
 1. Prometheus を単体で立てる（`docker run --rm -p 9090:9090 prom/prometheus:<compose.yaml と同じ版> --web.enable-remote-write-receiver`）。
 2. `prometheus_series` / `snappy_compress` を流用した小さなスクリプト（`tests/` ではなく scratch。repo には入れない）で、同じ series に `t=now`、`t=now-60s` の順に remote write する。
-3. 2 回目の POST が `400` で本文に `out of order sample` を含めば「捨てる」。`storage.tsdb.out_of_order_time_window=10m` を付けて立て直して `204` になれば、compose.yaml の prometheus の command に `--storage.tsdb.out_of_order_time_window=1h`（追い付きの最大を 1 時間と見積もる）を足す。捨てないなら何もしない。
+3. 2 回目の POST が `400` で本文に `out of order sample` を含めば「捨てる」。`storage.tsdb.out_of_order_time_window=10m` を付けて立て直して `204` になれば、`docker/compose/prometheus.yml` の `storage.tsdb.out_of_order_time_window: 1h`（追い付きの最大を 1 時間と見積もる）を足す。捨てないなら何もしない。（実装で分かった事実: Prometheus v3.15.0 にはこれを変える起動の引数が無く、設定ファイルにだけ書ける。cold review が `--help` で確かめた。レビュー後に設計を正本に合わせて書き換えた）
 4. どちらでも `docs/local-compose.md`（手元の compose の docs。実物の名前は実装で確かめる）に「追い付きの逆順サンプルは…（確かめた日、Prometheus の版、結果）」を書く。
 
 **B. Splunk のアプリと volume（Mac で立てば）**
@@ -46,7 +46,7 @@
 
 | ファイル | 件 | 何を |
 |---|---|---|
-| `docker/compose/compose.yaml` | A | prometheus の `--storage.tsdb.out_of_order_time_window`（捨てる場合だけ） |
+| `docker/compose/prometheus.yml` | A | `storage.tsdb.out_of_order_time_window: 1h`（捨てる場合だけ。起動の引数は無いので設定ファイルに） |
 | `docker/compose/check.sh` | C | 判定（合わない場合だけ） |
 | `tests/test_local_compose.py` | A, C | 変えた分の check |
 | 手元の compose の docs（`docs/local-compose.md` 相当）と `docker/compose/README` | A, B, C | 確かめた結果（日付、版、結果、未確認ならその理由） |

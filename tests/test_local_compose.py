@@ -317,6 +317,8 @@ check("prometheus は remote write を受け、設定は prometheus.yml（scrape
       "--web.enable-remote-write-receiver" in svc["prometheus"]["command"]
       and "./prometheus.yml:/etc/prometheus/prometheus.yml:ro" in svc["prometheus"]["volumes"]
       and "scrape_configs" not in read("docker", "compose", "prometheus.yml"))
+check("prometheus.yml は同じ系列の時刻が戻るサンプル（Kafka の追い付き）を 1 時間まで受ける（storage.tsdb.out_of_order_time_window。既定の 0 では v3.15.0 が 400 で捨てるのを 034 で確かめた）",
+      (yaml.safe_load(read("docker", "compose", "prometheus.yml")) or {}).get("storage", {}).get("tsdb", {}).get("out_of_order_time_window") == "1h")
 _gf = svc["grafana"]["environment"]
 check("grafana は PROMETHEUS_AUTH=none / OPENSEARCH_AUTH=basic で、URL は compose の中の prometheus と opensearch、ALERTS_TOPIC_ARN は渡さない",
       _gf["PROMETHEUS_AUTH"] == "none" and _gf["OPENSEARCH_AUTH"] == "basic" and _gf["PROMETHEUS_URL"] == "http://prometheus:9090"
@@ -806,6 +808,13 @@ check("check.sh: Splunk の認証の失敗（messages の FATAL / ERROR）は「
       and splunk_line('{"messages":[{"type":"WARN","text":"call not properly authenticated"}]}') == [f"NG  {SPL}: result が無い: WARN call not properly authenticated"]
       and splunk_line('{"result":{"count":0}}') == [f"NG  {SPL}: 0 件"]
       and splunk_line('{"result":{"count":3}}') == [f"ok  {SPL}"])
+check("check.sh: Splunk 10.4.4 の本物の応答（034 で手元の docker に打って写した本文）で、パスワード違いの 401 は ERROR Unauthorized、"
+      "検索の書き誤りの 400 は FATAL、200 の count が \"0\" なら「0 件」、\"1\" なら ok、200 の空の本文（eval の引数の誤りなど）は「読めない応答: 空」",
+      splunk_line('{"messages":[{"type":"ERROR","text":"Unauthorized"}]}') == [f"NG  {SPL}: ERROR Unauthorized"]
+      and splunk_line('{"messages":[{"type":"FATAL","text":"Unknown search command \'nosuchcmd\'."}]}') == [f"NG  {SPL}: FATAL Unknown search command 'nosuchcmd'."]
+      and splunk_line('{"preview":false,"offset":0,"lastrow":true,"result":{"count":"0"}}\n') == [f"NG  {SPL}: 0 件"]
+      and splunk_line('{"preview":false,"offset":0,"lastrow":true,"result":{"count":"1"}}\n') == [f"ok  {SPL}"]
+      and splunk_line(" ") == [f"NG  {SPL}: 読めない応答: 空"])   # 空の FAKE_SPLUNK は既定の応答になるので、空白 1 つで空の本文の代わりにする
 _dup = '{"messages":[' + ",".join(['{"type":"ERROR","text":"Unauthorized"}'] * 30) + ']}'
 _long = '{"messages":[{"type":"FATAL","text":"' + "x" * 300 + '\\n  y"},{"type":"ERROR","text":"b\\nc"}]}'
 _ll = splunk_line(_long)
