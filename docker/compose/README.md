@@ -79,6 +79,8 @@ docker/compose/lab.sh fail-main
 | Prometheus | http://localhost:9090 | なし |
 | OpenSearch（API） | http://localhost:9200 | `admin` / `.env` の `OPENSEARCH_PASSWORD` |
 
+Kafka の内部トピック（`__consumer_offsets` 等）は 1 パーティション（`compose.yaml` の `x-kafka-env`。既定の 50 から絞った）。パーティション数はトピックが最初に作られたとき（consumer group を初めて使ったとき）に決まる。Spark は consumer group を使わないので、前からある volume でもふつうはまだ作られておらず、上げ直せば 1 で作られる。前の volume に 50 で出来ているかは `docker compose -f docker/compose/compose.yaml exec kafka-1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:9092 --describe --topic __consumer_offsets` で分かる（PartitionCount を見る）。50 で出来ていて 1 にしたいときだけ `docker/compose/down.sh -v` で消して上げ直す（Kafka だけでなく Splunk・OpenSearch・Grafana・Prometheus・Spark の checkpoint も全部消える）。
+
 ## ぶつかりやすいポート
 
 Telegraf・syslog-ng・GoFlow2 は host のネットワークにいるので、host の次のポートを開ける。待つのは lab の管理ネットの GW `203.0.113.1` だけ（`127.0.0.1` では待たない。lab の外から偽の trap や syslog を入れられないように）。lab が無いときに `up.sh` を打つと全部のインターフェースで待つ（`WARNING` が出る。WSL の外から届くかは WSL のネットワークのモード次第で、未確認）。ほかのプロセスが使っていると Telegraf が起動しない（`docker compose -f docker/compose/compose.yaml logs telegraf`）。`203.0.113.1` が無いとき（lab を `down` したまま）に Telegraf が起こし直されても `bind: cannot assign requested address` で落ちる。telegraf・syslog-ng と spark は `restart: on-failure:5`（goflow2 は Kafka が上がるまで落ちるので `on-failure:10`）なので、5 回起こし直しても落ちるなら止まったままになる（Docker は回数を戻さない。spark は `check.sh` の「Spark: … が動いている」が NG になる）。`docker compose -f docker/compose/compose.yaml ps -a` で `Exited` なら `logs telegraf` で理由を見て、直してから `docker/compose/up.sh telegraf` で起こす（`check.sh` の「Telegraf: health が 200」も NG になる）。lab を `down` / `up` で作り直したあとは、Telegraf が動いていても `docker compose -f docker/compose/compose.yaml restart telegraf syslog-ng goflow2` で待ち直させる（作り直した bridge で前の待ち受けが受け続けるかは未確認）。

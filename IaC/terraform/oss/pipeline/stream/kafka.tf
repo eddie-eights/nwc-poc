@@ -84,6 +84,11 @@ locals {
     { name = "KAFKA_TRANSACTION_STATE_LOG_MIN_ISR", value = "2" },
     { name = "KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR", value = "3" },
     { name = "KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR", value = "2" },
+    # 内部トピック（__consumer_offsets・__transaction_state・__share_group_state）。既定 50。PoC では 1（MSK は configuration に項目が無く変えられない）。
+    # __consumer_offsets が 1 だと group coordinator が 1 台に寄る。consumer group が増える構成に変えるときは 3 に戻す
+    { name = "KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS", value = "1" },
+    { name = "KAFKA_TRANSACTION_STATE_LOG_NUM_PARTITIONS", value = "1" },
+    { name = "KAFKA_SHARE_COORDINATOR_STATE_TOPIC_NUM_PARTITIONS", value = "1" },
     # ここから 3 つは MSK の configuration（IaC/terraform/aws-managed/pipeline/stream/msk.tf の server_properties）と同じ
     { name = "KAFKA_NUM_PARTITIONS", value = "2" },
     { name = "KAFKA_LOG_RETENTION_HOURS", value = "24" },
