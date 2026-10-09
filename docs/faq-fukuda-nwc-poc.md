@@ -638,7 +638,7 @@ flowchart TB
 
 **分散して読んでいるかの確かめ方**
 
-Spark UI（EMR の managed storage を入れればコンソールから開ける。いまは切っているので開けない。下の「CloudWatch だけに…見えなくなる？」）の Executors の画面で、executor 1 と 2 の両方に「完了したタスク」の数が増えていけば、分かれて読んでいる（AWS では未確認）。
+Spark UI（動いているジョブなら driver が出す Live UI をコンソールから開ける。下の「CloudWatch だけに…見えなくなる？」）の Executors の画面で、executor 1 と 2 の両方に「完了したタスク」の数が増えていけば、分かれて読んでいる（AWS では未確認）。
 
 ### Q. Spark のジョブは 1 つで、Kafka の購読も 1 つ？
 
@@ -866,17 +866,18 @@ EMR Serverless のジョブ（Spark）のログ。置き先は 3 つあり、こ
 
 CloudWatch は画面に関係ない。それ以前に、**CloudWatch にはイベントログを出せない**（出せるのは driver と executor の stdout / stderr だけ）。
 
-- Spark UI の元はイベントログ。EMR のコンソールの Spark UI が読むのは **managed storage に置いたイベントログだけ**。S3 だけに置いても読まない（AWS の文書で「Not supported」）。
-- だから画面が見えるかどうかは managed storage を切るかどうかで決まる。CloudWatch を足しても引いても変わらない。
+- コンソールの「Spark UI」（`get-dashboard-for-job-run` と同じもの）は 2 種類ある（AWS の文書の `GetDashboardForJobRun`）。
+  - **動いているジョブ: Live UI。** driver が出している Spark UI をそのまま見る。ログの置き先とは関係なく開ける。このリポジトリのジョブは止めるまで動き続けるストリーミングなので、ふだん見るのはこちら。[pipeline.md](pipeline.md) の手順も `--states RUNNING` のジョブを選んでいる。
+  - **終わったジョブ: 永続 UI（Spark History Server）。** 元はイベントログで、読むのは **managed storage に置いたイベントログだけ**。S3 だけに置いても読まない（AWS の文書で「Not supported」。managed storage を切ると「コンソールから Spark UI にアクセスできない」）。
+- だから「見えなくなる」のは終わったジョブの画面だけで、それも CloudWatch ではなく managed storage を切るかどうかで決まる。このリポジトリは managed storage を切っているので、止めたあとのジョブの画面は開けない（`ops/down.sh` でアプリごと消えるので、ふだんは困らない）。
 
-| managed storage | コンソールの Spark UI |
-|---|---|
-| ON（S3 や CloudWatch を足してもよい） | 開ける |
-| OFF（このリポジトリ） | 開けない。AWS の文書に「コンソールから Spark UI にアクセスできない」とある |
+| ジョブの状態 | managed storage ON | OFF（このリポジトリ） |
+|---|---|---|
+| 動いている | Live UI を開ける | Live UI を開ける |
+| 終わった | Spark History Server を開ける（30 日） | 開けない |
 
-- このリポジトリは OFF なので、[pipeline.md](pipeline.md) の `get-dashboard-for-job-run` の手順は文書どおりなら通らない（AWS では未確認）。
-- S3 のイベントログを画面で見るなら、Spark History Server を手元に立てて S3 を読ませる（AWS のサンプル `aws-samples/emr-serverless-samples` の `utilities/spark-ui`）。
-- 画面を戻すなら `managedPersistenceMonitoringConfiguration` を `enabled = true` にする（30 日保持、追加料金なし）。閉域の VPC なので、S3 のゲートウェイエンドポイントのポリシーが EMR 側のバケットを許す必要があるかは AWS で確かめる。
+- 終わったジョブを S3 のイベントログから見るなら、Spark History Server を手元に立てて S3 を読ませる（AWS のサンプル `aws-samples/emr-serverless-samples` の `utilities/spark-ui`）。
+- 戻すなら `managedPersistenceMonitoringConfiguration` を `enabled = true` にする（30 日保持、追加料金なし）。閉域の VPC なので、S3 のゲートウェイエンドポイントのポリシーに EMR の `AppInfo` バケットへの `s3:PutObject` を足す必要がある（AWS の文書「Storing logs」。AWS では未確認）。
 
 ---
 
