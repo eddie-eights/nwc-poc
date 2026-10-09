@@ -81,6 +81,8 @@ lab を上げる（`sudo` のパスワードを聞かれる）。
 - このラッパーが渡すのは次の 5 つだけ。
   `.env` の `SRLINUX_IMAGE` / `MULTITOOL_IMAGE` / `TREX_IMAGE` と `TELEGRAF_LOCAL=1`、案内に出す自分のパス `LAB_CMD`。
   - そのため、シェルに `REGISTRY` や `AWS_REGION` があっても ECR や SSM へは行かない。
+  - `.env` にイメージの 3 つが無いと `up`（と `render`）は止まる。`down` / `check` などはイメージを見ないので打てる。
+    011 より前の `.env` には `TREX_IMAGE` が無いので、`.env.example` から写す。
 
 ```bash
 docker/compose/up.sh

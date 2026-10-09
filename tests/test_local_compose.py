@@ -572,6 +572,11 @@ _lc = tree("SRLINUX_IMAGE=example.com/srl:1\nMULTITOOL_IMAGE=example.com/mt:2\n"
 _r, _c = run([os.path.join(_lc, "lab.sh"), "up"])
 check("docker/compose/lab.sh: .env に TREX_IMAGE が無ければ（011 より前の .env）sudo を打たずに止まる",
       _r.returncode != 0 and _c == ["docker compose --env-file .env config --environment"] and "TREX_IMAGE が無い" in _r.stderr)
+_lc = tree("SRLINUX_IMAGE=example.com/srl:1\n")
+_r, _c = run([os.path.join(_lc, "lab.sh"), "down"])
+check("docker/compose/lab.sh down: イメージを見ないサブコマンドは .env にイメージが揃っていなくても止まらず、無いものは空で sudo に渡す（024 C）",
+      _r.returncode == 0 and len([c for c in _c if c.startswith("sudo ")]) == 1 and _c[1].startswith("sudo ")
+      and "TREX_IMAGE=" in _c[1].split() and "SRLINUX_IMAGE=example.com/srl:1" in _c[1].split() and "が無い" not in _r.stderr)
 _r, _c = run([os.path.join(tree(), "lab.sh"), "up"], FAKE_CONFIG_FAIL="1")
 check("docker/compose/lab.sh: compose が .env を読めなければ sudo を打たずに止まり、compose のエラー（値のかけらを含むことがある）は出さない",
       _r.returncode == 1 and _c == ["docker compose --env-file .env.example config --environment"]
