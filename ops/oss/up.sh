@@ -42,7 +42,13 @@ OPS_DIR=ops/oss        # SSM のパラメータのタグ ManagedBy=ops/oss/up.sh
 TF_LOG_NAME=tf-oss     # terraform のログは ops/logs/tf-oss-<ルート>-<apply|destroy>.log
 TF_INIT_LOCKFILE=readonly  # init は lock を書き換えない（lock はマネージド版へのシンボリックリンク。ops/common.sh の tf_init_root）
 NAUTOBOT_CTX=""        # Nautobot のイメージの材料を集める一時ディレクトリ（手順 2）。終わるときに消す
-trap 'if [ -n "$TF_AWS_CONFIG" ]; then rm -f "$TF_AWS_CONFIG"; fi; if [ -n "$NAUTOBOT_CTX" ]; then rm -rf -- "$NAUTOBOT_CTX"; fi; if [ -n "$ROLL_PLAN" ]; then rm -f "$ROLL_PLAN"; fi' EXIT
+on_exit() {  # 途中で止まっても一時ファイルを消す（ops/up.sh の on_exit と同じ。OSS 版はバックグラウンドの apply を持たないので待ちは無い）
+  if [ -n "$TF_AWS_CONFIG" ]; then rm -f "$TF_AWS_CONFIG"; fi
+  if [ -n "$NAUTOBOT_CTX" ]; then rm -rf -- "$NAUTOBOT_CTX"; fi
+  if [ -n "$ROLL_PLAN" ]; then rm -f "$ROLL_PLAN"; fi
+  if [ -n "$SECRET_INPUT" ]; then rm -f -- "$SECRET_INPUT"; fi  # SSM の SecureString の値を書いた一時ファイル（ops/up-common.sh の ensure_secret / ensure_fixed_secret が書く）
+}
+trap on_exit EXIT
 
 # ---- 0. 道具と認証 -------------------------------------------------------------
 log "0. 設定と道具と認証を確かめる（OSS 版）"
@@ -647,10 +653,9 @@ if [ -n "$NO_DASHBOARD_PORTFORWARD" ]; then
   exit 0
 fi
 log "10. ポートフォワーディング（http://localhost:$LOCAL_PORT/ 。Ctrl+C で閉じる）"
-# exec すると EXIT の trap が走らないので、ここで片付ける
+# exec すると EXIT の trap が走らないので、ここで同じ on_exit を 1 回呼んで片付ける
 trap - EXIT
-if [ -n "$TF_AWS_CONFIG" ]; then rm -f "$TF_AWS_CONFIG"; fi
-if [ -n "$NAUTOBOT_CTX" ]; then rm -rf -- "$NAUTOBOT_CTX"; fi
+on_exit
 exec aws ssm start-session --region "$REGION" --target "$INSTANCE_ID" \
   --document-name AWS-StartPortForwardingSession \
   --parameters "{\"portNumber\":[\"8080\"],\"localPortNumber\":[\"$LOCAL_PORT\"]}"

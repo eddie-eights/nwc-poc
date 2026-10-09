@@ -103,6 +103,7 @@ az_num() {  # az_num <キー> <既定> <最小> <最大> <範囲の理由>  書�
   if [ "$v" -lt "$3" ] || [ "$v" -gt "$4" ]; then die "$k=$v は書けない。$3〜$4 で書く（$5）。まだ何も作っていない"; fi
   printf -v "$k" '%s' "$v"
 }
+SECRET_INPUT=""  # ensure_secret / ensure_fixed_secret が値を書く一時ファイル。put-parameter の最中に止まっても ops/up.sh と ops/oss/up.sh の EXIT の trap（on_exit）が消す
 # ensure_secret <SSM のパラメータ名> <password|strong-password|uuid|token|kafka-cluster-id> <説明>  無ければ乱数の SecureString を作る。値は画面にもログにも出さない
 #   strong-password は password と同じ 32 文字に、大文字・小文字・数字・記号（- か _）が 1 つ以上ずつ入るまで引き直したもの
 #   （OSS 版の OpenSearch の OPENSEARCH_INITIAL_ADMIN_PASSWORD。2.12 から弱いパスワードでは起動しない）。
@@ -120,8 +121,8 @@ ensure_secret() {
   esac
   # 値は Python が作って本人だけが読める一時ファイルに書き、AWS CLI に file:// で渡す（コマンドラインにも変数にも載せない）。
   # 標準入力（file:///dev/stdin）は AWS CLI v2 が読めず Invalid JSON になる。down.sh は ManagedBy のタグで見分けて消す
-  local input rc=0
-  input=$(umask 077; mktemp "${TMPDIR:-/tmp}/nwc-secret.XXXXXX") || die "一時ファイルを作れなかった"
+  local rc=0
+  SECRET_INPUT=$(umask 077; mktemp "${TMPDIR:-/tmp}/nwc-secret.XXXXXX") || die "一時ファイルを作れなかった"
   "${PY[@]}" -c 'import base64, json, secrets, sys, uuid
 name, kind, desc, prefix, owner, managed_by, path = sys.argv[1:]
 def kafka_cluster_id():
@@ -140,9 +141,9 @@ value = (str(uuid.uuid4()) if kind == "uuid" else secrets.token_hex(20) if kind 
 with open(path, "w", encoding="utf-8") as f:
     json.dump({"Name": name, "Type": "SecureString", "Value": value, "Description": desc,
                "Tags": [{"Key": "ManagedBy", "Value": managed_by}, {"Key": "Project", "Value": prefix}, {"Key": "owner", "Value": owner}]}, f)' \
-    "$name" "$kind" "$desc" "$PREFIX" "$OWNER" "$OPS_DIR/up.sh" "$input" \
-    && aws ssm put-parameter --region "$REGION" --cli-input-json "file://$input" >/dev/null || rc=$?
-  rm -f -- "${input:?}"
+    "$name" "$kind" "$desc" "$PREFIX" "$OWNER" "$OPS_DIR/up.sh" "$SECRET_INPUT" \
+    && aws ssm put-parameter --region "$REGION" --cli-input-json "file://$SECRET_INPUT" >/dev/null || rc=$?
+  rm -f -- "${SECRET_INPUT:?}"; SECRET_INPUT=""
   [ "$rc" -eq 0 ] || die "SSM に $name を作れなかった（上のエラー）"
   echo "$name を作った（値は出さない。見るコマンドは最後に出る）"
 }
@@ -157,16 +158,16 @@ ensure_fixed_secret() {  # ensure_fixed_secret <SSM のパラメータ名> <値>
     *) die "$name が SecureString でない（${type}）。消してから打ち直す: aws ssm delete-parameter --region $REGION --name $name" ;;
   esac
   # ensure_secret と同じく、本人だけが読める一時ファイルに書いて file:// で渡す（値は環境変数で Python に渡し、コマンドラインに載せない）
-  local input rc=0
-  input=$(umask 077; mktemp "${TMPDIR:-/tmp}/nwc-secret.XXXXXX") || die "一時ファイルを作れなかった"
+  local rc=0
+  SECRET_INPUT=$(umask 077; mktemp "${TMPDIR:-/tmp}/nwc-secret.XXXXXX") || die "一時ファイルを作れなかった"
   FIXED_SECRET_VALUE="$value" "${PY[@]}" -c 'import json, os, sys
 name, desc, prefix, owner, managed_by, path = sys.argv[1:]
 with open(path, "w", encoding="utf-8") as f:
     json.dump({"Name": name, "Type": "SecureString", "Value": os.environ["FIXED_SECRET_VALUE"], "Description": desc,
                "Tags": [{"Key": "ManagedBy", "Value": managed_by}, {"Key": "Project", "Value": prefix}, {"Key": "owner", "Value": owner}]}, f)' \
-    "$name" "$desc" "$PREFIX" "$OWNER" "$OPS_DIR/up.sh" "$input" \
-    && aws ssm put-parameter --region "$REGION" --cli-input-json "file://$input" >/dev/null || rc=$?
-  rm -f -- "${input:?}"
+    "$name" "$desc" "$PREFIX" "$OWNER" "$OPS_DIR/up.sh" "$SECRET_INPUT" \
+    && aws ssm put-parameter --region "$REGION" --cli-input-json "file://$SECRET_INPUT" >/dev/null || rc=$?
+  rm -f -- "${SECRET_INPUT:?}"; SECRET_INPUT=""
   [ "$rc" -eq 0 ] || die "SSM に $name を作れなかった（上のエラー）"
   echo "$name を作った（値は出さない）"
 }
