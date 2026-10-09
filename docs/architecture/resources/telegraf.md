@@ -81,8 +81,8 @@ Telegraf は機器から送られてくる SNMP trap を受ける（受ける側
 | 項目 | 状態 |
 |---|---|
 | gnmic は 1 タスク・1 AZ | 増やすと二重に書くので増やせない。止まっているあいだのカウンターは抜ける（状態は繋ぎ直したときに今の値を全部送り直す） |
-| gnmic の Kafka の ACL | マネージドの MSK は IAM と SCRAM の併用なので、SCRAM のユーザーには `gnmi` と `metrics` へ書く ACL が要る想定。Spark のジョブが起動時に `User:collectors`（syslog-ng・GoFlow2 と同じユーザー）へ入れる（cycle 012 の `ensure_acls`）。それまでの値を gnmic は捨てるので、on-change の購読の直後の今の状態は Kafka に残らない。AWS では未確認（OSS 版は認証なしなので当たらない） |
-| gnmic を ECS で動かした記録 | まだ無い（AWS では未確認。手元の docker と compose だけ） |
+| gnmic の Kafka の ACL | Spark のジョブが起動時に `User:collectors`（syslog-ng・GoFlow2 と同じユーザー）へ `gnmi` と `metrics` へ書く ACL を入れる（cycle 012 の `ensure_acls`）。マネージドの MSK は IAM と SCRAM の併用なので ACL が要る想定だったが、2026-10-09 の AWS では ACL を入れる前も `metrics` に書けた（`allow.everyone.if.no.acl.found` が効いた。`docs/verification/20261009-aws-managed.md` の「A.」「B.」）。ACL を入れたあとは未確認（OSS 版は認証なしなので当たらない） |
+| gnmic を ECS で動かした記録 | 2026-10-09 に AWS で動かした。desired 1 / running 1 で、`metrics` に IF の統計と `system` の event が入った。`gnmi` のトピックはできなかった（on-change の 3 つの購読から 1 件も書かれていない。gnmic のログに ERROR は 0。原因は確かめていない）。`docs/verification/20261009-aws-managed.md` の「B.」 |
 | MDT の受け口 | 2026-10-08（cycle 012）に外した。本番の Cisco の MDT を受けるなら戻す（[collection.md](../../collection.md)） |
 
 ## 関連
