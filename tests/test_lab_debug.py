@@ -5,7 +5,7 @@
 - ロール: IaC/terraform/aws-managed/pipeline/lab/iam.tf と同じ Sid と Action（ECR は Telegraf のリポジトリも読む）
 - Telegraf: 同じ telegraf.conf.in を SINK=stdout で描く。入力は MSK 向けと同じで、出力だけが標準出力になる（app/telegraf/telegraf.sh render を手元で回す）
 実行は uv run python tests/test_lab_debug.py（pyyaml を使う。AWS も docker も要らない）。"""
-import os, re, shlex, subprocess, sys, tempfile, tomllib
+import json, os, re, shlex, subprocess, sys, tempfile, tomllib
 
 import yaml
 
@@ -539,6 +539,30 @@ _r = _route('case "$2" in *route-table\\ ipv4-unicast*) echo "next-hop-group 3" 
             '*) printf "ip-address 172.16.0.12\\nsubinterface ethernet-1/50.0\\n" ;; esac;')
 check("lab.sh failover の route(): 経路があるときは next-hop-group → next-hop → ip-address / subinterface をたどって 1 行に出す（形は変わらない）",
       _r.returncode == 0 and "ip-address 172.16.0.12 subinterface ethernet-1/50.0" in _r.stdout and "IS-IS の経路が無い" not in _r.stdout)
+
+# ---- trex/kafka_load.sh の nodes() / peer() / payload()（024 F）。関数だけを抜き出し、cwd を app/containerlab/trex にして打つ（docker も MSK も要らない）
+_kl = read("app", "containerlab", "trex", "kafka_load.sh")
+_kl_fns = "\n".join(re.search(p, _kl, re.M | re.S).group(0) for p in (r"^nodes\(\) \{.*?\}$", r"^peer\(\) \{.*?\}$", r"^payload\(\) \{.*?^\}"))
+def _kl_run(script):
+    return subprocess.run(["bash", "-c", "set -euo pipefail\n" + _kl_fns + "\n" + script], capture_output=True, text=True,
+                          cwd=os.path.join(ROOT, "app", "containerlab", "trex"), stdin=subprocess.DEVNULL, timeout=30)
+_kl_nodes = [(n, v["mgmt-ipv4"]) for n, v in yaml.safe_load(read("app", "containerlab", "splab.clab.yml.in"))["topology"]["nodes"].items()
+             if v.get("kind") == "nokia_srlinux"]
+_r = _kl_run("nodes")
+check("kafka_load.sh の nodes(): splab.clab.yml.in の SR Linux 6 台の名前と mgmt-ipv4 を出す（.in の現物と同じ。trex は kind linux なので入らない）",
+      _r.returncode == 0 and len(_kl_nodes) == 6 and ("dc1-a-leaf-01", "203.0.113.31") in _kl_nodes and "dc1-trex-01" not in _r.stdout
+      and [tuple(l.split()) for l in _r.stdout.splitlines()] == _kl_nodes)
+_r = _kl_run('for n in $(nodes | cut -d" " -f1); do echo "$n $(peer "$n")"; done')
+_kl_peers = dict(l.split(" ", 1) for l in _r.stdout.splitlines())
+check("kafka_load.sh の peer(): 各機器の srlinux/<機器>.cli の最初の overlay の neighbor（dc1-a-leaf-01 は 10.255.0.1、dc1-spine-01 は 10.255.1.1。空の機器が無い）",
+      _r.returncode == 0 and len(_kl_peers) == 6 and _kl_peers.get("dc1-a-leaf-01") == "10.255.0.1" and _kl_peers.get("dc1-spine-01") == "10.255.1.1"
+      and all(re.fullmatch(r"10\.255\.\d+\.\d+", p) for p in _kl_peers.values()))
+_r = _kl_run("TOPIC=gnmi; payload")
+_kl_recs = [json.loads(l) for l in _r.stdout.splitlines()]
+check("kafka_load.sh の gnmi のレコード: neighbor_peer-address は peer() の値（10.255.0.1 の固定でない）で、source はその機器の管理 IP",
+      '"neighbor_peer-address":"10.255.0.1"' not in _kl and '"neighbor_peer-address":"%s"' in _kl
+      and _r.returncode == 0 and [(r["tags"]["source"], r["tags"]["neighbor_peer-address"]) for r in _kl_recs]
+      == [(ip, _kl_peers[n]) for n, ip in _kl_nodes])
 
 _lab_out =read("IaC", "terraform", "aws-managed", "pipeline", "lab", "outputs.tf")
 check("lab の output graph_port_forward_command は lab.sh graph が出すコマンドと同じ（宛先は aws_instance.lab.id、ポートは lab.sh の GRAPH_PORT）",
