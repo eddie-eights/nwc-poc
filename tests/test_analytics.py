@@ -1574,26 +1574,32 @@ check("Runtime の 1 AZ を拒んでいた前の決定（2026-10-04）の文が�
 # _gh_slug は GitHub の規則に揃えきらない（028）。GitHub の作り方は公開の仕様が無く、追いかけると壊れやすい。
 # 代わりに、差が出る書き方を FAQ の見出しで使えなくする（下の _faq_heads_ok）: 丸数字などの No の文字、_ 以外の Pc の文字、
 # コード（`…`）の外の [ ] * < > と、英数字に挟まれていない _（リンク、強調、HTML の記法）、_gh_slug で同じアンカーになる見出し（-1 を付ける形）
+import html as _html
 def _gh_slug(text):
-    return "".join("-" if ch == " " else ch for ch in text.strip().lower()
+    # 実体参照（&amp; など）は GitHub では文字になってからアンカーになる（032）
+    return "".join("-" if ch == " " else ch for ch in _html.unescape(text).strip().lower()
                    if ch in "-_ " or unicodedata.category(ch)[0] in "LNM")
 def _faq_heads(text):
     """FAQ の見出しを (レベル, 見出しの文字, 行番号) で返す。コードブロックの中の # の行は数えない。
     フェンスは字下げしたものと ~~~ も見る。開いたのと同じ文字で、開いた長さ以上の並びだけの行で閉じる（GitHub に寄せる。028）。
-    閉じの字下げが開きより浅い行は閉じと見なさない（箇条書きの中のフェンスは列 0 の ``` では閉じない。GFM と同じ。028 の cold review S2）"""
+    閉じの字下げが開きより浅い行は閉じと見なさない（箇条書きの中のフェンスは列 0 の ``` では閉じない。GFM と同じ。028 の cold review S2）。
+    閉じの字下げは開きより 4 以上深くてもいけない（字下げのコードになる）。見出しは 0〜3 空白の字下げまで。
+    字下げは行頭の tab を 4 空白（tab stop 4）に展開して数える（032）"""
     heads, fence, indent = [], None, 0
     for i, line in enumerate(text.split("\n")):
+        body = line.lstrip(" \t")
+        ind = len(line[:len(line) - len(body)].expandtabs(4))
         if fence is not None:
-            c = line.strip()
-            if c and set(c) == {fence[0]} and len(c) >= len(fence) and len(line) - len(line.lstrip()) >= indent:
+            c = body.rstrip()
+            if c and set(c) == {fence[0]} and len(c) >= len(fence) and indent <= ind <= indent + 3:
                 fence = None
             continue
-        f = re.match(r"^(\s*)(`{3,}|~{3,})", line)
+        f = re.match(r"^(`{3,}|~{3,})", body)
         if f:
-            fence, indent = f.group(2), len(f.group(1))
+            fence, indent = f.group(1), ind
             continue
-        m = re.match(r"^(#{1,6}) (.*)$", line)
-        if m:
+        m = re.match(r"^(#{1,6})[ \t](.*)$", body)
+        if m and ind <= 3:
             heads.append((len(m.group(1)), m.group(2), i))
     return heads
 def _faq_toc_ok(text):
@@ -1660,6 +1666,17 @@ _faq_list_fence = "\n- item\n  ```\n  code\n{}```\n\n### Q. 偽の質問\n"
 check("FAQ: 箇条書きの中のフェンスは、開きより浅い字下げの ``` では閉じない（同じ字下げなら閉じる。028 の cold review S2）",
       [h[:2] for h in _faq_heads(_faq + _faq_list_fence.format(""))] == [h[:2] for h in _faq_heads(_faq)]
       and [h[:2] for h in _faq_heads(_faq + _faq_list_fence.format("  "))] == [h[:2] for h in _faq_heads(_faq)] + [(3, "Q. 偽の質問")])
+# 028 で残した GitHub との差（032）: 実体参照、0〜3 空白の字下げの見出し、info string つきのフェンス、4 空白以上の字下げの閉じ、行頭の tab
+check("FAQ の見出し: 実体参照は解いてからアンカーにする（&amp; は & になって消える。032）",
+      [(l, _gh_slug(h)) for l, h, _ in _faq_heads("  ## &amp; x")] == [(2, "-x")] and _gh_slug("a &lt;b&gt; c") == "a-b-c")
+check("FAQ の見出し: 0〜3 空白の字下げの # は見出し、4 空白以上は字下げのコードなので見出しにしない（032）",
+      _faq_heads(" # a\n   ## b\n    ## c") == [(1, "a", 0), (2, "b", 1)])
+check("FAQ の見出し: info string つきのフェンス（```py、~~~ yaml）の中の # は見出しにしない（032）",
+      _faq_heads("```py\n# a\n```\n~~~ yaml\n# b\n~~~\n# c") == [(1, "c", 6)])
+check("FAQ の見出し: 列 0 で開いたフェンスは 4 空白以上の字下げの ``` では閉じない（0〜3 空白なら閉じる。032）",
+      _faq_heads("```\n    ```\n# a\n```\n# b") == [(1, "b", 4)] and _faq_heads("```\n   ```\n# a") == [(1, "a", 2)])
+check("FAQ の見出し: 行頭の tab は 4 空白と数える（tab の # は見出しにせず、列 0 のフェンスは tab の ``` で閉じない。032）",
+      _faq_heads("\t## a\n```\n\t```\n# b\n```\n# c") == [(1, "c", 5)])
 # 構成の pptx を描く道具はリポジトリの中に置く（028。前は個人リポジトリの ~/Documents/repo/bin/render-pptx を指していた）
 import tomllib
 _arch_readme = open(os.path.join(ROOT, "docs", "architecture", "README.md"), encoding="utf-8").read()
