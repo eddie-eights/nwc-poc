@@ -14,6 +14,7 @@ nwc-poc の技術と構成について、ほかの開発者に説明するとき
 - [10. Splunk](#10-splunk)
 - [11. マネージドを OSS に置き換えるとき](#11-マネージドを-oss-に置き換えるとき)
 - [12. AWS の基礎（AZ、署名、SDK、MSK の画面）](#12-aws-の基礎az署名sdkmsk-の画面)
+- [13. lab のネットワーク（spine・leaf・mac-vrf）](#13-lab-のネットワークspineleafmac-vrf)
 
 ---
 
@@ -2344,3 +2345,63 @@ SDK を使うと、自分で書かなくて済むもの。
 
 - https://docs.aws.amazon.com/msk/latest/developerguide/msk-topic-operations-information.html
 - https://ui.docs.kafbat.io/configuration/authentication/for-kafka/aws-iam.md
+
+---
+
+## 13. lab のネットワーク（spine・leaf・mac-vrf）
+
+- [Q. leaf はルーター？ スイッチ？](#q-leaf-はルーター-スイッチ)
+- [Q. ポートごとにスイッチかルーターかを設定できるということ？](#q-ポートごとにスイッチかルーターかを設定できるということ)
+- [Q. lab では、なぜ WAN 側の leaf のポートもサーバー側と同じ LAN に入れている？](#q-lab-ではなぜ-wan-側の-leaf-のポートもサーバー側と同じ-lan-に入れている)
+
+### Q. leaf はルーター？ スイッチ？
+
+**A. 両方。ポートごとに役割が違う。**
+
+leaf は LAN の境目に立つ機器で、片側は LAN の中（MAC アドレスで届く）、もう片側は LAN の外（IP で運ぶ）なので、両方の動きをする。
+
+| ポート | 役割 | 何を見て動くか | lab での設定 |
+|---|---|---|---|
+| ethernet-1/3（TRex 側。本物ならサーバーや WAN 側の機器） | スイッチ | MAC アドレス。同じ LAN の中で届ける | mac-vrf `macvrf-100` に所属。MAC アドレステーブルを持つ |
+| ethernet-1/1、1/2（spine 側） | ルーター | IP アドレス。LAN の外で leaf から leaf へ運ぶ | 172.16.x.y/31 の IP、IS-IS、BGP EVPN、VXLAN の付け足し・外し |
+
+spine は spine 側のポートしか無いので、IP だけを見るルーターの動き。6 台とも同じ SR Linux（ixr-d2l）で、スイッチかルーターかは機種の違いではなく、どこに置いてどう設定したかで決まる。資料は `docs/architecture/lab-network-architecter.deck.md` の「spine は IP で運ぶだけ、leaf はスイッチとルーターの両方を務めます」。
+
+### Q. ポートごとにスイッチかルーターかを設定できるということ？
+
+**A. できる。SR Linux ではポート（subinterface）の種類と、入れる network-instance で決まる。**
+
+1. ポートの subinterface の種類を決める。IP アドレスを付ければルーターの口、`type bridged` にすればスイッチの口。
+2. そのポートをどの network-instance に入れるかを決める。network-instance は経路表や MAC アドレステーブルを持つ入れ物で、`type default` は IP の経路表を持つルーターの入れ物、`type mac-vrf` は MAC アドレステーブルを持つスイッチの入れ物。
+
+lab の leaf（`app/containerlab/gen_lab.py`）ではこう分けている。
+
+| ポート | 種類 | 入れ物 | 動き |
+|---|---|---|---|
+| ethernet-1/1、1/2（spine 側） | IP アドレス（172.16.x.y/31） | network-instance `default`。IS-IS と BGP もここ | ルーター |
+| ethernet-1/3（TRex 側） | `type bridged`。IP アドレス無し | network-instance `macvrf-100`（mac-vrf） | スイッチ |
+
+```
+set / interface ethernet-1/1 subinterface 0 ipv4 address 172.16.x.y/31
+set / network-instance default interface ethernet-1/1.0
+
+set / interface ethernet-1/3 subinterface 0 type bridged
+set / network-instance macvrf-100 type mac-vrf
+set / network-instance macvrf-100 interface ethernet-1/3.0
+```
+
+spine は 1/1〜1/4 全部に IP を付けて `default` に入れているので、全ポートがルーターの口。1 台の中にルーターの入れ物とスイッチの入れ物を同時に持てるのが、データセンター用のスイッチの普通の作り。2 つの入れ物は別々で、lab には両者を IP でつなぐ IRB が無いので、ethernet-1/3 に来たパケットは mac-vrf の中だけで扱われ、VXLAN でほかの leaf の mac-vrf へ運ばれる。
+
+### Q. lab では、なぜ WAN 側の leaf のポートもサーバー側と同じ LAN に入れている？
+
+**A. 試験の都合。本物では利用者とサーバーが同じ LAN に入ることはない。**
+
+本物のデータセンターでは、WAN 側の leaf（s-leaf）の先はルーターやファイアウォールで、LAN をまたぐ通信はそこが IP で中継する。サーバーの LAN は DC 側の leaf（a-leaf）の先だけ。lab では 4 台の leaf の ethernet-1/3 を全部 1 つの LAN（10.100.0.0/24、VNI 100、mac-vrf `macvrf-100`）に入れていて、TRex の port 0〜3 はどれも同じ LAN にいる。
+
+| 理由 | 中身 |
+|---|---|
+| ルーターを置かない | lab にはルーターもファイアウォールも無い。置くと機器が 1 台増え、IP で中継する設定（IRB）も要る。この PoC の本題は監視なので、そこまで作らない |
+| TRex は同じ LAN の相手に送る | TRex は同じ LAN の相手に向けて直接パケットを送る装置。4 本を同じ LAN にすれば、ルーター無しで 4 台の leaf 全部にパケットを通せる |
+| どの leaf でも同じ試験をしたい | どの leaf で回線を切っても「通信が途切れた・戻った」を IS-IS・BGP EVPN・VXLAN の同じ 3 つの仕組みで確かめたい。1 つの LAN なら、どの leaf 同士でも同じ仕組みで届く |
+
+mac-vrf は `macvrf-100` の 1 つだけで IRB は無い（`docs/cycles/011-lab-isis-trex-x86/design.md`）。011 より前の lab も、WAN 側の VM（wan-upstream-01）と DC 側の VM（dc1-host-01）を同じ mac-vrf に入れていた。資料は `docs/architecture/lab-network-architecter.deck.md` の「lab では、本物にはない形で、WAN 側の口もサーバー側と同じ LAN に入れています」。
