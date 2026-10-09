@@ -411,12 +411,13 @@ fake("docker", '[ "${1:-}" = login ] && cat >/dev/null\n'
      'esac; fi\n'
      # docker compose: config --environment は --env-file の KEY=値 の行をそのまま（クォートも # メモも外さない。本物の読み方は下の本物の compose のテスト）、
      # 続けて自分の環境を出す（あとの方が勝つので、本物と同じくシェルが勝つ）。FAKE_CONFIG_FAIL=1 なら値のかけらを標準エラーに出して 15 で落ちる。
+     # 環境からは FAKE_TG_ENV を外す（複数行の値の TELEGRAF_BIND= / HEALTH_PORT= の行が .env の値に混ざると、bind を .env から読んでも通ってしまう。cycle 027）。
      # ps -a -q <サービス> は telegraf なら FAKE_TG_ID、goflow2 なら FAKE_GF_ID のコンテナ ID（空ならコンテナ無しで何も出さない。check.sh が bind とポートを読む。cycle 027）。
      # ps は FAKE_PS（無ければ spark-splunk と spark-http が running の 2 行）。ほか（up / down）は渡された環境を書く
      'if [ "${1:-}" = compose ]; then case " $* " in\n'
      '  *" config --environment "*) f=; prev=; for a in "$@"; do [ "$prev" = --env-file ] && f=$a; prev=$a; done\n'
      '    [ "${FAKE_CONFIG_FAIL:-0}" = 1 ] && { echo "failed to read $f: line 3: unterminated quoted value \\"SECRETFRAG" >&2; exit 15; }\n'
-     '    grep -E "^[A-Za-z_][A-Za-z0-9_]*=" "$f"; env ;;\n'
+     '    grep -E "^[A-Za-z_][A-Za-z0-9_]*=" "$f"; env -u FAKE_TG_ENV ;;\n'
      '  *" ps -a -q "*) case "${*: -1}" in telegraf) id=${FAKE_TG_ID-0a1b2c3d4e5f} ;; goflow2) id=${FAKE_GF_ID-6a7b8c9d0e1f} ;; *) id= ;; esac\n'
      '    [ -z "$id" ] || echo "$id" ;;\n'
      '  *" ps "*) if [ -n "${FAKE_PS+x}" ]; then printf "%s\\n" "$FAKE_PS"; else cat <<\'J\'\n'
