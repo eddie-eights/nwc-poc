@@ -254,7 +254,7 @@ case "${1:-}" in
     # 26.7.2 の sr_cli には "show … route-table ipv4-unicast prefix …" が無い（Unknown token 'ipv4-unicast'。2026-09-27 実測）ので、state の経路 → next-hop-group → next-hop の ip-address をたどる
     route() {
       local nhg i
-      nhg=$(srl dc1-a-leaf-01 "info from state network-instance default route-table ipv4-unicast route 10.255.1.1/32 id * route-type isis route-owner * origin-network-instance * next-hop-group" 2>/dev/null | grep -oE 'next-hop-group [0-9]+' | head -1 | awk '{print $2}')
+      nhg=$(srl dc1-a-leaf-01 "info from state network-instance default route-table ipv4-unicast route 10.255.1.1/32 id * route-type isis route-owner * origin-network-instance * next-hop-group" 2>/dev/null | grep -oE 'next-hop-group [0-9]+' | head -1 | awk '{print $2}' || true)
       [ -n "$nhg" ] || { echo "  (IS-IS の経路が無い)"; return 0; }
       for i in $(srl dc1-a-leaf-01 "info from state network-instance default route-table next-hop-group $nhg next-hop * next-hop" 2>/dev/null | grep -E '^ *next-hop [0-9]+ *$' | awk '{print $2}' | sort -u); do
         srl dc1-a-leaf-01 "info from state network-instance default route-table next-hop $i" 2>/dev/null | grep -oE 'ip-address [0-9.]+|subinterface [^ ]+' | tr '\n' ' ' || true

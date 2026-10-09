@@ -525,7 +525,20 @@ check("lab.sh trex status: pgrep -af t-rex-64 のあとに出力の末尾（/var
       _r.returncode == 0 and _c == ["docker exec clab-splab-dc1-trex-01 pgrep -af t-rex-64", "docker exec clab-splab-dc1-trex-01 tail -n 20 /var/log/trex.log"]
       and "./t-rex-64 -i" in _r.stdout)
 
-_lab_out = read("IaC", "terraform", "aws-managed", "pipeline", "lab", "outputs.tf")
+# ---- lab.sh failover の route()（024 A）。lab.sh の set -euo pipefail のもとで、route() の本体だけを偽の srl() と打つ
+_route_fn = re.search(r"^    route\(\) \{.*?^    \}", lab_sh, re.M | re.S).group(0)
+def _route(srl_body):
+    return subprocess.run(["bash", "-c", "set -euo pipefail\nsrl() { " + srl_body + " }\n" + _route_fn + "\nroute"],
+                          capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
+_r = _route(":;")
+check("lab.sh failover の route(): IS-IS の経路が無い（srl が何も返さない）とき、set -e と pipefail で止まらず「(IS-IS の経路が無い)」を出して 0 で返る",
+      _r.returncode == 0 and _r.stdout == "  (IS-IS の経路が無い)\n")
+_r = _route('case "$2" in *route-table\\ ipv4-unicast*) echo "next-hop-group 3" ;; *next-hop-group*) echo "    next-hop 1" ;; '
+            '*) printf "ip-address 172.16.0.12\\nsubinterface ethernet-1/50.0\\n" ;; esac;')
+check("lab.sh failover の route(): 経路があるときは next-hop-group → next-hop → ip-address / subinterface をたどって 1 行に出す（形は変わらない）",
+      _r.returncode == 0 and "ip-address 172.16.0.12 subinterface ethernet-1/50.0" in _r.stdout and "IS-IS の経路が無い" not in _r.stdout)
+
+_lab_out =read("IaC", "terraform", "aws-managed", "pipeline", "lab", "outputs.tf")
 check("lab の output graph_port_forward_command は lab.sh graph が出すコマンドと同じ（宛先は aws_instance.lab.id、ポートは lab.sh の GRAPH_PORT）",
       sh_const(lab_sh, "GRAPH_PORT") == "50080"
       and 'value       = "' + _fwd.replace("ap-northeast-1", "${var.region}").replace("i-0123456789abcdef0", "${aws_instance.lab.id}") + '"' in _lab_out)
