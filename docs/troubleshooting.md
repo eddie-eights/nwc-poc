@@ -4,6 +4,8 @@
 
 `<prefix>` は `deploy.env` の `OWNER` から作る接頭辞 `<owner>-nwc-poc`。多くは `ops/up.sh` を打ち直せば直る（できているものは飛ばす）。
 
+2026-10-09 より前の記録・ログ・ダッシュボードでは、Splunk の app・保存済みサーチ・sourcetype、Grafana のフォルダ、Nautobot のユーザーと Job の名前が改名前のもの（「名前を nwc に揃える（019）」）。新旧の対応は `docs/cycles/` の 019 のサイクルの `design.md`（「設計方針」1 の置換の表）。
+
 ## `ops/up.sh` / Terraform
 
 | 症状 | 原因と直し方 |
@@ -138,6 +140,16 @@ Kafbat UI は Web の EC2 の Docker で動く（`127.0.0.1:8082`）。Web の E
   `sudo systemctl restart <prefix>-kafka-ui`。スクリプトはパラメータを起動のときに 1 回だけ読むので、restart か EC2 の再起動まで古い値のコンテナが動き続ける。イメージは、`KAFKA_UI_TAG` を上げて stream を apply すると SSM の `/<prefix>/kafka-ui/image` が変わる。同じ回の `ops/up.sh` の中では入れ替わらない（手順 4-4 の EC2 の再起動は stream の apply（手順 7）より前で、手順 8-3 の Web の再起動は動いている Kafbat UI に触らない）。次に打ち直した回の手順 4-4 の再起動で新しい値を読む（OSS 版の `ops/oss/up.sh` も同じ手順 4-4 で再起動する）。
 - **手で止めたのに戻ってくる**
   `sudo systemctl stop <prefix>-kafka-ui` で止めても（t4g.medium のメモリを Gradio に空けたいときなど）、Web のユニットの `Wants=` が、Web の start / restart のたびに起こす（手順 8-3 の打ち直し、手で打つ `systemctl restart <prefix>-web`）。止めたままにしたいなら `sudo systemctl mask --runtime <prefix>-kafka-ui`。戻すのは `sudo systemctl unmask --runtime <prefix>-kafka-ui`（`--runtime` を付けないと `/run` の mask は外れない）。EC2 の再起動でも mask は消える。
+
+## 2026-10-09 の改名より前に立てた環境
+
+2026-10-09 に Splunk のアプリ、Nautobot の App と API ユーザーと JobHook、S3 Tables の namespace の名前を `nwc` に揃えた（「名前を nwc に揃える（019）」）。それより前に立てて残した環境に新しい名前のものを上げると、次が起きる。どれも、先に `ops/down.sh`（手元の compose は `docker/compose/down.sh -v`）で消してから上げれば起きない（[deploy.md](deploy.md)、[docker/compose/README.md](../docker/compose/README.md) の「消す」）。
+
+| 症状 | 原因と直し方 |
+|---|---|
+| 手元の compose の Splunk で、保存済みサーチ `nwc_*` が動かない（前の名前のアプリが動き続ける）か、同じアラートの `sendmodalert` が 2 回ずつ出る | volume `splunk-etc` に前の名前のアプリが残っている。同じ版のまま上げると新しいアプリが入らず、版を上げると両方が動く（compose は SNS の topic を渡さないので、SNS には届かず失敗のログが 2 回出る。ECS の Splunk は volume を持たないので起きない）。`docker/compose/down.sh -v` で volume ごと消してから上げる。コードを読んだだけで、再現はしていない |
+| Nautobot の起動ログに Token の `IntegrityError` が出る。JobHook が 2 つある | Nautobot の RDS に前の名前の API ユーザーと JobHook が残っている。新しい名前のユーザーに同じキーのトークンを作ろうとして一意制約で落ちる（起動は続く）。`ops/down.sh` で RDS ごと消してから上げる。コードを読んだだけで、AWS では未確認 |
+| analytics だけを apply し直したあと、workflow が前の namespace を読む | workflow は analytics の state の `table_namespace` を apply のときに読むので、workflow を apply し直すまで前の namespace のまま（`ops/up.sh` を通しで打てば analytics が先なので起きない）。`ops/down.sh` で消してから上げる。コードを読んだだけで、AWS では未確認 |
 
 ## 消すとき
 

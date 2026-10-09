@@ -488,3 +488,56 @@ $ bash ops/check.sh   # 終了コード 0。件数は実装前と同じ
 
 - `./.git` は worktree のポインタのファイル。
 - イメージの build と `tests/check_splunk_image.py` は取り直していない（app・docker・IaC は 5162693 から変えていない。docs 2 本と build.md だけ）。
+
+## Round 2
+
+実装モデル: opus-5.5 / effort: xhigh（high へ下げる手段が無い）。cold review 1 回目（review.md の Round 1）への PM の判断を直す。docs だけのラウンド。
+
+- `docs/troubleshooting.md`
+  - 冒頭に 1 行: 2026-10-09 より前の記録・ログ・ダッシュボードは改名前の名前で、新旧の対応は 019 の design.md の置換の表（cold S1）。
+  - 項「2026-10-09 の改名より前に立てた環境」を足した（cold S2）。症状 3 つ（compose の Splunk のアプリが入れ替わらない・2 回ずつ発火する、Nautobot の Token の `IntegrityError`、analytics だけの apply のあと workflow が前の namespace を読む）→ 原因 → `ops/down.sh`（compose は `docker/compose/down.sh -v`）で消してから上げる。
+- 019 の `design.md`: 検証方法の 1 つ目の例外を「`moved` ブロックの中に残る旧名（`from` と、連鎖の中継の `to`）」に広げた（cold Nit 1）。
+
+逸脱:
+
+- PM の指示の「SNS に同じアラートが 2 回出る」は書かなかった。compose は SNS の topic を渡さない（`docker/compose/compose.yaml:268`）ので SNS には届かない。ECS の Splunk は volume を持たない（`IaC/terraform/aws-managed/pipeline/analytics/splunk.tf:9`）ので二重にならない。そこで「同じアラートの `sendmodalert` が 2 回ずつ出る（SNS には届かず失敗のログが 2 回）」と書いた。
+- 対応表の場所は `docs/cycles/` の 019 のサイクルの `design.md` と書き、パスは書かなかった。ディレクトリ名に旧名が入っていて、合格条件の grep に当たるため。
+
+### 検証
+
+```
+$ grep -rli netops --exclude-dir=.git --exclude-dir=.terraform --exclude-dir=.venv . | grep -v -e '^./docs/cycles/' -e '^./docs/verification/'
+./tests/test_analytics.py
+./IaC/terraform/aws-managed/pipeline/analytics/tables.tf
+./.git
+$ bash ops/check.sh   # 終了コード 0。件数は実装前と同じ
+198:通過 168 / 失敗 0
+713:通過 513 / 失敗 0
+1288:通過 161 / 失敗 0
+1368:通過 79 / 失敗 0
+1372:通過 3 / 失敗 0
+1452:通過 78 / 失敗 0
+1462:通過 7 / 失敗 0
+1560:通過 97 / 失敗 0
+1699:通過 138 / 失敗 0
+1770:68 項目すべて通過
+1944:通過 173 / 失敗 0
+2141:通過 196 / 失敗 0
+2208:通過 66 / 失敗 0
+2315:通過 106 / 失敗 0
+2434:通過 103 / 失敗 0
+2879:通過 327 / 失敗 0
+2881:すべて通過
+```
+
+- tables.tf と test_analytics.py の中で残る行は Round 1 と同じ（tables.tf:54,55,61、test_analytics.py:2225-2226）。
+- イメージの build は取り直していない（app・docker・IaC は不変）。
+
+### セルフレビュー
+
+- 足した文を、根拠のファイルと突き合わせて読んだ（読んだだけ）。
+  - compose の SNS の topic（compose.yaml:268）。
+  - Nautobot の bootstrap（`app/nautobot/nwc/bootstrap.py:66-72`、`:160`）。
+  - workflow が namespace を読むところ（`IaC/terraform/aws-managed/workflow/locals.tf:132`）。
+- 旧名の字面が増えていないことは、上の grep で確かめた。
+- 文書だけの変更なので反対弁護人は起動していない。
