@@ -1571,22 +1571,39 @@ check("Runtime の 1 AZ を拒んでいた前の決定（2026-10-04）の文が�
       and "既定 1（2026-10-05 のユーザー決定）" in up and "1 つを禁じる記述は無い" in up and "2026-10-05 確認" in up
       and "1 つを禁じてはいない" in _faq)
 # FAQ の各節（##）の直下に質問（###）の目次がある（020）。アンカーは GitHub の規則（小文字、文字・数字・空白・- _ 以外を消し、空白を - に、同じ名前は -1, -2）
+# _gh_slug は GitHub の規則に揃えきらない（028）。GitHub の作り方は公開の仕様が無く、追いかけると壊れやすい。
+# 代わりに、差が出る書き方を FAQ の見出しで使えなくする（下の _faq_heads_ok）: 丸数字などの No の文字、_ 以外の Pc の文字、
+# コード（`…`）の外の [ ] * < > と、英数字に挟まれていない _（リンク、強調、HTML の記法）、_gh_slug で同じアンカーになる見出し（-1 を付ける形）
 def _gh_slug(text):
     return "".join("-" if ch == " " else ch for ch in text.strip().lower()
                    if ch in "-_ " or unicodedata.category(ch)[0] in "LNM")
-def _faq_toc_ok(text):
-    heads, seen, in_code = [], {}, False  # (レベル, アンカー, 行番号)
-    lines = text.split("\n")
-    for i, line in enumerate(lines):
-        if line.startswith("```"):
-            in_code = not in_code
+def _faq_heads(text):
+    """FAQ の見出しを (レベル, 見出しの文字, 行番号) で返す。コードブロックの中の # の行は数えない。
+    フェンスは字下げしたものと ~~~ も見る。開いたのと同じ文字で、開いた長さ以上の並びだけの行で閉じる（GitHub に寄せる。028）。
+    閉じの字下げが開きより浅い行は閉じと見なさない（箇条書きの中のフェンスは列 0 の ``` では閉じない。GFM と同じ。028 の cold review S2）"""
+    heads, fence, indent = [], None, 0
+    for i, line in enumerate(text.split("\n")):
+        if fence is not None:
+            c = line.strip()
+            if c and set(c) == {fence[0]} and len(c) >= len(fence) and len(line) - len(line.lstrip()) >= indent:
+                fence = None
             continue
-        m = None if in_code else re.match(r"^(#{1,6}) (.*)$", line)
+        f = re.match(r"^(\s*)(`{3,}|~{3,})", line)
+        if f:
+            fence, indent = f.group(2), len(f.group(1))
+            continue
+        m = re.match(r"^(#{1,6}) (.*)$", line)
         if m:
-            base = _gh_slug(m.group(2))
-            n = seen.get(base, 0)
-            seen[base] = n + 1
-            heads.append((len(m.group(1)), base if n == 0 else f"{base}-{n}", i))
+            heads.append((len(m.group(1)), m.group(2), i))
+    return heads
+def _faq_toc_ok(text):
+    heads, seen = [], {}  # (レベル, アンカー, 行番号)
+    lines = text.split("\n")
+    for lvl, h, i in _faq_heads(text):
+        base = _gh_slug(h)
+        n = seen.get(base, 0)
+        seen[base] = n + 1
+        heads.append((lvl, base if n == 0 else f"{base}-{n}", i))
     anchors = {a for _, a, _ in heads}
     links = re.findall(r"\]\(#([^)]+)\)", text)
     secs = [k for k, h in enumerate(heads) if h[0] == 2]
@@ -1607,6 +1624,52 @@ def _faq_toc_ok(text):
     return len(secs) == 12 and all(a in anchors for a in links)
 check("FAQ: 12 の節の直下に、その節の質問（###）を順に並べた目次があり、FAQ の中のアンカーが全部見出しに当たる",
       _faq_toc_ok(_faq) and len(re.findall(r"^### ", _faq, re.M)) == len(re.findall(r"^- \[.*\]\(#q-", _faq, re.M)))
+def _faq_heads_ok(text):
+    """FAQ の見出しが、_gh_slug と GitHub で差が出る書き方を使っていない（028。縛る文字は _gh_slug の上のコメント）"""
+    slugs = []
+    for _, h, _ in _faq_heads(text):
+        if any(unicodedata.category(ch) == "No" or (unicodedata.category(ch) == "Pc" and ch != "_") for ch in h):
+            return False
+        # ` の対応を GFM と同じに取れない書き方（奇数個、`` を含む）は使わない（028 のセルフレビュー 2）
+        if h.count("`") % 2 or "``" in h:
+            return False
+        # コードの中の文字は GitHub でも記法にならない。_ は英数字に挟まれていれば強調にならない（raw_telemetry、event_id）。
+        # コードは空白に置き換えて消す（コードに接した _ を英数字に挟まれたと見なさない。028 の cold review S1）
+        if re.search(r"[\[\]*<>]|(?<![0-9A-Za-z])_|_(?![0-9A-Za-z])", re.sub(r"`[^`]*`", " ", h)):
+            return False
+        slugs.append(_gh_slug(h))
+    return len(slugs) == len(set(slugs))
+check("FAQ: 見出しに丸数字（No）、_ 以外の Pc、コードの外の [ ] * < > と英数字に挟まれていない _ を使わず、_gh_slug のアンカーが重ならない（028。GitHub と差が出る書き方を縛る）",
+      _faq_heads_ok(_faq))
+_faq_q1 = re.search(r"^### .*$", _faq, re.M)
+def _faq_with(extra):  # 最初の質問の見出しの行の後ろに extra を足した写し（実物の FAQ は書き換えない）
+    return _faq[:_faq_q1.end()] + extra + _faq[_faq_q1.end():]
+check("FAQ の見出しの縛りは、写しに足した丸数字・[リンク](#x)・同名の見出し・強調・HTML・全角の＿をそれぞれ落とす（028）",
+      not any(_faq_heads_ok(_faq_with(x)) for x in (" ①", " [リンク](#x)", "\n\n" + _faq_q1.group(0),
+                                                     " _強調_", " *強調*", " <br>", " ＿")))
+_faq_fenced = _faq + ("\n~~~\n## 偽の節 1\n~~~\n\n~~~\n```\n## 偽の節 2\n~~~\n\n````\n```\n## 偽の節 3\n````\n\n"
+                      "```text\n```python\n## 偽の節 4\n```\n\n  ```\n## 偽の節 5\n  ```\n")
+check("FAQ: 字下げしたフェンスと ~~~ のフェンスの中の # の行は見出しに数えない。開いたのと同じ文字で、開いた長さ以上の並びだけの行で閉じる（028）",
+      [h[:2] for h in _faq_heads(_faq_fenced)] == [h[:2] for h in _faq_heads(_faq)]
+      and _faq_toc_ok(_faq_fenced) and _faq_heads_ok(_faq_fenced))
+check("FAQ の見出しの縛りは、写しに足したコードに接した _（x`a`_b_`c`y）を落とす（028 の cold review S1。GFM では _b_ が強調になる）",
+      not _faq_heads_ok(_faq_with(" x`a`_b_`c`y")))
+check("FAQ の見出しの縛りは、写しに足した ` が奇数個の見出しと `` を含む見出しを落とす（028 のセルフレビュー 2）",
+      not any(_faq_heads_ok(_faq_with(x)) for x in (" `a _x_ ``", " `a_b` `", " `` a_b ``")))
+_faq_list_fence = "\n- item\n  ```\n  code\n{}```\n\n### Q. 偽の質問\n"
+check("FAQ: 箇条書きの中のフェンスは、開きより浅い字下げの ``` では閉じない（同じ字下げなら閉じる。028 の cold review S2）",
+      [h[:2] for h in _faq_heads(_faq + _faq_list_fence.format(""))] == [h[:2] for h in _faq_heads(_faq)]
+      and [h[:2] for h in _faq_heads(_faq + _faq_list_fence.format("  "))] == [h[:2] for h in _faq_heads(_faq)] + [(3, "Q. 偽の質問")])
+# 構成の pptx を描く道具はリポジトリの中に置く（028。前は個人リポジトリの ~/Documents/repo/bin/render-pptx を指していた）
+import tomllib
+_arch_readme = open(os.path.join(ROOT, "docs", "architecture", "README.md"), encoding="utf-8").read()
+with open(os.path.join(ROOT, "pyproject.toml"), "rb") as _f:
+    _pyproject = tomllib.load(_f)
+check("構成の pptx は docs/architecture/render_pptx.py で描き、pyproject の docs のグループ（python-pptx==1.0.2）で打つ。README は個人リポジトリの道具を指さない（028）",
+      os.path.isfile(os.path.join(ROOT, "docs", "architecture", "render_pptx.py"))
+      and _pyproject.get("dependency-groups", {}).get("docs") == ["python-pptx==1.0.2"]
+      and "uv run --group docs python docs/architecture/render_pptx.py" in _arch_readme
+      and "Documents/repo" not in _arch_readme)
 _SINGLE = {  # (ルート, リソースの見出し): 理由に書く言葉
     ("base/core", 'resource "aws_instance" "web"'): "SSM のポートフォワード",
     ("pipeline/lab", 'resource "aws_instance" "lab"'): "containerlab の 1 台の中に全部の機器",
