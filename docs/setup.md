@@ -6,31 +6,54 @@
 
 ## AWS 側
 
-- **VPC は `IaC/terraform/aws-managed/base/core` が作る。**既定は `10.0.0.0/16` に `/24` のプライベートサブネット 3 つ（a = `apne1-az1` / b = `apne1-az4` / c = `apne1-az2`）。3 つともいつも作り、各リソースが何 AZ を使うかは `deploy.env` の `*_AZ_NUM` で選ぶ（既定は a だけ。MSK だけ a と b。[deploy.md](deploy.md)）。インターネットへの経路は無い（NAT Gateway も IGW もパブリックサブネットも作らない。外から入る経路も無い）。社内のネットワークと重なるなら `deploy.env` の `VPC_CIDR` を変える（`/16`〜`/24`）。
-- **SG はワークロードごとに 1 つ（16 個）と、VPC エンドポイント用の `endpoints`。**全部 `IaC/terraform/aws-managed/base/core` の `security_groups.tf` が作り、ルールはそこの通信の表から作る。表に無い通信は VPC の中でも通らない（送信も絞る）。表は [architecture/core.md](architecture/core.md) の「SG」。VPC の全 ENI の通信は VPC フローログ（ロググループ `/<prefix>/vpc-flow-logs`、保存 7 日）に残る。
-- AWS の API（SSM / ECR / CloudWatch Logs / Bedrock / AgentCore（Gateway を含む）/ S3 Tables / Neptune Analytics / Firehose / ECS / Athena / SNS / SQS / Prometheus / Secrets Manager。作るルートの分だけ）へはインターフェース型エンドポイントで届き、VPC の外からの呼び出しは Deny で拒む（[architecture/core.md](architecture/core.md) の「閉域」）。ほかに S3 の Gateway 型（無料。ポリシーは付けない）と、KB か logs のコレクションを作るときの OpenSearch Serverless の 1 本（既定の 1 AZ で約 $0.014/h。`ENDPOINTS_AZ_NUM` の数の倍）。エンドポイントの無い API へは届かない（NAT Gateway が無いので Deny より先に接続のタイムアウトになる）。
+- **VPC は `IaC/terraform/aws-managed/base/core` が作る。**
+  - 既定は `10.0.0.0/16` に `/24` のプライベートサブネット 3 つ（a = `apne1-az1` / b = `apne1-az4` / c = `apne1-az2`）。
+    3 つともいつも作り、各リソースが何 AZ を使うかは `deploy.env` の `*_AZ_NUM` で選ぶ（既定は a だけ。MSK だけ a と b。[deploy.md](deploy.md)）。
+  - インターネットへの経路は無い（NAT Gateway も IGW もパブリックサブネットも作らない。外から入る経路も無い）。
+  - 社内のネットワークと重なるなら `deploy.env` の `VPC_CIDR` を変える（`/16`〜`/24`）。
+- **SG はワークロードごとに 1 つ（16 個）と、VPC エンドポイント用の `endpoints`。**
+  - 全部 `IaC/terraform/aws-managed/base/core` の `security_groups.tf` が作り、ルールはそこの通信の表から作る。表に無い通信は VPC の中でも通らない（送信も絞る）。
+  - 表は [architecture/core.md](architecture/core.md) の「SG」。
+  - VPC の全 ENI の通信は VPC フローログ（ロググループ `/<prefix>/vpc-flow-logs`、保存 7 日）に残る。
+- AWS の API（SSM / ECR / CloudWatch Logs / Bedrock / AgentCore（Gateway を含む）/ S3 Tables / Neptune Analytics / Firehose / ECS / Athena / SNS / SQS / Prometheus / Secrets Manager。作るルートの分だけ）へはインターフェース型エンドポイントで届く。
+  VPC の外からの呼び出しは Deny で拒む（[architecture/core.md](architecture/core.md) の「閉域」）。
+  - ほかに S3 の Gateway 型（無料。ポリシーは付けない）と、KB か logs のコレクションを作るときの OpenSearch Serverless の 1 本（既定の 1 AZ で約 $0.014/h。`ENDPOINTS_AZ_NUM` の数の倍）。
+  - エンドポイントの無い API へは届かない（NAT Gateway が無いので Deny より先に接続のタイムアウトになる）。
 - 組織の SCP で `aws:SourceVpc` の Deny をすでに掛けているなら、この Terraform の Deny と重なっても害は無い。逆に VPC エンドポイントの作成を SCP で止めていると、手順 3 で落ちる。
 - 使うモデル: Nova 2 Lite（`jp.amazon.nova-2-lite-v1:0`）、Titan Text Embeddings V2、Rerank（`amazon.rerank-v1:0`）。どれも Amazon のモデルなので Marketplace の購読は要らない。SCP や IAM でモデルを絞っているなら、この 3 つを許可する。
 - apply する人に要る権限（管理者権限なら足りる）:
   - IAM ロールの作成と `iam:CreateServiceLinkedRole`
   - `aoss:*`
   - ガードレールの作成。`guardrail-profile/apac.guardrail.v1:0` への `bedrock:CreateGuardrail` も要る
-  - デバッグ用の EC2（`ops/lab-debug.sh`）を作るなら CloudFormation のスタック（`<prefix>-lab-debug`）の作成と、その中の VPC・エンドポイント・S3・ECR、名前付きの IAM ロール・インスタンスプロファイル（`CAPABILITY_NAMED_IAM`。`iam:CreateRole` / `iam:CreateInstanceProfile` / `iam:PassRole`）
-- **OpenSearch Serverless のコレクション（KB と logs）は公開しない。**ネットワークポリシーは `IaC/terraform/aws-managed/base/core` の VPC エンドポイント 1 本（2 つのコレクションで共用）だけを通し、KB はそれに加えて Bedrock のサービス（`bedrock.amazonaws.com`）を通す。エンドポイントを通らない接続は公開側からの扱いになるので、VPC の中からでもエンドポイントが無ければ届かない。KB のベクトルインデックスは VPC の中の Lambda が作り、apply する人の PC は OpenSearch につながない（データアクセスポリシーにも人は入らない。apply と destroy を別の人が打ってもよい）。
+  - デバッグ用の EC2（`ops/lab-debug.sh`）を作るなら CloudFormation のスタック（`<prefix>-lab-debug`）の作成と、
+    その中の VPC・エンドポイント・S3・ECR、名前付きの IAM ロール・インスタンスプロファイル（`CAPABILITY_NAMED_IAM`。`iam:CreateRole` / `iam:CreateInstanceProfile` / `iam:PassRole`）
+- **OpenSearch Serverless のコレクション（KB と logs）は公開しない。**
+  - ネットワークポリシーは `IaC/terraform/aws-managed/base/core` の VPC エンドポイント 1 本（2 つのコレクションで共用）だけを通し、KB はそれに加えて Bedrock のサービス（`bedrock.amazonaws.com`）を通す。
+    エンドポイントを通らない接続は公開側からの扱いになるので、VPC の中からでもエンドポイントが無ければ届かない。
+  - KB のベクトルインデックスは VPC の中の Lambda が作り、apply する人の PC は OpenSearch につながない（データアクセスポリシーにも人は入らない。apply と destroy を別の人が打ってもよい）。
 - ガードレールの判定は、東京以外の APAC のリージョン（大阪、ソウル、ムンバイ、シンガポール、シドニー）で行われることがある。データを国内に留める決まりがあるなら使えない。
-- Session Manager の設定で KMS の暗号化を必須にしているなら、インスタンスロールへの `kms:Decrypt` が別に要る（この Terraform には入れていない。`kms` のエンドポイントも NAT Gateway も無いので、`kms` の API へは届かない。そのときは `kms` のエンドポイントを足す）。
-- **PIPELINE は組織の SCP / IAM で止められやすい**（EC2 の m6i.xlarge、Neptune Analytics、MSK、EMR Serverless、S3 Tables、ECS Fargate（Telegraf / gnmic / syslog-ng / GoFlow2 / Grafana / Splunk / Nautobot）と内部 NLB（Telegraf・syslog-ng・GoFlow2）、RDS（Nautobot）、Cloud Map）。apply が `explicitly denied` で止まったら、管理者に許可を頼むか `SKIP_*` で外す。
+- Session Manager の設定で KMS の暗号化を必須にしているなら、インスタンスロールへの `kms:Decrypt` が別に要る（この Terraform には入れていない）。
+  - `kms` のエンドポイントも NAT Gateway も無いので、`kms` の API へは届かない。そのときは `kms` のエンドポイントを足す。
+- **PIPELINE は組織の SCP / IAM で止められやすい**
+  （EC2 の m6i.xlarge、Neptune Analytics、MSK、EMR Serverless、S3 Tables、ECS Fargate（Telegraf / gnmic / syslog-ng / GoFlow2 / Grafana / Splunk / Nautobot）と内部 NLB（Telegraf・syslog-ng・GoFlow2）、RDS（Nautobot）、Cloud Map）。
+  apply が `explicitly denied` で止まったら、管理者に許可を頼むか `SKIP_*` で外す。
 
 ## 利用者の PC 側
 
-AWS CLI v2 と Session Manager plugin を入れる。PC から `ssm.ap-northeast-1.amazonaws.com` と `ssmmessages.ap-northeast-1.amazonaws.com` に 443 で届く必要がある（社内プロキシ経由でよい）。EC2 側は VPC の ssm / ssmmessages のエンドポイントで同じ 2 つに届く。
-エンドポイントの SG はワークロードの SG からしか受けないので、DX / VPN の先の PC から VPC のエンドポイントを使う形（2026-09-26 まであった `CLIENT_CIDR`）には対応していない。PC は公開の SSM の API に出られればよい（ポートフォワーディングは PoC だけの入口として割り切る）。
+AWS CLI v2 と Session Manager plugin を入れる。
+PC から `ssm.ap-northeast-1.amazonaws.com` と `ssmmessages.ap-northeast-1.amazonaws.com` に 443 で届く必要がある（社内プロキシ経由でよい）。EC2 側は VPC の ssm / ssmmessages のエンドポイントで同じ 2 つに届く。
+エンドポイントの SG はワークロードの SG からしか受けないので、DX / VPN の先の PC から VPC のエンドポイントを使う形には対応していない。
+PC は公開の SSM の API に出られればよい（ポートフォワーディングは PoC だけの入口として割り切る）。
 
 ## Terraform を打つ PC 側
 
-- AWS CLI v2、Terraform 1.11 以上、Docker buildx（arm64）、Session Manager plugin（`NO_DASHBOARD_PORTFORWARD=1` なら要らない。OSS 版で Kafka / OpenSearch を 1 台ずつ入れ替えるときは ECS Exec に使う。端末の無いシェルから打つなら `script` も使う。macOS と Linux（util-linux）には入っている）、uv（`python3` があれば up.sh はそちらを使う）、curl（lab・analytics・デバッグ用の EC2 のときに containerlab の rpm と jar を取る）。
+- AWS CLI v2、Terraform 1.11 以上、Docker buildx（arm64）。
+- Session Manager plugin（`NO_DASHBOARD_PORTFORWARD=1` なら要らない。OSS 版で Kafka / OpenSearch を 1 台ずつ入れ替えるときは ECS Exec に使う。端末の無いシェルから打つなら `script` も使う。macOS と Linux（util-linux）には入っている）。
+- uv（`python3` があれば up.sh はそちらを使う）、curl（lab・analytics・デバッグ用の EC2 のときに containerlab の rpm と jar を取る）。
 - `registry.terraform.io` に 443 で届くこと（OpenSearch Serverless には PC からつながない）。
-- イメージをビルドするので、インターネットに出られること。`STORES` に `splunk` を入れると、Docker Hub から `splunk/splunk` の amd64 のイメージ（約 2〜3 GB）を引き、検知のアプリを足して ECR に push する。lab（`PIPELINE=1`）とデバッグ用の EC2 は、SR Linux・multitool・TRex（Docker Hub の `trexcisco/trex`）の amd64 を引いて ECR に写す。
+- イメージをビルドするので、インターネットに出られること。
+  - `STORES` に `splunk` を入れると、Docker Hub から `splunk/splunk` の amd64 のイメージ（約 2〜3 GB）を引き、検知のアプリを足して ECR に push する。
+  - lab（`PIPELINE=1`）とデバッグ用の EC2 は、SR Linux・multitool・TRex（Docker Hub の `trexcisco/trex`）の amd64 を引いて ECR に写す。
 - x86_64 の PC では、agent / worker / Grafana / Nautobot のビルドに QEMU（binfmt）が要る（下の WSL2 の `binfmt` の行。Telegraf と Splunk は COPY だけ、lab のイメージは写すだけなので要らない）。
 
 ### Mac
@@ -45,7 +68,8 @@ Docker Desktop も入れて起動しておく。bash は macOS 標準の 3.2 の
 
 ### WSL2（Ubuntu）
 
-道具は全部 **WSL 側**に入れる（Windows 側に入れたものは WSL から見えない）。zip は WSL のホームに展開し、改行を LF のまま使う（`file app/containerlab/lab.sh` に `CRLF` が出なければよい）。社内 PC は先に下の「社内 PC の CA」の 1 を済ませる。
+道具は全部 **WSL 側**に入れる（Windows 側に入れたものは WSL から見えない）。
+zip は WSL のホームに展開し、改行を LF のまま使う（`file app/containerlab/lab.sh` に `CRLF` が出なければよい）。社内 PC は先に下の「社内 PC の CA」の 1 を済ませる。
 
 Terraform:
 
@@ -102,6 +126,11 @@ echo 'export AWS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt' >> ~/.bashrc
 
 ## 閉域を一時的に外すとき
 
-`AccessDenied`（`with an explicit deny in an identity-based policy` / `resource-based policy`）が出て、VPC の外からの呼び出しを疑うときは、`NETWORK_PERIMETER=0 ops/up.sh` で Deny だけを外して打ち直す（エンドポイントは残る）。通るようになったら、どの呼び出しがエンドポイントを通っていないかを CloudTrail の `vpcEndpointId` の無いイベントで探し、直したら `1` に戻す。
+`AccessDenied`（`with an explicit deny in an identity-based policy` / `resource-based policy`）が出て、VPC の外からの呼び出しを疑うときは、`NETWORK_PERIMETER=0 ops/up.sh` で Deny だけを外して打ち直す（エンドポイントは残る）。
+通るようになったら、どの呼び出しがエンドポイントを通っていないかを CloudTrail の `vpcEndpointId` の無いイベントで探し、直したら `1` に戻す。
 
-2026-09-26 に NAT Gateway に替える前の配置（エンドポイント 12 本と、ルートごとに SG とルールを持つ形。最後の commit は `7c42b0f`）は、エンドポイントを戻したいまは使わない。SG は 2026-09-26〜29 は全部で共有する `internal` 1 つで、2026-09-29 から土台の通信の表に替えた。
+## 経緯
+
+- 2026-09-26 に NAT Gateway に替える前の配置（エンドポイント 12 本と、ルートごとに SG とルールを持つ形。最後の commit は `7c42b0f`）は、エンドポイントを戻したいまは使わない。
+- DX / VPN の先の PC から VPC のエンドポイントを使う形（`CLIENT_CIDR`）は 2026-09-26 まであった。
+- SG は 2026-09-26〜29 は全部で共有する `internal` 1 つで、2026-09-29 から土台の通信の表に替えた。

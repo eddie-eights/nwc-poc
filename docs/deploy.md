@@ -122,7 +122,8 @@
   - Amazon Managed Grafana はサインインに IAM Identity Center か SAML が要り、このアカウントには Organizations も Identity Center も無いので使えない。
 - **`splunk`**
   全トピック → Splunk の HTTP Event Collector（HEC。ジョブ `sinks-splunk`）。Spark は VPC の中の `https://splunk.<prefix>.internal:8088` に送る（自己署名なので検証しない）。
-  - analytics の ECS に Splunk Enterprise を立てる（公式イメージ `splunk/splunk:10.4.4` に検知のアプリ `nwc_alerts` を足したもの、試用ライセンス。Fargate x86 2 vCPU / 4 GB、エフェメラルストレージ 40 GiB）。起動時に Splunk のライセンスと Splunk General Terms に同意する。
+  - analytics の ECS に Splunk Enterprise を立てる（公式イメージ `splunk/splunk:10.4.4` に検知のアプリ `nwc_alerts` を足したもの、試用ライセンス）。
+    Fargate x86 2 vCPU / 4 GB、エフェメラルストレージ 40 GiB。起動時に Splunk のライセンスと Splunk General Terms に同意する。
   - admin のパスワードと HEC の token は `ops/up.sh` が SSM の SecureString に乱数で作る。index はタスクと一緒に消える（検証用）。
   - 保存済みサーチ（gNMI の IF / BGP / IS-IS、trap の linkDown / linkUp、そのほかの trap）が毎分走り、アラートを SNS へ出す（[pipeline.md](pipeline.md) の「アラート」）。
   - 外すと、trap の linkDown / linkUp から IF の up / down を知らせるものが無い。
@@ -149,8 +150,10 @@
 #### `ENDPOINTS_AZ_NUM` と `RUNTIME_AZ_NUM`
 
 - ほかの `*_AZ_NUM` を 2 以上に書いたのに `ENDPOINTS_AZ_NUM` が小さいと注意が出る（a の AZ が止まると、b / c に置いたものも AWS の API に届かない）。`RUNTIME_AZ_NUM` より小さいときだけは注意で済まない（次の項目）。
-- `RUNTIME_AZ_NUM` が 2 以上で `ENDPOINTS_AZ_NUM` を書いていなければ、`ops/up.sh` がこの数まで上げる（上げたことを 1 行出す。エンドポイントの費用が AZ の数の倍に増える）。これより小さく書いてあれば何も作る前に止まる（エンドポイントが a にしか無いと、2 AZ が見かけだけになる）。
-- `ENDPOINTS_AZ_NUM=3` にすると、graph と analytics を作る回に注意が出る（止まらない）。グラフの状態の Lambda（graph-status）がエンドポイントに届かないときに待つ時間の上限が 66.6 秒になり、Lambda の timeout の 60 秒を超える（1 AZ は 42.6 秒、2 AZ は 54.6 秒）。
+- `RUNTIME_AZ_NUM` が 2 以上で `ENDPOINTS_AZ_NUM` を書いていなければ、`ops/up.sh` がこの数まで上げる（上げたことを 1 行出す。エンドポイントの費用が AZ の数の倍に増える）。
+  これより小さく書いてあれば何も作る前に止まる（エンドポイントが a にしか無いと、2 AZ が見かけだけになる）。
+- `ENDPOINTS_AZ_NUM=3` にすると、graph と analytics を作る回に注意が出る（止まらない）。
+  グラフの状態の Lambda（graph-status）がエンドポイントに届かないときに待つ時間の上限が 66.6 秒になり、Lambda の timeout の 60 秒を超える（1 AZ は 42.6 秒、2 AZ は 54.6 秒）。
 - 超えると Neptune に書く途中で切れてやり直しになり、status が遅れる。analytics を今回は作らないが前の回のものが残っている回は、同じく超えるのに注意が出ない（分かっている穴）。
 - AZ が止まったときの動きは AWS では未確認。
 
@@ -218,15 +221,24 @@
 
 - スクリプトの中は `-auto-approve`。できているものは飛ばすので、落ちたら打ち直せばよい。
 - 手順 10 が自分で開くのは Web（EC2 の 8080）のポートフォワードだけ。Kafbat UI（EC2 の 8082）は、表示されたコマンド（`kafka_ui_port_forward_command`）を別のターミナルで打って開く。
-- 初回の `ops/up.sh` では、手順 10 の直後に開いても Kafbat UI がまだ上がっていないことがある（手順 8-3 で起こした直後）。つながらなければ少し待ってからブラウザで開き直し、ポートフォワードが閉じていたらそのコマンドを打ち直す。
-  - 上がるまではイメージの pull を含めて 1〜2 分の見込み。手順 8-3 から開けるまでの秒数は AWS では未計測（参考に、2026-10-09 の AWS では手順 4-4 の再起動から Spring の起動の行まで 38 秒。手元の Docker では pull 済みのイメージで起動に 7 秒）。
-  - 上がったかは Web の EC2 の `journalctl -u <prefix>-kafka-ui` に `Started KafkaUiApplication` が出たかで見る。systemd の `Started <prefix>-kafka-ui.service` はスクリプトが動き出した時点で出るので、上がった合図ではない。
-- user_data を変えたサイクルより前に立てたままの環境は、次の `IaC/terraform/aws-managed/base/core` の apply で Web の EC2 が作り直される（`IaC/terraform/aws-managed/base/core/web.tf` の `user_data_replace_on_change = true`）。インスタンス ID が変わるので、`start_session_command` とポートフォワードのコマンドは手順 10 の表示から取り直す。
-  - 当たるサイクルは、いまのところ「Kafbat UI を Web の EC2 に同居させる（010）」と「Kafbat UI を Web の EC2 に移した残りを直す（014）」。010 より前の環境は、user_data のほかにインスタンスタイプ・メタデータのホップ数・ボリュームも変わる。
-- 010 より前に作って、ECS（Fargate）の Kafbat UI（クラスター `<prefix>-telegraf` のサービス `<prefix>-kafka-ui`）が動いたままの環境では、手順 3 の `IaC/terraform/aws-managed/base/core` の apply が SG `<prefix>-kafka-ui` を消すところで `DependencyViolation` になる。そのタスクの ENI がまだ SG を使っていて、Fargate のサービスを消すのは手順 3 より後の手順 7（stream）だから。
-  - 先に `ops/down.sh` で消すか、`aws ecs delete-service --region <region> --cluster <prefix>-telegraf --service <prefix>-kafka-ui --force` でサービスを消し、タスクが止まって ENI が消えるのを待ってから打ち直す。OSS 版（`ops/oss/up.sh`）も順番は同じ。
+- 初回の `ops/up.sh` では、手順 10 の直後に開いても Kafbat UI がまだ上がっていないことがある（手順 8-3 で起こした直後）。
+  つながらなければ少し待ってからブラウザで開き直し、ポートフォワードが閉じていたらそのコマンドを打ち直す。
+  - 上がるまではイメージの pull を含めて 1〜2 分の見込み。手順 8-3 から開けるまでの秒数は AWS では未計測。
+  - 参考に、2026-10-09 の AWS では手順 4-4 の再起動から Spring の起動の行まで 38 秒。手元の Docker では pull 済みのイメージで起動に 7 秒。
+  - 上がったかは Web の EC2 の `journalctl -u <prefix>-kafka-ui` に `Started KafkaUiApplication` が出たかで見る。
+    systemd の `Started <prefix>-kafka-ui.service` はスクリプトが動き出した時点で出るので、上がった合図ではない。
+- user_data を変えたサイクルより前に立てたままの環境は、次の `IaC/terraform/aws-managed/base/core` の apply で Web の EC2 が作り直される（`IaC/terraform/aws-managed/base/core/web.tf` の `user_data_replace_on_change = true`）。
+  インスタンス ID が変わるので、`start_session_command` とポートフォワードのコマンドは手順 10 の表示から取り直す。
+  - 当たるサイクルは、いまのところ「Kafbat UI を Web の EC2 に同居させる（010）」と「Kafbat UI を Web の EC2 に移した残りを直す（014）」。
+  - 010 より前の環境は、user_data のほかにインスタンスタイプ・メタデータのホップ数・ボリュームも変わる。
+- 010 より前に作って、ECS（Fargate）の Kafbat UI（クラスター `<prefix>-telegraf` のサービス `<prefix>-kafka-ui`）が動いたままの環境では、手順 3 の apply が止まる。
+  `IaC/terraform/aws-managed/base/core` の apply が SG `<prefix>-kafka-ui` を消すところで `DependencyViolation` になる。
+  - そのタスクの ENI がまだ SG を使っていて、Fargate のサービスを消すのは手順 3 より後の手順 7（stream）だから。
+  - 先に `ops/down.sh` で消すか、`aws ecs delete-service --region <region> --cluster <prefix>-telegraf --service <prefix>-kafka-ui --force` でサービスを消し、タスクが止まって ENI が消えるのを待ってから打ち直す。
+  - OSS 版（`ops/oss/up.sh`）も順番は同じ。
   - どれだけ待って落ちるかは未確認（AWS では再現していない。010 のレビューで読んだ順番から）。
-- 「名前を nwc に揃える（019）」より前に立てたままの環境は、先に `ops/down.sh` で消してから `ops/up.sh` で上げる。Splunk のアプリ、Nautobot の App と API ユーザーと JobHook、S3 Tables の namespace の名前が `nwc` に変わったので、前の名前のものが残って新しい名前と食い違う。
+- 「名前を nwc に揃える（019）」より前に立てたままの環境は、先に `ops/down.sh` で消してから `ops/up.sh` で上げる。
+  Splunk のアプリ、Nautobot の App と API ユーザーと JobHook、S3 Tables の namespace の名前が `nwc` に変わったので、前の名前のものが残って新しい名前と食い違う。
   - Nautobot の RDS には前の API ユーザーと JobHook が残り、起動時のトークンの作成が一意制約で落ちる（コードを読んだだけで、AWS では未確認）。
   - analytics だけを apply し直すと namespace は作り直され、workflow は apply し直すまで前の namespace を見続ける（同じく未確認）。
 - 途中で落ちたときは、裏の graph の apply が終わるまで待ってから止まる。その間ターミナルを閉じない。
@@ -237,7 +249,8 @@
 
 - agent、worker、Temporal のミラー、Telegraf、gnmic、syslog-ng、Grafana、Nautobot、Redis と Kafbat UI と GoFlow2 のミラーは arm64。lab の srlinux / multitool / trex のミラーは、lab の EC2 が x86_64 なので amd64。
 - ECS の Splunk は amd64 の公式イメージ（約 2〜3 GB）に検知のアプリを足してビルドする。
-- Telegraf / gnmic / syslog-ng / Grafana / Splunk / Nautobot のタグは `<版>-<ディレクトリの中身のハッシュ 12 文字>`。`app/telegraf/`・`app/gnmic/`・`app/syslog-ng/`・`app/grafana/`・`app/splunk/`・`app/nautobot/`（Nautobot は中に入れる `app/agentcore/graph.py`・`app/agentcore/toolkit.py` と lab の定義も）を変えると、次の `ops/up.sh` が作り直す。
+- Telegraf / gnmic / syslog-ng / Grafana / Splunk / Nautobot のタグは `<版>-<ディレクトリの中身のハッシュ 12 文字>`。
+  `app/telegraf/`・`app/gnmic/`・`app/syslog-ng/`・`app/grafana/`・`app/splunk/`・`app/nautobot/`（Nautobot は中に入れる `app/agentcore/graph.py`・`app/agentcore/toolkit.py` と lab の定義も）を変えると、次の `ops/up.sh` が作り直す。
 
 #### 手順 5: jar の照合
 
@@ -281,15 +294,18 @@ flowchart LR
 ```
 
 - 手順 5-2 で、`ops/up.sh` が作った SSM のパラメータ（`/<prefix>/` の下でタグ `ManagedBy=ops/up.sh` のもの）を消す。手で入れたパラメータは消さない。
-  - 消すもの: Grafana / Splunk / Nautobot の admin のパスワード、Splunk の HEC の token とクラスターの合言葉（`/<prefix>/splunk/idxc-secret`）、Nautobot の SECRET_KEY と DB のパスワードと API トークン、Kafbat UI の admin のパスワード、gnmic の機器の認証情報（`/<prefix>/gnmic/` の下の 2 つ。cycle 013 より前に作った `/<prefix>/telegraf-dialin/` の下の 3 つも）。
+  - 消すもの（admin のパスワードと token）: Grafana / Splunk / Nautobot の admin のパスワード、Splunk の HEC の token とクラスターの合言葉（`/<prefix>/splunk/idxc-secret`）、Kafbat UI の admin のパスワード。
+  - 消すもの（Nautobot と gnmic）: Nautobot の SECRET_KEY と DB のパスワードと API トークン、gnmic の機器の認証情報（`/<prefix>/gnmic/` の下の 2 つ。cycle 013 より前に作った `/<prefix>/telegraf-dialin/` の下の 3 つも）。
   - nautobot のルートが消えなかったときは Nautobot の分だけ残す（Terraform が destroy でも DB のパスワードを読むので。打ち直せば消える）。
-- 手順 5-3 で、`ops/up.sh` が作った MSK の SCRAM の secret（Secrets Manager の `AmazonMSK_<prefix>-collectors`）を復旧の待ちを置かずに消す。KMS の鍵（`alias/<prefix>-msk-scram`）は削除を予約（7 日後に消える。待つあいだは課金されない）してから alias を外す。
+- 手順 5-3 で、`ops/up.sh` が作った MSK の SCRAM の secret（Secrets Manager の `AmazonMSK_<prefix>-collectors`）を復旧の待ちを置かずに消す。
+  KMS の鍵（`alias/<prefix>-msk-scram`）は削除を予約（7 日後に消える。待つあいだは課金されない）してから alias を外す。
   - stream が消えなかったときは両方残す（次の `ops/down.sh` で消す）。secret の値は読まない・出さない。
 - Nautobot の RDS は最後のスナップショットを取らずに消す。Nautobot で編集した内容は残らない（次の `ops/up.sh` でまた lab の定義から入る）。
 - 最後に `Project=<prefix>` のタグが残っているものを出す（手順 6）。**消えたリソースも出るので、この一覧では消えたかを決めない**（下の「消したあとに残るもの」）。
 - デバッグ用の EC2（CloudFormation の `<prefix>-lab-debug`）は消さない。`ops/lab-debug.sh down` で消す（同じ `Project` タグなので、残っていれば上の一覧に出る）。
 - **Runtime の ENI は最大 8 時間残る。**
-  その間は VPC、サブネット、Runtime の SG（`<prefix>-runtime`）を残して他を消し、終了コード 0 で終わる（2026-10-05 と 2026-10-08 の AWS でもこうなった）。残った分に時間課金は無く、次の `ops/up.sh` が使い回すので、打ち直さなくてよい（下の「消したあとに残るもの」）。
+  その間は VPC、サブネット、Runtime の SG（`<prefix>-runtime`）を残して他を消し、終了コード 0 で終わる（2026-10-05 と 2026-10-08 の AWS でもこうなった）。
+  残った分に時間課金は無く、次の `ops/up.sh` が使い回すので、打ち直さなくてよい（下の「消したあとに残るもの」）。
 - graph / workflow / KB（`<prefix>-kb-index`）の Lambda の ENI（20〜40 分残る）は裏で消す。
 - `KEEP_ECR=1 ops/down.sh` で ECR を残すと、翌朝のビルドを飛ばせる。
 - analytics を消してから graph を消すまでのあいだ、graph の Lambda は Firehose へ送れずにやり直す（ログに ERROR が出る）。片付けの途中なので害は無い。
@@ -307,7 +323,8 @@ flowchart LR
 | MSK の SCRAM の KMS の鍵（alias は外してある） | KMS の鍵はすぐには消せず、削除の予約の待ち（7 日）が要る（上の手順 5-3） | 無料（予約中の鍵は課金されない。KMS の価格表） | 新しい鍵を作る（予約中の鍵はそのまま 7 日後に消える）。alias を外せずに残っていれば、予約を取り消して同じ鍵を使い直す（取り消すと、待った日数も課金される） |
 
 - **`KEEP_ECR=1` で残した ECR に前の lab のイメージ（arm64）があっても、消さなくてよい。**
-  いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）。前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）とは名前がぶつからないので、`ops/up.sh` は amd64 を写し直し、前のタグは使われずに残るだけ（保管料は残したぶんだけかかる）。
+  いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）。
+  前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）とは名前がぶつからないので、`ops/up.sh` は amd64 を写し直し、前のタグは使われずに残るだけ（保管料は残したぶんだけかかる）。
 - 残した VPC を次の `ops/up.sh` が使い回すことは、2026-10-08 の AWS で確かめた（3 日残った VPC の ID が前後で同じ）。
 - 消し切りたいときだけ、ENI が外れてから（数時間後）、`ops/up.sh` を打ったのと同じチェックアウトで `ops/down.sh` を打ち直す。
 - **消えたかは、サービスごとの API で見る。**`ops/down.sh` の最後の一覧（手順 6）はタグの API（`aws resourcegroupstaggingapi get-resources`）で、消えたリソースも返す。
@@ -353,7 +370,8 @@ tf base/ecr state list
 EOF
 ```
 
-- 2026-10-08 の OSS 版で、同じアドレスとリポジトリ名で 18 リポジトリ（当時の数。いまの OSS 版は 22 = マネージド版の 15 + OSS 版だけの 7）とライフサイクルのポリシーを import した。`plan` は `0 to add, 18 to change, 0 to destroy` だった（変わるのは、import では入らない `force_delete` だけ）。
+- 2026-10-08 の OSS 版で、同じアドレスとリポジトリ名で 18 リポジトリ（当時の数。いまの OSS 版は 22 = マネージド版の 15 + OSS 版だけの 7）とライフサイクルのポリシーを import した。
+  `plan` は `0 to add, 18 to change, 0 to destroy` だった（変わるのは、import では入らない `force_delete` だけ）。
 - **`try()` にしてからの import と、マネージド版の import は AWS で未確認。**
   `base/ecr/outputs.tf` が `try()` で包むので、override は要らないはず。
 
@@ -392,7 +410,8 @@ if [ -z "$(git ls-files $(echo $D))" ] && [ -z "$(find $(echo $D) -type f -not -
 
 ## アラートの通知の履歴（Firehose と Athena）
 
-analytics がある回（今回作るか、`SKIP_ANALYTICS=1` でも state に残っている）は、graph の Lambda が受けたアラートの通知を Firehose `<prefix>-alert-events` で S3 Tables の `alert_events` に追記し、エージェントの `query_history` が Athena のワークグループ `<prefix>-history` で読む（中身は [pipeline.md](pipeline.md) の「アラートの履歴」）。
+analytics がある回（今回作るか、`SKIP_ANALYTICS=1` でも state に残っている）は、graph の Lambda が受けたアラートの通知を Firehose `<prefix>-alert-events` で S3 Tables の `alert_events` に追記する。
+エージェントの `query_history` が Athena のワークグループ `<prefix>-history` で読む（中身は [pipeline.md](pipeline.md) の「アラートの履歴」）。
 
 - **Glue のカタログ `s3tablescatalog`**
   Firehose と Athena は S3 Tables のテーブルを Glue の S3 Tables 連携のカタログ越しに引く。アカウントとリージョンに 1 つで、ほかの OWNER の環境と共有する。
@@ -406,11 +425,13 @@ aws glue delete-catalog --region ap-northeast-1 --catalog-id s3tablescatalog
 ```
 
 - **費用**
-  VPC のインターフェース型エンドポイントが 2 本増える（graph の Lambda の `kinesis-firehose` と、`WORKFLOW=1` のときの tools Lambda の `athena`。1 本 $0.014/h × AZ。手順 0 の目安はこの本数を数えている）。Firehose は取り込んだ量、Athena はスキャンした量の課金で、PoC の量なら月に数セント（Athena は 1 回 1 GiB で打ち切る）。
+  VPC のインターフェース型エンドポイントが 2 本増える（graph の Lambda の `kinesis-firehose` と、`WORKFLOW=1` のときの tools Lambda の `athena`。1 本 $0.014/h × AZ。手順 0 の目安はこの本数を数えている）。
+  Firehose は取り込んだ量、Athena はスキャンした量の課金で、PoC の量なら月に数セント（Athena は 1 回 1 GiB で打ち切る）。
 - **`starts_at` の意味は送り手で違う**
   Grafana は発火した時刻（`resolved` の行も同じ）、Splunk は保存済みサーチの `latest(_time)`（その状態を最後に見た時刻）。届いた時刻は `received_at`。
 - **2026-10-05 に AWS で確かめた**
-  Firehose が `alert_events` に firing と resolved の行を書き、Athena（ワークグループ `<prefix>-history`）で読めた（閉域の Deny は既定の `NETWORK_PERIMETER=1` のまま）。うまくいかないときは `firehose-errors/alert_events/` にオブジェクトが無いかを見る。
+  Firehose が `alert_events` に firing と resolved の行を書き、Athena（ワークグループ `<prefix>-history`）で読めた（閉域の Deny は既定の `NETWORK_PERIMETER=1` のまま）。
+  うまくいかないときは `firehose-errors/alert_events/` にオブジェクトが無いかを見る。
 
 ## 利用者に画面を渡す
 
@@ -477,7 +498,8 @@ terraform -chdir=IaC/terraform/aws-managed/pipeline/stream output -raw kafka_ui_
 - `SKIP_STREAM=1` で立てたあとで stream を足すときは、`SKIP_STREAM` を外して `ops/up.sh` を打ち直す（手順 8-3 で Kafbat UI が起きる）。
 - terraform だけで stream を上げると、ログインのパスワード `/<prefix>/kafka-ui/admin-password`（`ops/up.sh` の手順 7 が作る）が無いので、`sudo systemctl start <prefix>-kafka-ui` しても 75 で止まる。
 
-利用者に渡すなら、上のポリシーの `PortForwardDocumentOnly` の Resource に `arn:aws:ssm:ap-northeast-1::document/AWS-StartPortForwardingSessionToRemoteHost` を足す。パスワードを見るには `/<prefix>/grafana/admin-password` への `ssm:GetParameter`（復号あり）も要るので、渡さずに口頭で伝えてもよい。
+利用者に渡すなら、上のポリシーの `PortForwardDocumentOnly` の Resource に `arn:aws:ssm:ap-northeast-1::document/AWS-StartPortForwardingSessionToRemoteHost` を足す。
+パスワードを見るには `/<prefix>/grafana/admin-password` への `ssm:GetParameter`（復号あり）も要るので、渡さずに口頭で伝えてもよい。
 
 ## 試す質問
 
@@ -504,5 +526,6 @@ aws bedrock-agentcore invoke-agent-runtime --region ap-northeast-1 \
 ## 経緯
 
 - `link_down` が見る `snmp_interface_oper_up` は名前に snmp が付くが、いまは gnmic が取る gNMI の値。2026-10-09 までは SNMP のポーリングの値だった。
-- 同じ名前の VPC が 2 つあると、前の `ops/down.sh` は Runtime の ENI を古い方の VPC で探して見落とし、base/core を全部消しにいって `DependencyViolation` で止まった（2026-10-08、終了コード 1）。いまの「VPC の ID を state から読む」形はこのため。
+- 2026-10-08: 同じ名前の VPC が 2 つあると、前の `ops/down.sh` は Runtime の ENI を古い方の VPC で探して見落とし、base/core を全部消しにいって `DependencyViolation` で止まった（終了コード 1）。
+  いまの「VPC の ID を state から読む」形はこのため。
 - state を失ったときの ECR の import は、2026-10-08 の OSS 版で `pipeline` の 6 本が `Error: Invalid index` で落ち、一時的な override で通した。いまは `base/ecr/outputs.tf` が `try()` で包む。

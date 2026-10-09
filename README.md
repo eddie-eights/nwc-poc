@@ -1,8 +1,10 @@
 # nwc-poc — ネットワーク運用の PoC（Terraform）
 
 ブラウザのチャットから AgentCore Runtime のエージェントに聞くと、Amazon Nova 2 Lite がトポロジのツール（と任意の手順書の検索）を使って答える。
-lab（containerlab の Nokia SR Linux で組んだ Spine-Leaf）の機器の gNMI・SNMP の trap・syslog を Kafka → Spark で格納先に流し、Grafana と Splunk のアラートで異常を見つけ、SNS → SQS で Temporal のワークフローを起こして原因を調べて修復案を出し、人が承認したら直す、までを試せる。
-全部を**プライベートサブネット**に作り、**AWS の API へは VPC エンドポイントだけを通す閉域**にする。この VPC のエンドポイントを通らない呼び出しは、IAM とリソースポリシーの Deny（`aws:SourceVpc`）で拒む（鍵が漏れても VPC の外からは使えない）。
+lab（containerlab の Nokia SR Linux で組んだ Spine-Leaf）の機器の gNMI・SNMP の trap・syslog を Kafka → Spark で格納先に流し、Grafana と Splunk のアラートで異常を見つける。
+そこから SNS → SQS で Temporal のワークフローを起こして原因を調べて修復案を出し、人が承認したら直す、までを試せる。
+全部を**プライベートサブネット**に作り、**AWS の API へは VPC エンドポイントだけを通す閉域**にする。
+この VPC のエンドポイントを通らない呼び出しは、IAM とリソースポリシーの Deny（`aws:SourceVpc`）で拒む（鍵が漏れても VPC の外からは使えない）。
 VPC にインターネットへの経路は無い（NAT Gateway も IGW も作らない。Splunk も VPC の中の ECS に立てる）。PC からは SSM のポートフォワーディングで入り、インターネットからの受信ルールは無い。
 
 ```mermaid
@@ -32,9 +34,12 @@ flowchart LR
 - **マネージド版**（`IaC/terraform/aws-managed/`、`ops/up.sh` / `ops/down.sh`）
   できる限り AWS のマネージドサービスで作る。`deploy.env` で要る機能だけ `1` にし、何も書かなければ土台だけを作る。
 - **OSS 版**（`IaC/terraform/oss/`、`ops/oss/up.sh` / `ops/oss/down.sh`）
-  マネージドの部分を OSS（Kafka・Neo4j・OpenSearch・VictoriaMetrics・Spark）にして ECS で動かす（AWS で 2 回立てて確かめた。マネージド版と同じアカウントに並べて立てるのは未確認）。できること・費用・メンテナンス性の比較は [oss-variant.md](docs/oss-variant.md)。
+  マネージドの部分を OSS（Kafka・Neo4j・OpenSearch・VictoriaMetrics・Spark）にして ECS で動かす。できること・費用・メンテナンス性の比較は [oss-variant.md](docs/oss-variant.md)。
+  - AWS で 2 回立てて確かめた。マネージド版と同じアカウントに並べて立てるのは未確認。
 - **手元の compose**（`docker/compose/`）
-  AWS を使わず、WSL2 の中だけでパイプライン（lab → 収集 → Kafka → Spark → OpenSearch / Prometheus / Splunk → Grafana）を一周させる（SNS・Neptune・Nautobot・ワークフロー・エージェントは無い）。手順は [docker/compose/README.md](docker/compose/README.md)（WSL での通しは未確認）。
+  AWS を使わず、WSL2 の中だけでパイプライン（lab → 収集 → Kafka → Spark → OpenSearch / Prometheus / Splunk → Grafana）を一周させる。
+  - SNS・Neptune・Nautobot・ワークフロー・エージェントは無い。
+  - 手順は [docker/compose/README.md](docker/compose/README.md)（WSL での通しは未確認）。
 
 マネージド版の機能:
 
@@ -47,7 +52,8 @@ flowchart LR
 
 `PIPELINE=1` だけで約 $2.92/h、既定のまま 1 か月置くと約 $2,100（約 32 万円）になるので、**使い終わったら当日中に消す。** 内訳は [deploy.md の費用](docs/deploy.md#費用)。
 
-デバッグ用の EC2（lab + Telegraf を 1 台。MSK / ECS を作らずに機器と Telegraf の設定を確かめる）は `deploy.env` の機能ではない。`ops/lab-debug.sh up` / `down` で作る・消す別のスタックで、`ops/down.sh` では消えない（[pipeline.md](docs/pipeline.md)）。
+デバッグ用の EC2（lab + Telegraf を 1 台。MSK / ECS を作らずに機器と Telegraf の設定を確かめる）は `deploy.env` の機能ではない。
+`ops/lab-debug.sh up` / `down` で作る・消す別のスタックで、`ops/down.sh` では消えない（[pipeline.md](docs/pipeline.md)）。
 
 ## 手順
 
@@ -67,7 +73,8 @@ unzip ~/nwc-poc-main.zip -d ~ && cd ~/nwc-poc-main
 cp deploy.env.example deploy.env
 ```
 
-   手で書くファイルはこの `deploy.env` だけ。`IaC/terraform/aws-managed/<ルート>/terraform.tfvars.example` と `.env.example` は写さなくてよい（terraform を手で打つとき、Web を手元で動かすときにだけ使う。[docs/development.md](docs/development.md)）。
+   手で書くファイルはこの `deploy.env` だけ。`IaC/terraform/aws-managed/<ルート>/terraform.tfvars.example` と `.env.example` は写さなくてよい。
+   この 2 つは terraform を手で打つとき、Web を手元で動かすときにだけ使う（[docs/development.md](docs/development.md)）。
 
 5. 作る。終わると `http://localhost:8080` へのポートフォワーディングが開く。
 
