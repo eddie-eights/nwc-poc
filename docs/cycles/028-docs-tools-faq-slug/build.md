@@ -227,3 +227,127 @@ rc=0
 
 - **GitHub での描画は未確認**（設計のリスク 3）。縛りの外の差（Nl の文字、絵文字、全角の記号、上のセルフレビュー 1〜3 と 5〜7 の作為的な見出し）は残る。
 - **AWS では未確認**（AWS に触れる変更は無い）。
+
+## Round 2
+
+実装モデル: opus-5.5 / effort: high
+
+cold review（Must 0 / Should 3 / Nit 6）を受けた PM の判定に従って直した。直したのは S1・S2・S3 と、Round 1 のセルフレビュー 2（cold review では挙がっていないが PM が直すと判断）。Nit N1〜N6 は触っていない。実物の FAQ（`docs/faq-fukuda-nwc-poc.md`、見出し 93 本）は変えていない。AWS には触っていない。
+
+### 何を直したか
+
+- コード（cfca5fa。`tests/test_analytics.py` の `_faq_heads` / `_faq_heads_ok` と check 3 つだけ）
+  1. S1（= セルフレビュー 1）: `_faq_heads_ok:1626` の `re.sub(r"`[^`]*`", …, h)` の置換先を `""` から `" "` にした。コードに接した `_` を「英数字に挟まれている」と見なさない。
+  2. セルフレビュー 2: `_faq_heads_ok:1621-1622` で、`` ` `` が奇数個の見出しと `` `` `` を含む見出しを落とす。
+  3. S2（= セルフレビュー 3）: `_faq_heads:1572-1582` で開きの字下げを覚え、閉じの字下げが開きより浅い行は閉じと見なさない（GFM と同じ）。
+  4. 赤→緑の check を 3 つ足した（`:1643-1650`。523 → 526）。どれも `_faq_with` か、`_faq` の末尾に足す写しで作る。
+     - S1: `_faq_with(" x`a`_b_`c`y")` を落とす。
+     - セルフレビュー 2: `_faq_with` の `" `a _x_ ``"`（奇数かつ ``）、`" `a_b` `"`（奇数だけ）、`" `` a_b ``"`（`` だけ）をそれぞれ落とす。
+     - S2: `_faq` の末尾に「箇条書きの中の 2 空白のフェンスを列 0 の ``` で閉じたつもりの行 + `### Q. 偽の質問`」を足すと見出しは実物と同じ（偽の質問は数えない）。同じ字下げ（2 空白）で閉じれば偽の質問を数える（閉じなくなったわけではないことの対照）。
+- 記録（次の commit）
+  - S3: `design.md` を実装に揃えた。B.1 に閉じの字下げの 1 行、B.2 に「ASCII 英数字に挟まれた `_` は許す」「コードは空白に置き換えて消す」「`` ` `` が奇数個と `` `` `` を含む見出しは使わない」の 3 行、「変更対象ファイル」に `ops/check.sh` の 1 行。どれも「（… PM の指示で追記）」と書いた。他の部分は変えていない。
+  - `review.md` を新しく書いた（cold review の本文をそのまま連結し、PM の判定と再現の出力を足した）。
+
+### 検証（HEAD cfca5fa。2026-10-10 に opus-5.5 が打った）
+
+1. 再現入力を、直す前（`git show fb409cf:tests/test_analytics.py` の写し）と直した後の関数に当てた（scratchpad の `v1010/028/r2/probe.py`。`_gh_slug` から `_faq_heads_ok` までを抜き出して exec する。リポジトリには入れていない）
+
+```
+== 直す前（fb409cf）
+実物の FAQ: 見出し 93 本（### 80 本） / ok=True
+S1: '### Q. x`a`_b_`c`y' -> ok=True
+SR2 奇数かつ ``: '### Q. `a _x_ ``' -> ok=True
+SR2 奇数だけ: '### Q. `a_b` `' -> ok=True
+SR2 `` だけ: '### Q. `` a_b ``' -> ok=True
+S2: '- item\n  ```\n  code\n```\n### Q. B\n' -> heads=[(3, 'Q. B')]
+S2 対照（同じ字下げで閉じる）: '- item\n  ```\n  code\n  ```\n### Q. B\n' -> heads=[(3, 'Q. B')]
+== 直した後（作業ツリー）
+実物の FAQ: 見出し 93 本（### 80 本） / ok=True
+S1: '### Q. x`a`_b_`c`y' -> ok=False
+SR2 奇数かつ ``: '### Q. `a _x_ ``' -> ok=False
+SR2 奇数だけ: '### Q. `a_b` `' -> ok=False
+SR2 `` だけ: '### Q. `` a_b ``' -> ok=False
+S2: '- item\n  ```\n  code\n```\n### Q. B\n' -> heads=[]
+S2 対照（同じ字下げで閉じる）: '- item\n  ```\n  code\n  ```\n### Q. B\n' -> heads=[(3, 'Q. B')]
+```
+
+2. 足した 3 つの check の条件を、直す前と直した後の関数に当てた（scratchpad の `v1010/028/r2/red_checks.py`。check の式をそのまま写した）
+
+```
+== 直す前（fb409cf）
+S1 の check: False
+セルフレビュー 2 の check: False
+S2 の check: False
+== 直した後（作業ツリー）
+S1 の check: True
+セルフレビュー 2 の check: True
+S2 の check: True
+```
+
+3. `uv run --frozen --group dev --group web --group docs python tests/test_analytics.py`（028 の行と末尾だけ抜いた）
+
+```
+ok FAQ: 見出しに丸数字（No）、_ 以外の Pc、コードの外の [ ] * < > と英数字に挟まれていない _ を使わず、_gh_slug のアンカーが重ならない（028。GitHub と差が出る書き方を縛る）
+ok FAQ の見出しの縛りは、写しに足した丸数字・[リンク](#x)・同名の見出し・強調・HTML・全角の＿をそれぞれ落とす（028）
+ok FAQ: 字下げしたフェンスと ~~~ のフェンスの中の # の行は見出しに数えない。開いたのと同じ文字で、開いた長さ以上の並びだけの行で閉じる（028）
+ok FAQ の見出しの縛りは、写しに足したコードに接した _（x`a`_b_`c`y）を落とす（028 の cold review S1。GFM では _b_ が強調になる）
+ok FAQ の見出しの縛りは、写しに足した ` が奇数個の見出しと `` を含む見出しを落とす（028 のセルフレビュー 2）
+ok FAQ: 箇条書きの中のフェンスは、開きより浅い字下げの ``` では閉じない（同じ字下げなら閉じる。028 の cold review S2）
+ok 構成の pptx は docs/architecture/render_pptx.py で描き、pyproject の docs のグループ（python-pptx==1.0.2）で打つ。README は個人リポジトリの道具を指さない（028）
+通過 526 / 失敗 0
+```
+
+523 → 526（Round 2 の check 3 つ）。
+
+4. `uv run --frozen --group dev --group web python tests/test_alerts.py`
+
+```
+通過 168 / 失敗 0
+```
+
+5. `bash ops/check.sh`（rc=0。段 2 の各ルートの行、段 4 の ok の行とログ行は省いた）
+
+```
+== 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+差分なし
+== 2. 9 つのルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+…（18 ルート全部 OK）
+== 3. スクリプトの構文
+bash -n: 28 本
+構文エラーなし
+== 4. 模擬テスト
+通過 161 / 失敗 0    (test_agentcore)
+通過 168 / 失敗 0    (test_alerts)
+通過 526 / 失敗 0    (test_analytics)
+通過 79 / 失敗 0     (test_collectors)
+通過 3 / 失敗 0      (test_dashboard_config)
+通過 78 / 失敗 0     (test_graph)
+通過 7 / 失敗 0      (test_kb_index)
+通過 110 / 失敗 0    (test_lab_debug)
+通過 138 / 失敗 0    (test_local_compose)
+68 項目すべて通過    (test_nautobot)
+通過 174 / 失敗 0    (test_oss)
+通過 200 / 失敗 0    (test_oss_ops)
+通過 66 / 失敗 0     (test_oss_roll)
+通過 108 / 失敗 0    (test_stream)
+通過 103 / 失敗 0    (test_sync)
+通過 327 / 失敗 0    (test_workflow)
+== 5. 旧名 netops が戻っていない（docs/cycles と docs/verification は記録なので見ない。cycle 019）
+netops なし（許した 3 ファイル 5 行だけ）
+すべて通過
+```
+
+（括弧のファイル名は並び順から足した。出力そのものには無い）。test_analytics 以外の件数は Round 1 と同じ。
+
+### セルフレビュー
+
+自分: opus-5.5 / effort: high。変えたのは `_faq_heads` / `_faq_heads_ok` の 3 か所と check 3 つ、記録だけで、PM の判定の範囲内。
+
+- correctness: 再現入力は直す前に通り、直した後に落ちる（上の 1・2）。実物の FAQ の 93 本は直す前と同じく ok=True で、見出しの並びも同じ（`_faq_toc_ok` と既存のフェンスの check が ok のまま）。FAQ の字下げしたフェンス（`:61` `:63` `:194` `:196` `:215` `:219`）は開きと閉じが同じ 2 空白なので、閉じの字下げの縛りに当たらない。
+- S2 の check は「浅い閉じで閉じない」だけでなく「同じ字下げなら閉じる」も見る。閉じを全部無効にする書き換えでは落ちる。
+- セルフレビュー 2 の縛りは安全側に倒した。`` ` `` が奇数個でも全部が 1 個の並びなら GFM と対応の取り方は同じだが、PM の判定どおり落とす。実物の FAQ に `` `` `` を含む見出しや奇数個の見出しは無い。
+- 残るずれ（直していない。Nit 扱いで PM の判定の外）
+  - 列 0 で開いたフェンスを、4 空白以上の字下げの `` ``` `` の行で閉じたと見なす（GFM では閉じず、以後がコードになる）。S2 と同じ向きで、検査は緑のまま GitHub の後半がコードになる。起きれば描画が大きく崩れるので人が気づく。
+  - tab は字下げ 1 文字と数える（GFM は 4 桁に展開する）。
+  - どちらも実物の FAQ に無い。cold review の N1〜N6 と同じく設計のリスク 3 の範囲。
+- Must fix: 0。
