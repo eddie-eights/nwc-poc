@@ -397,14 +397,14 @@ resource "aws_bedrockagent_data_source" "docs" {
 
   knowledge_base_id    = aws_bedrockagent_knowledge_base.kb[0].id
   name                 = "${local.name_prefix}-docs"
-  description          = "Markdown files under s3://<bucket>/docs/"
+  description          = "Markdown files under s3://<assets bucket>/kb/"
   data_deletion_policy = "RETAIN"
 
   data_source_configuration {
     type = "S3"
     s3_configuration {
       bucket_arn         = local.bucket_arn
-      inclusion_prefixes = ["docs/"]
+      inclusion_prefixes = ["kb/"]
     }
   }
 }

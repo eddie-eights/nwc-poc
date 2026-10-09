@@ -40,12 +40,12 @@ resource "aws_iam_role_policy" "web_assets" {
       {
         Effect   = "Allow"
         Action   = "s3:GetObject"
-        Resource = "${aws_s3_bucket.kb.arn}/web/*"
+        Resource = "${aws_s3_bucket.assets.arn}/web/*"
       },
       {
         Effect   = "Allow"
         Action   = "s3:ListBucket"
-        Resource = aws_s3_bucket.kb.arn
+        Resource = aws_s3_bucket.assets.arn
         Condition = {
           StringLike = { "s3:prefix" = "web/*" }
         }
@@ -95,7 +95,7 @@ resource "aws_instance" "web" {
   user_data = templatefile("${path.module}/templates/web_user_data.sh.tftpl", {
     name_prefix   = local.name_prefix
     region        = var.region
-    bucket        = aws_s3_bucket.kb.bucket
+    bucket        = aws_s3_bucket.assets.bucket
     graph_backend = local.oss ? "neo4j" : ""
   })
   user_data_replace_on_change = true

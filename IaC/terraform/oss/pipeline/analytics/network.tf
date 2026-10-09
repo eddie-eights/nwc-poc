@@ -56,7 +56,7 @@ locals {
   spark_sg_id   = try(data.terraform_remote_state.main.outputs.security_group_ids["spark"], "")
   grafana_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["grafana"], "")
   splunk_sg_id  = try(data.terraform_remote_state.main.outputs.security_group_ids["splunk"], "")
-  bucket        = data.terraform_remote_state.main.outputs.kb_bucket_name
+  bucket        = data.terraform_remote_state.main.outputs.assets_bucket_name
   bucket_arn    = "arn:${local.partition}:s3:::${local.bucket}"
   # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
   perimeter_policy_arn        = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
@@ -68,8 +68,8 @@ locals {
   # SSM のパラメータの ARN の頭（後ろに /<接頭辞>/… を付ける）
   ssm_parameter_arn = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter"
 
-  # checkpoint の置き場はマネージド版と同じ s3://<バケット>/analytics/checkpoint/（Spark は S3A で読み書きする。spark.tf）
-  s3_prefix        = "analytics"
+  # checkpoint の置き場はマネージド版と同じ s3://<assets のバケット>/spark/checkpoint/（Spark は S3A で読み書きする。spark.tf）
+  s3_prefix        = "spark"
   checkpoint       = "${local.s3_prefix}/checkpoint"
   catalog_name     = "s3tables"
   table_bucket     = "${local.name_prefix}-tables"

@@ -6,7 +6,7 @@
 # サービス（1 台）がタスクの終わりを見て起こし直す。台数は作るときは 0 で、ops/oss/up.sh が書き先が上がってから 1 にする。
 # イメージは docker/images/spark/Dockerfile（apache/spark:3.5.9-java17-python3 に Kafka・Iceberg・S3 Tables・S3A の jar と app/spark/snmp_sinks.py を焼き込む。
 # 閉域で Maven に届かないので、起動時に jar を取りに行かない）。ops/oss/up.sh が作って ECR の <接頭辞>-spark に push する。
-# checkpoint はマネージド版と同じバケットの analytics/checkpoint/ に S3A（s3a://）で書く（EMR の s3:// は EMRFS で、素の Spark には無い）。
+# checkpoint はマネージド版と同じ assets のバケットの spark/checkpoint/ に S3A（s3a://）で書く（EMR の s3:// は EMRFS で、素の Spark には無い）。
 # Kafka は PLAINTEXT（KAFKA_AUTH=none）、OpenSearch は Basic 認証（OPENSEARCH_AUTH=basic）、vminsert は署名なし（PROMETHEUS_AUTH=none）。
 # 宛先とパスワードは opensearch.tf・victoriametrics.tf の locals をそのまま使う（同じ値を別の名前で持たない）。
 # Splunk はマネージド版と同じ（リンクした splunk.tf のタスク）で、送り方もマネージド版の splunk の格納先と同じ（HEC に自己署名の TLS で POST）。

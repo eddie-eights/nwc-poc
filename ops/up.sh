@@ -761,8 +761,8 @@ echo "エンドポイント: $ENDPOINTS"
 # それより前（7c42b0f まで、ルートごとにエンドポイントと SG を持っていた頃）の state が残っていれば、同じく先に ops/down.sh で消す
 tf_apply base/core ${MAIN_VARS[@]+"${MAIN_VARS[@]}"}
 INSTANCE_ID=$(tf base/core output -raw web_instance_id)
-KB_BUCKET=$(tf base/core output -raw kb_bucket_name)
-echo "INSTANCE_ID=$INSTANCE_ID KB_BUCKET=$KB_BUCKET"
+ASSETS_BUCKET=$(tf base/core output -raw assets_bucket_name)
+echo "INSTANCE_ID=$INSTANCE_ID ASSETS_BUCKET=$ASSETS_BUCKET"
 
 # graph は base/core の state しか読まないので、ここで裏で始めて待ち時間を重ねる（Neptune Analytics のグラフは作るのに数分〜十数分。実測はまだ無い）
 if [ -z "$SKIP_GRAPH" ]; then
@@ -802,17 +802,17 @@ fi
 log "4-1. wheel（arm64 / cp313）"
 fetch_wheels wheels app/dashboard/requirements.txt
 
-log "4-2. Web の部品を s3://$KB_BUCKET/web/ に置く"
+log "4-2. Web の部品を s3://$ASSETS_BUCKET/web/ に置く"
 # app.py が import する app/dashboard/ の .py（chat / config / incident_view / topology_view）も全部置く。app.py だけだと Web が起動のたびに落ちる
-for f in app/dashboard/*.py; do aws s3 cp --only-show-errors "$f" "s3://$KB_BUCKET/web/${f#app/dashboard/}"; done
-aws s3 cp --only-show-errors app/dashboard/requirements.txt "s3://$KB_BUCKET/web/requirements.txt"
-for f in toolkit topology graph proposals; do aws s3 cp --only-show-errors "app/agentcore/$f.py" "s3://$KB_BUCKET/web/$f.py"; done
-aws s3 cp --only-show-errors app/agentcore/data/ "s3://$KB_BUCKET/web/data/" --recursive
-aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels/ "s3://$KB_BUCKET/web/wheels/"
+for f in app/dashboard/*.py; do aws s3 cp --only-show-errors "$f" "s3://$ASSETS_BUCKET/web/${f#app/dashboard/}"; done
+aws s3 cp --only-show-errors app/dashboard/requirements.txt "s3://$ASSETS_BUCKET/web/requirements.txt"
+for f in toolkit topology graph proposals; do aws s3 cp --only-show-errors "app/agentcore/$f.py" "s3://$ASSETS_BUCKET/web/$f.py"; done
+aws s3 cp --only-show-errors app/agentcore/data/ "s3://$ASSETS_BUCKET/web/data/" --recursive
+aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels/ "s3://$ASSETS_BUCKET/web/wheels/"
 
 if [ -n "$CREATE_KB" ]; then
 log "4-3. 手順書を置いて取り込む（CREATE_KB=1）"
-aws s3 cp --only-show-errors app/resources/ "s3://$KB_BUCKET/docs/" --recursive --exclude "*" --include "*.md"
+aws s3 cp --only-show-errors app/resources/ "s3://$ASSETS_BUCKET/kb/" --recursive --exclude "*" --include "*.md"
 # 索引を作った直後は StartIngestionJob が「no such index」の ValidationException を返す（OpenSearch Serverless 側の反映待ち。
 # 2026-09-17 に索引の置き換えの 2 秒後で実測）。10 秒おきに最大 12 回（2 分）まで打ち直す
 JOB_ID=""
@@ -866,11 +866,11 @@ if [ -z "$SKIP_LAB" ]; then
       LAB_VARS=(-var forward_to_telegraf=true)
     fi
   fi
-  log "5-1. lab の材料（containerlab の rpm とトポロジ）を s3://$KB_BUCKET/lab/ に置く"
-  upload_lab "$KB_BUCKET" || die "lab の材料を s3://$KB_BUCKET/lab/ に置けなかった"
+  log "5-1. lab の材料（containerlab の rpm とトポロジ）を s3://$ASSETS_BUCKET/lab/ に置く"
+  upload_lab "$ASSETS_BUCKET" || die "lab の材料を s3://$ASSETS_BUCKET/lab/ に置けなかった"
 fi
 fetch_jars() {  # fetch_jars  JARS の jar を $JARS_DIR に取り（手元にあれば取らない）、sha256 を照合する。合わなければ消して止める
-  # JARS に無い jar（版を上げる前に取ったもの）は $JARS_DIR から消す。spark.jars は analytics/jars/*.jar を全部読むので、残すと同じクラスが 2 つの版で載る
+  # JARS に無い jar（版を上げる前に取ったもの）は $JARS_DIR から消す。spark.jars は spark/jars/*.jar を全部読むので、残すと同じクラスが 2 つの版で載る
   local e p f sha keep=" "
   mkdir -p "$JARS_DIR"
   for e in "${JARS[@]}"; do
@@ -887,12 +887,12 @@ fetch_jars() {  # fetch_jars  JARS の jar を $JARS_DIR に取り（手元に�
   done
 }
 if [ -z "$SKIP_ANALYTICS" ]; then
-  log "5-2. Spark のスクリプトと jar（Kafka / MSK IAM / S3 Tables カタログ）を s3://$KB_BUCKET/analytics/ に置く"
+  log "5-2. Spark のスクリプトと jar（Kafka / MSK IAM / S3 Tables カタログ）を s3://$ASSETS_BUCKET/spark/ に置く"
   fetch_jars
   "${PY[@]}" -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$SPARK_SCRIPT" || die "$SPARK_SCRIPT が Python として読めない"
-  aws s3 cp --only-show-errors "$SPARK_SCRIPT" "s3://$KB_BUCKET/analytics/"
+  aws s3 cp --only-show-errors "$SPARK_SCRIPT" "s3://$ASSETS_BUCKET/spark/"
   # --delete で、S3 の側からも JARS に無い jar（前の版）を消す（--exclude で外したものは消さないので、jar だけが対象）
-  aws s3 sync --only-show-errors --delete "$JARS_DIR/" "s3://$KB_BUCKET/analytics/jars/" --exclude "*" --include "*.jar"
+  aws s3 sync --only-show-errors --delete "$JARS_DIR/" "s3://$ASSETS_BUCKET/spark/jars/" --exclude "*" --include "*.jar"
 fi
 
 # ---- 6. lab ---------------------------------------------------------------------

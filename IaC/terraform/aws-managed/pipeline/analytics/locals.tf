@@ -71,7 +71,7 @@ locals {
   splunk_sg_id  = try(data.terraform_remote_state.main.outputs.security_group_ids["splunk"], "")
   # 土台の OpenSearch Serverless の VPC エンドポイント（create_opensearch_endpoint=true のときだけある。古い state には output が無い）
   aoss_vpce_id = try(data.terraform_remote_state.main.outputs.opensearch_vpc_endpoint_id, "")
-  bucket       = data.terraform_remote_state.main.outputs.kb_bucket_name
+  bucket       = data.terraform_remote_state.main.outputs.assets_bucket_name
   bucket_arn   = "arn:${local.partition}:s3:::${local.bucket}"
   # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
   perimeter_policy_arn = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
@@ -91,7 +91,7 @@ locals {
   group_arns = "${replace(local.msk_cluster_arn, ":cluster/", ":group/")}/*"
 
   # ops/up.sh が置く場所（ops/up.sh の手順 5）。スクリプトと jar は読むだけ、checkpoint と logs は書く
-  s3_prefix   = "analytics"
+  s3_prefix   = "spark"
   script_key  = "${local.s3_prefix}/snmp_sinks.py"
   jars_prefix = "${local.s3_prefix}/jars"
   logs_prefix = "${local.s3_prefix}/logs"

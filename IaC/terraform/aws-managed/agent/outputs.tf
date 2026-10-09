@@ -46,7 +46,7 @@ output "collection_endpoint" {
 
 output "upload_docs_command" {
   description = "Run in this repository to upload the sample markdown files (create_knowledge_base = true)"
-  value       = "aws s3 cp app/resources/ s3://${local.bucket_name}/docs/ --recursive --exclude \"*\" --include \"*.md\""
+  value       = "aws s3 cp app/resources/ s3://${local.bucket_name}/kb/ --recursive --exclude \"*\" --include \"*.md\""
 }
 
 output "start_ingestion_command" {
