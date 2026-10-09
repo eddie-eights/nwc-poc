@@ -91,10 +91,10 @@ output "job_driver_json_http" {
 }
 
 output "configuration_overrides_json" {
-  description = "configurationOverrides for start-job-run (driver logs to CloudWatch, worker logs to the asset bucket, no EMR managed storage)"
+  description = "configurationOverrides for start-job-run (driver logs to CloudWatch, worker logs to the logs bucket, no EMR managed storage)"
   value = jsonencode({
     monitoringConfiguration = {
-      s3MonitoringConfiguration                 = { logUri = "s3://${local.bucket}/${local.logs_prefix}/" }
+      s3MonitoringConfiguration                 = { logUri = "s3://${local.logs_bucket}/${local.emr_logs_prefix}/" }
       managedPersistenceMonitoringConfiguration = { enabled = false }
       # CloudWatch Logs へは IaC/terraform/aws-managed/base/core の logs のエンドポイントを通る（無い VPC で NAT も無いとジョブが
       # 「Unable to push logs ... Connect timeout on endpoint URL: https://logs...」で FAILED になる。2026-09-17 に実測）

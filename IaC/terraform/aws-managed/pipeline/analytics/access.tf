@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------- runtime role of the Spark job
 resource "aws_iam_role" "emr" {
   name        = "${local.name_prefix}-emr-runtime"
-  description = "EMR Serverless job runtime - reads MSK, writes the sinks (S3 Tables, OpenSearch Serverless, Prometheus, Splunk HEC with the token from SSM), reads the script and jars from the asset bucket"
+  description = "EMR Serverless job runtime - reads MSK, writes the sinks (S3 Tables, OpenSearch Serverless, Prometheus, Splunk HEC with the token from SSM), reads the script and jars from the asset bucket, writes its logs to the logs bucket"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -25,7 +25,7 @@ resource "aws_iam_role_policy" "emr" {
     Version = "2012-10-17"
     Statement = concat([
       {
-        # スクリプトと jar を読む。checkpoint とログを書く
+        # スクリプトと jar を読む。checkpoint を読み書きする
         Sid      = "AssetBucket"
         Effect   = "Allow"
         Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
@@ -36,6 +36,19 @@ resource "aws_iam_role_policy" "emr" {
         Effect   = "Allow"
         Action   = ["s3:ListBucket", "s3:GetBucketLocation"]
         Resource = local.bucket_arn
+      },
+      {
+        # ワーカーのログ（configuration_overrides_json の logUri。logs のバケットの emr/）
+        Sid      = "LogsBucket"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:GetObject"]
+        Resource = "${local.logs_bucket_arn}/${local.emr_logs_prefix}/*"
+      },
+      {
+        Sid      = "LogsBucketList"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket", "s3:GetBucketLocation"]
+        Resource = local.logs_bucket_arn
       },
       {
         # Kafka を読む（consumer group は spark-kafka-source-* で Spark が付ける）。

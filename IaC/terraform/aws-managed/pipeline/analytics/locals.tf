@@ -45,6 +45,16 @@ data "terraform_remote_state" "stream" {
   }
 }
 
+# EMR のログと Firehose が書けなかった行の置き場（logs のバケット）は IaC/terraform/aws-managed/base/logs。ops/up.sh が base/core より先に作り、
+# ops/down.sh は消さない（中身は 7 日で消える）ので、analytics を apply する時点で必ずある（try で包まない）
+data "terraform_remote_state" "logs" {
+  backend = "local"
+
+  config = {
+    path = "${path.module}/../../base/logs/terraform.tfstate"
+  }
+}
+
 # Grafana / Splunk のイメージは IaC/terraform/aws-managed/base/ecr（ops/up.sh の手順 1 と 2）
 data "terraform_remote_state" "ecr" {
   backend = "local"
@@ -73,6 +83,9 @@ locals {
   aoss_vpce_id = try(data.terraform_remote_state.main.outputs.opensearch_vpc_endpoint_id, "")
   bucket       = data.terraform_remote_state.main.outputs.assets_bucket_name
   bucket_arn   = "arn:${local.partition}:s3:::${local.bucket}"
+  # EMR のログ（emr/）と Firehose が書けなかった行（firehose-errors/）。assets と違って VPC の Deny は無い（docs/architecture/resources/s3-buckets.md）
+  logs_bucket     = data.terraform_remote_state.logs.outputs.logs_bucket_name
+  logs_bucket_arn = "arn:${local.partition}:s3:::${local.logs_bucket}"
   # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
   perimeter_policy_arn = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
   # リソースポリシーの Deny から外すプリンシパル（デプロイする人と KB のロール）
@@ -90,12 +103,13 @@ locals {
   topic_arns = "${replace(local.msk_cluster_arn, ":cluster/", ":topic/")}/*"
   group_arns = "${replace(local.msk_cluster_arn, ":cluster/", ":group/")}/*"
 
-  # ops/up.sh が置く場所（ops/up.sh の手順 5）。スクリプトと jar は読むだけ、checkpoint と logs は書く
+  # assets のバケットの spark/（ops/up.sh の手順 5 が置く）。スクリプトと jar は読むだけ、checkpoint は読み書きする
   s3_prefix   = "spark"
   script_key  = "${local.s3_prefix}/snmp_sinks.py"
   jars_prefix = "${local.s3_prefix}/jars"
-  logs_prefix = "${local.s3_prefix}/logs"
   checkpoint  = "${local.s3_prefix}/checkpoint"
+  # EMR のログは logs のバケットの emr/（EMR がその下に applications/<id>/jobs/<id>/… を作る）
+  emr_logs_prefix = "emr"
   # checkpoint は Kafka の offset を持つので、MSK を作り直すと新しいクラスタの offset と合わない（古い offset を読みに行って止まるか、
   # 新しいトピックの頭を飛ばす）。MSK のクラスタの uuid（ARN の最後）をパスに入れ、クラスタが変われば checkpoint も新しくする
   msk_cluster_uuid = try(element(split("/", local.msk_cluster_arn), 2), "none")

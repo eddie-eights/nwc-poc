@@ -10,8 +10,8 @@
 # 例外は 3 つ:
 #   - デプロイする人（ops/up.sh を打つ PC の認証情報。terraform と s3 cp が VPC の外から来る。PoC では仕方ないとユーザーが決めた、2026-09-28）
 #   - AWS のサービス自身（aws:PrincipalIsAWSService: SNS → SQS）とサービスが呼び手の代わりに出すリクエスト（aws:ViaAWSService）
-#   - サービスがロールを引き受けて自分の側から来るもの（Bedrock の KB が docs/ を読む <prefix>-kb、Firehose が S3 Tables の alert_events に
-#     書き、書けなかった行を firehose-errors/ に落とす <prefix>-alert-firehose。IaC/terraform/aws-managed/pipeline/analytics の history.tf）
+#   - サービスがロールを引き受けて自分の側から来るもの（Bedrock の KB が assets の kb/ を読む <prefix>-kb、Firehose が S3 Tables の alert_events に
+#     書き、書けなかった行を logs のバケット（base/logs。ここの Deny は無い）の firehose-errors/ に落とす <prefix>-alert-firehose。IaC/terraform/aws-managed/pipeline/analytics の history.tf）
 # IAM 側で拒む API は、VPC エンドポイントを通るものだけにする。logs / ecr / ec2 / kms / sts / xray はサービスがロールの認証情報で
 # 自分の側から呼ぶ（Lambda のログ、Runtime のイメージ取得）ので入れない。kafka-cluster は VPC の中にしか無く、aoss はネットワークポリシーで、neptune-graph はグラフの public_connectivity = false で閉じている
 # （neptune-graph のリクエストに aws:SourceVpc が付くかは確かめていないので、Deny には入れない）。

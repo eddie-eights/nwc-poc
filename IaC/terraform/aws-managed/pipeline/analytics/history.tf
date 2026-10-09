@@ -3,7 +3,7 @@
 # このストリームに put_record_batch する（graph の alert_history = true。ops/up.sh が analytics がある回にだけ渡す。今回作るか、state に残っている）。
 # Firehose は 60 秒か 1 MiB ごとに tables.tf の alert_events に追記する（Iceberg。Glue の s3tablescatalog を通す）。
 # s3tablescatalog はアカウントとリージョンに 1 つの Glue のカタログで、無ければ ops/up.sh が作る（down.sh では消さない。docs/deploy.md）。
-# 書けなかった行は土台のバケットの firehose-errors/alert_events/ に落ちる。読むのはエージェントの query_history（app/agentcore/evidence.py。
+# 書けなかった行は logs のバケット（IaC/terraform/aws-managed/base/logs の <prefix>-logs-<アカウント>。7 日で消える）の firehose-errors/alert_events/ に落ちる。読むのはエージェントの query_history（app/agentcore/evidence.py。
 # 下の Athena のワークグループ。tools の Lambda の権限は IaC/terraform/aws-managed/workflow の gateway.tf）。
 # Firehose はロールを引き受けて自分の側（VPC の外）から書くので、このロールは IaC/terraform/aws-managed/base/core の perimeter.tf の資源側の Deny の例外
 # （perimeter_exempt_principals）に入れてあり、IAM 側の Deny も付けない。ストリームとワークグループの名前は固定
@@ -22,7 +22,7 @@ locals {
 
 resource "aws_iam_role" "alert_firehose" {
   name        = local.alert_firehose
-  description = "Firehose ${local.alert_stream} - appends the alert notifications to the S3 Tables table alert_events, failed rows to the asset bucket"
+  description = "Firehose ${local.alert_stream} - appends the alert notifications to the S3 Tables table alert_events, failed rows to the logs bucket"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -87,13 +87,13 @@ resource "aws_iam_role_policy" "alert_firehose" {
         Sid      = "ErrorBucket"
         Effect   = "Allow"
         Action   = ["s3:PutObject", "s3:GetObject", "s3:AbortMultipartUpload"]
-        Resource = "${local.bucket_arn}/firehose-errors/*"
+        Resource = "${local.logs_bucket_arn}/firehose-errors/*"
       },
       {
         Sid      = "ErrorBucketList"
         Effect   = "Allow"
         Action   = ["s3:ListBucket", "s3:ListBucketMultipartUploads", "s3:GetBucketLocation"]
-        Resource = local.bucket_arn
+        Resource = local.logs_bucket_arn
       },
       {
         Sid      = "Logs"
@@ -146,7 +146,7 @@ resource "aws_kinesis_firehose_delivery_stream" "alert_events" {
 
     s3_configuration {
       role_arn            = aws_iam_role.alert_firehose.arn
-      bucket_arn          = local.bucket_arn
+      bucket_arn          = local.logs_bucket_arn
       error_output_prefix = local.alert_errors
     }
 
