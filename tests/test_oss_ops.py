@@ -1686,5 +1686,15 @@ p, cs = run_check("--yes")
 check("check-grafana.sh: 知らない引数は使い方を出して 3 で止まる（terraform と aws には触らない）",
       p.returncode == 3 and "使い方" in p.stderr and not tf_calls(cs) and not [c for c in cs if c["cmd"] == "aws"])
 
+# Mac の bash 3.2 は $VAR の直後に全角文字が続くと変数名に 1 バイト食い、set -u で「SPLUNK_VERSION�: unbound variable」になる
+# （2026-10-09 の AWS 検証で ops/up.sh の 7-4 が止まった）。$VAR の直後に非 ASCII が続く所は ${VAR} に書く
+import glob
+_BARE_VAR = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*(?=[^\x00-\x7f])")
+_sh = sorted(glob.glob(os.path.join(ROOT, d, "*.sh")) for d in ["ops", "ops/oss", "app/containerlab", "app/telegraf", "docker/compose"])
+_bare = [f"{os.path.relpath(f, ROOT)}:{i}" for fs in _sh for f in fs
+         for i, line in enumerate(open(f, encoding="utf-8"), 1) if _BARE_VAR.search(line)]
+check("ops / app/containerlab / app/telegraf / docker/compose の *.sh に、$VAR の直後に非 ASCII が続く行が無い（Mac の bash 3.2 が 1 バイト食う）",
+      not _bare and len([f for fs in _sh for f in fs]) >= 20)
+
 shutil.rmtree(TMP, ignore_errors=True)
 print(f"通過 {passed} / 失敗 0")

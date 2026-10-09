@@ -70,7 +70,7 @@ roll_wait() {  # roll_wait <分> [<除く台>]  除く台以外から順に見�
     out=$(roll_exec "$(roll_service "$k")")
     # shellcheck disable=SC2086
     if ROLL_LEADER=$(printf '%s\n' "$out" | "${PY[@]}" "$OPS_DIR/roll_health.py" "$ROLL_KIND" $ROLL_NODES); then
-      echo "   $ROLL_LABEL は健全（$((SECONDS - start)) 秒。$k の中から見た。リーダーは $ROLL_LEADER）"
+      echo "   $ROLL_LABEL は健全（$((SECONDS - start)) 秒。$k の中から見た。リーダーは ${ROLL_LEADER}）"
       return 0
     fi
     ROLL_REASON=$ROLL_LEADER
@@ -146,10 +146,10 @@ roll_nodes() {  # roll_nodes <kafka|opensearch> <ルート> [-var 名前=値 …
     || die "$TF_DIR/$root の output $names を読めなかった"
   ROLL_NODES=$(printf '%s\n' "$ROLL_SVCS" | awk 'NF { printf "%s ", $1 }')
   ROLL_NODES=${ROLL_NODES% }
-  echo "$ROLL_LABEL の変わる台: $keys（全部の台: $ROLL_NODES）"
+  echo "$ROLL_LABEL の変わる台: ${keys}（全部の台: ${ROLL_NODES}）"
   log "$ROLL_LABEL が健全か確かめる（入れ替える前。${ROLL_MINUTES_PRE} 分まで待つ。ECS Exec で台の中から見る）"
   roll_wait "$ROLL_MINUTES_PRE" "" \
-    || die "$ROLL_LABEL が入れ替える前から健全でない（$ROLL_REASON）。まだ何も入れ替えていない。様子を見て（ECS のクラスター $ROLL_CLUSTER、$hint）、直ったらもう一度 $OPS_DIR/up.sh。健全さを待たずに変わる台を一度に入れ替えるなら OSS_ROLL=0 $OPS_DIR/up.sh"
+    || die "$ROLL_LABEL が入れ替える前から健全でない（${ROLL_REASON}）。まだ何も入れ替えていない。様子を見て（ECS のクラスター ${ROLL_CLUSTER}、${hint}）、直ったらもう一度 $OPS_DIR/up.sh。健全さを待たずに変わる台を一度に入れ替えるなら OSS_ROLL=0 $OPS_DIR/up.sh"
   left=$keys; rolled=""
   while [ -n "$left" ]; do
     next=""
@@ -158,8 +158,8 @@ roll_nodes() {  # roll_nodes <kafka|opensearch> <ルート> [-var 名前=値 …
     done
     [ -n "$next" ] || next=$ROLL_LEADER   # 残りがリーダーだけ
     svc=$(roll_service "$next")
-    [ -n "$svc" ] || die "$TF_DIR/$root の output $names に台 $next が無い（$ROLL_NODES）"
-    log "$ROLL_LABEL の台 $next（$svc）を入れ替える（${rolled:+入れ替えた台:$rolled。}残り: $left。リーダー: $ROLL_LEADER）"
+    [ -n "$svc" ] || die "$TF_DIR/$root の output $names に台 $next が無い（${ROLL_NODES}）"
+    log "$ROLL_LABEL の台 ${next}（${svc}）を入れ替える（${rolled:+入れ替えた台:${rolled}。}残り: ${left}。リーダー: ${ROLL_LEADER}）"
     tf_apply_only "$root" "$@" -target="aws_ecs_service.$kind[\"$next\"]"
     rolled="$rolled $next"
     left=$(for k in $left; do [ "$k" = "$next" ] || printf '%s ' "$k"; done)
@@ -167,10 +167,10 @@ roll_nodes() {  # roll_nodes <kafka|opensearch> <ルート> [-var 名前=値 …
     # services-stable は 10 分で諦めるので、2 回まで待つ
     aws ecs wait services-stable --region "$REGION" --cluster "$ROLL_CLUSTER" --services "$svc" 2>/dev/null \
       || aws ecs wait services-stable --region "$REGION" --cluster "$ROLL_CLUSTER" --services "$svc" \
-      || die "$svc が 20 分たっても安定しない（入れ替えにかかった台:$rolled。残り: ${left:-なし}）。aws ecs list-tasks --region $REGION --cluster $ROLL_CLUSTER --service-name $svc --desired-status STOPPED と $hint を見る。直ったらもう一度 $OPS_DIR/up.sh（残りの台だけ入れ替える）"
+      || die "$svc が 20 分たっても安定しない（入れ替えにかかった台:${rolled}。残り: ${left:-なし}）。aws ecs list-tasks --region $REGION --cluster $ROLL_CLUSTER --service-name $svc --desired-status STOPPED と $hint を見る。直ったらもう一度 $OPS_DIR/up.sh（残りの台だけ入れ替える）"
     echo "   $svc は安定した。ほかの台から見て $ROLL_LABEL が健全に戻るのを待つ（${minutes} 分まで）"
     roll_wait "$minutes" "$next" \
-      || die "$ROLL_LABEL の台 $next を入れ替えたあと、${minutes} 分たっても健全に戻らない（$ROLL_REASON）。入れ替えた台:$rolled。残り: ${left:-なし}。様子を見て（ECS のクラスター $ROLL_CLUSTER、$hint）、戻ったらもう一度 $OPS_DIR/up.sh（残りの台だけ入れ替える）"
+      || die "$ROLL_LABEL の台 $next を入れ替えたあと、${minutes} 分たっても健全に戻らない（${ROLL_REASON}）。入れ替えた台:${rolled}。残り: ${left:-なし}。様子を見て（ECS のクラスター ${ROLL_CLUSTER}、${hint}）、戻ったらもう一度 $OPS_DIR/up.sh（残りの台だけ入れ替える）"
   done
-  echo "$ROLL_LABEL の台を 1 台ずつ入れ替えた（入れ替えた順:$rolled）"
+  echo "$ROLL_LABEL の台を 1 台ずつ入れ替えた（入れ替えた順:${rolled}）"
 }

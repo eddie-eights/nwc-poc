@@ -45,7 +45,7 @@ oss_image_upstream() {  # oss_image_upstream <名前>  写す元（ビルドす�
 mirror_oss_images() {
   local reg="$1" prefix="$2" name tag upstream; shift 2
   for name in "$@"; do
-    tag=$(oss_image_tag "$name") || { echo "知らないイメージ: $name（ops/oss/oss-images.sh の OSS_IMAGES: $OSS_IMAGES）" >&2; return 1; }
+    tag=$(oss_image_tag "$name") || { echo "知らないイメージ: ${name}（ops/oss/oss-images.sh の OSS_IMAGES: ${OSS_IMAGES}）" >&2; return 1; }
     if ecr_has "$prefix-$name" "$tag"; then echo "$name:$tag はある"; continue; fi
     upstream=$(oss_image_upstream "$name")
     if [ -n "$upstream" ]; then

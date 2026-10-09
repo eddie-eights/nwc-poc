@@ -62,7 +62,7 @@ ssm_run() {  # ssm_run <インスタンス ID> <コマンド…>  cloud-init（u
         return 0 ;;
       Pending|InProgress|Delayed|読めない)
         if [ "$SECONDS" -ge "$deadline" ]; then
-          echo "SSM Run Command（$cmd_id）の結果が $SSM_RUN_WAIT 秒たっても分からない（最後の状態: $status）。あとで見るのは aws ssm get-command-invocation --region $REGION --command-id $cmd_id --instance-id $id（待つ秒数は SSM_RUN_WAIT）" >&2
+          echo "SSM Run Command（${cmd_id}）の結果が $SSM_RUN_WAIT 秒たっても分からない（最後の状態: ${status}）。あとで見るのは aws ssm get-command-invocation --region $REGION --command-id $cmd_id --instance-id ${id}（待つ秒数は SSM_RUN_WAIT）" >&2
           return 2
         fi
         sleep 10 ;;
@@ -92,13 +92,13 @@ fetch_wheels() {  # fetch_wheels <置き場> <pip に -r で渡す requirements>
   fi
   if command -v uv >/dev/null; then pip="uv run --python 3.13 --with pip python -m pip"; else pip="python3 -m pip"; fi
   rm -rf "$dir"
-  $pip download "${WHEEL_ARGS[@]}" -d "$dir" -r "$req" || die "Web の wheel（$req）を $dir/ に取れなかった"
+  $pip download "${WHEEL_ARGS[@]}" -d "$dir" -r "$req" || die "Web の wheel（${req}）を $dir/ に取れなかった"
   printf '%s\n' "$sha" > "$dir/.requirements.sha256"
 }
 az_num() {  # az_num <キー> <既定> <最小> <最大> <範囲の理由>  書いてなければ既定。範囲の外なら止める
   local k=$1 v="${!1:-}"
   if [ -n "$v" ]; then AZ_NUM_SET="$AZ_NUM_SET $k"; else v=$2; fi
-  case "$v" in *[!0-9]* | '') die "$k は $3〜$4 の数で書く（いまは $k=$v）。まだ何も作っていない" ;; esac
+  case "$v" in *[!0-9]* | '') die "$k は $3〜$4 の数で書く（いまは $k=${v}）。まだ何も作っていない" ;; esac
   v=$((10#$v))
   if [ "$v" -lt "$3" ] || [ "$v" -gt "$4" ]; then die "$k=$v は書けない。$3〜$4 で書く（$5）。まだ何も作っていない"; fi
   printf -v "$k" '%s' "$v"
@@ -237,12 +237,12 @@ splunk_cluster_check() {
       --filter-pattern '"nwc-peer-check"' --query 'events[].message' --output text 2>/dev/null | tr '\t' '\n' | grep '^nwc-peer-check ' | tail -n 1 || true)
     case "$line" in
       "nwc-peer-check state=ok reason=peers_up:"*)
-        if [ "${line##*:}" -ge "$SPLUNK_AZ_NUM" ]; then echo "search head は indexer を全部（${SPLUNK_AZ_NUM} 台）同じ GUID で検索できる（$line）"; return 0; fi ;;
+        if [ "${line##*:}" -ge "$SPLUNK_AZ_NUM" ]; then echo "search head は indexer を全部（${SPLUNK_AZ_NUM} 台）同じ GUID で検索できる（${line}）"; return 0; fi ;;
     esac
     sleep 15
   done
   [ -n "$line" ] || die "search head のタスク（${sh_task##*/}）は、突き合わせ（app/splunk/peers_check.py）をまだ 1 回もしていない（6 分待っても判定の行「nwc-peer-check …」がロググループ /ecs/$PREFIX-splunk の splunk/splunk/${sh_task##*/} に無い）。search head が入れ替わったばかりなら、HEALTHY になってから打ち直す"
-  die "search head の突き合わせ（app/splunk/peers_check.py）が 6 分たっても ok（Up の indexer が ${SPLUNK_AZ_NUM} 台）にならない。最新の判定は「$line」（degraded: manager が Up と言う indexer が足りない。reason=peers_up:<Up の数>/<あるはずの数>。mismatch: search head が古い GUID の indexer を持っている。続けば ECS が search head を入れ替える。skip: manager に聞けない。error: search head の peers を読めない）。ロググループ /ecs/$PREFIX-splunk を見る"
+  die "search head の突き合わせ（app/splunk/peers_check.py）が 6 分たっても ok（Up の indexer が ${SPLUNK_AZ_NUM} 台）にならない。最新の判定は「${line}」（degraded: manager が Up と言う indexer が足りない。reason=peers_up:<Up の数>/<あるはずの数>。mismatch: search head が古い GUID の indexer を持っている。続けば ECS が search head を入れ替える。skip: manager に聞けない。error: search head の peers を読めない）。ロググループ /ecs/$PREFIX-splunk を見る"
 }
 # Agent（Runtime）・worker・Temporal・Nautobot と Redis のイメージ。マネージド版と OSS 版（005）が同じ作り方をする。どれも docker login 済みで呼び、REG / PREFIX を使う。
 # NAUTOBOT_VERSION は docker/images/nautobot/Dockerfile の ARG、REDIS_TAG は IaC/terraform/aws-managed/pipeline/nautobot の redis_image_tag、
@@ -308,7 +308,7 @@ grafana_rules_step() {  # grafana_rules_step <Web のインスタンス ID> <ana
     grafana_rules_check "$1" || rc=$?
     case "$rc" in
       0) ;;
-      1) GRAFANA_WARN="Grafana のアラートルールの評価を確かめた結果が OK ではない（$GRAFANA_VERDICT）。評価のエラーの理由は Grafana のログ（aws logs tail /ecs/$PREFIX-grafana --region $REGION --since 1h --filter-pattern '\"Failed to evaluate rule\"'）。直したら $4" ;;
+      1) GRAFANA_WARN="Grafana のアラートルールの評価を確かめた結果が OK ではない（${GRAFANA_VERDICT}）。評価のエラーの理由は Grafana のログ（aws logs tail /ecs/$PREFIX-grafana --region $REGION --since 1h --filter-pattern '\"Failed to evaluate rule\"'）。直したら $4" ;;
       *) GRAFANA_WARN="Grafana のアラートルールの評価を確かめられなかった（${GRAFANA_VERDICT:-判定の行が無い。上の出力}）。理由は上の出力。確かめ直すのは $4" ;;
     esac
   fi

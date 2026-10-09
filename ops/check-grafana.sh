@@ -42,7 +42,7 @@ INSTANCE_ID=$(terraform -chdir="$TF_DIR/base/core" output -raw web_instance_id 2
 GRAFANA_SERVICE=$(terraform -chdir="$TF_DIR/pipeline/analytics" output -raw grafana_service_name 2>/dev/null) || GRAFANA_SERVICE=""
 [ -n "$GRAFANA_SERVICE" ] || die "$TF_DIR/pipeline/analytics に Grafana が無い（出力 grafana_service_name が読めないか空。マネージド版は STORES に grafana を入れて ops/up.sh を打つ）"
 
-log "Grafana（$GRAFANA_SERVICE）のアラートルールを Web の EC2（$INSTANCE_ID）から読む（最大 5 分）"
+log "Grafana（${GRAFANA_SERVICE}）のアラートルールを Web の EC2（${INSTANCE_ID}）から読む（最大 5 分）"
 rc=0
 grafana_rules_check "$INSTANCE_ID" || rc=$?
 if [ "$rc" = 1 ]; then

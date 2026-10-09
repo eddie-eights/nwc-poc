@@ -129,7 +129,7 @@ destroy_base_core() {
       echo "注意: VPC を引けなかった（上のエラー）"
     fi
   fi
-  echo "Runtime の ENI を探す VPC: ${vpcs:-（読めない）}（$src）"
+  echo "Runtime の ENI を探す VPC: ${vpcs:-（読めない）}（${src}）"
   agent_enis=""
   if [ -n "$vpcs" ]; then
     agent_enis=$(aws ec2 describe-network-interfaces --region "$REGION" --filters "Name=vpc-id,Values=$vpcs" \

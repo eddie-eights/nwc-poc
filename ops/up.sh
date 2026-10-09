@@ -197,7 +197,7 @@ if [ -n "$OLD_STORE_KEYS" ]; then
       *) OLD_STORE_BAD="$OLD_STORE_BAD $v=${val}" ;;
     esac
   done
-  [ -z "$OLD_STORE_BAD" ] || die "$OLD_STORE_WHAT。いまの値の${OLD_STORE_BAD} は 1 / 0 でないので、当たる STORES を決められない。$OLD_STORE_HOW"
+  [ -z "$OLD_STORE_BAD" ] || die "${OLD_STORE_WHAT}。いまの値の${OLD_STORE_BAD} は 1 / 0 でないので、当たる STORES を決められない。$OLD_STORE_HOW"
   OLD_STORES=""
   if [ -n "$OLD_SINK_S3" ]; then OLD_STORES="s3"; fi
   OLD_STORES_NO_GRAFANA="$OLD_STORES${OLD_SINK_SPLUNK:+${OLD_STORES:+,}splunk}"
@@ -207,14 +207,14 @@ if [ -n "$OLD_STORE_KEYS" ]; then
     if [ -z "$OLD_GRAFANA" ]; then OLD_STORE_COMBO="Grafana を作らずに OpenSearch か Prometheus を作る"
     elif [ -z "$OLD_SINK_OPENSEARCH" ]; then OLD_STORE_COMBO="Prometheus だけを作る（OpenSearch は作らない）"
     else OLD_STORE_COMBO="OpenSearch だけを作る（Prometheus は作らない）"; fi
-    die "$OLD_STORE_WHAT。いまの値（${OLD_STORE_VALUES# }）は ${OLD_STORE_COMBO}組み合わせで、その組み合わせはもう選べない（OpenSearch・Prometheus・Grafana は STORES の grafana でまとめて作るか作らないか）。近いのは STORES=$OLD_STORES_GRAFANA（3 つとも作る）か、$(if [ -n "$OLD_STORES_NO_GRAFANA" ]; then echo "STORES=$OLD_STORES_NO_GRAFANA（3 つとも作らない）"; else echo "格納先が残らないので analytics ごと作らない SKIP_ANALYTICS=1"; fi)。$OLD_STORE_HOW"
+    die "${OLD_STORE_WHAT}。いまの値（${OLD_STORE_VALUES# }）は ${OLD_STORE_COMBO}組み合わせで、その組み合わせはもう選べない（OpenSearch・Prometheus・Grafana は STORES の grafana でまとめて作るか作らないか）。近いのは STORES=${OLD_STORES_GRAFANA}（3 つとも作る）か、$(if [ -n "$OLD_STORES_NO_GRAFANA" ]; then echo "STORES=${OLD_STORES_NO_GRAFANA}（3 つとも作らない）"; else echo "格納先が残らないので analytics ごと作らない SKIP_ANALYTICS=1"; fi)。$OLD_STORE_HOW"
   fi
   if [ -n "$OLD_SINK_OPENSEARCH" ]; then OLD_STORES="$OLD_STORES_GRAFANA"; else OLD_STORES="$OLD_STORES_NO_GRAFANA"; fi
-  [ -n "$OLD_STORES" ] || die "$OLD_STORE_WHAT。いまの値（${OLD_STORE_VALUES# }）は格納先が 1 つも無く、STORES ではそう書けない（空なら既定の s3,grafana,splunk）。analytics ごと要らないなら SKIP_ANALYTICS=1 を書く。$OLD_STORE_HOW"
+  [ -n "$OLD_STORES" ] || die "${OLD_STORE_WHAT}。いまの値（${OLD_STORE_VALUES# }）は格納先が 1 つも無く、STORES ではそう書けない（空なら既定の s3,grafana,splunk）。analytics ごと要らないなら SKIP_ANALYTICS=1 を書く。$OLD_STORE_HOW"
   if [ "$OLD_STORES" = s3,grafana,splunk ]; then
-    die "$OLD_STORE_WHAT。いまの値（${OLD_STORE_VALUES# }）は STORES=s3,grafana,splunk と同じ（STORES を書かないときの既定）。$OLD_STORE_HOW"
+    die "${OLD_STORE_WHAT}。いまの値（${OLD_STORE_VALUES# }）は STORES=s3,grafana,splunk と同じ（STORES を書かないときの既定）。$OLD_STORE_HOW"
   fi
-  die "$OLD_STORE_WHAT。いまの値（${OLD_STORE_VALUES# }）は STORES=$OLD_STORES と書く。$OLD_STORE_HOW"
+  die "${OLD_STORE_WHAT}。いまの値（${OLD_STORE_VALUES# }）は STORES=$OLD_STORES と書く。$OLD_STORE_HOW"
 fi
 # 格納先を 3 つのまとまりで選ぶ（STORES=s3,grafana,splunk の形。カンマで並べ、順番と重複は問わない）。既定は s3,grafana,splunk（3 つとも。splunk は cycle 002 で既定に入れた）。
 #   s3      = 全トピック → S3 Tables（Iceberg）の raw_telemetry。アラートの履歴（alert_events と Athena。サイクル 001）は STORES に関わらず analytics を作れば入る
@@ -253,7 +253,7 @@ SINKS_TF="\"$(printf '%s' "$SINKS" | sed 's/,/","/g')\""
 # Spark のジョブが HTTP の格納先（opensearch / prometheus / splunk）へ送る所。既定 driver（マイクロバッチを driver に集めて送る）、
 # executor ならパーティションごとに executor が送る（foreachPartition）。IaC/terraform/aws-managed/pipeline/analytics の var.http_send に渡す
 HTTP_SEND="${HTTP_SEND:-driver}"
-case "$HTTP_SEND" in driver | executor) ;; *) die "HTTP_SEND は driver か executor（小文字）: $HTTP_SEND。まだ何も作っていない" ;; esac
+case "$HTTP_SEND" in driver | executor) ;; *) die "HTTP_SEND は driver か executor（小文字）: ${HTTP_SEND}。まだ何も作っていない" ;; esac
 # Spark の 1 つのクエリが Kafka の 1 回のトリガー（60 秒）に読む件数の上限（全パーティションの合計。maxOffsetsPerTrigger）。既定 10000、0 で上限なし。
 # MAX_OFFSETS_PER_TRIGGER_<格納先>（格納先は --sinks の呼び名: ICEBERG（STORES の s3）/ SPLUNK / OPENSEARCH / PROMETHEUS）が空でなければ、
 # その格納先のクエリだけそちらを使う。IaC/terraform/aws-managed/pipeline/analytics の var.max_offsets_per_trigger と var.max_offsets_per_trigger_by_sink に渡す
@@ -262,7 +262,7 @@ MAX_OFFSETS_BY_SINK=""   # splunk=2000,prometheus=5000 の形（HCL の map の�
 for v in MAX_OFFSETS_PER_TRIGGER MAX_OFFSETS_PER_TRIGGER_ICEBERG MAX_OFFSETS_PER_TRIGGER_SPLUNK MAX_OFFSETS_PER_TRIGGER_OPENSEARCH MAX_OFFSETS_PER_TRIGGER_PROMETHEUS; do
   val="${!v:-}"
   [ -n "$val" ] || continue
-  case "$val" in *[!0-9]* | 0?* | ??????????*) die "$v は 0 以上の整数（0 で上限なし。9 桁まで、先頭に 0 を付けない）: $val。まだ何も作っていない" ;; esac
+  case "$val" in *[!0-9]* | 0?* | ??????????*) die "$v は 0 以上の整数（0 で上限なし。9 桁まで、先頭に 0 を付けない）: ${val}。まだ何も作っていない" ;; esac
   [ "$v" = MAX_OFFSETS_PER_TRIGGER ] || MAX_OFFSETS_BY_SINK="$MAX_OFFSETS_BY_SINK${MAX_OFFSETS_BY_SINK:+,}$(printf '%s' "${v#MAX_OFFSETS_PER_TRIGGER_}" | tr 'A-Z' 'a-z')=$val"
 done
 # NO_PORTFORWARD は 2026-10-04 に NO_DASHBOARD_PORTFORWARD へ名前を変えた。前の deploy.env か環境変数に残っていると、
@@ -271,7 +271,7 @@ done
 flag_value SKIP_LAB; flag_value SKIP_STREAM; flag_value SKIP_ANALYTICS; flag_value SKIP_GRAPH; flag_value NO_DASHBOARD_PORTFORWARD
 # stream の syslog-ng の syslog の形式。既定は本番の Cisco に合わせた RFC3164（stream の変数の既定と同じ）
 SYSLOG_STANDARD="${SYSLOG_STANDARD:-RFC3164}"
-case "$SYSLOG_STANDARD" in RFC3164 | RFC5424) ;; *) die "SYSLOG_STANDARD は RFC3164 か RFC5424（大文字）: $SYSLOG_STANDARD。まだ何も作っていない" ;; esac
+case "$SYSLOG_STANDARD" in RFC3164 | RFC5424) ;; *) die "SYSLOG_STANDARD は RFC3164 か RFC5424（大文字）: ${SYSLOG_STANDARD}。まだ何も作っていない" ;; esac
 # SNMP_POLL は 2026-10-09 から使わない（cycle 013 で SNMP のポーリングをやめた）。前の deploy.env で止まらないよう読むだけ読み、書いてあれば注意を出す
 if [ -n "${SNMP_POLL:-}" ]; then
   echo "注意: SNMP_POLL は使わない（2026-10-09 に SNMP のポーリングをやめ、IF の状態は gnmic が gNMI で取る。Grafana の link_down も gNMI から出る）。deploy.env から消してよい"
@@ -382,8 +382,8 @@ az_num SPLUNK_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"
 # Splunk のクラスター（2 か 3）は STORES の splunk の Splunk を変えるもの。analytics を作らない（SKIP_ANALYTICS=1）なら見ない。
 # index は main だけ（docs/cycles/004-splunk-indexer-cluster/design.md。ほかの index を複製する設定を入れていない）
 if [ "$SPLUNK_AZ_NUM" -gt 1 ] && [ -z "$SKIP_ANALYTICS" ]; then
-  [ -n "$SPLUNK_ON_ECS" ] || die "SPLUNK_AZ_NUM=$SPLUNK_AZ_NUM は Splunk のクラスターで、STORES に splunk が要る（いまは STORES=$STORES）。splunk を足すか、SPLUNK_AZ_NUM を消す。まだ何も作っていない"
-  [ -z "$SPLUNK_INDEX" ] || die "SPLUNK_AZ_NUM=$SPLUNK_AZ_NUM（Splunk のクラスター）では index は main だけで、SPLUNK_INDEX は書けない（いまは SPLUNK_INDEX=$SPLUNK_INDEX）。SPLUNK_INDEX を消すか、SPLUNK_AZ_NUM=1 にする。まだ何も作っていない"
+  [ -n "$SPLUNK_ON_ECS" ] || die "SPLUNK_AZ_NUM=$SPLUNK_AZ_NUM は Splunk のクラスターで、STORES に splunk が要る（いまは STORES=${STORES}）。splunk を足すか、SPLUNK_AZ_NUM を消す。まだ何も作っていない"
+  [ -z "$SPLUNK_INDEX" ] || die "SPLUNK_AZ_NUM=${SPLUNK_AZ_NUM}（Splunk のクラスター）では index は main だけで、SPLUNK_INDEX は書けない（いまは SPLUNK_INDEX=${SPLUNK_INDEX}）。SPLUNK_INDEX を消すか、SPLUNK_AZ_NUM=1 にする。まだ何も作っていない"
 fi
 SPLUNK_TASKS=1   # Splunk のタスクの数（費用と 7-4b の待ち）。クラスターは manager 1 + indexer SPLUNK_AZ_NUM + search head 1
 if [ "$SPLUNK_AZ_NUM" -gt 1 ]; then SPLUNK_TASKS=$((SPLUNK_AZ_NUM + 2)); fi
@@ -410,7 +410,7 @@ for k in $AZ_NUM_SET; do
   if [ "$k" != ENDPOINTS_AZ_NUM ] && [ "${!k}" -gt "$ENDPOINTS_AZ_NUM" ]; then AZ_NUM_OVER="$AZ_NUM_OVER $k=${!k}"; fi
 done
 if [ -n "$AZ_NUM_OVER" ]; then
-  echo "注意:${AZ_NUM_OVER} に対して ENDPOINTS_AZ_NUM=$ENDPOINTS_AZ_NUM。エンドポイントはサブネット a から $ENDPOINTS_AZ_NUM つにしか無いので、その AZ が止まると、ほかの AZ に置いたものも AWS の API に届かない（止めずに進む。そろえるなら ENDPOINTS_AZ_NUM も同じ数にする）"
+  echo "注意:${AZ_NUM_OVER} に対して ENDPOINTS_AZ_NUM=${ENDPOINTS_AZ_NUM}。エンドポイントはサブネット a から $ENDPOINTS_AZ_NUM つにしか無いので、その AZ が止まると、ほかの AZ に置いたものも AWS の API に届かない（止めずに進む。そろえるなら ENDPOINTS_AZ_NUM も同じ数にする）"
 fi
 # グラフの状態の Lambda（<prefix>-graph-status。IaC/terraform/aws-managed/pipeline/graph の sync.tf で timeout 60 秒）が Firehose（アラートの履歴）と Neptune を
 # 待つ時間の上限は、ENDPOINTS_AZ_NUM で伸びる。エンドポイントの IP は AZ ごとに 1 つあり、接続の待ちは IP ごとにかかる（urllib3 は名前の
@@ -1041,7 +1041,7 @@ if [ -z "$SKIP_ANALYTICS" ]; then
   fi
   if [ -n "$SPLUNK_ON_ECS" ]; then
     # Splunk を ECS で立てる。管理者のパスワードと HEC の token（クラスターなら合言葉も）は SSM に乱数で作る（ops/up-common.sh。OSS 版と共通）
-    echo "Splunk Enterprise（splunk/splunk:$SPLUNK_VERSION・試用ライセンス）を立てる。Splunk のライセンスと Splunk General Terms に同意して起動する"
+    echo "Splunk Enterprise（splunk/splunk:${SPLUNK_VERSION}・試用ライセンス）を立てる。Splunk のライセンスと Splunk General Terms に同意して起動する"
     ensure_splunk_secrets "$SPLUNK_AZ_NUM"
     ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX" -var "splunk_az_num=$SPLUNK_AZ_NUM")
   fi
@@ -1067,11 +1067,11 @@ if [ -z "$SKIP_ANALYTICS" ]; then
       APP_CHANGE="上限を $APP_CPU / $APP_MEMORY から $EMR_MAX_CPU / $EMR_MAX_MEMORY に"
     fi
     if [ "$APP_SUBNETS" != "$EMR_AZ_NUM" ]; then
-      APP_CHANGE="${APP_CHANGE:+$APP_CHANGE、}サブネットを ${APP_SUBNETS:-?} つから $EMR_AZ_NUM つに"
+      APP_CHANGE="${APP_CHANGE:+${APP_CHANGE}、}サブネットを ${APP_SUBNETS:-?} つから $EMR_AZ_NUM つに"
     fi
     if [ -n "$APP_STATE" ] && [ -n "$APP_CHANGE" ]; then
       case "$APP_STATE" in
-        STOPPED | CREATED) echo "EMR Serverless のアプリの${APP_CHANGE}変える（アプリは $APP_STATE）" ;;
+        STOPPED | CREATED) echo "EMR Serverless のアプリの${APP_CHANGE}変える（アプリは ${APP_STATE}）" ;;
         *)
           echo "EMR Serverless のアプリの${APP_CHANGE}変える。アプリが $APP_STATE なので、ジョブを全部止めてからアプリを止める（ジョブは 7-5 で起こし直す）"
           RUNS=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$APP_ID" \
@@ -1089,7 +1089,7 @@ if [ -z "$SKIP_ANALYTICS" ]; then
             [ -n "$LEFT" ] || break
             sleep 5
           done
-          [ -z "$LEFT" ] || die "アプリの設定を変える前に止めた Spark のジョブ（$LEFT）が 3 分たっても止まらない。$(tf pipeline/analytics output -raw list_job_runs_command) で見て、止まってから打ち直す"
+          [ -z "$LEFT" ] || die "アプリの設定を変える前に止めた Spark のジョブ（${LEFT}）が 3 分たっても止まらない。$(tf pipeline/analytics output -raw list_job_runs_command) で見て、止まってから打ち直す"
           for i in $(seq 1 36); do  # STOPPED になるまで最大 3 分（STARTING から STARTED になったものにも stop-application を打ち直す）
             APP_STATE=$(aws emr-serverless get-application --region "$REGION" --application-id "$APP_ID" --query application.state --output text)
             case "$APP_STATE" in
@@ -1099,8 +1099,8 @@ if [ -z "$SKIP_ANALYTICS" ]; then
             sleep 5
           done
           case "$APP_STATE" in
-            STOPPED | CREATED) echo "アプリ（$APP_ID）を止めた" ;;
-            *) die "EMR Serverless のアプリ（$APP_ID）が 3 分たっても止まらない（$APP_STATE）。aws emr-serverless get-application --region $REGION --application-id $APP_ID で STOPPED になってから打ち直す" ;;
+            STOPPED | CREATED) echo "アプリ（${APP_ID}）を止めた" ;;
+            *) die "EMR Serverless のアプリ（${APP_ID}）が 3 分たっても止まらない（${APP_STATE}）。aws emr-serverless get-application --region $REGION --application-id $APP_ID で STOPPED になってから打ち直す" ;;
           esac
           ;;
       esac
@@ -1173,7 +1173,7 @@ if [ -z "$SKIP_ANALYTICS" ]; then
   for name in $OLD_NAMES; do
     OLD=$(runs_named "$name")
     if [ -n "$OLD" ]; then
-      echo "古い名前のジョブ $name（${OLD% }）を止める。止まってから新しい名前のジョブを起こす"
+      echo "古い名前のジョブ ${name}（${OLD% }）を止める。止まってから新しい名前のジョブを起こす"
       STOP="$STOP $OLD"
     fi
   done
@@ -1183,7 +1183,7 @@ if [ -z "$SKIP_ANALYTICS" ]; then
     RUNNING=$(runs_named "$NAME")
     if [ -z "$JOB_DRIVER" ]; then  # このジョブの格納先のまとまりが STORES に無い
       if [ -n "$RUNNING" ]; then
-        echo "$NAME（${RUNNING% }）は格納先が無くなったので止める"
+        echo "${NAME}（${RUNNING% }）は格納先が無くなったので止める"
         STOP="$STOP $RUNNING"
       fi
       continue
@@ -1196,11 +1196,11 @@ if [ -z "$SKIP_ANALYTICS" ]; then
       if [ -z "$KEEP" ] && [ "$spec" = "$JOB_SPEC" ]; then KEEP="$id"; else STALE="$STALE $id"; fi
     done
     if [ -n "$STALE" ]; then
-      echo "$NAME（${STALE# }）はスクリプトか引数が違う（今は SpecHash=$JOB_SPEC）か 2 つ目なので止める"
+      echo "${NAME}（${STALE# }）はスクリプトか引数が違う（今は SpecHash=${JOB_SPEC}）か 2 つ目なので止める"
       STOP="$STOP $STALE"
     fi
     if [ -n "$KEEP" ]; then
-      echo "$NAME は同じスクリプトと引数で動いている（${KEEP}。SpecHash=$JOB_SPEC）"
+      echo "$NAME は同じスクリプトと引数で動いている（${KEEP}。SpecHash=${JOB_SPEC}）"
     else
       START="$START $JOB"
     fi
@@ -1264,7 +1264,7 @@ if [ -n "$WORKFLOW" ]; then
     echo "Temporal の UI（Web の EC2 経由でタスクの 8233 へ。PC の http://localhost:8233/ ）:"
     echo "  aws ssm start-session --region $REGION --target $INSTANCE_ID --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{\"host\":[\"$WF_TASK_IP\"],\"portNumber\":[\"8233\"],\"localPortNumber\":[\"8233\"]}'"
   else
-    WF_WARN="workflow のワーカーのサービス（$WF_SERVICE）が 20 分たっても安定しない。ワーカーのログ（$(tf workflow output -raw worker_logs_command)）と aws ecs list-tasks --region $REGION --cluster $WF_CLUSTER --desired-status STOPPED を見て、直ったら ops/up.sh を打ち直す"
+    WF_WARN="workflow のワーカーのサービス（${WF_SERVICE}）が 20 分たっても安定しない。ワーカーのログ（$(tf workflow output -raw worker_logs_command)）と aws ecs list-tasks --region $REGION --cluster $WF_CLUSTER --desired-status STOPPED を見て、直ったら ops/up.sh を打ち直す"
     printf '\033[1;33m%s\033[0m\n' "$WF_WARN"
   fi
   log "8-6. Web を再起動する（Neptune の接続先を SSM から読み直すため。エージェントは Gateway を 5 分以内に拾う）"
