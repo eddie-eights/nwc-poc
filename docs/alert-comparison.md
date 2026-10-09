@@ -40,19 +40,20 @@
 
 | 行 | Grafana | Splunk |
 |---|---|---|
-| `link_down`（gNMI） | 状態が文字列（`up` / `down`、`enable` / `disable`）で、Prometheus に入らない。Spark が `snmp_interface_oper_up`（`up` なら 1）と `snmp_interface_admin_up`（`enable` なら 1）の系列に直す。機器名も無いので、Spark が device map で `sysName` を足す。admin-state が disable の IF は PromQL の `unless` で外す | 整形は要らない。文字列のまま読む。ただし Splunk は「いまの状態」を持たないので、サーチが前の値と比べて変わった IF だけを出す。そのために 24 時間ぶんを読む |
-| `link_down`（trap） | linkDown の trap は IF 名を入れた項目の名前が IF ごとに変わる。OpenSearch のクエリ 1 本でまとめられないので、ルールにしていない | 整形は要らない。SPL が項目の名前を前方一致で拾う |
-| `bgp_down` / `isis_down` | 状態が文字列（`established` / `up` など）で、Prometheus に入らない。Spark が 1（正常）/ 0（それ以外）の系列に直す。機器名も無いので、Spark が device map で `sysName` を足す | 整形は要らない。文字列のまま読む。送り元の IP は、アラートアクションが `DEVICE_MAP` で機器名に直す |
-| `trap` | 機器名が無いので、Spark が OpenSearch の文書に `tags.sysName` を足す。まとめる数に上限がある（機器 10 × OID 10。2026-10-08 までは 50 × 20） | 整形は要らない。解消を出すためのサーチ（`netops_trap_clear`）がもう 1 本要る |
+| `link_down`（gNMI） | 状態が文字列（`up` / `down`、`enable` / `disable`）で、Prometheus に入らない。Spark が `snmp_interface_oper_up`（`up` なら 1）と `snmp_interface_admin_up`（`enable` なら 1）の系列に直す。機器名も無いので、Spark が device map で `sysName` を足す。admin-state が disable の IF は PromQL の `unless` で外す | 状態は文字列のまま読む（1 / 0 にしない）。機器名は Spark が device map で `sysName` を足す（2026-10-09 から）。ただし Splunk は「いまの状態」を持たないので、サーチが前の値と比べて変わった IF だけを出す。そのために 24 時間ぶんを読む |
+| `link_down`（trap） | linkDown の trap は IF 名を入れた項目の名前が IF ごとに変わる。OpenSearch のクエリ 1 本でまとめられないので、ルールにしていない | 機器名は Spark が device map で `sysName` を足す（2026-10-09 から）。IF ごとに変わる項目の名前は、SPL が前方一致で拾う |
+| `bgp_down` / `isis_down` | 状態が文字列（`established` / `up` など）で、Prometheus に入らない。Spark が 1（正常）/ 0（それ以外）の系列に直す。機器名も無いので、Spark が device map で `sysName` を足す | 状態は文字列のまま読む（1 / 0 にしない）。機器名は Spark が device map で `sysName` を足す（2026-10-09 から）。表に無い機器の送り元の IP は、アラートアクションが `DEVICE_MAP` で機器名に直す |
+| `trap` | 機器名が無いので、Spark が OpenSearch の文書に `tags.sysName` を足す。まとめる数に上限がある（機器 10 × OID 10。2026-10-08 までは 50 × 20） | 機器名は Spark が device map で `sysName` を足す（2026-10-09 から）。解消を出すためのサーチ（`netops_trap_clear`）がもう 1 本要る |
 
 Spark の整形の中身（`app/spark/snmp_sinks.py`）:
 
 | 整形 | 中身 | 行き先 |
 |---|---|---|
 | 状態を 1 / 0 にする | `bgp_neighbor` の `session_state` から `snmp_bgp_neighbor_session_up`（`established` なら 1）、`isis_interface` の `oper_state` から `snmp_isis_interface_oper_up`（`up` なら 1）、`interface` の `oper_state` / `admin_state` から `snmp_interface_oper_up`（`up` なら 1）/ `snmp_interface_admin_up`（`enable` なら 1）を作る（`interface` は 2026-10-09 から） | Prometheus |
-| `sysName` を足す | レコードに `sysName` が無ければ、送り元の IP を device map（`--device-map`）で引いて足す | Prometheus と OpenSearch |
+| `sysName` を足す | レコードに `sysName` が無ければ、送り元の IP を device map（`--device-map`）で引いて足す | Prometheus と OpenSearch と Splunk（Splunk は 2026-10-09 から） |
+| 数値の文字列を数値にする | Splunk へ送るイベントの `fields` のうち、数値の文字列を数値にする（`_splunk_value`） | Splunk |
 
-Splunk へ送るイベントは変えていない。
+Splunk へ送るイベントの状態は文字列のまま（1 / 0 にしない）。変えるのは、`sysName` を足すこと（表に無い機器は、アラートアクションが `DEVICE_MAP` で直す）と、`fields` の数値の文字列を数値にすることだけ。gnmic の event は、どの格納先へも Telegraf の形に読み替えてから送る（`GNMI_MEASUREMENTS`・`GNMI_TAGS`。S3 Tables も同じ）。
 
 ## 2. 手順
 

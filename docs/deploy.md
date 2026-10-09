@@ -135,7 +135,7 @@ flowchart LR
 |---|---|---|---|
 | VPC・サブネット・Runtime の SG（`<prefix>-runtime`） | AgentCore Runtime の ENI（InterfaceType `agentic_ai`）が外れるまで消せない（最大 8 時間） | 無料 | base/core の state に残っているので、同じ VPC に残りを作り足す |
 | SSM のパラメータ（`/<prefix>/` の下） | nautobot のルートが消えなかったときの Nautobot の分（上の手順 5-2） | 無料（標準のパラメータ） | あるものは作り直さない |
-| ECR のリポジトリ（`KEEP_ECR=1` のとき） | 意図して残す | 7.39 GB で月 約 110 円（$0.10/GB・月。2026-10-08 の 11 リポジトリ） | ECR にあるタグはビルドを飛ばす |
+| ECR のリポジトリ（`KEEP_ECR=1` のとき） | 意図して残す | 7.39 GB で月 約 110 円（$0.10/GB・月。2026-10-08 の 11 リポジトリ。いまのマネージド版は 15 リポジトリ（`IaC/terraform/aws-managed/base/ecr/main.tf`）） | ECR にあるタグはビルドを飛ばす |
 | MSK の SCRAM の KMS の鍵（alias は外してある） | KMS の鍵はすぐには消せず、削除の予約の待ち（7 日）が要る（上の手順 5-3） | 無料（予約中の鍵は課金されない。KMS の価格表） | 新しい鍵を作る（予約中の鍵はそのまま 7 日後に消える）。alias を外せずに残っていれば、予約を取り消して同じ鍵を使い直す（取り消すと、待った日数も課金される） |
 
 - **`KEEP_ECR=1` で残した ECR に 2026-10-08 より前の lab のイメージ（arm64）があっても、消さなくてよい。** いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）なので、`KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が残っていても名前がぶつからず、`ops/up.sh` は amd64 を写し直す。前のタグは使われずに残るだけで、消さなくてよい（保管料は残したぶんだけかかる）。
@@ -175,7 +175,7 @@ tf base/ecr state list
 EOF
 ```
 
-2026-10-08 の OSS 版は、同じアドレスとリポジトリ名で 18 リポジトリとライフサイクルのポリシーを import した。`plan` は `0 to add, 18 to change, 0 to destroy` だった（変わるのは、import では入らない `force_delete` だけ）。そのときは `pipeline` の 6 本が `Error: Invalid index` で落ちたので、一時的な override で通した。いまは `base/ecr/outputs.tf` が `try()` で包むので、override は要らない。ただし `try()` にしてからの import と、マネージド版の import は AWS で未確認。
+2026-10-08 の OSS 版は、同じアドレスとリポジトリ名で 18 リポジトリ（当時の数。いまの OSS 版は 22 = マネージド版の 15 + OSS 版だけの 7）とライフサイクルのポリシーを import した。`plan` は `0 to add, 18 to change, 0 to destroy` だった（変わるのは、import では入らない `force_delete` だけ）。そのときは `pipeline` の 6 本が `Error: Invalid index` で落ちたので、一時的な override で通した。いまは `base/ecr/outputs.tf` が `try()` で包むので、override は要らない。ただし `try()` にしてからの import と、マネージド版の import は AWS で未確認。
 
 ## 007 で並べ直したとき（state の移し方）
 

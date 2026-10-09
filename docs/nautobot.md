@@ -1,6 +1,6 @@
 # Nautobot（構成・部品・使い方・Neptune と組み合わせた使いどころ）
 
-Nautobot は、機器の一覧とケーブルの**正**（台帳）。`PIPELINE=1` ならいつも立つ（`IaC/terraform/aws-managed/pipeline/nautobot`）。
+Nautobot は、機器の一覧とケーブルの**正**（台帳）。`PIPELINE=1` なら立つ（`IaC/terraform/aws-managed/pipeline/nautobot`）。立たないのは `SKIP_STREAM` と `SKIP_GRAPH` を両方付けた回だけ（Job の書き先が無い。`ops/up.sh` の `NAUTOBOT`）。
 Nautobot で機器・インタフェース・ケーブルを変えると、Nautobot の中の Job が gnmic の購読先と Neptune のトポロジを合わせる。
 OSS 版（[oss-variant.md](oss-variant.md)）では、同じ Job が Neptune の代わりに Neo4j に書く（2026-10-08 に AWS で確かめた。[verification/20261008-oss-aws.md](verification/20261008-oss-aws.md)）。この文書の「Neptune」は、OSS 版では Neo4j と読み替える。
 

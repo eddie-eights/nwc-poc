@@ -3,7 +3,7 @@
 nwc-poc の技術と構成について、ほかの開発者に説明するときに役に立つ質問と答えをまとめた。開発の進め方（サイクルや作業の順番）の質問は入れない。コードのパスはこのリポジトリの中のもの。
 
 - [1. syslog の基本](#1-syslog-の基本)
-- [2. 収集の設定（Telegraf と本番の Cisco）](#2-収集の設定telegraf-と本番の-cisco)
+- [2. 収集の設定（syslog-ng・Telegraf・gnmic と本番の Cisco）](#2-収集の設定syslog-ngtelegrafgnmic-と本番の-cisco)
 - [3. デバッグ用の EC2（lab + Telegraf）](#3-デバッグ用の-ec2lab--telegraf)
 - [4. YANG・OpenConfig とシスコの機器](#4-yangopenconfig-とシスコの機器)
 - [5. Spark の動き](#5-spark-の動き)
@@ -185,7 +185,7 @@ PRI = ファシリティの番号 × 8 + 重要度
 
 ---
 
-## 2. 収集の設定（Telegraf と本番の Cisco）
+## 2. 収集の設定（syslog-ng・Telegraf・gnmic と本番の Cisco）
 
 ### Q. 本番の Cisco の `logging host <IPアドレス | ホスト名>` には、AWS の NLB を書く？
 

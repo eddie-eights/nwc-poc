@@ -60,7 +60,7 @@ Athena は、ここのテーブルをエージェントと Web の承認タブ�
   Terraform のテーブルの定義で列を変えると、テーブルの作り直しになるため。
   出典: `app/spark/snmp_sinks.py` の `ICEBERG_ADDED_COLUMNS` のコメント。
 - **Spark から Iceberg は「ちょうど 1 回」。**
-  同じマイクロバッチは 1 回しか確定しない。ただし Telegraf が Kafka に 2 回入れた分は 2 行になる。
+  同じマイクロバッチは 1 回しか確定しない。ただし集める側（Telegraf・gnmic・syslog-ng・GoFlow2）が Kafka に 2 回入れた分は 2 行になる（Spark は重複を落とさない。`event_id` が同じになるので読む側で落とせる）。
   出典: [data-stores.md](../../data-stores.md) の「届け方の保証」。
 - **`alert_events` と `proposal_events` は二重に入ることがある。読むときに `event_id` で落とす。**
   `alert_events` は Lambda のやり直しと、Grafana の 4 時間ごとの送り直し、Grafana と Splunk の両方から来た分。`proposal_events` はアクティビティの再試行の分。`query_history` は `event_id` で重複を落とし、新しい順に最大 50 件を返す。

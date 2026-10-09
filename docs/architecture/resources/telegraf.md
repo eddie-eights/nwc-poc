@@ -22,7 +22,7 @@ Telegraf は機器から送られてくる SNMP trap を受ける（受ける側
 | 機器の認証情報 | SSM `/<prefix>/gnmic/gnmi-username`・`gnmi-password`（SecureString。`ops/up.sh` が作る） | `ops/up-common.sh` の `ensure_fixed_secret`（`ops/up.sh` の手順 7 が呼ぶ） |
 | スイッチ | `TELEGRAF_AZ_NUM`。`SYSLOG_STANDARD` は 2026-10-08 から syslog-ng のもの。`MDT_SOURCE_CIDRS` は使わない。`SNMP_POLL` は 2026-10-09 から使わない（`deploy.env` に書いてあれば `ops/up.sh` が注意を出すだけ） | `deploy.env.example` |
 | ログ | `/ecs/<prefix>-telegraf`（ストリームは `dialout/…`）と `/ecs/<prefix>-gnmic`（`gnmic/…`） | `telegraf.tf`、`gnmic.tf` |
-| 費用 | タスク 1 つ 1.2 セント/時 ×（`TELEGRAF_AZ_NUM` + gnmic の 1）+ NLB 2.43 セント/時（公表単価） | `ops/up.sh` の費用の目安（524〜584 行） |
+| 費用 | Telegraf と gnmic の分は、タスク 1 つ 1.2 セント/時 ×（`TELEGRAF_AZ_NUM` + gnmic の 1）+ NLB 2.43 セント/時（公表単価）。stream の収集の全体（syslog-ng と GoFlow2 も入れて Fargate のタスク 3 + `TELEGRAF_AZ_NUM` 個と NLB）は、`ops/up.sh` の `COST_CENTS` で `(12 × (3 + TELEGRAF_AZ_NUM) + 24 + 5) / 10` セント/時（単位は 0.1 セントで、`+ 5` は四捨五入） | `ops/up.sh` の費用の目安（524〜584 行） |
 
 ## つながり
 
