@@ -1,6 +1,6 @@
 # TRex（後段の負荷試験の道具）
 
-lab の `dc1-trex-01`（containerlab の `kind: linux`、イメージは `trexcisco/trex:2.41`）で、Telegraf から後ろ（MSK → Spark / Splunk → Grafana / Splunk のアラート → SNS → Lambda）に負荷をかけるための材料。**このサイクル（011）では置くだけで、撃っていない。** TRex がこの lab で起動するかも確かめていない（下の「確かめていないこと」）。
+lab の `dc1-trex-01`（containerlab の `kind: linux`、イメージは `trexcisco/trex:2.41`）で、Telegraf から後ろ（MSK → Spark / Splunk → Grafana / Splunk のアラート → SNS → Lambda）に負荷をかけるための材料。**このサイクル（011）では置くだけで、撃っていない。** TRex が lab の EC2（m6i.xlarge）で起動することは確かめた（下の「lab の EC2（m6i.xlarge）で確かめたこと」）。撃って届くかは確かめていない（「確かめていないこと」）。
 
 | ファイル | 中身 |
 |---|---|

@@ -63,7 +63,7 @@ OSS 版だけのリポジトリ（`oss_repositories`。マネージド版では�
   タグにディレクトリの中身のハッシュが入る（`ops/lab-common.sh` の `dir_tag`）。`IMAGE_TAG` を上げなくてよい。
   - ハッシュはファイルの中身をそのまま取るので、コメントだけの変更でもタグが変わる。
   - たとえば `docker/images/telegraf/Dockerfile` のコメントを直すと `TELEGRAF_TAG` が変わり、次の `ops/up.sh` がイメージを作り直す。
-  出典: [data-stores.md](../../data-stores.md) の「9. タグ」、`ops/up.sh` のコメント。
+  - 出典: [data-stores.md](../../data-stores.md) の「9. タグ」、`ops/up.sh` のコメント。
 - **`ops/up.sh` は、ECR にそのタグが無いときだけビルドして push する。**
   `ecr_has` で見る。
   出典: [data-stores.md](../../data-stores.md) の「9. タグ」、`ops/lab-common.sh`。
