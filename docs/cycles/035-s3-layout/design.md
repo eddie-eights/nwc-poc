@@ -103,6 +103,13 @@ logs のプレフィックス（種類名）:
 - `docs/faq-fukuda-nwc-poc.md` に「S3 のバケットは何本あるか」を 1 問（節の目次にも足す。見出しの文字は `tests/test_analytics.py` の `_faq_heads_ok` の範囲で）。
 - `README.md` と `CLAUDE.md` にバケット名の記述があれば揃える（`grep -n 'kb-\|バケット' README.md CLAUDE.md` で確かめる。2026-10-10 の grep では無かった）。
 
+### 追加（2026-10-10、ユーザー指示）: EMR の managed storage を有効に戻す
+
+- ユーザー指示「managed storage は無料なら有効にして」。`pipeline/analytics/outputs.tf` の `configuration_overrides_json` の `managedPersistenceMonitoringConfiguration` を `enabled = true` にする。
+- 理由: 終わったジョブの Spark UI（Spark History Server）は managed storage のイベントログしか読まない。managed storage は無料で 30 日保持。
+- S3 の `logUri`（logs の `emr/`）と CloudWatch の driver ログは今のまま残す。`SPARK_EXECUTOR` は CloudWatch に足さない。
+- 閉域の S3 gateway endpoint（`base/core/endpoints.tf`）にはポリシーが無いので、endpoint 側は変えない見込み（AWS では未確認）。
+
 ## 変更対象ファイル
 
 | 区分 | ファイル |
@@ -117,6 +124,7 @@ logs のプレフィックス（種類名）:
 | ops | `ops/up.sh`、`ops/oss/up.sh`、`ops/down.sh`、`ops/oss/down.sh`、`ops/check.sh` |
 | tests | `tests/test_analytics.py`、`tests/test_oss.py`、`tests/test_oss_ops.py`、`tests/test_workflow.py` |
 | docs | `docs/architecture/resources/README.md`、`docs/data-stores.md`、`docs/deploy.md`、`docs/pipeline.md`、`docs/troubleshooting.md`、`docs/faq-fukuda-nwc-poc.md`、`docs/architecture/resources/{firehose,emr-serverless,web-ec2,vpc-perimeter}.md` |
+| 追加（managed storage） | `IaC/terraform/aws-managed/pipeline/analytics/outputs.tf`、`tests/test_analytics.py`、`docs/architecture/resources/emr-serverless.md`（`docs/pipeline.md` と `docs/faq-fukuda-nwc-poc.md` の該当箇所は main にだけあるので、035 を main に入れたあとで直す） |
 | 変えない | `IaC/terraform/aws-managed/base/core/endpoints.tf`（S3 の gateway endpoint にポリシーは無いので logs バケットのための変更は無い）、`perimeter.tf`、`pipeline/analytics/tables.tf`（S3 Tables は別物）、`IaC/cloudformation/`（lab-debug のバケット）、`docs/cycles/`、`docs/verification/` |
 
 ## 再利用するもの
@@ -156,6 +164,7 @@ AWS（PM が次の 1 回の検証で見る。エンジニアは打たない）:
 - `ops/up.sh` のあと `aws s3api get-bucket-lifecycle-configuration --bucket efukuda-nwc-poc-logs-493116771193` の `Rules[0].Expiration.Days` が 7。`aws s3api get-bucket-policy` の Statement が `DenyInsecureTransport` の 1 つ。
 - Spark のジョブが 1 回動いたあと `aws s3 ls s3://efukuda-nwc-poc-logs-493116771193/emr/applications/ --recursive | head -3` に行がある。assets の `analytics/` と `docs/` が無く、`spark/snmp_sinks.py` `spark/jars/` `spark/checkpoint/<uuid>/` `web/` `lab/` がある（`aws s3 ls s3://efukuda-nwc-poc-assets-493116771193/`）。
 - KB を作っているなら（`CREATE_KB=1`）、取り込みが `kb/` から成功する（`start_ingestion_command` のあと `COMPLETE`）。
+- 追加（managed storage）: 終わったジョブ（例: cancel したジョブ）の Spark UI が、コンソールの View application UIs から開ける。
 - `ops/down.sh` のあと `aws s3api head-bucket --bucket efukuda-nwc-poc-assets-493116771193` が 404、`…-logs-…` が 200。`report_leftovers` の一覧に logs バケットの ARN が出る（想定どおり）。
 
 ## 未確定事項とリスク

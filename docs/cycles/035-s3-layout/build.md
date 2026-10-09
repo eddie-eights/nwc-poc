@@ -168,3 +168,27 @@ Must fix は 0。PM の判断で、Should fix 1 件と Nit 2 件をこの 1 comm
 - **Nit 2（`ops/down.sh` と `ops/oss/down.sh` の「logs のバケットは残す」）:** echo を `if has_resources base/logs; then … fi` で囲み、state が無いか空なら出さないようにした。`tests/test_analytics.py` の検査も、囲みの中で出すことを見るように直した
 - **Nit 4（`docs/architecture/resources/s3-buckets.md` の assets の「作る順」）:** `docs/deploy.md` の手順の表と同じく「`ops/up.sh` の手順 3（base/core。手順 1 の base/ecr と base/logs の後）」にした
 - 確かめたこと: `uv run --frozen python3 tests/test_analytics.py` 通過 544 / 失敗 0、`tests/test_oss_ops.py` 通過 206 / 失敗 0、`tests/test_oss.py` 通過 177 / 失敗 0、`tests/test_workflow.py` 通過 333 / 失敗 0。`bash -n` は 2 本とも無言。`ops/oss/down.sh` の囲みを `if true; then` にすると、直した検査が AssertionError で落ちる
+
+## 追加の修正（2026-10-10、ユーザー指示: EMR の managed storage を有効に戻す）
+
+design.md の「追加（2026-10-10、ユーザー指示）」の節のとおり。
+
+### 変えたファイル
+
+- `IaC/terraform/aws-managed/pipeline/analytics/outputs.tf`: `configuration_overrides_json` の `managedPersistenceMonitoringConfiguration` を `enabled = true` にし、理由のコメントを 1 行足した。description の「no EMR managed storage」も「EMR managed storage on」に直した。`terraform fmt` で `s3MonitoringConfiguration` の行の揃えが変わった
+- `tests/test_analytics.py`: 「managed storage は使わない」の検査を、`enabled = true` で、`managedPersistenceMonitoringConfiguration` が 1 か所だけであることを見る検査に直した
+- `docs/architecture/resources/emr-serverless.md`: ログの行に、managed storage を有効にしてあり、終わったジョブの Spark UI を View application UIs から開けること（AWS では未確認）を足した
+- `docs/cycles/035-s3-layout/design.md`: 「追加」の節、変更対象ファイルの 1 行、AWS の検証方法の 1 行
+
+### 直していないもの
+
+- `docs/pipeline.md` の Spark UI の手順と `docs/faq-fukuda-nwc-poc.md` の「CloudWatch だけに…見えなくなる？」ほか。「managed storage を切っている」の文は main の 7e6be29 と bac225f で入ったもので、このブランチ（3d497de から分かれた）には無い。ここで書くと main とぶつかるので、035 を main に入れたあとに直す。main の版に当てる差分は PM に渡した
+
+### テスト
+
+- `terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics validate -no-color`（`init -backend=false` のあと）: `Success! The configuration is valid.`。作った `.terraform/` は消した。lock ファイルは変わっていない
+- `terraform fmt -check -recursive IaC`: 無言
+- `uv run --frozen python3 tests/test_analytics.py`: 通過 544 / 失敗 0
+- `uv run --frozen python3 tests/test_workflow.py`: 通過 333 / 失敗 0
+- `uv run --frozen python3 tests/test_oss.py`: 通過 177 / 失敗 0
+- 直した検査が効くか: `enabled = false` に戻すと、直した検査が AssertionError で落ちる（確かめたあと戻した）

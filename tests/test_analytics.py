@@ -377,9 +377,9 @@ check("ジョブは格納先で 3 つ（iceberg / splunk / http = opensearch と
       and re.search(r'job_drivers = \{ for job, sinks in local\.spark_jobs : job => length\(sinks\) == 0 \? "" : jsonencode\(', tf) is not None
       and all(re.search(r'output "job_driver_json_' + j + r'" \{[^}]*value\s*=\s*local\.job_drivers\["' + j + r'"\]', tf) for j in ("iceberg", "splunk", "http"))
       and re.search(r'^output "job_driver_json" ', tf, re.M) is None)
-check("ドライバーのログは CloudWatch、EMR の managed storage は使わない",
+check("ドライバーのログは CloudWatch、EMR の managed storage は有効（終わったジョブの Spark UI を開くため。cycle 035 の追加）",
       re.search(r'cloudWatchLoggingConfiguration\s*=\s*\{\s*enabled\s*=\s*var\.cloudwatch_logging', tf) is not None
-      and re.search(r'managedPersistenceMonitoringConfiguration\s*=\s*\{\s*enabled\s*=\s*false', tf) is not None)
+      and re.search(r'managedPersistenceMonitoringConfiguration\s*=\s*\{\s*enabled\s*=\s*true\s*\}', tf) is not None and tf.count('managedPersistenceMonitoringConfiguration') == 1)
 
 # ---- Spark のスクリプト（読み書きの形は文字列で見る。pyspark は関数の中で import するので、モジュールは pyspark 無しで読める）
 tree = ast.parse(src, SRC)
