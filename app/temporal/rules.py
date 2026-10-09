@@ -85,7 +85,7 @@ def impact(devices: list, links: list, changes: list) -> dict:
     devices = [{device_id, status, role}]、links = [{a, a_if, b, b_if, status}]、changes = [{op, target}]。
     op は link_down / link_up（target = <機器>#<IF>。どちらの端でもよい）か device_down / device_up（target = 機器名）。
     つながりは DOWN でない回線と機器だけで見て、変更前のかたまりのうち、変更後にいちばん大きい断片から外れた機器を「孤立」とする。同点ならどれも本流にしない
-    （つながり直す機器は向きを逆にして同じことをする。isolated_after は変更後のいちばん大きいかたまりに入っていない機器）。
+    （つながり直す機器は、変更後の本流にいて、変更前はその中のいちばん大きい断片（同点なら変更前の本流）にいなかった機器。それも同点なら変更前に次数 0 だった機器だけ。isolated_after は変更後のいちばん大きいかたまりに入っていない機器）。
     role が END_ROLES の機器（TRex。4 台の leaf につながるが転送しない）は端として扱い、ほかの機器どうしをつなぐ中継にしない。
     端は、つながる相手がかたまりに入っていればかたまりに入る。冗長の本数も、端でない機器は端への回線を数えない（leaf は Spine への本数）。
     role が無ければ全部を中継として見る（ワーカーの awsio.read_topology も role を読んで渡す）。
@@ -149,10 +149,18 @@ def impact(devices: list, links: list, changes: list) -> dict:
         else:
             unknown.append(f"{op} {target}".strip())
     adj1, comps1, iso1, deg1 = view(dd, ld)
+    # つながり直す機器: 変更後の本流 K（唯一いちばん大きいかたまり）にいて、変更前は K の中の唯一いちばん大きい断片 W にいなかった機器
+    # （孤立、別のかたまり、DOWN）。端は、変更後に K につながり、変更前は W につながっていなかったもの。
+    # W が同点で決まらないときは変更前の本流を W にする（本流でない同じ大きさのかたまりどうしがつながって本流を抜いたときは、その全部）。
+    # 変更前の本流も同点なら、変更前に次数 0 だった（孤立か DOWN の）機器だけ（同点のかたまりどうしをつないでも全部が載らない）。
+    # 変更前の本流を先に使わないのは、回線を落として別のかたまりが本流に繰り上がったとき、そのかたまりを「つながり直す」に載せないため
+    main1 = largest(comps1)
+    w0 = largest([main1 & c for c in comps0]) or largest(comps0)
+    back = (main1 - w0) | {e for e in ends & set(adj1) if any(o in main1 for o in adj1[e]) and not any(o in w0 for o in adj0.get(e, []))}
     out = {
         "changes": [{"op": str(c.get("op") or ""), "target": str(c.get("target") or "")} for c in changes], "unknown": unknown,
         "newly_isolated": sorted(lost(adj0, comps0, adj1, comps1) - targets),
-        "reconnected": sorted(i for i in lost(adj1, comps1, adj0, comps0) if i in deg1),
+        "reconnected": sorted(i for i in back if w0 or deg0.get(i, 0) == 0),
         "redundancy_lost": sorted(i for i in deg1 if deg1[i] == 1 and deg0.get(i, 0) >= 2 and i not in iso1),
         "redundancy_restored": sorted(i for i in deg1 if deg1[i] >= 2 and deg0.get(i, 0) <= 1 and i not in iso1),
         "isolated_after": sorted(iso1),

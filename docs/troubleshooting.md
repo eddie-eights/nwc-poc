@@ -28,7 +28,7 @@
 | 2026-10-04 より前のデバッグ用の EC2 が残ったまま `ops/down.sh` で土台（base/core）が消えない（`DeleteConflict` / `DependencyViolation`） | 前の形のスタックは土台のサブネット・SG・境界ポリシーを使っていて、今の `ops/down.sh` はそれを消さない。`ops/lab-debug.sh down` のあと `ops/down.sh` を打ち直す（`ops/up.sh` もそのスタック向けの ECR のエンドポイントを外すので、先に消しておく） |
 | `ops/up.sh` が「注意: LAB_DEBUG は使わない」と出す | `deploy.env` から `LAB_DEBUG` の行を消す。デバッグ用の EC2 は `ops/lab-debug.sh up` / `down` |
 | `ops/lab-debug.sh` が「… が ROLLBACK_COMPLETE」（ROLLBACK_FAILED / DELETE_FAILED）で止まる | 原因は `aws cloudformation describe-stack-events --stack-name <prefix>-lab-debug`。`ops/lab-debug.sh down` のあと `up` |
-| 7-3 で graph の apply が `waiting for Lambda Function (<prefix>-graph-status) create: unexpected state 'Failed' … InsufficientRolePermissions` で止まる | ロールのポリシー（VPC の ENI を作る `ec2:*NetworkInterface*`）が IAM に行き渡る前に Lambda が検査した（2026-10-10 の AWS。ポリシーの作成完了の 1 秒後に Lambda を作っていた）。state では Lambda が tainted になるので、同じ引数で `ops/up.sh` を打ち直すと作り直されて通る（続きは表の下の `graph-status の作成`） |
+| 7-3 で graph の apply が `waiting for Lambda Function (<prefix>-graph-status) create: unexpected state 'Failed' … InsufficientRolePermissions` で止まる | ロールのポリシー（VPC の ENI を作る `ec2:*NetworkInterface*`）が IAM に行き渡る前に Lambda が検査した（2026-10-10 の AWS。ポリシーの作成完了の 1 秒後に Lambda を作っていた）。cycle 029 から `sync.tf` の `time_sleep.status_iam` で 30 秒待ってから作る。それでも出たら 30 秒では足りなかったということなので `create_duration` を延ばす（60s。直す場所は表の下の `graph-status の作成`）。その場の回避は、同じ引数で `ops/up.sh` を打ち直す（state では Lambda が tainted になるので作り直されて通る。続きは表の下の `graph-status の作成`） |
 | 7-4 で analytics の apply が `aws_kinesis_firehose_delivery_stream.alert_events` の `InvalidArgumentException: The security token included in the request is invalid. Ensure that the provided IAM role associated with firehose is not deleted.` で止まる | ロールを作った直後の IAM の反映遅れ（2026-10-09 の AWS）。cycle 026 から `history.tf` の `time_sleep.alert_firehose_iam` で 30 秒待ってから作る。それでも出るなら同じ引数で `ops/up.sh` を打ち直す（通った実績あり）か、`create_duration` を延ばす |
 | ビルドの `pip install` が `CERTIFICATE_VERIFY_FAILED` | 社内 CA の差し替え。`ReadTimeoutError` は QEMU が遅いだけなので打ち直す |
 
@@ -46,10 +46,10 @@
   - `terraform -chdir=IaC/terraform/aws-managed/pipeline/stream destroy -refresh=false -var owner=<OWNER> -var 'gnmi_targets="0.0.0.0:57400"'` で data source を読まずに state のものを消し、`ops/down.sh` を打ち直す。
   - 読めない data source の destroy が `-refresh=false` で通るのは手元の Terraform 1.16 で確かめた。
 - `graph-status の作成`:
-  - `IaC/terraform/aws-managed/pipeline/graph/sync.tf` の `aws_lambda_function.status` は `aws_iam_role_policy.status` を待つだけで、IAM の反映は待たない。ロールを作った直後の apply（初回と、graph を消してからの作り直し）で起きうる。
-  - 2026-10-10 の AWS で 1 回目の `ops/up.sh` がここで止まり、同じ引数の 2 回目で `Resources: 3 added, 0 changed, 1 destroyed`（Lambda の replace）で通った。`GetFunction` は `State=Active`、`LastUpdateStatus=Successful`。
-  - 2 回目も止まるなら、`aws lambda get-function --function-name <prefix>-graph-status` の `StateReasonCode` を見る。`InsufficientRolePermissions` 以外なら別の原因。
-  - 恒久対策（analytics の Firehose と同じ `time_sleep`）は `docs/cycles/BACKLOG.md` の候補。
+  - `InsufficientRolePermissions` の停止は、ロールを作った直後の apply（初回と、graph を消してからの作り直し）で起きうる。cycle 029 から `IaC/terraform/aws-managed/pipeline/graph/sync.tf`（と OSS 版の `sync.tf`）の `aws_lambda_function.status` は `time_sleep.status_iam`（30 秒。analytics の Firehose と同じ形）を待ってから作る。
+  - 待ちを延ばすときは、マネージド版と OSS 版（`IaC/terraform/oss/pipeline/graph/sync.tf`。リンクでなく実ファイル）の両方の `create_duration` と、それを縛る `tests/test_sync.py` の `_iam_wait` を一緒に直す。
+  - 029 より前の 2026-10-10 の AWS では、1 回目の `ops/up.sh` がここで止まり、同じ引数の 2 回目で `Resources: 3 added, 0 changed, 1 destroyed`（Lambda の replace）で通った。`GetFunction` は `State=Active`、`LastUpdateStatus=Successful`。
+  - 打ち直した `ops/up.sh` でもまた止まるなら、`aws lambda get-function --function-name <prefix>-graph-status` の `StateReasonCode` を見る。`InsufficientRolePermissions` 以外なら別の原因。
 
 ## 閉域（`explicit deny`）
 
@@ -124,7 +124,7 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 | BGP / IS-IS の層や機器の `ALARM` が変わらない | 出すのは Grafana と Splunk のアラート（`bgp_down` / `isis_down` / `trap`）。`STORES` に `grafana` も `splunk` も無ければ出ない（仕様）（あるのに変わらないときは表の下の `ALARM`） |
 | Grafana のダッシュボード「nwc / SNMP metrics」が空、エージェントの `query_metrics` が何も返さない | `metrics` トピックの IF の統計・CPU・メモリは gnmic が 60 秒ごとに書く（見る所は表の下の `metrics`） |
 | `sinks-splunk` / `sinks-grafana` のジョブが数分で落ちて立ち直りを繰り返し、ログに `ValueError: year 173875 is out of range` | gnmic の values の無い event を Telegraf の行として読んでいた（025 で直した）。直す前のイメージ（`snmp_sinks.py` のハッシュ）で立っていないかを見る |
-| `gnmi` トピックに on-change の購読（`interface_state` / `bgp_neighbor` / `isis_interface`）の初回値が無い（値が変われば書かれる） | まず gnmic の設定の出力に `buffer-size` / `timeout` があるか（030。送り手が詰まっているあいだの応答を捨てない。古いイメージなら作り直す）。あっても無ければ、gnmic が応答を受けているか（`--debug` の `gNMI Subscribe Response`）と機器の初期同期を見る（[pipeline.md](pipeline.md) の「gnmic の購読」と「gnmic の書き込みと ACL」） |
+| `gnmi` トピックに on-change の購読（`interface_state` / `bgp_neighbor` / `isis_interface`）の初回値が無い（値が変われば書かれる） | まず gnmic が応答を受けているか（`--debug` の `gNMI Subscribe Response`）と、機器が初期同期を送っているか（lab の EC2 から gnmic の CLI で同じ購読を機器に直接当てる）を見る（[pipeline.md](pipeline.md) の「gnmic の購読」と「gnmic の書き込みと ACL」）。出力の `buffer-size` / `timeout`（030）は送り手が詰まっているあいだの取りこぼしの手当てで、1 件も無い件には効かない見込み（イメージが古くて無いなら作り直す） |
 | トポロジは赤くなるのに修復案が出ない | SNS → SQS か、ワーカー。`WORKFLOW=1` か、起こす種類か（ワークフローを起こすのは `link_down` だけ）を見る（DLQ とワーカーのログは表の下の `修復案`） |
 | 承認を押しても `pending` のまま | 反映まで数秒〜20 秒かかる（Web → SQS `<prefix>-decisions` → worker → ワークフロー → `proposal_events` → Athena）。「更新」を押す（実測と、1 分たっても変わらないときは表の下の `pending`） |
 | 承認を押したら `expired` になった | ワークフローがもう無かった（worker のタスクが入れ替わった）。処置は打たれない。まだ落ちていれば、次の通知で別の修復案が出る（[workflow.md](workflow.md)） |
@@ -381,7 +381,7 @@ EC2 の再起動でも mask は消える。
 - `splunk-etc`:
   - compose は SNS の topic を渡さないので、SNS には届かず失敗のログが 2 回出る。
   - ECS の Splunk は volume を持たないので起きない。
-  - コードを読んだだけで、再現はしていない。
+  - 同じ版のまま作り直したアプリが volume に写らないことは 034 で再現した（上流の `/sbin/updateetc.sh` は `splunk.version` が違うときだけ写す。[docker/compose/README.md](../docker/compose/README.md) の「確かめたこと」）。前の名前のアプリが残る場面そのものは再現していない。
 
 ## 消すとき
 

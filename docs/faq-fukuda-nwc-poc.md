@@ -1195,7 +1195,7 @@ Lambda から書く経路は 2 案あった。
 | データソース | 接続先 | 入っているもの | 使い道 |
 |---|---|---|---|
 | Prometheus (AMP)。既定 | Amazon Managed Service for Prometheus | metrics / gnmi | ダッシュボード `metrics.json` と、アラートルール `link_down`、`bgp_down`、`isis_down` |
-| OpenSearch (logs) | OpenSearch Serverless の logs コレクション | traps / logs / flows | ダッシュボード `logs.json` と、アラートルール `trap` |
+| OpenSearch (logs) | OpenSearch Serverless の logs コレクション | traps / logs / flows | ダッシュボード `logs.json`（トピックごとの件数と traps / logs の行）と `flows.json`（flows）、アラートルール `trap` |
 
 - アラートは両方のデータソースを見ている。Prometheus のルールが 3 つ、OpenSearch のルールが 1 つ（`app/grafana/provisioning/alerting/`）。
 - 聞いた時点（2026-10-04）では、アラートは Prometheus の `link_down` だけだった。trap や BGP / IS-IS の落ちは Splunk だけが検知していた。「Splunk と Grafana のアラートを比べる（002）」で両方を揃えた。

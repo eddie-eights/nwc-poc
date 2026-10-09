@@ -13,7 +13,7 @@ SQS はもう 1 本あり、Web の承認・却下を worker に届ける（決�
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
 | トピック | `<prefix>-alerts`。暗号は AWS 管理の鍵（`alias/aws/sns`）。送り手も受け手も無いときも作る | `IaC/terraform/aws-managed/base/core/alerts.tf` |
-| Lambda | `<prefix>-graph-status`。python3.13、arm64、256 MB（OSS 版の Neo4j のドライバのレイヤーで 128 MB では余裕が無かった）、timeout 60 秒、VPC の中（`LAMBDA_AZ_NUM`、既定 1） | `IaC/terraform/aws-managed/pipeline/graph/sync.tf`、`app/graph/status_handler.py` |
+| Lambda | `<prefix>-graph-status`。python3.13、arm64、256 MB（OSS 版の Neo4j のドライバのレイヤーで 128 MB では余裕が無かった）、timeout 60 秒、VPC の中（`LAMBDA_AZ_NUM`、既定 1）。作るのは `time_sleep.status_iam`（30 秒。ロールを作り直したら待ちも作り直す）のあと（IAM の反映前に作ると `InsufficientRolePermissions` になった。029） | `IaC/terraform/aws-managed/pipeline/graph/sync.tf`、`app/graph/status_handler.py` |
 | Lambda の zip の中身 | `app/graph/status_handler.py`（`index.py` として）、`app/agentcore/graph.py`、`app/agentcore/toolkit.py`、`app/temporal/rules.py` | `sync.tf` |
 | Lambda のログ | `/aws/lambda/<prefix>-graph-status` | `sync.tf` |
 | キュー | `<prefix>-anomalies`。可視性タイムアウト 120 秒、保持 1 日、long polling 20 秒、5 回受け取ったら DLQ へ | `IaC/terraform/aws-managed/workflow/events.tf` |

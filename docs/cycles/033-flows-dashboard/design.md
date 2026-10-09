@@ -76,7 +76,7 @@ flows は GoFlow2 が sFlow / IPFIX を受けて Kafka の `flows` トピック�
 - `uv run --frozen python3 tests/test_oss.py` と check を足した側のテストが `失敗 0`（件数は実測）。
 - `bash -n app/grafana/start.sh` が無言。
 - 手元の compose（`docker/compose/`）に Grafana と OpenSearch があれば `docker compose up` して `http://localhost:3000/d/nwc-flows` が 6 panel で開く（flows のデータは lab が無いと空。panel のエラーが無いことだけ見る）。無ければ AWS で。
-- AWS（PM が 1 回だけ打つ。実装の範囲外）: Grafana の `nwc / flows` が開き、lab の sFlow で panel 1〜6 に値が入る。panel のエラー（`field not found` など）が無い。
+- AWS（PM が 1 回だけ打つ。実装の範囲外）: Grafana の `nwc / flows` が開く。lab の機器は flow を出さない（`docs/collection.md`、`ops/netflow_send.py` の docstring）ので、Web の EC2 から `ops/netflow_send.py <NLB>:2055` で 1 本送ってから、panel 1〜6 に値が入り、panel のエラー（`field not found` など）が無いことを見る。送る前は全 panel が空で正常。
 
 ## 未確定事項とリスク
 

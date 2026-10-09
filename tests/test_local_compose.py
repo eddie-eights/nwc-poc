@@ -317,6 +317,8 @@ check("prometheus は remote write を受け、設定は prometheus.yml（scrape
       "--web.enable-remote-write-receiver" in svc["prometheus"]["command"]
       and "./prometheus.yml:/etc/prometheus/prometheus.yml:ro" in svc["prometheus"]["volumes"]
       and "scrape_configs" not in read("docker", "compose", "prometheus.yml"))
+check("prometheus.yml は同じ系列の時刻が戻るサンプル（Kafka の追い付き）を 1 時間まで受ける（storage.tsdb.out_of_order_time_window。既定の 0 では v3.15.0 が 400 で捨てるのを 034 で確かめた）",
+      (yaml.safe_load(read("docker", "compose", "prometheus.yml")) or {}).get("storage", {}).get("tsdb", {}).get("out_of_order_time_window") == "1h")
 _gf = svc["grafana"]["environment"]
 check("grafana は PROMETHEUS_AUTH=none / OPENSEARCH_AUTH=basic で、URL は compose の中の prometheus と opensearch、ALERTS_TOPIC_ARN は渡さない",
       _gf["PROMETHEUS_AUTH"] == "none" and _gf["OPENSEARCH_AUTH"] == "basic" and _gf["PROMETHEUS_URL"] == "http://prometheus:9090"
@@ -442,10 +444,11 @@ fake("sudo", 'exec env -i PATH="$PATH" FAKE_LOG="$FAKE_LOG" FAKE_BGP_ADMIN="${FA
 # lab.sh up が打つ（containerlab は deploy を書くだけ、modprobe は何もしない）
 fake("containerlab")
 fake("modprobe")
-# up.sh が lab の管理ネットの GW を探し、check.sh がコンテナの bind が host にあるかを見る ip -o -4 addr show。FAKE_GW=1 なら containerlab の bridge に 203.0.113.1 がある（203.0.113.10 は似た別のアドレス）
+# up.sh が lab の管理ネットの GW を探し、check.sh がコンテナの bind が host にあるかを見る ip -o -4 addr show。FAKE_GW=1 なら containerlab の bridge に 203.0.113.1 がある（203.0.113.10 は似た別のアドレス）。FAKE_GW=look なら . を任意の 1 文字と読むと当たる 203a0a113a1 だけがある
 fake("ip", r'''echo "1: lo    inet 127.0.0.1/8 scope host lo\       valid_lft forever preferred_lft forever"
 echo "5: eth0    inet 203.0.113.10/24 brd 203.0.113.255 scope global eth0\       valid_lft forever preferred_lft forever"
 [ "${FAKE_GW:-0}" = 1 ] && echo "7: br-1a2b3c4d5e6f    inet 203.0.113.1/24 brd 203.0.113.255 scope global br-1a2b3c4d5e6f\       valid_lft forever preferred_lft forever"
+[ "${FAKE_GW:-0}" = look ] && echo "8: br-0f0f0f0f0f0f    inet 203a0a113a1/24 scope global br-0f0f0f0f0f0f\       valid_lft forever preferred_lft forever"
 exit 0
 ''')
 # lab.sh failover が待つ sleep と、断を見る snmpwalk（何も返さないので、down が見えるまで 10 回 sleep 1 する）
@@ -674,6 +677,10 @@ check("up.sh: app/containerlab/lab_topology.py の 2 つ（GNMI_TARGETS / DEVICE
 _r, _c = run([os.path.join(_lc, "up.sh")], FAKE_GW="1", TELEGRAF_BIND="10.9.9.9")
 check("up.sh: host に 203.0.113.1（lab.sh up が作る bridge）があれば TELEGRAF_BIND=203.0.113.1 で渡し、WARNING を出さない（シェルの TELEGRAF_BIND は使わない。203.0.113.10 と取り違えない）",
       _r.returncode == 0 and _c == ["ip -o -4 addr show", "docker compose up -d --build", f"{_upenv} TELEGRAF_BIND=203.0.113.1"] and "WARNING" not in _r.stderr)
+_r, _c = run([os.path.join(_lc, "up.sh")], FAKE_GW="look")
+check("up.sh: GW の判定は check.sh の dest と同じ grep -F --（. を任意の 1 文字と読まない。203a0a113a1 では TELEGRAF_BIND を空にして WARNING）。-q にしない（cycle 032）",
+      'grep -F -- " $MGMT_GW/" >/dev/null' in read("docker", "compose", "up.sh") and "grep -q" not in read("docker", "compose", "up.sh")
+      and _r.returncode == 0 and _c[2] == f"{_upenv} TELEGRAF_BIND=" and "WARNING" in _r.stderr)
 _r, _c = run([os.path.join(_lc, "up.sh"), "telegraf"])
 check("up.sh: 引数は docker compose up に渡す（up.sh telegraf で Telegraf だけ作り直す）", _r.returncode == 0 and _c[1] == "docker compose up -d --build telegraf")
 _r, _c = run([os.path.join(_lc, "down.sh"), "-v"])
@@ -806,6 +813,13 @@ check("check.sh: Splunk の認証の失敗（messages の FATAL / ERROR）は「
       and splunk_line('{"messages":[{"type":"WARN","text":"call not properly authenticated"}]}') == [f"NG  {SPL}: result が無い: WARN call not properly authenticated"]
       and splunk_line('{"result":{"count":0}}') == [f"NG  {SPL}: 0 件"]
       and splunk_line('{"result":{"count":3}}') == [f"ok  {SPL}"])
+check("check.sh: Splunk 10.4.4 の本物の応答（034 で手元の docker に打って写した本文）で、パスワード違いの 401 は ERROR Unauthorized、"
+      "検索の書き誤りの 400 は FATAL、200 の count が \"0\" なら「0 件」、\"1\" なら ok、200 の空の本文（eval の引数の誤りなど）は「読めない応答: 空」",
+      splunk_line('{"messages":[{"type":"ERROR","text":"Unauthorized"}]}') == [f"NG  {SPL}: ERROR Unauthorized"]
+      and splunk_line('{"messages":[{"type":"FATAL","text":"Unknown search command \'nosuchcmd\'."}]}') == [f"NG  {SPL}: FATAL Unknown search command 'nosuchcmd'."]
+      and splunk_line('{"preview":false,"offset":0,"lastrow":true,"result":{"count":"0"}}\n') == [f"NG  {SPL}: 0 件"]
+      and splunk_line('{"preview":false,"offset":0,"lastrow":true,"result":{"count":"1"}}\n') == [f"ok  {SPL}"]
+      and splunk_line(" ") == [f"NG  {SPL}: 読めない応答: 空"])   # 空の FAKE_SPLUNK は既定の応答になるので、空白 1 つで空の本文の代わりにする
 _dup = '{"messages":[' + ",".join(['{"type":"ERROR","text":"Unauthorized"}'] * 30) + ']}'
 _long = '{"messages":[{"type":"FATAL","text":"' + "x" * 300 + '\\n  y"},{"type":"ERROR","text":"b\\nc"}]}'
 _ll = splunk_line(_long)

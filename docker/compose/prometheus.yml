@@ -1,2 +1,8 @@
 # Spark（spark-http）の remote write を受けるだけ（compose.yaml の --web.enable-remote-write-receiver）。scrape はしない
 global:
+# 同じ系列に時刻が戻るサンプル（Kafka の追い付きで古い分が後から届く）を 1 時間までは受ける。既定の 0 では 400「out of order sample」で
+# 捨てられ、Spark は打ち直さずに捨てる（「手元の compose の未確認を確かめる（034）」で v3.15.0 に t=now → t=now-60s と送って確かめた）。
+# Prometheus 3.15.0 にこれを変える起動の引数は無く、設定ファイルにだけ書ける
+storage:
+  tsdb:
+    out_of_order_time_window: 1h

@@ -405,6 +405,8 @@ check("gnmic.yaml: 出力は gnmi / metrics の 2 つ（Kafka、同じブロー�
       and all(o["type"] == "kafka" and o["address"] == _GNMIC_ENV["KAFKA_BROKERS"] and o["topic"] == n and o["format"] == "event" and o["split-events"] is True
               and o.get("sasl") == {"user": "${KAFKA_SASL_USER}", "password": "${KAFKA_SASL_PASS}", "mechanism": "SCRAM-SHA-512"}
               and o.get("tls") == {"ca-file": "/etc/ssl/certs/ca-certificates.crt"}
+              # scram の区間にだけ別の項目（required-acks、debug など）を足しても気付けるよう、キー集合も縛る（030 のレビュー）
+              and set(o) == {"type", "address", "topic", "format", "split-events", "buffer-size", "timeout", "event-processors", "sasl", "tls"}
               for n, o in _gy.get("outputs", {}).items()))
 check("gnmic.yaml: target の名前は IP（tags.source = device map のキー）、address は GNMI_TARGETS の host:port、資格情報は target ごとに ${…} のまま",
       _gy.get("targets") == {ip: {"address": f"{ip}:57400", "username": "${GNMI_USERNAME}", "password": "${GNMI_PASSWORD}"} for ip in ("203.0.113.31", "203.0.113.32")})
@@ -419,8 +421,8 @@ check("gnmic.sh render（KAFKA_AUTH=none。OSS 版と手元）: SCRAM の資格�
       and all(o["address"] == "kafka-0.nwc:9092" and set(o) == {"type", "address", "topic", "format", "split-events", "buffer-size", "timeout", "event-processors"}
               for o in _gy_n.get("outputs", {}).values())
       and _gy_n.get("subscriptions") == _gy.get("subscriptions") and _gy_n.get("targets") == _gy.get("targets"))
-# cycle 030: 購読直後の初期同期（on-change の全状態）を producer（TLS + SCRAM）が出来るまで抱える（既定の buffer-size 0 / timeout 5s は黙って捨てる）。
-# values の無い event（metrics の 9 割、deletes だけの event）は output 側の event-drop で捨てる。scram と none の両方で同じ
+# cycle 030: 送り手（sarama）が詰まっているあいだの応答を抱える（既定の buffer-size 0 / timeout 5s は 5 秒で黙って捨てる）。初回値が丸ごと無い件に効くかは AWS で未確認。
+# values の無い event（2026-10-09 の metrics の 400 件中 359 件、deletes だけの event）は output 側の event-drop で捨てる。scram と none の両方で同じ
 check("gnmic.yaml（cycle 030）: gnmi / metrics の両方が buffer-size 10000・timeout 60s・event-processors [drop-empty]（scram と none の両方）",
       all(set(y.get("outputs", {})) == {"gnmi", "metrics"}
           and all(o.get("buffer-size") == 10000 and o.get("timeout") == "60s" and o.get("event-processors") == ["drop-empty"] for o in y["outputs"].values())

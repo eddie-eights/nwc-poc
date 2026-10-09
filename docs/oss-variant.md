@@ -86,6 +86,7 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
   Grafana、Web の部品、エージェント、workflow、Neo4j への同期までつないである（何がどう動くかは [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md) の「実装の状態」）。
 - **機能と格納先は選ばない。**
   `AGENT` / `PIPELINE` / `WORKFLOW` / `STORES` などのキーは読まず、ルートはいつも全部、格納先はいつも `iceberg` / `opensearch` / `prometheus` / `splunk` の 4 つ、Grafana もいつも作る。
+  Grafana のダッシュボード（`metrics.json` / `logs.json` / `flows.json`）とアラートのルールはマネージド版と同じファイル（`app/grafana/provisioning`。データソースの uid を `amp` / `aoss-logs` に揃えてある）。
 - **Nautobot の Job は Neo4j に書く（2026-10-08 に AWS で確かめた。手で打つ Job と JobHook の両方。[verification/20261008-oss-aws.md](verification/20261008-oss-aws.md)）。**
   - Neo4j のタスクが入れ替わると変更履歴も消え、`ops/sync-graph.sh --oss` では戻らないので、そのあと Job「gnmic とグラフ DB に同期」を打ち直す（上の「Neo4j を起こし直したあとの戻し方」）。
   - Job の名前はマネージド版と同じで、説明に Neo4j と出る。エージェントの `root_cause` と `topology_graph` の `source` は `neo4j`（空なら `neo4j-empty`）

@@ -263,6 +263,36 @@ _l = [{"a": "a", "a_if": "1", "b": "b", "b_if": "1"}, {"a": "c", "a_if": "1", "b
 r = t.impact(_d, _l, [{"op": "link_up", "target": "e#1"}])
 check("impact: 上げてかたまりの大きさの順が入れ替わっても（c–d–e の 3 台が a–b の 2 台を抜く）、何も切れていない a と b は孤立に出ず ok、つながり直すのは e",
       r["verdict"] == "ok" and r["newly_isolated"] == [] and r["reconnected"] == ["e"])
+_d = [{"device_id": x} for x in "abcd"]
+_l = [{"a": "a", "a_if": "1", "b": "b", "b_if": "1"}, {"a": "c", "a_if": "1", "b": "d", "b_if": "1"}, {"a": "b", "a_if": "2", "b": "c", "b_if": "2", "status": "DOWN"}]
+r = t.impact(_d, _l, [{"op": "link_up", "target": "b#2"}])
+check("impact: 同点で割れたかたまり（a–b と c–d）を b–c でつないでも、もともとかたまりにいた 4 台はつながり直すに出ない（変更前に本流が無いときは、次数 0 だった機器だけ。cycle 032）",
+      r["verdict"] == "ok" and r["reconnected"] == [] and "つながり直す機器" not in r["summary"])
+_d = [{"device_id": x} for x in "abcde"]
+_l = [{"a": "a", "a_if": "1", "b": "b", "b_if": "1"}, {"a": "b", "a_if": "2", "b": "c", "b_if": "1"}, {"a": "d", "a_if": "1", "b": "e", "b_if": "1"},
+      {"a": "c", "a_if": "2", "b": "d", "b_if": "2", "status": "DOWN"}]
+r = t.impact(_d, _l, [{"op": "link_up", "target": "c#2"}])
+check("impact: 本流（a–b–c）と別のかたまり（d–e）を c–d でつなぐと、本流にいなかった d と e がつながり直す（本流にいた a–c は出ない。cycle 032）",
+      r["verdict"] == "ok" and r["reconnected"] == ["d", "e"])
+_d = [{"device_id": x} for x in ("s1", "s2", "l1", "trex")]
+_d[3]["role"] = "trex"
+_l = [{"a": "s1", "a_if": "1", "b": "l1", "b_if": "1"}, {"a": "s2", "a_if": "1", "b": "l1", "b_if": "2"}, {"a": "l1", "a_if": "3", "b": "trex", "b_if": "1", "status": "DOWN"}]
+r = t.impact(_d, _l, [{"op": "link_up", "target": "trex#1"}])
+check("impact: 孤立していた端（TRex）も、本流の機器への回線を上げればつながり直す（cycle 032）", r["reconnected"] == ["trex"])
+_d2 = [dict(d, status="DOWN") if d["device_id"] == "s2" else d for d in _d]
+r = t.impact(_d2, _l, [{"op": "device_up", "target": "s2"}])
+check("impact: DOWN だった機器を上げて本流に入れば、つながり直すに出る（変更前の次数は 0。cycle 032）", r["reconnected"] == ["s2"])
+_d = [{"device_id": x} for x in "abcdefghi"]
+_l = [{"a": a, "a_if": str(n), "b": b, "b_if": str(n)} for n, (a, b) in enumerate(["ab", "bc", "cd", "de", "fg", "gh", "hi"])]
+r = t.impact(_d, _l, [{"op": "link_down", "target": "b#1"}])
+check("impact: 回線を落として本流（a–e の 5 台）が割れ、別のかたまり（f–i の 4 台）が繰り上がっても、f–i はつながり直すに出ない（cycle 032）",
+      r["verdict"] == "danger" and r["newly_isolated"] == ["a", "b"] and r["reconnected"] == [] and "つながり直す機器" not in r["summary"])
+_d = [{"device_id": x} for x in "abcdefg"]
+_l = [{"a": a, "a_if": str(n), "b": b, "b_if": str(n), "status": "DOWN" if (a, b) == ("e", "f") else "UP"}
+      for n, (a, b) in enumerate(["ab", "bc", "de", "fg", "ef"])]
+r = t.impact(_d, _l, [{"op": "link_up", "target": "e#4"}])
+check("impact: 本流（a–c の 3 台）と別の同じ大きさのかたまり（d–e と f–g）どうしをつないで本流を抜けば、d–g がつながり直すに出る"
+      "（変更後の本流の中の断片が同点なら変更前の本流と比べる。cycle 032）", r["reconnected"] == ["d", "e", "f", "g"])
 check("app.run_tool は what_if を topology に振る", app.run_tool("what_if", {"op": "device_down", "target": "dc1-a-leaf-01"})["verdict"] == "ok")
 # ---- Nautobot の保守中と変更履歴（2026-10-04）
 check("list_devices は maintenance を出す（静的データでは全部 false）", all(d["maintenance"] is False for d in t.list_devices()["devices"]))
