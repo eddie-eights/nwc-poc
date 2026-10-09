@@ -25,10 +25,12 @@ read_rows がトピックで分けて同じ形に読み替える（name は flow
 
 gnmic（cycle 013。機器の gNMI を購読する。app/gnmic）の event（format: event。split-events で 1 メッセージ 1 件）は
   {"name": "<subscription の名前>", "timestamp": <ナノ秒>, "tags": {"source": "<機器の IP>", "interface_name": "…", …}, "values": {"/interface/oper-state": "…"}}
-の形（消えたときは values が無く deletes だけ）。read_rows が形で見分けて（fields が無く、values か deletes がある）Telegraf の形に読み替える
+の形（消えたときは values が無く deletes だけ）。read_rows（読み替えの中身は parse_rows）が形で見分けて（fields が無い）Telegraf の形に読み替える
 （トピックでは分けない。gnmi と metrics のどちらに来ても同じ）: timestamp は秒、name は GNMI_MEASUREMENTS で measurement に、tags のキーは接頭辞（…:）を落として
 GNMI_TAGS で名前を替え、values のキーは最後の要素の接頭辞を落として - を _ に（/interface/oper-state → oper_state）、agent_host の列は tags.source。
-deletes だけの event は捨てる。gnmic_message が同じ読み替えを Python で書いたもの（tests/test_stream.py が縛る）。読み替えた形がどの格納先にも入る（S3 Tables も）。
+values の無い event（deletes だけ、または values も deletes も無いもの。2026-10-09 の AWS では metrics の 400 件中 359 件）は捨てる（cycle 025）。
+gnmic_message が同じ読み替えを Python で書いたもの（tests/test_stream.py が縛る）。読み替えた形がどの格納先にも入る（S3 Tables も）。
+timestamp が 0〜2100 年の範囲の外の行（ナノ秒を秒と読んだ値など）は、ts に直す前に捨てる（TIMESTAMP_MAX。1 行で collect() が死なないため。cycle 025）。
 
 どの行にも一意の番号 event_id を付ける: Kafka のメッセージの value（from_json の前のバイト列そのまま）の SHA-256 の 16 進 64 文字（F.sha2）。
 中身から作るので、Spark のやり直しで同じメッセージを送り直しても、Telegraf が同じメッセージを Kafka に 2 回入れても同じ値になり、読む側で重複を落とせる
@@ -126,6 +128,7 @@ GNMI_MEASUREMENTS = {"interface_state": "interface", "interface_stats": "interfa
 # tags のキー（接頭辞「…:」を落としたもの）→ Telegraf のころの名前（Grafana / Splunk のルールとダッシュボードが読む）。表に無いタグ（source、subscription-name …）はそのまま
 GNMI_TAGS = {"interface_name": "ifName", "neighbor_peer-address": "peer_address", "interface_interface-name": "interface_name", "control_slot": "slot"}
 GNMI_NS = 1000000000   # event の timestamp はナノ秒。割って小数を切り、秒（Telegraf の timestamp と同じ単位）にする（double の割り算。read_rows と gnmic_message で同じ）
+TIMESTAMP_MAX = 4102444800   # 2100-01-01T00:00:00Z の秒。これを超える timestamp（ナノ秒を秒と読んだ値など）の行は捨てる（cycle 025。1 行で collect() が死なないため）
 
 # S3 Tables の表に、ジョブが起動時に足す列（tables.tf の列のあとに、この順。名前と Spark SQL の型）。tables.tf の schema には書かない:
 # aws provider（6.64）の aws_s3tables_table は metadata の schema を変えると表を作り直す（RequiresReplace）ので、いまある行が消える。
@@ -239,21 +242,8 @@ def basic_auth_header():
 # ---------------------------------------------------------------- 行の形（Kafka → 列）
 def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
     """Kafka の topics（カンマ区切り）を読んで tables.tf の列にした DataFrame を返す（テストでは start せずに中身だけ見る）。
-    max_offsets_per_trigger が 0 でなければ、1 回のトリガーに読む件数をそこで抑える（Kafka の maxOffsetsPerTrigger）"""
-    from pyspark.sql import functions as F
-    from pyspark.sql import types as T
-
-    # Telegraf の JSON のうち、列に分ける部分だけ型を書く。tags / fields は文字列のまま
-    # （値は数値でも JSON の文字のまま文字列で入る。Spark の from_json は StringType に JSON の値の字面を入れる）。
-    # values / deletes は gnmic の event（fields の代わりに values を持ち、消えたときは deletes だけ。cycle 013）を見分けて読み替えるため
-    schema = T.StructType([
-        T.StructField("timestamp", T.LongType()),
-        T.StructField("name", T.StringType()),
-        T.StructField("tags", T.MapType(T.StringType(), T.StringType())),
-        T.StructField("fields", T.MapType(T.StringType(), T.StringType())),
-        T.StructField("values", T.MapType(T.StringType(), T.StringType())),
-        T.StructField("deletes", T.ArrayType(T.StringType())),
-    ])
+    max_offsets_per_trigger が 0 でなければ、1 回のトリガーに読む件数をそこで抑える（Kafka の maxOffsetsPerTrigger）。
+    読み替え（形の見分け、gnmic / flows の読み替え、timestamp の範囲の守り）は parse_rows がする（cycle 025 で切り出した）"""
     reader = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", bootstrap)
@@ -274,12 +264,36 @@ def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
         )
     if max_offsets_per_trigger:
         reader = reader.option("maxOffsetsPerTrigger", str(max_offsets_per_trigger))
-    raw = reader.load()
+    return parse_rows(reader.load())
+
+
+def parse_rows(raw):
+    """Kafka の行（value / topic / partition / offset の列を持つ DataFrame。readStream でもバッチでもよい）を tables.tf の列にした DataFrame にする
+    （read_rows の読み替えの中身。cycle 025 で切り出した。tests/spark_parse_check.py が本物の Spark のバッチの DataFrame で通す）。
+    timestamp が 0〜TIMESTAMP_MAX（2100 年）の範囲の外の行と、timestamp の無い行は捨てる（範囲の守りはここだけの仕事。gnmic_message / flow_message には無い）"""
+    from pyspark.sql import functions as F
+    from pyspark.sql import types as T
+
+    # Telegraf の JSON のうち、列に分ける部分だけ型を書く。tags / fields は文字列のまま
+    # （値は数値でも JSON の文字のまま文字列で入る。Spark の from_json は StringType に JSON の値の字面を入れる）。
+    # values / deletes は gnmic の event（fields の代わりに values を持ち、消えたときは deletes だけ。cycle 013）を読み替えるため
+    # （deletes は cycle 025 から見分けに使わない。deletes だけの event は values が無いので捨てる）
+    schema = T.StructType([
+        T.StructField("timestamp", T.LongType()),
+        T.StructField("name", T.StringType()),
+        T.StructField("tags", T.MapType(T.StringType(), T.StringType())),
+        T.StructField("fields", T.MapType(T.StringType(), T.StringType())),
+        T.StructField("values", T.MapType(T.StringType(), T.StringType())),
+        T.StructField("deletes", T.ArrayType(T.StringType())),
+    ])
     value = F.col("value").cast("string")
     msg = F.from_json(value, schema)
-    # gnmic の event は形で見分け、Telegraf の形（timestamp / name / tags / fields）の struct に読み替える（gnmic_struct。gnmic_message と同じ表）。
+    # gnmic の event は形で見分け（fields が無い）、Telegraf の形（timestamp / name / tags / fields）の struct に読み替える（gnmic_struct。gnmic_message と同じ表）。
+    # Telegraf の JSON（trap / syslog-ng / telegraf）は必ず fields を持ち、flows はトピックで先に分ける。values の無い event（deletes だけ、values も deletes も無い。
+    # 2026-10-09 の AWS で metrics の 400 件中 359 件）も gnmic_struct に送り、timestamp が null になって下の where で捨てる（cycle 025。それまでは
+    # values か deletes を要求していたので、values も deletes も無い event が Telegraf の行としてナノ秒を秒と読まれ、sinks の collect() が年 173875 で落ちていた）。
     # Telegraf の行も同じ 4 つの項目の struct にする（F.when の分岐は同じ型でなければならない）
-    gnmic = msg["fields"].isNull() & (msg["values"].isNotNull() | msg["deletes"].isNotNull())
+    gnmic = msg["fields"].isNull()
     telegraf = F.struct(*(msg[k].alias(k) for k in ("timestamp", "name", "tags", "fields")))
     # flows（GoFlow2）は Telegraf の形ではないので、同じ形（timestamp / name / tags / fields）の struct に読み替える（flow_message と同じ表）。
     # 無いキーは map に入れない（Telegraf の tags / fields と同じく、値が null のキーを持たない）
@@ -304,7 +318,9 @@ def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
         F.sha2(F.col("value"), 256).alias("event_id"),
         F.col("partition").alias("kafka_partition"),
         F.col("offset").alias("kafka_offset"),
-    )
+        # 秒の timestamp が取りうる範囲の外（ナノ秒を秒と読んだ値など）と null は、ts に直す前に捨てる
+        # （Spark の timestamp の内部表現に依らない long の比較。null は between が null なので落ちる。cycle 025）
+    ).where(F.col("m.timestamp").between(0, TIMESTAMP_MAX))
     rows = parsed.select(
         F.to_timestamp(F.from_unixtime(F.col("m.timestamp"))).alias("ts"),
         F.col("topic"),
@@ -326,7 +342,8 @@ def read_rows(spark, bootstrap, topics, max_offsets_per_trigger=0):
 def flow_message(m):
     """GoFlow2 の JSON 1 行（dict）を Telegraf の形（timestamp / name / tags / fields）にする。read_rows が flows のトピックで
     Spark の列で組むものと同じ読み替え（テストが GoFlow2 の 1 行で確かめる）。値は文字列（Spark の from_json の StringType と同じく、
-    数値は JSON の字面）。無いキーと null は入れない。time_received_ns が整数でなければ timestamp は None（read_rows では ts が null で捨てる）"""
+    数値は JSON の字面）。無いキーと null は入れない。time_received_ns が整数でなければ timestamp は None（read_rows では ts が null で捨てる）。
+    timestamp の範囲（0〜2100 年）の守りは read_rows（parse_rows）だけの仕事で、ここでは見ない（読み替えの双子に留める）"""
     def text(v):
         return v if isinstance(v, str) else json.dumps(v)
 
@@ -342,7 +359,7 @@ def flow_message(m):
 
 def gnmic_struct(F, msg):
     """read_rows の gnmic の分岐: from_json した event の列 msg を、Telegraf の形（timestamp 秒 / name / tags / fields）の struct にする
-    （gnmic_message と同じ読み替え）。values の無い event（deletes だけ）は timestamp を null にして、read_rows の where で捨てる。
+    （gnmic_message と同じ読み替え）。values の無い event（deletes だけ、values も deletes も無い）は timestamp を null にして、parse_rows の where で捨てる。
     読み替えたキーが重なったら後勝ち（build が spark.sql.mapKeyDedupPolicy=LAST_WIN にする。既定の EXCEPTION ではクエリが落ちる）"""
     def strip(c):   # 接頭辞（srl_nokia-…:）を落とす
         return F.regexp_replace(c, "^.*:", "")
@@ -365,8 +382,9 @@ def gnmic_message(m):
     """gnmic の event 1 件（dict）を Telegraf の形（timestamp / name / tags / fields）にする。read_rows が Spark の列で組むもの（gnmic_struct）と
     同じ読み替え（GNMI_MEASUREMENTS / GNMI_TAGS。tests/test_stream.py が event で確かめる）。値は文字列（Spark の from_json の StringType と同じく、
     文字列でない値は JSON の字面。null は null のまま）。読み替えたキーが重なったら後勝ち（build の mapKeyDedupPolicy=LAST_WIN と同じ）。
-    values の無い event（消えたときの deletes だけ）と、timestamp が整数でないものは None（read_rows では ts が null で捨てる）。
-    Telegraf の形（fields がある）は読み替えない（read_rows はそのまま通す）ので、ここには渡さない"""
+    values の無い event（消えたときの deletes だけ、values も deletes も無いもの）と、timestamp が整数でないものは None（read_rows では ts が null で捨てる）。
+    Telegraf の形（fields がある）は読み替えない（read_rows はそのまま通す）ので、ここには渡さない。
+    timestamp の範囲（0〜2100 年）の守りは read_rows（parse_rows）だけの仕事で、ここでは見ない（読み替えの双子に留める）"""
     def text(v):
         return v if v is None or isinstance(v, str) else json.dumps(v, separators=(",", ":"), ensure_ascii=False)
 

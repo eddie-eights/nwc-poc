@@ -285,7 +285,7 @@ check("Spark の既定は logs（syslog-ng）と flows（GoFlow2）も読む", m
       and mod.sink_topics("opensearch", mod.METRIC_TOPICS, mod.LOG_TOPICS) == "traps,logs,flows")
 
 # ---- gnmic（cycle 013）: event → Telegraf の形の読み替え（gnmic_message。read_rows の gnmic_struct と同じ表。test_analytics が gnmic_struct を見る）
-# 入力の event はソースから組んだ形（gnmic v0.49.0 の event の形。実物ではない。design.md の未確定 1、AWS で実物と照合する = 検証 7）
+# 入力の event はソースから組んだ形（gnmic v0.49.0 の event の形。実物ではない。design.md の未確定 1、AWS で実物と照合する = 検証 7）。実物は _ge_real（下）
 _ge = {"name": "interface_state", "timestamp": 1700000000123456789,
        "tags": {"interface_name": "ethernet-1/1", "source": "203.0.113.31", "subscription-name": "interface_state"},
        "values": {"/srl_nokia-interfaces:interface/oper-state": "down"}}
@@ -350,6 +350,14 @@ check("gnmic_message: 消えた event（deletes だけ）・values が dict で�
           dict(_ge, timestamp=True), {k: v for k, v in _ge.items() if k != "timestamp"})))
 check("gnmic_message: 入力の event を書き換えない", _ge["tags"] == {"interface_name": "ethernet-1/1", "source": "203.0.113.31", "subscription-name": "interface_state"}
       and list(_ge["values"]) == ["/srl_nokia-interfaces:interface/oper-state"])
+# cycle 025: 実物の event（2026-10-09 の AWS の metrics。docs/verification/20261009-aws-managed-2.md 不具合 1。Kafbat UI で取った字面のまま）。
+# values も deletes も無い（400 件中 359 件がこの形）。read_rows がこれを Telegraf の行として読み、sinks が落ちていた
+_ge_real = {"name": "interface_stats", "timestamp": 1791534762523125553, "tags": {"interface_name": "ethernet-1/7", "source": "203.0.113.11", "subscription-name": "interface_stats"}}
+check("gnmic_message: values のキーそのものが無い実物の event（2026-10-09 の AWS）は None（捨てる）", mod.gnmic_message(_ge_real) is None)
+check("gnmic_message: 実物の event に values を足すと、timestamp は秒（1791534762）、name は interface、interface_name は ifName、fields は in_octets",
+      mod.gnmic_message(dict(_ge_real, values={"/srl_nokia-interfaces:interface/statistics/in-octets": "12345"}))
+      == {"timestamp": 1791534762, "name": "interface", "tags": {"ifName": "ethernet-1/7", "source": "203.0.113.11", "subscription-name": "interface_stats"},
+          "fields": {"in_octets": "12345"}})
 
 # ---- gnmic（cycle 013）: gnmic.sh render が gnmic.yaml.in から作る設定（手元の sh で回す。イメージの中は alpine の sh。検証 5 は docker run）
 import yaml   # PyYAML（uv の dev グループ。ops/check.sh が入れる）
