@@ -582,6 +582,8 @@ vrnetlab のページには、このほかに Cisco vIOS と Cisco ASAv も載�
 - [Q. executor を 2 つにしたら Kafka からの読み取りは 2 つに分かれる。送信はまた別に並列化が要るの？](#q-executor-を-2-つにしたら-kafka-からの読み取りは-2-つに分かれる送信はまた別に並列化が要るの)
 - [Q. `foreachPartition` は、大量のデータを Spark のジョブ 1 つでは捌けなくなったときに使う？ 環境変数で切り替えられる？](#q-foreachpartition-は大量のデータを-spark-のジョブ-1-つでは捌けなくなったときに使う-環境変数で切り替えられる)
 - [Q. 大量のデータでは、格納先ごとに Spark のジョブを分けたほうがいい？](#q-大量のデータでは格納先ごとに-spark-のジョブを分けたほうがいい)
+- [Q. EMR のログが S3 にあるけど、何？](#q-emr-のログが-s3-にあるけど何)
+- [Q. CloudWatch だけに worker を含む全部のログとイベントログを出すと、EMR の画面（Spark UI）から見えなくなる？](#q-cloudwatch-だけに-worker-を含む全部のログとイベントログを出すとemr-の画面spark-uiから見えなくなる)
 
 ### Q. Spark のジョブ、driver、executor、クエリ、タスクは、役割がどう違う？
 
@@ -636,7 +638,7 @@ flowchart TB
 
 **分散して読んでいるかの確かめ方**
 
-Spark UI（EMR Serverless のコンソールから開ける）の Executors の画面で、executor 1 と 2 の両方に「完了したタスク」の数が増えていけば、分かれて読んでいる（AWS では未確認）。
+Spark UI（EMR の managed storage を入れればコンソールから開ける。いまは切っているので開けない。下の「CloudWatch だけに…見えなくなる？」）の Executors の画面で、executor 1 と 2 の両方に「完了したタスク」の数が増えていけば、分かれて読んでいる（AWS では未確認）。
 
 ### Q. Spark のジョブは 1 つで、Kafka の購読も 1 つ？
 
@@ -844,6 +846,37 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
   - 格納先を外すと、そのジョブは起きない（`STORES` に `splunk` が無ければ Splunk のジョブは無い）。
   - 上限を変える apply は、アプリが止まっていないと通らない。`ops/up.sh` は上限が違うときだけ、先にジョブとアプリを止めてから apply し、ジョブを checkpoint の続きから起こし直す。
   - スクリプトは `--sinks` で格納先を選べ、checkpoint は格納先ごとに分かれているので、同じスクリプトを 3 つ起こしている。
+
+### Q. EMR のログが S3 にあるけど、何？
+
+EMR Serverless のジョブ（Spark）のログ。置き先は 3 つあり、このリポジトリは S3 と CloudWatch の 2 つを使い、EMR の managed storage は切っている（`IaC/terraform/aws-managed/pipeline/analytics/outputs.tf` の `configuration_overrides_json`）。
+
+| 置き先 | 入るもの | 保持 | コンソールの Spark UI |
+|---|---|---|---|
+| managed storage（EMR が持つ領域。既定で ON） | driver と executor の stdout / stderr、イベントログ | 30 日 | 開ける |
+| S3（`s3MonitoringConfiguration` の `logUri`） | 同上 | バケットのライフサイクル次第 | 開けない（AWS の文書で「Not supported」） |
+| CloudWatch Logs（`cloudWatchLoggingConfiguration`） | driver と executor の stdout / stderr だけ。**イベントログは入らない** | ロググループの保持日数 | 関係しない |
+
+- S3 の中は `logUri` の下に `applications/<アプリ ID>/jobs/<ジョブ ID>/` が切られ、`SPARK_DRIVER/` と `SPARK_EXECUTOR/<番号>/` に stdout / stderr の gz、`sparklogs/` にイベントログが入る。`S3 の置き場を整える（035）` のあとは logs バケットの `emr/` の下で、7 日で消える。
+- CloudWatch に出しているのは driver の stdout / stderr だけ（`logTypes = { SPARK_DRIVER = ["stdout", "stderr"] }`）。`aws logs tail` で追えるのが目的。executor のログは S3 だけ。
+  - executor も CloudWatch に出せる（`SPARK_EXECUTOR` を足す）が、送るのは worker の仕事なので worker の資源を食い、AWS の文書は worker を大きくするよう勧めている。PutLogEvents の上限に当たることもある。executor のログを読むのは調べ物のときだけなので S3 で足りる。
+- managed storage を切った理由: 置き先が 3 つになって同じものが二重に残るのを避けるため。ただし下の Q のとおり、切るとコンソールの Spark UI が開けない。
+
+### Q. CloudWatch だけに worker を含む全部のログとイベントログを出すと、EMR の画面（Spark UI）から見えなくなる？
+
+CloudWatch は画面に関係ない。それ以前に、**CloudWatch にはイベントログを出せない**（出せるのは driver と executor の stdout / stderr だけ）。
+
+- Spark UI の元はイベントログ。EMR のコンソールの Spark UI が読むのは **managed storage に置いたイベントログだけ**。S3 だけに置いても読まない（AWS の文書で「Not supported」）。
+- だから画面が見えるかどうかは managed storage を切るかどうかで決まる。CloudWatch を足しても引いても変わらない。
+
+| managed storage | コンソールの Spark UI |
+|---|---|
+| ON（S3 や CloudWatch を足してもよい） | 開ける |
+| OFF（このリポジトリ） | 開けない。AWS の文書に「コンソールから Spark UI にアクセスできない」とある |
+
+- このリポジトリは OFF なので、[pipeline.md](pipeline.md) の `get-dashboard-for-job-run` の手順は文書どおりなら通らない（AWS では未確認）。
+- S3 のイベントログを画面で見るなら、Spark History Server を手元に立てて S3 を読ませる（AWS のサンプル `aws-samples/emr-serverless-samples` の `utilities/spark-ui`）。
+- 画面を戻すなら `managedPersistenceMonitoringConfiguration` を `enabled = true` にする（30 日保持、追加料金なし）。閉域の VPC なので、S3 のゲートウェイエンドポイントのポリシーが EMR 側のバケットを許す必要があるかは AWS で確かめる。
 
 ---
 

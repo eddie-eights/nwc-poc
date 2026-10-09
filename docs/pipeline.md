@@ -619,7 +619,7 @@ terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw list_j
 terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw list_tables_command; echo
 ```
 
-Spark UI を開く（EMR Studio は要らない）:
+Spark UI を開く（EMR Studio は要らない）。**ただし EMR の managed storage を切っているので（`outputs.tf` の `managedPersistenceMonitoringConfiguration`）、AWS の文書どおりならコンソールの Spark UI は開けず、この手順は通らない（AWS では未確認。FAQ「CloudWatch だけに worker を含む全部のログとイベントログを出すと、EMR の画面（Spark UI）から見えなくなる？」）:**
 
 ```bash
 APP_ID=$(terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw application_id); echo "$APP_ID"
