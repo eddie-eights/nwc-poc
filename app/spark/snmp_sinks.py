@@ -919,29 +919,35 @@ def admin_client(spark, bootstrap):
 
 
 def ensure_topics(spark, bootstrap, topics):
-    """無いトピックを作って、作った名前を返す（あるものは触らない）。
+    """無いトピックを作って、作れた名前を返す（あるものと、ほかが先に作ったものは触らない）。
     MSK は auto.create.topics.enable=true だが、それは produce のとき。Telegraf が最初の trap を出すまで traps は無く、
     Spark の offset 読み（AdminClient）は無いトピックで UnknownTopicOrPartitionException で落ちて、起こし直しの上限（1 時間 5 回）を
     使い切っていた（2026-09-27 実測）。logs / flows / gnmi / metrics は、書く syslog-ng・GoFlow2・gnmic（SASL/SCRAM）に CREATE の ACL を付けないので、
     AWS の文書どおりなら自動では作られず（MSK では未確認）、ここで作る（gnmic が止まっていても gnmi / metrics はある）。
     パーティション数と複製数はブローカーの既定（IaC/terraform/aws-managed/pipeline/stream の MSK configuration）。
-    ほかのジョブや Telegraf と同時に作って TopicExistsException になっても、あるのだから先へ進む"""
+    ほかのジョブや Telegraf と同時に作って TopicExistsException になっても、あるのだから先へ進む（そのトピックは作った名前に入れない）。
+    どれが作れたかは .all() では分からないので、values()（トピック名 → future の Map）でトピックごとに待つ"""
     jvm = spark._jvm
     admin = admin_client(spark, bootstrap)
     try:
         have = set(admin.listTopics().names().get())
         missing = [t for t in topics if t not in have]
+        made = []
         if missing:
             none = jvm.java.util.Optional.empty()
             new = jvm.java.util.ArrayList()
             for t in missing:
                 new.add(jvm.org.apache.kafka.clients.admin.NewTopic(t, none, none))
-            try:
-                admin.createTopics(new).all().get()
-            except Exception as e:  # noqa: BLE001 - py4j の例外。TopicExists だけ許す
-                if "TopicExistsException" not in str(e):
-                    raise
-        return missing
+            futures = admin.createTopics(new).values()
+            for t in missing:
+                try:
+                    futures.get(t).get()
+                except Exception as e:  # noqa: BLE001 - py4j の例外。TopicExists だけ許す
+                    if "TopicExistsException" not in str(e):
+                        raise
+                    continue
+                made.append(t)
+        return made
     finally:
         admin.close()
 

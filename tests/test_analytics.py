@@ -624,11 +624,15 @@ class _Fut:
 
 class _Admin:
     made = []
+    # err はトピック全部に同じ例外の文字列か、トピック名 → 例外の文字列の dict（一部だけ失敗）。values() はトピック名 → future（Kafka の Map<String, KafkaFuture<Void>>）
     def __init__(self, have, err=None, acl_err=None): self.have, self.err, self.acl_err, self.closed, self.acls = have, err, acl_err, False, None
     def listTopics(self): return type("R", (), {"names": lambda _s: _Fut(self.have)})()
     def createTopics(self, lst):
-        _Admin.made.extend(t.name for t in lst)
-        return type("R", (), {"all": lambda _s: _Fut(None, self.err)})()
+        names = [t.name for t in lst]
+        _Admin.made.extend(names)
+        err = lambda n: self.err.get(n) if isinstance(self.err, dict) else self.err
+        return type("R", (), {"all": lambda _s: _Fut(None, next((err(n) for n in names if err(n)), None)),
+                              "values": lambda _s: {n: _Fut(None, err(n)) for n in names}})()
     def createAcls(self, bindings):
         self.acls = (self.acls or []) + list(bindings)
         return type("R", (), {"all": lambda _s: _Fut(None, self.acl_err)})()
@@ -671,12 +675,16 @@ _admin2 = _Admin({"metrics", "gnmi", "traps", "logs"})
 check("ensure_topics: 全部あれば作らない（createTopics を呼ばない）",
       mod.ensure_topics(type("S", (), {"_jvm": _JVM(_admin2)})(), "b", ["traps", "logs"]) == [] and _Admin.made == [] and _admin2.closed)
 _admin3 = _Admin(set(), err="org.apache.kafka.common.errors.TopicExistsException: Topic 'traps' already exists.")
-check("ensure_topics: 同時に作られて TopicExistsException になっても先へ進む", mod.ensure_topics(type("S", (), {"_jvm": _JVM(_admin3)})(), "b", ["traps"]) == ["traps"])
+check("ensure_topics: 同時に作られて TopicExistsException になっても先へ進み、作ったとは言わない", mod.ensure_topics(type("S", (), {"_jvm": _JVM(_admin3)})(), "b", ["traps"]) == [])
 _admin4 = _Admin(set(), err="org.apache.kafka.common.errors.TopicAuthorizationException: Not authorized")
 try:
     mod.ensure_topics(type("S", (), {"_jvm": _JVM(_admin4)})(), "b", ["traps"]); _raised = False
 except Exception: _raised = True
 check("ensure_topics: TopicExists 以外の失敗は上げる（権限が無いのを黙って通さない）。close はする", _raised and _admin4.closed)
+_Admin.made = []
+_admin5 = _Admin(set(), err={"logs": "org.apache.kafka.common.errors.TopicExistsException: Topic 'logs' already exists."})
+check("ensure_topics: 一部だけ TopicExists（logs だけほかが先に作った）なら、作れた traps だけを返す。close はする",
+      mod.ensure_topics(type("S", (), {"_jvm": _JVM(_admin5)})(), "b", ["traps", "logs"]) == ["traps"] and _Admin.made == ["traps", "logs"] and _admin5.closed)
 
 # ---- SASL/SCRAM の収集器の ACL（AWS の文書は MSK の IAM のアクセス制御では allow.everyone.if.no.acl.found が効かないとする。MSK では未確認。cycle 012 Round 2）
 def _kafka_auth(v, f):
