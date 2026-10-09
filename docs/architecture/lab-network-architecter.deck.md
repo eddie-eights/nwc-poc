@@ -37,16 +37,17 @@ source: app/containerlab/gen_lab.py、trex/、docs/cycles/011-lab-isis-trex-x86/
 - SR Linux の機種は ixr-d2l（ライセンス不要）。
 :::
 
-## 登場するのは、中央の spine 2 台、末端の leaf 4 台、TRex 1 台です
+## 登場するのは、中央の spine 2 台、末端の leaf 4 台、その先の利用者とサーバーです
 
 - 中央: dc1-spine-01、dc1-spine-02
-- 末端（WAN 側）: dc1-s-leaf-01、dc1-s-leaf-02
-- 末端（DC 側）: dc1-a-leaf-01、dc1-a-leaf-02
-- どの leaf も spine 2 台の両方につながる（ケーブル 8 本。spine 2 台 × leaf 4 台）。leaf 同士は直接つながない
-- TRex は leaf にだけつながる（ケーブル 4 本。eth1 〜 eth4 を各 leaf に 1 本ずつ）
+- 末端（WAN 側）: dc1-s-leaf-01、dc1-s-leaf-02。先には利用者や外のネットワーク（WAN）がつながる
+- 末端（DC 側）: dc1-a-leaf-01、dc1-a-leaf-02。先にはサーバーがつながる
+- どの leaf も spine 2 台の両方につながる（ケーブル 8 本）。leaf 同士は直接つながない
+- lab には利用者もサーバーもいないので、末端のケーブル 4 本は負荷試験用の装置 dc1-trex-01（eth1 〜 eth4）につないである
 
 ::: notes
 - spine と leaf は全組み合わせを結ぶ。spine 側のポートは ethernet-1/<leaf の番号>、leaf 側のポートは ethernet-1/<spine の番号>。
+- TRex は負荷試験のときだけ、利用者とサーバーの代わりにパケットを流す（app/containerlab/gen_lab.py）。
 - 図は Claude のデッキ（https://claude.ai/artifact/3DtfxGFkTehxxwRpHRcB8u）の 3 枚目にある。
 :::
 
@@ -56,7 +57,7 @@ source: app/containerlab/gen_lab.py、trex/、docs/cycles/011-lab-isis-trex-x86/
 
 **spine（中央）**
 
-- TRex のケーブルはつながっていない
+- 末端のケーブルはつながっていない
 - leaf から来たパケットを、宛先の IP アドレスを見て別の leaf へ渡す
 - あとで出てくる「どの MAC アドレスがどこにいるか」の取りまとめ役も担う
 
@@ -64,7 +65,7 @@ source: app/containerlab/gen_lab.py、trex/、docs/cycles/011-lab-isis-trex-x86/
 
 **leaf（末端）**
 
-- TRex 側のポートでは、MAC アドレスを見るスイッチとして動く
+- 利用者やサーバー側のポートでは、MAC アドレスを見るスイッチとして動く
 - spine 側のポートでは、IP で通信するルーターとして動く
 - 2 つの顔をつなぐ「包む・ほどく」も leaf の仕事
 
@@ -72,17 +73,17 @@ source: app/containerlab/gen_lab.py、trex/、docs/cycles/011-lab-isis-trex-x86/
 
 6 台とも同じ SR Linux で、どちらの動きもできます。spine と leaf の違いは機種ではなく、どこに置いてどう設定したかです。
 
-## leaf が 2 台ずつあるのは、パケットを必ず spine 経由にするためです
+## leaf が WAN 側と DC 側に分かれているのは、本物のデータセンターの形だからです
 
-- TRex はポートを 2 本ずつ組にして流し合う（port 0 ↔ 1、port 2 ↔ 3）
-- 組の 2 本を別々の leaf につなぐので、パケットは必ず leaf → spine → leaf と本線を渡る
-- leaf が 1 台だけなら、同じスイッチの中で折り返して終わり。試したい部分を通らない
-- spine が 2 台なのは、片方が止まっても通る形（冗長）にするため
-- 「回線が切れた」を安全に起こして、監視を試せる
+- 本物では、利用者や外のネットワークがつながる leaf（WAN 側、s-leaf）と、サーバーがつながる leaf（DC 側、a-leaf）が分かれている
+- この PoC は監視が本題なので、「DC 側の leaf で回線が切れた」と本物と同じ役割の名前で出せるように分けている
+- 4 台の設定は同じ。仮に 4 台とも DC 側にしても、通信や試験は変わらない
+- それぞれ 2 台ずつあるのは、本物と同じく 1 台が止まっても通信が続く形（冗長構成）にするため。片方の回線を落として、監視が気づくかを安全に試せる
+- 組になる 2 本のケーブルを別々の leaf につなぐので、パケットは必ず leaf → spine → leaf と幹線を通り、3 つの仕組みを全部通して確かめられる
 
 ::: notes
-- TRex の組は trex/trex_cfg.yaml.in（port 0 の default_gw が port 1、port 2 の default_gw が port 3）。
-- mac-vrf の ecmp は 2（spine 2 台に振り分ける）。
+- a-leaf / s-leaf の a と s の意味は依頼の名前のままで、確かめていない（docs/cycles/011-lab-isis-trex-x86/design.md の未確定事項 1）。
+- TRex の組は trex/trex_cfg.yaml.in（port 0 ↔ 1 が s-leaf の組、port 2 ↔ 3 が a-leaf の組）。mac-vrf の ecmp は 2。
 :::
 
 # 先に知っておく言葉
