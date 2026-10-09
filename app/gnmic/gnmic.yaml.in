@@ -22,7 +22,8 @@ __TARGETS__
 
 # 5 つ。subscription ごとに別の SubscribeRequest になるので、1 つが機器に断られてもほかは止まらない。パスは SR Linux 26.7 の YANG
 # on-change は購読の直後に今の状態を全部送り、その後は変わったときだけ送る（heartbeat-interval は付けない。Grafana は last_over_time 24h、Splunk は 24 時間を読む）。
-# 購読の直後の全部（初期同期）が Kafka に無い件（2026-10-09 の AWS）への手当てとして、outputs に buffer-size / timeout を付けた（030。効くかは AWS で未確認）
+# outputs の buffer-size / timeout（030）は、送り手が詰まったときの取りこぼしの手当て。購読の直後の全部（初期同期）が Kafka に 1 件も無い件（2026-10-09 の AWS）には
+# 効かない見込み（producer は接続を待たずに出来る）。その件は AWS で機器の初期同期と gnmic の受信を見る
 subscriptions:
   # IF の up / down（Grafana の link_down と Splunk の nwc_gnmi の link_down。snmp_interface_oper_up / admin_up）
   interface_state:
@@ -79,9 +80,10 @@ outputs:
     topic: gnmi
     format: event
     split-events: true
-    # 既定（buffer-size 0 / timeout 5s）では、送り手（sarama）が詰まっているあいだ（初回のメタデータの取得、TLS + SCRAM の握手）に
-    # 5 秒を超えて待たされた応答を黙って捨てるので、抱えて待つ（2026-10-09 の AWS で初回値が無かった件の仮説。AWS で未確認。030）。
-    # 1 枠は split 前の SubscribeResponse 1 件。timeout は sarama の Producer.Timeout にも入る（required-acks が既定の wait-for-local なら使われない）
+    # 既定（buffer-size 0 / timeout 5s）では、送り手（sarama）が詰まっているあいだ（ブローカーの応答待ち、再接続）に
+    # 5 秒を超えて待たされた応答を黙って捨てるので、抱えて待つ（取りこぼしの手当て。030）。producer は接続を待たずに出来るので、
+    # 2026-10-09 の AWS で初回値が 1 件も無かった件には効かない見込み（原因は機器の初期同期か gnmic の受信の側。AWS で見る）。
+    # 1 枠は split 前の SubscribeResponse 1 件（出力 2 つで最大 20000）。timeout は sarama の Producer.Timeout にも入る（required-acks が既定の wait-for-local なら使われない）
     buffer-size: 10000
     timeout: 60s
     event-processors: [drop-empty]
@@ -100,9 +102,10 @@ outputs:
     topic: metrics
     format: event
     split-events: true
-    # 既定（buffer-size 0 / timeout 5s）では、送り手（sarama）が詰まっているあいだ（初回のメタデータの取得、TLS + SCRAM の握手）に
-    # 5 秒を超えて待たされた応答を黙って捨てるので、抱えて待つ（2026-10-09 の AWS で初回値が無かった件の仮説。AWS で未確認。030）。
-    # 1 枠は split 前の SubscribeResponse 1 件。timeout は sarama の Producer.Timeout にも入る（required-acks が既定の wait-for-local なら使われない）
+    # 既定（buffer-size 0 / timeout 5s）では、送り手（sarama）が詰まっているあいだ（ブローカーの応答待ち、再接続）に
+    # 5 秒を超えて待たされた応答を黙って捨てるので、抱えて待つ（取りこぼしの手当て。030）。producer は接続を待たずに出来るので、
+    # 2026-10-09 の AWS で初回値が 1 件も無かった件には効かない見込み（原因は機器の初期同期か gnmic の受信の側。AWS で見る）。
+    # 1 枠は split 前の SubscribeResponse 1 件（出力 2 つで最大 20000）。timeout は sarama の Producer.Timeout にも入る（required-acks が既定の wait-for-local なら使われない）
     buffer-size: 10000
     timeout: 60s
     event-processors: [drop-empty]

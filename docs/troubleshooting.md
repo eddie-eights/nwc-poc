@@ -122,7 +122,7 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 | BGP / IS-IS の層や機器の `ALARM` が変わらない | 出すのは Grafana と Splunk のアラート（`bgp_down` / `isis_down` / `trap`）。`STORES` に `grafana` も `splunk` も無ければ出ない（仕様）（あるのに変わらないときは表の下の `ALARM`） |
 | Grafana のダッシュボード「nwc / SNMP metrics」が空、エージェントの `query_metrics` が何も返さない | `metrics` トピックの IF の統計・CPU・メモリは gnmic が 60 秒ごとに書く（見る所は表の下の `metrics`） |
 | `sinks-splunk` / `sinks-grafana` のジョブが数分で落ちて立ち直りを繰り返し、ログに `ValueError: year 173875 is out of range` | gnmic の values の無い event を Telegraf の行として読んでいた（025 で直した）。直す前のイメージ（`snmp_sinks.py` のハッシュ）で立っていないかを見る |
-| `gnmi` トピックに on-change の購読（`interface_state` / `bgp_neighbor` / `isis_interface`）の初回値が無い（値が変われば書かれる） | まず gnmic の設定の出力に `buffer-size` / `timeout` があるか（030。送り手が詰まっているあいだの応答を捨てない。古いイメージなら作り直す）。あっても無ければ、gnmic が応答を受けているか（`--debug` の `gNMI Subscribe Response`）と機器の初期同期を見る（[pipeline.md](pipeline.md) の「gnmic の購読」と「gnmic の書き込みと ACL」） |
+| `gnmi` トピックに on-change の購読（`interface_state` / `bgp_neighbor` / `isis_interface`）の初回値が無い（値が変われば書かれる） | まず gnmic が応答を受けているか（`--debug` の `gNMI Subscribe Response`）と、機器が初期同期を送っているか（lab の EC2 から gnmic の CLI で同じ購読を機器に直接当てる）を見る（[pipeline.md](pipeline.md) の「gnmic の購読」と「gnmic の書き込みと ACL」）。出力の `buffer-size` / `timeout`（030）は送り手が詰まっているあいだの取りこぼしの手当てで、1 件も無い件には効かない見込み（イメージが古くて無いなら作り直す） |
 | トポロジは赤くなるのに修復案が出ない | SNS → SQS か、ワーカー。`WORKFLOW=1` か、起こす種類か（ワークフローを起こすのは `link_down` だけ）を見る（DLQ とワーカーのログは表の下の `修復案`） |
 | 承認を押しても `pending` のまま | 反映まで数秒〜20 秒かかる（Web → SQS `<prefix>-decisions` → worker → ワークフロー → `proposal_events` → Athena）。「更新」を押す（実測と、1 分たっても変わらないときは表の下の `pending`） |
 | 承認を押したら `expired` になった | ワークフローがもう無かった（worker のタスクが入れ替わった）。処置は打たれない。まだ落ちていれば、次の通知で別の修復案が出る（[workflow.md](workflow.md)） |
