@@ -34,3 +34,7 @@ ops/logs/
 jars/
 # VS Code のワークスペース設定は各自の手元だけに置く
 .vscode/
+# Claude Code の worktree（中は入れ子のリポジトリ。git add -A で gitlink として混ざるのを防ぐ）
+.claude/worktrees/
+# サイクルの ops/check.sh の出力。結論は build.md に「通過 N / 失敗 0」で書くので全文は入れない
+docs/cycles/**/*.log
