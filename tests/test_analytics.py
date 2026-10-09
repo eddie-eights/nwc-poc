@@ -482,9 +482,22 @@ check("read_rows: flows のトピックだけ GoFlow2 の JSON を Telegraf の�
 _gs = src[src.index("def gnmic_struct("):src.index("def gnmic_message(")]
 check("read_rows: schema に gnmic の values（文字列の map）と deletes（文字列の配列）を足す",
       'T.StructField("values", T.MapType(T.StringType(), T.StringType()))' in _rr and 'T.StructField("deletes", T.ArrayType(T.StringType()))' in _rr)
-check("read_rows: fields が無く values か deletes がある行を gnmic の event とする（トピックでは分けない）。Telegraf の行は今の 4 項目の struct のまま",
-      'gnmic = msg["fields"].isNull() & (msg["values"].isNotNull() | msg["deletes"].isNotNull())' in _rr
+check("read_rows: fields が無い行を gnmic の event とする（トピックでは分けない）。values も deletes も無い実物の event（2026-10-09 の AWS。400 件中 359 件）は"
+      " gnmic_struct で timestamp が null になり捨てる。Telegraf の行は今の 4 項目の struct のまま",
+      'gnmic = msg["fields"].isNull()\n' in _rr
+      and 'msg["values"].isNotNull() | msg["deletes"].isNotNull()' not in _rr
       and 'telegraf = F.struct(*(msg[k].alias(k) for k in ("timestamp", "name", "tags", "fields")))' in _rr)
+# cycle 025: 1 行の壊れた timestamp でジョブが死なない（範囲の守り）、本物の Spark で通せるように parse_rows を切り出す
+check("TIMESTAMP_MAX は 4102444800（2100-01-01T00:00:00Z の秒）", re.search(r'^TIMESTAMP_MAX\s*=\s*4102444800\s', src, re.M) is not None)
+check("parse_rows: parsed の最後に m.timestamp の範囲（0〜TIMESTAMP_MAX）の where を付け、ts に直す前に捨てる（null もここで落ちる）",
+      '.where(F.col("m.timestamp").between(0, TIMESTAMP_MAX))' in _parsed)
+check("parse_rows(raw) がモジュールの関数としてあり、read_rows は return parse_rows(reader.load()) で終わる",
+      "parse_rows" in funcs and [a.arg for a in funcs["parse_rows"].args.args] == ["raw"]
+      and "return parse_rows(reader.load())" in _rr
+      and src[src.index("def read_rows("):src.index("def parse_rows(")].rstrip().endswith("return parse_rows(reader.load())"))
+check("範囲の守りは parse_rows だけの仕事（読み替えの双子 gnmic_message / flow_message は TIMESTAMP_MAX を見ない）",
+      "TIMESTAMP_MAX" not in src[src.index("def flow_message("):src.index("def gnmic_struct(")]
+      and "TIMESTAMP_MAX" not in src[src.index("def gnmic_message("):src.index("def row_to_record(")])
 check("read_rows: agent_host の列は gnmic なら tags.source、ほかは tags.agent_host（rows は m.tags ではなくこの列を読む）",
       'F.when(gnmic, msg["tags"]["source"]).otherwise(msg["tags"]["agent_host"]).alias("agent_host")' in _parsed
       and re.search(r'^\s*F\.col\("agent_host"\),$', block, re.M) is not None and 'm.tags")["agent_host"]' not in src)
@@ -1075,7 +1088,7 @@ class _Any:
     def __call__(self, *a, **kw): return self
     def __getitem__(self, k): return self
     def __truediv__(self, o): return self   # flows の time_received_ns と gnmic の timestamp（ナノ秒）を秒にする割り算
-    def __and__(self, o): return self       # gnmic の event の見分け（fields が無く、values か deletes がある）
+    def __and__(self, o): return self       # where の条件（ts.isNotNull() & …）など
     def __or__(self, o): return self
 
 

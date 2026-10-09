@@ -28,4 +28,5 @@
 `test_*.py` でないもの:
 
 - `check_splunk_image.py` — Splunk のイメージの中の Python が持つ boto3 で SNS へ送れることを、イメージをビルドして確かめる。数分かかり docker が要るので `ops/check.sh` には入れない（Splunk の版を上げたときに手で回し、`CHECKED` を書き換える。`test_alerts` が `CHECKED` と Dockerfile の版を突き合わせる）
+- `spark_parse_check.py` — `app/spark/snmp_sinks.py` の `parse_rows`（Kafka の行 → tables.tf の列の読み替え）に、実物の gnmic の event を含む 6 件を本物の Spark で通し、`collect()` が死なずに 2 行になることを確かめる（cycle 025）。pyspark と Java が要るので `ops/check.sh` には入れない。Spark のイメージ（`docker/images/spark/Dockerfile`）の中で `snmp_sinks.py` とこのファイルをマウントして `spark-submit --master 'local[1]'` で回す（コマンドはファイルの docstring）。`snmp_sinks.py` の読み替えを変えたときに手で回す
 - `golden/neptune_cypher.json` — `test_oss` の 1 が比べる、切り替えを入れる前の Cypher の正解
