@@ -1028,6 +1028,10 @@ check("ops/oss/up.sh の EXIT の trap は on_exit 関数で、TF_AWS_CONFIG・N
       _oss_on_exit is not None
       and all(f'if [ -n "${v}" ]; then rm -' in _oss_on_exit.group(0) for v in ("TF_AWS_CONFIG", "NAUTOBOT_CTX", "ROLL_PLAN", "SECRET_INPUT"))
       and up.count("\ntrap - EXIT\non_exit\nexec aws ssm start-session ") == 1 and up.count("\ntrap ") == 2)
+_mgd_up = read("ops/up.sh")
+check("ops/up.sh も手順 10 の exec の前に trap を外して同じ on_exit を 1 回呼ぶ（TF_AWS_CONFIG だけを手で消さない。NAUTOBOT_CTX なども消える。cycle 026）",
+      _mgd_up.count("\ntrap - EXIT\non_exit\nexec aws ssm start-session ") == 1 and _mgd_up.count("\ntrap ") == 2
+      and 0 <= _mgd_up.rfind('if [ -n "$NO_DASHBOARD_PORTFORWARD" ]; then exit 0; fi') < _mgd_up.find("\ntrap - EXIT\non_exit\n"))
 check("ops/oss/oss-images.sh は ops/ にある関数を書き直していない（写しを作らない）", not funcs(img_sh) & ops_funcs)
 check("ops/oss/up.sh は ops/common.sh・ops/up-common.sh・ops/lab-common.sh・ops/deploy-env.sh を読む",
       all(s in up for s in (". ops/common.sh", ". ops/up-common.sh", '/../lab-common.sh"', '/../deploy-env.sh"')))
