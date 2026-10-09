@@ -442,7 +442,7 @@ fake("sudo", 'exec env -i PATH="$PATH" FAKE_LOG="$FAKE_LOG" FAKE_BGP_ADMIN="${FA
 # lab.sh up が打つ（containerlab は deploy を書くだけ、modprobe は何もしない）
 fake("containerlab")
 fake("modprobe")
-# up.sh と check.sh が lab の管理ネットの GW を探す ip -o -4 addr show。FAKE_GW=1 なら containerlab の bridge に 203.0.113.1 がある（203.0.113.10 は似た別のアドレス）
+# up.sh が lab の管理ネットの GW を探し、check.sh がコンテナの bind が host にあるかを見る ip -o -4 addr show。FAKE_GW=1 なら containerlab の bridge に 203.0.113.1 がある（203.0.113.10 は似た別のアドレス）
 fake("ip", r'''echo "1: lo    inet 127.0.0.1/8 scope host lo\       valid_lft forever preferred_lft forever"
 echo "5: eth0    inet 203.0.113.10/24 brd 203.0.113.255 scope global eth0\       valid_lft forever preferred_lft forever"
 [ "${FAKE_GW:-0}" = 1 ] && echo "7: br-1a2b3c4d5e6f    inet 203.0.113.1/24 brd 203.0.113.255 scope global br-1a2b3c4d5e6f\       valid_lft forever preferred_lft forever"
@@ -718,8 +718,12 @@ check("check.sh: 動いているコンテナの bind が空（全部のインタ
 BIND = {"FAKE_TG_ENV": "PATH=/usr/bin:/bin\nTELEGRAF_BIND=203.0.113.1\nHEALTH_PORT=8080",
         "FAKE_GF_CMD": '["-listen=netflow://203.0.113.1:2055,sflow://203.0.113.1:6343","-transport=kafka","-format=json","-addr=203.0.113.1:8081"]'}
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_GW="1", **BIND)
-check("check.sh: コンテナの bind が 203.0.113.1（up.sh が lab の管理ネットの GW を TELEGRAF_BIND にした）で、それが host にあれば、そこの Telegraf の health と GoFlow2 の /metrics に打つ（cycle 027）",
-      _r.returncode == 0 and hc_urls(_c) == ["http://203.0.113.1:8080/", "http://203.0.113.1:8081/metrics"] and f"ok  {TH}" in _r.stdout.splitlines())
+_r2, _c2 = run([os.path.join(_lc, "check.sh")], FAKE_GW="1", FAKE_TG_ENV=BIND["FAKE_TG_ENV"])
+_r3, _c3 = run([os.path.join(_lc, "check.sh")], FAKE_GW="1", FAKE_GF_CMD=BIND["FAKE_GF_CMD"])
+check("check.sh: コンテナの bind が 203.0.113.1（up.sh が lab の管理ネットの GW を TELEGRAF_BIND にした）で、それが host にあれば、そこの Telegraf の health と GoFlow2 の /metrics に打つ。"
+      "bind は Telegraf と GoFlow2 のコンテナから別々に読む（up.sh telegraf だけで作り直したあとは食い違うことがある）（cycle 027）",
+      _r.returncode == 0 and hc_urls(_c) == ["http://203.0.113.1:8080/", "http://203.0.113.1:8081/metrics"] and f"ok  {TH}" in _r.stdout.splitlines()
+      and hc_urls(_c2) == ["http://203.0.113.1:8080/", "http://127.0.0.1:8081/metrics"] and hc_urls(_c3) == ["http://127.0.0.1:8080/", "http://203.0.113.1:8081/metrics"])
 _r, _c = run([os.path.join(_lc, "check.sh")], **BIND)
 check("check.sh: コンテナの bind が 203.0.113.1 なのに host に無い（up.sh のあとに lab.sh down した）なら、curl を打たずに Telegraf と GoFlow2 を NG にし、"
       "「host に無い」と lab.sh up か up.sh telegraf syslog-ng goflow2 を案内する。終了コード 1（cycle 027）",
@@ -727,10 +731,16 @@ check("check.sh: コンテナの bind が 203.0.113.1 なのに host に無い�
       and [l for l in _r.stdout.splitlines() if TH in l or GF in l]
       == [f"NG  {n}: 203.0.113.1 が host に無い（lab.sh down のあとなら docker/compose/lab.sh up で戻すか、docker/compose/up.sh telegraf syslog-ng goflow2 で上げ直す）" for n in (TH, GF)])
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_TG_ID="", FAKE_GF_ID="")
-check("check.sh: Telegraf と GoFlow2 のコンテナが無い（ps -a -q が何も返さない）なら、inspect も curl も打たずに NG にして up.sh <サービス> を案内する。終了コード 1（cycle 027）",
+_r2, _c2 = run([os.path.join(_lc, "check.sh")], FAKE_TG_ID="")
+_r3, _c3 = run([os.path.join(_lc, "check.sh")], FAKE_GF_ID="")
+_NT, _NG = f"NG  {TH}: コンテナが無い（docker/compose/up.sh telegraf で上げる）", f"NG  {GF}: コンテナが無い（docker/compose/up.sh goflow2 で上げる）"
+check("check.sh: Telegraf と GoFlow2 のコンテナが無い（ps -a -q が何も返さない）なら、inspect も curl も打たずに NG にして up.sh <サービス> を案内する。終了コード 1。"
+      "片方だけ無ければ、もう片方は打つ（cycle 027）",
       _r.returncode == 1 and hc_urls(_c) == [] and not [c for c in _c if c.startswith("docker inspect")]
-      and [l for l in _r.stdout.splitlines() if TH in l or GF in l]
-      == [f"NG  {TH}: コンテナが無い（docker/compose/up.sh telegraf で上げる）", f"NG  {GF}: コンテナが無い（docker/compose/up.sh goflow2 で上げる）"])
+      and [l for l in _r.stdout.splitlines() if TH in l or GF in l] == [_NT, _NG]
+      and _r2.returncode == _r3.returncode == 1
+      and hc_urls(_c2) == ["http://127.0.0.1:8081/metrics"] and [l for l in _r2.stdout.splitlines() if TH in l or GF in l] == [_NT, f"ok  {GF}"]
+      and hc_urls(_c3) == ["http://127.0.0.1:8080/"] and [l for l in _r3.stdout.splitlines() if TH in l or GF in l] == [f"ok  {TH}", _NG])
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_TG_HEALTH="000")
 check("check.sh: Telegraf の health に繋がらない（restart の上限で止まった、bind に失敗した）なら NG で、ps -a と logs telegraf と up.sh telegraf を案内する",
       _r.returncode == 1 and [l for l in _r.stdout.splitlines() if TH in l]
