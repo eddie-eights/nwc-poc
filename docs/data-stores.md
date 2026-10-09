@@ -55,6 +55,8 @@ flowchart LR
   WEB -->|"承認 / 却下"| DQ["SQS<br/>prefix-decisions"] --> WK
 ```
 
+配布物とログの S3 のバケット（assets と logs）は [s3-buckets.md](architecture/resources/s3-buckets.md)。
+
 ### 2. 1 回の障害で何が書かれるか
 
 `sudo lab fail-main` で DC 側 Leaf の fabric（`dc1-a-leaf-01 ethernet-1/1`）を落としたときの流れ（既定の `STORES=s3,grafana,splunk`）。

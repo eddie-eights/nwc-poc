@@ -431,8 +431,10 @@ with open(args[args.index("-o") + 1], "w") as f:
 '''
 
 # ops/oss/up.sh が apply する順番
-ROOTS = ["base/ecr", "base/core", "agent", "pipeline/lab", "pipeline/stream", "pipeline/graph",
+ROOTS = ["base/ecr", "base/logs", "base/core", "agent", "pipeline/lab", "pipeline/stream", "pipeline/graph",
          "pipeline/nautobot", "pipeline/analytics", "workflow"]
+# ops/oss/down.sh が destroy するもの。base/logs（logs のバケット。中身は 7 日で消える）は残す（cycle 035）
+DOWN_ROOTS = [r for r in ROOTS if r != "base/logs"]
 
 def lambda_eni(eni_id, fn, vpc):
     return {"id": eni_id, "desc": f"AWS Lambda VPC ENI-{fn}-0a1b2c", "status": "available", "type": "lambda", "vpc": vpc}
@@ -605,7 +607,7 @@ check("OSS 版は MSK を持たないので、Secrets Manager にも KMS にも�
       and (inv["secrets"], inv["kms"], inv["kms_keys"]) == (inventory()["secrets"], inventory()["kms"], inventory()["kms_keys"]))
 check("terraform は IaC/terraform/oss/ の下だけを -chdir で触り、IaC/terraform/aws-managed/（マネージド版の state）には入らない",
       tf_calls(cs) and all(chdir_of(c).startswith("IaC/terraform/oss/") for c in tf_calls(cs)))
-check("IaC/terraform/oss/ の 9 つのルートを全部 destroy した", destroyed(cs) == {f"IaC/terraform/oss/{r}" for r in ROOTS})
+check("IaC/terraform/oss/ の 9 つのルート（base/logs 以外）を全部 destroy し、base/logs は destroy しない（cycle 035）", destroyed(cs) == {f"IaC/terraform/oss/{r}" for r in DOWN_ROOTS})
 check("destroy には -var owner=x を渡す",
       all("owner=x" in c["args"] for c in tf_calls(cs) if c["args"][1] == "destroy"))
 check("terraform に渡す認証のプロファイル名は接頭辞から作る（x-nwc-oss-terraform）",
@@ -823,7 +825,7 @@ check("nautobot が消えなかった: 終了コード 1 で、/x-nwc-oss/nautob
       p.returncode == 1 and "NG: 消えなかったルート: pipeline/nautobot（" in p.stdout + p.stderr
       and set(inv["ssm"]) == ALL_PARAMS - set(OSS_MANAGED_PARAMS) | {"/x-nwc-oss/nautobot/secret-key"})
 check("nautobot が消えなかった: 前後のルート（analytics / graph / stream / base/core）は消しにいく",
-      {f"IaC/terraform/oss/{r}" for r in ROOTS} == destroyed(cs))
+      {f"IaC/terraform/oss/{r}" for r in DOWN_ROOTS} == destroyed(cs))
 
 # ================================================================ 4. イメージの名前と版
 img_sh = read("ops/oss/oss-images.sh")
@@ -1115,11 +1117,12 @@ check("ops/oss/ の 2 つは resolve_name_prefix nwc-oss で接頭辞を作り�
           and re.search(r"^OPS_DIR=ops/oss\b", t, re.M) and re.search(r"^TF_LOG_NAME=tf-oss\b", t, re.M) for t in (up, down)))
 pos = lambda s: up.find(s)
 _applies = [pos(f"tf_apply {r}") for r in ROOTS]
-check("ops/oss/up.sh はルートを base/ecr → base/core → agent → pipeline/lab → pipeline/stream → pipeline/graph → pipeline/nautobot → pipeline/analytics → workflow の順に当て、ROOTS もその 9 つ（マネージド版と同じ範囲）",
-      _applies[0] >= 0 and _applies == sorted(_applies) and len(set(_applies)) == 9
+check("ops/oss/up.sh はルートを base/ecr → base/logs → base/core → agent → pipeline/lab → pipeline/stream → pipeline/graph → pipeline/nautobot → pipeline/analytics → workflow の順に当て、ROOTS もその 10 個（マネージド版と同じ範囲）",
+      _applies[0] >= 0 and _applies == sorted(_applies) and len(set(_applies)) == 10
       and re.search(r'^ROOTS="' + " ".join(ROOTS) + r'"$', up, re.M))
-check("ops/oss/down.sh は up.sh の 9 つのルートを全部消す（base/core は destroy_base_core、agent は destroy_agent）",
-      all(re.search(rf"^\s*destroy_(lambda_)?root {re.escape(r)}\b", down, re.M) for r in ROOTS if r not in ("base/core", "agent"))
+check("ops/oss/down.sh は up.sh の 10 個のルートのうち base/logs 以外の 9 つを全部消す（base/core は destroy_base_core、agent は destroy_agent。base/logs は残す。cycle 035）",
+      all(re.search(rf"^\s*destroy_(lambda_)?root {re.escape(r)}\b", down, re.M) for r in DOWN_ROOTS if r not in ("base/core", "agent"))
+      and not re.search(r"^\s*destroy_(lambda_)?root base/logs\b", down, re.M)
       and re.search(r"^destroy_agent$", down, re.M) and re.search(r"^destroy_base_core$", down, re.M))
 check("ops/oss/up.sh は OSS_NOW を持たず、oss-images.sh の OSS_IMAGES（7 つ）をそのまま使って、ECR ができてから OSS のイメージを写すかビルドし、stream より先に済ませる",
       "OSS_NOW" not in up and len(V["OSS_IMAGES"].split()) == 7 and re.search(r"^for name in \$OSS_IMAGES; do$", up, re.M) is not None
@@ -1206,7 +1209,7 @@ check("ops/oss/up.sh は Neo4j のサービスが安定してから、Web の EC
       and "ops/seed_graph.py" in read("ops/up.sh") and "/usr/bin/python3.13 -" in up)
 check("ops/oss/up.sh は Web に Neo4j のドライバーを入れる（app/dashboard/requirements-oss.txt のホイールを wheels-oss/ に取り、S3 に上げる）。wheels-oss/ は git に入れない",
       "fetch_wheels wheels-oss app/dashboard/requirements-oss.txt app/dashboard/requirements.txt " in up
-      and 'aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels-oss/ "s3://$KB_BUCKET/web/wheels/"' in up
+      and 'aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels-oss/ "s3://$ASSETS_BUCKET/web/wheels/"' in up
       and re.search(r"^neo4j==", read("app/dashboard/requirements-oss.txt"), re.M) and re.search(r"^-r requirements\.txt$", read("app/dashboard/requirements-oss.txt"), re.M)
       and re.search(r"^wheels-oss/$", read(".gitignore"), re.M) and re.search(r"^IaC/terraform/\*\*/\.build/$", read(".gitignore"), re.M) and all(subprocess.run(["git", "check-ignore", "-q", f"IaC/terraform/{r}/.build/x"], cwd=ROOT).returncode == 0 for r in ("oss/pipeline/graph", "aws-managed/workflow", "aws-managed/agent")))
 _fw = re.search(r"^fetch_wheels\(\) \{.*?^\}$", read("ops/up-common.sh"), re.M | re.S)
@@ -1216,7 +1219,7 @@ check("Web の wheel はマネージド版と OSS 版が同じ関数（ops/up-co
       all(w in _fw for w in ('"${WHEEL_ARGS[*]}"', '"${WHEEL_ARGS[@]}"', 'rm -rf "$dir"', '"$dir/.requirements.sha256"', 'cat "${@:2}"'))
       and _fw.index('rm -rf "$dir"') < _fw.index("download") < _fw.index('> "$dir/.requirements.sha256"')
       and "\nfetch_wheels wheels app/dashboard/requirements.txt\n" in read("ops/up.sh")
-      and 'aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels/ "s3://$KB_BUCKET/web/wheels/"' in read("ops/up.sh")
+      and 'aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels/ "s3://$ASSETS_BUCKET/web/wheels/"' in read("ops/up.sh")
       and "manylinux" not in up[pos('log "4-1.'):pos('log "4-2.')] and "*.whl" not in up and "*.whl" not in read("ops/up.sh"))
 check("ops/oss/up.sh はワーカーのイメージを Neo4j のドライバー入り（app/temporal/requirements-oss.txt）でビルドする",
       'build_worker "$IMAGE_TAG" requirements-oss.txt' in up and re.search(r"^neo4j==", read("app/temporal/requirements-oss.txt"), re.M))
@@ -1291,7 +1294,7 @@ ap = applies(cs)
 check("up.sh（通し）: 終了コード 0 で最後まで行き、偽物の知らないコマンドを打たず、未定義の変数も踏まない",
       p.returncode == 0 and not [c for c in cs if "unknown" in c] and "unbound variable" not in out and "command not found" not in out
       and "NO_DASHBOARD_PORTFORWARD=1: Web へのポートフォワーディングは開かない" in p.stdout)
-check("up.sh（通し）: IaC/terraform/oss/ の 9 つのルートを決めた順に 1 回ずつ apply し、どれにも owner=x を渡す（IaC/terraform/aws-managed/ のルートには触らない）",
+check("up.sh（通し）: IaC/terraform/oss/ の 10 個のルートを決めた順に 1 回ずつ apply し、どれにも owner=x を渡す（IaC/terraform/aws-managed/ のルートには触らない）",
       [r for r, _ in ap] == [f"IaC/terraform/oss/{r}" for r in ROOTS] and all(has_var(a, "owner=x") for _, a in ap)
       and all(chdir_of(c).startswith("IaC/terraform/oss/") for c in tf_calls(cs)))
 A = {r[len("IaC/terraform/oss/"):]: a for r, a in ap}
@@ -1643,12 +1646,12 @@ check("ops/oss/up.sh（81）: 7-4b の analytics のクラスターの名前も 
 
 # ---- up.sh の作ったものを ops/oss/down.sh が消す（同じ在庫から）
 p, csd, invd = run_down("ops/oss/down.sh", "x", inv=inv3)
-check("up.sh → down.sh: up.sh が作った SSM のパラメータ 13 個を全部消し、up.sh が apply した 9 つのルートを全部 destroy する",
+check("up.sh → down.sh: up.sh が作った SSM のパラメータ 13 個を全部消し、up.sh が apply した 10 個のルートのうち base/logs 以外の 9 つを全部 destroy する",
       p.returncode == 0 and invd["ssm"] == {} and len(aws_calls(csd, "ssm", "delete-parameter")) == 13
-      and destroyed(csd) == {f"IaC/terraform/oss/{r}" for r in ROOTS} and "残り: 0 件" in p.stdout)
+      and destroyed(csd) == {f"IaC/terraform/oss/{r}" for r in DOWN_ROOTS} and "残り: 0 件" in p.stdout)
 
 check("ops/oss/up.sh と down.sh の terraform init は、どのルートも -lockfile=readonly（lock はマネージド版へのシンボリックリンクなので書き換えない）",
-      len({tuple(c["args"][:1]) for c in tf_calls(cs) if c["args"][1] == "init"}) == 9
+      len({tuple(c["args"][:1]) for c in tf_calls(cs) if c["args"][1] == "init"}) == 10
       and all(a == ["init", "-input=false", "-lockfile=readonly"] for a in inits(cs) + inits(csd)) and inits(csd))
 check("IaC/terraform/oss/ の .terraform.lock.hcl は、どのルートもマネージド版の lock へのシンボリックリンク（実ファイルにしない）",
       all(os.path.islink(os.path.join(ROOT, "IaC/terraform/oss", r, ".terraform.lock.hcl")) for r in ROOTS))
@@ -1666,7 +1669,7 @@ def var_names(args):
     return {args[i + 1].partition("=")[0] for i in range(len(args) - 1) if args[i] == "-var"}
 _up_vars = {(r[len("IaC/terraform/oss/"):], v) for r, a in ap for v in var_names(a)}
 _down_vars = {(chdir_of(c)[len("IaC/terraform/oss/"):], v) for c in tf_calls(csd) if c["args"][1] == "destroy" for v in var_names(c["args"])}
-check("up.sh（通し）が 9 つのルートに渡した -var の名前は、どれも IaC/terraform/oss/<ルート>/*.tf の variable で宣言されている（owner を含めて全部）",
+check("up.sh（通し）が 10 個のルートに渡した -var の名前は、どれも IaC/terraform/oss/<ルート>/*.tf の variable で宣言されている（owner を含めて全部）",
       _up_vars and {r for r, _ in _up_vars} == set(ROOTS) and not [(r, v) for r, v in _up_vars if v not in tf_variables(r)])
 check("down.sh が destroy に渡した -var（workflow の worker_image_tag、stream の gnmi_targets、owner）も、そのルートの variable で宣言されている（snmp_agents は cycle 013 でやめた）",
       {("workflow", "worker_image_tag"), ("pipeline/stream", "gnmi_targets")} <= _down_vars and ("pipeline/stream", "snmp_agents") not in _down_vars

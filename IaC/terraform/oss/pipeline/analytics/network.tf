@@ -32,6 +32,16 @@ data "terraform_remote_state" "stream" {
   }
 }
 
+# Firehose が書けなかった行の置き場（logs のバケット）は IaC/terraform/oss/base/logs。ops/oss/up.sh が base/core より先に作り、
+# ops/oss/down.sh は消さない（中身は 7 日で消える）ので、analytics を apply する時点で必ずある（try で包まない）
+data "terraform_remote_state" "logs" {
+  backend = "local"
+
+  config = {
+    path = "${path.module}/../../base/logs/terraform.tfstate"
+  }
+}
+
 # Spark（docker/images/spark/Dockerfile。ops/oss/up.sh が作って <接頭辞>-spark に push する）と OpenSearch・VictoriaMetrics（ops/oss/up.sh が
 # ECR に写す）のイメージは IaC/terraform/oss/base/ecr
 data "terraform_remote_state" "ecr" {
@@ -56,8 +66,11 @@ locals {
   spark_sg_id   = try(data.terraform_remote_state.main.outputs.security_group_ids["spark"], "")
   grafana_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["grafana"], "")
   splunk_sg_id  = try(data.terraform_remote_state.main.outputs.security_group_ids["splunk"], "")
-  bucket        = data.terraform_remote_state.main.outputs.kb_bucket_name
+  bucket        = data.terraform_remote_state.main.outputs.assets_bucket_name
   bucket_arn    = "arn:${local.partition}:s3:::${local.bucket}"
+  # Firehose が書けなかった行（リンクした history.tf）。OSS 版の Spark のログは CloudWatch（spark.tf の awslogs）なので、ここに落ちるのはそれだけ
+  logs_bucket     = data.terraform_remote_state.logs.outputs.logs_bucket_name
+  logs_bucket_arn = "arn:${local.partition}:s3:::${local.logs_bucket}"
   # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
   perimeter_policy_arn        = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
   perimeter_exempt_principals = try(data.terraform_remote_state.main.outputs.perimeter_exempt_principals, [])
@@ -68,8 +81,8 @@ locals {
   # SSM のパラメータの ARN の頭（後ろに /<接頭辞>/… を付ける）
   ssm_parameter_arn = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter"
 
-  # checkpoint の置き場はマネージド版と同じ s3://<バケット>/analytics/checkpoint/（Spark は S3A で読み書きする。spark.tf）
-  s3_prefix        = "analytics"
+  # checkpoint の置き場はマネージド版と同じ s3://<assets のバケット>/spark/checkpoint/（Spark は S3A で読み書きする。spark.tf）
+  s3_prefix        = "spark"
   checkpoint       = "${local.s3_prefix}/checkpoint"
   catalog_name     = "s3tables"
   table_bucket     = "${local.name_prefix}-tables"

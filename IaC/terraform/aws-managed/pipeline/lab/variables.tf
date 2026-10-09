@@ -72,7 +72,7 @@ variable "forward_to_telegraf" {
 
 # ---------------------------------------------------------------- assets
 variable "containerlab_version" {
-  description = "containerlab_<version>_linux_amd64.rpm must be uploaded to s3://<kb_bucket_name of IaC/terraform/aws-managed/base/core>/lab/"
+  description = "containerlab_<version>_linux_amd64.rpm must be uploaded to s3://<assets_bucket_name of IaC/terraform/aws-managed/base/core>/lab/"
   type        = string
   default     = "0.79.0"
 

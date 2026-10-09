@@ -97,7 +97,7 @@ variable "log_retention_days" {
 }
 
 variable "cloudwatch_logging" {
-  description = "Send the driver stdout / stderr to CloudWatch Logs (through the logs interface endpoint of the base root). false keeps the logs only in the asset bucket"
+  description = "Send the driver stdout / stderr to CloudWatch Logs (through the logs interface endpoint of the base root). false keeps the driver logs only in EMR managed storage (30 days, read through the Spark UI; no S3 logs since cycle 035)"
   type        = bool
   default     = true
 }

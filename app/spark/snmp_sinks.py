@@ -145,7 +145,7 @@ ICEBERG_ADDED_COLUMNS = (("event_id", "string"), ("kafka_topic", "string"), ("ka
 def parse_args(argv):
     p = argparse.ArgumentParser(prog="snmp_sinks.py", description=__doc__.split("\n")[0])
     p.add_argument("--bootstrap", required=True, help="Kafka の bootstrap servers（マネージド版は MSK の SASL/IAM の 9098、OSS 版（KAFKA_AUTH=none）は kafka-N の 9092）")
-    p.add_argument("--checkpoint", required=True, help="checkpoint の親（s3://<バケット>/analytics/checkpoint/。格納先ごとに下にディレクトリを切る）")
+    p.add_argument("--checkpoint", required=True, help="checkpoint の親（s3://<assets のバケット>/spark/checkpoint/。格納先ごとに下にディレクトリを切る）")
     p.add_argument("--sinks", required=True, help="格納先（カンマ区切り。iceberg / opensearch / prometheus / splunk）")
     p.add_argument("--http-send", choices=HTTP_SEND, default="driver", help="HTTP の格納先へ送る所。driver = マイクロバッチを collect して driver が送る（既定）、"
                                                                          "executor = foreachPartition でパーティションごとに executor が送る")

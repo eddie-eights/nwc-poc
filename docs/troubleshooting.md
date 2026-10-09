@@ -16,7 +16,7 @@
 | 手順 0 で「IAM ユーザーの一時セッション（get-session-token）で入っている」で止まる / apply が `AccessDenied` / `InvalidClientTokenId`（読み取りは通る） | `sts get-session-token` の一時セッションで打っている。長期キーか SSO のプロファイルで打ち直す |
 | apply が `explicitly denied` で止まる | 組織の SCP / IAM が止めている。管理者に頼むか、`SKIP_*` で外す（lab は `SKIP_LAB=1`、MSK は `SKIP_STREAM=1`、EMR / S3 Tables は `SKIP_ANALYTICS=1`、Neptune は `SKIP_GRAPH=1`）。打ち直さないなら `ops/down.sh` |
 | apply が `EntityAlreadyExists` など「もうある」 | state を消した・別の PC で apply した（up.sh を打った worktree を消した、も同じ）。手で消すか、ECR は import する（続きは表の下の `EntityAlreadyExists`） |
-| `does not have an attribute named "…"` | 前のルート（`base/ecr` → `base/core` → …）をこの PC で apply していない、または先に消した。`ops/up.sh` を打ち直す |
+| `does not have an attribute named "…"` | 前のルート（`base/ecr` → `base/logs` → `base/core` → …）をこの PC で apply していない、または先に消した。`ops/up.sh` を打ち直す |
 | `Error acquiring the state lock` | 同じルートを別のターミナルで打っている。終わるのを待つ |
 | `aws_lambda_invocation.kb_index` が失敗（CREATE_KB=1） | KB のベクトルインデックスを VPC の中の Lambda `<接頭辞>-kb-index` が作る。ログは CloudWatch Logs の `/aws/lambda/<接頭辞>-kb-index`（続きは表の下の `kb_index`） |
 | 「IaC/terraform/aws-managed/base/core に OpenSearch Serverless の VPC エンドポイントが無い」の precondition で止まる | KB か logs のコレクションを作るのに、base/core に VPC エンドポイントが無い。`ops/up.sh` を通して打つ（`CREATE_KB` か `STORES` の `grafana` を見て base/core に渡す）。ルートを手で apply したなら base/core を `-var create_opensearch_endpoint=true` で打ち直す |
@@ -35,6 +35,7 @@
 - `EntityAlreadyExists`:
   - [architecture/README.md](architecture/README.md) の get-resources で `Project=<prefix>` を探して手で消す。
   - 手順 1 の ECR（`RepositoryAlreadyExistsException`）は `KEEP_ECR=1` で残したものなので、消さずに import する（[deploy.md](deploy.md) の「state を失ったとき」）。
+  - 手順 1 の logs のバケットは `ops/down.sh` が残したもの。import するか消す（[deploy.md](deploy.md) の「logs のバケットの import」。AWS では未確認）。
 - `kb_index`: 403 や接続できないのは 4 分半まで打ち直してから落ちる。
   - 権限の反映待ちなら `ops/up.sh` を打ち直す。
   - 続くなら `IaC/terraform/aws-managed/base/core` の OpenSearch Serverless の VPC エンドポイント（`create_opensearch_endpoint`）が ACTIVE か見る。
@@ -174,7 +175,7 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
   - 多ければ `kinesis-firehose` のエンドポイント（手順 0 の一覧）と、ロールの `firehose:PutRecordBatch`。
   - `ALERT_DROPPED` は `device_id` か `kind` が無い・`status` が firing / resolved でない通知か、
     行を組めない通知（`starts_at` が epoch ミリ秒など）で、行にしていない（送り手のテンプレートを見る）。
-  - Firehose が受けたのに S3 Tables に入らなかった行は土台のバケットの `firehose-errors/alert_events/`。
+  - Firehose が受けたのに S3 Tables に入らなかった行は logs のバケット `<prefix>-logs-<アカウント>` の `firehose-errors/alert_events/`（7 日で消える）。
   - 行は Neptune より先に送るので、Neptune が遅くても応答しなくても、この表の行には影響しない。
 - `Neptune の status`:
   - Lambda は例外か timeout で落ち、非同期のやり直し（2 回まで）で Neptune に書き直すので、`status` は遅れて変わる。

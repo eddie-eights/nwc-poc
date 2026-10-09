@@ -4,7 +4,7 @@
 
 `<prefix>` は `deploy.env` の `OWNER` から作る接頭辞 `<owner>-nwc-poc`。
 
-スライドの構成図は 2 本。マネージド版が [architecture-managed.pptx](../architecture-managed.pptx)（10 枚。データの流れ、9 つの Terraform ルート、6 段の処理、収集から格納まで、検知から修復まで、SG、費用、消す順、画面の開き方）、OSS 版が [architecture-oss.pptx](../architecture-oss.pptx)（10 枚。置き換えた 5 つ、1 対 1 の対応、Fargate のタスク、ルート、6 段の処理、SG、`ops/oss/up.sh`、AWS で確かめたこと、未確認）。
+スライドの構成図は 2 本。マネージド版が [architecture-managed.pptx](../architecture-managed.pptx)（10 枚。データの流れ、10 の Terraform ルート、6 段の処理、収集から格納まで、検知から修復まで、SG、費用、消す順、画面の開き方）、OSS 版が [architecture-oss.pptx](../architecture-oss.pptx)（10 枚。置き換えた 5 つ、1 対 1 の対応、Fargate のタスク、ルート、6 段の処理、SG、`ops/oss/up.sh`、AWS で確かめたこと、未確認）。
 
 ソースは `*.deck.md`。
 描くのは `uv run --only-group docs python docs/architecture/render_pptx.py docs/architecture/architecture-managed.deck.md -o docs/architecture-managed.pptx`（OSS 版は `architecture-oss`）。
@@ -62,7 +62,7 @@
 | `docker/images/<名前>/Dockerfile` | イメージの `Dockerfile`（agentcore / temporal / grafana / splunk / nautobot / telegraf / gnmic / syslog-ng / spark / neo4j）。使い方は表の下 |
 | `docker/compose/` | 手元の docker compose（WSL2 の中だけで lab から Grafana / Splunk まで一周させる。AWS は使わない。[README](../../docker/compose/README.md)） |
 | `IaC/terraform/aws-managed/` | AWS にリソースを作るのはここだけ（下のツリー） |
-| `IaC/terraform/oss/` | OSS 版の同じ 9 つのルート（下の段落） |
+| `IaC/terraform/oss/` | OSS 版の同じ 10 のルート（下の段落） |
 | `IaC/cloudformation/` | デバッグ用の EC2 のスタック（`lab-debug.yaml`。下の段落） |
 | `ops/` | `up.sh` / `down.sh` / `check.sh` / `lab-debug.sh` / `sync-graph.sh` など |
 | `ops/oss/` | OSS 版の操作（`ops/oss/up.sh` / `down.sh`）とイメージの版（`ops/oss/oss-images.sh`）（[oss-variant.md](../oss-variant.md)） |
@@ -86,7 +86,8 @@
 IaC/terraform/aws-managed/
 ├── base/
 │   ├── ecr/         ECR リポジトリ
-│   └── core/        VPC / VPC エンドポイント / 閉域の Deny（perimeter.tf）/ SG（ワークロードごと。通信の表は security_groups.tf）/ フローログ / バケット / アラートの SNS トピック（alerts.tf）/ ロール / Web の EC2
+│   ├── logs/        logs のバケット（Firehose が書けなかった行。ops/down.sh は消さない）
+│   └── core/        VPC / VPC エンドポイント / 閉域の Deny（perimeter.tf）/ SG（ワークロードごと。通信の表は security_groups.tf）/ フローログ / assets のバケット / アラートの SNS トピック（alerts.tf）/ ロール / Web の EC2
 ├── agent/         AGENT=1     Runtime / ガードレール / KB
 ├── pipeline/      PIPELINE=1
 │   ├── lab/         containerlab の EC2（stream を作るときは Telegraf・gnmic・syslog-ng・GoFlow2 とのあいだの転送も）
@@ -97,13 +98,13 @@ IaC/terraform/aws-managed/
 └── workflow/      WORKFLOW=1  Temporal on ECS / Gateway（MCP）/ SQS（SNS の購読と、承認・却下の decisions）
 ```
 
-ルートは 9 つで、`ops/up.sh` の `ROOTS` と `ops/check.sh` ではこの順に並ぶ:
-`base/ecr` → `base/core` → `agent` → `pipeline/lab` → `pipeline/stream` → `pipeline/analytics` → `pipeline/graph` → `pipeline/nautobot` → `workflow`。
+ルートは 10 で、`ops/up.sh` の `ROOTS` と `ops/check.sh` ではこの順に並ぶ:
+`base/ecr` → `base/logs` → `base/core` → `agent` → `pipeline/lab` → `pipeline/stream` → `pipeline/analytics` → `pipeline/graph` → `pipeline/nautobot` → `workflow`。
 
 - apply の順は少し違う。graph は手順 3-2 で裏で始めて手順 7-3 で待ち、nautobot は analytics の前（手順 7-3c）。
 - Nautobot は `PIPELINE=1` ならいつも作る（stream と graph を両方外したときだけ作らない）。
 
-OSS 版（`ops/oss/up.sh`）は `IaC/terraform/oss/` に同じ 9 つのルートを持つ（[oss-variant.md](../oss-variant.md)）。
+OSS 版（`ops/oss/up.sh`）は `IaC/terraform/oss/` に同じ 10 のルートを持つ（[oss-variant.md](../oss-variant.md)）。
 
 - 多くのファイルは `IaC/terraform/aws-managed/` へのシンボリックリンク。違いは各ルートの `oss.auto.tfvars` と OSS 版だけのファイル。
 - 接頭辞は `<owner>-nwc-oss`、state も `IaC/terraform/oss/<ルート>/terraform.tfstate` で、マネージド版とは別。

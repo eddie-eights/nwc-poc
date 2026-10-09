@@ -922,7 +922,7 @@ check("承認タブの注記はワークフローが Temporal であることを
 up = read("ops", "up.sh")
 web_imports = {m for m in re.findall(r"^(?:import|from) (\w+)", read("app", "dashboard", "app.py"), re.M) if os.path.exists(os.path.join(ROOT, "app", "dashboard", m + ".py"))}
 check(f"up.sh 4-2 は app/dashboard/*.py を全部置く（app.py が import する {sorted(web_imports)} を含む）",
-      web_imports and 'for f in app/dashboard/*.py; do aws s3 cp --only-show-errors "$f" "s3://$KB_BUCKET/web/${f#app/dashboard/}"; done' in up)
+      web_imports and 'for f in app/dashboard/*.py; do aws s3 cp --only-show-errors "$f" "s3://$ASSETS_BUCKET/web/${f#app/dashboard/}"; done' in up)
 check("Web の起動確認は is-active（落ちて再起動するまでの数秒も active）ではなく 8080 を聞いているかで見る",
       "ss -ltn 'sport = :8080' | grep -q LISTEN" in up and "systemctl is-active --quiet $PREFIX-web.service" not in up)
 check("lab の状態の照合は 1 つの空白で区切った lab=active containers=N をそのまま探す（空白を 2 つ要る形だと合わない）",

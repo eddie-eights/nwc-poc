@@ -759,7 +759,7 @@ check("KAFKA_AUTH / OPENSEARCH_AUTH / PROMETHEUS_AUTH の綴り違いは ValueEr
 # Splunk の HEC の token: OSS 版は ECS の secrets が SSM の SecureString を SPLUNK_HEC_TOKEN に入れる。無ければマネージド版のまま SSM から読む
 _ssm_reads = []
 sinks.read_ssm_parameter = lambda name, region: (_ssm_reads.append(name), "tok-ssm")[1]
-_SPLUNK_ARGS = ["--bootstrap", "b:9092", "--checkpoint", "s3a://b/analytics/checkpoint", "--sinks", "splunk", "--splunk-hec-url", "https://s:8088"]
+_SPLUNK_ARGS = ["--bootstrap", "b:9092", "--checkpoint", "s3a://b/spark/checkpoint", "--sinks", "splunk", "--splunk-hec-url", "https://s:8088"]
 
 
 def parse_ok(argv, **env):
@@ -904,7 +904,7 @@ check("OSS 版のデータソースは SigV4 を使わず、Prometheus は素の
       and "basicAuth: true" in _oss_os and "basicAuthUser: ${OPENSEARCH_USER}" in _oss_os and "basicAuthPassword: ${OPENSEARCH_PASSWORD}" in _oss_os)
 
 # ---- 4. IaC/terraform/oss の木（設計の 3）。ファイルを読むだけ（terraform validate は ops/check.sh が両方の木に打つ）
-TF_ROOTS = ("base/ecr", "base/core", "agent", "pipeline/lab", "pipeline/stream", "pipeline/analytics", "pipeline/graph", "pipeline/nautobot", "workflow")
+TF_ROOTS = ("base/ecr", "base/logs", "base/core", "agent", "pipeline/lab", "pipeline/stream", "pipeline/analytics", "pipeline/graph", "pipeline/nautobot", "workflow")
 OSS_REAL = ("pipeline/stream", "pipeline/analytics", "pipeline/graph")
 UNCHANGED = tuple(r for r in TF_ROOTS if r not in OSS_REAL)
 
@@ -933,7 +933,7 @@ def links_to_managed(root, names):
 
 _bad = [b for r in UNCHANGED for b in links_to_managed(r, git_files(f"IaC/terraform/aws-managed/{r}"))]
 _extra = {r: sorted(set(git_files(f"IaC/terraform/oss/{r}")) - set(git_files(f"IaC/terraform/aws-managed/{r}"))) for r in UNCHANGED}
-check(f"IaC/terraform/oss の変えない 6 ルートは IaC/terraform/aws-managed/ の同じルートのファイル全部への相対リンクで、実ファイルは oss.auto.tfvars だけ（違う: {_bad} {_extra}）",
+check(f"IaC/terraform/oss の変えない 7 ルートは IaC/terraform/aws-managed/ の同じルートのファイル全部への相対リンクで、実ファイルは oss.auto.tfvars だけ（違う: {_bad} {_extra}）",
       not _bad and all(e == ["oss.auto.tfvars"] for e in _extra.values()))
 _shared = ("versions.tf", "providers.tf", "variables.tf", ".terraform.lock.hcl", "terraform.tfvars.example")
 _cross = [f"{r}/{n}" for r in OSS_REAL for n in git_files(f"IaC/terraform/oss/{r}")
@@ -956,7 +956,7 @@ check(f"OSS 版の stream / analytics / graph に MSK / EMR Serverless / AMP / N
       _hits and not any(_hits.values()))
 
 _auto = {r: os.path.join(ROOT, "IaC", "terraform", "oss", *r.split("/"), "oss.auto.tfvars") for r in TF_ROOTS}
-check("IaC/terraform/oss の 9 ルートに oss.auto.tfvars（project = nwc-oss）があり、実ファイルで git が無視しない（.gitignore の *.tfvars の例外）",
+check("IaC/terraform/oss の 10 ルートに oss.auto.tfvars（project = nwc-oss）があり、実ファイルで git が無視しない（.gitignore の *.tfvars の例外）",
       all(os.path.isfile(p) and not os.path.islink(p) and re.search(r'^project = "nwc-oss"$', open(p, encoding="utf-8").read(), re.M)
           and subprocess.run(["git", "check-ignore", "-q", os.path.relpath(p, ROOT)], cwd=ROOT).returncode == 1 for p in _auto.values())
       and subprocess.run(["git", "check-ignore", "-q", "IaC/terraform/oss/workflow/.build/tools.zip"], cwd=ROOT).returncode == 0)
@@ -964,7 +964,7 @@ check("IaC/terraform/oss の 9 ルートに oss.auto.tfvars（project = nwc-oss�
 _vars = {r: open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", *r.split("/"), "variables.tf"), encoding="utf-8").read() for r in TF_ROOTS}
 _prefix = {r: "\n".join(tf_text("IaC/terraform/aws-managed", r).values()) for r in TF_ROOTS}
 _prefix.update({f"oss:{r}": "\n".join(tf_text("IaC/terraform/oss", r).values()) for r in OSS_REAL})
-check("9 ルートに var.project（既定 nwc-poc、nwc-poc と nwc-oss だけ受ける）があり、接頭辞はどれも <owner>-<project>（-nwc-poc の書き込みは無い）",
+check("10 ルートに var.project（既定 nwc-poc、nwc-poc と nwc-oss だけ受ける）があり、接頭辞はどれも <owner>-<project>（-nwc-poc の書き込みは無い）",
       all(re.search(r'variable "project" \{[^}]*?default\s*=\s*"nwc-poc"[\s\S]*?condition\s*=\s*contains\(\["nwc-poc", "nwc-oss"\], var\.project\)', v) for v in _vars.values())
       and all([v for v in re.findall(r"^\s*name_prefix\s*=\s*(.+)$", s, re.M) if v != "local.name_prefix"] == ['"${var.owner}-${var.project}"'] for s in _prefix.values()))
 

@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------- runtime role of the Spark job
 resource "aws_iam_role" "emr" {
   name        = "${local.name_prefix}-emr-runtime"
-  description = "EMR Serverless job runtime - reads MSK, writes the sinks (S3 Tables, OpenSearch Serverless, Prometheus, Splunk HEC with the token from SSM), reads the script and jars from the asset bucket"
+  description = "EMR Serverless job runtime - reads MSK, writes the sinks (S3 Tables, OpenSearch Serverless, Prometheus, Splunk HEC with the token from SSM), reads the script and jars from the asset bucket, writes its driver logs to CloudWatch"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -25,7 +25,7 @@ resource "aws_iam_role_policy" "emr" {
     Version = "2012-10-17"
     Statement = concat([
       {
-        # スクリプトと jar を読む。checkpoint とログを書く
+        # スクリプトと jar を読む。checkpoint を読み書きする
         Sid      = "AssetBucket"
         Effect   = "Allow"
         Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]

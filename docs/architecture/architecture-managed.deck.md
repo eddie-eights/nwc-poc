@@ -39,13 +39,14 @@ source: docs/architecture/、README.md、docs/deploy.md、ops/up.sh・down.sh、
 - Neptune Analytics はトポロジと status を持ち、Web・エージェント・Temporal が読む。Nautobot は機器とケーブルの正。
 :::
 
-## 9 つの Terraform ルートを ops/up.sh が順に作る
+## 10 の Terraform ルートを ops/up.sh が順に作る
 
 ::: columns
 
 | ルート（数） | 中身 |
 |---|---|
 | base/ecr（6） | ECR |
+| base/logs（6） | logs のバケット |
 | base/core（39） | VPC・閉域・SG・Web・SNS |
 | agent（22） | Runtime・ガードレール・KB |
 | workflow（35） | Temporal・MCP・SQS |
@@ -58,18 +59,19 @@ source: docs/architecture/、README.md、docs/deploy.md、ops/up.sh・down.sh、
 |---|---|
 | lab（7） | lab の EC2 |
 | stream（57） | MSK・収集 4 種・NLB |
-| graph（10） | Neptune・status Lambda |
+| graph（11） | Neptune・status Lambda |
 | nautobot（16） | Nautobot・RDS |
-| analytics（53） | EMR・格納先・Grafana・Splunk |
+| analytics（54） | EMR・格納先・Grafana・Splunk |
 
 :::
 
 ::: notes
 - ルートは IaC/terraform/aws-managed/<ルート>。
-- 数え方: ルートの *.tf をつないで grep -c '^resource "'（2026-10-09、origin/main 9fb0616）。count・for_each で増える実数ではない。元のデッキ（2026-10-08）から変わったのは agent 21 → 22 と stream 37 → 57（013 で gnmic・syslog-ng・GoFlow2 が入り、telegraf-dialin が外れた）。
+- 数え方: ルートの *.tf をつないで grep -c '^resource "'（2026-10-10、feat/035-s3-layout b39c543）。count・for_each で増える実数ではない。元のデッキ（2026-10-08）から変わったのは agent 21 → 22 と stream 37 → 57（013 で gnmic・syslog-ng・GoFlow2 が入り、telegraf-dialin が外れた）。
+- 2026-10-09 の数えからは、base/logs（6）が 035 で増え、graph 10 → 11、analytics 53 → 54 になった。
 - stream の 57 の内訳: telegraf.tf 15、collectors.tf 20（syslog-ng・GoFlow2）、gnmic.tf 12、msk.tf 5、kafka_ui.tf 4（Web の EC2 で動く Kafbat UI の接続先。ECS のタスクではない）、access.tf 1。
 - workflow の MCP は AgentCore Gateway。analytics の格納先は S3 Tables・OpenSearch Serverless・AMP。
-- ops/up.sh の順（ROOTS は ops/up.sh:469）: base/ecr → base/core → agent → lab → stream → graph → nautobot → analytics → workflow。graph は base/core のあと裏で始め、stream のあとで待つ。
+- ops/up.sh の順（ROOTS は ops/up.sh:470）: base/ecr → base/logs → base/core → agent → lab → stream → graph → nautobot → analytics → workflow。graph は base/core のあと裏で始め、stream のあとで待つ。
 - agent は AGENT=1、workflow は WORKFLOW=1、pipeline の 5 つは PIPELINE=1。接頭辞は <owner>-nwc-poc。
 - lab-debug は別の CloudFormation スタックで、ここには入らない（ops/lab-debug.sh）。
 :::
@@ -113,7 +115,7 @@ gnmic は取りに行き、ほかの 3 種は内部 NLB の裏で受ける。
 
 ## 検知から修復まで: アラートは SNS に集まり、link_down だけが承認つきの修復へ進む
 
-- Grafana のルール 4 つと Splunk の保存済みサーチ 4 つが、同じ 4 種を SNS へ出す
+- Grafana のルール 4 つと Splunk の保存済みサーチ 3 つが、同じ 4 種を SNS へ出す
 - SNS から status Lambda が Neptune の status を書き、Firehose が `alert_events` に残す
 - link_down だけが SQS から Temporal のワークフローを起こす
 - エージェントが原因を調べて修復を提案し、人が Web の承認タブで承認する
@@ -166,12 +168,13 @@ PIPELINE と土台で約 $2.92/h、STORES=s3 だけなら約 $1.99/h。使い終
 
 ## ops/down.sh は作った逆の順に消し、Runtime の ENI だけが最大 8 時間残る
 
-- 9 つのルートを workflow から base/ecr まで逆の順に消す
+- base/logs を除く 9 つのルートを workflow から base/ecr まで逆の順に消す
 - 続けて Runtime のロググループ、SSM のパラメータ、MSK の SCRAM の secret を消す
 - KMS の鍵は削除を予約する（7 日後に消える）
 - `KEEP_ECR=1` なら ECR を残す
 - Runtime の ENI が外れるまで VPC・サブネット・runtime の SG が残る（課金なし）
 - Lambda の ENI は 20〜40 分残り、裏で消す
+- logs のバケットは意図して残す（中身は 7 日で消える）
 
 ::: notes
 - 正: docs/deploy.md の「消す順」（ops/down.sh）。順は workflow → analytics → nautobot → graph → stream → lab → agent → base/core → base/ecr → Runtime のロググループ → SSM のパラメータ → MSK の SCRAM の secret と KMS の鍵。
@@ -180,6 +183,7 @@ PIPELINE と土台で約 $2.92/h、STORES=s3 だけなら約 $1.99/h。使い終
 - Runtime の ENI が残るあいだは VPC 一式を残して他を消し、終了コード 0 で終わる。次の ops/up.sh が使い回す。
 - 20〜40 分残る ENI は graph・workflow・KB（<prefix>-kb-index）の Lambda のもの。
 - KEEP_ECR=1 の ECR は 7.39 GB で月 約 110 円（docs/deploy.md の「消したあとに残るもの」）。
+- base/logs（logs のバケット <prefix>-logs-<アカウント>）は消さない（ops/down.sh:129-132）。Firehose が書けなかった行を消したあとでも読むため。空のバケットは無料。
 :::
 
 ## 画面は Web の EC2 を踏み台に localhost で開き、lab の図だけは lab の EC2 から開く
