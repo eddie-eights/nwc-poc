@@ -444,10 +444,11 @@ fake("sudo", 'exec env -i PATH="$PATH" FAKE_LOG="$FAKE_LOG" FAKE_BGP_ADMIN="${FA
 # lab.sh up が打つ（containerlab は deploy を書くだけ、modprobe は何もしない）
 fake("containerlab")
 fake("modprobe")
-# up.sh が lab の管理ネットの GW を探し、check.sh がコンテナの bind が host にあるかを見る ip -o -4 addr show。FAKE_GW=1 なら containerlab の bridge に 203.0.113.1 がある（203.0.113.10 は似た別のアドレス）
+# up.sh が lab の管理ネットの GW を探し、check.sh がコンテナの bind が host にあるかを見る ip -o -4 addr show。FAKE_GW=1 なら containerlab の bridge に 203.0.113.1 がある（203.0.113.10 は似た別のアドレス）。FAKE_GW=look なら . を任意の 1 文字と読むと当たる 203a0a113a1 だけがある
 fake("ip", r'''echo "1: lo    inet 127.0.0.1/8 scope host lo\       valid_lft forever preferred_lft forever"
 echo "5: eth0    inet 203.0.113.10/24 brd 203.0.113.255 scope global eth0\       valid_lft forever preferred_lft forever"
 [ "${FAKE_GW:-0}" = 1 ] && echo "7: br-1a2b3c4d5e6f    inet 203.0.113.1/24 brd 203.0.113.255 scope global br-1a2b3c4d5e6f\       valid_lft forever preferred_lft forever"
+[ "${FAKE_GW:-0}" = look ] && echo "8: br-0f0f0f0f0f0f    inet 203a0a113a1/24 scope global br-0f0f0f0f0f0f\       valid_lft forever preferred_lft forever"
 exit 0
 ''')
 # lab.sh failover が待つ sleep と、断を見る snmpwalk（何も返さないので、down が見えるまで 10 回 sleep 1 する）
@@ -676,6 +677,10 @@ check("up.sh: app/containerlab/lab_topology.py の 2 つ（GNMI_TARGETS / DEVICE
 _r, _c = run([os.path.join(_lc, "up.sh")], FAKE_GW="1", TELEGRAF_BIND="10.9.9.9")
 check("up.sh: host に 203.0.113.1（lab.sh up が作る bridge）があれば TELEGRAF_BIND=203.0.113.1 で渡し、WARNING を出さない（シェルの TELEGRAF_BIND は使わない。203.0.113.10 と取り違えない）",
       _r.returncode == 0 and _c == ["ip -o -4 addr show", "docker compose up -d --build", f"{_upenv} TELEGRAF_BIND=203.0.113.1"] and "WARNING" not in _r.stderr)
+_r, _c = run([os.path.join(_lc, "up.sh")], FAKE_GW="look")
+check("up.sh: GW の判定は check.sh の dest と同じ grep -F --（. を任意の 1 文字と読まない。203a0a113a1 では TELEGRAF_BIND を空にして WARNING）。-q にしない（cycle 032）",
+      'grep -F -- " $MGMT_GW/" >/dev/null' in read("docker", "compose", "up.sh") and "grep -q" not in read("docker", "compose", "up.sh")
+      and _r.returncode == 0 and _c[2] == f"{_upenv} TELEGRAF_BIND=" and "WARNING" in _r.stderr)
 _r, _c = run([os.path.join(_lc, "up.sh"), "telegraf"])
 check("up.sh: 引数は docker compose up に渡す（up.sh telegraf で Telegraf だけ作り直す）", _r.returncode == 0 and _c[1] == "docker compose up -d --build telegraf")
 _r, _c = run([os.path.join(_lc, "down.sh"), "-v"])

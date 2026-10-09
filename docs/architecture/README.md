@@ -7,7 +7,7 @@
 スライドの構成図は 2 本。マネージド版が [architecture-managed.pptx](../architecture-managed.pptx)（10 枚。データの流れ、9 つの Terraform ルート、6 段の処理、収集から格納まで、検知から修復まで、SG、費用、消す順、画面の開き方）、OSS 版が [architecture-oss.pptx](../architecture-oss.pptx)（10 枚。置き換えた 5 つ、1 対 1 の対応、Fargate のタスク、ルート、6 段の処理、SG、`ops/oss/up.sh`、AWS で確かめたこと、未確認）。
 
 ソースは `*.deck.md`。
-描くのは `uv run --group docs python docs/architecture/render_pptx.py docs/architecture/architecture-managed.deck.md -o docs/architecture-managed.pptx`（OSS 版は `architecture-oss`）。
+描くのは `uv run --only-group docs python docs/architecture/render_pptx.py docs/architecture/architecture-managed.deck.md -o docs/architecture-managed.pptx`（OSS 版は `architecture-oss`）。
 `.deck.md` を直したら pptx も描き直して一緒に commit する。
 
 構成の説明は terraform のルートに合わせて 4 つに分けてある。
