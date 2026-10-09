@@ -40,6 +40,7 @@ fi
 if [ -n "${OPENSEARCH_URL:-}" ]; then
   cp "$OS_DS/opensearch.yaml" "$DST/datasources/"
   cp "$SRC/dashboards/logs.json" /tmp/grafana-dashboards/
+  cp "$SRC/dashboards/flows.json" /tmp/grafana-dashboards/
   if [ -n "${ALERTS_TOPIC_ARN:-}" ]; then
     cp "$SRC/alerting/nwc-opensearch.yaml" "$DST/alerting/"
   fi
