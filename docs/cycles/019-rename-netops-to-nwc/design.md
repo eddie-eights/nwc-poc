@@ -87,3 +87,5 @@ AWS の資源の名前は 2026-10-04 に `nwc-*`（接頭辞 `<owner>-nwc-poc`�
 2. **Grafana の連絡先のテンプレート名 `nwc.sns` と `message: '{{ template "nwc.sns" . }}'` の一致**も同じ。`tests/test_alerts.py` が見ているはず。
 3. **Nautobot の `PYTHONPATH=/opt/nautobot/nwc` と Job の import（`import nb_sync` 等）**: ディレクトリ名を変えてもモジュール名は変わらないが、`bootstrap.py` の `JOBS` のクラスパスは `nwc_jobs.…` に変わる。`tests/test_nautobot.py` が `JOBS` と `netops_jobs.py` のクラス名の一致を見ているなら、そこを直す。
 4. **`IaC/terraform/aws-managed/agent/variables.tf:50` の `netops`** は AgentCore Runtime の名前の説明の中。名前そのものは接頭辞から導くので、説明の文言だけ直す。実装時に該当行を読んで確かめる。
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261009-cycle-019-rename-netops-to-nwc-design.html -->

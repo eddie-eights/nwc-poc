@@ -82,3 +82,5 @@ None
 
 - cold reviewer に依頼しない（実装ファイルが不変。変えたのは `docs/troubleshooting.md` と 019 の design.md だけ）。レビューは build.md の Round 2 に依る。
 - PM の判断の 3 つを直した。取り直した検証は build.md の Round 2。
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261009-cycle-019-rename-netops-to-nwc-review.html -->
