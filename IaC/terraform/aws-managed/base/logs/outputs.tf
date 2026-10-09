@@ -4,6 +4,6 @@ output "logs_bucket_name" {
 }
 
 output "logs_bucket_arn" {
-  description = "ARN of the logs bucket. IaC/terraform/aws-managed/pipeline/analytics reads it from this state (Firehose error rows). ops/down.sh does not destroy this root."
+  description = "ARN of the logs bucket (Firehose error rows). No root reads it - IaC/terraform/aws-managed/pipeline/analytics builds the ARN from logs_bucket_name. ops/down.sh does not destroy this root."
   value       = aws_s3_bucket.logs.arn
 }
