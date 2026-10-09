@@ -1567,17 +1567,18 @@ def _gh_slug(text):
                    if ch in "-_ " or unicodedata.category(ch)[0] in "LNM")
 def _faq_heads(text):
     """FAQ の見出しを (レベル, 見出しの文字, 行番号) で返す。コードブロックの中の # の行は数えない。
-    フェンスは字下げしたものと ~~~ も見る。開いたのと同じ文字で、開いた長さ以上の並びだけの行で閉じる（GitHub に寄せる。028）"""
-    heads, fence = [], None
+    フェンスは字下げしたものと ~~~ も見る。開いたのと同じ文字で、開いた長さ以上の並びだけの行で閉じる（GitHub に寄せる。028）。
+    閉じの字下げが開きより浅い行は閉じと見なさない（箇条書きの中のフェンスは列 0 の ``` では閉じない。GFM と同じ。028 の cold review S2）"""
+    heads, fence, indent = [], None, 0
     for i, line in enumerate(text.split("\n")):
         if fence is not None:
             c = line.strip()
-            if c and set(c) == {fence[0]} and len(c) >= len(fence):
+            if c and set(c) == {fence[0]} and len(c) >= len(fence) and len(line) - len(line.lstrip()) >= indent:
                 fence = None
             continue
-        f = re.match(r"^\s*(`{3,}|~{3,})", line)
+        f = re.match(r"^(\s*)(`{3,}|~{3,})", line)
         if f:
-            fence = f.group(1)
+            fence, indent = f.group(2), len(f.group(1))
             continue
         m = re.match(r"^(#{1,6}) (.*)$", line)
         if m:
@@ -1617,8 +1618,12 @@ def _faq_heads_ok(text):
     for _, h, _ in _faq_heads(text):
         if any(unicodedata.category(ch) == "No" or (unicodedata.category(ch) == "Pc" and ch != "_") for ch in h):
             return False
-        # コードの中の文字は GitHub でも記法にならない。_ は英数字に挟まれていれば強調にならない（raw_telemetry、event_id）
-        if re.search(r"[\[\]*<>]|(?<![0-9A-Za-z])_|_(?![0-9A-Za-z])", re.sub(r"`[^`]*`", "", h)):
+        # ` の対応を GFM と同じに取れない書き方（奇数個、`` を含む）は使わない（028 のセルフレビュー 2）
+        if h.count("`") % 2 or "``" in h:
+            return False
+        # コードの中の文字は GitHub でも記法にならない。_ は英数字に挟まれていれば強調にならない（raw_telemetry、event_id）。
+        # コードは空白に置き換えて消す（コードに接した _ を英数字に挟まれたと見なさない。028 の cold review S1）
+        if re.search(r"[\[\]*<>]|(?<![0-9A-Za-z])_|_(?![0-9A-Za-z])", re.sub(r"`[^`]*`", " ", h)):
             return False
         slugs.append(_gh_slug(h))
     return len(slugs) == len(set(slugs))
@@ -1635,6 +1640,14 @@ _faq_fenced = _faq + ("\n~~~\n## 偽の節 1\n~~~\n\n~~~\n```\n## 偽の節 2\n~
 check("FAQ: 字下げしたフェンスと ~~~ のフェンスの中の # の行は見出しに数えない。開いたのと同じ文字で、開いた長さ以上の並びだけの行で閉じる（028）",
       [h[:2] for h in _faq_heads(_faq_fenced)] == [h[:2] for h in _faq_heads(_faq)]
       and _faq_toc_ok(_faq_fenced) and _faq_heads_ok(_faq_fenced))
+check("FAQ の見出しの縛りは、写しに足したコードに接した _（x`a`_b_`c`y）を落とす（028 の cold review S1。GFM では _b_ が強調になる）",
+      not _faq_heads_ok(_faq_with(" x`a`_b_`c`y")))
+check("FAQ の見出しの縛りは、写しに足した ` が奇数個の見出しと `` を含む見出しを落とす（028 のセルフレビュー 2）",
+      not any(_faq_heads_ok(_faq_with(x)) for x in (" `a _x_ ``", " `a_b` `", " `` a_b ``")))
+_faq_list_fence = "\n- item\n  ```\n  code\n{}```\n\n### Q. 偽の質問\n"
+check("FAQ: 箇条書きの中のフェンスは、開きより浅い字下げの ``` では閉じない（同じ字下げなら閉じる。028 の cold review S2）",
+      [h[:2] for h in _faq_heads(_faq + _faq_list_fence.format(""))] == [h[:2] for h in _faq_heads(_faq)]
+      and [h[:2] for h in _faq_heads(_faq + _faq_list_fence.format("  "))] == [h[:2] for h in _faq_heads(_faq)] + [(3, "Q. 偽の質問")])
 # 構成の pptx を描く道具はリポジトリの中に置く（028。前は個人リポジトリの ~/Documents/repo/bin/render-pptx を指していた）
 import tomllib
 _arch_readme = open(os.path.join(ROOT, "docs", "architecture", "README.md"), encoding="utf-8").read()
