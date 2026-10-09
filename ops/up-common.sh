@@ -203,7 +203,7 @@ splunk_image_check() {  # SPLUNK_TAG を app/splunk/ の中身と docker/images/
   if ecr_has "$PREFIX-splunk" "$SPLUNK_TAG"; then echo "splunk:$SPLUNK_TAG はある"; else NEED_SPLUNK=1; fi
 }
 build_splunk() {  # docker login 済みで呼ぶ。REG / PREFIX / SPLUNK_TAG（splunk_image_check）を使う
-  # Splunk Enterprise の公式イメージ（amd64 だけ。約 2〜3 GB）に検知のアプリ（app/splunk/netops_alerts）を足す。
+  # Splunk Enterprise の公式イメージ（amd64 だけ。約 2〜3 GB）に検知のアプリ（app/splunk/nwc_alerts）を足す。
   # Fargate は VPC の中から ECR しか引けず、タスクは Splunkbase にも出られないので、アプリはビルドのときに入れる
   # （COPY だけなので、arm64 の PC（Apple シリコン）でもエミュレーション無しで作れる）
   docker buildx build --platform linux/amd64 --build-arg "SPLUNK_VERSION=$SPLUNK_VERSION" -t "$REG/$PREFIX-splunk:$SPLUNK_TAG" --push -f docker/images/splunk/Dockerfile app/splunk/
@@ -337,7 +337,7 @@ ensure_nautobot_secrets() {  # pipeline/nautobot の apply より前に呼ぶ。
   ensure_secret "/$PREFIX/nautobot/secret-key" password "Nautobot SECRET_KEY (created by $OPS_DIR/up.sh)"
   ensure_secret "/$PREFIX/nautobot/admin-password" password "Nautobot admin password (created by $OPS_DIR/up.sh)"
   ensure_secret "/$PREFIX/nautobot/db-password" password "Nautobot database password (created by $OPS_DIR/up.sh)"
-  # Web の「トポロジ」タブがリンクの追加・削除を Nautobot の REST API に書くためのトークン（bootstrap.py が同じ値でユーザー netops-web のトークンを作る）
+  # Web の「トポロジ」タブがリンクの追加・削除を Nautobot の REST API に書くためのトークン（bootstrap.py が同じ値でユーザー nwc-web のトークンを作る）
   ensure_secret "/$PREFIX/nautobot/api-token" token "Nautobot API token of the web UI (created by $OPS_DIR/up.sh)"
 }
 

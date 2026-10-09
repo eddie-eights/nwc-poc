@@ -1,4 +1,4 @@
-"""Nautobot の中身を読んで、gnmic の購読先の一覧（SSM）と Neptune（OSS 版は Neo4j）の物理層に合わせる。app/nautobot/jobs/netops_jobs.py の Job と、
+"""Nautobot の中身を読んで、gnmic の購読先の一覧（SSM）と Neptune（OSS 版は Neo4j）の物理層に合わせる。app/nautobot/jobs/nwc_jobs.py の Job と、
 起動時の bootstrap.py が呼ぶ。対応付けは nb_map.py。
 
   1. 機器の一覧: Service gnmi を持つ機器から作った文字列が SSM の今の値と違うときだけ書き換え、gnmic のサービスを作り直す
@@ -23,7 +23,7 @@ import graph
 import nb_map
 import toolkit
 
-LOCK = "netops-nautobot-sync"
+LOCK = "nwc-nautobot-sync"
 LOCK_TIMEOUT = 900   # ロックを持ったまま落ちても、この秒数で外れる。Job の制限時間（Celery の hard limit 600 秒）より長くし、走っている途中で外れないようにする
 LOCK_WAIT = 240      # 先に走っている同期を待つ秒数
 GRAPH_NAME = {"neptune": "Neptune", "neo4j": "Neo4j"}[graph.BACKEND]   # ログと失敗の文言に出すグラフの名前

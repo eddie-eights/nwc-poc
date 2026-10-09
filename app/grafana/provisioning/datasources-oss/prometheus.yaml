@@ -1,6 +1,6 @@
 # OSS 版（cycle 005。IaC/terraform/oss）の Prometheus: VictoriaMetrics の vmselect（app/spark/snmp_sinks.py が vminsert に remote write する）。
 # app/grafana/start.sh が PROMETHEUS_AUTH=none のときに datasources/prometheus.yaml の代わりに並べる。
-# uid はマネージド版（AMP）と同じ amp にして、ダッシュボード（metrics.json）とアラートのルール（netops-prometheus.yaml）をそのまま使う。
+# uid はマネージド版（AMP）と同じ amp にして、ダッシュボード（metrics.json）とアラートのルール（nwc-prometheus.yaml）をそのまま使う。
 # PROMETHEUS_URL は http://<vmselect>:8481/select/0/prometheus（Prometheus の API の根。VPC の中なので署名も TLS も無し。SG で Grafana だけに絞る）
 apiVersion: 1
 datasources:

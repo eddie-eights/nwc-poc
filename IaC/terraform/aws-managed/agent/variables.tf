@@ -47,7 +47,7 @@ variable "agent_image_uri" {
 }
 
 variable "runtime_name" {
-  description = "Optional. AgentCore Runtime name (letters, digits and underscore only. Hyphens are not allowed). Leave empty to derive it from the prefix <owner>-nwc-poc: hyphens become underscores and _agent is appended (owner netops -> netops_nwc_poc_agent)."
+  description = "Optional. AgentCore Runtime name (letters, digits and underscore only. Hyphens are not allowed). Leave empty to derive it from the prefix <owner>-nwc-poc: hyphens become underscores and _agent is appended (owner yamada -> yamada_nwc_poc_agent)."
   type        = string
   default     = ""
 

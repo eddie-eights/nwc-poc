@@ -127,7 +127,7 @@ resource "aws_kinesis_firehose_delivery_stream" "alert_events" {
     s3_backup_mode     = "FailedDataOnly"
 
     destination_table_configuration {
-      database_name = aws_s3tables_namespace.netops.namespace
+      database_name = aws_s3tables_namespace.nwc.namespace
       table_name    = aws_s3tables_table.alert_events.name
     }
 

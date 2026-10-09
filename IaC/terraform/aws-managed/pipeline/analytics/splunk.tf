@@ -2,7 +2,7 @@
 # sinks に splunk があるとき、Splunk の公式イメージ（splunk/splunk）にアラートの app を足したもの（docker/images/splunk/Dockerfile）を 1 タスク立て、
 # Spark の splunk の格納先が VPC の中の HEC（https://splunk.<名前空間>:8088）へ書く。AWS の外へは出ない（2026-09-28 まであった外の Splunk へ NAT で出る道はやめた）。
 # イメージは amd64 しか無いので X86_64 のタスクにし、ops/up.sh の手順 2 が ECR の <接頭辞>-splunk に入れる（VPC から AWS の外へ出る経路が無いので Docker Hub から引けない）。
-# 検知は app netops_alerts の保存済みサーチ（リンク・BGP・IS-IS・trap）で、アラートアクション netops_sns が土台の SNS トピック
+# 検知は app nwc_alerts の保存済みサーチ（リンク・BGP・IS-IS・trap）で、アラートアクション nwc_sns が土台の SNS トピック
 # （IaC/terraform/aws-managed/base/core の alerts.tf）へ publish する。認証はタスクロール（アクセスキーは置かない）で、sns のエンドポイントを通る。
 # ライセンスは Splunk Enterprise の試用（60 日、1 日 500 MB まで）。SPLUNK_START_ARGS / SPLUNK_GENERAL_TERMS で起動時に Splunk の
 # ライセンスと Splunk General Terms に同意する（イメージがこの 2 つ無しでは起きない）ので、デプロイする人が同意したことになる。
@@ -99,7 +99,7 @@ resource "aws_ecs_task_definition" "splunk" {
   cpu                      = var.splunk_task_cpu
   memory                   = var.splunk_task_memory
   execution_role_arn       = aws_iam_role.splunk_execution[0].arn
-  # アラートアクション（app/splunk/netops_alerts/bin/netops_sns.py）が SNS へ publish する
+  # アラートアクション（app/splunk/nwc_alerts/bin/nwc_sns.py）が SNS へ publish する
   task_role_arn = aws_iam_role.splunk_task[0].arn
 
   runtime_platform {
@@ -414,7 +414,7 @@ resource "aws_iam_role" "splunk_task" {
   count = local.splunk_on_ecs ? 1 : 0
 
   name               = "${local.name_prefix}-splunk-task"
-  description        = "Splunk task - the netops_sns alert action publishes alerts to the SNS topic"
+  description        = "Splunk task - the nwc_sns alert action publishes alerts to the SNS topic"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
 }
 

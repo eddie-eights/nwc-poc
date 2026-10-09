@@ -1,8 +1,8 @@
 {
   "uid": "nwc-logs",
-  "title": "netops / traps and syslog",
+  "title": "nwc / traps and syslog",
   "tags": [
-    "netops"
+    "nwc"
   ],
   "timezone": "browser",
   "schemaVersion": 41,

@@ -172,7 +172,7 @@ def precheck(action: str, devices: list, links: list) -> dict:
 
 
 # ---------------------------------------------------------------- アラート（Grafana / Splunk → SNS → SQS）
-# SNS に publish する JSON は送り手（app/grafana/provisioning/alerting と app/splunk/netops_alerts）で形を揃えてある:
+# SNS に publish する JSON は送り手（app/grafana/provisioning/alerting と app/splunk/nwc_alerts）で形を揃えてある:
 #   {"source": "grafana" | "splunk",
 #    "alerts": [{"status": "firing" | "resolved", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1",
 #                "detail": "ethernet-1/1 is down", "starts_at": 1790000000}]}

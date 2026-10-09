@@ -1,1 +1,1 @@
-[netops_sns]
+[nwc_sns]

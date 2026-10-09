@@ -252,7 +252,7 @@ services:
       start_period: 1m
 
   splunk:
-    # 上流の splunk/splunk は amd64 だけ（WSL の x86_64 はそのまま。Apple Silicon の Mac はエミュレーションで、未確認）。standalone で app netops_alerts が動く
+    # 上流の splunk/splunk は amd64 だけ（WSL の x86_64 はそのまま。Apple Silicon の Mac はエミュレーションで、未確認）。standalone で app nwc_alerts が動く
     build:
       context: ../../app/splunk
       dockerfile: ../../docker/images/splunk/Dockerfile

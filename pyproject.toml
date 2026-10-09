@@ -3,7 +3,7 @@
 [project]
 name = "nwc-poc"
 version = "0.0.0"
-description = "NetOps PoC Terraform and local mock tests"
+description = "Network operations PoC: Terraform and local mock tests"
 requires-python = ">=3.13,<3.14"
 
 [dependency-groups]

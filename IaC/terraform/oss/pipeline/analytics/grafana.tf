@@ -7,7 +7,7 @@
 #   uid はマネージド版と同じ amp / aoss-logs なので、ダッシュボード（provisioning/dashboards）とアラートのルール（provisioning/alerting）は
 #   マネージド版と同じファイルをそのまま使う（イメージも同じ docker/images/grafana/Dockerfile。写しは作らない）
 # - タスクロールは SNS の publish だけ（aps と aoss の許可も、OpenSearch Serverless のデータアクセスポリシーも要らない）。
-#   アラートはマネージド版と同じ連絡先（app/grafana/provisioning/alerting/netops.yaml。タスクロールの SigV4 で sns の VPC エンドポイントを通る）から
+#   アラートはマネージド版と同じ連絡先（app/grafana/provisioning/alerting/nwc.yaml。タスクロールの SigV4 で sns の VPC エンドポイントを通る）から
 #   土台のトピック（IaC/terraform/aws-managed/base/core の alerts.tf）へ出て、status の Lambda（IaC/terraform/oss/pipeline/graph の sync.tf）とワークフロー
 #   （IaC/terraform/aws-managed/workflow の events.tf）が受ける。SigV4 が要るのは SNS だけで、データソースの認証の違いは環境変数で吸収する
 # - Grafana から OpenSearch の 9200 と vmselect の 8481 への SG の行は土台の oss.tf にある

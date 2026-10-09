@@ -12,7 +12,7 @@
 # 機器は lab の EC2 の中の docker network（203.0.113.0/24）にいる。trap は次の経路でここへ届く（lab の EC2 で sudo lab forward-status）:
 #   機器は lab の EC2（203.0.113.1:162）へ送り、lab の EC2 が内部 NLB（IP は NLB がある間は変わらない）へ DNAT し、
 #   NLB が 1162 でここへ渡す。NLB は送り元を変えない（UDP のクライアント IP の保持）ので、送り元は機器の管理 IP のまま
-# MIB は入れないので trap の varbind 名は数値 OID のまま Kafka に載る（ifName の OID を引くのは Splunk の保存済みサーチ。app/splunk/netops_alerts）。
+# MIB は入れないので trap の varbind 名は数値 OID のまま Kafka に載る（ifName の OID を引くのは Splunk の保存済みサーチ。app/splunk/nwc_alerts）。
 
 [agent]
   interval = "10s"

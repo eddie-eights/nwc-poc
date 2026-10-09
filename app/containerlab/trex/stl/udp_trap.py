@@ -11,7 +11,7 @@ TRex のコンソールから:
     pps        1 ポートあたりの送信レート（packets/s）。既定 100
     community  SNMPv2c の community。既定 public（containerlab が全ノードに入れる値）
     ifindex    varbind の ifIndex。既定 1
-    ifname     varbind の ifName。既定 ethernet-1/1（Splunk の netops_trap が target に使う）
+    ifname     varbind の ifName。既定 ethernet-1/1（Splunk の nwc_trap が target に使う）
 
 中身は IF-MIB の linkDown（snmpTrapOID .1.3.6.1.6.3.1.1.5.3）。varbind は sysUpTime.0 / snmpTrapOID.0 のあとに
 linkDown の OBJECTS（ifIndex / ifAdminStatus = up / ifOperStatus = down）と ifName。BER はこのファイルで組む（TRex の scapy の版に依らない）。

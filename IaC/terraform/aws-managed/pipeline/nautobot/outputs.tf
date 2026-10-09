@@ -19,7 +19,7 @@ output "url" {
 }
 
 output "sync_targets" {
-  description = "What the NetOps job writes: gnmic (the gNMI targets in SSM) and / or neptune (neo4j in the OSS variant). Empty when neither stream nor graph is there."
+  description = "What the NWC job writes: gnmic (the gNMI targets in SSM) and / or neptune (neo4j in the OSS variant). Empty when neither stream nor graph is there."
   value       = compact([local.gnmic_from_nautobot ? "gnmic" : "", local.neptune_graph_id != "" ? "neptune" : "", local.graph_neo4j ? "neo4j" : ""])
 }
 

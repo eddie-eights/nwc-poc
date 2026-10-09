@@ -57,7 +57,7 @@ docker/compose/up.sh
 docker/compose/check.sh
 ```
 
-2〜3 分待ってから打つ。Spark の 2 つ（`spark-splunk` / `spark-http`）が `running` か、Kafka のトピックとメッセージ数、Prometheus の `snmp_interface_oper_up`、OpenSearch の `snmp-logs`、Splunk の `sourcetype=netops:*`、Grafana のデータソース 2 つと Prometheus の health、Telegraf の health（`up.sh` と同じく `203.0.113.1` があればそこ、無ければ `127.0.0.1` の `HEALTH_PORT`）、syslog-ng が 5140/udp で待っているか、GoFlow2 の `/metrics`（8081）を見て、NG が無ければ `すべて ok`。Kafka のトピックは Spark が起動のときに作るので、gnmic と Telegraf から届いているかはメッセージ数（Kafbat UI の `messagesCount`）で見る。`metrics`（gnmic の IF のカウンター）と `gnmi`（gnmic の IF・BGP・IS-IS の状態。購読した直後に今の値を 1 回送る）が 0 件なら NG（`docker compose -f docker/compose/compose.yaml logs gnmic`）。trap の `traps` は障害を入れるまで来ないので、0 件でも NG にせず `注意` を出す（下の `fail-main` か `trap-test` のあとに打ち直すと `ok` になる）。1 つでも NG なら非 0 で終わるので、`docker compose -f docker/compose/compose.yaml logs <サービス>` で見る。Spark が `exited` なら `restart: on-failure:5` を使い切って止まっている（`logs spark-splunk` などで理由を見て、直してから `docker/compose/up.sh spark-splunk`）。`created` なら送り先が `healthy` になっていない。
+2〜3 分待ってから打つ。Spark の 2 つ（`spark-splunk` / `spark-http`）が `running` か、Kafka のトピックとメッセージ数、Prometheus の `snmp_interface_oper_up`、OpenSearch の `snmp-logs`、Splunk の `sourcetype=nwc:*`、Grafana のデータソース 2 つと Prometheus の health、Telegraf の health（`up.sh` と同じく `203.0.113.1` があればそこ、無ければ `127.0.0.1` の `HEALTH_PORT`）、syslog-ng が 5140/udp で待っているか、GoFlow2 の `/metrics`（8081）を見て、NG が無ければ `すべて ok`。Kafka のトピックは Spark が起動のときに作るので、gnmic と Telegraf から届いているかはメッセージ数（Kafbat UI の `messagesCount`）で見る。`metrics`（gnmic の IF のカウンター）と `gnmi`（gnmic の IF・BGP・IS-IS の状態。購読した直後に今の値を 1 回送る）が 0 件なら NG（`docker compose -f docker/compose/compose.yaml logs gnmic`）。trap の `traps` は障害を入れるまで来ないので、0 件でも NG にせず `注意` を出す（下の `fail-main` か `trap-test` のあとに打ち直すと `ok` になる）。1 つでも NG なら非 0 で終わるので、`docker compose -f docker/compose/compose.yaml logs <サービス>` で見る。Spark が `exited` なら `restart: on-failure:5` を使い切って止まっている（`logs spark-splunk` などで理由を見て、直してから `docker/compose/up.sh spark-splunk`）。`created` なら送り先が `healthy` になっていない。
 
 障害を入れて見る:
 
@@ -65,7 +65,7 @@ docker/compose/check.sh
 docker/compose/lab.sh fail-main
 ```
 
-数分で Grafana の `metrics` ダッシュボードの `dc1-a-leaf-01 ethernet-1/1` が DOWN、`logs` ダッシュボードと Splunk（`index=* source="telegraf:snmp_trap"`）に linkDown の trap と syslog が出る。戻すのは `docker/compose/lab.sh heal-main`。`docker/compose/lab.sh trap-test` は link 以外の trap を 1 通送る（Splunk の保存済みサーチ `netops_trap` が次の実行で 1 件）。
+数分で Grafana の `metrics` ダッシュボードの `dc1-a-leaf-01 ethernet-1/1` が DOWN、`logs` ダッシュボードと Splunk（`index=* source="telegraf:snmp_trap"`）に linkDown の trap と syslog が出る。戻すのは `docker/compose/lab.sh heal-main`。`docker/compose/lab.sh trap-test` は link 以外の trap を 1 通送る（Splunk の保存済みサーチ `nwc_trap` が次の実行で 1 件）。
 
 ## 見る場所
 

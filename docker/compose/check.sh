@@ -84,13 +84,13 @@ judge "OpenSearch: snmp-logs の件数 > 0" \
   <<<"$(get OPENSEARCH_PASSWORD 'http://127.0.0.1:9200/snmp-logs/_count' || true)"
 # 認証の失敗などで result が無い応答を 0 件と分ける（本物の 401 の本文は未確認）。messages の FATAL / ERROR はその理由（同じものは 1 つに）、
 # ほかは「result が無い」、JSON でなければ「読めない応答」
-judge "Splunk: sourcetype=netops:* の直近 10 分の件数 > 0" \
+judge "Splunk: sourcetype=nwc:* の直近 10 分の件数 > 0" \
   "(lambda o: (lambda m, c: '; '.join(sorted({e for t, e in m if t in ('FATAL', 'ERROR')}))
      or (('ok' if max(c) > 0 else '0 件') if c else 'result が無い' + (': ' + '; '.join(sorted({e for _, e in m})) if m else '')))(
      [(x.get('type'), str(x.get('type')) + ' ' + str(x.get('text'))) for d in o for x in d.get('messages', [])],
      [int(d['result'].get('count', 0)) for d in o if 'result' in d]))([json.loads(l) for l in s.splitlines() if l.strip()] or json.loads(s))" \
   <<<"$(get SPLUNK_PASSWORD -k 'https://127.0.0.1:8089/services/search/jobs/export' \
-        --data-urlencode 'search=search index=* sourcetype=netops:* earliest=-10m | stats count' -d output_mode=json || true)"
+        --data-urlencode 'search=search index=* sourcetype=nwc:* earliest=-10m | stats count' -d output_mode=json || true)"
 judge "Grafana: データソース uid amp / aoss-logs がある" \
   "(lambda n: 'ok' if not n else '無い: ' + ', '.join(n))(sorted({'amp', 'aoss-logs'} - {d['uid'] for d in json.loads(s)}))" \
   <<<"$(get GF_SECURITY_ADMIN_PASSWORD 'http://127.0.0.1:3000/api/datasources' || true)"

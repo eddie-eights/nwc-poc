@@ -1,7 +1,7 @@
 """Nautobot の Job（JOBS_ROOT = /opt/nautobot/jobs）。Nautobot を機器の一覧とトポロジの正にして、gnmic の購読先とグラフ DB（Neptune）に流す。
 OSS 版（cycle 005）は同じ Job が Neo4j に書く（app/agentcore/graph.py が GRAPH_BACKEND=neo4j で切り替える）。Job の名前は両方の版で同じ「グラフ DB」で、
-説明だけが書き先の名前（nb_sync.GRAPH_NAME）になる。JobHook と bootstrap.py は Job をクラスの場所（netops_jobs.SyncOnChange）で引くので、名前を変えても外れない。
-中身は /opt/nautobot/netops/nb_sync.py。Job の行と JobHook は起動時の bootstrap.py が作って有効にする。
+説明だけが書き先の名前（nb_sync.GRAPH_NAME）になる。JobHook と bootstrap.py は Job をクラスの場所（nwc_jobs.SyncOnChange）で引くので、名前を変えても外れない。
+中身は /opt/nautobot/nwc/nb_sync.py。Job の行と JobHook は起動時の bootstrap.py が作って有効にする。
 
 同期の最後に、Nautobot の変更履歴（ObjectChange）の新しい 50 件をグラフ DB の頂点 change に写す（エージェントの recent_changes が読む）。
 
@@ -12,7 +12,7 @@ from nautobot.apps.jobs import BooleanVar, Job, JobHookReceiver, register_jobs
 
 import nb_sync
 
-name = "NetOps"
+name = "NWC"
 
 
 class SyncTopology(Job):
@@ -31,7 +31,7 @@ class SyncTopology(Job):
 class SyncOnChange(JobHookReceiver):
     class Meta:
         name = "変更のたびに gnmic とグラフ DB に同期"
-        description = f"JobHook（netops-sync）が呼ぶ。中身は「{SyncTopology.Meta.name}」と同じ（グラフ DB は {nb_sync.GRAPH_NAME}）"
+        description = f"JobHook（nwc-sync）が呼ぶ。中身は「{SyncTopology.Meta.name}」と同じ（グラフ DB は {nb_sync.GRAPH_NAME}）"
         has_sensitive_variables = False
 
     def receive_job_hook(self, change, action, changed_object):

@@ -204,7 +204,7 @@ output "prometheus_remote_write_url" {
 
 output "table_namespace" {
   description = "S3 Tables namespace of the tables (IaC/terraform/aws-managed/workflow appends proposal_events in it)"
-  value       = aws_s3tables_namespace.netops.namespace
+  value       = aws_s3tables_namespace.nwc.namespace
 }
 
 output "proposal_events_table_name" {
