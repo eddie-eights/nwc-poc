@@ -424,8 +424,8 @@ terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw splunk
     - bytes はサンプルした flow の合計。sFlow / IPFIX のサンプリング率は掛けていない（GoFlow2 も Spark も掛けず、率は格納しない）。
     - lab の機器は flow を出さないので、ふだんは空。`ops/netflow_send.py` で 1 本送ると出る。
     - 手元の compose（OpenSearch 3.9.0、Grafana 13.2.3）で 6 panel が開き、値が入ることを確かめた。**AWS では未確認。**
-- ダッシュボードは `app/grafana/provisioning` だけで、UI で変えたものはタスクと一緒に消える。
-  残すなら provisioning に書いて `ops/up.sh`（ディレクトリのハッシュが変わるのでイメージから作り直す）。
+  - 正はこの provisioning だけで、UI で変えたものはタスクと一緒に消える。
+    残すなら provisioning に書いて `ops/up.sh`（ディレクトリのハッシュが変わるのでイメージから作り直す）。
 - admin のパスワードは `ops/up.sh` が SSM の SecureString `/<prefix>/grafana/admin-password` に乱数で作り、`ops/down.sh` が消す（タグ `ManagedBy=ops/up.sh`）。
 - Amazon Managed Grafana は使えない。サインインに IAM Identity Center か SAML の IdP が要り、このアカウントには Organizations も Identity Center も無い。
 - Splunk（ECS）は `STORES` に `splunk` があるとき（既定で入っている）だけ。検索は `index=main`（HEC の token の既定の index）。
