@@ -632,6 +632,16 @@ check("EventBridge のルールは無く、土台（base/core）のトピック 
       and 'alerts_topic_arn = try(data.terraform_remote_state.main.outputs.alerts_topic_arn, "")' in _loc)
 check("古い土台（alerts_topic_arn の出力が無い）では、購読の precondition が plan を止める（空の ARN で apply して API のエラーにしない）",
       'condition     = local.alerts_topic_arn != ""' in tf and "depends_on = [aws_lambda_permission.status]" in tf)
+# 2026-10-10 の AWS でポリシーの作成完了の 1 秒後に Lambda を作り InsufficientRolePermissions で止まった（029）。
+# OSS 版の sync.tf はリンクでなく実ファイルなので両方を見る（versions.tf と lock は OSS 版がマネージド版へのリンク）
+_graph_dir = os.path.join("IaC", "terraform", "aws-managed", "pipeline", "graph")
+_iam_wait = r'resource "time_sleep" "status_iam" \{\s*create_duration = "30s"\s*triggers = \{\s*role = aws_iam_role\.status\.unique_id\s*\}\s*depends_on = \[aws_iam_role\.status, aws_iam_role_policy\.status\]\s*\}'
+_lambda_dep = r'resource "aws_lambda_function" "status" \{(?:(?!\nresource ).)*?\n  depends_on = \[aws_cloudwatch_log_group\.status, aws_iam_role_policy\.status, time_sleep\.status_iam\]\n\}'
+check("status の Lambda は time_sleep.status_iam（30 秒。ロールが作り直されたら待ちも作り直す）のあとに作る（マネージド版と OSS 版）。time の provider は versions.tf と lock にある",
+      all(re.search(_iam_wait, t) and re.search(_lambda_dep, t, re.S) and t.count('resource "time_sleep"') == 1
+          for t in (tf, read("IaC", "terraform", "oss", "pipeline", "graph", "sync.tf")))
+      and re.search(r'^    time = \{\s*source  = "hashicorp/time"\s*version = "~> 0\.13"\s*\}', read(_graph_dir, "versions.tf"), re.M)
+      and 'provider "registry.terraform.io/hashicorp/time"' in read(_graph_dir, ".terraform.lock.hcl"))
 check("Lambda は VPC の中で NEPTUNE_GRAPH_ID を環境変数で持ち、ロググループは retention 付き",
       "vpc_config" in tf and "NEPTUNE_GRAPH_ID = aws_neptunegraph_graph.graph.id" in tf and "NEPTUNE_ENDPOINT" not in tf and "retention_in_days = var.log_retention_days" in tf)
 _nep = read("IaC", "terraform", "aws-managed", "pipeline", "graph", "neptune.tf")
