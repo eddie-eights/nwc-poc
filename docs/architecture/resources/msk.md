@@ -15,8 +15,8 @@ Telegraf・gnmic・syslog-ng・GoFlow2 が集めた機器のデータを、い�
 | ブローカー | `kafka.m5.large`（ほかに選べるのは `kafka.m7g.large`）、1 AZ に 1 台、EBS 10 GB | 変数 `broker_instance_type`、`msk.tf` |
 | AZ の数 | `MSK_AZ_NUM`（既定 2、2〜3）。ブローカーの数と同じ | `ops/up.sh`、変数 `msk_az_num` |
 | 認証と暗号 | IAM 認証（9098）と SASL/SCRAM（9096。syslog-ng と GoFlow2 と gnmic だけ）。クライアントとの間もブローカー同士も TLS | `msk.tf` の `client_authentication`、`encryption_info` |
-| SCRAM の資格情報 | Secrets Manager の `AmazonMSK_<prefix>-collectors`（名前は `AmazonMSK_` で始める決まり）。顧客管理の KMS の鍵 `alias/<prefix>-msk-scram` で暗号化する（MSK は既定の鍵の secret を受け付けない）。作り方と消し方は表の下 | `ops/up-common.sh` の `ensure_msk_scram_key` / `ensure_msk_scram_secret`、`ops/down-common.sh` の `delete_msk_scram`、`msk.tf` の `aws_msk_scram_secret_association` |
-| SCRAM のユーザーの ACL | `User:collectors` に `logs` / `flows` / `gnmi` / `metrics` の `WRITE` と `DESCRIBE`（`LITERAL`、host `*`）。`CREATE` と CLUSTER の ACL は付けない。Spark のジョブが起動のたびに入れる（同じものを入れても変わらない）。ACL を入れる前と入れたあとの振る舞いは表の下 | `app/spark/snmp_sinks.py` の `ensure_acls`、EMR の実行ロールの `kafka-cluster:AlterCluster`（`IaC/terraform/aws-managed/pipeline/analytics/access.tf`） |
+| SCRAM の資格情報 | Secrets Manager の `AmazonMSK_<prefix>-syslog-ng` / `-goflow2` / `-gnmic`（コレクターごとに 1 本、ユーザー名はコレクター名。cycle 031。名前は `AmazonMSK_` で始める決まり）。顧客管理の KMS の鍵 `alias/<prefix>-msk-scram` で暗号化する（MSK は既定の鍵の secret を受け付けない）。作り方と消し方は表の下 | `ops/up-common.sh` の `ensure_msk_scram_key` / `ensure_msk_scram_secret`、`ops/down-common.sh` の `delete_msk_scram` / `delete_msk_scram_key`、`msk.tf` の `aws_msk_scram_secret_association` |
+| SCRAM のユーザーの ACL | ユーザーごとに自分のトピックだけ: `User:syslog-ng` → `logs`、`User:goflow2` → `flows`、`User:gnmic` → `gnmi` / `metrics` の `WRITE` と `DESCRIBE`（`LITERAL`、host `*`。cycle 031）。`CREATE` と CLUSTER の ACL は付けない。Spark のジョブが起動のたびに入れる（同じものを入れても変わらない）。ACL を入れる前と入れたあとの振る舞いは表の下 | `app/spark/snmp_sinks.py` の `ensure_acls`、EMR の実行ロールの `kafka-cluster:AlterCluster`（`IaC/terraform/aws-managed/pipeline/analytics/access.tf`） |
 | ブローカーの設定 | `auto.create.topics.enable=true`、`default.replication.factor` = ブローカーの数、`min.insync.replicas` = その 1 つ下、`num.partitions=2`、`log.retention.hours=24`。内部トピックは表の下 | `msk.tf` の `aws_msk_configuration` |
 | ブローカーのログ | CloudWatch Logs のロググループ `/<prefix>/msk`、保存 7 日 | 変数 `log_retention_days`、`msk.tf` |
 | スイッチ | `PIPELINE=1` で作る。`SKIP_STREAM=1` で作らない（analytics も作らない） | `deploy.env.example` |
@@ -43,10 +43,10 @@ Telegraf・gnmic・syslog-ng・GoFlow2 が集めた機器のデータを、い�
 | 相手 | 向き | ポートと認証 |
 |---|---|---|
 | Telegraf（受ける側） | Telegraf → MSK | 9098/tcp、SASL_SSL + AWS_MSK_IAM。タスクロール `<prefix>-telegraf-task` |
-| gnmic（ECS） | gnmic → MSK | 9096/tcp、SASL_SSL + SCRAM-SHA-512。syslog-ng・GoFlow2 と同じ secret（`AmazonMSK_<prefix>-collectors`）を ECS の secrets で受ける（実行ロール `<prefix>-gnmic-exec`）。AWS で書けたかは表の下 |
+| gnmic（ECS） | gnmic → MSK | 9096/tcp、SASL_SSL + SCRAM-SHA-512。gnmic 専用の secret（`AmazonMSK_<prefix>-gnmic`。cycle 031）を ECS の secrets で受ける（実行ロール `<prefix>-gnmic-exec`）。AWS で書けたかは表の下 |
 | syslog-ng / GoFlow2（ECS） | → MSK | 9096/tcp、SASL_SSL + SCRAM-SHA-512。ユーザー名とパスワードは ECS の secrets で Secrets Manager からタスクの環境変数に入る（実行ロール `<prefix>-syslog-ng-exec` / `<prefix>-goflow2-exec`） |
 | Spark（EMR Serverless） | Spark ← MSK | 9098/tcp、同じ認証。ジョブの実行ロール |
-| Spark（EMR Serverless、ACL） | Spark → MSK | 9098/tcp、同じ認証。起動のたびに `User:collectors` の `logs` / `flows` / `gnmi` / `metrics` の `WRITE` と `DESCRIBE` を `createAcls` で入れる（実行ロールの `kafka-cluster:AlterCluster`） |
+| Spark（EMR Serverless、ACL） | Spark → MSK | 9098/tcp、同じ認証。起動のたびにユーザーごとに自分のトピックの `WRITE` と `DESCRIBE`（`User:syslog-ng` → `logs`、`User:goflow2` → `flows`、`User:gnmic` → `gnmi` / `metrics`）を `createAcls` で入れる（実行ロールの `kafka-cluster:AlterCluster`） |
 | ブローカー同士 | MSK ↔ MSK | 9092〜9098/tcp |
 | Kafbat UI（Web の EC2 の Docker） | Web → MSK | 9098/tcp、同じ認証。Web の EC2 のロール（stream が足すポリシー `<prefix>-kafka-ui`）は、トピックの読み書き・作成・変更・削除と、グループを見ることまで |
 | SSM | MSK → パラメータ | ブートストラップの文字列を `/<prefix>/msk-bootstrap`（String）に書く |
@@ -150,3 +150,4 @@ OSS 版（`IaC/terraform/oss/pipeline/stream`）には MSK が無い。
   SCRAM（9096）を使うのは、このときから syslog-ng と GoFlow2。
 - 2026-10-09: `metrics` と `gnmi` を書くのが Telegraf の取りにいく側から gnmic に替わった。
   それまでの `metrics` は SNMP のポーリングの結果。gnmic も SCRAM を使う。
+- 2026-10-10（031）: SCRAM のユーザーをコレクターごとに分けた（`syslog-ng` / `goflow2` / `gnmic`。secret も 3 本）。ACL もユーザーごとに自分のトピックだけ。

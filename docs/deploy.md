@@ -263,7 +263,8 @@ jar は `ops/up.sh` の `JARS` に書いた sha256 と照合し、合わなけ�
 - 初めて stream を作る回は、手順 4-4 の再起動の時点で接続先がまだ無いので Kafbat UI は止まっていて、手順 8-3 の Web の再起動で起きる。
 - 先に次のシークレットを作る（どれも無いときだけ。値は出さない）。
   - SSM の SecureString: gnmic の機器の認証情報 2 つ（`/<prefix>/gnmic/` の下。最初は lab の既定値）と、Kafbat UI の admin のパスワード。
-  - Secrets Manager の `AmazonMSK_<prefix>-collectors`: syslog-ng と GoFlow2 と gnmic が MSK に書く SCRAM の資格情報（顧客管理の KMS の鍵 `alias/<prefix>-msk-scram` で暗号化）。
+  - Secrets Manager の `AmazonMSK_<prefix>-syslog-ng` / `-goflow2` / `-gnmic`: syslog-ng と GoFlow2 と gnmic が MSK に書く SCRAM の資格情報。
+    コレクターごとに 1 本で、ユーザー名はコレクター名（cycle 031）。顧客管理の KMS の鍵 `alias/<prefix>-msk-scram`（3 本で 1 本）で暗号化する。
 
 #### 手順 7-3c: Nautobot
 
@@ -297,8 +298,9 @@ flowchart LR
   - 消すもの（admin のパスワードと token）: Grafana / Splunk / Nautobot の admin のパスワード、Splunk の HEC の token とクラスターの合言葉（`/<prefix>/splunk/idxc-secret`）、Kafbat UI の admin のパスワード。
   - 消すもの（Nautobot と gnmic）: Nautobot の SECRET_KEY と DB のパスワードと API トークン、gnmic の機器の認証情報（`/<prefix>/gnmic/` の下の 2 つ。cycle 013 より前に作った `/<prefix>/telegraf-dialin/` の下の 3 つも）。
   - nautobot のルートが消えなかったときは Nautobot の分だけ残す（Terraform が destroy でも DB のパスワードを読むので。打ち直せば消える）。
-- 手順 5-3 で、`ops/up.sh` が作った MSK の SCRAM の secret（Secrets Manager の `AmazonMSK_<prefix>-collectors`）を復旧の待ちを置かずに消す。
-  KMS の鍵（`alias/<prefix>-msk-scram`）は削除を予約（7 日後に消える。待つあいだは課金されない）してから alias を外す。
+- 手順 5-3 で、`ops/up.sh` が作った MSK の SCRAM の secret（Secrets Manager の `AmazonMSK_<prefix>-syslog-ng` / `-goflow2` / `-gnmic` の 3 本）を復旧の待ちを置かずに消す。
+  KMS の鍵（`alias/<prefix>-msk-scram`）は 3 本のあとに 1 回だけ削除を予約（7 日後に消える。待つあいだは課金されない）してから alias を外す。
+  1 本でも消せなかった（か確かめられなかった）ときは鍵を残す（消すと残った secret を復号できなくなる）。
   - stream が消えなかったときは両方残す（次の `ops/down.sh` で消す）。secret の値は読まない・出さない。
 - Nautobot の RDS は最後のスナップショットを取らずに消す。Nautobot で編集した内容は残らない（次の `ops/up.sh` でまた lab の定義から入る）。
 - 最後に `Project=<prefix>` のタグが残っているものを出す（手順 6）。**消えたリソースも出るので、この一覧では消えたかを決めない**（下の「消したあとに残るもの」）。

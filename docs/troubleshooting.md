@@ -20,7 +20,7 @@
 | `Error acquiring the state lock` | 同じルートを別のターミナルで打っている。終わるのを待つ |
 | `aws_lambda_invocation.kb_index` が失敗（CREATE_KB=1） | KB のベクトルインデックスを VPC の中の Lambda `<接頭辞>-kb-index` が作る。ログは CloudWatch Logs の `/aws/lambda/<接頭辞>-kb-index`（続きは表の下の `kb_index`） |
 | 「IaC/terraform/aws-managed/base/core に OpenSearch Serverless の VPC エンドポイントが無い」の precondition で止まる | KB か logs のコレクションを作るのに、base/core に VPC エンドポイントが無い。`ops/up.sh` を通して打つ（`CREATE_KB` か `STORES` の `grafana` を見て base/core に渡す）。ルートを手で apply したなら base/core を `-var create_opensearch_endpoint=true` で打ち直す |
-| `ops/down.sh` の stream の destroy が `data.aws_secretsmanager_secret.msk_scram` / `data.aws_kms_alias.msk_scram` の not found で止まる | stream が残っているのに、SCRAM の secret `AmazonMSK_<prefix>-collectors` か鍵の alias `alias/<prefix>-msk-scram` が無い。`-refresh=false` で stream を消してから `ops/down.sh` を打ち直す（続きは表の下の `msk_scram`） |
+| `ops/down.sh` の stream の destroy が `data.aws_secretsmanager_secret.msk_scram` / `data.aws_kms_alias.msk_scram` の not found で止まる | stream が残っているのに、SCRAM の secret `AmazonMSK_<prefix>-<コレクター>`（`syslog-ng` / `goflow2` / `gnmic` のどれか）か鍵の alias `alias/<prefix>-msk-scram` が無い。`-refresh=false` で stream を消してから `ops/down.sh` を打ち直す（続きは表の下の `msk_scram`） |
 | destroy が `provider["registry.terraform.io/opensearch-project/opensearch"]` で止まる | 2026-09-28 より前に作った agent の state（`opensearch_index.kb` 入り）。コミット f7b1688 の `IaC/terraform/aws-managed/agent` で destroy する |
 | 手順 0 の後に「2026-09-29 より前の SG（internal）が残っている」で止まる | SG をワークロードごとに分ける前の state。まだ何も作っていない。先に `ops/down.sh` を打つ（Runtime の ENI が残るあいだは VPC・サブネット・`internal` が残るので、時間をおいて打ち直す） |
 | `terraform apply` が「state に security_group_ids が無い」（Resource postcondition failed）で止まる | 土台（`IaC/terraform/aws-managed/base/core`）が SG をワークロードごとに分ける前の state。`ops/up.sh` を通さずにルートを直接 apply したときに出る。先に `ops/down.sh` を打ってから `ops/up.sh` |
@@ -129,7 +129,7 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 | 承認しても approved のまま進まない | ワーカーのイメージが古い。`deploy.env` の `IMAGE_TAG` を上げて `ops/up.sh`（[workflow.md](workflow.md)） |
 | 手順 7-2c で「Telegraf か gnmic のサービスが 10 分たっても安定しない」 | タスクが起きては止まっている。サービスは 2 つ（Telegraf の受ける側 `<prefix>-telegraf-dialout` と gnmic の `<prefix>-gnmic`）（止まった理由の見方は表の下の `7-2c`） |
 | 手順 7-2d で「syslog-ng か GoFlow2 のサービスが 10 分たっても安定しない」 | 止まらずに先へ進む。サービスは `<prefix>-syslog-ng` と `<prefix>-goflow2`（止まった理由の見方は表の下の `7-2d`） |
-| syslog-ng のログに `Topic authorization failed`、GoFlow2 のログに `The client is not authorized to access this topic` が出続ける | ACL が無いこと自体では出ない。出るなら、トピックに ACL があるのに `User:collectors` の分が足りないと見ている（推測。確かめた範囲と見る所は表の下の `authorization failed`） |
+| syslog-ng のログに `Topic authorization failed`、GoFlow2 のログに `The client is not authorized to access this topic` が出続ける | ACL が無いこと自体では出ない。出るなら、トピックに ACL があるのに自分のユーザー（`User:syslog-ng` / `User:goflow2`）の分が足りないと見ている（推測。確かめた範囲と見る所は表の下の `authorization failed`） |
 | 手順 7-3c で「Nautobot のサービスが 20 分たっても安定しない」 | 止まらずに先へ進み、最後にもう一度同じ注意が出る。初回は DB の migrate のあいだ `web` が HEALTHY にならず、`worker` も起きない（止まった理由の見方は表の下の `7-3c`） |
 | syslog の項目（ホスト名・本文など）が崩れる、取れない | syslog-ng の形式（`SYSLOG_STANDARD`）と機器の形式が合っていない。既定は RFC3164（本番の Cisco）、lab の SR Linux は RFC5424（続きは表の下の `SYSLOG_STANDARD`） |
 | デバッグ用の EC2 で Telegraf の出力を見たい | `sudo lab telegraf status` / `logs -f`（出力は標準出力。MSK へは送らない。受けるのは trap だけ） |
@@ -209,14 +209,14 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
   - 起きてすぐ終わるなら、Telegraf はロググループ `/ecs/<prefix>-telegraf`（ストリーム `dialout/…`）、
     gnmic は `/ecs/<prefix>-gnmic`（ストリーム `gnmic/…`）の最初の行を見る。
   - gnmic が購読先の形・同じ IP・認証情報のどれかで止まっていれば、stream の変数 `gnmi_targets`（`ops/up.sh` が lab の定義から作る）か、
-    SSM の `/<prefix>/gnmic/` の下か、Secrets Manager の `AmazonMSK_<prefix>-collectors`。
+    SSM の `/<prefix>/gnmic/` の下か、Secrets Manager の `AmazonMSK_<prefix>-gnmic`。
   - NLB のヘルスチェック（`8080/tcp`、Telegraf の `outputs.health`。Telegraf が動いていれば 200）が通らないと入れ替えが続く。
     この 2 つのうち NLB の後ろにいるのは Telegraf だけで、gnmic は NLB を持たない。
 - `7-2d`:
   - `terraform -chdir=IaC/terraform/aws-managed/pipeline/stream output -raw syslog_ng_list_tasks_command`
     （GoFlow2 は `goflow2_list_tasks_command`）に `--desired-status STOPPED` を足して打ち、`stoppedReason` を見る。
   - `ResourceInitializationError` で secret を取れないなら、secretsmanager のエンドポイント（手順 0 の一覧）か、
-    実行ロールの `secretsmanager:GetSecretValue` / `kms:Decrypt`（secret `AmazonMSK_<prefix>-collectors` と鍵 `alias/<prefix>-msk-scram`）。
+    実行ロールの `secretsmanager:GetSecretValue` / `kms:Decrypt`（secret `AmazonMSK_<prefix>-syslog-ng` / `AmazonMSK_<prefix>-goflow2` と鍵 `alias/<prefix>-msk-scram`）。
   - 起きてすぐ終わるならロググループ `/ecs/<prefix>-syslog-ng` / `/ecs/<prefix>-goflow2` の最初の行。
   - SASL の認証で落ちるなら、secret が MSK に付いているか（`aws kafka list-scram-secrets`）。
   - NLB のヘルスチェックは syslog-ng が `5140/tcp`、GoFlow2 が `8081/tcp` の `/__health`。
@@ -226,7 +226,8 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
   - ACL は analytics の Spark のジョブが起動時に入れる。入れたあとの振る舞いは AWS では未確認。
   - 書けないあいだ、syslog-ng は syslog をメモリのキュー（既定 10000 件まで。syslog-ng が起こし直すと消える）で持っていて書けるようになったら書き、
     GoFlow2 はその間のフローを捨てる。どちらも落ちず、ヘルスチェックも通る。
-  - ジョブが動いているのに出るなら、ジョブの driver の stderr に `ACL: User:collectors に …` の行があるかを見る。
+  - ジョブが動いているのに出るなら、ジョブの driver の stderr に `ACL: User:syslog-ng WRITE logs, …` の行があるかを見る。
+  - 1 つのコレクターだけで出るなら、そのユーザーが自分のトピック以外に書いていないか（ユーザーごとのトピックは [pipeline.md](pipeline.md) の「収集器の ACL」の表。cycle 031）。
   - ジョブが起動で `ClusterAuthorizationException` で落ちているなら、
     EMR の実行ロールの `kafka-cluster:AlterCluster`（`IaC/terraform/aws-managed/pipeline/analytics/access.tf`）。
 - `7-3c`:

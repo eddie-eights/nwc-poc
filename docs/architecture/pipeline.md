@@ -50,7 +50,7 @@ flowchart LR
   - syslog（5140/udp）は syslog-ng（`<prefix>-syslog-ng`。AxoSyslog に `app/syslog-ng/` の設定を足したイメージ）がTelegraf と同じ `device_log` の形にして `logs` へ書く。
   - NetFlow（2055/udp）と sFlow（6343/udp）は GoFlow2（`<prefix>-goflow2`。上流のイメージをそのまま）が `flows` へ書く（Spark が共通の形に読み替える）。
   - MSK へは IAM 認証ではなく SASL/SCRAM（9096）。
-  - 資格情報は `ops/up.sh` が作る Secrets Manager の `AmazonMSK_<prefix>-collectors`（顧客管理の KMS の鍵 `alias/<prefix>-msk-scram` で暗号化）。
+  - 資格情報は `ops/up.sh` が作る Secrets Manager の `AmazonMSK_<prefix>-syslog-ng` / `-goflow2` / `-gnmic`（コレクターごとに別のユーザー。cycle 031。顧客管理の KMS の鍵 `alias/<prefix>-msk-scram` で暗号化）。
     ECS の secrets でタスクの環境変数に入れる。
 - lab の SR Linux は MDT を送れないので gNMI で取る。
   gnmic が gNMI の event の形のまま Kafka へ書き、Spark が Telegraf のころと同じ系列（`snmp_interface_*` など）に読み替える（[collection.md](../collection.md) の「gnmic の event と読み替え」）。

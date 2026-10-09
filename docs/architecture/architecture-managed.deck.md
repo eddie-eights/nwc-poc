@@ -176,7 +176,7 @@ PIPELINE と土台で約 $2.92/h、STORES=s3 だけなら約 $1.99/h。使い終
 ::: notes
 - 正: docs/deploy.md の「消す順」（ops/down.sh）。順は workflow → analytics → nautobot → graph → stream → lab → agent → base/core → base/ecr → Runtime のロググループ → SSM のパラメータ → MSK の SCRAM の secret と KMS の鍵。
 - analytics では Spark のジョブを cancel してから消す。nautobot の RDS は最後のスナップショットを取らない。
-- SSM のパラメータはタグ ManagedBy=ops/up.sh のものだけ。secret は Secrets Manager の AmazonMSK_<prefix>-collectors、鍵は alias/<prefix>-msk-scram。値は読まない。
+- SSM のパラメータはタグ ManagedBy=ops/up.sh のものだけ。secret は Secrets Manager の AmazonMSK_<prefix>-syslog-ng / -goflow2 / -gnmic（コレクターごと）、鍵は alias/<prefix>-msk-scram。値は読まない。
 - Runtime の ENI が残るあいだは VPC 一式を残して他を消し、終了コード 0 で終わる。次の ops/up.sh が使い回す。
 - 20〜40 分残る ENI は graph・workflow・KB（<prefix>-kb-index）の Lambda のもの。
 - KEEP_ECR=1 の ECR は 7.39 GB で月 約 110 円（docs/deploy.md の「消したあとに残るもの」）。

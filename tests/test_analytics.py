@@ -734,10 +734,9 @@ check("ensure_acls: コレクターごとのユーザー（cycle 031）に自分
       and _adm5.acls == [("TOPIC", t, "LITERAL", "User:" + u, "*", op, "ALLOW") for u, ts in _scram_want for t in ts for op in ("WRITE", "DESCRIBE")])
 _acl_pairs = {(a[3], a[1]) for a in (_adm5.acls or [])}
 check("ensure_acls: ほかのコレクターのトピックには ACL を入れない（User:syslog-ng は flows / gnmi / metrics に書けない、User:goflow2 は logs / gnmi / metrics、"
-      f"User:gnmic は logs / flows。User:collectors も無い。{sorted(_acl_pairs)}）",
+      f"User:gnmic は logs / flows。{sorted(_acl_pairs)}）",
       _acl_pairs == {("User:" + u, t) for u, ts in _scram_want for t in ts}
-      and ("User:syslog-ng", "flows") not in _acl_pairs and ("User:goflow2", "logs") not in _acl_pairs and ("User:gnmic", "logs") not in _acl_pairs
-      and not any(u == "User:collectors" for u, _ in _acl_pairs))
+      and ("User:syslog-ng", "flows") not in _acl_pairs and ("User:goflow2", "logs") not in _acl_pairs and ("User:gnmic", "logs") not in _acl_pairs)
 check("ensure_acls: AdminClient は SASL_SSL / AWS_MSK_IAM で bootstrap に繋ぎ、終わったら close。トピックは作らない（CREATE も CLUSTER の ACL も付けない）",
       _adm5.closed and _sp5._jvm.props["bootstrap.servers"] == "b-1:9098" and _sp5._jvm.props["security.protocol"] == "SASL_SSL"
       and _sp5._jvm.props["sasl.mechanism"] == "AWS_MSK_IAM" and _Admin.made == []
@@ -763,7 +762,7 @@ _tg_conf = open(os.path.join(ROOT, "app", "telegraf", "telegraf.conf.in"), encod
 _scram_topics = [t for ts in mod.SCRAM_USERS.values() for t in ts]
 check("ensure_acls のユーザーとトピックは書く側と同じ（ユーザーは ops/up.sh が ensure_msk_scram_secret に渡すコレクター名で、up-common.sh が username にする。"
       "syslog-ng の topic、GoFlow2 の -transport.kafka.topic、gnmic の outputs の topic の全部。Telegraf（IAM）が書く traps は入れない）",
-      not hasattr(mod, "SCRAM_USER") and not hasattr(mod, "SCRAM_TOPICS")
+      sorted(n for n in dir(mod) if n.startswith("SCRAM_")) == ["SCRAM_OPS", "SCRAM_USERS"]   # 1 人のユーザーと 4 トピックの古い定数は残さない
       and mod.SCRAM_USERS == {"syslog-ng": ("logs",), "goflow2": ("flows",), "gnmic": ("gnmi", "metrics")}
       and list(mod.SCRAM_USERS) == re.findall(r"^  ensure_msk_scram_secret (\S+)$", up, re.M)
       and 'json.dumps({"username": user, "password": secrets.token_urlsafe(24)})' in _ops_common("up")
