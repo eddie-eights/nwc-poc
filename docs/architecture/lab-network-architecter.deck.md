@@ -40,14 +40,24 @@ source: app/containerlab/gen_lab.py、trex/、docs/cycles/011-lab-isis-trex-x86/
 ## 登場するのは、中央の spine 2 台、末端の leaf 4 台、その先の利用者とサーバーです
 
 - 中央: dc1-spine-01、dc1-spine-02
-- 末端（WAN 側）: dc1-s-leaf-01、dc1-s-leaf-02。先には利用者や外のネットワーク（WAN）がつながる
-- 末端（DC 側）: dc1-a-leaf-01、dc1-a-leaf-02。先にはサーバーがつながる
+- 末端（WAN 側）: dc1-s-leaf-01、dc1-s-leaf-02。先にはルーターやファイアウォールがあり、その向こうにインターネットや拠点の利用者がいる
+- 末端（DC 側）: dc1-a-leaf-01、dc1-a-leaf-02。先にはサーバーの LAN（10.100.0.0/24）があり、この中は MAC アドレスで届く
 - どの leaf も spine 2 台の両方につながる（ケーブル 8 本）。leaf 同士は直接つながない
-- LAN の境目は leaf。末端の 4 本は同じ 1 つの LAN（10.100.0.0/24）で MAC アドレスで届き、spine と leaf の間はケーブルごとに別の IP ネットワーク（172.16.x.y/31）
-- lab には利用者もサーバーもいないので、末端のケーブル 4 本は負荷試験用の装置 dc1-trex-01（eth1 〜 eth4）につないである
 
 ::: notes
 - spine と leaf は全組み合わせを結ぶ。spine 側のポートは ethernet-1/<leaf の番号>、leaf 側のポートは ethernet-1/<spine の番号>。
+- 図は Claude のデッキ（https://claude.ai/artifact/3DtfxGFkTehxxwRpHRcB8u）の 3 枚目にある。
+:::
+
+## LAN の境目は leaf で、利用者がサーバーの LAN に直接入ることはありません
+
+- spine と leaf の間は、ケーブルごとに別の IP ネットワーク（172.16.x.y/31）。LAN はそこには無い
+- DC 側の leaf の ethernet-1/3 がサーバーの LAN の境目。この中は MAC アドレスで届く
+- WAN 側の leaf の先はルーターやファイアウォール。利用者からサーバーへの通信は LAN をまたぐので、そこが IP で中継する
+- lab にはルーターも利用者もサーバーもいないので、末端のケーブル 4 本は負荷試験用の装置 dc1-trex-01（eth1 〜 eth4）につないである
+- lab での違いは、このあとの「lab では、本物にはない形で…」のスライドで説明する
+
+::: notes
 - TRex は負荷試験のときだけ、利用者とサーバーの代わりにパケットを流す（app/containerlab/gen_lab.py）。
 - 図は Claude のデッキ（https://claude.ai/artifact/3DtfxGFkTehxxwRpHRcB8u）の 3 枚目にある。
 :::
@@ -85,6 +95,28 @@ source: app/containerlab/gen_lab.py、trex/、docs/cycles/011-lab-isis-trex-x86/
 ::: notes
 - a-leaf / s-leaf の a と s の意味は依頼の名前のままで、確かめていない（docs/cycles/011-lab-isis-trex-x86/design.md の未確定事項 1）。
 - TRex の組は trex/trex_cfg.yaml.in（port 0 ↔ 1 が s-leaf の組、port 2 ↔ 3 が a-leaf の組）。mac-vrf の ecmp は 2。
+:::
+
+## lab では、本物にはない形で、WAN 側の口もサーバー側と同じ LAN に入れています
+
+- 本物では、利用者とサーバーが同じ LAN に入ることはない。WAN 側の leaf の先はルーターやファイアウォールで、LAN をまたぐ通信はそこが IP で中継する
+- lab では、4 台の leaf の ethernet-1/3 を全部 1 つの LAN（10.100.0.0/24、VNI 100）に入れている。TRex の port 0 〜 3 はどれも同じ LAN にいる
+- つまり同じ LAN なのは試験の都合で、WAN 側がサーバーと同じ LAN に入る想定ではない。理由は次のスライド
+
+::: notes
+- mac-vrf は macvrf-100 の 1 つだけで、LAN をまたぐ中継（IRB）は無い（docs/cycles/011-lab-isis-trex-x86/design.md）。
+- 011 より前の lab も、WAN 側の VM（wan-upstream-01）と DC 側の VM（dc1-host-01）を同じ mac-vrf に入れていた。
+- 図は Claude のデッキ（https://claude.ai/artifact/3DtfxGFkTehxxwRpHRcB8u）の 6 枚目にある。
+:::
+
+## WAN 側も同じ LAN に入れているのは、ルーター無しで 4 台の leaf 全部に同じ試験をするためです
+
+- 理由 1: lab にはルーターもファイアウォールも無い。置くと機器が 1 台増え、IP で中継する設定も要る。この PoC の本題は監視なので、そこまでは作らない
+- 理由 2: TRex は同じ LAN の相手に向けて直接パケットを送る装置なので、4 本を同じ LAN にすればルーター無しで 4 台の leaf 全部にパケットを通せる
+- 理由 3: どの leaf で回線を切っても「通信が途切れた・戻った」を同じ 3 つの仕組みで確かめたい。1 つの LAN なら、どの leaf 同士でも同じ仕組みで届く
+
+::: notes
+- TRex の組は trex/trex_cfg.yaml.in（port 0 ↔ 1 が s-leaf の組、port 2 ↔ 3 が a-leaf の組）。
 :::
 
 # 先に知っておく言葉
