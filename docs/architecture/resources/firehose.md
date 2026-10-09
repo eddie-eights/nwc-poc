@@ -5,7 +5,7 @@
 ## ひとことで
 
 アラートの通知を、S3 Tables の `alert_events` に追記するための配送ストリーム（Amazon Data Firehose。宛先は Iceberg）。
-Lambda が 1 件ずつ渡した行を、60 秒か 1 MiB ごとにまとめて書く。アラートの履歴を残す（001）で入った。
+Lambda が 1 件ずつ渡した行を、60 秒か 1 MiB ごとにまとめて書く。
 
 ## このプロジェクトでの使い方
 
@@ -39,11 +39,14 @@ Lambda が 1 件ずつ渡した行を、60 秒か 1 MiB ごとにまとめて書
   graph は analytics より先に apply するが、名前が決まっているので Lambda の環境変数 `ALERT_STREAM` に先に書ける。ストリームができるまでのあいだの送信は失敗し、行はログに残る。
   出典: [pipeline.md](../../pipeline.md) の「アラートの履歴」、アラートの履歴を残す（001）の設計の「未確定事項とリスク」の 5。
 - **Lambda は Neptune より先に Firehose へ送る。**
-  Neptune が遅くても応答しなくても履歴は残る。Firehose に使うのは長くて 15.6 秒（3 回 ×（接続 2 秒 + 読み 3 秒）+ 待ち 0.6 秒）。エンドポイントが 2 AZ なら長くて 21.6 秒。
-  出典: [pipeline.md](../../pipeline.md) の「アラートの履歴」。
+  Neptune が遅くても応答しなくても履歴は残る。
+  - Firehose に使うのは長くて 15.6 秒（3 回 ×（接続 2 秒 + 読み 3 秒）+ 待ち 0.6 秒）。エンドポイントが 2 AZ なら長くて 21.6 秒。
+  - 出典: [pipeline.md](../../pipeline.md) の「アラートの履歴」。
 - **Firehose の失敗では Lambda を落とさない。**
-  `status` の正しさを履歴より優先する。届かなかった行だけを 3 回まで送り直し、残った行は 1 行ずつ JSON のまま `ALERT_EVENT_LOST` の ERROR でログに書く。探すのは Logs Insights の `filter @message like /ALERT_EVENT_LOST/`。
-  出典: 同上。
+  `status` の正しさを履歴より優先する。
+  - 届かなかった行だけを 3 回まで送り直し、残った行は 1 行ずつ JSON のまま `ALERT_EVENT_LOST` の ERROR でログに書く。
+  - 探すのは Logs Insights の `filter @message like /ALERT_EVENT_LOST/`。
+  - 出典: 同上。
 - **Lambda は重複を落とさない。**
   Grafana の 4 時間ごとの送り直しも、Grafana と Splunk の両方から来た分も行になる。読む側が `event_id` で落とす。
   出典: 同上。

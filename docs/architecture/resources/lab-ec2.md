@@ -11,7 +11,7 @@ Web やエージェントとはつながっていない。使うのは trap・sy
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
-| EC2 | Amazon Linux 2023 x86_64、`m6i.xlarge`（`m6i.xlarge` / `m6i.2xlarge` / `c6i.2xlarge` / `t3.xlarge` / `t3.2xlarge` から選ぶ。TRex のイメージが amd64 だけのため、2026-10-08 に `t4g` から替えた）、EBS 24 GB。1 台だけ（サブネット a）で、AZ を選ぶキーは無い | `IaC/terraform/aws-managed/pipeline/lab/instance.tf`、変数 `instance_type`、`volume_size` |
+| EC2 | Amazon Linux 2023 x86_64、`m6i.xlarge`（`m6i.xlarge` / `m6i.2xlarge` / `c6i.2xlarge` / `t3.xlarge` / `t3.2xlarge` から選ぶ）、EBS 24 GB。1 台だけ（サブネット a）で、AZ を選ぶキーは無い | `IaC/terraform/aws-managed/pipeline/lab/instance.tf`、変数 `instance_type`、`volume_size` |
 | 版 | containerlab 0.79.0、SR Linux 26.7.2、multitool v0.10.0、TRex 2.41。正は `ops/lab-common.sh` | `ops/lab-common.sh`、`IaC/terraform/aws-managed/pipeline/lab/variables.tf`（同じ値） |
 | イメージ | ECR の `<prefix>-lab-srlinux`、`<prefix>-lab-multitool`、`<prefix>-lab-trex`（公開のイメージの amd64 の写し） | `IaC/terraform/aws-managed/base/ecr/main.tf`、`ops/lab-common.sh` |
 | 材料 | containerlab の rpm とトポロジ。S3 の `lab/`（土台のバケット）に `ops/up.sh` の手順 5-1 が置く | `ops/up.sh`、`app/containerlab/setup.sh` |
@@ -34,28 +34,36 @@ lab の中身:
 | 相手 | 向き | ポートと認証 |
 |---|---|---|
 | 利用者の PC | PC → EC2 | SSM Session Manager（`ssm`、`ssmmessages` のエンドポイント） |
-| gnmic（stream の ECS） | タスク → 機器 | gNMI 57400/tcp。VPC のルートで管理ネットワーク宛てを lab の EC2 に向ける。認証情報は SSM の SecureString。2026-10-09（cycle 013）に Telegraf の取りにいく側を置き換え、SNMP 161/udp は通さなくなった |
-| stream の ECS の受ける側（内部 NLB） | 機器 → EC2 → NLB | trap 162/udp（Telegraf）、syslog 5140/udp（syslog-ng）、NetFlow 2055/udp・sFlow 6343/udp（GoFlow2）。機器は `203.0.113.1` へ送り、`lab forward` が NLB へ DNAT する（SR Linux は NetFlow を送れないので、NetFlow は lab の EC2 で `ops/netflow_send.py` を打って試す） |
+| gnmic（stream の ECS） | タスク → 機器 | gNMI 57400/tcp。VPC のルートで管理ネットワーク宛てを lab の EC2 に向ける。認証情報は SSM の SecureString。SNMP 161/udp は通さない |
+| stream の ECS の受ける側（内部 NLB） | 機器 → EC2 → NLB | trap 162/udp（Telegraf）、syslog 5140/udp（syslog-ng）、NetFlow 2055/udp・sFlow 6343/udp（GoFlow2）。機器は `203.0.113.1` へ送り、`lab forward` が NLB へ DNAT する（NetFlow の試し方は表の下） |
 | SSM のパラメータ | EC2 → `/<prefix>/telegraf-address`、`/<prefix>/telegraf-source-cidr` | `ssm` のエンドポイント、インスタンスロール（`lab forward` が読む） |
 | ECR と S3 | EC2 → イメージ、`lab/` | `ecr.api`、`ecr.dkr` のエンドポイントと S3 の gateway エンドポイント |
 | worker（Temporal） | worker → SSM → EC2 | Run Command で `sudo lab heal-main` などを打つ |
 
+- stream の ECS の受ける側（内部 NLB）: SR Linux は NetFlow を送れないので、NetFlow は lab の EC2 で `ops/netflow_send.py` を打って試す。
+
 ## 知見
 
 - **1 台だけで、2 台にはできない。**
-  containerlab の 1 台の中に全部の機器があり、管理ネットワークへの VPC のルートもこの 1 台の ENI を向く。2 台にすると別々の lab になる。コードから確かめた理由で、AWS では試していない（2026-10-04）。
-  出典: `IaC/terraform/aws-managed/pipeline/lab/instance.tf` のコメント。
+  containerlab の 1 台の中に全部の機器があり、管理ネットワークへの VPC のルートもこの 1 台の ENI を向く。
+  2 台にすると別々の lab になる。
+  - コードから確かめた理由で、AWS では試していない（2026-10-04）。
+  - 出典: `IaC/terraform/aws-managed/pipeline/lab/instance.tf` のコメント。
 - **メモリは SR Linux 6 台と TRex で 11〜13 GB の見込み（推定。EC2 では測っていない）。**
-  SR Linux 6 台で 10 GB ほど使う。`m6i.xlarge` は 16 GB。足りないと `containerlab deploy` が readiness で止まるので、`m6i.2xlarge`（32 GB）に上げる。
-  出典: [pipeline.md](../../pipeline.md) の「動かないとき」、[app/containerlab/trex/README.md](../../../app/containerlab/trex/README.md)。
+  SR Linux 6 台で 10 GB ほど使う。`m6i.xlarge` は 16 GB。
+  - 足りないと `containerlab deploy` が readiness で止まるので、`m6i.2xlarge`（32 GB）に上げる。
+  - 出典: [pipeline.md](../../pipeline.md) の「動かないとき」、[app/containerlab/trex/README.md](../../../app/containerlab/trex/README.md)。
 - **2026-10-08 より前に ECR に置いた lab のイメージは arm64。**
-  いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）なので、`KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が残っていても名前がぶつからず、`ops/up.sh` は amd64 を写し直す。前のタグは使われずに残るだけで、消さなくてよい（保管料は残したぶんだけかかる）。
-  出典: [ecr.md](ecr.md)。
+  いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）。
+  - そのため `KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が残っていても名前がぶつからず、`ops/up.sh` は amd64 を写し直す。
+  - 前のタグは使われずに残るだけで、消さなくてよい（保管料は残したぶんだけかかる）。
+  - 出典: [ecr.md](ecr.md)。
 - **版の正は `ops/lab-common.sh`。**
   terraform の変数とデバッグ用のスタックの既定値も同じ値にしてある。
   出典: `ops/lab-common.sh`、[pipeline.md](../../pipeline.md) の「デバッグ用の EC2（lab + Telegraf を 1 台）」。
 - **stream がある回は、EC2 の `source_dest_check` を切ってある。**
-  送り元や宛先が管理ネットワーク（`203.0.113.x`）のパケットを、gnmic のタスクや、Telegraf・syslog-ng・GoFlow2 の NLB とのあいだで通すため。変数 `forward_to_telegraf`（既定 false）を、`ops/up.sh` が stream を作るか残すときに true にする。
+  送り元や宛先が管理ネットワーク（`203.0.113.x`）のパケットを、gnmic のタスクや、Telegraf・syslog-ng・GoFlow2 の NLB とのあいだで通すため。
+  変数 `forward_to_telegraf`（既定 false）を、`ops/up.sh` が stream を作るか残すときに true にする。
   出典: `instance.tf` と `IaC/terraform/aws-managed/pipeline/lab/telegraf.tf` のコメント。
 - **trap と syslog は、送り元の IP を機器の管理 IP のまま届ける。**
   Docker の MASQUERADE にかけず、NLB も送り元を残す。Spark とエージェントが送り元の IP で機器を引くため。
@@ -79,23 +87,28 @@ lab の中身:
   2026-09-27 に EC2 で確認。
   出典: [pipeline.md](../../pipeline.md) の「lab に入る」。
 - **SR Linux の SNMP の `ifOperStatus` は、実際の状態より 15〜20 秒遅れる。**
-  2026-09-27 の実測。2026-10-09（「gNMI を gnmic に移し、SNMP のポーリングと telegraf-dialin を外す（013）」）から SNMP のポーリングはやめ、IF の状態は gnmic が gNMI の on-change で取る。
+  2026-09-27 の実測。いまは SNMP のポーリングはせず、IF の状態は gnmic が gNMI の on-change で取る。
   出典: [pipeline.md](../../pipeline.md) の「lab に入る」。
 - **SR Linux は、未使用の物理ポートも IF として全部出す。**
-  gNMI の `admin-state` が disable の IF（2026-10-09 までの SNMP のポーリングでは `ifAdminStatus` が down の行）。IF の鍵は `ifName`。Grafana と Splunk の `link_down` は admin-state が disable の IF、サブインタフェース、ループバック、管理ポートを見ない。
-  出典: [pipeline.md](../../pipeline.md) の「lab に入る」。
+  gNMI の `admin-state` が disable の IF。IF の鍵は `ifName`。
+  - Grafana と Splunk の `link_down` は admin-state が disable の IF、サブインタフェース、ループバック、管理ポートを見ない。
+  - 出典: [pipeline.md](../../pipeline.md) の「lab に入る」。
 - **lab の機器は syslog を RFC 5424 で送る。syslog-ng の既定は本番に合わせた RFC3164。**
-  lab のログの項目まで見るなら `SYSLOG_STANDARD` を合わせる（2026-10-08 から stream の syslog-ng の設定。デバッグ用の EC2 は syslog を受けない）。
+  lab のログの項目まで見るなら `SYSLOG_STANDARD` を合わせる（stream の syslog-ng の設定。デバッグ用の EC2 は syslog を受けない）。
   出典: [pipeline.md](../../pipeline.md) の「lab に入る」。
 - **いまは EVPN-VXLAN。SR-MPLS はライセンス待ち。**
-  SR Linux のコンテナは SR-MPLS に `ixr6e` / `ixr10e` とライセンスが要る。届いたら `gen_lab.py` を替える。トポロジと Neptune の層は変わらない。
-  出典: [pipeline.md](../../pipeline.md) の「lab を変える」。
+  SR Linux のコンテナは SR-MPLS に `ixr6e` / `ixr10e` とライセンスが要る。届いたら `gen_lab.py` を替える。
+  - トポロジと Neptune の層は変わらない。
+  - 出典: [pipeline.md](../../pipeline.md) の「lab を変える」。
 - **TRex は起動まで確かめた。負荷はまだ撃っていない。**
-  2026-10-09 に m6i.xlarge の lab で TRex 2.41 が af_packet で 4 ポートを起こした（`set driver name net_af_packet`、`Number of ports found: 4`。`docs/verification/20261009-aws-managed.md` の「D.」）。撃つ手順と確かめていないことは `app/containerlab/trex/README.md`。
+  2026-10-09 に m6i.xlarge の lab で TRex 2.41 が af_packet で 4 ポートを起こした（`set driver name net_af_packet`、`Number of ports found: 4`。`docs/verification/20261009-aws-managed.md` の「D.」）。
+  撃つ手順と確かめていないことは `app/containerlab/trex/README.md`。
   出典: [pipeline.md](../../pipeline.md) の「lab に入る」。
 - **デバッグ用の EC2 は別物。**
-  `ops/lab-debug.sh` が CloudFormation のスタック `<prefix>-lab-debug` で作る（lab + Telegraf を 1 台、自分の VPC）。`ops/up.sh` / `ops/down.sh` とは別で、Nautobot を使わない。中身の支度は lab の EC2 と同じ `app/containerlab/setup.sh`。
-  出典: [pipeline.md](../../pipeline.md) の「デバッグ用の EC2（lab + Telegraf を 1 台）」。
+  `ops/lab-debug.sh` が CloudFormation のスタック `<prefix>-lab-debug` で作る（lab + Telegraf を 1 台、自分の VPC）。
+  `ops/up.sh` / `ops/down.sh` とは別で、Nautobot を使わない。
+  - 中身の支度は lab の EC2 と同じ `app/containerlab/setup.sh`。
+  - 出典: [pipeline.md](../../pipeline.md) の「デバッグ用の EC2（lab + Telegraf を 1 台）」。
 
 ## 制約と未確認
 
@@ -112,3 +125,9 @@ lab の中身:
 - [pipeline.md](../../pipeline.md): 「lab に入る」「デバッグ用の EC2（lab + Telegraf を 1 台）」「lab を変える」「変えたとき」
 - [pipeline.md](../pipeline.md): 構成（pipeline）
 - [collection.md](../../collection.md): 機器から集めるデータ
+
+## 経緯
+
+- 2026-10-08: TRex のイメージが amd64 だけのため、lab の EC2 を `t4g` から替えた。
+- 2026-10-09（「gNMI を gnmic に移し、SNMP のポーリングと telegraf-dialin を外す（013）」）: gnmic が Telegraf の取りにいく側を置き換え、SNMP のポーリングをやめた。SNMP 161/udp は通さなくなった。
+- 2026-10-09 までの SNMP のポーリングでは、未使用の物理ポートは `ifAdminStatus` が down の行だった。

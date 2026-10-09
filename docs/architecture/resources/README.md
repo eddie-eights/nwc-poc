@@ -2,7 +2,8 @@
 
 ← [構成](../README.md)
 
-AWS のリソース 1 つにつき 1 ファイル。FAQ、設計の記録、Terraform と `ops/up.sh` のコメントに散らばっていた事実を、リソースごとに集め直したもの。新しい事実は足していない。書いてあることはコード（`IaC/terraform/aws-managed/`、`ops/`、各プログラム）と突き合わせてある（2026-10-08）。
+AWS のリソース 1 つにつき 1 ファイル。FAQ、設計の記録、Terraform と `ops/up.sh` のコメントに散らばっていた事実を、リソースごとに集め直したもの。
+新しい事実は足していない。書いてあることはコード（`IaC/terraform/aws-managed/`、`ops/`、各プログラム）と突き合わせてある（2026-10-08）。
 
 - どのファイルも見出しは同じ: ひとことで / このプロジェクトでの使い方 / つながり / 知見 / 制約と未確認 / 関連。
 - `<prefix>` は `deploy.env` の `OWNER` から作る接頭辞 `<owner>-nwc-poc`。リージョンは東京（ap-northeast-1）。
@@ -14,7 +15,7 @@ AWS のリソース 1 つにつき 1 ファイル。FAQ、設計の記録、Terr
 | VPC と閉域（VPC エンドポイント + Deny、SG） | `base/core` | インターネットへの経路が無い VPC。AWS の API へはエンドポイントだけで行き、VPC の外からの呼び出しを拒む | [vpc-perimeter.md](vpc-perimeter.md) |
 | Web の EC2 | `base/core` | Gradio の画面（チャット / トポロジ / 承認）と、Grafana などを開くための踏み台 | [web-ec2.md](web-ec2.md) |
 | MSK | `pipeline/stream` | 機器のデータを 5 つのトピックで 24 時間ためる Kafka | [msk.md](msk.md) |
-| Telegraf と gnmic（ECS） | `pipeline/stream` | 機器から trap を受け（Telegraf）、gNMI を購読して（gnmic。2026-10-09 から）MSK に書く（syslog は syslog-ng、NetFlow / sFlow は GoFlow2。同じ stream の ECS） | [telegraf.md](telegraf.md) |
+| Telegraf と gnmic（ECS） | `pipeline/stream` | 機器から trap を受け（Telegraf）、gNMI を購読して（gnmic）MSK に書く（syslog は syslog-ng、NetFlow / sFlow は GoFlow2。同じ stream の ECS） | [telegraf.md](telegraf.md) |
 | EMR Serverless（Spark） | `pipeline/analytics` | MSK を読み、格納先ごとのジョブで 60 秒ごとに書く | [emr-serverless.md](emr-serverless.md) |
 | S3 Tables（Iceberg）と Athena | `pipeline/analytics` | 生データ、修復案（いまの状態と証跡。`proposal_events`）、アラートの通知の履歴の置き場と、それを読む SQL | [s3-tables-athena.md](s3-tables-athena.md) |
 | Firehose | `pipeline/analytics` | アラートの通知を 1 件 1 行で S3 Tables に追記する | [firehose.md](firehose.md) |
@@ -33,7 +34,8 @@ AWS のリソース 1 つにつき 1 ファイル。FAQ、設計の記録、Terr
 
 ## OSS 版
 
-上の表はマネージド版（`IaC/terraform/aws-managed/`、接頭辞 `<owner>-nwc-poc`）。マネージドを OSS に置き換えた環境を作る（005）で、別の版（`IaC/terraform/oss/`、接頭辞 `<owner>-nwc-oss`）が main に入った（2026-10-07 に AWS で 1 回立てて確かめた）。
+上の表はマネージド版（`IaC/terraform/aws-managed/`、接頭辞 `<owner>-nwc-poc`）。
+マネージドを OSS に置き換えた別の版（`IaC/terraform/oss/`、接頭辞 `<owner>-nwc-oss`）もある（2026-10-07 に AWS で 1 回立てて確かめた）。
 OSS 版では次の 5 つを ECS の OSS に置き換え、ほかは同じ。違いの全体は [oss-variant.md](../../oss-variant.md)。
 
 | マネージド版 | OSS 版 | ファイル |

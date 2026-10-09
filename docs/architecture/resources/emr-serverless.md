@@ -37,7 +37,7 @@ MSK のトピックを読み、格納先（S3 Tables、OpenSearch、Prometheus�
 | 相手 | 向き | ポートと認証 |
 |---|---|---|
 | MSK | Spark ← MSK | 9098/tcp、SASL_SSL + AWS_MSK_IAM |
-| MSK（ACL） | Spark → MSK | 9098/tcp、同じ認証。起動のたびに `User:collectors` の `logs` / `flows` / `gnmi` / `metrics` の `WRITE` と `DESCRIBE` を AdminClient の `createAcls` で入れる（`ensure_acls`。実行ロールの `kafka-cluster:AlterCluster`。cycle 012、`gnmi` / `metrics` は 013） |
+| MSK（ACL） | Spark → MSK | 9098/tcp、同じ認証。起動のたびに `User:collectors` の `logs` / `flows` / `gnmi` / `metrics` の `WRITE` と `DESCRIBE` を AdminClient の `createAcls` で入れる（`ensure_acls`。実行ロールの `kafka-cluster:AlterCluster`） |
 | S3 Tables | Spark → テーブル | s3tables のエンドポイント（Iceberg REST）、IAM |
 | Prometheus | Spark → ワークスペース | aps-workspaces のエンドポイント、remote write（protobuf + snappy を自前で組む）、SigV4 |
 | OpenSearch Serverless | Spark → コレクション | OpenSearch Serverless の VPC エンドポイント、SigV4、`_bulk` |
@@ -46,7 +46,7 @@ MSK のトピックを読み、格納先（S3 Tables、OpenSearch、Prometheus�
 
 ## 知見
 
-- **ジョブを格納先ごとに 3 つに分けた（2026-10-04）。**
+- **ジョブを格納先ごとに 3 つに分けている。**
   1 つの格納先が遅れたり落ちたりしても、ほかの格納先の読み進みを止めないため。クエリが 1 つ止まると、そのクエリのいるジョブだけを終わらせ（exit 1）、EMR Serverless が起こし直す。
   出典: FAQ「大量のデータでは、格納先ごとに Spark のジョブを分けたほうがいい？」、[pipeline.md](../../pipeline.md) の「Spark を確かめる」。
 - **同じ名前のジョブは同時に 1 本だけ。**
@@ -58,11 +58,14 @@ MSK のトピックを読み、格納先（S3 Tables、OpenSearch、Prometheus�
   ふだんの 60 秒分より十分大きい。HTTP の格納先は 1 回分を driver（2g）に集めて送るので、溜まった分を一度に読まないための歯止め。
   出典: `deploy.env.example` の `MAX_OFFSETS_PER_TRIGGER`、FAQ「`maxOffsetsPerTrigger` は、格納先がどのくらいの量を処理できるかで決まる？」。
 - **4xx は送り直さずに捨て、数をログに出す。**
-  送り直しても通らないため。5xx と接続の失敗だけ 3 回まで送り直す。それでも駄目ならバッチ（`executor` ではパーティション）を頭からやり直すので、HTTP の格納先には重複が残りうる。
-  出典: [data-stores.md](../../data-stores.md) の「届け方の保証」。
+  送り直しても通らないため。5xx と接続の失敗だけ 3 回まで送り直す。
+  - それでも駄目ならバッチ（`executor` ではパーティション）を頭からやり直すので、HTTP の格納先には重複が残りうる。
+  - 出典: [data-stores.md](../../data-stores.md) の「届け方の保証」。
 - **イベントに一意の番号 `event_id` を付けている。**
-  Kafka のメッセージの中身（JSON を解く前のバイト列）の SHA-256。どのジョブが何回読んでも同じ値になるので、S3 Tables、OpenSearch、Splunk の同じイベントを突き合わせられる。Prometheus のラベルには入れない（サンプルごとに系列ができてしまう）。
-  出典: FAQ「Spark のジョブが 3 つに分かれているので、同じイベントでも番号（event_id）が変わることはある？」、`app/spark/snmp_sinks.py` の `ICEBERG_ADDED_COLUMNS` まわり。
+  Kafka のメッセージの中身（JSON を解く前のバイト列）の SHA-256。
+  どのジョブが何回読んでも同じ値になるので、S3 Tables、OpenSearch、Splunk の同じイベントを突き合わせられる。
+  - Prometheus のラベルには入れない（サンプルごとに系列ができてしまう）。
+  - 出典: FAQ「Spark のジョブが 3 つに分かれているので、同じイベントでも番号（event_id）が変わることはある？」、`app/spark/snmp_sinks.py` の `ICEBERG_ADDED_COLUMNS` まわり。
 - **`executor` で Prometheus に送るときは、送る前に系列で分け直す。**
   Telegraf は Kafka のキーを付けないので、そのままだと同じ系列がパーティションに散らばり、古い時刻のサンプルが拒まれる。
   出典: `deploy.env.example` の `HTTP_SEND`。
@@ -78,9 +81,6 @@ MSK のトピックを読み、格納先（S3 Tables、OpenSearch、Prometheus�
 - **Spark UI の URL は一時的な認証を含み、約 1 時間で切れる。**
   チャットやチケットに貼らない。
   出典: 同上。
-- **2026-10-02 までは Spark が異常を検知して EventBridge に出していた。**
-  いまは書くだけ。
-  出典: `IaC/terraform/aws-managed/pipeline/analytics/locals.tf` の先頭のコメント。
 
 ## 制約と未確認
 
@@ -90,7 +90,11 @@ MSK のトピックを読み、格納先（S3 Tables、OpenSearch、Prometheus�
 | 1 AZ（既定） | その AZ が止まるとジョブも止まる。AWS で確かめた記録は無い |
 | `flows`（GoFlow2） | Telegraf の形ではないので、Spark が読むときに共通の形（measurement `flow`、送り元・宛先・ポートを tags、bytes / packets を fields）に読み替える。AWS の MSK から読んだ記録はまだ無い |
 
-OSS 版（`IaC/terraform/oss/pipeline/analytics`）には EMR Serverless が無く、代わりに `spark.tf` が同じ `app/spark/snmp_sinks.py` を ECS（Fargate）で `local[*]` で動かす（Spark 3.5.9。ジョブの分け方は同じで、格納先ごとに 1 サービス。起こし直しは ECS のサービスがする）。チェックポイントは同じバケットの `analytics/checkpoint/` に S3A で書く。[oss-variant.md](../../oss-variant.md)。
+OSS 版（`IaC/terraform/oss/pipeline/analytics`）には EMR Serverless が無い。[oss-variant.md](../../oss-variant.md)。
+
+- 代わりに `spark.tf` が同じ `app/spark/snmp_sinks.py` を ECS（Fargate）で `local[*]` で動かす（Spark 3.5.9）。
+- ジョブの分け方は同じで、格納先ごとに 1 サービス。起こし直しは ECS のサービスがする。
+- チェックポイントは同じバケットの `analytics/checkpoint/` に S3A で書く。
 
 ## 関連
 
@@ -98,3 +102,7 @@ OSS 版（`IaC/terraform/oss/pipeline/analytics`）には EMR Serverless が無�
 - [pipeline.md](../../pipeline.md): 「Spark を確かめる」
 - [data-stores.md](../../data-stores.md): 「届け方の保証」
 - FAQ の 5 章「Spark の動き」と 9 章「格納先とテーブル、重複」: [faq-fukuda-nwc-poc.md](../../faq-fukuda-nwc-poc.md)
+
+## 経緯
+
+- 2026-10-02 までは Spark が異常を検知して EventBridge に出していた。いまは書くだけ（出典: `IaC/terraform/aws-managed/pipeline/analytics/locals.tf` の先頭のコメント）。

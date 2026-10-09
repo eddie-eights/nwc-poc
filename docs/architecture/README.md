@@ -21,7 +21,14 @@
 
 リソースごとの知見（使い方、つながり、はまりどころ、制約）は [resources/README.md](resources/README.md)。
 
-使い方は別のファイル: パイプラインは [pipeline.md](../pipeline.md)、機器から集めるデータは [collection.md](../collection.md)、承認の流れは [workflow.md](../workflow.md)、データの置き場は [data-stores.md](../data-stores.md)、Nautobot は [nautobot.md](../nautobot.md)、マネージドを OSS に置き換えた版は [oss-variant.md](../oss-variant.md)。
+使い方は別のファイル:
+
+- パイプラインは [pipeline.md](../pipeline.md)
+- 機器から集めるデータは [collection.md](../collection.md)
+- 承認の流れは [workflow.md](../workflow.md)
+- データの置き場は [data-stores.md](../data-stores.md)
+- Nautobot は [nautobot.md](../nautobot.md)
+- マネージドを OSS に置き換えた版は [oss-variant.md](../oss-variant.md)
 
 ## どのファイルがどこで動くか
 
@@ -41,18 +48,18 @@
 | `app/dashboard/` | Gradio の画面 |
 | `app/temporal/` | Temporal のワークフローとワーカー |
 | `app/spark/` | Spark のジョブ（`snmp_sinks.py`。格納先へ流すだけで、検知はしない） |
-| `app/containerlab/` | containerlab の構成、SR Linux の設定（`srlinux/*.cli`）、EC2 の支度（`setup.sh`。lab とデバッグ用の EC2 で共通）、stream の ECS（Telegraf・gnmic・syslog-ng・GoFlow2）とのあいだの転送（`lab forward`）、デバッグ用の EC2 の Telegraf（`lab telegraf`。trap だけ） |
-| `app/telegraf/` | Telegraf の設定（`telegraf.conf.in`。機器の SNMP trap を受けてトピック `traps` へ書く）と入口の `telegraf.sh`（イメージの中では `tg`）（stream の ECS のタスクで動く。デバッグ用の EC2 でも docker で `SINK=stdout`。gNMI は cycle 013 で gnmic へ移した） |
-| `app/gnmic/` | gnmic の設定のテンプレート（`gnmic.yaml.in`。購読 5 つと Kafka の出力）と入口の `gnmic.sh`（イメージの中では `gn`。`run` / `render` / `get`）。機器の gNMI を購読して、状態をトピック `gnmi`、カウンターを `metrics` へ書く（stream の ECS のタスクで動く。cycle 013 から） |
-| `app/syslog-ng/` | syslog-ng（AxoSyslog）の設定のテンプレート（`syslog-ng.conf.in`）と入口の `syslog-ng.sh`（イメージの中では `sng`）。機器の syslog を Telegraf と同じ `device_log` の形にしてトピック `logs` へ書く（stream の ECS のタスクで動く。2026-10-08 から。NetFlow / sFlow の GoFlow2 は上流のイメージをそのまま使うので、ここには無い） |
+| `app/containerlab/` | containerlab の構成、SR Linux の設定（`srlinux/*.cli`）、EC2 の支度（`setup.sh`）、stream の ECS とのあいだの転送（`lab forward`）、デバッグ用の EC2 の Telegraf（`lab telegraf`）。詳細は表の下 |
+| `app/telegraf/` | Telegraf の設定（`telegraf.conf.in`。機器の SNMP trap を受けてトピック `traps` へ書く）と入口の `telegraf.sh`（イメージの中では `tg`）（stream の ECS のタスクで動く。デバッグ用の EC2 でも docker で `SINK=stdout`） |
+| `app/gnmic/` | gnmic の設定のテンプレート（`gnmic.yaml.in`。購読 5 つと Kafka の出力）と入口の `gnmic.sh`（イメージの中では `gn`。`run` / `render` / `get`）。機器の gNMI を購読して、状態をトピック `gnmi`、カウンターを `metrics` へ書く（stream の ECS のタスクで動く） |
+| `app/syslog-ng/` | syslog-ng（AxoSyslog）の設定のテンプレート（`syslog-ng.conf.in`）と入口の `syslog-ng.sh`（イメージの中では `sng`）。機器の syslog を Telegraf と同じ `device_log` の形にしてトピック `logs` へ書く（stream の ECS のタスクで動く。GoFlow2 は表の下） |
 | `app/grafana/` | Grafana の `start.sh` と provisioning（データソース（OSS 版は `datasources-oss/`）、ダッシュボード、アラート（`alerting/` の `nwc-prometheus.yaml` / `nwc-opensearch.yaml` / `nwc.yaml`）。analytics の ECS のタスクで動く） |
-| `app/splunk/` | Splunk のアプリ `nwc_alerts`（保存済みサーチと、SNS へ publish するアラートアクション。analytics の ECS のタスクで動く）、`entrypoint.sh`（役割に合わせてアプリを外す。indexer は止まる前に `splunk offline`）、`peers_check.py`（クラスターの search head が indexer を全部検索できるかの突き合わせ） |
+| `app/splunk/` | Splunk のアプリ `nwc_alerts`、`entrypoint.sh`、`peers_check.py`。詳細は表の下 |
 | `app/nautobot/` | Nautobot の Job（`jobs/nwc_jobs.py`）と、その中身（`nwc/`。対応付け `nb_map.py`、同期 `nb_sync.py`、起動時の `bootstrap.py`）。`PIPELINE=1` ならいつも ECS で動く |
 | `app/graph/` | アラート（SNS）を受けて Neptune（Neptune Analytics）の `status` を書き、通知の履歴を Firehose へ送る Lambda（`status_handler.py`） |
 | `app/neo4j/` | OSS 版の Neo4j（+ GDS）の `entrypoint.sh`（OSS 版の graph の ECS のタスクで動く） |
 | `app/resources/` | ナレッジベースに入れる手順書 |
 | `app/gateway/` | Gateway（MCP）の tools Lambda（`handler.py` と、ツールの定義 `tools.json`） |
-| `docker/images/<名前>/Dockerfile` | イメージの `Dockerfile`（agentcore / temporal / grafana / splunk / nautobot / telegraf / gnmic / syslog-ng / spark / neo4j）。ビルドのコンテキストは `app/<名前>/` で、`docker buildx build -f docker/images/<名前>/Dockerfile app/<名前>/` の形で使う。Splunk は公式イメージ + 検知のアプリ、Nautobot は公式イメージ + boto3 |
+| `docker/images/<名前>/Dockerfile` | イメージの `Dockerfile`（agentcore / temporal / grafana / splunk / nautobot / telegraf / gnmic / syslog-ng / spark / neo4j）。使い方は表の下 |
 | `docker/compose/` | 手元の docker compose（WSL2 の中だけで lab から Grafana / Splunk まで一周させる。AWS は使わない。[README](../../docker/compose/README.md)） |
 | `IaC/terraform/aws-managed/` | AWS にリソースを作るのはここだけ（下のツリー） |
 | `IaC/terraform/oss/` | OSS 版の同じ 9 つのルート（下の段落） |
@@ -60,6 +67,20 @@
 | `ops/` | `up.sh` / `down.sh` / `check.sh` / `lab-debug.sh` / `sync-graph.sh` など |
 | `ops/oss/` | OSS 版の操作（`ops/oss/up.sh` / `down.sh`）とイメージの版（`ops/oss/oss-images.sh`）（[oss-variant.md](../oss-variant.md)） |
 | `tests/` | 模擬テスト（AWS を呼ばない） |
+
+- `app/containerlab/`:
+  - `setup.sh` は lab とデバッグ用の EC2 で共通。
+  - `lab forward` は stream の ECS（Telegraf・gnmic・syslog-ng・GoFlow2）とのあいだの転送。
+  - `lab telegraf` のデバッグ用の EC2 の Telegraf は trap だけ。
+- `app/syslog-ng/`: NetFlow / sFlow の GoFlow2 は上流のイメージをそのまま使うので、ここには無い。
+- `app/splunk/`:
+  - `nwc_alerts` は保存済みサーチと、SNS へ publish するアラートアクション。analytics の ECS のタスクで動く。
+  - `entrypoint.sh` は役割に合わせてアプリを外す。indexer は止まる前に `splunk offline`。
+  - `peers_check.py` はクラスターの search head が indexer を全部検索できるかの突き合わせ。
+- `docker/images/<名前>/Dockerfile`:
+  - ビルドのコンテキストは `app/<名前>/` で、次の形で使う。
+    `docker buildx build -f docker/images/<名前>/Dockerfile app/<名前>/`
+  - Splunk は公式イメージ + 検知のアプリ、Nautobot は公式イメージ + boto3。
 
 ```
 IaC/terraform/aws-managed/
@@ -76,11 +97,25 @@ IaC/terraform/aws-managed/
 └── workflow/      WORKFLOW=1  Temporal on ECS / Gateway（MCP）/ SQS（SNS の購読と、承認・却下の decisions）
 ```
 
-ルートは 9 つで、`ops/up.sh` の `ROOTS` と `ops/check.sh` ではこの順に並ぶ: `base/ecr` → `base/core` → `agent` → `pipeline/lab` → `pipeline/stream` → `pipeline/analytics` → `pipeline/graph` → `pipeline/nautobot` → `workflow`。apply の順は少し違い、graph は手順 3-2 で裏で始めて手順 7-3 で待ち、nautobot は analytics の前（手順 7-3c）。Nautobot は `PIPELINE=1` ならいつも作る（stream と graph を両方外したときだけ作らない）。
+ルートは 9 つで、`ops/up.sh` の `ROOTS` と `ops/check.sh` ではこの順に並ぶ:
+`base/ecr` → `base/core` → `agent` → `pipeline/lab` → `pipeline/stream` → `pipeline/analytics` → `pipeline/graph` → `pipeline/nautobot` → `workflow`。
 
-OSS 版（`ops/oss/up.sh`）は `IaC/terraform/oss/` に同じ 9 つのルートを持つ（多くのファイルは `IaC/terraform/aws-managed/` へのシンボリックリンクで、違いは各ルートの `oss.auto.tfvars` と OSS 版だけのファイル）。接頭辞は `<owner>-nwc-oss`、state も `IaC/terraform/oss/<ルート>/terraform.tfstate` で、マネージド版とは別（[oss-variant.md](../oss-variant.md)）。
+- apply の順は少し違う。graph は手順 3-2 で裏で始めて手順 7-3 で待ち、nautobot は analytics の前（手順 7-3c）。
+- Nautobot は `PIPELINE=1` ならいつも作る（stream と graph を両方外したときだけ作らない）。
 
-デバッグ用の EC2（lab + Telegraf を 1 台）だけは terraform ではなく CloudFormation の `IaC/cloudformation/lab-debug.yaml`（スタック `<prefix>-lab-debug`）。作るのも消すのも `ops/lab-debug.sh up` / `down` だけで、`ops/up.sh` / `ops/down.sh` は触らない（2026-10-04 から）。土台（base/core）は使わず、自分の VPC（既定 `10.20.0.0/24`。どこともつながないので base/core と重なってよい。IGW / NAT は無い）、インターフェース型エンドポイント 4 本（ssm / ssmmessages / ecr.api / ecr.dkr）と S3 の gateway、バケット `<prefix>-lab-debug-<アカウント>`、ECR のリポジトリ 4 つ（`<prefix>-debug-lab-srlinux` / `-lab-multitool` / `-lab-trex` / `-telegraf`。スタックと一緒に消える）を持つ。
+OSS 版（`ops/oss/up.sh`）は `IaC/terraform/oss/` に同じ 9 つのルートを持つ（[oss-variant.md](../oss-variant.md)）。
+
+- 多くのファイルは `IaC/terraform/aws-managed/` へのシンボリックリンク。違いは各ルートの `oss.auto.tfvars` と OSS 版だけのファイル。
+- 接頭辞は `<owner>-nwc-oss`、state も `IaC/terraform/oss/<ルート>/terraform.tfstate` で、マネージド版とは別。
+
+デバッグ用の EC2（lab + Telegraf を 1 台）だけは terraform ではなく CloudFormation の `IaC/cloudformation/lab-debug.yaml`（スタック `<prefix>-lab-debug`）。
+
+- 作るのも消すのも `ops/lab-debug.sh up` / `down` だけで、`ops/up.sh` / `ops/down.sh` は触らない。
+- 土台（base/core）は使わず、次を自分で持つ。
+  - 自分の VPC（既定 `10.20.0.0/24`。どこともつながないので base/core と重なってよい。IGW / NAT は無い）
+  - インターフェース型エンドポイント 4 本（ssm / ssmmessages / ecr.api / ecr.dkr）と S3 の gateway
+  - バケット `<prefix>-lab-debug-<アカウント>`
+  - ECR のリポジトリ 4 つ（`<prefix>-debug-lab-srlinux` / `-lab-multitool` / `-lab-trex` / `-telegraf`。スタックと一緒に消える）
 
 1 ディレクトリ = 1 state。state は各ルートの `terraform.tfstate`（ローカル）。変数を変えたいときは `terraform.tfvars.example` を `terraform.tfvars` に写す。
 
@@ -118,3 +153,7 @@ aws resourcegroupstaggingapi get-resources --region ap-northeast-1 \
 | 誰がいつ入ったか | CloudTrail の `StartSession` |
 
 ポートフォワーディングの中身は Session Manager のセッションログに残らない。会話の中身もどこにも保存しない。
+
+## 経緯
+
+- 013: gNMI を Telegraf（`app/telegraf/`）から gnmic（`app/gnmic/`）へ移した。

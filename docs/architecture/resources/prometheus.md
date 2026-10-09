@@ -12,12 +12,14 @@
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
 | ワークスペース | alias `<prefix>-metrics`。1 つ | `IaC/terraform/aws-managed/pipeline/analytics/sinks.tf` の `aws_prometheus_workspace.metrics` |
-| 入るもの | MSK の `metrics` / `gnmi` のトピックの数値（gnmic の event を Spark が Telegraf の形に読み替えたもの）。メトリクス名の頭に `snmp_` が付く（例: `snmp_interface_oper_up`、`snmp_interface_in_octets`、`snmp_bgp_neighbor_session_up`、`snmp_isis_interface_oper_up`） | `app/spark/snmp_sinks.py` |
+| 入るもの | MSK の `metrics` / `gnmi` のトピックの数値（gnmic の event を Spark が Telegraf の形に読み替えたもの）。メトリクス名の頭に `snmp_` が付く（例は表の下） | `app/spark/snmp_sinks.py` |
 | ラベル | Telegraf の形の tags（gnmic の tags を Spark が `sysName` / `ifName` などに読み替える）と `__name__` だけ。`event_id` と Kafka の位置は入れない | `app/spark/snmp_sinks.py` |
 | 書き方 | Spark の remote write（protobuf + snappy を自前で組む）、SigV4 | `app/spark/snmp_sinks.py` |
 | スイッチ | `STORES` の `grafana`（OpenSearch のログ用コレクションと Grafana と一緒に作る） | `deploy.env.example` |
 | AZ | 選ぶものが無い（サービス側で動く）。入口は `aps-workspaces` のエンドポイント（`ENDPOINTS_AZ_NUM`） | `ops/up.sh` の手順 0（`endpoints_for` のあとで `STORES` の `grafana` のときに足す） |
 | 費用 | ワークスペースは 0。取り込んだサンプル数と保存量の課金が別にある | `ops/up.sh` の費用の目安（524〜584 行）、`sinks.tf` のコメント |
+
+- 入るもの（メトリクス名の例）: `snmp_interface_oper_up`、`snmp_interface_in_octets`、`snmp_bgp_neighbor_session_up`、`snmp_isis_interface_oper_up`
 
 ## つながり
 
@@ -30,8 +32,9 @@
 ## 知見
 
 - **重複は入らない。何もしなくてよい。**
-  系列（名前とラベル）と時刻が同じサンプルは 1 つしか持てない。Spark が同じバッチを送り直しても増えない。ただしこの動きは記憶から書いたもので、AWS では確かめていない（FAQ にそう書いてある）。
-  出典: FAQ「OpenSearch と Prometheus でも、重複を防げる？ Grafana の側で落とすべき？」。
+  - 系列（名前とラベル）と時刻が同じサンプルは 1 つしか持てない。Spark が同じバッチを送り直しても増えない。
+  - ただしこの動きは記憶から書いたもので、AWS では確かめていない（FAQ にそう書いてある）。
+  - 出典: FAQ「OpenSearch と Prometheus でも、重複を防げる？ Grafana の側で落とすべき？」。
 - **時刻が戻ったサンプルと古すぎるサンプルは 4xx で断られ、Spark は捨てる。**
   捨てた数は driver のログに出る。
   出典: [data-stores.md](../../data-stores.md) の「届け方の保証」。
@@ -50,8 +53,8 @@
 - **ワークスペースのリソースポリシーでは、VPC の外を拒んでいない。**
   Deny と `aws:SourceVpc` が効くか確かめられないため。IAM 側の Deny（`<prefix>-network-perimeter`）だけで止めている。
   出典: `IaC/terraform/aws-managed/pipeline/analytics/sinks.tf` のコメント。
-- **2026-10-09（cycle 013）から `snmp_interface_ifOperStatus` は入らない。**
-  SNMP のポーリングをやめ、IF の状態は gnmic の gNMI から `snmp_interface_oper_up`（1 が up）と `snmp_interface_admin_up` で入る。ダッシュボード、`query_metrics`、ルール `link_down` はこちらを見る。
+- **`snmp_interface_ifOperStatus` は入らない。**
+  IF の状態は gnmic の gNMI から `snmp_interface_oper_up`（1 が up）と `snmp_interface_admin_up` で入る。ダッシュボード、`query_metrics`、ルール `link_down` はこちらを見る。
   出典: [collection.md](../../collection.md) の「gnmic の event と読み替え」。
 
 ## 制約と未確認
@@ -69,3 +72,7 @@
 - [emr-serverless.md](emr-serverless.md)、[grafana.md](grafana.md)
 - [data-stores.md](../../data-stores.md): 「届け方の保証」
 - [pipeline.md](../../pipeline.md): 「Grafana のアラート」
+
+## 経緯
+
+- 2026-10-09（013）: SNMP のポーリングをやめ、`snmp_interface_ifOperStatus` は入らなくなった（[collection.md](../../collection.md) の「gnmic の event と読み替え」）。

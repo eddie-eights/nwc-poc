@@ -35,11 +35,13 @@ VPC エンドポイント（`aws_opensearchserverless_vpc_endpoint.aoss`）は�
 ## 知見
 
 - **ログ用のコレクションは、ドキュメントの ID を付けられない。**
-  TIMESERIES 型は追記だけで、ID での上書きができない。Spark が送り直すと、同じドキュメントが 2 つ残る。SEARCH 型にすれば ID を付けられるが、ログの置き場としては TIMESERIES のほうが安く合っているので替えない。
-  出典: FAQ「OpenSearch と Prometheus でも、重複を防げる？ Grafana の側で落とすべき？」、`IaC/terraform/aws-managed/pipeline/analytics/sinks.tf` のコメント。
+  - TIMESERIES 型は追記だけで、ID での上書きができない。Spark が送り直すと、同じドキュメントが 2 つ残る。
+  - SEARCH 型にすれば ID を付けられるが、ログの置き場としては TIMESERIES のほうが安く合っているので替えない。
+  - 出典: FAQ「OpenSearch と Prometheus でも、重複を防げる？ Grafana の側で落とすべき？」、`IaC/terraform/aws-managed/pipeline/analytics/sinks.tf` のコメント。
 - **重複で数字が変わるのは、件数と合計のパネルだけ。**
-  Grafana で一律に落とす設定は無い。必要なパネルだけ、一意の番号の種類数（Unique Count）で数える。重複が起きるのは送信の失敗でやり直したときだけ。
-  出典: 同じ FAQ。
+  - Grafana で一律に落とす設定は無い。必要なパネルだけ、一意の番号の種類数（Unique Count）で数える。
+  - 重複が起きるのは送信の失敗でやり直したときだけ。
+  - 出典: 同じ FAQ。
 - **コレクションは、ポリシー 3 つ（暗号・ネットワーク・データアクセス）を先に作ってから作る。**
   `depends_on` で順番を固定してある。
   出典: `sinks.tf`、`IaC/terraform/aws-managed/agent/kb.tf`。
