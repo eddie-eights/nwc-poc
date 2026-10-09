@@ -27,7 +27,7 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 
 | ルール | 見るもの | 出すもの |
 |---|---|---|
-| `link_down` | Prometheus の `snmp_interface_oper_up`（gnmic が取る gNMI の IF の oper-state。2026-10-09 まではSNMP のポーリングの `ifOperStatus`） | 0 で `firing`。ループバック、管理ポート、サブインタフェース、`snmp_interface_admin_up` が 0（admin-state が disable）のポートは外す |
+| `link_down` | Prometheus の `snmp_interface_oper_up`（gnmic が取る gNMI の IF の oper-state） | 0 で `firing`。ループバック、管理ポート、サブインタフェース、`snmp_interface_admin_up` が 0（admin-state が disable）のポートは外す |
 | `bgp_down` | Prometheus の `snmp_bgp_neighbor_session_up` | 0 で `firing`。対象は相手の IP |
 | `isis_down` | Prometheus の `snmp_isis_interface_oper_up` | 0 で `firing`。対象はサブインタフェース |
 | `trap` | OpenSearch の `snmp_trap`（過去 10 分を機器と OID ごとに数える） | 1 通以上で `firing`、10 分来なければ `resolved`。linkDown / linkUp などは数えない |
@@ -51,26 +51,25 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
   VPC エンドポイントだけのコレクションには届かない。それで Grafana を立てている。
   出典: `IaC/terraform/aws-managed/pipeline/analytics/grafana.tf` の先頭のコメント。
 - **タスクは 1 つだけにしている。増やすと通知が二重になる。**
-  アラートルールの評価もタスクの中で動く。HA を組まずに複数台にすると、全部の台が全ルールを評価する。設定もタスクの中の SQLite でタスクごとに別々。2 つにして AWS で試してはいない。
-  出典: `grafana.tf` のコメント（Grafana の文書「Configure high availability」、https://grafana.com/docs/grafana/latest/alerting/set-up/configure-high-availability/ 、2026-10-04 確認）。
+  アラートルールの評価もタスクの中で動く。HA を組まずに複数台にすると、全部の台が全ルールを評価する。
+  - 設定もタスクの中の SQLite でタスクごとに別々。
+  - 2 つにして AWS で試してはいない。
+  - 出典: `grafana.tf` のコメント（Grafana の文書「Configure high availability」、2026-10-04 確認）。
+    https://grafana.com/docs/grafana/latest/alerting/set-up/configure-high-availability/
 - **plugin はイメージに焼き込む。**
   AWS の外へ出る経路が無いので、起動時に落とせない。
   出典: [pipeline.md](../../pipeline.md) の「Grafana と Splunk を開く」。
 - **UI で変えたものは、タスクと一緒に消える。**
-  ダッシュボードもルールも provisioning だけ。provisioning したルール・連絡先・ポリシーは画面から変えられない。残すなら `app/grafana/provisioning` に書いて `ops/up.sh`（イメージから作り直す）。
-  出典: [pipeline.md](../../pipeline.md) の「Grafana と Splunk を開く」「Grafana のアラート」。
+  ダッシュボードもルールも provisioning だけ。provisioning したルール・連絡先・ポリシーは画面から変えられない。
+  - 残すなら `app/grafana/provisioning` に書いて `ops/up.sh`（イメージから作り直す）。
+  - 出典: [pipeline.md](../../pipeline.md) の「Grafana と Splunk を開く」「Grafana のアラート」。
 - **`nwc.yaml` のテンプレートの `$` はそのまま書く。**
   `$$` とエスケープすると Grafana が起動しない（`Invalid format of the submitted template`。13.2.2 で実測）。
   出典: [pipeline.md](../../pipeline.md) の「Grafana のアラート」。
 - **データが無いときの扱いは、ルールで分けてある。**
-  Prometheus の 3 本は直前の状態のまま（`KeepLast`。分からないときに発火も解消もしない）。`trap` は NoData を OK にする（`KeepLast` だと発火したまま解消しない）。
+  Prometheus の 3 本は直前の状態のまま（`KeepLast`。分からないときに発火も解消もしない）。
+  `trap` は NoData を OK にする（`KeepLast` だと発火したまま解消しない）。
   出典: [pipeline.md](../../pipeline.md) の「Grafana のアラート」。
-- **評価がエラーでも、画面のルールは Normal に見える。ルールの API で確かめる。**
-  4 本とも `execErrState: KeepLast` なので、クエリが失敗してもアラートは出ない。エラーはルールの API（`/api/prometheus/grafana/api/v1/rules`）の `alerts[].state` に `Normal (Error, KeepLast)`（発火中の系列なら `Alerting (Error, KeepLast)`）と出るだけで、`health` は `ok`、`lastError` は空のまま（13.2.2 で実測）。インデックスが無いだけなら NoData で、エラーにはならない。
-  それで `ops/up.sh`（OSS 版は `ops/oss/up.sh`）の手順 9-2 と `ops/check-grafana.sh [--oss]` が、Web の EC2 から SSM Run Command でこの API を読み、`(Error` を含むか `Error` で始まる状態、`health=error`、空でない `lastError` のどれかがあるルールを NG にする（`ops/grafana_rules_check.py`）。API がルールのグループをページに分けて返したとき（`data.groupNextToken`）は、`group_next_token` で最後のページまで読む。13.2.3 の既定は `group_limit=-1`（全部を 1 ページで返す）なので、今はトークンは来ない。同じトークンが繰り返すか 100 ページを超えたら読めなかったとして扱う（待ち切れたら未確認）。判定に使うのは、打ってから全部のルールがもう 1 回評価された結果（`lastEvaluation` が変わったもの）。打ったときに見える評価は、データソースを直す前・壊れる前のものかもしれない。そのうえで、エラーのあったルールはもう 1 回評価されるのを待ち、そこでもエラーなら NG にする。エラーの評価が作った状態（ラベルがルールのラベルだけのもの）は、直したあとの成功した評価に 1 回分残り、その次の評価で消える（Grafana の stale の扱い。13.2.2 で実測: 14:12:11 に直し、14:13:00 の評価は `Alerting` と `Normal (Error, KeepLast)` が並び、14:14:00 の評価で `Alerting` だけになった）。それで NG は OK より 1 分ほど遅く出る。結果は 0 OK / 1 NG / 2 未確認 / 3 確かめる前に止まった（`ops/check-grafana.sh` の終了コード。[troubleshooting.md](../../troubleshooting.md) の「`ops/check-grafana.sh` の終了コード」）。up.sh は NG でも未確認でも止めず、黄色の警告を最後にもう一度出す。ログの案内は NG のときだけ（未確認は評価のエラーとは限らない）。
-  ルールのクエリを `/api/ds/query` に投げて HTTP 200 を見る方法は取らなかった。スケジューラーの実際の評価ではなくクエリ A だけを別の時間範囲で投げ直すことになり、ルールを足すたびに確かめる側も足す必要がある。API の GET 1 回なら、今あるルールも後で足すルールも同じに見られる。
-  理由の文は API に残らないので、ログ（`/ecs/<prefix>-grafana` の `Failed to evaluate rule`）で見る。この行は Grafana がやり直すエラーの 1・2 回目（3 回まで）に出る（13.2.2 で実測）。
-  出典: `ops/grafana_rules_check.py` の先頭のコメント、`ops/up-common.sh` の `grafana_rules_step`。
 - **linkDown / linkUp の trap から `link_down` を出すのは Splunk だけ。**
   IF 名の入った varbind の名前が IF ごとに変わり、OpenSearch の集計では取り出せない。
   出典: [pipeline.md](../../pipeline.md) の「アラート」。
@@ -86,22 +85,78 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
   Grafana は `/var/lib/grafana` に SQLite を、`app/grafana/start.sh` は `/tmp` に provisioning を書く。
   出典: `grafana.tf` のコメント。
 
+### 評価がエラーでも、画面のルールは Normal に見える
+
+ルールの API で確かめる。
+4 本とも `execErrState: KeepLast` なので、クエリが失敗してもアラートは出ない。
+
+- エラーはルールの API（`/api/prometheus/grafana/api/v1/rules`）の `alerts[].state` に `Normal (Error, KeepLast)`（発火中の系列なら `Alerting (Error, KeepLast)`）と出るだけ。
+  `health` は `ok`、`lastError` は空のまま（13.2.2 で実測）。
+- インデックスが無いだけなら NoData で、エラーにはならない。
+
+それで `ops/up.sh`（OSS 版は `ops/oss/up.sh`）の手順 9-2 と `ops/check-grafana.sh [--oss]` が、Web の EC2 から SSM Run Command でこの API を読む。
+
+- `(Error` を含むか `Error` で始まる状態、`health=error`、空でない `lastError` のどれかがあるルールを NG にする（`ops/grafana_rules_check.py`）。
+- API がルールのグループをページに分けて返したとき（`data.groupNextToken`）は、`group_next_token` で最後のページまで読む。
+  13.2.3 の既定は `group_limit=-1`（全部を 1 ページで返す）なので、今はトークンは来ない。
+- 同じトークンが繰り返すか 100 ページを超えたら読めなかったとして扱う（待ち切れたら未確認）。
+- 判定に使うのは、打ってから全部のルールがもう 1 回評価された結果（`lastEvaluation` が変わったもの）。
+  打ったときに見える評価は、データソースを直す前・壊れる前のものかもしれない。
+- そのうえで、エラーのあったルールはもう 1 回評価されるのを待ち、そこでもエラーなら NG にする。
+- エラーの評価が作った状態（ラベルがルールのラベルだけのもの）は、直したあとの成功した評価に 1 回分残り、その次の評価で消える（Grafana の stale の扱い）。
+  13.2.2 で実測: 14:12:11 に直し、14:13:00 の評価は `Alerting` と `Normal (Error, KeepLast)` が並び、14:14:00 の評価で `Alerting` だけになった。
+- それで NG は OK より 1 分ほど遅く出る。
+- 結果は 0 OK / 1 NG / 2 未確認 / 3 確かめる前に止まった（`ops/check-grafana.sh` の終了コード。[troubleshooting.md](../../troubleshooting.md) の「`ops/check-grafana.sh` の終了コード」）。
+- up.sh は NG でも未確認でも止めず、黄色の警告を最後にもう一度出す。
+  ログの案内は NG のときだけ（未確認は評価のエラーとは限らない）。
+
+ルールのクエリを `/api/ds/query` に投げて HTTP 200 を見る方法は取らなかった。
+
+- スケジューラーの実際の評価ではなくクエリ A だけを別の時間範囲で投げ直すことになり、ルールを足すたびに確かめる側も足す必要がある。
+- API の GET 1 回なら、今あるルールも後で足すルールも同じに見られる。
+
+理由の文は API に残らないので、ログ（`/ecs/<prefix>-grafana` の `Failed to evaluate rule`）で見る。
+この行は Grafana がやり直すエラーの 1・2 回目（3 回まで）に出る（13.2.2 で実測）。
+
+出典: `ops/grafana_rules_check.py` の先頭のコメント、`ops/up-common.sh` の `grafana_rules_step`。
+
 ## 制約と未確認
 
 | 項目 | 状態 |
 |---|---|
-| 4 本になったあとの形（Splunk と Grafana のアラートを比べる（002）） | 2026-10-05 に AWS で `link_down` と `isis_down` の発火を確かめた（`sudo lab fail-main`）。2026-10-08 に AWS で `bgp_down` の発火を確かめた（`sudo lab fail-bgp`。011 の前の lab。[verification/20261008-managed-aws.md](../../verification/20261008-managed-aws.md)）。`trap` はルールの評価が毎回エラーで出なかった。「AWS 検証で見つけた不具合 3 件を直す（008）」でルールを絞り、手元の Grafana で通したが、AWS では未確認。Grafana の画面は未確認 |
-| OpenSearch Serverless を SigV4 でルールの評価に使えるか | 未確認。2026-10-08 に AWS で試したが、`trap` のルールの評価が毎回エラーになった（`bucket budget out of bounds`。[verification/20261008-managed-aws.md](../../verification/20261008-managed-aws.md) の「不具合」1）。008 でルールを絞り手元の Grafana で通したが、AWS では未確認。ダッシュボードで読めることは 2026-09-28 に確認済み |
+| 4 本になったあとの形（Splunk と Grafana のアラートを比べる（002）） | `link_down`・`isis_down`・`bgp_down` の発火は AWS で確かめた。`trap` は AWS では未確認。Grafana の画面は未確認（表の下） |
+| OpenSearch Serverless を SigV4 でルールの評価に使えるか | 未確認（表の下）。ダッシュボードで読めることは 2026-09-28 に確認済み |
 | 機器ごと止まったとき | 検知しない（系列が途切れると解消を送る） |
 | gnmic が止まったとき | 系列は `last_over_time(...[24h])` で最後の値のまま残るので、止まっているあいだの変化は出ない（`link_down` / `bgp_down` / `isis_down`） |
 | 1 タスク・1 AZ | 止まっているあいだはルールが評価されない |
-| ルールの評価のエラーの確かめ（手順 9-2、`ops/check-grafana.sh`） | 打ったあとの評価だけを見る（あとで壊れたら打ち直す）。打ってから全部のルールが評価されるまで最大 1 分、エラーがあればもう 1 回の評価まで 1 分ほど延びる。打ったあとの評価で 1 回でもエラーになったルールは、すぐ直っても NG になる（次の評価にエラーが残るため）。NoData はエラーではないので OK になる。待つのは最大 5 分で、評価されないルール（止めたルールなど）があれば「未確認」。SSM Run Command の結果を待つのは `SSM_RUN_WAIT` 秒（既定 1800）までで、過ぎたら未確認。マネージド版は `STORES` に `grafana` があるときと、今回は analytics を作らない回（`PIPELINE=0`・`SKIP_ANALYTICS=1`）でも前の回の Grafana の ECS サービスが state に残っているときに打つ。analytics の state の一覧か、Grafana のクラスターとサービスの名前（`tf output`）が読めないか空なら、確かめず（`aws ecs wait` も打たず）に黄色の警告を出して先へ進む（最後の案内まで届かせる）。AWS では未実行（API の形とログは手元の 13.2.2 で確かめた） |
+| ルールの評価のエラーの確かめ（手順 9-2、`ops/check-grafana.sh`） | 打ったあとの評価だけを見る（あとで壊れたら打ち直す）。AWS では未実行（API の形とログは手元の 13.2.2 で確かめた）。詳細は表の下 |
 | Grafana がやり直さないエラーでも `Failed to evaluate rule` がログに出るか | 未確認。出なければ `--filter-pattern '"level=error"'` で探す |
 
-OSS 版（`IaC/terraform/oss/pipeline/analytics/grafana.tf`）も同じイメージとルールで 1 タスク立てる。データソースだけが VictoriaMetrics の vmselect（署名なし）と ECS の OpenSearch（Basic 認証）に変わる（`app/grafana/provisioning/datasources-oss`。uid が同じなので、ダッシュボードとアラートルールはそのまま使う）。[oss-variant.md](../../oss-variant.md)。
+- 4 本になったあとの形:
+  - 2026-10-05 に AWS で `link_down` と `isis_down` の発火を確かめた（`sudo lab fail-main`）。
+  - 2026-10-08 に AWS で `bgp_down` の発火を確かめた（`sudo lab fail-bgp`。011 の前の lab。[verification/20261008-managed-aws.md](../../verification/20261008-managed-aws.md)）。
+  - `trap` はルールの評価が毎回エラーで出なかった。「AWS 検証で見つけた不具合 3 件を直す（008）」でルールを絞り、手元の Grafana で通したが、AWS では未確認。
+- OpenSearch Serverless を SigV4 でルールの評価に使えるか:
+  - 2026-10-08 に AWS で試したが、`trap` のルールの評価が毎回エラーになった（`bucket budget out of bounds`。[verification/20261008-managed-aws.md](../../verification/20261008-managed-aws.md) の「不具合」1）。
+  - 008 でルールを絞り手元の Grafana で通したが、AWS では未確認。
+- ルールの評価のエラーの確かめ（手順 9-2、`ops/check-grafana.sh`）:
+  - 打ってから全部のルールが評価されるまで最大 1 分、エラーがあればもう 1 回の評価まで 1 分ほど延びる。
+  - 打ったあとの評価で 1 回でもエラーになったルールは、すぐ直っても NG になる（次の評価にエラーが残るため）。NoData はエラーではないので OK になる。
+  - 待つのは最大 5 分で、評価されないルール（止めたルールなど）があれば「未確認」。
+  - SSM Run Command の結果を待つのは `SSM_RUN_WAIT` 秒（既定 1800）までで、過ぎたら未確認。
+  - マネージド版は `STORES` に `grafana` があるときと、今回は analytics を作らない回（`PIPELINE=0`・`SKIP_ANALYTICS=1`）でも前の回の Grafana の ECS サービスが state に残っているときに打つ。
+  - analytics の state の一覧か、Grafana のクラスターとサービスの名前（`tf output`）が読めないか空なら、確かめず（`aws ecs wait` も打たず）に黄色の警告を出して先へ進む（最後の案内まで届かせる）。
+
+OSS 版（`IaC/terraform/oss/pipeline/analytics/grafana.tf`）も同じイメージとルールで 1 タスク立てる。[oss-variant.md](../../oss-variant.md)。
+データソースだけが VictoriaMetrics の vmselect（署名なし）と ECS の OpenSearch（Basic 認証）に変わる（`app/grafana/provisioning/datasources-oss`）。
+uid が同じなので、ダッシュボードとアラートルールはそのまま使う。
 
 ## 関連
 
 - [prometheus.md](prometheus.md)、[opensearch-serverless.md](opensearch-serverless.md)、[sns-sqs-lambda.md](sns-sqs-lambda.md)、[splunk.md](splunk.md)
 - [pipeline.md](../../pipeline.md): 「Grafana と Splunk を開く」「アラート」「Grafana のアラート」
 - [alert-comparison.md](../../alert-comparison.md): Splunk と Grafana のアラートを比べる（002）の結果
+
+## 経緯
+
+- 2026-10-09 までは、`link_down` が見る `snmp_interface_oper_up` は SNMP のポーリングの `ifOperStatus` だった。いまは gnmic が取る gNMI の IF の oper-state。

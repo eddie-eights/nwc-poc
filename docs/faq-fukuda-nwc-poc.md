@@ -19,6 +19,18 @@ nwc-poc の技術と構成について、ほかの開発者に説明するとき
 
 ## 1. syslog の基本
 
+- [Q. システムログと syslog は別物？](#q-システムログと-syslog-は別物)
+- [Q. syslog のファシリティとは？ 重要度とは何が違う？](#q-syslog-のファシリティとは-重要度とは何が違う)
+- [Q. 送るファシリティや重要度は、ルーター側で設定する？](#q-送るファシリティや重要度はルーター側で設定する)
+- [Q. SR Linux の subsystem は、syslog のファシリティと同じもの？](#q-sr-linux-の-subsystem-はsyslog-のファシリティと同じもの)
+- [Q. lab から送る syslog の形式は、Cisco と同じ？](#q-lab-から送る-syslog-の形式はcisco-と同じ)
+- [Q. PRI とは？](#q-pri-とは)
+- [Q. PRI の「× 8」は、8 進数にしているということ？](#q-pri-の-8は8-進数にしているということ)
+- [Q. ファシリティは Cisco と SR Linux で違う？](#q-ファシリティは-cisco-と-sr-linux-で違う)
+- [Q. Cisco の機器は、cron や mail ではなく local7 でログを送る？](#q-cisco-の機器はcron-や-mail-ではなく-local7-でログを送る)
+- [Q. SR Linux も local7 で送れる？](#q-sr-linux-も-local7-で送れる)
+- [Q. lab の SR Linux は、どのファシリティで syslog を送っている？](#q-lab-の-sr-linux-はどのファシリティで-syslog-を送っている)
+
 ### Q. システムログと syslog は別物？
 
 **A. 同じものを指すことが多いが、厳密には別の言葉。**
@@ -187,6 +199,10 @@ PRI = ファシリティの番号 × 8 + 重要度
 
 ## 2. 収集の設定（syslog-ng・Telegraf・gnmic と本番の Cisco）
 
+- [Q. 本番の Cisco の `logging host <IPアドレス | ホスト名>` には、AWS の NLB を書く？](#q-本番の-cisco-の-logging-host-ipアドレス--ホスト名-にはaws-の-nlb-を書く)
+- [Q. syslog-ng が受ける syslog の形式（RFC 3164 / RFC 5424）は、どこで切り替える？](#q-syslog-ng-が受ける-syslog-の形式rfc-3164--rfc-5424はどこで切り替える)
+- [Q. SNMP はポーリングと trap のどちらで集めている？ ポーリングは止められる？](#q-snmp-はポーリングと-trap-のどちらで集めている-ポーリングは止められる)
+
 ### Q. 本番の Cisco の `logging host <IPアドレス | ホスト名>` には、AWS の NLB を書く？
 
 **A. はい。syslog-ng を今の構成（ECS + 内部 NLB。NLB は Telegraf・syslog-ng・GoFlow2 で共通）のまま使うなら、NLB の IP を書く。**
@@ -264,6 +280,10 @@ SYSLOG_STANDARD=RFC5424 PIPELINE=1 ops/up.sh   # lab の SR Linux のログま�
 
 ## 3. デバッグ用の EC2（lab + Telegraf）
 
+- [Q. lab と Telegraf だけを確かめるデバッグ用の EC2 は、どう作ってある？ terraform の側とずれない？](#q-lab-と-telegraf-だけを確かめるデバッグ用の-ec2-はどう作ってある-terraform-の側とずれない)
+- [Q. デバッグ用の EC2 のために、Telegraf は何が変わった？](#q-デバッグ用の-ec2-のためにtelegraf-は何が変わった)
+- [Q. デバッグ用の EC2 は、なぜ `ops/up.sh` / `ops/down.sh` と別になっている？](#q-デバッグ用の-ec2-はなぜ-opsupsh--opsdownsh-と別になっている)
+
 ### Q. lab と Telegraf だけを確かめるデバッグ用の EC2 は、どう作ってある？ terraform の側とずれない？
 
 **A. CloudFormation のスタック `<接頭辞>-lab-debug`（`IaC/cloudformation/lab-debug.yaml`）で作る。設定とソースは terraform の側と共通にしてあり、ずれはテストが見る。** MSK・ECS・NLB を作らずに、機器の設定と Telegraf の設定を 1 台で確かめるためのもの。
@@ -336,6 +356,11 @@ SYSLOG_STANDARD=RFC5424 PIPELINE=1 ops/up.sh   # lab の SR Linux のログま�
 ---
 
 ## 4. YANG・OpenConfig とシスコの機器
+
+- [Q. YANG とは？](#q-yang-とは)
+- [Q. OpenConfig とは？](#q-openconfig-とは)
+- [Q. containerlab で使えるシスコの機器は、何がある？](#q-containerlab-で使えるシスコの機器は何がある)
+- [Q. シスコの機器なら、メトリクスはどれも同じ？](#q-シスコの機器ならメトリクスはどれも同じ)
 
 ### Q. YANG とは？
 
@@ -547,6 +572,15 @@ vrnetlab のページには、このほかに Cisco vIOS と Cisco ASAv も載�
 ---
 
 ## 5. Spark の動き
+
+- [Q. Spark のジョブ、driver、executor、クエリ、タスクは、役割がどう違う？](#q-spark-のジョブdriverexecutorクエリタスクは役割がどう違う)
+- [Q. Spark のジョブは 1 つで、Kafka の購読も 1 つ？](#q-spark-のジョブは-1-つでkafka-の購読も-1-つ)
+- [Q. 60 秒周期になっているけど、量が溜まったら 60 秒より前に送る？](#q-60-秒周期になっているけど量が溜まったら-60-秒より前に送る)
+- [Q. `maxOffsetsPerTrigger` は、格納先がどのくらいの量を処理できるかで決まる？](#q-maxoffsetspertrigger-は格納先がどのくらいの量を処理できるかで決まる)
+- [Q. Kafka のパーティションが 4 つあるとしたら、Spark で分散して購読させたい場合は Spark のコンテナを 4 つにすればいい？](#q-kafka-のパーティションが-4-つあるとしたらspark-で分散して購読させたい場合は-spark-のコンテナを-4-つにすればいい)
+- [Q. executor を 2 つにしたら Kafka からの読み取りは 2 つに分かれる。送信はまた別に並列化が要るの？](#q-executor-を-2-つにしたら-kafka-からの読み取りは-2-つに分かれる送信はまた別に並列化が要るの)
+- [Q. `foreachPartition` は、大量のデータを Spark のジョブ 1 つでは捌けなくなったときに使う？ 環境変数で切り替えられる？](#q-foreachpartition-は大量のデータを-spark-のジョブ-1-つでは捌けなくなったときに使う-環境変数で切り替えられる)
+- [Q. 大量のデータでは、格納先ごとに Spark のジョブを分けたほうがいい？](#q-大量のデータでは格納先ごとに-spark-のジョブを分けたほうがいい)
 
 ### Q. Spark のジョブ、driver、executor、クエリ、タスクは、役割がどう違う？
 
@@ -814,6 +848,15 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 ## 6. Nautobot（機器の一覧とケーブルの正）
 
+- [Q. Neptune のグラフの追加は、Nautobot の Job がやっているという理解で合ってる？](#q-neptune-のグラフの追加はnautobot-の-job-がやっているという理解で合ってる)
+- [Q. Nautobot は、いつ立つ？ 環境変数でオン・オフを切り替えられる？](#q-nautobot-はいつ立つ-環境変数でオンオフを切り替えられる)
+- [Q. Nautobot にトポロジの情報を入れているのはシェルスクリプトだと思うけど、どこからの情報を引っ張ってきて入れている？](#q-nautobot-にトポロジの情報を入れているのはシェルスクリプトだと思うけどどこからの情報を引っ張ってきて入れている)
+- [Q. 本番では、SDN などの機器を管理しているワーカーが、Nautobot に API で格納すればいい？](#q-本番ではsdn-などの機器を管理しているワーカーがnautobot-に-api-で格納すればいい)
+- [Q. 「Nautobot の側から取りにいく」とは、Nautobot の Job が取りにいくということ？](#q-nautobot-の側から取りにいくとはnautobot-の-job-が取りにいくということ)
+- [Q. Nautobot は、データベースと Job が一緒になっている？](#q-nautobot-はデータベースと-job-が一緒になっている)
+- [Q. Nautobot はもともと Web・データベース・Job・Celery・Redis がセットになったもの？ 今回新しく足したわけではない？](#q-nautobot-はもともと-webデータベースjobceleryredis-がセットになったもの-今回新しく足したわけではない)
+- [Q. Web（運用管理者ダッシュボード）からのトポロジの変更は、Nautobot に書いて、Nautobot の Job が Neptune に反映する構成になっている？](#q-web運用管理者ダッシュボードからのトポロジの変更はnautobot-に書いてnautobot-の-job-が-neptune-に反映する構成になっている)
+
 ### Q. Neptune のグラフの追加は、Nautobot の Job がやっているという理解で合ってる？
 
 **A. 物理層の更新（と台帳の変更履歴）だけが Job。** Neptune に書くものは 4 つあり、書き手が分かれている。
@@ -836,7 +879,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 - 立たないのは、`PIPELINE=0` のときと、`SKIP_STREAM` と `SKIP_GRAPH` を両方書いたとき（Job の書き先が無い）。
 - 前の `deploy.env` に `NAUTOBOT=...` が残っていても止まらない。`ops/up.sh` が「もう使わない」と注意を出す。
 - gnmic の購読先の一覧は、いつも Nautobot の Job が書く SSM のパラメータ（`/<prefix>/gnmic/nautobot/gnmi-targets`）から受ける。
-- 費用は Nautobot の分（+$0.13/h と `ecs` のエンドポイント $0.014/h）が PIPELINE に入る。`PIPELINE=1` だけ（`STORES` は既定）なら、土台と合わせて約 $2.92/h（README の表）。
+- 費用は Nautobot の分（+$0.13/h と `ecs` のエンドポイント $0.014/h）が PIPELINE に入る。`PIPELINE=1` だけ（`STORES` は既定）なら、土台と合わせて約 $2.92/h（[deploy.md の費用](deploy.md#費用)）。
 - デバッグ用の EC2（`ops/lab-debug.sh`）は Nautobot を使わない（lab の定義の一覧のまま）。
 
 ### Q. Nautobot にトポロジの情報を入れているのはシェルスクリプトだと思うけど、どこからの情報を引っ張ってきて入れている？
@@ -936,6 +979,10 @@ flowchart LR
 
 ## 7. Neptune（グラフに置くもの）
 
+- [Q. Neptune Database と Neptune Analytics の使い分けは？ いまの構成でも問題ない？](#q-neptune-database-と-neptune-analytics-の使い分けは-いまの構成でも問題ない)
+- [Q. Neptune には修復案は書かないよね？ status 更新だけよね？](#q-neptune-には修復案は書かないよね-status-更新だけよね)
+- [Q. Neptune Analytics で分析するときに障害情報や修復案も必要になるなら、プロパティとして入れたほうがいい？](#q-neptune-analytics-で分析するときに障害情報や修復案も必要になるならプロパティとして入れたほうがいい)
+
 ### Q. Neptune Database と Neptune Analytics の使い分けは？ いまの構成でも問題ない？
 
 **A. いまの構成（Neptune Analytics にトポロジと status を置く）で問題ない。** この PoC の使い方は Analytics のほうに合っている。2026-10-05 に AWS で動かして確かめた（Lambda `graph-status` が `status` を DOWN / UP に書き換え、チャットがトポロジの質問に正しく答えた）。
@@ -1018,6 +1065,11 @@ Database と Analytics の使い分けは、この章の最初の Q。
 ---
 
 ## 8. 障害の情報をどこに残すか
+
+- [Q. いまネットワークの障害情報はどこに書いてる？](#q-いまネットワークの障害情報はどこに書いてる)
+- [Q. 障害情報は S3 に持っておくのは適切？](#q-障害情報は-s3-に持っておくのは適切)
+- [Q. worker（Temporal）からのほうが、複数のソースから障害情報を取得したあとに整形して S3 に書ける？ 同じ情報を agent に渡せば情報源が揃う？](#q-workertemporalからのほうが複数のソースから障害情報を取得したあとに整形して-s3-に書ける-同じ情報を-agent-に渡せば情報源が揃う)
+- [Q. Temporal が障害情報を S3 に記載するのは良くない？](#q-temporal-が障害情報を-s3-に記載するのは良くない)
 
 2026-10-04 に聞いたこと。ここでの結論が「アラートの履歴を残す（001）」の設計になり（[設計](cycles/001-alert-history-firehose/design.md)）、いまは main に入っている。
 
@@ -1109,6 +1161,18 @@ Lambda から書く経路は 2 案あった。
 ---
 
 ## 9. 格納先とテーブル、重複
+
+- [Q. ログは OpenSearch、メトリクスは Prometheus に流している？](#q-ログは-opensearchメトリクスは-prometheus-に流している)
+- [Q. Grafana のデータソースは、OpenSearch と Prometheus の 2 つ？](#q-grafana-のデータソースはopensearch-と-prometheus-の-2-つ)
+- [Q. raw_telemetry（旧 snmp_metrics）って何？](#q-raw_telemetry旧-snmp_metricsって何)
+- [Q. S3 Tables には 1 つのテーブルしかない？ メトリクスもログも 1 つの同じテーブル？](#q-s3-tables-には-1-つのテーブルしかない-メトリクスもログも-1-つの同じテーブル)
+- [Q. Splunk に同じデータが二重に入るのは、防げる？](#q-splunk-に同じデータが二重に入るのは防げる)
+- [Q. OpenSearch と Prometheus でも、重複を防げる？ Grafana の側で落とすべき？](#q-opensearch-と-prometheus-でも重複を防げる-grafana-の側で落とすべき)
+- [Q. 重複を防げるように、作り替えられる？](#q-重複を防げるように作り替えられる)
+- [Q. 一意の番号は、Telegraf で付けて全部の格納先に入れたほうがよい？](#q-一意の番号はtelegraf-で付けて全部の格納先に入れたほうがよい)
+- [Q. Telegraf と Kafka のあいだには、重複を見つけるための番号がある？](#q-telegraf-と-kafka-のあいだには重複を見つけるための番号がある)
+- [Q. Splunk の重複で同じアラートが 2 回 SNS に出たら、障害の履歴は二重になる？ 検索で落とす以外の方法はある？](#q-splunk-の重複で同じアラートが-2-回-sns-に出たら障害の履歴は二重になる-検索で落とす以外の方法はある)
+- [Q. Spark のジョブが 3 つに分かれているので、同じイベントでも番号（event_id）が変わることはある？](#q-spark-のジョブが-3-つに分かれているので同じイベントでも番号event_idが変わることはある)
 
 ### Q. ログは OpenSearch、メトリクスは Prometheus に流している？
 
@@ -1405,6 +1469,15 @@ Splunk の中で重複を扱う方法。
 
 ## 10. Splunk
 
+- [Q. Splunk はデータ量で課金されると聞いた。Splunk Cloud の話？](#q-splunk-はデータ量で課金されると聞いたsplunk-cloud-の話)
+- [Q. Splunk のライセンスは、Splunk のサイトでメールアドレスを登録しないと使えない？](#q-splunk-のライセンスはsplunk-のサイトでメールアドレスを登録しないと使えない)
+- [Q. Splunk の開発者向けライセンスと試用ライセンスは、何が違う？](#q-splunk-の開発者向けライセンスと試用ライセンスは何が違う)
+- [Q. Splunk から SNS へは、どうやってアラートを出している？](#q-splunk-から-sns-へはどうやってアラートを出している)
+- [Q. Splunk のイメージに Python を入れるのは、避けたほうがいい？](#q-splunk-のイメージに-python-を入れるのは避けたほうがいい)
+- [Q. Splunk をクラスターにすると、GUI の入口が分かれる？](#q-splunk-をクラスターにするとgui-の入口が分かれる)
+- [Q. HEC で index を指定しないと、自動で index の名前が付く？](#q-hec-で-index-を指定しないと自動で-index-の名前が付く)
+- [Q. indexer の GUID を台ごとに固定すれば、同じ IP で入れ替わっても search head はそのまま検索できる？](#q-indexer-の-guid-を台ごとに固定すれば同じ-ip-で入れ替わっても-search-head-はそのまま検索できる)
+
 ### Q. Splunk はデータ量で課金されると聞いた。Splunk Cloud の話？
 
 **A. Splunk Cloud だけの話ではない。自分で立てる Splunk Enterprise も同じ。ただし数えるのは「格納している量」ではなく、「1 日に取り込む量（GB/日）」。**
@@ -1639,6 +1712,19 @@ AWS の上（ECS のタスクロール、VPC エンドポイント）で送れ�
 ---
 
 ## 11. マネージドを OSS に置き換えるとき
+
+- [Q. S3 以外の格納先は、VictoriaMetrics のようにクラスターにできる？](#q-s3-以外の格納先はvictoriametrics-のようにクラスターにできる)
+- [Q. ECS で動かす OSS（Kafka、OpenSearch、Prometheus、Neo4j）のデータは、EBS と EFS のどちらに置くのが向いている？](#q-ecs-で動かす-osskafkaopensearchprometheusneo4jのデータはebs-と-efs-のどちらに置くのが向いている)
+- [Q. EKS だと EFS を使えることはある？](#q-eks-だと-efs-を使えることはある)
+- [Q. Prometheus は、そもそもクラスターにできない？](#q-prometheus-はそもそもクラスターにできない)
+- [Q. Prometheus の代わりに VictoriaMetrics のクラスターにすると、何が変わる？](#q-prometheus-の代わりに-victoriametrics-のクラスターにすると何が変わる)
+- [Q. VictoriaMetrics のクラスターで「分散」と「複製」は何が違う？](#q-victoriametrics-のクラスターで分散と複製は何が違う)
+- [Q. OpenSearch は、クラスターにできる？](#q-opensearch-はクラスターにできる)
+- [Q. OpenSearch は、レプリカと合わせて 2 台では足りない？](#q-opensearch-はレプリカと合わせて-2-台では足りない)
+- [Q. VictoriaLogs は、OpenSearch の代わりになる？](#q-victorialogs-はopensearch-の代わりになる)
+- [Q. Neo4j は、クラスターにする必要がある？](#q-neo4j-はクラスターにする必要がある)
+- [Q. Kafka を KRaft のクラスターにするには、何台要る？](#q-kafka-を-kraft-のクラスターにするには何台要る)
+- [Q. 中心性などのグラフのアルゴリズムは、NetworkX と Neo4j の GDS のどちらでやる？](#q-中心性などのグラフのアルゴリズムはnetworkx-と-neo4j-の-gds-のどちらでやる)
 
 ### Q. S3 以外の格納先は、VictoriaMetrics のようにクラスターにできる？
 
@@ -2101,6 +2187,12 @@ AWS 版は、エージェントのツール `centrality`（`app/agentcore/graph.
 ---
 
 ## 12. AWS の基礎（AZ、署名、SDK、MSK の画面）
+
+- [Q. もう 2 AZ に置いてあるものは、1 AZ にできるか](#q-もう-2-az-に置いてあるものは1-az-にできるか)
+- [Q. RDS は 3 AZ にできない？](#q-rds-は-3-az-にできない)
+- [Q. SigV4 って何？](#q-sigv4-って何)
+- [Q. AWS のベストプラクティスは、boto3 で書くこと？](#q-aws-のベストプラクティスはboto3-で書くこと)
+- [Q. MSK にも Kafbat UI みたいな GUI はある？](#q-msk-にも-kafbat-ui-みたいな-gui-はある)
 
 ### Q. もう 2 AZ に置いてあるものは、1 AZ にできるか
 

@@ -36,7 +36,12 @@
 | `query_metrics` | Amazon Managed Prometheus（PromQL） |
 | `query_history` | S3 Tables の `alert_events`（Athena のワークグループ `<prefix>-history`。`event_id` で重複を落とし、新しい順に最大 50 件） |
 
-OSS 版（`IaC/terraform/oss/`）でも AgentCore と Bedrock はそのまま使う。読む先だけが変わり、Runtime と tools の Lambda に `GRAPH_BACKEND=neo4j`（Neo4j）、`OPENSEARCH_AUTH=basic`（ECS の OpenSearch）、`PROMETHEUS_AUTH=none`（VictoriaMetrics）が入る（`IaC/terraform/aws-managed/agent/runtime.tf`、`IaC/terraform/aws-managed/workflow/gateway.tf`）。[oss-variant.md](../../oss-variant.md)。
+OSS 版（`IaC/terraform/oss/`）でも AgentCore と Bedrock はそのまま使う。[oss-variant.md](../../oss-variant.md)。
+読む先だけが変わり、Runtime と tools の Lambda に次が入る（`IaC/terraform/aws-managed/agent/runtime.tf`、`IaC/terraform/aws-managed/workflow/gateway.tf`）。
+
+- `GRAPH_BACKEND=neo4j`（Neo4j）
+- `OPENSEARCH_AUTH=basic`（ECS の OpenSearch）
+- `PROMETHEUS_AUTH=none`（VictoriaMetrics）
 
 ## つながり
 
@@ -71,10 +76,12 @@ OSS 版（`IaC/terraform/oss/`）でも AgentCore と Bedrock はそのまま使
   版は作成時点の内容を固定する。`description` の `r1` を `r2` に上げる。
   出典: `kb.tf` のコメント。
 - **Runtime は KB のコレクションを直接呼ばない。**
-  Retrieve を呼ぶと、Bedrock がサービス側から検索する。取り込みも Bedrock がその経路で書く。リランクは呼び出し側でなく KB のサービスロールの権限で動く。
-  出典: `kb.tf` のコメント。
+  Retrieve を呼ぶと、Bedrock がサービス側から検索する。取り込みも Bedrock がその経路で書く。
+  - リランクは呼び出し側でなく KB のサービスロールの権限で動く。
+  - 出典: `kb.tf` のコメント。
 - **KB の index は、VPC の中の Lambda が作る。**
-  コレクションは VPC エンドポイントからしか届かないので、Terraform を打つ PC からは作れない。index がもうあれば作らない（mappings が違っても直さない）。2026-09-17 までの opensearch provider では、Bedrock が足したフィールドの差分で毎回作り直しになり、ベクトルが消えた。
+  コレクションは VPC エンドポイントからしか届かないので、Terraform を打つ PC からは作れない。
+  index がもうあれば作らない（mappings が違っても直さない）。
   出典: `kb.tf` のコメント。
 - **ハイブリッド検索には、faiss エンジンと `index: true` の text フィールドが要る。**
   出典: `kb.tf` のコメント。
@@ -85,8 +92,10 @@ OSS 版（`IaC/terraform/oss/`）でも AgentCore と Bedrock はそのまま使
   AgentCore の文書の DenyAllExceptVPC と同じ形のリソースポリシー。デプロイする人は外れるので、Runtime だけを PC から CLI で確かめられる。
   出典: `runtime.tf` と `IaC/terraform/aws-managed/workflow/gateway.tf` のコメント。
 - **承認・却下はツールに出していない。**
-  承認・却下は Web が決定のキュー `<prefix>-decisions` に送る。このキューへの `sqs:SendMessage` は Web の EC2 のロールにだけ付け、Runtime と tools の Lambda のロールには付けない。tools の Lambda の権限は Neptune を読むだけ（Write は付けない）で、Athena で読めるテーブルは `alert_events` と `proposal_events` だけ。
-  出典: `gateway.tf` と `IaC/terraform/aws-managed/workflow/proposals.tf` のコメント、[workflow.md](../../workflow.md) の「流れ」。
+  承認・却下は Web が決定のキュー `<prefix>-decisions` に送る。
+  このキューへの `sqs:SendMessage` は Web の EC2 のロールにだけ付け、Runtime と tools の Lambda のロールには付けない。
+  - tools の Lambda の権限は Neptune を読むだけ（Write は付けない）で、Athena で読めるテーブルは `alert_events` と `proposal_events` だけ。
+  - 出典: `gateway.tf` と `IaC/terraform/aws-managed/workflow/proposals.tf` のコメント、[workflow.md](../../workflow.md) の「流れ」。
 - **Gateway に届かなければ、Runtime はコンテナの中のツールで答える。**
   出典: [workflow.md](../../workflow.md) の「流れ」。
 - **`app/agentcore/` のモジュールを増やしたら、3 か所に足す。**
@@ -96,8 +105,10 @@ OSS 版（`IaC/terraform/oss/`）でも AgentCore と Bedrock はそのまま使
   置くと `KeyError: 'MODEL_ID'` や Web のロールの `AccessDenied` になる。Web のロールに権限を足して直さない。
   出典: [agent.md](../agent.md) の「チャットの経路」、[troubleshooting.md](../../troubleshooting.md) の「チャットの答えがおかしい」。
 - **Runtime の ENI は、消したあと最大 8 時間残る。**
-  そのあいだは VPC、サブネット、Runtime の SG を残してほかを消し、終了コード 0 で終わる。残った分に時間課金は無く、次の `ops/up.sh` が使い回すので、打ち直さなくてよい。Lambda の ENI は 20〜40 分。
-  出典: [deploy.md](../../deploy.md) の「`ops/down.sh` がすること」、[troubleshooting.md](../../troubleshooting.md) の「消すとき」。
+  そのあいだは VPC、サブネット、Runtime の SG を残してほかを消し、終了コード 0 で終わる。
+  残った分に時間課金は無く、次の `ops/up.sh` が使い回すので、打ち直さなくてよい。
+  - Lambda の ENI は 20〜40 分。
+  - 出典: [deploy.md](../../deploy.md) の「`ops/down.sh` がすること」、[troubleshooting.md](../../troubleshooting.md) の「消すとき」。
 - **答えがおかしいときの見方。**
   [troubleshooting.md](../../troubleshooting.md) の「チャットの答えがおかしい」（150 秒で失敗、`tools=0`、`参照:` が付かない、ガードレールの誤検知）。
   出典: 同じファイル。
@@ -106,12 +117,15 @@ OSS 版（`IaC/terraform/oss/`）でも AgentCore と Bedrock はそのまま使
 
 | 項目 | 状態 |
 |---|---|
-| Runtime をサブネット 1 つで作る | API は受け付ける（`VpcConfig` の subnets は 1〜16 個、https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_VpcConfig.html 、2026-10-05 確認）。手引きは 2 つ以上を勧める。1 つ（既定の `RUNTIME_AZ_NUM=1`）で作って動くことは 2026-10-05 に AWS で確かめた。2 つ以上は未確認 |
+| Runtime をサブネット 1 つで作る | API は受け付ける（表の下）。手引きは 2 つ以上を勧める。1 つ（既定の `RUNTIME_AZ_NUM=1`）で作って動くことは 2026-10-05 に AWS で確かめた。2 つ以上は未確認 |
 | `query_history` が閉域の Deny に当たらないか | Athena のワークグループ `<prefix>-history` で `alert_events` を読めることは 2026-10-05 に AWS で確かめた。チャットから `query_history` を呼んだ結果は未確認 |
 | チャットの通し | 2026-10-05 に AWS で、チャットが「dc1-leaf-01 の接続先は」に正しく答えた（`AGENT=1 PIPELINE=1 WORKFLOW=1`、`RUNTIME_AZ_NUM` は既定の 1） |
 | ツールの回数の上限に当たったとき | `MAX_TOOL_ROUNDS`（既定 5）に当たると、何も返さずに終わる。既知（2026-10-05。[troubleshooting.md](../../troubleshooting.md) の「既知の不具合」） |
-| 異常の一覧を返すツール | 無い（2026-10-02 にやめた。いまのアラートは Grafana と Splunk の画面で見る） |
+| 異常の一覧を返すツール | 無い（いまのアラートは Grafana と Splunk の画面で見る） |
 | タグ | Runtime のロググループには Terraform で付かない（`ops/up.sh` の手順 9 で付ける）。KB のデータソースとガードレールの版には付かない |
+
+- Runtime をサブネット 1 つで作る: `VpcConfig` の subnets は 1〜16 個（2026-10-05 確認）。
+  https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_VpcConfig.html
 
 ## 関連
 
@@ -119,3 +133,8 @@ OSS 版（`IaC/terraform/oss/`）でも AgentCore と Bedrock はそのまま使
 - [agent.md](../agent.md): 「チャットの経路」
 - [workflow.md](../workflow.md): Gateway と tools の Lambda
 - [troubleshooting.md](../../troubleshooting.md): 「チャットの答えがおかしい」
+
+## 経緯
+
+- 2026-09-17 までの opensearch provider では、Bedrock が足したフィールドの差分で KB の index が毎回作り直しになり、ベクトルが消えた（出典: `kb.tf` のコメント）。
+- 2026-10-02: 異常の一覧を返すツールをやめた。

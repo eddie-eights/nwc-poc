@@ -1,6 +1,6 @@
 # TRex（後段の負荷試験の道具）
 
-lab の `dc1-trex-01`（containerlab の `kind: linux`、イメージは `trexcisco/trex:2.41`）で、Telegraf から後ろ（MSK → Spark / Splunk → Grafana / Splunk のアラート → SNS → Lambda）に負荷をかけるための材料。**このサイクル（011）では置くだけで、撃っていない。** TRex がこの lab で起動するかも確かめていない（下の「確かめていないこと」）。
+lab の `dc1-trex-01`（containerlab の `kind: linux`、イメージは `trexcisco/trex:2.41`）で、Telegraf から後ろ（MSK → Spark / Splunk → Grafana / Splunk のアラート → SNS → Lambda）に負荷をかけるための材料。**このサイクル（011）では置くだけで、撃っていない。** TRex が lab の EC2（m6i.xlarge）で起動することは確かめた（下の「lab の EC2（m6i.xlarge）で確かめたこと」）。撃って届くかは確かめていない（「確かめていないこと」）。
 
 | ファイル | 中身 |
 |---|---|
@@ -110,9 +110,12 @@ sudo bash /opt/<prefix>-lab/src/trex/kafka_load.sh gnmi 50000 -1         # gnmi 
 
 ## 確かめていないこと
 
-- TRex 2.41（2018 年、CentOS 7）が SR Linux 26.7.2 と同じホストで、`privileged: true` + af_packet、hugepages 無しで起きるか（design.md の未確定事項 2）
 - `trex-console` が Python 2.7 で動くか 3 で動くか。プロファイルはどちらでも読める書き方にしてある（手元では Python 3.14 と scapy の SNMP の層でパケットを読み戻して確かめた）
 - 負荷の経路（上の (a) / (b)）と、メモリ（上の「大きくする」）
+
+lab の EC2（m6i.xlarge）で確かめたこと（[2026-10-09 の記録](../../../docs/verification/20261009-aws-managed.md)の D）:
+
+- TRex 2.41（2018 年、CentOS 7）が SR Linux 26.7.2 と同じホストで、`privileged: true` + af_packet、hugepages 無しで起きた（design.md の未確定事項 2）。`lab trex status` に `set driver name net_af_packet` と `Number of ports found: 4` が出た
 
 手元で確かめたこと（lab の EC2 では動かしていない）:
 

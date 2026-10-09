@@ -3,7 +3,7 @@ IaC/terraform/aws-managed/pipeline/analytics が main と stream の state を�
 Spark のスクリプトが Kafka（MSK の IAM 認証）を格納先ごとに読んで Iceberg / OpenSearch Serverless / Prometheus に流すこと、
 テーブルの列がスクリプトと一致すること、remote write の protobuf と snappy が手で復号できることを見る。
 実行は python3 tests/test_analytics.py（依存は無い。pyspark も botocore も要らない。スクリプトは import するが pyspark は関数の中で読む）。"""
-import ast, importlib.util, inspect, io, json, os, re, ssl, struct, sys, zlib
+import ast, importlib.util, inspect, io, json, os, re, ssl, struct, sys, unicodedata, zlib
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 SRC = os.path.join(ROOT, "app", "spark", "snmp_sinks.py")
@@ -1545,6 +1545,43 @@ check("Runtime の 1 AZ を拒んでいた前の決定（2026-10-04）の文が�
                         "AWS の文書が高可用性のため 2 AZ 以上を勧めている", "MSK と Runtime だけ", "MSK と Runtime は", "Runtime needs two AZs"))
       and "既定 1（2026-10-05 のユーザー決定）" in up and "1 つを禁じる記述は無い" in up and "2026-10-05 確認" in up
       and "1 つを禁じてはいない" in _faq)
+# FAQ の各節（##）の直下に質問（###）の目次がある（020）。アンカーは GitHub の規則（小文字、文字・数字・空白・- _ 以外を消し、空白を - に、同じ名前は -1, -2）
+def _gh_slug(text):
+    return "".join("-" if ch == " " else ch for ch in text.strip().lower()
+                   if ch in "-_ " or unicodedata.category(ch)[0] in "LNM")
+def _faq_toc_ok(text):
+    heads, seen, in_code = [], {}, False  # (レベル, アンカー, 行番号)
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if line.startswith("```"):
+            in_code = not in_code
+            continue
+        m = None if in_code else re.match(r"^(#{1,6}) (.*)$", line)
+        if m:
+            base = _gh_slug(m.group(2))
+            n = seen.get(base, 0)
+            seen[base] = n + 1
+            heads.append((len(m.group(1)), base if n == 0 else f"{base}-{n}", i))
+    anchors = {a for _, a, _ in heads}
+    links = re.findall(r"\]\(#([^)]+)\)", text)
+    secs = [k for k, h in enumerate(heads) if h[0] == 2]
+    for k in secs:
+        qs = []
+        for lvl, a, _ in heads[k + 1:]:
+            if lvl <= 2:
+                break
+            if lvl == 3:
+                qs.append(a)
+        toc, i = [], heads[k][2] + 2  # 見出しの次の空行の次から
+        while i < len(lines) and lines[i].startswith("- ["):
+            m = re.match(r"^- \[[^\n]*\]\(#([^)]+)\)$", lines[i])
+            toc.append(m.group(1) if m else None)
+            i += 1
+        if toc != qs:
+            return False
+    return len(secs) == 12 and all(a in anchors for a in links)
+check("FAQ: 12 の節の直下に、その節の質問（###）を順に並べた目次があり、FAQ の中のアンカーが全部見出しに当たる",
+      _faq_toc_ok(_faq) and len(re.findall(r"^### ", _faq, re.M)) == len(re.findall(r"^- \[.*\]\(#q-", _faq, re.M)))
 _SINGLE = {  # (ルート, リソースの見出し): 理由に書く言葉
     ("base/core", 'resource "aws_instance" "web"'): "SSM のポートフォワード",
     ("pipeline/lab", 'resource "aws_instance" "lab"'): "containerlab の 1 台の中に全部の機器",

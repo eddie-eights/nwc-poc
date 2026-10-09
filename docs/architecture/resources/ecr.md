@@ -31,10 +31,10 @@ VPC から外へ出る経路が無いので、Fargate も EC2 も Runtime も、
 | `lab-multitool` | `ghcr.io/srl-labs/network-multitool`（写し。containerlab の `linux` kind の既定。いまの lab で使うノードは無い） | lab の EC2 | 上流の版 + `-amd64`（`MULTITOOL_ECR_TAG`） |
 | `lab-trex` | `trexcisco/trex`（写し。amd64 だけ） | lab の EC2（`dc1-trex-01`） | 上流の版 + `-amd64`（`TREX_ECR_TAG`） |
 | `telegraf` | 公式の `telegraf` に設定のテンプレートと `tg` を足す | ECS Fargate（stream） | `<版>-<ディレクトリの中身のハッシュ 12 桁>` |
-| `gnmic` | 公式の `ghcr.io/openconfig/gnmic` に設定のテンプレートと `gn` を足す（2026-10-09 から） | ECS Fargate（stream） | 同上（版は `ops/up-common.sh` の `GNMIC_VERSION`） |
-| `syslog-ng` | 公式の AxoSyslog に設定のテンプレートと `sng` を足す（2026-10-08 から） | ECS Fargate（stream） | 同上（版は `ops/up-common.sh` の `SYSLOG_NG_VERSION`） |
-| `goflow2` | `netsampler/goflow2`（写し。2026-10-08 から） | ECS Fargate（stream） | 上流の版（`ops/up-common.sh` の `GOFLOW2_TAG`） |
-| `kafka-ui` | `ghcr.io/kafbat/kafka-ui`（写し） | Web の EC2 の Docker（stream を作る回。010 から） | 上流の版（`ops/up.sh` の `KAFKA_UI_TAG`） |
+| `gnmic` | 公式の `ghcr.io/openconfig/gnmic` に設定のテンプレートと `gn` を足す | ECS Fargate（stream） | 同上（版は `ops/up-common.sh` の `GNMIC_VERSION`） |
+| `syslog-ng` | 公式の AxoSyslog に設定のテンプレートと `sng` を足す | ECS Fargate（stream） | 同上（版は `ops/up-common.sh` の `SYSLOG_NG_VERSION`） |
+| `goflow2` | `netsampler/goflow2`（写し） | ECS Fargate（stream） | 上流の版（`ops/up-common.sh` の `GOFLOW2_TAG`） |
+| `kafka-ui` | `ghcr.io/kafbat/kafka-ui`（写し） | Web の EC2 の Docker（stream を作る回） | 上流の版（`ops/up.sh` の `KAFKA_UI_TAG`） |
 | `grafana` | 公式の Grafana OSS に plugin と provisioning を焼き込む | ECS Fargate（analytics） | 同上 |
 | `splunk` | 公式の `splunk/splunk` に検知のアプリと入口のスクリプトを足す（amd64 だけ、約 2〜3 GB） | ECS Fargate x86（analytics） | 同上 |
 | `nautobot` | 公式の Nautobot に Job などを足す | ECS Fargate（nautobot） | 同上（ハッシュは `app/nautobot/` に `app/agentcore/graph.py`・`app/agentcore/toolkit.py` と lab の定義の seed を足したビルドの材料から作る） |
@@ -61,13 +61,17 @@ OSS 版だけのリポジトリ（`oss_repositories`。マネージド版では�
   出典: [data-stores.md](../../data-stores.md) の「9. タグ」、`IaC/terraform/aws-managed/base/ecr/main.tf` のコメント。
 - **`telegraf` / `gnmic` / `syslog-ng` / `grafana` / `splunk` / `nautobot` は、中身を変えれば自動でタグが変わる。**
   タグにディレクトリの中身のハッシュが入る（`ops/lab-common.sh` の `dir_tag`）。`IMAGE_TAG` を上げなくてよい。
-  出典: [data-stores.md](../../data-stores.md) の「9. タグ」、`ops/up.sh` のコメント。
+  - ハッシュはファイルの中身をそのまま取るので、コメントだけの変更でもタグが変わる。
+  - たとえば `docker/images/telegraf/Dockerfile` のコメントを直すと `TELEGRAF_TAG` が変わり、次の `ops/up.sh` がイメージを作り直す。
+  - 出典: [data-stores.md](../../data-stores.md) の「9. タグ」、`ops/up.sh` のコメント。
 - **`ops/up.sh` は、ECR にそのタグが無いときだけビルドして push する。**
   `ecr_has` で見る。
   出典: [data-stores.md](../../data-stores.md) の「9. タグ」、`ops/lab-common.sh`。
 - **アーキテクチャは全体で揃えず、イメージごとに `--platform` を指定する。**
-  arm64 が必須なのは AgentCore Runtime（x86_64 でビルドしたイメージは起動しない）。x86 が必須なのは `splunk` と `lab-trex`（公式イメージが amd64 しか無い）。Fargate のほかのサービスは arm64。lab の EC2 は x86_64 なので、`lab-*` の 3 つは amd64 を写す。
-  出典: [data-stores.md](../../data-stores.md) の「8. アーキテクチャは全体で揃えない（同じホストの中だけ揃える）」。
+  - arm64 が必須なのは AgentCore Runtime（x86_64 でビルドしたイメージは起動しない）。
+  - x86 が必須なのは `splunk` と `lab-trex`（公式イメージが amd64 しか無い）。
+  - Fargate のほかのサービスは arm64。lab の EC2 は x86_64 なので、`lab-*` の 3 つは amd64 を写す。
+  - 出典: [data-stores.md](../../data-stores.md) の「8. アーキテクチャは全体で揃えない（同じホストの中だけ揃える）」。
 - **`splunk` は、そのタスクだけ `X86_64` にする。**
   `--platform linux/amd64` で作る。公式イメージに COPY するだけなので、arm64 の PC でもエミュレーション無しで作れる。
   出典: 同上。
@@ -75,8 +79,10 @@ OSS 版だけのリポジトリ（`oss_repositories`。マネージド版では�
   指定した 1 つのアーキテクチャだけ push したという意味。
   出典: 同上。
 - **2026-10-08 より前の `lab-srlinux` / `lab-multitool` のタグは arm64。**
-  いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）なので、`KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が残っていても名前がぶつからず、`ops/up.sh` は amd64 を写し直す。前のタグは使われずに残るだけで、消さなくてよい（保管料は残したぶんだけかかる）。
-  出典: `ops/lab-common.sh` の `mirror_lab_images`（タグがあれば飛ばす）、同上。
+  いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）。
+  - そのため `KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が残っていても名前がぶつからず、`ops/up.sh` は amd64 を写し直す。
+  - 前のタグは使われずに残るだけで、消さなくてよい（保管料は残したぶんだけかかる）。
+  - 出典: `ops/lab-common.sh` の `mirror_lab_images`（タグがあれば飛ばす）、同上。
 - **`KEEP_ECR=1` で残すと、翌日の `ops/up.sh` でビルドを飛ばせる。**
   保管料は 7.39 GB（11 リポジトリ）で月 約 110 円（2026-10-08 の実測）。
   出典: [deploy.md](../../deploy.md) の「消したあとに残るもの」、`ops/down.sh` の先頭のコメント。

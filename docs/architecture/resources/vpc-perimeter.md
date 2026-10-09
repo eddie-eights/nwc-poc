@@ -18,12 +18,15 @@ VPC の中の通信は、SG の通信の表に書いたものだけが通る。
 | OpenSearch Serverless の VPC エンドポイント | KB か `STORES` の `grafana` があるとき、または前に作ったコレクションが agent か analytics の state に残っているときだけ作る（`create_opensearch_endpoint`。`ops/up.sh` の `NEED_AOSS`） | `IaC/terraform/aws-managed/base/core/endpoints.tf` の `aws_opensearchserverless_vpc_endpoint.aoss` |
 | エンドポイントを置く AZ の数 | `ENDPOINTS_AZ_NUM`（既定 1、1〜3） | `ops/up.sh`、`deploy.env.example` |
 | IAM の Deny | 管理ポリシー `<prefix>-network-perimeter`。ワークロードのロール全部に付ける | `IaC/terraform/aws-managed/base/core/perimeter.tf` と各ルートの attachment |
-| リソースポリシーの Deny | バケット、S3 Tables のテーブルバケット、SNS、SQS（本体と DLQ）、AgentCore の Runtime と Gateway | `bucket.tf`、`alerts.tf`、`IaC/terraform/aws-managed/pipeline/analytics/tables.tf`、`IaC/terraform/aws-managed/workflow/events.tf`、`IaC/terraform/aws-managed/workflow/gateway.tf`、`IaC/terraform/aws-managed/agent/runtime.tf` |
+| リソースポリシーの Deny | バケット、S3 Tables のテーブルバケット、SNS、SQS（本体と DLQ）、AgentCore の Runtime と Gateway | `bucket.tf`、`alerts.tf` ほか（一覧は表の下） |
 | Deny から外すプリンシパル | apply した人、KB のロール `<prefix>-kb`、Firehose のロール `<prefix>-alert-firehose` | `IaC/terraform/aws-managed/base/core/perimeter.tf` の `perimeter_exempt_principals` |
 | SG | ワークロードごとに 1 つと `endpoints`。ルールは通信の表から作る | `IaC/terraform/aws-managed/base/core/security_groups.tf` の `local.sg_flows` |
 | フローログ | VPC の全 ENI。ロググループ `/<prefix>/vpc-flow-logs`、保存 7 日、集約 60 秒 | `IaC/terraform/aws-managed/base/core/flow_logs.tf` |
 | スイッチ | `NETWORK_PERIMETER=0` で Deny を一時的に外す（切り分け用） | `ops/up.sh`、[setup.md](../../setup.md) の「閉域を一時的に外すとき」 |
 | 費用 | インターフェース型エンドポイント 1 つ 1.4 セント/時 × `ENDPOINTS_AZ_NUM`（データは別に $0.01/GB）。OpenSearch Serverless の VPC エンドポイントも 1.4 セント/時 × AZ（公表単価）。SG、ルール、gateway 型は時間課金なし | `ops/up.sh` の費用の目安（524〜584 行） |
+
+- リソースポリシーの Deny を定義している場所: `bucket.tf`、`alerts.tf`、`IaC/terraform/aws-managed/pipeline/analytics/tables.tf`、`IaC/terraform/aws-managed/workflow/events.tf`、
+  `IaC/terraform/aws-managed/workflow/gateway.tf`、`IaC/terraform/aws-managed/agent/runtime.tf`
 
 機能ごとのエンドポイント（`ops/up.sh` の `endpoints_for`）:
 
@@ -48,7 +51,7 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
 | web | grafana / splunk / workflow / nautobot | 3000 / 8000 / 8233 / 8080（tcp） | SSM のポートフォワーディングで画面を開く（Kafbat UI は Web の EC2 の中なので SG を通らない） |
 | nautobot | nautobot_db | 5432/tcp | PostgreSQL |
 | telegraf_dialout / spark / web | msk | 9098/tcp | Kafka（IAM 認証。web は Kafbat UI） |
-| syslog_ng / goflow2 / gnmic | msk | 9096/tcp | Kafka（SASL/SCRAM。2026-10-08 から。gnmic は 2026-10-09 から） |
+| syslog_ng / goflow2 / gnmic | msk | 9096/tcp | Kafka（SASL/SCRAM） |
 | msk | msk | 9092〜9098/tcp | ブローカー同士 |
 | spark | spark | 全部の tcp | 1 つのジョブの driver と executor |
 | spark | splunk | 8088/tcp | HEC |
@@ -56,7 +59,7 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
 | telegraf_dialout_nlb | syslog_ng | 5140/udp、5140/tcp | syslog の転送と NLB のヘルスチェック |
 | telegraf_dialout_nlb | goflow2 | 2055/udp、6343/udp、8081/tcp | NetFlow・sFlow の転送と NLB のヘルスチェック |
 | lab の管理ネットワーク（203.0.113.0/24）、lab | telegraf_dialout_nlb | 162/udp、5140/udp、2055/udp、6343/udp | 機器の trap・syslog・NetFlow・sFlow（lab の EC2 が DNAT する。NetFlow / sFlow は lab の EC2 から試しに送る分も） |
-| gnmic | lab の管理ネットワーク | 57400/tcp | gNMI の購読（2026-10-09 に telegraf_dialin を置き換え、SNMP のポーリングの 161/udp は外した） |
+| gnmic | lab の管理ネットワーク | 57400/tcp | gNMI の購読 |
 
 ## 知見
 
@@ -73,8 +76,10 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
   先に消すと、残っているワークロードが接続のタイムアウトになる。
   出典: `ops/up.sh` の `endpoints_for` のコメント。
 - **Deny から外すものは 3 種類ある。**
-  apply した人（`terraform` を打つ PC は VPC の外。PoC の割り切り）、AWS のサービス自身とサービスが代わりに呼ぶもの（`aws:PrincipalIsAWSService`、`aws:ViaAWSService`）、サービス側で動くロール（KB の `<prefix>-kb`、Firehose の `<prefix>-alert-firehose`）。
-  出典: [core.md](../core.md) の「閉域」、`IaC/terraform/aws-managed/pipeline/analytics/history.tf` の先頭のコメント。
+  - apply した人（`terraform` を打つ PC は VPC の外。PoC の割り切り）
+  - AWS のサービス自身とサービスが代わりに呼ぶもの（`aws:PrincipalIsAWSService`、`aws:ViaAWSService`）
+  - サービス側で動くロール（KB の `<prefix>-kb`、Firehose の `<prefix>-alert-firehose`）
+  - 出典: [core.md](../core.md) の「閉域」、`IaC/terraform/aws-managed/pipeline/analytics/history.tf` の先頭のコメント。
 - **S3 Tables の Iceberg REST は `aws:CalledViaLast = s3tables.amazonaws.com` を Deny から外してある。**
   S3 Tables が裏で呼ぶ API には、元の VPC が付かない。
   出典: [core.md](../core.md) の「閉域」。
@@ -83,8 +88,8 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
   出典: [core.md](../core.md) の「閉域」。
 - **apply する人が替わると、前の人の Deny でバケットに入れなくなる。**
   外すプリンシパルが前の人のままだから。直し方は [troubleshooting.md](../../troubleshooting.md) の「閉域」の「apply する人が替わり…」の行。
-- **SG はワークロードごとに分け、ルールは土台の 1 か所で作る（2026-09-29）。**
-  それまでは全部で共有する `internal` が 1 つだった。ほかのルートは土台の output `security_group_ids` から自分の SG を読んで付けるだけ。SG とルールに時間課金は無いので、機能を作らないときもそろえて作る。
+- **SG はワークロードごとに分け、ルールは土台の 1 か所で作る。**
+  ほかのルートは土台の output `security_group_ids` から自分の SG を読んで付けるだけ。SG とルールに時間課金は無いので、機能を作らないときもそろえて作る。
   出典: [core.md](../core.md) の「SG」、[troubleshooting.md](../../troubleshooting.md) の「2026-09-29 より前の SG（internal）が残っている」の行。
 - **SG の説明（description）を変えると作り直しになる。**
   ENI が付いていると消えないので、変える前に `ops/down.sh` を打つ。
@@ -95,8 +100,6 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
 - **拒んだ通信はフローログで探す。**
   Logs Insights で `filter action = "REJECT"` を打つ（1〜2 分遅れて出る）。
   出典: [troubleshooting.md](../../troubleshooting.md) の「閉域」の「VPC の中の相手への接続がタイムアウトする」の行。
-- **2026-09-28 に、NAT Gateway と AWS の外の Splunk をコードごと消してこの形にした。**
-  出典: `IaC/terraform/aws-managed/base/core/perimeter.tf` のコメント、[core.md](../core.md) の「閉域」。
 
 ## 制約と未確認
 
@@ -115,3 +118,10 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
 - [setup.md](../../setup.md): 閉域を一時的に外すとき
 - [troubleshooting.md](../../troubleshooting.md): 「閉域（`explicit deny`）」
 - [ssm-parameter-store.md](ssm-parameter-store.md)、[ecr.md](ecr.md): エンドポイント経由で読むもの
+
+## 経緯
+
+- 2026-09-28: NAT Gateway と AWS の外の Splunk をコードごと消してこの形にした（出典: `IaC/terraform/aws-managed/base/core/perimeter.tf` のコメント、[core.md](../core.md) の「閉域」）。
+- 2026-09-29: SG をワークロードごとに分けた。それまでは全部で共有する `internal` が 1 つだった。
+- 2026-10-08: syslog_ng / goflow2 から msk への 9096/tcp（SASL/SCRAM）ができた。gnmic は 2026-10-09 から。
+- 2026-10-09: gnmic が telegraf_dialin を置き換え、SNMP のポーリングの 161/udp は外した。

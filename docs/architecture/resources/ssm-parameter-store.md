@@ -43,7 +43,7 @@ SecureString（`ops/up.sh` が作る）:
 | `/<prefix>/grafana/admin-password` | Grafana の admin のパスワード | 乱数（`STORES` に `grafana` があるとき） | Grafana のタスク |
 | `/<prefix>/splunk/admin-password`、`hec-token` | Splunk の admin のパスワード、HEC の token | 乱数、uuid（`STORES` に `splunk` があるとき） | Splunk のタスク |
 | `/<prefix>/splunk/idxc-secret` | Splunk のクラスターの合言葉（cluster manager・indexer・search head が互いを確かめる） | 乱数（`SPLUNK_AZ_NUM` が 2 か 3 のとき） | Splunk のタスク（どの役割も同じ値） |
-| `/<prefix>/gnmic/gnmi-username`、`gnmi-password` | 機器の gNMI の認証情報 | 決まった値（containerlab の既定値を最初の値にする） | gnmic のタスク（2026-10-09 まではTelegraf の取りにいく側の `/<prefix>/telegraf-dialin/` に SNMP の community と 3 つ。前の回の分は `ops/down.sh` が消す） |
+| `/<prefix>/gnmic/gnmi-username`、`gnmi-password` | 機器の gNMI の認証情報 | 決まった値（containerlab の既定値を最初の値にする） | gnmic のタスク |
 | `/<prefix>/kafka-ui/admin-password` | Kafbat UI の admin のパスワード | 乱数（stream を作るとき） | Web の EC2 のユニット `<prefix>-kafka-ui`（復号して `/run` の env に書き、止まると消す） |
 | `/<prefix>/kafka/cluster-id`、`/<prefix>/neo4j-password`、`/<prefix>/opensearch-password` | Kafka（KRaft）の CLUSTER_ID、Neo4j と OpenSearch のパスワード（OSS 版だけ。`ops/oss/up.sh` が作る） | 乱数 | Kafka・Neo4j・OpenSearch のタスクと、それを読む側 |
 
@@ -63,8 +63,9 @@ SecureString（`ops/up.sh` が作る）:
   Terraform は名前（ARN）だけを扱い、タスクは ECS の secrets で受ける。
   出典: `ops/down.sh` の手順 5-2 のコメント、`ops/up.sh` のコメント。
 - **もうあれば作り直さない。**
-  `ops/up.sh` を打ち直してもパスワードは変わらない。機器の認証情報を手で書き換えた値も残る。型が SecureString でなければ止まる。
-  出典: `ops/up-common.sh` の `ensure_secret`、`ensure_fixed_secret`。
+  - `ops/up.sh` を打ち直してもパスワードは変わらない。機器の認証情報を手で書き換えた値も残る。
+  - 型が SecureString でなければ止まる。
+  - 出典: `ops/up-common.sh` の `ensure_secret`、`ensure_fixed_secret`。
 - **タスクは起動のときに値を読む。SSM を手で変えたら、サービスを作り直す。**
   `aws ecs update-service --force-new-deployment`。
   出典: [troubleshooting.md](../../troubleshooting.md) の「パイプラインと WORKFLOW」。
@@ -92,7 +93,7 @@ SecureString（`ops/up.sh` が作る）:
 | 項目 | 状態 |
 |---|---|
 | シークレットの入れ替え（ローテーション） | 仕組みは作っていない。手で変えたらサービスを作り直す |
-| Secrets Manager | MSK の SCRAM の資格情報（`AmazonMSK_<prefix>-collectors`）だけで使う（MSK の SCRAM は Secrets Manager しか受けない。2026-10-08、cycle 012 から。[msk.md](msk.md)）。ほかのシークレットは SSM の SecureString に置く決まり |
+| Secrets Manager | MSK の SCRAM の資格情報（`AmazonMSK_<prefix>-collectors`）だけで使う（MSK の SCRAM は Secrets Manager しか受けない。[msk.md](msk.md)）。ほかのシークレットは SSM の SecureString に置く決まり |
 | 機器の認証情報 | lab では containerlab の既定値。本番の機器につなぐときは SSM の値を書き換える（`ops/up.sh` は、あれば触らない） |
 
 ## 関連
@@ -100,3 +101,8 @@ SecureString（`ops/up.sh` が作る）:
 - [nautobot.md](nautobot.md)、[telegraf.md](telegraf.md)、[grafana.md](grafana.md)、[splunk.md](splunk.md)、[web-ec2.md](web-ec2.md)、[vpc-perimeter.md](vpc-perimeter.md)
 - [deploy.md](../../deploy.md): 「`ops/up.sh` がすること」「`ops/down.sh` がすること」
 - [data-stores.md](../../data-stores.md): 「15. ブローカーの渡し方と msk-bootstrap」
+
+## 経緯
+
+- 2026-10-08（012）: MSK の SCRAM の資格情報（`AmazonMSK_<prefix>-collectors`）を Secrets Manager に置き始めた（[msk.md](msk.md)）。
+- 2026-10-09 まで: 機器の認証情報は Telegraf の取りにいく側の `/<prefix>/telegraf-dialin/` に SNMP の community と 3 つあった。前の回の分は `ops/down.sh` が消す。

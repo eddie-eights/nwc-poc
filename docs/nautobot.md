@@ -21,7 +21,7 @@ OSS 版（[oss-variant.md](oss-variant.md)）では、同じ Job が Neptune の
 
 | | Nautobot | Neptune |
 |---|---|---|
-| 持つもの | あるべき姿（台帳）: 機器、インタフェース、IP、Service、ケーブル | いまの姿（グラフ）: 台帳の写し + アラートで変わる `status` + IP 層 / EVPN・BGP 層（修復案は 2026-10-05 から S3 Tables の `proposal_events`。Neptune には無い） |
+| 持つもの | あるべき姿（台帳）: 機器、インタフェース、IP、Service、ケーブル | いまの姿（グラフ）: 台帳の写し + アラートで変わる `status` + IP 層 / EVPN・BGP 層（修復案は S3 Tables の `proposal_events`。Neptune には無い） |
 | 変える人 | 人（Nautobot の画面、Web の「トポロジ」タブ）か、外のシステム（API） | Job、Lambda、`ops/up.sh` と `ops/sync-graph.sh`（人は直接変えない） |
 | 読む人 | 運用者、Job | AI エージェント、Web の「トポロジ」タブ |
 | 得意なこと | 入力の検査、変更の履歴、権限 | つながりをたどる（隣、影響の範囲、層をまたぐ紐づけ） |
@@ -77,11 +77,15 @@ LB は無い。閉域なので、画面は Web の EC2 を踏み台にしたポ�
 
 | ファイル | 役割 |
 |---|---|
-| `jobs/nwc_jobs.py` | Job 2 つ。`SyncTopology`「gnmic とグラフ DB に同期」（手で打つ）と `SyncOnChange`「変更のたびに gnmic とグラフ DB に同期」（JobHook `nwc-sync` が呼ぶ）。中身は同じ。名前はマネージド版（Neptune）と OSS 版（Neo4j）で同じで、説明に書き先の名前が出る（`nb_sync.GRAPH_NAME`）。JobHook と bootstrap は Job を名前でなくクラスの場所（`nwc_jobs.SyncOnChange`）で引くので、名前を変えても外れない |
+| `jobs/nwc_jobs.py` | Job 2 つ。`SyncTopology`「gnmic とグラフ DB に同期」（手で打つ）と `SyncOnChange`「変更のたびに gnmic とグラフ DB に同期」（JobHook `nwc-sync` が呼ぶ）。中身は同じ（下） |
 | `nwc/nb_sync.py` | 同期の本体。台帳を読む → ① gnmic の一覧（SSM）と gnmic の作り直し → ② Neptune の物理層 |
 | `nwc/nb_map.py` | 台帳とトポロジの対応付け（Nautobot に依らない純粋な関数。`tests/test_nautobot.py` が検査する） |
 | `nwc/bootstrap.py` | web の起動時に 1 回走る用意（下の 4） |
-| `docker/images/nautobot/Dockerfile`（007 で `app/nautobot/` から移した） | 公式イメージに上のファイルと `app/agentcore/graph.py`（Neptune へ openCypher で書く関数）・`app/agentcore/toolkit.py`、`lab_seed.json` を足す |
+| `docker/images/nautobot/Dockerfile` | 公式イメージに上のファイルと `app/agentcore/graph.py`（Neptune へ openCypher で書く関数）・`app/agentcore/toolkit.py`、`lab_seed.json` を足す |
+
+- `jobs/nwc_jobs.py` の Job 2 つ:
+  - 名前はマネージド版（Neptune）と OSS 版（Neo4j）で同じで、説明に書き先の名前が出る（`nb_sync.GRAPH_NAME`）。
+  - JobHook と bootstrap は Job を名前でなくクラスの場所（`nwc_jobs.SyncOnChange`）で引くので、名前を変えても外れない。
 
 ## 4. 起動してから同期するまで
 
@@ -128,7 +132,7 @@ terraform -chdir=IaC/terraform/aws-managed/pipeline/nautobot output -raw passwor
 | Nautobot で変えるもの | 映る先 |
 |---|---|
 | Device の Service `gnmi`（tcp） | gnmic が gNMI を購読する先 `<primary IPv4>:<ポート>` |
-| Device の Service `snmp`（udp） | 購読先には入れない（機器が SNMP を喋る印。2026-10-09（cycle 013）に SNMP のポーリングをやめるまでは、Telegraf が SNMP を取りにいく先だった） |
+| Device の Service `snmp`（udp） | 購読先には入れない（機器が SNMP を喋る印） |
 | Device（名前、Location、Role、primary IPv4、custom field `asn`） | Neptune の `device`。Service がどちらかあれば「監視」 |
 | Interface（名前、最初の IP、LAG の親） | Neptune の `interface` |
 | Cable（両端が Interface。custom field `link_role` / `bandwidth_mbps`） | Neptune の回線。種類（fabric / l2 / lag）は両端の Role と LAG から決まる |
@@ -187,7 +191,8 @@ sequenceDiagram
 
 ### (2) 配線を変える
 
-Cable を足す・消す・つなぎ替えると、Neptune の回線が同じように変わる。エージェントの `neighbors`（隣の機器）と `blast_radius`（その機器が落ちたときに影響が届く範囲）は Neptune の回線をたどるので、答えが新しい配線に合う。
+Cable を足す・消す・つなぎ替えると、Neptune の回線が同じように変わる。
+エージェントの `neighbors`（隣の機器）と `blast_radius`（その機器が落ちたときに影響が届く範囲）は Neptune の回線をたどるので、答えが新しい配線に合う。
 
 ### (3) 障害のときに、影響の範囲と原因の候補を出す
 
@@ -200,26 +205,33 @@ flowchart LR
   AG --> P["原因と修復案<br/>→ 人が承認"]
 ```
 
-- 回線の `status` が `DOWN` になると、Neptune の中で「その回線の両端は誰か」「主 / 副のどちらか（`link_role`）」「帯域はいくつか（`bandwidth_mbps`）」が台帳の値とつながっている。エージェントはここから「副の回線が残っているか」「どの機器まで影響するか」を答える。
+- 回線の `status` が `DOWN` になると、Neptune の中で下の 3 つが台帳の値とつながっている。エージェントはここから「副の回線が残っているか」「どの機器まで影響するか」を答える。
+  - 「その回線の両端は誰か」
+  - 「主 / 副のどちらか（`link_role`）」
+  - 「帯域はいくつか（`bandwidth_mbps`）」
 - 物理の回線の上に IP 層（IS-IS の隣接）と EVPN・BGP 層（セッション）が紐づいているので、「この回線が落ちると、どの隣接とどのセッションが巻き込まれるか」を層をまたいでたどれる。物理層の土台が Nautobot の台帳。
 - Job は `status` と上の層を消さずに差分だけ書くので、障害の最中に台帳を直しても、いまの状態は残る。
 
 ### (4) 台帳に無い機器から異常が来たのを見つける
 
-トポロジに無い機器やインタフェースの異常は、Neptune に「未登録」の頂点として残る（Web の図では橙の点線の枠）。これは「台帳に載っていない機器が動いている」の知らせになる。Nautobot にその機器を足すと、Job が未登録の頂点を登録済みに置き換え、`UP` でない `status` は引き継ぐ。
+トポロジに無い機器やインタフェースの異常は、Neptune に「未登録」の頂点として残る（Web の図では橙の点線の枠）。これは「台帳に載っていない機器が動いている」の知らせになる。
+Nautobot にその機器を足すと、Job が未登録の頂点を登録済みに置き換え、`UP` でない `status` は引き継ぐ。
 
 ### (5) 保守中の機器の異常では、調査を起こさない
 
 Device の Status を `Maintenance` にすると、Job が Neptune の `device` に `maintenance` を付ける（`Maintenance` を機器の Status に選べるようにするのは起動時の `bootstrap.py`。対象の名前は `nb_map.py` の `MAINTENANCE_STATUSES`）。
 
-- アラートの機器か、落ちた回線の相手の機器が保守中なら、ワークフローを起こさない（`app/temporal/rules.py` の `maintenance_hold`。starter のログに `skip … 保守中の機器`）。Neptune の `status` は今までどおり変わるので、Web の図には出る。
+- アラートの機器か、落ちた回線の相手の機器が保守中なら、ワークフローを起こさない。
+  - 判定は `app/temporal/rules.py` の `maintenance_hold`。starter のログに `skip … 保守中の機器`。
+  - Neptune の `status` は今までどおり変わるので、Web の図には出る。
 - エージェントの `list_devices` と `root_cause` は `maintenance` を返す。根本原因の機器が保守中なら「作業によるものの可能性」と添える。
 - Status を `Active` に戻すと `maintenance` は外れる。戻したあとに来たアラート（Grafana は 4 時間ごとに送り直す）から、また調査が起きる。
 - Neptune を読めないときは、保守中と見なさずに起こす（止める側に倒さない）。
 
 ### (6) 障害の直前に台帳の何が変わったかを引く
 
-Nautobot は変更のたびに ObjectChange（だれが・いつ・何を・どう変えたか）を残す。Job は同期の最後に、新しい順に 50 件（`nb_map.py` の `CHANGES_KEEP`）を Neptune の頂点 `change` に写す（無いものだけ足し、50 件から外れたものは消す）。
+Nautobot は変更のたびに ObjectChange（だれが・いつ・何を・どう変えたか）を残す。
+Job は同期の最後に、新しい順に 50 件（`nb_map.py` の `CHANGES_KEEP`）を Neptune の頂点 `change` に写す（無いものだけ足し、50 件から外れたものは消す）。
 
 - エージェントの `recent_changes`（`device_id` で絞れる）がこれを読む。調査のプロンプトにも「直前の構成変更は `recent_changes`」と入れてある。
 - 1 件は `time` / `user` / `action` / `object_type` / `object` / `device_id` / `detail`（変わった項目。例 `status: Active → Maintenance`）。
@@ -243,7 +255,7 @@ Neptune に書くものは 4 つあり、書き手が分かれている。Nautob
 | IP 層 / EVPN・BGP 層 | `ops/up.sh` の手順 7-3b、`ops/sync-graph.sh` | lab の定義（SR Linux の設定）。Nautobot には無い |
 | `status` | Lambda `<prefix>-graph-status` | アラート（SNS） |
 
-修復案は Neptune に書かない（2026-10-05 から。S3 Tables の `proposal_events` に worker だけが書く。[data-stores.md](data-stores.md)）。
+修復案は Neptune に書かない（S3 Tables の `proposal_events` に worker だけが書く。[data-stores.md](data-stores.md)）。
 
 Web の「トポロジ」タブのリンクの追加・削除は、Neptune ではなく Nautobot に書く（SSM `/<prefix>/nautobot/url` があるあいだ。5 章）。Web が Neptune の物理層を直接書くことはない。
 
@@ -257,4 +269,9 @@ Web の「トポロジ」タブのリンクの追加・削除は、Neptune で�
 - デバッグ用の EC2（`ops/lab-debug.sh`）は Nautobot を使わない。
 - マネージド版で AWS で確かめたのは、起動・seed・Job と JobHook の登録・起動時の同期まで。
 - OSS 版では 2026-10-08 に、REST API で機器の status を変える → JobHook → Neo4j（`maintenance` と変更履歴）と、手で打つ Job まで AWS で通った（[verification/20261008-oss-aws.md](verification/20261008-oss-aws.md) の「Nautobot の Job」）。
-- マネージド版の Nautobot での変更 → JobHook → SSM / gnmic / Neptune と、Web からの Nautobot への書き込みは、まだ AWS では確かめていない（手元のテスト `tests/test_nautobot.py` と、手元の Docker で起こした Nautobot 3.2.6 への REST API だけ）。
+- マネージド版の Nautobot での変更 → JobHook → SSM / gnmic / Neptune と、Web からの Nautobot への書き込みは、まだ AWS では確かめていない。
+  確かめたのは手元のテスト `tests/test_nautobot.py` と、手元の Docker で起こした Nautobot 3.2.6 への REST API だけ。
+
+## 経緯
+
+- 2026-10-09（「gNMI を gnmic に移し、SNMP のポーリングと telegraf-dialin を外す（013）」）: SNMP のポーリングをやめた。それまで Service `snmp` は Telegraf が SNMP を取りにいく先だった。

@@ -12,7 +12,7 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
 | サービス | `<prefix>-nautobot`。1 タスクに 3 コンテナ。Fargate ARM、2 vCPU / 4 GB。AZ を選ぶキーは無い | `IaC/terraform/aws-managed/pipeline/nautobot/nautobot.tf` |
-| イメージ | 公式の `networktocode/nautobot:3.2.6-py3.12` に boto3、`app/nautobot/` の Job、`app/agentcore/graph.py`、`lab_seed.json` を足したもの。ECR の `<prefix>-nautobot`。redis は `8.10.2-alpine` を ECR の `<prefix>-redis` に写したもの | `docker/images/nautobot/Dockerfile`、`ops/up-common.sh` の `NAUTOBOT_VERSION`、`REDIS_TAG` |
+| イメージ | 公式の `networktocode/nautobot:3.2.6-py3.12` に boto3、`app/nautobot/` の Job、`app/agentcore/graph.py`、`lab_seed.json` を足したもの。ECR の `<prefix>-nautobot`。redis は表の下 | `docker/images/nautobot/Dockerfile`、`ops/up-common.sh` の `NAUTOBOT_VERSION`、`REDIS_TAG` |
 | DB | RDS の PostgreSQL 17、`db.t4g.micro`、gp3 20 GB。バックアップ無し、最後のスナップショット無し。`NAUTOBOT_DB_AZ_NUM`（既定 1、1〜2。2 は Multi-AZ） | `IaC/terraform/aws-managed/pipeline/nautobot/database.tf` |
 | 名前 | Cloud Map `nautobot.<prefix>-nautobot.internal:8080`。SSM の String `/<prefix>/nautobot/url` にも書く | `nautobot.tf` |
 | シークレット | SSM の SecureString `/<prefix>/nautobot/{secret-key,admin-password,db-password,api-token}` の 4 つ（`ops/up.sh` が apply の前に乱数で作る） | `ops/up-common.sh` の `ensure_nautobot_secrets`、`nautobot.tf` の `secrets` |
@@ -20,12 +20,14 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 | スイッチ | `PIPELINE=1` ならいつも立つ。`SKIP_STREAM` と `SKIP_GRAPH` の両方があるときだけ作らない | `ops/up.sh` |
 | 費用 | 13 セント/時（Fargate 9.9 + RDS 2.5 + gp3 0.4）。Multi-AZ で 16 セント/時 | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`） |
 
+- イメージの redis: `8.10.2-alpine` を ECR の `<prefix>-redis` に写したもの。
+
 台帳のどこが、どこに映るか:
 
 | Nautobot | 反映先 |
 |---|---|
 | Device の Service `gnmi`（tcp） | gnmic の購読先（SSM `/<prefix>/gnmic/nautobot/gnmi-targets`） |
-| Device の Service `snmp`（udp） | 購読先には入れない（機器が SNMP を喋る印。`gnmi` か `snmp` があれば Neptune の `enabled`。SNMP のポーリングは 2026-10-09 にやめた） |
+| Device の Service `snmp`（udp） | 購読先には入れない（機器が SNMP を喋る印。`gnmi` か `snmp` があれば Neptune の `enabled`） |
 | Device（名前、Location、Role、primary IPv4、`asn`）と Interface | Neptune の `device` / `interface` |
 | Cable（`link_role`、`bandwidth_mbps`） | Neptune の回線。種類（fabric / l2 / lag）は両端の Role と LAG から決める |
 | Device の Status `Maintenance` | Neptune の `device` の `maintenance`。その機器の `link_down` ではワークフローを起こさない |
@@ -44,18 +46,28 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 ## 知見
 
 - **web・DB・Job・Celery・Redis は、Nautobot にもともとある組み合わせ。**
-  PostgreSQL と Redis は使う側が用意する決まり。ここでは DB を RDS、Redis をタスクの中のコンテナにした。足したのは `app/nautobot/` の Job と起動時の用意（`bootstrap.py`）。
-  出典: [nautobot.md](../../nautobot.md) の「3. 部品ごとの役割」、FAQ「Nautobot はもともと Web・データベース・Job・Celery・Redis がセットになったもの？…」。
+  PostgreSQL と Redis は使う側が用意する決まり。ここでは DB を RDS、Redis をタスクの中のコンテナにした。
+  - 足したのは `app/nautobot/` の Job と起動時の用意（`bootstrap.py`）。
+  - 出典: [nautobot.md](../../nautobot.md) の「3. 部品ごとの役割」、FAQ「Nautobot はもともと Web・データベース・Job・Celery・Redis がセットになったもの？…」。
 - **タスクは 1 つだけ。2 つにするとキャッシュ・ロック・キューが別々になる。**
-  Redis と Celery の worker が同じタスクにあるため。入れ替えのときも、古いほうを止めてから新しいほうを起こす。コードから確かめた理由で、AWS では試していない（2026-10-04）。
-  出典: `IaC/terraform/aws-managed/pipeline/nautobot/nautobot.tf` のコメント。
+  Redis と Celery の worker が同じタスクにあるため。入れ替えのときも、古いほうを止めてから新しいほうを起こす。
+  - コードから確かめた理由で、AWS では試していない（2026-10-04）。
+  - 出典: `IaC/terraform/aws-managed/pipeline/nautobot/nautobot.tf` のコメント。
 - **Redis は 8 系（`8.10.2-alpine`）。**
-  8 系からライセンスに AGPLv3 を選べる（7.4 は RSALv2 / SSPL だけで、OSS のライセンスではなかった）。公式のイメージは Search・JSON・Bloom・TimeSeries のモジュールを読み込んで起きる（使っていない。起きた直後の使用メモリは約 1.4 MB）。持ち続けるデータは無い（`--save "" --appendonly no`）ので、版を上げても移すものは無い。
-  2026-10-08 に手元のコンテナで、同じ command と healthCheck（`redis-cli ping`）で起き、Nautobot 3.2.6 のイメージ（redis-py 8.1.0、kombu 5.6.2、Celery 5.6.3、django-redis 7.0.0）からキャッシュの読み書きと Celery のブローカーの送受信ができた。AWS では未確認。
-  出典: https://redis.io/legal/licenses/ （ライセンス）、https://redis.io/docs/latest/operate/oss_and_stack/stack-with-enterprise/release-notes/redisce/redisos-8.0-release-notes/ （8.0 の変更は ACL の分類と `GETRANGE` で、ここでは使っていない。2026-10-08 確認）。
+  8 系からライセンスに AGPLv3 を選べる（7.4 は RSALv2 / SSPL だけで、OSS のライセンスではなかった）。
+  - 公式のイメージは Search・JSON・Bloom・TimeSeries のモジュールを読み込んで起きる（使っていない。起きた直後の使用メモリは約 1.4 MB）。
+  - 持ち続けるデータは無い（`--save "" --appendonly no`）ので、版を上げても移すものは無い。
+  - 2026-10-08 に手元のコンテナで、同じ command と healthCheck（`redis-cli ping`）で起きた。
+    Nautobot 3.2.6 のイメージ（redis-py 8.1.0、kombu 5.6.2、Celery 5.6.3、django-redis 7.0.0）からキャッシュの読み書きと Celery のブローカーの送受信ができた。
+    AWS では未確認。
+  - 出典: https://redis.io/legal/licenses/ （ライセンス）、
+    https://redis.io/docs/latest/operate/oss_and_stack/stack-with-enterprise/release-notes/redisce/redisos-8.0-release-notes/
+    （8.0 の変更は ACL の分類と `GETRANGE` で、ここでは使っていない。2026-10-08 確認）。
 - **DB を 3 AZ にはできない。**
   2 は Multi-AZ の DB インスタンス（待機系 1 台。読めない）。3 AZ は Multi-AZ DB クラスターという別のリソースで、`db.t4g.micro` が使えない。
-  出典: `IaC/terraform/aws-managed/pipeline/nautobot/database.tf` のコメント（Amazon RDS User Guide、https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html と https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/multi-az-db-clusters-concepts.html 、2026-10-04 確認）。
+  出典: `IaC/terraform/aws-managed/pipeline/nautobot/database.tf` のコメント（Amazon RDS User Guide、
+  https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html と
+  https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/multi-az-db-clusters-concepts.html 、2026-10-04 確認）。
 - **DB のパスワードは plan にも state にも残らない。**
   `ops/up.sh` が SSM の SecureString に作り、Terraform は ephemeral で読んで write-only の引数（`password_wo`）に渡す。タスクは同じパラメータを ECS の secrets で受ける。
   出典: `database.tf` のコメント。
@@ -103,7 +115,12 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 | Web からの Nautobot への書き込み | AWS では未確認 |
 | 本番の機器の一覧を外から入れる | PoC には未実装（[nautobot.md](../../nautobot.md) の 6 章の (7)） |
 | デバッグ用の EC2（`ops/lab-debug.sh`） | Nautobot を使わない |
-| OSS 版（`IaC/terraform/oss/pipeline/nautobot`。同じファイルをシンボリックリンクで使う） | Job は Neo4j に書く（graph の state に `neo4j_uri` があるとタスク定義が `GRAPH_BACKEND=neo4j` などを渡し、`ops/oss/up.sh` が Neo4j のドライバー入りのイメージを作る。手で打つ Job と JobHook の両方を 2026-10-08 に AWS で確かめた）。Neo4j を起こし直したあとは 2 段で戻す: `ops/sync-graph.sh --oss` で lab の定義から物理層と IP 層を入れ、そのあと Job「gnmic とグラフ DB に同期」で変更履歴と Nautobot で足した機器と回線を戻す（[oss-variant.md](../../oss-variant.md) の「Neo4j を起こし直したあとの戻し方」） |
+| OSS 版（`IaC/terraform/oss/pipeline/nautobot`。同じファイルをシンボリックリンクで使う） | Job は Neo4j に書く（手で打つ Job と JobHook の両方を 2026-10-08 に AWS で確かめた）。仕組みと、Neo4j を起こし直したあとの戻し方は表の下 |
+
+- OSS 版の Job: graph の state に `neo4j_uri` があるとタスク定義が `GRAPH_BACKEND=neo4j` などを渡し、`ops/oss/up.sh` が Neo4j のドライバー入りのイメージを作る。
+- OSS 版で Neo4j を起こし直したあとは 2 段で戻す（[oss-variant.md](../../oss-variant.md) の「Neo4j を起こし直したあとの戻し方」）。
+  - `ops/sync-graph.sh --oss` で lab の定義から物理層と IP 層を入れる。
+  - そのあと Job「gnmic とグラフ DB に同期」で変更履歴と Nautobot で足した機器と回線を戻す。
 
 ## 関連
 
@@ -111,3 +128,7 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 - [nautobot.md](../../nautobot.md): 構成・部品・使い方・Neptune と組み合わせた使いどころ
 - [pipeline.md](../../pipeline.md): 「Nautobot（機器の一覧とケーブルの正）」
 - FAQ の 6 章: [faq-fukuda-nwc-poc.md](../../faq-fukuda-nwc-poc.md)
+
+## 経緯
+
+- 2026-10-09: SNMP のポーリングをやめた。

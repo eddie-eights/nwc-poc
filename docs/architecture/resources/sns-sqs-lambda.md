@@ -55,14 +55,12 @@ SQS はもう 1 本あり、Web の承認・却下を worker に届ける（決�
   送り手は analytics、受け手は graph と workflow で、ルートが別。
   出典: `IaC/terraform/aws-managed/base/core/alerts.tf` の先頭のコメント。
 - **トピックもキューも、VPC の外からの呼び出しを拒む。**
-  偽のアラートでワークフローを起こしたり `status` を書き換えたりさせないため。トピックで拒むのは Publish だけ（ポリシーの読み書きは、デプロイする人が変わっても戻せるように残す）。SNS からキューへの配信は `aws:PrincipalIsAWSService` で外れる。
-  出典: `alerts.tf` と `IaC/terraform/aws-managed/workflow/events.tf` のコメント。
+  - 偽のアラートでワークフローを起こしたり `status` を書き換えたりさせないため。
+  - トピックで拒むのは Publish だけ（ポリシーの読み書きは、デプロイする人が変わっても戻せるように残す）。SNS からキューへの配信は `aws:PrincipalIsAWSService` で外れる。
+  - 出典: `alerts.tf` と `IaC/terraform/aws-managed/workflow/events.tf` のコメント。
 - **SQS を挟むのは、ECS のタスクを SNS から直接叩けないから。**
   HTTP の口も Lambda も要らない一番安い経路。
   出典: `events.tf` の先頭のコメント。
-- **2026-10-02 までは Spark が EventBridge に出していた。**
-  Spark の detect が `put_events` し、ルールが同じ 2 つの受け手へ流していた。いまは検知を Grafana と Splunk に寄せている。
-  出典: `alerts.tf`、`events.tf`、`sync.tf` の先頭のコメント。
 - **メッセージの形を変えるときは 3 か所を一緒に変える。**
   Grafana のテンプレート、Splunk のアラートアクション、`app/temporal/rules.py` の `alerts_from_message`（worker と Lambda が同じものを使う）。
   出典: [pipeline.md](../../pipeline.md) の「アラート」。
@@ -70,10 +68,13 @@ SQS はもう 1 本あり、Web の承認・却下を worker に届ける（決�
   `app/agentcore/graph.py` が読み込むため。apply は通るので気づきにくい。
   出典: `IaC/terraform/aws-managed/pipeline/graph/sync.tf` のコメント。
 - **Lambda は Neptune より先に Firehose へ送る。**
-  Neptune が遅くても応答しなくても履歴は残る。Firehose に長くて 15.6 秒（エンドポイントが 2 AZ なら 21.6 秒）、Neptune の 1 回の問い合わせに長くて 27 秒（2 AZ なら 33 秒）。エンドポイントを 3 AZ にすると上限が 66.6 秒で timeout の 60 秒を超える（`ops/up.sh` は注意だけ出して進む。2026-10-05 のユーザー決定）。
-  出典: [pipeline.md](../../pipeline.md) の「アラートの履歴」、`ops/up.sh` のコメント。
+  - Neptune が遅くても応答しなくても履歴は残る。
+  - Firehose に長くて 15.6 秒（エンドポイントが 2 AZ なら 21.6 秒）、Neptune の 1 回の問い合わせに長くて 27 秒（2 AZ なら 33 秒）。
+  - エンドポイントを 3 AZ にすると上限が 66.6 秒で timeout の 60 秒を超える（`ops/up.sh` は注意だけ出して進む。2026-10-05 のユーザー決定）。
+  - 出典: [pipeline.md](../../pipeline.md) の「アラートの履歴」、`ops/up.sh` のコメント。
 - **Lambda が例外を投げるのは、Neptune への書き込みが失敗したときだけ。**
-  Firehose の失敗では落とさない（`status` の正しさを履歴より優先する）。落ちると Lambda の非同期のやり直しが 2 回まで走る。
+  Firehose の失敗では落とさない（`status` の正しさを履歴より優先する）。
+  落ちると Lambda の非同期のやり直しが 2 回まで走る。
   出典: [pipeline.md](../../pipeline.md) の「アラートの履歴」。
 - **やり直しは、書けていた通知も流し直す。**
   同じ通知が履歴に二重に入る（読むときに `event_id` で落とす）。そのあいだに届いた通知の `status` を古い値に戻すこともある。
@@ -88,17 +89,20 @@ SQS はもう 1 本あり、Web の承認・却下を worker に届ける（決�
   ワークフローの id が `investigate-<anomaly_id>` で、Temporal が二重起動を弾く。`status` は上書きなので、同じ値を 2 回書いても変わらない。
   出典: [workflow.md](../../workflow.md) の「通知の重なりと取りこぼし」、[data-stores.md](../../data-stores.md) の「アラートの経路（格納先 → 修復）」。
 - **worker はメッセージを「処理できた」ときだけ消す。**
-  起こした・起こす理由が無い・保守中・既に走っている・解消を伝える相手がいない、のどれかなら消す。Temporal や Neptune に届かないときは残して配り直させ、5 回で DLQ へ。処理が 120 秒を超えると、もう一度受け取る。
-  出典: [workflow.md](../../workflow.md) の「流れ」、[data-stores.md](../../data-stores.md) の「アラートの経路（格納先 → 修復）」。
+  - 起こした・起こす理由が無い・保守中・既に走っている・解消を伝える相手がいない、のどれかなら消す。
+  - Temporal や Neptune に届かないときは残して配り直させ、5 回で DLQ へ。処理が 120 秒を超えると、もう一度受け取る。
+  - 出典: [workflow.md](../../workflow.md) の「流れ」、[data-stores.md](../../data-stores.md) の「アラートの経路（格納先 → 修復）」。
 - **決定のキューに送れるのは Web の EC2 のロールだけ。**
-  「チャットからは承認できない」を IAM で守る。Runtime と tools の Lambda のロールには `sqs:SendMessage` を付けない。キューのポリシーは VPC の外からの呼び出しの Deny だけ（閉域があるとき）。
-  出典: `IaC/terraform/aws-managed/workflow/proposals.tf` の先頭のコメント、`events.tf` のコメント。
+  - 「チャットからは承認できない」を IAM で守る。Runtime と tools の Lambda のロールには `sqs:SendMessage` を付けない。
+  - キューのポリシーは VPC の外からの呼び出しの Deny だけ（閉域があるとき）。
+  - 出典: `IaC/terraform/aws-managed/workflow/proposals.tf` の先頭のコメント、`events.tf` のコメント。
 - **決定をアラートのキューに入れても効かない。**
   アラートのキューには Grafana と Splunk のタスクロールも SNS 越しに届くので、worker はそこに来た決定を読めないメッセージとして消す。
   出典: `app/temporal/worker.py` の `handle_message` のコメント。
 - **決定のメッセージは、シグナルを送れたか、ワークフローが無いと分かったら消す。**
-  ワークフローが無く修復案が `pending` なら、worker が `expired` の行を足してから消す。Temporal や S3 Tables に届かないときは残し、5 回で DLQ へ。worker が 1 日を超えて止まると、保持の切れた決定は消える（修復案は `pending` のまま）。
-  出典: `app/temporal/worker.py` の `handle_decision`、`events.tf` のコメント。
+  - ワークフローが無く修復案が `pending` なら、worker が `expired` の行を足してから消す。
+  - Temporal や S3 Tables に届かないときは残し、5 回で DLQ へ。worker が 1 日を超えて止まると、保持の切れた決定は消える（修復案は `pending` のまま）。
+  - 出典: `app/temporal/worker.py` の `handle_decision`、`events.tf` のコメント。
 - **`starts_at` の意味は送り手で違う。**
   Grafana は発火した時刻で、`resolved` でも発火の時刻のまま。Splunk はその状態を最後に見た時刻（`resolved` なら戻った時刻）。
   出典: [pipeline.md](../../pipeline.md) の「アラートの履歴」。
@@ -126,10 +130,13 @@ SQS はもう 1 本あり、Web の承認・却下を worker に届ける（決�
 | エンドポイントが 3 AZ のとき | Lambda の待ちの上限（66.6 秒）が timeout（60 秒）を超える。注意だけ出す |
 | フラップ（承認待ちのあいだに直って、また落ちた） | 落ち直しの `firing` がワークフローの走っているあいだに届くと捨てる。次に調査が起きるのは Grafana の送り直し（4 時間後）か Splunk の次の変化 |
 | DLQ に入ったメッセージ | 戻す仕組みは作っていない（保持 14 日） |
-| AWS の上での通し（Grafana と Splunk の publish、Firehose への書き込み） | 2026-10-05 に AWS で確かめた。`sudo lab fail-main` で Grafana と Splunk の両方が `link_down` と `isis_down` を出し、SNS → Lambda（`status` の書き換えと Firehose）と SNS → SQS → worker の配信が通った。2026-10-08 に、Grafana と Splunk の `bgp_down` と Splunk の `trap` の firing が SNS → Lambda に届いた（011 の前の lab。[verification/20261008-managed-aws.md](../../verification/20261008-managed-aws.md)）。Grafana の `trap` は、ルールの評価がエラーで出なかった（008 で直した。AWS では未確認） |
+| AWS の上での通し（Grafana と Splunk の publish、Firehose への書き込み） | 2026-10-05 と 2026-10-08 に AWS で確かめた（中身は表の下）。Grafana の `trap` は AWS では未確認 |
 | 決定のキュー（Web → SQS → worker） | 2026-10-05 に AWS で承認の 1 通を確かめた。却下、重複、DLQ に落ちる経路は未確認 |
 
-2026-10-05 に、Web の承認も SQS で worker に届ける形に変えた。[修復案を S3 Tables にまとめる（003）の設計](../../cycles/003-proposals-in-s3tables/design.md)。
+- AWS の上での通しを確かめた中身:
+  - 2026-10-05: `sudo lab fail-main` で Grafana と Splunk の両方が `link_down` と `isis_down` を出し、SNS → Lambda（`status` の書き換えと Firehose）と SNS → SQS → worker の配信が通った。
+  - 2026-10-08: Grafana と Splunk の `bgp_down` と Splunk の `trap` の firing が SNS → Lambda に届いた（011 の前の lab。[verification/20261008-managed-aws.md](../../verification/20261008-managed-aws.md)）。
+  - Grafana の `trap` は、ルールの評価がエラーで出なかった（008 で直した。AWS では未確認）。
 
 ## 関連
 
@@ -137,3 +144,10 @@ SQS はもう 1 本あり、Web の承認・却下を worker に届ける（決�
 - [pipeline.md](../../pipeline.md): 「アラート」「アラートの履歴」
 - [workflow.md](../../workflow.md): 「流れ」「通知の重なりと取りこぼし」
 - [data-stores.md](../../data-stores.md): 「届け方の保証（どの区間で、失うか、重複するか）」
+
+## 経緯
+
+- 2026-10-02 まで: Spark が EventBridge に出していた。
+  - Spark の detect が `put_events` し、ルールが同じ 2 つの受け手へ流していた。いまは検知を Grafana と Splunk に寄せている。
+  - 出典: `alerts.tf`、`events.tf`、`sync.tf` の先頭のコメント。
+- 2026-10-05（003）: Web の承認も SQS で worker に届ける形に変えた（[修復案を S3 Tables にまとめる（003）の設計](../../cycles/003-proposals-in-s3tables/design.md)）。
