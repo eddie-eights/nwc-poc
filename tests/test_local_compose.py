@@ -129,8 +129,8 @@ _tf_block = _tf_block[:_tf_block.index("\n  ]")]
 _tf_env = {k: v for k, v in re.findall(r'\{\s*name\s*=\s*"(\w+)",\s*value\s*=\s*"([^"]*)"\s*\}', _tf_block) if "${" not in v}
 _ext = {"KAFKA_LISTENERS", "KAFKA_LISTENER_SECURITY_PROTOCOL_MAP"}
 _same = set(_tf_env) - _ext - {"KAFKA_LOG_RETENTION_HOURS"}
-check("kafka.tf の kafka_environment から比べる値を 13 個読めた（読めずに素通りしない）",
-      len(_same) == 13 and _ext <= set(_tf_env) and "KAFKA_HEAP_OPTS" not in _tf_env)
+check("kafka.tf の kafka_environment から比べる値を 16 個読めた（読めずに素通りしない。内部トピックのパーティション数 3 つは cycle 022）",
+      len(_same) == 16 and _ext <= set(_tf_env) and "KAFKA_HEAP_OPTS" not in _tf_env)
 for i, n in enumerate(("kafka-1", "kafka-2", "kafka-3")):
     e, port = svc[n]["environment"], 9094 + i
     check(f"{n}: EXTERNAL 以外の KAFKA_*（ホスト名・ヒープ・保持期間を除く）は kafka.tf と同じ値",

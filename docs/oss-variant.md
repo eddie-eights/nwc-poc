@@ -23,7 +23,7 @@
 | エージェントの実行と入口 | Bedrock AgentCore（Runtime、Gateway） | 変えない（マネージドのまま） |
 | モデルとガードレール | Bedrock（Amazon Nova 2 Lite、ガードレール） | 変えない（マネージドのまま） |
 | 手順書の検索 | Bedrock のナレッジベース + OpenSearch Serverless | 変えない（マネージドのまま）。ただし `ops/oss/up.sh` はナレッジベースを作らない（OpenSearch Serverless を使うので OSS 版には入れない。`CREATE_KB` も読まない） |
-| Kafka | MSK | Apache Kafka（KRaft）を ECS に 3 台。データは EFS |
+| Kafka | MSK | Apache Kafka（KRaft）を ECS に 3 台。データは EFS。内部トピック（`__consumer_offsets` 等）は 1 パーティション（MSK は既定の 50。トピックが最初に作られたときに決まるので、50 で出来ている EFS では消して作り直すまで 50 のまま） |
 | Kafka の監視の画面 | MSK のコンソールと CloudWatch | Kafbat UI（Apache 2.0）を Web の EC2 の Docker に 1 つ（「Kafbat UI を Web の EC2 に同居させる（010）」から。それより前は ECS に 1 台）。ブローカー、トピック、メッセージを見る。トピックの追加とメッセージの送信も画面からできる。コンシューマーの遅れは出ない（Spark は consumer group を作らず、offset を checkpoint に持つ） |
 | ストリーム処理 | EMR Serverless（Spark） | Apache Spark 3.5 を ECS に（ジョブごとに 1 タスクで 3 つ。`iceberg`、`splunk`、OpenSearch と VictoriaMetrics に書く `http`）。Splunk へはマネージド版と同じ HEC に書く |
 | 生データの表 | S3 Tables（Iceberg） | 変えない（マネージドのまま） |
@@ -96,7 +96,7 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
 
 | OSS | 確かめたこと | 残っている未確認 |
 |---|---|---|
-| Kafka | EFS に置いた 3 台が組めて、1 時間流して 5 つのトピックに入った。1 台止めても残り 2 台で受け続け、戻ると 3 分以内に under-replicated が 0 に戻った。10-08 は、タスク定義を変えて打ち直した `ops/oss/up.sh` が 3 台を 1 台ずつ入れ替え、最後に under-replicated が 0 だった（記録の「1 台ずつ入れ替える」） | 日単位で流したときの遅さやロック |
+| Kafka | EFS に置いた 3 台が組めて、1 時間流して 5 つのトピックに入った。1 台止めても残り 2 台で受け続け、戻ると 3 分以内に under-replicated が 0 に戻った。10-08 は、タスク定義を変えて打ち直した `ops/oss/up.sh` が 3 台を 1 台ずつ入れ替え、最後に under-replicated が 0 だった（記録の「1 台ずつ入れ替える」） | 日単位で流したときの遅さやロック。内部トピックのパーティション数の設定が 1 になっていること（「OSS 版の Kafka の内部トピックのパーティションを絞る（022）」）。consumer group が無いと `__consumer_offsets` は作られないので、トピックではなく設定を見る: Kafbat UI の Brokers のブローカー設定か `kafka-configs.sh --bootstrap-server … --describe --entity-type brokers --entity-name 1 --all` で、`offsets.topic.num.partitions` が STATIC_BROKER_CONFIG の 1 になっていること |
 | OpenSearch | 3.9.0 の 3 台が Fargate で `node.store.allow_mmap=false` で起動し、green。trap が入り、1 台止めても yellow で検索できた。まとめ役（1 GB）は OOM で落ちなかった | なし |
 | VictoriaMetrics | 6 台分 396 系列が入り、Grafana に出た。vmstorage を 1 台止めて戻しても値は抜けなかった | vminsert だけが起き直したとき |
 | Neo4j + GDS | status の Lambda とエージェントの `centrality` が Neo4j を読み書きした。タスクを止めると Web は静的データに落ちて 200 のまま、起こし直して `ops/sync-graph.sh --oss`（物理層と IP 層）と Nautobot の Job（変更履歴）の 2 段で戻った | Neptune の結果と同じ並びになるか（マネージド版と並べて立てる必要がある） |
