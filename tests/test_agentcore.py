@@ -287,6 +287,12 @@ _l = [{"a": a, "a_if": str(n), "b": b, "b_if": str(n)} for n, (a, b) in enumerat
 r = t.impact(_d, _l, [{"op": "link_down", "target": "b#1"}])
 check("impact: 回線を落として本流（a–e の 5 台）が割れ、別のかたまり（f–i の 4 台）が繰り上がっても、f–i はつながり直すに出ない（cycle 032）",
       r["verdict"] == "danger" and r["newly_isolated"] == ["a", "b"] and r["reconnected"] == [] and "つながり直す機器" not in r["summary"])
+_d = [{"device_id": x} for x in "abcdefg"]
+_l = [{"a": a, "a_if": str(n), "b": b, "b_if": str(n), "status": "DOWN" if (a, b) == ("e", "f") else "UP"}
+      for n, (a, b) in enumerate(["ab", "bc", "de", "fg", "ef"])]
+r = t.impact(_d, _l, [{"op": "link_up", "target": "e#4"}])
+check("impact: 本流（a–c の 3 台）と別の同じ大きさのかたまり（d–e と f–g）どうしをつないで本流を抜けば、d–g がつながり直すに出る"
+      "（変更後の本流の中の断片が同点なら変更前の本流と比べる。cycle 032）", r["reconnected"] == ["d", "e", "f", "g"])
 check("app.run_tool は what_if を topology に振る", app.run_tool("what_if", {"op": "device_down", "target": "dc1-a-leaf-01"})["verdict"] == "ok")
 # ---- Nautobot の保守中と変更履歴（2026-10-04）
 check("list_devices は maintenance を出す（静的データでは全部 false）", all(d["maintenance"] is False for d in t.list_devices()["devices"]))
