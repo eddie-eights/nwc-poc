@@ -285,7 +285,7 @@ SELECT status, source, device_id, kind, target, starts_at, received_at FROM "s3t
 - 画面は Alerting → Alert rules。provisioning したルール・連絡先・ポリシーは画面から変えられない。変えるなら `app/grafana/provisioning/alerting/` の `nwc-prometheus.yaml` / `nwc-opensearch.yaml`（ルール）か `nwc.yaml`（送り先、ポリシー、本文のテンプレート）を変えて `ops/up.sh`（イメージから作り直す）。
 - `nwc.yaml` のテンプレートの `$` はそのまま書く。`$$` とエスケープすると Grafana が起動しない（`Invalid format of the submitted template`。13.2.2 で実測）。`${ALERTS_TOPIC_ARN}` と `${AWS_REGION}` だけは、起動時に Grafana が環境変数で埋める。
 - `app/grafana/start.sh` は、`ALERTS_TOPIC_ARN` があるときだけアラートの定義を並べる。`nwc-prometheus.yaml` は `PROMETHEUS_URL` も、`nwc-opensearch.yaml` は `OPENSEARCH_URL` もあるとき。`nwc.yaml` はどちらかを並べたとき。
-- 4 本になったあとの形（Splunk と Grafana のアラートを比べる（002））は、2026-10-05 に AWS で `link_down` と `isis_down` の発火を確かめた（`sudo lab fail-main`）。`bgp_down` と `trap` の発火は AWS では未確認。`link_down` が gNMI から出る形（cycle 013）は AWS では未確認。
+- 4 本になったあとの形（Splunk と Grafana のアラートを比べる（002））は、2026-10-05 に AWS で `link_down` と `isis_down` の発火を確かめた（`sudo lab fail-main`）。2026-10-08 に AWS で `bgp_down`（Grafana と Splunk）と Splunk の `trap` の発火を確かめた（`sudo lab fail-bgp` / `trap-test`。011 の前の lab、013 の前の形。`docs/verification/20261008-managed-aws.md`）。Grafana の `trap` はルールの評価がエラーで出なかった。「AWS 検証で見つけた不具合 3 件を直す（008）」でルールを絞り、手元の Grafana で通したが、AWS では未確認。`link_down` が gNMI から出る形（cycle 013）は AWS では未確認。
 
 ### Splunk のアラート
 
@@ -306,7 +306,7 @@ SELECT status, source, device_id, kind, target, starts_at, received_at FROM "s3t
 - 確かめる（Splunk の画面の検索）:
   - サーチが動いたか: `index=_internal sourcetype=scheduler savedsearch_name=nwc_*`
   - publish の結果: `index=_internal sourcetype=splunkd sendmodalert nwc_sns`（成功は `published=` の分子と分母が同じ。失敗は `ERROR`）
-- 2026-10-02 の作り替えは、模擬テストと手元のコンテナ（Splunk 10.4.3、Grafana 13.2.2）で確かめた。2026-10-05 に AWS で確かめた: `sudo lab fail-main` で Grafana と Splunk の両方が `link_down` と `isis_down` を出し、`sns` のエンドポイント越しの publish と、SNS からの配信（Lambda と SQS）が通った。AWS では未確認: `bgp_down` と `trap` の発火、trap の送り元の IP が `DEVICE_MAP` に当たるか、SR Linux の linkDown の trap に IF 名が載るか。
+- 2026-10-02 の作り替えは、模擬テストと手元のコンテナ（Splunk 10.4.3、Grafana 13.2.2）で確かめた。2026-10-05 に AWS で確かめた: `sudo lab fail-main` で Grafana と Splunk の両方が `link_down` と `isis_down` を出し、`sns` のエンドポイント越しの publish と、SNS からの配信（Lambda と SQS）が通った。2026-10-08 に AWS で、`bgp_down` と `trap` の発火と、trap の送り元の IP が `DEVICE_MAP` で機器名に直ることを確かめた（011 の前の lab。trap は `dc1-host-01` から。`docs/verification/20261008-managed-aws.md`）。AWS では未確認: いまの lab（011）の送り元、SR Linux の linkDown の trap に IF 名が載るか。
 - 2026-10-05 の AWS で見つけた 2 つ（trap の検索がサブインターフェース（`ethernet-1/1.0`）の `link_down` も出す、`nwc_gnmi` が起動の直後に `resolved` をまとめて送る）は直した。trap は手元のテスト、`nwc_gnmi` は手元のコンテナ（Splunk 10.4.3）で確かめた。AWS では未確認。
 
 ## Spark を確かめる

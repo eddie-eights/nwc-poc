@@ -255,4 +255,6 @@ Web の「トポロジ」タブのリンクの追加・削除は、Neptune で�
 - 一括で変えると、変更 1 件ごとに Job が走り、一覧が変わるたびに gnmic が作り直される。大きく変えるときは JobHook `nwc-sync` を止めてから変え、最後に手で Job を打つ。
 - `ops/sync-graph.sh --replace` は lab の定義で上書きする。Nautobot で足したものは、Job を打つまで Neptune から消える。
 - デバッグ用の EC2（`ops/lab-debug.sh`）は Nautobot を使わない。
-- AWS で確かめたのは、起動・seed・Job と JobHook の登録・起動時の同期まで。Nautobot での変更 → JobHook → SSM / gnmic / Neptune と、Web からの Nautobot への書き込みは、まだ AWS では確かめていない（手元のテスト `tests/test_nautobot.py` と、手元の Docker で起こした Nautobot 3.2.6 への REST API だけ）。
+- マネージド版で AWS で確かめたのは、起動・seed・Job と JobHook の登録・起動時の同期まで。
+- OSS 版では 2026-10-08 に、REST API で機器の status を変える → JobHook → Neo4j（`maintenance` と変更履歴）と、手で打つ Job まで AWS で通った（[verification/20261008-oss-aws.md](verification/20261008-oss-aws.md) の「Nautobot の Job」）。
+- マネージド版の Nautobot での変更 → JobHook → SSM / gnmic / Neptune と、Web からの Nautobot への書き込みは、まだ AWS では確かめていない（手元のテスト `tests/test_nautobot.py` と、手元の Docker で起こした Nautobot 3.2.6 への REST API だけ）。
