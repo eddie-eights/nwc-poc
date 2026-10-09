@@ -69,7 +69,8 @@ flowchart LR
   ACL を入れたあとの振る舞いは未確認。
 - 同じ日、`gnmi` はトピックができず、on-change の 3 つの購読（`interface_state` / `bgp_neighbor` / `isis_interface`）からは 1 件も書かれていなかった（gnmic のログに ERROR は 0）。
   原因は確かめていない（ACL のせいではない）。
-  初期同期を producer が出来る前に捨てていたと見て、030 で出力に buffer を足した（下の「gnmic の購読」。AWS では未確認）。
+  030 で出力に buffer を足した（下の「gnmic の購読」）が、これで直るかは AWS で未確認。
+  この回は `gnmi` のトピックそのものが無かった（自動作成は有効）ので、event が gnmic の出力に 1 件も届いていなかった見込みが高い。直らなければ上流（機器の初期同期、gnmic の受信）を疑う。
 - 根拠は `docs/verification/20261009-aws-managed.md` の「A.」「B.」。
 - OSS 版の Kafka は認証なしなので ACL は当たらない。
 
@@ -117,9 +118,9 @@ flowchart LR
   Spark が Telegraf と同じ形（measurement・タグ・項目）に読み替える（`app/spark/snmp_sinks.py` の `gnmic_message`。[collection.md](collection.md)）。
 - target の名前は機器の管理 IP（event の `tags.source`）で、機器名（`sysName`）は Spark が device map で足す。
 - on_change は購読の直後に今の状態を全部送り、そのあとは変わったときだけ送る。
-  - 購読の直後の全部（初期同期）は、Kafka の producer（TLS + SCRAM）が出来る前に来る。
-    gnmic の既定（`buffer-size` 0 / `timeout` 5s）では受け手が居ないあいだの event を黙って捨てるので、出力の `gnmi` / `metrics` に `buffer-size: 10000` / `timeout: 60s` を付けて抱えて待つ（030）。
-- `values` の無い event（2026-10-09 の AWS で `metrics` の 9 割。`deletes` だけの event も）は、出力の側の processor `drop-empty`（`event-drop`）で捨てて Kafka に書かない（030）。
+  - gnmic の出力は既定（`buffer-size` 0 / `timeout` 5s）では、Kafka への送り手が詰まっているあいだ（初回のメタデータの取得、TLS + SCRAM の握手）に 5 秒を超えて待たされた応答を黙って捨てる。
+    初期同期の burst がこれに当たる見込みで、出力の `gnmi` / `metrics` に `buffer-size: 10000` / `timeout: 60s` を付けて抱えて待つ（030。初回値が入るようになるかは AWS で未確認）。
+- `values` の無い event（2026-10-09 の AWS で `metrics` の 400 件中 359 件。`deletes` だけの event も）は、出力の側の processor `drop-empty`（`event-drop`）で捨てて Kafka に書かない（030）。
   Spark の `read_rows` もこれらは読んで捨てていた。
 - Grafana のルール `link_down` / `bgp_down` / `isis_down`（`STORES` に `grafana` があるとき）と Splunk の保存済みサーチ `nwc_gnmi`（`STORES` に `splunk` があるとき）は、ここから次を出す（下の「アラート」）。
   - `link_down`（物理 IF が対象）

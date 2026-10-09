@@ -225,6 +225,7 @@ gnmic は購読した値を event の形で Kafka に書く（`app/gnmic/gnmic.y
 - values のキーはモジュールの接頭辞つきの絶対パス、カウンターは文字列。
   tags のキーは `interface_name` / `source` / `subscription-name` / `control_slot` / `cpu_index`。
 - values の無い event（tags だけ。400 件のうち 359 件）もあり、`read_rows` も `gnmic_message` もこれを捨てる（025 で `read_rows` の判定を直した。それまでは Telegraf の行として通り、sinks が落ちていた）。
+  030 から gnmic が出力の processor `drop-empty` でこれを捨て、Kafka には書かない（`read_rows` の捨てる処理は守りとして残す）。
 - `gnmi`（`interface_state` など）の event は無かったので、oper-state / admin-state の綴りは見ていない（`docs/verification/20261009-aws-managed.md` の「B.」）。
 
 ```
