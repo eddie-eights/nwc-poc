@@ -90,8 +90,8 @@ lab の中身:
 - **いまは EVPN-VXLAN。SR-MPLS はライセンス待ち。**
   SR Linux のコンテナは SR-MPLS に `ixr6e` / `ixr10e` とライセンスが要る。届いたら `gen_lab.py` を替える。トポロジと Neptune の層は変わらない。
   出典: [pipeline.md](../../pipeline.md) の「lab を変える」。
-- **TRex は置いてあるだけで、負荷はまだ撃っていない。**
-  この lab で起動するかも確かめていない（2026-10-08）。撃つ手順と確かめていないことは `app/containerlab/trex/README.md`。
+- **TRex は起動まで確かめた。負荷はまだ撃っていない。**
+  2026-10-09 に m6i.xlarge の lab で TRex 2.41 が af_packet で 4 ポートを起こした（`set driver name net_af_packet`、`Number of ports found: 4`。`docs/verification/20261009-aws-managed.md` の「D.」）。撃つ手順と確かめていないことは `app/containerlab/trex/README.md`。
   出典: [pipeline.md](../../pipeline.md) の「lab に入る」。
 - **デバッグ用の EC2 は別物。**
   `ops/lab-debug.sh` が CloudFormation のスタック `<prefix>-lab-debug` で作る（lab + Telegraf を 1 台、自分の VPC）。`ops/up.sh` / `ops/down.sh` とは別で、Nautobot を使わない。中身の支度は lab の EC2 と同じ `app/containerlab/setup.sh`。

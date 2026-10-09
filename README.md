@@ -81,7 +81,7 @@ ops/up.sh
 ops/down.sh
 ```
 
-- 所要時間は AGENT だけで 10〜15 分、PIPELINE で 40〜60 分（MSK だけで 20〜30 分）。
+- 所要時間は AGENT だけで 10〜15 分、PIPELINE で 40〜60 分（MSK だけで約 30 分。2026-10-09 の AWS で `Creation complete after 30m0s`）。
 - `ops/up.sh` はできているものを飛ばすので、途中で落ちたら打ち直せばよい。
 - リージョンは東京（`ap-northeast-1`）で固定。
 
