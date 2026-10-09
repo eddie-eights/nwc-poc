@@ -448,7 +448,8 @@ exit 0
 ''')
 fake("free", 'printf "               total        used        free\\nMem:  %s  1000  1000\\nSwap:  0  0  0\\n" "${FAKE_MEM:-32000}"\n')
 # check.sh が打つ curl。引数と、-K - で渡された標準入力を書き、URL ごとに決めた応答を返す。FAKE_DOWN=1 なら繋がらない（出力なしで 7）。
-# Splunk の応答は FAKE_SPLUNK があればそれ（認証の失敗は 401 でも curl -sS は本文を出して 0 で終わる）。Kafka の metrics / gnmi / traps / logs のメッセージ数は FAKE_METRICS / FAKE_GNMI / FAKE_TRAPS / FAKE_LOGS、
+# Splunk の応答は FAKE_SPLUNK があればそれ（認証の失敗は 401 でも curl -sS は本文を出して 0 で終わる）。Kafka の metrics / gnmi / traps / logs のメッセージ数は FAKE_METRICS / FAKE_GNMI / FAKE_TRAPS / FAKE_LOGS
+# （FAKE_KAFKA_SHAPE=nokey なら messagesCount を落とし、=null なら null にする）、
 # Telegraf の health と GoFlow2 の /metrics の HTTP の番号は FAKE_TG_HEALTH / FAKE_GF_METRICS
 fake("curl", r'''prev=; url=
 for a in "$@"; do
@@ -458,7 +459,11 @@ for a in "$@"; do
 done
 [ "${FAKE_DOWN:-0}" = 1 ] && exit 7
 case "$url" in
-  *18080/api/clusters/nwc/topics*) printf '{"topics":[{"name":"metrics","messagesCount":%s},{"name":"gnmi","messagesCount":%s},{"name":"traps","messagesCount":%s},{"name":"logs","messagesCount":%s},{"name":"flows","messagesCount":0}]}\n' "${FAKE_METRICS:-120}" "${FAKE_GNMI:-40}" "${FAKE_TRAPS:-3}" "${FAKE_LOGS:-9}" ;;
+  *18080/api/clusters/nwc/topics*) case "${FAKE_KAFKA_SHAPE:-}" in
+    nokey) echo '{"topics":[{"name":"metrics"},{"name":"gnmi"},{"name":"traps"},{"name":"logs"},{"name":"flows"}]}' ;;
+    null) echo '{"topics":[{"name":"metrics","messagesCount":null},{"name":"gnmi","messagesCount":null},{"name":"traps","messagesCount":null},{"name":"logs","messagesCount":null},{"name":"flows","messagesCount":null}]}' ;;
+    *) printf '{"topics":[{"name":"metrics","messagesCount":%s},{"name":"gnmi","messagesCount":%s},{"name":"traps","messagesCount":%s},{"name":"logs","messagesCount":%s},{"name":"flows","messagesCount":0}]}\n' "${FAKE_METRICS:-120}" "${FAKE_GNMI:-40}" "${FAKE_TRAPS:-3}" "${FAKE_LOGS:-9}" ;;
+  esac ;;
   *9090/api/v1/query*) echo '{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1760000000,"12"]}]}}' ;;
   *9200/snmp-logs/_count*) echo "{\"count\":${FAKE_OS_COUNT:-5}}" ;;
   *8089/services/search/jobs/export*)
@@ -473,7 +478,7 @@ esac
 LOG = os.path.join(TMP, "calls.log")
 CLEAN = ("REGISTRY", "AWS_REGION", "PARAM_PREFIX", "TELEGRAF_IMAGE", "TELEGRAF_LOCAL", "SRLINUX_IMAGE", "TREX_IMAGE",
          "SNMP_AGENTS", "GNMI_TARGETS", "DEVICE_MAP", "FAKE_IPT_RULES", "FAKE_MEM", "FAKE_DOWN", "FAKE_OS_COUNT", "FAKE_SPLUNK",
-         "FAKE_METRICS", "FAKE_TRAPS", "FAKE_LOGS", "FAKE_GW", "FAKE_TG_HEALTH", "FAKE_GF_METRICS", "FAKE_SNG", "FAKE_SNG_ADDR", "TELEGRAF_BIND", "HEALTH_PORT", "LOG_PORT", "TRAP_PORT",
+         "FAKE_METRICS", "FAKE_GNMI", "FAKE_TRAPS", "FAKE_LOGS", "FAKE_KAFKA_SHAPE", "FAKE_GW", "FAKE_TG_HEALTH", "FAKE_GF_METRICS", "FAKE_SNG", "FAKE_SNG_ADDR", "TELEGRAF_BIND", "HEALTH_PORT", "LOG_PORT", "TRAP_PORT",
          "LAB_CMD", "FAKE_BGP_ADMIN", "FAKE_PS", "FAKE_CONFIG_FAIL") + tuple(example)   # .env.example の名前もシェルにあれば .env より勝つので消す
 
 def run(cmd, cwd=None, **env):
@@ -723,6 +728,12 @@ check("check.sh: Kafka の logs が 0 件なら NG にせず「注意」で fail
       _r.returncode == 0 and _r.stdout.splitlines()[-1] == "すべて ok" and f"ok  {KL}" not in _r.stdout.splitlines()
       and [l for l in _r.stdout.splitlines() if KL in l]
       == [f"注意 {KL}: 0 件（syslog は機器が出すまで来ない。docker/compose/lab.sh fail-main のあとに打ち直す。来ないままなら docker compose logs syslog-ng）"])
+NOCNT = "messagesCount が無い（Kafbat UI の応答の形が違う。curl -s 'http://127.0.0.1:18080/api/clusters/nwc/topics?perPage=100' で中身を見る）"
+for _shape, _what in (("nokey", "無い"), ("null", " null ")):
+    _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_KAFKA_SHAPE=_shape)
+    check(f"check.sh: Kafbat UI の応答で messagesCount が{_what}なら、4 行とも（traps / logs も注意でなく）NG で「messagesCount が無い」と見方を出し、「読めない応答」にしない。終了コード 1（cycle 027）",
+          _r.returncode == 1 and "読めない応答" not in _r.stdout
+          and [l for l in _r.stdout.splitlines() if any(k in l for k in (KM, KG, KT, KL))] == [f"NG  {k}: {NOCNT}" for k in (KM, KG, KT, KL)])
 _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_SNG="0")
 _r2, _c2 = run([os.path.join(_lc, "check.sh")], FAKE_SNG_ADDR="203.0.113.1")
 check("check.sh: syslog-ng は ss -Hlun の待っているアドレスが :5140 で終わる行があれば ok（0.0.0.0 でも 203.0.113.1 でも）。"

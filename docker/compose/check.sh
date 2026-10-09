@@ -65,16 +65,19 @@ judge "Kafka: トピック metrics / gnmi / traps / logs / flows がある" \
 # トピックは Spark が起動のときに作るので、gnmic・Telegraf・syslog-ng から届いているかはメッセージ数で見る（metrics は gnmic の IF のカウンター、
 # gnmi は gnmic の IF・BGP・IS-IS の状態。on-change は購読した直後に今の値を 1 回送るので、gnmic が繋がっていれば 0 にならない）。trap と syslog は障害を入れるまで来ないこともあるので、
 # traps と logs の 0 件は NG にしない。flows は lab の SR Linux が NetFlow を出さないので数を見ない（ops/netflow_send.py で送ったときだけ増える）
-cnt="{t['name']: t['messagesCount'] for t in json.loads(s)['topics']}"
-judge "Kafka: metrics のメッセージ数 > 0" "'ok' if $cnt.get('metrics', 0) > 0 else '0 件'" <<<"$kafka"
+cnt="{t['name']: t.get('messagesCount') for t in json.loads(s)['topics']}"
+# num('<トピック>') は件数（int）か、件数が読めない（messagesCount が無い・null・数でない）ときの NG の理由（str）。トピックが無ければ 0 件。
+# 件数が読めないのは 0 件とは別の問題なので、traps と logs もそのときは注意でなく NG
+num="(lambda c: lambda n: (lambda v: v if type(v) is int else \"messagesCount が無い（Kafbat UI の応答の形が違う。curl -s 'http://127.0.0.1:18080/api/clusters/nwc/topics?perPage=100' で中身を見る）\")(c.get(n, 0)))($cnt)"
+judge "Kafka: metrics のメッセージ数 > 0" "(lambda v: v if type(v) is str else 'ok' if v > 0 else '0 件')($num('metrics'))" <<<"$kafka"
 judge "Kafka: gnmi のメッセージ数 > 0" \
-  "'ok' if $cnt.get('gnmi', 0) > 0 else '0 件（gnmic の on-change（IF・BGP・IS-IS の状態）が届いていない。購読した直後に今の値を 1 回送るので、gnmic が繋がっていれば 0 にならない。docker compose logs gnmic）'" \
+  "(lambda v: v if type(v) is str else 'ok' if v > 0 else '0 件（gnmic の on-change（IF・BGP・IS-IS の状態）が届いていない。購読した直後に今の値を 1 回送るので、gnmic が繋がっていれば 0 にならない。docker compose logs gnmic）')($num('gnmi'))" \
   <<<"$kafka"
 judge "Kafka: traps のメッセージ数 > 0" \
-  "'ok' if $cnt.get('traps', 0) > 0 else '注意: 0 件（trap は障害を入れるまで来ない。docker/compose/lab.sh fail-main か trap-test のあとに打ち直す）'" \
+  "(lambda v: v if type(v) is str else 'ok' if v > 0 else '注意: 0 件（trap は障害を入れるまで来ない。docker/compose/lab.sh fail-main か trap-test のあとに打ち直す）')($num('traps'))" \
   <<<"$kafka"
 judge "Kafka: logs のメッセージ数 > 0" \
-  "'ok' if $cnt.get('logs', 0) > 0 else '注意: 0 件（syslog は機器が出すまで来ない。docker/compose/lab.sh fail-main のあとに打ち直す。来ないままなら docker compose logs syslog-ng）'" \
+  "(lambda v: v if type(v) is str else 'ok' if v > 0 else '注意: 0 件（syslog は機器が出すまで来ない。docker/compose/lab.sh fail-main のあとに打ち直す。来ないままなら docker compose logs syslog-ng）')($num('logs'))" \
   <<<"$kafka"
 judge "Prometheus: count(snmp_interface_oper_up) > 0" \
   "(lambda r: 'ok' if r and float(r[0]['value'][1]) > 0 else '0 件')(json.loads(s)['data']['result'])" \
