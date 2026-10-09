@@ -100,7 +100,7 @@
 - [ ] `kafka_load.sh` の gnmi の peer の固定を lab の構成から取る（2026-10-09 に 011 のセルフレビュー N6）
 - [ ] `TELEGRAF_TAG` が Dockerfile のコメントの変更でも変わり、次の `up.sh` がイメージを作り直すのを docs に書くか、ハッシュの入力を絞る（2026-10-09 に 011 のセルフレビュー N7）
 - [ ] `app/containerlab/lab.sh` の `${TREX_IMAGE:?}` を見張るテストを足す（2026-10-09 に 011 のセルフレビュー N8）
-- [ ] TRex 2.41 が af_packet で起動することを AWS で確かめる（m6i.xlarge。aws_sandbox の always-on のガード `allowed_instance_types` に t4g.medium と m6i.xlarge を足してユーザーが apply（2026-10-09 決定。nwc-poc には移さない）。2026-10-09 に 011 のセルフレビュー N9。未確認）
+- [ ] TRex 2.41 が af_packet で起動することを AWS で確かめる（m6i.xlarge。aws_sandbox の always-on のガード `netops-always-on-guard` に t4g.medium と m6i.xlarge を足した（2026-10-09 に v4。nwc-poc には移さない）。2026-10-09 に 011 のセルフレビュー N9。未確認）
 - [ ] ECR の lab の版の `-amd64` の付け方を docs に書く（2026-10-09 に 011 のセルフレビュー N10）
 - [ ] デバッグ用の Telegraf の ECR タグにも `-$LAB_ARCH` を付ける（`ops/lab-debug.sh:141-145`。lab の 3 イメージと同じ仕組みで守る。2026-10-09 に 011 の cold review Round 1 の Nit）
 - [ ] `IaC/terraform/aws-managed/base/ecr/outputs.tf:7/12/17` の説明のタグ（`with tag 26.7.2` 等）を実際に置く `*_ECR_TAG`（`26.7.2-amd64` 等）に合わせる（2026-10-09 に 011 の cold review Round 1 の Nit）
