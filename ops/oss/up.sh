@@ -2,7 +2,7 @@
 # OSS 版（cycle 005「マネージドを OSS に置き換えた環境を作る」）を 1 本で起こす。マネージド版（ops/up.sh）と同じアカウントに並べて立てられる。
 #   リソース名の接頭辞と Project タグは <owner>-nwc-oss（マネージド版は <owner>-nwc-poc）。ルートは IaC/terraform/oss/ の下で、
 #   state も IaC/terraform/oss/<ルート>/terraform.tfstate に置く（マネージド版の IaC/terraform/aws-managed/ の state とは別）。消すのは ops/oss/down.sh。
-#   作るのはマネージド版の AGENT=1 PIPELINE=1 WORKFLOW=1 と同じ範囲で、いつも全部: base/ecr → base/core → agent（AgentCore Runtime）→ Web の部品
+#   作るのはマネージド版の AGENT=1 PIPELINE=1 WORKFLOW=1 と同じ範囲で、いつも全部: base/ecr → base/logs（ops/oss/down.sh は消さない）→ base/core → agent（AgentCore Runtime）→ Web の部品
 #   → pipeline/lab → pipeline/stream（Kafka は MSK でなく ECS の KRaft 3 台。IaC/terraform/oss/pipeline/stream/kafka.tf）
 #   → pipeline/graph（Neo4j + GDS の ECS と status の Lambda。上がったら lab の定義からトポロジを入れる）→ pipeline/nautobot
 #   → pipeline/analytics（Spark・OpenSearch・VictoriaMetrics・Splunk の ECS と S3 Tables）→ workflow（Temporal のワーカーと AgentCore Gateway）。
@@ -170,10 +170,13 @@ ROOTS="base/ecr base/logs base/core agent pipeline/lab pipeline/stream pipeline/
 ENDPOINTS="ssm ssmmessages ecr.api ecr.dkr logs s3tables sns kinesis-firehose bedrock-runtime bedrock-agentcore ecs sqs bedrock-agentcore.gateway athena"
 
 # ---- 1. ECR --------------------------------------------------------------------
-log "1. ECR リポジトリ（IaC/terraform/oss/base/ecr）"
+log "1. ECR リポジトリ（IaC/terraform/oss/base/ecr）と logs のバケット（base/logs）"
 tf_apply base/ecr
 REPO=$(tf base/ecr output -raw agent_repository_url); echo "REPO=$REPO"
 REG="${REPO%%/*}"
+# logs のバケット <接頭辞>-logs-<アカウント>（EMR のログと Firehose が書けなかった行。中身は 7 日で消える。cycle 035）。
+# ops/oss/down.sh は消さないので、2 回目からは No changes。base/core より先に作る（pipeline/analytics が state から読む）
+tf_apply base/logs
 
 # ---- 2. イメージ ----------------------------------------------------------------
 log "2. イメージ（ECR に無いタグだけ写すかビルドする）"

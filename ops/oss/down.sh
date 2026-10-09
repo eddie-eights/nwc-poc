@@ -10,8 +10,9 @@
 #   KEEP_ECR=1 ops/oss/down.sh   # ECR（イメージ）だけ残す。翌日の ops/oss/up.sh で写すのを飛ばせる（保管料は 14.9 GB で月 約 220 円。2026-10-08 の実測）
 #
 # ops/oss/up.sh と同じ deploy.env（DEPLOY_ENV_FILE=<パス> で別のファイル）を読む。使うキーは OWNER（必須。作ったときと同じ値）、
-# KEEP_ECR、AWS_PROFILE / AWS_CA_BUNDLE。ops/oss/up.sh はいつも 9 つのルート（base/ecr・base/core・agent・pipeline/lab・pipeline/stream・
-# pipeline/graph・pipeline/nautobot・pipeline/analytics・workflow）を作るので、9 つとも消す（途中で止まって作っていないルートは飛ばす）。
+# KEEP_ECR、AWS_PROFILE / AWS_CA_BUNDLE。ops/oss/up.sh はいつも 10 のルート（base/ecr・base/logs・base/core・agent・pipeline/lab・pipeline/stream・
+# pipeline/graph・pipeline/nautobot・pipeline/analytics・workflow）を作る。base/logs（logs のバケット。中身は 7 日で消える）だけは消さず、
+# 残りの 9 つを消す（途中で止まって作っていないルートは飛ばす）。
 # PC に残るもの（wheels-oss/ と IaC/terraform/oss/pipeline/graph/.build/）は消さない（次の ops/oss/up.sh が使い回すか作り直す）。
 # Glue のカタログ s3tablescatalog はアカウントで 1 つをマネージド版と共有するので、マネージド版の ops/down.sh と同じく消さない
 set -uo pipefail
@@ -84,6 +85,8 @@ log "6. 残っていないか（Project=$PREFIX のタグ）"
 report_leftovers
 echo "（この一覧では消えたかを決めない。タグの API は消えたリソースも返す。"
 echo " 消えたかはサービスごとの API で見る。KEEP_ECR=1 なら ECR のリポジトリは実際に残っている。docs/deploy.md の「消したあとに残るもの」）"
+echo "logs のバケット $PREFIX-logs-$ACCOUNT_ID は残す（IaC/terraform/oss/base/logs。中身は 7 日で消え、空のバケットは無料。上の一覧に出るのは想定どおり。"
+echo " 消すなら terraform -chdir=IaC/terraform/oss/base/logs destroy -var owner=$OWNER）"
 if [ "$MAIN_LEFT" = 1 ]; then
   echo "IaC/terraform/oss/base/core の VPC・サブネット・runtime の SG は残した（Runtime の ENI 待ち。時間課金は無い）。"
   echo "そのままでよい。次の ops/oss/up.sh が使い回す（ops/oss/up.sh を打ったのと同じチェックアウトから打つとき。state はここにしか無い）。"

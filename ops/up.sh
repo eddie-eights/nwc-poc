@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # deploy.env の PIPELINE / AGENT / WORKFLOW で選んだ機能を 1 本で起こす。機能は互いに独立で、要るものだけ作る（費用を抑えるため）。
-#   土台（必ず作る）  base/ecr + base/core（VPC / Web の EC2 / バケット / ロール。インターネットへの経路は無い）。約 $0.04/h + エンドポイント。
+#   土台（必ず作る）  base/ecr + base/logs（ログのバケット。ops/down.sh は消さない）+ base/core（VPC / Web の EC2 / バケット / ロール。インターネットへの経路は無い）。約 $0.04/h + エンドポイント。
 #   AGENT（既定 0）   agent での分析。IaC/terraform/aws-managed/agent（AgentCore Runtime + ガードレール。CREATE_KB=1 なら Knowledge Base も）。
 #                     Web の「チャット」タブが使える
 #   PIPELINE          データパイプライン。lab（containerlab）→ stream（MSK と Telegraf・gnmic（ECS））→ analytics（Spark on EMR Serverless → S3 Tables / OpenSearch / Prometheus / Splunk。
@@ -431,7 +431,7 @@ if [ -z "$SKIP_GRAPH" ]; then
 fi
 if [ -z "$NETWORK_PERIMETER" ]; then echo "NETWORK_PERIMETER=0: VPC の外からの呼び出しを拒む Deny を外す（エンドポイントは作る。切り分けが済んだら 1 に戻して打ち直す）"; fi
 if [ -z "$AGENT$PIPELINE$WORKFLOW" ]; then
-  echo "機能が全部 0（既定）なので土台（base/ecr + base/core）だけ作る（Web は開けるが「チャット」は「配備されていない」と返す。チャットを使うなら AGENT=1 を書く）"
+  echo "機能が全部 0（既定）なので土台（base/ecr + base/logs + base/core）だけ作る（Web は開けるが「チャット」は「配備されていない」と返す。チャットを使うなら AGENT=1 を書く）"
 fi
 command -v aws >/dev/null || die "aws CLI が無い（docs/setup.md「Terraform を打つ PC 側」）"
 command -v terraform >/dev/null || die "terraform が無い（docs/setup.md「Terraform を打つ PC 側」。1.11 以上）"
@@ -467,7 +467,7 @@ done
 case "${LAB_DEBUG:-}" in ''|0|false|no) ;; *) echo "注意: LAB_DEBUG は使わない。デバッグ用の EC2 は ops/lab-debug.sh up / down で作る・消す（deploy.env から消してよい）" ;; esac
 if [ -n "${MDT_SOURCE_CIDRS:-}" ]; then echo "注意: MDT_SOURCE_CIDRS は 2026-10-08 から使わない（cycle 012 で Cisco の MDT の受け口を外した。戻し方は docs/collection.md。deploy.env から消してよい）"; fi
 tf_use_cli_credentials
-ROOTS="base/ecr base/core"
+ROOTS="base/ecr base/logs base/core"
 if [ -n "$AGENT" ]; then ROOTS="$ROOTS agent"; fi
 if [ -z "$SKIP_LAB" ]; then ROOTS="$ROOTS pipeline/lab"; fi
 if [ -z "$SKIP_STREAM" ]; then ROOTS="$ROOTS pipeline/stream"; fi
@@ -606,10 +606,13 @@ if [ -f "$TF_DIR/base/core/terraform.tfstate" ]; then
 fi
 
 # ---- 1. ECR --------------------------------------------------------------------
-log "1. ECR リポジトリ（IaC/terraform/aws-managed/base/ecr）"
+log "1. ECR リポジトリ（IaC/terraform/aws-managed/base/ecr）と logs のバケット（base/logs）"
 tf_apply base/ecr
 REPO=$(tf base/ecr output -raw agent_repository_url); echo "REPO=$REPO"
 REG="${REPO%%/*}"
+# logs のバケット <接頭辞>-logs-<アカウント>（EMR のログと Firehose が書けなかった行。中身は 7 日で消える。cycle 035）。
+# ops/down.sh は消さないので、2 回目からは No changes。base/core より先に作る（pipeline/analytics が state から読む）
+tf_apply base/logs
 
 # ---- 2. イメージ ----------------------------------------------------------------
 log "2. イメージ（ECR に無いタグだけ作る）"
