@@ -192,3 +192,73 @@ design.md の「追加（2026-10-10、ユーザー指示）」の節のとおり
 - `uv run --frozen python3 tests/test_workflow.py`: 通過 333 / 失敗 0
 - `uv run --frozen python3 tests/test_oss.py`: 通過 177 / 失敗 0
 - 直した検査が効くか: `enabled = false` に戻すと、直した検査が AssertionError で落ちる（確かめたあと戻した）
+
+## 追加の修正（2026-10-10、ユーザー指示: EMR のログの S3 を落とす）
+
+design.md の「追加（2026-10-10、ユーザー指示）: EMR のログの S3 を落とす」の節のとおり。実装モデル: opus-5.5 / effort: high。
+
+### commit
+
+- af40dc3: `git merge main`（コンフリクト無し。`docs/cycles/QUEUE.md` は PM が書くので触っていない）
+- ec5f504: コードとテストから EMR の S3 のログを消す。`base/core/outputs.tf` の `assets_bucket_arn` の Nit もここで直した
+- 3bec3c4: docs を揃え、FAQ に 2 問足し、design.md を直す
+- 43085fd、0ba2c37: セルフレビューで見つけた description の 2 件（下の「指摘と片付け」）
+
+### 変えたファイル
+
+- `IaC/terraform/aws-managed/pipeline/analytics/outputs.tf`: `configuration_overrides_json` から `s3MonitoringConfiguration` を消した。description とコメントを「CloudWatch（driver）と managed storage、S3 には出さない」に直した
+- `IaC/terraform/aws-managed/pipeline/analytics/access.tf`: 実行ロールの `LogsBucket` / `LogsBucketList` の 2 文を消した。ロールの description の「logs を書く」を「driver のログを CloudWatch に書く」にした
+- `IaC/terraform/aws-managed/pipeline/analytics/locals.tf`: `emr_logs_prefix` を消した。`logs_bucket` / `logs_bucket_arn` は Firehose（`history.tf`）が使うので残し、コメントを Firehose だけにした
+- `IaC/terraform/aws-managed/pipeline/analytics/variables.tf`: `cloudwatch_logging` の description の「asset bucket」を managed storage に直した（43085fd）
+- `IaC/terraform/aws-managed/base/logs/{main,outputs}.tf`: コメントと description を Firehose の行だけにした。`logs_bucket_arn` は読むルートが無いことを書いた（0ba2c37）
+- `IaC/terraform/aws-managed/base/core/{bucket,outputs}.tf`: bucket.tf のコメント。outputs.tf の `assets_bucket_arn` の description を「読むのは agent だけ」に直した（grep で `agent/locals.tf:66` だけと確かめた）
+- `IaC/terraform/oss/pipeline/analytics/network.tf`、`ops/up.sh`、`ops/oss/up.sh`: コメントだけ（OSS 版の動きは変えていない）
+- `tests/test_analytics.py`: managed storage を足したときの「S3 にも出す」の検査を、「S3 に出さない」の検査に置き換えた（`s3MonitoringConfiguration` と `logUri` と `emr_logs_prefix` が無い、access.tf に Sid が `LogsBucket` / `LogsBucketList` の文が無い、managed storage が `enabled = true`、`cloudWatchLoggingConfiguration` がある）。消した名前は文字列をつないで作り、grep で残りを探すときにこのファイルが当たらないようにした
+- docs: `docs/faq-fukuda-nwc-poc.md`、`docs/architecture/resources/{s3-buckets,emr-serverless,README}.md`、`docs/pipeline.md`、`docs/deploy.md`、`docs/cycles/035-s3-layout/design.md`
+  - FAQ: 「EMR のログが S3 にあるけど、何？」を「EMR のログはどこにある？ S3 には出していない？」に改めた。「CloudWatch だけに…見えなくなる？」の表と「戻すなら」の行を、managed storage が ON のいまに合わせた（前の節の「直していないもの」は、main を入れたのでここで直した）
+  - FAQ に足した 2 問: 「`terraform apply` で Spark のジョブも登録される？」（5 節。ジョブは `ops/up.sh` の手順 7-5 が `start-job-run` で起こす。PM の指示の「8-2」は、いまの up.sh では 7-5）と「S3 Tables と Athena はある？」（9 節）。どちらも節の目次に足した
+
+### テスト（実測）
+
+| 検査 | 結果 |
+|---|---|
+| `uv run --frozen python3 tests/test_analytics.py` | 通過 544 / 失敗 0（前と同じ数。検査を 1 つ置き換えた） |
+| `tests/test_oss.py` | 通過 177 / 失敗 0 |
+| `tests/test_oss_ops.py` | 通過 206 / 失敗 0 |
+| `tests/test_workflow.py` | 通過 333 / 失敗 0 |
+| `tests/test_lab_debug.py` | 通過 110 / 失敗 0 |
+| `tests/test_agentcore.py` | 通過 168 / 失敗 0 |
+| `terraform validate`（`init -backend=false`、`TF_DATA_DIR` は scratchpad） | aws-managed の `pipeline/analytics`、`base/logs`、`base/core` と oss の `pipeline/analytics`、`base/logs` で `Success! The configuration is valid.`。lock ファイルは変わっていない |
+| `terraform fmt -check -recursive IaC` | 無言 |
+| `bash -n ops/up.sh ops/down.sh ops/oss/up.sh ops/oss/down.sh ops/check.sh` | 無言 |
+| `grep -rn 's3Monitoring\|logUri\|emr_logs\|LogsBucket\|emr/' IaC ops app tests` | `base/logs/main.tf:2` と `tests/test_analytics.py:362,366` のコメントと、つないで作る文字列だけ |
+
+退行の注入（どれも置き換えた検査が AssertionError で落ち、`git checkout` で戻した）: `s3MonitoringConfiguration` を戻す、access.tf に Sid `LogsBucketList` の文を戻す、managed storage を `enabled = false` にする。
+
+### セルフレビュー
+
+- 自分: opus-5.5 / effort: high。`/robust` の観点（correctness / security / runtime / data loss / API compat / type safety / missing tests / 設計との整合）で、af40dc3 からの差分（IaC、ops、tests、docs）を読んだ
+
+#### 指摘と片付け
+
+1. **Nit**: [docs] `pipeline/analytics/variables.tf` の `cloudwatch_logging` の description が「false なら asset bucket だけ」のままだった → **直した**（43085fd）
+2. **Nit**: [docs] `base/logs/outputs.tf` の `logs_bucket_arn` の description が「pipeline/analytics が読む」だったが、analytics は `logs_bucket_name` から ARN を組み立てていて読んでいない（035 の最初からの誤り） → **直した**（0ba2c37）。`s3-buckets.md` の「読む output」の行も同じく直した（3bec3c4）
+3. **Should fix 候補（PM の判断）**: [runtime] 手順 7-4 の apply で実行ロールから logs への権限が消えてから、手順 7-5 でジョブを起こし直すまでのあいだ、動いているジョブはまだ古い `logUri` で S3 に書こうとする
+   - 破綻シナリオ: 前の構成のジョブが動いている環境で `ops/up.sh` を打つと、7-4b の Splunk の待ち（最大 20 分）のあいだ、ジョブのログの S3 への書き込みが拒まれる。ジョブが FAILED になる可能性がある（AWS では未確認）。`terraform apply` だけを打った場合は、次の `ops/up.sh` まで続く
+   - 片付け: **直していない。** FAILED になっても 7-5 は動いていないジョブとして checkpoint の続きから起こすので、データは落ちない。AWS はいま全部消えていて、動いているジョブが無い
+4. **確認（変更なし）**: [runtime] `configuration_overrides_json` はジョブのタグ `SpecHash` に入るので、次の `ops/up.sh` で 3 つのジョブとも起こし直しになる。checkpoint の続きから読むのでデータは落ちない。FAQ の新しい Q に書いた
+5. **確認（変更なし）**: [data loss] S3 を落としたので、executor のログは managed storage（30 日）にしか残らない。`cloudwatch_logging = false` なら driver のログも同じ。FAQ に書いた
+6. **確認（変更なし）**: [docs] FAQ の前の版にあった「閉域なので S3 のゲートウェイエンドポイントのポリシーに EMR の `AppInfo` バケットへの `s3:PutObject` が要る」は、`base/core/endpoints.tf` の S3 の gateway エンドポイントにポリシーが無いので当たらない、と書き換えた。managed storage への書き込みが閉域で通るかは AWS では未確認のまま
+
+#### 「問題なし」とした観点と根拠
+
+- correctness: 消した `emr_logs_prefix` と 2 つの Sid を参照する場所は残っていない（validate が通り、上の grep が 0）。`logs_bucket` / `logs_bucket_arn` は Firehose の `ErrorBucket` / `ErrorBucketList` と `s3_configuration.bucket_arn` が使い続ける
+- security: 実行ロールの権限は減っただけ。logs のバケットのポリシー（`DenyInsecureTransport`）は変えていない。`.env` 系は読んでいない。AWS は叩いていない
+- API compat: output の名前（`configuration_overrides_json`、`logs_bucket_name`、`logs_bucket_arn`、`assets_bucket_arn`）は変えていない。変えたのは description と値の中身だけ
+- missing tests: S3 のログを戻す 3 通りの退行は、置き換えた検査が落とす（上の退行の注入）
+- 設計との整合: OSS 版の動きは変えていない（`network.tf` はコメントだけ）
+- Must fix: 0
+
+### 未確認
+
+- **AWS での動き。** S3 を落としたあとも、終わったジョブの Spark UI が View application UIs から開くか。logs のバケットに `emr/` が出来ないか。設計の「検証方法」の AWS の節のとおり、PM の 1 回の検証で見る
