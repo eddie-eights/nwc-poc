@@ -1,4 +1,4 @@
-# nwc-poc — NetOps PoC（Terraform）
+# nwc-poc — ネットワーク運用の PoC（Terraform）
 
 ブラウザのチャットから AgentCore Runtime のエージェントに聞くと、Amazon Nova 2 Lite がトポロジのツール（と任意の手順書の検索）を使って答える。
 lab（containerlab の Nokia SR Linux で組んだ Spine-Leaf）の機器の gNMI・SNMP の trap・syslog を Kafka → Spark で格納先に流し、Grafana と Splunk のアラートで異常を見つけ、SNS → SQS で Temporal のワークフローを起こして原因を調べて修復案を出し、人が承認したら直す、までを試せる。

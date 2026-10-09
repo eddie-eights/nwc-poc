@@ -41,9 +41,9 @@
 | `app/telegraf/` | Telegraf の設定（`telegraf.conf.in`。機器の SNMP trap を受けてトピック `traps` へ書く）と入口の `telegraf.sh`（イメージの中では `tg`）（stream の ECS のタスクで動く。デバッグ用の EC2 でも docker で `SINK=stdout`。gNMI は cycle 013 で gnmic へ移した） |
 | `app/gnmic/` | gnmic の設定のテンプレート（`gnmic.yaml.in`。購読 5 つと Kafka の出力）と入口の `gnmic.sh`（イメージの中では `gn`。`run` / `render` / `get`）。機器の gNMI を購読して、状態をトピック `gnmi`、カウンターを `metrics` へ書く（stream の ECS のタスクで動く。cycle 013 から） |
 | `app/syslog-ng/` | syslog-ng（AxoSyslog）の設定のテンプレート（`syslog-ng.conf.in`）と入口の `syslog-ng.sh`（イメージの中では `sng`）。機器の syslog を Telegraf と同じ `device_log` の形にしてトピック `logs` へ書く（stream の ECS のタスクで動く。2026-10-08 から。NetFlow / sFlow の GoFlow2 は上流のイメージをそのまま使うので、ここには無い） |
-| `app/grafana/` | Grafana の `start.sh` と provisioning（データソース（OSS 版は `datasources-oss/`）、ダッシュボード、アラート（`alerting/` の `netops-prometheus.yaml` / `netops-opensearch.yaml` / `netops.yaml`）。analytics の ECS のタスクで動く） |
-| `app/splunk/` | Splunk のアプリ `netops_alerts`（保存済みサーチと、SNS へ publish するアラートアクション。analytics の ECS のタスクで動く）、`entrypoint.sh`（役割に合わせてアプリを外す。indexer は止まる前に `splunk offline`）、`peers_check.py`（クラスターの search head が indexer を全部検索できるかの突き合わせ） |
-| `app/nautobot/` | Nautobot の Job（`jobs/netops_jobs.py`）と、その中身（`netops/`。対応付け `nb_map.py`、同期 `nb_sync.py`、起動時の `bootstrap.py`）。`PIPELINE=1` ならいつも ECS で動く |
+| `app/grafana/` | Grafana の `start.sh` と provisioning（データソース（OSS 版は `datasources-oss/`）、ダッシュボード、アラート（`alerting/` の `nwc-prometheus.yaml` / `nwc-opensearch.yaml` / `nwc.yaml`）。analytics の ECS のタスクで動く） |
+| `app/splunk/` | Splunk のアプリ `nwc_alerts`（保存済みサーチと、SNS へ publish するアラートアクション。analytics の ECS のタスクで動く）、`entrypoint.sh`（役割に合わせてアプリを外す。indexer は止まる前に `splunk offline`）、`peers_check.py`（クラスターの search head が indexer を全部検索できるかの突き合わせ） |
+| `app/nautobot/` | Nautobot の Job（`jobs/nwc_jobs.py`）と、その中身（`nwc/`。対応付け `nb_map.py`、同期 `nb_sync.py`、起動時の `bootstrap.py`）。`PIPELINE=1` ならいつも ECS で動く |
 | `app/graph/` | アラート（SNS）を受けて Neptune（Neptune Analytics）の `status` を書き、通知の履歴を Firehose へ送る Lambda（`status_handler.py`） |
 | `app/neo4j/` | OSS 版の Neo4j（+ GDS）の `entrypoint.sh`（OSS 版の graph の ECS のタスクで動く） |
 | `app/resources/` | ナレッジベースに入れる手順書 |

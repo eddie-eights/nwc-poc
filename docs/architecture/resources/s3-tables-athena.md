@@ -12,7 +12,7 @@ Athena は、ここのテーブルをエージェントと Web の承認タブ�
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
 | テーブルバケット | `<prefix>-tables`。analytics を作る回はいつも作る（`STORES` に `s3` が無くても） | `IaC/terraform/aws-managed/pipeline/analytics/tables.tf` |
-| namespace | `netops`（アンダースコアだけ。ハイフンは使えない） | `tables.tf` |
+| namespace | `nwc`（アンダースコアだけ。ハイフンは使えない） | `tables.tf` |
 | テーブルの作り方 | Terraform が作る（`ops/down.sh` の destroy でバケットごと消せるように） | `tables.tf` |
 | Glue のカタログ | `s3tablescatalog`。アカウントとリージョンに 1 つ。無いときだけ `ops/up.sh` が作り、`ops/down.sh` では消さない | `ops/up-common.sh` の `ensure_s3tables_catalog`（`ops/up.sh` の手順 7-4 が呼ぶ）、[deploy.md](../../deploy.md) の「アラートの通知の履歴」 |
 | Athena のワークグループ | `<prefix>-history`。設定を強制、1 回のスキャンは 1 GiB で打ち切り、結果は Athena の管理ストレージ | `IaC/terraform/aws-managed/pipeline/analytics/history.tf` |

@@ -1,6 +1,6 @@
-"""Splunk のアラートアクション netops_sns。保存済みサーチ（default/savedsearches.conf）の結果を SNS のトピックへ publish する。
+"""Splunk のアラートアクション nwc_sns。保存済みサーチ（default/savedsearches.conf）の結果を SNS のトピックへ publish する。
 
-Splunk は `python netops_sns.py --execute` で起こし、標準入力に JSON（results_file = 結果の CSV（gzip）の場所 など）を渡す。
+Splunk は `python nwc_sns.py --execute` で起こし、標準入力に JSON（results_file = 結果の CSV（gzip）の場所 など）を渡す。
 結果の 1 行 = アラート 1 件で、列は device / kind / target / status（firing | resolved）/ detail / starts_at（epoch 秒）。
 publish する JSON は Grafana（app/grafana/provisioning/alerting）と同じ形で、app/temporal/rules.py の alerts_from_message と app/graph/status_handler.py が読む:
   {"source": "splunk", "alerts": [{"status", "device_id", "kind", "target", "detail", "starts_at"}, …]}
@@ -31,7 +31,7 @@ STATUSES = ("firing", "resolved")
 MAX_ALERTS = 50      # 1 通に入れる件数（SNS の本文は 256 KB まで。1 件は数百バイト）
 ATTEMPTS = 3
 TIMEOUT = 10
-SUBJECT = "netops alert"
+SUBJECT = "nwc alert"
 IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 
 

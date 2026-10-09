@@ -16,8 +16,8 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 | イメージ | Grafana OSS 13.2.3 にデータソースの plugin（amazonprometheus 3.2.0、opensearch 2.34.4。版は固定）と provisioning を焼き込んだもの。ECR の `<prefix>-grafana` | `docker/images/grafana/Dockerfile`、変数 `grafana_image_tag` |
 | 名前 | Cloud Map `grafana.<prefix>.internal:3000` | `grafana.tf` |
 | データソース | Prometheus（Amazon Managed Prometheus）と OpenSearch Serverless（`snmp-logs`）。どちらも SigV4（タスクロール） | `app/grafana/provisioning`、`app/grafana/start.sh` |
-| アラートルール | 4 本（フォルダ `nwc-alerts`）。1 分ごとに評価、`for: 0s` | `app/grafana/provisioning/alerting/netops-prometheus.yaml`、`netops-opensearch.yaml` |
-| 送り先 | SNS `<prefix>-alerts`。解消は 30 秒以内（`group_interval`）、直らないあいだは 4 時間ごとに送り直す（`repeat_interval`） | `app/grafana/provisioning/alerting/netops.yaml` |
+| アラートルール | 4 本（フォルダ `nwc-alerts`）。1 分ごとに評価、`for: 0s` | `app/grafana/provisioning/alerting/nwc-prometheus.yaml`、`nwc-opensearch.yaml` |
+| 送り先 | SNS `<prefix>-alerts`。解消は 30 秒以内（`group_interval`）、直らないあいだは 4 時間ごとに送り直す（`repeat_interval`） | `app/grafana/provisioning/alerting/nwc.yaml` |
 | admin のパスワード | SSM の SecureString `/<prefix>/grafana/admin-password`（`ops/up.sh` が乱数で作る） | `ops/up.sh`、`grafana.tf` の `secrets` |
 | ログ | `/ecs/<prefix>-grafana` | `grafana.tf` |
 | スイッチ | `STORES` の `grafana`（Grafana だけを切り替えるキーは無い） | `deploy.env.example` |
@@ -59,7 +59,7 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 - **UI で変えたものは、タスクと一緒に消える。**
   ダッシュボードもルールも provisioning だけ。provisioning したルール・連絡先・ポリシーは画面から変えられない。残すなら `app/grafana/provisioning` に書いて `ops/up.sh`（イメージから作り直す）。
   出典: [pipeline.md](../../pipeline.md) の「Grafana と Splunk を開く」「Grafana のアラート」。
-- **`netops.yaml` のテンプレートの `$` はそのまま書く。**
+- **`nwc.yaml` のテンプレートの `$` はそのまま書く。**
   `$$` とエスケープすると Grafana が起動しない（`Invalid format of the submitted template`。13.2.2 で実測）。
   出典: [pipeline.md](../../pipeline.md) の「Grafana のアラート」。
 - **データが無いときの扱いは、ルールで分けてある。**

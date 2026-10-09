@@ -265,7 +265,7 @@ check("recent_changes は Neptune が無ければ案内を返す", "Nautobot" in
 _cfg, _lr = t.graph.configured, t.graph.list_records
 t.graph.configured = lambda: True
 _rows = [{"change_id": "change#2", "time": 1790000100, "user": "admin", "action": "update", "object_type": "device", "object": "dc1-a-leaf-01", "device_id": "dc1-a-leaf-01", "detail": "status: Active → Maintenance"},
-         {"change_id": "change#1", "time": 1790000000, "user": "netops-web", "action": "delete", "object_type": "cable", "object": "dc1-a-leaf-02 ethernet-1/1 <> dc1-spine-01", "device_id": ""}]
+         {"change_id": "change#1", "time": 1790000000, "user": "nwc-web", "action": "delete", "object_type": "cable", "object": "dc1-a-leaf-02 ethernet-1/1 <> dc1-spine-01", "device_id": ""}]
 _asked = []
 t.graph.list_records = lambda label, key, order, **kw: _asked.append((label, key, order, kw)) or list(_rows)
 rc = t.recent_changes()
@@ -447,10 +447,10 @@ r = evidence.query_history("dc1-a-leaf-01")
 check("query_history は環境変数が無ければ rows == [] で「未配備」を返し、Athena を呼ばない",
       r["rows"] == [] and "まだ配備していない" in r["error"] and fa.calls == [])
 for _missing in _hist_env:
-    for k, v in zip(_hist_env, ("nwc-history", "s3tablescatalog/tb", "netops", "alert_events")):
+    for k, v in zip(_hist_env, ("nwc-history", "s3tablescatalog/tb", "nwc", "alert_events")):
         setattr(evidence, k, "" if k == _missing else v)
     check(f"query_history は {_missing} だけが空でも「未配備」", "まだ配備していない" in evidence.query_history()["error"] and fa.calls == [])
-for k, v in zip(_hist_env, ("nwc-history", "s3tablescatalog/tb", "netops", "alert_events")):
+for k, v in zip(_hist_env, ("nwc-history", "s3tablescatalog/tb", "nwc", "alert_events")):
     setattr(evidence, k, v)
 evidence.POLL = 0
 
@@ -464,7 +464,7 @@ _q = fa.started()[0]
 check("query_history の SQL は event_id で重複を落とし（row_number() OVER (PARTITION BY event_id）、新しい順に LIMIT 50",
       "row_number() OVER (PARTITION BY event_id ORDER BY received_at)" in _q["QueryString"] and "WHERE rn = 1 ORDER BY received_at DESC LIMIT 50" in _q["QueryString"])
 check("query_history は \"<catalog>\".\"<namespace>\".\"<table>\" を読み、10 列を ALERT_EVENT_COLUMNS の順で選ぶ",
-      'FROM "s3tablescatalog/tb"."netops"."alert_events"' in _q["QueryString"]
+      'FROM "s3tablescatalog/tb"."nwc"."alert_events"' in _q["QueryString"]
       and _q["QueryString"].startswith("SELECT event_id, anomaly_id, source, status, device_id, kind, target, detail, starts_at, received_at FROM"))
 check("device_id は ExecutionParameters（'…' で囲んだ文字列の式）で渡り、SQL の文字列には現れない",
       _q["ExecutionParameters"] == ["'dc1-a-leaf-01'"] and "AND device_id = ?" in _q["QueryString"] and "dc1-a-leaf-01" not in _q["QueryString"])
@@ -534,7 +534,7 @@ class FakeSQS:
             raise self.error
         return {"MessageId": "m1"}
 
-_prop_env = {"ATHENA_WORKGROUP": "nwc-history", "ATHENA_CATALOG": "s3tablescatalog/tb", "HISTORY_NAMESPACE": "netops",
+_prop_env = {"ATHENA_WORKGROUP": "nwc-history", "ATHENA_CATALOG": "s3tablescatalog/tb", "HISTORY_NAMESPACE": "nwc",
              "PROPOSAL_EVENTS_TABLE": "proposal_events", "DECISION_QUEUE_URL": "https://sqs.ap-northeast-1.amazonaws.com/123/nwc-decisions"}
 _prop_saved_env = {k: os.environ.get(k) for k in _prop_env}
 for k in _prop_env:
@@ -567,7 +567,7 @@ r = proposals.list_proposals(status="pending", device_id="dc1-a-leaf-01")
 _q = fa.started()[0]
 check("list_proposals の SQL は proposal_id ごとに最新の行（seq、同じなら event_time が遅いほう）を選び、status は外側、device_id は内側で絞る",
       "row_number() OVER (PARTITION BY proposal_id ORDER BY seq DESC, event_time DESC) AS rn" in _q["QueryString"]
-      and 'FROM "s3tablescatalog/tb"."netops"."proposal_events" WHERE device_id = ?)' in _q["QueryString"]
+      and 'FROM "s3tablescatalog/tb"."nwc"."proposal_events" WHERE device_id = ?)' in _q["QueryString"]
       and "WHERE rn = 1 AND status = ? ORDER BY event_time DESC LIMIT 50" in _q["QueryString"])
 check("値は ExecutionParameters で device_id → status の順に渡り、SQL の文字列には現れない。ワークグループ指定で打つ",
       _q["ExecutionParameters"] == ["'dc1-a-leaf-01'", "'pending'"] and "dc1-a-leaf-01" not in _q["QueryString"] and "'pending'" not in _q["QueryString"]
@@ -693,7 +693,7 @@ check("Athena が AccessDenied で断っても落ちずに「修復案を読め�
       all(x["error"].startswith("修復案を読めない: Athena を呼べない: AccessDeniedException: ") and _clean(x["error"]) for x in _rs)
       and _rs[0]["proposals"] == _rs[1]["proposals"] == [] and proposals.get_proposal(PID) == {} and fs.sent == [])
 toolkit._clients["athena"] = fa = FakeAthena(states=("FAILED",), reason="Insufficient permissions to execute the query. " + _denied(
-    "glue:GetTable", f"arn:aws:glue:ap-northeast-1:{_ACCT}:table/s3tablescatalog/tb/netops/proposal_events") + " x" * 300)
+    "glue:GetTable", f"arn:aws:glue:ap-northeast-1:{_ACCT}:table/s3tablescatalog/tb/nwc/proposal_events") + " x" * 300)
 r = proposals.list_proposals()
 check("Athena が FAILED の理由に ARN があっても伏せて短く返す（落ちない）",
       r["error"].startswith("修復案を読めない: Athena のクエリが FAILED: Insufficient permissions") and _clean(r["error"]) and r["proposals"] == [])

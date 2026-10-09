@@ -61,7 +61,7 @@ TREX_PROC=t-rex-64
 # fail-bgp / heal-bgp が止める iBGP（EVPN）の隣接: dc1-a-leaf-01 から dc1-spine-01 のループバックへの 1 本（srlinux/dc1-a-leaf-01.cli の bgp neighbor）
 BGP_NODE=dc1-a-leaf-01; BGP_PEER=10.255.0.1
 # trap-test が送る trap の OID（net-snmp の NET-SNMP-EXAMPLES-MIB::netSnmpExampleHeartbeatNotification）。link でも起動の知らせでもないので、
-# Splunk の netops_trap と Grafana の trap ルールがどちらも kind = trap にする
+# Splunk の nwc_trap と Grafana の trap ルールがどちらも kind = trap にする
 TEST_TRAP_OID=.1.3.6.1.4.1.8072.2.3.0.1
 # user_data が書く（キーは setup.sh の頭）。TELEGRAF_IMAGE があるのはデバッグ用の EC2（IaC/cloudformation/lab-debug.yaml）だけ
 ENV_FILE=$(ls /etc/*-lab.env 2>/dev/null | head -1 || true)

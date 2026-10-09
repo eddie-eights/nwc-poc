@@ -49,7 +49,7 @@ payload() {
           "$now" "$i" "$ip" $((RANDOM * 1000)) $((RANDOM * 1000))
       done
     else
-      # gnmic の bgp_neighbor（on-change。established なので Splunk の netops_gnmi と Grafana の bgp_down は発火しない）
+      # gnmic の bgp_neighbor（on-change。established なので Splunk の nwc_gnmi と Grafana の bgp_down は発火しない）
       printf '{"name":"bgp_neighbor","timestamp":%s,"tags":{"network-instance_name":"default","neighbor_peer-address":"10.255.0.1","source":"%s","subscription-name":"bgp_neighbor"},"values":{"/network-instance/protocols/bgp/neighbor/session-state":"established"}}\n' \
         "$now" "$ip"
     fi

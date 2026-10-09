@@ -22,7 +22,7 @@ __TARGETS__
 # 5 つ。subscription ごとに別の SubscribeRequest になるので、1 つが機器に断られてもほかは止まらない。パスは SR Linux 26.7 の YANG
 # on-change は購読の直後に今の状態を全部送り、その後は変わったときだけ送る（heartbeat-interval は付けない。Grafana は last_over_time 24h、Splunk は 24 時間を読む）
 subscriptions:
-  # IF の up / down（Grafana の link_down と Splunk の netops_gnmi の link_down。snmp_interface_oper_up / admin_up）
+  # IF の up / down（Grafana の link_down と Splunk の nwc_gnmi の link_down。snmp_interface_oper_up / admin_up）
   interface_state:
     paths:
       - /interface[name=*]/oper-state

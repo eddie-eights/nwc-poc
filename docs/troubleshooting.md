@@ -4,6 +4,8 @@
 
 `<prefix>` は `deploy.env` の `OWNER` から作る接頭辞 `<owner>-nwc-poc`。多くは `ops/up.sh` を打ち直せば直る（できているものは飛ばす）。
 
+2026-10-09 より前の記録・ログ・ダッシュボードでは、Splunk の app・保存済みサーチ・sourcetype、Grafana のフォルダ、Nautobot のユーザーと Job の名前が改名前のもの（「名前を nwc に揃える（019）」）。新旧の対応は `docs/cycles/` の 019 のサイクルの `design.md`（「設計方針」1 の置換の表）。
+
 ## `ops/up.sh` / Terraform
 
 | 症状 | 原因と直し方 |
@@ -75,13 +77,13 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 |---|---|
 | 回線を落としても Grafana のルール `link_down` が Normal のまま | 通知まで 2 分ほどかかる（[pipeline.md](pipeline.md) の「アラート」の表）。それでも変わらなければ、Grafana の Explore で `snmp_interface_oper_up` が来ているか見る（`snmp_interface_admin_up` が 0 の IF はルールが外す）。来ていなければ gnmic（ECS Exec で入って `gn get`。[pipeline.md](pipeline.md) の「gnmic と Telegraf に入る」）か Spark（[pipeline.md](pipeline.md) の「Spark を確かめる」）。2026-10-09（cycle 013）からは SNMP のポーリングではなく gnmic の gNMI の値を見る |
 | `ops/up.sh` の最後に「Grafana のアラートルールの評価を確かめた結果が OK ではない」か「確かめられなかった」、またはデータは来ているのに Grafana のアラートが来ない | ルールの評価がエラーでも `KeepLast` で Normal に見える。`ops/check-grafana.sh`（OSS 版は `--oss`）で今の状態を見る（終了コードは下の「`ops/check-grafana.sh` の終了コード」）。`エラー:` の行がエラーのルール。理由は `aws logs tail /ecs/<prefix>-grafana --since 1h --filter-pattern '"Failed to evaluate rule"'`（出なければ `'"level=error"'`）。`未確認（… 401` は admin のパスワードが SSM と違う（下の「Grafana に入れない」）、`確かめ始めてから評価されていないルール` は Grafana が起動中か止まっている。`エラーのあったルールのもう 1 回の評価を待っている` で終わったら打ち直す。「確かめられなかった」（未確認）は評価のエラーとは限らない。上の出力の理由（`判定: 未確認（…）`、`SSM Run Command を送れなかった`、`… 秒たっても分からない` など）を見て打ち直す。OK でも、ルールの行の `alerts=` が `NoData` だけなら、ルールのクエリが何も返していない（エラーではないので OK になる。メトリクス名・インデックス・ラベルを見る）（[pipeline.md](pipeline.md) の「Grafana のアラート」） |
-| Splunk のアラートが出ない | `STORES` に `splunk` があるか（既定で入っている。`STORES` を書いて外していないか）。Splunk の検索で `index=* source="telegraf:snmp_trap"`（gNMI の IF の状態は `source="telegraf:interface"`、BGP は `telegraf:bgp_neighbor`、IS-IS は `telegraf:isis_interface`。名前は Telegraf のころのまま）にイベントが来ているか、保存済みサーチが動いたか（`index=_internal sourcetype=scheduler savedsearch_name=netops_*`）を見る（[pipeline.md](pipeline.md) の「Splunk のアラート」） |
-| アラートは出ているのに SNS に届かない（Grafana の Contact points の `nwc-sns` が失敗、Splunk の `sendmodalert` に `ERROR`） | タイムアウトなら `sns` のインターフェース型エンドポイント（手順 0 の一覧）。`AccessDenied` ならタスクロールの `sns:Publish` と、トピックのポリシー（VPC の外からの publish を拒む）。ログは `/ecs/<prefix>-grafana`、Splunk は検索 `index=_internal sourcetype=splunkd sendmodalert netops_sns` |
+| Splunk のアラートが出ない | `STORES` に `splunk` があるか（既定で入っている。`STORES` を書いて外していないか）。Splunk の検索で `index=* source="telegraf:snmp_trap"`（gNMI の IF の状態は `source="telegraf:interface"`、BGP は `telegraf:bgp_neighbor`、IS-IS は `telegraf:isis_interface`。名前は Telegraf のころのまま）にイベントが来ているか、保存済みサーチが動いたか（`index=_internal sourcetype=scheduler savedsearch_name=nwc_*`）を見る（[pipeline.md](pipeline.md) の「Splunk のアラート」） |
+| アラートは出ているのに SNS に届かない（Grafana の Contact points の `nwc-sns` が失敗、Splunk の `sendmodalert` に `ERROR`） | タイムアウトなら `sns` のインターフェース型エンドポイント（手順 0 の一覧）。`AccessDenied` ならタスクロールの `sns:Publish` と、トピックのポリシー（VPC の外からの publish を拒む）。ログは `/ecs/<prefix>-grafana`、Splunk は検索 `index=_internal sourcetype=splunkd sendmodalert nwc_sns` |
 | トポロジに赤い線が出ない | `/aws/lambda/<prefix>-graph-status` のログを見る。呼ばれていなければ送り手か SNS（上の 3 行）。`UNREGISTERED` の警告は、アラートの機器名・IF 名がトポロジに無い（Splunk なら IP を `DEVICE_MAP` で機器名に直せていない。lab に足した機器なら `ops/sync-graph.sh --replace`）。`読めないメッセージ（捨てる）` は本文の形が違う（[pipeline.md](pipeline.md) の「アラート」） |
 | `query_history` に出ない通知がある | `/aws/lambda/<prefix>-graph-status` を CloudWatch Logs Insights で見る。`filter @message like /ALERT_EVENT_LOST/` に出る行は Firehose に 3 回送っても届かなかったもの（メッセージの `ALERT_EVENT_LOST ` のあとが行の JSON そのまま）。多ければ `kinesis-firehose` のエンドポイント（手順 0 の一覧）と、ロールの `firehose:PutRecordBatch`。`ALERT_DROPPED` は `device_id` か `kind` が無い・`status` が firing / resolved でない通知か、行を組めない通知（`starts_at` が epoch ミリ秒など）で、行にしていない（送り手のテンプレートを見る）。Firehose が受けたのに S3 Tables に入らなかった行は土台のバケットの `firehose-errors/alert_events/`。行は Neptune より先に送るので、Neptune が遅くても応答しなくても、この表の行には影響しない |
 | Neptune の `status` が変わらず、ログに `Task timed out` か `Neptune に書けなかった` がある | Neptune が遅いか届かない（上の「閉域」の Neptune の行を見る）。履歴の行は Neptune より先に送ってある。Lambda は例外か timeout で落ち、非同期のやり直し（2 回まで）で Neptune に書き直すので、`status` は遅れて変わる。やり直しでも書けなければ `status` は変わらないまま。やり直しの分、履歴の行は二重に入る（`query_history` は `event_id` で落とす） |
 | BGP / IS-IS の層や機器の `ALARM` が変わらない | 出すのは Grafana と Splunk のアラート（`bgp_down` / `isis_down` / `trap`）。`STORES` に `grafana` も `splunk` も無ければ出ない（仕様）。あるのに変わらなければ、Grafana は Alerting → Alert rules のルール `bgp_down` / `isis_down` / `trap` の状態、Splunk は上の「Splunk のアラートが出ない」の行を見る。Grafana の `bgp_down` / `isis_down` は Explore で `snmp_bgp_neighbor_session_up` / `snmp_isis_interface_oper_up` が来ているかも見る |
-| Grafana のダッシュボード「netops / SNMP metrics」が空、エージェントの `query_metrics` が何も返さない | 2026-10-09（cycle 013）から `metrics` トピックの IF の統計・CPU・メモリは gnmic が 60 秒ごとに書く（SNMP のポーリングはやめた）。stream の output `gnmic_list_tasks_command` で gnmic のタスクが動いているか、ロググループ `/ecs/<prefix>-gnmic` に Kafka のエラー（SCRAM の認証や ACL）が出ていないかを見る。マネージドでは Spark のジョブが Kafka の ACL を入れるまで書けない見込み（下の `Topic authorization failed` の行、[architecture/resources/telegraf.md](architecture/resources/telegraf.md) の「制約と未確認」）。gnmic が書けているのに空なら Spark（[pipeline.md](pipeline.md) の「Spark を確かめる」） |
+| Grafana のダッシュボード「nwc / SNMP metrics」が空、エージェントの `query_metrics` が何も返さない | 2026-10-09（cycle 013）から `metrics` トピックの IF の統計・CPU・メモリは gnmic が 60 秒ごとに書く（SNMP のポーリングはやめた）。stream の output `gnmic_list_tasks_command` で gnmic のタスクが動いているか、ロググループ `/ecs/<prefix>-gnmic` に Kafka のエラー（SCRAM の認証や ACL）が出ていないかを見る。マネージドでは Spark のジョブが Kafka の ACL を入れるまで書けない見込み（下の `Topic authorization failed` の行、[architecture/resources/telegraf.md](architecture/resources/telegraf.md) の「制約と未確認」）。gnmic が書けているのに空なら Spark（[pipeline.md](pipeline.md) の「Spark を確かめる」） |
 | トポロジは赤くなるのに修復案が出ない | SNS → SQS か、ワーカー。`WORKFLOW=1` か、起こす種類か（ワークフローを起こすのは `link_down` だけ）を見る。`terraform -chdir=IaC/terraform/aws-managed/workflow output -raw anomaly_dlq_url` のキューに溜まっていれば、ワーカーが 5 回読んで処理できなかった。ワーカーのログは `terraform -chdir=IaC/terraform/aws-managed/workflow output -raw worker_logs_command`（[workflow.md](workflow.md) の「うまくいかないとき」） |
 | 承認を押しても `pending` のまま | 反映まで数秒〜20 秒かかる（Web → SQS `<prefix>-decisions` → worker → ワークフロー → `proposal_events` → Athena。時間は AWS では未確認）。「更新」を押す。1 分たっても変わらなければ、worker のログに `decide <proposal_id>` が出ているか、DLQ `<prefix>-decisions-dlq` に溜まっていないかを見る（[workflow.md](workflow.md)） |
 | 承認を押したら `expired` になった | ワークフローがもう無かった（worker のタスクが入れ替わった）。処置は打たれない。まだ落ちていれば、次の通知で別の修復案が出る（[workflow.md](workflow.md)） |
@@ -139,6 +141,16 @@ Kafbat UI は Web の EC2 の Docker で動く（`127.0.0.1:8082`）。Web の E
 - **手で止めたのに戻ってくる**
   `sudo systemctl stop <prefix>-kafka-ui` で止めても（t4g.medium のメモリを Gradio に空けたいときなど）、Web のユニットの `Wants=` が、Web の start / restart のたびに起こす（手順 8-3 の打ち直し、手で打つ `systemctl restart <prefix>-web`）。止めたままにしたいなら `sudo systemctl mask --runtime <prefix>-kafka-ui`。戻すのは `sudo systemctl unmask --runtime <prefix>-kafka-ui`（`--runtime` を付けないと `/run` の mask は外れない）。EC2 の再起動でも mask は消える。
 
+## 2026-10-09 の改名より前に立てた環境
+
+2026-10-09 に Splunk のアプリ、Nautobot の App と API ユーザーと JobHook、S3 Tables の namespace の名前を `nwc` に揃えた（「名前を nwc に揃える（019）」）。それより前に立てて残した環境に新しい名前のものを上げると、次が起きる。どれも、先に `ops/down.sh`（手元の compose は `docker/compose/down.sh -v`）で消してから上げれば起きない（[deploy.md](deploy.md)、[docker/compose/README.md](../docker/compose/README.md) の「消す」）。
+
+| 症状 | 原因と直し方 |
+|---|---|
+| 手元の compose の Splunk で、保存済みサーチ `nwc_*` が動かない（前の名前のアプリが動き続ける）か、同じアラートの `sendmodalert` が 2 回ずつ出る | volume `splunk-etc` に前の名前のアプリが残っている。同じ版のまま上げると新しいアプリが入らず、版を上げると両方が動く（compose は SNS の topic を渡さないので、SNS には届かず失敗のログが 2 回出る。ECS の Splunk は volume を持たないので起きない）。`docker/compose/down.sh -v` で volume ごと消してから上げる。コードを読んだだけで、再現はしていない |
+| Nautobot の起動ログに Token の `IntegrityError` が出る。JobHook が 2 つある | Nautobot の RDS に前の名前の API ユーザーと JobHook が残っている。新しい名前のユーザーに同じキーのトークンを作ろうとして一意制約で落ちる（起動は続く）。`ops/down.sh` で RDS ごと消してから上げる。コードを読んだだけで、AWS では未確認 |
+| analytics だけを apply し直したあと、workflow が前の namespace を読む | workflow は analytics の state の `table_namespace` を apply のときに読むので、workflow を apply し直すまで前の namespace のまま（`ops/up.sh` を通しで打てば analytics が先なので起きない）。`ops/down.sh` で消してから上げる。コードを読んだだけで、AWS では未確認 |
+
 ## 消すとき
 
 | 症状 | 原因と直し方 |
@@ -154,4 +166,4 @@ Kafbat UI は Web の EC2 の Docker で動く（`127.0.0.1:8082`）。Web の E
 
 | 見つけた日 | 症状 | 分かっていること |
 |---|---|---|
-| 2026-10-05 | 1 本の回線断で修復案が 2 件できる（見つけたときは 4 件） | 回線の leaf 側と spine 側が、別の異常として数えられる。1 件を承認して verified になると、残りは obsolete になった。両端を 1 つにまとめるのは別のサイクル。4 件のうち 2 件の原因だった、Splunk の trap の検索がサブインターフェース（`ethernet-1/1.0`）を除いていない点は直した（`netops_trap`。手元のテストで確認、AWS では未確認） |
+| 2026-10-05 | 1 本の回線断で修復案が 2 件できる（見つけたときは 4 件） | 回線の leaf 側と spine 側が、別の異常として数えられる。1 件を承認して verified になると、残りは obsolete になった。両端を 1 つにまとめるのは別のサイクル。4 件のうち 2 件の原因だった、Splunk の trap の検索がサブインターフェース（`ethernet-1/1.0`）を除いていない点は直した（`nwc_trap`。手元のテストで確認、AWS では未確認） |

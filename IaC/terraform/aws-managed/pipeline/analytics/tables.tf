@@ -39,7 +39,7 @@ resource "aws_s3tables_table_bucket_policy" "tables" {
   })
 }
 
-resource "aws_s3tables_namespace" "netops" {
+resource "aws_s3tables_namespace" "nwc" {
   namespace        = var.namespace
   table_bucket_arn = aws_s3tables_table_bucket.tables.arn
 }
@@ -55,6 +55,13 @@ moved {
   to   = aws_s3tables_namespace.netops
 }
 
+# 2026-10-09 にリポジトリの名前に揃えて nwc に改名した（cycle 019）。上の moved とつないで state のアドレスを引き継ぐ。
+# 名前空間の名前（var.namespace）も変わるので、apply では作り直し（中身は消える）になる（この PoC はその日に消すので構わない）
+moved {
+  from = aws_s3tables_namespace.netops
+  to   = aws_s3tables_namespace.nwc
+}
+
 # 2026-10-04 に snmp_metrics から改名した（全トピックが入るので、SNMP のメトリクスだけに見えない名前に。いまは metrics / gnmi / traps / logs / flows。mdt は cycle 012 で外した）。
 # moved で state のアドレスを引き継ぐ。テーブルの名前（var.table_name）も変わるので、古いテーブルを残したまま apply すると
 # 作り直し（中身は消える）になるかもしれない（AWS では未確認。この PoC はその日に消すので構わない）
@@ -67,7 +74,7 @@ resource "aws_s3tables_table" "raw_telemetry" {
   count = local.sink_iceberg ? 1 : 0
 
   name             = var.table_name
-  namespace        = aws_s3tables_namespace.netops.namespace
+  namespace        = aws_s3tables_namespace.nwc.namespace
   table_bucket_arn = aws_s3tables_table_bucket.tables.arn
   format           = "ICEBERG"
 
@@ -134,7 +141,7 @@ resource "aws_s3tables_table" "raw_telemetry" {
 # 12 列のテーブルが残っている state からの作り直しは、AWS では見ていない（未確認））
 resource "aws_s3tables_table" "proposal_events" {
   name             = "proposal_events"
-  namespace        = aws_s3tables_namespace.netops.namespace
+  namespace        = aws_s3tables_namespace.nwc.namespace
   table_bucket_arn = aws_s3tables_table_bucket.tables.arn
   format           = "ICEBERG"
 
@@ -294,7 +301,7 @@ resource "aws_s3tables_table" "proposal_events" {
 # Splunk ではその状態の最後の時刻（resolved では解消した時刻）。列は app/temporal/rules.py の ALERT_EVENT_COLUMNS と同じ順・同じ型
 resource "aws_s3tables_table" "alert_events" {
   name             = "alert_events"
-  namespace        = aws_s3tables_namespace.netops.namespace
+  namespace        = aws_s3tables_namespace.nwc.namespace
   table_bucket_arn = aws_s3tables_table_bucket.tables.arn
   format           = "ICEBERG"
 

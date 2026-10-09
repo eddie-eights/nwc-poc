@@ -39,7 +39,7 @@ splunk（event の項目）。prometheus には入れない（ラベルにする
 
 異常の検知はここではしない（2026-10-02 にやめた。detect のクエリと Neptune の anomaly 頂点、S3 Tables の anomaly_events、EventBridge への put_events を消した）。
 検知と相関は格納先の側でする: Grafana のアラートルール（AMP の gNMI の IF / BGP / IS-IS、OpenSearch の trap。
-app/grafana/provisioning/alerting）と Splunk の保存済みサーチ（gNMI の IF / BGP / IS-IS と trap。app/splunk/netops_alerts）が同じ 4 種類を
+app/grafana/provisioning/alerting）と Splunk の保存済みサーチ（gNMI の IF / BGP / IS-IS と trap。app/splunk/nwc_alerts）が同じ 4 種類を
 SNS のトピック <接頭辞>-alerts に出し、ワークフロー（SQS）とトポロジの status（graph の Lambda）がそれを受ける（cycle 002 で両方に揃えた。
 IF の up / down は cycle 013 で SNMP のポーリングの ifOperStatus から gNMI の oper-state に替えた）。
 そのために格納先に合わせた整形だけはここでする（Kafka の生データと S3 Tables へ書くものは、上の gnmic の読み替えのほかは変えない）:
@@ -110,7 +110,7 @@ BULK_SIZE = 500         # 1 回の POST に載せる行数
 OPENSEARCH_INDEX = "snmp-logs"
 METRIC_PREFIX = "snmp"
 SPLUNK_HEC_PATH = "/services/collector/event"   # HEC の JSON イベントの入口（--splunk-hec-url に無ければ足す）
-SPLUNK_SOURCETYPE_PREFIX = "netops"             # sourcetype は netops:<トピック>（netops:metrics / netops:traps / netops:logs）
+SPLUNK_SOURCETYPE_PREFIX = "nwc"                # sourcetype は nwc:<トピック>（nwc:metrics / nwc:traps / nwc:logs）
 # 文字列の状態 → 1 / 0（Prometheus は数値しか持てない。Grafana の bgp_down / isis_down のルールが読む）。
 # (measurement, field) → (系列の field 名, 1 になる値)。値は大文字小文字を見ない。表に無い文字列の field は今までどおり捨てる
 STATE_FIELDS = {
@@ -426,7 +426,7 @@ def _loads(s):
 
 
 def parse_device_map(text):
-    """"203.0.113.31=dc1-a-leaf-01,…" → {別名（小文字）: 機器名}。= の無い要素は捨てる（app/splunk/netops_alerts/bin/netops_sns.py の parse_device_map と同じ読み方）"""
+    """"203.0.113.31=dc1-a-leaf-01,…" → {別名（小文字）: 機器名}。= の無い要素は捨てる（app/splunk/nwc_alerts/bin/nwc_sns.py の parse_device_map と同じ読み方）"""
     out = {}
     for p in (text or "").split(","):
         k, sep, v = p.partition("=")
@@ -585,7 +585,7 @@ def _splunk_value(v):
 
 def splunk_events(records, index="", devmap=None):
     """HEC の JSON イベント（1 行 1 イベント。HEC は本文に並べた複数のイベントを 1 回で受ける）。
-    time は epoch 秒、host は機器（無ければ Telegraf の agent_host）、sourcetype は netops:<トピック>、event に measurement / tags / fields と
+    time は epoch 秒、host は機器（無ければ Telegraf の agent_host）、sourcetype は nwc:<トピック>、event に measurement / tags / fields と
     一意の番号 event_id、Kafka の位置（kafka_topic / kafka_partition / kafka_offset）。
     fields の数値の文字列は数値にする（Splunk が検索で数として扱えるように）。
     sysName の無い tags（gNMI と trap）は devmap で機器名を足す（表に無ければ足さない。cycle 013。保存済みサーチの device が Grafana と同じ機器名になる）"""

@@ -1,6 +1,6 @@
 # nwc-poc - PIPELINE nautobot root module. Nautobot (source of truth of the devices and cables) on ECS Fargate with PostgreSQL on RDS.
 # One task runs three containers: web (UI / API on 8080), a Celery worker (runs the jobs) and Redis (cache and Celery broker).
-# The NetOps jobs of the image (app/nautobot/jobs) read the devices and cables of Nautobot and bring two things in line with them:
+# The NWC jobs of the image (app/nautobot/jobs) read the devices and cables of Nautobot and bring two things in line with them:
 #   1. the gNMI targets of the gnmic task - an SSM parameter of IaC/terraform/aws-managed/pipeline/stream, then a new deployment of the gnmic service
 #   2. the physical layer of the topology in Neptune (IaC/terraform/aws-managed/pipeline/graph), written with openCypher (app/agentcore/graph.py sync_physical).
 #      The OSS variant (IaC/terraform/oss, cycle 005) writes the same into Neo4j instead: its graph state has neo4j_uri, not graph_id
@@ -107,7 +107,7 @@ locals {
   # ops/up.sh が無ければ乱数で作る SecureString（値は Terraform の state に載せない。ops/down.sh が消す）
   secret_parameters = {
     secret-key     = "/${local.name_prefix}/nautobot/secret-key"     # Django の SECRET_KEY
-    admin-password = "/${local.name_prefix}/nautobot/admin-password" # 画面の管理者（app/nautobot/netops/bootstrap.py が作る）
+    admin-password = "/${local.name_prefix}/nautobot/admin-password" # 画面の管理者（app/nautobot/nwc/bootstrap.py が作る）
     db-password    = "/${local.name_prefix}/nautobot/db-password"    # RDS のマスターユーザー
     api-token      = "/${local.name_prefix}/nautobot/api-token"      # Web（app/dashboard/nautobot_api.py）が REST API に使うトークン（bootstrap.py が同じ値で作る）
   }

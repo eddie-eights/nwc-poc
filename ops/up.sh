@@ -50,7 +50,7 @@
 #                                       web の EC2 を踏み台にした SSM のポートフォワードで開く（コマンドは最後に出る）
 #                             splunk  = 全トピック → Splunk の HTTP Event Collector。Splunk Enterprise（公式イメージ・試用ライセンス）を analytics の ECS で
 #                                       立てて VPC の中で送る（+$0.12/h。起動時に Splunk のライセンスと Splunk General Terms に同意する。index はタスクと
-#                                       一緒に消える）。イメージは公式イメージに検知のアプリ（app/splunk/netops_alerts。trap と gNMI の IF・BGP・IS-IS を
+#                                       一緒に消える）。イメージは公式イメージに検知のアプリ（app/splunk/nwc_alerts。trap と gNMI の IF・BGP・IS-IS を
 #                                       保存済みサーチで見て SNS へ出す）を足したもの。管理者のパスワードと HEC の token は手順 7-4 で SSM の SecureString に作る
 #                                       （値は出さない。見るコマンドを最後に出す）。SPLUNK_INDEX（既定は空 = token の既定の index）は任意。
 #                                       AWS の外の Splunk へ NAT Gateway で送る道は 2026-09-28 にやめた（VPC から AWS の外へ出る経路は作らない）
@@ -689,7 +689,7 @@ else
     build_splunk   # Splunk の公式イメージに検知のアプリを足して push する（ops/up-common.sh。OSS 版と共通）
   fi
   if [ -n "$NEED_NAUTOBOT" ]; then
-    # Nautobot の公式イメージに boto3 と Job（app/nautobot/jobs）と対応付け（app/nautobot/netops + app/agentcore/graph.py）と最初の seed を足す（ops/up-common.sh。OSS 版と共通）
+    # Nautobot の公式イメージに boto3 と Job（app/nautobot/jobs）と対応付け（app/nautobot/nwc + app/agentcore/graph.py）と最初の seed を足す（ops/up-common.sh。OSS 版と共通）
     build_nautobot "$NAUTOBOT_TAG" "$NAUTOBOT_CTX"
   fi
   if [ -n "$NEED_REDIS" ]; then

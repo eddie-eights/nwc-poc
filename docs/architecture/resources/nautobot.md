@@ -80,11 +80,11 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 - **機器の名前を変えると、Neptune では別の機器になる。**
   名前が頂点の ID。その機器の `status` と上の層へのつながりは消える。
   出典: 同上。
-- **一括で変えるときは、JobHook `netops-sync` を止めてから。**
+- **一括で変えるときは、JobHook `nwc-sync` を止めてから。**
   変更 1 件ごとに Job が走り、一覧が変わるたびに gnmic が作り直される。最後に手で Job を打つ。
   出典: 同上。
 - **JobHook は、変更した人に Job を実行する権限が無いと出ない。**
-  管理者は出る。権限を絞ったユーザーを作るなら、Job `netops_jobs.SyncOnChange` の実行も許す。
+  管理者は出る。権限を絞ったユーザーを作るなら、Job `nwc_jobs.SyncOnChange` の実行も許す。
   出典: [pipeline.md](../../pipeline.md) の「Nautobot（機器の一覧とケーブルの正）」。
 - **Web の「トポロジ」タブのリンクの編集は、Neptune でなく Nautobot に書く。**
   SSM の `/<prefix>/nautobot/url` があるあいだ。Web が Neptune の物理層を直接書くことはない。

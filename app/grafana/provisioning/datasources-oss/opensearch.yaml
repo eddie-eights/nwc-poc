@@ -1,6 +1,6 @@
 # OSS 版（cycle 005。IaC/terraform/oss）の OpenSearch（自前の 3.9.0。app/spark/snmp_sinks.py が Basic 認証で _bulk に書く）。
 # app/grafana/start.sh が OPENSEARCH_AUTH=basic のときに datasources/opensearch.yaml の代わりに並べる。
-# uid はマネージド版（OpenSearch Serverless）と同じ aoss-logs にして、ダッシュボード（logs.json）とアラートのルール（netops-opensearch.yaml）をそのまま使う。
+# uid はマネージド版（OpenSearch Serverless）と同じ aoss-logs にして、ダッシュボード（logs.json）とアラートのルール（nwc-opensearch.yaml）をそのまま使う。
 # OPENSEARCH_USER は start.sh が既定 admin を入れる。OPENSEARCH_PASSWORD は ECS が SSM の SecureString から入れる（値はここに書かない）
 apiVersion: 1
 datasources:

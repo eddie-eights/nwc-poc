@@ -47,7 +47,7 @@ flowchart LR
 
 ### 2. 1 回の障害で何が書かれるか
 
-`sudo lab fail-main` で DC 側 Leaf の fabric（`dc1-a-leaf-01 ethernet-1/1`）を落としたときの流れ（既定の `STORES=s3,grafana,splunk`）。1〜3 は Grafana の道を書いた。既定では Splunk も同じ id の `link_down` を SNS に出す（保存済みサーチ `netops_gnmi` が gNMI の IF の状態から、`netops_trap` が linkDown の trap から。4 から先は同じで、異常としては 1 つにまとまる）。`STORES` に `grafana` も `splunk` も無ければアラートは出ない（2026-10-09（cycle 013）までは、1 は SNMP のポーリングから取っていた）。
+`sudo lab fail-main` で DC 側 Leaf の fabric（`dc1-a-leaf-01 ethernet-1/1`）を落としたときの流れ（既定の `STORES=s3,grafana,splunk`）。1〜3 は Grafana の道を書いた。既定では Splunk も同じ id の `link_down` を SNS に出す（保存済みサーチ `nwc_gnmi` が gNMI の IF の状態から、`nwc_trap` が linkDown の trap から。4 から先は同じで、異常としては 1 つにまとまる）。`STORES` に `grafana` も `splunk` も無ければアラートは出ない（2026-10-09（cycle 013）までは、1 は SNMP のポーリングから取っていた）。
 
 1. **gNMI（on-change）:** gnmic が IF の `oper-state` が `down` に変わったのを受け、MSK の `gnmi` に出す。
 2. **Spark:** gnmic の event を Telegraf のころと同じ形（系列 `snmp_interface_oper_up`）に読み替え（[collection.md](collection.md) の「gnmic の event と読み替え」）、`iceberg` が行を `raw_telemetry` に追記し、`prometheus` が同じ値を Prometheus に書く。どちらも up か down かを判断しない。
@@ -124,7 +124,7 @@ flowchart LR
 
 | 見たいもの | ファイル |
 |---|---|
-| 検知（アラートのルール、保存済みサーチ、SNS への publish） | [app/grafana/provisioning/alerting/](../app/grafana/provisioning/alerting/)（ルールは `netops-prometheus.yaml` と `netops-opensearch.yaml`、送り先と本文は `netops.yaml`）、[app/splunk/netops_alerts/](../app/splunk/netops_alerts/) |
+| 検知（アラートのルール、保存済みサーチ、SNS への publish） | [app/grafana/provisioning/alerting/](../app/grafana/provisioning/alerting/)（ルールは `nwc-prometheus.yaml` と `nwc-opensearch.yaml`、送り先と本文は `nwc.yaml`）、[app/splunk/nwc_alerts/](../app/splunk/nwc_alerts/) |
 | アラートのトピックと、本文の読み方 | [IaC/terraform/aws-managed/base/core/alerts.tf](../IaC/terraform/aws-managed/base/core/alerts.tf)、[app/temporal/rules.py](../app/temporal/rules.py) の `alerts_from_message` |
 | 修復案と履歴のテーブル（`proposal_events` / `alert_events`） | [IaC/terraform/aws-managed/pipeline/analytics/tables.tf](../IaC/terraform/aws-managed/pipeline/analytics/tables.tf) |
 | 障害の履歴の書き込みと読み出し（Firehose、Athena のワークグループ） | [IaC/terraform/aws-managed/pipeline/analytics/history.tf](../IaC/terraform/aws-managed/pipeline/analytics/history.tf)、[app/graph/status_handler.py](../app/graph/status_handler.py) の `send_history`、[app/agentcore/evidence.py](../app/agentcore/evidence.py) の `query_history` |
@@ -155,9 +155,9 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 | `syslog-ng` | [app/syslog-ng/](../app/syslog-ng/)（公式の AxoSyslog `ghcr.io/axoflow/axosyslog:4.29.0` に設定のテンプレートと入口のスクリプトを足す。[docker/images/syslog-ng/Dockerfile](../docker/images/syslog-ng/Dockerfile)） | ECS Fargate（stream。内部 NLB の後ろ。2026-10-08、cycle 012 から） | 機器の syslog（UDP 5140）を受け、Telegraf と同じ形（measurement `device_log`）で MSK の `logs` に書く。MSK へは SASL/SCRAM（9096）でつなぐ |
 | `goflow2` | `netsampler/goflow2:v2.2.7`（ミラー） | ECS Fargate（stream。内部 NLB の後ろ。2026-10-08、cycle 012 から） | NetFlow（UDP 2055）と sFlow（UDP 6343）を受け、GoFlow2 の JSON のまま MSK の `flows` に書く（共通の形には Spark が読み替える）。MSK へは SASL/SCRAM。lab の SR Linux は NetFlow を出さないので、試すときは `ops/netflow_send.py` |
 | `grafana` | [app/grafana/](../app/grafana/)（公式の Grafana OSS にデータソースの plugin と provisioning を焼き込む） | ECS Fargate（analytics。`STORES` の `grafana`） | Prometheus（AMP）と OpenSearch Serverless を SigV4 で読んで見せる。アラートルール（Prometheus の `link_down` / `bgp_down` / `isis_down` と、OpenSearch の `trap`）を評価して SNS へ出す（`link_down` は gnmic が取る gNMI の IF の状態を見る） |
-| `splunk` | [app/splunk/](../app/splunk/)（公式の `splunk/splunk:10.4.4` に検知のアプリ `netops_alerts` と入口のスクリプトを足す。amd64 だけ、約 2〜3 GB） | ECS Fargate x86（analytics。`STORES` に `splunk` があるとき） | Splunk Enterprise（試用ライセンス）。Spark が HEC に全トピックを送り、保存済みサーチが gNMI・trap から異常を見つけて SNS へ出す |
+| `splunk` | [app/splunk/](../app/splunk/)（公式の `splunk/splunk:10.4.4` に検知のアプリ `nwc_alerts` と入口のスクリプトを足す。amd64 だけ、約 2〜3 GB） | ECS Fargate x86（analytics。`STORES` に `splunk` があるとき） | Splunk Enterprise（試用ライセンス）。Spark が HEC に全トピックを送り、保存済みサーチが gNMI・trap から異常を見つけて SNS へ出す |
 | `kafka-ui` | `ghcr.io/kafbat/kafka-ui`（ミラー） | Web の EC2 の Docker（stream を作る回。010 から） | Kafbat UI。MSK のトピック・メッセージ・consumer group を画面で見る（IAM 認証） |
-| `nautobot` | [app/nautobot/](../app/nautobot/)（公式の `networktocode/nautobot` に Job と `netops` を足す） | ECS Fargate（pipeline/nautobot。`PIPELINE=1`） | 台帳（Nautobot）。変更を gnmic の購読先と Neptune に同期する |
+| `nautobot` | [app/nautobot/](../app/nautobot/)（公式の `networktocode/nautobot` に Job と `nwc` を足す） | ECS Fargate（pipeline/nautobot。`PIPELINE=1`） | 台帳（Nautobot）。変更を gnmic の購読先と Neptune に同期する |
 | `redis` | `redis`（ミラー） | ECS Fargate（`nautobot` と同じタスク） | Nautobot のキャッシュと Celery のブローカー |
 
 分けて見ると、監視される側が `lab-srlinux`、負荷をかける側が `lab-trex`（`lab-multitool` は containerlab の既定のイメージ）、集める側が `telegraf` / `gnmic` / `syslog-ng` / `goflow2`、考える側が `agent`、実行する側が `temporal` / `worker`、見る側と見つける側が `grafana` / `splunk`。

@@ -1,8 +1,8 @@
 # ---------------------------------------------------------------- Nautobot (ECS Fargate)
 # 1 つのタスクに 3 つのコンテナ（同じタスクなので互いに localhost で届く）:
-#   web     画面と API（8080）。上流の entrypoint が DB の migrate（post_upgrade）をしてから、app/nautobot/netops/bootstrap.py が
+#   web     画面と API（8080）。上流の entrypoint が DB の migrate（post_upgrade）をしてから、app/nautobot/nwc/bootstrap.py が
 #           管理者・custom field・最初の seed（機器が 0 件のときだけ lab の定義から）・Job の有効化と JobHook を入れ、一度同期して、uwsgi を起こす
-#   worker  Celery のワーカー。Job（app/nautobot/jobs/netops_jobs.py の「gnmic とグラフ DB に同期」と、変更のたびに走る JobHook）を回す
+#   worker  Celery のワーカー。Job（app/nautobot/jobs/nwc_jobs.py の「gnmic とグラフ DB に同期」と、変更のたびに走る JobHook）を回す
 #   redis   キャッシュと Celery のブローカー、同期のロック。中身は消えてよい
 # 画面は Web の EC2 を踏み台にした SSM のポートフォワードで開く（outputs.tf のコマンド）。
 
@@ -55,7 +55,7 @@ locals {
     { name = "NAUTOBOT_REDIS_PORT", value = "6379" },
     { name = "NAUTOBOT_SUPERUSER_NAME", value = var.admin_user },
     { name = "AWS_REGION", value = var.region },
-    # Job の書き先（app/nautobot/netops/nb_sync.py）。空ならその片方を飛ばす
+    # Job の書き先（app/nautobot/nwc/nb_sync.py）。空ならその片方を飛ばす
     ], local.graph_neo4j ? [
     { name = "GRAPH_BACKEND", value = "neo4j" },
     { name = "NEO4J_URI", value = local.neo4j_uri },
@@ -116,7 +116,7 @@ resource "aws_ecs_task_definition" "nautobot" {
       image     = local.image
       essential = true
       # entrypoint（上流のまま）が DB を待って migrate してから、この command が走る。bootstrap.py が落ちても画面は上げる（ログに理由が出る）
-      command      = ["sh", "-c", "python /opt/nautobot/netops/bootstrap.py; exec nautobot-server start --ini /opt/nautobot/uwsgi.ini"]
+      command      = ["sh", "-c", "python /opt/nautobot/nwc/bootstrap.py; exec nautobot-server start --ini /opt/nautobot/uwsgi.ini"]
       portMappings = [{ containerPort = 8080, protocol = "tcp" }]
       dependsOn    = [{ containerName = "redis", condition = "HEALTHY" }]
       # entrypoint が DB を待つ秒数（既定 30）。RDS とタスクを同時に作るので長めにする

@@ -41,7 +41,7 @@ variable "emr_release_label" {
 variable "namespace" {
   description = "S3 Tables namespace (lowercase letters, digits, underscores - no hyphens)"
   type        = string
-  default     = "netops"
+  default     = "nwc"
 
   validation {
     condition     = can(regex("^[a-z0-9][a-z0-9_]{0,254}$", var.namespace)) && !startswith(var.namespace, "aws")
@@ -176,7 +176,7 @@ variable "splunk_index" {
 }
 
 variable "splunk_image_tag" {
-  description = "Tag of the app/splunk/ image (splunk/splunk plus the netops_alerts app) in the ECR repository <prefix>-splunk. ops/up.sh builds it as <Splunk version>-<hash of app/splunk/ and docker/images/splunk/Dockerfile> (amd64 only, so the task is X86_64). Used only when sinks has splunk"
+  description = "Tag of the app/splunk/ image (splunk/splunk plus the nwc_alerts app) in the ECR repository <prefix>-splunk. ops/up.sh builds it as <Splunk version>-<hash of app/splunk/ and docker/images/splunk/Dockerfile> (amd64 only, so the task is X86_64). Used only when sinks has splunk"
   type        = string
   default     = "10.4.4"
 
@@ -272,7 +272,7 @@ variable "grafana_task_memory" {
 
 # ---------------------------------------------------------------- alerts (Grafana / Splunk -> SNS topic of IaC/terraform/aws-managed/base/core)
 variable "device_map" {
-  description = "alias=device_id,... (management IPs, interface and loopback addresses, hostnames). Used where a record has no sysName tag (traps and gNMI carry the management IP in source): the Splunk task gets it as DEVICE_MAP for its alert action (app/splunk/netops_alerts), and the Spark job gets it as --device-map to add sysName to the prometheus, opensearch and splunk sinks (the Grafana rules and the Splunk saved searches group by sysName). ops/up.sh always generates it from the lab definition with app/containerlab/lab_topology.py --device-map, so the device list lives in one place. Empty means such alerts keep the raw IP as device_id (they do not match a device in Neptune). ops/up.sh restarts the streaming job when the arguments change."
+  description = "alias=device_id,... (management IPs, interface and loopback addresses, hostnames). Used where a record has no sysName tag (traps and gNMI carry the management IP in source): the Splunk task gets it as DEVICE_MAP for its alert action (app/splunk/nwc_alerts), and the Spark job gets it as --device-map to add sysName to the prometheus, opensearch and splunk sinks (the Grafana rules and the Splunk saved searches group by sysName). ops/up.sh always generates it from the lab definition with app/containerlab/lab_topology.py --device-map, so the device list lives in one place. Empty means such alerts keep the raw IP as device_id (they do not match a device in Neptune). ops/up.sh restarts the streaming job when the arguments change."
   type        = string
   default     = ""
 }

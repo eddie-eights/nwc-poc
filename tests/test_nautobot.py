@@ -1,5 +1,5 @@
 """Nautobot 連携（app/nautobot/、IaC/terraform/aws-managed/pipeline/nautobot、ops/up.sh が PIPELINE=1 でいつも作る）の模擬テスト。AWS にも Nautobot にも触れない。
-- 対応付け（app/nautobot/netops/nb_map.py）: lab の定義 → seed_plan → Nautobot → to_graph / targets と一周すると、lab と同じ機器・回線・gnmic の購読先に戻る
+- 対応付け（app/nautobot/nwc/nb_map.py）: lab の定義 → seed_plan → Nautobot → to_graph / targets と一周すると、lab と同じ機器・回線・gnmic の購読先に戻る
 - 同期（nb_sync.push_targets）: 変わったときだけ SSM を書いて gnmic を作り直す。空の一覧は書かない
 - Web: Nautobot があるあいだは、リンクの追加・削除を Nautobot の REST API に書く（app/dashboard/topology_view.py、app/dashboard/nautobot_api.py）。静的データの投入は止める
 - 配線: Dockerfile・Terraform・ops/up.sh・ops/down.sh の名前と順序がそろっている
@@ -7,7 +7,7 @@
 import json, logging, os, re, subprocess, sys
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-sys.path[:0] = [os.path.join(ROOT, "app", "agentcore"), os.path.join(ROOT, "app", "nautobot", "netops"), os.path.join(ROOT, "app", "containerlab")]
+sys.path[:0] = [os.path.join(ROOT, "app", "agentcore"), os.path.join(ROOT, "app", "nautobot", "nwc"), os.path.join(ROOT, "app", "containerlab")]
 
 passed = 0
 def check(name, cond):
@@ -142,7 +142,7 @@ graph.sync_physical = lambda devices, links: synced.append((len(devices), len(li
 toolkit.client = lambda name: {"ssm": Ssm({"/p/gnmi": "old"}), "ecs": Ecs()}[name]
 _changes = [{"id": "u1", "time": 1790000000, "user": "admin", "action": "update", "object_type": "device", "object": "DC1-A-Leaf-01", "device": "DC1-A-Leaf-01",
              "differences": {"removed": {"status": {"name": "Active"}, "last_updated": "a"}, "added": {"status": {"name": "Maintenance"}, "last_updated": "b"}}},
-            {"id": "u2", "time": 1790000100, "user": "netops-web", "action": "delete", "object_type": "cable", "object": "x <> y", "device": "", "differences": None},
+            {"id": "u2", "time": 1790000100, "user": "nwc-web", "action": "delete", "object_type": "cable", "object": "x <> y", "device": "", "differences": None},
             {"id": "", "time": 1}]
 changes_synced = []
 nb_sync.read_changes = lambda: list(_changes)
@@ -218,10 +218,10 @@ check("sync（OSS 版）: 機器が 1 台も無いときは Neo4j を触らな�
       and "Nautobot に機器が 1 台も無い。Neo4j は触らない" in lines)
 check("sync（OSS 版）のあと、graph と nb_sync はマネージド版（Neptune）に戻る", graph.BACKEND == "neptune" and nb_sync.GRAPH_NAME == "Neptune")
 graph.configured = lambda: True
-ns = read("app", "nautobot", "netops", "nb_sync.py")
+ns = read("app", "nautobot", "nwc", "nb_sync.py")
 check("nb_sync.read は機器の Status を読み、read_changes は ObjectChange を新しい順に読む",
       '"status": d.status.name if d.status else ""' in ns and 'ObjectChange.objects.select_related("changed_object_type", "related_object_type").order_by("-time")[:limit]' in ns)
-boot = read("app", "nautobot", "netops", "bootstrap.py")
+boot = read("app", "nautobot", "nwc", "bootstrap.py")
 check("bootstrap: seed が失敗したら起動時の同期を飛ばし、JobHook は起動のたびに決まった形へ戻す",
       "steps_skip.add(first_sync)" in boot and "JobHook.objects.update_or_create" in boot)
 check("bootstrap: Maintenance を機器の Status に選べるようにする（seed より前）",
@@ -229,7 +229,7 @@ check("bootstrap: Maintenance を機器の Status に選べるようにする（
 # ---- Job の名前（2026-10-08 の OSS 版の検証の「docs のずれ」3。前は OSS 版でも「Telegraf と Neptune に同期」。cycle 013 で Telegraf → gnmic）
 import importlib.util
 def load_jobs(graph_name):
-    """app/nautobot/jobs/netops_jobs.py を、Nautobot の Job の基底と nb_sync（GRAPH_NAME だけ）を差し替えて読む。{クラス名: (name, description)}"""
+    """app/nautobot/jobs/nwc_jobs.py を、Nautobot の Job の基底と nb_sync（GRAPH_NAME だけ）を差し替えて読む。{クラス名: (name, description)}"""
     stub = types.ModuleType("nautobot.apps.jobs")
     stub.Job, stub.JobHookReceiver, stub.BooleanVar, stub.register_jobs = type("Job", (), {}), type("JobHookReceiver", (), {}), (lambda **kw: kw), (lambda *c: None)
     mods = {"nautobot": types.ModuleType("nautobot"), "nautobot.apps": types.ModuleType("nautobot.apps"), "nautobot.apps.jobs": stub,
@@ -237,7 +237,7 @@ def load_jobs(graph_name):
     saved = {k: sys.modules.get(k) for k in mods}
     sys.modules.update(mods)
     try:
-        spec = importlib.util.spec_from_file_location("netops_jobs", os.path.join(ROOT, "app", "nautobot", "jobs", "netops_jobs.py"))
+        spec = importlib.util.spec_from_file_location("nwc_jobs", os.path.join(ROOT, "app", "nautobot", "jobs", "nwc_jobs.py"))
         m = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(m)
         return {c: (getattr(m, c).Meta.name, getattr(m, c).Meta.description) for c in ("SyncTopology", "SyncOnChange")}
@@ -257,7 +257,7 @@ check("Job の説明は書き先の名前（nb_sync.GRAPH_NAME）を出す。マ
 _old_name = subprocess.run(["git", "grep", "-n", "-e", "Telegraf と Neptune に同期", "-e", "Telegraf とグラフ DB に同期", "--", "app", "IaC", "ops",
                             "docs/nautobot.md", "docs/oss-variant.md", "docs/pipeline.md", "docs/architecture"], cwd=ROOT, capture_output=True, text=True).stdout
 check(f"Job は名前でなくクラスの場所で引く（bootstrap の JOBS と JobHook の job）ので、名前を変えても外れない。古い名前はコードと docs に残らない（{_old_name.strip()}）",
-      'JOBS = ("netops_jobs.SyncTopology", "netops_jobs.SyncOnChange")' in boot and '"job": models[JOBS[1]]' in boot and _old_name == "")
+      'JOBS = ("nwc_jobs.SyncTopology", "nwc_jobs.SyncOnChange")' in boot and '"job": models[JOBS[1]]' in boot and _old_name == "")
 
 # ---- 配線
 docker = read("docker", "images", "nautobot", "Dockerfile")
@@ -270,12 +270,12 @@ check("版: ops/up.sh の NAUTOBOT_VERSION = Dockerfile の ARG", f"ARG NAUTOBOT
 check("版: ops/up.sh の REDIS_TAG = terraform の redis_image_tag の既定値",
       re.search(r'variable "redis_image_tag" \{[\s\S]*?default\s*=\s*"%s"' % re.escape(redis), tf["variables.tf"]) is not None)
 check("Dockerfile が COPY するものを ops/up.sh の nautobot_context が集める",
-      "netops/ graph.py toolkit.py lab_seed.json /opt/nautobot/netops/" in docker and "jobs/ /opt/nautobot/jobs/" in docker
+      "nwc/ graph.py toolkit.py lab_seed.json /opt/nautobot/nwc/" in docker and "jobs/ /opt/nautobot/jobs/" in docker
       and 'cp -R app/nautobot/. "$1/" && cp app/agentcore/graph.py app/agentcore/toolkit.py "$1/"' in up and 'app/containerlab/lab_topology.py app/containerlab >"$1/lab_seed.json"' in up)
-check("lab_seed.json はリポジトリに置かない（毎回 lab の定義から作る）", not os.path.exists(os.path.join(ROOT, "app", "nautobot", "netops", "lab_seed.json")))
-check("Job が import するモジュールが PYTHONPATH の先にそろう", "PYTHONPATH=/opt/nautobot/netops" in docker
-      and all(os.path.exists(os.path.join(ROOT, *p)) for p in (("app", "nautobot", "netops", "nb_sync.py"), ("app", "nautobot", "netops", "bootstrap.py"), ("app", "agentcore", "graph.py"), ("app", "agentcore", "toolkit.py"))))
-envs = set(re.findall(r'os\.environ\.get\("([A-Z_]+)"', read("app", "nautobot", "netops", "nb_sync.py")))
+check("lab_seed.json はリポジトリに置かない（毎回 lab の定義から作る）", not os.path.exists(os.path.join(ROOT, "app", "nautobot", "nwc", "lab_seed.json")))
+check("Job が import するモジュールが PYTHONPATH の先にそろう", "PYTHONPATH=/opt/nautobot/nwc" in docker
+      and all(os.path.exists(os.path.join(ROOT, *p)) for p in (("app", "nautobot", "nwc", "nb_sync.py"), ("app", "nautobot", "nwc", "bootstrap.py"), ("app", "agentcore", "graph.py"), ("app", "agentcore", "toolkit.py"))))
+envs = set(re.findall(r'os\.environ\.get\("([A-Z_]+)"', read("app", "nautobot", "nwc", "nb_sync.py")))
 check("nb_sync が読む環境変数を Terraform がコンテナに渡す", envs and all(e in nb_tf for e in envs | {"NEPTUNE_GRAPH_ID"}) and "NEPTUNE_ENDPOINT" not in nb_tf)
 check("シークレットは SSM の SecureString から（タスク定義の secrets と RDS の write-only）。Terraform の変数に値を持たない",
       all(s in nb_tf for s in ("NAUTOBOT_SECRET_KEY", "NAUTOBOT_DB_PASSWORD", "NAUTOBOT_SUPERUSER_PASSWORD", "NAUTOBOT_API_TOKEN"))
@@ -347,7 +347,7 @@ check("Web: ケーブルのあるインタフェースには足さず、削除�
 check("Web: トークンは SecureString として読み（decrypt）、API のユーザーは bootstrap が同じ環境変数から作る",
       nb.TOKEN.decrypt and nb.TOKEN.param == "nautobot/api-token" and not tv.toolkit.Param("X", "y").decrypt
       and '{"WithDecryption": True} if self.decrypt else {}' in read("app", "agentcore", "toolkit.py")
-      and 'os.environ.get("NAUTOBOT_API_TOKEN", "")' in read("app", "nautobot", "netops", "bootstrap.py") and "api_user, custom_fields" in read("app", "nautobot", "netops", "bootstrap.py")
+      and 'os.environ.get("NAUTOBOT_API_TOKEN", "")' in read("app", "nautobot", "nwc", "bootstrap.py") and "api_user, custom_fields" in read("app", "nautobot", "nwc", "bootstrap.py")
       and 'ensure_secret "/$PREFIX/nautobot/api-token" token' in up and "secrets.token_hex(20)" in up)
 check("API のトークンは worker のコンテナには渡さない", '!contains(["NAUTOBOT_SUPERUSER_PASSWORD", "NAUTOBOT_API_TOKEN"], s.name)' in nb_tf)
 graph.configured = lambda: False

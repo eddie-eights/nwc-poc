@@ -3,12 +3,12 @@
 
   1. 管理者: NAUTOBOT_SUPERUSER_NAME / NAUTOBOT_SUPERUSER_PASSWORD（SSM の SecureString を ECS が渡す）で作り、パスワードを合わせる。
      上流の NAUTOBOT_CREATE_SUPERUSER は API トークンも要るので使わない
-  1b. API のユーザー: NAUTOBOT_API_TOKEN（SSM の SecureString）があれば、ユーザー NAUTOBOT_API_USER（既定 netops-web）とそのトークンを作る。
+  1b. API のユーザー: NAUTOBOT_API_TOKEN（SSM の SecureString）があれば、ユーザー NAUTOBOT_API_USER（既定 nwc-web）とそのトークンを作る。
       Web の「トポロジ」タブ（app/dashboard/nautobot_api.py）がこのトークンでケーブルを作る・消す。JobHook は変更者に Job の実行権限が要るので superuser にする
   2. custom field: Device の asn、Cable の link_role / bandwidth_mbps（nb_map.py の対応付けが読む）
   3. 最初の seed: 機器が 1 台も無いときだけ、イメージに入れた lab の定義（lab_seed.json = app/containerlab/lab_topology.py の出力）から
      Location / Role / Device / Interface / IPAddress / Service / Cable を作る。あとは Nautobot が正で、lab を変えてもここは入れ直さない
-  4. Job: JOBS_ROOT の netops_jobs の 2 つを登録して有効にし、JobHook（netops-sync）を張る
+  4. Job: JOBS_ROOT の nwc_jobs の 2 つを登録して有効にし、JobHook（nwc-sync）を張る
   5. 起動時の同期: gnmic の購読先の一覧と Neptune（OSS 版は Neo4j）の物理層を今の Nautobot に合わせる（nb_sync.sync）
 """
 import contextlib
@@ -36,11 +36,11 @@ import nb_map  # noqa: E402
 import nb_sync  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="bootstrap %(levelname)s %(message)s")
-log = logging.getLogger("netops.bootstrap")
+log = logging.getLogger("nwc.bootstrap")
 
-SEED = os.environ.get("NETOPS_SEED", os.path.join(os.path.dirname(os.path.abspath(__file__)), "lab_seed.json"))
-JOBS = ("netops_jobs.SyncTopology", "netops_jobs.SyncOnChange")
-HOOK = "netops-sync"
+SEED = os.environ.get("NWC_SEED", os.path.join(os.path.dirname(os.path.abspath(__file__)), "lab_seed.json"))
+JOBS = ("nwc_jobs.SyncTopology", "nwc_jobs.SyncOnChange")
+HOOK = "nwc-sync"
 SWITCH_TYPE, VM_TYPE = ("Nokia", "SR Linux"), ("Generic", "Linux VM")
 CUSTOM_FIELDS = (("asn", "ASN", "integer", Device), ("link_role", "Link role", "text", Cable), ("bandwidth_mbps", "Bandwidth (Mbps)", "integer", Cable))
 
@@ -58,7 +58,7 @@ def superuser():
 
 
 def api_user():
-    name, key = os.environ.get("NAUTOBOT_API_USER", "netops-web"), os.environ.get("NAUTOBOT_API_TOKEN", "")
+    name, key = os.environ.get("NAUTOBOT_API_USER", "nwc-web"), os.environ.get("NAUTOBOT_API_TOKEN", "")
     if not key:
         log.warning("NAUTOBOT_API_TOKEN が無い。API のユーザーは作らない（Web からのリンクの編集は使えない）")
         return
@@ -69,7 +69,7 @@ def api_user():
         user.set_unusable_password()   # 画面からは入れない。API のトークンだけ
     user.save()
     Token.objects.filter(user=user).exclude(key=key).delete()   # SSM の値を作り直したら古いトークンは消す
-    Token.objects.get_or_create(user=user, key=key, defaults={"description": "app/dashboard/nautobot_api.py (created by netops bootstrap)"})
+    Token.objects.get_or_create(user=user, key=key, defaults={"description": "app/dashboard/nautobot_api.py (created by nwc bootstrap)"})
     log.info("API のユーザー %s とトークンを%s", name, "作った" if created else "合わせた")
 
 
@@ -77,7 +77,7 @@ def custom_fields():
     # custom field を足すと Nautobot は既存の行に既定値を配る Job（ProvisionCustomField）を積む。積むのに「誰の変更か」が要るので、管理者の変更として行う
     # （管理者がいなければそのまま作る。Job は積めずに ERROR が出るが、field はできる）
     user = get_user_model().objects.filter(is_superuser=True, is_active=True).order_by("username").first()
-    with web_request_context(user, context_detail="netops-bootstrap") if user else contextlib.nullcontext():
+    with web_request_context(user, context_detail="nwc-bootstrap") if user else contextlib.nullcontext():
         for key, label, kind, model in CUSTOM_FIELDS:
             field, _ = CustomField.objects.get_or_create(key=key, defaults={"label": label, "type": kind})
             field.content_types.add(ContentType.objects.get_for_model(model))

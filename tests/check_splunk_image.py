@@ -1,13 +1,13 @@
 """Splunk のイメージ（docker/images/splunk/Dockerfile）の中で、Splunk の Python が持っている boto3 でアラートを SNS へ送れることを確かめる。
-アラートアクション（app/splunk/netops_alerts/bin/netops_sns.py）は boto3 を同梱せず、Splunk の Python のものを使う。Splunk の版
+アラートアクション（app/splunk/nwc_alerts/bin/nwc_sns.py）は boto3 を同梱せず、Splunk の Python のものを使う。Splunk の版
 （docker/images/splunk/Dockerfile の SPLUNK_VERSION）を上げると boto3 が無くなる・変わることがあるので、版を変えたらこれを走らせ、通ったら CHECKED を書き換える
 （tests/test_alerts.py が CHECKED と Dockerfile の版・python.required を突き合わせるので、書き換えないと ops/check.sh が落ちる）。
 boto3 が無くなっていたら、boto3 を app の lib/ に同梱する形（git の ffba169）に戻す。
 
 確かめること（AWS へは出ない。偽の認証情報の口と偽の SNS を、コンテナの中で Splunk の Python で動かす）
-  1. 直に: Splunk の Python（alert_actions.conf の python.required の版）で boto3 / botocore を読み、netops_sns の sns_client で
+  1. 直に: Splunk の Python（alert_actions.conf の python.required の版）で boto3 / botocore を読み、nwc_sns の sns_client で
      SNS のクライアントを作り、send で偽の SNS へ 1 通 publish する
-  2. 本物の流れで: 入口（app/splunk/entrypoint.sh）で起こした Splunk に HEC で link down のイベント（gnmic の interface_state を Spark が読み替えた形）を 1 件入れ、保存済みサーチ（netops_gnmi）→
+  2. 本物の流れで: 入口（app/splunk/entrypoint.sh）で起こした Splunk に HEC で link down のイベント（gnmic の interface_state を Spark が読み替えた形）を 1 件入れ、保存済みサーチ（nwc_gnmi）→
      アラートアクション（splunkd が python.required の Python で起こす）→ 偽の SNS に 1 通だけ届く。本文・件名・送った Python と boto3 の版
      （User-Agent）と、splunkd.log の published=1/1 / exit code=0 を見る
   3. boto3 が読めないとき: app の bin/ に読むと失敗する boto3.py を置いて（2 と同じ流れ）、splunkd.log に理由の分かる ERROR が出て、送らないこと
@@ -33,8 +33,8 @@ CHECKED = {"splunk": "10.4.4", "python": "3.13.11", "boto3": "1.37.14"}   # こ�
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IMAGE = "nwc-splunk-check:local"
 NAME = f"nwc-splunk-check-{os.getpid()}"
-APP = "/opt/splunk/etc/apps/netops_alerts"
-TOPIC = "arn:aws:sns:ap-northeast-1:111122223333:netops-alerts"
+APP = "/opt/splunk/etc/apps/nwc_alerts"
+TOPIC = "arn:aws:sns:ap-northeast-1:111122223333:nwc-alerts"
 PORT = 18080
 POSTS = "/tmp/nwc_posts.jsonl"
 SHADOW = f"{APP}/bin/boto3.py"
@@ -75,7 +75,7 @@ DIRECT = r'''
 import json, sys
 sys.path.insert(0, "%s/bin")
 import boto3, botocore
-import netops_sns as sns
+import nwc_sns as sns
 env = sns.load_env()
 client = sns.sns_client(env)
 alert = {"status": "firing", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/9", "detail": "check_splunk_image (direct)", "starts_at": 1}
@@ -122,7 +122,7 @@ def splunkd_log():
 
 
 def action_lines():
-    return [l for l in splunkd_log().splitlines() if "action=netops_sns" in l]
+    return [l for l in splunkd_log().splitlines() if "action=nwc_sns" in l]
 
 
 def wait(what, cond, timeout, step=5):
@@ -138,7 +138,7 @@ def wait(what, cond, timeout, step=5):
 def hec_link_down(token, if_name):
     """HEC に link down（oper_state=down）のイベントを 1 件入れる。gnmic の interface_state（on-change。トピック gnmi）を Spark の splunk_events が
     書く形（app/spark/snmp_sinks.py。tags.source は機器の IP、sysName は --device-map で足したもの）"""
-    ev = {"time": int(time.time()), "host": "203.0.113.11", "source": "telegraf:interface", "sourcetype": "netops:gnmi",
+    ev = {"time": int(time.time()), "host": "203.0.113.11", "source": "telegraf:interface", "sourcetype": "nwc:gnmi",
           "event": {"topic": "gnmi", "measurement": "interface", "agent_host": "203.0.113.11",
                     "tags": {"ifName": if_name, "source": "203.0.113.11", "subscription-name": "interface_state", "sysName": "dc1-a-leaf-01"},
                     "fields": {"oper_state": "down"}}}
@@ -155,7 +155,7 @@ def ua_versions(ua):
 def main(argv):
     if run("docker", "info", check_rc=False).returncode != 0:
         print("docker が動いていない"); return 2
-    conf = open(os.path.join(ROOT, "app", "splunk", "netops_alerts", "default", "alert_actions.conf"), encoding="utf-8").read()
+    conf = open(os.path.join(ROOT, "app", "splunk", "nwc_alerts", "default", "alert_actions.conf"), encoding="utf-8").read()
     required = re.search(r"^python\.required\s*=\s*(\S+)", conf, re.M).group(1)
     image = argv[1] if len(argv) > 1 else IMAGE
     if len(argv) <= 1:
@@ -178,7 +178,7 @@ def main(argv):
         check(f"Splunk が入口（app/splunk/entrypoint.sh）から起きて healthy になる（{int(time.time() - t0)} 秒）", health and health[-1] == "healthy",
               run("docker", "logs", "--tail", "30", NAME, check_rc=False).stdout)
         version = re.search(r"^VERSION=(\S+)", dexec("cat", "/opt/splunk/etc/splunk.version").stdout, re.M).group(1)
-        btool = dexec("/opt/splunk/bin/splunk", "btool", "alert_actions", "list", "netops_sns").stdout
+        btool = dexec("/opt/splunk/bin/splunk", "btool", "alert_actions", "list", "nwc_sns").stdout
         check(f"splunkd が読む設定でも python.required = {required}（btool）", re.search(rf"^python\.required\s*=\s*{re.escape(required)}$", btool, re.M) is not None, btool)
 
         dexec("sh", "-c", "cat > /tmp/nwc_fake_sns.py", input=FAKE)
@@ -195,22 +195,22 @@ def main(argv):
               (p.stderr or p.stdout)[-1500:])
         print(f"   python {direct['python']}（{direct['executable']}）boto3 {direct['boto3']} botocore {direct['botocore']} {direct['boto3_file']}")
         got = publishes()
-        check("直に: netops_sns.send で偽の SNS へ 1 通届く（認証情報は偽の口から、署名つき、Query API の Publish）",
+        check("直に: nwc_sns.send で偽の SNS へ 1 通届く（認証情報は偽の口から、署名つき、Query API の Publish）",
               direct["sent"] == 1 and len(got) == 1 and got[0]["form"].get("Action") == "Publish" and got[0]["form"].get("TopicArn") == TOPIC
               and got[0]["token"] == "local-test-token" and any(x["kind"] == "creds" and x["path"] == "/creds" for x in posts()), json.dumps(got, ensure_ascii=False))
 
-        # ---- 2. 本物の流れ（HEC → netops_gnmi → アラートアクション → 偽の SNS）
+        # ---- 2. 本物の流れ（HEC → nwc_gnmi → アラートアクション → 偽の SNS）
         before = len(publishes())
         hec_link_down(token, "ethernet-1/1")
-        print("-- HEC に link down（dc1-a-leaf-01 ethernet-1/1）を入れた。netops_gnmi（毎分）が送るのを待つ")
+        print("-- HEC に link down（dc1-a-leaf-01 ethernet-1/1）を入れた。nwc_gnmi（毎分）が送るのを待つ")
         wait("publish", lambda: len(publishes()) > before, 240)
         time.sleep(75)   # 次の回で重ねて送らないこと（サーチは毎分）
         got = publishes()[before:]
         msg = json.loads(got[0]["form"].get("Message", "{}")) if got else {}
         alerts = msg.get("alerts") or [{}]
         check("本物の流れ: アラートアクションが偽の SNS へ 1 通だけ送る（次の回で重ねて送らない）", len(got) == 1, json.dumps(got, ensure_ascii=False))
-        check("本物の流れ: 本文は Grafana と同じ形の JSON（source=splunk、link_down の firing 1 件）、件名は netops alert、form は Publish",
-              got[0]["form"].get("Action") == "Publish" and got[0]["form"].get("Subject") == "netops alert" and got[0]["form"].get("TopicArn") == TOPIC
+        check("本物の流れ: 本文は Grafana と同じ形の JSON（source=splunk、link_down の firing 1 件）、件名は nwc alert、form は Publish",
+              got[0]["form"].get("Action") == "Publish" and got[0]["form"].get("Subject") == "nwc alert" and got[0]["form"].get("TopicArn") == TOPIC
               and got[0]["content_type"].startswith("application/x-www-form-urlencoded") and msg.get("source") == "splunk" and len(msg.get("alerts", [])) == 1
               and {k: alerts[0].get(k) for k in ("status", "device_id", "kind", "target", "detail")}
               == {"status": "firing", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "detail": "ethernet-1/1 is down (splunk: gnmi)"}
@@ -220,7 +220,7 @@ def main(argv):
               ua_py == direct["python"] and ua_boto3 == direct["boto3"], got[0]["user_agent"])
         lines = action_lines()
         check("本物の流れ: splunkd.log に件数（published=1/1）と exit code=0 が残る",
-              any("STDERR" in l and "search=netops_gnmi rows=1 alerts=1 published=1/1" in l for l in lines) and any("exit code=0" in l for l in lines),
+              any("STDERR" in l and "search=nwc_gnmi rows=1 alerts=1 published=1/1" in l for l in lines) and any("exit code=0" in l for l in lines),
               "\n".join(lines[-10:]))
 
         # ---- 3. boto3 が読めないとき（app の bin/ に読むと失敗する boto3.py を置く。sys.path の先頭は bin/ なので site-packages より先に読まれる）

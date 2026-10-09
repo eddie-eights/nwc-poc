@@ -31,7 +31,7 @@ SR Linux の interface、exec でアドレスを振る IF、回線の端の IF�
 機器の一覧はここ（lab の定義）1 か所にし、gnmic の gNMI の購読先と device map（Splunk のアラートアクションの DEVICE_MAP と Spark の --device-map）もここから作る（ops/up.sh）。
 
 使い方: python3 app/containerlab/lab_topology.py [lab のディレクトリ]  → JSON（{"devices": [...], "links": [...], "layers": {...}}）を標準出力に出す
-        --device-map    Splunk のアラートアクション（app/splunk/netops_alerts）の DEVICE_MAP と Spark の --device-map（別名=device_id,...。device_id と同じ別名は省く）を出す
+        --device-map    Splunk のアラートアクション（app/splunk/nwc_alerts）の DEVICE_MAP と Spark の --device-map（別名=device_id,...。device_id と同じ別名は省く）を出す
         --gnmi-targets  gnmic の購読先（監視対象の管理 IP。"<IP>:57400", ... の形。app/gnmic/gnmic.sh の GNMI_TARGETS）を出す
                         （SNMP のポーリング先の --snmp-agents は cycle 013 でやめた）
         --layers        物理層より上（layers）だけを JSON で出す

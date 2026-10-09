@@ -1,8 +1,8 @@
 {
   "uid": "nwc-metrics",
-  "title": "netops / SNMP metrics",
+  "title": "nwc / SNMP metrics",
   "tags": [
-    "netops"
+    "nwc"
   ],
   "timezone": "browser",
   "schemaVersion": 41,

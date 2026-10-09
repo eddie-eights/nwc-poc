@@ -14,7 +14,7 @@ RUN mkdir -p /opt/grafana-plugins \
  && grafana cli --pluginsDir /opt/grafana-plugins plugins install grafana-amazonprometheus-datasource 3.2.0 \
  && grafana cli --pluginsDir /opt/grafana-plugins plugins install grafana-opensearch-datasource 2.34.4 \
  && chown -R 472:0 /opt/grafana-plugins
-COPY provisioning /etc/grafana/netops
+COPY provisioning /etc/grafana/nwc
 COPY --chmod=0755 start.sh /usr/local/bin/nwc-grafana
 USER 472
 

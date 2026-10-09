@@ -61,12 +61,12 @@ output "grafana_repository_url" {
 }
 
 output "splunk_repository_url" {
-  description = "ops/up.sh builds app/splunk/ (splunk/splunk plus the netops_alerts app, amd64 only) and pushes it here as <Splunk version>-<hash of app/splunk/ and docker/images/splunk/Dockerfile> (step 2, when STORES has splunk). IaC/terraform/aws-managed/pipeline/analytics runs it on ECS."
+  description = "ops/up.sh builds app/splunk/ (splunk/splunk plus the nwc_alerts app, amd64 only) and pushes it here as <Splunk version>-<hash of app/splunk/ and docker/images/splunk/Dockerfile> (step 2, when STORES has splunk). IaC/terraform/aws-managed/pipeline/analytics runs it on ECS."
   value       = try(aws_ecr_repository.pipeline["splunk"].repository_url, "")
 }
 
 output "nautobot_repository_url" {
-  description = "ops/up.sh builds app/nautobot/ (networktocode/nautobot plus the NetOps jobs, arm64) and pushes it here as <Nautobot version>-<hash of the build context> (step 2, whenever PIPELINE=1). IaC/terraform/aws-managed/pipeline/nautobot runs it on ECS."
+  description = "ops/up.sh builds app/nautobot/ (networktocode/nautobot plus the NWC jobs, arm64) and pushes it here as <Nautobot version>-<hash of the build context> (step 2, whenever PIPELINE=1). IaC/terraform/aws-managed/pipeline/nautobot runs it on ECS."
   value       = try(aws_ecr_repository.pipeline["nautobot"].repository_url, "")
 }
 
