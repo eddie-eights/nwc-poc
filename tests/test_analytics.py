@@ -1576,8 +1576,9 @@ check("Runtime の 1 AZ を拒んでいた前の決定（2026-10-04）の文が�
 # コード（`…`）の外の [ ] * < > と、英数字に挟まれていない _（リンク、強調、HTML の記法）、_gh_slug で同じアンカーになる見出し（-1 を付ける形）
 import html as _html
 def _gh_slug(text):
-    # 実体参照（&amp; など）は GitHub では文字になってからアンカーになる（032）
-    return "".join("-" if ch == " " else ch for ch in _html.unescape(text).strip().lower()
+    # 実体参照（&amp; など）は GitHub では文字になってからアンカーになる。コード（`…`）の中は解かない（032）
+    text = "".join(p if p.startswith("`") else _html.unescape(p) for p in re.split(r"(`[^`]*`)", text))
+    return "".join("-" if ch == " " else ch for ch in text.strip().lower()
                    if ch in "-_ " or unicodedata.category(ch)[0] in "LNM")
 def _faq_heads(text):
     """FAQ の見出しを (レベル, 見出しの文字, 行番号) で返す。コードブロックの中の # の行は数えない。
@@ -1668,7 +1669,8 @@ check("FAQ: 箇条書きの中のフェンスは、開きより浅い字下げ�
       and [h[:2] for h in _faq_heads(_faq + _faq_list_fence.format("  "))] == [h[:2] for h in _faq_heads(_faq)] + [(3, "Q. 偽の質問")])
 # 028 で残した GitHub との差（032）: 実体参照、0〜3 空白の字下げの見出し、info string つきのフェンス、4 空白以上の字下げの閉じ、行頭の tab
 check("FAQ の見出し: 実体参照は解いてからアンカーにする（&amp; は & になって消える。032）",
-      [(l, _gh_slug(h)) for l, h, _ in _faq_heads("  ## &amp; x")] == [(2, "-x")] and _gh_slug("a &lt;b&gt; c") == "a-b-c")
+      [(l, _gh_slug(h)) for l, h, _ in _faq_heads("  ## &amp; x")] == [(2, "-x")] and _gh_slug("a &lt;b&gt; c") == "a-b-c"
+      and _gh_slug("`&amp;` x") == "amp-x" and _gh_slug("`a &lt; b` c") == "a-lt-b-c")
 check("FAQ の見出し: 0〜3 空白の字下げの # は見出し、4 空白以上は字下げのコードなので見出しにしない（032）",
       _faq_heads(" # a\n   ## b\n    ## c") == [(1, "a", 0), (2, "b", 1)])
 check("FAQ の見出し: info string つきのフェンス（```py、~~~ yaml）の中の # は見出しにしない（032）",
