@@ -100,7 +100,7 @@
 - [ ] `kafka_load.sh` の gnmi の peer の固定を lab の構成から取る（2026-10-09 に 011 のセルフレビュー N6）
 - [ ] `TELEGRAF_TAG` が Dockerfile のコメントの変更でも変わり、次の `up.sh` がイメージを作り直すのを docs に書くか、ハッシュの入力を絞る（2026-10-09 に 011 のセルフレビュー N7）
 - [ ] `app/containerlab/lab.sh` の `${TREX_IMAGE:?}` を見張るテストを足す（2026-10-09 に 011 のセルフレビュー N8）
-- [ ] TRex 2.41 が af_packet で起動することを AWS で確かめる（m6i.xlarge。ガードの許可リストは 018 で nwc-poc 側に持つ（Web の t4g.medium と lab の m6i.xlarge を含む）。2026-10-09 に 011 のセルフレビュー N9。未確認）
+- [ ] TRex 2.41 が af_packet で起動することを AWS で確かめる（m6i.xlarge。aws_sandbox の always-on のガード `netops-always-on-guard` に t4g.medium と m6i.xlarge を足した（2026-10-09 に v4。nwc-poc には移さない）。2026-10-09 に 011 のセルフレビュー N9。未確認）
 - [ ] ECR の lab の版の `-amd64` の付け方を docs に書く（2026-10-09 に 011 のセルフレビュー N10）
 - [ ] デバッグ用の Telegraf の ECR タグにも `-$LAB_ARCH` を付ける（`ops/lab-debug.sh:141-145`。lab の 3 イメージと同じ仕組みで守る。2026-10-09 に 011 の cold review Round 1 の Nit）
 - [ ] `IaC/terraform/aws-managed/base/ecr/outputs.tf:7/12/17` の説明のタグ（`with tag 26.7.2` 等）を実際に置く `*_ECR_TAG`（`26.7.2-amd64` 等）に合わせる（2026-10-09 に 011 の cold review Round 1 の Nit）
@@ -113,5 +113,4 @@
 - [ ] `ensure_secret` / `ensure_fixed_secret` の一時ファイルを `on_exit` でも消す（`ops/up-common.sh:111` と `:149` は SecureString の値を 0600 の一時ファイルに書き、消すのは関数の最後の `rm` だけ。`put-parameter` の最中に Ctrl+C や kill で止まると平文のファイルが残る。2026-10-09 に 012 の Round 2 のセルフレビューの C5）
 - [ ] `ensure_topics` のログを TopicExists のときに「作った」と出さないようにする（`app/spark/snmp_sinks.py:862-867`。3 本のジョブが同時に起きると、作っていないジョブも「作った: logs, flows」と出す。ずれるのは文言だけでトピックと ACL は正しい。2026-10-09 に 012 の Round 2 のセルフレビューの N4）
 - [ ] コレクターごとに SCRAM のユーザーを分ける（いまは syslog-ng / GoFlow2 / gnmic が `User:collectors` を共有し、`logs` / `flows` / `gnmi` の全部に書ける。ユーザーを 3 つにして secret と ACL をコレクターごとに絞る。2026-10-09 に 013 のセルフレビュー F1b の残リスク）
-- [ ] EC2 のインスタンスタイプのガードを nwc-poc で持つ（`eddie-eights/aws_sandbox` の `netops-always-on-guard` を `IaC/terraform/aws-managed/guard/` に定義し直す。EC2 の拒否だけ。許可リストは Web と lab の `validation` の和集合でテストが見張る。`ops/down.sh` は消さない。古いガードの削除と apply はユーザー。2026-10-09 のユーザー指示） → 018-ec2-guard-in-repo
 - [ ] netops の名前を nwc に揃える（Splunk の app `netops_alerts` / Grafana の `netops*.yaml` / Nautobot の `app/nautobot/netops/` と `netops_jobs` / sourcetype `netops:` / S3 Tables の名前空間 `netops` / README と pyproject の「NetOps」を `nwc` にする。`docs/cycles/` と `docs/verification/` は記録なので触らない。2026-10-09 のユーザー指示） → 019-rename-netops-to-nwc
