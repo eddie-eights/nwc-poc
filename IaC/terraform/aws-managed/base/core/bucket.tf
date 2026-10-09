@@ -4,7 +4,7 @@
 #   kb/     KB の取り込み元（IaC/terraform/aws-managed/agent の create_knowledge_base = true のとき。agent/kb.tf の inclusion_prefixes）
 #   lab/    containerlab の rpm とトポロジ（lab の EC2 の user_data が読む）
 #   spark/  Spark のスクリプト（snmp_sinks.py）と jars/、checkpoint/<MSK の uuid>/（Spark 自身が読み書きする。OSS 版も同じパス）
-# EMR のログと Firehose が書けなかった行は別のバケット（base/logs の <prefix>-logs-<アカウント>。7 日で消え、ops/down.sh で消さない）。
+# Firehose が書けなかった行は別のバケット（base/logs の <prefix>-logs-<アカウント>。7 日で消え、ops/down.sh で消さない）。
 # force_destroy = true なので、中身が残っていても terraform destroy で消える
 resource "aws_s3_bucket" "assets" {
   bucket        = "${local.name_prefix}-assets-${local.account_id}"

@@ -48,7 +48,7 @@ check("ファイルは versions / providers / variables / locals / network / tab
                         "ecs.tf", "grafana.tf", "splunk.tf", "history.tf"})
 check("main の state をローカルから読む", re.search(r'data "terraform_remote_state" "main"[\s\S]*?backend\s*=\s*"local"', tf, re.S) is not None
       and '"${path.module}/../../base/core/terraform.tfstate"' in tf)
-# cycle 035: EMR のログと Firehose が書けなかった行は logs のバケット（base/logs。ops/down.sh で消さない）に書く
+# cycle 035: Firehose が書けなかった行は logs のバケット（base/logs。ops/down.sh で消さない）に書く（EMR のログは S3 に出さない）
 check("logs の state（base/logs）をローカルから読み、logs_bucket と logs_bucket_arn を作る（cycle 035）",
       re.search(r'data "terraform_remote_state" "logs"[\s\S]*?backend\s*=\s*"local"', tf, re.S) is not None
       and '"${path.module}/../../base/logs/terraform.tfstate"' in tf
@@ -359,10 +359,18 @@ check("--checkpoint は s3://<assets のバケット>/spark/checkpoint/<MSK の 
 check("job_driver は jars を s3://<assets のバケット>/spark/jars/ から読む（cycle 035 で analytics/ → spark/）", "spark.jars=s3://${local.bucket}/${local.jars_prefix}/*.jar" in tf
       and re.search(r'jars_prefix\s*=\s*"\$\{local\.s3_prefix\}/jars"', tf) is not None and re.search(r's3_prefix\s*=\s*"spark"', tf) is not None
       and re.search(r'checkpoint\s*=\s*"\$\{local\.s3_prefix\}/checkpoint"', tf) is not None)
-check("EMR のログ（s3MonitoringConfiguration の logUri）は logs のバケットの emr/ に書き、実行ロールは logs のバケットの emr/* だけに PutObject / GetObject、バケットに ListBucket / GetBucketLocation（cycle 035）",
-      'logUri = "s3://${local.logs_bucket}/${local.emr_logs_prefix}/"' in tf and re.search(r'emr_logs_prefix\s*=\s*"emr"', tf) is not None
-      and re.search(r'Sid\s*=\s*"LogsBucket"[\s\S]*?"s3:PutObject",\s*"s3:GetObject"[\s\S]*?Resource\s*=\s*"\$\{local\.logs_bucket_arn\}/\$\{local\.emr_logs_prefix\}/\*"', tf) is not None
-      and re.search(r'Sid\s*=\s*"LogsBucketList"[\s\S]*?"s3:ListBucket",\s*"s3:GetBucketLocation"[\s\S]*?Resource\s*=\s*local\.logs_bucket_arn\b', tf) is not None
+# cycle 035 の追加: EMR のログは CloudWatch（driver）と EMR の managed storage（Spark UI）の 2 つ。S3（logs のバケットの emr/）は落とした
+_emr_overrides = re.search(r'output "configuration_overrides_json" \{([\s\S]*?)\n\}', tf)
+_access_tf = open(os.path.join(TF_DIR, "access.tf"), encoding="utf-8").read()
+# 消した名前は文字列をつないで作る（grep で取りこぼしを探すときにこのファイルが当たらないように）
+_s3_mon, _log_uri, _emr_log_pfx, _logs_sid = "s3Monitoring" + "Configuration", "log" + "Uri", "emr_logs" + "_prefix", "Logs" + "Bucket"
+check("EMR のログは S3 に出さない: S3 の monitoring 設定・その URI・emr のログの prefix が無く、access.tf に logs のバケットへの文（Sid が Logs で始まる 2 つ）が無い。"
+      "managedPersistenceMonitoringConfiguration は enabled = true、cloudWatchLoggingConfiguration はある（cycle 035）",
+      _emr_overrides is not None
+      and _s3_mon not in tf and _log_uri not in tf and _emr_log_pfx not in tf
+      and re.search(r'Sid\s*=\s*"' + _logs_sid + r'(List)?"', _access_tf) is None
+      and re.search(r'managedPersistenceMonitoringConfiguration\s*=\s*\{\s*enabled\s*=\s*true\s*\}', _emr_overrides.group(1)) is not None
+      and "cloudWatchLoggingConfiguration" in _emr_overrides.group(1)
       and re.search(r'(?<!emr_)\blogs_prefix\b', tf) is None and "${local.s3_prefix}/logs" not in tf)
 check("ジョブは 1 つ 3 vCPU（driver 1 + executor 2。Kafka のパーティション 2 つを並列に読む。動的割り当て無し）。sparkSubmitParameters は 3 つのジョブで共通",
       "spark.driver.cores=1" in tf and "spark.executor.cores=1" in tf and "spark.executor.instances=2" in tf and "spark.dynamicAllocation.enabled=false" in tf

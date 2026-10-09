@@ -75,7 +75,7 @@ output "assets_bucket_name" {
 }
 
 output "assets_bucket_arn" {
-  description = "ARN of the bucket (read by IaC/terraform/aws-managed/agent / IaC/terraform/aws-managed/pipeline/lab / IaC/terraform/aws-managed/pipeline/stream for IAM policies)"
+  description = "ARN of the assets bucket. Read only by IaC/terraform/aws-managed/agent (IAM policy of the knowledge base role)"
   value       = aws_s3_bucket.assets.arn
 }
 

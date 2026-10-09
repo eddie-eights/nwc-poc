@@ -32,7 +32,7 @@ data "terraform_remote_state" "stream" {
   }
 }
 
-# EMR のログと Firehose が書けなかった行の置き場（logs のバケット）は IaC/terraform/oss/base/logs。ops/oss/up.sh が base/core より先に作り、
+# Firehose が書けなかった行の置き場（logs のバケット）は IaC/terraform/oss/base/logs。ops/oss/up.sh が base/core より先に作り、
 # ops/oss/down.sh は消さない（中身は 7 日で消える）ので、analytics を apply する時点で必ずある（try で包まない）
 data "terraform_remote_state" "logs" {
   backend = "local"

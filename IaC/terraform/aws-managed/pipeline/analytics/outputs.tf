@@ -91,11 +91,11 @@ output "job_driver_json_http" {
 }
 
 output "configuration_overrides_json" {
-  description = "configurationOverrides for start-job-run (driver logs to CloudWatch, worker logs to the logs bucket, EMR managed storage on)"
+  description = "configurationOverrides for start-job-run (driver logs to CloudWatch, EMR managed storage on for the Spark UI; no S3 logs)"
   value = jsonencode({
     monitoringConfiguration = {
-      s3MonitoringConfiguration = { logUri = "s3://${local.logs_bucket}/${local.emr_logs_prefix}/" }
-      # 終わったジョブの Spark UI（Spark History Server）を開くため managed storage を有効にする（無料・30 日保持。S3 の logUri と CloudWatch の driver ログは今のまま残す）
+      # 終わったジョブの Spark UI（Spark History Server）を開くため managed storage を有効にする（無料・30 日保持）。
+      # S3 には出さない（cycle 035 で落とした。managed storage が同じものを持つ）。CloudWatch の driver ログは残す
       managedPersistenceMonitoringConfiguration = { enabled = true }
       # CloudWatch Logs へは IaC/terraform/aws-managed/base/core の logs のエンドポイントを通る（無い VPC で NAT も無いとジョブが
       # 「Unable to push logs ... Connect timeout on endpoint URL: https://logs...」で FAILED になる。2026-09-17 に実測）

@@ -174,7 +174,7 @@ log "1. ECR リポジトリ（IaC/terraform/oss/base/ecr）と logs のバケッ
 tf_apply base/ecr
 REPO=$(tf base/ecr output -raw agent_repository_url); echo "REPO=$REPO"
 REG="${REPO%%/*}"
-# logs のバケット <接頭辞>-logs-<アカウント>（EMR のログと Firehose が書けなかった行。中身は 7 日で消える。cycle 035）。
+# logs のバケット <接頭辞>-logs-<アカウント>（Firehose が書けなかった行。中身は 7 日で消える。cycle 035）。
 # ops/oss/down.sh は消さないので、2 回目からは No changes。base/core より先に作る（pipeline/analytics が state から読む）
 tf_apply base/logs
 

@@ -1,4 +1,5 @@
-# logs バケット（cycle 035「S3 の置き場を整える」）。EMR Serverless のログ（emr/）と、Firehose が書けなかった行（firehose-errors/）を置く。
+# logs バケット（cycle 035「S3 の置き場を整える」）。Firehose が書けなかった行（firehose-errors/）を置く。
+# EMR Serverless のログは S3 に出さない（CloudWatch の driver ログと EMR の managed storage。035 の追加で emr/ を落とした）。
 # 書くのは IaC/terraform/aws-managed/pipeline/analytics（OSS 版は IaC/terraform/oss/pipeline/analytics にリンクされた history.tf）。
 # 中身は 7 日で消える。ops/down.sh はこのルートを消さない（VPC を消したあとでもログを読める。空のバケットは無料）。
 # 消すなら terraform -chdir=IaC/terraform/aws-managed/base/logs destroy（force_destroy = true なので中身ごと消える）。
@@ -74,8 +75,7 @@ resource "aws_s3_bucket_policy" "logs" {
 
   # DenyInsecureTransport だけ。base/core の assets バケットにある DenyOutsideVpc は付けない:
   # (1) このルートは base/core より先に作り、ops/down.sh で消さないので、VPC の id を知らず、VPC より長生きする。
-  # (2) 書くのは AWS のサービスで、Firehose は VPC の外から書く（pipeline/analytics/history.tf の先頭）。
-  # EMR のジョブの側は IAM の Deny（pipeline/analytics/access.tf の emr_perimeter）が VPC の外からの利用を止める
+  # (2) 書くのは Firehose（AWS のサービス）で、VPC の外から書く（pipeline/analytics/history.tf の先頭）
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
