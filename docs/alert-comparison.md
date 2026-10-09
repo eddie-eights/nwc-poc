@@ -10,7 +10,7 @@
 
 - 4 種類のアラート（`link_down` / `bgp_down` / `isis_down` / `trap`）を、Grafana と Splunk の両方が出すようにした。
 - ルールはどれも書けた。ただし Grafana の 3 つは「条件つき」で、Spark の側でデータの形を整える必要があった（2026-10-09 から `link_down` も gNMI から出すので、Grafana は 4 つとも条件つき）。
-- **検知の遅れと取りこぼしの比較は、1 回分だけ結果がある**（2026-10-05、`fail-main`）。両方が `link_down` と `isis_down` を出し、取りこぼしは無かった。`link_down` は Splunk のほうが 1〜3 分早かった。手順どおりの 3 回と、`bgp_down`・`trap` はまだ。それまでこのサイクルは完了にしない。
+- **検知の遅れと取りこぼしの比較は、2 回分だけ結果がある**（2026-10-05 の `fail-main`、2026-10-08 の `fail-main` / `fail-bgp` / `trap-test`）。2026-10-05 は両方が `link_down` と `isis_down` を出し、取りこぼしは無かった。`link_down` は Splunk のほうが 1〜3 分早かった。2026-10-08 は `link_down` が両方とも約 2 分、`bgp_down` が両方とも約 70 秒。`trap` は Splunk だけが出し、Grafana はルールの評価がエラーになった（008 で直したが AWS では未確認）。手順どおりの 3 回はまだ。それまでこのサイクルは完了にしない。
 
 理由と背景:
 
@@ -139,7 +139,7 @@ ORDER BY anomaly_id, status
 
 ## 4. 結果
 
-**1 回分だけある。手順どおりの 3 回はまだ。**
+**2 回分ある（2026-10-05 と 2026-10-08）。手順どおりの 3 回はまだ。**
 
 ### 2026-10-05 の 1 回（AWS の全体の動作確認）
 
@@ -171,6 +171,29 @@ ORDER BY anomaly_id, status
 - `resolved` の遅れ。戻したのは承認からの `heal-main`（02:45:16）で、行はあるが時刻を控えていない。
 - `link_down` の Splunk の内訳（ポーリングと trap）。
 - `bgp_down`（`fail-bgp`）と `trap`（`trap-test`）。打っていない。
+
+### 2026-10-08 の 1 回（AWS の全体の動作確認）
+
+機器の名前は 2026-10-05 の回と同じく、lab を組み直す前のもの。時刻は UTC。出典は `docs/verification/20261008-managed-aws.md` の項目の表と「障害の時刻」。この回は Athena のクエリを打たず、graph-status の Lambda のログと、Splunk の sendmodalert の時刻で見た。遅れは、打ってから最初の `firing` まで。
+
+| 入れた異常 | 打った時刻 | Grafana | Splunk | 取りこぼし |
+|---|---|---|---|---|
+| `fail-main`（`link_down`） | 19:43:55 | 約 2 分 11 秒（Lambda が 19:46:06〜07 に受けた） | 約 2 分 6 秒（trap のサーチが 19:46:00〜01 に送った） | 無い |
+| `fail-bgp`（`bgp_down`） | 19:48:50 | 約 70 秒（19:50:00） | 約 71 秒（19:50:01） | 無い |
+| `trap-test`（`trap`） | 19:48:53 | 出なかった | 約 68 秒（19:50:01） | Grafana（ルールの評価のエラー） |
+
+分かったこと:
+
+- `link_down` は両方とも約 2 分で、2026-10-05 ほどの差は出なかった。Splunk の最初の `link_down` は trap のサーチから出た
+- Grafana の `trap` のルールは、評価のたびに `bucket budget out of bounds` のエラーになった（OpenSearch Serverless）
+
+  「AWS 検証で見つけた不具合 3 件を直す（008）」でルールの区切りを絞り（50 × 20 / auto → 10 × 10 / 30s）、手元の Grafana で通した。AWS では未確認。
+
+この回で取れていないもの:
+
+- Grafana の `bgp_down` の `resolved`。19:53:27 までに届かず、そのまま `ops/down.sh` に進んだ（Splunk は 19:53:01）。
+- `trap` の解消（約 10 分後）。待たなかった。
+- `isis_down` の `firing` の時刻。控えていない。
 
 ### 手順どおりの 3 回（未実施）
 
@@ -256,13 +279,13 @@ ORDER BY anomaly_id, status
 
 ### AWS で未確認のこと
 
-模擬テストと手元のコンテナ（Grafana 13.2.2、Splunk 10.4.3、Telegraf 1.40）で確かめたところまで。下は AWS で試していない。
+模擬テストと手元のコンテナ（当時の Grafana 13.2.2、Splunk 10.4.3、Telegraf 1.40。いまのイメージは Grafana 13.2.3、Splunk 10.4.4、Telegraf 1.40.1）で確かめたところまで。下は AWS で試していなかったものと、そのあとの状態。
 
 | 項目 | 状態 |
 |---|---|
-| Grafana が OpenSearch Serverless を SigV4 でルールの評価に使えるか | 未確認。ダッシュボードで読めることは 2026-09-28 に確認済み |
+| Grafana が OpenSearch Serverless を SigV4 でルールの評価に使えるか | 2026-10-08 に AWS で試したが、`trap` のルールの評価が毎回エラーになった（`bucket budget out of bounds`）。008 でルールを絞り手元の Grafana で通したが、AWS では未確認。ダッシュボードで読めることは 2026-09-28 に確認済み |
 | SR Linux が出す trap の OID の形（`.1.3.6.1.…` で入るか） | 未確認。手元では net-snmp の `snmptrap` で確かめた |
-| `lab fail-bgp` / `lab heal-bgp` / `lab trap-test` の実際の動き | 未確認。lab の EC2 で打っていない |
+| `lab fail-bgp` / `lab heal-bgp` / `lab trap-test` の実際の動き | 2026-10-08 に lab の EC2 で打った（011 の前の lab）。`bgp_down` は両方から出て、`trap` は Splunk だけから出た。heal-bgp で BGP は戻り、Splunk は `resolved` を出した。Grafana の `bgp_down` の `resolved` は見ていない（上の「2026-10-08 の 1 回」） |
 | `lab trap-test` で `dc1-trex-01` が `ALARM` になるか | 未確認。送り元の IP が device map で `dc1-trex-01` に直る前提 |
 | SR Linux の linkDown の trap に IF 名が載るか | 未確認。載らないと Splunk の trap の `target` が IF 名にならず、gNMI の `link_down` と別の異常の id になる |
 | `link_down` で 2 つ目のワークフローが起きるか | 2026-10-05 に確かめた。1 本の回線断でワークフローが 4 本起きた（「4. 結果」）。trap ではなく、Splunk がサブインターフェースの `link_down` も出すことと、回線の両端が別の異常になることによる |

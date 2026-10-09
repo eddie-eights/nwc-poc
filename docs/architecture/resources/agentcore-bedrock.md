@@ -96,7 +96,7 @@ OSS 版（`IaC/terraform/oss/`）でも AgentCore と Bedrock はそのまま使
   置くと `KeyError: 'MODEL_ID'` や Web のロールの `AccessDenied` になる。Web のロールに権限を足して直さない。
   出典: [agent.md](../agent.md) の「チャットの経路」、[troubleshooting.md](../../troubleshooting.md) の「チャットの答えがおかしい」。
 - **Runtime の ENI は、消したあと最大 8 時間残る。**
-  そのあいだは VPC、サブネット、Runtime の SG を残してほかを消す。時間をおいて `ops/down.sh` を打ち直す。Lambda の ENI は 20〜40 分。
+  そのあいだは VPC、サブネット、Runtime の SG を残してほかを消し、終了コード 0 で終わる。残った分に時間課金は無く、次の `ops/up.sh` が使い回すので、打ち直さなくてよい。Lambda の ENI は 20〜40 分。
   出典: [deploy.md](../../deploy.md) の「`ops/down.sh` がすること」、[troubleshooting.md](../../troubleshooting.md) の「消すとき」。
 - **答えがおかしいときの見方。**
   [troubleshooting.md](../../troubleshooting.md) の「チャットの答えがおかしい」（150 秒で失敗、`tools=0`、`参照:` が付かない、ガードレールの誤検知）。

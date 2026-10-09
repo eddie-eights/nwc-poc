@@ -27,7 +27,7 @@ flowchart LR
 
 ## 作るもの
 
-できる限り AWS のマネージドサービスで作っている。これとは別に、マネージドの部分を OSS にした版（`IaC/terraform/oss/` と `ops/oss/`。Kafka・Neo4j・OpenSearch・VictoriaMetrics・Spark を ECS で動かす）も作ってあり、`ops/oss/up.sh` で立てて `ops/oss/down.sh` で消す（2026-10-07 に AWS で 1 回立てて確かめた。マネージド版と同じアカウントに並べて立てるのは未確認）。できること・費用・メンテナンス性の比較は [oss-variant.md](docs/oss-variant.md)。
+できる限り AWS のマネージドサービスで作っている。これとは別に、マネージドの部分を OSS にした版（`IaC/terraform/oss/` と `ops/oss/`。Kafka・Neo4j・OpenSearch・VictoriaMetrics・Spark を ECS で動かす）も作ってあり、`ops/oss/up.sh` で立てて `ops/oss/down.sh` で消す（2026-10-07 と 10-08 に AWS で 1 回ずつ立てて確かめた。マネージド版と同じアカウントに並べて立てるのは未確認）。できること・費用・メンテナンス性の比較は [oss-variant.md](docs/oss-variant.md)。
 
 AWS を使わずに、WSL2 の中だけでパイプライン（lab → gnmic・Telegraf・syslog-ng・GoFlow2 → Kafka → Spark → OpenSearch / Prometheus / Splunk → Grafana）を一周させる構成もある（`docker/compose/`。SNS・Neptune・Nautobot・ワークフロー・エージェントは無い）。手順は [docker/compose/README.md](docker/compose/README.md)（WSL での通しは未確認）。
 
@@ -163,9 +163,9 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | [pipeline.md](docs/pipeline.md) | lab、gnmic・Telegraf・syslog-ng・GoFlow2、デバッグ用の EC2（`ops/lab-debug.sh`）、Spark、Grafana と Splunk のアラート、Neptune のトポロジの使い方 |
 | [nautobot.md](docs/nautobot.md) | Nautobot: コンテナと部品の構成、起動から同期まで、使い方、Neptune と組み合わせた使いどころ |
 | [workflow.md](docs/workflow.md) | 承認の流れと Temporal UI |
-| [alert-comparison.md](docs/alert-comparison.md) | Splunk と Grafana のアラートを比べる: 4 種類のアラートを両方で書けたか、障害を入れる手順、遅れと取りこぼしを出す Athena のクエリ、結果（2026-10-05 の 1 回分。手順どおりの 3 回の計測と `bgp_down`・`trap` は未実施） |
+| [alert-comparison.md](docs/alert-comparison.md) | Splunk と Grafana のアラートを比べる: 4 種類のアラートを両方で書けたか、障害を入れる手順、遅れと取りこぼしを出す Athena のクエリ、結果（2026-10-05 と 10-08 の 2 回分。`bgp_down`・`trap` は 10-08 に打った。手順どおりの 3 回の計測は未実施） |
 | [troubleshooting.md](docs/troubleshooting.md) | うまくいかないとき |
-| [oss-variant.md](docs/oss-variant.md) | マネージドの部分を OSS にした版（`IaC/terraform/oss/`、`ops/oss/up.sh`）: その目的（マネージドでできて OSS でできないこと、費用、メンテナンス性の比較）、マネージドの部分と OSS の置き換え先の対応、2026-10-07 に AWS で確かめたことと未確認のこと |
+| [oss-variant.md](docs/oss-variant.md) | マネージドの部分を OSS にした版（`IaC/terraform/oss/`、`ops/oss/up.sh`）: その目的（マネージドでできて OSS でできないこと、費用、メンテナンス性の比較）、マネージドの部分と OSS の置き換え先の対応、2026-10-07 と 10-08 に AWS で確かめたことと未確認のこと |
 | [docker/compose/README.md](docker/compose/README.md) | 手元の docker compose（WSL2）: 前提（WSL の docker-ce、`.wslconfig` のメモリ）、立てて障害を入れて見るまでの手順、見る場所、ぶつかりやすいポート、消し方 |
 | [hearing.md](docs/hearing.md) | ヒアリング項目: PoC の設計を決めるために相手に確かめたいこと（格納先の冗長化、保管期間など）と答え |
 | [development.md](docs/development.md) | 手元のテスト、変更するときの決まり、Web を手元で動かす |
