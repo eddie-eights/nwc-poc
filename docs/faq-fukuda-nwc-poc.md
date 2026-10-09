@@ -2191,6 +2191,8 @@ AWS 版は、エージェントのツール `centrality`（`app/agentcore/graph.
 
 - [Q. もう 2 AZ に置いてあるものは、1 AZ にできるか](#q-もう-2-az-に置いてあるものは1-az-にできるか)
 - [Q. RDS は 3 AZ にできない？](#q-rds-は-3-az-にできない)
+- [Q. Temporal の履歴を残すなら、データベースが要る？](#q-temporal-の履歴を残すならデータベースが要る)
+- [Q. RDS for PostgreSQL と Aurora PostgreSQL のどちらにする？](#q-rds-for-postgresql-と-aurora-postgresql-のどちらにする)
 - [Q. SigV4 って何？](#q-sigv4-って何)
 - [Q. AWS のベストプラクティスは、boto3 で書くこと？](#q-aws-のベストプラクティスはboto3-で書くこと)
 - [Q. MSK にも Kafbat UI みたいな GUI はある？](#q-msk-にも-kafbat-ui-みたいな-gui-はある)
@@ -2248,6 +2250,57 @@ Multi-AZ DB クラスターが使えるエンジンは、RDS for MySQL と RDS f
 
 - https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html
 - https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.RDS_Fea_Regions_DB-eng.Feature.MultiAZDBClusters.html
+
+### Q. Temporal の履歴を残すなら、データベースが要る？
+
+**A. 要る。いまの PoC は `server start-dev` で SQLite がコンテナの中にあり、Fargate のタスクが入れ替わると進行中のワークフローの状態ごと消える。** 残すなら Temporal のサーバーを本番モードで起動し、外のデータベースに持たせる。
+
+| いまの置き方 | 中身 |
+|---|---|
+| Temporal の履歴（ワークフローの実行の状態） | タスクの中の SQLite。タスクと一緒に消える（[workflow.md](workflow.md)） |
+| 修復案の履歴（作成・承認・適用などの 1 行ずつ） | S3 Tables の `proposal_events`。これは残る |
+
+消えて困るのは前者だけ。「残す」は RDS で済む話で、ECS に載せること自体が理由ではない。
+
+**取れる置き方**
+
+| 置き方 | 向き不向き |
+|---|---|
+| RDS for PostgreSQL（Nautobot の RDS に `temporal` と `temporal_visibility` の 2 つのデータベースを足す） | PoC の最小。`temporal-sql-tool` でスキーマを入れてから `temporal server` を本番モードで起動する |
+| Aurora PostgreSQL | 動くが、PoC では得が無い（下の Q） |
+| Temporal Cloud | サーバーを持たず worker だけ ECS に置く。閉域の構成とは合いにくい |
+| SQLite のまま EFS に置く | 動くが `start-dev` は開発用で、単一ノード・HA 無し。本番向けではない |
+
+Nautobot の RDS は `ops/down.sh` で消える設計なので、相乗りさせても「down.sh のあとも残る」にはならない。そこまで残したいなら、そのサイクルで RDS を down.sh の外に出すかを決める。候補は `docs/cycles/BACKLOG.md` の「Temporal の履歴を RDS に残す」。
+
+### Q. RDS for PostgreSQL と Aurora PostgreSQL のどちらにする？
+
+**A. PoC は RDS for PostgreSQL（2026-10-10 のユーザー決定）。Aurora は本番で高可用や読み取り分散が要件になってから。** Nautobot も Temporal も PostgreSQL で動き、Nautobot の推奨は PostgreSQL（MySQL も対応はあるが採る理由が無い）。
+
+**PoC で Aurora に替えても得が無い理由**
+
+| 理由 | 中身 |
+|---|---|
+| 強みを使わない | ストレージの 6 重化、数十秒のフェイルオーバー、リーダーエンドポイント、ストレージの自動拡張は、毎回消して作り直す PoC では一つも使わない |
+| Terraform が増える | `aws_db_instance` 1 つが `aws_rds_cluster` + `aws_rds_cluster_instance` の 2 段になり、`terraform destroy` も遅くなる |
+| 費用が数倍 | 下の表。最小構成どうしで約 5 倍 |
+| I/O 課金が読みにくい | Temporal の履歴は細かい書き込みが多い。Aurora Standard は I/O 課金が乗り、I/O-Optimized にすると基本料が上がる |
+
+**時間あたりの費用の目安**（東京、最小構成、概算。2026-10-10）
+
+| 構成 | 時間あたり |
+|---|---|
+| RDS for PostgreSQL db.t4g.micro | 約 0.02 USD |
+| Aurora PostgreSQL db.t4g.medium（provisioned の最小） | 約 0.11 USD |
+| Aurora Serverless v2 0.5 ACU | 約 0.10 USD |
+
+Aurora Serverless v2 は 0 ACU まで落として自動停止できるが、再開に十数秒かかり、Temporal のように接続を張り続けるサーバーとは相性が悪い。
+
+**Aurora に替える時期の目安**
+
+- フェイルオーバーを 1 分以内にしたい、本番の SLA を約束するとき。
+- Nautobot と Temporal の読み取りを分けたい、ストレージが数百 GB に伸びるとき。
+- 会社のリポジトリに移り、運用の標準が Aurora に決まっているとき。
 
 ### Q. SigV4 って何？
 
