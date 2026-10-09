@@ -27,27 +27,27 @@ flowchart LR
 
 ## 作るもの
 
-できる限り AWS のマネージドサービスで作っている。これとは別に、マネージドの部分を OSS にした版（`IaC/terraform/oss/` と `ops/oss/`。Kafka・Neo4j・OpenSearch・VictoriaMetrics・Spark を ECS で動かす）も作ってあり、`ops/oss/up.sh` で立てて `ops/oss/down.sh` で消す（2026-10-07 と 10-08 に AWS で 1 回ずつ立てて確かめた。マネージド版と同じアカウントに並べて立てるのは未確認）。できること・費用・メンテナンス性の比較は [oss-variant.md](docs/oss-variant.md)。
+作り方は 3 つある。このページの手順はマネージド版。
 
-AWS を使わずに、WSL2 の中だけでパイプライン（lab → gnmic・Telegraf・syslog-ng・GoFlow2 → Kafka → Spark → OpenSearch / Prometheus / Splunk → Grafana）を一周させる構成もある（`docker/compose/`。SNS・Neptune・Nautobot・ワークフロー・エージェントは無い）。手順は [docker/compose/README.md](docker/compose/README.md)（WSL での通しは未確認）。
+- **マネージド版**（`IaC/terraform/aws-managed/`、`ops/up.sh` / `ops/down.sh`）
+  できる限り AWS のマネージドサービスで作る。`deploy.env` で要る機能だけ `1` にし、何も書かなければ土台だけを作る。
+- **OSS 版**（`IaC/terraform/oss/`、`ops/oss/up.sh` / `ops/oss/down.sh`）
+  マネージドの部分を OSS（Kafka・Neo4j・OpenSearch・VictoriaMetrics・Spark）にして ECS で動かす（AWS で 2 回立てて確かめた。マネージド版と同じアカウントに並べて立てるのは未確認）。できること・費用・メンテナンス性の比較は [oss-variant.md](docs/oss-variant.md)。
+- **手元の compose**（`docker/compose/`）
+  AWS を使わず、WSL2 の中だけでパイプライン（lab → 収集 → Kafka → Spark → OpenSearch / Prometheus / Splunk → Grafana）を一周させる（SNS・Neptune・Nautobot・ワークフロー・エージェントは無い）。手順は [docker/compose/README.md](docker/compose/README.md)（WSL での通しは未確認）。
 
-`deploy.env` で要る機能だけ `1` にする。何も書かなければ土台だけを作る。
+マネージド版の機能:
 
-| 機能 | できること | 待機の時間課金（東京） |
-|---|---|---|
-| 土台（必ず） | VPC、SSM のエンドポイント 2 本、Web の EC2（t4g.medium。stream を作る回は Kafbat UI も同居）、S3、ECR | 約 $0.07/h |
-| `AGENT=1` | チャット（Runtime + ガードレール）。`CREATE_KB=1` で手順書の検索も | 約 $0.07/h（エンドポイント 5 本。ほかは質問ごとのモデル料金だけ。KB は +$0.35/h） |
-| `PIPELINE=1` | lab → gnmic・Telegraf・syslog-ng・GoFlow2（ECS）→ MSK → Spark → S3 Tables / OpenSearch / Prometheus / Splunk（`STORES` の既定は `s3,grafana,splunk` の 3 つとも）、Grafana と Splunk のアラート → SNS、Neptune のトポロジ（アラートで status が変わる）、Nautobot（機器の一覧とケーブルの正。`SKIP_STREAM` と `SKIP_GRAPH` を両方付けた回のほかは立つ） | 約 $2.85/h（`STORES` が既定のとき。うち Neptune Analytics が $0.58/h、Nautobot が $0.14/h、`STORES` の `grafana` が約 $0.60/h、`splunk` が約 $0.34/h（Spark のジョブ $0.21、ECS の Splunk $0.12、sns のエンドポイント $0.014）） |
-| `WORKFLOW=1` | アラート（SNS → SQS）で Temporal を起こし、調査 → 承認 → 修復。AGENT と PIPELINE と、アラートの送り手（Grafana か Splunk）が要る | 約 $0.09/h |
+| 機能 | できること |
+|---|---|
+| 土台（必ず） | VPC、SSM のエンドポイント 2 本、Web の EC2（t4g.medium。stream を作る回は Kafbat UI も同居）、S3、ECR |
+| `AGENT=1` | チャット（Runtime + ガードレール）。`CREATE_KB=1` で手順書の検索も |
+| `PIPELINE=1` | lab → 収集（gnmic・Telegraf・syslog-ng・GoFlow2。ECS）→ MSK → Spark → 格納先（`STORES` で選ぶ）。Grafana と Splunk のアラート → SNS、Neptune のトポロジ（アラートで status が変わる）、Nautobot（機器の一覧とケーブルの正） |
+| `WORKFLOW=1` | アラート（SNS → SQS）で Temporal を起こし、調査 → 承認 → 修復。AGENT と PIPELINE と、アラートの送り手（Grafana か Splunk）が要る |
 
-インターフェース型エンドポイントは 1 本 $0.014/h（既定の 1 AZ のとき。`ENDPOINTS_AZ_NUM` を 2 / 3 にすると AZ の数の倍）で、作る機能が呼ぶ API の分だけ `ops/up.sh` が選ぶ（上の金額に入れてある。同じサービスは機能をまたいで 1 本）。
-OpenSearch Serverless のコレクション（KB と logs）も公開せず、VPC エンドポイント 1 本（$0.014/h。両方作っても 1 本。これも `ENDPOINTS_AZ_NUM` の数の倍）からだけ届く。
+`PIPELINE=1` だけで約 $2.92/h、既定のまま 1 か月置くと約 $2,100（約 32 万円）になるので、**使い終わったら当日中に消す。** 内訳は [deploy.md の費用](docs/deploy.md#費用)。
 
-`PIPELINE=1` だけ（`STORES` は既定の `s3,grafana,splunk`）なら、土台と合わせて約 $2.92/h。`STORES=s3` に絞れば約 $1.99/h。**既定のまま 1 か月置くと約 $2,100（約 32 万円）になるので、使い終わったら当日中に消す。**
-
-何 AZ に置くかはリソースごとの `*_AZ_NUM` で選ぶ（既定は 1 AZ。MSK だけ 2 AZ。[deploy.md](docs/deploy.md)）。上の金額は既定の AZ の数のときのもの。
-
-デバッグ用の EC2（lab + Telegraf を 1 台。Telegraf の出力は標準出力。MSK / ECS を作らずに機器と Telegraf の設定を確かめる）は `deploy.env` の機能ではなく、`ops/lab-debug.sh up` / `down` だけで作る・消す CloudFormation のスタック。自分の VPC・エンドポイント 4 本・バケット・ECR を持ち、`ops/up.sh` / `ops/down.sh` とは別（`ops/down.sh` では消えない）。待機は約 $0.30/h（[pipeline.md](docs/pipeline.md)）。
+デバッグ用の EC2（lab + Telegraf を 1 台。MSK / ECS を作らずに機器と Telegraf の設定を確かめる）は `deploy.env` の機能ではない。`ops/lab-debug.sh up` / `down` で作る・消す別のスタックで、`ops/down.sh` では消えない（[pipeline.md](docs/pipeline.md)）。
 
 ## 手順
 
@@ -81,7 +81,7 @@ ops/up.sh
 ops/down.sh
 ```
 
-- 所要時間は AGENT だけで 10〜15 分、PIPELINE で 40〜60 分（MSK だけで約 30 分。2026-10-09 の AWS で `Creation complete after 30m0s`）。
+- 所要時間は AGENT だけで 10〜15 分、PIPELINE で 40〜60 分（MSK だけで約 30 分。[2026-10-09 の記録](docs/verification/20261009-aws-managed.md)で `Creation complete after 30m0s`）。
 - `ops/up.sh` はできているものを飛ばすので、途中で落ちたら打ち直せばよい。
 - リージョンは東京（`ap-northeast-1`）で固定。
 
@@ -135,7 +135,7 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | `AGENT` / `PIPELINE` / `WORKFLOW` / `CREATE_KB` | 作る機能 |
 | `SKIP_LAB` / `SKIP_STREAM` / `SKIP_ANALYTICS` / `SKIP_GRAPH` | PIPELINE の一部を外す |
 | `STORES` | analytics の格納先。`s3`（S3 Tables）/ `grafana`（OpenSearch + Prometheus + Grafana）/ `splunk`（Splunk）をカンマで並べる。既定は 3 つとも（`s3,grafana,splunk`）。外したまとまりは作らない（前に作っていればデータごと消える） |
-| `SNMP_POLL` | 2026-10-09 から使わない（cycle 013 で SNMP のポーリングをやめ、IF の状態とカウンターは gnmic が gNMI で取る）。書いてあると `ops/up.sh` が注意を出すだけ。消してよい |
+| `SNMP_POLL` | 使わない（IF の状態とカウンターは gnmic が gNMI で取る）。書いてあると `ops/up.sh` が注意を出すだけなので、消してよい |
 | `*_AZ_NUM` | 冗長化用。リソースごとに何 AZ に置くか（`ENDPOINTS_AZ_NUM` / `MSK_AZ_NUM` / `RUNTIME_AZ_NUM` / `SPLUNK_AZ_NUM` など 10 個）。既定は 1（MSK だけ 2）。`SPLUNK_AZ_NUM` を 2 か 3 にすると Splunk が indexer のクラスターになる。ふだんの検証では書かない |
 | `IMAGE_TAG` | `app/agentcore/` や `app/temporal/` を変えたら `v2` などに上げる |
 | `HTTP_SEND` | Spark が HTTP の格納先（OpenSearch / Prometheus / Splunk）へ送る所。既定 `driver`。量が増えたら `executor`（費用は変わらない） |
@@ -158,17 +158,17 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 |---|---|
 | [architecture/](docs/architecture/README.md) | 構成図（スライドはマネージド版 [architecture-managed.pptx](docs/architecture-managed.pptx) と OSS 版 [architecture-oss.pptx](docs/architecture-oss.pptx)）、どのファイルがどこで動くか、名前とタグ、ログ。中身は [core](docs/architecture/core.md)（閉域・SG）/ [agent](docs/architecture/agent.md) / [pipeline](docs/architecture/pipeline.md) / [workflow](docs/architecture/workflow.md) に分けてある |
 | [setup.md](docs/setup.md) | 前提（AWS の権限、ネットワーク、Mac / WSL2、社内 PC の CA） |
-| [deploy.md](docs/deploy.md) | `deploy.env` の全キー、`ops/up.sh` / `ops/down.sh` の中身、利用者に渡す権限、試す質問 |
-| [collection.md](docs/collection.md) | 機器から集めるデータ: 欲しいもの（syslog・trap・telemetry・性能メトリクス・NetFlow / sFlow）といまの状態、集める側（gnmic・Telegraf・syslog-ng・GoFlow2）、telemetry と性能メトリクスは Cisco MDT の dial-out で受ける方針（受け口は 2026-10-08 に外した）、lab（SR Linux）での取り方と gnmic の event の読み替え、未決定事項 |
+| [deploy.md](docs/deploy.md) | `deploy.env` の全キー、費用、`ops/up.sh` / `ops/down.sh` の中身、利用者に渡す権限、試す質問 |
+| [collection.md](docs/collection.md) | 機器から集めるデータ（syslog・trap・telemetry・性能メトリクス・NetFlow / sFlow）、集める側（gnmic・Telegraf・syslog-ng・GoFlow2）、Cisco MDT の方針、lab での取り方、未決定事項 |
 | [pipeline.md](docs/pipeline.md) | lab、gnmic・Telegraf・syslog-ng・GoFlow2、デバッグ用の EC2（`ops/lab-debug.sh`）、Spark、Grafana と Splunk のアラート、Neptune のトポロジの使い方 |
 | [nautobot.md](docs/nautobot.md) | Nautobot: コンテナと部品の構成、起動から同期まで、使い方、Neptune と組み合わせた使いどころ |
 | [workflow.md](docs/workflow.md) | 承認の流れと Temporal UI |
-| [alert-comparison.md](docs/alert-comparison.md) | Splunk と Grafana のアラートを比べる: 4 種類のアラートを両方で書けたか、障害を入れる手順、遅れと取りこぼしを出す Athena のクエリ、結果（2026-10-05 と 10-08 の 2 回分。`bgp_down`・`trap` は 10-08 に打った。手順どおりの 3 回の計測は未実施） |
+| [alert-comparison.md](docs/alert-comparison.md) | Splunk と Grafana のアラートの比較: 4 種類のアラートを両方で書けたか、障害を入れる手順、遅れと取りこぼしを出す Athena のクエリ、結果 |
 | [troubleshooting.md](docs/troubleshooting.md) | うまくいかないとき |
-| [oss-variant.md](docs/oss-variant.md) | マネージドの部分を OSS にした版（`IaC/terraform/oss/`、`ops/oss/up.sh`）: その目的（マネージドでできて OSS でできないこと、費用、メンテナンス性の比較）、マネージドの部分と OSS の置き換え先の対応、2026-10-07 と 10-08 に AWS で確かめたことと未確認のこと |
-| [docker/compose/README.md](docker/compose/README.md) | 手元の docker compose（WSL2）: 前提（WSL の docker-ce、`.wslconfig` のメモリ）、立てて障害を入れて見るまでの手順、見る場所、ぶつかりやすいポート、消し方 |
-| [hearing.md](docs/hearing.md) | ヒアリング項目: PoC の設計を決めるために相手に確かめたいこと（格納先の冗長化、保管期間など）と答え |
+| [oss-variant.md](docs/oss-variant.md) | マネージドの部分を OSS にした版: 目的、マネージドと OSS の置き換え先の対応、AWS で確かめたことと未確認のこと |
+| [docker/compose/README.md](docker/compose/README.md) | 手元の docker compose（WSL2）: 前提、立てて障害を入れて見るまでの手順、見る場所、ぶつかりやすいポート、消し方 |
+| [hearing.md](docs/hearing.md) | ヒアリング項目: PoC の設計を決めるために相手に確かめたいことと答え |
 | [development.md](docs/development.md) | 手元のテスト、変更するときの決まり、Web を手元で動かす |
-| [ai-dev-flow.md](docs/ai-dev-flow.md) | AI 開発フロー: PM とエンジニアの AI セッションがサイクル（設計 → 実装 → レビュー）を回す流れの図（Mermaid）、役割の分担、正本は `design.md` だけという決まり、成果物の置き場 |
-| [faq-fukuda-nwc-poc.md](docs/faq-fukuda-nwc-poc.md) | FAQ: ほかの開発者に説明するときに出る質問と答え（syslog、収集の設定、デバッグ用の EC2、YANG、Spark、Nautobot、Neptune、障害の情報の置き場、格納先とテーブル、Splunk、マネージドを OSS に置き換えるとき、AWS の基礎） |
-| [data-stores.md](docs/data-stores.md) | 勉強会メモ: データの置き場（Neptune にトポロジと `status`、S3 Tables の `proposal_events` に修復案の状態と証跡、`alert_events` にアラートの通知の履歴）と DynamoDB をやめた理由、コンテナイメージの役目とアーキテクチャの選び方（arm64 が要るのは AgentCore、x86 が要るのは Splunk と TRex。同じホストの中だけ揃える）、Neptune Analytics の基礎（Neptune Database との違い、AZ 冗長、トポロジをグラフにする意味）、MSK のブートストラップサーバーと、集める側（Telegraf・gnmic・syslog-ng・GoFlow2）と Spark がそれをどう受け取るか（`msk-bootstrap` を残す理由） |
+| [ai-dev-flow.md](docs/ai-dev-flow.md) | AI 開発フロー: PM とエンジニアの AI セッションがサイクル（設計 → 実装 → レビュー）を回す流れ、役割の分担、成果物の置き場 |
+| [faq-fukuda-nwc-poc.md](docs/faq-fukuda-nwc-poc.md) | FAQ: ほかの開発者に説明するときに出る質問と答え（収集、Spark、Nautobot、Neptune、格納先、Splunk、OSS への置き換え、AWS の基礎など） |
+| [data-stores.md](docs/data-stores.md) | 勉強会メモ: データの置き場、コンテナイメージのアーキテクチャの選び方、Neptune Analytics の基礎、MSK のブートストラップサーバーの受け渡し |
