@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # nwc-poc - AWS に触らずに打てる検査をまとめて打つ。docs/development.md の「手元で確かめる」と同じ内容。
 #   1. terraform fmt -check -recursive（IaC/terraform/aws-managed/ と、OSS 版（cycle 005）の IaC/terraform/oss/）
-#   2. 9 つのルートで init -backend=false + validate（provider を取るだけで state には触らない）。IaC/terraform/aws-managed/ と IaC/terraform/oss/ の両方。
+#   2. 10 のルートで init -backend=false + validate（provider を取るだけで state には触らない）。IaC/terraform/aws-managed/ と IaC/terraform/oss/ の両方。
 #      IaC/terraform/oss/ のルートは IaC/terraform/aws-managed/ のファイルへのシンボリックリンクと oss.auto.tfvars（project = nwc-oss）なので、
 #      IaC/terraform/aws-managed/ を変えると両方の validate に効く
 #   3. スクリプトの構文（git が追跡している .sh は全部（git ls-files '*.sh'）1 つずつ bash -n。bash -n a b は a しか見ない。リポジトリの .py は全部 ast.parse）
@@ -12,7 +12,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-ROOTS=(base/ecr base/core agent pipeline/lab pipeline/stream pipeline/analytics pipeline/graph pipeline/nautobot workflow)
+ROOTS=(base/ecr base/logs base/core agent pipeline/lab pipeline/stream pipeline/analytics pipeline/graph pipeline/nautobot workflow)
 TF_BASES=(IaC/terraform/aws-managed IaC/terraform/oss)
 
 log() { printf '\n== %s\n' "$*"; }
@@ -29,7 +29,7 @@ for base in "${TF_BASES[@]}"; do
 done
 echo "差分なし"
 
-log "2. 9 つのルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）"
+log "2. 10 のルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）"
 for base in "${TF_BASES[@]}"; do
   # IaC/terraform/oss の lock はマネージド版の lock へのシンボリックリンク。init が lock を書くとリンクが実ファイルに置き換わる（ops/common.sh の tf_init_root）ので、
   # IaC/terraform/oss は -lockfile=readonly で読むだけにする。この PC のハッシュは先に回る IaC/terraform/aws-managed/ のルートが足す（TF_BASES の順を入れ替えても lock は壊れず、init で止まる）

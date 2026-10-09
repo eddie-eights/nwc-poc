@@ -158,7 +158,7 @@ if [ -f "$TF_DIR/base/core/terraform.tfstate" ]; then
     die "IaC/terraform/oss/base/core の state に 2026-10-09 より前の取りにいく側の Telegraf の SG（telegraf_dialin）が残っていて、stream がそれを使っている。先に ops/oss/down.sh で消す（stream だけ先に消してもよい）。まだ何も作っていない"
   fi
 fi
-ROOTS="base/ecr base/core agent pipeline/lab pipeline/stream pipeline/graph pipeline/nautobot pipeline/analytics workflow"
+ROOTS="base/ecr base/logs base/core agent pipeline/lab pipeline/stream pipeline/graph pipeline/nautobot pipeline/analytics workflow"
 # 土台の SSM Agent とポートフォワーディング（ssm ssmmessages）、ECS のタスクのイメージ（ecr.api ecr.dkr）とログ（logs）。
 # Kafka の CLUSTER_ID、Kafbat UI・OpenSearch・Splunk・Neo4j のパスワードと HEC の token は ECS の secrets や Lambda が SSM から受ける（ssm）。
 # Spark の iceberg は S3 Tables の API（s3tables）、Splunk のアラートは SNS（sns）、status の Lambda のアラートの履歴は Firehose（kinesis-firehose。
