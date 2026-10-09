@@ -1063,20 +1063,21 @@ check(f"Kafka の差し替え口（{', '.join(sorted(_IFACE))}）は msk.tf と 
 check("マネージド版の msk.tf の差し替え口は今と同じ値（Telegraf の環境変数は足さない、ブートストラップは IAM の SASL_SSL）",
       "kafka_client_environment = []" in _msk_tf and "kafka_bootstrap_brokers = aws_msk_cluster.stream.bootstrap_brokers_sasl_iam" in _msk_tf
       and 'output "msk_cluster_arn"' in _msk_tf and 'output "msk_cluster_arn"' not in _m_stream["outputs.tf"])
-check("syslog-ng と GoFlow2 の口: マネージド版は MSK の SCRAM（9096 のブートストラップ、secret は AmazonMSK_<接頭辞>-collectors を data source で引いて ECS の secrets で "
-      "ユーザー名とパスワードを入れ、実行ロールに secret と KMS の復号）。OSS 版は認証なしの 9092 で secret も権限も無い",
+check("syslog-ng と GoFlow2 と gnmic の口: マネージド版は MSK の SCRAM（9096 のブートストラップ、secret はコレクターごとの AmazonMSK_<接頭辞>-<コレクター>（cycle 031）を "
+      "data source で引いて ECS の secrets でユーザー名とパスワードを入れ、実行ロールに secret と KMS の復号）。OSS 版は認証なしの 9092 で secret も権限も無い（形はマネージド版と同じ表）",
       "kafka_collector_brokers = aws_msk_cluster.stream.bootstrap_brokers_sasl_scram" in _msk_tf and 'kafka_collector_auth    = "scram"' in _msk_tf
-      and re.search(r'data "aws_secretsmanager_secret" "msk_scram" \{\n  name = "AmazonMSK_\$\{local\.name_prefix\}-collectors"\n\}', _msk_tf) is not None
+      and re.search(r'data "aws_secretsmanager_secret" "msk_scram" \{\n  for_each = toset\(local\.scram_collectors\)\n  name     = "AmazonMSK_\$\{local\.name_prefix\}-\$\{each\.key\}"\n\}', _msk_tf) is not None
       and re.search(r'data "aws_kms_alias" "msk_scram" \{\n  name = "alias/\$\{local\.name_prefix\}-msk-scram"\n\}', _msk_tf) is not None
-      and '{ name = "KAFKA_SASL_USER", valueFrom = "${data.aws_secretsmanager_secret.msk_scram.arn}:username::" }' in _msk_tf
-      and '{ name = "KAFKA_SASL_PASS", valueFrom = "${data.aws_secretsmanager_secret.msk_scram.arn}:password::" }' in _msk_tf
-      and re.search(r'Sid      = "ScramSecret"\n\s*Effect   = "Allow"\n\s*Action   = \["secretsmanager:GetSecretValue"\]\n\s*Resource = data\.aws_secretsmanager_secret\.msk_scram\.arn\n', _msk_tf) is not None
+      and "  kafka_collector_secrets = { for c in local.scram_collectors : c => [\n" in _msk_tf
+      and '{ name = "KAFKA_SASL_USER", valueFrom = "${data.aws_secretsmanager_secret.msk_scram[c].arn}:username::" }' in _msk_tf
+      and '{ name = "KAFKA_SASL_PASS", valueFrom = "${data.aws_secretsmanager_secret.msk_scram[c].arn}:password::" }' in _msk_tf
+      and re.search(r'Sid      = "ScramSecret"\n\s*Effect   = "Allow"\n\s*Action   = \["secretsmanager:GetSecretValue"\]\n\s*Resource = \[for c in local\.scram_collectors : data\.aws_secretsmanager_secret\.msk_scram\[c\]\.arn\]\n', _msk_tf) is not None
       and re.search(r'Sid      = "ScramSecretKey"\n\s*Effect   = "Allow"\n\s*Action   = \["kms:Decrypt"\]\n\s*Resource = data\.aws_kms_alias\.msk_scram\.target_key_arn\n', _msk_tf) is not None
       and re.search(r"sasl \{\n\s*iam\s*= true\n\s*scram = true\n\s*\}", _msk_tf) is not None
-      and re.search(r'resource "aws_msk_scram_secret_association" "collectors" \{\n  cluster_arn     = aws_msk_cluster\.stream\.arn\n  secret_arn_list = \[data\.aws_secretsmanager_secret\.msk_scram\.arn\]\n\}', _msk_tf) is not None
+      and re.search(r'resource "aws_msk_scram_secret_association" "collectors" \{\n  cluster_arn     = aws_msk_cluster\.stream\.arn\n  secret_arn_list = \[for c in local\.scram_collectors : data\.aws_secretsmanager_secret\.msk_scram\[c\]\.arn\]\n\}', _msk_tf) is not None
       and 'resource "aws_secretsmanager_secret"' not in _msk_tf and "aws_secretsmanager_secret_version" not in _msk_tf   # 値は Terraform の state に入れない（ops/up.sh が作る）
       and "kafka_collector_brokers              = local.kafka_bootstrap_brokers" in _kafka_tf and 'kafka_collector_auth                 = "none"' in _kafka_tf
-      and "kafka_collector_secrets              = []" in _kafka_tf and "kafka_collector_execution_statements = []" in _kafka_tf
+      and 'kafka_collector_secrets              = { "syslog-ng" = [], "goflow2" = [], "gnmic" = [] }' in _kafka_tf and "kafka_collector_execution_statements = []" in _kafka_tf
       and "secretsmanager" not in _code(_kafka_tf))
 _tg_envs = re.findall(r"^      environment = concat\(\n        \[\n[\s\S]*?^        \],\n        local\.kafka_client_environment,\n      \)\n",
                       _m_stream["telegraf.tf"], re.M)

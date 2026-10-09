@@ -101,10 +101,11 @@ locals {
   kafka_bootstrap_brokers = join(",", [for n, h in local.kafka_hosts : "${h}:9092"])
   # Kafbat UI はプロトコルで選ぶ（kafka_ui.tf）。認証が無いので PLAINTEXT だけ（oss.auto.tfvars の kafka_ui_security_protocol）
   kafka_bootstrap_by_protocol = { PLAINTEXT = local.kafka_bootstrap_brokers }
-  # syslog-ng と GoFlow2（collectors.tf）の口。マネージド版の SCRAM（secret・KMS・association）は OSS 版には無く、認証なしの 9092 に書く
+  # syslog-ng と GoFlow2（collectors.tf）と gnmic（gnmic.tf）の口。マネージド版の SCRAM（secret・KMS・association）は OSS 版には無く、認証なしの 9092 に書く。
+  # kafka_collector_secrets はマネージド版と同じ形（コレクター名 → ECS の secrets）で、どれも空
   kafka_collector_brokers              = local.kafka_bootstrap_brokers
   kafka_collector_auth                 = "none"
-  kafka_collector_secrets              = []
+  kafka_collector_secrets              = { "syslog-ng" = [], "goflow2" = [], "gnmic" = [] }
   kafka_collector_execution_statements = []
   # Telegraf のタスクの環境変数に足す。telegraf.sh が outputs.kafka の IAM 認証の行を消し、aws_config も書かない
   kafka_client_environment = [{ name = "KAFKA_AUTH", value = "none" }]

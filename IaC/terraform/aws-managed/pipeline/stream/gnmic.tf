@@ -7,7 +7,8 @@
 # 機器の一覧を持ち、2 つ立てると同じ機器から 2 回取って Kafka に 2 回書くので 1 つ。いつもサブネット a に置く（lab.sh forward が通すのは
 # このサブネットの CIDR。SSM の /<接頭辞>/telegraf-source-cidr。telegraf.tf）。
 # ブローカー・認証・資格情報・実行ロールの権限は collectors.tf と同じ kafka_collector_* の locals（マネージド版は MSK の SASL/SCRAM の 9096、OSS 版は
-# 認証なしの 9092）。マネージド版の SCRAM のユーザー（User:collectors。syslog-ng・GoFlow2 と共有）には Kafka の ACL が要り、Spark のジョブが起動で
+# 認証なしの 9092）。マネージド版の SCRAM はコレクターごとに別のユーザー（User:syslog-ng / User:goflow2 / User:gnmic。cycle 031）で、User:gnmic には
+# Kafka の ACL が要り、Spark のジョブが起動で
 # gnmi と metrics の WRITE・DESCRIBE を入れる（app/spark/snmp_sinks.py の ensure_acls）。入るまでに書いた値は落ちる（cycle 013 の design.md の未確定 7）。
 # 機器の一覧と gNMI の資格情報は SSM パラメータから ECS の secrets で渡す（タスクを起こすときに読むので、変えたらサービスを作り直す）:
 #   /<接頭辞>/gnmic/<出どころ>/gnmi-targets   String（"IP:57400", ...）。出どころは lab（var.gnmi_targets。Terraform が書く）か
@@ -89,7 +90,7 @@ resource "aws_ecs_task_definition" "gnmic" {
       # Kafka の SCRAM の資格情報（マネージド版だけ）と、機器の一覧（String）と gNMI の資格情報（SecureString）。
       # gnmic.sh が GNMI_TARGETS を埋め、資格情報は gnmic が設定を読むときに ${…} を展開する（/tmp/gnmic.yaml に値を書かない）
       secrets = concat(
-        local.kafka_collector_secrets,
+        local.kafka_collector_secrets["gnmic"],
         [{ name = "GNMI_TARGETS", valueFrom = "${local.ssm_parameter_arn}${local.gnmic_targets_name}" }],
         [for env, leaf in local.gnmic_credentials : { name = env, valueFrom = "${local.ssm_parameter_arn}${local.gnmic_parameter_prefix}/${leaf}" }],
       )

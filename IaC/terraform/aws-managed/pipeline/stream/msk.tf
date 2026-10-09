@@ -1,7 +1,9 @@
 # ---------------------------------------------------------------- MSK
 # マネージド版の Kafka。MSK（var.msk_az_num 台、IAM 認証と SASL/SCRAM）。あるあいだ 1 時間に約 0.61 USD かかる - 作った日のうちに消す。
-# SCRAM（9096、cycle 012）は syslog-ng と GoFlow2（collectors.tf）の口。どちらも MSK の IAM 認証を喋れない。資格情報は Secrets Manager の
-# AmazonMSK_<接頭辞>-collectors（顧客管理の KMS キー alias/<接頭辞>-msk-scram で暗号化）で、ops/up.sh が apply の前に作り、ops/down.sh が destroy のあとに消す。
+# SCRAM（9096、cycle 012）は syslog-ng と GoFlow2（collectors.tf）と gnmic（gnmic.tf）の口。どれも MSK の IAM 認証を喋れない。資格情報は Secrets Manager の
+# AmazonMSK_<接頭辞>-<コレクター>（顧客管理の KMS キー alias/<接頭辞>-msk-scram で暗号化）で、ops/up.sh が apply の前に作り、ops/down.sh が destroy のあとに消す。
+# コレクターごとに別のユーザー（User:syslog-ng / User:goflow2 / User:gnmic。cycle 031）で、Spark のジョブ（app/spark/snmp_sinks.py の SCRAM_USERS）が
+# ユーザーごとに書けるトピックを絞る。名前の一覧は下の scram_collectors と ops/up.sh・ops/down.sh・SCRAM_USERS で揃える。
 # Terraform は data source で ARN だけを引き、値には触らない（state に入らない）。
 # OSS 版（cycle 005。IaC/terraform/oss/pipeline/stream）にこのファイルは無く、代わりに kafka.tf（ECS の Kafka）がある。どちらも下の kafka_* の locals を
 # 同じ名前で定義し、2 つの版で共通のファイル（locals.tf・telegraf.tf・kafka_ui.tf・access.tf・outputs.tf。OSS 版はシンボリックリンク）は MSK のリソースでなくそれを使う
@@ -16,6 +18,9 @@ locals {
   topic_arns = "${replace(aws_msk_cluster.stream.arn, ":cluster/", ":topic/")}/*"
   group_arns = "${replace(aws_msk_cluster.stream.arn, ":cluster/", ":group/")}/*"
 
+  # SCRAM のユーザー（= コレクター）。secret は 1 人 1 本（AmazonMSK_<接頭辞>-<コレクター>、username もコレクター名）
+  scram_collectors = ["syslog-ng", "goflow2", "gnmic"]
+
   # ---- Kafka の差し替え口（OSS 版は kafka.tf が同じ名前で定義する）
   # Telegraf の KAFKA_BROKERS（IAM の口。9098）と output bootstrap_brokers
   kafka_bootstrap_brokers = aws_msk_cluster.stream.bootstrap_brokers_sasl_iam
@@ -24,20 +29,21 @@ locals {
     SASL_SSL  = aws_msk_cluster.stream.bootstrap_brokers_sasl_iam
     PLAINTEXT = aws_msk_cluster.stream.bootstrap_brokers
   }
-  # syslog-ng と GoFlow2（collectors.tf）の口。SCRAM（9096、TLS）。ユーザー名とパスワードは ECS の secrets で Secrets Manager から入れる
+  # syslog-ng と GoFlow2（collectors.tf）と gnmic（gnmic.tf）の口。SCRAM（9096、TLS）。ユーザー名とパスワードは ECS の secrets で Secrets Manager から入れる。
+  # kafka_collector_secrets はコレクター名 → ECS の secrets の表（それぞれ自分の secret だけを入れる）
   kafka_collector_brokers = aws_msk_cluster.stream.bootstrap_brokers_sasl_scram
   kafka_collector_auth    = "scram"
-  kafka_collector_secrets = [
-    { name = "KAFKA_SASL_USER", valueFrom = "${data.aws_secretsmanager_secret.msk_scram.arn}:username::" },
-    { name = "KAFKA_SASL_PASS", valueFrom = "${data.aws_secretsmanager_secret.msk_scram.arn}:password::" },
-  ]
+  kafka_collector_secrets = { for c in local.scram_collectors : c => [
+    { name = "KAFKA_SASL_USER", valueFrom = "${data.aws_secretsmanager_secret.msk_scram[c].arn}:username::" },
+    { name = "KAFKA_SASL_PASS", valueFrom = "${data.aws_secretsmanager_secret.msk_scram[c].arn}:password::" },
+  ] }
   # 2 つの実行ロールに足す権限（ECS のエージェントが起動時に secret を読む。Secrets Manager は呼び手の権限で KMS の復号を頼む）
   kafka_collector_execution_statements = [
     {
       Sid      = "ScramSecret"
       Effect   = "Allow"
       Action   = ["secretsmanager:GetSecretValue"]
-      Resource = data.aws_secretsmanager_secret.msk_scram.arn
+      Resource = [for c in local.scram_collectors : data.aws_secretsmanager_secret.msk_scram[c].arn]
     },
     {
       Sid      = "ScramSecretKey"
@@ -186,7 +192,8 @@ resource "aws_msk_cluster" "stream" {
 # ---- SASL/SCRAM の資格情報（cycle 012）。secret と KMS キーは ops/up.sh が作る（MSK は名前が AmazonMSK_ で始まり、顧客管理のキーで暗号化した secret しか受け付けない）。
 # MSK が secret にリソースポリシーを付けるので、手で書き換えない
 data "aws_secretsmanager_secret" "msk_scram" {
-  name = "AmazonMSK_${local.name_prefix}-collectors"
+  for_each = toset(local.scram_collectors)
+  name     = "AmazonMSK_${local.name_prefix}-${each.key}"
 }
 
 data "aws_kms_alias" "msk_scram" {
@@ -195,7 +202,7 @@ data "aws_kms_alias" "msk_scram" {
 
 resource "aws_msk_scram_secret_association" "collectors" {
   cluster_arn     = aws_msk_cluster.stream.arn
-  secret_arn_list = [data.aws_secretsmanager_secret.msk_scram.arn]
+  secret_arn_list = [for c in local.scram_collectors : data.aws_secretsmanager_secret.msk_scram[c].arn]
 }
 
 # ブローカーのアドレスはクラスタ作成後にしか分からない。Telegraf のタスク（telegraf.tf）は環境変数で直接受け取るので、ここは手で調べるときと
