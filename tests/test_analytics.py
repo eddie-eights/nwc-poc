@@ -272,8 +272,8 @@ check("ECS のロールは全部 perimeter の Deny を付け、信頼ポリシ�
       and '"aws:SourceAccount"' in _ecs_tf)
 check("up.sh は Grafana / Splunk のパスワードと HEC の token を ensure_secret で SSM に作り（値は Python が本人だけ読める一時ファイルに書いて file:// で渡し、すぐ消す）、down.sh は ManagedBy のタグで消す",
       'ensure_secret "/$PREFIX/grafana/admin-password" password' in up and 'ensure_secret "/$PREFIX/splunk/admin-password" password' in up
-      and 'ensure_secret "/$PREFIX/splunk/hec-token" uuid' in up and '--cli-input-json "file://$input"' in up and "umask 077" in up
-      and 'rm -f -- "${input:?}"' in up and "file:///dev/stdin" not in up.replace("（file:///dev/stdin）", "")
+      and 'ensure_secret "/$PREFIX/splunk/hec-token" uuid' in up and '--cli-input-json "file://$SECRET_INPUT"' in up and "umask 077" in up
+      and 'rm -f -- "${SECRET_INPUT:?}"; SECRET_INPUT=""' in up and "file:///dev/stdin" not in up.replace("（file:///dev/stdin）", "")
       and '"Key=tag:ManagedBy,Values=$OPS_DIR/up.sh"' in down and "aws ssm delete-parameter" in down)
 check("up.sh は ECS の Splunk が HEALTHY になってから Spark のジョブを起こす", up.index('log "7-4b.') < up.index('log "7-5.') and "healthStatus" in up)
 check("variable splunk_hec_token_parameter（既定は空。/ で始まる）/ splunk_index。外の Splunk の splunk_hec_url / splunk_skip_tls_verify は無い（2026-09-28）",
