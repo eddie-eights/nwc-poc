@@ -6,6 +6,7 @@
 #      IaC/terraform/aws-managed/ を変えると両方の validate に効く
 #   3. スクリプトの構文（git が追跡している .sh は全部（git ls-files '*.sh'）1 つずつ bash -n。bash -n a b は a しか見ない。リポジトリの .py は全部 ast.parse）
 #   4. 模擬テスト（tests/test_*.py を全部。AWS に触れない）
+#   5. 旧名（cycle 019 で nwc に改めた名前）が戻っていない（git ls-files の追跡ファイルを grep。docs/cycles と docs/verification は記録なので見ない）
 # 最後の行が「すべて通過」なら健全。途中で落ちたらそこで止まる。
 set -euo pipefail
 
@@ -65,5 +66,17 @@ if command -v uv >/dev/null; then
 else
   echo "uv が無いので飛ばす（docs/development.md の「手元で確かめる」の通り uv sync --group dev --group web を入れてから打つ）"
 fi
+
+# 旧名はこのファイルにも字面で書かない（書くとこのファイルが grep に掛かる）。'net''ops' は bash が 1 語につなぐ
+OLD_NAME='net''ops'
+log "5. 旧名 $OLD_NAME が戻っていない（docs/cycles と docs/verification は記録なので見ない。cycle 019）"
+# 残ってよいのは tables.tf の moved（古い state のアドレスは字面で書くしかない。IaC/terraform/oss のはそのシンボリックリンク）と、
+# それを見る tests/test_analytics.py の 1 check だけ。moved を消したら ALLOWED と 5 行もここで直す
+HITS=$(git ls-files -z | grep -z -v -e '^docs/cycles/' -e '^docs/verification/' | xargs -0 grep -l -i "$OLD_NAME" -- 2>/dev/null | LC_ALL=C sort || true)
+ALLOWED=$'IaC/terraform/aws-managed/pipeline/analytics/tables.tf\nIaC/terraform/oss/pipeline/analytics/tables.tf\ntests/test_analytics.py'
+[ "$HITS" = "$ALLOWED" ] || die "$OLD_NAME が残っている（許すのは tables.tf の moved と test_analytics の check だけ）: $(printf '%s' "$HITS" | tr '\n' ' ')"
+n=$(grep -c -i "$OLD_NAME" IaC/terraform/aws-managed/pipeline/analytics/tables.tf tests/test_analytics.py | awk -F: '{s+=$2} END{print s}')
+[ "$n" -eq 5 ] || die "tables.tf と test_analytics.py の $OLD_NAME が 5 行でない（$n 行）。moved 3 行と check 2 行以外に増えている"
+echo "$OLD_NAME なし（許した 3 ファイル 5 行だけ）"
 
 printf '\nすべて通過\n'

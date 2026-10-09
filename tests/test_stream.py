@@ -562,10 +562,19 @@ def _between(text, start, end):  # start から end の手前まで。どちら�
     return text[i:j] if j >= 0 else ""
 _s83 = _between(_up_sh, "\n# ---- 8-3. Web ", "\n# ---- 8-5. ")
 _s75 = _between(_oss_up_sh, '\nlog "7-5. ', "\n# ---- 8. workflow ")
+# 8-3 は全体を 1 本で fullmatch する（cycle 023）: 見出しの次が字下げなしの if、本文は 2 スペース字下げの行（空行も可）だけで restart を含み、
+# 字下げなしの fi で閉じて、あとは空行だけ。&& { で続ける形・字下げした if・関数で包む形は落ちる。_s83 は 8-5 の見出しの前の \n を含まないので、
+# fi の直後に空行が無いと末尾は fi で切れる（fi\n\n* でなく fi\n*）
+_s83_re = re.compile(
+    r'\n# ---- 8-3\. Web -*\n'
+    r'if \[ -z "\$SKIP_STREAM" \] \|\| [^\n]*; then\n'
+    r'(?:(?:  [^\n]*)?\n)*?'
+    r'  run_on_instance "\$INSTANCE_ID" "systemctl restart \$PREFIX-web\.service; \$WEB_ACTIVE"\n'
+    r'(?:(?:  [^\n]*)?\n)*?'
+    r'fi\n*')
 check("Kafbat UI を起こす Web の restart は stream の apply より後: ops/up.sh の手順 8-3 は if [ -z \"$SKIP_STREAM\" ] || … の中、OSS 版の手順 7-5 は条件なし（cycle 014）",
       -1 < _up_sh.find("\n  tf_apply pipeline/stream ") < _up_sh.find("\n# ---- 8-3. Web ")
-      and re.match(r'\n# ---- 8-3\. Web -*\nif \[ -z "\$SKIP_STREAM" \] \|\| [^\n]*; then\n', _s83) is not None
-      and '\n  run_on_instance "$INSTANCE_ID" "systemctl restart $PREFIX-web.service; $WEB_ACTIVE"\n' in _s83 and _s83.count("\nfi\n") == 1
+      and _s83_re.fullmatch(_s83) is not None
       and -1 < _oss_up_sh.find('\ntf_apply pipeline/stream "${STREAM_VARS[@]}"\n') < _oss_up_sh.find('\nlog "7-5. ')
       and re.fullmatch(r'\nlog "7-5\. [^"\n]*"\n(?:[ \t]*(?:#[^\n]*)?\n)*run_on_instance "\$INSTANCE_ID" "systemctl restart \$PREFIX-web\.service; \$WEB_ACTIVE"(?:\n[ \t]*(?:#[^\n]*)?)*\n?', _s75) is not None
       and re.findall(r"^(?:if|fi)\b.*$", _between(_oss_up_sh, "\n# ---- 7-4c. ", "\n# ---- 8. workflow "), re.M)

@@ -1946,6 +1946,13 @@ check("ops/check.sh: bash -n は git ls-files '*.sh' の全部で、そこに op
       and _chk_find and "ops" in _chk_find.group(1).split()
       and re.search(r"^\s*for t in tests/test_\*\.py; do$", _chk, re.M) is not None
       and "for t in tests/test_agentcore.py" not in _chk)
+# 旧名は字面で書かない（書くとこのファイルが ops/check.sh の 5. に掛かる）
+_chk_old = _chk[_chk.find('\nlog "5. '):_chk.find("\nprintf '\\nすべて通過")]
+check("ops/check.sh: 5. で旧名の grep を git ls-files に打ち、docs/cycles と docs/verification を除き、許すのは tables.tf（aws-managed と oss のリンク）と tests/test_analytics.py の 5 行だけ（cycle 023）",
+      "OLD_NAME='net''ops'\n" in _chk and _chk.find("OLD_NAME=") < _chk.find('\nlog "5. ') < _chk.find("\nprintf '\\nすべて通過")
+      and "git ls-files -z | grep -z -v -e '^docs/cycles/' -e '^docs/verification/' | xargs -0 grep -l -i \"$OLD_NAME\"" in _chk_old
+      and all(p in _chk_old for p in ("IaC/terraform/aws-managed/pipeline/analytics/tables.tf", "IaC/terraform/oss/pipeline/analytics/tables.tf", "tests/test_analytics.py"))
+      and '[ "$n" -eq 5 ]' in _chk_old and "LC_ALL=C sort" in _chk_old)
 
 # ---- app/neo4j/entrypoint.sh: GRAPH_PASSWORD を NEO4J_AUTH に直してから公式の entrypoint を呼ぶ（偽物の tini と entrypoint で通す）
 def neo4j_entrypoint(**env):

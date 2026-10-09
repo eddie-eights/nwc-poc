@@ -168,6 +168,10 @@ elif (svc, op) == ("ssm", "put-parameter"):
     src = opt("--cli-input-json")
     if not src or not src.startswith("file://"):
         fail("put-parameter には file:// で渡す", 255)
+    if os.environ.get("FAKE_SSM_PUT_SIGNAL"):  # 作っている最中に止められた（下の FAKE_SM_CREATE_SIGNAL と同じ。呼んだ shell と自分の両方に届く）
+        sig = getattr(signal, "SIG" + os.environ["FAKE_SSM_PUT_SIGNAL"])
+        os.kill(os.getppid(), sig)
+        signal.signal(sig, signal.SIG_DFL); os.kill(os.getpid(), sig)
     with open(src[len("file://"):], encoding="utf-8") as f:
         d = json.load(f)
     inv["ssm"][d["Name"]] = {"type": d["Type"], "value": d["Value"], "tags": {t["Key"]: t["Value"] for t in d.get("Tags", [])}}
@@ -891,6 +895,19 @@ check("ensure_secret kafka-cluster-id: 値は画面にもコマンドライン�
 check("ensure_secret kafka-cluster-id: タグは ManagedBy=ops/oss/up.sh・Project=x-nwc-oss・owner=x（ops/oss/down.sh が消せる）",
       made.get("tags") == {"ManagedBy": "ops/oss/up.sh", "Project": "x-nwc-oss", "owner": "x"})
 check("ensure_secret: 値を書いた一時ファイルを残さない", not [f for f in os.listdir(TMP) if f.startswith("nwc-secret.")])
+# put-parameter の最中に止められても、値を書いた一時ファイルは EXIT の trap（on_exit）が消す。on_exit は ops/up.sh のものをそのまま使う（cycle 023）
+_on_exit = re.search(r"^on_exit\(\) \{.*?^\}\ntrap on_exit EXIT\n", read("ops/up.sh"), re.S | re.M).group(0)
+for _sig in ("INT", "TERM"):
+    for _f in [f for f in os.listdir(TMP) if f.startswith("nwc-secret.")]:
+        os.remove(os.path.join(TMP, _f))
+    reset(inventory())
+    _p = subprocess.run(["bash", "-c", SECRET_SH.replace("OPS_DIR=ops/oss\n", "OPS_DIR=ops/oss\nGRAPH_PID=\"\"; NAUTOBOT_CTX=\"\"\n" + _on_exit, 1)],
+                        cwd=ROOT, env=fake_env({"FAKE_SSM_PUT_SIGNAL": _sig}), capture_output=True, text=True, timeout=60)
+    with open(INV, encoding="utf-8") as f:
+        _ssm = json.load(f)["ssm"]
+    check(f"ensure_secret: put-parameter の最中に SIG{_sig} で止まっても、値を書いた一時ファイルを残さない（ops/up.sh の on_exit が消す）",
+          _p.returncode < 0 and len(aws_calls(calls(), "ssm", "put-parameter")) == 1 and "/x-nwc-oss/kafka/new-id" not in _ssm
+          and not [f for f in os.listdir(TMP) if f.startswith("nwc-secret.")])
 
 # 先頭が「-」になる乱数を引いたら引き直す（Kafka の Uuid.randomUuid と同じ）。up-common.sh の Python をそのまま動かす
 src = re.search(r"(def kafka_cluster_id\(\):\n(?:    .*\n)+)", read("ops/up-common.sh")).group(1)
@@ -954,8 +971,7 @@ check("ensure_msk_scram_secret: 中身は JSON の username / password（MSK の
 check("ensure_msk_scram_secret: パスワードは画面にもコマンドラインにも出さず、値を書いた一時ファイルを残さず、中身を読むコマンド（get-secret-value）は打たない",
       _val.get("password") and _val["password"] not in out and not any(_val["password"] in " ".join(c["args"]) for c in cs)
       and not [f for f in os.listdir(TMP) if f.startswith("nwc-secret.")] and not aws_calls(cs, "secretsmanager", "get-secret-value"))
-# create-secret の最中に止められても、値を書いた一時ファイルは ops/up.sh の EXIT の trap（on_exit）が消す。on_exit は ops/up.sh のものをそのまま使う
-_on_exit = re.search(r"^on_exit\(\) \{.*?^\}\ntrap on_exit EXIT\n", read("ops/up.sh"), re.S | re.M).group(0)
+# create-secret の最中に止められても、値を書いた一時ファイルは ops/up.sh の EXIT の trap（on_exit）が消す。on_exit は ops/up.sh のもの（上の _on_exit）をそのまま使う
 for _sig in ("INT", "TERM"):
     for _f in [f for f in os.listdir(TMP) if f.startswith("nwc-secret.")]:
         os.remove(os.path.join(TMP, _f))
@@ -1005,7 +1021,13 @@ up, down = read("ops/oss/up.sh"), read("ops/oss/down.sh")
 def funcs(text):
     return set(re.findall(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{", text, re.M))
 ops_funcs = set().union(*(funcs(read(f"ops/{f}")) for f in os.listdir(os.path.join(ROOT, "ops")) if f.endswith(".sh")))
-check("ops/oss/up.sh と down.sh は関数を定義しない（ops/ の共通の関数を読む）", not funcs(up) and not funcs(down))
+check("ops/oss/up.sh と down.sh は関数を定義しない（ops/ の共通の関数を読む。up.sh の EXIT の trap の on_exit だけは別。cycle 023）",
+      funcs(up) == {"on_exit"} and not funcs(down))
+_oss_on_exit = re.search(r"^on_exit\(\) \{.*?^\}\ntrap on_exit EXIT\n", up, re.S | re.M)
+check("ops/oss/up.sh の EXIT の trap は on_exit 関数で、TF_AWS_CONFIG・NAUTOBOT_CTX・ROLL_PLAN・SECRET_INPUT の 4 つを消し、exec の前に trap を外して同じ on_exit を 1 回呼ぶ（cycle 023）",
+      _oss_on_exit is not None
+      and all(f'if [ -n "${v}" ]; then rm -' in _oss_on_exit.group(0) for v in ("TF_AWS_CONFIG", "NAUTOBOT_CTX", "ROLL_PLAN", "SECRET_INPUT"))
+      and up.count("\ntrap - EXIT\non_exit\nexec aws ssm start-session ") == 1 and up.count("\ntrap ") == 2)
 check("ops/oss/oss-images.sh は ops/ にある関数を書き直していない（写しを作らない）", not funcs(img_sh) & ops_funcs)
 check("ops/oss/up.sh は ops/common.sh・ops/up-common.sh・ops/lab-common.sh・ops/deploy-env.sh を読む",
       all(s in up for s in (". ops/common.sh", ". ops/up-common.sh", '/../lab-common.sh"', '/../deploy-env.sh"')))
@@ -1055,7 +1077,7 @@ check("ops/oss/up.sh は stream と analytics の apply の前に roll_nodes（o
       and 0 <= pos("ANALYTICS_VARS=(") < pos('roll_nodes opensearch pipeline/analytics "${ANALYTICS_VARS[@]}"\ntf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"\n')
       and _an.count("\n\n") == 0 and _st.count("\n\n") == 0 and up.count("roll_nodes ") == 2
       and re.search(r'^OSS_ROLL="\$\{OSS_ROLL:-1\}"; flag_value OSS_ROLL\b', up, re.M) is not None
-      and 'if [ -n "$ROLL_PLAN" ]; then rm -f "$ROLL_PLAN"; fi' in up[pos("\ntrap '"):up.index("\n", pos("\ntrap '") + 1)])
+      and _oss_on_exit is not None and 'if [ -n "$ROLL_PLAN" ]; then rm -f "$ROLL_PLAN"; fi' in _oss_on_exit.group(0))
 check("ops/oss/up.sh は analytics の前に Grafana の admin のパスワードを SSM に作り、analytics に create_grafana=true と Grafana のタグを渡す（OSS 版はいつも Grafana を作る）",
       0 <= pos('ensure_secret "/$PREFIX/grafana/admin-password" password') < pos("tf_apply pipeline/analytics")
       and "-var create_grafana=true" in _an and '-var "grafana_image_tag=$GRAFANA_TAG"' in _an)
