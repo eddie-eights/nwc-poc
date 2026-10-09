@@ -451,7 +451,7 @@ def _lab_graph(*args, active=False, **env):
             f.write(lab_sh)
         os.chmod(os.path.join(d, "lab.sh"), 0o755)
         open(os.path.join(d, "splab.clab.yml"), "w").close()
-        e = {k: v for k, v in os.environ.items() if k not in ("NAME_PREFIX", "AWS_REGION", "REGISTRY", "TELEGRAF_IMAGE")}
+        e = {k: v for k, v in os.environ.items() if k not in ("NAME_PREFIX", "AWS_REGION", "REGISTRY", "TELEGRAF_IMAGE", "SRLINUX_IMAGE", "TREX_IMAGE")}
         e.update(PATH=b + os.pathsep + os.environ["PATH"], FAKE_LOG=log, **env)
         r = subprocess.run([os.path.join(d, "lab.sh"), *args], env=e, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
         return r, open(log, encoding="utf-8").read().splitlines(), os.path.realpath(d)
@@ -481,6 +481,12 @@ check("lab.sh down: graph-stop で図を止めてから containerlab destroy す
 _r, _c, _ = _lab_graph("down")
 check("lab.sh down: NAME_PREFIX が無ければ（手元の compose）systemctl を打たずに destroy だけ",
       _r.returncode == 0 and _c == ["containerlab destroy -t splab.clab.yml --cleanup"])
+# ---- lab.sh render の ${TREX_IMAGE:?}（024 G。011 で足した TRex のイメージが無いまま splab.clab.yml を作らない）
+check("lab.sh render) の次の行は : \"${SRLINUX_IMAGE:?}\" \"${TREX_IMAGE:?}\"（イメージは SR Linux と TRex の 2 つ）",
+      re.search(r"^  render\)\n(.*)$", lab_sh, re.M).group(1).strip() == ': "${SRLINUX_IMAGE:?}" "${TREX_IMAGE:?}"')
+_r, _c, _ = _lab_graph("render", SRLINUX_IMAGE="x")
+check("lab.sh render: TREX_IMAGE が無ければ（011 より前の環境）splab.clab.yml を作らずに止まり、stderr に TREX_IMAGE と出す",
+      _r.returncode != 0 and "TREX_IMAGE" in _r.stderr and "を作った" not in _r.stdout and _c == [])
 # ---- lab.sh logs / trex stop / trex status（011 Round 2）。lab.sh・テンプレート・srlinux/*.cli を一時ディレクトリに写し、偽の docker を PATH の先に置く。
 # srlinux/ には S3 に残った古い .cli（dc1-leaf-01。011 で dc1-a-leaf-01 に改名した名前）を 1 本混ぜる
 def _lab_docker(*args, running=False):
