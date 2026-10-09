@@ -155,3 +155,51 @@ exit 0。2 行の `topic` / `measurement` / `agent_host` / `ts` / `fields_json` 
 1. 範囲の外で捨てた行の件数を出さない。Telegraf の timestamp の単位を間違えると全部が黙って消える（設計の未確定 4 のとおり、別のサイクル）
 2. `spark_parse_check.py` に、判定の直しを単独で縛る入力が無い（例: `fields` も `values` も無く timestamp が秒の event を足せば、古い判定では Telegraf の行として 3 行目が出て NG になる）。設計の 5 件から外れるので足していない
 3. `msg["deletes"]` は schema に残るが、どこでも読まなくなった（`test_analytics.py` の check が schema の字面を縛っているので残した）
+
+## Round 1: cold review 後の直し
+
+cold review（`review.md` の Round 1）は Must fix 0 / Should fix 2 / Nit 5。PM の判断で Should fix の 2 件と Nit 3 を直した。Nit 1・2・4・5 は直さない。上の「直さなかったもの」の 2 はこの直しで片付いた。
+
+直した点:
+
+1. **Should fix 1 [missing tests]**: `tests/spark_parse_check.py` の INPUTS に 6 件目 `("metrics", {"name": "interface_stats", "timestamp": 1791534762, "tags": TAGS})` を足した（fields も values も無く、timestamp が秒）。EXPECTED は 2 行のまま。範囲の守りは効かないので、判定だけを縛る。docstring と `tests/README.md` の「5 件」を「6 件」にした
+2. **Should fix 2 [design 整合性]**: `design.md` の「設計方針 4」の赤→緑と「検証方法 4」を、6 件目を前提にした手順（判定だけ戻す → `NG 3 rows`、範囲も外す → `ValueError`）に直した。`--platform linux/amd64` の記述を外し、イメージが arm64 で build できて `--platform` 無しで動いたことに書き換えた（「調査で分かった事実」、実装ステップ 2、未確定事項 1 も同じ）。入力の数（5 → 6）も合わせた
+3. **Nit 3**: Docker のタグを `design.md` と `spark_parse_check.py` の docstring の両方で `nwc-local-spark:parse-check` にし、最後に `docker rmi nwc-local-spark:parse-check` を添えた（compose の `nwc-local-spark:latest` を上書きしないため）
+
+Docker（`docker build -f docker/images/spark/Dockerfile -t nwc-local-spark:parse-check app/spark`、arm64。`--platform` は付けない）:
+
+緑（直した版の `snmp_sinks.py`。INFO の行を除く）:
+
+```
+row	metrics	interface	203.0.113.11	2026-10-09T08:32:42	{"in_octets":"12345"}
+row	traps	snmp_trap	203.0.113.11	2026-10-09T08:32:42	{"oid":"1.3.6.1.6.3.1.1.5.3"}
+OK 2 rows
+exit=0
+```
+
+赤（直した版から判定の 1 行だけを古い字面 `msg["fields"].isNull() & (msg["values"].isNotNull() | msg["deletes"].isNotNull())` に戻した一時ファイル。scratchpad に置いてマウントし、終わったら消した）:
+
+```
+row	metrics	interface	203.0.113.11	2026-10-09T08:32:42	{"in_octets":"12345"}
+row	traps	snmp_trap	203.0.113.11	2026-10-09T08:32:42	{"oid":"1.3.6.1.6.3.1.1.5.3"}
+row	metrics	interface_stats	None	2026-10-09T08:32:42	None
+NG 3 rows（期待は 2 行: [('metrics', 'interface', '203.0.113.11', '2026-10-09T08:32:42', '{"in_octets":"12345"}'), ('traps', 'snmp_trap', '203.0.113.11', '2026-10-09T08:32:42', '{"oid":"1.3.6.1.6.3.1.1.5.3"}')]）
+exit=1
+```
+
+3 行目が 6 件目（Telegraf の行として残った）。終わったら `docker rmi nwc-local-spark:parse-check` を打ち（`Untagged: nwc-local-spark:parse-check`、`Deleted: sha256:1ae9f9d6…`）、`docker image ls nwc-local-spark` に `:parse-check` が無いこと（`:latest` だけ。これは手元の compose のもので触っていない）を確かめた。
+
+テスト（直したあとの作業ツリーで取り直した）:
+
+```
+$ uv run --group dev --group web python tests/test_analytics.py
+通過 519 / 失敗 0
+$ uv run --group dev --group web python tests/test_stream.py
+通過 108 / 失敗 0
+$ bash ops/check.sh
+（exit=0。最後の行）すべて通過
+```
+
+`ops/check.sh` の本ごとの件数は上の表と同じ（agentcore 161、alerts 168、analytics 519、collectors 79、dashboard_config 3、graph 78、kb_index 7、lab_debug 97、local_compose 138、nautobot 68 項目、oss 174、oss_ops 200、oss_roll 66、stream 108、sync 103、workflow 327）。
+
+`git diff --stat origin/main` には、設計の 7 本と build.md に加えて `design.md`（直した）と `review.md`（新規）が入る。

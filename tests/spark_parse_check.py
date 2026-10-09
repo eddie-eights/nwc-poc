@@ -1,17 +1,21 @@
-"""本物の Spark で snmp_sinks.parse_rows に Kafka の行の形のバッチの DataFrame を 5 件通し、collect() まで死なずに 2 行になることを確かめる（cycle 025）。
+"""本物の Spark で snmp_sinks.parse_rows に Kafka の行の形のバッチの DataFrame を 6 件通し、collect() まで死なずに 2 行になることを確かめる（cycle 025）。
 
-test_*.py ではないので ops/check.sh では回らない（pyspark と Java が要る。手元の Mac には無い）。Spark のイメージ nwc-local-spark の中で回す:
+test_*.py ではないので ops/check.sh では回らない（pyspark と Java が要る。手元の Mac には無い）。Spark のイメージ（docker/images/spark/Dockerfile）を
+確認用の別のタグで build して、その中で回す。手元の compose が使う nwc-local-spark（:latest）を、このブランチの snmp_sinks.py を焼いたイメージで上書きしないため:
 
-  docker build -f docker/images/spark/Dockerfile -t nwc-local-spark app/spark
+  docker build -f docker/images/spark/Dockerfile -t nwc-local-spark:parse-check app/spark
   docker run --rm \\
     -v "$PWD/app/spark/snmp_sinks.py:/opt/nwc/snmp_sinks.py:ro" \\
     -v "$PWD/tests/spark_parse_check.py:/opt/nwc/spark_parse_check.py:ro" \\
-    nwc-local-spark /opt/spark/bin/spark-submit --master 'local[1]' /opt/nwc/spark_parse_check.py
+    nwc-local-spark:parse-check /opt/spark/bin/spark-submit --master 'local[1]' /opt/nwc/spark_parse_check.py
+  docker rmi nwc-local-spark:parse-check
 
 apache/spark のイメージは arm64 もあるので、arm64 の Mac でもそのまま build と run ができる（--platform は付けない。2026-10-09 に確かめた。cycle 025 の build.md）。
 合えば最後の行が OK 2 rows で exit 0、違えば NG を print して exit 1。collect() で ValueError が出たらトレースで exit 1。
 入力の 1 は 2026-10-09 の AWS の metrics の実物（docs/verification/20261009-aws-managed-2.md 不具合 1）。values も deletes も無い gnmic の event で、
 025 の前の read_rows はこれを Telegraf の行として読み、ナノ秒の timestamp を秒と読んで年 173875 の ts を作り、collect() が ValueError で落ちていた。
+入力の 6 は gnmic の判定（fields が無いこと）だけを縛る。timestamp が秒なので範囲の守りは効かず、判定を古い字面（values か deletes を見る形）に戻すと
+Telegraf の行として残って 3 行になり NG になる。
 """
 import json
 import os
@@ -36,6 +40,7 @@ INPUTS = [
     ("gnmi", {"name": "interface_state", "timestamp": NS, "tags": TAGS, "deletes": ["/srl_nokia-interfaces:interface/oper-state"]}),   # 3. deletes だけ
     ("traps", TRAP),   # 4. Telegraf の trap
     ("traps", dict(TRAP, timestamp=NS)),   # 5. 4 の timestamp をナノ秒にしたもの（fields はある。範囲の守りだけが効く）
+    ("metrics", {"name": "interface_stats", "timestamp": 1791534762, "tags": TAGS}),   # 6. fields も values も無く timestamp が秒（範囲の内。判定だけが効く）
 ]
 # (topic, measurement, agent_host, ts の UTC の ISO, fields_json)。2 と 4 だけが残る
 EXPECTED = [
