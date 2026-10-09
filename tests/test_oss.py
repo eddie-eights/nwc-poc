@@ -759,7 +759,7 @@ check("KAFKA_AUTH / OPENSEARCH_AUTH / PROMETHEUS_AUTH の綴り違いは ValueEr
 # Splunk の HEC の token: OSS 版は ECS の secrets が SSM の SecureString を SPLUNK_HEC_TOKEN に入れる。無ければマネージド版のまま SSM から読む
 _ssm_reads = []
 sinks.read_ssm_parameter = lambda name, region: (_ssm_reads.append(name), "tok-ssm")[1]
-_SPLUNK_ARGS = ["--bootstrap", "b:9092", "--checkpoint", "s3a://b/analytics/checkpoint", "--sinks", "splunk", "--splunk-hec-url", "https://s:8088"]
+_SPLUNK_ARGS = ["--bootstrap", "b:9092", "--checkpoint", "s3a://b/spark/checkpoint", "--sinks", "splunk", "--splunk-hec-url", "https://s:8088"]
 
 
 def parse_ok(argv, **env):

@@ -48,9 +48,17 @@ check("ファイルは versions / providers / variables / locals / network / tab
                         "ecs.tf", "grafana.tf", "splunk.tf", "history.tf"})
 check("main の state をローカルから読む", re.search(r'data "terraform_remote_state" "main"[\s\S]*?backend\s*=\s*"local"', tf, re.S) is not None
       and '"${path.module}/../../base/core/terraform.tfstate"' in tf)
+# cycle 035: EMR のログと Firehose が書けなかった行は logs のバケット（base/logs。ops/down.sh で消さない）に書く
+check("logs の state（base/logs）をローカルから読み、logs_bucket と logs_bucket_arn を作る（cycle 035）",
+      re.search(r'data "terraform_remote_state" "logs"[\s\S]*?backend\s*=\s*"local"', tf, re.S) is not None
+      and '"${path.module}/../../base/logs/terraform.tfstate"' in tf
+      and re.search(r'logs_bucket\s*=\s*data\.terraform_remote_state\.logs\.outputs\.logs_bucket_name', tf) is not None
+      and re.search(r'logs_bucket_arn\s*=\s*"arn:\$\{local\.partition\}:s3:::\$\{local\.logs_bucket\}"', tf) is not None)
+check("IaC/terraform/aws-managed/base/logs に output logs_bucket_name がある",
+      re.search(r'^output "logs_bucket_name"', open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "logs", "outputs.tf"), encoding="utf-8").read(), re.M) is not None)
 check("stream の state をローカルから読む", re.search(r'data "terraform_remote_state" "stream"[\s\S]*?backend\s*=\s*"local"', tf, re.S) is not None
       and '"${path.module}/../stream/terraform.tfstate"' in tf)
-for out in ("vpc_id", "subnet_ids", "security_group_ids", "opensearch_vpc_endpoint_id", "kb_bucket_name"):
+for out in ("vpc_id", "subnet_ids", "security_group_ids", "opensearch_vpc_endpoint_id", "assets_bucket_name"):
     check(f"main の output {out} を使う", f"data.terraform_remote_state.main.outputs.{out}" in tf)
 for out in ("msk_cluster_arn", "bootstrap_brokers"):
     check(f"stream の output {out} を try で読む（無ければ precondition で止める）",
@@ -63,7 +71,7 @@ check("アラートのトピックの ARN は main の state から try で読�
 check("stream が無いときは「IaC/terraform/aws-managed/pipeline/stream を先に apply する」と出る",
       re.search(r'precondition\s*\{[\s\S]*?msk_cluster_arn\s*!=\s*""[\s\S]*?IaC/terraform/aws-managed/pipeline/stream を先に apply する', tf, re.S) is not None)
 # main / stream の .tf に本当にその output があるか（stream の msk_cluster_arn は MSK だけのものなので msk.tf にある。cycle 005）
-for root, outs in (("base/core", ("vpc_id", "subnet_ids", "security_group_ids", "opensearch_vpc_endpoint_id", "kb_bucket_name", "alerts_topic_arn")),
+for root, outs in (("base/core", ("vpc_id", "subnet_ids", "security_group_ids", "opensearch_vpc_endpoint_id", "assets_bucket_name", "alerts_topic_arn")),
                    ("pipeline/stream", ("msk_cluster_arn", "bootstrap_brokers"))):
     _dir = os.path.join(ROOT, "IaC", "terraform", "aws-managed", root)
     other = ""
@@ -344,12 +352,18 @@ check("job_driver は device map が空でなく、そのジョブに prometheus
       re.search(r'\["--device-map",\s*var\.device_map\] : a if var\.device_map != "" && \(contains\(sinks, "prometheus"\) \|\| contains\(sinks, "opensearch"\) \|\| contains\(sinks, "splunk"\)\)', args_block.group(1)) is not None)
 check("job_driver の引数に token の値は無い（SSM のパラメータ名だけ）", "hec-token" not in args_block.group(1) and "splunk_hec_token" not in args_block.group(1))
 check("--sinks はそのジョブの格納先（var.sinks にあるものだけ）をカンマでつなぐ", '"--sinks", join(",", sinks)' in args_block.group(1) and "var.sinks" not in args_block.group(1))
-check("--checkpoint は s3://<バケット>/analytics/checkpoint/<MSK の uuid>/（MSK を作り直したら checkpoint も新しく。格納先ごとに下を切るのはスクリプト）",
+check("--checkpoint は s3://<assets のバケット>/spark/checkpoint/<MSK の uuid>/（MSK を作り直したら checkpoint も新しく。格納先ごとに下を切るのはスクリプト）",
       '"--checkpoint", local.checkpoint_uri' in args_block.group(1)
       and re.search(r'msk_cluster_uuid\s*=\s*try\(element\(split\("/", local\.msk_cluster_arn\), 2\)', tf) is not None
       and re.search(r'checkpoint_uri\s*=\s*"s3://\$\{local\.bucket\}/\$\{local\.checkpoint\}/\$\{local\.msk_cluster_uuid\}/"', tf) is not None)
-check("job_driver は jars を s3://<バケット>/analytics/jars/ から読む", "spark.jars=s3://${local.bucket}/${local.jars_prefix}/*.jar" in tf
-      and re.search(r'jars_prefix\s*=\s*"\$\{local\.s3_prefix\}/jars"', tf) is not None and re.search(r's3_prefix\s*=\s*"analytics"', tf) is not None)
+check("job_driver は jars を s3://<assets のバケット>/spark/jars/ から読む（cycle 035 で analytics/ → spark/）", "spark.jars=s3://${local.bucket}/${local.jars_prefix}/*.jar" in tf
+      and re.search(r'jars_prefix\s*=\s*"\$\{local\.s3_prefix\}/jars"', tf) is not None and re.search(r's3_prefix\s*=\s*"spark"', tf) is not None
+      and re.search(r'checkpoint\s*=\s*"\$\{local\.s3_prefix\}/checkpoint"', tf) is not None)
+check("EMR のログ（s3MonitoringConfiguration の logUri）は logs のバケットの emr/ に書き、実行ロールは logs のバケットの emr/* だけに PutObject / GetObject、バケットに ListBucket / GetBucketLocation（cycle 035）",
+      'logUri = "s3://${local.logs_bucket}/${local.emr_logs_prefix}/"' in tf and re.search(r'emr_logs_prefix\s*=\s*"emr"', tf) is not None
+      and re.search(r'Sid\s*=\s*"LogsBucket"[\s\S]*?"s3:PutObject",\s*"s3:GetObject"[\s\S]*?Resource\s*=\s*"\$\{local\.logs_bucket_arn\}/\$\{local\.emr_logs_prefix\}/\*"', tf) is not None
+      and re.search(r'Sid\s*=\s*"LogsBucketList"[\s\S]*?"s3:ListBucket",\s*"s3:GetBucketLocation"[\s\S]*?Resource\s*=\s*local\.logs_bucket_arn\b', tf) is not None
+      and re.search(r'(?<!emr_)\blogs_prefix\b', tf) is None and "${local.s3_prefix}/logs" not in tf)
 check("ジョブは 1 つ 3 vCPU（driver 1 + executor 2。Kafka のパーティション 2 つを並列に読む。動的割り当て無し）。sparkSubmitParameters は 3 つのジョブで共通",
       "spark.driver.cores=1" in tf and "spark.executor.cores=1" in tf and "spark.executor.instances=2" in tf and "spark.dynamicAllocation.enabled=false" in tf
       and tf.count("spark.executor.instances=") == 1 and tf.count("sparkSubmitParameters") == 1)
@@ -406,9 +420,9 @@ check("Firehose <接頭辞>-alert-events は iceberg で s3tablescatalog/<テー
       and re.search(r'database_name\s*=\s*aws_s3tables_namespace\.nwc\.namespace', _fh.group(1)) is not None
       and re.search(r'table_name\s*=\s*aws_s3tables_table\.alert_events\.name', _fh.group(1)) is not None
       and re.search(r'buffering_interval\s*=\s*60\b', _fh.group(1)) is not None and re.search(r'buffering_size\s*=\s*1\b', _fh.group(1)) is not None)
-check("書けなかった行は土台のバケットの firehose-errors/alert_events/ に落とし（FailedDataOnly）、CloudWatch のログを付ける",
+check("書けなかった行は logs のバケット（base/logs）の firehose-errors/alert_events/ に落とし（FailedDataOnly）、CloudWatch のログを付ける（cycle 035 で assets から移した）",
       re.search(r's3_backup_mode\s*=\s*"FailedDataOnly"', _fh.group(1)) is not None
-      and re.search(r'bucket_arn\s*=\s*local\.bucket_arn', _fh.group(1)) is not None
+      and re.search(r'bucket_arn\s*=\s*local\.logs_bucket_arn\b', _fh.group(1)) is not None and "local.bucket_arn" not in _fh.group(1)
       and re.search(r'error_output_prefix\s*=\s*local\.alert_errors', _fh.group(1)) is not None and 'alert_errors   = "firehose-errors/alert_events/"' in _hist
       and re.search(r'cloudwatch_logging_options \{\s*enabled\s*=\s*true', _fh.group(1)) is not None)
 _fhpol = re.search(r'resource "aws_iam_role_policy" "alert_firehose" \{(.*?)\n\}\n', _hist, re.S).group(1)
@@ -416,12 +430,12 @@ check("Firehose のロール <接頭辞>-alert-firehose: 信頼は firehose.amaz
       'alert_firehose    = "${local.name_prefix}-alert-firehose"' in _hist
       and re.search(r'Principal\s*=\s*\{\s*Service\s*=\s*"firehose\.amazonaws\.com"\s*\}', _hist) is not None
       and '"aws:SourceAccount" = local.account_id' in _hist and "perimeter_policy_arn" not in _hist)
-check("Firehose のロールの許可は S3 Tables（テーブルバケットと /table/*）と Glue の s3tablescatalog と firehose-errors/* とログだけ",
+check("Firehose のロールの許可は S3 Tables（テーブルバケットと /table/*）と Glue の s3tablescatalog と logs のバケットの firehose-errors/* とログだけ",
       sorted(re.findall(r'"(s3tables:\w+)"', _fhpol)) == sorted(["s3tables:GetTableBucket", "s3tables:GetNamespace", "s3tables:GetTable", "s3tables:GetTableData",
                                                               "s3tables:GetTableMetadataLocation", "s3tables:PutTableData", "s3tables:UpdateTableMetadataLocation"])
       and sorted(re.findall(r'"(glue:\w+)"', _fhpol)) == sorted(["glue:GetCatalog", "glue:GetDatabase", "glue:GetDatabases", "glue:GetTable", "glue:GetTables", "glue:UpdateTable"])
       and '"${local.table_bucket_arn}/table/*"' in _fhpol and '"${local.glue_catalog}/s3tablescatalog/*"' in _fhpol
-      and 'Resource = "${local.bucket_arn}/firehose-errors/*"' in _fhpol
+      and 'Resource = "${local.logs_bucket_arn}/firehose-errors/*"' in _fhpol and "local.bucket_arn" not in _fhpol
       and "s3:*" not in _fhpol and "s3tables:*" not in _fhpol and "glue:*" not in _fhpol and '"*"' not in _fhpol)
 _fhwait = re.search(r'resource "time_sleep" "alert_firehose_iam" \{(.*?)\n\}\n', _hist, re.S)
 _fhwait_s = re.search(r'create_duration\s*=\s*"(\d+)s"', _fhwait.group(1)) if _fhwait else None
@@ -539,10 +553,10 @@ def parse_error(argv):
         sys.stderr = saved
     return None
 
-base = ["--bootstrap", "b:9098", "--checkpoint", "s3://bucket/analytics/checkpoint"]
+base = ["--bootstrap", "b:9098", "--checkpoint", "s3://bucket/spark/checkpoint"]
 a = mod.parse_args(base + ["--sinks", "iceberg", "--iceberg-table", "s3tablesbucket.ns.t"])
 check("parse_args: 既定は metrics,gnmi / traps,logs,flows、checkpoint に / を足す、sinks はリスト",
-      a.metric_topics == "metrics,gnmi" and a.log_topics == "traps,logs,flows" and a.checkpoint == "s3://bucket/analytics/checkpoint/" and a.sinks == ["iceberg"])
+      a.metric_topics == "metrics,gnmi" and a.log_topics == "traps,logs,flows" and a.checkpoint == "s3://bucket/spark/checkpoint/" and a.sinks == ["iceberg"])
 a = mod.parse_args(base + ["--sinks", "iceberg, prometheus ,opensearch", "--iceberg-table", "t", "--prometheus-url", "https://p/api/v1/remote_write",
                            "--opensearch-endpoint", "https://o", "--metric-topics", " metrics , cpu ", "--log-topics", "traps,logs"])
 check("parse_args: 空白を除いて 3 つ、トピックも空白を除く", a.sinks == ["iceberg", "prometheus", "opensearch"] and a.metric_topics == "metrics,cpu" and a.log_topics == "traps,logs"
@@ -985,7 +999,7 @@ class _DriverBatch:
 
 def _query(*http_send, name="prometheus", sender=None):
     r = _Rows()
-    mod.http_query(r, name, "s3://b/analytics/checkpoint/u/", sender or _got.append, *http_send)
+    mod.http_query(r, name, "s3://b/spark/checkpoint/u/", sender or _got.append, *http_send)
     return r.writeStream.calls
 
 
@@ -1035,7 +1049,7 @@ _fb = [a[0] for k, a in _query("driver", name="splunk", sender=lambda recs: 1) i
 _, _err = _stderr(lambda: _fb(_DriverBatch([_row(3.0), _row(1.0)]), 6))
 check("http_query driver: 捨てた数もログに出す（splunk / opensearch は件）", "[snmp_sinks] splunk: batch 6 で 2 行を送り、1 件を捨てた（4xx など）" in _err)
 check("http_query executor: クエリの名前、checkpoint、トリガーは driver のときと同じ",
-      _calls[0] == ("queryName", ("prometheus",)) and ("option", ("checkpointLocation", "s3://b/analytics/checkpoint/u/prometheus/")) in _calls
+      _calls[0] == ("queryName", ("prometheus",)) and ("option", ("checkpointLocation", "s3://b/spark/checkpoint/u/prometheus/")) in _calls
       and [k for k, _ in _calls] == [k for k, _ in _query()])
 for _hs in ((), ("driver",)):
     _got.clear()
@@ -1412,7 +1426,45 @@ check("flows の行は logs と同じ送り先: Splunk は sourcetype nwc:flows 
 _up_jars = re.findall(r'^  "([0-9a-f]{64}):(\S+\.jar)"$', up, re.M)
 check("up.sh は 6 本の jar を <sha256>:<Maven のパス> で書き、5-2 で fetch_jars が取って照合してから S3 に置く。S3 の側も sync --delete で JARS に無い jar を消す",
       len(_up_jars) == 6 and "JAR_URLS" not in up
-      and up.index('log "5-2.') < up.index("\n  fetch_jars\n") < up.index('aws s3 sync --only-show-errors --delete "$JARS_DIR/" "s3://$KB_BUCKET/analytics/jars/" --exclude "*" --include "*.jar"'))
+      and up.index('log "5-2.') < up.index("\n  fetch_jars\n") < up.index('aws s3 sync --only-show-errors --delete "$JARS_DIR/" "s3://$ASSETS_BUCKET/spark/jars/" --exclude "*" --include "*.jar"'))
+
+# ---- S3 の置き場（cycle 035）: assets（base/core。ops/down.sh で消える）と logs（base/logs。7 日で消え、ops/down.sh は消さない）の 2 本
+_logs_dir = os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "logs")
+_logs_tf = "".join(open(os.path.join(_logs_dir, n), encoding="utf-8").read() + "\n" for n in sorted(os.listdir(_logs_dir)) if n.endswith(".tf"))
+_logs_pol = re.search(r'resource "aws_s3_bucket_policy" "logs" \{(.*?)\n\}\n', _logs_tf, re.S)
+check("IaC/terraform/aws-managed/base/logs は main / outputs / providers / variables / versions の .tf と terraform.tfvars.example の 6 ファイル（と .terraform.lock.hcl）を git に持つ（base/ecr と同じ骨格）",
+      {os.path.basename(f) for f in subprocess.run(["git", "ls-files", "IaC/terraform/aws-managed/base/logs"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.split()}
+      == {"main.tf", "outputs.tf", "providers.tf", "variables.tf", "versions.tf", "terraform.tfvars.example", ".terraform.lock.hcl"})
+check("logs のバケットは <owner>-<project>-logs-<アカウント>（force_destroy）で、ライフサイクルは全体を 7 日で消し、未完了のマルチパートも 7 日で消す",
+      'bucket        = "${local.name_prefix}-logs-${local.account_id}"' in _logs_tf and re.search(r'force_destroy\s*=\s*true', _logs_tf) is not None
+      and re.search(r'resource "aws_s3_bucket_lifecycle_configuration" "logs"[\s\S]*?expiration \{\s*days\s*=\s*7\s*\}', _logs_tf) is not None
+      and re.search(r'abort_incomplete_multipart_upload \{\s*days_after_initiation\s*=\s*7\s*\}', _logs_tf) is not None)
+check("logs のバケットのポリシーは DenyInsecureTransport だけで、DenyOutsideVpc は付けない（VPC より長生きし、Firehose は VPC の外から書く）。PAB と SSE は assets と同じ",
+      _logs_pol is not None and re.findall(r'Sid\s*=\s*"(\w+)"', _logs_pol.group(1)) == ["DenyInsecureTransport"]
+      and re.search(r'Sid\s*=\s*"DenyOutsideVpc"', _logs_tf) is None and "aws:SourceVpc" not in _logs_tf
+      and all(f'resource "{r}" "logs"' in _logs_tf for r in ("aws_s3_bucket_public_access_block", "aws_s3_bucket_server_side_encryption_configuration", "aws_s3_bucket_ownership_controls")))
+_oss_up = _ops_common("up") + open(os.path.join(ROOT, "ops", "oss", "up.sh"), encoding="utf-8").read()
+check("ops/up.sh と ops/oss/up.sh は base/logs を base/ecr のあと base/core の前に apply する（analytics が logs の state を読む）",
+      all(0 <= t.index("\ntf_apply base/ecr") < t.index("\ntf_apply base/logs\n") < t.index("\ntf_apply base/core") for t in (up, _oss_up))
+      and 'ROOTS="base/ecr base/logs base/core"' in up and re.search(r"^ROOTS=\([^)]*\bbase/logs\b", checksh, re.M) is not None)
+_oss_down = _ops_common("down") + open(os.path.join(ROOT, "ops", "oss", "down.sh"), encoding="utf-8").read()
+check("ops/down.sh と ops/oss/down.sh は base/logs を destroy せず、残すことと消し方（terraform -chdir=…/base/logs destroy）を出す",
+      all(not re.search(r"^\s*destroy_(lambda_)?root base/logs\b", t, re.M) and "base/logs destroy -var owner=${OWNER}" in t
+          and "は残す" in t for t in (down, _oss_down)))
+# 古い名前（共用バケットの kb、analytics/ の下の logs / jars / checkpoint）が残っていない。docs/cycles/ と docs/verification/ は記録なので見ない。
+# このファイル自身に文字列が載らないよう、パターンはつないで作る
+_old_names = ["kb" + "_bucket", "KB" + "_BUCKET", "analytics" + "/logs", "analytics" + "/jars", "analytics" + "/checkpoint"]
+_stale = []
+for _f in subprocess.run(["git", "ls-files", "IaC", "ops", "app", "tests", "README.md", "CLAUDE.md"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.split():
+    _p = os.path.join(ROOT, _f)
+    if os.path.islink(_p) or not os.path.isfile(_p):
+        continue
+    try:
+        _t = open(_p, encoding="utf-8").read()
+    except UnicodeDecodeError:
+        continue
+    _stale += [f"{_f}: {w}" for w in _old_names if w in _t]
+check("IaC / ops / app / tests / README.md / CLAUDE.md に古い名前（kb のバケット、analytics/ の下の logs / jars / checkpoint）が残っていない（cycle 035）", not _stale)
 def _expand_vars(text, path, assign):  # パスの $NAME / ${NAME} を、text の中の代入（up.sh の NAME=値、Dockerfile の ARG NAME=値）で埋める
     vals = dict(re.findall(assign, text, re.M))
     return re.sub(r"\$\{?(\w+)\}?", lambda m: vals[m.group(1)], path)
@@ -2415,7 +2467,7 @@ check("job_driver_json は sparkSubmit の 3 キー", all(k in tf for k in ("ent
 _jobs_def = {j: [x.strip(' "') for x in v.split(",")] for j, v in
              re.findall(r'(\w+) = \[([^\]]*)\]', re.search(r'spark_jobs = \{ for job, sinks in \{(.*?)\} :', tf).group(1))}
 check("spark_jobs: iceberg / splunk / http（opensearch と prometheus）", _jobs_def == {"iceberg": ["iceberg"], "splunk": ["splunk"], "http": ["opensearch", "prometheus"]})
-_VALS = {"local.bootstrap": "b:9098", "local.checkpoint_uri": "s3://bucket/analytics/checkpoint/u/", "var.region": "ap-northeast-1",
+_VALS = {"local.bootstrap": "b:9098", "local.checkpoint_uri": "s3://bucket/spark/checkpoint/u/", "var.region": "ap-northeast-1",
          "local.metric_topics": "metrics,gnmi", "local.log_topics": "traps,logs", "local.iceberg_table": "s3tables.nwc.raw_telemetry",
          "local.opensearch_endpoint": "https://c.aoss.amazonaws.com", "local.opensearch_index": "snmp-logs",
          "local.prometheus_remote_write_url": "https://aps/api/v1/remote_write", "local.splunk_hec_url": "https://splunk.p.internal:8088",
@@ -2464,7 +2516,7 @@ check("splunk のジョブ: --sinks splunk と Splunk の引数だけ（token �
 check("http のジョブ: --sinks opensearch,prometheus と両方の引数だけ",
       _val(_jh, "--sinks") == "opensearch,prometheus" and _flags(_jh) == _COMMON | {"--opensearch-endpoint", "--opensearch-index", "--prometheus-url"})
 check("3 つのジョブは同じ --checkpoint の親を渡す（格納先ごとの下のディレクトリはスクリプトが切るので、分けても checkpoint のパスは変わらない）",
-      {_val(j, "--checkpoint") for j in (_ji, _js, _jh)} == {"s3://bucket/analytics/checkpoint/u/"})
+      {_val(j, "--checkpoint") for j in (_ji, _js, _jh)} == {"s3://bucket/spark/checkpoint/u/"})
 _pa = [mod.parse_args(j) for j in (_ji, _js, _jh)]
 check("どのジョブの引数もスクリプトの parse_args を通る（格納先に要る引数がそろう）",
       [a.sinks for a in _pa] == [["iceberg"], ["splunk"], ["opensearch", "prometheus"]] and all(a.http_send == "driver" for a in _pa))
