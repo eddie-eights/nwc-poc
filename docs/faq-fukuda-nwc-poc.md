@@ -582,6 +582,8 @@ vrnetlab のページには、このほかに Cisco vIOS と Cisco ASAv も載�
 - [Q. executor を 2 つにしたら Kafka からの読み取りは 2 つに分かれる。送信はまた別に並列化が要るの？](#q-executor-を-2-つにしたら-kafka-からの読み取りは-2-つに分かれる送信はまた別に並列化が要るの)
 - [Q. `foreachPartition` は、大量のデータを Spark のジョブ 1 つでは捌けなくなったときに使う？ 環境変数で切り替えられる？](#q-foreachpartition-は大量のデータを-spark-のジョブ-1-つでは捌けなくなったときに使う-環境変数で切り替えられる)
 - [Q. 大量のデータでは、格納先ごとに Spark のジョブを分けたほうがいい？](#q-大量のデータでは格納先ごとに-spark-のジョブを分けたほうがいい)
+- [Q. EMR のログが S3 にあるけど、何？](#q-emr-のログが-s3-にあるけど何)
+- [Q. CloudWatch だけに worker を含む全部のログとイベントログを出すと、EMR の画面（Spark UI）から見えなくなる？](#q-cloudwatch-だけに-worker-を含む全部のログとイベントログを出すとemr-の画面spark-uiから見えなくなる)
 
 ### Q. Spark のジョブ、driver、executor、クエリ、タスクは、役割がどう違う？
 
@@ -636,7 +638,7 @@ flowchart TB
 
 **分散して読んでいるかの確かめ方**
 
-Spark UI（EMR Serverless のコンソールから開ける）の Executors の画面で、executor 1 と 2 の両方に「完了したタスク」の数が増えていけば、分かれて読んでいる（AWS では未確認）。
+Spark UI（動いているジョブなら driver が出す Live UI をコンソールから開ける。下の「CloudWatch だけに…見えなくなる？」）の Executors の画面で、executor 1 と 2 の両方に「完了したタスク」の数が増えていけば、分かれて読んでいる（AWS では未確認）。
 
 ### Q. Spark のジョブは 1 つで、Kafka の購読も 1 つ？
 
@@ -844,6 +846,38 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
   - 格納先を外すと、そのジョブは起きない（`STORES` に `splunk` が無ければ Splunk のジョブは無い）。
   - 上限を変える apply は、アプリが止まっていないと通らない。`ops/up.sh` は上限が違うときだけ、先にジョブとアプリを止めてから apply し、ジョブを checkpoint の続きから起こし直す。
   - スクリプトは `--sinks` で格納先を選べ、checkpoint は格納先ごとに分かれているので、同じスクリプトを 3 つ起こしている。
+
+### Q. EMR のログが S3 にあるけど、何？
+
+EMR Serverless のジョブ（Spark）のログ。置き先は 3 つあり、このリポジトリは S3 と CloudWatch の 2 つを使い、EMR の managed storage は切っている（`IaC/terraform/aws-managed/pipeline/analytics/outputs.tf` の `configuration_overrides_json`）。
+
+| 置き先 | 入るもの | 保持 | コンソールの Spark UI |
+|---|---|---|---|
+| managed storage（EMR が持つ領域。既定で ON） | driver と executor の stdout / stderr、イベントログ | 30 日 | 開ける |
+| S3（`s3MonitoringConfiguration` の `logUri`） | 同上 | バケットのライフサイクル次第 | 開けない（AWS の文書で「Not supported」） |
+| CloudWatch Logs（`cloudWatchLoggingConfiguration`） | driver と executor の stdout / stderr だけ。**イベントログは入らない** | ロググループの保持日数 | 関係しない |
+
+- S3 の中は `logUri` の下に `applications/<アプリ ID>/jobs/<ジョブ ID>/` が切られ、`SPARK_DRIVER/` と `SPARK_EXECUTOR/<番号>/` に stdout / stderr の gz、`sparklogs/` にイベントログが入る。`S3 の置き場を整える（035）` のあとは logs バケットの `emr/` の下で、7 日で消える。
+- CloudWatch に出しているのは driver の stdout / stderr だけ（`logTypes = { SPARK_DRIVER = ["stdout", "stderr"] }`）。`aws logs tail` で追えるのが目的。executor のログは S3 だけ。
+  - executor も CloudWatch に出せる（`SPARK_EXECUTOR` を足す）が、送るのは worker の仕事なので worker の資源を食い、AWS の文書は worker を大きくするよう勧めている。PutLogEvents の上限に当たることもある。executor のログを読むのは調べ物のときだけなので S3 で足りる。
+- managed storage を切った理由: 置き先が 3 つになって同じものが二重に残るのを避けるため。ただし下の Q のとおり、切るとコンソールの Spark UI が開けない。
+
+### Q. CloudWatch だけに worker を含む全部のログとイベントログを出すと、EMR の画面（Spark UI）から見えなくなる？
+
+CloudWatch は画面に関係ない。それ以前に、**CloudWatch にはイベントログを出せない**（出せるのは driver と executor の stdout / stderr だけ）。
+
+- コンソールの「Spark UI」（`get-dashboard-for-job-run` と同じもの）は 2 種類ある（AWS の文書の `GetDashboardForJobRun`）。
+  - **動いているジョブ: Live UI。** driver が出している Spark UI をそのまま見る。ログの置き先とは関係なく開ける。このリポジトリのジョブは止めるまで動き続けるストリーミングなので、ふだん見るのはこちら。[pipeline.md](pipeline.md) の手順も `--states RUNNING` のジョブを選んでいる。
+  - **終わったジョブ: 永続 UI（Spark History Server）。** 元はイベントログで、読むのは **managed storage に置いたイベントログだけ**。S3 だけに置いても読まない（AWS の文書で「Not supported」。managed storage を切ると「コンソールから Spark UI にアクセスできない」）。
+- だから「見えなくなる」のは終わったジョブの画面だけで、それも CloudWatch ではなく managed storage を切るかどうかで決まる。このリポジトリは managed storage を切っているので、止めたあとのジョブの画面は開けない（`ops/down.sh` でアプリごと消えるので、ふだんは困らない）。
+
+| ジョブの状態 | managed storage ON | OFF（このリポジトリ） |
+|---|---|---|
+| 動いている | Live UI を開ける | Live UI を開ける |
+| 終わった | Spark History Server を開ける（30 日） | 開けない |
+
+- 終わったジョブを S3 のイベントログから見るなら、Spark History Server を手元に立てて S3 を読ませる（AWS のサンプル `aws-samples/emr-serverless-samples` の `utilities/spark-ui`）。
+- 戻すなら `managedPersistenceMonitoringConfiguration` を `enabled = true` にする（30 日保持、追加料金なし）。閉域の VPC なので、S3 のゲートウェイエンドポイントのポリシーに EMR の `AppInfo` バケットへの `s3:PutObject` を足す必要がある（AWS の文書「Storing logs」。AWS では未確認）。
 
 ---
 
@@ -2210,6 +2244,8 @@ AWS 版は、エージェントのツール `centrality`（`app/agentcore/graph.
 
 - [Q. もう 2 AZ に置いてあるものは、1 AZ にできるか](#q-もう-2-az-に置いてあるものは1-az-にできるか)
 - [Q. RDS は 3 AZ にできない？](#q-rds-は-3-az-にできない)
+- [Q. Temporal の履歴を残すなら、データベースが要る？](#q-temporal-の履歴を残すならデータベースが要る)
+- [Q. RDS for PostgreSQL と Aurora PostgreSQL のどちらにする？](#q-rds-for-postgresql-と-aurora-postgresql-のどちらにする)
 - [Q. SigV4 って何？](#q-sigv4-って何)
 - [Q. AWS のベストプラクティスは、boto3 で書くこと？](#q-aws-のベストプラクティスはboto3-で書くこと)
 - [Q. MSK にも Kafbat UI みたいな GUI はある？](#q-msk-にも-kafbat-ui-みたいな-gui-はある)
@@ -2267,6 +2303,57 @@ Multi-AZ DB クラスターが使えるエンジンは、RDS for MySQL と RDS f
 
 - https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.MultiAZ.html
 - https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Concepts.RDS_Fea_Regions_DB-eng.Feature.MultiAZDBClusters.html
+
+### Q. Temporal の履歴を残すなら、データベースが要る？
+
+**A. 要る。いまの PoC は `server start-dev` で SQLite がコンテナの中にあり、Fargate のタスクが入れ替わると進行中のワークフローの状態ごと消える。** 残すなら Temporal のサーバーを本番モードで起動し、外のデータベースに持たせる。
+
+| いまの置き方 | 中身 |
+|---|---|
+| Temporal の履歴（ワークフローの実行の状態） | タスクの中の SQLite。タスクと一緒に消える（[workflow.md](workflow.md)） |
+| 修復案の履歴（作成・承認・適用などの 1 行ずつ） | S3 Tables の `proposal_events`。これは残る |
+
+消えて困るのは前者だけ。「残す」は RDS で済む話で、ECS に載せること自体が理由ではない。
+
+**取れる置き方**
+
+| 置き方 | 向き不向き |
+|---|---|
+| RDS for PostgreSQL（Nautobot の RDS に `temporal` と `temporal_visibility` の 2 つのデータベースを足す） | PoC の最小。`temporal-sql-tool` でスキーマを入れてから `temporal server` を本番モードで起動する |
+| Aurora PostgreSQL | 動くが、PoC では得が無い（下の Q） |
+| Temporal Cloud | サーバーを持たず worker だけ ECS に置く。閉域の構成とは合いにくい |
+| SQLite のまま EFS に置く | 動くが `start-dev` は開発用で、単一ノード・HA 無し。本番向けではない |
+
+Nautobot の RDS は `ops/down.sh` で消える設計なので、相乗りさせても「down.sh のあとも残る」にはならない。そこまで残したいなら、そのサイクルで RDS を down.sh の外に出すかを決める。候補は `docs/cycles/QUEUE.md` の「Temporal の履歴を RDS に残す」。
+
+### Q. RDS for PostgreSQL と Aurora PostgreSQL のどちらにする？
+
+**A. PoC は RDS for PostgreSQL（2026-10-10 のユーザー決定）。Aurora は本番で高可用や読み取り分散が要件になってから。** Nautobot も Temporal も PostgreSQL で動き、Nautobot の推奨は PostgreSQL（MySQL も対応はあるが採る理由が無い）。
+
+**PoC で Aurora に替えても得が無い理由**
+
+| 理由 | 中身 |
+|---|---|
+| 強みを使わない | ストレージの 6 重化、数十秒のフェイルオーバー、リーダーエンドポイント、ストレージの自動拡張は、毎回消して作り直す PoC では一つも使わない |
+| Terraform が増える | `aws_db_instance` 1 つが `aws_rds_cluster` + `aws_rds_cluster_instance` の 2 段になり、`terraform destroy` も遅くなる |
+| 費用が数倍 | 下の表。最小構成どうしで約 5 倍 |
+| I/O 課金が読みにくい | Temporal の履歴は細かい書き込みが多い。Aurora Standard は I/O 課金が乗り、I/O-Optimized にすると基本料が上がる |
+
+**時間あたりの費用の目安**（東京、最小構成、概算。2026-10-10）
+
+| 構成 | 時間あたり |
+|---|---|
+| RDS for PostgreSQL db.t4g.micro | 約 0.02 USD |
+| Aurora PostgreSQL db.t4g.medium（provisioned の最小） | 約 0.11 USD |
+| Aurora Serverless v2 0.5 ACU | 約 0.10 USD |
+
+Aurora Serverless v2 は 0 ACU まで落として自動停止できるが、再開に十数秒かかり、Temporal のように接続を張り続けるサーバーとは相性が悪い。
+
+**Aurora に替える時期の目安**
+
+- フェイルオーバーを 1 分以内にしたい、本番の SLA を約束するとき。
+- Nautobot と Temporal の読み取りを分けたい、ストレージが数百 GB に伸びるとき。
+- 会社のリポジトリに移り、運用の標準が Aurora に決まっているとき。
 
 ### Q. SigV4 って何？
 

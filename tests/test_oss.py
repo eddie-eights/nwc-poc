@@ -342,7 +342,7 @@ check("neo4j: 送るのは golden（Neptune の openCypher）を _dialect で直
 check("neo4j: ラベル無しで未登録の頂点を読む文（MATCH (n) WHERE n.registered）を送らない（全部の頂点を読む）",
       not any(q.startswith("MATCH (n) WHERE n.registered") for q, _ in calls4) and any(q.startswith("MATCH (n) WHERE n.registered") for q, _ in golden["graph"]))
 
-# ラベル無しの id 検索（BACKLOG の「Neo4j の id 検索にラベルを付ける」）。Neo4j の一意制約と索引はラベルごとなので、
+# ラベル無しの id 検索（QUEUE の「Neo4j の id 検索にラベルを付ける」）。Neo4j の一意制約と索引はラベルごとなので、
 # (n) WHERE n.id = $id のようにラベルが無いと索引を使えず、全部の頂点を読む。Neptune の ~id はグラフ全体で一意なので要らない
 _ID_CMP = re.compile(r"\bid\((\w+)\)\s*(?:=|IN\b)|\b(\w+)\.id\s*(?:=|IN\b)")   # id(v) = … / v.id IN …
 _ID_PROP = re.compile(r"\((\w+)\s*\{\s*(?:`~id`|id)\s*:")                        # (v {id: …})（ラベル無しの MATCH / MERGE）

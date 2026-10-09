@@ -51,7 +51,7 @@ AWS アカウント 493116771193、ap-northeast-1、`OWNER=efukuda`（接頭辞 
 
 - 1 本目の 7-3 で `aws_lambda_function.status` が `State=Failed / StateReasonCode=InsufficientRolePermissions`。ログでは `aws_iam_role_policy.status: Creation complete after 1s` の直後（1 秒後）に Lambda を作り始めていた。VPC の ENI を作る権限（`ec2:CreateNetworkInterface` など）が IAM に行き渡る前に Lambda が検査したと見る。閉域の Deny（`perimeter.tf`）に ec2 は無い。
 - state では Lambda が tainted になり、2 本目の apply で replace された（`3 added, 0 changed, 1 destroyed`）。`GetFunction` は `State=Active`、`LastUpdateStatus=Successful`。
-- analytics の Firehose（2026-10-09 の回、026 で `time_sleep` を入れた）と同じ種類。恒久対策は `docs/cycles/BACKLOG.md` に足した。`docs/troubleshooting.md` の表にも行を足した。
+- analytics の Firehose（2026-10-09 の回、026 で `time_sleep` を入れた）と同じ種類。恒久対策は `docs/cycles/QUEUE.md`（当時の名前は `BACKLOG.md`）に足した。`docs/troubleshooting.md` の表にも行を足した。
 - 1 本目の `UP_RC` は空だった。zsh でパイプの左の終了コードは `PIPESTATUS` でなく `${pipestatus[1]}`（記録の手順のミス。up.sh の不具合ではない）。
 
 ## 片付け（ops/down.sh）
