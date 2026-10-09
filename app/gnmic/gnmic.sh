@@ -34,7 +34,7 @@ render() {
   case "$KAFKA_AUTH" in
     scram)
       [ -n "${KAFKA_SASL_USER:-}" ] && [ -n "${KAFKA_SASL_PASS:-}" ] \
-        || die "KAFKA_SASL_USER / KAFKA_SASL_PASS が無い（stream の ECS は Secrets Manager の AmazonMSK_<接頭辞>-collectors を secrets で受ける。ops/up.sh が作る）"
+        || die "KAFKA_SASL_USER / KAFKA_SASL_PASS が無い（stream の ECS は Secrets Manager の AmazonMSK_<接頭辞>-gnmic を secrets で受ける。ops/up.sh が作る）"
       # 区間の印の行だけ消す
       drop='/^# [<>]\{3\} kafka_auth scram/d' auth='SASL/SCRAM-SHA-512'
       ;;

@@ -47,7 +47,7 @@ render() {
       # 値は設定の "..." の中にそのまま入るので、" \ ` や空白で文字列が壊れないよう、英数字と ._~+/=@- だけ通す（ops/up.sh が作る値は英数字だけ）
       for v in KAFKA_SASL_USER KAFKA_SASL_PASS; do
         eval "val=\${$v:-}"
-        [ -n "$val" ] || die "$v が無い（stream の ECS は Secrets Manager の AmazonMSK_<接頭辞>-collectors を secrets で受ける。ops/up.sh が作る）"
+        [ -n "$val" ] || die "$v が無い（stream の ECS は Secrets Manager の AmazonMSK_<接頭辞>-syslog-ng を secrets で受ける。ops/up.sh が作る）"
         case "$val" in *[!A-Za-z0-9._~+/=@-]*) die "$v に使えない文字がある（英数字と ._~+/=@- だけ。値は出さない）" ;; esac
       done
       # 区間の印の行だけ消す

@@ -726,9 +726,18 @@ _Admin.made = []
 _adm5 = _Admin(set())
 _sp5 = type("S", (), {"_jvm": _JVM(_adm5)})()
 _r5 = _kafka_auth(None, lambda: mod.ensure_acls(_sp5, "b-1:9098"))
-check("ensure_acls: User:collectors に logs / flows / gnmi / metrics の WRITE と DESCRIBE（TOPIC・LITERAL・host *・ALLOW）の 8 つを 1 回の createAcls で入れ、入れたものを返す",
-      _r5 == ["WRITE logs", "DESCRIBE logs", "WRITE flows", "DESCRIBE flows", "WRITE gnmi", "DESCRIBE gnmi", "WRITE metrics", "DESCRIBE metrics"]
-      and _adm5.acls == [("TOPIC", t, "LITERAL", "User:collectors", "*", op, "ALLOW") for t in ("logs", "flows", "gnmi", "metrics") for op in ("WRITE", "DESCRIBE")])
+_scram_want = (("syslog-ng", ("logs",)), ("goflow2", ("flows",)), ("gnmic", ("gnmi", "metrics")))
+check("ensure_acls: コレクターごとのユーザー（cycle 031）に自分のトピックの WRITE と DESCRIBE（TOPIC・LITERAL・host *・ALLOW）を入れる。"
+      "User:syslog-ng → logs、User:goflow2 → flows、User:gnmic → gnmi / metrics の 8 つを 1 回の createAcls で入れ、入れたものを返す",
+      _r5 == ["User:syslog-ng WRITE logs", "User:syslog-ng DESCRIBE logs", "User:goflow2 WRITE flows", "User:goflow2 DESCRIBE flows",
+              "User:gnmic WRITE gnmi", "User:gnmic DESCRIBE gnmi", "User:gnmic WRITE metrics", "User:gnmic DESCRIBE metrics"]
+      and _adm5.acls == [("TOPIC", t, "LITERAL", "User:" + u, "*", op, "ALLOW") for u, ts in _scram_want for t in ts for op in ("WRITE", "DESCRIBE")])
+_acl_pairs = {(a[3], a[1]) for a in (_adm5.acls or [])}
+check("ensure_acls: ほかのコレクターのトピックには ACL を入れない（User:syslog-ng は flows / gnmi / metrics に書けない、User:goflow2 は logs / gnmi / metrics、"
+      f"User:gnmic は logs / flows。User:collectors も無い。{sorted(_acl_pairs)}）",
+      _acl_pairs == {("User:" + u, t) for u, ts in _scram_want for t in ts}
+      and ("User:syslog-ng", "flows") not in _acl_pairs and ("User:goflow2", "logs") not in _acl_pairs and ("User:gnmic", "logs") not in _acl_pairs
+      and not any(u == "User:collectors" for u, _ in _acl_pairs))
 check("ensure_acls: AdminClient は SASL_SSL / AWS_MSK_IAM で bootstrap に繋ぎ、終わったら close。トピックは作らない（CREATE も CLUSTER の ACL も付けない）",
       _adm5.closed and _sp5._jvm.props["bootstrap.servers"] == "b-1:9098" and _sp5._jvm.props["security.protocol"] == "SASL_SSL"
       and _sp5._jvm.props["sasl.mechanism"] == "AWS_MSK_IAM" and _Admin.made == []
@@ -751,20 +760,25 @@ _collectors_tf = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "pip
 _gnmic_in = open(os.path.join(ROOT, "app", "gnmic", "gnmic.yaml.in"), encoding="utf-8").read()
 _gnmic_topics = re.findall(r"^    topic: (\S+)$", _gnmic_in, re.M)
 _tg_conf = open(os.path.join(ROOT, "app", "telegraf", "telegraf.conf.in"), encoding="utf-8").read()
-check("ensure_acls のユーザーとトピックは書く側と同じ（up-common.sh の SCRAM の username、syslog-ng の topic、GoFlow2 の -transport.kafka.topic、"
-      "gnmic の outputs の topic の全部。Telegraf（IAM）が書く traps は入れない）",
-      mod.SCRAM_USER == "collectors" and '"username": "collectors"' in _ops_common("up")
-      and mod.SCRAM_TOPICS == ("logs", "flows", "gnmi", "metrics") and 'topic("logs")' in _conf_in and '"-transport.kafka.topic=flows"' in _collectors_tf
-      and _gnmic_topics == ["gnmi", "metrics"] and _gnmic_in.count("mechanism: SCRAM-SHA-512") == len(_gnmic_topics)
-      and re.findall(r'^\s*topic = "(\w+)"', _tg_conf, re.M) == ["traps"] and "traps" not in mod.SCRAM_TOPICS)
+_scram_topics = [t for ts in mod.SCRAM_USERS.values() for t in ts]
+check("ensure_acls のユーザーとトピックは書く側と同じ（ユーザーは ops/up.sh が ensure_msk_scram_secret に渡すコレクター名で、up-common.sh が username にする。"
+      "syslog-ng の topic、GoFlow2 の -transport.kafka.topic、gnmic の outputs の topic の全部。Telegraf（IAM）が書く traps は入れない）",
+      not hasattr(mod, "SCRAM_USER") and not hasattr(mod, "SCRAM_TOPICS")
+      and mod.SCRAM_USERS == {"syslog-ng": ("logs",), "goflow2": ("flows",), "gnmic": ("gnmi", "metrics")}
+      and list(mod.SCRAM_USERS) == re.findall(r"^  ensure_msk_scram_secret (\S+)$", up, re.M)
+      and 'json.dumps({"username": user, "password": secrets.token_urlsafe(24)})' in _ops_common("up")
+      and 'topic("logs")' in _conf_in and mod.SCRAM_USERS["syslog-ng"] == ("logs",)
+      and '"-transport.kafka.topic=flows"' in _collectors_tf and mod.SCRAM_USERS["goflow2"] == ("flows",)
+      and tuple(_gnmic_topics) == mod.SCRAM_USERS["gnmic"] and _gnmic_in.count("mechanism: SCRAM-SHA-512") == len(_gnmic_topics)
+      and re.findall(r'^\s*topic = "(\w+)"', _tg_conf, re.M) == ["traps"] and "traps" not in _scram_topics)
 check("ensure_acls のトピックは Spark が作るトピック（log_topics と metric_topics の既定）に入っている（ACL だけあってトピックが無いままにならない）",
-      set(mod.SCRAM_TOPICS) <= set(mod.LOG_TOPICS.split(",")) | set(mod.METRIC_TOPICS.split(","))
+      set(_scram_topics) <= set(mod.LOG_TOPICS.split(",")) | set(mod.METRIC_TOPICS.split(","))
       and re.search(r'variable "log_topics"[\s\S]*?default\s*=\s*\["traps",\s*"logs",\s*"flows"\]', tf) is not None
       and re.search(r'variable "metric_topics"[\s\S]*?default\s*=\s*\["metrics",\s*"gnmi"\]', tf) is not None)
 _main_src = inspect.getsource(mod.main)
-check("main: ensure_topics のあとに ensure_acls を呼び、入れた ACL を「ACL: User:collectors に …」で stderr に出してから格納先を起こす",
+check("main: ensure_topics のあとに ensure_acls を呼び、入れた ACL を「ACL: User:syslog-ng WRITE logs, …」で stderr に出してから格納先を起こす",
       0 < _main_src.find("ensure_topics(spark") < _main_src.find("ensure_acls(spark, args.bootstrap)") < _main_src.find("build(spark, args)")
-      and 'log(f"ACL: User:{SCRAM_USER} に " + ", ".join(acls))' in _main_src)
+      and 'log("ACL: " + ", ".join(acls))' in _main_src)
 
 # ---- Splunk HEC（Spark から直接。2026-09-26）
 check("splunk_hec_url: 末尾の / を除き、/services/collector/event を足す（すでに付いていればそのまま、/services/collector なら /event を足す）",

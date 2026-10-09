@@ -434,8 +434,8 @@ _gbad = {"GNMI_TARGETS が無い": dict(GNMI_TARGETS=None), "GNMI_TARGETS の形
 _gbad_res = {k: _gnmic_render(**v) for k, v in _gbad.items()}
 check("gnmic.sh render: " + " / ".join(_gbad) + " は 0 以外で止まり、設定を作らない（作業のファイルも残さない）",
       all(rc != 0 and text is None and files == [] for rc, _, text, files in _gbad_res.values()))
-check("gnmic.sh render: 資格情報が無いときの案内に出どころ（SSM の SecureString / Secrets Manager の AmazonMSK_<接頭辞>-collectors）を書く",
-      "SSM の SecureString" in _gbad_res["GNMI_PASSWORD が無い"][1] and "AmazonMSK_<接頭辞>-collectors" in _gbad_res["scram で KAFKA_SASL_PASS が無い"][1])
+check("gnmic.sh render: 資格情報が無いときの案内に出どころ（SSM の SecureString / Secrets Manager の AmazonMSK_<接頭辞>-gnmic。cycle 031）を書く",
+      "SSM の SecureString" in _gbad_res["GNMI_PASSWORD が無い"][1] and "AmazonMSK_<接頭辞>-gnmic" in _gbad_res["scram で KAFKA_SASL_PASS が無い"][1])
 _gdock = _read("docker", "images", "gnmic", "Dockerfile")
 check("gnmic の Dockerfile: 公式イメージ（版は ARG GNMIC_VERSION）に gnmic.yaml.in と gnmic.sh（/usr/local/bin/gn）を足し、nobody で gn run を起こす",
       re.search(r"^ARG GNMIC_VERSION=\d+\.\d+\.\d+$", _gdock, re.M) is not None and "FROM ghcr.io/openconfig/gnmic:${GNMIC_VERSION}\n" in _gdock
