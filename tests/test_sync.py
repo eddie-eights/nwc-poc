@@ -638,9 +638,9 @@ _graph_dir = os.path.join("IaC", "terraform", "aws-managed", "pipeline", "graph"
 _iam_wait = r'resource "time_sleep" "status_iam" \{\s*create_duration = "30s"\s*triggers = \{\s*role = aws_iam_role\.status\.unique_id\s*\}\s*depends_on = \[aws_iam_role\.status, aws_iam_role_policy\.status\]\s*\}'
 _lambda_dep = r'resource "aws_lambda_function" "status" \{(?:(?!\nresource ).)*?\n  depends_on = \[aws_cloudwatch_log_group\.status, aws_iam_role_policy\.status, time_sleep\.status_iam\]\n\}'
 check("status の Lambda は time_sleep.status_iam（30 秒。ロールが作り直されたら待ちも作り直す）のあとに作る（マネージド版と OSS 版）。time の provider は versions.tf と lock にある",
-      all(re.search(_iam_wait, t) and re.search(_lambda_dep, t, re.S)
+      all(re.search(_iam_wait, t) and re.search(_lambda_dep, t, re.S) and t.count('resource "time_sleep"') == 1
           for t in (tf, read("IaC", "terraform", "oss", "pipeline", "graph", "sync.tf")))
-      and 'source  = "hashicorp/time"' in read(_graph_dir, "versions.tf")
+      and re.search(r'^    time = \{\s*source  = "hashicorp/time"\s*version = "~> 0\.13"\s*\}', read(_graph_dir, "versions.tf"), re.M)
       and 'provider "registry.terraform.io/hashicorp/time"' in read(_graph_dir, ".terraform.lock.hcl"))
 check("Lambda は VPC の中で NEPTUNE_GRAPH_ID を環境変数で持ち、ロググループは retention 付き",
       "vpc_config" in tf and "NEPTUNE_GRAPH_ID = aws_neptunegraph_graph.graph.id" in tf and "NEPTUNE_ENDPOINT" not in tf and "retention_in_days = var.log_retention_days" in tf)
