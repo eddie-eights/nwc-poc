@@ -137,7 +137,7 @@ def query_metrics(query: str, minutes: int = 15) -> dict:
 # ---------------------------------------------------------------- アラートの通知の履歴（Athena → S3 Tables の alert_events。2026-10-04）
 HISTORY_NOT_DEPLOYED = ("アラートの履歴（S3 Tables の alert_events を Athena で読む）はまだ配備していない（IaC/terraform/aws-managed/pipeline/analytics を apply して、"
                         "IaC/terraform/aws-managed/workflow を apply し直すと使える）。直近はメトリクスを query_metrics、ログを search_logs で見る")
-# 列は app/temporal/rules.py の ALERT_EVENT_COLUMNS と同じ順（tests/test_app.py が突き合わせる）
+# 列は app/temporal/rules.py の ALERT_EVENT_COLUMNS と同じ順（tests/test_agentcore.py が突き合わせる）
 HISTORY_COLUMNS = ("event_id", "anomaly_id", "source", "status", "device_id", "kind", "target", "detail", "starts_at", "received_at")
 HISTORY_LIMIT = 50
 

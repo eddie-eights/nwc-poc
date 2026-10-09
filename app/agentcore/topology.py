@@ -17,7 +17,7 @@ import os
 import time
 from collections import deque
 
-from botocore.exceptions import BotoCoreError, ClientError   # except は graph.errors() で受ける（tests/test_app.py がこの名前を使う）
+from botocore.exceptions import BotoCoreError, ClientError   # except は graph.errors() で受ける（tests/test_agentcore.py がこの名前を使う）
 
 import graph
 import toolkit
