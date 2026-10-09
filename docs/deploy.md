@@ -334,8 +334,8 @@ flowchart LR
 |---|---|---|---|
 | VPC・サブネット・Runtime の SG（`<prefix>-runtime`） | AgentCore Runtime の ENI（InterfaceType `agentic_ai`）が外れるまで消せない（最大 8 時間） | 無料 | base/core の state に残っているので、同じ VPC に残りを作り足す |
 | SSM のパラメータ（`/<prefix>/` の下） | nautobot のルートが消えなかったときの Nautobot の分（上の手順 5-2） | 無料（標準のパラメータ） | あるものは作り直さない |
-| ECR のリポジトリ（`KEEP_ECR=1` のとき） | 意図して残す | 7.39 GB で月 約 110 円（$0.10/GB・月。2026-10-08 の 11 リポジトリ。いまのマネージド版は 15 リポジトリ（`IaC/terraform/aws-managed/base/ecr/main.tf`）） | ECR にあるタグはビルドを飛ばす |
-| logs のバケット `<prefix>-logs-<アカウント>` | 意図して残す（`ops/down.sh` は base/logs を消さない） | 7 日ぶんの Firehose の書けなかった行だけで、ふだんは空。月 1 円未満 | そのまま使う |
+| ECR のリポジトリ（`KEEP_ECR=1` のとき） | 意図して残す | 7.39 GB で月 約 110 円（$0.10/GB・月。2026-10-08 の 11 リポジトリ。いまのマネージド版は 14 リポジトリ（`IaC/terraform/aws-managed/base/ecr/main.tf`）） | ECR にあるタグはビルドを飛ばす |
+| logs のバケット `<prefix>-logs-<アカウント>` | 意図して残す（`ops/down.sh` は base/logs を消さない） | 7 日ぶんの Firehose の書けなかった行だけで、ふだんは空。月 1 円未満 | 同じチェックアウトからならそのまま使う。state を失ったら下の import |
 | MSK の SCRAM の KMS の鍵（alias は外してある） | KMS の鍵はすぐには消せず、削除の予約の待ち（7 日）が要る（上の手順 5-3） | 無料（予約中の鍵は課金されない。KMS の価格表） | 新しい鍵を作る（予約中の鍵はそのまま 7 日後に消える）。alias を外せずに残っていれば、予約を取り消して同じ鍵を使い直す（取り消すと、待った日数も課金される） |
 
 - **`KEEP_ECR=1` で残した ECR に前の lab のイメージ（arm64）があっても、消さなくてよい。**
@@ -353,8 +353,9 @@ flowchart LR
 
 上の「使い回す」は、`ops/up.sh` を打ったのと同じチェックアウトから打つときだけ成り立つ。**残したものがあるあいだは、up.sh を打ったチェックアウトを消さない。**
 
-- Terraform の state は 9 つのルートとも local backend で、`ops/up.sh` を打ったチェックアウトの `IaC/terraform/aws-managed/<ルート>/terraform.tfstate` にしか無い（OSS 版は `IaC/terraform/oss/<ルート>/`）。
+- Terraform の state は 10 のルートとも local backend で、`ops/up.sh` を打ったチェックアウトの `IaC/terraform/aws-managed/<ルート>/terraform.tfstate` にしか無い（OSS 版は `IaC/terraform/oss/<ルート>/`）。
 - worktree で `ops/up.sh` を打ってその worktree を消すと、state も一緒に消える（OSS 版の `ops/oss/up.sh` / `ops/oss/down.sh` も同じ）。worktree で立てたなら、worktree を消す前に、そこから `ops/down.sh` を打って消し切る。
+- logs のバケットは `ops/down.sh` のあとも残る（base/logs を消さない）。worktree を消すなら、その前に base/logs も destroy するか、次の up.sh の前に下の import をする。
 
 state を失ったまま次の `ops/up.sh` を打つと、残したものはこう扱われる（2026-10-08 の OSS 版の AWS 検証。[verification/20261008-oss-aws.md](verification/20261008-oss-aws.md) の「state の扱い」）。
 
@@ -363,6 +364,7 @@ state を失ったまま次の `ops/up.sh` を打つと、残したものはこ�
   - state の無い VPC は、どのチェックアウトの `ops/down.sh` でも消えない。ENI が外れてから手で消す（SG → サブネット → VPC の順。`aws ec2 delete-security-group` / `delete-subnet` / `delete-vpc`）。
   - 同じ名前の VPC が 2 つあっても、`ops/down.sh` は VPC の ID を base/core の state から読む。読めないときだけ名前で引いて、当たった VPC を全部見る（`ops/down-common.sh` の `destroy_base_core`）。
 - **ECR は import が要る。**残ったリポジトリは state に無いので、そのまま `ops/up.sh` を打つと、手順 1 の apply が同じ名前のリポジトリを作ろうとしてぶつかる。
+- **logs のバケットも import が要る（AWS では未確認）。**手順 1 の base/logs の apply が同じ名前のバケットを作ろうとして止まる見込み（下の「logs のバケットの import」）。
 
 ECR を残して state を失ったときは、`ops/up.sh` の前に、up.sh を打つチェックアウトの直下で、残ったリポジトリを base/ecr の state に import する（下のコマンド）。
 
@@ -386,10 +388,39 @@ tf base/ecr state list
 EOF
 ```
 
-- 2026-10-08 の OSS 版で、同じアドレスとリポジトリ名で 18 リポジトリ（当時の数。いまの OSS 版は 22 = マネージド版の 15 + OSS 版だけの 7）とライフサイクルのポリシーを import した。
+- 2026-10-08 の OSS 版で、同じアドレスとリポジトリ名で 18 リポジトリ（当時の数。いまの OSS 版は 21 = マネージド版の 14 + OSS 版だけの 7）とライフサイクルのポリシーを import した。
   `plan` は `0 to add, 18 to change, 0 to destroy` だった（変わるのは、import では入らない `force_delete` だけ）。
 - **`try()` にしてからの import と、マネージド版の import は AWS で未確認。**
   `base/ecr/outputs.tf` が `try()` で包むので、override は要らないはず。
+
+#### logs のバケットの import
+
+logs のバケットを残したまま state を失ったときも、`ops/up.sh` の前に、up.sh を打つチェックアウトの直下で base/logs の state に import する（下のコマンド）。
+
+- **AWS では未確認。**そのまま `ops/up.sh` を打つと、手順 1 の base/logs の apply が `BucketAlreadyOwnedByYou` で止まる見込み。
+  S3 の仕様から推した（東京リージョンのとき。us-east-1 だけは同じ名前の作成が成功扱いになる）。
+- `OWNER` と `AWS_PROFILE` は ECR のときと同じ。import の ID は 6 つともバケット名 `<prefix>-logs-<アカウント>`。
+  lifecycle も `bucket` だけでよい（provider v5 から。`base/logs/versions.tf` は `~> 6.0`、lock は 6.64.0）。
+- 下はマネージド版。OSS 版（`IaC/terraform/oss/base/logs`）は 1 行目を `OWNER=<owner> PROJECT=nwc-oss TF_DIR=IaC/terraform/oss TF_INIT_LOCKFILE=readonly bash <<'EOF'` にする。
+
+```bash
+OWNER=<owner> PROJECT=nwc-poc TF_DIR=IaC/terraform/aws-managed bash <<'EOF'
+PREFIX=$OWNER-$PROJECT
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+. ops/common.sh; trap 'rm -f "$TF_AWS_CONFIG"' EXIT
+tf_use_cli_credentials; tf_init_root base/logs
+imp() { tf base/logs import -input=false -var "owner=$OWNER" "$1" "$PREFIX-logs-$ACCOUNT"; }
+imp aws_s3_bucket.logs
+imp aws_s3_bucket_public_access_block.logs
+imp aws_s3_bucket_server_side_encryption_configuration.logs
+imp aws_s3_bucket_ownership_controls.logs
+imp aws_s3_bucket_lifecycle_configuration.logs
+imp aws_s3_bucket_policy.logs
+tf base/logs state list
+EOF
+```
+
+- 代わりの手: 中身は 7 日で消える Firehose の書けなかった行だけなので、`aws s3 rb s3://<prefix>-logs-<アカウント> --force` で消してから `ops/up.sh` を打ってもよい（これも AWS では未確認）。
 
 ## 007 で並べ直したとき（state の移し方）
 

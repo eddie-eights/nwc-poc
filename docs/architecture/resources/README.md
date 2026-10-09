@@ -31,7 +31,7 @@ AWS のリソース 1 つにつき 1 ファイル。FAQ、設計の記録、Terr
 | lab の EC2（containerlab） | `pipeline/lab` | SR Linux 6 台の検証用ネットワーク | [lab-ec2.md](lab-ec2.md) |
 | SSM Parameter Store | 各ルートと `ops/up.sh` | ルートをまたいで渡す値（String）と、シークレット（SecureString） | [ssm-parameter-store.md](ssm-parameter-store.md) |
 | S3 のバケット（assets と logs） | `base/core`、`base/logs` | 配布物と Spark の checkpoint の置き場（assets。`ops/down.sh` で消える）と、Firehose の書けなかった行を 7 日置く場所（logs。消さずに残す） | [s3-buckets.md](s3-buckets.md) |
-| ECR | `base/ecr` | コンテナイメージ 15 個（OSS 版はさらに 7 個）の置き場 | [ecr.md](ecr.md) |
+| ECR | `base/ecr` | コンテナイメージ 14 個（OSS 版はさらに 7 個）の置き場 | [ecr.md](ecr.md) |
 
 ## OSS 版
 

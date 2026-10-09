@@ -19,7 +19,7 @@ MSK のトピックを読み、格納先（S3 Tables、OpenSearch、Prometheus�
 | 周期と上限 | トリガー 60 秒。1 回に読む件数の上限 `MAX_OFFSETS_PER_TRIGGER`（既定 10000、0 で上限なし。格納先ごとの値も書ける） | `app/spark/snmp_sinks.py` の `TRIGGER`、`deploy.env.example` |
 | HTTP の送り方 | `HTTP_SEND`（既定 `driver`。`executor` でパーティションごとに送る）。タイムアウト 30 秒、5xx と接続の失敗は 3 回まで、まとまりは 500 件 | `app/spark/snmp_sinks.py` の `HTTP_TIMEOUT`、`HTTP_RETRIES`、`BULK_SIZE` |
 | チェックポイント | `s3://<assets のバケット>/spark/checkpoint/<MSK クラスタの uuid>/`。クエリごとに別。スクリプトと jar も同じ `spark/` の下（[s3-buckets.md](s3-buckets.md)） | [pipeline.md](../../pipeline.md) の「Spark を確かめる」 |
-| ログ | CloudWatch Logs の `/aws/emr-serverless/<prefix>`（driver の stdout / stderr。保存 7 日）と、EMR の managed storage（driver と executor の stdout / stderr とイベントログ。無料・30 日保持）の 2 か所。S3 には出さない（cycle 035 の追加で logs のバケットの `emr/` を落とした）。終わったジョブの Spark UI はコンソールの View application UIs から開ける（AWS では未確認）。設定は `outputs.tf` の `configuration_overrides_json` | `emr.tf` の `aws_cloudwatch_log_group.emr`、`outputs.tf` の `logUri`、`IaC/terraform/aws-managed/base/logs` |
+| ログ | CloudWatch Logs の `/aws/emr-serverless/<prefix>`（driver の stdout / stderr。保存 7 日）と、EMR の managed storage（driver と executor の stdout / stderr とイベントログ。無料・30 日保持）の 2 か所。S3 には出さない（cycle 035 の追加で logs のバケットの `emr/` を落とした）。終わったジョブの Spark UI はコンソールの View application UIs から開ける（AWS では未確認）。設定は `outputs.tf` の `configuration_overrides_json` | `emr.tf` の `aws_cloudwatch_log_group.emr`、`outputs.tf` の `configuration_overrides_json`（`managedPersistenceMonitoringConfiguration`、`cloudWatchLoggingConfiguration`） |
 | スイッチ | `STORES`（既定 `s3,grafana,splunk`）、`SKIP_ANALYTICS=1` | `deploy.env.example` |
 | 費用 | ジョブ 1 つ 21 セント/時（3 vCPU。3 つで 63）。動いているあいだだけ | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`。単価は 2026-09-17 確認） |
 
