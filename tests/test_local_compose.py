@@ -808,6 +808,13 @@ check("check.sh: Splunk の認証の失敗（messages の FATAL / ERROR）は「
       and splunk_line('{"messages":[{"type":"WARN","text":"call not properly authenticated"}]}') == [f"NG  {SPL}: result が無い: WARN call not properly authenticated"]
       and splunk_line('{"result":{"count":0}}') == [f"NG  {SPL}: 0 件"]
       and splunk_line('{"result":{"count":3}}') == [f"ok  {SPL}"])
+check("check.sh: Splunk 10.4.4 の本物の応答（034 で手元の docker に打って写した本文）で、パスワード違いの 401 は ERROR Unauthorized、"
+      "検索の書き誤りの 400 は FATAL、200 の count が \"0\" なら「0 件」、\"1\" なら ok、200 の空の本文（eval の引数の誤りなど）は「読めない応答: 空」",
+      splunk_line('{"messages":[{"type":"ERROR","text":"Unauthorized"}]}') == [f"NG  {SPL}: ERROR Unauthorized"]
+      and splunk_line('{"messages":[{"type":"FATAL","text":"Unknown search command \'nosuchcmd\'."}]}') == [f"NG  {SPL}: FATAL Unknown search command 'nosuchcmd'."]
+      and splunk_line('{"preview":false,"offset":0,"lastrow":true,"result":{"count":"0"}}\n') == [f"NG  {SPL}: 0 件"]
+      and splunk_line('{"preview":false,"offset":0,"lastrow":true,"result":{"count":"1"}}\n') == [f"ok  {SPL}"]
+      and splunk_line(" ") == [f"NG  {SPL}: 読めない応答: 空"])   # 空の FAKE_SPLUNK は既定の応答になるので、空白 1 つで空の本文の代わりにする
 _dup = '{"messages":[' + ",".join(['{"type":"ERROR","text":"Unauthorized"}'] * 30) + ']}'
 _long = '{"messages":[{"type":"FATAL","text":"' + "x" * 300 + '\\n  y"},{"type":"ERROR","text":"b\\nc"}]}'
 _ll = splunk_line(_long)

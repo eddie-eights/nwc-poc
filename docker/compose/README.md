@@ -250,6 +250,39 @@ containerlab が `app/containerlab/clab-splab/`（root の持ち物）を作る�
 - 前から上げている Prometheus は設定ファイルを読み直さないので、`docker compose -f docker/compose/compose.yaml restart prometheus` で起こし直す。
   - volume は消さなくてよい（前の設定で書いた volume のまま新しい設定で起こし直し、時刻が戻るサンプルが `204` で入るのを確かめた）。
 
+**Splunk のアプリを作り直しても、volume `splunk-etc` には写らない**
+
+- 確かめた日と版: 2026-10-10、Splunk 10.4.4（`compose.yaml` の splunk を、ほかの構成とぶつからない別のプロジェクト名で 1 つだけ上げた）。
+  - Mac のエミュレーション（`platform: linux/amd64`）でも立ち、`healthy` まで 2〜3 分（起動から 120〜165 秒）だった。
+- `app/splunk/nwc_alerts/default/savedsearches.conf` に 1 行足してイメージを build し直し、`up -d` でコンテナを作り直した。
+  - イメージの `/opt/splunk-etc/apps/nwc_alerts` には写ったが、volume の `/opt/splunk/etc/apps/nwc_alerts` は前のままだった。
+  - 上流のイメージの `/sbin/updateetc.sh` は、イメージと volume の `splunk.version` が違うときだけ `/opt/splunk-etc` を volume へ写す。同じ版のまま作り直しても写らない。
+- アプリ（`app/splunk/`）を変えたら、Splunk の `etc` の volume を消してから上げる。
+  - `docker/compose/down.sh -v` で全部消す（Kafka・OpenSearch・Prometheus・Grafana・Spark の checkpoint も消える）。
+  - Splunk だけなら次の 2 つのあとに `docker/compose/up.sh`。`splunk-etc` だけを消して上げ直すと変更が写り、admin のパスワードも `.env` の値で入れ直されるのを確かめた（`splunk-var` の検索データは残る）。
+
+    ```bash
+    docker compose -f docker/compose/compose.yaml rm -s -f splunk
+    ```
+
+    ```bash
+    docker volume rm nwc-local_splunk-etc
+    ```
+
+**`check.sh` の Splunk の判定は本物の応答と合う**
+
+上と同じ Splunk 10.4.4 に、`check.sh` と同じ `curl`（`/services/search/jobs/export`、`output_mode=json`）を打った本文に、`check.sh` の判定の式を当てた。`check.sh` は変えていない。
+
+| 打ち方 | HTTP | 本文 | 判定 |
+|---|---|---|---|
+| パスワード違い | 401 | `{"messages":[{"type":"ERROR","text":"Unauthorized"}]}` | `NG … ERROR Unauthorized` |
+| `check.sh` の検索（まだ何も入っていない） | 200 | `{"preview":false,"offset":0,"lastrow":true,"result":{"count":"0"}}` | `NG … 0 件` |
+| `index=_internal … \| head 1 \| stats count` | 200 | 上と同じ形で `"count":"1"` | `ok` |
+| 知らないコマンド（`\| nosuchcmd`） | 400 | `{"messages":[{"type":"FATAL","text":"Unknown search command 'nosuchcmd'."}]}` | `NG … FATAL Unknown search command 'nosuchcmd'.` |
+| `eval` の引数の誤りや、無い lookup | 200 | 空 | `NG … 読めない応答: 空` |
+
+- `result` と `messages` の `ERROR` が 1 つの応答に混ざる形は、試した打ち方（失敗する subsearch、無い index への `collect` など）では出なかった。混ざったときの判定（`ERROR` を理由に NG）はテストの偽の応答でだけ確かめている。
+
 ## 経緯
 
 - 2026-10-09（019）: Splunk のアプリの名前を `nwc_alerts` に揃えた（「名前を nwc に揃える（019）」）。

@@ -256,7 +256,7 @@ services:
       start_period: 1m
 
   splunk:
-    # 上流の splunk/splunk は amd64 だけ（WSL の x86_64 はそのまま。Apple Silicon の Mac はエミュレーションで、未確認）。standalone で app nwc_alerts が動く
+    # 上流の splunk/splunk は amd64 だけ（WSL の x86_64 はそのまま。Apple Silicon の Mac はエミュレーションで立つ。034 で確かめた）。standalone で app nwc_alerts が動く
     build:
       context: ../../app/splunk
       dockerfile: ../../docker/images/splunk/Dockerfile
@@ -278,7 +278,7 @@ services:
     # Web 8000（http）と管理 API 8089（https。./check.sh が検索を打つ）。HEC 8088 は compose のネットワークの中だけ
     ports: ["127.0.0.1:8000:8000", "127.0.0.1:8089:8089"]
     # spark-splunk が待つ。上流のイメージの HEALTHCHECK と同じ checkstate.sh（Ansible の構成（HEC の token を含む）が終わり、管理 API 8089 が応えれば healthy。
-    # IaC/terraform/aws-managed/pipeline/analytics/splunk.tf も同じ）。起動は WSL の x86_64 で 2〜3 分、Apple Silicon のエミュレーションは未確認なので start_period を長めに取る
+    # IaC/terraform/aws-managed/pipeline/analytics/splunk.tf も同じ）。起動は WSL の x86_64 で 2〜3 分、Apple Silicon のエミュレーションでも splunk だけなら 2〜3 分（034）。全部を同時に上げたときは未確認なので start_period を長めに取る
     healthcheck:
       test: ["CMD-SHELL", "/sbin/checkstate.sh"]
       interval: 15s
