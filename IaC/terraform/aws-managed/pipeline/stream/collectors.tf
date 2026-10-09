@@ -6,7 +6,8 @@
 #   GoFlow2    udp 2055（NetFlow v5 / v9 / IPFIX）と udp 6343（sFlow）→ flows トピック。GoFlow2 の JSON のまま書き、Spark が共通の形に読み替える
 #              （app/spark/snmp_sinks.py）。イメージは netsampler/goflow2 を ECR の <接頭辞>-goflow2 に写したもの（設定は全部フラグなので Dockerfile は無い）
 # ブローカー・認証・資格情報・実行ロールの権限は msk.tf / OSS 版の kafka.tf の kafka_collector_* の locals が渡す（マネージド版は SCRAM で、ユーザー名と
-# パスワードは Secrets Manager の AmazonMSK_<接頭辞>-collectors を ECS の secrets で入れる。OSS 版は認証なしの 9092）。Terraform は secret の値に触らない。
+# パスワードは Secrets Manager の AmazonMSK_<接頭辞>-syslog-ng / -goflow2 を ECS の secrets で入れる。コレクターごとに別のユーザー（User:syslog-ng /
+# User:goflow2 / User:gnmic。cycle 031）。OSS 版は認証なしの 9092）。Terraform は secret の値に触らない。
 # SG（syslog_ng / goflow2）のルールは IaC/terraform/aws-managed/base/core の security_groups.tf（OSS 版は oss.tf）の通信の表:
 #   NLB の SG から udp 5140 / tcp 5140（syslog-ng）、udp 2055 / 6343 / tcp 8081（GoFlow2）を受け（tcp はヘルスチェック）、MSK の 9096（OSS 版は Kafka の 9092）と
 #   エンドポイント（Secrets Manager・ECR・CloudWatch Logs）へ送る
@@ -76,7 +77,7 @@ resource "aws_ecs_task_definition" "syslog_ng" {
         { name = "KAFKA_AUTH", value = local.kafka_collector_auth },
         { name = "SYSLOG_STANDARD", value = var.syslog_standard },
       ]
-      secrets = local.kafka_collector_secrets
+      secrets = local.kafka_collector_secrets["syslog-ng"]
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -168,7 +169,7 @@ resource "aws_ecs_task_definition" "goflow2" {
         { containerPort = 6343, protocol = "udp" }, # sFlow（NLB の 6343 から）
         { containerPort = 8081, protocol = "tcp" }, # /__health（NLB のヘルスチェック）と /metrics
       ]
-      secrets = local.kafka_collector_secrets
+      secrets = local.kafka_collector_secrets["goflow2"]
       logConfiguration = {
         logDriver = "awslogs"
         options = {

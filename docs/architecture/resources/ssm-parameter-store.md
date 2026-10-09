@@ -93,7 +93,7 @@ SecureString（`ops/up.sh` が作る）:
 | 項目 | 状態 |
 |---|---|
 | シークレットの入れ替え（ローテーション） | 仕組みは作っていない。手で変えたらサービスを作り直す |
-| Secrets Manager | MSK の SCRAM の資格情報（`AmazonMSK_<prefix>-collectors`）だけで使う（MSK の SCRAM は Secrets Manager しか受けない。[msk.md](msk.md)）。ほかのシークレットは SSM の SecureString に置く決まり |
+| Secrets Manager | MSK の SCRAM の資格情報（コレクターごとの `AmazonMSK_<prefix>-syslog-ng` / `-goflow2` / `-gnmic`）だけで使う（MSK の SCRAM は Secrets Manager しか受けない。[msk.md](msk.md)）。ほかのシークレットは SSM の SecureString に置く決まり |
 | 機器の認証情報 | lab では containerlab の既定値。本番の機器につなぐときは SSM の値を書き換える（`ops/up.sh` は、あれば触らない） |
 
 ## 関連
@@ -104,5 +104,6 @@ SecureString（`ops/up.sh` が作る）:
 
 ## 経緯
 
-- 2026-10-08（012）: MSK の SCRAM の資格情報（`AmazonMSK_<prefix>-collectors`）を Secrets Manager に置き始めた（[msk.md](msk.md)）。
+- 2026-10-08（012）: MSK の SCRAM の資格情報を Secrets Manager に置き始めた（このときは 3 つのコレクターで共有の 1 本。[msk.md](msk.md)）。
+- 2026-10-10（031）: SCRAM の secret をコレクターごとの 3 本（`AmazonMSK_<prefix>-syslog-ng` / `-goflow2` / `-gnmic`）に分けた。
 - 2026-10-09 まで: 機器の認証情報は Telegraf の取りにいく側の `/<prefix>/telegraf-dialin/` に SNMP の community と 3 つあった。前の回の分は `ops/down.sh` が消す。

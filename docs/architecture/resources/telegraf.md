@@ -35,7 +35,7 @@ Telegraf は機器から送られてくる SNMP trap を受ける（受ける側
 | 機器（lab の SR Linux） | 機器 → lab の EC2 → NLB → 受ける側 | trap 162/udp。lab の EC2 が DNAT する（syslog と NetFlow / sFlow も同じ NLB に来るが、受けるのは syslog-ng と GoFlow2） |
 | 機器 | gnmic → 機器 | gNMI 57400/tcp（VPC のルートで lab の EC2 へ。lab の EC2 はタスクのサブネット `/<prefix>/telegraf-source-cidr` から来たものだけ機器へ通す） |
 | MSK | Telegraf → MSK | 9098/tcp、AWS-MSK-IAM。タスクロール `<prefix>-telegraf-task` |
-| MSK | gnmic → MSK | 9096/tcp、SASL/SCRAM-SHA-512。資格情報は Secrets Manager の `AmazonMSK_<prefix>-collectors`（syslog-ng・GoFlow2 と同じ）を ECS の secrets で受ける |
+| MSK | gnmic → MSK | 9096/tcp、SASL/SCRAM-SHA-512。資格情報は Secrets Manager の `AmazonMSK_<prefix>-gnmic`（ユーザー `gnmic`。cycle 031 で syslog-ng・GoFlow2 と分けた）を ECS の secrets で受ける |
 | SSM | gnmic のタスクの起動時に読む | 実行ロール `<prefix>-gnmic-exec` の `ssm:GetParameters`（`/<prefix>/gnmic/*` だけ） |
 | Nautobot | Nautobot → SSM → サービス | Job が gnmic の購読先の一覧のパラメータを書き換え、gnmic のサービスを作り直す |
 
@@ -86,7 +86,7 @@ Telegraf は機器から送られてくる SNMP trap を受ける（受ける側
 | 項目 | 状態 |
 |---|---|
 | gnmic は 1 タスク・1 AZ | 増やすと二重に書くので増やせない。止まっているあいだのカウンターは抜ける（状態は繋ぎ直したときに今の値を全部送り直す） |
-| gnmic の Kafka の ACL | Spark のジョブが起動時に `User:collectors`（syslog-ng・GoFlow2 と同じユーザー）へ `gnmi` と `metrics` へ書く ACL を入れる（cycle 012 の `ensure_acls`）。AWS で見たことは表の下 |
+| gnmic の Kafka の ACL | Spark のジョブが起動時に `User:gnmic` へ `gnmi` と `metrics` へ書く ACL を入れる（cycle 012 の `ensure_acls`。ユーザーは cycle 031 でコレクターごとに分けた）。AWS で見たことは表の下 |
 | gnmic を ECS で動かした記録 | 2026-10-09 に AWS で動かした。desired 1 / running 1 で、`metrics` に IF の統計と `system` の event が入った。`gnmi` のトピックはできなかった（表の下）。`docs/verification/20261009-aws-managed.md` の「B.」 |
 | MDT の受け口 | 外した。本番の Cisco の MDT を受けるなら戻す（[collection.md](../../collection.md)） |
 

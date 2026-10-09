@@ -57,7 +57,7 @@ flowchart LR
 - 購読先は SSM の `/<prefix>/gnmic/nautobot/gnmi-targets`（String）にあり、タスクが ECS の secrets で環境変数 `GNMI_TARGETS` として受ける。
 - 最初の値は `ops/up.sh` が lab の定義から作って stream の変数 `gnmi_targets` に渡したもの。
   そのあとは Nautobot の Job が書き換える（Terraform は値の変化を見ない。下の「Nautobot」）。
-- Kafka へは syslog-ng・GoFlow2 と同じ SASL/SCRAM（9096/tcp、Secrets Manager の `AmazonMSK_<prefix>-collectors`）で書く。
+- Kafka へは syslog-ng・GoFlow2 と同じ SASL/SCRAM（9096/tcp）で書く。ユーザーは gnmic 専用の `gnmic`（Secrets Manager の `AmazonMSK_<prefix>-gnmic`。cycle 031）。
   起動時に `gn run` が設定を埋める。
 
 #### gnmic の書き込みと ACL
@@ -83,10 +83,11 @@ flowchart LR
 - syslog-ng はトピック `logs` に Telegraf と同じ `device_log` の形で書く。
 - GoFlow2（`<prefix>-goflow2`）は公式の `netsampler/goflow2:v2.2.7` を ECR の `<prefix>-goflow2:v2.2.7` にミラーしたもので、トピック `flows` に書く。
 - どちらも MSK の IAM 認証を話せないので、SASL/SCRAM（9096/tcp、SCRAM-SHA-512）で書く。
-- ユーザー名とパスワードは `ops/up.sh` が Secrets Manager の `AmazonMSK_<prefix>-collectors` に作る（無いときだけ。値は出さない）。
-  顧客管理の KMS キー `alias/<prefix>-msk-scram` で暗号化する（MSK の SCRAM はこの 2 つを要る）。
-- タスクは起動時に ECS の secrets で受ける。
-  `ops/down.sh` が secret をすぐ消し、鍵は 7 日後の削除を予約する（手順 5-3）。
+- ユーザー名とパスワードは `ops/up.sh` がコレクターごとに Secrets Manager の `AmazonMSK_<prefix>-syslog-ng` / `AmazonMSK_<prefix>-goflow2` に作る
+  （gnmic の分は `AmazonMSK_<prefix>-gnmic`。無いときだけ。値は出さない）。ユーザー名はコレクター名（cycle 031。下の「収集器の ACL」の表）。
+  顧客管理の KMS キー `alias/<prefix>-msk-scram`（3 本で 1 本）で暗号化する（MSK の SCRAM はこの 2 つを要る）。
+- タスクは起動時に ECS の secrets で自分の secret だけを受ける。
+  `ops/down.sh` が secret を 3 本ともすぐ消し、鍵は 7 日後の削除を予約する（手順 5-3）。1 本でも消せなければ鍵は残す（消すと残った secret を復号できない）。
 
 ### SNMP
 
@@ -142,7 +143,17 @@ flowchart LR
 
 #### 収集器の ACL
 
-- Spark は続けて、SASL/SCRAM の収集器のユーザー `collectors` に `logs` / `flows` / `gnmi` / `metrics` の `WRITE` と `DESCRIBE` の ACL を入れる（`snmp_sinks.py` の `ensure_acls`。EMR のロールに `kafka-cluster:AlterCluster`）。
+- Spark は続けて、SASL/SCRAM の収集器のユーザーごとに、自分のトピックの `WRITE` と `DESCRIBE` の ACL を入れる（`snmp_sinks.py` の `ensure_acls` と `SCRAM_USERS`。EMR のロールに `kafka-cluster:AlterCluster`）。
+- ユーザーはコレクターごとに分けてある（cycle 031）。1 つの資格情報が漏れても、ACL が効いていれば、ほかのコレクターのトピックには書けない。
+
+| コレクター | secret（Secrets Manager） | ユーザー | ACL を入れるトピック |
+|---|---|---|---|
+| syslog-ng | `AmazonMSK_<prefix>-syslog-ng` | `syslog-ng` | `logs` |
+| GoFlow2 | `AmazonMSK_<prefix>-goflow2` | `goflow2` | `flows` |
+| gnmic | `AmazonMSK_<prefix>-gnmic` | `gnmic` | `gnmi`、`metrics` |
+
+- 名前の一覧は `ops/up.sh` / `ops/down.sh` の 3 行、`msk.tf` の `scram_collectors`、`SCRAM_USERS` で揃える（`tests/test_stream.py` と `tests/test_analytics.py` が見る）。
+- ACL の無いトピック（`traps` など）には、`allow.everyone.if.no.acl.found` が効いている限り、どの SCRAM のユーザーも書けると見ている（推測。下の 2026-10-09 の結果から）。
 - AWS の文書は、MSK の IAM のアクセス制御では `allow.everyone.if.no.acl.found` が効かないとしている。
 - それでも 2026-10-09 の AWS（IAM と SCRAM の併用、`SKIP_ANALYTICS=1`）では、ACL が無いまま syslog-ng・GoFlow2・gnmic が書けた。
   syslog-ng と GoFlow2 のロググループに `authoriz` を含む行は 0（`docs/verification/20261009-aws-managed.md` の「A.」、[architecture/resources/msk.md](architecture/resources/msk.md)）。
@@ -152,7 +163,7 @@ flowchart LR
   - GoFlow2 はその間のフローを、gnmic はその間の値を捨てる。
   - syslog-ng と GoFlow2 は手元の Kafka で 340 秒の待ちを測った。gnmic は測っていない。
 - 入れた ACL は driver の stderr に次のように出る。入れられなければジョブは起動で落ちる。
-  `ACL: User:collectors に WRITE logs, DESCRIBE logs, WRITE flows, DESCRIBE flows, WRITE gnmi, DESCRIBE gnmi, WRITE metrics, DESCRIBE metrics`
+  `ACL: User:syslog-ng WRITE logs, User:syslog-ng DESCRIBE logs, User:goflow2 WRITE flows, User:goflow2 DESCRIBE flows, User:gnmic WRITE gnmi, User:gnmic DESCRIBE gnmi, User:gnmic WRITE metrics, User:gnmic DESCRIBE metrics`
 - `KAFKA_AUTH=none`（OSS 版・手元の compose）は Kafka に authorizer が無いので入れない。
 
 ### 格納先と検知

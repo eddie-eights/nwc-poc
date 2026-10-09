@@ -6,7 +6,7 @@
 #   キーと型は Telegraf 1.40.1 の実物の 1 行（docs/collection.md）と同じ。tests/test_collectors.py が下の format-json と突き合わせる
 # Kafka の認証は「>>> kafka_auth scram」の区間（MSK の SASL/SCRAM。9096、TLS）。KAFKA_AUTH=none（OSS 版の ECS の Kafka と手元の compose）のとき syslog-ng.sh render が消す。
 # ユーザー名とパスワードはここに埋めない。syslog-ng が設定を読むときに環境変数 KAFKA_SASL_USER / KAFKA_SASL_PASS から入れる（名前をバッククォートで囲む書き方。/tmp の設定に値が残らない）。
-# ECS は Secrets Manager の AmazonMSK_<接頭辞>-collectors を secrets で受ける。値に二重引用符・バックスラッシュ・バッククォート・空白は使えない（設定の文字列が壊れる。syslog-ng.sh render が止める）。
+# ECS は Secrets Manager の AmazonMSK_<接頭辞>-syslog-ng を secrets で受ける。値に二重引用符・バックスラッシュ・バッククォート・空白は使えない（設定の文字列が壊れる。syslog-ng.sh render が止める）。
 # syslog-ng はバッククォートをコメントの中でも展開する（閉じていないと設定が読めない）ので、このファイルにはバッククォートを 2 か所のほかに書かない
 
 options {

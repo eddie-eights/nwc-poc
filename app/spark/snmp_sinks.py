@@ -91,12 +91,17 @@ FLOW_TIME_KEY = "time_received_ns"   # ナノ秒。1e9 で割って小数を切�
 SINKS = ("iceberg", "opensearch", "prometheus", "splunk")
 # 接続の認証（先頭が既定 = マネージド版。OSS 版は環境変数で後ろの方にする。モジュールの docstring）
 KAFKA_AUTHS = ("iam", "none")
-# SASL/SCRAM で書く収集器（syslog-ng → logs、GoFlow2 → flows、gnmic → gnmi / metrics）の Kafka のユーザーとトピック。AWS の文書は MSK の IAM のアクセス制御では
+# SASL/SCRAM で書く収集器の Kafka のユーザーと、ユーザーごとに書けるトピック。AWS の文書は MSK の IAM のアクセス制御では
 # allow.everyone.if.no.acl.found が効かないとするので、SCRAM のユーザーは ACL が無いと書けない想定（MSK では未確認。cycle 012 Round 2。ensure_acls が付ける）。
-# gnmic も同じユーザー（同じ secret）で書く（cycle 013。別のユーザーに分けるかは未確定）
-SCRAM_USER = "collectors"            # ops/up-common.sh の ensure_msk_scram_secret の username
+# コレクターごとに別のユーザー（cycle 031。1 つの資格情報が漏れても、ACL を入れたほかのコレクターのトピックには書けない。ただし ACL の無いトピックと、
+# このジョブが ACL を入れる前は、allow.everyone.if.no.acl.found が効いていればどのユーザーも書ける（推測。docs/pipeline.md の「収集器の ACL」））。キーは ops/up-common.sh の
+# ensure_msk_scram_secret の username（= コレクター名。ops/up.sh と IaC/terraform/aws-managed/pipeline/stream/msk.tf の scram_collectors と同じ）。トピックは
 # app/syslog-ng/syslog-ng.conf.in の topic("logs")、IaC/terraform/aws-managed/pipeline/stream/collectors.tf の -transport.kafka.topic=flows、app/gnmic/gnmic.yaml.in の topic: gnmi / metrics
-SCRAM_TOPICS = ("logs", "flows", "gnmi", "metrics")
+SCRAM_USERS = {
+    "syslog-ng": ("logs",),
+    "goflow2": ("flows",),
+    "gnmic": ("gnmi", "metrics"),
+}
 SCRAM_OPS = ("WRITE", "DESCRIBE")    # CREATE は付けない（トピックは ensure_topics が作る）。CLUSTER の ACL（IDEMPOTENT_WRITE 等）も付けない
 OPENSEARCH_AUTHS = ("sigv4", "basic")
 PROMETHEUS_AUTHS = ("sigv4", "none")
@@ -971,7 +976,8 @@ def ensure_topics(spark, bootstrap, topics):
 
 
 def ensure_acls(spark, bootstrap):
-    """SASL/SCRAM の収集器のユーザー（SCRAM_USER）に、SCRAM_TOPICS の SCRAM_OPS を ALLOW する ACL を入れ、入れたものを「操作 トピック」で返す。
+    """SASL/SCRAM の収集器のユーザー（SCRAM_USERS のキー）それぞれに、自分のトピックだけの SCRAM_OPS を ALLOW する ACL を入れ、
+    入れたものを「User:<ユーザー> 操作 トピック」で返す（cycle 031。User:syslog-ng は logs だけ、User:goflow2 は flows だけ、User:gnmic は gnmi と metrics）。
     MSK は IAM と SCRAM を併用していて、AWS の文書（iam-access-control.html）は IAM のアクセス制御では allow.everyone.if.no.acl.found が効かないとする。
     そのとおりなら、ACL が無いと syslog-ng / GoFlow2 / gnmic は Topic authorization failed で書けない（syslog-ng はキューで持ち、GoFlow2 はその間のフローを捨てる。
     gnmic はその間の値を捨てるので、on-change の購読の直後の今の状態は Kafka に残らない。MSK で本当にそうなるかは未確認。cycle 012 の design.md の未確定事項 8）。
@@ -984,11 +990,12 @@ def ensure_acls(spark, bootstrap):
     acl, res = jvm.org.apache.kafka.common.acl, jvm.org.apache.kafka.common.resource
     bindings = jvm.java.util.ArrayList()
     made = []
-    for t in SCRAM_TOPICS:
-        pattern = res.ResourcePattern(res.ResourceType.TOPIC, t, res.PatternType.LITERAL)
-        for op in SCRAM_OPS:
-            bindings.add(acl.AclBinding(pattern, acl.AccessControlEntry("User:" + SCRAM_USER, "*", getattr(acl.AclOperation, op), acl.AclPermissionType.ALLOW)))
-            made.append(f"{op} {t}")
+    for user, topics in SCRAM_USERS.items():
+        for t in topics:
+            pattern = res.ResourcePattern(res.ResourceType.TOPIC, t, res.PatternType.LITERAL)
+            for op in SCRAM_OPS:
+                bindings.add(acl.AclBinding(pattern, acl.AccessControlEntry("User:" + user, "*", getattr(acl.AclOperation, op), acl.AclPermissionType.ALLOW)))
+                made.append(f"User:{user} {op} {t}")
     admin = admin_client(spark, bootstrap)
     try:
         admin.createAcls(bindings).all().get()
@@ -1035,7 +1042,7 @@ def main(argv):
     log("トピック: " + ", ".join(all_topics(args)) + (f"（作った: {', '.join(made)}）" if made else "（全部あった）"))
     acls = ensure_acls(spark, args.bootstrap)
     if acls:
-        log(f"ACL: User:{SCRAM_USER} に " + ", ".join(acls))
+        log("ACL: " + ", ".join(acls))
     queries = build(spark, args)
     log("格納先: " + ", ".join(f"{s}({sink_topics(s, args.metric_topics, args.log_topics)}。1 回 {max_offsets(args, s) or '上限なし'} 件まで)" for s in args.sinks)
         + f"。HTTP の送信: {args.http_send}")

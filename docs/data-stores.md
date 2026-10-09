@@ -529,7 +529,7 @@ SSM は読まない。
    - タスクの環境変数: `KAFKA_BROKERS`（同じ root の MSK の SCRAM の口 `bootstrap_brokers_sasl_scram`）・`KAFKA_AUTH`（scram / none、既定 scram）。
    - ECS の secrets で受ける `GNMI_TARGETS`: SSM の `/<prefix>/gnmic/<lab か nautobot>/gnmi-targets`。
    - ECS の secrets で受ける `GNMI_USERNAME` / `GNMI_PASSWORD`: SSM の SecureString `/<prefix>/gnmic/gnmi-username`・`gnmi-password`。
-   - ECS の secrets で受ける `KAFKA_SASL_USER` / `KAFKA_SASL_PASS`: Secrets Manager の `AmazonMSK_<prefix>-collectors`。
+   - ECS の secrets で受ける `KAFKA_SASL_USER` / `KAFKA_SASL_PASS`: Secrets Manager の `AmazonMSK_<prefix>-gnmic`（ユーザー `gnmic`。cycle 031 でコレクターごとに分けた）。
    - 購読先の形が違う・同じ IP が 2 回ある・認証情報が無いときはそこで終わる。
      ECS がタスクを立て直す（ログに理由が出る）。
 2. `gnmic.yaml.in` の `__KAFKA_BROKERS__` と購読先（target の名前は IP）を埋めて `/tmp/gnmic.yaml` を作る。
@@ -553,7 +553,8 @@ SSM は読まない。
 - 実行ロール `<prefix>-telegraf-exec` は `AmazonECSTaskExecutionRolePolicy`（ECR とログ）だけ。
 - gnmic は別のロール。
   - 実行ロール `<prefix>-gnmic-exec`: `AmazonECSTaskExecutionRolePolicy` と、secrets を読む `ssm:GetParameters`（`/<prefix>/gnmic/*` だけ）。
-  - 同じ実行ロールに SCRAM の secret（`AmazonMSK_<prefix>-collectors` の `secretsmanager:GetSecretValue` と鍵の `kms:Decrypt`）。
+  - 同じ実行ロールに SCRAM の secret（`AmazonMSK_<prefix>-syslog-ng` / `-goflow2` / `-gnmic` の 3 本の `secretsmanager:GetSecretValue` と鍵の `kms:Decrypt`）。
+    タスクに入れるのは `-gnmic` だけ（3 本を読める権限は syslog-ng・GoFlow2 の実行ロールと同じ `kafka_collector_execution_statements`）。
   - タスクロール `<prefix>-gnmic-task`: ECS Exec の `ssmmessages` だけ（Kafka の権限は無い。SCRAM で書く）。
 - どのロールにも閉域の Deny（`<prefix>-network-perimeter`）を付ける。
 

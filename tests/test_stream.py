@@ -131,10 +131,10 @@ check("土台の SG の通信の表に、受け口ごとの 3 本（管理ネッ
       and not re.search(r'from = "telegraf_dialout_nlb", to = "telegraf_dialout", protocol = "(udp", port = 5140|tcp", port = 57000)', core_sg))
 _col_td = {k: m.group(0) for k in ("syslog_ng", "goflow2")
            if (m := re.search(r'^resource "aws_ecs_task_definition" "' + k + r'" \{\n(?:.*\n)*?^\}\n', stream_col, re.M))}
-check("syslog-ng と GoFlow2 のタスク定義は、それぞれの実行ロールで local.kafka_collector_secrets（SCRAM のユーザー名とパスワード）を入れ、"
+check("syslog-ng と GoFlow2 のタスク定義は、それぞれの実行ロールで local.kafka_collector_secrets の自分の分（SCRAM のユーザー名とパスワード。cycle 031）を入れ、"
       "実行ロールのポリシーは local.kafka_collector_execution_statements。syslog-ng は KAFKA_BROKERS / KAFKA_AUTH、GoFlow2 は引数でブローカーと SCRAM を受ける",
       sorted(_col_td) == ["goflow2", "syslog_ng"]
-      and all(f"  execution_role_arn       = aws_iam_role.{k}_execution.arn\n" in b and "\n      secrets = local.kafka_collector_secrets\n" in b for k, b in _col_td.items())
+      and all(f"  execution_role_arn       = aws_iam_role.{k}_execution.arn\n" in b and f'\n      secrets = local.kafka_collector_secrets["{k.replace("_", "-")}"]\n' in b for k, b in _col_td.items())
       and all(re.search(r'^resource "aws_iam_role_policy" "' + k + r'_execution" \{\n(?:(?!^\}).*\n)*?\s*Statement = local\.kafka_collector_execution_statements\n', stream_col, re.M)
               for k in _col_td)
       and '{ name = "KAFKA_BROKERS", value = local.kafka_collector_brokers },' in _col_td["syslog_ng"]
@@ -179,6 +179,12 @@ check("gnmic のタスクの GNMI_TARGETS は SSM のパラメータ（/<接頭�
       and 'gnmic_targets_name     = "${local.gnmic_parameter_prefix}/${local.gnmic_target_source}/gnmi-targets"' in stream_gn
       and 'gnmic_target_source    = var.gnmi_targets_from_nautobot ? "nautobot" : "lab"' in stream_gn
       and stream_gn.count("value       = var.gnmi_targets\n") == 2 and "ignore_changes = [value]" in stream_gn)
+_ks_refs = re.findall(r"local\.kafka_collector_secrets(\[[^\]\n]*\])?",
+                      "\n".join(l for l in (stream_col + "\n" + stream_gn).splitlines() if not l.lstrip().startswith("#")))
+check(f"ECS のタスクはどれも自分の SCRAM の secret だけを入れる（collectors.tf と gnmic.tf の kafka_collector_secrets は syslog-ng・goflow2・gnmic の順に 1 回ずつ引く。"
+      f"cycle 031。{_ks_refs}）",
+      _ks_refs == ['["syslog-ng"]', '["goflow2"]', '["gnmic"]']
+      and '      secrets = concat(\n        local.kafka_collector_secrets["gnmic"],\n' in stream_gn)
 _dockerfile = _read("docker", "images", "telegraf", "Dockerfile")
 check("Telegraf は trap だけ受ける: inputs は snmp_trap だけ（inputs.snmp / inputs.gnmi / Starlark は cycle 013 で外した）。.star はリポジトリにもイメージにも無い",
       re.findall(r"^\[\[(inputs\.\w+)\]\]", tele, re.M) == ["inputs.snmp_trap"] and "starlark" not in tele
@@ -430,8 +436,8 @@ _gbad = {"GNMI_TARGETS が無い": dict(GNMI_TARGETS=None), "GNMI_TARGETS の形
 _gbad_res = {k: _gnmic_render(**v) for k, v in _gbad.items()}
 check("gnmic.sh render: " + " / ".join(_gbad) + " は 0 以外で止まり、設定を作らない（作業のファイルも残さない）",
       all(rc != 0 and text is None and files == [] for rc, _, text, files in _gbad_res.values()))
-check("gnmic.sh render: 資格情報が無いときの案内に出どころ（SSM の SecureString / Secrets Manager の AmazonMSK_<接頭辞>-collectors）を書く",
-      "SSM の SecureString" in _gbad_res["GNMI_PASSWORD が無い"][1] and "AmazonMSK_<接頭辞>-collectors" in _gbad_res["scram で KAFKA_SASL_PASS が無い"][1])
+check("gnmic.sh render: 資格情報が無いときの案内に出どころ（SSM の SecureString / Secrets Manager の AmazonMSK_<接頭辞>-gnmic。cycle 031）を書く",
+      "SSM の SecureString" in _gbad_res["GNMI_PASSWORD が無い"][1] and "AmazonMSK_<接頭辞>-gnmic" in _gbad_res["scram で KAFKA_SASL_PASS が無い"][1])
 _gdock = _read("docker", "images", "gnmic", "Dockerfile")
 check("gnmic の Dockerfile: 公式イメージ（版は ARG GNMIC_VERSION）に gnmic.yaml.in と gnmic.sh（/usr/local/bin/gn）を足し、nobody で gn run を起こす",
       re.search(r"^ARG GNMIC_VERSION=\d+\.\d+\.\d+$", _gdock, re.M) is not None and "FROM ghcr.io/openconfig/gnmic:${GNMIC_VERSION}\n" in _gdock
@@ -827,24 +833,36 @@ _msk_tf = _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "msk.tf
 _upc, _downc = _read("ops", "up-common.sh"), _read("ops", "down-common.sh")
 _up_sh, _down_sh, _oss_up, _oss_down = _read("ops", "up.sh"), _read("ops", "down.sh"), _read("ops", "oss", "up.sh"), _read("ops", "oss", "down.sh")
 check("SCRAM の secret と鍵の名前は、ops/up-common.sh（作る）・ops/down-common.sh（消す）・msk.tf（data source で引く）で同じ（接頭辞は owner-nwc-poc）",
-      'data "aws_secretsmanager_secret" "msk_scram" {\n  name = "AmazonMSK_${local.name_prefix}-collectors"\n}' in _msk_tf
+      'data "aws_secretsmanager_secret" "msk_scram" {\n  for_each = toset(local.scram_collectors)\n  name     = "AmazonMSK_${local.name_prefix}-${each.key}"\n}' in _msk_tf
       and 'data "aws_kms_alias" "msk_scram" {\n  name = "alias/${local.name_prefix}-msk-scram"\n}' in _msk_tf
-      and 'local alias="alias/$PREFIX-msk-scram" out arn state' in _upc and 'local name="AmazonMSK_$PREFIX-collectors" out kms deleted' in _upc
-      and 'local name="AmazonMSK_$PREFIX-collectors" alias="alias/$PREFIX-msk-scram" out arn state' in _downc
+      and 'local alias="alias/$PREFIX-msk-scram" out arn state' in _upc and 'local name="AmazonMSK_$PREFIX-$collector" out kms deleted' in _upc
+      and 'local name="AmazonMSK_$PREFIX-${1:?delete_msk_scram にコレクター名を渡す}" out' in _downc
+      and 'local alias="alias/$PREFIX-msk-scram" out arn state' in _downc
       and 'name_prefix = "${var.owner}-${var.project}"' in _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "locals.tf")
       and 'PREFIX="$OWNER-${1:-nwc-poc}"' in _read("ops", "deploy-env.sh"))
 _sm_read = [f for f in ([os.path.join("ops", n) for n in sorted(os.listdir(os.path.join(ROOT, "ops"))) if n.endswith(".sh")]
                         + [os.path.join("ops", "oss", n) for n in sorted(os.listdir(os.path.join(ROOT, "ops", "oss"))) if n.endswith(".sh")])
             if re.search(r"get-secret-value|batch-get-secret-value", "\n".join(l for l in _read(f).splitlines() if not l.lstrip().startswith("#")))]
 check(f"ops/ と ops/oss/ のシェルは Secrets Manager の secret の中身を読まない（get-secret-value / batch-get-secret-value を打たない。{_sm_read}）", _sm_read == [])
-check("ops/up.sh は stream を作る回だけ、鍵 → secret → stream の apply の順に呼ぶ（msk.tf の data source が apply の時に引く）",
+check("ops/up.sh は stream を作る回だけ、鍵 → secret 3 本（コレクターごと。cycle 031）→ stream の apply の順に呼ぶ（msk.tf の data source が apply の時に引く）",
       _in_stream_block("\n  ensure_msk_scram_key\n")
-      and "\n  ensure_msk_scram_key\n  ensure_msk_scram_secret\n  tf_apply pipeline/stream " in _up_sh
-      and _up_sh.count("ensure_msk_scram_key") == 1 and _up_sh.count("ensure_msk_scram_secret") == 1)
-check("ops/down.sh は 5-3. で delete_msk_scram を呼ぶ（destroy と SSM のパラメータのあと、残りの一覧の前）。OSS 版（MSK が無い）の up.sh / down.sh は呼ばない",
-      re.search(r"^delete_up_ssm_params\n(?:.*\n)*?^delete_msk_scram\n(?:.*\n)*?^report_leftovers$", _down_sh, re.M) is not None
-      and _down_sh.index("\ndestroy_root pipeline/stream ") < _down_sh.index("\ndelete_msk_scram\n")
+      and ("\n  ensure_msk_scram_key\n  ensure_msk_scram_secret syslog-ng\n  ensure_msk_scram_secret goflow2\n  ensure_msk_scram_secret gnmic\n"
+           "  tf_apply pipeline/stream ") in _up_sh
+      and _up_sh.count("ensure_msk_scram_key") == 1 and _up_sh.count("ensure_msk_scram_secret") == 3)
+check("ops/down.sh は 5-3. で delete_msk_scram を 3 本ぶん呼び、そのあと delete_msk_scram_key を 1 回（destroy と SSM のパラメータのあと、残りの一覧の前）。"
+      "OSS 版（MSK が無い）の up.sh / down.sh は呼ばない",
+      re.search(r"^delete_up_ssm_params\n(?:.*\n)*?^delete_msk_scram syslog-ng\ndelete_msk_scram goflow2\ndelete_msk_scram gnmic\ndelete_msk_scram_key\n"
+                r"(?:.*\n)*?^report_leftovers$", _down_sh, re.M) is not None
+      and len(re.findall(r"^delete_msk_scram_key$", _down_sh, re.M)) == 1 and len(re.findall(r"^delete_msk_scram ", _down_sh, re.M)) == 3
+      and _down_sh.index("\ndestroy_root pipeline/stream ") < _down_sh.index("\ndelete_msk_scram syslog-ng\n")
       and not re.search(r"msk_scram", _oss_up + _oss_down))
+# コレクター（= SCRAM のユーザー）の一覧は、作る・消す・引くの 3 か所で同じ（cycle 031）
+_scram_tf = re.search(r"^  scram_collectors = \[(.*)\]$", _msk_tf, re.M)
+_scram_lists = {"msk.tf": re.findall(r'"([^"]+)"', _scram_tf.group(1)) if _scram_tf else None,
+                "up.sh": re.findall(r"^  ensure_msk_scram_secret (\S+)$", _up_sh, re.M),
+                "down.sh": re.findall(r"^delete_msk_scram (\S+)$", _down_sh, re.M)}
+check(f"SCRAM のユーザーの一覧は msk.tf の scram_collectors・ops/up.sh・ops/down.sh で同じ順に syslog-ng / goflow2 / gnmic（{_scram_lists}）",
+      all(v == ["syslog-ng", "goflow2", "gnmic"] for v in _scram_lists.values()))
 _lab_flow = re.search(r'^\s*for p in ([\d ]+); do\n\s*iptables -t nat -I PREROUTING 1 -s "\$MGMT" -d "\$MGMT_GW" -p udp --dport "\$p" "\$\{c\[@\]\}" -j DNAT --to-destination "\$t:\$p"$', labsh, re.M)
 check("lab.sh forward の NetFlow / sFlow の DNAT のポートは、NLB の受け口（collector_listeners）の netflow / sflow と同じ（cycle 012）",
       _lab_flow is not None and sorted(map(int, _lab_flow.group(1).split())) == sorted(_cl[k][0] for k in ("netflow", "sflow")))
