@@ -11,9 +11,9 @@
 | ファイル | terraform | 中身 |
 |---|---|---|
 | [core.md](core.md) | `base/core`、`base/ecr` | 土台: VPC、Web の EC2、アラートの SNS トピック、閉域（エンドポイント + Deny）、SG（通信の表） |
-| [agent.md](agent.md) | `app/agentcore/`（`AGENT=1`） | チャットの経路: Web → AgentCore Runtime → Nova 2 Lite・ガードレール・KB・ツール |
+| [agent.md](agent.md) | `agent/`（`AGENT=1`） | チャットの経路: Web → AgentCore Runtime → Nova 2 Lite・ガードレール・KB・ツール |
 | [pipeline.md](pipeline.md) | `pipeline/`（`PIPELINE=1`） | lab → Telegraf・gnmic・syslog-ng・GoFlow2 → MSK → Spark → 格納先、Grafana と Splunk のアラート、Neptune のトポロジ、Nautobot |
-| [workflow.md](workflow.md) | `app/temporal/`（`WORKFLOW=1`） | アラート（SNS → SQS）→ Temporal の調査・承認・修復、Gateway（MCP） |
+| [workflow.md](workflow.md) | `workflow/`（`WORKFLOW=1`） | アラート（SNS → SQS）→ Temporal の調査・承認・修復、Gateway（MCP） |
 
 リソースごとの知見（使い方、つながり、はまりどころ、制約）は [resources/README.md](resources/README.md)。
 

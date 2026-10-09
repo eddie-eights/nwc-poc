@@ -126,7 +126,7 @@ SQS はもう 1 本あり、Web の承認・却下を worker に届ける（決�
 | エンドポイントが 3 AZ のとき | Lambda の待ちの上限（66.6 秒）が timeout（60 秒）を超える。注意だけ出す |
 | フラップ（承認待ちのあいだに直って、また落ちた） | 落ち直しの `firing` がワークフローの走っているあいだに届くと捨てる。次に調査が起きるのは Grafana の送り直し（4 時間後）か Splunk の次の変化 |
 | DLQ に入ったメッセージ | 戻す仕組みは作っていない（保持 14 日） |
-| AWS の上での通し（Grafana と Splunk の publish、Firehose への書き込み） | 2026-10-05 に AWS で確かめた。`sudo lab fail-main` で Grafana と Splunk の両方が `link_down` と `isis_down` を出し、SNS → Lambda（`status` の書き換えと Firehose）と SNS → SQS → worker の配信が通った。`bgp_down` と `trap` の firing は未確認 |
+| AWS の上での通し（Grafana と Splunk の publish、Firehose への書き込み） | 2026-10-05 に AWS で確かめた。`sudo lab fail-main` で Grafana と Splunk の両方が `link_down` と `isis_down` を出し、SNS → Lambda（`status` の書き換えと Firehose）と SNS → SQS → worker の配信が通った。2026-10-08 に、Grafana と Splunk の `bgp_down` と Splunk の `trap` の firing が SNS → Lambda に届いた（011 の前の lab。[verification/20261008-managed-aws.md](../../verification/20261008-managed-aws.md)）。Grafana の `trap` は、ルールの評価がエラーで出なかった（008 で直した。AWS では未確認） |
 | 決定のキュー（Web → SQS → worker） | 2026-10-05 に AWS で承認の 1 通を確かめた。却下、重複、DLQ に落ちる経路は未確認 |
 
 2026-10-05 に、Web の承認も SQS で worker に届ける形に変えた。[修復案を S3 Tables にまとめる（003）の設計](../../cycles/003-proposals-in-s3tables/design.md)。
