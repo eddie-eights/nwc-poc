@@ -23,8 +23,8 @@
 | syslog | 取れる | 機器 → 5140/udp → NLB → syslog-ng（2026-10-08 から。それまでは Telegraf）→ `logs`（Telegraf と同じ `device_log` の形）。既定の `SYSLOG_STANDARD=RFC3164` は本番の Cisco 向けで、lab の SR Linux（RFC5424）のログは崩れる（[deploy.md](deploy.md)） |
 | SNMP trap | 取れる | 機器 → 162/udp → NLB → Telegraf → `traps`。異常として上げるのは Grafana（`STORES` の `grafana`。link 以外の trap を `trap` として）と Splunk（`STORES` の `splunk`。linkDown / linkUp を `link_down`、ほかを `trap` として）。linkDown / linkUp の trap から `link_down` を出すのは Splunk だけ |
 | NetFlow / sFlow | 受け口だけ（lab の機器からは来ない） | 機器 → 2055/udp（NetFlow）・6343/udp（sFlow）→ NLB → GoFlow2 → `flows`（2026-10-08 から）。Spark が Telegraf と同じ形（measurement `flow`）に読み替え、`traps` / `logs` と同じ格納先（S3 Tables・OpenSearch・Splunk の `sourcetype=nwc:flows`）へ流す。lab の SR Linux は NetFlow を送れないので、`ops/netflow_send.py` で 1 パケット送って確かめる |
-| telemetry | 一部 | gnmic → 機器の gNMI（57400/tcp）で IF / BGP / IS-IS の状態を `gnmi` トピックへ（2026-10-09、cycle 013 から。それまでは Telegraf で、EVPN と MAC も取っていた）。本番の MDT の受け口（57000/tcp → `mdt` トピック）は 2026-10-08（cycle 012）に外した（下の「方針」） |
-| 性能メトリクス | lab だけ（CPU・メモリ・IF のカウンタ） | gnmic → lab の SR Linux の gNMI で CPU・メモリ・IF のカウンタ（`statistics`）を 60 秒ごとに `metrics` トピックへ（2026-10-09、cycle 013 から。AWS では未確認）。セッション数と収容回線数の代替（MAC テーブルの数、お客さま向けの IF の数）と、それを変換した共通の形（`device_cpu` など）は cycle 013 でやめた。本番の MDT の受け口は 2026-10-08 に外した。SNMP のポーリング（IF の状態と 32 ビットカウンタ、エラー数）も cycle 013 でやめた |
+| telemetry | 一部 | gnmic → 機器の gNMI（57400/tcp）で IF / BGP / IS-IS の状態を `gnmi` トピックへ（2026-10-09、cycle 013 から。それまでは Telegraf で、EVPN と MAC も取っていた）。2026-10-09 の AWS では `gnmi` トピックができず、1 件も書かれていなかった（原因は確かめていない）。本番の MDT の受け口（57000/tcp → `mdt` トピック）は 2026-10-08（cycle 012）に外した（下の「方針」） |
+| 性能メトリクス | lab だけ（CPU・メモリ・IF のカウンタ） | gnmic → lab の SR Linux の gNMI で CPU・メモリ・IF のカウンタ（`statistics`）を 60 秒ごとに `metrics` トピックへ（2026-10-09、cycle 013 から。同じ日の AWS で `interface_stats` と `system` の event が `metrics` に入るのを確かめた。Spark から先は未確認）。セッション数と収容回線数の代替（MAC テーブルの数、お客さま向けの IF の数）と、それを変換した共通の形（`device_cpu` など）は cycle 013 でやめた。本番の MDT の受け口は 2026-10-08 に外した。SNMP のポーリング（IF の状態と 32 ビットカウンタ、エラー数）も cycle 013 でやめた |
 
 trap と syslog では性能の時系列は取れない（届くのはイベントか、しきい値を越えたという知らせだけ）。性能メトリクスにはポーリングか telemetry が要る。
 
@@ -37,7 +37,7 @@ trap と syslog では性能の時系列は取れない（届くのはイベン�
 | syslog（5140/udp） | syslog-ng（`<prefix>-syslog-ng`。`app/syslog-ng/`） | `logs` |
 | NetFlow（2055/udp）・sFlow（6343/udp） | GoFlow2（`<prefix>-goflow2`） | `flows` |
 
-syslog-ng と GoFlow2 と gnmic は MSK の IAM 認証を話せないので、SASL/SCRAM（9096/tcp）で書く（Kafka の ACL は Spark が起動時に入れ、それまでは書けない見込み。[pipeline.md](pipeline.md)）（資格情報の置き場は [pipeline.md](pipeline.md) の冒頭の箇条書き）。
+syslog-ng と GoFlow2 と gnmic は MSK の IAM 認証を話せないので、SASL/SCRAM（9096/tcp）で書く（Kafka の ACL は Spark が起動時に入れる。ACL の無いうちも書けることを 2026-10-09 の AWS で確かめた。[pipeline.md](pipeline.md)）（資格情報の置き場は [pipeline.md](pipeline.md) の冒頭の箇条書き）。
 
 **syslog の形は Telegraf のときと同じ（2026-10-08 に手元の docker で比べた）:** 同じ RFC5424 の 1 行
 
@@ -175,7 +175,7 @@ gNMI の購読はこちらから取りにいくので、lab の値は gnmic の�
 
 ## gnmic の event と読み替え（2026-10-09、cycle 013）
 
-gnmic は購読した値を event の形で Kafka に書く（`app/gnmic/gnmic.yaml.in` の `format: event`。`split-events: true` で 1 メッセージ 1 件）。下は gnmic v0.49.0 のソースから組んだ形で、実物との照合は AWS では未確認。
+gnmic は購読した値を event の形で Kafka に書く（`app/gnmic/gnmic.yaml.in` の `format: event`。`split-events: true` で 1 メッセージ 1 件）。下は gnmic v0.49.0 のソースから組んだ形。2026-10-09 の AWS で `metrics` の実物（`interface_stats` と `system`）と照らし、同じ形だった（values のキーはモジュールの接頭辞つきの絶対パス、カウンターは文字列、tags のキーは `interface_name` / `source` / `subscription-name` / `control_slot` / `cpu_index`）。values の無い event（tags だけ。400 件のうち 358 件）もあり、`gnmic_message` はこれを捨てる。`gnmi`（`interface_state` など）の event は無かったので、oper-state / admin-state の綴りは見ていない（`docs/verification/20261009-aws-managed.md` の「B.」）。
 
 ```
 {"name": "interface_state", "timestamp": 1700000000123456789, "tags": {"source": "203.0.113.31", "interface_name": "ethernet-1/1", "subscription-name": "interface_state"}, "values": {"/srl_nokia-interfaces:interface/oper-state": "down"}}
@@ -216,6 +216,6 @@ Prometheus の系列の名前は Telegraf のころの `snmp_` の頭のまま�
 | 「セッション」が何のセッションか | 一般的な解釈で候補を上に並べた（BNG の加入者、FW の接続、NAT、IPsec、ハードウェアの表）。本番の機器の役割が分かれば絞れる。lab は MAC の数で代える（上の「lab での取り方」） | 本番は候補まで。lab は決定 |
 | セッションの上限と収容回線数の上限の出どころ | 機器の上限（ライセンス・設定値・機種の上限・ポート数）は多くが MDT で取れる。設計上の上限だけ静的データ（`app/agentcore/data/devices.yaml` か Neptune）。割るのは設定上の上限を先に使う（上の「割る上限の選び方」） | 決定 |
 | 共通の形 | Grafana と Splunk のルールを書く相手。本番の機種が 1 種類なら Cisco の形を正にし、混ざるなら独自の共通の形にする | 本番の機種が分かってから決める。lab の仮の形への変換は cycle 013 でやめ、いまは gnmic の event を Telegraf の形に読み替えている（上の「gnmic の event と読み替え」） |
-| lab からどう送るか | gNMI を gnmic で取り、Spark が Telegraf の形に読み替える（上の「lab での取り方」。cycle 013 から。AWS では未確認） | 決定 |
+| lab からどう送るか | gNMI を gnmic で取り、Spark が Telegraf の形に読み替える（上の「lab での取り方」。cycle 013 から。2026-10-09 の AWS で gnmic が `metrics` に書くところまで確かめた。`gnmi` は書かれず、Spark の読み替えから先は未確認） | 決定 |
 | lab に Cisco の機器を足すか | 足せば MDT の受け口（`cisco_telemetry_mdt`。2026-10-08 に外したので戻してから）と Cisco の YANG の名前を lab で試せ、IOS XE ならセッションも代替ではなく本物（NAT / FW）が取れる見込み。本番が XR なら XRd（コンテナ。KVM 不要、1 台 2 GiB）、XE なら Cat8000v（VM。KVM が要るので lab の EC2 を Graviton の t4g から x86 の C8i / M8i などのネステッド仮想化か .metal に変える）。どちらも x86 だけ（lab は arm64 で通すと 2026-09-26 に決めているので、その決定を変えることになる）で、入手に Cisco の契約が要る見込み（未確認）。IOL は NETCONF が無く MDT を出せない見込みで、CML の同梱イメージは CML の中でしか使えないライセンス。SR Linux のファブリックは残し、本番と同じ OS の Cisco を 1〜2 台足すのが候補（2026-10-04 に調べた）。XRd の control-plane 版は転送が最小限で leaf の代わりにならず、Nexus（N9Kv）でファブリックを組むと 1 台 6〜10 GB で lab の EC2 が約 $0.17/h（t4g.xlarge）から $0.64〜1.28/h（r7i.2xlarge〜4xlarge）になる。Cat8000v を 2 台足すだけなら m7i.2xlarge で約 $0.52/h（東京のオンデマンド） | **当面は SR Linux のまま**（2026-10-04 決定。費用と arm64 の決定を優先）。本番の機種が分かったら見直す。2026-10-08 に TRex のため lab の EC2 を x86_64（`m6i.xlarge`、約 $0.25/h）にしたので、「x86 だけ」は妨げでなくなった（費用と入手の条件は残る） |
 | Grafana と Splunk の分担 | 同じ指標を両方で見るとルールを 2 か所でそろえることになる（異常の id が同じなので通知は 1 つにまとまる） | 未定 |
