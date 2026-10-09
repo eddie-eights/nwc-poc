@@ -117,9 +117,13 @@ resource "aws_cloudwatch_log_stream" "alert_firehose" {
 
 # ロールとポリシーを作った直後は、Firehose が assume できずに作成が止まることがある（IAM の反映遅れ。
 # 2026-10-09 の AWS で InvalidArgumentException: The security token included in the request is invalid … を実測し、打ち直しで通った）。
-# 30 秒は推定。足りなければ延ばす
+# 30 秒は推定。足りなければ延ばす。
+# triggers はロールが作り直されたら待ちも作り直すため（state を残したまま接頭辞を変えたときも待つ）
 resource "time_sleep" "alert_firehose_iam" {
   create_duration = "30s"
+  triggers = {
+    role = aws_iam_role.alert_firehose.unique_id
+  }
 
   depends_on = [aws_iam_role.alert_firehose, aws_iam_role_policy.alert_firehose]
 }

@@ -432,6 +432,9 @@ check("Firehose はロールとポリシーの反映を time_sleep.alert_firehos
       and re.search(r'depends_on\s*=\s*\[[^\]]*\btime_sleep\.alert_firehose_iam\b[^\]]*\]', _fh.group(1)) is not None
       and re.search(r'source\s*=\s*"hashicorp/time"', open(os.path.join(_an_dir, "versions.tf"), encoding="utf-8").read()) is not None
       and 'provider "registry.terraform.io/hashicorp/time" {' in open(os.path.join(_an_dir, ".terraform.lock.hcl"), encoding="utf-8").read())
+check("time_sleep.alert_firehose_iam は triggers にロールの unique_id を持ち、state を残したままロールが作り直されたときも待ち直す（cycle 026 の cold review）",
+      _fhwait is not None
+      and re.search(r'triggers\s*=\s*\{\s*role\s*=\s*aws_iam_role\.alert_firehose\.unique_id\s*\}', _fhwait.group(1)) is not None)
 _wg = re.search(r'resource "aws_athena_workgroup" "history" \{(.*?)\n\}\n', _hist, re.S)
 check("Athena のワークグループ <接頭辞>-history: 結果は管理ストレージ、ワークグループの設定を強制し、スキャン量で打ち切り、force_destroy",
       _wg is not None and 'history_workgroup = "${local.name_prefix}-history"' in _hist
