@@ -50,7 +50,7 @@ while IFS= read -r f; do bash -n "$f" || die "$f に構文エラーがある"; d
 echo "bash -n: $(grep -c . <<<"$SH") 本"
 if command -v python3 >/dev/null; then PY=(python3); else PY=(uv run --python 3.13 python); fi
 # .py は名指しにせず全部見る（名指しにすると、ファイルを足したときに検査から漏れる）
-find app docker ops tests -name '*.py' -not -path '*/__pycache__/*' -print0 |
+find app docker docs ops tests -name '*.py' -not -path '*/__pycache__/*' -print0 |
   xargs -0 "${PY[@]}" -c 'import ast, sys
 for f in sys.argv[1:]:
     ast.parse(open(f, encoding="utf-8").read(), f)'
