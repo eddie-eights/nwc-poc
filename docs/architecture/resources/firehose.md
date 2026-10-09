@@ -59,6 +59,11 @@ Lambda が 1 件ずつ渡した行を、60 秒か 1 MiB ごとにまとめて書
 - **`ops/down.sh` の途中でも送信は失敗する。**
   analytics を消してから graph を消すまでのあいだ。`status` の更新は止まらない。
   出典: 同じ設計のリスクの 5。
+- **ストリームはロールの IAM の反映を 30 秒待ってから作る。**
+  ロールとポリシーを作った直後に作ると、Firehose がロールを引き受けられずに `InvalidArgumentException: The security token included in the request is invalid. Ensure that the provided IAM role associated with firehose is not deleted.` で止まることがある（2026-10-09 の AWS で実測。同じ引数の打ち直しで通った）。
+  - cycle 026 から `history.tf` の `time_sleep.alert_firehose_iam`（`create_duration = "30s"`。ロールを作り直したら待ちも作り直す）を挟み、ストリームが `depends_on` で待つ。30 秒は推定で、2026-10-10 の AWS では 1 回で通った（`docs/verification/20261010-aws-managed.md`）。
+  - それでも同じエラーで止まるなら、同じ引数で `ops/up.sh` を打ち直す。続くなら `create_duration` を延ばす。
+  - 出典: `history.tf` の `time_sleep` のコメント、[troubleshooting.md](../../troubleshooting.md) の「`ops/up.sh` / Terraform」の表。
 
 ## 制約と未確認
 

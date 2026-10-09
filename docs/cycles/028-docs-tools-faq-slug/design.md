@@ -115,3 +115,5 @@
 2. python-pptx 1.0.2 が今の Python（`requires-python = ">=3.13,<3.14"`）で入るかは未確認。入らなければ止めて報告する。
 3. 縛りは GitHub の規則に揃えたことにはならない。縛りの外の差（たとえば絵文字や全角の記号の扱い）は残る。GitHub での描画は未確認のまま。
 4. `uv.lock` に python-pptx と依存（lxml、Pillow、XlsxWriter、typing-extensions）が入る。docs のグループを使わない `uv run --group dev` には入らない。
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261010-cycle-028-docs-tools-faq-slug-design.html -->
