@@ -240,3 +240,95 @@ rc=1
   - 「ロールが作り直されると待たない」は成り立つ。
   - ただし、起きるのは state を残したまま接頭辞を変えたときだけ。いつもの down → up では起きない。
   - 実測していないので Should fix のまま残す。
+
+## Round 2
+
+実装モデル: opus-5.5 / effort: high
+
+cold review（Round 1）の Should fix 1 件を、PM の判断で直した（commit d04562b）。Nit は直していない（判断は `review.md`）。AWS には触っていない。
+
+### 直したこと
+
+- `IaC/terraform/aws-managed/pipeline/analytics/history.tf:118-129`
+  - `time_sleep.alert_firehose_iam` に `triggers = { role = aws_iam_role.alert_firehose.unique_id }` を足し、コメントに理由を 1 行足した。
+  - state を残したまま接頭辞（`OWNER` / `PROJECT`）を変えてロールが作り直されたときも、待ちを作り直して Firehose の前に待つ。
+- `tests/test_analytics.py:435-437`
+  - D の check の隣に、`triggers` がロールの `unique_id` を参照していることの check を 1 つ足した（520 → 521）。
+- `docs/cycles/026-ops-kafbat-firehose-fixes/design.md` の D の 3
+  - `triggers` を持つことと理由を、PM の指示として 1 行足した。ほかの部分は変えていない。
+
+### 赤→緑
+
+赤（check を先に足し、`history.tf` に `triggers` が無い状態で打った）:
+
+```
+$ uv run --frozen --group dev --group web python tests/test_analytics.py
+  ...
+  File ".../tests/test_analytics.py", line 19, in check
+    assert cond, name
+AssertionError: time_sleep.alert_firehose_iam は triggers にロールの unique_id を持ち、state を残したままロールが作り直されたときも待ち直す（cycle 026 の cold review）
+```
+
+緑（`triggers` を足したあと）:
+
+```
+ok time_sleep.alert_firehose_iam は triggers にロールの unique_id を持ち、state を残したままロールが作り直されたときも待ち直す（cycle 026 の cold review）
+通過 521 / 失敗 0
+```
+
+### 検証
+
+両方の analytics のルートを、lock を書き換えない形で init して validate した（`.terraform` は `TF_DATA_DIR` で scratchpad に置いた）:
+
+```
+$ terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics init -backend=false -lockfile=readonly -input=false
+- Reusing previous version of hashicorp/time from the dependency lock file
+- Installed hashicorp/time v0.14.2 (signed by HashiCorp)
+Terraform has been successfully initialized!
+$ terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics validate
+Success! The configuration is valid.
+$ terraform -chdir=IaC/terraform/oss/pipeline/analytics init -backend=false -lockfile=readonly -input=false
+- Reusing previous version of hashicorp/time from the dependency lock file
+- Installed hashicorp/time v0.14.2 (signed by HashiCorp)
+Terraform has been successfully initialized!
+$ terraform -chdir=IaC/terraform/oss/pipeline/analytics validate
+Success! The configuration is valid.
+```
+
+`bash ops/check.sh`（rc=0）:
+
+```
+== 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+差分なし
+== 2. 9 つのルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+  （18 行すべて OK）
+== 3. スクリプトの構文
+bash -n: 28 本
+構文エラーなし
+== 4. 模擬テスト
+  （test_agentcore）通過 161 / 失敗 0
+  （test_alerts）通過 168 / 失敗 0
+  （test_analytics）通過 521 / 失敗 0
+  （test_collectors）通過 79 / 失敗 0
+  （test_dashboard_config）通過 3 / 失敗 0
+  （test_graph）通過 78 / 失敗 0
+  （test_kb_index）通過 7 / 失敗 0
+  （test_lab_debug）通過 110 / 失敗 0
+  （test_local_compose）通過 138 / 失敗 0
+  （test_nautobot）68 項目すべて通過
+  （test_oss）通過 174 / 失敗 0
+  （test_oss_ops）通過 203 / 失敗 0
+  （test_oss_roll）通過 66 / 失敗 0
+  （test_stream）通過 108 / 失敗 0
+  （test_sync）通過 103 / 失敗 0
+  （test_workflow）通過 327 / 失敗 0
+== 5. 旧名 netops が戻っていない（docs/cycles と docs/verification は記録なので見ない。cycle 019）
+netops なし（許した 3 ファイル 5 行だけ）
+
+すべて通過
+```
+
+### 未確認
+
+- **AWS では未確認**（Round 1 と同じ）。`triggers` を足したことで、既にある環境では次の apply で `time_sleep` が 1 回作り直されて 30 秒待つ（Firehose は `time_sleep` を参照しないので作り直さない）。plan は打っていない。
+- 接頭辞を変えてロールが作り直される場面で待つことは、Terraform の `time_sleep` の `triggers` の振る舞い（値が変わると置き換え）から推しただけで、実測していない。
