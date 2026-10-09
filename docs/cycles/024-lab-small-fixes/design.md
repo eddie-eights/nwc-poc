@@ -78,7 +78,7 @@
 
 **I. デバッグ用 Telegraf のタグ**
 
-- `ops/lab-debug.sh:129` `TELEGRAF_TAG=$(telegraf_tag)`、`:141` `ecr_has "$REPO_PREFIX-telegraf" "$TELEGRAF_TAG"`、`:145` `build_telegraf "$REG/$REPO_PREFIX-telegraf:$TELEGRAF_TAG" linux/amd64`、`:154` `deploy true "$TELEGRAF_TAG"`（CFn の `TelegrafImageTag`）。`ops/up.sh:633-634` は同じ `telegraf_tag` で **arm64** を stream の ECS 用に作って同じ repo `<prefix>-telegraf` に置く。同じタグ名に amd64 と arm64 が別々に push されると、後に push した方が上書きし、lab-debug の EC2（x86_64）が arm64 のイメージを引いて起きなくなる（または逆）。lab の 3 イメージは `ops/lab-common.sh:15-18` の `LAB_ARCH=amd64` と `*_ECR_TAG="$*_TAG-$LAB_ARCH"` で既に分けてある。
+- `ops/lab-debug.sh:129` `TELEGRAF_TAG=$(telegraf_tag)`、`:141` `ecr_has "$REPO_PREFIX-telegraf" "$TELEGRAF_TAG"`、`:145` `build_telegraf "$REG/$REPO_PREFIX-telegraf:$TELEGRAF_TAG" linux/amd64`、`:154` `deploy true "$TELEGRAF_TAG"`（CFn の `TelegrafImageTag`）。`ops/up.sh:633-634` は同じ `telegraf_tag` で **arm64** を stream の ECS 用に作り、stream の repo `<prefix>-telegraf` に置く。デバッグ用の repo はそれとは別で、`REPO_PREFIX="$PREFIX-debug"`（`ops/lab-debug.sh:37`）から `<prefix>-debug-telegraf`（CFn の `TelegrafRepository`、`lab-debug.yaml:318`）になる。repo が別なので、amd64 と arm64 が同じタグで上書きし合うことは元から起きない（実装のときに確かめた。設計の当初は「同じ repo で混ざる」と書いていたが、それは誤り）。それでもタグを変えるのは見分けのため。lab の 3 イメージは `ops/lab-common.sh:15-18` の `LAB_ARCH=amd64` と `*_ECR_TAG="$*_TAG-$LAB_ARCH"` でタグに arch を付けているので、デバッグ用の Telegraf もそろえて、タグを見れば amd64 だと分かるようにする。
 - `IaC/cloudformation/lab-debug.yaml:76-79` の `TelegrafImageTag` の Description は `"<Telegraf version>-<hash …> (ops/lab-common.sh telegraf_tag)"`。
 - テスト `tests/test_lab_debug.py:106-107` が `up` と `dbg` の両方に `"TELEGRAF_TAG=$(telegraf_tag)"` の字面を要求している。`dbg` 側を `-$LAB_ARCH` 付きにすると、この check が落ちる（直す必要がある）。
 
@@ -144,9 +144,9 @@
 
 **I. デバッグ用 Telegraf のタグに `-$LAB_ARCH`**
 
-1. `ops/lab-debug.sh:129` を `TELEGRAF_TAG="$(telegraf_tag)-$LAB_ARCH" || die …` にする（`LAB_ARCH` は `. ops/lab-common.sh` で入っている）。`:141,145,154` はそのまま（変数経由）。`:127` の log の「どれも x86_64 の EC2 に載るので amd64」の後ろに「（タグも lab の 3 つと同じく `-amd64` を付け、stream の arm64 と同じ repo で混ざらないようにする）」を足す。
-2. `IaC/cloudformation/lab-debug.yaml:79` の Description を `"<Telegraf version>-<hash …>-amd64 (ops/lab-common.sh telegraf_tag plus -LAB_ARCH; the stream ECS pushes the arm64 build of the same version to the same repository without the suffix)"` にする。
-3. テスト。`tests/test_lab_debug.py:106-107` の `dbg` 側の字面を `'TELEGRAF_TAG="$(telegraf_tag)-$LAB_ARCH"'` にする（`up` 側は `TELEGRAF_TAG=$(telegraf_tag)` のまま）。check の名前に「デバッグ用は -$LAB_ARCH 付き（stream の arm64 と同じ repo に置くので混ざらない）」を足す。
+1. `ops/lab-debug.sh:129` を `TELEGRAF_TAG="$(telegraf_tag)-$LAB_ARCH" || die …` にする（`LAB_ARCH` は `. ops/lab-common.sh` で入っている）。`:141,145,154` はそのまま（変数経由）。`:127` の log の「どれも x86_64 の EC2 に載るので amd64」の後ろに「タグも lab の 3 つ（H の後は 2 つ）と同じく -amd64 を付け、arch をタグでも分かるようにする。stream の arm64 は別の repo の $PREFIX-telegraf」を足す。
+2. `IaC/cloudformation/lab-debug.yaml:79` の Description を `"<Telegraf version>-<hash …>-amd64 (ops/lab-common.sh telegraf_tag plus -LAB_ARCH, like the lab images; the stream ECS pushes the arm64 build of the same version without the suffix to its own repository <prefix>-telegraf). Required when CreateInstance is true"` にする（既存の「Required when …」は残す）。
+3. テスト。`tests/test_lab_debug.py:106-107` の `dbg` 側の字面を `'TELEGRAF_TAG="$(telegraf_tag)-$LAB_ARCH"'` にする（`up` 側は `TELEGRAF_TAG=$(telegraf_tag)` のまま）。check の名前に「デバッグ用は -$LAB_ARCH 付き（lab のイメージとそろえる。stream の arm64 は別の repo <prefix>-telegraf で -arm64 を付けない）」を足す。
 
 **J. `trex_cfg` / `edge_ports` / `stl/*.py` のテスト**
 
@@ -235,4 +235,4 @@
 3. **`aws s3 sync --exclude "clab-*/*"` の glob がソースの相対パスに当たること。** `--exclude "__pycache__/*"` が同じ形で動いている（`tests/test_lab_debug.py:241` の既存の期待）ので同じ挙動のはず。実機では次回の AWS 検証で `aws s3 ls s3://<bucket>/lab/ --recursive | grep clab-` が 0 行であることを見る（手元に `clab-splab/` を置いて打つ）。
 4. **F の `peer()` は「最初の overlay の neighbor」を取る。** s-leaf は 4 つの neighbor を持つが、負荷試験のレコードはどれか 1 つで足りる（Splunk / Grafana のルールは established では発火しない）。固定の `10.255.0.1` が a-leaf 以外のノードに実在しない peer だったのを「実在する peer」にするのが目的で、全 peer を回すことはしない。
 5. **J の `edge_ports` は `srl` を呼ぶので、解析部分だけを打つには関数を分けるか偽の `srl` を置く。** 偽の `srl() { echo up; }` を置けば関数全体を打てる（出力が `eth1 dc1-s-leaf-01 3 up` の形になる想定。実装で `edge_ports` の実際の出力形を読んで期待値を合わせる）。
-6. **I でタグを変えると、lab-debug の Telegraf は次回 1 回ビルドし直し**（`<prefix>-telegraf:<ver>-<hash>-amd64` が ECR に無い）。時間が増えるだけ。
+6. **I でタグを変えると、lab-debug の Telegraf は次回 1 回ビルドし直し**（デバッグ用の repo `<prefix>-debug-telegraf` に `<ver>-<hash>-amd64` のタグが無い）。時間が増えるだけ。stream の `<prefix>-telegraf` には影響しない。

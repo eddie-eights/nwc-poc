@@ -335,6 +335,7 @@
    - 古い値: `test_lab_debug` 97。今は 110。
    - `test_oss_ops` も 199 のままで、今は 200。これは 024 より前からずれている。
    - 設計の変更対象に無いので触っていない。BACKLOG に回すかは PM の判断。
+   - 追記: PM の判断でこのサイクルに入れ、cold review 後に直した（下の「cold review 後の直し」）。
 2. **Nit: G の打つ方の check は、`${TREX_IMAGE:?}` の印だけを外しても落ちない。**
    - `lab.sh` の `set -u` が同じく止めるため。
    - 印を見張るのは字面の check の方で、赤→緑はそちらで確かめた。
@@ -361,3 +362,28 @@
    - 結論: 新たに止まる形は無い。
 
 Pre-Mortem から足した直しは無い。
+
+## cold review 後の直し
+
+cold review（`review.md` の Round 1）は Must fix 0、Should fix 1、Nit 4 だった。直したのは PM の判断による次の 2 つ。Nit 4 件は直していない。
+
+1. **Should fix [設計との整合]: design.md の I を、実装で見つけた事実に書き換えた。**
+   - 当初の design.md は、stream の Telegraf と「同じ repo `<prefix>-telegraf`」に置くので amd64 と arm64 が上書きし合う、としていた。
+   - 実際は、デバッグ用の repo は別（`<prefix>-debug-telegraf`）で、衝突は元から起きない。タグに `-amd64` を付けるのは、lab のイメージとそろえて見分けるため。
+   - 書き換えたのは、「調査で分かった事実」の I（旧 :81）、「直し方」の I の 1〜3（:147-149。log・CFn の Description・check の名前を実装の文言に合わせた）、未確定事項 6（:238）。
+   - 上の「設計からずらした点」の 6 は、この直しで design.md 側にも反映された。
+2. **`docs/development.md:61` のテストの件数を直した。** `test_lab_debug` 97 → 110、`test_oss_ops` 199 → 200。
+
+docs だけの直しなので件数は変わらない見込みだったが、取り直した。
+
+```
+$ uv run --group dev --group web python tests/test_lab_debug.py
+通過 110 / 失敗 0
+$ uv run --group dev --group web python tests/test_oss_ops.py
+通過 200 / 失敗 0
+$ bash ops/check.sh
+…
+すべて通過
+```
+
+`bash ops/check.sh` の終了コードは 0。
