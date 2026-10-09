@@ -53,7 +53,7 @@ logs のプレフィックス（種類名）:
 - ライフサイクルは 1 ルール（`id = "expire-7-days"`、`status = "Enabled"`、`filter {}` でバケット全体、`expiration { days = 7 }`、`abort_incomplete_multipart_upload { days_after_initiation = 7 }`）。バージョニングは付けない（期限で消えたものを戻す要件は無い）。
 - **`DenyOutsideVpc` は付けない。** 理由: (1) `base/logs` は `base/core` より先に apply し、`ops/down.sh` で消さないので、VPC の id を知らない・VPC より長生きする。(2) 書くのは AWS のサービス（EMR Serverless、Firehose）で、Firehose は VPC の外から書く（`history.tf` 先頭のコメント。いまも `perimeter_exempt_principals` で例外にしている）。IAM 側の Deny（`access.tf` の `emr_perimeter`）はそのまま（EMR のジョブは VPC の中から書くので `aws:SourceVpc` が合う。いまも assets の `DenyOutsideVpc` の下で書けている）。
 - `outputs.tf`: `logs_bucket_name`（`aws_s3_bucket.logs.bucket`）と `logs_bucket_arn`（`.arn`）。description に「`pipeline/analytics` が EMR のログと Firehose のエラー行の置き場として読む。`ops/down.sh` は消さない」と書く。
-- OSS 版: `IaC/terraform/oss/base/logs/` に、上の 6 ファイルへの相対シンボリックリンク（`../../../../terraform/aws-managed/base/logs/<file>`。`IaC/terraform/oss/base/ecr/` と同じ段数）と、実ファイル `oss.auto.tfvars`（`base/ecr` のものを写し、`project = "nwc-oss"`）。`.gitignore` の `!IaC/terraform/oss/**/oss.auto.tfvars` に当たるので追加の例外は要らない。
+- OSS 版: `IaC/terraform/oss/base/logs/` に、上の 6 ファイルと `.terraform.lock.hcl` の 7 本への相対シンボリックリンク（`../../../../terraform/aws-managed/base/logs/<file>`。`IaC/terraform/oss/base/ecr/` と同じ段数）と、実ファイル `oss.auto.tfvars`（`base/ecr` のものを写し、`project = "nwc-oss"`）。`.gitignore` の `!IaC/terraform/oss/**/oss.auto.tfvars` に当たるので追加の例外は要らない。
 - ルートの一覧に足す: `ops/oss/up.sh:161` の `ROOTS`、`ops/check.sh:15` の `ROOTS`、`tests/test_oss.py:907` の `TF_ROOTS`（`"base/ecr", "base/logs", "base/core", …` の順）。`ops/oss/down.sh:13` のコメントの「9 つのルート」は「`base/logs` は消さない」と書き足す。
 
 ### 書く側を logs バケットに向ける（`pipeline/analytics`）
@@ -107,7 +107,7 @@ logs のプレフィックス（種類名）:
 
 | 区分 | ファイル |
 |---|---|
-| 新規 | `IaC/terraform/aws-managed/base/logs/{main,outputs,providers,variables,versions}.tf`、`terraform.tfvars.example`、`IaC/terraform/oss/base/logs/`（6 symlink + `oss.auto.tfvars`）、`docs/architecture/resources/s3-buckets.md` |
+| 新規 | `IaC/terraform/aws-managed/base/logs/{main,outputs,providers,variables,versions}.tf`、`terraform.tfvars.example`、`IaC/terraform/oss/base/logs/`（7 symlink + `oss.auto.tfvars`）、`docs/architecture/resources/s3-buckets.md` |
 | base/core | `bucket.tf`、`outputs.tf` |
 | agent | `locals.tf`、`kb.tf`、`outputs.tf` |
 | pipeline/lab | `locals.tf`、`variables.tf` |
@@ -148,7 +148,7 @@ commit はステップごとに分ける（レビューで差分を追えるよ�
 - `terraform -chdir=IaC/terraform/aws-managed/<root> validate -no-color` が `base/logs` `base/core` `agent` `pipeline/lab` `pipeline/analytics` の 5 つで、`terraform -chdir=IaC/terraform/oss/<root> validate -no-color` が `base/logs` `pipeline/analytics` の 2 つで `Success! The configuration is valid.`（`init -backend=false` を先に打つ）。
 - `bash -n ops/up.sh ops/down.sh ops/oss/up.sh ops/oss/down.sh ops/check.sh` が無言。
 - `grep -rn 'kb_bucket\|KB_BUCKET\|analytics/logs\|analytics/jars\|analytics/checkpoint\|/docs/' IaC ops app tests docs README.md CLAUDE.md | grep -v 'docs/cycles/\|docs/verification/\|tests/test_agentcore.py'` が 0 行（`/docs/` は `s3://…/docs/` の意味で残っていないこと。`docs/*.md` へのリンクの `docs/` は先頭が `/` でないので当たらない。当たったら 1 行ずつ読んで判断する）。
-- `ls -l IaC/terraform/oss/base/logs/` が 6 本の symlink と `oss.auto.tfvars`。
+- `ls -l IaC/terraform/oss/base/logs/` が 7 本の symlink（6 ファイルと `.terraform.lock.hcl`）と `oss.auto.tfvars`。
 - `grep -n 'tf_apply base/' ops/up.sh ops/oss/up.sh` が `base/ecr` → `base/logs` → `base/core` の順。`grep -n 'base/logs' ops/down.sh ops/oss/down.sh` に `destroy_root` の行が無い。
 
 AWS（PM が次の 1 回の検証で見る。エンジニアは打たない）:

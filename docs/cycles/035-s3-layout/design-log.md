@@ -40,3 +40,7 @@ PM の答え: AWS のベストプラクティスは「ライフサイクル・�
 
 - 今日の checkpoint の改名（9 ファイルの未コミット差分）はこのサイクルに吸収し、差分は捨てた。エンジニアが origin/main（3d497de）から新しい配置で書く。
 - `terraform state mv` は要らない。2026-10-10 時点で AWS のリソースは全部消えている。
+
+## Round 1（2026-10-10、実装で design.md と現物が食い違ったところ）
+
+- OSS 版の `base/logs` の symlink は 6 本でなく 7 本（`IaC/terraform/oss/base/ecr/` と同じく `.terraform.lock.hcl` もリンクする）。design.md の 3 か所（設計方針、変更対象ファイル、検証方法）を直した。

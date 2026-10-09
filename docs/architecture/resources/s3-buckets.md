@@ -62,7 +62,7 @@ OSS 版の logs に入るのは Firehose の書けなかった行だけ（EMR Se
 
 | 項目 | 状態 |
 |---|---|
-| EMR Serverless が logs の `emr/` に書けるか | 未確認（cycle 035 で assets の `analytics/logs/` から移した。設計の「未確定事項とリスク」の 1） |
+| EMR Serverless が logs の `emr/` に書けるか | 未確認（cycle 035 で assets のバケットから移した。設計の「未確定事項とリスク」の 1） |
 | Firehose が書けなかった行を logs に落とせるか | 未確認（同じく assets の `firehose-errors/` から移した。リスクの 2） |
 | 古い kb のバケットの state を持つ PC | `terraform apply` が置き換え（destroy + create）になる。先に `ops/down.sh` を打つ（[deploy.md](../../deploy.md)） |
 
