@@ -582,8 +582,9 @@ vrnetlab のページには、このほかに Cisco vIOS と Cisco ASAv も載�
 - [Q. executor を 2 つにしたら Kafka からの読み取りは 2 つに分かれる。送信はまた別に並列化が要るの？](#q-executor-を-2-つにしたら-kafka-からの読み取りは-2-つに分かれる送信はまた別に並列化が要るの)
 - [Q. `foreachPartition` は、大量のデータを Spark のジョブ 1 つでは捌けなくなったときに使う？ 環境変数で切り替えられる？](#q-foreachpartition-は大量のデータを-spark-のジョブ-1-つでは捌けなくなったときに使う-環境変数で切り替えられる)
 - [Q. 大量のデータでは、格納先ごとに Spark のジョブを分けたほうがいい？](#q-大量のデータでは格納先ごとに-spark-のジョブを分けたほうがいい)
-- [Q. EMR のログが S3 にあるけど、何？](#q-emr-のログが-s3-にあるけど何)
+- [Q. EMR のログはどこにある？ S3 には出していない？](#q-emr-のログはどこにある-s3-には出していない)
 - [Q. CloudWatch だけに worker を含む全部のログとイベントログを出すと、EMR の画面（Spark UI）から見えなくなる？](#q-cloudwatch-だけに-worker-を含む全部のログとイベントログを出すとemr-の画面spark-uiから見えなくなる)
+- [Q. `terraform apply` で Spark のジョブも登録される？](#q-terraform-apply-で-spark-のジョブも登録される)
 
 ### Q. Spark のジョブ、driver、executor、クエリ、タスクは、役割がどう違う？
 
@@ -847,20 +848,24 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
   - 上限を変える apply は、アプリが止まっていないと通らない。`ops/up.sh` は上限が違うときだけ、先にジョブとアプリを止めてから apply し、ジョブを checkpoint の続きから起こし直す。
   - スクリプトは `--sinks` で格納先を選べ、checkpoint は格納先ごとに分かれているので、同じスクリプトを 3 つ起こしている。
 
-### Q. EMR のログが S3 にあるけど、何？
+### Q. EMR のログはどこにある？ S3 には出していない？
 
-EMR Serverless のジョブ（Spark）のログ。置き先は 3 つあり、このリポジトリは S3 と CloudWatch の 2 つを使い、EMR の managed storage は切っている（`IaC/terraform/aws-managed/pipeline/analytics/outputs.tf` の `configuration_overrides_json`）。
+**A. 2 か所。driver の stdout / stderr は CloudWatch Logs、driver と executor の stdout / stderr とイベントログは EMR の managed storage。S3 には出していない**（`IaC/terraform/aws-managed/pipeline/analytics/outputs.tf` の `configuration_overrides_json`）。
 
-| 置き先 | 入るもの | 保持 | コンソールの Spark UI |
-|---|---|---|---|
-| managed storage（EMR が持つ領域。既定で ON） | driver と executor の stdout / stderr、イベントログ | 30 日 | 開ける |
-| S3（`s3MonitoringConfiguration` の `logUri`） | 同上 | バケットのライフサイクル次第 | 開けない（AWS の文書で「Not supported」） |
-| CloudWatch Logs（`cloudWatchLoggingConfiguration`） | driver と executor の stdout / stderr だけ。**イベントログは入らない** | ロググループの保持日数 | 関係しない |
+| 置き先 | 入るもの | 保持 | コンソールの Spark UI | このリポジトリ |
+|---|---|---|---|---|
+| managed storage（EMR が持つ領域。無料） | driver と executor の stdout / stderr、イベントログ | 30 日 | 開ける | 使う（`managedPersistenceMonitoringConfiguration` を `enabled = true`） |
+| CloudWatch Logs（`cloudWatchLoggingConfiguration`） | driver と executor の stdout / stderr だけ。**イベントログは入らない** | ロググループの保持日数（`/aws/emr-serverless/<prefix>` は 7 日） | 関係しない | driver の分だけ使う |
+| S3（`s3MonitoringConfiguration` の `logUri`） | managed storage と同じ | バケットのライフサイクル次第 | 開けない（AWS の文書で「Not supported」） | 使わない |
 
-- S3 の中は `logUri` の下に `applications/<アプリ ID>/jobs/<ジョブ ID>/` が切られ、`SPARK_DRIVER/` と `SPARK_EXECUTOR/<番号>/` に stdout / stderr の gz、`sparklogs/` にイベントログが入る。`S3 の置き場を整える（035）` のあとは logs バケットの `emr/` の下で、7 日で消える。
-- CloudWatch に出しているのは driver の stdout / stderr だけ（`logTypes = { SPARK_DRIVER = ["stdout", "stderr"] }`）。`aws logs tail` で追えるのが目的。executor のログは S3 だけ。
-  - executor も CloudWatch に出せる（`SPARK_EXECUTOR` を足す）が、送るのは worker の仕事なので worker の資源を食い、AWS の文書は worker を大きくするよう勧めている。PutLogEvents の上限に当たることもある。executor のログを読むのは調べ物のときだけなので S3 で足りる。
-- managed storage を切った理由: 置き先が 3 つになって同じものが二重に残るのを避けるため。ただし下の Q のとおり、切るとコンソールの Spark UI が開けない。
+- **S3 に出さない理由。**
+  managed storage が同じもの（stdout / stderr とイベントログ）を持ち、終わったジョブの Spark UI が読むのも managed storage だけなので、S3 に出しても同じものが二重に残るだけ。「S3 の置き場を整える（035）」の追加で、logs バケットの `emr/` に出すのをやめた（2026-10-10、ユーザー指示）。logs バケットに残るのは Firehose が書けなかった行だけ。
+- **CloudWatch に出しているのは driver の stdout / stderr だけ**（`logTypes = { SPARK_DRIVER = ["stdout", "stderr"] }`）。
+  `aws logs tail` で追えるのが目的。executor のログは managed storage にだけあり、コンソールの Spark UI から読む（AWS では未確認）。
+  - executor も CloudWatch に出せる（`SPARK_EXECUTOR` を足す）が、送るのは worker の仕事なので worker の資源を食い、AWS の文書は worker を大きくするよう勧めている。PutLogEvents の上限に当たることもある。executor のログを読むのは調べ物のときだけなので managed storage で足りる。
+  - `cloudwatch_logging = false`（`pipeline/analytics/variables.tf`）にすると、driver のログも managed storage だけになる。
+- **前は S3 と CloudWatch に出し、managed storage を切っていた。**
+  035 の追加で、まず managed storage を有効に戻し（終わったジョブの Spark UI を開くため）、続けて S3 を落とした。
 
 ### Q. CloudWatch だけに worker を含む全部のログとイベントログを出すと、EMR の画面（Spark UI）から見えなくなる？
 
@@ -869,15 +874,28 @@ CloudWatch は画面に関係ない。それ以前に、**CloudWatch にはイ�
 - コンソールの「Spark UI」（`get-dashboard-for-job-run` と同じもの）は 2 種類ある（AWS の文書の `GetDashboardForJobRun`）。
   - **動いているジョブ: Live UI。** driver が出している Spark UI をそのまま見る。ログの置き先とは関係なく開ける。このリポジトリのジョブは止めるまで動き続けるストリーミングなので、ふだん見るのはこちら。[pipeline.md](pipeline.md) の手順も `--states RUNNING` のジョブを選んでいる。
   - **終わったジョブ: 永続 UI（Spark History Server）。** 元はイベントログで、読むのは **managed storage に置いたイベントログだけ**。S3 だけに置いても読まない（AWS の文書で「Not supported」。managed storage を切ると「コンソールから Spark UI にアクセスできない」）。
-- だから「見えなくなる」のは終わったジョブの画面だけで、それも CloudWatch ではなく managed storage を切るかどうかで決まる。このリポジトリは managed storage を切っているので、止めたあとのジョブの画面は開けない（`ops/down.sh` でアプリごと消えるので、ふだんは困らない）。
+- だから「見えなくなる」のは終わったジョブの画面だけで、それも CloudWatch ではなく managed storage を切るかどうかで決まる。このリポジトリは managed storage を有効にしている（「S3 の置き場を整える（035）」の追加）ので、止めたあとのジョブの画面も 30 日のあいだ開ける（AWS では未確認）。
 
-| ジョブの状態 | managed storage ON | OFF（このリポジトリ） |
+| ジョブの状態 | managed storage ON（このリポジトリ） | OFF |
 |---|---|---|
 | 動いている | Live UI を開ける | Live UI を開ける |
 | 終わった | Spark History Server を開ける（30 日） | 開けない |
 
-- 終わったジョブを S3 のイベントログから見るなら、Spark History Server を手元に立てて S3 を読ませる（AWS のサンプル `aws-samples/emr-serverless-samples` の `utilities/spark-ui`）。
-- 戻すなら `managedPersistenceMonitoringConfiguration` を `enabled = true` にする（30 日保持、追加料金なし）。閉域の VPC なので、S3 のゲートウェイエンドポイントのポリシーに EMR の `AppInfo` バケットへの `s3:PutObject` を足す必要がある（AWS の文書「Storing logs」。AWS では未確認）。
+- managed storage は `managedPersistenceMonitoringConfiguration` を `enabled = true` にして有効にしている（30 日保持、追加料金なし）。閉域の VPC だが、S3 のゲートウェイエンドポイント（`IaC/terraform/aws-managed/base/core/endpoints.tf`）にはポリシーを付けていないので、エンドポイントの側は変えていない（AWS では未確認）。
+- 30 日を過ぎた終わったジョブを見たいなら、イベントログを S3 にも出し、Spark History Server を手元に立てて S3 を読ませる（AWS のサンプル `aws-samples/emr-serverless-samples` の `utilities/spark-ui`）。このリポジトリは S3 に出していないので、30 日を過ぎたジョブの画面は見られない。
+
+### Q. `terraform apply` で Spark のジョブも登録される？
+
+**A. 登録されない。Terraform が作るのは EMR Serverless のアプリケーション（`IaC/terraform/aws-managed/pipeline/analytics/emr.tf` の `aws_emrserverless_application`）まで。ジョブは `ops/up.sh` の手順 7-5 が `aws emr-serverless start-job-run` で起こす。**
+
+- Terraform は、ジョブに渡す中身を output で出すだけ（`pipeline/analytics/outputs.tf`）。
+  - `job_driver_json_iceberg` / `job_driver_json_splunk` / `job_driver_json_http`: スクリプトと引数（`--job-driver` に渡す）。格納先が `STORES` に無いジョブは空。
+  - `configuration_overrides_json`: ログの置き先（`--configuration-overrides` に渡す。上の「EMR のログはどこにある？」）。
+- 手順 7-5 は、キー `iceberg` / `splunk` / `http` をジョブ名 `sinks-s3iceberg` / `sinks-splunk` / `sinks-grafana` にして、`--mode STREAMING` で起こす。
+  - スクリプトと 2 つの output のハッシュをジョブのタグ `SpecHash` に付け、同じものが動いていれば何もしない。違えばそのジョブを止めて checkpoint の続きから起こし直す。
+  - だから `configuration_overrides_json` を変えると（035 の追加で S3 のログを落としたときなど）、次の `ops/up.sh` で 3 つのジョブとも起こし直しになる。
+- ストリーミングのジョブは止めるまで動き続け、起こしたときの引数のまま動く。`terraform apply` だけ打っても、動いているジョブの引数は変わらない。
+- 手順 7-4（`terraform apply`）でアプリの上限を変えるときは、先にジョブとアプリを止め、7-5 で起こし直す（上の「大量のデータでは、格納先ごとに Spark のジョブを分けたほうがいい？」）。
 
 ---
 
@@ -1209,6 +1227,7 @@ Lambda から書く経路は 2 案あった。
 - [Q. Splunk の重複で同じアラートが 2 回 SNS に出たら、障害の履歴は二重になる？ 検索で落とす以外の方法はある？](#q-splunk-の重複で同じアラートが-2-回-sns-に出たら障害の履歴は二重になる-検索で落とす以外の方法はある)
 - [Q. Spark のジョブが 3 つに分かれているので、同じイベントでも番号（event_id）が変わることはある？](#q-spark-のジョブが-3-つに分かれているので同じイベントでも番号event_idが変わることはある)
 - [Q. S3 のバケットは何本ある？ 何に使い分けている？](#q-s3-のバケットは何本ある-何に使い分けている)
+- [Q. S3 Tables と Athena はある？](#q-s3-tables-と-athena-はある)
 
 ### Q. ログは OpenSearch、メトリクスは Prometheus に流している？
 
@@ -1503,12 +1522,12 @@ Splunk の中で重複を扱う方法。
 
 ### Q. S3 のバケットは何本ある？ 何に使い分けている？
 
-**A. 汎用のバケットは 2 本。配布物を置く assets と、ログを置く logs。** テーブル（S3 Tables の `raw_telemetry` と `alert_events`）は別の仕組みのテーブルバケットで、ここには数えない。
+**A. 汎用のバケットは 2 本。配布物を置く assets と、Firehose が書けなかった行を置く logs。** テーブル（S3 Tables の `raw_telemetry`、`alert_events`、`proposal_events`）は別の仕組みのテーブルバケットで、ここには数えない（下の「S3 Tables と Athena はある？」）。
 
 | バケット | 中身 | 作るルート | `ops/down.sh` |
 |---|---|---|---|
 | assets `<prefix>-assets-<アカウント>` | `web/`（Web の部品）、`kb/`（Bedrock の KB の取り込み元の手順書）、`lab/`（containerlab の rpm と設定）、`spark/`（`snmp_sinks.py`、jar、Spark の checkpoint） | `base/core` | 消す |
-| logs `<prefix>-logs-<アカウント>` | `emr/`（EMR Serverless のワーカーのログ）、`firehose-errors/alert_events/`（Firehose が書けなかった履歴の行）。7 日で消える | `base/logs` | 消さない |
+| logs `<prefix>-logs-<アカウント>` | `firehose-errors/alert_events/`（Firehose が書けなかった履歴の行）。7 日で消える。EMR Serverless のログは S3 に出さない（Spark の節の「EMR のログはどこにある？」） | `base/logs` | 消さない |
 
 - **分けたのは、消す時期と守り方が違うため。**
   配布物は環境と一緒に消してよいが、ログは環境を消したあとに「なぜ落ちたか」を読みたい。logs は `ops/down.sh` で消さず、7 日で中身が消えるので置きっぱなしでも費用は月 1 円未満。
@@ -1516,8 +1535,26 @@ Splunk の中で重複を扱う方法。
   base/logs は base/core より先に作って VPC より長生きするので VPC の id を知らず、Firehose はロールを引き受けて VPC の外から書くため。付けているのは HTTPS 以外を拒むものだけ。
 - **前は kb という名前の 1 本に全部入れていた。**
   KB の原稿のほかに Web、lab、Spark の部品と EMR のログが同じ階層に混ざっていたので、「S3 の置き場を整える（035）」で名前を assets にし、用途ごとの接頭辞に分け、ログを logs に出した。
+  そのあと同じ 035 の追加で、EMR のログは S3 に出すのをやめた（managed storage が同じものを持つため）。
 
 詳しくは [s3-buckets.md](architecture/resources/s3-buckets.md)。
+
+### Q. S3 Tables と Athena はある？
+
+**A. ある。どちらも `IaC/terraform/aws-managed/pipeline/analytics` が作る。** S3 Tables はテーブルバケット `<prefix>-tables` の namespace `nwc` にテーブルが 3 つ（`tables.tf`）。Athena はワークグループ `<prefix>-history` が 1 つ（`history.tf`）。
+
+| 種類 | 名前 | 作る条件 | 書く | 読む |
+|---|---|---|---|---|
+| テーブル | `raw_telemetry`（機器から来た生データの全部） | `STORES` に `s3` があるときだけ | Spark のジョブ `sinks-s3iceberg` | まだ読む側が無い（Athena で手で読める） |
+| テーブル | `alert_events`（アラートの通知 1 件が 1 行） | いつも | Lambda `<prefix>-graph-status` → Firehose `<prefix>-alert-events` | エージェントの `query_history`（Athena） |
+| テーブル | `proposal_events`（修復案の 1 段ごとに 1 行） | いつも | Temporal の worker（PyIceberg） | Web の承認タブとエージェントの `list_proposals`（Athena） |
+| Athena のワークグループ | `<prefix>-history` | いつも | なし（読むだけ） | 上の 2 つの読み手。1 回のスキャンは 1 GiB で打ち切り、結果は Athena の管理ストレージ |
+
+- テーブルバケットと namespace は、`STORES` に `s3` が無くても作る（`alert_events` と `proposal_events` が入るため）。
+- Athena から見たカタログ名は `s3tablescatalog/<テーブルバケット>`（analytics の output `athena_catalog`）。中身の見方は [pipeline.md](pipeline.md) の `list_tables_command`。
+- 上の「S3 のバケットは何本ある？」の 2 本（assets と logs）とは別の仕組み。テーブルは時間課金が無い。
+
+詳しくは [s3-tables-athena.md](architecture/resources/s3-tables-athena.md)。
 
 ---
 

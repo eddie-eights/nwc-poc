@@ -4,7 +4,8 @@
 
 ## ひとことで
 
-S3 の汎用バケットは 2 本。`ops/up.sh` が置く配布物と Spark の checkpoint を入れる **assets** と、AWS のサービスが書くログを 7 日だけ置く **logs**。
+S3 の汎用バケットは 2 本。`ops/up.sh` が置く配布物と Spark の checkpoint を入れる **assets** と、Firehose が書けなかった行を 7 日だけ置く **logs**。
+EMR Serverless のログは S3 に出さない（CloudWatch Logs と EMR の managed storage。[emr-serverless.md](emr-serverless.md)）。
 assets は `ops/down.sh` で消え、logs は消さずに残す。
 S3 Tables（Iceberg のテーブルバケット）は別物で、[s3-tables-athena.md](s3-tables-athena.md)。
 
@@ -19,7 +20,7 @@ S3 Tables（Iceberg のテーブルバケット）は別物で、[s3-tables-athe
 | 中身の寿命 | ライフサイクル無し（バケットごと消える） | ライフサイクルで 7 日で消す（未完了のマルチパートも 7 日）。バージョニング無し |
 | ポリシー | `DenyInsecureTransport` と `DenyOutsideVpc`（`NETWORK_PERIMETER=0` で外れる） | `DenyInsecureTransport` だけ |
 | PAB・SSE・所有 | 全部ブロック、SSE-S3（AES256）、`BucketOwnerEnforced` | 同じ |
-| 読む output | `assets_bucket_name` / `assets_bucket_arn`（agent、pipeline/lab、pipeline/analytics） | `logs_bucket_name` / `logs_bucket_arn`（pipeline/analytics） |
+| 読む output | `assets_bucket_name`（agent、pipeline/lab、pipeline/analytics）、`assets_bucket_arn`（agent だけ） | `logs_bucket_name`（pipeline/analytics の Firehose。`logs_bucket_arn` を読むルートは無い） |
 
 プレフィックスは部品名で切る:
 
@@ -29,7 +30,6 @@ S3 Tables（Iceberg のテーブルバケット）は別物で、[s3-tables-athe
 | assets | `kb/` | KB の取り込み元の手順書（`CREATE_KB=1` のとき） | `ops/up.sh` の手順 4-3 | Bedrock の KB（ロール `<prefix>-kb`。`agent/kb.tf` の `inclusion_prefixes`） |
 | assets | `lab/` | containerlab の rpm とトポロジ | `ops/up.sh` の手順 5-1 | lab の EC2 の user_data |
 | assets | `spark/` | `snmp_sinks.py`、`jars/`、`checkpoint/<MSK の uuid>/` | `ops/up.sh` の手順 5-2（スクリプトと jar）、Spark（checkpoint） | EMR Serverless（OSS 版は ECS の Spark） |
-| logs | `emr/` | EMR Serverless のワーカーのログ（`logUri`） | EMR Serverless | 人（切り分けのとき） |
 | logs | `firehose-errors/alert_events/` | Firehose が S3 Tables に書けなかった行 | Firehose（ロール `<prefix>-alert-firehose`） | 人（[troubleshooting.md](../../troubleshooting.md)） |
 
 OSS 版（`IaC/terraform/oss/`）も同じ 2 本で、接頭辞が `<owner>-nwc-oss` になる（マネージド版とは別のバケット）。
@@ -42,7 +42,6 @@ OSS 版の logs に入るのは Firehose の書けなかった行だけ（EMR Se
 | デプロイする人（`ops/up.sh`） | PC → assets | VPC の外から。`DenyOutsideVpc` の例外（`perimeter_exempt_principals`） |
 | Web・lab の EC2、Spark | VPC → assets | S3 の gateway エンドポイント。各ロールの IAM |
 | Bedrock の KB | KB → assets の `kb/` | ロール `<prefix>-kb` を引き受けて VPC の外から読む。`DenyOutsideVpc` の例外 |
-| EMR Serverless | Spark → logs の `emr/` | 実行ロールの `LogsBucket`（`emr/*` に PutObject / GetObject）と `LogsBucketList`（`pipeline/analytics/access.tf`） |
 | Firehose | Firehose → logs の `firehose-errors/` | ロール `<prefix>-alert-firehose` の `ErrorBucket` / `ErrorBucketList`（`pipeline/analytics/history.tf`） |
 
 ## 知見
@@ -53,7 +52,7 @@ OSS 版の logs に入るのは Firehose の書けなかった行だけ（EMR Se
 - **logs に `DenyOutsideVpc` を付けない。**
   1. base/logs は base/core より先に作り、`ops/down.sh` でも消さないので、VPC の id を知らず、VPC より長生きする。
   2. 書くのは AWS のサービスで、Firehose はロールを引き受けて VPC の外から書く。
-  EMR のジョブの側は、実行ロールに付けた IAM 側の Deny（`pipeline/analytics/access.tf` の `emr_perimeter`）が VPC の外からの利用を止める。
+  EMR Serverless は logs に書かない（cycle 035 の追加で S3 のログを落とした）。
   出典: `IaC/terraform/aws-managed/base/logs/main.tf` のポリシーのコメント、[vpc-perimeter.md](vpc-perimeter.md)。
 - **`ops/down.sh` の「残っていないか」の一覧に logs のバケットが毎回出る。**
   意図して残しているので想定どおり。`ops/down.sh` も一覧の後にそう出す（[deploy.md](../../deploy.md) の「消したあとに残るもの」）。
@@ -62,7 +61,7 @@ OSS 版の logs に入るのは Firehose の書けなかった行だけ（EMR Se
 
 | 項目 | 状態 |
 |---|---|
-| EMR Serverless が logs の `emr/` に書けるか | 未確認（cycle 035 で assets のバケットから移した。設計の「未確定事項とリスク」の 1） |
+| EMR Serverless のログ | S3 には出さない（cycle 035 の追加で logs の `emr/` を落とした。CloudWatch Logs と EMR の managed storage だけ） |
 | Firehose が書けなかった行を logs に落とせるか | 未確認（同じく assets の `firehose-errors/` から移した。リスクの 2） |
 | 古い kb のバケットの state を持つ PC | `terraform apply` が置き換え（destroy + create）になる。先に `ops/down.sh` を打つ（[deploy.md](../../deploy.md)） |
 

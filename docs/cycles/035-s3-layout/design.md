@@ -107,8 +107,25 @@ logs のプレフィックス（種類名）:
 
 - ユーザー指示「managed storage は無料なら有効にして」。`pipeline/analytics/outputs.tf` の `configuration_overrides_json` の `managedPersistenceMonitoringConfiguration` を `enabled = true` にする。
 - 理由: 終わったジョブの Spark UI（Spark History Server）は managed storage のイベントログしか読まない。managed storage は無料で 30 日保持。
-- S3 の `logUri`（logs の `emr/`）と CloudWatch の driver ログは今のまま残す。`SPARK_EXECUTOR` は CloudWatch に足さない。
+- S3 の `logUri`（logs の `emr/`）と CloudWatch の driver ログは今のまま残す（その後、下の節で S3 は落とした）。`SPARK_EXECUTOR` は CloudWatch に足さない。
 - 閉域の S3 gateway endpoint（`base/core/endpoints.tf`）にはポリシーが無いので、endpoint 側は変えない見込み（AWS では未確認）。
+
+### 追加（2026-10-10、ユーザー指示）: EMR のログの S3 を落とす
+
+- 決定: EMR Serverless のログの置き先は 2 つだけにする。CloudWatch Logs（driver の stdout / stderr）と、EMR の managed storage（Spark UI。無料・30 日保持）。S3（logs バケットの `emr/`）には出さない。
+- 理由: managed storage が S3 と同じもの（driver と executor の stdout / stderr、イベントログ）を持ち、終わったジョブの Spark UI が読むのも managed storage だけなので、S3 は二重に残るだけになる。
+- logs バケットは残す。Firehose が書けなかった行（`firehose-errors/alert_events/`）の置き場として使う。
+- 変える場所:
+  - `pipeline/analytics/outputs.tf` の `configuration_overrides_json` から `s3MonitoringConfiguration` を消す。
+  - `pipeline/analytics/access.tf` の実行ロールから logs バケットへの 2 つの文（`LogsBucket` / `LogsBucketList`）を消す。
+  - `pipeline/analytics/locals.tf` の `emr_logs_prefix` を消す（`logs_bucket` / `logs_bucket_arn` は Firehose が使うので残す）。
+  - `base/logs` と `base/core` の description とコメント、`ops/up.sh` / `ops/oss/up.sh` のコメントを「Firehose の行だけ」に揃える。
+  - `tests/test_analytics.py` の検査を「S3 に出さない」に置き換える。
+  - docs（FAQ、`s3-buckets.md`、`emr-serverless.md`、resources の `README.md`、`pipeline.md`、`deploy.md`）を揃える。
+- ついでに、`base/core/outputs.tf` の `assets_bucket_arn` の description を、読むのが agent だけであることに合わせて直す（cold review の Nit）。
+- FAQ に 2 問足す: 「`terraform apply` で Spark のジョブも登録される？」と「S3 Tables と Athena はある？」。
+- OSS 版は変えない（EMR Serverless が無い）。`IaC/terraform/oss/pipeline/analytics/network.tf` のコメントだけ「Firehose が書けなかった行」に揃える。
+- `configuration_overrides_json` はジョブのタグ `SpecHash` に入るので、次の `ops/up.sh` で 3 つのジョブとも checkpoint の続きから起こし直しになる（データは落ちない）。
 
 ## 変更対象ファイル
 
@@ -125,6 +142,7 @@ logs のプレフィックス（種類名）:
 | tests | `tests/test_analytics.py`、`tests/test_oss.py`、`tests/test_oss_ops.py`、`tests/test_workflow.py` |
 | docs | `docs/architecture/resources/README.md`、`docs/data-stores.md`、`docs/deploy.md`、`docs/pipeline.md`、`docs/troubleshooting.md`、`docs/faq-fukuda-nwc-poc.md`、`docs/architecture/resources/{firehose,emr-serverless,web-ec2,vpc-perimeter}.md` |
 | 追加（managed storage） | `IaC/terraform/aws-managed/pipeline/analytics/outputs.tf`、`tests/test_analytics.py`、`docs/architecture/resources/emr-serverless.md`（`docs/pipeline.md` と `docs/faq-fukuda-nwc-poc.md` の該当箇所は main にだけあるので、035 を main に入れたあとで直す） |
+| 追加（EMR のログの S3 を落とす） | `IaC/terraform/aws-managed/pipeline/analytics/{outputs,access,locals}.tf`、`IaC/terraform/aws-managed/base/logs/{main,outputs}.tf`、`IaC/terraform/aws-managed/base/core/{bucket,outputs}.tf`、`IaC/terraform/oss/pipeline/analytics/network.tf`（コメントだけ）、`ops/up.sh`、`ops/oss/up.sh`（コメントだけ）、`tests/test_analytics.py`、`docs/faq-fukuda-nwc-poc.md`、`docs/architecture/resources/{s3-buckets,emr-serverless,README}.md`、`docs/pipeline.md`、`docs/deploy.md` |
 | 変えない | `IaC/terraform/aws-managed/base/core/endpoints.tf`（S3 の gateway endpoint にポリシーは無いので logs バケットのための変更は無い）、`perimeter.tf`、`pipeline/analytics/tables.tf`（S3 Tables は別物）、`IaC/cloudformation/`（lab-debug のバケット）、`docs/cycles/`、`docs/verification/` |
 
 ## 再利用するもの
@@ -162,14 +180,15 @@ commit はステップごとに分ける（レビューで差分を追えるよ�
 AWS（PM が次の 1 回の検証で見る。エンジニアは打たない）:
 
 - `ops/up.sh` のあと `aws s3api get-bucket-lifecycle-configuration --bucket efukuda-nwc-poc-logs-493116771193` の `Rules[0].Expiration.Days` が 7。`aws s3api get-bucket-policy` の Statement が `DenyInsecureTransport` の 1 つ。
-- Spark のジョブが 1 回動いたあと `aws s3 ls s3://efukuda-nwc-poc-logs-493116771193/emr/applications/ --recursive | head -3` に行がある。assets の `analytics/` と `docs/` が無く、`spark/snmp_sinks.py` `spark/jars/` `spark/checkpoint/<uuid>/` `web/` `lab/` がある（`aws s3 ls s3://efukuda-nwc-poc-assets-493116771193/`）。
+- Spark のジョブが 1 回動いたあと `aws s3 ls s3://efukuda-nwc-poc-logs-493116771193/` に `emr/` が無い（追加: EMR のログの S3 を落とした）。assets の `analytics/` と `docs/` が無く、`spark/snmp_sinks.py` `spark/jars/` `spark/checkpoint/<uuid>/` `web/` `lab/` がある（`aws s3 ls s3://efukuda-nwc-poc-assets-493116771193/`）。
 - KB を作っているなら（`CREATE_KB=1`）、取り込みが `kb/` から成功する（`start_ingestion_command` のあと `COMPLETE`）。
-- 追加（managed storage）: 終わったジョブ（例: cancel したジョブ）の Spark UI が、コンソールの View application UIs から開ける。
+- 追加（managed storage）: 終わったジョブ（例: cancel したジョブ）の Spark UI が、コンソールの View application UIs から開ける。S3 を落としたあとも開ける（読むのは managed storage だけ）。
 - `ops/down.sh` のあと `aws s3api head-bucket --bucket efukuda-nwc-poc-assets-493116771193` が 404、`…-logs-…` が 200。`report_leftovers` の一覧に logs バケットの ARN が出る（想定どおり）。
 
 ## 未確定事項とリスク
 
 1. **EMR Serverless が logs バケットに書けるか（AWS で未確認）。** いまは assets（`DenyOutsideVpc` あり）に書けているので、Deny の無い logs に書けないことは考えにくいが、IAM の `LogsBucket` の Action が足りなければジョブは `Unable to push logs` 相当で FAILED になる。AWS の文書は実行ロールに `s3:PutObject` `s3:GetObject` `s3:ListBucket` を求めている（上の設計はこの 3 つ + `GetBucketLocation`）。PM の 1 回の検証で見る。
+   追加（2026-10-10）: EMR のログを S3 に出すのをやめたので、このリスクは無くなった。
 2. **Firehose の `FailedDataOnly` の書き先を別バケットにしてもストリームが作れるか（AWS で未確認）。** `s3_configuration.bucket_arn` はストリーム作成時にロールの権限を確かめるので、IAM の `ErrorBucket` / `ErrorBucketList` が logs を向いていれば通るはず。通らなければ `history.tf` の `time_sleep` と同じ `InvalidArgumentException` が出る。
 3. **`ops/down.sh` の `report_leftovers` に毎回 logs バケットが出る。** 「消えたかはサービスごとの API で見る」運用なので害は無いが、docs に書いておかないと消し忘れに見える。
 4. **KB の取り込み元を `docs/` → `kb/` にすると、既存の KB は再取り込みが要る。** AWS は全部消えているので、次の `ops/up.sh` で新しく作る。state の無いところへの影響は無い。

@@ -195,7 +195,7 @@
 | 手順 | 何をする |
 |---|---|
 | 0 | `deploy.env` と道具と認証を確かめ、作るルート、インターフェース型エンドポイント、費用の目安を出す |
-| 1 | `IaC/terraform/aws-managed/base/ecr` と `IaC/terraform/aws-managed/base/logs`（logs のバケット `<prefix>-logs-<アカウント>`。EMR のログと Firehose が書けなかった行を 7 日置く。`ops/down.sh` は消さない。[s3-buckets.md](architecture/resources/s3-buckets.md)） |
+| 1 | `IaC/terraform/aws-managed/base/ecr` と `IaC/terraform/aws-managed/base/logs`（logs のバケット `<prefix>-logs-<アカウント>`。Firehose が書けなかった行を 7 日置く。`ops/down.sh` は消さない。[s3-buckets.md](architecture/resources/s3-buckets.md)） |
 | 2 | ECR に無いタグだけビルドして push（アーキテクチャとタグの決め方は下の「手順ごとの補足」） |
 | 3 | `IaC/terraform/aws-managed/base/core`（エンドポイントは今回作る機能の分に、state にリソースが残っているルートの分を足す）。graph を作るなら 3-2 で裏で `IaC/terraform/aws-managed/pipeline/graph` を始める（ログは `ops/logs/graph-apply.log`） |
 | 3-3 | `IaC/terraform/aws-managed/agent`（`AGENT=1` のとき） |
@@ -314,7 +314,7 @@ flowchart LR
 - Nautobot の RDS は最後のスナップショットを取らずに消す。Nautobot で編集した内容は残らない（次の `ops/up.sh` でまた lab の定義から入る）。
 - 最後に `Project=<prefix>` のタグが残っているものを出す（手順 6）。**消えたリソースも出るので、この一覧では消えたかを決めない**（下の「消したあとに残るもの」）。
 - **base/logs（logs のバケット `<prefix>-logs-<アカウント>`）は消さない。**
-  EMR のログと Firehose が書けなかった行を、環境を消したあとでも読めるようにするため。中身は 7 日で消え、空のバケットは無料（[s3-buckets.md](architecture/resources/s3-buckets.md)）。
+  Firehose が書けなかった行を、環境を消したあとでも読めるようにするため（EMR のログは S3 に出さない）。中身は 7 日で消え、空のバケットは無料（[s3-buckets.md](architecture/resources/s3-buckets.md)）。
   手順 6 の一覧に毎回出るのは想定どおりで、`ops/down.sh` も一覧のあとにそう出す。
   消すなら `terraform -chdir=IaC/terraform/aws-managed/base/logs destroy -var owner=<OWNER>`（OSS 版は `IaC/terraform/oss/base/logs`）。
 - デバッグ用の EC2（CloudFormation の `<prefix>-lab-debug`）は消さない。`ops/lab-debug.sh down` で消す（同じ `Project` タグなので、残っていれば上の一覧に出る）。
@@ -335,7 +335,7 @@ flowchart LR
 | VPC・サブネット・Runtime の SG（`<prefix>-runtime`） | AgentCore Runtime の ENI（InterfaceType `agentic_ai`）が外れるまで消せない（最大 8 時間） | 無料 | base/core の state に残っているので、同じ VPC に残りを作り足す |
 | SSM のパラメータ（`/<prefix>/` の下） | nautobot のルートが消えなかったときの Nautobot の分（上の手順 5-2） | 無料（標準のパラメータ） | あるものは作り直さない |
 | ECR のリポジトリ（`KEEP_ECR=1` のとき） | 意図して残す | 7.39 GB で月 約 110 円（$0.10/GB・月。2026-10-08 の 11 リポジトリ。いまのマネージド版は 15 リポジトリ（`IaC/terraform/aws-managed/base/ecr/main.tf`）） | ECR にあるタグはビルドを飛ばす |
-| logs のバケット `<prefix>-logs-<アカウント>` | 意図して残す（`ops/down.sh` は base/logs を消さない） | 7 日ぶんのログで数十 MB、月 1 円未満 | そのまま使う |
+| logs のバケット `<prefix>-logs-<アカウント>` | 意図して残す（`ops/down.sh` は base/logs を消さない） | 7 日ぶんの Firehose の書けなかった行だけで、ふだんは空。月 1 円未満 | そのまま使う |
 | MSK の SCRAM の KMS の鍵（alias は外してある） | KMS の鍵はすぐには消せず、削除の予約の待ち（7 日）が要る（上の手順 5-3） | 無料（予約中の鍵は課金されない。KMS の価格表） | 新しい鍵を作る（予約中の鍵はそのまま 7 日後に消える）。alias を外せずに残っていれば、予約を取り消して同じ鍵を使い直す（取り消すと、待った日数も課金される） |
 
 - **`KEEP_ECR=1` で残した ECR に前の lab のイメージ（arm64）があっても、消さなくてよい。**
