@@ -317,6 +317,8 @@ check("prometheus は remote write を受け、設定は prometheus.yml（scrape
       "--web.enable-remote-write-receiver" in svc["prometheus"]["command"]
       and "./prometheus.yml:/etc/prometheus/prometheus.yml:ro" in svc["prometheus"]["volumes"]
       and "scrape_configs" not in read("docker", "compose", "prometheus.yml"))
+check("prometheus.yml は同じ系列の時刻が戻るサンプル（Kafka の追い付き）を 1 時間まで受ける（storage.tsdb.out_of_order_time_window。既定の 0 では v3.15.0 が 400 で捨てるのを 034 で確かめた）",
+      (yaml.safe_load(read("docker", "compose", "prometheus.yml")) or {}).get("storage", {}).get("tsdb", {}).get("out_of_order_time_window") == "1h")
 _gf = svc["grafana"]["environment"]
 check("grafana は PROMETHEUS_AUTH=none / OPENSEARCH_AUTH=basic で、URL は compose の中の prometheus と opensearch、ALERTS_TOPIC_ARN は渡さない",
       _gf["PROMETHEUS_AUTH"] == "none" and _gf["OPENSEARCH_AUTH"] == "basic" and _gf["PROMETHEUS_URL"] == "http://prometheus:9090"

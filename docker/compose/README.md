@@ -235,6 +235,21 @@ sudo iptables -t nat -D PREROUTING -s 203.0.113.0/24 -d 203.0.113.1 -p udp --dpo
 
 containerlab が `app/containerlab/clab-splab/`（root の持ち物）を作る。git の無視の対象（`.gitignore` の `app/containerlab/clab-*/`）なので `git status` には出ない。消すなら `sudo rm -rf app/containerlab/clab-splab`。
 
+## 確かめたこと
+
+「手元の compose の未確認を確かめる（034）」で、Mac（Apple Silicon、Docker Desktop）の docker で確かめた結果。
+
+**Prometheus は Kafka の追い付きで時刻が戻るサンプルを 1 時間まで受ける**
+
+- 確かめた日と版: 2026-10-10、`prom/prometheus:v3.15.0`（`compose.yaml` と同じ版）を単体で立てた。
+- 同じ系列に `t=now`、`t=now-60s` の順で remote write すると、既定（`out_of_order_time_window` が 0）では 2 回目が `400` `out of order sample` で捨てられた。
+  - Spark（`spark-http`）は 4xx を打ち直さずに捨てるので、lag が溜まったあとの追い付きで同じ系列の古いサンプルが後から届くと欠ける。
+- `prometheus.yml` に `storage.tsdb.out_of_order_time_window: 1h` を足すと、同じ送り方で 2 回とも `204` になり、2 つとも入った。
+  - 3.15.0 にはこれを変える起動の引数が無いので、`compose.yaml` でなく `prometheus.yml` に書いた。
+  - 1 時間より古いサンプルは今までどおり捨てる（追い付きの最大を 1 時間と見積もった）。
+- 前から上げている Prometheus は設定ファイルを読み直さないので、`docker compose -f docker/compose/compose.yaml restart prometheus` で起こし直す。
+  - volume は消さなくてよい（前の設定で書いた volume のまま新しい設定で起こし直し、時刻が戻るサンプルが `204` で入るのを確かめた）。
+
 ## 経緯
 
 - 2026-10-09（019）: Splunk のアプリの名前を `nwc_alerts` に揃えた（「名前を nwc に揃える（019）」）。
