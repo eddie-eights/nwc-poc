@@ -112,3 +112,77 @@ for t in test_analytics test_oss_ops test_oss test_workflow; do uv run --frozen 
 通過 177 / 失敗 0
 通過 333 / 失敗 0
 ```
+
+## Round 2
+
+実行モデル: cold reviewer は fable 5.1（`Agent` に model を渡さず親を継承。この worktree の HEAD 6aba1c9 を読んだ）。PM の確認も fable 5.1。
+対象: `main...feat/035-s3-layout` の 6aba1c9 まで（93db6f4 の直しと managed storage の有効化を含む）。cold reviewer に依頼した（完了判定の直前）。結果は `review-r02.md` から連結。
+
+# S3 の置き場を整える（035） cold review Round 2
+
+- 対象: ブランチ `feat/035-s3-layout`、HEAD `6aba1c9`（比較元 `main`）。worktree `.claude/worktrees/agent-a310d7ae208642cd2` の中で確認した
+- 正本: `docs/cycles/035-s3-layout/design.md`（「追加（managed storage）」の節を含む）
+- 前ラウンド（`review.md`、75a879a 時点）の未解消 Must fix: 無し。Round 1 の Should fix 1 件（deploy.md の古い state の消し方）と Nit 2・4 は直っていることを確認した。Nit 1（KB のロールの `S3Read` が `/*`）と Nit 3（`ops/up.sh` に古い `aws_s3_bucket.kb` の state の番が無い）は意図して残した扱いなので、この回では数え直さない
+
+## サマリ
+
+Must fix 0 件、Should fix 0 件、Nit 1 件。design.md との食い違いは見つからなかった。
+
+- 改名（`kb` → `assets`、`analytics/` → `spark/`、`docs/` → `kb/`）は base/core・agent・pipeline/lab・pipeline/analytics・OSS の analytics・`ops/*.sh`・`app/spark/snmp_sinks.py` の全部で揃っている。`main` 側の古い名前は IaC / ops / app / tests / docs に残っていない（残っているのは `s3-buckets.md:15` と `deploy.md:246` の「改名した」という説明、`telegraf/` の docker のパス、`-kb-index` の Lambda の名前だけで、いずれも意図どおり）
+- 新しいルート `IaC/terraform/aws-managed/base/logs` は design のとおり: 名前 `<prefix>-logs-<account>`、`force_destroy`、PAB 全部 true、SSE-S3、`BucketOwnerEnforced`、ライフサイクル `filter {}` + `expiration 7 日` + `abort_incomplete_multipart_upload 7 日`、ポリシーは `DenyInsecureTransport` だけ（`DenyOutsideVpc` 無し、`aws:SourceVpc` の文字列も無し）、output `logs_bucket_name` / `logs_bucket_arn`。`variables.tf` / `providers.tf` / `versions.tf` は base/ecr と同じ骨格（variables は lab/workflow のリポジトリの 2 変数だけ無い）
+- IAM の絞り方は design のとおり: EMR の実行ロールは `LogsBucket`（`emr/*` に PutObject / GetObject）と `LogsBucketList`（バケットに ListBucket / GetBucketLocation）、Firehose のロールは `ErrorBucket` / `ErrorBucketList` が logs を向き、`s3_configuration.bucket_arn = local.logs_bucket_arn`。`emr_perimeter` の付け方は変えていない。KB のロールの `S3List` に `s3:prefix` の条件が無いので `inclusion_prefixes = ["kb/"]` はそのまま通る
+- `ops/up.sh` / `ops/oss/up.sh` は `tf_apply base/ecr` → `tf_apply base/logs` → `tf_apply base/core` の順で、`ops/down.sh` / `ops/oss/down.sh` に `destroy_root base/logs` は無く、残す旨の echo は `has_resources base/logs` で囲んである（`PREFIX` / `OWNER` / `ACCOUNT_ID` はその前に定義済み: `ops/down.sh:50`、`ops/oss/down.sh:45`）
+- OSS 版 `IaC/terraform/oss/base/logs` は 7 本の相対シンボリックリンク（`.terraform.lock.hcl` を含む）と実ファイル `oss.auto.tfvars`（`project = "nwc-oss"`）で、`ls -L` で全部解決する
+- managed storage の追加: `outputs.tf` の `managedPersistenceMonitoringConfiguration = { enabled = true }` と、test_analytics の検査、`emr-serverless.md` の「AWS では未確認」の注記が揃っている
+
+### 見た観点
+
+- design.md 整合性（設計方針・変更一覧・検証の節・リスク 1〜6 と、実装・テスト・docs の対応）
+- correctness: 改名の取りこぼし、`terraform_remote_state.logs` のパス、`tf_apply` の順、down.sh の分岐、OSS のリンクの解決
+- security: logs のバケットのポリシー・PAB・SSE、EMR と Firehose のロールの Resource の範囲、KB のロールの prefix
+- runtime bugs: `set -uo pipefail` の下で未定義変数を踏まないか（`PREFIX` / `OWNER` / `ACCOUNT_ID`）
+- data loss: 古い `kb` のバケットの state を持つ PC で置き換えになる件の docs（`deploy.md:246-253`）
+- missing tests: design の「検証」に挙げたテストが tests/ に入っているか（test_analytics の 9 項目 + managed storage の 1 項目、test_oss の TF_ROOTS と「10 ルート」、test_oss_ops の `DOWN_ROOTS`、test_workflow の `ASSETS_BUCKET`）
+- 自分で実行した検証（全部 worktree の中。`git status --short` は実行後も空）
+  - `uv run --frozen python3 tests/test_analytics.py` → `通過 544 / 失敗 0`（design の「535 より増える」を満たす）
+  - `tests/test_oss.py` → `通過 177 / 失敗 0`、`tests/test_oss_ops.py` → `通過 206 / 失敗 0`、`tests/test_workflow.py` → `通過 333 / 失敗 0`、`tests/test_lab_debug.py` → `通過 110 / 失敗 0`、`tests/test_agentcore.py` → `通過 168 / 失敗 0`
+  - `terraform validate`（`TF_DATA_DIR` を scratchpad に向けて init）: aws-managed の `base/logs` / `base/core` / `agent` / `pipeline/lab` / `pipeline/analytics` と oss の `base/logs` / `pipeline/analytics` の 7 ルート全部 `Success! The configuration is valid.`
+  - `terraform fmt -check -recursive IaC/terraform/aws-managed` → 差分無し
+  - `bash -n ops/up.sh ops/down.sh ops/check.sh ops/oss/up.sh ops/oss/down.sh` → 無言
+  - 古い名前の grep（`kb_bucket` / `KB_BUCKET` / `analytics/logs` / `analytics/jars` / `analytics/checkpoint` / `docs/` の取り込み）→ 上に書いた意図どおりの箇所以外 0 行
+
+### 見ていない観点
+
+- AWS での動作。EMR Serverless が logs の `emr/` に書けるか、Firehose が `firehose-errors/` に落とせるか、managed storage の Spark UI が開くか、ライフサイクルの `filter {}` が全オブジェクトに効くか（design のリスク 1・2 と「追加」の節が「未確認」としている通り）。`terraform apply` / `plan` も打っていない
+- 古い `kb` の state を持つ PC で `deploy.md:250` の手順 1（`git checkout 3d497de -- ops IaC` → `ops/down.sh` → `git checkout HEAD -- ops IaC`）が通るか。コードを読んだだけ
+- `ops/up.sh` を通しで動かす偽物の検査（test_oss_ops にある OSS 版の通しは走らせたが、マネージド版の `ops/up.sh` の通しの検査は無い）
+- Bedrock の KB が `kb/` から再取り込みされるか（リスク 3）
+- `docs/pipeline.md` と FAQ の managed storage の記述（build.md のとおり main にしか無いので、マージ後に別途）
+
+## Must fix
+
+None
+
+## Should fix
+
+None
+
+## Nit
+
+- [design.md 整合性] `IaC/terraform/aws-managed/base/core/outputs.tf:78` の `assets_bucket_arn` の description が「read by agent / pipeline/lab / pipeline/stream for IAM policies」のままで、読み手が実態と違う。`main` の `kb_bucket_arn` から文面を引き継いだもので、同じファイルの `assets_bucket_name`（73 行目）は今回の改名に合わせて `(kb/)` `(lab/)` `(spark/)` と直してある。ARN を読んでいるのは `IaC/terraform/aws-managed/agent/locals.tf:66` だけで（grep で確認。`pipeline/lab` と `pipeline/analytics` と OSS の analytics は `assets_bucket_name` だけを読み、`pipeline/stream` の `.tf` にバケットの参照は無い）、`docs/architecture/resources/s3-buckets.md` の「読む output」の行も `assets_bucket_arn` を agent・lab・analytics が読むように読める。Nit にした理由: 動作に影響せず、design の変更一覧にも無い説明文の範囲だから。直すなら description を「Read by IaC/terraform/aws-managed/agent (KB role)」程度にし、s3-buckets.md の行は name と arn で読み手を分けるか、arn の読み手を agent だけにする
+
+## 良かった点
+
+- Round 1 の Should fix を、手順の追加（`deploy.md:248-253` の「消し方は 2 つ」。`IaC` も戻す理由と `git checkout HEAD --` にする理由まで）で直してあり、同じ落とし穴を踏む PC が無くなる
+- test_analytics の末尾の「古い名前が残っていない」検査が、自分のファイルに文字列を載せない作り（`"kb" + "_bucket"`）になっていて、検査自身が検査に引っかからない
+- `ops/down.sh` の残す旨の echo を `has_resources base/logs` で囲んだので、base/logs を一度も作っていない PC で意味の無い案内が出ない
+- `docs/architecture/resources/s3-buckets.md` が「なぜ 2 本に分けたか」「なぜ logs に `DenyOutsideVpc` を付けないか」を出典付きで書いていて、FAQ・firehose.md・emr-serverless.md・vpc-perimeter.md が全部そこを指している（正本が 1 つ）
+- managed storage の追加が、design の節・`outputs.tf`・test_analytics の検査（`enabled = true` が 1 回だけ）・`emr-serverless.md` の「AWS では未確認」の 4 か所で揃っている
+
+## ユーザーへの質問
+
+None
+
+### PM の確認と分類
+
+- Must fix 0 / Should fix 0。Nit 1（`base/core/outputs.tf:78` の `assets_bucket_arn` の description が旧文面）は、このあとの「EMR のログの S3 を落とす」commit で一緒に直す（次のセッション）
