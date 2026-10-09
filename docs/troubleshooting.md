@@ -40,6 +40,8 @@
   - 続くなら `IaC/terraform/aws-managed/base/core` の OpenSearch Serverless の VPC エンドポイント（`create_opensearch_endpoint`）が ACTIVE か見る。
 - `msk_scram`:
   - 無くなるのは、2026-10-08（cycle 012）より前のコードで作った stream を今のコードで消すとき、または手で消したとき。
+  - 2026-10-10（cycle 031）をまたいだときも同じ。031 より前のコードで作った stream（secret は 3 つのコレクターで共有の 1 本）を今のコードで消すと、3 本の secret が無くて止まる（逆も）。
+    作ったときと同じコードで消すか、下の `-refresh=false` で消す。古い共有の secret（名前は [pipeline.md](pipeline.md) の表に無い 031 より前のもの）は `ops/down.sh` が消さないので、手で消す。
   - destroy は data source を読み直すので止まり、`ops/down.sh` は stream も secret と鍵も残す。
   - `terraform -chdir=IaC/terraform/aws-managed/pipeline/stream destroy -refresh=false -var owner=<OWNER> -var 'gnmi_targets="0.0.0.0:57400"'` で data source を読まずに state のものを消し、`ops/down.sh` を打ち直す。
   - 読めない data source の destroy が `-refresh=false` で通るのは手元の Terraform 1.16 で確かめた。

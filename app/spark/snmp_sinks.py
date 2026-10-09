@@ -93,7 +93,8 @@ SINKS = ("iceberg", "opensearch", "prometheus", "splunk")
 KAFKA_AUTHS = ("iam", "none")
 # SASL/SCRAM で書く収集器の Kafka のユーザーと、ユーザーごとに書けるトピック。AWS の文書は MSK の IAM のアクセス制御では
 # allow.everyone.if.no.acl.found が効かないとするので、SCRAM のユーザーは ACL が無いと書けない想定（MSK では未確認。cycle 012 Round 2。ensure_acls が付ける）。
-# コレクターごとに別のユーザー（cycle 031。1 つの資格情報が漏れても、ほかのコレクターのトピックには書けない）。キーは ops/up-common.sh の
+# コレクターごとに別のユーザー（cycle 031。1 つの資格情報が漏れても、ACL を入れたほかのコレクターのトピックには書けない。ただし ACL の無いトピックと、
+# このジョブが ACL を入れる前は、allow.everyone.if.no.acl.found が効いていればどのユーザーも書ける（推測。docs/pipeline.md の「収集器の ACL」））。キーは ops/up-common.sh の
 # ensure_msk_scram_secret の username（= コレクター名。ops/up.sh と IaC/terraform/aws-managed/pipeline/stream/msk.tf の scram_collectors と同じ）。トピックは
 # app/syslog-ng/syslog-ng.conf.in の topic("logs")、IaC/terraform/aws-managed/pipeline/stream/collectors.tf の -transport.kafka.topic=flows、app/gnmic/gnmic.yaml.in の topic: gnmi / metrics
 SCRAM_USERS = {

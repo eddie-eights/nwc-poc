@@ -226,7 +226,7 @@ delete_msk_scram_key() {  # ops/up.sh が作った MSK の SCRAM の KMS の鍵�
     echo "$alias: 残す（$TF_DIR/pipeline/stream が消えなかったので、次の $OPS_DIR/down.sh で消す）"; return ;;
   esac
   if [ -n "$MSK_SCRAM_KEEP_KEY" ]; then
-    echo "$alias: 残す（消せなかった secret がある。消すと secret を復号できなくなる）"; return
+    echo "$alias: 残す（消せなかった（か確かめられなかった）secret がある。消すと secret を復号できなくなる）"; return
   fi
   # 鍵はすぐには消せない（7 日の待ち。待つあいだは課金されない）。先に削除を予約し、それから alias を外す
   # （逆の順だと、予約に失敗したとき名前の無い鍵が残り、次の up.sh は別の鍵を作る）

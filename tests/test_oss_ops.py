@@ -228,6 +228,7 @@ elif (svc, op) == ("ecr", "describe-images"):
         fail("An error occurred (ImageNotFoundException)")
 # ---- MSK の SCRAM の secret と KMS の鍵（cycle 012）。在庫の secrets は {名前: {"kms": 鍵の ARN}}（中身は持たない）、
 # kms は {alias: 鍵の ARN}、kms_keys は {鍵の ARN: 状態}。FAKE_SM_FAIL なら delete-secret が落ちる（1 なら全部、secret の名前ならその 1 本だけ）。FAKE_KMS_DENY なら describe-key が権限で落ちる。
+# FAKE_SM_DESCRIBE_DENY（secret の名前）なら、その 1 本の describe-secret が権限で落ちる（cycle 031）。
 # 削除を予約された secret は "deleted" を持つ。create-secret / create-key が作ったものは中身とタグも持つ（値が外に出ていないかを見るため）
 elif (svc, op) == ("secretsmanager", "create-secret"):
     src = opt("--cli-input-json")
@@ -277,6 +278,8 @@ elif (svc, op) == ("kms", "enable-key"):
     inv["kms_keys"][opt("--key-id")] = "Enabled"
     save()
 elif (svc, op) == ("secretsmanager", "describe-secret"):
+    if os.environ.get("FAKE_SM_DESCRIBE_DENY") == opt("--secret-id"):
+        fail("An error occurred (AccessDeniedException) when calling the DescribeSecret operation")
     s = inv.get("secrets", {}).get(opt("--secret-id"))
     if s is None:
         fail("An error occurred (ResourceNotFoundException) when calling the DescribeSecret operation: Secrets Manager can't find the specified secret.")
@@ -720,7 +723,19 @@ check("ops/down.sh: SCRAM の secret の 1 本だけ消せなかったら、ほ�
       and set(inv["secrets"]) == set(POC_SCRAM) | {MGD_SCRAM[1]}
       and f"{MGD_SCRAM[1]}: 消せなかった（上のエラー）。鍵も残す" in out and f"{MGD_SCRAM[2]}: 消した" in out
       and not aws_calls(cs, "kms", "schedule-key-deletion") and not aws_calls(cs, "kms", "delete-alias") and aws_ops(cs, "kms") == []
-      and inv["kms_keys"][KEY_MGD] == "Enabled" and "alias/x-nwc-oss-nwc-poc-msk-scram: 残す（消せなかった secret がある" in out)
+      and inv["kms_keys"][KEY_MGD] == "Enabled" and "alias/x-nwc-oss-nwc-poc-msk-scram: 残す（消せなかった（か確かめられなかった）secret がある" in out)
+
+# 3 本のうち 1 本（gnmic）が確かめられない（describe-secret が NotFound 以外で落ちる）: その 1 本は消さず、ほかの 2 本は消し、鍵は残す（cycle 031）
+p, cs, inv = run_down("ops/down.sh", "x-nwc-oss", {"FAKE_SM_DESCRIBE_DENY": MGD_SCRAM[2]})
+out = p.stdout + p.stderr
+check("ops/down.sh: SCRAM の secret の 1 本が確かめられなかった（describe-secret が権限で落ちた）ら、その 1 本は消さず、ほかの 2 本は消し、"
+      "鍵は予約も alias の削除もせずに残す（cycle 031）",
+      not [c for c in cs if c.get("unknown")]
+      and [arg_after(a, "--secret-id") for a in aws_calls(cs, "secretsmanager", "delete-secret")] == MGD_SCRAM[:2]
+      and set(inv["secrets"]) == set(POC_SCRAM) | {MGD_SCRAM[2]}
+      and f"{MGD_SCRAM[2]}: 確かめられなかった（An error occurred (AccessDeniedException)" in out and f"{MGD_SCRAM[1]}: 消した" in out
+      and aws_ops(cs, "kms") == [] and inv["kms_keys"][KEY_MGD] == "Enabled"
+      and "alias/x-nwc-oss-nwc-poc-msk-scram: 残す（消せなかった（か確かめられなかった）secret がある" in out)
 
 pending = inventory()
 for _n in MGD_SCRAM:

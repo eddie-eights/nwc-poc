@@ -8,8 +8,7 @@
 # このサブネットの CIDR。SSM の /<接頭辞>/telegraf-source-cidr。telegraf.tf）。
 # ブローカー・認証・資格情報・実行ロールの権限は collectors.tf と同じ kafka_collector_* の locals（マネージド版は MSK の SASL/SCRAM の 9096、OSS 版は
 # 認証なしの 9092）。マネージド版の SCRAM はコレクターごとに別のユーザー（User:syslog-ng / User:goflow2 / User:gnmic。cycle 031）で、User:gnmic には
-# Kafka の ACL が要り、Spark のジョブが起動で
-# gnmi と metrics の WRITE・DESCRIBE を入れる（app/spark/snmp_sinks.py の ensure_acls）。入るまでに書いた値は落ちる（cycle 013 の design.md の未確定 7）。
+# Kafka の ACL が要り、Spark のジョブが起動時に gnmi と metrics の WRITE・DESCRIBE を入れる（app/spark/snmp_sinks.py の ensure_acls）。入るまでに書いた値は落ちる（cycle 013 の design.md の未確定 7）。
 # 機器の一覧と gNMI の資格情報は SSM パラメータから ECS の secrets で渡す（タスクを起こすときに読むので、変えたらサービスを作り直す）:
 #   /<接頭辞>/gnmic/<出どころ>/gnmi-targets   String（"IP:57400", ...）。出どころは lab（var.gnmi_targets。Terraform が書く）か
 #                     nautobot（var.gnmi_targets_from_nautobot。最初の値だけ Terraform が書き、あとは IaC/terraform/aws-managed/pipeline/nautobot の Job が書き換えて

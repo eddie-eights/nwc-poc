@@ -37,7 +37,7 @@ locals {
     { name = "KAFKA_SASL_USER", valueFrom = "${data.aws_secretsmanager_secret.msk_scram[c].arn}:username::" },
     { name = "KAFKA_SASL_PASS", valueFrom = "${data.aws_secretsmanager_secret.msk_scram[c].arn}:password::" },
   ] }
-  # 2 つの実行ロールに足す権限（ECS のエージェントが起動時に secret を読む。Secrets Manager は呼び手の権限で KMS の復号を頼む）
+  # 3 つの実行ロール（syslog-ng / GoFlow2 / gnmic）に足す権限（ECS のエージェントが起動時に secret を読む。Secrets Manager は呼び手の権限で KMS の復号を頼む）
   kafka_collector_execution_statements = [
     {
       Sid      = "ScramSecret"
