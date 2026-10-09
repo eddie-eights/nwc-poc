@@ -76,7 +76,7 @@ Parameters:
   TelegrafImageTag:
     Type: String
     Default: ""
-    Description: "<Telegraf version>-<hash of app/telegraf/ and docker/images/telegraf/Dockerfile> (ops/lab-common.sh telegraf_tag). Required when CreateInstance is true"
+    Description: "<Telegraf version>-<hash of app/telegraf/ and docker/images/telegraf/Dockerfile>-amd64 (ops/lab-common.sh telegraf_tag plus -LAB_ARCH, like the lab images; the stream ECS pushes the arm64 build of the same version without the suffix to its own repository <prefix>-telegraf). Required when CreateInstance is true"
   AutoStartLab:
     Type: String
     Default: "true"

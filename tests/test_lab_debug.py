@@ -101,9 +101,9 @@ check("ops/up.sh と ops/lab-debug.sh は ops/lab-common.sh を source し、lab
       and not any(re.search(r"^%s=" % k, s, re.M) for k in ("SRLINUX_TAG", "MULTITOOL_TAG", "TREX_TAG", "LAB_ARCH", "SRLINUX_ECR_TAG", "MULTITOOL_ECR_TAG", "TREX_ECR_TAG",
                                                          "CONTAINERLAB_VERSION", "TELEGRAF_VERSION", "CONTAINERLAB_RPM") for s in (up, dbg))
       and not any(re.search(r"^(ecr_has|fetch|dir_tag)\(\)", s, re.M) for s in (up, dbg)))
-check("イメージの作り方（ミラー・Telegraf のビルド・app/containerlab/ の置き方）は lab-common.sh の関数を両方が呼ぶ",
+check("イメージの作り方（ミラー・Telegraf のビルド・app/containerlab/ の置き方）は lab-common.sh の関数を両方が呼ぶ。Telegraf のタグはデバッグ用は -$LAB_ARCH 付き（lab の 3 つとそろえる。stream の arm64 は別の repo <prefix>-telegraf で -arm64 を付けない）",
       all(f in up for f in ("mirror_lab_images ", "build_telegraf ", "upload_lab ", "TELEGRAF_TAG=$(telegraf_tag)"))
-      and all(f in dbg for f in ("mirror_lab_images ", "build_telegraf ", "upload_lab ", "TELEGRAF_TAG=$(telegraf_tag)"))
+      and all(f in dbg for f in ("mirror_lab_images ", "build_telegraf ", "upload_lab ", 'TELEGRAF_TAG="$(telegraf_tag)-$LAB_ARCH"'))
       and "docker pull" not in up.split("# ---- 2. イメージ")[1].split("# ---- 3.")[0].split("NEED_TEMPORAL")[0]
       and "ghcr.io/nokia/srlinux" not in up and "ghcr.io/nokia/srlinux" not in dbg)
 _pass = re.findall(r'"(\w+)=\$', dbg.split("--parameter-overrides")[1].split("--tags")[0])

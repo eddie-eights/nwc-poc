@@ -125,8 +125,8 @@ case "$CMD" in
       log "1. $STACK はある（${s}）"
     fi
 
-    log "2. イメージ（ECR に無いタグだけ作る。lab の 3 つと、stream の ECS と同じ作り方の Telegraf。どれも x86_64 の EC2 に載るので amd64）"
-    TELEGRAF_TAG=$(telegraf_tag) || die "app/telegraf/ のタグを作れなかった"
+    log "2. イメージ（ECR に無いタグだけ作る。lab の 3 つと、stream の ECS と同じ作り方の Telegraf。どれも x86_64 の EC2 に載るので amd64。タグも lab の 3 つと同じく -amd64 を付け、arch をタグでも分かるようにする。stream の arm64 は別の repo の $PREFIX-telegraf）"
+    TELEGRAF_TAG="$(telegraf_tag)-$LAB_ARCH" || die "app/telegraf/ のタグを作れなかった"
     LOGGED_IN=""
     login() {
       [ -z "$LOGGED_IN" ] || return 0
