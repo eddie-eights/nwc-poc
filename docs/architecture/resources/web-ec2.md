@@ -17,7 +17,7 @@ stream を作る回は Kafbat UI も Docker で同居する（Kafbat UI を Web 
 | メタデータ | IMDSv2 だけ、ホップ数 2（Kafbat UI のコンテナが Docker の bridge 越しにインスタンスロールを取る） | `IaC/terraform/aws-managed/base/core/web.tf` |
 | 画面 | Gradio が `127.0.0.1:8080` だけで待つ。systemd のユニット `<prefix>-web` | `app/dashboard/app.py`、`IaC/terraform/aws-managed/base/core/templates/web_user_data.sh.tftpl` |
 | Kafbat UI | Docker のコンテナが `127.0.0.1:8082` だけで待つ。systemd のユニット `<prefix>-kafka-ui`（動きは表の下） | `IaC/terraform/aws-managed/base/core/templates/web_user_data.sh.tftpl`、`IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf` |
-| 画面のコード | 共有バケット `<prefix>-kb-<アカウント>` の `web/` から起動時に取る | `ops/up.sh` の手順 4、`IaC/terraform/aws-managed/base/core/bucket.tf` |
+| 画面のコード | assets のバケット `<prefix>-assets-<アカウント>` の `web/` から起動時に取る | `ops/up.sh` の手順 4、`IaC/terraform/aws-managed/base/core/bucket.tf` |
 | ロール | `<prefix>-web`。SSM の管理、`web/*` の読み取り、`/<prefix>/*` の `ssm:GetParameter`。ECR の `<prefix>-kafka-ui` からのイメージの取得。ほかのルートが足す許可は表の下 | `IaC/terraform/aws-managed/base/core/web.tf`、`IaC/terraform/aws-managed/agent/runtime.tf`、`IaC/terraform/aws-managed/workflow/proposals.tf` |
 | スイッチ | 無い（土台なので必ず作る）。PC 側のポートは `LOCAL_PORT`（既定 8080）、`NO_DASHBOARD_PORTFORWARD=1` で最後のポートフォワーディングを開かない | [deploy.md](../../deploy.md) の「`deploy.env` のキー」 |
 | 費用 | 4.3 セント/時（t4g.medium。土台は合わせて約 4 セント/時 + エンドポイント） | `ops/up.sh` の費用の目安（524〜584 行） |

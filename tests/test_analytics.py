@@ -1455,16 +1455,16 @@ check("ops/down.sh と ops/oss/down.sh は base/logs を destroy せず、残す
 # このファイル自身に文字列が載らないよう、パターンはつないで作る
 _old_names = ["kb" + "_bucket", "KB" + "_BUCKET", "analytics" + "/logs", "analytics" + "/jars", "analytics" + "/checkpoint"]
 _stale = []
-for _f in subprocess.run(["git", "ls-files", "IaC", "ops", "app", "tests", "README.md", "CLAUDE.md"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.split():
+for _f in subprocess.run(["git", "ls-files", "IaC", "ops", "app", "tests", "docs", "README.md", "CLAUDE.md"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.split():
     _p = os.path.join(ROOT, _f)
-    if os.path.islink(_p) or not os.path.isfile(_p):
+    if _f.startswith(("docs/cycles/", "docs/verification/")) or os.path.islink(_p) or not os.path.isfile(_p):
         continue
     try:
         _t = open(_p, encoding="utf-8").read()
     except UnicodeDecodeError:
         continue
     _stale += [f"{_f}: {w}" for w in _old_names if w in _t]
-check("IaC / ops / app / tests / README.md / CLAUDE.md に古い名前（kb のバケット、analytics/ の下の logs / jars / checkpoint）が残っていない（cycle 035）", not _stale)
+check("IaC / ops / app / tests / docs（cycles と verification を除く） / README.md / CLAUDE.md に古い名前（kb のバケット、analytics/ の下の logs / jars / checkpoint）が残っていない（cycle 035）", not _stale)
 def _expand_vars(text, path, assign):  # パスの $NAME / ${NAME} を、text の中の代入（up.sh の NAME=値、Dockerfile の ARG NAME=値）で埋める
     vals = dict(re.findall(assign, text, re.M))
     return re.sub(r"\$\{?(\w+)\}?", lambda m: vals[m.group(1)], path)

@@ -26,7 +26,8 @@ VPC の中の通信は、SG の通信の表に書いたものだけが通る。
 | 費用 | インターフェース型エンドポイント 1 つ 1.4 セント/時 × `ENDPOINTS_AZ_NUM`（データは別に $0.01/GB）。OpenSearch Serverless の VPC エンドポイントも 1.4 セント/時 × AZ（公表単価）。SG、ルール、gateway 型は時間課金なし | `ops/up.sh` の費用の目安（524〜584 行） |
 
 - リソースポリシーの Deny を定義している場所: `bucket.tf`、`alerts.tf`、`IaC/terraform/aws-managed/pipeline/analytics/tables.tf`、`IaC/terraform/aws-managed/workflow/events.tf`、
-  `IaC/terraform/aws-managed/workflow/gateway.tf`、`IaC/terraform/aws-managed/agent/runtime.tf`
+  `IaC/terraform/aws-managed/workflow/gateway.tf`、`IaC/terraform/aws-managed/agent/runtime.tf`。
+  `bucket.tf` は assets のバケット。logs のバケット（`IaC/terraform/aws-managed/base/logs`）には付けない（理由は [s3-buckets.md](s3-buckets.md)）
 
 機能ごとのエンドポイント（`ops/up.sh` の `endpoints_for`）:
 

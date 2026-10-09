@@ -1174,6 +1174,7 @@ Lambda から書く経路は 2 案あった。
 - [Q. Telegraf と Kafka のあいだには、重複を見つけるための番号がある？](#q-telegraf-と-kafka-のあいだには重複を見つけるための番号がある)
 - [Q. Splunk の重複で同じアラートが 2 回 SNS に出たら、障害の履歴は二重になる？ 検索で落とす以外の方法はある？](#q-splunk-の重複で同じアラートが-2-回-sns-に出たら障害の履歴は二重になる-検索で落とす以外の方法はある)
 - [Q. Spark のジョブが 3 つに分かれているので、同じイベントでも番号（event_id）が変わることはある？](#q-spark-のジョブが-3-つに分かれているので同じイベントでも番号event_idが変わることはある)
+- [Q. S3 のバケットは何本ある？ 何に使い分けている？](#q-s3-のバケットは何本ある-何に使い分けている)
 
 ### Q. ログは OpenSearch、メトリクスは Prometheus に流している？
 
@@ -1465,6 +1466,24 @@ Splunk の中で重複を扱う方法。
   `event_id` は同じで、offset が違う。`event_id` で重複を落とせる。
 
 実装済み（`app/spark/snmp_sinks.py`。聞いた時点では実装の前だった）。Prometheus には入れていない。
+
+### Q. S3 のバケットは何本ある？ 何に使い分けている？
+
+**A. 汎用のバケットは 2 本。配布物を置く assets と、ログを置く logs。** テーブル（S3 Tables の `raw_telemetry` と `alert_events`）は別の仕組みのテーブルバケットで、ここには数えない。
+
+| バケット | 中身 | 作るルート | `ops/down.sh` |
+|---|---|---|---|
+| assets `<prefix>-assets-<アカウント>` | `web/`（Web の部品）、`kb/`（Bedrock の KB の取り込み元の手順書）、`lab/`（containerlab の rpm と設定）、`spark/`（`snmp_sinks.py`、jar、Spark の checkpoint） | `base/core` | 消す |
+| logs `<prefix>-logs-<アカウント>` | `emr/`（EMR Serverless のワーカーのログ）、`firehose-errors/alert_events/`（Firehose が書けなかった履歴の行）。7 日で消える | `base/logs` | 消さない |
+
+- **分けたのは、消す時期と守り方が違うため。**
+  配布物は環境と一緒に消してよいが、ログは環境を消したあとに「なぜ落ちたか」を読みたい。logs は `ops/down.sh` で消さず、7 日で中身が消えるので置きっぱなしでも費用は月 1 円未満。
+- **logs には VPC の外を拒むポリシー（DenyOutsideVpc）を付けていない。**
+  base/logs は base/core より先に作って VPC より長生きするので VPC の id を知らず、Firehose はロールを引き受けて VPC の外から書くため。付けているのは HTTPS 以外を拒むものだけ。
+- **前は kb という名前の 1 本に全部入れていた。**
+  KB の原稿のほかに Web、lab、Spark の部品と EMR のログが同じ階層に混ざっていたので、「S3 の置き場を整える（035）」で名前を assets にし、用途ごとの接頭辞に分け、ログを logs に出した。
+
+詳しくは [s3-buckets.md](architecture/resources/s3-buckets.md)。
 
 ---
 

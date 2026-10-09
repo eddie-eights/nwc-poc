@@ -174,7 +174,7 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
   - 多ければ `kinesis-firehose` のエンドポイント（手順 0 の一覧）と、ロールの `firehose:PutRecordBatch`。
   - `ALERT_DROPPED` は `device_id` か `kind` が無い・`status` が firing / resolved でない通知か、
     行を組めない通知（`starts_at` が epoch ミリ秒など）で、行にしていない（送り手のテンプレートを見る）。
-  - Firehose が受けたのに S3 Tables に入らなかった行は土台のバケットの `firehose-errors/alert_events/`。
+  - Firehose が受けたのに S3 Tables に入らなかった行は logs のバケット `<prefix>-logs-<アカウント>` の `firehose-errors/alert_events/`（7 日で消える）。
   - 行は Neptune より先に送るので、Neptune が遅くても応答しなくても、この表の行には影響しない。
 - `Neptune の status`:
   - Lambda は例外か timeout で落ち、非同期のやり直し（2 回まで）で Neptune に書き直すので、`status` は遅れて変わる。

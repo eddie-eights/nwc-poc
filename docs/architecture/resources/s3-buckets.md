@@ -1,0 +1,72 @@
+# S3 のバケット（assets と logs）
+
+← [リソースごとの知見](README.md)
+
+## ひとことで
+
+S3 の汎用バケットは 2 本。`ops/up.sh` が置く配布物と Spark の checkpoint を入れる **assets** と、AWS のサービスが書くログを 7 日だけ置く **logs**。
+assets は `ops/down.sh` で消え、logs は消さずに残す。
+S3 Tables（Iceberg のテーブルバケット）は別物で、[s3-tables-athena.md](s3-tables-athena.md)。
+
+## このプロジェクトでの使い方
+
+| 項目 | assets | logs |
+|---|---|---|
+| 名前 | `<prefix>-assets-<アカウント>`（cycle 035 で `<prefix>-kb-<アカウント>` から改名） | `<prefix>-logs-<アカウント>` |
+| terraform のルート | `IaC/terraform/aws-managed/base/core` の `bucket.tf` | `IaC/terraform/aws-managed/base/logs` の `main.tf` |
+| 作る順 | base/ecr → base/logs → base/core（`ops/up.sh` の手順 1 の後） | `ops/up.sh` の手順 1（base/ecr の次） |
+| 消し方 | `ops/down.sh`（base/core と一緒。`force_destroy = true`） | `ops/down.sh` は消さない。消すなら `terraform -chdir=IaC/terraform/aws-managed/base/logs destroy -var owner=<OWNER>`（`force_destroy = true`） |
+| 中身の寿命 | ライフサイクル無し（バケットごと消える） | ライフサイクルで 7 日で消す（未完了のマルチパートも 7 日）。バージョニング無し |
+| ポリシー | `DenyInsecureTransport` と `DenyOutsideVpc`（`NETWORK_PERIMETER=0` で外れる） | `DenyInsecureTransport` だけ |
+| PAB・SSE・所有 | 全部ブロック、SSE-S3（AES256）、`BucketOwnerEnforced` | 同じ |
+| 読む output | `assets_bucket_name` / `assets_bucket_arn`（agent、pipeline/lab、pipeline/analytics） | `logs_bucket_name` / `logs_bucket_arn`（pipeline/analytics） |
+
+プレフィックスは部品名で切る:
+
+| バケット | プレフィックス | 中身 | 書く | 読む |
+|---|---|---|---|---|
+| assets | `web/` | 画面のコード（`app/dashboard/*.py` と、Web が使う `app/agentcore/` の一部とデータ）、`requirements.txt`、`wheels/` | `ops/up.sh` の手順 4-2 | Web の EC2 の user_data |
+| assets | `kb/` | KB の取り込み元の手順書（`CREATE_KB=1` のとき） | `ops/up.sh` の手順 4-3 | Bedrock の KB（ロール `<prefix>-kb`。`agent/kb.tf` の `inclusion_prefixes`） |
+| assets | `lab/` | containerlab の rpm とトポロジ | `ops/up.sh` の手順 5-1 | lab の EC2 の user_data |
+| assets | `spark/` | `snmp_sinks.py`、`jars/`、`checkpoint/<MSK の uuid>/` | `ops/up.sh` の手順 5-2（スクリプトと jar）、Spark（checkpoint） | EMR Serverless（OSS 版は ECS の Spark） |
+| logs | `emr/` | EMR Serverless のワーカーのログ（`logUri`） | EMR Serverless | 人（切り分けのとき） |
+| logs | `firehose-errors/alert_events/` | Firehose が S3 Tables に書けなかった行 | Firehose（ロール `<prefix>-alert-firehose`） | 人（[troubleshooting.md](../../troubleshooting.md)） |
+
+OSS 版（`IaC/terraform/oss/`）も同じ 2 本で、接頭辞が `<owner>-nwc-oss` になる（マネージド版とは別のバケット）。
+OSS 版の logs に入るのは Firehose の書けなかった行だけ（EMR Serverless が無い）。
+
+## つながり
+
+| 相手 | 向き | ポートと認証 |
+|---|---|---|
+| デプロイする人（`ops/up.sh`） | PC → assets | VPC の外から。`DenyOutsideVpc` の例外（`perimeter_exempt_principals`） |
+| Web・lab の EC2、Spark | VPC → assets | S3 の gateway エンドポイント。各ロールの IAM |
+| Bedrock の KB | KB → assets の `kb/` | ロール `<prefix>-kb` を引き受けて VPC の外から読む。`DenyOutsideVpc` の例外 |
+| EMR Serverless | Spark → logs の `emr/` | 実行ロールの `LogsBucket`（`emr/*` に PutObject / GetObject）と `LogsBucketList`（`pipeline/analytics/access.tf`） |
+| Firehose | Firehose → logs の `firehose-errors/` | ロール `<prefix>-alert-firehose` の `ErrorBucket` / `ErrorBucketList`（`pipeline/analytics/history.tf`） |
+
+## 知見
+
+- **バケットを分けたのは寿命が違うから。**
+  assets は `ops/up.sh` がいつでも置き直せるので `ops/down.sh` で消す。ログは環境を消したあとに読みたいので、VPC より長生きさせ、7 日で自然に消す。空のバケットは課金されない。
+  出典: S3 の置き場を整える（035）の設計の「設計方針」。
+- **logs に `DenyOutsideVpc` を付けない。**
+  1. base/logs は base/core より先に作り、`ops/down.sh` でも消さないので、VPC の id を知らず、VPC より長生きする。
+  2. 書くのは AWS のサービスで、Firehose はロールを引き受けて VPC の外から書く。
+  EMR のジョブの側は、実行ロールに付けた IAM 側の Deny（`pipeline/analytics/access.tf` の `emr_perimeter`）が VPC の外からの利用を止める。
+  出典: `IaC/terraform/aws-managed/base/logs/main.tf` のポリシーのコメント、[vpc-perimeter.md](vpc-perimeter.md)。
+- **`ops/down.sh` の「残っていないか」の一覧に logs のバケットが毎回出る。**
+  意図して残しているので想定どおり。`ops/down.sh` も一覧の後にそう出す（[deploy.md](../../deploy.md) の「消したあとに残るもの」）。
+
+## 制約と未確認
+
+| 項目 | 状態 |
+|---|---|
+| EMR Serverless が logs の `emr/` に書けるか | 未確認（cycle 035 で assets の `analytics/logs/` から移した。設計の「未確定事項とリスク」の 1） |
+| Firehose が書けなかった行を logs に落とせるか | 未確認（同じく assets の `firehose-errors/` から移した。リスクの 2） |
+| 古い kb のバケットの state を持つ PC | `terraform apply` が置き換え（destroy + create）になる。先に `ops/down.sh` を打つ（[deploy.md](../../deploy.md)） |
+
+## 関連
+
+- [vpc-perimeter.md](vpc-perimeter.md)、[emr-serverless.md](emr-serverless.md)、[firehose.md](firehose.md)、[web-ec2.md](web-ec2.md)、[lab-ec2.md](lab-ec2.md)、[agentcore-bedrock.md](agentcore-bedrock.md)
+- [data-stores.md](../../data-stores.md)（データの置き場の全体）
