@@ -101,6 +101,7 @@ upload_lab() {  # upload_lab <バケット>  lab の EC2 は起動のたびに s
     || { echo "containerlab の rpm が取れない（社内 PC なら docs/setup.md「社内 PC の CA」）" >&2; return 1; }
   # --delete: 手元で消した・改名したファイル（srlinux/*.cli など）を S3 からも消す。EC2 も --delete で読むので、残すと古い機器名が戻る。
   # --exclude に当たるものは送らず、S3 側でも消さない（aws s3 sync の --delete の説明）。rpm は下の cp で置くので、ここで除いて消させない
-  aws s3 sync --only-show-errors --delete app/containerlab/ "s3://$1/lab/" --exclude "splab.clab.yml" --exclude "__pycache__/*" --exclude "*.DS_Store" --exclude "$CONTAINERLAB_RPM" || return 1
+  # clab-*/: containerlab が lab.sh up で作る作業ディレクトリ（root の持ち物。.gitignore と同じ）。手元で lab を上げたあとに打っても送らない
+  aws s3 sync --only-show-errors --delete app/containerlab/ "s3://$1/lab/" --exclude "splab.clab.yml" --exclude "__pycache__/*" --exclude "*.DS_Store" --exclude "$CONTAINERLAB_RPM" --exclude "clab-*/*" || return 1
   aws s3 cp --only-show-errors "$CONTAINERLAB_RPM" "s3://$1/lab/"
 }

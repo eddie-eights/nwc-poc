@@ -238,14 +238,14 @@ check("lab/ の置き場は upload_lab の宛先と同じ（s3://<バケット>/
 _ul = re.search(r"^upload_lab\(\) \{.*?^\}", common, re.M | re.S).group(0)
 _ul_sync = [l for l in _ul.splitlines() if l.strip().startswith("aws s3 sync ")]
 _ul_ex = lambda l: set(re.findall(r'--exclude "([^"]+)"', l))
-check("upload_lab の sync は --delete 付きで、除くのは描いた splab.clab.yml・__pycache__・.DS_Store と、下の cp で置く rpm（$CONTAINERLAB_RPM）",
+check("upload_lab の sync は --delete 付きで、除くのは描いた splab.clab.yml・__pycache__・.DS_Store・containerlab の作業ディレクトリ clab-*/ と、下の cp で置く rpm（$CONTAINERLAB_RPM）",
       len(_ul_sync) == 1 and " --delete " in _ul_sync[0]
-      and _ul_ex(_ul_sync[0]) == {"splab.clab.yml", "__pycache__/*", "*.DS_Store", "$CONTAINERLAB_RPM"}
+      and _ul_ex(_ul_sync[0]) == {"splab.clab.yml", "__pycache__/*", "*.DS_Store", "$CONTAINERLAB_RPM", "clab-*/*"}
       and 'aws s3 cp --only-show-errors "$CONTAINERLAB_RPM" "s3://$1/lab/"' in _ul)
 _ulc = re.search(r'output "upload_lab_command" \{.*?value\s*=\s*"(.*)"\n', read("IaC", "terraform", "aws-managed", "pipeline", "lab", "outputs.tf"), re.S).group(1).replace('\\"', '"')
 check("lab の output upload_lab_command も同じ --delete と同じ除外（rpm は var.containerlab_version の名前）",
       _ulc.startswith("aws s3 sync --delete app/containerlab/ ")
-      and _ul_ex(_ulc.split(" && ")[0]) == {"splab.clab.yml", "__pycache__/*", "*.DS_Store", "containerlab_${var.containerlab_version}_linux_amd64.rpm"}
+      and _ul_ex(_ulc.split(" && ")[0]) == {"splab.clab.yml", "__pycache__/*", "*.DS_Store", "containerlab_${var.containerlab_version}_linux_amd64.rpm", "clab-*/*"}
       and sh_const(common, "CONTAINERLAB_RPM") == "containerlab_${CONTAINERLAB_VERSION}_linux_amd64.rpm")
 check("setup.sh は TELEGRAF_IMAGE があるときだけ Telegraf のユニットを作り、無ければ消す（lab の EC2 には残さない）",
       re.search(r'if \[ -n "\$\{TELEGRAF_IMAGE:-\}" \]; then\n\s*cat > "\$TG_UNIT"[\s\S]*?ExecStart=\$SRC/lab\.sh telegraf run[\s\S]*?else\n\s*systemctl disable --now[\s\S]*?rm -f "\$TG_UNIT"', setup) is not None)
