@@ -61,13 +61,13 @@ LOCAL_PORT="${LOCAL_PORT:-8080}"   # 最後のポートフォワーディング�
 # Spark のタスクが HTTP の格納先（opensearch / prometheus / splunk）へ送る所（driver か executor）と、1 回のトリガーに読む件数の上限。
 # 意味と書き方はマネージド版（ops/up.sh）と同じで、analytics の var.http_send / max_offsets_per_trigger / max_offsets_per_trigger_by_sink に渡す
 HTTP_SEND="${HTTP_SEND:-driver}"
-case "$HTTP_SEND" in driver | executor) ;; *) die "HTTP_SEND は driver か executor（小文字）: $HTTP_SEND。まだ何も作っていない" ;; esac
+case "$HTTP_SEND" in driver | executor) ;; *) die "HTTP_SEND は driver か executor（小文字）: ${HTTP_SEND}。まだ何も作っていない" ;; esac
 MAX_OFFSETS_PER_TRIGGER="${MAX_OFFSETS_PER_TRIGGER:-10000}"
 MAX_OFFSETS_BY_SINK=""   # splunk=2000,prometheus=5000 の形（HCL の map の中身）
 for v in MAX_OFFSETS_PER_TRIGGER MAX_OFFSETS_PER_TRIGGER_ICEBERG MAX_OFFSETS_PER_TRIGGER_SPLUNK MAX_OFFSETS_PER_TRIGGER_OPENSEARCH MAX_OFFSETS_PER_TRIGGER_PROMETHEUS; do
   val="${!v:-}"
   [ -n "$val" ] || continue
-  case "$val" in *[!0-9]* | 0?* | ??????????*) die "$v は 0 以上の整数（0 で上限なし。9 桁まで、先頭に 0 を付けない）: $val。まだ何も作っていない" ;; esac
+  case "$val" in *[!0-9]* | 0?* | ??????????*) die "$v は 0 以上の整数（0 で上限なし。9 桁まで、先頭に 0 を付けない）: ${val}。まだ何も作っていない" ;; esac
   [ "$v" = MAX_OFFSETS_PER_TRIGGER ] || MAX_OFFSETS_BY_SINK="$MAX_OFFSETS_BY_SINK${MAX_OFFSETS_BY_SINK:+,}$(printf '%s' "${v#MAX_OFFSETS_PER_TRIGGER_}" | tr 'A-Z' 'a-z')=$val"
 done
 [ -z "${NO_PORTFORWARD:-}" ] || die "NO_PORTFORWARD は NO_DASHBOARD_PORTFORWARD に変わった（意味は同じで、1 なら最後の Web へのポートフォワーディングを開かずに終わる）。deploy.env と環境変数を書き換える。まだ何も作っていない"
@@ -75,7 +75,7 @@ flag_value NO_DASHBOARD_PORTFORWARD
 SYSLOG_STANDARD="${SYSLOG_STANDARD:-RFC3164}"
 case "$SYSLOG_STANDARD" in
   RFC3164|RFC5424) ;;
-  *) die "SYSLOG_STANDARD は RFC3164 か RFC5424（大文字）: $SYSLOG_STANDARD。まだ何も作っていない" ;;
+  *) die "SYSLOG_STANDARD は RFC3164 か RFC5424（大文字）: ${SYSLOG_STANDARD}。まだ何も作っていない" ;;
 esac
 # SNMP_POLL は 2026-10-09 から使わない（cycle 013 で SNMP のポーリングをやめた）。マネージド版と同じく、書いてあれば注意を出すだけ
 if [ -n "${SNMP_POLL:-}" ]; then
@@ -98,7 +98,7 @@ az_num LAMBDA_AZ_NUM 1 1 3 "サブネットは a / b / c の 3 つ"    # agent�
 az_num NAUTOBOT_DB_AZ_NUM 1 1 2 "RDS の Multi-AZ（待機系 1 台）が 2。3 は Multi-AZ DB クラスタで、作っていない"
 SPLUNK_INDEX="${SPLUNK_INDEX:-}"
 if [ "$SPLUNK_AZ_NUM" -gt 1 ]; then
-  [ -z "$SPLUNK_INDEX" ] || die "SPLUNK_AZ_NUM=$SPLUNK_AZ_NUM（Splunk のクラスター）では index は main だけで、SPLUNK_INDEX は書けない（いまは SPLUNK_INDEX=$SPLUNK_INDEX）。SPLUNK_INDEX を消すか、SPLUNK_AZ_NUM=1 にする。まだ何も作っていない"
+  [ -z "$SPLUNK_INDEX" ] || die "SPLUNK_AZ_NUM=${SPLUNK_AZ_NUM}（Splunk のクラスター）では index は main だけで、SPLUNK_INDEX は書けない（いまは SPLUNK_INDEX=${SPLUNK_INDEX}）。SPLUNK_INDEX を消すか、SPLUNK_AZ_NUM=1 にする。まだ何も作っていない"
 fi
 SPLUNK_TASKS=1   # Splunk のタスクの数（7-4b の待ち）。クラスターは manager 1 + indexer SPLUNK_AZ_NUM + search head 1
 if [ "$SPLUNK_AZ_NUM" -gt 1 ]; then SPLUNK_TASKS=$((SPLUNK_AZ_NUM + 2)); fi
@@ -116,7 +116,7 @@ for k in $AZ_NUM_SET; do
   if [ "$k" != ENDPOINTS_AZ_NUM ] && [ "${!k}" -gt "$ENDPOINTS_AZ_NUM" ]; then AZ_NUM_OVER="$AZ_NUM_OVER $k=${!k}"; fi
 done
 if [ -n "$AZ_NUM_OVER" ]; then
-  echo "注意:${AZ_NUM_OVER} に対して ENDPOINTS_AZ_NUM=$ENDPOINTS_AZ_NUM。エンドポイントはサブネット a から $ENDPOINTS_AZ_NUM つにしか無いので、その AZ が止まると、ほかの AZ に置いたものも AWS の API に届かない（止めずに進む）"
+  echo "注意:${AZ_NUM_OVER} に対して ENDPOINTS_AZ_NUM=${ENDPOINTS_AZ_NUM}。エンドポイントはサブネット a から $ENDPOINTS_AZ_NUM つにしか無いので、その AZ が止まると、ほかの AZ に置いたものも AWS の API に届かない（止めずに進む）"
 fi
 # Kafka は 3 台を a / b / c に 1 台ずつ置く（kafka.tf。数は変えられない）。エンドポイントが a だけ（ENDPOINTS_AZ_NUM=1）でも動くが、a が止まると
 # b / c の Kafka も ECR や CloudWatch Logs に届かない
@@ -253,7 +253,7 @@ else
   if [ -n "$NEED_OSS" ]; then
     # 公開イメージ（Fargate は VPC の中から ECR しか引けないので写す。arm64）と、app/spark/・app/neo4j/ のビルド（arm64）
     # shellcheck disable=SC2086
-    mirror_oss_images "$REG" "$PREFIX" $OSS_IMAGES || die "OSS 版のイメージ（$OSS_IMAGES）を ECR に置けなかった"
+    mirror_oss_images "$REG" "$PREFIX" $OSS_IMAGES || die "OSS 版のイメージ（${OSS_IMAGES}）を ECR に置けなかった"
   fi
   if [ -n "$NEED_SPLUNK" ]; then
     build_splunk   # amd64（ops/up-common.sh。マネージド版と共通）
@@ -385,7 +385,7 @@ KAFKA_SERVICES=$(tf pipeline/stream output -json kafka_service_names \
 if aws ecs wait services-stable --region "$REGION" --cluster "$KAFKA_CLUSTER" --services $KAFKA_SERVICES; then
   echo "Kafka は動いている（ログ: aws logs tail --region $REGION $(tf pipeline/stream output -raw kafka_log_group_name) --follow）"
 else
-  printf '\033[1;33m%s\033[0m\n' "Kafka のサービス（$KAFKA_SERVICES）が 10 分たっても安定しない。aws ecs list-tasks --region $REGION --cluster $KAFKA_CLUSTER --desired-status STOPPED とロググループ $(tf pipeline/stream output -raw kafka_log_group_name) を見る"
+  printf '\033[1;33m%s\033[0m\n' "Kafka のサービス（${KAFKA_SERVICES}）が 10 分たっても安定しない。aws ecs list-tasks --region $REGION --cluster $KAFKA_CLUSTER --desired-status STOPPED とロググループ $(tf pipeline/stream output -raw kafka_log_group_name) を見る"
 fi
 log "7-2d. Telegraf（受ける側）と gnmic の ECS のサービスが安定するのを待つ（1〜3 分）"
 TG_CLUSTER=$(tf pipeline/stream output -raw telegraf_cluster_name); TG_DIALOUT_SERVICE=$(tf pipeline/stream output -raw telegraf_dialout_service_name)
@@ -443,7 +443,7 @@ if aws ecs wait services-stable --region "$REGION" --cluster "$GRAPH_CLUSTER" --
   LAB_TOPOLOGY_B64=$("${PY[@]}" app/containerlab/lab_topology.py app/containerlab | base64 | tr -d '\n') || die "app/containerlab/lab_topology.py が lab の定義を読めなかった"
   run_on_instance "$INSTANCE_ID" "echo $(base64 < ops/seed_graph.py | tr -d '\n') | base64 -d | NAME_PREFIX=$PREFIX LAB_TOPOLOGY_B64=$LAB_TOPOLOGY_B64 /usr/bin/python3.13 -"
 else
-  GRAPH_WARN="Neo4j のサービス（$NEO4J_SERVICE）が 10 分たっても安定しない。トポロジは入れていない。aws ecs list-tasks --region $REGION --cluster $GRAPH_CLUSTER --desired-status STOPPED とロググループ $(tf pipeline/graph output -raw neo4j_log_group_name) を見て、直ったら ops/oss/up.sh を打ち直す"
+  GRAPH_WARN="Neo4j のサービス（${NEO4J_SERVICE}）が 10 分たっても安定しない。トポロジは入れていない。aws ecs list-tasks --region $REGION --cluster $GRAPH_CLUSTER --desired-status STOPPED とロググループ $(tf pipeline/graph output -raw neo4j_log_group_name) を見て、直ったら ops/oss/up.sh を打ち直す"
   printf '\033[1;33m%s\033[0m\n' "$GRAPH_WARN"
 fi
 
@@ -472,7 +472,7 @@ log "7-4. analytics（IaC/terraform/oss/pipeline/analytics。Spark・OpenSearch 
 # Spark のタスクが ECS の secrets で受ける。値は Terraform の state にも画面にも出さない（ops/up-common.sh）
 ensure_secret "/$PREFIX/opensearch-password" strong-password "OpenSearch admin password (created by ops/oss/up.sh)"
 # Splunk の管理者のパスワードと HEC の token（クラスターなら合言葉も）。マネージド版と同じ関数（ops/up-common.sh）
-echo "Splunk Enterprise（splunk/splunk:$SPLUNK_VERSION・試用ライセンス）を立てる。Splunk のライセンスと Splunk General Terms に同意して起動する"
+echo "Splunk Enterprise（splunk/splunk:${SPLUNK_VERSION}・試用ライセンス）を立てる。Splunk のライセンスと Splunk General Terms に同意して起動する"
 ensure_splunk_secrets "$SPLUNK_AZ_NUM"
 # Grafana の admin のパスワード。Grafana のタスクが ECS の secrets で受ける（grafana.tf。マネージド版と同じ名前）
 ensure_secret "/$PREFIX/grafana/admin-password" password "Grafana admin password (created by ops/oss/up.sh)"
@@ -506,13 +506,13 @@ VM_SERVICES=$(tf pipeline/analytics output -json victoriametrics_service_names \
 if aws ecs wait services-stable --region "$REGION" --cluster "$AN_CLUSTER" --services $OS_SERVICES; then
   echo "OpenSearch は動いている（ログ: aws logs tail --region $REGION $(tf pipeline/analytics output -raw opensearch_log_group_name) --follow）"
 else
-  STORE_WARN="$STORE_WARN OpenSearch（$OS_SERVICES。ロググループ $(tf pipeline/analytics output -raw opensearch_log_group_name)）"
+  STORE_WARN="$STORE_WARN OpenSearch（${OS_SERVICES}。ロググループ $(tf pipeline/analytics output -raw opensearch_log_group_name)）"
 fi
 # shellcheck disable=SC2086
 if aws ecs wait services-stable --region "$REGION" --cluster "$AN_CLUSTER" --services $VM_SERVICES; then
   echo "VictoriaMetrics は動いている（ログ: aws logs tail --region $REGION $(tf pipeline/analytics output -raw victoriametrics_log_group_name) --follow）"
 else
-  STORE_WARN="$STORE_WARN VictoriaMetrics（$VM_SERVICES。ロググループ $(tf pipeline/analytics output -raw victoriametrics_log_group_name)）"
+  STORE_WARN="$STORE_WARN VictoriaMetrics（${VM_SERVICES}。ロググループ $(tf pipeline/analytics output -raw victoriametrics_log_group_name)）"
 fi
 log "7-4b. Splunk のタスク（$SPLUNK_TASKS 個）が HEALTHY になるのを待つ（初回は 5〜10 分。クラスターはもっとかかる）"
 SP_SERVICES=$(tf pipeline/analytics output -raw splunk_service_name)
@@ -582,7 +582,7 @@ if aws ecs wait services-stable --region "$REGION" --cluster "$WF_CLUSTER" --ser
     --query 'tasks[0].attachments[0].details[?name==`privateIPv4Address`].value | [0]' --output text)
   echo "WF_TASK=${WF_TASK##*/} WF_TASK_IP=$WF_TASK_IP"
 else
-  WF_WARN="workflow のワーカーのサービス（$WF_SERVICE）が 20 分たっても安定しない。ワーカーのログ（$(tf workflow output -raw worker_logs_command)）と aws ecs list-tasks --region $REGION --cluster $WF_CLUSTER --desired-status STOPPED を見て、直ったら ops/oss/up.sh を打ち直す"
+  WF_WARN="workflow のワーカーのサービス（${WF_SERVICE}）が 20 分たっても安定しない。ワーカーのログ（$(tf workflow output -raw worker_logs_command)）と aws ecs list-tasks --region $REGION --cluster $WF_CLUSTER --desired-status STOPPED を見て、直ったら ops/oss/up.sh を打ち直す"
   printf '\033[1;33m%s\033[0m\n' "$WF_WARN"
 fi
 log "8-2. Web を起こし直す（workflow の Gateway の値を読ませる）"
@@ -590,7 +590,7 @@ run_on_instance "$INSTANCE_ID" "systemctl restart $PREFIX-web.service; $WEB_ACTI
 
 # ---- 9. Runtime のロググループ ------------------------------------------------------------
 # AgentCore が作るロググループに保持期間とタグを付ける（まだ無ければ先に作る。消すのは ops/oss/down.sh の delete_runtime_log_groups）
-log "9. Runtime のロググループ（$LOG_GROUP）の保持期間を 7 日にする"
+log "9. Runtime のロググループ（${LOG_GROUP}）の保持期間を 7 日にする"
 if ! aws logs put-retention-policy --region "$REGION" --log-group-name "$LOG_GROUP" --retention-in-days 7 2>/dev/null; then
   aws logs create-log-group --region "$REGION" --log-group-name "$LOG_GROUP"
   aws logs put-retention-policy --region "$REGION" --log-group-name "$LOG_GROUP" --retention-in-days 7

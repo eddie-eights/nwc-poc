@@ -54,7 +54,7 @@ deploy() {  # deploy <CreateInstance> [<TelegrafImageTag>]  版は ops/lab-commo
       "NetworkPerimeter=$([ -n "$NETWORK_PERIMETER" ] && echo true || echo false)" \
       "ContainerlabVersion=$CONTAINERLAB_VERSION" "SrlinuxImageTag=$SRLINUX_ECR_TAG" "MultitoolImageTag=$MULTITOOL_ECR_TAG" "TrexImageTag=$TREX_ECR_TAG" \
     --tags "Project=$PREFIX" "owner=$OWNER" \
-    || die "$STACK を作れなかった（aws cloudformation describe-stack-events --region $REGION --stack-name $STACK）"
+    || die "$STACK を作れなかった（aws cloudformation describe-stack-events --region $REGION --stack-name ${STACK}）"
 }
 
 instance_id() {  # EC2 の ID。まだ無い（初回の器だけの状態）なら空。読めなければ 1（$(…) の中では set -e が効かないので明示する）
@@ -84,7 +84,7 @@ case "$CMD" in
     fi
     aws cloudformation delete-stack --region "$REGION" --stack-name "$STACK"
     aws cloudformation wait stack-delete-complete --region "$REGION" --stack-name "$STACK" \
-      || die "$STACK が消えなかった（aws cloudformation describe-stack-events --region $REGION --stack-name $STACK）"
+      || die "$STACK が消えなかった（aws cloudformation describe-stack-events --region $REGION --stack-name ${STACK}）"
     echo "$STACK を消した"
     ;;
 
@@ -110,9 +110,9 @@ case "$CMD" in
       # 初回の deploy が変更セットを作っただけで止まった形（中身は無い）。deploy は無いものとして作り直せる
       REVIEW_IN_PROGRESS) s="" ;;
       ROLLBACK_COMPLETE|ROLLBACK_FAILED|DELETE_FAILED)
-        die "$STACK が $s。作り直せないので先に ops/lab-debug.sh down" ;;
+        die "$STACK が ${s}。作り直せないので先に ops/lab-debug.sh down" ;;
       *_IN_PROGRESS)
-        die "$STACK が $s（CloudFormation が作業中）。終わってから打ち直す" ;;
+        die "$STACK が ${s}（CloudFormation が作業中）。終わってから打ち直す" ;;
     esac
     if [ -z "$s" ]; then
       # イメージと lab/ の置き場がまだ無いので、EC2 の無い器（VPC・エンドポイント・バケット・ECR）を先に作る
@@ -122,7 +122,7 @@ case "$CMD" in
       # 2026-10-04 より前の形（土台 IaC/terraform/aws-managed/base/core の VPC とバケットを使っていた）は器を持たないので、作り直す
       rp=$(stack_output RepositoryPrefix) || die "$STACK の出力が読めない（上の出力）"
       case "$rp" in ''|None) die "$STACK が前の形（土台の VPC を使う）のまま。先に ops/lab-debug.sh down" ;; esac
-      log "1. $STACK はある（$s）"
+      log "1. $STACK はある（${s}）"
     fi
 
     log "2. イメージ（ECR に無いタグだけ作る。lab の 3 つと、stream の ECS と同じ作り方の Telegraf。どれも x86_64 の EC2 に載るので amd64）"
@@ -148,7 +148,7 @@ case "$CMD" in
     log "3. lab の材料（containerlab の rpm とトポロジ）を s3://$BUCKET/lab/ に置く"
     upload_lab "$BUCKET" || die "lab の材料を s3://$BUCKET/lab/ に置けなかった"
 
-    log "4. $STACK の EC2（$TEMPLATE。初回は EC2 の中でトポロジが上がるまで 10 分ほど）"
+    log "4. $STACK の EC2（${TEMPLATE}。初回は EC2 の中でトポロジが上がるまで 10 分ほど）"
     BEFORE=$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK" \
       --query 'Stacks[0].LastUpdatedTime' --output text 2>/dev/null || true)
     deploy true "$TELEGRAF_TAG"

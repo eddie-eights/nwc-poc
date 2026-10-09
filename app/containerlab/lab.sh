@@ -154,7 +154,7 @@ case "${1:-}" in
   render)
     : "${SRLINUX_IMAGE:?}" "${MULTITOOL_IMAGE:?}" "${TREX_IMAGE:?}"
     sed -e "s#__SRLINUX_IMAGE__#$SRLINUX_IMAGE#" -e "s#__MULTITOOL_IMAGE__#$MULTITOOL_IMAGE#" -e "s#__TREX_IMAGE__#$TREX_IMAGE#" "$TOPO.in" > "$TOPO"
-    echo "$TOPO を作った（イメージは $SRLINUX_IMAGE と $MULTITOOL_IMAGE と $TREX_IMAGE）"
+    echo "$TOPO を作った（イメージは $SRLINUX_IMAGE と $MULTITOOL_IMAGE と ${TREX_IMAGE}）"
     ;;
   pull)
     # ECR の認証は 12 時間で切れるので、毎回ログインしてから取る（署名はインスタンスロール）。
@@ -245,9 +245,9 @@ case "${1:-}" in
     command -v snmptrap >/dev/null || { echo "snmptrap が無い（net-snmp-utils）" >&2; exit 1; }
     pid=$(docker inspect -f '{{.State.Pid}}' "clab-$LAB-$TREX")
     nsenter -t "$pid" -n snmptrap -v2c -c "$SNMP_COMMUNITY" "$MGMT_GW:162" '' "$TEST_TRAP_OID" .1.3.6.1.4.1.8072.2.3.2.1 i 1
-    echo "trap $TEST_TRAP_OID を $TREX（$(mgmt_ip "$TREX")）から $MGMT_GW:162 へ送った"
+    echo "trap $TEST_TRAP_OID を ${TREX}（$(mgmt_ip "$TREX")）から $MGMT_GW:162 へ送った"
     hint "'$LAB_CMD telegraf logs' に snmp_trap（oid=${TEST_TRAP_OID}）が出る" \
-      "数分で Grafana と Splunk の両方が trap（$TREX の $TEST_TRAP_OID）を出し、次の trap が来なければおよそ 10 分後に両方が解消を出す"
+      "数分で Grafana と Splunk の両方が trap（$TREX の ${TEST_TRAP_OID}）を出し、次の trap が来なければおよそ 10 分後に両方が解消を出す"
     ;;
   failover)
     # dc1-a-leaf-01 から dc1-s-leaf-01 のループバック（10.255.1.1）への経路。切替前は spine 2 台（172.16.0.4 / 172.16.0.12）の ECMP、切替後は 172.16.0.12 だけ
@@ -293,7 +293,7 @@ case "${1:-}" in
     ;;
   forward)
     if local_telegraf; then
-      # デバッグ用の EC2 と手元の compose: 受け手はこのホストの host ネットワークにいるので、gNMI（手元の gnmic）と syslog（$MGMT_GW:$LOG_PORT）はそのまま届く。
+      # デバッグ用の EC2 と手元の compose: 受け手はこのホストの host ネットワークにいるので、gNMI（手元の gnmic）と syslog（$MGMT_GW:${LOG_PORT}）はそのまま届く。
       # 機器の trap は $MGMT_GW の 162 に来るので、Telegraf が待つ $TRAP_PORT へ向けるだけ（送り元は機器の管理 IP のまま）
       unforward
       c=(-m comment --comment "$FW_TAG")
@@ -320,7 +320,7 @@ case "${1:-}" in
     iptables -I DOCKER-USER 1 -s "$s" -d "$MGMT" -p tcp --dport "$GNMI_PORT" "${c[@]}" -j ACCEPT
     # Docker 28 以降は raw の PREROUTING でブリッジ以外から来たコンテナ宛てを落とす。その前で抜ける（古い Docker では何もしない規則になる）
     iptables -t raw -I PREROUTING 1 -s "$s" -d "$MGMT" -p tcp --dport "$GNMI_PORT" "${c[@]}" -j ACCEPT
-    # trap と syslog: 機器の宛先（この EC2 の $MGMT_GW の 162 と $LOG_PORT）を Telegraf の NLB へ向け直す（NLB がタスクの 1162 と $LOG_PORT へ）
+    # trap と syslog: 機器の宛先（この EC2 の $MGMT_GW の 162 と ${LOG_PORT}）を Telegraf の NLB へ向け直す（NLB がタスクの 1162 と $LOG_PORT へ）
     iptables -t nat -I PREROUTING 1 -s "$MGMT" -d "$MGMT_GW" -p udp --dport 162 "${c[@]}" -j DNAT --to-destination "$t:162"
     iptables -t nat -I PREROUTING 1 -s "$MGMT" -d "$MGMT_GW" -p udp --dport "$LOG_PORT" "${c[@]}" -j DNAT --to-destination "$t:$LOG_PORT"
     iptables -I DOCKER-USER 1 -s "$MGMT" -d "$t" -p udp --dport 162 "${c[@]}" -j ACCEPT
@@ -339,7 +339,7 @@ case "${1:-}" in
     for tb in raw filter nat; do iptables -t "$tb" -S 2>/dev/null | grep -- "--comment $FW_TAG" || true; done
     echo "== nat POSTROUTING（$FW_TAG の RETURN が Docker の MASQUERADE より上にあること）=="
     iptables -t nat -S POSTROUTING
-    echo "== 機器から見た trap / syslog の宛先（$MGMT_GW。DNAT で Telegraf へ）と gNMI の受け口（$GNMI_PORT）=="
+    echo "== 機器から見た trap / syslog の宛先（${MGMT_GW}。DNAT で Telegraf へ）と gNMI の受け口（${GNMI_PORT}）=="
     for n in $(routers); do
       printf '  %-14s ' "$n"
       # list はキー無しだと "Missing value for 'host'" になるので * で全部出す。grep が空でも set -e / pipefail で止めない
@@ -356,7 +356,7 @@ case "${1:-}" in
         # trap だけ受ける（gNMI の購読と SNMP のポーリングは cycle 013 でやめた。gNMI を 1 回取って見るのは stream の output の gnmic_exec_command）
         docker image inspect "$TELEGRAF_IMAGE" >/dev/null 2>&1 || "$SELF" pull
         docker rm -f "$TG" >/dev/null 2>&1 || true
-        # host ネットワーク: 管理ネットワーク（$MGMT）の機器へそのまま届き、機器からの $MGMT_GW:$LOG_PORT / $TRAP_PORT もそのまま受ける
+        # host ネットワーク: 管理ネットワーク（${MGMT}）の機器へそのまま届き、機器からの $MGMT_GW:$LOG_PORT / $TRAP_PORT もそのまま受ける
         docker run -d --name "$TG" --restart unless-stopped --network host --log-opt max-size=50m --log-opt max-file=3 \
           -e SINK=stdout -e SYSLOG_STANDARD="$LOG_STANDARD" -e AWS_REGION "$TELEGRAF_IMAGE" run >/dev/null
         echo "Telegraf を起こした（${TELEGRAF_IMAGE}。出力は '$LAB_CMD telegraf logs -f'）"
@@ -387,7 +387,7 @@ case "${1:-}" in
         dir=$(x "$TREX" find / -xdev -maxdepth 5 -name t-rex-64 -type f 2>/dev/null | head -1) || true
         [ -n "$dir" ] || { echo "$TREX の中に t-rex-64 が無い（TREX_IMAGE が TRex のイメージか）" >&2; exit 1; }
         docker exec -d "clab-$LAB-$TREX" sh -c 'cd "$1" && exec ./t-rex-64 -i --no-key --iom 0 > "$2" 2>&1' sh "${dir%/*}" "$TREX_LOG"
-        echo "TRex を起こした（ポート ${ports[*]}、設定 $TREX_CFG、出力 $TREX_LOG、プロファイル $TREX_PROFILES/stl）。起動に数十秒。'$LAB_CMD trex status' で見る"
+        echo "TRex を起こした（ポート ${ports[*]}、設定 ${TREX_CFG}、出力 ${TREX_LOG}、プロファイル $TREX_PROFILES/stl）。起動に数十秒。'$LAB_CMD trex status' で見る"
         ;;
       stop)   x "$TREX" pkill -f "$TREX_PROC" || echo "TRex は動いていない" ;;
       status)
