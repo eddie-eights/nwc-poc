@@ -28,7 +28,7 @@
 | 2026-10-04 より前のデバッグ用の EC2 が残ったまま `ops/down.sh` で土台（base/core）が消えない（`DeleteConflict` / `DependencyViolation`） | 前の形のスタックは土台のサブネット・SG・境界ポリシーを使っていて、今の `ops/down.sh` はそれを消さない。`ops/lab-debug.sh down` のあと `ops/down.sh` を打ち直す（`ops/up.sh` もそのスタック向けの ECR のエンドポイントを外すので、先に消しておく） |
 | `ops/up.sh` が「注意: LAB_DEBUG は使わない」と出す | `deploy.env` から `LAB_DEBUG` の行を消す。デバッグ用の EC2 は `ops/lab-debug.sh up` / `down` |
 | `ops/lab-debug.sh` が「… が ROLLBACK_COMPLETE」（ROLLBACK_FAILED / DELETE_FAILED）で止まる | 原因は `aws cloudformation describe-stack-events --stack-name <prefix>-lab-debug`。`ops/lab-debug.sh down` のあと `up` |
-| 7-3 で graph の apply が `waiting for Lambda Function (<prefix>-graph-status) create: unexpected state 'Failed' … InsufficientRolePermissions` で止まる | ロールのポリシー（VPC の ENI を作る `ec2:*NetworkInterface*`）が IAM に行き渡る前に Lambda が検査した（2026-10-10 の AWS。ポリシーの作成完了の 1 秒後に Lambda を作っていた）。state では Lambda が tainted になるので、同じ引数で `ops/up.sh` を打ち直すと作り直されて通る（続きは表の下の `graph-status の作成`） |
+| 7-3 で graph の apply が `waiting for Lambda Function (<prefix>-graph-status) create: unexpected state 'Failed' … InsufficientRolePermissions` で止まる | ロールのポリシー（VPC の ENI を作る `ec2:*NetworkInterface*`）が IAM に行き渡る前に Lambda が検査した（2026-10-10 の AWS。ポリシーの作成完了の 1 秒後に Lambda を作っていた）。cycle 029 から `sync.tf` の `time_sleep.status_iam` で 30 秒待ってから作る。それでも出たら 30 秒では足りなかったということなので `create_duration` を延ばす（60s）。その場の回避は、同じ引数で `ops/up.sh` を打ち直す（state では Lambda が tainted になるので作り直されて通る。続きは表の下の `graph-status の作成`） |
 | 7-4 で analytics の apply が `aws_kinesis_firehose_delivery_stream.alert_events` の `InvalidArgumentException: The security token included in the request is invalid. Ensure that the provided IAM role associated with firehose is not deleted.` で止まる | ロールを作った直後の IAM の反映遅れ（2026-10-09 の AWS）。cycle 026 から `history.tf` の `time_sleep.alert_firehose_iam` で 30 秒待ってから作る。それでも出るなら同じ引数で `ops/up.sh` を打ち直す（通った実績あり）か、`create_duration` を延ばす |
 | ビルドの `pip install` が `CERTIFICATE_VERIFY_FAILED` | 社内 CA の差し替え。`ReadTimeoutError` は QEMU が遅いだけなので打ち直す |
 
@@ -44,10 +44,9 @@
   - `terraform -chdir=IaC/terraform/aws-managed/pipeline/stream destroy -refresh=false -var owner=<OWNER> -var 'gnmi_targets="0.0.0.0:57400"'` で data source を読まずに state のものを消し、`ops/down.sh` を打ち直す。
   - 読めない data source の destroy が `-refresh=false` で通るのは手元の Terraform 1.16 で確かめた。
 - `graph-status の作成`:
-  - `IaC/terraform/aws-managed/pipeline/graph/sync.tf` の `aws_lambda_function.status` は `aws_iam_role_policy.status` を待つだけで、IAM の反映は待たない。ロールを作った直後の apply（初回と、graph を消してからの作り直し）で起きうる。
-  - 2026-10-10 の AWS で 1 回目の `ops/up.sh` がここで止まり、同じ引数の 2 回目で `Resources: 3 added, 0 changed, 1 destroyed`（Lambda の replace）で通った。`GetFunction` は `State=Active`、`LastUpdateStatus=Successful`。
+  - ロールを作った直後の apply（初回と、graph を消してからの作り直し）で起きうる。cycle 029 から `IaC/terraform/aws-managed/pipeline/graph/sync.tf`（と OSS 版の `sync.tf`）の `aws_lambda_function.status` は `time_sleep.status_iam`（30 秒。analytics の Firehose と同じ形）を待ってから作る。
+  - 029 より前の 2026-10-10 の AWS では、1 回目の `ops/up.sh` がここで止まり、同じ引数の 2 回目で `Resources: 3 added, 0 changed, 1 destroyed`（Lambda の replace）で通った。`GetFunction` は `State=Active`、`LastUpdateStatus=Successful`。
   - 2 回目も止まるなら、`aws lambda get-function --function-name <prefix>-graph-status` の `StateReasonCode` を見る。`InsufficientRolePermissions` 以外なら別の原因。
-  - 恒久対策（analytics の Firehose と同じ `time_sleep`）は `docs/cycles/BACKLOG.md` の候補。
 
 ## 閉域（`explicit deny`）
 
