@@ -1,0 +1,5 @@
+# OSS 版（cycle 005）の AgentCore Runtime: マネージド版の依存に Neo4j のドライバ（app/agentcore/graph.py が GRAPH_BACKEND=neo4j で使う）を足す。
+# docker buildx build --platform linux/arm64 --build-arg REQUIREMENTS=requirements-oss.txt -f docker/images/agentcore/Dockerfile app/agentcore/（ops/oss/up.sh）
+# 版は app/graph/・app/dashboard/・app/temporal/ の requirements-oss.txt と同じにする（tests/test_oss.py が見る）
+-r requirements.txt
+neo4j==6.3.1

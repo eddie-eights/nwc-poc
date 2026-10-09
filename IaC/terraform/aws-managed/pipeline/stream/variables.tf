@@ -1,0 +1,208 @@
+# ---------------------------------------------------------------- naming
+variable "region" {
+  description = "AWS region. Same value as IaC/terraform/aws-managed/base/core."
+  type        = string
+  default     = "ap-northeast-1"
+}
+
+variable "owner" {
+  description = "Required. Name of the person who deploys this copy. Resource names and the Project tag are <owner>-nwc-poc (<owner>-nwc-oss in IaC/terraform/oss, see project), so each person can find their own resources in the console. Same value in every root module."
+  type        = string
+
+  validation {
+    # 接頭辞は <owner>-nwc-poc。OpenSearch Serverless の data access policy 名が 32 文字までで、一番長い接尾辞は IaC/terraform/aws-managed/workflow の <接頭辞>-logs-read（10 文字）なので接頭辞は 22 文字まで。-nwc-poc の 8 文字（OSS 版の -nwc-oss も 8 文字）を引いて owner は 14 文字まで
+    # ハイフンの連続と末尾のハイフンも弾く（ECR のリポジトリ名が受け付けない）
+    condition     = can(regex("^[a-z][a-z0-9]*(-[a-z0-9]+)*$", var.owner)) && length(var.owner) <= 14
+    error_message = "owner must be 1-14 lowercase letters, digits and single hyphens, starting with a letter and not ending with one."
+  }
+}
+
+variable "project" {
+  description = "Second half of the resource name prefix and of the Project tag (<owner>-<project>). nwc-poc is the managed-services build (IaC/terraform/aws-managed/); nwc-oss is the build that runs open-source services on ECS instead (IaC/terraform/oss/, cycle 005), whose oss.auto.tfvars sets it. Same value in every root module."
+  type        = string
+  default     = "nwc-poc"
+
+  validation {
+    condition     = contains(["nwc-poc", "nwc-oss"], var.project)
+    error_message = "project must be nwc-poc (IaC/terraform/aws-managed/) or nwc-oss (IaC/terraform/oss/)."
+  }
+}
+
+# ---------------------------------------------------------------- MSK
+variable "kafka_version" {
+  description = "MSK provisioned Kafka version, KRaft mode only (the .kraft suffix selects KRaft; Kafka 4 has no ZooKeeper mode). 4.1.x is the newest for Standard brokers, 4.2.x is Express brokers only (list-kafka-versions and the MSK supported versions page, checked 2026-09-18)."
+  type        = string
+  default     = "4.1.x.kraft"
+
+  validation {
+    condition     = can(regex("^([4-9]|[1-9][0-9])\\.[0-9]+\\.x\\.kraft$", var.kafka_version))
+    error_message = "kafka_version must be 4.0.x.kraft or newer (KRaft mode), e.g. 4.1.x.kraft."
+  }
+}
+
+variable "broker_instance_type" {
+  description = "Smallest Standard broker that Kafka 4.x (KRaft) accepts. kafka.t3.small is rejected by CreateCluster with 4.1.x.kraft (Unsupported InstanceType, seen 2026-09-18); it is only for 3.x. kafka.m5.large is 0.271 USD per hour per broker in Tokyo, so 0.542 for 2 brokers and 0.813 for 3 (msk_az_num; Price List API, 2026-09-18)."
+  type        = string
+  default     = "kafka.m5.large"
+
+  validation {
+    condition     = contains(["kafka.m5.large", "kafka.m7g.large"], var.broker_instance_type)
+    error_message = "broker_instance_type must be kafka.m5.large or kafka.m7g.large (Kafka 4.x does not accept kafka.t3.small)."
+  }
+}
+
+variable "msk_az_num" {
+  description = "Number of AZs (subnets a, b, c of IaC/terraform/aws-managed/base/core from the front) of the MSK cluster, one broker per AZ. 2 or 3; 1 is not possible because MSK takes client subnets in two or three AZs only (Amazon MSK API Reference, Clusters, BrokerNodeGroupInfo.clientSubnets: https://docs.aws.amazon.com/msk/1.0/apireference/clusters.html, checked 2026-10-04). 2 keeps replication factor 2 / min.insync.replicas 1, 3 uses 3 / 2. Each broker is about 0.271 USD/h (kafka.m5.large). Changing it on a live cluster recreates the cluster (the topics are lost). ops/up.sh passes MSK_AZ_NUM."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = contains([2, 3], var.msk_az_num)
+    error_message = "msk_az_num must be 2 or 3 (MSK puts its brokers in two or three AZs; one AZ is not possible)."
+  }
+}
+
+variable "log_retention_days" {
+  description = "Retention of the broker log group."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = contains([1, 3, 7, 14, 30], var.log_retention_days)
+    error_message = "log_retention_days must be one of 1, 3, 7, 14, 30."
+  }
+}
+
+# ---------------------------------------------------------------- Telegraf (telegraf.tf)
+variable "telegraf_image_tag" {
+  description = "Tag of the Telegraf image in the <prefix>-telegraf repository (docker/images/telegraf/Dockerfile). ops/up.sh builds it as <telegraf version>-<hash of app/telegraf/ and docker/images/telegraf/Dockerfile> and passes it."
+  type        = string
+  default     = "1.40.1"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._-]{1,128}$", var.telegraf_image_tag))
+    error_message = "telegraf_image_tag must be a valid ECR tag (letters, digits, . _ -)."
+  }
+}
+
+variable "telegraf_az_num" {
+  description = "Number of AZs (subnets a, b, c from the front) of the Telegraf dial-out side: the NLB subnets and the number of dial-out tasks (one per AZ). 1, 2 or 3. The gnmic task (gnmic.tf) stays one in subnet a (two would subscribe twice). SSM /<prefix>/telegraf-address stays the NLB address in subnet a (the lab DNATs to it); real devices should send to output telegraf_dialout_dns_name. With 2 or 3 the NLB balances across zones, so subnet a's address still reaches the tasks in b / c. ops/up.sh passes TELEGRAF_AZ_NUM."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2, 3], var.telegraf_az_num)
+    error_message = "telegraf_az_num must be 1, 2 or 3."
+  }
+}
+
+variable "telegraf_task_cpu" {
+  description = "Fargate CPU units of the Telegraf dial-out task (ARM64). 256 (0.25 vCPU) is enough for the traps."
+  type        = number
+  default     = 256
+
+  validation {
+    condition     = contains([256, 512, 1024], var.telegraf_task_cpu)
+    error_message = "telegraf_task_cpu must be 256, 512 or 1024."
+  }
+}
+
+variable "telegraf_task_memory" {
+  description = "Fargate memory (MiB) of the Telegraf dial-out task. Must be a valid pair with telegraf_task_cpu (256 takes 512-2048)."
+  type        = number
+  default     = 512
+
+  validation {
+    condition     = contains([512, 1024, 2048], var.telegraf_task_memory)
+    error_message = "telegraf_task_memory must be 512, 1024 or 2048."
+  }
+}
+
+# ---------------------------------------------------------------- gnmic (gnmic.tf, cycle 013)
+# Always created with this root. Subscribes to the devices over gNMI and writes to Kafka with SASL/SCRAM on MSK (9096) and PLAINTEXT on the OSS Kafka
+variable "gnmic_image_tag" {
+  description = "Tag of the gnmic image (docker/images/gnmic/Dockerfile) in the ECR repository <prefix>-gnmic. ops/up.sh builds it as <GNMIC_VERSION>-<hash of app/gnmic/ and docker/images/gnmic/Dockerfile> and passes it."
+  type        = string
+  default     = "0.49.0"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$", var.gnmic_image_tag))
+    error_message = "gnmic_image_tag must be a valid ECR tag (letters, digits, _ . -, up to 128 characters)."
+  }
+}
+
+variable "gnmi_targets" {
+  description = "gNMI subscription targets of the gnmic task, as \"<IP>:57400\", ... (the inside of a YAML flow list). ops/up.sh makes it from the lab definition (python3 app/containerlab/lab_topology.py app/containerlab --gnmi-targets). Goes to the SSM parameter /<prefix>/gnmic/lab/gnmi-targets (or only the first value of .../nautobot/gnmi-targets with gnmi_targets_from_nautobot)."
+  type        = string
+
+  validation {
+    condition     = can(regex("^\"[0-9.]+:[0-9]+\"(, *\"[0-9.]+:[0-9]+\")*$", var.gnmi_targets))
+    error_message = "gnmi_targets must look like \"203.0.113.11:57400\", \"203.0.113.12:57400\" (python3 app/containerlab/lab_topology.py app/containerlab --gnmi-targets)."
+  }
+}
+
+variable "gnmi_targets_from_nautobot" {
+  description = "Whether the Nautobot job (IaC/terraform/aws-managed/pipeline/nautobot) owns the gNMI targets. true moves them to /<prefix>/gnmic/nautobot/gnmi-targets (Terraform writes only the first value, from gnmi_targets, and ignores later changes); false keeps them in /<prefix>/gnmic/lab/gnmi-targets from the variable. ops/up.sh always passes true (Nautobot is always built with stream since 2026-10-04); false is left for applying this root by hand."
+  type        = bool
+  default     = false
+}
+
+# ---------------------------------------------------------------- syslog-ng and GoFlow2 (collectors.tf, cycle 012)
+# Always created with this root, behind the NLB of telegraf.tf. Both write to Kafka with SASL/SCRAM on MSK (9096) and PLAINTEXT on the OSS Kafka
+variable "syslog_ng_image_tag" {
+  description = "Tag of the syslog-ng image (AxoSyslog, docker/images/syslog-ng/Dockerfile) in the ECR repository <prefix>-syslog-ng. ops/up.sh builds it as <SYSLOG_NG_VERSION>-<hash of app/syslog-ng/ and docker/images/syslog-ng/Dockerfile> and passes it."
+  type        = string
+  default     = "4.29.0"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$", var.syslog_ng_image_tag))
+    error_message = "syslog_ng_image_tag must be a valid ECR tag (letters, digits, _ . -, up to 128 characters)."
+  }
+}
+
+variable "goflow2_image_tag" {
+  description = "Tag of the GoFlow2 image in the ECR repository <prefix>-goflow2. ops/up.sh mirrors netsampler/goflow2:<GOFLOW2_TAG> with the same tag and passes it."
+  type        = string
+  default     = "v2.2.7"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$", var.goflow2_image_tag))
+    error_message = "goflow2_image_tag must be a valid ECR tag (letters, digits, _ . -, up to 128 characters)."
+  }
+}
+
+variable "syslog_standard" {
+  description = "Format of the device syslog that syslog-ng parses (SYSLOG_STANDARD of the task: RFC5424 reads the network() source with flags(syslog-protocol), RFC3164 without it). RFC3164 is the BSD format of Cisco IOS, the production devices. ops/up.sh passes SYSLOG_STANDARD from deploy.env (default RFC3164). The SR Linux lab sends RFC5424 (LAB_SYSLOG_STANDARD in ops/lab-common.sh). Until cycle 012 Telegraf parsed it (inputs.syslog)."
+  type        = string
+  default     = "RFC3164"
+
+  validation {
+    condition     = contains(["RFC3164", "RFC5424"], var.syslog_standard)
+    error_message = "syslog_standard must be RFC3164 or RFC5424."
+  }
+}
+
+# ---------------------------------------------------------------- Kafbat UI (kafka_ui.tf)
+# Always created with this root (no switch, user decision of 2026-10-05). Runs in Docker on the web EC2 since cycle 010 (2026-10-08) and is opened
+# through an SSM port forward to it (output kafka_ui_port_forward_command), with a login form whose admin password is an SSM SecureString created by ops/up.sh
+variable "kafka_ui_image_tag" {
+  description = "Tag of the Kafbat UI image in the ECR repository <prefix>-kafka-ui. ops/up.sh mirrors ghcr.io/kafbat/kafka-ui:<KAFKA_UI_TAG> with the same tag and passes it."
+  type        = string
+  default     = "v1.5.0"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$", var.kafka_ui_image_tag))
+    error_message = "kafka_ui_image_tag must be a valid ECR tag (letters, digits, _ . -, up to 128 characters)."
+  }
+}
+
+variable "kafka_ui_security_protocol" {
+  description = "How Kafbat UI talks to Kafka. SASL_SSL adds the MSK IAM settings (AWS_MSK_IAM with the role of the web EC2, port 9098 - this root's MSK). PLAINTEXT adds none, for a Kafka without authentication (the OSS Kafka of cycle 005)."
+  type        = string
+  default     = "SASL_SSL"
+
+  validation {
+    condition     = contains(["SASL_SSL", "PLAINTEXT"], var.kafka_ui_security_protocol)
+    error_message = "kafka_ui_security_protocol must be SASL_SSL (MSK IAM) or PLAINTEXT."
+  }
+}

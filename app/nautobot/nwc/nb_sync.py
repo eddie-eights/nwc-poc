@@ -1,0 +1,136 @@
+"""Nautobot の中身を読んで、gnmic の購読先の一覧（SSM）と Neptune（OSS 版は Neo4j）の物理層に合わせる。app/nautobot/jobs/nwc_jobs.py の Job と、
+起動時の bootstrap.py が呼ぶ。対応付けは nb_map.py。
+
+  1. 機器の一覧: Service gnmi を持つ機器から作った文字列が SSM の今の値と違うときだけ書き換え、gnmic のサービスを作り直す
+     （ECS は起動時に secrets を読むので、書き換えただけでは反映されない）。空の一覧は書かない（gnmic が起動できなくなる）。
+     cycle 013 で Telegraf の dialin（gNMI と SNMP の 2 つの一覧）から gnmic（gNMI の 1 つ）に替えた
+  2. Neptune（OSS 版は Neo4j。graph.py が GRAPH_BACKEND で切り替える）: graph.sync_physical()（openCypher）で物理層だけを差分で合わせる。status と上の層は残る。機器が 1 台も無いときは触らない（全部消えるので）
+     機器の Status が Maintenance なら maintenance = true を付ける（保守中。ワークフローが起こさない）
+  3. 変更履歴: 直近の ObjectChange（誰が・いつ・何を・どう変えたか）を graph.sync_changes() で label change の頂点に写す（エージェントの recent_changes）
+
+同時に 2 つ走ると古い読みが後から書くことがあるので、Redis のロック（Django の cache）の中で「読む → 書く」をする。
+
+環境変数（IaC/terraform/aws-managed/pipeline/nautobot がコンテナに渡す）:
+  GNMI_TARGETS_PARAMETER                         一覧を書く SSM のパラメータ名（IaC/terraform/aws-managed/pipeline/stream の出力 gnmic_target_parameter）。空なら 1 を飛ばす
+  TELEGRAF_CLUSTER / GNMIC_SERVICE               作り直す ECS のサービス（クラスターは stream の telegraf_cluster_name）
+  NEPTUNE_GRAPH_ID                               Neptune Analytics のグラフの ID（g-xxxxxxxxxx）。空なら 2 と 3 を飛ばす
+  GRAPH_BACKEND / NEO4J_URI / NEO4J_PASSWORD     OSS 版（cycle 005）だけ。NEPTUNE_GRAPH_ID の代わりに Neo4j に書く（パスワードはタスク定義の secrets）。
+                                                 NEO4J_URI が空なら 2 と 3 を飛ばす。Job の戻り値の鍵は graph.BACKEND（neptune / neo4j）
+"""
+import os
+
+import graph
+import nb_map
+import toolkit
+
+LOCK = "nwc-nautobot-sync"
+LOCK_TIMEOUT = 900   # ロックを持ったまま落ちても、この秒数で外れる。Job の制限時間（Celery の hard limit 600 秒）より長くし、走っている途中で外れないようにする
+LOCK_WAIT = 240      # 先に走っている同期を待つ秒数
+GRAPH_NAME = {"neptune": "Neptune", "neo4j": "Neo4j"}[graph.BACKEND]   # ログと失敗の文言に出すグラフの名前
+GRAPH_SETTING = {"neptune": "NEPTUNE_GRAPH_ID", "neo4j": "NEO4J_URI"}[graph.BACKEND]   # 書き先を決める環境変数（無ければグラフを触らない）
+
+
+def read() -> tuple[list[dict], list[dict]]:
+    """Nautobot の DB から nb_map.to_graph() / targets() に渡す rows（機器）と cables（回線）を作る"""
+    from nautobot.dcim.models import Cable, Device
+
+    rows = []
+    for d in (Device.objects.select_related("location", "role", "primary_ip4", "status")
+              .prefetch_related("interfaces__ip_addresses", "interfaces__lag", "services").order_by("name")):
+        interfaces = []
+        for i in d.interfaces.all():
+            hosts = sorted((str(ip.host) for ip in i.ip_addresses.all()), key=lambda h: (":" in h, h))   # v4 が先
+            interfaces.append({"name": i.name, "address": hosts[0] if hosts else "", "lag": i.lag.name if i.lag else ""})
+        rows.append({
+            "name": d.name, "status": d.status.name if d.status else "", "site": d.location.name if d.location else "", "role": d.role.name if d.role else "",
+            "mgmt_ip": str(d.primary_ip4.host) if d.primary_ip4 else "", "asn": d.cf.get("asn"), "interfaces": interfaces,
+            "services": [{"name": s.name, "protocol": s.protocol, "ports": list(s.ports or [])} for s in d.services.all()],
+        })
+    cables = []
+    for c in Cable.objects.prefetch_related("terminations__interface__device"):
+        # 両端とも connector 1 の、機器に直に付いた Interface のものだけ（回路や電源のケーブル、片側だけのもの、Module の Interface（device が無い）は回線にしない）
+        ends = {e.cable_end: e.interface for e in c.terminations.all()
+                if e.connector == 1 and e.interface is not None and e.interface.device is not None}
+        if set(ends) != {"A", "B"}:
+            continue
+        cables.append({"a": ends["A"].device.name, "a_if": ends["A"].name, "b": ends["B"].device.name, "b_if": ends["B"].name,
+                       "role": c.cf.get("link_role"), "bandwidth_mbps": c.cf.get("bandwidth_mbps")})
+    return rows, cables
+
+
+def read_changes(limit: int = nb_map.CHANGES_KEEP) -> list[dict]:
+    """直近の変更履歴（ObjectChange）を nb_map.change_rows() に渡す形で。device は、変えたものが機器ならその名前、機器に付くもの（インタフェースなど）なら親の機器"""
+    from nautobot.extras.models import ObjectChange
+
+    out = []
+    for c in ObjectChange.objects.select_related("changed_object_type", "related_object_type").order_by("-time")[:limit]:
+        model = c.changed_object_type.model if c.changed_object_type else ""
+        device = c.object_repr if model == "device" else ""
+        if not device and c.related_object_type and c.related_object_type.model == "device":
+            device = getattr(c.related_object, "name", "") or ""   # 消えた機器なら None
+        try:
+            differences = (c.get_snapshots() or {}).get("differences")
+        except Exception:  # noqa: BLE001 - 差分が作れない古い行でも、誰がいつ何を変えたかは残す
+            differences = None
+        out.append({"id": str(c.pk), "time": int(c.time.timestamp()), "user": c.user_name, "action": str(c.action), "object_type": model,
+                    "object": c.object_repr, "device": device, "differences": differences})
+    return out
+
+
+def push_targets(rows: list[dict], log, force_redeploy: bool = False) -> dict:
+    """gnmic の購読先の一覧を SSM に合わせ、変わったら（か force_redeploy なら）gnmic のサービスを作り直す"""
+    names = {"gnmi-targets": os.environ.get("GNMI_TARGETS_PARAMETER", "")}
+    cluster, service = os.environ.get("TELEGRAF_CLUSTER", ""), os.environ.get("GNMIC_SERVICE", "")
+    if not all(names.values()) or not cluster or not service:
+        log.warning("gnmic の一覧の書き先が渡されていない（stream が gnmi_targets_from_nautobot でない）。gnmic の一覧は触らない")
+        return {"skipped": True}
+    ssm, changed = toolkit.client("ssm"), []
+    for key, value in nb_map.targets(rows).items():
+        if not value:
+            log.warning("%s が空になる（Service を持つ機器が無い）。SSM は書き換えない", key)
+            continue
+        if ssm.get_parameter(Name=names[key])["Parameter"]["Value"] == value:
+            continue
+        ssm.put_parameter(Name=names[key], Value=value, Type="String", Overwrite=True)
+        changed.append(key)
+        log.info("%s を書き換えた: %s", names[key], value)
+    if changed or force_redeploy:
+        toolkit.client("ecs").update_service(cluster=cluster, service=service, forceNewDeployment=True)
+        log.info("gnmic（%s）を作り直す", service)
+    return {"changed": changed, "redeployed": bool(changed or force_redeploy)}
+
+
+def sync(log, force_redeploy: bool = False) -> dict:
+    """Nautobot → gnmic の一覧と Neptune（OSS 版は Neo4j）。片方が失敗してももう片方はやり、最後に失敗をまとめて上げる（Job が失敗になる）"""
+    from django.core.cache import cache
+
+    with cache.lock(LOCK, timeout=LOCK_TIMEOUT, blocking_timeout=LOCK_WAIT):
+        rows, cables = read()
+        devices, links, warnings = nb_map.to_graph(rows, cables)
+        for w in warnings:
+            log.warning(w)
+        out, errors = {"devices": len(devices), "links": len(links)}, []
+        try:
+            out["gnmic"] = push_targets(rows, log, force_redeploy)
+        except Exception as e:  # SSM / ECS の失敗。グラフは続ける
+            errors.append(f"gnmic の一覧: {e}")
+        try:
+            if not devices:
+                # 空のまま合わせるとグラフの物理層が（status と上の層への辺ごと）全部消える。seed の失敗や入れ直しの途中を、消す指示とは読まない
+                log.warning("Nautobot に機器が 1 台も無い。%s は触らない", GRAPH_NAME)
+                out[graph.BACKEND] = {"skipped": True}
+            elif graph.configured():
+                out[graph.BACKEND] = graph.sync_physical(devices, links)
+                log.info("%s の物理層を合わせた: %s", GRAPH_NAME, out[graph.BACKEND])
+            else:
+                log.warning("%s が無い。%s は触らない", GRAPH_SETTING, GRAPH_NAME)
+        except Exception as e:
+            errors.append(f"{GRAPH_NAME}: {e}")
+        try:
+            if graph.configured():
+                out["changes"] = graph.sync_changes(nb_map.change_rows(read_changes()))
+        except Exception as e:
+            errors.append(f"変更履歴: {e}")
+    if errors:
+        raise RuntimeError(" / ".join(errors))
+    return out

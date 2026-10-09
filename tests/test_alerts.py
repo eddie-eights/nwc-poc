@@ -1,14 +1,14 @@
 """アラートの送り手の模擬テスト（AWS にも Splunk にも Grafana にも触れない）。
-Splunk のアラートアクション（splunk/netops_alerts/bin/netops_sns.py）が保存済みサーチの結果を SNS の本文にして publish すること（boto3）、
-保存済みサーチ（default/savedsearches.conf）と Grafana のアラート（grafana/provisioning/alerting/netops*.yaml）が同じ形の本文を出し、
-受け手（workflow/rules.py の alerts_from_message）がそのまま読めること、SNS のトピック（terraform/base/core の alerts.tf）と
-イメージ（splunk/Dockerfile・entrypoint.sh、grafana/start.sh）と ops/up.sh・ops/check.sh がその配線を持つこと。
+Splunk のアラートアクション（app/splunk/nwc_alerts/bin/nwc_sns.py）が保存済みサーチの結果を SNS の本文にして publish すること（boto3）、
+保存済みサーチ（default/savedsearches.conf）と Grafana のアラート（app/grafana/provisioning/alerting/nwc*.yaml）が同じ形の本文を出し、
+受け手（app/temporal/rules.py の alerts_from_message）がそのまま読めること、SNS のトピック（IaC/terraform/aws-managed/base/core の alerts.tf）と
+イメージ（docker/images/splunk/Dockerfile・entrypoint.sh、app/grafana/start.sh）と ops/up.sh・ops/check.sh がその配線を持つこと。
 受け手の側は tests/test_workflow.py（SQS → ワークフロー）と tests/test_sync.py（Lambda → Neptune の status）。
 実行は uv run --group dev python tests/test_alerts.py（boto3 が無くても通る。あれば手元の偽の SNS へ本物の boto3 で publish して確かめる）"""
-import ast, contextlib, csv, glob, gzip, http.server, importlib.util, io, json, os, re, signal, subprocess, sys, tempfile, threading, time, urllib.parse
+import ast, contextlib, csv, glob, gzip, http.server, importlib.util, io, json, math, os, re, signal, subprocess, sys, tempfile, threading, time, urllib.parse
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-sys.path.insert(0, os.path.join(ROOT, "workflow"))
+sys.path.insert(0, os.path.join(ROOT, "app", "temporal"))
 passed = 0
 
 
@@ -28,16 +28,16 @@ def read(*p):
     with open(os.path.join(ROOT, *p), encoding="utf-8") as f:
         return f.read()
 
-def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の oss/ops/ と共通）とつないで見る
+def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の ops/oss/ と共通）とつないで見る
     return read("ops", "common.sh") + read("ops", f"{name}-common.sh") + read("ops", f"{name}.sh")
 
 
-ACTION = "splunk/netops_alerts/bin/netops_sns.py"
-sns = load(ACTION, "netops_sns")
-import rules   # noqa: E402  受け手（workflow/rules.py）
+ACTION = "app/splunk/nwc_alerts/bin/nwc_sns.py"
+sns = load(ACTION, "nwc_sns")
+import rules   # noqa: E402  受け手（app/temporal/rules.py）
 src = read(ACTION)
 KEYS = ["status", "device_id", "kind", "target", "detail", "starts_at"]
-TOPIC = "arn:aws:sns:ap-northeast-1:111122223333:netops-alerts"
+TOPIC = "arn:aws:sns:ap-northeast-1:111122223333:nwc-alerts"
 CREDS = ("AKIDTEST", "test-secret", "test-token")   # 偽の値（手元の偽の認証情報の口が返す）
 
 # ---- アラートアクション: 行 → アラート
@@ -51,28 +51,28 @@ check("アラートアクションはモジュールの頭では標準ライブ�
       "app に同梱せず、sys.path も足さない。boto3 の無い PC でもテストできる）",
       top <= set(sys.stdlib_module_names) and imported(ast.walk(ast.parse(src))) - top == {"boto3", "botocore"}
       and "sys.path" not in src and not hasattr(sns, "APP_LIB"))
-devmap = sns.parse_device_map(" 203.0.113.31=dc1-leaf-01 ,DC1-Leaf-02.Example.Net=dc1-leaf-02,壊れた要素,=x,y=,203.0.113.101=")
+devmap = sns.parse_device_map(" 203.0.113.31=dc1-a-leaf-01 ,DC1-A-Leaf-02.Example.Net=dc1-a-leaf-02,壊れた要素,=x,y=,203.0.113.101=")
 check("device map は「別名=機器名」をカンマで並べたもの。別名は小文字にし、= の無い要素と片方が空の要素は捨てる",
-      devmap == {"203.0.113.31": "dc1-leaf-01", "dc1-leaf-02.example.net": "dc1-leaf-02"} and sns.parse_device_map("") == {} and sns.parse_device_map(None) == {})
+      devmap == {"203.0.113.31": "dc1-a-leaf-01", "dc1-a-leaf-02.example.net": "dc1-a-leaf-02"} and sns.parse_device_map("") == {} and sns.parse_device_map(None) == {})
 check("機器名は device map を引き、無ければ小文字にしてドメインを落とす（IPv4 は落とさない）",
-      [sns.device_name(n, devmap) for n in ("203.0.113.31", "DC1-LEAF-02.example.net", "Dc1-Spine-01.lab.local", "198.51.100.7", " dc1-leaf-01 ", "", None)]
-      == ["dc1-leaf-01", "dc1-leaf-02", "dc1-spine-01", "198.51.100.7", "dc1-leaf-01", "", ""])
+      [sns.device_name(n, devmap) for n in ("203.0.113.31", "DC1-A-LEAF-02.example.net", "Dc1-Spine-01.lab.local", "198.51.100.7", " dc1-a-leaf-01 ", "", None)]
+      == ["dc1-a-leaf-01", "dc1-a-leaf-02", "dc1-spine-01", "198.51.100.7", "dc1-a-leaf-01", "", ""])
 check("受け手（rules.device_name）も同じ規則で揃える（device map を通ったあとの名前はそのまま通る）",
-      all(rules.device_name(n) == sns.device_name(n, {}) for n in ("DC1-LEAF-02.example.net", "198.51.100.7", "dc1-leaf-01", "")))
+      all(rules.device_name(n) == sns.device_name(n, {}) for n in ("DC1-A-LEAF-02.example.net", "198.51.100.7", "dc1-a-leaf-01", "")))
 check("starts_at は epoch 秒の整数にする（小数は切り捨て、読めない値と負の値は 0）",
       [sns._epoch(v) for v in ("1790000000.9", 1790000000, "", None, "x", "-5")] == [1790000000, 1790000000, 0, 0, 0, 0])
 ROWS = [
     {"device": "203.0.113.31", "kind": "bgp_down", "target": "10.255.0.1", "status": "firing", "detail": "bgp session to 10.255.0.1 is active (splunk: gnmi)", "starts_at": "1790000000.5"},
     {"device": "DC1-SPINE-01.lab", "kind": "link_down", "target": " ethernet-1/1 ", "status": "RESOLVED", "detail": "", "starts_at": ""},
     {"device": "", "kind": "trap", "target": ".1.3", "status": "firing"},
-    {"device": "dc1-leaf-01", "kind": "", "target": "x", "status": "firing"},
-    {"device": "dc1-leaf-01", "kind": "trap", "target": ".1.3", "status": "pending"},
-    {"device": "dc1-leaf-01", "kind": "trap", "status": "firing", "detail": "x" * 3000},
+    {"device": "dc1-a-leaf-01", "kind": "", "target": "x", "status": "firing"},
+    {"device": "dc1-a-leaf-01", "kind": "trap", "target": ".1.3", "status": "pending"},
+    {"device": "dc1-a-leaf-01", "kind": "trap", "status": "firing", "detail": "x" * 3000},
 ]
 alerts = sns.alerts_from_rows(ROWS, devmap)
 check("結果の 1 行 = アラート 1 件。機器か種類が無い行と、status が firing / resolved でない行は捨てる",
       [(a["device_id"], a["kind"], a["target"], a["status"], a["starts_at"]) for a in alerts]
-      == [("dc1-leaf-01", "bgp_down", "10.255.0.1", "firing", 1790000000), ("dc1-spine-01", "link_down", "ethernet-1/1", "resolved", 0), ("dc1-leaf-01", "trap", "", "firing", 0)])
+      == [("dc1-a-leaf-01", "bgp_down", "10.255.0.1", "firing", 1790000000), ("dc1-spine-01", "link_down", "ethernet-1/1", "resolved", 0), ("dc1-a-leaf-01", "trap", "", "firing", 0)])
 check("アラートの項目は 6 つで、detail は 1000 字で切る", all(list(a) == KEYS for a in alerts) and len(alerts[2]["detail"]) == 1000)
 texts = sns.messages(alerts)
 check("本文は {\"source\": \"splunk\", \"alerts\": […]} の JSON 1 通（空白を入れない）",
@@ -84,36 +84,36 @@ check("50 件ごとに 1 通に分ける（SNS の本文は 256 KB まで）。0
 got = rules.alerts_from_message(texts[0], now=1790000123)
 check("受け手（rules.alerts_from_message）がそのまま読める: anomaly_id は <機器>#<種類>#<対象>、starts_at が無ければ受けた時刻",
       [(a["anomaly_id"], a["status"], a["first_seen"], a["source"]) for a in got]
-      == [("dc1-leaf-01#bgp_down#10.255.0.1", "firing", 1790000000, "splunk"), ("dc1-spine-01#link_down#ethernet-1/1", "resolved", 1790000123, "splunk"),
-          ("dc1-leaf-01#trap#", "firing", 1790000123, "splunk")])
+      == [("dc1-a-leaf-01#bgp_down#10.255.0.1", "firing", 1790000000, "splunk"), ("dc1-spine-01#link_down#ethernet-1/1", "resolved", 1790000123, "splunk"),
+          ("dc1-a-leaf-01#trap#", "firing", 1790000123, "splunk")])
 with tempfile.TemporaryDirectory() as tmp:
     RESULTS = os.path.join(tmp, "results.csv.gz")
     with gzip.open(RESULTS, "wt", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["device", "kind", "target", "status", "detail", "starts_at", "__mv_device"])
         w.writeheader()
         w.writerow(dict(ROWS[0], __mv_device=""))
-        w.writerow({"device": "dc1-leaf-02", "kind": "trap", "target": ".1.3.6.1.4.1.9.9.41.2.0.1", "status": "resolved", "detail": "改行\nとカンマ, を含む", "starts_at": "1790000060"})
+        w.writerow({"device": "dc1-a-leaf-02", "kind": "trap", "target": ".1.3.6.1.4.1.9.9.41.2.0.1", "status": "resolved", "detail": "改行\nとカンマ, を含む", "starts_at": "1790000060"})
     rows = sns.read_rows(RESULTS)
     check("結果のファイル（gzip の CSV。Splunk が results_file で渡す）を行の dict にする（余分な列は無視、改行とカンマ入りの値も読む）",
           len(rows) == 2 and rows[0]["device"] == "203.0.113.31" and rows[1]["detail"] == "改行\nとカンマ, を含む"
-          and [a["device_id"] for a in sns.alerts_from_rows(rows, devmap)] == ["dc1-leaf-01", "dc1-leaf-02"])
+          and [a["device_id"] for a in sns.alerts_from_rows(rows, devmap)] == ["dc1-a-leaf-01", "dc1-a-leaf-02"])
 
     # ---- 設定（entrypoint.sh が書くファイル）
-    ep = read("splunk", "entrypoint.sh")
+    ep = read("app", "splunk", "entrypoint.sh")
     check("entrypoint.sh がファイルに写す環境変数は、アラートアクションが読むもの（ENV_KEYS）と同じ並び",
           tuple(re.search(r"\nfor k in ([A-Z_ ]+); do\n", ep).group(1).split()) == sns.ENV_KEYS
-          and re.search(r'ENV_FILE="\$\{NETOPS_ALERTS_ENV:-([^}]+)\}"', ep).group(1) == sns.ENV_FILE)
+          and re.search(r'ENV_FILE="\$\{NWC_ALERTS_ENV:-([^}]+)\}"', ep).group(1) == sns.ENV_FILE)
     check("entrypoint.sh は写したあと上流の入口へ exec する（引数はそのまま）、ファイルは splunk ユーザーが読める（umask 022）",
           ep.rstrip().endswith('exec /sbin/entrypoint.sh "$@"') and "umask 022" in ep and "set -eu" in ep)
     check("認証情報そのもの（AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN）はファイルに写さない",
           not any(k in ep or k in sns.ENV_KEYS for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")))
     ENVF = os.path.join(tmp, "nwc-alerts.env")
-    DM = "203.0.113.31=dc1-leaf-01,10.255.2.2=dc1-leaf-02"
+    DM = "203.0.113.31=dc1-a-leaf-01,10.255.2.2=dc1-a-leaf-02"
     stub = os.path.join(tmp, "entrypoint.sh")
     with open(stub, "w", encoding="utf-8") as f:
         f.write(ep.replace('exec /sbin/entrypoint.sh "$@"', 'echo "upstream $*"'))
     r = subprocess.run(["bash", stub, "start-service"], capture_output=True, text=True,
-                       env={"PATH": os.environ["PATH"], "NETOPS_ALERTS_ENV": ENVF, "AWS_REGION": "ap-northeast-1", "ALERTS_TOPIC_ARN": TOPIC, "DEVICE_MAP": DM,
+                       env={"PATH": os.environ["PATH"], "NWC_ALERTS_ENV": ENVF, "AWS_REGION": "ap-northeast-1", "ALERTS_TOPIC_ARN": TOPIC, "DEVICE_MAP": DM,
                             "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "/v2/credentials/abc", "SPLUNK_PASSWORD": "must-not-be-copied"})
     written = read(ENVF) if os.path.exists(ENVF) else ""
     check("entrypoint.sh を実際に走らせる: 6 行の KEY=VALUE を書き、他の環境変数（SPLUNK_PASSWORD など）は写さない",
@@ -135,13 +135,13 @@ with tempfile.TemporaryDirectory() as tmp:
     roles = {}
     for role in (None, "splunk_standalone", "splunk_search_head", "splunk_cluster_master", "splunk_indexer"):
         r = subprocess.run(["bash", stub_role, "start-service"], capture_output=True, text=True,
-                           env={"PATH": os.environ["PATH"], "NETOPS_ALERTS_ENV": os.path.join(tmp, "role.env"), **({"SPLUNK_ROLE": role} if role else {})})
+                           env={"PATH": os.environ["PATH"], "NWC_ALERTS_ENV": os.path.join(tmp, "role.env"), **({"SPLUNK_ROLE": role} if role else {})})
         roles[role] = (r.returncode, r.stdout.splitlines())
-    check("クラスター（「Splunk をクラスターにする（004）」）では保存済みサーチ（app netops_alerts）を search head だけに残す: SPLUNK_ROLE が無い・standalone・"
-          "search_head は消さず、manager と indexer は上流の入口の前に /opt/splunk-etc/apps/netops_alerts を splunk ユーザーで消す（同じアラートが台の数だけ出ない）",
+    check("クラスター（「Splunk をクラスターにする（004）」）では保存済みサーチ（app nwc_alerts）を search head だけに残す: SPLUNK_ROLE が無い・standalone・"
+          "search_head は消さず、manager と indexer は上流の入口の前に /opt/splunk-etc/apps/nwc_alerts を splunk ユーザーで消す（同じアラートが台の数だけ出ない）",
           all(roles[k] == (0, ["upstream start-service"]) for k in (None, "splunk_standalone", "splunk_search_head"))
-          and all(roles[k] == (0, ["removed /opt/splunk-etc/apps/netops_alerts", "upstream start-service"]) for k in ("splunk_cluster_master", "splunk_indexer"))
-          and ep.count("sudo -n -u splunk rm -rf /opt/splunk-etc/apps/netops_alerts") == 1)
+          and all(roles[k] == (0, ["removed /opt/splunk-etc/apps/nwc_alerts", "upstream start-service"]) for k in ("splunk_cluster_master", "splunk_indexer"))
+          and ep.count("sudo -n -u splunk rm -rf /opt/splunk-etc/apps/nwc_alerts") == 1)
 
     # indexer は止められると splunk offline を打ってから、上流の入口へ SIGTERM を回す（「Splunk をクラスターにする（004）」のリスク 11）
     up_term = os.path.join(tmp, "upstream-term.sh")   # 上流の入口と同じく、SIGTERM で teardown（splunk stop）して終わる
@@ -172,7 +172,7 @@ with tempfile.TemporaryDirectory() as tmp:
         t0 = time.time()
         with open(out, "w", encoding="utf-8") as fo:
             p = subprocess.Popen(["bash", script, "start-service"], stdout=fo, stderr=subprocess.STDOUT,
-                                 env={"PATH": bindir + os.pathsep + os.environ["PATH"], "NETOPS_ALERTS_ENV": os.path.join(tmp, "term.env"),
+                                 env={"PATH": bindir + os.pathsep + os.environ["PATH"], "NWC_ALERTS_ENV": os.path.join(tmp, "term.env"),
                                       "SPLUNK_ROLE": role, "SPLUNK_PASSWORD": "pw-not-printed", **env})
         while "upstream start-service" not in read(out) and time.time() - t0 < 10:
             time.sleep(0.05)
@@ -184,7 +184,7 @@ with tempfile.TemporaryDirectory() as tmp:
     args = read(fake_args).splitlines() if os.path.exists(fake_args) else []
     check("indexer: SIGTERM で splunk offline を splunk ユーザーで打ち（admin で認証）、終わったら上流の入口へ SIGTERM を回して teardown させる。"
           "かかった秒数を nwc-offline の行に出し、パスワードは出さない",
-          rc == 0 and lines[:4] == ["removed /opt/splunk-etc/apps/netops_alerts", "upstream start-service", "nwc-offline: start", "fake offline"]
+          rc == 0 and lines[:4] == ["removed /opt/splunk-etc/apps/nwc_alerts", "upstream start-service", "nwc-offline: start", "fake offline"]
           and re.fullmatch(r"nwc-offline: rc=0 [01]s", lines[4]) is not None and lines[5:] == ["upstream teardown"]
           and args == ["offline", "-auth", "admin:pw-not-printed"] and not any("pw-not-printed" in l for l in lines)
           and 'timeout "$OFFLINE_TIMEOUT" sudo -n -u splunk /opt/splunk/bin/splunk offline -auth "admin:${SPLUNK_PASSWORD:-}" < /dev/null' in ep)
@@ -200,7 +200,7 @@ with tempfile.TemporaryDirectory() as tmp:
     check("indexer 以外（search head・manager・standalone）は今までどおり上流の入口へ exec し、SIGTERM は上流がそのまま受ける（offline は打たない）",
           all(rc == 0 and lines[-2:] == ["upstream start-service", "upstream teardown"] and not any("nwc-offline" in l for l in lines)
               for rc, lines, _ in roles.values()) and not os.path.exists(fake_args))
-    stf_idx = read("terraform", "pipeline", "analytics", "splunk.tf").split('resource "aws_ecs_task_definition" "splunk_idx"', 1)[1].split("\nresource ", 1)[0]
+    stf_idx = read("IaC", "terraform", "aws-managed", "pipeline", "analytics", "splunk.tf").split('resource "aws_ecs_task_definition" "splunk_idx"', 1)[1].split("\nresource ", 1)[0]
     stop_timeout = int(re.search(r"\n    stopTimeout = (\d+)\n", stf_idx).group(1))
     offline_timeout = int(re.search(r"\nOFFLINE_TIMEOUT=(\d+)\n", ep).group(1))
     check("offline を打ち切る秒数と、そのあとの splunk stop（手元で 47 秒）が、indexer のタスクの stopTimeout（splunk.tf。Fargate の上限 120 秒）に収まる",
@@ -249,7 +249,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     sent, n, nconn, slept, calls, err = run_send([])
     check("2 通とも 1 回で送れれば待たない。client（認証情報）は 1 回だけ作って使い回す。publish するのはトピック・件名・本文",
-          (sent, n, nconn, slept, err) == (2, 2, 1, [], "") and calls == [{"TopicArn": TOPIC, "Subject": "netops alert", "Message": m} for m in ("a", "b")])
+          (sent, n, nconn, slept, err) == (2, 2, 1, [], "") and calls == [{"TopicArn": TOPIC, "Subject": "nwc alert", "Message": m} for m in ("a", "b")])
     sent, n, nconn, slept, calls, err = run_send([Denied(), TimeoutError("timed out")])
     check("失敗したら client を作り直して（認証情報を取り直して）送り直す（1 通につき 3 回まで。待ちは 1 秒、2 秒）",
           (sent, n, nconn, slept) == (2, 4, 3, [1, 2]) and err.count("ERROR publish に失敗した") == 2 and "HTTP 403 AuthorizationError" in err and "TimeoutError: timed out" in err)
@@ -262,7 +262,7 @@ with tempfile.TemporaryDirectory() as tmp:
     except ImportError as e:
         raised = e
     check("boto3 が読めない（Splunk の Python に無い）ときは送り直さずに止まる（main が理由を ERROR で残して 3 にする）", isinstance(raised, ModuleNotFoundError))
-    check("送り直しの回数と待ちの定数", (sns.ATTEMPTS, sns.TIMEOUT, sns.SUBJECT, sns.STATUSES) == (3, 10, "netops alert", ("firing", "resolved")))
+    check("送り直しの回数と待ちの定数", (sns.ATTEMPTS, sns.TIMEOUT, sns.SUBJECT, sns.STATUSES) == (3, 10, "nwc alert", ("firing", "resolved")))
 
     # ---- 本物の boto3 で、手元の偽の認証情報の口と偽の SNS へ publish する（boto3 が無ければ飛ばす。ops/check.sh は dev のグループで入れる）
     try:
@@ -334,7 +334,7 @@ with tempfile.TemporaryDirectory() as tmp:
             check("本物の boto3: 偽の SNS へ 2 通届く。本文は Query API の Publish（トピック・件名・アラートの JSON）で、"
                   "一時的な認証情報（token 付き）でトピックのリージョンの sns として SigV4 で署名してある。プロキシの環境変数は通らない",
                   sent == 2 and len(ok) == 3 and ok[1]["path"] == "/"
-                  and ok[1]["form"] == {"Action": "Publish", "Version": "2010-03-31", "TopicArn": TOPIC, "Subject": "netops alert", "Message": texts[0]}
+                  and ok[1]["form"] == {"Action": "Publish", "Version": "2010-03-31", "TopicArn": TOPIC, "Subject": "nwc alert", "Message": texts[0]}
                   and ok[2]["form"]["Message"] == "{}"
                   and all(p["auth"].startswith("AWS4-HMAC-SHA256 Credential=AKIDTEST/") and "/ap-northeast-1/sns/aws4_request" in p["auth"] and p["token"] == "test-token"
                           for p in ok))
@@ -373,27 +373,27 @@ with tempfile.TemporaryDirectory() as tmp:
             sns.load_env, sns.send = keep
         return rc, published, err.getvalue()
 
-    PAYLOAD = json.dumps({"search_name": "netops_gnmi", "results_file": RESULTS, "session_key": "must-not-be-logged"})
-    rc, published, err = run_main(["netops_sns.py", "--execute"], PAYLOAD)
+    PAYLOAD = json.dumps({"search_name": "nwc_gnmi", "results_file": RESULTS, "session_key": "must-not-be-logged"})
+    rc, published, err = run_main(["nwc_sns.py", "--execute"], PAYLOAD)
     check("main: 結果のファイルを読んで publish し、0 で終わる（件数を 1 行で残す）",
-          rc == 0 and len(published) == 1 and [a["device_id"] for a in json.loads(published[0])["alerts"]] == ["dc1-leaf-01", "dc1-leaf-02"]
-          and "INFO search=netops_gnmi rows=2 alerts=2 published=1/1" in err)
+          rc == 0 and len(published) == 1 and [a["device_id"] for a in json.loads(published[0])["alerts"]] == ["dc1-a-leaf-01", "dc1-a-leaf-02"]
+          and "INFO search=nwc_gnmi rows=2 alerts=2 published=1/1" in err)
     check("main: Splunk のセッションキーはログに出さない", "must-not-be-logged" not in err)
-    check("main: --execute 以外では何もしない（1）", run_main(["netops_sns.py"], PAYLOAD)[0] == 1 and run_main(["netops_sns.py", "--other"], PAYLOAD)[:2] == (1, []))
-    rc, published, err = run_main(["netops_sns.py", "--execute"], PAYLOAD, envd={"AWS_REGION": "ap-northeast-1"})
+    check("main: --execute 以外では何もしない（1）", run_main(["nwc_sns.py"], PAYLOAD)[0] == 1 and run_main(["nwc_sns.py", "--other"], PAYLOAD)[:2] == (1, []))
+    rc, published, err = run_main(["nwc_sns.py", "--execute"], PAYLOAD, envd={"AWS_REGION": "ap-northeast-1"})
     check("main: トピックの ARN が無ければ送らずに 2（理由を ERROR で残す）", rc == 2 and published == [] and "ERROR ALERTS_TOPIC_ARN が無い" in err)
-    check("main: 送れなかった通があれば 2（Splunk の sendmodalert に失敗として残る）", run_main(["netops_sns.py", "--execute"], PAYLOAD, sent=0)[0] == 2)
-    rc, published, err = run_main(["netops_sns.py", "--execute"], json.dumps({"results_file": os.path.join(tmp, "none.csv.gz")}))
+    check("main: 送れなかった通があれば 2（Splunk の sendmodalert に失敗として残る）", run_main(["nwc_sns.py", "--execute"], PAYLOAD, sent=0)[0] == 2)
+    rc, published, err = run_main(["nwc_sns.py", "--execute"], json.dumps({"results_file": os.path.join(tmp, "none.csv.gz")}))
     check("main: 結果のファイルが無い・JSON が壊れているなどは traceback を出さずに 3", rc == 3 and "ERROR Unexpected error: FileNotFoundError" in err and "Traceback" not in err
-          and run_main(["netops_sns.py", "--execute"], "{壊れた")[0] == 3 and run_main(["netops_sns.py", "--execute"], PAYLOAD, fail=ValueError("x"))[0] == 3)
-    rc, published, err = run_main(["netops_sns.py", "--execute"], PAYLOAD, fail=ModuleNotFoundError("No module named 'boto3'"))
+          and run_main(["nwc_sns.py", "--execute"], "{壊れた")[0] == 3 and run_main(["nwc_sns.py", "--execute"], PAYLOAD, fail=ValueError("x"))[0] == 3)
+    rc, published, err = run_main(["nwc_sns.py", "--execute"], PAYLOAD, fail=ModuleNotFoundError("No module named 'boto3'"))
     check("main: boto3 が読めない（Splunk の版を変えて Splunk の Python から無くなった）ときは、理由と確かめ方を 1 行で残して 3（traceback は出さない）",
           rc == 3 and published == [] and len(err.splitlines()) == 1 and "Traceback" not in err
           and f"ERROR boto3 を読めない（ModuleNotFoundError: No module named 'boto3'）。Splunk の Python {sys.version.split()[0]}（" in err
           and "tests/check_splunk_image.py" in err and "ffba169" in err)
     with gzip.open(RESULTS, "wt", encoding="utf-8", newline="") as f:
         f.write("device,kind,target,status,detail,starts_at\n")
-    rc, published, err = run_main(["netops_sns.py", "--execute"], PAYLOAD)
+    rc, published, err = run_main(["nwc_sns.py", "--execute"], PAYLOAD)
     check("main: 行が 0 件なら何も送らずに 0", rc == 0 and published == [] and "published=0/0" in err)
 
 
@@ -421,61 +421,77 @@ def parse_conf(text):
     return out
 
 
-APP = ("splunk", "netops_alerts")
+APP = ("app", "splunk", "nwc_alerts")
 saved = parse_conf(read(*APP, "default", "savedsearches.conf"))
 actions = parse_conf(read(*APP, "default", "alert_actions.conf"))
-check("保存済みサーチは 4 つ（SNMP のポーリングの IF、gNMI の BGP / IS-IS、trap、trap を時間で閉じる）", list(saved) == ["netops_poll", "netops_gnmi", "netops_trap", "netops_trap_clear"])
+check("保存済みサーチは 3 つ（gNMI の IF / BGP / IS-IS、trap、trap を時間で閉じる。SNMP のポーリングのサーチは cycle 013 で外した）",
+      list(saved) == ["nwc_gnmi", "nwc_trap", "nwc_trap_clear"])
 COMMON = {"enableSched": "1", "cron_schedule": "* * * * *", "realtime_schedule": "0", "dispatch.latest_time": "+5m", "alert.track": "0", "alert.digest_mode": "1",
-          "alert.suppress": "0", "counttype": "number of events", "relation": "greater than", "quantity": "0", "action.netops_sns": "1"}
+          "alert.suppress": "0", "counttype": "number of events", "relation": "greater than", "quantity": "0", "action.nwc_sns": "1"}
 check("どのサーチも毎分走り、遅れても飛ばさず（realtime_schedule = 0）、結果が 1 行でもあれば全部の行をまとめて 1 回アクションへ渡す（digest）。抑制はしない",
       all({k: s.get(k) for k in COMMON} == COMMON for s in saved.values()))
-check("アクションは netops_sns だけ（メールや webhook は付けない）", all([k for k in s if k.startswith("action.")] == ["action.netops_sns"] for s in saved.values()))
+check("アクションは nwc_sns だけ（メールや webhook は付けない）", all([k for k in s if k.startswith("action.")] == ["action.nwc_sns"] for s in saved.values()))
 pipes = {n: [p.strip() for p in s["search"].split("\n| ")] for n, s in saved.items()}
 check("どのサーチも _raw だけにしてから spath で項目を取る（KV_MODE = json の項目に spath を重ねると多値になって 1 行も出ない）",
       all(p[1] == "fields _time _indextime _raw source" and p[2] == "spath" and s["search"].count("spath") == 1 for (n, p), s in zip(pipes.items(), saved.values())))
 check("どのサーチも最後は table device kind target status detail starts_at（アラートアクションが読む列）",
       all(p[-1] == "table device kind target status detail starts_at" for p in pipes.values())
       and all(re.search(rf"r\.get\(\"{c}\"\)", src) for c in ("device", "kind", "target", "status", "detail", "starts_at")))
-check("窓は索引に入った時刻で切る（直前の 1 分を 10 秒手前にずらして 1 回だけ読む。前の値としてポーリングはその前の 10 分、gNMI は 24 時間も読む。"
+check("窓は索引に入った時刻で切る（直前の 1 分を 10 秒手前にずらして 1 回だけ読む。前の値として gNMI はその前の 24 時間も読む。"
       "イベントの時刻の窓 dispatch.earliest_time は広く取る）",
-      pipes["netops_trap"][0].endswith("_index_earliest=-1m@m-10s _index_latest=@m-10s") and saved["netops_trap"]["dispatch.earliest_time"] == "-1h"
-      and pipes["netops_poll"][0].endswith("_index_earliest=-11m@m-10s _index_latest=@m-10s") and saved["netops_poll"]["dispatch.earliest_time"] == "-1h"
-      and pipes["netops_gnmi"][0].endswith("_index_earliest=-1441m@m-10s _index_latest=@m-10s") and saved["netops_gnmi"]["dispatch.earliest_time"] == "-25h"
-      and pipes["netops_trap_clear"][0].endswith("_index_earliest=-70m@m-10s _index_latest=@m-10s") and saved["netops_trap_clear"]["dispatch.earliest_time"] == "-3h")
-check("イベントは source で選ぶ（Spark の splunk_events が telegraf:<measurement> を付ける）。index は決め打ちしない（SPLUNK_INDEX で変わる）",
-      pipes["netops_poll"][0].startswith('index=* source="telegraf:interface" ')
-      and pipes["netops_gnmi"][0].startswith('index=* (source="telegraf:bgp_neighbor" OR source="telegraf:isis_interface") ')
-      and all(pipes[n][0].startswith('index=* source="telegraf:snmp_trap" ') for n in ("netops_trap", "netops_trap_clear"))
-      and 'f"telegraf:{r[\'measurement\'] or \'unknown\'}"' in read("spark", "snmp_sinks.py"))
+      pipes["nwc_trap"][0].endswith("_index_earliest=-1m@m-10s _index_latest=@m-10s") and saved["nwc_trap"]["dispatch.earliest_time"] == "-1h"
+      and pipes["nwc_gnmi"][0].endswith("_index_earliest=-1441m@m-10s _index_latest=@m-10s") and saved["nwc_gnmi"]["dispatch.earliest_time"] == "-25h"
+      and pipes["nwc_trap_clear"][0].endswith("_index_earliest=-70m@m-10s _index_latest=@m-10s") and saved["nwc_trap_clear"]["dispatch.earliest_time"] == "-3h")
+check("イベントは source で選ぶ（Spark の splunk_events が telegraf:<measurement> を付ける）。index は決め打ちしない（SPLUNK_INDEX で変わる）。"
+      "IF の状態は 60 秒ごとのカウンター（interface_stats）と同じ telegraf:interface なので、Spark が付ける field の名前（oper_state / admin_state）の語で先に絞る",
+      pipes["nwc_gnmi"][0].startswith('index=* (source="telegraf:bgp_neighbor" OR source="telegraf:isis_interface" '
+                                         'OR (source="telegraf:interface" (oper_state OR admin_state))) ')
+      and all(f in read("app", "spark", "snmp_sinks.py") for f in ('("interface", "oper_state"): ("oper_up", "up")', '("interface", "admin_state"): ("admin_up", "enable")'))
+      and all(pipes[n][0].startswith('index=* source="telegraf:snmp_trap" ') for n in ("nwc_trap", "nwc_trap_clear"))
+      and 'f"telegraf:{r[\'measurement\'] or \'unknown\'}"' in read("app", "spark", "snmp_sinks.py"))
 DEVICE = "eval device=coalesce('tags.sysName', 'tags.agent_host', 'tags.source')"
-check("機器は tags.sysName > tags.agent_host > tags.source（gNMI と trap は IP。アラートアクションが DEVICE_MAP で名前に直す）",
+check("機器は tags.sysName > tags.agent_host > tags.source（gNMI と trap は IP。Spark が device map で sysName を足し、表に無い機器はアラートアクションが DEVICE_MAP で名前に直す）",
       all(DEVICE in p for p in pipes.values()))
-p = saved["netops_poll"]["search"]
-check("ポーリング: ifOperStatus が 2 なら down（admin-state が disable の IF は down と数えない）。target は ifName（linkDown trap と同じ anomaly_id）",
-      "eval target='tags.ifName', oper=tonumber('fields.ifOperStatus'), admin=coalesce(tonumber('fields.ifAdminStatus'), 1)" in p
-      and 'eval down=if(oper==2 AND admin!=2, 1, 0), in_now=if(_indextime >= relative_time(now(), "-1m@m-10s"), 1, 0)' in p)
-check("ポーリング: 前 = 今の 1 分より前に入った最後の値、今 = 読んだ 11 分ぶんの最後の値（イベントの時刻で）、starts_at = 今の状態になった時刻",
-      'eval prev_down=if(in_now==0, down, null()), down_time=if(down==1, _time, null()), up_time=if(down==0, _time, null())' in p
-      and "eventstats max(down_time) as last_down max(up_time) as last_up by device target" in p
-      and "eval now_down=if(coalesce(last_down, 0) > coalesce(last_up, 0), 1, 0)" in p
-      and "eval run_time=if(_time > coalesce(if(now_down==1, last_up, last_down), 0), _time, null())" in p
-      and "stats latest(prev_down) as prev_down max(now_down) as now_down max(in_now) as arrived latest(admin) as now_admin min(run_time) as starts_at by device target" in p
-      and 'eval kind="link_down", status=if(now_down==1, "firing", "resolved")' in p)
-check("ポーリング: down のまま admin-state を disable にして閉じたときは、detail を is up ではなく is admin down にする",
-      'eval detail=target." is ".if(status=="firing", "down", if(now_admin==2, "admin down", "up"))." (splunk: poll)"' in p)
+g = saved["nwc_gnmi"]["search"]
+_gp = pipes["nwc_gnmi"]
+check("gNMI: IF は oper_state が up 以外で link_down（admin_state が disable の IF は down と数えない）、BGP は session_state が established 以外で bgp_down、"
+      "IS-IS は oper_state が up 以外で isis_down",
+      'eval kind=case(source=="telegraf:bgp_neighbor", "bgp_down", source=="telegraf:isis_interface", "isis_down", true(), "link_down")' in _gp
+      and "eval state=lower(if(kind==\"bgp_down\", 'fields.session_state', 'fields.oper_state')), admin=if(kind==\"link_down\", lower('fields.admin_state'), null())" in _gp
+      and 'eval down=case(kind=="bgp_down", if(cur_state=="established", 0, 1), kind=="isis_down", if(cur_state=="up", 0, 1), '
+          'true(), if(cur_state!="up" AND coalesce(cur_admin, "")!="disable", 1, 0))' in _gp)
+check("gNMI: target は IF が ifName（linkDown trap と同じ anomaly_id）、BGP がピアのアドレス、IS-IS が IF 名（status Lambda の set_layer_status が引く名前）",
+      "eval target=case(kind==\"bgp_down\", coalesce('tags.peer_address', 'tags.neighbor_peer_address'), kind==\"isis_down\", 'tags.interface_name', true(), 'tags.ifName')" in _gp)
+_si = _gp.index("sort 0 _time")
+check("gNMI: IF の oper_state と admin_state は別のイベントで来ることがあるので、時刻の順に並べて対象ごとに前の値を持ち越す（oper_state がまだ 1 つも無い IF は見ない）",
+      _gp[_si + 1] == "streamstats last(state) as cur_state last(admin) as cur_admin by device kind target" and _gp[_si + 2] == "where isnotnull(cur_state)"
+      and _gp[_si - 1] == 'where isnotnull(device) AND isnotnull(target) AND (isnotnull(state) OR isnotnull(admin)) AND (kind!="link_down" OR NOT match(target, "^(lo|mgmt)|[.]"))')
+check("gNMI: 前の値と比べて down かどうかが変わったときだけ出す（前 = 今の 1 分より前に入った最後の値、今 = 読んだ全部のうち最後の値（イベントの時刻で）、"
+      "starts_at = 今の状態になった時刻）。detail の state は最後の値（link_down は down / up）",
+      'eval in_now=if(_indextime >= relative_time(now(), "-1m@m-10s"), 1, 0)' in _gp
+      and 'eval prev_down=if(in_now==0, down, null()), down_time=if(down==1, _time, null()), up_time=if(down==0, _time, null())' in _gp
+      and "eventstats max(down_time) as last_down max(up_time) as last_up by device kind target" in _gp
+      and "eval now_down=if(coalesce(last_down, 0) > coalesce(last_up, 0), 1, 0)" in _gp
+      and "eval run_time=if(_time > coalesce(if(now_down==1, last_up, last_down), 0), _time, null())" in _gp
+      and "stats latest(prev_down) as prev_down max(now_down) as now_down max(in_now) as arrived latest(cur_state) as state min(run_time) as starts_at by device kind target" in _gp
+      and 'eval status=if(now_down==1, "firing", "resolved")' in _gp
+      and 'eval detail=case(kind=="bgp_down", "bgp session to ".target." is ".state, kind=="isis_down", "isis interface ".target." is ".state, '
+          'true(), target." is ".if(status=="firing", "down", "up"))." (splunk: gnmi)"' in _gp
+      and [x.split(" ")[0] for x in _gp] == ["index=*", "fields", "spath", "eval", "eval", "eval", "eval", "where", "sort", "streamstats", "where", "eval", "eval", "eval",
+                                              "eventstats", "eval", "eval", "stats", "where", "eval", "eval", "table"])
 
-# ---- ポーリングの遷移（SPL は動かせないので、表と参照実装と where の条件を突き合わせる）
-# 前（null = 今の 1 分より前の 10 分に値が無い / 0 / 1）× 今（0 / 1 / null = 今の 1 分に値が入っていない）→ firing / なし（None）/ resolved
-POLL_TABLE = {
+# ---- gNMI の遷移（SPL は動かせないので、表と参照実装と where の条件を突き合わせる。本物の Splunk では tests/check_splunk_image.py が link_down を 1 件通す）
+# 前（null = 今の 1 分より前の 24 時間に値が無い / 0 / 1）× 今（0 / 1 / null = 今の 1 分に値が入っていない）→ firing / なし（None）/ resolved
+GNMI_TABLE = {
     (None, 0): None, (None, 1): "firing", (None, None): None,
     (0, 0): None, (0, 1): "firing", (0, None): None,
     (1, 0): "resolved", (1, 1): None, (1, None): None,
 }
-POLL_BACK = (int(re.search(r"_index_earliest=-(\d+)m@m-10s", pipes["netops_poll"][0]).group(1)) - 1) * 60   # 前として読む秒数（今の 1 分を除く）
+GNMI_BACK = (int(re.search(r"_index_earliest=-(\d+)m@m-10s", _gp[0]).group(1)) - 1) * 60   # 前として読む秒数（今の 1 分を除く）
 
 
-def poll_ref(events, T, back=POLL_BACK):
-    """netops_poll の参照実装（IF 1 つぶん）。events = [(索引の時刻, イベントの時刻, down 0/1)]、T = その回の窓の終わり（@m-10s）。
+def gnmi_ref(events, T, back=GNMI_BACK):
+    """nwc_gnmi の参照実装（対象 1 つぶん）。events = [(索引の時刻, イベントの時刻, down 0/1)]、T = その回の窓の終わり（@m-10s）。
     今の 1 分 = 索引の時刻が [T-60, T)、前 = [T-60-back, T-60)。返すのは (status, starts_at)。出さないときは (None, None)"""
     seen = [e for e in events if T - 60 - back <= e[0] < T]
     if not any(e[0] >= T - 60 for e in seen):
@@ -490,22 +506,22 @@ def poll_ref(events, T, back=POLL_BACK):
     return status, min(e[1] for e in seen if e[1] > changed)
 
 
-def poll_runs(events, n, back=POLL_BACK):
-    return [poll_ref(events, 60 * k, back) for k in range(1, n + 1)]
+def gnmi_runs(events, n, back=GNMI_BACK):
+    return [gnmi_ref(events, 60 * k, back) for k in range(1, n + 1)]
 
 
-def ev(t, down, delay=2):   # Telegraf の時刻 t のポーリング 1 回（delay 秒後に索引に入る）
+def ev(t, down, delay=2):   # 機器の時刻 t の on-change 1 件（delay 秒後に索引に入る）
     return (t + delay, t, down)
 
 
-check("ポーリングの遷移: 参照実装が表のとおり（前の値は今の 1 分より前に入った最後のもの、今の 1 分に値が無ければ出さない）",
-      all(poll_ref(([(10, 10, pd)] if pd is not None else []) + ([(70, 70, nd)] if nd is not None else []), 120)[0] == want
-          for (pd, nd), want in POLL_TABLE.items()))
-_pw = next(x for x in pipes["netops_poll"] if x.startswith("where arrived"))[len("where "):]
+check("gNMI の遷移: 参照実装が表のとおり（前の値は今の 1 分より前に入った最後のもの、今の 1 分に値が無ければ出さない）",
+      all(gnmi_ref(([(10, 10, pd)] if pd is not None else []) + ([(70, 70, nd)] if nd is not None else []), 120)[0] == want
+          for (pd, nd), want in GNMI_TABLE.items()))
+_pw = next(x for x in _gp if x.startswith("where arrived"))[len("where "):]
 _py = re.sub(r"isnull\((\w+)\)", r"(\1 is None)", re.sub(r"isnotnull\((\w+)\)", r"(\1 is not None)", _pw)).replace(" AND ", " and ").replace(" OR ", " or ")
 
 
-def poll_spl(prev_down, now):
+def gnmi_spl(prev_down, now):
     """SPL の where と status を同じ値で評価する。今が null（今の 1 分に値が無い）なら arrived = 0 で、now_down は前の値（前も無ければ 0 と 1 の両方）"""
     outs = set()
     for now_down in ([now] if now is not None else [prev_down] if prev_down is not None else [0, 1]):
@@ -514,64 +530,67 @@ def poll_spl(prev_down, now):
     return outs
 
 
-check("ポーリングの遷移: SPL の where（と status=if(now_down==1, …)）が表と同じ組み合わせで出す",
+check("gNMI の遷移: SPL の where（と status=if(now_down==1, …)）が表と同じ組み合わせで出す",
       _pw == "arrived==1 AND ((isnull(prev_down) AND now_down==1) OR (isnotnull(prev_down) AND prev_down!=now_down))"
-      and all(poll_spl(pd, nd) == {want} for (pd, nd), want in POLL_TABLE.items()))
-check("ポーリングの遷移: 参照実装の前の長さは SPL の窓（-11m@m-10s から今の 1 分を除いた 10 分）", POLL_BACK == 600)
-check("ポーリング: 前の 1 分が空（Spark のバッチが境界の前後に揺れた）でも、down が続いている IF の firing を出し直さない",
-      poll_runs([ev(10, 0), ev(70, 1), ev(80, 1), ev(190, 1), ev(250, 1)], 5) == [(None, None), ("firing", 70), (None, None), (None, None), (None, None)])
-check("ポーリング: 前の 1 分が空のあいだに up に戻った IF も resolved を出す（starts_at は up に戻った時刻）",
-      poll_runs([ev(10, 0), ev(70, 1), ev(190, 0), ev(250, 0)], 5) == [(None, None), ("firing", 70), (None, None), ("resolved", 190), (None, None)])
-check("ポーリング: 直前の 1 分だけと比べる形（前の長さ 60 秒）だと、上の 2 つで firing の出し直しと resolved の取りこぼしが起きる（この検査で見分けられる）",
-      poll_runs([ev(10, 0), ev(70, 1), ev(190, 1)], 4, back=60)[3] == ("firing", 190)
-      and poll_runs([ev(10, 0), ev(70, 1), ev(190, 0)], 4, back=60)[3] == (None, None))
-check("ポーリング: starts_at は down になった時刻（1 分に何回 down を読んでも、最初の down。直前に up があればそのあと）",
-      poll_runs([ev(10, 0), ev(65, 0), ev(75, 1), ev(85, 1), ev(95, 1)], 2)[1] == ("firing", 75)
-      and poll_runs([ev(5, 1), ev(15, 1)], 1)[0] == ("firing", 5))
-check("ポーリング: 送り直しの重複（前に入った古い down がもう一度入る）で、up に戻った IF を down にしない",
-      poll_runs([ev(10, 1), ev(70, 0), (130, 10, 1)], 3) == [("firing", 10), ("resolved", 70), (None, None)])
-check("ポーリング: 10 分を超えて値が途切れたあとも down が続いていれば、新しい発生として出し直す（限界。starts_at は途切れたあとの最初の値）",
-      poll_runs([ev(10, 1), ev(70, 1), ev(790, 1)], 14)[13] == ("firing", 790)
-      and poll_runs([ev(10, 1), ev(70, 1), ev(670, 1)], 12)[11] == (None, None))
-SKIP_IF = re.search(r'NOT match\(target, "([^"]+)"\)', p).group(1)
-check("ポーリング: 見ない IF は Grafana の link_down と同じ（ループバック・管理ポート・サブインタフェース）",
-      [n for n in ("lo0", "mgmt0", "ethernet-1/1.0", "ethernet-1/1", "ethernet-1/49", "irb0") if not re.search(SKIP_IF, n)] == ["ethernet-1/1", "ethernet-1/49", "irb0"]
-      and [n for n in ("lo0", "mgmt0", "ethernet-1/1.0", "ethernet-1/1", "ethernet-1/49", "irb0") if not re.fullmatch("(lo|mgmt).*|.*[.].*", n)] == ["ethernet-1/1", "ethernet-1/49", "irb0"]
-      and 'ifName!~"(lo|mgmt).*|.*[.].*"' in read("grafana", "provisioning", "alerting", "netops-prometheus.yaml"))
-g = saved["netops_gnmi"]["search"]
-check("gNMI: BGP は session_state が established 以外で bgp_down、IS-IS は oper_state が up 以外で isis_down",
-      'eval kind=if(source=="telegraf:bgp_neighbor", "bgp_down", "isis_down")' in g and "'fields.session_state'" in g and "'fields.oper_state'" in g
-      and 'eval down=if((kind=="bgp_down" AND state=="established") OR (kind=="isis_down" AND state=="up"), 0, 1), '
-          'in_now=if(_indextime >= relative_time(now(), "-1m@m-10s"), 1, 0)' in g)
-check("gNMI: target は BGP がピアのアドレス、IS-IS が IF 名（status Lambda の set_layer_status が引く名前）",
-      "coalesce('tags.peer_address', 'tags.neighbor_peer_address'), 'tags.interface_name'" in g)
-_gp = pipes["netops_gnmi"]
-_pp = [x.replace("by device target", "by device kind target") for x in pipes["netops_poll"]]
-check("gNMI: 前の値と比べて down かどうかが変わったときだけ出す。比べ方（前・今・出す条件・starts_at）はポーリングと同じ行（対象は device kind target）。"
-      "detail の state は最後の値",
-      all(x in _gp for x in _pp if x.startswith(("eval prev_down=", "eventstats ", "eval now_down=", "eval run_time=", "where arrived")))
-      and "stats latest(prev_down) as prev_down max(now_down) as now_down max(in_now) as arrived latest(state) as state min(run_time) as starts_at by device kind target" in _gp
-      and 'eval status=if(now_down==1, "firing", "resolved")' in _gp
-      and [x.split(" ")[0] for x in _gp] == ["index=*", "fields", "spath", "eval", "eval", "eval", "eval", "where", "eval", "eval", "eventstats", "eval", "eval",
-                                              "stats", "where", "eval", "eval", "table"])
-GNMI_BACK = (int(re.search(r"_index_earliest=-(\d+)m@m-10s", _gp[0]).group(1)) - 1) * 60
+      and all(gnmi_spl(pd, nd) == {want} for (pd, nd), want in GNMI_TABLE.items()))
 check("gNMI の遷移: 参照実装の前の長さは SPL の窓（-1441m@m-10s から今の 1 分を除いた 24 時間。Grafana の last_over_time(...[24h]) と同じ）",
-      GNMI_BACK == 86400 and "[24h]" in read("grafana", "provisioning", "alerting", "netops-prometheus.yaml"))
+      GNMI_BACK == 86400 and "[24h]" in read("app", "grafana", "provisioning", "alerting", "nwc-prometheus.yaml"))
+check("gNMI: 前の 1 分が空（Spark のバッチが境界の前後に揺れた）でも、down が続いている対象の firing を出し直さない",
+      gnmi_runs([ev(10, 0), ev(70, 1), ev(80, 1), ev(190, 1), ev(250, 1)], 5) == [(None, None), ("firing", 70), (None, None), (None, None), (None, None)])
+check("gNMI: 前の 1 分が空のあいだに戻った対象も resolved を出す（starts_at は戻った時刻）",
+      gnmi_runs([ev(10, 0), ev(70, 1), ev(190, 0), ev(250, 0)], 5) == [(None, None), ("firing", 70), (None, None), ("resolved", 190), (None, None)])
+check("gNMI: 直前の 1 分だけと比べる形（前の長さ 60 秒）だと、上の 2 つで firing の出し直しと resolved の取りこぼしが起きる（この検査で見分けられる）",
+      gnmi_runs([ev(10, 0), ev(70, 1), ev(190, 1)], 4, back=60)[3] == ("firing", 190)
+      and gnmi_runs([ev(10, 0), ev(70, 1), ev(190, 0)], 4, back=60)[3] == (None, None))
+check("gNMI: starts_at は down になった時刻（1 分に何回 down を読んでも、最初の down。直前に up があればそのあと）",
+      gnmi_runs([ev(10, 0), ev(65, 0), ev(75, 1), ev(85, 1), ev(95, 1)], 2)[1] == ("firing", 75)
+      and gnmi_runs([ev(5, 1), ev(15, 1)], 1)[0] == ("firing", 5))
+check("gNMI: 送り直しの重複（前に入った古い down がもう一度入る）で、戻った対象を down にしない",
+      gnmi_runs([ev(10, 1), ev(70, 0), (130, 10, 1)], 3) == [("firing", 10), ("resolved", 70), (None, None)])
 _H = 3600
 check("gNMI: 起動の直後（購読の最初の送信や、Spark が Kafka を頭から読み直した分が今の 1 分にまとめて入る）は、up / established の resolved を出さない。down は firing",
-      poll_ref([(65, 10, 0), (66, 20, 0), (67, 30, 1)], 120, GNMI_BACK) == ("firing", 30)
-      and poll_ref([(65, 10, 1), (66, 20, 0)], 120, GNMI_BACK) == (None, None)
-      and poll_ref([(65, 10, 0)], 120, GNMI_BACK) == (None, None))
-check("gNMI: Telegraf がつなぎ直して今の状態を送り直しても、前と同じなら出さない（24 時間以内）。down のまま送り直しても firing を出し直さない",
-      poll_runs([ev(10, 0), ev(6 * _H + 10, 0)], 6 * 60 + 1, GNMI_BACK)[-1] == (None, None)
-      and poll_runs([ev(10, 1), ev(6 * _H + 10, 1)], 6 * 60 + 1, GNMI_BACK)[-1] == (None, None))
-check("gNMI: 変わったときは前の値が何時間前でも出す（down から 2 時間後に established → resolved。ポーリングの 10 分なら前が無くて出せない）",
-      poll_runs([ev(10, 1), ev(2 * _H + 10, 0)], 2 * 60 + 1, GNMI_BACK)[-1] == ("resolved", 2 * _H + 10)
-      and poll_runs([ev(10, 1), ev(2 * _H + 10, 0)], 2 * 60 + 1)[-1] == (None, None))
+      gnmi_ref([(65, 10, 0), (66, 20, 0), (67, 30, 1)], 120) == ("firing", 30)
+      and gnmi_ref([(65, 10, 1), (66, 20, 0)], 120) == (None, None)
+      and gnmi_ref([(65, 10, 0)], 120) == (None, None))
+check("gNMI: gnmic がつなぎ直して今の状態を送り直しても、前と同じなら出さない（24 時間以内）。down のまま送り直しても firing を出し直さない",
+      gnmi_runs([ev(10, 0), ev(6 * _H + 10, 0)], 6 * 60 + 1)[-1] == (None, None)
+      and gnmi_runs([ev(10, 1), ev(6 * _H + 10, 1)], 6 * 60 + 1)[-1] == (None, None))
+check("gNMI: 変わったときは前の値が何時間前でも出す（down から 2 時間後に戻る → resolved。前を 10 分しか読まないと出せない）",
+      gnmi_runs([ev(10, 1), ev(2 * _H + 10, 0)], 2 * 60 + 1)[-1] == ("resolved", 2 * _H + 10)
+      and gnmi_runs([ev(10, 1), ev(2 * _H + 10, 0)], 2 * 60 + 1, back=600)[-1] == (None, None))
 check("gNMI: 24 時間を超えて down が続いたあとの resolved は出さない。down を送り直すと firing を出し直す（限界。Grafana が閉じる）",
-      poll_runs([ev(10, 1), ev(25 * _H + 10, 0)], 25 * 60 + 1, GNMI_BACK)[-1] == (None, None)
-      and poll_runs([ev(10, 1), ev(25 * _H + 10, 1)], 25 * 60 + 1, GNMI_BACK)[-1] == ("firing", 25 * _H + 10))
+      gnmi_runs([ev(10, 1), ev(25 * _H + 10, 0)], 25 * 60 + 1)[-1] == (None, None)
+      and gnmi_runs([ev(10, 1), ev(25 * _H + 10, 1)], 25 * 60 + 1)[-1] == ("firing", 25 * _H + 10))
 
+# ---- link_down の持ち越し（oper_state と admin_state が別のイベントで来る）。SPL の down の式（link_down の枝）を Python で評価し、streamstats last() の持ち越し
+# （null は飛ばす）を写した参照実装に通す
+_ld = re.search(r'true\(\), if\((cur_state!="up" AND coalesce\(cur_admin, ""\)!="disable"), 1, 0\)\)$',
+                next(x for x in _gp if x.startswith("eval down=")))
+_ldpy = _ld.group(1).replace('coalesce(cur_admin, "")', '(cur_admin if cur_admin is not None else "")').replace(" AND ", " and ")
+
+
+def link_down_ref(events):
+    """[(イベントの時刻, oper_state か None, admin_state か None)] → イベントごとの down（0 / 1。oper_state がまだ無ければ None = where で落ちる）"""
+    out, cur_state, cur_admin = [], None, None
+    for _, o, a in sorted(events, key=lambda e: e[0]):
+        cur_state = o.lower() if o is not None else cur_state
+        cur_admin = a.lower() if a is not None else cur_admin
+        out.append(None if cur_state is None else int(eval(_ldpy, {}, {"cur_state": cur_state, "cur_admin": cur_admin})))
+    return out
+
+
+check("link_down の持ち越し: oper が down のあと別のイベントで admin が disable になると down でなくなる（resolved。管理で止めた IF は異常ではない）",
+      link_down_ref([(10, "down", None), (20, None, "disable")]) == [1, 0])
+check("link_down の持ち越し: admin を disable にしてから oper が down になっても down にしない。enable に戻して oper が down のままなら down",
+      link_down_ref([(10, "up", "enable"), (20, None, "disable"), (30, "down", None), (40, None, "enable")]) == [0, 0, 0, 1])
+check("link_down の持ち越し: admin_state が 1 つも無い IF は enable として扱う。oper_state がまだ無い IF（admin だけ）は見ない。大文字でも同じ",
+      link_down_ref([(10, None, "enable"), (20, "DOWN", None), (30, "up", None)]) == [None, 1, 0])
+SKIP_IF = re.search(r'NOT match\(target, "([^"]+)"\)', g).group(1)
+check("gNMI の link_down: 見ない IF は Grafana の link_down と同じ（ループバック・管理ポート・サブインタフェース）。BGP / IS-IS には当てない",
+      [n for n in ("lo0", "mgmt0", "ethernet-1/1.0", "ethernet-1/1", "ethernet-1/49", "irb0") if not re.search(SKIP_IF, n)] == ["ethernet-1/1", "ethernet-1/49", "irb0"]
+      and [n for n in ("lo0", "mgmt0", "ethernet-1/1.0", "ethernet-1/1", "ethernet-1/49", "irb0") if not re.fullmatch("(lo|mgmt).*|.*[.].*", n)] == ["ethernet-1/1", "ethernet-1/49", "irb0"]
+      and 'ifName!~"(lo|mgmt).*|.*[.].*"' in read("app", "grafana", "provisioning", "alerting", "nwc-prometheus.yaml")
+      and f'(kind!="link_down" OR NOT match(target, "{SKIP_IF}"))' in g)
 
 def norm(oid, search):
     """サーチの中の OID の正規化（replace(replace(x, "^iso\\.", ".1."), "^1\\.", ".1.")）を同じ正規表現で写す"""
@@ -579,7 +598,7 @@ def norm(oid, search):
     return re.sub(m.group(3), m.group(4), re.sub(m.group(1), m.group(2), oid))
 
 
-t, c = saved["netops_trap"]["search"], saved["netops_trap_clear"]["search"]
+t, c = saved["nwc_trap"]["search"], saved["nwc_trap_clear"]["search"]
 check("trap: OID は先頭を .1. に揃える（MIB が無いと Telegraf は iso.3.6… と書く）",
       [norm(o, t) for o in ("iso.3.6.1.6.3.1.1.5.3", "1.3.6.1.6.3.1.1.5.3", ".1.3.6.1.6.3.1.1.5.3", "iso.3.6.1.4.1.9.1.0.1")]
       == [".1.3.6.1.6.3.1.1.5.3"] * 3 + [".1.3.6.1.4.1.9.1.0.1"] and norm("iso.3.6.1.6.3.1.1.5.3", c) == ".1.3.6.1.6.3.1.1.5.3")
@@ -588,9 +607,9 @@ LINK = [".1.3.6.1.6.3.1.1.5.3", ".1.3.6.1.6.3.1.1.5.4"]
 excluded = lambda s: re.findall(r'oid!="(\.[0-9.]+)"', s)   # noqa: E731
 check("trap: 機器が起きた知らせ（coldStart / warmStart / nsNotifyShutdown / nsNotifyRestart）は異常にしない", excluded(t) == IGNORED)
 _tskip = re.search(r'where kind!="link_down" OR NOT match\(target, "([^"]+)"\)', t)
-check("trap: linkDown / linkUp でも、ポーリングと同じ IF（ループバック・管理ポート・サブインタフェース）は見ない。link 以外の trap の target（OID）は落とさない",
+check("trap: linkDown / linkUp でも、gNMI の link_down と同じ IF（ループバック・管理ポート・サブインタフェース）は見ない。link 以外の trap の target（OID）は落とさない",
       _tskip is not None and _tskip.group(1) == SKIP_IF
-      and pipes["netops_trap"].index(_tskip.group(0)) == pipes["netops_trap"].index('eval target=if(kind=="link_down", coalesce(if_name, if_descr, if_index, "?"), oid)') + 1
+      and pipes["nwc_trap"].index(_tskip.group(0)) == pipes["nwc_trap"].index('eval target=if(kind=="link_down", coalesce(if_name, if_descr, if_index, "?"), oid)') + 1
       and [n for n in ("ethernet-1/1.0", "lo0", "mgmt0", "ethernet-1/1", "5", "?") if not re.search(_tskip.group(1), n)] == ["ethernet-1/1", "5", "?"])
 check("trap: linkDown は link_down の firing、linkUp は resolved。それ以外は kind = trap（target は trap の OID）の firing",
       'eval kind=if(oid==".1.3.6.1.6.3.1.1.5.3" OR oid==".1.3.6.1.6.3.1.1.5.4", "link_down", "trap")' in t
@@ -612,18 +631,18 @@ check("trap の解消: link の trap は対象にしない（linkUp が閉じる
 check("trap の解消の target は trap の firing と同じ（OID）なので、同じ anomaly_id を閉じる",
       "target=oid" in c and 'coalesce(if_name, if_descr, if_index, "?"), oid)' in t)
 check("サーチが出す kind は受け手が知っているものだけ（link_down はワークフローを起こし、bgp_down / isis_down / trap は status だけ）",
-      set(re.findall(r'"(link_down|bgp_down|isis_down|trap)"', p + g + t + c)) == {"link_down", "bgp_down", "isis_down", "trap"} and rules.START_KINDS == {"link_down"})
-check("detail の末尾でどの入力から出したかが分かる（Grafana は (grafana: …)）: ポーリングは (splunk: poll)、gNMI は (splunk: gnmi)、"
+      set(re.findall(r'"(link_down|bgp_down|isis_down|trap)"', g + t + c)) == {"link_down", "bgp_down", "isis_down", "trap"} and rules.START_KINDS == {"link_down"})
+check("detail の末尾でどの入力から出したかが分かる（Grafana は (grafana: …)）: gNMI は (splunk: gnmi)、"
       "link の trap は (splunk: linkDown trap) / (splunk: linkUp trap)、ほかの trap は (splunk: trap)",
-      re.findall(r"\((splunk[^)]*)\)", p + g + t + c) == ["splunk: poll", "splunk: gnmi", "splunk: linkUp trap", "splunk: linkDown trap", "splunk: trap", "splunk: trap"])
+      re.findall(r"\((splunk[^)]*)\)", g + t + c) == ["splunk: gnmi", "splunk: linkUp trap", "splunk: linkDown trap", "splunk: trap", "splunk: trap"])
 check("アラートアクションの定義: カスタム、標準入力は JSON、Python は 3.13 と書く（boto3 は Splunk の Python のもの。latest だと Splunk を上げたとき黙って替わる）",
-      actions == {"netops_sns": dict(actions["netops_sns"], **{"is_custom": "1", "payload_format": "json", "python.required": "3.13"})}
-      and os.path.exists(os.path.join(ROOT, *APP, "bin", "netops_sns.py")) and os.path.exists(os.path.join(ROOT, *APP, "default", "data", "ui", "alerts", "netops_sns.html")))
+      actions == {"nwc_sns": dict(actions["nwc_sns"], **{"is_custom": "1", "payload_format": "json", "python.required": "3.13"})}
+      and os.path.exists(os.path.join(ROOT, *APP, "bin", "nwc_sns.py")) and os.path.exists(os.path.join(ROOT, *APP, "default", "data", "ui", "alerts", "nwc_sns.html")))
 check("spec（README/*.conf.spec）がある（無いと btool check が知らない設定として警告する）",
-      "[netops_sns]" in read(*APP, "README", "alert_actions.conf.spec") and "action.netops_sns = " in read(*APP, "README", "savedsearches.conf.spec"))
+      "[nwc_sns]" in read(*APP, "README", "alert_actions.conf.spec") and "action.nwc_sns = " in read(*APP, "README", "savedsearches.conf.spec"))
 appc, meta = parse_conf(read(*APP, "default", "app.conf")), parse_conf(read(*APP, "metadata", "default.meta"))
 check("app は有効で、画面には出さない。サーチ・アクション・props は全体へ export する（HEC のイベントは他の app の文脈でも読める）",
-      appc["install"]["state"] == "enabled" and appc["ui"]["is_visible"] == "0" and appc["package"]["id"] == "netops_alerts"
+      appc["install"]["state"] == "enabled" and appc["ui"]["is_visible"] == "0" and appc["package"]["id"] == "nwc_alerts"
       and all(meta[k] == {"export": "system"} for k in ("alert_actions", "savedsearches", "props")))
 check("props: telegraf:* の source は JSON として読む（画面で tags.* / fields.* を使えるように）", parse_conf(read(*APP, "default", "props.conf")) == {"source::telegraf:*": {"KV_MODE": "json"}})
 check("app の中に認証情報や local/ は無い（公開リポジトリ）",
@@ -631,20 +650,20 @@ check("app の中に認証情報や local/ は無い（公開リポジトリ）"
                                                                          for f in ("savedsearches.conf", "alert_actions.conf", "app.conf", "props.conf")))
 
 # ---- Splunk のイメージ
-df = read("splunk", "Dockerfile")
+df = read("docker", "images", "splunk", "Dockerfile")
 dcode = [l for l in df.splitlines() if l.strip() and not l.startswith("#")]
 check("Splunk のイメージは上流の公式イメージに app と入口とヘルスチェックの突き合わせ（peers_check.py）を足すだけ（RUN は無い = arm64 の PC でも QEMU 無しでビルドできる。boto3 は同梱しない）",
-      dcode == ["ARG SPLUNK_VERSION=10.4.3", "FROM splunk/splunk:${SPLUNK_VERSION}", "COPY --chown=splunk:splunk netops_alerts /opt/splunk-etc/apps/netops_alerts",
+      dcode == ["ARG SPLUNK_VERSION=10.4.4", "FROM splunk/splunk:${SPLUNK_VERSION}", "COPY --chown=splunk:splunk nwc_alerts /opt/splunk-etc/apps/nwc_alerts",
                 "COPY --chmod=0755 entrypoint.sh /sbin/nwc-entrypoint.sh", "COPY --chmod=0755 peers_check.py /sbin/nwc-peers-check.py",
                 'ENTRYPOINT ["/sbin/nwc-entrypoint.sh"]', 'CMD ["start-service"]'])
 
-# ---- search head のヘルスチェックに足す突き合わせ（splunk/peers_check.py。「Splunk をクラスターにする（004）」の手当て A）
-pc = load("splunk/peers_check.py", "peers_check")
-pcsrc = read("splunk", "peers_check.py")
+# ---- search head のヘルスチェックに足す突き合わせ（app/splunk/peers_check.py。「Splunk をクラスターにする（004）」の手当て A）
+pc = load("app/splunk/peers_check.py", "peers_check")
+pcsrc = read("app", "splunk", "peers_check.py")
 check("peers_check.py は OS の /usr/bin/python3 で標準ライブラリだけを読む（Splunk の Python に頼らない）。イメージの /sbin/nwc-peers-check.py を、"
       "クラスターの search head のヘルスチェック（splunk.tf）が checkstate.sh のあとに呼ぶ",
       pcsrc.startswith("#!/usr/bin/python3\n") and imported(ast.walk(ast.parse(pcsrc))) <= set(sys.stdlib_module_names)
-      and '"/sbin/checkstate.sh && /sbin/nwc-peers-check.py"' in read("terraform", "pipeline", "analytics", "splunk.tf"))
+      and '"/sbin/checkstate.sh && /sbin/nwc-peers-check.py"' in read("IaC", "terraform", "aws-managed", "pipeline", "analytics", "splunk.tf"))
 check("peers_check.py: SPLUNK_CLUSTER_MASTER_URL（上流の入口と同じく名前だけ）を管理 API の URL にする（https:// とポート 8089 が無ければ足す）",
       pc.manager_base("splunk-cm.t-nwc-poc.internal") == "https://splunk-cm.t-nwc-poc.internal:8089"
       and pc.manager_base(" https://x:8089/ ") == "https://x:8089" and pc.manager_base("https://x") == "https://x:8089"
@@ -740,7 +759,7 @@ check("peers_check.py: manager が Up と言う peer が NWC_PEERS_EXPECTED（in
                                                           pc.SH_PEERS: [_sh("AAA-1"), _sh("OLD-1")]})[:4:3] == (1, ["nwc-peer-check state=mismatch reason=lost:idx-b"])
       and all(_pc_main(dict(_PCENV, NWC_PEERS_EXPECTED=v), _one_down)[:4:3] == (0, ["nwc-peer-check state=ok reason=peers_up:1"]) for v in ("", "x", "0", "1"))
       and _pc_main(_PCENV, _one_down)[3] == ["nwc-peer-check state=ok reason=peers_up:1"])
-_sh_env = read("terraform", "pipeline", "analytics", "splunk.tf")
+_sh_env = read("IaC", "terraform", "aws-managed", "pipeline", "analytics", "splunk.tf")
 check("splunk.tf: クラスターの search head のタスクだけに NWC_PEERS_EXPECTED（indexer の数 = splunk_az_num）を渡す（manager と indexer の環境変数には入れない）",
       re.search(r'\{ name = "SPLUNK_ROLE", value = "splunk_search_head" \},\n(?:\s*#[^\n]*\n)*\s*\{ name = "NWC_PEERS_EXPECTED", value = tostring\(var\.splunk_az_num\) \},\n'
                 r'\s*\], local\.splunk_cluster_environment\) : \[\]\)', _sh_env) is not None
@@ -780,45 +799,45 @@ img = load("tests/check_splunk_image.py", "check_splunk_image")
 check("Splunk の版を変えたら、コンテナの検査（tests/check_splunk_image.py。その版の Python の boto3 で publish できるか）を走らせて CHECKED を書き換える: "
       "CHECKED の Splunk = Dockerfile の SPLUNK_VERSION、CHECKED の Python = python.required の版",
       img.CHECKED["splunk"] == re.search(r"^ARG SPLUNK_VERSION=(\S+)$", df, re.M).group(1)
-      and img.CHECKED["python"].startswith(actions["netops_sns"]["python.required"] + ".") and set(img.CHECKED) == {"splunk", "python", "boto3"})
+      and img.CHECKED["python"].startswith(actions["nwc_sns"]["python.required"] + ".") and set(img.CHECKED) == {"splunk", "python", "boto3"})
 check("tests/check_splunk_image.py はコンテナを消すとき、イメージの VOLUME（/opt/splunk/etc・var）の匿名ボリュームも消す"
       "（docker rm -f -v。-v が無いと 1 回走らせるごとに約 1.3 GB 残る）",
       re.findall(r'run\("docker", "rm",[^)]*\)', read("tests", "check_splunk_image.py")) == ['run("docker", "rm", "-f", "-v", NAME, check_rc=False)'])
 up = read_ops("up")
 check("up.sh の SPLUNK_VERSION / GRAFANA_VERSION は Dockerfile の ARG の既定値と同じ",
       re.search(r"^SPLUNK_VERSION=([\d.]+)", up, re.M).group(1) == re.search(r"ARG SPLUNK_VERSION=([\d.]+)", df).group(1)
-      and re.search(r"^GRAFANA_VERSION=([\d.]+)", up, re.M).group(1) == re.search(r"ARG GRAFANA_VERSION=([\d.]+)", read("grafana", "Dockerfile")).group(1))
+      and re.search(r"^GRAFANA_VERSION=([\d.]+)", up, re.M).group(1) == re.search(r"ARG GRAFANA_VERSION=([\d.]+)", read("docker", "images", "grafana", "Dockerfile")).group(1))
 check("up.sh は Splunk と Grafana のイメージを <版>-<ディレクトリのハッシュ> のタグでビルドする（中身を変えたら別のタグ。Splunk は amd64、Grafana は arm64）",
-      'SPLUNK_TAG=$(dir_tag "$SPLUNK_VERSION" splunk)' in up and 'GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" grafana)' in up
-      and 'docker buildx build --platform linux/amd64 --build-arg "SPLUNK_VERSION=$SPLUNK_VERSION" -t "$REG/$PREFIX-splunk:$SPLUNK_TAG" --push splunk/' in up
-      and 'docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push grafana/' in up)
-stf = read("terraform", "pipeline", "analytics", "splunk.tf")
+      'SPLUNK_TAG=$(dir_tag "$SPLUNK_VERSION" app/splunk docker/images/splunk/Dockerfile)' in up and 'GRAFANA_TAG=$(dir_tag "$GRAFANA_VERSION" app/grafana docker/images/grafana/Dockerfile)' in up
+      and 'docker buildx build --platform linux/amd64 --build-arg "SPLUNK_VERSION=$SPLUNK_VERSION" -t "$REG/$PREFIX-splunk:$SPLUNK_TAG" --push -f docker/images/splunk/Dockerfile app/splunk/' in up
+      and 'docker buildx build --platform linux/arm64 --build-arg "GRAFANA_VERSION=$GRAFANA_VERSION" -t "$REG/$PREFIX-grafana:$GRAFANA_TAG" --push -f docker/images/grafana/Dockerfile app/grafana/' in up)
+stf = read("IaC", "terraform", "aws-managed", "pipeline", "analytics", "splunk.tf")
 check("Splunk のタスクはトピックの ARN と device map を環境変数で受け、タスクロールは土台のトピックへの sns:Publish だけを足す",
       '{ name = "ALERTS_TOPIC_ARN", value = local.alerts_topic_arn }' in stf and re.search(r'\{ name = "DEVICE_MAP", value = var\.device_map \}', stf) is not None
       and re.search(r'Action\s*=\s*\["sns:Publish"\]\s*\n\s*Resource\s*=\s*local\.alerts_topic_arn', stf) is not None and '"sns:*"' not in stf)
-lt = load("lab/lab_topology.py", "lab_topology")
-dm = subprocess.run([sys.executable, os.path.join(ROOT, "lab", "lab_topology.py"), "lab", "--device-map"], capture_output=True, text=True, cwd=ROOT)
+lt = load("app/containerlab/lab_topology.py", "lab_topology")
+dm = subprocess.run([sys.executable, os.path.join(ROOT, "app", "containerlab", "lab_topology.py"), "app/containerlab", "--device-map"], capture_output=True, text=True, cwd=ROOT)
 dmap = sns.parse_device_map(dm.stdout.strip())
-check("device map（lab/lab_topology.py --device-map）は管理 IP と回線の IP を機器名に引ける形で、アラートアクションがそのまま読む",
+check("device map（app/containerlab/lab_topology.py --device-map）は管理 IP と回線の IP を機器名に引ける形で、アラートアクションがそのまま読む",
       dm.returncode == 0 and len(dmap) >= 8 and all(sns.IPV4_RE.match(k) and re.fullmatch(r"[a-z0-9-]+", v) for k, v in dmap.items())
-      and sns.device_name("10.255.2.1", dmap) == "dc1-leaf-01" and len(dm.stdout.strip()) < 4000)
+      and sns.device_name("10.255.2.1", dmap) == "dc1-a-leaf-01" and len(dm.stdout.strip()) < 4000)
 
-# ---- Grafana のアラート（送り先と本文は netops.yaml、ルールは格納先ごとに netops-prometheus.yaml / netops-opensearch.yaml）
+# ---- Grafana のアラート（送り先と本文は nwc.yaml、ルールは格納先ごとに nwc-prometheus.yaml / nwc-opensearch.yaml）
 def nocomment(text):
     return "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
 
 
-gcode = nocomment(read("grafana", "provisioning", "alerting", "netops.yaml"))
-gpcode = nocomment(read("grafana", "provisioning", "alerting", "netops-prometheus.yaml"))
-gocode = nocomment(read("grafana", "provisioning", "alerting", "netops-opensearch.yaml"))
+gcode = nocomment(read("app", "grafana", "provisioning", "alerting", "nwc.yaml"))
+gpcode = nocomment(read("app", "grafana", "provisioning", "alerting", "nwc-prometheus.yaml"))
+gocode = nocomment(read("app", "grafana", "provisioning", "alerting", "nwc-opensearch.yaml"))
 rcode = gpcode + "\n" + gocode
-tmpl = re.search(r'\{\{ define "netops\.sns" \}\}(.*)\{\{ end \}\}\s*$', gcode, re.S).group(1)
+tmpl = re.search(r'\{\{ define "nwc\.sns" \}\}(.*)\{\{ end \}\}\s*$', gcode, re.S).group(1)
 check("Grafana の本文の項目は Splunk のアラートアクションと同じ 6 つ（同じ順）、source は grafana",
       re.findall(r'"(\w+)":', tmpl) == ["source", "alerts"] + KEYS and tmpl.startswith('{"source":"grafana","alerts":['))
 
 
 def render(alerts):
-    """netops.sns のテンプレートを Go のテンプレートの代わりに写す（使っている構文だけ）。%q は JSON の文字列と同じ引用"""
+    """nwc.sns のテンプレートを Go のテンプレートの代わりに写す（使っている構文だけ）。%q は JSON の文字列と同じ引用"""
     m = re.fullmatch(r"(.*)\{\{ range \$i, \$a := \.Alerts \}\}(.*)\{\{ end \}\}(.*)", tmpl, re.S)
     out = []
     for i, a in enumerate(alerts):
@@ -831,22 +850,22 @@ def render(alerts):
     return m.group(1) + "".join(out) + m.group(3)
 
 
-body = render([{"status": "firing", "labels": {"sysName": "dc1-leaf-01", "ifName": "ethernet-1/49", "kind": "link_down", "target": "ethernet-1/49"},
-                "annotations": {"detail": "ethernet-1/49 is down (grafana: poll)"}, "starts_at": 1790000000},
+body = render([{"status": "firing", "labels": {"sysName": "dc1-a-leaf-01", "ifName": "ethernet-1/49", "kind": "link_down", "target": "ethernet-1/49"},
+                "annotations": {"detail": "ethernet-1/49 is down (grafana: gnmi)"}, "starts_at": 1790000000},
                {"status": "resolved", "labels": {"sysName": "DC1-Spine-01", "kind": "link_down", "target": 'eth"x'},
-                "annotations": {"detail": 'eth"x is down (grafana: poll)'}, "starts_at": 1790000030},
+                "annotations": {"detail": 'eth"x is down (grafana: gnmi)'}, "starts_at": 1790000030},
                {"status": "firing", "labels": {"source": "203.0.113.99", "peer_address": "10.255.0.9", "kind": "bgp_down", "target": "10.255.0.9"},
                 "annotations": {"detail": "bgp session to 10.255.0.9 is not established (grafana: gnmi)"}, "starts_at": 1790000060}])
 check("Grafana の本文は埋めたあと JSON になる（テンプレートの構文は全部埋まる。値の中の \" も壊さない。機器名が無ければ送り元の IP）",
       "{{" not in body and [(a["device_id"], a["target"], a["detail"]) for a in json.loads(body)["alerts"]]
-      == [("dc1-leaf-01", "ethernet-1/49", "ethernet-1/49 is down (grafana: poll)"), ("DC1-Spine-01", 'eth"x', 'eth"x is down (grafana: poll)'),
+      == [("dc1-a-leaf-01", "ethernet-1/49", "ethernet-1/49 is down (grafana: gnmi)"), ("DC1-Spine-01", 'eth"x', 'eth"x is down (grafana: gnmi)'),
           ("203.0.113.99", "10.255.0.9", "bgp session to 10.255.0.9 is not established (grafana: gnmi)")]
       and all(list(a) == KEYS for a in json.loads(body)["alerts"]))
 check("受け手がそのまま読める: Grafana の link_down は Splunk の linkDown trap と同じ anomaly_id（同じ障害は 1 つのワークフロー）",
       [(a["anomaly_id"], a["status"], a["first_seen"], a["source"]) for a in rules.alerts_from_message(body)][:2]
-      == [("dc1-leaf-01#link_down#ethernet-1/49", "firing", 1790000000, "grafana"), ("dc1-spine-01#link_down#eth\"x", "resolved", 1790000030, "grafana")]
+      == [("dc1-a-leaf-01#link_down#ethernet-1/49", "firing", 1790000000, "grafana"), ("dc1-spine-01#link_down#eth\"x", "resolved", 1790000030, "grafana")]
       and rules.alerts_from_message(sns.messages(sns.alerts_from_rows([{"device": "10.255.2.1", "kind": "link_down", "target": "ethernet-1/49", "status": "firing"}], dmap))[0], now=1)[0]["anomaly_id"]
-      == "dc1-leaf-01#link_down#ethernet-1/49")
+      == "dc1-a-leaf-01#link_down#ethernet-1/49")
 check("$ は二重にしない（$$ と書くと Grafana 13.2.2 が起動しない）。${…} は連絡先の環境変数 2 つだけ。ルールのファイルは $ を持たない"
       "（provisioning がラベルの $labels を環境変数として消すので .Labels で書く）",
       "$$" not in gcode and set(re.findall(r"\$\{(\w+)\}", gcode)) == {"ALERTS_TOPIC_ARN", "AWS_REGION"} and "$" not in rcode)
@@ -865,12 +884,14 @@ check("どのルールもラベル kind（= title）/ target と注釈 detail（
       all(re.search(rf"labels:\s*\n\s*kind: {t}\n\s*(sysName: .*\n\s*)?target: '\{{\{{ .+ \}}\}}'\n", r) and "condition: C" in r and "for: 0s" in r
           for t, r in grules.items())
       and {t: re.search(r"detail: '.*\((grafana: \w+)\)'", r).group(1) for t, r in grules.items()}
-      == {"link_down": "grafana: poll", "bgp_down": "grafana: gnmi", "isis_down": "grafana: gnmi", "trap": "grafana: trap"})
-check("link_down: ifOperStatus が 2 の IF（ループバック・管理ポート・サブ IF・admin down は見ない。値で判定するので直れば次の評価で解消）。target は ifName",
-      "expr: 'snmp_interface_ifOperStatus{ifName!~\"(lo|mgmt).*|.*[.].*\"} unless on (sysName, ifName) (snmp_interface_ifAdminStatus == 2)'" in grules["link_down"]
-      and re.search(r"type: within_range\s*\n\s*params: \[1\.5, 2\.5\]", grules["link_down"]) is not None
+      == {"link_down": "grafana: gnmi", "bgp_down": "grafana: gnmi", "isis_down": "grafana: gnmi", "trap": "grafana: trap"})
+check("link_down: gNMI の oper-state（Spark の 1 / 0 の系列）の直近 24 時間の最後の値が 0.5 未満の IF（ループバック・管理ポート・サブ IF と、"
+      "admin-state が disable の IF は見ない。値で判定するので直れば次の評価で解消）。target は ifName",
+      "expr: 'last_over_time(snmp_interface_oper_up{ifName!~\"(lo|mgmt).*|.*[.].*\"}[24h]) unless on (sysName, ifName) (last_over_time(snmp_interface_admin_up[24h]) == 0)'"
+      in grules["link_down"]
+      and re.search(r"type: lt\s*\n\s*params: \[0\.5\]", grules["link_down"]) is not None
       and "target: '{{ .Labels.ifName }}'" in grules["link_down"])
-ss = read("spark", "snmp_sinks.py")
+ss = read("app", "spark", "snmp_sinks.py")
 check("bgp_down / isis_down: Spark が書く 1 / 0 の系列の直近 24 時間の最後の値が 0.5 未満なら発火。target は peer_address / interface_name（gNMI の tag）",
       "expr: 'last_over_time(snmp_bgp_neighbor_session_up[24h])'" in grules["bgp_down"] and "target: '{{ .Labels.peer_address }}'" in grules["bgp_down"]
       and "expr: 'last_over_time(snmp_isis_interface_oper_up[24h])'" in grules["isis_down"] and "target: '{{ .Labels.interface_name }}'" in grules["isis_down"]
@@ -878,10 +899,12 @@ check("bgp_down / isis_down: Spark が書く 1 / 0 の系列の直近 24 時間�
       and '("bgp_neighbor", "session_state"): ("session_up", "established")' in ss and '("isis_interface", "oper_state"): ("oper_up", "up")' in ss)
 check("ルールのメトリクス名とラベルは Spark が AMP に書く名前（snmp_<measurement>_<field>、tag はそのままラベル）で、データソースは uid: amp",
       'METRIC_PREFIX = "snmp"' in ss and gpcode.count("datasourceUid: amp") == 3
-      and re.search(r"^\s*uid: amp$", read("grafana", "provisioning", "datasources", "prometheus.yaml"), re.M) is not None
-      and all(f in read("telegraf", "telegraf.conf.in") for f in ("ifOperStatus", "ifAdminStatus", "ifName", "sysName")))
-SPLUNK_TRAP_SKIP = re.findall(r'oid!="([.0-9]+)"', re.search(r"^\[netops_trap\]$(.*?)^\[", read("splunk", "netops_alerts", "default", "savedsearches.conf"), re.S | re.M).group(1))
-check("trap: 過去 10 分の snmp_trap を機器と OID ごとに数える（OpenSearch のデータソース uid: aoss-logs、文字列は .keyword）。除く OID は Splunk の netops_trap と"
+      and re.search(r"^\s*uid: amp$", read("app", "grafana", "provisioning", "datasources", "prometheus.yaml"), re.M) is not None
+      and '("interface", "oper_state"): ("oper_up", "up")' in ss and '("interface", "admin_state"): ("admin_up", "enable")' in ss
+      and '"interface_name": "ifName"' in ss.split("GNMI_TAGS = ", 1)[1].split("\n", 1)[0]
+      and all(f in read("app", "gnmic", "gnmic.yaml.in") for f in ("/interface[name=*]/oper-state", "/interface[name=*]/admin-state")))
+SPLUNK_TRAP_SKIP = re.findall(r'oid!="([.0-9]+)"', re.search(r"^\[nwc_trap\]$(.*?)^\[", read("app", "splunk", "nwc_alerts", "default", "savedsearches.conf"), re.S | re.M).group(1))
+check("trap: 過去 10 分の snmp_trap を機器と OID ごとに数える（OpenSearch のデータソース uid: aoss-logs、文字列は .keyword）。除く OID は Splunk の nwc_trap と"
       "同じに linkDown / linkUp を足したもの。target は OID",
       "datasourceUid: aoss-logs" in grules["trap"] and "from: 600" in grules["trap"] and "measurement.keyword:snmp_trap AND NOT tags.oid.keyword:(" in grules["trap"]
       and set(re.findall(r'"([.0-9]+)"', re.search(r"tags\.oid\.keyword:\((.*?)\)", grules["trap"]).group(1)))
@@ -889,31 +912,57 @@ check("trap: 過去 10 分の snmp_trap を機器と OID ごとに数える（Op
       and re.findall(r"field: (\S+)", grules["trap"]) == ["tags.sysName.keyword", "tags.oid.keyword", "'@timestamp'"]
       and """sysName: '{{ index .Labels "tags.sysName.keyword" }}'""" in grules["trap"] and """target: '{{ index .Labels "tags.oid.keyword" }}'""" in grules["trap"]
       and re.search(r"type: gt\s*\n\s*params: \[0\]", grules["trap"]) is not None
-      and re.search(r"^\s*uid: aoss-logs$", read("grafana", "provisioning", "datasources", "opensearch.yaml"), re.M) is not None)
-check("trap の terms は 機器 × OID × 時間の区切り 20 個が 65535 に収まる大きさ（超えると opensearch プラグインが評価をエラーにする）",
-      (lambda n: len(n) == 2 and n[0] * n[1] * 20 <= 65535)([int(x) for x in re.findall(r"size: '(\d+)'", grules["trap"])]))
+      and re.search(r"^\s*uid: aoss-logs$", read("app", "grafana", "provisioning", "datasources", "opensearch.yaml"), re.M) is not None)
+OPENSEARCH_PLUGIN_COPIED = "2.34.4"  # 下の 2 つの関数が写した grafana-opensearch-datasource の版（Dockerfile が入れる版と突き合わせる）
+
+
+def terms_buckets(sizes, shards):
+    """grafana-opensearch-datasource（OPENSEARCH_PLUGIN_COPIED）の termsBucketProduct / termsBucketEstimate（pkg/opensearch/lucene_handler.go）を写す。
+    terms 1 つを shard 1 なら size、2 以上なら shards * (int(size * 1.5) + 10) と見積もって掛ける"""
+    return math.prod(n if shards <= 1 else shards * (int(n * 1.5) + 10) for n in sizes)
+
+
+def bucket_budget_ok(sizes, interval, shards, max_buckets=65535):
+    """同じく bucketFloorInterval（pkg/tsdb/interval.go）。検査は date_histogram の interval が auto のときだけで、
+    max_buckets * 90 / 100 を terms の見積もりで割って 20 未満なら「bucket budget out of bounds」"""
+    return interval != "auto" or max_buckets * 90 // 100 // terms_buckets(sizes, shards) >= 20
+
+
+tsizes = [int(x) for x in re.findall(r"size: '(\d+)'", grules["trap"])]
+tinterval = re.search(r"^\s*interval: (\S+)$", grules["trap"], re.M).group(1)
+check("trap の bucket budget の写しは AWS で見たエラーを再現する（AOSS の index は shard 2 で、機器 50 × OID 20 が 13600 になり auto で落ちる。shard 1 の OSS では通る）",
+      terms_buckets([50, 20], 2) == 13600 and not bucket_budget_ok([50, 20], "auto", 2) and bucket_budget_ok([50, 20], "auto", 1))
+check("trap の時間の区切りは固定の 30s（10 分を 20 個。auto だと terms の見積もりが shard の数で変わり、プラグインが評価をエラーにしうる）。"
+      "terms は auto だったとしても shard 2 で通る大きさで、固定の区切り 21 個（端を含む）を掛けても 65535 に収まる",
+      tinterval == "30s" and len(tsizes) == 2 and all(bucket_budget_ok(tsizes, i, s) for i in (tinterval, "auto") for s in (1, 2))
+      and terms_buckets(tsizes, 2) * (600 // 30 + 1) <= 65535)
 check("データが無い・クエリが失敗したときは直前の状態のまま（分からないときに発火も解消もしない）。trap だけは数えるものが無ければ解消（10 分来なければ閉じる）",
       all("noDataState: KeepLast" in grules[t] for t in ("link_down", "bgp_down", "isis_down")) and "noDataState: OK" in grules["trap"]
       and all("execErrState: KeepLast" in r for r in grules.values()))
 check("ルールの kind のうちワークフローを起こすのは link_down だけ（bgp_down / isis_down / trap は記録だけ）", rules.START_KINDS == {"link_down"})
 check("連絡先は SNS（鍵は書かない = タスクロールで SigV4）。解消も送る",
       "type: sns" in gcode and "topic_arn: ${ALERTS_TOPIC_ARN}" in gcode and re.search(r"sigv4:\s*\n\s*region: \$\{AWS_REGION\}", gcode) is not None
-      and "disableResolveMessage: false" in gcode and "message: '{{ template \"netops.sns\" . }}'" in gcode
+      and "disableResolveMessage: false" in gcode and "message: '{{ template \"nwc.sns\" . }}'" in gcode
       and not re.search(r"(?i)access_key|secret_key|assume_role|profile", gcode + rcode) and "groups:" not in gcode)
 check("通知ポリシー: 対象（機器 + target）ごとに 1 通、発火はすぐ、解消は 30 秒以内、直らないあいだは 4 時間ごとに送り直す",
       "receiver: nwc-sns" in gcode and "group_by: ['alertname', 'sysName', 'target']" in gcode and "group_wait: 0s" in gcode and "group_interval: 30s" in gcode and "repeat_interval: 4h" in gcode)
-gdf = read("grafana", "Dockerfile")
+gdf = read("docker", "images", "grafana", "Dockerfile")
+gplugins = dict(re.findall(r"plugins install (\S+) (\S+?) ?\\?$", gdf, re.M))
+check(f"Grafana のプラグインは版を固定して入れ、opensearch は bucket budget の式を写した版（{OPENSEARCH_PLUGIN_COPIED}）と同じ。"
+      "amazonprometheus は AWS で動かしたイメージの版。版の無い install も ARG で替えられる版も無い",
+      gplugins == {"grafana-amazonprometheus-datasource": "3.2.0", "grafana-opensearch-datasource": OPENSEARCH_PLUGIN_COPIED}
+      and gdf.count("plugins install") == 2 and re.findall(r"^ARG (\w+)", gdf, re.M) == ["GRAFANA_VERSION"])
 check("Grafana のイメージは provisioning を持ち、SigV4 を既定の認証情報（タスクロール）で使う",
-      "COPY provisioning /etc/grafana/netops" in gdf and "GF_AUTH_SIGV4_AUTH_ENABLED=true" in gdf and "GF_AWS_ALLOWED_AUTH_PROVIDERS=default" in gdf)
-gtf = read("terraform", "pipeline", "analytics", "grafana.tf")
+      "COPY provisioning /etc/grafana/nwc" in gdf and "GF_AUTH_SIGV4_AUTH_ENABLED=true" in gdf and "GF_AWS_ALLOWED_AUTH_PROVIDERS=default" in gdf)
+gtf = read("IaC", "terraform", "aws-managed", "pipeline", "analytics", "grafana.tf")
 check("Grafana のタスクはトピックの ARN を環境変数で受け、タスクロールは土台のトピックへの sns:Publish だけを足す",
       '{ name = "ALERTS_TOPIC_ARN", value = local.alerts_topic_arn }' in gtf and re.search(r'Action\s*=\s*\["sns:Publish"\]\s*\n\s*Resource\s*=\s*local\.alerts_topic_arn', gtf) is not None and '"sns:*"' not in gtf)
 
 
 def start_sh(**env):
-    """grafana/start.sh を一時ディレクトリに向けて走らせ、並んだアラートの定義とデータソースを返す"""
+    """app/grafana/start.sh を一時ディレクトリに向けて走らせ、並んだアラートの定義とデータソースを返す"""
     with tempfile.TemporaryDirectory() as tmp:
-        sh = read("grafana", "start.sh").replace("SRC=/etc/grafana/netops", f"SRC={os.path.join(ROOT, 'grafana', 'provisioning')}")
+        sh = read("app", "grafana", "start.sh").replace("SRC=/etc/grafana/nwc", f"SRC={os.path.join(ROOT, 'app', 'grafana', 'provisioning')}")
         sh = sh.replace("/tmp/grafana-", f"{tmp}/grafana-").replace('exec /run.sh "$@"', 'echo "run $GF_PATHS_PROVISIONING"')
         assert "/etc/grafana" not in sh and "/tmp/grafana" not in sh.replace(tmp, "") and "exec " not in sh
         r = subprocess.run(["sh", "-c", sh], capture_output=True, text=True, env=dict({"PATH": os.environ["PATH"]}, **env))
@@ -923,15 +972,441 @@ def start_sh(**env):
 
 AMP = "https://aps-workspaces.ap-northeast-1.amazonaws.com/workspaces/ws-x"
 check("start.sh: アラートの定義は ALERTS_TOPIC_ARN があるときだけ並べ、ルールはデータソースがあるほうだけ（無いデータソースを読むルールは並べない）",
-      start_sh(PROMETHEUS_URL=AMP, ALERTS_TOPIC_ARN=TOPIC) == (["netops-prometheus.yaml", "netops.yaml"], ["prometheus.yaml"])
-      and start_sh(ALERTS_TOPIC_ARN=TOPIC, OPENSEARCH_URL="https://x") == (["netops-opensearch.yaml", "netops.yaml"], ["opensearch.yaml"])
+      start_sh(PROMETHEUS_URL=AMP, ALERTS_TOPIC_ARN=TOPIC) == (["nwc-prometheus.yaml", "nwc.yaml"], ["prometheus.yaml"])
+      and start_sh(ALERTS_TOPIC_ARN=TOPIC, OPENSEARCH_URL="https://x") == (["nwc-opensearch.yaml", "nwc.yaml"], ["opensearch.yaml"])
       and start_sh(PROMETHEUS_URL=AMP, OPENSEARCH_URL="https://x", ALERTS_TOPIC_ARN=TOPIC)
-      == (["netops-opensearch.yaml", "netops-prometheus.yaml", "netops.yaml"], ["opensearch.yaml", "prometheus.yaml"])
+      == (["nwc-opensearch.yaml", "nwc-prometheus.yaml", "nwc.yaml"], ["opensearch.yaml", "prometheus.yaml"])
       and start_sh(PROMETHEUS_URL=AMP, OPENSEARCH_URL="https://x") == ([], ["opensearch.yaml", "prometheus.yaml"])
       and start_sh(ALERTS_TOPIC_ARN=TOPIC) == ([], []) and start_sh() == ([], []))
 
+# ---- ルールの評価のエラーを ops で見る（ops/grafana_rules_check.py。ops/up.sh・ops/oss/up.sh の 9-2 と ops/check-grafana.sh が Web の EC2 で動かす）
+# execErrState: KeepLast だと評価のエラーは alerts[].state の「Normal (Error, KeepLast)」にだけ出る（health は ok、lastError は空。手元の Grafana 13.2.2 で実測）
+grc = load("ops/grafana_rules_check.py", "grafana_rules_check")
+
+
+def grule(name, *states, health="ok", last_error="", evaluated="2026-10-08T13:28:50Z"):
+    return {"name": name, "health": health, "state": "inactive", "lastError": last_error, "lastEvaluation": evaluated,
+            "alerts": [{"state": s} for s in states]}
+
+
+def gbody(*rules):
+    return {"status": "success", "data": {"groups": [{"name": "nwc-prometheus", "rules": list(rules)}]}}
+
+
+def before(body, at="2026-10-08T13:27:50Z"):
+    """body の 1 回前の評価（check を打ったときに見える評価）。check はこれと lastEvaluation が違う評価だけで判定する"""
+    return {"status": "success", "data": {"groups": [dict(g, rules=[dict(r, lastEvaluation=at) for r in g["rules"]])
+                                                     for g in body["data"]["groups"]]}}
+
+
+def again(body):
+    """body の 1 回あとの評価。エラーはこの評価でも出たら NG になる"""
+    return before(body, at="2026-10-08T13:29:50Z")
+
+
+def ngrun(body, **kw):
+    """打ったときの評価 → body → その次の評価（body と同じ状態）と答えて check を回す"""
+    return grun(before(body), body, again(body), **kw)
+
+
+def grun(*answers, wait=30):
+    """answers を順に返す（例外なら投げる。尽きたら最後のものを返し続ける）偽の fetch で check を回す。(終了コード, 出力の行, fetch の回数, 待った秒数)"""
+    t, out, n = [0.0], [], [0]
+
+    def fetch():
+        a = answers[min(n[0], len(answers) - 1)]
+        n[0] += 1
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    def sleep(s):
+        t[0] += s
+
+    rc = grc.check(fetch, wait, clock=lambda: t[0], sleep=sleep, out=out.append)
+    return rc, out, n[0], t[0]
+
+
+_ok = gbody(grule("link_down", "Normal"), grule("bgp_down", "Normal (NoData)"), grule("isis_down", "Normal (NoData, KeepLast)"),
+            grule("trap", "Alerting", "Normal"), grule("quiet"))
+check("ルールの確かめ: Normal・NoData（KeepLast も）・Alerting・アラート無しはエラーではない。打ったあとの評価が全部そろえば OK（0）",
+      grun(before(_ok), _ok)[0] == 0 and grun(before(_ok), _ok)[1][-1] == "判定: OK（5 本とも評価のエラーなし）"
+      and grun(before(_ok), _ok)[2:] == (2, 10) and len(grun(before(_ok), _ok)[1]) == 6)
+_ngb = gbody(grule("link_down", "Normal (Error, KeepLast)", "Normal (Error, KeepLast)"), grule("trap", "Normal"))
+_ng = ngrun(_ngb)
+check("ルールの確かめ: 「Normal (Error, KeepLast)」が打ったあとの 2 回の評価で続けば NG（1）。どのルールか、状態ごとの数も出す",
+      _ng[0] == 1 and _ng[1][-1] == "判定: NG（2 本のうち 1 本の評価がエラー: nwc-prometheus/link_down）"
+      and "エラー: nwc-prometheus/link_down（Normal (Error, KeepLast) ×2）" in _ng[1] and _ng[2:] == (3, 20))
+check("ルールの確かめ: health が error、lastError が空でない、state が Error で始まる（execErrState: Error のとき）、"
+      "系列のあるルールのエラー（Alerting (Error, KeepLast)）も NG",
+      [ngrun(gbody(r))[0] for r in (grule("a", health="error"), grule("a", last_error="x" * 500), grule("a", "Error"),
+                                    grule("a", "Alerting (Error)"), grule("a", "Alerting (Error, KeepLast)"))]
+      == [1, 1, 1, 1, 1] and any(len(l) < 400 and "lastError=" in l for l in ngrun(gbody(grule("a", last_error="x" * 500)))[1]))
+_was_ng = grun(gbody(grule("trap", "Normal (Error, KeepLast)", evaluated="2026-10-08T13:57:50Z")),
+               gbody(grule("trap", "Alerting", evaluated="2026-10-08T13:58:50Z")))
+_was_ok = grun(gbody(grule("trap", "Alerting", evaluated="2026-10-08T13:57:50Z")),
+               gbody(grule("trap", "Alerting (Error, KeepLast)", evaluated="2026-10-08T13:58:50Z")),
+               gbody(grule("trap", "Alerting (Error, KeepLast)", evaluated="2026-10-08T13:59:50Z")))
+check("ルールの確かめ: 打ったときに見える評価（データソースを直す前・壊れる前のものかもしれない）では判定せず、lastEvaluation が変わる（次の評価）まで待つ",
+      _was_ng[0] == 0 and _was_ng[2:] == (2, 10) and _was_ok[0] == 1 and _was_ok[2:] == (3, 20))
+# 手元の 13.2.2 で実測: 14:12:11 に OpenSearch を戻すと、14:13:00 の評価は Alerting（系列）と Normal (Error, KeepLast)（前の評価の残り。
+# ラベルはルールのものだけ）が並び、14:14:00 の評価で Alerting だけになった
+_left = gbody(grule("trap", "Alerting", "Normal (Error, KeepLast)"))
+_stale = grun(before(_left), _left, again(gbody(grule("trap", "Alerting"))))
+_flaky = grun(before(_ngb), _ngb, again(gbody(grule("link_down", "Normal"), grule("trap", "Normal"))))
+_slow = grun(before(_ngb), _ngb, gbody(grule("link_down", "Normal (Error, KeepLast)"), grule("trap", "Normal", evaluated="2026-10-08T13:29:50Z")),
+             again(_ngb))
+check("ルールの確かめ: エラーは、そのルールがもう 1 回評価されてもエラーのときだけ NG。直した直後に 1 回分残るエラーでは NG にしない",
+      _stale[0] == 0 and _stale[1][-1] == "判定: OK（1 本とも評価のエラーなし）" and _stale[2:] == (3, 20)
+      and _flaky[0] == 0 and _slow[0] == 1 and _slow[2:] == (4, 30)
+      and grun(before(_ngb), _ngb)[1][-1] == "判定: 未確認（30 秒待った。エラーのあったルールのもう 1 回の評価を待っている"
+                                              "（直した直後は前の評価のエラーが 1 回分残る）: nwc-prometheus/link_down）")
+_late = grun(gbody(grule("link_down", evaluated="0001-01-01T00:00:00Z")), gbody(grule("link_down", evaluated="")), gbody(grule("link_down", "Normal")))
+check("ルールの確かめ: まだ評価されていない（lastEvaluation が 0001- か空）ルールがあれば 10 秒おきに読み直し、全部そろってから判定する"
+      "（立てた直後は最初の評価で判定する）",
+      _late[:1] == (0,) and _late[2] == 3 and _late[3] == 20)
+_never = grun(gbody(grule("link_down", "Normal", evaluated="2026-10-08T13:27:50Z"), grule("trap", evaluated="0001-01-01T00:00:00Z")),
+              gbody(grule("link_down", "Normal"), grule("trap", evaluated="0001-01-01T00:00:00Z")))
+check("ルールの確かめ: 待つ秒数（GRAFANA_WAIT）までに評価がそろわなければ未確認（2）。どのルールを待っていたかを出す",
+      _never[0] == 2 and _never[1][-1] == "判定: 未確認（30 秒待った。確かめ始めてから評価されていないルール: nwc-prometheus/trap）"
+      and _never[3] == 30 and grun(gbody(grule("a", "Normal")))[1][-1] == "判定: 未確認（30 秒待った。確かめ始めてから評価されていないルール: nwc-prometheus/a）"
+      and grun(gbody(), wait=10)[1][-1].startswith("判定: 未確認（10 秒待った。ルールが 0 本"))
+_down = grun(grc.urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")), ValueError("Expecting value"),
+             grc.http.client.IncompleteRead(b"{"), before(gbody(grule("a", "Normal"))), gbody(grule("a", "Normal")), wait=60)
+check("ルールの確かめ: Grafana が起動中（つながらない）・途中で切れた応答・JSON でない応答は待って読み直し、ずっと読めなければ理由を付けて未確認（2）",
+      _down[0] == 0 and _down[2] == 5
+      and grun(grc.urllib.error.URLError("x"), wait=20)[1][-1] == "判定: 未確認（20 秒待った。Grafana のルールの API が読めない（URLError: <urlopen error x>））")
+_unauth = grun(grc.Unauthorized("HTTP 401（admin のパスワードが Grafana と SSM で違う）"), gbody(grule("a", "Normal")))
+check("ルールの確かめ: 401 / 403 は待たずに未確認（2。待っても直らない）",
+      _unauth == (2, ["判定: 未確認（Grafana のルールの API が HTTP 401（admin のパスワードが Grafana と SSM で違う））"], 1, 0))
+
+
+class _Rules(http.server.BaseHTTPRequestHandler):
+    PW = "pw-" + "q9Z2" * 4   # 偽の値（手元の偽の Grafana が受け付けるパスワード）
+    SEEN = []                 # (パス, Authorization が付いていたか)
+    PAGES = {}                # パス（クエリも）→ 返す本文か、本文を返す関数（ページ分けの確かめ）
+
+    def do_GET(self):
+        import base64
+        self.SEEN.append((self.path, "Authorization" in self.headers))
+        if self.path.startswith("/moved/"):   # 別の場所へのリダイレクト
+            self.send_response(302); self.send_header("Location", self.path[len("/moved"):]); self.end_headers()
+            return
+        ok = self.headers.get("Authorization") == "Basic " + base64.b64encode(f"admin:{self.PW}".encode()).decode()
+        rules = "/api/prometheus/grafana/api/v1/rules"
+        if ok and self.path.startswith("/endless" + rules):   # 毎回違うトークンを返す（終わらない）
+            page = {"status": "success", "data": {"groups": [], "groupNextToken": f"n{len(self.SEEN)}"}}
+        else:
+            page = self.PAGES.get(self.path) if ok else None
+        if page is not None:
+            code, body = 200, json.dumps(page() if callable(page) else page)
+        else:
+            code, body = ((200, json.dumps(gbody(grule("a", "Normal")))) if self.path == rules
+                          else (200, "[]") if self.path == "/list" + rules else (404, "{}")) if ok else (401, "{}")
+        self.send_response(code); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(body.encode())
+
+    def log_message(self, *a):
+        pass
+
+
+_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Rules)
+threading.Thread(target=_srv.serve_forever, daemon=True).start()
+_url = f"http://127.0.0.1:{_srv.server_address[1]}"
+_saved = {k: os.environ.get(k) for k in ("http_proxy", "HTTP_PROXY")}
+os.environ["http_proxy"] = os.environ["HTTP_PROXY"] = "http://127.0.0.1:9"   # 届かないプロキシ（make_fetch はプロキシを通さない）
+try:
+    _got = grc.make_fetch(_url, _Rules.PW)()
+    try:
+        grc.make_fetch(_url, "wrong-" + _Rules.PW)()
+        _401 = None
+    except grc.Unauthorized as e:
+        _401 = e
+    _wrong = io.StringIO()
+    with contextlib.redirect_stdout(_wrong):
+        _rc401 = grc.check(grc.make_fetch(_url, "wrong-" + _Rules.PW), 30, sleep=lambda s: None)
+    _Rules.SEEN.clear()
+    try:
+        grc.make_fetch(_url + "/moved", _Rules.PW)()
+        _moved = None
+    except grc.Unauthorized as e:
+        _moved = e
+    _moved_seen = list(_Rules.SEEN)
+    try:
+        grc.make_fetch(_url + "/list", _Rules.PW)()
+        _list = None
+    except ValueError as e:
+        _list = e
+
+    # ページ分け（groupNextToken）。13.2.3 の既定は group_limit=-1 なので来ない。来たときのための道を、偽の Grafana が 2 ページ返す形で縛る
+    _RP, _r = "/api/prometheus/grafana/api/v1/rules", [0]
+
+    def _p1():   # 読むたびに評価が 1 回進む
+        _r[0] += 1
+        return {"status": "success", "data": {"groups": [{"name": "g1", "rules": [grule("a", "Normal", evaluated=f"2026-10-08T14:{_r[0]:02}:00Z")]}],
+                                              "groupNextToken": "t/1+="}}
+
+    def _p2(state):
+        return lambda: {"status": "success", "data": {"groups": [{"name": "g2", "rules": [grule("b", state, evaluated=f"2026-10-08T14:{_r[0]:02}:00Z")]}]}}
+
+    def _p1e():   # 1 ページ目は _p1 と同じで、トークンだけ違う（2 ページ目が status: error を返す形）
+        body = _p1()
+        body["data"]["groupNextToken"] = "e"
+        return body
+
+    def _grc_run(base, wait):   # 時計は偽（sleep の秒だけ進む）。wait=30 なら 4 回読む
+        o, t = io.StringIO(), [0.0]
+        with contextlib.redirect_stdout(o):
+            rc = grc.check(grc.make_fetch(_url + base, _Rules.PW), wait, clock=lambda: t[0], sleep=lambda s: t.__setitem__(0, t[0] + s))
+        return rc, o.getvalue().splitlines()
+
+    _Rules.PAGES.update({"/paged" + _RP: _p1, "/paged" + _RP + "?group_next_token=t%2F1%2B%3D": _p2("Normal")})
+    _Rules.SEEN.clear()
+    _pg = grc.make_fetch(_url + "/paged", _Rules.PW)()
+    _pg_seen = list(_Rules.SEEN)
+    _pg_ok = _grc_run("/paged", 30)
+    _Rules.PAGES["/paged" + _RP + "?group_next_token=t%2F1%2B%3D"] = _p2("Normal (Error, KeepLast)")
+    _pg_ng = _grc_run("/paged", 30)
+    _Rules.PAGES.update({"/loop" + _RP: {"status": "success", "data": {"groups": [{"name": "g1", "rules": [grule("a", "Normal")]}],
+                                                                       "groupNextToken": "same"}},
+                         "/loop" + _RP + "?group_next_token=same": {"status": "success", "data": {"groups": [], "groupNextToken": "same"}},
+                         "/dataarr" + _RP: {"status": "success", "data": ["x"]},
+                         "/tokint" + _RP: {"status": "success", "data": {"groups": [], "groupNextToken": 5}},
+                         "/nostatus" + _RP: {},
+                         "/grpdict" + _RP: {"status": "success", "data": {"groups": {"g": 1}}},
+                         "/p2err" + _RP: _p1e,
+                         "/p2err" + _RP + "?group_next_token=e": {"status": "error", "errorType": "server_error", "error": "boom"}})
+    _p2err = _grc_run("/p2err", 30)
+    _Rules.SEEN.clear()
+    _loop = _grc_run("/loop", 0)
+    _loop_seen = list(_Rules.SEEN)
+    _Rules.SEEN.clear()
+    try:
+        grc.make_fetch(_url + "/endless", _Rules.PW)()
+        _endless = None
+    except ValueError as e:
+        _endless = e
+    _endless_n = len(_Rules.SEEN)
+    _endless_run = _grc_run("/endless", 0)
+    _odd = []
+    for _base in ("/dataarr", "/tokint", "/nostatus", "/grpdict"):
+        try:
+            grc.make_fetch(_url + _base, _Rules.PW)()
+            _odd.append(None)
+        except ValueError as e:
+            _odd.append(str(e))
+    _dataarr = _grc_run("/dataarr", 0)
+finally:
+    _srv.shutdown()
+    for k, v in _saved.items():
+        os.environ.pop(k) if v is None else os.environ.__setitem__(k, v)
+check("ルールの確かめ: make_fetch は admin の Basic 認証でルールの API を読み（環境変数のプロキシは通さない）、401 は Unauthorized にする。"
+      "パスワードは例外の文にも出力にも出さない",
+      _got == {"data": gbody(grule("a", "Normal"))["data"]} and isinstance(_401, grc.Unauthorized) and _401.__cause__ is None and _401.__suppress_context__
+      and _Rules.PW not in str(_401) and _rc401 == 2 and _Rules.PW not in _wrong.getvalue() and "HTTP 401" in _wrong.getvalue())
+check("ルールの確かめ: make_fetch はリダイレクト先に Authorization（パスワード）を送らない。JSON がオブジェクトでなければ ValueError（check が待って読み直す）",
+      isinstance(_moved, grc.Unauthorized)
+      and _moved_seen == [("/moved/api/prometheus/grafana/api/v1/rules", True), ("/api/prometheus/grafana/api/v1/rules", False)]
+      and isinstance(_list, ValueError) and "list" in str(_list))
+check("ルールの確かめ（ページ分け）: data.groupNextToken があれば group_next_token（URL エンコードする）で次のページを読み、グループをつなぐ。"
+      "どのページにも Authorization を付け、group_limit は送らない（13.2.3 の既定 -1 は全部を 1 ページで返す）",
+      [g["name"] for g in _pg["data"]["groups"]] == ["g1", "g2"] and [r["name"] for g in _pg["data"]["groups"] for r in g["rules"]] == ["a", "b"]
+      and _pg_seen == [("/paged" + _RP, True), ("/paged" + _RP + "?group_next_token=t%2F1%2B%3D", True)]
+      and "group_limit" not in read("ops", "grafana_rules_check.py").split('"""', 2)[2])
+check("ルールの確かめ（ページ分け）: 判定は全部のページのルールで出す（2 ページ目のルールだけがエラーでも NG。1 ページ目だけなら OK になる形）",
+      _pg_ok[0] == 0 and _pg_ok[1][-1] == "判定: OK（2 本とも評価のエラーなし）" and [l.split(":")[0] for l in _pg_ok[1][:-1]] == ["g1/a", "g2/b"]
+      and _pg_ng[0] == 1 and _pg_ng[1][-1] == "判定: NG（2 本のうち 1 本の評価がエラー: g2/b）")
+check("ルールの確かめ（ページ分け）: 同じ groupNextToken が 2 回来たら読めなかったとして扱い、待ち切れたら未確認（2）。読んだのは 2 ページだけ",
+      _loop == (2, ["判定: 未確認（0 秒待った。Grafana のルールの API が読めない（ValueError: groupNextToken が繰り返された（same）））"])
+      and _loop_seen == [("/loop" + _RP, True), ("/loop" + _RP + "?group_next_token=same", True)])
+check("ルールの確かめ（ページ分け）: トークンが毎回変わって終わらなければ 100 ページ（最初の 1 ページを含めて 100 回読む）で止めて未確認（2）。"
+      "data がオブジェクトでない・トークンが文字列でない・status が success でない・data.groups が配列でないも ValueError で未確認（落ちない）",
+      isinstance(_endless, ValueError) and str(_endless) == "ページが 100 を超えた（groupNextToken が終わらない）" and _endless_n == 100
+      and _endless_run[0] == 2 and _endless_run[1][-1].endswith("（ValueError: ページが 100 を超えた（groupNextToken が終わらない）））")
+      and _odd == ["data が JSON のオブジェクトでない（list）", "groupNextToken が文字列でない（int）",
+                   "status が success でない（status=None）", "data.groups が配列でない（dict）"]
+      and _dataarr == (2, ["判定: 未確認（0 秒待った。Grafana のルールの API が読めない（ValueError: data が JSON のオブジェクトでない（list）））"]))
+check("ルールの確かめ（ページ分け）: 2 ページ目が 200 で status: error を返し続けたら、1 ページ目のルールだけで OK にせず、待ち切れたら未確認（2）",
+      _p2err == (2, ["判定: 未確認（30 秒待った。Grafana のルールの API が読めない（ValueError: status が success でない（status='error', error=boom）））"]))
+
+_seen, _gout = {}, io.StringIO()
+_orig = (grc.load_web_env, grc.admin_password, grc.make_fetch, grc.check)
+grc.load_web_env = lambda prefix: _seen.setdefault("env", prefix)
+grc.make_fetch = lambda url, pw: _seen.update(url=url, pw=pw) or "fetch"
+grc.check = lambda fetch, wait: _seen.update(fetch=fetch, wait=wait) or 0
+os.environ.pop("GRAFANA_WAIT", None)
+try:
+    os.environ.pop("NAME_PREFIX", None)
+    try:
+        grc.main()
+        _noprefix = None
+    except SystemExit as e:
+        _noprefix = e.code
+    os.environ["NAME_PREFIX"] = "x-nwc-oss"
+    grc.admin_password = lambda prefix: _Rules.PW
+    _rc = grc.main()
+
+    def _no_ssm(prefix):
+        raise RuntimeError(f"AccessDenied for {_Rules.PW}")
+    grc.admin_password = _no_ssm
+    with contextlib.redirect_stdout(_gout):
+        _rc_ssm = grc.main()
+finally:
+    grc.load_web_env, grc.admin_password, grc.make_fetch, grc.check = _orig
+    os.environ.pop("NAME_PREFIX", None)
+check("ルールの確かめ（main）: NAME_PREFIX が無ければ止まる。Grafana は Cloud Map の grafana.<接頭辞>.internal:3000、パスワードは SSM の値、待つのは既定 300 秒。"
+      "SSM が読めなければ例外の型だけを出して未確認（2）",
+      isinstance(_noprefix, str) and "NAME_PREFIX" in _noprefix and _rc == 0 and _seen["env"] == "x-nwc-oss"
+      and _seen == {"env": "x-nwc-oss", "url": "http://grafana.x-nwc-oss.internal:3000", "pw": _Rules.PW, "fetch": "fetch", "wait": 300}
+      and _rc_ssm == 2 and _gout.getvalue() == "判定: 未確認（SSM の /x-nwc-oss/grafana/admin-password が読めない: RuntimeError）\n")
+_gsrc = read("ops", "grafana_rules_check.py")
+check("ルールの確かめ: 読むのは SSM の /<接頭辞>/grafana/admin-password（Web の EC2 のロールが読める範囲）と Web と同じ環境変数・boto3。標準ライブラリのほかは boto3 だけ",
+      'Name=f"/{prefix}/grafana/admin-password", WithDecryption=True' in _gsrc and 'open(f"/etc/{prefix}-web.env"' in _gsrc
+      and imported(ast.parse(_gsrc).body) <= {"base64", "collections", "http", "json", "os", "sys", "time", "urllib"}
+      and imported(ast.walk(ast.parse(_gsrc))) - imported(ast.parse(_gsrc).body) == {"boto3"}
+      and re.search(r'parameter/\$\{local\.name_prefix\}/\*', read("IaC", "terraform", "aws-managed", "base", "core", "web.tf")) is not None)
+
+# ops/up-common.sh の grafana_rules_step（9-2）を偽物の aws で回す。ssm_run も本物（cloud-init の待ちと、結果の読み方）
+_GFAKE = r'''#!/usr/bin/env python3
+import json, os, sys
+a = sys.argv[1:]
+d = os.environ["GDIR"]
+with open(os.path.join(d, "calls.jsonl"), "a", encoding="utf-8") as f:
+    f.write(json.dumps(a) + "\n")
+q = a[a.index("--query") + 1] if "--query" in a else None
+if a[:3] == ["ecs", "wait", "services-stable"]:
+    sys.exit(255 if os.environ.get("G_UNSTABLE") else 0)
+if a[:2] == ["ssm", "send-command"]:
+    if os.environ.get("G_SEND_FAIL"):
+        print("An error occurred (InvalidInstanceId)", file=sys.stderr); sys.exit(254)
+    with open(os.path.join(d, "params.json"), "w", encoding="utf-8") as f:
+        f.write(a[a.index("--parameters") + 1])
+    print("cmd-1"); sys.exit(0)
+if a[:2] == ["ssm", "get-command-invocation"]:
+    if a[a.index("--command-id") + 1] != "cmd-1":
+        print("An error occurred (ValidationException)", file=sys.stderr); sys.exit(254)
+    # G_INV_FAIL=<n>: 最初の n 回は読めない（送った直後の InvocationDoesNotExist）
+    with open(os.path.join(d, "calls.jsonl"), encoding="utf-8") as f:
+        n = sum(1 for line in f if '"get-command-invocation"' in line)
+    if n <= int(os.environ.get("G_INV_FAIL", "0")):
+        print("An error occurred (InvocationDoesNotExist)", file=sys.stderr); sys.exit(254)
+    out = os.environ["G_OUT"]
+    if q == "Status":
+        print(os.environ["G_STATUS"])
+    elif q == "StandardOutputContent":
+        print(out)
+    elif q == "[StandardOutputContent,StandardErrorContent]":
+        print(out + "\t")   # --output text はタブでつなぐ（標準エラーは空）
+    else:
+        sys.exit(255)
+    sys.exit(0)
+sys.exit(255)
+'''
+_GSTEP = r'''set -euo pipefail
+REGION=ap-northeast-1; PREFIX=x-nwc-poc
+. ops/common.sh
+. ops/up-common.sh
+grafana_rules_step i-web cl-an svc-grafana "ops/check-grafana.sh"
+printf 'WARN=[%s]\n' "$GRAFANA_WARN"
+'''
+# grafana_rules_check だけを呼ぶ版（終了コードと GRAFANA_VERDICT。ops/check-grafana.sh はこの終了コードで終わる）
+_GCHK = r'''set -euo pipefail
+REGION=ap-northeast-1; PREFIX=x-nwc-poc
+. ops/common.sh
+. ops/up-common.sh
+rc=0; grafana_rules_check i-web || rc=$?
+printf 'RC=%s VERDICT=[%s]\n' "$rc" "$GRAFANA_VERDICT"
+'''
+
+
+def gstep(script=_GSTEP, **env):
+    """(終了コード か None（20 秒で終わらない）, 出力, 送ったコマンド か None, aws の呼び出し)"""
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, "bin"))
+        for name, body in (("aws", _GFAKE), ("sleep", "#!/bin/sh\nexec /bin/sleep 0.05\n")):
+            with open(os.path.join(d, "bin", name), "w", encoding="utf-8") as f:
+                f.write(body)
+            os.chmod(os.path.join(d, "bin", name), 0o755)
+        try:
+            r = subprocess.run(["bash", "-c", script], cwd=ROOT, capture_output=True, text=True, timeout=20,
+                               env=dict({"PATH": os.path.join(d, "bin") + os.pathsep + os.environ["PATH"], "GDIR": d, "G_OUT": "", "G_STATUS": "Success"}, **env))
+            rc, out = r.returncode, r.stdout + r.stderr
+        except subprocess.TimeoutExpired:
+            rc, out = None, ""
+        p = os.path.join(d, "params.json")
+        sent = json.load(open(p, encoding="utf-8"))["commands"] if os.path.exists(p) else None
+        c = os.path.join(d, "calls.jsonl")
+        calls = [json.loads(line) for line in open(c, encoding="utf-8")] if os.path.exists(c) else []
+        return rc, out, sent, calls
+
+
+_s_ok = gstep(G_OUT="nwc-prometheus/link_down: health=ok\n判定: OK（4 本とも評価のエラーなし）")
+_m = re.fullmatch(r"echo (\S+) \| base64 -d \| NAME_PREFIX=x-nwc-poc /usr/bin/python3\.13 -", (_s_ok[2] or [""])[-1])
+check("9-2（grafana_rules_step）: Grafana のサービスが安定してから、Web の EC2 に ops/grafana_rules_check.py そのものを NAME_PREFIX 付きで 1 回送る。"
+      "OK なら判定を出し、警告は空",
+      _s_ok[0] == 0 and "判定: OK（4 本とも評価のエラーなし）" in _s_ok[1] and "WARN=[]" in _s_ok[1]
+      and _s_ok[3][0] == ["ecs", "wait", "services-stable", "--region", "ap-northeast-1", "--cluster", "cl-an", "--services", "svc-grafana"]
+      and [c[:2] for c in _s_ok[3]].count(["ssm", "send-command"]) == 1 and "i-web" in _s_ok[3][1]
+      and _m is not None and __import__("base64").b64decode(_m.group(1)).decode() == _gsrc)
+check("9-2: 送るコマンドは JSON の文字列に埋めるので、ダブルクォートもバックスラッシュも含まない（ssm_run の約束）",
+      _s_ok[2] is not None and not re.search(r'["\\]', _s_ok[2][-1]))
+_s_ng = gstep(G_STATUS="Failed", G_OUT="nwc-opensearch/trap: health=ok\n判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap）")
+_w_ng = re.search(r"WARN=\[(.*)\]", _s_ng[1]).group(1) if _s_ng[0] == 0 else ""
+check("9-2: NG なら止めずに（0）、判定の行（タブの手前まで）とログの見方（/ecs/<接頭辞>-grafana の Failed to evaluate rule）と確かめ直すコマンドを警告に入れ、黄色で出す",
+      _s_ng[0] == 0 and _w_ng.startswith("Grafana のアラートルールの評価を確かめた結果が OK ではない（判定: NG（4 本のうち 1 本の評価がエラー: nwc-opensearch/trap））。")
+      and "\t" not in _w_ng and "aws logs tail /ecs/x-nwc-poc-grafana --region ap-northeast-1" in _w_ng and "Failed to evaluate rule" in _w_ng
+      and _w_ng.endswith("直したら ops/check-grafana.sh") and "\033[1;33m" + _w_ng + "\033[0m" in _s_ng[1])
+_s_un = gstep(G_UNSTABLE="1")
+check("9-2: Grafana のサービスが安定しなければ確かめを送らず（0）、安定しない旨とタスクの見方を警告に入れる",
+      _s_un[0] == 0 and _s_un[2] is None and "Grafana のサービス（svc-grafana）が 10 分たっても安定しないので" in _s_un[1]
+      and "--cluster cl-an --desired-status STOPPED" in _s_un[1])
+_s_sf = gstep(G_SEND_FAIL="1")
+check("9-2: SSM Run Command を送れなければ、待ち続けずに（set -e の効かない $( ) の中でも ssm_run が 1 を返す）未確認の警告（判定の行が無い。ログの案内なし）を出す",
+      _s_sf[0] == 0 and "SSM Run Command を送れなかった" in _s_sf[1]
+      and "WARN=[Grafana のアラートルールの評価を確かめられなかった（判定の行が無い。上の出力）。理由は上の出力。確かめ直すのは ops/check-grafana.sh]" in _s_sf[1]
+      and "Failed to evaluate rule" not in _s_sf[1]
+      and not [c for c in _s_sf[3] if c[:2] == ["ssm", "get-command-invocation"]])
+_s_uk = gstep(G_STATUS="Failed", G_OUT="判定: 未確認（300 秒待った。Grafana に届かない（URLError: timed out））")
+check("9-2: 判定が未確認なら、確かめられなかった旨（判定の行。タブの手前まで）と確かめ直すコマンドを警告に入れる。評価のエラーとは限らないので Grafana のログは案内しない",
+      _s_uk[0] == 0
+      and "WARN=[Grafana のアラートルールの評価を確かめられなかった（判定: 未確認（300 秒待った。Grafana に届かない（URLError: timed out）））。理由は上の出力。確かめ直すのは ops/check-grafana.sh]" in _s_uk[1]
+      and "Failed to evaluate rule" not in _s_uk[1] and "aws logs tail" not in _s_uk[1])
+# grafana_rules_check の終了コード（ops/check-grafana.sh の 0 / 1 / 2）。判定の行と SSM の状態の組み合わせ
+_gc = {k: gstep(_GCHK, **e) for k, e in {
+    "ok": dict(G_OUT="判定: OK（4 本とも評価のエラーなし）"),
+    "ng": dict(G_STATUS="Failed", G_OUT="判定: NG（4 本のうち 1 本の評価がエラー: g/a）"),
+    "unknown": dict(G_STATUS="Failed", G_OUT="判定: 未確認（0 秒待った。Grafana のルールの API が 401（admin のパスワードが Grafana と SSM で違う））"),
+    "noverdict": dict(G_STATUS="Failed", G_OUT="Traceback (most recent call last):"),
+    "okempty": dict(G_OUT=""),
+    "okwithoutok": dict(G_OUT="判定: 未確認（…）"),
+    "sendfail": dict(G_SEND_FAIL="1"),
+    "deadline": dict(G_STATUS="InProgress", SSM_RUN_WAIT="1"),
+}.items()}
+_gcr = {k: re.search(r"RC=(\d) VERDICT=\[(.*)\]", v[1]).groups() if v[0] == 0 and "RC=" in v[1] else None for k, v in _gc.items()}
+check("grafana_rules_check の終了コード: OK の判定で SSM も成功なら 0、NG の判定なら 1、未確認・判定の行が無い・送れないは 2。最後の判定の行を GRAFANA_VERDICT に置く",
+      _gcr == {"ok": ("0", "判定: OK（4 本とも評価のエラーなし）"), "ng": ("1", "判定: NG（4 本のうち 1 本の評価がエラー: g/a）"),
+               "unknown": ("2", "判定: 未確認（0 秒待った。Grafana のルールの API が 401（admin のパスワードが Grafana と SSM で違う））"),
+               "noverdict": ("2", ""), "okempty": ("2", ""), "okwithoutok": ("2", "判定: 未確認（…）"), "sendfail": ("2", ""), "deadline": ("2", "")})
+# ssm_run の締め切り（SSM_RUN_WAIT 秒。既定 1800）。偽の sleep は 0.05 秒なので、締め切りが無ければ 20 秒で切れる
+_s_dl = gstep(G_STATUS="InProgress", SSM_RUN_WAIT="1")
+check("ssm_run: InProgress のまま SSM_RUN_WAIT 秒を過ぎたら、待つのをやめて結果の見方（get-command-invocation）を出し、9-2 は未確認の警告にする",
+      _s_dl[0] == 0
+      and "SSM Run Command（cmd-1）の結果が 1 秒たっても分からない（最後の状態: InProgress）。あとで見るのは aws ssm get-command-invocation --region ap-northeast-1 --command-id cmd-1 --instance-id i-web（待つ秒数は SSM_RUN_WAIT）" in _s_dl[1]
+      and "WARN=[Grafana のアラートルールの評価を確かめられなかった（判定の行が無い。上の出力）。理由は上の出力。確かめ直すのは ops/check-grafana.sh]" in _s_dl[1]
+      and not [c for c in _s_dl[3] if c[:2] == ["ssm", "cancel-command"]])
+_s_rf = gstep(G_INV_FAIL="100000", SSM_RUN_WAIT="1")
+check("ssm_run: get-command-invocation が読めないまま SSM_RUN_WAIT 秒を過ぎても同じく返す（最後の状態: 読めない）",
+      _s_rf[0] == 0 and "の結果が 1 秒たっても分からない（最後の状態: 読めない）" in _s_rf[1] and "確かめられなかった（判定の行が無い。上の出力）" in _s_rf[1])
+_s_r2 = gstep(G_INV_FAIL="2", G_OUT="判定: OK（4 本とも評価のエラーなし）")
+check("ssm_run: 送った直後に get-command-invocation が読めなくても、読めるまで読み直す（締め切りの中なら OK になる）",
+      _s_r2[0] == 0 and "WARN=[]" in _s_r2[1] and "分からない" not in _s_r2[1]
+      and [c[:2] for c in _s_r2[3]].count(["ssm", "get-command-invocation"]) == 4)
+_s_bad = {v: gstep(SSM_RUN_WAIT=v) for v in ("abc", "0", "-5", "01", "1.5")}
+check("SSM_RUN_WAIT が 1 以上の整数でなければ、ops/up-common.sh を読んだところで理由を言って止まる（aws には触らない）",
+      all(r[0] == 1 and f"SSM_RUN_WAIT は SSM Run Command の結果を待つ秒数（1 以上の整数。既定 1800）。いまは「{v}」" in r[1] and not r[3] for v, r in _s_bad.items()),
+      )
+
 # ---- SNS のトピック（土台）と受け手の配線
-atf = read("terraform", "base", "core", "alerts.tf")
+atf = read("IaC", "terraform", "aws-managed", "base", "core", "alerts.tf")
 acode = "\n".join(l for l in atf.splitlines() if not l.lstrip().startswith("#"))
 check("トピックは土台（base/core）に 1 つ（<接頭辞>-alerts）、保存時の暗号化は AWS 管理の鍵",
       acode.count('resource "aws_sns_topic" ') == 1 and 'name = "${local.name_prefix}-alerts"' in acode and 'kms_master_key_id = "alias/aws/sns"' in acode)
@@ -945,20 +1420,20 @@ check("閉域（network_perimeter）のとき、VPC の外からの sns:Publish 
       == [("StringNotEqualsIfExists", "aws:SourceVpc"), ("BoolIfExists", "aws:ViaAWSService"), ("Bool", "aws:PrincipalIsAWSService"), ("ArnNotLike", "aws:PrincipalArn")]
       and "values   = [aws_vpc.this.id]" in deny and "values   = local.perimeter_exempt_principals" in deny)
 check("土台は alerts_topic_arn を出し、閉域の IAM 側の Deny に sns:* がある（events:* はもう無い）",
-      re.search(r'output "alerts_topic_arn" \{[^}]*value\s*=\s*aws_sns_topic\.alerts\.arn', read("terraform", "base", "core", "outputs.tf")) is not None
-      and '"sns:*"' in read("terraform", "base", "core", "perimeter.tf") and '"events:*"' not in read("terraform", "base", "core", "perimeter.tf"))
+      re.search(r'output "alerts_topic_arn" \{[^}]*value\s*=\s*aws_sns_topic\.alerts\.arn', read("IaC", "terraform", "aws-managed", "base", "core", "outputs.tf")) is not None
+      and '"sns:*"' in read("IaC", "terraform", "aws-managed", "base", "core", "perimeter.tf") and '"events:*"' not in read("IaC", "terraform", "aws-managed", "base", "core", "perimeter.tf"))
 TRY = 'alerts_topic_arn = try(data.terraform_remote_state.main.outputs.alerts_topic_arn, "")'
 check("送り手（analytics）と受け手（workflow / graph）は土台の state からトピックを読む（古い土台なら apply の前に理由を言って止まる）",
-      all(TRY in read("terraform", *r, "locals.tf") for r in (("pipeline", "analytics"), ("pipeline", "graph"), ("workflow",)))
-      and all('condition     = local.alerts_topic_arn != ""' in read("terraform", *f) for f in
+      all(TRY in read("IaC", "terraform", "aws-managed", *r, "locals.tf") for r in (("pipeline", "analytics"), ("pipeline", "graph"), ("workflow",)))
+      and all('condition     = local.alerts_topic_arn != ""' in read("IaC", "terraform", "aws-managed", *f) for f in
               (("pipeline", "analytics", "grafana.tf"), ("pipeline", "analytics", "splunk.tf"), ("pipeline", "graph", "sync.tf"), ("workflow", "events.tf"))))
-wtf = read("terraform", "workflow", "events.tf")
+wtf = read("IaC", "terraform", "aws-managed", "workflow", "events.tf")
 check("受け手は 2 つ: SQS（raw message delivery。ワークフロー）と Lambda（status）",
       re.search(r'resource "aws_sns_topic_subscription" "anomalies" \{[^}]*protocol\s*=\s*"sqs"[^}]*raw_message_delivery\s*=\s*true', wtf, re.S) is not None
-      and re.search(r'resource "aws_sns_topic_subscription" "status" \{[^}]*protocol\s*=\s*"lambda"', read("terraform", "pipeline", "graph", "sync.tf"), re.S) is not None)
+      and re.search(r'resource "aws_sns_topic_subscription" "status" \{[^}]*protocol\s*=\s*"lambda"', read("IaC", "terraform", "aws-managed", "pipeline", "graph", "sync.tf"), re.S) is not None)
 check("EventBridge のルールと Spark からの put_events はどこにも無い",
       not any("aws_cloudwatch_event_" in read(f) or "events:PutEvents" in read(f)
-              for f in glob.glob(os.path.join(ROOT, "terraform", "**", "*.tf"), recursive=True) if ".terraform" not in f)
+              for f in glob.glob(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "**", "*.tf"), recursive=True) if ".terraform" not in f)
       and "put_events" not in "\n".join(l for l in ss.splitlines() if not l.lstrip().startswith("#")).split('"""', 2)[2])
 
 # ---- ops/check.sh
@@ -970,30 +1445,44 @@ check("check.sh は tests/ の test_*.py を全部走らせる（このテスト
       sorted(listed) == sorted("tests/" + os.path.basename(p) for p in glob.glob(os.path.join(ROOT, "tests", "test_*.py"))) and "tests/test_alerts.py" in listed)
 dirs = re.search(r"\nfind ([a-z ]+) -name '\*\.py'", chk).group(1).split()
 tracked = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "*.py"], capture_output=True, text=True, cwd=ROOT).stdout.split()
-check("check.sh の構文検査は .py のあるディレクトリを全部見る（splunk/ のアラートアクションと graph/ の Lambda も）",
-      {p.split("/")[0] for p in tracked} <= set(dirs) and {"splunk", "graph"} <= set(dirs))
+check("check.sh の構文検査は .py のあるディレクトリを全部見る（app/splunk/ のアラートアクションと app/graph/ の Lambda も。どちらも app/ の下）",
+      {p.split("/")[0] for p in tracked} <= set(dirs) and "app" in dirs
+      and os.path.isdir(os.path.join(ROOT, "app", "splunk")) and os.path.isdir(os.path.join(ROOT, "app", "graph")))
 
 # ---- lab.sh: 比べるための障害（fail-bgp / heal-bgp / trap-test）
-lab = read("lab", "lab.sh")
-labc = {k: re.search(rf"(?:^|; ){k}=([^;\s]+)", lab, re.M).group(1) for k in ("BGP_NODE", "BGP_PEER", "ACC_VM", "TEST_TRAP_OID")}
-check("lab.sh の fail-bgp / heal-bgp は BGP_NODE の設定にある iBGP の neighbor（BGP_PEER）の admin-state を disable / enable にする。使い方の表示に 3 つが載る",
-      f"set / network-instance default protocols bgp neighbor {labc['BGP_PEER']} peer-group overlay" in read("lab", "srlinux", labc["BGP_NODE"] + ".cli")
+lab = read("app", "containerlab", "lab.sh")
+labc = {k: re.search(rf"(?:^|; ){k}=([^;\s]+)", lab, re.M).group(1) for k in ("BGP_NODE", "BGP_PEER", "TREX", "TEST_TRAP_OID")}
+check("lab.sh の fail-bgp / heal-bgp は BGP_NODE の設定にある iBGP の neighbor（BGP_PEER）の admin-state を disable / enable にする。使い方の表示に 3 つが載る（graph の行が 6 行目、011 で trex の行が 8 行目に増えた）",
+      f"set / network-instance default protocols bgp neighbor {labc['BGP_PEER']} peer-group overlay" in read("app", "containerlab", "srlinux", labc["BGP_NODE"] + ".cli")
       and '"set / network-instance default protocols bgp neighbor $BGP_PEER admin-state $1" "commit now"' in lab
       and all(f"\n    bgp_admin {s}\n" in lab for s in ("disable", "enable"))
       and all(f"\n  {c})\n" in lab for c in ("fail-bgp", "heal-bgp", "trap-test"))
-      and [i for i, l in enumerate(lab.splitlines(), 1) if l.startswith("#   lab.sh ")] == [3, 4, 5, 6] and "fail-bgp | heal-bgp | trap-test" in lab.splitlines()[3]
-      and "  *) sed -n '2,6p' \"$SELF\"; exit 1 ;;" in lab and "      *) sed -n '6p' \"$SELF\"; exit 1 ;;" in lab and "telegraf run" in lab.splitlines()[5])
+      and [i for i, l in enumerate(lab.splitlines(), 1) if l.startswith("#   lab.sh ")] == [3, 4, 5, 6, 7, 8] and "fail-bgp | heal-bgp | trap-test" in lab.splitlines()[3]
+      and "  *) sed -n '2,8p' \"$SELF\"; exit 1 ;;" in lab and "      *) sed -n '7p' \"$SELF\"; exit 1 ;;" in lab and "telegraf run" in lab.splitlines()[6]
+      and "      *) sed -n '8p' \"$SELF\"; exit 1 ;;" in lab and "trex start | stop | status" in lab.splitlines()[7])
 _ba = lab[lab.index("\nbgp_admin() {"):lab.index("\n}\n", lab.index("\nbgp_admin() {"))]
 check("lab.sh の fail-bgp / heal-bgp は commit のあと state の admin-state を読み直し、変わっていなければ 1 で止まる（sr_cli の終了コードに頼らない。grep -q は pipe に繋がない）",
       '"info from state / network-instance default protocols bgp neighbor $BGP_PEER admin-state")' in _ba
       and 'grep -qw "admin-state $1" <<<"$st" || {' in _ba and _ba.rstrip().endswith("exit 1; }") and "| grep" not in _ba)
-_dm = dict(kv.split("=") for kv in subprocess.run([sys.executable, os.path.join(ROOT, "lab", "lab_topology.py"), os.path.join(ROOT, "lab"), "--device-map"],
+_dm = dict(kv.split("=") for kv in subprocess.run([sys.executable, os.path.join(ROOT, "app", "containerlab", "lab_topology.py"), os.path.join(ROOT, "app", "containerlab"), "--device-map"],
                                                    capture_output=True, text=True, check=True).stdout.strip().split(","))
-check("lab.sh の trap-test の OID は Splunk の netops_trap も Grafana の trap ルールも除かない（どちらも kind = trap）。管理ネットワークの中（ACC_VM の netns）から"
-      "機器の trap と同じ $MGMT_GW:162 へ送り、送り元の管理 IP は device map で ACC_VM になる",
+check("lab.sh の trap-test の OID は Splunk の nwc_trap も Grafana の trap ルールも除かない（どちらも kind = trap）。管理ネットワークの中（TREX の netns）から"
+      "機器の trap と同じ $MGMT_GW:162 へ送り、送り元の管理 IP は device map で TREX（dc1-trex-01）になる",
       labc["TEST_TRAP_OID"] not in set(SPLUNK_TRAP_SKIP) | {".1.3.6.1.6.3.1.1.5.3", ".1.3.6.1.6.3.1.1.5.4"}
       and labc["TEST_TRAP_OID"] not in re.search(r"tags\.oid\.keyword:\((.*?)\)", grules["trap"]).group(1)
       and """nsenter -t "$pid" -n snmptrap -v2c -c "$SNMP_COMMUNITY" "$MGMT_GW:162" '' "$TEST_TRAP_OID" """ in lab
-      and """pid=$(docker inspect -f '{{.State.Pid}}' "clab-$LAB-$ACC_VM")""" in lab
-      and [ip for ip, n in _dm.items() if n == labc["ACC_VM"] and ip.startswith("203.0.113.")] == ["203.0.113.102"])
+      and """pid=$(docker inspect -f '{{.State.Pid}}' "clab-$LAB-$TREX")""" in lab
+      and [ip for ip, n in _dm.items() if n == labc["TREX"] and ip.startswith("203.0.113.")] == ["203.0.113.101"])
+_mgmt_gw = re.search(r'^MGMT_GW = "([0-9.]+)"', read("app", "containerlab", "gen_lab.py"), re.M).group(1)
+_srl = {os.path.basename(p)[:-4] for p in glob.glob(os.path.join(ROOT, "app", "containerlab", "srlinux", "*.cli"))}
+_trap_srl = {n for n in _srl if f"trap-group telegraf destination telegraf address {_mgmt_gw}\n" in read("app", "containerlab", "srlinux", n + ".cli")}
+_trap_senders = _trap_srl | {labc["TREX"]}
+_sys_size = int(re.search(r"field: tags\.sysName\.keyword\s*\n\s*settings:\s*\n\s*size: '(\d+)'", grules["trap"]).group(1))
+check("trap のルールの機器の terms（上位 size 件）は lab の trap の送り元（trap を lab の EC2 へ送る SR Linux（全台）+ trap-test の TREX）を全部返せる。"
+      "yaml のコメントの送り元の数も同じ",
+      _trap_srl == _srl and len(_srl) == read("app", "containerlab", "splab.clab.yml.in").count("kind: nokia_srlinux")
+      and labc["TREX"] not in _trap_srl and len(_trap_senders) <= _sys_size
+      and re.search(r"lab は trap の送り元 (\d+) = SR Linux (\d+) 台 \+ lab\.sh の trap-test の (\S+)、",
+                    read("app", "grafana", "provisioning", "alerting", "nwc-opensearch.yaml")).groups()
+      == (str(len(_trap_senders)), str(len(_trap_srl)), labc["TREX"]))
 print(f"通過 {passed} / 失敗 0")

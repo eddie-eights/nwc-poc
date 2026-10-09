@@ -168,6 +168,29 @@ flowchart LR
 - **OpenSearch の `cluster.initial_cluster_manager_nodes` は、3 台そろって作り直されたときにも使う。**
   クラスターの状態もタスクの中にあるため。
 
+### Kafka と OpenSearch を 1 台ずつ入れ替える
+
+どちらも台ごとにサービスが分かれ、入れ替えでは古いタスクを止めてから新しいタスクを起こす（`deployment_minimum_healthy_percent = 0`）。そのまま `terraform apply` すると、タスク定義が変わった台が同時に入れ替わる（下の「未確定事項とリスク」の 2 と 4）。そこで `oss/ops/up.sh` は、stream と analytics の apply の直前に `oss/ops/roll-nodes.sh` の `roll_nodes` を打つ。
+
+1. 呼ぶ側の apply と同じ `-var` で plan を取り、`aws_ecs_service.kafka` / `aws_ecs_service.opensearch` のうち変わる（update か作り直し）台を拾う（`oss/ops/roll_health.py plan`）。変わる台が無いとき、state にサービスが無い（初めて作る）ときは何もしない。
+2. 入れ替える前に、クラスターが健全か確かめる（5 分まで待つ）。健全でなければ何も入れ替えずに止まる。
+3. リーダー（Kafka は KRaft のアクティブな controller、OpenSearch は cluster manager）でない台から 1 台ずつ、その台のサービスだけ `-target` で apply し、サービスが安定するのを待ち、入れ替えた台以外から見て健全に戻るのを待つ（Kafka 15 分、OpenSearch 30 分）。リーダーは最後。
+4. 時間切れで止まったときは、入れ替えた台と残りの台を出す。もう一度 `oss/ops/up.sh` を打てば、plan で残りの台だけを拾う。
+
+| 対象 | 健全の条件（`oss/ops/roll_health.py`） |
+|---|---|
+| Kafka | `kafka-broker-api-versions.sh` に全部の台が fenced でなく載る。`kafka-topics.sh --under-replicated-partitions` が 1 行も出さない。`kafka-metadata-quorum.sh describe --replication` に全部の台が Leader か Follower で載り、Lag が 100 以下、Leader がちょうど 1 台 |
+| OpenSearch | `_cluster/health` が `green` で `number_of_nodes` が 3。`_cat/cluster_manager` が 3 台のどれか |
+
+- **健全さは ECS Exec でタスクの中から見る。**
+  Kafka の 9092 と OpenSearch の 9200 は、PC からも Web の EC2 からも届かない（SG で絞っている）ため。手元に Session Manager plugin が要る（無ければ止まる）。ECS Exec の `--interactive` は標準入力が端末でないと「Cannot perform start session: EOF」で切れるので、端末が無いときは `script` で疑似端末を付けて打ち、`script` も打てなければ止まる（2026-10-08 の AWS の検証で見つけて足した）。ECS Exec はタスクの中のコマンドの終了コードを返さないので、コマンドが出力に印（`==nwc-roll <節>` と `==nwc-rc <終了コード>`）を書き、`roll_health.py` は印の中だけを読む。
+- **OpenSearch の admin のパスワードは手元に持ってこない。**
+  タスクの secrets の環境変数（`OPENSEARCH_INITIAL_ADMIN_PASSWORD`）をタスクの中で読む。
+- **`OSS_ROLL=0` で、1 台ずつ入れ替えずに apply で一度に入れ替える。**
+  環境変数だけ（`deploy.env` には書かない）。既定は 1。
+- **AWS ではまだ打っていない。**
+  ECS Exec の `--command` の引用符の扱い、TTY が無いときの出力、入れ替えの途中の Lag の値は、手元の偽のコマンドで確かめただけ。
+
 ### 置き方
 
 ```
@@ -181,6 +204,7 @@ oss/
     pipeline/graph       neo4j.tf、sync.tf、access.tf、outputs.tf が実体
   ops/up.sh  ops/down.sh   OSS 版の作る・消す
   ops/oss-images.sh        イメージの名前と版（1 か所）。ECR に写す・ビルドする関数
+  ops/roll-nodes.sh  ops/roll_health.py   Kafka と OpenSearch を 1 台ずつ入れ替える（up.sh が読む）
   compose/                 手元の確認用（compose.yaml と check-*.sh、check_*.py）
 spark/Dockerfile           Spark のイメージ（ECS 向け）
 neo4j/Dockerfile           Neo4j + GDS のイメージ（ECS 向け）。パスワードを渡す entrypoint.sh つき
@@ -209,7 +233,8 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 | Web | EC2 に部品（Web の `.py` と `web/requirements-oss.txt` の wheel）を置き、`GRAPH_BACKEND=neo4j` で動く。手順書は Knowledge Base を作らないので置かない |
 | Neo4j への同期 | `oss/ops/up.sh` の 7-3b が `ops/seed_graph.py` を Web の EC2 で打つ（空のときだけ）。入れ直しは `ops/sync-graph.sh --oss [--replace]` |
 | エージェント | `agent` のイメージを Neo4j のドライバー入りでビルドし、`GRAPH_BACKEND=neo4j` で Neo4j を引く |
-| Nautobot の Job から Neo4j | **まだ。** `terraform/pipeline/nautobot` のタスク定義が `GRAPH_BACKEND` / `NEO4J_URI` / `NEO4J_PASSWORD` を渡さず、Nautobot のイメージに Neo4j のドライバーが無い（OSS 版では Job「Telegraf と Neptune に同期」の Neptune 側が動かない。lab の定義からの同期は動く） |
+| Nautobot の Job から Neo4j | コードとテストまで済み（2026-10-08）。AWS でも確かめた（2026-10-08 の 2 回目。手で打つ Job と JobHook の両方が Neo4j の物理層と変更履歴を書いた。`docs/verification/20261008-oss-aws.md`）。`terraform/pipeline/nautobot` は graph の state に `neo4j_uri` があれば、`NEPTUNE_GRAPH_ID` の代わりに `GRAPH_BACKEND=neo4j` と `NEO4J_URI` を渡す（worker と同じ読み方）。パスワードは ECS の secrets の `NEO4J_PASSWORD` で web と worker に渡し、実行ロールがそのパラメータを読む。`oss/ops/up.sh` は Nautobot のイメージを `nautobot/requirements-oss.txt`（Neo4j のドライバー入り）でビルドする。Job の名前は両方の版で「Telegraf とグラフ DB に同期」「変更のたびに Telegraf とグラフ DB に同期」で、説明に書き先（Neptune / Neo4j）が出る（2026-10-08 に「Telegraf と Neptune に同期」から変えた。fix/oss-ecr-outputs-nautobot-job）。マネージド版のタスク定義とイメージの依存は変わらない |
+| Kafka と OpenSearch の入れ替え | タスク定義が変わる打ち直しでは、`oss/ops/up.sh` が `oss/ops/roll-nodes.sh` で 1 台ずつ入れ替える（上の「Kafka と OpenSearch を 1 台ずつ入れ替える」。`OSS_ROLL=0` で一度に）。手元のテストだけで、AWS ではまだ打っていない |
 | 格納先の選択 | `oss/ops/up.sh` は読まない。いつも iceberg、opensearch、prometheus、splunk の 4 つを `sinks` に渡す（マネージド版の `STORES` は読まない）。terraform の変数 `sinks` はマネージド版と共用なので、手で絞ればその分のジョブは作られない |
 
 ### アプリのコードの切り替え
@@ -279,7 +304,7 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 | Kafka（EFS） | 3 台が組めて、5 つのトピックに流れた。1 台止めても残り 2 台で受け続け（under-replicated 2）、戻ると 3 分以内に 0 に戻った。遅さやロックの不具合は出なかった |
 | Spark → S3 Tables | EMR なしで `netops.raw_telemetry` に行が増えた（Athena で 1 時間に 115,719 行） |
 | 道具の Lambda と Runtime | python3.13 のレイヤーで Neo4j のドライバを読み込めた。SSM のパスワードで Neo4j と OpenSearch に入り、vmselect を読めた（`centrality`、`search_logs`、`query_metrics` が答えを返した） |
-| status の Lambda | Grafana と Splunk の両方の経路のアラートで Neo4j の status を変えた。`REPORT` の `Max Memory Used` は 111 MB / 128 MB（余裕が無い。下の「未確定事項とリスク」） |
+| status の Lambda | Grafana と Splunk の両方の経路のアラートで Neo4j の status を変えた。`REPORT` の `Max Memory Used` は 128 MB のとき 111 MB で余裕が無かったので 256 MB に上げ、2026-10-08 の 2 回目は 139 MB / 256 MB（下の「未確定事項とリスク」） |
 | Kafbat UI | KRaft の 3 台とトピックを表示でき、API でトピックを作って消せた（画面は開いていない）。Spark の consumer group は出ない（Spark は group を作らずに offset を checkpoint に持つ） |
 | Grafana | `datasources-oss` の `opensearch.yaml` の `version` 3.9.0 が、立てた OpenSearch と同じ。両方のデータソースの health が OK |
 
@@ -304,13 +329,14 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 | `terraform/base/core/oss.tf` | OSS 版だけの SG と通信の表（Kafka、OpenSearch、VictoriaMetrics、Neo4j、Spark、EFS の 2049）、EFS とマウントターゲット |
 | `terraform/base/ecr/` | 写す image と自前でビルドする image のリポジトリ（kafka、opensearch、vmstorage、vminsert、vmselect、spark、neo4j） |
 | `oss/ops/up.sh`、`oss/ops/down.sh`、`oss/ops/oss-images.sh` | OSS 版の作る・消す。image を写す、`CLUSTER_ID` とパスワードの SSM、サービスが安定するのを待つ |
+| `oss/ops/roll-nodes.sh`、`oss/ops/roll_health.py` | Kafka と OpenSearch を 1 台ずつ入れ替える（`oss/ops/up.sh` が stream と analytics の apply の前に打つ） |
 | `ops/common.sh`、`ops/up-common.sh`、`ops/down-common.sh` | `ops/up.sh` と `ops/down.sh` から切り出した共通の関数 |
 | `spark/snmp_sinks.py`、`agent/evidence.py`、`agent/graph.py`、`workflow/awsio.py`、`graph/status_handler.py` | 上の「アプリのコードの切り替え」 |
 | `spark/Dockerfile`、`neo4j/Dockerfile`、`neo4j/entrypoint.sh` | Spark に jar とスクリプト、Neo4j に GDS の jar とパスワードの受け渡し |
 | `telegraf/` | `outputs.kafka` の認証の行を `KAFKA_AUTH` で出し分ける |
 | `grafana/provisioning/datasources-oss`、`grafana/start.sh` | OSS 版用のデータソース |
 | `oss/compose/` | 手元の確認用の compose と確認の手順 |
-| `tests/test_oss.py`、`tests/test_oss_ops.py` | 下の「検証方法」 |
+| `tests/test_oss.py`、`tests/test_oss_ops.py`、`tests/test_oss_roll.py` | 下の「検証方法」 |
 | docs（こちらで書く） | `docs/oss-variant.md`、`docs/deploy.md`、`docs/data-stores.md`、`docs/pipeline.md`、`README.md`、FAQ |
 
 ## 再利用するもの
@@ -328,7 +354,7 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 3. `oss/terraform/` の骨組み（シンボリックリンク、接頭辞の変数、SG、ECR、EFS）。（済み）
 4. Kafka と Telegraf。（済み）
 5. OpenSearch、VictoriaMetrics、Spark、Grafana。（済み。Grafana も `oss/ops/up.sh` が作る）
-6. Neo4j と status の Lambda。（済み）worker、Web、エージェントを `oss/ops/up.sh` につなぐ。（済み）Nautobot の Job を Neo4j につなぐ。（まだ。上の「実装の状態」）
+6. Neo4j と status の Lambda。（済み）worker、Web、エージェントを `oss/ops/up.sh` につなぐ。（済み）Nautobot の Job を Neo4j につなぐ。（済み。2026-10-08 にコードとテスト、同日の 2 回目の AWS で確認）
 7. `oss/ops/up.sh` と `down.sh`、`ops/check.sh`。（済み。作るのは上の「実装の状態」の 9 ルート）
 8. AWS での確認。（済み。2026-10-07 に 1 回。結果は「検証方法」の AWS の表と「AWS で確かめたこと」）
 9. docs（こちらで書く）。
@@ -350,6 +376,7 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 - `oss/terraform/` の変えないルートのファイルが、全部シンボリックリンクである。
 - `oss/terraform/` の 3 つのルートに `aws_msk`、`aws_emrserverless`、`aws_prometheus`、`aws_neptunegraph`、ログ用の `aws_opensearchserverless` のリソースが無い。
 - `oss/ops/oss-images.sh` の版が、`oss/compose/` と Dockerfile の版と同じ。
+- `oss/ops/roll-nodes.sh` が、変わる台だけをリーダーでない台から 1 台ずつ `-target` で apply し、間で健全に戻るのを待つ。健全の判定（`roll_health.py`）が、fenced、複製の不足、controller の遅れ、yellow、ECS Exec の案内の行や印の欠けを健全と見ない（`tests/test_oss_roll.py`。terraform と aws は偽のコマンド）。
 - `ops/check.sh` が通る（`terraform/` と `oss/terraform/` の fmt と validate、スクリプトの構文、テスト）。
 
 ### AWS（`oss/ops/up.sh` で行う。このサイクルの完了の条件。2026-10-07 に 1 を除いて通った）
@@ -364,10 +391,10 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 8. 立てたあとに見る、机上では確かめられない点（**どれも見た**。結果は「AWS で確かめたこと」）:
    - OpenSearch の 2 つの ECS サービス（データとまとめ役）が 1 つの Cloud Map の名前 `opensearch` に入り、`discovery.seed_hosts` が両方を引く。
    - まとめ役（1 GB のタスク、heap 512m）が exit 137（OOM）で落ちない。
-   - status の Lambda（128 MB、Neo4j のレイヤー付き）の `REPORT` の `Max Memory Used` に余裕がある（111 MB で、余裕は無かった）。
+   - status の Lambda（128 MB、Neo4j のレイヤー付き）の `REPORT` の `Max Memory Used` に余裕がある（128 MB では 111 MB で余裕が無かった。256 MB に上げた 2 回目は 139 MB）。
    - Grafana の `datasources-oss` の `opensearch.yaml` の `version` が、立てた OpenSearch の版と合っている（違うとクエリの文法で失敗する）。
 
-3 の Nautobot の Job からの同期は、「実装の状態」の「まだ」が埋まってから確かめる（lab の定義からの同期で代える）。
+3 の Nautobot の Job からの同期は、2026-10-07 の時点ではつないでいなかった（lab の定義からの同期で代えた）。2026-10-08 にコードをつなぎ、同日の 2 回目の AWS で、Nautobot で機器を変えたあと手で打つ Job と JobHook の両方が Neo4j の物理層と変更履歴を書くことを確かめた（`docs/verification/20261008-oss-aws.md`）。Neo4j を起こし直したあとは `ops/sync-graph.sh --oss` だけでは変更履歴が戻らず、Job を打ち直して戻った。
 
 ### down.sh のあと（2026-10-07 05:14Z に `OWNER=efukuda KEEP_ECR=1 oss/ops/down.sh` が rc 0 で終わった。その 10 分後に AWS CLI で名指しで見た）
 
@@ -404,11 +431,13 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 1. **OpenSearch が Fargate で動くか（いちばん大きい）。**
    `vm.max_map_count` を変えられない。`node.store.allow_mmap=false` で動くという公式の記述は無い。手元は `vm.max_map_count` が 262144 だったので、確かめられていない。駄目なら VictoriaLogs に切り替える（読む側の書き直しが増える）。
 2. **OpenSearch のデータは、2 台が同時に落ちると消える。**
-   タスクの一時領域に置いているため。`terraform apply` でタスク定義が変わると、3 つのサービスが同時に入れ替わり、インデックスもクラスターの状態も消える。1 台ずつ入れ替える手順は、まだ無い。
+   タスクの一時領域に置いているため。`terraform apply` でタスク定義が変わると、3 つのサービスが同時に入れ替わり、インデックスもクラスターの状態も消える。
+   そこで `oss/ops/up.sh` は、analytics の apply の前に `oss/ops/roll-nodes.sh` で 1 台ずつ入れ替える（下の「Kafka と OpenSearch を 1 台ずつ入れ替える」）。3 台とも cluster manager になれる（データの 2 台は既定の役割）ので、1 台ずつなら投票の過半数が残る。手元のテストだけで、**AWS ではまだ打っていない。**
 3. **Kafka を EFS に置いてよいか。**
    公式の文書に記述が無い。AWS で 1 時間流して 1 台止めて戻すまでは不具合が出なかったが、長く流したときの遅さやロックは未確認。出たら、タスクの一時領域に戻す（複製があるので、1 台が入れ替わっても残りから戻る）。
 4. **Kafka の入れ替え。**
-   `terraform apply` でタスク定義が変わると、3 つのサービスが同時に入れ替わり、そのあいだ controller の過半数が無い（データは EFS に残るので戻る）。1 台ずつ入れ替える手順は、まだ無い。
+   `terraform apply` でタスク定義が変わると、3 つのサービスが同時に入れ替わり、そのあいだ controller の過半数が無い（データは EFS に残るので戻る）。
+   そこで `oss/ops/up.sh` は、stream の apply の前に `oss/ops/roll-nodes.sh` で 1 台ずつ入れ替える（下の「Kafka と OpenSearch を 1 台ずつ入れ替える」）。手元のテストだけで、**AWS ではまだ打っていない。**
 5. **vminsert が vmstorage より先に受けると、値が抜ける。**
    待ちのコンテナで防いでいる。あとから vmstorage が 1 台だけ長く止まり、そのあいだに vminsert が起き直した場合は、残りの 2 台に書く（複製数 2 は保たれる）。AWS で立てたときは 6 台分の系列が全部入り、vmstorage を 1 台止めて戻しても値は抜けなかった。vminsert だけが起き直す場合は未確認。
 6. **Spark が EMR なしで S3 Tables に書けるか。**
@@ -418,11 +447,13 @@ ops/common.sh  ops/up-common.sh  ops/down-common.sh   マネージド版と OSS 
 8. **シンボリックリンクの terraform。**
    変えないルートが、変えるルートの output や IAM を参照している。「空なら作らない」の分岐が多くなるなら、そのルートは複製に切り替える。`agent`、`workflow`、`pipeline/nautobot` は `oss/ops/up.sh` から apply し、AWS で動いた。
 9. **Lambda から Neo4j へ。**
-   ドライバはレイヤーで入れた。AWS で、Grafana と Splunk の両方のアラートで status が変わり、Neo4j を止めて戻したあとも書けた。ただし status の Lambda は `Max Memory Used` が 111 MB / 128 MB で、ドライバの版を上げると足りなくなる（`terraform/pipeline/graph/sync.tf` の `memory_size`。マネージド版と共用なので、別のサイクルで上げる）。
+   ドライバはレイヤーで入れた。AWS で、Grafana と Splunk の両方のアラートで status が変わり、Neo4j を止めて戻したあとも書けた。ただし status の Lambda は `Max Memory Used` が 111 MB / 128 MB で、余裕が無かった。2026-10-08 に `memory_size` を 256 MB に上げた（マネージド版の `terraform/pipeline/graph/sync.tf` と、OSS 版の写し `oss/terraform/pipeline/graph/sync.tf` の両方。`tests/test_oss.py` が同じ値かを見る）。256 MB での `REPORT` は、2026-10-08 の 2 回目の AWS で 139 MB だった。
 10. **並べて立てたときの上限。**
     Fargate の vCPU の上限（30）に OSS 版だけで 21.5 なので、マネージド版と並べるには上限を上げる。並べたときの VPC とエンドポイントの上限は未確認。
-11. **Neo4j の ECS のサービスに healthCheck が無い。**
-    タスクの healthStatus が UNKNOWN のままで、`aws ecs wait services-stable` は RUNNING を見るだけ。Neo4j のプロセスが起きていて Bolt が開いていない時間は、ECS からは見えない（別のサイクルで足す）。
+11. **Neo4j の ECS の healthCheck は、Bolt のポートが開いているかしか見ない。**
+    2026-10-08 に足した（`oss/terraform/pipeline/graph/neo4j.tf`。公式イメージに curl と nc が無いので、bash の `/dev/tcp` で 7687 に繋ぐ）。手元の `neo4j:2026.09.0-community` で、起動前は失敗し、起動後に通るのを確かめた。
+    UNHEALTHY になると ECS がタスクを入れ替え、データが消える。そのため 30 秒おきに 10 回続けて失敗する（5 分）まで落とさず、起動の 3 分は数えない。`oss/ops/up.sh` は HEALTHY を待たず、7-3b が Bolt に繋げるかを 30 秒おきに見る。
+    Bolt が開いていてクエリに答えない状態は、healthCheck では見えない。AWS ではまだ打っていない。
 12. **エンドポイントが 1 つの AZ だけのとき。**
     `ENDPOINTS_AZ_NUM=1` でも動くが、その AZ が止まると、ほかの AZ の Kafka も ECR や CloudWatch Logs に届かない。
 

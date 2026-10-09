@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # 作ったものをまとめて消す（docs/deploy.md の「ops/down.sh がすること」）。Terraform のルートを依存の逆順に destroy し、消え終わるまで待つ。
-# state（terraform/<ルート>/terraform.tfstate）にリソースが載っているルートだけを消す。作っていないルートは飛ばす。
+# state（IaC/terraform/aws-managed/<ルート>/terraform.tfstate）にリソースが載っているルートだけを消す。作っていないルートは飛ばす。
 #
 # 使い方（展開したフォルダの直下で。先に AWS CLI の認証を通しておく。IAM ユーザーなら長期キーのまま打つ）:
-#   ops/down.sh              # 全部消す（workflow → analytics → nautobot → graph → stream → lab → agent → base/core → ecr → Runtime のロググループ → ops/up.sh が作った SSM のパラメータ）。KEEP_ECR=0 と同じ
-#   KEEP_ECR=1 ops/down.sh   # ECR（イメージ）だけ残す。翌日の ops/up.sh でビルドを飛ばせる（保管料は月数円）
+#   ops/down.sh              # 全部消す（workflow → analytics → nautobot → graph → stream → lab → agent → base/core → ecr → Runtime のロググループ → ops/up.sh が作った SSM のパラメータ
+#                            → MSK の SCRAM の secret と KMS の鍵）。KEEP_ECR=0 と同じ
+#   KEEP_ECR=1 ops/down.sh   # ECR（イメージ）だけ残す。翌日の ops/up.sh でビルドを飛ばせる（保管料は 7.39 GB で月 約 110 円。2026-10-08 の実測）
 #
 # ops/up.sh と同じ deploy.env（DEPLOY_ENV_FILE=<パス> で別のファイル）を読む。環境変数はファイルより優先。
 # ここで使うキー（OWNER だけ必須で、ほかは任意）:
@@ -18,8 +19,8 @@
 #
 # 社内の SSL 検査がある PC では ops/up.sh と同じく AWS_CA_BUNDLE を入れてから打つ。
 # KB のベクトルインデックスはコレクションごと消える（PC から OpenSearch にはつながない。2026-09-28 にコレクションを閉じてから）。
-# それより前の agent の state（opensearch_index.kb が載っている）は、いまの terraform/agent では消せない（opensearch provider を外した）。
-# その state が残っているなら、コミット f7b1688 の terraform/agent で destroy してから、この版に上げる
+# それより前の agent の state（opensearch_index.kb が載っている）は、いまの IaC/terraform/aws-managed/agent では消せない（opensearch provider を外した）。
+# その state が残っているなら、コミット f7b1688 の IaC/terraform/aws-managed/agent で destroy してから、この版に上げる
 set -uo pipefail
 
 REGION=ap-northeast-1
@@ -28,7 +29,7 @@ REGION=ap-northeast-1
 resolve_deploy_env_file  # DEPLOY_ENV_FILE の相対パスは、下の cd の前の場所から見る
 cd "$(dirname "$0")/.."
 
-. ops/common.sh       # log / die / tf と terraform の認証情報（OSS 版の oss/ops/down.sh と同じものを読む）
+. ops/common.sh       # log / die / tf と terraform の認証情報（OSS 版の ops/oss/down.sh と同じものを読む）
 . ops/down-common.sh  # destroy_root / destroy_agent / destroy_base_core / report_leftovers など
 trap 'if [ -n "$TF_AWS_CONFIG" ]; then rm -f "$TF_AWS_CONFIG"; fi' EXIT  # tf_use_cli_credentials の一時ファイル
 
@@ -82,16 +83,16 @@ destroy_root pipeline/analytics
 # Nautobot（ECS と RDS）。RDS は最後のスナップショット無しで消すので、Nautobot で編集した内容は残らない（5〜10 分）
 destroy_root pipeline/nautobot
 destroy_lambda_root pipeline/graph "$PREFIX-graph-status"
-# stream の snmp_agents / gnmi_targets も必須変数だが destroy では使われないので、形だけ合う値を渡す
-destroy_root pipeline/stream -var 'snmp_agents="udp://0.0.0.0:161"' -var 'gnmi_targets="0.0.0.0:57400"'
+# stream の gnmi_targets も必須変数だが destroy では使われないので、形だけ合う値を渡す
+destroy_root pipeline/stream -var 'gnmi_targets="0.0.0.0:57400"'
 
 log "2. lab"
 destroy_root pipeline/lab
 
-log "3. agent（Runtime / ガードレール / KB。terraform/base/core のロールにポリシーを付けているので base/core より先）"
+log "3. agent（Runtime / ガードレール / KB。IaC/terraform/aws-managed/base/core のロールにポリシーを付けているので base/core より先）"
 destroy_agent
 
-log "3-2. 土台（terraform/base/core。VPC / Web の EC2 / バケット（中身ごと消える）/ ロール）"
+log "3-2. 土台（IaC/terraform/aws-managed/base/core。VPC / Web の EC2 / バケット（中身ごと消える）/ ロール）"
 # Runtime の ENI が残っているあいだは VPC・サブネット・runtime の SG を残し、それ以外を消す（ops/down-common.sh の destroy_base_core）
 destroy_base_core
 
@@ -107,15 +108,23 @@ delete_runtime_log_groups
 
 log "5-2. ops/up.sh が作った SSM のパラメータ（Grafana / Splunk / Nautobot の admin のパスワード、ECS の Splunk の HEC の token、Nautobot の SECRET_KEY と DB のパスワード など）"
 # タグ ManagedBy=ops/up.sh の付いたものだけ消す（手で入れたパラメータは消さない）。値は読まない。
-# terraform/pipeline/nautobot が消えなかったときは、その secrets を残す（ops/down-common.sh の delete_up_ssm_params）
+# IaC/terraform/aws-managed/pipeline/nautobot が消えなかったときは、その secrets を残す（ops/down-common.sh の delete_up_ssm_params）
 delete_up_ssm_params
+
+log "5-3. ops/up.sh が作った MSK の SCRAM の secret（Secrets Manager）と KMS の鍵"
+# secret はすぐ消し、鍵は削除を予約して（7 日後に消える。待つあいだは課金されない）alias を外す。中身は読まない。
+# IaC/terraform/aws-managed/pipeline/stream が消えなかったときは両方残す（ops/down-common.sh の delete_msk_scram）
+delete_msk_scram
 
 log "6. 残っていないか（Project=$PREFIX のタグ）"
 report_leftovers
-echo "（残り 0 件なら全部消えている。ecr を残したときはリポジトリが出る。消した直後の数分は消えたものが出ることがある）"
+echo "（この一覧では消えたかを決めない。タグの API は消えたリソースも返す（何日も前に消えた EMR Serverless のジョブランなど）。"
+echo " 消えたかはサービスごとの API で見る。KEEP_ECR=1 なら ECR のリポジトリは実際に残っている。MSK の SCRAM の KMS の鍵は削除の予約のまま 7 日残る（課金なし）。
+ docs/deploy.md の「消したあとに残るもの」）"
 if [ "$MAIN_LEFT" = 1 ]; then
-  echo "terraform/base/core の VPC・サブネット・runtime の SG は残した（Runtime の ENI 待ち。時間課金は無い）。"
-  echo "すぐ使うなら ops/up.sh がそのまま使い回す。消し切るなら数時間おいて ops/down.sh を打ち直す"
+  echo "IaC/terraform/aws-managed/base/core の VPC・サブネット・runtime の SG は残した（Runtime の ENI 待ち。時間課金は無い）。"
+  echo "そのままでよい。次の ops/up.sh が使い回す（ops/up.sh を打ったのと同じチェックアウトから打つとき。state はここにしか無い）。"
+  echo "消し切るときだけ、ENI が外れてから（最大 8 時間）同じチェックアウトで ops/down.sh を打ち直す"
 fi
 if [ -n "$FAILED_ROOTS" ]; then
   echo

@@ -12,17 +12,17 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
-| サービス | `<prefix>-splunk`（1 台のときは全部の役目、クラスターのときは search head）。ECS のクラスター `<prefix>-analytics`。1 タスク、サブネット a | `terraform/pipeline/analytics/splunk.tf` |
+| サービス | `<prefix>-splunk`（1 台のときは全部の役目、クラスターのときは search head）。ECS のクラスター `<prefix>-analytics`。1 タスク、サブネット a | `IaC/terraform/aws-managed/pipeline/analytics/splunk.tf` |
 | クラスターのサービス | `SPLUNK_AZ_NUM` が 2 か 3 のときだけ。`<prefix>-splunk-cm`（cluster manager、1 タスク、サブネット a）と `<prefix>-splunk-idx`（indexer、`SPLUNK_AZ_NUM` タスク、サブネット a から `SPLUNK_AZ_NUM` 個） | `splunk.tf`、`deploy.env.example` の `SPLUNK_AZ_NUM`（既定 1、1〜3） |
 | タスクの大きさ | Fargate x86、2 vCPU / 4 GB、エフェメラルストレージ 40 GiB | 変数 `splunk_task_cpu`、`splunk_task_memory`、`splunk_ephemeral_storage_gib` |
-| イメージ | Splunk Enterprise 10.4.3 の公式イメージ + app `netops_alerts`。ECR の `<prefix>-splunk` | `splunk/Dockerfile`、変数 `splunk_image_tag` |
+| イメージ | Splunk Enterprise 10.4.4 の公式イメージ + app `nwc_alerts`。ECR の `<prefix>-splunk` | `docker/images/splunk/Dockerfile`、変数 `splunk_image_tag` |
 | 名前とポート | Cloud Map `splunk.<prefix>.internal`。Web 8000（http）、HEC 8088（https、自己署名）。クラスターのときは `splunk-cm.<prefix>.internal`（manager）と `splunk-idx.<prefix>.internal`（indexer。A レコードが indexer の数だけ）が増え、HEC の宛先は `splunk-idx` になる | `splunk.tf`、`locals.tf` の `splunk_hec_url` |
-| Splunk どうしのポート | 管理と検索 8089、複製 9887、転送の受け口 9997。SG `splunk` から `splunk` へだけ開けてある（1 台のときも規則はある。相手がいないだけ）。ほかの SG からは 8089 に届かない | `terraform/base/core/security_groups.tf` |
-| 入るもの | 5 つのトピックの全部。sourcetype は `netops:<トピック>`。index は `main`（HEC の token の既定） | `spark/snmp_sinks.py`、変数 `SPLUNK_INDEX`（既定は空） |
+| Splunk どうしのポート | 管理と検索 8089、複製 9887、転送の受け口 9997。SG `splunk` から `splunk` へだけ開けてある（1 台のときも規則はある。相手がいないだけ）。ほかの SG からは 8089 に届かない | `IaC/terraform/aws-managed/base/core/security_groups.tf` |
+| 入るもの | 5 つのトピックの全部。sourcetype は `nwc:<トピック>`。index は `main`（HEC の token の既定） | `app/spark/snmp_sinks.py`、変数 `SPLUNK_INDEX`（既定は空） |
 | ライセンス | 試用（60 日、1 日 500 MB まで）。起動時に環境変数で同意する | `splunk.tf` の `SPLUNK_START_ARGS`、`SPLUNK_GENERAL_TERMS` |
-| シークレット | SSM の SecureString `/<prefix>/splunk/admin-password`、`/<prefix>/splunk/hec-token`。クラスターのときは `/<prefix>/splunk/idxc-secret`（manager・indexer・search head が互いを確かめる合言葉）も。どれも `ops/up.sh` が作る。値は Terraform も state も持たない | `ops/up.sh`、`splunk.tf` の `secrets` |
+| シークレット | SSM の SecureString `/<prefix>/splunk/admin-password`、`/<prefix>/splunk/hec-token`。クラスターのときは `/<prefix>/splunk/idxc-secret`（manager・indexer・search head が互いを確かめる合言葉）も。どれも `ops/up.sh` が作る。値は Terraform も state も持たない | `ops/up-common.sh` の `ensure_splunk_secrets`（`ops/up.sh` の手順 7-4 が呼ぶ）、`splunk.tf` の `secrets` |
 | スイッチ | `STORES` の `splunk`。クラスターにするかは `SPLUNK_AZ_NUM` | `deploy.env.example` |
-| 費用 | 1 タスク 12 セント/時（`STORES` の `splunk` 全体では Spark のジョブと合わせて約 +$0.34/h）。`SPLUNK_AZ_NUM=2` は 4 タスクで 49 セント/時（+$0.37/h）、`3` は 5 タスクで 61 セント/時（+$0.49/h）。AZ をまたぐ複製の通信料は入っていない | `ops/up.sh` の先頭のコメント、`deploy.env.example` |
+| 費用 | 1 タスク 12 セント/時（`STORES` の `splunk` 全体では Spark のジョブと合わせて約 +$0.34/h）。`SPLUNK_AZ_NUM=2` は 4 タスクで 49 セント/時（+$0.37/h）、`3` は 5 タスクで 61 セント/時（+$0.49/h）。AZ をまたぐ複製の通信料は入っていない | `ops/up.sh` の費用の目安（524〜584 行）、`deploy.env.example` |
 
 `SPLUNK_AZ_NUM` と構成:
 
@@ -38,16 +38,15 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 |---|---|---|
 | cluster manager（`splunk-cm`） | indexer の登録と、複製の指図 | 複製の設定（複製の数と、検索できる複製の数。どちらも indexer の数） |
 | indexer（`splunk-idx`） | HEC で受けて index `main` に入れる。相手に複製を送る | index `main`（自分の分と、相手の分の複製） |
-| search head（`splunk`） | 検索、UI、保存済みサーチ、アラートアクション | app `netops_alerts`、`DEVICE_MAP`、SNS へ publish するタスクロール |
+| search head（`splunk`） | 検索、UI、保存済みサーチ、アラートアクション | app `nwc_alerts`、`DEVICE_MAP`、SNS へ publish するタスクロール |
 
-保存済みサーチ（app `netops_alerts`。4 本とも毎分）:
+保存済みサーチ（app `nwc_alerts`。3 本とも毎分）:
 
 | 保存済みサーチ | 見るもの | 出すもの |
 |---|---|---|
-| `netops_poll` | SNMP のポーリングの `ifOperStatus` | down かどうかが変わった IF だけ。`link_down` の `firing` / `resolved` |
-| `netops_gnmi` | gNMI の BGP の `session_state`、IS-IS の `oper_state` | 前の値と比べて変わったときだけ。`bgp_down` / `isis_down` の `firing` / `resolved` |
-| `netops_trap` | trap | linkDown は `link_down` の `firing`、linkUp は `resolved`。ほかの trap は `trap` の `firing` |
-| `netops_trap_clear` | trap（過去 70 分） | その機器から link 以外の trap が 10 分来なければ `trap` を `resolved` |
+| `nwc_gnmi` | gNMI の IF の `oper_state` / `admin_state`、BGP の `session_state`、IS-IS の `oper_state` | 前の値（24 時間）と比べて変わったときだけ。`link_down` / `bgp_down` / `isis_down` の `firing` / `resolved`（`link_down` は 2026-10-09 に SNMP のポーリングの保存済みサーチから移した） |
+| `nwc_trap` | trap | linkDown は `link_down` の `firing`、linkUp は `resolved`。ほかの trap は `trap` の `firing` |
+| `nwc_trap_clear` | trap（過去 70 分） | その機器から link 以外の trap が 10 分来なければ `trap` を `resolved` |
 
 ## つながり
 
@@ -56,14 +55,14 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | Spark（ジョブ `sinks-splunk`） | Spark → HEC | 8088/tcp、`/services/collector/event`、HEC の token。宛先は 1 台のとき `splunk`、クラスターのとき `splunk-idx`（どの indexer も同じ token で受ける） |
 | 利用者の PC | PC → Web の EC2 → Splunk | 8000/tcp。SSM のポートフォワーディング（output `splunk_port_forward_command`）。ユーザー admin。クラスターのときの入口は search head。manager の画面（クラスターの状態）は output `splunk_cm_port_forward_command`（`http://localhost:8001`） |
 | Splunk どうし（クラスターのときだけ） | search head → indexer（検索）、manager ↔ indexer・search head（管理）、indexer ↔ indexer（複製）、search head・manager → indexer（自分の `_internal` と `_audit` の転送） | 8089 / 9887 / 9997。合言葉は `/<prefix>/splunk/idxc-secret` |
-| SNS | Splunk → `<prefix>-alerts` | `sns` のエンドポイント。アラートアクション `netops_sns` がタスクロール（`sns:Publish` だけ）で publish |
+| SNS | Splunk → `<prefix>-alerts` | `sns` のエンドポイント。アラートアクション `nwc_sns` がタスクロール（`sns:Publish` だけ）で publish |
 | SSM | タスクの起動時に読む | 実行ロール |
 
 ## 知見
 
 - **イメージは amd64 しか無い。**
-  ほかのコンテナは arm64 にそろえてあるが、Splunk だけ x86 のタスクにしている。
-  出典: `terraform/pipeline/analytics/splunk.tf` の先頭のコメント、[data-stores.md](../../data-stores.md) の「8. arm64 に揃える（Splunk だけ x86）」。
+  Fargate のほかのタスクは arm64 だが、Splunk だけ x86 のタスクにしている（x86 が要るのは、ほかに lab の EC2 の TRex）。
+  出典: `IaC/terraform/aws-managed/pipeline/analytics/splunk.tf` の先頭のコメント、[data-stores.md](../../data-stores.md) の「8. アーキテクチャは全体で揃えない（同じホストの中だけ揃える）」。
 - **ライセンスと Splunk General Terms には、デプロイする人が同意したことになる。**
   イメージは `SPLUNK_START_ARGS=--accept-license` と `SPLUNK_GENERAL_TERMS` が無いと起きない。Splunk のサイトへの登録は要らない。
   出典: `splunk.tf` の先頭のコメント、FAQ「Splunk のライセンスは、Splunk のサイトでメールアドレスを登録しないと使えない？」。
@@ -74,22 +73,22 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
   先に出すと、HEC への POST が再試行のあとに落ちてジョブが止まる。手順 7-4b が最長 20 分待つ（最初の起動は 5〜10 分）。クラスターのときは 3 つのサービスの全部のタスク（`SPLUNK_AZ_NUM` + 2 個）を待つ。
   出典: `splunk.tf` のコメント、`ops/up.sh` の手順 7-4b。
 - **クラスターの保存済みサーチは search head だけで動く。**
-  manager と indexer でも動くと、同じアラートが台の数だけ SNS に出る。`splunk/entrypoint.sh` が、`SPLUNK_ROLE` が search head と 1 台用（`splunk_standalone`）のとき以外は、起動の前に app `netops_alerts` を消す。SNS へ publish するタスクロールと `DEVICE_MAP` も search head のタスク定義にだけ付く。
-  出典: `splunk/entrypoint.sh`、`splunk.tf`。
+  manager と indexer でも動くと、同じアラートが台の数だけ SNS に出る。`app/splunk/entrypoint.sh` が、`SPLUNK_ROLE` が search head と 1 台用（`splunk_standalone`）のとき以外は、起動の前に app `nwc_alerts` を消す。SNS へ publish するタスクロールと `DEVICE_MAP` も search head のタスク定義にだけ付く。
+  出典: `app/splunk/entrypoint.sh`、`splunk.tf`。
 - **indexer は、止められる（SIGTERM）と先に `splunk offline` を打つ。**
   いきなり止まると、manager が次の世代を約 5 分確定できず、search head の検索が黙って 0 件になる（データは消えない）。`splunk offline` で manager が primary を残りの indexer へ付け替えてから止まる。60 秒で終わらなければ打ち切って、いつもどおり止める。タスク定義の `stopTimeout` は 120 秒。ログには `nwc-offline: start` と `nwc-offline: rc=<終了コード> <秒>s` が出る。
   2026-10-05 に AWS で確かめた（`SPLUNK_AZ_NUM=2`。indexer のタスクを 1 つ止めると `nwc-offline: start` → `nwc-offline: rc=0 43s` が出て、ECS が代わりを起動した）。
   効くのは SIGTERM で止まるときだけ。落ちたときや SIGKILL のときは走らない。
-  出典: `splunk/entrypoint.sh`、004 の設計の「未確定事項とリスク」の 11。
+  出典: `app/splunk/entrypoint.sh`、004 の設計の「未確定事項とリスク」の 11。
 - **search head のヘルスチェックは、indexer の GUID の突き合わせも見る（`nwc-peer-check`）。**
-  indexer が入れ替わって前と同じ IP をもらうと、search head は古い GUID のままその indexer を持ち続け、検索が黙って欠ける（手元の Docker で再現。Fargate で同じ IP がまた割り当てられるかは未確認）。`splunk/peers_check.py`（イメージの `/sbin/nwc-peers-check.py`）が、manager が Up と言う indexer を search head が同じ GUID の Up で持っているかを見る。食い違いが 10 回（約 5 分）続くと、ECS が search head を入れ替える。
+  indexer が入れ替わって前と同じ IP をもらうと、search head は古い GUID のままその indexer を持ち続け、検索が黙って欠ける（手元の Docker で再現。Fargate で同じ IP がまた割り当てられるかは未確認）。`app/splunk/peers_check.py`（イメージの `/sbin/nwc-peers-check.py`）が、manager が Up と言う indexer を search head が同じ GUID の Up で持っているかを見る。食い違いが 10 回（約 5 分）続くと、ECS が search head を入れ替える。
   判定が変わったときだけ、ログに `nwc-peer-check state=<ok / degraded / mismatch / skip / error> reason=<理由>` を 1 行書く。`degraded` は manager が Up と言う indexer がタスク定義の数（`NWC_PEERS_EXPECTED`）より少ない（`reason=peers_up:<Up の数>/<あるはずの数>`。終了コードは 0 で、search head は入れ替えない）、`skip` は manager に聞けない、`error` は search head の peers を読めない。
   `ops/up.sh` の手順 7-4b は、全タスクが HEALTHY になったあとにこの行を読み、`state=ok reason=peers_up:<indexer の数>` になるまで最大 6 分待つ。ならなければ止まる。
   2026-10-05 に AWS で確かめた（`nwc-peer-check state=ok reason=peers_up:2`）。`mismatch` で search head が入れ替わるところは AWS では未確認。
-  出典: `splunk/peers_check.py`、`ops/up.sh` の `splunk_cluster_check`。
+  出典: `app/splunk/peers_check.py`、`ops/up-common.sh` の `splunk_cluster_check`。
 - **indexer が AZ に 1 台ずつになるかは、Fargate の振り分けに任せている（保証ではない）。**
   同じ AZ に 2 台いたら、`ops/up.sh` が注意を出して進む。2026-10-05 の AWS（`SPLUNK_AZ_NUM=2`）では ap-northeast-1a と ap-northeast-1c に分かれた。
-  出典: `splunk.tf` の `aws_ecs_service.splunk_idx`、`ops/up.sh` の `splunk_cluster_check`。
+  出典: `splunk.tf` の `aws_ecs_service.splunk_idx`、`ops/up-common.sh` の `splunk_cluster_check`。
 - **新しい indexer は、ECS のヘルスチェックが通るまで HEC の宛先に載らない。**
   `splunk-idx` の Cloud Map にだけ `health_check_custom_config` を付けてある。クラスターに入る前の indexer に Spark が送らないようにするため。
   出典: `splunk.tf` の `aws_service_discovery_service.splunk_idx`。
@@ -103,10 +102,10 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
   index はタスクの中にあり、引き継がない。
   出典: `deploy.env.example`、004 の設計。
 - **アラートは、Splunk の Python が持っている boto3 で SNS に publish する。**
-  10.4.3 は python3.13 に boto3 1.37.14。app には同梱しない。Splunk の版を変えたら `tests/check_splunk_image.py` で確かめる。1 通に 50 件まで、失敗は 3 回まで試す。
+  10.4.4 は python3.13 に boto3 1.37.14。app には同梱しない。Splunk の版を変えたら `tests/check_splunk_image.py` で確かめる。1 通に 50 件まで、失敗は 3 回まで試す。
   出典: [pipeline.md](../../pipeline.md) の「Splunk のアラート」。
 - **splunkd は、コンテナの環境変数を子プロセスに引き継がない。**
-  `splunk/entrypoint.sh` が、要る値（リージョン、トピックの ARN、`DEVICE_MAP`、認証情報の取り出し口の URI）を `/opt/container_artifact/nwc-alerts.env` に写す。鍵そのものは書かない。
+  `app/splunk/entrypoint.sh` が、要る値（リージョン、トピックの ARN、`DEVICE_MAP`、認証情報の取り出し口の URI）を `/opt/container_artifact/nwc-alerts.env` に写す。鍵そのものは書かない。
   出典: 同上。
 - **保存済みサーチは「索引に入った時刻」で直前の 1 分を読む。**
   イベントの時刻で切ると、Spark のマイクロバッチで遅れて届いた分を取りこぼす。スケジューラが遅れても飛ばさない（`realtime_schedule = 0`）。
@@ -127,7 +126,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
   Splunk は index を自動では作らない。既定（`SPLUNK_INDEX` が空）では `main` に入るので起きない。2026-10-04 に手元のコンテナで見つけた。
   出典: FAQ「HEC で index を指定しないと、自動で index の名前が付く？」（Splunk の文書 https://help.splunk.com/en/splunk-enterprise/get-started/get-data-in/10.0/get-data-with-http-event-collector/format-events-for-http-event-collector 、2026-10-05 に確認）。
 - **確かめるときの検索。**
-  サーチが動いたかは `index=_internal sourcetype=scheduler savedsearch_name=netops_*`。publish の結果は `index=_internal sourcetype=splunkd sendmodalert netops_sns`。データは `index=main`。
+  サーチが動いたかは `index=_internal sourcetype=scheduler savedsearch_name=nwc_*`。publish の結果は `index=_internal sourcetype=splunkd sendmodalert nwc_sns`。データは `index=main`。
   出典: [pipeline.md](../../pipeline.md) の「Splunk のアラート」「Grafana と Splunk を開く」。
 - **アラートが出ないときの見方。**
   [troubleshooting.md](../../troubleshooting.md) の「パイプラインと WORKFLOW」の「Splunk のアラートが出ない」「手順 7-4b で…HEALTHY にならない」「手順 7-4b で…突き合わせ…」の行。ログは `/ecs/<prefix>-splunk`（ストリームの接頭辞は search head と 1 台用が `splunk`、manager が `splunk-cm`、indexer が `splunk-idx`）。
@@ -147,7 +146,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | `SPLUNK_AZ_NUM` | 2026-10-05 に AWS で確かめたのは `2`（4 タスク、indexer は 2 つの AZ）。`3` は未確認。`1` のままの 1 台の構成も、004 を入れたあとの AWS では未確認 |
 | 試用ライセンス | タスクごとに別々の試用ライセンスを持つ。2026-10-05 の `SPLUNK_AZ_NUM=2` ではクラスターとアラートが動いた。日数がたったあとの挙動は未確認 |
 | 既知の不具合（2026-10-05） | trap のサブインターフェース（`ethernet-1/1.0`）の `link_down` と、起動の直後の `resolved` のまとめ送りは直した（手元で確認、AWS では未確認）。回線の両端が別の異常になる件は [troubleshooting.md](../../troubleshooting.md) の「既知の不具合」 |
-| Telegraf か Splunk が 10 分を超えて止まったとき | `netops_poll` の「前の値」が無くなり、戻ったときに新しい `starts_at` で `firing` をもう 1 回出す |
+| 24 時間を超えて変わっていない down | `nwc_gnmi` の「前の値」が無いので、戻ったときの `resolved` を出さない。gnmic が繋ぎ直して送り直すと、新しい `starts_at` で `firing` をもう 1 回出す |
 | Splunk が止まっているあいだの変化 | 次に状態が変わるまで出ない |
 
 クラスターの設計と、手元の Docker で確かめたことは [Splunk をクラスターにする（004）の設計](../../cycles/004-splunk-indexer-cluster/design.md)。
@@ -156,5 +155,5 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 
 - [emr-serverless.md](emr-serverless.md)、[grafana.md](grafana.md)、[sns-sqs-lambda.md](sns-sqs-lambda.md)、[ssm-parameter-store.md](ssm-parameter-store.md)
 - [pipeline.md](../../pipeline.md): 「Grafana と Splunk を開く」「アラート」「Splunk のアラート」
-- [alert-comparison.md](../../alert-comparison.md): Splunk と Grafana のアラートを比べる（002）の結果、「Splunk の `netops_poll`」
+- [alert-comparison.md](../../alert-comparison.md): Splunk と Grafana のアラートを比べる（002）の結果（SNMP のポーリングの保存済みサーチは 2026-10-09 にやめた）
 - FAQ の 10 章「Splunk」と 9 章「格納先とテーブル、重複」: [faq-fukuda-nwc-poc.md](../../faq-fukuda-nwc-poc.md)

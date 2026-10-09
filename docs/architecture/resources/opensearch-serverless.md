@@ -4,23 +4,23 @@
 
 ## ひとことで
 
-コレクションを 2 つ使っている。機器の trap と syslog を検索するためのログ用（TIMESERIES 型）と、Bedrock の Knowledge Base のベクトル検索用（VECTORSEARCH 型）。
+コレクションを 2 つ使っている。機器の trap と syslog（と NetFlow / sFlow）を検索するためのログ用（TIMESERIES 型）と、Bedrock の Knowledge Base のベクトル検索用（VECTORSEARCH 型）。
 どちらも公開せず、土台の OpenSearch Serverless の VPC エンドポイントからだけ届く。ログ用は正本ではなく、見るための写し。
 
 ## このプロジェクトでの使い方
 
 | 項目 | ログ用 | Knowledge Base 用 | 定義している場所 |
 |---|---|---|---|
-| コレクション | `<prefix>-logs`（TIMESERIES） | `<prefix>-kb`（VECTORSEARCH） | `terraform/pipeline/analytics/sinks.tf`、`terraform/agent/kb.tf` |
-| index と中身 | `snmp-logs`。MSK の `traps` と `logs` のドキュメント（trap と syslog）。`event_id` と Kafka の位置も項目として持つ | `kb-index`。`kb-docs/` の手順書を Titan v2（1024 次元、faiss）でベクトルにしたもの | `spark/snmp_sinks.py`、`terraform/agent/locals.tf` |
+| コレクション | `<prefix>-logs`（TIMESERIES） | `<prefix>-kb`（VECTORSEARCH） | `IaC/terraform/aws-managed/pipeline/analytics/sinks.tf`、`IaC/terraform/aws-managed/agent/kb.tf` |
+| index と中身 | `snmp-logs`。MSK の `traps` と `logs` と `flows` のドキュメント（trap と syslog と NetFlow / sFlow）。`event_id` と Kafka の位置も項目として持つ | `kb-index`。`app/resources/` の手順書を Titan v2（1024 次元、faiss）でベクトルにしたもの | `app/spark/snmp_sinks.py`、`IaC/terraform/aws-managed/agent/locals.tf` |
 | index を作るもの | Spark の最初の `_bulk` | VPC の中の Lambda `<prefix>-kb-index`（apply のときに 1 回呼ぶ） | `sinks.tf` の `aws_opensearchserverless_access_policy.logs`、`kb.tf` |
 | スイッチ | `STORES` の `grafana`（Prometheus と一緒に作る） | `CREATE_KB=1` | `deploy.env.example` |
 | 暗号 | AWS 所有の鍵 | AWS 所有の鍵 | 各 `security_policy`（encryption） |
 | ネットワーク | `AllowFromPublic = false`、`SourceVPCEs` に土台の VPC エンドポイントだけ | 同じ | 各 `security_policy`（network） |
 | 控え | `OPENSEARCH_AZ_NUM`（既定 1、1〜2）。2 で `standby_replicas = ENABLED` | 同じキー | 変数 `opensearch_az_num` |
-| 費用 | 33 セント/時 × AZ（公表単価。検索の負荷で増える） | +$0.35/h（OCU 0.33 + VPC エンドポイント 0.01 + bedrock-agent-runtime 0.01。2 AZ で OCU が倍） | `ops/up.sh` の先頭のコメント |
+| 費用 | 33 セント/時 × AZ（公表単価。検索の負荷で増える） | +$0.35/h（OCU 0.33 + VPC エンドポイント 0.01 + bedrock-agent-runtime 0.01。2 AZ で OCU が倍） | `ops/up.sh` の費用の目安（524〜584 行） |
 
-VPC エンドポイント（`aws_opensearchserverless_vpc_endpoint.aoss`）は土台（`terraform/base/core/endpoints.tf`）にあり、KB か `STORES` の `grafana` があるときだけ作る。
+VPC エンドポイント（`aws_opensearchserverless_vpc_endpoint.aoss`）は土台（`IaC/terraform/aws-managed/base/core/endpoints.tf`）にあり、KB か `STORES` の `grafana` があるときだけ作る。
 
 ## つながり
 
@@ -36,13 +36,13 @@ VPC エンドポイント（`aws_opensearchserverless_vpc_endpoint.aoss`）は�
 
 - **ログ用のコレクションは、ドキュメントの ID を付けられない。**
   TIMESERIES 型は追記だけで、ID での上書きができない。Spark が送り直すと、同じドキュメントが 2 つ残る。SEARCH 型にすれば ID を付けられるが、ログの置き場としては TIMESERIES のほうが安く合っているので替えない。
-  出典: FAQ「OpenSearch と Prometheus でも、重複を防げる？ Grafana の側で落とすべき？」、`terraform/pipeline/analytics/sinks.tf` のコメント。
+  出典: FAQ「OpenSearch と Prometheus でも、重複を防げる？ Grafana の側で落とすべき？」、`IaC/terraform/aws-managed/pipeline/analytics/sinks.tf` のコメント。
 - **重複で数字が変わるのは、件数と合計のパネルだけ。**
   Grafana で一律に落とす設定は無い。必要なパネルだけ、一意の番号の種類数（Unique Count）で数える。重複が起きるのは送信の失敗でやり直したときだけ。
   出典: 同じ FAQ。
 - **コレクションは、ポリシー 3 つ（暗号・ネットワーク・データアクセス）を先に作ってから作る。**
   `depends_on` で順番を固定してある。
-  出典: `sinks.tf`、`terraform/agent/kb.tf`。
+  出典: `sinks.tf`、`IaC/terraform/aws-managed/agent/kb.tf`。
 - **VPC エンドポイントが無いと、コレクションの apply が precondition で止まる。**
   土台を `create_opensearch_endpoint=true` で apply し直す（`ops/up.sh` は `STORES` に `grafana` があるか `CREATE_KB=1` のとき自動で渡す）。
   出典: `sinks.tf` と `kb.tf` の precondition。
@@ -57,7 +57,7 @@ VPC エンドポイント（`aws_opensearchserverless_vpc_endpoint.aoss`）は�
   出典: [alert-comparison.md](../../alert-comparison.md) の「Spark の整形の副作用」。
 - **KB の index を作り直すときは、コレクションごと作り直す。**
   `-replace=aws_opensearchserverless_collection.kb[0]` のあと、取り込みをやり直す。
-  出典: `terraform/agent/kb.tf` のコメント。
+  出典: `IaC/terraform/aws-managed/agent/kb.tf` のコメント。
 
 ## 制約と未確認
 

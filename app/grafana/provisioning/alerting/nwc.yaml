@@ -1,0 +1,43 @@
+# Grafana のアラートの送り先（連絡先・通知ポリシー・本文のテンプレート）。発火と解消を SNS のトピック（IaC/terraform/aws-managed/base/core の alerts.tf）へ publish する。
+# 受け手は SQS → ワークフロー（app/temporal/worker.py の starter）と、トポロジの status を書く Lambda（app/graph/status_handler.py）。
+# ルールは格納先ごとに別のファイル（nwc-prometheus.yaml / nwc-opensearch.yaml）。app/grafana/start.sh は ALERTS_TOPIC_ARN があるときにこのファイルを、
+# さらにデータソースがあるほうのルールのファイルを並べる。連絡先の ${...} は起動時に Grafana が環境変数で埋める。
+# 下のテンプレートの中の $i / $a はそのまま渡る（$$ と書くと「Invalid format of the submitted template」で Grafana が起動しない。13.2.2 で実測）。
+# ルールのラベルの中の $ は provisioning が環境変数として展開する（'{{ $labels.ifName }}' が '{{ .ifName }}' になる。13.2.2 で実測）ので、
+# ルールのラベルと注釈は $labels を使わず .Labels で書く。
+# 画面からは変えられない（provisioning したルール・連絡先・ポリシーは読み取り専用。変えるならこのファイルを変えてイメージを作り直す）
+apiVersion: 1
+
+# ---- 連絡先。SNS へ SigV4 で publish する（鍵は書かない = タスクロール。sns へは IaC/terraform/aws-managed/base/core のインターフェース型エンドポイントを通る）
+contactPoints:
+  - orgId: 1
+    name: nwc-sns
+    receivers:
+      - uid: nwc-sns
+        type: sns
+        disableResolveMessage: false
+        settings:
+          topic_arn: ${ALERTS_TOPIC_ARN}
+          sigv4:
+            region: ${AWS_REGION}
+          subject: nwc alert
+          message: '{{ template "nwc.sns" . }}'
+
+# ---- 通知ポリシー。対象ごとに 1 通（機器 + target でまとめる）。発火はすぐ送り、解消は次の group_interval で送る。
+# 直らないあいだは repeat_interval ごとに同じ starts_at で送り直す（ワークフローは同じ id なので二重には起きない）
+policies:
+  - orgId: 1
+    receiver: nwc-sns
+    group_by: ['alertname', 'sysName', 'target']
+    group_wait: 0s
+    group_interval: 30s
+    repeat_interval: 4h
+
+# ---- 本文。app/temporal/rules.py の alerts_from_message が読む形（Splunk の app/splunk/nwc_alerts/bin/nwc_sns.py と同じ形）。
+# 種類によらない形: どのルールもラベル kind / target と注釈 detail を持つ。機器は sysName（Spark が device map で足す）、無ければ source（機器の管理 IP。
+# Splunk の coalesce('tags.sysName', …, 'tags.source') と同じ）
+templates:
+  - orgId: 1
+    name: nwc.sns
+    template: |
+      {{ define "nwc.sns" }}{"source":"grafana","alerts":[{{ range $i, $a := .Alerts }}{{ if $i }},{{ end }}{"status":{{ printf "%q" $a.Status }},"device_id":{{ printf "%q" (or $a.Labels.sysName $a.Labels.source) }},"kind":{{ printf "%q" $a.Labels.kind }},"target":{{ printf "%q" $a.Labels.target }},"detail":{{ printf "%q" $a.Annotations.detail }},"starts_at":{{ $a.StartsAt.Unix }}}{{ end }}]}{{ end }}

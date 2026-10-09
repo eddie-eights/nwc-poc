@@ -11,13 +11,13 @@ Lambda が 1 件ずつ渡した行を、60 秒か 1 MiB ごとにまとめて書
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
-| ストリーム | `<prefix>-alert-events`。宛先 `iceberg`。1 つだけ | `terraform/pipeline/analytics/history.tf` の `aws_kinesis_firehose_delivery_stream.alert_events` |
-| 宛先のテーブル | namespace `netops` の `alert_events`。Glue のカタログ `s3tablescatalog/<テーブルバケット>` 越し | `history.tf`、`terraform/pipeline/analytics/tables.tf` |
+| ストリーム | `<prefix>-alert-events`。宛先 `iceberg`。1 つだけ | `IaC/terraform/aws-managed/pipeline/analytics/history.tf` の `aws_kinesis_firehose_delivery_stream.alert_events` |
+| 宛先のテーブル | namespace `nwc` の `alert_events`。Glue のカタログ `s3tablescatalog/<テーブルバケット>` 越し | `history.tf`、`IaC/terraform/aws-managed/pipeline/analytics/tables.tf` |
 | まとめ方 | 60 秒か 1 MiB の早いほう | `history.tf` の `buffering_interval`、`buffering_size` |
 | 書けなかった行 | 土台のバケットの `firehose-errors/alert_events/`（`s3_backup_mode = FailedDataOnly`） | `history.tf` の `local.alert_errors` |
 | ロール | `<prefix>-alert-firehose`。S3 Tables、Glue、エラー用のプレフィックス、ログ | `history.tf` の `aws_iam_role.alert_firehose` |
 | ログ | `/aws/kinesisfirehose/<prefix>-alert-events`（ストリーム `DestinationDelivery`） | `history.tf` |
-| 送る側のスイッチ | graph の変数 `alert_history = true`。`ops/up.sh` が analytics がある回（今回作るか、state に残っている）にだけ渡す | `ops/up.sh`、`terraform/pipeline/graph/sync.tf` |
+| 送る側のスイッチ | graph の変数 `alert_history = true`。`ops/up.sh` が analytics がある回（今回作るか、state に残っている）にだけ渡す | `ops/up.sh`、`IaC/terraform/aws-managed/pipeline/graph/sync.tf` |
 | AZ | 選ぶものが無い（サービス側で動く）。Lambda からの入口は `kinesis-firehose` のエンドポイント（`ENDPOINTS_AZ_NUM`） | `ops/up.sh` の `endpoints_for` |
 | 費用 | 取り込んだ量の課金（PoC の量なら月に数セント）。エンドポイント 1 本が 1.4 セント/時 × AZ | `history.tf` の先頭のコメント、[deploy.md](../../deploy.md) の「アラートの通知の履歴」 |
 
@@ -34,7 +34,7 @@ Lambda が 1 件ずつ渡した行を、60 秒か 1 MiB ごとにまとめて書
 
 - **Firehose のロールは、閉域の Deny の例外に入れてある。**
   Firehose はロールを引き受けて自分の側（VPC の外）から書くので、`aws:SourceVpc` が付かない。資源側の Deny の例外（`perimeter_exempt_principals`）に入れ、IAM 側の Deny も付けない。
-  出典: `terraform/pipeline/analytics/history.tf` の先頭のコメント、`terraform/base/core/perimeter.tf`。
+  出典: `IaC/terraform/aws-managed/pipeline/analytics/history.tf` の先頭のコメント、`IaC/terraform/aws-managed/base/core/perimeter.tf`。
 - **ストリームの名前は固定で、graph は analytics を待たない。**
   graph は analytics より先に apply するが、名前が決まっているので Lambda の環境変数 `ALERT_STREAM` に先に書ける。ストリームができるまでのあいだの送信は失敗し、行はログに残る。
   出典: [pipeline.md](../../pipeline.md) の「アラートの履歴」、アラートの履歴を残す（001）の設計の「未確定事項とリスク」の 5。

@@ -1,1 +1,0 @@
-[netops_sns]

@@ -1,0 +1,128 @@
+# ---------------------------------------------------------------- naming
+variable "region" {
+  description = "AWS region. Same value as IaC/terraform/aws-managed/base/core."
+  type        = string
+  default     = "ap-northeast-1"
+}
+
+variable "owner" {
+  description = "Required. Name of the person who deploys this copy. Resource names and the Project tag are <owner>-nwc-poc (<owner>-nwc-oss in IaC/terraform/oss, see project), so each person can find their own resources in the console. Same value in every root module."
+  type        = string
+
+  validation {
+    # 接頭辞は <owner>-nwc-poc。OpenSearch Serverless の data access policy 名が 32 文字までで、一番長い接尾辞は IaC/terraform/aws-managed/workflow の <接頭辞>-logs-read（10 文字）なので接頭辞は 22 文字まで。-nwc-poc の 8 文字（OSS 版の -nwc-oss も 8 文字）を引いて owner は 14 文字まで
+    # ハイフンの連続と末尾のハイフンも弾く（ECR のリポジトリ名が受け付けない）
+    condition     = can(regex("^[a-z][a-z0-9]*(-[a-z0-9]+)*$", var.owner)) && length(var.owner) <= 14
+    error_message = "owner must be 1-14 lowercase letters, digits and single hyphens, starting with a letter and not ending with one."
+  }
+}
+
+variable "project" {
+  description = "Second half of the resource name prefix and of the Project tag (<owner>-<project>). nwc-poc is the managed-services build (IaC/terraform/aws-managed/); nwc-oss is the build that runs open-source services on ECS instead (IaC/terraform/oss/, cycle 005), whose oss.auto.tfvars sets it. Same value in every root module."
+  type        = string
+  default     = "nwc-poc"
+
+  validation {
+    condition     = contains(["nwc-poc", "nwc-oss"], var.project)
+    error_message = "project must be nwc-poc (IaC/terraform/aws-managed/) or nwc-oss (IaC/terraform/oss/)."
+  }
+}
+
+# ---------------------------------------------------------------- images (IaC/terraform/aws-managed/base/ecr)
+variable "worker_image_tag" {
+  description = "Tag of the worker image in the <prefix>-worker repository. ops/up.sh passes IMAGE_TAG."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._-]{1,128}$", var.worker_image_tag))
+    error_message = "worker_image_tag must be a valid ECR tag (letters, digits, . _ -)."
+  }
+}
+
+variable "temporal_image_tag" {
+  description = "Tag of the Temporal CLI image mirrored into the <prefix>-temporal repository (temporalio/temporal)."
+  type        = string
+  default     = "1.9.1"
+}
+
+# ---------------------------------------------------------------- task
+variable "task_cpu" {
+  description = "Fargate task CPU units (1024 = 1 vCPU). Temporal dev server and the worker share it."
+  type        = number
+  default     = 1024
+}
+
+variable "task_memory" {
+  description = "Fargate task memory in MiB."
+  type        = number
+  default     = 2048
+}
+
+variable "desired_count" {
+  description = "Number of workflow tasks. Keep 1 - the Temporal dev server stores its state in the task (SQLite) and two tasks would not share it."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.desired_count >= 0 && var.desired_count <= 1
+    error_message = "desired_count must be 0 or 1."
+  }
+}
+
+variable "log_retention_days" {
+  description = "Retention of the task log group /ecs/<prefix>-workflow."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = contains([1, 3, 7, 14, 30], var.log_retention_days)
+    error_message = "log_retention_days must be one of 1, 3, 7, 14, 30."
+  }
+}
+
+# ---------------------------------------------------------------- workflow behaviour (worker environment)
+variable "approval_timeout_minutes" {
+  description = "How long a proposal waits for a human decision before the workflow ends as expired."
+  type        = number
+  default     = 120
+}
+
+variable "verify_timeout_seconds" {
+  description = "How long the workflow waits for the resolved alert (Grafana / Splunk -> SNS -> SQS -> signal) after applying the fix before it ends as failed. Must cover the poll interval, the alert evaluation interval and the notification grouping (about 2 minutes in total)."
+  type        = number
+  default     = 300
+
+  validation {
+    condition     = var.verify_timeout_seconds >= 60
+    error_message = "verify_timeout_seconds must be at least 60."
+  }
+}
+
+variable "hold_minutes" {
+  description = "How long a workflow that ended as rejected / expired / failed stays open waiting for the resolved alert. While it is open, repeated firing alerts of the same anomaly do not start another investigation."
+  type        = number
+  default     = 1440
+
+  validation {
+    condition     = var.hold_minutes >= 0
+    error_message = "hold_minutes must be 0 or more."
+  }
+}
+
+# ---------------------------------------------------------------- gateway (MCP)
+variable "create_gateway" {
+  description = "Create the AgentCore Gateway (MCP) with the tools Lambda (in the VPC: Neptune, OpenSearch Serverless, Prometheus). false keeps the workflow only; the chat runtime then uses its built-in tools."
+  type        = bool
+  default     = true
+}
+
+variable "lambda_az_num" {
+  description = "Number of AZs (subnets a, b, c of IaC/terraform/aws-managed/base/core from the front) of the tools Lambda (gateway.tf). 1, 2 or 3. The workflow task itself stays one in subnet a (Temporal keeps its SQLite inside the task). ops/up.sh passes LAMBDA_AZ_NUM (also to IaC/terraform/aws-managed/agent and IaC/terraform/aws-managed/pipeline/graph)."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2, 3], var.lambda_az_num)
+    error_message = "lambda_az_num must be 1, 2 or 3."
+  }
+}

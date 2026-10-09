@@ -12,7 +12,7 @@
 
 | データ | 置き場 | 書く | 読む |
 |---|---|---|---|
-| 生データの履歴（metrics / gnmi / mdt / traps / logs の全部） | S3 Tables（Iceberg）`raw_telemetry` | Spark の `iceberg` | まだ読む側が無い（`query_history` が読むのは下の `alert_events`） |
+| 生データの履歴（metrics / gnmi / traps / logs / flows の全部） | S3 Tables（Iceberg）`raw_telemetry` | Spark の `iceberg` | まだ読む側が無い（`query_history` が読むのは下の `alert_events`） |
 | 異常の「いま」 | 置かない。機器・回線・層の `status`（下の 2 行）と、Grafana / Splunk のアラートの状態で見る | — | — |
 | 障害の履歴（アラートの通知 1 件が 1 行。発火と解消） | S3 Tables `alert_events` | Lambda `graph-status` → Firehose（60 秒ごとにまとめて追記） | エージェントの `query_history`（Athena） |
 | 修復案（作成・承認・却下・時間切れ・適用・確認のたびに 1 行。どの行にも原因・コマンド・理由・事前チェック・決めた人・処置の結果などの全項目。「いま」は `proposal_id` ごとに `seq` が最大の行） | S3 Tables `proposal_events`（28 列。`proposal_id` は `<anomaly_id>#<first_seen>`） | worker だけ（PyIceberg） | Web の承認タブ、エージェントの `list_proposals`（どちらも Athena）、worker（PyIceberg） |
@@ -23,11 +23,11 @@
 
 ほかに、検索用のログ（OpenSearch `snmp-logs`）とグラフ用のメトリクス（Prometheus）がある。この 2 つは見るための写しで、正本ではない。`STORES` に `splunk` があれば全トピックを Splunk（HTTP Event Collector）にも送る。これも写しで、Splunk は analytics の ECS に立てる（index はタスクと一緒に消える。docs/pipeline.md）。
 
-検知はこの写しの上で動く。Grafana のアラートルールは Prometheus（ポーリングの IF の状態、gNMI の BGP / IS-IS の状態）と OpenSearch（trap）を、Splunk の保存済みサーチは Splunk の index を見て、発火と解消を SNS のトピック `<prefix>-alerts` に出す（[pipeline.md](pipeline.md) の「アラート」）。
+検知はこの写しの上で動く。Grafana のアラートルールは Prometheus（gNMI の IF・BGP・IS-IS の状態）と OpenSearch（trap）を、Splunk の保存済みサーチは Splunk の index を見て、発火と解消を SNS のトピック `<prefix>-alerts` に出す（[pipeline.md](pipeline.md) の「アラート」）。
 
 ```mermaid
 flowchart LR
-  MSK["MSK<br/>metrics / gnmi / mdt / traps / logs"] --> SPARK["Spark<br/>EMR Serverless"]
+  MSK["MSK<br/>metrics / gnmi / traps / logs / flows"] --> SPARK["Spark<br/>EMR Serverless"]
   SPARK -->|"全部 append"| ICE["S3 Tables<br/>raw_telemetry"]
   SPARK --> PROM["Prometheus"] --> GRAF["Grafana<br/>アラートルール"]
   SPARK --> OS["OpenSearch<br/>snmp-logs"] --> GRAF
@@ -47,12 +47,12 @@ flowchart LR
 
 ### 2. 1 回の障害で何が書かれるか
 
-`sudo lab fail-main` でアクセス側 Leaf の fabric（`dc1-leaf-01 ethernet-1/1`）を落としたときの流れ（既定の `STORES=s3,grafana,splunk` / `SNMP_POLL=1`）。1〜3 は Grafana の道を書いた。既定では Splunk も同じ id の `link_down` を SNS に出す（保存済みサーチ `netops_poll` がポーリングから、`netops_trap` が linkDown の trap から。4 から先は同じで、異常としては 1 つにまとまる）。`SNMP_POLL=0` ではポーリングをしないので 1〜3 が起きず、Splunk が trap からだけ知らせる。`STORES` に `splunk` も無ければアラートは出ない。
+`sudo lab fail-main` で DC 側 Leaf の fabric（`dc1-a-leaf-01 ethernet-1/1`）を落としたときの流れ（既定の `STORES=s3,grafana,splunk`）。1〜3 は Grafana の道を書いた。既定では Splunk も同じ id の `link_down` を SNS に出す（保存済みサーチ `nwc_gnmi` が gNMI の IF の状態から、`nwc_trap` が linkDown の trap から。4 から先は同じで、異常としては 1 つにまとまる）。`STORES` に `grafana` も `splunk` も無ければアラートは出ない（2026-10-09（cycle 013）までは、1 は SNMP のポーリングから取っていた）。
 
-1. **ポーリング（10 秒ごと）:** Telegraf が `ifOperStatus=down` を拾い、MSK の `metrics` に出す。
-2. **Spark:** `iceberg` が行をそのまま `raw_telemetry` に追記し、`prometheus` が同じ値を Prometheus に書く。どちらも up か down かを判断しない。
-3. **Grafana:** ルール `link_down` が 1 分ごとに `ifOperStatus` を見て、down の IF を `firing` として SNS のトピック `<prefix>-alerts` に出す。異常の id は `dc1-leaf-01#link_down#ethernet-1/1`。ここでは頂点も行も書かない。
-4. **Lambda `graph-status`:** SNS から受け取り、Neptune の IF の頂点の `status` を `DOWN` にする。同じ回線の IS-IS の隣接も Grafana と Splunk の `isis_down`（gNMI）で届き、頂点 `dc1-leaf-01#isis#ethernet-1/1.0` も `DOWN` になる。同じ通知を Firehose にも送り、60 秒ほどで `alert_events` に `firing` の行が入る（event_id は `<anomaly_id>#<source>#<status>#<starts_at の epoch 秒>`）。
+1. **gNMI（on-change）:** gnmic が IF の `oper-state` が `down` に変わったのを受け、MSK の `gnmi` に出す。
+2. **Spark:** gnmic の event を Telegraf のころと同じ形（系列 `snmp_interface_oper_up`）に読み替え（[collection.md](collection.md) の「gnmic の event と読み替え」）、`iceberg` が行を `raw_telemetry` に追記し、`prometheus` が同じ値を Prometheus に書く。どちらも up か down かを判断しない。
+3. **Grafana:** ルール `link_down` が 1 分ごとに `snmp_interface_oper_up` を見て、down の IF を `firing` として SNS のトピック `<prefix>-alerts` に出す。異常の id は `dc1-a-leaf-01#link_down#ethernet-1/1`。ここでは頂点も行も書かない。
+4. **Lambda `graph-status`:** SNS から受け取り、Neptune の回線（辺 `link`）と IF の頂点の `status` を `DOWN` にする。同じ回線の IS-IS の隣接も Grafana と Splunk の `isis_down`（gNMI）で届き、頂点 `dc1-a-leaf-01#isis#ethernet-1/1.0` も `DOWN` になる。同じ通知を Firehose にも送り、60 秒ほどで `alert_events` に `firing` の行が入る（event_id は `<anomaly_id>#<source>#<status>#<starts_at の epoch 秒>`）。
 5. **worker:** SQS から受け取り、異常ごとに Temporal のワークフロー `investigate-<anomaly_id>` を起こす。
 6. **修復案:** worker が `proposal_events` に `created` の行を足す（`status` は `pending`。`proposal_id` は `<anomaly_id>#<first_seen>`。`first_seen` はアラートの `starts_at`）。Neptune には書かない。
    Web で承認すると、決定が SQS `<prefix>-decisions` に 1 通入る。worker がそれを受け取ってワークフローにシグナル `decide` を送り、ワークフローが `approved` の行を足す。`heal-main` を打つと `applied`、解消の通知が届くと `verified` の行が続く。
@@ -77,7 +77,7 @@ flowchart LR
 ### 4. 気を付けること
 
 - **Neptune が止まっても検知は止まらない:** 見つけるのは Grafana と Splunk で、Neptune を読まない。止まるのは `status` の更新（Lambda）、トポロジのツール、新しいワークフローの起動（worker が保守中かどうかを Neptune で見るため）。修復案の一覧と承認・却下は Neptune を使わないので動く。そのあいだのアラートは SQS に残り、worker が 5 回受け取っても処理できなければ DLQ へ行く。
-- **承認・却下を送れるのは Web の EC2 のロールだけ:** 決定のキュー `<prefix>-decisions` への `sqs:SendMessage` は、Web の EC2 のロールにだけ付けている（`terraform/workflow/proposals.tf` のポリシー `<prefix>-workflow-web`）。Runtime と tools の Lambda のロールには無い。コードでも `decide` をツールに出していない。HITL の線は IAM とコードの両方で引いている（2026-10-04 までは Neptune の IAM が頂点ごとに絞れず、コードだけだった）。
+- **承認・却下を送れるのは Web の EC2 のロールだけ:** 決定のキュー `<prefix>-decisions` への `sqs:SendMessage` は、Web の EC2 のロールにだけ付けている（`IaC/terraform/aws-managed/workflow/proposals.tf` のポリシー `<prefix>-workflow-web`）。Runtime と tools の Lambda のロールには無い。コードでも `decide` をツールに出していない。HITL の線は IAM とコードの両方で引いている（2026-10-04 までは Neptune の IAM が頂点ごとに絞れず、コードだけだった）。
 - **アラートのキューに決定を入れても効かない:** アラートのキュー `<prefix>-anomalies` には Grafana と Splunk のタスクロールも SNS 越しに届く。worker はこのキューに来た決定を読めないメッセージとして消す。決定は決定のキューからだけ受ける。
 - **証跡は二重に入ることがある:** Spark の読み直しやアクティビティの再試行で同じ行がもう一度入る。`alert_events` も、Lambda が Neptune への書き込みで失敗するか、Neptune の途中で timeout するとやり直し（最大 2 回）で同じ通知を送り直す。集計するときは `event_id` で重複を落とす（`query_history` はそうしている）。
 - **`alert_events` は欠けることがある:** Firehose に 3 回送っても届かなかった行は、Lambda を落とさずに `ALERT_EVENT_LOST` の ERROR でログに残すだけ（`status` の正しさを優先する。[pipeline.md](pipeline.md) の「アラートの履歴」）。`device_id` か `kind` の無い通知と、`starts_at` が範囲外で行を組めない通知も行にしない（`ALERT_DROPPED` の WARNING）。行は Neptune より先に送るので、Neptune が遅くても応答しなくても履歴は残る。`status` は遅れる、または失敗してやり直す（[pipeline.md](pipeline.md) の「アラートの履歴」）。
@@ -124,75 +124,86 @@ flowchart LR
 
 | 見たいもの | ファイル |
 |---|---|
-| 検知（アラートのルール、保存済みサーチ、SNS への publish） | [grafana/provisioning/alerting/](../grafana/provisioning/alerting/)（ルールは `netops-prometheus.yaml` と `netops-opensearch.yaml`、送り先と本文は `netops.yaml`）、[splunk/netops_alerts/](../splunk/netops_alerts/) |
-| アラートのトピックと、本文の読み方 | [terraform/base/core/alerts.tf](../terraform/base/core/alerts.tf)、[workflow/rules.py](../workflow/rules.py) の `alerts_from_message` |
-| 修復案と履歴のテーブル（`proposal_events` / `alert_events`） | [terraform/pipeline/analytics/tables.tf](../terraform/pipeline/analytics/tables.tf) |
-| 障害の履歴の書き込みと読み出し（Firehose、Athena のワークグループ） | [terraform/pipeline/analytics/history.tf](../terraform/pipeline/analytics/history.tf)、[graph/status_handler.py](../graph/status_handler.py) の `send_history`、[agent/evidence.py](../agent/evidence.py) の `query_history` |
-| 履歴の 1 行の形 | [workflow/rules.py](../workflow/rules.py) の `alert_event` |
-| 修復案の置き場の説明、決定のキューに送れるロール（Terraform 側の説明と IAM） | [terraform/workflow/proposals.tf](../terraform/workflow/proposals.tf)、[terraform/workflow/iam.tf](../terraform/workflow/iam.tf) |
-| アラートのキューと決定のキュー | [terraform/workflow/events.tf](../terraform/workflow/events.tf) |
-| worker の読み書き（Neptune は openCypher で読むだけ、`proposal_events` は PyIceberg で読み書き、SQS の受け取り） | [workflow/awsio.py](../workflow/awsio.py) |
-| 修復案の 1 行の形（28 列）と「いま」の決め方 | [workflow/rules.py](../workflow/rules.py) の `PROPOSAL_EVENT_COLUMNS` / `proposal_event` / `latest_proposals` |
-| Web とエージェントの読み方（Athena）と、Web の決定の送り方（SQS） | [agent/proposals.py](../agent/proposals.py) の `list_proposals` / `get_proposal` / `decide` |
-| Neptune の機器・回線・層の status | [graph/status_handler.py](../graph/status_handler.py) |
+| 検知（アラートのルール、保存済みサーチ、SNS への publish） | [app/grafana/provisioning/alerting/](../app/grafana/provisioning/alerting/)（ルールは `nwc-prometheus.yaml` と `nwc-opensearch.yaml`、送り先と本文は `nwc.yaml`）、[app/splunk/nwc_alerts/](../app/splunk/nwc_alerts/) |
+| アラートのトピックと、本文の読み方 | [IaC/terraform/aws-managed/base/core/alerts.tf](../IaC/terraform/aws-managed/base/core/alerts.tf)、[app/temporal/rules.py](../app/temporal/rules.py) の `alerts_from_message` |
+| 修復案と履歴のテーブル（`proposal_events` / `alert_events`） | [IaC/terraform/aws-managed/pipeline/analytics/tables.tf](../IaC/terraform/aws-managed/pipeline/analytics/tables.tf) |
+| 障害の履歴の書き込みと読み出し（Firehose、Athena のワークグループ） | [IaC/terraform/aws-managed/pipeline/analytics/history.tf](../IaC/terraform/aws-managed/pipeline/analytics/history.tf)、[app/graph/status_handler.py](../app/graph/status_handler.py) の `send_history`、[app/agentcore/evidence.py](../app/agentcore/evidence.py) の `query_history` |
+| 履歴の 1 行の形 | [app/temporal/rules.py](../app/temporal/rules.py) の `alert_event` |
+| 修復案の置き場の説明、決定のキューに送れるロール（Terraform 側の説明と IAM） | [IaC/terraform/aws-managed/workflow/proposals.tf](../IaC/terraform/aws-managed/workflow/proposals.tf)、[IaC/terraform/aws-managed/workflow/iam.tf](../IaC/terraform/aws-managed/workflow/iam.tf) |
+| アラートのキューと決定のキュー | [IaC/terraform/aws-managed/workflow/events.tf](../IaC/terraform/aws-managed/workflow/events.tf) |
+| worker の読み書き（Neptune は openCypher で読むだけ、`proposal_events` は PyIceberg で読み書き、SQS の受け取り） | [app/temporal/awsio.py](../app/temporal/awsio.py) |
+| 修復案の 1 行の形（28 列）と「いま」の決め方 | [app/temporal/rules.py](../app/temporal/rules.py) の `PROPOSAL_EVENT_COLUMNS` / `proposal_event` / `latest_proposals` |
+| Web とエージェントの読み方（Athena）と、Web の決定の送り方（SQS） | [app/agentcore/proposals.py](../app/agentcore/proposals.py) の `list_proposals` / `get_proposal` / `decide` |
+| Neptune の機器・回線・層の status | [app/graph/status_handler.py](../app/graph/status_handler.py) |
 
 ## コンテナイメージ
 
-ECR に置くイメージが「どこで・何をして」いるかのまとめ。2026-09-25 時点のコードで確かめた内容に、2026-09-28 に足した `telegraf` / `grafana` / `splunk` を加えた。
+ECR に置くイメージが「どこで・何をして」いるかのまとめ。2026-09-25 時点のコードで確かめた内容に、2026-09-28 に足した `telegraf` / `grafana` / `splunk` を加えた。2026-10-08（cycle 012）に `syslog-ng` / `goflow2` を足した。
 
 ### 7. イメージと動く場所
 
 | イメージ（`<prefix>-…`） | 元 | 動く場所 | 役目 |
 |---|---|---|---|
-| `agent` | [agent/](../agent/)（自前ビルド） | AgentCore Runtime | チャットの本体。Bedrock のモデルを呼び、Neptune のトポロジ、OpenSearch / Prometheus の証拠を集めて答え、承認待ちの修復案を作る |
-| `lab-srlinux` | `ghcr.io/nokia/srlinux`（ミラー。約 1 GB） | lab の EC2（containerlab） | スイッチ（Nokia SR Linux、`ixr-d2l`）。`lab/splab.clab.yml.in` の 6 台（Leaf-SW 2 / Spine 2 / Leaf 2）がこれで立ち、`lab/srlinux/<機器>.cli` で IS-IS・iBGP EVPN・VXLAN・LAG・SNMP の trap・syslog が入る。SNMP エージェントと gNMI は機器に内蔵（containerlab が v2c の `public` と `57400/tcp` を入れる）。監視される「機器」そのもので、**trap の宛先（`system snmp trap-group`）を書いた機器が監視対象**（いまは 6 台全部） |
-| `lab-multitool` | `ghcr.io/srl-labs/network-multitool`（ミラー） | lab の EC2（containerlab） | ping / traceroute / tcpdump 入りの VM 役（`wan-upstream-01` / `dc1-host-01`）。Leaf の組へ bond0（LACP）で 2 本つなぎ、疎通確認と障害の再現に使う |
+| `agent` | [app/agentcore/](../app/agentcore/)（自前ビルド） | AgentCore Runtime | チャットの本体。Bedrock のモデルを呼び、Neptune のトポロジ、OpenSearch / Prometheus の証拠を集めて答え、承認待ちの修復案を作る |
+| `lab-srlinux` | `ghcr.io/nokia/srlinux`（ミラー。約 1 GB） | lab の EC2（containerlab） | スイッチ（Nokia SR Linux、`ixr-d2l`）。`app/containerlab/splab.clab.yml.in` の 6 台（s-leaf 2 / Spine 2 / a-leaf 2）がこれで立ち、`app/containerlab/srlinux/<機器>.cli` で IS-IS・iBGP EVPN・VXLAN・SNMP の trap・syslog が入る。SNMP エージェントと gNMI は機器に内蔵（containerlab が v2c の `public` と `57400/tcp` を入れる）。監視される「機器」そのもので、**trap の宛先（`system snmp trap-group`）を書いた機器が監視対象**（いまは 6 台全部） |
+| `lab-multitool` | `ghcr.io/srl-labs/network-multitool`（ミラー） | lab の EC2（containerlab） | containerlab の `linux` kind の既定のイメージ（ping / traceroute / tcpdump 入り）。いまの lab で使うノードは無い（`dc1-trex-01` は `lab-trex` で上書きする）。疎通を見る箱を足すときにそのまま使える |
+| `lab-trex` | `trexcisco/trex`（Docker Hub のミラー。amd64 だけ） | lab の EC2（containerlab） | トラフィックジェネレータ（Cisco TRex 2.41）の `dc1-trex-01`。`eth1`〜`eth4` を各 leaf の `ethernet-1/3`（mac-vrf の素の subinterface）へ 1 本ずつつなぐ。トポロジを上げても TRex 本体は起きず、`sudo lab trex start` で起こす。後段（Telegraf → MSK → Spark → 格納先、アラート）の負荷試験に使う（[app/containerlab/trex/README.md](../app/containerlab/trex/README.md)） |
 | `temporal` | `temporalio/temporal`（ミラー） | ECS Fargate（WORKFLOW=1） | Temporal のサーバー。`server start-dev` で 1 コンテナで動く。Fargate はプライベート網から Docker Hub を引けないので ECR にミラーする |
-| `worker` | [workflow/](../workflow/)（自前ビルド） | ECS Fargate（WORKFLOW=1） | Temporal のワーカー。SQS のアラートと Web の決定を拾い、Runtime に修復案を作らせ、S3 Tables の `proposal_events` に記録し、承認後に SSM で lab の機器へ流して検証する（Neptune はトポロジを読むだけ）。同じタスクの `temporal` に `localhost:7233` でつなぐ |
-| `telegraf` | [telegraf/](../telegraf/)（公式の `telegraf:1.40.0` に設定のテンプレートと `tg` を足す） | ECS Fargate（stream。受ける側（内部 NLB の後ろ）と取りにいく側の 2 サービス。役割は環境変数 `TELEGRAF_ROLE`）。デバッグ用の EC2（`ops/lab-debug.sh`）でも同じ作り方のイメージ（スタックの ECR の `<prefix>-debug-telegraf`）を docker で動かす | 機器の gNMI の購読・SNMP のポーリングと trap・syslog を受けて MSK に書く。SNMP のポーリングは `SNMP_POLL=0` で止める（stream の既定は `1`。デバッグ用の EC2 の既定は `0`）（デバッグ用の EC2 では `SINK=stdout` で標準出力に書く）。2026-09-28 まで lab とは別の EC2 で systemd の下に rpm で動いていた |
-| `grafana` | [grafana/](../grafana/)（公式の Grafana OSS にデータソースの plugin と provisioning を焼き込む） | ECS Fargate（analytics。`STORES` の `grafana`） | Prometheus（AMP）と OpenSearch Serverless を SigV4 で読んで見せる。アラートルール（Prometheus の `link_down` / `bgp_down` / `isis_down` と、OpenSearch の `trap`）を評価して SNS へ出す（`link_down` はポーリングの値を見るので、`SNMP_POLL=0` では発火しない） |
-| `splunk` | [splunk/](../splunk/)（公式の `splunk/splunk:10.4.3` に検知のアプリ `netops_alerts` と入口のスクリプトを足す。amd64 だけ、約 2〜3 GB） | ECS Fargate x86（analytics。`STORES` に `splunk` があるとき） | Splunk Enterprise（試用ライセンス）。Spark が HEC に全トピックを送り、保存済みサーチが SNMP のポーリング・trap・gNMI から異常を見つけて SNS へ出す |
+| `worker` | [app/temporal/](../app/temporal/)（自前ビルド） | ECS Fargate（WORKFLOW=1） | Temporal のワーカー。SQS のアラートと Web の決定を拾い、Runtime に修復案を作らせ、S3 Tables の `proposal_events` に記録し、承認後に SSM で lab の機器へ流して検証する（Neptune はトポロジを読むだけ）。同じタスクの `temporal` に `localhost:7233` でつなぐ |
+| `telegraf` | [app/telegraf/](../app/telegraf/)（公式の `telegraf:1.40.1` に設定のテンプレートと `tg` を足す） | ECS Fargate（stream。サービス `<prefix>-telegraf-dialout`。内部 NLB の後ろ）。デバッグ用の EC2（`ops/lab-debug.sh`）でも同じ作り方のイメージ（スタックの ECR の `<prefix>-debug-telegraf`）を docker で動かす | 機器の SNMP trap を受けて MSK の `traps` に書く（syslog は 2026-10-08 から `syslog-ng` が受ける。gNMI の購読は 2026-10-09 から `gnmic` が取り、SNMP のポーリングはやめた）（デバッグ用の EC2 では `SINK=stdout` で標準出力に書く）。2026-09-28 まで lab とは別の EC2 で systemd の下に rpm で動いていた |
+| `gnmic` | [app/gnmic/](../app/gnmic/)（公式の `ghcr.io/openconfig/gnmic` 0.49.0 に設定のテンプレートと `gn` を足す。[docker/images/gnmic/Dockerfile](../docker/images/gnmic/Dockerfile)） | ECS Fargate（stream。サービス `<prefix>-gnmic`。1 タスク固定、NLB なし。2026-10-09、cycle 013 から） | 機器の gNMI を購読し、状態（IF・BGP・IS-IS）を on-change で `gnmi`、カウンター（IF の統計・CPU・メモリ）を 60 秒ごとに `metrics` へ、event の形のまま書く。MSK へは SASL/SCRAM（9096）でつなぐ |
+| `syslog-ng` | [app/syslog-ng/](../app/syslog-ng/)（公式の AxoSyslog `ghcr.io/axoflow/axosyslog:4.29.0` に設定のテンプレートと入口のスクリプトを足す。[docker/images/syslog-ng/Dockerfile](../docker/images/syslog-ng/Dockerfile)） | ECS Fargate（stream。内部 NLB の後ろ。2026-10-08、cycle 012 から） | 機器の syslog（UDP 5140）を受け、Telegraf と同じ形（measurement `device_log`）で MSK の `logs` に書く。MSK へは SASL/SCRAM（9096）でつなぐ |
+| `goflow2` | `netsampler/goflow2:v2.2.7`（ミラー） | ECS Fargate（stream。内部 NLB の後ろ。2026-10-08、cycle 012 から） | NetFlow（UDP 2055）と sFlow（UDP 6343）を受け、GoFlow2 の JSON のまま MSK の `flows` に書く（共通の形には Spark が読み替える）。MSK へは SASL/SCRAM。lab の SR Linux は NetFlow を出さないので、試すときは `ops/netflow_send.py` |
+| `grafana` | [app/grafana/](../app/grafana/)（公式の Grafana OSS にデータソースの plugin と provisioning を焼き込む） | ECS Fargate（analytics。`STORES` の `grafana`） | Prometheus（AMP）と OpenSearch Serverless を SigV4 で読んで見せる。アラートルール（Prometheus の `link_down` / `bgp_down` / `isis_down` と、OpenSearch の `trap`）を評価して SNS へ出す（`link_down` は gnmic が取る gNMI の IF の状態を見る） |
+| `splunk` | [app/splunk/](../app/splunk/)（公式の `splunk/splunk:10.4.4` に検知のアプリ `nwc_alerts` と入口のスクリプトを足す。amd64 だけ、約 2〜3 GB） | ECS Fargate x86（analytics。`STORES` に `splunk` があるとき） | Splunk Enterprise（試用ライセンス）。Spark が HEC に全トピックを送り、保存済みサーチが gNMI・trap から異常を見つけて SNS へ出す |
+| `kafka-ui` | `ghcr.io/kafbat/kafka-ui`（ミラー） | Web の EC2 の Docker（stream を作る回。010 から） | Kafbat UI。MSK のトピック・メッセージ・consumer group を画面で見る（IAM 認証） |
+| `nautobot` | [app/nautobot/](../app/nautobot/)（公式の `networktocode/nautobot` に Job と `nwc` を足す） | ECS Fargate（pipeline/nautobot。`PIPELINE=1`） | 台帳（Nautobot）。変更を gnmic の購読先と Neptune に同期する |
+| `redis` | `redis`（ミラー） | ECS Fargate（`nautobot` と同じタスク） | Nautobot のキャッシュと Celery のブローカー |
 
-分けて見ると、監視される側が `lab-srlinux` / `lab-multitool`、集める側が `telegraf`、考える側が `agent`、実行する側が `temporal` / `worker`、見る側と見つける側が `grafana` / `splunk`。
+分けて見ると、監視される側が `lab-srlinux`、負荷をかける側が `lab-trex`（`lab-multitool` は containerlab の既定のイメージ）、集める側が `telegraf` / `gnmic` / `syslog-ng` / `goflow2`、考える側が `agent`、実行する側が `temporal` / `worker`、見る側と見つける側が `grafana` / `splunk`。
 
-### 8. arm64 に揃える（Splunk だけ x86）
+### 8. アーキテクチャは全体で揃えない（同じホストの中だけ揃える）
 
-- **AgentCore Runtime は linux/arm64 のイメージしか動かせない。** x86_64 でビルドしたイメージは起動しない。`agent/Dockerfile` の冒頭にも書いてある。
-- ほかも arm64 に揃えてある: ECS Fargate は `cpu_architecture = "ARM64"`（[terraform/workflow/ecs.tf](../terraform/workflow/ecs.tf)、stream の Telegraf、analytics の Grafana）、lab / Web の EC2 は `t4g`（Graviton）だけを受け付ける。
-- 例外は `splunk`。公式イメージが amd64 しか無いので、そのタスクだけ `X86_64` にし、`docker buildx build --platform linux/amd64` で作る（公式イメージに COPY するだけなので、arm64 の PC でもエミュレーション無しで作れる）。
-- だから `splunk` のほかは、PC 側の `docker buildx build` は必ず `--platform linux/arm64`、`docker pull` も `--platform linux/arm64`。Mac（Apple Silicon）はそのまま、WSL2 は `binfmt` を入れる（[setup.md](setup.md)）。
-- ミラーの push で「only the available single-platform image was pushed」と出るのは、arm64 だけ push したという意味で問題ない。
+2026-10-08 に「arm64 に揃える（Splunk だけ x86）」から書き換えた。TRex のイメージが amd64 しか無く、lab の EC2 を x86_64 にしたため。
+
+- **arm64 が必須なのは AgentCore Runtime のエージェントだけ。** Runtime は linux/arm64 のイメージしか動かせず、x86_64 でビルドしたイメージは起動しない。`docker/images/agentcore/Dockerfile` の冒頭にも書いてある。
+- **x86 が必須なのは Splunk と TRex。** どちらも公式イメージが amd64 しか無い。`splunk` は ECS Fargate のそのタスクだけ `X86_64` にし、`docker buildx build --platform linux/amd64` で作る（公式イメージに COPY するだけなので、arm64 の PC でもエミュレーション無しで作れる）。TRex（`trexcisco/trex`）は lab の EC2 で動くので、lab の EC2 を x86_64（既定 `m6i.xlarge`）にした。
+- **Fargate のほかのサービスは安い arm64。** `cpu_architecture = "ARM64"`（[IaC/terraform/aws-managed/workflow/ecs.tf](../IaC/terraform/aws-managed/workflow/ecs.tf)、stream の Telegraf・gnmic・syslog-ng・GoFlow2、analytics の Grafana、pipeline/nautobot の Nautobot）。EMR Serverless と Lambda も arm64、Web の EC2 は `t4g`（Graviton）だけを受け付ける（Kafbat UI もこの EC2 で動く）。
+- **同じホストの中は揃える。** lab の EC2 では SR Linux / multitool / TRex が全部 amd64（`ops/lab-common.sh` の `mirror_lab_images` が `linux/amd64` で写す）。デバッグ用の EC2（`ops/lab-debug.sh`）で同じホストに載る Telegraf も amd64 でビルドする（`build_telegraf` の第 2 引数。stream の ECS の Telegraf は arm64 のままで、リポジトリが別）。
+- **`--platform` はイメージごとに指定する。** PC 側の `docker buildx build` と `docker pull` は、動く場所に合わせて `linux/arm64` か `linux/amd64` を必ず書く。Mac（Apple Silicon）は arm64 のビルドがそのまま、x86_64 の PC（WSL2）は `binfmt` を入れる（[setup.md](setup.md)）。lab のイメージは pull して写すだけなので、どちらの PC でもエミュレーションは要らない。
+- ミラーの push で「only the available single-platform image was pushed」と出るのは、指定した 1 つのアーキテクチャだけ push したという意味で問題ない。
+- **前の arm64 のタグは残っていてよい。** いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）なので、`KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が残っていても名前がぶつからず、`ops/up.sh` は amd64 を写し直す。前のタグは使われずに残るだけで、消さなくてよい（保管料は残したぶんだけかかる）。
 
 ### 9. タグ
 
-- ECR のリポジトリは `IMMUTABLE`（[terraform/base/ecr/main.tf](../terraform/base/ecr/main.tf)）。同じタグへの上書きはできないので、コードを変えたらタグを進める。
-- 自前ビルドの `agent` / `worker` は `IMAGE_TAG`（既定 `v1`）。ミラーは上流の版そのまま（`ops/lab-common.sh` の `SRLINUX_TAG` / `MULTITOOL_TAG`、`ops/up.sh` の `TEMPORAL_TAG`）。
-- `telegraf` / `grafana` / `splunk` は `<版>-<ディレクトリの中身の sha256 の先頭 12 文字>`（`ops/lab-common.sh` の `dir_tag`）。中身を変えれば自動でタグが変わるので、`IMAGE_TAG` を上げなくてよい。
+- ECR のリポジトリは `IMMUTABLE`（[IaC/terraform/aws-managed/base/ecr/main.tf](../IaC/terraform/aws-managed/base/ecr/main.tf)）。同じタグへの上書きはできないので、コードを変えたらタグを進める。
+- 自前ビルドの `agent` / `worker` は `IMAGE_TAG`（既定 `v1`）。ミラーは上流の版そのまま（`ops/up-common.sh` の `TEMPORAL_TAG` / `REDIS_TAG` / `GOFLOW2_TAG`、`ops/up.sh` の `KAFKA_UI_TAG`）。lab の 3 つだけは上流の版に `-amd64` を付ける（`ops/lab-common.sh` の `SRLINUX_ECR_TAG` / `MULTITOOL_ECR_TAG` / `TREX_ECR_TAG`。2026-10-08 より前の arm64 の写しと名前を分ける）。
+- `telegraf` / `gnmic` / `syslog-ng` / `grafana` / `splunk` / `nautobot` は `<版>-<ディレクトリの中身の sha256 の先頭 12 文字>`（`ops/lab-common.sh` の `dir_tag`）。中身を変えれば自動でタグが変わるので、`IMAGE_TAG` を上げなくてよい。
 - `ops/up.sh` は ECR にそのタグが無いときだけビルドして push する（手順 2）。
 
 ### 10. コードの入口
 
 | 見たいもの | ファイル |
 |---|---|
-| ビルドと push、タグの定数 | [ops/up.sh](../ops/up.sh) の手順 2 |
-| リポジトリの定義 | [terraform/base/ecr/main.tf](../terraform/base/ecr/main.tf) |
-| lab のどの機器がどのイメージか | [lab/splab.clab.yml.in](../lab/splab.clab.yml.in)（[lab/gen_lab.py](../lab/gen_lab.py) が作る） |
-| Runtime がどのイメージを指すか | [terraform/agent/variables.tf](../terraform/agent/variables.tf) の `agent_image_tag` |
-| Fargate のタスク定義（temporal と worker の 2 コンテナ） | [terraform/workflow/ecs.tf](../terraform/workflow/ecs.tf) |
-| Telegraf / Grafana / Splunk のタスク定義 | [terraform/pipeline/stream/telegraf.tf](../terraform/pipeline/stream/telegraf.tf)、[terraform/pipeline/analytics/grafana.tf](../terraform/pipeline/analytics/grafana.tf)、[terraform/pipeline/analytics/splunk.tf](../terraform/pipeline/analytics/splunk.tf) |
+| ビルドと push、タグの定数 | [ops/up.sh](../ops/up.sh) の手順 2、[ops/up-common.sh](../ops/up-common.sh) |
+| リポジトリの定義 | [IaC/terraform/aws-managed/base/ecr/main.tf](../IaC/terraform/aws-managed/base/ecr/main.tf) |
+| lab のどの機器がどのイメージか | [app/containerlab/splab.clab.yml.in](../app/containerlab/splab.clab.yml.in)（[app/containerlab/gen_lab.py](../app/containerlab/gen_lab.py) が作る） |
+| Runtime がどのイメージを指すか | [IaC/terraform/aws-managed/agent/variables.tf](../IaC/terraform/aws-managed/agent/variables.tf) の `agent_image_tag` |
+| Fargate のタスク定義（temporal と worker の 2 コンテナ） | [IaC/terraform/aws-managed/workflow/ecs.tf](../IaC/terraform/aws-managed/workflow/ecs.tf) |
+| Telegraf / gnmic / syslog-ng / GoFlow2 / Grafana / Splunk のタスク定義 | [IaC/terraform/aws-managed/pipeline/stream/telegraf.tf](../IaC/terraform/aws-managed/pipeline/stream/telegraf.tf)、[IaC/terraform/aws-managed/pipeline/stream/gnmic.tf](../IaC/terraform/aws-managed/pipeline/stream/gnmic.tf)、[IaC/terraform/aws-managed/pipeline/stream/collectors.tf](../IaC/terraform/aws-managed/pipeline/stream/collectors.tf)、[IaC/terraform/aws-managed/pipeline/analytics/grafana.tf](../IaC/terraform/aws-managed/pipeline/analytics/grafana.tf)、[IaC/terraform/aws-managed/pipeline/analytics/splunk.tf](../IaC/terraform/aws-managed/pipeline/analytics/splunk.tf) |
 
 ## Neptune の層
 
-設計の「物理層・IP 層・EVPN/BGP 層のそれぞれの接続情報と、各層を紐づける ID」を Neptune でどう持つか。2026-09-26 に lab を Spine-Leaf（EVPN-VXLAN）にしたときに入れた。元データは `lab/lab_topology.py` が `lab/srlinux/*.cli` から作る（`agent/data/layers.json` はその写し）。
+設計の「物理層・IP 層・EVPN/BGP 層のそれぞれの接続情報と、各層を紐づける ID」を Neptune でどう持つか。2026-09-26 に lab を Spine-Leaf（EVPN-VXLAN）にしたときに入れた。元データは `app/containerlab/lab_topology.py` が `app/containerlab/srlinux/*.cli` から作る（`app/agentcore/data/layers.json` はその写し）。
 
 | 層 | 頂点（label） | id | 下の層を指す property | 同じ層の辺 |
 |---|---|---|---|---|
-| 物理 | `device` / `interface` | `dc1-leaf-01` / `dc1-leaf-01#ethernet-1/1` | — | `link`（機器 ⇄ 機器。`a_if` / `b_if`、kind は fabric / lag / l2 / mgmt） |
-| IP | `ip_interface` | `dc1-leaf-01#ethernet-1/1.0` | `interface_id` → `interface`（辺 `over`。ループバック `system0.0` は物理層に無いので空） | — |
-| IP | `isis_adjacency` | `dc1-leaf-01#isis#ethernet-1/1.0` | `ip_interface_id` / `interface_id`（辺 `over`） | `peer`（両端の隣接） |
-| EVPN・BGP | `bgp_session` | `dc1-leaf-01#bgp#10.255.0.1` | `ip_interface_id` → ループバック `system0.0`（辺 `over`） | `peer`（Leaf ⇄ Spine の RR） |
-| EVPN・BGP | `evpn_instance` | `dc1-leaf-01#evi#100` | `ip_interface_id` → VTEP のループバック（辺 `over`）、`interfaces`（`lag1.0`。辺 `attach` → `ip_interface`） | `tunnel`（同じ EVI の VTEP 同士） |
-| EVPN・BGP | `ethernet_segment` | `dc1-leaf-01#es#ES-2` | `interface_id` → `lag1`（辺 `over`） | `segment`（同じ ESI の 2 台） |
+| 物理 | `device` / `interface` | `dc1-a-leaf-01` / `dc1-a-leaf-01#ethernet-1/1` | — | `link`（機器 ⇄ 機器。`a_if` / `b_if`、kind は fabric / lag / l2 / mgmt） |
+| IP | `ip_interface` | `dc1-a-leaf-01#ethernet-1/1.0` | `interface_id` → `interface`（辺 `over`。ループバック `system0.0` は物理層に無いので空） | — |
+| IP | `isis_adjacency` | `dc1-a-leaf-01#isis#ethernet-1/1.0` | `ip_interface_id` / `interface_id`（辺 `over`） | `peer`（両端の隣接） |
+| EVPN・BGP | `bgp_session` | `dc1-a-leaf-01#bgp#10.255.0.1` | `ip_interface_id` → ループバック `system0.0`（辺 `over`） | `peer`（Leaf ⇄ Spine の RR） |
+| EVPN・BGP | `evpn_instance` | `dc1-a-leaf-01#evi#100` | `ip_interface_id` → VTEP のループバック（辺 `over`）、`interfaces`（`ethernet-1/3.0`。辺 `attach` → `ip_interface`） | `tunnel`（同じ EVI の VTEP 同士） |
+| EVPN・BGP | `ethernet_segment` | `<機器>#es#<名前>`（いまの lab には無い。LAG の multihoming を組んだときだけ） | `interface_id` → LAG の IF（辺 `over`） | `segment`（同じ ESI の 2 台） |
 
 - 頂点はどれも `layer`（`ip` / `evpn`）と `device_id` を持ち、動的な `status`（`UP` / `DOWN`。無ければ UP）は Lambda `graph-status` が Grafana と Splunk のアラート（gNMI の `bgp_down` / `isis_down`）から書く。`STORES` に `grafana` も `splunk` も無いとこのアラートが出ないので変わらない。エージェントの `layers` ツールと Web の層の表は、id と `interface_id` / `ip_interface_id` で下の層へ追える。
 - 未登録の扱いは物理層と同じ。トポロジに無い BGP のセッションが落ちたら `registered=false` の頂点を作って残し、`ops/sync-graph.sh --replace` で置き換わる。
@@ -214,14 +225,14 @@ AWS が運用を持つグラフデータベース。データを頂点と辺で�
 | 問い合わせ | Gremlin / openCypher / SPARQL | openCypher だけ |
 | 口 | VPC の中のクラスターエンドポイント（8182） | AWS の API（`neptune-graph`）。VPC からはインターフェース型エンドポイント `neptune-graph-data` |
 
-- **問い合わせは openCypher:** `MATCH (a)-[:link]-(b)` のように形を描く。boto3 の `neptune-graph` クライアントの `execute_query` に文字列とパラメータを渡す（[agent/graph.py](../agent/graph.py) の `query()`）。2026-10-04 までは Gremlin だった。
+- **問い合わせは openCypher:** `MATCH (a)-[:link]-(b)` のように形を描く。boto3 の `neptune-graph` クライアントの `execute_query` に文字列とパラメータを渡す（[app/agentcore/graph.py](../app/agentcore/graph.py) の `query()`）。2026-10-04 までは Gremlin だった。
 - **グラフアルゴリズム:** `CALL neptune.algo.degree(...)` のように openCypher から呼ぶ。この PoC は次数中心性・近接中心性・弱連結成分を `centrality` ツールで使う。媒介中心性は無い。OSS 版では別の道具に置き換える箇所（[oss-variant.md](oss-variant.md)）。
 - **向いていない:** 表の集計（SQL が無い）、単純なキーと値、時系列、全文検索。
-- **費用:** 無料枠は無く、動いているあいだずっと時間で課金される。最小の 16 m-NCU で約 $0.58/h（東京。Neptune Database の `db.t4g.medium` は約 $0.14/h と数えていた）。大きさは [variables.tf](../terraform/pipeline/graph/variables.tf) の `provisioned_memory`。
+- **費用:** 無料枠は無く、動いているあいだずっと時間で課金される。最小の 16 m-NCU で約 $0.58/h（東京。Neptune Database の `db.t4g.medium` は約 $0.14/h と数えていた）。大きさは [variables.tf](../IaC/terraform/aws-managed/pipeline/graph/variables.tf) の `provisioned_memory`。
 
 ### 12. AZ 冗長か
 
-グラフはメモリに載っており、レプリカ（`replica_count`）を足すと別の AZ に待機系を持てる（レプリカの分も同じ単価がかかる）。この PoC は [neptune.tf](../terraform/pipeline/graph/neptune.tf) で `replica_count = 0`。**障害が起きるとグラフが戻るまで止まる**（4 のとおり、止まると `status` の更新と新しいワークフローの起動も止まる）。その日に消す使い捨てなので費用を優先している。
+グラフはメモリに載っており、レプリカ（`replica_count`）を足すと別の AZ に待機系を持てる（レプリカの分も同じ単価がかかる）。この PoC は [neptune.tf](../IaC/terraform/aws-managed/pipeline/graph/neptune.tf) で `replica_count = var.neptune_az_num - 1` で、既定の `NEPTUNE_AZ_NUM=1` では 0。**既定では障害が起きるとグラフが戻るまで止まる**（4 のとおり、止まると `status` の更新と新しいワークフローの起動も止まる）。その日に消す使い捨てなので費用を優先している。
 
 ### 13. グラフはいくつ作れるか
 
@@ -241,10 +252,10 @@ AWS が運用を持つグラフデータベース。データを頂点と辺で�
 ```mermaid
 flowchart LR
   subgraph now["いま"]
-    D1["device dc1-leaf-01<br/>status=ALARM"] --- I1["interface dc1-leaf-01#ethernet-1/1<br/>status=DOWN"]
+    D1["device dc1-a-leaf-01<br/>status=ALARM"] --- I1["interface dc1-a-leaf-01#ethernet-1/1<br/>status=DOWN"]
   end
   subgraph idea["障害を頂点にして辺を張るなら（案）"]
-    I2["interface dc1-leaf-01#ethernet-1/1"] -- "occurred_on" --- X2["incident（発生 1 回ごと）"]
+    I2["interface dc1-a-leaf-01#ethernet-1/1"] -- "occurred_on" --- X2["incident（発生 1 回ごと）"]
     X2 -- "handled_by" --> P2["proposal"]
   end
 ```
@@ -258,43 +269,52 @@ flowchart LR
 
 **グラフにしても得をしない問い:** 月の件数、機器ごとのランキング、時系列（表と Athena が向く）。障害 1 件の長いログ（S3 に置き、頂点には場所だけ持たせる）。似た障害のベクトル検索は、Neptune Analytics にベクトル検索があるが使っていない（手順書の検索は Knowledge Bases と OpenSearch Serverless）。
 
-**この PoC では:** 8 台のラボで単発の回線断が中心なので、効いているのは影響範囲だけ。複数機器の同時障害（Spine 障害で配下の Leaf がまとめて落ちる）を扱うか、エージェントに原因の推定までさせるなら、辺を張る価値が出る。障害の履歴の置き場を決めるときは、この案（Neptune に発生ごとの頂点）と、表（S3 Tables）や Splunk に置く案を比べる。Neptune にはトポロジだけを置く方針（5）とぶつかるので、辺を張るなら方針から見直すことになる。
+**この PoC では:** 7 台のラボで単発の回線断が中心なので、効いているのは影響範囲だけ。複数機器の同時障害（Spine 障害で配下の Leaf がまとめて落ちる）を扱うか、エージェントに原因の推定までさせるなら、辺を張る価値が出る。障害の履歴の置き場を決めるときは、この案（Neptune に発生ごとの頂点）と、表（S3 Tables）や Splunk に置く案を比べる。Neptune にはトポロジだけを置く方針（5）とぶつかるので、辺を張るなら方針から見直すことになる。
 
 ## MSK とクライアントのつなぎ
 
-Telegraf・Spark が「どのブローカーにつなぐか」をどう知るか。2026-09-25 に手動構築（手順 5）で確かめた内容を、2026-09-28 に Telegraf を ECS に移したのに合わせて直した。
+集める側（Telegraf・gnmic・syslog-ng・GoFlow2）と Spark が「どのブローカーにつなぐか」をどう知るか。2026-09-25 に手動構築（手順 5）で確かめた内容を、2026-09-28 に Telegraf を ECS に移したのに合わせて直した。
 
 ### 15. ブローカーの渡し方と msk-bootstrap
 
-**ブートストラップサーバーとは。** Kafka のクライアントは、クラスターにつなぐときに「最初に話しかけるブローカーのアドレス一覧」が要る。これがブートストラップサーバーで、`b-1.<クラスター>.kafka.ap-northeast-1.amazonaws.com:9098,b-2.<クラスター>...:9098` のような文字列。クライアントはここに一度つなぐと、クラスター全体の構成（どのブローカーがどのパーティションを持つか）を教えてもらい、以降はそれに従って直接つなぐ。だから全ブローカーを列挙する必要は無いが、MSK はふつう全部を返す。ポート 9098 は SASL/IAM 用（9092 が平文、9094 が TLS、9096 が SASL/SCRAM）。この PoC は IAM だけを有効にしているので 9098 しか使わない。
+**ブートストラップサーバーとは。** Kafka のクライアントは、クラスターにつなぐときに「最初に話しかけるブローカーのアドレス一覧」が要る。これがブートストラップサーバーで、`b-1.<クラスター>.kafka.ap-northeast-1.amazonaws.com:9098,b-2.<クラスター>...:9098` のような文字列。クライアントはここに一度つなぐと、クラスター全体の構成（どのブローカーがどのパーティションを持つか）を教えてもらい、以降はそれに従って直接つなぐ。だから全ブローカーを列挙する必要は無いが、MSK はふつう全部を返す。ポート 9098 は SASL/IAM 用（9092 が平文、9094 が TLS、9096 が SASL/SCRAM）。この PoC は IAM と SASL/SCRAM を有効にしていて（SCRAM は 2026-10-08、cycle 012 から）、Telegraf・Spark・Kafbat UI は 9098、syslog-ng・GoFlow2・gnmic は 9096 を使う。
 
-**Telegraf は環境変数でもらう。** この文字列はクラスターを作り終えるまで決まらない（クラスター名から推測できない乱数が入る）。2026-09-28 までは Telegraf の EC2 が [terraform/pipeline/lab](../terraform/pipeline/lab) で MSK より先に作られたので、起動時に SSM の `/<prefix>/msk-bootstrap` を読んでいた。いまの Telegraf は MSK と同じ [terraform/pipeline/stream](../terraform/pipeline/stream) の ECS のタスクなので、[telegraf.tf](../terraform/pipeline/stream/telegraf.tf) がタスク定義の環境変数 `KAFKA_BROKERS` に `aws_msk_cluster.stream.bootstrap_brokers_sasl_iam` をそのまま入れる。SSM は読まない。
+**Telegraf は環境変数でもらう。** この文字列はクラスターを作り終えるまで決まらない（クラスター名から推測できない乱数が入る）。2026-09-28 までは Telegraf の EC2 が [IaC/terraform/aws-managed/pipeline/lab](../IaC/terraform/aws-managed/pipeline/lab) で MSK より先に作られたので、起動時に SSM の `/<prefix>/msk-bootstrap` を読んでいた。いまの Telegraf は MSK と同じ [IaC/terraform/aws-managed/pipeline/stream](../IaC/terraform/aws-managed/pipeline/stream) の ECS のタスクなので、[telegraf.tf](../IaC/terraform/aws-managed/pipeline/stream/telegraf.tf) がタスク定義の環境変数 `KAFKA_BROKERS` に `aws_msk_cluster.stream.bootstrap_brokers_sasl_iam` をそのまま入れる。SSM は読まない。
 
-**`msk-bootstrap` は残す。** [terraform/pipeline/stream/msk.tf](../terraform/pipeline/stream/msk.tf) は今もクラスターを作った直後に `/<prefix>/msk-bootstrap`（String）へ書く。手動構築と確かめるときに使う（手動構築では `aws kafka get-bootstrap-brokers` の `BootstrapBrokerStringSaslIam` を `aws ssm put-parameter` で入れる。手順 5-5）。Runtime と Web のロールに付く `<prefix>-stream-parameters-read` は `parameter/<prefix>/*` の読み取りだけで、Kafka の権限は無い（この 2 つは MSK に書かない）。
+**`msk-bootstrap` は残す。** [IaC/terraform/aws-managed/pipeline/stream/msk.tf](../IaC/terraform/aws-managed/pipeline/stream/msk.tf) は今もクラスターを作った直後に `/<prefix>/msk-bootstrap`（String）へ書く。手動構築と確かめるときに使う（手動構築では `aws kafka get-bootstrap-brokers` の `BootstrapBrokerStringSaslIam` を `aws ssm put-parameter` で入れる。2026-09-25 の手動構築の手順 5-5。その手順書はこのリポジトリに無い）。Runtime と Web のロールに付く `<prefix>-stream-parameters-read` は `parameter/<prefix>/*` の読み取りだけで、Kafka の権限は無い（この 2 つは MSK に書かない）。
 
-**Telegraf 側の流れ**（[telegraf/telegraf.sh](../telegraf/telegraf.sh) の `render`。コンテナの入口 `tg run` が最初に呼ぶ）。
+**Telegraf 側の流れ**（[app/telegraf/telegraf.sh](../app/telegraf/telegraf.sh) の `render`。コンテナの入口 `tg run` が最初に呼ぶ）。
 
-1. タスクの環境変数 `SINK`（kafka / stdout、既定 kafka）・`SYSLOG_STANDARD`（RFC3164 / RFC5424、既定 RFC3164）・`SNMP_POLL`（0 / 1、既定 1）・`KAFKA_BROKERS`（`SINK=kafka` のときだけ）/ `SNMP_AGENTS`（`SNMP_POLL=1` のときだけ）/ `GNMI_TARGETS` / `AWS_REGION` の形を確かめる。取りにいく側（`TELEGRAF_ROLE=dialin`）は `SNMP_AGENTS` / `GNMI_TARGETS` と機器の認証情報（`GNMI_USERNAME` / `GNMI_PASSWORD` / `SNMP_COMMUNITY`）を、環境変数の値ではなく SSM パラメータ（`/<prefix>/telegraf-dialin/…`）から ECS の secrets で受ける（認証情報は SecureString で、`ops/up.sh` が lab の既定値で作る。設定ファイルには書かず、Telegraf が起きるときに環境変数から読む）。崩れていればそこで終わり、ECS がタスクを立て直す（ログに理由が出る）。
-2. `telegraf.conf.in` の `__KAFKA_BROKERS__` / `__SYSLOG_STANDARD__` などを埋めて `/tmp/telegraf.conf` を作る。`[[outputs.kafka]]` が metrics / gnmi / traps / logs / mdt の分あり、どれも同じブローカーに `sasl_mechanism = "AWS-MSK-IAM"` でつなぐ。出力は環境変数 `SINK`（既定 `kafka`）で選び、選ばなかった出力の区間（`# >>> sink <名前>` 〜 `# <<< sink <名前>`）を消す。デバッグ用の EC2 は `SINK=stdout` で `[[outputs.file]]`（標準出力、同じ JSON）だけになり、`KAFKA_BROKERS` も `/tmp/aws_config` も要らない。`SNMP_POLL=0` なら SNMP のポーリングの区間（`# >>> snmp_poll` 〜 `# <<< snmp_poll`。`[[inputs.snmp]]`）も消す。`TELEGRAF_ROLE` が `dialout`（受ける側）なら取りにいく入力の区間（`# >>> role dialin`）を、`dialin`（取りにいく側）なら受ける入力の区間（`# >>> role dialout`）を消す（既定 `all` は消さない）。出力はどの役割でも同じ。
-3. 認証はタスクロール `<prefix>-telegraf-task`。Telegraf の MSK IAM 認証は profile の指定が要る（[telegraf.conf.in](../telegraf/telegraf.conf.in) の注記）ので、鍵の無い `[default]`（region だけ）を `/tmp/aws_config` に置き、SDK が ECS の入れる `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` のロールに落ちるようにしてある。
+1. タスクの環境変数 `SINK`（kafka / stdout、既定 kafka）・`KAFKA_AUTH`（iam / none、既定 iam）・`KAFKA_BROKERS`（`SINK=kafka` のときだけ）/ `AWS_REGION` の形を確かめる。崩れていればそこで終わり、ECS がタスクを立て直す（ログに理由が出る）。2026-10-09（cycle 013）までは取りにいく側（`TELEGRAF_ROLE=dialin`）が `SNMP_AGENTS` / `GNMI_TARGETS` と機器の認証情報を SSM（`/<prefix>/telegraf-dialin/…`）から受けていたが、gNMI は gnmic へ移し、SNMP のポーリングはやめた（下の「gnmic 側の流れ」）。
+2. `telegraf.conf.in` の `__KAFKA_BROKERS__` などを埋めて `/tmp/telegraf.conf` を作る。`[[outputs.kafka]]` は traps の 1 つだけで、`sasl_mechanism = "AWS-MSK-IAM"` でつなぐ（2026-10-08 から logs は syslog-ng、flows は GoFlow2、2026-10-09 から gnmi と metrics は gnmic が SASL/SCRAM で書く）。出力は環境変数 `SINK`（既定 `kafka`）で選び、選ばなかった出力の区間（`# >>> sink <名前>` 〜 `# <<< sink <名前>`）を消す。デバッグ用の EC2 は `SINK=stdout` で `[[outputs.file]]`（標準出力、同じ JSON）だけになり、`KAFKA_BROKERS` も `/tmp/aws_config` も要らない。
+3. 認証はタスクロール `<prefix>-telegraf-task`。Telegraf の MSK IAM 認証は profile の指定が要る（[telegraf.conf.in](../app/telegraf/telegraf.conf.in) の注記）ので、鍵の無い `[default]`（region だけ）を `/tmp/aws_config` に置き、SDK が ECS の入れる `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` のロールに落ちるようにしてある。
 
-**IAM は 1 段。** タスクロールのポリシー `<prefix>-telegraf-task`（[telegraf.tf](../terraform/pipeline/stream/telegraf.tf)）は次の 2 文。前の `<prefix>-stream-produce` にあった `Bootstrap`（`ssm:GetParameter`）は要らなくなったので消した。
+**gnmic 側の流れ**（[app/gnmic/gnmic.sh](../app/gnmic/gnmic.sh) の `render`。コンテナの入口 `gn run` が最初に呼ぶ。2026-10-09、cycle 013 から）。
+
+1. タスクの環境変数 `KAFKA_BROKERS`（同じ root の MSK の SCRAM の口 `bootstrap_brokers_sasl_scram`）・`KAFKA_AUTH`（scram / none、既定 scram）と、ECS の secrets で受ける `GNMI_TARGETS`（SSM の `/<prefix>/gnmic/<lab か nautobot>/gnmi-targets`）・`GNMI_USERNAME` / `GNMI_PASSWORD`（SSM の SecureString `/<prefix>/gnmic/gnmi-username`・`gnmi-password`）・`KAFKA_SASL_USER` / `KAFKA_SASL_PASS`（Secrets Manager の `AmazonMSK_<prefix>-collectors`）を確かめる。購読先の形が違う・同じ IP が 2 回ある・認証情報が無いときはそこで終わり、ECS がタスクを立て直す（ログに理由が出る）。
+2. `gnmic.yaml.in` の `__KAFKA_BROKERS__` と購読先（target の名前は IP）を埋めて `/tmp/gnmic.yaml` を作る。認証情報は設定に書かず、gnmic が設定を読むときに環境変数から入れる。出力は Kafka の 2 つ（状態の購読は `gnmi`、カウンターの購読は `metrics`）。`KAFKA_AUTH=none`（OSS 版と手元の compose）なら SASL と TLS の行を消す。
+3. Kafka の認証は SASL/SCRAM-SHA-512 だけで、タスクロール `<prefix>-gnmic-task` に Kafka の権限は無い。マネージドの MSK は IAM と SCRAM の併用なので、SCRAM のユーザーには Kafka の ACL が要る想定（`gnmi` / `metrics` の ACL は Spark が起動時に入れ、それまでマネージドの gnmic は Kafka に書けない見込み。AWS では未確認）。
+
+**IAM は 1 段。** タスクロールのポリシー `<prefix>-telegraf-task`（[telegraf.tf](../IaC/terraform/aws-managed/pipeline/stream/telegraf.tf)）は次の 2 文。前の `<prefix>-stream-produce` にあった `Bootstrap`（`ssm:GetParameter`）は要らなくなったので消した。
 
 | Sid | 許可 | 使うとき |
 |---|---|---|
 | `Kafka` | `kafka-cluster:Connect` / `DescribeCluster` / `WriteData` / `WriteDataIdempotently` / `DescribeTopic` / `CreateTopic` を「クラスターの ARN」と「`topic/<クラスター>/*`」に | トピックに書く（`auto.create.topics.enable=true` なので初回の書き込みでトピックができる。そのために `CreateTopic` が要る） |
-| `EcsExec` | `ssmmessages` の 4 つ | ECS Exec で入って `tg gnmi` / `tg test` を打つ |
+| `EcsExec` | `ssmmessages` の 4 つ | ECS Exec で入る（`tg render` で設定を見るなど。`tg gnmi` / `tg test` は 2026-10-09 にやめた） |
 
-実行ロール `<prefix>-telegraf-exec` は `AmazonECSTaskExecutionRolePolicy`（ECR とログ）と、取りにいく側の secrets を読む `ssm:GetParameters`（`/<prefix>/telegraf-dialin/*` だけ）。どちらのロールにも閉域の Deny（`<prefix>-network-perimeter`）を付ける。
+実行ロール `<prefix>-telegraf-exec` は `AmazonECSTaskExecutionRolePolicy`（ECR とログ）だけ（2026-10-09 までは取りにいく側の secrets を読む `ssm:GetParameters` も持っていた）。gnmic は別のロールで、実行ロール `<prefix>-gnmic-exec` が `AmazonECSTaskExecutionRolePolicy` と、secrets を読む `ssm:GetParameters`（`/<prefix>/gnmic/*` だけ）と SCRAM の secret（`AmazonMSK_<prefix>-collectors` の `secretsmanager:GetSecretValue` と鍵の `kms:Decrypt`）、タスクロール `<prefix>-gnmic-task` が ECS Exec の `ssmmessages` だけ（Kafka の権限は無い。SCRAM で書く）。どのロールにも閉域の Deny（`<prefix>-network-perimeter`）を付ける。
 
-**クライアントごとの渡し方。** どちらも SSM を読まない。
+**クライアントごとの渡し方。** どれも SSM を読まない。
 
 | クライアント | ブローカーの知り方 | 理由 |
 |---|---|---|
 | Telegraf（ECS） | タスク定義の環境変数 `KAFKA_BROKERS`（同じ root の MSK の属性） | MSK と同じ root で作られ、タスクは起動のたびに環境変数をもらえるから |
-| Spark（EMR Serverless） | [terraform/pipeline/analytics](../terraform/pipeline/analytics) が stream の state の `bootstrap_brokers` を読み、ジョブの引数 `--bootstrap` で渡す（[spark/snmp_sinks.py](../spark/snmp_sinks.py)） | ジョブは起動のたびに引数をもらえるので、パラメータストアを引く必要が無い |
+| syslog-ng・GoFlow2（ECS） | syslog-ng はタスク定義の環境変数 `KAFKA_BROKERS`、GoFlow2 は引数 `-transport.kafka.brokers`（どちらも同じ root の MSK の SCRAM の口 `bootstrap_brokers_sasl_scram`。[collectors.tf](../IaC/terraform/aws-managed/pipeline/stream/collectors.tf)） | Telegraf と同じ |
+| gnmic（ECS） | タスク定義の環境変数 `KAFKA_BROKERS`（同じ root の MSK の SCRAM の口 `bootstrap_brokers_sasl_scram`。[gnmic.tf](../IaC/terraform/aws-managed/pipeline/stream/gnmic.tf)） | Telegraf と同じ |
+| Spark（EMR Serverless） | [IaC/terraform/aws-managed/pipeline/analytics](../IaC/terraform/aws-managed/pipeline/analytics) が stream の state の `bootstrap_brokers` を読み、ジョブの引数 `--bootstrap` で渡す（[app/spark/snmp_sinks.py](../app/spark/snmp_sinks.py)） | ジョブは起動のたびに引数をもらえるので、パラメータストアを引く必要が無い |
+| Kafbat UI（Web の EC2 の Docker） | パラメータストアの String `/<prefix>/kafka-ui/bootstrap-servers`（同じ root の MSK の IAM 認証の口。[kafka_ui.tf](../IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf)）を Web の EC2 のユニットが起動のたびに読み、環境変数 `KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS` で渡す | Web の EC2 は stream より先にでき、stream を作り直しても EC2 は変わらないので、Terraform の値を直接は渡せない |
 
-**確かめ方。** ロググループ `/ecs/<prefix>-telegraf` に「`/tmp/telegraf.conf を作った（role: … / sink: kafka / brokers: …）`」が出ていれば `render` は通っている。ECS Exec で取りにいく側のタスクに入って（[pipeline.md](pipeline.md) の「Telegraf に入る」）`tg gnmi` を打つと gNMI の購読を 20 秒だけ受けて標準出力に出す（MSK には送らない）ので、機器との疎通と MSK との疎通を切り分けられる。`SNMP_POLL=1`（既定）のタスクなら `tg test` でポーリングを 1 回まわして同じように見られる（`SNMP_POLL=0` では「止めてある」と出して終わる）。MSK 側は、Kafka の `WriteData` が拒まれればログに出る。
+**確かめ方。** ロググループ `/ecs/<prefix>-telegraf` に「`/tmp/telegraf.conf を作った（sink: kafka / brokers: … / trap: …）`」が出ていれば Telegraf の `render` は通っている。gnmic はロググループ `/ecs/<prefix>-gnmic` に「`/tmp/gnmic.yaml を作った（gnmi: N 台 … / brokers: … / topics: gnmi, metrics / kafka auth: SASL/SCRAM-SHA-512）`」が出る。ECS Exec で gnmic のタスクに入って（[pipeline.md](pipeline.md) の「gnmic と Telegraf に入る」）`gn get` を打つと、状態を 1 回だけ取って Kafka と同じ event の形で標準出力に出す（Kafka には書かない）ので、機器との疎通と MSK との疎通を切り分けられる。MSK 側は、Telegraf は Kafka の `WriteData` が拒まれれば、gnmic は SCRAM の認証か ACL で拒まれれば、それぞれのログに出る。
 
 ## 届け方の保証（どの区間で、失うか、重複するか）
 
@@ -312,10 +332,10 @@ Telegraf・Spark が「どのブローカーにつなぐか」をどう知るか
 
 | 区間 | 保証 | 失う場面 | 重複する場面 |
 |---|---|---|---|
-| 機器 → Telegraf（SNMP のポーリング、gNMI、trap、syslog） | 多くて 1 回 | trap と syslog は UDP で、届かなければそれきり。ポーリングは失敗した回が抜ける。Telegraf が止まっているあいだの分 | 無い |
+| 機器 → Telegraf・gnmic・syslog-ng・GoFlow2（trap、gNMI、syslog、NetFlow / sFlow） | 多くて 1 回 | trap と syslog と NetFlow / sFlow は UDP で、届かなければそれきり。gNMI の sample（カウンター）は、gnmic が止まっているか繋ぎ直しているあいだの回が抜ける（on-change の状態は、繋ぎ直したときに今の値を全部送り直すので、あいだの変化だけが抜ける）。Telegraf・gnmic・syslog-ng・GoFlow2 が止まっているあいだの分 | 無い（gnmic が繋ぎ直したときに状態を送り直すのは、同じ値の新しい知らせ） |
 | Telegraf → Kafka（MSK） | 少なくとも 1 回 | Telegraf の手元のバッファがあふれた分。`required_acks = 1` なので、受け取ったリーダーが複製の前に落ちた分 | 返事が届かず送り直した分。失敗したまとまりを次の回に送り直した分 |
 | Kafka → Spark | 少なくとも 1 回 | 無い（checkpoint の offset から読み直す）。Kafka の保存期間を過ぎた分は読めない | マイクロバッチのやり直しで、同じ offset をもう一度読む |
-| Spark → S3 Tables（Iceberg） | ちょうど 1 回 | 無い | 無い（バッチの番号で、同じバッチは 1 回しか確定しない）。Telegraf が Kafka に 2 回入れた分は、2 行になる |
+| Spark → S3 Tables（Iceberg） | ちょうど 1 回 | 無い | 無い（バッチの番号で、同じバッチは 1 回しか確定しない）。集める側（Telegraf・gnmic・syslog-ng・GoFlow2）が Kafka に 2 回入れた分は、2 行になる（Spark は重複を落とさない。`event_id` が同じになるので読む側で落とせる） |
 | Spark → Prometheus | 少なくとも 1 回で送り、結果はちょうど 1 回 | 4xx で断られたサンプルは捨てる（時刻が戻ったもの、古すぎるもの）。数は driver のログに出る | 無い（同じ系列と時刻は 1 つ） |
 | Spark → OpenSearch | 少なくとも 1 回 | 4xx で断られたドキュメントは捨てる | やり直しの分が残る（TIMESERIES 型は ID を付けられない） |
 | Spark → Splunk（HEC） | 少なくとも 1 回 | 4xx で断られたイベントは捨てる | やり直しの分が残る（HEC は来たものを全部入れる） |

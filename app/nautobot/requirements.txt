@@ -1,0 +1,2 @@
+# Nautobot のイメージ（docker/images/nautobot/Dockerfile）に上流の公式イメージへ足す依存。Job が SSM / ECS / neptune-graph を呼ぶ boto3 だけ
+boto3>=1.40,<2

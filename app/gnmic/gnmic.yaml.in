@@ -1,0 +1,95 @@
+# gnmic の設定のひな形（cycle 013。それまでは Telegraf の inputs.gnmi = telegraf-dialin）。app/gnmic/gnmic.sh render が __X__ を埋めて /tmp/gnmic.yaml を書く。
+# 機器（lab の SR Linux）の gNMI を購読し、Kafka の gnmi（状態。on-change）と metrics（カウンター。sample）へ event の形で書く。
+# event の形は {"name": <subscription の名前>, "timestamp": <ns>, "tags": {...}, "values": {...}}（split-events で 1 メッセージ 1 件）。
+# Telegraf の形（name / tags / fields、秒）への読み替えは app/spark/snmp_sinks.py の read_rows がする（双子は gnmic_message。tests/test_stream.py が縛る）。processor は使わない
+#
+# 資格情報の値はここにも /tmp の設定にも書かない。${...} のまま置き、gnmic が設定を読むときに環境変数から入れる
+# （target の username は常に、password は $ で始まるときだけ展開する。outputs は全部の値を展開する。gnmic v0.49.0 の pkg/config/targets.go と outputs.go）
+
+# lab の SR Linux は containerlab が全ノードで 57400 を開ける（TLS、自己署名）
+port: 57400
+encoding: json_ietf
+skip-verify: true
+# 標準エラーにログを出す（無いと gnmic はログを捨てる）。資格情報は gnmic が伏せる（**** / redacted）
+log: true
+
+# 購読先。名前は IP（__TARGETS__ の行を gnmic.sh が target ごとの "<IP>": の塊（address: "<IP>:<port>"、username、password）で置き換える）。
+# event の tags.source = 名前 = IP で、機器名（sysName）は Spark が device map で引く。username / password は target ごとに書く
+# （全体の username / password にすると、全部の target が同じ文字列を指したまま展開されて、2 つめ以降で値が崩れる。gnmic v0.49.0 の setTargetConfigDefaultsFromGlobalFlags）
+targets:
+__TARGETS__
+
+# 5 つ。subscription ごとに別の SubscribeRequest になるので、1 つが機器に断られてもほかは止まらない。パスは SR Linux 26.7 の YANG
+# on-change は購読の直後に今の状態を全部送り、その後は変わったときだけ送る（heartbeat-interval は付けない。Grafana は last_over_time 24h、Splunk は 24 時間を読む）
+subscriptions:
+  # IF の up / down（Grafana の link_down と Splunk の nwc_gnmi の link_down。snmp_interface_oper_up / admin_up）
+  interface_state:
+    paths:
+      - /interface[name=*]/oper-state
+      - /interface[name=*]/admin-state
+    mode: stream
+    stream-mode: on-change
+    outputs: [gnmi]
+  # IF の流量とエラー（ダッシュボード metrics.json。snmp_interface_in_octets など）
+  interface_stats:
+    paths:
+      - /interface[name=*]/statistics
+    mode: stream
+    stream-mode: sample
+    sample-interval: 60s
+    outputs: [metrics]
+  # BGP の状態（bgp_down）
+  bgp_neighbor:
+    paths:
+      - /network-instance[name=default]/protocols/bgp/neighbor[peer-address=*]/session-state
+    mode: stream
+    stream-mode: on-change
+    outputs: [gnmi]
+  # IS-IS は隣接ではなく IF の oper-state（隣接は落ちると state=down を経ずに消える。isis_down。2026-09-27 に Telegraf で実測）
+  isis_interface:
+    paths:
+      - /network-instance[name=default]/protocols/isis/instance[name=main]/interface[interface-name=*]/oper-state
+    mode: stream
+    stream-mode: on-change
+    outputs: [gnmi]
+  # CPU とメモリ（ダッシュボード。snmp_system_instant / snmp_system_utilization）。cpu[index=all] は SR Linux の集計の行
+  system:
+    paths:
+      - /platform/control[slot=*]/cpu[index=all]/total
+      - /platform/control[slot=*]/memory
+    mode: stream
+    stream-mode: sample
+    sample-interval: 60s
+    outputs: [metrics]
+
+# Kafka の出力。同じブローカーで、トピックだけ違う 2 つ。address は KAFKA_BROKERS（host:port のカンマ区切り）のまま（gnmic がカンマで分ける）
+outputs:
+  gnmi:
+    type: kafka
+    address: "__KAFKA_BROKERS__"
+    topic: gnmi
+    format: event
+    split-events: true
+# >>> kafka_auth scram（gnmic.sh render が KAFKA_AUTH=scram（既定）のとき印の行だけ消し、none のとき区間ごと消す）
+    sasl:
+      user: ${KAFKA_SASL_USER}
+      password: ${KAFKA_SASL_PASS}
+      mechanism: SCRAM-SHA-512
+    # MSK の 9096 は TLS。gnmic は ca-file / skip-verify / 証明書のどれかが無いと TLS を張らないので、イメージ（alpine）の CA の束を渡す
+    tls:
+      ca-file: /etc/ssl/certs/ca-certificates.crt
+# <<< kafka_auth scram
+  metrics:
+    type: kafka
+    address: "__KAFKA_BROKERS__"
+    topic: metrics
+    format: event
+    split-events: true
+# >>> kafka_auth scram
+    sasl:
+      user: ${KAFKA_SASL_USER}
+      password: ${KAFKA_SASL_PASS}
+      mechanism: SCRAM-SHA-512
+    tls:
+      ca-file: /etc/ssl/certs/ca-certificates.crt
+# <<< kafka_auth scram

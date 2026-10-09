@@ -3,7 +3,7 @@
 nwc-poc の技術と構成について、ほかの開発者に説明するときに役に立つ質問と答えをまとめた。開発の進め方（サイクルや作業の順番）の質問は入れない。コードのパスはこのリポジトリの中のもの。
 
 - [1. syslog の基本](#1-syslog-の基本)
-- [2. 収集の設定（Telegraf と本番の Cisco）](#2-収集の設定telegraf-と本番の-cisco)
+- [2. 収集の設定（syslog-ng・Telegraf・gnmic と本番の Cisco）](#2-収集の設定syslog-ngtelegrafgnmic-と本番の-cisco)
 - [3. デバッグ用の EC2（lab + Telegraf）](#3-デバッグ用の-ec2lab--telegraf)
 - [4. YANG・OpenConfig とシスコの機器](#4-yangopenconfig-とシスコの機器)
 - [5. Spark の動き](#5-spark-の動き)
@@ -31,7 +31,7 @@ nwc-poc の技術と構成について、ほかの開発者に説明するとき
 - Cisco のログの主な出し先は、コンソール、メモリ（`show logging`）、SSH の端末（`terminal monitor`）、syslog サーバー（`logging host`）の 4 つ。最後の「外へ送る」部分が syslog。
 - lab でも 2 つは分かれている。
   - SR Linux がコンテナの中に書くログ（`lab.sh logs` で読む）。
-  - 同じ出来事を RFC 5424 で UDP 5140 に送る syslog（Telegraf の `inputs.syslog` が受け、MSK の `logs` トピックへ流す）。
+  - 同じ出来事を RFC 5424 で UDP 5140 に送る syslog（stream の syslog-ng が受け、MSK の `logs` トピックへ流す。2026-10-08 までは Telegraf の `inputs.syslog`）。
 
 ### Q. syslog のファシリティとは？ 重要度とは何が違う？
 
@@ -44,7 +44,7 @@ nwc-poc の技術と構成について、ほかの開発者に説明するとき
 
 - 教材に出てくるファシリティの表（authpriv、cron、kern、lpr、mail、news、syslog、local0〜7）は Linux / Unix サーバーの一覧。lpr や news は昔の名残。
 - ネットワーク機器で大事なのは **local0〜7**。機器には kern や mail のような決まった出どころが無いので、空き番号の local を使う。Cisco の既定は local7。
-- lab の SR Linux の設定（`lab/srlinux/*.cli`）:
+- lab の SR Linux の設定（`app/containerlab/srlinux/*.cli`）:
 
   ```
   set / system logging remote-server 203.0.113.1 subsystem bgp priority match-above informational
@@ -60,7 +60,7 @@ nwc-poc の技術と構成について、ほかの開発者に説明するとき
 | どこで | 決めること | lab では |
 |---|---|---|
 | 送る側（ルーター） | 送り先とポート、ファシリティ、どの重要度以上を送るか | 203.0.113.1:5140/udp、subsystem ごとに informational 以上 |
-| 受ける側（syslog サーバー） | 届いたものをどこに保存し、何を捨てるか | Telegraf は全部受け、ファシリティと重要度を付けたまま MSK へ |
+| 受ける側（syslog サーバー） | 届いたものをどこに保存し、何を捨てるか | syslog-ng は全部受け、ファシリティと重要度を付けたまま MSK へ（2026-10-08 までは Telegraf） |
 | その先（分析側） | どの重要度を異常として扱うか | Spark・OpenSearch・Grafana で絞れる |
 
 - ルーター側で絞ると、量は減るが、送らなかったログは後から見られない。
@@ -93,7 +93,7 @@ SR Linux は送る前に subsystem で「BGP と IS-IS だけ」のように選�
 - 本文はメーカーごとに違う。
   - Cisco: `%LINEPROTO-5-UPDOWN: ...`
   - SR Linux: 独自の文面
-- 本文を読む処理（Spark の検知など）は、メーカーごとに読み方を用意する必要がある。lab が IF の状態を syslog ではなく gNMI や SNMP で見ているのは、そのほうが機械で扱いやすいから。
+- 本文を読む処理は、メーカーごとに読み方を用意する必要がある（この PoC のアラート、つまり Grafana のルールと Splunk の保存済みサーチは、いまは syslog の本文を読んでいない。2026-10-02 までは Spark が検知していた）。lab が IF の状態を syslog ではなく gNMI や SNMP で見ているのは、そのほうが機械で扱いやすいから。
 - まとめ: 送り方と PRI の考え方は共通。ヘッダーの版と本文は機器による。
 
 ### Q. PRI とは？
@@ -174,9 +174,9 @@ PRI = ファシリティの番号 × 8 + 重要度
 
 **A. local7。本番は Cisco（IOS の既定が local7）を想定しているので、lab の SR Linux 6 台も local7 で送る設定にしてある。**
 
-- `lab/gen_lab.py` が `set / system logging subsystem-facility local7` を書く（定数 `LOG_FACILITY`）。`lab/srlinux/*.cli` はそこから生成する。
+- `app/containerlab/gen_lab.py` が `set / system logging subsystem-facility local7` を書く（定数 `LOG_FACILITY`）。`app/containerlab/srlinux/*.cli` はそこから生成する。
 - `tests/test_stream.py` が「6 台とも local7」を確かめる。
-- Telegraf と Spark はファシリティの値を見ていないので、その先には影響しない。
+- syslog-ng と Spark はファシリティの値で絞っていないので、その先には影響しない。
 - 実機ではまだ確かめていない。次に lab を立てたら、lab の EC2 で受信を見て、informational が `<190>1 ...` になっていることを確かめる。
 
   ```bash
@@ -185,11 +185,11 @@ PRI = ファシリティの番号 × 8 + 重要度
 
 ---
 
-## 2. 収集の設定（Telegraf と本番の Cisco）
+## 2. 収集の設定（syslog-ng・Telegraf・gnmic と本番の Cisco）
 
 ### Q. 本番の Cisco の `logging host <IPアドレス | ホスト名>` には、AWS の NLB を書く？
 
-**A. はい。Telegraf を今の構成（ECS + 内部 NLB）のまま使うなら、NLB の IP を書く。**
+**A. はい。syslog-ng を今の構成（ECS + 内部 NLB。NLB は Telegraf・syslog-ng・GoFlow2 で共通）のまま使うなら、NLB の IP を書く。**
 
 - **今の lab は NLB を直接指していない。**
   - SR Linux の宛先は lab の EC2 の docker ネットワークのゲートウェイ `203.0.113.1:5140`。
@@ -207,66 +207,58 @@ PRI = ファシリティの番号 × 8 + 重要度
   - ホスト名を載せる `logging origin-id hostname`、番号を消す `no logging message-counter syslog`、時刻の形を決める `service timestamps log datetime msec` は、RFC3164 の解析がどう変わるかを実機で確かめてから決める。
   - `logging facility local7` と `logging trap informational` は IOS の既定と同じなので、書かなくても変わらない（明示のため書く）。
 - **ポート**
-  - Cisco の既定は 514。Telegraf は 5140 で待っているので（非 root は 1024 未満で待てない）、`port 5140` が要る。
+  - Cisco の既定は 514。syslog-ng は 5140 で待っているので（2026-10-08 までは Telegraf。どちらも非 root で、1024 未満では待てない）、`port 5140` が要る。
   - trap は `snmp-server host <NLB の IP> version 2c <community>` と `snmp-server enable traps snmp linkdown linkup` で 162 に送れば、NLB が Telegraf の 1162 へ渡す（版を書かないと v1 で送る。Telegraf は 2c で受ける）。
-  - Cisco の linkDown の varbind には ifName が無い（ifIndex・ifDescr など）。Spark は ifName → ifDescr → ifIndex の順で IF を引くので ifDescr で引くことになり、SR Linux の ifName とは名前の形が違う。
+  - Cisco の linkDown の varbind には ifName が無い（ifIndex・ifDescr など）。trap を `link_down` にする Splunk の保存済みサーチ `nwc_trap` は ifName → ifDescr → ifIndex の順で IF を引くので ifDescr で引くことになり、SR Linux の ifName とは名前の形が違う。
 - **経路**
   - 内部 NLB なので、オンプレから届くには Direct Connect か Site-to-Site VPN が要る。
-  - NLB の SG でオンプレの CIDR を通す必要もある（今は `terraform/base/core/security_groups.tf` の通信の表で lab の `203.0.113.0/24` だけ）。NACL はコードで作っていない（既定で全部通す）ので、絞っている環境だけ見直す。
+  - NLB の SG でオンプレの CIDR を通す必要もある（今は `IaC/terraform/aws-managed/base/core/security_groups.tf` の通信の表で lab の `203.0.113.0/24` だけ）。NACL はコードで作っていない（既定で全部通す）ので、絞っている環境だけ見直す。
 - **IP の固定**
   NLB を作り直すと IP が変わる。機器に IP を書くなら、`subnet_mapping` の `private_ipv4_address` で固定したほうが安全。今のコードは固定していない（`subnets` から `subnet_mapping` に変えると NLB は 1 回作り直しになる）。
 - **形式**
-  Cisco IOS の既定は BSD 形式（RFC 3164 に近いが、そのままではない）。Telegraf は RFC3164 で受けるが、きれいに解析できるかは実機で確かめる（形式の切り替えは次の Q）。
+  Cisco IOS の既定は BSD 形式（RFC 3164 に近いが、そのままではない）。syslog-ng は RFC3164 で受けるが、きれいに解析できるかは実機で確かめる（形式の切り替えは次の Q）。
 
-### Q. Telegraf が受ける syslog の形式（RFC 3164 / RFC 5424）は、どこで切り替える？
+### Q. syslog-ng が受ける syslog の形式（RFC 3164 / RFC 5424）は、どこで切り替える？
 
 **A. `deploy.env`（か環境変数）の `SYSLOG_STANDARD` で選ぶ。既定は本番の Cisco に合わせた `RFC3164`。**
 
 | どこ | 中身 |
 |---|---|
-| `telegraf/telegraf.sh` | `SYSLOG_STANDARD`（既定 `RFC3164`。空も既定。大文字の `RFC3164` / `RFC5424` 以外は止まる）で `telegraf.conf.in` の `syslog_standard` を埋める |
-| `terraform/pipeline/stream` | 変数 `syslog_standard`（既定 `RFC3164`）を ECS タスクの環境変数 `SYSLOG_STANDARD` に渡す |
+| `app/syslog-ng/syslog-ng.sh` | `SYSLOG_STANDARD`（既定 `RFC3164`。空も既定。大文字の `RFC3164` / `RFC5424` 以外は止まる）で `syslog-ng.conf.in` の flags を埋める（`RFC5424` は `flags(syslog-protocol)`、`RFC3164` は flags 無し）。2026-10-08 までは `app/telegraf/telegraf.sh` が Telegraf の `syslog_standard` を埋めていた |
+| `IaC/terraform/aws-managed/pipeline/stream` | 変数 `syslog_standard`（既定 `RFC3164`）を syslog-ng の ECS タスク（`collectors.tf`）の環境変数 `SYSLOG_STANDARD` に渡す |
 | `ops/up.sh` | `SYSLOG_STANDARD`（空なら `RFC3164`）を stream の `syslog_standard` に渡す。大文字の `RFC3164` / `RFC5424` 以外は何も作る前に止まる。lab の SR Linux の形式（`ops/lab-common.sh` の `LAB_SYSLOG_STANDARD` = `RFC5424`）と違えば「lab のログの項目が崩れる」と注意を出す |
 | `ops/deploy-env.sh` / `deploy.env.example` | 読めるキーに `SYSLOG_STANDARD` がある |
-| `lab/lab.sh` | デバッグ用の EC2 の Telegraf に `LOG_STANDARD=RFC5424` を渡す |
+| `app/containerlab/lab.sh` | デバッグ用の EC2 の Telegraf に `LOG_STANDARD`（`RFC5424`）を `SYSLOG_STANDARD` として渡す（2026-10-08 から Telegraf は syslog を受けないので、渡しても使われない） |
 
 ```bash
 SYSLOG_STANDARD=RFC5424 PIPELINE=1 ops/up.sh   # lab の SR Linux のログまで見るとき
 ```
 
-- 本番の Cisco を受けるときは RFC3164 にする。`terraform/pipeline/stream` を直接打つなら、`syslog_standard` を渡さなければ既定の RFC3164 になる。`ops/up.sh` も書かなければ RFC3164。
+- 本番の Cisco を受けるときは RFC3164 にする。`IaC/terraform/aws-managed/pipeline/stream` を直接打つなら、`syslog_standard` を渡さなければ既定の RFC3164 になる。`ops/up.sh` も書かなければ RFC3164。
 - lab の SR Linux は RFC 5424 で送るので、既定のままだと lab のログはホスト名・本文などがきれいに取れない。lab のログまで見るときだけ `RFC5424` にする。
-- 変えて打ち直すと、ECS の Telegraf のタスクが入れ替わる（環境変数が変わるので）。
-- デバッグ用の EC2 の Telegraf は lab 専用なので、この値によらず `lab/lab.sh` の `LOG_STANDARD`（RFC5424）のまま。
+- 変えて打ち直すと、ECS の syslog-ng のタスク（`syslog-ng`）が入れ替わる（環境変数が変わるので）。
+- デバッグ用の EC2 は 2026-10-08 から syslog を受けない（syslog-ng はデバッグ用の EC2 では動かさない）。
 - Cisco IOS の既定のヘッダー（シーケンス番号や `*` 付きの時刻、ホスト名の有無）が RFC3164 でどう解析されるかは、実機で確かめていない。
 
 ### Q. SNMP はポーリングと trap のどちらで集めている？ ポーリングは止められる？
 
-**A. 両方。Telegraf は 10 秒ごとのポーリング（`inputs.snmp`）と trap（`inputs.snmp_trap`）を受ける。`SNMP_POLL=0` にするとポーリングだけ止まり、SNMP は trap だけになる。** gNMI と syslog は変わらない。
+**A. いまは trap だけ（2026-10-09、サイクル「gNMI を gnmic に移し、SNMP のポーリングと telegraf-dialin を外す（013）」から）。SNMP のポーリングはやめ、IF の状態とカウンターは gnmic が gNMI で取る。** 止めるスイッチ（`SNMP_POLL`）も無くなった。
 
-| どこ | 中身 |
-|---|---|
-| `telegraf/telegraf.conf.in` | `[[inputs.snmp]]` を `# >>> snmp_poll` 〜 `# <<< snmp_poll` で囲んである |
-| `telegraf/telegraf.sh` | `SNMP_POLL`（既定 `1`。`0` / `1` 以外は止まる）が `0` ならその区間を消す。`SNMP_AGENTS` を見るのは `1` のときだけ。`tg test` は `0` なら「止めてある」と出して終わる |
-| `terraform/pipeline/stream` | 変数 `snmp_poll`（bool、既定 `true`）をタスクの環境変数 `SNMP_POLL`（`1` / `0`）に渡す。ECS Exec の既定のコマンド（出力 `telegraf_exec_command`）は `tg gnmi` |
-| `ops/up.sh` / `ops/deploy-env.sh` / `deploy.env.example` | `deploy.env` の `SNMP_POLL`（`1` / `0`、`true` / `false` も可。既定 `1`）を stream の `snmp_poll` に渡す |
-| `lab/lab.sh` | デバッグ用の EC2 の Telegraf にも `SNMP_POLL` を渡す。こちらは既定 `0`（trap だけ） |
+| 何を | 誰が | どう | トピック |
+|---|---|---|---|
+| IF・BGP・IS-IS の状態 | gnmic（`app/gnmic/gnmic.yaml.in`） | gNMI の on-change | `gnmi` |
+| IF の統計・CPU・メモリ | gnmic | gNMI の sample（60 秒ごと） | `metrics` |
+| SNMP の trap | Telegraf（`inputs.snmp_trap`） | 機器から送られてくるのを受ける | `traps` |
 
-```bash
-SNMP_POLL=0 PIPELINE=1 ops/up.sh     # ポーリングを止めるとき（deploy.env に SNMP_POLL=0 でもよい）
-sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリングありで起こし直す
-```
-
-- **止めると空になるもの**
-  - `metrics` トピック（measurement `system` / `interface`）が出なくなる。
-  - Grafana の IF のグラフ（ダッシュボード「netops / SNMP metrics」）、エージェントの `query_metrics`、S3 Tables のポーリングの行が空になる。
 - **アラート**
-  - Grafana のルール `link_down` と Splunk の保存済みサーチ `netops_poll` は、ポーリングの `ifOperStatus` を見るので発火しない。
-  - IF の up / down は、trap から Splunk（`STORES` の `splunk`）が `link_down` を出す。
-  - そのため `ops/up.sh` は Grafana を `SNMP_POLL=1` のときだけアラートの送り手に数える。`WORKFLOW=1` で送り手が 1 つも無いと「`STORES` に `splunk` を入れるか `SNMP_POLL=1` にする」と出して止まる。`STORES` に `grafana` があって `SNMP_POLL=0` のときは注意を出す。
-- NLB のヘルスチェック（`outputs.health`）は、何も書いていないうちは 200 を返すので、ポーリングを止めても通る。Spark は無いトピックを作るので、`metrics` が無くても動く。
-- 変えて打ち直すと、ECS の Telegraf のタスクが入れ替わる（環境変数が変わるので）。
-- 当時は既定が `0`（trap だけ）だった。いまは Grafana の `link_down` と Splunk の `netops_poll` がポーリングを見るので、既定は `1`。
+  - Grafana のルール `link_down` は、gnmic の IF の状態（系列 `snmp_interface_oper_up`）を見る。
+  - Splunk の SNMP のポーリングの保存済みサーチはやめ、`nwc_gnmi`（gNMI の IF・BGP・IS-IS）と `nwc_trap`（linkDown / linkUp）が `link_down` を出す。
+  - そのため `ops/up.sh` は、`STORES` に `grafana` か `splunk` があればアラートの送り手に数える。
+- 系列名（`snmp_interface_*` など）は Telegraf のころのまま。gnmic は event の形のまま書き、Spark が読み替える（[collection.md](collection.md) の「gnmic の event と読み替え」）。
+- 機器との疎通を見るのは、gnmic のタスクに ECS Exec で入って打つ `gn get`。Telegraf の `tg test` / `tg gnmi` はやめた（打つと案内を出して終わる）。
+- `deploy.env` に `SNMP_POLL` が残っていても止まらない。`ops/up.sh` が「使わない」と注意を出すだけ（消してよい）。
+
+当時（2026-10-09 まで）は、Telegraf の取りにいく側（`telegraf-dialin`）が 10 秒ごとにポーリングし（`inputs.snmp`）、`SNMP_POLL=0` で止められた。既定は `1` で、その前は `0`（trap だけ）だった。デバッグ用の EC2 の Telegraf の既定は `0` だった。
 
 ---
 
@@ -274,26 +266,26 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 
 ### Q. lab と Telegraf だけを確かめるデバッグ用の EC2 は、どう作ってある？ terraform の側とずれない？
 
-**A. CloudFormation のスタック `<接頭辞>-lab-debug`（`cloudformation/lab-debug.yaml`）で作る。設定とソースは terraform の側と共通にしてあり、ずれはテストが見る。** MSK・ECS・NLB を作らずに、機器の設定と Telegraf の設定を 1 台で確かめるためのもの。
+**A. CloudFormation のスタック `<接頭辞>-lab-debug`（`IaC/cloudformation/lab-debug.yaml`）で作る。設定とソースは terraform の側と共通にしてあり、ずれはテストが見る。** MSK・ECS・NLB を作らずに、機器の設定と Telegraf の設定を 1 台で確かめるためのもの。
 
 **使い方**
 
 | コマンド | すること |
 |---|---|
-| `ops/lab-debug.sh up` | イメージと `lab/` を置き、スタックを作る・変える |
-| `ops/lab-debug.sh sync` | `lab/` を置き直して EC2 を再起動する |
+| `ops/lab-debug.sh up` | イメージと `app/containerlab/` を置き、スタックを作る・変える |
+| `ops/lab-debug.sh sync` | `app/containerlab/` を置き直して EC2 を再起動する |
 | `ops/lab-debug.sh status` | スタックと EC2 の状態 |
 | `ops/lab-debug.sh down` | スタックを消す（`ops/down.sh` では消えない。この章の最後の Q） |
 
 - EC2 の中では次のコマンドが使える。
   - `sudo lab telegraf logs -f`: Telegraf の出力（MSK に載るのと同じ JSON）
-  - `sudo lab telegraf test` / `sudo lab telegraf gnmi`
-- 待機の費用は約 $0.23/h（EC2 $0.17/h とエンドポイント 4 本。スタックが自分の VPC を持つ。この章の最後の Q）。
+  - `sudo lab telegraf run` / `stop` / `status`: この EC2 の Telegraf（trap だけ受ける）を起こす・止める・状態を見る
+- 待機の費用は約 $0.30/h（EC2 $0.25/h とエンドポイント 4 本。スタックが自分の VPC を持つ。この章の最後の Q）。
 
 **共通化したところ**
 
 - 版とイメージの作り方は `ops/lab-common.sh` 1 か所にある。`up.sh` と `lab-debug.sh` の両方が読む。
-- EC2 の中の支度は `lab/setup.sh` 1 つ。terraform の user_data も CloudFormation の UserData も、env を書いてこれを呼ぶだけ。違うのは `TELEGRAF_IMAGE` が空か値があるか（と、イメージのリポジトリの名前）だけ。
+- EC2 の中の支度は `app/containerlab/setup.sh` 1 つ。terraform の user_data も CloudFormation の UserData も、env を書いてこれを呼ぶだけ。違うのは `TELEGRAF_IMAGE` が空か値があるか（と、イメージのリポジトリの名前）だけ。
 - Telegraf は stream の ECS と同じイメージと同じ `telegraf.conf.in` を使い、出力だけ `SINK=stdout` にする。
 - 機器は trap を 162 に送る。デバッグ用の EC2 では iptables の REDIRECT で Telegraf の 1162 へ回す。
 - `tests/test_lab_debug.py` が次の一致を確かめる。
@@ -304,7 +296,7 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 
 ### Q. デバッグ用の EC2 のために、Telegraf は何が変わった？
 
-**A. ECS で動いている Telegraf の動きは変わらない。同じイメージをデバッグ用の EC2 でも動かせるように、出力を選べるようにしただけ。** 収集の中身（inputs と processors）は同じ（`inputs.syslog` の形式は `SYSLOG_STANDARD` で選ぶ。2 章）。
+**A. ECS で動いている Telegraf の動きは変わらない。同じイメージをデバッグ用の EC2 でも動かせるように、出力を選べるようにしただけ。** 収集の中身（inputs と processors）は同じ（syslog は 2026-10-08 から Telegraf ではなく syslog-ng が受ける。形式は `SYSLOG_STANDARD` で選ぶ。2 章）。
 
 - `telegraf.conf.in`
   - 出力を `# >>> sink kafka` と `# >>> sink stdout` の区間に分けた。
@@ -313,7 +305,7 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
   - 環境変数 `SINK`（既定 `kafka`）で出力を選び、選ばなかった区間を消す。
   - `SINK=stdout` では `KAFKA_BROKERS` も MSK の IAM 用の `aws_config` も要らない。
   - `tg render`（設定を作るだけ）を足した。
-- 影響: `telegraf/` の中身が変わったのでイメージのタグ（ディレクトリのハッシュ）が変わる。次の `ops/up.sh` でビルドし直し、ECS のタスクが入れ替わる。
+- 影響: `app/telegraf/` の中身が変わったのでイメージのタグ（ディレクトリのハッシュ）が変わる。次の `ops/up.sh` でビルドし直し、ECS のタスクが入れ替わる。
 
 ### Q. デバッグ用の EC2 は、なぜ `ops/up.sh` / `ops/down.sh` と別になっている？
 
@@ -321,7 +313,7 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 
 **前の形（2026-10-04 まで）で困ったこと**
 
-- 土台（`terraform/base/core`）の VPC・サブネット・バケットと、`ops/up.sh` が足す ECR のエンドポイントを借りていた。
+- 土台（`IaC/terraform/aws-managed/base/core`）の VPC・サブネット・バケットと、`ops/up.sh` が足す ECR のエンドポイントを借りていた。
 - なので先に `ops/up.sh` が要り、`ops/down.sh` で土台を消すときはスタックを先に消す必要があった。
 
 **今の形**
@@ -331,14 +323,14 @@ sudo SNMP_POLL=1 lab telegraf run    # デバッグ用の EC2 で、ポーリン
 | VPC | 既定 `10.20.0.0/24`、1 AZ・1 サブネット。IGW も NAT も無い閉域。どこともつながないので土台と CIDR が重なってよい |
 | エンドポイント | ssm / ssmmessages（SSM で入る）、ecr.api / ecr.dkr（イメージを引く）の 4 本と、S3 の gateway（無料） |
 | バケット | `<接頭辞>-lab-debug-<アカウント>`。`lab/` だけを置く |
-| ECR | `<接頭辞>-debug-lab-srlinux` / `-debug-lab-multitool` / `-debug-telegraf`。スタックを消すとイメージごと消える |
+| ECR | `<接頭辞>-debug-lab-srlinux` / `-debug-lab-multitool` / `-debug-lab-trex` / `-debug-telegraf`。スタックを消すとイメージごと消える |
 | ロール | 前と同じ権限。`NETWORK_PERIMETER` のときは VPC の外からの呼び出しを拒む Deny を、この VPC に向けて持つ |
 
-- `ops/lab-debug.sh up` の初回は、EC2 の無い器を先に作り、イメージと `lab/` を置いてから EC2 を作る（置く前に EC2 を起こしても引けないため）。
+- `ops/lab-debug.sh up` の初回は、EC2 の無い器を先に作り、イメージと `app/containerlab/` を置いてから EC2 を作る（置く前に EC2 を起こしても引けないため）。
 - `ops/lab-debug.sh down` はバケットを空にしてからスタックを消す。
 - `deploy.env` の `LAB_DEBUG` は使わない。残っていれば `ops/up.sh` が注意を出すだけ。
 - 代わりに増えたもの:
-  - 待機の費用: 約 $0.20/h → 約 $0.23/h（エンドポイントを土台と共用しなくなった。2026-10-04 に EC2 の単価を t4g.xlarge の $0.17/h に直した値）
+  - 待機の費用: 約 $0.20/h → 約 $0.23/h（エンドポイントを土台と共用しなくなった。2026-10-04 に EC2 の単価を t4g.xlarge の $0.17/h に直した値）。2026-10-08 に EC2 を x86_64 の m6i.xlarge（$0.25/h）にして約 $0.30/h（TRex のイメージが amd64 だけのため）
   - 初回の push: SR Linux（約 1 GB）を別のリポジトリにもう一度置く
 
 ---
@@ -407,7 +399,7 @@ container interfaces {
 
 **このプロジェクトでは**
 
-- Telegraf の `path = "/interface[name=*]/statistics"` などは、SR Linux 独自の YANG モデルの木をたどったパス（`telegraf/telegraf.conf.in`）。
+- gnmic の購読の `/interface[name=*]/statistics` などは、SR Linux 独自の YANG モデルの木をたどったパス（`app/gnmic/gnmic.yaml.in`）。
 - SNMP での MIB にあたるものが、gNMI での YANG モデル。MIB は OID（数字の並び）で、YANG は名前のパスで値を指す。
 
 **出典**
@@ -434,7 +426,7 @@ container interfaces {
 
 同じ値でも、独自のモデルではベンダーごとにパスが違う。OpenConfig なら 1 つのパスで済む。
 
-| 取りたい値 | SR Linux 独自のパス（いまの Telegraf） | OpenConfig のパス |
+| 取りたい値 | SR Linux 独自のパス（いまの gnmic） | OpenConfig のパス |
 |---|---|---|
 | インターフェースのカウンター | `/interface[name=*]/statistics` | `/interfaces/interface[name=*]/state/counters` |
 | インターフェースの up / down | `/interface[name=*]/oper-state` | `/interfaces/interface[name=*]/state/oper-status` |
@@ -444,7 +436,7 @@ container interfaces {
 
 - OpenConfig のモデルは「何を」（値の名前と住所）を決める。
 - gNMI は「どう運ぶか」（プロトコル）を決める。gNMI も OpenConfig のプロジェクトが作った。
-- gNMI は独自のモデルも運べる。いまの Telegraf は、gNMI で SR Linux 独自のモデルを読んでいる。
+- gNMI は独自のモデルも運べる。いまの gnmic は、gNMI で SR Linux 独自のモデルを読んでいる。
 
 **メリットとデメリット**
 
@@ -535,14 +527,14 @@ vrnetlab のページには、このほかに Cisco vIOS と Cisco ASAv も載�
 
 **このプロジェクトへの影響**
 
-いまの Telegraf は、2 種類の取り方をしている（`telegraf/telegraf.conf.in`）。
+いまは gnmic が gNMI を取り（`app/gnmic/gnmic.yaml.in`）、Telegraf は SNMP の trap だけを受けている（`app/telegraf/telegraf.conf.in`。SNMP のポーリングは 2026-10-09 の cycle 013 でやめた）。
 
 | いま集めているもの | シスコを足したとき |
 |---|---|
-| SNMP の標準 MIB（sysName、sysUpTime、ifName、ifAdminStatus、ifOperStatus、ifInOctets など） | そのまま使える見込み |
+| SNMP の trap（linkDown / linkUp などの標準の通知） | そのまま受けられる見込み。ただし Cisco の linkDown の varbind には ifName が無い（「2. 収集の設定」の最初の Q） |
 | gNMI の SR Linux 独自のパス（`/network-instance[name=default]/protocols/bgp/neighbor[...]/session-state`、`/platform/control[...]/cpu[...]`、`/interface[name=*]/statistics` など） | 使えない。OS ごとにパスを書き直す |
 
-- パスが変わると、メトリクスの名前とラベルも変わる。Grafana のアラートルール、Splunk の検索、`lab_gnmi.star` の変換も、機器の種類ごとに直すことになる。
+- パスが変わると、メトリクスの名前とラベルも変わる。Grafana のアラートルール、Splunk の検索、gnmic の購読と Spark の読み替え（`app/spark/snmp_sinks.py`。2026-10-09 までは Telegraf の `lab_gnmi.star`）も、機器の種類ごとに直すことになる。
 - 複数のベンダーを混ぜるなら、OpenConfig のパスに寄せると、直す場所が減る。SR Linux も OpenConfig に対応している（有効にする設定が要る）。
 
 **未確認**
@@ -583,7 +575,7 @@ flowchart TB
 | 言葉 | 何か | 数を決めるもの | この PoC では |
 |---|---|---|---|
 | アプリケーション | EMR Serverless の入れ物。ジョブを動かす場所で、使える vCPU とメモリの上限を持つ | Terraform で 1 つ作る | 1 つ。上限は `max_cpu` / `max_memory` |
-| ジョブ | スクリプト（`spark/snmp_sinks.py`）を 1 回起こしたもの。driver 1 つと executor いくつかの組。起こす、止める、課金の単位 | `ops/up.sh` が起こす数 | 格納先のまとまりで 3 つ（`sinks-s3iceberg` / `sinks-splunk` / `sinks-grafana`） |
+| ジョブ | スクリプト（`app/spark/snmp_sinks.py`）を 1 回起こしたもの。driver 1 つと executor いくつかの組。起こす、止める、課金の単位 | `ops/up.sh` が起こす数 | 格納先のまとまりで 3 つ（`sinks-s3iceberg` / `sinks-splunk` / `sinks-grafana`） |
 | driver | ジョブに 1 つだけあるプロセス。スクリプトの本体がここで動く。Kafka のどこからどこまでを読むかを決め、タスクに割って executor に配り、checkpoint に進み具合を書く | 必ず 1 つ | 1 コア、2g |
 | executor | driver から配られたタスクを実行するプロセス。Kafka から実際に読み、変換し、書く | `spark.executor.instances` | 2 つ、それぞれ 1 コア |
 | クエリ（streaming query） | 「このトピックを読み、この格納先に書く」を止まらずに繰り返す処理。driver の中で動き、自分の Kafka の購読と checkpoint を持つ | スクリプトが `--sinks` の数だけ作る | 格納先ごとに 1 つ（全部で 4 つ。2 つ同居するのは `sinks-grafana` だけ） |
@@ -613,14 +605,14 @@ Spark UI（EMR Serverless のコンソールから開ける）の Executors の�
 
 ### Q. Spark のジョブは 1 つで、Kafka の購読も 1 つ？
 
-**A. どちらも 1 つではない。ジョブは格納先のまとまりごとに 3 つ。Kafka の購読は格納先ごとに 1 つずつ（最大 4 つ）。** `spark/snmp_sinks.py` の `build` が、格納先ごとに別のストリーミングクエリを起こしている。
+**A. どちらも 1 つではない。ジョブは格納先のまとまりごとに 3 つ。Kafka の購読は格納先ごとに 1 つずつ（最大 4 つ）。** `app/spark/snmp_sinks.py` の `build` が、格納先ごとに別のストリーミングクエリを起こしている。
 
 | ジョブ | クエリ（格納先） | 購読するトピック | 有効になる条件 |
 |---|---|---|---|
-| `sinks-s3iceberg` | iceberg（S3 Tables の生データ） | metrics / gnmi / mdt / traps / logs | `STORES` の `s3` |
-| `sinks-grafana` | prometheus | metrics / gnmi / mdt | `STORES` の `grafana` |
-| `sinks-grafana` | opensearch | traps / logs | `STORES` の `grafana` |
-| `sinks-splunk` | splunk | metrics / gnmi / mdt / traps / logs | `STORES` の `splunk` |
+| `sinks-s3iceberg` | iceberg（S3 Tables の生データ） | metrics / gnmi / traps / logs / flows | `STORES` の `s3` |
+| `sinks-grafana` | prometheus | metrics / gnmi | `STORES` の `grafana` |
+| `sinks-grafana` | opensearch | traps / logs / flows | `STORES` の `grafana` |
+| `sinks-splunk` | splunk | metrics / gnmi / traps / logs / flows | `STORES` の `splunk` |
 
 - **1 つのクエリは、複数のトピックをまとめて 1 回で購読する。**
   トピックごとに購読を分けてはいない（`subscribe` にカンマ区切りで渡す）。
@@ -650,7 +642,7 @@ Spark UI（EMR Serverless のコンソールから開ける）の Executors の�
 | 部品 | 送るきっかけ | この PoC の値 |
 |---|---|---|
 | Telegraf → Kafka | 10 秒ごと。ただし 500 件溜まったら、その時点で送る | `flush_interval = "10s"`、`metric_batch_size = 500` |
-| Spark → 格納先 | 60 秒ごとだけ | `TRIGGER = "60 seconds"`（`spark/snmp_sinks.py`） |
+| Spark → 格納先 | 60 秒ごとだけ | `TRIGGER = "60 seconds"`（`app/spark/snmp_sinks.py`） |
 | Firehose → S3 Tables（アラートの履歴。アラートの履歴を残す（001）で足した） | 60 秒、またはバッファの大きさの早いほう | 60 秒 |
 
 - **遅れを縮めたいなら、間隔を短くする。**
@@ -704,8 +696,8 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 | 項目 | 値 | 場所 |
 |---|---|---|
-| トピックのパーティション | 2 | `terraform/pipeline/stream/msk.tf` の `num.partitions` |
-| executor | 2 つ、それぞれ 1 コア、固定（自動で増やさない）。2026-10-04 に 1 → 2 にした。driver と合わせて、ジョブ 1 つにつき 3 vCPU。ジョブは格納先で 3 つまで動くので、合わせて最大 9 vCPU | `terraform/pipeline/analytics/outputs.tf` の `spark.executor.instances` ほか |
+| トピックのパーティション | 2 | `IaC/terraform/aws-managed/pipeline/stream/msk.tf` の `num.partitions` |
+| executor | 2 つ、それぞれ 1 コア、固定（自動で増やさない）。2026-10-04 に 1 → 2 にした。driver と合わせて、ジョブ 1 つにつき 3 vCPU。ジョブは格納先で 3 つまで動くので、合わせて最大 9 vCPU | `IaC/terraform/aws-managed/pipeline/analytics/outputs.tf` の `spark.executor.instances` ほか |
 
 - つまり、いまはパーティション 2 つを executor 2 つで同時に読んでいる（AWS では未確認）。
 - 増やすなら `spark.executor.instances` か `spark.executor.cores` を上げ、EMR Serverless の上限（`max_cpu` / `max_memory`）も合わせる。
@@ -759,8 +751,8 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 | 場所 | 中身 |
 |---|---|
-| `spark/snmp_sinks.py` | 引数 `--http-send driver / executor`。`http_query` の中で、`driver` なら `collect()`、`executor` なら `batch_df.foreachPartition(...)` |
-| `terraform/pipeline/analytics` | 変数 `http_send`。`executor` のときだけ、Splunk のジョブと OpenSearch + Prometheus のジョブの引数に渡す（S3 Tables のジョブには渡さない） |
+| `app/spark/snmp_sinks.py` | 引数 `--http-send driver / executor`。`http_query` の中で、`driver` なら `collect()`、`executor` なら `batch_df.foreachPartition(...)` |
+| `IaC/terraform/aws-managed/pipeline/analytics` | 変数 `http_send`。`executor` のときだけ、Splunk のジョブと OpenSearch + Prometheus のジョブの引数に渡す（S3 Tables のジョブには渡さない） |
 | `ops/up.sh` と `deploy.env.example` | 環境変数 `HTTP_SEND`。既定は `driver`。ほかの値なら、何も作る前に止まる |
 
 引数が変わるとジョブの SpecHash が変わるので、`ops/up.sh` を流し直せば HTTP の格納先のジョブ 2 つが起こし直され、checkpoint の続きから読む。費用は変わらない（executor の数は同じ）。
@@ -827,14 +819,14 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 | 書くもの | 書き手 |
 |---|---|
-| 全層（物理 / IP / EVPN・BGP）の最初の投入 | `ops/up.sh` の手順 7-3b（`lab/lab_topology.py` の出力を `ops/seed_graph.py` が入れる） |
-| 物理層（機器・IF・回線）の差分 | Nautobot の Job（`nb_sync.sync` → `agent/graph.py` の `sync_physical()`。openCypher） |
-| `status`（アラートで変わる） | graph の Lambda（`graph/status_handler.py`） |
+| 全層（物理 / IP / EVPN・BGP）の最初の投入 | `ops/up.sh` の手順 7-3b（`app/containerlab/lab_topology.py` の出力を `ops/seed_graph.py` が入れる） |
+| 物理層（機器・IF・回線）の差分 | Nautobot の Job（`nb_sync.sync` → `app/agentcore/graph.py` の `sync_physical()`。openCypher） |
+| `status`（アラートで変わる） | graph の Lambda（`app/graph/status_handler.py`） |
 | 台帳の変更履歴（頂点 `change`。新しい順に 50 件） | Nautobot の Job（`sync_changes()`） |
 
 - 修復案は Neptune に書かない（2026-10-05 から。置き場は S3 Tables の `proposal_events` だけ。7 章）。当時（2026-10-04 まで）はワークフローと Web が修復案の頂点を書いていた。
 - Job は `status` と IP 層より上には触らない。IP 層・EVPN/BGP 層は Nautobot からは入らない。
-- Job は Neptune のほかに、Telegraf の取りにいく側（dialin）の機器の一覧（SSM のパラメータ）も書き換える。
+- Job は Neptune のほかに、gnmic の購読先の一覧（SSM のパラメータ）も書き換える。
 
 ### Q. Nautobot は、いつ立つ？ 環境変数でオン・オフを切り替えられる？
 
@@ -842,17 +834,17 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 - 立たないのは、`PIPELINE=0` のときと、`SKIP_STREAM` と `SKIP_GRAPH` を両方書いたとき（Job の書き先が無い）。
 - 前の `deploy.env` に `NAUTOBOT=...` が残っていても止まらない。`ops/up.sh` が「もう使わない」と注意を出す。
-- Telegraf の dialin の一覧は、いつも Nautobot の Job が書く SSM のパラメータ（`/<prefix>/telegraf-dialin/nautobot/*`）から受ける。
-- 費用は Nautobot の分（+$0.13/h と `ecs` のエンドポイント $0.014/h）が PIPELINE に入る。`PIPELINE=1` だけ（`STORES` は既定）なら、土台と合わせて約 $2.80/h（README の表）。
+- gnmic の購読先の一覧は、いつも Nautobot の Job が書く SSM のパラメータ（`/<prefix>/gnmic/nautobot/gnmi-targets`）から受ける。
+- 費用は Nautobot の分（+$0.13/h と `ecs` のエンドポイント $0.014/h）が PIPELINE に入る。`PIPELINE=1` だけ（`STORES` は既定）なら、土台と合わせて約 $2.92/h（README の表）。
 - デバッグ用の EC2（`ops/lab-debug.sh`）は Nautobot を使わない（lab の定義の一覧のまま）。
 
 ### Q. Nautobot にトポロジの情報を入れているのはシェルスクリプトだと思うけど、どこからの情報を引っ張ってきて入れている？
 
 **A. リポジトリの中の lab の定義ファイルから。** 実機や AWS から取ってきてはいない。入れるのはシェルではなく、コンテナの中の Python。
 
-1. 元の情報: `lab/splab.clab.yml.in`（containerlab の機器と配線）と `lab/srlinux/<機器>.cli`（SR Linux の設定）。
-2. 変換: `ops/up.sh` がイメージを作るときに手元で `lab/lab_topology.py` を実行し、機器 8 台・回線 12 本を `lab_seed.json` にしてイメージに入れる。
-3. 投入: コンテナが起動時に `nautobot/netops/bootstrap.py` を実行し、**機器が 1 台も無いときだけ** `lab_seed.json` から入れる。
+1. 元の情報: `app/containerlab/splab.clab.yml.in`（containerlab の機器と配線）と `app/containerlab/srlinux/<機器>.cli`（SR Linux の設定）。
+2. 変換: `ops/up.sh` がイメージを作るときに手元で `app/containerlab/lab_topology.py` を実行し、機器 7 台・回線 12 本を `lab_seed.json` にしてイメージに入れる。
+3. 投入: コンテナが起動時に `app/nautobot/nwc/bootstrap.py` を実行し、**機器が 1 台も無いときだけ** `lab_seed.json` から入れる。
 
 - 入るもの: 拠点、役割、機器、インタフェース（LAG を含む）、アドレス、管理 IP、ASN、Service（`gnmi` / `snmp`）、ケーブル（主 / 副と帯域）。
 - 2 回目からは seed を飛ばすので、Nautobot で変えた内容が正になる。`ops/down.sh` で DB ごと消えるので、作り直すとまた lab の定義から入る。
@@ -869,7 +861,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 - **取り込み方。**
   外のワーカーが API で書くほかに、Nautobot の側から取りにいく方法がある（次の Q）。
 - **Job が読む項目に合わせる。**
-  Job は Device の Service `gnmi` / `snmp` を監視対象の印にし、ケーブルの主 / 副と帯域、ASN などを決まった場所から読む（対応は `nautobot/netops/nb_map.py`）。同じ形で入れないと Telegraf や Neptune に映らない。
+  Job は Device の Service `gnmi` / `snmp` を監視対象の印にし、ケーブルの主 / 副と帯域、ASN などを決まった場所から読む（対応は `app/nautobot/nwc/nb_map.py`）。同じ形で入れないと gnmic の購読先や Neptune に映らない。
 - 今の構成は閉域で、Nautobot は VPC の中からしか届かない。外のワーカーから書くなら経路と API トークン（発行と SSM での保管）が要る。PoC にはどちらも入っていない。
 
 ### Q. 「Nautobot の側から取りにいく」とは、Nautobot の Job が取りにいくということ？
@@ -896,12 +888,12 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 |---|---|---|
 | Web / API | 画面と REST API・GraphQL | ECS のタスクの web コンテナ |
 | データベース | 機器・インタフェース・ケーブルなどの台帳 | RDS の PostgreSQL |
-| Job | Nautobot の中で動く Python のプログラム。台帳を直接読み書きできる | `nautobot/jobs/netops_jobs.py` |
+| Job | Nautobot の中で動く Python のプログラム。台帳を直接読み書きできる | `app/nautobot/jobs/nwc_jobs.py` |
 | Celery worker | Job を実際に動かすプロセス | 同じタスクの worker コンテナ |
 | Redis | web から worker へ Job を渡すキュー | 同じタスクの Redis コンテナ |
 
 - Job は Nautobot のプロセスの中で動くので、API を通さずに台帳を扱える。
-- Job が動くきっかけは 4 つ: 画面のボタン、スケジュール、API、台帳の変更（JobHook）。この PoC は JobHook（`netops-sync`）と、起動時の 1 回。
+- Job が動くきっかけは 4 つ: 画面のボタン、スケジュール、API、台帳の変更（JobHook）。この PoC は JobHook（`nwc-sync`）と、起動時の 1 回。
 
 ### Q. Nautobot はもともと Web・データベース・Job・Celery・Redis がセットになったもの？ 今回新しく足したわけではない？
 
@@ -915,13 +907,13 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 今回足したのは、Nautobot の上で動く中身だけ。
 
-- Job のコード（`nautobot/jobs/netops_jobs.py`）と、台帳とトポロジの対応付け・同期（`nautobot/netops/nb_map.py` / `nb_sync.py`）
-- 起動時の用意（`nautobot/netops/bootstrap.py`: 管理者、API のユーザー、custom field、最初の seed、Job の有効化と JobHook）
-- 公式イメージに boto3 と上のファイルを足す `nautobot/Dockerfile`
+- Job のコード（`app/nautobot/jobs/nwc_jobs.py`）と、台帳とトポロジの対応付け・同期（`app/nautobot/nwc/nb_map.py` / `nb_sync.py`）
+- 起動時の用意（`app/nautobot/nwc/bootstrap.py`: 管理者、API のユーザー、custom field、最初の seed、Job の有効化と JobHook）
+- 公式イメージに boto3 と上のファイルを足す `docker/images/nautobot/Dockerfile`
 
 ### Q. Web（運用管理者ダッシュボード）からのトポロジの変更は、Nautobot に書いて、Nautobot の Job が Neptune に反映する構成になっている？
 
-**A. なっている。** Web の「トポロジ」タブのリンクの追加・削除は Nautobot の REST API に書き、Nautobot の JobHook が呼ぶ Job が Neptune の物理層（と Telegraf の一覧）に反映する。Web が Neptune の物理層を直接書くことは無くなった。
+**A. なっている。** Web の「トポロジ」タブのリンクの追加・削除は Nautobot の REST API に書き、Nautobot の JobHook が呼ぶ Job が Neptune の物理層（と gnmic の購読先の一覧）に反映する。Web が Neptune の物理層を直接書くことは無くなった。
 
 ```mermaid
 flowchart LR
@@ -1080,7 +1072,7 @@ Lambda から書く経路は 2 案あった。
 **A. どちらもできる。ただし、ワークフローの中で書くと障害の一部しか残らないので、書く場所を 2 つに分ける。**
 
 - **集めて書くのはできる。**
-  worker はすでに Neptune を読み、PyIceberg で S3 Tables に追記している。ログ（OpenSearch）、メトリクス（Prometheus）、Nautobot の変更履歴を取る処理は `agent/evidence.py` にあり、worker から呼べる。足りないのは worker の IAM とエンドポイントの環境変数。
+  worker はすでに Neptune を読み、PyIceberg で S3 Tables に追記している。ログ（OpenSearch）とメトリクス（Prometheus）を取る処理は `app/agentcore/evidence.py`、Nautobot の変更履歴（Neptune の頂点 `change`）を引く処理は `app/agentcore/topology.py` の `recent_changes` にあり、worker から呼べる。足りないのは worker の IAM とエンドポイントの環境変数。
 - **ワークフローは全部の障害を見ていない。**
   起こすのは `link_down` だけ。保守中の機器の通知、重複、閉じたあとに届いた解消は捨てている。
 - **情報源は、聞いた時点では揃っていない。**
@@ -1123,8 +1115,8 @@ Lambda から書く経路は 2 案あった。
 
 | 流し先 | 入るトピック | 中身 |
 |---|---|---|
-| OpenSearch（インデックス `snmp-logs`） | traps / logs | trap と syslog |
-| Prometheus | metrics / gnmi / mdt | メトリクスの時系列 |
+| OpenSearch（インデックス `snmp-logs`） | traps / logs / flows | trap と syslog と NetFlow / sFlow |
+| Prometheus | metrics / gnmi | メトリクスの時系列 |
 | S3 Tables の生データのテーブル | 5 つ全部 | 正本 |
 | Splunk（`STORES` に `splunk` があるときだけ） | 5 つ全部 | 比較用 |
 
@@ -1132,14 +1124,14 @@ Lambda から書く経路は 2 案あった。
 
 ### Q. Grafana のデータソースは、OpenSearch と Prometheus の 2 つ？
 
-**A. その 2 つ。** 定義は `grafana/provisioning/datasources/`。
+**A. その 2 つ。** 定義は `app/grafana/provisioning/datasources/`。
 
 | データソース | 接続先 | 入っているもの | 使い道 |
 |---|---|---|---|
-| Prometheus (AMP)。既定 | Amazon Managed Service for Prometheus | metrics / gnmi / mdt | ダッシュボード `metrics.json` と、アラートルール `link_down`、`bgp_down`、`isis_down` |
-| OpenSearch (logs) | OpenSearch Serverless の logs コレクション | traps / logs | ダッシュボード `logs.json` と、アラートルール `trap` |
+| Prometheus (AMP)。既定 | Amazon Managed Service for Prometheus | metrics / gnmi | ダッシュボード `metrics.json` と、アラートルール `link_down`、`bgp_down`、`isis_down` |
+| OpenSearch (logs) | OpenSearch Serverless の logs コレクション | traps / logs / flows | ダッシュボード `logs.json` と、アラートルール `trap` |
 
-- アラートは両方のデータソースを見ている。Prometheus のルールが 3 つ、OpenSearch のルールが 1 つ（`grafana/provisioning/alerting/`）。
+- アラートは両方のデータソースを見ている。Prometheus のルールが 3 つ、OpenSearch のルールが 1 つ（`app/grafana/provisioning/alerting/`）。
 - 聞いた時点（2026-10-04）では、アラートは Prometheus の `link_down` だけだった。trap や BGP / IS-IS の落ちは Splunk だけが検知していた。「Splunk と Grafana のアラートを比べる（002）」で両方を揃えた。
 - S3 Tables は Grafana のデータソースではない。
 - どちらも認証はタスクロールの SigV4 で、VPC エンドポイント経由。
@@ -1149,7 +1141,7 @@ Lambda から書く経路は 2 案あった。
 **A. 機器から来た生データを、全部そのまま溜めておく S3 Tables（Iceberg）のテーブル。**
 
 - **入るもの。**
-  MSK の 5 つのトピック（metrics / gnmi / mdt / traps / logs）の全部。Spark が up か down かを判断せず、行をそのまま追記する。どのトピックから来た行かは `topic` 列で分かる。
+  MSK の 5 つのトピック（metrics / gnmi / traps / logs / flows）の全部。Spark が up か down かを判断せず、行をそのまま追記する。どのトピックから来た行かは `topic` 列で分かる。
 - **役割。**
   メトリクスとログの履歴の正本。OpenSearch と Prometheus は検索やグラフのための写し。
 - **作られる条件。**
@@ -1163,15 +1155,15 @@ Lambda から書く経路は 2 案あった。
 
 | 中身 | テーブル名 | 書く人 | 状態 |
 |---|---|---|---|
-| 機器から来た生データ（metrics / gnmi / mdt / traps / logs の全部） | `raw_telemetry`（旧 `snmp_metrics`） | Spark | `STORES` に `s3` があるときだけ作る |
+| 機器から来た生データ（metrics / gnmi / traps / logs / flows の全部） | `raw_telemetry`（旧 `snmp_metrics`） | Spark | `STORES` に `s3` があるときだけ作る |
 | 修復案（作成・承認・却下・時間切れ・適用・確認）。修復案の置き場はここだけ | `proposal_events` | Temporal の worker | いつも作る |
 | アラートの通知の履歴（発火と解消） | `alert_events` | Lambda graph-status（Firehose 経由） | 「アラートの履歴を残す（001）」で入った（聞いた時点では実装中だった） |
 
-生データのテーブルの列は 12。Terraform が作る 8 列（`terraform/pipeline/analytics/tables.tf`）に、Spark が起動時に `ALTER TABLE` で 4 列を足す。聞いた時点では 8 列だった。
+生データのテーブルの列は 12。Terraform が作る 8 列（`IaC/terraform/aws-managed/pipeline/analytics/tables.tf`）に、Spark が起動時に `ALTER TABLE` で 4 列を足す。聞いた時点では 8 列だった。
 
 - `ts`、`ingested_at`: 時刻
 - `topic`: どのトピックから来たか。メトリクスとログはこの列で見分ける
-- `measurement`、`agent_host`、`host`: Telegraf が付ける名前と送り元
+- `measurement`、`agent_host`、`host`: Telegraf の JSON の形の名前と送り元（syslog-ng はこの形で書き、gnmic と GoFlow2 の行は Spark が読み替えて埋める）
 - `tags_json`、`fields_json`: 中身。JSON の文字列のまま
 - `event_id`、`kafka_topic`、`kafka_partition`、`kafka_offset`: Spark が足す 4 列。一意の番号と、元のメッセージの Kafka の位置
 
@@ -1242,7 +1234,7 @@ Grafana の側でやること。
 - **一意の番号は、Splunk と同じものを使う。**
   `event_id`（Kafka のメッセージの中身の SHA-256）を、ドキュメントの項目として入れてある。当時は入れておらず、案は Kafka のトピック、パーティション、offset をつないだ値だった。
 - **パネルの数え方は、まだ替えていない。**
-  `grafana/` に `event_id` を使うパネルは無い。
+  `app/grafana/` に `event_id` を使うパネルは無い。
 - **Grafana で一律に落とさない理由。**
   Grafana は検索の結果を描くだけで、重複を落とす共通の設定は無い。パネルごとに問い合わせを書くことになる。必要なパネルは件数と合計だけ。
 - **重複が起きるのは、送信の失敗でやり直したときだけ。**
@@ -1314,7 +1306,7 @@ OpenSearch Serverless の型をあとから替えられないこと、SEARCH 型
 | Prometheus | 入れない | ラベルに入れると、サンプル 1 つごとに別の系列ができて壊れる。もともと同じ系列と時刻は 1 つしか持てないので、要らない |
 
 - **勧めは、Spark で中身から作る番号。**
-  直す場所が `spark/snmp_sinks.py` の 1 か所で済み、Telegraf の送り直しも拾える。Kafka の offset も別の項目として入れておくと、元のメッセージを追える。
+  直す場所が `app/spark/snmp_sinks.py` の 1 か所で済み、Telegraf の送り直しも拾える。Kafka の offset も別の項目として入れておくと、元のメッセージを追える。
 - **Telegraf で付けるのが要るのは、中身が同じ別の出来事を数え分けたいときだけ。**
   メトリクスでは起きない（同じ系列の同じ時刻は、同じもの）。ログで件数の正確さが要るなら、そのとき足す。
 
@@ -1333,7 +1325,7 @@ Kafka が持っている番号。
 
 この 2 つは Kafka の中だけで使われる。メッセージの中身には入らないので、Spark や格納先からは見えない。
 
-いまの設定（`telegraf/telegraf.conf.in` の `outputs.kafka`）。
+いまの設定（`app/telegraf/telegraf.conf.in` の `outputs.kafka`）。
 
 | 設定 | 値 | 意味 |
 |---|---|---|
@@ -1354,7 +1346,7 @@ Kafka が持っている番号。
 - **有効にするなら、3 つを合わせて変える。**
   `idempotent_writes = true`、`required_acks = -1`（全部の複製が受け取るまで待つ）、MSK の IAM の権限（冪等な書き込みの許可）。そのぶん送信が少し遅くなる。
 - **時刻は秒まで（`json_timestamp_units = "1s"`）。**
-  中身から番号を作る場合、同じ秒の中の 2 つの出来事は時刻で区別できない。メトリクスは決まった間隔で届くので困らない（SNMP のポーリングは 10 秒、gNMI の sample は 60 秒）。変化のたびに届くもの（gNMI の on_change、trap、syslog）は、同じ秒に同じ中身が 2 回あると 1 つに見える。
+  中身から番号を作る場合、同じ秒の中の 2 つの出来事は時刻で区別できない。メトリクスは決まった間隔で届くので困らない（gNMI の sample は 60 秒。2026-10-09 までの SNMP のポーリングは 10 秒）。変化のたびに届くもの（gNMI の on_change、trap、syslog）は、同じ秒に同じ中身が 2 回あると 1 つに見える。
 
 idempotent producer の動き、Telegraf の `idempotent_writes` の設定名、MSK の権限は、記憶から書いた。
 
@@ -1406,7 +1398,7 @@ Splunk の中で重複を扱う方法。
 - **Telegraf が同じメッセージを Kafka に 2 回入れた場合。**
   `event_id` は同じで、offset が違う。`event_id` で重複を落とせる。
 
-実装済み（`spark/snmp_sinks.py`。聞いた時点では実装の前だった）。Prometheus には入れていない。
+実装済み（`app/spark/snmp_sinks.py`。聞いた時点では実装の前だった）。Prometheus には入れていない。
 
 ---
 
@@ -1428,7 +1420,7 @@ Splunk の中で重複を扱う方法。
 - **クラスターにして複製しても、取り込み量は増えない。**
   数えるのは最初に取り込んだ 1 回だけで、indexer の間の複製は数えない。増えるのはディスクと台数（AWS の費用）。
 - **取り込み量を減らす手は、Splunk に送るトピックを絞ること。**
-  いまは全部のトピックを Splunk に送っている。S3 に全部あるので、Splunk にはアラートに使うもの（ポーリング、trap、gNMI の BGP と IS-IS）だけ送る、という分け方ができる。
+  いまは全部のトピックを Splunk に送っている。S3 に全部あるので、Splunk にはアラートに使うもの（trap、gNMI の IF・BGP・IS-IS）だけ送る、という分け方ができる。
 
 料金の形は記憶から書いた。契約の前に Splunk の料金のページで確かめる。
 
@@ -1482,25 +1474,24 @@ Splunk の中で重複を扱う方法。
 
 ### Q. Splunk から SNS へは、どうやってアラートを出している？
 
-**A. 毎分走る保存済みサーチが結果を 1 行でも返すと、自作のアラートアクション `netops_sns`（Python のスクリプト）が SNS の Publish API を直接呼ぶ。認証は ECS のタスクロール。**
+**A. 毎分走る保存済みサーチが結果を 1 行でも返すと、自作のアラートアクション `nwc_sns`（Python のスクリプト）が SNS の Publish API を直接呼ぶ。認証は ECS のタスクロール。**
 
 | 順 | 何が起きるか | どこに書いてあるか |
 |---|---|---|
-| 1 | Spark が HEC でイベントを Splunk に入れる | `spark/snmp_sinks.py` |
-| 2 | 保存済みサーチが毎分走り、直前の 1 分に index に入ったイベントを読む（ポーリングと gNMI は、比べる相手としてその前も読む）。結果の 1 行がアラート 1 件 | `splunk/netops_alerts/default/savedsearches.conf` |
-| 3 | 結果が 1 行以上あると、Splunk がスクリプトを `--execute` で起こす。結果の CSV の場所を標準入力で渡す | `savedsearches.conf` の `action.netops_sns = 1`、`alert_actions.conf` |
-| 4 | スクリプトが CSV を読み、IP を機器名に直し（`DEVICE_MAP`）、Grafana と同じ形の JSON にする。1 通に最大 50 件 | `splunk/netops_alerts/bin/netops_sns.py` |
+| 1 | Spark が HEC でイベントを Splunk に入れる | `app/spark/snmp_sinks.py` |
+| 2 | 保存済みサーチが毎分走り、直前の 1 分に index に入ったイベントを読む（gNMI は、比べる相手としてその前も読む）。結果の 1 行がアラート 1 件 | `app/splunk/nwc_alerts/default/savedsearches.conf` |
+| 3 | 結果が 1 行以上あると、Splunk がスクリプトを `--execute` で起こす。結果の CSV の場所を標準入力で渡す | `savedsearches.conf` の `action.nwc_sns = 1`、`alert_actions.conf` |
+| 4 | スクリプトが CSV を読み、IP を機器名に直し（`DEVICE_MAP`）、Grafana と同じ形の JSON にする。1 通に最大 50 件 | `app/splunk/nwc_alerts/bin/nwc_sns.py` |
 | 5 | タスクロールの一時的な認証情報を取り、Splunk の Python が持っている boto3 で SNS の Publish を呼ぶ（署名は boto3 がする）。失敗したら 3 回まで試す | 同じファイル |
-| 6 | SNS のトピック `<接頭辞>-alerts` に届く。ここから先は Grafana のアラートと同じ道 | `terraform/base/core` の `alerts.tf` |
+| 6 | SNS のトピック `<接頭辞>-alerts` に届く。ここから先は Grafana のアラートと同じ道 | `IaC/terraform/aws-managed/base/core` の `alerts.tf` |
 
-保存済みサーチは 4 本ある。
+保存済みサーチは 3 本ある（2026-10-09 に SNMP のポーリングのサーチをやめた）。
 
 | 名前 | 見るもの | 出すアラート |
 |---|---|---|
-| `netops_poll` | SNMP のポーリング（IF の `ifOperStatus`） | `link_down` の firing と resolved |
-| `netops_gnmi` | gNMI の on_change（BGP のセッション、IS-IS の IF） | `bgp_down`、`isis_down` の firing と resolved |
-| `netops_trap` | SNMP の trap | linkDown は `link_down` の firing、linkUp は resolved。ほかの trap は `trap` の firing |
-| `netops_trap_clear` | 「直った」の知らせが無い trap | 時間が経ったら resolved |
+| `nwc_gnmi` | gNMI の on_change（IF の oper / admin、BGP のセッション、IS-IS の IF） | `link_down`、`bgp_down`、`isis_down` の firing と resolved |
+| `nwc_trap` | SNMP の trap | linkDown は `link_down` の firing、linkUp は resolved。ほかの trap は `trap` の firing |
+| `nwc_trap_clear` | 「直った」の知らせが無い trap | 時間が経ったら resolved |
 
 スクリプトを自作している理由は 3 つ。
 
@@ -1515,7 +1506,7 @@ Splunk の中で重複を扱う方法。
 知っておくとよいこと。
 
 - **環境変数は、入口のスクリプトがファイルに写している。**
-  splunkd の子プロセス（アラートアクション）は、コンテナの環境変数を引き継がない。`splunk/entrypoint.sh` がトピックの ARN などを `/opt/container_artifact/nwc-alerts.env` に書き、スクリプトがそれを読む。
+  splunkd の子プロセス（アラートアクション）は、コンテナの環境変数を引き継がない。`app/splunk/entrypoint.sh` がトピックの ARN などを `/opt/container_artifact/nwc-alerts.env` に書き、スクリプトがそれを読む。
 - **SNS へは VPC エンドポイントを通る。**
   閉域なので、インターネットには出ない。
 - **失敗は Splunk のログに残る。**
@@ -1523,7 +1514,7 @@ Splunk の中で重複を扱う方法。
 - **クラスターのときは、この仕組みは search head にだけある。**
   indexer でも動くと、同じアラートが台の数だけ出る。
 
-ここに書いたのは、「Splunk と Grafana のアラートを比べる（002）」が入ったあとの main の状態。聞いた時点では保存済みサーチは 3 本（`netops_poll` が無い）で、署名は自前だった。
+ここに書いたのは、「Splunk と Grafana のアラートを比べる（002）」が入ったあとの main の状態。聞いた時点では保存済みサーチは 3 本（SNMP のポーリングのサーチが無い）で、署名は自前だった。
 
 ### Q. Splunk のイメージに Python を入れるのは、避けたほうがいい？
 
@@ -1553,11 +1544,13 @@ Splunk の中で重複を扱う方法。
 - **デメリット。**
   Splunk は、この boto3 を app に使わせるとは約束していない（公式の文書でそういう記述は見つけられなかった）。Splunk の版を上げると、boto3 の版が変わったり無くなったりしうる。利用者のあいだの勧めは「自分の app に同梱する」。
 - **デメリットへの備え。**
-  イメージのタグを固定している（`splunk/splunk:10.4.3`）ので、勝手には変わらない。タグを上げるときに気づけるよう、`tests/check_splunk_image.py` で「その版の Python に boto3 があり、publish できる」を確かめる。無くなっていたら、同梱する形に替える（エンジニアが一度作った実装がブランチ `feat/splunk-boto3` のコミット ffba169 にある）。
+  イメージのタグを固定している（いまは `splunk/splunk:10.4.4`）ので、勝手には変わらない。タグを上げるときに気づけるよう、`tests/check_splunk_image.py` で「その版の Python に boto3 があり、publish できる」を確かめる。無くなっていたら、同梱する形に替える（エンジニアが一度作った実装がブランチ `feat/splunk-boto3` のコミット ffba169 にある）。
 - **版が古いことの影響。**
   使うのは SNS の `Publish` だけで、何年も変わっていない API。1.37.14 で困らない。
 
 AWS の上（ECS のタスクロール、VPC エンドポイント）で送れることは、2026-10-05 に確かめた（`link_down` と `isis_down` が SNS に届いた）。
+
+2026-10-08 に `splunk/splunk:10.4.4` へ上げたときも `tests/check_splunk_image.py` で確かめた。3.13.11 と 3.9.25 のどちらにも boto3 1.37.14 があり（場所も同じ）、3.13 から publish が通った（3.9 からの publish は試していない）。
 
 確かめていないこと: Splunk の過去の版に boto3 が入っていたか。「利用者のあいだの勧め」は Splunk のコミュニティの投稿で、検索結果の要約から読んだ（ページそのものは開けなかった）。
 
@@ -1600,7 +1593,7 @@ AWS の上（ECS のタスクロール、VPC エンドポイント）で送れ�
 
 **理由**
 
-- Spark（`spark/snmp_sinks.py` の `splunk_events`）は、`SPLUNK_INDEX` が空ならイベントに `index` を入れない。HEC の仕様で、入っていない項目は token に決めた値になる。
+- Spark（`app/spark/snmp_sinks.py` の `splunk_events`）は、`SPLUNK_INDEX` が空ならイベントに `index` を入れない。HEC の仕様で、入っていない項目は token に決めた値になる。
 - 無い index 宛てのイベントは、`indexes.conf` の `lastChanceIndex` に行き先を書いておけばそこへ入る。既定は空で、空なら捨てられる（公式の記述）。
 - このプロジェクトは `indexes.conf` を書いていない（004 の決定）ので、`lastChanceIndex` も空のまま。
 
@@ -1653,13 +1646,13 @@ AWS の上（ECS のタスクロール、VPC エンドポイント）で送れ�
 | 格納先 | この PoC の実体 | 横に広げる仕組み | 自分でやること |
 |---|---|---|---|
 | Prometheus | Amazon Managed Service for Prometheus（AMP）のワークスペース | 中身は分散型の Prometheus（Cortex）。取り込みと保存を AWS が複数 AZ で分散している | 無い。上限（取り込みの速さ、時系列の数）に当たったら引き上げを申請する |
-| OpenSearch | OpenSearch Serverless のコレクション `logs` | 取り込みと検索の計算（OCU）を AWS が負荷に合わせて増減する | 無い。この PoC は費用を抑えるため予備のレプリカを切っている（`standby_replicas = "DISABLED"`）。本番は有効にする |
+| OpenSearch | OpenSearch Serverless のコレクション `logs` | 取り込みと検索の計算（OCU）を AWS が負荷に合わせて増減する | 無い。この PoC は費用を抑えるため、既定では予備のレプリカを切っている（`standby_replicas = "DISABLED"`。`OPENSEARCH_AZ_NUM=2` で `ENABLED`）。本番は有効にする |
 | Splunk | ECS の Splunk Enterprise。既定は 1 タスク | Splunk の機能としてはある（インデクサークラスターとサーチヘッドクラスター） | `SPLUNK_AZ_NUM` を 2 か 3 にすると、インデクサーのクラスターになる（cluster manager 1、indexer は AZ ごとに 1、search head 1）。聞いた時点では 1 台だけで、「組むなら、インデクサー数台、クラスターマネージャー、HEC の前のロードバランサー、ライセンスが要る」と答えていた |
 
 - **VictoriaMetrics のクラスター版が要るのは、素の Prometheus が 1 台でしか動かないから。**
   素の Prometheus を横に広げるために VictoriaMetrics、Thanos、Mimir、Cortex がある。AMP はその Cortex を AWS が運用しているものなので、同じ役目をもう果たしている。
 - **この PoC で先に詰まるのは、格納先ではなく送る側。**
-  OpenSearch、Prometheus、Splunk への送信は、Spark の driver が 1 本で送っている（`spark/snmp_sinks.py` の `http_query`）。格納先を広げても、ここが変わらなければ速くならない。量が増えたら、送信を executor の側で並列にやる形にするのが先（いまは `--http-send executor` で切り替えられる。既定は driver）。
+  OpenSearch、Prometheus、Splunk への送信は、Spark の driver が 1 本で送っている（`app/spark/snmp_sinks.py` の `http_query`）。格納先を広げても、ここが変わらなければ速くならない。量が増えたら、送信を executor の側で並列にやる形にするのが先（いまは `--http-send executor` で切り替えられる。既定は driver）。
 - **Splunk の既定は、比較用の 1 台。**
   クラスターは「Splunk をクラスターにする（004）」で足した切り替えで、2026-10-05 に AWS で確かめたのは `SPLUNK_AZ_NUM=2`（`3` は未確認）。Splunk は Grafana との比較のために置いていて（`STORES` に `splunk` があるときだけ）、止まっても正本の S3 Tables には影響しない。
 
@@ -1687,10 +1680,10 @@ Fargate をやめて、ECS の EC2（または EC2 そのもの）にボリュ�
 
 | OSS | 置き場 | 理由 |
 |---|---|---|
-| Kafka | EFS | タスクが入れ替わってもログを残す。Kafka の公式の文書に NFS / EFS の記述は無い（置いてよいかは未確認） |
+| Kafka | EFS | タスクが入れ替わってもログを残す。Kafka の公式の文書に NFS / EFS の記述は無い。2026-10-07 に AWS で 1 時間ほど流して、1 台止めて戻すまで遅さやロックの不具合は出なかった（日単位で長く流したときは未確認） |
 | VictoriaMetrics（vmstorage） | EFS | 公式の文書が「Amazon EFS などの NFS に置ける」と書いている |
 | OpenSearch | タスクの一時領域 | 公式の文書がネットワークファイルシステムを避けるよう書いている。データの 2 台が同時に落ちると消える |
-| Neo4j | タスクの一時領域 | NFS は非対応と明記。消えたら Nautobot と lab の定義から同期し直す |
+| Neo4j | タスクの一時領域 | NFS は非対応と明記。消えたら 2 段で同期し直す（`ops/sync-graph.sh --oss` で lab の定義から、そのあと Nautobot の Job「gnmic とグラフ DB に同期」で変更履歴。[oss-variant.md](oss-variant.md) の「Neo4j を起こし直したあとの戻し方」） |
 
 - EFS は、台ごとにアクセスポイント（ディレクトリ）を分ける。1 つのディレクトリに書くのは 1 つのタスクだけなので、NFS で問題になりやすい同時書き込みが起きない。
 - 「NFS は勧めない」という注意は、マネージドと OSS を比べるときの材料として残す（自前で持つと、置き場の選び方まで自分の責任になる）。
@@ -1764,9 +1757,9 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 
 **A. 結論**
 
-クラスターを組めて、EFS にも公式に置ける。Prometheus の remote write と問い合わせの API をそのまま受けるので、書く側（Spark）と読む側（Grafana、エージェント）は送り先の URL を替え、署名（SigV4）を外すだけで済んだ。OSS 版（005）はこれに替える（2026-10-04 のユーザーの決定）。
+クラスターを組めて、EFS にも公式に置ける。Prometheus の remote write と問い合わせの API をそのまま受けるので、書く側（Spark）と読む側（Grafana、エージェント）は送り先の URL を替え、署名（SigV4）を外すだけで済んだ。OSS 版（005）はこれに替えた（2026-10-04 のユーザーの決定）。
 
-2026-10-04 に公式ドキュメントと Docker Hub で確かめた。手元のコンテナでは、Spark から vminsert に書けて、vmstorage を 1 台止めても全部読めた。AWS では動かしていない。
+2026-10-04 に公式ドキュメントと Docker Hub で確かめた。手元のコンテナでは、Spark から vminsert に書けて、vmstorage を 1 台止めても全部読めた。2026-10-07 に AWS でも立て、lab の 6 台分 396 系列が入り、vmstorage を 1 台止めても値は新しいままだった。
 
 **構成**
 
@@ -1793,7 +1786,7 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 **起動の順に気をつける（手元のコンテナで分かったこと）**
 
 - vminsert が vmstorage の 3 台につなぐ前に書いた行は、1 台にしか入らない。その台を止めると、欠けたことを示さずに値が抜ける。
-- だから vmstorage が上がってから vminsert を起動する。OSS 版は、vminsert のタスクに「3 台が受けるまで待つ」コンテナを付けている。
+- だから vmstorage が上がってから vminsert を起動する。OSS 版は、vminsert のタスクに「3 台が受けるまで待つ」コンテナ（`wait-vmstorage`）を付けている。待つのは `vmstorage_wait_seconds`（既定 300 秒）までで、過ぎたら止まっている台を外して vminsert を起こす。
 - つないだあとに書いたデータは、1 台止めても全部読めた。
 
 **未確認**
@@ -1877,7 +1870,7 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 
 ### Q. OpenSearch は、レプリカと合わせて 2 台では足りない？
 
-データの複製だけなら 2 台で足りる。ただ、1 台止まってもクラスターが動き続けるには、まとめ役（cluster manager）の票が 3 つ要る。OSS 版（005）は「データ 2 台 + まとめ役だけの小さい 1 台」にする（2026-10-04 に決めた）。
+データの複製だけなら 2 台で足りる。ただ、1 台止まってもクラスターが動き続けるには、まとめ役（cluster manager）の票が 3 つ要る。OSS 版（005）は「データ 2 台 + まとめ役だけの小さい 1 台」にした（2026-10-04 に決めた）。
 
 **理由**
 
@@ -1902,7 +1895,7 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 - データを持たないので、メモリもディスクも小さくて済む。
 - まとめ役の仕事（台の監視、index の管理）が、検索や書き込みの負荷に巻き込まれない。PoC のデータ量では、ほとんど効かない。
 
-確認元は AWS の OpenSearch Service のドキュメント（[Dedicated master nodes](https://docs.aws.amazon.com/opensearch-service/latest/developerguide/managedomains-dedicatedmasternodes.html)）。「2 台は実質 1 台」を OpenSearch 本体のドキュメントでは確かめていない（未確認）。「データ 2 台 + まとめ役 1 台」は、手元のコンテナで 3 台のどれを止めても検索できた（Fargate では未確認）。Kafka の controller を 3 台にしたのと同じ理屈。
+確認元は AWS の OpenSearch Service のドキュメント（[Dedicated master nodes](https://docs.aws.amazon.com/opensearch-service/latest/developerguide/managedomains-dedicatedmasternodes.html)）。「2 台は実質 1 台」を OpenSearch 本体のドキュメントでは確かめていない（未確認）。「データ 2 台 + まとめ役 1 台」は、手元のコンテナで 3 台のどれを止めても検索できた。2026-10-07 に AWS の Fargate でも、3.9.0 を `node.store.allow_mmap=false` で 3 台立てて green になり、1 台止めても yellow で検索できた（止めたのがどの台かは記録が無く、3 台のどれでもよいかは Fargate では未確認）。Kafka の controller を 3 台にしたのと同じ理屈。
 
 データは 3 台ともタスクの一時領域に置く（公式の文書がネットワークファイルシステムを避けるよう書いているため）。1 台が入れ替わったときは、もう 1 台のレプリカから戻る。データの 2 台が同時に落ちると消える。
 
@@ -1910,7 +1903,7 @@ OSS 版（005）は ECS で作ると決めている。EKS にしても、Fargate
 
 **A. 結論**
 
-ログの置き場としては代わりになる。ただし検索の書き方が変わるので、読む側のコードとダッシュボードは書き直しになる。いまは OpenSearch のクラスターを第一の案にして、VictoriaLogs は候補として残す。
+ログの置き場としては代わりになる。ただし検索の書き方が変わるので、読む側のコードとダッシュボードは書き直しになる。OSS 版（005）は OpenSearch のクラスターで作り、VictoriaLogs は候補として残す。切り替えるのは OpenSearch が Fargate で動かないと分かったときの予定だったが、2026-10-07 に AWS の Fargate で動いた。
 
 **VictoriaLogs とは**
 
@@ -1934,7 +1927,7 @@ VictoriaMetrics と同じ作り手のログ用データベース。ライセン�
 | 場所 | OpenSearch のまま | VictoriaLogs にすると |
 |---|---|---|
 | Spark の書き込み | 認証と宛先を変えるだけ | 宛先のパスと、時刻とメッセージの列を教えるパラメーター（`_time_field`、`_msg_field`、`_stream_fields`）を足す |
-| エージェントの証拠集め（`agent/evidence.py`） | ほぼそのまま | 検索を LogsQL に書き直す |
+| エージェントの証拠集め（`app/agentcore/evidence.py`） | ほぼそのまま | 検索を LogsQL に書き直す |
 | Grafana のダッシュボードとアラート | ほぼそのまま | データソースとクエリを書き直す |
 
 **メリットとデメリット（VictoriaLogs にした場合）**
@@ -1967,17 +1960,17 @@ VictoriaMetrics と同じ作り手のログ用データベース。ライセン�
 
 | 理由 | 中身 |
 |---|---|
-| 入っているのが、作り直せるデータだから | Neo4j に置くのは機器、インタフェース、ケーブルのトポロジと、障害の status。元は Nautobot にあり、同期し直せば戻る |
+| 入っているのが、作り直せるデータだから | Neo4j に置くのは機器、インタフェース、ケーブルのトポロジと、障害の status。元は Nautobot と lab の定義にあり、同期し直せば戻る（OSS 版は `ops/sync-graph.sh --oss` で lab の定義から、そのあと Nautobot の Job で変更履歴と Nautobot で足した機器と回線。Job は 2026-10-08 から Neo4j に書く） |
 | 量が小さいから | lab の機器は数台。クラスターで読み取りを分散するほどの負荷が無い |
 | クラスターは OSS 版に無いから | クラスターは Enterprise Edition だけ（有償のライセンス）。Community Edition（GPLv3）では組めない。有償の契約が要るので、PoC では使わない |
 
 **1 台が止まると困ること**
 
-- Web のトポロジのタブが出ない。
+- Web のトポロジのタブが Neo4j の中身を出せない（2026-10-07 に AWS で止めたときは、静的データの表示に落ちて画面は 200 のままだった）。
 - 障害の status の更新（Lambda graph-status）が失敗する。
 - エージェントが「隣の機器」などトポロジを引けない。
 
-修復案の置き場は「修復案を S3 Tables にまとめる（003）」で S3 Tables に移ったので、Neo4j が止まっても修復の流れは進む。ECS のサービスなので、タスクが落ちれば自動で立ち上がり直す。データが一時領域なら、そのあと Nautobot から同期し直す。
+修復案の置き場は「修復案を S3 Tables にまとめる（003）」で S3 Tables に移ったので、Neo4j が止まっても修復の流れは進む。ECS のサービスなので、タスクが落ちれば自動で立ち上がり直す。データが一時領域なら、そのあと `ops/sync-graph.sh --oss` で lab の定義から同期し直す。2026-10-07 に AWS で Neo4j のタスクを止めると、ECS が 1 分で起こし直してグラフは空になり、同期で 8 台 / 38 インターフェース / 12 リンクに戻った。2026-10-08 の検証では、変更履歴は `ops/sync-graph.sh --oss` では 0 件のままで、そのあと Nautobot の Job（当時の名前は「Telegraf とグラフ DB に同期」。cycle 013 で「gnmic とグラフ DB に同期」に改めた）を打って 19 件に戻った（[oss-variant.md](oss-variant.md) の「Neo4j を起こし直したあとの戻し方」）。
 
 **クラスターが要るのは**
 
@@ -1994,7 +1987,7 @@ Community Edition にクラスターが無いことは、2026-10-04 に Neo4j �
 
 - クラスターは Enterprise Edition だけの機能で、Community Edition では組めない。
 - だから OSS 版の中で、Neo4j だけは 1 台で動く（Kafka、OpenSearch、VictoriaMetrics はクラスター）。
-- 止まっているあいだは、トポロジの表示と status の更新ができない。データは Nautobot から同期し直せる。
+- 止まっているあいだは、トポロジの表示と status の更新ができない。データは lab の定義から同期し直せる（`ops/sync-graph.sh --oss`）。
 
 ### Q. Kafka を KRaft のクラスターにするには、何台要る？
 
@@ -2022,10 +2015,15 @@ Community Edition にクラスターが無いことは、2026-10-04 に Neo4j �
 - 固定の voter で 3 台が組めた。
 - 1 台止めても、書いた 1000 件を全部読めて、書けた。
 
+**AWS で確かめたこと（2026-10-07）**
+
+- Fargate と EFS の上で 3 台が組めて、5 つのトピックに流れた。
+- 1 台止めても残りの 2 台で受け続け（under-replicated 2）、戻ると 3 分以内に 0 に戻った。1 時間ほど流して、遅さやロックの不具合は出なかった。
+
 **まだ確かめていないこと**
 
 - Kafka のデータを EFS（NFS）に置いてよいかは、公式ドキュメントに記述が見つからない。
-- combined の 3 台を ECS の Fargate で 1 台ずつ入れ替えたときに、過半数が保たれるかは AWS で未確認。いまの terraform は、タスク定義が変わると 3 台を同時に入れ替える（データは EFS に残る）。
+- combined の 3 台を ECS の Fargate で 1 台ずつ入れ替えたときに、過半数が保たれるかは AWS で未確認。terraform だけで apply すると、タスク定義が変わった台を同時に入れ替える（データは EFS に残る）。`ops/oss/up.sh` は apply の前に `ops/oss/roll-nodes.sh` で 1 台ずつ入れ替え、間で controller と複製がそろうのを ECS Exec で待つ（2026-10-08 に足し、同日に AWS で 3 台を 1 台ずつ入れ替えて通った。ECS Exec は端末が要るので、端末の無いシェルからは `script` で疑似端末を付けて打つ（`script` も打てなければ止まる）。`OSS_ROLL=0` で一度に入れ替える）。
 
 **出典**
 
@@ -2051,7 +2049,7 @@ GDS でやる。AWS 版と同じ「DB の中で `CALL`」の形で比べられ�
 
 **背景**
 
-AWS 版は、エージェントのツール `centrality`（`agent/graph.py` の `centrality()`）が Neptune Analytics の `neptune.algo.*` を 3 つ呼んでいる。
+AWS 版は、エージェントのツール `centrality`（`app/agentcore/graph.py` の `centrality()`）が Neptune Analytics の `neptune.algo.*` を 3 つ呼んでいる。
 
 | 使っているもの | 意味 |
 |---|---|
@@ -2066,7 +2064,7 @@ AWS 版は、エージェントのツール `centrality`（`agent/graph.py` の 
 | 何か | Python のグラフ計算ライブラリ | Neo4j のプラグイン。Cypher の `CALL gds.*` で呼ぶ |
 | 計算する場所 | エージェントの Python の中。Neo4j から機器と回線を読み出して計算する | Neo4j の中。グラフをメモリに写して（projection）計算する |
 | ライセンス | BSD（3 条項） | GPLv3（Neo4j が配る jar の中の `NOTICE.txt` と `LICENSE.txt`） |
-| 入れ方 | Python の依存に `networkx` を足す | 公式イメージの `products/` に入っている jar を `plugins/` に写してイメージを作る（`neo4j/Dockerfile`）。`NEO4J_PLUGINS` は起動時にダウンロードするので、閉域では使えない |
+| 入れ方 | Python の依存に `networkx` を足す | 公式イメージの `products/` に入っている jar を `plugins/` に写してイメージを作る（`docker/images/neo4j/Dockerfile`）。`NEO4J_PLUGINS` は起動時にダウンロードするので、閉域では使えない |
 | 制限 | 1 プロセスのメモリに載る大きさまで | Community 版の GDS は並列 4 コアまで、モデルは 3 つまで。ライセンスのファイルが無ければ Community 版として動く |
 
 **メリットとデメリット**
@@ -2085,6 +2083,8 @@ AWS 版は、エージェントのツール `centrality`（`agent/graph.py` の 
 
 - GDS は Neo4j Community Edition の上で動いた。
 - `gds.degree`、`gds.closeness`、`gds.wcc` の結果は、定義どおりの値と一致した。島の数は 1。
+
+2026-10-07 に AWS でも、道具の Lambda と Runtime から `centrality` が GDS の答えを返した。
 
 **まだ確かめていないこと**
 
@@ -2109,10 +2109,10 @@ MSK 以外は 1 AZ にできる。MSK は AWS の決まりで 2 AZ より少な�
 | リソース | 1 AZ にできるか | 理由 |
 |---|---|---|
 | MSK | できない | ブローカーを置くサブネットは 2 つ以上の AZ に要る（AWS の決まり）。ブローカーの数も AZ の数の倍数 |
-| AgentCore Runtime | できる見込み（AWS では未確認） | API はサブネットを 1〜16 個受け付ける（AgentCore Control API Reference「VpcConfig」）。手引き（AgentCore Developer Guide「Configure Amazon Bedrock AgentCore Runtime and tools for VPC」）は高可用のため 2 AZ 以上を勧めるが、1 つを禁じてはいない（どちらも 2026-10-05 確認）。2 AZ にするときは `ops/up.sh` がエンドポイントも同じ数にそろえる（エンドポイントが a にしか無いと 2 AZ が見かけだけになる） |
+| AgentCore Runtime | できる（既定の 1 サブネットで作って動くことは 2026-10-05 に AWS で確かめた。2 つ以上は AWS で未確認） | API はサブネットを 1〜16 個受け付ける（AgentCore Control API Reference「VpcConfig」）。手引き（AgentCore Developer Guide「Configure Amazon Bedrock AgentCore Runtime and tools for VPC」）は高可用のため 2 AZ 以上を勧めるが、1 つを禁じてはいない（どちらも 2026-10-05 確認）。2 AZ にするときは `ops/up.sh` がエンドポイントも同じ数にそろえる（エンドポイントが a にしか無いと 2 AZ が見かけだけになる） |
 | EMR Serverless | できる | サブネットを 1 つだけ渡せばよい。費用は変わらない |
 | Lambda（KB の索引、グラフの状態、tools） | できる | サブネットを 1 つだけ渡せばよい。費用は変わらない |
-| AOSS の VPC エンドポイント | できる見込み（未確認） | 1 サブネットで作れるかは確かめていない。作れれば 1.4 セント/h 減る |
+| AOSS の VPC エンドポイント | できる見込み（AWS では未確認） | 2026-10-04 までは 2 AZ 固定だった。いまは `ENDPOINTS_AZ_NUM` に従い、既定は 1 AZ（`IaC/terraform/aws-managed/base/core/endpoints.tf`）。1 サブネットで作れるかは AWS では確かめていない。2 AZ より 1.4 セント/h 安い |
 
 1 AZ にしても費用が減るのは AOSS のエンドポイントだけ。EMR と Lambda は「既定は全部 1 AZ」に揃える意味だけがある。
 
@@ -2143,7 +2143,7 @@ Multi-AZ DB クラスターが使えるエンジンは、RDS for MySQL と RDS f
 **いまの設定**
 
 - `NAUTOBOT_DB_AZ_NUM`: 既定 1、1〜2。2 にすると `multi_az = true`（約 +$0.03/h）。
-- 定義は `terraform/pipeline/nautobot/database.tf` と `variables.tf`。
+- 定義は `IaC/terraform/aws-managed/pipeline/nautobot/database.tf` と `variables.tf`。
 
 **3 AZ にしたくなったら**
 
@@ -2179,10 +2179,10 @@ AWS の側は、同じ計算をして値が合うかを見る。合えば通し�
 - **ふだんは意識しない。**
   boto3 や AWS CLI が、呼ぶたびに自動で計算している。
 - **この PoC で名前が出てくる理由。**
-  聞いた時点では、Splunk のアラートアクション（`netops_sns.py`）が boto3 を使わずに SNS を呼んでいて、この計算を自分で書いていた。いまは Splunk が持っている boto3 を使う形に替えたので、そのコードは無い。
+  聞いた時点では、Splunk のアラートアクション（`nwc_sns.py`）が boto3 を使わずに SNS を呼んでいて、この計算を自分で書いていた。いまは Splunk が持っている boto3 を使う形に替えたので、そのコードは無い。
 - **ほかにも同じ署名を使っている場所。**
   Spark から OpenSearch Serverless と Amazon Managed Service for Prometheus へ書くとき（サービス名は `aoss` と `aps`）。
-  こちらは最初から、署名の計算を botocore（boto3 の土台のライブラリ）に任せている（`spark/snmp_sinks.py` の `sigv4_headers`）。いまは、署名を自分で計算している場所は無い。
+  こちらは最初から、署名の計算を botocore（boto3 の土台のライブラリ）に任せている（`app/spark/snmp_sinks.py` の `sigv4_headers`）。いまは、署名を自分で計算している場所は無い。
 - **Spark が boto3 のクライアント（`boto3.client(...)`）で送っていない理由。**
   送り先が OpenSearch の `_bulk` と Prometheus の remote write という、それぞれの製品の HTTP の口だから。boto3 にはこの 2 つを呼ぶメソッドが無い。だから「署名だけ botocore に作らせて、HTTP は自分で送る」形になる。
 - **一時的な認証情報のときは、トークンも付ける。**
@@ -2243,9 +2243,9 @@ SDK を使うと、自分で書かなくて済むもの。
 **このプロジェクトでは**
 
 - マネージド版の MSK は Provisioned で IAM 認証なので、条件に合うはず（コンソールで開いたことは無い。未確認）。
-- OSS 版（「マネージドを OSS に置き換えた環境を作る（005）」）には Kafbat UI を置く。
-- マネージド版の MSK にも Kafbat UI を置いてある（2026-10-05 のユーザーの決定）。ECS に 1 タスクがいつも立つ。`SASL_SSL` と `AWS_MSK_IAM` の設定と、タスクロールへの `kafka-cluster:*` の権限で、IAM 認証でつなぐ。
-- IAM でつながることは 2026-10-05 に AWS で確かめた。画面に入れるか、画面からトピックを足せるか、タスクロールの権限で足りるかは未確認。
+- OSS 版（「マネージドを OSS に置き換えた環境を作る（005）」）には Kafbat UI を置いた（認証なしの `PLAINTEXT`）。2026-10-07 に AWS で、ブローカーとトピックが見え、API からトピックの作成と削除ができた（200）。Spark は consumer group を作らないので、lag は出ない。
+- マネージド版の MSK にも Kafbat UI を置いてある（2026-10-05 のユーザーの決定）。「Kafbat UI を Web の EC2 に同居させる（010）」から Web の EC2 の Docker で動く（それより前は ECS に 1 タスク）。`SASL_SSL` と `AWS_MSK_IAM` の設定と、Web の EC2 のロールへの権限（Kafbat UI が使う `kafka-cluster:` の操作だけ。`IaC/terraform/aws-managed/pipeline/stream/msk.tf` の `kafka_ui_kafka_statements`）で、IAM 認証でつなぐ。ブローカーの設定の変更と consumer group の変更・削除の権限は付けていないので、画面のその操作は権限エラーになる。
+- IAM でつながることは ECS のタスクだったときに 2026-10-05 に AWS で確かめた（Web の EC2 のインスタンスロールでは未確認）。画面に入れるか、画面からトピックを足せるか、ロールの権限で足りるかは未確認。
 
 **出典**（2026-10-05 に確認）
 

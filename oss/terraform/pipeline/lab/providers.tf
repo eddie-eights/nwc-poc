@@ -1,1 +1,0 @@
-../../../../terraform/pipeline/lab/providers.tf

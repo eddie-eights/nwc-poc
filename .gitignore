@@ -9,9 +9,11 @@ __pycache__/
 deploy.env
 # pip download の置き場（ops/up.sh の手順 4）
 wheels/
-# OSS 版（oss/ops/up.sh の手順 4-1。web/requirements-oss.txt のぶん）
+# OSS 版（ops/oss/up.sh の手順 4-1。app/dashboard/requirements-oss.txt のぶん）
 wheels-oss/
-lab/splab.clab.yml
+app/containerlab/splab.clab.yml
+# containerlab が lab.sh up で作る（root の持ち物。docker/compose/README.md の「消す」）
+app/containerlab/clab-*/
 *.rpm
 # uv の仮想環境
 .venv/
@@ -24,9 +26,8 @@ lab/splab.clab.yml
 *.tfvars
 !*.tfvars.example
 # OSS 版（cycle 005）のルートは oss.auto.tfvars で project = nwc-oss を入れる（値に秘密は無い）
-!oss/terraform/**/oss.auto.tfvars
-terraform/**/.build/
-oss/terraform/**/.build/
+!IaC/terraform/oss/**/oss.auto.tfvars
+IaC/terraform/**/.build/
 ops/logs/
 *.part
 # ops/up.sh の手順 5-3 で取る Spark の jar

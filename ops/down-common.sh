@@ -1,4 +1,4 @@
-# ops/down.sh と OSS 版（005）の oss/ops/down.sh が読む共通の関数（ルートの destroy、消し残しの片付けと数え上げ）。
+# ops/down.sh と OSS 版（005）の ops/oss/down.sh が読む共通の関数（ルートの destroy、消し残しの片付けと数え上げ。MSK の SCRAM の secret と鍵はマネージド版だけ）。
 # 先に ops/common.sh と ops/deploy-env.sh を読む（log / die / tf / tf_logged を使う）。REGION / PREFIX / OWNER は呼ぶ前に決める。
 # 名前で探すものは、どれも接頭辞の完全一致か「接頭辞-」で絞る（OSS 版の <owner>-nwc-oss は、OWNER=<名前>-nwc-oss のマネージド版の
 # <名前>-nwc-oss-nwc-poc の頭と同じ文字列になる。前方一致で探すと相手のものを消す）
@@ -83,7 +83,7 @@ destroy_lambda_root() {  # destroy_lambda_root <ルート> <VPC の中の Lambda
   kill "$reaper" 2>/dev/null; wait "$reaper" 2>/dev/null || true
 }
 LOG_GROUP=""  # agent の state から読んだ Runtime のロググループ（delete_runtime_log_groups が一緒に消す）
-destroy_agent() {  # agent（Runtime / ガードレール / KB）を消す。terraform/base/core のロールにポリシーを付けているので base/core より先
+destroy_agent() {  # agent（Runtime / ガードレール / KB）を消す。IaC/terraform/aws-managed/base/core のロールにポリシーを付けているので base/core より先
   local agent_vars=()
   LOG_GROUP=""
   if has_resources agent; then
@@ -93,35 +93,50 @@ destroy_agent() {  # agent（Runtime / ガードレール / KB）を消す。ter
   if has_resources agent && tf agent state list 2>/dev/null | grep -q '^aws_opensearchserverless_collection\.kb\['; then
     agent_vars+=(-var create_knowledge_base=true)
   fi
-  # KB を作っていれば、ベクトルインデックスを作る Lambda（terraform/agent/kb.tf）が VPC の中にいる。ENI を刈りながら消す
+  # KB を作っていれば、ベクトルインデックスを作る Lambda（IaC/terraform/aws-managed/agent/kb.tf）が VPC の中にいる。ENI を刈りながら消す
   destroy_lambda_root agent "$PREFIX-kb-index" ${agent_vars[@]+"${agent_vars[@]}"}
 }
 # 土台（base/core）を消す。
 # Runtime の ENI（種類 agentic_ai。AWS 側の所有で、自分では外せない）は Runtime を消したあとも最大 8 時間残り、その間はサブネットと
-# runtime の SG（terraform/base/core の security_groups.tf）が DependencyViolation で消えない（terraform は 20 分待ってから落ちる）。
+# runtime の SG（IaC/terraform/aws-managed/base/core の security_groups.tf）が DependencyViolation で消えない（terraform は 20 分待ってから落ちる）。
 # runtime の SG を参照するルール（endpoints の受信、runtime 自身の送信）は別のリソースなので一緒に消え、ほかの SG は消せる。
 # 残っているあいだは、それ以外だけを消して先へ進む（2026-09-28 より前の state なら NAT Gateway・EIP・IGW も。時間課金があるのでこのとき消す）。
 # 残る VPC・サブネット・SG に時間課金は無く、次の up.sh はそのまま使い回す
 MAIN_LEFT=0
 destroy_base_core() {
-  local vpc_id agent_enis addr main_targets=()
+  local vpcs="" src v out agent_enis addr main_targets=()
   if ! has_resources base/core; then
     echo "$TF_DIR/base/core: 無い（state が無いか空）"
     return 0
   fi
   # 確認そのものが落ちたときに黙って全部消しにいくと 20 分待ちに戻るので、結果は必ず表示し、エラーも隠さない
-  # VPC は terraform の output でなくタグで引く。destroy が途中で落ちた state には output が残らず（terraform は output を先に外す）、
-  # `terraform output -raw` は空を返して成功するので、打ち直しのとき（= いちばん要るとき）に読めない
-  vpc_id=$(aws ec2 describe-vpcs --region "$REGION" --filters "Name=tag:Name,Values=$PREFIX-vpc" \
-    --query 'Vpcs[0].VpcId' --output text) || { echo "注意: VPC を引けなかった（上のエラー）"; vpc_id=""; }
-  if [ "$vpc_id" = None ]; then vpc_id=""; fi
+  # VPC はこのルートの state の aws_vpc.this から読む。terraform の output は使わない（destroy が途中で落ちた state には output が残らず
+  # （terraform は output を先に外す）、`terraform output -raw` は空を返して成功するので、打ち直しのとき = いちばん要るときに読めない）。
+  # タグ Name で引くのは state から読めないときだけ。同じ名前の VPC が 2 つあると 1 つ目だけでは古い方を引くことがある
+  # （2026-10-08 の OSS 版の検証。今回の VPC の Runtime の ENI を見落として全部消しにいき、SG の削除待ちを 3 回繰り返して落ちた）ので、
+  # 当たったものを全部見て、どれか 1 つにでも ENI があれば残す側に倒す
+  vpcs=$(tf base/core state show aws_vpc.this 2>/dev/null \
+    | awk -F'"' '/^[[:space:]]*id[[:space:]]*=/ && v == "" { v = $2 } END { print v }') || vpcs=""
+  case "$vpcs" in vpc-*) src="state の aws_vpc.this" ;; *) vpcs="" ;; esac
+  if [ -z "$vpcs" ]; then
+    src="タグ Name=$PREFIX-vpc"
+    if out=$(aws ec2 describe-vpcs --region "$REGION" --filters "Name=tag:Name,Values=$PREFIX-vpc" \
+        --query 'Vpcs[].VpcId' --output text); then
+      for v in $out; do
+        case "$v" in vpc-*) vpcs="${vpcs:+$vpcs,}$v" ;; esac
+      done
+    else
+      echo "注意: VPC を引けなかった（上のエラー）"
+    fi
+  fi
+  echo "Runtime の ENI を探す VPC: ${vpcs:-（読めない）}（$src）"
   agent_enis=""
-  if [ -n "$vpc_id" ]; then
-    agent_enis=$(aws ec2 describe-network-interfaces --region "$REGION" --filters "Name=vpc-id,Values=$vpc_id" \
+  if [ -n "$vpcs" ]; then
+    agent_enis=$(aws ec2 describe-network-interfaces --region "$REGION" --filters "Name=vpc-id,Values=$vpcs" \
       --query "NetworkInterfaces[?InterfaceType=='agentic_ai'].NetworkInterfaceId" --output text) \
       || echo "注意: ENI の確認に失敗した（上のエラー）。残っていない扱いで進む"
   fi
-  echo "Runtime の ENI の確認: VPC=${vpc_id:-（読めない）} 残り=${agent_enis:-なし}"
+  echo "Runtime の ENI の確認: VPC=${vpcs:-（読めない）} 残り=${agent_enis:-なし}"
   if [ -n "$agent_enis" ] && [ "$agent_enis" != None ]; then
     MAIN_LEFT=1
     echo "Runtime の ENI が残っている: $agent_enis"
@@ -181,7 +196,50 @@ delete_up_ssm_params() {  # up.sh が作った SSM のパラメータ（/<PREFIX
     aws ssm delete-parameter --region "$REGION" --name "$n" 2>/dev/null && echo "$n: 消した" || echo "$n: 無い"
   done
 }
-report_leftovers() {  # タグ Project=<PREFIX>（完全一致）の付いた、まだ残っているリソースの ARN を並べ、数を出す
+delete_msk_scram() {  # ops/up.sh が作った MSK の SCRAM の secret（AmazonMSK_<PREFIX>-collectors）と KMS の鍵（alias/<PREFIX>-msk-scram）を消す。マネージド版だけ
+  # Terraform の管理外（値を state に載せないよう ops/up-common.sh の ensure_msk_scram_key / ensure_msk_scram_secret が作る）。secret の中身は読まない
+  local name="AmazonMSK_$PREFIX-collectors" alias="alias/$PREFIX-msk-scram" out arn state
+  # stream が消えなかったときは両方残す。msk.tf の data source が次の destroy でも 2 つを引くので、消すと打ち直しても stream を消せなくなる
+  case " $FAILED_ROOTS " in *" pipeline/stream "*)
+    echo "$name と $alias: 残す（$TF_DIR/pipeline/stream が消えなかったので、次の $OPS_DIR/down.sh で消す）"; return ;;
+  esac
+  # secret は復旧の待ち（既定 30 日）を置かずに消す（待つあいだは同じ名前で作れず、次の up.sh が止まる）
+  if out=$(aws secretsmanager describe-secret --region "$REGION" --secret-id "$name" --query Name --output text 2>&1); then
+    if aws secretsmanager delete-secret --region "$REGION" --secret-id "$name" --force-delete-without-recovery >/dev/null; then
+      echo "$name: 消した"
+    else
+      echo "$name: 消せなかった（上のエラー）。鍵も残す（消すと secret を復号できなくなる）。手で消す: aws secretsmanager delete-secret --region $REGION --secret-id $name --force-delete-without-recovery"
+      return
+    fi
+  else
+    case "$out" in
+      *ResourceNotFoundException*) echo "$name: 無い" ;;
+      *) echo "$name: 確かめられなかった（${out}）。鍵も残す"; return ;;
+    esac
+  fi
+  # 鍵はすぐには消せない（7 日の待ち。待つあいだは課金されない）。先に削除を予約し、それから alias を外す
+  # （逆の順だと、予約に失敗したとき名前の無い鍵が残り、次の up.sh は別の鍵を作る）
+  if ! out=$(aws kms describe-key --region "$REGION" --key-id "$alias" --query 'KeyMetadata.[Arn,KeyState]' --output text 2>&1); then
+    case "$out" in
+      *NotFoundException*) echo "$alias: 無い" ;;
+      *) echo "$alias: 確かめられなかった（${out}）" ;;
+    esac
+    return
+  fi
+  arn=${out%%$'\t'*}; state=${out##*$'\t'}
+  if [ "$state" != PendingDeletion ]; then
+    if ! aws kms schedule-key-deletion --region "$REGION" --key-id "$arn" --pending-window-in-days 7 >/dev/null; then
+      echo "$alias: 鍵の削除を予約できなかった（上のエラー）。手で予約する: aws kms schedule-key-deletion --region $REGION --key-id $arn --pending-window-in-days 7"
+      return
+    fi
+  fi
+  if aws kms delete-alias --region "$REGION" --alias-name "$alias"; then
+    echo "$alias: 鍵の削除を予約し（7 日後に消える。待つあいだは課金されない）、alias を外した"
+  else
+    echo "$alias: 鍵の削除は予約したが、alias を外せなかった（上のエラー）。次の $OPS_DIR/up.sh は予約を取り消して同じ鍵を使い直す"
+  fi
+}
+report_leftovers() {  # タグ Project=<PREFIX>（完全一致）の付いたリソースの ARN を並べ、数を出す。タグの API は消えたリソースも返すので、消えたかはこれで決めない
   local arns rc=0
   arns=$(aws resourcegroupstaggingapi get-resources --region "$REGION" --tag-filters "Key=Project,Values=$PREFIX" \
     --query 'ResourceTagMappingList[].ResourceARN' --output text) || rc=$?

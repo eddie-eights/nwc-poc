@@ -98,7 +98,7 @@
 | OpenSearch の Cloud Map の名前 | `opensearch-1`、`opensearch-2`、`opensearch-cm` | `opensearch`（データの 2 台）と `opensearch-cm`。ECS のサービスは Cloud Map のサービスを 1 つしか持てない |
 | OpenSearch の REST | 書いていなかった | TLS なしの HTTP と Basic 認証。台どうしはデモの証明書の TLS |
 | EFS の置き場 | `pipeline/analytics` | `terraform/base/core/oss.tf`（SG と通信の表と同じファイル）。アクセスポイントは使うルート |
-| Kafka、OpenSearch の入れ替え | 1 台ずつ待って進める | `terraform apply` でタスク定義が変わると 3 台が同時に入れ替わる。1 台ずつの手順は、まだ無い |
+| Kafka、OpenSearch の入れ替え | 1 台ずつ待って進める | `terraform apply` でタスク定義が変わると 3 台が同時に入れ替わる。1 台ずつの手順は、この時点では無かった（2026-10-08 に `oss/ops/roll-nodes.sh` を足し、`oss/ops/up.sh` が apply の前に 1 台ずつ入れ替える。AWS では未確認。design.md の「Kafka と OpenSearch を 1 台ずつ入れ替える」） |
 | Neo4j のドライバ | レイヤーか、zip に同梱か（未定） | Lambda のレイヤー（`graph/requirements-oss.txt`） |
 | GDS の入れ方 | jar をダウンロードして焼き込む | 公式イメージの `products/` にある jar を `plugins/` に写す |
 | イメージの版 | Kafbat UI の版は未確認 | `oss/ops/oss-images.sh` に 1 か所（Kafka 4.3.1、Kafbat UI v1.5.0、OpenSearch 3.9.0、VictoriaMetrics v1.153.0、Spark 3.5.9、Neo4j 2026.09.0） |

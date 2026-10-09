@@ -1,0 +1,1 @@
+../../../terraform/aws-managed/workflow/.terraform.lock.hcl

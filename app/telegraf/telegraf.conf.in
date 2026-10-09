@@ -1,0 +1,71 @@
+# Telegraf の設定テンプレート。Telegraf のコンテナ（IaC/terraform/aws-managed/pipeline/stream の ECS。docker/images/telegraf/Dockerfile）が起きるとき、telegraf.sh render が
+# タスク定義の環境変数で __KAFKA_BROKERS__ / __AWS_REGION__ と受け口の __BIND__ / __TRAP_PORT__ / __HEALTH_PORT__ を埋めて /tmp/telegraf.conf に書く。
+# 出力は「>>> sink <名前>」〜「<<< sink <名前>」の区間のうち SINK（kafka = MSK。既定 / stdout = 標準出力。デバッグ用の EC2）の 1 つだけを残す。
+# 入力は機器から送ってくる SNMP trap を受けるものだけ。stream の ECS の telegraf-dialout（NLB の後ろ。機器の一覧を持たず、台数を増やしても同じものを 2 回書かない）。
+#   機器の syslog は syslog-ng（app/syslog-ng）、NetFlow / sFlow は GoFlow2 が受ける。MDT の受け口は外した（cycle 012。戻し方は docs/collection.md）。
+#   gNMI の購読と SNMP のポーリング（取りにいく側の telegraf-dialin）は cycle 013 でやめ、gNMI は gnmic（app/gnmic）が取る。
+#   入力を役割で分けていた区間（「>>> role <名前>」と telegraf.sh の TELEGRAF_ROLE）も一緒に外した
+#
+# 流れ: Spine-Leaf の SR Linux 6 台からの trap を udp 162 で受ける → MSK（IAM 認証、TLS。OSS 版は ECS の Kafka、認証なし）
+#   traps トピック: snmp_trap（linkDown / linkUp ほか）
+# （metrics / gnmi トピックは gnmic、logs トピックの device_log は syslog-ng（app/syslog-ng）、flows トピックは GoFlow2 が書く。cycle 012 / 013）
+# 機器は lab の EC2 の中の docker network（203.0.113.0/24）にいる。trap は次の経路でここへ届く（lab の EC2 で sudo lab forward-status）:
+#   機器は lab の EC2（203.0.113.1:162）へ送り、lab の EC2 が内部 NLB（IP は NLB がある間は変わらない）へ DNAT し、
+#   NLB が 1162 でここへ渡す。NLB は送り元を変えない（UDP のクライアント IP の保持）ので、送り元は機器の管理 IP のまま
+# MIB は入れないので trap の varbind 名は数値 OID のまま Kafka に載る（ifName の OID を引くのは Splunk の保存済みサーチ。app/splunk/nwc_alerts）。
+
+[agent]
+  interval = "10s"
+  flush_interval = "10s"
+  round_interval = true
+  metric_batch_size = 500
+  metric_buffer_limit = 10000
+  omit_hostname = true
+  snmp_translator = "gosmi"
+
+# 受け口の 2 つ（trap・health）のアドレスとポートは telegraf.sh render が TELEGRAF_BIND（既定は空 = 全部のインターフェース）と
+# TRAP_PORT / HEALTH_PORT（既定 1162 / 8080）で埋める。ECS は何も渡さないので既定のまま
+# ---- trap 受信。コンテナは非 root なので 162 ではなく 1162 で待つ（NLB が 162 を 1162 に向ける。telegraf.sh の TRAP_PORT）。
+# source タグは機器の管理 IP（lab の EC2 も NLB も送り元を変えない）
+[[inputs.snmp_trap]]
+  service_address = "udp://__BIND__:__TRAP_PORT__"
+  version = "2c"
+  timeout = "5s"
+
+# >>> sink kafka（telegraf.sh render が SINK で片方だけ残す。既定 kafka）
+# ---- Kafka（MSK。OSS 版は ECS の Kafka）の traps トピックへ（snmp_trap）。gNMI の値の metrics / gnmi トピックは cycle 013 から gnmic が書くので、その 2 つの出力は外した
+# 「>>> kafka_auth iam」の区間は MSK の IAM 認証の 4 行。telegraf.sh render が KAFKA_AUTH=none（OSS 版の認証なしの Kafka。cycle 005）のとき消す
+# sasl_aws_msk_iam_profile: Telegraf 1.40.0 は profile か role + session のどちらかを書かないと
+# 「both role and session must be set」で落ち、インスタンスプロファイルだけでは起動しない（2026-09-18 に EC2 で確認。plugins/common/kafka/sasl_aws_iam_msk.go）。
+# telegraf.sh render が region だけの [default] を /tmp/aws_config に書き、鍵が無いので SDK がタスクロール（ECS のコンテナの認証情報）に落ちる
+[[outputs.kafka]]
+  brokers = [__KAFKA_BROKERS__]
+  topic = "traps"
+# >>> kafka_auth iam
+  enable_tls = true
+  sasl_mechanism = "AWS-MSK-IAM"
+  sasl_aws_msk_iam_region = "__AWS_REGION__"
+  sasl_aws_msk_iam_profile = "default"
+# <<< kafka_auth iam
+  data_format = "json"
+  json_timestamp_units = "1s"
+  required_acks = 1
+  max_retry = 3
+  namepass = ["snmp_trap"]
+# <<< sink kafka
+
+# >>> sink stdout
+# ---- 標準出力へ（デバッグ用の EC2。IaC/cloudformation/lab-debug.yaml。MSK が無いので docker logs で見る。sudo lab telegraf logs）。
+# 形は MSK に載るものと同じ（json、秒の timestamp）
+[[outputs.file]]
+  files = ["stdout"]
+  data_format = "json"
+  json_timestamp_units = "1s"
+# <<< sink stdout
+
+# ---- 生きているかの口。NLB のヘルスチェック（IaC/terraform/aws-managed/pipeline/stream の telegraf.tf。HTTP 8080。dialout のタスク）がここを見る。
+# 条件を書かないので、Telegraf が動いていれば 200 を返す。namepass には来ない名前（system。cycle 013 までは SNMP のポーリングが出していた）だけを置いて、
+# 何も流し込まない。何も届いていない間は default_status（200）を返すので、ヘルスチェックは通る
+[[outputs.health]]
+  service_address = "http://__BIND__:__HEALTH_PORT__"
+  namepass = ["system"]

@@ -1,4 +1,4 @@
-"""機能 WORKFLOW（terraform/workflow、workflow/（rules / awsio / worker）、agent/proposals.py、agent/mcp_client.py、tools/）の模擬テスト。
+"""機能 WORKFLOW（IaC/terraform/aws-managed/workflow、app/temporal/（rules / awsio / worker）、app/agentcore/proposals.py、app/agentcore/mcp_client.py、app/gateway/）の模擬テスト。
 AWS にも Temporal にも触れない。temporalio と boto3 を差し替えて 3 つのモジュールを読み、純粋な関数（プロンプト・JSON の読み取り・
 許可リスト・アラート（SNS → SQS）の読み取りと起こす判定 = rules）と AWS 呼び出しの形（awsio）、ワークフローと starter の振る舞い（worker）、
 proposals.decide の条件、mcp_client の応答の読み取り、
@@ -6,7 +6,7 @@ tools.json と Python の TOOL_SPECS の一致、Terraform と ops スクリプ�
 import ast, contextlib, io, json, os, re, sys, types
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-TF_DIR = os.path.join(ROOT, "terraform", "workflow")
+TF_DIR = os.path.join(ROOT, "IaC", "terraform", "aws-managed", "workflow")
 
 passed = 0
 def check(name, cond):
@@ -19,7 +19,7 @@ def read(*parts):
     with open(os.path.join(ROOT, *parts), encoding="utf-8") as f:
         return f.read()
 
-def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の oss/ops/ と共通）とつないで見る
+def read_ops(name):  # ops/up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/<name>-common.sh。OSS 版の ops/oss/ と共通）とつないで見る
     return read("ops", "common.sh") + read("ops", f"{name}-common.sh") + read("ops", f"{name}.sh")
 
 # ---- 差し替え: boto3 / botocore（呼ばれた内容を記録する）
@@ -98,11 +98,11 @@ sys.modules.update({"temporalio": t_root, "temporalio.activity": t_activity, "te
                     "temporalio.worker": t_worker, "temporalio.service": t_service})
 
 os.environ.update({"NEPTUNE_GRAPH_ID": "g-abc1234567", "AUDIT_TABLE_BUCKET_ARN": "arn:aws:s3tables:ap-northeast-1:123456789012:bucket/audit",
-                   "AUDIT_NAMESPACE": "netops", "AGENT_RUNTIME_ARN": "arn:aws:bedrock-agentcore:ap-northeast-1:123456789012:runtime/x",
+                   "AUDIT_NAMESPACE": "nwc", "AGENT_RUNTIME_ARN": "arn:aws:bedrock-agentcore:ap-northeast-1:123456789012:runtime/x",
                    "LAB_INSTANCE_ID": "i-0123456789abcdef0", "PARAM_PREFIX": ""})
-sys.path.insert(0, os.path.join(ROOT, "workflow"))
-sys.path.insert(0, os.path.join(ROOT, "agent"))
-sys.path.insert(0, os.path.join(ROOT, "tools"))
+sys.path.insert(0, os.path.join(ROOT, "app", "temporal"))
+sys.path.insert(0, os.path.join(ROOT, "app", "agentcore"))
+sys.path.insert(0, os.path.join(ROOT, "app", "gateway"))
 import worker  # noqa: E402 - Temporal のワークフローとアクティビティ
 import awsio  # noqa: E402 - 環境変数と AWS 呼び出し
 import rules  # noqa: E402 - 判断だけの純粋関数
@@ -112,7 +112,7 @@ import topology  # noqa: E402
 import evidence  # noqa: E402
 import handler  # noqa: E402
 
-# ---- workflow/rules.py の純粋な関数
+# ---- app/temporal/rules.py の純粋な関数
 # アラート 1 件（rules.alerts_from_message が SQS の本文から作る形）
 anomaly = {"anomaly_id": "hq-ce-01#link_down#eth1", "device_id": "hq-ce-01", "kind": "link_down", "target": "eth1", "status": "firing",
            "first_seen": 1700000000, "detail": "ifOperStatus down", "source": "grafana"}
@@ -122,16 +122,16 @@ check("プロンプトに機器・種別・対象と、発生の時刻（JST）�
 check("プロンプトはまず root_cause で根本原因かどうかを確かめさせる", "まず root_cause" in prompt)
 # ---- 事前チェック（2026-10-04）
 import asyncio, inspect  # noqa: E402
-check("impact は agent/topology.py と workflow/rules.py で同じ（ワーカーのイメージには agent/ が入らないので 2 か所に置く）",
-      inspect.getsource(rules.impact) == inspect.getsource(topology.impact))
+check("impact は app/agentcore/topology.py と app/temporal/rules.py で同じ（ワーカーのイメージには app/agentcore/ が入らないので 2 か所に置く）",
+      inspect.getsource(rules.impact) == inspect.getsource(topology.impact) and rules.END_ROLES == topology.END_ROLES == ("trex",))
 check("事前チェックの対応表は許可リストの処置を全部持つ", set(rules.ACTION_CHANGES) == set(rules.ALLOWED_ACTIONS))
-_pd = [{"device_id": x, "status": None} for x in ("dc1-leaf-01", "dc1-spine-01", "dc1-spine-02")]
-_pl = [{"a": "dc1-leaf-01", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/3", "status": "DOWN"},
-       {"a": "dc1-leaf-01", "a_if": "ethernet-1/2", "b": "dc1-spine-02", "b_if": "ethernet-1/3", "status": "UP"},
+_pd = [{"device_id": x, "status": None} for x in ("dc1-a-leaf-01", "dc1-spine-01", "dc1-spine-02")]
+_pl = [{"a": "dc1-a-leaf-01", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/3", "status": "DOWN"},
+       {"a": "dc1-a-leaf-01", "a_if": "ethernet-1/2", "b": "dc1-spine-02", "b_if": "ethernet-1/3", "status": "UP"},
        {"a": "dc1-spine-01", "a_if": "ethernet-1/9", "b": "dc1-spine-02", "b_if": "ethernet-1/9", "status": None}]
 pc = rules.precheck("heal-main", _pd, _pl)
 check("heal-main の事前チェックは「上げる」と仮定して問題なし、冗長が戻る機器を出す",
-      pc["verdict"] == "ok" and pc["text"].startswith("【問題なし】dc1-leaf-01#ethernet-1/1 を上げると仮定") and "冗長が戻る機器: dc1-leaf-01" in pc["text"])
+      pc["verdict"] == "ok" and pc["text"].startswith("【問題なし】dc1-a-leaf-01#ethernet-1/1 を上げると仮定") and "冗長が戻る機器: dc1-a-leaf-01" in pc["text"])
 check("check は何も変えないので問題なし、none は空", rules.precheck("check", _pd, _pl)["verdict"] == "ok" and rules.precheck("none", _pd, _pl) == {"verdict": "", "text": ""})
 check("対象の回線がグラフに無ければ「確認できず」", rules.precheck("heal-main", _pd, _pl[1:])["verdict"] == "unknown" and "【確認できず】" in rules.precheck("heal-main", _pd, _pl[1:])["text"])
 check("対応表に無い処置は「確認できず」", rules.precheck("reboot", _pd, _pl)["verdict"] == "unknown")
@@ -139,38 +139,49 @@ _g = []
 def _fake_cypher(q, **params):
     _g.append(q)
     if "(n:device)" in q:
-        return [{"id": "dc1-leaf-01", "status": "ALARM", "maintenance": True}, {"id": "dc1-spine-01", "status": None, "maintenance": None}]
-    return [{"a": "dc1-leaf-01", "b": "dc1-spine-01", "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}]
+        return [{"id": "dc1-a-leaf-01", "status": "ALARM", "maintenance": True, "role": "leaf"}, {"id": "dc1-spine-01", "status": None, "maintenance": None}]
+    return [{"a": "dc1-a-leaf-01", "b": "dc1-spine-01", "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}]
 _gs, awsio.cypher = awsio.cypher, _fake_cypher
-check("awsio.read_topology は機器（id・status・maintenance）と回線（両端・IF・status）を読む",
-      awsio.read_topology() == ([{"device_id": "dc1-leaf-01", "status": "ALARM", "maintenance": True}, {"device_id": "dc1-spine-01", "status": None, "maintenance": False}],
-                                [{"a": "dc1-leaf-01", "b": "dc1-spine-01", "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}])
-      and _g == ["MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance",
+check("awsio.read_topology は機器（id・status・maintenance・role）と回線（両端・IF・status）を読む",
+      awsio.read_topology() == ([{"device_id": "dc1-a-leaf-01", "status": "ALARM", "maintenance": True, "role": "leaf"},
+                                 {"device_id": "dc1-spine-01", "status": None, "maintenance": False, "role": None}],
+                                [{"a": "dc1-a-leaf-01", "b": "dc1-spine-01", "a_if": "ethernet-1/1", "b_if": "ethernet-1/3", "status": "DOWN"}])
+      and _g == ["MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance, n.role AS role",
                  "MATCH (a)-[l:link]->(b) RETURN id(a) AS a, id(b) AS b, l.a_if AS a_if, l.b_if AS b_if, l.status AS status"])
+check("read_topology の機器の openCypher は role を返す（n.role AS role。rules.impact が END_ROLES の TRex を端として扱うのに使う）",
+      "n.role AS role" in _g[0] and all("role" in d for d in awsio.read_topology()[0]))
+# read_topology の形のまま rules.impact に渡す: TRex（role trex）が 2 台の leaf につながっていても、leaf の Spine への最後の回線を落とせば孤立と出る
+_tp = {"(n:device)": [{"id": "dc1-a-leaf-01", "role": "leaf"}, {"id": "dc1-a-leaf-02", "role": "leaf"}, {"id": "dc1-spine-01", "role": "spine"}, {"id": "dc1-trex-01", "role": "trex"}],
+       "link": [{"a": "dc1-a-leaf-01", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/1"}, {"a": "dc1-a-leaf-02", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/2"},
+                {"a": "dc1-trex-01", "a_if": "eth1", "b": "dc1-a-leaf-01", "b_if": "ethernet-1/10"}, {"a": "dc1-trex-01", "a_if": "eth2", "b": "dc1-a-leaf-02", "b_if": "ethernet-1/10"}]}
+awsio.cypher = lambda q, **params: _tp["(n:device)" if "(n:device)" in q else "link"]
+_imp = rules.impact(*awsio.read_topology(), [{"op": "link_down", "target": "dc1-a-leaf-01#ethernet-1/1"}])
+check("read_topology が返す role で、rules.impact は TRex を中継にしない（leaf の Spine への最後の回線を落とすと leaf が孤立する）",
+      _imp["newly_isolated"] == ["dc1-a-leaf-01"] and _imp["verdict"] == "danger")
 awsio.cypher = _gs
 _ask, _rt = awsio.ask_agent, awsio.read_topology
 awsio.ask_agent = lambda prompt: '{"cause": "c", "action": "heal-main", "reason": "r"}'
 awsio.read_topology = lambda: (_pd, _pl)
-f = asyncio.run(worker.investigate({"device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1"}))
+f = asyncio.run(worker.investigate({"device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1"}))
 check("investigate は処置の事前チェックを finding に付ける", f["action"] == "heal-main" and f["precheck_verdict"] == "ok" and f["precheck"].startswith("【問題なし】"))
 def _boom():
     raise RuntimeError("neptune down")
 awsio.read_topology = _boom
-f = asyncio.run(worker.investigate({"device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1"}))
+f = asyncio.run(worker.investigate({"device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1"}))
 check("トポロジを読めなくても調査は落とさず、「確認できず」を付ける", f["action"] == "heal-main" and f["precheck_verdict"] == "unknown" and "neptune down" in f["precheck"])
 awsio.ask_agent = lambda prompt: '{"cause": "c", "action": "none", "reason": "r"}'
 f = asyncio.run(worker.investigate({"device_id": "x", "kind": "link_down", "target": "y"}))
 check("処置が none ならトポロジを読まず、事前チェックは空", f["precheck"] == "" and f["precheck_verdict"] == "")
 awsio.ask_agent, awsio.read_topology = _ask, _rt
 # ---- 保守中（Nautobot の Status が Maintenance → Neptune の maintenance。2026-10-04）
-_al = {"device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1"}
+_al = {"device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1"}
 _m = lambda *names: [dict(d, maintenance=d["device_id"] in names) for d in _pd]
 check("保守中でなければ止めない", rules.maintenance_hold(_al, _m(), _pl) == [])
-check("アラートの機器が保守中なら止める", rules.maintenance_hold(_al, _m("dc1-leaf-01"), _pl) == ["dc1-leaf-01"])
+check("アラートの機器が保守中なら止める", rules.maintenance_hold(_al, _m("dc1-a-leaf-01"), _pl) == ["dc1-a-leaf-01"])
 check("回線の相手が保守中でも止める（相手を止めればこちらの回線が落ちる）", rules.maintenance_hold(_al, _m("dc1-spine-01"), _pl) == ["dc1-spine-01"])
 check("別の回線の相手が保守中なら止めない", rules.maintenance_hold(_al, _m("dc1-spine-02"), _pl) == [])
 check("プロンプトは直前の構成変更を recent_changes で見させる", "recent_changes（Nautobot の変更履歴）" in prompt)
-check("承認タブの詳細は事前チェックを出す", '("事前チェック", "precheck")' in read("web", "incident_view.py"))
+check("承認タブの詳細は事前チェックを出す", '("事前チェック", "precheck")' in read("app", "dashboard", "incident_view.py"))
 check("プロンプトは JSON 1 個を求め、action の 3 択を示す", '"action"' in prompt and "heal-main | check | none" in prompt)
 check("応答の中の JSON を拾う（前後に文があっても）",
       rules.parse_agent_json('確認しました。\n{"cause": "eth1 が down", "action": "heal-main", "reason": "主回線"}\n以上')
@@ -184,7 +195,7 @@ check("check は sudo lab check", rules.normalize_action("check") == ("check", "
 check("許可リストに無い処置は none でコマンド空（rm -rf / も fail-main も）",
       rules.normalize_action("rm -rf /") == ("none", "") and rules.normalize_action("fail-main") == ("none", "")
       and rules.normalize_action("") == ("none", ""))
-check("ALLOWED_ACTIONS は lab/lab.sh のサブコマンド", all(f"  {a})" in read("lab", "lab.sh") for a in rules.ALLOWED_ACTIONS))
+check("ALLOWED_ACTIONS は app/containerlab/lab.sh のサブコマンド", all(f"  {a})" in read("app", "containerlab", "lab.sh") for a in rules.ALLOWED_ACTIONS))
 check("firing の link_down で、同じ発生の修復案が無ければ起こす", rules.should_start(anomaly, None) and rules.should_start(anomaly, {}))
 check("同じ発生の修復案がもうあれば起こさない（Grafana は同じ starts_at を repeat_interval ごとに送り直す）",
       not rules.should_start(anomaly, {"first_seen": 1700000000, "status": "verified"}))
@@ -209,12 +220,12 @@ check("読めない本文・alerts が list でない本文は []",
       rules.alerts_from_message("garbage") == [] and rules.alerts_from_message("") == [] and rules.alerts_from_message("[1]") == []
       and rules.alerts_from_message(json.dumps({"alerts": "x"})) == [] and rules.alerts_from_message(None) == [])
 _many = rules.alerts_from_message(json.dumps({"source": "splunk", "alerts": [
-    {**_alert, "device_id": "DC1-Leaf-01.example.net", "status": "RESOLVED", "starts_at": "1700000001.7"},
+    {**_alert, "device_id": "DC1-A-Leaf-01.example.net", "status": "RESOLVED", "starts_at": "1700000001.7"},
     {**_alert, "device_id": "172.20.20.99", "kind": "trap", "target": ".1.3.6.1.4.1.1", "starts_at": None},
     {**_alert, "device_id": ""}, {**_alert, "kind": ""}, {**_alert, "status": "pending"}, "x", {**_alert, "detail": "d" * 5000}]}), now=42)
 check("機器名は小文字の短い名前に（IPv4 はそのまま）、status は小文字に、starts_at が無ければ now、detail は 1000 字で切る",
       [(a["device_id"], a["status"], a["first_seen"]) for a in _many]
-      == [("dc1-leaf-01", "resolved", 1700000001), ("172.20.20.99", "firing", 42), ("hq-ce-01", "firing", 1700000000)]
+      == [("dc1-a-leaf-01", "resolved", 1700000001), ("172.20.20.99", "firing", 42), ("hq-ce-01", "firing", 1700000000)]
       and _many[1]["anomaly_id"] == "172.20.20.99#trap#.1.3.6.1.4.1.1" and len(_many[2]["detail"]) == 1000
       and all(a["source"] == "splunk" for a in _many))
 check("形の合わない要素（機器か種類が無い・status が firing / resolved でない・dict でない）は捨てる", len(_many) == 3)
@@ -224,32 +235,32 @@ check("alert_count は alerts の要素を形にかかわらず数える（alert
       and rules.alert_count(json.dumps({"Type": "Notification", "Message": _many_body})) == 3
       and rules.alert_count("garbage") == 0 and rules.alert_count(None) == 0 and rules.alert_count(json.dumps({"alerts": "x"})) == 0)
 # 送り手 2 つ（Grafana のテンプレートと Splunk のアラートアクション）が同じ形で publish しているか
-_sns_py = read("splunk", "netops_alerts", "bin", "netops_sns.py")
-_gf_yaml = read("grafana", "provisioning", "alerting", "netops.yaml")
+_sns_py = read("app", "splunk", "nwc_alerts", "bin", "nwc_sns.py")
+_gf_yaml = read("app", "grafana", "provisioning", "alerting", "nwc.yaml")
 check("Splunk のアラートアクションと Grafana のテンプレートは同じ 6 つの項目を出す",
       all(f'"{k}"' in _sns_py and f'"{k}"' in _gf_yaml for k in ("status", "device_id", "kind", "target", "detail", "starts_at"))
       and '"source": "splunk"' in _sns_py and '"source":"grafana"' in _gf_yaml.replace('": "', '":"'))
 # rules.py に boto3 / temporalio を持ち込むと、このテストも Temporal のサンドボックスも動かなくなる（分割の理由そのもの）
 check("rules.py は標準ライブラリ（json / re / datetime）しか読まない",
-      set(re.findall(r"^(?:import|from) (\w+)", read("workflow", "rules.py"), re.M)) == {"json", "re", "datetime"})
+      set(re.findall(r"^(?:import|from) (\w+)", read("app", "temporal", "rules.py"), re.M)) == {"json", "re", "datetime"})
 
-# ---- workflow/awsio.py の AWS 呼び出し（差し替えで記録）
+# ---- app/temporal/awsio.py の AWS 呼び出し（差し替えで記録）
 gq = lambda: [kw["queryString"] for n, op, kw in calls if op == "execute_query"]
 gp = lambda: [kw.get("parameters", {}) for n, op, kw in calls if op == "execute_query"]
 check("Gremlin の組み立て（_q / _un / gremlin）はもう無い（値は openCypher のパラメータで渡すので、エスケープが要らない）",
-      not any(hasattr(awsio, n) for n in ("_q", "_un", "gremlin", "NEPTUNE_ENDPOINT")) and "execute_gremlin_query" not in read("workflow", "awsio.py"))
+      not any(hasattr(awsio, n) for n in ("_q", "_un", "gremlin", "NEPTUNE_ENDPOINT")) and "execute_gremlin_query" not in read("app", "temporal", "awsio.py"))
 # 修復案の頂点（label proposal）は 2026-10-05 にやめた。修復案は S3 Tables の proposal_events だけ
-_awsio_src = read("workflow", "awsio.py")
+_awsio_src = read("app", "temporal", "awsio.py")
 check("awsio は修復案を Neptune に読み書きしない（read_proposal / write_proposal / update_proposal も :proposal も無い）",
       not any(hasattr(awsio, n) for n in ("read_proposal", "write_proposal", "update_proposal")) and ":proposal" not in _awsio_src)
 # Neptune はトポロジだけにする（2026-10-02）。異常の「いま」は Temporal のワークフローとシグナルが持つ
 check("awsio は異常の頂点（label anomaly）を読まない",
       not hasattr(awsio, "read_anomaly") and not hasattr(awsio, "list_open_anomalies") and ":anomaly" not in _awsio_src)
 calls.clear(); clients.clear(); awsio._cache.pop("neptune", None)
-fake["execute_query"] = cyrows({"id": "hq-ce-01", "status": "DOWN", "maintenance": True})
+fake["execute_query"] = cyrows({"id": "hq-ce-01", "status": "DOWN", "maintenance": True, "role": "ce"})
 awsio.read_topology()
 check("Neptune Analytics は neptune-graph の execute_query（openCypher、グラフ ID 指定、endpoint_url なし）で読む",
-      gq()[0] == "MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance"
+      gq()[0] == "MATCH (n:device) RETURN id(n) AS id, n.status AS status, n.maintenance AS maintenance, n.role AS role"
       and calls[-1][2]["graphIdentifier"] == "g-abc1234567" and calls[-1][2]["language"] == "OPEN_CYPHER"
       and clients[-1][0] == "neptune-graph" and "endpoint_url" not in clients[-1][1])
 fake["execute_query"] = cyrows()
@@ -336,13 +347,13 @@ check("anomaly_of は proposal_id の右端の # から後ろを外す、決定�
       rules.anomaly_of(_pid) == "hq-ce-01#link_down#eth1" and rules.alerts_from_message(_dm()) == [])
 check("status に出てくる出来事は全部 PROPOSAL_EVENTS にある", set(proposals.STATUSES) - {"pending"} <= set(rules.PROPOSAL_EVENTS))
 check("append_proposal_events は空なら何もしない（pyiceberg を読まない）", awsio.append_proposal_events([], rules.PROPOSAL_EVENT_COLUMNS) is None)
-# アラートの通知の履歴（S3 Tables の alert_events。書くのは graph/status_handler.py）
+# アラートの通知の履歴（S3 Tables の alert_events。書くのは app/graph/status_handler.py）
 al = rules.alerts_from_message(json.dumps({"source": "grafana", "alerts": [
-    {"status": "firing", "device_id": "dc1-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "detail": "oper-state down", "starts_at": 1790000000},
+    {"status": "firing", "device_id": "dc1-a-leaf-01", "kind": "link_down", "target": "ethernet-1/1", "detail": "oper-state down", "starts_at": 1790000000},
     {"status": "resolved", "device_id": "?", "kind": "trap", "target": "?", "detail": ""}]}))
 ae = [rules.alert_event(a, 1790000123.5) for a in al]
 check("alert_event の event_id は <anomaly_id>#<source>#<status>#<starts_at の epoch 秒>",
-      ae[0]["event_id"] == "dc1-leaf-01#link_down#ethernet-1/1#grafana#firing#1790000000" and ae[0]["anomaly_id"] == "dc1-leaf-01#link_down#ethernet-1/1")
+      ae[0]["event_id"] == "dc1-a-leaf-01#link_down#ethernet-1/1#grafana#firing#1790000000" and ae[0]["anomaly_id"] == "dc1-a-leaf-01#link_down#ethernet-1/1")
 check("alert_event の列は ALERT_EVENT_COLUMNS と同じ順、時刻は ISO 8601 の UTC（マイクロ秒と Z）",
       list(ae[0]) == [n for n, _ in rules.ALERT_EVENT_COLUMNS]
       and ae[0]["starts_at"] == "2026-09-21T14:13:20.000000Z" and ae[0]["received_at"] == "2026-09-21T14:15:23.500000Z"
@@ -374,15 +385,15 @@ except RuntimeError:
 check("Runtime が error を返したら例外（Temporal が再試行する）", bad)
 # 分割しても worker.py からは awsio / rules 経由で全部に届く（Temporal のサンドボックスを通すため imports_passed_through で囲む）
 check("worker.py は awsio / rules を imports_passed_through で読む",
-      re.search(r"with workflow\.unsafe\.imports_passed_through\(\):\n\s*import awsio\n\s*import rules", read("workflow", "worker.py")) is not None)
+      re.search(r"with workflow\.unsafe\.imports_passed_through\(\):\n\s*import awsio\n\s*import rules", read("app", "temporal", "worker.py")) is not None)
 # 2026-10-02: パッチの切り出し位置を誤って定数とアクティビティがまるごと欠けた。temporalio を入れていない環境では import の確認が走らず気づけなかったので、形を見る
 check("worker.py に定数・アクティビティ 5 本・@workflow.defn の付いたワークフロー・シグナル 2 本・starter がそろっている",
       [f.__name__ for f in worker.ACTIVITIES] == ["investigate", "put_proposal", "record_event", "record_ignored", "apply_on_lab"]
       and all(isinstance(getattr(worker, k), int) for k in ("APPROVAL_TIMEOUT_MINUTES", "VERIFY_TIMEOUT", "HOLD_MINUTES"))
       and worker.HOLD_OUTCOMES == ("rejected", "expired", "failed") and worker.TASK_QUEUE and worker.TEMPORAL_ADDRESS == "localhost:7233"
-      and re.search(r"^@workflow\.defn\nclass InvestigateAnomaly:", read("workflow", "worker.py"), re.M) is not None
-      and read("workflow", "worker.py").count("@activity.defn\n") == 5
-      and len(re.findall(r"^    @workflow\.signal\n    def (decide|resolved)\(", read("workflow", "worker.py"), re.M)) == 2
+      and re.search(r"^@workflow\.defn\nclass InvestigateAnomaly:", read("app", "temporal", "worker.py"), re.M) is not None
+      and read("app", "temporal", "worker.py").count("@activity.defn\n") == 5
+      and len(re.findall(r"^    @workflow\.signal\n    def (decide|resolved)\(", read("app", "temporal", "worker.py"), re.M)) == 2
       and all(callable(getattr(worker, f)) for f in ("start_for", "resolve_for", "handle_message", "handle_decision", "starter_queue", "starter", "connect", "main")))
 check("異常の頂点を見るアクティビティ（get_anomaly / still_open / anomaly_resolved）と、表を見る starter はもう無い",
       not any(hasattr(worker, f) for f in ("get_anomaly", "still_open", "anomaly_resolved", "starter_table", "POLL_INTERVAL", "VERIFY_ATTEMPTS", "VERIFY_INTERVAL")))
@@ -395,7 +406,7 @@ calls.clear()
 check("Athena の設定が無ければ一覧・1 件・承認とも「未配備」を返し、AWS を呼ばない（Neptune も見ない）",
       proposals.list_proposals() == {"error": proposals.NOT_DEPLOYED, "proposals": []} and proposals.get_proposal("a#1") == {}
       and proposals.decide("a#1", "approved", "web") == {"error": proposals.NOT_DEPLOYED} and calls == [])
-check("proposals.py は Neptune（agent/graph.py）を読まない", "import graph" not in read("agent", "proposals.py") and not hasattr(proposals, "graph"))
+check("proposals.py は Neptune（app/agentcore/graph.py）を読まない", "import graph" not in read("app", "agentcore", "proposals.py") and not hasattr(proposals, "graph"))
 
 # エージェントのツール（読むだけ。2026-09-18）
 check("ツールも未配備なら案内を返す", proposals.run_tool("list_proposals", {})["error"] == proposals.NOT_DEPLOYED and calls == [])
@@ -416,17 +427,17 @@ check("Gateway の URL が無ければツール一覧は空（app.py はコン�
 check("Gateway に無いツールの call はエラーの辞書", "error" in mcp_client.call("neighbors", {}))
 
 # ---- tools.json と Python の TOOL_SPECS
-tools = json.loads(read("tools", "tools.json"))
+tools = json.loads(read("app", "gateway", "tools.json"))
 py_specs = {s["toolSpec"]["name"]: s["toolSpec"] for s in topology.TOOL_SPECS + evidence.TOOL_SPECS + proposals.TOOL_SPECS}
 check("tools.json の 13 個は topology / evidence / proposals の TOOL_SPECS と同じ名前（list_anomalies は 2026-10-02 にやめた）",
       {t["name"] for t in tools} == set(py_specs) and len(tools) == 13 and "list_anomalies" not in py_specs
-      and not os.path.exists(os.path.join(ROOT, "agent", "anomalies.py")))
+      and not os.path.exists(os.path.join(ROOT, "app", "agentcore", "anomalies.py")))
 check("evidence のツールは search_logs / query_metrics / query_history", {s["toolSpec"]["name"] for s in evidence.TOOL_SPECS} == {"search_logs", "query_metrics", "query_history"})
 # query_history が読む列と Firehose が書く列（status Lambda の rules.alert_event）がずれると、SELECT が COLUMN_NOT_FOUND で落ちる
 check("evidence.HISTORY_COLUMNS は rules.ALERT_EVENT_COLUMNS の列名と同じ順",
       evidence.HISTORY_COLUMNS == tuple(n for n, _ in rules.ALERT_EVENT_COLUMNS))
 check("handler は topology / evidence / proposals のツールを名前で振り分ける",
-      "MODULES = (topology, evidence, proposals)" in read("tools", "handler.py"))
+      "MODULES = (topology, evidence, proposals)" in read("app", "gateway", "handler.py"))
 for t in tools:
     js = py_specs[t["name"]]["inputSchema"]["json"]
     check(f"{t['name']} の引数と必須が Python と同じ",
@@ -435,7 +446,7 @@ for t in tools:
 check("tools.json の型は string / integer だけ（Gateway の inline schema が受ける形）",
       all(p["type"] in ("string", "integer") for t in tools for p in t["inputSchema"]["properties"].values()))
 
-# ---- tools/handler.py
+# ---- app/gateway/handler.py
 class Ctx:
     client_context = types.SimpleNamespace(custom={"bedrockAgentCoreToolName": "tools___list_devices"})
 check("Lambda は client_context のツール名から <target>___ を外す", handler.tool_name(Ctx()) == "list_devices")
@@ -447,7 +458,7 @@ check("知らないツールはエラーの辞書", "error" in handler.dispatch(
 tf = ""
 tf_files = sorted(n for n in os.listdir(TF_DIR) if n.endswith(".tf"))
 for name in tf_files:
-    tf += read("terraform", "workflow", name) + "\n"
+    tf += read("IaC", "terraform", "aws-managed", "workflow", name) + "\n"
 check("ファイルは versions / providers / variables / locals / proposals / iam / ecs / gateway / outputs",
       set(tf_files) == {"versions.tf", "providers.tf", "variables.tf", "locals.tf", "proposals.tf", "iam.tf", "ecs.tf", "gateway.tf", "events.tf", "outputs.tf"})
 check("graph と analytics の state は try で読む（無くても apply できる）",
@@ -455,14 +466,14 @@ check("graph と analytics の state は try で読む（無くても apply で�
       and re.search(r'try\(data\.terraform_remote_state\.analytics', tf) is not None)
 for root in ("base/core", "pipeline/lab", "base/ecr", "agent"):
     check(f"{root} の state をローカルから読む", f'"${{path.module}}/../{root}/terraform.tfstate"' in tf)
-main_out = read("terraform", "base", "core", "outputs.tf")
-lab_out = read("terraform", "pipeline", "lab", "outputs.tf"); ecr_out = read("terraform", "base", "ecr", "outputs.tf"); agent_out = read("terraform", "agent", "outputs.tf")
+main_out = read("IaC", "terraform", "aws-managed", "base", "core", "outputs.tf")
+lab_out = read("IaC", "terraform", "aws-managed", "pipeline", "lab", "outputs.tf"); ecr_out = read("IaC", "terraform", "aws-managed", "base", "ecr", "outputs.tf"); agent_out = read("IaC", "terraform", "aws-managed", "agent", "outputs.tf")
 for out in ("vpc_id", "instance_subnet_id", "security_group_ids", "runtime_role_name", "web_role_name"):
     check(f"main の出力 {out} がある", f'output "{out}"' in main_out and f"outputs.{out}" in tf)
-check("agent の出力 agent_runtime_arn を try で読み、無ければ precondition で止まる（terraform/agent を先に apply）",
+check("agent の出力 agent_runtime_arn を try で読み、無ければ precondition で止まる（IaC/terraform/aws-managed/agent を先に apply）",
       'output "agent_runtime_arn"' in agent_out and re.search(r'try\(data\.terraform_remote_state\.agent\.outputs\.agent_runtime_arn, ""\)', tf) is not None
-      and 'condition     = local.runtime_arn != ""' in tf and "terraform/agent を先に apply" in tf)
-graph_out = read("terraform", "pipeline", "graph", "outputs.tf"); analytics_out = read("terraform", "pipeline", "analytics", "outputs.tf")
+      and 'condition     = local.runtime_arn != ""' in tf and "IaC/terraform/aws-managed/agent を先に apply" in tf)
+graph_out = read("IaC", "terraform", "aws-managed", "pipeline", "graph", "outputs.tf"); analytics_out = read("IaC", "terraform", "aws-managed", "pipeline", "analytics", "outputs.tf")
 check("graph の出力 graph_id / graph_arn を読む（Neptune Analytics。届く道は土台の neptune-graph-data のエンドポイント）",
       all(f'output "{o}"' in graph_out and f"outputs.{o}" in tf for o in ("graph_id", "graph_arn")) and "cluster_endpoint" not in tf and "neptune-db" not in tf)
 check("analytics の出力（テーブルバケット・namespace・proposal_events）を読む",
@@ -484,8 +495,8 @@ check("worker は temporal の後に起き、localhost:7233 につなぐ", '"loc
 for env in ("NEPTUNE_GRAPH_ID", "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "PROPOSAL_EVENTS_TABLE", "ANOMALY_QUEUE_URL", "DECISION_QUEUE_URL", "AGENT_RUNTIME_ARN", "LAB_INSTANCE_ID", "APPROVAL_TIMEOUT_MINUTES", "VERIFY_TIMEOUT", "HOLD_MINUTES", "PARAM_PREFIX"):
     check(f"worker の環境変数 {env} を渡す", f'name = "{env}"' in tf or f'name  = "{env}"' in tf or re.search(rf'name\s*=\s*"{env}"', tf) is not None)
 # 渡した名前を worker が読んでいなければ、既定値のまま動いて気づけない
-_env_read = set(re.findall(r'os\.environ\.get\("(\w+)"', read("workflow", "worker.py") + read("workflow", "awsio.py")))
-_env_passed = set(re.findall(r'\{ name = "(\w+)", value', read("terraform", "workflow", "ecs.tf").split('name      = "worker"')[1]))
+_env_read = set(re.findall(r'os\.environ\.get\("(\w+)"', read("app", "temporal", "worker.py") + read("app", "temporal", "awsio.py")))
+_env_passed = set(re.findall(r'\{ name = "(\w+)", value', read("IaC", "terraform", "aws-managed", "workflow", "ecs.tf").split('name      = "worker"')[1]))
 check(f"worker のコンテナに渡す環境変数は全部 worker.py / awsio.py が読む（読まれない: {sorted(_env_passed - _env_read - {'PARAM_PREFIX'})}）",
       _env_passed and not (_env_passed - _env_read - {"PARAM_PREFIX"}) and not ({"POLL_INTERVAL", "VERIFY_ATTEMPTS", "VERIFY_INTERVAL"} & _env_passed))
 check("タスクロールは Runtime の InvokeAgentRuntime と lab への ssm:SendCommand（AWS-RunShellScript だけ）",
@@ -524,18 +535,18 @@ check("Runtime と Web のロールに SSM の読み取りを付け、Gateway �
 # 承認・却下を書けるのはコードの上では web だけ（decide はツールにしない）。Neptune の IAM は頂点ごとに絞れないので、線はコードで引く
 check("修復案を決める専用の IAM（decide_access）はもう無い", "decide_access" not in tf)
 check("Gateway は AWS_IAM 認可の MCP で、2025-06-18 を話す", 'authorizer_type = "AWS_IAM"' in tf and 'protocol_type   = "MCP"' in tf and '"2025-06-18"' in tf)
-check("Gateway のターゲットは tools.json から inline schema を作る", 'jsondecode(file("${local.repo_root}/tools/tools.json"))' in tf and 'dynamic "inline_payload"' in tf)
+check("Gateway のターゲットは tools.json から inline schema を作る", 'jsondecode(file("${local.repo_root}/app/gateway/tools.json"))' in tf and 'dynamic "inline_payload"' in tf)
 check("tools Lambda は python3.13 arm64 で、handler.py / toolkit / topology / evidence / proposals / graph / data を zip にする（anomalies は入れない）",
       'runtime          = "python3.13"' in tf and 'architectures    = ["arm64"]' in tf
-      and all(f'"{p}"' in tf or f'{{local.repo_root}}/{p}"' in tf for p in ("tools/handler.py", "agent/toolkit.py", "agent/topology.py", "agent/evidence.py", "agent/proposals.py", "agent/graph.py", "agent/data/topology.json", "agent/data/devices.yaml", "agent/data/layers.json"))
-      and "agent/anomalies.py" not in tf)
+      and all(f'"{p}"' in tf or f'{{local.repo_root}}/{p}"' in tf for p in ("app/gateway/handler.py", "app/agentcore/toolkit.py", "app/agentcore/topology.py", "app/agentcore/evidence.py", "app/agentcore/proposals.py", "app/agentcore/graph.py", "app/agentcore/data/topology.json", "app/agentcore/data/devices.yaml", "app/agentcore/data/layers.json"))
+      and "app/agentcore/anomalies.py" not in tf)
 # 入れ忘れても apply も plan も通り、実行時に ModuleNotFoundError になる。だから「入っている」ではなく「足りていないものが無い」を見る:
-# zip に入れたモジュールが import する agent/ のモジュールが、全部 tools_files に並んでいるか
-zipped = set(re.findall(r'^\s+"agent/(\w+)\.py"\s+=', tf, re.M))
+# zip に入れたモジュールが import する app/agentcore/ のモジュールが、全部 tools_files に並んでいるか
+zipped = set(re.findall(r'^\s+"app/agentcore/(\w+)\.py"\s+=', tf, re.M))
 needed = set()
-for src in [("tools", "handler.py")] + [("agent", m + ".py") for m in zipped]:
-    needed |= {i for i in re.findall(r"^import (\w+)$", read(*src), re.M) if os.path.exists(os.path.join(ROOT, "agent", i + ".py"))}
-check(f"tools.zip は入れたモジュールが import する agent/ のモジュールを全部入れる（足りない: {sorted(needed - zipped)}）", zipped and not (needed - zipped))
+for src in [("app", "gateway", "handler.py")] + [("app", "agentcore", m + ".py") for m in zipped]:
+    needed |= {i for i in re.findall(r"^import (\w+)$", read(*src), re.M) if os.path.exists(os.path.join(ROOT, "app", "agentcore", i + ".py"))}
+check(f"tools.zip は入れたモジュールが import する app/agentcore/ のモジュールを全部入れる（足りない: {sorted(needed - zipped)}）", zipped and not (needed - zipped))
 check("tools Lambda は VPC の中（Neptune / OpenSearch / Prometheus に届く）で、OPENSEARCH_ENDPOINT / PROMETHEUS_QUERY_URL を渡す",
       re.search(r'resource "aws_lambda_function" "tools"[\s\S]*?vpc_config \{', tf) is not None
       and all(v in tf for v in ("OPENSEARCH_ENDPOINT", "OPENSEARCH_INDEX", "PROMETHEUS_QUERY_URL")))
@@ -550,8 +561,8 @@ check("tools Lambda に ATHENA_WORKGROUP / ATHENA_CATALOG / HISTORY_NAMESPACE / 
       and re.search(r'HISTORY_NAMESPACE\s+= local\.athena_workgroup == "" \? "" : local\.audit_namespace', tf) is not None)
 _agent_env_read = set()
 for _m in zipped:
-    _agent_env_read |= set(re.findall(r'os\.environ\.get\("(\w+)"', read("agent", _m + ".py")))
-    _agent_env_read |= set(re.findall(r'Param\("(\w+)"', read("agent", _m + ".py")))  # 環境変数が先、無ければ SSM（toolkit.Param）
+    _agent_env_read |= set(re.findall(r'os\.environ\.get\("(\w+)"', read("app", "agentcore", _m + ".py")))
+    _agent_env_read |= set(re.findall(r'Param\("(\w+)"', read("app", "agentcore", _m + ".py")))  # 環境変数が先、無ければ SSM（toolkit.Param）
 check(f"tools Lambda に渡す環境変数は全部 zip のモジュールが読む（読まれない: {sorted(_tools_env_keys - _agent_env_read)}）",
       _tools_env_keys and not (_tools_env_keys - _agent_env_read))
 _hist_stmts = {sid: re.search(rf'sid\s*=\s*"{sid}"[\s\S]*?\n    \}}', tf) for sid in ("HistoryQuery", "HistoryCatalog", "HistoryBucket", "HistoryTable")}
@@ -588,7 +599,7 @@ check("アラートのキュー 2 つのポリシーは sns.amazonaws.com の Se
 check("EventBridge のルールはもう無い（Spark の検知と一緒にやめた。2026-10-02）",
       "aws_cloudwatch_event_" not in tf and "events.amazonaws.com" not in tf and "AnomalyOpened" not in tf)
 check("タスクロールは SQS の ReceiveMessage / DeleteMessage", '"sqs:ReceiveMessage", "sqs:DeleteMessage"' in tf)
-_events_tf = read("terraform", "workflow", "events.tf")
+_events_tf = read("IaC", "terraform", "aws-managed", "workflow", "events.tf")
 check("決定のキュー（decisions）と DLQ（5 回）があり、SNS は購読しない（Web が直接送る）",
       'resource "aws_sqs_queue" "decisions"' in _events_tf and 'resource "aws_sqs_queue" "decisions_dlq"' in _events_tf
       and re.search(r'resource "aws_sqs_queue" "decisions" \{[\s\S]*?deadLetterTargetArn = aws_sqs_queue\.decisions_dlq\.arn[\s\S]*?maxReceiveCount\s*=\s*5', _events_tf) is not None
@@ -619,35 +630,35 @@ check("aws_iam_role の description は ASCII だけ",
       all(d.isascii() for d in re.findall(r'resource "aws_iam_role"[\s\S]*?description\s*=\s*"([^"]*)"', tf)))
 check("Fargate のタスクは 1 vCPU / 2 GB が既定（≒ $0.05/h）", 'default     = 1024' in tf and 'default     = 2048' in tf)
 check("ログの保持期間を書く", "retention_in_days = var.log_retention_days" in tf)
-check("mcp_client は SigV4 のサービス名 bedrock-agentcore で署名する", '"bedrock-agentcore"' in read("agent", "mcp_client.py"))
-check("agent/app.py は Gateway のツールを先に、無ければコンテナ内の関数を使う", "mcp_client.tool_specs() or TOOL_SPECS" in read("agent", "app.py") and "mcp_client.has(name)" in read("agent", "app.py"))
-check("agent/Dockerfile は toolkit.py / mcp_client.py / proposals.py を入れる",
-      all(f"{m}.py" in read("agent", "Dockerfile").split("COPY app.py")[1].split("\n")[0] for m in ("toolkit", "mcp_client", "proposals")))
-check("workflow/Dockerfile は非 root で worker.py を打つ", "USER worker" in read("workflow", "Dockerfile") and '["python", "worker.py"]' in read("workflow", "Dockerfile"))
+check("mcp_client は SigV4 のサービス名 bedrock-agentcore で署名する", '"bedrock-agentcore"' in read("app", "agentcore", "mcp_client.py"))
+check("app/agentcore/app.py は Gateway のツールを先に、無ければコンテナ内の関数を使う", "mcp_client.tool_specs() or TOOL_SPECS" in read("app", "agentcore", "app.py") and "mcp_client.has(name)" in read("app", "agentcore", "app.py"))
+check("docker/images/agentcore/Dockerfile は toolkit.py / mcp_client.py / proposals.py を入れる",
+      all(f"{m}.py" in read("docker", "images", "agentcore", "Dockerfile").split("COPY app.py")[1].split("\n")[0] for m in ("toolkit", "mcp_client", "proposals")))
+check("docker/images/temporal/Dockerfile は非 root で worker.py を打つ", "USER worker" in read("docker", "images", "temporal", "Dockerfile") and '["python", "worker.py"]' in read("docker", "images", "temporal", "Dockerfile"))
 # 1 つずつ COPY すると、足したファイルを入れ忘れて起動時に ModuleNotFoundError になる（分割で 3 本になった）
-check("workflow/Dockerfile は *.py をまとめて入れる", "COPY *.py ./" in read("workflow", "Dockerfile"))
-check("workflow/requirements.txt は temporalio / boto3 / pyiceberg[pyarrow]（証跡の append）を固定する",
-      all(r in read("workflow", "requirements.txt") for r in ("temporalio==", "boto3>=", "pyiceberg[pyarrow]==")))
+check("docker/images/temporal/Dockerfile は *.py をまとめて入れる", "COPY *.py ./" in read("docker", "images", "temporal", "Dockerfile"))
+check("app/temporal/requirements.txt は temporalio / boto3 / pyiceberg[pyarrow]（証跡の append）を固定する",
+      all(r in read("app", "temporal", "requirements.txt") for r in ("temporalio==", "boto3>=", "pyiceberg[pyarrow]==")))
 for _f in ("worker.py", "awsio.py", "rules.py"):
-    ast.parse(read("workflow", _f))
-ecr_tf = read("terraform", "base", "ecr", "main.tf")
-check("terraform/base/ecr は worker / temporal のリポジトリを作る", '"worker", "temporal"' in ecr_tf and 'resource "aws_ecr_repository" "workflow"' in ecr_tf)
+    ast.parse(read("app", "temporal", _f))
+ecr_tf = read("IaC", "terraform", "aws-managed", "base", "ecr", "main.tf")
+check("IaC/terraform/aws-managed/base/ecr は worker / temporal のリポジトリを作る", '"worker", "temporal"' in ecr_tf and 'resource "aws_ecr_repository" "workflow"' in ecr_tf)
 
 # ---- web（app.py は画面の組み立てだけ。タブの中身は分けてある）
-web = read("web", "app.py")
-web_srcs = sorted(n for n in os.listdir(os.path.join(ROOT, "web")) if n.endswith(".py"))
+web = read("app", "dashboard", "app.py")
+web_srcs = sorted(n for n in os.listdir(os.path.join(ROOT, "app", "dashboard")) if n.endswith(".py"))
 check("web は app / config / chat / topology_view / incident_view / nautobot_api に分かれる",
       set(web_srcs) == {"app.py", "config.py", "chat.py", "topology_view.py", "incident_view.py", "nautobot_api.py"})
 # user_data は $APP/src/app.py の 1 行目で置き間違いを見るので、app.py の import gradio は行頭のまま動かさない
 check("app.py には行頭の import gradio がある（user_data の置き間違い検出が見ている）",
       re.search(r"^import gradio as gr$", web, re.M) is not None
-      and 'grep -q "^import gradio"' in read("terraform", "base", "core", "templates", "web_user_data.sh.tftpl"))
+      and 'grep -q "^import gradio"' in read("IaC", "terraform", "aws-managed", "base", "core", "templates", "web_user_data.sh.tftpl"))
 # cloud-init は MIME の 8bit の部分を raw-unicode-escape で取り出すので、日本語は「運」がバックスラッシュ付きの u904b になり、EnvironmentFile で u904b に崩れる
-web_ud = read("terraform", "base", "core", "templates", "web_user_data.sh.tftpl")
+web_ud = read("IaC", "terraform", "aws-managed", "base", "core", "templates", "web_user_data.sh.tftpl")
 check("web の user_data はコメント以外が ASCII だけで、TITLE を渡さない（タイトルは config.py の既定値）",
       all(l.isascii() for l in web_ud.splitlines() if not l.lstrip().startswith("#"))
-      and "TITLE=" not in web_ud and 'os.environ.get("TITLE", "運用管理ダッシュボード")' in read("web", "config.py"))
-incident = read("web", "incident_view.py")
+      and "TITLE=" not in web_ud and 'os.environ.get("TITLE", "運用管理ダッシュボード")' in read("app", "dashboard", "config.py"))
+incident = read("app", "dashboard", "incident_view.py")
 # 異常一覧のタブは 2026-10-02 にやめた（Neptune に異常の頂点を置かない。いまの異常はトポロジの状態と Grafana / Splunk で見る）
 check("Web のタブはチャット / トポロジ / 承認の 3 つ（異常一覧は無い）",
       re.findall(r'gr\.Tab\("([^"]+)"\)', web) == ["チャット", "トポロジ", "承認"]
@@ -661,20 +672,20 @@ check("承認・却下の結果はボタンの下の pr_result に出す（表�
       web.count("[pr_id, pr_status, pr_who, pr_ok],\n                          [pr_result, pr_table, pr_id])") == 2
       and "[pr_id, pr_status, pr_who, pr_ok], pr_out)" not in web)
 # 入れ忘れても apply は通り、EC2 の起動時に ModuleNotFoundError になる（tools.zip と同じ事故）。
-# web/*.py は upload_web_command が web/ ごと上げるので、確かめるのは agent/ から借りるモジュールの側
+# app/dashboard/*.py は upload_web_command が app/dashboard/ ごと上げるので、確かめるのは app/agentcore/ から借りるモジュールの側
 web_shared = set()
 for n in web_srcs:
-    web_shared |= {i for i in re.findall(r"^import (\w+)", read("web", n), re.M) if os.path.exists(os.path.join(ROOT, "agent", i + ".py"))}
+    web_shared |= {i for i in re.findall(r"^import (\w+)", read("app", "dashboard", n), re.M) if os.path.exists(os.path.join(ROOT, "app", "agentcore", i + ".py"))}
 uploaded = set(re.search(r"for f in ([\w ]+); do", main_out).group(1).split())
 check(f"main の upload_web_command は Web が import する agent のモジュールを全部上げる（足りない: {sorted(web_shared - uploaded)}）",
       web_shared and not (web_shared - uploaded))
-# 上の検査は web/*.py の import しか見ない。agent のモジュールどうしの import（proposals → evidence など）と、
+# 上の検査は app/dashboard/*.py の import しか見ない。agent のモジュールどうしの import（proposals → evidence など）と、
 # import のときに boto3 のクライアントを作ること（Web の EC2 は修復案を配備していなくても起動する）は、上げる分だけを別のディレクトリに写して確かめる
 import shutil as _sh, subprocess as _wsp, tempfile as _tf  # noqa: E402,E401
 _wd = _tf.mkdtemp()
 for _m in uploaded:
-    _sh.copy(os.path.join(ROOT, "agent", _m + ".py"), _wd)
-_sh.copytree(os.path.join(ROOT, "agent", "data"), os.path.join(_wd, "data"))
+    _sh.copy(os.path.join(ROOT, "app", "agentcore", _m + ".py"), _wd)
+_sh.copytree(os.path.join(ROOT, "app", "agentcore", "data"), os.path.join(_wd, "data"))
 _child = r'''
 import sys, types
 made = []
@@ -739,15 +750,15 @@ check("up.sh の WORKFLOW=1 は link_down のアラートの送り手（Grafana 
 # ---- starter: SQS のメッセージ（SNS のトピックの購読）
 check("starter はアラートと決定の 2 つのキューを 20 秒の long polling で待ち、ANOMALY_QUEUE_URL / DECISION_QUEUE_URL が無ければ起動で止まる（表を見る経路はもう無い）",
       all(hasattr(awsio, f) for f in ("receive_messages", "delete_message")) and awsio.GRAPH_ENV == "NEPTUNE_GRAPH_ID"
-      and "WaitTimeSeconds=20" in read("workflow", "awsio.py")
+      and "WaitTimeSeconds=20" in read("app", "temporal", "awsio.py")
       and re.search(r'for k in \("ANOMALY_QUEUE_URL", "DECISION_QUEUE_URL", awsio\.GRAPH_ENV, "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "AGENT_RUNTIME_ARN"\):\n\s*if not getattr\(awsio, k\):\n\s*raise SystemExit',
-                    read("workflow", "worker.py")) is not None
-      and "starter(client, awsio.ANOMALY_QUEUE_URL, handle_message)" in read("workflow", "worker.py")
-      and "starter(client, awsio.DECISION_QUEUE_URL, handle_decision)" in read("workflow", "worker.py"))
+                    read("app", "temporal", "worker.py")) is not None
+      and "starter(client, awsio.ANOMALY_QUEUE_URL, handle_message)" in read("app", "temporal", "worker.py")
+      and "starter(client, awsio.DECISION_QUEUE_URL, handle_decision)" in read("app", "temporal", "worker.py"))
 check("up.sh は workflow ルートを足し、費用に 5 セント足す（Fargate だけ。sqs のエンドポイントは無くなった）", 'ROOTS="$ROOTS workflow"' in up and 'COST_CENTS=$((COST_CENTS + 5))' in up)
 check("up.sh は worker を buildx でビルドし、temporalio/temporal を ECR にミラーする",
-      '--push workflow/' in up and 'docker pull --platform linux/arm64 "temporalio/temporal:$TEMPORAL_TAG"' in up and "$PREFIX-temporal:$TEMPORAL_TAG" in up)
-check("up.sh の TEMPORAL_TAG は terraform/workflow の temporal_image_tag の既定値と同じ",
+      '--push -f docker/images/temporal/Dockerfile app/temporal/' in up and 'docker pull --platform linux/arm64 "temporalio/temporal:$TEMPORAL_TAG"' in up and "$PREFIX-temporal:$TEMPORAL_TAG" in up)
+check("up.sh の TEMPORAL_TAG は IaC/terraform/aws-managed/workflow の temporal_image_tag の既定値と同じ",
       re.search(r'^TEMPORAL_TAG=(\S+)', up, re.M).group(1) == re.search(r'variable "temporal_image_tag"[\s\S]*?default\s*=\s*"([^"]+)"', tf).group(1))
 check("up.sh は workflow を apply して services-stable を待ち、Temporal UI のポートフォワーディングを案内する",
       'tf_apply workflow -var "worker_image_tag=$IMAGE_TAG"' in up and 'aws ecs wait services-stable' in up and 'AWS-StartPortForwardingSessionToRemoteHost' in up)
@@ -756,7 +767,7 @@ check("down.sh は workflow を最初に消す（必須変数はダミーで渡�
 # .py を名指しで並べると、ファイルを足したときに構文検査から漏れる（分割で 7 本増えた）。find に任せているかを見る
 check("check.sh は workflow ルートとこのテストを見て、.py は名指しせず find で全部見る",
       "workflow)" in chk and "for t in tests/test_*.py; do" in chk
-      and re.search(r"find [\w /]*\bworkflow\b [^\n]*-name '\*\.py'", chk) is not None and "ast.parse(" in chk)
+      and re.search(r"find [\w /]*\bapp\b [^\n]*-name '\*\.py'", chk) is not None and "ast.parse(" in chk)
 check("deploy.env.example は AGENT=0 / PIPELINE=0 / WORKFLOW=0 を既定にし（2026-10-04 に AGENT の既定を 0 にした）、CREATE_KB を説明する（古い PHASE の行は載せない）",
       re.search(r"^AGENT=0\n^PIPELINE=0\n^WORKFLOW=0$", read("deploy.env.example"), re.M) is not None
       and "既定は AGENT=1" not in read("deploy.env.example") and "AGENT=1 だけ" not in read("deploy.env.example")
@@ -793,13 +804,13 @@ check("down.sh は 1 ルートが消えなくても止まらず、残りを消�
       "FAILED_ROOTS=" in down and 'FAILED_ROOTS="$FAILED_ROOTS $root"' in down
       and re.search(r'if \[ -n "\$FAILED_ROOTS" \]; then[\s\S]*?exit 1', down) is not None
       and re.search(r'destroy_root\(\)[\s\S]*?\n\}', down).group(0).count("die ") == 0)
-# ---- terraform/agent と terraform/base/core の分担
-agent_files = set(n for n in os.listdir(os.path.join(ROOT, "terraform", "agent")) if n.endswith(".tf"))
-check("terraform/agent のファイルは versions / providers / variables / locals / runtime / kb / outputs（network.tf は 2026-09-26 に無くなった）",
+# ---- IaC/terraform/aws-managed/agent と IaC/terraform/aws-managed/base/core の分担
+agent_files = set(n for n in os.listdir(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "agent")) if n.endswith(".tf"))
+check("IaC/terraform/aws-managed/agent のファイルは versions / providers / variables / locals / runtime / kb / outputs（network.tf は 2026-09-26 に無くなった）",
       agent_files == {"versions.tf", "providers.tf", "variables.tf", "locals.tf", "runtime.tf", "kb.tf", "outputs.tf"})
-agent_tf = "".join(read("terraform", "agent", n) for n in sorted(agent_files))
-main_tf = "".join(read("terraform", "base", "core", n) for n in sorted(os.listdir(os.path.join(ROOT, "terraform", "base", "core"))) if n.endswith(".tf"))
-check("Runtime / ガードレール / KB は terraform/agent にあり、terraform/base/core には無い。agent にエンドポイントも SG も無く、Runtime は土台の runtime の SG を使う",
+agent_tf = "".join(read("IaC", "terraform", "aws-managed", "agent", n) for n in sorted(agent_files))
+main_tf = "".join(read("IaC", "terraform", "aws-managed", "base", "core", n) for n in sorted(os.listdir(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core"))) if n.endswith(".tf"))
+check("Runtime / ガードレール / KB は IaC/terraform/aws-managed/agent にあり、IaC/terraform/aws-managed/base/core には無い。agent にエンドポイントも SG も無く、Runtime は土台の runtime の SG を使う",
       all(r in agent_tf for r in ('resource "aws_bedrockagentcore_agent_runtime" "agent"', 'resource "aws_bedrock_guardrail" "this"', 'resource "aws_bedrockagent_knowledge_base" "kb"'))
       and 'resource "aws_vpc_endpoint"' not in agent_tf and 'resource "aws_security_group"' not in agent_tf
       and re.search(r'runtime_sg_id\s*=\s*try\(data\.terraform_remote_state\.main\.outputs\.security_group_ids\["runtime"\], ""\)', agent_tf) is not None
@@ -810,10 +821,10 @@ check("KB のコレクションは公開せず、土台の VPC エンドポイ�
       and re.search(r'aoss_vpce_id\s*=\s*try\(data\.terraform_remote_state\.main\.outputs\.opensearch_vpc_endpoint_id,\s*""\)', agent_tf) is not None
       and "kb_admin_principal_arn" not in agent_tf and "aws_iam_session_context" not in agent_tf
       and "opensearch-project/opensearch" not in agent_tf and 'resource "opensearch_index"' not in agent_tf)
-check("KB のベクトルインデックスは VPC の中の Lambda（agent/kb_index.py）が作り、KB はその後に作る。Lambda は CreateIndex / DescribeIndex だけ",
+check("KB のベクトルインデックスは VPC の中の Lambda（app/agentcore/kb_index.py）が作り、KB はその後に作る。Lambda は CreateIndex / DescribeIndex だけ",
       re.search(r'resource "aws_lambda_function" "kb_index"[\s\S]*?vpc_config\s*\{[\s\S]*?security_group_ids\s*=\s*\[local\.lambda_sg_id\]', agent_tf, re.S) is not None
       and re.search(r'lambda_sg_id\s*=\s*try\(data\.terraform_remote_state\.main\.outputs\.security_group_ids\["lambda"\], ""\)', agent_tf) is not None
-      and "agent/kb_index.py" in agent_tf and 'resource "aws_lambda_invocation" "kb_index"' in agent_tf
+      and "app/agentcore/kb_index.py" in agent_tf and 'resource "aws_lambda_invocation" "kb_index"' in agent_tf
       and re.search(r'"aoss:CreateIndex",\s*"aoss:DescribeIndex"\][\s\S]*?Principal\s*=\s*\[aws_iam_role\.kb_index\[0\]\.arn\]', agent_tf, re.S) is not None
       and re.search(r'resource "aws_bedrockagent_knowledge_base" "kb"[\s\S]*?depends_on\s*=\s*\[aws_lambda_invocation\.kb_index', agent_tf, re.S) is not None)
 check("up.sh は KB か logs のコレクションがあるときだけ base/core に create_opensearch_endpoint=true を渡す（費用 +3 セント）",
@@ -824,14 +835,21 @@ check("KB は create_knowledge_base（既定 false）の count で作り、Runti
       and re.search(r'local\.kb \? \{\n\s*KNOWLEDGE_BASE_ID', agent_tf) is not None)
 check("Runtime の ARN は agent が SSM に書き、web はそれを読む（main は runtime_arn を user_data に渡さない）",
       'resource "aws_ssm_parameter" "runtime_arn"' in agent_tf and 'name        = "${local.param_prefix}/runtime-arn"' in agent_tf
-      and "runtime_arn" not in read("terraform", "base", "core", "templates", "web_user_data.sh.tftpl")
-      and 'toolkit.Param("RUNTIME_ARN", "runtime-arn")' in read("web", "chat.py")
+      and "runtime_arn" not in read("IaC", "terraform", "aws-managed", "base", "core", "templates", "web_user_data.sh.tftpl")
+      and 'toolkit.Param("RUNTIME_ARN", "runtime-arn")' in read("app", "dashboard", "chat.py")
       and 'ssm:GetParameter' in main_tf)
 check("agent は web のロールに InvokeAgentRuntime を付け、main の runtime ロールにポリシーを足す",
       'role = local.web_role_name' in agent_tf and 'bedrock-agentcore:InvokeAgentRuntime' in agent_tf and 'role = local.runtime_role_name' in agent_tf
       and 'output "runtime_role_arn"' in main_out and 'resource "aws_iam_role" "runtime"' in main_tf)
 check("閉域: Runtime のリソースポリシーは VPC の外からの InvokeAgentRuntime を拒み、apply した人は外す（deploy.md の CLI の確認が通る）",
       re.search(r'resource "aws_bedrockagentcore_resource_policy" "runtime"[\s\S]*?"bedrock-agentcore:InvokeAgentRuntime"[\s\S]*?agent_runtime_arn[\s\S]*?"aws:SourceVpc"[\s\S]*?local\.perimeter_exempt_principals', agent_tf) is not None)
+_agent_roles = set(re.findall(r'resource "aws_iam_role" "(\w+)"', agent_tf))
+_agent_perim = set(re.findall(r'resource "aws_iam_role_policy_attachment" "\w+" \{\n\s*count = local\.kb && local\.perimeter_policy_arn != "" \? 1 : 0\n\s*'
+                              r'role\s*= aws_iam_role\.(\w+)\[0\]\.name\n\s*policy_arn = local\.perimeter_policy_arn\n\}', agent_tf))
+check("閉域: agent のロールは、サービス側で動く KB のロール（<prefix>-kb。perimeter_exempt_principals）を除いて全部 perimeter の Deny を付ける（kb-index の Lambda も）",
+      _agent_roles == {"kb", "kb_index"} and _agent_perim == _agent_roles - {"kb"}
+      and 'perimeter_policy_arn        = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")' in agent_tf
+      and '"arn:${local.partition}:iam::${local.account_id}:role/${local.name_prefix}-kb",' in main_tf)
 check("down.sh は Runtime の ENI が残るあいだ VPC・サブネット・runtime の SG を残して他を消す（aws_security_group.internal は 2026-09-29 より前の state）",
       "InterfaceType=='agentic_ai'" in down and "Name=tag:Name,Values=$PREFIX-vpc" in down and "tf base/core output -raw vpc_id" not in down and "Runtime の ENI の確認:" in down
       and '''""|data.*|aws_vpc.this|aws_subnet.*|'aws_security_group.workload["runtime"]'|aws_security_group.internal) ;;''' in down
@@ -843,15 +861,15 @@ check("up.sh は base/core の state に 2026-09-29 より前の SG（aws_securi
 _sg_roots = ("agent", "pipeline/analytics", "pipeline/graph", "pipeline/lab", "pipeline/stream", "workflow")
 # stream の MSK の SG は msk.tf で読む（MSK だけのもの。OSS 版のルートに msk.tf は無い。cycle 005）
 _sg_files = {r: ("locals.tf", "msk.tf") if r == "pipeline/stream" else ("locals.tf",) for r in _sg_roots}
-_sg_locals = {r: "\n".join(read("terraform", *r.split("/"), f) for f in fs) for r, fs in _sg_files.items()}
+_sg_locals = {r: "\n".join(read("IaC", "terraform", "aws-managed", *r.split("/"), f) for f in fs) for r, fs in _sg_files.items()}
 check("SG の ID を読む 6 ルートは try で読み（古い state のまま down.sh の destroy が通る）、base/core の state に security_group_ids が無ければ apply の前に止める",
       all(re.search(r'data "terraform_remote_state" "main" \{[\s\S]*?lifecycle \{\s*postcondition \{\s*condition\s*=\s*can\(self\.outputs\.security_group_ids(\["\w+"\])?\)', s) is not None
           and re.findall(r'security_group_ids\[', s)
           # stream の postcondition はキーまで見る（Telegraf の SG のキーを 2026-10-04 に変えた）。can の中の 1 つは try の数に入れない
           and len(re.findall(r'(?<!can\(self\.outputs\.)security_group_ids\[', s)) == len(re.findall(r'= try\(data\.terraform_remote_state\.main\.outputs\.security_group_ids\["\w+"\], ""\)', s))
           for s in _sg_locals.values())
-      and not any("security_group_ids[" in read("terraform", *r.split("/"), f) for r in _sg_roots
-                  for f in os.listdir(os.path.join(ROOT, "terraform", *r.split("/"))) if f.endswith(".tf") and f not in _sg_files[r]))
+      and not any("security_group_ids[" in read("IaC", "terraform", "aws-managed", *r.split("/"), f) for r in _sg_roots
+                  for f in os.listdir(os.path.join(ROOT, "IaC", "terraform", "aws-managed", *r.split("/"))) if f.endswith(".tf") and f not in _sg_files[r]))
 _destroy_agent = re.search(r"\ndestroy_agent\(\) \{[\s\S]*?\n\}", down).group(0)
 check("down.sh は agent を lab の後、main の前に消し（ops/down-common.sh の destroy_agent）、ロググループ名を agent の state から読む",
       _down_body.index("\ndestroy_root pipeline/lab\n") < _down_body.index("\ndestroy_agent\n") < _down_body.index("\ndestroy_base_core\n")
@@ -861,7 +879,7 @@ check("up.sh は main の後に agent を apply し、CREATE_KB のときだけ�
       and re.search(r'if \[ -n "\$CREATE_KB" \]; then\nlog "4-3\. 手順書を置いて取り込む', up) is not None and 'AGENT_VARS+=(-var create_knowledge_base=true)' in up)
 
 # ---- 2026-09-18 実機: wait_condition の timeout は asyncio.TimeoutError で、握らないとワークフロー自体が失敗して承認が拾えない
-wsrc = read("workflow", "worker.py")
+wsrc = read("app", "temporal", "worker.py")
 check("承認待ちの wait_condition は TimeoutError を握って表を見直す（漏らすとワークフロー失敗）",
       "except asyncio.TimeoutError" in wsrc and wsrc.index("wait_condition(") < wsrc.index("except asyncio.TimeoutError"))
 check("承認タブの注記はワークフローが Temporal であることを言い、表は折り返し、id は表から選べる",
@@ -869,9 +887,9 @@ check("承認タブの注記はワークフローが Temporal であることを
 
 # ---- ops/up.sh が Web を立てる手順（2026-09-19 実機: app.py だけ置いて chat が無く、起動のたびに落ちていたのに「Web が動いている」と出た）
 up = read("ops", "up.sh")
-web_imports = {m for m in re.findall(r"^(?:import|from) (\w+)", read("web", "app.py"), re.M) if os.path.exists(os.path.join(ROOT, "web", m + ".py"))}
-check(f"up.sh 4-2 は web/*.py を全部置く（app.py が import する {sorted(web_imports)} を含む）",
-      web_imports and 'for f in web/*.py; do aws s3 cp --only-show-errors "$f" "s3://$KB_BUCKET/web/${f#web/}"; done' in up)
+web_imports = {m for m in re.findall(r"^(?:import|from) (\w+)", read("app", "dashboard", "app.py"), re.M) if os.path.exists(os.path.join(ROOT, "app", "dashboard", m + ".py"))}
+check(f"up.sh 4-2 は app/dashboard/*.py を全部置く（app.py が import する {sorted(web_imports)} を含む）",
+      web_imports and 'for f in app/dashboard/*.py; do aws s3 cp --only-show-errors "$f" "s3://$KB_BUCKET/web/${f#app/dashboard/}"; done' in up)
 check("Web の起動確認は is-active（落ちて再起動するまでの数秒も active）ではなく 8080 を聞いているかで見る",
       "ss -ltn 'sport = :8080' | grep -q LISTEN" in up and "systemctl is-active --quiet $PREFIX-web.service" not in up)
 check("lab の状態の照合は 1 つの空白で区切った lab=active containers=N をそのまま探す（空白を 2 つ要る形だと合わない）",
@@ -1322,14 +1340,14 @@ check("決定のキューの読めない本文・アラート・approved / rejec
 for k, v in _saved.items():
     setattr(awsio, k, v)
 
-# ---- web/incident_view.py の承認（gradio / pandas / config は差し替えて読む。config は環境変数と env ファイルを読むので本物は使わない）
+# ---- app/dashboard/incident_view.py の承認（gradio / pandas / config は差し替えて読む。config は環境変数と env ファイルを読むので本物は使わない）
 _gr = types.ModuleType("gradio"); _gr.update = lambda **k: ("update", k)
 _gr.SelectData = type("SelectData", (), {})  # select_proposal の注釈。中身は types.SimpleNamespace で渡す
 _pd = types.ModuleType("pandas"); _pd.DataFrame = lambda rows, columns=None: rows
 _web_mods = {"gradio": _gr, "pandas": _pd, "config": types.ModuleType("config")}
 _prev = {k: sys.modules.get(k) for k in _web_mods}
 sys.modules.update(_web_mods)
-sys.path.insert(0, os.path.join(ROOT, "web"))
+sys.path.insert(0, os.path.join(ROOT, "app", "dashboard"))
 import incident_view as iv  # noqa: E402
 for k, v in _prev.items():
     if v is None:
@@ -1379,7 +1397,7 @@ check("表の select をプルダウンにつなぎ、詳細と「読んだ」�
 
 # ---- Temporal UI（8233）: 2026-09-24 のレビューではポートごとの SG ルールの抜けで UI が開かなかった。2026-09-29 からルールは土台の通信の表にあり、
 #      Web の EC2 から workflow の 8233 の 1 行で送信と受信の 2 本ができる（7233 は無い）
-_sg_tf = read("terraform", "base", "core", "security_groups.tf")
+_sg_tf = read("IaC", "terraform", "aws-managed", "base", "core", "security_groups.tf")
 check("Temporal UI（8233）は土台の通信の表の web → workflow の 1 行で、workflow にはルールも Web の SG の参照も無く、7233 の行は無い",
       re.search(r'\{ from = "web", to = "workflow", protocol = "tcp", port = 8233,', _sg_tf) is not None
       and re.search(r'to = "workflow", protocol = "tcp", port = 7233', _sg_tf) is None and "7233" not in _sg_tf.replace("gRPC 7233", "")

@@ -1,0 +1,490 @@
+AWSTemplateFormatVersion: "2010-09-09"
+# デバッグ用の EC2: lab（containerlab の SR Linux 6 台 + TRex 1 台。x86_64）と Telegraf を 1 台に入れる。MSK / ECS / NLB を作らずに、
+# 機器の設定と Telegraf の設定（app/telegraf/telegraf.conf.in）を確かめる。Telegraf の出力は標準出力（sudo lab telegraf logs）。
+#
+# このスタックだけで閉じる（2026-10-04 ユーザー決定: ops/up.sh / ops/down.sh と terraform からは作らない・消さない）。
+# 作るのも消すのも ops/lab-debug.sh up / down（スタック名 <接頭辞>-lab-debug）。VPC・エンドポイント・バケット・ECR もここで持つ:
+#   - VPC（VpcCidr。1 AZ・1 サブネット）。インターネットへの経路は無い（NAT も IGW も無い）。IaC/terraform/aws-managed/base/core と同じ閉域の形
+#   - AWS の API へはインターフェース型エンドポイント 4 本（ssm / ssmmessages: SSM で入る。ecr.api / ecr.dkr: イメージを引く）と
+#     S3 の gateway エンドポイント（lab/ の材料、ECR のレイヤー、AL2023 の dnf リポジトリ。無料）
+#   - バケット <接頭辞>-lab-debug-<アカウント>（lab/ だけを置く）と ECR のリポジトリ 4 つ（<接頭辞>-debug-lab-srlinux / -lab-multitool / -lab-trex / -telegraf）。
+#     ECR はスタックを消すとイメージごと消える（EmptyOnDelete）。バケットは ops/lab-debug.sh down が空にしてから消す
+#   - ロールに VPC の外からの呼び出しを拒む Deny（IaC/terraform/aws-managed/base/core の perimeter.tf と同じ Action と条件。この VPC を指す）
+# イメージと app/containerlab/ を置く前に EC2 を起こしても引けないので、初回は CreateInstance=false で器だけ作り、置いてから true にする（ops/lab-debug.sh up）。
+#
+# IaC/terraform/aws-managed/pipeline/lab とずれないようにしてあるところ（tests/test_lab_debug.py が見る）:
+#   - EC2 の中でやることは S3 の lab/setup.sh 1 つ。UserData は env を書いて S3 から lab/ を置き直し、setup.sh を exec するだけ
+#     （IaC/terraform/aws-managed/pipeline/lab/templates/lab_user_data.sh.tftpl と同じ形。違うのはリポジトリの名前と TELEGRAF_IMAGE があること）
+#   - パラメータの既定値は IaC/terraform/aws-managed/pipeline/lab の変数の既定値と ops/lab-common.sh の版
+#   - ロールの権限は IaC/terraform/aws-managed/pipeline/lab/iam.tf と同じ Sid（EcrPull は Telegraf のリポジトリも読む。TelegrafAddress は要らない）
+#   - Telegraf のイメージは stream の ECS と同じ作り方（ops/lab-common.sh の telegraf_tag。app/telegraf/ の中身と docker/images/telegraf/Dockerfile からタグを作る）
+Description: nwc-poc lab debug EC2 (containerlab + Telegraf to stdout on one instance, in its own closed VPC)
+
+Parameters:
+  NamePrefix:
+    Type: String
+    Description: <owner>-nwc-poc (same as the Terraform roots)
+    AllowedPattern: "^[a-z][a-z0-9]*(-[a-z0-9]+)*-nwc-poc$"
+  Owner:
+    Type: String
+    Description: OWNER in deploy.env (the owner tag)
+  CreateInstance:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: false creates only the VPC, endpoints, bucket and ECR (first run, before the images and lab/ are uploaded)
+  VpcCidr:
+    Type: String
+    Default: 10.20.0.0/24
+    AllowedPattern: "^(\\d{1,3}\\.){3}\\d{1,3}/(1[6-9]|2[0-4])$"
+    Description: CIDR of this stack's own VPC (/16 to /24). It is not peered with anything, so it may overlap IaC/terraform/aws-managed/base/core
+  AzId:
+    Type: String
+    Default: apne1-az1
+    AllowedValues: [apne1-az1, apne1-az2, apne1-az4]
+    Description: AZ ID of the subnet (same choices as az_id_a of IaC/terraform/aws-managed/base/core; all of them offer every InstanceType below)
+  NetworkPerimeter:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Deny AWS API calls of the instance role that do not come through this VPC (same as NETWORK_PERIMETER of ops/up.sh)
+  ImageId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+  InstanceType:
+    Type: String
+    Default: m6i.xlarge
+    AllowedValues: [m6i.xlarge, m6i.2xlarge, c6i.2xlarge, t3.xlarge, t3.2xlarge]
+    Description: x86_64 (TRex is amd64 only). Six SR Linux nodes need about 1.5-2.5 GB each at boot, TRex 2-4 GB, plus Telegraf
+  VolumeSize:
+    Type: Number
+    Default: 24
+    MinValue: 8
+    MaxValue: 64
+  ContainerlabVersion:
+    Type: String
+    Default: "0.79.0"
+  SrlinuxImageTag:
+    Type: String
+    Default: "26.7.2-amd64"
+  MultitoolImageTag:
+    Type: String
+    Default: "v0.10.0-amd64"
+  TrexImageTag:
+    Type: String
+    Default: "2.41-amd64"
+  TelegrafImageTag:
+    Type: String
+    Default: ""
+    Description: "<Telegraf version>-<hash of app/telegraf/ and docker/images/telegraf/Dockerfile> (ops/lab-common.sh telegraf_tag). Required when CreateInstance is true"
+  AutoStartLab:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+
+Conditions:
+  HasInstance: !Equals [!Ref CreateInstance, "true"]
+  HasPerimeter: !Equals [!Ref NetworkPerimeter, "true"]
+
+Rules:
+  TelegrafTagWithInstance:
+    RuleCondition: !Equals [!Ref CreateInstance, "true"]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref TelegrafImageTag, ""]]
+        AssertDescription: TelegrafImageTag is required when CreateInstance is true
+
+Resources:
+  # ---------------------------------------------------------------- network（閉域。IaC/terraform/aws-managed/base/core の vpc.tf / endpoints.tf と同じ形）
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      # インターフェース型エンドポイントの private DNS に要る
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - { Key: Name, Value: !Sub "${NamePrefix}-lab-debug" }
+        - { Key: Project, Value: !Ref NamePrefix }
+        - { Key: owner, Value: !Ref Owner }
+
+  # サブネットは VPC と同じ CIDR の 1 つだけ（EC2 とエンドポイントの ENI を置く）。パブリック IP は付けない
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref VpcCidr
+      AvailabilityZoneId: !Ref AzId
+      MapPublicIpOnLaunch: false
+      Tags:
+        - { Key: Name, Value: !Sub "${NamePrefix}-lab-debug" }
+        - { Key: Project, Value: !Ref NamePrefix }
+        - { Key: owner, Value: !Ref Owner }
+
+  # 経路は VPC の中と S3 の gateway エンドポイントだけ（0.0.0.0/0 の経路を作らない）
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - { Key: Name, Value: !Sub "${NamePrefix}-lab-debug" }
+        - { Key: Project, Value: !Ref NamePrefix }
+        - { Key: owner, Value: !Ref Owner }
+
+  SubnetRouteTable:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet
+      RouteTableId: !Ref RouteTable
+
+  # EC2: 受信は無し（SSM で入るのは EC2 から外への接続）。送信は 443 だけ（経路があるのはエンドポイントと S3 だけ）。
+  # 機器（docker のブリッジ）と Telegraf（host ネットワーク）のあいだは EC2 の中なので SG を通らない
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${NamePrefix}-lab-debug"
+      GroupDescription: Lab debug EC2 - no inbound, HTTPS to the VPC endpoints and S3 only
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: AWS APIs through the endpoints and S3 through the gateway endpoint (no other route) }
+      Tags:
+        - { Key: Name, Value: !Sub "${NamePrefix}-lab-debug" }
+        - { Key: Project, Value: !Ref NamePrefix }
+        - { Key: owner, Value: !Ref Owner }
+
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${NamePrefix}-lab-debug-endpoints"
+      GroupDescription: Interface endpoints of the lab debug VPC - HTTPS from the EC2 only
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, SourceSecurityGroupId: !Ref InstanceSecurityGroup, Description: AWS APIs from the lab debug EC2 }
+      # 送信ルールは要らない（応答は接続追跡で通る）。既定の全許可を消す
+      SecurityGroupEgress:
+        - { IpProtocol: "-1", CidrIp: 127.0.0.1/32, Description: No outbound }
+      Tags:
+        - { Key: Name, Value: !Sub "${NamePrefix}-lab-debug-endpoints" }
+        - { Key: Project, Value: !Ref NamePrefix }
+        - { Key: owner, Value: !Ref Owner }
+
+  # S3 の gateway エンドポイント（無料）。ポリシーは付けない（IaC/terraform/aws-managed/base/core の endpoints.tf と同じ理由: dnf のリポジトリは匿名の GET、
+  # ECR のレイヤーは ECR が署名した URL なので、プリンシパルやバケットで絞ると止まる）
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcEndpointType: Gateway
+      RouteTableIds: [!Ref RouteTable]
+
+  # インターフェース型エンドポイント（1 本 $0.014/h × 4）。ポリシーは「このアカウントのプリンシパルだけ」（endpoints.tf と同じ。
+  # CloudFormation は YAML のアンカーを受け付けないので 4 本とも書く）
+  SsmEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssm"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref Subnet]
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: OwnAccountOnly
+            Effect: Allow
+            Principal: "*"
+            Action: "*"
+            Resource: "*"
+            Condition:
+              StringEquals: { "aws:PrincipalAccount": !Ref AWS::AccountId }
+  SsmMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ssmmessages"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref Subnet]
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: OwnAccountOnly
+            Effect: Allow
+            Principal: "*"
+            Action: "*"
+            Resource: "*"
+            Condition:
+              StringEquals: { "aws:PrincipalAccount": !Ref AWS::AccountId }
+  EcrApiEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.api"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref Subnet]
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: OwnAccountOnly
+            Effect: Allow
+            Principal: "*"
+            Action: "*"
+            Resource: "*"
+            Condition:
+              StringEquals: { "aws:PrincipalAccount": !Ref AWS::AccountId }
+  EcrDkrEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.dkr"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref Subnet]
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: OwnAccountOnly
+            Effect: Allow
+            Principal: "*"
+            Action: "*"
+            Resource: "*"
+            Condition:
+              StringEquals: { "aws:PrincipalAccount": !Ref AWS::AccountId }
+
+  # ---------------------------------------------------------------- lab/ の置き場とイメージ
+  # lab/ だけを置く（EC2 が起動のたびに読む）。消すときは ops/lab-debug.sh down が先に空にする
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${NamePrefix}-lab-debug-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      Tags:
+        - { Key: Project, Value: !Ref NamePrefix }
+        - { Key: owner, Value: !Ref Owner }
+
+  # 資源側は暗号化されていない経路だけ拒む。VPC の外からの Deny は IAM 側（Role の network-perimeter）だけ
+  # （PC から lab/ を置くデプロイする人を外す Deny を書くには、その人の ARN を渡す必要があるため。中身は公開のソフトと lab の設定だけ）
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource: [!GetAtt Bucket.Arn, !Sub "${Bucket.Arn}/*"]
+            Condition:
+              Bool: { "aws:SecureTransport": "false" }
+
+  # IaC/terraform/aws-managed/base/ecr と同じ設定（タグは上書きできない・push で検査）。名前は base/ecr のもの（<接頭辞>-lab-* / <接頭辞>-telegraf）と別にする
+  SrlinuxRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "${NamePrefix}-debug-lab-srlinux"
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration: { ScanOnPush: true }
+      EmptyOnDelete: true
+      Tags:
+        - { Key: Project, Value: !Ref NamePrefix }
+        - { Key: owner, Value: !Ref Owner }
+  MultitoolRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "${NamePrefix}-debug-lab-multitool"
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration: { ScanOnPush: true }
+      EmptyOnDelete: true
+      Tags:
+        - { Key: Project, Value: !Ref NamePrefix }
+        - { Key: owner, Value: !Ref Owner }
+  TrexRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "${NamePrefix}-debug-lab-trex"
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration: { ScanOnPush: true }
+      EmptyOnDelete: true
+      Tags:
+        - { Key: Project, Value: !Ref NamePrefix }
+        - { Key: owner, Value: !Ref Owner }
+  TelegrafRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "${NamePrefix}-debug-telegraf"
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration: { ScanOnPush: true }
+      EmptyOnDelete: true
+      Tags:
+        - { Key: Project, Value: !Ref NamePrefix }
+        - { Key: owner, Value: !Ref Owner }
+
+  # ---------------------------------------------------------------- EC2
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${NamePrefix}-lab-debug"
+      Description: !Sub "${NamePrefix} lab debug EC2 - SSM managed node, pull lab and Telegraf images from ECR, read lab/ from the stack bucket"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      Policies:
+        - PolicyName: lab-assets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: EcrPull
+                Effect: Allow
+                Action: [ecr:BatchGetImage, ecr:GetDownloadUrlForLayer, ecr:BatchCheckLayerAvailability]
+                Resource: [!GetAtt SrlinuxRepository.Arn, !GetAtt MultitoolRepository.Arn, !GetAtt TrexRepository.Arn, !GetAtt TelegrafRepository.Arn]
+              - Sid: EcrToken
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: S3Read
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "${Bucket.Arn}/lab/*"
+              - Sid: S3List
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt Bucket.Arn
+                Condition:
+                  StringLike: { "s3:prefix": "lab/*" }
+        # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny と同じ Action と条件（aws:SourceVpc はこのスタックの VPC）
+        - !If
+          - HasPerimeter
+          - PolicyName: network-perimeter
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Sid: DenyOutsideVpc
+                  Effect: Deny
+                  Action: ["s3:*", "s3tables:*", "sqs:*", "ssm:*", "ssmmessages:*", "bedrock:*", "sns:*", "aps:*",
+                           "athena:*", "firehose:*", "bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:InvokeGateway"]
+                  Resource: "*"
+                  Condition:
+                    StringNotEqualsIfExists: { "aws:SourceVpc": !Ref Vpc, "aws:CalledViaLast": s3tables.amazonaws.com }
+                    BoolIfExists: { "aws:ViaAWSService": "false" }
+          - !Ref AWS::NoValue
+      Tags:
+        - { Key: Name, Value: !Sub "${NamePrefix}-lab-debug" }
+        - { Key: Project, Value: !Ref NamePrefix }
+        - { Key: owner, Value: !Ref Owner }
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${NamePrefix}-lab-debug"
+      Roles: [!Ref Role]
+
+  # 起動のたびに流す（cloud-config の always）。S3 の lab/ を置き直して再起動すれば設定も更新される（ops/lab-debug.sh sync）
+  Instance:
+    Type: AWS::EC2::Instance
+    Condition: HasInstance
+    # SSM Agent が起きたときにエンドポイントがあるように（無いと登録が遅れる）
+    DependsOn: [SsmEndpoint, SsmMessagesEndpoint, EcrApiEndpoint, EcrDkrEndpoint, S3Endpoint, SubnetRouteTable]
+    Properties:
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      SubnetId: !Ref Subnet
+      SecurityGroupIds: [!Ref InstanceSecurityGroup]
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+        # コンテナからは IMDS に届かせない（hop limit 1 は docker bridge を越えない。Telegraf は host ネットワークで AWS の API は呼ばない）
+        HttpPutResponseHopLimit: 1
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: !Ref VolumeSize
+            Encrypted: true
+            DeleteOnTermination: true
+      PropagateTagsToVolumeOnCreation: true
+      Tags:
+        - { Key: Name, Value: !Sub "${NamePrefix}-lab-debug" }
+        - { Key: Project, Value: !Ref NamePrefix }
+        - { Key: owner, Value: !Ref Owner }
+      # 中身は IaC/terraform/aws-managed/pipeline/lab/templates/lab_user_data.sh.tftpl と同じ形（env のキーも同じ）。Fn::Sub が ${…} を埋めるので、シェルの変数は $LAB と書く
+      UserData:
+        Fn::Base64: !Sub |
+          Content-Type: multipart/mixed; boundary="==BOUNDARY=="
+          MIME-Version: 1.0
+
+          --==BOUNDARY==
+          Content-Type: text/cloud-config; charset="us-ascii"
+          MIME-Version: 1.0
+
+          #cloud-config
+          cloud_final_modules:
+          - [scripts-user, always]
+
+          --==BOUNDARY==
+          Content-Type: text/x-shellscript; charset="utf-8"
+          MIME-Version: 1.0
+          Content-Transfer-Encoding: 8bit
+
+          #!/bin/bash
+          # 支度の中身は S3 の lab/setup.sh（IaC/terraform/aws-managed/pipeline/lab の user_data と共通）。ここは env を書いて置き直し、呼ぶだけ
+          set -euo pipefail
+          LAB=/opt/${NamePrefix}-lab
+          install -d -m 0755 $LAB
+          cat > /etc/${NamePrefix}-lab.env <<'__ENV__'
+          NAME_PREFIX=${NamePrefix}
+          AWS_REGION=${AWS::Region}
+          REGISTRY=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
+          SRLINUX_IMAGE=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${NamePrefix}-debug-lab-srlinux:${SrlinuxImageTag}
+          MULTITOOL_IMAGE=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${NamePrefix}-debug-lab-multitool:${MultitoolImageTag}
+          TREX_IMAGE=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${NamePrefix}-debug-lab-trex:${TrexImageTag}
+          TELEGRAF_IMAGE=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${NamePrefix}-debug-telegraf:${TelegrafImageTag}
+          PARAM_PREFIX=/${NamePrefix}
+          CONTAINERLAB_VERSION=${ContainerlabVersion}
+          AUTO_START_LAB=${AutoStartLab}
+          __ENV__
+          aws s3 sync --delete --region ${AWS::Region} s3://${Bucket}/lab/ $LAB/src/
+          if [ ! -f $LAB/src/setup.sh ]; then
+            echo "lab/ is not in s3://${Bucket}/lab/ yet. Run ops/lab-debug.sh up and reboot." >&2
+            exit 0
+          fi
+          exec bash $LAB/src/setup.sh
+          --==BOUNDARY==--
+
+Outputs:
+  BucketName:
+    Description: lab/ goes to s3://<this>/lab/ (ops/lab-debug.sh)
+    Value: !Ref Bucket
+  RepositoryPrefix:
+    Description: "<registry>/<this>-lab-srlinux, -lab-multitool, -lab-trex, -telegraf"
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${NamePrefix}-debug"
+  InstanceId:
+    Condition: HasInstance
+    Description: Target of the SSM session
+    Value: !Ref Instance
+  StartSessionCommand:
+    Condition: HasInstance
+    Description: Run on the user's PC (AWS CLI v2 + Session Manager plugin), then "sudo lab status" / "sudo lab telegraf logs -f" / "sudo lab check"
+    Value: !Sub "aws ssm start-session --region ${AWS::Region} --target ${Instance}"

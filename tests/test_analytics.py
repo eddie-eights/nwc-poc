@@ -1,13 +1,13 @@
-"""terraform/pipeline/analytics と spark/snmp_sinks.py の模擬テスト（AWS に触れない）。
-terraform/pipeline/analytics が main と stream の state を読み、S3 Tables のテーブルと EMR Serverless と格納先（sinks）を作ること、
+"""IaC/terraform/aws-managed/pipeline/analytics と app/spark/snmp_sinks.py の模擬テスト（AWS に触れない）。
+IaC/terraform/aws-managed/pipeline/analytics が main と stream の state を読み、S3 Tables のテーブルと EMR Serverless と格納先（sinks）を作ること、
 Spark のスクリプトが Kafka（MSK の IAM 認証）を格納先ごとに読んで Iceberg / OpenSearch Serverless / Prometheus に流すこと、
 テーブルの列がスクリプトと一致すること、remote write の protobuf と snappy が手で復号できることを見る。
 実行は python3 tests/test_analytics.py（依存は無い。pyspark も botocore も要らない。スクリプトは import するが pyspark は関数の中で読む）。"""
 import ast, importlib.util, inspect, io, json, os, re, ssl, struct, sys, zlib
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-SRC = os.path.join(ROOT, "spark", "snmp_sinks.py")
-TF_DIR = os.path.join(ROOT, "terraform", "pipeline", "analytics")
+SRC = os.path.join(ROOT, "app", "spark", "snmp_sinks.py")
+TF_DIR = os.path.join(ROOT, "IaC", "terraform", "aws-managed", "pipeline", "analytics")
 UP = os.path.join(ROOT, "ops", "up.sh")
 DOWN = os.path.join(ROOT, "ops", "down.sh")
 CHECK = os.path.join(ROOT, "ops", "check.sh")
@@ -20,7 +20,7 @@ def check(name, cond):
     passed += 1
     print("ok", name)
 
-# terraform/pipeline/analytics は関心ごとにファイルが分かれているので、ルートの .tf を全部つないで見る
+# IaC/terraform/aws-managed/pipeline/analytics は関心ごとにファイルが分かれているので、ルートの .tf を全部つないで見る
 tf = ""
 tf_files = sorted(n for n in os.listdir(TF_DIR) if n.endswith(".tf"))
 for name in tf_files:
@@ -32,7 +32,7 @@ with open(UP, encoding="utf-8") as f:
     up = f.read()
 with open(DOWN, encoding="utf-8") as f:
     down = f.read()
-# up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/up-common.sh / down-common.sh。OSS 版の oss/ops/ と共通）とつないで見る
+# up.sh / down.sh は、読んでいる共通の関数（ops/common.sh と ops/up-common.sh / down-common.sh。OSS 版の ops/oss/ と共通）とつないで見る
 def _ops_common(kind):
     return "".join(open(os.path.join(ROOT, "ops", n), encoding="utf-8").read() for n in ("common.sh", f"{kind}-common.sh"))
 up = _ops_common("up") + up
@@ -60,23 +60,23 @@ check("graph の state は読まない（Spark は Neptune に書かない。SKI
       'terraform_remote_state" "graph"' not in tf and not any(w in tf for w in ("neptune_host", "neptune_endpoint", "neptune_resource_id", "neptune-db")))
 check("アラートのトピックの ARN は main の state から try で読む（古い土台では空）",
       'alerts_topic_arn = try(data.terraform_remote_state.main.outputs.alerts_topic_arn, "")' in tf)
-check("stream が無いときは「terraform/pipeline/stream を先に apply する」と出る",
-      re.search(r'precondition\s*\{[\s\S]*?msk_cluster_arn\s*!=\s*""[\s\S]*?terraform/pipeline/stream を先に apply する', tf, re.S) is not None)
+check("stream が無いときは「IaC/terraform/aws-managed/pipeline/stream を先に apply する」と出る",
+      re.search(r'precondition\s*\{[\s\S]*?msk_cluster_arn\s*!=\s*""[\s\S]*?IaC/terraform/aws-managed/pipeline/stream を先に apply する', tf, re.S) is not None)
 # main / stream の .tf に本当にその output があるか（stream の msk_cluster_arn は MSK だけのものなので msk.tf にある。cycle 005）
 for root, outs in (("base/core", ("vpc_id", "subnet_ids", "security_group_ids", "opensearch_vpc_endpoint_id", "kb_bucket_name", "alerts_topic_arn")),
                    ("pipeline/stream", ("msk_cluster_arn", "bootstrap_brokers"))):
-    _dir = os.path.join(ROOT, "terraform", root)
+    _dir = os.path.join(ROOT, "IaC", "terraform", "aws-managed", root)
     other = ""
     for name in sorted(n for n in os.listdir(_dir) if n.endswith(".tf")):
         with open(os.path.join(_dir, name), encoding="utf-8") as f:
             other += f.read() + "\n"
     for out in outs:
-        check(f"terraform/{root} に output {out} がある", re.search(r'^output "' + out + r'"', other, re.M) is not None)
+        check(f"IaC/terraform/aws-managed/{root} に output {out} がある", re.search(r'^output "' + out + r'"', other, re.M) is not None)
 
 # ---- ネットワーク（SG はワークロードごとに土台の security_groups.tf にあり、ルールはそこの通信の表から作る。2026-09-29。
 #      AWS の API は土台のインターフェース型エンドポイントを通し、NAT Gateway は無い）
-_core = "".join(open(os.path.join(ROOT, "terraform", "base", "core", n), encoding="utf-8").read() for n in sorted(os.listdir(os.path.join(ROOT, "terraform", "base", "core"))) if n.endswith(".tf"))
-_sg_tf = open(os.path.join(ROOT, "terraform", "base", "core", "security_groups.tf"), encoding="utf-8").read()
+_core = "".join(open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", n), encoding="utf-8").read() for n in sorted(os.listdir(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core"))) if n.endswith(".tf"))
+_sg_tf = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", "security_groups.tf"), encoding="utf-8").read()
 check("analytics は SG も SG のルールもインターフェース型エンドポイントも作らない（S3 Tables / events / aps / logs の API は土台のエンドポイントを通る）",
       'resource "aws_security_group"' not in tf and 'resource "aws_vpc_endpoint"' not in tf and "aws_vpc_security_group_" not in tf
       and not any(k in tf for k in ("msk_sg_id", "neptune_sg_id", "emr_self", "msk_from_emr", "endpoints_from_emr")))
@@ -87,8 +87,9 @@ check("EMR / Grafana / Splunk は土台の spark / grafana / splunk の SG を�
 
 _sg_keys = re.search(r'security_groups = \{(.*?)\n  \}', _sg_tf, re.S)
 _sg_keys = set(re.findall(r'^\s+(\w+)\s+=\s+"', _sg_keys.group(1), re.M)) if _sg_keys else set()
-SG_KEYS = {"web", "lab", "telegraf_dialout", "telegraf_dialin", "telegraf_dialout_nlb", "msk", "spark", "grafana", "splunk", "nautobot", "nautobot_db", "lambda", "workflow", "runtime", "kafka_ui"}
-check(f"土台の SG はワークロードごとの 15 個と endpoints（{sorted(_sg_keys)}）",
+SG_KEYS = {"web", "lab", "telegraf_dialout", "gnmic", "telegraf_dialout_nlb", "syslog_ng", "goflow2", "msk", "spark", "grafana", "splunk", "nautobot", "nautobot_db",
+           "lambda", "workflow", "runtime"}
+check(f"土台の SG はワークロードごとの 16 個（syslog_ng と goflow2 は cycle 012 で足した。kafka_ui は cycle 010 で外した。telegraf_dialin は cycle 013 で gnmic に替えた）と endpoints（{sorted(_sg_keys)}）",
       _sg_keys == SG_KEYS and re.findall(r'resource "aws_security_group" "(\w+)"', _core) == ["workload", "endpoints"]
       and re.search(r'resource "aws_security_group" "workload" \{\n\s*for_each = local\.workload_security_groups\n', _sg_tf) is not None)
 # 通信の表を読む（from = sg の行は aws_api_clients に展開する）
@@ -98,35 +99,54 @@ _flows = set()
 for _m in re.finditer(r'\{ from = ("?\w+"?), to = "(\w+)", protocol = "(\w+)", port = (\d+)(?:, to_port = (\d+))?(?:, only = "(\w+)")?, why = "([^"]*)" \}', _sg_tf):
     for _from in (_clients if _m.group(1) == "sg" else [_m.group(1).strip('"')]):
         _flows.add((_from, _m.group(2), _m.group(3), int(_m.group(4)), int(_m.group(5) or _m.group(4)), _m.group(6) or ""))
-EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_dialout", "telegraf_dialin", "spark", "grafana", "splunk", "nautobot", "lambda", "workflow", "runtime", "kafka_ui") for t in ("endpoints", "s3")} | {
-    # Nautobot（terraform/pipeline/nautobot。2026-10-04）: 画面は Web の EC2 からのポートフォワード、DB は RDS。
+EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_dialout", "gnmic", "syslog_ng", "goflow2", "spark", "grafana", "splunk", "nautobot", "lambda",
+                                                         "workflow", "runtime") for t in ("endpoints", "s3")} | {
+    # Nautobot（IaC/terraform/aws-managed/pipeline/nautobot。2026-10-04）: 画面は Web の EC2 からのポートフォワード、DB は RDS。
     # Neptune は Neptune Analytics にしたので SG が無く、行も無い（neptune-graph-data のエンドポイントの 443 で届く。2026-10-04）
     ("web", "nautobot", "tcp", 8080, 8080, ""), ("nautobot", "nautobot_db", "tcp", 5432, 5432, ""),
     ("web", "grafana", "tcp", 3000, 3000, ""), ("web", "splunk", "tcp", 8000, 8000, ""), ("web", "workflow", "tcp", 8233, 8233, ""),
-    ("telegraf_dialout", "msk", "tcp", 9098, 9098, ""), ("telegraf_dialin", "msk", "tcp", 9098, 9098, ""), ("spark", "msk", "tcp", 9098, 9098, ""), ("msk", "msk", "tcp", 9092, 9098, ""),
-    # Kafbat UI（terraform/pipeline/stream。2026-10-05）: 画面は Web の EC2 からのポートフォワード、MSK へは IAM の 9098
-    ("web", "kafka_ui", "tcp", 8080, 8080, ""), ("kafka_ui", "msk", "tcp", 9098, 9098, ""),
+    ("telegraf_dialout", "msk", "tcp", 9098, 9098, ""), ("spark", "msk", "tcp", 9098, 9098, ""), ("msk", "msk", "tcp", 9092, 9098, ""),
+    # syslog-ng と GoFlow2 は MSK の IAM 認証を喋れないので SASL/SCRAM の 9096（cycle 012）
+    ("syslog_ng", "msk", "tcp", 9096, 9096, ""), ("goflow2", "msk", "tcp", 9096, 9096, ""),
+    # gnmic も SCRAM の 9096（cycle 013。012 の collectors.tf と同じ形。IAM の 9098 の行は telegraf_dialin とともに無くなった）
+    ("gnmic", "msk", "tcp", 9096, 9096, ""),
+    # Kafbat UI（IaC/terraform/aws-managed/pipeline/stream。2026-10-05）: cycle 010 から Web の EC2 の Docker で動くので、MSK へは Web から IAM の 9098
+    ("web", "msk", "tcp", 9098, 9098, ""),
     ("spark", "spark", "tcp", 0, 65535, ""), ("spark", "splunk", "tcp", 8088, 8088, ""),
     # Splunk のクラスター（「Splunk をクラスターにする（004）」）: manager・indexer・search head の間だけ
     ("splunk", "splunk", "tcp", 8089, 8089, ""), ("splunk", "splunk", "tcp", 9887, 9887, ""), ("splunk", "splunk", "tcp", 9997, 9997, ""),
-    ("telegraf_dialout_nlb", "telegraf_dialout", "udp", 1162, 1162, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "udp", 5140, 5140, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "tcp", 57000, 57000, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "tcp", 8080, 8080, ""),
+    # NLB → タスク（cycle 012 で syslog を syslog-ng へ移し、NetFlow / sFlow の GoFlow2 を足し、MDT の 57000/tcp を外した）。tcp はヘルスチェック
+    ("telegraf_dialout_nlb", "telegraf_dialout", "udp", 1162, 1162, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "tcp", 8080, 8080, ""),
+    ("telegraf_dialout_nlb", "syslog_ng", "udp", 5140, 5140, ""), ("telegraf_dialout_nlb", "syslog_ng", "tcp", 5140, 5140, ""),
+    ("telegraf_dialout_nlb", "goflow2", "udp", 2055, 2055, ""), ("telegraf_dialout_nlb", "goflow2", "udp", 6343, 6343, ""), ("telegraf_dialout_nlb", "goflow2", "tcp", 8081, 8081, ""),
     ("lab_mgmt", "telegraf_dialout_nlb", "udp", 162, 162, ""), ("lab_mgmt", "telegraf_dialout_nlb", "udp", 5140, 5140, ""),
+    ("lab_mgmt", "telegraf_dialout_nlb", "udp", 2055, 2055, ""), ("lab_mgmt", "telegraf_dialout_nlb", "udp", 6343, 6343, ""),
     ("lab", "telegraf_dialout_nlb", "udp", 162, 162, "egress"), ("lab", "telegraf_dialout_nlb", "udp", 5140, 5140, "egress"),
-    # ポーリングと gNMI は取りにいく側（telegraf_dialin）だけ。受ける側（telegraf_dialout）は機器へ出ない（2026-10-04 に分けた）
-    ("telegraf_dialin", "lab_mgmt", "udp", 161, 161, ""), ("telegraf_dialin", "lab_mgmt", "tcp", 57400, 57400, ""),
-    ("telegraf_dialin", "lab", "udp", 161, 161, "ingress"), ("telegraf_dialin", "lab", "tcp", 57400, 57400, "ingress"),
+    # NetFlow / sFlow は lab の EC2 のホストが自分の IP からも送る（SR Linux は NetFlow を送れないので ops/netflow_send.py で試す）ので両側
+    ("lab", "telegraf_dialout_nlb", "udp", 2055, 2055, ""), ("lab", "telegraf_dialout_nlb", "udp", 6343, 6343, ""),
+    # 機器へ取りにいくのは gnmic の gNMI（57400）だけ。SNMP のポーリング（161/udp）は cycle 013 でやめた。受ける側（telegraf_dialout）は機器へ出ない
+    ("gnmic", "lab_mgmt", "tcp", 57400, 57400, ""), ("gnmic", "lab", "tcp", 57400, 57400, "ingress"),
 }
 check(f"通信の表は決めた流れだけ（多い: {sorted(_flows - EXPECTED_FLOWS)} 足りない: {sorted(EXPECTED_FLOWS - _flows)}）",
-      _flows == EXPECTED_FLOWS and _sg_tf.count("{ from = ") == len(EXPECTED_FLOWS) - 2 * len(_clients) + 2 + 1)
-_core_vars = open(os.path.join(ROOT, "terraform", "base", "core", "variables.tf"), encoding="utf-8").read()
-check("MDT の送り元は変数 mdt_source_cidrs の CIDR から NLB の 57000/tcp だけ（受信だけ。既定は空、0.0.0.0/0 と重複とネットワークアドレスでない書き方を拒む）",
-      re.search(r'\[for c in var\.mdt_source_cidrs :\s*\{ from = "cidr:\$\{c\}", cidr = c, to = "telegraf_dialout_nlb", protocol = "tcp", port = 57000, why = "[^"]*" \}\s*\]', _sg_tf) is not None
+      _flows == EXPECTED_FLOWS and _sg_tf.count("{ from = ") == len(EXPECTED_FLOWS) - 2 * len(_clients) + 2)
+_core_vars = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", "variables.tf"), encoding="utf-8").read()
+def _no_comment(t):
+    return "\n".join(l for l in t.splitlines() if not l.lstrip().startswith("#"))
+_up_src = open(os.path.join(ROOT, "ops", "up.sh"), encoding="utf-8").read()
+_oss_up_src = open(os.path.join(ROOT, "ops", "oss", "up.sh"), encoding="utf-8").read()
+_denv_keys = open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read().split("DEPLOY_ENV_KEYS=", 1)[1].split('"')[1]
+_MDT_NOTE = 'if [ -n "${MDT_SOURCE_CIDRS:-}" ]; then echo "注意: MDT_SOURCE_CIDRS は 2026-10-08 から使わない'
+check("MDT の受け口（送り元の変数 mdt_source_cidrs と NLB の 57000/tcp）は cycle 012 で外した。deploy.env の MDT_SOURCE_CIDRS は読むだけ読み（前の deploy.env で止めない）、"
+      "ops/up.sh と ops/oss/up.sh が注意を出す。CIDR の行を書ける表の仕組み（cidr）は残す",
+      "mdt_source_cidrs" not in _no_comment(_sg_tf) + _no_comment(_core_vars) and "57000" not in _no_comment(_sg_tf)
+      and "mdt_source_cidrs" not in _up_src + _oss_up_src and "MDT_SOURCE_CIDRS" not in env_example
       and "cidr     = try(f.cidr, null)" in _sg_tf
-      and re.search(r'variable "mdt_source_cidrs" \{[\s\S]*?type\s*=\s*list\(string\)\s*default\s*=\s*\[\][\s\S]*?cidrsubnet\(c, 0, 0\) == c[\s\S]*?length\(distinct\(var\.mdt_source_cidrs\)\) == length\(var\.mdt_source_cidrs\)'
-                    r'[\s\S]*?!contains\(var\.mdt_source_cidrs, "0\.0\.0\.0/0"\)', _core_vars) is not None
-      and 'MAIN_VARS+=(-var "mdt_source_cidrs=' in open(os.path.join(ROOT, "ops", "up.sh"), encoding="utf-8").read()
-      and "MDT_SOURCE_CIDRS" in open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read())
-check("Temporal の gRPC 7233（workflow）と Splunk の管理 API 8089（splunk。クラスターの splunk どうしは除く）は開けず、CIDR のルールは lab の管理ネットワーク・MDT の送り元・endpoints の送信なしだけ（EMR Serverless は 0.0.0.0/0 の inbound を拒否する）",
+      and re.search(r"(?<![A-Z_])MDT_SOURCE_CIDRS(?![A-Z_])", _denv_keys) is not None
+      and _up_src.count(_MDT_NOTE) == 1 and _oss_up_src.count(_MDT_NOTE) == 1
+      and [l for l in _no_comment(_up_src + _oss_up_src).splitlines() if "MDT_SOURCE_CIDRS" in l] == [l for l in (_up_src + _oss_up_src).splitlines() if l.startswith(_MDT_NOTE)])
+check("閉域の VPC エンドポイントに secretsmanager を書ける（syslog-ng と GoFlow2 の SCRAM の secret を ECS が取りにいく。cycle 012）",
+      re.search(r'"kinesis-firehose", "athena", "secretsmanager",\n\s*\], s\)\]\)', _core_vars) is not None and "athena and secretsmanager." in _core_vars)
+check("Temporal の gRPC 7233（workflow）と Splunk の管理 API 8089（splunk。クラスターの splunk どうしは除く）は開けず、CIDR のルールは lab の管理ネットワーク・表の cidr（cycle 012 で MDT の送り元を外し、いまは行が無い）・endpoints の送信なしだけ（EMR Serverless は 0.0.0.0/0 の inbound を拒否する）",
       not any(t == "workflow" and p <= 7233 <= q or t == "splunk" and f != "splunk" and p <= 8089 <= q for f, t, _, p, q, _ in _flows)
       and sorted(re.findall(r'cidr_ipv4\s*=\s*(.+)', _sg_tf)) == sorted(['each.value.to == "lab_mgmt" ? local.lab_mgmt_cidr : null', 'each.value.from == "lab_mgmt" ? local.lab_mgmt_cidr : each.value.cidr', '"127.0.0.1/32"'])
       and "var.vpc_cidr" not in _sg_tf and "cidr_ipv6" not in _sg_tf)
@@ -136,10 +156,10 @@ check("ルールは表から for_each で作る。送信は from の SG、受信
       and 'prefix_list_id               = each.value.to == "s3" ? data.aws_ec2_managed_prefix_list.s3.id : null' in _sg_tf
       and 'name = "com.amazonaws.${var.region}.s3"' in _sg_tf
       and _core.count("resource \"aws_vpc_security_group_") == 3)
-_lab_locals = open(os.path.join(ROOT, "terraform", "pipeline", "lab", "locals.tf"), encoding="utf-8").read()
-_lab_sh = open(os.path.join(ROOT, "lab", "lab.sh"), encoding="utf-8").read()
+_lab_locals = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "pipeline", "lab", "locals.tf"), encoding="utf-8").read()
+_lab_sh = open(os.path.join(ROOT, "app", "containerlab", "lab.sh"), encoding="utf-8").read()
 _mgmt = re.search(r'lab_mgmt_cidr = "([^"]+)"', _sg_tf)
-check("土台の lab_mgmt_cidr は terraform/pipeline/lab の mgmt_cidr と lab.sh の MGMT と同じ",
+check("土台の lab_mgmt_cidr は IaC/terraform/aws-managed/pipeline/lab の mgmt_cidr と lab.sh の MGMT と同じ",
       _mgmt is not None and f'mgmt_cidr = "{_mgmt.group(1)}"' in _lab_locals and re.search(r'^MGMT=' + re.escape(_mgmt.group(1)) + r'$', _lab_sh, re.M) is not None)
 check("土台の endpoints SG は表の 443 だけ受け、外へ出さない（インターフェース型と OpenSearch Serverless の VPC エンドポイント用）",
       re.search(r'"endpoints_none"[\s\S]*?security_group_id\s*=\s*aws_security_group\.endpoints\.id[\s\S]*?cidr_ipv4\s*=\s*"127\.0\.0\.1/32"', _sg_tf, re.S) is not None
@@ -149,7 +169,7 @@ check("土台の output security_group_ids は SG のキーと endpoints の map
       and 'sg_ids  = merge({ for k, sg in aws_security_group.workload : k => sg.id }, { endpoints = aws_security_group.endpoints.id })' in _sg_tf
       and "internal_security_group_id" not in _core)
 
-_fl = open(os.path.join(ROOT, "terraform", "base", "core", "flow_logs.tf"), encoding="utf-8").read()
+_fl = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", "flow_logs.tf"), encoding="utf-8").read()
 check("VPC フローログ: 土台の VPC の全通信を 60 秒の集約で CloudWatch Logs へ。ロググループは /<prefix>/vpc-flow-logs で保持期間つき",
       re.search(r'resource "aws_flow_log" "vpc" \{[\s\S]*?vpc_id\s*=\s*aws_vpc\.this\.id[\s\S]*?traffic_type\s*=\s*"ALL"[\s\S]*?log_destination_type\s*=\s*"cloud-watch-logs"'
                 r'[\s\S]*?log_destination\s*=\s*aws_cloudwatch_log_group\.flow_logs\.arn[\s\S]*?max_aggregation_interval\s*=\s*60', _fl) is not None
@@ -159,7 +179,7 @@ check("VPC フローログ: 土台の VPC の全通信を 60 秒の集約で Clo
 check("VPC フローログのロール: 信頼は自アカウントの vpc-flow-log だけ、書けるのはそのロググループだけで CreateLogGroup は無く、閉域の Deny は付けない",
       re.search(r'Principal = \{ Service = "vpc-flow-logs\.amazonaws\.com" \}[\s\S]*?"aws:SourceAccount" = local\.account_id[\s\S]*?"aws:SourceArn" = "arn:\$\{local\.partition\}:ec2:\$\{var\.region\}:\$\{local\.account_id\}:vpc-flow-log/\*"', _fl) is not None
       and 'Resource = "${aws_cloudwatch_log_group.flow_logs.arn}:*"' in _fl and '"logs:CreateLogGroup"' not in _fl
-      and "aws_iam_role.flow_logs" not in open(os.path.join(ROOT, "terraform", "base", "core", "perimeter.tf"), encoding="utf-8").read())
+      and "aws_iam_role.flow_logs" not in open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", "perimeter.tf"), encoding="utf-8").read())
 
 # ---- S3 Tables のテーブル（列はスクリプトと同じでなければ append が落ちる）
 TABLE_COLUMNS = ["ts", "topic", "measurement", "agent_host", "host", "tags_json", "fields_json", "ingested_at"]
@@ -189,15 +209,19 @@ check("runtime role は emr-serverless から assume（SourceAccount の条件�
       re.search(r'"emr-serverless\.amazonaws\.com"', tf) is not None and '"aws:SourceAccount"' in tf)
 for act in ("s3tables:GetTableMetadataLocation", "s3tables:UpdateTableMetadataLocation", "s3tables:PutTableData", "kafka-cluster:ReadData", "kafka-cluster:Connect", "kafka-cluster:CreateTopic"):
     check(f"runtime role に {act}", f'"{act}"' in tf)
+check("runtime role の kafka-cluster:AlterCluster は クラスターの ARN の文だけ（SCRAM の収集器の ACL を入れる。cycle 012 Round 2）",
+      re.search(r'Sid\s*=\s*"KafkaCluster"[^}]*?Action\s*=\s*\[[^\]]*"kafka-cluster:AlterCluster"[^\]]*\]\s*\n\s*Resource\s*=\s*local\.msk_cluster_arn\n', tf) is not None
+      and tf.count('"kafka-cluster:AlterCluster"') == 1)
 check("Kafka のトピック ARN は cluster → topic の置き換え", 'replace(local.msk_cluster_arn, ":cluster/", ":topic/")' in tf)
 
 # ---- 格納先（var.sinks。Kafka から 4 つに分ける。splunk は Spark から HEC に書く。2026-09-26 に MSK Connect をやめた）
 check("variable sinks は list、既定 3 つ（iceberg / opensearch / prometheus。2026-09-17 ユーザー決定）、validation は splunk を入れた 4 つ",
       re.search(r'variable "sinks"[\s\S]*?type\s*=\s*list\(string\)[\s\S]*?default\s*=\s*\["iceberg",\s*"opensearch",\s*"prometheus"\][\s\S]*?validation', tf, re.S) is not None
       and re.search(r'variable "sinks"[\s\S]*?validation[\s\S]*?\["iceberg",\s*"opensearch",\s*"prometheus",\s*"splunk"\]', tf, re.S) is not None)
-check("variable metric_topics / log_topics（既定 metrics / traps + logs、空を拒否）",
-      re.search(r'variable "metric_topics"[\s\S]*?default\s*=\s*\["metrics",\s*"gnmi",\s*"mdt"\][\s\S]*?validation', tf, re.S) is not None
-      and re.search(r'variable "log_topics"[\s\S]*?default\s*=\s*\["traps",\s*"logs"\][\s\S]*?validation', tf, re.S) is not None)
+check("variable metric_topics / log_topics（既定 metrics,gnmi / traps,logs,flows。mdt は無い（cycle 012）。空を拒否）",
+      re.search(r'variable "metric_topics"[\s\S]*?default\s*=\s*\["metrics",\s*"gnmi"\][\s\S]*?validation', tf, re.S) is not None
+      and re.search(r'variable "log_topics"[\s\S]*?default\s*=\s*\["traps",\s*"logs",\s*"flows"\][\s\S]*?validation', tf, re.S) is not None
+      and '"mdt"' not in tf)
 _splunk_tf = open(os.path.join(TF_DIR, "splunk.tf"), encoding="utf-8").read()
 _grafana_tf = open(os.path.join(TF_DIR, "grafana.tf"), encoding="utf-8").read()
 _ecs_tf = open(os.path.join(TF_DIR, "ecs.tf"), encoding="utf-8").read()
@@ -316,8 +340,8 @@ check("job_driver の格納先の引数は、そのジョブの格納先にあ�
       and re.search(r'\["--splunk-hec-url",\s*local\.splunk_hec_url,\s*"--splunk-token-parameter",\s*local\.splunk_token_parameter,\s*"--splunk-index",\s*var\.splunk_index\] : a if contains\(sinks, "splunk"\)', args_block.group(1)) is not None
       and re.search(r'\["--splunk-skip-verify"\] : a if contains\(sinks, "splunk"\) && local\.splunk_skip_tls_verify', args_block.group(1)) is not None
       and "local.sink_" not in args_block.group(1))
-check("job_driver は device map が空でなく、そのジョブに prometheus か opensearch があるときだけ --device-map を渡す（cycle 002。sysName の無い gNMI と trap に機器名を足す）",
-      re.search(r'\["--device-map",\s*var\.device_map\] : a if var\.device_map != "" && \(contains\(sinks, "prometheus"\) \|\| contains\(sinks, "opensearch"\)\)', args_block.group(1)) is not None)
+check("job_driver は device map が空でなく、そのジョブに prometheus か opensearch か splunk があるときだけ --device-map を渡す（cycle 002。sysName の無い gNMI と trap に機器名を足す。splunk は cycle 013）",
+      re.search(r'\["--device-map",\s*var\.device_map\] : a if var\.device_map != "" && \(contains\(sinks, "prometheus"\) \|\| contains\(sinks, "opensearch"\) \|\| contains\(sinks, "splunk"\)\)', args_block.group(1)) is not None)
 check("job_driver の引数に token の値は無い（SSM のパラメータ名だけ）", "hec-token" not in args_block.group(1) and "splunk_hec_token" not in args_block.group(1))
 check("--sinks はそのジョブの格納先（var.sinks にあるものだけ）をカンマでつなぐ", '"--sinks", join(",", sinks)' in args_block.group(1) and "var.sinks" not in args_block.group(1))
 check("--checkpoint は s3://<バケット>/analytics/checkpoint/<MSK の uuid>/（MSK を作り直したら checkpoint も新しく。格納先ごとに下を切るのはスクリプト）",
@@ -355,12 +379,12 @@ check("runtime role に Neptune と EventBridge の許可は無い（Spark は�
 check("EMR と Neptune の間の SG のルールは analytics にも土台にも無い", "emr_neptune" not in tf and "neptune_from_emr" not in tf
       and re.search(r'from = "spark", to = "neptune"', _sg_tf) is None)
 # 証跡のテーブルは修復案の proposal_events だけ（異常の履歴 anomaly_events は 2026-10-02 に消した。置き場所は保留）
-_rules_tree = ast.parse(open(os.path.join(ROOT, "workflow", "rules.py"), encoding="utf-8").read())
+_rules_tree = ast.parse(open(os.path.join(ROOT, "app", "temporal", "rules.py"), encoding="utf-8").read())
 _pec = next(ast.literal_eval(n.value) for n in _rules_tree.body if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "PROPOSAL_EVENT_COLUMNS")
 _blk = re.search(r'resource "aws_s3tables_table" "proposal_events" \{(.*?)\n\}\n', tf, re.S)
 check("証跡のテーブル proposal_events をいつも作り（count 無し）、列はどれも required = false（PyArrow の列は nullable）",
       _blk is not None and "count" not in _blk.group(1) and "required = true" not in _blk.group(1).replace(" ", "").replace("required=true", "required = true"))
-check("proposal_events の列と順は workflow/rules.py の PROPOSAL_EVENT_COLUMNS と同じ",
+check("proposal_events の列と順は app/temporal/rules.py の PROPOSAL_EVENT_COLUMNS と同じ",
       re.findall(r'name\s*=\s*"(\w+)"\s*\n\s*type\s*=\s*"(\w+)"', _blk.group(1)) == [tuple(c) for c in _pec])
 check("異常の履歴のテーブル anomaly_events は無い（S3 Tables のテーブルは raw_telemetry と proposal_events と alert_events だけ）",
       re.findall(r'resource "aws_s3tables_table" "(\w+)"', tf) == ["raw_telemetry", "proposal_events", "alert_events"] and '"anomaly_events' not in tf and "anomaly_events_table" not in tf
@@ -370,16 +394,16 @@ _aec = next(ast.literal_eval(n.value) for n in _rules_tree.body if isinstance(n,
 _ablk = re.search(r'resource "aws_s3tables_table" "alert_events" \{(.*?)\n\}\n', tf, re.S)
 check("alert_events をいつも作り（count 無し）、列はどれも required = false",
       _ablk is not None and "count" not in _ablk.group(1) and re.search(r'required\s*=\s*true', _ablk.group(1)) is None)
-check("alert_events の列と順は workflow/rules.py の ALERT_EVENT_COLUMNS と同じ",
+check("alert_events の列と順は app/temporal/rules.py の ALERT_EVENT_COLUMNS と同じ",
       re.findall(r'name\s*=\s*"(\w+)"\s*\n\s*type\s*=\s*"(\w+)"', _ablk.group(1)) == [tuple(c) for c in _aec])
-_hist = open(os.path.join(ROOT, "terraform", "pipeline", "analytics", "history.tf"), encoding="utf-8").read()
+_hist = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "pipeline", "analytics", "history.tf"), encoding="utf-8").read()
 _fh = re.search(r'resource "aws_kinesis_firehose_delivery_stream" "alert_events" \{(.*?)\n\}\n', _hist, re.S)
 check("Firehose <接頭辞>-alert-events は iceberg で s3tablescatalog/<テーブルバケット> の alert_events に書き、バッファは 60 秒 / 1 MiB",
       _fh is not None and 'name        = "${local.name_prefix}-alert-events"' in _fh.group(1) and 'destination = "iceberg"' in _fh.group(1)
       and re.search(r'catalog_arn\s*=\s*"\$\{local\.glue_catalog\}/\$\{local\.athena_catalog\}"', _fh.group(1)) is not None
       and 'athena_catalog = "s3tablescatalog/${local.table_bucket}"' in _hist
       and 'glue_catalog   = "arn:${local.partition}:glue:${var.region}:${local.account_id}:catalog"' in _hist
-      and re.search(r'database_name\s*=\s*aws_s3tables_namespace\.netops\.namespace', _fh.group(1)) is not None
+      and re.search(r'database_name\s*=\s*aws_s3tables_namespace\.nwc\.namespace', _fh.group(1)) is not None
       and re.search(r'table_name\s*=\s*aws_s3tables_table\.alert_events\.name', _fh.group(1)) is not None
       and re.search(r'buffering_interval\s*=\s*60\b', _fh.group(1)) is not None and re.search(r'buffering_size\s*=\s*1\b', _fh.group(1)) is not None)
 check("書けなかった行は土台のバケットの firehose-errors/alert_events/ に落とし（FailedDataOnly）、CloudWatch のログを付ける",
@@ -410,8 +434,9 @@ check("analytics に events / sns のエンドポイントは無い（SNS へは
 check("build の引数は spark / args（格納先ごとに Kafka を読む）", [a.arg for a in funcs["build"].args.args] == ["spark", "args"])
 check("pyspark はモジュールの先頭で import しない（テストと引数の検査を pyspark 無しで動かすため）",
       not any(isinstance(n, (ast.Import, ast.ImportFrom)) and "pyspark" in ast.dump(n) for n in tree.body))
-check("既定のトピックは metrics / gnmi / mdt（メトリクス。gnmi は Telegraf の inputs.gnmi、mdt は inputs.cisco_telemetry_mdt）と traps / logs（ログ。logs は機器の syslog）", re.search(r'^METRIC_TOPICS\s*=\s*"metrics,gnmi,mdt"', src, re.M) is not None
-      and re.search(r'^LOG_TOPICS\s*=\s*"traps,logs"', src, re.M) is not None)
+check("既定のトピックは metrics / gnmi（メトリクス。gnmi は gnmic の on-change、metrics は gnmic の sample（cycle 013）。mdt は cycle 012 で外した）と traps / logs / flows（ログ。logs は syslog-ng、flows は GoFlow2）",
+      re.search(r'^METRIC_TOPICS\s*=\s*"metrics,gnmi"', src, re.M) is not None
+      and re.search(r'^LOG_TOPICS\s*=\s*"traps,logs,flows"', src, re.M) is not None)
 check("SINKS は iceberg / opensearch / prometheus / splunk（Terraform の validation と同じ）", re.search(r'^SINKS\s*=\s*\("iceberg", "opensearch", "prometheus", "splunk"\)', src, re.M) is not None)
 check("Kafka を readStream で読み、購読は引数（格納先ごと）", '.readStream.format("kafka")' in src and '.option("subscribe", topics)' in src)
 for k, v in (("kafka.security.protocol", "SASL_SSL"), ("kafka.sasl.mechanism", "AWS_MSK_IAM"),
@@ -445,6 +470,30 @@ check("event_id は from_json の前の value（binary のまま。cast しな�
 check("重複は落とさない（.dropDuplicates( を呼ばない。落とすのは読む側）", ".dropDuplicates(" not in src and ".dropDuplicatesWithinWatermark(" not in src)
 check("timestamp が無い行は捨てる", '.where(F.col("ts").isNotNull())' in src)
 check("tags / fields は JSON 文字列のまま", 'F.to_json(F.col("m.tags")).alias("tags_json")' in src and 'F.to_json(F.col("m.fields")).alias("fields_json")' in src)
+_rr = src[src.index("def read_rows("):src.index("def row_to_record(")]
+check("read_rows: flows のトピックだけ GoFlow2 の JSON を Telegraf の形の struct（timestamp / name / tags / fields）に読み替え、ほかは今の schema のまま（flow_message と同じ表を使う）",
+      'F.when(F.col("topic") == FLOW_TOPIC, flow_struct).when(gnmic, gnmic_struct(F, msg)).otherwise(telegraf).alias("m")' in _parsed
+      and 'F.from_json(value, T.MapType(T.StringType(), T.StringType()))' in _rr
+      and '(flow[FLOW_TIME_KEY].cast("long") / 1000000000).cast("long").alias("timestamp")' in _rr
+      and 'F.lit(FLOW_NAME).alias("name")' in _rr and 'flow_map(FLOW_TAGS).alias("tags")' in _rr and 'flow_map(FLOW_FIELDS).alias("fields")' in _rr
+      and "F.map_filter(F.create_map(*kv), lambda k, v: v.isNotNull())" in _rr
+      and re.search(r'^FLOW_TOPIC\s*=\s*"flows"$', src, re.M) is not None and re.search(r'^FLOW_NAME\s*=\s*"flow"$', src, re.M) is not None)
+# cycle 013: gnmic の event は形で見分けて読み替える（gnmic_struct。表は gnmic_message と同じ。gnmic_message の答えは tests/test_stream.py）
+_gs = src[src.index("def gnmic_struct("):src.index("def gnmic_message(")]
+check("read_rows: schema に gnmic の values（文字列の map）と deletes（文字列の配列）を足す",
+      'T.StructField("values", T.MapType(T.StringType(), T.StringType()))' in _rr and 'T.StructField("deletes", T.ArrayType(T.StringType()))' in _rr)
+check("read_rows: fields が無く values か deletes がある行を gnmic の event とする（トピックでは分けない）。Telegraf の行は今の 4 項目の struct のまま",
+      'gnmic = msg["fields"].isNull() & (msg["values"].isNotNull() | msg["deletes"].isNotNull())' in _rr
+      and 'telegraf = F.struct(*(msg[k].alias(k) for k in ("timestamp", "name", "tags", "fields")))' in _rr)
+check("read_rows: agent_host の列は gnmic なら tags.source、ほかは tags.agent_host（rows は m.tags ではなくこの列を読む）",
+      'F.when(gnmic, msg["tags"]["source"]).otherwise(msg["tags"]["agent_host"]).alias("agent_host")' in _parsed
+      and re.search(r'^\s*F\.col\("agent_host"\),$', block, re.M) is not None and 'm.tags")["agent_host"]' not in src)
+check("gnmic_struct: timestamp は values があるときだけ ns を秒に（deletes だけなら null で where が捨てる）、name / tags のキーは表で替え、values のキーは最後の要素の接頭辞を落として - を _ に",
+      'F.when(msg["values"].isNotNull(), (msg["timestamp"] / GNMI_NS).cast("long")).alias("timestamp")' in _gs
+      and 'lookup(GNMI_MEASUREMENTS, msg["name"]).alias("name")' in _gs
+      and 'F.transform_keys(msg["tags"], lambda k, v: lookup(GNMI_TAGS, strip(k))).alias("tags")' in _gs
+      and 'F.transform_keys(msg["values"], lambda k, v: F.translate(strip(F.element_at(F.split(k, "/"), -1)), "-", "_")).alias("fields")' in _gs
+      and 'F.regexp_replace(c, "^.*:", "")' in _gs and re.search(r'^GNMI_NS\s*=\s*1000000000\s', src, re.M) is not None)
 
 # ---- 純粋な関数を本当に動かす（引数の検査、トピックの振り分け、名前の規則、protobuf と snappy の手組み）
 spec = importlib.util.spec_from_file_location("snmp_sinks", SRC)
@@ -467,8 +516,8 @@ def parse_error(argv):
 
 base = ["--bootstrap", "b:9098", "--checkpoint", "s3://bucket/analytics/checkpoint"]
 a = mod.parse_args(base + ["--sinks", "iceberg", "--iceberg-table", "s3tablesbucket.ns.t"])
-check("parse_args: 既定は metrics / traps,logs、checkpoint に / を足す、sinks はリスト",
-      a.metric_topics == "metrics,gnmi,mdt" and a.log_topics == "traps,logs" and a.checkpoint == "s3://bucket/analytics/checkpoint/" and a.sinks == ["iceberg"])
+check("parse_args: 既定は metrics,gnmi / traps,logs,flows、checkpoint に / を足す、sinks はリスト",
+      a.metric_topics == "metrics,gnmi" and a.log_topics == "traps,logs,flows" and a.checkpoint == "s3://bucket/analytics/checkpoint/" and a.sinks == ["iceberg"])
 a = mod.parse_args(base + ["--sinks", "iceberg, prometheus ,opensearch", "--iceberg-table", "t", "--prometheus-url", "https://p/api/v1/remote_write",
                            "--opensearch-endpoint", "https://o", "--metric-topics", " metrics , cpu ", "--log-topics", "traps,logs"])
 check("parse_args: 空白を除いて 3 つ、トピックも空白を除く", a.sinks == ["iceberg", "prometheus", "opensearch"] and a.metric_topics == "metrics,cpu" and a.log_topics == "traps,logs"
@@ -480,7 +529,7 @@ check("parse_args: splunk は --splunk-hec-url と --splunk-token-parameter が�
       parse_error(base + ["--sinks", "splunk"]) == 2 and parse_error(base + ["--sinks", "splunk", "--splunk-hec-url", "https://s:8088"]) == 2
       and (lambda a: a.sinks == ["splunk"] and a.splunk_index == "" and a.splunk_skip_verify is False)(
           mod.parse_args(base + ["--sinks", "splunk", "--splunk-hec-url", "https://s:8088", "--splunk-token-parameter", "/p/splunk/hec-token"]))
-      and mod.parse_args(base + ["--sinks", "splunk", "--splunk-hec-url", "https://s:8088", "--splunk-token-parameter", "/p/t", "--splunk-index", "netops", "--splunk-skip-verify"]).splunk_skip_verify is True)
+      and mod.parse_args(base + ["--sinks", "splunk", "--splunk-hec-url", "https://s:8088", "--splunk-token-parameter", "/p/t", "--splunk-index", "nwc", "--splunk-skip-verify"]).splunk_skip_verify is True)
 check("parse_args: 空の --metric-topics は 2", parse_error(base + ["--sinks", "iceberg", "--iceberg-table", "t", "--metric-topics", ","]) == 2)
 
 check("sink_topics: iceberg は全部（重複無し）、prometheus はメトリクス、opensearch はログ",
@@ -518,23 +567,23 @@ _ord = mod.prometheus_series([dict(rec, ts=1700000002.0, fields={"a": 2}), dict(
 check("prometheus_series: サンプルは時刻の順（同じ系列が 1 バッチに逆順で来ても AMP が out-of-order で拒まない）。同じ時刻なら元の順",
       [(dict(l)["__name__"][-1], v, ms) for l, v, ms in _ord] == [("a", 1.0, 1700000001000), ("b", 1.0, 1700000001000), ("a", 2.0, 1700000002000), ("a", 3.0, 1700000002000)])
 # cycle 002: gNMI の BGP / IS-IS の文字列の状態を 1 / 0 にし、sysName の無いレコードに device map で機器名を足す
-_dm = mod.parse_device_map(" 203.0.113.31 = dc1-leaf-01 ,203.0.113.32=dc1-leaf-02,bad,=x,y=")
+_dm = mod.parse_device_map(" 203.0.113.31 = dc1-a-leaf-01 ,203.0.113.32=dc1-a-leaf-02,bad,=x,y=")
 check("parse_device_map: 別名=機器名,… を {別名（小文字）: 機器名}。= の無い要素と空の側は捨てる",
-      _dm == {"203.0.113.31": "dc1-leaf-01", "203.0.113.32": "dc1-leaf-02"} and mod.parse_device_map("") == {} and mod.parse_device_map(None) == {}
-      and mod.parse_device_map("Leaf1=dc1-leaf-01") == {"leaf1": "dc1-leaf-01"})
+      _dm == {"203.0.113.31": "dc1-a-leaf-01", "203.0.113.32": "dc1-a-leaf-02"} and mod.parse_device_map("") == {} and mod.parse_device_map(None) == {}
+      and mod.parse_device_map("Leaf1=dc1-a-leaf-01") == {"leaf1": "dc1-a-leaf-01"})
 _t = {"source": "203.0.113.31", "peer_address": "10.255.0.1"}
 check("with_sysname: sysName が無ければ source を引いて足した写し。表に無い・sysName がある・表が空ならそのまま",
-      mod.with_sysname(_t, _dm) == dict(_t, sysName="dc1-leaf-01") and "sysName" not in _t
+      mod.with_sysname(_t, _dm) == dict(_t, sysName="dc1-a-leaf-01") and "sysName" not in _t
       and mod.with_sysname({"source": "203.0.113.99"}, _dm) == {"source": "203.0.113.99"}
       and mod.with_sysname({"source": "203.0.113.31", "sysName": "x"}, _dm)["sysName"] == "x"
-      and mod.with_sysname({"source": "203.0.113.31", "sysName": ""}, _dm)["sysName"] == "dc1-leaf-01"
+      and mod.with_sysname({"source": "203.0.113.31", "sysName": ""}, _dm)["sysName"] == "dc1-a-leaf-01"
       and mod.with_sysname(_t, {}) is _t and mod.with_sysname(_t, None) is _t
-      and mod.with_sysname({"source": " 203.0.113.31 "}, _dm)["sysName"] == "dc1-leaf-01")
+      and mod.with_sysname({"source": " 203.0.113.31 "}, _dm)["sysName"] == "dc1-a-leaf-01")
 check("with_sysname(fallback_source=True): 表に無い（表が空・無いときも）source はそのまま sysName にする。source も無ければそのまま",
       mod.with_sysname({"source": " 203.0.113.99 "}, _dm, fallback_source=True) == {"source": " 203.0.113.99 ", "sysName": "203.0.113.99"}
       and mod.with_sysname(_t, {}, fallback_source=True) == dict(_t, sysName="203.0.113.31")
       and mod.with_sysname(_t, None, fallback_source=True) == dict(_t, sysName="203.0.113.31")
-      and mod.with_sysname(_t, _dm, fallback_source=True)["sysName"] == "dc1-leaf-01"
+      and mod.with_sysname(_t, _dm, fallback_source=True)["sysName"] == "dc1-a-leaf-01"
       and mod.with_sysname({"source": "203.0.113.31", "sysName": "x"}, _dm, fallback_source=True)["sysName"] == "x"
       and mod.with_sysname({"agent_host": "r1"}, _dm, fallback_source=True) == {"agent_host": "r1"} and "sysName" not in _t)
 def _gnmi(meas, field, value, **tags):
@@ -544,7 +593,7 @@ _bgp = mod.prometheus_series([_gnmi("bgp_neighbor", "session_state", "establishe
 check("prometheus_series: bgp_neighbor の session_state は snmp_bgp_neighbor_session_up（established が 1、ほかは 0）で、sysName が機器名",
       [(dict(l)["__name__"], dict(l)["peer_address"], v) for l, v, _ in _bgp]
       == [("snmp_bgp_neighbor_session_up", "10.255.0.1", 1.0), ("snmp_bgp_neighbor_session_up", "10.255.0.2", 0.0)]
-      and all(dict(l)["sysName"] == "dc1-leaf-01" and dict(l)["source"] == "203.0.113.31" for l, _, _ in _bgp))
+      and all(dict(l)["sysName"] == "dc1-a-leaf-01" and dict(l)["source"] == "203.0.113.31" for l, _, _ in _bgp))
 _isis = mod.prometheus_series([_gnmi("isis_interface", "oper_state", v, interface_name="ethernet-1/1.0") for v in ("up", "DOWN", " Up ")], _dm)
 check("prometheus_series: isis_interface の oper_state は snmp_isis_interface_oper_up（up が 1、ほかは 0。大文字小文字と前後の空白は見ない）",
       [(dict(l)["__name__"], v) for l, v, _ in _isis] == [("snmp_isis_interface_oper_up", 1.0), ("snmp_isis_interface_oper_up", 0.0), ("snmp_isis_interface_oper_up", 1.0)]
@@ -560,10 +609,10 @@ check("prometheus_series: 表に無い IP では sysName を足さない。devma
 
 # ---- トピックを起動時に作る（無いトピックを購読すると offset 読みで落ちる。2026-09-27）
 check("all_topics: 格納先が読むトピックの和（重複なし、引数の順）",
-      mod.all_topics(mod.parse_args(base + ["--sinks", "opensearch", "--opensearch-endpoint", "https://o"])) == ["traps", "logs"]
+      mod.all_topics(mod.parse_args(base + ["--sinks", "opensearch", "--opensearch-endpoint", "https://o"])) == ["traps", "logs", "flows"]
       and mod.all_topics(mod.parse_args(base + ["--sinks", "prometheus,opensearch", "--prometheus-url", "https://p/api/v1/remote_write", "--opensearch-endpoint", "https://o",
                                                  "--metric-topics", "metrics,gnmi", "--log-topics", "gnmi,traps,logs"])) == ["metrics", "gnmi", "traps", "logs"]
-      and mod.all_topics(mod.parse_args(base + ["--sinks", "prometheus", "--prometheus-url", "https://p/api/v1/remote_write"])) == ["metrics", "gnmi", "mdt"])
+      and mod.all_topics(mod.parse_args(base + ["--sinks", "prometheus", "--prometheus-url", "https://p/api/v1/remote_write"])) == ["metrics", "gnmi"])
 
 
 class _Fut:
@@ -575,11 +624,14 @@ class _Fut:
 
 class _Admin:
     made = []
-    def __init__(self, have, err=None): self.have, self.err, self.closed = have, err, False
+    def __init__(self, have, err=None, acl_err=None): self.have, self.err, self.acl_err, self.closed, self.acls = have, err, acl_err, False, None
     def listTopics(self): return type("R", (), {"names": lambda _s: _Fut(self.have)})()
     def createTopics(self, lst):
         _Admin.made.extend(t.name for t in lst)
         return type("R", (), {"all": lambda _s: _Fut(None, self.err)})()
+    def createAcls(self, bindings):
+        self.acls = (self.acls or []) + list(bindings)
+        return type("R", (), {"all": lambda _s: _Fut(None, self.acl_err)})()
     def close(self): self.closed = True
 
 
@@ -593,9 +645,20 @@ class _JVM:
             def add(self, x): self.append(x)
         class NewTopic:
             def __init__(self, name, p, r): self.name = name
+        # ACL は (resourceType, name, patternType, principal, host, operation, permissionType) のタプルにする（Kafka の enum は名前の文字列）
+        enum = lambda *names: type("E", (), {n: n for n in names})
+        acl = type("Acl", (), {"AclBinding": staticmethod(lambda pattern, entry: pattern + entry),
+                               "AccessControlEntry": staticmethod(lambda principal, host, op, perm: (principal, host, op, perm)),
+                               "AclOperation": enum("ANY", "ALL", "READ", "WRITE", "CREATE", "DELETE", "ALTER", "DESCRIBE", "CLUSTER_ACTION",
+                                                    "DESCRIBE_CONFIGS", "ALTER_CONFIGS", "IDEMPOTENT_WRITE"),
+                               "AclPermissionType": enum("ANY", "DENY", "ALLOW")})()
+        res = type("Res", (), {"ResourcePattern": staticmethod(lambda rtype, name, ptype: (rtype, name, ptype)),
+                               "ResourceType": enum("ANY", "TOPIC", "GROUP", "CLUSTER", "TRANSACTIONAL_ID"),
+                               "PatternType": enum("ANY", "MATCH", "LITERAL", "PREFIXED")})()
         self.java = type("J", (), {"util": type("U", (), {"Properties": Props, "ArrayList": ArrayList, "Optional": type("O", (), {"empty": staticmethod(lambda: None)})})})()
         self.org = type("O", (), {"apache": type("A", (), {"kafka": type("K", (), {"clients": type("C", (), {"admin": type("Ad", (), {
-            "AdminClient": type("AC", (), {"create": staticmethod(lambda props: (setattr(j, "props", props), admin)[1])}), "NewTopic": NewTopic})()})()})()})()})()
+            "AdminClient": type("AC", (), {"create": staticmethod(lambda props: (setattr(j, "props", props), admin)[1])}), "NewTopic": NewTopic})()})(),
+            "common": type("Cm", (), {"acl": acl, "resource": res})()})()})()})()
 
 
 _admin = _Admin({"metrics", "gnmi"})
@@ -615,17 +678,72 @@ try:
 except Exception: _raised = True
 check("ensure_topics: TopicExists 以外の失敗は上げる（権限が無いのを黙って通さない）。close はする", _raised and _admin4.closed)
 
+# ---- SASL/SCRAM の収集器の ACL（AWS の文書は MSK の IAM のアクセス制御では allow.everyone.if.no.acl.found が効かないとする。MSK では未確認。cycle 012 Round 2）
+def _kafka_auth(v, f):
+    """KAFKA_AUTH を v にして f() を呼び、元に戻す（None は消す）"""
+    saved = os.environ.get("KAFKA_AUTH")
+    os.environ.pop("KAFKA_AUTH", None) if v is None else os.environ.__setitem__("KAFKA_AUTH", v)
+    try:
+        return f()
+    finally:
+        os.environ.pop("KAFKA_AUTH", None) if saved is None else os.environ.__setitem__("KAFKA_AUTH", saved)
+
+
+_Admin.made = []
+_adm5 = _Admin(set())
+_sp5 = type("S", (), {"_jvm": _JVM(_adm5)})()
+_r5 = _kafka_auth(None, lambda: mod.ensure_acls(_sp5, "b-1:9098"))
+check("ensure_acls: User:collectors に logs / flows / gnmi / metrics の WRITE と DESCRIBE（TOPIC・LITERAL・host *・ALLOW）の 8 つを 1 回の createAcls で入れ、入れたものを返す",
+      _r5 == ["WRITE logs", "DESCRIBE logs", "WRITE flows", "DESCRIBE flows", "WRITE gnmi", "DESCRIBE gnmi", "WRITE metrics", "DESCRIBE metrics"]
+      and _adm5.acls == [("TOPIC", t, "LITERAL", "User:collectors", "*", op, "ALLOW") for t in ("logs", "flows", "gnmi", "metrics") for op in ("WRITE", "DESCRIBE")])
+check("ensure_acls: AdminClient は SASL_SSL / AWS_MSK_IAM で bootstrap に繋ぎ、終わったら close。トピックは作らない（CREATE も CLUSTER の ACL も付けない）",
+      _adm5.closed and _sp5._jvm.props["bootstrap.servers"] == "b-1:9098" and _sp5._jvm.props["security.protocol"] == "SASL_SSL"
+      and _sp5._jvm.props["sasl.mechanism"] == "AWS_MSK_IAM" and _Admin.made == []
+      and not any(a[5] in ("CREATE", "ALL") or a[0] != "TOPIC" for a in _adm5.acls))
+_adm6 = _Admin(set())
+_sp6 = type("S", (), {"_jvm": _JVM(_adm6)})()
+check("ensure_acls: KAFKA_AUTH=none（OSS 版・手元の compose。authorizer が無い）は何もしない（AdminClient を作らず [] を返す）",
+      _kafka_auth("none", lambda: mod.ensure_acls(_sp6, "kafka-1:9092")) == [] and _adm6.acls is None and not hasattr(_sp6._jvm, "props"))
+try:
+    _kafka_auth("plaintext", lambda: mod.ensure_acls(type("S", (), {"_jvm": _JVM(_Admin(set()))})(), "b")); _raised = False
+except ValueError: _raised = True
+check("ensure_acls: KAFKA_AUTH の綴り違いは ValueError（黙って MSK の扱いにしない）", _raised)
+_adm7 = _Admin(set(), acl_err="org.apache.kafka.common.errors.ClusterAuthorizationException: Cluster authorization failed.")
+try:
+    _kafka_auth(None, lambda: mod.ensure_acls(type("S", (), {"_jvm": _JVM(_adm7)})(), "b")); _raised = False
+except Exception as e: _raised = "ClusterAuthorizationException" in str(e)
+check("ensure_acls: createAcls の失敗（AlterCluster が無い等）は上げる（ジョブが起動で落ち、原因が stderr に出る）。close はする", _raised and _adm7.closed)
+_conf_in = open(os.path.join(ROOT, "app", "syslog-ng", "syslog-ng.conf.in"), encoding="utf-8").read()
+_collectors_tf = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "pipeline", "stream", "collectors.tf"), encoding="utf-8").read()
+_gnmic_in = open(os.path.join(ROOT, "app", "gnmic", "gnmic.yaml.in"), encoding="utf-8").read()
+_gnmic_topics = re.findall(r"^    topic: (\S+)$", _gnmic_in, re.M)
+_tg_conf = open(os.path.join(ROOT, "app", "telegraf", "telegraf.conf.in"), encoding="utf-8").read()
+check("ensure_acls のユーザーとトピックは書く側と同じ（up-common.sh の SCRAM の username、syslog-ng の topic、GoFlow2 の -transport.kafka.topic、"
+      "gnmic の outputs の topic の全部。Telegraf（IAM）が書く traps は入れない）",
+      mod.SCRAM_USER == "collectors" and '"username": "collectors"' in _ops_common("up")
+      and mod.SCRAM_TOPICS == ("logs", "flows", "gnmi", "metrics") and 'topic("logs")' in _conf_in and '"-transport.kafka.topic=flows"' in _collectors_tf
+      and _gnmic_topics == ["gnmi", "metrics"] and _gnmic_in.count("mechanism: SCRAM-SHA-512") == len(_gnmic_topics)
+      and re.findall(r'^\s*topic = "(\w+)"', _tg_conf, re.M) == ["traps"] and "traps" not in mod.SCRAM_TOPICS)
+check("ensure_acls のトピックは Spark が作るトピック（log_topics と metric_topics の既定）に入っている（ACL だけあってトピックが無いままにならない）",
+      set(mod.SCRAM_TOPICS) <= set(mod.LOG_TOPICS.split(",")) | set(mod.METRIC_TOPICS.split(","))
+      and re.search(r'variable "log_topics"[\s\S]*?default\s*=\s*\["traps",\s*"logs",\s*"flows"\]', tf) is not None
+      and re.search(r'variable "metric_topics"[\s\S]*?default\s*=\s*\["metrics",\s*"gnmi"\]', tf) is not None)
+_main_src = inspect.getsource(mod.main)
+check("main: ensure_topics のあとに ensure_acls を呼び、入れた ACL を「ACL: User:collectors に …」で stderr に出してから格納先を起こす",
+      0 < _main_src.find("ensure_topics(spark") < _main_src.find("ensure_acls(spark, args.bootstrap)") < _main_src.find("build(spark, args)")
+      and 'log(f"ACL: User:{SCRAM_USER} に " + ", ".join(acls))' in _main_src)
+
 # ---- Splunk HEC（Spark から直接。2026-09-26）
 check("splunk_hec_url: 末尾の / を除き、/services/collector/event を足す（すでに付いていればそのまま、/services/collector なら /event を足す）",
       mod.splunk_hec_url("https://s:8088") == "https://s:8088/services/collector/event"
       and mod.splunk_hec_url("https://s:8088/") == "https://s:8088/services/collector/event"
       and mod.splunk_hec_url("https://s:8088/services/collector") == "https://s:8088/services/collector/event"
       and mod.splunk_hec_url("https://s:8088/services/collector/event/") == "https://s:8088/services/collector/event")
-_ev = [json.loads(x) for x in mod.splunk_events([rec, dict(rec, host="", agent_host="", measurement="", topic="traps")], "netops")]
-check("splunk_events: 1 レコードが 1 行の JSON。time は ts、host は host → agent_host → unknown、source は telegraf:<measurement>、sourcetype は netops:<topic>、index は渡したとき",
+_ev = [json.loads(x) for x in mod.splunk_events([rec, dict(rec, host="", agent_host="", measurement="", topic="traps")], "nwc")]
+check("splunk_events: 1 レコードが 1 行の JSON。time は ts、host は host → agent_host → unknown、source は telegraf:<measurement>、sourcetype は nwc:<topic>、index は渡したとき",
       len(_ev) == 2 and _ev[0]["time"] == 1700000000.5 and _ev[0]["host"] == "h" and _ev[0]["source"] == "telegraf:interface"
-      and _ev[0]["sourcetype"] == "netops:metrics" and _ev[0]["index"] == "netops"
-      and _ev[1]["host"] == "unknown" and _ev[1]["source"] == "telegraf:unknown" and _ev[1]["sourcetype"] == "netops:traps")
+      and _ev[0]["sourcetype"] == "nwc:metrics" and _ev[0]["index"] == "nwc"
+      and _ev[1]["host"] == "unknown" and _ev[1]["source"] == "telegraf:unknown" and _ev[1]["sourcetype"] == "nwc:traps")
 check("splunk_events: event に topic / measurement / agent_host / tags / fields。数値の文字列は数値に、それ以外はそのまま",
       _ev[0]["event"]["topic"] == "metrics" and _ev[0]["event"]["measurement"] == "interface" and _ev[0]["event"]["agent_host"] == "r1"
       and _ev[0]["event"]["tags"]["ifName"] == "Gi0/1" and _ev[0]["event"]["fields"]["ifInOctets"] == 123 and _ev[0]["event"]["fields"]["descr"] == "up"
@@ -636,7 +754,7 @@ _posts = []
 _orig_post = mod.http_post
 mod.http_post = lambda url, body, headers, context=None: (_posts.append((url, body, headers, context)), (200, "ok"))[1]
 try:
-    _send = mod.make_splunk_sender("https://s:8088/", "tok", "netops")
+    _send = mod.make_splunk_sender("https://s:8088/", "tok", "nwc")
     _ok_dropped = _send([rec] * (mod.BULK_SIZE + 1))
 finally:
     mod.http_post = _orig_post
@@ -656,7 +774,7 @@ finally:
     mod.http_post = _orig_post
 check("make_splunk_sender: HEC が 4xx を返したらそのまとまりを捨てて続け（例外にしない。ジョブを止めない）、捨てた件数を返す", _dropped == 3)
 check("build: splunk は起動時に SSM から token を読み（WithDecryption。環境変数 SPLUNK_HEC_TOKEN が無ければ）、make_splunk_sender で http_query に流す",
-      re.search(r'elif s == "splunk":\s*\n(\s*#[^\n]*\n)*\s*token = splunk_token\(args\.splunk_token_parameter, args\.region\)\s*\n\s*queries\.append\(http_query\(rows, s, args\.checkpoint, make_splunk_sender\(args\.splunk_hec_url, token, args\.splunk_index, args\.splunk_skip_verify\)\)\)', src) is not None
+      re.search(r'elif s == "splunk":\s*\n(\s*#[^\n]*\n)*\s*token = splunk_token\(args\.splunk_token_parameter, args\.region\)\s*\n\s*queries\.append\(http_query\(rows, s, args\.checkpoint, make_splunk_sender\(args\.splunk_hec_url, token, args\.splunk_index, args\.splunk_skip_verify, devmap\)\)\)', src) is not None
       and re.search(r'def splunk_token\(parameter, region\):[\s\S]*?return os\.environ\.get\("SPLUNK_HEC_TOKEN"\) or read_ssm_parameter\(parameter, region\)\n', src) is not None
       and re.search(r'def read_ssm_parameter\(name, region\):[\s\S]*?get_parameter\(Name=name, WithDecryption=True\)', src) is not None)
 check("http_post は context（SSL）を urlopen に渡せる", re.search(r'def http_post\(url, body, headers, context=None\)', src) is not None and "context=context" in src)
@@ -744,18 +862,20 @@ mod.read_ssm_parameter = lambda name, region: (_ssm.append((name, region)), "tok
 mod.http_post = lambda url, body, headers, context=None: (_posts.append((url, body, headers, context)), (403, b'{"text":"Invalid token","code":4}'))[1]
 _posts.clear()
 try:
-    _send = mod.make_splunk_sender_on_executor("https://s:8088", "/p/splunk/hec-token", "ap-northeast-1", "netops", True)
+    _send = mod.make_splunk_sender_on_executor("https://s:8088", "/p/splunk/hec-token", "ap-northeast-1", "nwc", True, {"r1": "dc1-a-leaf-01"})
     _ssm_at_make = list(_ssm)
     _cells = [c.cell_contents for c in (_send.__closure__ or ())]
-    _n, _err = _stderr(lambda: mod.send_partition("splunk", _send, 3, iter([_row(2.0), _row(1.0)])))
+    _n, _err = _stderr(lambda: mod.send_partition("splunk", _send, 3, iter([dict(_row(2.0), tags_json='{"source":"r1","ifName":"Gi0/1"}'), _row(1.0)])))
 finally:
     mod.http_post, mod.read_ssm_parameter = _orig_post, _orig_ssm
-check("make_splunk_sender_on_executor: 作るときは SSM を読まず、持つのは URL / パラメータ名 / region / index / skip_verify の文字列と bool だけ（token も SSL の context も executor へ運ばない）",
-      _ssm_at_make == [] and sorted(map(repr, _cells)) == sorted(map(repr, ["https://s:8088", "/p/splunk/hec-token", "ap-northeast-1", "netops", True])))
+check("make_splunk_sender_on_executor: 作るときは SSM を読まず、持つのは URL / パラメータ名 / region / index / skip_verify の文字列と bool と device map の辞書だけ（token も SSL の context も executor へ運ばない）",
+      _ssm_at_make == [] and sorted(map(repr, _cells)) == sorted(map(repr, ["https://s:8088", "/p/splunk/hec-token", "ap-northeast-1", "nwc", True, {"r1": "dc1-a-leaf-01"}])))
 check("make_splunk_sender_on_executor: 送るときに SSM から token を読み、Authorization: Splunk <token> で HEC に送る。index と skip_verify（検証しない context）も今の sender と同じ",
       _ssm == [("/p/splunk/hec-token", "ap-northeast-1")] and len(_posts) == 1 and _posts[0][0] == "https://s:8088/services/collector/event"
       and _posts[0][2]["Authorization"] == "Splunk tok-from-ssm" and _posts[0][3] is not None and _posts[0][3].verify_mode == ssl.CERT_NONE
-      and [json.loads(x)["time"] for x in _posts[0][1].decode().split("\n")] == [1.0, 2.0] and json.loads(_posts[0][1].decode().split("\n")[0])["index"] == "netops")
+      and [json.loads(x)["time"] for x in _posts[0][1].decode().split("\n")] == [1.0, 2.0] and json.loads(_posts[0][1].decode().split("\n")[0])["index"] == "nwc")
+check("make_splunk_sender_on_executor: device map で sysName を足す（source のある行だけ。cycle 013）",
+      [json.loads(x)["event"]["tags"].get("sysName") for x in _posts[0][1].decode().split("\n")] == [None, "dc1-a-leaf-01"])
 check("make_splunk_sender_on_executor: 4xx は捨てて続け（例外にしない）、ログに token の値を出さない",
       _n == (2, 2) and "splunk: HEC が 403 を返した" in _err and "partition -1 で 2 行を送り、2 件を捨てた（4xx など）" in _err and "tok-from-ssm" not in _err)
 check("executor へ運ぶ opensearch / prometheus の sender が持つのは文字列と辞書（と None）だけ（pickle できないものを持たない）",
@@ -884,7 +1004,14 @@ check("executor の分岐（each_batch_on_executors と send_partition）は行�
       and "foreachPartition" in _attrs(_inner["each_batch_on_executors"]) and "collect" in _attrs(_inner["each_batch"]))
 
 # build: どの HTTP の格納先にも http_send を渡す。splunk は executor のとき token を持たない sender にする
+class _Conf:
+    """spark.conf の偽物（set を覚え、log に "conf" を足す。_Spark は readStream で "read" を足すので順番が分かる）"""
+    def __init__(self, log=None): self.sets, self.log = [], (log if log is not None else [])
+    def set(self, k, v): self.sets.append((k, v)); self.log.append("conf")
+
+
 _hq = []
+_bsp = type("S", (), {"conf": _Conf()})()
 _orig_build = (mod.read_rows, mod.read_ssm_parameter, mod.http_query)
 mod.read_rows = lambda spark, bootstrap, topics, *a: _Rows()
 mod.read_ssm_parameter = lambda name, region: (_ssm.append(name), "tok-from-ssm")[1]
@@ -893,10 +1020,10 @@ _ba = base + ["--sinks", "splunk,prometheus,opensearch", "--splunk-hec-url", "ht
               "--prometheus-url", "https://p/api/v1/remote_write", "--opensearch-endpoint", "https://o"]
 try:
     _ssm.clear()
-    mod.build(None, mod.parse_args(_ba + ["--http-send", "executor"]))
+    mod.build(_bsp, mod.parse_args(_ba + ["--http-send", "executor"]))
     _exec, _ssm_exec = list(_hq), list(_ssm)
     _hq.clear(), _ssm.clear()
-    mod.build(None, mod.parse_args(_ba))
+    mod.build(_bsp, mod.parse_args(_ba + ["--device-map", "203.0.113.31=dc1-a-leaf-01"]))
     _drv, _ssm_drv = list(_hq), list(_ssm)
 finally:
     mod.read_rows, mod.read_ssm_parameter, mod.http_query = _orig_build
@@ -906,6 +1033,11 @@ check("build executor: splunk / prometheus / opensearch に executor を渡す�
 check("build driver（既定）: 今のまま（splunk は起動時に読んだ token を持つ sender、http_send は driver）",
       [(n, h) for n, _, h in _drv] == [("splunk", "driver"), ("prometheus", "driver"), ("opensearch", "driver")] and _ssm_drv == ["/p/t"]
       and "Splunk tok-from-ssm" in repr([c.cell_contents for c in (_drv[0][1].__closure__ or ())]))
+check("build: クエリを組む前に spark.sql.mapKeyDedupPolicy を LAST_WIN にする（gnmic の読み替えで map のキーが重なってもクエリを落とさない。起動ごとに 1 回）",
+      _bsp.conf.sets == [("spark.sql.mapKeyDedupPolicy", "LAST_WIN")] * 2)
+check("build: --device-map を splunk の sender にも渡す（driver は make_splunk_sender、executor は make_splunk_sender_on_executor の中身に device map の辞書）",
+      {"203.0.113.31": "dc1-a-leaf-01"} in [c.cell_contents for c in (_drv[0][1].__closure__ or ())]
+      and {} in [c.cell_contents for c in (_exec[0][1].__closure__ or ())])
 check("main は HTTP の送信先（driver / executor）を起動時のログに出す", '+ f"。HTTP の送信: {args.http_send}"' in src)
 
 # ---- Kafka の 1 回のトリガーに 1 つのクエリが読む件数の上限（--max-offsets-per-trigger と格納先ごとの --max-offsets-per-trigger-by-sink。2026-10-04）
@@ -934,6 +1066,9 @@ class _Any:
     def __getattr__(self, k): return self
     def __call__(self, *a, **kw): return self
     def __getitem__(self, k): return self
+    def __truediv__(self, o): return self   # flows の time_received_ns と gnmic の timestamp（ナノ秒）を秒にする割り算
+    def __and__(self, o): return self       # gnmic の event の見分け（fields が無く、values か deletes がある）
+    def __or__(self, o): return self
 
 
 class _Reader:
@@ -946,10 +1081,12 @@ class _Reader:
 class _Spark:
     """readStream は option を覚え、table(名前).schema.fields は have の列、sql は文を覚える（ensure_iceberg_columns 用）"""
     def __init__(self, have=None):
-        self.readers, self.sqls, self.tables = [], [], []
+        self.readers, self.sqls, self.tables, self.log = [], [], [], []
         self.have = list(TABLE_COLUMNS if have is None else have)
+        self.conf = _Conf(self.log)
     @property
     def readStream(self):
+        self.log.append("read")
         self.readers.append(_Reader())
         return self.readers[-1]
     def table(self, name):
@@ -964,7 +1101,7 @@ _fake_sql = _types.ModuleType("pyspark.sql")
 _fake_sql.functions, _fake_sql.types = _Any(), _Any()
 _saved_mods = {k: sys.modules.get(k) for k in ("pyspark", "pyspark.sql")}
 _orig_mo = (mod.iceberg_query, mod.http_query, mod.read_ssm_parameter)
-_b4 = base + ["--sinks", "iceberg,splunk,opensearch,prometheus", "--iceberg-table", "s3tables.netops.raw_telemetry",
+_b4 = base + ["--sinks", "iceberg,splunk,opensearch,prometheus", "--iceberg-table", "s3tables.nwc.raw_telemetry",
               "--splunk-hec-url", "https://s:8088", "--splunk-token-parameter", "/p/t",
               "--prometheus-url", "https://p/api/v1/remote_write", "--opensearch-endpoint", "https://o"]
 def _reads(*extra):
@@ -1018,9 +1155,11 @@ check("build 共通 0 + opensearch=300,iceberg=50000: 書いた格納先だけ�
       _r_mixed == {"iceberg": "50000", "splunk": None, "opensearch": "300", "prometheus": None})
 check("main は格納先ごとの上限（0 なら上限なし）を起動時のログに出す", "1 回 {max_offsets(args, s) or '上限なし'} 件まで" in src)
 check("build iceberg: 列の足りない表（tables.tf の 8 列）には iceberg のクエリを組む前に ALTER TABLE を 1 回出し、足した列をログに出す",
-      _sp_old.tables == ["s3tables.netops.raw_telemetry"] and _alter_at == [1]
-      and _sp_old.sqls == ["ALTER TABLE s3tables.netops.raw_telemetry ADD COLUMNS (event_id string, kafka_topic string, kafka_partition int, kafka_offset bigint)"]
-      and "iceberg: s3tables.netops.raw_telemetry に列 event_id, kafka_topic, kafka_partition, kafka_offset を足した（いまある行は null）" in _alter_out)
+      _sp_old.tables == ["s3tables.nwc.raw_telemetry"] and _alter_at == [1]
+      and _sp_old.sqls == ["ALTER TABLE s3tables.nwc.raw_telemetry ADD COLUMNS (event_id string, kafka_topic string, kafka_partition int, kafka_offset bigint)"]
+      and "iceberg: s3tables.nwc.raw_telemetry に列 event_id, kafka_topic, kafka_partition, kafka_offset を足した（いまある行は null）" in _alter_out)
+check("build: mapKeyDedupPolicy は Kafka を読む前（どのクエリよりも先）に 1 回だけ決める",
+      _sp_new.conf.sets == [("spark.sql.mapKeyDedupPolicy", "LAST_WIN")] and _sp_new.log[0] == "conf" and _sp_new.log.count("read") == 4)
 check("build iceberg: 列がそろっていれば ALTER も列のログも出さない（2 回目の起動から）", _sp_new.sqls == [] and "を足した" not in _new_out)
 check("build: iceberg が無ければ表を見ない（HTTP の格納先のジョブは S3 Tables に触らない）", _sp_http.tables == [] and _sp_http.sqls == [])
 check("ICEBERG_ADDED_COLUMNS は event_id string / kafka_topic string / kafka_partition int / kafka_offset bigint（Kafka の partition は int、offset は long）",
@@ -1105,21 +1244,29 @@ check("opensearch_docs: action 行と document 行の対、@timestamp は ISO �
       and json.loads(docs[1])["tags"]["ifName"] == "Gi0/1")
 _trap = {"ts": 1700000000.0, "topic": "traps", "measurement": "snmp_trap", "agent_host": "", "host": "h",
          "tags": {"source": "203.0.113.31", "oid": ".1.3.6.1.6.3.1.1.5.3", "name": "linkDown"}, "fields": {"sysUpTimeInstance": 1}}
-_tdocs = mod.opensearch_docs([_trap, dict(_trap, tags=dict(_trap["tags"], source="203.0.113.99"))], mod.parse_device_map("203.0.113.31=dc1-leaf-01"))
+_tdocs = mod.opensearch_docs([_trap, dict(_trap, tags=dict(_trap["tags"], source="203.0.113.99"))], mod.parse_device_map("203.0.113.31=dc1-a-leaf-01"))
 check("opensearch_docs: sysName の無い snmp_trap は tags.sysName に機器名が入る。表に無い IP では IP をそのまま入れる（Grafana の trap のルールの集計に出す）。元のレコードは変えない",
-      json.loads(_tdocs[1])["tags"] == dict(_trap["tags"], sysName="dc1-leaf-01")
+      json.loads(_tdocs[1])["tags"] == dict(_trap["tags"], sysName="dc1-a-leaf-01")
       and json.loads(_tdocs[3])["tags"] == dict(_trap["tags"], source="203.0.113.99", sysName="203.0.113.99")
       and "sysName" not in _trap["tags"])
 check("opensearch_docs: devmap を渡さなくても sysName の無い trap は source を入れる。sysName のあるレコード（ポーリング）と source の無いレコードは変えない",
       json.loads(mod.opensearch_docs([_trap])[1])["tags"]["sysName"] == "203.0.113.31" and mod.opensearch_docs([rec], mod.parse_device_map("203.0.113.31=x")) == docs
-      and json.loads(mod.opensearch_docs([dict(_trap, tags={"source": "203.0.113.31", "sysName": "x"})], mod.parse_device_map("203.0.113.31=dc1-leaf-01"))[1])["tags"]["sysName"] == "x")
-check("splunk_events は device map を受けず、sysName を足さない（Splunk のアラートアクションが DEVICE_MAP で引く。cycle 002 でも出力は変えない）",
-      list(inspect.signature(mod.splunk_events).parameters) == ["records", "index"]
-      and "sysName" not in json.loads(mod.splunk_events([_trap])[0])["event"]["tags"])
-check("build は device map を prometheus と opensearch の sender にだけ渡す",
+      and json.loads(mod.opensearch_docs([dict(_trap, tags={"source": "203.0.113.31", "sysName": "x"})], mod.parse_device_map("203.0.113.31=dc1-a-leaf-01"))[1])["tags"]["sysName"] == "x")
+# cycle 013: Splunk にも sysName を足す（保存済みサーチの device が Grafana と同じ機器名になる。PM 承認）
+_sdm = mod.parse_device_map("203.0.113.31=dc1-a-leaf-01")
+_gnmi_rec = {"ts": 1700000000.0, "topic": "gnmi", "measurement": "interface", "agent_host": "203.0.113.31", "host": None,
+             "tags": {"ifName": "ethernet-1/1", "source": "203.0.113.31", "subscription-name": "interface_state"}, "fields": {"oper_state": "down"}}
+_sev = [json.loads(x)["event"]["tags"] for x in mod.splunk_events([_trap, _gnmi_rec, dict(_trap, tags=dict(_trap["tags"], source="203.0.113.99")), rec], "", _sdm)]
+check("splunk_events: device map を渡すと sysName の無い trap と gNMI の tags に機器名が入る（dc1-a-leaf-01）。表に無い IP には足さない（opensearch と違い IP を入れない）。元のレコードは変えない",
+      list(inspect.signature(mod.splunk_events).parameters) == ["records", "index", "devmap"]
+      and _sev[0] == dict(_trap["tags"], sysName="dc1-a-leaf-01") and _sev[1] == dict(_gnmi_rec["tags"], sysName="dc1-a-leaf-01")
+      and "sysName" not in _sev[2] and _sev[3] == rec["tags"] and "sysName" not in _trap["tags"] and "sysName" not in _gnmi_rec["tags"])
+check("splunk_events: device map を渡さなければ今までどおり（sysName を足さない）",
+      "sysName" not in json.loads(mod.splunk_events([_trap])[0])["event"]["tags"] and "sysName" not in json.loads(mod.splunk_events([_gnmi_rec], "nwc")[0])["event"]["tags"])
+check("build は device map を prometheus / opensearch / splunk（driver と executor）の sender に渡す",
       "devmap = parse_device_map(args.device_map)" in src
       and re.search(r'make_prometheus_sender\([^)]*devmap\)', src) is not None and re.search(r'make_opensearch_sender\([^)]*devmap\)', src) is not None
-      and re.search(r'make_splunk_sender\([^)]*devmap', src) is None)
+      and re.search(r'make_splunk_sender\([^)]*, devmap\)\)\)', src) is not None and re.search(r'make_splunk_sender_on_executor\([^)]*, devmap\)', src) is not None)
 
 import datetime as dt
 r = mod.row_to_record({"ts": dt.datetime(2023, 11, 14, 22, 13, 20, tzinfo=dt.timezone.utc), "topic": "traps", "measurement": "snmp_trap",
@@ -1180,26 +1327,115 @@ check("prometheus_series: ラベルの名前に event_id / kafka_* が出ない�
       all(not n.startswith(("event_id", "kafka_")) for l, _, _ in mod.prometheus_series(_recs) for n, _ in l)
       and len({tuple(l) for l, _, _ in mod.prometheus_series(_recs[:2])}) == 2)
 
+# ---- flows（GoFlow2 の JSON 1 行）→ 共通の形（cycle 012）。read_rows は同じ表を Spark の列で組む（本物の Spark で同じ結果になることは 012 の build.md）
+_gf = {"type": "NETFLOW_V5", "time_received_ns": 1700000000123456789, "sequence_num": 1, "sampling_rate": 0, "sampler_address": "192.0.2.1",
+       "time_flow_start_ns": 0, "bytes": 1500, "packets": 3, "src_addr": "10.0.0.1", "dst_addr": "10.0.0.2", "etype": "IPv4", "proto": "TCP",
+       "src_port": 443, "dst_port": 50001, "in_if": 1, "out_if": 2, "src_mac": "00:00:00:00:00:00", "as_path": [], "next_hop": ""}
+_gf_tags = {"sampler": "192.0.2.1", "src": "10.0.0.1", "dst": "10.0.0.2", "proto": "TCP", "src_port": "443", "dst_port": "50001",
+            "in_if": "1", "out_if": "2", "type": "NETFLOW_V5"}
+check("flow_message: GoFlow2 の 1 行 → name flow、tags 9 つ（sampler / src / dst / proto / ポート 2 つ / IF 2 つ / type）、fields は bytes / packets、"
+      "timestamp は time_received_ns を秒に（小数を切る）。値は文字列（Spark の from_json の StringType と同じ字面）。表に無いキー（etype / src_mac など）は持ってこない",
+      mod.flow_message(_gf) == {"timestamp": 1700000000, "name": "flow", "tags": _gf_tags, "fields": {"bytes": "1500", "packets": "3"}})
+check("flow_message: 無いキーと null は入れない。time_received_ns が無い・整数でないなら timestamp は None（read_rows では ts が null で捨てる）",
+      mod.flow_message({**{k: v for k, v in _gf.items() if k not in ("in_if", "packets")}, "out_if": None})
+      == {"timestamp": 1700000000, "name": "flow", "tags": {k: v for k, v in _gf_tags.items() if k not in ("in_if", "out_if")}, "fields": {"bytes": "1500"}}
+      and mod.flow_message({"time_received_ns": "abc"})["timestamp"] is None and mod.flow_message({})["timestamp"] is None
+      and mod.flow_message({"time_received_ns": "1700000000000000000"})["timestamp"] == 1700000000)
+check("flows の表: Telegraf の形のキーは重複なし、GoFlow2 のキーは design の 11 個（type / sampler_address / src_addr / dst_addr / proto / src_port / dst_port / in_if / out_if / bytes / packets）",
+      len({k for k, _ in mod.FLOW_TAGS + mod.FLOW_FIELDS}) == 11
+      and {g for _, g in mod.FLOW_TAGS + mod.FLOW_FIELDS} == {"type", "sampler_address", "src_addr", "dst_addr", "proto", "src_port", "dst_port", "in_if", "out_if", "bytes", "packets"}
+      and mod.FLOW_TIME_KEY == "time_received_ns" and "flows" in mod.LOG_TOPICS.split(",") and "flows" not in mod.METRIC_TOPICS.split(","))
+_frow = _kafka_row(json.dumps(mod.flow_message(_gf)).encode(), 20, topic="flows")
+_bodies = {}
+mod.sigv4_headers = lambda method, url, body, service, region, headers: dict(headers)
+mod.http_post = lambda url, body, headers, context=None: (_bodies.setdefault(url, []).append(body), (200, '{"errors":false}'))[1]
+try:
+    mod.make_splunk_sender("https://s:8088", "tok")([mod.row_to_record(_frow)])
+    mod.make_opensearch_sender("https://o", "snmp-logs", "ap-northeast-1")([mod.row_to_record(_frow)])
+finally:
+    mod.http_post, mod.sigv4_headers = _orig_post, _orig_sig
+_f_sp = json.loads(_bodies["https://s:8088/services/collector/event"][0].decode())
+_f_os = [json.loads(x) for x in _bodies["https://o/snmp-logs/_bulk"][0].decode().splitlines()]
+check("flows の行は logs と同じ送り先: Splunk は sourcetype nwc:flows / source telegraf:flow、OpenSearch は snmp-logs の索引（表を足さない。012 の build.md の逸脱 a）",
+      _f_sp["sourcetype"] == "nwc:flows" and _f_sp["source"] == "telegraf:flow" and _f_sp["event"]["tags"]["src"] == "10.0.0.1"
+      and _f_sp["event"]["fields"] == {"bytes": 1500, "packets": 3}   # 文字列の数値は送り先で数にする（Telegraf の Counter と同じ）
+      and len(_f_os) == 2 and _f_os[1]["topic"] == "flows" and _f_os[1]["measurement"] == "flow" and _f_os[1]["tags"]["sampler"] == "192.0.2.1"
+      and _f_os[1]["fields"] == {"bytes": 1500.0, "packets": 3.0})
+
 # ---- ops/up.sh / ops/down.sh / ops/check.sh / deploy.env.example とのつながり
-check("up.sh は 6 本の jar を置く", len(re.findall(r'^\s*"\$MAVEN/', up, re.M)) == 6)
+_up_jars = re.findall(r'^  "([0-9a-f]{64}):(\S+\.jar)"$', up, re.M)
+check("up.sh は 6 本の jar を <sha256>:<Maven のパス> で書き、5-2 で fetch_jars が取って照合してから S3 に置く。S3 の側も sync --delete で JARS に無い jar を消す",
+      len(_up_jars) == 6 and "JAR_URLS" not in up
+      and up.index('log "5-2.') < up.index("\n  fetch_jars\n") < up.index('aws s3 sync --only-show-errors --delete "$JARS_DIR/" "s3://$KB_BUCKET/analytics/jars/" --exclude "*" --include "*.jar"'))
+def _expand_vars(text, path, assign):  # パスの $NAME / ${NAME} を、text の中の代入（up.sh の NAME=値、Dockerfile の ARG NAME=値）で埋める
+    vals = dict(re.findall(assign, text, re.M))
+    return re.sub(r"\$\{?(\w+)\}?", lambda m: vals[m.group(1)], path)
+_spark_dock = open(os.path.join(ROOT, "docker", "images", "spark", "Dockerfile"), encoding="utf-8").read()
+_up_sha = {_expand_vars(up, p, r"^(\w+)=(\S+)$"): s for s, p in _up_jars}
+_dock_sha = {_expand_vars(_spark_dock, p, r"^ARG (\w+)=(\S+)$"): s for s, p in re.findall(r"^ {6}(\S+?):(\S+\.jar)(?:; do)? \\$", _spark_dock, re.M)}
+_same_jars = set(_up_sha) & set(_dock_sha)
+check("up.sh と docker/images/spark/Dockerfile に同じ jar（版まで同じパス）があれば、sha256 も同じ（いまは kafka-clients / commons-pool2 / S3 Tables のカタログ）",
+      len(_dock_sha) == 9 and len(_same_jars) >= 1 and all(_up_sha[p] == _dock_sha[p] for p in _same_jars))
+import tempfile
+_fjblk = up[up.index("fetch_jars() {"):up.index("\n}\n", up.index("fetch_jars() {")) + 3]
+_lab_common = open(os.path.join(ROOT, "ops", "lab-common.sh"), encoding="utf-8").read()
+_fetchblk = _lab_common[_lab_common.index("fetch() {"):_lab_common.index("\n}\n", _lab_common.index("fetch() {")) + 3]
+_fakecurl = r'''die() { echo "DIE: $*"; exit 1; }
+curl() {  # curl -fL --retry 3 -o <出力> <URL>。中身は jar の名前（BAD に当たる名前だけ別の中身）
+  local out url
+  while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift 2 ;; --retry) shift 2 ;; -*) shift ;; *) url=$1; shift ;; esac; done
+  echo "$url" >> "$CALLS"
+  if [ "${url##*/}" = "${BAD:-}" ]; then printf tampered > "$out"; else printf '%s' "${url##*/}" > "$out"; fi
+}
+'''
+def _fetch_jars(d, names, bad=""):  # d/jars に fetch_jars を打つ。jar の中身はその名前なので、JARS の sha256 は名前の sha256
+    jars = " ".join(f'"{hashlib.sha256(n.encode()).hexdigest()}:g/a/{n}"' for n in names)
+    calls = os.path.join(d, "calls")
+    if os.path.exists(calls):
+        os.remove(calls)
+    r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + _fakecurl + _fetchblk + _fjblk
+                        + f'PY=("{sys.executable}")\nJARS_DIR=jars\nMAVEN=https://m\nJARS=({jars})\nfetch_jars\necho END'],
+                       capture_output=True, text=True, cwd=d, env={"PATH": os.environ["PATH"], "CALLS": calls, "BAD": bad})
+    got = open(calls, encoding="utf-8").read().split() if os.path.exists(calls) else []
+    return r.returncode, r.stdout + r.stderr, sorted(os.listdir(os.path.join(d, "jars"))), got
+def _jar_dir(files):
+    d = tempfile.mkdtemp()
+    os.makedirs(os.path.join(d, "jars"))
+    for n, body in files.items():
+        with open(os.path.join(d, "jars", n), "w", encoding="utf-8") as fh:
+            fh.write(body)
+    return d
+_rc, _out, _ls, _got = _fetch_jars(_jar_dir({"a-1.0.jar": "old", "a-2.0.jar": "a-2.0.jar", "notes.txt": "n"}), ["a-2.0.jar", "b-1.0.jar"])
+check("up.sh: fetch_jars は手元に無い jar だけ Maven から取り、sha256 が合えば通す。JARS に無い jar（前の版）は jars/ から消し、jar でないものは残す",
+      _rc == 0 and _out.rstrip().endswith("END") and _got == ["https://m/g/a/b-1.0.jar"]
+      and _ls == ["a-2.0.jar", "b-1.0.jar", "notes.txt"] and "jars/a-1.0.jar: up.sh の JARS に無い（前の版）ので消す" in _out)
+_rc, _out, _ls, _ = _fetch_jars(_jar_dir({}), ["a-2.0.jar", "b-1.0.jar"], bad="b-1.0.jar")
+check("up.sh: 取った jar の sha256 が JARS と合わなければ、その jar を消して止まる（S3 には上げない）",
+      _rc != 0 and "END" not in _out and "DIE: jars/b-1.0.jar の sha256（" in _out and _ls == ["a-2.0.jar"])
+_d = _jar_dir({"a-2.0.jar": "corrupt"})
+_rc, _out, _ls, _got = _fetch_jars(_d, ["a-2.0.jar"])
+_rc2, _out2, _ls2, _got2 = _fetch_jars(_d, ["a-2.0.jar"])
+check("up.sh: 手元に残っていた jar の sha256 が合わなくても消して止まり、打ち直せば取り直して通る",
+      _rc != 0 and _got == [] and _ls == [] and "DIE: jars/a-2.0.jar の sha256（" in _out
+      and _rc2 == 0 and _out2.rstrip().endswith("END") and _got2 == ["https://m/g/a/a-2.0.jar"] and _ls2 == ["a-2.0.jar"])
 for jar in ("spark-sql-kafka-0-10_2.12", "spark-token-provider-kafka-0-10_2.12", "kafka-clients", "commons-pool2", "aws-msk-iam-auth", "s3-tables-catalog-for-iceberg-runtime"):
     check(f"up.sh の jar に {jar}", jar in up)
-check("up.sh の SPARK_VERSION は emr_release_label の Spark（3.5.6）", re.search(r'^SPARK_VERSION=3\.5\.6$', up, re.M) is not None
-      and "7.13.0 = Spark 3.5.6" in tf)
-check("up.sh のスクリプトは spark/snmp_sinks.py", re.search(r'^SPARK_SCRIPT=spark/snmp_sinks\.py$', up, re.M) is not None and "snmp_to_iceberg" not in up)
+check("up.sh の SPARK_VERSION は emr_release_label の Spark（3.5.8）", re.search(r'^SPARK_VERSION=3\.5\.8$', up, re.M) is not None
+      and "7.14.0 = Spark 3.5.8" in tf)
+check("up.sh のスクリプトは app/spark/snmp_sinks.py", re.search(r'^SPARK_SCRIPT=app/spark/snmp_sinks\.py$', up, re.M) is not None and "snmp_to_iceberg" not in up)
 check("up.sh は SPLUNK_INDEX（既定は空）を読み、STORES に splunk があれば（既定）ECS の Splunk の token を SSM に作ってから渡す（値は読まない）。外の Splunk の変数は渡さない",
       re.search(r'^SPLUNK_INDEX="\$\{SPLUNK_INDEX:-\}"$', up, re.M) is not None
       and "get-parameter" not in up and "splunk_hec_url=" not in up and "splunk_skip_tls_verify" not in up and "SPLUNK_TOKEN_PARAM" not in up
       and 'ANALYTICS_VARS+=(-var "splunk_image_tag=$SPLUNK_TAG" -var "splunk_index=$SPLUNK_INDEX" -var "splunk_az_num=$SPLUNK_AZ_NUM")' in up
       and 'ensure_secret "/$PREFIX/splunk/hec-token" uuid' in up[up.index("ensure_splunk_secrets() {"):]
       and up.index('ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]"') < up.index('    ensure_splunk_secrets "$SPLUNK_AZ_NUM"') < up.index('tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"'))
-check("up.sh は STORES（既定 s3,grafana,splunk）から導いた格納先を terraform/pipeline/analytics の sinks に組んで渡す",
+check("up.sh は STORES（既定 s3,grafana,splunk）から導いた格納先を IaC/terraform/aws-managed/pipeline/analytics の sinks に組んで渡す",
       re.search(r'^if \[ -z "\$\{STORES:-\}" \]; then STORES=s3,grafana,splunk; STORES_DEFAULT=1; fi$', up, re.M) is not None
       and re.search(r'^SINK_S3="\$STORE_S3"; SINK_OPENSEARCH="\$STORE_GRAFANA"; SINK_PROMETHEUS="\$STORE_GRAFANA"; SINK_SPLUNK="\$STORE_SPLUNK"$', up, re.M) is not None
       and 'ANALYTICS_VARS=(-var "sinks=[$SINKS_TF]" ' in up and 'tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"' in up)
-check("up.sh は STORES の splunk に関わらず device map を lab の定義から作って渡す（lab/lab_topology.py --device-map。trap と gNMI には sysName が無い。Splunk の DEVICE_MAP と Spark の --device-map。cycle 002）",
-      re.search(r'  ANALYTICS_VARS=\(-var "sinks=\[\$SINKS_TF\]" [^\n]*\n(?:  ANALYTICS_VARS\+=\(-var "opensearch_az_num=\$OPENSEARCH_AZ_NUM"\)\n)?(?:  ensure_s3tables_catalog [^\n]*\n)?(?:  #[^\n]*\n)*  DEVICE_MAP=\$\("\$\{PY\[@\]\}" lab/lab_topology\.py lab --device-map\) \|\| die [^\n]*\n  ANALYTICS_VARS\+=\(-var "device_map=\$DEVICE_MAP"\)\n  if \[ -n "\$GRAFANA" \]', up) is not None
-      and up.count("lab_topology.py lab --device-map") == 1 and up.count('-var "device_map=$DEVICE_MAP"') == 1)
+check("up.sh は STORES の splunk に関わらず device map を lab の定義から作って渡す（app/containerlab/lab_topology.py --device-map。trap と gNMI には sysName が無い。Splunk の DEVICE_MAP と Spark の --device-map。cycle 002）",
+      re.search(r'  ANALYTICS_VARS=\(-var "sinks=\[\$SINKS_TF\]" [^\n]*\n(?:  ANALYTICS_VARS\+=\(-var "opensearch_az_num=\$OPENSEARCH_AZ_NUM"\)\n)?(?:  ensure_s3tables_catalog [^\n]*\n)?(?:  #[^\n]*\n)*  DEVICE_MAP=\$\("\$\{PY\[@\]\}" app/containerlab/lab_topology\.py app/containerlab --device-map\) \|\| die [^\n]*\n  ANALYTICS_VARS\+=\(-var "device_map=\$DEVICE_MAP"\)\n  if \[ -n "\$GRAFANA" \]', up) is not None
+      and up.count("lab_topology.py app/containerlab --device-map") == 1 and up.count('-var "device_map=$DEVICE_MAP"') == 1)
 check("up.sh は AGENT=0 でも CloudWatch へのログを切らない（CloudWatch Logs へは土台の logs のエンドポイントで届く）",
       "cloudwatch_logging=false" not in up and re.search(r'variable "cloudwatch_logging" \{[^}]*default\s*=\s*true', tf) is not None)
 # 2026-09-26〜28 は NAT Gateway だけで AWS の API に出ていた。2026-09-28 に閉域（エンドポイント + aws:SourceVpc の Deny）にした
@@ -1239,7 +1475,7 @@ _AZ_VARS = {  # (ルート, 変数): (既定, 使える値)
     ("pipeline/nautobot", "nautobot_db_az_num"): (1, [1, 2]), ("workflow", "lambda_az_num"): (1, [1, 2, 3]),
 }
 def _root_tf(root):
-    d = os.path.join(ROOT, "terraform", *root.split("/"))
+    d = os.path.join(ROOT, "IaC", "terraform", "aws-managed", *root.split("/"))
     return "".join(open(os.path.join(d, n), encoding="utf-8").read() for n in sorted(os.listdir(d)) if n.endswith(".tf"))
 def _az_var_ok(root, name, default, allowed):
     m = re.search(r'variable "' + name + r'" \{(.*?)\n\}', _root_tf(root), re.S)
@@ -1277,7 +1513,7 @@ _AZ_SRC = {  # (ルート, 変数, リソースのファイル): 出典の URL
 def _az_src_ok(root, name, fname, url):
     day = "2026-10-05" if name == "runtime_az_num" else "2026-10-04"
     m = re.search(r'variable "' + name + r'" \{\n\s*description\s*=\s*"([^"\n]*)"', _root_tf(root))
-    res = open(os.path.join(ROOT, "terraform", *root.split("/"), fname), encoding="utf-8").read()
+    res = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", *root.split("/"), fname), encoding="utf-8").read()
     return (m is not None and url in m.group(1) and f"checked {day}" in m.group(1)
             and re.search(r"^\s*#.*" + re.escape(url), res, re.M) is not None and f"{day} 確認" in res
             and re.search(r"^#.*" + re.escape(url), up, re.M) is not None)
@@ -1296,7 +1532,7 @@ check("確かめ切れていないことは「未確認」と書く（Runtime �
 _faq = open(os.path.join(ROOT, "docs", "faq-fukuda-nwc-poc.md"), encoding="utf-8").read()
 check("Runtime の 1 AZ を拒んでいた前の決定（2026-10-04）の文が、up.sh・deploy.env.example・terraform・FAQ に残っていない",
       not any(w in t for t in (up, env_example, _root_tf("agent"), _root_tf("base/core"),
-                               open(os.path.join(ROOT, "terraform", "agent", "terraform.tfvars.example"), encoding="utf-8").read(), _faq)
+                               open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "agent", "terraform.tfvars.example"), encoding="utf-8").read(), _faq)
               for w in ("AWS の制約ではなくユーザーの決定", "not by AWS", "refused on purpose", "kept at two", "2 AZ 以上に置く",
                         "AWS の文書が高可用性のため 2 AZ 以上を勧めている", "MSK と Runtime だけ", "MSK と Runtime は", "Runtime needs two AZs"))
       and "既定 1（2026-10-05 のユーザー決定）" in up and "1 つを禁じる記述は無い" in up and "2026-10-05 確認" in up
@@ -1307,7 +1543,7 @@ _SINGLE = {  # (ルート, リソースの見出し): 理由に書く言葉
     ("pipeline/analytics", 'resource "aws_ecs_service" "grafana"'): "https://grafana.com/docs/grafana/latest/alerting/set-up/configure-high-availability/",
     ("pipeline/nautobot", 'resource "aws_ecs_service" "nautobot"'): "Redis と Celery のワーカーが同じタスク",
     ("workflow", 'resource "aws_ecs_service" "workflow"'): "Temporal の開発用サーバー",
-    ("pipeline/stream", 'resource "aws_ecs_service" "telegraf_dialin"'): "TELEGRAF_AZ_NUM に従わない理由",
+    ("pipeline/stream", 'resource "aws_ecs_service" "gnmic"'): "TELEGRAF_AZ_NUM に従わない理由",   # cycle 013 で telegraf_dialin から替えた
 }
 def _single_ok(root, head, word):
     t = _root_tf(root)
@@ -1317,10 +1553,10 @@ def _single_ok(root, head, word):
     j = t.find("\n}\n", i)
     near = t[max(0, t.rfind("\n\n", 0, i)):j]  # 見出しの直前のコメントから、そのリソースの終わりまで
     return word in near and ("AWS では未確認（2026-10-04）" in near or "2026-10-04 確認" in near)
-check("1 台でしか成り立たないリソース（Web / lab / Grafana / Nautobot / workflow / Telegraf の dialin）のそばに、AZ の数のキーを作らない理由と確かめ方（出典か「未確認」）を書く",
+check("1 台でしか成り立たないリソース（Web / lab / Grafana / Nautobot / workflow / gnmic）のそばに、AZ の数のキーを作らない理由と確かめ方（出典か「未確認」）を書く",
       all(_single_ok(r, h, w) for (r, h), w in _SINGLE.items()))
-# ---- 閉域の Deny（terraform/base/core/perimeter.tf と、analytics が付けるもの）
-_perim = open(os.path.join(ROOT, "terraform", "base", "core", "perimeter.tf"), encoding="utf-8").read()
+# ---- 閉域の Deny（IaC/terraform/aws-managed/base/core/perimeter.tf と、analytics が付けるもの）
+_perim = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", "perimeter.tf"), encoding="utf-8").read()
 check("perimeter.tf: aws:SourceVpc がこの VPC でなく、AWS のサービス経由でもない呼び出しを拒む（S3 Tables が裏で呼ぶ分は外す）",
       re.search(r'StringNotEqualsIfExists\s*=\s*\{\s*"aws:SourceVpc"\s*=\s*aws_vpc\.this\.id,\s*"aws:CalledViaLast"\s*=\s*"s3tables\.amazonaws\.com"\s*\}', _perim) is not None
       and re.search(r'BoolIfExists\s*=\s*\{\s*"aws:ViaAWSService"\s*=\s*"false"\s*\}', _perim) is not None
@@ -1345,12 +1581,13 @@ check("AGENT は bedrock-runtime / bedrock-agentcore / ecr / logs を足し、KB
       _endpoints("base/ecr base/core agent", AGENT="1") == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs | 7"
       and _endpoints("base/ecr base/core agent", AGENT="1", CREATE_KB="1").startswith("OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs bedrock-agent-runtime | 8"))
 _ALL = "base/ecr base/core agent pipeline/lab pipeline/stream pipeline/analytics pipeline/graph workflow"
-check("全部なら 16 本で重複しない（ecr / logs / s3tables / bedrock-agentcore は 1 本ずつ。graph は Neptune Analytics の neptune-graph-data）。events は無く、アラートの送り手がいれば sns",
+check("全部なら 17 本で重複しない（ecr / logs / s3tables / bedrock-agentcore は 1 本ずつ。graph は Neptune Analytics の neptune-graph-data。"
+      "stream の secretsmanager は syslog-ng と GoFlow2 の SCRAM の secret。cycle 012）。events は無く、アラートの送り手がいれば sns",
       _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1", GRAFANA="1")
-      == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs s3tables neptune-graph-data kinesis-firehose sqs bedrock-agentcore.gateway athena bedrock-agent-runtime aps-workspaces sns | 16")
-check("sns のエンドポイントは Grafana か Splunk があるときだけ（Grafana はいつもアラートルールを持つ。どちらも無ければ 15 本。Splunk だけでも足す）",
-      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1").endswith("aps-workspaces | 15")
-      and _endpoints("base/ecr base/core pipeline/lab pipeline/stream pipeline/analytics", SPLUNK_ON_ECS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr logs s3tables sns | 7"
+      == "OUT: ssm ssmmessages bedrock-runtime bedrock-agentcore ecr.api ecr.dkr logs secretsmanager s3tables neptune-graph-data kinesis-firehose sqs bedrock-agentcore.gateway athena bedrock-agent-runtime aps-workspaces sns | 17")
+check("sns のエンドポイントは Grafana か Splunk があるときだけ（Grafana はいつもアラートルールを持つ。どちらも無ければ 16 本。Splunk だけでも足す）",
+      _endpoints(_ALL, AGENT="1", CREATE_KB="1", SINK_PROMETHEUS="1").endswith("aps-workspaces | 16")
+      and _endpoints("base/ecr base/core pipeline/lab pipeline/stream pipeline/analytics", SPLUNK_ON_ECS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr logs secretsmanager s3tables sns | 8"
       and "events" not in _epblk.replace("events の", ""))
 check("kinesis-firehose（graph の履歴）と athena（workflow の query_history）は analytics を作る回か、analytics が state に残っているときだけ",
       _endpoints("base/ecr base/core pipeline/lab pipeline/graph", SKIP_ANALYTICS="1") == "OUT: ssm ssmmessages ecr.api ecr.dkr neptune-graph-data | 5"
@@ -1421,19 +1658,21 @@ def _senders(**env):
     r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $1"; exit 1; }\n' + _sndblk + 'echo "OUT: ${LINK_DOWN_SENDERS:-none}"'],
                        capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env})
     return r.stdout.strip().splitlines()[-1][:40] if r.stdout.strip() else r.stderr
-check("Grafana が link_down の送り手になるのは（STORES の grafana から導いた）GRAFANA と SINK_PROMETHEUS と SNMP_POLL があるときだけ（link_down はポーリングの ifOperStatus を見る）。Splunk は SPLUNK_ON_ECS（STORES の splunk）で",
-      _senders(GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: grafana" and _senders(GRAFANA="1", SINK_PROMETHEUS="1") == "OUT: none"
+check("Grafana が link_down の送り手になるのは（STORES の grafana から導いた）GRAFANA と SINK_PROMETHEUS があるときだけ（link_down は gnmic が取る gNMI の IF の状態を見る。"
+      "cycle 013 から SNMP_POLL は数えない）。Splunk は SPLUNK_ON_ECS（STORES の splunk）で",
+      _senders(GRAFANA="1", SINK_PROMETHEUS="1") == "OUT: grafana" and _senders(GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="0") == "OUT: grafana"
       and _senders(GRAFANA="1", SNMP_POLL="1") == "OUT: none" and _senders(SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: none"
-      and _senders(SPLUNK_ON_ECS="1") == "OUT: splunk" and _senders(GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1", SPLUNK_ON_ECS="1") == "OUT: grafana,splunk")
-check("up.sh の WORKFLOW=1 は link_down の送り手（Grafana か Splunk）が 1 つも無ければ、何も作る前に止まる（SNMP_POLL=0 では Grafana は数えない）",
+      and _senders(SPLUNK_ON_ECS="1") == "OUT: splunk" and _senders(GRAFANA="1", SINK_PROMETHEUS="1", SPLUNK_ON_ECS="1") == "OUT: grafana,splunk")
+check("up.sh の WORKFLOW=1 は link_down の送り手（Grafana か Splunk）が 1 つも無ければ、何も作る前に止まる",
       _senders(WORKFLOW="1", GRAFANA="1").startswith("DIE: WORKFLOW はアラートの送り手が要る") and _senders(WORKFLOW="1").startswith("DIE: WORKFLOW はアラートの送り手が要る")
-      and _senders(WORKFLOW="1", GRAFANA="1", SINK_PROMETHEUS="1").startswith("DIE: WORKFLOW はアラートの送り手が要る")
-      and _senders(WORKFLOW="1", GRAFANA="1", SINK_PROMETHEUS="1", SNMP_POLL="1") == "OUT: grafana" and _senders(WORKFLOW="1", SPLUNK_ON_ECS="1") == "OUT: splunk"
+      and _senders(WORKFLOW="1", GRAFANA="1", SINK_PROMETHEUS="1") == "OUT: grafana" and _senders(WORKFLOW="1", SPLUNK_ON_ECS="1") == "OUT: splunk"
       and up.index('die "WORKFLOW はアラートの送り手が要る') < up.index("ENDPOINTS=\"\""))
 _r = subprocess.run(["bash", "-c", 'die() { echo "DIE: $1"; exit 1; }\n' + _sndblk], capture_output=True, text=True,
-                    env={"PATH": os.environ["PATH"], "GRAFANA": "1", "SINK_PROMETHEUS": "1", "SPLUNK_ON_ECS": "1"})
-check("SNMP_POLL=0 で Grafana の link_down が黙るときは注意を出す（Splunk があれば trap からだけ知らせると言う）",
-      "注意: SNMP_POLL=0 なので Grafana のアラートルール link_down と Splunk の netops_poll は発火しない" in _r.stdout)
+                    env={"PATH": os.environ["PATH"], "GRAFANA": "1", "SINK_PROMETHEUS": "1", "SPLUNK_ON_ECS": "1", "SNMP_POLL": "0"})
+check("SNMP_POLL=0 の注意（Grafana の link_down が黙る）は cycle 013 でやめた: 送り手の決め方は SNMP_POLL を見ず、注意も出さない。"
+      "前の deploy.env に SNMP_POLL があれば、使わないことだけ言う",
+      _r.returncode == 0 and _r.stdout == "" and "SNMP_POLL" not in _no_comment(_sndblk)
+      and "注意: SNMP_POLL は使わない" in up and "注意: SNMP_POLL=0" not in up)
 check("up.sh は base/core に interface_endpoints / network_perimeter / endpoints_az_num を渡し、state に残るルートの分も足す",
       'MAIN_VARS+=(-var "interface_endpoints=[' in up and 'MAIN_VARS+=(-var "network_perimeter=' in up
       and 'MAIN_VARS+=(-var "endpoints_az_num=$ENDPOINTS_AZ_NUM")' in up and "endpoints_multi_az" not in up
@@ -1446,10 +1685,10 @@ check("NAT Gateway / IGW / EIP / パブリックサブネット / 既定ルー�
       not any(f'resource "{t}"' in _core for t in ("aws_nat_gateway", "aws_internet_gateway", "aws_eip", "aws_route"))
       and 'resource "aws_subnet" "public"' not in _core and "create_nat_gateway" not in _core and 'output "nat_gateway"' not in _core
       and "create_nat_gateway" not in up and "CREATE_NAT" not in up and "nat_gateway" not in tf)
-check("費用の目安: 土台は Web の EC2 の 2 セント（NAT Gateway は無い）。ECS の Splunk はタスク 1 つ 12.3（SPLUNK_TASKS 個）、Grafana は 2",
-      "COST_CENTS=2\n" in up and "# NAT Gateway\n" not in up and "COST_CENTS=8" not in up
+check("費用の目安: 土台は Web の EC2（t4g.medium。cycle 010 から Kafbat UI も同居）の 4 セント（NAT Gateway は無い）。ECS の Splunk はタスク 1 つ 12.3（SPLUNK_TASKS 個）、Grafana は 2",
+      "COST_CENTS=4\n" in up and "# NAT Gateway\n" not in up and "COST_CENTS=8" not in up and "COST_CENTS=2\n" not in up
       and 'if [ -n "$GRAFANA" ]; then COST_CENTS=$((COST_CENTS + 2)); fi' in up and 'if [ -n "$SPLUNK_ON_ECS" ]; then COST_CENTS=$((COST_CENTS + 123 * SPLUNK_TASKS / 10)); fi' in up)
-check("lab.sh は containerlab の版の確かめ（GitHub へ出る）をしない", "export CLAB_VERSION_CHECK=disable" in open(os.path.join(ROOT, "lab", "lab.sh"), encoding="utf-8").read())
+check("lab.sh は containerlab の版の確かめ（GitHub へ出る）をしない", "export CLAB_VERSION_CHECK=disable" in open(os.path.join(ROOT, "app", "containerlab", "lab.sh"), encoding="utf-8").read())
 check("up.sh / deploy-env.sh に共用のエンドポイントと CLIENT_CIDR の扱いは無い",
       not any(k in up for k in ("SHARED_ENDPOINTS", "create_shared_endpoints", 'aws_vpc_endpoint.runtime["ecr-api"]', "CLIENT_CIDR"))
       and "CLIENT_CIDR" not in open(os.path.join(ROOT, "ops", "deploy-env.sh"), encoding="utf-8").read())
@@ -1468,7 +1707,7 @@ def _stores(tail=_ST_OUT, **env):
     return r.returncode, r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "", r.stdout
 check("STORES は deploy.env を読んだあと、前のキーの検査のすぐ後で読み、Grafana・WORKFLOW の送り手・費用の検査の前に格納先の変数へ写す",
       up.index("load_deploy_env\n") < up.index('OLD_STORE_KEYS=""') < up.index('STORES_DEFAULT=""') < up.index('SINKS_TF="\\"$(printf')
-      < up.index('GRAFANA=""\nif [ -z "$SKIP_ANALYTICS" ]') < up.index('die "WORKFLOW はアラートの送り手が要る') < up.index("COST_CENTS=2\n"))
+      < up.index('GRAFANA=""\nif [ -z "$SKIP_ANALYTICS" ]') < up.index('die "WORKFLOW はアラートの送り手が要る') < up.index("COST_CENTS=4\n"))
 check("up.sh は SINK_* / GRAFANA をスイッチとして読まない（既定値・flag_value・STORES とのぶつかりの検査が無い）",
       not any(k in up for k in ('SINK_S3="${SINK_S3:-1}"', 'SINK_SPLUNK="${SINK_SPLUNK:-0}"', "flag_value SINK_", 'GRAFANA="${GRAFANA:-1}"',
                                 "flag_value GRAFANA", 'case "${GRAFANA:-}" in', "を一緒に書いている", "SINK_SPLUNK が全部 0")))
@@ -1544,14 +1783,14 @@ check("STORES と一緒になくしたキーが書いてあっても止まり、
       and all(_stores(STORES="splunk", **{k: "0"})[0] == 1 for k in ("SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA")))
 check("なくしたキーの空の値（SINK_S3= / GRAFANA=）は書いていないのと同じ（deploy.env の空の値と同じ扱い）",
       _stores(STORES="s3", SINK_S3="", GRAFANA="")[:2] == (0, "OUT: iceberg | G=0 ECS=0") and _stores(SINK_SPLUNK="")[:2] == _stores()[:2])
-check("STORES で選んだあとも今の検査が効く（grafana だけでは SNMP_POLL=1 でないと WORKFLOW の送り手が無く止まる。splunk なら通る）",
-      _stores(_sndblk + _ST_OUT, STORES="s3,grafana", WORKFLOW="1", SNMP_POLL="")[1].startswith("DIE: WORKFLOW はアラートの送り手が要る")
-      and _stores(_sndblk + _ST_OUT, STORES="s3,grafana", WORKFLOW="1", SNMP_POLL="1")[:2] == (0, "OUT: iceberg,opensearch,prometheus | G=1 ECS=0")
+check("STORES で選んだあとも今の検査が効く（s3 だけでは WORKFLOW の送り手が無く止まる。grafana か splunk なら通る。cycle 013 から grafana は SNMP_POLL が無くても送り手）",
+      _stores(_sndblk + _ST_OUT, STORES="s3", WORKFLOW="1")[1].startswith("DIE: WORKFLOW はアラートの送り手が要る")
+      and _stores(_sndblk + _ST_OUT, STORES="s3,grafana", WORKFLOW="1")[:2] == (0, "OUT: iceberg,opensearch,prometheus | G=1 ECS=0")
       and _stores(_sndblk + _ST_OUT, STORES="splunk", WORKFLOW="1")[:2] == (0, "OUT: splunk | G=0 ECS=1"))
 # 既定（deploy.env に何も書かない）で WORKFLOW=1 にすると、link_down の送り手は Grafana と Splunk の両方になる（設計の検証。cycle 002）
-_snmp_line = up[up.index('SNMP_POLL="${SNMP_POLL:-1}"'):].split("\n", 1)[0] + "\n"
-check("既定のまま WORKFLOW=1 なら送り手は grafana,splunk、格納先は 4 つ（STORES は s3,grafana,splunk、SNMP_POLL は 1 が既定）",
-      _stores(_snmp_line + _sndblk + 'echo "OUT: ${LINK_DOWN_SENDERS:-none} | $SINKS"', WORKFLOW="1")[:2]
+check("既定のまま WORKFLOW=1 なら送り手は grafana,splunk、格納先は 4 つ（STORES は s3,grafana,splunk。SNMP_POLL の既定は cycle 013 でなくした）",
+      'SNMP_POLL="${SNMP_POLL:-1}"' not in up
+      and _stores(_sndblk + 'echo "OUT: ${LINK_DOWN_SENDERS:-none} | $SINKS"', WORKFLOW="1")[:2]
       == (0, "OUT: grafana,splunk | iceberg,opensearch,prometheus,splunk"))
 check("SKIP_ANALYTICS=1 なら STORES に grafana / splunk があっても Grafana と ECS の Splunk は作らない",
       _stores(STORES="grafana,splunk", SKIP_ANALYTICS="1")[:2] == (0, "OUT: opensearch,prometheus,splunk | G=0 ECS=0"))
@@ -1631,7 +1870,7 @@ check("up.sh: ジョブのキーからジョブ名を引くのは job_name の 1
 check("up.sh は analytics に Spark のジョブ 1 つにつき 21 セント（S3 / Splunk / OpenSearch か Prometheus）と opensearch の OCU を足し、opensearch は analytics を作るときだけ OCU の注意を出す",
       'if [ -n "$SINK_S3" ]; then COST_CENTS=$((COST_CENTS + 21)); fi\n  if [ -n "$SINK_SPLUNK" ]; then COST_CENTS=$((COST_CENTS + 21)); fi\n'
       '  if [ -n "$SINK_OPENSEARCH$SINK_PROMETHEUS" ]; then COST_CENTS=$((COST_CENTS + 21)); fi\n' in up
-      and up.count("COST_CENTS + 21") == 3 and "COST_CENTS=2\n" in up
+      and up.count("COST_CENTS + 21") == 3 and "COST_CENTS=4\n" in up
       and re.search(r'\*,opensearch,\*\) if \[ -z "\$SKIP_ANALYTICS" \]; then printf', up) is not None)
 check("up.sh はジョブごとに同じ SpecHash のものが動いていれば起こさない", "--states SUBMITTED PENDING SCHEDULED RUNNING QUEUED --query 'jobRuns[].[name,id]'" in up
       and "jobRun.tags.SpecHash" in up and 'if [ -z "$KEEP" ] && [ "$spec" = "$JOB_SPEC" ]; then KEEP="$id"; else STALE="$STALE $id"; fi' in up)
@@ -1644,32 +1883,34 @@ check("down.sh は名前で絞らずに動いているジョブを全部 cancel 
 check("down.sh は job を cancel → stop-application → destroy analytics → destroy graph の順",
       down.index("cancel-job-run") < down.index("stop-application") < down.index("destroy_root pipeline/analytics") < down.index("destroy_lambda_root pipeline/graph") < down.index("destroy_root pipeline/stream"))
 # .py は名指しで並べず find で全部見る（名指しだとファイルを足したときに構文検査から漏れる）
-check("check.sh は spark/ の .py を構文検査に入れ、spark/snmp_sinks.py がある",
-      re.search(r"find [\w /]*\bspark\b [^\n]*-name '\*\.py'", checksh) is not None
-      and os.path.isfile(os.path.join(ROOT, "spark", "snmp_sinks.py")) and "snmp_to_iceberg" not in checksh)
+check("check.sh は app/spark/ の .py を構文検査に入れ、app/spark/snmp_sinks.py がある",
+      re.search(r"find [\w /]*\bapp\b [^\n]*-name '\*\.py'", checksh) is not None
+      and os.path.isfile(os.path.join(ROOT, "app", "spark", "snmp_sinks.py")) and "snmp_to_iceberg" not in checksh)
 check("up.sh の WORKFLOW=1 は SKIP_ANALYTICS があれば止まる（Grafana / Splunk のアラートが無いとワーカーが起きない）",
       re.search(r'if \[ -n "\$WORKFLOW" \]; then\n[\s\S]*?-n "\$SKIP_ANALYTICS"[\s\S]*?-n "\$SKIP_GRAPH"[\s\S]*?die "WORKFLOW は lab と stream と analytics と graph が要る', up) is not None)
 check("up.sh は SKIP_GRAPH=1 でも analytics を作る（Spark は Neptune に書かない。2026-10-02）", "analytics は graph が要る" not in up)
 check("up.sh は PIPELINE=0 なら lab / stream / analytics / graph を全部飛ばす",
       re.search(r'else\n\s*SKIP_LAB=1; SKIP_STREAM=1; SKIP_ANALYTICS=1; SKIP_GRAPH=1\n', up) is not None)
 # lab は単独で外せる（2026-10-04 まで、SKIP_LAB=1 で stream を作ると止まっていた）。WORKFLOW と PIPELINE の判定を切り出して動かす
-_skblk = up[up.index('if [ -n "$WORKFLOW" ]; then\n  if [ -z "$AGENT" ]'):up.index("# Nautobot（terraform/pipeline/nautobot）は機器の一覧とケーブルの正")]
+_skblk = up[up.index('if [ -n "$WORKFLOW" ]; then\n  if [ -z "$AGENT" ]'):up.index("# Nautobot（IaC/terraform/aws-managed/pipeline/nautobot）は機器の一覧とケーブルの正")]
 def _skip(**env):
     r = subprocess.run(["bash", "-c", _pre + "flag_value SKIP_LAB; flag_value SKIP_STREAM; flag_value SKIP_ANALYTICS; flag_value SKIP_GRAPH\n" + _skblk
                         + 'echo "OUT: L=${SKIP_LAB:-0} S=${SKIP_STREAM:-0} A=${SKIP_ANALYTICS:-0} G=${SKIP_GRAPH:-0}"'], capture_output=True, text=True,
                        env={"PATH": os.environ["PATH"], **env})
     return r.stdout.strip()
-check("up.sh は PIPELINE=1 で SKIP_LAB=1 だけなら止まらず、lab 以外を作る（Telegraf の取りにいく側が届かないことを言う）",
+check("up.sh は PIPELINE=1 で SKIP_LAB=1 だけなら止まらず、lab 以外を作る（gnmic が届かず繋ぎ直すことを言う）",
       _skip(PIPELINE="1", SKIP_LAB="1").endswith("OUT: L=1 S=0 A=0 G=0") and "SKIP_LAB=1 なので lab は作らない" in _skip(PIPELINE="1", SKIP_LAB="1")
       and "タスクは落ちない" in _skip(PIPELINE="1", SKIP_LAB="1") and "DIE" not in _skip(PIPELINE="1", SKIP_LAB="1")
       and "stream は lab が要る" not in up)
 check("up.sh は SKIP_LAB=1 でも stream を作らないなら lab の注意を出さず、lab を作るときも出さない",
       "lab は作らない" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1") and "lab は作らない" not in _skip(PIPELINE="1")
       and _skip(PIPELINE="1") == "OUT: L=0 S=0 A=0 G=0")
-check("up.sh は lab が無く MDT_SOURCE_CIDRS も空で stream を作るなら「この stream には何も届かない」と注意を出して続ける",
+check("up.sh は lab が無いまま stream を作るなら「この stream には何も届かない」と注意を出して続ける（cycle 012 で MDT を外し、受け口に届くのは lab の EC2 からだけになった。"
+      "前の MDT_SOURCE_CIDRS が書いてあっても出す）",
       "この stream には何も届かない" in _skip(PIPELINE="1", SKIP_LAB="1") and _skip(PIPELINE="1", SKIP_LAB="1").endswith("OUT: L=1 S=0 A=0 G=0")
-      and "何も届かない" not in _skip(PIPELINE="1", SKIP_LAB="1", MDT_SOURCE_CIDRS="10.10.0.0/16")
-      and "何も届かない" not in _skip(PIPELINE="1", MDT_SOURCE_CIDRS="") and "何も届かない" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1"))
+      and "この stream には何も届かない" in _skip(PIPELINE="1", SKIP_LAB="1", MDT_SOURCE_CIDRS="10.10.0.0/16")
+      and "何も届かない" not in _skip(PIPELINE="1") and "何も届かない" not in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1")
+      and "MDT" not in _skip(PIPELINE="1", SKIP_LAB="1"))
 check("up.sh の「土台だけになる」は SKIP_LAB と SKIP_STREAM と SKIP_GRAPH が全部あるときだけ（lab と graph だけ外しても stream は作る）",
       "土台だけになる" in _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1", SKIP_GRAPH="1")
       and _skip(PIPELINE="1", SKIP_LAB="1", SKIP_STREAM="1", SKIP_GRAPH="1").endswith("OUT: L=1 S=1 A=1 G=1")
@@ -1683,7 +1924,7 @@ check("up.sh は lab が無ければ lab の syslog の注意・7-3b のトポ�
       'if [ -z "$SKIP_LAB" ] && [ "$SYSLOG_STANDARD" != "$LAB_SYSLOG_STANDARD" ]; then' in up
       and re.search(r'\n  if \[ -z "\$SKIP_LAB" \]; then\n    log "7-3b\.[^\n]*\n(    [^\n]*\n)*?    LAB_TOPOLOGY_B64=[^\n]*\n    run_on_instance [^\n]*LAB_TOPOLOGY_B64[^\n]*\n  else\n', up) is not None
       and up.count("LAB_TOPOLOGY_B64=$(") == 1
-      and 'if [ -z "$SKIP_LAB" ]; then COST_CENTS=$((COST_CENTS + 17)); fi' in up
+      and 'if [ -z "$SKIP_LAB" ]; then COST_CENTS=$((COST_CENTS + 25)); fi' in up
       and re.search(r'LAB_VARS=\(-var forward_to_telegraf=false\)\nif \[ -z "\$SKIP_LAB" \]; then\n', up) is not None
       and re.search(r'\nif \[ -n "\$LAB_INSTANCE_ID" \]; then\n  echo "lab に入るコマンド:"', up) is not None
       and re.search(r'\nif \[ -n "\$LAB_INSTANCE_ID" \]; then\n  # lab の EC2 の中を見る', up) is not None)
@@ -1830,8 +2071,8 @@ check("SPLUNK_AZ_NUM: 2 か 3 は STORES に splunk が要り、SPLUNK_INDEX と
       "Splunk のタスクは 1 か SPLUNK_AZ_NUM + 2",
       _aznum(SPLUNK_AZ_NUM="2", ENDPOINTS_AZ_NUM="2", SKIP_ANALYTICS="").endswith("OUT: 2 2 1 1 1 1 1 1 1 2")
       and _aznum(SPLUNK_AZ_NUM="2", SPLUNK_ON_ECS="", STORES="s3", SKIP_ANALYTICS="").startswith("DIE: SPLUNK_AZ_NUM=2 は Splunk のクラスターで、STORES に splunk が要る（いまは STORES=s3）")
-      and _aznum(SPLUNK_AZ_NUM="3", SPLUNK_INDEX="netops", SKIP_ANALYTICS="").startswith("DIE: SPLUNK_AZ_NUM=3（Splunk のクラスター）では index は main だけで、SPLUNK_INDEX は書けない")
-      and _aznum(SPLUNK_AZ_NUM="2", SPLUNK_ON_ECS="", STORES="s3", SPLUNK_INDEX="netops", SKIP_ANALYTICS="1").endswith(" 2")
+      and _aznum(SPLUNK_AZ_NUM="3", SPLUNK_INDEX="nwc", SKIP_ANALYTICS="").startswith("DIE: SPLUNK_AZ_NUM=3（Splunk のクラスター）では index は main だけで、SPLUNK_INDEX は書けない")
+      and _aznum(SPLUNK_AZ_NUM="2", SPLUNK_ON_ECS="", STORES="s3", SPLUNK_INDEX="nwc", SKIP_ANALYTICS="1").endswith(" 2")
       and all(subprocess.run(["bash", "-uc", 'die() { exit 1; }\n' + _azfn + _azblk + 'echo "$SPLUNK_TASKS"'], capture_output=True, text=True,
                              env={"PATH": os.environ["PATH"], **_AZ_ENV, "SKIP_ANALYTICS": "", "SPLUNK_AZ_NUM": a, "ENDPOINTS_AZ_NUM": "3"}).stdout.strip() == t
               for a, t in (("", "1"), ("1", "1"), ("2", "4"), ("3", "5"))))
@@ -1878,9 +2119,9 @@ check("up.sh（クラスター）: いまの search head のタスクのログ�
       and _scc_runs["three"][1] == 1 and _scc_runs["three"][0].rstrip().endswith("END"))
 check("up.sh（クラスター）: 判定の行が 1 つも無ければ成功にせず、24 回（15 秒おき、6 分）待ってから「まだ 1 回も突き合わせていない」と言って止まる",
       _scc_runs["none"][1] == 24 and "END" not in _scc_runs["none"][0]
-      and "DIE: search head のタスク（sh1）は、突き合わせ（splunk/peers_check.py）をまだ 1 回もしていない" in _scc_runs["none"][0])
+      and "DIE: search head のタスク（sh1）は、突き合わせ（app/splunk/peers_check.py）をまだ 1 回もしていない" in _scc_runs["none"][0])
 check("up.sh（クラスター）: 最新の判定が mismatch、または ok でも Up の peer が indexer の数に足りなければ、6 分待ってから最新の判定を出して止まる",
-      all(_scc_runs[k][1] == 24 and "END" not in _scc_runs[k][0] and "DIE: search head の突き合わせ（splunk/peers_check.py）が 6 分たっても ok（Up の indexer が 2 台）にならない" in _scc_runs[k][0]
+      all(_scc_runs[k][1] == 24 and "END" not in _scc_runs[k][0] and "DIE: search head の突き合わせ（app/splunk/peers_check.py）が 6 分たっても ok（Up の indexer が 2 台）にならない" in _scc_runs[k][0]
           for k in ("few", "mismatch"))
       and "最新の判定は「nwc-peer-check state=mismatch reason=lost:idx-b」" in _scc_runs["mismatch"][0]
       and "最新の判定は「nwc-peer-check state=ok reason=peers_up:1」" in _scc_runs["few"][0])
@@ -1901,13 +2142,13 @@ check("書いたキーが ENDPOINTS_AZ_NUM より大きいと注意を 1 行出�
       and _aznum(MSK_AZ_NUM="2").startswith("注意: MSK_AZ_NUM=2 に対して")
       and "注意" not in _aznum(LAMBDA_AZ_NUM="1"))
 # グラフの状態の Lambda（graph-status）の待ちの上限が timeout を超える ENDPOINTS_AZ_NUM で注意を出す（2026-10-05 のユーザー決定）。
-# 上限は graph/status_handler.py の FIREHOSE_CONFIG・RETRY_WAITS・NEPTUNE_CONFIG と sync.tf の timeout から計算し、up.sh の数と比べる
-_sh_vals = {n.targets[0].id: n.value for n in ast.parse(open(os.path.join(ROOT, "graph", "status_handler.py"), encoding="utf-8").read()).body
+# 上限は app/graph/status_handler.py の FIREHOSE_CONFIG・RETRY_WAITS・NEPTUNE_CONFIG と sync.tf の timeout から計算し、up.sh の数と比べる
+_sh_vals = {n.targets[0].id: n.value for n in ast.parse(open(os.path.join(ROOT, "app", "graph", "status_handler.py"), encoding="utf-8").read()).body
             if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)}
 _fhc, _npc = ({k.arg: ast.literal_eval(k.value) for k in _sh_vals[c].keywords} for c in ("FIREHOSE_CONFIG", "NEPTUNE_CONFIG"))
 _rwaits = ast.literal_eval(_sh_vals["RETRY_WAITS"])
 _gs_timeout = int(re.search(r'resource "aws_lambda_function" "status" \{\n(?:  .*\n)*?  timeout\s*=\s*(\d+)',
-                            open(os.path.join(ROOT, "terraform", "pipeline", "graph", "sync.tf"), encoding="utf-8").read()).group(1))
+                            open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "pipeline", "graph", "sync.tf"), encoding="utf-8").read()).group(1))
 def _gs_wait(n, firehose=True):   # n = エンドポイントの IP の数（AZ ごとに 1 つ）。接続の待ちは IP ごとにかかる
     nep = _npc["retries"]["total_max_attempts"] * (n * _npc["connect_timeout"] + _npc["read_timeout"]) + 1   # 再試行の前の待ちは 1 秒まで
     fh = (1 + len(_rwaits)) * _fhc["retries"]["total_max_attempts"] * (n * _fhc["connect_timeout"] + _fhc["read_timeout"]) + sum(_rwaits)
@@ -1936,7 +2177,7 @@ check("graph-status: RUNTIME_AZ_NUM=3 で ENDPOINTS_AZ_NUM を 3 に上げたと
 check("graph-status: up.sh と deploy.env.example の ENDPOINTS_AZ_NUM の説明に、3 で注意が出ることを書く（上限の秒は計算と同じ）",
       all(f"待つ時間の上限（{_gs_wait(3)} 秒）が timeout の {_gs_timeout} 秒を超える" in t for t in (_red_up, _red_env)))
 check("AZ_NUM の検査は deploy.env を読んだあと、aws を呼ぶ前・費用の目安より前（何も作る前）",
-      up.index("\nload_deploy_env\n") < up.index(_azblk) < up.index("command -v aws >/dev/null") < up.index("COST_CENTS=2\n"))
+      up.index("\nload_deploy_env\n") < up.index(_azblk) < up.index("command -v aws >/dev/null") < up.index("COST_CENTS=4\n"))
 check("各ルートに *_AZ_NUM を -var で渡す",
       'GRAPH_VARS=(-var "neptune_az_num=$NEPTUNE_AZ_NUM" -var "lambda_az_num=$LAMBDA_AZ_NUM")\n  if analytics_on; then GRAPH_VARS+=(-var alert_history=true); fi\n'
       '  ( tf_apply_only pipeline/graph "${GRAPH_VARS[@]}" )' in up
@@ -1946,7 +2187,7 @@ check("各ルートに *_AZ_NUM を -var で渡す",
       and 'AGENT_VARS=(-var "agent_image_tag=$IMAGE_TAG" -var "runtime_az_num=$RUNTIME_AZ_NUM" -var "lambda_az_num=$LAMBDA_AZ_NUM" -var "opensearch_az_num=$OPENSEARCH_AZ_NUM")' in up
       and 'ANALYTICS_VARS+=(-var "opensearch_az_num=$OPENSEARCH_AZ_NUM")' in up and '-var "emr_az_num=$EMR_AZ_NUM")' in up)
 # 費用の目安の全体を切り出して AZ_NUM ごとに動かす（endpoint_count は 2 本に固定。機能は全部切ってから 1 つずつ入れる）
-_costall = up[up.index("COST_CENTS=2\n"):up.index("COST_NOTE=$(printf")]
+_costall = up[up.index("COST_CENTS=4\n"):up.index("COST_NOTE=$(printf")]
 _COST_OFF = {k: "" for k in ("AGENT", "CREATE_KB", "SINK_S3", "SINK_OPENSEARCH", "SINK_PROMETHEUS", "SINK_SPLUNK", "GRAFANA",
                              "SPLUNK_ON_ECS", "NAUTOBOT", "WORKFLOW")}
 _COST_OFF.update(SKIP_LAB="1", SKIP_GRAPH="1", SKIP_STREAM="1", SKIP_ANALYTICS="1", **dict(zip(_AZ_KEYS, "1211111111")))
@@ -1954,30 +2195,35 @@ def _costaz(**env):
     r = subprocess.run(["bash", "-uc", "endpoint_count() { echo 2; }\n" + _costall + 'echo "OUT: $COST_CENTS"'], capture_output=True, text=True,
                        env={"PATH": os.environ["PATH"], **_COST_OFF, **env})
     return int(r.stdout.split("OUT: ")[1]) if "OUT: " in r.stdout else r.stderr
-check("費用: エンドポイントは 1.4 × 本数 × ENDPOINTS_AZ_NUM（2 本で 1 AZ 3、3 AZ 8）",
-      _costaz() == 2 + 3 and _costaz(ENDPOINTS_AZ_NUM="3") == 2 + 8)
-check("費用: MSK は 2 AZ で 57、3 AZ で +27。Telegraf は受ける側のタスクが AZ ごとに増える（1 AZ 5、3 AZ 7）。Kafbat UI は stream を作る回はいつも 2",
-      _costaz(SKIP_STREAM="") == 5 + 57 + 5 + 2 and _costaz(SKIP_STREAM="", MSK_AZ_NUM="3") == 5 + 84 + 5 + 2
-      and _costaz(SKIP_STREAM="", TELEGRAF_AZ_NUM="3") == 5 + 57 + 7 + 2
-      and "\n  COST_CENTS=$((COST_CENTS + 2))   # Kafbat UI（Fargate のタスク 1）\nfi\n" in _costall)
+check("費用: エンドポイントは 1.4 × 本数 × ENDPOINTS_AZ_NUM（2 本で 1 AZ 3、3 AZ 8）。土台は Web の EC2 の 4",
+      _costaz() == 4 + 3 and _costaz(ENDPOINTS_AZ_NUM="3") == 4 + 8)
+check("費用: MSK は 2 AZ で 57、3 AZ で +27。Telegraf・gnmic・syslog-ng・GoFlow2 は Telegraf の受ける側のタスクが AZ ごとに増える（1 AZ 7、3 AZ 10。"
+      "syslog-ng と GoFlow2 の 2 タスクは cycle 012、gnmic は cycle 013 で Telegraf の取りにいく側と入れ替え）。Kafbat UI は cycle 010 から土台（Web の EC2）に入っていて stream では足さない",
+      _costaz(SKIP_STREAM="") == 7 + 57 + 7 and _costaz(SKIP_STREAM="", MSK_AZ_NUM="3") == 7 + 84 + 7
+      and _costaz(SKIP_STREAM="", TELEGRAF_AZ_NUM="3") == 7 + 57 + 10
+      and "Kafbat UI（Fargate" not in _costall
+      and "\n  COST_CENTS=$((COST_CENTS + (12 * (3 + TELEGRAF_AZ_NUM) + 24 + 5) / 10))   # Telegraf・gnmic・syslog-ng・GoFlow2（Fargate のタスク 3 + TELEGRAF_AZ_NUM 個と NLB）\nfi\n" in _costall)
 check("費用: Neptune は 58 × NEPTUNE_AZ_NUM、Nautobot は Multi-AZ で 13 → 16",
-      _costaz(SKIP_GRAPH="") == 5 + 58 and _costaz(SKIP_GRAPH="", NEPTUNE_AZ_NUM="3") == 5 + 174
-      and _costaz(NAUTOBOT="1") == 5 + 13 and _costaz(NAUTOBOT="1", NAUTOBOT_DB_AZ_NUM="2") == 5 + 16)
+      _costaz(SKIP_GRAPH="") == 7 + 58 and _costaz(SKIP_GRAPH="", NEPTUNE_AZ_NUM="3") == 7 + 174
+      and _costaz(NAUTOBOT="1") == 7 + 13 and _costaz(NAUTOBOT="1", NAUTOBOT_DB_AZ_NUM="2") == 7 + 16)
 check("費用: OpenSearch の OCU は 33 × OPENSEARCH_AZ_NUM（KB も logs も）、OpenSearch Serverless のエンドポイントは 1.4 × ENDPOINTS_AZ_NUM（1 AZ 1、2 AZ 3）",
-      _costaz(AGENT="1", CREATE_KB="1") == 5 + 33 + 1 and _costaz(AGENT="1", CREATE_KB="1", OPENSEARCH_AZ_NUM="2") == 5 + 66 + 1
-      and _costaz(AGENT="1", CREATE_KB="1", ENDPOINTS_AZ_NUM="2") == 2 + 6 + 33 + 3
-      and _costaz(SKIP_ANALYTICS="", SINK_OPENSEARCH="1", OPENSEARCH_AZ_NUM="2") == 5 + 21 + 66 + 1)
+      _costaz(AGENT="1", CREATE_KB="1") == 7 + 33 + 1 and _costaz(AGENT="1", CREATE_KB="1", OPENSEARCH_AZ_NUM="2") == 7 + 66 + 1
+      and _costaz(AGENT="1", CREATE_KB="1", ENDPOINTS_AZ_NUM="2") == 4 + 6 + 33 + 3
+      and _costaz(SKIP_ANALYTICS="", SINK_OPENSEARCH="1", OPENSEARCH_AZ_NUM="2") == 7 + 21 + 66 + 1)
 check("費用: EMR / Lambda / Runtime の AZ_NUM では変わらない。AZ をまたぐ転送料は入れず、AZ_NUM を書いたときに 1 行出す",
       _costaz(EMR_AZ_NUM="3", LAMBDA_AZ_NUM="3", RUNTIME_AZ_NUM="3") == _costaz()
       and 'if [ -n "$AZ_NUM_SET" ]; then echo "AZ をまたぐ転送料（' in up)
 # iceberg を外しても、証跡があるのでテーブルバケット・namespace・カタログはいつも作る。生データの raw_telemetry だけ外す
 check('resource "aws_s3tables_table" "raw_telemetry" は sink_iceberg の count',
       re.search(r'resource "aws_s3tables_table" "raw_telemetry" \{\n  count = local\.sink_iceberg \? 1 : 0\n', tf) is not None)
-for _res in ('resource "aws_s3tables_table_bucket" "tables"', 'resource "aws_s3tables_namespace" "netops"'):
+for _res in ('resource "aws_s3tables_table_bucket" "tables"', 'resource "aws_s3tables_namespace" "nwc"'):
     check(f"{_res} はいつも作る（count 無し）", re.search(re.escape(_res) + r' \{\n  count', tf) is None and _res in tf)
-check("count を外したバケット・namespace は moved で state の [0] を引き継ぐ（作り直さない）",
-      all(re.search(r'moved \{\n\s*from = ' + re.escape(r) + r'\[0\]\n\s*to\s*= ' + re.escape(r) + r'\n', tf) for r in
-          ("aws_s3tables_table_bucket.tables", "aws_s3tables_namespace.netops")))
+# namespace の資源は cycle 019 で改名した。古い名前は moved の from にだけ残る（[0] → 古い名前 → nwc とつなぐ）
+check("count を外したバケット・namespace は moved で state の [0] を引き継ぐ（作り直さない）。改名した namespace も moved で state のアドレスをつなぐ",
+      all(re.search(r'moved \{\n\s*from = ' + re.escape(f) + r'\n\s*to\s*= ' + re.escape(t) + r'\n', tf) for f, t in
+          (("aws_s3tables_table_bucket.tables[0]", "aws_s3tables_table_bucket.tables"),
+           ("aws_s3tables_namespace.netops[0]", "aws_s3tables_namespace.netops"),
+           ("aws_s3tables_namespace.netops", "aws_s3tables_namespace.nwc"))))
 check("実行ロールの S3TablesCatalog は iceberg を選んだときだけ（Spark は証跡に書かなくなった。2026-10-02）、Spark のカタログの設定はいつも入る",
       re.search(r'Sid\s*=\s*"S3TablesCatalog"', tf) is not None and "}] : s if local.sink_iceberg]" in tf.split('Sid    = "S3TablesCatalog"')[1].split("OpenSearchCollection")[0]
       and "warehouse=${local.table_bucket_arn}" in tf and "c if local.sink_iceberg" not in tf)
@@ -1989,7 +2235,7 @@ _jobs_def = {j: [x.strip(' "') for x in v.split(",")] for j, v in
              re.findall(r'(\w+) = \[([^\]]*)\]', re.search(r'spark_jobs = \{ for job, sinks in \{(.*?)\} :', tf).group(1))}
 check("spark_jobs: iceberg / splunk / http（opensearch と prometheus）", _jobs_def == {"iceberg": ["iceberg"], "splunk": ["splunk"], "http": ["opensearch", "prometheus"]})
 _VALS = {"local.bootstrap": "b:9098", "local.checkpoint_uri": "s3://bucket/analytics/checkpoint/u/", "var.region": "ap-northeast-1",
-         "local.metric_topics": "metrics,gnmi", "local.log_topics": "traps,logs", "local.iceberg_table": "s3tables.netops.raw_telemetry",
+         "local.metric_topics": "metrics,gnmi", "local.log_topics": "traps,logs", "local.iceberg_table": "s3tables.nwc.raw_telemetry",
          "local.opensearch_endpoint": "https://c.aoss.amazonaws.com", "local.opensearch_index": "snmp-logs",
          "local.prometheus_remote_write_url": "https://aps/api/v1/remote_write", "local.splunk_hec_url": "https://splunk.p.internal:8088",
          "local.splunk_token_parameter": "/p/splunk/hec-token", "var.splunk_index": ""}
@@ -2070,11 +2316,12 @@ check("格納先ごとの値は、その格納先を選んでいなければ渡�
 check("共通 0: どのジョブにも --max-offsets-per-trigger 0 を渡し、スクリプトは上限なしになる",
       all(_val(_job_args(j, _ALL4, max_offsets=0), "--max-offsets-per-trigger") == "0" and mod.parse_args(_job_args(j, _ALL4, max_offsets=0)).max_offsets_per_trigger == 0
           for j in ("iceberg", "splunk", "http")))
-_dmap = "203.0.113.31=dc1-leaf-01,203.0.113.21=dc1-spine-01"
+_dmap = "203.0.113.31=dc1-a-leaf-01,203.0.113.21=dc1-spine-01"
 _dj = {j: _job_args(j, _ALL4, device_map=_dmap) for j in ("iceberg", "splunk", "http")}
-check("device map があれば http のジョブ（opensearch / prometheus）にだけ --device-map を渡し、スクリプトはそれを読む。iceberg と splunk のジョブ、device map が空のときは渡さない（cycle 002）",
+check("device map があれば http のジョブ（opensearch / prometheus）と splunk のジョブに --device-map を渡し、スクリプトはそれを読む。iceberg のジョブ、device map が空のときは渡さない（cycle 002。splunk は cycle 013）",
       _val(_dj["http"], "--device-map") == _dmap and mod.parse_args(_dj["http"]).device_map == _dmap
-      and _dj["iceberg"] == _ji and _dj["splunk"] == _js and "--device-map" not in _jh
+      and _val(_dj["splunk"], "--device-map") == _dmap and mod.parse_args(_dj["splunk"]).device_map == _dmap
+      and _dj["iceberg"] == _ji and "--device-map" not in _jh and "--device-map" not in _js
       and _val(_job_args("http", ["prometheus"], device_map=_dmap), "--device-map") == _dmap)
 check("variable max_offsets_per_trigger は number で既定 10000、0 以上の整数だけ通す",
       re.search(r'variable "max_offsets_per_trigger" \{\s*description[^\n]*\n\s*type\s*=\s*number\s*\n\s*default\s*=\s*10000\s*\n\s*validation \{\s*\n'
@@ -2267,7 +2514,7 @@ check("7-5: 待っている（QUEUED の）ジョブも動いているものと�
       _rc == 0 and _acts(_st) == ["cancel sinks-grafana:q", "start sinks-grafana STREAMING"])
 # 7-4 の前の「上限が変わるときだけジョブとアプリを止める」を up.sh から切り出し、偽の aws（アプリの状態も持つ）で動かす
 _b74 = up[up.index("  # EMR Serverless のアプリの上限（maximum_capacity。"):up.index('  tf_apply pipeline/analytics "${ANALYTICS_VARS[@]}"')]
-_tfv = open(os.path.join(ROOT, "terraform", "pipeline", "analytics", "variables.tf"), encoding="utf-8").read()
+_tfv = open(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "pipeline", "analytics", "variables.tf"), encoding="utf-8").read()
 _m_cpu = re.search(r'variable "max_cpu" \{[^}]*default\s*=\s*"([^"]+)"', _tfv)
 _m_mem = re.search(r'variable "max_memory" \{[^}]*default\s*=\s*"([^"]+)"', _tfv)
 check("up.sh の EMR_MAX_CPU / EMR_MAX_MEMORY は variables.tf の max_cpu / max_memory の既定値と同じで、tf_apply の前に止める判断がある",
@@ -2332,13 +2579,13 @@ def _run74(app, runs=(), cancel_delay=2, stop_delay=2, state_file=True, emr_az_n
             f.write(_FAKE_AWS74)
         os.chmod(os.path.join(d, "aws"), 0o755)
         if state_file:
-            os.makedirs(os.path.join(d, "terraform", "pipeline", "analytics"))
-            open(os.path.join(d, "terraform", "pipeline", "analytics", "terraform.tfstate"), "w").close()
+            os.makedirs(os.path.join(d, "IaC", "terraform", "aws-managed", "pipeline", "analytics"))
+            open(os.path.join(d, "IaC", "terraform", "aws-managed", "pipeline", "analytics", "terraform.tfstate"), "w").close()
         state = os.path.join(d, "state.json")
         with open(state, "w") as f:
             json.dump({"app": copy.deepcopy(app), "runs": copy.deepcopy(list(runs)), "log": [],
                        "cancel_delay": cancel_delay, "stop_delay": stop_delay}, f)
-        pre = (f'set -euo pipefail\nREGION=r; ANALYTICS_VARS=(-var x=1); EMR_AZ_NUM={emr_az_num}\n'
+        pre = (f'set -euo pipefail\nTF_DIR=IaC/terraform/aws-managed; REGION=r; ANALYTICS_VARS=(-var x=1); EMR_AZ_NUM={emr_az_num}\n'
                'die() { echo "DIE: $*"; exit 1; }\nsleep() { :; }\ntf_init() { :; }\nhas_resources() { return 0; }\n'
                'tf() { case "$4" in application_id) echo app ;; list_job_runs_command) echo LIST ;; *) echo "tf? $*" >&2; exit 9 ;; esac; }\n')
         r = subprocess.run(["bash", "-c", pre + _b74 + '\nprintf "VARS:%s\\n" "${ANALYTICS_VARS[@]}"'], capture_output=True, text=True, cwd=d,

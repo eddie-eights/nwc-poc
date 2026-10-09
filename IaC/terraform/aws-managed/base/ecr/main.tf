@@ -1,0 +1,118 @@
+# ECR repositories of nwc-poc. The agent image, the three lab images (srlinux / multitool / trex, amd64 for the x86_64 lab EC2),
+# the two workflow images (worker / temporal) and the eight ECS images of the pipeline (telegraf / gnmic / syslog-ng / goflow2 / grafana / splunk / nautobot / redis) go here.
+# ops/up.sh pushes them in step 2.
+# force_delete = true so that `terraform destroy` removes the repositories together with their images (daily ops/down.sh).
+
+# リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、
+# 1 つの AWS アカウントを何人かで使っても、自分の名前で自分のリソースを探せる
+locals {
+  # 末尾は var.project（IaC/terraform/aws-managed/ は既定の nwc-poc、OSS 版の IaC/terraform/oss/ は oss.auto.tfvars の nwc-oss。cycle 005）
+  name_prefix = "${var.owner}-${var.project}"
+}
+
+locals {
+  lab_repositories      = var.create_lab_repositories ? toset(["srlinux", "multitool", "trex"]) : toset([])
+  workflow_repositories = var.create_workflow_repositories ? toset(["worker", "temporal"]) : toset([])
+  # パイプラインの 9 つ（Telegraf・gnmic・syslog-ng・GoFlow2 は pipeline/stream の ECS、Kafbat UI は Web の EC2 の Docker（cycle 010。base/core の web_user_data）、
+  # Grafana と Splunk は pipeline/analytics、Nautobot とその Redis は pipeline/nautobot）。syslog-ng と GoFlow2 は cycle 012、gnmic は cycle 013 で足した
+  # リポジトリに時間課金は無いので、いつも作る
+  pipeline_repositories = toset(["telegraf", "gnmic", "kafka-ui", "syslog-ng", "goflow2", "grafana", "splunk", "nautobot", "redis"])
+  # OSS 版（IaC/terraform/oss。var.project = nwc-oss。cycle 005）だけのイメージ。kafka（apache/kafka）・opensearch・vminsert / vmselect / vmstorage
+  # （VictoriaMetrics のクラスター版）は公開イメージをそのまま写し、spark（Spark 3.5 と app/spark/ のジョブ）と neo4j（Neo4j と GDS）は ops がビルドする。
+  # マネージド版では空（リポジトリを作らない）
+  oss_repositories = var.project == "nwc-oss" ? toset(["kafka", "opensearch", "vminsert", "vmselect", "vmstorage", "spark", "neo4j"]) : toset([])
+}
+
+resource "aws_ecr_repository" "agent" {
+  name                 = "${local.name_prefix}-agent"
+  image_tag_mutability = "IMMUTABLE" # the same tag cannot be pushed twice (change agent_image_tag / IMAGE_TAG for every update)
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "agent" {
+  repository = aws_ecr_repository.agent.name
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "keep last 5 images"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 5
+      }
+      action = { type = "expire" }
+    }]
+  })
+}
+
+resource "aws_ecr_repository" "lab" {
+  for_each = local.lab_repositories
+
+  name                 = "${local.name_prefix}-lab-${each.key}"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+}
+
+resource "aws_ecr_repository" "workflow" {
+  for_each = local.workflow_repositories
+
+  name                 = "${local.name_prefix}-${each.key}"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+}
+
+resource "aws_ecr_repository" "pipeline" {
+  for_each = local.pipeline_repositories
+
+  name                 = "${local.name_prefix}-${each.key}"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+}
+
+resource "aws_ecr_repository" "oss" {
+  for_each = local.oss_repositories
+
+  name                 = "${local.name_prefix}-${each.key}"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+}

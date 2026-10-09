@@ -31,10 +31,10 @@ PoC の設計を決めるために、相手に確かめたいことを並べる�
 
 | 格納先 | 入っているもの | 冗長化 | 落ちるとどうなるか |
 |---|---|---|---|
-| S3 Tables | 全部のトピック（メトリクス、trap、syslog、gNMI） | AWS が持つ（複数の AZ） | ― |
-| Amazon Managed Service for Prometheus | メトリクス（SNMP のポーリング、gNMI の数値） | AWS が持つ（複数の AZ） | ― |
-| OpenSearch Serverless | ログ（trap、syslog） | 予備のレプリカは無し（`standby_replicas = "DISABLED"`。PoC の費用のため） | AZ の障害で検索と取り込みが止まることがある |
-| Splunk Enterprise（ECS） | 全部のトピック | 無し。タスク 1 つ、index はタスクの中 | タスクが落ちると、入れたデータが全部消える |
+| S3 Tables | 全部のトピック（メトリクス、trap、syslog、gNMI、NetFlow / sFlow） | AWS が持つ（複数の AZ） | ― |
+| Amazon Managed Service for Prometheus | メトリクス（gNMI の数値。2026-10-09 までは SNMP のポーリングも） | AWS が持つ（複数の AZ） | ― |
+| OpenSearch Serverless | ログ（trap、syslog、NetFlow / sFlow） | 既定は予備のレプリカ無し（`standby_replicas = "DISABLED"`。PoC の費用のため）。`OPENSEARCH_AZ_NUM=2` で `ENABLED` | AZ の障害で検索と取り込みが止まることがある |
+| Splunk Enterprise（ECS） | 全部のトピック | 既定（`SPLUNK_AZ_NUM=1`）は無し。タスク 1 つ、index はタスクの中。2 か 3 なら indexer のクラスターで、indexer の間で複製する | 既定では、タスクが落ちると入れたデータが全部消える |
 | Kafka（MSK） | 格納先へ流す前の全部のデータ | ブローカーの間で複製 | ― |
 
 ### 答え
@@ -44,7 +44,7 @@ PoC の設計を決めるために、相手に確かめたいことを並べる�
 ### 決まること
 
 - Splunk のクラスターを既定にするか（設計は [cycles/004-splunk-indexer-cluster/design.md](cycles/004-splunk-indexer-cluster/design.md)）。
-- OpenSearch Serverless の予備のレプリカを有効にするか。
+- OpenSearch Serverless の予備のレプリカを既定で有効にするか。
 - S3 から格納先へ入れ直す手順を作るか。
 
 ## 2. データの保管期間は、格納先ごとにどれくらいか
@@ -70,7 +70,7 @@ PoC の設計を決めるために、相手に確かめたいことを並べる�
 | Amazon Managed Service for Prometheus | 150 日（サービスの既定） | 設定なし |
 | OpenSearch Serverless | 無期限（データのライフサイクルのポリシーが無い） | 設定なし |
 | Splunk Enterprise（ECS） | タスクが生きている間だけ。index の既定は約 6 年だが、その前にタスクと一緒に消える | 設定なし |
-| Kafka（MSK） | 24 時間 | `terraform/pipeline/stream/msk.tf` の `log.retention.hours=24` |
+| Kafka（MSK） | 24 時間 | `IaC/terraform/aws-managed/pipeline/stream/msk.tf` の `log.retention.hours=24` |
 
 Prometheus の 150 日と Splunk の約 6 年は、サービスと製品の既定値として書いた。このリポジトリの設定からは確かめていない。
 

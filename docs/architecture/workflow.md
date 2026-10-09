@@ -2,7 +2,7 @@
 
 ← [構成](README.md)
 
-`terraform/workflow`（`WORKFLOW=1`）。Temporal on ECS、SQS が 2 本（SNS を購読するアラートのキューと、Web の承認・却下を受ける決定のキュー）、Gateway（MCP）と tools Lambda。AGENT と PIPELINE と、アラートの送り手（Grafana か Splunk）が要る。承認の流れと Temporal UI は [workflow.md](../workflow.md)、データの置き場は [data-stores.md](../data-stores.md)。
+`IaC/terraform/aws-managed/workflow`（`WORKFLOW=1`）。Temporal on ECS、SQS が 2 本（SNS を購読するアラートのキューと、Web の承認・却下を受ける決定のキュー）、Gateway（MCP）と tools Lambda。AGENT と PIPELINE と、アラートの送り手（Grafana か Splunk）が要る。承認の流れと Temporal UI は [workflow.md](../workflow.md)、データの置き場は [data-stores.md](../data-stores.md)。
 
 ```mermaid
 flowchart LR

@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# デバッグ用の EC2（lab + Telegraf を 1 台に。CloudFormation のスタック <接頭辞>-lab-debug。cloudformation/lab-debug.yaml）を作る・消す。
-# MSK / ECS / NLB を作らずに、機器の設定（lab/）と Telegraf の設定（telegraf/）を確かめる。Telegraf の出力は標準出力（sudo lab telegraf logs -f）。
+# デバッグ用の EC2（lab + Telegraf を 1 台に。CloudFormation のスタック <接頭辞>-lab-debug。IaC/cloudformation/lab-debug.yaml）を作る・消す。
+# MSK / ECS / NLB を作らずに、機器の設定（app/containerlab/）と Telegraf の設定（app/telegraf/）を確かめる。Telegraf の出力は標準出力（sudo lab telegraf logs -f）。
 #
 # 使い方（展開したフォルダの直下で。deploy.env は OWNER と NETWORK_PERIMETER だけ読む。先に AWS CLI の認証を通しておく）:
 #   ops/lab-debug.sh up       # スタック（VPC・エンドポイント・バケット・ECR）を作り、イメージ（ECR に無いタグだけ）と lab/ を置いて EC2 を起こす・変える。最後に SSM で入るコマンドを出す
-#   ops/lab-debug.sh sync     # lab/ を置き直して EC2 を再起動する（lab/ の設定を変えたとき。telegraf/ を変えたときは up）
+#   ops/lab-debug.sh sync     # app/containerlab/ を置き直して EC2 を再起動する（app/containerlab/ の設定を変えたとき。app/telegraf/ を変えたときは up）
 #   ops/lab-debug.sh status   # スタックと EC2 の状態
 #   ops/lab-debug.sh down     # バケットを空にしてスタックを消す（ECR はイメージごと消える）
 #
 # ops/up.sh / ops/down.sh / terraform とは独立（2026-10-04 ユーザー決定: CloudFormation だけで扱う）。up.sh で何も作っていなくても動き、
-# down.sh はこれを消さない。VPC もエンドポイントもバケットも ECR もスタックが持つので、土台（terraform/base/core）は要らない。
-# terraform/pipeline/lab の EC2 とずれないよう、版とイメージと lab/ の置き方は ops/lab-common.sh、EC2 の中の支度は lab/setup.sh を共有する。
-# 待機の費用は約 $0.23/h（EC2 t4g.xlarge 約 $0.17/h + インターフェース型エンドポイント 4 本 $0.056/h）。使い終わったら down。
+# down.sh はこれを消さない。VPC もエンドポイントもバケットも ECR もスタックが持つので、土台（IaC/terraform/aws-managed/base/core）は要らない。
+# IaC/terraform/aws-managed/pipeline/lab の EC2 とずれないよう、版とイメージと app/containerlab/ の置き方は ops/lab-common.sh、EC2 の中の支度は app/containerlab/setup.sh を共有する。
+# 待機の費用は約 $0.30/h（EC2 m6i.xlarge 約 $0.25/h + インターフェース型エンドポイント 4 本 $0.056/h）。使い終わったら down。
 set -euo pipefail
 
 REGION=ap-northeast-1
@@ -22,7 +22,7 @@ cd "$(dirname "$0")/.."
 
 log()  { printf '\n\033[1;34m== %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31mNG: %s\033[0m\n' "$*" >&2; exit 1; }
-TEMPLATE=cloudformation/lab-debug.yaml
+TEMPLATE=IaC/cloudformation/lab-debug.yaml
 
 CMD="${1:-}"
 case "$CMD" in up|sync|status|down) ;; *) sed -n '2,10p' "$0"; exit 1 ;; esac
@@ -34,7 +34,7 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text) || die "
 REG="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
 # スタックが持つバケットと ECR のリポジトリの名前（テンプレートと同じ作り方。down は Outputs が読めなくても消せるよう、ここで作る）
 BUCKET="$PREFIX-lab-debug-$ACCOUNT_ID"
-REPO_PREFIX="$PREFIX-debug"   # <これ>-lab-srlinux / -lab-multitool / -telegraf
+REPO_PREFIX="$PREFIX-debug"   # <これ>-lab-srlinux / -lab-multitool / -lab-trex / -telegraf
 # VPC の外からの呼び出しを拒む Deny（ops/up.sh の NETWORK_PERIMETER と同じキー。既定 1）
 NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"
 flag_value NETWORK_PERIMETER
@@ -52,7 +52,7 @@ deploy() {  # deploy <CreateInstance> [<TelegrafImageTag>]  版は ops/lab-commo
     --parameter-overrides \
       "NamePrefix=$PREFIX" "Owner=$OWNER" "CreateInstance=$1" "TelegrafImageTag=${2:-}" \
       "NetworkPerimeter=$([ -n "$NETWORK_PERIMETER" ] && echo true || echo false)" \
-      "ContainerlabVersion=$CONTAINERLAB_VERSION" "SrlinuxImageTag=$SRLINUX_TAG" "MultitoolImageTag=$MULTITOOL_TAG" \
+      "ContainerlabVersion=$CONTAINERLAB_VERSION" "SrlinuxImageTag=$SRLINUX_ECR_TAG" "MultitoolImageTag=$MULTITOOL_ECR_TAG" "TrexImageTag=$TREX_ECR_TAG" \
     --tags "Project=$PREFIX" "owner=$OWNER" \
     || die "$STACK を作れなかった（aws cloudformation describe-stack-events --region $REGION --stack-name $STACK）"
 }
@@ -93,7 +93,7 @@ case "$CMD" in
     id=""; if [ -n "$s" ]; then id=$(instance_id) || die "$STACK の出力が読めない（上の出力）"; fi
     [ -n "$id" ] || die "$STACK の EC2 が無い。先に ops/lab-debug.sh up"
     command -v curl >/dev/null || die "curl が無い（containerlab の rpm を取るのに使う）"
-    log "lab/ を s3://$BUCKET/lab/ に置き直して EC2 を再起動する（起動のたびに lab/setup.sh が置き直す）"
+    log "app/containerlab/ を s3://$BUCKET/lab/ に置き直して EC2 を再起動する（起動のたびに app/containerlab/setup.sh が置き直す）"
     upload_lab "$BUCKET" || die "lab の材料を s3://$BUCKET/lab/ に置けなかった"
     aws ec2 reboot-instances --region "$REGION" --instance-ids "$id"
     echo "$id を再起動した。トポロジが上がるまで 10 分ほど（sudo lab status）"
@@ -119,14 +119,14 @@ case "$CMD" in
       log "1. $STACK の器（VPC・エンドポイント 4 本・バケット・ECR。EC2 はまだ作らない。数分）"
       deploy false
     else
-      # 2026-10-04 より前の形（土台 terraform/base/core の VPC とバケットを使っていた）は器を持たないので、作り直す
+      # 2026-10-04 より前の形（土台 IaC/terraform/aws-managed/base/core の VPC とバケットを使っていた）は器を持たないので、作り直す
       rp=$(stack_output RepositoryPrefix) || die "$STACK の出力が読めない（上の出力）"
       case "$rp" in ''|None) die "$STACK が前の形（土台の VPC を使う）のまま。先に ops/lab-debug.sh down" ;; esac
       log "1. $STACK はある（$s）"
     fi
 
-    log "2. イメージ（ECR に無いタグだけ作る。lab の 2 つと、stream の ECS と同じ作り方の Telegraf）"
-    TELEGRAF_TAG=$(telegraf_tag) || die "telegraf/ のタグを作れなかった"
+    log "2. イメージ（ECR に無いタグだけ作る。lab の 3 つと、stream の ECS と同じ作り方の Telegraf。どれも x86_64 の EC2 に載るので amd64）"
+    TELEGRAF_TAG=$(telegraf_tag) || die "app/telegraf/ のタグを作れなかった"
     LOGGED_IN=""
     login() {
       [ -z "$LOGGED_IN" ] || return 0
@@ -135,13 +135,14 @@ case "$CMD" in
       aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REG"
       LOGGED_IN=1
     }
-    if ! ecr_has "$REPO_PREFIX-lab-srlinux" "$SRLINUX_TAG" || ! ecr_has "$REPO_PREFIX-lab-multitool" "$MULTITOOL_TAG"; then login; fi
+    if ! ecr_has "$REPO_PREFIX-lab-srlinux" "$SRLINUX_ECR_TAG" || ! ecr_has "$REPO_PREFIX-lab-multitool" "$MULTITOOL_ECR_TAG" \
+      || ! ecr_has "$REPO_PREFIX-lab-trex" "$TREX_ECR_TAG"; then login; fi
     mirror_lab_images "$REG" "$REPO_PREFIX" || die "lab のイメージを ECR に置けなかった"
     if ecr_has "$REPO_PREFIX-telegraf" "$TELEGRAF_TAG"; then echo "telegraf:$TELEGRAF_TAG はある"
     else
       login
       docker buildx version >/dev/null 2>&1 || die "docker buildx が無い（docs/setup.md「Terraform を打つ PC 側」）"
-      build_telegraf "$REG/$REPO_PREFIX-telegraf:$TELEGRAF_TAG"
+      build_telegraf "$REG/$REPO_PREFIX-telegraf:$TELEGRAF_TAG" linux/amd64   # stream の ECS（arm64）とはリポジトリが別
     fi
 
     log "3. lab の材料（containerlab の rpm とトポロジ）を s3://$BUCKET/lab/ に置く"
@@ -154,11 +155,11 @@ case "$CMD" in
     AFTER=$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK" \
       --query 'Stacks[0].LastUpdatedTime' --output text 2>/dev/null || true)
     if [ -n "$BEFORE" ] && [ "$BEFORE" = "$AFTER" ]; then
-      echo "スタックは変わらなかった。置き直した lab/ を EC2 に入れるなら ops/lab-debug.sh sync（再起動する）"
+      echo "スタックは変わらなかった。置き直した app/containerlab/ を EC2 に入れるなら ops/lab-debug.sh sync（再起動する）"
     fi
 
-    log "できた。デバッグ用の EC2 に入るコマンド（中で sudo lab status / sudo lab check / sudo lab telegraf logs -f / sudo lab telegraf test）:"
+    log "できた。デバッグ用の EC2 に入るコマンド（中で sudo lab status / sudo lab check / sudo lab telegraf logs -f / sudo lab trap-test）:"
     stack_output StartSessionCommand
-    echo "使い終わったら ops/lab-debug.sh down（待機だけで約 \$0.23/h。ops/down.sh では消えない）"
+    echo "使い終わったら ops/lab-debug.sh down（待機だけで約 \$0.30/h。ops/down.sh では消えない）"
     ;;
 esac

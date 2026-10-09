@@ -1,0 +1,26 @@
+{
+  "_comment": "トポロジの初期値（物理層）。中身は app/containerlab/splab.clab.yml.in + app/containerlab/srlinux/*.cli と 1 対 1（ここが唯一のシードで lab 側にコピーは置かない。app/containerlab/gen_lab.py を打ち直したら python3 app/containerlab/lab_topology.py app/containerlab の出力で直す）。すべて架空のアドレスと帯域。nodes / links の形は app/containerlab/lab_topology.py が作るものと同じ。links は a < b で正規化する（無向リンクを 1 行で持つため）。a_if / b_if は機器の設定と ifTable の ifName と同じ文字列（SR Linux は ethernet-1/N、TRex は ethN。containerlab の endpoints の e1-N ではない。ifIndex は使わない）。kind は fabric（Spine - Leaf。IS-IS の p2p）/ l2（TRex - Leaf。leaf の mac-vrf に素の subinterface で付く）/ lag（VM - Leaf の LACP。いまの lab には無い）/ mgmt、role は description に primary / secondary があるときだけ（他は null。seed 側で空文字に丸める）。**階層を決めるのは node.role だけで、layer は持たない**（2026-09-11 決定。二重に持つと必ずズレる。段の順は app/agentcore/topology.py の ROLE_ORDER = spine / a-leaf / s-leaf / trex / unknown）。IP 層と EVPN・BGP 層は layers.json。",
+  "nodes": [
+    { "device_id": "dc1-s-leaf-01", "site": "dc1", "role": "s-leaf", "asn": 65100 },
+    { "device_id": "dc1-s-leaf-02", "site": "dc1", "role": "s-leaf", "asn": 65100 },
+    { "device_id": "dc1-spine-01", "site": "dc1", "role": "spine", "asn": 65100 },
+    { "device_id": "dc1-spine-02", "site": "dc1", "role": "spine", "asn": 65100 },
+    { "device_id": "dc1-a-leaf-01", "site": "dc1", "role": "a-leaf", "asn": 65100 },
+    { "device_id": "dc1-a-leaf-02", "site": "dc1", "role": "a-leaf", "asn": 65100 },
+    { "device_id": "dc1-trex-01", "site": "dc1", "role": "trex", "asn": null }
+  ],
+  "links": [
+    { "a": "dc1-a-leaf-01", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/3", "kind": "fabric", "role": null, "bandwidth_mbps": 25000 },
+    { "a": "dc1-a-leaf-01", "a_if": "ethernet-1/2", "b": "dc1-spine-02", "b_if": "ethernet-1/3", "kind": "fabric", "role": null, "bandwidth_mbps": 25000 },
+    { "a": "dc1-a-leaf-01", "a_if": "ethernet-1/3", "b": "dc1-trex-01", "b_if": "eth3", "kind": "l2", "role": null, "bandwidth_mbps": 25000 },
+    { "a": "dc1-a-leaf-02", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/4", "kind": "fabric", "role": null, "bandwidth_mbps": 25000 },
+    { "a": "dc1-a-leaf-02", "a_if": "ethernet-1/2", "b": "dc1-spine-02", "b_if": "ethernet-1/4", "kind": "fabric", "role": null, "bandwidth_mbps": 25000 },
+    { "a": "dc1-a-leaf-02", "a_if": "ethernet-1/3", "b": "dc1-trex-01", "b_if": "eth4", "kind": "l2", "role": null, "bandwidth_mbps": 25000 },
+    { "a": "dc1-s-leaf-01", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/1", "kind": "fabric", "role": null, "bandwidth_mbps": 25000 },
+    { "a": "dc1-s-leaf-01", "a_if": "ethernet-1/2", "b": "dc1-spine-02", "b_if": "ethernet-1/1", "kind": "fabric", "role": null, "bandwidth_mbps": 25000 },
+    { "a": "dc1-s-leaf-01", "a_if": "ethernet-1/3", "b": "dc1-trex-01", "b_if": "eth1", "kind": "l2", "role": null, "bandwidth_mbps": 25000 },
+    { "a": "dc1-s-leaf-02", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/2", "kind": "fabric", "role": null, "bandwidth_mbps": 25000 },
+    { "a": "dc1-s-leaf-02", "a_if": "ethernet-1/2", "b": "dc1-spine-02", "b_if": "ethernet-1/2", "kind": "fabric", "role": null, "bandwidth_mbps": 25000 },
+    { "a": "dc1-s-leaf-02", "a_if": "ethernet-1/3", "b": "dc1-trex-01", "b_if": "eth2", "kind": "l2", "role": null, "bandwidth_mbps": 25000 }
+  ]
+}

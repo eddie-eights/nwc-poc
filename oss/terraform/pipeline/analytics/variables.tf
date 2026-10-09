@@ -1,1 +1,0 @@
-../../../../terraform/pipeline/analytics/variables.tf

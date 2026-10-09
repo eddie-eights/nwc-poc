@@ -16,7 +16,9 @@
 # ADMIN_ARN・OPENSEARCH_CACERT_FILE・SPLUNK_SKIP_TLS_VERIFY は 2026-09-28 から使わない。前の deploy.env で止まらないよう読むだけ読み、ops/up.sh が注意を出す。
 # SPLUNK_HEC_URL も同日から使わない（書いてあれば ops/up.sh が止まる。黙って ECS の Splunk に替えないため）
 # LAB_DEBUG は 2026-10-04 から使わない（デバッグ用の EC2 は ops/lab-debug.sh だけで作る・消す）。読むだけ読み、ops/up.sh が注意を出す
-# NAUTOBOT も 2026-10-04 から使わない（Nautobot は PIPELINE=1 ならいつも作る）。同じく読むだけ読み、ops/up.sh が注意を出す
+# MDT_SOURCE_CIDRS は 2026-10-08 から使わない（cycle 012 で MDT の受け口を外した）。読むだけ読み、ops/up.sh と ops/oss/up.sh が注意を出す
+# SNMP_POLL は 2026-10-09 から使わない（cycle 013 で SNMP のポーリングをやめた）。読むだけ読み、ops/up.sh と ops/oss/up.sh が注意を出す
+# NAUTOBOT も 2026-10-04 から使わない（Nautobot は PIPELINE=1 なら作る。SKIP_STREAM と SKIP_GRAPH を両方付けた回だけ作らない）。同じく読むだけ読み、ops/up.sh が注意を出す
 # SINK_S3 / SINK_OPENSEARCH / SINK_PROMETHEUS / SINK_SPLUNK / GRAFANA も 2026-10-04 から使わない（格納先は STORES だけで選ぶ）。
 # 書けるキーではないが読むだけ読み、ops/up.sh がその値に当たる STORES の書き方を出して止まる（知らないキーとして止めると書き換え方が分からない。
 # 黙って STORES の既定に替えると格納先が変わる）。ops/down.sh は前の deploy.env のまま打てる
@@ -112,13 +114,13 @@ load_deploy_env() {
 }
 
 # resolve_name_prefix [プロジェクト]  deploy.env の OWNER（= デプロイする人の名前。**必須**）を確かめ、接頭辞 PREFIX=<owner>-<プロジェクト> を作る。
-# プロジェクトは既定が nwc-poc（ops/up.sh / ops/down.sh）で、OSS 版（005）の oss/ops/up.sh / down.sh は nwc-oss を渡す
-# （oss/terraform/ の oss.auto.tfvars の project と同じ値。同じ 8 文字なので下の長さの上限も同じ）。
+# プロジェクトは既定が nwc-poc（ops/up.sh / ops/down.sh）で、OSS 版（005）の ops/oss/up.sh / down.sh は nwc-oss を渡す
+# （IaC/terraform/oss/ の oss.auto.tfvars の project と同じ値。同じ 8 文字なので下の長さの上限も同じ）。
 # load_deploy_env のあとに呼ぶ。OWNER は terraform の -var owner と AWS CLI の owner タグに渡り、
 # PREFIX はリソース名の接頭辞であり Project タグの値で、terraform 側は同じものを locals.tf が var.owner から作る（渡さない）。
 # 有無と形は各ルートの variables.tf の owner（既定値が無い + 同じ validation）と同じものをここでも見る（terraform を起こす前に、
 # 値を聞かれて止まる代わりに何を書けばよいかを出して止まるため）。
-#   接頭辞は OpenSearch Serverless の data access policy 名が 32 文字までで、一番長い接尾辞が terraform/workflow の
+#   接頭辞は OpenSearch Serverless の data access policy 名が 32 文字までで、一番長い接尾辞が IaC/terraform/aws-managed/workflow の
 #   <接頭辞>-logs-read（10 文字）なので 22 文字まで。-nwc-poc の 8 文字を引いて owner は 14 文字まで。
 #   ハイフンの連続と末尾のハイフンは ECR のリポジトリ名が受け付けない
 resolve_name_prefix() {
@@ -142,7 +144,7 @@ flag_value() {
 
 # ---- terraform の出力を絞る（up.sh / down.sh 共通。呼ぶ側が tf <ルート> <引数…> を持っていること）
 # 画面には Plan / 完了したリソース / 5 分ごとの経過 / エラーだけを出し、全文は ops/logs/ に残す。TF_VERBOSE=1 で全部そのまま出す。
-# ファイル名の頭は TF_LOG_NAME（既定 tf。OSS 版の oss/ops/ は tf-oss にして、同じ名前のルートのログを上書きしない）
+# ファイル名の頭は TF_LOG_NAME（既定 tf。OSS 版の ops/oss/ は tf-oss にして、同じ名前のルートのログを上書きしない）
 TF_VERBOSE="${TF_VERBOSE:-}"
 TF_KEEP='^(Plan:|Apply complete|Destroy complete|No changes)|Error|^[│╷╵]|: (Creation|Destruction|Modifications) complete|: Still (creating|destroying|modifying)\.\.\. \[[0-9]*[05]m0s elapsed\]'
 tf_log_file() { echo "ops/logs/${TF_LOG_NAME:-tf}-${1//\//-}-$2.log"; }
