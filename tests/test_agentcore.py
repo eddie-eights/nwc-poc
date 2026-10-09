@@ -241,9 +241,9 @@ check("what_if: fabric の片系が DOWN のまま残りの 1 本を落とすと
       w["verdict"] == "danger" and w["newly_isolated"] == ["dc1-a-leaf-01"] and w["redundancy_lost"] == [] and "孤立する機器: dc1-a-leaf-01" in w["summary"])
 _with_status(devices={"dc1-spine-01": "DOWN"})
 w = t.what_if("device_down", "dc1-spine-02")
-check("what_if: Spine-01 が DOWN のまま Spine-02 を落とすと、Leaf はばらばらになり danger（4 台の Leaf につながる TRex を通り道にしない）",
-      w["verdict"] == "danger" and len(w["newly_isolated"]) == 3
-      and set(w["newly_isolated"]) < {"dc1-a-leaf-01", "dc1-a-leaf-02", "dc1-s-leaf-01", "dc1-s-leaf-02"})
+check("what_if: Spine-01 が DOWN のまま Spine-02 を落とすと、Leaf は 1 台ずつばらばらになり、どれも本流でないので Leaf 4 台と TRex が孤立で danger（4 台の Leaf につながる TRex を通り道にしない）",
+      w["verdict"] == "danger"
+      and w["newly_isolated"] == ["dc1-a-leaf-01", "dc1-a-leaf-02", "dc1-s-leaf-01", "dc1-s-leaf-02", "dc1-trex-01"])
 _with_status()
 check("what_if: 相手の端の名前でも同じ回線に当たる", t.what_if("link_down", "dc1-spine-01#ethernet-1/3")["unknown"] == [])
 check("what_if: 無い対象は unknown、op が違えば error",
@@ -258,6 +258,11 @@ r = t.impact(_d, [dict(l, status="UP") for l in _l], [{"op": "link_down", "targe
 check("impact: 2 本のうち 1 本を落とすと冗長切れで warn", r["verdict"] == "warn" and r["redundancy_lost"] == ["a"] and r["newly_isolated"] == [])
 r = t.impact(_d, [dict(_l[0], status="DOWN"), _l[1], _l[2]], [{"op": "link_up", "target": "a#1"}])
 check("impact: 孤立していた機器が、上げるとつながり直す", r["reconnected"] == ["a"] and r["verdict"] == "ok")
+_d = [{"device_id": x} for x in "abcde"]
+_l = [{"a": "a", "a_if": "1", "b": "b", "b_if": "1"}, {"a": "c", "a_if": "1", "b": "d", "b_if": "1"}, {"a": "d", "a_if": "2", "b": "e", "b_if": "1", "status": "DOWN"}]
+r = t.impact(_d, _l, [{"op": "link_up", "target": "e#1"}])
+check("impact: 上げてかたまりの大きさの順が入れ替わっても（c–d–e の 3 台が a–b の 2 台を抜く）、何も切れていない a と b は孤立に出ず ok、つながり直すのは e",
+      r["verdict"] == "ok" and r["newly_isolated"] == [] and r["reconnected"] == ["e"])
 check("app.run_tool は what_if を topology に振る", app.run_tool("what_if", {"op": "device_down", "target": "dc1-a-leaf-01"})["verdict"] == "ok")
 # ---- Nautobot の保守中と変更履歴（2026-10-04）
 check("list_devices は maintenance を出す（静的データでは全部 false）", all(d["maintenance"] is False for d in t.list_devices()["devices"]))

@@ -74,8 +74,6 @@ def normalize_action(action: str) -> tuple[str, str]:
 # ---------------------------------------------------------------- 事前チェック（処置を打つ前に、孤立と冗長切れを見る。2026-10-04）
 # 処置がトポロジをどう変えるか（app/containerlab/lab.sh のサブコマンドの中身）。処置を ALLOWED_ACTIONS に足すときはここにも足す（無い処置は「確認できず」になる）。
 # いまの 2 つは dc1-a-leaf-01 の ethernet-1/1 を上げる（heal-main）か見るだけ（check）。落とす処置（機器の再起動・回線の切り離し）を足したときに効く。
-# ただし上げるだけでも、トポロジが割れているときは「危険」と出ることがある（impact が変更後のいちばん大きいかたまりを本流に選ぶため。誤報。
-# docs/cycles/BACKLOG.md の「heal-main と孤立の同点を解く」）
 ACTION_CHANGES = {"heal-main": [{"op": "link_up", "target": "dc1-a-leaf-01#ethernet-1/1"}], "check": []}
 PRECHECK_JA = {"ok": "問題なし", "warn": "注意", "danger": "危険", "unknown": "確認できず"}
 # 端の役割（つながりの中継にしない機器）。app/agentcore/topology.py の END_ROLES と同じ
@@ -86,7 +84,8 @@ def impact(devices: list, links: list, changes: list) -> dict:
     """回線・機器を落とした / 上げたと仮定して、孤立する機器と冗長が切れる機器を出す（修復を打つ前の事前チェック）。
     devices = [{device_id, status, role}]、links = [{a, a_if, b, b_if, status}]、changes = [{op, target}]。
     op は link_down / link_up（target = <機器>#<IF>。どちらの端でもよい）か device_down / device_up（target = 機器名）。
-    つながりは DOWN でない回線と機器だけで見て、いちばん大きいかたまりに入っていない機器を「孤立」とする。
+    つながりは DOWN でない回線と機器だけで見て、変更前のかたまりのうち、変更後にいちばん大きい断片から外れた機器を「孤立」とする。同点ならどれも本流にしない
+    （つながり直す機器は向きを逆にして同じことをする。isolated_after は変更後のいちばん大きいかたまりに入っていない機器）。
     role が END_ROLES の機器（TRex。4 台の leaf につながるが転送しない）は端として扱い、ほかの機器どうしをつなぐ中継にしない。
     端は、つながる相手がかたまりに入っていればかたまりに入る。冗長の本数も、端でない機器は端への回線を数えない（leaf は Spine への本数）。
     role が無ければ全部を中継として見る（ワーカーの awsio.read_topology も role を読んで渡す）。
@@ -102,7 +101,7 @@ def impact(devices: list, links: list, changes: list) -> dict:
             if n not in ld and l["a"] in adj and l["b"] in adj:
                 adj[l["a"]].append(l["b"])
                 adj[l["b"]].append(l["a"])
-        seen, main = set(), set()
+        seen, comps = set(), []
         for start in adj:
             if start in seen or start in ends:
                 continue
@@ -113,12 +112,29 @@ def impact(devices: list, links: list, changes: list) -> dict:
                         comp.add(o)
                         stack.append(o)
             seen |= comp
-            if len(comp) > len(main):
-                main = comp
-        main |= {i for i in ends & set(adj) if any(o in main for o in adj[i])}
-        return set(adj) - main, {i: sum(1 for o in v if i in ends or o not in ends) for i, v in adj.items()}
+            comps.append(comp)
+        main = max(comps, key=len, default=set())
+        main = main | {i for i in ends & set(adj) if any(o in main for o in adj[i])}
+        return adj, comps, set(adj) - main, {i: sum(1 for o in v if i in ends or o not in ends) for i, v in adj.items()}
 
-    iso0, deg0 = view(dev_down, link_down)
+    def largest(parts: list) -> set:
+        # 唯一いちばん大きい断片。同点か空なら空（どれも本流にしない）
+        parts = sorted((p for p in parts if p), key=len, reverse=True)
+        return parts[0] if parts and (len(parts) == 1 or len(parts[0]) > len(parts[1])) else set()
+
+    def lost(adj_a: dict, comps_a: list, adj_b: dict, comps_b: list) -> set:
+        # a のかたまり K ごとに、生き残り（b でも生きている機器）を b のかたまりで分け、唯一いちばん大きい断片 W(K) から外れた機器。
+        # 端は、a で隣接するかたまりのうち唯一いちばん大きい K* があり、b で W(K*) のどれにも隣接していなければ外れる
+        out = set()
+        for k in comps_a:
+            out |= (k & set(adj_b)) - largest([k & c for c in comps_b])
+        for e in ends & set(adj_a) & set(adj_b):
+            k = largest([c for c in comps_a if any(o in c for o in adj_a[e])])
+            if k and not any(o in largest([k & c for c in comps_b]) for o in adj_b[e]):
+                out.add(e)
+        return out
+
+    adj0, comps0, _, deg0 = view(dev_down, link_down)
     dd, ld, unknown, targets = set(dev_down), set(link_down), [], set()
     for c in changes:
         op, target = str(c.get("op") or ""), str(c.get("target") or "")
@@ -132,11 +148,11 @@ def impact(devices: list, links: list, changes: list) -> dict:
                 (ld.add if op == "link_down" else ld.discard)(n)
         else:
             unknown.append(f"{op} {target}".strip())
-    iso1, deg1 = view(dd, ld)
+    adj1, comps1, iso1, deg1 = view(dd, ld)
     out = {
         "changes": [{"op": str(c.get("op") or ""), "target": str(c.get("target") or "")} for c in changes], "unknown": unknown,
-        "newly_isolated": sorted(iso1 - iso0 - targets),
-        "reconnected": sorted(i for i in iso0 - iso1 if i in deg1),
+        "newly_isolated": sorted(lost(adj0, comps0, adj1, comps1) - targets),
+        "reconnected": sorted(i for i in lost(adj1, comps1, adj0, comps0) if i in deg1),
         "redundancy_lost": sorted(i for i in deg1 if deg1[i] == 1 and deg0.get(i, 0) >= 2 and i not in iso1),
         "redundancy_restored": sorted(i for i in deg1 if deg1[i] >= 2 and deg0.get(i, 0) <= 1 and i not in iso1),
         "isolated_after": sorted(iso1),

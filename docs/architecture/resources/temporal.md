@@ -103,7 +103,7 @@ worker が読み書きするもの:
 | Temporal の履歴 | 残らない（SQLite がタスクの `/tmp`） |
 | 2 タスク | 立てられない（上の知見。AWS では未確認） |
 | フラップ | 走っているあいだに届いた落ち直しの `firing` は捨てる（[workflow.md](../../workflow.md) の「通知の重なりと取りこぼし」） |
-| 処置の種類 | `heal-main`（`dc1-a-leaf-01` の `ethernet-1/1` を上げる）と見るだけの `check` だけ。事前チェック（`precheck`）の警告は落とす処置を足したときに効くが、トポロジが割れているときは `heal-main` でも「危険」の誤報が出ることがある（`rules.py` の `ACTION_CHANGES` の上のコメント） |
+| 処置の種類 | `heal-main`（`dc1-a-leaf-01` の `ethernet-1/1` を上げる）と見るだけの `check` だけ。事前チェック（`precheck`）の警告は落とす処置を足したときに効く |
 | worker が 1 日を超えて止まる | そのあいだに Web から送った決定は SQS の保持（1 日）で消える。修復案は `pending` のまま残る |
 | 却下・時間切れ（`expired`）・`failed`・`ignored` の経路 | AWS では未確認（模擬テストだけ） |
 | 1 本の回線断で修復案が 4 件できる | 既知（2026-10-05。[troubleshooting.md](../../troubleshooting.md) の「既知の不具合」）。承認した 1 件が verified、残りの 3 件は obsolete になった |

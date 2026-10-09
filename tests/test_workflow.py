@@ -135,6 +135,39 @@ check("heal-main の事前チェックは「上げる」と仮定して問題な
 check("check は何も変えないので問題なし、none は空", rules.precheck("check", _pd, _pl)["verdict"] == "ok" and rules.precheck("none", _pd, _pl) == {"verdict": "", "text": ""})
 check("対象の回線がグラフに無ければ「確認できず」", rules.precheck("heal-main", _pd, _pl[1:])["verdict"] == "unknown" and "【確認できず】" in rules.precheck("heal-main", _pd, _pl[1:])["text"])
 check("対応表に無い処置は「確認できず」", rules.precheck("reboot", _pd, _pl)["verdict"] == "unknown")
+# 総当たり: 静的データ（7 台・12 本）で spine 2 台の状態 4 通り × 回線の DOWN の組み合わせ 2^12 通り。上げるだけの heal-main は孤立も冗長切れも出さない（027）
+_hm_devs, _hm_links = topology.load_static()
+_hm_spines = [d for d in _hm_devs if d["device_id"] in ("dc1-spine-01", "dc1-spine-02")]
+_hm_seen = {}
+for _hm_links_down in range(1 << len(_hm_links)):
+    for _i, _x in enumerate(_hm_links):
+        _x["status"] = "DOWN" if _hm_links_down >> _i & 1 else "UP"
+    for _hm_spines_down in range(1 << len(_hm_spines)):
+        for _i, _x in enumerate(_hm_spines):
+            _x["status"] = "DOWN" if _hm_spines_down >> _i & 1 else None
+        _v = rules.precheck("heal-main", _hm_devs, _hm_links)["verdict"]
+        _hm_seen[_v] = _hm_seen.get(_v, 0) + 1
+check("heal-main の事前チェックは、spine 2 台の状態 4 通り × 回線 12 本の DOWN の組み合わせ 2^12 通りのどれでも問題なし（危険にも注意にもならない）",
+      len(_hm_links) == 12 and len(_hm_spines) == 2 and _hm_seen == {"ok": 16384})
+# 孤立の規則を rules.impact で直接縛る（上げるだけの総当たりは同点を作らないので、本文の一致の検査だけに頼らない。027 のセルフレビュー）
+def _toy(ids, links, changes):
+    return rules.impact([{"device_id": x, "role": "trex" if x.startswith("t") else None} for x in ids],
+                        [{"a": a, "a_if": ai, "b": b, "b_if": bi, "status": st} for a, ai, b, bi, st in links], changes)
+_r = _toy("abcd", [("a", "1", "b", "1", "UP"), ("b", "2", "c", "1", "UP"), ("c", "2", "d", "1", "UP")], [{"op": "device_down", "target": "b"}])
+check("impact: 1 本道 a–b–c–d で b を落とすと、生き残りの {a} と {c, d} のうち唯一いちばん大きい c–d が本流で、a だけが孤立（落とした b は出さない）",
+      _r["verdict"] == "danger" and _r["newly_isolated"] == ["a"])
+_r = _toy("abcd", [("a", "1", "b", "1", "UP"), ("b", "2", "c", "1", "UP"), ("c", "2", "d", "1", "UP")], [{"op": "link_down", "target": "b#2"}])
+check("impact: a–b–c–d の真ん中の回線を落として 2–2 に割れると、同点でどちらも本流にせず 4 台とも孤立",
+      _r["verdict"] == "danger" and _r["newly_isolated"] == ["a", "b", "c", "d"])
+_r = _toy("abct", [("a", "1", "b", "1", "UP"), ("b", "2", "c", "1", "UP"), ("t", "1", "a", "2", "UP"), ("t", "2", "c", "2", "UP")], [{"op": "device_down", "target": "a"}])
+check("impact: 端 t が a と c につながる a–b–c で a を落としても、t は本流 b–c の c につながったままなので孤立に出ない",
+      _r["newly_isolated"] == [] and "t" not in _r["isolated_after"])
+_r = _toy("abct", [("a", "1", "b", "1", "UP"), ("b", "2", "c", "1", "UP"), ("t", "1", "a", "2", "UP")], [{"op": "device_down", "target": "a"}])
+check("impact: 端 t が a にだけつながる a–b–c で a を落とすと、t は本流 b–c のどれにもつながらないので孤立で danger",
+      _r["verdict"] == "danger" and _r["newly_isolated"] == ["t"])
+_r = _toy("abcdefg", [("a", "1", "b", "1", "UP"), ("b", "2", "c", "1", "UP"), ("c", "2", "d", "1", "UP"), ("d", "2", "e", "1", "UP"), ("f", "1", "g", "1", "UP")], [{"op": "link_down", "target": "f#1"}])
+check("impact: 本流 a–e から切れている島 f–g の中の回線を落とすと、島が割れて同点なので f と g が孤立で danger（すでに本流に無い機器でも、かたまりが割れれば出す）",
+      _r["verdict"] == "danger" and _r["newly_isolated"] == ["f", "g"])
 _g = []
 def _fake_cypher(q, **params):
     _g.append(q)

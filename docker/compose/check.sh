@@ -65,16 +65,19 @@ judge "Kafka: トピック metrics / gnmi / traps / logs / flows がある" \
 # トピックは Spark が起動のときに作るので、gnmic・Telegraf・syslog-ng から届いているかはメッセージ数で見る（metrics は gnmic の IF のカウンター、
 # gnmi は gnmic の IF・BGP・IS-IS の状態。on-change は購読した直後に今の値を 1 回送るので、gnmic が繋がっていれば 0 にならない）。trap と syslog は障害を入れるまで来ないこともあるので、
 # traps と logs の 0 件は NG にしない。flows は lab の SR Linux が NetFlow を出さないので数を見ない（ops/netflow_send.py で送ったときだけ増える）
-cnt="{t['name']: t['messagesCount'] for t in json.loads(s)['topics']}"
-judge "Kafka: metrics のメッセージ数 > 0" "'ok' if $cnt.get('metrics', 0) > 0 else '0 件'" <<<"$kafka"
+cnt="{t['name']: t.get('messagesCount') for t in json.loads(s)['topics']}"
+# num('<トピック>') は件数（int）か、件数が読めない（messagesCount が無い・null・数でない）ときの NG の理由（str）。トピックが無ければ 0 件。
+# 件数が読めないのは 0 件とは別の問題なので、traps と logs もそのときは注意でなく NG
+num="(lambda c: lambda n: (lambda v: v if type(v) is int else \"messagesCount が無い（Kafbat UI の応答の形が違う。curl -s 'http://127.0.0.1:18080/api/clusters/nwc/topics?perPage=100' で中身を見る）\")(c.get(n, 0)))($cnt)"
+judge "Kafka: metrics のメッセージ数 > 0" "(lambda v: v if type(v) is str else 'ok' if v > 0 else '0 件')($num('metrics'))" <<<"$kafka"
 judge "Kafka: gnmi のメッセージ数 > 0" \
-  "'ok' if $cnt.get('gnmi', 0) > 0 else '0 件（gnmic の on-change（IF・BGP・IS-IS の状態）が届いていない。購読した直後に今の値を 1 回送るので、gnmic が繋がっていれば 0 にならない。docker compose logs gnmic）'" \
+  "(lambda v: v if type(v) is str else 'ok' if v > 0 else '0 件（gnmic の on-change（IF・BGP・IS-IS の状態）が届いていない。購読した直後に今の値を 1 回送るので、gnmic が繋がっていれば 0 にならない。docker compose logs gnmic）')($num('gnmi'))" \
   <<<"$kafka"
 judge "Kafka: traps のメッセージ数 > 0" \
-  "'ok' if $cnt.get('traps', 0) > 0 else '注意: 0 件（trap は障害を入れるまで来ない。docker/compose/lab.sh fail-main か trap-test のあとに打ち直す）'" \
+  "(lambda v: v if type(v) is str else 'ok' if v > 0 else '注意: 0 件（trap は障害を入れるまで来ない。docker/compose/lab.sh fail-main か trap-test のあとに打ち直す）')($num('traps'))" \
   <<<"$kafka"
 judge "Kafka: logs のメッセージ数 > 0" \
-  "'ok' if $cnt.get('logs', 0) > 0 else '注意: 0 件（syslog は機器が出すまで来ない。docker/compose/lab.sh fail-main のあとに打ち直す。来ないままなら docker compose logs syslog-ng）'" \
+  "(lambda v: v if type(v) is str else 'ok' if v > 0 else '注意: 0 件（syslog は機器が出すまで来ない。docker/compose/lab.sh fail-main のあとに打ち直す。来ないままなら docker compose logs syslog-ng）')($num('logs'))" \
   <<<"$kafka"
 judge "Prometheus: count(snmp_interface_oper_up) > 0" \
   "(lambda r: 'ok' if r and float(r[0]['value'][1]) > 0 else '0 件')(json.loads(s)['data']['result'])" \
@@ -97,23 +100,40 @@ judge "Grafana: データソース uid amp / aoss-logs がある" \
 judge "Grafana: amp（Prometheus）の health が OK" \
   "'ok' if json.loads(s).get('status') == 'OK' else json.loads(s).get('message', s[:200])" \
   <<<"$(get GF_SECURITY_ADMIN_PASSWORD 'http://127.0.0.1:3000/api/datasources/uid/amp/health' || true)"
-# Telegraf の health（outputs.health）。up.sh と同じく lab の管理ネットの GW（app/containerlab/lab.sh の MGMT_GW）が host にあればそこ、無ければ 127.0.0.1 に打つ
-# （GW が無いときの Telegraf は全部のインターフェースで待つ）。ポートは compose と同じくシェルの HEALTH_PORT、.env の HEALTH_PORT、8080 の順（env_get が前の 2 つ）。
-# restart: on-failure:5 で止まったままのときもここで分かる
-MGMT_GW=203.0.113.1
-tb=127.0.0.1; ip -o -4 addr show 2>/dev/null | grep -q " $MGMT_GW/" && tb=$MGMT_GW
-hp=$(env_get HEALTH_PORT)
-judge "Telegraf: health が 200" \
-  "'ok' if s.strip() == '200' else ('繋がらない' if s.strip() in ('', '000') else 'HTTP ' + s.strip()) + '（docker compose ps -a telegraf が Exited なら logs telegraf で理由を見て up.sh telegraf）'" \
-  <<<"$(get - -o /dev/null -w '%{http_code}' "http://$tb:${hp:-8080}/" || true)"
-# syslog-ng と GoFlow2 も host のネットワークで、Telegraf と同じアドレス（up.sh の TELEGRAF_BIND）で待つ。syslog-ng は 5140/udp を待っているか（ss の 4 列目が
-# 待っているアドレス:ポート）、GoFlow2 は /metrics（8081。8080 は Telegraf の health）を見る
+# Telegraf・syslog-ng・GoFlow2 は host のネットワークで、up.sh がコンテナを作ったときの TELEGRAF_BIND（lab の管理ネットの GW 203.0.113.1 か、空なら全部のインターフェース）で待つ。
+# Telegraf の health と GoFlow2 の /metrics の宛先は、いま host にあるアドレスでなく動いているコンテナの設定から読む（up.sh のあとに lab.sh down / up しても、
+# コンテナは作ったときのアドレスで待ったまま）。compose の呼び方は上の Spark の ps と同じ。ps -a は止まったコンテナも返す（Exited なら curl が「繋がらない」になる）
+cid() { docker compose ps -a -q "$1" 2>/dev/null | head -n 1 || true; }  # cid <サービス> → コンテナ ID（無ければ空）
+# dest <サービス> <コンテナ ID> <bind> → 打つ先のアドレスか、curl を打たずに NG にする理由（頭に「NG 」）。bind が空なら全部のインターフェースで待つので 127.0.0.1。
+# grep は -q にしない（見つけた所で読むのをやめると ip が SIGPIPE で落ち、pipefail で外れたことになる）
+dest() {
+  if [ -z "$2" ]; then echo "NG コンテナが無い（docker/compose/up.sh $1 で上げる）"
+  elif [ -z "$3" ]; then echo 127.0.0.1
+  elif ip -o -4 addr show 2>/dev/null | grep -F -- " $3/" >/dev/null; then echo "$3"
+  else echo "NG $3 が host に無い（lab.sh down のあとなら docker/compose/lab.sh up で戻すか、docker/compose/up.sh telegraf syslog-ng goflow2 で上げ直す）"; fi
+}
+probe() {  # probe <名前> <サービス> <dest の出力> <:ポート/パス>。HTTP の番号が 200 なら ok
+  case "$3" in
+    NG\ *) echo "NG  $1: ${3#NG }"; ng=1 ;;
+    *) judge "$1" \
+         "'ok' if s.strip() == '200' else ('繋がらない' if s.strip() in ('', '000') else 'HTTP ' + s.strip()) + '（docker compose ps -a $2 が Exited なら logs $2 で理由を見て up.sh $2）'" \
+         <<<"$(get - -o /dev/null -w '%{http_code}' "http://$3$4" || true)" ;;
+  esac
+}
+# Telegraf の health（outputs.health）。bind とポートはコンテナの環境の TELEGRAF_BIND と HEALTH_PORT（無ければ 8080）。.env の HEALTH_PORT は読まない
+# （コンテナが上がったあとに .env だけ変えると、待っていないポートに打つ）。restart: on-failure:5 で止まったままのときもここで分かる
+tg=$(cid telegraf); tg_env=
+[ -z "$tg" ] || tg_env=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$tg" 2>/dev/null || true)
+hp=$(printf '%s\n' "$tg_env" | sed -n 's/^HEALTH_PORT=//p' | tail -n 1)
+probe "Telegraf: health が 200" telegraf "$(dest telegraf "$tg" "$(printf '%s\n' "$tg_env" | sed -n 's/^TELEGRAF_BIND=//p' | tail -n 1)")" ":${hp:-8080}/"
+# syslog-ng は 5140/udp を待っているか（ss の 4 列目が待っているアドレス:ポート。bind に依らない）
 judge "syslog-ng: udp 5140 を待っている" \
   "'ok' if any(l.split()[3].endswith(':5140') for l in s.splitlines() if len(l.split()) > 3) else '待っていない（docker compose ps -a syslog-ng が Exited なら logs syslog-ng で理由を見て up.sh syslog-ng）'" \
   <<<"$(ss -Hlun 2>/dev/null || true)"
-judge "GoFlow2: /metrics が 200" \
-  "'ok' if s.strip() == '200' else ('繋がらない' if s.strip() in ('', '000') else 'HTTP ' + s.strip()) + '（docker compose ps -a goflow2 が Exited なら logs goflow2 で理由を見て up.sh goflow2）'" \
-  <<<"$(get - -o /dev/null -w '%{http_code}' "http://$tb:8081/metrics" || true)"
+# GoFlow2 は /metrics（8081。8080 は Telegraf の health）。bind はコンテナの引数の -addr=<bind>:8081
+gf=$(cid goflow2); gf_cmd=
+[ -z "$gf" ] || gf_cmd=$(docker inspect --format '{{json .Config.Cmd}}' "$gf" 2>/dev/null || true)
+probe "GoFlow2: /metrics が 200" goflow2 "$(dest goflow2 "$gf" "$(printf '%s\n' "$gf_cmd" | sed -n 's/.*"-addr=\([^"]*\):[0-9]*".*/\1/p' | tail -n 1)")" ":8081/metrics"
 
 if [ "$ng" = 0 ]; then echo "すべて ok"; else echo "NG がある（docker compose logs <サービス> で見る）"; fi
 exit "$ng"
