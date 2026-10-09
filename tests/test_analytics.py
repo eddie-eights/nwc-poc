@@ -1682,11 +1682,27 @@ import tomllib
 _arch_readme = open(os.path.join(ROOT, "docs", "architecture", "README.md"), encoding="utf-8").read()
 with open(os.path.join(ROOT, "pyproject.toml"), "rb") as _f:
     _pyproject = tomllib.load(_f)
-check("構成の pptx は docs/architecture/render_pptx.py で描き、pyproject の docs のグループ（python-pptx==1.0.2）で打つ。README は個人リポジトリの道具を指さない（028）",
+check("構成の pptx は docs/architecture/render_pptx.py で描き、pyproject の docs のグループ（python-pptx==1.0.2）だけで打つ（--only-group。032）。README は個人リポジトリの道具を指さない（028）",
       os.path.isfile(os.path.join(ROOT, "docs", "architecture", "render_pptx.py"))
       and _pyproject.get("dependency-groups", {}).get("docs") == ["python-pptx==1.0.2"]
-      and "uv run --group docs python docs/architecture/render_pptx.py" in _arch_readme
+      and "uv run --only-group docs python docs/architecture/render_pptx.py" in _arch_readme
+      and "uv run --group docs" not in _arch_readme
       and "Documents/repo" not in _arch_readme)
+# 描けることも見る（032）: docs のグループだけの環境で python-pptx を import し、2 本のデッキを scratch へ描く。uv が無ければ skip せず落とす（この repo は uv 前提）
+import shutil, subprocess, tempfile, zipfile
+_pptx_dir = tempfile.mkdtemp()
+_pptx_code = ("import sys, pptx; sys.path.insert(0, 'docs/architecture'); import render_pptx as m; "
+              "sys.exit(max(m.main([f'docs/architecture/architecture-{v}.deck.md', '-o', f'{sys.argv[1]}/{v}.pptx']) for v in ('managed', 'oss')))")
+_pptx_run = (subprocess.run(["uv", "run", "--frozen", "--only-group", "docs", "python", "-c", _pptx_code, _pptx_dir],
+                            cwd=ROOT, capture_output=True, text=True, timeout=120)
+             if shutil.which("uv") else None)
+_pptx_out = [os.path.join(_pptx_dir, f"{v}.pptx") for v in ("managed", "oss")]
+_pptx_ok = (_pptx_run is not None and _pptx_run.returncode == 0
+            and all(os.path.isfile(o) and zipfile.is_zipfile(o)
+                    and any(n.startswith("ppt/slides/slide") for n in zipfile.ZipFile(o).namelist()) for o in _pptx_out))
+shutil.rmtree(_pptx_dir, ignore_errors=True)
+check("構成の pptx は uv run --only-group docs で描ける（python-pptx の import と、managed / oss の 2 本の .deck.md から pptx を scratch へ。032）"
+      + ("" if _pptx_ok else f"\n{_pptx_run and _pptx_run.stderr[-2000:]}"), _pptx_ok)
 _SINGLE = {  # (ルート, リソースの見出し): 理由に書く言葉
     ("base/core", 'resource "aws_instance" "web"'): "SSM のポートフォワード",
     ("pipeline/lab", 'resource "aws_instance" "lab"'): "containerlab の 1 台の中に全部の機器",
