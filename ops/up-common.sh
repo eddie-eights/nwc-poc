@@ -343,11 +343,12 @@ ensure_nautobot_secrets() {  # pipeline/nautobot の apply より前に呼ぶ。
 }
 
 # ---- MSK の SASL/SCRAM の資格情報（cycle 012。マネージド版の ops/up.sh だけが呼ぶ。OSS 版の Kafka は認証なしの 9092）
-# syslog-ng と GoFlow2 と gnmic（cycle 013）が MSK に書くときのユーザー名とパスワード。MSK の SCRAM は Secrets Manager の secret（名前が AmazonMSK_ で始まる）しか受けず、
-# その secret は自分で作った KMS の鍵で暗号化しないといけない（AWS が管理する aws/secretsmanager の鍵は使えない）。
+# syslog-ng と GoFlow2 と gnmic（cycle 013）が MSK に書くときのユーザー名とパスワード。コレクターごとに別の secret とユーザー（cycle 031。
+# app/spark/snmp_sinks.py の SCRAM_USERS がユーザーごとに書けるトピックを絞る）。MSK の SCRAM は Secrets Manager の secret（名前が AmazonMSK_ で始まる）しか受けず、
+# その secret は自分で作った KMS の鍵で暗号化しないといけない（AWS が管理する aws/secretsmanager の鍵は使えない）。鍵は 3 本の secret で 1 本。
 # 値を Terraform の state に入れないよう、両方ここで作る。IaC/terraform/aws-managed/pipeline/stream/msk.tf は同じ名前の data source で ARN だけ引く
 # （名前が揃っていることは tests/test_stream.py が見る）。消すのは ops/down.sh（ops/down-common.sh の delete_msk_scram）。
-# 費用は鍵が月 $1、secret が月 $0.40（どちらも日割り）。1 時間あたり 0.2 セントに満たないので、ops/up.sh の時間あたりの目安には入れていない
+# 費用は鍵が月 $1、secret が 1 本月 $0.40（どちらも日割り）。1 時間あたり 0.2 セントに満たないので、ops/up.sh の時間あたりの目安には入れていない
 ensure_msk_scram_key() {  # 鍵（alias/<PREFIX>-msk-scram）が無ければ作る。MSK_SCRAM_KEY_ARN に鍵の ARN を入れる
   local alias="alias/$PREFIX-msk-scram" out arn state
   if ! out=$(aws kms describe-key --region "$REGION" --key-id "$alias" --query 'KeyMetadata.[Arn,KeyState]' --output text 2>&1); then
@@ -375,8 +376,10 @@ ensure_msk_scram_key() {  # 鍵（alias/<PREFIX>-msk-scram）が無ければ作�
   MSK_SCRAM_KEY_ARN=$arn
 }
 MSK_SCRAM_INPUT=""  # ensure_msk_scram_secret が値を書く一時ファイル。create-secret の最中に止まっても ops/up.sh の EXIT の trap（on_exit）が消す
-ensure_msk_scram_secret() {  # secret（AmazonMSK_<PREFIX>-collectors）が無ければ作る。先に ensure_msk_scram_key を呼ぶ（MSK_SCRAM_KEY_ARN で暗号化する）。値は出さない
-  local name="AmazonMSK_$PREFIX-collectors" out kms deleted
+ensure_msk_scram_secret() {  # ensure_msk_scram_secret <コレクター>: secret（AmazonMSK_<PREFIX>-<コレクター>、username は <コレクター>）が無ければ作る。
+  # 先に ensure_msk_scram_key を呼ぶ（MSK_SCRAM_KEY_ARN で暗号化する）。値は出さない
+  local collector=${1:?ensure_msk_scram_secret にコレクター名を渡す}
+  local name="AmazonMSK_$PREFIX-$collector" out kms deleted
   # 中身（ユーザー名とパスワード）は読まない。describe-secret はメタデータ（暗号化の鍵と削除の予約）だけを返す
   if out=$(aws secretsmanager describe-secret --region "$REGION" --secret-id "$name" --query '[KmsKeyId,DeletedDate]' --output text 2>&1); then
     kms=${out%%$'\t'*}; deleted=${out##*$'\t'}
@@ -397,12 +400,12 @@ ensure_msk_scram_secret() {  # secret（AmazonMSK_<PREFIX>-collectors）が無�
   MSK_SCRAM_INPUT=$(umask 077; mktemp "${TMPDIR:-/tmp}/nwc-secret.XXXXXX") || die "一時ファイルを作れなかった"
   # パスワードは乱数（英数字と - _ だけ）。値はコマンドラインにも画面にも出さず、一時ファイル（自分だけが読める）から渡してすぐ消す
   "${PY[@]}" -c 'import json, secrets, sys
-name, desc, key, prefix, owner, managed_by, path = sys.argv[1:]
+name, desc, key, prefix, owner, managed_by, path, user = sys.argv[1:]
 with open(path, "w", encoding="utf-8") as f:
     json.dump({"Name": name, "Description": desc, "KmsKeyId": key,
-               "SecretString": json.dumps({"username": "collectors", "password": secrets.token_urlsafe(24)}),
+               "SecretString": json.dumps({"username": user, "password": secrets.token_urlsafe(24)}),
                "Tags": [{"Key": "ManagedBy", "Value": managed_by}, {"Key": "Project", "Value": prefix}, {"Key": "owner", "Value": owner}]}, f)' \
-    "$name" "MSK SCRAM credentials of syslog-ng, GoFlow2 and gnmic (created by $OPS_DIR/up.sh)" "$MSK_SCRAM_KEY_ARN" "$PREFIX" "$OWNER" "$OPS_DIR/up.sh" "$MSK_SCRAM_INPUT" \
+    "$name" "MSK SCRAM credentials of $collector (created by $OPS_DIR/up.sh)" "$MSK_SCRAM_KEY_ARN" "$PREFIX" "$OWNER" "$OPS_DIR/up.sh" "$MSK_SCRAM_INPUT" "$collector" \
     && aws secretsmanager create-secret --region "$REGION" --cli-input-json "file://$MSK_SCRAM_INPUT" >/dev/null || rc=$?
   rm -f -- "${MSK_SCRAM_INPUT:?}"; MSK_SCRAM_INPUT=""
   [ "$rc" -eq 0 ] || die "Secrets Manager に $name を作れなかった（上のエラー）。直前の $OPS_DIR/down.sh で消したばかりなら、数分おいて打ち直す"

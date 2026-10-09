@@ -227,7 +227,7 @@ elif (svc, op) == ("ecr", "describe-images"):
     if not os.environ.get("FAKE_ECR_ALL") and f'{opt("--repository-name")}:{tag}' not in inv.get("ecr", []):
         fail("An error occurred (ImageNotFoundException)")
 # ---- MSK の SCRAM の secret と KMS の鍵（cycle 012）。在庫の secrets は {名前: {"kms": 鍵の ARN}}（中身は持たない）、
-# kms は {alias: 鍵の ARN}、kms_keys は {鍵の ARN: 状態}。FAKE_SM_FAIL なら delete-secret が落ちる。FAKE_KMS_DENY なら describe-key が権限で落ちる。
+# kms は {alias: 鍵の ARN}、kms_keys は {鍵の ARN: 状態}。FAKE_SM_FAIL なら delete-secret が落ちる（1 なら全部、secret の名前ならその 1 本だけ）。FAKE_KMS_DENY なら describe-key が権限で落ちる。
 # 削除を予約された secret は "deleted" を持つ。create-secret / create-key が作ったものは中身とタグも持つ（値が外に出ていないかを見るため）
 elif (svc, op) == ("secretsmanager", "create-secret"):
     src = opt("--cli-input-json")
@@ -289,7 +289,7 @@ elif (svc, op) == ("secretsmanager", "describe-secret"):
 elif (svc, op) == ("secretsmanager", "delete-secret"):
     if "--force-delete-without-recovery" not in args:
         log({"unknown": "delete-secret without --force-delete-without-recovery"}); fail("unknown delete-secret", 255)
-    if os.environ.get("FAKE_SM_FAIL"):
+    if os.environ.get("FAKE_SM_FAIL") in ("1", opt("--secret-id")):
         fail("An error occurred (AccessDeniedException) when calling the DeleteSecret operation")
     if opt("--secret-id") not in inv.get("secrets", {}):
         fail("An error occurred (ResourceNotFoundException)")
@@ -444,6 +444,10 @@ def ssm_param(managed_by, project):
 # マネージド版（OWNER=x → x-nwc-poc）
 KEY_MGD = "arn:aws:kms:ap-northeast-1:123456789012:key/k-mgd"  # alias/x-nwc-oss-nwc-poc-msk-scram の鍵
 KEY_POC = "arn:aws:kms:ap-northeast-1:123456789012:key/k-poc"  # alias/x-nwc-poc-msk-scram の鍵
+SCRAM_COLLECTORS = ("syslog-ng", "goflow2", "gnmic")  # SCRAM の secret はコレクターごとに 1 本（cycle 031）。ops/up.sh が作る順
+def scram_names(prefix):
+    return ["AmazonMSK_" + prefix + "-" + c for c in SCRAM_COLLECTORS]
+MGD_SCRAM, POC_SCRAM = scram_names("x-nwc-oss-nwc-poc"), scram_names("x-nwc-poc")
 OSS_MANAGED_PARAMS = ["/x-nwc-oss/kafka/cluster-id", "/x-nwc-oss/kafka-ui/admin-password", "/x-nwc-oss/gnmic/gnmi-password",
                       "/x-nwc-oss/opensearch-password", "/x-nwc-oss/splunk/admin-password", "/x-nwc-oss/splunk/hec-token",
                       "/x-nwc-oss/neo4j-password", "/x-nwc-oss/nautobot/secret-key"]
@@ -473,7 +477,7 @@ def inventory():
                                          "arn:aws:ec2:ap-northeast-1:123456789012:subnet/subnet-0aaa"],
                    "x-nwc-poc": ["arn:aws:s3:::x-nwc-poc-left"]},
         "ecr": [],
-        "secrets": {"AmazonMSK_x-nwc-oss-nwc-poc-collectors": {"kms": KEY_MGD}, "AmazonMSK_x-nwc-poc-collectors": {"kms": KEY_POC}},
+        "secrets": {**{n: {"kms": KEY_MGD} for n in MGD_SCRAM}, **{n: {"kms": KEY_POC} for n in POC_SCRAM}},
         "kms": {"alias/x-nwc-oss-nwc-poc-msk-scram": KEY_MGD, "alias/x-nwc-poc-msk-scram": KEY_POC},
         "kms_keys": {KEY_MGD: "Enabled", KEY_POC: "Enabled"},
     }
@@ -657,19 +661,20 @@ check("マネージド版: ロググループは x_nwc_oss_nwc_poc_agent- だけ
 def aws_ops(cs, svc):  # svc に打った操作を順に
     return [c["args"][1] for c in cs if c["cmd"] == "aws" and c["args"][0] == svc]
 
-def aws_pos(cs, svc, op):
-    return next(i for i, c in enumerate(cs) if c["cmd"] == "aws" and c["args"][:2] == [svc, op])
+def aws_pos(cs, svc, op, last=False):  # 最初（last なら最後）に打った位置
+    pos = [i for i, c in enumerate(cs) if c["cmd"] == "aws" and c["args"][:2] == [svc, op]]
+    return pos[-1] if last else pos[0]
 
-check("マネージド版: MSK の SCRAM の secret は AmazonMSK_x-nwc-oss-nwc-poc-collectors だけを --force-delete-without-recovery で消し、"
-      "x-nwc-poc のものは残す（cycle 012）",
-      set(inv["secrets"]) == {"AmazonMSK_x-nwc-poc-collectors"}
-      and [arg_after(a, "--secret-id") for a in aws_calls(cs, "secretsmanager", "delete-secret")] == ["AmazonMSK_x-nwc-oss-nwc-poc-collectors"]
-      and "AmazonMSK_x-nwc-oss-nwc-poc-collectors: 消した" in out)
-check("マネージド版: KMS は alias/x-nwc-oss-nwc-poc-msk-scram の鍵だけ、secret を消したあとに 7 日の削除を予約し、それから alias を外す"
+check("マネージド版: MSK の SCRAM の secret は x-nwc-oss-nwc-poc の 3 本（syslog-ng / goflow2 / gnmic）だけを --force-delete-without-recovery で消し、"
+      "x-nwc-poc のものは残す（cycle 012。031 でコレクターごとに）",
+      set(inv["secrets"]) == set(POC_SCRAM)
+      and [arg_after(a, "--secret-id") for a in aws_calls(cs, "secretsmanager", "delete-secret")] == MGD_SCRAM
+      and all(f"{n}: 消した" in out for n in MGD_SCRAM))
+check("マネージド版: KMS は alias/x-nwc-oss-nwc-poc-msk-scram の鍵だけ、secret を 3 本とも消したあとに 1 回だけ 7 日の削除を予約し、それから alias を外す"
       "（x-nwc-poc の鍵と alias は残す）",
       inv["kms"] == {"alias/x-nwc-poc-msk-scram": KEY_POC} and inv["kms_keys"] == {KEY_MGD: "PendingDeletion", KEY_POC: "Enabled"}
       and aws_ops(cs, "kms") == ["describe-key", "schedule-key-deletion", "delete-alias"]
-      and aws_pos(cs, "secretsmanager", "delete-secret") < aws_pos(cs, "kms", "schedule-key-deletion") < aws_pos(cs, "kms", "delete-alias")
+      and aws_pos(cs, "secretsmanager", "delete-secret", last=True) < aws_pos(cs, "kms", "schedule-key-deletion") < aws_pos(cs, "kms", "delete-alias")
       and "alias/x-nwc-oss-nwc-poc-msk-scram: 鍵の削除を予約し（7 日後に消える。待つあいだは課金されない）、alias を外した" in out)
 check("マネージド版: secret の中身を読むコマンド（get-secret-value）は打たない", not aws_calls(cs, "secretsmanager", "get-secret-value"))
 check("マネージド版: 残りも Project=x-nwc-oss-nwc-poc で数える（「残り: 2 件」）",
@@ -688,7 +693,7 @@ check("ops/down.sh（OWNER=x → x-nwc-poc）: 終了コード 0 で、消した
       and set(inv["log_groups"]) == ALL_LOG_GROUPS - {"/aws/bedrock-agentcore/runtimes/x_nwc_poc_agent-CCC-DEFAULT"}
       and "残り: 1 件（Project=x-nwc-poc のタグ）" in out)
 check("ops/down.sh（OWNER=x）: SCRAM の secret と鍵も x-nwc-poc のものだけ消す（x-nwc-oss-nwc-poc のものは残す）",
-      set(inv["secrets"]) == {"AmazonMSK_x-nwc-oss-nwc-poc-collectors"}
+      set(inv["secrets"]) == set(MGD_SCRAM)
       and inv["kms"] == {"alias/x-nwc-oss-nwc-poc-msk-scram": KEY_MGD} and inv["kms_keys"] == {KEY_MGD: "Enabled", KEY_POC: "PendingDeletion"})
 
 # ---- 5-3. の分かれ道（cycle 012）
@@ -698,22 +703,34 @@ check("ops/down.sh: pipeline/stream が消えなかったら SCRAM の secret �
       p.returncode != 0 and not [c for c in cs if c.get("unknown")]
       and not [c for c in cs if c["cmd"] == "aws" and c["args"][0] in ("secretsmanager", "kms")]
       and (inv["secrets"], inv["kms"], inv["kms_keys"]) == (inventory()["secrets"], inventory()["kms"], inventory()["kms_keys"])
-      and "AmazonMSK_x-nwc-oss-nwc-poc-collectors と alias/x-nwc-oss-nwc-poc-msk-scram: 残す（IaC/terraform/aws-managed/pipeline/stream が消えなかったので" in out)
+      and all(f"{n}: 残す（IaC/terraform/aws-managed/pipeline/stream が消えなかったので" in out for n in MGD_SCRAM + ["alias/x-nwc-oss-nwc-poc-msk-scram"]))
 
 p, cs, inv = run_down("ops/down.sh", "x-nwc-oss", {"FAKE_SM_FAIL": "1"})
 out = p.stdout + p.stderr
 check("ops/down.sh: secret を消せなかったら鍵も残す（消すと secret を復号できなくなる）",
       not [c for c in cs if c.get("unknown")] and not aws_calls(cs, "kms", "schedule-key-deletion") and not aws_calls(cs, "kms", "delete-alias")
-      and inv["kms_keys"][KEY_MGD] == "Enabled" and "AmazonMSK_x-nwc-oss-nwc-poc-collectors: 消せなかった（上のエラー）。鍵も残す" in out)
+      and inv["kms_keys"][KEY_MGD] == "Enabled" and all(f"{n}: 消せなかった（上のエラー）。鍵も残す" in out for n in MGD_SCRAM))
+
+# 3 本のうち 1 本（goflow2）だけ消せない: ほかの 2 本は消し、鍵は残す（cycle 031）
+p, cs, inv = run_down("ops/down.sh", "x-nwc-oss", {"FAKE_SM_FAIL": MGD_SCRAM[1]})
+out = p.stdout + p.stderr
+check("ops/down.sh: SCRAM の secret の 1 本だけ消せなかったら、ほかの 2 本は消し、鍵は予約も alias の削除もせずに残す（cycle 031）",
+      not [c for c in cs if c.get("unknown")]
+      and [arg_after(a, "--secret-id") for a in aws_calls(cs, "secretsmanager", "delete-secret")] == MGD_SCRAM
+      and set(inv["secrets"]) == set(POC_SCRAM) | {MGD_SCRAM[1]}
+      and f"{MGD_SCRAM[1]}: 消せなかった（上のエラー）。鍵も残す" in out and f"{MGD_SCRAM[2]}: 消した" in out
+      and not aws_calls(cs, "kms", "schedule-key-deletion") and not aws_calls(cs, "kms", "delete-alias") and aws_ops(cs, "kms") == []
+      and inv["kms_keys"][KEY_MGD] == "Enabled" and "alias/x-nwc-oss-nwc-poc-msk-scram: 残す（消せなかった secret がある" in out)
 
 pending = inventory()
-del pending["secrets"]["AmazonMSK_x-nwc-oss-nwc-poc-collectors"]
+for _n in MGD_SCRAM:
+    del pending["secrets"][_n]
 pending["kms_keys"][KEY_MGD] = "PendingDeletion"
 p, cs, inv = run_down("ops/down.sh", "x-nwc-oss", inv=pending)
 out = p.stdout + p.stderr
 check("ops/down.sh: secret が無く、鍵が削除の予約中（前の down.sh が alias を外せなかった）なら、予約し直さずに alias だけ外す",
       p.returncode == 0 and not [c for c in cs if c.get("unknown")]
-      and "AmazonMSK_x-nwc-oss-nwc-poc-collectors: 無い" in out
+      and all(f"{n}: 無い" in out for n in MGD_SCRAM)
       and aws_ops(cs, "kms") == ["describe-key", "delete-alias"] and inv["kms"] == {"alias/x-nwc-poc-msk-scram": KEY_POC})
 
 # ================================================================ 2''. 同じ名前の VPC が 2 つあるとき（2026-10-08 の OSS 版の検証の不具合 1）
@@ -958,7 +975,11 @@ check("ensure_secret strong-password: 値は画面にもコマンドラインに
 SCRAM_SH = r'''
 REGION=ap-northeast-1; PY=(python3); PREFIX=x-nwc-poc; OWNER=x
 . ops/common.sh; . ops/up-common.sh; OPS_DIR=ops
-for i in 1 2; do ensure_msk_scram_key || exit 1; ensure_msk_scram_secret || exit 1; echo "KEY=$MSK_SCRAM_KEY_ARN"; done
+for i in 1 2; do
+  ensure_msk_scram_key || exit 1
+  ensure_msk_scram_secret syslog-ng || exit 1; ensure_msk_scram_secret goflow2 || exit 1; ensure_msk_scram_secret gnmic || exit 1
+  echo "KEY=$MSK_SCRAM_KEY_ARN"
+done
 '''
 def run_scram(inv, extra=None, sh=SCRAM_SH):
     reset(inv)
@@ -968,28 +989,40 @@ def run_scram(inv, extra=None, sh=SCRAM_SH):
 
 def no_scram():  # 在庫から x-nwc-poc の secret と鍵を除く（何も無いところから作る）
     i = inventory()
-    del i["secrets"]["AmazonMSK_x-nwc-poc-collectors"]; del i["kms"]["alias/x-nwc-poc-msk-scram"]; del i["kms_keys"][KEY_POC]
+    for n in POC_SCRAM:
+        del i["secrets"][n]
+    del i["kms"]["alias/x-nwc-poc-msk-scram"]; del i["kms_keys"][KEY_POC]
     return i
 
 p, cs, inv = run_scram(no_scram())
 out = p.stdout + p.stderr
 _new = [a for a in inv["kms_keys"] if "/k-new" in a] or ["（作られていない）"]
-_made = inv["secrets"].get("AmazonMSK_x-nwc-poc-collectors", {})
-_val = json.loads(_made.get("value", "{}"))
+_mades = {c: inv["secrets"].get(n, {}) for c, n in zip(SCRAM_COLLECTORS, POC_SCRAM)}
+_vals = {c: json.loads(m.get("value", "{}")) for c, m in _mades.items()}
 check("ensure_msk_scram_key: alias/x-nwc-poc-msk-scram が無ければ鍵を 1 回だけ作って alias を付け、2 回目は作り直さない（MSK_SCRAM_KEY_ARN はその鍵）",
       p.returncode == 0 and not [c for c in cs if c.get("unknown")] and len(_new) == 1
       and inv["kms"]["alias/x-nwc-poc-msk-scram"] == _new[0] and len(aws_calls(cs, "kms", "create-key")) == 1 and len(aws_calls(cs, "kms", "create-alias")) == 1
       and p.stdout.count(f"KEY={_new[0]}\n") == 2 and "alias/x-nwc-poc-msk-scram はある（作り直さない）" in p.stdout
       and inv.get("kms_made", {}).get(_new[0], {}).get("tags") == {"ManagedBy": "ops/up.sh", "Project": "x-nwc-poc", "owner": "x"})
-check("ensure_msk_scram_secret: AmazonMSK_x-nwc-poc-collectors を作った鍵（MSK_SCRAM_KEY_ARN）で暗号化して 1 回だけ作り、2 回目は作り直さない",
-      _made.get("kms") == _new[0] and len(aws_calls(cs, "secretsmanager", "create-secret")) == 1
-      and "AmazonMSK_x-nwc-poc-collectors はある（作り直さない）" in p.stdout
-      and _made.get("tags") == {"ManagedBy": "ops/up.sh", "Project": "x-nwc-poc", "owner": "x"})
-check("ensure_msk_scram_secret: 中身は JSON の username / password（MSK の SCRAM の形）で、パスワードは 32 文字の乱数",
-      set(_val) == {"username", "password"} and _val["username"] == "collectors" and re.fullmatch(r"[A-Za-z0-9_-]{32}", _val["password"]) is not None)
+check("ensure_msk_scram_secret: AmazonMSK_x-nwc-poc-{syslog-ng,goflow2,gnmic} をこの順に、作った鍵（MSK_SCRAM_KEY_ARN）で暗号化して 1 回ずつ作り、"
+      "2 回目は作り直さない（cycle 031）",
+      all(m.get("kms") == _new[0] for m in _mades.values())
+      and len(aws_calls(cs, "secretsmanager", "create-secret")) == 3
+      and [n for n in inv["secrets"] if n.startswith("AmazonMSK_x-nwc-poc-")] == POC_SCRAM
+      and all(f"{n} はある（作り直さない）" in p.stdout for n in POC_SCRAM)
+      and all(m.get("tags") == {"ManagedBy": "ops/up.sh", "Project": "x-nwc-poc", "owner": "x"} for m in _mades.values())
+      and [m.get("desc") for m in _mades.values()] == [f"MSK SCRAM credentials of {c} (created by ops/up.sh)" for c in SCRAM_COLLECTORS])
+check("ensure_msk_scram_secret: 中身は JSON の username / password（MSK の SCRAM の形）。username はコレクター名、パスワードは 32 文字の乱数で 3 本とも別",
+      all(set(v) == {"username", "password"} and v["username"] == c and re.fullmatch(r"[A-Za-z0-9_-]{32}", v["password"]) is not None
+          for c, v in _vals.items())
+      and len({v.get("password") for v in _vals.values()}) == 3)
 check("ensure_msk_scram_secret: パスワードは画面にもコマンドラインにも出さず、値を書いた一時ファイルを残さず、中身を読むコマンド（get-secret-value）は打たない",
-      _val.get("password") and _val["password"] not in out and not any(_val["password"] in " ".join(c["args"]) for c in cs)
+      all(v.get("password") and v["password"] not in out and not any(v["password"] in " ".join(c["args"]) for c in cs) for v in _vals.values())
       and not [f for f in os.listdir(TMP) if f.startswith("nwc-secret.")] and not aws_calls(cs, "secretsmanager", "get-secret-value"))
+p, cs, inv = run_scram(no_scram(), sh=SCRAM_SH.replace("for i in 1 2; do", "ensure_msk_scram_key || exit 1; ensure_msk_scram_secret; echo NOT-REACHED; exit 0\nfor i in 1 2; do", 1))
+check("ensure_msk_scram_secret: コレクター名を渡さなければ止まり、secret を作らない（cycle 031）",
+      p.returncode != 0 and "NOT-REACHED" not in p.stdout and not aws_calls(cs, "secretsmanager", "create-secret")
+      and "ensure_msk_scram_secret にコレクター名を渡す" in p.stderr)
 # create-secret の最中に止められても、値を書いた一時ファイルは ops/up.sh の EXIT の trap（on_exit）が消す。on_exit は ops/up.sh のもの（上の _on_exit）をそのまま使う
 for _sig in ("INT", "TERM"):
     for _f in [f for f in os.listdir(TMP) if f.startswith("nwc-secret.")]:
@@ -997,36 +1030,39 @@ for _sig in ("INT", "TERM"):
     _p, _cs, _inv = run_scram(no_scram(), {"FAKE_SM_CREATE_SIGNAL": _sig},
                               SCRAM_SH.replace("OPS_DIR=ops\n", "OPS_DIR=ops\nGRAPH_PID=\"\"; NAUTOBOT_CTX=\"\"\n" + _on_exit, 1))
     check(f"ensure_msk_scram_secret: create-secret の最中に SIG{_sig} で止まっても、値を書いた一時ファイルを残さない（ops/up.sh の on_exit が消す）",
-          _p.returncode < 0 and len(aws_calls(_cs, "secretsmanager", "create-secret")) == 1 and "AmazonMSK_x-nwc-poc-collectors" not in _inv["secrets"]
+          _p.returncode < 0 and len(aws_calls(_cs, "secretsmanager", "create-secret")) == 1 and not set(POC_SCRAM) & set(_inv["secrets"])
           and not [f for f in os.listdir(TMP) if f.startswith("nwc-secret.")])
 check("ensure_msk_scram_key / secret: x-nwc-oss-nwc-poc の secret と鍵には触らない",
-      inv["secrets"]["AmazonMSK_x-nwc-oss-nwc-poc-collectors"] == inventory()["secrets"]["AmazonMSK_x-nwc-oss-nwc-poc-collectors"]
+      all(inv["secrets"][n] == inventory()["secrets"][n] for n in MGD_SCRAM)
       and inv["kms"]["alias/x-nwc-oss-nwc-poc-msk-scram"] == KEY_MGD and inv["kms_keys"][KEY_MGD] == "Enabled")
 
 # 直前の down.sh が鍵の削除を予約し、secret の削除も予約されている（手で消したとき）: 予約を取り消して有効に戻し、secret を戻す
 _pend = inventory()
 _pend["kms_keys"][KEY_POC] = "PendingDeletion"
-_pend["secrets"]["AmazonMSK_x-nwc-poc-collectors"]["deleted"] = "2026-10-08T00:00:00+09:00"
+for _n in POC_SCRAM:
+    _pend["secrets"][_n]["deleted"] = "2026-10-08T00:00:00+09:00"
 p, cs, inv = run_scram(_pend)
 check("ensure_msk_scram_key: 鍵が削除の予約中なら取り消して有効に戻す（cancel-key-deletion のあと enable-key）。secret の削除の予約も戻し、どちらも作り直さない",
       p.returncode == 0 and aws_ops(cs, "kms") == ["describe-key", "cancel-key-deletion", "enable-key", "describe-key"]
-      and inv["kms_keys"][KEY_POC] == "Enabled" and "deleted" not in inv["secrets"]["AmazonMSK_x-nwc-poc-collectors"]
-      and len(aws_calls(cs, "secretsmanager", "restore-secret")) == 1 and not aws_calls(cs, "secretsmanager", "create-secret")
+      and inv["kms_keys"][KEY_POC] == "Enabled" and all("deleted" not in inv["secrets"][n] for n in POC_SCRAM)
+      and len(aws_calls(cs, "secretsmanager", "restore-secret")) == 3 and not aws_calls(cs, "secretsmanager", "create-secret")
       and "alias/x-nwc-poc-msk-scram は PendingDeletion だったので有効に戻した" in p.stdout and f"KEY={KEY_POC}" in p.stdout)
 
 # secret が別の鍵（作り直す前の鍵や aws/secretsmanager）で暗号化されている: MSK が受けないので止める
 _other = inventory()
-_other["secrets"]["AmazonMSK_x-nwc-poc-collectors"]["kms"] = KEY_MGD
+_other["secrets"][POC_SCRAM[2]]["kms"] = KEY_MGD
 p, cs, inv = run_scram(_other)
-check("ensure_msk_scram_secret: secret の暗号化の鍵が alias/x-nwc-poc-msk-scram の鍵と違えば、作り直さずに止め、消し方を出す",
+check("ensure_msk_scram_secret: secret（ここでは 3 本目の gnmic）の暗号化の鍵が alias/x-nwc-poc-msk-scram の鍵と違えば、作り直さずに止め、消し方を出す",
       p.returncode != 0 and not aws_calls(cs, "secretsmanager", "create-secret") and "KEY=" not in p.stdout
-      and "AmazonMSK_x-nwc-poc-collectors の暗号化の鍵（" + KEY_MGD + "）が alias/x-nwc-poc-msk-scram の鍵と違う" in p.stderr
+      and all(f"{n} はある（作り直さない）" in p.stdout for n in POC_SCRAM[:2])
+      and POC_SCRAM[2] + " の暗号化の鍵（" + KEY_MGD + "）が alias/x-nwc-poc-msk-scram の鍵と違う" in p.stderr
       and "--force-delete-without-recovery" in p.stderr)
-_other["secrets"]["AmazonMSK_x-nwc-poc-collectors"]["kms"] = "None"   # aws/secretsmanager で暗号化した secret は KmsKeyId が無い
+_other["secrets"][POC_SCRAM[2]]["kms"] = "None"   # aws/secretsmanager で暗号化した secret は KmsKeyId が無い
 p, cs, inv = run_scram(_other)
 check("ensure_msk_scram_secret: aws/secretsmanager の鍵（KmsKeyId が無い）で暗号化した secret でも止める", p.returncode != 0 and "の暗号化の鍵（None）が" in p.stderr)
 for _form in (KEY_POC.rsplit("/", 1)[1], "alias/x-nwc-poc-msk-scram", "arn:aws:kms:ap-northeast-1:123456789012:alias/x-nwc-poc-msk-scram"):
-    _other["secrets"]["AmazonMSK_x-nwc-poc-collectors"]["kms"] = _form
+    for _n in POC_SCRAM:
+        _other["secrets"][_n]["kms"] = _form
     p, cs, inv = run_scram(_other)
     check(f"ensure_msk_scram_secret: KmsKeyId が同じ鍵の別の書き方（{_form}）なら通す", p.returncode == 0 and not aws_calls(cs, "secretsmanager", "create-secret"))
 

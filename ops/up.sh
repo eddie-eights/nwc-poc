@@ -927,9 +927,12 @@ if [ -z "$SKIP_STREAM" ]; then
   echo "gnmic の購読先の一覧: Nautobot の Job が書く（上の一覧は最初の値）"
   # Kafbat UI（stream を作る回はいつも作る）。ログインの admin のパスワードは SSM の SecureString（Web の EC2 のユニットが起動のたびに SSM から読む）
   ensure_secret "/$PREFIX/kafka-ui/admin-password" password "Kafbat UI admin password (created by ops/up.sh)"
-  # syslog-ng と GoFlow2 と gnmic が MSK に書く SCRAM のユーザー名とパスワード（Secrets Manager。KMS の鍵も作る。ops/up-common.sh）。msk.tf が data source で引くので apply より前
+  # syslog-ng と GoFlow2 と gnmic が MSK に書く SCRAM のユーザー名とパスワード（Secrets Manager。KMS の鍵も作る。ops/up-common.sh）。msk.tf が data source で引くので apply より前。
+  # コレクターごとに 1 本（cycle 031。名前は msk.tf の scram_collectors と app/spark/snmp_sinks.py の SCRAM_USERS と揃える）
   ensure_msk_scram_key
-  ensure_msk_scram_secret
+  ensure_msk_scram_secret syslog-ng
+  ensure_msk_scram_secret goflow2
+  ensure_msk_scram_secret gnmic
   tf_apply pipeline/stream -var "telegraf_image_tag=$TELEGRAF_TAG" -var "kafka_ui_image_tag=$KAFKA_UI_TAG" -var "gnmi_targets=$GNMI_TARGETS" \
     -var "syslog_standard=$SYSLOG_STANDARD" -var "gnmic_image_tag=$GNMIC_TAG" -var "gnmi_targets_from_nautobot=$GNMI_FROM_NAUTOBOT" \
     -var "syslog_ng_image_tag=$SYSLOG_NG_TAG" -var "goflow2_image_tag=$GOFLOW2_TAG" \

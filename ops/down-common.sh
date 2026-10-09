@@ -196,12 +196,14 @@ delete_up_ssm_params() {  # up.sh が作った SSM のパラメータ（/<PREFIX
     aws ssm delete-parameter --region "$REGION" --name "$n" 2>/dev/null && echo "$n: 消した" || echo "$n: 無い"
   done
 }
-delete_msk_scram() {  # ops/up.sh が作った MSK の SCRAM の secret（AmazonMSK_<PREFIX>-collectors）と KMS の鍵（alias/<PREFIX>-msk-scram）を消す。マネージド版だけ
+MSK_SCRAM_KEEP_KEY=""  # delete_msk_scram が secret を消せなかった（か確かめられなかった）とき 1。delete_msk_scram_key が鍵を残す
+delete_msk_scram() {  # delete_msk_scram <コレクター>: ops/up.sh が作った MSK の SCRAM の secret（AmazonMSK_<PREFIX>-<コレクター>）を消す。マネージド版だけ。
+  # 鍵（alias/<PREFIX>-msk-scram）は 3 本のあとに delete_msk_scram_key が 1 回だけ消す（cycle 031）。
   # Terraform の管理外（値を state に載せないよう ops/up-common.sh の ensure_msk_scram_key / ensure_msk_scram_secret が作る）。secret の中身は読まない
-  local name="AmazonMSK_$PREFIX-collectors" alias="alias/$PREFIX-msk-scram" out arn state
-  # stream が消えなかったときは両方残す。msk.tf の data source が次の destroy でも 2 つを引くので、消すと打ち直しても stream を消せなくなる
+  local name="AmazonMSK_$PREFIX-${1:?delete_msk_scram にコレクター名を渡す}" out
+  # stream が消えなかったときは残す。msk.tf の data source が次の destroy でも引くので、消すと打ち直しても stream を消せなくなる
   case " $FAILED_ROOTS " in *" pipeline/stream "*)
-    echo "$name と $alias: 残す（$TF_DIR/pipeline/stream が消えなかったので、次の $OPS_DIR/down.sh で消す）"; return ;;
+    echo "$name: 残す（$TF_DIR/pipeline/stream が消えなかったので、次の $OPS_DIR/down.sh で消す）"; return ;;
   esac
   # secret は復旧の待ち（既定 30 日）を置かずに消す（待つあいだは同じ名前で作れず、次の up.sh が止まる）
   if out=$(aws secretsmanager describe-secret --region "$REGION" --secret-id "$name" --query Name --output text 2>&1); then
@@ -209,13 +211,22 @@ delete_msk_scram() {  # ops/up.sh が作った MSK の SCRAM の secret（Amazon
       echo "$name: 消した"
     else
       echo "$name: 消せなかった（上のエラー）。鍵も残す（消すと secret を復号できなくなる）。手で消す: aws secretsmanager delete-secret --region $REGION --secret-id $name --force-delete-without-recovery"
-      return
+      MSK_SCRAM_KEEP_KEY=1
     fi
   else
     case "$out" in
       *ResourceNotFoundException*) echo "$name: 無い" ;;
-      *) echo "$name: 確かめられなかった（${out}）。鍵も残す"; return ;;
+      *) echo "$name: 確かめられなかった（${out}）。鍵も残す"; MSK_SCRAM_KEEP_KEY=1 ;;
     esac
+  fi
+}
+delete_msk_scram_key() {  # ops/up.sh が作った MSK の SCRAM の KMS の鍵（alias/<PREFIX>-msk-scram）の削除を予約し、alias を外す。delete_msk_scram を 3 本ぶん呼んだあとに 1 回
+  local alias="alias/$PREFIX-msk-scram" out arn state
+  case " $FAILED_ROOTS " in *" pipeline/stream "*)
+    echo "$alias: 残す（$TF_DIR/pipeline/stream が消えなかったので、次の $OPS_DIR/down.sh で消す）"; return ;;
+  esac
+  if [ -n "$MSK_SCRAM_KEEP_KEY" ]; then
+    echo "$alias: 残す（消せなかった secret がある。消すと secret を復号できなくなる）"; return
   fi
   # 鍵はすぐには消せない（7 日の待ち。待つあいだは課金されない）。先に削除を予約し、それから alias を外す
   # （逆の順だと、予約に失敗したとき名前の無い鍵が残り、次の up.sh は別の鍵を作る）

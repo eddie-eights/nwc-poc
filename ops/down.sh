@@ -113,8 +113,12 @@ delete_up_ssm_params
 
 log "5-3. ops/up.sh が作った MSK の SCRAM の secret（Secrets Manager）と KMS の鍵"
 # secret はすぐ消し、鍵は削除を予約して（7 日後に消える。待つあいだは課金されない）alias を外す。中身は読まない。
-# IaC/terraform/aws-managed/pipeline/stream が消えなかったときは両方残す（ops/down-common.sh の delete_msk_scram）
-delete_msk_scram
+# IaC/terraform/aws-managed/pipeline/stream が消えなかったときは両方残す（ops/down-common.sh の delete_msk_scram / delete_msk_scram_key）。
+# secret はコレクターごとに 1 本（cycle 031）。1 本でも消せなかったら鍵は残す
+delete_msk_scram syslog-ng
+delete_msk_scram goflow2
+delete_msk_scram gnmic
+delete_msk_scram_key
 
 log "6. 残っていないか（Project=$PREFIX のタグ）"
 report_leftovers
