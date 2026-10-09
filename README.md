@@ -179,3 +179,4 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | [ai-dev-flow.md](docs/ai-dev-flow.md) | AI 開発フロー: PM とエンジニアの AI セッションがサイクル（設計 → 実装 → レビュー）を回す流れ、役割の分担、成果物の置き場 |
 | [faq-fukuda-nwc-poc.md](docs/faq-fukuda-nwc-poc.md) | FAQ: ほかの開発者に説明するときに出る質問と答え（収集、Spark、Nautobot、Neptune、格納先、Splunk、OSS への置き換え、AWS の基礎など） |
 | [data-stores.md](docs/data-stores.md) | 勉強会メモ: データの置き場、コンテナイメージのアーキテクチャの選び方、Neptune Analytics の基礎、MSK のブートストラップサーバーの受け渡し |
+| [GLOSSARY.md](docs/GLOSSARY.md) | 用語集: この PoC で使う言葉（障害とアラートの通知など）の意味と、避ける言い方 |

@@ -54,11 +54,11 @@ bash ops/check.sh
 中身:
 
 - `terraform fmt`（`IaC/terraform/aws-managed/` と `IaC/terraform/oss/`）
-- 9 ルートの `terraform validate`（`IaC/terraform/aws-managed/` と `IaC/terraform/oss/` の両方で 18 回）
+- 10 ルートの `terraform validate`（`IaC/terraform/aws-managed/` と `IaC/terraform/oss/` の両方で 20 回）
 - git が追跡している `.sh` 全部（`git ls-files '*.sh'`）の `bash -n` と `.py` 全部の構文
-- `tests/test_*.py` の全部（16 本）
-  - `test_agentcore` 161 項目、`test_graph` 78、`test_stream` 106、`test_sync` 103、`test_analytics` 515、`test_workflow` 327、`test_alerts` 168、`test_kb_index` 7
-  - `test_lab_debug` 110、`test_nautobot` 68、`test_oss` 174、`test_oss_ops` 200、`test_oss_roll` 66、`test_local_compose` 138、`test_collectors` 79、`test_dashboard_config` 3
+- `tests/test_*.py` の全部（16 本。項目の数は 2026-10-10 に数えた値）
+  - `test_agentcore` 168 項目、`test_graph` 78、`test_stream` 112、`test_sync` 104、`test_analytics` 544、`test_workflow` 333、`test_alerts` 168、`test_kb_index` 7
+  - `test_lab_debug` 110、`test_nautobot` 68、`test_oss` 177、`test_oss_ops` 206、`test_oss_roll` 66、`test_local_compose` 145、`test_collectors` 79、`test_dashboard_config` 3
 - 最後に、git が追跡しているファイルに旧名（cycle 019 で `nwc` に改めた名前）が戻っていないかの grep。
   - `docs/cycles/` と `docs/verification/` は記録なので見ない。許すのは `tables.tf` の `moved` とそれを見る `test_analytics` の check の 3 ファイル 5 行だけ。
 

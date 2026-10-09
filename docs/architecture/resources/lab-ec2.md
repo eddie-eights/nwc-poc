@@ -14,7 +14,7 @@ Web やエージェントとはつながっていない。使うのは trap・sy
 | EC2 | Amazon Linux 2023 x86_64、`m6i.xlarge`（`m6i.xlarge` / `m6i.2xlarge` / `c6i.2xlarge` / `t3.xlarge` / `t3.2xlarge` から選ぶ）、EBS 24 GB。1 台だけ（サブネット a）で、AZ を選ぶキーは無い | `IaC/terraform/aws-managed/pipeline/lab/instance.tf`、変数 `instance_type`、`volume_size` |
 | 版 | containerlab 0.79.0、SR Linux 26.7.2、TRex 2.41。正は `ops/lab-common.sh` | `ops/lab-common.sh`、`IaC/terraform/aws-managed/pipeline/lab/variables.tf`（同じ値） |
 | イメージ | ECR の `<prefix>-lab-srlinux`、`<prefix>-lab-trex`（公開のイメージの amd64 の写し） | `IaC/terraform/aws-managed/base/ecr/main.tf`、`ops/lab-common.sh` |
-| 材料 | containerlab の rpm とトポロジ。S3 の `lab/`（土台のバケット）に `ops/up.sh` の手順 5-1 が置く | `ops/up.sh`、`app/containerlab/setup.sh` |
+| 材料 | containerlab の rpm とトポロジ。S3 の assets のバケットの `lab/`（[s3-buckets.md](s3-buckets.md)）に `ops/up.sh` の手順 5-1 が置く | `ops/up.sh`、`app/containerlab/setup.sh` |
 | 起動 | systemd の `<prefix>-lab`。起動のたびに S3 の `lab/` を置き直して流す | `instance.tf` のコメント、`app/containerlab/setup.sh` |
 | 管理ネットワーク | `203.0.113.0/24`（EC2 の中の docker network。VPC からは見えない） | `IaC/terraform/aws-managed/pipeline/lab/locals.tf` の `mgmt_cidr`、`app/containerlab/splab.clab.yml.in` |
 | 入り方 | SSM Session Manager（管理者用のシェルセッション）。中では `sudo lab <コマンド>` | [pipeline.md](../../pipeline.md) の「lab に入る」 |

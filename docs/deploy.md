@@ -195,12 +195,12 @@
 | 手順 | 何をする |
 |---|---|
 | 0 | `deploy.env` と道具と認証を確かめ、作るルート、インターフェース型エンドポイント、費用の目安を出す |
-| 1 | `IaC/terraform/aws-managed/base/ecr` |
+| 1 | `IaC/terraform/aws-managed/base/ecr` と `IaC/terraform/aws-managed/base/logs`（logs のバケット `<prefix>-logs-<アカウント>`。Firehose が書けなかった行を 7 日置く。`ops/down.sh` は消さない。[s3-buckets.md](architecture/resources/s3-buckets.md)） |
 | 2 | ECR に無いタグだけビルドして push（アーキテクチャとタグの決め方は下の「手順ごとの補足」） |
 | 3 | `IaC/terraform/aws-managed/base/core`（エンドポイントは今回作る機能の分に、state にリソースが残っているルートの分を足す）。graph を作るなら 3-2 で裏で `IaC/terraform/aws-managed/pipeline/graph` を始める（ログは `ops/logs/graph-apply.log`） |
 | 3-3 | `IaC/terraform/aws-managed/agent`（`AGENT=1` のとき） |
-| 4 | 4-1 で Web の wheel を取り（`wheels/` が空のときだけ）、4-2 で Web の部品を S3 に置く。4-3 で `CREATE_KB=1` なら手順書を取り込む。4-4 で Web の EC2 を再起動 |
-| 5 | 5-1 で containerlab の rpm と `app/containerlab/`、5-2 で Spark の jar 6 本と `app/spark/snmp_sinks.py` を S3 に置く（jar の照合は下の「手順ごとの補足」） |
+| 4 | 4-1 で Web の wheel を取り（`wheels/` が空のときだけ）、4-2 で Web の部品を S3（assets のバケットの `web/`）に置く。4-3 で `CREATE_KB=1` なら手順書を取り込む。4-4 で Web の EC2 を再起動 |
+| 5 | 5-1 で containerlab の rpm と `app/containerlab/` を assets のバケットの `lab/`、5-2 で Spark の jar 6 本と `app/spark/snmp_sinks.py` を `spark/` に置く（jar の照合は下の「手順ごとの補足」） |
 | 6 | `IaC/terraform/aws-managed/pipeline/lab` |
 | 7 | `IaC/terraform/aws-managed/pipeline/stream`（MSK に約 30 分）。Telegraf（受ける側）・gnmic・syslog-ng・GoFlow2 の ECS と内部 NLB、Kafbat UI の接続先、先に要るシークレットも（下の「手順ごとの補足」） |
 | 7-2 | lab の EC2 でトポロジ（7 コンテナ）が上がっているかを見る（上がっていなければ注意を出して進む） |
@@ -237,6 +237,14 @@
   - 先に `ops/down.sh` で消すか、`aws ecs delete-service --region <region> --cluster <prefix>-telegraf --service <prefix>-kafka-ui --force` でサービスを消し、タスクが止まって ENI が消えるのを待ってから打ち直す。
   - OSS 版（`ops/oss/up.sh`）も順番は同じ。
   - どれだけ待って落ちるかは未確認（AWS では再現していない。010 のレビューで読んだ順番から）。
+- 「S3 の置き場を整える（035）」より前の state（base/core に `<prefix>-kb-<アカウント>` のバケットがある）を持つチェックアウトでは、次の base/core の apply がバケットを置き換える（中身ごと destroy して `<prefix>-assets-<アカウント>` を create）。
+  Spark の checkpoint も前の位置を引き継がず、新しい `spark/checkpoint/` から読み始める。先に消してから `ops/up.sh` で上げる。
+  - 035 のコードの `ops/down.sh` では、その state は消し切れない。`IaC/terraform/aws-managed/pipeline/analytics` が `base/logs` の state の出力を `try` 無しで読むので、`base/logs` の state が無いと analytics の destroy が止まる。
+  - 消し方は 2 つのどちらか。
+    1. 035 より前のコードの `ops/down.sh` で消す。例: `git checkout 3d497de -- ops IaC` で戻して `ops/down.sh` を打ち、終わったら `git checkout HEAD -- ops IaC` で戻す。
+       `ops` だけでなく `IaC` も戻す（`base/logs` を読むのは analytics の terraform のコード）。戻すときは `HEAD` を付ける（`git checkout -- ops IaC` だけだと、3d497de の版が入ったインデックスから戻るので元に戻らない）。
+    2. 先に `terraform -chdir=IaC/terraform/aws-managed/base/logs init` と `terraform -chdir=IaC/terraform/aws-managed/base/logs apply -var owner=<OWNER>` で logs のバケットを作り、それから `ops/down.sh` を打つ。logs のバケットは `ops/down.sh` のあとも残る（下の「消したあとに残るもの」）。
+  - OSS 版（`ops/oss/down.sh`）も同じ。2 のルートは `IaC/terraform/oss/base/logs`。
 - 「名前を nwc に揃える（019）」より前に立てたままの環境は、先に `ops/down.sh` で消してから `ops/up.sh` で上げる。
   Splunk のアプリ、Nautobot の App と API ユーザーと JobHook、S3 Tables の namespace の名前が `nwc` に変わったので、前の名前のものが残って新しい名前と食い違う。
   - Nautobot の RDS には前の API ユーザーと JobHook が残り、起動時のトークンの作成が一意制約で落ちる（コードを読んだだけで、AWS では未確認）。
@@ -292,6 +300,7 @@ state にリソースが載っているルートだけを、この順に消す�
 ```mermaid
 flowchart LR
   A["workflow"] --> B["analytics<br/>Spark のジョブを cancel"] --> N["nautobot<br/>RDS ごと"] --> C["graph"] --> D["stream"] --> E["lab"] --> F["agent"] --> G["base/core"] --> H["base/ecr"] --> I["Runtime の<br/>ロググループ"] --> J["SSM のパラメータ<br/>ManagedBy=ops/up.sh"] --> K["MSK の SCRAM の<br/>secret と KMS の鍵"]
+  L["base/logs<br/>消さない"]
 ```
 
 - 手順 5-2 で、`ops/up.sh` が作った SSM のパラメータ（`/<prefix>/` の下でタグ `ManagedBy=ops/up.sh` のもの）を消す。手で入れたパラメータは消さない。
@@ -304,6 +313,10 @@ flowchart LR
   - stream が消えなかったときは両方残す（次の `ops/down.sh` で消す）。secret の値は読まない・出さない。
 - Nautobot の RDS は最後のスナップショットを取らずに消す。Nautobot で編集した内容は残らない（次の `ops/up.sh` でまた lab の定義から入る）。
 - 最後に `Project=<prefix>` のタグが残っているものを出す（手順 6）。**消えたリソースも出るので、この一覧では消えたかを決めない**（下の「消したあとに残るもの」）。
+- **base/logs（logs のバケット `<prefix>-logs-<アカウント>`）は消さない。**
+  Firehose が書けなかった行を、環境を消したあとでも読めるようにするため（EMR のログは S3 に出さない）。中身は 7 日で消え、空のバケットは無料（[s3-buckets.md](architecture/resources/s3-buckets.md)）。
+  手順 6 の一覧に毎回出るのは想定どおりで、`ops/down.sh` も一覧のあとにそう出す。
+  消すなら `terraform -chdir=IaC/terraform/aws-managed/base/logs destroy -var owner=<OWNER>`（OSS 版は `IaC/terraform/oss/base/logs`）。
 - デバッグ用の EC2（CloudFormation の `<prefix>-lab-debug`）は消さない。`ops/lab-debug.sh down` で消す（同じ `Project` タグなので、残っていれば上の一覧に出る）。
 - **Runtime の ENI は最大 8 時間残る。**
   その間は VPC、サブネット、Runtime の SG（`<prefix>-runtime`）を残して他を消し、終了コード 0 で終わる（2026-10-05 と 2026-10-08 の AWS でもこうなった）。
@@ -321,7 +334,8 @@ flowchart LR
 |---|---|---|---|
 | VPC・サブネット・Runtime の SG（`<prefix>-runtime`） | AgentCore Runtime の ENI（InterfaceType `agentic_ai`）が外れるまで消せない（最大 8 時間） | 無料 | base/core の state に残っているので、同じ VPC に残りを作り足す |
 | SSM のパラメータ（`/<prefix>/` の下） | nautobot のルートが消えなかったときの Nautobot の分（上の手順 5-2） | 無料（標準のパラメータ） | あるものは作り直さない |
-| ECR のリポジトリ（`KEEP_ECR=1` のとき） | 意図して残す | 7.39 GB で月 約 110 円（$0.10/GB・月。2026-10-08 の 11 リポジトリ。いまのマネージド版は 15 リポジトリ（`IaC/terraform/aws-managed/base/ecr/main.tf`）） | ECR にあるタグはビルドを飛ばす |
+| ECR のリポジトリ（`KEEP_ECR=1` のとき） | 意図して残す | 7.39 GB で月 約 110 円（$0.10/GB・月。2026-10-08 の 11 リポジトリ。いまのマネージド版は 14 リポジトリ（`IaC/terraform/aws-managed/base/ecr/main.tf`）） | ECR にあるタグはビルドを飛ばす |
+| logs のバケット `<prefix>-logs-<アカウント>` | 意図して残す（`ops/down.sh` は base/logs を消さない） | 7 日ぶんの Firehose の書けなかった行だけで、ふだんは空。月 1 円未満 | 同じチェックアウトからならそのまま使う。state を失ったら下の import |
 | MSK の SCRAM の KMS の鍵（alias は外してある） | KMS の鍵はすぐには消せず、削除の予約の待ち（7 日）が要る（上の手順 5-3） | 無料（予約中の鍵は課金されない。KMS の価格表） | 新しい鍵を作る（予約中の鍵はそのまま 7 日後に消える）。alias を外せずに残っていれば、予約を取り消して同じ鍵を使い直す（取り消すと、待った日数も課金される） |
 
 - **`KEEP_ECR=1` で残した ECR に前の lab のイメージ（arm64）があっても、消さなくてよい。**
@@ -339,8 +353,9 @@ flowchart LR
 
 上の「使い回す」は、`ops/up.sh` を打ったのと同じチェックアウトから打つときだけ成り立つ。**残したものがあるあいだは、up.sh を打ったチェックアウトを消さない。**
 
-- Terraform の state は 9 つのルートとも local backend で、`ops/up.sh` を打ったチェックアウトの `IaC/terraform/aws-managed/<ルート>/terraform.tfstate` にしか無い（OSS 版は `IaC/terraform/oss/<ルート>/`）。
+- Terraform の state は 10 のルートとも local backend で、`ops/up.sh` を打ったチェックアウトの `IaC/terraform/aws-managed/<ルート>/terraform.tfstate` にしか無い（OSS 版は `IaC/terraform/oss/<ルート>/`）。
 - worktree で `ops/up.sh` を打ってその worktree を消すと、state も一緒に消える（OSS 版の `ops/oss/up.sh` / `ops/oss/down.sh` も同じ）。worktree で立てたなら、worktree を消す前に、そこから `ops/down.sh` を打って消し切る。
+- logs のバケットは `ops/down.sh` のあとも残る（base/logs を消さない）。worktree を消すなら、その前に base/logs も destroy するか、次の up.sh の前に下の import をする。
 
 state を失ったまま次の `ops/up.sh` を打つと、残したものはこう扱われる（2026-10-08 の OSS 版の AWS 検証。[verification/20261008-oss-aws.md](verification/20261008-oss-aws.md) の「state の扱い」）。
 
@@ -349,6 +364,7 @@ state を失ったまま次の `ops/up.sh` を打つと、残したものはこ�
   - state の無い VPC は、どのチェックアウトの `ops/down.sh` でも消えない。ENI が外れてから手で消す（SG → サブネット → VPC の順。`aws ec2 delete-security-group` / `delete-subnet` / `delete-vpc`）。
   - 同じ名前の VPC が 2 つあっても、`ops/down.sh` は VPC の ID を base/core の state から読む。読めないときだけ名前で引いて、当たった VPC を全部見る（`ops/down-common.sh` の `destroy_base_core`）。
 - **ECR は import が要る。**残ったリポジトリは state に無いので、そのまま `ops/up.sh` を打つと、手順 1 の apply が同じ名前のリポジトリを作ろうとしてぶつかる。
+- **logs のバケットも import が要る（AWS では未確認）。**手順 1 の base/logs の apply が同じ名前のバケットを作ろうとして止まる見込み（下の「logs のバケットの import」）。
 
 ECR を残して state を失ったときは、`ops/up.sh` の前に、up.sh を打つチェックアウトの直下で、残ったリポジトリを base/ecr の state に import する（下のコマンド）。
 
@@ -372,10 +388,39 @@ tf base/ecr state list
 EOF
 ```
 
-- 2026-10-08 の OSS 版で、同じアドレスとリポジトリ名で 18 リポジトリ（当時の数。いまの OSS 版は 22 = マネージド版の 15 + OSS 版だけの 7）とライフサイクルのポリシーを import した。
+- 2026-10-08 の OSS 版で、同じアドレスとリポジトリ名で 18 リポジトリ（当時の数。いまの OSS 版は 21 = マネージド版の 14 + OSS 版だけの 7）とライフサイクルのポリシーを import した。
   `plan` は `0 to add, 18 to change, 0 to destroy` だった（変わるのは、import では入らない `force_delete` だけ）。
 - **`try()` にしてからの import と、マネージド版の import は AWS で未確認。**
   `base/ecr/outputs.tf` が `try()` で包むので、override は要らないはず。
+
+#### logs のバケットの import
+
+logs のバケットを残したまま state を失ったときも、`ops/up.sh` の前に、up.sh を打つチェックアウトの直下で base/logs の state に import する（下のコマンド）。
+
+- **AWS では未確認。**そのまま `ops/up.sh` を打つと、手順 1 の base/logs の apply が `BucketAlreadyOwnedByYou` で止まる見込み。
+  S3 の仕様から推した（東京リージョンのとき。us-east-1 だけは同じ名前の作成が成功扱いになる）。
+- `OWNER` と `AWS_PROFILE` は ECR のときと同じ。import の ID は 6 つともバケット名 `<prefix>-logs-<アカウント>`。
+  lifecycle も `bucket` だけでよい（provider v5 から。`base/logs/versions.tf` は `~> 6.0`、lock は 6.64.0）。
+- 下はマネージド版。OSS 版（`IaC/terraform/oss/base/logs`）は 1 行目を `OWNER=<owner> PROJECT=nwc-oss TF_DIR=IaC/terraform/oss TF_INIT_LOCKFILE=readonly bash <<'EOF'` にする。
+
+```bash
+OWNER=<owner> PROJECT=nwc-poc TF_DIR=IaC/terraform/aws-managed bash <<'EOF'
+PREFIX=$OWNER-$PROJECT
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+. ops/common.sh; trap 'rm -f "$TF_AWS_CONFIG"' EXIT
+tf_use_cli_credentials; tf_init_root base/logs
+imp() { tf base/logs import -input=false -var "owner=$OWNER" "$1" "$PREFIX-logs-$ACCOUNT"; }
+imp aws_s3_bucket.logs
+imp aws_s3_bucket_public_access_block.logs
+imp aws_s3_bucket_server_side_encryption_configuration.logs
+imp aws_s3_bucket_ownership_controls.logs
+imp aws_s3_bucket_lifecycle_configuration.logs
+imp aws_s3_bucket_policy.logs
+tf base/logs state list
+EOF
+```
+
+- 代わりの手: 中身は 7 日で消える Firehose の書けなかった行だけなので、`aws s3 rb s3://<prefix>-logs-<アカウント> --force` で消してから `ops/up.sh` を打ってもよい（これも AWS では未確認）。
 
 ## 007 で並べ直したとき（state の移し方）
 
@@ -433,7 +478,7 @@ aws glue delete-catalog --region ap-northeast-1 --catalog-id s3tablescatalog
   Grafana は発火した時刻（`resolved` の行も同じ）、Splunk は保存済みサーチの `latest(_time)`（その状態を最後に見た時刻）。届いた時刻は `received_at`。
 - **2026-10-05 に AWS で確かめた**
   Firehose が `alert_events` に firing と resolved の行を書き、Athena（ワークグループ `<prefix>-history`）で読めた（閉域の Deny は既定の `NETWORK_PERIMETER=1` のまま）。
-  うまくいかないときは `firehose-errors/alert_events/` にオブジェクトが無いかを見る。
+  うまくいかないときは logs のバケット `<prefix>-logs-<アカウント>` の `firehose-errors/alert_events/` にオブジェクトが無いかを見る。
 
 ## 利用者に画面を渡す
 

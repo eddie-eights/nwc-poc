@@ -511,7 +511,7 @@ terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw splunk
   - Grafana は発火した時刻で、`resolved` の行も発火の時刻のまま。
   - Splunk は保存済みサーチの `latest(_time)` で、その状態を最後に見た時刻（`resolved` なら戻った時刻）。
   - `received_at` は Lambda が受けた時刻。
-- 書けなかった行は土台のバケットの `firehose-errors/alert_events/` に落ちる。Firehose のログはロググループ `/aws/kinesisfirehose/<prefix>-alert-events`。
+- 書けなかった行は logs のバケット `<prefix>-logs-<アカウント>` の `firehose-errors/alert_events/` に落ちる（7 日で消える。[s3-buckets.md](architecture/resources/s3-buckets.md)）。Firehose のログはロググループ `/aws/kinesisfirehose/<prefix>-alert-events`。
 - 読むのはエージェントの `query_history`（Athena のワークグループ `<prefix>-history`。`event_id` で重複を落とし、新しい順に最大 50 件）。
 - 手で見るとき（`<bucket>` はテーブルバケットの名前。カタログ名は analytics の output `athena_catalog`）:
 
@@ -619,7 +619,7 @@ terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw list_j
 terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw list_tables_command; echo
 ```
 
-Spark UI を開く（EMR Studio は要らない）。動いているジョブの Live UI で、driver が出している画面をそのまま見る。終わったジョブの画面（Spark History Server）は managed storage を切っているので開けない（FAQ「CloudWatch だけに worker を含む全部のログとイベントログを出すと、EMR の画面（Spark UI）から見えなくなる？」）:
+Spark UI を開く（EMR Studio は要らない）。動いているジョブの Live UI で、driver が出している画面をそのまま見る。終わったジョブの画面（Spark History Server）は、EMR の managed storage を有効にしてあるので 30 日のあいだコンソールの View application UIs から開ける（AWS では未確認。FAQ「CloudWatch だけに worker を含む全部のログとイベントログを出すと、EMR の画面（Spark UI）から見えなくなる？」）:
 
 ```bash
 APP_ID=$(terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw application_id); echo "$APP_ID"
@@ -659,7 +659,7 @@ LOG_GROUP=$(terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output
   - ほかのジョブは動き続ける。チェックポイントの続きから読むので、取りこぼしは無い。
   - S3 Tables は二重にもならない。HTTP の格納先は、やり直しで同じ行がもう一度届きうる（[data-stores.md](data-stores.md) の「届け方の保証」）。
   - 起こし直しは既定で 1 時間に 5 回まで（超えると `FAILED`）。
-- チェックポイントは MSK クラスタごとのパス（`s3://<バケット>/analytics/checkpoint/<クラスタの uuid>/`）。MSK を作り直すと、前のクラスタのオフセットを読まずに新しいパスから始まる。
+- チェックポイントは MSK クラスタごとのパス（`s3://<assets のバケット>/spark/checkpoint/<クラスタの uuid>/`）。MSK を作り直すと、前のクラスタのオフセットを読まずに新しいパスから始まる。
 - analytics を消すと S3 Tables の履歴も消える（`alert_events` も）。
 
 ## Neptune のトポロジ

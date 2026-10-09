@@ -78,22 +78,23 @@ source: docs/oss-variant.md、docs/cycles/005-oss-on-ecs/design.md、IaC/terrafo
 - 元のデッキの「これに Kafbat UI がもう 1 個」は外した。Kafbat UI（v1.5.0）は 010 から Web の EC2 の Docker で動き、Fargate のタスクではない（docs/oss-variant.md）。
 :::
 
-## ルートはマネージド版と同じ 9 つで、自分のファイルを持つのは 3 つ
+## ルートはマネージド版と同じ 10 で、自分のファイルを持つのは 3 つ
 
-置き場は IaC/terraform/oss/。ほかの 6 つは aws-managed/ へのリンクだけ。
+置き場は IaC/terraform/oss/。ほかの 7 つは aws-managed/ へのリンクだけ。
 
 | ルート | OSS 版で替えたもの | 数 |
 |---|---|---|
 | pipeline/stream | MSK → Kafka | 66 |
-| pipeline/graph | Neptune → Neo4j | 23 |
-| pipeline/analytics | EMR・OpenSearch・AMP → ECS | 79 |
+| pipeline/graph | Neptune → Neo4j | 24 |
+| pipeline/analytics | EMR・OpenSearch・AMP → ECS | 80 |
 | base/core | oss.tf の SG・EFS | 39 |
 
 ::: notes
-- 数は tf の resource ブロックの数（ルートの *.tf をつないで grep -c '^resource "'。シンボリックリンクの先も数える。2026-10-09、origin/main 9fb0616）。count・for_each で増える実数ではない。
-- マネージド版の数は stream 57、graph 10、analytics 53、base/core 39。元のデッキの stream 46 は、013 で収集 4 種（gnmic・syslog-ng・GoFlow2）が入って 66 になった。
+- 数は tf の resource ブロックの数（ルートの *.tf をつないで grep -c '^resource "'。シンボリックリンクの先も数える。2026-10-10、feat/035-s3-layout b39c543）。count・for_each で増える実数ではない。
+- マネージド版の数は stream 57、graph 11、analytics 54、base/core 39。
+- 2026-10-09 の数え（graph 23・analytics 79、マネージド版 10・53）から 1 つずつ増えた。元のデッキの stream 46 は、013 で収集 4 種（gnmic・syslog-ng・GoFlow2）が入って 66 になった。
 - 自分のファイル: stream は kafka.tf、graph は access・neo4j・outputs・sync、analytics は grafana・locals・network・opensearch・outputs・spark・victoriametrics。残りはマネージド版のファイルへのシンボリックリンクと oss.auto.tfvars（project = "nwc-oss"）。
-- ほかの 6 つ（base/ecr・base/core・agent・workflow・pipeline/lab・pipeline/nautobot）は IaC/terraform/aws-managed/ の同じルートへのシンボリックリンクに oss.auto.tfvars を足しただけ。
+- ほかの 7 つ（base/ecr・base/logs・base/core・agent・workflow・pipeline/lab・pipeline/nautobot）は IaC/terraform/aws-managed/ の同じルートへのシンボリックリンクに oss.auto.tfvars を足しただけ。
 - base/core の oss.tf はマネージド版と共通のファイル（IaC/terraform/aws-managed/base/core/oss.tf）。var.project が nwc-oss のときだけ SG と EFS を作る。
 :::
 
@@ -136,7 +137,7 @@ source: docs/oss-variant.md、docs/cycles/005-oss-on-ecs/design.md、IaC/terrafo
 - 新しい SG（kafka・opensearch・victoriametrics・neo4j など）はエンドポイントと S3 へ 443。
 :::
 
-## ops/oss/up.sh は同じ 9 ルートを作り、down.sh が逆の順に消す
+## ops/oss/up.sh は同じ 10 ルートを作り、down.sh が base/logs を残して逆の順に消す
 
 - 格納先は 4 つ全部と Grafana をいつも作る。KB は作らない
 - 打ち直しでは Kafka と OpenSearch を 1 台ずつ入れ替える
@@ -146,7 +147,8 @@ source: docs/oss-variant.md、docs/cycles/005-oss-on-ecs/design.md、IaC/terrafo
 - Fargate の vCPU を 21.5 使う（上限 30。10-08 に測った値）
 
 ::: notes
-- 作る順（ROOTS は ops/oss/up.sh:155）: base/ecr → base/core → agent → lab → stream → graph → nautobot → analytics → workflow。ops/oss/down.sh はこの逆。
+- 作る順（ROOTS は ops/oss/up.sh:161）: base/ecr → base/logs → base/core → agent → lab → stream → graph → nautobot → analytics → workflow。
+- ops/oss/down.sh はこの逆の順に 9 ルートを消し、base/logs（logs のバケット）は残す（ops/oss/down.sh:88-91）。
 - 元のタイトルの oss/ops/up.sh は、017 で ops/oss/up.sh に移ったので直した（中身の主張は同じ）。
 - 1 台ずつの入れ替えは ops/oss/roll-nodes.sh。stream と analytics の apply の前に、変わる台をリーダーでない方から 1 台ずつ apply し、間で健全に戻るのを ECS Exec で待つ。OSS_ROLL=0 で一度に入れ替える（docs/oss-variant.md）。2026-10-08 の 2 回目で Kafka の 3 台を入れ替えて rc=0（13 分 57 秒）。標準入力が端末でないときに付ける疑似端末のうち、Linux の script -q -c の形は AWS では未確認。
 - 39 分 05 秒（rc=0）と約 $1.55/h は docs/verification/20261008-oss-aws.md（見積もりは公開の価格表から。請求書では確かめていない）。マネージド版（約 $2.92/h）の約半分。

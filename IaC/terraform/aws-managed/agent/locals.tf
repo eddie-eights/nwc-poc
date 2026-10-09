@@ -62,8 +62,8 @@ locals {
   runtime_role_name = data.terraform_remote_state.main.outputs.runtime_role_name
   runtime_role_arn  = data.terraform_remote_state.main.outputs.runtime_role_arn
   web_role_name     = data.terraform_remote_state.main.outputs.web_role_name
-  bucket_name       = data.terraform_remote_state.main.outputs.kb_bucket_name
-  bucket_arn        = data.terraform_remote_state.main.outputs.kb_bucket_arn
+  bucket_name       = data.terraform_remote_state.main.outputs.assets_bucket_name
+  bucket_arn        = data.terraform_remote_state.main.outputs.assets_bucket_arn
   # 土台の OpenSearch Serverless の VPC エンドポイント（create_opensearch_endpoint=true のときだけある。古い state には output が無い）
   aoss_vpce_id = try(data.terraform_remote_state.main.outputs.opensearch_vpc_endpoint_id, "")
   # IaC/terraform/aws-managed/base/core の perimeter.tf（NETWORK_PERIMETER=0 か古い state なら空）

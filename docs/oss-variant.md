@@ -81,8 +81,8 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
 | `docker/images/spark/Dockerfile`、`docker/images/neo4j/Dockerfile` | ECS 向けの Spark と Neo4j（GDS 入り）のイメージ |
 | `ops/common.sh`、`ops/up-common.sh`、`ops/down-common.sh` | マネージド版と OSS 版の共通の関数 |
 
-- **`ops/oss/up.sh` が作るルートは、マネージド版の `ops/up.sh` と同じ 9 つ。**
-  `base/ecr`、`base/core`、`agent`、`pipeline/lab`、`pipeline/stream`、`pipeline/graph`、`pipeline/nautobot`、`pipeline/analytics`、`workflow`。
+- **`ops/oss/up.sh` が作るルートは、マネージド版の `ops/up.sh` と同じ 10。**
+  `base/ecr`、`base/logs`、`base/core`、`agent`、`pipeline/lab`、`pipeline/stream`、`pipeline/graph`、`pipeline/nautobot`、`pipeline/analytics`、`workflow`。
   Grafana、Web の部品、エージェント、workflow、Neo4j への同期までつないである（何がどう動くかは [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md) の「実装の状態」）。
 - **機能と格納先は選ばない。**
   `AGENT` / `PIPELINE` / `WORKFLOW` / `STORES` などのキーは読まず、ルートはいつも全部、格納先はいつも `iceberg` / `opensearch` / `prometheus` / `splunk` の 4 つ、Grafana もいつも作る。

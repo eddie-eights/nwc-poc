@@ -69,14 +69,14 @@ output "alerts_topic_arn" {
   value       = aws_sns_topic.alerts.arn
 }
 
-output "kb_bucket_name" {
-  description = "Read by IaC/terraform/aws-managed/agent (docs/), IaC/terraform/aws-managed/pipeline/lab (lab/ telegraf/) and IaC/terraform/aws-managed/pipeline/analytics (analytics/)"
-  value       = aws_s3_bucket.kb.bucket
+output "assets_bucket_name" {
+  description = "Name of the assets bucket (<prefix>-assets-<account>). Read by IaC/terraform/aws-managed/agent (kb/), IaC/terraform/aws-managed/pipeline/lab (lab/) and IaC/terraform/aws-managed/pipeline/analytics (spark/)"
+  value       = aws_s3_bucket.assets.bucket
 }
 
-output "kb_bucket_arn" {
-  description = "ARN of the bucket (read by IaC/terraform/aws-managed/agent / IaC/terraform/aws-managed/pipeline/lab / IaC/terraform/aws-managed/pipeline/stream for IAM policies)"
-  value       = aws_s3_bucket.kb.arn
+output "assets_bucket_arn" {
+  description = "ARN of the assets bucket. Read only by IaC/terraform/aws-managed/agent (IAM policy of the knowledge base role)"
+  value       = aws_s3_bucket.assets.arn
 }
 
 output "runtime_role_name" {
@@ -102,5 +102,5 @@ output "flow_log_group_name" {
 # ---------------------------------------------------------------- commands
 output "upload_web_command" {
   description = "Run in this repository after \"pip download\" into wheels/ (step 4 of ops/up.sh). Copies every app/dashboard/*.py (app / config / chat / topology_view / incident_view) plus the agent modules the web UI shares (toolkit / topology / graph / proposals). The instance pulls the S3 prefix web/ on every boot. The OSS build (IaC/terraform/oss) also copies app/dashboard/requirements-oss.txt (the Neo4j driver), which its user_data installs."
-  value       = "aws s3 cp app/dashboard/ s3://${aws_s3_bucket.kb.bucket}/web/ --recursive --exclude '*' --include '*.py' --include 'requirements.txt'${local.oss ? " --include 'requirements-oss.txt'" : ""} && for f in toolkit topology graph proposals; do aws s3 cp app/agentcore/$f.py s3://${aws_s3_bucket.kb.bucket}/web/$f.py; done && aws s3 cp app/agentcore/data/ s3://${aws_s3_bucket.kb.bucket}/web/data/ --recursive && aws s3 sync wheels/ s3://${aws_s3_bucket.kb.bucket}/web/wheels/"
+  value       = "aws s3 cp app/dashboard/ s3://${aws_s3_bucket.assets.bucket}/web/ --recursive --exclude '*' --include '*.py' --include 'requirements.txt'${local.oss ? " --include 'requirements-oss.txt'" : ""} && for f in toolkit topology graph proposals; do aws s3 cp app/agentcore/$f.py s3://${aws_s3_bucket.assets.bucket}/web/$f.py; done && aws s3 cp app/agentcore/data/ s3://${aws_s3_bucket.assets.bucket}/web/data/ --recursive && aws s3 sync wheels/ s3://${aws_s3_bucket.assets.bucket}/web/wheels/"
 }

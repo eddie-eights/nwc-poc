@@ -2,7 +2,7 @@
 # OSS 版（cycle 005「マネージドを OSS に置き換えた環境を作る」）を 1 本で起こす。マネージド版（ops/up.sh）と同じアカウントに並べて立てられる。
 #   リソース名の接頭辞と Project タグは <owner>-nwc-oss（マネージド版は <owner>-nwc-poc）。ルートは IaC/terraform/oss/ の下で、
 #   state も IaC/terraform/oss/<ルート>/terraform.tfstate に置く（マネージド版の IaC/terraform/aws-managed/ の state とは別）。消すのは ops/oss/down.sh。
-#   作るのはマネージド版の AGENT=1 PIPELINE=1 WORKFLOW=1 と同じ範囲で、いつも全部: base/ecr → base/core → agent（AgentCore Runtime）→ Web の部品
+#   作るのはマネージド版の AGENT=1 PIPELINE=1 WORKFLOW=1 と同じ範囲で、いつも全部: base/ecr → base/logs（ops/oss/down.sh は消さない）→ base/core → agent（AgentCore Runtime）→ Web の部品
 #   → pipeline/lab → pipeline/stream（Kafka は MSK でなく ECS の KRaft 3 台。IaC/terraform/oss/pipeline/stream/kafka.tf）
 #   → pipeline/graph（Neo4j + GDS の ECS と status の Lambda。上がったら lab の定義からトポロジを入れる）→ pipeline/nautobot
 #   → pipeline/analytics（Spark・OpenSearch・VictoriaMetrics・Splunk の ECS と S3 Tables）→ workflow（Temporal のワーカーと AgentCore Gateway）。
@@ -158,7 +158,7 @@ if [ -f "$TF_DIR/base/core/terraform.tfstate" ]; then
     die "IaC/terraform/oss/base/core の state に 2026-10-09 より前の取りにいく側の Telegraf の SG（telegraf_dialin）が残っていて、stream がそれを使っている。先に ops/oss/down.sh で消す（stream だけ先に消してもよい）。まだ何も作っていない"
   fi
 fi
-ROOTS="base/ecr base/core agent pipeline/lab pipeline/stream pipeline/graph pipeline/nautobot pipeline/analytics workflow"
+ROOTS="base/ecr base/logs base/core agent pipeline/lab pipeline/stream pipeline/graph pipeline/nautobot pipeline/analytics workflow"
 # 土台の SSM Agent とポートフォワーディング（ssm ssmmessages）、ECS のタスクのイメージ（ecr.api ecr.dkr）とログ（logs）。
 # Kafka の CLUSTER_ID、Kafbat UI・OpenSearch・Splunk・Neo4j のパスワードと HEC の token は ECS の secrets や Lambda が SSM から受ける（ssm）。
 # Spark の iceberg は S3 Tables の API（s3tables）、Splunk のアラートは SNS（sns）、status の Lambda のアラートの履歴は Firehose（kinesis-firehose。
@@ -170,10 +170,13 @@ ROOTS="base/ecr base/core agent pipeline/lab pipeline/stream pipeline/graph pipe
 ENDPOINTS="ssm ssmmessages ecr.api ecr.dkr logs s3tables sns kinesis-firehose bedrock-runtime bedrock-agentcore ecs sqs bedrock-agentcore.gateway athena"
 
 # ---- 1. ECR --------------------------------------------------------------------
-log "1. ECR リポジトリ（IaC/terraform/oss/base/ecr）"
+log "1. ECR リポジトリ（IaC/terraform/oss/base/ecr）と logs のバケット（base/logs）"
 tf_apply base/ecr
 REPO=$(tf base/ecr output -raw agent_repository_url); echo "REPO=$REPO"
 REG="${REPO%%/*}"
+# logs のバケット <接頭辞>-logs-<アカウント>（Firehose が書けなかった行。中身は 7 日で消える。cycle 035）。
+# ops/oss/down.sh は消さないので、2 回目からは No changes。base/core より先に作る（pipeline/analytics が state から読む）
+tf_apply base/logs
 
 # ---- 2. イメージ ----------------------------------------------------------------
 log "2. イメージ（ECR に無いタグだけ写すかビルドする）"
@@ -288,8 +291,8 @@ MAIN_VARS+=(-var "endpoints_az_num=$ENDPOINTS_AZ_NUM")
 echo "エンドポイント: $ENDPOINTS"
 tf_apply base/core ${MAIN_VARS[@]+"${MAIN_VARS[@]}"}
 INSTANCE_ID=$(tf base/core output -raw web_instance_id)
-KB_BUCKET=$(tf base/core output -raw kb_bucket_name)
-echo "INSTANCE_ID=$INSTANCE_ID KB_BUCKET=$KB_BUCKET"
+ASSETS_BUCKET=$(tf base/core output -raw assets_bucket_name)
+echo "INSTANCE_ID=$INSTANCE_ID ASSETS_BUCKET=$ASSETS_BUCKET"
 
 # ---- 3-3. agent ----------------------------------------------------------------
 # マネージド版と同じルート（IaC/terraform/oss/agent は IaC/terraform/aws-managed/agent へのリンク）。Knowledge Base は作らない（OpenSearch Serverless を使うので OSS 版には入れない）
@@ -304,13 +307,13 @@ echo "Runtime の ARN は SSM の $(tf agent output -raw runtime_arn_parameter_n
 log "4-1. wheel（arm64 / cp313。app/dashboard/requirements-oss.txt）"
 fetch_wheels wheels-oss app/dashboard/requirements-oss.txt app/dashboard/requirements.txt   # requirements-oss.txt は -r で requirements.txt を読むので、両方の版を見る
 
-log "4-2. Web の部品を s3://$KB_BUCKET/web/ に置く"
-for f in app/dashboard/*.py; do aws s3 cp --only-show-errors "$f" "s3://$KB_BUCKET/web/${f#app/dashboard/}"; done
-aws s3 cp --only-show-errors app/dashboard/requirements.txt "s3://$KB_BUCKET/web/requirements.txt"   # requirements-oss.txt が -r で読む
-aws s3 cp --only-show-errors app/dashboard/requirements-oss.txt "s3://$KB_BUCKET/web/requirements-oss.txt"
-for f in toolkit topology graph proposals; do aws s3 cp --only-show-errors "app/agentcore/$f.py" "s3://$KB_BUCKET/web/$f.py"; done
-aws s3 cp --only-show-errors app/agentcore/data/ "s3://$KB_BUCKET/web/data/" --recursive
-aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels-oss/ "s3://$KB_BUCKET/web/wheels/"
+log "4-2. Web の部品を s3://$ASSETS_BUCKET/web/ に置く"
+for f in app/dashboard/*.py; do aws s3 cp --only-show-errors "$f" "s3://$ASSETS_BUCKET/web/${f#app/dashboard/}"; done
+aws s3 cp --only-show-errors app/dashboard/requirements.txt "s3://$ASSETS_BUCKET/web/requirements.txt"   # requirements-oss.txt が -r で読む
+aws s3 cp --only-show-errors app/dashboard/requirements-oss.txt "s3://$ASSETS_BUCKET/web/requirements-oss.txt"
+for f in toolkit topology graph proposals; do aws s3 cp --only-show-errors "app/agentcore/$f.py" "s3://$ASSETS_BUCKET/web/$f.py"; done
+aws s3 cp --only-show-errors app/agentcore/data/ "s3://$ASSETS_BUCKET/web/data/" --recursive
+aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels-oss/ "s3://$ASSETS_BUCKET/web/wheels/"
 
 log "4-4. EC2 を再起動して Web を立てる（初回の apply 時点では app/dashboard/ が無いため）"
 wait_ssm_online "$INSTANCE_ID"
@@ -325,8 +328,8 @@ echo "Web が動いている"
 
 # ---- 5. lab の材料 -----------------------------------------------------------------
 # lab の EC2 は起動のたびに s3://<バケット>/lab/ を読む。apply より前に置けば、最初の起動で入る
-log "5-1. lab の材料（containerlab の rpm とトポロジ）を s3://$KB_BUCKET/lab/ に置く"
-upload_lab "$KB_BUCKET" || die "lab の材料を s3://$KB_BUCKET/lab/ に置けなかった"
+log "5-1. lab の材料（containerlab の rpm とトポロジ）を s3://$ASSETS_BUCKET/lab/ に置く"
+upload_lab "$ASSETS_BUCKET" || die "lab の材料を s3://$ASSETS_BUCKET/lab/ に置けなかった"
 
 # ---- 6. lab ---------------------------------------------------------------------
 LAB_WARN=""

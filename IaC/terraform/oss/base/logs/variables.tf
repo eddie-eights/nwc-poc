@@ -1,0 +1,1 @@
+../../../../terraform/aws-managed/base/logs/variables.tf

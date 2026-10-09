@@ -44,7 +44,7 @@ locals {
   subnet_id = data.terraform_remote_state.main.outputs.instance_subnet_id
   # SG は古い state の destroy でも評価できるように try（空のまま apply に進まないよう remote_state の postcondition で止める）
   lab_sg_id = try(data.terraform_remote_state.main.outputs.security_group_ids["lab"], "")
-  bucket    = data.terraform_remote_state.main.outputs.kb_bucket_name
+  bucket    = data.terraform_remote_state.main.outputs.assets_bucket_name
   # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
   perimeter_policy_arn = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
   # 1 本（IaC/terraform/aws-managed/base/core の private）。gnmic のタスクから lab の管理ネットワークへの経路を足す
