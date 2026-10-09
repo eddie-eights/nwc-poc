@@ -20,6 +20,11 @@ web = [
   "boto3>=1.40,<2",
   "pyyaml>=6.0,<7",
 ]
+# 構成の pptx を描く docs/architecture/render_pptx.py（docs/architecture/README.md）。
+# render_pptx.py は python-pptx の私有 API（run._r / p._pPr / cell._tc / table._tbl）を触るので版を固定する。上げるときは描いた pptx を開いて確かめる
+docs = [
+  "python-pptx==1.0.2",
+]
 
 [tool.uv]
 package = false

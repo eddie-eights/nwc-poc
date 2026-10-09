@@ -1595,6 +1595,16 @@ def _faq_toc_ok(text):
     return len(secs) == 12 and all(a in anchors for a in links)
 check("FAQ: 12 の節の直下に、その節の質問（###）を順に並べた目次があり、FAQ の中のアンカーが全部見出しに当たる",
       _faq_toc_ok(_faq) and len(re.findall(r"^### ", _faq, re.M)) == len(re.findall(r"^- \[.*\]\(#q-", _faq, re.M)))
+# 構成の pptx を描く道具はリポジトリの中に置く（028。前は個人リポジトリの ~/Documents/repo/bin/render-pptx を指していた）
+import tomllib
+_arch_readme = open(os.path.join(ROOT, "docs", "architecture", "README.md"), encoding="utf-8").read()
+with open(os.path.join(ROOT, "pyproject.toml"), "rb") as _f:
+    _pyproject = tomllib.load(_f)
+check("構成の pptx は docs/architecture/render_pptx.py で描き、pyproject の docs のグループ（python-pptx==1.0.2）で打つ。README は個人リポジトリの道具を指さない（028）",
+      os.path.isfile(os.path.join(ROOT, "docs", "architecture", "render_pptx.py"))
+      and _pyproject.get("dependency-groups", {}).get("docs") == ["python-pptx==1.0.2"]
+      and "uv run --group docs python docs/architecture/render_pptx.py" in _arch_readme
+      and "Documents/repo" not in _arch_readme)
 _SINGLE = {  # (ルート, リソースの見出し): 理由に書く言葉
     ("base/core", 'resource "aws_instance" "web"'): "SSM のポートフォワード",
     ("pipeline/lab", 'resource "aws_instance" "lab"'): "containerlab の 1 台の中に全部の機器",
