@@ -186,3 +186,41 @@ None
 ### PM の確認と分類
 
 - Must fix 0 / Should fix 0。Nit 1（`base/core/outputs.tf:78` の `assets_bucket_arn` の description が旧文面）は、このあとの「EMR のログの S3 を落とす」commit で一緒に直す（次のセッション）
+
+## Round 3
+
+実行モデル: PM の確認は fable 5.1。実装（ec5f504〜d99b856）は opus 5.5。docs の整合性レビューと修正も opus 5.5（別のサブエージェント、文脈無し）。
+対象: `main...feat/035-s3-layout` の af40dc3（main 取り込み）〜 fe3eb0d（13 ファイル、pptx 2 本も描き直し）。cold reviewer は依頼していない（1 サイクル 2 回を Round 1・2 で使い切り。このラウンドのレビューは `build.md` の「追加の修正（EMR のログの S3 を落とす）」のセルフレビューと、下の docs 整合性レビューに依る）。
+
+### 前ラウンドの未解消
+
+- Round 2 Nit（`base/core/outputs.tf:78` の `assets_bucket_arn` の description）→ 解消。`sed -n '77,80p'` で「Read only by IaC/terraform/aws-managed/agent (IAM policy of the knowledge base role)」。
+
+### 追加の変更（EMR のログの S3 を落とす。ユーザー決定 2026-10-10）の確認
+
+- `grep -rn "emr_logs_prefix\|s3MonitoringConfiguration\|LogsBucketList\|logs_bucket.*emr" IaC/ tests/ ops/` → 0 行。
+- テスト（worktree で実行。HEAD b39c543）: test_analytics 544 / 0、test_oss 177 / 0、test_oss_ops 206 / 0、test_workflow 333 / 0、test_lab_debug 110 / 0、test_agentcore 168 / 0。
+- `terraform validate`・`fmt -check`・`bash -n` は build.md の追加ラウンドのとおり（PM は打ち直していない。読んだだけ）。
+
+### セルフレビューの未解消（build.md 追加ラウンド）の分類
+
+- [runtime bugs] `pipeline/analytics/access.tf:20`: 手順 7-4 の apply で logs への権限が先に消え、7-5 で起こし直すまでの旧構成のジョブが S3 にログを書けない → **Should fix → 対象外（移行時だけ、いま環境が無い）**。
+  根拠: AWS MCP で `emr-serverless ListApplications`（ap-northeast-1）→ 0 件、`s3 ListBuckets` に nwc / efukuda の名前 → 0 件（2026-10-10）。旧構成のジョブは存在せず、次の `ops/up.sh` は新構成で最初から起こす。QUEUE の「Spark のジョブだけ止めて起こし直す手順」で、止めてから apply する順を書く。
+- [確認のみ] `outputs.tf:93` の `configuration_overrides_json` が `SpecHash` に入るので次の up.sh で 3 ジョブとも起こし直し → checkpoint の続きから読むのでデータは落ちない。対応なし。
+
+### docs の整合性レビュー（README / docs とコードの突き合わせ。ユーザー指示「整合性レビュー・修正まで」）
+
+結果ファイル: scratchpad の `docs-consistency-review.md`（リポジトリには入れない）。Must 2 / Should 20 / Nit 5。
+
+- Must 1 `s3-buckets.md:66`: 古い kb の state の消し方が「先に ops/down.sh」のまま（035 の down.sh では消し切れない。deploy.md:242-253 と食い違い）→ 直した。
+- Must 2 `deploy.md:338, 352-393`: logs のバケットは down.sh で残るので、state を失うと次の up.sh の base/logs の apply がぶつかる（東京では BucketAlreadyOwnedByYou。S3 の仕様から推した、AWS 未確認）。import の手順が無い → ECR と同じ形の import 6 リソースと、`aws s3 rb --force` の代案を書いた。
+- Should 20 件: ルート数 9 → 10（architecture/README.md ×4、deck ×4、oss-variant、deploy、development）、ROOTS の並びに base/logs（README、deck ×2、oss-variant、troubleshooting）、ECR 15 → 14（resources/README、deploy ×2）、Splunk の保存済みサーチ 4 → 3（deck）、`emr-serverless.md:22` の定義場所 → 全部直した。
+- Nit 5 件: deck の resource 数（graph 11 / analytics 54）、development.md のテストの数、troubleshooting.md の順、s3-buckets.md:25 の「部品名で切る」、README の索引に GLOSSARY.md → 直した（pptx は索引に載せない）。
+- 修正の commit: fe3eb0d（13 ファイル、pptx 2 本も描き直し）。修正後のテスト: test_oss 177 / 0、test_analytics 544 / 0（PM が打ち直した）、test_oss_ops 206 / 0（エンジニア報告）。古い数の grep は意図した 3 行だけ。
+
+### 見た観点 / 見ていない観点
+
+- 見た: design 整合性、correctness（古い名前の grep）、runtime bugs（移行時の権限）、missing tests（差し替えた検査が 3 通りの退行で落ちることは build.md）、docs とコードの整合。
+- 見ていない: AWS での動作（この後の検証で、logs のライフサイクル 7 日、ポリシーが DenyInsecureTransport のみ、assets の `spark/` `web/` `lab/`、logs に `emr/` が無い、Firehose のストリーム、終わったジョブの Spark UI、KB の取り込み）。閉域から managed storage に書けるか。
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/projects/nwc-poc-architecture.html -->
