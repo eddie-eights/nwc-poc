@@ -340,7 +340,7 @@ def impact(devices: list, links: list, changes: list) -> dict:
     devices = [{device_id, status, role}]、links = [{a, a_if, b, b_if, status}]、changes = [{op, target}]。
     op は link_down / link_up（target = <機器>#<IF>。どちらの端でもよい）か device_down / device_up（target = 機器名）。
     つながりは DOWN でない回線と機器だけで見て、変更前のかたまりのうち、変更後にいちばん大きい断片から外れた機器を「孤立」とする。同点ならどれも本流にしない
-    （つながり直す機器は向きを逆にして同じことをする。isolated_after は変更後のいちばん大きいかたまりに入っていない機器）。
+    （つながり直す機器は、変更後の本流にいて変更前は本流にいなかった機器。変更前が同点なら変更前に次数 0 だった機器だけ。isolated_after は変更後のいちばん大きいかたまりに入っていない機器）。
     role が END_ROLES の機器（TRex。4 台の leaf につながるが転送しない）は端として扱い、ほかの機器どうしをつなぐ中継にしない。
     端は、つながる相手がかたまりに入っていればかたまりに入る。冗長の本数も、端でない機器は端への回線を数えない（leaf は Spine への本数）。
     role が無ければ全部を中継として見る（ワーカーの awsio.read_topology も role を読んで渡す）。
@@ -404,10 +404,19 @@ def impact(devices: list, links: list, changes: list) -> dict:
         else:
             unknown.append(f"{op} {target}".strip())
     adj1, comps1, iso1, deg1 = view(dd, ld)
+
+    def main_of(adj: dict, comps: list) -> set:
+        # 唯一いちばん大きいかたまりと、それにつながる端。同点なら空
+        m = largest(comps)
+        return m | {i for i in ends & set(adj) if any(o in m for o in adj[i])}
+
+    # つながり直す機器: 変更後の本流にいて、変更前は本流にいなかった機器（孤立、別のかたまり、DOWN）。
+    # 変更前の本流が同点で決まらないときは、変更前に次数 0 だった（孤立か DOWN の）機器だけ（同点のかたまりどうしをつないでも全部が載らない）
+    main0, main1 = main_of(adj0, comps0), main_of(adj1, comps1)
     out = {
         "changes": [{"op": str(c.get("op") or ""), "target": str(c.get("target") or "")} for c in changes], "unknown": unknown,
         "newly_isolated": sorted(lost(adj0, comps0, adj1, comps1) - targets),
-        "reconnected": sorted(i for i in lost(adj1, comps1, adj0, comps0) if i in deg1),
+        "reconnected": sorted(i for i in main1 if (i not in main0 if main0 else deg0.get(i, 0) == 0)),
         "redundancy_lost": sorted(i for i in deg1 if deg1[i] == 1 and deg0.get(i, 0) >= 2 and i not in iso1),
         "redundancy_restored": sorted(i for i in deg1 if deg1[i] >= 2 and deg0.get(i, 0) <= 1 and i not in iso1),
         "isolated_after": sorted(iso1),
