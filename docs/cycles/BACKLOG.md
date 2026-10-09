@@ -117,3 +117,4 @@
 - [ ] `netops` が戻らないよう受け入れの grep を `ops/check.sh` に常設する（019 の cold review の質問。019 では「テストの中身と件数を変えない」としたので入れていない）
 - [ ] gnmic の on-change の購読が `gnmi` トピックに 1 件も書かない原因を調べて直す（2026-10-09 の AWS 検証で、`metrics` は入るのに `gnmi` のトピックができていなかった。gnmic のログ 410 行に ERROR は 0。013 の設計は「on-change は購読の直後に今の値を 1 回送る」としていた。手元の `docker/compose/check.sh` の `gnmi` の件数の検査で再現を試す。`docs/verification/20261009-aws-managed.md` の B と不具合 2）
 - [ ] syslog-ng が `SYSLOG_STANDARD` と違う形式の行を捨てることを確かめて `docs/troubleshooting.md` に書く（2026-10-09 の AWS 検証で `logger --rfc5424` の試験行が `logs` に入らなかった。受け口は既定の RFC3164 なので、形式の不一致と推定。機器の syslog は入っていた。未確認。`docs/verification/20261009-aws-managed.md` の不具合 3）
+- [ ] `app/containerlab/trex/README.md` の「確かめていないこと」を 2026-10-09 の AWS の結果に揃える（TRex 2.41 が SR Linux と同じホストで af_packet で起きたのは確かめた。`docs/verification/20261009-aws-managed.md` の D。docs を揃えるサイクル（111）は `app/` を範囲外にしたので残った。エンジニア1 の 2026-10-09 の報告）
