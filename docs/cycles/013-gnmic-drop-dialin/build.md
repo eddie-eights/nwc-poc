@@ -522,3 +522,22 @@ bash -n: 28 本
 
 すべて通過
 ```
+
+## AWS 検証
+
+2026-10-09 にマネージド版を AWS に立てて見た（記録の正本は `docs/verification/20261009-aws-managed.md` の「3 回目」の B）。
+
+- `efukuda-nwc-poc-gnmic` の ECS のサービスは desired 1 / running 1。`telegraf-dialin` のサービスは無い。
+- gnmic のログ 410 行に ERROR は 0。
+- `metrics` のトピックに `interface_stats` と `system` の event が入っていた。実物:
+
+```json
+{"name": "interface_stats", "timestamp": 1791512362072293077, "tags": {"interface_name": "ethernet-1/1", "source": "203.0.113.12", "subscription-name": "interface_stats"}, "values": {"/srl_nokia-interfaces:interface/statistics/carrier-transitions": "0", "/srl_nokia-interfaces:interface/statistics/in-broadcast-packets": "4", "…": "…"}}
+{"name": "system", "timestamp": 1791512362092186339, "tags": {"control_slot": "A", "source": "203.0.113.21", "subscription-name": "system"}, "values": {"/srl_nokia-platform:platform/srl_nokia-platform-control:control/srl_nokia-platform-memory:memory/free": "3811790848", "…": "…"}}
+{"name": "interface_stats", "timestamp": 1791513682493808462, "tags": {"interface_name": "ethernet-1/58", "source": "203.0.113.32", "subscription-name": "interface_stats"}}
+```
+
+- `tests/test_stream.py` の入力と形は同じ（values のキーは接頭辞つきの絶対パス、値は文字列、tags は `interface_name` / `source` / `subscription-name`）。values の無い event（400 件中 358 件）は `gnmic_message` が捨てる。テストの入力も `app/spark` の読み替えも直していない。
+- `system` の 13 件中 7 件に `cpu_index` のタグがあった（未確定 6）。
+- `gnmi` のトピックはできていなかった（on-change の 3 つの購読から 1 件も書かれていない。原因は確かめていない）。oper-state / admin-state の綴り、未確定 2・7 は見られていない。
+- AMP、`fail-main` から先、トポロジ、`heal-main` は未確認（analytics を起こしていない）。

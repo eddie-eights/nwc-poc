@@ -66,8 +66,10 @@ resource "aws_ecs_task_definition" "syslog_ng" {
       image     = "${local.syslog_ng_repository_url}:${var.syslog_ng_image_tag}"
       essential = true
       portMappings = [
-        { containerPort = 5140, protocol = "udp" }, # 機器の syslog（NLB の 5140 から）
-        { containerPort = 5140, protocol = "tcp" }, # NLB のヘルスチェック（tcp で来た syslog も書く）
+        # 機器の syslog（NLB の 5140 から）。NLB のヘルスチェックは tcp の 5140 に来る（tcp で来た syslog も書く）が、tcp の行は書かない:
+        # load_balancer の付いたサービスでは同じ containerPort を 2 行書くと CreateService が InvalidParameterException で断る（2026-10-09 の AWS 検証）。
+        # awsvpc では portMappings に無いポートにも SG が通せば届く
+        { containerPort = 5140, protocol = "udp" },
       ]
       environment = [
         { name = "KAFKA_BROKERS", value = local.kafka_collector_brokers },
