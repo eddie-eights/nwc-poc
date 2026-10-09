@@ -96,7 +96,7 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
 
 | OSS | 確かめたこと | 残っている未確認 |
 |---|---|---|
-| Kafka | EFS に置いた 3 台が組めて、1 時間流して 5 つのトピックに入った。1 台止めても残り 2 台で受け続け、戻ると 3 分以内に under-replicated が 0 に戻った。10-08 は、タスク定義を変えて打ち直した `ops/oss/up.sh` が 3 台を 1 台ずつ入れ替え、最後に under-replicated が 0 だった（記録の「1 台ずつ入れ替える」） | 日単位で流したときの遅さやロック。内部トピック（`__consumer_offsets`）が 1 パーティションになること（「OSS 版の Kafka の内部トピックのパーティションを絞る（022）」。Kafbat UI で見る） |
+| Kafka | EFS に置いた 3 台が組めて、1 時間流して 5 つのトピックに入った。1 台止めても残り 2 台で受け続け、戻ると 3 分以内に under-replicated が 0 に戻った。10-08 は、タスク定義を変えて打ち直した `ops/oss/up.sh` が 3 台を 1 台ずつ入れ替え、最後に under-replicated が 0 だった（記録の「1 台ずつ入れ替える」） | 日単位で流したときの遅さやロック。内部トピックのパーティション数の設定が 1 になっていること（「OSS 版の Kafka の内部トピックのパーティションを絞る（022）」）。consumer group が無いと `__consumer_offsets` は作られないので、トピックではなく設定を見る: Kafbat UI の Brokers のブローカー設定か `kafka-configs.sh --bootstrap-server … --describe --entity-type brokers --entity-name 1 --all` で、`offsets.topic.num.partitions` が STATIC_BROKER_CONFIG の 1 になっていること |
 | OpenSearch | 3.9.0 の 3 台が Fargate で `node.store.allow_mmap=false` で起動し、green。trap が入り、1 台止めても yellow で検索できた。まとめ役（1 GB）は OOM で落ちなかった | なし |
 | VictoriaMetrics | 6 台分 396 系列が入り、Grafana に出た。vmstorage を 1 台止めて戻しても値は抜けなかった | vminsert だけが起き直したとき |
 | Neo4j + GDS | status の Lambda とエージェントの `centrality` が Neo4j を読み書きした。タスクを止めると Web は静的データに落ちて 200 のまま、起こし直して `ops/sync-graph.sh --oss`（物理層と IP 層）と Nautobot の Job（変更履歴）の 2 段で戻った | Neptune の結果と同じ並びになるか（マネージド版と並べて立てる必要がある） |

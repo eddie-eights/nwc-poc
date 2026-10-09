@@ -699,11 +699,11 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 | トピックのパーティション | 2 | `IaC/terraform/aws-managed/pipeline/stream/msk.tf` の `num.partitions` |
 | executor | 2 つ、それぞれ 1 コア、固定（自動で増やさない）。2026-10-04 に 1 → 2 にした。driver と合わせて、ジョブ 1 つにつき 3 vCPU。ジョブは格納先で 3 つまで動くので、合わせて最大 9 vCPU | `IaC/terraform/aws-managed/pipeline/analytics/outputs.tf` の `spark.executor.instances` ほか |
 
-- Kafka が自分のために作る内部トピック（`__consumer_offsets` 等）は既定 50 パーティション。OSS 版と手元の compose では 1 に絞る。MSK は configuration に項目が無く既定の 50。
 - つまり、いまはパーティション 2 つを executor 2 つで同時に読んでいる（AWS では未確認）。
 - 増やすなら `spark.executor.instances` か `spark.executor.cores` を上げ、EMR Serverless の上限（`max_cpu` / `max_memory`）も合わせる。
 - **読むのを並列にしても、書くほうは並列にならない格納先がある。**
   OpenSearch、Prometheus、Splunk への送信は、既定では行を driver に集めて（`collect`）から driver が 1 本で送る（`http_query`）。executor を増やして速くなるのは S3 Tables（Iceberg）への書き込みだけ。量が増えたら `deploy.env` に `HTTP_SEND=executor` を書くと、executor が自分で送る形（`foreachPartition`）に切り替わる。
+- Kafka が自分のために作る内部トピック（`__consumer_offsets` 等）は既定 50 パーティション。OSS 版と手元の compose では 1 に絞る（MSK は configuration に項目が無く 50 のまま）。
 
 ### Q. executor を 2 つにしたら Kafka からの読み取りは 2 つに分かれる。送信はまた別に並列化が要るの？
 

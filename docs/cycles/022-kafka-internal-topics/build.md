@@ -121,3 +121,21 @@ ok kafka.tf の kafka_environment から比べる値を 16 個読めた（読め
 $ uv run --group dev --group web python tests/test_oss.py
 通過 173 / 失敗 0
 ```
+
+### PM の指摘で直したもの（PR #18 のマージ前）
+
+- S3: FAQ の 1 行を箇条書きの末尾へ動かし、2 文にした（「つまり」が表を受ける並びに戻した）
+- S2: `docs/oss-variant.md:99` の未確認を「`kafka-configs.sh --describe --entity-type brokers --entity-name 1 --all`（または Kafbat UI の Brokers）で `offsets.topic.num.partitions` が STATIC_BROKER_CONFIG の 1」に書き換えた
+- N1: `kafka.tf` のコメント「3 に戻す」を「作り直して増やす（既定は 50）」にした
+- `docker/compose/README.md` の段落を、太字の見出し行と箇条書き 4 つに分けた（中身は S1 のまま）
+
+```
+$ uv run --group dev --group web python tests/test_local_compose.py
+ok kafka.tf の kafka_environment から比べる値を 16 個読めた（読めずに素通りしない。内部トピックのパーティション数 3 つは cycle 022）
+通過 138 / 失敗 0
+$ uv run --group dev --group web python tests/test_analytics.py
+通過 513 / 失敗 0
+$ uv run --group dev --group web python tests/test_oss.py
+通過 173 / 失敗 0
+$ terraform fmt -check IaC/terraform/oss/pipeline/stream   # rc=0
+```

@@ -79,7 +79,17 @@ docker/compose/lab.sh fail-main
 | Prometheus | http://localhost:9090 | なし |
 | OpenSearch（API） | http://localhost:9200 | `admin` / `.env` の `OPENSEARCH_PASSWORD` |
 
-Kafka の内部トピック（`__consumer_offsets` 等）は 1 パーティション（`compose.yaml` の `x-kafka-env`。既定の 50 から絞った）。パーティション数はトピックが最初に作られたとき（consumer group を初めて使ったとき）に決まる。Spark は consumer group を使わないので、前からある volume でもふつうはまだ作られておらず、上げ直せば 1 で作られる。前の volume に 50 で出来ているかは `docker compose -f docker/compose/compose.yaml exec kafka-1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:9092 --describe --topic __consumer_offsets` で分かる（PartitionCount を見る）。50 で出来ていて 1 にしたいときだけ `docker/compose/down.sh -v` で消して上げ直す（Kafka だけでなく Splunk・OpenSearch・Grafana・Prometheus・Spark の checkpoint も全部消える）。
+**Kafka の内部トピック（`__consumer_offsets` 等）は 1 パーティション**
+
+- `compose.yaml` の `x-kafka-env` で、既定の 50 から 1 に絞った（OSS 版の `kafka.tf` と同じ）。
+- 数はトピックが最初に作られたとき（consumer group を初めて使ったとき）に決まる。Spark は consumer group を使わないので、前からある volume でもふつうはまだ作られておらず、上げ直せば 1 で作られる。
+- 前の volume に 50 で出来ているかは、次の出力の PartitionCount で分かる。
+
+  ```bash
+  docker compose -f docker/compose/compose.yaml exec kafka-1 /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:9092 --describe --topic __consumer_offsets
+  ```
+
+- 50 で出来ていて 1 にしたいときだけ、`docker/compose/down.sh -v` で消して上げ直す。Kafka だけでなく Splunk・OpenSearch・Grafana・Prometheus・Spark の checkpoint も全部消える。
 
 ## ぶつかりやすいポート
 
