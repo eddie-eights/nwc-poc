@@ -69,12 +69,12 @@ AWS の資源の名前は 2026-10-04 に `nwc-*`（接頭辞 `<owner>-nwc-poc`�
 
 1. `git mv`（1 commit）
 2. 参照の書き換え: コード・設定・Dockerfile・Terraform（1 commit）。`grep -rn -i netops app docker IaC ops deploy.env.example pyproject.toml README.md` が 0 になるまで
-3. tests と docs（1 commit）。`grep -rli netops . | grep -v -e '^./docs/cycles/' -e '^./docs/verification/' -e '^./.git/'` が 0
+3. tests と docs（1 commit）。`grep -rli netops . | grep -v -e '^./docs/cycles/' -e '^./docs/verification/' -e '^./.git/'` が `moved` の 2 本だけになるまで（検証方法の 1 つ目）
 4. セルフレビュー（`/cycle-build` 手順 6）
 
 ## 検証方法
 
-- `grep -rli netops --exclude-dir=.git --exclude-dir=.terraform --exclude-dir=.venv . | grep -v -e '^./docs/cycles/' -e '^./docs/verification/'` の出力が空
+- `grep -rli netops --exclude-dir=.git --exclude-dir=.terraform --exclude-dir=.venv . | grep -v -e '^./docs/cycles/' -e '^./docs/verification/'` の出力が、`IaC/terraform/aws-managed/pipeline/analytics/tables.tf` と `tests/test_analytics.py` の 2 本だけ。この 2 本で残ってよいのは `moved` の `from = aws_s3tables_namespace.netops[0]` / `from = aws_s3tables_namespace.netops` の字面と、それを見る検査だけ（`moved` の `from` は古い state のアドレスを字面で書くしかない。2026-10-09 にエンジニア1 の質問で PM が決めた。案 B の「moved を 2 本とも消す」は、`namespace` を tfvars で上書きしている環境で同じ名前の destroy と create がぶつかるので採らない）。`grep -rn -i netops` でこの 2 本の中身を見て、ほかの行が無いことを build.md に貼る
 - `uv run pytest` が全部通り、通る検査の件数が実装前と同じ（build.md の冒頭で実測して書く。2026-10-09 の 013 のレビューでは test_alerts 168 / test_analytics 513 / test_nautobot 68 / test_stream 106 ほか）
 - `terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics validate` と `IaC/terraform/aws-managed/pipeline/nautobot`、`IaC/terraform/oss/pipeline/analytics` が `Success`
 - `docker build -f docker/images/splunk/Dockerfile app/splunk` が通り、`python tests/check_splunk_image.py` が通る（Splunk の app の名前とアクションの名前はイメージの中のパスで決まるため）。amd64 のイメージ（Mac では `--platform linux/amd64`）。ビルドできない環境なら「未確認」と build.md に書く
