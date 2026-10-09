@@ -25,8 +25,8 @@
 - [x] EMR を 7.14.0 に上げ、Spark の jar を合わせる（2026-10-08 完了。feat/spark-bump。AWS では未確認）
 - [x] Iceberg を 1.12.0 に上げる（2026-10-08 完了。feat/spark-bump。OSS 版だけ。マネージド版は EMR 同梱の 1.10.1 のまま。AWS では未確認）
 - [x] lab を IS-IS の spine 2 + a-leaf 2 + s-leaf 2 と各 leaf につなぐ TRex にする（SR-MPLS はライセンスが届いたら `ixr-6e` に差し替え。2026-10-08 の決定） → 011-lab-isis-trex-x86（2026-10-09 完了。AWS では未確認）
-- [x] コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種にする（telegraf-dialin を外し、ifTable の代わりに gNMI の oper-state を使う） → 012-msk-scram-syslog-ng-goflow2（MSK の SCRAM、syslog-ng、GoFlow2、MDT を外す。2026-10-09 完了。AWS の検証は未確認）
-- [x] gNMI を gnmic に移し、SNMP のポーリングと telegraf-dialin を外す（Grafana / Splunk の link_down を gNMI の oper-state に乗せ替える。011 と 012 のあと） → 013-gnmic-drop-dialin（2026-10-09 完了）
+- [x] コレクターを gNMI / SNMP trap / syslog-ng / GoFlow2 の 4 種にする（telegraf-dialin を外し、ifTable の代わりに gNMI の oper-state を使う） → 012-msk-scram-syslog-ng-goflow2（MSK の SCRAM、syslog-ng、GoFlow2、MDT を外す。2026-10-09 完了。同日の AWS 検証で SCRAM + IAM の有効化と ACL の前の `flows` / `logs` への書き込みを確認。ACL のあとは未確認。`docs/verification/20261009-aws-managed.md`）
+- [x] gNMI を gnmic に移し、SNMP のポーリングと telegraf-dialin を外す（Grafana / Splunk の link_down を gNMI の oper-state に乗せ替える。011 と 012 のあと） → 013-gnmic-drop-dialin（2026-10-09 完了。同日の AWS 検証で gnmic 1/1、telegraf-dialin 無し、`metrics` の event の形を確認。`gnmi` トピックは未作成（下の行）。AMP とアラートは未確認）
 - [x] `ops/up.sh` が取る jar（`JAR_URLS` 6 本）のハッシュを照合する（`docker/images/spark/Dockerfile` と compose の分は 2026-10-08 に済んだ）（2026-10-08 完了。fix/up-jar-hash。前の版の jar は jars/ と S3 から消す。S3 の `--delete` は AWS で未確認）
 - [x] `.env.example` と `ops/up.sh` と terraform のコメントの古い記述を直す（2026-10-08 完了。fix/stale-comments。コメントと description だけで動作は変えていない。2026-10-08 の docs 同期で見つけた、コードの側の食い違い: `.env.example:140` の SNMP_POLL の既定、`ops/up.sh:445` の docker の要る先に kafka-ui が無い、`ops/up.sh` の mdt・NEED_AOSS・SINK_*/GRAFANA の古いコメント、`IaC/terraform/aws-managed/base/core/endpoints.tf:27`・`perimeter.tf:4-6`・`outputs.tf:58`、`IaC/terraform/aws-managed/pipeline/stream/variables.tf:109`、`IaC/terraform/aws-managed/pipeline/analytics/locals.tf:1-10`、`app/agentcore/evidence.py:3,5`）
 - [x] `IaC/terraform/aws-managed/agent/kb.tf` の kb_index のロールにネットワークの境界の条件を付ける（ほかのロールにはあって、これだけ無い。2026-10-08 の docs 同期で見つけた）（2026-10-08 完了。fix/kb-index-firehose。KB のロールはサービス側の例外なので付けない。AWS では未確認）
@@ -82,7 +82,7 @@
 - [x] `ops/up-common.sh` の `ssm_run` の読み直しに全体の締め切りを付ける（失敗が全部 Pending 扱いで待ち続ける。前からある。2026-10-08 に 008 (b) のセルフレビューの Nit N6） → 015-grafana-check-followups（2026-10-09 完了）
 - [x] 前の回の analytics が残っている回（`PIPELINE=0` など）でも 9-2 の Grafana のルールの検査を打つ（いまは analytics を作った回しか打たない。2026-10-08 に 008 (b) のセルフレビューの Nit N7） → 015-grafana-check-followups（2026-10-09 完了）
 - [x] 初回デプロイの最後のポートフォワーディングの時点で Kafbat UI がまだ上がっていないことがあるのを `docs/deploy.md` に書く（8-3 の restart の直後に起きる。2026-10-09 に 014 のセルフレビューの Nit 4） → 016-kafbat-ui-nits → 016-kafbat-ui-nits（2026-10-09 完了）
-- [ ] Kafbat UI のユニットが 75 で failed のまま残ると `systemctl is-system-running` が degraded になるのを AWS で測る（`SuccessExitStatus=75` にする案。未計測。2026-10-09 に 014 のセルフレビューの Nit 5）
+- [ ] Kafbat UI のユニットが 75 で failed のまま残ると `systemctl is-system-running` が degraded になるのを直す（`SuccessExitStatus=75` にする案。2026-10-09 の AWS 検証で stream の前に `degraded` を実測、stream のあとの再起動で `running`。2026-10-09 に 014 のセルフレビューの Nit 5）
 - [x] `SKIP_STREAM=1` で立てたあと terraform だけで stream を上げたとき admin-password の SSM が無いのを埋める（2026-10-09 に 014 のセルフレビューの Nit 6） → 016-kafbat-ui-nits → 016-kafbat-ui-nits（2026-10-09 完了）
 - [ ] reboot のときに Kafbat UI の 69 の待ちが `enable --now` を最大 30 秒止めるのを AWS で測る（未計測。2026-10-09 に 014 のセルフレビューの Nit 8）
 - [x] `tests/test_stream.py` の 8-3 / 7-5 の検査が行の位置（`_s75.split("\n")[2]`）と完全一致の文字列に依り、`.index()` の ValueError で残りの検査が止まるのを直す（変異 5 個は ValueError での検出。2026-10-09 に 014 のセルフレビューの Nit 9 と cold review の Nit 5） → 016-kafbat-ui-nits → 016-kafbat-ui-nits（2026-10-09 完了）
@@ -100,7 +100,7 @@
 - [ ] `kafka_load.sh` の gnmi の peer の固定を lab の構成から取る（2026-10-09 に 011 のセルフレビュー N6）
 - [ ] `TELEGRAF_TAG` が Dockerfile のコメントの変更でも変わり、次の `up.sh` がイメージを作り直すのを docs に書くか、ハッシュの入力を絞る（2026-10-09 に 011 のセルフレビュー N7）
 - [ ] `app/containerlab/lab.sh` の `${TREX_IMAGE:?}` を見張るテストを足す（2026-10-09 に 011 のセルフレビュー N8）
-- [ ] TRex 2.41 が af_packet で起動することを AWS で確かめる（m6i.xlarge。aws_sandbox の always-on のガード `netops-always-on-guard` に t4g.medium と m6i.xlarge を足した（2026-10-09 に v4。nwc-poc には移さない）。2026-10-09 に 011 のセルフレビュー N9。未確認）
+- [x] TRex 2.41 が af_packet で起動することを AWS で確かめる（m6i.xlarge。aws_sandbox の always-on のガード `netops-always-on-guard` に t4g.medium と m6i.xlarge を足した（2026-10-09 に v4。nwc-poc には移さない）。2026-10-09 に 011 のセルフレビュー N9）（2026-10-09 完了。`lab trex start` で `net_af_packet`、`Number of ports found: 4`。`docs/verification/20261009-aws-managed.md` の D）
 - [ ] ECR の lab の版の `-amd64` の付け方を docs に書く（2026-10-09 に 011 のセルフレビュー N10）
 - [ ] デバッグ用の Telegraf の ECR タグにも `-$LAB_ARCH` を付ける（`ops/lab-debug.sh:141-145`。lab の 3 イメージと同じ仕組みで守る。2026-10-09 に 011 の cold review Round 1 の Nit）
 - [ ] `IaC/terraform/aws-managed/base/ecr/outputs.tf:7/12/17` の説明のタグ（`with tag 26.7.2` 等）を実際に置く `*_ECR_TAG`（`26.7.2-amd64` 等）に合わせる（2026-10-09 に 011 の cold review Round 1 の Nit）
@@ -115,3 +115,5 @@
 - [ ] コレクターごとに SCRAM のユーザーを分ける（いまは syslog-ng / GoFlow2 / gnmic が `User:collectors` を共有し、`logs` / `flows` / `gnmi` の全部に書ける。ユーザーを 3 つにして secret と ACL をコレクターごとに絞る。2026-10-09 に 013 のセルフレビュー F1b の残リスク）
 - [x] netops の名前を nwc に揃える（Splunk の app `netops_alerts` / Grafana の `netops*.yaml` / Nautobot の `app/nautobot/netops/` と `netops_jobs` / sourcetype `netops:` / S3 Tables の名前空間 `netops` / README と pyproject の「NetOps」を `nwc` にする。`docs/cycles/` と `docs/verification/` は記録なので触らない。2026-10-09 のユーザー指示） → 019-rename-netops-to-nwc（2026-10-09 完了）
 - [ ] `netops` が戻らないよう受け入れの grep を `ops/check.sh` に常設する（019 の cold review の質問。019 では「テストの中身と件数を変えない」としたので入れていない）
+- [ ] gnmic の on-change の購読が `gnmi` トピックに 1 件も書かない原因を調べて直す（2026-10-09 の AWS 検証で、`metrics` は入るのに `gnmi` のトピックができていなかった。gnmic のログ 410 行に ERROR は 0。013 の設計は「on-change は購読の直後に今の値を 1 回送る」としていた。手元の `docker/compose/check.sh` の `gnmi` の件数の検査で再現を試す。`docs/verification/20261009-aws-managed.md` の B と不具合 2）
+- [ ] syslog-ng が `SYSLOG_STANDARD` と違う形式の行を捨てることを確かめて `docs/troubleshooting.md` に書く（2026-10-09 の AWS 検証で `logger --rfc5424` の試験行が `logs` に入らなかった。受け口は既定の RFC3164 なので、形式の不一致と推定。機器の syslog は入っていた。未確認。`docs/verification/20261009-aws-managed.md` の不具合 3）
