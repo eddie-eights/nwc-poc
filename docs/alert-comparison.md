@@ -4,7 +4,7 @@
 
 サイクル「Splunk と Grafana のアラートを比べる（002）」の結果を書く場所。設計は [cycles/002-alert-parity-splunk-grafana/design.md](cycles/002-alert-parity-splunk-grafana/design.md)。
 
-2026-10-09（サイクル「gNMI を gnmic に移し、SNMP のポーリングと telegraf-dialin を外す（013）」）から、どちらの `link_down` も gNMI の IF の状態から出す（Grafana は `snmp_interface_oper_up`、Splunk は保存済みサーチ `netops_gnmi`）。保存済みサーチ `netops_poll` と `SNMP_POLL` は無くなった。下の結果は SNMP のポーリングで測った当時のもの。
+2026-10-09（サイクル「gNMI を gnmic に移し、SNMP のポーリングと telegraf-dialin を外す（013）」）から、どちらの `link_down` も gNMI の IF の状態から出す（Grafana は `snmp_interface_oper_up`、Splunk は保存済みサーチ `nwc_gnmi`）。SNMP のポーリングの保存済みサーチと `SNMP_POLL` は無くなった。下の結果は SNMP のポーリングで測った当時のもの。
 
 ## 結論
 
@@ -30,11 +30,11 @@
 
 | `kind` | 見るデータ | Grafana | Splunk |
 |---|---|---|---|
-| `link_down` | gNMI の IF の `oper_state` / `admin_state`（2026-10-09 までは SNMP のポーリングの `ifOperStatus`） | 条件つき（ルール `link_down`。ポーリングのころは書けた） | 書けた（`netops_gnmi`。ポーリングのころは `netops_poll`） |
-| `link_down` | linkDown / linkUp の trap | 書けない | 書けた（`netops_trap`） |
-| `bgp_down` | gNMI の BGP の `session_state` | 条件つき（ルール `bgp_down`） | 書けた（`netops_gnmi`） |
-| `isis_down` | gNMI の IS-IS の IF の `oper_state` | 条件つき（ルール `isis_down`） | 書けた（`netops_gnmi`） |
-| `trap` | linkDown / linkUp 以外の trap | 条件つき（ルール `trap`） | 書けた（`netops_trap` と `netops_trap_clear`） |
+| `link_down` | gNMI の IF の `oper_state` / `admin_state`（2026-10-09 までは SNMP のポーリングの `ifOperStatus`） | 条件つき（ルール `link_down`。ポーリングのころは書けた） | 書けた（`nwc_gnmi`。ポーリングのころは別の保存済みサーチ） |
+| `link_down` | linkDown / linkUp の trap | 書けない | 書けた（`nwc_trap`） |
+| `bgp_down` | gNMI の BGP の `session_state` | 条件つき（ルール `bgp_down`） | 書けた（`nwc_gnmi`） |
+| `isis_down` | gNMI の IS-IS の IF の `oper_state` | 条件つき（ルール `isis_down`） | 書けた（`nwc_gnmi`） |
+| `trap` | linkDown / linkUp 以外の trap | 条件つき（ルール `trap`） | 書けた（`nwc_trap` と `nwc_trap_clear`） |
 
 理由と、取り込みで要る整形:
 
@@ -43,7 +43,7 @@
 | `link_down`（gNMI） | 状態が文字列（`up` / `down`、`enable` / `disable`）で、Prometheus に入らない。Spark が `snmp_interface_oper_up`（`up` なら 1）と `snmp_interface_admin_up`（`enable` なら 1）の系列に直す。機器名も無いので、Spark が device map で `sysName` を足す。admin-state が disable の IF は PromQL の `unless` で外す | 状態は文字列のまま読む（1 / 0 にしない）。機器名は Spark が device map で `sysName` を足す（2026-10-09 から）。ただし Splunk は「いまの状態」を持たないので、サーチが前の値と比べて変わった IF だけを出す。そのために 24 時間ぶんを読む |
 | `link_down`（trap） | linkDown の trap は IF 名を入れた項目の名前が IF ごとに変わる。OpenSearch のクエリ 1 本でまとめられないので、ルールにしていない | 機器名は Spark が device map で `sysName` を足す（2026-10-09 から）。IF ごとに変わる項目の名前は、SPL が前方一致で拾う |
 | `bgp_down` / `isis_down` | 状態が文字列（`established` / `up` など）で、Prometheus に入らない。Spark が 1（正常）/ 0（それ以外）の系列に直す。機器名も無いので、Spark が device map で `sysName` を足す | 状態は文字列のまま読む（1 / 0 にしない）。機器名は Spark が device map で `sysName` を足す（2026-10-09 から）。表に無い機器の送り元の IP は、アラートアクションが `DEVICE_MAP` で機器名に直す |
-| `trap` | 機器名が無いので、Spark が OpenSearch の文書に `tags.sysName` を足す。まとめる数に上限がある（機器 10 × OID 10。2026-10-08 までは 50 × 20） | 機器名は Spark が device map で `sysName` を足す（2026-10-09 から）。解消を出すためのサーチ（`netops_trap_clear`）がもう 1 本要る |
+| `trap` | 機器名が無いので、Spark が OpenSearch の文書に `tags.sysName` を足す。まとめる数に上限がある（機器 10 × OID 10。2026-10-08 までは 50 × 20） | 機器名は Spark が device map で `sysName` を足す（2026-10-09 から）。解消を出すためのサーチ（`nwc_trap_clear`）がもう 1 本要る |
 
 Spark の整形の中身（`app/spark/snmp_sinks.py`）:
 
@@ -102,7 +102,7 @@ WITH e AS (
   -- Lambda のやり直しで二重に入った行を event_id で落とす
   SELECT * FROM (
     SELECT *, row_number() OVER (PARTITION BY event_id ORDER BY received_at) AS rn
-    FROM "s3tablescatalog/<テーブルバケットの名前>"."netops"."alert_events"
+    FROM "s3tablescatalog/<テーブルバケットの名前>"."nwc"."alert_events"
     WHERE received_at BETWEEN TIMESTAMP '2026-10-05 01:00:00 UTC' AND TIMESTAMP '2026-10-05 01:05:00 UTC'
   ) WHERE rn = 1
 ),
@@ -131,7 +131,7 @@ ORDER BY anomaly_id, status
 | `grafana_first` / `splunk_first` | その異常・その `status` の通知を、送り手ごとに最初に受けた時刻 |
 | `splunk_minus_grafana_sec` | 差（秒）。正なら Splunk のほうが遅い |
 | `missed` | 片方にしか行が無い。取りこぼし |
-| `splunk_gnmi_first` / `splunk_trap_first` | `link_down` を、Splunk の gNMI（`netops_gnmi`）と trap（`netops_trap`）に分けた時刻 |
+| `splunk_gnmi_first` / `splunk_trap_first` | `link_down` を、Splunk の gNMI（`nwc_gnmi`）と trap（`nwc_trap`）に分けた時刻 |
 
 - 入れた時刻からの遅れは、控えた時刻と `grafana_first` / `splunk_first` の差で出す。
 - gNMI と trap は `detail` の末尾で分かれる。Grafana は `(grafana: gnmi)` / `(grafana: trap)`。Splunk は `(splunk: gnmi)` / `(splunk: linkDown trap)` / `(splunk: linkUp trap)` / `(splunk: trap)`。
@@ -207,7 +207,7 @@ ORDER BY anomaly_id, status
 
 - `link_down` は送り手が 3 つある
 
-  Grafana の gNMI、Splunk の trap、Splunk の gNMI（`netops_gnmi`）。異常の id は同じだが、`starts_at` は 3 つとも違う。ワークフローは異常の id ごとに 1 つなので、ふつうは 1 つにまとまる。ただし、最初のワークフローが閉じたあとに遅れた 1 通が届くと、2 つ目が起きうる。実測はしていない。
+  Grafana の gNMI、Splunk の trap、Splunk の gNMI（`nwc_gnmi`）。異常の id は同じだが、`starts_at` は 3 つとも違う。ワークフローは異常の id ごとに 1 つなので、ふつうは 1 つにまとまる。ただし、最初のワークフローが閉じたあとに遅れた 1 通が届くと、2 つ目が起きうる。実測はしていない。
 - Splunk の `resolved` の `starts_at` は、直った時刻
 
   Grafana の `resolved` は、発火したときの `starts_at` を持ったまま来る。
@@ -225,7 +225,7 @@ ORDER BY anomaly_id, status
   Prometheus にあるのは 1 / 0 だけ。`idle` や `active` の区別は Splunk の `detail`（`bgp session to 10.255.0.1 is idle (splunk: gnmi)` の形）で見る。
 - `trap` のルール
 
-  データが無いときは正常として扱う（`noDataState: OK`）。`KeepLast` だと、trap が 10 分の窓から出たあとも発火したままになる。まとめるのは `tags.sysName.keyword` と `tags.oid.keyword` で、数は機器 10 × OID 10 まで（2026-10-08 までは 50 × 20）。プラグインが「組み合わせ × 時間の区切り」を 65535 までしか受けないため。解消は OID ごとで、その OID の trap が 10 分来なければ出る。Splunk の `netops_trap_clear` は機器ごとで、その機器から link 以外の trap が 10 分来なければ全部を閉じる。
+  データが無いときは正常として扱う（`noDataState: OK`）。`KeepLast` だと、trap が 10 分の窓から出たあとも発火したままになる。まとめるのは `tags.sysName.keyword` と `tags.oid.keyword` で、数は機器 10 × OID 10 まで（2026-10-08 までは 50 × 20）。プラグインが「組み合わせ × 時間の区切り」を 65535 までしか受けないため。解消は OID ごとで、その OID の trap が 10 分来なければ出る。Splunk の `nwc_trap_clear` は機器ごとで、その機器から link 以外の trap が 10 分来なければ全部を閉じる。
 
 ### Spark の整形の副作用
 
@@ -236,7 +236,7 @@ ORDER BY anomaly_id, status
 
   OpenSearch の文書は、送り元の IP をそのまま `tags.sysName` に入れる（Grafana の `trap` のルールが機器ごとにまとめる鍵が要るため）。Prometheus には足さない。
 
-### Splunk の `netops_poll`（2026-10-09 にやめた）
+### Splunk の SNMP のポーリングの保存済みサーチ（2026-10-09 にやめた）
 
 - 毎分、索引に入った時刻で 11 分ぶんを読む
 

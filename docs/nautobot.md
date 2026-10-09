@@ -77,10 +77,10 @@ LB は無い。閉域なので、画面は Web の EC2 を踏み台にしたポ�
 
 | ファイル | 役割 |
 |---|---|
-| `jobs/netops_jobs.py` | Job 2 つ。`SyncTopology`「gnmic とグラフ DB に同期」（手で打つ）と `SyncOnChange`「変更のたびに gnmic とグラフ DB に同期」（JobHook `netops-sync` が呼ぶ）。中身は同じ。名前はマネージド版（Neptune）と OSS 版（Neo4j）で同じで、説明に書き先の名前が出る（`nb_sync.GRAPH_NAME`）。JobHook と bootstrap は Job を名前でなくクラスの場所（`netops_jobs.SyncOnChange`）で引くので、名前を変えても外れない |
-| `netops/nb_sync.py` | 同期の本体。台帳を読む → ① gnmic の一覧（SSM）と gnmic の作り直し → ② Neptune の物理層 |
-| `netops/nb_map.py` | 台帳とトポロジの対応付け（Nautobot に依らない純粋な関数。`tests/test_nautobot.py` が検査する） |
-| `netops/bootstrap.py` | web の起動時に 1 回走る用意（下の 4） |
+| `jobs/nwc_jobs.py` | Job 2 つ。`SyncTopology`「gnmic とグラフ DB に同期」（手で打つ）と `SyncOnChange`「変更のたびに gnmic とグラフ DB に同期」（JobHook `nwc-sync` が呼ぶ）。中身は同じ。名前はマネージド版（Neptune）と OSS 版（Neo4j）で同じで、説明に書き先の名前が出る（`nb_sync.GRAPH_NAME`）。JobHook と bootstrap は Job を名前でなくクラスの場所（`nwc_jobs.SyncOnChange`）で引くので、名前を変えても外れない |
+| `nwc/nb_sync.py` | 同期の本体。台帳を読む → ① gnmic の一覧（SSM）と gnmic の作り直し → ② Neptune の物理層 |
+| `nwc/nb_map.py` | 台帳とトポロジの対応付け（Nautobot に依らない純粋な関数。`tests/test_nautobot.py` が検査する） |
+| `nwc/bootstrap.py` | web の起動時に 1 回走る用意（下の 4） |
 | `docker/images/nautobot/Dockerfile`（007 で `app/nautobot/` から移した） | 公式イメージに上のファイルと `app/agentcore/graph.py`（Neptune へ openCypher で書く関数）・`app/agentcore/toolkit.py`、`lab_seed.json` を足す |
 
 ## 4. 起動してから同期するまで
@@ -95,7 +95,7 @@ sequenceDiagram
   W->>D: migrate（最初は 5〜10 分）
   W->>D: 管理者、custom field（asn / link_role / bandwidth_mbps）
   W->>D: 機器が 0 台のときだけ lab の定義から seed（7 台 / 12 本）
-  W->>D: Job 2 つを有効にし、JobHook netops-sync を張る
+  W->>D: Job 2 つを有効にし、JobHook nwc-sync を張る
   W->>T: 起動時の同期（一覧）
   W->>N: 起動時の同期（物理層）
   Note over W: ここから画面が開く
@@ -159,7 +159,7 @@ sequenceDiagram
   participant U as 運用者（Web の「トポロジ」タブ）
   participant W as Web の EC2（app/dashboard/nautobot_api.py）
   participant N as Nautobot（REST API）
-  participant J as Job（JobHook netops-sync）
+  participant J as Job（JobHook nwc-sync）
   participant G as Neptune
   U->>W: リンクを追加 / 削除
   W->>N: インタフェースが無ければ作る → ケーブルを作る / 消す（トークン）
@@ -169,7 +169,7 @@ sequenceDiagram
   W->>G: トポロジを読む
 ```
 
-- トークンは SSM の SecureString `/<prefix>/nautobot/api-token`（`ops/up.sh` が作る）。Nautobot の側は起動時に `bootstrap.py` が同じ値でユーザー `netops-web` のトークンを作る。
+- トークンは SSM の SecureString `/<prefix>/nautobot/api-token`（`ops/up.sh` が作る）。Nautobot の側は起動時に `bootstrap.py` が同じ値でユーザー `nwc-web` のトークンを作る。
 - 種別（fabric / l2 / lag）は画面で選んだものではなく、両端の機器の Role と LAG から Job が決める。役割（primary / secondary）と帯域はケーブルの custom field に入る。
 - 片方のインタフェースにもうケーブルがあれば追加は断られる（先にそのリンクを消す）。削除はケーブルだけを消し、インタフェースは残る。
 - 画面にあるのはリンクの追加・削除だけ。機器・Service・IP は Nautobot の画面で変える。
@@ -252,7 +252,7 @@ Web の「トポロジ」タブのリンクの追加・削除は、Neptune で�
 - `ops/down.sh` で DB ごと消える。Nautobot で編集した内容は残らず、作り直すと lab の定義から入り直す。
 - 機器が 1 台も無いときは Neptune を触らない（空で合わせると物理層が全部消えるため）。
 - 機器の名前を変えると、Neptune では別の機器になる（名前が頂点の ID）。その機器の `status` と上の層へのつながりは消える。
-- 一括で変えると、変更 1 件ごとに Job が走り、一覧が変わるたびに gnmic が作り直される。大きく変えるときは JobHook `netops-sync` を止めてから変え、最後に手で Job を打つ。
+- 一括で変えると、変更 1 件ごとに Job が走り、一覧が変わるたびに gnmic が作り直される。大きく変えるときは JobHook `nwc-sync` を止めてから変え、最後に手で Job を打つ。
 - `ops/sync-graph.sh --replace` は lab の定義で上書きする。Nautobot で足したものは、Job を打つまで Neptune から消える。
 - デバッグ用の EC2（`ops/lab-debug.sh`）は Nautobot を使わない。
 - AWS で確かめたのは、起動・seed・Job と JobHook の登録・起動時の同期まで。Nautobot での変更 → JobHook → SSM / gnmic / Neptune と、Web からの Nautobot への書き込みは、まだ AWS では確かめていない（手元のテスト `tests/test_nautobot.py` と、手元の Docker で起こした Nautobot 3.2.6 への REST API だけ）。

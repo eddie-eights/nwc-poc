@@ -403,7 +403,7 @@ check("Firehose <接頭辞>-alert-events は iceberg で s3tablescatalog/<テー
       and re.search(r'catalog_arn\s*=\s*"\$\{local\.glue_catalog\}/\$\{local\.athena_catalog\}"', _fh.group(1)) is not None
       and 'athena_catalog = "s3tablescatalog/${local.table_bucket}"' in _hist
       and 'glue_catalog   = "arn:${local.partition}:glue:${var.region}:${local.account_id}:catalog"' in _hist
-      and re.search(r'database_name\s*=\s*aws_s3tables_namespace\.netops\.namespace', _fh.group(1)) is not None
+      and re.search(r'database_name\s*=\s*aws_s3tables_namespace\.nwc\.namespace', _fh.group(1)) is not None
       and re.search(r'table_name\s*=\s*aws_s3tables_table\.alert_events\.name', _fh.group(1)) is not None
       and re.search(r'buffering_interval\s*=\s*60\b', _fh.group(1)) is not None and re.search(r'buffering_size\s*=\s*1\b', _fh.group(1)) is not None)
 check("書けなかった行は土台のバケットの firehose-errors/alert_events/ に落とし（FailedDataOnly）、CloudWatch のログを付ける",
@@ -529,7 +529,7 @@ check("parse_args: splunk は --splunk-hec-url と --splunk-token-parameter が�
       parse_error(base + ["--sinks", "splunk"]) == 2 and parse_error(base + ["--sinks", "splunk", "--splunk-hec-url", "https://s:8088"]) == 2
       and (lambda a: a.sinks == ["splunk"] and a.splunk_index == "" and a.splunk_skip_verify is False)(
           mod.parse_args(base + ["--sinks", "splunk", "--splunk-hec-url", "https://s:8088", "--splunk-token-parameter", "/p/splunk/hec-token"]))
-      and mod.parse_args(base + ["--sinks", "splunk", "--splunk-hec-url", "https://s:8088", "--splunk-token-parameter", "/p/t", "--splunk-index", "netops", "--splunk-skip-verify"]).splunk_skip_verify is True)
+      and mod.parse_args(base + ["--sinks", "splunk", "--splunk-hec-url", "https://s:8088", "--splunk-token-parameter", "/p/t", "--splunk-index", "nwc", "--splunk-skip-verify"]).splunk_skip_verify is True)
 check("parse_args: 空の --metric-topics は 2", parse_error(base + ["--sinks", "iceberg", "--iceberg-table", "t", "--metric-topics", ","]) == 2)
 
 check("sink_topics: iceberg は全部（重複無し）、prometheus はメトリクス、opensearch はログ",
@@ -739,11 +739,11 @@ check("splunk_hec_url: 末尾の / を除き、/services/collector/event を足�
       and mod.splunk_hec_url("https://s:8088/") == "https://s:8088/services/collector/event"
       and mod.splunk_hec_url("https://s:8088/services/collector") == "https://s:8088/services/collector/event"
       and mod.splunk_hec_url("https://s:8088/services/collector/event/") == "https://s:8088/services/collector/event")
-_ev = [json.loads(x) for x in mod.splunk_events([rec, dict(rec, host="", agent_host="", measurement="", topic="traps")], "netops")]
-check("splunk_events: 1 レコードが 1 行の JSON。time は ts、host は host → agent_host → unknown、source は telegraf:<measurement>、sourcetype は netops:<topic>、index は渡したとき",
+_ev = [json.loads(x) for x in mod.splunk_events([rec, dict(rec, host="", agent_host="", measurement="", topic="traps")], "nwc")]
+check("splunk_events: 1 レコードが 1 行の JSON。time は ts、host は host → agent_host → unknown、source は telegraf:<measurement>、sourcetype は nwc:<topic>、index は渡したとき",
       len(_ev) == 2 and _ev[0]["time"] == 1700000000.5 and _ev[0]["host"] == "h" and _ev[0]["source"] == "telegraf:interface"
-      and _ev[0]["sourcetype"] == "netops:metrics" and _ev[0]["index"] == "netops"
-      and _ev[1]["host"] == "unknown" and _ev[1]["source"] == "telegraf:unknown" and _ev[1]["sourcetype"] == "netops:traps")
+      and _ev[0]["sourcetype"] == "nwc:metrics" and _ev[0]["index"] == "nwc"
+      and _ev[1]["host"] == "unknown" and _ev[1]["source"] == "telegraf:unknown" and _ev[1]["sourcetype"] == "nwc:traps")
 check("splunk_events: event に topic / measurement / agent_host / tags / fields。数値の文字列は数値に、それ以外はそのまま",
       _ev[0]["event"]["topic"] == "metrics" and _ev[0]["event"]["measurement"] == "interface" and _ev[0]["event"]["agent_host"] == "r1"
       and _ev[0]["event"]["tags"]["ifName"] == "Gi0/1" and _ev[0]["event"]["fields"]["ifInOctets"] == 123 and _ev[0]["event"]["fields"]["descr"] == "up"
@@ -754,7 +754,7 @@ _posts = []
 _orig_post = mod.http_post
 mod.http_post = lambda url, body, headers, context=None: (_posts.append((url, body, headers, context)), (200, "ok"))[1]
 try:
-    _send = mod.make_splunk_sender("https://s:8088/", "tok", "netops")
+    _send = mod.make_splunk_sender("https://s:8088/", "tok", "nwc")
     _ok_dropped = _send([rec] * (mod.BULK_SIZE + 1))
 finally:
     mod.http_post = _orig_post
@@ -862,18 +862,18 @@ mod.read_ssm_parameter = lambda name, region: (_ssm.append((name, region)), "tok
 mod.http_post = lambda url, body, headers, context=None: (_posts.append((url, body, headers, context)), (403, b'{"text":"Invalid token","code":4}'))[1]
 _posts.clear()
 try:
-    _send = mod.make_splunk_sender_on_executor("https://s:8088", "/p/splunk/hec-token", "ap-northeast-1", "netops", True, {"r1": "dc1-a-leaf-01"})
+    _send = mod.make_splunk_sender_on_executor("https://s:8088", "/p/splunk/hec-token", "ap-northeast-1", "nwc", True, {"r1": "dc1-a-leaf-01"})
     _ssm_at_make = list(_ssm)
     _cells = [c.cell_contents for c in (_send.__closure__ or ())]
     _n, _err = _stderr(lambda: mod.send_partition("splunk", _send, 3, iter([dict(_row(2.0), tags_json='{"source":"r1","ifName":"Gi0/1"}'), _row(1.0)])))
 finally:
     mod.http_post, mod.read_ssm_parameter = _orig_post, _orig_ssm
 check("make_splunk_sender_on_executor: 作るときは SSM を読まず、持つのは URL / パラメータ名 / region / index / skip_verify の文字列と bool と device map の辞書だけ（token も SSL の context も executor へ運ばない）",
-      _ssm_at_make == [] and sorted(map(repr, _cells)) == sorted(map(repr, ["https://s:8088", "/p/splunk/hec-token", "ap-northeast-1", "netops", True, {"r1": "dc1-a-leaf-01"}])))
+      _ssm_at_make == [] and sorted(map(repr, _cells)) == sorted(map(repr, ["https://s:8088", "/p/splunk/hec-token", "ap-northeast-1", "nwc", True, {"r1": "dc1-a-leaf-01"}])))
 check("make_splunk_sender_on_executor: 送るときに SSM から token を読み、Authorization: Splunk <token> で HEC に送る。index と skip_verify（検証しない context）も今の sender と同じ",
       _ssm == [("/p/splunk/hec-token", "ap-northeast-1")] and len(_posts) == 1 and _posts[0][0] == "https://s:8088/services/collector/event"
       and _posts[0][2]["Authorization"] == "Splunk tok-from-ssm" and _posts[0][3] is not None and _posts[0][3].verify_mode == ssl.CERT_NONE
-      and [json.loads(x)["time"] for x in _posts[0][1].decode().split("\n")] == [1.0, 2.0] and json.loads(_posts[0][1].decode().split("\n")[0])["index"] == "netops")
+      and [json.loads(x)["time"] for x in _posts[0][1].decode().split("\n")] == [1.0, 2.0] and json.loads(_posts[0][1].decode().split("\n")[0])["index"] == "nwc")
 check("make_splunk_sender_on_executor: device map で sysName を足す（source のある行だけ。cycle 013）",
       [json.loads(x)["event"]["tags"].get("sysName") for x in _posts[0][1].decode().split("\n")] == [None, "dc1-a-leaf-01"])
 check("make_splunk_sender_on_executor: 4xx は捨てて続け（例外にしない）、ログに token の値を出さない",
@@ -1101,7 +1101,7 @@ _fake_sql = _types.ModuleType("pyspark.sql")
 _fake_sql.functions, _fake_sql.types = _Any(), _Any()
 _saved_mods = {k: sys.modules.get(k) for k in ("pyspark", "pyspark.sql")}
 _orig_mo = (mod.iceberg_query, mod.http_query, mod.read_ssm_parameter)
-_b4 = base + ["--sinks", "iceberg,splunk,opensearch,prometheus", "--iceberg-table", "s3tables.netops.raw_telemetry",
+_b4 = base + ["--sinks", "iceberg,splunk,opensearch,prometheus", "--iceberg-table", "s3tables.nwc.raw_telemetry",
               "--splunk-hec-url", "https://s:8088", "--splunk-token-parameter", "/p/t",
               "--prometheus-url", "https://p/api/v1/remote_write", "--opensearch-endpoint", "https://o"]
 def _reads(*extra):
@@ -1155,9 +1155,9 @@ check("build 共通 0 + opensearch=300,iceberg=50000: 書いた格納先だけ�
       _r_mixed == {"iceberg": "50000", "splunk": None, "opensearch": "300", "prometheus": None})
 check("main は格納先ごとの上限（0 なら上限なし）を起動時のログに出す", "1 回 {max_offsets(args, s) or '上限なし'} 件まで" in src)
 check("build iceberg: 列の足りない表（tables.tf の 8 列）には iceberg のクエリを組む前に ALTER TABLE を 1 回出し、足した列をログに出す",
-      _sp_old.tables == ["s3tables.netops.raw_telemetry"] and _alter_at == [1]
-      and _sp_old.sqls == ["ALTER TABLE s3tables.netops.raw_telemetry ADD COLUMNS (event_id string, kafka_topic string, kafka_partition int, kafka_offset bigint)"]
-      and "iceberg: s3tables.netops.raw_telemetry に列 event_id, kafka_topic, kafka_partition, kafka_offset を足した（いまある行は null）" in _alter_out)
+      _sp_old.tables == ["s3tables.nwc.raw_telemetry"] and _alter_at == [1]
+      and _sp_old.sqls == ["ALTER TABLE s3tables.nwc.raw_telemetry ADD COLUMNS (event_id string, kafka_topic string, kafka_partition int, kafka_offset bigint)"]
+      and "iceberg: s3tables.nwc.raw_telemetry に列 event_id, kafka_topic, kafka_partition, kafka_offset を足した（いまある行は null）" in _alter_out)
 check("build: mapKeyDedupPolicy は Kafka を読む前（どのクエリよりも先）に 1 回だけ決める",
       _sp_new.conf.sets == [("spark.sql.mapKeyDedupPolicy", "LAST_WIN")] and _sp_new.log[0] == "conf" and _sp_new.log.count("read") == 4)
 check("build iceberg: 列がそろっていれば ALTER も列のログも出さない（2 回目の起動から）", _sp_new.sqls == [] and "を足した" not in _new_out)
@@ -1262,7 +1262,7 @@ check("splunk_events: device map を渡すと sysName の無い trap と gNMI �
       and _sev[0] == dict(_trap["tags"], sysName="dc1-a-leaf-01") and _sev[1] == dict(_gnmi_rec["tags"], sysName="dc1-a-leaf-01")
       and "sysName" not in _sev[2] and _sev[3] == rec["tags"] and "sysName" not in _trap["tags"] and "sysName" not in _gnmi_rec["tags"])
 check("splunk_events: device map を渡さなければ今までどおり（sysName を足さない）",
-      "sysName" not in json.loads(mod.splunk_events([_trap])[0])["event"]["tags"] and "sysName" not in json.loads(mod.splunk_events([_gnmi_rec], "netops")[0])["event"]["tags"])
+      "sysName" not in json.loads(mod.splunk_events([_trap])[0])["event"]["tags"] and "sysName" not in json.loads(mod.splunk_events([_gnmi_rec], "nwc")[0])["event"]["tags"])
 check("build は device map を prometheus / opensearch / splunk（driver と executor）の sender に渡す",
       "devmap = parse_device_map(args.device_map)" in src
       and re.search(r'make_prometheus_sender\([^)]*devmap\)', src) is not None and re.search(r'make_opensearch_sender\([^)]*devmap\)', src) is not None
@@ -1356,8 +1356,8 @@ finally:
     mod.http_post, mod.sigv4_headers = _orig_post, _orig_sig
 _f_sp = json.loads(_bodies["https://s:8088/services/collector/event"][0].decode())
 _f_os = [json.loads(x) for x in _bodies["https://o/snmp-logs/_bulk"][0].decode().splitlines()]
-check("flows の行は logs と同じ送り先: Splunk は sourcetype netops:flows / source telegraf:flow、OpenSearch は snmp-logs の索引（表を足さない。012 の build.md の逸脱 a）",
-      _f_sp["sourcetype"] == "netops:flows" and _f_sp["source"] == "telegraf:flow" and _f_sp["event"]["tags"]["src"] == "10.0.0.1"
+check("flows の行は logs と同じ送り先: Splunk は sourcetype nwc:flows / source telegraf:flow、OpenSearch は snmp-logs の索引（表を足さない。012 の build.md の逸脱 a）",
+      _f_sp["sourcetype"] == "nwc:flows" and _f_sp["source"] == "telegraf:flow" and _f_sp["event"]["tags"]["src"] == "10.0.0.1"
       and _f_sp["event"]["fields"] == {"bytes": 1500, "packets": 3}   # 文字列の数値は送り先で数にする（Telegraf の Counter と同じ）
       and len(_f_os) == 2 and _f_os[1]["topic"] == "flows" and _f_os[1]["measurement"] == "flow" and _f_os[1]["tags"]["sampler"] == "192.0.2.1"
       and _f_os[1]["fields"] == {"bytes": 1500.0, "packets": 3.0})
@@ -2071,8 +2071,8 @@ check("SPLUNK_AZ_NUM: 2 か 3 は STORES に splunk が要り、SPLUNK_INDEX と
       "Splunk のタスクは 1 か SPLUNK_AZ_NUM + 2",
       _aznum(SPLUNK_AZ_NUM="2", ENDPOINTS_AZ_NUM="2", SKIP_ANALYTICS="").endswith("OUT: 2 2 1 1 1 1 1 1 1 2")
       and _aznum(SPLUNK_AZ_NUM="2", SPLUNK_ON_ECS="", STORES="s3", SKIP_ANALYTICS="").startswith("DIE: SPLUNK_AZ_NUM=2 は Splunk のクラスターで、STORES に splunk が要る（いまは STORES=s3）")
-      and _aznum(SPLUNK_AZ_NUM="3", SPLUNK_INDEX="netops", SKIP_ANALYTICS="").startswith("DIE: SPLUNK_AZ_NUM=3（Splunk のクラスター）では index は main だけで、SPLUNK_INDEX は書けない")
-      and _aznum(SPLUNK_AZ_NUM="2", SPLUNK_ON_ECS="", STORES="s3", SPLUNK_INDEX="netops", SKIP_ANALYTICS="1").endswith(" 2")
+      and _aznum(SPLUNK_AZ_NUM="3", SPLUNK_INDEX="nwc", SKIP_ANALYTICS="").startswith("DIE: SPLUNK_AZ_NUM=3（Splunk のクラスター）では index は main だけで、SPLUNK_INDEX は書けない")
+      and _aznum(SPLUNK_AZ_NUM="2", SPLUNK_ON_ECS="", STORES="s3", SPLUNK_INDEX="nwc", SKIP_ANALYTICS="1").endswith(" 2")
       and all(subprocess.run(["bash", "-uc", 'die() { exit 1; }\n' + _azfn + _azblk + 'echo "$SPLUNK_TASKS"'], capture_output=True, text=True,
                              env={"PATH": os.environ["PATH"], **_AZ_ENV, "SKIP_ANALYTICS": "", "SPLUNK_AZ_NUM": a, "ENDPOINTS_AZ_NUM": "3"}).stdout.strip() == t
               for a, t in (("", "1"), ("1", "1"), ("2", "4"), ("3", "5"))))
@@ -2216,11 +2216,14 @@ check("費用: EMR / Lambda / Runtime の AZ_NUM では変わらない。AZ を�
 # iceberg を外しても、証跡があるのでテーブルバケット・namespace・カタログはいつも作る。生データの raw_telemetry だけ外す
 check('resource "aws_s3tables_table" "raw_telemetry" は sink_iceberg の count',
       re.search(r'resource "aws_s3tables_table" "raw_telemetry" \{\n  count = local\.sink_iceberg \? 1 : 0\n', tf) is not None)
-for _res in ('resource "aws_s3tables_table_bucket" "tables"', 'resource "aws_s3tables_namespace" "netops"'):
+for _res in ('resource "aws_s3tables_table_bucket" "tables"', 'resource "aws_s3tables_namespace" "nwc"'):
     check(f"{_res} はいつも作る（count 無し）", re.search(re.escape(_res) + r' \{\n  count', tf) is None and _res in tf)
-check("count を外したバケット・namespace は moved で state の [0] を引き継ぐ（作り直さない）",
-      all(re.search(r'moved \{\n\s*from = ' + re.escape(r) + r'\[0\]\n\s*to\s*= ' + re.escape(r) + r'\n', tf) for r in
-          ("aws_s3tables_table_bucket.tables", "aws_s3tables_namespace.netops")))
+# namespace の資源は cycle 019 で改名した。古い名前は moved の from にだけ残る（[0] → 古い名前 → nwc とつなぐ）
+check("count を外したバケット・namespace は moved で state の [0] を引き継ぐ（作り直さない）。改名した namespace も moved で state のアドレスをつなぐ",
+      all(re.search(r'moved \{\n\s*from = ' + re.escape(f) + r'\n\s*to\s*= ' + re.escape(t) + r'\n', tf) for f, t in
+          (("aws_s3tables_table_bucket.tables[0]", "aws_s3tables_table_bucket.tables"),
+           ("aws_s3tables_namespace.netops[0]", "aws_s3tables_namespace.netops"),
+           ("aws_s3tables_namespace.netops", "aws_s3tables_namespace.nwc"))))
 check("実行ロールの S3TablesCatalog は iceberg を選んだときだけ（Spark は証跡に書かなくなった。2026-10-02）、Spark のカタログの設定はいつも入る",
       re.search(r'Sid\s*=\s*"S3TablesCatalog"', tf) is not None and "}] : s if local.sink_iceberg]" in tf.split('Sid    = "S3TablesCatalog"')[1].split("OpenSearchCollection")[0]
       and "warehouse=${local.table_bucket_arn}" in tf and "c if local.sink_iceberg" not in tf)
@@ -2232,7 +2235,7 @@ _jobs_def = {j: [x.strip(' "') for x in v.split(",")] for j, v in
              re.findall(r'(\w+) = \[([^\]]*)\]', re.search(r'spark_jobs = \{ for job, sinks in \{(.*?)\} :', tf).group(1))}
 check("spark_jobs: iceberg / splunk / http（opensearch と prometheus）", _jobs_def == {"iceberg": ["iceberg"], "splunk": ["splunk"], "http": ["opensearch", "prometheus"]})
 _VALS = {"local.bootstrap": "b:9098", "local.checkpoint_uri": "s3://bucket/analytics/checkpoint/u/", "var.region": "ap-northeast-1",
-         "local.metric_topics": "metrics,gnmi", "local.log_topics": "traps,logs", "local.iceberg_table": "s3tables.netops.raw_telemetry",
+         "local.metric_topics": "metrics,gnmi", "local.log_topics": "traps,logs", "local.iceberg_table": "s3tables.nwc.raw_telemetry",
          "local.opensearch_endpoint": "https://c.aoss.amazonaws.com", "local.opensearch_index": "snmp-logs",
          "local.prometheus_remote_write_url": "https://aps/api/v1/remote_write", "local.splunk_hec_url": "https://splunk.p.internal:8088",
          "local.splunk_token_parameter": "/p/splunk/hec-token", "var.splunk_index": ""}

@@ -209,7 +209,7 @@ PRI = ファシリティの番号 × 8 + 重要度
 - **ポート**
   - Cisco の既定は 514。syslog-ng は 5140 で待っているので（2026-10-08 までは Telegraf。どちらも非 root で、1024 未満では待てない）、`port 5140` が要る。
   - trap は `snmp-server host <NLB の IP> version 2c <community>` と `snmp-server enable traps snmp linkdown linkup` で 162 に送れば、NLB が Telegraf の 1162 へ渡す（版を書かないと v1 で送る。Telegraf は 2c で受ける）。
-  - Cisco の linkDown の varbind には ifName が無い（ifIndex・ifDescr など）。trap を `link_down` にする Splunk の保存済みサーチ `netops_trap` は ifName → ifDescr → ifIndex の順で IF を引くので ifDescr で引くことになり、SR Linux の ifName とは名前の形が違う。
+  - Cisco の linkDown の varbind には ifName が無い（ifIndex・ifDescr など）。trap を `link_down` にする Splunk の保存済みサーチ `nwc_trap` は ifName → ifDescr → ifIndex の順で IF を引くので ifDescr で引くことになり、SR Linux の ifName とは名前の形が違う。
 - **経路**
   - 内部 NLB なので、オンプレから届くには Direct Connect か Site-to-Site VPN が要る。
   - NLB の SG でオンプレの CIDR を通す必要もある（今は `IaC/terraform/aws-managed/base/core/security_groups.tf` の通信の表で lab の `203.0.113.0/24` だけ）。NACL はコードで作っていない（既定で全部通す）ので、絞っている環境だけ見直す。
@@ -252,7 +252,7 @@ SYSLOG_STANDARD=RFC5424 PIPELINE=1 ops/up.sh   # lab の SR Linux のログま�
 
 - **アラート**
   - Grafana のルール `link_down` は、gnmic の IF の状態（系列 `snmp_interface_oper_up`）を見る。
-  - Splunk の保存済みサーチ `netops_poll` はやめ、`netops_gnmi`（gNMI の IF・BGP・IS-IS）と `netops_trap`（linkDown / linkUp）が `link_down` を出す。
+  - Splunk の SNMP のポーリングの保存済みサーチはやめ、`nwc_gnmi`（gNMI の IF・BGP・IS-IS）と `nwc_trap`（linkDown / linkUp）が `link_down` を出す。
   - そのため `ops/up.sh` は、`STORES` に `grafana` か `splunk` があればアラートの送り手に数える。
 - 系列名（`snmp_interface_*` など）は Telegraf のころのまま。gnmic は event の形のまま書き、Spark が読み替える（[collection.md](collection.md) の「gnmic の event と読み替え」）。
 - 機器との疎通を見るのは、gnmic のタスクに ECS Exec で入って打つ `gn get`。Telegraf の `tg test` / `tg gnmi` はやめた（打つと案内を出して終わる）。
@@ -844,7 +844,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 1. 元の情報: `app/containerlab/splab.clab.yml.in`（containerlab の機器と配線）と `app/containerlab/srlinux/<機器>.cli`（SR Linux の設定）。
 2. 変換: `ops/up.sh` がイメージを作るときに手元で `app/containerlab/lab_topology.py` を実行し、機器 7 台・回線 12 本を `lab_seed.json` にしてイメージに入れる。
-3. 投入: コンテナが起動時に `app/nautobot/netops/bootstrap.py` を実行し、**機器が 1 台も無いときだけ** `lab_seed.json` から入れる。
+3. 投入: コンテナが起動時に `app/nautobot/nwc/bootstrap.py` を実行し、**機器が 1 台も無いときだけ** `lab_seed.json` から入れる。
 
 - 入るもの: 拠点、役割、機器、インタフェース（LAG を含む）、アドレス、管理 IP、ASN、Service（`gnmi` / `snmp`）、ケーブル（主 / 副と帯域）。
 - 2 回目からは seed を飛ばすので、Nautobot で変えた内容が正になる。`ops/down.sh` で DB ごと消えるので、作り直すとまた lab の定義から入る。
@@ -861,7 +861,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 - **取り込み方。**
   外のワーカーが API で書くほかに、Nautobot の側から取りにいく方法がある（次の Q）。
 - **Job が読む項目に合わせる。**
-  Job は Device の Service `gnmi` / `snmp` を監視対象の印にし、ケーブルの主 / 副と帯域、ASN などを決まった場所から読む（対応は `app/nautobot/netops/nb_map.py`）。同じ形で入れないと gnmic の購読先や Neptune に映らない。
+  Job は Device の Service `gnmi` / `snmp` を監視対象の印にし、ケーブルの主 / 副と帯域、ASN などを決まった場所から読む（対応は `app/nautobot/nwc/nb_map.py`）。同じ形で入れないと gnmic の購読先や Neptune に映らない。
 - 今の構成は閉域で、Nautobot は VPC の中からしか届かない。外のワーカーから書くなら経路と API トークン（発行と SSM での保管）が要る。PoC にはどちらも入っていない。
 
 ### Q. 「Nautobot の側から取りにいく」とは、Nautobot の Job が取りにいくということ？
@@ -888,12 +888,12 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 |---|---|---|
 | Web / API | 画面と REST API・GraphQL | ECS のタスクの web コンテナ |
 | データベース | 機器・インタフェース・ケーブルなどの台帳 | RDS の PostgreSQL |
-| Job | Nautobot の中で動く Python のプログラム。台帳を直接読み書きできる | `app/nautobot/jobs/netops_jobs.py` |
+| Job | Nautobot の中で動く Python のプログラム。台帳を直接読み書きできる | `app/nautobot/jobs/nwc_jobs.py` |
 | Celery worker | Job を実際に動かすプロセス | 同じタスクの worker コンテナ |
 | Redis | web から worker へ Job を渡すキュー | 同じタスクの Redis コンテナ |
 
 - Job は Nautobot のプロセスの中で動くので、API を通さずに台帳を扱える。
-- Job が動くきっかけは 4 つ: 画面のボタン、スケジュール、API、台帳の変更（JobHook）。この PoC は JobHook（`netops-sync`）と、起動時の 1 回。
+- Job が動くきっかけは 4 つ: 画面のボタン、スケジュール、API、台帳の変更（JobHook）。この PoC は JobHook（`nwc-sync`）と、起動時の 1 回。
 
 ### Q. Nautobot はもともと Web・データベース・Job・Celery・Redis がセットになったもの？ 今回新しく足したわけではない？
 
@@ -907,8 +907,8 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 
 今回足したのは、Nautobot の上で動く中身だけ。
 
-- Job のコード（`app/nautobot/jobs/netops_jobs.py`）と、台帳とトポロジの対応付け・同期（`app/nautobot/netops/nb_map.py` / `nb_sync.py`）
-- 起動時の用意（`app/nautobot/netops/bootstrap.py`: 管理者、API のユーザー、custom field、最初の seed、Job の有効化と JobHook）
+- Job のコード（`app/nautobot/jobs/nwc_jobs.py`）と、台帳とトポロジの対応付け・同期（`app/nautobot/nwc/nb_map.py` / `nb_sync.py`）
+- 起動時の用意（`app/nautobot/nwc/bootstrap.py`: 管理者、API のユーザー、custom field、最初の seed、Job の有効化と JobHook）
 - 公式イメージに boto3 と上のファイルを足す `docker/images/nautobot/Dockerfile`
 
 ### Q. Web（運用管理者ダッシュボード）からのトポロジの変更は、Nautobot に書いて、Nautobot の Job が Neptune に反映する構成になっている？
@@ -1474,24 +1474,24 @@ Splunk の中で重複を扱う方法。
 
 ### Q. Splunk から SNS へは、どうやってアラートを出している？
 
-**A. 毎分走る保存済みサーチが結果を 1 行でも返すと、自作のアラートアクション `netops_sns`（Python のスクリプト）が SNS の Publish API を直接呼ぶ。認証は ECS のタスクロール。**
+**A. 毎分走る保存済みサーチが結果を 1 行でも返すと、自作のアラートアクション `nwc_sns`（Python のスクリプト）が SNS の Publish API を直接呼ぶ。認証は ECS のタスクロール。**
 
 | 順 | 何が起きるか | どこに書いてあるか |
 |---|---|---|
 | 1 | Spark が HEC でイベントを Splunk に入れる | `app/spark/snmp_sinks.py` |
-| 2 | 保存済みサーチが毎分走り、直前の 1 分に index に入ったイベントを読む（gNMI は、比べる相手としてその前も読む）。結果の 1 行がアラート 1 件 | `app/splunk/netops_alerts/default/savedsearches.conf` |
-| 3 | 結果が 1 行以上あると、Splunk がスクリプトを `--execute` で起こす。結果の CSV の場所を標準入力で渡す | `savedsearches.conf` の `action.netops_sns = 1`、`alert_actions.conf` |
-| 4 | スクリプトが CSV を読み、IP を機器名に直し（`DEVICE_MAP`）、Grafana と同じ形の JSON にする。1 通に最大 50 件 | `app/splunk/netops_alerts/bin/netops_sns.py` |
+| 2 | 保存済みサーチが毎分走り、直前の 1 分に index に入ったイベントを読む（gNMI は、比べる相手としてその前も読む）。結果の 1 行がアラート 1 件 | `app/splunk/nwc_alerts/default/savedsearches.conf` |
+| 3 | 結果が 1 行以上あると、Splunk がスクリプトを `--execute` で起こす。結果の CSV の場所を標準入力で渡す | `savedsearches.conf` の `action.nwc_sns = 1`、`alert_actions.conf` |
+| 4 | スクリプトが CSV を読み、IP を機器名に直し（`DEVICE_MAP`）、Grafana と同じ形の JSON にする。1 通に最大 50 件 | `app/splunk/nwc_alerts/bin/nwc_sns.py` |
 | 5 | タスクロールの一時的な認証情報を取り、Splunk の Python が持っている boto3 で SNS の Publish を呼ぶ（署名は boto3 がする）。失敗したら 3 回まで試す | 同じファイル |
 | 6 | SNS のトピック `<接頭辞>-alerts` に届く。ここから先は Grafana のアラートと同じ道 | `IaC/terraform/aws-managed/base/core` の `alerts.tf` |
 
-保存済みサーチは 3 本ある（2026-10-09 に `netops_poll` をやめた）。
+保存済みサーチは 3 本ある（2026-10-09 に SNMP のポーリングのサーチをやめた）。
 
 | 名前 | 見るもの | 出すアラート |
 |---|---|---|
-| `netops_gnmi` | gNMI の on_change（IF の oper / admin、BGP のセッション、IS-IS の IF） | `link_down`、`bgp_down`、`isis_down` の firing と resolved |
-| `netops_trap` | SNMP の trap | linkDown は `link_down` の firing、linkUp は resolved。ほかの trap は `trap` の firing |
-| `netops_trap_clear` | 「直った」の知らせが無い trap | 時間が経ったら resolved |
+| `nwc_gnmi` | gNMI の on_change（IF の oper / admin、BGP のセッション、IS-IS の IF） | `link_down`、`bgp_down`、`isis_down` の firing と resolved |
+| `nwc_trap` | SNMP の trap | linkDown は `link_down` の firing、linkUp は resolved。ほかの trap は `trap` の firing |
+| `nwc_trap_clear` | 「直った」の知らせが無い trap | 時間が経ったら resolved |
 
 スクリプトを自作している理由は 3 つ。
 
@@ -1514,7 +1514,7 @@ Splunk の中で重複を扱う方法。
 - **クラスターのときは、この仕組みは search head にだけある。**
   indexer でも動くと、同じアラートが台の数だけ出る。
 
-ここに書いたのは、「Splunk と Grafana のアラートを比べる（002）」が入ったあとの main の状態。聞いた時点では保存済みサーチは 3 本（`netops_poll` が無い）で、署名は自前だった。
+ここに書いたのは、「Splunk と Grafana のアラートを比べる（002）」が入ったあとの main の状態。聞いた時点では保存済みサーチは 3 本（SNMP のポーリングのサーチが無い）で、署名は自前だった。
 
 ### Q. Splunk のイメージに Python を入れるのは、避けたほうがいい？
 
@@ -2179,7 +2179,7 @@ AWS の側は、同じ計算をして値が合うかを見る。合えば通し�
 - **ふだんは意識しない。**
   boto3 や AWS CLI が、呼ぶたびに自動で計算している。
 - **この PoC で名前が出てくる理由。**
-  聞いた時点では、Splunk のアラートアクション（`netops_sns.py`）が boto3 を使わずに SNS を呼んでいて、この計算を自分で書いていた。いまは Splunk が持っている boto3 を使う形に替えたので、そのコードは無い。
+  聞いた時点では、Splunk のアラートアクション（`nwc_sns.py`）が boto3 を使わずに SNS を呼んでいて、この計算を自分で書いていた。いまは Splunk が持っている boto3 を使う形に替えたので、そのコードは無い。
 - **ほかにも同じ署名を使っている場所。**
   Spark から OpenSearch Serverless と Amazon Managed Service for Prometheus へ書くとき（サービス名は `aoss` と `aps`）。
   こちらは最初から、署名の計算を botocore（boto3 の土台のライブラリ）に任せている（`app/spark/snmp_sinks.py` の `sigv4_headers`）。いまは、署名を自分で計算している場所は無い。

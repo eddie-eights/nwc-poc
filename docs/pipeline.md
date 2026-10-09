@@ -43,14 +43,14 @@ flowchart LR
   - `system`: CPU（`cpu[index=all]/total`）とメモリ（60 秒ごと、`metrics`）
   - target の名前は機器の管理 IP（event の `tags.source`）で、機器名（`sysName`）は Spark が device map で足す。on_change は購読の直後に今の状態を全部送り、そのあとは変わったときだけ送る。
   - EVPN の ethernet-segment と MAC テーブルの購読、`lab_*` の購読と共通の形（`device_cpu` など）は cycle 013 でやめた。本番の Cisco の MDT の受け口（`inputs.cisco_telemetry_mdt`、57000/tcp、トピック `mdt`）は 2026-10-08（cycle 012）に外した（[collection.md](collection.md) の「方針」）。
-  - Grafana のルール `link_down` / `bgp_down` / `isis_down`（`STORES` に `grafana` があるとき）と Splunk の保存済みサーチ `netops_gnmi`（`STORES` に `splunk` があるとき）は、ここから `link_down`（物理 IF が対象）、`bgp_down`（相手の IP が対象）、`isis_down`（サブインタフェースが対象）を出す（下の「アラート」）。
+  - Grafana のルール `link_down` / `bgp_down` / `isis_down`（`STORES` に `grafana` があるとき）と Splunk の保存済みサーチ `nwc_gnmi`（`STORES` に `splunk` があるとき）は、ここから `link_down`（物理 IF が対象）、`bgp_down`（相手の IP が対象）、`isis_down`（サブインタフェースが対象）を出す（下の「アラート」）。
 - Spark は起動時に、読むトピック（`metrics` / `gnmi` / `traps` / `logs` / `flows`）のうち無いものを作る（`snmp_sinks.py` の `ensure_topics`。EMR のロールに `kafka-cluster:CreateTopic`）。MSK の `auto.create.topics.enable=true` は書き込みのときにしか効かず、Telegraf が最初の trap を出すまで `traps` が無い。SASL/SCRAM で書く syslog-ng・GoFlow2・gnmic には CREATE の ACL を付けないので、AWS の文書どおりなら `logs` / `flows` / `gnmi` / `metrics` は自動ではできず、ここで作るまで無い。無いトピックを購読するとジョブは offset 読みで落ちて、起こし直しの上限（1 時間 5 回）を使い切る（2026-09-27 に実測）。
 - 続けて、SASL/SCRAM の収集器のユーザー `collectors` に `logs` / `flows` / `gnmi` / `metrics` の `WRITE` と `DESCRIBE` の ACL を入れる（`snmp_sinks.py` の `ensure_acls`。EMR のロールに `kafka-cluster:AlterCluster`。cycle 012、`gnmi` / `metrics` は cycle 013）。AWS の文書は MSK の IAM のアクセス制御では `allow.everyone.if.no.acl.found` が効かないとしていて、そのとおりなら ACL が無いと syslog-ng・GoFlow2・gnmic は `Topic authorization failed` で書けない（MSK で本当にそうなるかは未確認。[architecture/resources/msk.md](architecture/resources/msk.md)）。stream が立ってからジョブが起きるまでの間（`SKIP_ANALYTICS=1` ならずっと）、syslog-ng は syslog をメモリのキュー（既定 10000 件。syslog-ng が起こし直すと消える）で持って ACL が入ったら書き、GoFlow2 はその間のフローを、gnmic はその間の値を捨てる。どれも落ちない（syslog-ng と GoFlow2 は手元の Kafka で 340 秒の待ちを測った。gnmic は測っていない）。入れた ACL は driver の stderr に `ACL: User:collectors に WRITE logs, DESCRIBE logs, WRITE flows, DESCRIBE flows, WRITE gnmi, DESCRIBE gnmi, WRITE metrics, DESCRIBE metrics` と出る。入れられなければジョブは起動で落ちる。`KAFKA_AUTH=none`（OSS 版・手元の compose）は Kafka に authorizer が無いので入れない。
 - メトリクスとログの履歴の正本は S3 Tables（`raw_telemetry`）。Spark は格納先へ流すだけで、異常の検知はしない（2026-10-02 にやめた）。検知は Grafana と Splunk のアラートで、SNS のトピック `<prefix>-alerts` に出す（下の「アラート」）。Neptune の頂点 `anomaly`、S3 Tables の `anomaly_events`、Web の「異常一覧」、エージェントの `list_anomalies` は無くなった。障害の履歴は 2026-10-04 から、アラートの通知 1 件を 1 行として S3 Tables の `alert_events` に置く（下の「アラートの履歴」、[data-stores.md](data-stores.md)）。
 - analytics は graph が無くても作れる（Neptune に書くのは SNS を購読する graph の Lambda だけ）。`SKIP_GRAPH=1` だと、トポロジは `app/agentcore/data/` の静的データになり、アラートが届いても `status` を書く先が無い。
 - テーブルバケットは `STORES` に `s3` が無くても作る（証跡の置き場）。`ops/down.sh` はバケットごと消すので、証跡も消える。
 - Splunk（`STORES` の `splunk`）は Spark（既定は driver。`HTTP_SEND=executor` なら executor）が全トピックを HTTP Event Collector（HEC）に POST する（2026-09-26 に MSK Connect の Splunk Connect for Kafka をやめて、ほかの格納先と同じ形にした）。
-  - analytics の ECS に Splunk Enterprise（`docker/images/splunk/Dockerfile`。公式の `splunk/splunk:10.4.4` に検知のアプリ `netops_alerts` を足し、ECR の `<prefix>-splunk:10.4.4-<ディレクトリのハッシュ 12 文字>` に作る。amd64 しか無いので Fargate x86、2 vCPU / 4 GB、エフェメラルストレージ 40 GiB）を既定では 1 タスク立て、Spark は Cloud Map の `https://splunk.<prefix>.internal:8088` に送る（イメージの自己署名の証明書なので検証しない）。起動時に Splunk のライセンスと Splunk General Terms に同意する（`SPLUNK_START_ARGS=--accept-license`、`SPLUNK_GENERAL_TERMS=--accept-sgt-current-at-splunk-com`）。試用ライセンス（60 日、1 日 500 MB）。admin のパスワード `/<prefix>/splunk/admin-password` と HEC の token `/<prefix>/splunk/hec-token`（uuid）は `ops/up.sh` が SSM の SecureString に作る（値は出さない。`ops/down.sh` が消す）。index はタスクのエフェメラルストレージにあり、タスクと一緒に消える（検証用）。`ops/up.sh` は手順 7-4b でタスクが HEALTHY になるのを待ってから（最大 20 分）Spark のジョブを起こす。画面は下の「Grafana と Splunk を開く」。
+  - analytics の ECS に Splunk Enterprise（`docker/images/splunk/Dockerfile`。公式の `splunk/splunk:10.4.4` に検知のアプリ `nwc_alerts` を足し、ECR の `<prefix>-splunk:10.4.4-<ディレクトリのハッシュ 12 文字>` に作る。amd64 しか無いので Fargate x86、2 vCPU / 4 GB、エフェメラルストレージ 40 GiB）を既定では 1 タスク立て、Spark は Cloud Map の `https://splunk.<prefix>.internal:8088` に送る（イメージの自己署名の証明書なので検証しない）。起動時に Splunk のライセンスと Splunk General Terms に同意する（`SPLUNK_START_ARGS=--accept-license`、`SPLUNK_GENERAL_TERMS=--accept-sgt-current-at-splunk-com`）。試用ライセンス（60 日、1 日 500 MB）。admin のパスワード `/<prefix>/splunk/admin-password` と HEC の token `/<prefix>/splunk/hec-token`（uuid）は `ops/up.sh` が SSM の SecureString に作る（値は出さない。`ops/down.sh` が消す）。index はタスクのエフェメラルストレージにあり、タスクと一緒に消える（検証用）。`ops/up.sh` は手順 7-4b でタスクが HEALTHY になるのを待ってから（最大 20 分）Spark のジョブを起こす。画面は下の「Grafana と Splunk を開く」。
   - `SPLUNK_AZ_NUM` を 2 か 3 にすると indexer のクラスターになる（Splunk をクラスターにする（004）。2026-10-05 に `SPLUNK_AZ_NUM=2` を AWS で確かめた。`3` は未確認）。タスクは cluster manager 1（`splunk-cm.<prefix>.internal`）、indexer が AZ ごとに 1（`splunk-idx.<prefix>.internal`。全部のイベントを互いに複製する）、search head 1（`splunk.<prefix>.internal`。検索、UI、保存済みサーチ）。Spark の送り先は `https://splunk-idx.<prefix>.internal:8088` に変わる。合言葉 `/<prefix>/splunk/idxc-secret` も `ops/up.sh` が SSM の SecureString に作る。index は `main` だけ（`SPLUNK_INDEX` と一緒には書けない）。1 台とクラスターを切り替えると空から始まる。手順 7-4b は全部のタスクの HEALTHY を待ち、そのあと search head が indexer を全部検索できること（ログの `nwc-peer-check state=ok reason=peers_up:<indexer の数>`）を最大 6 分待つ。indexer は止められると先に `splunk offline` を打つ（ログに `nwc-offline: start` と `nwc-offline: rc=0 <秒>s`）。くわしくは [architecture/resources/splunk.md](architecture/resources/splunk.md)。
   - AWS の外の Splunk（Splunk Cloud など）へ NAT Gateway で送る道は 2026-09-28 にやめた（VPC から AWS の外へ出る経路を作らない。`SPLUNK_HEC_URL` が書いてあると `ops/up.sh` が止まる）。
   - HEC が 4xx を返したまとまり（最大 500 件）は捨ててログに出し、ジョブは止めない。5xx は再送する。
@@ -213,15 +213,15 @@ terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw splunk
 
 | 送り手 | 見るもの | 出す `kind` | 定義 | 落ちてから通知まで |
 |---|---|---|---|---|
-| Grafana（`STORES` の `grafana`。既定で入っている） | Prometheus: gNMI の on_change（IF の `oper-state` / `admin-state`、BGP のセッション、IS-IS の IF）。OpenSearch: link 以外の trap | `link_down`、`bgp_down`、`isis_down`、`trap`（link 以外の trap） | `app/grafana/provisioning/alerting/netops-prometheus.yaml`（`link_down` / `bgp_down` / `isis_down`）、`netops-opensearch.yaml`（`trap`）、`netops.yaml`（送り先と本文） | Spark のマイクロバッチ 60 秒 + ルールの評価（1 分ごと） |
-| Splunk（`STORES` の `splunk`。既定で入っている） | trap、gNMI の on_change（IF の `oper-state` / `admin-state`、BGP のセッション、IS-IS の IF） | `link_down`（gNMI と、linkDown / linkUp の trap）、`trap`（ほかの trap）、`bgp_down`、`isis_down` | `app/splunk/netops_alerts/default/savedsearches.conf` | Spark のマイクロバッチ 60 秒 + 保存済みサーチ（毎分。索引に入ってから最大 70 秒ほど） |
+| Grafana（`STORES` の `grafana`。既定で入っている） | Prometheus: gNMI の on_change（IF の `oper-state` / `admin-state`、BGP のセッション、IS-IS の IF）。OpenSearch: link 以外の trap | `link_down`、`bgp_down`、`isis_down`、`trap`（link 以外の trap） | `app/grafana/provisioning/alerting/nwc-prometheus.yaml`（`link_down` / `bgp_down` / `isis_down`）、`nwc-opensearch.yaml`（`trap`）、`nwc.yaml`（送り先と本文） | Spark のマイクロバッチ 60 秒 + ルールの評価（1 分ごと） |
+| Splunk（`STORES` の `splunk`。既定で入っている） | trap、gNMI の on_change（IF の `oper-state` / `admin-state`、BGP のセッション、IS-IS の IF） | `link_down`（gNMI と、linkDown / linkUp の trap）、`trap`（ほかの trap）、`bgp_down`、`isis_down` | `app/splunk/nwc_alerts/default/savedsearches.conf` | Spark のマイクロバッチ 60 秒 + 保存済みサーチ（毎分。索引に入ってから最大 70 秒ほど） |
 
 - **既定（`STORES=s3,grafana,splunk`）では、Grafana と Splunk の両方が同じ 4 種類を出す。**
   cycle 002（Splunk と Grafana のアラートを比べる）でそろえた。`detail` の末尾の `(grafana: gnmi)` / `(splunk: trap)` などで、どの送り手がどの入力から出したかが分かる。
 - **違いは linkDown / linkUp の trap。**
   trap から `link_down` を出すのは Splunk だけ。Grafana は作らない（IF 名の入った varbind の名前が IF ごとに変わり、OpenSearch の集計では取り出せない）。
 - **`link_down` は cycle 013 から gNMI の IF の `oper-state` で見る。**
-  それまでの SNMP のポーリングの `ifOperStatus`（Grafana の `link_down` と Splunk の `netops_poll`）はやめ、`SNMP_POLL` も使わない。
+  それまでの SNMP のポーリングの `ifOperStatus`（Grafana の `link_down` と Splunk の保存済みサーチ）はやめ、`SNMP_POLL` も使わない。
 - **`ops/up.sh` の送り手の数え方。**
   Grafana は作ればいつも送り手で、`sns` のエンドポイントを足す。`WORKFLOW=1` の検査が見るのは `link_down` の送り手（ワークフローを起こすのは `link_down` だけ）で、Grafana も Splunk もあればいつも数える。どちらも無いと `ops/up.sh` は何も作らずに止まる。
 - 本文は `{"source": "grafana" | "splunk", "alerts": [{"status", "device_id", "kind", "target", "detail", "starts_at"}]}`。異常の id は `<device_id>#<kind>#<target>` で、送り手が違っても同じ機器・種類・対象なら同じ id になる（Grafana と Splunk が同じ `link_down` を知らせても 1 つ）。形を変えるときは、Grafana のテンプレート、Splunk のアラートアクション、`app/temporal/rules.py` の `alerts_from_message`（ワーカーと Lambda が同じものを使う）を一緒に変える。
@@ -253,7 +253,7 @@ terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw athena
 ```
 
 ```sql
-SELECT status, source, device_id, kind, target, starts_at, received_at FROM "s3tablescatalog/<bucket>"."netops"."alert_events" ORDER BY received_at DESC LIMIT 20
+SELECT status, source, device_id, kind, target, starts_at, received_at FROM "s3tablescatalog/<bucket>"."nwc"."alert_events" ORDER BY received_at DESC LIMIT 20
 ```
 
 - Athena のコンソールではワークグループ `<prefix>-history` を選ぶ（クエリの結果は Athena の管理ストレージに置き、1 回のスキャンは 1 GiB で止める）。
@@ -282,32 +282,32 @@ SELECT status, source, device_id, kind, target, starts_at, received_at FROM "s3t
 
   - 打ったあとの評価だけを見る（打ったときに見える評価と、直した直後に 1 回分残る前のエラーでは判定しない）。NoData（クエリが何も返さない）はエラーではないので OK になる。データソースや格納先を直したあと、Grafana のタスクが入れ替わったあと、アラートが来ないと思ったときに打つ。入れ替わりの途中は前のタスクを見ることがあるので、終わってから打つ（up.sh の 9-2 は `aws ecs wait services-stable` で待ってから見る）。
 - 通知は機器・種類・対象ごとに 1 通（`group_by` は alertname / sysName / target）。発火はすぐ、解消は 30 秒以内（`group_interval`）。直らないあいだは 4 時間ごと（`repeat_interval`）に同じ `starts_at` で送り直す。
-- 画面は Alerting → Alert rules。provisioning したルール・連絡先・ポリシーは画面から変えられない。変えるなら `app/grafana/provisioning/alerting/` の `netops-prometheus.yaml` / `netops-opensearch.yaml`（ルール）か `netops.yaml`（送り先、ポリシー、本文のテンプレート）を変えて `ops/up.sh`（イメージから作り直す）。
-- `netops.yaml` のテンプレートの `$` はそのまま書く。`$$` とエスケープすると Grafana が起動しない（`Invalid format of the submitted template`。13.2.2 で実測）。`${ALERTS_TOPIC_ARN}` と `${AWS_REGION}` だけは、起動時に Grafana が環境変数で埋める。
-- `app/grafana/start.sh` は、`ALERTS_TOPIC_ARN` があるときだけアラートの定義を並べる。`netops-prometheus.yaml` は `PROMETHEUS_URL` も、`netops-opensearch.yaml` は `OPENSEARCH_URL` もあるとき。`netops.yaml` はどちらかを並べたとき。
+- 画面は Alerting → Alert rules。provisioning したルール・連絡先・ポリシーは画面から変えられない。変えるなら `app/grafana/provisioning/alerting/` の `nwc-prometheus.yaml` / `nwc-opensearch.yaml`（ルール）か `nwc.yaml`（送り先、ポリシー、本文のテンプレート）を変えて `ops/up.sh`（イメージから作り直す）。
+- `nwc.yaml` のテンプレートの `$` はそのまま書く。`$$` とエスケープすると Grafana が起動しない（`Invalid format of the submitted template`。13.2.2 で実測）。`${ALERTS_TOPIC_ARN}` と `${AWS_REGION}` だけは、起動時に Grafana が環境変数で埋める。
+- `app/grafana/start.sh` は、`ALERTS_TOPIC_ARN` があるときだけアラートの定義を並べる。`nwc-prometheus.yaml` は `PROMETHEUS_URL` も、`nwc-opensearch.yaml` は `OPENSEARCH_URL` もあるとき。`nwc.yaml` はどちらかを並べたとき。
 - 4 本になったあとの形（Splunk と Grafana のアラートを比べる（002））は、2026-10-05 に AWS で `link_down` と `isis_down` の発火を確かめた（`sudo lab fail-main`）。`bgp_down` と `trap` の発火は AWS では未確認。`link_down` が gNMI から出る形（cycle 013）は AWS では未確認。
 
 ### Splunk のアラート
 
-- アプリ `netops_alerts` をイメージに焼き込んである（`app/splunk/netops_alerts/`）。保存済みサーチ 3 本と、結果を SNS へ publish するアラートアクション `netops_sns`（`bin/netops_sns.py`）。
+- アプリ `nwc_alerts` をイメージに焼き込んである（`app/splunk/nwc_alerts/`）。保存済みサーチ 3 本と、結果を SNS へ publish するアラートアクション `nwc_sns`（`bin/nwc_sns.py`）。
 
 | 保存済みサーチ | 見るもの | 出すもの |
 |---|---|---|
-| `netops_gnmi` | `telegraf:interface` の `oper_state` / `admin_state`、`telegraf:bgp_neighbor` の `session_state`、`telegraf:isis_interface` の `oper_state`（どれも gnmic の gNMI を Spark が読み替えたもの） | 前の値（過去 24 時間の最後の値）と比べて変わったときだけ出す。`up` / `established` / `up` でなくなれば `link_down` / `bgp_down` / `isis_down` の `firing`、戻れば `resolved`。前の値が無いときは、異常なら `firing` だけ出す（起動の直後に `resolved` をまとめて送らない）。`link_down` はループバック、管理ポート、サブインタフェース、admin-state が disable の IF を外す（Grafana の `link_down` と同じ） |
-| `netops_trap` | `telegraf:snmp_trap` | linkDown は `link_down` の `firing`、linkUp は `resolved`（ループバック、管理ポート、サブインタフェースは外す）。ほかの trap は `trap` の `firing`（coldStart / warmStart などは出さない） |
-| `netops_trap_clear` | 同上（過去 70 分） | その機器から link 以外の trap が 10 分来なければ、その機器の `trap` を `resolved` にする（機器ごと。1 つの trap につき 1 回） |
+| `nwc_gnmi` | `telegraf:interface` の `oper_state` / `admin_state`、`telegraf:bgp_neighbor` の `session_state`、`telegraf:isis_interface` の `oper_state`（どれも gnmic の gNMI を Spark が読み替えたもの） | 前の値（過去 24 時間の最後の値）と比べて変わったときだけ出す。`up` / `established` / `up` でなくなれば `link_down` / `bgp_down` / `isis_down` の `firing`、戻れば `resolved`。前の値が無いときは、異常なら `firing` だけ出す（起動の直後に `resolved` をまとめて送らない）。`link_down` はループバック、管理ポート、サブインタフェース、admin-state が disable の IF を外す（Grafana の `link_down` と同じ） |
+| `nwc_trap` | `telegraf:snmp_trap` | linkDown は `link_down` の `firing`、linkUp は `resolved`（ループバック、管理ポート、サブインタフェースは外す）。ほかの trap は `trap` の `firing`（coldStart / warmStart などは出さない） |
+| `nwc_trap_clear` | 同上（過去 70 分） | その機器から link 以外の trap が 10 分来なければ、その機器の `trap` を `resolved` にする（機器ごと。1 つの trap につき 1 回） |
 
-- 3 本とも毎分動き、「索引に入った時刻」で直前の 1 分を 1 回だけ読む（`_index_earliest` / `_index_latest`。イベントの時刻で切ると、Spark のマイクロバッチで遅れて届いた分を取りこぼす）。`netops_gnmi` は比べる相手としてその前の 24 時間も、`netops_trap_clear` は過去 70 分を読む。スケジューラが遅れても飛ばさない（`realtime_schedule = 0`）。
+- 3 本とも毎分動き、「索引に入った時刻」で直前の 1 分を 1 回だけ読む（`_index_earliest` / `_index_latest`。イベントの時刻で切ると、Spark のマイクロバッチで遅れて届いた分を取りこぼす）。`nwc_gnmi` は比べる相手としてその前の 24 時間も、`nwc_trap_clear` は過去 70 分を読む。スケジューラが遅れても飛ばさない（`realtime_schedule = 0`）。
 - 項目は `fields` で `_raw` だけにしてから `spath` で取る。`props.conf` の `KV_MODE = json` と重ねると全部の項目が同じ値 2 つの多値になり、1 行も出なくなる（10.4.3 で実測）。
 - gNMI と trap のイベントは機器名でなく IP を持つので、アラートアクションがタスクの環境変数 `DEVICE_MAP`（`ops/up.sh` が `app/containerlab/lab_topology.py --device-map` で作る）で機器名に直す。直せなかった IP はそのまま `device_id` になり、Neptune では「未登録」の頂点になる。
 - アラートアクションは、Splunk の Python が持っている boto3 で publish する（10.4.4 は python3.13 に boto3 1.37.14。app に同梱しない）。Splunk の版を変えたら `tests/check_splunk_image.py` で、その版に boto3 があり publish できることを確かめる。認証情報は ECS のタスクロール。1 通に 50 件まで、失敗は 3 回まで試す。
 - splunkd はコンテナの環境変数を子プロセスに引き継がないので、`app/splunk/entrypoint.sh` が要る値（リージョン、トピックの ARN、`DEVICE_MAP`、認証情報の取り出し口の URI）を `/opt/container_artifact/nwc-alerts.env` に写す（鍵そのものは書かない）。
 - Splunkbase の Splunk Add-on for AWS は使っていない。配布物を公開リポジトリに置けず、VPC から Splunkbase へも出られないため。
 - 確かめる（Splunk の画面の検索）:
-  - サーチが動いたか: `index=_internal sourcetype=scheduler savedsearch_name=netops_*`
-  - publish の結果: `index=_internal sourcetype=splunkd sendmodalert netops_sns`（成功は `published=` の分子と分母が同じ。失敗は `ERROR`）
+  - サーチが動いたか: `index=_internal sourcetype=scheduler savedsearch_name=nwc_*`
+  - publish の結果: `index=_internal sourcetype=splunkd sendmodalert nwc_sns`（成功は `published=` の分子と分母が同じ。失敗は `ERROR`）
 - 2026-10-02 の作り替えは、模擬テストと手元のコンテナ（Splunk 10.4.3、Grafana 13.2.2）で確かめた。2026-10-05 に AWS で確かめた: `sudo lab fail-main` で Grafana と Splunk の両方が `link_down` と `isis_down` を出し、`sns` のエンドポイント越しの publish と、SNS からの配信（Lambda と SQS）が通った。AWS では未確認: `bgp_down` と `trap` の発火、trap の送り元の IP が `DEVICE_MAP` に当たるか、SR Linux の linkDown の trap に IF 名が載るか。
-- 2026-10-05 の AWS で見つけた 2 つ（trap の検索がサブインターフェース（`ethernet-1/1.0`）の `link_down` も出す、`netops_gnmi` が起動の直後に `resolved` をまとめて送る）は直した。trap は手元のテスト、`netops_gnmi` は手元のコンテナ（Splunk 10.4.3）で確かめた。AWS では未確認。
+- 2026-10-05 の AWS で見つけた 2 つ（trap の検索がサブインターフェース（`ethernet-1/1.0`）の `link_down` も出す、`nwc_gnmi` が起動の直後に `resolved` をまとめて送る）は直した。trap は手元のテスト、`nwc_gnmi` は手元のコンテナ（Splunk 10.4.3）で確かめた。AWS では未確認。
 
 ## Spark を確かめる
 
@@ -370,7 +370,7 @@ ops/sync-graph.sh --dry-run    # 作った JSON を出すだけ
 
 - Web の「トポロジ」タブの「静的データを投入」は `app/agentcore/data/` を入れる。同じタブでリンクの追加と削除もできる。
 - 状態は Lambda `<prefix>-graph-status` が書く（SNS のトピック `<prefix>-alerts` を購読する。`firing` で落とし、`resolved` で戻す）。`link_down` なら回線の辺に `DOWN` / `UP`、`bgp_down` / `isis_down`（gNMI）なら上の層の頂点 `bgp_session` / `isis_adjacency` に `DOWN` / `UP`、`trap`（link 以外の trap）なら機器に `ALARM` / `UP`（`UP` に戻すのは機器が `ALARM` のときだけ。IF の分からない linkDown の `DOWN` は残す）。
-- link 以外の trap には「直った」の知らせが無いので、時間で `resolved` にする。Splunk は保存済みサーチ `netops_trap_clear` が 1 分おきに見て、その機器の最後の trap から 10 分で機器ごと閉じる。Grafana のルール `trap` は、同じ OID の trap が 10 分来なければ OID ごとに閉じる。coldStart / warmStart は異常にしない。調査ワークフローを起こすのは `link_down` だけ。
+- link 以外の trap には「直った」の知らせが無いので、時間で `resolved` にする。Splunk は保存済みサーチ `nwc_trap_clear` が 1 分おきに見て、その機器の最後の trap から 10 分で機器ごと閉じる。Grafana のルール `trap` は、同じ OID の trap が 10 分来なければ OID ごとに閉じる。coldStart / warmStart は異常にしない。調査ワークフローを起こすのは `link_down` だけ。
 - 入れ直すと状態は全部 `UP` に戻る（上の層も入れ直す。`ops/sync-graph.sh --replace`）。
 - 物理層の正は Nautobot（下の「Nautobot」）。Web の「トポロジ」タブのリンクの追加・削除は Nautobot に書かれ（静的データの投入は止まる）、`--replace` は lab の定義で上書きするので、Nautobot で足したものは Job を打つまで Neptune から消える。
 - トポロジに無い機器やインタフェースの異常は捨てず、「未登録」の頂点（`registered=false`、機器は `role=unknown`）として残す。Web の図では橙の点線の枠、表の「監視」は「未登録」になる。Lambda のログには WARNING で `UNREGISTERED` が出る。lab に足した機器なら `ops/sync-graph.sh --replace` で登録すると置き換わり、`UP` でない状態は引き継ぐ。
@@ -384,7 +384,7 @@ ops/sync-graph.sh --dry-run    # 作った JSON を出すだけ
 ```mermaid
 flowchart LR
   W["Web の「トポロジ」タブ<br/>リンクの追加・削除"] -->|"REST API（トークン）"| U
-  U["Nautobot<br/>機器 / Service / ケーブル"] -->|"JobHook（変更のたび）<br/>または手で Job"| J["Job<br/>app/nautobot/jobs/netops_jobs.py"]
+  U["Nautobot<br/>機器 / Service / ケーブル"] -->|"JobHook（変更のたび）<br/>または手で Job"| J["Job<br/>app/nautobot/jobs/nwc_jobs.py"]
   J -->|"SSM の一覧を書き換え<br/>ECS のサービスを作り直す"| T["gnmic<br/>gNMI を取りにいく"]
   J -->|"openCypher（差分）"| N["Neptune の物理層<br/>device / interface / 回線"]
 ```
@@ -398,16 +398,16 @@ flowchart LR
 
 - 構成は ECS Fargate（ARM 2 vCPU / 4 GB）の 1 タスクに web（uWSGI）・Celery worker（Job を回す）・Redis の 3 コンテナと、RDS の PostgreSQL（`db.t4g.micro`）。SG は `<prefix>-nautobot` / `<prefix>-nautobot-db`。LB は無く、Web の EC2 を踏み台にしたポートフォワードで開く。
 - シークレット（Django の SECRET_KEY、admin のパスワード、DB のパスワード、Web が使う API のトークン）は `ops/up.sh` が SSM の SecureString `/<prefix>/nautobot/{secret-key,admin-password,db-password,api-token}` に乱数で作る。タスクは ECS の secrets で受け、RDS には Terraform の write-only の引数で渡す（state に載らない）。
-- 最初の起動で、DB が空なら lab の定義（イメージに入れた `lab_seed.json`）から機器・インタフェース・IP・Service・ケーブルを入れ、Job 2 つ（「gnmic とグラフ DB に同期」「変更のたびに gnmic とグラフ DB に同期」）と JobHook `netops-sync` を有効にして 1 回同期する（`app/nautobot/netops/bootstrap.py`。2 回目からは足りないものだけ作る。lab の定義からの seed は機器が 1 台も無いときだけで、機器があれば lab を変えても入れ直さない）。
+- 最初の起動で、DB が空なら lab の定義（イメージに入れた `lab_seed.json`）から機器・インタフェース・IP・Service・ケーブルを入れ、Job 2 つ（「gnmic とグラフ DB に同期」「変更のたびに gnmic とグラフ DB に同期」）と JobHook `nwc-sync` を有効にして 1 回同期する（`app/nautobot/nwc/bootstrap.py`。2 回目からは足りないものだけ作る。lab の定義からの seed は機器が 1 台も無いときだけで、機器があれば lab を変えても入れ直さない）。
 - gnmic の一覧は、変わったときだけ書き換えて gnmic のサービスを作り直す（購読が数十秒切れる）。Service `gnmi` を持つ機器が 1 台も無くなる変更は書かない（gnmic が起動できなくなるので、警告だけ）。
 - Neptune へは `app/agentcore/graph.py` の `sync_physical()` が openCypher で差分を書く。`status`（アラートが書く）と IP 層・EVPN/BGP 層は触らない。IP 層から上は Nautobot に無いので、lab の定義からだけ入る（`ops/sync-graph.sh`）。
-- Web の「トポロジ」タブのリンクの追加・削除は、Nautobot があるあいだ Nautobot の REST API に書く（`app/dashboard/nautobot_api.py`。無いインタフェースは作り、ケーブルを作る・消す）。Neptune には JobHook の Job が数秒〜十数秒あとに反映するので、画面は「再読み込み」で確かめる。API のユーザーは `netops-web`（起動時に `bootstrap.py` が SSM の `api-token` と同じ値のトークンで作る。JobHook が出るように superuser）。種別（fabric / l2 / lag）は画面で選んだものではなく両端の Role と LAG から決まる。機器の追加・削除は Nautobot の画面でする。「静的データを投入」は Nautobot があるあいだ使えない。
+- Web の「トポロジ」タブのリンクの追加・削除は、Nautobot があるあいだ Nautobot の REST API に書く（`app/dashboard/nautobot_api.py`。無いインタフェースは作り、ケーブルを作る・消す）。Neptune には JobHook の Job が数秒〜十数秒あとに反映するので、画面は「再読み込み」で確かめる。API のユーザーは `nwc-web`（起動時に `bootstrap.py` が SSM の `api-token` と同じ値のトークンで作る。JobHook が出るように superuser）。種別（fabric / l2 / lag）は画面で選んだものではなく両端の Role と LAG から決まる。機器の追加・削除は Nautobot の画面でする。「静的データを投入」は Nautobot があるあいだ使えない。
 - JobHook は Device / Interface / Cable / IPAddress / Service / Location / Role の作成・変更・削除で出る。IP をインタフェースに付け替えただけのように JobHook が出ない変更のあとは、画面の Jobs → 「gnmic とグラフ DB に同期」を手で打つ。
-- JobHook は、変更した人に Job を実行する権限が無いと出ない（管理者は出る）。権限を絞ったユーザーを作るなら、Job `netops_jobs.SyncOnChange` の実行も許す。
+- JobHook は、変更した人に Job を実行する権限が無いと出ない（管理者は出る）。権限を絞ったユーザーを作るなら、Job `nwc_jobs.SyncOnChange` の実行も許す。
 - 機器が 1 台も無いときは Neptune を触らない（空で合わせると物理層が全部消えるため。seed が失敗したときも起動時の同期を飛ばす）。全部消したいときは `ops/sync-graph.sh --replace` で入れ直す。
 - 機器の名前を変えると、Neptune では「前の名前の機器を消して新しい名前の機器を足す」になり、その機器の `status` と IP 層より上へのつながりは消える（名前が頂点の ID のため）。上の層は `ops/sync-graph.sh --replace` で入れ直す。
 - 機器の status は `Maintenance` だけ見る（Neptune の機器に `maintenance = true` を付け、ワークフローはその機器の異常では起こさない。`bootstrap.py` が `Maintenance` を機器にも選べるようにする）。ほかの status（Planned / Decommissioning など）は見ず、Nautobot にある機器は全部映る。Module に付いた Interface のケーブルは回線にしない。
-- 一括で変えると変更 1 件ごとに Job が 1 本ずつ順に走り、途中の状態で一覧が変わるたびに gnmic が作り直される。大きく変えるときは JobHook `netops-sync` を止めてから変え、最後に手で Job を打つ（JobHook は次の起動で有効に戻る）。
+- 一括で変えると変更 1 件ごとに Job が 1 本ずつ順に走り、途中の状態で一覧が変わるたびに gnmic が作り直される。大きく変えるときは JobHook `nwc-sync` を止めてから変え、最後に手で Job を打つ（JobHook は次の起動で有効に戻る）。
 - admin のパスワードは起動のたびに SSM の値へ戻る（画面で変えても残らない）。
 - stream を作り直して一覧の持ち主を変えたとき（`gnmi_targets_from_nautobot` を手で変えた apply）は、nautobot のルートも apply し直す。そのままだと Job が `ParameterNotFound` で失敗する（`ops/up.sh` は両方をそろえる）。
 - `ops/down.sh` で DB ごと消える。Nautobot で編集した内容は残らない。

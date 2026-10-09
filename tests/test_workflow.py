@@ -98,7 +98,7 @@ sys.modules.update({"temporalio": t_root, "temporalio.activity": t_activity, "te
                     "temporalio.worker": t_worker, "temporalio.service": t_service})
 
 os.environ.update({"NEPTUNE_GRAPH_ID": "g-abc1234567", "AUDIT_TABLE_BUCKET_ARN": "arn:aws:s3tables:ap-northeast-1:123456789012:bucket/audit",
-                   "AUDIT_NAMESPACE": "netops", "AGENT_RUNTIME_ARN": "arn:aws:bedrock-agentcore:ap-northeast-1:123456789012:runtime/x",
+                   "AUDIT_NAMESPACE": "nwc", "AGENT_RUNTIME_ARN": "arn:aws:bedrock-agentcore:ap-northeast-1:123456789012:runtime/x",
                    "LAB_INSTANCE_ID": "i-0123456789abcdef0", "PARAM_PREFIX": ""})
 sys.path.insert(0, os.path.join(ROOT, "app", "temporal"))
 sys.path.insert(0, os.path.join(ROOT, "app", "agentcore"))
@@ -235,8 +235,8 @@ check("alert_count は alerts の要素を形にかかわらず数える（alert
       and rules.alert_count(json.dumps({"Type": "Notification", "Message": _many_body})) == 3
       and rules.alert_count("garbage") == 0 and rules.alert_count(None) == 0 and rules.alert_count(json.dumps({"alerts": "x"})) == 0)
 # 送り手 2 つ（Grafana のテンプレートと Splunk のアラートアクション）が同じ形で publish しているか
-_sns_py = read("app", "splunk", "netops_alerts", "bin", "netops_sns.py")
-_gf_yaml = read("app", "grafana", "provisioning", "alerting", "netops.yaml")
+_sns_py = read("app", "splunk", "nwc_alerts", "bin", "nwc_sns.py")
+_gf_yaml = read("app", "grafana", "provisioning", "alerting", "nwc.yaml")
 check("Splunk のアラートアクションと Grafana のテンプレートは同じ 6 つの項目を出す",
       all(f'"{k}"' in _sns_py and f'"{k}"' in _gf_yaml for k in ("status", "device_id", "kind", "target", "detail", "starts_at"))
       and '"source": "splunk"' in _sns_py and '"source":"grafana"' in _gf_yaml.replace('": "', '":"'))

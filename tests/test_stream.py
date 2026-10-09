@@ -329,7 +329,7 @@ check("gnmic の interface_stats / system を prometheus_series に通すと、�
       == [("snmp_interface_in_octets", 123456789012.0, "dc1-a-leaf-01"), ("snmp_interface_out_error_packets", 3.0, "dc1-a-leaf-01"),
           ("snmp_system_instant", 7.0, "dc1-a-leaf-01"), ("snmp_system_utilization", 41.0, "dc1-a-leaf-01")])
 check("gnmic_message: bgp_neighbor / isis_interface は name のまま、neighbor_peer-address は peer_address、interface_interface-name は interface_name"
-      "（Grafana の bgp_down / isis_down と Splunk の netops_gnmi が読む名前）。表に無いタグ（network-instance_name など）は残す",
+      "（Grafana の bgp_down / isis_down と Splunk の nwc_gnmi が読む名前）。表に無いタグ（network-instance_name など）は残す",
       mod.gnmic_message({"name": "bgp_neighbor", "timestamp": 1, "tags": {"network-instance_name": "default", "neighbor_peer-address": "10.255.0.1", "source": "s"},
                          "values": {"/network-instance/protocols/bgp/neighbor/session-state": "established"}})
       == {"timestamp": 0, "name": "bgp_neighbor", "tags": {"network-instance_name": "default", "peer_address": "10.255.0.1", "source": "s"},
@@ -398,11 +398,11 @@ _gcode = "\n".join(l for l in _gtext.splitlines() if not l.lstrip().startswith("
 check("gnmic.sh render: 資格情報の値を設定にも標準出力にも書かない。印の行（>>> / <<< kafka_auth）は消え、__X__ は全部埋まる",
       not any(v in _gtext + _out for k, v in _GNMIC_ENV.items() if k.startswith(("GNMI_USER", "GNMI_PASS", "KAFKA_SASL")))
       and "kafka_auth" not in _gtext and not re.search(r"__[A-Z_]+__", _gcode))
-_rc_n, _out_n, _gtext_n, _ = _gnmic_render(KAFKA_AUTH="none", KAFKA_SASL_USER=None, KAFKA_SASL_PASS=None, KAFKA_BROKERS="kafka-0.netops:9092")
+_rc_n, _out_n, _gtext_n, _ = _gnmic_render(KAFKA_AUTH="none", KAFKA_SASL_USER=None, KAFKA_SASL_PASS=None, KAFKA_BROKERS="kafka-0.nwc:9092")
 _gy_n = yaml.safe_load(_gtext_n) if _gtext_n else {}
 check("gnmic.sh render（KAFKA_AUTH=none。OSS 版と手元）: SCRAM の資格情報が無くても作れ、出力に sasl も tls も無い（ほかは scram と同じ）",
       _rc_n == 0 and "kafka auth: none" in _out_n and "sasl" not in _gtext_n and "tls" not in _gtext_n and "kafka_auth" not in _gtext_n
-      and all(o["address"] == "kafka-0.netops:9092" and set(o) == {"type", "address", "topic", "format", "split-events"} for o in _gy_n.get("outputs", {}).values())
+      and all(o["address"] == "kafka-0.nwc:9092" and set(o) == {"type", "address", "topic", "format", "split-events"} for o in _gy_n.get("outputs", {}).values())
       and _gy_n.get("subscriptions") == _gy.get("subscriptions") and _gy_n.get("targets") == _gy.get("targets"))
 _gbad = {"GNMI_TARGETS が無い": dict(GNMI_TARGETS=None), "GNMI_TARGETS の形が違う": dict(GNMI_TARGETS="203.0.113.31:57400"),
          "GNMI_TARGETS に同じ IP が 2 回": dict(GNMI_TARGETS='"203.0.113.31:57400", "203.0.113.31:57401"'),

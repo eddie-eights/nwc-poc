@@ -745,8 +745,8 @@ check("OPENSEARCH_AUTH=basic: 署名せず Basic 認証（ユーザーは既定 
                                                         "Authorization": "Basic " + base64.b64encode(b"admin:pw-os").decode()})])
 check("OPENSEARCH_AUTH=basic: executor へ運ぶ sender が持つのは文字列と辞書（と None）だけで、パスワードは持たない（送るたびに環境変数から読む）",
       all(isinstance(c.cell_contents, (str, dict, type(None))) for c in _f.__closure__) and "pw-os" not in repr([c.cell_contents for c in _f.__closure__]))
-_f, _p, _s = send("opensearch", OPENSEARCH_AUTH="basic", OPENSEARCH_PASSWORD="pw-os", OPENSEARCH_USER="netops")
-check("OPENSEARCH_USER でユーザーを変えられる", _p[0][1]["Authorization"] == "Basic " + base64.b64encode(b"netops:pw-os").decode())
+_f, _p, _s = send("opensearch", OPENSEARCH_AUTH="basic", OPENSEARCH_PASSWORD="pw-os", OPENSEARCH_USER="nwc")
+check("OPENSEARCH_USER でユーザーを変えられる", _p[0][1]["Authorization"] == "Basic " + base64.b64encode(b"nwc:pw-os").decode())
 check("OPENSEARCH_AUTH=basic で OPENSEARCH_PASSWORD が無ければ、sender を作るとき（ジョブの起動時）に ValueError",
       raises(ValueError, lambda: send("opensearch", OPENSEARCH_AUTH="basic")))
 _f, _p, _s = send("prometheus", PROMETHEUS_AUTH="none")
@@ -864,7 +864,7 @@ def start_sh(**env):
     """(終了コード, 並んだデータソースの {ファイル名: 中身}, 最後の行, stderr)"""
     with tempfile.TemporaryDirectory() as tmp:
         sh = open(os.path.join(ROOT, "app", "grafana", "start.sh"), encoding="utf-8").read()
-        sh = sh.replace("SRC=/etc/grafana/netops", f"SRC={os.path.join(ROOT, 'app', 'grafana', 'provisioning')}")
+        sh = sh.replace("SRC=/etc/grafana/nwc", f"SRC={os.path.join(ROOT, 'app', 'grafana', 'provisioning')}")
         sh = sh.replace("/tmp/grafana-", f"{tmp}/grafana-").replace('exec /run.sh "$@"', 'echo "user=${OPENSEARCH_USER:-}"')
         assert "/etc/grafana" not in sh and "exec " not in sh
         r = subprocess.run(["sh", "-c", sh], capture_output=True, text=True,
@@ -1470,7 +1470,7 @@ check(f"Neo4j のドライバの版は Lambda の層・Web・Worker・Nautobot �
       all(len(p) == 1 for p in _pins.values()) and len({p[0] for p in _pins.values()}) == 1
       and all(re.search(r"^-r requirements\.txt$", _req[n], re.M) for n in ("dashboard", "temporal", "nautobot"))
       and all("ARG REQUIREMENTS=requirements.txt" in open(os.path.join(ROOT, "docker", "images", d, "Dockerfile"), encoding="utf-8").read() for d in ("temporal", "nautobot")))
-# Nautobot の Job（app/nautobot/netops/nb_sync.py）は app/agentcore/graph.py をそのまま使うので、OSS 版は Worker と同じ読み方（graph の state の neo4j_uri）で Neo4j に向ける
+# Nautobot の Job（app/nautobot/nwc/nb_sync.py）は app/agentcore/graph.py をそのまま使うので、OSS 版は Worker と同じ読み方（graph の state の neo4j_uri）で Neo4j に向ける
 _nb = {n: _code(s) for n, s in tf_text("IaC/terraform/aws-managed", "pipeline/nautobot").items()}
 _nb_up = {t: open(os.path.join(ROOT, *t, "up.sh"), encoding="utf-8").read() for t in (("ops",), ("ops", "oss"))}
 _nb_dock = open(os.path.join(ROOT, "docker", "images", "nautobot", "Dockerfile"), encoding="utf-8").read()
@@ -1487,7 +1487,7 @@ check("Nautobot: OSS 版（graph の state に neo4j_uri がある）だけ NEPT
       and re.search(r'^\s+build_nautobot "\$NAUTOBOT_TAG" "\$NAUTOBOT_CTX" requirements-oss\.txt\s', _nb_up[("ops", "oss")], re.M)
       and re.search(r'^\s+build_nautobot "\$NAUTOBOT_TAG" "\$NAUTOBOT_CTX"$', _nb_up[("ops",)], re.M)
       and '--build-arg "REQUIREMENTS=${3:-requirements.txt}"' in open(os.path.join(ROOT, "ops", "up-common.sh"), encoding="utf-8").read()
-      and '-r "/tmp/netops-requirements/$REQUIREMENTS"' in _nb_dock and "COPY requirements*.txt /tmp/netops-requirements/" in _nb_dock
+      and '-r "/tmp/nwc-requirements/$REQUIREMENTS"' in _nb_dock and "COPY requirements*.txt /tmp/nwc-requirements/" in _nb_dock
       and "neo4j" not in open(os.path.join(ROOT, "app", "nautobot", "requirements.txt"), encoding="utf-8").read())
 
 # ---- 8. AWS で動かす前の点検（005）。ファイルを読むだけ（plan はしない）
@@ -1837,7 +1837,7 @@ def grafana_files(**env):
     """app/grafana/start.sh が並べるファイル {datasources|alerting|dashboards/<名前>: 中身}（start_sh と同じやり方。環境変数は渡したものだけ）"""
     with tempfile.TemporaryDirectory() as tmp:
         sh = open(os.path.join(ROOT, "app", "grafana", "start.sh"), encoding="utf-8").read()
-        sh = sh.replace("SRC=/etc/grafana/netops", f"SRC={os.path.join(ROOT, 'app', 'grafana', 'provisioning')}")
+        sh = sh.replace("SRC=/etc/grafana/nwc", f"SRC={os.path.join(ROOT, 'app', 'grafana', 'provisioning')}")
         sh = sh.replace("/tmp/grafana-", f"{tmp}/grafana-").replace('exec /run.sh "$@"', "true")
         assert "/etc/grafana" not in sh and "exec " not in sh
         subprocess.run(["sh", "-c", sh], capture_output=True, text=True, check=True, env={"PATH": os.environ["PATH"], **env})
@@ -1855,7 +1855,7 @@ _g_m = grafana_files(AWS_REGION="ap-northeast-1", PROMETHEUS_URL="https://aps-wo
 _g_copies = subprocess.run(["git", "grep", "-l", "--untracked", "-e", "datasourceUid", "-e", '"uid": "amp"', "-e", '"uid": "aoss-logs"',
                             "--", ".", ":!docs", ":!tests", ":!app/grafana/provisioning"], capture_output=True, text=True, cwd=ROOT).stdout.split()
 _G_FILES = {"datasources/prometheus.yaml", "datasources/opensearch.yaml", "dashboards/metrics.json", "dashboards/logs.json",
-            "alerting/netops.yaml", "alerting/netops-prometheus.yaml", "alerting/netops-opensearch.yaml"}
+            "alerting/nwc.yaml", "alerting/nwc-prometheus.yaml", "alerting/nwc-opensearch.yaml"}
 check(f"OSS 版の環境変数（PROMETHEUS_URL={_g_oss_env['PROMETHEUS_URL']}、OPENSEARCH_URL={_g_oss_env['OPENSEARCH_URL']}）で start.sh は datasources-oss の 2 つと、"
       "マネージド版と同じダッシュボード 2 つ・アラートの定義 3 つ（app/grafana/provisioning のファイルそのもの）を並べる。ダッシュボードとルールの写しはリポジトリに無い",
       set(_g_oss) == set(_g_m) == _G_FILES
@@ -1863,7 +1863,7 @@ check(f"OSS 版の環境変数（PROMETHEUS_URL={_g_oss_env['PROMETHEUS_URL']}�
       and all(_g_oss[f"datasources/{n}"] == provisioning("datasources-oss", n) for n in ("prometheus.yaml", "opensearch.yaml"))
       and all(_g_oss[f] == _g_m[f] == provisioning(*f.split("/")) for f in _G_FILES if not f.startswith("datasources/"))
       and sorted(f for f in git_files("app/grafana") if f.endswith((".json", ".yaml")) and not f.startswith("provisioning/datasources"))
-      == sorted("provisioning/" + f for f in _G_FILES if not f.startswith("datasources/")) + ["provisioning/dashboards/netops.yaml"]
+      == sorted("provisioning/" + f for f in _G_FILES if not f.startswith("datasources/")) + ["provisioning/dashboards/nwc.yaml"]
       and not _g_copies)
 
 
@@ -1876,7 +1876,7 @@ def _ds_refs(o):
 
 _g_have = {u for f, s in _g_oss.items() if f.startswith("datasources/") for u in uids(s)}
 _g_want = {f: set(_ds_refs(json.loads(s))) if f.endswith(".json") else set(re.findall(r"^\s+datasourceUid: (\S+)$", s, re.M)) - {"__expr__"}
-           for f, s in _g_oss.items() if f.startswith(("dashboards/", "alerting/netops-"))}
+           for f, s in _g_oss.items() if f.startswith(("dashboards/", "alerting/nwc-"))}
 check(f"ダッシュボードとアラートのルールが引くデータソースの uid（{ {f: sorted(v) for f, v in _g_want.items()} }）は、どれも OSS 版で並べたデータソース（{sorted(_g_have)}）にある",
       _g_have == {"amp", "aoss-logs"} and all(_g_want.values()) and set().union(*_g_want.values()) <= _g_have)
 _g_vars = set(re.findall(r"\$\{(\w+)\}", "".join(s for f, s in _g_oss.items() if f.endswith(".yaml"))))
@@ -1884,7 +1884,7 @@ check(f"並べた定義が起動時に読む環境変数（{sorted(_g_vars)}）�
       _g_vars and _g_vars <= set(_g_env["IaC/terraform/oss"]) | {n for n, _ in _g_sec} | {"OPENSEARCH_USER"})
 
 # アラートの経路: Grafana の連絡先 → 土台の SNS のトピック → status の Lambda（OSS 版の graph の sync.tf）と SQS → ワークフロー（IaC/terraform/aws-managed/workflow の events.tf）
-_nets = _g_oss["alerting/netops.yaml"]
+_nets = _g_oss["alerting/nwc.yaml"]
 _sub = {f"{b}/{r}": _block(_code(tf_text(b, r)[n]), "resource", f"aws_sns_topic_subscription.{s}")
         for b, r, n, s in (("IaC/terraform/oss", "pipeline/graph", "sync.tf", "status"), ("IaC/terraform/oss", "workflow", "events.tf", "anomalies"))}
 _topic_expr = 'alerts_topic_arn = try(data.terraform_remote_state.main.outputs.alerts_topic_arn, "")'

@@ -674,10 +674,10 @@ _argv = [c for c in _c if c.startswith("curl ")]
 _stdin = [c for c in _c if c.startswith("STDIN ")]
 check("check.sh: パスワードは curl の引数に載せず（ps に出る）、-K - の標準入力で user = \"admin:…\" として渡す（OpenSearch・Splunk・Grafana 2 つの 4 回）。Kafka のトピックの一覧は 1 回だけ取る",
       len(_argv) == 8 and len([c for c in _argv if "18080/api/clusters/nwc/topics" in c]) == 1 and not [c for c in _argv if PW in c] and _stdin == [f'STDIN user = "admin:{PW}"'] * 4)
-check("check.sh: Splunk の検索は sourcetype=netops:*（Spark の SPLUNK_SOURCETYPE_PREFIX）、Prometheus は Grafana のダッシュボードとアラートが使う snmp_interface_oper_up（gnmic の interface_state を Spark が読み替えた系列）",
-      sinks.SPLUNK_SOURCETYPE_PREFIX == "netops" and any("sourcetype=netops:*" in c for c in _argv)
+check("check.sh: Splunk の検索は sourcetype=nwc:*（Spark の SPLUNK_SOURCETYPE_PREFIX）、Prometheus は Grafana のダッシュボードとアラートが使う snmp_interface_oper_up（gnmic の interface_state を Spark が読み替えた系列）",
+      sinks.SPLUNK_SOURCETYPE_PREFIX == "nwc" and any("sourcetype=nwc:*" in c for c in _argv)
       and "snmp_interface_oper_up" in read("app", "grafana", "provisioning", "dashboards", "metrics.json")
-      and "snmp_interface_oper_up" in read("app", "grafana", "provisioning", "alerting", "netops-prometheus.yaml")
+      and "snmp_interface_oper_up" in read("app", "grafana", "provisioning", "alerting", "nwc-prometheus.yaml")
       and any("query=count(snmp_interface_oper_up)" in c for c in _argv))
 check("check.sh: Grafana で見る uid（amp / aoss-logs）は app/grafana/provisioning/datasources-oss の定義にある",
       {m for f in ("prometheus.yaml", "opensearch.yaml")
@@ -740,7 +740,7 @@ _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_OS_COUNT="0", FAKE_MEM="16000
 check("check.sh: 1 つが 0 件なら、そこだけ NG にして残りも見てから終了コード 1。メモリが 20 GB 未満なら注意を出す",
       _r.returncode == 1 and "NG  OpenSearch: snmp-logs の件数 > 0: 0 件" in _r.stdout and len([l for l in _r.stdout.splitlines() if l.startswith("ok  ")]) == 14
       and "注意: メモリが 16000 MiB" in _r.stdout and _r.stdout.splitlines()[-1].startswith("NG がある"))
-SPL = "Splunk: sourcetype=netops:* の直近 10 分の件数 > 0"
+SPL = "Splunk: sourcetype=nwc:* の直近 10 分の件数 > 0"
 def splunk_line(body):  # Splunk の応答を body にして check.sh を打ち、Splunk の行を返す
     _r, _c = run([os.path.join(_lc, "check.sh")], FAKE_SPLUNK=body)
     return [l for l in _r.stdout.splitlines() if SPL in l]
