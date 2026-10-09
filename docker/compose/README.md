@@ -108,6 +108,8 @@ docker/compose/down.sh -v
 
 `-v` を付けると volume（Kafka・OpenSearch・Prometheus・Splunk・Grafana・Spark の checkpoint）も消す。付けなければデータを残して止めるだけ。
 
+2026-10-09 に Splunk のアプリの名前を `nwc_alerts` に揃えた（「名前を nwc に揃える（019）」）。それより前に上げた Splunk の volume には前の名前のアプリが残り（同じ版のまま上げると新しいアプリが入らない）、Grafana の volume にも前の名前の空のフォルダが残る。019 より前に上げていたら、`docker/compose/down.sh -v` で volume ごと消してから上げ直す。
+
 WSL を落とすと（`wsl --shutdown` など）trap の REDIRECT が消える。lab が上がったままなら `docker/compose/lab.sh forward` で張り直す（`lab.sh up` も最後に張り直す）。
 
 lab の `down` は trap の REDIRECT（目印 `nwc-lab-telegraf`）を残す。次の `lab.sh up` が消してから張り直すので残っていても害は無いが、消すなら次を打つ。

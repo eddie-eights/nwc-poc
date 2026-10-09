@@ -359,6 +359,7 @@ level=error の行: 0
   - 置換を受け入れる。記録は今の名前で読める、とする。
   - 「当時の名前は netops」と注を足す。ただし合格条件の grep に当たるので、例外を足すことになる。
   - どちらも設計（合格条件）に関わるので、実装では直していない。
+- **PM の判断（2026-10-09）: 直さない。** 設計の方針 4 が記録と定めたのは `docs/cycles/` と `docs/verification/` だけで、`docs/*.md` は現行の説明文書。review.md に PM の判断として残す。
 
 **S2 Should fix ［運用・旧名で立てた環境をそのまま上げ直す］**
 
@@ -384,6 +385,14 @@ level=error の行: 0
   - 未確認（AWS に触らない）。
 - 直し方の案: 「旧名で立てた環境（compose の volume、Nautobot の RDS、稼働中の AWS）は down.sh（compose は `-v`）で消してから、新しい名前で上げる」と docs/deploy.md か README に 1 行書く。
   - deploy.md は 018 と並行していて netops を含む行だけを直す約束なので、書いていない。
+- **PM の判断（2026-10-09）: 直す。** `docs/deploy.md` と `docker/compose/README.md` に 1 行ずつ足した（下の「PM の判断のあとの直し」）。前の名前の字面は書かない。
+
+#### PM の判断のあとの直し
+
+- `docs/cycle-006-design`（d0537a1。018 の取り下げ b34e71a と、019 の合格条件の例外 723ccfd）をマージした。衝突なし。`ls docs/cycles/ | grep -c '^018'` が `0`、`grep -n 018 docs/cycles/BACKLOG.md` が空。
+- S2: `docs/deploy.md` の手順の注意の最後（010 の Kafbat UI の行の次）と、`docker/compose/README.md` の「消す」の `-v` の説明の次に 1 行ずつ足した。旧名の環境は `ops/down.sh`（compose は `docker/compose/down.sh -v`）で消してから上げる、という趣旨。
+- 足したあとに取り直した出力は「Round 1 の追い（PM の判断のあと）」の検証に貼る。
+- 検査用のイメージ（`nwc-grafana-check:local`・`nwc-nautobot-check:local`・`nwc-splunk-check:local`）を消した（N3）。
 
 #### 最終報告に回したもの（Nit。格下げの根拠は実行して取った）
 
@@ -441,3 +450,41 @@ level=error の行: 0
   - ENV_FILE は変わっていない。
   - AWS の資源名で変わるのは namespace だけ。
   - 検査は同語反復になっていない（注入で落ちる）。
+
+### Round 1 の追い（PM の判断のあと）の検証
+
+d0537a1 のマージと S2 の 2 行のあと、同じ作業ツリーで取り直した。
+
+```
+$ grep -rli netops --exclude-dir=.git --exclude-dir=.terraform --exclude-dir=.venv . | grep -v -e '^./docs/cycles/' -e '^./docs/verification/'
+./tests/test_analytics.py
+./IaC/terraform/aws-managed/pipeline/analytics/tables.tf
+./.git
+$ grep -rn -i netops IaC/terraform/aws-managed/pipeline/analytics/tables.tf tests/test_analytics.py
+IaC/terraform/aws-managed/pipeline/analytics/tables.tf:54:  from = aws_s3tables_namespace.netops[0]
+IaC/terraform/aws-managed/pipeline/analytics/tables.tf:55:  to   = aws_s3tables_namespace.netops
+IaC/terraform/aws-managed/pipeline/analytics/tables.tf:61:  from = aws_s3tables_namespace.netops
+tests/test_analytics.py:2225:           ("aws_s3tables_namespace.netops[0]", "aws_s3tables_namespace.netops"),
+tests/test_analytics.py:2226:           ("aws_s3tables_namespace.netops", "aws_s3tables_namespace.nwc"))))
+$ bash ops/check.sh   # 終了コード 0。件数は実装前と同じ
+198:通過 168 / 失敗 0
+713:通過 513 / 失敗 0
+1288:通過 161 / 失敗 0
+1368:通過 79 / 失敗 0
+1372:通過 3 / 失敗 0
+1452:通過 78 / 失敗 0
+1462:通過 7 / 失敗 0
+1560:通過 97 / 失敗 0
+1699:通過 138 / 失敗 0
+1770:68 項目すべて通過
+1944:通過 173 / 失敗 0
+2141:通過 196 / 失敗 0
+2208:通過 66 / 失敗 0
+2315:通過 106 / 失敗 0
+2434:通過 103 / 失敗 0
+2879:通過 327 / 失敗 0
+2881:すべて通過
+```
+
+- `./.git` は worktree のポインタのファイル。
+- イメージの build と `tests/check_splunk_image.py` は取り直していない（app・docker・IaC は 5162693 から変えていない。docs 2 本と build.md だけ）。
