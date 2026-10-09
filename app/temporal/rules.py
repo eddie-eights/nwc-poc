@@ -73,7 +73,9 @@ def normalize_action(action: str) -> tuple[str, str]:
 
 # ---------------------------------------------------------------- 事前チェック（処置を打つ前に、孤立と冗長切れを見る。2026-10-04）
 # 処置がトポロジをどう変えるか（app/containerlab/lab.sh のサブコマンドの中身）。処置を ALLOWED_ACTIONS に足すときはここにも足す（無い処置は「確認できず」になる）。
-# いまの 2 つは回線を上げるか見るだけなので、孤立の警告は出ない。落とす処置（機器の再起動・回線の切り離し）を足したときに効く
+# いまの 2 つは dc1-a-leaf-01 の ethernet-1/1 を上げる（heal-main）か見るだけ（check）。落とす処置（機器の再起動・回線の切り離し）を足したときに効く。
+# ただし上げるだけでも、トポロジが割れているときは「危険」と出ることがある（impact が変更後のいちばん大きいかたまりを本流に選ぶため。誤報。
+# docs/cycles/BACKLOG.md の「heal-main と孤立の同点を解く」）
 ACTION_CHANGES = {"heal-main": [{"op": "link_up", "target": "dc1-a-leaf-01#ethernet-1/1"}], "check": []}
 PRECHECK_JA = {"ok": "問題なし", "warn": "注意", "danger": "危険", "unknown": "確認できず"}
 # 端の役割（つながりの中継にしない機器）。app/agentcore/topology.py の END_ROLES と同じ

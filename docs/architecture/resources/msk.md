@@ -17,7 +17,7 @@ Telegraf・gnmic・syslog-ng・GoFlow2 が集めた機器のデータを、い�
 | 認証と暗号 | IAM 認証（9098）と SASL/SCRAM（9096。syslog-ng と GoFlow2 と gnmic だけ）。クライアントとの間もブローカー同士も TLS | `msk.tf` の `client_authentication`、`encryption_info` |
 | SCRAM の資格情報 | Secrets Manager の `AmazonMSK_<prefix>-collectors`（名前は `AmazonMSK_` で始める決まり）。顧客管理の KMS の鍵 `alias/<prefix>-msk-scram` で暗号化する（MSK は既定の鍵の secret を受け付けない）。作り方と消し方は表の下 | `ops/up-common.sh` の `ensure_msk_scram_key` / `ensure_msk_scram_secret`、`ops/down-common.sh` の `delete_msk_scram`、`msk.tf` の `aws_msk_scram_secret_association` |
 | SCRAM のユーザーの ACL | `User:collectors` に `logs` / `flows` / `gnmi` / `metrics` の `WRITE` と `DESCRIBE`（`LITERAL`、host `*`）。`CREATE` と CLUSTER の ACL は付けない。Spark のジョブが起動のたびに入れる（同じものを入れても変わらない）。ACL を入れる前と入れたあとの振る舞いは表の下 | `app/spark/snmp_sinks.py` の `ensure_acls`、EMR の実行ロールの `kafka-cluster:AlterCluster`（`IaC/terraform/aws-managed/pipeline/analytics/access.tf`） |
-| ブローカーの設定 | `auto.create.topics.enable=true`、`default.replication.factor` = ブローカーの数、`min.insync.replicas` = その 1 つ下、`num.partitions=2`、`log.retention.hours=24`。内部トピック（`__consumer_offsets` 等）のパーティション数は configuration に項目が無く変えられないので既定の 50（OSS 版は 1） | `msk.tf` の `aws_msk_configuration` |
+| ブローカーの設定 | `auto.create.topics.enable=true`、`default.replication.factor` = ブローカーの数、`min.insync.replicas` = その 1 つ下、`num.partitions=2`、`log.retention.hours=24`。内部トピックは表の下 | `msk.tf` の `aws_msk_configuration` |
 | ブローカーのログ | CloudWatch Logs のロググループ `/<prefix>/msk`、保存 7 日 | 変数 `log_retention_days`、`msk.tf` |
 | スイッチ | `PIPELINE=1` で作る。`SKIP_STREAM=1` で作らない（analytics も作らない） | `deploy.env.example` |
 | 費用 | 57 セント/時（2 台。1 台増やすごとに +27） | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`） |
@@ -26,6 +26,7 @@ Telegraf・gnmic・syslog-ng・GoFlow2 が集めた機器のデータを、い�
 - SCRAM のユーザーの ACL: 2026-10-09 の AWS では、ACL を入れる前も syslog-ng・GoFlow2・gnmic は書けた。
   `allow.everyone.if.no.acl.found` が効いた（`docs/verification/20261009-aws-managed.md` の「A.」「B.」）。
   ACL を入れたあとの振る舞いは未確認。
+- ブローカーの設定: 内部トピック（`__consumer_offsets` 等）のパーティション数は configuration に項目が無く変えられないので、既定の 50 のまま（OSS 版は 1）。
 
 トピックと中身:
 

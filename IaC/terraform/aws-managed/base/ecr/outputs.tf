@@ -4,17 +4,17 @@ output "agent_repository_url" {
 }
 
 output "srlinux_repository_url" {
-  description = "Push ghcr.io/nokia/srlinux:26.7.2 (amd64, for the x86_64 lab EC2) here with tag 26.7.2 (step 2 of ops/up.sh). Empty when create_lab_repositories is false."
+  description = "Push ghcr.io/nokia/srlinux:26.7.2 (amd64, for the x86_64 lab EC2) here with tag 26.7.2-amd64 (SRLINUX_ECR_TAG of ops/lab-common.sh; step 2 of ops/up.sh). Empty when create_lab_repositories is false."
   value       = try(aws_ecr_repository.lab["srlinux"].repository_url, "")
 }
 
 output "multitool_repository_url" {
-  description = "Push ghcr.io/srl-labs/network-multitool:v0.10.0 here with tag v0.10.0 (step 2 of ops/up.sh)."
+  description = "Push ghcr.io/srl-labs/network-multitool:v0.10.0 here with tag v0.10.0-amd64 (MULTITOOL_ECR_TAG of ops/lab-common.sh; step 2 of ops/up.sh)."
   value       = try(aws_ecr_repository.lab["multitool"].repository_url, "")
 }
 
 output "trex_repository_url" {
-  description = "Push trexcisco/trex:2.41 (amd64 only) here with tag 2.41 (step 2 of ops/up.sh). The traffic generator of the lab (app/containerlab/trex/)."
+  description = "Push trexcisco/trex:2.41 (amd64 only) here with tag 2.41-amd64 (TREX_ECR_TAG of ops/lab-common.sh; step 2 of ops/up.sh). The traffic generator of the lab (app/containerlab/trex/)."
   value       = try(aws_ecr_repository.lab["trex"].repository_url, "")
 }
 
