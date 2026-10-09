@@ -343,7 +343,7 @@ SYSLOG_STANDARD=RFC5424 PIPELINE=1 ops/up.sh   # lab の SR Linux のログま�
 | VPC | 既定 `10.20.0.0/24`、1 AZ・1 サブネット。IGW も NAT も無い閉域。どこともつながないので土台と CIDR が重なってよい |
 | エンドポイント | ssm / ssmmessages（SSM で入る）、ecr.api / ecr.dkr（イメージを引く）の 4 本と、S3 の gateway（無料） |
 | バケット | `<接頭辞>-lab-debug-<アカウント>`。`lab/` だけを置く |
-| ECR | `<接頭辞>-debug-lab-srlinux` / `-debug-lab-multitool` / `-debug-lab-trex` / `-debug-telegraf`。スタックを消すとイメージごと消える |
+| ECR | `<接頭辞>-debug-lab-srlinux` / `-debug-lab-trex` / `-debug-telegraf`。スタックを消すとイメージごと消える |
 | ロール | 前と同じ権限。`NETWORK_PERIMETER` のときは VPC の外からの呼び出しを拒む Deny を、この VPC に向けて持つ |
 
 - `ops/lab-debug.sh up` の初回は、EC2 の無い器を先に作り、イメージと `app/containerlab/` を置いてから EC2 を作る（置く前に EC2 を起こしても引けないため）。

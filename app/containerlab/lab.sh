@@ -152,9 +152,9 @@ unforward() {  # forward が入れた規則（目印 ${FW_TAG}）を全部消す
 
 case "${1:-}" in
   render)
-    : "${SRLINUX_IMAGE:?}" "${MULTITOOL_IMAGE:?}" "${TREX_IMAGE:?}"
-    sed -e "s#__SRLINUX_IMAGE__#$SRLINUX_IMAGE#" -e "s#__MULTITOOL_IMAGE__#$MULTITOOL_IMAGE#" -e "s#__TREX_IMAGE__#$TREX_IMAGE#" "$TOPO.in" > "$TOPO"
-    echo "$TOPO を作った（イメージは $SRLINUX_IMAGE と $MULTITOOL_IMAGE と ${TREX_IMAGE}）"
+    : "${SRLINUX_IMAGE:?}" "${TREX_IMAGE:?}"
+    sed -e "s#__SRLINUX_IMAGE__#$SRLINUX_IMAGE#" -e "s#__TREX_IMAGE__#$TREX_IMAGE#" "$TOPO.in" > "$TOPO"
+    echo "$TOPO を作った（イメージは $SRLINUX_IMAGE と ${TREX_IMAGE}）"
     ;;
   pull)
     # ECR の認証は 12 時間で切れるので、毎回ログインしてから取る（署名はインスタンスロール）。
@@ -163,7 +163,7 @@ case "${1:-}" in
       : "${AWS_REGION:?}"
       aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
     fi
-    for i in "$SRLINUX_IMAGE" "$MULTITOOL_IMAGE" "$TREX_IMAGE" ${TELEGRAF_IMAGE:+"$TELEGRAF_IMAGE"}; do docker pull -q "$i"; done
+    for i in "$SRLINUX_IMAGE" "$TREX_IMAGE" ${TELEGRAF_IMAGE:+"$TELEGRAF_IMAGE"}; do docker pull -q "$i"; done
     ;;
   up)
     [ -f "$TOPO" ] || "$SELF" render

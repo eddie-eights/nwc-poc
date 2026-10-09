@@ -53,7 +53,7 @@ PC は公開の SSM の API に出られればよい（ポートフォワーデ�
 - `registry.terraform.io` に 443 で届くこと（OpenSearch Serverless には PC からつながない）。
 - イメージをビルドするので、インターネットに出られること。
   - `STORES` に `splunk` を入れると、Docker Hub から `splunk/splunk` の amd64 のイメージ（約 2〜3 GB）を引き、検知のアプリを足して ECR に push する。
-  - lab（`PIPELINE=1`）とデバッグ用の EC2 は、SR Linux・multitool・TRex（Docker Hub の `trexcisco/trex`）の amd64 を引いて ECR に写す。
+  - lab（`PIPELINE=1`）とデバッグ用の EC2 は、SR Linux・TRex（Docker Hub の `trexcisco/trex`）の amd64 を引いて ECR に写す。
 - x86_64 の PC では、agent / worker / Grafana / Nautobot のビルドに QEMU（binfmt）が要る（下の WSL2 の `binfmt` の行。Telegraf と Splunk は COPY だけ、lab のイメージは写すだけなので要らない）。
 
 ### Mac

@@ -3,7 +3,7 @@
 # /etc/<接頭辞>-lab.env を書いて S3 から置き直し、これを exec するだけ（中身はここに 1 つだけ。tests/test_lab_debug.py が見る）:
 #   IaC/terraform/aws-managed/pipeline/lab/templates/lab_user_data.sh.tftpl   lab の EC2（Telegraf は stream の ECS。TELEGRAF_IMAGE は空）
 #   IaC/cloudformation/lab-debug.yaml の UserData                 デバッグ用の EC2（Telegraf もこの EC2 で動かす。TELEGRAF_IMAGE がある）
-# env のキー: NAME_PREFIX / AWS_REGION / REGISTRY / SRLINUX_IMAGE / MULTITOOL_IMAGE / TREX_IMAGE / TELEGRAF_IMAGE / PARAM_PREFIX / CONTAINERLAB_VERSION / AUTO_START_LAB
+# env のキー: NAME_PREFIX / AWS_REGION / REGISTRY / SRLINUX_IMAGE / TREX_IMAGE / TELEGRAF_IMAGE / PARAM_PREFIX / CONTAINERLAB_VERSION / AUTO_START_LAB
 set -euo pipefail
 SRC=$(dirname "$(readlink -f "$0")")
 ENV_FILE=$(ls /etc/*-lab.env 2>/dev/null | head -1 || true)

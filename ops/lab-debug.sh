@@ -34,7 +34,7 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text) || die "
 REG="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
 # スタックが持つバケットと ECR のリポジトリの名前（テンプレートと同じ作り方。down は Outputs が読めなくても消せるよう、ここで作る）
 BUCKET="$PREFIX-lab-debug-$ACCOUNT_ID"
-REPO_PREFIX="$PREFIX-debug"   # <これ>-lab-srlinux / -lab-multitool / -lab-trex / -telegraf
+REPO_PREFIX="$PREFIX-debug"   # <これ>-lab-srlinux / -lab-trex / -telegraf
 # VPC の外からの呼び出しを拒む Deny（ops/up.sh の NETWORK_PERIMETER と同じキー。既定 1）
 NETWORK_PERIMETER="${NETWORK_PERIMETER:-1}"
 flag_value NETWORK_PERIMETER
@@ -52,7 +52,7 @@ deploy() {  # deploy <CreateInstance> [<TelegrafImageTag>]  版は ops/lab-commo
     --parameter-overrides \
       "NamePrefix=$PREFIX" "Owner=$OWNER" "CreateInstance=$1" "TelegrafImageTag=${2:-}" \
       "NetworkPerimeter=$([ -n "$NETWORK_PERIMETER" ] && echo true || echo false)" \
-      "ContainerlabVersion=$CONTAINERLAB_VERSION" "SrlinuxImageTag=$SRLINUX_ECR_TAG" "MultitoolImageTag=$MULTITOOL_ECR_TAG" "TrexImageTag=$TREX_ECR_TAG" \
+      "ContainerlabVersion=$CONTAINERLAB_VERSION" "SrlinuxImageTag=$SRLINUX_ECR_TAG" "TrexImageTag=$TREX_ECR_TAG" \
     --tags "Project=$PREFIX" "owner=$OWNER" \
     || die "$STACK を作れなかった（aws cloudformation describe-stack-events --region $REGION --stack-name ${STACK}）"
 }
@@ -125,7 +125,7 @@ case "$CMD" in
       log "1. $STACK はある（${s}）"
     fi
 
-    log "2. イメージ（ECR に無いタグだけ作る。lab の 3 つと、stream の ECS と同じ作り方の Telegraf。どれも x86_64 の EC2 に載るので amd64。タグも lab の 3 つと同じく -amd64 を付け、arch をタグでも分かるようにする。stream の arm64 は別の repo の $PREFIX-telegraf）"
+    log "2. イメージ（ECR に無いタグだけ作る。lab の 2 つと、stream の ECS と同じ作り方の Telegraf。どれも x86_64 の EC2 に載るので amd64。タグも lab の 2 つと同じく -amd64 を付け、arch をタグでも分かるようにする。stream の arm64 は別の repo の $PREFIX-telegraf）"
     TELEGRAF_TAG="$(telegraf_tag)-$LAB_ARCH" || die "app/telegraf/ のタグを作れなかった"
     LOGGED_IN=""
     login() {
@@ -135,7 +135,7 @@ case "$CMD" in
       aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REG"
       LOGGED_IN=1
     }
-    if ! ecr_has "$REPO_PREFIX-lab-srlinux" "$SRLINUX_ECR_TAG" || ! ecr_has "$REPO_PREFIX-lab-multitool" "$MULTITOOL_ECR_TAG" \
+    if ! ecr_has "$REPO_PREFIX-lab-srlinux" "$SRLINUX_ECR_TAG" \
       || ! ecr_has "$REPO_PREFIX-lab-trex" "$TREX_ECR_TAG"; then login; fi
     mirror_lab_images "$REG" "$REPO_PREFIX" || die "lab のイメージを ECR に置けなかった"
     if ecr_has "$REPO_PREFIX-telegraf" "$TELEGRAF_TAG"; then echo "telegraf:$TELEGRAF_TAG はある"

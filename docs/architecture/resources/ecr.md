@@ -11,7 +11,7 @@ VPC から外へ出る経路が無いので、Fargate も EC2 も Runtime も、
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
-| リポジトリ | 15 個（下の表）。時間課金が無いので、スイッチに関わらずいつも作る。OSS 版（`IaC/terraform/oss/`、`project = nwc-oss`）はこれに 7 個を足す（下の「OSS 版だけのリポジトリ」） | `IaC/terraform/aws-managed/base/ecr/main.tf` |
+| リポジトリ | 14 個（下の表）。時間課金が無いので、スイッチに関わらずいつも作る。OSS 版（`IaC/terraform/oss/`、`project = nwc-oss`）はこれに 7 個を足す（下の「OSS 版だけのリポジトリ」） | `IaC/terraform/aws-managed/base/ecr/main.tf` |
 | タグ | `IMMUTABLE`（同じタグに上書きできない） | `main.tf` |
 | 消し方 | `force_delete = true`。destroy でイメージごと消える | `main.tf` |
 | スキャン | `scan_on_push = true` | `main.tf` |
@@ -28,7 +28,6 @@ VPC から外へ出る経路が無いので、Fargate も EC2 も Runtime も、
 | `worker` | `app/temporal/`（自前ビルド） | ECS Fargate（workflow） | `IMAGE_TAG` |
 | `temporal` | `temporalio/temporal`（写し） | ECS Fargate（workflow） | 上流の版（`ops/up-common.sh` の `TEMPORAL_TAG`） |
 | `lab-srlinux` | `ghcr.io/nokia/srlinux`（写し。約 1 GB） | lab の EC2 | 上流の版 + `-amd64`（`ops/lab-common.sh` の `SRLINUX_ECR_TAG`） |
-| `lab-multitool` | `ghcr.io/srl-labs/network-multitool`（写し。containerlab の `linux` kind の既定。いまの lab で使うノードは無い） | lab の EC2 | 上流の版 + `-amd64`（`MULTITOOL_ECR_TAG`） |
 | `lab-trex` | `trexcisco/trex`（写し。amd64 だけ） | lab の EC2（`dc1-trex-01`） | 上流の版 + `-amd64`（`TREX_ECR_TAG`） |
 | `telegraf` | 公式の `telegraf` に設定のテンプレートと `tg` を足す | ECS Fargate（stream） | `<版>-<ディレクトリの中身のハッシュ 12 桁>` |
 | `gnmic` | 公式の `ghcr.io/openconfig/gnmic` に設定のテンプレートと `gn` を足す | ECS Fargate（stream） | 同上（版は `ops/up-common.sh` の `GNMIC_VERSION`） |
@@ -70,7 +69,7 @@ OSS 版だけのリポジトリ（`oss_repositories`。マネージド版では�
 - **アーキテクチャは全体で揃えず、イメージごとに `--platform` を指定する。**
   - arm64 が必須なのは AgentCore Runtime（x86_64 でビルドしたイメージは起動しない）。
   - x86 が必須なのは `splunk` と `lab-trex`（公式イメージが amd64 しか無い）。
-  - Fargate のほかのサービスは arm64。lab の EC2 は x86_64 なので、`lab-*` の 3 つは amd64 を写す。
+  - Fargate のほかのサービスは arm64。lab の EC2 は x86_64 なので、`lab-*` の 2 つは amd64 を写す。
   - 出典: [data-stores.md](../../data-stores.md) の「8. アーキテクチャは全体で揃えない（同じホストの中だけ揃える）」。
 - **`splunk` は、そのタスクだけ `X86_64` にする。**
   `--platform linux/amd64` で作る。公式イメージに COPY するだけなので、arm64 の PC でもエミュレーション無しで作れる。
@@ -78,9 +77,9 @@ OSS 版だけのリポジトリ（`oss_repositories`。マネージド版では�
 - **写しの push で「only the available single-platform image was pushed」と出ても問題ない。**
   指定した 1 つのアーキテクチャだけ push したという意味。
   出典: 同上。
-- **2026-10-08 より前の `lab-srlinux` / `lab-multitool` のタグは arm64。**
+- **2026-10-08 より前の `lab-srlinux` のタグは arm64。**
   いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）。
-  - そのため `KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が残っていても名前がぶつからず、`ops/up.sh` は amd64 を写し直す。
+  - そのため `KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2`）が残っていても名前がぶつからず、`ops/up.sh` は amd64 を写し直す。
   - 前のタグは使われずに残るだけで、消さなくてよい（保管料は残したぶんだけかかる）。
   - 出典: `ops/lab-common.sh` の `mirror_lab_images`（タグがあれば飛ばす）、同上。
 - **`KEEP_ECR=1` で残すと、翌日の `ops/up.sh` でビルドを飛ばせる。**
@@ -90,7 +89,7 @@ OSS 版だけのリポジトリ（`oss_repositories`。マネージド版では�
   `ecr.api` / `ecr.dkr` が `ops/up.sh` の手順 0 の一覧にあるか、S3 の gateway エンドポイントがプライベートのルートテーブルに載っているか。`explicit deny` なら VPC のエンドポイントを通っていない。
   出典: [pipeline.md](../../pipeline.md) の「動かないとき」。
 - **デバッグ用の EC2 のイメージは、別のリポジトリに置く。**
-  `<prefix>-debug-lab-srlinux` / `-debug-lab-multitool` / `-debug-lab-trex` / `-debug-telegraf`（CloudFormation のスタックが作る）。SR Linux は `ops/up.sh` で置いてあっても、もう一度 push する。
+  `<prefix>-debug-lab-srlinux` / `-debug-lab-trex` / `-debug-telegraf`（CloudFormation のスタックが作る）。SR Linux は `ops/up.sh` で置いてあっても、もう一度 push する。
   出典: [pipeline.md](../../pipeline.md) の「デバッグ用の EC2（lab + Telegraf を 1 台）」。
 
 ## 制約と未確認

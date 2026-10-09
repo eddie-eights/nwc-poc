@@ -7,7 +7,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 #   - VPC（VpcCidr。1 AZ・1 サブネット）。インターネットへの経路は無い（NAT も IGW も無い）。IaC/terraform/aws-managed/base/core と同じ閉域の形
 #   - AWS の API へはインターフェース型エンドポイント 4 本（ssm / ssmmessages: SSM で入る。ecr.api / ecr.dkr: イメージを引く）と
 #     S3 の gateway エンドポイント（lab/ の材料、ECR のレイヤー、AL2023 の dnf リポジトリ。無料）
-#   - バケット <接頭辞>-lab-debug-<アカウント>（lab/ だけを置く）と ECR のリポジトリ 4 つ（<接頭辞>-debug-lab-srlinux / -lab-multitool / -lab-trex / -telegraf）。
+#   - バケット <接頭辞>-lab-debug-<アカウント>（lab/ だけを置く）と ECR のリポジトリ 3 つ（<接頭辞>-debug-lab-srlinux / -lab-trex / -telegraf）。
 #     ECR はスタックを消すとイメージごと消える（EmptyOnDelete）。バケットは ops/lab-debug.sh down が空にしてから消す
 #   - ロールに VPC の外からの呼び出しを拒む Deny（IaC/terraform/aws-managed/base/core の perimeter.tf と同じ Action と条件。この VPC を指す）
 # イメージと app/containerlab/ を置く前に EC2 を起こしても引けないので、初回は CreateInstance=false で器だけ作り、置いてから true にする（ops/lab-debug.sh up）。
@@ -67,9 +67,6 @@ Parameters:
   SrlinuxImageTag:
     Type: String
     Default: "26.7.2-amd64"
-  MultitoolImageTag:
-    Type: String
-    Default: "v0.10.0-amd64"
   TrexImageTag:
     Type: String
     Default: "2.41-amd64"
@@ -305,16 +302,6 @@ Resources:
       Tags:
         - { Key: Project, Value: !Ref NamePrefix }
         - { Key: owner, Value: !Ref Owner }
-  MultitoolRepository:
-    Type: AWS::ECR::Repository
-    Properties:
-      RepositoryName: !Sub "${NamePrefix}-debug-lab-multitool"
-      ImageTagMutability: IMMUTABLE
-      ImageScanningConfiguration: { ScanOnPush: true }
-      EmptyOnDelete: true
-      Tags:
-        - { Key: Project, Value: !Ref NamePrefix }
-        - { Key: owner, Value: !Ref Owner }
   TrexRepository:
     Type: AWS::ECR::Repository
     Properties:
@@ -358,7 +345,7 @@ Resources:
               - Sid: EcrPull
                 Effect: Allow
                 Action: [ecr:BatchGetImage, ecr:GetDownloadUrlForLayer, ecr:BatchCheckLayerAvailability]
-                Resource: [!GetAtt SrlinuxRepository.Arn, !GetAtt MultitoolRepository.Arn, !GetAtt TrexRepository.Arn, !GetAtt TelegrafRepository.Arn]
+                Resource: [!GetAtt SrlinuxRepository.Arn, !GetAtt TrexRepository.Arn, !GetAtt TelegrafRepository.Arn]
               - Sid: EcrToken
                 Effect: Allow
                 Action: ecr:GetAuthorizationToken
@@ -458,7 +445,6 @@ Resources:
           AWS_REGION=${AWS::Region}
           REGISTRY=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
           SRLINUX_IMAGE=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${NamePrefix}-debug-lab-srlinux:${SrlinuxImageTag}
-          MULTITOOL_IMAGE=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${NamePrefix}-debug-lab-multitool:${MultitoolImageTag}
           TREX_IMAGE=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${NamePrefix}-debug-lab-trex:${TrexImageTag}
           TELEGRAF_IMAGE=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${NamePrefix}-debug-telegraf:${TelegrafImageTag}
           PARAM_PREFIX=/${NamePrefix}
@@ -478,7 +464,7 @@ Outputs:
     Description: lab/ goes to s3://<this>/lab/ (ops/lab-debug.sh)
     Value: !Ref Bucket
   RepositoryPrefix:
-    Description: "<registry>/<this>-lab-srlinux, -lab-multitool, -lab-trex, -telegraf"
+    Description: "<registry>/<this>-lab-srlinux, -lab-trex, -telegraf"
     Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${NamePrefix}-debug"
   InstanceId:
     Condition: HasInstance

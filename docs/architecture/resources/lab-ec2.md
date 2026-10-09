@@ -12,8 +12,8 @@ Web やエージェントとはつながっていない。使うのは trap・sy
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
 | EC2 | Amazon Linux 2023 x86_64、`m6i.xlarge`（`m6i.xlarge` / `m6i.2xlarge` / `c6i.2xlarge` / `t3.xlarge` / `t3.2xlarge` から選ぶ）、EBS 24 GB。1 台だけ（サブネット a）で、AZ を選ぶキーは無い | `IaC/terraform/aws-managed/pipeline/lab/instance.tf`、変数 `instance_type`、`volume_size` |
-| 版 | containerlab 0.79.0、SR Linux 26.7.2、multitool v0.10.0、TRex 2.41。正は `ops/lab-common.sh` | `ops/lab-common.sh`、`IaC/terraform/aws-managed/pipeline/lab/variables.tf`（同じ値） |
-| イメージ | ECR の `<prefix>-lab-srlinux`、`<prefix>-lab-multitool`、`<prefix>-lab-trex`（公開のイメージの amd64 の写し） | `IaC/terraform/aws-managed/base/ecr/main.tf`、`ops/lab-common.sh` |
+| 版 | containerlab 0.79.0、SR Linux 26.7.2、TRex 2.41。正は `ops/lab-common.sh` | `ops/lab-common.sh`、`IaC/terraform/aws-managed/pipeline/lab/variables.tf`（同じ値） |
+| イメージ | ECR の `<prefix>-lab-srlinux`、`<prefix>-lab-trex`（公開のイメージの amd64 の写し） | `IaC/terraform/aws-managed/base/ecr/main.tf`、`ops/lab-common.sh` |
 | 材料 | containerlab の rpm とトポロジ。S3 の `lab/`（土台のバケット）に `ops/up.sh` の手順 5-1 が置く | `ops/up.sh`、`app/containerlab/setup.sh` |
 | 起動 | systemd の `<prefix>-lab`。起動のたびに S3 の `lab/` を置き直して流す | `instance.tf` のコメント、`app/containerlab/setup.sh` |
 | 管理ネットワーク | `203.0.113.0/24`（EC2 の中の docker network。VPC からは見えない） | `IaC/terraform/aws-managed/pipeline/lab/locals.tf` の `mgmt_cidr`、`app/containerlab/splab.clab.yml.in` |
@@ -55,7 +55,7 @@ lab の中身:
   - 出典: [pipeline.md](../../pipeline.md) の「動かないとき」、[app/containerlab/trex/README.md](../../../app/containerlab/trex/README.md)。
 - **2026-10-08 より前に ECR に置いた lab のイメージは arm64。**
   いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）。
-  - そのため `KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が残っていても名前がぶつからず、`ops/up.sh` は amd64 を写し直す。
+  - そのため `KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2`）が残っていても名前がぶつからず、`ops/up.sh` は amd64 を写し直す。
   - 前のタグは使われずに残るだけで、消さなくてよい（保管料は残したぶんだけかかる）。
   - 出典: [ecr.md](ecr.md)。
 - **版の正は `ops/lab-common.sh`。**

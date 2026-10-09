@@ -28,7 +28,7 @@ variable "project" {
 }
 
 variable "create_lab_repositories" {
-  description = "Also create the three repositories of the lab images (srlinux / multitool / trex). false keeps only the agent repository."
+  description = "Also create the two repositories of the lab images (srlinux / trex). false keeps only the agent repository."
   type        = bool
   default     = true
 }
