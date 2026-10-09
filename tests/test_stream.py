@@ -399,6 +399,8 @@ check("gnmic.yaml: 出力は gnmi / metrics の 2 つ（Kafka、同じブロー�
       and all(o["type"] == "kafka" and o["address"] == _GNMIC_ENV["KAFKA_BROKERS"] and o["topic"] == n and o["format"] == "event" and o["split-events"] is True
               and o.get("sasl") == {"user": "${KAFKA_SASL_USER}", "password": "${KAFKA_SASL_PASS}", "mechanism": "SCRAM-SHA-512"}
               and o.get("tls") == {"ca-file": "/etc/ssl/certs/ca-certificates.crt"}
+              # scram の区間にだけ別の項目（required-acks、debug など）を足しても気付けるよう、キー集合も縛る（030 のレビュー）
+              and set(o) == {"type", "address", "topic", "format", "split-events", "buffer-size", "timeout", "event-processors", "sasl", "tls"}
               for n, o in _gy.get("outputs", {}).items()))
 check("gnmic.yaml: target の名前は IP（tags.source = device map のキー）、address は GNMI_TARGETS の host:port、資格情報は target ごとに ${…} のまま",
       _gy.get("targets") == {ip: {"address": f"{ip}:57400", "username": "${GNMI_USERNAME}", "password": "${GNMI_PASSWORD}"} for ip in ("203.0.113.31", "203.0.113.32")})
@@ -410,8 +412,17 @@ _rc_n, _out_n, _gtext_n, _ = _gnmic_render(KAFKA_AUTH="none", KAFKA_SASL_USER=No
 _gy_n = yaml.safe_load(_gtext_n) if _gtext_n else {}
 check("gnmic.sh render（KAFKA_AUTH=none。OSS 版と手元）: SCRAM の資格情報が無くても作れ、出力に sasl も tls も無い（ほかは scram と同じ）",
       _rc_n == 0 and "kafka auth: none" in _out_n and "sasl" not in _gtext_n and "tls" not in _gtext_n and "kafka_auth" not in _gtext_n
-      and all(o["address"] == "kafka-0.nwc:9092" and set(o) == {"type", "address", "topic", "format", "split-events"} for o in _gy_n.get("outputs", {}).values())
+      and all(o["address"] == "kafka-0.nwc:9092" and set(o) == {"type", "address", "topic", "format", "split-events", "buffer-size", "timeout", "event-processors"}
+              for o in _gy_n.get("outputs", {}).values())
       and _gy_n.get("subscriptions") == _gy.get("subscriptions") and _gy_n.get("targets") == _gy.get("targets"))
+# cycle 030: 送り手（sarama）が詰まっているあいだの応答を抱える（既定の buffer-size 0 / timeout 5s は 5 秒で黙って捨てる）。初回値が丸ごと無い件に効くかは AWS で未確認。
+# values の無い event（2026-10-09 の metrics の 400 件中 359 件、deletes だけの event）は output 側の event-drop で捨てる。scram と none の両方で同じ
+check("gnmic.yaml（cycle 030）: gnmi / metrics の両方が buffer-size 10000・timeout 60s・event-processors [drop-empty]（scram と none の両方）",
+      all(set(y.get("outputs", {})) == {"gnmi", "metrics"}
+          and all(o.get("buffer-size") == 10000 and o.get("timeout") == "60s" and o.get("event-processors") == ["drop-empty"] for o in y["outputs"].values())
+          for y in (_gy, _gy_n)))
+check("gnmic.yaml（cycle 030）: processor は drop-empty の 1 つだけで、event-drop の condition は values が null か空のとき（scram と none の両方）",
+      all(y.get("processors") == {"drop-empty": {"event-drop": {"condition": ".values == null or (.values | length) == 0"}}} for y in (_gy, _gy_n)))
 _gbad = {"GNMI_TARGETS が無い": dict(GNMI_TARGETS=None), "GNMI_TARGETS の形が違う": dict(GNMI_TARGETS="203.0.113.31:57400"),
          "GNMI_TARGETS に同じ IP が 2 回": dict(GNMI_TARGETS='"203.0.113.31:57400", "203.0.113.31:57401"'),
          "KAFKA_BROKERS の形が違う": dict(KAFKA_BROKERS="b-1.example:9096;rm"), "GNMI_PASSWORD が無い": dict(GNMI_PASSWORD=None),
