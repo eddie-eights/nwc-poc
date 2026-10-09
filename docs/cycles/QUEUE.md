@@ -1,6 +1,6 @@
 # サイクルをまたぐ候補
 
-1 行 1 件、タイトルは動詞で書く。実装の手順と検証はここに書かず、サイクルの `design.md` に書く。
+1 行 1 件、タイトルは動詞で書く。実装の手順と検証はここに書かず、サイクルの `design.md` に書く。次にやるサイクルの待ち行列なので `QUEUE.md`（2026-10-10 に `BACKLOG.md` から改名。ヌーラボの Backlog と混同するため。過去のサイクル記録にある「BACKLOG」はこのファイルのこと）。
 
 - [x] Nautobot の Job を OSS 版の Neo4j につなぐ（2026-10-08 完了。コードとテストのあと、同日の OSS 版の AWS 検証で確認。005 の design.md「実装の状態」、`docs/verification/20261008-oss-aws.md`）
 - [x] Neo4j の id 検索にラベルを付ける（頂点が増えると全走査になる）（2026-10-08 完了。fix/neo4j-id-labels。`_lbl` で Neo4j のときだけ付け、Neptune に送る openCypher は不変。手元の Neo4j で 2000 機器の set_status の dbHits 15014 → 13。AWS の Neo4j / Neptune では未確認）

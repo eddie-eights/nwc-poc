@@ -2305,7 +2305,7 @@ Multi-AZ DB クラスターが使えるエンジンは、RDS for MySQL と RDS f
 | Temporal Cloud | サーバーを持たず worker だけ ECS に置く。閉域の構成とは合いにくい |
 | SQLite のまま EFS に置く | 動くが `start-dev` は開発用で、単一ノード・HA 無し。本番向けではない |
 
-Nautobot の RDS は `ops/down.sh` で消える設計なので、相乗りさせても「down.sh のあとも残る」にはならない。そこまで残したいなら、そのサイクルで RDS を down.sh の外に出すかを決める。候補は `docs/cycles/BACKLOG.md` の「Temporal の履歴を RDS に残す」。
+Nautobot の RDS は `ops/down.sh` で消える設計なので、相乗りさせても「down.sh のあとも残る」にはならない。そこまで残したいなら、そのサイクルで RDS を down.sh の外に出すかを決める。候補は `docs/cycles/QUEUE.md` の「Temporal の履歴を RDS に残す」。
 
 ### Q. RDS for PostgreSQL と Aurora PostgreSQL のどちらにする？
 
