@@ -14,7 +14,7 @@ S3 Tables（Iceberg のテーブルバケット）は別物で、[s3-tables-athe
 |---|---|---|
 | 名前 | `<prefix>-assets-<アカウント>`（cycle 035 で `<prefix>-kb-<アカウント>` から改名） | `<prefix>-logs-<アカウント>` |
 | terraform のルート | `IaC/terraform/aws-managed/base/core` の `bucket.tf` | `IaC/terraform/aws-managed/base/logs` の `main.tf` |
-| 作る順 | base/ecr → base/logs → base/core（`ops/up.sh` の手順 1 の後） | `ops/up.sh` の手順 1（base/ecr の次） |
+| 作る順 | `ops/up.sh` の手順 3（base/core。手順 1 の base/ecr と base/logs の後） | `ops/up.sh` の手順 1（base/ecr の次） |
 | 消し方 | `ops/down.sh`（base/core と一緒。`force_destroy = true`） | `ops/down.sh` は消さない。消すなら `terraform -chdir=IaC/terraform/aws-managed/base/logs destroy -var owner=<OWNER>`（`force_destroy = true`） |
 | 中身の寿命 | ライフサイクル無し（バケットごと消える） | ライフサイクルで 7 日で消す（未完了のマルチパートも 7 日）。バージョニング無し |
 | ポリシー | `DenyInsecureTransport` と `DenyOutsideVpc`（`NETWORK_PERIMETER=0` で外れる） | `DenyInsecureTransport` だけ |

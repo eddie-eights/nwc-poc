@@ -126,8 +126,10 @@ report_leftovers
 echo "（この一覧では消えたかを決めない。タグの API は消えたリソースも返す（何日も前に消えた EMR Serverless のジョブランなど）。"
 echo " 消えたかはサービスごとの API で見る。KEEP_ECR=1 なら ECR のリポジトリは実際に残っている。MSK の SCRAM の KMS の鍵は削除の予約のまま 7 日残る（課金なし）。
  docs/deploy.md の「消したあとに残るもの」）"
-echo "logs のバケット $PREFIX-logs-$ACCOUNT_ID は残す（IaC/terraform/aws-managed/base/logs。中身は 7 日で消え、空のバケットは無料。上の一覧に出るのは想定どおり。"
-echo " 消すなら terraform -chdir=IaC/terraform/aws-managed/base/logs destroy -var owner=${OWNER}）"
+if has_resources base/logs; then  # state が無いか空（base/logs を作る前に ops/up.sh が止まった）なら、残すものが無いので出さない
+  echo "logs のバケット $PREFIX-logs-$ACCOUNT_ID は残す（IaC/terraform/aws-managed/base/logs。中身は 7 日で消え、空のバケットは無料。上の一覧に出るのは想定どおり。"
+  echo " 消すなら terraform -chdir=IaC/terraform/aws-managed/base/logs destroy -var owner=${OWNER}）"
+fi
 if [ "$MAIN_LEFT" = 1 ]; then
   echo "IaC/terraform/aws-managed/base/core の VPC・サブネット・runtime の SG は残した（Runtime の ENI 待ち。時間課金は無い）。"
   echo "そのままでよい。次の ops/up.sh が使い回す（ops/up.sh を打ったのと同じチェックアウトから打つとき。state はここにしか無い）。"

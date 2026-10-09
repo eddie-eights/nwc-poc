@@ -159,3 +159,12 @@ tests/test_workflow.py: 通過 333 / 失敗 0
 - **AWS での動き全部（設計のリスク 1 と 2）。** EMR Serverless が logs の `emr/` に書けるか、Firehose のストリームが logs を書けなかった行の置き場にして作れるか、ライフサイクルとポリシーが設計どおりに入るか、KB の取り込みが `kb/` から通るか、`ops/down.sh` のあと assets が消え logs が残るか。設計の「検証方法」の AWS の節のとおり、PM の 1 回の検証で見る
 - **古い state からの移り方（リスク 6）。** state の無いところでは当たらない。古い kb のバケットを持つ state で base/core を apply したときの置き換えは打っていない
 - **OSS 版の `ops/oss/up.sh` を通した `base/logs` の apply。** validate と静的な検査だけ
+
+## コールドレビュー後の修正
+
+Must fix は 0。PM の判断で、Should fix 1 件と Nit 2 件をこの 1 commit で直した（Nit 1 の KB のロールの範囲と Nit 3 の up.sh の旧 kb の guard は直さない。Nit 1 は PM が BACKLOG に積む）。
+
+- **Should fix（`docs/deploy.md` の 035 より前の state の消し方）:** 「先に `ops/down.sh` で消す」を、035 のコードの `ops/down.sh` では `base/logs` の state が無いと analytics の destroy が止まることと、2 つの消し方（035 より前のコードで消す／先に `base/logs` を apply する）に書き直した。PM の文面から 2 点変えた。戻すのは `ops` だけでなく `IaC` も（`try` 無しで読むのは analytics の terraform のコード）。戻し先は `git checkout HEAD -- ops IaC`（`git checkout -- ops` はインデックスから戻すので、3d497de の版のまま）
+- **Nit 2（`ops/down.sh` と `ops/oss/down.sh` の「logs のバケットは残す」）:** echo を `if has_resources base/logs; then … fi` で囲み、state が無いか空なら出さないようにした。`tests/test_analytics.py` の検査も、囲みの中で出すことを見るように直した
+- **Nit 4（`docs/architecture/resources/s3-buckets.md` の assets の「作る順」）:** `docs/deploy.md` の手順の表と同じく「`ops/up.sh` の手順 3（base/core。手順 1 の base/ecr と base/logs の後）」にした
+- 確かめたこと: `uv run --frozen python3 tests/test_analytics.py` 通過 544 / 失敗 0、`tests/test_oss_ops.py` 通過 206 / 失敗 0、`tests/test_oss.py` 通過 177 / 失敗 0、`tests/test_workflow.py` 通過 333 / 失敗 0。`bash -n` は 2 本とも無言。`ops/oss/down.sh` の囲みを `if true; then` にすると、直した検査が AssertionError で落ちる

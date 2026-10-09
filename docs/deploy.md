@@ -238,7 +238,13 @@
   - OSS 版（`ops/oss/up.sh`）も順番は同じ。
   - どれだけ待って落ちるかは未確認（AWS では再現していない。010 のレビューで読んだ順番から）。
 - 「S3 の置き場を整える（035）」より前の state（base/core に `<prefix>-kb-<アカウント>` のバケットがある）を持つチェックアウトでは、次の base/core の apply がバケットを置き換える（中身ごと destroy して `<prefix>-assets-<アカウント>` を create）。
-  Spark の checkpoint も前の位置を引き継がず、新しい `spark/checkpoint/` から読み始める。先に `ops/down.sh` で消してから `ops/up.sh` で上げる。
+  Spark の checkpoint も前の位置を引き継がず、新しい `spark/checkpoint/` から読み始める。先に消してから `ops/up.sh` で上げる。
+  - 035 のコードの `ops/down.sh` では、その state は消し切れない。`IaC/terraform/aws-managed/pipeline/analytics` が `base/logs` の state の出力を `try` 無しで読むので、`base/logs` の state が無いと analytics の destroy が止まる。
+  - 消し方は 2 つのどちらか。
+    1. 035 より前のコードの `ops/down.sh` で消す。例: `git checkout 3d497de -- ops IaC` で戻して `ops/down.sh` を打ち、終わったら `git checkout HEAD -- ops IaC` で戻す。
+       `ops` だけでなく `IaC` も戻す（`base/logs` を読むのは analytics の terraform のコード）。戻すときは `HEAD` を付ける（`git checkout -- ops IaC` だけだと、3d497de の版が入ったインデックスから戻るので元に戻らない）。
+    2. 先に `terraform -chdir=IaC/terraform/aws-managed/base/logs init` と `terraform -chdir=IaC/terraform/aws-managed/base/logs apply -var owner=<OWNER>` で logs のバケットを作り、それから `ops/down.sh` を打つ。logs のバケットは `ops/down.sh` のあとも残る（下の「消したあとに残るもの」）。
+  - OSS 版（`ops/oss/down.sh`）も同じ。2 のルートは `IaC/terraform/oss/base/logs`。
 - 「名前を nwc に揃える（019）」より前に立てたままの環境は、先に `ops/down.sh` で消してから `ops/up.sh` で上げる。
   Splunk のアプリ、Nautobot の App と API ユーザーと JobHook、S3 Tables の namespace の名前が `nwc` に変わったので、前の名前のものが残って新しい名前と食い違う。
   - Nautobot の RDS には前の API ユーザーと JobHook が残り、起動時のトークンの作成が一意制約で落ちる（コードを読んだだけで、AWS では未確認）。

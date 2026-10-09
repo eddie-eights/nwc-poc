@@ -1448,9 +1448,10 @@ check("ops/up.sh と ops/oss/up.sh は base/logs を base/ecr のあと base/cor
       all(0 <= t.index("\ntf_apply base/ecr") < t.index("\ntf_apply base/logs\n") < t.index("\ntf_apply base/core") for t in (up, _oss_up))
       and 'ROOTS="base/ecr base/logs base/core"' in up and re.search(r"^ROOTS=\([^)]*\bbase/logs\b", checksh, re.M) is not None)
 _oss_down = _ops_common("down") + open(os.path.join(ROOT, "ops", "oss", "down.sh"), encoding="utf-8").read()
-check("ops/down.sh と ops/oss/down.sh は base/logs を destroy せず、残すことと消し方（terraform -chdir=…/base/logs destroy）を出す",
-      all(not re.search(r"^\s*destroy_(lambda_)?root base/logs\b", t, re.M) and "base/logs destroy -var owner=${OWNER}" in t
-          and "は残す" in t for t in (down, _oss_down)))
+check("ops/down.sh と ops/oss/down.sh は base/logs を destroy せず、残すことと消し方（terraform -chdir=…/base/logs destroy）を、base/logs の state にリソースがあるときだけ出す",
+      all(not re.search(r"^\s*destroy_(lambda_)?root base/logs\b", t, re.M)
+          and re.search(r"^if has_resources base/logs; then[^\n]*\n  echo \"logs のバケット [^\n]*は残す[^\n]*\n  echo \" 消すなら terraform -chdir=IaC/terraform/[a-z-]+/base/logs destroy -var owner=\$\{OWNER\}）\"\nfi$", t, re.M)
+          for t in (down, _oss_down)))
 # 古い名前（共用バケットの kb、analytics/ の下の logs / jars / checkpoint）が残っていない。docs/cycles/ と docs/verification/ は記録なので見ない。
 # このファイル自身に文字列が載らないよう、パターンはつないで作る
 _old_names = ["kb" + "_bucket", "KB" + "_BUCKET", "analytics" + "/logs", "analytics" + "/jars", "analytics" + "/checkpoint"]
