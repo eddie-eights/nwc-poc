@@ -547,15 +547,18 @@ check("Web の EC2 は t4g.medium（Gradio 約 400 MB + Kafbat UI の JVM）で�
                     r'Resource\s*=\s*"arn:\$\{local\.partition\}:ecr:\$\{var\.region\}:\$\{local\.account_id\}:repository/\$\{local\.name_prefix\}-kafka-ui"', web_tf) is not None
       and not re.search(r'"ecr:(Put|Upload|Initiate|Complete|Delete)', web_tf))
 check("Kafbat UI は Web の EC2 の systemd のユニットが Docker のコンテナを 127.0.0.1:8082 に出す（stream は base/core より後に作られる）。"
-      "パラメータが無い（標準エラーに (ParameterNotFound)）と 75 で終わって起こし直さず（RestartPreventExitStatus。cycle 014）、それ以外で読めないと 69 で終わって 30 秒ごとに起こし直す",
+      "パラメータが無い（標準エラーに (ParameterNotFound)）と 75 で終わって起こし直さず（RestartPreventExitStatus。cycle 014）、それ以外で読めないと 69 で終わって 30 秒ごとに起こし直す。"
+      "75 は成功の扱いにして failed に数えない（SuccessExitStatus。degraded にしない。cycle 026）",
       'exec docker run --rm --name ${name_prefix}-kafka-ui --env-file "$ENV_FILE" -p 127.0.0.1:8082:8080 "$IMAGE"' in _kscript
       and "\n  exit 75\n" in _kscript and "\n    exit 69\n" in _kscript and """  if ! grep -qF '(ParameterNotFound)' "$ERR_FILE"; then\n""" in _kscript
       and all(f"{v}=$(param {n}) || exit $?\n" in _kscript for v, n in (("IMAGE", "image"), ("SERVERS", "bootstrap-servers"), ("PROTOCOL", "security-protocol"),
                                                                      ("PASSWORD", "admin-password --with-decryption")))
       and all(l + "\n" in _kunit for l in ("After=docker.service network-online.target", "Wants=network-online.target", "Requires=docker.service",
                                            "ExecStart=/usr/local/bin/${name_prefix}-kafka-ui",
-                                           "Restart=always", "RestartSec=30", "RestartPreventExitStatus=75", "TimeoutStartSec=0", "WantedBy=multi-user.target"))
-      and re.findall(r"^RestartPreventExitStatus=.*$", _kunit, re.M) == ["RestartPreventExitStatus=75"])
+                                           "Restart=always", "RestartSec=30", "RestartPreventExitStatus=75", "SuccessExitStatus=75",
+                                           "TimeoutStartSec=0", "WantedBy=multi-user.target"))
+      and re.findall(r"^RestartPreventExitStatus=.*$", _kunit, re.M) == ["RestartPreventExitStatus=75"]
+      and re.findall(r"^SuccessExitStatus=.*$", _kunit, re.M) == ["SuccessExitStatus=75"])
 _wunit = web_ud[web_ud.index("<<__UNIT__\n"):web_ud.index("\n__UNIT__\n") + 1]  # <接頭辞>-web.service
 check("75 で止まった Kafbat UI は、Web のユニットの Wants= で、ops/up.sh の手順 8-3（OSS 版は 7-5）の systemctl restart <接頭辞>-web が起こす。"
       "弱い依存だけにして、Kafbat UI が落ちても Web を止めない（Requires / BindsTo / PartOf / Requisite にしない。cycle 014）",

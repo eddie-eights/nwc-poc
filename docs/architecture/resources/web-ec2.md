@@ -23,7 +23,7 @@ stream を作る回は Kafbat UI も Docker で同居する（Kafbat UI を Web 
 | 費用 | 4.3 セント/時（t4g.medium。土台は合わせて約 4 セント/時 + エンドポイント） | `ops/up.sh` の費用の目安（524〜584 行） |
 
 - Kafbat UI のユニット `<prefix>-kafka-ui` の動き:
-  - Restart=always、30 秒ごと。終了コード 75 では起こし直さない。
+  - Restart=always、30 秒ごと。終了コード 75 は成功の扱いにして起こし直さない。
   - イメージ・接続先・パスワードは SSM の `/<prefix>/kafka-ui/` から起動のたびに読む。
   - パラメータが無ければ（stream が無い回）1 回で止まり（75。コンテナは無い）、Web のユニットの `Wants=` で Web の再起動が起こす。
     手で止めても Web の start / restart のたびに起き直す。止めたままにするなら `systemctl mask --runtime <prefix>-kafka-ui`。

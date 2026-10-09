@@ -6,5 +6,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0"
     }
+    # Firehose を IAM の反映を待ってから作る（history.tf の alert_firehose_iam）
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.13"
+    }
   }
 }

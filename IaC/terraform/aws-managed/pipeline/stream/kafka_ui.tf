@@ -4,7 +4,8 @@
 # 2026-10-08 のユーザー決定（cycle 010）で ECS のタスクと Cloud Map をやめ、Web の EC2（IaC/terraform/aws-managed/base/core の web.tf）の
 # Docker で動かす。コンテナを起こすのは Web の EC2 の systemd ユニット（user_data の templates/web_user_data.sh.tftpl）で、このファイルは
 # その接続先を SSM の String のパラメータに書き、Web の EC2 のロールに Kafka の権限を足すだけ。base/core（EC2）が先、stream（接続先）が後の順で作るので、
-# EC2 の初回の起動ではパラメータがまだ無く、ユニットは 1 回で止まる（終了コード 75。RestartPreventExitStatus で起こし直さない。cycle 014）。
+# EC2 の初回の起動ではパラメータがまだ無く、ユニットは 1 回で止まる（終了コード 75。RestartPreventExitStatus で起こし直さない。cycle 014。
+# SuccessExitStatus で成功の扱いにするので failed に数えず、systemctl is-system-running を degraded にしない。cycle 026）。
 # stream の apply のあと ops/up.sh の手順 8-3（OSS 版は 7-5）の Web の restart が、Web のユニットの Wants= で起こす。
 # 無いのではなく読めない（AccessDenied・SSM に届かない など）ときは 69 で終わり、30 秒ごとに起こし直す。
 # イメージは ghcr.io/kafbat/kafka-ui を ECR に写したもの（ops/up.sh の手順 2。AWS の外へ出る経路が無いので ghcr.io から直接は引けない）。

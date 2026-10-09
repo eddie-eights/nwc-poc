@@ -278,9 +278,9 @@ systemd の `Started <prefix>-kafka-ui.service` はスクリプトが動き出�
 #### `… does not exist (pipeline/stream is not applied …). Not retrying; …` で止まっている（終了コード 75）
 
 SSM のパラメータが無かった。
-ユニットは failed のまま止まり、自分では起こし直さない。
-2026-10-09 の AWS では `NRestarts=0` のまま止まり、`systemctl is-system-running` は `degraded` になった。
-stream を作ってから Web の EC2 を起こし直すと `running` に戻った。
+ユニットは `inactive (dead)` で止まり（`SuccessExitStatus=75`）、自分では起こし直さない（AWS では未確認。cycle 026 で足した形）。
+026 より前は `failed` のまま止まり、`systemctl is-system-running` が `degraded` になった（2026-10-09 の AWS。`NRestarts=0`）。
+そのときは stream を作ってから Web の EC2 を起こし直すと `running` に戻った。
 
 `does not exist` の前の名前が、最初に無かったパラメータ（読む順は `image`、`bootstrap-servers`、`security-protocol`、`admin-password`）。
 
@@ -301,6 +301,7 @@ stream を作ってから Web の EC2 を起こし直すと `running` に戻っ�
 コンテナ（Kafbat UI）が 75 で終わった。
 `RestartPreventExitStatus=75` はユニットの main プロセスの終了コードを見る。
 スクリプトは `exec docker run` するので、コンテナの終了コードがそのまま main プロセスの終了コードになり、75 なら起こし直さない。
+`SuccessExitStatus=75` もあるので、`status=75` でもユニットは failed にならない。
 
 コンテナは `--rm` で消えているので `docker logs` では見られない。
 `journalctl -u <prefix>-kafka-ui` の、止まる直前のコンテナの出力を見る。

@@ -101,6 +101,7 @@
    }
    ```
    Firehose の `depends_on` を `[time_sleep.alert_firehose_iam]` にし、`:147` のコメントに「ロールの反映も待つ」を足す。`history.tf` に `count` は無いので付けない。
+   （cold review の Should fix を受けた PM の指示で追記）`time_sleep` に `triggers = { role = aws_iam_role.alert_firehose.unique_id }` を持たせる。state を残したまま接頭辞（`OWNER` / `PROJECT`）を変えてロールが作り直されたときも、待ちを作り直して Firehose の前に待つため。テストでもこの `triggers` を見る。
 4. テスト。`tests/test_analytics.py` の Firehose の節に 1 check 足す。`history.tf` に `resource "time_sleep" "alert_firehose_iam"` があり、`create_duration` が `"30s"` 以上で、`depends_on` にロールとポリシーがあり、Firehose の `depends_on` が `time_sleep.alert_firehose_iam` を含む。`versions.tf` に `hashicorp/time` があり、lock に `registry.terraform.io/hashicorp/time` の block があること。先に落ちることを見る（赤→緑）。
 5. `terraform validate` を両方のルートで通す。`terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics init -backend=false` と `-chdir=IaC/terraform/oss/pipeline/analytics init -backend=false -lockfile=readonly` のあと `validate`。worktree の `.terraform/` は gitignore なので commit に入らない。
 

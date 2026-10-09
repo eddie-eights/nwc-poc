@@ -1348,8 +1348,9 @@ if [ -n "$GRAFANA_WARN" ]; then printf '\033[1;33m%s\033[0m\n' "$GRAFANA_WARN"; 
 printf '\033[1;33m%s\033[0m\n' "$COST_NOTE"
 if [ -n "$NO_DASHBOARD_PORTFORWARD" ]; then exit 0; fi
 log "10. ポートフォワーディング（http://localhost:$LOCAL_PORT/ 。Ctrl+C で閉じる）"
+# exec すると EXIT の trap が走らないので、ここで同じ on_exit を 1 回呼んで片付ける
 trap - EXIT
-if [ -n "$TF_AWS_CONFIG" ]; then rm -f "$TF_AWS_CONFIG"; fi
+on_exit
 exec aws ssm start-session --region "$REGION" --target "$INSTANCE_ID" \
   --document-name AWS-StartPortForwardingSession \
   --parameters "{\"portNumber\":[\"8080\"],\"localPortNumber\":[\"$LOCAL_PORT\"]}"

@@ -908,6 +908,25 @@ for _sig in ("INT", "TERM"):
     check(f"ensure_secret: put-parameter の最中に SIG{_sig} で止まっても、値を書いた一時ファイルを残さない（ops/up.sh の on_exit が消す）",
           _p.returncode < 0 and len(aws_calls(calls(), "ssm", "put-parameter")) == 1 and "/x-nwc-oss/kafka/new-id" not in _ssm
           and not [f for f in os.listdir(TMP) if f.startswith("nwc-secret.")])
+# ensure_fixed_secret（gnmic の username / password）も同じ SECRET_INPUT に値を書く。put-parameter の最中に止められても on_exit が消す（cycle 026）
+FIXED_SECRET_SH = r'''
+REGION=ap-northeast-1; PY=(python3); PREFIX=x-nwc-oss; OWNER=x
+. ops/common.sh; . ops/up-common.sh; OPS_DIR=ops/oss
+ensure_fixed_secret /x-nwc-oss/gnmic/gnmi-password "test-value" "desc" || exit 1
+'''
+for _sig in ("INT", "TERM"):
+    for _f in [f for f in os.listdir(TMP) if f.startswith("nwc-secret.")]:
+        os.remove(os.path.join(TMP, _f))
+    _inv = inventory()
+    del _inv["ssm"]["/x-nwc-oss/gnmic/gnmi-password"]  # 在庫にあると作らない（put-parameter を打たない）ので、無いところから打つ
+    reset(_inv)
+    _p = subprocess.run(["bash", "-c", FIXED_SECRET_SH.replace("OPS_DIR=ops/oss\n", "OPS_DIR=ops/oss\nGRAPH_PID=\"\"; NAUTOBOT_CTX=\"\"\n" + _on_exit, 1)],
+                        cwd=ROOT, env=fake_env({"FAKE_SSM_PUT_SIGNAL": _sig}), capture_output=True, text=True, timeout=60)
+    with open(INV, encoding="utf-8") as f:
+        _ssm = json.load(f)["ssm"]
+    check(f"ensure_fixed_secret: put-parameter の最中に SIG{_sig} で止まっても、値を書いた一時ファイルを残さない（ops/up.sh の on_exit が消す。cycle 026）",
+          _p.returncode < 0 and len(aws_calls(calls(), "ssm", "put-parameter")) == 1 and "/x-nwc-oss/gnmic/gnmi-password" not in _ssm
+          and not [f for f in os.listdir(TMP) if f.startswith("nwc-secret.")])
 
 # 先頭が「-」になる乱数を引いたら引き直す（Kafka の Uuid.randomUuid と同じ）。up-common.sh の Python をそのまま動かす
 src = re.search(r"(def kafka_cluster_id\(\):\n(?:    .*\n)+)", read("ops/up-common.sh")).group(1)
@@ -1028,6 +1047,10 @@ check("ops/oss/up.sh の EXIT の trap は on_exit 関数で、TF_AWS_CONFIG・N
       _oss_on_exit is not None
       and all(f'if [ -n "${v}" ]; then rm -' in _oss_on_exit.group(0) for v in ("TF_AWS_CONFIG", "NAUTOBOT_CTX", "ROLL_PLAN", "SECRET_INPUT"))
       and up.count("\ntrap - EXIT\non_exit\nexec aws ssm start-session ") == 1 and up.count("\ntrap ") == 2)
+_mgd_up = read("ops/up.sh")
+check("ops/up.sh も手順 10 の exec の前に trap を外して同じ on_exit を 1 回呼ぶ（TF_AWS_CONFIG だけを手で消さない。NAUTOBOT_CTX なども消える。cycle 026）",
+      _mgd_up.count("\ntrap - EXIT\non_exit\nexec aws ssm start-session ") == 1 and _mgd_up.count("\ntrap ") == 2
+      and 0 <= _mgd_up.rfind('if [ -n "$NO_DASHBOARD_PORTFORWARD" ]; then exit 0; fi') < _mgd_up.find("\ntrap - EXIT\non_exit\n"))
 check("ops/oss/oss-images.sh は ops/ にある関数を書き直していない（写しを作らない）", not funcs(img_sh) & ops_funcs)
 check("ops/oss/up.sh は ops/common.sh・ops/up-common.sh・ops/lab-common.sh・ops/deploy-env.sh を読む",
       all(s in up for s in (". ops/common.sh", ". ops/up-common.sh", '/../lab-common.sh"', '/../deploy-env.sh"')))
