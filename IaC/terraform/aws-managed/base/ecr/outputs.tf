@@ -8,11 +8,6 @@ output "srlinux_repository_url" {
   value       = try(aws_ecr_repository.lab["srlinux"].repository_url, "")
 }
 
-output "multitool_repository_url" {
-  description = "Push ghcr.io/srl-labs/network-multitool:v0.10.0 here with tag v0.10.0-amd64 (MULTITOOL_ECR_TAG of ops/lab-common.sh; step 2 of ops/up.sh)."
-  value       = try(aws_ecr_repository.lab["multitool"].repository_url, "")
-}
-
 output "trex_repository_url" {
   description = "Push trexcisco/trex:2.41 (amd64 only) here with tag 2.41-amd64 (TREX_ECR_TAG of ops/lab-common.sh; step 2 of ops/up.sh). The traffic generator of the lab (app/containerlab/trex/)."
   value       = try(aws_ecr_repository.lab["trex"].repository_url, "")

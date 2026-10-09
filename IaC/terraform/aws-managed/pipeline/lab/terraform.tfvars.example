@@ -17,5 +17,4 @@
 #
 # containerlab_version = "0.79.0"
 # srlinux_image_tag    = "26.7.2-amd64"
-# multitool_image_tag  = "v0.10.0-amd64"
 # trex_image_tag       = "2.41-amd64"

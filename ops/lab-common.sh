@@ -2,25 +2,22 @@
 # ops/lab-debug.sh（IaC/cloudformation/lab-debug.yaml のデバッグ用の EC2。up.sh とは別のスタックで、バケットと ECR もスタックが持つ）が source する。版と作り方をここ 1 か所にして、2 つの EC2 がずれないようにする。
 # 呼ぶ側が REGION と PY（python の起動の配列）を先に決めておく。
 #
-# SRLINUX_TAG / MULTITOOL_TAG / TREX_TAG は上流の版（docker/compose/.env.example の手元の lab もこの版を引く）。ECR に置くタグはその後ろに -$LAB_ARCH を付けた
+# SRLINUX_TAG / TREX_TAG は上流の版（docker/compose/.env.example の手元の lab もこの版を引く）。ECR に置くタグはその後ろに -$LAB_ARCH を付けた
 # *_ECR_TAG で、IaC/terraform/aws-managed/pipeline/lab の変数の既定値（*_image_tag）と IaC/cloudformation/lab-debug.yaml のパラメータの既定値はこちら。
 # CONTAINERLAB_VERSION は同じ 2 つの containerlab_version / ContainerlabVersion に、TELEGRAF_VERSION は docker/images/telegraf/Dockerfile の ARG の既定値に合わせてある。
 # 変えるときは全部を変える（tests/test_lab_debug.py が見る）。lab の EC2 は x86_64（TRex が amd64 だけのため）なので、lab のイメージと rpm は amd64 を引く
 SRLINUX_TAG=26.7.2   # ghcr.io/nokia/srlinux はマルチアーキ。amd64 を引く
-MULTITOOL_TAG=v0.10.0
 TREX_TAG=2.41        # trexcisco/trex は amd64 だけ（latest = 2.41）
 # ECR のタグにアーキを入れるのは、2026-10-08 より前（lab の EC2 が arm64 だったころ）に上流の版そのままのタグで置いた arm64 の写しが
 # KEEP_ECR=1 で残っていても、名前がぶつからないようにするため（タグがあれば写しを飛ばすので、同じ名前だと x86_64 の EC2 が arm64 を引いて起きない。
 # リポジトリは IMMUTABLE なので同じタグへ上書きもできない）。前の arm64 のタグは使われずに残るだけ
 LAB_ARCH=amd64
 SRLINUX_ECR_TAG="$SRLINUX_TAG-$LAB_ARCH"
-MULTITOOL_ECR_TAG="$MULTITOOL_TAG-$LAB_ARCH"
 TREX_ECR_TAG="$TREX_TAG-$LAB_ARCH"
 CONTAINERLAB_VERSION=0.79.0
 TELEGRAF_VERSION=1.40.1
 CONTAINERLAB_RPM="containerlab_${CONTAINERLAB_VERSION}_linux_amd64.rpm"
 SRLINUX_UPSTREAM=ghcr.io/nokia/srlinux
-MULTITOOL_UPSTREAM=ghcr.io/srl-labs/network-multitool
 TREX_UPSTREAM=trexcisco/trex
 # lab の SR Linux が送る syslog の形式。ops/up.sh の SYSLOG_STANDARD（stream の syslog-ng が受ける形式。既定は本番の Cisco に合わせた RFC3164）がこれと違えば up.sh が注意を出す。
 # app/containerlab/lab.sh の LOG_STANDARD（デバッグ用の EC2 の Telegraf に渡す）と同じ
@@ -81,11 +78,9 @@ mirror_image() {  # mirror_image <上流のイメージ:タグ> <ECR のイメ�
   docker tag "$1" "$2"
   docker push "$2"
 }
-mirror_lab_images() {  # mirror_lab_images <レジストリ> <接頭辞>  lab の 3 つ（SR Linux 約 1 GB、linux kind の既定の multitool、TRex）のうち ECR に無いタグだけ。lab の EC2 は x86_64 なので amd64
+mirror_lab_images() {  # mirror_lab_images <レジストリ> <接頭辞>  lab の 2 つ（SR Linux 約 1 GB と TRex）のうち ECR に無いタグだけ。lab の EC2 は x86_64 なので amd64
   if ecr_has "$2-lab-srlinux" "$SRLINUX_ECR_TAG"; then echo "lab-srlinux:$SRLINUX_ECR_TAG はある"
   else mirror_image "$SRLINUX_UPSTREAM:$SRLINUX_TAG" "$1/$2-lab-srlinux:$SRLINUX_ECR_TAG" "linux/$LAB_ARCH" || return 1; fi
-  if ecr_has "$2-lab-multitool" "$MULTITOOL_ECR_TAG"; then echo "lab-multitool:$MULTITOOL_ECR_TAG はある"
-  else mirror_image "$MULTITOOL_UPSTREAM:$MULTITOOL_TAG" "$1/$2-lab-multitool:$MULTITOOL_ECR_TAG" "linux/$LAB_ARCH" || return 1; fi
   if ecr_has "$2-lab-trex" "$TREX_ECR_TAG"; then echo "lab-trex:$TREX_ECR_TAG はある"
   else mirror_image "$TREX_UPSTREAM:$TREX_TAG" "$1/$2-lab-trex:$TREX_ECR_TAG" "linux/$LAB_ARCH" || return 1; fi
 }
@@ -101,6 +96,7 @@ upload_lab() {  # upload_lab <バケット>  lab の EC2 は起動のたびに s
     || { echo "containerlab の rpm が取れない（社内 PC なら docs/setup.md「社内 PC の CA」）" >&2; return 1; }
   # --delete: 手元で消した・改名したファイル（srlinux/*.cli など）を S3 からも消す。EC2 も --delete で読むので、残すと古い機器名が戻る。
   # --exclude に当たるものは送らず、S3 側でも消さない（aws s3 sync の --delete の説明）。rpm は下の cp で置くので、ここで除いて消させない
-  aws s3 sync --only-show-errors --delete app/containerlab/ "s3://$1/lab/" --exclude "splab.clab.yml" --exclude "__pycache__/*" --exclude "*.DS_Store" --exclude "$CONTAINERLAB_RPM" || return 1
+  # clab-*/: containerlab が lab.sh up で作る作業ディレクトリ（root の持ち物。.gitignore と同じ）。手元で lab を上げたあとに打っても送らない
+  aws s3 sync --only-show-errors --delete app/containerlab/ "s3://$1/lab/" --exclude "splab.clab.yml" --exclude "__pycache__/*" --exclude "*.DS_Store" --exclude "$CONTAINERLAB_RPM" --exclude "clab-*/*" || return 1
   aws s3 cp --only-show-errors "$CONTAINERLAB_RPM" "s3://$1/lab/"
 }

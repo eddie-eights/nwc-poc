@@ -34,8 +34,6 @@ topology:
     nokia_srlinux:
       image: __SRLINUX_IMAGE__
       type: ixr-d2l
-    linux:
-      image: __MULTITOOL_IMAGE__
 
   nodes:
     # ---------- s-leaf（WAN 側） ----------

@@ -317,7 +317,7 @@ MSK / ECS / NLB を作らずに、機器の設定（`app/containerlab/`）と Te
 terraform ではなく CloudFormation のスタック `<prefix>-lab-debug`（[IaC/cloudformation/lab-debug.yaml](../IaC/cloudformation/lab-debug.yaml)）で、作るのも消すのも [ops/lab-debug.sh](../ops/lab-debug.sh) の 1 コマンド。
 
 - **`ops/up.sh` / `ops/down.sh` とは別。**
-  スタックが自分の VPC（閉域。既定 `10.20.0.0/24`）、エンドポイント 4 本（ssm / ssmmessages / ecr.api / ecr.dkr）と S3 の gateway、バケット、ECR のリポジトリ 4 つを持つ。
+  スタックが自分の VPC（閉域。既定 `10.20.0.0/24`）、エンドポイント 4 本（ssm / ssmmessages / ecr.api / ecr.dkr）と S3 の gateway、バケット、ECR のリポジトリ 3 つを持つ。
   そのため `ops/up.sh` で何も作っていなくても立ち、`ops/down.sh` では消えない。
 - lab の EC2 と並べて立ててもよい（管理ネットワーク `203.0.113.0/24` は EC2 の中だけにある）。
 - 待機は約 $0.30/h（m6i.xlarge 約 $0.25/h とエンドポイント 4 本 $0.056/h）。
@@ -349,8 +349,8 @@ ops/lab-debug.sh down          # バケットを空にしてスタックを消�
 
 - `app/telegraf/` を変えたら `ops/lab-debug.sh up`（タグが変わるのでイメージを作り直し、スタックの UserData が変わって EC2 が止まって起きる）。`app/containerlab/` だけなら `ops/lab-debug.sh sync`。
 - スタックが `ROLLBACK_COMPLETE` などで止まったら `ops/lab-debug.sh down` してから `up`。原因は `aws cloudformation describe-stack-events --region ap-northeast-1 --stack-name <prefix>-lab-debug`。
-- イメージは土台の ECR（`<prefix>-lab-*` / `<prefix>-telegraf`）と別のリポジトリ（`<prefix>-debug-lab-srlinux` / `-debug-lab-multitool` / `-debug-lab-trex` / `-debug-telegraf`）に置く。
-- lab の 3 つと Telegraf は、EC2 が x86_64 なので amd64。SR Linux（約 1 GB）は `ops/up.sh` で置いてあっても、初回の `up` でもう一度 push する。
+- イメージは土台の ECR（`<prefix>-lab-*` / `<prefix>-telegraf`）と別のリポジトリ（`<prefix>-debug-lab-srlinux` / `-debug-lab-trex` / `-debug-telegraf`）に置く。
+- lab の 2 つと Telegraf は、EC2 が x86_64 なので amd64。SR Linux（約 1 GB）は `ops/up.sh` で置いてあっても、初回の `up` でもう一度 push する。
 - 境界の Deny（`NETWORK_PERIMETER`）は IAM 側だけ（ロールのインライン）。
   IaC/terraform/aws-managed/base/core の `perimeter.tf` と同じ Action と条件をこの VPC に向ける。
 - バケット側は暗号化されていない経路を拒むだけ（中身は公開のソフトと lab の設定）。

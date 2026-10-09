@@ -33,7 +33,7 @@ bash -c "$(curl -sL https://get.containerlab.dev)"
 ```
 
 QEMU（binfmt）は要らない。build するイメージ（Telegraf、gnmic、Grafana、Spark、Splunk）は WSL の x86_64 のまま作る。
-SR Linux と multitool も ghcr.io の amd64 を取る。TRex（Docker Hub の `trexcisco/trex`）は amd64 しか無いが、WSL の x86_64 ならそのまま動く。
+SR Linux も ghcr.io の amd64 を取る。TRex（Docker Hub の `trexcisco/trex`）は amd64 しか無いが、WSL の x86_64 ならそのまま動く。
 
 足りないメモリは lab を減らして空ける。
 
@@ -78,9 +78,11 @@ lab を上げる（`sudo` のパスワードを聞かれる）。
 - 最後に `compose の Telegraf へ: trap 162/udp を 1162/udp へ向けた` が出ればよい（Telegraf がまだ無くても iptables の規則は入る）。
 - サブコマンドは `app/containerlab/lab.sh` と同じ（`check` / `fail-main` / `heal-main` / `trap-test` / `down` など）。
   障害のあとの案内（「戻すのは …」）もこのラッパーの打ち方で出る。
-- このラッパーが渡すのは次の 5 つだけ。
-  `.env` の `SRLINUX_IMAGE` / `MULTITOOL_IMAGE` / `TREX_IMAGE` と `TELEGRAF_LOCAL=1`、案内に出す自分のパス `LAB_CMD`。
+- このラッパーが渡すのは次の 4 つだけ。
+  `.env` の `SRLINUX_IMAGE` / `TREX_IMAGE` と `TELEGRAF_LOCAL=1`、案内に出す自分のパス `LAB_CMD`。
   - そのため、シェルに `REGISTRY` や `AWS_REGION` があっても ECR や SSM へは行かない。
+  - `.env` にイメージの 2 つが無いと `up`（と `render`）は止まる。`down` / `check` などはイメージを見ないので打てる。
+    011 より前の `.env` には `TREX_IMAGE` が無いので、`.env.example` から写す。
 
 ```bash
 docker/compose/up.sh

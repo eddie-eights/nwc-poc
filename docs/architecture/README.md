@@ -115,7 +115,7 @@ OSS 版（`ops/oss/up.sh`）は `IaC/terraform/oss/` に同じ 9 つのルート
   - 自分の VPC（既定 `10.20.0.0/24`。どこともつながないので base/core と重なってよい。IGW / NAT は無い）
   - インターフェース型エンドポイント 4 本（ssm / ssmmessages / ecr.api / ecr.dkr）と S3 の gateway
   - バケット `<prefix>-lab-debug-<アカウント>`
-  - ECR のリポジトリ 4 つ（`<prefix>-debug-lab-srlinux` / `-lab-multitool` / `-lab-trex` / `-telegraf`。スタックと一緒に消える）
+  - ECR のリポジトリ 3 つ（`<prefix>-debug-lab-srlinux` / `-lab-trex` / `-telegraf`。スタックと一緒に消える）
 
 1 ディレクトリ = 1 state。state は各ルートの `terraform.tfstate`（ローカル）。変数を変えたいときは `terraform.tfvars.example` を `terraform.tfvars` に写す。
 

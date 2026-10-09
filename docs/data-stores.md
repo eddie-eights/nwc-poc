@@ -260,7 +260,6 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 |---|---|---|---|
 | `agent` | [app/agentcore/](../app/agentcore/)（自前ビルド） | AgentCore Runtime | チャットの本体。Bedrock のモデルを呼び、Neptune のトポロジ、OpenSearch / Prometheus の証拠を集めて答え、承認待ちの修復案を作る |
 | `lab-srlinux` | `ghcr.io/nokia/srlinux`（ミラー。約 1 GB） | lab の EC2（containerlab） | スイッチ（Nokia SR Linux、`ixr-d2l`）。監視される「機器」そのもの（表の下） |
-| `lab-multitool` | `ghcr.io/srl-labs/network-multitool`（ミラー） | lab の EC2（containerlab） | containerlab の `linux` kind の既定のイメージ（ping / traceroute / tcpdump 入り）。いまの lab で使うノードは無い（`dc1-trex-01` は `lab-trex` で上書きする）。疎通を見る箱を足すときにそのまま使える |
 | `lab-trex` | `trexcisco/trex`（Docker Hub のミラー。amd64 だけ） | lab の EC2（containerlab） | トラフィックジェネレータ（Cisco TRex 2.41）の `dc1-trex-01`。後段（Telegraf → MSK → Spark → 格納先、アラート）の負荷試験に使う（表の下） |
 | `temporal` | `temporalio/temporal`（ミラー） | ECS Fargate（WORKFLOW=1） | Temporal のサーバー。`server start-dev` で 1 コンテナで動く。Fargate はプライベート網から Docker Hub を引けないので ECR にミラーする |
 | `worker` | [app/temporal/](../app/temporal/)（自前ビルド） | ECS Fargate（WORKFLOW=1） | Temporal のワーカー。SQS のアラートと Web の決定を拾い、Runtime に修復案を作らせ、S3 Tables の `proposal_events` に記録し、承認後に SSM で lab の機器へ流して検証する（Neptune はトポロジを読むだけ）。同じタスクの `temporal` に `localhost:7233` でつなぐ |
@@ -284,7 +283,7 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
   - トポロジを上げても TRex 本体は起きず、`sudo lab trex start` で起こす。
   - 使い方は [app/containerlab/trex/README.md](../app/containerlab/trex/README.md)。
 
-分けて見ると、監視される側が `lab-srlinux`、負荷をかける側が `lab-trex`（`lab-multitool` は containerlab の既定のイメージ）。
+分けて見ると、監視される側が `lab-srlinux`、負荷をかける側が `lab-trex`。
 集める側が `telegraf` / `gnmic` / `syslog-ng` / `goflow2`、考える側が `agent`、実行する側が `temporal` / `worker`、見る側と見つける側が `grafana` / `splunk`。
 
 ### 8. アーキテクチャは全体で揃えない（同じホストの中だけ揃える）
@@ -303,7 +302,7 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
   - EMR Serverless と Lambda も arm64。
     Web の EC2 は `t4g`（Graviton）だけを受け付ける（Kafbat UI もこの EC2 で動く）。
 - **同じホストの中は揃える。**
-  - lab の EC2 では SR Linux / multitool / TRex が全部 amd64。
+  - lab の EC2 では SR Linux / TRex が両方 amd64。
     `ops/lab-common.sh` の `mirror_lab_images` が `linux/amd64` で写す。
   - デバッグ用の EC2（`ops/lab-debug.sh`）で同じホストに載る Telegraf も amd64 でビルドする（`build_telegraf` の第 2 引数）。
     stream の ECS の Telegraf は arm64 のままで、リポジトリが別。
@@ -314,7 +313,7 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 - ミラーの push で「only the available single-platform image was pushed」と出るのは、指定した 1 つのアーキテクチャだけ push したという意味で問題ない。
 - **前の arm64 のタグは残っていてよい。**
   - いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）。
-  - そのため `KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）が残っていても名前がぶつからない。
+  - そのため `KEEP_ECR=1` で前のタグ（`lab-srlinux:26.7.2`）が残っていても名前がぶつからない。
     `ops/up.sh` は amd64 を写し直す。
   - 前のタグは使われずに残るだけで、消さなくてよい（保管料は残したぶんだけかかる）。
 
@@ -323,7 +322,7 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 - ECR のリポジトリは `IMMUTABLE`（[IaC/terraform/aws-managed/base/ecr/main.tf](../IaC/terraform/aws-managed/base/ecr/main.tf)）。同じタグへの上書きはできないので、コードを変えたらタグを進める。
 - 自前ビルドの `agent` / `worker` は `IMAGE_TAG`（既定 `v1`）。
   ミラーは上流の版そのまま（`ops/up-common.sh` の `TEMPORAL_TAG` / `REDIS_TAG` / `GOFLOW2_TAG`、`ops/up.sh` の `KAFKA_UI_TAG`）。
-- lab の 3 つだけは上流の版に `-amd64` を付ける（`ops/lab-common.sh` の `SRLINUX_ECR_TAG` / `MULTITOOL_ECR_TAG` / `TREX_ECR_TAG`）。
+- lab の 2 つだけは上流の版に `-amd64` を付ける（`ops/lab-common.sh` の `SRLINUX_ECR_TAG` / `TREX_ECR_TAG`）。
   前の arm64 の写しと名前を分けるため。
 - `telegraf` / `gnmic` / `syslog-ng` / `grafana` / `splunk` / `nautobot` は `<版>-<ディレクトリの中身の sha256 の先頭 12 文字>`（`ops/lab-common.sh` の `dir_tag`）。
   中身を変えれば自動でタグが変わるので、`IMAGE_TAG` を上げなくてよい。

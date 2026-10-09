@@ -24,7 +24,7 @@
 | `wan-upstream-01` / `dc1-host-01`（multitool） | `dc1-trex-01`（役割 `trex`）1 台 | 203.0.113.101 | 無し |
 
 - 名前は `<site>-<role>-<NN>` のまま。役割にハイフンが入るので、`app/containerlab/lab_topology.py` の `split_name` を「先頭 1 語が site、末尾 1 語が連番、あいだ全部が role」に変える（`parts[0], "-".join(parts[1:-1])`）。`wan-upstream-01` のような site 無しの名前は無くなる
-- `ROLE_ORDER` は上から `spine` → `a-leaf` → `s-leaf` → `trex` → `unknown`（topology.json の `_comment`、`app/agentcore/topology.py`、`app/nautobot/netops/nb_map.py`、dashboard の並び順が同じ表を持つ。全部同じ順に直す）
+- `ROLE_ORDER` は上から `spine` → `a-leaf` → `s-leaf` → `trex` → `unknown`（topology.json の `_comment`、`app/agentcore/topology.py`、`app/nautobot/nwc/nb_map.py`、dashboard の並び順が同じ表を持つ。全部同じ順に直す）
 - `VM_ROLES = {"trex"}`（SNMP / gNMI の対象外。`devices.yaml` は `enabled: false`、`device_map` には載せる = trap-test の送り元の名前引きに使う）
 - a / s の意味はユーザーに確かめていない（未確定事項 1）。写像は「WAN 側の leafsw → s-leaf」「DC 側の leaf → a-leaf」とし、IP とループバックの割当はいまの値を引き継ぐ（設定の差分を名前だけにして、IS-IS の NET と BGP の RR 構成を変えない）
 
@@ -62,7 +62,7 @@
 
 - `app/containerlab/lab.sh`: `UP_VM` / `ACC_VM` → `TREX=dc1-trex-01`。`BGP_NODE=dc1-a-leaf-01`。`fail-main` / `heal-main` は `dc1-a-leaf-01 ethernet-1/1`。`failover` の経路は `dc1-a-leaf-01 → dc1-s-leaf-01（10.255.1.1）`（spine の next-hop の IP は変わらない）。`vm_ping` と `check` の bond0 の節は消し、代わりに「各 leaf の `ethernet-1/3` の oper-state と、`dc1-trex-01` の `eth1`〜`eth4` が up」を出す。`trap-test` は `$TREX` の netns で `snmptrap`（送り元 203.0.113.101）。`up` の `modprobe bonding` を消す。ヘッダ :9 の「SR Linux 6 = leafsw 2 + spine 2 + leaf 2, VM 2」。新サブコマンド `trex start|stop|status`
 - `app/containerlab/setup.sh`: bonding モジュール、rpm 名
-- `app/temporal/rules.py` :43 / :77 / :170、`app/agentcore/evidence.py` :114 / :186 / :193 / :203、`proposals.py` :174、`topology.py` :486-529、`tools/tools.json` :30-218、`app/spark/snmp_sinks.py` :306、`app/splunk/netops_alerts/bin/netops_sns.py` :61、`app/dashboard/app.py` :35 / :58-59（`lag（VM - Leaf の LACP）` の選択肢を消す）、`app/dashboard/topology_view.py` :22 / :80 / :123 / :132、`app/nautobot/netops/nb_map.py` :6 / :30-35、`docs/nautobot.md` :138
+- `app/temporal/rules.py` :43 / :77 / :170、`app/agentcore/evidence.py` :114 / :186 / :193 / :203、`proposals.py` :174、`topology.py` :486-529、`tools/tools.json` :30-218、`app/spark/snmp_sinks.py` :306、`app/splunk/netops_alerts/bin/netops_sns.py` :61、`app/dashboard/app.py` :35 / :58-59（`lag（VM - Leaf の LACP）` の選択肢を消す）、`app/dashboard/topology_view.py` :22 / :80 / :123 / :132、`app/nautobot/nwc/nb_map.py` :6 / :30-35、`docs/nautobot.md` :138
 - `ops/up.sh` :883 `LAB_NODES` のコメント「8。SR Linux 6 + VM 2」→ 7（SR Linux 6 + TRex 1。`grep -cE '^ *kind: (nokia_srlinux|linux)$'` の値も 7 になる）、`oss/ops/up.sh` :298 / :340-345、`IaC/cloudformation/lab-debug.yaml` :2 / :58 の説明、lab の `locals.tf` ヘッダ、`variables.tf` :33
 - `docker/compose/lab.sh`（`TREX_IMAGE` を渡す）、`docker/compose/README.md` :14 / :28 / :30、`.env.example`
 - docs: `docs/architecture/resources/lab-ec2.md`、`telegraf.md`、`collection.md`、`pipeline.md` :10 / :12 / :29-33 / :88 / :396-417、`deploy.md` :25、`setup.md` :22 / :31 / :34 / :74-78、`troubleshooting.md` :27、`README.md` :4 / :50 / :56、`data-stores.md` :148-154 / :161-167 / :264、`docs/architecture/resources/ecr.md` :35 / :64-71 / :80、`alert-comparison.md`

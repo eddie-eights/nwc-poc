@@ -36,12 +36,14 @@ fi
 
 # lab の SR Linux（splab.clab.yml.in の kind nokia_srlinux）の名前と管理 IP。レコードの tags.source に IP を使う（機器名は Spark が device map で足す）
 nodes() { awk '/^    [a-z0-9-]+:$/ { n = $1; sub(":", "", n) } /kind: nokia_srlinux/ { k = n } /mgmt-ipv4:/ && n == k { print n, $2 }' ../splab.clab.yml.in; }
+# その機器の iBGP（EVPN）の peer: ../srlinux/<機器>.cli の最初の overlay の neighbor（leaf は spine のループバック、spine は leaf のループバック）
+peer() { sed -n 's#^set / network-instance default protocols bgp neighbor \([0-9.]*\) peer-group overlay.*#\1#p' "../srlinux/$1.cli" | head -1; }
 
 # 1 行 1 レコード（kafka-producer-perf-test の --payload-file は改行で区切り、毎回どれか 1 行を選ぶ）。timestamp は作った時刻で固定
 payload() {
-  local now ip i
+  local now node ip i p
   now=$(date +%s)000000000
-  while read -r _ ip; do
+  while read -r node ip; do
     if [ "$TOPIC" = metrics ]; then
       # gnmic の interface_stats（app/gnmic/gnmic.yaml.in。sample 60 秒。機器ごとに ethernet-1/1〜1/3）
       for i in 1 2 3; do
@@ -49,9 +51,12 @@ payload() {
           "$now" "$i" "$ip" $((RANDOM * 1000)) $((RANDOM * 1000))
       done
     else
-      # gnmic の bgp_neighbor（on-change。established なので Splunk の nwc_gnmi と Grafana の bgp_down は発火しない）
-      printf '{"name":"bgp_neighbor","timestamp":%s,"tags":{"network-instance_name":"default","neighbor_peer-address":"10.255.0.1","source":"%s","subscription-name":"bgp_neighbor"},"values":{"/network-instance/protocols/bgp/neighbor/session-state":"established"}}\n' \
-        "$now" "$ip"
+      # gnmic の bgp_neighbor（on-change。established なので Splunk の nwc_gnmi と Grafana の bgp_down は発火しない）。
+      # peer はその機器に実在する neighbor（.cli が無い・読めないときも set -e で黙って落ちずに理由を出す）
+      p=$(peer "$node" 2>/dev/null) || p=""
+      [ -n "$p" ] || { echo "$node の BGP の peer が ../srlinux/$node.cli に無い" >&2; exit 1; }
+      printf '{"name":"bgp_neighbor","timestamp":%s,"tags":{"network-instance_name":"default","neighbor_peer-address":"%s","source":"%s","subscription-name":"bgp_neighbor"},"values":{"/network-instance/protocols/bgp/neighbor/session-state":"established"}}\n' \
+        "$now" "$p" "$ip"
     fi
   done < <(nodes)
 }

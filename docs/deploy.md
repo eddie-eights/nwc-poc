@@ -247,7 +247,7 @@
 
 #### 手順 2: イメージ
 
-- agent、worker、Temporal のミラー、Telegraf、gnmic、syslog-ng、Grafana、Nautobot、Redis と Kafbat UI と GoFlow2 のミラーは arm64。lab の srlinux / multitool / trex のミラーは、lab の EC2 が x86_64 なので amd64。
+- agent、worker、Temporal のミラー、Telegraf、gnmic、syslog-ng、Grafana、Nautobot、Redis と Kafbat UI と GoFlow2 のミラーは arm64。lab の srlinux / trex のミラーは、lab の EC2 が x86_64 なので amd64。
 - ECS の Splunk は amd64 の公式イメージ（約 2〜3 GB）に検知のアプリを足してビルドする。
 - Telegraf / gnmic / syslog-ng / Grafana / Splunk / Nautobot のタグは `<版>-<ディレクトリの中身のハッシュ 12 文字>`。
   `app/telegraf/`・`app/gnmic/`・`app/syslog-ng/`・`app/grafana/`・`app/splunk/`・`app/nautobot/`（Nautobot は中に入れる `app/agentcore/graph.py`・`app/agentcore/toolkit.py` と lab の定義も）を変えると、次の `ops/up.sh` が作り直す。
@@ -324,7 +324,7 @@ flowchart LR
 
 - **`KEEP_ECR=1` で残した ECR に前の lab のイメージ（arm64）があっても、消さなくてよい。**
   いまの lab のタグは上流の版に `-amd64` を付けたもの（`lab-srlinux:26.7.2-amd64` など。`ops/lab-common.sh` の `*_ECR_TAG`）。
-  前のタグ（`lab-srlinux:26.7.2` / `lab-multitool:v0.10.0`）とは名前がぶつからないので、`ops/up.sh` は amd64 を写し直し、前のタグは使われずに残るだけ（保管料は残したぶんだけかかる）。
+  前のタグ（`lab-srlinux:26.7.2`）とは名前がぶつからないので、`ops/up.sh` は amd64 を写し直し、前のタグは使われずに残るだけ（保管料は残したぶんだけかかる）。
 - 残した VPC を次の `ops/up.sh` が使い回すことは、2026-10-08 の AWS で確かめた（3 日残った VPC の ID が前後で同じ）。
 - 消し切りたいときだけ、ENI が外れてから（数時間後）、`ops/up.sh` を打ったのと同じチェックアウトで `ops/down.sh` を打ち直す。
 - **消えたかは、サービスごとの API で見る。**`ops/down.sh` の最後の一覧（手順 6）はタグの API（`aws resourcegroupstaggingapi get-resources`）で、消えたリソースも返す。
@@ -362,7 +362,7 @@ tf_use_cli_credentials; tf_init_root base/ecr
 imp() { tf base/ecr import -input=false -var "owner=$OWNER" "$1" "$PREFIX-$2"; }
 imp aws_ecr_repository.agent agent
 imp aws_ecr_lifecycle_policy.agent agent
-for k in srlinux multitool trex; do imp "aws_ecr_repository.lab[\"$k\"]" "lab-$k"; done
+for k in srlinux trex; do imp "aws_ecr_repository.lab[\"$k\"]" "lab-$k"; done
 for k in worker temporal; do imp "aws_ecr_repository.workflow[\"$k\"]" "$k"; done
 for k in telegraf gnmic kafka-ui syslog-ng goflow2 grafana splunk nautobot redis; do imp "aws_ecr_repository.pipeline[\"$k\"]" "$k"; done
 if [ "$PROJECT" = nwc-oss ]; then for k in kafka opensearch vminsert vmselect vmstorage spark neo4j; do imp "aws_ecr_repository.oss[\"$k\"]" "$k"; done; fi

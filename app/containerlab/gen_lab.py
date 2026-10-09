@@ -240,8 +240,6 @@ def clab_template(switches: list, trex: tuple, links: list, leaves: int, spines:
         "    nokia_srlinux:",
         "      image: __SRLINUX_IMAGE__",
         "      type: ixr-d2l",
-        "    linux:",
-        "      image: __MULTITOOL_IMAGE__",
         "",
         "  nodes:",
     ]

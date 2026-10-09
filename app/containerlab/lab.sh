@@ -152,9 +152,9 @@ unforward() {  # forward が入れた規則（目印 ${FW_TAG}）を全部消す
 
 case "${1:-}" in
   render)
-    : "${SRLINUX_IMAGE:?}" "${MULTITOOL_IMAGE:?}" "${TREX_IMAGE:?}"
-    sed -e "s#__SRLINUX_IMAGE__#$SRLINUX_IMAGE#" -e "s#__MULTITOOL_IMAGE__#$MULTITOOL_IMAGE#" -e "s#__TREX_IMAGE__#$TREX_IMAGE#" "$TOPO.in" > "$TOPO"
-    echo "$TOPO を作った（イメージは $SRLINUX_IMAGE と $MULTITOOL_IMAGE と ${TREX_IMAGE}）"
+    : "${SRLINUX_IMAGE:?}" "${TREX_IMAGE:?}"
+    sed -e "s#__SRLINUX_IMAGE__#$SRLINUX_IMAGE#" -e "s#__TREX_IMAGE__#$TREX_IMAGE#" "$TOPO.in" > "$TOPO"
+    echo "$TOPO を作った（イメージは $SRLINUX_IMAGE と ${TREX_IMAGE}）"
     ;;
   pull)
     # ECR の認証は 12 時間で切れるので、毎回ログインしてから取る（署名はインスタンスロール）。
@@ -163,7 +163,7 @@ case "${1:-}" in
       : "${AWS_REGION:?}"
       aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
     fi
-    for i in "$SRLINUX_IMAGE" "$MULTITOOL_IMAGE" "$TREX_IMAGE" ${TELEGRAF_IMAGE:+"$TELEGRAF_IMAGE"}; do docker pull -q "$i"; done
+    for i in "$SRLINUX_IMAGE" "$TREX_IMAGE" ${TELEGRAF_IMAGE:+"$TELEGRAF_IMAGE"}; do docker pull -q "$i"; done
     ;;
   up)
     [ -f "$TOPO" ] || "$SELF" render
@@ -193,7 +193,7 @@ case "${1:-}" in
       && curl -sf -m 2 -H "X-aws-ec2-metadata-token: $t" http://169.254.169.254/latest/meta-data/instance-id) || id="<この EC2 の instance id>"
     echo "手元の PC で打つ（AWS CLI v2 + Session Manager plugin。IaC/terraform/aws-managed/pipeline/lab の output graph_port_forward_command と同じ）:"
     echo "  aws ssm start-session --region $AWS_REGION --target $id --document-name AWS-StartPortForwardingSession --parameters portNumber=$GRAPH_PORT,localPortNumber=$GRAPH_PORT"
-    echo "ブラウザで http://localhost:$GRAPH_PORT/ を開く。開けなければ 'sudo systemctl status $NAME_PREFIX-lab-graph'。止めるのは '$LAB_CMD graph-stop'"
+    echo "ブラウザで http://localhost:$GRAPH_PORT/ を開く。開けなければ 'sudo journalctl -u $NAME_PREFIX-lab-graph'。止めるのは '$LAB_CMD graph-stop'"
     ;;
   graph-stop)
     # down（lab の EC2 の systemd の ExecStop）からも呼ぶ。手元の compose（docker/compose/lab.sh）には NAME_PREFIX が無いので何もしない。
@@ -254,7 +254,7 @@ case "${1:-}" in
     # 26.7.2 の sr_cli には "show … route-table ipv4-unicast prefix …" が無い（Unknown token 'ipv4-unicast'。2026-09-27 実測）ので、state の経路 → next-hop-group → next-hop の ip-address をたどる
     route() {
       local nhg i
-      nhg=$(srl dc1-a-leaf-01 "info from state network-instance default route-table ipv4-unicast route 10.255.1.1/32 id * route-type isis route-owner * origin-network-instance * next-hop-group" 2>/dev/null | grep -oE 'next-hop-group [0-9]+' | head -1 | awk '{print $2}')
+      nhg=$(srl dc1-a-leaf-01 "info from state network-instance default route-table ipv4-unicast route 10.255.1.1/32 id * route-type isis route-owner * origin-network-instance * next-hop-group" 2>/dev/null | grep -oE 'next-hop-group [0-9]+' | head -1 | awk '{print $2}' || true)
       [ -n "$nhg" ] || { echo "  (IS-IS の経路が無い)"; return 0; }
       for i in $(srl dc1-a-leaf-01 "info from state network-instance default route-table next-hop-group $nhg next-hop * next-hop" 2>/dev/null | grep -E '^ *next-hop [0-9]+ *$' | awk '{print $2}' | sort -u); do
         srl dc1-a-leaf-01 "info from state network-instance default route-table next-hop $i" 2>/dev/null | grep -oE 'ip-address [0-9.]+|subinterface [^ ]+' | tr '\n' ' ' || true
