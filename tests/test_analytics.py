@@ -423,6 +423,15 @@ check("Firehose のロールの許可は S3 Tables（テーブルバケットと
       and '"${local.table_bucket_arn}/table/*"' in _fhpol and '"${local.glue_catalog}/s3tablescatalog/*"' in _fhpol
       and 'Resource = "${local.bucket_arn}/firehose-errors/*"' in _fhpol
       and "s3:*" not in _fhpol and "s3tables:*" not in _fhpol and "glue:*" not in _fhpol and '"*"' not in _fhpol)
+_fhwait = re.search(r'resource "time_sleep" "alert_firehose_iam" \{(.*?)\n\}\n', _hist, re.S)
+_fhwait_s = re.search(r'create_duration\s*=\s*"(\d+)s"', _fhwait.group(1)) if _fhwait else None
+_an_dir = os.path.join(ROOT, "IaC", "terraform", "aws-managed", "pipeline", "analytics")
+check("Firehose はロールとポリシーの反映を time_sleep.alert_firehose_iam（30 秒以上）で待ってから作り、analytics の versions と lock に hashicorp/time がある（cycle 026）",
+      _fhwait is not None and _fhwait_s is not None and int(_fhwait_s.group(1)) >= 30 and "count" not in _fhwait.group(1)
+      and re.search(r'depends_on\s*=\s*\[aws_iam_role\.alert_firehose, aws_iam_role_policy\.alert_firehose\]', _fhwait.group(1)) is not None
+      and re.search(r'depends_on\s*=\s*\[[^\]]*\btime_sleep\.alert_firehose_iam\b[^\]]*\]', _fh.group(1)) is not None
+      and re.search(r'source\s*=\s*"hashicorp/time"', open(os.path.join(_an_dir, "versions.tf"), encoding="utf-8").read()) is not None
+      and 'provider "registry.terraform.io/hashicorp/time" {' in open(os.path.join(_an_dir, ".terraform.lock.hcl"), encoding="utf-8").read())
 _wg = re.search(r'resource "aws_athena_workgroup" "history" \{(.*?)\n\}\n', _hist, re.S)
 check("Athena のワークグループ <接頭辞>-history: 結果は管理ストレージ、ワークグループの設定を強制し、スキャン量で打ち切り、force_destroy",
       _wg is not None and 'history_workgroup = "${local.name_prefix}-history"' in _hist

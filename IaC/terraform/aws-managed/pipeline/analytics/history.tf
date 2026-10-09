@@ -115,6 +115,15 @@ resource "aws_cloudwatch_log_stream" "alert_firehose" {
   log_group_name = aws_cloudwatch_log_group.alert_firehose.name
 }
 
+# ロールとポリシーを作った直後は、Firehose が assume できずに作成が止まることがある（IAM の反映遅れ。
+# 2026-10-09 の AWS で InvalidArgumentException: The security token included in the request is invalid … を実測し、打ち直しで通った）。
+# 30 秒は推定。足りなければ延ばす
+resource "time_sleep" "alert_firehose_iam" {
+  create_duration = "30s"
+
+  depends_on = [aws_iam_role.alert_firehose, aws_iam_role_policy.alert_firehose]
+}
+
 resource "aws_kinesis_firehose_delivery_stream" "alert_events" {
   name        = "${local.name_prefix}-alert-events"
   destination = "iceberg"
@@ -144,8 +153,8 @@ resource "aws_kinesis_firehose_delivery_stream" "alert_events" {
     }
   }
 
-  # ロールの権限が付く前に作ると、Firehose がテーブルを確かめられずに作成が失敗する
-  depends_on = [aws_iam_role_policy.alert_firehose]
+  # ロールの権限が付く前に作ると、Firehose がテーブルを確かめられずに作成が失敗する。ロールの反映も待つ（time_sleep はポリシーのあとに数える）
+  depends_on = [time_sleep.alert_firehose_iam]
 }
 
 # query_history（app/agentcore/evidence.py）と、修復案の読み取り（app/agentcore/proposals.py の list_proposals / get_proposal。Web の承認タブと tools の Lambda。2026-10-05）が投げる。
