@@ -142,7 +142,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | index の保存 | タスクのエフェメラルストレージ。タスクと一緒に消える（残すなら EFS が要る）。クラスターでも、indexer を全部同時に落とす（`ops/down.sh`、analytics の作り直し）と全部消える |
 | cluster manager と search head | 1 つずつで、サブネット a にしかいない。この AZ が落ちている間は検索もアラートも止まる（データは残りの indexer にある） |
 | search head が入れ替わっている間 | Splunk のアラートは出ない。`nwc-peer-check` が効くまでの約 5 分も、古い GUID の indexer に入ったイベントのアラートは落ちる。あとから出し直す仕組みは無い |
-| AWS の上での通し | 2026-10-05 に AWS で確かめた: `sudo lab fail-main` で Splunk が `link_down` と `isis_down` を出し、`sns` のエンドポイント越しに SNS へ届いた（`SPLUNK_AZ_NUM=2` の構成）。未確認: `bgp_down` と `trap` の firing、trap の送り元の IP が `DEVICE_MAP` に当たるか、SR Linux の linkDown の trap に IF 名が載るか、Splunk の画面 |
+| AWS の上での通し | 2026-10-05 に AWS で確かめた: `sudo lab fail-main` で Splunk が `link_down` と `isis_down` を出し、`sns` のエンドポイント越しに SNS へ届いた（`SPLUNK_AZ_NUM=2` の構成）。2026-10-08 に AWS で、`bgp_down` の firing と resolved、`trap` の firing、trap の送り元の IP が `DEVICE_MAP` で機器名（`dc1-host-01`）に直ることを確かめた（011 の前の lab。[verification/20261008-managed-aws.md](../../verification/20261008-managed-aws.md)）。未確認: いまの lab（011）の送り元、SR Linux の linkDown の trap に IF 名が載るか、Splunk の画面 |
 | `SPLUNK_AZ_NUM` | 2026-10-05 に AWS で確かめたのは `2`（4 タスク、indexer は 2 つの AZ）。`3` は未確認。`1` のままの 1 台の構成も、004 を入れたあとの AWS では未確認 |
 | 試用ライセンス | タスクごとに別々の試用ライセンスを持つ。2026-10-05 の `SPLUNK_AZ_NUM=2` ではクラスターとアラートが動いた。日数がたったあとの挙動は未確認 |
 | 既知の不具合（2026-10-05） | trap のサブインターフェース（`ethernet-1/1.0`）の `link_down` と、起動の直後の `resolved` のまとめ送りは直した（手元で確認、AWS では未確認）。回線の両端が別の異常になる件は [troubleshooting.md](../../troubleshooting.md) の「既知の不具合」 |

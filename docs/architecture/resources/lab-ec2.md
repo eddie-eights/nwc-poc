@@ -79,7 +79,7 @@ lab の中身:
   2026-09-27 に EC2 で確認。
   出典: [pipeline.md](../../pipeline.md) の「lab に入る」。
 - **SR Linux の SNMP の `ifOperStatus` は、実際の状態より 15〜20 秒遅れる。**
-  2026-09-27 の実測。
+  2026-09-27 の実測。2026-10-09（「gNMI を gnmic に移し、SNMP のポーリングと telegraf-dialin を外す（013）」）から SNMP のポーリングはやめ、IF の状態は gnmic が gNMI の on-change で取る。
   出典: [pipeline.md](../../pipeline.md) の「lab に入る」。
 - **SR Linux は、未使用の物理ポートも IF として全部出す。**
   gNMI の `admin-state` が disable の IF（2026-10-09 までの SNMP のポーリングでは `ifAdminStatus` が down の行）。IF の鍵は `ifName`。Grafana と Splunk の `link_down` は admin-state が disable の IF、サブインタフェース、ループバック、管理ポートを見ない。

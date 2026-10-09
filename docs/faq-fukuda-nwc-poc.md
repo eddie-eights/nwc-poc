@@ -69,13 +69,13 @@ nwc-poc の技術と構成について、ほかの開発者に説明するとき
 
 ### Q. SR Linux の subsystem は、syslog のファシリティと同じもの？
 
-**A. 別物。教材の表のファシリティも lab の subsystem も 8 つだが、数が同じなのはたまたま。**
+**A. 別物。教材の表のファシリティは 8 つ、lab の subsystem は 7 つ。2026-10-08 の「lab を IS-IS で組み直し、各 leaf に TRex をつなぎ、lab の EC2 を x86 にする（011）」で `lag` を外すまではどちらも 8 つだったが、数が同じなのはたまたまだった。**
 
-| | 教材の表の 8 つ（ファシリティ） | lab の 8 つ（subsystem） |
+| | 教材の表の 8 つ（ファシリティ） | lab の 7 つ（subsystem） |
 |---|---|---|
-| 中身 | authpriv、cron、kern、lpr、mail、news、syslog、local0〜7 | bgp、chassis、evpn、isis、lag、linux、netinst、xdp |
+| 中身 | authpriv、cron、kern、lpr、mail、news、syslog、local0〜7 | bgp、chassis、evpn、isis、linux、netinst、xdp（`app/containerlab/gen_lab.py` の logging の行） |
 | 誰が決めたか | syslog の標準（共通） | SR Linux 独自 |
-| 細かさ | 粗い | 機能ごとに細かい（全部で数十種類。lab はそのうち 8 つ） |
+| 細かさ | 粗い | 機能ごとに細かい（全部で数十種類。lab はそのうち 7 つ） |
 
 SR Linux は送る前に subsystem で「BGP と IS-IS だけ」のように選べる。外へ送るときは標準のファシリティも付く。
 
@@ -168,7 +168,7 @@ PRI = ファシリティの番号 × 8 + 重要度
 
 - 変わるのは SR Linux の機能のログだけ。
 - 送り先ごとには変えられない。remote-server の `facility` は付け替えではなく「このファシリティだけ送る」という絞り込み。
-- `subsystem linux` は Linux 側のログ（authpriv など）ではなく、SR Linux のアプリ `linux_mgr` のログ（前にそう答えたのは誤り）。lab が送る 8 つの subsystem は全部 SR Linux 自身のログなので、全部 local7 になる。
+- `subsystem linux` は Linux 側のログ（authpriv など）ではなく、SR Linux のアプリ `linux_mgr` のログ（前にそう答えたのは誤り）。lab が送る 7 つの subsystem は全部 SR Linux 自身のログなので、全部 local7 になる。
 
 ### Q. lab の SR Linux は、どのファシリティで syslog を送っている？
 
@@ -728,7 +728,7 @@ Spark の読み方は、Kafka のふつうのコンシューマーグループ�
 - **並列に送るには、送る処理を executor の側に移す。**
   `collect()` をやめ、`foreachPartition` でパーティションごとに executor が自分で HTTP を送る。そうすると executor の数だけ同時に送る。この切り替えは入っている（`HTTP_SEND=executor`。次の Q）。
 - **既定を driver のままにしている理由。**
-  PoC の量（機器 10 台ほど、60 秒ごと）なら driver 1 本で間に合っている。driver で送るほうが、失敗したときの再送とログが 1 か所で済んで単純。量が増えて 1 回のバッチが 60 秒で終わらなくなったら切り替える。
+  PoC の量（lab の機器 7 台、60 秒ごと）なら driver 1 本で間に合っている。driver で送るほうが、失敗したときの再送とログが 1 か所で済んで単純。量が増えて 1 回のバッチが 60 秒で終わらなくなったら切り替える。
 
 ### Q. `foreachPartition` は、大量のデータを Spark のジョブ 1 つでは捌けなくなったときに使う？ 環境変数で切り替えられる？
 
@@ -962,7 +962,7 @@ flowchart LR
 
 | 点 | 中身 |
 |---|---|
-| 書き込みの集中 | アラートが一度に大量に来て status の更新が重なる使い方は、本来 Database の領分。PoC の量なら問題にならない見込み |
+| 書き込みの集中 | アラートが一度に大量に来て status の更新が重なる使い方は、本来 Database の領分。2026-10-08 の AWS では、同じ秒に届いた 2 件の resolved の書き込みが `ConflictException` で弾かれ、Lambda のやり直しで 54 秒後に反映された（`docs/verification/20261008-managed-aws.md`）。いまは Lambda が関数の中で待って書き直す（「AWS 検証で見つけた不具合 3 件を直す（008）」。`app/graph/status_handler.py` の `ConflictException` の扱い） |
 | 料金 | Analytics はメモリ量 × 時間の課金で、最小構成でも動かしているあいだは掛かる。単価と、止めておけるかは確かめていない |
 | 未確認 | `NEPTUNE_AZ_NUM` が 2 以上のとき、`neptune-graph` のリクエストに `aws:SourceVpc` が付くか、メモリの使用量（16 m-NCU で lab の 8 台は通った）。閉域のエンドポイント越しに届くことは 2026-10-05 に確かめた |
 
@@ -1294,7 +1294,7 @@ OpenSearch Serverless の型をあとから替えられないこと、SEARCH 型
 |---|---|---|---|
 | Kafka のトピック、パーティション、offset | Spark | 送信のやり直し | Telegraf が Kafka へ送り直した分は、offset が別なので拾えない |
 | 中身から作る（機器、測定名、タグ、時刻、値のハッシュ） | Spark（Telegraf でも同じ値になる） | 送信のやり直し + Telegraf の送り直し | 中身が完全に同じ別の出来事を、1 つと見なす。同じ秒に同じ文面の syslog が 2 行出た場合など |
-| 通し番号（Telegraf の名前 + 起動時刻 + 連番） | Telegraf（Starlark の processor を書く） | 上と同じ。中身が同じ別の出来事も区別できる | Telegraf に手書きのコードが増える。Telegraf の設定は機器の種類ごとにあるので、全部に入れる |
+| 通し番号（Telegraf の名前 + 起動時刻 + 連番） | Telegraf（Starlark の processor を書く） | 上と同じ。中身が同じ別の出来事も区別できる | Telegraf に手書きのコードが増える。いま Telegraf が受けるのは trap だけで（「gNMI を gnmic に移し、SNMP のポーリングと telegraf-dialin を外す（013）」）、gNMI は gnmic、syslog は syslog-ng、NetFlow / sFlow は GoFlow2 が送るので、通し番号は収集器ごとに別のやり方で入れることになる |
 
 格納先ごとの扱い。
 
@@ -1345,8 +1345,8 @@ Kafka が持っている番号。
   Kafka の番号は Kafka の入口までしか守らない。格納先まで通して重複を見つけるには、メッセージの中身に入っている番号が要る。
 - **有効にするなら、3 つを合わせて変える。**
   `idempotent_writes = true`、`required_acks = -1`（全部の複製が受け取るまで待つ）、MSK の IAM の権限（冪等な書き込みの許可）。そのぶん送信が少し遅くなる。
-- **時刻は秒まで（`json_timestamp_units = "1s"`）。**
-  中身から番号を作る場合、同じ秒の中の 2 つの出来事は時刻で区別できない。メトリクスは決まった間隔で届くので困らない（gNMI の sample は 60 秒。2026-10-09 までの SNMP のポーリングは 10 秒）。変化のたびに届くもの（gNMI の on_change、trap、syslog）は、同じ秒に同じ中身が 2 回あると 1 つに見える。
+- **Telegraf の時刻は秒まで（`json_timestamp_units = "1s"`）。**
+  中身から番号を作る場合、同じ秒の中の 2 つの出来事は時刻で区別できない。いま Telegraf が送るのは trap だけ。ほかの収集器は Kafka のメッセージに細かい時刻を入れる（gnmic はナノ秒の `timestamp`、syslog-ng は機器が付けた時刻をマイクロ秒まで `fields.timestamp` に、GoFlow2 は `time_received_ns`）。Spark の `event_id` はメッセージのバイト列の SHA-256（`app/spark/snmp_sinks.py` の `read_rows`）なので、これらは同じ秒の 2 つの出来事でも別の番号になる。残るのは trap で、同じ秒に同じ中身の trap が 2 回あると 1 つに見える。
 
 idempotent producer の動き、Telegraf の `idempotent_writes` の設定名、MSK の権限は、記憶から書いた。
 
@@ -1376,7 +1376,7 @@ Splunk の中で重複を扱う方法。
 - **保存済みサーチにも、番号での `dedup` を足せる。**
   ただし効くのは同じ回の中だけで、そこはもう `stats latest` で 1 行になっている。回をまたぐ重複は、下流の `event_id` が受け止める。
 - **残る弱点は 1 つ。**
-  同じ秒に同じ中身の別の出来事が 2 回あった場合は、区別できない（時刻が秒までのため）。
+  同じ秒に同じ中身の trap が 2 回あった場合は、区別できない（Telegraf の時刻が秒までのため。ほかの収集器のメッセージは細かい時刻を持つ。上の Q の「Telegraf の時刻は秒まで」）。
 
 保存済みサーチは「Splunk と Grafana のアラートを比べる（002）」、履歴は「アラートの履歴を残す（001）」で作った形で、どちらも main に入っている（聞いた時点では入る前だった）。経路ごとの一覧は `docs/data-stores.md` の「届け方の保証」。
 
@@ -2015,15 +2015,15 @@ Community Edition にクラスターが無いことは、2026-10-04 に Neo4j �
 - 固定の voter で 3 台が組めた。
 - 1 台止めても、書いた 1000 件を全部読めて、書けた。
 
-**AWS で確かめたこと（2026-10-07）**
+**AWS で確かめたこと（2026-10-07 と 10-08）**
 
 - Fargate と EFS の上で 3 台が組めて、5 つのトピックに流れた。
 - 1 台止めても残りの 2 台で受け続け（under-replicated 2）、戻ると 3 分以内に 0 に戻った。1 時間ほど流して、遅さやロックの不具合は出なかった。
+- （2026-10-08）combined の 3 台を 1 台ずつ入れ替えても、台ごとに controller と複製がそろって健全に戻り、最後は 5 トピックとも under-replicated 0 だった（`docs/verification/20261008-oss-aws.md` の「1 台ずつ入れ替える」）。terraform だけで apply すると、タスク定義が変わった台を同時に入れ替える（データは EFS に残る）。`ops/oss/up.sh` は apply の前に `ops/oss/roll-nodes.sh` で 1 台ずつ入れ替え、間で controller と複製がそろうのを ECS Exec で待つ。ECS Exec は端末が要るので、端末の無いシェルからは `script` で疑似端末を付けて打つ（`script` も打てなければ止まる）。`OSS_ROLL=0` で一度に入れ替える。
 
 **まだ確かめていないこと**
 
 - Kafka のデータを EFS（NFS）に置いてよいかは、公式ドキュメントに記述が見つからない。
-- combined の 3 台を ECS の Fargate で 1 台ずつ入れ替えたときに、過半数が保たれるかは AWS で未確認。terraform だけで apply すると、タスク定義が変わった台を同時に入れ替える（データは EFS に残る）。`ops/oss/up.sh` は apply の前に `ops/oss/roll-nodes.sh` で 1 台ずつ入れ替え、間で controller と複製がそろうのを ECS Exec で待つ（2026-10-08 に足し、同日に AWS で 3 台を 1 台ずつ入れ替えて通った。ECS Exec は端末が要るので、端末の無いシェルからは `script` で疑似端末を付けて打つ（`script` も打てなければ止まる）。`OSS_ROLL=0` で一度に入れ替える）。
 
 **出典**
 

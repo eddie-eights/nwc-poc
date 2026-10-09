@@ -90,8 +90,8 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 
 | 項目 | 状態 |
 |---|---|
-| 4 本になったあとの形（Splunk と Grafana のアラートを比べる（002）） | 2026-10-05 に AWS で `link_down` と `isis_down` の発火を確かめた（`sudo lab fail-main`）。`bgp_down` と `trap` の発火、Grafana の画面は未確認 |
-| OpenSearch Serverless を SigV4 でルールの評価に使えるか | 未確認（ダッシュボードで読めることは 2026-09-28 に確認済み） |
+| 4 本になったあとの形（Splunk と Grafana のアラートを比べる（002）） | 2026-10-05 に AWS で `link_down` と `isis_down` の発火を確かめた（`sudo lab fail-main`）。2026-10-08 に AWS で `bgp_down` の発火を確かめた（`sudo lab fail-bgp`。011 の前の lab。[verification/20261008-managed-aws.md](../../verification/20261008-managed-aws.md)）。`trap` はルールの評価が毎回エラーで出なかった。「AWS 検証で見つけた不具合 3 件を直す（008）」でルールを絞り、手元の Grafana で通したが、AWS では未確認。Grafana の画面は未確認 |
+| OpenSearch Serverless を SigV4 でルールの評価に使えるか | 未確認。2026-10-08 に AWS で試したが、`trap` のルールの評価が毎回エラーになった（`bucket budget out of bounds`。[verification/20261008-managed-aws.md](../../verification/20261008-managed-aws.md) の「不具合」1）。008 でルールを絞り手元の Grafana で通したが、AWS では未確認。ダッシュボードで読めることは 2026-09-28 に確認済み |
 | 機器ごと止まったとき | 検知しない（系列が途切れると解消を送る） |
 | gnmic が止まったとき | 系列は `last_over_time(...[24h])` で最後の値のまま残るので、止まっているあいだの変化は出ない（`link_down` / `bgp_down` / `isis_down`） |
 | 1 タスク・1 AZ | 止まっているあいだはルールが評価されない |
