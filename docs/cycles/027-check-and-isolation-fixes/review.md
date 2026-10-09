@@ -131,3 +131,5 @@ None
 - `uv run --frozen --group dev --group web python tests/test_workflow.py` → `通過 333 / 失敗 0`
 - `uv run --frozen --group dev --group web python tests/test_agentcore.py` → `通過 162 / 失敗 0`
 - `uv run --frozen --group dev --group web python tests/test_local_compose.py` → `通過 142 / 失敗 0`
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261010-cycle-027-check-and-isolation-fixes-review.html -->

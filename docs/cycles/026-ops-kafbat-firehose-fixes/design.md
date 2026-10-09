@@ -156,3 +156,5 @@
 3. **D の 30 秒は推定。** IAM の反映遅れの長さは決まっていない。AWS の確認で通らなければ延ばす。1 回通っても、遅れが短かっただけの可能性は残る。
 4. **D は既に作ってある環境で 1 回 30 秒待つ**（`time_sleep` を新しく作るため）。Firehose は作り直さない（`depends_on` の変更は置き換えにならない）。plan で確かめる。
 5. **D の lock の block を手で写す。** hash が合わないと init が落ちる。aws-managed 側は `-lockfile=readonly` を付けずに init して、lock が書き換わらないこと（`git diff` が写した block だけ）を確かめる。
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261010-cycle-026-ops-kafbat-firehose-fixes-design.html -->

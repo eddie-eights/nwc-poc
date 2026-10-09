@@ -158,3 +158,5 @@ S2 の check: True
 ```
 
 直した後の `tests/test_analytics.py` は `通過 526 / 失敗 0`、`tests/test_alerts.py` は `通過 168 / 失敗 0`、`bash ops/check.sh` は rc=0 で `すべて通過`（出力は build.md の Round 2）。
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261010-cycle-028-docs-tools-faq-slug-review.html -->

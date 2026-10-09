@@ -364,7 +364,7 @@ stream を作ると、Kafbat UI（`ghcr.io/kafbat/kafka-ui:v1.5.0` を ECR に�
   - 接続先は stream の `kafka_ui.tf` が書く SSM の String（`/<prefix>/kafka-ui/image`・`bootstrap-servers`・`security-protocol`）。
 - 止まり方（75 / 69）:
   - パラメータが無い（ParameterNotFound。stream がまだ無い、`SKIP_STREAM=1`）ときは 1 回で止まる（終了コード 75。`RestartPreventExitStatus=75`）。起こし直さないので、コンテナは無い。
-    75 は成功の扱い（`SuccessExitStatus=75`）なので、ユニットは `inactive (dead)` で止まり、`systemctl is-system-running` を `degraded` にしない（AWS では未確認。cycle 026 で足した形）。
+    75 は成功の扱い（`SuccessExitStatus=75`）なので、ユニットは `inactive (dead)` で止まり、`systemctl is-system-running` を `degraded` にしない（cycle 026 で足した形。2026-10-10 の AWS で、stream の前は `inactive (dead)` / `Result=success` / `running`、stream のあとの再起動では `active (running)` を実測。`docs/verification/20261010-aws-managed.md` の「C」）。
   - 026 より前は、2026-10-09 の AWS で、stream の前の起動ではユニットが `failed`（`status=75`）、`NRestarts=0` で止まり、`systemctl is-system-running` は `degraded` だった。
     stream を作ったあとの再起動では `active (running)` で、`running` に戻った（`docs/verification/20261009-aws-managed.md` の「C.」）。
   - それ以外で読めない（AccessDenied、SSM のエンドポイント不達、認証情報がまだ無い など）ときは 69 で終わって 30 秒ごとに起こし直す。

@@ -174,3 +174,5 @@
 3. `docker compose ps -a -q` が止まったコンテナ（Exited）も返すので、Exited のときは bind を読んで curl を打ち、「繋がらない」と出る。今の文言（`ps -a telegraf が Exited なら logs telegraf`）がそのまま当たるので、分けない。
 4. C の新しい定義は、変更前に割れていたかたまりが変更後に同点で割れると、どちらも「孤立」に出す（本流を選ばない）。spine を 2 台とも落とすと孤立が 3 台から 5 台（leaf 4 台と TRex）に増える。運用者には大げさに見えうるが、どの leaf も本流ではないので正しい。
 5. 総当たりの検査は 16384 通りで、試作では 2 つの `impact` を回して数秒だった。テスト全体の時間への影響は小さいはずだが、実装時に測る。
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261010-cycle-027-check-and-isolation-fixes-design.html -->

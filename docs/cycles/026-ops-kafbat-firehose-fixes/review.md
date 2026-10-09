@@ -87,3 +87,5 @@ $ bash ops/check.sh
 ```
 
 AWS に依る項目（C の `inactive (dead)` / `degraded`、D の 30 秒で足りること、既存環境での `plan`）は未確認で、PM の AWS 確認で見る。
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/nwc-poc/20261010-cycle-026-ops-kafbat-firehose-fixes-review.html -->
