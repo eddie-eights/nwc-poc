@@ -554,6 +554,8 @@ check("worker は temporal の HEALTHY の後に起き、localhost:7233 につ�
       '"localhost:7233"' in _c_worker and '{ containerName = "temporal", condition = "HEALTHY" }' in _c_worker and 'condition = "START"' not in _ecs_tf)
 check("サービスは新しいタスクを先に立てる（min 100 / max 200。履歴は RDS にある）",
       "deployment_minimum_healthy_percent = 100" in _ecs_tf and "deployment_maximum_percent         = 200" in _ecs_tf)
+check("どのコンテナにも initProcessEnabled が無い（PID 1 は temporal-server のイメージの tini。ECS の init は孤児しか回収せず、namespace を作る背景のプロセスの親は生きている temporal-server なので回収できない。init の /proc/1/environ には master のパスワードも残る。cycle 039）",
+      "initProcessEnabled" not in _ecs_code and "linuxParameters" not in _ecs_code)
 nautobot_out = read("IaC", "terraform", "aws-managed", "pipeline", "nautobot", "outputs.tf")
 check("nautobot の state（db_address / db_port / db_password_parameter）を try で読み、無ければ precondition で止まる",
       '"${path.module}/../pipeline/nautobot/terraform.tfstate"' in tf
@@ -583,12 +585,16 @@ check("TEMPORAL_UI_TAG は workflow の temporal_ui_image_tag の既定と同じ
       _v(r'^TEMPORAL_UI_TAG=(\S+)', _upc) is not None
       and _v(r'^TEMPORAL_UI_TAG=(\S+)', _upc) == _v(r'variable "temporal_ui_image_tag"[\s\S]*?default\s*=\s*"([^"]+)"', tf)
       and "default" not in tf.split('variable "temporal_image_tag"')[1].split("variable ")[0])
-check("docker/images/temporal-server/ は Dockerfile と entrypoint.sh と dynamic config の 3 つ",
-      sorted(os.listdir(os.path.join(ROOT, "docker", "images", "temporal-server"))) == ["Dockerfile", "dynamicconfig.yaml", "entrypoint.sh"])
+check("docker/images/temporal-server/ は Dockerfile と entrypoint.sh と namespace.sh と dynamic config の 4 つ",
+      sorted(os.listdir(os.path.join(ROOT, "docker", "images", "temporal-server"))) == ["Dockerfile", "dynamicconfig.yaml", "entrypoint.sh", "namespace.sh"])
+_ts_df_code = [ln.strip() for ln in _ts_df.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+check("Dockerfile は tini を apk で入れ（psql と同じ RUN）、namespace.sh を /etc/temporal/namespace-rds.sh に実行できる形で COPY する（cycle 039）",
+      "RUN apk add --no-cache ${POSTGRESQL_CLIENT_PACKAGE} tini" in _ts_df_code
+      and "COPY --chmod=755 namespace.sh /etc/temporal/namespace-rds.sh" in _ts_df_code)
 _ts_ep = read("docker", "images", "temporal-server", "entrypoint.sh")
-check("entrypoint はパスワードをコマンドラインに載せない（psql は \\getenv、temporal-sql-tool は SQL_PASSWORD）で、最後に公式の entrypoint へ exec する",
+check("entrypoint はパスワードをコマンドラインに載せない（psql は \\getenv、temporal-sql-tool は SQL_PASSWORD）で、最後に tini の子として公式の entrypoint へ exec する",
       "\\getenv pw POSTGRES_PWD" in _ts_ep and "-v pw=" not in _ts_ep and "--pw" not in _ts_ep and 'SQL_PASSWORD="$POSTGRES_PWD"' in _ts_ep
-      and _ts_ep.rstrip().splitlines()[-1].strip() == "exec /etc/temporal/entrypoint.sh")
+      and _ts_ep.rstrip().splitlines()[-1].strip() == "exec tini -- /etc/temporal/entrypoint.sh")
 check("entrypoint はロールの SET の権限を見てから GRANT する（PG 16 以降の CREATEROLE の作ったロールは ADMIN だけで、OWNER に指定できない）",
       "pg_has_role(CURRENT_USER, :'role', 'SET')" in _ts_ep and "'MEMBER'" not in _ts_ep)
 check("entrypoint は schema_version が無いときだけ setup-schema、毎回 update-schema（スキーマを消さない）",
@@ -600,6 +606,98 @@ check("entrypoint は schema_version が無いときだけ setup-schema、毎回
       and [ln.strip() for ln in _ts_ep.splitlines() if "setup-schema -v 0.0" in ln and not ln.lstrip().startswith("#")]
       == ['log "$db: 初回なので setup-schema -v 0.0"', 'sql_tool "$db" setup-schema -v 0.0']
       and re.search(r'\n  if \[ "\$has" = "f" \]; then\n    log "\$db: 初回なので setup-schema -v 0\.0"\n    sql_tool "\$db" setup-schema -v 0\.0\n  fi\n', _ts_ep) is not None)
+_ts_ep_code = [ln for ln in _ts_ep.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+# 行末の \ で続く行は 1 行にまとめる（psql の 1 回の呼び出しを 1 行として見る）
+_ts_ep_logical = re.sub(r"\\\n", " ", "\n".join(_ts_ep_code)).splitlines()
+_ts_unset = [i for i, ln in enumerate(_ts_ep_logical) if re.match(r"\s*unset\b", ln) and "NAUTOBOT_DB_PASSWORD" in ln]
+_ts_before = [ln for ln in _ts_ep_logical[:_ts_unset[0]] if "NAUTOBOT_DB_PASSWORD" in ln] if len(_ts_unset) == 1 else []
+check(f"entrypoint は master のパスワード（NAUTOBOT_DB_PASSWORD）を最後に使う btree_gin の psql の直後に 1 回だけ env から外し、その後のコードに出さない（sql_tool・namespace・tini・temporal-server の /proc/<pid>/environ に残さない。unset の行: {_ts_unset}）",
+      len(_ts_unset) == 1 and re.match(r"\s*unset( \w+)* NAUTOBOT_DB_PASSWORD( \w+)*$", _ts_ep_logical[_ts_unset[0]]) is not None
+      and bool(_ts_before) and "CREATE EXTENSION IF NOT EXISTS btree_gin" in _ts_before[-1] and _ts_before[-1].lstrip().startswith('PGPASSWORD="$NAUTOBOT_DB_PASSWORD" psql')
+      and "CREATE EXTENSION IF NOT EXISTS btree_gin" in _ts_ep_logical[_ts_unset[0] - 1]
+      and not any("NAUTOBOT_DB_PASSWORD" in ln for ln in _ts_ep_logical[_ts_unset[0] + 1:]))
+_ts_sql_tool = _ts_ep.split("sql_tool() {")[1].split("\n}")[0] if "sql_tool() {" in _ts_ep else ""
+check("entrypoint の temporal-sql-tool と psql の TLS はサーバー本体と同じ SQL_HOST_VERIFICATION / SQL_CA / SQL_HOST_NAME から導く（ホスト名検証を決め打ちしない）",
+      _ts_sql_tool != "" and "SQL_TLS_DISABLE_HOST_VERIFICATION=true" not in _ts_ep and ': "${SQL_HOST_VERIFICATION:=false}"' in _ts_ep
+      and '"$SQL_HOST_VERIFICATION"' in _ts_ep and "SQL_TLS_DISABLE_HOST_VERIFICATION" in _ts_ep
+      and 'SQL_TLS_CA_FILE="$SQL_CA"' in _ts_ep and 'SQL_TLS_SERVER_NAME="$SQL_HOST_NAME"' in _ts_ep
+      and "PGSSLMODE=verify-full" in _ts_ep and 'PGSSLROOTCERT="$SQL_CA"' in _ts_ep)
+def _ts_ep_tls(**env):
+    """entrypoint の TLS の導出（SQL_ の既定値、PGSSLMODE の分岐、sql_tool）だけを sh で動かし、psql と temporal-sql-tool（差し替え）に渡る env を返す。"""
+    import subprocess, tempfile
+    defaults = "\n".join(ln for ln in _ts_ep.splitlines() if ln.startswith(': "${SQL_'))
+    a = _ts_ep.index("export PGHOST="); a_end = _ts_ep.index("\n", _ts_ep.index("sql_tool_skip_host_verify=true; fi")) + 1
+    b = _ts_ep.index("sql_tool() {"); b_end = _ts_ep.index("\n}\n", b) + 3
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, "temporal-sql-tool"), "w") as f:
+            f.write("#!/bin/sh\nenv | grep -E '^SQL_TLS(=|_DISABLE_HOST_VERIFICATION=|_CA_FILE=|_SERVER_NAME=)' | sort\n"
+                    "echo \"_ARGS=$*\"\necho \"_INNER_SQL_PASSWORD=${SQL_PASSWORD-unset}\"\n")
+        os.chmod(os.path.join(d, "temporal-sql-tool"), 0o755)
+        script = (f"set -eu\n{defaults}\n{_ts_ep[a:a_end]}{_ts_ep[b:b_end]}sql_tool temporal update-schema -d /x\necho PGSSLMODE=$PGSSLMODE\necho PGSSLROOTCERT=${{PGSSLROOTCERT-}}\n"
+                  "echo _OUTER_SQL_PASSWORD=${SQL_PASSWORD-unset}\necho _OUTER_SQL_TLS=${SQL_TLS-unset}\n")
+        base = {"PATH": d + os.pathsep + os.environ.get("PATH", ""), "POSTGRES_SEEDS": "db", "DB_PORT": "5432", "POSTGRES_USER": "temporal", "POSTGRES_PWD": "pw"}
+        out = subprocess.run(["sh", "-c", script], env={**base, **env}, capture_output=True, text=True, timeout=30)
+    kv = dict(ln.split("=", 1) for ln in out.stdout.splitlines() if "=" in ln)
+    return out.returncode, {k: v for k, v in kv.items() if not k.startswith("_")}, {k: v for k, v in kv.items() if k.startswith("_")}
+_rc, _tls, _ex = _ts_ep_tls(SQL_TLS_ENABLED="true", SQL_HOST_VERIFICATION="false")
+# sql_tool は引数をそのまま渡し、パスワードと SQL_TLS* はサブシェルの中だけ（本体のシェルに漏れると exec で temporal-server の env に乗る）
+check(f"entrypoint の sql_tool: 引数をそのまま temporal-sql-tool に渡し、SQL_PASSWORD / SQL_TLS は呼んだ側のシェルに残さない（いま: {_ex}）",
+      _rc == 0 and _ex == {"_ARGS": "--plugin postgres12 --ep db -p 5432 -u temporal --db temporal update-schema -d /x",
+                           "_INNER_SQL_PASSWORD": "pw", "_OUTER_SQL_PASSWORD": "unset", "_OUTER_SQL_TLS": "unset"})
+# fork だけのサブシェル（( … ) &）は /proc/<pid>/environ に親の最初の env（master のパスワード入り）を持ち続ける。別の実行ファイルを exec すれば unset の後の env になる
+check("entrypoint は namespace を /etc/temporal/namespace-rds.sh <address> <namespace> <retention> & で起こし、( … ) & のサブシェルを持たない（cycle 039）",
+      '/etc/temporal/namespace-rds.sh "$TEMPORAL_ADDRESS_LOCAL" "$DEFAULT_NAMESPACE" "$DEFAULT_NAMESPACE_RETENTION" &' in [ln.strip() for ln in _ts_ep_code]
+      and not any(re.search(r"\)\s*&\s*$", ln) for ln in _ts_ep_code))
+# unset の「後」で起こすことも見る（文字列の有無だけでは、行を手順 2 の前へ動かしても気づけない。exec された子は起こした時点の env を /proc/<pid>/environ に持つ）
+_ts_ns_line = [i for i, ln in enumerate(_ts_ep_logical) if ln.strip().startswith("/etc/temporal/namespace-rds.sh ")]
+_ts_sql_loop = [i for i, ln in enumerate(_ts_ep_logical) if ln.strip().startswith("for pair in ")]
+check(f"entrypoint は temporal-sql-tool（for pair）と namespace-rds.sh を unset NAUTOBOT_DB_PASSWORD より後の行で起こす（行: unset {_ts_unset} / for pair {_ts_sql_loop} / namespace {_ts_ns_line}）",
+      len(_ts_unset) == 1 and len(_ts_sql_loop) == 1 and len(_ts_ns_line) == 1 and _ts_unset[0] < _ts_sql_loop[0] < _ts_ns_line[0])
+_ts_ns = read("docker", "images", "temporal-server", "namespace.sh")
+_ts_ns_code = "\n".join(ln for ln in _ts_ns.splitlines() if not ln.lstrip().startswith("#"))
+_ts_ns_exits = re.findall(r"\bexit\b[ \t]*([^\s;]*)", _ts_ns_code)
+check(f"namespace.sh はパスワードを持たず（unset も NAUTOBOT_DB_PASSWORD も POSTGRES_PWD も無い）、describe → create の順で、どこで抜けても exit 0（いま: exit {_ts_ns_exits}）",
+      _ts_ns.startswith("#!/bin/sh\n") and re.search(r"^set -u$", _ts_ns, re.M) is not None
+      and "unset" not in _ts_ns and "NAUTOBOT_DB_PASSWORD" not in _ts_ns and "POSTGRES_PWD" not in _ts_ns
+      and 0 <= _ts_ns_code.find("namespace describe") < _ts_ns_code.find("namespace create")
+      and bool(_ts_ns_exits) and all(c == "0" for c in _ts_ns_exits))
+def _ts_ns_run(describe_ok, create_ok, *args):
+    """namespace.sh を、nc / temporal / sleep を差し替えて動かす。temporal に渡った引数と stderr と rc を返す。"""
+    import subprocess, tempfile
+    with tempfile.TemporaryDirectory() as d:
+        stubs = {"nc": "exit 0", "sleep": "exit 0",
+                 "temporal": f'echo "$*" >> {d}/calls\ncase "$3" in describe) exit {0 if describe_ok else 1};; create) exit {0 if create_ok else 1};; esac\nexit 0'}
+        for n, body in stubs.items():
+            with open(os.path.join(d, n), "w") as f:
+                f.write("#!/bin/sh\n" + body + "\n")
+            os.chmod(os.path.join(d, n), 0o755)
+        out = subprocess.run(["sh", os.path.join(ROOT, "docker", "images", "temporal-server", "namespace.sh"), *args],
+                             env={"PATH": d + os.pathsep + os.environ.get("PATH", "")}, capture_output=True, text=True, timeout=30)
+        calls = open(os.path.join(d, "calls")).read().splitlines() if os.path.exists(os.path.join(d, "calls")) else []
+    return out.returncode, calls, out.stderr
+_ns_rc, _ns_calls, _ns_err = _ts_ns_run(False, True, "10.0.0.1:7233", "ns1", "24h")
+check(f"namespace.sh: 引数（address / namespace / retention）で動き、無ければ create して entrypoint-rds: の接頭辞でログを出す（いま: rc={_ns_rc} {_ns_calls} {_ns_err.strip()!r}）",
+      _ns_rc == 0 and _ns_calls == ["operator cluster health --address 10.0.0.1:7233", "operator namespace describe -n ns1 --address 10.0.0.1:7233",
+                                 "operator namespace create -n ns1 --retention 24h --address 10.0.0.1:7233"]
+      and _ns_err.strip() == "entrypoint-rds: namespace: ns1 を作った（retention 24h）")
+_ns_rc, _ns_calls, _ns_err = _ts_ns_run(True, False, "10.0.0.1:7233", "ns1", "24h")
+check(f"namespace.sh: describe が通れば create しない（いま: rc={_ns_rc} {_ns_calls}）",
+      _ns_rc == 0 and not any("namespace create" in c for c in _ns_calls) and _ns_err.strip() == "entrypoint-rds: namespace: ns1 がある")
+_ns_rc, _ns_calls, _ns_err = _ts_ns_run(False, False, "10.0.0.1:7233", "ns1", "24h")
+check(f"namespace.sh: create が 30 回通らなくても exit 0（temporal-server を道連れにしない。いま: rc={_ns_rc} create {sum('namespace create' in c for c in _ns_calls)} 回）",
+      _ns_rc == 0 and sum("namespace create" in c for c in _ns_calls) == 30 and _ns_err.strip().endswith("entrypoint-rds: namespace: ns1 を作れない（30 回）"))
+check(f"entrypoint の TLS（ecs.tf と同じ SQL_HOST_VERIFICATION=false）: psql は require、temporal-sql-tool はホスト名を検証しない。CA とサーバー名は渡さない（いま: {_tls}）",
+      _rc == 0 and _tls == {"SQL_TLS": "true", "SQL_TLS_DISABLE_HOST_VERIFICATION": "true", "PGSSLMODE": "require", "PGSSLROOTCERT": ""})
+_rc, _tls, _ = _ts_ep_tls(SQL_TLS_ENABLED="true")
+check(f"entrypoint の TLS: SQL_HOST_VERIFICATION が無ければ false と同じ（いま: {_tls}）",
+      _rc == 0 and _tls == {"SQL_TLS": "true", "SQL_TLS_DISABLE_HOST_VERIFICATION": "true", "PGSSLMODE": "require", "PGSSLROOTCERT": ""})
+_rc, _tls, _ = _ts_ep_tls(SQL_TLS_ENABLED="true", SQL_HOST_VERIFICATION="true", SQL_CA="/ca.pem", SQL_HOST_NAME="db.example")
+check(f"entrypoint の TLS: SQL_HOST_VERIFICATION=true なら psql は verify-full で SQL_CA を根に、temporal-sql-tool はホスト名を検証し CA とサーバー名を受ける（いま: {_tls}）",
+      _rc == 0 and _tls == {"SQL_TLS": "true", "SQL_TLS_DISABLE_HOST_VERIFICATION": "false", "SQL_TLS_CA_FILE": "/ca.pem", "SQL_TLS_SERVER_NAME": "db.example",
+                            "PGSSLMODE": "verify-full", "PGSSLROOTCERT": "/ca.pem"})
+_rc, _tls, _ = _ts_ep_tls(SQL_TLS_ENABLED="false")
+check(f"entrypoint の TLS: SQL_TLS_ENABLED=false なら psql は prefer、temporal-sql-tool は TLS 無し（いま: {_tls}）",
+      _rc == 0 and _tls.get("SQL_TLS") == "false" and _tls.get("PGSSLMODE") == "prefer")
 for env in ("NEPTUNE_GRAPH_ID", "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "PROPOSAL_EVENTS_TABLE", "ANOMALY_QUEUE_URL", "DECISION_QUEUE_URL", "AGENT_RUNTIME_ARN", "LAB_INSTANCE_ID", "APPROVAL_TIMEOUT_MINUTES", "VERIFY_TIMEOUT", "HOLD_MINUTES", "PARAM_PREFIX"):
     check(f"worker の環境変数 {env} を渡す", f'name = "{env}"' in tf or f'name  = "{env}"' in tf or re.search(rf'name\s*=\s*"{env}"', tf) is not None)
 # 渡した名前を worker が読んでいなければ、既定値のまま動いて気づけない
