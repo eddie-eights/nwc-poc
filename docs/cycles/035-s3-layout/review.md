@@ -223,4 +223,16 @@ None
 - 見た: design 整合性、correctness（古い名前の grep）、runtime bugs（移行時の権限）、missing tests（差し替えた検査が 3 通りの退行で落ちることは build.md）、docs とコードの整合。
 - 見ていない: AWS での動作（この後の検証で、logs のライフサイクル 7 日、ポリシーが DenyInsecureTransport のみ、assets の `spark/` `web/` `lab/`、logs に `emr/` が無い、Firehose のストリーム、終わったジョブの Spark UI、KB の取り込み）。閉域から managed storage に書けるか。
 
+## Round 4（AWS 検証。2026-10-10）
+
+- 実行モデル: fable 5.1（PM）。cold reviewer は呼んでいない（1 サイクル 2 回を Round 1・2 で使い切り。実装ファイルは Round 3 から不変）。
+- design の「検証方法」の AWS の節を `ops/up.sh`（`PIPELINE=1 AGENT=1 CREATE_KB=1`）で 1 回確かめた。全項目が通った。記録は [verification/20261010-aws-managed-035.md](../../verification/20261010-aws-managed-035.md)。
+  - logs: ライフサイクル `Expiration.Days=7`、ポリシーの Sid は `DenyInsecureTransport` のみ、`emr/` 無し（空）
+  - assets: `kb/ lab/ spark/ web/` の 4 つ。`spark/snmp_sinks.py`、`spark/jars/`、`spark/checkpoint/<uuid>/`
+  - Firehose: `FailedDataOnly` の宛先が logs の `firehose-errors/alert_events/`（リスク 2 は当たらず、1 回で作れた）
+  - EMR: 3 ジョブとも `managedPersistenceMonitoringConfiguration.enabled=true`、`s3MonitoringConfiguration` 無し。cancel したジョブの `GetDashboardForJobRun` が URL を返した（画面は見ていない）
+  - KB: `inclusionPrefixes=["kb/"]`、取り込み `COMPLETE`（3 本、失敗 0）
+  - `ops/down.sh` のあと assets が 404、logs が 200、EMR / MSK / ECS / KB ほか 0 件
+- Round 3 の「見ていない観点」のうち AWS の分は解消。残るのは、7 日後に実際に消えること、Firehose が実際に落とす行、Spark UI の画面、古い `kb` の state を持つ PC の手順。
+
 <!-- artifact: /Users/eight/Documents/repo/artifacts/projects/nwc-poc-architecture.html -->

@@ -62,7 +62,7 @@ OSS 版の logs に入るのは Firehose の書けなかった行だけ（EMR Se
 | 項目 | 状態 |
 |---|---|
 | EMR Serverless のログ | S3 には出さない（cycle 035 の追加で logs の `emr/` を落とした。CloudWatch Logs と EMR の managed storage だけ） |
-| Firehose が書けなかった行を logs に落とせるか | 未確認（同じく assets の `firehose-errors/` から移した。リスクの 2） |
+| Firehose が書けなかった行を logs に落とせるか | 宛先の設定は確認済み（2026-10-10 の [AWS 検証](../../verification/20261010-aws-managed-035.md)で `S3BackupMode=FailedDataOnly`、宛先が logs の `firehose-errors/alert_events/`）。実際に落ちた行はまだ見ていない（落ちる行を作っていない） |
 | 古い kb のバケットの state を持つ PC | `terraform apply` が置き換え（destroy + create）になる。035 の `ops/down.sh` ではその state を消し切れない（analytics の destroy が止まる）。消し方は [deploy.md](../../deploy.md) の「`ops/up.sh` がすること」にある 2 つ（035 より前のコードで down するか、先に base/logs を apply する） |
 
 ## 関連
