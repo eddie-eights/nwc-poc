@@ -198,3 +198,50 @@ None
 - Should fix: 1（missing tests。`build.md` Round 2 の Should 1 と cold review の Should 1 は同一）→ エンジニア Round 3 で直す
 - Nit: 6（直さない）
 - 次: エンジニア Round 3（テストの硬化だけ。実装ファイルは触らない）→ 実装が変わらなければ cold reviewer 2 回目は呼ばず、Round 3 のセルフレビューをそのラウンドのレビューにする → 完了判定
+
+## Round 3
+
+レビューモデル: PM(fable-5-1) / effort: high。2026-10-11。対象は `8ae95e1`（エンジニア Round 3。実装モデル claude-opus-5-5 / high）。
+
+**cold reviewer: 依頼しない（2 回目は呼ばない）。** 理由: `1d22174..8ae95e1` の差分は `build.md` / `review.md` / `tests/test_lab_debug.py` / `tests/test_workflow.py` だけで、実装ファイル（`IaC/` / `app/` / docs）は cold review 1 回目の対象から 1 バイトも変わっていない（テストだけのラウンド）。このラウンドは `build.md` Round 3 の `### セルフレビュー` に依った。
+
+### build.md Round 3 のセルフレビューの確定（PM の分類）
+
+- Should fix 1・2（`override_policy_documents` での上書き、ポリシーの付け先の差し替えをテストが見ない。反対弁護人の Nit をエンジニアが Should に上げて直した）: 直したままでよい。M-F / M-G / M-H が rc=1 の出力は `build.md` Round 3。
+- Nit 4（tools の check はコメント行を許さず lab と揃っていない）、Nit 5（`tf_actions` が `IndexError` で落ちて check の名前が出ない）: 直さない。最終報告に載せる。
+
+### 完了判定の取り直し（PM が `8ae95e1` で実行）
+
+全テスト（`uv run --group dev --group web python tests/<名前>.py` の末尾）:
+
+| テスト | 結果 |
+| :--- | :--- |
+| test_stream | `通過 118 / 失敗 0` |
+| test_workflow | `通過 462 / 失敗 0` |
+| test_lab_debug | `通過 113 / 失敗 0` |
+| test_oss_ops | `通過 209 / 失敗 0` |
+| test_oss | `通過 177 / 失敗 0` |
+| test_nautobot | `68 項目すべて通過` |
+
+Round 2 の Should fix（Deny に `Condition` を足してもテストが落ちない）の元の再現手順を、いまのコードで実行し直した（scratchpad の `mut044.py`。ファイルを書き換えてテストを走らせ、元に戻す）:
+
+```
+M-A IaC/cloudformation/lab-debug.yaml -> tests/test_lab_debug.py rc=1
+    AssertionError: lab-debug のロールの lab-assets の末尾に DenyNautobotSecrets（… キーは Sid / Effect / Action / Resource …
+M-B IaC/terraform/aws-managed/pipeline/lab/iam.tf -> tests/test_lab_debug.py rc=1
+    AssertionError: lab のロールの lab_assets の Statement の末尾は DenyNautobotSecrets（Sid・Effect = Deny・Action = ssm:GetParameter*・Resource = local.nautobot_secret_parameter_arns …
+M-B2 IaC/terraform/aws-managed/pipeline/lab/iam.tf -> tests/test_workflow.py rc=0
+M-C IaC/terraform/aws-managed/workflow/gateway.tf -> tests/test_workflow.py rc=1
+    AssertionError: tools の Lambda のロールの文書（gateway.tf の tools）に DenyNautobotSecrets（sid・effect = Deny・actions = ssm:GetParameter*・resources = local.nautobot_secret_parameter_arns …
+```
+
+M-B2 は lab の `iam.tf` の Condition を `test_workflow` が見ないという結果だが、lab の Statement の形は `test_lab_debug` の担当（M-B で rc=1）で、`test_workflow` が lab から見るのは `locals.tf` の名前の一致だけ。スイート全体では落ちるので解消とする。`terraform validate` と `fmt -check` は IaC が `1d22174` から不変なので取り直さない（`1d22174` での結果は `build.md` Round 2 と cold review 1 回目の 6 ルート Success / rc 0）。
+
+### 判断
+
+- Must fix: 0
+- Should fix: 0（Round 2 の 1 件は解消。上の出力）
+- Nit: 直さないもの 8 件（cold review 1 回目の 6 件、`build.md` Round 3 の Nit 4・5）。最終報告に載せる
+- 全体設計 HTML: 触らない（IAM の Deny を足しただけで、構成要素・データの流れ・配置は変わらない）
+- AWS の実機確認（design の検証 6）は QUEUE 147 でまとめて行う
+- サイクル完了（2026-10-11）。QUEUE 148 を完了にする
