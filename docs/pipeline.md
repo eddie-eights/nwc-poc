@@ -104,6 +104,7 @@ flowchart LR
   lab の EC2 が Telegraf の NLB の IP（SSM `/<prefix>/telegraf-address`）へ DNAT する。
 - NLB は trap を Telegraf のタスクの `1162/udp` へ、syslog を syslog-ng の `5140/udp` へ、NetFlow / sFlow を GoFlow2 の `2055/udp` / `6343/udp` へ渡す（UDP なので送り元の IP はそのまま）。
 - SR Linux は NetFlow を送れない。NetFlow は lab の EC2 から `python3 ops/netflow_send.py <NLB の IP>:2055` で 1 パケット送って確かめる。
+  syslog も lab の EC2 から `logger -n <NLB の IP> -P 5140 -d --rfc3164 -t acl-probe "…"` で試せる（AWS では未確認。手順は [troubleshooting.md](troubleshooting.md) の「syslog の試験行が logs に入らない」の「正しい送り方」）。
 - この 5 つは lab の EC2 で `sudo lab forward` が張る。
   `lab up` が毎回呼び、`ops/up.sh` も手順 7-2b で打つ（lab の変数 `forward_to_telegraf`）。
 
@@ -344,6 +345,9 @@ aws logs tail --region ap-northeast-1 "$(terraform -chdir=IaC/terraform/aws-mana
   - gnmic の購読先の変化では作り直さない。それは Nautobot の Job が作り直す。
 - 設定のテンプレートは `app/gnmic/gnmic.yaml.in` と `app/telegraf/telegraf.conf.in`。変えたときは下の「変えたとき」。
 - `gn get` で機器に届かない、trap が来ない、ログが来ないときは、lab の EC2 で `sudo lab forward-status` を見る（規則が無ければ `sudo lab forward`）。
+  - `RETURN`（送り元を残す行。`app/containerlab/lab.sh` の `forward`）が Docker の MASQUERADE より上に無いと、機器が送った行の送り元が lab の EC2 の IP に替わる。
+    trap は NLB で落ちる（NLB は lab の SG から 162/udp を受けない）。syslog は「lab の EC2 から NLB の syslog 5140 への受信ルールを足す（037）」から NLB を通って届き、`tags.source` が EC2 の IP になる。
+    既定の `SYSLOG_STANDARD=RFC3164` で lab の SR Linux（RFC5424）を受けているときは `tags.sysName` も送り元の IP で埋まるので、機器の名前ではなく EC2 の IP として入る（RFC5424 の受け口なら `sysName` は機器の名前のまま）。`sudo lab forward` で打ち直す。
 
 ## デバッグ用の EC2（lab + Telegraf を 1 台）
 

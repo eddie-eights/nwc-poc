@@ -30,6 +30,7 @@
   - Grafana: `STORES` の `grafana`。link 以外の trap を `trap` として上げる。
   - Splunk: `STORES` の `splunk`。linkDown / linkUp を `link_down`、ほかを `trap` として上げる。
 - `NetFlow / sFlow`: lab の SR Linux は NetFlow を送れないので、`ops/netflow_send.py` で 1 パケット送って確かめる。
+- `syslog`: 機器の syslog のほかに、lab の EC2 から `logger` で NLB の 5140 へ送って試せる（AWS では未確認。手順は [troubleshooting.md](troubleshooting.md) の「syslog の試験行が logs に入らない」の「正しい送り方」）。
 
 trap と syslog では性能の時系列は取れない（届くのはイベントか、しきい値を越えたという知らせだけ）。性能メトリクスにはポーリングか telemetry が要る。
 

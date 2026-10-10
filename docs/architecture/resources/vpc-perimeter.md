@@ -127,3 +127,4 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
 - 2026-09-29: SG をワークロードごとに分けた。それまでは全部で共有する `internal` が 1 つだった。
 - 2026-10-08: syslog_ng / goflow2 から msk への 9096/tcp（SASL/SCRAM）ができた。gnmic は 2026-10-09 から。
 - 2026-10-09: gnmic が telegraf_dialin を置き換え、SNMP のポーリングの 161/udp は外した。
+- 2026-10-10: lab の EC2 から NLB（telegraf_dialout_nlb）の 5140/udp の受信を足した（037。EC2 自身が `logger` で試せるように。機器の syslog は前から CIDR で受ける）。

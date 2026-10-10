@@ -113,7 +113,8 @@ locals {
       { from = "telegraf_dialout_nlb", to = "goflow2", protocol = "tcp", port = 8081, why = "NLB health check - GoFlow2 /__health" },
 
       # trap・syslog・NetFlow・sFlow: 機器 → lab の EC2（lab.sh forward の DNAT）→ NLB。送り元は機器の管理 IP のままなので、NLB は管理ネットワークの CIDR から受け、
-      # lab の EC2 は NLB の SG へ送る
+      # lab の EC2 は NLB の SG へ送る。NLB は lab の SG からも udp 5140 / 2055 / 6343 を受ける（EC2 自身が試しに送るぶん。下の「両側」の行）。
+      # lab の SG は 162/udp も NLB へ送るが、NLB は trap を lab の SG から受けない
       { from = "lab_mgmt", to = "telegraf_dialout_nlb", protocol = "udp", port = 162, why = "SNMP traps from the switches - DNAT on the lab EC2" },
       { from = "lab_mgmt", to = "telegraf_dialout_nlb", protocol = "udp", port = 5140, why = "syslog from the switches - DNAT on the lab EC2" },
       { from = "lab_mgmt", to = "telegraf_dialout_nlb", protocol = "udp", port = 2055, why = "NetFlow from the switches - DNAT on the lab EC2" },
