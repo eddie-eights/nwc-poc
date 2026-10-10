@@ -221,3 +221,198 @@ M9 state の sed が最初の行で止まらない（q を消す）: rc=1 Assert
   - 呼び出し位置
   - テストの土台
 - 再設計で変わるもの: 守りの条件、die 文、troubleshooting の行、「ルートが空なら通る」check。
+
+## Round 2
+
+実装モデル: opus-5.5 / effort: high
+
+### 実装内容
+
+- `ops/up-common.sh`: Round 1 の `SG_DESCRIPTION_ROOTS` と 3 関数を消し、`has_resources` の後に設計方針 1 の 3 関数を置いた。
+  - `sg_descriptions_in_code`: `security_groups.tf` の `  security_groups = {` 〜 `  }` を読む。`oss.auto.tfvars` が `project = "nwc-oss"` なら `oss.tf` の `  oss_security_groups = {` 〜 `  }` も読み、後勝ちで上書きする。出力は `<キー>\t<文言>`。
+  - `sg_descriptions_in_state`: 標準入力の `terraform show -no-color` から、`# aws_security_group.workload["<キー>"]:` の見出し 〜 行頭 `}` のブロックの、4 空白ちょうどの最初の `description` を取る。無ければ空。
+  - `check_sg_descriptions`: `tf base/core show -no-color` を 1 回だけ打つ（失敗なら die）。コードにあるキーだけ比べ、違えば設計どおりの文面で die する。
+  - awk は BSD awk で動く書き方（`match` + `substr`、`ENVIRON` でコードの表を渡す）。
+- `ops/up.sh` / `ops/oss/up.sh`: 呼び出し位置は Round 1 のまま。上のコメントを設計方針 2 に直した。
+- `security_groups.tf:24-26`: コメントを設計方針 4 に直した（description は Round 1 のまま）。
+- docs: `core.md:103`、`vpc-perimeter.md:98`、`troubleshooting.md:26` を設計方針 5 に。ルートだけ destroy する案内と必須変数の列挙は消した。`cml-sandbox.md` は触っていない。
+- テスト:
+  - `tests/test_workflow.py`: 043 の塊を検証 1・2 に合わせて書き直した（18 check。telegraf の description の check は Round 1 のまま）。
+  - `tests/test_oss_ops.py`: 偽の terraform に `show` の枝（`# aws_vpc.this:` のブロックだけを返す）を足した。
+
+### 変更ファイル
+
+- IaC/terraform/aws-managed/base/core/security_groups.tf
+- docs/architecture/core.md
+- docs/architecture/resources/vpc-perimeter.md
+- docs/troubleshooting.md
+- ops/oss/up.sh
+- ops/up-common.sh
+- ops/up.sh
+- tests/test_oss_ops.py
+- tests/test_workflow.py
+- docs/cycles/043-sg-description-guard/build.md
+
+### 設計からの逸脱
+
+- `check_sg_descriptions` は、コード側が空（`sg_descriptions_in_code` が失敗するか、1 行も出さない）なら die する（`…security_groups.tf から SG の description が読めない…`）。
+  - 理由: 無いと、`local.security_groups` の形が変わったとき全キーが「コードに無いキー」になり、守りが黙って素通りする。
+- `sg_descriptions_in_code` は、塊の中に空行・コメント以外で `<キー> = "<文言>"` の形でない行（行末のコメント、式など）があれば、その行を stderr に出して失敗する（上の die になる）。
+  - 理由: セルフレビューの指摘 2。1 行だけ黙って落ちると、そのキーの違いを見逃す。
+- テストは素の `python3` に yaml が無いので、`uv run --group dev --group web python tests/<file>.py` で打った（Round 1 と同じ形）。
+- 検証 5 の grep は `docs/cycles/` を除いて見た（043 の design.md / build.md 自身が旧名と旧文言を引用している）。
+
+### 検証（最後の編集の後に取り直した出力）
+
+1・2. `tests/test_workflow.py` の 043 の check（行は途中で切った）
+
+```
+ok up.sh は check_sg_descriptions を tf_init base/core の後、log "1. ECR リポジトリ" の前に 1 回呼ぶ（cycle 043。いま: 1 回）
+ok ops/up-common.sh に SG_DESCRIPTION_ROOTS（Round 1 のキーの表）が無く、sg_descriptions_in_code / sg_descriptions_in_state / check_sg_descriptions の 3 関数があり、check_sg_descrip
+ok check_sg_descriptions: state の description が全キーともコードと同じなら通り、terraform show を 1 回だけ打ち、init も state list も打たない（いま: rc=0 '' ['tf bas
+ok check_sg_descriptions: workflow の description が古い（041 より前）なら、state とコードの文言を出して die し、down.sh の全消しだけを案内する（ルートだけ消
+ok check_sg_descriptions: workflow と telegraf_dialout_nlb の 2 つが古ければ、die の文に両方を出す（いま: rc=1 'DIE: …
+ok check_sg_descriptions: state の SG のブロックに description の行が無ければ（空）、違うものとして die する（いま: rc=1 'DIE: …
+ok check_sg_descriptions: コードに無いキー（キーを変えた古い telegraf。既存の守りの担当）は古い文言でも飛ばして通す（いま: rc=0 ''）
+ok check_sg_descriptions: state に workload の SG が 1 つも無い（aws_vpc とルールのブロックだけ）なら通す（いま: rc=0 ''）
+ok check_sg_descriptions: terraform show が失敗したら黙って通さず die する（いま: rc=1 'Error: fake show failure\nDIE: …
+ok check_sg_descriptions: security_groups.tf から文言が 1 つも読めない（local.security_groups の形が変わった）なら、全キーを飛ばして素通りせず die する（terrafor
+ok check_sg_descriptions: security_groups.tf の 1 行だけが読めない（行末のコメントなど）なら、そのキーを黙って飛ばさず、読めない行を出して die する（ter
+ok check_sg_descriptions: OSS 版（oss.auto.tfvars が project = "nwc-oss"）は oss.tf の文言で比べる。spark が oss.tf の文言なら通り、security_groups.tf の EMR Serverless の文…
+ok sg_descriptions_in_state は SG のブロックの 4 空白の description だけを <キー>\t<文言> で出し、前後のルールと VPC のブロックの description を拾わない（descri
+ok sg_descriptions_in_state は SG のブロックを行頭の } で閉じ、後ろの Outputs: の 4 空白の description を拾わない（いま: 'workflow\t\n'）
+ok local.security_groups / oss_security_groups の塊の行（空行とコメント以外）は全部 <キー> = "<文言>" の形で、テストの正規表現が全部拾う（いま: 16 行 / 16 …
+ok sg_descriptions_in_code は実物の security_groups.tf の local.security_groups のキーと文言を全部出し、Python の正規表現で取ったものと一致する（キーの重複なし
+ok sg_descriptions_in_code は OSS 版（IaC/terraform/oss。oss.auto.tfvars が nwc-oss）では oss.tf の local.oss_security_groups で上書きし、キーを足す（spark は Spark ECS task、ka
+```
+
+3. `tests/test_oss_ops.py`（呼び出し位置と通し。抜粋。通しの check は全部 ok）
+
+```
+ok ops/oss/up.sh は check_sg_descriptions（description を変えた SG の守り。ops/up-common.sh）を tf_init base/core の後、ECR より前に 1 回呼ぶ（マネージド版と同じ。cycl
+ok up.sh（通し）: 終了コード 0 で最後まで行き、偽物の知らないコマンドを打たず、未定義の変数も踏まない
+```
+
+4. telegraf の description の check（Round 1 のまま）
+
+```
+ok telegraf_dialout の SG の description に MDT と syslog が無く SNMP traps があり（012 で syslog_ng、013 で gnmic に移った）、telegraf_dialout_nlb の description に syslog-ng …
+```
+
+5. 文言（`docs/cycles/` を除く）
+
+```
+$ grep -rn 'SG_DESCRIPTION_ROOTS' ops docs tests IaC   （docs/cycles/ を除く）
+（出力なし。rc=1）
+$ grep -rn 'だけ先に消してもよい' ops docs   （docs/cycles/ を除く）
+ops/oss/up.sh:158  （telegraf_dialin の既存の守り）
+ops/up.sh:598      （telegraf の既存の守り）
+ops/up.sh:604      （telegraf_dialin の既存の守り）
+$ grep -n 'worker_image_tag=destroy' docs/troubleshooting.md
+（出力なし。rc=1）
+$ grep -c 'check_sg_descriptions' docs/architecture/core.md docs/architecture/resources/vpc-perimeter.md docs/troubleshooting.md
+docs/architecture/resources/vpc-perimeter.md:1
+docs/architecture/core.md:1
+docs/troubleshooting.md:1
+$ grep -rln 'and MDT' IaC docs --include='*.tf' --include='*.md'
+docs/cycles/QUEUE.md
+docs/cycles/043-sg-description-guard/build.md
+docs/cycles/043-sg-description-guard/design.md
+docs/cycles/041-nlb-docs-and-workflow-sg/build.md
+docs/cycles/041-nlb-docs-and-workflow-sg/review.md
+$ grep -n 'NLB の SG が' docs/cml-sandbox.md
+（出力なし。rc=1）
+```
+
+6. 全テスト・fmt・構文
+
+```
+$ uv run --group dev --group web python tests/test_workflow.py
+通過 454 / 失敗 0
+$ uv run --group dev --group web python tests/test_oss_ops.py
+通過 208 / 失敗 0
+$ uv run --group dev --group web python tests/test_stream.py
+通過 114 / 失敗 0
+$ terraform fmt -check -recursive IaC/terraform/aws-managed/base/core
+rc=0（出力なし）
+$ bash -n ops/up.sh ; bash -n ops/oss/up.sh ; bash -n ops/up-common.sh（1 本ずつ）
+rc=0 / rc=0 / rc=0（出力なし）
+```
+
+7. AWS: 未実行（設計どおり。QUEUE の「残った修正をまとめて AWS で動作確認して直す」で見る）。docker も使っていない。
+
+### セルフレビュー
+
+- 自分: opus-5.5 / effort: high（サブエージェントの中で effort は切り替えられない）
+- 反対弁護人: opus / effort: xhigh（文脈を渡して 1 回。読み取り専用。終了後の `git status --porcelain -uall` は 9 本の M だけで、増えたものは無し）
+
+#### 実測で縛ったもの（ミューテーション。最後のコードの編集の後に 14 個とも取り直し、全部落ちることを確かめてから元に戻した）
+
+```
+M1 up.sh の呼び出しを消す          | test_workflow.py rc=1: up.sh は check_sg_descriptions を tf_init base/core の後 … 1 回呼ぶ
+M2 oss/up.sh の呼び出しを消す      | test_oss_ops.py rc=1: ops/oss/up.sh は check_sg_descriptions（…）を tf_init base/core の後 …
+M3 比較を常に等しい               | rc=1: workflow の description が古い（041 より前）なら … die し …
+M4 ($1 in c) を外す              | rc=1: コードに無いキー … は古い文言でも飛ばして通す（いま: rc=1 'DIE: …
+M5 show の失敗を素通り            | rc=1: terraform show が失敗したら黙って通さず die する（いま: rc=0 …）
+M6 入れ子の description も読む    | rc=1: description の行が無ければ（空）、違うものとして die する
+M7 OSS の上書きを読まない          | rc=1: OSS 版（…）は oss.tf の文言で比べる …
+M8 コードのキーを先勝ちに          | rc=1: OSS 版（…）は oss.tf の文言で比べる …
+M9 空のコードの守りを外す          | rc=1: security_groups.tf から文言が 1 つも読めない … なら … die する
+M10 die 文を部分消しの案内に戻す   | rc=1: workflow の description が古い … down.sh の全消しだけを案内する …
+M11 state のキーの切り出しをずらす | rc=1: workflow の description が古い … die し …
+M12 } での flush を外す           | rc=1: sg_descriptions_in_state は SG のブロックを行頭の } で閉じ、後ろの Outputs: … を拾わない
+M13 読めない行を飛ばす             | rc=1: security_groups.tf の 1 行だけが読めない（行末のコメントなど）なら … die する
+M14 読めない行で exit しない       | rc=1: （M13 と同じ check）
+```
+
+- M12 は最初の取り直しで生き残った（後ろに Outputs: が来る形がサンプルに無かった）。Outputs: の check を足して落ちるようにした。
+
+#### 指摘と片付け
+
+1. **Should fix（設計側。PM へ。直していない）**
+   - [die 文と docs の案内] `ops/up-common.sh` の `check_sg_descriptions` の die 文、`docs/troubleshooting.md:26`（どちらも設計方針 1・5 の文面どおり）
+   - 破綻シナリオ:
+     - Runtime の ENI（agentic_ai。最大 8 時間ほど残る）があるあいだ、`ops/down-common.sh:140-148` の `destroy_base_core` は `aws_security_group.workload["runtime"]` を残す。
+     - runtime の description が state とコードで違うと、`up.sh` は die する。案内どおり `down.sh` を打っても runtime の SG は残り、`up.sh` はまた die する。「時間をおいて打ち直す」案内が die 文にも troubleshooting にも無い。troubleshooting の行は workflow / telegraf だけを挙げ、runtime を挙げていない。
+     - die 文の理由（「ほかの SG のルールが古い SG を参照したまま」）は、runtime の SG だけが残った state には当たらない。
+   - 再現:
+     - 反対弁護人が、メインのチェックアウトの OSS の state を読み取りで描画し、VPC・サブネット・`workload["runtime"]` だけが残り、runtime の description が旧文言（`AgentCore Runtime ENIs (terraform/agent)`。コードは `… (IaC/terraform/aws-managed/agent)`）であることを見た。その show を守りに流すと die した。
+     - 自分はメインのチェックアウトに触らない指示なので、この state は読んでいない。`destroy_base_core` が runtime の SG を残すことは `ops/down-common.sh:140-148` を読んで確かめた（読んだだけ）。
+   - 守りが止めること自体は正しい（ENI が残っていれば runtime の SG の作り直しは失敗する。ENI が消えていれば down.sh 1 回で通る）。直すのは案内の文面で、文面は design.md が決めているので実装では変えていない。
+   - 影響: 次の実物の `ops/oss/up.sh` は手順 0 の後でこの die になる見込み（反対弁護人の実測）。
+
+2. **Should fix（直した）**
+   - [correctness / missing tests] `ops/up-common.sh` の `sg_descriptions_in_code`
+   - 破綻シナリオ: `security_groups.tf` の 1 行が `<キー> = "<文言>"` の形から外れる（行末のコメント `# 041` など）と、その行は黙って捨てられ、そのキーは「コードに無いキー」として比較から外れる。空のときの die は全滅のときしか捕まえない。テストの参照用の正規表現も同じ穴を持つので、照合の check も通っていた。
+   - 再現: 反対弁護人が `security_groups.tf` のコピーの workflow の行末に `# 041` を足し、DIE から workflow が消えることを見た。自分でも同じ形の check（`code_tail_comment`）を足し、直す前の形（M13）で落ちることを確かめた。
+   - 直し: 塊の中の空行・コメント以外の読めない行を stderr に出して失敗させ、`check_sg_descriptions` の「読めない」die にした（「設計からの逸脱」）。テストに、読めない行の die の check と、実物の塊の行数とキーの数が一致する check を足した。
+
+3. **Nit（設計の文言）**
+   - [検証計画] design.md 検証 5 の `SG_DESCRIPTION_ROOTS` が 0 件、`だけ先に消してもよい` が 3 行だけ、は書いたとおりに打つと 043 の design.md / build.md 自身に当たる。`docs/cycles/` を除けば満たす（検証 5 の出力）。
+
+4. **Nit（範囲外。PM へ）**
+   - [範囲] `IaC/terraform/aws-managed/base/core/security_groups.tf:189-191` の `aws_security_group.endpoints` は `workload[...]` ではないので守りが見ない。description を変えれば同じく作り直しになり、VPC エンドポイントの ENI とワークロードの SG からの 443 の参照で止まる。読んだだけ。いまは変えていないので起きない。
+
+5. **Nit（据え置き）**
+   - [state の形] `ops/up-common.sh` の `sg_descriptions_in_state`
+   - deposed のオブジェクト（`# aws_security_group.workload["lab"]: (deposed object …)`）があると、同じキーが 2 行出る。どちらかがコードと違えば die する（止める側に倒れる）。tainted の見出しのキーも正しく取れる。
+   - 再現（scratchpad の deposed.sh。関数を `ops/up-common.sh` から切り出して、tainted 1 つ・deposed と現行の lab を流した）:
+     ```
+     web	T
+     lab	OLD
+     lab	NEW
+     ```
+   - この SG は `create_before_destroy` を使わないので deposed は作られない。止める側に倒れるので据え置く。
+
+#### 問題なしとした観点と根拠
+
+- `terraform show` の実物の形（見出し、4 空白の description、8 空白の tags、行頭の `}`、末尾の Outputs）: 反対弁護人が実物の state のバックアップを読み取りで描画し、16 キーを正しく出すこと、DIE が telegraf_dialout / telegraf_dialout_nlb / workflow のちょうど 3 つになることを確かめた。自分は実物の state を読んでいない（テストのサンプルで確かめた）。
+- ルール・VPC・Outputs の description を拾わない: 検証 2 の check（M6・M12 で縛った）。
+- 呼び出しの前提（up-common.sh を読む順、TF_DIR / OPS_DIR / tf / die、直前の tf_init base/core）: 反対弁護人が `ops/up.sh` と `ops/oss/up.sh` の該当箇所を読んで確かめた。test_oss_ops の通し（`未定義の変数も踏まない`）が通る。
+- OSS の判定: 検証 2 の OSS の check（M7・M8）と、実物の `IaC/terraform/oss` に対する `sg_descriptions_in_code` の check。
+- bash 3.2 / BSD awk: テストは macOS の `/bin/bash`（3.2）と `/usr/bin/awk` で走る。GNU awk / mawk は未実行。
+
+#### 結論
+
+- 未解消の Must fix: 0。
+- `/cycle-design` への差し戻し: 必須ではない。指摘 1（runtime の ENI が残るときの案内）は設計の文面の話なので PM の判断に回す。

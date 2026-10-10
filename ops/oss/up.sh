@@ -157,7 +157,9 @@ if [ -f "$TF_DIR/base/core/terraform.tfstate" ]; then
     && [ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ] && { tf_init pipeline/stream; [ -n "$(tf pipeline/stream state list 2>/dev/null)" ]; }; then
     die "IaC/terraform/oss/base/core の state に 2026-10-09 より前の取りにいく側の Telegraf の SG（telegraf_dialin）が残っていて、stream がそれを使っている。先に ops/oss/down.sh で消す（stream だけ先に消してもよい）。まだ何も作っていない"
   fi
-  # description を変えた SG（workflow / telegraf_dialout / telegraf_dialout_nlb）も同じ。付けるルートが残っているなら先に消してもらう（ops/up-common.sh の check_sg_descriptions）
+  # キーはそのままで description を変えた SG（workflow は 041、telegraf_dialout / telegraf_dialout_nlb は 043）も作り直しで、ほかの SG のルールが古い SG を
+  # 参照したままなので、付けるルートを消しても消せない。state の description がコードと違えば、全部消してもらう（ops/up-common.sh の check_sg_descriptions。
+  # 全キーを見るので表は無い）
   check_sg_descriptions
 fi
 ROOTS="base/ecr base/logs base/core agent pipeline/lab pipeline/stream pipeline/graph pipeline/nautobot pipeline/analytics workflow"

@@ -1457,97 +1457,160 @@ check("down.sh は Runtime の ENI が残るあいだ VPC・サブネット・ru
 check("up.sh は base/core の state に 2026-09-29 より前の SG（aws_security_group.internal）があれば、ECR より前に止めて先に down.sh を打たせる",
       re.search(r"grep -qx 'aws_security_group\\\.internal'", up) is not None
       and up.index("aws_security_group\\.internal") < up.index('log "1. ECR リポジトリ') and "先に ops/down.sh で消す" in up)
-# ---- description を変えた SG の守り（cycle 043）: state の description がコードと違い、付けるルートが残っていれば up.sh を止める
+# ---- description を変えた SG の守り（cycle 043）: state にある workload の SG 全部の description をコードと比べ、違えば up.sh を止めて down.sh の全消しだけを案内する
 _up_sh = read("ops", "up.sh")
 _csd_calls = [m.start() for m in re.finditer(r"^\s*check_sg_descriptions\s*$", _up_sh, re.M)]
 check(f"up.sh は check_sg_descriptions を tf_init base/core の後、log \"1. ECR リポジトリ\" の前に 1 回呼ぶ（cycle 043。いま: {len(_csd_calls)} 回）",
       len(_csd_calls) == 1 and 0 <= _up_sh.find("tf_init base/core") < _csd_calls[0] < _up_sh.find('log "1. ECR リポジトリ'))
-_sdr_m = re.search(r'^SG_DESCRIPTION_ROOTS="([^"]*)"$', _upc, re.M)
-_sdr = [tuple(e.split(":", 1)) for e in _sdr_m.group(1).split()] if _sdr_m else []
-_sg_tf_core = read("IaC", "terraform", "aws-managed", "base", "core", "security_groups.tf")
-_sg_locals_block = _sg_tf_core.split("  security_groups = {")[1].split("\n  }\n")[0] if "  security_groups = {" in _sg_tf_core else ""
-check(f"ops/up-common.sh の SG_DESCRIPTION_ROOTS は workflow:workflow / telegraf_dialout:pipeline/stream / telegraf_dialout_nlb:pipeline/stream で、"
-      f"各キーは security_groups.tf の local.security_groups にあり、各ルートの locals.tf が security_group_ids[\"<キー>\"] を読む（いま: {_sdr}）",
-      sorted(_sdr) == sorted([("workflow", "workflow"), ("telegraf_dialout", "pipeline/stream"), ("telegraf_dialout_nlb", "pipeline/stream")])
-      and all(re.search(rf'^    {k}\s+= "[^"]+"$', _sg_locals_block, re.M) for k, _ in _sdr)
-      and all(f'security_group_ids["{k}"]' in read("IaC", "terraform", "aws-managed", *r.split("/"), "locals.tf") for k, r in _sdr))
 _upc_fn = {n: (_upc.split(f"\n{n}() {{")[1].split("\n}\n")[0] if f"\n{n}() {{" in _upc else "")
-           for n in ("sg_description_in_code", "sg_description_in_state", "check_sg_descriptions")}
-_SG_CODE_DESC = {k: re.search(rf'^    {k}\s+= "([^"]*)"$', _sg_tf_core, re.M).group(1) for k, _ in _sdr}
-def _csd_run(show=None, lists=(), tfstates=(), table=None):
-    """check_sg_descriptions を bash で、tf / tf_init / die（関数）を差し替えて動かす。TF_DIR は一時ディレクトリ（base/core/security_groups.tf は実物のコピー）。
-    show: キー → state の description（既定はコードと同じ。None ならその SG は state に無い）。lists: state list が非空のルート。tfstates: terraform.tfstate があるルート。
-    rc と stdout / stderr と tf の呼び出しを返す。"""
+           for n in ("sg_descriptions_in_code", "sg_descriptions_in_state", "check_sg_descriptions")}
+_csd_body = "\n".join(l for l in _upc_fn["check_sg_descriptions"].splitlines() if not l.lstrip().startswith("#"))  # コメントの行（関数の見出しの行の説明を含む）を除く
+_sdr_name = "SG_DESCRIPTION_" + "ROOTS"  # Round 1 のキーの表の名前（grep で 0 件にするため、このファイルにも綴りを置かない）
+check(f"ops/up-common.sh に {_sdr_name}（Round 1 のキーの表）が無く、sg_descriptions_in_code / sg_descriptions_in_state / check_sg_descriptions の 3 関数があり、"
+      "check_sg_descriptions の本文は tf_init も state list も打たない（ルートの state を見ない。cycle 043 Round 2）",
+      _sdr_name not in _upc and all(_upc_fn.values()) and _csd_body.strip()
+      and "tf_init" not in _csd_body and "state list" not in _csd_body and "tf base/core show -no-color" in _csd_body)
+_sg_tf_core = read("IaC", "terraform", "aws-managed", "base", "core", "security_groups.tf")
+_oss_tf_core = read("IaC", "terraform", "aws-managed", "base", "core", "oss.tf")
+_SG_CODE_DESC = dict(re.findall(r'^    (\w+)\s+= "([^"]*)"$', _sg_tf_core.split("\n  security_groups = {\n")[1].split("\n  }\n")[0], re.M))
+_SG_OSS_DESC = dict(re.findall(r'^    (\w+)\s+= "([^"]*)"$', _oss_tf_core.split("\n  oss_security_groups = {\n")[1].split("\n  }\n")[0], re.M))
+_SG_CODE_DESC_OSS = {**{k: v for k, v in _SG_CODE_DESC.items() if k != "msk"}, **_SG_OSS_DESC}  # OSS の state（msk は oss_replaced で無い）
+def _csd_show(sgs):
+    """terraform show -no-color（state 全体）の形のサンプル。ルール → aws_vpc → SG（sgs: キー → description。None なら description の行が無い）→ ルールの順"""
+    blocks = ['# aws_vpc_security_group_ingress_rule.flow["nautobot-neo4j-tcp-7687"]:\nresource "aws_vpc_security_group_ingress_rule" "flow" {\n'
+              '    arn                          = "arn:aws:ec2:ap-northeast-1:1:security-group-rule/sgr-1"\n'
+              '    description                  = "Neo4j Bolt - Nautobot sync"\n    from_port                    = 7687\n    id                           = "sgr-1"\n'
+              '    ip_protocol                  = "tcp"\n    referenced_security_group_id = "sg-2"\n    security_group_id            = "sg-1"\n}\n',
+              '# aws_vpc.this:\nresource "aws_vpc" "this" {\n    arn                                  = "arn:aws:ec2:ap-northeast-1:1:vpc/vpc-1"\n'
+              '    cidr_block                           = "10.0.0.0/16"\n    id                                   = "vpc-1"\n'
+              '    tags                                 = {\n        "Name" = "p-vpc"\n    }\n}\n']
+    for k, v in sgs.items():
+        blocks.append(f'# aws_security_group.workload["{k}"]:\nresource "aws_security_group" "workload" {{\n'
+                      f'    arn                    = "arn:aws:ec2:ap-northeast-1:1:security-group/sg-{k}"\n'
+                      + (f'    description            = "{v}"\n    egress                 = []\n' if v is not None
+                         # description の行が無い SG は、入れ子（12 空白）の description を持たせる（4 空白ちょうどだけを読むか）
+                         else '    egress                 = [\n        {\n            description      = "inline rule"\n            from_port        = 0\n        },\n    ]\n')
+                      + f'    id                     = "sg-{k}"\n    ingress                = []\n'
+                      f'    name                   = "p-{k.replace("_", "-")}"\n    tags                   = {{\n        "Name" = "p-{k.replace("_", "-")}"\n    }}\n}}\n')
+    blocks.append('# aws_vpc_security_group_egress_rule.flow["web-workflow-tcp-8233"]:\nresource "aws_vpc_security_group_egress_rule" "flow" {\n'
+                  '    description                  = "Temporal UI through SSM port forwarding"\n    id                           = "sgr-2"\n}\n')
+    return "\n".join(blocks)
+def _csd_run(state=None, oss=False, show_fail=False, code_broken=False, code_tail_comment=False):
+    """check_sg_descriptions を bash で、tf / tf_init / die（関数）を差し替えて動かす。TF_DIR は一時ディレクトリ（base/core の security_groups.tf と oss.tf は実物のコピー。
+    oss なら oss.auto.tfvars に project = "nwc-oss"）。state: terraform show に載せる workload の SG（キー → description。既定はコードと同じ全キー）。
+    code_broken: コピーの security_groups.tf の「  security_groups = {」の行を崩す（コードの文言が 1 つも読めない）。
+    code_tail_comment: コピーの security_groups.tf の workflow の行の末尾に「 # 041」を足す（その 1 行だけ読めない）。
+    rc と stdout / stderr と tf / tf_init の呼び出しを返す。"""
     import shutil, subprocess, tempfile
-    show = dict(_SG_CODE_DESC, **(show or {}))
+    if state is None:
+        state = dict(_SG_CODE_DESC_OSS if oss else _SG_CODE_DESC)
     with tempfile.TemporaryDirectory() as d:
-        tfd = os.path.join(d, "tf")
-        os.makedirs(os.path.join(tfd, "base", "core"))
-        shutil.copy(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", "security_groups.tf"), os.path.join(tfd, "base", "core"))
-        os.makedirs(os.path.join(d, "show")); os.makedirs(os.path.join(d, "list"))
-        for k, v in show.items():
-            if v is None:
-                continue
-            with open(os.path.join(d, "show", k), "w") as f:
-                f.write(f'# aws_security_group.workload["{k}"]:\nresource "aws_security_group" "workload" {{\n'
-                        f'    arn                    = "arn:aws:ec2:ap-northeast-1:1:security-group/sg-1"\n'
-                        # egress / ingress に description の行があっても（workload はインラインのルールを持たないが念のため）、SG 本体の最初の 1 行だけを読むか
-                        f'    description            = "{v}"\n    egress                 = [\n        {{\n            description      = "inline rule"\n        }},\n    ]\n'
-                        f'    id                     = "sg-1"\n'
-                        f'    ingress                = []\n    name                   = "p-{k.replace("_", "-")}"\n'
-                        f'    tags                   = {{\n        "Name" = "p-{k.replace("_", "-")}"\n    }}\n}}\n')
-        for r in tfstates:
-            os.makedirs(os.path.join(tfd, *r.split("/")), exist_ok=True)
-            with open(os.path.join(tfd, *r.split("/"), "terraform.tfstate"), "w") as f:
-                f.write("{}")
-        for r in lists:
-            with open(os.path.join(d, "list", r.replace("/", "_")), "w") as f:
-                f.write("aws_ecs_service.x\n")
+        core = os.path.join(d, "tf", "base", "core")
+        os.makedirs(core)
+        for fn in ("security_groups.tf", "oss.tf"):
+            shutil.copy(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", fn), core)
+        if code_broken:
+            with open(os.path.join(core, "security_groups.tf")) as f:
+                _t = f.read()
+            with open(os.path.join(core, "security_groups.tf"), "w") as f:
+                f.write(_t.replace("\n  security_groups = {\n", "\n  security_groups = merge({\n"))
+        if code_tail_comment:
+            with open(os.path.join(core, "security_groups.tf")) as f:
+                _t = f.read()
+            _wl = f'    workflow             = "{_SG_CODE_DESC["workflow"]}"\n'
+            assert _t.count(_wl) == 1, "security_groups.tf の workflow の行の形が変わった（テストの土台を直す）"
+            with open(os.path.join(core, "security_groups.tf"), "w") as f:
+                f.write(_t.replace(_wl, _wl[:-1] + " # 041\n"))
+        if oss:
+            with open(os.path.join(core, "oss.auto.tfvars"), "w") as f:
+                f.write('# OSS 版のしるし\nproject = "nwc-oss"\n')
+        with open(os.path.join(d, "show"), "w") as f:
+            f.write(_csd_show(state))
         script = ("set -euo pipefail\n"
-                  f"D={d}\nTF_DIR={tfd}\nOPS_DIR=ops\n"
+                  f"D={d}\nTF_DIR={d}/tf\nOPS_DIR=ops\nSHOW_FAIL={'1' if show_fail else ''}\n"
                   'die() { echo "DIE: $*" >&2; exit 1; }\n'
                   'tf_init() { echo "init $1" >> "$D/calls"; }\n'
-                  'tf() { local root="$1"; shift; echo "tf $root $*" >> "$D/calls"\n'
-                  '  if [ "$1 $2" = "state show" ]; then local k="${4#*\\"}"; k="${k%\\"*}"; [ -f "$D/show/$k" ] && cat "$D/show/$k"; return; fi\n'
-                  '  if [ "$1 $2" = "state list" ]; then cat "$D/list/${root//\\//_}" 2>/dev/null || true; return 0; fi\n'
+                  'tf() { echo "tf $*" >> "$D/calls"\n'
+                  '  if [ "$*" = "base/core show -no-color" ]; then [ -z "$SHOW_FAIL" ] || { echo "Error: fake show failure" >&2; return 1; }; cat "$D/show"; return 0; fi\n'
                   '  return 9; }\n'
-                  f'SG_DESCRIPTION_ROOTS="{table if table is not None else _sdr_m.group(1)}"\n'
                   + "".join(f"{n}() {{{b}\n}}\n" for n, b in _upc_fn.items())
                   + "check_sg_descriptions\necho DONE\n")
         out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30, stdin=_vsp.DEVNULL)
         calls = open(os.path.join(d, "calls")).read().splitlines() if os.path.exists(os.path.join(d, "calls")) else []
     return out.returncode, out.stdout, out.stderr, calls
+def _csd_no_root(calls):  # ルートの state を見ていない（init も state list も打たない）
+    return not any(c.startswith("init ") or " state list" in c for c in calls)
 _WF_OLD = "Temporal dev server and worker ECS task (IaC/terraform/aws-managed/workflow)"
 _NLB_OLD = "Internal NLB in front of the Telegraf dial-out task (IaC/terraform/aws-managed/pipeline/stream)"
-_r = _csd_run(lists=("workflow", "pipeline/stream"), tfstates=("workflow", "pipeline/stream"))
-check(f"check_sg_descriptions: state の description がコードと同じなら、付けるルートが残っていても通る（state list も init も打たない。いま: rc={_r[0]} {_r[2].strip()!r} {_r[3]}）",
-      _r[0] == 0 and "DONE" in _r[1] and "DIE:" not in _r[2] and not any(c.startswith("init ") or " state list" in c for c in _r[3])
-      and sum(" state show -no-color " in c for c in _r[3]) == 3)
-_r = _csd_run(show={"workflow": _WF_OLD}, lists=("workflow",), tfstates=("workflow",))
-check(f"check_sg_descriptions: workflow の description が古く（041 より前）、workflow の state にリソースがあれば die する（いま: rc={_r[0]} {_r[2].strip()!r}）",
-      _r[0] == 1 and "DONE" not in _r[1] and "DIE:" in _r[2] and "SG workflow の description（Temporal dev server and worker ECS task" in _r[2]
-      and f"コード（{_SG_CODE_DESC['workflow']}）" in _r[2]
-      and "workflow がその SG を付けている" in _r[2] and "先に ops/down.sh で消す（workflow だけ先に消してもよい）" in _r[2] and "init workflow" in _r[3])
-_r = _csd_run(show={"workflow": _WF_OLD}, lists=("workflow",))
-_r2 = _csd_run(show={"workflow": _WF_OLD}, tfstates=("workflow",))
-check(f"check_sg_descriptions: description が古くても、workflow の terraform.tfstate が無い（init も打たない）か state list が空なら通る（いま: rc={_r[0]} / {_r2[0]} {_r[2].strip()!r} {_r2[2].strip()!r}）",
-      _r[0] == 0 and "DONE" in _r[1] and "DIE:" not in _r[2] and "init workflow" not in _r[3]
-      and _r2[0] == 0 and "DONE" in _r2[1] and "DIE:" not in _r2[2] and "init workflow" in _r2[3])
-_r = _csd_run(show={k: None for k in _SG_CODE_DESC}, lists=("workflow", "pipeline/stream"), tfstates=("workflow", "pipeline/stream"))
-check(f"check_sg_descriptions: base/core の state にその SG が無い（state show が失敗）なら通る（いま: rc={_r[0]} {_r[2].strip()!r}）",
-      _r[0] == 0 and "DONE" in _r[1] and "DIE:" not in _r[2] and not any(c.startswith("init ") for c in _r[3]))
-_r = _csd_run(show={"telegraf_dialout_nlb": _NLB_OLD}, lists=("pipeline/stream",), tfstates=("pipeline/stream",))
-check(f"check_sg_descriptions: telegraf_dialout_nlb の description が古く（043 より前）、stream が残っていれば die する（いま: rc={_r[0]} {_r[2].strip()!r}）",
-      _r[0] == 1 and "DIE:" in _r[2] and "SG telegraf_dialout_nlb の description（Internal NLB in front of the Telegraf dial-out task" in _r[2]
-      and "pipeline/stream がその SG を付けている" in _r[2] and "pipeline/stream だけ先に消してもよい" in _r[2])
-_r = _csd_run(table="workflowx:workflow")
-check(f"check_sg_descriptions: 表のキーの綴りが security_groups.tf に無ければ素通りせず die する（いま: rc={_r[0]} {_r[2].strip()!r}）",
-      _r[0] == 1 and "DIE:" in _r[2] and "security_groups.tf に SG workflowx の description が無い" in _r[2])
+_r = _csd_run()
+check(f"check_sg_descriptions: state の description が全キーともコードと同じなら通り、terraform show を 1 回だけ打ち、init も state list も打たない（いま: rc={_r[0]} {_r[2].strip()!r} {_r[3]}）",
+      _r[0] == 0 and "DONE" in _r[1] and "DIE:" not in _r[2] and _r[3] == ["tf base/core show -no-color"])
+_r = _csd_run(state={**_SG_CODE_DESC, "workflow": _WF_OLD})
+check(f"check_sg_descriptions: workflow の description が古い（041 より前）なら、state とコードの文言を出して die し、down.sh の全消しだけを案内する"
+      f"（ルートだけ消す案内は無い。init も state list も打たない。いま: rc={_r[0]} {_r[2].strip()!r} {_r[3]}）",
+      _r[0] == 1 and "DONE" not in _r[1] and "DIE:" in _r[2] and "workflow（state「Temporal dev server and worker ECS task" in _r[2]
+      and "コード「Temporal server, UI and worker" in _r[2] and "先に ops/down.sh で全部消してから ops/up.sh" in _r[2]
+      and "だけ先に消してもよい" not in _r[2] and _csd_no_root(_r[3]))
+_r = _csd_run(state={**_SG_CODE_DESC, "workflow": _WF_OLD, "telegraf_dialout_nlb": _NLB_OLD})
+check(f"check_sg_descriptions: workflow と telegraf_dialout_nlb の 2 つが古ければ、die の文に両方を出す（いま: rc={_r[0]} {_r[2].strip()!r}）",
+      _r[0] == 1 and "DIE:" in _r[2] and "workflow（" in _r[2] and "telegraf_dialout_nlb（state「Internal NLB in front of the Telegraf dial-out task" in _r[2])
+_r = _csd_run(state={**_SG_CODE_DESC, "workflow": None})
+check(f"check_sg_descriptions: state の SG のブロックに description の行が無ければ（空）、違うものとして die する（いま: rc={_r[0]} {_r[2].strip()!r}）",
+      _r[0] == 1 and "DIE:" in _r[2] and "workflow（state「」/ コード「Temporal server, UI and worker" in _r[2])
+_r = _csd_run(state={**_SG_CODE_DESC, "telegraf": "Telegraf ECS task - traps, syslog and MDT behind the NLB (IaC/terraform/aws-managed/pipeline/stream)"})
+check(f"check_sg_descriptions: コードに無いキー（キーを変えた古い telegraf。既存の守りの担当）は古い文言でも飛ばして通す（いま: rc={_r[0]} {_r[2].strip()!r}）",
+      _r[0] == 0 and "DONE" in _r[1] and "DIE:" not in _r[2])
+_r = _csd_run(state={})
+check(f"check_sg_descriptions: state に workload の SG が 1 つも無い（aws_vpc とルールのブロックだけ）なら通す（いま: rc={_r[0]} {_r[2].strip()!r}）",
+      _r[0] == 0 and "DONE" in _r[1] and "DIE:" not in _r[2])
+_r = _csd_run(show_fail=True)
+check(f"check_sg_descriptions: terraform show が失敗したら黙って通さず die する（いま: rc={_r[0]} {_r[2].strip()!r}）",
+      _r[0] == 1 and "DONE" not in _r[1] and "DIE:" in _r[2] and "base/core の state が読めない（terraform show の失敗" in _r[2])
+_r = _csd_run(state={**_SG_CODE_DESC, "workflow": _WF_OLD}, code_broken=True)
+check(f"check_sg_descriptions: security_groups.tf から文言が 1 つも読めない（local.security_groups の形が変わった）なら、全キーを飛ばして素通りせず die する"
+      f"（terraform show も打たない。いま: rc={_r[0]} {_r[2].strip()!r} {_r[3]}）",
+      _r[0] == 1 and "DONE" not in _r[1] and "DIE:" in _r[2] and "security_groups.tf から SG の description が読めない" in _r[2] and _r[3] == [])
+_r = _csd_run(state={**_SG_CODE_DESC, "workflow": _WF_OLD}, code_tail_comment=True)
+check(f"check_sg_descriptions: security_groups.tf の 1 行だけが読めない（行末のコメントなど）なら、そのキーを黙って飛ばさず、読めない行を出して die する"
+      f"（terraform show も打たない。いま: rc={_r[0]} {_r[2].strip()!r} {_r[3]}）",
+      _r[0] == 1 and "DONE" not in _r[1] and "読めない行:" in _r[2] and 'workflow             = "Temporal server' in _r[2]
+      and "security_groups.tf から SG の description が読めない" in _r[2] and _r[3] == [])
+_r = _csd_run(oss=True)
+_r2 = _csd_run(state={**_SG_CODE_DESC_OSS, "spark": _SG_CODE_DESC["spark"]}, oss=True)
+_r3 = _csd_run(state={**_SG_CODE_DESC, "spark": _SG_CODE_DESC["spark"]})
+check(f"check_sg_descriptions: OSS 版（oss.auto.tfvars が project = \"nwc-oss\"）は oss.tf の文言で比べる。spark が oss.tf の文言なら通り、"
+      f"security_groups.tf の EMR Serverless の文言なら die する。マネージド版は EMR Serverless の文言で通る（いま: rc={_r[0]} / {_r2[0]} / {_r3[0]} {_r[2].strip()!r} {_r2[2].strip()!r}）",
+      _r[0] == 0 and "DIE:" not in _r[2] and _SG_CODE_DESC_OSS["spark"].startswith("Spark ECS task, local mode")
+      and _r2[0] == 1 and "spark（state「EMR Serverless workers" in _r2[2]
+      and _r3[0] == 0 and "DIE:" not in _r3[2] and _SG_CODE_DESC["spark"].startswith("EMR Serverless workers"))
 import subprocess as _sp043  # noqa: E402
-_sdc_out = {k: _sp043.run(["bash", "-c", f"TF_DIR=IaC/terraform/aws-managed\nsg_description_in_code() {{{_upc_fn['sg_description_in_code']}\n}}\nsg_description_in_code {k}"],
-                          cwd=ROOT, capture_output=True, text=True, timeout=30, stdin=_vsp.DEVNULL).stdout for k, _ in _sdr}
-check(f"sg_description_in_code は実物の security_groups.tf から表の 3 キーとも空でない 1 行を返し、Python の正規表現で取った文言と一致する（いま: {_sdc_out}）",
-      len(_sdc_out) == 3 and all(v == _SG_CODE_DESC[k] + "\n" and _SG_CODE_DESC[k] for k, v in _sdc_out.items()))
+_sds_out = _sp043.run(["bash", "-c", f"sg_descriptions_in_state() {{{_upc_fn['sg_descriptions_in_state']}\n}}\nsg_descriptions_in_state"],
+                      input=_csd_show({"web": "W (x) = y", "workflow": None, "lab": "L"}), capture_output=True, text=True, timeout=30).stdout
+check(f"sg_descriptions_in_state は SG のブロックの 4 空白の description だけを <キー>\\t<文言> で出し、前後のルールと VPC のブロックの description を拾わない"
+      f"（description の行が無い SG は空。いま: {_sds_out!r}）",
+      _sds_out == "web\tW (x) = y\nworkflow\t\nlab\tL\n")
+_sds_tail = _sp043.run(["bash", "-c", f"sg_descriptions_in_state() {{{_upc_fn['sg_descriptions_in_state']}\n}}\nsg_descriptions_in_state"],
+                       input='# aws_security_group.workload["workflow"]:\nresource "aws_security_group" "workload" {\n    egress = []\n}\n\n'
+                             'Outputs:\n\nmeta = {\n    description = "from an output"\n}\n', capture_output=True, text=True, timeout=30).stdout
+check(f"sg_descriptions_in_state は SG のブロックを行頭の }} で閉じ、後ろの Outputs: の 4 空白の description を拾わない（いま: {_sds_tail!r}）",
+      _sds_tail == "workflow\t\n")
+def _sg_block_lines(tf, head):  # コードの塊のうち、空行とコメント以外の行の数（テストの正規表現が 1 行を黙って落としていないか）
+    return len([l for l in tf.split(f"\n  {head} = {{\n")[1].split("\n  }\n")[0].splitlines() if l.strip() and not l.strip().startswith("#")])
+check(f"local.security_groups / oss_security_groups の塊の行（空行とコメント以外）は全部 <キー> = \"<文言>\" の形で、テストの正規表現が全部拾う"
+      f"（いま: {_sg_block_lines(_sg_tf_core, 'security_groups')} 行 / {len(_SG_CODE_DESC)} 件、{_sg_block_lines(_oss_tf_core, 'oss_security_groups')} 行 / {len(_SG_OSS_DESC)} 件）",
+      _sg_block_lines(_sg_tf_core, "security_groups") == len(_SG_CODE_DESC) and _sg_block_lines(_oss_tf_core, "oss_security_groups") == len(_SG_OSS_DESC))
+def _sdc_real(tf_dir):
+    out = _sp043.run(["bash", "-c", f"TF_DIR={tf_dir}\nsg_descriptions_in_code() {{{_upc_fn['sg_descriptions_in_code']}\n}}\nsg_descriptions_in_code"],
+                     cwd=ROOT, capture_output=True, text=True, timeout=30, stdin=_vsp.DEVNULL).stdout
+    return [tuple(l.split("\t", 1)) for l in out.splitlines()]
+_sdc_m, _sdc_o = _sdc_real("IaC/terraform/aws-managed"), _sdc_real("IaC/terraform/oss")
+check(f"sg_descriptions_in_code は実物の security_groups.tf の local.security_groups のキーと文言を全部出し、Python の正規表現で取ったものと一致する（キーの重複なし。いま: {len(_sdc_m)} 件）",
+      dict(_sdc_m) == _SG_CODE_DESC and len(_sdc_m) == len(_SG_CODE_DESC)
+      and {"workflow", "telegraf_dialout", "telegraf_dialout_nlb", "spark", "msk"} <= set(_SG_CODE_DESC))
+check(f"sg_descriptions_in_code は OSS 版（IaC/terraform/oss。oss.auto.tfvars が nwc-oss）では oss.tf の local.oss_security_groups で上書きし、キーを足す"
+      f"（spark は Spark ECS task、kafka がある。いま: {len(_sdc_o)} 件 spark={dict(_sdc_o).get('spark')!r}）",
+      dict(_sdc_o) == {**_SG_CODE_DESC, **_SG_OSS_DESC} and len(_sdc_o) == len({**_SG_CODE_DESC, **_SG_OSS_DESC})
+      and dict(_sdc_o)["spark"] == _SG_OSS_DESC["spark"] and "kafka" in dict(_sdc_o))
 _sg_roots = ("agent", "pipeline/analytics", "pipeline/graph", "pipeline/lab", "pipeline/stream", "workflow")
 # stream の MSK の SG は msk.tf で読む（MSK だけのもの。OSS 版のルートに msk.tf は無い。cycle 005）
 _sg_files = {r: ("locals.tf", "msk.tf") if r == "pipeline/stream" else ("locals.tf",) for r in _sg_roots}

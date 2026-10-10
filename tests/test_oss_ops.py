@@ -373,6 +373,18 @@ if rest[:2] == ["state", "show"]:
         "    }",
         "}"]))
     sys.exit(0)
+if rest[:1] == ["show"]:  # state 全体（up.sh の check_sg_descriptions。cycle 043）。workload の SG は載せない（守りは通す）。形は上の state show と同じ
+    print("\n".join([
+        "# aws_vpc.this:",
+        'resource "aws_vpc" "this" {',
+        '    arn                                  = "arn:aws:ec2:ap-northeast-1:123456789012:vpc/vpc-0show"',
+        '    cidr_block                           = "10.0.0.0/16"',
+        '    id                                   = "vpc-0show"',
+        "    tags                                 = {",
+        '        "Name" = "x-vpc"',
+        "    }",
+        "}"]))
+    sys.exit(0)
 if verb == "apply":
     print("Apply complete! Resources: 1 added, 0 changed, 0 destroyed.")
     sys.exit(0)
