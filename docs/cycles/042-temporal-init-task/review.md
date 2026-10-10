@@ -170,3 +170,128 @@ None
 - `tests/test_oss_ops.py:121` の偽の run-task の返りが 2 フィールドのまま: 据え置く（`nfail` は 0 で読めて通る。OSS 版の up.sh は 147 の AWS の確認で実物を通す）。
 - 成功の偽の返り 9 か所を 5 フィールドに直した件（指示の範囲外）: 受け入れる。2 フィールドのままだと「件数を末尾で見る」改変が通ってしまう（missing tests）。
 - 次: cold reviewer の 2 回目（完了判定の直前）を呼ぶ。
+# temporal の初期化を一回きりのタスクに分け、サーバーのタスク定義から master のパスワードを外す（042）のコールドレビュー 2 回目
+
+- 対象: ブランチ `feat/042-temporal-init-task`、HEAD `a1e1c53`（ベースは main の `fa99bdf`）
+- レビュー担当: cold reviewer（読み取りだけ。既存のファイルは変えていない。書いたのはこのファイル 1 本）
+- 前のラウンドで解消していない Must fix: 無し
+
+## サマリ
+
+- Must fix は 0 件。
+  - design.md の設計方針 1〜5 は実装と合っている。
+  - サーバーのタスク定義から master のパスワードは消えている。init のタスクにしか渡らない。
+  - Round 2 の Should 2（`run-task` の `failures` の理由が捨てられる）は解消している。
+- Should fix は 1 件。設計方針 6 と検証 6 が求める「QUEUE 147 に AWS で見るものを足す」がまだ済んでいない。さらに、147 にある 039 / 040 の確認項目は 042 の後の挙動に合わなくなっている。
+- Nit は 0 件。
+  - 気になった点はどれも既知だった。1 つは `list-tasks --desired-status RUNNING` が止めに入った init を見ない点で、build.md の R2-9 にある。
+  - ほかは build.md の Round 1 Nit 6〜9 / R2-8〜10 / R3-3〜4 と、review.md の 1 回目の Nit 3〜4。
+  - これらは PM が「最終報告に載せる」と決めているので、数え直さない。
+- テストは自分で実行した。どちらも cwd は `/Users/eight/Documents/Dev/sandbox/nwc-poc/.claude/worktrees/pm-042`。
+  - `uv run --group dev --group web python tests/test_workflow.py` の結果は `通過 436 / 失敗 0` だった（ベースでは 381 件）。
+  - `uv run --group dev --group web python tests/test_oss_ops.py` の結果は `通過 207 / 失敗 0` だった。
+  - 042 で足した check は出力の名前で確かめた。entrypoint の待ちは 30 回で exit 1 になる。版の比較は 1.9 < 1.19、2.0 ≥ 1.19 で、形が違うものは偽になる。trap は TERM / INT で exit 143 になる。そのほか `run_temporal_init` の failures / exitCode None / 待ちの 2 回 / 呼ぶ順、`DenyNautobotParameters`、`startPeriod = 300`、イメージのディレクトリの 6 ファイルと COPY の行がある。
+
+### 見た観点 / 見ていない観点
+
+- 見た観点
+  - design 整合性。design.md の設計方針 1〜6、変更対象ファイルの表、検証 1 / 6、リスク 1〜6 を差分と突き合わせた。
+    - `IaC/terraform/aws-managed/workflow/ecs.tf:28-75`: init のタスク定義。family は `<prefix>-workflow-init`、タスクロールは無し、secrets は `POSTGRES_PWD` と `NAUTOBOT_DB_PASSWORD` の 2 つ（`:51-54`）、healthCheck と portMappings は無し、`stopTimeout = 120`、awslogs の prefix は `init`。
+    - `locals.tf` の `temporal_db_env`（7 項目）を init とサーバーの両方が使っている。
+    - サーバーの secrets は `POSTGRES_PWD` だけ（`ecs.tf:113-115`）。`startPeriod = 300`（`ecs.tf:124`）。
+    - `outputs.tf` に `init_task_definition`、`task_subnet_id`、`task_security_group_id`、`init_logs_command` がある。
+    - `ops/up.sh:1254-1261` と `ops/oss/up.sh:585-592` で、`tf_apply workflow` → `run_temporal_init` → `services-stable` の順になっている。
+    - Docker のイメージのディレクトリは 6 ファイル。init.sh は `COPY --chmod=755`、common.sh は source されるので chmod 無し。ENTRYPOINT は entrypoint-rds.sh のまま。
+    - docs は temporal.md、nautobot.md、deploy.md の 8-5、workflow.md の表。
+  - correctness
+    - `ops/up-common.sh:361-402` の `run_temporal_init`。次を読んだ。
+      - `tf_output … || exit 1`
+      - `family` の切り出し
+      - 前の init の `list-tasks` と `--tasks $prev` の分割
+      - `run-task` の 5 フィールドの `IFS=$'\t' read`
+      - `failures` / `None` / 空の判定
+      - `tasks-stopped` の 2 回
+      - `describe-tasks` の `exitCode` が `None` のとき die になること
+    - `docker/images/temporal-server/entrypoint.sh` の待ち。`step=1〜3` は `:25` / `:46` / `:67`。上限は `:57` で `exit 1`、間隔は `:61` の `sleep 10`、最後は `:72` の `exec /sbin/tini`。版の比較 `version_ge` も読んだ。
+    - `init.sh`: master の psql、`setup-schema -v 0.0` を `to_regclass` が `f` のときだけ打つこと、`update-schema` を毎回打つこと。
+  - security
+    - `iam.tf:141-154`: タスクロールの Allow は `ssm:GetParameter` だけ。Deny の `ssm:GetParameter*` は `/<prefix>/nautobot/*` に掛かるので、GetParameters と GetParametersByPath で抜ける道は無い。
+    - 実行ロールの `execution_db_passwords`（`iam.tf:51-64`）は、init とサーバーの secrets にしか効かない。
+    - init のタスクにはタスクロールが無い。`run-task` に `--enable-execute-command` も付けていないので、ECS Exec で init の env に入る経路も無い。
+    - Deny で worker が壊れないかも見た。worker のイメージは `docker/images/temporal/Dockerfile:21` の `COPY *.py` で app/temporal だけを入れる。app/temporal で SSM を使うのは `awsio.py:202` の `send_command` と `get_command_invocation` だけで、`get_parameter` は無い。
+  - runtime bugs
+    - サーバーの待ちと healthCheck の時間を見た。待ちは 30 回 × 10 秒に psql の時間を足したもの。healthCheck は `startPeriod` 300 秒に 6 回 × 10 秒で、合わせて約 360 秒。DB にすぐ繋がる通常の場合は、`exit 1` の行が先に出る。
+    - trap と `${step:-0}` を見た。init.sh を PID 1 の sh で動かしても TERM の handler があるので止まる。
+  - data loss
+    - init を 2 つ同時に走らせると `setup-schema -v 0.0` で版が戻る。run-task の前に `list-tasks` で待つことで、これを防いでいる。
+  - missing tests
+    - 042 の check の名前と件数を、テストの出力で見た。
+- 見ていない観点
+  - 実イメージ（busybox の sh / sed / `tr`）と Fargate での実行。手元の docker も AWS も使わない指示なので。busybox の部分は PM が alpine で確かめた結果（review.md の Round 2）を読んだだけ。
+  - `terraform fmt` / `terraform validate` / `ops/check.sh`。実行していない。
+  - 実物の AWS CLI の `--output text` の並び。テストの偽の aws と、build.md の Round 3 の実測の記録に依った。
+  - build.md の docker の検証 2〜5 の記録の中身。読んでいない。
+  - API compatibility と type safety。対象は shell / Terraform / Dockerfile だけで、Python の API の変更は無い。
+
+## Must fix
+
+None
+
+## Should fix
+
+- [design 整合性] design.md の設計方針 6 と検証 6 が求める「`docs/cycles/QUEUE.md` 147 に AWS で見るものを足す」が、まだ済んでいない（`docs/cycles/QUEUE.md:147`）。さらに、147 にある 039 / 040 の確認項目は 042 の後の挙動に合わなくなっている。
+  - 分類の理由: 実行時に壊れるものは無いので Must ではない。ただし AWS での確認はまとめて 147 で一度に済ませる決まりなので、ここに無いものは確かめられないまま完了になる。だから Should。
+  - 根拠
+    - `design.md:42` の設計方針 6 には「`QUEUE.md` 147 に AWS で見るものを足す（下の検証 6）」とある。`design.md:94` の検証 6 には「QUEUE 147 に足す」とあり、見るものは 4 つ。
+      - `describe-task-definition` で、サーバーの secrets が `POSTGRES_PWD` だけ
+      - `<prefix>-workflow-init` のタスクが exit 0 で止まっている
+      - ECS Exec で `grep -lz NAUTOBOT_DB_PASSWORD /proc/[0-9]*/environ` が空
+      - up.sh の 8-5 が init の待ちを含めて通る
+    - `design.md:100` のリスク 3 にも「AWS で 147 のときに時間を見る」とある。
+    - `QUEUE.md:147` を `workflow-init` / `042` / `8-5` / `POSTGRES_PWD` / `grep -lz` で grep したが、どれも 0 件だった。
+    - build.md の `:81` / `:520` / `:652` は「QUEUE 147 に足すのは PM」と書いて、エンジニアの範囲から外している。review.md の Round 2 / Round 3 にも、147 を書いたという記録は無い。
+    - 147 の既存の項目のうち、042 で合わなくなったものが 2 つある。
+      - 039 の項目「ssm agent とそのシェル、healthCheck の `sh` / `temporal` はタスク定義の env を引き継ぐので `1` でよい」。042 の後は、サーバーのタスク定義に `NAUTOBOT_DB_PASSWORD` が無い（`ecs.tf:113-115`）。だから全部のプロセスで `0` が正しい。`1` が出たら退行（master のパスワードがサーバーに戻った）の印になる。
+      - 040 の項目「起動中（手順 1 の DB 待ちか手順 3 のスキーマ）に `aws ecs stop-task` を打つと ExitCode 143」。サーバーの手順 3 はいまは namespace（`entrypoint.sh:67`）で、スキーマは init のタスクの手順 3（init.sh）に移った。
+  - 壊れる入力と状態
+    - 147 の確認を、いまの文面のとおりに進めたとする。042 の 4 項目（サーバーの secrets、init の exit 0、environ の grep、8-5 の待ちの時間）は誰も見ないまま、147 が完了になる。
+    - ECS Exec の確認では、ssm agent のシェルに `1` が出ても「`1` でよい」と読まれて通ってしまう。
+    - スキーマの途中での stop-task を試すとき、サーバーのタスクを止めても、もうスキーマの手順は走っていない。
+  - 直し方の案
+    - PM が 147 に 042 の 4 項目と、8-5 の待ちの時間（リスク 3）を足す。
+    - 039 の項目は「042 からは全部 `0`（ssm agent のシェルと healthCheck も）」に直す。
+    - 040 の stop-task の項目は「サーバーは手順 1 の DB 待ちか手順 2 の版の待ち。スキーマの途中は `<prefix>-workflow-init` のタスクに stop-task を打ち、ExitCode 143 で止まって up.sh の打ち直しでやり直せること」に分ける。
+
+## Nit
+
+None
+
+## 良かった点
+
+- サーバーのタスク定義の secrets から `NAUTOBOT_DB_PASSWORD` を外した（`ecs.tf:113-115`）。そのうえで、タスクロールに `DenyNautobotParameters`（`iam.tf:149-154`）を付けた。
+  - これで ECS Exec のシェルから `aws ssm get-parameter` で master のパスワードを取る経路も塞いでいる。
+  - Allow が `ssm:GetParameter` だけなので、`ssm:GetParameter*` の Deny は GetParametersByPath の抜け道も含めて閉じている。
+- init のタスクにはタスクロールも ECS Exec も無い。master のパスワードは、一回きりで止まるタスクの env にしか無い。
+- `run-task` は、`failures` が付いても終了コード 0 で返る。この形をちゃんと扱っている。
+  - 件数、`failures[0]` の arn / reason / detail、taskArn の `None` / 空を全部 die に載せている。
+  - `exitCode` が `None`（イメージの取得の失敗など）でも die になる。
+  - text 出力で入れ子が 2 行に割れる件は、実測してから平らなクエリにしている。
+- DB の env を `local.temporal_db_env` に 1 か所でまとめ、init とサーバーで共有した。片方だけ直して食い違うことが起きない。
+- 旧設計では、サーバーのタスクを並べると、それぞれがスキーマを書く競合があった。これが init の 1 本に寄って消えた。init 自身の同時実行も、`list-tasks` の待ちで防いでいる。
+- 042 の check（436 件中、381 件からの増分）は細かい。版の比較の境界（1.9 / 1.19、major の大小、3 つ組、v 付き）、trap の手順の番号、背景プロセスが無いこと、`--tasks $prev` の分割まで縛っている。build.md の mutation の記録でも、壊した版が落ちることを示している。
+
+## ユーザーへの質問
+
+None
+
+### Round 4 の PM の確認（2026-10-11。PM(fable-5-1)。上の cold review 2 回目（opus / effort xhigh。1 サイクル 2 回の 2 回目）の指摘の再現と、完了判定）
+
+- Should 1（QUEUE 147 に 042 の AWS の確認が無い。039 / 040 の項目が 042 の後に合わない）: **再現した**（`sed -n 147p docs/cycles/QUEUE.md | grep -c 'workflow-init\|042\|8-5\|POSTGRES_PWD\|grep -lz'` → `0`）。design 整合性（検証 6 は PM の範囲）なので直した: 147 に 042 の項目（describe-task-definition の secrets、8-5 の待ちと時間、init の exitCode 0、サーバーのログ、ECS Exec の environ の grep と `get-parameter` の AccessDenied、実イメージの busybox）を足し、039 の「`1` でよい」を「042 からは全部 `0`」に、040 の stop-task をサーバー（手順 1 / 2）と init（スキーマの途中）に分けた。直したあと同じ grep で `042` 3 / `workflow-init` 3 / `POSTGRES_PWD` 2 / `8-5` 1 / `grep -lz` 1。
+- 完了判定（verification-before-completion。これまでの Must / Should をいまのコード a1e1c53 + QUEUE の修正で取り直した）:
+  - Round 1 の Must 1（タスクのロールが `/<prefix>/nautobot/*` を読める）: `grep -n DenyNautobotParameters IaC/terraform/aws-managed/workflow/iam.tf` → `150`。`grep -n NAUTOBOT_DB_PASSWORD IaC/terraform/aws-managed/workflow/ecs.tf` → `53`（init の secrets だけ。サーバーには無い）。
+  - Round 2 の Should 1（busybox で未確認）: `docker run --rm -v <scratchpad>/bb:/bb:ro alpine:3.20 sh /bb/t.sh` を取り直し、Round 2 と同じ出力（6 モードの have / err、待ち 2 回のあと「スキーマは temporal=1.19 / temporal_visibility=1.19」、上限 i=31）。alpine は `docker rmi` で消した（`docker images -q | wc -l` → 0）。
+  - Round 2 の Should 2（run-task の failures）: Round 3 の確認のとおり（bash 3.2 の read と test_workflow の check）。
+  - 全テスト: `tests/test_oss_ops.py` → `通過 207 / 失敗 0`、`tests/test_workflow.py` → `通過 436 / 失敗 0`。
+- 全体設計 HTML: 触らない（構成要素は init のタスクが 1 つ増えるが、全体設計 HTML（`~/Documents/repo/artifacts/projects/nwc-poc-architecture.html`）は temporal の起動の手順まで描いていない。差し戻しで design.md の全体の設計は変わっていない）。
+- 最終報告に載せる Nit（直さない）: cold review 1 回目の Nit 3（`temporal.md:18` の空セル）/ Nit 4（`temporal.md:120` / `workflow.md:158` の「apply だけ」の条件）、build.md の Round 1 Nit 6〜9、R2-8〜10、R3-3（空のフィールドで read がずれる。ECS は null を None で返すので実物では起きない）、R3-4（run-task 非 0 の die の文面の断定）。
+- サイクル完了。QUEUE 140 を `[x]`（2026-10-11 完了）にした。
