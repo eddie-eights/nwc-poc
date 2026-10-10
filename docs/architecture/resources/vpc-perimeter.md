@@ -95,6 +95,7 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
   出典: [core.md](../core.md) の「SG」、[troubleshooting.md](../../troubleshooting.md) の「2026-09-29 より前の SG（internal）が残っている」の行。
 - **SG の説明（description）を変えると作り直しになる。**
   ENI が付いていると消えないので、変える前に `ops/down.sh` を打つ。
+  state の description がコードと違う SG（workflow、telegraf_dialout、telegraf_dialout_nlb）を付けるルートが残っていると、`ops/up.sh` は手順 0 の後で止まる（`ops/up-common.sh` の `check_sg_descriptions`。description を変えたら `SG_DESCRIPTION_ROOTS` に足す）。
   出典: [core.md](../core.md) の「SG」。
 - **lab が転送する通信は、片側を CIDR で書く。**
   SG が見る送り元は lab の EC2 ではなく機器の管理 IP になるため、相手の ENI が見える側だけ SG の参照で書く。

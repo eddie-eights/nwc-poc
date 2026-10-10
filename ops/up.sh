@@ -603,6 +603,9 @@ if [ -f "$TF_DIR/base/core/terraform.tfstate" ]; then
     && [ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ] && { tf_init pipeline/stream; [ -n "$(tf pipeline/stream state list 2>/dev/null)" ]; }; then
     die "IaC/terraform/aws-managed/base/core の state に 2026-10-09 より前の取りにいく側の Telegraf の SG（telegraf_dialin）が残っていて、stream がそれを使っている。先に ops/down.sh で消す（stream だけ先に消してもよい）。まだ何も作っていない"
   fi
+  # キーはそのままで description を変えた SG（workflow は 041、telegraf_dialout / telegraf_dialout_nlb は 043）も作り直しで、付けたままでは消せないのは上と同じ。
+  # state の description がコードと違い、付けるルートが残っているなら先に消してもらう（ops/up-common.sh の check_sg_descriptions と SG_DESCRIPTION_ROOTS）
+  check_sg_descriptions
 fi
 
 # ---- 1. ECR --------------------------------------------------------------------

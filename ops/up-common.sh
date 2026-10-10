@@ -21,6 +21,33 @@ tf_apply() {  # tf_apply <ルート> [-var 名前=値 …]
 has_resources() {  # has_resources <ルート>  state があり、リソースが 1 つ以上載っている（init 済みが前提）
   [ -f "$TF_DIR/$1/terraform.tfstate" ] && [ -n "$(tf "$1" state list 2>/dev/null)" ]
 }
+# description を変えた SG（cycle 043）。aws_security_group.workload は description を変えると作り直し（name が固定で create_before_destroy を付けられない）で、
+# その SG を付けたルート（ECS のタスク、NLB の ENI）が残っていると destroy が DependencyViolation で止まり、先に消したルールだけが無い状態になる。
+# <キー>:<その SG を付けるルート> を並べる。description を変えたら 1 つ足す（workflow は 041、telegraf_dialout / telegraf_dialout_nlb は 043）
+SG_DESCRIPTION_ROOTS="workflow:workflow telegraf_dialout:pipeline/stream telegraf_dialout_nlb:pipeline/stream"
+sg_description_in_code() {  # sg_description_in_code <キー>  security_groups.tf の local.security_groups の文言を出す（無ければ空）
+  sed -n "/^    $1 *= \"\(.*\)\"\$/{s//\1/p;q;}" "$TF_DIR/base/core/security_groups.tf"
+}
+sg_description_in_state() {  # sg_description_in_state <キー>  base/core の state の SG の description を出す（init 済みが前提）。state に無ければ 1
+  local out
+  out=$(tf base/core state show -no-color "aws_security_group.workload[\"$1\"]" 2>/dev/null) || return 1
+  # 属性は名前順で、description（SG 本体の 1 行）は egress / ingress より前。workload はインラインのルールを持たないが、念のため最初の行だけ
+  printf '%s\n' "$out" | sed -n '/^ *description *= "\(.*\)"$/{s//\1/p;q;}'
+}
+check_sg_descriptions() {  # base/core の state の SG の description がコードと違い、その SG を付けるルートが残っていれば die（tf_init base/core 済みが前提）
+  local entry key root code state
+  for entry in $SG_DESCRIPTION_ROOTS; do
+    key=${entry%%:*}; root=${entry#*:}
+    code=$(sg_description_in_code "$key")
+    [ -n "$code" ] || die "$TF_DIR/base/core/security_groups.tf に SG $key の description が無い（ops/up-common.sh の SG_DESCRIPTION_ROOTS の綴りを直す）。まだ何も作っていない"
+    state=$(sg_description_in_state "$key") || continue   # state にその SG が無い
+    [ "$state" != "$code" ] || continue
+    [ -s "$TF_DIR/$root/terraform.tfstate" ] || continue
+    tf_init "$root"
+    [ -n "$(tf "$root" state list 2>/dev/null)" ] || continue
+    die "$TF_DIR/base/core の state の SG $key の description（${state}）がコード（${code}）と違い、$root がその SG を付けている。description を変えると作り直しで、付けたままでは消せない（DependencyViolation）。先に $OPS_DIR/down.sh で消す（$root だけ先に消してもよい）。まだ何も作っていない"
+  done
+}
 tf_output() {  # tf_output <ルート> <出力名>  出力を 1 つ読んで出す。読めない・空なら die（赤い NG: の行）。$( ) の中の die はサブシェルだけを抜けるので、
   # 止めるかどうかは呼ぶ側が決める（止めるなら X=$(tf_output …) || exit 1、止めないなら if X=$(tf_output …); then …）
   local v
