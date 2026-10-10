@@ -263,3 +263,7 @@ $ bash ops/check.sh   （通過の行だけ抜き出し）
 
 - `docker rm -f -v temporaltls pgtls`、`docker network rm t036tls`、`docker rmi nwc-temporal-server:test postgres:18 temporalio/server:1.32.1 temporalio/admin-tools:1.32.1 temporalio/ui:2.55.0`
 - `docker ps -a` は空。ネットワークに t036* は無い。イメージに 1.32.1 / postgres:18 / nwc-temporal-server は無い（前からあった postgres:16-alpine / 17-alpine / temporalio/temporal:1.9.1 と ECR タグのものは触っていない）
+
+#### origin/main（485fa44、037）を取り込んだあと
+
+`git merge origin/main` はコンフリクト無し（security_groups.tf は 037 の `lab → telegraf_dialout_nlb udp 5140` の行と workflow の 3 行が両方ある。QUEUE.md は origin/main と同じ）。取り込んだあとの `bash ops/check.sh` は上と同じ件数で `すべて通過`（通過 168 / 168 / 549 / 79 / 3 / 78 / 7 / 110 / 145、68 項目、177 / 207 / 66 / 114 / 104 / 355、失敗 0）。
