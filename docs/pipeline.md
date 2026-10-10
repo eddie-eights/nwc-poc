@@ -346,8 +346,8 @@ aws logs tail --region ap-northeast-1 "$(terraform -chdir=IaC/terraform/aws-mana
 - 設定のテンプレートは `app/gnmic/gnmic.yaml.in` と `app/telegraf/telegraf.conf.in`。変えたときは下の「変えたとき」。
 - `gn get` で機器に届かない、trap が来ない、ログが来ないときは、lab の EC2 で `sudo lab forward-status` を見る（規則が無ければ `sudo lab forward`）。
   - `RETURN`（送り元を残す行。`app/containerlab/lab.sh` の `forward`）が Docker の MASQUERADE より上に無いと、機器が送った行の送り元が lab の EC2 の IP に替わる。
-    trap は NLB で落ちる（NLB は lab の SG から 162/udp を受けない）。syslog は「lab の EC2 から NLB の syslog 5140 への受信ルールを足す（037）」から NLB を通って届き、`tags.source` が EC2 の IP になる。
-    既定の `SYSLOG_STANDARD=RFC3164` で lab の SR Linux（RFC5424）を受けているときは `tags.sysName` も送り元の IP で埋まるので、機器の名前ではなく EC2 の IP として入る（RFC5424 の受け口なら `sysName` は機器の名前のまま）。`sudo lab forward` で打ち直す。
+    trap は NLB で落ちる（NLB は trap（162/udp）を lab の SG からは受けない。lab の SG の 162 は送る側だけ。NLB の 162 が受けるのは送り元が機器の管理 IP のままの DNAT だけ）。syslog は「lab の EC2 から NLB の syslog 5140 への受信ルールを足す（037）」から NLB を通って届き、`tags.source` が EC2 の IP になる。
+    既定の `SYSLOG_STANDARD=RFC3164` で lab の SR Linux（RFC5424）を受けているときは `tags.sysName` も送り元の IP で埋まるので、`sysName` が機器の管理 IP（正常時）ではなく EC2 の IP になる（RFC5424 の受け口なら `sysName` は機器の名前のまま）。`sudo lab forward` で打ち直す。
 
 ## デバッグ用の EC2（lab + Telegraf を 1 台）
 

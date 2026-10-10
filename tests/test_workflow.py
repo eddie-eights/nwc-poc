@@ -1629,5 +1629,8 @@ check("Temporal UI（8233）は土台の通信の表の web → workflow の 1 �
       and ("workflow", "nautobot_db", "5432", "") in _sg_rows
       and "task_ui_from_web" not in tf and "web_to_task_ui" not in tf and "web_sg_id" not in tf and "instance_security_group_id" not in tf
       and 'output "security_group_ids"' in main_out and 'outputs.security_group_ids["workflow"]' in tf)
+_wf_sg_desc = re.search(r'^    workflow\s+= "([^"]*)"$', _sg_tf, re.M)
+check("workflow の SG の description に dev server が無く Temporal server, UI and worker がある（036 で temporalio/server + RDS にした。cycle 041）",
+      _wf_sg_desc is not None and "dev server" not in _wf_sg_desc.group(1).lower() and "Temporal server, UI and worker" in _wf_sg_desc.group(1))
 check("修復案の status に obsolete がある（tools.json の説明も）", "obsolete" in proposals.STATUSES and all("obsolete" in t["description"] for t in tools if t["name"] == "list_proposals"))
 print(f"通過 {passed} / 失敗 0")

@@ -36,7 +36,7 @@ locals {
     nautobot             = "Nautobot ECS task - web, celery worker and redis (IaC/terraform/aws-managed/pipeline/nautobot)"
     nautobot_db          = "Nautobot PostgreSQL on RDS (IaC/terraform/aws-managed/pipeline/nautobot)"
     lambda               = "Lambda in the VPC - graph status, MCP tools, knowledge base index"
-    workflow             = "Temporal dev server and worker ECS task (IaC/terraform/aws-managed/workflow)"
+    workflow             = "Temporal server, UI and worker ECS task (IaC/terraform/aws-managed/workflow)"
     runtime              = "AgentCore Runtime ENIs (IaC/terraform/aws-managed/agent)"
   }
   sg_keys = concat(keys(local.workload_security_groups), ["endpoints"])
@@ -114,7 +114,7 @@ locals {
 
       # trap・syslog・NetFlow・sFlow: 機器 → lab の EC2（lab.sh forward の DNAT）→ NLB。送り元は機器の管理 IP のままなので、NLB は管理ネットワークの CIDR から受け、
       # lab の EC2 は NLB の SG へ送る。NLB は lab の SG からも udp 5140 / 2055 / 6343 を受ける（EC2 自身が試しに送るぶん。下の「両側」の行）。
-      # lab の SG は 162/udp も NLB へ送るが、NLB は trap を lab の SG から受けない
+      # NLB は trap（162/udp）を lab の SG からは受けない（lab の SG の 162 は送る側だけ。下の only = "egress" の行）
       { from = "lab_mgmt", to = "telegraf_dialout_nlb", protocol = "udp", port = 162, why = "SNMP traps from the switches - DNAT on the lab EC2" },
       { from = "lab_mgmt", to = "telegraf_dialout_nlb", protocol = "udp", port = 5140, why = "syslog from the switches - DNAT on the lab EC2" },
       { from = "lab_mgmt", to = "telegraf_dialout_nlb", protocol = "udp", port = 2055, why = "NetFlow from the switches - DNAT on the lab EC2" },
