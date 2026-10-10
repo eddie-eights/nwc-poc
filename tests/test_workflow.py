@@ -648,6 +648,11 @@ check(f"entrypoint の sql_tool: 引数をそのまま temporal-sql-tool に渡�
 check("entrypoint は namespace を /etc/temporal/namespace-rds.sh <address> <namespace> <retention> & で起こし、( … ) & のサブシェルを持たない（cycle 039）",
       '/etc/temporal/namespace-rds.sh "$TEMPORAL_ADDRESS_LOCAL" "$DEFAULT_NAMESPACE" "$DEFAULT_NAMESPACE_RETENTION" &' in [ln.strip() for ln in _ts_ep_code]
       and not any(re.search(r"\)\s*&\s*$", ln) for ln in _ts_ep_code))
+# unset の「後」で起こすことも見る（文字列の有無だけでは、行を手順 2 の前へ動かしても気づけない。exec された子は起こした時点の env を /proc/<pid>/environ に持つ）
+_ts_ns_line = [i for i, ln in enumerate(_ts_ep_logical) if ln.strip().startswith("/etc/temporal/namespace-rds.sh ")]
+_ts_sql_loop = [i for i, ln in enumerate(_ts_ep_logical) if ln.strip().startswith("for pair in ")]
+check(f"entrypoint は temporal-sql-tool（for pair）と namespace-rds.sh を unset NAUTOBOT_DB_PASSWORD より後の行で起こす（行: unset {_ts_unset} / for pair {_ts_sql_loop} / namespace {_ts_ns_line}）",
+      len(_ts_unset) == 1 and len(_ts_sql_loop) == 1 and len(_ts_ns_line) == 1 and _ts_unset[0] < _ts_sql_loop[0] < _ts_ns_line[0])
 _ts_ns = read("docker", "images", "temporal-server", "namespace.sh")
 _ts_ns_code = "\n".join(ln for ln in _ts_ns.splitlines() if not ln.lstrip().startswith("#"))
 _ts_ns_exits = re.findall(r"\bexit\b[ \t]*([^\s;]*)", _ts_ns_code)

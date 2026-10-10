@@ -7,7 +7,7 @@
 「Temporal の履歴を RDS に残す（036）」のコールドレビュー Round 1（`docs/cycles/036-temporal-rds/review.md` の「Nit」）で、`docker/images/temporal-server/entrypoint.sh` と `IaC/terraform/aws-managed/workflow/ecs.tf` に 3 つの Nit が出た。どれも動作には影響しないが、数行で閉じられるので 1 サイクルで消化する。
 
 1. **[security] master のパスワードが temporal-server の env に残る。** `NAUTOBOT_DB_PASSWORD`（Nautobot の RDS の master のパスワード）は、ロールと DB を作ったあと使わないのに、`exec` のあとも PID 1 の env に残り、タスクの中のプロセス（uid temporal）が `/proc/1/environ` から読める。
-   **守れる範囲**: entrypoint のあとに動くプロセス（tini、temporal-server、namespace を作る背景のプロセス）の `/proc/<pid>/environ` から消すこと。**守れない範囲**: ECS Exec（`ecs:ExecuteCommand`）のシェルはタスク定義の env を SSM agent から引き継ぐので、`env` でそのまま見える。これは 036 の design.md のリスク 7 が受け入れた代償（読める範囲は Nautobot のコンテナと同じ）で、根本対策（初期化を一回きりのタスクに分ける）は別サイクル。
+   **守れる範囲**: entrypoint のあとに動くプロセス（tini、temporal-server、namespace を作る背景のプロセス）の `/proc/<pid>/environ` から消すこと。**守れない範囲**: ECS Exec（`ecs:ExecuteCommand`）のシェルはタスク定義の env を SSM agent から引き継ぐので、`env` でそのまま見える。healthCheck が 10 秒ごとに起こす `temporal operator namespace describe` のプロセスも同じ env を持ち、uid temporal で立つ（Round 2 のコールドレビュー Round 1。手元の docker の HEALTHCHECK で再現、Fargate では未確認）。これは 036 の design.md のリスク 7 が受け入れた代償（読める範囲は Nautobot のコンテナと同じ）で、根本対策（初期化を一回きりのタスクに分ける）は別サイクル。
 2. **[整合性] `sql_tool` のホスト名検証が決め打ち。** Round 1 で直した（`SQL_HOST_VERIFICATION` / `SQL_CA` / `SQL_HOST_NAME` から導く）。Round 2 では変えない。
 3. **[runtime] namespace を作る背景のプロセスがゾンビで残る。** `( … ) &` は `exec` のあと temporal-server（同じ PID）の子になり、抜けたあと誰も `wait` しない。Round 1 の `initProcessEnabled` では解けない（init は孤児しか回収せず、親の temporal-server は生きている。さらに PID 1 が init になると `/proc/1/environ` にパスワードが戻る。`design-log.md`）。**PID 1 を tini にし、temporal-server を tini の子にする。** 背景のプロセスは `exec tini` で tini の子になり、抜けたら tini が回収する。
 
@@ -91,4 +91,4 @@
 2. **`SQL_TLS_SERVER_NAME` を temporal の postgres プラグインが読まないかもしれない**（Round 1 の反対弁護人。未確認）。`SQL_HOST_NAME` はいま渡していないので動作に影響しない。design は渡す形のまま残し、QUEUE に未確認として足す（PM）。
 3. **`SQL_HOST_VERIFICATION=true` の経路は手元でも AWS でも通していない。** 036 と同じ。
 4. **イメージとタスク定義が変わり、次の `up.sh` で workflow のサービスが入れ替わる。** min 100 / max 200 で履歴は RDS に残る（AWS では未確認。QUEUE の AWS 動作確認で見る）。
-5. **ECS Exec からは master のパスワードが見える**（背景 1）。このサイクルでは守らない。
+5. **ECS Exec のシェルと healthCheck のプロセスからは master のパスワードが見える**（背景 1）。このサイクルでは守らない。根本対策（初期化を一回きりのタスクに分ける）は QUEUE。
