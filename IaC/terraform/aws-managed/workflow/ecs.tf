@@ -95,7 +95,7 @@ resource "aws_ecs_task_definition" "workflow" {
       image     = local.temporal_image
       essential = true
       # docker/images/temporal-server/（temporalio/server + temporal-sql-tool + psql）。entrypoint はロール temporal で両方の DB のスキーマの版が
-      # イメージの版に揃うまで待ち（ロール・DB・スキーマを入れるのは上の init のタスク。cycle 042）、namespace default を背景で作ってから temporal-server を起こす。
+      # イメージの版以上になるまで待ち（ロール・DB・スキーマを入れるのは上の init のタスク。待ちは 30 回 = startPeriod の 300 秒。cycle 042）、namespace default を背景で作ってから temporal-server を起こす。
       # 履歴は Nautobot の RDS for PostgreSQL に残る（cycle 036。2026-10-10 までは CLI の開発用サーバーで、履歴はコンテナの中のファイルにあった）。portMappings は無し
       environment = concat([
         { name = "DB", value = "postgres12" },
