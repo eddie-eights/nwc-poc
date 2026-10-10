@@ -7,6 +7,7 @@
 #   2. スキーマをロール POSTGRES_USER で入れる（setup-schema は初回だけ。update-schema は毎回）
 #   3. 背景で namespace DEFAULT_NAMESPACE を無いときだけ作る（/etc/temporal/namespace-rds.sh。サーバーが上がるのを待ってから。cycle 039）
 #   4. tini（PID 1）の子として公式の /etc/temporal/entrypoint.sh へ exec（temporal-server start）。背景の namespace-rds.sh も tini の子になり、抜けたら tini が回収する（cycle 039）
+# exec tini までは PID 1 のこの sh が走る。ECS の停止（SIGTERM）は trap で受け、走っている手順（psql / temporal-sql-tool）が返った区切りで exit 143 で抜ける（cycle 040）
 # パスワードは env（ECS の secrets）から psql の \getenv と PGPASSWORD / SQL_PASSWORD で渡し、コマンドラインにもログにも出さない。
 # TLS（psql と temporal-sql-tool）はサーバー本体と同じ SQL_TLS_ENABLED / SQL_HOST_VERIFICATION / SQL_CA / SQL_HOST_NAME（ecs.tf）から導く（cycle 039）。
 set -eu
@@ -30,10 +31,19 @@ SCHEMA_DIR=/etc/temporal/schema/postgresql/v12
 TEMPORAL_ADDRESS_LOCAL=127.0.0.1:7233
 
 log() { echo "entrypoint-rds: $*" >&2; }
+# PID 1 の sh はハンドラの無い SIGTERM を無視する（stopTimeout の後の SIGKILL まで止まらない）。ash は前景の子が返ってから trap を走らせるので、
+# update-schema の途中では切れない。exec tini で trap は既定に戻る（cycle 040）
+trap 'log "SIGTERM を受けたので初期化を止める（手順 ${step:-0} のあと。ここまでの手順はべき等なので次の起動でやり直す）"; exit 143' TERM INT
 
 # psql の接続先（パスワードは呼ぶたびに PGPASSWORD で渡す）。RDS PostgreSQL 15 以降は rds.force_ssl=1 が既定なので、TLS 有効なら require。
 # SQL_HOST_VERIFICATION=true ならサーバー本体と同じく証明書とホスト名を確かめる（verify-full。CA は SQL_CA）
 export PGHOST="$POSTGRES_SEEDS" PGPORT="$DB_PORT" PGCONNECT_TIMEOUT=10
+# サーバー本体の設定テンプレート（YAML）は True / TRUE も真に読むが、sh の = は大文字小文字を区別するので小文字に揃える（cycle 040）
+SQL_TLS_ENABLED=$(printf '%s' "$SQL_TLS_ENABLED" | tr '[:upper:]' '[:lower:]')
+SQL_HOST_VERIFICATION=$(printf '%s' "$SQL_HOST_VERIFICATION" | tr '[:upper:]' '[:lower:]')
+if [ "$SQL_HOST_VERIFICATION" = "true" ] && [ -z "${SQL_CA:-}" ]; then
+  log "SQL_HOST_VERIFICATION=true なのに SQL_CA（CA のパス）が無い。psql の verify-full も temporal-server も RDS の証明書を確かめられない"; exit 1
+fi
 if [ "$SQL_TLS_ENABLED" = "true" ]; then
   if [ "$SQL_HOST_VERIFICATION" = "true" ]; then
     export PGSSLMODE=verify-full
@@ -45,9 +55,11 @@ else
   export PGSSLMODE=prefer
 fi
 # temporal-sql-tool はホスト名の検証を「外す」フラグ（--tls-disable-host-verification）なので、SQL_HOST_VERIFICATION の否定を渡す
+# SQL_TLS_SERVER_NAME は temporal-sql-tool の env（tools/sql/main.go）、SQL_HOST_NAME はサーバー本体の env（config_template.yaml の serverName）
 if [ "$SQL_HOST_VERIFICATION" = "true" ]; then sql_tool_skip_host_verify=false; else sql_tool_skip_host_verify=true; fi
 
 # 1. DB が受け付けるまで待つ（RDS が起きる前にタスクが上がることがあるので、公式の 1 回だけでなく回す）
+step=1
 i=0
 until nc -z -w 10 "$POSTGRES_SEEDS" "$DB_PORT"; do
   i=$((i + 1))
@@ -57,6 +69,7 @@ until nc -z -w 10 "$POSTGRES_SEEDS" "$DB_PORT"; do
 done
 
 # 2. ロールと DB を master で作る（無いときだけ。パスワードは毎回揃える）。CREATE DATABASE ... OWNER には master がそのロールのメンバーである必要があるので先に GRANT
+step=2
 log "ロール $POSTGRES_USER と DB $DBNAME / $VISIBILITY_DBNAME を確かめる"
 PGPASSWORD="$NAUTOBOT_DB_PASSWORD" psql -X -q -v ON_ERROR_STOP=1 -U "$NAUTOBOT_DB_USER" -d "$NAUTOBOT_DB_NAME" \
   -v role="$POSTGRES_USER" -v db="$DBNAME" -v vdb="$VISIBILITY_DBNAME" <<'SQL'
@@ -88,6 +101,7 @@ sql_tool() {  # sql_tool <DB 名> <サブコマンドと引数...>。env はサ�
     exec temporal-sql-tool --plugin postgres12 --ep "$POSTGRES_SEEDS" -p "$DB_PORT" -u "$POSTGRES_USER" --db "$db" "$@"
   )
 }
+step=3
 for pair in "$DBNAME:temporal" "$VISIBILITY_DBNAME:visibility"; do
   db=${pair%%:*}; dir=${pair#*:}
   has=$(PGPASSWORD="$POSTGRES_PWD" psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$db" -tAc "SELECT to_regclass('schema_version') IS NOT NULL")
@@ -99,10 +113,11 @@ for pair in "$DBNAME:temporal" "$VISIBILITY_DBNAME:visibility"; do
   sql_tool "$db" update-schema -d "$SCHEMA_DIR/$dir/versioned"
 done
 
-# 4. namespace を背景で作る（公式 create-namespace.sh と同じ流れ）。失敗しても本体は落とさない（healthCheck が namespace を見るので ECS 側で UNHEALTHY になる）。
+# 4. namespace を背景で作る（公式 create-namespace.sh と同じ流れ）。失敗しても log を出して exit 0 で抜けるだけで、終了コードは誰も待たない（healthCheck が namespace を見るので ECS 側で UNHEALTHY になる）。
 # fork だけのサブシェルは /proc/<pid>/environ に起動時の env（master のパスワード入り）を持ち続けるので、別の実行ファイルを exec させる（cycle 039）
+step=4
 /etc/temporal/namespace-rds.sh "$TEMPORAL_ADDRESS_LOCAL" "$DEFAULT_NAMESPACE" "$DEFAULT_NAMESPACE_RETENTION" &
 
 # 5. 公式の入口（BIND_ON_IP=0.0.0.0 なら TEMPORAL_BROADCAST_ADDRESS を getent hosts $(hostname) で埋めて temporal-server start）。
 # PID 1 を tini にする: 背景の namespace-rds.sh は tini の子になり、抜けたら tini が回収する。tini は SIGTERM を temporal-server へ渡す（cycle 039）
-exec tini -- /etc/temporal/entrypoint.sh
+exec /sbin/tini -- /etc/temporal/entrypoint.sh

@@ -51,6 +51,8 @@ resource "aws_ecs_task_definition" "workflow" {
         { name = "DBNAME", value = "temporal" },
         { name = "VISIBILITY_DBNAME", value = "temporal_visibility" },
         { name = "SQL_TLS_ENABLED", value = "true" }, # RDS PostgreSQL 15 以降は rds.force_ssl=1 が既定
+        # true にするには RDS の CA をイメージに入れて SQL_CA を渡す（SQL_HOST_NAME は任意。無ければ接続先のホスト名）。
+        # false のあいだは psql（require）も temporal-server（InsecureSkipVerify）も CA を確かめない
         { name = "SQL_HOST_VERIFICATION", value = "false" },
         { name = "SQL_MAX_CONNS", value = tostring(var.temporal_sql_max_conns) },
         { name = "SQL_MAX_IDLE_CONNS", value = tostring(var.temporal_sql_max_idle_conns) },
@@ -74,6 +76,10 @@ resource "aws_ecs_task_definition" "workflow" {
         retries     = 6
         startPeriod = 180
       }
+      # 起動中（entrypoint の DB を待つ / ロールと DB / スキーマ）に停止が来ると、entrypoint の trap は走っている手順が返るまで待ってから exit 143 で抜ける。
+      # 初回の setup-schema + update-schema の途中で SIGKILL しないよう Fargate の上限の 120 秒にする。通常の停止は tini が SIGTERM を
+      # temporal-server に渡してすぐ抜けるので 120 秒は待たない（cycle 040）
+      stopTimeout = 120
       logConfiguration = {
         logDriver = "awslogs"
         options = {

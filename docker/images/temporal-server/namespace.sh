@@ -2,12 +2,15 @@
 # namespace を無いときだけ作る（cycle 039。docker/images/temporal-server/Dockerfile が /etc/temporal/namespace-rds.sh に置く）。
 # entrypoint-rds.sh が master のパスワードを env から外したあとに背景で起こす。公式 create-namespace.sh と同じ流れで、サーバーが上がるのを待ってから作る。
 # 使い方: namespace-rds.sh <frontend のアドレス> <namespace> <retention>
-# 失敗しても exit 0（本体の temporal-server は落とさない。healthCheck が namespace を見るので ECS 側で UNHEALTHY になる）。
+# 引数が足りなければ非 0 で抜ける（起こし方の誤り）。動作中の失敗（frontend が開かない、cluster health が通らない、作れない）は log を出して exit 0 で抜けるだけ。本体の temporal-server は別プロセスで、この終了コードを誰も待たない。健全性は ECS の healthCheck の describe が見る。
 # exec tini の後は tini の子になり、抜けたら tini が回収する（ゾンビを残さない）。
 set -u
 
+: "${1:?namespace-rds.sh <frontend のアドレス> <namespace> <retention> の 1 つ目が無い}"
 address=$1
+: "${2:?namespace-rds.sh <frontend のアドレス> <namespace> <retention> の 2 つ目が無い}"
 namespace=$2
+: "${3:?namespace-rds.sh <frontend のアドレス> <namespace> <retention> の 3 つ目が無い}"
 retention=$3
 
 log() { echo "entrypoint-rds: $*" >&2; }

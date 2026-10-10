@@ -1,6 +1,6 @@
 # Temporal のサーバー（cycle 036）。WORKFLOW のタスクの temporal コンテナ。履歴は Nautobot の RDS for PostgreSQL（temporal / temporal_visibility）に書く。
 # 公式の temporalio/server に、admin-tools の temporal-sql-tool（スキーマ）と temporal CLI（namespace と healthCheck）と psql（ロールと DB の作成）を足し、
-# 入口を entrypoint.sh（初期化してから公式の /etc/temporal/entrypoint.sh へ exec）に替える。worker のイメージは docker/images/temporal/（別物）。
+# 入口を entrypoint-rds.sh（初期化してから /sbin/tini の子として公式の /etc/temporal/entrypoint.sh へ exec）に替える。worker のイメージは docker/images/temporal/（別物）。
 # tini は entrypoint.sh が最後に exec する PID 1（temporal-server と namespace を作る背景のプロセスの親。抜けた子を回収する。cycle 039）。
 # namespace.sh は entrypoint.sh が背景で起こす namespace の作成（/etc/temporal/namespace-rds.sh。master のパスワードを外したあとの env で動く。cycle 039）。
 # 版の正は ops/up-common.sh の TEMPORAL_SERVER_VERSION と POSTGRES_MAJOR（--build-arg で渡す。ここの既定値も同じ値にしてある。tests/test_workflow.py が一致を見る）。

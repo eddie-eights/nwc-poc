@@ -58,8 +58,10 @@ worker が読み書きするもの:
 - **初期化は temporal のコンテナの entrypoint がやる。**
   - ロールと DB は Nautobot の master で「無いときだけ」作る。スキーマは `schema_version` が無い初回だけ `setup-schema`、毎回 `update-schema`（べき等。消すコマンドは打たない）。
   - namespace `default` は temporal-server を起こしたあとに背景で作る。healthCheck がその describe を見るので、worker と ui は namespace ができてから起きる。
-  - ロールと DB を作った直後に、master のパスワード（`NAUTOBOT_DB_PASSWORD`）を env から外す。守れるのは tini / temporal-server / namespace を作る背景のプロセスの `/proc/<pid>/environ`。見える経路が 2 つ残る: ECS Exec のシェルと、healthCheck が 10 秒ごとに起こす `temporal operator namespace describe` のプロセス。どちらもタスク定義の env を引き継ぐ。healthCheck のプロセスは uid temporal で立つので、`ecs:ExecuteCommand` の権限が無くてもタスクの中のコードから読める（手元の docker の HEALTHCHECK で確認。Fargate では未確認）。[036 の設計](../../cycles/036-temporal-rds/design.md)のリスク 7 のままで、根本対策（初期化を一回きりのタスクに分ける）は `docs/cycles/QUEUE.md`。
+  - ロールと DB を作った直後に、master のパスワード（`NAUTOBOT_DB_PASSWORD`）を env から外す。守れるのは tini / temporal-server / namespace を作る背景のプロセスの `/proc/<pid>/environ`。起動が終わったあとも見える経路が 2 つ残る（起動中の 3 つ目は下の `/proc/1/environ`）: ECS Exec のシェルと、healthCheck が 10 秒ごとに起こす `temporal operator namespace describe` のプロセス。どちらもタスク定義の env を引き継ぐ。healthCheck のプロセスは uid temporal で立つので、`ecs:ExecuteCommand` の権限が無くてもタスクの中のコードから読める（手元の docker の HEALTHCHECK で確認。Fargate では未確認）。[036 の設計](../../cycles/036-temporal-rds/design.md)のリスク 7 のままで、根本対策（初期化を一回きりのタスクに分ける）は `docs/cycles/QUEUE.md`。
   - PID 1 はイメージの tini。temporal-server と namespace を作る背景のプロセス（`/etc/temporal/namespace-rds.sh`）は tini の子で、抜けたら tini が回収する。ECS の `initProcessEnabled` では回収できない: init は孤児しか拾わず、親の temporal-server は生きている（cycle 039）。
+  - `exec tini` までの手順 1〜3 は PID 1 の sh で走る。その間は `/proc/1/environ` にタスク定義の env（master のパスワード入り）がある（tini に替わった時点で消える）。
+  - 起動中（手順 1〜3）に ECS の停止が来たら、走っている手順の区切りで exit 143 で抜ける（update-schema の途中で切らない）。stopTimeout は 120 秒（cycle 040）。
   - 出典: `docker/images/temporal-server/entrypoint.sh`、`namespace.sh`、`Dockerfile`。
 - **gRPC の 7233〜7239 と membership の 6933〜6939 はタスクの外に出さない。**
   temporal は `BIND_ON_IP=0.0.0.0` で待つが portMappings に出さず、SG は workflow → workflow の自分宛てだけ（デプロイの入れ替わりで 2 つのタスクが並ぶ間に使う）。worker は同じタスクの `localhost:7233`、ui は `127.0.0.1:7233`。
@@ -110,7 +112,7 @@ worker が読み書きするもの:
 | 項目 | 状態 |
 |---|---|
 | Temporal の履歴 | Nautobot の RDS に残る。`ops/down.sh` で RDS ごと消える |
-| RDS の PostgreSQL 18 | Temporal の動作確認済みの一覧は 12〜16。手元の `postgres:18` ではスキーマが入り動いた（2026-10-10）。RDS の 18、TLS（`SQL_HOST_VERIFICATION=false`）、master での `CREATE EXTENSION btree_gin` は AWS では未確認。ホスト名検証を有効にするには、RDS の CA をイメージに入れ（いまの Dockerfile には無い）、ecs.tf に `SQL_HOST_VERIFICATION=true` と `SQL_CA` を足し、`tests/test_workflow.py` の期待を変える。entrypoint の psql / temporal-sql-tool は同じ env を読むので変えなくてよい |
+| RDS の PostgreSQL 18 | Temporal の動作確認済みの一覧は 12〜16。手元の `postgres:18` ではスキーマが入り動いた（2026-10-10）。RDS の 18、TLS（`SQL_HOST_VERIFICATION=false`）、master での `CREATE EXTENSION btree_gin` は AWS では未確認。ホスト名検証を有効にするには、RDS の CA をイメージに入れ（いまの Dockerfile には無い）、ecs.tf に `SQL_HOST_VERIFICATION=true` と `SQL_CA` を足し、`tests/test_workflow.py` の期待を変える。entrypoint の psql / temporal-sql-tool は同じ env を読むので変えなくてよい。`SQL_HOST_VERIFICATION=false` のあいだは psql（require）も temporal-server（InsecureSkipVerify）も CA を確かめない。`true` で `SQL_CA` が無いと entrypoint が起動時に止める |
 | 2 タスク | デプロイの入れ替わりの間だけ並ぶ。AWS では未確認 |
 | ECS Exec と healthCheck | どちらのプロセスもタスク定義の env を引き継ぐので master のパスワードが見える。ECS Exec の `ecs:ExecuteCommand` の権限は Nautobot のコンテナと同じ扱い。healthCheck（10 秒ごと）は uid temporal で立つので、タスクの中のコードからも読める |
 | フラップ | 走っているあいだに届いた落ち直しの `firing` は捨てる（[workflow.md](../../workflow.md) の「通知の重なりと取りこぼし」） |
@@ -136,3 +138,4 @@ worker が読み書きするもの:
 - 2026-10-10（036）: CLI の開発用サーバー（`temporalio/temporal` 1.9.1、履歴はコンテナの中のファイル）をやめ、`temporalio/server` 1.32.1 の本番モードで Nautobot の RDS に履歴を書く形に変えた。UI は別コンテナ。
   - [Temporal の履歴を RDS に残す（036）の設計](../../cycles/036-temporal-rds/design.md)
 - 2026-10-10（039）: tini を PID 1 にし、namespace の作成を別の実行ファイル（`namespace-rds.sh`）にし、master のパスワードを最後に使った直後に env から外した。psql / temporal-sql-tool の TLS はサーバー本体と同じ env から導く。[temporal-server の entrypoint の守りを締める（039）の設計](../../cycles/039-temporal-entrypoint-hardening/design.md)
+- 2026-10-10（040）: 起動中の SIGTERM を entrypoint の trap で受けて手順の区切りで exit 143 で抜け、temporal の stopTimeout を 120 秒にした。TLS の env を小文字に揃え、`SQL_HOST_VERIFICATION=true` で `SQL_CA` が無ければ起動時に止める。[temporal-server の entrypoint を起動中の SIGTERM で止められるようにする（040）の設計](../../cycles/040-temporal-entrypoint-sigterm-nits/design.md)
