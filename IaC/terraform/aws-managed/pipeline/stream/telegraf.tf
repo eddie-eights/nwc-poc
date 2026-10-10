@@ -14,7 +14,7 @@
 #   syslog      機器 → lab の EC2 の 5140/udp → DNAT → NLB の 5140 → syslog-ng のタスクの 5140
 #   NetFlow / sFlow  機器 → lab の EC2 の 2055 / 6343（udp）→ DNAT → NLB の同じ番号 → GoFlow2 のタスクの同じ番号
 #               （lab の SR Linux は NetFlow を出さない。試すときは lab の EC2 のホストから ops/netflow_send.py で NLB へ直接送る。
-#               syslog も同じく lab の EC2 のホストから logger で NLB へ直接送れる。docs/troubleshooting.md の「正しい送り方」の 2 つ目）
+#               syslog も同じく lab の EC2 のホストから logger で NLB へ直接送れる（AWS では未確認）。docs/troubleshooting.md の「正しい送り方」の 2 つ目）
 # タスクの IP は作り直すと変わるので、DNAT の宛先は変わらない NLB の IP にする（SSM の /<接頭辞>/telegraf-address）。
 # NLB は UDP の送り元の IP を残す（UDP のターゲットは client IP preservation が既定で、Spark とエージェントは送り元の IP で機器を引く）。
 # SG は NLB（telegraf_dialout_nlb）とタスクごとに別々で、ルールは IaC/terraform/aws-managed/base/core の security_groups.tf の通信の表にある:

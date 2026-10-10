@@ -68,6 +68,6 @@
 
 ## 未確定事項とリスク
 
-1. **SG の作り直し。** `description` は SG の作り直しを伴う属性なので、次の `ops/up.sh` で workflow の SG が replace になる。いま環境が無いので影響は無い。041 より前に立てた環境が残っている PC で `up.sh` を打つと、`aws_security_group.workload["workflow"]` に `create_before_destroy` が無く名前も固定なので、先に古い SG のルールが消え、SG 本体は ECS のタスクの ENI とほかの SG のルールの参照が残って `DependencyViolation` で消せず、apply が失敗する（`security_groups.tf:14` と `ops/up.sh:587-588` の書き方のとおり。走っている Temporal のタスクは送信のルールを失う）。環境が残っていれば先に `ops/down.sh`（PM が QUEUE 145 に書く。Round 1 の cold review の Should fix 1 で「一度止まる」から直した）。
+1. **SG の作り直し。** `description` は SG の作り直しを伴う属性なので、次の `ops/up.sh` で workflow の SG が replace になる。いま環境が無いので影響は無い。041 より前に立てた環境が残っている PC で `up.sh` を打つと、`aws_security_group.workload["workflow"]` に `create_before_destroy` が無く名前も固定なので、先に古い SG のルールが消え、SG 本体は ECS のタスクの ENI とほかの SG のルールの参照が残って `DependencyViolation` で消せず、apply が失敗する（`security_groups.tf:14` と `ops/up.sh:587-588` の書き方のとおり。走っている Temporal のタスクは送信のルールを失う）。環境が残っていれば先に `ops/down.sh`（PM が QUEUE 145 に書く。Round 1 の cold review の Should fix 1 で「一度止まる」から直した）。OSS 版も同じ（`IaC/terraform/oss/base/core/security_groups.tf` はマネージド版へのシンボリックリンクで、`oss.tf:75-78` が `local.security_groups` をそのまま引き継ぎ、`ops/oss/up.sh:5` のとおり workflow はいつも作る）ので、041 より前の OSS 版の環境が残っていれば先に `ops/oss/down.sh`。ガードを置くなら `ops/oss/up.sh:152-160` の塊にも（Round 2 の cold review の Should fix 2）。
 2. **行番号のずれ。** 038 以降に docs が動いているので、行番号は目安。文言（引用した文）で探し、見つからなければ build.md に書いて止める（別の文に置き換えない）。
 3. docs の表と Terraform の表の一致はテストしない（設計方針 6）。次にずれたときは人が気づくしかない。

@@ -183,3 +183,164 @@ $ grep -n "lab の SG からは受けない" <6 ファイル> | grep -vc "送る
 ```
 
 結論（Round 1）: Must 0 / Should 3（3 件とも直した）/ Nit 7（5 件直した、1 件記録、1 件 QUEUE）。実装ファイル（docs と .tf のコメント、テスト）が変わったので、cold reviewer の 2 回目を呼ぶ。
+
+### cold reviewer 2 回目（review-r02.md。対象 `01a1f33`。opus / effort xhigh）
+
+## サマリ
+
+対象は「NLB の受信と試し方の説明を揃え、workflow の SG の description を直す（041）」の Round 2。
+
+- 全体: `main`（865dfcc）→ HEAD（01a1f33）。13 ファイル、435 行追加 / 20 行削除。そのうち `docs/cycles` を除くと 9 ファイル。
+- 前ラウンドからの差分: `a1d387e..01a1f33`。11 ファイル。中身は review.md の新規 185 行と、docs・コメント・テストの 1〜4 行ずつの直し。
+
+Round 1 で直すとした 8 件（Should 3 件、Nit 5 件）は、どれも記録どおりに直っている。
+`./ops/check.sh` は手元で「すべて通過」（rc=0）になった。
+Must fix は無い。
+
+Should fix は 2 件ある。
+
+- Round 1 の Should fix 2 の直しで書き直した `docs/deploy.md:95` に、この cycle の主題である「NLB が誰から受けるか」について、正本と違う一文が新しく入った。
+- Round 1 の Should fix 1 の直し（SG の作り直しのリスク）が、マネージド版の `ops/up.sh` / `ops/down.sh` しか書いていない。OSS 版も同じ `security_groups.tf` を使う。
+
+### 見た観点 / 見ていない観点
+
+見た観点:
+
+- **design.md との整合性**
+  - 設計方針 1〜7 を、`git diff main..HEAD` の全行と突き合わせた。
+  - Round 1 の review.md にある PM の確認（「直した」とした 8 件）を、`git diff a1d387e..01a1f33` と 1 件ずつ照らした。
+  - `diff <(sed -n 83,84p docs/architecture/core.md) <(sed -n 62,63p docs/architecture/resources/vpc-perimeter.md)` を実行し、IDENTICAL だった（設計方針 2 と Round 1 の Nit 3）。
+  - 検証 3 は自分で grep し直した。6 ファイルで「受けない」を含み、かつ trap / 162 に触れる行は 7 行あり、7 行とも「lab の SG からは受けない」と「送る側だけ」の両方を含む。
+  - `grep -rni "dev server" IaC app ops docs`（`docs/cycles` を除く）は 0 件だった。
+  - 検証 4 の deploy.md の grep を、build.md と同じパターンで打ち直した（下の Nit 1）。
+- **correctness（docs とコメントの事実）**
+  - `security_groups.tf:115-126` を読んだ（NLB の受信は `lab_mgmt` の CIDR と `lab` の SG。162 は `only = "egress"`）。
+  - `:160-182` の `only` の扱い（egress と ingress の for_each の条件）を読んだ。
+  - `app/spark/snmp_sinks.py:168,461-470` を読んだ（`--device-map` と `with_sysname`）。
+  - analytics の `variables.tf:274-275`、`splunk.tf:131`、`outputs.tf:57-58` を読んだ。`--device-map` と `DEVICE_MAP` は同じ `var.device_map` から来ている。
+  - `app/syslog-ng/syslog-ng.conf.in:13-17,56,60` を読んだ（`keep-hostname(yes)`、`use-dns(no)`、`tags.sysName=$HOST`、`tags.source=$SOURCEIP`）。
+  - `app/containerlab/lab.sh:323-335` を読んだ（DNAT は 162 / 5140 / 2055 / 6343）。
+  - `ops/netflow_send.py:1-19` を読んだ。
+  - `ops/up.sh:290-305` と `:586-605` を読んだ。
+  - `docs/pipeline.md` の見出しを見た。313 行目が「gnmic と Telegraf に入る」、次の `##` は 352 行目で、347 行目の `forward-status` の箇条書きはこの節の中にある。
+  - `docs/troubleshooting.md:395-470`（「正しい送り方」の 2 つの送り方）を読んだ。
+- **runtime bugs / data loss（SG の description の変更）**
+  - `aws_security_group.workload` の定義（`security_groups.tf:151-159`。`lifecycle` は無い）を読んだ。
+  - OSS 版の `IaC/terraform/oss/base/core/security_groups.tf` がマネージド版へのシンボリックリンクであることを `ls -la` で確かめた。
+  - `oss.tf:75-78`（`workload_security_groups` が `local.security_groups` を引き継ぐ）を読んだ。
+  - `ops/oss/up.sh:5,152-160` と `ops/oss/down.sh:50-52` を読んだ。
+- **security**
+  - `security_groups.tf` の差分は、description 1 行とコメント 1 行だけ。通信の表（`sg_flows`）の行は増えても減ってもいない。
+- **missing tests**
+  - 足した check の正規表現と条件を、python で次の 4 通りに当てた。
+
+    | 当てた中身 | 結果 |
+    |---|---|
+    | main の値 | False |
+    | HEAD の値 | True |
+    | HEAD に「Dev Server」を足したもの | False |
+    | `=` の揃えを詰めたもの | True |
+- **テストの実行**
+  - `./ops/check.sh` を実行した。末尾は「すべて通過」で rc=0。`tests/test_workflow.py` は `通過 371 / 失敗 0` で、足した check が `ok` の行に出ている。
+  - `terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss` は rc=0。
+  - 実行後の `git status --porcelain -uall` は空だった。
+
+見ていない観点:
+
+- AWS での動作は見ていない。SG の作り直しで `terraform apply` がどう失敗するかは、静的に読んだだけ。plan も apply もしていない。
+- `aws_vpc_security_group_*_rule` の `referenced_security_group_id` が、変わったときにその場で更新されるのか、作り直しになるのか。provider の版に当たって確かめていないので、design.md のリスク 1 の「ほかの SG のルールの参照が残って」が本当にそうなるかは確かめていない。ECS のタスクの ENI だけでも `DependencyViolation` になる、という結論は変わらない。
+- type safety と API compatibility は、SG のキー・名前・outputs に変更が無いことだけを見た。
+- My Repo の全体設計 HTML は対象外。
+
+## Must fix
+
+None
+
+## Should fix
+
+- **[design.md との整合性 + correctness] `docs/deploy.md:95`（Round 1 の Should fix 2 の直しで書き直した行）**
+
+  新しい 95 行目は「`ops/netflow_send.py` も lab の EC2 のホストから打つもの（NLB は lab の SG からしか受けない）なので来ない」と書いている。正本と比べて、ずれが 2 つある。
+
+  - 「NLB は lab の SG からしか受けない」は、正本と違う。`base/core/security_groups.tf:118-126` では、NLB の受信は次の 2 つ。
+    - `lab_mgmt`（203.0.113.0/24）から 162 / 5140 / 2055 / 6343
+    - `lab` の SG から 5140 / 2055 / 6343
+
+    この cycle は、NLB が誰から何を受けるかの説明を正本に揃えるためのもの（design.md:9）。それなのに、Round 1 の直しでその主題について新しい食い違いが 1 つ入った。
+  - 同じ文の「NetFlow / sFlow は lab の SR Linux が出さず」は、Round 1 の Should fix 3 で `lab/telegraf.tf:10` から外した言い過ぎと同じ。そちらは「sFlow はコンテナ版で出るか未確認」に直してあり、根拠は `ops/netflow_send.py:3`。
+    しかも `SKIP_LAB` の節では lab の SR Linux 自体が無いので、この理由はそもそも要らない。
+
+  直すなら、`ops/up.sh:300` と同じ言い方にする。たとえば次のとおり。
+  > trap・syslog・NetFlow・sFlow は lab からしか来ない（NLB が受けるのは lab の管理ネットワークの CIDR と lab の SG からだけ）。`ops/netflow_send.py` も、`logger` で送る試し方（…）も、lab の EC2 のホストから打つので使えない。
+
+  Should にした理由: `SKIP_LAB` のときの結論（何も来ない）は正しいので、動きは変わらない。困るのは、この行を NLB の受信の説明として読んだ人。管理ネットワークの CIDR からの DNAT（trap の本来の経路）が受けられないと読み違える。Round 1 で同じ種類のずれ（新しく足した行に入った事実の食い違い）を Should にしたので、それに揃えた。
+
+- **[runtime bugs / data loss（記載漏れ）] `docs/cycles/041-nlb-docs-and-workflow-sg/design.md:71`（リスク 1）、`docs/cycles/QUEUE.md:145`、`:146`**
+
+  Round 1 の Should fix 1 の直しは、SG の作り直しのリスクと回避策を、マネージド版の `ops/up.sh` / `ops/down.sh` の名前でしか書いていない。OSS 版も同じ形で影響を受ける。
+
+  - `IaC/terraform/oss/base/core/security_groups.tf` は、マネージド版の `security_groups.tf` へのシンボリックリンク。
+  - `oss.tf:75-78` は、`workload_security_groups` に `local.security_groups` をそのまま引き継ぐ。workflow は `oss_replaced` に入っていない。
+  - `ops/oss/up.sh:5` は workflow をいつも作る。
+
+  このため、041 より前に立てた OSS 版の環境が残っていると、`ops/oss/up.sh` でも `aws_security_group.workload["workflow"]`（`nwc-oss-workflow`）が作り直しになる。そこでマネージド版と同じように apply が失敗する見込み。回避策は `ops/oss/down.sh`。
+
+  QUEUE:145 のガードの候補も `ops/up.sh:596-605` の形しか挙げていない。OSS 版には別のガードの塊（`ops/oss/up.sh:152-160`）がある。
+
+  直すなら、リスク 1 と QUEUE の 2 行に「OSS 版は `ops/oss/up.sh` / `ops/oss/down.sh`。ガードは `ops/oss/up.sh` にも」を足す。
+
+  Should にした理由: いまは環境が無い（design.md:8）ので、誰も困らない。困るのは、041 より前の OSS 版を残した PC で `ops/oss/up.sh` を打ったとき。マネージド版にしか注意が無いと、その人は書いてある回避策を自分の環境に当てはめられない。Round 1 で同じリスクのマネージド版の書き方を Should にしたので、それに揃えた。
+
+## Nit
+
+- **[design.md との整合性（検証の記録）] design.md:66 の検証 4、`docs/cycles/041-nlb-docs-and-workflow-sg/build.md` の検証 4**
+
+  Round 1 の直しのあと、`deploy.md:96` は「lab の EC2 から `logger` で送る試し方…も同じ理由で使えない」で始まるようになった。そのため、build.md と同じ grep を打つと、0 件ではなく 1 件が当たる。
+
+  ```
+  $ grep -n "SKIP_LAB" -A6 docs/deploy.md | grep -cE '^[0-9]+-\s*(- )?lab の EC2 から'
+  1
+  ```
+
+  行の中身は「使えない」という否定なので、設計の意図（lab の EC2 を使う案内をしない）は満たしている。
+  ただ、build.md に貼ってある期待出力（0）は今の状態では再現しない。Round 1 の PM の確認でも、この検証は打ち直していない。
+  記録として、review.md か build.md に「Round 1 の直しのあと 1 件当たるが、否定の文」と 1 行残すとよい。
+
+- **[correctness（QUEUE の記述）] `docs/cycles/QUEUE.md:145`**
+
+  - 「`security_groups.tf:27,29` の telegraf_dialout / telegraf_dialout_nlb の description が『traps, syslog and MDT』のまま」とあるが、その文字列が入っているのは 27 行目（telegraf_dialout）だけ。29 行目（telegraf_dialout_nlb）は「Internal NLB in front of the Telegraf dial-out task」で、古さの中身が違う。いまの NLB は syslog-ng と GoFlow2 の前にも立っている。
+  - `security_groups.tf:25` に「dialout と NLB の description は cycle 012 で syslog と MDT が抜けても変えない（変えると作り直し）」という記録済みの判断がある。この行はそれをくつがえす候補なので、その行を直すことも書いておくと、次の cycle で見落とさない。
+  - 同じ行の括弧の中に、題名（NLB の受信の説明と telegraf の description）と関係の無い「workflow の SG のガードを `up.sh` に置くか」が入っている。「1 行 1 件」の決まりに照らすと、別の行に分けるのが合う。
+
+- **[correctness（言い切りの強さ）] `IaC/terraform/aws-managed/pipeline/stream/telegraf.tf:17`**
+
+  「syslog も同じく lab の EC2 のホストから logger で NLB へ直接送れる」と言い切っている。リンク先の `docs/troubleshooting.md` の「正しい送り方」の 2 つ目は「AWS では未確認」と書いている。
+  一方、NetFlow の同じ経路は 2026-10-09 に `flows` で 2 件の実績がある（`troubleshooting.md` の「届かなかったわけ」の 1）。
+  コメントでは「送れる（AWS では未確認）」くらいにしておくと、docs と揃う。
+
+## 良かった点
+
+- Round 1 で直すとした 8 件が、review.md の記録どおりに差分へ入っている。
+  - Should fix 1〜3
+  - Nit 1（`--device-map`）、Nit 2（2 文目の主語）、Nit 3（ポートの順）、Nit 4（「2 つ目」）、Nit 5（`.lower()`）
+- `core.md:83-84` と `vpc-perimeter.md:62-63` の 2 行が、`diff` で字面まで一致している。
+- 「162 は受けない」を言う 7 か所が、全部同じ 2 語を含んでいる。2 文目の主語も「NLB の 162 が受けるのは…」に揃い、読み違いが無くなった。
+- `troubleshooting.md:452` の `--device-map`（Splunk の `DEVICE_MAP` と同じ表）は、analytics の `variables.tf:275` と `outputs.tf:57-58` の配線と合っている。
+- `lab/telegraf.tf:10-11` の括弧は、`ops/netflow_send.py:1,3,8` と合う形に直った（DNAT を通らない、NetFlow v5 だけ、sFlow は未確認）。
+- テストの check は、大文字小文字を変えた退行でも落ちる。`terraform fmt` の揃えの幅が変わっても当たる（python で確かめた）。
+- `app/` と `ops/` には差分が無く、通信の表（`sg_flows`）の行も変わっていない。
+
+## ユーザーへの質問
+
+None
+
+### PM の確認（Round 2）
+
+- 対象: `01a1f33`。cold reviewer: 依頼した（2 回目 / 2 回。opus / effort xhigh）。PM の確認: fable-5-1 / effort high。
+- Should fix 1（deploy.md:95）: 再現した。`base/core/security_groups.tf:118-126` を読んだ。NLB の受信は `lab_mgmt`（203.0.113.0/24）から 162/5140/2055/6343 と `lab` の SG から 5140/2055/6343 の 2 つで、「lab の SG からしか受けない」は誤り。`ops/up.sh:300` と同じ言い方に直した（SR Linux の言い過ぎも外した）。
+- Should fix 2（design.md リスク 1、QUEUE）: 再現した。`ls -l IaC/terraform/oss/base/core/security_groups.tf` はマネージド版へのシンボリックリンク、`oss.tf:75-78` は `local.security_groups` を引き継ぎ、`ops/oss/up.sh:5` は workflow をいつも作る。リスク 1 と QUEUE 145（AWS で見るもの）に `ops/oss/down.sh` を足した。
+- Nit 1（検証 4 の grep）: 再現した（`grep -n "SKIP_LAB" -A6 docs/deploy.md | grep -cE '^[0-9]+-\s*(- )?lab の EC2 から'` は Round 1 の直し後 1。今回 95-96 行目を書き直したので、いまは `ops/netflow_send.py` で始まる行になり 0 に戻る）。
+- Nit 2（QUEUE の telegraf の description）: 再現した（`:29` は「Internal NLB in front of the Telegraf dial-out task」）。QUEUE の行を `:27` / `:29` の実物と `security_groups.tf:25` の記録済みの判断に直し、up.sh のガードを別の 1 行に分けた。
+- Nit 3（stream/telegraf.tf:17）: 「（AWS では未確認）」を足した。
+- `./ops/check.sh`: 末尾「すべて通過」。
+- 結論: Must 0 / Should 2（2 件とも直した）/ Nit 3（3 件とも直した）。cold reviewer は 2 回使い切ったので呼ばない。直したのは docs とコメントだけで、実装（`security_groups.tf` の description、テスト）は Round 1 のまま。サイクル完了。QUEUE の 3 行を完了にした。
