@@ -16,7 +16,7 @@
 | コンテナ | `app/agentcore/app.py`。イメージは ECR の `<prefix>-agent`（arm64） | `docker/images/agentcore/Dockerfile` |
 | モデル | `jp.amazon.nova-2-lite-v1:0`（東京と大阪に振り分ける推論プロファイル） | 変数 `model_id` |
 | ガードレール | Standard 階層、フィルタの強さは MEDIUM | `IaC/terraform/aws-managed/agent/kb.tf` の `aws_bedrock_guardrail.this` |
-| Knowledge Base | `CREATE_KB=1` のときだけ。assets のバケットの `kb/` の md（[s3-buckets.md](s3-buckets.md)） → Titan Embeddings v2（1024 次元）→ OpenSearch Serverless の `kb-index`（faiss） | `kb.tf` |
+| Knowledge Base | `CREATE_KB=1` のときだけ。assets のバケットの `knowledge-base/` の md（[s3-buckets.md](s3-buckets.md)） → Titan Embeddings v2（1024 次元）→ OpenSearch Serverless の `kb-index`（faiss） | `kb.tf` |
 | 検索 | HYBRID で 20 件取り、`amazon.rerank-v1:0` で 5 件に絞る | 変数 `number_of_results`、`rerank_model_id`、`number_of_reranked_results`、[agent.md](../agent.md) |
 | Runtime の ARN | SSM の String `/<prefix>/runtime-arn`。Web の EC2 が読む（60 秒キャッシュ） | `runtime.tf` |
 | Gateway | `<prefix>-tools`。MCP（`2025-06-18`）、認証は AWS_IAM。URL は SSM の String `/<prefix>/gateway-url` | `IaC/terraform/aws-managed/workflow/gateway.tf` |

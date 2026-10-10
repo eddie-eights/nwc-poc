@@ -1460,9 +1460,10 @@ check("ops/down.sh と ops/oss/down.sh は base/logs を destroy せず、残す
       all(not re.search(r"^\s*destroy_(lambda_)?root base/logs\b", t, re.M)
           and re.search(r"^if has_resources base/logs; then[^\n]*\n  echo \"logs のバケット [^\n]*は残す[^\n]*\n  echo \" 消すなら terraform -chdir=IaC/terraform/[a-z-]+/base/logs destroy -var owner=\$\{OWNER\}）\"\nfi$", t, re.M)
           for t in (down, _oss_down)))
-# 古い名前（共用バケットの kb、analytics/ の下の logs / jars / checkpoint）が残っていない。docs/cycles/ と docs/verification/ は記録なので見ない。
+# 古い名前（共用バケットの kb、analytics/ の下の logs / jars / checkpoint、KB の取り込み元の旧プレフィックス。2026-10-10 に knowledge-base/ に改名）が残っていない。docs/cycles/ と docs/verification/ は記録なので見ない。
 # このファイル自身に文字列が載らないよう、パターンはつないで作る
 _old_names = ["kb" + "_bucket", "KB" + "_BUCKET", "analytics" + "/logs", "analytics" + "/jars", "analytics" + "/checkpoint"]
+_old_res = [re.compile(r"\bkb" + "/")]  # 旧プレフィックス（単語境界 + kb + スラッシュ。agent/kb.tf のようなファイル名には当たらない）
 _stale = []
 for _f in subprocess.run(["git", "ls-files", "IaC", "ops", "app", "tests", "docs", "README.md", "CLAUDE.md"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.split():
     _p = os.path.join(ROOT, _f)
@@ -1472,8 +1473,8 @@ for _f in subprocess.run(["git", "ls-files", "IaC", "ops", "app", "tests", "docs
         _t = open(_p, encoding="utf-8").read()
     except UnicodeDecodeError:
         continue
-    _stale += [f"{_f}: {w}" for w in _old_names if w in _t]
-check("IaC / ops / app / tests / docs（cycles と verification を除く） / README.md / CLAUDE.md に古い名前（kb のバケット、analytics/ の下の logs / jars / checkpoint）が残っていない（cycle 035）", not _stale)
+    _stale += [f"{_f}: {w}" for w in _old_names if w in _t] + [f"{_f}: {r.pattern}" for r in _old_res if r.search(_t)]
+check("IaC / ops / app / tests / docs（cycles と verification を除く） / README.md / CLAUDE.md に古い名前（kb のバケット、analytics/ の下の logs / jars / checkpoint、KB の取り込み元の旧プレフィックス）が残っていない（cycle 035、2026-10-10 の knowledge-base/ への改名）", not _stale)
 def _expand_vars(text, path, assign):  # パスの $NAME / ${NAME} を、text の中の代入（up.sh の NAME=値、Dockerfile の ARG NAME=値）で埋める
     vals = dict(re.findall(assign, text, re.M))
     return re.sub(r"\$\{?(\w+)\}?", lambda m: vals[m.group(1)], path)

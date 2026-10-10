@@ -1526,7 +1526,7 @@ Splunk の中で重複を扱う方法。
 
 | バケット | 中身 | 作るルート | `ops/down.sh` |
 |---|---|---|---|
-| assets `<prefix>-assets-<アカウント>` | `web/`（Web の部品）、`kb/`（Bedrock の KB の取り込み元の手順書）、`lab/`（containerlab の rpm と設定）、`spark/`（`snmp_sinks.py`、jar、Spark の checkpoint） | `base/core` | 消す |
+| assets `<prefix>-assets-<アカウント>` | `web/`（Web の部品）、`knowledge-base/`（Bedrock の KB の取り込み元の手順書）、`lab/`（containerlab の rpm と設定）、`spark/`（`snmp_sinks.py`、jar、Spark の checkpoint） | `base/core` | 消す |
 | logs `<prefix>-logs-<アカウント>` | `firehose-errors/alert_events/`（Firehose が書けなかった履歴の行）。7 日で消える。EMR Serverless のログは S3 に出さない（Spark の節の「EMR のログはどこにある？」） | `base/logs` | 消さない |
 
 - **分けたのは、消す時期と守り方が違うため。**

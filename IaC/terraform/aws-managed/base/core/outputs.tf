@@ -70,7 +70,7 @@ output "alerts_topic_arn" {
 }
 
 output "assets_bucket_name" {
-  description = "Name of the assets bucket (<prefix>-assets-<account>). Read by IaC/terraform/aws-managed/agent (kb/), IaC/terraform/aws-managed/pipeline/lab (lab/) and IaC/terraform/aws-managed/pipeline/analytics (spark/)"
+  description = "Name of the assets bucket (<prefix>-assets-<account>). Read by IaC/terraform/aws-managed/agent (knowledge-base/), IaC/terraform/aws-managed/pipeline/lab (lab/) and IaC/terraform/aws-managed/pipeline/analytics (spark/)"
   value       = aws_s3_bucket.assets.bucket
 }
 

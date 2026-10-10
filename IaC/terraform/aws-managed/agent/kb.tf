@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------- knowledge base (S3 -> Titan Embeddings v2 -> OpenSearch Serverless)
-# create_knowledge_base = true のときだけ作る（count）。バケットは IaC/terraform/aws-managed/base/core の assets（web/ lab/ spark/ と共用。取り込むのは kb/ だけ）。
-# 取り込み元の md は利用者の PC から aws s3 cp で assets のバケットの kb/ に置き、start-ingestion-job で取り込む（ops/up.sh の手順 4）
+# create_knowledge_base = true のときだけ作る（count）。バケットは IaC/terraform/aws-managed/base/core の assets（web/ lab/ spark/ と共用。取り込むのは knowledge-base/ だけ）。
+# 取り込み元の md は利用者の PC から aws s3 cp で assets のバケットの knowledge-base/ に置き、start-ingestion-job で取り込む（ops/up.sh の手順 4）
 resource "aws_opensearchserverless_security_policy" "kb_encryption" {
   count = local.kb ? 1 : 0
 
@@ -397,14 +397,14 @@ resource "aws_bedrockagent_data_source" "docs" {
 
   knowledge_base_id    = aws_bedrockagent_knowledge_base.kb[0].id
   name                 = "${local.name_prefix}-docs"
-  description          = "Markdown files under s3://<assets bucket>/kb/"
+  description          = "Markdown files under s3://<assets bucket>/knowledge-base/"
   data_deletion_policy = "RETAIN"
 
   data_source_configuration {
     type = "S3"
     s3_configuration {
       bucket_arn         = local.bucket_arn
-      inclusion_prefixes = ["kb/"]
+      inclusion_prefixes = ["knowledge-base/"]
     }
   }
 }
