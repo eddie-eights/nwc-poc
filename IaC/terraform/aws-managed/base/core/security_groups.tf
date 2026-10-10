@@ -21,12 +21,14 @@ locals {
     lab = "Lab EC2 - containerlab, forwards the lab mgmt network"
     # Telegraf は受ける側（dialout。NLB の後ろ）のタスク（2026-10-04 にキーを dialout / dialin にそろえた。キーを変えると SG は作り直しになるので、
     # ops/up.sh は古いキーの state のまま stream があると止める）。
-    # dialout と NLB の description は cycle 012 で syslog と MDT が抜けても変えない（変えると作り直し）。
+    # dialout と NLB の description は 043 で syslog_ng / goflow2 に合わせた（description を変えると作り直しで、ほかの SG のルールが古い SG を
+    # 参照したままなので、付けるルートを消しても消せない。古い description の state があると ops/up.sh は check_sg_descriptions で止める。
+    # 全キーを見るので表は無い）。
     # syslog_ng と goflow2（機器の syslog と NetFlow / sFlow を受けるタスク。dialout と同じ NLB の後ろ）は cycle 012 で足した。
     # gnmic（機器の gNMI を取りにいくタスク）は cycle 013 で取りにいく側の telegraf_dialin を置き換えた（SNMP のポーリングもやめた）
-    telegraf_dialout     = "Telegraf dial-out ECS task - traps, syslog and MDT behind the NLB (IaC/terraform/aws-managed/pipeline/stream)"
+    telegraf_dialout     = "Telegraf dial-out ECS task - SNMP traps behind the NLB (IaC/terraform/aws-managed/pipeline/stream)"
     gnmic                = "gnmic ECS task - gNMI subscriptions to Kafka (IaC/terraform/aws-managed/pipeline/stream)"
-    telegraf_dialout_nlb = "Internal NLB in front of the Telegraf dial-out task (IaC/terraform/aws-managed/pipeline/stream)"
+    telegraf_dialout_nlb = "Internal NLB in front of the Telegraf dial-out, syslog-ng and GoFlow2 tasks (IaC/terraform/aws-managed/pipeline/stream)"
     syslog_ng            = "syslog-ng ECS task - device syslog behind the NLB to Kafka (IaC/terraform/aws-managed/pipeline/stream)"
     goflow2              = "GoFlow2 ECS task - NetFlow and sFlow behind the NLB to Kafka (IaC/terraform/aws-managed/pipeline/stream)"
     msk                  = "MSK brokers (IaC/terraform/aws-managed/pipeline/stream)"

@@ -100,6 +100,7 @@ Neptune Analytics に SG は無い。VPC の中の口を持たず、インター
 - VPC の全 ENI の通信は VPC フローログ（`IaC/terraform/aws-managed/base/core/flow_logs.tf`）でロググループ `/<prefix>/vpc-flow-logs` に残る（保存 7 日。集約 60 秒）。
   表の漏れで拒んだ通信は `action = REJECT` で出る（問い合わせは [troubleshooting.md](../troubleshooting.md)）。
 - SG の説明（description）を変えると作り直しになり、ENI が付いていると消えない。変えるときは先に `ops/down.sh` を打つ。
+  state の description がコードと違う SG が 1 つでもあると、`ops/up.sh` は手順 0 の後で止まる（`ops/up-common.sh` の `check_sg_descriptions`。全キーを見る）。ほかの SG のルールが古い SG を参照したままなので、付けるルートだけ消しても消せない。`ops/down.sh` で全部消してから `ops/up.sh`。
 - 2026-09-29 より前の state（全部で共有する `internal` 1 つ）が残っていると、`ops/up.sh` は手順 0 の後で止まる。
   ほかのルートは土台の `security_group_ids` を読むが、無ければ apply の前に止まり（`terraform_remote_state` の postcondition）、destroy は古い state のままでも通る（SG の ID は `try` で読む）。
 

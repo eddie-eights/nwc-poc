@@ -61,7 +61,7 @@ flowchart TB
         P4[依存で束ねてエンジニアを起動<br/>Agent で 1 人 1 worktree 1 ブランチ]
         P5[ブランチをマージし check.sh を回す]
         P6[cold reviewer を呼ぶ<br/>渡すのは design.md と変更ファイルの一覧だけ]
-        P7[指摘を再現して分類を確定]
+        P7[指摘の分類を確定<br/>同意は添付の出力、格下げだけ再現]
         P8{Must fix が<br/>残っている}
         P9[design.md を上書きして<br/>Round N+1 を振る]
         P10[Should fix を design.md と突き合わせて選ぶ<br/>直すなら先に design.md に入れる<br/>見送りは理由を review.md に残す]
