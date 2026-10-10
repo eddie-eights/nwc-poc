@@ -119,6 +119,8 @@ elif (svc, op) == ("ecs", "wait"):  # FAKE_ECS_UNSTABLE のサービスは安定
         fail("Waiter ServicesStable failed: Max attempts exceeded", 255)
 elif (svc, op) == ("ecs", "run-task"):  # Temporal の初期化のタスク（ops/up-common.sh の run_temporal_init。cycle 042）
     print(f'arn:aws:ecs:ap-northeast-1:123456789012:task/{opt("--cluster")}/init-t1\t0')
+elif (svc, op) == ("ecs", "list-tasks") and opt("--family"):  # run_temporal_init が前の init を見る（走っていない。cycle 042）
+    print("")
 elif (svc, op) == ("ecs", "list-tasks"):
     print(f'arn:aws:ecs:ap-northeast-1:123456789012:task/{opt("--cluster")}/{opt("--service-name")}-t1')
 elif (svc, op) == ("ecs", "describe-tasks"):

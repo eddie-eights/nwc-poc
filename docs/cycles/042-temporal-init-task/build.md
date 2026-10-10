@@ -655,3 +655,351 @@ $ docker network ls --format '{{.Name}}' | grep -c t042
 ### 手元の docker のイメージを消した事故
 
 docker の後片付けで、手元のイメージ 126 本を消した。後片付けの `cleanup042.sh` は、検証で増えたイメージだけを消すつもりで、前後の一覧の差（`comm -13`）を `docker rmi` に流した。ところが、検証の前の一覧 `images-before.txt` は名前だけ（`{{.Repository}}:{{.Tag}}`）で、比べる側の `images-after0.txt` は ID 付き（`{{.Repository}}:{{.Tag}} {{.ID}}`）で取っていた。そのため全 129 行が「増えた」と出て、検証の前からあった 126 本（`efukuda-nwc-*` の ECR のタグなど）まで rmi した。volume とビルドキャッシュは消していない。一覧を確かめずに rmi に流したのも原因で、次からは前後を同じ format で取り、消す前に件数が想定（ここでは 3 本）を超えたら止める。復旧は PM とユーザーが扱い、このサブエージェントは報告のあと docker に触っていない。
+
+## Round 2
+
+実装モデル: opus-5.5 / effort: high（PM のサブエージェント。ベースは 40bedb1。対象は Round 1 のセルフレビューの Should 2〜5。design.md の設計方針 2〜3 と検証 1 のとおり。Nit 6〜9 は直さない）
+
+### 変えたもの
+
+- `docker/images/temporal-server/entrypoint.sh`（Should 2・3・4）
+  - 判定を「DB の版 ≥ イメージの版」にした。`version_ge` で major と minor を数で比べる。どちらかの引数が空、3 つ組、`v` 付き、数でない場合は、stderr に何も出さずに偽を返す。
+  - 待ちを 30 回 × 10 秒にした（300 秒。startPeriod と同じ）。
+  - 毎回の行と最後の行に `init_hint` を出す。中身は、どの手順が init を run-task するかと、`terraform -chdir=… output -raw init_logs_command` でログを見る方法。
+  - psql の出力は `2>&1` で受け、次の 2 つに分ける。
+    - 版の行（`sed -n '/^N.N$/p' | head -n 1`）
+    - それ以外の、空でない最初の 1 行（`sed -e '/^N.N$/d' -e '/^$/d' | head -n 1`）
+  - 失敗した DB の分だけ、`<DB> の psql: <1 行目>` を待ちの行に足す。
+  - sed は `{p;q;}` を使わず、`| head -n 1` にした。busybox sed との差を避けるため。
+- `ops/up-common.sh` `run_temporal_init`（Should 5）
+  - run-task の前に `aws ecs list-tasks --family <family> --desired-status RUNNING` を打つ。前の init が走っていれば、`--tasks $prev`（引用しない。複数の ARN を別々の引数にする）で `wait tasks-stopped` を 2 回まで待つ。それでも止まらなければ `die`。
+  - list-tasks そのものが失敗したときも `die`。
+- `tests/test_workflow.py`（検証 1 の追加分）
+  - 待ちが 30 回で、毎回の行と最後の行に init_hint があること。
+  - `version_ge` の単体の check。sh で 15 通りを試し、stderr が空であること。
+  - DB がイメージより新しい（1.20 / 1.15、2.0 / 1.14）なら待たない。古い・形が違うなら 30 回待って exit 1。
+  - 偽の psql で次を確かめる。
+    - 認証が失敗したら、stderr の 1 行目が出る。2 行目とパスワードは出ない。
+    - 表が無いときは `ERROR:  relation "schema_version" does not exist` が出て、2 行目の `LINE 1:` は出ない。
+    - 行が無い（psql は成功で空）ときと、表が無いときの出方を分ける。
+  - `run_temporal_init` で次を確かめる。
+    - list-tasks → 前の init の wait → run-task の順になる。
+    - 前の init が 2 つあれば、偽の aws が受けた wait の引数の数が 10 になる（`--tasks` に ARN を 2 つの引数で渡す）。
+    - None は待たない。
+    - 待ちが 1 回目で時間切れなら 2 回目へ進む。2 回とも時間切れなら die。
+    - list-tasks が失敗したら die。
+- `tests/test_oss_ops.py`: 偽の aws の `list-tasks --family` が空を返すようにした（OSS 版の up.sh の模擬が新しい呼び出しで止まらないように）。
+- docs
+  - `docs/workflow.md`: 「i/60」「60 回」を「i/30」「30 回（300 秒）」にした。`password authentication failed` は init がロールを作るまでは正常に出ると書いた。init が exitCode 0 で止まった後も続くなら、ロールのパスワードを疑う。
+  - `docs/architecture/resources/temporal.md`:
+    - 「揃うまで」を「以上になるまで」にした。60 回を 30 回（300 秒）、10 分を 5 分にした。
+    - 前の init を待つことを書いた。
+    - 認証の失敗の行が、init までは正常に出ることを書いた。
+  - `docs/deploy.md` の 8-5: 前の init がまだ走っていれば、先にそれが止まるのを待つと書いた。
+  - `IaC/terraform/aws-managed/workflow/ecs.tf:98` のコメント: 「揃うまで」を「以上になるまで（30 回 = startPeriod の 300 秒）」にした。
+
+### 設計からの逸脱
+
+- design.md:36 の待ちの行の例は `ops/up.sh の 8-5 が run-task する … ログは aws logs tail …`。実装は、OSS 版の手順（`ops/oss/up.sh の 8`）と、ロググループ名を引ける `terraform -chdir=IaC/terraform/aws-managed/workflow output -raw init_logs_command` も足した（ロググループ名は entrypoint からは分からないため）。
+- 手順 6（検証 2〜5 の手元の docker）は実行していない。PM の指示（docker は一切使わない。イメージを消した事故の復旧待ち）による。代わりに、sh の振る舞いは偽の psql の scratchpad スクリプトで確かめた（下）。
+
+### 検証
+
+#### 1. テスト（`./ops/check.sh`。最後の編集のあとに取り直した）
+
+```
+$ ./ops/check.sh > check.out 2>&1; echo "rc=$?"
+rc=0
+$ sed -n '1,31p' check.out
+== 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+差分なし
+
+== 2. 10 のルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+IaC/terraform/aws-managed/base/ecr  OK
+IaC/terraform/aws-managed/base/logs  OK
+IaC/terraform/aws-managed/base/core  OK
+IaC/terraform/aws-managed/agent  OK
+IaC/terraform/aws-managed/pipeline/lab  OK
+IaC/terraform/aws-managed/pipeline/stream  OK
+IaC/terraform/aws-managed/pipeline/analytics  OK
+IaC/terraform/aws-managed/pipeline/graph  OK
+IaC/terraform/aws-managed/pipeline/nautobot  OK
+IaC/terraform/aws-managed/workflow  OK
+IaC/terraform/oss/base/ecr  OK
+IaC/terraform/oss/base/logs  OK
+IaC/terraform/oss/base/core  OK
+IaC/terraform/oss/agent  OK
+IaC/terraform/oss/pipeline/lab  OK
+IaC/terraform/oss/pipeline/stream  OK
+IaC/terraform/oss/pipeline/analytics  OK
+IaC/terraform/oss/pipeline/graph  OK
+IaC/terraform/oss/pipeline/nautobot  OK
+IaC/terraform/oss/workflow  OK
+
+== 3. スクリプトの構文
+bash -n: 33 本
+構文エラーなし
+
+== 4. 模擬テスト
+$ grep -n -E '^(==|通過|すべて)' check.out
+2:== 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+5:== 2. 10 のルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+27:== 3. スクリプトの構文
+31:== 4. 模擬テスト
+613:通過 168 / 失敗 0
+782:通過 168 / 失敗 0
+1333:通過 549 / 失敗 0
+1413:通過 79 / 失敗 0
+1417:通過 3 / 失敗 0
+1497:通過 78 / 失敗 0
+1507:通過 7 / 失敗 0
+1618:通過 110 / 失敗 0
+1764:通過 145 / 失敗 0
+2013:通過 177 / 失敗 0
+2221:通過 207 / 失敗 0
+2288:通過 66 / 失敗 0
+2403:通過 114 / 失敗 0
+2523:通過 104 / 失敗 0
+3076:通過 435 / 失敗 0
+3078:== 5. 旧名 netops が戻っていない（docs/cycles と docs/verification は記録なので見ない。cycle 019）
+3081:すべて通過
+$ uv run --group dev --group web python tests/test_workflow.py 2>&1 | tail -n 1
+通過 435 / 失敗 0
+$ uv run --group dev --group web python tests/test_oss_ops.py 2>&1 | tail -n 1
+通過 207 / 失敗 0
+```
+
+Round 2 で足した・直した check（`check.out` から）:
+
+```
+ok entrypoint.sh は両方の DB の版がイメージの versioned/ の版（v を除き、数で並べた最大）以上になるまで 10 秒おきに 30 回（startPeriod の 300 秒）待ち、毎回と最後の行に init のログの見方を出して、最後は exit 1（Round 1 のセルフレビューの Should 2 / 3。cycle 042）
+ok entrypoint.sh: 表が無い → 表はあるが版が無い → 1.19 / 1.14 で 2 回待ってから namespace と tini へ進む（v1.9 より v1.19 を新しいとみる。…）
+ok entrypoint.sh: 版が古い（1.9 < 1.19）まま 30 回待つと namespace も tini も起こさず exit 1、init のログの見方を出す（…）
+ok entrypoint.sh: temporal だけ古い（1.18 / 1.14）なら 30 回待って exit 1（いま: rc=1 sleep 30 回）
+ok entrypoint.sh: visibility だけ古い（1.20 / 1.13）なら 30 回待って exit 1（いま: rc=1 sleep 30 回）
+ok entrypoint.sh: major が小さい（0.99 / 1.14）なら 30 回待って exit 1（いま: rc=1 sleep 30 回）
+ok entrypoint.sh: 形が違う（3 つ組）（1.19.1 / 1.14）なら 30 回待って exit 1（いま: rc=1 sleep 30 回）
+ok entrypoint.sh: 形が違う（v 付き）（v1.19 / 1.14）なら 30 回待って exit 1（いま: rc=1 sleep 30 回）
+ok entrypoint.sh の version_ge: major.minor を数で比べ（1.20 ≥ 1.19、2.0 ≥ 1.19、1.9 < 1.19）、どちらかが空・3 つ組・v 付き・数でないものは stderr に何も出さず偽（…）
+ok entrypoint.sh: psql が認証で落ちたら、待ちの行に DB ごとの stderr の 1 行目を出し（2 行目とパスワードは出さない）、版が揃えば進む（…）
+ok entrypoint.sh: 表が無い（psql の失敗。2 行目の LINE 1: は出さない）と行が無い（psql は成功で空）を分けて出し、最後の行にも psql の失敗を出す（…）
+ok run_temporal_init は ecs list-tasks（前の init）→ その tasks-stopped → ecs run-task → ecs wait tasks-stopped → describe-tasks の exitCode の順で、0 以外（None を含む）で die する（Round 1 のセルフレビューの Should 5。…）
+ok run_temporal_init: 前の init が 2 つ走っていれば両方を別々の引数で tasks-stopped に渡して待ってから run-task する（…）
+ok run_temporal_init: list-tasks が None（text の空）なら前の init を待たない（…）
+ok run_temporal_init: 前の init の待ちが 1 回目で時間切れでも 2 回目で止まれば run-task する（…）
+ok run_temporal_init: 前の init が 2 回待っても止まらなければ run-task せずに die（…）
+ok run_temporal_init: list-tasks そのものが失敗すれば run-task せずに die（いま: rc=1 ['ecs list-tasks'] 'DIE: 走っている Temporal の初期化のタスク（p-workflow-init）を確かめられない（上のエラー）'）
+```
+
+##### 壊して落ちるか（`<scratchpad>/r2/mutate2.py`。ファイルは書かず、open() の返りをメモリ上で入れ替える）
+
+1 行目の「変更なし」は基準で、落ちないのが正しい。ほかの 27 件のうち 26 件が落ちた。落ちなかった 1 件（空行を err から外さない）は、下のセルフレビューの R2-8 に入れた。
+
+```
+!! 落ちない [変更なし] 失敗 0
+落ちた [[S2] 版の比べを等号に戻す] 失敗 3
+    - entrypoint.sh は両方の DB の版がイメージの versioned/ の版（v を除き、数で並べた最大）以上になるまで 10 秒おきに 30 回（startPeriod の 300 秒）待ち、毎回と最後の行
+    - entrypoint.sh: DB の版がイメージより新しい（1.20 > 1.19、1.15 > 1.14）なら待たずに namespace と tini へ進む（いま: rc=1 ['psql', 'psql', '
+    - entrypoint.sh: DB の版がイメージの版とmajor が大きい（2.0 / 1.14）なら待たずに進む（いま: rc=1 sleep 30 回）
+落ちた [[S2] version_ge が minor だけ見る] 失敗 3
+    - entrypoint.sh: DB の版がイメージの版とmajor が大きい（2.0 / 1.14）なら待たずに進む（いま: rc=1 sleep 30 回）
+    - entrypoint.sh: major が小さい（0.99 / 1.14）なら 30 回待って exit 1（いま: rc=0 sleep 0 回）
+    - entrypoint.sh の version_ge: major.minor を数で比べ（1.20 ≥ 1.19、2.0 ≥ 1.19、1.9 < 1.19）、どちらかが空・3 つ組・v 付き・数でないものは stde
+落ちた [[S2] version_ge が major だけ見る] 失敗 4
+    - entrypoint.sh: 版が古い（1.9 < 1.19）まま 30 回待つと namespace も tini も起こさず exit 1、init のログの見方を出す（いま: rc=0 sleep 0 回 'ypo
+    - entrypoint.sh: temporal だけ古い（1.18 / 1.14）なら 30 回待って exit 1（いま: rc=0 sleep 0 回）
+    - entrypoint.sh: visibility だけ古い（1.20 / 1.13）なら 30 回待って exit 1（いま: rc=0 sleep 0 回）
+落ちた [[S2] version_ge が 3 つ組を弾かない] 失敗 1
+    - entrypoint.sh の version_ge: major.minor を数で比べ（1.20 ≥ 1.19、2.0 ≥ 1.19、1.9 < 1.19）、どちらかが空・3 つ組・v 付き・数でないものは stde
+落ちた [[S2] version_ge が v1.19 を弾かない] 失敗 1
+    - entrypoint.sh の version_ge: major.minor を数で比べ（1.20 ≥ 1.19、2.0 ≥ 1.19、1.9 < 1.19）、どちらかが空・3 つ組・v 付き・数でないものは stde
+落ちた [[S2] visibility を見ない] 失敗 2
+    - entrypoint.sh は両方の DB の版がイメージの versioned/ の版（v を除き、数で並べた最大）以上になるまで 10 秒おきに 30 回（startPeriod の 300 秒）待ち、毎回と最後の行
+    - entrypoint.sh: visibility だけ古い（1.20 / 1.13）なら 30 回待って exit 1（いま: rc=0 sleep 0 回）
+落ちた [[S3] 待ちを 60 回に戻す] 失敗 7
+    - entrypoint.sh は両方の DB の版がイメージの versioned/ の版（v を除き、数で並べた最大）以上になるまで 10 秒おきに 30 回（startPeriod の 300 秒）待ち、毎回と最後の行
+    - entrypoint.sh: 版が古い（1.9 < 1.19）まま 30 回待つと namespace も tini も起こさず exit 1、init のログの見方を出す（いま: rc=1 sleep 60 回 'te
+    - entrypoint.sh: temporal だけ古い（1.18 / 1.14）なら 30 回待って exit 1（いま: rc=1 sleep 60 回）
+落ちた [[S3] 毎回の行から init_hint を外す] 失敗 2
+    - entrypoint.sh は両方の DB の版がイメージの versioned/ の版（v を除き、数で並べた最大）以上になるまで 10 秒おきに 30 回（startPeriod の 300 秒）待ち、毎回と最後の行
+    - entrypoint.sh: 表が無い → 表はあるが版が無い → 1.19 / 1.14 で 2 回待ってから namespace と tini へ進む（v1.9 より v1.19 を新しいとみる。いま: rc=0 [
+落ちた [[S3] init_hint から init_logs_command を外す] 失敗 3
+    - entrypoint.sh は両方の DB の版がイメージの versioned/ の版（v を除き、数で並べた最大）以上になるまで 10 秒おきに 30 回（startPeriod の 300 秒）待ち、毎回と最後の行
+    - entrypoint.sh: 表が無い → 表はあるが版が無い → 1.19 / 1.14 で 2 回待ってから namespace と tini へ進む（v1.9 より v1.19 を新しいとみる。いま: rc=0 [
+    - entrypoint.sh: 版が古い（1.9 < 1.19）まま 30 回待つと namespace も tini も起こさず exit 1、init のログの見方を出す（いま: rc=1 sleep 30 回 'te
+落ちた [[S3] sleep を 5 秒に] 失敗 9
+    - entrypoint.sh は両方の DB の版がイメージの versioned/ の版（v を除き、数で並べた最大）以上になるまで 10 秒おきに 30 回（startPeriod の 300 秒）待ち、毎回と最後の行
+    - entrypoint.sh: 表が無い → 表はあるが版が無い → 1.19 / 1.14 で 2 回待ってから namespace と tini へ進む（v1.9 より v1.19 を新しいとみる。いま: rc=0 [
+    - entrypoint.sh: 版が古い（1.9 < 1.19）まま 30 回待つと namespace も tini も起こさず exit 1、init のログの見方を出す（いま: rc=1 sleep 0 回 'tem
+落ちた [[S4] psql の stderr を捨てる] 失敗 3
+    - entrypoint.sh の psql はロール POSTGRES_USER と POSTGRES_PWD で schema_version.curr_version を読む 1 か所だけで、stderr を捨てずに受
+    - entrypoint.sh: psql が認証で落ちたら、待ちの行に DB ごとの stderr の 1 行目を出し（2 行目とパスワードは出さない）、版が揃えば進む（いま: rc=0 'entrypoint-rds: 
+    - entrypoint.sh: 表が無い（psql の失敗。2 行目の LINE 1: は出さない）と行が無い（psql は成功で空）を分けて出し、最後の行にも psql の失敗を出す（いま: rc=1 'ープ> --lo
+落ちた [[S4] 毎回の行に err を出さない] 失敗 1
+    - entrypoint.sh: psql が認証で落ちたら、待ちの行に DB ごとの stderr の 1 行目を出し（2 行目とパスワードは出さない）、版が揃えば進む（いま: rc=0 'entrypoint-rds: 
+落ちた [[S4] 最後の行に err を出さない] 失敗 1
+    - entrypoint.sh: 表が無い（psql の失敗。2 行目の LINE 1: は出さない）と行が無い（psql は成功で空）を分けて出し、最後の行にも psql の失敗を出す（いま: rc=1 'ープ> --lo
+落ちた [[S4] err を全行に] 失敗 2
+    - entrypoint.sh: psql が認証で落ちたら、待ちの行に DB ごとの stderr の 1 行目を出し（2 行目とパスワードは出さない）、版が揃えば進む（いま: rc=0 'entrypoint-rds: 
+    - entrypoint.sh: 表が無い（psql の失敗。2 行目の LINE 1: は出さない）と行が無い（psql は成功で空）を分けて出し、最後の行にも psql の失敗を出す（いま: rc=1 'ral の ps
+落ちた [[S4] 版を 1 行目で取る] 失敗 2
+    - entrypoint.sh: psql が認証で落ちたら、待ちの行に DB ごとの stderr の 1 行目を出し（2 行目とパスワードは出さない）、版が揃えば進む（いま: rc=0 'entrypoint-rds: 
+    - entrypoint.sh: 表が無い（psql の失敗。2 行目の LINE 1: は出さない）と行が無い（psql は成功で空）を分けて出し、最後の行にも psql の失敗を出す（いま: rc=1 ' not exi
+落ちた [[S5] list-tasks を呼ばない] 失敗 11
+    - run_temporal_init: exitCode 0 なら run-task → wait → describe-tasks で抜け、先へ進む（サービスと同じサブネット・SG、公開 IP 無し。いま: rc=0 [
+    - run_temporal_init: run-task が failures を返せば（タスクの ARN があっても）待たずに die（None…。いま: rc=1 ['ecs run-task'] 'DIE: Temp
+    - run_temporal_init: run-task が failures を返せば（タスクの ARN があっても）待たずに die（k/c1/abc…。いま: rc=1 ['ecs run-task'] ' の初期化
+落ちた [[S5] list-tasks の失敗で止まらない] 失敗 1
+    - run_temporal_init: list-tasks そのものが失敗すれば run-task せずに die（いま: rc=1 ['ecs list-tasks', 'ecs run-task', 'ecs wai
+落ちた [[S5] None を走っている扱い] 失敗 1
+    - run_temporal_init: list-tasks が None（text の空）なら前の init を待たない（いま: ['ecs list-tasks', 'ecs wait', 'ecs run-task'
+落ちた [[S5] 前の init の待ちを 1 回だけ] 失敗 2
+    - run_temporal_init: 前の init の待ちが 1 回目で時間切れでも 2 回目で止まれば run-task する（いま: rc=1 ['ecs list-tasks', 'ecs wait']）
+    - run_temporal_init: 前の init が 2 回待っても止まらなければ run-task せずに die（いま: rc=1 ['ecs list-tasks', 'ecs wait'] 'たっても止まらな
+落ちた [[S5] 前の init が止まらなくても進む] 失敗 1
+    - run_temporal_init: 前の init が 2 回待っても止まらなければ run-task せずに die（いま: rc=0 ['ecs list-tasks', 'ecs wait', 'ecs wait
+落ちた [[S5] $prev を引用する（2 つで壊れる）] 失敗 1
+    - run_temporal_init: 前の init が 2 つ走っていれば両方を別々の引数で tasks-stopped に渡して待ってから run-task する（いま: rc=0 ['ecs list-tasks'
+落ちた [[S5] --family を外す] 失敗 2
+    - run_temporal_init は ecs list-tasks（前の init）→ その tasks-stopped → ecs run-task → ecs wait tasks-stopped → descri
+    - run_temporal_init: exitCode 0 なら run-task → wait → describe-tasks で抜け、先へ進む（サービスと同じサブネット・SG、公開 IP 無し。いま: rc=0 [
+落ちた [[S5] 前の init を run-task のあとで待つ] 失敗 3
+    - run_temporal_init: 前の init が 2 つ走っていれば両方を別々の引数で tasks-stopped に渡して待ってから run-task する（いま: rc=0 ['ecs list-tasks'
+    - run_temporal_init: 前の init の待ちが 1 回目で時間切れでも 2 回目で止まれば run-task する（いま: rc=0 ['ecs list-tasks', 'ecs run-task', 
+    - run_temporal_init: 前の init が 2 回待っても止まらなければ run-task せずに die（いま: rc=1 ['ecs list-tasks', 'ecs run-task', 'ecs 
+落ちた [[S2] version_ge の形の検査を全部外す] 失敗 1
+    - entrypoint.sh の version_ge: major.minor を数で比べ（1.20 ≥ 1.19、2.0 ≥ 1.19、1.9 < 1.19）、どちらかが空・3 つ組・v 付き・数でないものは stde
+落ちた [[S2] version_ge がイメージの版（第 2 引数）の形を見ない] 失敗 1
+    - entrypoint.sh の version_ge: major.minor を数で比べ（1.20 ≥ 1.19、2.0 ≥ 1.19、1.9 < 1.19）、どちらかが空・3 つ組・v 付き・数でないものは stde
+落ちた [[S5] 前の init の ARN を 1 つの引数にまとめる] 失敗 1
+    - run_temporal_init: 前の init が 2 つ走っていれば両方を別々の引数で tasks-stopped に渡して待ってから run-task する（いま: rc=0 ['ecs list-tasks'
+!! 落ちない [[S4] 空行を err から外さない] 失敗 0
+```
+
+##### sh での振る舞い（`<scratchpad>/r2/ep-sh.sh`。偽の psql / nc / sleep / ns / tini で entrypoint.sh を動かす）
+
+- イメージの版は 1.19 / 1.14（`versioned/` は v1.0・v1.9・v1.19 と v1.0・v1.14）。
+- 各ケースで、ログの最初と最後の行、終了コード、行数、sleep の回数、起こしたものを出す。行が 1 行のときは、最初と最後に同じ行が 2 回出る。
+- パスワード（`pw-role-secret`）と stderr の 2 行目（`second line`）がログに出たら `!!` の行が出る。どのケースでも出ていない。
+- 下の出力は `/bin/sh` で取った。`/bin/dash` でも取り、`diff ep-sh.out ep-dash.out` は空だった（rc=0）。
+
+```
+=== DB がイメージより新しい（temporal=1.20 visibility=1.15。イメージは 1.19 / 1.14）
+entrypoint-rds: スキーマは temporal=1.20 / temporal_visibility=1.15（イメージの版 1.19 / 1.14 以上）
+entrypoint-rds: スキーマは temporal=1.20 / temporal_visibility=1.15（イメージの版 1.19 / 1.14 以上）
+rc=0 行数=1 sleep=0 起こしたもの: ns 127.0.0.1:7233 default 72h tini -- /etc/temporal/entrypoint.sh 
+=== DB がイメージと同じ（temporal=1.19 visibility=1.14。イメージは 1.19 / 1.14）
+entrypoint-rds: スキーマは temporal=1.19 / temporal_visibility=1.14（イメージの版 1.19 / 1.14 以上）
+entrypoint-rds: スキーマは temporal=1.19 / temporal_visibility=1.14（イメージの版 1.19 / 1.14 以上）
+rc=0 行数=1 sleep=0 起こしたもの: ns 127.0.0.1:7233 default 72h tini -- /etc/temporal/entrypoint.sh 
+=== DB が古い（1.9 < 1.19）（temporal=1.9 visibility=1.14。イメージは 1.19 / 1.14）
+entrypoint-rds: 初期化のタスク（ops/up.sh の 8-5（OSS 版は ops/oss/up.sh の 8）が run-task する <接頭辞>-workflow-init。ログは terraform -chdir=IaC/terraform/aws-managed/workflow output -raw init_logs_command（aws logs tail <ロググループ> --log-stream-name-prefix init））を待つ（1/30。スキーマの版 temporal=1.9/1.19 temporal_visibility=1.14/1.14）
+entrypoint-rds: 初期化のタスク（ops/up.sh の 8-5（OSS 版は ops/oss/up.sh の 8）が run-task する <接頭辞>-workflow-init。ログは terraform -chdir=IaC/terraform/aws-managed/workflow output -raw init_logs_command（aws logs tail <ロググループ> --log-stream-name-prefix init））が 30 回（300 秒）待っても終わらない（スキーマの版 temporal=1.9/1.19 temporal_visibility=1.14/1.14）。ops/up.sh（OSS 版は ops/oss/up.sh）を打ち直すか、init のログを見る
+rc=1 行数=31 sleep=30 起こしたもの: 
+=== 認証の失敗（temporal=AUTH visibility=AUTH。イメージは 1.19 / 1.14）
+entrypoint-rds: 初期化のタスク（ops/up.sh の 8-5（OSS 版は ops/oss/up.sh の 8）が run-task する <接頭辞>-workflow-init。ログは terraform -chdir=IaC/terraform/aws-managed/workflow output -raw init_logs_command（aws logs tail <ロググループ> --log-stream-name-prefix init））を待つ（1/30。スキーマの版 temporal=無し/1.19 temporal_visibility=無し/1.14。temporal の psql: psql: error: connection to server at "db" (10.0.0.1), port 5432 failed: FATAL:  password authentication failed for user "temporal"。temporal_visibility の psql: psql: error: connection to server at "db" (10.0.0.1), port 5432 failed: FATAL:  password authentication failed for user "temporal"）
+entrypoint-rds: 初期化のタスク（ops/up.sh の 8-5（OSS 版は ops/oss/up.sh の 8）が run-task する <接頭辞>-workflow-init。ログは terraform -chdir=IaC/terraform/aws-managed/workflow output -raw init_logs_command（aws logs tail <ロググループ> --log-stream-name-prefix init））が 30 回（300 秒）待っても終わらない（スキーマの版 temporal=無し/1.19 temporal_visibility=無し/1.14。temporal の psql: psql: error: connection to server at "db" (10.0.0.1), port 5432 failed: FATAL:  password authentication failed for user "temporal"。temporal_visibility の psql: psql: error: connection to server at "db" (10.0.0.1), port 5432 failed: FATAL:  password authentication failed for user "temporal"）。ops/up.sh（OSS 版は ops/oss/up.sh）を打ち直すか、init のログを見る
+rc=1 行数=31 sleep=30 起こしたもの: 
+=== TLS の失敗（visibility は揃っている）（temporal=SSL visibility=1.14。イメージは 1.19 / 1.14）
+entrypoint-rds: 初期化のタスク（ops/up.sh の 8-5（OSS 版は ops/oss/up.sh の 8）が run-task する <接頭辞>-workflow-init。ログは terraform -chdir=IaC/terraform/aws-managed/workflow output -raw init_logs_command（aws logs tail <ロググループ> --log-stream-name-prefix init））を待つ（1/30。スキーマの版 temporal=無し/1.19 temporal_visibility=1.14/1.14。temporal の psql: psql: error: connection to server at "db" (10.0.0.1), port 5432 failed: SSL error: certificate verify failed）
+entrypoint-rds: 初期化のタスク（ops/up.sh の 8-5（OSS 版は ops/oss/up.sh の 8）が run-task する <接頭辞>-workflow-init。ログは terraform -chdir=IaC/terraform/aws-managed/workflow output -raw init_logs_command（aws logs tail <ロググループ> --log-stream-name-prefix init））が 30 回（300 秒）待っても終わらない（スキーマの版 temporal=無し/1.19 temporal_visibility=1.14/1.14。temporal の psql: psql: error: connection to server at "db" (10.0.0.1), port 5432 failed: SSL error: certificate verify failed）。ops/up.sh（OSS 版は ops/oss/up.sh）を打ち直すか、init のログを見る
+rc=1 行数=31 sleep=30 起こしたもの: 
+```
+
+`version_ge` を同じ入力に当てた結果（`<scratchpad>/r2/vge.sh`。`<DB の版>:<イメージの版>=<終了コード>`）:
+
+```
+/bin/sh: 1.19:1.19=0 1.20:1.19=0 2.0:1.19=0 1.9:1.19=1 0.99:1.14=1 :1.19=1 1.19.1:1.19=1 v1.19:1.19=1 1.:1.19=1 .19:1.19=1 1.x:1.1=1 119:1.19=1 1.19:1.20.1=1 1.19:=1 1.19:v1.19=1 
+/bin/dash: 1.19:1.19=0 1.20:1.19=0 2.0:1.19=0 1.9:1.19=1 0.99:1.14=1 :1.19=1 1.19.1:1.19=1 v1.19:1.19=1 1.:1.19=1 .19:1.19=1 1.x:1.1=1 119:1.19=1 1.19:1.20.1=1 1.19:=1 1.19:v1.19=1
+```
+
+#### 2〜5. 手元の docker
+
+未実行。PM の指示（docker は一切使わない。イメージを消した事故の復旧待ち）による。Round 2 の変更（待ちの判定・回数・log・`run_temporal_init`）は、Round 1 の検証 2〜5 の結果を変えない範囲だが、イメージの中の busybox の sh / sed で entrypoint.sh を動かしたことはまだ無い（下の R2-3）。
+
+#### 6. AWS
+
+未実行（design.md のとおり、このサイクルではやらない）。
+
+### セルフレビュー
+
+- 体制
+  - 自分: opus-5.5 / high。design.md・差分・テストを突き合わせ、上の mutate2.py で check を 1 本ずつ壊した。サブエージェントの中なので effort は切り替えられない。
+  - 反対弁護人: general-purpose のサブエージェント（opus / xhigh）。次を渡し、読み取り専用で走らせた。
+    - design.md と build.md のパス、変更ファイルの一覧
+    - 選んだ方針と理由
+    - 不安な箇所: busybox の sed、`2>&1` で WARNING が混ざること、`$prev` を引用しないこと、待ちの秒数と ECS が止める時刻のずれ
+  - 反対弁護人のあと、`git status --porcelain -uall` が走らせる前と同じ 8 件の ` M` だけであることを確かめた。
+- 結果: Must 0。Should 3 件のうち 2 件を直し、1 件（R2-3）は busybox で確かめられていないので残す。Nit 7 件のうち 4 件を直し、3 件は直していない。
+
+#### R2-1（Should。直した）[missing tests] version_ge の形の検査に check が無い
+
+- 場所: `entrypoint.sh:40-45`。
+- 破綻シナリオ: 形の検査（3 つ組・`v` 付き・空）を外しても、テストが通っていた。外すと `[ 1.19.1 -ge … ]` が stderr にエラーを出し、空の版で真偽が崩れる。
+- 確かめたこと: 直す前の mutate2.py では「version_ge が 3 つ組を弾かない」「v1.19 を弾かない」「形の検査を全部外す」の 3 件が落ちなかった。
+- 直したこと: `tests/test_workflow.py` に version_ge の単体の check を足した（sh で 15 通り、stderr が空）。上の mutate2.out では、3 件とも落ちる。
+
+#### R2-2（Should。直した）[correctness / 運用] 認証の失敗の行が、init の前でも出るのは正常なのに、docs がパスワードを疑わせていた
+
+- 場所: `docs/workflow.md:158`、`docs/architecture/resources/temporal.md:61`、`entrypoint.sh` の schema_read のコメント。
+- 破綻シナリオ: 初回の up.sh では、init がロール `temporal` を作るまで、サーバーの psql は失敗する。PostgreSQL はロールが無いときも、ロールの有無を隠すために `password authentication failed` を返す。そのため、正常な待ちの間に出る行を見た人が、SSM のパスワードを作り直しに行く。
+- 確かめたこと: PostgreSQL の既知の振る舞い（読んだだけ。手元の docker は使えないので再現していない）。
+- 直したこと:
+  - docs 2 か所とコメントに「init がロールを作るまでは正常。init が exitCode 0 で止まった後も続くなら、パスワードを疑う」と書いた。
+  - テストの偽の psql の ERR を、実際に返る形（`ERROR:  relation "schema_version" does not exist` と 2 行目の `LINE 1:`）にした。
+
+#### R2-3（Should。直していない。残す）[runtime bugs] busybox の sh / sed で動かしていない
+
+- 場所: `entrypoint.sh:36-45`。
+- 破綻シナリオ: Alpine のイメージの `/bin/sh` は busybox ash、sed は busybox sed。手元で確かめたのは macOS の `/bin/sh` と `/bin/dash` だけ。busybox で sed の正規表現や `case` の扱いが違えば、版が取れずに 30 回待って exit 1 になり、デプロイが止まる。
+- 確かめたこと: 確かめられていない（docker 禁止）。
+- やったこと: 差が出やすい `sed -n '/…/{p;q;}'`（ブロックと `q`）を使わず、`sed -n '/…/p' | head -n 1` と `sed -e … -e …` にした。どちらも POSIX の範囲。
+- 片付け方: docker か AWS（検証 6）で、イメージの中で entrypoint.sh を動かして確かめる。Should のまま、PM に報告する。
+
+#### R2-4（Nit。直した）[correctness] version_ge がイメージの版（第 2 引数）の形を見ていなかった
+
+- 破綻シナリオ: `versioned/` に `v1.20.1` のような名前ができると、`[` がエラーを出す。
+- 直したこと: `for _v in "$1" "$2"` で両方を見るようにした。vge.sh の `1.19:1.20.1=1`、`1.19:=1` と、mutate2 の「イメージの版（第 2 引数）の形を見ない」が落ちることで確かめた。
+
+#### R2-5（Nit。直した）[テスト] `--tasks $prev` が 2 つの引数で渡ることをテストが見分けられなかった
+
+- 直したこと: 偽の aws の wait が引数の数を `wargc` に残すようにし、前の init が 2 つのときに 10 になることを check した。mutate2 の「$prev を引用する」と「ARN を 1 つの引数にまとめる」が落ちることで確かめた。
+
+#### R2-6（Nit。直した）init_hint がロググループ名を引けなかった
+
+- 破綻シナリオ: `terraform output init_logs_command` だけでは、どの root か（`-chdir`）が分からず、`-raw` が無いと引用符つきで出る。
+- 直したこと: `terraform -chdir=IaC/terraform/aws-managed/workflow output -raw init_logs_command` にした。
+
+#### R2-7（Nit。直した）entrypoint のヘッダーのコメントが「必ず先に『終わらない』の行が出る」と言い切っていた
+
+- 破綻シナリオ: DB の 5432 が開くまでの待ち（`wait_for_db`）が長いと、ループが 30 回目に届く前に ECS が止める（startPeriod 300 秒 + 6 回 × 10 秒）。
+- 直したこと: 「ふつうはその前に出る（DB の 5432 が開くのが遅いと間に合わないこともある）」に直した。
+
+#### Nit（直していない）
+
+- R2-8: psql の出力の空行を err から外す `-e '/^$/d'` に、縛る check が無い（mutate2 の「空行を err から外さない」が落ちない）。
+  - err は log にしか使わず、待ちの判定（schema_have）には使わない（読んだだけ）。
+  - 外れても、空行から始まる失敗のときに失敗の理由が log に出ないだけ。
+- R2-9: `list-tasks --desired-status RUNNING` は、すでに止めに入ったタスク（desiredStatus が STOPPED で、まだ lastStatus が STOPPED でない）を見ない。
+  - 誰かが stop-task した直後の init は SIGTERM で trap に入り exit 143 で終わるので、窓は短い（読んだだけ）。
+- R2-10: psql の stderr の WARNING 行が 1 行目に来ると、本当の失敗の行の代わりに WARNING が出る。
+  - コメントには書いた。振る舞いは変えていない。
+
+#### 問題なしと判断したもの
+
+- 「1.20 に対して 1.19 が通る」と「認証失敗の stderr が log に出る」
+  - 実行した: ep-sh.sh（/bin/sh と /bin/dash）と check.sh。
+- パスワードと stderr の 2 行目がログに出ないこと
+  - 実行した: ep-sh.sh の `!!` の行が無い。check の「2 行目とパスワードは出さない」。
+- `$prev` を引用しないこと（ARN は空白を含まない。bash 3.2 で 2 つの引数に分かれる）
+  - 実行した: check の wargc = 10。
+- 待ちの 30 回 × 10 秒と、ECS が止める時刻（startPeriod 300 秒 + 6 回 × 10 秒）の関係
+  - ecs.tf の値とループの数から計算しただけ（Fargate では未確認）。
+
+### 残っているもの
+
+- R2-3: busybox の sh / sed で entrypoint.sh を動かしていない。docker か AWS（検証 6）で確かめる。
+- Nit R2-8〜R2-10（上）。直していない。
+- Round 1 の Nit 6〜9 は、指示どおり直していない。
+- design.md:90（検証 3）に「（1/60）」が残っている。いまは 30 回なので「（1/30）」。design.md は PM が直す。
+- 検証 2〜5（手元の docker）と検証 6（AWS）は未実行。

@@ -698,14 +698,19 @@ _ts_ep_bad = [w for w in ("NAUTOBOT_DB_", "NAUTOBOT", "temporal-sql-tool", "sql_
               if w in _ts_ep_code_text]
 check(f"entrypoint.sh は master のパスワードとユーザーに触らず、スキーマを書かない（temporal-sql-tool / CREATE / GRANT / unset が無い。いま見つかったもの: {_ts_ep_bad}）",
       _ts_ep_bad == [] and _ts_ep.rstrip().splitlines()[-1].strip() == "exec /sbin/tini -- /etc/temporal/entrypoint.sh")
-_ts_ep_psql = [ln.strip() for ln in _ts_ep_logical if re.search(r"(^|\s)psql\s", ln)]
-check(f"entrypoint.sh の psql はロール POSTGRES_USER と POSTGRES_PWD で schema_version.curr_version を読む 1 か所だけ（いま: {_ts_ep_psql}）",
-      len(_ts_ep_psql) == 1 and _ts_ep_psql[0].startswith('PGPASSWORD="$POSTGRES_PWD" psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$1" -tAc')
-      and '"SELECT curr_version FROM schema_version WHERE version_partition = 0"' in _ts_ep_psql[0])
-check("entrypoint.sh はイメージの versioned/ の版（v を除き、数で並べた最大）に両方の DB が揃うまで 10 秒おきに 60 回待ち、揃わなければ init のログの見方を出して exit 1",
+_ts_ep_psql = [ln.strip() for ln in _ts_ep_logical if re.search(r"(^|\s|\()psql\s", ln.split("  # ", 1)[0])]
+check(f"entrypoint.sh の psql はロール POSTGRES_USER と POSTGRES_PWD で schema_version.curr_version を読む 1 か所だけで、stderr を捨てずに受ける（2>&1。いま: {_ts_ep_psql}）",
+      len(_ts_ep_psql) == 1 and _ts_ep_psql[0].startswith('_out=$(PGPASSWORD="$POSTGRES_PWD" psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$1" -tAc')
+      and _ts_ep_psql[0].endswith('"SELECT curr_version FROM schema_version WHERE version_partition = 0" 2>&1) || true')
+      and "2>/dev/null" not in _ts_ep_code_text)
+check("entrypoint.sh は両方の DB の版がイメージの versioned/ の版（v を除き、数で並べた最大）以上になるまで 10 秒おきに 30 回（startPeriod の 300 秒）待ち、"
+      "毎回と最後の行に init のログの見方を出して、最後は exit 1（Round 1 のセルフレビューの Should 2 / 3。cycle 042）",
       "sort -t. -k1,1n -k2,2n | tail -n 1" in _ts_ep and 'want_t=$(schema_want temporal); want_v=$(schema_want visibility)' in _ts_ep
-      and 'if [ "$have_t" = "$want_t" ] && [ "$have_v" = "$want_v" ]; then break; fi' in _ts_ep
-      and re.search(r'if \[ "\$i" -gt 60 \]; then\n\s*log "[^"]*init_logs_command[^"]*"; exit 1\n', _ts_ep) is not None and "\n  sleep 10\n" in _ts_ep)
+      and 'if version_ge "$have_t" "$want_t" && version_ge "$have_v" "$want_v"; then break; fi' in _ts_ep
+      and "init_logs_command" in _ts_ep.split("init_hint=", 1)[-1].split("\n", 1)[0]
+      and re.search(r'if \[ "\$i" -gt 30 \]; then\n\s*log "[^"]*\$\{init_hint\}[^"]*30 回（300 秒）[^"]*"; exit 1\n', _ts_ep) is not None
+      and re.search(r'\n  log "[^"]*\$\{init_hint\}[^"]*（\$\{i\}/30。[^"]*"\n  sleep 10\n', _ts_ep) is not None
+      and re.findall(r"startPeriod\s*=\s*(\d+)", _c_temporal_code) == ["300"])
 # fork だけのサブシェル（( … ) &）は /proc/<pid>/environ に親の最初の env を持ち続ける。別の実行ファイルを exec させる（cycle 039）
 check("entrypoint は namespace を /etc/temporal/namespace-rds.sh <address> <namespace> <retention> & で起こし、( … ) & のサブシェルを持たない（cycle 039）",
       '/etc/temporal/namespace-rds.sh "$TEMPORAL_ADDRESS_LOCAL" "$DEFAULT_NAMESPACE" "$DEFAULT_NAMESPACE_RETENTION" &' in [ln.strip() for ln in _ts_ep_logical]
@@ -772,7 +777,9 @@ def _ts_ep_run(seq_t, seq_v, versions=("v1.0", "v1.2", "v1.9", "v1.19"), vis_ver
                      f'echo "psql $* PGPASSWORD=${{PGPASSWORD-unset}} MASTER=${{NAUTOBOT_DB_PASSWORD-unset}}" >> {d}/calls\n'
                      f'n=$(cat {d}/n_$db 2>/dev/null || echo 0); n=$((n + 1)); echo $n > {d}/n_$db\n'
                      f'v=$(sed -n "${{n}}p" {d}/seq_$db); [ -n "$v" ] || v=$(tail -n 1 {d}/seq_$db)\n'
-                     'case "$v" in ERR) echo "psql: error: role does not exist" >&2; exit 2;; EMPTY) exit 0;; *) echo "$v";; esac'),
+                     'case "$v" in ERR) printf \'%s\\n\' "ERROR:  relation \\"schema_version\\" does not exist" "LINE 1: SELECT curr_version FROM schema_version" >&2; exit 3;; EMPTY) exit 0;;\n'
+                     '  AUTH) printf \'%s\\n\' "psql: error: connection to server at \\"db\\" (10.0.0.1), port 5432 failed: FATAL:  password authentication failed for user \\"temporal\\"" "2 行目" >&2; exit 2;;\n'
+                     '  *) echo "$v";; esac'),
             "ns": f'echo "ns $*" >> {d}/calls', "tini": f'echo "tini $*" >> {d}/calls'})
         with open(os.path.join(d, "common.sh"), "w") as f:
             f.write(_ts_common.replace("SCHEMA_DIR=/etc/temporal/schema/postgresql/v12", f"SCHEMA_DIR={d}/schema"))
@@ -784,20 +791,57 @@ def _ts_ep_run(seq_t, seq_v, versions=("v1.0", "v1.2", "v1.9", "v1.19"), vis_ver
     return out.returncode, calls, out.stderr
 _ep_rc, _ep_calls, _ep_err = _ts_ep_run(["ERR", "EMPTY", "1.19"], ["ERR", "1.14", "1.14"])
 _ep_kinds = [c.split()[0] for c in _ep_calls]
-check(f"entrypoint.sh: ロールも表も無い → 表はあるが版が無い → 1.19 / 1.14 で 2 回待ってから namespace と tini へ進む（v1.9 より v1.19 を新しいとみる。いま: rc={_ep_rc} {_ep_kinds} {_ep_err.strip()[-80:]!r}）",
+check(f"entrypoint.sh: 表が無い → 表はあるが版が無い → 1.19 / 1.14 で 2 回待ってから namespace と tini へ進む（v1.9 より v1.19 を新しいとみる。いま: rc={_ep_rc} {_ep_kinds} {_ep_err.strip()[-80:]!r}）",
       # ns は背景（&）で起こし、すぐ exec tini する。どちらが先に calls へ書くかは決まらないので、最後の 2 つは順を問わない
       _ep_rc == 0 and _ep_kinds[:8] == ["psql", "psql", "sleep", "psql", "psql", "sleep", "psql", "psql"] and sorted(_ep_kinds[8:]) == ["ns", "tini"]
       and [c for c in _ep_calls if c.startswith("sleep")] == ["sleep 10", "sleep 10"]
       and sorted(c for c in _ep_calls if c.startswith(("ns", "tini"))) == ["ns 127.0.0.1:7233 default 72h", "tini -- /etc/temporal/entrypoint.sh"]
-      and "entrypoint-rds: 初期化のタスク（ops/up.sh の 8-5 が run-task する <接頭辞>-workflow-init）を待つ（2/60。" in _ep_err
-      and "entrypoint-rds: スキーマは temporal=1.19 / temporal_visibility=1.14（イメージの版と同じ）" in _ep_err)
+      and "entrypoint-rds: 初期化のタスク（ops/up.sh の 8-5（OSS 版は ops/oss/up.sh の 8）が run-task する <接頭辞>-workflow-init。ログは terraform -chdir=IaC/terraform/aws-managed/workflow output -raw init_logs_command" in _ep_err
+      and "を待つ（2/30。スキーマの版 temporal=無し/1.19 temporal_visibility=1.14/1.14）" in _ep_err
+      and "entrypoint-rds: スキーマは temporal=1.19 / temporal_visibility=1.14（イメージの版 1.19 / 1.14 以上）" in _ep_err)
 check(f"entrypoint.sh: psql は全部ロール temporal と POSTGRES_PWD（env）で呼び、パスワードを引数に載せず、master のパスワードは env にも無い（いま: {_ep_calls[:2]}）",
       all(" -U temporal " in c and c.endswith("PGPASSWORD=pw-role MASTER=unset") and "pw-role" not in c.rsplit(" PGPASSWORD=", 1)[0]
           for c in _ep_calls if c.startswith("psql")) and any(c.startswith("psql") for c in _ep_calls))
 _ep_rc, _ep_calls, _ep_err = _ts_ep_run(["1.9"], ["1.14"])
-check(f"entrypoint.sh: 版が古い（1.9 < 1.19）まま 60 回待つと namespace も tini も起こさず exit 1、init のログの見方を出す（いま: rc={_ep_rc} sleep {_ep_calls.count('sleep 10')} 回 {_ep_err.strip()[-80:]!r}）",
-      _ep_rc == 1 and _ep_calls.count("sleep 10") == 60 and not any(c.startswith(("ns", "tini")) for c in _ep_calls)
-      and "60 回待っても終わらない" in _ep_err and "init_logs_command" in _ep_err)
+check(f"entrypoint.sh: 版が古い（1.9 < 1.19）まま 30 回待つと namespace も tini も起こさず exit 1、init のログの見方を出す（いま: rc={_ep_rc} sleep {_ep_calls.count('sleep 10')} 回 {_ep_err.strip()[-80:]!r}）",
+      _ep_rc == 1 and _ep_calls.count("sleep 10") == 30 and not any(c.startswith(("ns", "tini")) for c in _ep_calls)
+      and "30 回（300 秒）待っても終わらない（スキーマの版 temporal=1.9/1.19 temporal_visibility=1.14/1.14）" in _ep_err and "init_logs_command" in _ep_err.strip().splitlines()[-1])
+# イメージを古い版に戻すと DB の版がイメージより新しくなる。Temporal 本体（VerifyCompatibleVersion）と同じく許す（Round 1 のセルフレビューの Should 2）
+_ep_rc, _ep_calls, _ep_err = _ts_ep_run(["1.20"], ["1.15"])
+check(f"entrypoint.sh: DB の版がイメージより新しい（1.20 > 1.19、1.15 > 1.14）なら待たずに namespace と tini へ進む（いま: rc={_ep_rc} {[c.split()[0] for c in _ep_calls]} {_ep_err.strip()[-60:]!r}）",
+      _ep_rc == 0 and not any(c.startswith("sleep") for c in _ep_calls) and sorted(c.split()[0] for c in _ep_calls if c.startswith(("ns", "tini"))) == ["ns", "tini"]
+      and "スキーマは temporal=1.20 / temporal_visibility=1.15（イメージの版 1.19 / 1.14 以上）" in _ep_err)
+for _seq_t, _seq_v, _why in ((["2.0"], ["1.14"], "major が大きい"), (["1.19"], ["1.14"], "同じ")):
+    _ep_rc, _ep_calls, _ep_err = _ts_ep_run(_seq_t, _seq_v)
+    check(f"entrypoint.sh: DB の版がイメージの版と{_why}（{_seq_t[0]} / {_seq_v[0]}）なら待たずに進む（いま: rc={_ep_rc} sleep {_ep_calls.count('sleep 10')} 回）",
+          _ep_rc == 0 and _ep_calls.count("sleep 10") == 0 and any(c.startswith("tini") for c in _ep_calls))
+for _seq_t, _seq_v, _why in ((["1.18"], ["1.14"], "temporal だけ古い"), (["1.20"], ["1.13"], "visibility だけ古い"), (["0.99"], ["1.14"], "major が小さい"),
+                             (["1.19.1"], ["1.14"], "形が違う（3 つ組）"), (["v1.19"], ["1.14"], "形が違う（v 付き）")):
+    _ep_rc, _ep_calls, _ep_err = _ts_ep_run(_seq_t, _seq_v)
+    check(f"entrypoint.sh: {_why}（{_seq_t[0]} / {_seq_v[0]}）なら 30 回待って exit 1（いま: rc={_ep_rc} sleep {_ep_calls.count('sleep 10')} 回）",
+          _ep_rc == 1 and _ep_calls.count("sleep 10") == 30 and not any(c.startswith(("ns", "tini")) for c in _ep_calls))
+# version_ge そのもの。schema_read の sed が版の形の行だけを渡すが、空（読めない）や形の違う値を渡されても、[ の「整数でない」で stderr を汚さずに偽を返す
+import subprocess as _vsp  # noqa: E402
+_vge = _ts_ep[_ts_ep.index("version_ge() {"):]
+_vge = _vge[:_vge.index("\n}\n") + 3]
+_vge_cases = (("1.19", "1.19", 0), ("1.20", "1.19", 0), ("2.0", "1.19", 0), ("1.9", "1.19", 1), ("0.99", "1.14", 1), ("1.18", "1.19", 1),
+              ("", "1.19", 1), ("1.19.1", "1.19", 1), ("v1.19", "1.19", 1), ("1.", "1.19", 1), (".19", "1.19", 1), ("1.x", "1.1", 1), ("119", "1.19", 1),
+              ("1.19", "1.20.1", 1), ("1.19", "", 1))
+_vge_out = _vsp.run(["sh", "-c", _vge + "".join(f'version_ge "{a}" "{b}"; echo "{a}:$?"\n' for a, b, _ in _vge_cases)],
+                    capture_output=True, text=True, timeout=30, stdin=_vsp.DEVNULL)
+check(f"entrypoint.sh の version_ge: major.minor を数で比べ（1.20 ≥ 1.19、2.0 ≥ 1.19、1.9 < 1.19）、どちらかが空・3 つ組・v 付き・数でないものは stderr に何も出さず偽（いま: {_vge_out.stdout.split()} {_vge_out.stderr.strip()[:80]!r}）",
+      _vge_out.stdout.split() == [f"{a}:{rc}" for a, _, rc in _vge_cases] and _vge_out.stderr == "")
+# 認証や TLS の失敗を「まだ無い」と誤解させない。psql の stderr の 1 行目をそのまま log に出す（Round 1 のセルフレビューの Should 4）
+_ep_rc, _ep_calls, _ep_err = _ts_ep_run(["AUTH", "1.19"], ["AUTH", "1.14"])
+check(f"entrypoint.sh: psql が認証で落ちたら、待ちの行に DB ごとの stderr の 1 行目を出し（2 行目とパスワードは出さない）、版が揃えば進む（いま: rc={_ep_rc} {_ep_err.strip()[:200]!r}）",
+      _ep_rc == 0 and _ep_calls.count("sleep 10") == 1
+      and "（1/30。スキーマの版 temporal=無し/1.19 temporal_visibility=無し/1.14。temporal の psql: psql: error: connection to server at \"db\" (10.0.0.1), port 5432 failed: "
+          "FATAL:  password authentication failed for user \"temporal\"。temporal_visibility の psql: psql: error: connection" in _ep_err
+      and "2 行目" not in _ep_err and "pw-role" not in _ep_err)
+_ep_rc, _ep_calls, _ep_err = _ts_ep_run(["ERR"], ["EMPTY"])
+check(f"entrypoint.sh: 表が無い（psql の失敗。2 行目の LINE 1: は出さない）と行が無い（psql は成功で空）を分けて出し、最後の行にも psql の失敗を出す（いま: rc={_ep_rc} {_ep_err.strip().splitlines()[-1][-160:]!r}）",
+      _ep_rc == 1 and "temporal=無し/1.19 temporal_visibility=無し/1.14。temporal の psql: ERROR:  relation \"schema_version\" does not exist）" in _ep_err.strip().splitlines()[-1]
+      and "temporal_visibility の psql" not in _ep_err and "LINE 1:" not in _ep_err)
 _ep_rc, _ep_calls, _ep_err = _ts_ep_run(["1.19"], ["1.14"], vis_versions=())
 check(f"entrypoint.sh: イメージに versioned/ の版が無ければ待たずに exit 1（いま: rc={_ep_rc} {_ep_calls} {_ep_err.strip()[-60:]!r}）",
       _ep_rc == 1 and not any(c.startswith(("sleep", "ns", "tini")) for c in _ep_calls) and "版が無い" in _ep_err)
@@ -1222,36 +1266,46 @@ for _name, _src in (("ops/up.sh", read("ops", "up.sh")), ("ops/oss/up.sh", read(
           len(_rti) == 1 and 0 <= _src.index("tf_apply workflow") < _rti[0] < _wf_stable
           and re.search(r"tf_apply workflow [^\n]*\n(\s*#[^\n]*\n)*\s*run_temporal_init\n", _src) is not None)
 _upc_rti = _upc.split("run_temporal_init() {")[1].split("\n}\n")[0] if "run_temporal_init() {" in _upc else ""
-_rti_pos = [_upc_rti.find(s) for s in ("aws ecs run-task ", "aws ecs wait tasks-stopped ", "aws ecs describe-tasks ", '[ "${code:-}" = 0 ] || die ')]
-check(f"run_temporal_init は ecs run-task → ecs wait tasks-stopped → describe-tasks の exitCode の順で、0 以外（None を含む）で die する（いま: {_rti_pos}）",
+_rti_pos = [_upc_rti.find(s) for s in ('aws ecs list-tasks --region "$REGION" --cluster "$cluster" --family "$family" --desired-status RUNNING ',
+                                       'aws ecs wait tasks-stopped --region "$REGION" --cluster "$cluster" --tasks $prev ', "aws ecs run-task ",
+                                       'aws ecs wait tasks-stopped --region "$REGION" --cluster "$cluster" --tasks "$task" ', "aws ecs describe-tasks ",
+                                       '[ "${code:-}" = 0 ] || die ')]
+check(f"run_temporal_init は ecs list-tasks（前の init）→ その tasks-stopped → ecs run-task → ecs wait tasks-stopped → describe-tasks の exitCode の順で、"
+      f"0 以外（None を含む）で die する（Round 1 のセルフレビューの Should 5。いま: {_rti_pos}）",
       -1 not in _rti_pos and _rti_pos == sorted(_rti_pos)
       and "containers[0].exitCode" in _upc_rti and "--launch-type FARGATE" in _upc_rti and "assignPublicIp=DISABLED" in _upc_rti
       and all(f"tf_output workflow {o})" in _upc_rti for o in ("cluster_name", "init_task_definition", "task_subnet_id", "task_security_group_id", "init_logs_command")))
-def _rti_run(run_out, desc_out, wait_fails=0, run_rc=0):
-    """run_temporal_init を bash で、aws（PATH の差し替え）と tf_output / die（関数）を差し替えて動かす。rc と aws の呼び出しと stdout / stderr を返す。"""
+def _rti_run(run_out, desc_out, wait_fails=0, run_rc=0, prev_out="", list_rc=0):
+    """run_temporal_init を bash で、aws（PATH の差し替え）と tf_output / die（関数）を差し替えて動かす。rc と aws の呼び出しと stdout / stderr を返す。
+    list-tasks（前の init）は prev_out を返す。wait は呼ばれた順に数え、wait_fails 回目までは時間切れ（前の init の待ちも数える）。"""
     import subprocess, tempfile
     with tempfile.TemporaryDirectory() as d:
         with open(os.path.join(d, "aws"), "w") as f:
             f.write(f'#!/bin/bash\necho "aws $*" >> {d}/calls\ncase "$2" in\n'
+                    f'  list-tasks) printf "%b\\n" "$PREV_OUT"; exit $LIST_RC;;\n'
                     f'  run-task) printf "%b\\n" "$RUN_OUT"; exit $RUN_RC;;\n'
-                    f'  wait) n=$(cat {d}/w 2>/dev/null || echo 0); n=$((n + 1)); echo $n > {d}/w; [ "$n" -gt "$WAIT_FAILS" ]; exit $?;;\n'
+                    f'  wait) echo $# >> {d}/wargc; n=$(cat {d}/w 2>/dev/null || echo 0); n=$((n + 1)); echo $n > {d}/w; [ "$n" -gt "$WAIT_FAILS" ]; exit $?;;\n'
                     f'  describe-tasks) printf "%b\\n" "$DESC_OUT";;\nesac\n')
         os.chmod(os.path.join(d, "aws"), 0o755)
         script = ("set -euo pipefail\nREGION=ap-northeast-1\ndie() { echo \"DIE: $*\" >&2; exit 1; }\n"
                   "tf_output() { case \"$2\" in cluster_name) echo c1;; init_task_definition) echo arn:aws:ecs:r:1:task-definition/p-workflow-init:3;;"
                   " task_subnet_id) echo subnet-1;; task_security_group_id) echo sg-1;; init_logs_command) echo 'aws logs tail g --log-stream-name-prefix init';; esac; }\n"
                   f"run_temporal_init() {{{_upc_rti}\n}}\nrun_temporal_init\necho DONE\n")
-        env = {"PATH": d + os.pathsep + os.environ.get("PATH", ""), "RUN_OUT": run_out, "DESC_OUT": desc_out, "WAIT_FAILS": str(wait_fails), "RUN_RC": str(run_rc)}
-        out = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+        env = {"PATH": d + os.pathsep + os.environ.get("PATH", ""), "RUN_OUT": run_out, "DESC_OUT": desc_out, "WAIT_FAILS": str(wait_fails), "RUN_RC": str(run_rc),
+               "PREV_OUT": prev_out, "LIST_RC": str(list_rc)}
+        out = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, stdin=_vsp.DEVNULL)
         calls = open(os.path.join(d, "calls")).read().splitlines() if os.path.exists(os.path.join(d, "calls")) else []
-    return out.returncode, [" ".join(c.split()[1:3]) for c in calls], calls, out.stdout, out.stderr
+        wargc = [int(n) for n in open(os.path.join(d, "wargc")).read().split()] if os.path.exists(os.path.join(d, "wargc")) else []
+    return out.returncode, [" ".join(c.split()[1:3]) for c in calls], calls, out.stdout, out.stderr, wargc
 _TASK = "arn:aws:ecs:r:1:task/c1/abc"
 _r = _rti_run(f"{_TASK}\\t0", "STOPPED\\t0\\tEssentialContainerExited\\tEssential container in task exited")
 check(f"run_temporal_init: exitCode 0 なら run-task → wait → describe-tasks で抜け、先へ進む（サービスと同じサブネット・SG、公開 IP 無し。いま: rc={_r[0]} {_r[1]} {_r[4].strip()!r}）",
-      _r[0] == 0 and "DONE" in _r[3] and _r[1] == ["ecs run-task", "ecs wait", "ecs describe-tasks"]
-      and "--task-definition arn:aws:ecs:r:1:task-definition/p-workflow-init:3 --launch-type FARGATE --count 1" in _r[2][0]
-      and "awsvpcConfiguration={subnets=[subnet-1],securityGroups=[sg-1],assignPublicIp=DISABLED}" in _r[2][0]
-      and f"--tasks {_TASK}" in _r[2][1] and f"--tasks {_TASK}" in _r[2][2] and "Temporal の初期化が終わった（exitCode=0）" in _r[3])
+      _r[0] == 0 and "DONE" in _r[3] and _r[1] == ["ecs list-tasks", "ecs run-task", "ecs wait", "ecs describe-tasks"]
+      and "--cluster c1 --family p-workflow-init --desired-status RUNNING" in _r[2][0]
+      and "--task-definition arn:aws:ecs:r:1:task-definition/p-workflow-init:3 --launch-type FARGATE --count 1" in _r[2][1]
+      and "awsvpcConfiguration={subnets=[subnet-1],securityGroups=[sg-1],assignPublicIp=DISABLED}" in _r[2][1]
+      and f"--tasks {_TASK}" in _r[2][2] and f"--tasks {_TASK}" in _r[2][3] and "Temporal の初期化が終わった（exitCode=0）" in _r[3]
+      and "前の初期化のタスク" not in _r[3])
 for _desc, _what in (("STOPPED\\t1\\tEssentialContainerExited\\tEssential container in task exited", "exitCode=1"),
                      ("STOPPED\\tNone\\tTaskFailedToStart\\tCannotPullContainerError: pull image manifest has been retried", "exitCode=None")):
     _r = _rti_run(f"{_TASK}\\t0", _desc)
@@ -1261,16 +1315,35 @@ for _desc, _what in (("STOPPED\\t1\\tEssentialContainerExited\\tEssential contai
 for _out in ("None\\t1", f"{_TASK}\\t1"):
     _r = _rti_run(_out, "")
     check(f"run_temporal_init: run-task が failures を返せば（タスクの ARN があっても）待たずに die（{_out.split(chr(92))[0][-8:]}…。いま: rc={_r[0]} {_r[1]} {_r[4].strip()[-60:]!r}）",
-          _r[0] != 0 and _r[1] == ["ecs run-task"] and "DIE: Temporal の初期化のタスクを起こせない（run-task の返り: " in _r[4])
+          _r[0] != 0 and _r[1] == ["ecs list-tasks", "ecs run-task"] and "DIE: Temporal の初期化のタスクを起こせない（run-task の返り: " in _r[4])
 _r = _rti_run("", "", run_rc=255)
 check(f"run_temporal_init: run-task そのものが失敗すれば待たずに die（権限の手がかりを出す。いま: rc={_r[0]} {_r[1]} {_r[4].strip()[-60:]!r}）",
-      _r[0] != 0 and _r[1] == ["ecs run-task"] and "DIE: Temporal の初期化のタスクを起こせない" in _r[4] and "iam:PassRole" in _r[4])
+      _r[0] != 0 and _r[1] == ["ecs list-tasks", "ecs run-task"] and "DIE: Temporal の初期化のタスクを起こせない" in _r[4] and "iam:PassRole" in _r[4])
 _r = _rti_run(f"{_TASK}\\t0", "STOPPED\\t0\\tx\\ty", wait_fails=1)
 check(f"run_temporal_init: tasks-stopped が 1 回目で時間切れでも 2 回目で止まれば先へ進む（いま: rc={_r[0]} {_r[1]}）",
-      _r[0] == 0 and "DONE" in _r[3] and _r[1] == ["ecs run-task", "ecs wait", "ecs wait", "ecs describe-tasks"])
+      _r[0] == 0 and "DONE" in _r[3] and _r[1] == ["ecs list-tasks", "ecs run-task", "ecs wait", "ecs wait", "ecs describe-tasks"])
 _r = _rti_run(f"{_TASK}\\t0", "STOPPED\\t0\\tx\\ty", wait_fails=2)
 check(f"run_temporal_init: tasks-stopped が 2 回とも時間切れなら describe-tasks を見ずに die（いま: rc={_r[0]} {_r[1]} {_r[4].strip()[-60:]!r}）",
-      _r[0] != 0 and "DONE" not in _r[3] and _r[1] == ["ecs run-task", "ecs wait", "ecs wait"] and "20 分たっても止まらない" in _r[4])
+      _r[0] != 0 and "DONE" not in _r[3] and _r[1] == ["ecs list-tasks", "ecs run-task", "ecs wait", "ecs wait"] and "20 分たっても止まらない" in _r[4])
+# 前の init（打ち直し、Ctrl-C の後）がまだ走っていれば、止まるのを待ってから起こす（2 つ同時だと新しい DB のスキーマが 0.0 に戻る。Round 1 のセルフレビューの Should 5）
+_PREV1, _PREV2 = "arn:aws:ecs:r:1:task/c1/old1", "arn:aws:ecs:r:1:task/c1/old2"
+_r = _rti_run(f"{_TASK}\\t0", "STOPPED\\t0\\tx\\ty", prev_out=f"{_PREV1}\\t{_PREV2}")
+check(f"run_temporal_init: 前の init が 2 つ走っていれば両方を別々の引数で tasks-stopped に渡して待ってから run-task する（いま: rc={_r[0]} {_r[1]} {_r[2][1:2]} 引数の数 {_r[5]}）",
+      _r[0] == 0 and "DONE" in _r[3] and _r[5][:1] == [10] and _r[1] == ["ecs list-tasks", "ecs wait", "ecs run-task", "ecs wait", "ecs describe-tasks"]
+      and _r[2][1].endswith(f"--cluster c1 --tasks {_PREV1} {_PREV2}") and f"前の初期化のタスク（p-workflow-init）がまだ走っているので、止まるのを待つ: {_PREV1} {_PREV2}" in _r[3])
+_r = _rti_run(f"{_TASK}\\t0", "STOPPED\\t0\\tx\\ty", prev_out="None")
+check(f"run_temporal_init: list-tasks が None（text の空）なら前の init を待たない（いま: {_r[1]}）",
+      _r[0] == 0 and _r[1] == ["ecs list-tasks", "ecs run-task", "ecs wait", "ecs describe-tasks"])
+_r = _rti_run(f"{_TASK}\\t0", "STOPPED\\t0\\tx\\ty", prev_out=_PREV1, wait_fails=1)
+check(f"run_temporal_init: 前の init の待ちが 1 回目で時間切れでも 2 回目で止まれば run-task する（いま: rc={_r[0]} {_r[1]}）",
+      _r[0] == 0 and _r[1] == ["ecs list-tasks", "ecs wait", "ecs wait", "ecs run-task", "ecs wait", "ecs describe-tasks"])
+_r = _rti_run(f"{_TASK}\\t0", "STOPPED\\t0\\tx\\ty", prev_out=_PREV1, wait_fails=2)
+check(f"run_temporal_init: 前の init が 2 回待っても止まらなければ run-task せずに die（いま: rc={_r[0]} {_r[1]} {_r[4].strip()[-60:]!r}）",
+      _r[0] != 0 and "DONE" not in _r[3] and _r[1] == ["ecs list-tasks", "ecs wait", "ecs wait"]
+      and "DIE: 前の Temporal の初期化のタスク（p-workflow-init）が 20 分たっても止まらない" in _r[4])
+_r = _rti_run(f"{_TASK}\\t0", "", list_rc=255)
+check(f"run_temporal_init: list-tasks そのものが失敗すれば run-task せずに die（いま: rc={_r[0]} {_r[1]} {_r[4].strip()[-60:]!r}）",
+      _r[0] != 0 and _r[1] == ["ecs list-tasks"] and "DIE: 走っている Temporal の初期化のタスク（p-workflow-init）を確かめられない" in _r[4])
 check("ensure_temporal_secrets は /<prefix>/temporal/db-password を乱数の SecureString で作る（値は出さない）",
       'ensure_secret "/$PREFIX/temporal/db-password" password' in read("ops", "up-common.sh"))
 check("up.sh は workflow を apply して services-stable を待ち、Temporal UI のポートフォワーディングを案内する",

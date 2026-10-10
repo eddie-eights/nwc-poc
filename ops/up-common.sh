@@ -362,12 +362,24 @@ run_temporal_init() {  # workflow の apply の直後、services-stable を待�
   # 一回きりのタスク <接頭辞>-workflow-init（IaC/terraform/aws-managed/workflow/ecs.tf の aws_ecs_task_definition.init。docker/images/temporal-server/init.sh）を
   # run-task で起こし、止まるまで待って終了コード 0 を確かめる。Nautobot の RDS の master でロール temporal と DB を作り、ロールでスキーマを最新まで上げる（べき等なので毎回打つ）。
   # サーバーのタスクはスキーマの版が揃うまで待っている（entrypoint.sh）。0 でなければ die（タスクの止まった理由と init のログの見方を出す）
-  local cluster taskdef subnet sg logs out task status code stop_code reason
+  local cluster taskdef family subnet sg logs prev out task status code stop_code reason
   cluster=$(tf_output workflow cluster_name) || exit 1
   taskdef=$(tf_output workflow init_task_definition) || exit 1
   subnet=$(tf_output workflow task_subnet_id) || exit 1
   sg=$(tf_output workflow task_security_group_id) || exit 1
   logs=$(tf_output workflow init_logs_command) || exit 1
+  family=${taskdef##*/}; family=${family%:*}
+  # 前の init（打ち直し、Ctrl-C や die の後）がまだ走っていれば、止まるのを待ってから起こす。2 つ同時に走ると、新しい DB では 2 つ目の
+  # setup-schema -v 0.0 が 1 つ目の update-schema の結果を 0.0 に戻し、以後の update-schema が落ちる（DB を手で直すまで戻らない）
+  prev=$(aws ecs list-tasks --region "$REGION" --cluster "$cluster" --family "$family" --desired-status RUNNING --query 'taskArns' --output text) \
+    || die "走っている Temporal の初期化のタスク（${family}）を確かめられない（上のエラー）"
+  if [ -n "$prev" ] && [ "$prev" != None ]; then
+    echo "前の初期化のタスク（${family}）がまだ走っているので、止まるのを待つ: ${prev//$'\t'/ }"
+    # タスクの ARN は空白を含まないので、複数なら分けて --tasks に並べる（引用しない）
+    aws ecs wait tasks-stopped --region "$REGION" --cluster "$cluster" --tasks $prev 2>/dev/null \
+      || aws ecs wait tasks-stopped --region "$REGION" --cluster "$cluster" --tasks $prev \
+      || die "前の Temporal の初期化のタスク（${family}）が 20 分たっても止まらない（ログ: ${logs}）"
+  fi
   echo "Temporal の初期化のタスク（${taskdef##*/}。ロール・DB・スキーマ。初回はイメージの取得とスキーマで 2〜5 分）"
   out=$(aws ecs run-task --region "$REGION" --cluster "$cluster" --task-definition "$taskdef" --launch-type FARGATE --count 1 \
     --network-configuration "awsvpcConfiguration={subnets=[$subnet],securityGroups=[$sg],assignPublicIp=DISABLED}" \
