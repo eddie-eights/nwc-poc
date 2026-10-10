@@ -156,7 +156,8 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
 | 30 日（参考） | 2,152 USD | 1,196 USD | -956 USD |
 
 - 内訳は、共通 0.893 + マネージド固有 2.096 = 2.989、共通 0.893 + OSS 固有 0.769 = 1.662。
-- `ops/up.sh` が表示する見積もり（2026-09-14 の Price List をセント単位に丸めたもの）は同じ構成で約 3.05 USD/h で、2% 以内で合う。README の「`PIPELINE=1` だけで約 2.92 USD/h」は AGENT と WORKFLOW を含まない値。
+- `ops/up.sh` が表示する見積もり（2026-09-14 の Price List をセント単位に丸めたもの）は同じ構成で約 3.04 USD/h で、2% 以内で合う。
+- デプロイのパターン（`AGENT=1` だけ、`PIPELINE=1` だけ、全部）ごとのマネージド版の値は [deploy.md の「デプロイのパターンごとの待機の時間課金」](deploy.md#デプロイのパターンごとの待機の時間課金)（`PIPELINE=1` だけで 2.87 USD/h）。OSS 版の `ops/oss/up.sh` はいつも 10 の root を全部立てるので、パターンは無い。
 
 ### 共通の部分（両方の版に立つもの。0.893 USD/h）
 

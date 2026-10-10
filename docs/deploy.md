@@ -169,6 +169,7 @@
 ## 費用
 
 既定の AZ の数（MSK だけ 2 AZ、ほかは 1 AZ）のときの、1 時間あたりの目安。`ops/up.sh` も手順 0 で目安を出す。
+AWS の料金表から root ごとに数えたパターン別の値は、下の「[デプロイのパターンごとの待機の時間課金](#デプロイのパターンごとの待機の時間課金)」。
 
 | 機能 | 1 時間あたり | 内訳 |
 |---|---|---|
@@ -190,6 +191,81 @@
 - OpenSearch Serverless のコレクション（KB と logs）は公開せず、VPC エンドポイント 1 本（$0.014/h。両方作っても 1 本。これも `ENDPOINTS_AZ_NUM` の数の倍）からだけ届く。
 - デバッグ用の EC2（`ops/lab-debug.sh`）は別のスタックで、待機は約 $0.30/h（[pipeline.md](pipeline.md) の「デバッグ用の EC2」）。
 - 消したあとに残るものの費用は下の「消したあとに残るもの」。
+
+### デプロイのパターンごとの待機の時間課金
+
+上の表は `ops/up.sh` の目安（2026-09-14〜15 の単価をセントに丸めたもの）。
+ここは `deploy.env` の 3 つのパターンで `ops/up.sh` が実際に立てるものを root ごとに数え、[oss-variant.md の「待機の時間課金を料金表から出す」](oss-variant.md#待機の時間課金を料金表から出す目的-2-の待機の時間課金2026-10-10) と同じ単価（東京、2026-10-10 の AWS Price List）を掛けた値（2026-10-10）。
+
+- **前提。**
+  `STORES` は既定（`s3,grafana,splunk`）、`*_AZ_NUM` は全部既定（`ENDPOINTS_AZ_NUM=1`、`MSK_AZ_NUM=2`、ほかは 1）、`SKIP_*` は書かない。
+  「待機」の意味、数えなかったもの（使った分の課金、CloudWatch Logs など）、GB-月と月額を 730 時間で割ることは oss-variant.md の節と同じ。
+- **1 日と 30 日。**
+  USD/h に 24 時間と 720 時間を掛けた参考値。
+- **数え方の出どころ。**
+  root の選び方は `ops/up.sh` の `ROOTS`（`SKIP_*` と `NAUTOBOT`）、エンドポイントは `endpoints_for` と `endpoint_count`、OpenSearch Serverless の VPC エンドポイントは `NEED_AOSS`。数量は各 root の Terraform の既定値（oss-variant.md の節の「数量の出どころ」）。
+
+#### 合計
+
+| パターン | `deploy.env` | 立てる root | インターフェース型エンドポイント | USD/h | 1 日（参考） | 30 日（参考） | `ops/up.sh` の目安 |
+|---|---|---|---|---|---|---|---|
+| 1. チャット | `AGENT=1`（`CREATE_KB=0`） | `base/ecr` `base/logs` `base/core` `agent` | 7 本 | 0.143 | 3.44 | 103 | $0.14 |
+| 1. チャットと手順書の検索 | `AGENT=1 CREATE_KB=1` | 同上 | 8 本 + OpenSearch Serverless の VPC エンドポイント | 0.505 | 12.13 | 364 | $0.49 |
+| 2. データパイプライン | `PIPELINE=1` | `base/ecr` `base/logs` `base/core` `pipeline/lab` `pipeline/stream` `pipeline/analytics` `pipeline/graph` `pipeline/nautobot` | 12 本 + OpenSearch Serverless の VPC エンドポイント | 2.870 | 68.88 | 2,066 | $2.92 |
+| 3. 全部 | `AGENT=1 PIPELINE=1 WORKFLOW=1` | 2 の 8 つ + `agent` `workflow`（10 の root 全部） | 17 本 + OpenSearch Serverless の VPC エンドポイント | 2.989 | 71.74 | 2,152 | $3.04 |
+
+- 3 は oss-variant.md の節のマネージド版（2.99 USD/h）と同じ構成で、同じ値になる。
+- `ops/up.sh` の目安は 2 と 3 で料金表の値より 0.05 USD/h（約 2%）高い。
+  差の大半は EMR Serverless のジョブ（目安は 1 つ 0.21、料金表では 0.192）と MSK（目安は 0.57、料金表ではブローカー 2 台とストレージで 0.545）。
+  1 は逆に目安のほうが 0.003〜0.015 低い（Web の EC2 と EBS の 4.5 セントを 4 に、OCU の 33.4 セントを 33 に丸めている）。
+- OpenSearch Serverless の VPC エンドポイントは、Bedrock の Knowledge Base（`CREATE_KB=1`）か logs の collection（`STORES` の `grafana`）があるときだけ立ち、両方あっても 1 本。
+
+#### root ごとに立つもの
+
+| root | 時間課金で立つもの | USD/h | 1 | 1（Knowledge Base あり） | 2 | 3 |
+|---|---|---|---|---|---|---|
+| `base/ecr` `base/logs` | ECR のリポジトリと logs のバケット（保存量の分だけ） | 0 | ○ | ○ | ○ | ○ |
+| `base/core` | Web の EC2 t4g.medium と EBS gp3 16 GB。VPC、サブネット、SG、SNS のトピック、S3、Flow Logs は時間課金なし | 0.0453 | ○ | ○ | ○ | ○ |
+| `agent` | AgentCore Runtime とガードレールは使った分だけ。`CREATE_KB=1` なら Bedrock の Knowledge Base の vector の collection（OpenSearch Serverless の 1 OCU） | 0（Knowledge Base ありは 0.334） | ○ | ○ | − | ○ |
+| `pipeline/lab` | lab の EC2 m6i.xlarge と EBS gp3 24 GB | 0.2512 | − | − | ○ | ○ |
+| `pipeline/stream` | MSK kafka.m5.large × 2 とストレージ 20 GB、SCRAM の KMS の鍵と Secrets Manager のシークレット 3 つ（0.5483）、Fargate ARM 0.25 vCPU / 0.5 GB × 4（Telegraf、gnmic、syslog-ng、GoFlow2。0.0493）、内部 NLB（0.0243） | 0.6219 | − | − | ○ | ○ |
+| `pipeline/analytics` | EMR Serverless のストリーミングジョブ 3 つ（0.5767）、logs の collection（OpenSearch Serverless の 1 OCU。0.334）、Grafana（Fargate ARM 0.5 vCPU / 1 GB。0.0246）、Splunk（Fargate x86 2 vCPU / 4 GB + 一時領域 40 GiB。0.1259）。Amazon Managed Service for Prometheus、S3 Tables、Firehose、Athena は使った分だけ | 1.0612 | − | − | ○ | ○ |
+| `pipeline/graph` | Neptune Analytics 16 m-NCU（レプリカ 0）。status の Lambda は使った分だけ | 0.5810 | − | − | ○ | ○ |
+| `pipeline/nautobot` | Fargate ARM 2 vCPU / 4 GB（Nautobot の web、Celery の worker、Redis を 1 タスク。0.0986）、RDS for PostgreSQL db.t4g.micro と gp3 20 GB（0.0288） | 0.1274 | − | − | ○ | ○ |
+| `workflow` | Fargate ARM 1 vCPU / 2 GB（Temporal の開発用サーバーとワーカーを 1 タスク）。SQS、AgentCore Gateway、ツールの Lambda は使った分だけ | 0.0493 | − | − | − | ○ |
+| インターフェース型エンドポイント（`base/core`） | 1 本 0.014。本数は下の表 | 0.014 × 本数 | 7 本 | 8 本 | 12 本 | 17 本 |
+| OpenSearch Serverless の VPC エンドポイント（`base/core`） | 1 本 0.014 | 0.014 | − | ○ | ○ | ○ |
+
+- **Web の EC2 と lab の EC2。**
+  Web の EC2 は `base/core` なので、どのパターンでも立つ。lab の EC2 は `PIPELINE=1` だけで立つ（`AGENT=1` だけでは `ops/up.sh` が `SKIP_LAB` を立てる）。
+- **Nautobot は PIPELINE に付く。**
+  `PIPELINE=1` なら `ops/up.sh` が `NAUTOBOT` をいつも 1 にする（作らないのは `SKIP_STREAM` と `SKIP_GRAPH` を両方付けた回だけ）。RDS もここに入る。
+- **WORKFLOW が足すもの。**
+  時間課金は Temporal のタスク（0.049）と、エンドポイント 3 本（`sqs` `bedrock-agentcore.gateway` `athena`。0.042）。エンドポイントの分がタスクとほぼ同じだけ足される。SQS のキューは使った分だけ。
+
+#### インターフェース型エンドポイントの本数
+
+`ops/up.sh` は root ごとに呼ぶ API のエンドポイントを足し、同じサービスは root をまたいで 1 本にする（`add_endpoints`）。そのため、パターンを足しても本数は単純な和にならない。
+
+| パターン | エンドポイント | 本数 |
+|---|---|---|
+| 1 | `ssm` `ssmmessages`（土台）、`bedrock-runtime` `bedrock-agentcore` `ecr.api` `ecr.dkr` `logs`（agent） | 7 |
+| 1（Knowledge Base あり） | 1 の 7 本 + `bedrock-agent-runtime` | 8 |
+| 2 | `ssm` `ssmmessages`（土台）、`ecr.api` `ecr.dkr`（lab）、`logs` `secretsmanager`（stream）、`s3tables`（analytics）、`neptune-graph-data` `kinesis-firehose`（graph）、`ecs`（nautobot）、`aps-workspaces` `sns`（Prometheus と、Grafana と Splunk のアラート） | 12 |
+| 3 | 2 の 12 本 + `bedrock-runtime` `bedrock-agentcore`（agent）+ `sqs` `bedrock-agentcore.gateway` `athena`（workflow） | 17 |
+
+#### パターン間の差分
+
+| 差分 | 足されるもの | USD/h |
+|---|---|---|
+| 土台だけ（機能を書かない） | Web の EC2 と EBS（0.0453）、エンドポイント 2 本（0.028） | 0.073 |
+| 土台 → 1 | エンドポイント 5 本（`bedrock-runtime` `bedrock-agentcore` `ecr.api` `ecr.dkr` `logs`。0.070）。`agent` の root そのものは 0 | +0.070 |
+| 1 → 1（Knowledge Base あり） | OpenSearch Serverless の 1 OCU（0.334）、`bedrock-agent-runtime`（0.014）、OpenSearch Serverless の VPC エンドポイント（0.014） | +0.362 |
+| 土台 → 2 | lab（0.2512）、stream（0.6219）、analytics（1.0612）、graph（0.5810）、nautobot（0.1274）、エンドポイント 10 本（0.140）、OpenSearch Serverless の VPC エンドポイント（0.014） | +2.797 |
+| 2 → 3 | AGENT のエンドポイント 2 本（`bedrock-runtime` `bedrock-agentcore`。0.028）、WORKFLOW の Temporal のタスク（0.0493）とエンドポイント 3 本（0.042）。`ecr.api` `ecr.dkr` `logs` `s3tables` は 2 にあるので増えない | +0.119 |
+
+- 2 の 2.87 USD/h のうち、Neptune Analytics（0.58）、EMR Serverless（0.58）、MSK（0.55）、OpenSearch Serverless の OCU（0.33）で 2.04、7 割を占める。
+- `AGENT=1 PIPELINE=1`（WORKFLOW なし）は 2 にエンドポイント 2 本を足した 2.898 USD/h。1 と 2 の和（3.013）にはならない（土台の Web の EC2 とエンドポイント 2 本、`ecr.api` `ecr.dkr` `logs` が重なる）。
 
 ## `ops/up.sh` がすること
 
