@@ -87,6 +87,6 @@
 ## 未確定事項とリスク
 
 1. **trap は手順の区切りまで待つ。** 手順 3 の update-schema が長いと（初回の RDS で数十秒）、SIGTERM から exit まで同じだけ掛かる。stopTimeout 120 秒で収まる見込み（手元の `postgres:18` では初回が 10 秒前後。036 の build.md）。超えたら SIGKILL で、これは変える前と同じ。
-2. **ECS Exec と healthCheck のプロセスは引き続き master のパスワードを持つ**（039 のまま。根本対策は QUEUE の一回きりの初期化タスク）。この cycle は手順 1〜2 の間だけ PID 1 の sh が持つことを docs に書くだけで、無くさない。
+2. **ECS Exec と healthCheck のプロセスは引き続き master のパスワードを持つ**（039 のまま。根本対策は QUEUE の一回きりの初期化タスク）。この cycle は `exec tini` までの手順 1〜3 のあいだ PID 1 の sh の `/proc/1/environ` が持つ（`unset` では消えない。cold review Round 1 で docker で確認）ことを docs に書くだけで、無くさない。
 3. **`SQL_HOST_VERIFICATION=true` の道は AWS で動かしたことが無い**（CA をイメージに入れていない）。fail fast と小文字化は `_ts_ep_tls` のスタブで確かめるだけ。
 4. 検証 5 で `docker stop` の所要が 15 秒を超えたら、trap が前景の `nc -w 10` の後まで待っている以外の理由（trap が効いていない）なので、build.md に `docker logs` を貼って止める。

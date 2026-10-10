@@ -113,7 +113,7 @@ for pair in "$DBNAME:temporal" "$VISIBILITY_DBNAME:visibility"; do
   sql_tool "$db" update-schema -d "$SCHEMA_DIR/$dir/versioned"
 done
 
-# 4. namespace を背景で作る（公式 create-namespace.sh と同じ流れ）。失敗しても本体は落とさない（healthCheck が namespace を見るので ECS 側で UNHEALTHY になる）。
+# 4. namespace を背景で作る（公式 create-namespace.sh と同じ流れ）。失敗しても log を出して exit 0 で抜けるだけで、終了コードは誰も待たない（healthCheck が namespace を見るので ECS 側で UNHEALTHY になる）。
 # fork だけのサブシェルは /proc/<pid>/environ に起動時の env（master のパスワード入り）を持ち続けるので、別の実行ファイルを exec させる（cycle 039）
 step=4
 /etc/temporal/namespace-rds.sh "$TEMPORAL_ADDRESS_LOCAL" "$DEFAULT_NAMESPACE" "$DEFAULT_NAMESPACE_RETENTION" &

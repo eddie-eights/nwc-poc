@@ -635,7 +635,10 @@ def _ts_ep_tls(**env):
         check("entrypoint の TLS の切り出しの目印（export PGHOST= / sql_tool_skip_host_verify=true; fi / sql_tool() { / \\n}\\n）がある", False)
         return None, {}, {}, ""
     a_end = _ts_ep.index("\n", a_mark) + 1; b_end = b_mark + 3
-    log_line = next(ln for ln in _ts_ep.splitlines() if ln.startswith("log() {"))
+    log_line = next((ln for ln in _ts_ep.splitlines() if ln.startswith("log() {")), None)
+    if log_line is None:
+        check("entrypoint の log() { の行がある（TLS の切り出しが使う）", False)
+        return None, {}, {}, ""
     with tempfile.TemporaryDirectory() as d:
         with open(os.path.join(d, "temporal-sql-tool"), "w") as f:
             f.write("#!/bin/sh\nenv | grep -E '^SQL_TLS(=|_DISABLE_HOST_VERIFICATION=|_CA_FILE=|_SERVER_NAME=)' | sort\n"
@@ -661,6 +664,11 @@ _ts_ns_line = [i for i, ln in enumerate(_ts_ep_logical) if ln.strip().startswith
 _ts_sql_loop = [i for i, ln in enumerate(_ts_ep_logical) if ln.strip().startswith("for pair in ")]
 check(f"entrypoint は temporal-sql-tool（for pair）と namespace-rds.sh を unset NAUTOBOT_DB_PASSWORD より後の行で起こす（行: unset {_ts_unset} / for pair {_ts_sql_loop} / namespace {_ts_ns_line}）",
       len(_ts_unset) == 1 and len(_ts_sql_loop) == 1 and len(_ts_ns_line) == 1 and _ts_unset[0] < _ts_sql_loop[0] < _ts_ns_line[0])
+# 「update-schema の途中で切らない」は sql_tool を前景で呼んでいることだけで成り立つ（trap は前景の子が返ってから走る。`… & wait $!` にすると wait が trap に割り込まれて途中で抜ける）
+_ts_bg = [ln.strip() for ln in _ts_ep_logical if re.search(r"(?<!&)&\s*$", ln)]
+_ts_wait = [ln.strip() for ln in _ts_ep_logical if re.search(r"\bwait\b", ln)]
+check(f"entrypoint が背景（末尾 &）で起こすのは namespace-rds.sh の 1 行だけで、wait の行は無い（psql と temporal-sql-tool は前景。いま: & {_ts_bg} wait {_ts_wait}）",
+      len(_ts_bg) == 1 and _ts_bg[0].startswith("/etc/temporal/namespace-rds.sh ") and _ts_wait == [])
 # 起動中の SIGTERM（cycle 040）。PID 1 の sh はハンドラの無い SIGTERM を無視するので、trap で受けて手順の区切りで exit 143 にする
 _ts_trap = [i for i, ln in enumerate(_ts_ep_logical) if re.match(r"\s*trap\b", ln)]
 _ts_steps = [(i, ln.strip()) for i, ln in enumerate(_ts_ep_logical) if re.match(r"\s*step=\d+\s*$", ln)]
@@ -669,19 +677,22 @@ _ts_marks = [_ts_first(r"until nc "), _ts_first(r'PGPASSWORD="\$NAUTOBOT_DB_PASS
 check(f"entrypoint は log() の後に trap を 1 つ置き TERM / INT で exit 143、step=1〜4 を手順 1（nc）/ 2（master の psql）/ 3（for pair）/ 4（namespace）の直前に順に置く（いま: trap {_ts_trap} step {_ts_steps} 目印 {_ts_marks}）",
       len(_ts_trap) == 1 and re.search(r"\bTERM\b", _ts_ep_logical[_ts_trap[0]]) is not None and re.search(r"\bINT\b", _ts_ep_logical[_ts_trap[0]]) is not None
       and "exit 143" in _ts_ep_logical[_ts_trap[0]] and "SIGTERM を受けたので初期化を止める" in _ts_ep_logical[_ts_trap[0]]
-      and _ts_first(r"log\(\) \{") < _ts_trap[0]
+      and 0 <= _ts_first(r"log\(\) \{") < _ts_trap[0]
       and [st for _, st in _ts_steps] == ["step=1", "step=2", "step=3", "step=4"] and -1 not in _ts_marks
       and _ts_trap[0] < _ts_steps[0][0] < _ts_marks[0] < _ts_steps[1][0] < _ts_marks[1] < _ts_steps[2][0] < _ts_marks[2] < _ts_steps[3][0] < _ts_marks[3])
-def _ts_trap_run():
-    """entrypoint の log() と trap を sh で動かし、step=2 のあとに自分へ SIGTERM を送る。rc と stdout と stderr を返す。"""
+def _ts_trap_run(step="step=2"):
+    """entrypoint の log() と trap を sh で動かし、step（既定は step=2。空なら未設定のまま）のあとに自分へ SIGTERM を送る。rc と stdout と stderr を返す。"""
     import subprocess
     lines = [ln for ln in _ts_ep_logical if re.match(r"\s*(log\(\) \{|trap\b)", ln)]
-    script = "set -eu\n" + "\n".join(lines) + "\nstep=2\nkill -TERM $$\necho after\n"
+    script = "set -eu\n" + "\n".join(lines) + f"\n{step}\nkill -TERM $$\necho after\n"
     out = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=30)
     return out.returncode, out.stdout, out.stderr
 _tr_rc, _tr_out, _tr_err = _ts_trap_run()
 check(f"entrypoint の trap: SIGTERM で次の行へ進まず exit 143、ログに手順の番号が出る（いま: rc={_tr_rc} {_tr_out.strip()!r} {_tr_err.strip()!r}）",
       _tr_rc == 143 and "after" not in _tr_out and "entrypoint-rds: SIGTERM を受けたので初期化を止める（手順 2 のあと" in _tr_err)
+_tr_rc, _tr_out, _tr_err = _ts_trap_run(step="")
+check(f"entrypoint の trap: step が未設定（手順 1 より前）でも set -u で落ちず exit 143、手順 0 と出る（${{step:-0}}。いま: rc={_tr_rc} {_tr_err.strip()!r}）",
+      _tr_rc == 143 and "after" not in _tr_out and "（手順 0 のあと" in _tr_err)
 _ts_ns = read("docker", "images", "temporal-server", "namespace.sh")
 _ts_ns_code = "\n".join(ln for ln in _ts_ns.splitlines() if not ln.lstrip().startswith("#"))
 _ts_ns_exits = re.findall(r"\bexit\b[ \t]*([^\s;]*)", _ts_ns_code)
@@ -713,7 +724,7 @@ _ns_rc, _ns_calls, _ns_err = _ts_ns_run(True, False, "10.0.0.1:7233", "ns1", "24
 check(f"namespace.sh: describe が通れば create しない（いま: rc={_ns_rc} {_ns_calls}）",
       _ns_rc == 0 and not any("namespace create" in c for c in _ns_calls) and _ns_err.strip() == "entrypoint-rds: namespace: ns1 がある")
 _ns_rc, _ns_calls, _ns_err = _ts_ns_run(False, False, "10.0.0.1:7233", "ns1", "24h")
-check(f"namespace.sh: create が 30 回通らなくても exit 0（temporal-server を道連れにしない。いま: rc={_ns_rc} create {sum('namespace create' in c for c in _ns_calls)} 回）",
+check(f"namespace.sh: create が 30 回通らなくても exit 0（本体の temporal-server は別プロセスで、この終了コードを誰も待たない。いま: rc={_ns_rc} create {sum('namespace create' in c for c in _ns_calls)} 回）",
       _ns_rc == 0 and sum("namespace create" in c for c in _ns_calls) == 30 and _ns_err.strip().endswith("entrypoint-rds: namespace: ns1 を作れない（30 回）"))
 _ns_rc, _ns_calls, _ns_err = _ts_ns_run(True, True, "10.0.0.1:7233", "ns1", "24h", nc_ok=False)
 check(f"namespace.sh: frontend の nc が 30 回通らなければ temporal を呼ばずに exit 0（いま: rc={_ns_rc} nc {sum(c.startswith('nc ') for c in _ns_calls)} 回 temporal {sum(c.startswith('temporal ') for c in _ns_calls)} 回 {_ns_err.strip()[-60:]!r}）",
@@ -724,8 +735,8 @@ check(f"namespace.sh: cluster health が 30 回通らなければ describe も c
       _ns_rc == 0 and sum("cluster health" in c for c in _ns_calls) == 30 and not any("namespace describe" in c or "namespace create" in c for c in _ns_calls)
       and _ns_err.strip().endswith("entrypoint-rds: namespace: cluster health が通らない（30 回）。作らずに抜ける"))
 _ns_rc, _ns_calls, _ns_err = _ts_ns_run(True, True, "10.0.0.1:7233", "ns1")
-check(f"namespace.sh: 引数が 2 つ（retention が無い）なら何も呼ばずに非 0 で抜け、retention が無いと言う（いま: rc={_ns_rc} {_ns_calls} {_ns_err.strip()!r}）",
-      _ns_rc != 0 and _ns_calls == [] and "retention" in _ns_err)
+check(f"namespace.sh: 引数が 2 つ（retention が無い）なら何も呼ばずに非 0 で抜け、3 つ目が無いと言う（いま: rc={_ns_rc} {_ns_calls} {_ns_err.strip()!r}）",
+      _ns_rc != 0 and _ns_calls == [] and "の 3 つ目が無い" in _ns_err and "の 1 つ目が無い" not in _ns_err and "の 2 つ目が無い" not in _ns_err)
 check(f"entrypoint の TLS（ecs.tf と同じ SQL_HOST_VERIFICATION=false）: psql は require、temporal-sql-tool はホスト名を検証しない。CA とサーバー名は渡さない（いま: {_tls}）",
       _rc == 0 and _tls == {"SQL_TLS": "true", "SQL_TLS_DISABLE_HOST_VERIFICATION": "true", "PGSSLMODE": "require", "PGSSLROOTCERT": ""})
 _rc, _tls, _, _ = _ts_ep_tls(SQL_TLS_ENABLED="true")
