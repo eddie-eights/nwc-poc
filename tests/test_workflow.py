@@ -1298,7 +1298,7 @@ def _rti_run(run_out, desc_out, wait_fails=0, run_rc=0, prev_out="", list_rc=0):
         wargc = [int(n) for n in open(os.path.join(d, "wargc")).read().split()] if os.path.exists(os.path.join(d, "wargc")) else []
     return out.returncode, [" ".join(c.split()[1:3]) for c in calls], calls, out.stdout, out.stderr, wargc
 _TASK = "arn:aws:ecs:r:1:task/c1/abc"
-_r = _rti_run(f"{_TASK}\\t0", "STOPPED\\t0\\tEssentialContainerExited\\tEssential container in task exited")
+_r = _rti_run(f"{_TASK}\\t0\\tNone\\tNone\\tNone", "STOPPED\\t0\\tEssentialContainerExited\\tEssential container in task exited")
 check(f"run_temporal_init: exitCode 0 なら run-task → wait → describe-tasks で抜け、先へ進む（サービスと同じサブネット・SG、公開 IP 無し。いま: rc={_r[0]} {_r[1]} {_r[4].strip()!r}）",
       _r[0] == 0 and "DONE" in _r[3] and _r[1] == ["ecs list-tasks", "ecs run-task", "ecs wait", "ecs describe-tasks"]
       and "--cluster c1 --family p-workflow-init --desired-status RUNNING" in _r[2][0]
@@ -1308,7 +1308,7 @@ check(f"run_temporal_init: exitCode 0 なら run-task → wait → describe-task
       and "前の初期化のタスク" not in _r[3])
 for _desc, _what in (("STOPPED\\t1\\tEssentialContainerExited\\tEssential container in task exited", "exitCode=1"),
                      ("STOPPED\\tNone\\tTaskFailedToStart\\tCannotPullContainerError: pull image manifest has been retried", "exitCode=None")):
-    _r = _rti_run(f"{_TASK}\\t0", _desc)
+    _r = _rti_run(f"{_TASK}\\t0\\tNone\\tNone\\tNone", _desc)
     check(f"run_temporal_init: {_what}（{_desc.split(chr(92))[0]}…）なら die し、止まった理由と init のログの見方を出す（いま: rc={_r[0]} {_r[4].strip()[-100:]!r}）",
           _r[0] != 0 and "DONE" not in _r[3] and f"DIE: Temporal の初期化のタスク abc が失敗した（lastStatus=STOPPED {_what} " in _r[4]
           and "aws logs tail g --log-stream-name-prefix init" in _r[4])
@@ -1316,32 +1316,44 @@ for _out in ("None\\t1", f"{_TASK}\\t1"):
     _r = _rti_run(_out, "")
     check(f"run_temporal_init: run-task が failures を返せば（タスクの ARN があっても）待たずに die（{_out.split(chr(92))[0][-8:]}…。いま: rc={_r[0]} {_r[1]} {_r[4].strip()[-60:]!r}）",
           _r[0] != 0 and _r[1] == ["ecs list-tasks", "ecs run-task"] and "DIE: Temporal の初期化のタスクを起こせない（run-task の返り: " in _r[4])
+# 偽の aws の run-task は、aws CLI の --output text が平らな --query に返す形（1 行に TAB 区切り。null は None。成功は <taskArn>\t0\tNone\tNone\tNone）を
+# 返す（cycle 042 Round 3。cold review Round 2 の Should 2）。Fargate のキャパシティ不足の reason は空白を含む文なので、TAB だけで切っていないと最初の語で切れる
+_r = _rti_run("None\\t1\\tarn:aws:ecs:r:1:container-instance/ci-1\\tRESOURCE:ENI\\tENI limit reached for subnet-1", "")
+_r2 = _rti_run("None\\t1\\tNone\\tCapacity is unavailable at this time. Please try again later\\tNone", "")
+check(f"run_temporal_init: run-task の failures があれば die の文面に failures[0] の reason / arn / detail を出す（Fargate のキャパシティ不足などは"
+      f"ここにしか出ない。いま: rc={_r[0]} {_r[1]} {_r[4].strip()[-160:]!r} / rc={_r2[0]} {_r2[4].strip()[-110:]!r}）",
+      _r[0] != 0 and _r[1] == ["ecs list-tasks", "ecs run-task"]
+      and " --query [tasks[0].taskArn, length(failures), failures[0].arn, failures[0].reason, failures[0].detail] --output text" in (_r[2][1] if len(_r[2]) > 1 else "")
+      and "reason=RESOURCE:ENI " in _r[4] and "arn=arn:aws:ecs:r:1:container-instance/ci-1 " in _r[4]
+      and "detail=ENI limit reached for subnet-1）" in _r[4] and "failures=1 件" in _r[4]
+      and _r2[0] != 0 and _r2[1] == ["ecs list-tasks", "ecs run-task"]
+      and "reason=Capacity is unavailable at this time. Please try again later arn=None detail=None）" in _r2[4])
 _r = _rti_run("", "", run_rc=255)
 check(f"run_temporal_init: run-task そのものが失敗すれば待たずに die（権限の手がかりを出す。いま: rc={_r[0]} {_r[1]} {_r[4].strip()[-60:]!r}）",
       _r[0] != 0 and _r[1] == ["ecs list-tasks", "ecs run-task"] and "DIE: Temporal の初期化のタスクを起こせない" in _r[4] and "iam:PassRole" in _r[4])
-_r = _rti_run(f"{_TASK}\\t0", "STOPPED\\t0\\tx\\ty", wait_fails=1)
+_r = _rti_run(f"{_TASK}\\t0\\tNone\\tNone\\tNone", "STOPPED\\t0\\tx\\ty", wait_fails=1)
 check(f"run_temporal_init: tasks-stopped が 1 回目で時間切れでも 2 回目で止まれば先へ進む（いま: rc={_r[0]} {_r[1]}）",
       _r[0] == 0 and "DONE" in _r[3] and _r[1] == ["ecs list-tasks", "ecs run-task", "ecs wait", "ecs wait", "ecs describe-tasks"])
-_r = _rti_run(f"{_TASK}\\t0", "STOPPED\\t0\\tx\\ty", wait_fails=2)
+_r = _rti_run(f"{_TASK}\\t0\\tNone\\tNone\\tNone", "STOPPED\\t0\\tx\\ty", wait_fails=2)
 check(f"run_temporal_init: tasks-stopped が 2 回とも時間切れなら describe-tasks を見ずに die（いま: rc={_r[0]} {_r[1]} {_r[4].strip()[-60:]!r}）",
       _r[0] != 0 and "DONE" not in _r[3] and _r[1] == ["ecs list-tasks", "ecs run-task", "ecs wait", "ecs wait"] and "20 分たっても止まらない" in _r[4])
 # 前の init（打ち直し、Ctrl-C の後）がまだ走っていれば、止まるのを待ってから起こす（2 つ同時だと新しい DB のスキーマが 0.0 に戻る。Round 1 のセルフレビューの Should 5）
 _PREV1, _PREV2 = "arn:aws:ecs:r:1:task/c1/old1", "arn:aws:ecs:r:1:task/c1/old2"
-_r = _rti_run(f"{_TASK}\\t0", "STOPPED\\t0\\tx\\ty", prev_out=f"{_PREV1}\\t{_PREV2}")
+_r = _rti_run(f"{_TASK}\\t0\\tNone\\tNone\\tNone", "STOPPED\\t0\\tx\\ty", prev_out=f"{_PREV1}\\t{_PREV2}")
 check(f"run_temporal_init: 前の init が 2 つ走っていれば両方を別々の引数で tasks-stopped に渡して待ってから run-task する（いま: rc={_r[0]} {_r[1]} {_r[2][1:2]} 引数の数 {_r[5]}）",
       _r[0] == 0 and "DONE" in _r[3] and _r[5][:1] == [10] and _r[1] == ["ecs list-tasks", "ecs wait", "ecs run-task", "ecs wait", "ecs describe-tasks"]
       and _r[2][1].endswith(f"--cluster c1 --tasks {_PREV1} {_PREV2}") and f"前の初期化のタスク（p-workflow-init）がまだ走っているので、止まるのを待つ: {_PREV1} {_PREV2}" in _r[3])
-_r = _rti_run(f"{_TASK}\\t0", "STOPPED\\t0\\tx\\ty", prev_out="None")
+_r = _rti_run(f"{_TASK}\\t0\\tNone\\tNone\\tNone", "STOPPED\\t0\\tx\\ty", prev_out="None")
 check(f"run_temporal_init: list-tasks が None（text の空）なら前の init を待たない（いま: {_r[1]}）",
       _r[0] == 0 and _r[1] == ["ecs list-tasks", "ecs run-task", "ecs wait", "ecs describe-tasks"])
-_r = _rti_run(f"{_TASK}\\t0", "STOPPED\\t0\\tx\\ty", prev_out=_PREV1, wait_fails=1)
+_r = _rti_run(f"{_TASK}\\t0\\tNone\\tNone\\tNone", "STOPPED\\t0\\tx\\ty", prev_out=_PREV1, wait_fails=1)
 check(f"run_temporal_init: 前の init の待ちが 1 回目で時間切れでも 2 回目で止まれば run-task する（いま: rc={_r[0]} {_r[1]}）",
       _r[0] == 0 and _r[1] == ["ecs list-tasks", "ecs wait", "ecs wait", "ecs run-task", "ecs wait", "ecs describe-tasks"])
-_r = _rti_run(f"{_TASK}\\t0", "STOPPED\\t0\\tx\\ty", prev_out=_PREV1, wait_fails=2)
+_r = _rti_run(f"{_TASK}\\t0\\tNone\\tNone\\tNone", "STOPPED\\t0\\tx\\ty", prev_out=_PREV1, wait_fails=2)
 check(f"run_temporal_init: 前の init が 2 回待っても止まらなければ run-task せずに die（いま: rc={_r[0]} {_r[1]} {_r[4].strip()[-60:]!r}）",
       _r[0] != 0 and "DONE" not in _r[3] and _r[1] == ["ecs list-tasks", "ecs wait", "ecs wait"]
       and "DIE: 前の Temporal の初期化のタスク（p-workflow-init）が 20 分たっても止まらない" in _r[4])
-_r = _rti_run(f"{_TASK}\\t0", "", list_rc=255)
+_r = _rti_run(f"{_TASK}\\t0\\tNone\\tNone\\tNone", "", list_rc=255)
 check(f"run_temporal_init: list-tasks そのものが失敗すれば run-task せずに die（いま: rc={_r[0]} {_r[1]} {_r[4].strip()[-60:]!r}）",
       _r[0] != 0 and _r[1] == ["ecs list-tasks"] and "DIE: 走っている Temporal の初期化のタスク（p-workflow-init）を確かめられない" in _r[4])
 check("ensure_temporal_secrets は /<prefix>/temporal/db-password を乱数の SecureString で作る（値は出さない）",

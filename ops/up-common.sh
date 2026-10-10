@@ -362,7 +362,7 @@ run_temporal_init() {  # workflow の apply の直後、services-stable を待�
   # 一回きりのタスク <接頭辞>-workflow-init（IaC/terraform/aws-managed/workflow/ecs.tf の aws_ecs_task_definition.init。docker/images/temporal-server/init.sh）を
   # run-task で起こし、止まるまで待って終了コード 0 を確かめる。Nautobot の RDS の master でロール temporal と DB を作り、ロールでスキーマを最新まで上げる（べき等なので毎回打つ）。
   # サーバーのタスクはスキーマの版が揃うまで待っている（entrypoint.sh）。0 でなければ die（タスクの止まった理由と init のログの見方を出す）
-  local cluster taskdef family subnet sg logs prev out task status code stop_code reason
+  local cluster taskdef family subnet sg logs prev out task nfail f_arn f_reason f_detail status code stop_code reason
   cluster=$(tf_output workflow cluster_name) || exit 1
   taskdef=$(tf_output workflow init_task_definition) || exit 1
   subnet=$(tf_output workflow task_subnet_id) || exit 1
@@ -383,10 +383,13 @@ run_temporal_init() {  # workflow の apply の直後、services-stable を待�
   echo "Temporal の初期化のタスク（${taskdef##*/}。ロール・DB・スキーマ。初回はイメージの取得とスキーマで 2〜5 分）"
   out=$(aws ecs run-task --region "$REGION" --cluster "$cluster" --task-definition "$taskdef" --launch-type FARGATE --count 1 \
     --network-configuration "awsvpcConfiguration={subnets=[$subnet],securityGroups=[$sg],assignPublicIp=DISABLED}" \
-    --query '[tasks[0].taskArn, length(failures)]' --output text) || die "Temporal の初期化のタスクを起こせない（上のエラー。ecs:RunTask と実行ロールへの iam:PassRole が要る）"
-  task=${out%%$'\t'*}
-  if [ "${out##*$'\t'}" != 0 ] || [ -z "$task" ] || [ "$task" = None ]; then
-    die "Temporal の初期化のタスクを起こせない（run-task の返り: ${out}）"
+    --query '[tasks[0].taskArn, length(failures), failures[0].arn, failures[0].reason, failures[0].detail]' --output text) || die "Temporal の初期化のタスクを起こせない（上のエラー。ecs:RunTask と実行ロールへの iam:PassRole が要る）"
+  # run-task は failures があっても終了コード 0 で返り、タスクは作られない（describe-tasks でも理由を引けない）。Fargate のキャパシティ不足
+  # （Capacity is unavailable…）などは failures[].reason にしか出ないので、failures[0] の arn / reason / detail を die に載せる。text では 1 行に TAB 区切りで並ぶ
+  # （null は None）。failures[0].[arn, reason, detail] と入れ子にすると text では 2 行に割れて read が拾えないので、平らに並べる
+  IFS=$'\t' read -r task nfail f_arn f_reason f_detail <<<"$out" || true
+  if [ "${nfail:-}" != 0 ] || [ -z "${task:-}" ] || [ "$task" = None ]; then
+    die "Temporal の初期化のタスクを起こせない（run-task の返り: taskArn=${task:-?} failures=${nfail:-?} 件。failures[0]: reason=${f_reason:-?} arn=${f_arn:-?} detail=${f_detail:-?}）"
   fi
   echo "init のタスク ${task##*/} が止まるのを待つ（ログ: ${logs}）"
   # tasks-stopped は 1 回で最大 10 分。2 回まで待つ

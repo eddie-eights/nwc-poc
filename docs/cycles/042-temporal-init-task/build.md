@@ -1003,3 +1003,133 @@ rc=1 行数=31 sleep=30 起こしたもの:
 - Round 1 の Nit 6〜9 は、指示どおり直していない。
 - design.md:90（検証 3）に「（1/60）」が残っている。いまは 30 回なので「（1/30）」。design.md は PM が直す。
 - 検証 2〜5（手元の docker）と検証 6（AWS）は未実行。
+
+## Round 3
+
+実装モデル: opus-5.5 / effort: high（PM のサブエージェント。ベースは 5a67875。対象は review.md の「Round 2 の PM の確認」の Should 2 だけ。design.md の設計方針 2 の `failures` と検証 1 の末尾の check）
+
+### 変えたもの
+
+- `ops/up-common.sh` `run_temporal_init`
+  - run-task の `--query` を `[tasks[0].taskArn, length(failures), failures[0].arn, failures[0].reason, failures[0].detail]` にした。
+  - 返りは `IFS=$'\t' read -r task nfail f_arn f_reason f_detail <<<"$out"` で切る。`nfail` が 0 以外、または task が空か None なら die。
+  - die の文面は `run-task の返り: taskArn=… failures=N 件。failures[0]: reason=… arn=… detail=…`（無い値は `?`）。
+- `tests/test_workflow.py`
+  - check を 1 件足した。偽の aws の run-task が failures を返す 2 通りで、die に reason / arn / detail が出ることを見る。
+    - `RESOURCE:ENI`
+    - 空白を含む `Capacity is unavailable at this time. …`
+  - 同じ check で、偽の aws が受けた `--query` を全文で見る。
+  - 既存の成功の偽の返り（9 か所）を、実物の text 出力の形 `<taskArn>\t0\tNone\tNone\tNone` に直した（セルフレビューの R3-1）。
+
+### 設計からの逸脱
+
+- PM の文言は「`--query` に `failures[0].[arn, reason, detail]` を足す」だった。実装は入れ子にせず、平らに並べた。
+  - 理由: 入れ子だと aws CLI の `--output text` が 2 行に割れて、1 行の read では拾えない。
+  - 確かめ方: 127.0.0.1 の偽の ECS エンドポイント（`<scratchpad>/r3/srv.py`、`t.sh`）に aws-cli 2.36.34 を向けて、text 出力を見た。AWS には出ていない。
+    ```
+    == fail [tasks[0].taskArn, length(failures), failures[0].arn, failures[0].reason, failures[0].detail]
+    task=[None] nfail=[1] arn=[arn:aws:ecs:ap-northeast-1:1:container-instance/x] reason=[RESOURCE:ENI] detail=[eni limit reached here]
+    == fail [tasks[0].taskArn, length(failures), failures[0].[arn, reason, detail]]
+    0000000    N   o   n   e  \t   1  \n   a   r   n ...
+    task=[None] nfail=[1] arn=[] reason=[] detail=[]
+    == ok [tasks[0].taskArn, length(failures), failures[0].arn, failures[0].reason, failures[0].detail]
+    task=[arn:aws:ecs:r:1:task/c1/abc] nfail=[0] arn=[None] reason=[None] detail=[None]
+    == noarn [tasks[0].taskArn, length(failures), failures[0].arn, failures[0].reason, failures[0].detail]
+    task=[None] nfail=[1] arn=[None] reason=[AGENT] detail=[None]
+    ```
+
+### 検証
+
+#### 1. テスト（`./ops/check.sh`。最後の編集のあとに取り直した）
+
+```
+$ ./ops/check.sh > check3.log 2>&1; echo rc=$?
+rc=0
+$ grep -n "通過 4\|failures\[0\] の reason" check3.log; tail -1 check3.log
+2841:ok run_temporal_init: run-task の failures があれば die の文面に failures[0] の reason / arn / detail を出す（Fargate のキャパシティ不足などはここにしか出ない。いま: rc=1 ['ecs list-tasks', 'ecs run-task'] 'こせない（run-task の返り: taskArn=None failures=1 件。failures[0]: reason=RESOURCE:ENI arn=arn:aws:ecs:r:1:container-instance/ci-1 detail=ENI limit reached for subnet-1）' / rc=1 'res=1 件。failures[0]: reason=Capacity is unavailable at this time. Please try again later arn=None detail=None）'）
+3077:通過 436 / 失敗 0
+すべて通過
+```
+
+test_workflow.py の通過は 435（Round 2）から 436 になった。
+
+##### 壊して落ちるか（`<scratchpad>/r3/mutate3.py`。ファイルは書かず、`ops/up-common.sh` の open() の返りをメモリ上で入れ替えて test_workflow.py を走らせる）
+
+1 行目の「変更なし」は基準で、落ちないのが正しい。ほかの 10 件はすべて落ちた。そのうち最後の 2 件は、反対弁護人の指摘（R3-1）を受けて足したもの。直す前は 2 件とも `!! 落ちない … 通過 436 / 失敗 0` だった。
+
+```
+基準 [変更なし] rc=0 最後の行: 通過 436 / 失敗 0
+落ちた [Round 2 の形に戻す（クエリは length(failures) だけ、die は ${out} をそのまま）] rc=1
+落ちた [クエリから failures[0].reason を落とす] rc=1
+落ちた [クエリを入れ子 failures[0].[arn, reason, detail] にする] rc=1
+落ちた [die の文面から reason を消す] rc=1
+落ちた [die の文面から arn を消す] rc=1
+落ちた [die の文面から detail を消す] rc=1
+落ちた [read の IFS を既定（空白も区切る）にする] rc=1
+落ちた [failures の件数を見ない（タスクの ARN があれば進む）] rc=1
+落ちた [件数を Round 2 の末尾のフィールドで見る（実物の成功 arn\t0\tNone\tNone\tNone で毎回 die）] rc=1
+    AssertionError: run_temporal_init: exitCode 0 なら run-task → wait → describe-tasks で抜け、先へ進む（…）
+落ちた [クエリの先頭 2 つを入れ替える（task に件数が入る）] rc=1
+    AssertionError: run_temporal_init: run-task の failures があれば die の文面に failures[0] の reason / arn / detail を出す（…）
+```
+
+最初の 8 件の AssertionError は、どれも今回足した check か、既存の「run-task が failures を返せば（タスクの ARN があっても）待たずに die」の check。
+
+#### 2〜6
+
+未実行。Round 3 の対象外（手元の docker は使わない指示。AWS は 147 の確認）。
+
+### セルフレビュー
+
+- 自分: opus-5.5 / effort high（サブエージェントの中なので切り替えられない）
+- 反対弁護人: opus / effort xhigh（文脈あり。読み取り専用）
+  - 返ったあとの `git status --porcelain -uall` は ` M ops/up-common.sh` と ` M tests/test_workflow.py` だけで、ファイルは増えていない。
+- 結果: Must 0 / Should 1（直した）/ Nit 3
+
+#### R3-1 Should（直した）
+
+- [missing tests] `tests/test_workflow.py:1301` ほか成功の偽の返り 9 か所と、`:1326`
+- 破綻シナリオ: 成功の偽の返りが `<taskArn>\t0` の 2 フィールドのままだった。`--query` も末尾の部分文字列でしか見ていなかった。このため、次の 2 つの改変がどちらも 436 のまま通った。実物ではどちらも、成功のたびに up.sh が die する。
+  - 件数を Round 2 の `${out##*$'\t'}` で見る
+  - クエリの先頭 2 つを入れ替える
+- 再現: mutate3.py に 2 件足して走らせ、`!! 落ちない` を確かめた。
+- 直した: 成功の返りを 5 フィールドにし、`--query` を全文で見るようにした。直したあとは 2 件とも落ちる（上の表）。
+
+#### R3-2 Nit（直した。自分の行だけ）
+
+- [正確さ] `ops/up-common.sh:387-388`
+- 「ENI の上限は failures にしか出ない」は、Fargate では正確でない。
+  - RunTask の `RESOURCE:ENI` は EC2 のコンテナインスタンスの場合。
+  - Fargate の ENI の不足は、タスクが作られたあとの `TaskFailedToStart` に出る。これは既存の describe-tasks の die が拾う。
+- 反対弁護人が AWS の docs を引いた。自分では docs を読んでいない。
+- コメントと check の名前を「Fargate のキャパシティ不足（Capacity is unavailable…）など」に直した。
+- `design.md:34` の同じ文言は PM の範囲なので残っている。
+
+#### R3-3 Nit（直さない）
+
+- [runtime] `ops/up-common.sh:390-392`
+- 空文字のフィールドがあると、IFS の TAB は空白扱いなので詰まって、後ろの値がずれる。detail に改行があると、2 行目以降が落ちる。
+- 反対弁護人が、実物の CLI に `None\t1\t\t\td1` を返させて再現した（`reason=? arn=d1 detail=?`）。
+- 据え置く理由: ECS は値の無い項目を null で返し、text では `None` になる（上の `noarn` の出力）。die には必ず着き、出る文面がずれるだけ。
+
+#### R3-4 Nit（直さない。範囲外・既存）
+
+- [文面] `ops/up-common.sh:386`
+- run-task が 0 以外で返ったときの die が「ecs:RunTask と iam:PassRole が要る」と断定している。Throttling や InvalidParameter でも同じ文面になる。
+
+#### 問題なしとした観点と根拠
+
+- 反対弁護人が /bin/bash 3.2.57 と `set -euo pipefail` の下で、抜き出した関数を実物の CLI の出力で動かした。どの場合も die に着く（2 件目以降は件数にだけ出る）。
+  - failures が 2 件
+  - tasks と failures が両方ある
+  - tasks も failures も空
+  - out が空
+  - read が EOF で 1 を返す
+- テストの偽の aws も `bash`（PATH の /bin/bash 3.2）で動いている。
+
+### 残っているもの
+
+- `tests/test_oss_ops.py:121` の偽の aws の run-task は、まだ `<arn>\t0` の 2 フィールドを返す。nfail は 0 で読めるので通る。範囲外なので触っていない。
+- `design.md:34` の「ENI の上限は failures[].reason にしか出ない」（R3-2）。
+- R3-3、R3-4（Nit）。
+- 検証 2〜6 は未実行。
