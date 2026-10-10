@@ -119,8 +119,8 @@ locals {
       { from = "lab_mgmt", to = "telegraf_dialout_nlb", protocol = "udp", port = 2055, why = "NetFlow from the switches - DNAT on the lab EC2" },
       { from = "lab_mgmt", to = "telegraf_dialout_nlb", protocol = "udp", port = 6343, why = "sFlow from the switches - DNAT on the lab EC2" },
       { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 162, only = "egress", why = "SNMP traps forwarded for the switches" },
-      { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 5140, only = "egress", why = "syslog forwarded for the switches" },
-      # NetFlow / sFlow は両側（lab の SR Linux は NetFlow を送れないので、試すときは lab の EC2 のホストが自分の IP から ops/netflow_send.py で送る）
+      # NetFlow / sFlow / syslog は両側（lab の EC2 のホストが自分の IP から試しに送る。NetFlow は ops/netflow_send.py、syslog は logger）
+      { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 5140, why = "syslog forwarded for the switches, or logger on the lab EC2" },
       { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 2055, why = "NetFlow - forwarded for the switches, or ops/netflow_send.py on the lab EC2" },
       { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 6343, why = "sFlow - forwarded for the switches, or a test sender on the lab EC2" },
 
