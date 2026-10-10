@@ -555,7 +555,7 @@ PC の compose（syslog-ng / gnmic）─ 127.0.0.N:9096 ─ SSM のトンネル 
 | 案 | 見送ったわけ |
 |---|---|
 | AWS Client VPN で PC を VPC に入れる | IaC が大きい（サーバー証明書と ACM、エンドポイント、サブネットの関連付け、認可の規則、SG の行、ルート）。エンドポイントの関連付けと接続の両方に時間課金（AWS の Client VPN の料金表）。PC で DevNet の VPN と AWS の VPN を同時に張ることになり、経路がぶつかりうる。閉域の Deny は IAM の話なので VPN では解けず、`aws:SourceVpc` が付く分だけ楽になるが、今回は AWS の API を PC から打たない |
-| UDP の中継（PC → トンネル → lab の EC2 の socat → NLB の 5140 / 162） | SSM のトンネルは TCP だけの見込み（未確認）。EC2 で送り直すと送り元が EC2 の IP になり、NLB の SG が `lab_mgmt` の CIDR からしか受けない（2026-10-09 の不具合 3 と同じ所。[troubleshooting.md](troubleshooting.md)）。MDT の 57000 は NLB に無い |
+| UDP の中継（PC → トンネル → lab の EC2 の socat → NLB の 5140 / 162） | SSM のトンネルは TCP だけの見込み（未確認）。EC2 で送り直すと送り元が EC2 の IP になり、trap の 162 は NLB の SG が `lab` の SG から受けない（syslog の 5140 は 037 から受ける）うえ、送り元の IP で機器を引けない（2026-10-09 の不具合 3 の所。[troubleshooting.md](troubleshooting.md)）。MDT の 57000 は NLB に無い |
 | MSK の公開アクセス（public access）か、PC から届く口を開ける | 2026-09-28 の閉域の判断（VPC エンドポイント + Deny、NAT と外の Splunk を消した）に反する |
 | 手元の Kafka から MSK へ MirrorMaker 2 / Kafka Connect で写す | 部品が 1 つ増え、MSK に届く問題は同じ（トンネルが要る） |
 | B（CML の中の Linux）で受けて AWS へ送る | CML のノードから AWS の閉域へ届く道が無い |

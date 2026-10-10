@@ -56,7 +56,7 @@
 ## 検証方法
 
 1. `python3 -m pytest tests/ -q` が全部通る。`tests/test_analytics.py` の「通信の表は決めた流れだけ」が、直した表に対して通ること（`EXPECTED_FLOWS` を直す前は「足りない: `('lab','telegraf_dialout_nlb','udp',5140,5140,'')`」で落ちる）。
-2. `grep -c 'only = "egress"' IaC/terraform/aws-managed/base/core/security_groups.tf` が `1`（162 の行だけ）。`grep -c 'only = "ingress"'` は `1`（gnmic の行）のまま。
+2. `grep -c 'only = "egress"' IaC/terraform/aws-managed/base/core/security_groups.tf` が `2`（162 の行と、56 行目の原則のコメント。表の行としては 162 だけ）。`grep -c 'only = "ingress"'` は `1`（gnmic の行）のまま。
 3. `cd IaC/terraform/aws-managed/base/core && terraform init -backend=false && terraform validate` が `Success`。
 4. `grep -n '送信だけ' docs/troubleshooting.md docs/faq-fukuda-nwc-poc.md` が、「037 までは」の文脈の行以外に無い。
 5. AWS では確かめない。確かめるときの手順を `troubleshooting.md` に残す（QUEUE の動作確認で打つ）:
@@ -66,10 +66,10 @@
    logger -n "$nlb" -P 5140 -d --rfc3164 -t acl-probe "syslog test from the lab EC2"
    ```
 
-   期待: Athena で `logs` を `appname = 'acl-probe'` で引くと `sysName` が lab の EC2 のホスト名の行が 1 件ある。
+   期待: Kafbat UI のトピック `logs` に `"appname":"acl-probe"` で `sysName` が lab の EC2 のホスト名の行が 1 件ある（Athena なら `raw_telemetry` の `topic = 'logs'` の行の `tags_json`。`logs` という表と `appname` の列は無い）。
 
 ## 未確定事項とリスク
 
-1. **真因は AWS で確かめていない。** SG のほかに落とす要素が無いことは表と DNAT の仕組みから読んだだけ。QUEUE の動作確認で `logs` に入らなければ、次は VPC Flow Logs（作っていない）か `syslog-ng-ctl stats` で切り分ける。
+1. **真因は AWS で確かめていない。** SG のほかに落とす要素が無いことは表と DNAT の仕組みから読んだだけ。QUEUE の動作確認で `logs` に入らなければ、次は VPC Flow Logs（`base/core/flow_logs.tf` にある。REJECT で宛先が NLB の IP、`dstPort` が 5140 の行）か `syslog-ng-ctl stats` で切り分ける。
 2. **`/<prefix>/telegraf-address` の値が NLB の DNS 名か IP かを確かめていない。** `lab.sh forward` が DNAT の宛先に使うので IP のはずだが、DNS 名なら `logger -n` にそのまま渡せる（どちらでも動く）。
 3. **OSS 版（`IaC/terraform/oss/`）は同じファイルへのシンボリックリンクなので、同時に直る。** `oss.tf` が表を差し替えるのは MSK の行だけで、この行には触らない（`tests/test_oss.py` の期待に 5140 の `only` が無いことを実装の最初に `grep` で確かめる）。
