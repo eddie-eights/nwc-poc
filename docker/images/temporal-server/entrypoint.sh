@@ -5,8 +5,9 @@
 #   1. Nautobot の RDS の master（NAUTOBOT_DB_USER）で、ロール POSTGRES_USER と DB の DBNAME / VISIBILITY_DBNAME を無いときだけ作る（owner はロール）
 #   2. スキーマをロール POSTGRES_USER で入れる（setup-schema は初回だけ。update-schema は毎回）
 #   3. 背景で namespace DEFAULT_NAMESPACE を無いときだけ作る（サーバーが上がるのを待ってから）
-#   4. 公式の /etc/temporal/entrypoint.sh へ exec（temporal-server start）
+#   4. 公式の /etc/temporal/entrypoint.sh へ exec（temporal-server start）。その直前に master のパスワード（NAUTOBOT_DB_PASSWORD）を env から外す（cycle 039）
 # パスワードは env（ECS の secrets）から psql の \getenv と PGPASSWORD / SQL_PASSWORD で渡し、コマンドラインにもログにも出さない。
+# TLS（psql と temporal-sql-tool）はサーバー本体と同じ SQL_TLS_ENABLED / SQL_HOST_VERIFICATION / SQL_CA / SQL_HOST_NAME（ecs.tf）から導く（cycle 039）。
 set -eu
 
 : "${POSTGRES_SEEDS:?POSTGRES_SEEDS（RDS のアドレス）が無い}"
@@ -19,6 +20,7 @@ set -eu
 : "${VISIBILITY_DBNAME:=temporal_visibility}"
 : "${NAUTOBOT_DB_NAME:=nautobot}"
 : "${SQL_TLS_ENABLED:=true}"
+: "${SQL_HOST_VERIFICATION:=false}"
 : "${DEFAULT_NAMESPACE:=default}"
 : "${DEFAULT_NAMESPACE_RETENTION:=72h}"
 export DB_PORT DBNAME VISIBILITY_DBNAME SQL_TLS_ENABLED POSTGRES_PWD
@@ -28,9 +30,21 @@ TEMPORAL_ADDRESS_LOCAL=127.0.0.1:7233
 
 log() { echo "entrypoint-rds: $*" >&2; }
 
-# psql の接続先（パスワードは呼ぶたびに PGPASSWORD で渡す）。RDS PostgreSQL 15 以降は rds.force_ssl=1 が既定なので、TLS 有効なら require
+# psql の接続先（パスワードは呼ぶたびに PGPASSWORD で渡す）。RDS PostgreSQL 15 以降は rds.force_ssl=1 が既定なので、TLS 有効なら require。
+# SQL_HOST_VERIFICATION=true ならサーバー本体と同じく証明書とホスト名を確かめる（verify-full。CA は SQL_CA）
 export PGHOST="$POSTGRES_SEEDS" PGPORT="$DB_PORT" PGCONNECT_TIMEOUT=10
-if [ "$SQL_TLS_ENABLED" = "true" ]; then export PGSSLMODE=require; else export PGSSLMODE=prefer; fi
+if [ "$SQL_TLS_ENABLED" = "true" ]; then
+  if [ "$SQL_HOST_VERIFICATION" = "true" ]; then
+    export PGSSLMODE=verify-full
+    if [ -n "${SQL_CA:-}" ]; then export PGSSLROOTCERT="$SQL_CA"; fi
+  else
+    export PGSSLMODE=require
+  fi
+else
+  export PGSSLMODE=prefer
+fi
+# temporal-sql-tool はホスト名の検証を「外す」フラグ（--tls-disable-host-verification）なので、SQL_HOST_VERIFICATION の否定を渡す
+if [ "$SQL_HOST_VERIFICATION" = "true" ]; then sql_tool_skip_host_verify=false; else sql_tool_skip_host_verify=true; fi
 
 # 1. DB が受け付けるまで待つ（RDS が起きる前にタスクが上がることがあるので、公式の 1 回だけでなく回す）
 i=0
@@ -62,10 +76,14 @@ PGPASSWORD="$NAUTOBOT_DB_PASSWORD" psql -X -q -v ON_ERROR_STOP=1 -U "$NAUTOBOT_D
   -c 'CREATE EXTENSION IF NOT EXISTS btree_gin'
 
 # 3. スキーマをロールで入れる。setup-schema -v 0.0 は schema_version を 0.0 に戻すので、schema_version が無い初回だけ打つ。update-schema はべき等なので毎回
-sql_tool() {  # sql_tool <DB 名> <サブコマンドと引数...>
+sql_tool() {  # sql_tool <DB 名> <サブコマンドと引数...>。env はサブシェルの中だけで export する（CA とサーバー名は値があるときだけ渡す）
   db=$1; shift
-  SQL_TLS="$SQL_TLS_ENABLED" SQL_TLS_DISABLE_HOST_VERIFICATION=true SQL_PASSWORD="$POSTGRES_PWD" \
-    temporal-sql-tool --plugin postgres12 --ep "$POSTGRES_SEEDS" -p "$DB_PORT" -u "$POSTGRES_USER" --db "$db" "$@"
+  (
+    export SQL_TLS="$SQL_TLS_ENABLED" SQL_TLS_DISABLE_HOST_VERIFICATION="$sql_tool_skip_host_verify" SQL_PASSWORD="$POSTGRES_PWD"
+    if [ -n "${SQL_CA:-}" ]; then export SQL_TLS_CA_FILE="$SQL_CA"; fi
+    if [ -n "${SQL_HOST_NAME:-}" ]; then export SQL_TLS_SERVER_NAME="$SQL_HOST_NAME"; fi
+    exec temporal-sql-tool --plugin postgres12 --ep "$POSTGRES_SEEDS" -p "$DB_PORT" -u "$POSTGRES_USER" --db "$db" "$@"
+  )
 }
 for pair in "$DBNAME:temporal" "$VISIBILITY_DBNAME:visibility"; do
   db=${pair%%:*}; dir=${pair#*:}
@@ -80,6 +98,7 @@ done
 
 # 4. namespace を背景で作る（公式 create-namespace.sh と同じ流れ）。失敗しても本体は落とさない（healthCheck が namespace を見るので ECS 側で UNHEALTHY になる）
 (
+  unset NAUTOBOT_DB_PASSWORD  # このサブシェルから起こす nc / temporal にも渡さない
   n=0
   until nc -z -w 10 127.0.0.1 7233; do
     n=$((n + 1)); if [ "$n" -ge 30 ]; then log "namespace: frontend の 7233 が開かない（30 回）。作らずに抜ける"; exit 0; fi
@@ -103,5 +122,7 @@ done
   done
 ) &
 
-# 5. 公式の入口（BIND_ON_IP=0.0.0.0 なら TEMPORAL_BROADCAST_ADDRESS を getent hosts $(hostname) で埋めて temporal-server start）
+# 5. 公式の入口（BIND_ON_IP=0.0.0.0 なら TEMPORAL_BROADCAST_ADDRESS を getent hosts $(hostname) で埋めて temporal-server start）。
+# master のパスワードはロールと DB を作ったあと使わないので、temporal-server の env に渡さない
+unset NAUTOBOT_DB_PASSWORD
 exec /etc/temporal/entrypoint.sh

@@ -58,6 +58,8 @@ worker が読み書きするもの:
 - **初期化は temporal のコンテナの entrypoint がやる。**
   - ロールと DB は Nautobot の master で「無いときだけ」作る。スキーマは `schema_version` が無い初回だけ `setup-schema`、毎回 `update-schema`（べき等。消すコマンドは打たない）。
   - namespace `default` は temporal-server を起こしたあとに背景で作る。healthCheck がその describe を見るので、worker と ui は namespace ができてから起きる。
+  - ロールと DB を作ったあと、master のパスワード（`NAUTOBOT_DB_PASSWORD`）は env から外してから temporal-server を起こす。
+  - namespace を作る背景のプロセスは、抜けたあと ECS の init（`initProcessEnabled`）が回収する。
   - 出典: `docker/images/temporal-server/entrypoint.sh`。
 - **gRPC の 7233〜7239 と membership の 6933〜6939 はタスクの外に出さない。**
   temporal は `BIND_ON_IP=0.0.0.0` で待つが portMappings に出さず、SG は workflow → workflow の自分宛てだけ（デプロイの入れ替わりで 2 つのタスクが並ぶ間に使う）。worker は同じタスクの `localhost:7233`、ui は `127.0.0.1:7233`。
@@ -108,7 +110,7 @@ worker が読み書きするもの:
 | 項目 | 状態 |
 |---|---|
 | Temporal の履歴 | Nautobot の RDS に残る。`ops/down.sh` で RDS ごと消える |
-| RDS の PostgreSQL 18 | Temporal の動作確認済みの一覧は 12〜16。手元の `postgres:18` ではスキーマが入り動いた（2026-10-10）。RDS の 18、TLS（`SQL_HOST_VERIFICATION=false`）、master での `CREATE EXTENSION btree_gin` は AWS では未確認 |
+| RDS の PostgreSQL 18 | Temporal の動作確認済みの一覧は 12〜16。手元の `postgres:18` ではスキーマが入り動いた（2026-10-10）。RDS の 18、TLS（`SQL_HOST_VERIFICATION=false`）、master での `CREATE EXTENSION btree_gin` は AWS では未確認。ホスト名検証を有効にするには、RDS の CA をイメージに入れ（いまの Dockerfile には無い）、ecs.tf に `SQL_HOST_VERIFICATION=true` と `SQL_CA` を足し、`tests/test_workflow.py` の期待を変える。entrypoint の psql / temporal-sql-tool は同じ env を読むので変えなくてよい |
 | 2 タスク | デプロイの入れ替わりの間だけ並ぶ。AWS では未確認 |
 | フラップ | 走っているあいだに届いた落ち直しの `firing` は捨てる（[workflow.md](../../workflow.md) の「通知の重なりと取りこぼし」） |
 | 処置の種類 | `heal-main`（`dc1-a-leaf-01` の `ethernet-1/1` を上げる）と見るだけの `check` だけ。事前チェック（`precheck`）の警告は落とす処置を足したときに効く |
@@ -132,3 +134,4 @@ worker が読み書きするもの:
   - 出典: `IaC/terraform/aws-managed/workflow/proposals.tf` の先頭のコメント。
 - 2026-10-10（036）: CLI の開発用サーバー（`temporalio/temporal` 1.9.1、履歴はコンテナの中のファイル）をやめ、`temporalio/server` 1.32.1 の本番モードで Nautobot の RDS に履歴を書く形に変えた。UI は別コンテナ。
   - [Temporal の履歴を RDS に残す（036）の設計](../../cycles/036-temporal-rds/design.md)
+- 2026-10-10（039）: entrypoint で master のパスワードを exec の前に env から外し、psql / temporal-sql-tool の TLS をサーバー本体と同じ env から導き、temporal のコンテナに `initProcessEnabled` を足した。[temporal-server の entrypoint の守りを締める（039）の設計](../../cycles/039-temporal-entrypoint-hardening/design.md)
