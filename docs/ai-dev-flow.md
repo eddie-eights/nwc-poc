@@ -2,6 +2,10 @@
 
 このリポジトリは、AI エージェント（Claude Code）の PM 1 セッションが、エンジニア（PM のサブエージェント）と cold reviewer を呼び分けて、**サイクル**（`docs/cycles/<NNN>-<slug>/`。設計 → 実装 → レビューの 1 周）の単位で開発している。その流れを役割ごとの列で 1 枚に描いたもの。正本は claude-settings（`eddie-eights/claude-settings`）の `cycle-design` / `cycle-build` / `cycle-review` の 3 スキルで、この図はその `cycle-design/flow.md` の写し。3 スキルの手順が変わったらここも合わせる。
 
+## 準備（PC ごと）
+
+[claude-settings](https://github.com/eddie-eights/claude-settings) を clone して `bin/install-skills` を実行する。`/cycle-design` / `/cycle-build` / `/cycle-review` / `/waiting` と、現在地を注入する SessionStart フック `cycle-context.py` が `~/.claude/` にリンクされる。スキルやフックが更新されたら、各 PC で実行し直す（新しく足されたコマンド・フックのリンクは実行しないと作られない）。フックの登録自体はこのリポジトリの `.claude/settings.json` にあり、スクリプトが無い PC では何もしない。
+
 ## 運用の 2 種類
 
 AI 開発フローには運用が 2 種類あり、違いは **GitHub のリモートを誰が操作するか** の 1 点。サイクルの中身は同じ。**このリポジトリは HITL 開発**で、下の図もその形で描いてある。

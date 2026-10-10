@@ -177,7 +177,7 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | [docker/compose/README.md](docker/compose/README.md) | 手元の docker compose（WSL2）: 前提、立てて障害を入れて見るまでの手順、見る場所、ぶつかりやすいポート、消し方 |
 | [hearing.md](docs/hearing.md) | ヒアリング項目: PoC の設計を決めるために相手に確かめたいことと答え |
 | [development.md](docs/development.md) | 手元のテスト、変更するときの決まり、Web を手元で動かす |
-| [ai-dev-flow.md](docs/ai-dev-flow.md) | AI 開発フロー: PM とエンジニアの AI セッションがサイクル（設計 → 実装 → レビュー）を回す流れ、役割の分担、成果物の置き場 |
+| [ai-dev-flow.md](docs/ai-dev-flow.md) | AI 開発フロー: PM とエンジニアの AI セッションがサイクル（設計 → 実装 → レビュー）を回す流れ、役割の分担、成果物の置き場。**別の PC で使うときは、[claude-settings](https://github.com/eddie-eights/claude-settings) を clone して `bin/install-skills` を実行する**（`/cycle-*` / `/waiting` と SessionStart フックのリンクを作る。更新のたびに実行し直す） |
 | [faq-fukuda-nwc-poc.md](docs/faq-fukuda-nwc-poc.md) | FAQ: ほかの開発者に説明するときに出る質問と答え（収集、Spark、Nautobot、Neptune、格納先、Splunk、OSS への置き換え、AWS の基礎など） |
 | [data-stores.md](docs/data-stores.md) | 勉強会メモ: データの置き場、コンテナイメージのアーキテクチャの選び方、Neptune Analytics の基礎、MSK のブートストラップサーバーの受け渡し |
 | [GLOSSARY.md](docs/GLOSSARY.md) | 用語集: この PoC で使う言葉（障害とアラートの通知など）の意味と、避ける言い方 |
