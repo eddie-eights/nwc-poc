@@ -9,9 +9,10 @@
 ## セッションの役（2026-10-10）
 
 - **このリポジトリで人が起動するセッションは PM の 1 つだけ。** このフォルダ（cwd）で起動したセッションは、題名や会話の記憶にかかわらず PM として動く（AI 開発フローは `docs/ai-dev-flow.md`、正本は claude-settings の `cycle-design/flow.md`）。エンジニアは PM のサブエージェント（`Agent`）。
-- 別の役のセッションは、このリポジトリの中では起動しない。プロジェクト別メモリ（`~/.claude/projects/<cwd>/memory/`）は cwd 単位で全セッションが共有するため。
+- **PM は coordinator。サイクルをまたいで同じセッションを使い、clear しない。** ユーザーの窓口も PM（秘書は置かない）。実装が背景で走っている間もユーザーの質問に答え、根拠は会話の記憶ではなくファイル（QUEUE、各サイクルの `design.md` / `build.md` / `review.md`、`git log`）から取る。
 - プロジェクト別メモリに「このセッション」「セッション ID」を主語にした役のメモを書かない。役はこのファイルで決まる。
-- 現在地（`docs/cycles/QUEUE.md` の着手行と直近の完了、最新サイクルの `review.md` の末尾、直近の commit）は `.claude/settings.json` の SessionStart フック `cycle-context.py` が起動のたび（clear 直後も）に注入する（スクリプトが `~/.claude/hooks/` に無い環境では何もしない）。引き継ぎメモは作らない。次に回すものは QUEUE に `- [ ]` で足す。
+- 現在地（`docs/cycles/QUEUE.md` の着手行と直近の完了、ユーザーの判断待ち、最新サイクルの `review.md` の末尾、直近の commit）は `.claude/settings.json` の SessionStart フック `cycle-context.py` が起動・再開・圧縮のたびに注入する（スクリプトが `~/.claude/hooks/` に無い環境では何もしない）。引き継ぎメモは作らない。次に回すものは QUEUE に `- [ ]` で足す。
+- **ユーザーの判断・確認・外部の返事を待つ件は `待ち(ユーザー): <何を>（yyyy-mm-dd〜）` と書く**（QUEUE の行か最新サイクルの `review.md` / `build.md` / `design.md`）。フックと `/waiting` がそれを一覧する。解けたら文言を消す。
 
 <!-- BEGIN AWS Agent Toolkit rules -->
 # AWS Guidance
