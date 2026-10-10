@@ -59,7 +59,7 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
 | telegraf_dialout_nlb | telegraf_dialout | 1162/udp、8080/tcp | trap の転送と NLB のヘルスチェック |
 | telegraf_dialout_nlb | syslog_ng | 5140/udp、5140/tcp | syslog の転送と NLB のヘルスチェック |
 | telegraf_dialout_nlb | goflow2 | 2055/udp、6343/udp、8081/tcp | NetFlow・sFlow の転送と NLB のヘルスチェック |
-| lab の管理ネットワーク（203.0.113.0/24）、lab | telegraf_dialout_nlb | 162/udp、5140/udp、2055/udp、6343/udp | 機器の trap・syslog・NetFlow・sFlow（lab の EC2 が DNAT する。NetFlow / sFlow は lab の EC2 から試しに送る分も） |
+| lab の管理ネットワーク（203.0.113.0/24）、lab | telegraf_dialout_nlb | 162/udp、5140/udp、2055/udp、6343/udp | 機器の trap・syslog・NetFlow・sFlow（lab の EC2 が DNAT する。NetFlow / sFlow / syslog は lab の EC2 から試しに送る分も） |
 | gnmic | lab の管理ネットワーク | 57400/tcp | gNMI の購読 |
 
 ## 知見
@@ -97,6 +97,7 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
   出典: [core.md](../core.md) の「SG」。
 - **lab が転送する通信は、片側を CIDR で書く。**
   SG が見る送り元は lab の EC2 ではなく機器の管理 IP になるため、相手の ENI が見える側だけ SG の参照で書く。
+  例外は EC2 自身が試しに送る NetFlow / sFlow / syslog。両側に書く（syslog は「lab の EC2 から NLB の syslog 5140 への受信ルールを足す（037）」から）。
   出典: [core.md](../core.md) の「SG」。
 - **拒んだ通信はフローログで探す。**
   Logs Insights で `filter action = "REJECT"` を打つ（1〜2 分遅れて出る）。

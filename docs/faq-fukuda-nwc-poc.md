@@ -263,13 +263,21 @@ SYSLOG_STANDARD=RFC5424 PIPELINE=1 ops/up.sh   # lab の SR Linux のログま�
 **A. 違う。syslog-ng は形が合わない行を捨てない（RFC3164 の受け口に RFC 5424 の行を入れると、`appname` が `1`、`sysName` が送り元の IP の行として入る）。1 行も無いなら届いていない。**
 
 - 2026-10-09 の AWS の動作確認で、lab の EC2 から `logger -n <NLB> -P 5140 -d --rfc5424 acl-probe` で送った行が `logs` に無かった。手元の syslog-ng 4.29.0（ECS と同じイメージ）で再現したところ、RFC3164 / RFC5424 のどちらの受け口でも、RFC 3164 / RFC 5424 / NX-OS の既定の形のどれも捨てない。
-- 届かなかった見込みのわけは 2 つ。NLB の SG が syslog の 5140/udp を管理ネットワークの CIDR（203.0.113.0/24）からしか受けない（lab の EC2 の SG からの行は送信だけ）。`lab.sh forward` の DNAT は PREROUTING で、EC2 自身が出したパケットは通らない。UDP なので `logger` は `rc=0` で終わる。
-- 正しい送り方は、TRex の netns から機器と同じ宛先 `203.0.113.1:5140` へ、受け口の `SYSLOG_STANDARD` と同じ形で送る（`lab.sh trap-test` と同じ理屈）。
+- 届かなかった見込みのわけは、NLB の SG が syslog の 5140/udp を管理ネットワークの CIDR（203.0.113.0/24）からしか受けなかったこと（lab の EC2 の SG からの行は 037 までは送信だけだった。「lab の EC2 から NLB の syslog 5140 への受信ルールを足す（037）」で両側にした。AWS では未確認）。UDP なので `logger` は `rc=0` で終わる。
+- 正しい送り方は 2 つ。形はどちらも受け口の `SYSLOG_STANDARD` に合わせる。
+  - TRex の netns から機器と同じ宛先 `203.0.113.1:5140` へ送る（`lab.sh trap-test` と同じ理屈。`lab.sh forward` の DNAT は PREROUTING で、EC2 自身が出したパケットは通らないので、機器と同じ宛先へは netns から送る）。
 
-  ```bash
-  pid=$(sudo docker inspect -f '{{.State.Pid}}' clab-splab-dc1-trex-01)
-  sudo nsenter -t "$pid" -n logger -n 203.0.113.1 -P 5140 -d --rfc3164 -t acl-probe "syslog test"
-  ```
+    ```bash
+    pid=$(sudo docker inspect -f '{{.State.Pid}}' clab-splab-dc1-trex-01)
+    sudo nsenter -t "$pid" -n logger -n 203.0.113.1 -P 5140 -d --rfc3164 -t acl-probe "syslog test"
+    ```
+
+  - lab の EC2 のホストから NLB の IP へ直接送る（037 から。DNAT は通らなくてよい）。
+
+    ```bash
+    nlb=$(aws ssm get-parameter --name "/<prefix>/telegraf-address" --query Parameter.Value --output text)
+    logger -n "$nlb" -P 5140 -d --rfc3164 -t acl-probe "syslog test from the lab EC2"
+    ```
 
 - util-linux の `logger` は 2.26 から既定が RFC 5424。既定の RFC3164 の受け口に送るときは `--rfc3164` を書く。
 - 再現の表、`syslog-ng-ctl stats` の見方、IaC の直し方の候補は [troubleshooting.md](troubleshooting.md) の「syslog の試験行が logs に入らない」。
