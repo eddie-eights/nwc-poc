@@ -2189,4 +2189,39 @@ check("telegraf_dialout の SG の description に MDT と syslog が無く SNMP
       _td_desc is not None and "MDT" not in _td_desc.group(1) and "syslog" not in _td_desc.group(1) and "SNMP traps" in _td_desc.group(1)
       and _tn_desc is not None and "syslog-ng" in _tn_desc.group(1) and "GoFlow2" in _tn_desc.group(1))
 check("修復案の status に obsolete がある（tools.json の説明も）", "obsolete" in proposals.STATUSES and all("obsolete" in t["description"] for t in tools if t["name"] == "list_proposals"))
+# ---- Nautobot の内部のシークレット（secret-key / admin-password / db-password）を tools の Lambda のロールで Deny する（cycle 044）。
+# Web と Runtime の Deny は base/core（ロールを作るルート）。名前は ops/up-common.sh の ensure_nautobot_secrets と pipeline/nautobot の secret_parameters が正
+_gw_tf = read("IaC", "terraform", "aws-managed", "workflow", "gateway.tf")
+_wf_locals = read("IaC", "terraform", "aws-managed", "workflow", "locals.tf")
+_gw_tools = _gw_tf.split('data "aws_iam_policy_document" "tools"')[1].split("\n}\n")[0] if 'data "aws_iam_policy_document" "tools"' in _gw_tf else ""
+_gw_stmt = lambda sid: _gw_tools.split(f'sid       = "{sid}"')[1].split("\n  }")[0] if f'"{sid}"' in _gw_tools else ""
+check("tools の Lambda のロールの文書（gateway.tf の tools）に DenyNautobotSecrets（Deny、ssm:GetParameter*、local.nautobot_secret_parameter_arns）があり、Parameters の Allow はそのまま",
+      'effect    = "Deny"' in _gw_stmt("DenyNautobotSecrets") and 'actions   = ["ssm:GetParameter*"]' in _gw_stmt("DenyNautobotSecrets")
+      and "resources = local.nautobot_secret_parameter_arns" in _gw_stmt("DenyNautobotSecrets")
+      and _gw_tools.count('effect    = "Deny"') == 1
+      and 'actions   = ["ssm:GetParameter"]' in _gw_stmt("Parameters") and "effect" not in _gw_stmt("Parameters")
+      and 'resources = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.param_prefix}/*"]' in _gw_stmt("Parameters"))
+_list_arns = lambda src: (lambda m: re.findall(r'^    "(.*)",$', m.group(1), re.M) if m else [])(
+    re.search(r"^  nautobot_secret_parameter_arns = \[\n((?:    .*\n)*?)  \]$", src, re.M))
+_wf_nb_arns = _list_arns(_wf_locals)
+_wf_nb_head = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.param_prefix}/nautobot/"
+check(f"workflow の locals.tf の nautobot_secret_parameter_arns は parameter${{local.param_prefix}}/nautobot/ の secret-key / admin-password / db-password（いま: {_wf_nb_arns}）",
+      _wf_nb_arns == [_wf_nb_head + n for n in ("secret-key", "admin-password", "db-password")])
+_core_nb_arns = _list_arns(read("IaC", "terraform", "aws-managed", "base", "core", "locals.tf"))
+_nb_up_names = re.findall(r'^  ensure_secret "/\$PREFIX/nautobot/([\w-]+)" ', read("ops", "up-common.sh"), re.M)
+_nb_tf_locals = read("IaC", "terraform", "aws-managed", "pipeline", "nautobot", "locals.tf")
+_nb_tf_names = re.findall(r'^    ([\w-]+)\s+= "/\$\{local\.name_prefix\}/nautobot/\1"', _nb_tf_locals.split("secret_parameters = {")[1].split("\n  }")[0], re.M) if "secret_parameters = {" in _nb_tf_locals else []
+_nb_deny_names = lambda arns: [a.rsplit("/nautobot/", 1)[1] for a in arns]
+check(f"Deny する 3 つの名前は、ops/up-common.sh の ensure_nautobot_secrets（{_nb_up_names}）と pipeline/nautobot の secret_parameters（{_nb_tf_names}）から api-token を除いたものと、"
+      "base/core と workflow の両方で一致する",
+      len(_nb_up_names) == 4 and "api-token" in _nb_up_names and sorted(_nb_up_names) == sorted(_nb_tf_names)
+      and sorted(_nb_deny_names(_wf_nb_arns)) == sorted(n for n in _nb_up_names if n != "api-token")
+      and sorted(_nb_deny_names(_core_nb_arns)) == sorted(n for n in _nb_up_names if n != "api-token")
+      and [a.split("parameter", 1)[1] for a in _core_nb_arns] == [a.split("parameter", 1)[1].replace("${local.param_prefix}", "/${local.name_prefix}") for a in _wf_nb_arns])
+_proposals_tf = read("IaC", "terraform", "aws-managed", "workflow", "proposals.tf")
+_reader_doc = _proposals_tf.split('data "aws_iam_policy_document" "reader_access"')[1].split("\n}\n")[0] if 'data "aws_iam_policy_document" "reader_access"' in _proposals_tf else ""
+check("proposals.tf の reader_access（Runtime と Web）は Parameters の Allow のままで Deny を持たない（Deny は base/core。cycle 044）",
+      'sid       = "Parameters"' in _reader_doc and "Deny" not in _reader_doc
+      and 'resources = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.param_prefix}/*"]' in _reader_doc)
+
 print(f"通過 {passed} / 失敗 0")

@@ -56,7 +56,7 @@ flowchart LR
 | SG | `<prefix>-nautobot` / `<prefix>-nautobot-db` | 画面へは Web の EC2 からだけ。DB へはタスクからだけ |
 | 名前解決 | `nautobot.<prefix>-nautobot.internal:8080` | VPC の中の URL（SSM `/<prefix>/nautobot/url` にも書く） |
 | ログ | `/ecs/<prefix>-nautobot` | ストリームは `web/`（migrate・bootstrap・画面）、`worker/`（Job）、`redis/` |
-| シークレット | SSM の SecureString `/<prefix>/nautobot/{secret-key,admin-password,db-password,api-token}` | `ops/up.sh` が乱数で作る。タスクは ECS の secrets で受ける |
+| シークレット | SSM の SecureString `/<prefix>/nautobot/{secret-key,admin-password,db-password,api-token}` | `ops/up.sh` が乱数で作る。タスクは ECS の secrets で受ける。`secret-key` / `admin-password` / `db-password` は Web / Runtime / tools の Lambda / temporal のタスクのロールでは Deny（cycle 044。`api-token` は Web が読む） |
 | イメージ | ECR `<prefix>-nautobot` | 公式イメージ `networktocode/nautobot:3.2.6-py3.12` に boto3 と下の「足したもの」を入れたもの |
 
 LB は無い。閉域なので、画面は Web の EC2 を踏み台にしたポートフォワードで開く。費用は約 $0.13/h（`NAUTOBOT_DB_AZ_NUM=2` で RDS が Multi-AZ になると +$0.03/h）。

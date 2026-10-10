@@ -882,4 +882,34 @@ check("ops/down.sh は Kafbat UI のパスワード（ManagedBy=ops/up.sh のタ
       "Tags" in up[up.index("ensure_secret() {"):up.index("ensure_secret() {") + 2500] and "Key=tag:ManagedBy,Values=$OPS_DIR/up.sh" in read_ops("down") and 'OPS_DIR="${OPS_DIR:-ops}"' in _read("ops", "common.sh")
       and "kafka_ui" not in read_ops("down"))
 
+# ---- Nautobot の内部のシークレット（secret-key / admin-password / db-password）を Web と Runtime のロールで Deny する（cycle 044）。
+# stream / graph / workflow がこの 2 つのロールに /<prefix>/* の ssm:GetParameter を足すので、ロールを作る base/core に Deny を置く
+_core_locals = _read("IaC", "terraform", "aws-managed", "base", "core", "locals.tf")
+_core_runtime = _read("IaC", "terraform", "aws-managed", "base", "core", "runtime.tf")
+_nb_arns_m = re.search(r"^  nautobot_secret_parameter_arns = \[\n((?:    .*\n)*?)  \]$", _core_locals, re.M)
+_nb_arns = re.findall(r'^    "(.*)",$', _nb_arns_m.group(1), re.M) if _nb_arns_m else []
+_nb_arn_head = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/${local.name_prefix}/nautobot/"
+check(f"base/core の locals.tf の nautobot_secret_parameter_arns は /<prefix>/nautobot/ の secret-key / admin-password / db-password の 3 つで、api-token と url を含まない（いま: {_nb_arns}）",
+      _nb_arns == [_nb_arn_head + n for n in ("secret-key", "admin-password", "db-password")]
+      and "api-token" not in _nb_arns_m.group(1) and "/url" not in _nb_arns_m.group(1))
+_nb_deny_block = ('        Sid      = "DenyNautobotSecrets"\n        Effect   = "Deny"\n        Action   = "ssm:GetParameter*"\n'
+                  '        Resource = local.nautobot_secret_parameter_arns\n')
+_web_assets = web_tf.split('resource "aws_iam_role_policy" "web_assets"')[1].split("\nresource ")[0] if '"web_assets"' in web_tf else ""
+check("Web のインラインポリシー（web_assets）の Statement の末尾に DenyNautobotSecrets（Deny、ssm:GetParameter*、local.nautobot_secret_parameter_arns）があり、"
+      "/<prefix>/* の ssm:GetParameter の Allow はそのまま",
+      "      {\n" + _nb_deny_block + "      },\n    ]\n  })\n}" in _web_assets
+      and _web_assets.count('Effect   = "Deny"') == 1
+      and re.search(r'Action\s*=\s*"ssm:GetParameter"\s*\n\s*Resource\s*=\s*"arn:\$\{local\.partition\}:ssm:\$\{var\.region\}:\$\{local\.account_id\}:parameter/\$\{local\.name_prefix\}/\*"', _web_assets) is not None)
+_rt_deny = _core_runtime.split('resource "aws_iam_role_policy" "runtime_deny_nautobot_secrets"')[1].split("\nresource ")[0] if "runtime_deny_nautobot_secrets" in _core_runtime else ""
+check("Runtime のロールに aws_iam_role_policy.runtime_deny_nautobot_secrets（<prefix>-runtime-deny-nautobot-secrets）があり、Statement は DenyNautobotSecrets 1 つだけで Allow が無い",
+      re.search(r'^  role = aws_iam_role\.runtime\.(id|name)$', _rt_deny, re.M) is not None
+      and 'name = "${local.name_prefix}-runtime-deny-nautobot-secrets"' in _rt_deny
+      and "    Statement = [\n      {\n" + _nb_deny_block + "      },\n    ]\n" in _rt_deny
+      and _rt_deny.count("Effect") == 1 and "Allow" not in _rt_deny)
+_oss_core = os.path.join(ROOT, "IaC", "terraform", "oss", "base", "core")
+check("OSS 版の base/core の locals.tf / web.tf / runtime.tf はマネージド版へのシンボリックリンクのまま（同じ Deny が OSS 版にも効く）",
+      all(os.path.islink(os.path.join(_oss_core, f))
+          and os.path.realpath(os.path.join(_oss_core, f)) == os.path.realpath(os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core", f))
+          for f in ("locals.tf", "web.tf", "runtime.tf")))
+
 print(f"通過 {passed} / 失敗 0")

@@ -14,7 +14,8 @@
 
 # ---------------------------------------------------------------- access for the chat runtime and the web EC2 (IaC/terraform/aws-managed/base/core roles)
 # SSM は 2 つとも読む。Gateway を呼ぶのはチャットの Runtime だけ（app/agentcore/mcp_client.py。Web のコードは Gateway を呼ばない）。
-# ロールごとに文書を分けるので、Runtime のポリシーは前と同じ中身のまま
+# ロールごとに文書を分けるので、Runtime のポリシーは前と同じ中身のまま。
+# Nautobot の内部のシークレット（secret-key / admin-password / db-password）の Deny は、ロールを作る IaC/terraform/aws-managed/base/core にある（cycle 044）
 data "aws_iam_policy_document" "reader_access" {
   for_each = local.reader_role_names
 

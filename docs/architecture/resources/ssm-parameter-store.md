@@ -39,7 +39,7 @@ SecureString（`ops/up.sh` が作る）:
 
 | 名前 | 中身 | 作り方 | 受け取る側 |
 |---|---|---|---|
-| `/<prefix>/nautobot/secret-key`、`admin-password`、`db-password`、`api-token` | Django の SECRET_KEY、admin のパスワード、DB のパスワード、Web が使う API のトークン | 乱数 | Nautobot のタスク（ECS の secrets）、RDS（`db-password`） |
+| `/<prefix>/nautobot/secret-key`、`admin-password`、`db-password`、`api-token` | Django の SECRET_KEY、admin のパスワード、DB のパスワード、Web が使う API のトークン | 乱数 | Nautobot のタスク（ECS の secrets）、RDS（`db-password`）、Temporal の init のタスク（`db-password`）。Web / Runtime / tools の Lambda / temporal のタスクのロールは `secret-key` / `admin-password` / `db-password` を Deny（`api-token` は Web が読む。cycle 044。temporal のタスクは `nautobot/*` を丸ごと） |
 | `/<prefix>/grafana/admin-password` | Grafana の admin のパスワード | 乱数（`STORES` に `grafana` があるとき） | Grafana のタスク |
 | `/<prefix>/splunk/admin-password`、`hec-token` | Splunk の admin のパスワード、HEC の token | 乱数、uuid（`STORES` に `splunk` があるとき） | Splunk のタスク |
 | `/<prefix>/splunk/idxc-secret` | Splunk のクラスターの合言葉（cluster manager・indexer・search head が互いを確かめる） | 乱数（`SPLUNK_AZ_NUM` が 2 か 3 のとき） | Splunk のタスク（どの役割も同じ値） |
@@ -52,7 +52,7 @@ SecureString（`ops/up.sh` が作る）:
 | 相手 | 向き | ポートと認証 |
 |---|---|---|
 | ECS のタスク（gnmic、Grafana、Splunk、Nautobot） | タスクの起動時に ECS が読む | タスク定義の `secrets`（`valueFrom` にパラメータの ARN） |
-| Web の EC2、Runtime、Lambda、worker、lab の EC2 | 各自 → パラメータ | `ssm` のエンドポイント、それぞれのロール（`/<prefix>/*` か、名前を絞った許可） |
+| Web の EC2、Runtime、Lambda、worker、lab の EC2 | 各自 → パラメータ | `ssm` のエンドポイント、それぞれのロール（`/<prefix>/*` か、名前を絞った許可。Web・Runtime・tools の Lambda は `nautobot/{secret-key,admin-password,db-password}` を Deny） |
 | RDS（Nautobot の DB） | Terraform → RDS | ephemeral で読み、write-only の引数（`password_wo`）に渡す |
 | Nautobot の Job | Job → `gnmic/nautobot/*` | `ssm` のエンドポイント、タスクロール |
 | `ops/up.sh`、`ops/down.sh` | PC → SSM | デプロイする人の認証。値は画面にもログにも出さない |
@@ -81,6 +81,11 @@ SecureString（`ops/up.sh` が作る）:
 - **`ops/down.sh` は、nautobot のルートが消えなかったときは `/<prefix>/nautobot/` の下を残す。**
   RDS のパスワードを Terraform が destroy でも読むので、消すと打ち直しても消せなくなる。次の `ops/down.sh` で消す。
   出典: `ops/down.sh` の手順 5-2 のコメント。
+- **Nautobot の内部のシークレット（`secret-key` / `admin-password` / `db-password`）は、`/<prefix>/*` を読めるロールでも Deny で読めない。**
+  Deny はロールを作るルートに置く（Web と Runtime は `base/core`、tools の Lambda は `workflow` の `gateway.tf`）。ほかのルートが足す `/<prefix>/*` の Allow にも勝つ。
+  Deny の無い lab の EC2 のロールは、`AmazonSSMManagedInstanceCore`（`ssm:GetParameter` / `GetParameters` が `*`）でまだ読める。
+  Deny は名前ごとで親のパスには掛けていない。いまはどのロールにも `ssm:GetParametersByPath` の Allow が無いので守れているが、足すときはこの Deny では守れない（パスの Deny も要る）。
+  出典: `IaC/terraform/aws-managed/base/core/locals.tf` の `nautobot_secret_parameter_arns`、[044 の設計](../../cycles/044-deny-nautobot-secrets/design.md)のリスク 3。
 - **手で入れたパラメータは `ops/down.sh` で消えない。**
   消すのはタグ `ManagedBy=ops/up.sh` の付いたものだけ。String は各ルートの destroy で消える。
   出典: `ops/down.sh` の手順 5-2 のコメント。
