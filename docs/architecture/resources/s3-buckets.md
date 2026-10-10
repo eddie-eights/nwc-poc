@@ -27,7 +27,7 @@ S3 Tables（Iceberg のテーブルバケット）は別物で、[s3-tables-athe
 | バケット | プレフィックス | 中身 | 書く | 読む |
 |---|---|---|---|---|
 | assets | `web/` | 画面のコード（`app/dashboard/*.py` と、Web が使う `app/agentcore/` の一部とデータ）、`requirements.txt`、`wheels/` | `ops/up.sh` の手順 4-2 | Web の EC2 の user_data |
-| assets | `knowledge-base/` | KB の取り込み元の手順書（`CREATE_KB=1` のとき） | `ops/up.sh` の手順 4-3 | Bedrock の KB（ロール `<prefix>-kb`。`agent/kb.tf` の `inclusion_prefixes`） |
+| assets | `knowledge-base/` | KB の取り込み元の手順書（`CREATE_KB=1` のとき） | `ops/up.sh` の手順 4-3 | Bedrock の KB（ロール `<prefix>-kb`。`agent/kb.tf` の `kb_prefix` が `inclusion_prefixes` と、ロールが読める範囲の両方を決める） |
 | assets | `lab/` | containerlab の rpm とトポロジ | `ops/up.sh` の手順 5-1 | lab の EC2 の user_data |
 | assets | `spark/` | `snmp_sinks.py`、`jars/`、`checkpoint/<MSK の uuid>/` | `ops/up.sh` の手順 5-2（スクリプトと jar）、Spark（checkpoint） | EMR Serverless（OSS 版は ECS の Spark） |
 | logs | `firehose-errors/alert_events/` | Firehose が S3 Tables に書けなかった行 | Firehose（ロール `<prefix>-alert-firehose`） | 人（[troubleshooting.md](../../troubleshooting.md)） |
@@ -41,7 +41,7 @@ OSS 版の logs に入るのは Firehose の書けなかった行だけ（EMR Se
 |---|---|---|
 | デプロイする人（`ops/up.sh`） | PC → assets | VPC の外から。`DenyOutsideVpc` の例外（`perimeter_exempt_principals`） |
 | Web・lab の EC2、Spark | VPC → assets | S3 の gateway エンドポイント。各ロールの IAM |
-| Bedrock の KB | KB → assets の `knowledge-base/` | ロール `<prefix>-kb` を引き受けて VPC の外から読む。`DenyOutsideVpc` の例外 |
+| Bedrock の KB | KB → assets の `knowledge-base/` | ロール `<prefix>-kb` を引き受けて VPC の外から読む。`DenyOutsideVpc` の例外。読めるのは `knowledge-base/` の下だけ（`s3:ListBucket` は `s3:prefix` の条件、`s3:GetObject` はオブジェクトの ARN で絞る。`web/` `lab/` `spark/` は読めない） |
 | Firehose | Firehose → logs の `firehose-errors/` | ロール `<prefix>-alert-firehose` の `ErrorBucket` / `ErrorBucketList`（`pipeline/analytics/history.tf`） |
 
 ## 知見
