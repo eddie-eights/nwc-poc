@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/cycle-context.py\"",
+            "command": "f=\"$HOME/.claude/hooks/cycle-context.py\"; [ -f \"$f\" ] && python3 \"$f\" || true",
             "timeout": 10
           }
         ]
