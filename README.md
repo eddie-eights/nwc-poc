@@ -167,7 +167,7 @@ VPC の中にあるので、どれも SSM のポートフォワードを打っ�
 | [setup.md](docs/setup.md) | 前提（AWS の権限、ネットワーク、Mac / WSL2、社内 PC の CA） |
 | [deploy.md](docs/deploy.md) | `deploy.env` の全キー、費用、`ops/up.sh` / `ops/down.sh` の中身、利用者に渡す権限、試す質問 |
 | [collection.md](docs/collection.md) | 機器から集めるデータ（syslog・trap・telemetry・性能メトリクス・NetFlow / sFlow）、集める側（gnmic・Telegraf・syslog-ng・GoFlow2）、Cisco MDT の方針、lab での取り方、未決定事項 |
-| [cml-sandbox.md](docs/cml-sandbox.md) | DevNet の CML サンドボックスで NX-OS 9000v のファブリックを組み、MDT・gNMI・syslog・trap の形を SR Linux と見比べる手順（未実施） |
+| [cml-sandbox.md](docs/cml-sandbox.md) | DevNet の CML サンドボックスで NX-OS 9000v のファブリックを組み、MDT・gNMI・syslog・trap の形を手元の compose で受けて SR Linux と見比べ、AWS の閉域へ流す道も決めるガイド（docs だけ。組むのはこれから） |
 | [pipeline.md](docs/pipeline.md) | lab、gnmic・Telegraf・syslog-ng・GoFlow2、デバッグ用の EC2（`ops/lab-debug.sh`）、Spark、Grafana と Splunk のアラート、Neptune のトポロジの使い方 |
 | [nautobot.md](docs/nautobot.md) | Nautobot: コンテナと部品の構成、起動から同期まで、使い方、Neptune と組み合わせた使いどころ |
 | [workflow.md](docs/workflow.md) | 承認の流れと Temporal UI |

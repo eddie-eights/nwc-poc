@@ -202,6 +202,7 @@ PRI = ファシリティの番号 × 8 + 重要度
 
 - [Q. 本番の Cisco の `logging host <IPアドレス | ホスト名>` には、AWS の NLB を書く？](#q-本番の-cisco-の-logging-host-ipアドレス--ホスト名-にはaws-の-nlb-を書く)
 - [Q. syslog-ng が受ける syslog の形式（RFC 3164 / RFC 5424）は、どこで切り替える？](#q-syslog-ng-が受ける-syslog-の形式rfc-3164--rfc-5424はどこで切り替える)
+- [Q. `logger` で送った試験の syslog が `logs` に入らないのは、RFC 5424 で送ったから？](#q-logger-で送った試験の-syslog-が-logs-に入らないのはrfc-5424-で送ったから)
 - [Q. SNMP はポーリングと trap のどちらで集めている？ ポーリングは止められる？](#q-snmp-はポーリングと-trap-のどちらで集めている-ポーリングは止められる)
 
 ### Q. 本番の Cisco の `logging host <IPアドレス | ホスト名>` には、AWS の NLB を書く？
@@ -256,6 +257,22 @@ SYSLOG_STANDARD=RFC5424 PIPELINE=1 ops/up.sh   # lab の SR Linux のログま�
 - 変えて打ち直すと、ECS の syslog-ng のタスク（`syslog-ng`）が入れ替わる（環境変数が変わるので）。
 - デバッグ用の EC2 は 2026-10-08 から syslog を受けない（syslog-ng はデバッグ用の EC2 では動かさない）。
 - Cisco IOS の既定のヘッダー（シーケンス番号や `*` 付きの時刻、ホスト名の有無）が RFC3164 でどう解析されるかは、実機で確かめていない。
+
+### Q. `logger` で送った試験の syslog が `logs` に入らないのは、RFC 5424 で送ったから？
+
+**A. 違う。syslog-ng は形が合わない行を捨てない（RFC3164 の受け口に RFC 5424 の行を入れると、`appname` が `1`、`sysName` が送り元の IP の行として入る）。1 行も無いなら届いていない。**
+
+- 2026-10-09 の AWS の動作確認で、lab の EC2 から `logger -n <NLB> -P 5140 -d --rfc5424 acl-probe` で送った行が `logs` に無かった。手元の syslog-ng 4.29.0（ECS と同じイメージ）で再現したところ、RFC3164 / RFC5424 のどちらの受け口でも、RFC 3164 / RFC 5424 / NX-OS の既定の形のどれも捨てない。
+- 届かなかった見込みのわけは 2 つ。NLB の SG が syslog の 5140/udp を管理ネットワークの CIDR（203.0.113.0/24）からしか受けない（lab の EC2 の SG からの行は送信だけ）。`lab.sh forward` の DNAT は PREROUTING で、EC2 自身が出したパケットは通らない。UDP なので `logger` は `rc=0` で終わる。
+- 正しい送り方は、TRex の netns から機器と同じ宛先 `203.0.113.1:5140` へ、受け口の `SYSLOG_STANDARD` と同じ形で送る（`lab.sh trap-test` と同じ理屈）。
+
+  ```bash
+  pid=$(sudo docker inspect -f '{{.State.Pid}}' clab-splab-dc1-trex-01)
+  sudo nsenter -t "$pid" -n logger -n 203.0.113.1 -P 5140 -d --rfc3164 -t acl-probe "syslog test"
+  ```
+
+- util-linux の `logger` は 2.26 から既定が RFC 5424。既定の RFC3164 の受け口に送るときは `--rfc3164` を書く。
+- 再現の表、`syslog-ng-ctl stats` の見方、IaC の直し方の候補は [troubleshooting.md](troubleshooting.md) の「syslog の試験行が logs に入らない」。
 
 ### Q. SNMP はポーリングと trap のどちらで集めている？ ポーリングは止められる？
 

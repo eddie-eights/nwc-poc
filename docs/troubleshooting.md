@@ -130,6 +130,7 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 | 承認を押しても `pending` のまま | 反映まで数秒〜20 秒かかる（Web → SQS `<prefix>-decisions` → worker → ワークフロー → `proposal_events` → Athena）。「更新」を押す（実測と、1 分たっても変わらないときは表の下の `pending`） |
 | 承認を押したら `expired` になった | ワークフローがもう無かった（worker のタスクが入れ替わった）。処置は打たれない。まだ落ちていれば、次の通知で別の修復案が出る（[workflow.md](workflow.md)） |
 | 承認しても approved のまま進まない | ワーカーのイメージが古い。`deploy.env` の `IMAGE_TAG` を上げて `ops/up.sh`（[workflow.md](workflow.md)） |
+| `logger` で送った試験の syslog が `logs` に入らない（機器の syslog は入る） | syslog-ng は RFC 5424 の行を捨てない（手元で再現。RFC3164 の受け口に入れると `appname` が `1` に崩れて入る）。試験の文字列が `logs` に 1 行も無いなら、届いていない。lab の EC2 から NLB へ直接送ると NLB の SG と `lab.sh forward` の DNAT に乗らないので、TRex の netns から機器と同じ宛先に送る（表の下の「syslog の試験行が logs に入らない」） |
 | 手順 7-2c で「Telegraf か gnmic のサービスが 10 分たっても安定しない」 | タスクが起きては止まっている。サービスは 2 つ（Telegraf の受ける側 `<prefix>-telegraf-dialout` と gnmic の `<prefix>-gnmic`）（止まった理由の見方は表の下の `7-2c`） |
 | 手順 7-2d で「syslog-ng か GoFlow2 のサービスが 10 分たっても安定しない」 | 止まらずに先へ進む。サービスは `<prefix>-syslog-ng` と `<prefix>-goflow2`（止まった理由の見方は表の下の `7-2d`） |
 | syslog-ng のログに `Topic authorization failed`、GoFlow2 のログに `The client is not authorized to access this topic` が出続ける | 自分のユーザー（`User:syslog-ng` / `User:goflow2`）のトピックの ACL がまだ無い（Spark のジョブが起動時に入れる。`allow.everyone.if.no.acl.found=false`）。ジョブが動いているのに出るなら ACL の行を見る（表の下の `authorization failed`） |
@@ -366,6 +367,88 @@ ecr.api / ecr.dkr のエンドポイント（stream が足す）と S3 の gatew
 戻すのは `sudo systemctl unmask --runtime <prefix>-kafka-ui`（`--runtime` を付けないと `/run` の mask は外れない）。
 EC2 の再起動でも mask は消える。
 
+### syslog の試験行が logs に入らない
+
+2026-10-09 の AWS の動作確認（[verification/20261009-aws-managed.md](verification/20261009-aws-managed.md) の不具合 3）で、lab の EC2 から `logger -n <NLB の IP> -P 5140 -d --rfc5424 acl-probe` で送った行が S3 Tables の `logs` に無かった（機器の syslog は入っていた）。
+受け口は既定の `SYSLOG_STANDARD=RFC3164` だったので「RFC 5424 の行を捨てた」と疑ったが、手元で再現したところ **syslog-ng は捨てない**。届いていなかったと見る。受け口は RFC 3164 / 5424 の両方を受ける形にはしない（設計の判断）。
+
+#### 再現（2026-10-10、手元の docker）
+
+リポジトリの `app/syslog-ng/syslog-ng.sh render` で `SYSLOG_STANDARD=RFC3164` と `RFC5424` の設定を作り、Kafka の宛先だけ `file()` に替えた syslog-ng 4.29.0（`ghcr.io/axoflow/axosyslog:4.29.0`。ECS と同じイメージ）に、別のコンテナの util-linux の `logger` 2.41.5 で UDP（`-d`）と TCP（`-T`）で送った。結果はどちらのポートも同じ。
+
+| 受け口 | 送った形 | 結果 | `logs` に書く行（抜き出し） |
+|---|---|---|---|
+| RFC3164（既定） | `logger --rfc3164 -t acl-probe` | 入った | `"sysName":"<送り手のホスト名>","appname":"acl-probe"`、`"message":"p5140-d rfc3164"` |
+| RFC3164（既定） | `logger --rfc5424 -t acl-probe`、`logger -t acl-probe`（指定なし。logger は 2.26 から既定が RFC 5424） | **壊れて入った** | `"sysName":"172.20.0.3","appname":"1"`、`"message":"2026-10-10T06:55:59.864904+00:00 f8524f52bc18 acl-probe - - [timeQuality tzKnown=\"1\" isSynced=\"0\"] p5140-d rfc5424"` |
+| RFC3164（既定） | 2026-10-09 の形 `logger --rfc5424 acl-probe`（`-t` 無し） | **壊れて入った** | `"appname":"1"`、`"message":"… root - - [timeQuality …] p5140-d acl-probe"` |
+| RFC3164（既定） | NX-OS の既定の形 `<187>spine-01: 2026 Oct 10 12:00:00 UTC: %ETHPORT-3-IF_DOWN_LINK_FAILURE: …` | 入った（`sysName` は送り元の IP） | `"sysName":"172.20.0.3","facility":"local7","severity":"err","appname":"spine-01"` |
+| RFC5424（`flags(syslog-protocol)`） | `logger --rfc3164 -t acl-probe` | 入った | `"sysName":"<送り手のホスト名>","appname":"acl-probe"` |
+| RFC5424 | `logger --rfc5424 -t acl-probe`、指定なし | 入った | `"sysName":"<送り手のホスト名>","appname":"acl-probe"`（`-t` 無しは `root`） |
+| RFC5424 | NX-OS の既定の形 | 入った（`sysName` は送り元の IP） | `"appname":"spine-01"` |
+
+`syslog-ng-ctl stats` は source と destination の `processed` が送った数（10）で一致し、`dropped` の計数は出なかった。syslog-ng のログは起動の `syslog-ng starting up; version='4.29.0'` だけで、解析のエラーは出ない。
+
+```
+source;s_RFC3164;;a;processed;10
+destination;d_RFC3164;;a;processed;10
+source;s_RFC5424;;a;processed;10
+destination;d_RFC5424;;a;processed;10
+```
+
+実際に流れた行（`flags(no-parse)` の受け口で取った。`<13>` = user.notice は `logger` の既定）:
+
+```
+<13>Oct 10 06:56:03 f8524f52bc18 acl-probe: p5142-d rfc3164
+<13>1 2026-10-10T06:56:03.925657+00:00 f8524f52bc18 acl-probe - - [timeQuality tzKnown="1" isSynced="0"] p5142-d rfc5424
+```
+
+#### わけ
+
+- syslog-ng の `network()` は RFC 3164（BSD）の解析器で（[AxoSyslog: network()](https://www.axoflow.com/docs/axosyslog-core/chapter-sources/configuring-sources-network/)）、RFC 5424 の行は `flags(syslog-protocol)` を付けたときだけ RFC 5424 として読む。
+  付けないと、PRI の次の `1`（バージョン）を PROGRAM、残りを本文と読み、HOST は送り元の IP で埋める。行は捨てない（2026-10-08 の Telegraf との比較、[collection.md](collection.md) の「syslog-ng と Telegraf の違い」と同じ結果）。
+- `flags(syslog-protocol)` を付けた受け口は RFC 3164 の行も読める（上の表）。
+- util-linux の `logger` は 2.26 から既定が RFC 5424（[logger(1)](https://man7.org/linux/man-pages/man1/logger.1.html)）。`--rfc5424` を書かなくても同じ形で出る。
+- 両方の形を受けたいときの選択肢は、`syslog()` source（IETF syslog。[AxoSyslog: syslog()](https://axoflow.com/docs/axosyslog-core/chapter-sources/source-syslog/)）を 601 などの別のポートで足すか、`flags(syslog-protocol)` の `network()` を別のポートで足す。
+  どちらも NLB のリスナーとターゲットグループ、SG の行、`lab.sh forward` の DNAT、`tests/test_collectors.py` の期待が増えるので、入れていない（設計の判断。本番の Cisco に合わせた 1 つの形で受ける）。
+
+#### 届かなかったわけ（有力。AWS では確かめていない）
+
+`acl-probe` が `logs` に 1 行も無かったので、syslog-ng まで届いていない。lab の EC2 から NLB へ直接送ると、次の 2 つで落ちる見込み。
+
+1. NLB の SG。`IaC/terraform/aws-managed/base/core/security_groups.tf` の `sg_flows` で、NLB の 5140/udp の受信は管理ネットワークの CIDR `lab_mgmt`（203.0.113.0/24）からだけ。
+   lab の EC2 の SG `lab` → NLB の 5140 の行は `only = "egress"` で、NLB 側に受ける規則が無い。NetFlow の 2055 の行は `only` 無しで両側にあるので、同じ EC2 からの `ops/netflow_send.py` は届いた（2026-10-09 の `flows` に 2 件）。
+
+   ```hcl
+   { from = "lab_mgmt", to = "telegraf_dialout_nlb", protocol = "udp", port = 5140, why = "syslog from the switches - DNAT on the lab EC2" },
+   { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 5140, only = "egress", why = "syslog forwarded for the switches" },
+   { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 2055, why = "NetFlow - forwarded for the switches, or ops/netflow_send.py on the lab EC2" },
+   ```
+
+2. DNAT。`lab.sh forward` の規則は PREROUTING なので、この EC2 で生まれたパケットは通らない（`lab.sh trap-test` が TRex の netns から送るのも同じ理由。「この EC2 から直接送ると PREROUTING を通らないので乗らない」）。
+   NLB の IP に直接送れば DNAT は要らないが、1 の SG で落ちる。
+
+UDP なので、落ちても `logger` は `rc=0` で終わる。
+
+#### 見分け方
+
+- Kafbat UI か Athena で `logs` を `appname = '1'` で引く。あれば RFC 5424 の行が RFC3164 の受け口に入っている（送り手の形を受け口の `SYSLOG_STANDARD` に合わせる）。試験の文字列が 1 行も無ければ、届いていない（経路を見る）。
+- syslog-ng は 1 行ごとのログを出さず、`stats(freq(0))`（`app/syslog-ng/syslog-ng.conf.in`）で定期の統計も書かない。ECS Exec が使えるなら `syslog-ng-ctl stats -c` で `source;s_device;;a;processed` と `destination;d_kafka;;a;processed` / `dropped` を比べる。`processed` が増えなければ届いていない。
+- 届いているかは受け口の手前で見る。lab の EC2 で `sudo tcpdump -n -i any udp port 5140`（[FAQ](faq-fukuda-nwc-poc.md) の 1 節）。EC2 から出た行は見えるが、NLB で落ちた行はこれでは分からない（SG で落ちた分は VPC Flow Logs にしか出ない。作っていない）。
+
+#### 正しい送り方
+
+TRex の netns から、機器と同じ宛先 `203.0.113.1:5140` へ、受け口の `SYSLOG_STANDARD` と同じ形で送る。送り元が 203.0.113.101 になり、DNAT と NLB の SG（`lab_mgmt`）に乗る。
+
+```bash
+# lab の EC2 で（受け口が既定の RFC3164 のとき）
+pid=$(sudo docker inspect -f '{{.State.Pid}}' clab-splab-dc1-trex-01)
+sudo nsenter -t "$pid" -n logger -n 203.0.113.1 -P 5140 -d --rfc3164 -t acl-probe "syslog test $(date +%s)"
+# 受け口が RFC5424（SYSLOG_STANDARD=RFC5424）なら --rfc3164 を --rfc5424 に替える
+```
+
+- `logs` には `sysName` が EC2 のホスト名、`source` が 203.0.113.101 の行として入る。Spark の `DEVICE_MAP` は 203.0.113.101 を `dc1-trex-01` に引く。
+- IaC を直すなら、`lab` → NLB の 5140 の行の `only = "egress"` を外す（NetFlow の行と同じ形）。EC2 から NLB の IP に直接送れるようになる。2026-10-10 時点では直していない（直すかは PM の判断）。
+
 ## 2026-10-09 の改名より前に立てた環境
 
 2026-10-09 に Splunk のアプリ、Nautobot の App と API ユーザーと JobHook、S3 Tables の namespace の名前を `nwc` に揃えた（「名前を nwc に揃える（019）」）。
@@ -410,3 +493,4 @@ EC2 の再起動でも mask は消える。
 - 2026-10-08（012）: syslog を Telegraf ではなく syslog-ng が受けるようにした。サービス `<prefix>-syslog-ng` / `<prefix>-goflow2` はこのとき足した。
 - 2026-10-09（013）: Grafana のルール `link_down` などが見る値を、SNMP のポーリングから gnmic の gNMI の値に替えた。`metrics` トピックの IF の統計・CPU・メモリも gnmic が書く（SNMP のポーリングはやめた）。
 - 2026-10-09（013）: デバッグ用の EC2 の Telegraf の `test` / `gnmi` をやめた（受けるのは trap だけ）。
+- 2026-10-10: 2026-10-09 の不具合 3（`logger --rfc5424` の試験行が `logs` に無い）を手元で再現し、syslog-ng は捨てないこと、届いていなかった見込み（NLB の SG と DNAT）を「syslog の試験行が logs に入らない」に書いた。
