@@ -6,6 +6,13 @@
 - シークレットは `ops/up.sh` が SSM Parameter Store の SecureString として作る。値は読まない・表示しない。
 - MSK の SCRAM の資格情報だけは例外で、`ops/up.sh` が Secrets Manager（コレクターごとの `AmazonMSK_<prefix>-syslog-ng` / `-goflow2` / `-gnmic`。顧客管理の KMS の鍵 `alias/<prefix>-msk-scram` で暗号化）に作る（MSK の SCRAM は Secrets Manager しか受けない）。値は読まない・表示しない。
 
+## セッションの役（2026-10-10）
+
+- **このリポジトリで人が起動するセッションは PM の 1 つだけ。** このフォルダ（cwd）で起動したセッションは、題名や会話の記憶にかかわらず PM として動く（AI 開発フローは `docs/ai-dev-flow.md`、正本は claude-settings の `cycle-design/flow.md`）。エンジニアは PM のサブエージェント（`Agent`）。
+- 秘書（PMO）など別の役のセッションは、このフォルダで起動しない。プロジェクト別メモリ（`~/.claude/projects/…nwc-poc/memory/`）は cwd 単位で全セッションが共有するため。
+- プロジェクト別メモリに「このセッション」「セッション ID」を主語にした役のメモを書かない。役はこのファイルで決まる。
+- 現在地（`docs/cycles/QUEUE.md` の着手行と直近の完了、最新サイクルの `review.md` の末尾、直近の commit）は `.claude/settings.json` の SessionStart フック `cycle-context.py` が起動のたび（clear 直後も）に注入する。引き継ぎメモは作らない。次に回すものは QUEUE に `- [ ]` で足す。
+
 <!-- BEGIN AWS Agent Toolkit rules -->
 # AWS Guidance
 
