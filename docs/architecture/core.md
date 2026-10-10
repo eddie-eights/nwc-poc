@@ -79,6 +79,7 @@ AWS の API へは全部 VPC エンドポイントから行き、この VPC を�
 | telegraf_dialout_nlb | syslog_ng | 5140/udp、5140/tcp | syslog の転送と、NLB のヘルスチェック（TCP） |
 | telegraf_dialout_nlb | goflow2 | 2055/udp、6343/udp、8081/tcp | NetFlow・sFlow の転送と、NLB のヘルスチェック（`/__health`） |
 | lab の管理ネットワーク（203.0.113.0/24） | telegraf_dialout_nlb | 162/udp、5140/udp、2055/udp、6343/udp | 機器の trap・syslog・NetFlow・sFlow（lab の EC2 が DNAT するので送り元は機器の IP のまま） |
+| lab | telegraf_dialout_nlb | 2055/udp、6343/udp、5140/udp | lab の EC2 のホストが自分の IP から試しに送る NetFlow・sFlow・syslog（`ops/netflow_send.py`、`logger`）。lab の SG は 162/udp も NLB へ送るが、NLB は trap を lab の SG から受けない |
 | gnmic | lab の管理ネットワーク | 57400/tcp | gnmic からの gNMI の購読（VPC のルートで lab の EC2 へ） |
 
 OSS 版（`IaC/terraform/oss/`）では `IaC/terraform/aws-managed/base/core/oss.tf` が SG と表を差し替える（msk とその行を外し、kafka / efs / opensearch / victoriametrics / neo4j の SG と行を足す）。

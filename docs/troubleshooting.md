@@ -130,7 +130,7 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 | 承認を押しても `pending` のまま | 反映まで数秒〜20 秒かかる（Web → SQS `<prefix>-decisions` → worker → ワークフロー → `proposal_events` → Athena）。「更新」を押す（実測と、1 分たっても変わらないときは表の下の `pending`） |
 | 承認を押したら `expired` になった | ワークフローがもう無かった（worker のタスクが入れ替わった）。処置は打たれない。まだ落ちていれば、次の通知で別の修復案が出る（[workflow.md](workflow.md)） |
 | 承認しても approved のまま進まない | ワーカーのイメージが古い。`deploy.env` の `IMAGE_TAG` を上げて `ops/up.sh`（[workflow.md](workflow.md)） |
-| `logger` で送った試験の syslog が `logs` に入らない（機器の syslog は入る） | syslog-ng は RFC 5424 の行を捨てない（手元で再現。RFC3164 の受け口に入れると `appname` が `1` に崩れて入る）。試験の文字列が `logs` に 1 行も無いなら、届いていない。lab の EC2 から NLB へ直接送ると NLB の SG と `lab.sh forward` の DNAT に乗らないので、TRex の netns から機器と同じ宛先に送る（表の下の「syslog の試験行が logs に入らない」） |
+| `logger` で送った試験の syslog が `logs` に入らない（機器の syslog は入る） | syslog-ng は RFC 5424 の行を捨てない（手元で再現。RFC3164 の受け口に入れると `appname` が `1` に崩れて入る）。試験の文字列が `logs` に 1 行も無いなら、届いていない。2026-10-09 は lab の EC2 から NLB へ直接送り、NLB の SG（`lab` からは送信だけだった）で落ちた見込み。TRex の netns から機器と同じ宛先に送るか、037 で両側にした後は NLB の IP へ直接送る（表の下の「syslog の試験行が logs に入らない」） |
 | 手順 7-2c で「Telegraf か gnmic のサービスが 10 分たっても安定しない」 | タスクが起きては止まっている。サービスは 2 つ（Telegraf の受ける側 `<prefix>-telegraf-dialout` と gnmic の `<prefix>-gnmic`）（止まった理由の見方は表の下の `7-2c`） |
 | 手順 7-2d で「syslog-ng か GoFlow2 のサービスが 10 分たっても安定しない」 | 止まらずに先へ進む。サービスは `<prefix>-syslog-ng` と `<prefix>-goflow2`（止まった理由の見方は表の下の `7-2d`） |
 | syslog-ng のログに `Topic authorization failed`、GoFlow2 のログに `The client is not authorized to access this topic` が出続ける | 自分のユーザー（`User:syslog-ng` / `User:goflow2`）のトピックの ACL がまだ無い（Spark のジョブが起動時に入れる。`allow.everyone.if.no.acl.found=false`）。ジョブが動いているのに出るなら ACL の行を見る（表の下の `authorization failed`） |
@@ -413,19 +413,20 @@ destination;d_RFC5424;;a;processed;10
 
 #### 届かなかったわけ（有力。AWS では確かめていない）
 
-`acl-probe` が `logs` に 1 行も無かったので、syslog-ng まで届いていない。lab の EC2 から NLB へ直接送ると、次の 2 つで落ちる見込み。
+`acl-probe` が `logs` に 1 行も無かったので、syslog-ng まで届いていない。2026-10-09 の lab の EC2 から NLB への直接の送信は、次の 1 で落ちた見込み。
 
-1. NLB の SG。`IaC/terraform/aws-managed/base/core/security_groups.tf` の `sg_flows` で、NLB の 5140/udp の受信は管理ネットワークの CIDR `lab_mgmt`（203.0.113.0/24）からだけ。
-   lab の EC2 の SG `lab` → NLB の 5140 の行は `only = "egress"` で、NLB 側に受ける規則が無い。NetFlow の 2055 の行は `only` 無しで両側にあるので、同じ EC2 からの `ops/netflow_send.py` は届いた（2026-10-09 の `flows` に 2 件）。
+1. NLB の SG。`IaC/terraform/aws-managed/base/core/security_groups.tf` の `sg_flows` で、NLB の 5140/udp の受信は管理ネットワークの CIDR `lab_mgmt`（203.0.113.0/24）からだけだった。
+   lab の EC2 の SG `lab` → NLB の 5140 の行は `only = "egress"`（送信だけ）で、NLB 側に受ける規則が無かった。NetFlow の 2055 の行は `only` 無しで両側にあるので、同じ EC2 からの `ops/netflow_send.py` は届いた（2026-10-09 の `flows` に 2 件）。
+   「lab の EC2 から NLB の syslog 5140 への受信ルールを足す（037）」で `only` を外して両側にした。直した後の形は次のとおり。AWS で確かめるのは QUEUE の「残った修正をまとめて AWS で動作確認して直す」のとき。
 
    ```hcl
    { from = "lab_mgmt", to = "telegraf_dialout_nlb", protocol = "udp", port = 5140, why = "syslog from the switches - DNAT on the lab EC2" },
-   { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 5140, only = "egress", why = "syslog forwarded for the switches" },
+   { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 5140, why = "syslog forwarded for the switches, or logger on the lab EC2" },
    { from = "lab", to = "telegraf_dialout_nlb", protocol = "udp", port = 2055, why = "NetFlow - forwarded for the switches, or ops/netflow_send.py on the lab EC2" },
    ```
 
 2. DNAT。`lab.sh forward` の規則は PREROUTING なので、この EC2 で生まれたパケットは通らない（`lab.sh trap-test` が TRex の netns から送るのも同じ理由。「この EC2 から直接送ると PREROUTING を通らないので乗らない」）。
-   NLB の IP に直接送れば DNAT は要らないが、1 の SG で落ちる。
+   ただし NLB の IP へ直接送るなら DNAT は要らない（宛先がもう NLB）。DNAT が要るのは機器と同じ宛先 `203.0.113.1:5140` へ送るときだけ。
 
 UDP なので、落ちても `logger` は `rc=0` で終わる。
 
@@ -433,11 +434,13 @@ UDP なので、落ちても `logger` は `rc=0` で終わる。
 
 - Kafbat UI か Athena で `logs` を `appname = '1'` で引く。あれば RFC 5424 の行が RFC3164 の受け口に入っている（送り手の形を受け口の `SYSLOG_STANDARD` に合わせる）。試験の文字列が 1 行も無ければ、届いていない（経路を見る）。
 - syslog-ng は 1 行ごとのログを出さず、`stats(freq(0))`（`app/syslog-ng/syslog-ng.conf.in`）で定期の統計も書かない。ECS Exec が使えるなら `syslog-ng-ctl stats -c` で `source;s_device;;a;processed` と `destination;d_kafka;;a;processed` / `dropped` を比べる。`processed` が増えなければ届いていない。
-- 届いているかは受け口の手前で見る。lab の EC2 で `sudo tcpdump -n -i any udp port 5140`（[FAQ](faq-fukuda-nwc-poc.md) の 1 節）。EC2 から出た行は見えるが、NLB で落ちた行はこれでは分からない（SG で落ちた分は VPC Flow Logs にしか出ない。作っていない）。
+- 届いているかは受け口の手前で見る。lab の EC2 で `sudo tcpdump -n -i any udp port 5140`（[FAQ](faq-fukuda-nwc-poc.md) の 1 節）。EC2 から出た行は見えるが、NLB で落ちた行はこれでは分からない。SG で落ちた分は VPC フローログに出る（上の「`sg_flows`」の REJECT のクエリで、宛先を NLB の IP、`dstPort` を 5140 に絞る）。
 
 #### 正しい送り方
 
-TRex の netns から、機器と同じ宛先 `203.0.113.1:5140` へ、受け口の `SYSLOG_STANDARD` と同じ形で送る。送り元が 203.0.113.101 になり、DNAT と NLB の SG（`lab_mgmt`）に乗る。
+どちらも、形は受け口の `SYSLOG_STANDARD` に合わせる。
+
+1つ目は、TRex の netns から、機器と同じ宛先 `203.0.113.1:5140` へ送る。送り元が 203.0.113.101 になり、DNAT と NLB の SG（`lab_mgmt`）に乗る。
 
 ```bash
 # lab の EC2 で（受け口が既定の RFC3164 のとき）
@@ -447,7 +450,18 @@ sudo nsenter -t "$pid" -n logger -n 203.0.113.1 -P 5140 -d --rfc3164 -t acl-prob
 ```
 
 - `logs` には `sysName` が EC2 のホスト名、`source` が 203.0.113.101 の行として入る。Spark の `DEVICE_MAP` は 203.0.113.101 を `dc1-trex-01` に引く。
-- IaC を直すなら、`lab` → NLB の 5140 の行の `only = "egress"` を外す（NetFlow の行と同じ形）。EC2 から NLB の IP に直接送れるようになる。2026-10-10 時点では直していない（直すかは PM の判断）。
+
+2つ目は、lab の EC2 のホストから NLB の IP へ直接送る（「lab の EC2 から NLB の syslog 5140 への受信ルールを足す（037）」から。AWS では未確認）。DNAT を通らず、NLB の SG の `lab` からの受信に乗る。NetFlow の `ops/netflow_send.py` と同じ経路。
+
+```bash
+# lab の EC2 で（受け口が既定の RFC3164 のとき）。SSM の値は NLB のサブネット a のプライベート IP
+. /etc/*-lab.env   # AWS_REGION と PARAM_PREFIX（lab の user_data が書く。lab forward も同じ値で読む）
+nlb=$(aws ssm get-parameter --region "$AWS_REGION" --name "$PARAM_PREFIX/telegraf-address" --query Parameter.Value --output text)
+logger -n "$nlb" -P 5140 -d --rfc3164 -t acl-probe "syslog test from the lab EC2"
+```
+
+- 期待: Kafbat UI でトピック `logs` を見ると、`"appname":"acl-probe"`、`"sysName"` が lab の EC2 のホスト名の行が 1 件ある。analytics を立てていれば、Athena の `raw_telemetry` で `topic = 'logs'` の行の `tags_json` にも同じ値が入る。
+- 入らなければ、VPC フローログの REJECT（宛先が NLB の IP、`dstPort` が 5140）か `syslog-ng-ctl stats` で切り分ける（上の「見分け方」）。
 
 ## 2026-10-09 の改名より前に立てた環境
 

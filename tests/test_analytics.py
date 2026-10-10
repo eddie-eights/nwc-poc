@@ -129,8 +129,8 @@ EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_
     ("telegraf_dialout_nlb", "goflow2", "udp", 2055, 2055, ""), ("telegraf_dialout_nlb", "goflow2", "udp", 6343, 6343, ""), ("telegraf_dialout_nlb", "goflow2", "tcp", 8081, 8081, ""),
     ("lab_mgmt", "telegraf_dialout_nlb", "udp", 162, 162, ""), ("lab_mgmt", "telegraf_dialout_nlb", "udp", 5140, 5140, ""),
     ("lab_mgmt", "telegraf_dialout_nlb", "udp", 2055, 2055, ""), ("lab_mgmt", "telegraf_dialout_nlb", "udp", 6343, 6343, ""),
-    ("lab", "telegraf_dialout_nlb", "udp", 162, 162, "egress"), ("lab", "telegraf_dialout_nlb", "udp", 5140, 5140, "egress"),
-    # NetFlow / sFlow は lab の EC2 のホストが自分の IP からも送る（SR Linux は NetFlow を送れないので ops/netflow_send.py で試す）ので両側
+    ("lab", "telegraf_dialout_nlb", "udp", 162, 162, "egress"), ("lab", "telegraf_dialout_nlb", "udp", 5140, 5140, ""),
+    # NetFlow / sFlow / syslog（上の行の 5140。037）は lab の EC2 のホストが自分の IP からも送る（NetFlow は ops/netflow_send.py、syslog は logger で試す）ので両側
     ("lab", "telegraf_dialout_nlb", "udp", 2055, 2055, ""), ("lab", "telegraf_dialout_nlb", "udp", 6343, 6343, ""),
     # 機器へ取りにいくのは gnmic の gNMI（57400）だけ。SNMP のポーリング（161/udp）は cycle 013 でやめた。受ける側（telegraf_dialout）は機器へ出ない
     ("gnmic", "lab_mgmt", "tcp", 57400, 57400, ""), ("gnmic", "lab", "tcp", 57400, 57400, "ingress"),

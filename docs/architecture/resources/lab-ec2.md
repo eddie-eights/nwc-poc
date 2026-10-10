@@ -35,12 +35,13 @@ lab の中身:
 |---|---|---|
 | 利用者の PC | PC → EC2 | SSM Session Manager（`ssm`、`ssmmessages` のエンドポイント） |
 | gnmic（stream の ECS） | タスク → 機器 | gNMI 57400/tcp。VPC のルートで管理ネットワーク宛てを lab の EC2 に向ける。認証情報は SSM の SecureString。SNMP 161/udp は通さない |
-| stream の ECS の受ける側（内部 NLB） | 機器 → EC2 → NLB | trap 162/udp（Telegraf）、syslog 5140/udp（syslog-ng）、NetFlow 2055/udp・sFlow 6343/udp（GoFlow2）。機器は `203.0.113.1` へ送り、`lab forward` が NLB へ DNAT する（NetFlow の試し方は表の下） |
+| stream の ECS の受ける側（内部 NLB） | 機器 → EC2 → NLB | trap 162/udp（Telegraf）、syslog 5140/udp（syslog-ng）、NetFlow 2055/udp・sFlow 6343/udp（GoFlow2）。機器は `203.0.113.1` へ送り、`lab forward` が NLB へ DNAT する（NetFlow と syslog の試し方は表の下） |
 | SSM のパラメータ | EC2 → `/<prefix>/telegraf-address`、`/<prefix>/telegraf-source-cidr` | `ssm` のエンドポイント、インスタンスロール（`lab forward` が読む） |
 | ECR と S3 | EC2 → イメージ、`lab/` | `ecr.api`、`ecr.dkr` のエンドポイントと S3 の gateway エンドポイント |
 | worker（Temporal） | worker → SSM → EC2 | Run Command で `sudo lab heal-main` などを打つ |
 
 - stream の ECS の受ける側（内部 NLB）: SR Linux は NetFlow を送れないので、NetFlow は lab の EC2 で `ops/netflow_send.py` を打って試す。
+- stream の ECS の受ける側（内部 NLB）: syslog は lab の EC2 のホストから NLB の IP（SSM `/<prefix>/telegraf-address`）へ `logger -n <NLB の IP> -P 5140 -d --rfc3164 -t acl-probe` で直接送って試せる（DNAT は通らない。「lab の EC2 から NLB の syslog 5140 への受信ルールを足す（037）」から。AWS では未確認）。
 
 ## 知見
 
