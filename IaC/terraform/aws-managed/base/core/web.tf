@@ -65,6 +65,15 @@ resource "aws_iam_role_policy" "web_assets" {
         Action   = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"]
         Resource = "arn:${local.partition}:ecr:${var.region}:${local.account_id}:repository/${local.name_prefix}-kafka-ui"
       },
+      # Nautobot の中だけのシークレット（secret-key / admin-password / db-password）は読ませない（cycle 044。locals.tf）。
+      # 上の ssm:GetParameter と、ほかのルートが足す /<prefix>/* の Allow と、AmazonSSMManagedInstanceCore（Resource *）に勝つ（prefix を問わない）。
+      # Web が読む nautobot/url と nautobot/api-token は含まない
+      {
+        Sid      = "DenyNautobotSecrets"
+        Effect   = "Deny"
+        Action   = "ssm:GetParameter*"
+        Resource = local.nautobot_secret_parameter_arns
+      },
     ]
   })
 }

@@ -87,6 +87,15 @@ data "aws_iam_policy_document" "tools" {
     resources = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.param_prefix}/*"]
   }
 
+  # Nautobot の中だけのシークレット（secret-key / admin-password / db-password。locals.tf）は読ませない（cycle 044）。
+  # tools の Lambda は nautobot/ を読まない。nautobot/url と nautobot/api-token は Web と同じ扱いで Deny しない
+  statement {
+    sid       = "DenyNautobotSecrets"
+    effect    = "Deny"
+    actions   = ["ssm:GetParameter*"]
+    resources = local.nautobot_secret_parameter_arns
+  }
+
   # トポロジと status を読むだけ。Write は付けない（修復案は Neptune に無い。ツールに承認・却下も無い。proposals.tf の冒頭）
   dynamic "statement" {
     for_each = local.neptune_data_arn != "" ? [1] : []

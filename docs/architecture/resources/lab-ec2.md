@@ -36,7 +36,7 @@ lab の中身:
 | 利用者の PC | PC → EC2 | SSM Session Manager（`ssm`、`ssmmessages` のエンドポイント） |
 | gnmic（stream の ECS） | タスク → 機器 | gNMI 57400/tcp。VPC のルートで管理ネットワーク宛てを lab の EC2 に向ける。認証情報は SSM の SecureString。SNMP 161/udp は通さない |
 | stream の ECS の受ける側（内部 NLB） | 機器 → EC2 → NLB | trap 162/udp（Telegraf）、syslog 5140/udp（syslog-ng）、NetFlow 2055/udp・sFlow 6343/udp（GoFlow2）。機器は `203.0.113.1` へ送り、`lab forward` が NLB へ DNAT する（NetFlow と syslog の試し方は表の下） |
-| SSM のパラメータ | EC2 → `/<prefix>/telegraf-address`、`/<prefix>/telegraf-source-cidr` | `ssm` のエンドポイント、インスタンスロール（`lab forward` が読む） |
+| SSM のパラメータ | EC2 → `/<prefix>/telegraf-address`、`/<prefix>/telegraf-source-cidr` | `ssm` のエンドポイント、インスタンスロール（`lab forward` が読む）。`nautobot/{secret-key,admin-password,db-password}` は Deny（cycle 044） |
 | ECR と S3 | EC2 → イメージ、`lab/` | `ecr.api`、`ecr.dkr` のエンドポイントと S3 の gateway エンドポイント |
 | worker（Temporal） | worker → SSM → EC2 | Run Command で `sudo lab heal-main` などを打つ |
 

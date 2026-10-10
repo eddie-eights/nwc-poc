@@ -229,4 +229,13 @@ locals {
 
   param_prefix = "/${local.name_prefix}"
   log_group    = "/ecs/${local.name_prefix}-workflow"
+
+  # Nautobot の中だけのシークレット（api-token を除く 3 つ。IaC/terraform/aws-managed/base/core の locals.tf の同名と同じ ARN）。
+  # tools の Lambda のロール（gateway.tf）で Deny する（cycle 044）。nautobot の state が無くても Deny は要るので、state の出力からは組まない。
+  # prefix を問わない（parameter/*/nautobot/<名前>）のは base/core と lab の Deny と同じ ARN にそろえるため
+  nautobot_secret_parameter_arns = [
+    "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/*/nautobot/secret-key",
+    "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/*/nautobot/admin-password",
+    "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/*/nautobot/db-password",
+  ]
 }

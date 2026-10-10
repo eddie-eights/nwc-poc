@@ -20,3 +20,17 @@ locals {
   account_id = data.aws_caller_identity.current.account_id
   partition  = data.aws_partition.current.partition
 }
+
+# Nautobot の中だけのシークレット（ops/up-common.sh の ensure_nautobot_secrets が作る SecureString のうち api-token を除く 3 つ。
+# IaC/terraform/aws-managed/pipeline/nautobot の locals.tf の secret_parameters と同じ名前）。使うのは Nautobot のタスクの実行ロールと
+# Temporal の init のタスクの実行ロール（db-password だけ）。Web（web.tf）と Runtime（runtime.tf）のロールでは Deny する。
+# stream / graph / workflow がこの 2 つのロールに足す /<prefix>/* の Allow にも勝つよう、ロールを作るこのルートに置く（cycle 044）。
+# prefix を問わない（parameter/*/nautobot/<名前>）のは、Web のロールの AmazonSSMManagedInstanceCore（ssm:GetParameter* が Resource *）に勝たせ、
+# 同じアカウントのほかの環境の 3 つも読ませないため。nautobot/url と nautobot/api-token は Nautobot の API の入口で、Web が読むので Deny しない
+locals {
+  nautobot_secret_parameter_arns = [
+    "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/*/nautobot/secret-key",
+    "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/*/nautobot/admin-password",
+    "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/*/nautobot/db-password",
+  ]
+}

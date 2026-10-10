@@ -63,6 +63,14 @@ resource "aws_iam_role_policy" "lab_assets" {
           "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/${local.name_prefix}/telegraf-source-cidr",
         ]
       },
+      {
+        # Nautobot の中だけのシークレット（locals.tf の nautobot_secret_parameter_arns）。上の AmazonSSMManagedInstanceCore（Resource *）に勝たせる。
+        # temporal のタスクが Run Command で lab のシェルを使えるので、lab のロールでも Deny しないと 042 の Deny が lab 経由で抜けられる（cycle 044）
+        Sid      = "DenyNautobotSecrets"
+        Effect   = "Deny"
+        Action   = "ssm:GetParameter*"
+        Resource = local.nautobot_secret_parameter_arns
+      },
     ]
   })
 }

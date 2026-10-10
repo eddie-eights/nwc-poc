@@ -54,3 +54,14 @@ locals {
   # EC2 の中の docker network で、forward_to_telegraf のときだけ VPC のルートで lab の EC2 に向ける（gnmic のタスクから機器の gNMI を引くため）
   mgmt_cidr = "203.0.113.0/24"
 }
+
+# Nautobot の中だけのシークレット（api-token を除く 3 つ。IaC/terraform/aws-managed/base/core の locals.tf の同名と同じ ARN）。
+# lab のロールは AmazonSSMManagedInstanceCore（ssm:GetParameter* が Resource *）で読めてしまうので、iam.tf の lab_assets で Deny する（cycle 044）。
+# prefix を問わない（parameter/*/nautobot/<名前>）のは、同じアカウントのほかの環境の 3 つも読ませないため
+locals {
+  nautobot_secret_parameter_arns = [
+    "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/*/nautobot/secret-key",
+    "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/*/nautobot/admin-password",
+    "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/*/nautobot/db-password",
+  ]
+}
