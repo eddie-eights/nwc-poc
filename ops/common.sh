@@ -33,6 +33,33 @@ tf() {  # tf <ルート> <terraform のサブコマンドと引数…>
   local root="$1"; shift
   env ${TF_AWS_ENV[@]+"${TF_AWS_ENV[@]}"} terraform -chdir="$TF_DIR/$root" "$@"
 }
+# emr_cancel_jobs <EMR Serverless のアプリケーション ID> <待つ回数（5 秒ごと）>
+#   動いている・待っている（SUBMITTED / PENDING / SCHEDULED / RUNNING / QUEUED）Spark のジョブを名前で絞らずに全部 cancel し、
+#   止まる（CANCELLING も抜ける）まで待つ。止め切れたら 0。待ち切れなければ残ったジョブの id を EMR_JOBS_LEFT に入れて 1 を返す
+#   （止まるか進むかは呼ぶ側が決める）。アプリケーションは止めない。
+#   ops/up.sh の手順 7-4（アプリの上限やサブネットを変える前）、ops/down.sh（アプリを止めて消す前）、ops/stop-spark.sh（ジョブだけ止める）が呼ぶ。
+#   手順 7-5 は SpecHash で選んだジョブだけを止めるので、ここは使わない。REGION を使う
+EMR_JOBS_LEFT=""
+emr_cancel_jobs() {
+  local app="$1" loops="$2" runs id i
+  runs=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$app" \
+    --states SUBMITTED PENDING SCHEDULED RUNNING QUEUED --query 'jobRuns[].id' --output text 2>/dev/null || true)
+  [ "$runs" != None ] || runs=""
+  [ -n "$runs" ] || echo "動いている Spark のジョブは無い"
+  for id in $runs; do
+    echo "Spark のジョブ $id を止める"
+    aws emr-serverless cancel-job-run --region "$REGION" --application-id "$app" --job-run-id "$id" >/dev/null || true
+  done
+  EMR_JOBS_LEFT=""
+  for i in $(seq 1 "$loops"); do
+    EMR_JOBS_LEFT=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$app" \
+      --states SUBMITTED PENDING SCHEDULED RUNNING QUEUED CANCELLING --query 'jobRuns[].id' --output text 2>/dev/null || true)
+    [ "$EMR_JOBS_LEFT" != None ] || EMR_JOBS_LEFT=""
+    [ -n "$EMR_JOBS_LEFT" ] || return 0
+    sleep 5
+  done
+  return 1
+}
 # tf_init_root <ルート>  マネージド版は「init -input=false」のまま。OSS 版（005）は TF_INIT_LOCKFILE=readonly にして -lockfile=readonly を足す。
 # IaC/terraform/oss/<ルート>/.terraform.lock.hcl はマネージド版の lock へのシンボリックリンクで、init が lock を書き換える場面
 # （その PC の OS・CPU のハッシュが lock に無いとき）に、リンクが実ファイルに置き換わる。readonly なら書き換えずに止まる

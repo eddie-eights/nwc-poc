@@ -286,6 +286,9 @@ resource "aws_iam_role" "kb" {
 }
 
 locals {
+  # KB の取り込み元の置き場（assets のバケットの中のプレフィックス）。データソースの inclusion_prefixes と、サービスロールが読める範囲
+  # （下の S3List の s3:prefix と S3Read の Resource）と、outputs.tf の upload_docs_command がここを参照する。2026-10-10 に略語の旧名から改名
+  kb_prefix = "knowledge-base/"
   # Retrieve のリランクは呼び出し側ではなく KB のサービスロールの権限で動く
   kb_rerank_statements = [for s in [
     {
@@ -328,6 +331,11 @@ resource "aws_iam_role_policy" "kb" {
       ],
       local.kb_rerank_statements,
       [
+        # S3 のデータソースに要るのは s3:ListBucket（バケット）と s3:GetObject（オブジェクト）の 2 つで、公式の例はバケット全体に許している
+        # （「Create a service role for Amazon Bedrock Knowledge Bases」の「Permissions to access your Amazon S3 data source」。
+        # https://docs.aws.amazon.com/bedrock/latest/userguide/kb-permissions.html）。同じページが「データソースが要るバケットとプレフィックス
+        # だけに絞る」よう求めているので、assets は web/ lab/ spark/ と共用のため、読めるのを取り込み元の knowledge-base/ の下だけにする
+        # （ListBucket は s3:prefix の条件、GetObject はオブジェクトの ARN で。cycle 035 のレビューの Nit 1）
         {
           Sid      = "S3List"
           Effect   = "Allow"
@@ -335,13 +343,14 @@ resource "aws_iam_role_policy" "kb" {
           Resource = local.bucket_arn
           Condition = {
             StringEquals = { "aws:ResourceAccount" = local.account_id }
+            StringLike   = { "s3:prefix" = [local.kb_prefix, "${local.kb_prefix}*"] }
           }
         },
         {
           Sid      = "S3Read"
           Effect   = "Allow"
           Action   = "s3:GetObject"
-          Resource = "${local.bucket_arn}/*"
+          Resource = "${local.bucket_arn}/${local.kb_prefix}*"
           Condition = {
             StringEquals = { "aws:ResourceAccount" = local.account_id }
           }
@@ -404,7 +413,7 @@ resource "aws_bedrockagent_data_source" "docs" {
     type = "S3"
     s3_configuration {
       bucket_arn         = local.bucket_arn
-      inclusion_prefixes = ["knowledge-base/"]
+      inclusion_prefixes = [local.kb_prefix]
     }
   }
 }

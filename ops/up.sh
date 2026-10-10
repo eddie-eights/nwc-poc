@@ -1057,7 +1057,7 @@ if [ -z "$SKIP_ANALYTICS" ]; then
   # アプリは STOPPED か CREATED のときしか更新できない（UpdateApplication の API リファレンス）。動いている（STARTED の）まま上限やサブネット
   # （networkConfiguration。EMR_AZ_NUM で数が変わる）を変えると tf_apply が失敗し、打ち直しても同じところで止まる。ジョブが動いていると
   # stop-application も効かない（2026-09-17 に実測）。そこで上限かサブネットの数が変わるときだけ、先にジョブを全部止めてからアプリを止める
-  # （ops/down.sh と同じ手順）。止めたジョブは 7-5 が checkpoint から起こし直す
+  # （ops/common.sh の emr_cancel_jobs。ops/down.sh と ops/stop-spark.sh も同じ関数で止める）。止めたジョブは 7-5 が checkpoint から起こし直す
   if [ -f "$TF_DIR/pipeline/analytics/terraform.tfstate" ] && { tf_init pipeline/analytics; has_resources pipeline/analytics; }; then
     APP_ID=$(tf pipeline/analytics output -raw application_id 2>/dev/null || true)
     APP_NOW=""
@@ -1080,22 +1080,8 @@ if [ -z "$SKIP_ANALYTICS" ]; then
         STOPPED | CREATED) echo "EMR Serverless のアプリの${APP_CHANGE}変える（アプリは ${APP_STATE}）" ;;
         *)
           echo "EMR Serverless のアプリの${APP_CHANGE}変える。アプリが $APP_STATE なので、ジョブを全部止めてからアプリを止める（ジョブは 7-5 で起こし直す）"
-          RUNS=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$APP_ID" \
-            --states SUBMITTED PENDING SCHEDULED RUNNING QUEUED --query 'jobRuns[].id' --output text)
-          for id in $RUNS; do
-            [ "$id" != None ] || continue
-            echo "Spark のジョブ $id を止める"
-            aws emr-serverless cancel-job-run --region "$REGION" --application-id "$APP_ID" --job-run-id "$id" >/dev/null
-          done
-          LEFT=""
-          for i in $(seq 1 36); do  # 止まるまで最大 3 分
-            LEFT=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$APP_ID" \
-              --states SUBMITTED PENDING SCHEDULED RUNNING QUEUED CANCELLING --query 'jobRuns[].id' --output text)
-            [ "$LEFT" != None ] || LEFT=""
-            [ -n "$LEFT" ] || break
-            sleep 5
-          done
-          [ -z "$LEFT" ] || die "アプリの設定を変える前に止めた Spark のジョブ（${LEFT}）が 3 分たっても止まらない。$(tf pipeline/analytics output -raw list_job_runs_command) で見て、止まってから打ち直す"
+          emr_cancel_jobs "$APP_ID" 36 \
+            || die "アプリの設定を変える前に止めた Spark のジョブ（${EMR_JOBS_LEFT}）が 3 分たっても止まらない。$(tf pipeline/analytics output -raw list_job_runs_command) で見て、止まってから打ち直す"
           for i in $(seq 1 36); do  # STOPPED になるまで最大 3 分（STARTING から STARTED になったものにも stop-application を打ち直す）
             APP_STATE=$(aws emr-serverless get-application --region "$REGION" --application-id "$APP_ID" --query application.state --output text)
             case "$APP_STATE" in
