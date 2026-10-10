@@ -141,4 +141,5 @@
 - [ ] ACL の無いトピックに SCRAM ユーザーが書けないようにする（`traps` には ACL が無く、`auto.create.topics.enable=true` と `allow.everyone.if.no.acl.found` の既定で、どの SCRAM ユーザーも書ける。031 より前からの穴で、2026-10-10 の 031 の cold review の Should fix。MSK では未確認）
 - [ ] Temporal の履歴を RDS に残す（いまは `server start-dev` で SQLite がコンテナの中にあり、Fargate のタスクが入れ替わると進行中のワークフローの状態が消える（`docs/workflow.md`）。Nautobot の RDS for PostgreSQL（`pipeline/nautobot/database.tf`）に `temporal` と `temporal_visibility` のデータベースを足して `temporal server` を本番モードで起動する案が最小。2026-10-10 にユーザーが BACKLOG 入りと「PoC は RDS for PostgreSQL。Aurora は本番で」を決めた。FAQ 12 に 2 問）
 - [ ] Spark のジョブだけ止めて起こし直す手順を作る（`ops/` に止めるスクリプト 1 本と deploy.md。戻すのは `ops/up.sh`。035 で `cancel-job-run` の方式にしたが、手で打つしかない）
-- [ ] Bedrock の Knowledge Base のロールが読める S3 の範囲を、assets バケットの Knowledge Base の置き場（prefix `kb/`）に絞る（いまは `S3Read` がバケット全体 `/*`。035 のコールドレビュー Round 1 の Nit 1）
+- [ ] Bedrock の Knowledge Base のロールが読める S3 の範囲を、assets バケットの Knowledge Base の置き場（prefix `knowledge-base/`）に絞る（いまは `S3Read` がバケット全体 `/*`。035 のコールドレビュー Round 1 の Nit 1）
+- [ ] assets バケットの Knowledge Base の置き場の prefix を `kb/` から `knowledge-base/` に改名する（略語を使わない。2026-10-10 のユーザー決定。Terraform のリソース識別子、IAM ロール名 `<prefix>-kb`、index 名 `kb-index` は据え置き） → fix/knowledge-base-prefix
