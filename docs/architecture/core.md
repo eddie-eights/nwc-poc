@@ -90,6 +90,7 @@ Neptune Analytics に SG は無い。VPC の中の口を持たず、インター
 
 - lab の EC2 が転送する流れは、SG が見る IP が lab の EC2 ではなく機器の管理 IP になる。
   そこで、相手の ENI の IP が見える側だけを SG の参照で書き（lab の送信は telegraf_dialout_nlb へ、lab の受信は gnmic から）、反対側は管理ネットワークの CIDR で書く。
+  例外は EC2 自身が試しに送る NetFlow / sFlow / syslog（2055 / 6343 / 5140 の udp）。両側に書く（telegraf_dialout_nlb は lab の SG からも受ける。162/udp の trap は lab の SG から受けない）。
 - 開けていないもの:
   - Temporal の gRPC 7233〜7239 と membership 6933〜6939 をタスクの外へ（開けるのは workflow の SG の自分宛てだけ。UI とワーカーは同じタスクの `127.0.0.1` / `localhost`）
   - Splunk の管理 API 8089 の外から（splunk の SG どうしだけ開ける）
@@ -107,3 +108,4 @@ Neptune Analytics に SG は無い。VPC の中の口を持たず、インター
 - 2026-10-04: Neptune を Neptune Database から Neptune Analytics に置き換えた。
 - 2026-10-08（012）: 本番の Cisco の MDT の dial-out の行（`MDT_SOURCE_CIDRS` の CIDR → telegraf_dialout_nlb の 57000/tcp）を受け口ごと外した（戻し方は [collection.md](../collection.md)）。
 - 2026-10-09（013）: 取りにいく側の Telegraf（`telegraf_dialin`）を gnmic に置き換え、SNMP のポーリング（161/udp）の行は外した。
+- 2026-10-10（037）: lab の EC2 から NLB（telegraf_dialout_nlb）の 5140/udp の受信を足した（EC2 自身が `logger` で試せるように。機器の syslog は前から CIDR で受ける）。

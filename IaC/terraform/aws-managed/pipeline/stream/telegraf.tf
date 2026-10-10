@@ -17,7 +17,8 @@
 # タスクの IP は作り直すと変わるので、DNAT の宛先は変わらない NLB の IP にする（SSM の /<接頭辞>/telegraf-address）。
 # NLB は UDP の送り元の IP を残す（UDP のターゲットは client IP preservation が既定で、Spark とエージェントは送り元の IP で機器を引く）。
 # SG は NLB（telegraf_dialout_nlb）とタスクごとに別々で、ルールは IaC/terraform/aws-managed/base/core の security_groups.tf の通信の表にある:
-#   telegraf_dialout_nlb  管理ネットワークの CIDR から udp 162 / 5140 / 2055 / 6343 を受け（送り元が機器の管理 IP のまま）、telegraf_dialout へ udp 1162 と
+#   telegraf_dialout_nlb  管理ネットワークの CIDR から udp 162 / 5140 / 2055 / 6343 を受け（送り元が機器の管理 IP のまま）、lab の SG からも udp 5140 / 2055 / 6343 を
+#                         受け（lab の EC2 自身が試しに送るぶん。trap の 162 は lab の SG から受けない）、telegraf_dialout へ udp 1162 と
 #                         tcp 8080、syslog_ng へ udp 5140 と tcp 5140、goflow2 へ udp 2055 / 6343 と tcp 8081 を送る（tcp はどれもヘルスチェック）
 #   telegraf_dialout      NLB の SG から受け（送り元の IP が残っても、NLB の SG を参照したルールで通る）、MSK の 9098・エンドポイントと S3 の 443 へ送る
 #   gnmic                 gnmic.tf の注記
