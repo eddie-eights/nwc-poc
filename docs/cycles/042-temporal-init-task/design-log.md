@@ -10,3 +10,13 @@
 - **`update-schema` はサーバーから外し、init だけがやる。** 2 か所で同じことをすると「どちらが正か」が消える。`up.sh` を打つたびに init が走るので、イメージの版を上げたときもそこで上がる。
 - **共通部分（log / trap / TLS の導出 / DB 待ち）は `common.sh` に切り出す。** 2 本のスクリプトに同じ 30 行を持たせると 040 のような直しが二重になる。
 - **healthCheck と ECS Exec はそのまま。** 渡さなくなるので経路として消える。healthCheck を `temporal` CLI 以外に替える理由は無い。
+
+## Round 1 の補正（2026-10-10。PM(fable-5-1)）
+
+エンジニアのセルフレビュー（`build.md` Round 1）の Should 2〜5 を design に取り込んだ（いずれも correctness / runtime / data loss なので自動で直す）。ユーザーの判断は要らない。
+
+- Should 2: 待ちの比較を「一致」から「DB ≥ イメージ」に変えた。Temporal 本体が DB の新しい側を許すのに entrypoint だけ拒むと、イメージを戻したときに起きない。
+- Should 3: ループを 60 回（600 秒）から 30 回（300 秒 = startPeriod）に短くし、毎回の log に init のログの案内を入れた。ECS が約 360 秒で止めるので 600 秒のループの最後の行は出ない。
+- Should 4: psql の失敗時に stderr の 1 行目を log に出す。
+- Should 5: `run_temporal_init` が前の init を `list-tasks` で見て止まるのを待つ。
+- Must 1（タスクのロールの SSM の Deny）は design の検証 1 に取り込んだ。
