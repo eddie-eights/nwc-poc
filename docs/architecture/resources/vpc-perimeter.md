@@ -59,7 +59,8 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
 | telegraf_dialout_nlb | telegraf_dialout | 1162/udp、8080/tcp | trap の転送と NLB のヘルスチェック |
 | telegraf_dialout_nlb | syslog_ng | 5140/udp、5140/tcp | syslog の転送と NLB のヘルスチェック |
 | telegraf_dialout_nlb | goflow2 | 2055/udp、6343/udp、8081/tcp | NetFlow・sFlow の転送と NLB のヘルスチェック |
-| lab の管理ネットワーク（203.0.113.0/24）、lab | telegraf_dialout_nlb | 162/udp、5140/udp、2055/udp、6343/udp | 機器の trap・syslog・NetFlow・sFlow（lab の EC2 が DNAT する。NetFlow / sFlow / syslog は lab の EC2 から試しに送る分も） |
+| lab の管理ネットワーク（203.0.113.0/24） | telegraf_dialout_nlb | 162/udp、5140/udp、2055/udp、6343/udp | 機器の trap・syslog・NetFlow・sFlow（lab の EC2 が DNAT するので送り元は機器の IP のまま） |
+| lab | telegraf_dialout_nlb | 2055/udp、6343/udp、5140/udp | lab の EC2 のホストが自分の IP から試しに送る NetFlow・sFlow・syslog（`ops/netflow_send.py`、`logger`）。NLB は trap（162/udp）を lab の SG からは受けない（lab の SG の 162 は送る側だけ。NLB の 162 が受けるのは送り元が機器の管理 IP のままの DNAT だけ） |
 | gnmic | lab の管理ネットワーク | 57400/tcp | gNMI の購読 |
 
 ## 知見

@@ -13,13 +13,14 @@
 #   trap        機器 → lab の EC2 の 162/udp → DNAT → 下の NLB の 162 → タスクの 1162（非 root は 1024 未満で待てない）
 #   syslog      機器 → lab の EC2 の 5140/udp → DNAT → NLB の 5140 → syslog-ng のタスクの 5140
 #   NetFlow / sFlow  機器 → lab の EC2 の 2055 / 6343（udp）→ DNAT → NLB の同じ番号 → GoFlow2 のタスクの同じ番号
-#               （lab の SR Linux は NetFlow を送れない。試すときは lab の EC2 のホストから ops/netflow_send.py で NLB へ送る）
+#               （lab の SR Linux は NetFlow を出さない。試すときは lab の EC2 のホストから ops/netflow_send.py で NLB へ直接送る。
+#               syslog も同じく lab の EC2 のホストから logger で NLB へ直接送れる（AWS では未確認）。docs/troubleshooting.md の「正しい送り方」の 2 つ目）
 # タスクの IP は作り直すと変わるので、DNAT の宛先は変わらない NLB の IP にする（SSM の /<接頭辞>/telegraf-address）。
 # NLB は UDP の送り元の IP を残す（UDP のターゲットは client IP preservation が既定で、Spark とエージェントは送り元の IP で機器を引く）。
 # SG は NLB（telegraf_dialout_nlb）とタスクごとに別々で、ルールは IaC/terraform/aws-managed/base/core の security_groups.tf の通信の表にある:
 #   telegraf_dialout_nlb  管理ネットワークの CIDR から udp 162 / 5140 / 2055 / 6343 を受け（送り元が機器の管理 IP のまま）、lab の SG からも udp 5140 / 2055 / 6343 を
-#                         受け（lab の EC2 自身が試しに送るぶん。trap の 162 は lab の SG から受けない）、telegraf_dialout へ udp 1162 と
-#                         tcp 8080、syslog_ng へ udp 5140 と tcp 5140、goflow2 へ udp 2055 / 6343 と tcp 8081 を送る（tcp はどれもヘルスチェック）
+#                         受け（lab の EC2 自身が試しに送るぶん。NLB は trap の 162 を lab の SG からは受けない。lab の SG の 162 は送る側だけ）、
+#                         telegraf_dialout へ udp 1162 と tcp 8080、syslog_ng へ udp 5140 と tcp 5140、goflow2 へ udp 2055 / 6343 と tcp 8081 を送る（tcp はどれもヘルスチェック）
 #   telegraf_dialout      NLB の SG から受け（送り元の IP が残っても、NLB の SG を参照したルールで通る）、MSK の 9098・エンドポイントと S3 の 443 へ送る
 #   gnmic                 gnmic.tf の注記
 # OSS 版（cycle 005。IaC/terraform/oss/pipeline/stream）はこのファイルをシンボリックリンクで使う。書き先は ECS の Kafka（kafka-1〜3 の 9092、認証なし）で、
