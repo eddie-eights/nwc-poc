@@ -242,7 +242,7 @@ AWS の料金表から root ごとに数えたパターン別の値は、下の�
 - **Nautobot は PIPELINE に付く。**
   `PIPELINE=1` なら `ops/up.sh` が `NAUTOBOT` をいつも 1 にする（作らないのは `SKIP_STREAM` と `SKIP_GRAPH` を両方付けた回だけ）。RDS もここに入る。
 - **WORKFLOW が足すもの。**
-  時間課金は Temporal のタスク（0.049）と、エンドポイント 3 本（`sqs` `bedrock-agentcore.gateway` `athena`。0.042）。エンドポイントの分がタスクとほぼ同じだけ足される。SQS のキューは使った分だけ。
+  時間課金は Temporal のタスク（0.049）と、エンドポイント 3 本（`sqs` `bedrock-agentcore.gateway` `athena`。0.042）。エンドポイントの分がタスクとほぼ同じだけ足される。SQS のキューは使った分だけ。初期化のタスク（0.25 vCPU / 0.5 GB）は `ops/up.sh` のたびに数分だけ走って止まるので、待機の時間課金には入れない。
 
 #### インターフェース型エンドポイントの本数
 
@@ -291,7 +291,7 @@ AWS の料金表から root ごとに数えたパターン別の値は、下の�
 | 7-4b | ECS の Splunk がヘルスチェックで HEALTHY になるのを待つ（最大 20 分。Spark のジョブは起動してすぐ HEC に送るので）。クラスターの待ち方は下の「手順ごとの補足」 |
 | 7-5 | Spark のジョブが動いていなければ起こす |
 | 8-3 | Web を再起動（stream・graph・Nautobot のどれかを作るとき）。Kafbat UI もここで起きる（Web のユニットの `Wants=`。止まっていれば起こし、動いていればそのまま） |
-| 8-5 | `IaC/terraform/aws-managed/workflow`（`WORKFLOW=1` のとき）。Temporal UI（`http://localhost:8233/`）を開くコマンドを表示 |
+| 8-5 | `IaC/terraform/aws-managed/workflow`（`WORKFLOW=1` のとき）。apply の直後に Temporal の初期化のタスク `<prefix>-workflow-init`（ロール・DB・スキーマ。初回はイメージの取得とスキーマで 2〜5 分）を `run-task` で起こし、exitCode 0 で止まるのを待つ（0 以外なら止まった理由と init のログの見方を出して止まる。cycle 042）。Temporal UI（`http://localhost:8233/`）を開くコマンドを表示 |
 | 8-6 | Web を再起動（`WORKFLOW=1` のとき） |
 | 9 | Runtime のロググループの保持を 7 日にする（`AGENT=1` のとき） |
 | 9-2 | Grafana のアラートルールが評価でエラーになっていないかを、Web の EC2 から Grafana のルールの API を読んで確かめる（最大 5 分。Grafana を今回作ったときと、今回は作らないが前の回の Grafana が残っているとき）。OK でなくても止めず、最後に警告をもう一度出す。あとから確かめ直すのは `ops/check-grafana.sh` |

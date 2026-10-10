@@ -154,8 +154,8 @@ terraform -chdir=IaC/terraform/aws-managed/workflow output -raw worker_logs_comm
 
 | 症状 | 原因と直し方 |
 |---|---|
-| apply の直後に worker も UI も起きない | worker と ui は temporal が HEALTHY（namespace `default` ができた）になるまで待つ。temporal の初期化（ロールと DB、スキーマ）に 1〜3 分かかる |
-| temporal が HEALTHY にならない（タスクが入れ替わり続ける） | 上のログで `entrypoint-rds:` の行を見る。`に繋がらない` なら Nautobot の RDS が無いか SG（`workflow` → `nautobot_db` の 5432）、psql のエラーならパスワード（SSM の `/<prefix>/temporal/db-password` と `/<prefix>/nautobot/db-password`） |
+| apply の直後に worker も UI も起きない | worker と ui は temporal が HEALTHY（namespace `default` ができた）になるまで待つ。temporal のサーバーは初期化のタスク（ロールと DB、スキーマ。2〜5 分）が終わるまで待ってから起きる |
+| temporal が HEALTHY にならない（タスクが入れ替わり続ける） | 上のログで `entrypoint-rds:` の行を見る。`に繋がらない` なら Nautobot の RDS が無いか SG（`workflow` → `nautobot_db` の 5432）。`初期化のタスク（… <接頭辞>-workflow-init）を待つ（i/60）` が続いて `60 回待っても終わらない` で止まるなら、初期化のタスクが走っていないか失敗している: `ops/up.sh` の 8-5 の出力を見るか、init のログを `terraform -chdir=IaC/terraform/aws-managed/workflow output -raw init_logs_command` のコマンドで見る（`init-rds:` の行。psql のエラーならパスワード: SSM の `/<prefix>/temporal/db-password` と `/<prefix>/nautobot/db-password`）。手で `terraform apply` だけした環境では init が走らないので、`ops/up.sh` を打ち直す |
 | 承認を押しても `pending` のまま | 反映まで数秒〜20 秒かかる。「更新」を押す。1 分たっても変わらなければ、worker のログに `decide <proposal_id>` が出ているか、DLQ `<prefix>-decisions-dlq` に溜まっていないかを見る |
 | 承認を押したら `expired` になった | ワークフローがもう無かった（Temporal の履歴が無くなった。cycle 036 より前はタスクが入れ替わると消えた）。処置は打たれない。まだ落ちていれば、次の通知（Grafana の送り直しは 4 時間ごと）で別の修復案が出る |
 | 承認しても approved のまま進まない（UI で `TimeoutError`） | ワーカーのイメージが古い。`deploy.env` の `IMAGE_TAG` を上げて `ops/up.sh` |

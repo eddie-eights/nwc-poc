@@ -45,7 +45,8 @@ resource "aws_iam_role_policy" "execution_neo4j" {
   })
 }
 
-# Temporal のサーバー（cycle 036）: secrets の POSTGRES_PWD（ロール temporal）と NAUTOBOT_DB_PASSWORD（RDS の master。entrypoint がロールと DB を作るときだけ使う）。
+# Temporal（cycle 036）: 実行ロールは init のタスクとサーバーのタスクの両方で使う（ecs.tf）。init のタスクが POSTGRES_PWD（ロール temporal）と
+# NAUTOBOT_DB_PASSWORD（RDS の master。ロールと DB を作るときだけ使う）を、サーバーのタスクが POSTGRES_PWD だけを読む（cycle 042）。
 # どちらも ops/up.sh が作る SSM の SecureString（aws/ssm キー）
 resource "aws_iam_role_policy" "execution_db_passwords" {
   name = "${local.name_prefix}-workflow-exec-db"
@@ -141,6 +142,15 @@ data "aws_iam_policy_document" "task" {
     sid       = "Parameters"
     actions   = ["ssm:GetParameter"]
     resources = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.param_prefix}/*"]
+  }
+
+  # サーバーのタスク（temporal / worker / ui と ECS Exec のシェル）から Nautobot の SSM（RDS の master のパスワードほか）を読ませない（cycle 042）。
+  # 上の Parameters は /<prefix>/* を許すので明示的に拒む。master のパスワードは init のタスクが実行ロールの secrets で受け取るだけ
+  statement {
+    sid       = "DenyNautobotParameters"
+    effect    = "Deny"
+    actions   = ["ssm:GetParameter*"]
+    resources = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.param_prefix}/nautobot/*"]
   }
 
   # Apply: `sudo lab <cmd>` を lab EC2 で打つ（lab が無いときは statement ごと無い）

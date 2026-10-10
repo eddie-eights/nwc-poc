@@ -117,6 +117,8 @@ elif (svc, op) == ("ec2", "reboot-instances"):
 elif (svc, op) == ("ecs", "wait"):  # FAKE_ECS_UNSTABLE のサービスは安定しない（待ちが切れる）
     if set(multi("--services")) & set(os.environ.get("FAKE_ECS_UNSTABLE", "").split(",")):
         fail("Waiter ServicesStable failed: Max attempts exceeded", 255)
+elif (svc, op) == ("ecs", "run-task"):  # Temporal の初期化のタスク（ops/up-common.sh の run_temporal_init。cycle 042）
+    print(f'arn:aws:ecs:ap-northeast-1:123456789012:task/{opt("--cluster")}/init-t1\t0')
 elif (svc, op) == ("ecs", "list-tasks"):
     print(f'arn:aws:ecs:ap-northeast-1:123456789012:task/{opt("--cluster")}/{opt("--service-name")}-t1')
 elif (svc, op) == ("ecs", "describe-tasks"):
@@ -124,6 +126,8 @@ elif (svc, op) == ("ecs", "describe-tasks"):
         print("HEALTHY")
     elif query and query.startswith("tasks[0].attachments[0].details"):
         print("10.0.1.23")
+    elif query == "tasks[0].[lastStatus, containers[0].exitCode, stopCode, stoppedReason]":
+        print("STOPPED\t0\tEssentialContainerExited\tEssential container in task exited")
     else:
         log({"unknown": "query " + str(query)}); fail("unknown query", 255)
 elif (svc, op) == ("ecs", "update-service"):
@@ -1636,7 +1640,9 @@ check("ops/oss/up.sh（81）: 9-2 で analytics の出力 grafana_service_name �
       and "NG: IaC/terraform/oss/pipeline/analytics の出力 grafana_service_name が空" in p4.stderr
       and (p4.stdout + p4.stderr).count(_skip_oss) == 2
       and not [c for c in cs4 if grafana_sent(c)]
-      and not [c for c in cs4 if is_aws(c, "ecs", "wait") and ("" in multi_of(c["args"], "--services") or not multi_of(c["args"], "--services"))]
+      # services-stable だけを見る（8 の run_temporal_init の tasks-stopped は --services を取らない。cycle 042）
+      and not [c for c in cs4 if is_aws(c, "ecs", "wait", "services-stable") and ("--services" not in c["args"] or "" in multi_of(c["args"], "--services")
+                                                                                   or not multi_of(c["args"], "--services"))]
       and not [c for c in cs4 if is_aws(c, "ecs", "wait", "grafana")])
 check("ops/oss/up.sh（81）: 7-4b の analytics のクラスターの名前も tf_output で読み、読めない・空なら 7-4b で止まる（9-2 もこのクラスター）。"
       "9-2 のサービスの名前は読めなくても止めず、grafana_skip_warn で警告する",
