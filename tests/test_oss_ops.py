@@ -373,6 +373,18 @@ if rest[:2] == ["state", "show"]:
         "    }",
         "}"]))
     sys.exit(0)
+if rest[:1] == ["show"]:  # state 全体（up.sh の check_sg_descriptions。cycle 043）。workload の SG は載せない（守りは通す）。形は上の state show と同じ
+    print("\n".join([
+        "# aws_vpc.this:",
+        'resource "aws_vpc" "this" {',
+        '    arn                                  = "arn:aws:ec2:ap-northeast-1:123456789012:vpc/vpc-0show"',
+        '    cidr_block                           = "10.0.0.0/16"',
+        '    id                                   = "vpc-0show"',
+        "    tags                                 = {",
+        '        "Name" = "x-vpc"',
+        "    }",
+        "}"]))
+    sys.exit(0)
 if verb == "apply":
     print("Apply complete! Resources: 1 added, 0 changed, 0 destroyed.")
     sys.exit(0)
@@ -521,6 +533,9 @@ for base in ("IaC/terraform/aws-managed", "IaC/terraform/oss"):
         os.makedirs(os.path.join(REPO, base, r))
         with open(os.path.join(REPO, base, r, "terraform.tfstate"), "w") as f:
             f.write("{}")
+# up.sh の check_sg_descriptions（cycle 043）は base/core の security_groups.tf から SG の description を読む。OSS 版のはマネージド版へのシンボリックリンク（本物と同じ形）
+shutil.copy(os.path.join(ROOT, "IaC/terraform/aws-managed/base/core/security_groups.tf"), os.path.join(REPO, "IaC/terraform/aws-managed/base/core"))
+os.symlink(os.readlink(os.path.join(ROOT, "IaC/terraform/oss/base/core/security_groups.tf")), os.path.join(REPO, "IaC/terraform/oss/base/core/security_groups.tf"))
 
 def fake_env(extra=None):
     env = {"PATH": BIN + os.pathsep + os.environ["PATH"], "HOME": TMP, "TMPDIR": TMP, "FAKE_LOG": LOG, "FAKE_INV": INV}
@@ -1204,6 +1219,9 @@ check("ops/oss/up.sh は base/core の state に古い取りにいく側の Tele
       "（マネージド版の ops/up.sh と同じ守り。SG のキーを変えると作り直しで、付けたままでは消せない）",
       0 <= pos("""grep -qxF 'aws_security_group.workload["telegraf_dialin"]'""") < pos('log "1. ECR リポジトリ')
       and '[ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ] && { tf_init pipeline/stream;' in up and "先に ops/oss/down.sh で消す" in up)
+check("ops/oss/up.sh は check_sg_descriptions（description を変えた SG の守り。ops/up-common.sh）を tf_init base/core の後、ECR より前に 1 回呼ぶ（マネージド版と同じ。cycle 043）",
+      len(re.findall(r"^\s*check_sg_descriptions\s*$", up, re.M)) == 1
+      and 0 <= pos("tf_init base/core") < pos("\n  check_sg_descriptions\n") < pos('log "1. ECR リポジトリ'))
 _spark_tf = read("IaC/terraform/oss/pipeline/analytics/spark.tf")
 check("Spark のサービスは Terraform では 0 台で作り（desired_count = 0、あとの変更は見ない）、up.sh が OpenSearch・VictoriaMetrics・Splunk を待ったあとで 1 台にする",
       re.search(r"^\s*desired_count\s*=\s*0$", _spark_tf, re.M) and "ignore_changes = [desired_count]" in _spark_tf

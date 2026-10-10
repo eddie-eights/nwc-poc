@@ -21,6 +21,61 @@ tf_apply() {  # tf_apply <ルート> [-var 名前=値 …]
 has_resources() {  # has_resources <ルート>  state があり、リソースが 1 つ以上載っている（init 済みが前提）
   [ -f "$TF_DIR/$1/terraform.tfstate" ] && [ -n "$(tf "$1" state list 2>/dev/null)" ]
 }
+# description を変えた SG（cycle 043）。aws_security_group.workload は description を変えると作り直し（name が固定で create_before_destroy を付けられない）で、
+# ほかの SG のルールが古い SG を referenced_security_group_id で参照したまま（参照側のルールは新しい SG を作った後に in-place で更新される）なので、
+# 付けるルートだけ消しても古い SG の destroy は DependencyViolation で止まる（先に消したルールだけが無い状態になる）。通るのは down.sh の全消しだけ。
+# state にある workload の SG 全部の description をコードと比べるので、キーの表は持たない（キーを変えた古い SG は up.sh の既存の守りの担当）
+sg_descriptions_in_code() {  # sg_descriptions_in_code  コードの SG の description を <キー>\t<文言> で出す（security_groups.tf の local.security_groups）。
+  # OSS 版（oss.auto.tfvars が project = "nwc-oss"。oss.tf の local.oss と同じ判定）は oss.tf の local.oss_security_groups が同じキーを上書きし、キーを足す
+  local dir="$TF_DIR/base/core" oss=""
+  if [ -f "$dir/oss.auto.tfvars" ] && grep -q '^project *= *"nwc-oss"' "$dir/oss.auto.tfvars"; then oss="$dir/oss.tf"; fi
+  awk '
+    FILENAME != prev { prev = FILENAME; file++; inb = 0 }
+    file == 1 && $0 == "  security_groups = {" { inb = 1; next }
+    file == 2 && $0 == "  oss_security_groups = {" { inb = 1; next }
+    inb && $0 == "  }" { inb = 0; next }
+    inb && match($0, /^    [A-Za-z0-9_]+ += "/) && substr($0, length($0)) == "\"" {
+      key = substr($0, 5); sub(/ .*/, "", key)
+      if (!(key in desc)) order[++n] = key
+      desc[key] = substr($0, RLENGTH + 1, length($0) - RLENGTH - 1); next
+    }
+    inb && $0 !~ /^ *(#|$)/ { bad = bad "\n  " FILENAME ": " $0 }  # 読めない行（行末のコメント、式など）は黙って飛ばさない（そのキーを見逃す）
+    END {
+      if (bad != "") { printf "NG: local.security_groups / oss_security_groups の読めない行:%s\n", bad > "/dev/stderr"; exit 1 }
+      for (i = 1; i <= n; i++) printf "%s\t%s\n", order[i], desc[order[i]]
+    }
+  ' "$dir/security_groups.tf" ${oss:+"$oss"}
+}
+sg_descriptions_in_state() {  # sg_descriptions_in_state < <terraform show -no-color の出力>  state の SG の description を <キー>\t<文言> で出す。
+  # 見出し「# aws_security_group.workload["<キー>"]:」から行頭の } までのブロックの、4 空白ちょうどの description（SG 本体の属性）の最初の 1 つ。
+  # 無ければ <キー>\t（空）。ほかのリソース（SG のルールの description も 4 空白）は別の見出しのブロックなので混ざらない
+  awk '
+    function flush() { if (key != "") printf "%s\t%s\n", key, (found ? d : ""); key = ""; found = 0 }
+    /^# / {
+      flush()
+      if (index($0, "# aws_security_group.workload[\"") == 1 && (e = index($0, "\"]:")) > 0) key = substr($0, 32, e - 32)
+      next
+    }
+    key != "" && $0 == "}" { flush(); next }
+    key != "" && !found && match($0, /^    description += "/) && substr($0, length($0)) == "\"" {
+      d = substr($0, RLENGTH + 1, length($0) - RLENGTH - 1); found = 1
+    }
+    END { flush() }
+  '
+}
+check_sg_descriptions() {  # base/core の state の SG の description がコードと違えば die（tf_init base/core 済みが前提）。ルートの state は見ない
+  local code shown diffs
+  code=$(sg_descriptions_in_code) && [ -n "$code" ] \
+    || die "$TF_DIR/base/core/security_groups.tf から SG の description が読めない（local.security_groups の形が変わったなら ops/up-common.sh の sg_descriptions_in_code を直す）。まだ何も作っていない"
+  shown=$(tf base/core show -no-color) || die "$TF_DIR/base/core の state が読めない（terraform show の失敗。上のエラー）。まだ何も作っていない"
+  # コードに無いキー（キーを変えた古い SG）は飛ばす。違うもの（空も含む）を「<キー>（state「…」/ コード「…」）」にして「、」でつなぐ
+  diffs=$(printf '%s\n' "$shown" | sg_descriptions_in_state | CODE="$code" awk -F'\t' '
+    BEGIN { n = split(ENVIRON["CODE"], lines, "\n"); for (i = 1; i <= n; i++) { t = index(lines[i], "\t"); if (t) c[substr(lines[i], 1, t - 1)] = substr(lines[i], t + 1) } }
+    ($1 in c) && $2 != c[$1] { out = out (out == "" ? "" : "、") $1 "（state「" $2 "」/ コード「" c[$1] "」）" }
+    END { printf "%s", out }
+  ')
+  [ -z "$diffs" ] || die "$TF_DIR/base/core の state の SG の description がコードと違う: ${diffs}。description を変えると SG は作り直しで、ほかの SG のルールが古い SG を参照したままなので、付けるルートだけ消しても消せない（DependencyViolation）。先に $OPS_DIR/down.sh で全部消してから $OPS_DIR/up.sh。まだ何も作っていない"
+}
 tf_output() {  # tf_output <ルート> <出力名>  出力を 1 つ読んで出す。読めない・空なら die（赤い NG: の行）。$( ) の中の die はサブシェルだけを抜けるので、
   # 止めるかどうかは呼ぶ側が決める（止めるなら X=$(tf_output …) || exit 1、止めないなら if X=$(tf_output …); then …）
   local v
