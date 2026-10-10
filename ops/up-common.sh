@@ -74,7 +74,11 @@ check_sg_descriptions() {  # base/core の state の SG の description がコ�
     ($1 in c) && $2 != c[$1] { out = out (out == "" ? "" : "、") $1 "（state「" $2 "」/ コード「" c[$1] "」）" }
     END { printf "%s", out }
   ')
-  [ -z "$diffs" ] || die "$TF_DIR/base/core の state の SG の description がコードと違う: ${diffs}。description を変えると SG は作り直しで、ほかの SG のルールが古い SG を参照したままなので、付けるルートだけ消しても消せない（DependencyViolation）。先に $OPS_DIR/down.sh で全部消してから $OPS_DIR/up.sh。まだ何も作っていない"
+  [ -n "$diffs" ] || return 0
+  # runtime の SG は Runtime の ENI があるあいだ down.sh も残す（ops/down-common.sh の destroy_base_core）ので、ENI が消えるのを待つ一言を足す（internal の守りと同じ）
+  local eni=""
+  case "、$diffs" in *"、runtime（"*) eni="runtime は Runtime の ENI（agentic_ai。最長 8 時間ほど残る）があるあいだ $OPS_DIR/down.sh も残すので、ENI が消えてから $OPS_DIR/down.sh を打つ。" ;; esac
+  die "$TF_DIR/base/core の state の SG の description がコードと違う: ${diffs}。description を変えると SG は作り直しで、ほかの SG のルールが古い SG を参照したままなので、付けるルートだけ消しても消せない（DependencyViolation）。先に $OPS_DIR/down.sh で全部消してから $OPS_DIR/up.sh。${eni}まだ何も作っていない"
 }
 tf_output() {  # tf_output <ルート> <出力名>  出力を 1 つ読んで出す。読めない・空なら die（赤い NG: の行）。$( ) の中の die はサブシェルだけを抜けるので、
   # 止めるかどうかは呼ぶ側が決める（止めるなら X=$(tf_output …) || exit 1、止めないなら if X=$(tf_output …); then …）

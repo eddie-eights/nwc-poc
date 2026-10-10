@@ -1552,8 +1552,21 @@ check(f"check_sg_descriptions: workflow の description が古い（041 より�
       and "コード「Temporal server, UI and worker" in _r[2] and "先に ops/down.sh で全部消してから ops/up.sh" in _r[2]
       and "だけ先に消してもよい" not in _r[2] and _csd_no_root(_r[3]))
 _r = _csd_run(state={**_SG_CODE_DESC, "workflow": _WF_OLD, "telegraf_dialout_nlb": _NLB_OLD})
-check(f"check_sg_descriptions: workflow と telegraf_dialout_nlb の 2 つが古ければ、die の文に両方を出す（いま: rc={_r[0]} {_r[2].strip()!r}）",
-      _r[0] == 1 and "DIE:" in _r[2] and "workflow（" in _r[2] and "telegraf_dialout_nlb（state「Internal NLB in front of the Telegraf dial-out task" in _r[2])
+check(f"check_sg_descriptions: workflow と telegraf_dialout_nlb の 2 つが古ければ、die の文に両方を出す。runtime は違わないので ENI の一言は無い（いま: rc={_r[0]} {_r[2].strip()!r}）",
+      _r[0] == 1 and "DIE:" in _r[2] and "workflow（" in _r[2] and "telegraf_dialout_nlb（state「Internal NLB in front of the Telegraf dial-out task" in _r[2]
+      and "ENI が消えてから" not in _r[2] and "Runtime の ENI" not in _r[2])
+_r = _csd_run(state={**_SG_CODE_DESC, "runtime": "AgentCore Runtime ENIs (terraform/agent)"})
+_eni = "runtime は Runtime の ENI（agentic_ai。最長 8 時間ほど残る）があるあいだ ops/down.sh も残すので、ENI が消えてから ops/down.sh を打つ。"
+check(f"check_sg_descriptions: runtime の description が古い（2026-10-08 より前の OSS 版の state の実物）なら、down.sh も Runtime の ENI があるあいだ runtime の SG を残すので、"
+      f"「ENI が消えてから down.sh」の一言を「まだ何も作っていない」の前に足して die する（cycle 043 Round 3。いま: rc={_r[0]} {_r[2].strip()!r}）",
+      _r[0] == 1 and "DONE" not in _r[1] and "DIE:" in _r[2] and "runtime（state「AgentCore Runtime ENIs (terraform/agent)」" in _r[2]
+      and f"先に ops/down.sh で全部消してから ops/up.sh。{_eni}まだ何も作っていない" in _r[2] and _r[2].count("ENI が消えてから") == 1)
+_r = _csd_run(state={**_SG_CODE_DESC, "workflow": _WF_OLD, "runtime": "AgentCore Runtime ENIs (terraform/agent)"})
+check(f"check_sg_descriptions: runtime がほかのキーと一緒に違っても（先頭でなくても）ENI の一言を 1 回だけ足す（いま: rc={_r[0]} {_r[2].strip()!r}）",
+      _r[0] == 1 and "workflow（" in _r[2] and "、runtime（" in _r[2] and _r[2].count(_eni) == 1)
+_r = _csd_run(state={**_SG_CODE_DESC, "web": "Web EC2 runtime（x)"})
+check(f"check_sg_descriptions: runtime 以外のキーの文言に runtime が入っていても ENI の一言は足さない（キーで判定する。いま: rc={_r[0]} {_r[2].strip()!r}）",
+      _r[0] == 1 and "web（" in _r[2] and "ENI が消えてから" not in _r[2])
 _r = _csd_run(state={**_SG_CODE_DESC, "workflow": None})
 check(f"check_sg_descriptions: state の SG のブロックに description の行が無ければ（空）、違うものとして die する（いま: rc={_r[0]} {_r[2].strip()!r}）",
       _r[0] == 1 and "DIE:" in _r[2] and "workflow（state「」/ コード「Temporal server, UI and worker" in _r[2])
@@ -1611,6 +1624,12 @@ check(f"sg_descriptions_in_code は OSS 版（IaC/terraform/oss。oss.auto.tfvar
       f"（spark は Spark ECS task、kafka がある。いま: {len(_sdc_o)} 件 spark={dict(_sdc_o).get('spark')!r}）",
       dict(_sdc_o) == {**_SG_CODE_DESC, **_SG_OSS_DESC} and len(_sdc_o) == len({**_SG_CODE_DESC, **_SG_OSS_DESC})
       and dict(_sdc_o)["spark"] == _SG_OSS_DESC["spark"] and "kafka" in dict(_sdc_o))
+_ts_csd = [l for l in read("docs", "troubleshooting.md").splitlines() if "state の SG の description がコードと違う" in l]
+check(f"troubleshooting.md の check_sg_descriptions の行は down.sh の全消しを案内し、runtime のときは ENI が消えてから、2026-10-08（48683dd）より前の state は全キーが違うと書く。"
+      f"ルートだけ destroy する案内は無い（cycle 043 Round 3。いま: {len(_ts_csd)} 行）",
+      len(_ts_csd) == 1 and "check_sg_descriptions" in _ts_csd[0] and "`ops/down.sh`（OSS 版は `ops/oss/down.sh`）で全部消してから `ops/up.sh`" in _ts_csd[0]
+      and "ENI が消えてから `ops/down.sh`" in _ts_csd[0] and "2026-10-08（`48683dd`）より前の state" in _ts_csd[0] and "全キーが違う" in _ts_csd[0]
+      and "worker_image_tag=destroy" not in read("docs", "troubleshooting.md") and "だけ先に消してもよい" not in _ts_csd[0])
 _sg_roots = ("agent", "pipeline/analytics", "pipeline/graph", "pipeline/lab", "pipeline/stream", "workflow")
 # stream の MSK の SG は msk.tf で読む（MSK だけのもの。OSS 版のルートに msk.tf は無い。cycle 005）
 _sg_files = {r: ("locals.tf", "msk.tf") if r == "pipeline/stream" else ("locals.tf",) for r in _sg_roots}
