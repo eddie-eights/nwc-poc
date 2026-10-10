@@ -79,6 +79,7 @@
 - `deploy.env` はシェルとして実行しない（値の先頭の `~/` だけ読み替える）。別のファイルを使うなら `DEPLOY_ENV_FILE` にパスを入れる。
 - `SSM_RUN_WAIT`（秒。既定 `1800`）は `deploy.env` のキーではなく、環境変数だけで渡す（`SSM_RUN_WAIT=3600 ops/up.sh`）。`ops/up.sh`・`ops/oss/up.sh`・`ops/check-grafana.sh` が SSM Run Command の結果（cloud-init の待ちを含む）を待つ長さ。
   過ぎたら待つのをやめ、結果を見る `aws ssm get-command-invocation` のコマンドを出す（インスタンスの上のコマンドは止めない）。
+- Claude Code の Bash ツールから `ops/up.sh` / `ops/down.sh` を打つと、SSM Run Command を待つポーリング（`ops/up-common.sh` の `grafana_rules_step` など）がセッションを閉じたあとも孤児のプロセスで残り、`aws` CLI を回し続けて CPU を食うことがある（2026-10-08 に 7 本が約 40 時間残った。締め切りの無い 015 より前のコード）。終わったら `pgrep -fl ops/up-common.sh` で残りを確かめ、あれば `pkill -f ops/up-common.sh` で止める。
 
 ### キーの補足
 
