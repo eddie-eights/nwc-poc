@@ -160,3 +160,13 @@ None
 - Nit 2（workflow の他のロールが `/<prefix>/*` を読める。範囲外・既存）: QUEUE に `- [ ]` で足した。
 - Nit 3〜4（`temporal.md:18` の空セル、`temporal.md:120` / `workflow.md:158` の「apply だけ」の条件）: 直さない。最終報告に載せる。
 - cold reviewer の 2 回目は Round 3 の後（完了判定の直前）に呼ぶ。
+
+## Round 3（2026-10-11。PM(fable-5-1)。cold reviewer は呼んでいない: 中間ラウンド。`build.md` の `## Round 3` のセルフレビュー（opus-5.5 + 反対弁護人 opus xhigh。Must 0 / Should 1 直した / Nit 3）に依った）
+
+- Round 2 の Should 2（`run-task` の `failures` の理由が捨てられる）: **解消を確認した**。pm-042（7ce046f）で `uv run --group dev --group web python tests/test_workflow.py` → `通過 436 / 失敗 0`。bash 3.2 で実装と同じ `IFS=$'\t' read -r task nfail f_arn f_reason f_detail` に `None\t1\tNone\tCapacity is unavailable at this time. Please try again later or in a different availability zone\tNone` を入れ `task=[None] nfail=[1] reason=[Capacity is unavailable …]`、成功の形 `arn:…\t0\tNone\tNone\tNone` で `nfail=[0]` を確認（空白を含む reason が切れない）。
+- 設計からの逸脱（`--query` を `failures[0].[arn, reason, detail]` の入れ子にせず平らに並べた）: 受け入れる。text 出力で入れ子が 2 行に割れるのはエンジニアが偽の ECS エンドポイントで実測（`build.md` Round 3）。design は「`failures[0]` の `arn` / `reason` / `detail` を出す」で、形は指定していない。
+- R3-2（design.md:34 の「ENI の上限は failures にしか出ない」が Fargate では不正確）: design.md の設計方針 2 を直した（PM。Fargate の ENI の不足は `TaskFailedToStart` に出て既存の `describe-tasks` の `die` が拾う）。
+- R3-3（空のフィールドで read がずれる）/ R3-4（run-task 非 0 の die の文面の断定）: Nit のまま。最終報告に載せる。
+- `tests/test_oss_ops.py:121` の偽の run-task の返りが 2 フィールドのまま: 据え置く（`nfail` は 0 で読めて通る。OSS 版の up.sh は 147 の AWS の確認で実物を通す）。
+- 成功の偽の返り 9 か所を 5 フィールドに直した件（指示の範囲外）: 受け入れる。2 フィールドのままだと「件数を末尾で見る」改変が通ってしまう（missing tests）。
+- 次: cold reviewer の 2 回目（完了判定の直前）を呼ぶ。
