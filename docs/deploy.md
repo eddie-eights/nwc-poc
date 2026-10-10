@@ -104,10 +104,10 @@
 #### `SKIP_ANALYTICS`
 
 - 減る -$1.17/h は、Spark のジョブ 3 つ、OpenSearch の OCU、Grafana、Splunk と、エンドポイント `s3tables` / `aps-workspaces` / `sns` / `kinesis-firehose` / OpenSearch Serverless の分。KB を作るなら OpenSearch Serverless の VPC エンドポイント $0.014 は残る。
-- Kafka のトピック `logs` / `flows` / `gnmi` / `metrics` を作る処理と、SASL/SCRAM の収集器のユーザーの ACL も Spark が起動時に入れるものなので動かない。
-- それでも AWS（`SKIP_ANALYTICS=1`）では、ACL が無いまま syslog-ng・GoFlow2・gnmic が MSK に書けた（`allow.everyone.if.no.acl.found` が効いている。認可のエラーは 0）。記録は [2026-10-09 の記録](verification/20261009-aws-managed.md) の「A.」「B.」。
-- `flows` / `logs` / `metrics` はできた（Spark を起こしていないので、書き込みでできたと見ている。推測）。`gnmi` はできなかった（gnmic の on-change の購読から 1 件も書かれていない。原因は確かめていない）。
-- ACL を入れたあとの振る舞いは未確認。
+- Kafka の 5 つのトピック（`traps` も）を作る処理と、SASL/SCRAM の収集器のユーザーの ACL は Spark が起動時に入れるものなので動かない。
+  MSK は `auto.create.topics.enable=false` と `allow.everyone.if.no.acl.found=false`（2026-10-10）なので、トピックは 1 つもできず、syslog-ng・GoFlow2・gnmic・Telegraf は何も書けない
+  （syslog-ng はキューで持ち、ほかは捨てる。[pipeline.md](pipeline.md) の「収集器の ACL」）。収集器が書くところまで見たいなら analytics も作る。
+- 2026-10-09 の AWS（当時は既定の true、`SKIP_ANALYTICS=1`）では、ACL が無いまま syslog-ng・GoFlow2・gnmic が MSK に書け、`flows` / `logs` / `metrics` が書き込みでできていた（`gnmi` はできなかった）。記録は [2026-10-09 の記録](verification/20261009-aws-managed.md) の「A.」「B.」。false にしてからは AWS で未確認。
 
 #### `STORES`
 

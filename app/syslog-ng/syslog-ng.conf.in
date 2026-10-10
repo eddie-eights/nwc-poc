@@ -28,8 +28,8 @@ source s_device {
 };
 
 # ---- Kafka の logs トピックへ（kafka-c() = librdkafka）。MSK では、トピックと SCRAM のユーザーの ACL（WRITE / DESCRIBE）は Spark が起動時に入れる
-# （app/spark/snmp_sinks.py の ensure_topics / ensure_acls）。AWS の文書どおりなら、それまでは Topic authorization failed で書けず（MSK では未確認）、
-# メッセージはキューで持って入ったら書く。
+# （app/spark/snmp_sinks.py の ensure_topics / ensure_acls）。MSK は allow.everyone.if.no.acl.found=false（msk.tf の aws_msk_configuration。2026-10-10）なので、
+# それまでは Topic authorization failed で書けず、メッセージはキューで持って入ったら書く。
 # キューの大きさや再送の設定は既定のまま（書けない間の振る舞いはこの既定で測った。tests/test_collectors.py）。メッセージは Telegraf の device_log の形:
 #   name       device_log
 #   tags       sysName（HOST）/ appname（PROGRAM）/ facility（local7 など）/ severity（err / notice など）/ source（送り元の IP）

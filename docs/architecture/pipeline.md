@@ -42,8 +42,9 @@ flowchart LR
   - タスクから機器の gNMI（57400/tcp）へ直接行く（増やすと同じ機器を 2 重に購読する）。
   - 購読は 5 つ。状態（IF・BGP・IS-IS）は on-change でトピック `gnmi`、カウンター（IF の統計・CPU・メモリ）は 60 秒ごとに `metrics` へ書く。
   - MSK へは syslog-ng・GoFlow2 と同じ SASL/SCRAM（9096）。`gnmi` / `metrics` の ACL は Spark が起動時に入れる。
-  - 2026-10-09 の AWS では ACL の前も `metrics` に書けた。`gnmi` のトピックはできず、原因は確かめていない。
-  - ACL のあとは未確認。根拠は `docs/verification/20261009-aws-managed.md` の「A.」「B.」。
+  - ACL が入るまで書けず、その間の値は捨てる（`allow.everyone.if.no.acl.found=false`。2026-10-10）。
+  - 2026-10-09 の AWS（当時は既定の true）では ACL の前も `metrics` に書けた。`gnmi` のトピックはできず、原因は確かめていない。
+    根拠は `docs/verification/20261009-aws-managed.md` の「A.」「B.」。false にしてからは AWS で未確認。
   - 購読先の一覧と機器の認証情報は SSM のパラメータを ECS の secrets で受ける（[pipeline.md](../pipeline.md) の「gnmic と Telegraf に入る」）。
 - 機器の syslog と NetFlow / sFlow は、Telegraf ではなく別のサービスで受ける（`IaC/terraform/aws-managed/pipeline/stream/collectors.tf`）。
   - 同じクラスター `<prefix>-telegraf` と同じ NLB の後ろにいる。どちらも 1 タスク。

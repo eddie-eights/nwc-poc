@@ -50,8 +50,8 @@ resource "aws_iam_role_policy" "emr" {
       {
         Sid    = "KafkaTopics"
         Effect = "Allow"
-        # CreateTopic: Spark が起動時に無いトピックを作る（app/spark/snmp_sinks.py の ensure_topics。Telegraf が最初の trap を出すまで traps が無く、
-        # SASL/SCRAM の syslog-ng / GoFlow2 には CREATE の ACL を付けないので、AWS の文書どおりなら logs / flows を自動で作れない）
+        # CreateTopic: Spark が起動時に無いトピックを作る（app/spark/snmp_sinks.py の ensure_topics）。MSK は auto.create.topics.enable=false
+        # （IaC/terraform/aws-managed/pipeline/stream/msk.tf の aws_msk_configuration。2026-10-10）なので、5 つのトピックを作るのはこのロールと Kafbat UI だけ
         Action   = ["kafka-cluster:DescribeTopic", "kafka-cluster:ReadData", "kafka-cluster:CreateTopic"]
         Resource = local.topic_arns
       },

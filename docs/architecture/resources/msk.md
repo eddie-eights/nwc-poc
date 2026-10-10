@@ -17,15 +17,14 @@ Telegraf・gnmic・syslog-ng・GoFlow2 が集めた機器のデータを、い�
 | 認証と暗号 | IAM 認証（9098）と SASL/SCRAM（9096。syslog-ng と GoFlow2 と gnmic だけ）。クライアントとの間もブローカー同士も TLS | `msk.tf` の `client_authentication`、`encryption_info` |
 | SCRAM の資格情報 | Secrets Manager の `AmazonMSK_<prefix>-syslog-ng` / `-goflow2` / `-gnmic`（コレクターごとに 1 本、ユーザー名はコレクター名。cycle 031。名前は `AmazonMSK_` で始める決まり）。顧客管理の KMS の鍵 `alias/<prefix>-msk-scram` で暗号化する（MSK は既定の鍵の secret を受け付けない）。作り方と消し方は表の下 | `ops/up-common.sh` の `ensure_msk_scram_key` / `ensure_msk_scram_secret`、`ops/down-common.sh` の `delete_msk_scram` / `delete_msk_scram_key`、`msk.tf` の `aws_msk_scram_secret_association` |
 | SCRAM のユーザーの ACL | ユーザーごとに自分のトピックだけ: `User:syslog-ng` → `logs`、`User:goflow2` → `flows`、`User:gnmic` → `gnmi` / `metrics` の `WRITE` と `DESCRIBE`（`LITERAL`、host `*`。cycle 031）。`CREATE` と CLUSTER の ACL は付けない。Spark のジョブが起動のたびに入れる（同じものを入れても変わらない）。ACL を入れる前と入れたあとの振る舞いは表の下 | `app/spark/snmp_sinks.py` の `ensure_acls`、EMR の実行ロールの `kafka-cluster:AlterCluster`（`IaC/terraform/aws-managed/pipeline/analytics/access.tf`） |
-| ブローカーの設定 | `auto.create.topics.enable=true`、`default.replication.factor` = ブローカーの数、`min.insync.replicas` = その 1 つ下、`num.partitions=2`、`log.retention.hours=24`。内部トピックは表の下 | `msk.tf` の `aws_msk_configuration` |
+| ブローカーの設定 | `allow.everyone.if.no.acl.found=false`、`auto.create.topics.enable=false`（2026-10-10。それまでは既定の true と true）、`default.replication.factor` = ブローカーの数、`min.insync.replicas` = その 1 つ下、`num.partitions=2`、`log.retention.hours=24`。内部トピックは表の下 | `msk.tf` の `aws_msk_configuration` |
 | ブローカーのログ | CloudWatch Logs のロググループ `/<prefix>/msk`、保存 7 日 | 変数 `log_retention_days`、`msk.tf` |
 | スイッチ | `PIPELINE=1` で作る。`SKIP_STREAM=1` で作らない（analytics も作らない） | `deploy.env.example` |
 | 費用 | 57 セント/時（2 台。1 台増やすごとに +27） | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`） |
 
 - SCRAM の資格情報: `ops/up.sh` が stream の apply の前に作り、`ops/down.sh` が消す（鍵は 7 日の削除の予約）。
-- SCRAM のユーザーの ACL: 2026-10-09 の AWS では、ACL を入れる前も syslog-ng・GoFlow2・gnmic は書けた。
-  `allow.everyone.if.no.acl.found` が効いた（`docs/verification/20261009-aws-managed.md` の「A.」「B.」）。
-  ACL を入れたあとの振る舞いは未確認。
+- SCRAM のユーザーの ACL: `allow.everyone.if.no.acl.found=false` なので、ACL が入るまで syslog-ng・GoFlow2・gnmic は書けない。ACL の無い `traps` にも書けない。
+  2026-10-09 の AWS（当時は既定の true）では ACL を入れる前も書けた（`docs/verification/20261009-aws-managed.md` の「A.」「B.」）。false にしてからは AWS で未確認。
 - ブローカーの設定: 内部トピック（`__consumer_offsets` 等）のパーティション数は configuration に項目が無く変えられないので、既定の 50 のまま（OSS 版は 1）。
 
 トピックと中身:
@@ -51,8 +50,8 @@ Telegraf・gnmic・syslog-ng・GoFlow2 が集めた機器のデータを、い�
 | Kafbat UI（Web の EC2 の Docker） | Web → MSK | 9098/tcp、同じ認証。Web の EC2 のロール（stream が足すポリシー `<prefix>-kafka-ui`）は、トピックの読み書き・作成・変更・削除と、グループを見ることまで |
 | SSM | MSK → パラメータ | ブートストラップの文字列を `/<prefix>/msk-bootstrap`（String）に書く |
 
-- gnmic（ECS）: 2026-10-09 の AWS では、Spark が ACL を入れる前も `metrics` に書けた。
-  `gnmi` のトピックはできなかった（原因は確かめていない。`docs/verification/20261009-aws-managed.md` の「B.」）。
+- gnmic（ECS）: 2026-10-09 の AWS（当時は `allow.everyone.if.no.acl.found` が既定の true）では、Spark が ACL を入れる前も `metrics` に書けた。
+  `gnmi` のトピックはできなかった（原因は確かめていない。`docs/verification/20261009-aws-managed.md` の「B.」）。いまは ACL が入るまで書けない。
 
 ## 知見
 
@@ -64,29 +63,32 @@ Telegraf・gnmic・syslog-ng・GoFlow2 が集めた機器のデータを、い�
   出典: `IaC/terraform/aws-managed/pipeline/stream/variables.tf` の `broker_instance_type` の説明。
 - **4.1.x が Standard ブローカーの最新で、4.2.x は Express ブローカーだけ。**
   出典: `IaC/terraform/aws-managed/pipeline/stream/variables.tf` の `kafka_version` の説明。
-- **トピックは最初の書き込みで自動でできる。**
-  `auto.create.topics.enable=true`。そのため Telegraf のタスクロールに `kafka-cluster:CreateTopic` が要る。
-  - Spark も、無いトピックを起動時に作る（`ensure_topics`）ので、gnmic がまだ書いていなくて `metrics` / `gnmi` が無くても落ちない。
+- **トピックは書き込みではできない（`auto.create.topics.enable=false`。2026-10-10）。**
+  5 つのトピックは Spark が起動時に作る（`ensure_topics`。EMR の実行ロールの `kafka-cluster:CreateTopic`）。Kafbat UI の画面からも作れる（Web のロールの `CreateTopic`）。
+  - Telegraf のタスクロールの `kafka-cluster:CreateTopic` は外した。Spark が `traps` を作るまで Telegraf は trap を出力のバッファで持つ。
   - SASL/SCRAM の syslog-ng・GoFlow2・gnmic には `CREATE` の ACL を付けない。
-    それでも 2026-10-09 の AWS では Spark を起こさずに `flows` / `logs` / `metrics` ができていた（パーティションは各 2。収集器の書き込みでできたと見ている。推測）。
-  - `gnmi` はできていなかった（gnmic が 1 件も書いていない。原因は確かめていない）。
+  - true だった 2026-10-09 の AWS では、Spark を起こさずに `flows` / `logs` / `metrics` ができていた（パーティションは各 2。収集器の書き込みでできたと見ている）。
+    `gnmi` はできていなかった（gnmic が 1 件も書いていない。原因は確かめていない）。
   - 出典: [data-stores.md](../../data-stores.md) の「15. ブローカーの渡し方と msk-bootstrap」、`docs/verification/20261009-aws-managed.md` の「A.」「B.」。
-- **IAM と SCRAM を併用したクラスターでも、SCRAM のユーザーは ACL の無いトピックに書けた（2026-10-09 の AWS）。**
-  文書は「IAM のアクセス制御を使うクラスターでは `allow.everyone.if.no.acl.found` が効かない」とする。
-  別のページで「MSK はこれを既定で true にする（ACL の無い資源には誰でも触れる）」ともする。
-  - IAM と SCRAM を併用したときにどちらが SCRAM の主体に効くかは書いていない。
-    前者なら ACL が要り（このリポジトリはこちらを想定して ACL を入れる）、後者なら収集器の SCRAM の資格情報で ACL の無いトピックとクラスターに何でもできる。
-  - 2026-10-09 に AWS（IAM と SCRAM の併用、Kafka `4.1.x.kraft`）で確かめたら後者だった（cycle 012 の検証 3）。
-    ACL を入れる前に syslog-ng・GoFlow2・gnmic が書け、syslog-ng と GoFlow2 のログに認可のエラーは 0。
-  - 確かめたのは書き込みだけで、ほかの操作は試していない。
-    `allow.everyone.if.no.acl.found=false` を足すかはまだ決めていない。
-  - ACL を入れたあとの振る舞いは未確認。IAM の主体は ACL と関係なく IAM のポリシーで動く。
+- **SCRAM のユーザーは ACL の無いトピックに書けない（`allow.everyone.if.no.acl.found=false`。2026-10-10）。**
+  MSK の既定は true で、2026-10-09 の AWS（IAM と SCRAM の併用、Kafka `4.1.x.kraft`）では SCRAM のユーザーが ACL の前に書けていた（cycle 012 の検証 3。
+  syslog-ng と GoFlow2 のログに認可のエラーは 0）。収集器の資格情報が 1 つ漏れると、ACL の無い `traps` に偽の trap を書けた（031 の cold review の Should fix）。false にして閉じた。
+  - 文書（`iam-access-control.html`）は「IAM のアクセス制御を使うクラスターでは `allow.everyone.if.no.acl.found` が効かない」「Kafka の ACL は IAM の主体には効かない」とする。
+    併用のクラスターでは SCRAM の主体には効いていた（上）。IAM の主体（Telegraf・Spark・Kafbat UI）は ACL と関係なく IAM のポリシーで動くので、false にしても変わらない見込み。
+  - 文書（`msk-configuration-properties.html`）は「false にする前に ACL を定義しておかないとクラスターに入れなくなる」とする。
+    ACL を入れる Spark は IAM の主体なので当たらない。クラスターは `ops/up.sh` のたびに作り直す。
+  - ブローカーは MSK が super user にしているので、複製と内部トピック（`__consumer_offsets` / `__amazon_msk_*`）にブローカーの ACL は要らない
+    （`msk-acls.html`「MSK はブローカーを super user に設定するので、`allow.everyone.if.no.acl.found` に関わらず全トピックに触れる」。2026-10-10 確認）。
+  - 手元の Kafka（`apache/kafka:4.3.1`、KRaft 1 台、StandardAuthorizer、SCRAM-SHA-512、同じ 2 つの設定）で 2026-10-10 に確かめた。
+    ACL の前は自分のトピックも拒否、ACL のあとは自分のトピックだけ書け、`traps`・ほかのコレクターのトピック・無いトピックは `TopicAuthorizationException`。
+    super user（MSK のブローカー相当）でも無いトピックは書き込みではできない。MSK では未確認。
+  - false にしてからの AWS の振る舞い（SCRAM の収集器が ACL のあとに書けること、Telegraf・Spark・Kafbat UI が変わらないこと、`UnderReplicatedPartitions` が 0 のまま）は未確認。
   - ACL を入れるのに要る IAM の権限は `kafka-cluster:AlterCluster`（EMR の実行ロールに付けた）。
     これは Kafka の ALTER CLUSTER と同じ幅を許す。
     （どの主体・資源への ACL の作成と削除、パーティションの再配置、リーダー選出、SCRAM の資格情報の変更 等。MSK でどれが効くかは未確認）
   - SCRAM のクラスターで CLUSTER の ACL を入れるとブローカー同士の複製が止まるという報告があるので、トピックの ACL だけにした。
-  - ブローカーに Read の ACL が要るか（文書の手順にはあり、同じページに「ブローカーは super user」ともある）は AWS で未確認。
-  - 出典: AWS の文書 `iam-access-control.html` / `msk-acls.html`（2026-10-09 に確認）、`docs/cycles/012-msk-scram-syslog-ng-goflow2/design.md` の未確定事項、`docs/verification/20261009-aws-managed.md` の「A.」。
+  - ブローカーの Read の ACL は要らない（`msk-acls.html` の「ブローカーは super user」。2026-10-10 に読み直した。同じページの手順は TLS の相互認証のクラスターの例）。AWS で false にして確かめるのはまだ。
+  - 出典: AWS の文書 `iam-access-control.html` / `msk-acls.html` / `msk-configuration-properties.html`（2026-10-10 に確認）、`docs/cycles/012-msk-scram-syslog-ng-goflow2/design.md` の未確定事項、`docs/verification/20261009-aws-managed.md` の「A.」。
 - **`min.insync.replicas` はブローカーの数の 1 つ下。**
   2 台なら 1 なので、1 台止まっても書ける。
   出典: `IaC/terraform/aws-managed/pipeline/stream/msk.tf` の `aws_msk_configuration` の上のコメント。
@@ -151,3 +153,5 @@ OSS 版（`IaC/terraform/oss/pipeline/stream`）には MSK が無い。
 - 2026-10-09: `metrics` と `gnmi` を書くのが Telegraf の取りにいく側から gnmic に替わった。
   それまでの `metrics` は SNMP のポーリングの結果。gnmic も SCRAM を使う。
 - 2026-10-10（031）: SCRAM のユーザーをコレクターごとに分けた（`syslog-ng` / `goflow2` / `gnmic`。secret も 3 本）。ACL もユーザーごとに自分のトピックだけ。
+- 2026-10-10: `allow.everyone.if.no.acl.found=false` と `auto.create.topics.enable=false` を configuration に入れた（031 の cold review の Should fix。ACL の無い `traps` と無いトピックに SCRAM のユーザーが書けた穴）。
+  Telegraf のタスクロールから `kafka-cluster:CreateTopic` を外した。

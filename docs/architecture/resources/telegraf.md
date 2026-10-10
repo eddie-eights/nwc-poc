@@ -91,8 +91,9 @@ Telegraf は機器から送られてくる SNMP trap を受ける（受ける側
 | MDT の受け口 | 外した。本番の Cisco の MDT を受けるなら戻す（[collection.md](../../collection.md)） |
 
 - gnmic の Kafka の ACL（AWS）:
-  - マネージドの MSK は IAM と SCRAM の併用なので ACL が要る想定だったが、2026-10-09 の AWS では ACL を入れる前も `metrics` に書けた（`allow.everyone.if.no.acl.found` が効いた。`docs/verification/20261009-aws-managed.md` の「A.」「B.」）。
-  - ACL を入れたあとは未確認（OSS 版は認証なしなので当たらない）。
+  - マネージドの MSK は `allow.everyone.if.no.acl.found=false`（2026-10-10）なので ACL が入るまで書けず、その間の値は捨てる。
+    2026-10-09 の AWS（当時は既定の true）では ACL を入れる前も `metrics` に書けた（`docs/verification/20261009-aws-managed.md` の「A.」「B.」）。
+  - false にしてからは AWS で未確認（OSS 版は認証なしなので当たらない）。
 - gnmic を ECS で動かした記録の `gnmi` のトピック: on-change の 3 つの購読から 1 件も書かれていない（gnmic のログに ERROR は 0。原因は確かめていない）。
 
 ## 関連

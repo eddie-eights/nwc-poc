@@ -132,7 +132,7 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 | 承認しても approved のまま進まない | ワーカーのイメージが古い。`deploy.env` の `IMAGE_TAG` を上げて `ops/up.sh`（[workflow.md](workflow.md)） |
 | 手順 7-2c で「Telegraf か gnmic のサービスが 10 分たっても安定しない」 | タスクが起きては止まっている。サービスは 2 つ（Telegraf の受ける側 `<prefix>-telegraf-dialout` と gnmic の `<prefix>-gnmic`）（止まった理由の見方は表の下の `7-2c`） |
 | 手順 7-2d で「syslog-ng か GoFlow2 のサービスが 10 分たっても安定しない」 | 止まらずに先へ進む。サービスは `<prefix>-syslog-ng` と `<prefix>-goflow2`（止まった理由の見方は表の下の `7-2d`） |
-| syslog-ng のログに `Topic authorization failed`、GoFlow2 のログに `The client is not authorized to access this topic` が出続ける | ACL が無いこと自体では出ない。出るなら、トピックに ACL があるのに自分のユーザー（`User:syslog-ng` / `User:goflow2`）の分が足りないと見ている（推測。確かめた範囲と見る所は表の下の `authorization failed`） |
+| syslog-ng のログに `Topic authorization failed`、GoFlow2 のログに `The client is not authorized to access this topic` が出続ける | 自分のユーザー（`User:syslog-ng` / `User:goflow2`）のトピックの ACL がまだ無い（Spark のジョブが起動時に入れる。`allow.everyone.if.no.acl.found=false`）。ジョブが動いているのに出るなら ACL の行を見る（表の下の `authorization failed`） |
 | 手順 7-3c で「Nautobot のサービスが 20 分たっても安定しない」 | 止まらずに先へ進み、最後にもう一度同じ注意が出る。初回は DB の migrate のあいだ `web` が HEALTHY にならず、`worker` も起きない（止まった理由の見方は表の下の `7-3c`） |
 | syslog の項目（ホスト名・本文など）が崩れる、取れない | syslog-ng の形式（`SYSLOG_STANDARD`）と機器の形式が合っていない。既定は RFC3164（本番の Cisco）、lab の SR Linux は RFC5424（続きは表の下の `SYSLOG_STANDARD`） |
 | デバッグ用の EC2 で Telegraf の出力を見たい | `sudo lab telegraf status` / `logs -f`（出力は標準出力。MSK へは送らない。受けるのは trap だけ） |
@@ -188,9 +188,8 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
 - `metrics`:
   - stream の output `gnmic_list_tasks_command` で gnmic のタスクが動いているか、
     ロググループ `/ecs/<prefix>-gnmic` に Kafka のエラー（SCRAM の認証や ACL）が出ていないかを見る。
-  - 2026-10-09 の AWS では、Spark のジョブが Kafka の ACL を入れる前から gnmic は `metrics` に書けた
-    （`docs/verification/20261009-aws-managed.md` の「B.」）。
-  - ACL を入れたあとは未確認（[architecture/resources/telegraf.md](architecture/resources/telegraf.md) の「制約と未確認」）。
+  - Spark のジョブが Kafka の ACL を入れるまで gnmic は書けず、その間の値は捨てる（`allow.everyone.if.no.acl.found=false`。2026-10-10）。
+    2026-10-09 の AWS（当時は既定の true）では ACL の前から書けた（`docs/verification/20261009-aws-managed.md` の「B.」）。false にしてからは AWS で未確認。
   - gnmic が書けているのに空なら Spark（[pipeline.md](pipeline.md) の「Spark を確かめる」）。
 - `修復案`:
   - `terraform -chdir=IaC/terraform/aws-managed/workflow output -raw anomaly_dlq_url` のキューに溜まっていれば、
@@ -224,9 +223,10 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
   - SASL の認証で落ちるなら、secret が MSK に付いているか（`aws kafka list-scram-secrets`）。
   - NLB のヘルスチェックは syslog-ng が `5140/tcp`、GoFlow2 が `8081/tcp` の `/__health`。
 - `authorization failed`:
-  - 2026-10-09 の AWS で、ACL を入れる Spark を起こさない回（`SKIP_ANALYTICS=1`）でも書けて、`authoriz` を含む行は 0。
-    `allow.everyone.if.no.acl.found` が効いている（`docs/verification/20261009-aws-managed.md` の「A.」）。
-  - ACL は analytics の Spark のジョブが起動時に入れる。入れたあとの振る舞いは AWS では未確認。
+  - MSK は `allow.everyone.if.no.acl.found=false`（`msk.tf`。2026-10-10）なので、ACL が入るまでは出るのが正しい。ACL は analytics の Spark のジョブが起動時に入れる。
+    `SKIP_ANALYTICS=1` だと誰も入れないので出続ける（トピックもできない）。
+  - 2026-10-09 の AWS（当時は既定の true）では、Spark を起こさない回でも書けて `authoriz` を含む行は 0 だった（`docs/verification/20261009-aws-managed.md` の「A.」）。false にしてからは AWS で未確認。
+  - `traps` に出るなら、SCRAM のユーザーで `traps` に書こうとしている（`traps` は Telegraf が IAM で書くトピックで、SCRAM の ACL は入れない）。
   - 書けないあいだ、syslog-ng は syslog をメモリのキュー（既定 10000 件まで。syslog-ng が起こし直すと消える）で持っていて書けるようになったら書き、
     GoFlow2 はその間のフローを捨てる。どちらも落ちず、ヘルスチェックも通る。
   - ジョブが動いているのに出るなら、ジョブの driver の stderr に `ACL: User:syslog-ng WRITE logs, …` の行があるかを見る。

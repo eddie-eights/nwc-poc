@@ -4,6 +4,8 @@
 # AmazonMSK_<接頭辞>-<コレクター>（顧客管理の KMS キー alias/<接頭辞>-msk-scram で暗号化）で、ops/up.sh が apply の前に作り、ops/down.sh が destroy のあとに消す。
 # コレクターごとに別のユーザー（User:syslog-ng / User:goflow2 / User:gnmic。cycle 031）で、Spark のジョブ（app/spark/snmp_sinks.py の SCRAM_USERS）が
 # ユーザーごとに書けるトピックを絞る。名前の一覧は下の scram_collectors と ops/up.sh・ops/down.sh・SCRAM_USERS で揃える。
+# ACL の無いトピック（traps や無いトピック）に SCRAM のユーザーが触れないように、下の aws_msk_configuration で allow.everyone.if.no.acl.found=false と
+# auto.create.topics.enable=false にしてある（2026-10-10）。IAM の主体（Telegraf・Spark・Kafbat UI）は Kafka の ACL と関係なく IAM のポリシーで動く。
 # Terraform は data source で ARN だけを引き、値には触らない（state に入らない）。
 # OSS 版（cycle 005。IaC/terraform/oss/pipeline/stream）にこのファイルは無く、代わりに kafka.tf（ECS の Kafka）がある。どちらも下の kafka_* の locals を
 # 同じ名前で定義し、2 つの版で共通のファイル（locals.tf・telegraf.tf・kafka_ui.tf・access.tf・outputs.tf。OSS 版はシンボリックリンク）は MSK のリソースでなくそれを使う
@@ -54,7 +56,9 @@ locals {
   ]
   # Telegraf のタスクに足す環境変数。MSK は telegraf.sh の既定（KAFKA_AUTH=iam）のままなので何も足さない
   kafka_client_environment = []
-  # Telegraf のタスクロールの Kafka の権限（ECS Exec の分は telegraf.tf）
+  # Telegraf のタスクロールの Kafka の権限（ECS Exec の分は telegraf.tf）。CreateTopic は付けない: auto.create.topics.enable=false（下の aws_msk_configuration）
+  # なので書き込みでトピックはできず、traps は Spark のジョブが起動時に作る（app/spark/snmp_sinks.py の ensure_topics）。できるまで Telegraf は出力の
+  # バッファ（metric_buffer_limit）で持つ
   telegraf_kafka_statements = [
     {
       Sid    = "Kafka"
@@ -65,7 +69,6 @@ locals {
         "kafka-cluster:WriteData",
         "kafka-cluster:WriteDataIdempotently",
         "kafka-cluster:DescribeTopic",
-        "kafka-cluster:CreateTopic",
       ]
       Resource = [aws_msk_cluster.stream.arn, local.topic_arns]
     },
@@ -117,12 +120,26 @@ locals {
 # KRaft モード（var.kafka_version の末尾の .kraft）。ZooKeeper のノードは無く、メタデータは MSK が持つコントローラーに載る（追加料金なし）
 # 複製の数はブローカーの数（var.msk_az_num）。min.insync.replicas はその 1 つ下: 2 台なら 1（1 台止まっても acks=all で書ける）、
 # 3 台なら 2（1 台止まっても書け、書いたものは 2 台にある）
+# allow.everyone.if.no.acl.found=false（2026-10-10）: MSK の既定は true で、ACL の無いトピック（traps。Telegraf が IAM で書く）には SCRAM のどのユーザーも書けた
+# （2026-10-09 の AWS で ACL の前に書けたのを確認。docs/verification/20261009-aws-managed.md の「A.」）。false にすると、ACL の無い資源には super user しか触れない。
+#   - 効くのは SASL/SCRAM の主体（syslog-ng / goflow2 / gnmic）だけ。IAM の主体（Telegraf・Spark・Kafbat UI）は Kafka の ACL と関係なく IAM のポリシーで動く
+#     （AWS の文書 iam-access-control.html「Kafka の ACL は IAM の主体には効かない」）。
+#   - ブローカーは MSK が super user にしているので、複製と内部トピック（__consumer_offsets / __amazon_msk_* 等）にブローカーの ACL は要らない
+#     （msk-acls.html「MSK はブローカーを super user に設定するので、allow.everyone.if.no.acl.found に関わらず全トピックに触れる」。2026-10-10 確認）。
+#   - SCRAM の収集器は、Spark のジョブ（app/spark/snmp_sinks.py の ensure_acls。IAM の AlterCluster）が自分のトピックの ACL を入れるまで Topic authorization failed
+#     で書けない（syslog-ng はキューで持ち、GoFlow2 と gnmic はその間の分を捨てる。SKIP_ANALYTICS=1 だと入れる者がいないので書けないまま）。
+#   - MSK の文書（msk-configuration-properties.html）は「false にする前に ACL を定義しておかないとクラスターに入れなくなる」とするが、ACL を入れる Spark は IAM の
+#     主体なので当たらない。クラスターは up.sh のたびに作り直すので、既存のクラスターの設定を変える経路は無い。
+# auto.create.topics.enable=false（同日）: 既定は true で、書き込みでトピックができた（Telegraf の traps。SCRAM のユーザーも ACL の無いトピック名なら作れた）。
+#   5 つのトピック（metrics / gnmi / traps / logs / flows）は Spark の ensure_topics が起動時に明示的に作る。Telegraf のタスクロールの CreateTopic は外した
+#   （上の telegraf_kafka_statements）。Kafbat UI の CreateTopic は画面から作る分なので残す（CreateTopics の API は auto create と別）
 resource "aws_msk_configuration" "stream" {
   name           = "${local.name_prefix}-stream"
   kafka_versions = [var.kafka_version]
 
   server_properties = <<-EOT
-    auto.create.topics.enable=true
+    allow.everyone.if.no.acl.found=false
+    auto.create.topics.enable=false
     default.replication.factor=${var.msk_az_num}
     min.insync.replicas=${var.msk_az_num - 1}
     num.partitions=2

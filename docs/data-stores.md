@@ -540,16 +540,14 @@ SSM は読まない。
    - `KAFKA_AUTH=none`（OSS 版と手元の compose）なら SASL と TLS の行を消す。
 3. Kafka の認証は SASL/SCRAM-SHA-512 だけで、タスクロール `<prefix>-gnmic-task` に Kafka の権限は無い。
    - マネージドの MSK は IAM と SCRAM の併用。
-   - `gnmi` / `metrics` の ACL は Spark が起動時に入れるが、ACL の無いうちも gnmic は書ける。
-     2026-10-09 の AWS で `metrics` に書けた（`allow.everyone.if.no.acl.found` が効いている）。
-   - 確かめた記録は `docs/verification/20261009-aws-managed.md` の「A.」「B.」。
-     ACL を入れたあとは未確認。
+   - `gnmi` / `metrics` の ACL は Spark が起動時に入れる。入るまで gnmic は書けず、その間の値は捨てる（`allow.everyone.if.no.acl.found=false`。2026-10-10）。
+   - 2026-10-09 の AWS（当時は既定の true）では ACL の前に `metrics` に書けた（`docs/verification/20261009-aws-managed.md` の「A.」「B.」）。false にしてからは AWS で未確認。
 
 **IAM は 1 段。** タスクロールのポリシー `<prefix>-telegraf-task`（[telegraf.tf](../IaC/terraform/aws-managed/pipeline/stream/telegraf.tf)）は次の 2 文。
 
 | Sid | 許可 | 使うとき |
 |---|---|---|
-| `Kafka` | `kafka-cluster:Connect` / `DescribeCluster` / `WriteData` / `WriteDataIdempotently` / `DescribeTopic` / `CreateTopic` を「クラスターの ARN」と「`topic/<クラスター>/*`」に | トピックに書く（`auto.create.topics.enable=true` なので初回の書き込みでトピックができる。そのために `CreateTopic` が要る） |
+| `Kafka` | `kafka-cluster:Connect` / `DescribeCluster` / `WriteData` / `WriteDataIdempotently` / `DescribeTopic` を「クラスターの ARN」と「`topic/<クラスター>/*`」に | トピックに書く（`auto.create.topics.enable=false` なので書き込みでトピックはできず、`traps` は Spark が起動時に作る。`CreateTopic` は 2026-10-10 に外した） |
 | `EcsExec` | `ssmmessages` の 4 つ | ECS Exec で入る（`tg render` で設定を見るなど） |
 
 - 実行ロール `<prefix>-telegraf-exec` は `AmazonECSTaskExecutionRolePolicy`（ECR とログ）だけ。

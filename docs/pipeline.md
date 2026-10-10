@@ -64,13 +64,13 @@ flowchart LR
 
 - マネージドの MSK は IAM と SCRAM の併用。
 - `gnmi` と `metrics` の ACL は、syslog-ng・GoFlow2 の分と一緒に Spark が起動時に入れる（下の `ensure_acls`）。
-  ただし ACL の無いうちも gnmic は書ける。
-- 2026-10-09 の AWS で、Spark を起こさずに `metrics` に書けた（`allow.everyone.if.no.acl.found` が効いている）。
-  ACL を入れたあとの振る舞いは未確認。
+  ACL が入るまで gnmic は書けず、その間の値は捨てる（`allow.everyone.if.no.acl.found=false`。下の「収集器の ACL」）。
+- 2026-10-09 の AWS（当時は既定の true）では、Spark を起こさずに `metrics` に書けた。2026-10-10 に false にしてからの AWS は未確認。
 - 同じ日、`gnmi` はトピックができず、on-change の 3 つの購読（`interface_state` / `bgp_neighbor` / `isis_interface`）からは 1 件も書かれていなかった（gnmic のログに ERROR は 0）。
   原因は確かめていない（ACL のせいではない）。
   030 で出力に buffer を足した（下の「gnmic の購読」）が、これで直るかは AWS で未確認。
-  この回は `gnmi` のトピックそのものが無かった（自動作成は有効）ので、event が gnmic の出力に 1 件も届いていなかった見込みが高い。直らなければ上流（機器の初期同期、gnmic の受信）を疑う。
+  この回は `gnmi` のトピックそのものが無かった（当時は自動作成が有効）ので、event が gnmic の出力に 1 件も届いていなかった見込みが高い。直らなければ上流（機器の初期同期、gnmic の受信）を疑う。
+  いまは Spark が `gnmi` を作るので、トピックの有無では見分けられない（件数で見る）。
 - 根拠は `docs/verification/20261009-aws-managed.md` の「A.」「B.」。
 - OSS 版の Kafka は認証なしなので ACL は当たらない。
 
@@ -134,11 +134,13 @@ flowchart LR
 #### トピックを作る
 
 - Spark は起動時に、読むトピック（`metrics` / `gnmi` / `traps` / `logs` / `flows`）のうち無いものを作る（`snmp_sinks.py` の `ensure_topics`。EMR のロールに `kafka-cluster:CreateTopic`）。
-- MSK の `auto.create.topics.enable=true` は書き込みのときにしか効かず、Telegraf が最初の trap を出すまで `traps` が無い。
-- SASL/SCRAM で書く syslog-ng・GoFlow2・gnmic には CREATE の ACL を付けない。
-- それでも 2026-10-09 の AWS では、Spark を起こしていないのに `flows` / `logs` / `metrics` があった（各 2 パーティション）。
-  収集器の書き込みでできたと見ている（推測。`docs/verification/20261009-aws-managed.md` の「A.」）。
-- `gnmi` は無かった（上の「gnmic の書き込みと ACL」）。
+- MSK は `auto.create.topics.enable=false`（`msk.tf` の `aws_msk_configuration`。2026-10-10 に true から変えた）。書き込みでトピックはできない。
+  5 つのトピックを作るのは Spark のこの処理だけ（Kafbat UI の画面から作ることもできる）。
+  Telegraf のタスクロールから `kafka-cluster:CreateTopic` を外した。
+- SASL/SCRAM で書く syslog-ng・GoFlow2・gnmic には CREATE の ACL を付けない（`allow.everyone.if.no.acl.found=false` なので、ACL の無い操作は全部拒まれる）。
+- true だった 2026-10-09 の AWS では、Spark を起こしていないのに `flows` / `logs` / `metrics` があった（各 2 パーティション。収集器の書き込みでできたと見ている。`docs/verification/20261009-aws-managed.md` の「A.」）。
+  `gnmi` は無かった（上の「gnmic の書き込みと ACL」）。
+- `SKIP_ANALYTICS=1`（Spark を起こさない）だとトピックも ACL もできないので、収集器は何も書けない（[deploy.md](deploy.md) の `SKIP_ANALYTICS`）。
 - 無いトピックを購読するとジョブは offset 読みで落ちて、起こし直しの上限（1 時間 5 回）を使い切る（2026-09-27 に実測）。
 
 #### 収集器の ACL
@@ -153,11 +155,26 @@ flowchart LR
 | gnmic | `AmazonMSK_<prefix>-gnmic` | `gnmic` | `gnmi`、`metrics` |
 
 - 名前の一覧は `ops/up.sh` / `ops/down.sh` の 3 行、`msk.tf` の `scram_collectors`、`SCRAM_USERS` で揃える（`tests/test_stream.py` と `tests/test_analytics.py` が見る）。
-- ACL の無いトピック（`traps` など）には、`allow.everyone.if.no.acl.found` が効いている限り、どの SCRAM のユーザーも書けると見ている（推測。下の 2026-10-09 の結果から）。
-- AWS の文書は、MSK の IAM のアクセス制御では `allow.everyone.if.no.acl.found` が効かないとしている。
-- それでも 2026-10-09 の AWS（IAM と SCRAM の併用、`SKIP_ANALYTICS=1`）では、ACL が無いまま syslog-ng・GoFlow2・gnmic が書けた。
-  syslog-ng と GoFlow2 のロググループに `authoriz` を含む行は 0（`docs/verification/20261009-aws-managed.md` の「A.」、[architecture/resources/msk.md](architecture/resources/msk.md)）。
-- ACL を入れたあとの振る舞いは未確認。
+- MSK は `allow.everyone.if.no.acl.found=false`（`msk.tf` の `aws_msk_configuration`。2026-10-10）。ACL の無い資源には super user しか触れない。
+  - SCRAM のユーザーは、ACL の無いトピック（`traps`。Telegraf が IAM で書く）と、ほかのコレクターのトピックと、無いトピックに書けない。ACL が入る前は自分のトピックにも書けない。
+  - IAM の主体（Telegraf・Spark・Kafbat UI）は Kafka の ACL と関係なく IAM のポリシーで動く（AWS の文書 `iam-access-control.html`）。
+  - ブローカーは MSK が super user にしているので、複製と内部トピック（`__consumer_offsets` / `__amazon_msk_*`）に ACL は要らない（`msk-acls.html`。2026-10-10 確認）。
+  - 手元の Kafka（`apache/kafka:4.3.1`、StandardAuthorizer、同じ 2 つの設定）で 2026-10-10 に確かめた。ACL の前は自分のトピックも拒否、ACL のあとは自分のトピックだけ書け、
+    `traps`・ほかのコレクターのトピック・無いトピックは `TopicAuthorizationException`。super user でも無いトピックはできない（auto create が無効）。MSK では未確認。
+- 2026-10-09 の AWS（当時は既定の true、`SKIP_ANALYTICS=1`）では、ACL が無いまま syslog-ng・GoFlow2・gnmic が書けていた（`docs/verification/20261009-aws-managed.md` の「A.」）。これが穴で、false にして閉じた（031 の cold review の Should fix）。
+
+トピックごとに書く者と読む者:
+
+| トピック | 書く | ACL（SCRAM） | 読む（全部 IAM） |
+|---|---|---|---|
+| `logs` | syslog-ng（SCRAM `syslog-ng`） | `User:syslog-ng` の `WRITE` / `DESCRIBE` | Spark（consumer group `spark-kafka-source-*`）、Kafbat UI |
+| `flows` | GoFlow2（SCRAM `goflow2`） | `User:goflow2` の `WRITE` / `DESCRIBE` | 同上 |
+| `gnmi` | gnmic（SCRAM `gnmic`） | `User:gnmic` の `WRITE` / `DESCRIBE` | 同上 |
+| `metrics` | gnmic（SCRAM `gnmic`） | `User:gnmic` の `WRITE` / `DESCRIBE` | 同上 |
+| `traps` | Telegraf（IAM のタスクロール） | 無し（SCRAM のユーザーは誰も書けない） | 同上 |
+| 内部トピック（`__consumer_offsets` 等） | ブローカー（super user） | 無し | ブローカー |
+
+- 読む側（Spark、Kafbat UI）と Telegraf は IAM なので Kafka の ACL は入れない。Lambda で Kafka を読むものは無い。
 - 書けないとき（`Topic authorization failed` など）も、どれも落ちない。
   - syslog-ng は syslog をメモリのキュー（既定 10000 件。syslog-ng が起こし直すと消える）で持って、書けるようになったら書く。
   - GoFlow2 はその間のフローを、gnmic はその間の値を捨てる。
