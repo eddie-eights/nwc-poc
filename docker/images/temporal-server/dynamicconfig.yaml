@@ -1,0 +1,4 @@
+# Temporal のサーバーの dynamic config（cycle 036）。temporalio/server の埋め込みの設定テンプレートは
+# DYNAMIC_CONFIG_FILE_PATH の既定 /etc/temporal/config/dynamicconfig/docker.yaml を読み、ファイルが無いと起動しない（1.32.1 で実測）。
+# 変える値は無いので空。値を足すときの書き方は https://docs.temporal.io/references/dynamic-configuration
+{}

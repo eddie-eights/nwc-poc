@@ -19,8 +19,13 @@ output "worker_repository_url" {
 }
 
 output "temporal_repository_url" {
-  description = "Push temporalio/temporal:1.9.1 here with tag 1.9.1 (step 2 of ops/up.sh)."
+  description = "Build docker/images/temporal-server/ (temporalio/server + temporal-sql-tool + psql, the Temporal server that keeps its history in the Nautobot RDS) and push it here with the dir_tag tag (step 2 of ops/up.sh)."
   value       = try(aws_ecr_repository.workflow["temporal"].repository_url, "")
+}
+
+output "temporal_ui_repository_url" {
+  description = "Push temporalio/ui here with the same tag (TEMPORAL_UI_TAG of ops/up-common.sh, step 2 of ops/up.sh)."
+  value       = try(aws_ecr_repository.workflow["temporal-ui"].repository_url, "")
 }
 
 # pipeline の 9 つも lab / workflow と同じく try() で包む。state を失って残った ECR を 1 本ずつ terraform import すると、まだ state に無いキーを

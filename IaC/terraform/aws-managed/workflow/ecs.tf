@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------- network
 # タスクの SG は IaC/terraform/aws-managed/base/core の workflow。受信は Web の EC2 からの Temporal UI の 8233（SSM のポートフォワーディング。docs/workflow.md
-# 「Temporal UI を開く」）だけ、送信はエンドポイント（Neptune Analytics もここ）と S3 の 443（security_groups.tf の通信の表）。
-# Temporal の gRPC（7233）はタスクの中の localhost だけで待つ（ワーカーは同じタスク。下の --ip 127.0.0.1）。
+# 「Temporal UI を開く」）だけ、送信はエンドポイント（Neptune Analytics もここ）と S3 の 443、Nautobot の RDS の 5432（Temporal の履歴。security_groups.tf の通信の表）。
+# Temporal の gRPC（7233〜7239）と membership（6933〜6939）はタスクの外に出さない（portMappings に無い。SG は workflow → workflow の自分宛てだけ）。
 # ECR / logs / SSM / AgentCore / SQS / s3tables へは IaC/terraform/aws-managed/base/core のインターフェース型エンドポイント（ops/up.sh が WORKFLOW のときに作らせる）を通る。
 # 2026-09-26 まではここにタスクの SG と 7 本のルールがあった（7c42b0f）
 
@@ -20,7 +20,7 @@ resource "aws_cloudwatch_log_group" "workflow" {
   retention_in_days = var.log_retention_days
 }
 
-# ---------------------------------------------------------------- task definition (Temporal dev server + worker in one task)
+# ---------------------------------------------------------------- task definition (Temporal server + UI + worker in one task)
 resource "aws_ecs_task_definition" "workflow" {
   family                   = "${local.name_prefix}-workflow"
   requires_compatibilities = ["FARGATE"]
@@ -40,13 +40,40 @@ resource "aws_ecs_task_definition" "workflow" {
       name      = "temporal"
       image     = local.temporal_image
       essential = true
-      # temporalio/temporal の entrypoint は `temporal`（CLI）。start-dev は SQLite を /tmp に置く（タスクが消えると消える）。
-      # gRPC（7233）と HTTP・メトリクスのポートは --ip の 127.0.0.1（同じタスクのワーカーだけが localhost でつなぐ）、Web UI だけ --ui-ip で外に出す
-      # （UI は同じコンテナの中から 127.0.0.1:7233 を読む）。2026-09-29 までは --ip 0.0.0.0 で 7233 もタスクの外に開いていた
-      command = ["server", "start-dev", "--ip", "127.0.0.1", "--ui-ip", "0.0.0.0", "--db-filename", "/tmp/temporal.db", "--log-level", "warn"]
-      portMappings = [
-        { containerPort = 8233, protocol = "tcp" }, # Web UI（docs/workflow.md「Temporal UI を開く」）
+      # docker/images/temporal-server/（temporalio/server + temporal-sql-tool + psql）。entrypoint が起動のたびに master（nautobot）でロール temporal と
+      # DB temporal / temporal_visibility を作り（あれば何もしない）、スキーマを最新まで上げ、namespace default を背景で作ってから temporal-server を起こす。
+      # 履歴は Nautobot の RDS for PostgreSQL に残る（cycle 036。2026-10-10 までは CLI の開発用サーバーで、履歴はコンテナの中のファイルにあった）。portMappings は無し
+      environment = [
+        { name = "DB", value = "postgres12" },
+        { name = "POSTGRES_SEEDS", value = local.nautobot_db_address },
+        { name = "DB_PORT", value = tostring(local.nautobot_db_port) },
+        { name = "POSTGRES_USER", value = "temporal" },
+        { name = "DBNAME", value = "temporal" },
+        { name = "VISIBILITY_DBNAME", value = "temporal_visibility" },
+        { name = "SQL_TLS_ENABLED", value = "true" }, # RDS PostgreSQL 15 以降は rds.force_ssl=1 が既定
+        { name = "SQL_HOST_VERIFICATION", value = "false" },
+        { name = "SQL_MAX_CONNS", value = tostring(var.temporal_sql_max_conns) },
+        { name = "SQL_MAX_IDLE_CONNS", value = tostring(var.temporal_sql_max_idle_conns) },
+        { name = "SQL_VIS_MAX_CONNS", value = tostring(var.temporal_visibility_max_conns) },
+        { name = "SQL_VIS_MAX_IDLE_CONNS", value = tostring(var.temporal_visibility_max_idle_conns) },
+        { name = "NUM_HISTORY_SHARDS", value = "4" }, # 一度決めたら変えられない（変えるなら DB を作り直す）
+        { name = "BIND_ON_IP", value = "0.0.0.0" },   # ui と worker が同じタスクの中から 127.0.0.1:7233 で届く
+        { name = "LOG_LEVEL", value = "warn" },
+        { name = "NAUTOBOT_DB_USER", value = "nautobot" },
       ]
+      # 値は state にもタスク定義にも書かない（読む権限は iam.tf の execution_db_passwords）
+      secrets = [
+        { name = "POSTGRES_PWD", valueFrom = local.temporal_db_password_arn },
+        { name = "NAUTOBOT_DB_PASSWORD", valueFrom = local.nautobot_db_password_arn },
+      ]
+      # HEALTHY = namespace まで出来た。worker と ui はこれを待つ（namespace の無い frontend に繋いで落ちる競合を無くす）
+      healthCheck = {
+        command     = ["CMD-SHELL", "temporal operator namespace describe -n default --address 127.0.0.1:7233 >/dev/null 2>&1 || exit 1"]
+        interval    = 10
+        timeout     = 5
+        retries     = 6
+        startPeriod = 180
+      }
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -56,13 +83,34 @@ resource "aws_ecs_task_definition" "workflow" {
         }
       }
     },
+    {
+      name      = "ui"
+      image     = local.temporal_ui_image
+      essential = false # UI が落ちてもワークフローは止めない
+      dependsOn = [{ containerName = "temporal", condition = "HEALTHY" }]
+      environment = [
+        { name = "TEMPORAL_ADDRESS", value = "127.0.0.1:7233" },
+        { name = "TEMPORAL_UI_PORT", value = "8233" },
+      ]
+      portMappings = [
+        { containerPort = 8233, protocol = "tcp" }, # Web UI（docs/workflow.md「Temporal UI を開く」）
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.workflow.name
+          awslogs-region        = var.region
+          awslogs-stream-prefix = "ui"
+        }
+      }
+    },
     # OSS 版（local.graph_neo4j）は NEPTUNE_GRAPH_ID の代わりに GRAPH_BACKEND と NEO4J_URI を同じ位置に置き、パスワードを secrets で足す
     # （merge の右が空のマネージド版では、出来上がるタスク定義は前と 1 文字も変わらない）
     merge({
       name      = "worker"
       image     = local.worker_image
       essential = true
-      dependsOn = [{ containerName = "temporal", condition = "START" }]
+      dependsOn = [{ containerName = "temporal", condition = "HEALTHY" }]
       environment = concat([
         { name = "TEMPORAL_ADDRESS", value = "localhost:7233" },
         { name = "AWS_REGION", value = var.region },
@@ -100,8 +148,12 @@ resource "aws_ecs_task_definition" "workflow" {
 
   lifecycle {
     precondition {
-      condition     = local.worker_repository_url != "" && local.temporal_repository_url != ""
-      error_message = "IaC/terraform/aws-managed/base/ecr の state から worker_repository_url / temporal_repository_url が読めない。IaC/terraform/aws-managed/base/ecr を create_workflow_repositories = true で apply する。"
+      condition     = local.worker_repository_url != "" && local.temporal_repository_url != "" && local.temporal_ui_repository_url != ""
+      error_message = "IaC/terraform/aws-managed/base/ecr の state から worker_repository_url / temporal_repository_url / temporal_ui_repository_url が読めない。IaC/terraform/aws-managed/base/ecr を create_workflow_repositories = true で apply する。"
+    }
+    precondition {
+      condition     = local.nautobot_db_address != "" && local.nautobot_db_password_arn != ""
+      error_message = "IaC/terraform/aws-managed/pipeline/nautobot の state から db_address / db_password_parameter が読めない。Temporal の履歴は Nautobot の RDS for PostgreSQL に置くので、IaC/terraform/aws-managed/pipeline/nautobot を先に apply する（cycle 036 から。deploy.env の PIPELINE=1）。"
     }
     precondition {
       condition     = local.runtime_arn != ""
@@ -128,11 +180,13 @@ resource "aws_ecs_service" "workflow" {
   # aws ecs execute-command でタスクの中に入れる
   enable_execute_command = true
 
-  # 2 つ同時に立てない（SQLite はタスクの中）。desired_count は 0 か 1 で、AZ の数のキー（*_AZ_NUM）も作らない: Temporal の開発用サーバーが
-  # タスクの中にあるので、2 つにすると別々の Temporal になり、承認待ちのワークフローが片方にしか無い。
+  # desired_count は 0 か 1 で、AZ の数のキー（*_AZ_NUM）も作らない: Temporal のサーバーと worker が同じタスクに入っていて、1 つで足りる。
+  # 履歴は RDS にあるので 2 つでも壊れないが、NUM_HISTORY_SHARDS = 4 では分ける意味が薄い（理由は cycle 036 で替えた。前は開発用サーバーの履歴がタスクの中だった）。
   # コードから確かめた理由で、AWS では未確認（2026-10-04）
-  deployment_minimum_healthy_percent = 0
-  deployment_maximum_percent         = 100
+  # Temporal の履歴は Nautobot の RDS にあるので（cycle 036）、デプロイでは新しいタスクを先に立ててから古いタスクを止める。
+  # 入れ替わりの間だけ 2 つのタスクが同じ DB の Temporal として並ぶ（shard の持ち主は DB の中で引き継がれる）
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
 
   network_configuration {
     subnets          = [local.subnet_id]
@@ -140,5 +194,5 @@ resource "aws_ecs_service" "workflow" {
     assign_public_ip = false
   }
 
-  depends_on = [aws_iam_role_policy.task, aws_iam_role_policy_attachment.execution, aws_iam_role_policy.execution_neo4j]
+  depends_on = [aws_iam_role_policy.task, aws_iam_role_policy_attachment.execution, aws_iam_role_policy.execution_neo4j, aws_iam_role_policy.execution_db_passwords]
 }

@@ -3,7 +3,7 @@ Grafana と Splunk のアラート（SNS → SQS）を受けてエージェン�
 
 流れ: Grafana のアラートルール / Splunk の保存済みサーチが異常を見つける → SNS のトピック（<接頭辞>-alerts）→ SQS → ここ（Temporal のワークフロー）が
 エージェントに Neptune / S3 / OpenSearch / Prometheus を見させて原因分析 → 修復の提案 → 人間の承認 → Temporal で実行。
-同じタスクの中の temporal コンテナ（temporal server start-dev、SQLite）に localhost:7233 でつなぐ。
+同じタスクの中の temporal コンテナ（temporal-server。履歴は Nautobot の RDS for PostgreSQL。cycle 036）に localhost:7233 でつなぐ。
 1 プロセスで 3 つを動かす:
   - starter（アラート）: SQS（ANOMALY_QUEUE_URL）を long polling（20 秒）し、届いたアラート（rules.alerts_from_message）ごとに
       firing   → investigate-<anomaly_id> のワークフローを起こす（起こすのは rules.START_KINDS（link_down）だけ）。
@@ -32,8 +32,8 @@ Grafana と Splunk のアラート（SNS → SQS）を受けてエージェン�
   閉じると、まだ直っていない同じ異常の次の通知（Grafana の repeat、Splunk の次のサーチ）がもう一度調査を起こす。
 修復案の置き場は S3 Tables の proposal_events だけ（2026-10-05 に Neptune の頂点 proposal をやめた）。書くのはこのワーカーだけで、
 段が進むたびに修復案の全項目を持つ行を 1 行足す（rules.proposal_event。seq が 1 ずつ増え、最大の行が「いま」）。
-Web とエージェントは Athena で読むので、Temporal を知らなくてよい。Temporal の dev server は SQLite をタスクの中に持つだけで、
-タスクが入れ替わると履歴ごと消えるので、修復案はこちらに残す。行を足す前に落ちたらアクティビティの再試行で足し直す（二重に入ったら読む側が seq で 1 つにする）。
+Web とエージェントは Athena で読むので、Temporal を知らなくてよい。Temporal の履歴は Nautobot の RDS にあるが（cycle 036）、
+RDS は ops/down.sh で消えるので、修復案はこちらに残す。行を足す前に落ちたらアクティビティの再試行で足し直す（二重に入ったら読む側が seq で 1 つにする）。
 
 3 ファイルに分けてある（同じディレクトリに置いて import する。Dockerfile は app/temporal/*.py を全部入れる）:
   rules.py   判断だけの純粋関数（プロンプト・JSON の読み取り・許可コマンド・アラートと決定の読み取り・起こすかどうか・修復案の行）

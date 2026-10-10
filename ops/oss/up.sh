@@ -9,7 +9,7 @@
 #   Spark のタスクは、OpenSearch・VictoriaMetrics が安定し Splunk が HEALTHY になってから起こす。最後に Web（8080）へのポートフォワーディングを開く。
 #   格納先はいつも iceberg / opensearch / prometheus / splunk の 4 つ（マネージド版の STORES のようには選ばない）。Grafana もいつも作る。
 #   イメージは ECR に無いタグだけ写すかビルドする（ops/oss/oss-images.sh の mirror_oss_images と、ops/up-common.sh の build_splunk / build_grafana / build_agent /
-#   build_worker / mirror_temporal / build_nautobot / build_syslog_ng / build_gnmic）。
+#   build_worker / build_temporal_server / mirror_temporal_ui / build_nautobot / build_syslog_ng / build_gnmic）。
 # 関数は ops/ のもの（ops/common.sh・ops/up-common.sh・ops/lab-common.sh・ops/deploy-env.sh）を読み、写しを作らない。
 # 何度打っても同じ状態に収束する（できているものは Terraform が差分なしで飛ばし、ECR にあるタグは写さない）。
 #
@@ -181,7 +181,7 @@ tf_apply base/logs
 # ---- 2. イメージ ----------------------------------------------------------------
 log "2. イメージ（ECR に無いタグだけ写すかビルドする）"
 NEED_LAB=""; NEED_TELEGRAF=""; NEED_KAFKA_UI=""; NEED_OSS=""; NEED_OSS_BUILD=""; NEED_SPLUNK=""
-NEED_AGENT=""; NEED_WORKER=""; NEED_TEMPORAL=""; NEED_NAUTOBOT=""; NEED_REDIS=""; NEED_GRAFANA=""; NEED_SYSLOG_NG=""; NEED_GOFLOW2=""; NEED_GNMIC=""
+NEED_AGENT=""; NEED_WORKER=""; NEED_TEMPORAL=""; NEED_TEMPORAL_UI=""; NEED_NAUTOBOT=""; NEED_REDIS=""; NEED_GRAFANA=""; NEED_SYSLOG_NG=""; NEED_GOFLOW2=""; NEED_GNMIC=""
 if ! ecr_has "$PREFIX-lab-srlinux" "$SRLINUX_ECR_TAG" \
   || ! ecr_has "$PREFIX-lab-trex" "$TREX_ECR_TAG"; then NEED_LAB=1
 else echo "lab-srlinux:$SRLINUX_ECR_TAG と lab-trex:$TREX_ECR_TAG はある"; fi
@@ -216,21 +216,24 @@ if ecr_has "$PREFIX-grafana" "$GRAFANA_TAG"; then echo "grafana:$GRAFANA_TAG は
 # agent と worker は依存が違う（app/agentcore/・app/temporal/ の requirements-oss.txt。Neo4j のドライバー入り）
 if ecr_has "$PREFIX-agent" "$IMAGE_TAG"; then echo "agent:$IMAGE_TAG はある（作り直すなら IMAGE_TAG を変える）"; else NEED_AGENT=1; fi
 if ecr_has "$PREFIX-worker" "$IMAGE_TAG"; then echo "worker:$IMAGE_TAG はある"; else NEED_WORKER=1; fi
-if ecr_has "$PREFIX-temporal" "$TEMPORAL_TAG"; then echo "temporal:$TEMPORAL_TAG はある"; else NEED_TEMPORAL=1; fi
+# Temporal のサーバー（履歴は Nautobot の RDS。cycle 036。タグは docker/images/temporal-server/ の中身から）と UI
+TEMPORAL_SERVER_IMAGE_TAG=$(dir_tag "$TEMPORAL_SERVER_VERSION" docker/images/temporal-server) || die "docker/images/temporal-server/ のタグを作れなかった"
+if ecr_has "$PREFIX-temporal" "$TEMPORAL_SERVER_IMAGE_TAG"; then echo "temporal:$TEMPORAL_SERVER_IMAGE_TAG はある"; else NEED_TEMPORAL=1; fi
+if ecr_has "$PREFIX-temporal-ui" "$TEMPORAL_UI_TAG"; then echo "temporal-ui:$TEMPORAL_UI_TAG はある"; else NEED_TEMPORAL_UI=1; fi
 # Nautobot のタグは、イメージに入る材料（app/nautobot/ と app/agentcore/graph.py・toolkit.py と lab の定義）の中身と docker/images/nautobot/Dockerfile から作る
 NAUTOBOT_CTX=$(mktemp -d "${TMPDIR:-/tmp}/$PREFIX-nautobot.XXXXXX") || die "一時ディレクトリを作れない（TMPDIR）"
 nautobot_context "$NAUTOBOT_CTX" || die "Nautobot のイメージの材料（app/nautobot/ と app/agentcore/graph.py・toolkit.py と lab の定義）を集められなかった"
 NAUTOBOT_TAG=$(dir_tag "$NAUTOBOT_VERSION" "$NAUTOBOT_CTX" docker/images/nautobot/Dockerfile) || die "app/nautobot/ のタグを作れなかった"
 if ecr_has "$PREFIX-nautobot" "$NAUTOBOT_TAG"; then echo "nautobot:$NAUTOBOT_TAG はある"; else NEED_NAUTOBOT=1; fi
 if ecr_has "$PREFIX-redis" "$REDIS_TAG"; then echo "redis:$REDIS_TAG はある"; else NEED_REDIS=1; fi
-if [ -z "$NEED_LAB$NEED_TELEGRAF$NEED_KAFKA_UI$NEED_OSS$NEED_SPLUNK$NEED_GRAFANA$NEED_AGENT$NEED_WORKER$NEED_TEMPORAL$NEED_NAUTOBOT$NEED_REDIS$NEED_SYSLOG_NG$NEED_GOFLOW2$NEED_GNMIC" ]; then
+if [ -z "$NEED_LAB$NEED_TELEGRAF$NEED_KAFKA_UI$NEED_OSS$NEED_SPLUNK$NEED_GRAFANA$NEED_AGENT$NEED_WORKER$NEED_TEMPORAL$NEED_TEMPORAL_UI$NEED_NAUTOBOT$NEED_REDIS$NEED_SYSLOG_NG$NEED_GOFLOW2$NEED_GNMIC" ]; then
   echo "写すイメージもビルドするイメージも無い"
 else
   docker info >/dev/null 2>&1 || die "dockerd に接続できない（WSL なら sudo service docker start。docs/setup.md「Terraform を打つ PC 側」）"
-  # agent / worker / nautobot / grafana / spark / neo4j は arm64 で RUN があるので、x86_64 の PC では QEMU（binfmt）が要る（写すだけのものと、COPY だけの
+  # agent / worker / nautobot / grafana / spark / neo4j / temporal は arm64 で RUN があるので、x86_64 の PC では QEMU（binfmt）が要る（写すだけのものと、COPY だけの
   # telegraf と syslog-ng と gnmic、amd64 の splunk は要らない）。出力は変数で受けてから探す（grep -q が先に閉じると docker が SIGPIPE で落ちることがある）
   BUILDX_LS=$(docker buildx ls 2>/dev/null || true)
-  if [ -n "$NEED_AGENT$NEED_WORKER$NEED_NAUTOBOT$NEED_GRAFANA$NEED_OSS_BUILD" ] && ! grep -q 'linux/arm64' <<<"$BUILDX_LS"; then
+  if [ -n "$NEED_AGENT$NEED_WORKER$NEED_NAUTOBOT$NEED_GRAFANA$NEED_OSS_BUILD$NEED_TEMPORAL" ] && ! grep -q 'linux/arm64' <<<"$BUILDX_LS"; then
     die "docker buildx ls の Platforms に linux/arm64 が無い（docs/setup.md「WSL2（Ubuntu）」の binfmt の行）"
   fi
   aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REG"
@@ -271,7 +274,10 @@ else
     build_worker "$IMAGE_TAG" requirements-oss.txt   # ワーカーは app/agentcore/graph.py を GRAPH_BACKEND=neo4j で使うので、Neo4j のドライバーを入れる
   fi
   if [ -n "$NEED_TEMPORAL" ]; then
-    mirror_temporal
+    build_temporal_server "$TEMPORAL_SERVER_IMAGE_TAG"
+  fi
+  if [ -n "$NEED_TEMPORAL_UI" ]; then
+    mirror_temporal_ui
   fi
   if [ -n "$NEED_NAUTOBOT" ]; then
     build_nautobot "$NAUTOBOT_TAG" "$NAUTOBOT_CTX" requirements-oss.txt   # Job は app/agentcore/graph.py を GRAPH_BACKEND=neo4j で使うので、Neo4j のドライバーを入れる
@@ -457,7 +463,8 @@ fi
 log "7-3c. nautobot（IaC/terraform/oss/pipeline/nautobot。Aurora / RDS と ECS。初回は 15 分ほど）"
 NAUTOBOT_WARN=""
 ensure_nautobot_secrets
-tf_apply pipeline/nautobot -var "nautobot_image_tag=$NAUTOBOT_TAG" -var "redis_image_tag=$REDIS_TAG" -var "nautobot_db_az_num=$NAUTOBOT_DB_AZ_NUM"
+# db_engine_version は Temporal のイメージの psql と同じ大版（POSTGRES_MAJOR。ops/up-common.sh）
+tf_apply pipeline/nautobot -var "nautobot_image_tag=$NAUTOBOT_TAG" -var "redis_image_tag=$REDIS_TAG" -var "db_engine_version=$POSTGRES_MAJOR" -var "nautobot_db_az_num=$NAUTOBOT_DB_AZ_NUM"
 echo "Nautobot の Job の書き先: $(tf pipeline/nautobot output -json sync_targets)"
 NB_CLUSTER=$(tf pipeline/nautobot output -raw cluster_name); NB_SERVICE=$(tf pipeline/nautobot output -raw service_name)
 # services-stable は 10 分で諦めるので、2 回まで待つ（初回は DB の初期化で 10 分を超える）
@@ -572,8 +579,10 @@ run_on_instance "$INSTANCE_ID" "systemctl restart $PREFIX-web.service; $WEB_ACTI
 # ---- 8. workflow -------------------------------------------------------------------
 # マネージド版と同じルート（IaC/terraform/oss/workflow は IaC/terraform/aws-managed/workflow へのリンク）。graph の output に neo4j_uri があるので、ワーカーとツールの Lambda は
 # GRAPH_BACKEND=neo4j で動く。OpenSearch Serverless と AMP の output は OSS 版の analytics に無いので、それを読むツールは値なしで作られる
-log "8. workflow（IaC/terraform/oss/workflow。Temporal のワーカーの ECS と AgentCore Gateway）"
-tf_apply workflow -var "worker_image_tag=$IMAGE_TAG" -var "lambda_az_num=$LAMBDA_AZ_NUM"
+log "8. workflow（IaC/terraform/oss/workflow。Temporal のサーバーとワーカーの ECS と AgentCore Gateway）"
+# Temporal のロール temporal のパスワード（SSM。値は出さない。ops/up-common.sh）
+ensure_temporal_secrets
+tf_apply workflow -var "worker_image_tag=$IMAGE_TAG" -var "temporal_image_tag=$TEMPORAL_SERVER_IMAGE_TAG" -var "lambda_az_num=$LAMBDA_AZ_NUM"
 WF_CLUSTER=$(tf workflow output -raw cluster_name); WF_SERVICE=$(tf workflow output -raw service_name)
 # services-stable は 1 回で最大 10 分。イメージの取得や Temporal の起動が遅い回に備えて 2 回まで待ち、それでも安定しなければ警告を出して先へ進む
 # （set -e で up.sh ごと止まると、Web の起こし直しと最後の案内まで届かない。005 のレビュー Nit 6。マネージド版の 8-5 も同じ）

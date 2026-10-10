@@ -19,7 +19,7 @@
 | `app/dashboard/` の `.py`、手順書 | `ops/up.sh` を打つ（手順 4 で S3 に置き直して Web を再起動する）。apply は要らない |
 | `app/agentcore/`（`app/agentcore/data/` を含む）、`app/temporal/` | `deploy.env` の `IMAGE_TAG` を上げて `ops/up.sh`。同じタグのままだとビルドを飛ばす |
 | `app/telegraf/`、`app/gnmic/`、`app/syslog-ng/`、`app/grafana/`（アラートのルール `provisioning/alerting/` を含む）、`app/splunk/`（保存済みサーチとアラートアクションを含む）、`app/nautobot/` | `ops/up.sh` を打つ。イメージのタグがディレクトリの中身から決まるので、作り直してタスクが入れ替わる（タグを上げる操作は要らない） |
-| Dockerfile（10 本。`docker/images/<名前>/Dockerfile`。build の context は下） | `agentcore`・`temporal` は `app/agentcore/` と同じく `IMAGE_TAG` を上げて `ops/up.sh`。ほかの 8 本は下 |
+| Dockerfile（11 本。`docker/images/<名前>/Dockerfile`。build の context は下） | `agentcore`・`temporal`（ワーカー）は `app/agentcore/` と同じく `IMAGE_TAG` を上げて `ops/up.sh`。ほかの 9 本は下 |
 | ガードレール（`IaC/terraform/aws-managed/agent/kb.tf`） | `aws_bedrock_guardrail_version.r1` の `description` の末尾を `r2` のように上げて `ops/up.sh`。上げないと Runtime は古い版のまま判定する |
 | `templates/*.sh.tftpl` | シェルの `${…}` は `$${…}`、`%{` は `%%{` と書く（`templatefile` を通るため）。user_data は 16 KB まで |
 | 変数の既定 | `IaC/terraform/aws-managed/<ルート>/terraform.tfvars.example` を `terraform.tfvars` に写して書く |
@@ -27,8 +27,8 @@
 | `IaC/cloudformation/lab-debug.yaml` の UserData | `Fn::Sub` を通るので、シェルの変数は `${…}` でなく `$LAB` の形で書く。EC2 の中の支度は `app/containerlab/setup.sh` に書き、UserData には足さない |
 
 - Dockerfile:
-  - build の context は `app/<名前>/` なので、手で打つときは `-f docker/images/<名前>/Dockerfile app/<名前>/`。
-  - ほかの 8 本（`telegraf`・`gnmic`・`syslog-ng`・`grafana`・`splunk`・`nautobot`、OSS 版の `spark`・`neo4j`）はタグのハッシュに Dockerfile も入るので、`ops/up.sh`（`spark`・`neo4j` は `ops/oss/up.sh`）を打つだけ。
+  - build の context は `app/<名前>/` なので、手で打つときは `-f docker/images/<名前>/Dockerfile app/<名前>/`。`temporal-server` だけは context が `docker/images/temporal-server/` そのもの（`app/` に中身が無い）。
+  - ほかの 9 本（`telegraf`・`gnmic`・`syslog-ng`・`grafana`・`splunk`・`nautobot`・`temporal-server`、OSS 版の `spark`・`neo4j`）はタグのハッシュに Dockerfile も入るので、`ops/up.sh`（`spark`・`neo4j` は `ops/oss/up.sh`）を打つだけ。
 - lab と Telegraf の版でそろえる既定値:
   - `IaC/terraform/aws-managed/pipeline/lab` の変数の既定値
   - `IaC/cloudformation/lab-debug.yaml` のパラメータの既定値
@@ -87,7 +87,7 @@ uv run python app/dashboard/app.py
 ## 入っていないもの
 
 - 会話の永続化。履歴は Runtime のセッションの中にだけあり、画面を再読み込みすると消える。
-- Temporal の永続化と UI の認証。履歴はタスクと一緒に消え、UI にはポートフォワーディングでしか届かない。
+- Temporal の UI の認証と、`ops/down.sh` をまたぐ履歴。履歴は Nautobot の RDS にありタスクが入れ替わっても残るが（cycle 036）、RDS は down.sh で消える。UI にはポートフォワーディングでしか届かない。
 - 実機への修復。打てるのは lab の `sudo lab heal-main`（`dc1-a-leaf-01 ethernet-1/1` の fabric を戻す）と `sudo lab check` だけ。
 - 生データ（`raw_telemetry`）の検索。エージェントの `query_history` が Athena で読むのはアラートの通知の履歴（`alert_events`）だけ。analytics が無ければ案内だけ返す。
 - Web の画面の中のグラフ。修復案は S3 Tables の `proposal_events` を Athena で読んで、そのまま表に出す（メトリクスとログのグラフは Grafana（`STORES` の `grafana`）で見る）。

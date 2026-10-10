@@ -45,6 +45,23 @@ resource "aws_iam_role_policy" "execution_neo4j" {
   })
 }
 
+# Temporal のサーバー（cycle 036）: secrets の POSTGRES_PWD（ロール temporal）と NAUTOBOT_DB_PASSWORD（RDS の master。entrypoint がロールと DB を作るときだけ使う）。
+# どちらも ops/up.sh が作る SSM の SecureString（aws/ssm キー）
+resource "aws_iam_role_policy" "execution_db_passwords" {
+  name = "${local.name_prefix}-workflow-exec-db"
+  role = aws_iam_role.execution.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "DbPasswords"
+      Effect   = "Allow"
+      Action   = ["ssm:GetParameters"]
+      Resource = compact([local.temporal_db_password_arn, local.nautobot_db_password_arn])
+    }]
+  })
+}
+
 # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない呼び出しを拒む）。実行ロールとタスクロールの両方に付ける
 resource "aws_iam_role_policy_attachment" "execution_perimeter" {
   count = local.perimeter_policy_arn != "" ? 1 : 0

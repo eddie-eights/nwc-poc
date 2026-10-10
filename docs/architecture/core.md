@@ -69,6 +69,8 @@ AWS の API へは全部 VPC エンドポイントから行き、この VPC を�
 | web / lab / telegraf_dialout / gnmic / syslog_ng / goflow2 / spark / grafana / splunk / nautobot / lambda / workflow / runtime | endpoints / S3（プレフィックスリスト） | 443/tcp | AWS の API（インターフェース型）と S3（gateway 型。ECR のレイヤーと dnf も） |
 | web | grafana / splunk / workflow / nautobot | 3000 / 8000 / 8233 / 8080（tcp） | SSM のポートフォワーディング（Grafana / Splunk Web / Temporal UI / Nautobot。Kafbat UI は Web の EC2 の中なので SG を通らない） |
 | nautobot | nautobot_db | 5432/tcp | Nautobot の PostgreSQL（RDS） |
+| workflow | nautobot_db | 5432/tcp | Temporal の履歴（同じ RDS の DB `temporal` / `temporal_visibility`。cycle 036） |
+| workflow | workflow | 6933〜6939 / 7233〜7239（tcp） | Temporal のサーバーの 5 つのサービスどうしの membership と gRPC（タスクの IP を広告し合う。同じタスクの中は SG を通らないので、効くのはデプロイ中に新旧 2 タスクが同じ DB で 1 つのクラスターになるときのタスクどうし。自分宛てだけ） |
 | telegraf_dialout / spark / web | msk | 9098/tcp | Kafka（IAM 認証。web は Kafbat UI） |
 | syslog_ng / goflow2 / gnmic | msk | 9096/tcp | Kafka（SASL/SCRAM。syslog-ng と GoFlow2 は MSK の IAM 認証を喋れない。gnmic も同じ形） |
 | msk | msk | 9092〜9098/tcp | ブローカー同士 |
@@ -88,7 +90,7 @@ Neptune Analytics に SG は無い。VPC の中の口を持たず、インター
 - lab の EC2 が転送する流れは、SG が見る IP が lab の EC2 ではなく機器の管理 IP になる。
   そこで、相手の ENI の IP が見える側だけを SG の参照で書き（lab の送信は telegraf_dialout_nlb へ、lab の受信は gnmic から）、反対側は管理ネットワークの CIDR で書く。
 - 開けていないもの:
-  - Temporal の gRPC 7233（ワーカーは同じタスクの `localhost`。Temporal も `127.0.0.1` だけで待つ）
+  - Temporal の gRPC 7233〜7239 と membership 6933〜6939 をタスクの外へ（開けるのは workflow の SG の自分宛てだけ。UI とワーカーは同じタスクの `127.0.0.1` / `localhost`）
   - Splunk の管理 API 8089 の外から（splunk の SG どうしだけ開ける）
 - インターネットからの受信は、SG の前に経路が無い。
 - DNS（VPC の +2）・IMDS・ECS のタスクメタデータ・Time Sync は SG の対象外なので、表に無くても届く。

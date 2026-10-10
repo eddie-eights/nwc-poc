@@ -40,14 +40,50 @@ variable "worker_image_tag" {
 }
 
 variable "temporal_image_tag" {
-  description = "Tag of the Temporal CLI image mirrored into the <prefix>-temporal repository (temporalio/temporal)."
+  description = "Tag of the Temporal server image in the <prefix>-temporal repository. ops/up.sh builds docker/images/temporal-server/ (temporalio/server + temporal-sql-tool + psql) and passes the dir_tag tag (<TEMPORAL_SERVER_VERSION>-<hash>)."
   type        = string
-  default     = "1.9.1"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._-]{1,128}$", var.temporal_image_tag))
+    error_message = "temporal_image_tag must be a valid ECR tag (letters, digits, . _ -)."
+  }
+}
+
+variable "temporal_ui_image_tag" {
+  description = "Tag of the Temporal UI image mirrored into the <prefix>-temporal-ui repository (temporalio/ui). Same value as TEMPORAL_UI_TAG of ops/up-common.sh."
+  type        = string
+  default     = "2.55.0"
+}
+
+# ---------------------------------------------------------------- Temporal history (RDS for PostgreSQL of IaC/terraform/aws-managed/pipeline/nautobot)
+# temporal-server の既定（20 / 20 と visibility の 10 / 10）は 5 サービスぶんで 150。db.t4g.micro の max_connections（約 110）を Nautobot と分けるので絞る
+variable "temporal_sql_max_conns" {
+  description = "SQL_MAX_CONNS of the Temporal server (per service, 5 services in the task) for the temporal database."
+  type        = number
+  default     = 4
+}
+
+variable "temporal_sql_max_idle_conns" {
+  description = "SQL_MAX_IDLE_CONNS of the Temporal server for the temporal database."
+  type        = number
+  default     = 2
+}
+
+variable "temporal_visibility_max_conns" {
+  description = "SQL_VIS_MAX_CONNS of the Temporal server (per service) for the temporal_visibility database."
+  type        = number
+  default     = 2
+}
+
+variable "temporal_visibility_max_idle_conns" {
+  description = "SQL_VIS_MAX_IDLE_CONNS of the Temporal server for the temporal_visibility database."
+  type        = number
+  default     = 1
 }
 
 # ---------------------------------------------------------------- task
 variable "task_cpu" {
-  description = "Fargate task CPU units (1024 = 1 vCPU). Temporal dev server and the worker share it."
+  description = "Fargate task CPU units (1024 = 1 vCPU). The Temporal server, the Temporal UI and the worker share it."
   type        = number
   default     = 1024
 }
@@ -59,7 +95,7 @@ variable "task_memory" {
 }
 
 variable "desired_count" {
-  description = "Number of workflow tasks. Keep 1 - the Temporal dev server stores its state in the task (SQLite) and two tasks would not share it."
+  description = "Number of workflow tasks (0 or 1). The Temporal history is in the Nautobot RDS, so a deployment may run two tasks for a short while (min 100 / max 200), but this PoC keeps one (NUM_HISTORY_SHARDS = 4)."
   type        = number
   default     = 1
 
@@ -117,7 +153,7 @@ variable "create_gateway" {
 }
 
 variable "lambda_az_num" {
-  description = "Number of AZs (subnets a, b, c of IaC/terraform/aws-managed/base/core from the front) of the tools Lambda (gateway.tf). 1, 2 or 3. The workflow task itself stays one in subnet a (Temporal keeps its SQLite inside the task). ops/up.sh passes LAMBDA_AZ_NUM (also to IaC/terraform/aws-managed/agent and IaC/terraform/aws-managed/pipeline/graph)."
+  description = "Number of AZs (subnets a, b, c of IaC/terraform/aws-managed/base/core from the front) of the tools Lambda (gateway.tf). 1, 2 or 3. The workflow task itself stays one in subnet a (desired_count). ops/up.sh passes LAMBDA_AZ_NUM (also to IaC/terraform/aws-managed/agent and IaC/terraform/aws-managed/pipeline/graph)."
   type        = number
   default     = 1
 

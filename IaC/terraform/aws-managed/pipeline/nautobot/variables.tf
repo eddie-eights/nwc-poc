@@ -89,9 +89,9 @@ variable "nautobot_db_az_num" {
 }
 
 variable "db_engine_version" {
-  description = "PostgreSQL major version (RDS picks the minor). Nautobot 3 supports PostgreSQL 12.0 and later."
+  description = "PostgreSQL major version (RDS picks the minor). Nautobot 3 supports PostgreSQL 12.0 and later. The Temporal history (workflow root) lives on this instance too. ops/up.sh passes POSTGRES_MAJOR of ops/up-common.sh, which is also the psql of docker/images/temporal-server (keep the three the same)."
   type        = string
-  default     = "17"
+  default     = "18"
 }
 
 variable "db_password_version" {

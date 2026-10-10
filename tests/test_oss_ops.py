@@ -1186,8 +1186,9 @@ check("ops/oss/up.sh は agent・graph・workflow に lambda_az_num を、agent 
       all(re.search(rf'^az_num {k} 1 1 ', up, re.M) for k in ("RUNTIME_AZ_NUM", "LAMBDA_AZ_NUM", "NAUTOBOT_DB_AZ_NUM"))
       and 'tf_apply agent -var "agent_image_tag=$IMAGE_TAG" -var "runtime_az_num=$RUNTIME_AZ_NUM" -var "lambda_az_num=$LAMBDA_AZ_NUM"' in up
       and 'tf_apply pipeline/graph -var "neo4j_image_tag=$NEO4J_TAG" -var alert_history=true -var "lambda_az_num=$LAMBDA_AZ_NUM"' in up
-      and 'tf_apply workflow -var "worker_image_tag=$IMAGE_TAG" -var "lambda_az_num=$LAMBDA_AZ_NUM"' in up
-      and 'tf_apply pipeline/nautobot -var "nautobot_image_tag=$NAUTOBOT_TAG" -var "redis_image_tag=$REDIS_TAG" -var "nautobot_db_az_num=$NAUTOBOT_DB_AZ_NUM"' in up)
+      and 'tf_apply workflow -var "worker_image_tag=$IMAGE_TAG" -var "temporal_image_tag=$TEMPORAL_SERVER_IMAGE_TAG" -var "lambda_az_num=$LAMBDA_AZ_NUM"' in up
+      and 'tf_apply pipeline/nautobot -var "nautobot_image_tag=$NAUTOBOT_TAG" -var "redis_image_tag=$REDIS_TAG" -var "db_engine_version=$POSTGRES_MAJOR"'
+          ' -var "nautobot_db_az_num=$NAUTOBOT_DB_AZ_NUM"' in up)
 check("ops/oss/up.sh は analytics に http_send と Spark の 1 回に読む件数（max_offsets_per_trigger とその格納先ごと）を、stream に telegraf_az_num と gnmi_targets_from_nautobot=true を渡す"
       "（dialin_targets_from_nautobot・snmp_agents・snmp_poll は cycle 013 でやめた）",
       '-var "http_send=$HTTP_SEND"' in _an and '-var "max_offsets_per_trigger=' in _an and '-var "max_offsets_per_trigger_by_sink=' in _an
@@ -1283,7 +1284,8 @@ def spark_starts(cs):
 UP_PARAMS = {f"/x-nwc-oss/{n}" for n in (
     "gnmic/gnmi-username", "gnmic/gnmi-password", "kafka-ui/admin-password",
     "kafka/cluster-id", "neo4j-password", "nautobot/secret-key", "nautobot/admin-password", "nautobot/db-password", "nautobot/api-token",
-    "opensearch-password", "splunk/admin-password", "splunk/hec-token", "grafana/admin-password")}
+    "opensearch-password", "splunk/admin-password", "splunk/hec-token", "grafana/admin-password",
+    "temporal/db-password")}  # temporal/db-password は cycle 036（Temporal の履歴を Nautobot の RDS に置く）
 SPARK_SERVICES = [f"x-nwc-oss-spark-{k}" for k in "abc"]
 empty = {"ssm": {}, "vpcs": {}, "enis": [], "log_groups": [], "tagged": {}, "ecr": []}
 
@@ -1326,12 +1328,12 @@ check("up.sh（通し）: Grafana のイメージを arm64 でビルドし（版
       and _gb[0][2:4] == ["--platform", "linux/arm64"] and "--push" in _gb[0] and arg_after(_gb[0], "--build-arg") == f"GRAFANA_VERSION={_gver}"
       and has_var(A.get("pipeline/analytics", []), "create_grafana=true")
       and has_var(A.get("pipeline/analytics", []), "grafana_image_tag=" + _gtag.rsplit(":", 1)[-1]))
-check("up.sh（通し）: SSM のパラメータを 13 個、全部 SecureString で、ManagedBy=ops/oss/up.sh・Project=x-nwc-oss のタグを付けて作る（ops/oss/down.sh が消せる）",
+check("up.sh（通し）: SSM のパラメータを 14 個（cycle 036 で temporal/db-password を足した）、全部 SecureString で、ManagedBy=ops/oss/up.sh・Project=x-nwc-oss のタグを付けて作る（ops/oss/down.sh が消せる）",
       set(inv["ssm"]) == UP_PARAMS and all(m["type"] == "SecureString" and m["tags"].get("ManagedBy") == "ops/oss/up.sh"
                                            and m["tags"].get("Project") == "x-nwc-oss" for m in inv["ssm"].values()))
 _secrets = [m.get("value", "") for n, m in inv["ssm"].items() if "/gnmic/" not in n]
-check("up.sh（通し）: 乱数で作ったシークレット（11 個）の値を、画面にも、aws・terraform・docker の引数にも出さない",
-      len(_secrets) == 11 and all(len(v) >= 16 for v in _secrets)
+check("up.sh（通し）: 乱数で作ったシークレット（12 個）の値を、画面にも、aws・terraform・docker の引数にも出さない",
+      len(_secrets) == 12 and all(len(v) >= 16 for v in _secrets)
       and not any(v in out or any(v in " ".join(c["args"]) for c in cs) for v in _secrets))
 _slver = re.search(r"^SYSLOG_NG_VERSION=(\S+)$", read("ops/up-common.sh"), re.M).group(1)
 _gfver = re.search(r"^GOFLOW2_TAG=(\S+)$", read("ops/up-common.sh"), re.M).group(1)
@@ -1646,8 +1648,8 @@ check("ops/oss/up.sh（81）: 7-4b の analytics のクラスターの名前も 
 
 # ---- up.sh の作ったものを ops/oss/down.sh が消す（同じ在庫から）
 p, csd, invd = run_down("ops/oss/down.sh", "x", inv=inv3)
-check("up.sh → down.sh: up.sh が作った SSM のパラメータ 13 個を全部消し、up.sh が apply した 10 個のルートのうち base/logs 以外の 9 つを全部 destroy する",
-      p.returncode == 0 and invd["ssm"] == {} and len(aws_calls(csd, "ssm", "delete-parameter")) == 13
+check("up.sh → down.sh: up.sh が作った SSM のパラメータ 14 個を全部消し、up.sh が apply した 10 個のルートのうち base/logs 以外の 9 つを全部 destroy する",
+      p.returncode == 0 and invd["ssm"] == {} and len(aws_calls(csd, "ssm", "delete-parameter")) == 14
       and destroyed(csd) == {f"IaC/terraform/oss/{r}" for r in DOWN_ROOTS} and "残り: 0 件" in p.stdout)
 
 check("ops/oss/up.sh と down.sh の terraform init は、どのルートも -lockfile=readonly（lock はマネージド版へのシンボリックリンクなので書き換えない）",
@@ -1674,6 +1676,26 @@ check("up.sh（通し）が 10 個のルートに渡した -var の名前は、�
 check("down.sh が destroy に渡した -var（workflow の worker_image_tag、stream の gnmi_targets、owner）も、そのルートの variable で宣言されている（snmp_agents は cycle 013 でやめた）",
       {("workflow", "worker_image_tag"), ("pipeline/stream", "gnmi_targets")} <= _down_vars and ("pipeline/stream", "snmp_agents") not in _down_vars
       and not [(r, v) for r, v in _down_vars if v not in tf_variables(r)])
+
+# ---- 既定の無い variable は、apply でも destroy でも全部 -var で渡す（-input=false なので、1 つ欠けると No value for required variable で止まる。
+# cycle 036 で workflow の temporal_image_tag の既定を外したとき、down.sh の destroy が渡し忘れていた）
+def tf_required_variables(root):
+    d = os.path.join(ROOT, "IaC/terraform/oss", root)
+    names = set()
+    for n in os.listdir(d):
+        if n.endswith(".tf"):
+            with open(os.path.join(d, n), encoding="utf-8") as f:
+                for m in re.finditer(r'^variable\s+"(\w+)"\s*\{\n(.*?)^\}', f.read(), re.M | re.S):
+                    if not re.search(r'^\s*default\s*=', m.group(2), re.M):
+                        names.add(m.group(1))
+    return names
+_missing_up = [(r[len("IaC/terraform/oss/"):], sorted(tf_required_variables(r[len("IaC/terraform/oss/"):]) - var_names(a))) for r, a in ap]
+_missing_down = [(chdir_of(c)[len("IaC/terraform/oss/"):], sorted(tf_required_variables(chdir_of(c)[len("IaC/terraform/oss/"):]) - var_names(c["args"])))
+                 for c in tf_calls(csd) if c["args"][1] == "destroy"]
+check(f"既定の無い variable（workflow の worker_image_tag / temporal_image_tag、stream の gnmi_targets、owner）は、up.sh の apply と down.sh の destroy の両方で -var で渡す"
+      f"（いま欠けている: up {[x for x in _missing_up if x[1]]} / down {[x for x in _missing_down if x[1]]}）",
+      {"temporal_image_tag", "worker_image_tag"} <= tf_required_variables("workflow") and _missing_up and _missing_down
+      and not [x for x in _missing_up + _missing_down if x[1]])
 
 # ---- readonly の init が止まったとき（この PC の OS・CPU のハッシュが lock に無い）
 p, cs, inv = run_up(dict(empty), {"NO_DASHBOARD_PORTFORWARD": "1", "FAKE_TF_INIT_FAIL": "IaC/terraform/oss/base/ecr"})

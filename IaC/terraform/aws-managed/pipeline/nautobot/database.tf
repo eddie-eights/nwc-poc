@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------- PostgreSQL (RDS)
 # Nautobot の DB。1 台・バックアップ無し・最後のスナップショット無しで、ops/down.sh で消える（Nautobot で編集した内容も一緒に消え、
-# 次の ops/up.sh でまた lab の定義から入る）。VPC の中の nautobot の SG からしか届かない（IaC/terraform/aws-managed/base/core の security_groups.tf）。
+# 次の ops/up.sh でまた lab の定義から入る）。VPC の中の nautobot と workflow（Temporal の履歴。cycle 036）の SG からしか届かない（IaC/terraform/aws-managed/base/core の security_groups.tf）。
 # var.nautobot_db_az_num が 2 なら Multi-AZ（別の AZ に同期の控え）
 
 resource "aws_db_subnet_group" "nautobot" {

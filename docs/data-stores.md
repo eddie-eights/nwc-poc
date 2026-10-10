@@ -162,7 +162,7 @@ flowchart LR
 - **worker が止まっているあいだの承認:**
   - 押した決定は SQS `<prefix>-decisions` で待つ（保持 1 日）。
   - worker が起きると受け取り、ワークフローが残っていれば `approved` / `rejected` の行を足す。
-  - ワークフローが消えていれば（Temporal の履歴はタスクと一緒に消える）、`pending` の修復案に `expired` の行を足して閉じる。
+  - ワークフローが消えていれば（Temporal の履歴が無くなった。cycle 036 からは Nautobot の RDS に残るので、RDS を作り直したときだけ）、`pending` の修復案に `expired` の行を足して閉じる。
     処置は打たない。
   - 1 日を超えて止まると決定は消え、行は何も足されない。
 - **効かなかった決定も行に残る:**
@@ -263,7 +263,8 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 | `agent` | [app/agentcore/](../app/agentcore/)（自前ビルド） | AgentCore Runtime | チャットの本体。Bedrock のモデルを呼び、Neptune のトポロジ、OpenSearch / Prometheus の証拠を集めて答え、承認待ちの修復案を作る |
 | `lab-srlinux` | `ghcr.io/nokia/srlinux`（ミラー。約 1 GB） | lab の EC2（containerlab） | スイッチ（Nokia SR Linux、`ixr-d2l`）。監視される「機器」そのもの（表の下） |
 | `lab-trex` | `trexcisco/trex`（Docker Hub のミラー。amd64 だけ） | lab の EC2（containerlab） | トラフィックジェネレータ（Cisco TRex 2.41）の `dc1-trex-01`。後段（Telegraf → MSK → Spark → 格納先、アラート）の負荷試験に使う（表の下） |
-| `temporal` | `temporalio/temporal`（ミラー） | ECS Fargate（WORKFLOW=1） | Temporal のサーバー。`server start-dev` で 1 コンテナで動く。Fargate はプライベート網から Docker Hub を引けないので ECR にミラーする |
+| `temporal` | [docker/images/temporal-server/](../docker/images/temporal-server/)（自前ビルド。公式の `temporalio/server` 1.32.1 に `temporal-sql-tool` と psql 18 と入口のスクリプトを足す） | ECS Fargate（WORKFLOW=1） | Temporal のサーバー。履歴を Nautobot の RDS for PostgreSQL（DB `temporal` / `temporal_visibility`）に書く。起動のたびにロール・DB・スキーマ・namespace を無ければ作る（cycle 036） |
+| `temporal-ui` | `temporalio/ui`（ミラー） | ECS Fargate（WORKFLOW=1。`temporal` と同じタスク） | Temporal の Web UI（8233）。Fargate はプライベート網から Docker Hub を引けないので ECR にミラーする |
 | `worker` | [app/temporal/](../app/temporal/)（自前ビルド） | ECS Fargate（WORKFLOW=1） | Temporal のワーカー。SQS のアラートと Web の決定を拾い、Runtime に修復案を作らせ、S3 Tables の `proposal_events` に記録し、承認後に SSM で lab の機器へ流して検証する（Neptune はトポロジを読むだけ）。同じタスクの `temporal` に `localhost:7233` でつなぐ |
 | `telegraf` | [app/telegraf/](../app/telegraf/)（公式の `telegraf:1.40.1` に設定のテンプレートと `tg` を足す） | ECS Fargate（stream。サービス `<prefix>-telegraf-dialout`。内部 NLB の後ろ）。デバッグ用の EC2（`ops/lab-debug.sh`）でも同じ作り方のイメージ（スタックの ECR の `<prefix>-debug-telegraf`）を docker で動かす | 機器の SNMP trap を受けて MSK の `traps` に書く（syslog は `syslog-ng` が受ける。gNMI の購読は `gnmic` が取る）（デバッグ用の EC2 では `SINK=stdout` で標準出力に書く） |
 | `gnmic` | [app/gnmic/](../app/gnmic/)（公式の `ghcr.io/openconfig/gnmic` 0.49.0 に設定のテンプレートと `gn` を足す。[docker/images/gnmic/Dockerfile](../docker/images/gnmic/Dockerfile)） | ECS Fargate（stream。サービス `<prefix>-gnmic`。1 タスク固定、NLB なし） | 機器の gNMI を購読し、状態（IF・BGP・IS-IS）を on-change で `gnmi`、カウンター（IF の統計・CPU・メモリ）を 60 秒ごとに `metrics` へ、event の形のまま書く。MSK へは SASL/SCRAM（9096）でつなぐ |
@@ -323,10 +324,10 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 
 - ECR のリポジトリは `IMMUTABLE`（[IaC/terraform/aws-managed/base/ecr/main.tf](../IaC/terraform/aws-managed/base/ecr/main.tf)）。同じタグへの上書きはできないので、コードを変えたらタグを進める。
 - 自前ビルドの `agent` / `worker` は `IMAGE_TAG`（既定 `v1`）。
-  ミラーは上流の版そのまま（`ops/up-common.sh` の `TEMPORAL_TAG` / `REDIS_TAG` / `GOFLOW2_TAG`、`ops/up.sh` の `KAFKA_UI_TAG`）。
+  ミラーは上流の版そのまま（`ops/up-common.sh` の `TEMPORAL_UI_TAG` / `REDIS_TAG` / `GOFLOW2_TAG`、`ops/up.sh` の `KAFKA_UI_TAG`）。
 - lab の 2 つだけは上流の版に `-amd64` を付ける（`ops/lab-common.sh` の `SRLINUX_ECR_TAG` / `TREX_ECR_TAG`）。
   前の arm64 の写しと名前を分けるため。
-- `telegraf` / `gnmic` / `syslog-ng` / `grafana` / `splunk` / `nautobot` は `<版>-<ディレクトリの中身の sha256 の先頭 12 文字>`（`ops/lab-common.sh` の `dir_tag`）。
+- `telegraf` / `gnmic` / `syslog-ng` / `grafana` / `splunk` / `nautobot` / `temporal` は `<版>-<ディレクトリの中身の sha256 の先頭 12 文字>`（`ops/lab-common.sh` の `dir_tag`）。
   中身を変えれば自動でタグが変わるので、`IMAGE_TAG` を上げなくてよい。
 - `ops/up.sh` は ECR にそのタグが無いときだけビルドして push する（手順 2）。
 

@@ -1,5 +1,5 @@
 # ECR repositories of nwc-poc. The agent image, the two lab images (srlinux / trex, amd64 for the x86_64 lab EC2),
-# the two workflow images (worker / temporal) and the eight ECS images of the pipeline (telegraf / gnmic / syslog-ng / goflow2 / grafana / splunk / nautobot / redis) go here.
+# the three workflow images (worker / temporal (built from docker/images/temporal-server) / temporal-ui) and the eight ECS images of the pipeline (telegraf / gnmic / syslog-ng / goflow2 / grafana / splunk / nautobot / redis) go here.
 # ops/up.sh pushes them in step 2.
 # force_delete = true so that `terraform destroy` removes the repositories together with their images (daily ops/down.sh).
 
@@ -12,7 +12,7 @@ locals {
 
 locals {
   lab_repositories      = var.create_lab_repositories ? toset(["srlinux", "trex"]) : toset([])
-  workflow_repositories = var.create_workflow_repositories ? toset(["worker", "temporal"]) : toset([])
+  workflow_repositories = var.create_workflow_repositories ? toset(["worker", "temporal", "temporal-ui"]) : toset([])
   # パイプラインの 9 つ（Telegraf・gnmic・syslog-ng・GoFlow2 は pipeline/stream の ECS、Kafbat UI は Web の EC2 の Docker（cycle 010。base/core の web_user_data）、
   # Grafana と Splunk は pipeline/analytics、Nautobot とその Redis は pipeline/nautobot）。syslog-ng と GoFlow2 は cycle 012、gnmic は cycle 013 で足した
   # リポジトリに時間課金は無いので、いつも作る

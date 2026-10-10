@@ -1,5 +1,5 @@
-# nwc-poc - workflow root module (feature "workflow"). One ECS on Fargate task (ARM64, 1 vCPU / 2 GB) runs the Temporal dev server
-# and a Python worker in the VPC of IaC/terraform/aws-managed/base/core. The Grafana alert rules and the Splunk saved searches of IaC/terraform/aws-managed/pipeline/analytics
+# nwc-poc - workflow root module (feature "workflow"). One ECS on Fargate task (ARM64, 1 vCPU / 2 GB) runs the Temporal server
+# (history in the Nautobot RDS, cycle 036), the Temporal UI and a Python worker in the VPC of IaC/terraform/aws-managed/base/core. The Grafana alert rules and the Splunk saved searches of IaC/terraform/aws-managed/pipeline/analytics
 # publish alerts to the SNS topic of IaC/terraform/aws-managed/base/core; events.tf subscribes an SQS queue to it and the worker starts one workflow per anomaly
 # (and signals it when the alert resolves). The workflow asks the
 # chat runtime (AgentCore) for a cause and a fix (the runtime looks at Neptune / OpenSearch / Prometheus through the MCP tools),
@@ -81,6 +81,15 @@ data "terraform_remote_state" "analytics" {
 
   config = {
     path = "${path.module}/../pipeline/analytics/terraform.tfstate"
+  }
+}
+
+# Temporal の履歴（DB temporal / temporal_visibility）は Nautobot の RDS for PostgreSQL に置く（cycle 036）。nautobot が無ければ空で、ecs.tf の precondition が止める
+data "terraform_remote_state" "nautobot" {
+  backend = "local"
+
+  config = {
+    path = "${path.module}/../pipeline/nautobot/terraform.tfstate"
   }
 }
 
@@ -188,11 +197,22 @@ locals {
   # マネージド版の analytics の state にはこの output が無いので false のまま
   analytics_oss = try(data.terraform_remote_state.analytics.outputs.opensearch_password_parameter, "") != ""
 
-  worker_repository_url   = try(data.terraform_remote_state.ecr.outputs.worker_repository_url, "")
-  temporal_repository_url = try(data.terraform_remote_state.ecr.outputs.temporal_repository_url, "")
+  worker_repository_url      = try(data.terraform_remote_state.ecr.outputs.worker_repository_url, "")
+  temporal_repository_url    = try(data.terraform_remote_state.ecr.outputs.temporal_repository_url, "")
+  temporal_ui_repository_url = try(data.terraform_remote_state.ecr.outputs.temporal_ui_repository_url, "")
 
-  worker_image   = "${local.worker_repository_url}:${var.worker_image_tag}"
-  temporal_image = "${local.temporal_repository_url}:${var.temporal_image_tag}"
+  worker_image      = "${local.worker_repository_url}:${var.worker_image_tag}"
+  temporal_image    = "${local.temporal_repository_url}:${var.temporal_image_tag}"
+  temporal_ui_image = "${local.temporal_ui_repository_url}:${var.temporal_ui_image_tag}"
+
+  # Temporal の履歴を置く RDS（IaC/terraform/aws-managed/pipeline/nautobot の database.tf。cycle 036）。temporal のコンテナの entrypoint
+  # （docker/images/temporal-server/entrypoint.sh）が master（nautobot）でロール temporal と DB を作り、ロール temporal で読み書きする。
+  # パスワードは 2 つとも SSM の SecureString（ops/up.sh の ensure_nautobot_secrets と ensure_temporal_secrets が作る）を ECS の secrets で渡す（iam.tf の execution_db_passwords）。
+  # nautobot が無いか 2026-10-10 より前の state なら空で、ecs.tf の precondition が止める
+  nautobot_db_address      = try(data.terraform_remote_state.nautobot.outputs.db_address, "")
+  nautobot_db_port         = try(data.terraform_remote_state.nautobot.outputs.db_port, 5432)
+  nautobot_db_password_arn = try("arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${data.terraform_remote_state.nautobot.outputs.db_password_parameter}", "")
+  temporal_db_password_arn = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/${local.name_prefix}/temporal/db-password"
 
   param_prefix = "/${local.name_prefix}"
   log_group    = "/ecs/${local.name_prefix}-workflow"

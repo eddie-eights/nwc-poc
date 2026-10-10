@@ -7,7 +7,8 @@
 # DNS（VPC の +2）・IMDS・ECS のタスクメタデータ・Time Sync は SG の対象外なので表に無い。インターネットからの受信は SG 以前に経路が無い（vpc.tf）。
 # EMR Serverless は 0.0.0.0/0 の受信ルールがある SG を拒むが、表に CIDR の受信は lab の管理ネットワーク（NLB の SG だけ）しか無い
 # （cycle 012 で MDT の送り元の var.mdt_source_cidrs を外した）。
-# 開けていないもの: Temporal の gRPC 7233（ワーカーは同じタスクの localhost。IaC/terraform/aws-managed/workflow の ecs.tf）、Splunk の管理 API 8089
+# 開けていないもの: Temporal の gRPC 7233〜7239 と membership 6933〜6939 をタスクの外へ（開けるのは workflow の SG の自分宛てだけ。ui とワーカーは同じタスクの
+# 127.0.0.1。IaC/terraform/aws-managed/workflow の ecs.tf。cycle 036）、Splunk の管理 API 8089
 # （開けるのはクラスターの splunk どうしだけ。外から使わない）。
 # 2026-09-26〜09-29 は全部で internal 1 つ（VPC の中は何でも受け、送信は自由）だった。その前（7c42b0f）はルートごとに SG とルールを持っていた。
 # SG の description は変えると作り直しになる（付いている ENI があると消えない）ので、変えるときは down してから。
@@ -72,6 +73,14 @@ locals {
 
       # Nautobot（IaC/terraform/aws-managed/pipeline/nautobot）→ RDS の PostgreSQL
       { from = "nautobot", to = "nautobot_db", protocol = "tcp", port = 5432, why = "PostgreSQL - Nautobot database" },
+
+      # Temporal のサーバー（IaC/terraform/aws-managed/workflow の ecs.tf。cycle 036）→ 同じ RDS（DB temporal / temporal_visibility）。
+      # temporal-server の 5 サービス（frontend / internal-frontend / history / matching / worker）は BIND_ON_IP=0.0.0.0 でタスクの IP を広告し合う。
+      # 同じタスクの中は自分の IP 宛てで SG を通らない。SG が効くのはデプロイ中に新旧 2 タスクが並ぶとき（同じ DB の cluster_membership で 1 つのクラスターに入り、
+      # shard を渡し合う）のタスクどうしなので、自分宛てだけ開ける（消すと入れ替えの間に旧タスクのメンバーに届かない）
+      { from = "workflow", to = "nautobot_db", protocol = "tcp", port = 5432, why = "PostgreSQL - Temporal history (temporal / temporal_visibility)" },
+      { from = "workflow", to = "workflow", protocol = "tcp", port = 6933, to_port = 6939, why = "Temporal membership between the tasks during a deployment" },
+      { from = "workflow", to = "workflow", protocol = "tcp", port = 7233, to_port = 7239, why = "Temporal gRPC between the tasks during a deployment" },
 
       # Kafka（IAM 認証の 9098）
       { from = "telegraf_dialout", to = "msk", protocol = "tcp", port = 9098, why = "Kafka IAM - Telegraf dial-out writes" },

@@ -48,8 +48,8 @@ echo "消す相手: 接頭辞と Project タグが $PREFIX のもの（IaC/terra
 tf_use_cli_credentials
 
 log "1. workflow → analytics → nautobot → graph → stream（IaC/terraform/oss/ にできていて、state にリソースがあるものだけ）"
-# workflow の worker_image_tag は必須変数だが destroy では使われないので、何でもよい値を渡す
-destroy_lambda_root workflow "$PREFIX-tools" -var "worker_image_tag=${IMAGE_TAG:-destroy}"
+# workflow の worker_image_tag と temporal_image_tag（cycle 036 で既定を外した）は必須変数だが destroy では使われないので、何でもよい値を渡す
+destroy_lambda_root workflow "$PREFIX-tools" -var "worker_image_tag=${IMAGE_TAG:-destroy}" -var "temporal_image_tag=destroy"
 destroy_root pipeline/analytics
 destroy_root pipeline/nautobot
 destroy_lambda_root pipeline/graph "$PREFIX-graph-status"

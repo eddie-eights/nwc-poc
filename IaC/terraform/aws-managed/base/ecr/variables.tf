@@ -34,7 +34,7 @@ variable "create_lab_repositories" {
 }
 
 variable "create_workflow_repositories" {
-  description = "Also create the two repositories of the WORKFLOW images (worker / temporal). false keeps only the agent and lab repositories."
+  description = "Also create the three repositories of the WORKFLOW images (worker / temporal / temporal-ui). false keeps only the agent and lab repositories."
   type        = bool
   default     = true
 }
