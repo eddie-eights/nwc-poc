@@ -50,7 +50,7 @@ flowchart LR
 | `PIPELINE=1` | lab → 収集（gnmic・Telegraf・syslog-ng・GoFlow2。ECS）→ MSK → Spark → 格納先（`STORES` で選ぶ）。Grafana と Splunk のアラート → SNS、Neptune のトポロジ（アラートで status が変わる）、Nautobot（機器の一覧とケーブルの正） |
 | `WORKFLOW=1` | アラート（SNS → SQS）で Temporal を起こし、調査 → 承認 → 修復。AGENT と PIPELINE と、アラートの送り手（Grafana か Splunk）が要る |
 
-`PIPELINE=1` だけで約 $2.92/h、既定のまま 1 か月置くと約 $2,100（約 32 万円）になるので、**使い終わったら当日中に消す。** 内訳は [deploy.md の費用](docs/deploy.md#費用)。
+`PIPELINE=1` だけで約 $2.87/h（AWS の料金表から算出。`ops/up.sh` の目安では $2.92/h）、既定のまま 1 か月置くと約 $2,100（約 31 万円）になるので、**使い終わったら当日中に消す。** 内訳とデプロイのパターンごとの値は [deploy.md の費用](docs/deploy.md#費用)。
 
 デバッグ用の EC2（lab + Telegraf を 1 台。MSK / ECS を作らずに機器と Telegraf の設定を確かめる）は `deploy.env` の機能ではない。
 `ops/lab-debug.sh up` / `down` で作る・消す別のスタックで、`ops/down.sh` では消えない（[pipeline.md](docs/pipeline.md)）。
