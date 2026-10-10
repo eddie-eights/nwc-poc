@@ -220,3 +220,121 @@ Success! The configuration is valid.
 - Must fix: 0
 - Should fix（PM へ）: 1（Deny に Condition を足す変異を lab / lab-debug / tools の check が見ない）
 - Nit: 2、3、4（5 は解消、6 は情報）
+
+## Round 3
+
+実装モデル: claude-opus-5-5 / effort: high（PM のサブエージェント）。2026-10-11。ベースは `c537dae`。対象は `review.md` Round 2 の `### 判断` の Should fix 1 件（`[missing tests]` tools / lab / lab-debug の Deny に `Condition` を足してもテストが落ちない）。テストの硬化だけで、`IaC/` と docs は触っていない。Nit は直していない。
+
+### 変更ファイル
+
+- `tests/test_lab_debug.py`
+  - lab（`pipeline/lab/iam.tf` の `lab_assets`）: 末尾の Statement のオブジェクトを `{` から `},` まで正規表現で切り出し、コメント行を除いて `Sid` / `Effect` / `Action` / `Resource` の 4 行と完全に一致することを見る（Round 2 は `Sid` の行からの部分一致）。`lab_assets` の付け先が `aws_iam_role.lab.id` であることも見る（反対弁護人の指摘 2）
+  - lab-debug（`lab-debug.yaml` の `lab-assets`）: `set(_cfn_nb) == {"Sid", "Effect", "Action", "Resource"}` を足した
+- `tests/test_workflow.py`
+  - tools（`gateway.tf` の `tools`）: `statement {` から字下げ 2 の `}` までを全部取り、sid が `DenyNautobotSecrets` のブロックが 1 つで、本文が 4 行と完全に一致することを見る（`"condition" not in` より厳しくし、sid の前に置いた `condition {}` も落とす）
+  - 文書に `override_policy_documents` / `source_policy_documents` が無いこと、`aws_iam_role_policy.tools` がこの文書を `aws_iam_role.tools[0]` に付けていることも見る（反対弁護人の指摘 1・2）
+- check の件数は変えていない（既存の check を硬くした）。test_lab_debug 113、test_workflow 462 のまま
+
+### 変異（実ファイルに 1 つずつ入れてテストを打ち、戻した）
+
+スクリプトは `scratchpad/044r3/mutate.py`（M-A〜M-H）、`mutate2.py` / `mutate3.py`（Round 2 の M1〜M13 をこの worktree に向けたもの）、`mutate_ctrl.py`（対照の Web / Runtime）。行末は省略した。
+
+```
+M-A lab-debug.yaml の DenyNautobotSecrets に Condition（aws:ViaAWSService=true）を足す: test_lab_debug.py rc=1 -> AssertionError: lab-debug のロールの lab-assets の末尾に DenyNautob…
+M-B pipeline/lab/iam.tf の DenyNautobotSecrets の Sid の前に Condition を足す: test_lab_debug.py rc=1 -> AssertionError: lab のロールの lab_assets の Statement の末尾は De…
+M-B2 pipeline/lab/iam.tf の DenyNautobotSecrets の Resource の後に Condition を足す: test_lab_debug.py rc=1 -> AssertionError: lab のロールの lab_assets の Statement の末尾は De…
+M-C gateway.tf の tools の DenyNautobotSecrets の resources の後に condition ブロックを足す: test_workflow.py rc=1 -> AssertionError: tools の Lambda のロールの文書（gateway.tf の tool…
+M-C2 gateway.tf の tools の DenyNautobotSecrets の sid の前に condition ブロックを足す: test_workflow.py rc=1 -> AssertionError: tools の Lambda のロールの文書（gateway.tf の tool…
+M-C3 gateway.tf の tools の DenyNautobotSecrets の effect を Allow にする: test_workflow.py rc=1 -> AssertionError: tools の Lambda のロールの文書（gateway.tf の tool…
+M-C4 gateway.tf の tools の DenyNautobotSecrets の actions を ssm:GetParameter にする: test_workflow.py rc=1 -> AssertionError: tools の Lambda のロールの文書（gateway.tf の tool…
+M-F gateway.tf の tools の文書に override_policy_documents（同じ sid の Deny を Condition 付きで上書き）を足す: test_workflow.py rc=1 -> AssertionError: tools の Lambda のロールの文書（gateway.tf の tool…
+M-G gateway.tf の aws_iam_role_policy.tools の policy を Deny の無い文書に向ける: test_workflow.py rc=1 -> AssertionError: tools の Lambda のロールの文書（gateway.tf の tool…
+M-H pipeline/lab/iam.tf の lab_assets の role を別のロールにする: test_lab_debug.py rc=1 -> AssertionError: lab のロールの lab_assets の Statement の末尾は De…
+status after restore:
+ M tests/test_lab_debug.py
+ M tests/test_workflow.py
+
+M1 base/core の locals の ARN を ${local.name_prefix} に戻す: test_stream.py rc=1 -> AssertionError: base/core の locals.tf の nautobot_secret_parameter_arns …
+M1 base/core の locals の ARN を ${local.name_prefix} に戻す: test_workflow.py rc=1 -> AssertionError: Deny する 3 つの名前は、ops/up-common.sh の ensure_…
+M2 pipeline/lab/iam.tf の DenyNautobotSecrets を消す: test_lab_debug.py rc=1 -> AssertionError: ロールの Sid は iam.tf と同じ（TelegrafAddress は …
+M3 lab-debug.yaml の Deny の Resource から db-password を抜く: test_lab_debug.py rc=1 -> AssertionError: lab-debug のロールの lab-assets の末尾に DenyNautob…
+M4 workflow の locals の ARN を ${local.param_prefix} に戻す: test_workflow.py rc=1 -> AssertionError: workflow の locals.tf の nautobot_secret_parameter_arns …
+M5 pipeline/lab の locals の db-password を api-token にする: test_lab_debug.py rc=1 -> AssertionError: pipeline/lab の locals.tf の nautobot_secret_parameter_arn…
+M5 pipeline/lab の locals の db-password を api-token にする: test_workflow.py rc=1 -> AssertionError: Deny する 3 つの名前は、ops/up-common.sh の ensure_…
+M6 lab-debug.yaml の Deny を Allow にする: test_lab_debug.py rc=1 -> AssertionError: ロールの Sid は iam.tf と同じ（TelegrafAddress は …
+M7 lab-debug.yaml の Deny の Action を ssm:GetParameter にする: test_lab_debug.py rc=1 -> AssertionError: Sid ごとの Action は iam.tf と同じ…
+M8 pipeline/lab/iam.tf の Deny の Action を ssm:GetParameter にする: test_lab_debug.py rc=1 -> AssertionError: Sid ごとの Action は iam.tf と同じ…
+M9 pipeline/lab の locals の ARN を ${local.name_prefix} にする: test_lab_debug.py rc=1 -> AssertionError: pipeline/lab の locals.tf の nautobot_secret_parameter_arn…
+M9 pipeline/lab の locals の ARN を ${local.name_prefix} にする: test_workflow.py rc=1 -> AssertionError: Deny する 3 つの名前は、ops/up-common.sh の ensure_…
+M10 lab-debug.yaml の Deny の Resource を自分の prefix（${NamePrefix}）にする: test_lab_debug.py rc=1 -> AssertionError: lab-debug のロールの lab-assets の末尾に DenyNautob…
+M11 lab-debug.yaml の Role の Description に nautobot を足す: test_nautobot.py rc=1 -> AssertionError: デバッグ用の EC2 は Nautobot を使わない（lab-de…
+M12 lab-debug.yaml に Nautobot の Allow を足す（Deny の後ろに別 Statement）: test_nautobot.py rc=1 -> AssertionError: デバッグ用の EC2 は Nautobot を使わない（lab-de…
+M12 lab-debug.yaml に Nautobot の Allow を足す（Deny の後ろに別 Statement）: test_lab_debug.py rc=1 -> AssertionError: ロールの Sid は iam.tf と同じ（TelegrafAddress は …
+M13 lab-debug.yaml の DenyNautobotSecrets の Effect を Allow にする: test_nautobot.py rc=1 -> AssertionError: デバッグ用の EC2 は Nautobot を使わない（lab-de…
+M-D web.tf の Deny の Sid の前に Condition（対照）: test_stream.py rc=1 -> AssertionError: Web のインラインポリシー（web_assets）の Statem…
+M-D2 web.tf の Deny の Resource の後に Condition（対照）: test_stream.py rc=1 -> AssertionError: Web のインラインポリシー（web_assets）の Statem…
+M-E runtime.tf の Deny の Sid の前に Condition（対照）: test_stream.py rc=1 -> AssertionError: Runtime のロールに aws_iam_role_policy.runtime_deny_nau…
+M-E2 runtime.tf の Deny の Resource の後に Condition（対照）: test_stream.py rc=1 -> AssertionError: Runtime のロールに aws_iam_role_policy.runtime_deny_nau…
+ M tests/test_lab_debug.py
+ M tests/test_workflow.py
+```
+
+### 検証（最後の編集のあとに取り直した）
+
+1. `uv run --group dev --group web python tests/test_stream.py` → `通過 118 / 失敗 0`
+2. `uv run --group dev --group web python tests/test_workflow.py` → `通過 462 / 失敗 0`
+3. `uv run --group dev --group web python tests/test_lab_debug.py` → `通過 113 / 失敗 0`
+4. `terraform fmt -check -recursive IaC/terraform/aws-managed` と validate 6 ルート（`init -backend=false`。`TF_DATA_DIR` は scratchpad。`scratchpad/044r3/tfcheck.sh`）:
+   ```
+   fmt -check rc=0
+   == IaC/terraform/aws-managed/base/core
+   init rc=0
+   Success! The configuration is valid.
+   == IaC/terraform/aws-managed/workflow
+   init rc=0
+   Success! The configuration is valid.
+   == IaC/terraform/aws-managed/pipeline/lab
+   init rc=0
+   Success! The configuration is valid.
+   == IaC/terraform/oss/base/core
+   init rc=0
+   Success! The configuration is valid.
+   == IaC/terraform/oss/workflow
+   init rc=0
+   Success! The configuration is valid.
+   == IaC/terraform/oss/pipeline/lab
+   init rc=0
+   Success! The configuration is valid.
+   ```
+5. `git status --short IaC/terraform/oss` → 空。`git diff --stat -- app/ IaC/ docs/` → 空。`tests/test_oss_ops.py` → `通過 209 / 失敗 0`、`tests/test_oss.py` → `通過 177 / 失敗 0`、`tests/test_nautobot.py` → `68 項目すべて通過`
+6. AWS の実機: 未実行（QUEUE 147。このサイクルでは打たない）
+
+### セルフレビュー
+
+- 自分: claude-opus-5-5 / effort high（サブエージェントの中では切り替えられない）
+- 反対弁護人: `Agent`（general-purpose、model opus、effort xhigh）。方針・変異の結果・不安な箇所（正規表現の切り出し、`^  \}$` の早い閉じ、fmt の整列で落ちすぎないか、Condition 以外の弱め方、test_nautobot が M-A で落ちない件）を渡し、読み取り専用。終了後の `git status --short` は ` M tests/test_lab_debug.py` と ` M tests/test_workflow.py` の 2 行だけ
+
+#### 指摘と片付け
+
+1. Should fix [missing tests] `tests/test_workflow.py:2196-2210` — 反対弁護人の指摘 1（Nit として返ってきたが、Should fix の目的「Deny に Condition を足すと落ちる」の抜け道なので上げた）。tools の文書に `override_policy_documents` を足して同じ sid の Deny を Condition 付きで上書きすると、tools のブロックは 1 文字も変わらずテストが通る（反対弁護人の DA-T1: `test_workflow.py rc=0、通過 462 / 失敗 0`、validate は Success）。IaC に `override_policy_documents` / `source_policy_documents` の使用は無い。**直した**（2 つの語が文書に無いことを見る）。直したあと M-F が `rc=1`（上の出力）
+2. Should fix [missing tests] `tests/test_workflow.py:2196-2210`、`tests/test_lab_debug.py:137-149` — 反対弁護人の指摘 2（Nit として返ってきた。上げた理由は 1 と同じで、付け先を替えると Deny が効かない）。`aws_iam_role_policy.tools` の `policy` を別の文書に向ける（DA-T5: `test_workflow.py rc=0`）、`lab_assets` の `role` を別のロールにする（DA-L6: `test_lab_debug.py rc=0`）とテストが通る。**直した**（tools は `role   = aws_iam_role.tools[0].name` と `policy = data.aws_iam_policy_document.tools.json`、lab は `role = aws_iam_role.lab.id` を見る。Runtime は `tests/test_stream.py` が `role = aws_iam_role.runtime.(id|name)` を見ている）。直したあと M-G / M-H が `rc=1`
+3. Nit [コメントの正確さ] `tests/test_lab_debug.py:138` — 「コメント行を除いて 4 行」は、4 行の間にコメントを挟むと terraform fmt が整列を切り直して落ちることを書いていなかった（反対弁護人 DA-L1: rc=1、DA-L2（末尾のコメント）: rc=0）。落ちる側なので穴ではない。自分の変更のコメントなので 1 行足して直した
+4. Nit [一貫性] `tests/test_workflow.py:2203` — tools の check はコメント行を 1 行も許さない（lab は先頭と末尾を許す）。落ちる側なので穴ではない（DA-T4: rc=1）。直さない
+5. Nit [読みやすさ] `tests/test_lab_debug.py:118-119`（Round 3 より前からある `tf_actions`）— NotResource に変えて fmt で整列を直すと `IndexError` で落ち、check の名前が出ない（DA-L4: rc=1、`IndexError: list index out of range`）。落ちること自体は正しい。直さない
+6. 情報 — test_nautobot は M-A で落ちない（担当外。M-A は test_lab_debug が落とす）
+
+#### 問題なしとした観点と根拠
+
+- lab の正規表現が末尾のオブジェクトだけを取る: 中身は字下げ 8 の行だけで、手前のオブジェクトから始まっても `      },\n      {` で `    ]` に合わず後戻りする。空行や浅い行が入るとマッチせず空リストになり落ちる（反対弁護人 DA-L3: rc=1）。Deny を TelegrafAddress の前に移すと落ちる（DA-L5: rc=1。設計の「末尾」どおり）
+- tools の `^  \}$` が早く閉じない: `condition {}` の閉じは字下げ 4。dynamic へ移す（DA-T2: rc=1、`いま: []`）、Deny を 2 つにする（DA-T3: rc=1）、sid を消す（DA-T6: rc=1）
+- Condition 以外の弱め方: lab の NotResource（DA-L4b: rc=1）、lab / tools の小文字 `deny`（DA-L7 / DA-T7: rc=1）、lab-debug の NotResource / Principal（DA-D1 / DA-D2: rc=1、キーの集合の check）
+- fmt の整列で落ちすぎない: 4 つのキーが変わらなければ fmt は整列を変えない（反対弁護人。fmt を実際に当てて確かめた）
+- Web / Runtime は test_stream が塊全体を見る: M-D / M-D2 / M-E / M-E2 が rc=1（上の出力）
+- Round 2 の守りが弱まっていない: M1〜M13 が全部 rc=1（上の出力）
+- 実装ファイルと docs に差分が無い: `git diff --stat -- app/ IaC/ docs/` が空
+
+#### 未解消
+
+- Must fix: 0
+- Should fix: 0（1・2 は直した）
+- Nit: 4、5（3 は直した、6 は情報）

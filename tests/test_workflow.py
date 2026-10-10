@@ -2195,9 +2195,18 @@ _gw_tf = read("IaC", "terraform", "aws-managed", "workflow", "gateway.tf")
 _wf_locals = read("IaC", "terraform", "aws-managed", "workflow", "locals.tf")
 _gw_tools = _gw_tf.split('data "aws_iam_policy_document" "tools"')[1].split("\n}\n")[0] if 'data "aws_iam_policy_document" "tools"' in _gw_tf else ""
 _gw_stmt = lambda sid: _gw_tools.split(f'sid       = "{sid}"')[1].split("\n  }")[0] if f'"{sid}"' in _gw_tools else ""
-check("tools の Lambda のロールの文書（gateway.tf の tools）に DenyNautobotSecrets（Deny、ssm:GetParameter*、local.nautobot_secret_parameter_arns）があり、Parameters の Allow はそのまま",
-      'effect    = "Deny"' in _gw_stmt("DenyNautobotSecrets") and 'actions   = ["ssm:GetParameter*"]' in _gw_stmt("DenyNautobotSecrets")
-      and "resources = local.nautobot_secret_parameter_arns" in _gw_stmt("DenyNautobotSecrets")
+# DenyNautobotSecrets の statement { から } まで（字下げ 2 の閉じ括弧。中の condition { } は字下げ 4 なので含まれる）を丸ごと比べる。
+# sid の前後に condition などを足して効かなくする変異を落とす（cycle 044 Round 3）。同じ sid を別の文書で上書きする override_policy_documents /
+# source_policy_documents が無いこと、この文書を tools のロールに付けていることも見る
+_gw_nb_blocks = [b for b in re.findall(r"^  statement \{\n(.*?)^  \}$", _gw_tools, re.M | re.S) if 'sid       = "DenyNautobotSecrets"' in b]
+check("tools の Lambda のロールの文書（gateway.tf の tools）に DenyNautobotSecrets（sid・effect = Deny・actions = ssm:GetParameter*・resources = local.nautobot_secret_parameter_arns の 4 行だけで、"
+      "condition などは無く、override_policy_documents / source_policy_documents で上書きしない）があり、aws_iam_role_policy.tools がこの文書を tools のロールに付け、"
+      f"Parameters の Allow はそのまま（いま: {_gw_nb_blocks}）",
+      _gw_nb_blocks == ['    sid       = "DenyNautobotSecrets"\n    effect    = "Deny"\n    actions   = ["ssm:GetParameter*"]\n'
+                        '    resources = local.nautobot_secret_parameter_arns\n']
+      and "override_policy_documents" not in _gw_tools and "source_policy_documents" not in _gw_tools
+      and ('  role   = aws_iam_role.tools[0].name\n  policy = data.aws_iam_policy_document.tools.json\n}'
+           in _gw_tf.split('resource "aws_iam_role_policy" "tools"')[-1].split("\nresource ")[0])
       and _gw_tools.count('effect    = "Deny"') == 1
       and 'actions   = ["ssm:GetParameter"]' in _gw_stmt("Parameters") and "effect" not in _gw_stmt("Parameters")
       and 'resources = ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${local.param_prefix}/*"]' in _gw_stmt("Parameters"))

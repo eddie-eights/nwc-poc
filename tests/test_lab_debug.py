@@ -135,18 +135,24 @@ check(f"pipeline/lab の locals.tf の nautobot_secret_parameter_arns は parame
       _lab_nb_arns == ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/*/nautobot/" + n
                        for n in ("secret-key", "admin-password", "db-password")])
 _lab_assets = iam_tf.split('resource "aws_iam_role_policy" "lab_assets"')[1].split("\nresource ")[0] if '"lab_assets"' in iam_tf else ""
-check("lab のロールの lab_assets の Statement の末尾に DenyNautobotSecrets（Deny、ssm:GetParameter*、local.nautobot_secret_parameter_arns）があり、"
-      "TelegrafAddress の Allow（ssm:GetParameter、telegraf-address と telegraf-source-cidr）はそのまま",
-      ('        Sid      = "DenyNautobotSecrets"\n        Effect   = "Deny"\n        Action   = "ssm:GetParameter*"\n'
-       '        Resource = local.nautobot_secret_parameter_arns\n      },\n    ]\n  })\n}') in _lab_assets
+# 末尾の Statement のオブジェクト（{ から }, まで）を丸ごと切り出し、コメント行を除いて 4 行だけであることを見る（Condition などを足して効かなくする変異を落とす。cycle 044 Round 3）。
+# 4 行の間にコメントを挟むと terraform fmt が = の整列を切り直すので落ちる（コメントを置けるのは先頭と末尾だけ）。ポリシーの付け先が lab のロールであることも見る
+_lab_nb_obj = re.search(r"^      \{\n((?:        .*\n)*?)      \},\n    \]\n  \}\)\n\}", _lab_assets, re.M)
+_lab_nb_lines = [l for l in _lab_nb_obj.group(1).splitlines() if not l.lstrip().startswith("#")] if _lab_nb_obj else []
+check("lab のロールの lab_assets の Statement の末尾は DenyNautobotSecrets（Sid・Effect = Deny・Action = ssm:GetParameter*・Resource = local.nautobot_secret_parameter_arns の 4 つだけで、Condition などのキーは無い）で、"
+      f"TelegrafAddress の Allow（ssm:GetParameter、telegraf-address と telegraf-source-cidr）はそのまま。lab_assets の付け先は aws_iam_role.lab（いま: {_lab_nb_lines}）",
+      _lab_nb_lines == ['        Sid      = "DenyNautobotSecrets"', '        Effect   = "Deny"', '        Action   = "ssm:GetParameter*"',
+                        '        Resource = local.nautobot_secret_parameter_arns']
+      and _lab_assets.startswith(' {\n  name = "lab-assets"\n  role = aws_iam_role.lab.id\n')
       and len(re.findall(r'Effect\s*=\s*"Deny"', _lab_assets)) == 1
       and re.search(r'Sid    = "TelegrafAddress"\n\s*Effect = "Allow"\n\s*Action = "ssm:GetParameter"\n\s*Resource = \[\n'
                     r'\s*"arn:\$\{local\.partition\}:ssm:\$\{var\.region\}:\$\{local\.account_id\}:parameter/\$\{local\.name_prefix\}/telegraf-address",\n'
                     r'\s*"arn:\$\{local\.partition\}:ssm:\$\{var\.region\}:\$\{local\.account_id\}:parameter/\$\{local\.name_prefix\}/telegraf-source-cidr",\n\s*\]', _lab_assets) is not None)
 _cfn_stmts = role["Policies"][0]["PolicyDocument"]["Statement"]
 _cfn_nb = stmts.get("DenyNautobotSecrets", {})
-check("lab-debug のロールの lab-assets の末尾に DenyNautobotSecrets（Deny、ssm:GetParameter*、!Sub の 3 つで名前は pipeline/lab の locals と同じ）があり、ほかの Statement は Allow",
-      _cfn_stmts[-1] is _cfn_nb and _cfn_nb.get("Effect") == "Deny" and _cfn_nb.get("Action") == "ssm:GetParameter*"
+check("lab-debug のロールの lab-assets の末尾に DenyNautobotSecrets（Deny、ssm:GetParameter*、!Sub の 3 つで名前は pipeline/lab の locals と同じ。"
+      f"キーは Sid / Effect / Action / Resource だけで Condition などは無い）があり、ほかの Statement は Allow（いまのキー: {sorted(_cfn_nb)}）",
+      _cfn_stmts[-1] is _cfn_nb and set(_cfn_nb) == {"Sid", "Effect", "Action", "Resource"} and _cfn_nb.get("Effect") == "Deny" and _cfn_nb.get("Action") == "ssm:GetParameter*"
       and _cfn_nb.get("Resource") == [{"Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*/nautobot/" + n} for n in _nb_names]
       and len(_nb_names) == 3 and all(s["Effect"] == "Allow" for s in _cfn_stmts[:-1]))
 repos = {k: v["Properties"] for k, v in res.items() if v["Type"] == "AWS::ECR::Repository"}
