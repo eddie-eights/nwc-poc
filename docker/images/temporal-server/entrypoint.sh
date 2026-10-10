@@ -2,10 +2,11 @@
 # Temporal のサーバーの入口（cycle 036。docker/images/temporal-server/Dockerfile の ENTRYPOINT）。
 # 公式の setup-postgres.sh と create-namespace.sh（temporalio/docker-builds）を 1 本に畳み、ロールと DB の作成だけ psql で足した。
 # 全部べき等で、2 回目以降の起動（タスクの入れ替え、再起動）でも同じ道を通る:
-#   1. Nautobot の RDS の master（NAUTOBOT_DB_USER）で、ロール POSTGRES_USER と DB の DBNAME / VISIBILITY_DBNAME を無いときだけ作る（owner はロール）
+#   1. Nautobot の RDS の master（NAUTOBOT_DB_USER）で、ロール POSTGRES_USER と DB の DBNAME / VISIBILITY_DBNAME を無いときだけ作る（owner はロール）。
+#      master のパスワード（NAUTOBOT_DB_PASSWORD）は最後に使った直後に env から外し、この後に起こすプロセスに渡さない（cycle 039）
 #   2. スキーマをロール POSTGRES_USER で入れる（setup-schema は初回だけ。update-schema は毎回）
-#   3. 背景で namespace DEFAULT_NAMESPACE を無いときだけ作る（サーバーが上がるのを待ってから）
-#   4. 公式の /etc/temporal/entrypoint.sh へ exec（temporal-server start）。その直前に master のパスワード（NAUTOBOT_DB_PASSWORD）を env から外す（cycle 039）
+#   3. 背景で namespace DEFAULT_NAMESPACE を無いときだけ作る（/etc/temporal/namespace-rds.sh。サーバーが上がるのを待ってから。cycle 039）
+#   4. tini（PID 1）の子として公式の /etc/temporal/entrypoint.sh へ exec（temporal-server start）。背景の namespace-rds.sh も tini の子になり、抜けたら tini が回収する（cycle 039）
 # パスワードは env（ECS の secrets）から psql の \getenv と PGPASSWORD / SQL_PASSWORD で渡し、コマンドラインにもログにも出さない。
 # TLS（psql と temporal-sql-tool）はサーバー本体と同じ SQL_TLS_ENABLED / SQL_HOST_VERIFICATION / SQL_CA / SQL_HOST_NAME（ecs.tf）から導く（cycle 039）。
 set -eu
@@ -74,6 +75,8 @@ SQL
 # visibility のスキーマが使う拡張。RDS の master は rds_superuser なので作れる（ロールでは作れないことがあるので master で先に作る）
 PGPASSWORD="$NAUTOBOT_DB_PASSWORD" psql -X -q -v ON_ERROR_STOP=1 -U "$NAUTOBOT_DB_USER" -d "$VISIBILITY_DBNAME" \
   -c 'CREATE EXTENSION IF NOT EXISTS btree_gin'
+# master のパスワードはここで使い終わる。この後に起こすプロセス（temporal-sql-tool、namespace-rds.sh、tini、temporal-server）の /proc/<pid>/environ に残さない
+unset NAUTOBOT_DB_PASSWORD
 
 # 3. スキーマをロールで入れる。setup-schema -v 0.0 は schema_version を 0.0 に戻すので、schema_version が無い初回だけ打つ。update-schema はべき等なので毎回
 sql_tool() {  # sql_tool <DB 名> <サブコマンドと引数...>。env はサブシェルの中だけで export する（CA とサーバー名は値があるときだけ渡す）
@@ -96,33 +99,10 @@ for pair in "$DBNAME:temporal" "$VISIBILITY_DBNAME:visibility"; do
   sql_tool "$db" update-schema -d "$SCHEMA_DIR/$dir/versioned"
 done
 
-# 4. namespace を背景で作る（公式 create-namespace.sh と同じ流れ）。失敗しても本体は落とさない（healthCheck が namespace を見るので ECS 側で UNHEALTHY になる）
-(
-  unset NAUTOBOT_DB_PASSWORD  # このサブシェルから起こす nc / temporal にも渡さない
-  n=0
-  until nc -z -w 10 127.0.0.1 7233; do
-    n=$((n + 1)); if [ "$n" -ge 30 ]; then log "namespace: frontend の 7233 が開かない（30 回）。作らずに抜ける"; exit 0; fi
-    sleep 5
-  done
-  n=0
-  until temporal operator cluster health --address "$TEMPORAL_ADDRESS_LOCAL" >/dev/null 2>&1; do
-    n=$((n + 1)); if [ "$n" -ge 30 ]; then log "namespace: cluster health が通らない（30 回）。作らずに抜ける"; exit 0; fi
-    sleep 5
-  done
-  n=0
-  while :; do
-    if temporal operator namespace describe -n "$DEFAULT_NAMESPACE" --address "$TEMPORAL_ADDRESS_LOCAL" >/dev/null 2>&1; then
-      log "namespace: $DEFAULT_NAMESPACE がある"; exit 0
-    fi
-    if temporal operator namespace create -n "$DEFAULT_NAMESPACE" --retention "$DEFAULT_NAMESPACE_RETENTION" --address "$TEMPORAL_ADDRESS_LOCAL" >/dev/null 2>&1; then
-      log "namespace: $DEFAULT_NAMESPACE を作った（retention ${DEFAULT_NAMESPACE_RETENTION}）"; exit 0
-    fi
-    n=$((n + 1)); if [ "$n" -ge 30 ]; then log "namespace: $DEFAULT_NAMESPACE を作れない（30 回）"; exit 0; fi
-    sleep 5
-  done
-) &
+# 4. namespace を背景で作る（公式 create-namespace.sh と同じ流れ）。失敗しても本体は落とさない（healthCheck が namespace を見るので ECS 側で UNHEALTHY になる）。
+# fork だけのサブシェルは /proc/<pid>/environ に起動時の env（master のパスワード入り）を持ち続けるので、別の実行ファイルを exec させる（cycle 039）
+/etc/temporal/namespace-rds.sh "$TEMPORAL_ADDRESS_LOCAL" "$DEFAULT_NAMESPACE" "$DEFAULT_NAMESPACE_RETENTION" &
 
 # 5. 公式の入口（BIND_ON_IP=0.0.0.0 なら TEMPORAL_BROADCAST_ADDRESS を getent hosts $(hostname) で埋めて temporal-server start）。
-# master のパスワードはロールと DB を作ったあと使わないので、temporal-server の env に渡さない
-unset NAUTOBOT_DB_PASSWORD
-exec /etc/temporal/entrypoint.sh
+# PID 1 を tini にする: 背景の namespace-rds.sh は tini の子になり、抜けたら tini が回収する。tini は SIGTERM を temporal-server へ渡す（cycle 039）
+exec tini -- /etc/temporal/entrypoint.sh

@@ -74,8 +74,6 @@ resource "aws_ecs_task_definition" "workflow" {
         retries     = 6
         startPeriod = 180
       }
-      # entrypoint が namespace を作る背景のプロセスは exec のあと temporal-server の子になり、誰も wait しない。ECS の init（PID 1）に回収させる（cycle 039）
-      linuxParameters = { initProcessEnabled = true }
       logConfiguration = {
         logDriver = "awslogs"
         options = {

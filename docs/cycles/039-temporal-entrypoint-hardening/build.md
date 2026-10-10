@@ -330,3 +330,333 @@ CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
 - Should fix 1（ECS Exec からは env が見える。design と docs の根拠の書き方）。
 - Nit 8（上の 5〜12）。
 - AWS では何も確かめていない。
+
+## Round 2
+
+実装モデル: opus-5.5 / effort: high（PM のサブエージェント。ベースは d3f076a）
+
+### 変えたもの
+
+- `docker/images/temporal-server/namespace.sh`（新規）
+  - Round 1 の背景のサブシェルの中身を移した。
+  - 引数は `<address> <namespace> <retention>`。`#!/bin/sh` と `set -u` で書いた。
+  - どこで抜けても `exit 0`。unset とパスワードの変数は持たない。
+- `docker/images/temporal-server/entrypoint.sh`
+  - `unset NAUTOBOT_DB_PASSWORD` を、btree_gin の psql の直後（79 行目）へ移した。
+  - 手順 4 は `/etc/temporal/namespace-rds.sh "$TEMPORAL_ADDRESS_LOCAL" "$DEFAULT_NAMESPACE" "$DEFAULT_NAMESPACE_RETENTION" &` の 1 行にした（104 行目）。
+  - 最後は `exec tini -- /etc/temporal/entrypoint.sh` にした（108 行目）。
+  - 先頭のコメントを直した。
+- `docker/images/temporal-server/Dockerfile`
+  - psql と同じ `apk add` に `tini` を足した。
+  - `COPY --chmod=755 namespace.sh /etc/temporal/namespace-rds.sh` を足した。
+  - コメントを 2 行足した。
+- `IaC/terraform/aws-managed/workflow/ecs.tf`: Round 1 の `linuxParameters` とコメントを外した。main と同じになった。
+- `tests/test_workflow.py`
+  - 設計方針 4 のとおり期待を変えた:
+    - 557: initProcessEnabled も linuxParameters も無い
+    - 588: ディレクトリのファイルは 4 つ
+    - 591: Dockerfile の tini と COPY
+    - 595: `exec tini --`
+    - 612-: unset の位置
+    - 648: namespace の起こし方
+    - 653-: namespace.sh の静的な検査
+  - namespace.sh を動かす振る舞いの検査を 3 つ足した（`_ts_ns_run`、659-683）。`nc`・`temporal`・`sleep` を差し替えて、次の 3 つを見る。
+    - 作る場合
+    - 既にある場合
+    - 30 回作れない場合
+- `docs/architecture/resources/temporal.md`
+  - 知見の 61-62 行目と出典を書き換えた。
+  - 制約の表に「ECS Exec」の行を足した。
+  - 経緯の 039 の行を直した。
+
+### 設計からの逸脱
+
+- namespace.sh の `nc` の宛先を、決め打ちの `127.0.0.1 7233` から引数の address で導く形に変えた（`${address%:*}` / `${address##*:}`）。
+  - design は「中身をそのまま移す」。
+  - 渡しているのは `127.0.0.1:7233` だけなので、動きは同じ。
+- 振る舞いの検査を 3 つ足した。design は静的な検査だけを挙げている。
+
+### 検証
+
+#### 1. テスト
+
+直す前の記録。nonfatal は、失敗で止めずに数えるラッパー。check 名は途中を … で略した。
+
+```
+test_workflow rc=1
+FAIL どのコンテナにも initProcessEnabled が無い（…）
+FAIL docker/images/temporal-server/ は … の 4 つ
+FAIL Dockerfile は tini を apk で入れ … namespace.sh を /etc/temporal/namespace-rds.sh に … COPY する（cycle 039）
+FAIL entrypoint は … 最後に tini の子として公式の entrypoint へ exec する
+FAIL entrypoint は master のパスワード（NAUTOBOT_DB_PASSWORD）を最後に使う btree_gin の psql の直後に … unset
+FAIL entrypoint は namespace を /etc/temporal/namespace-rds.sh <address> <namespace> <retention> & で起こし …
+FileNotFoundError: … docker/images/temporal-server/namespace.sh
+```
+
+最後の編集のあとの記録。
+
+```
+$ uv run --group dev --group web python tests/test_workflow.py; echo "test_workflow rc=$?"
+通過 369 / 失敗 0
+test_workflow rc=0
+```
+
+#### 2. `./ops/check.sh`（最後の編集のあと）
+
+```
+netops なし（許した 3 ファイル 5 行だけ）
+
+すべて通過
+check rc=0
+```
+
+#### 3. `sh -n`
+
+```
+entrypoint.sh rc=0
+namespace.sh rc=0
+```
+
+shellcheck はこの PC に入っていないので実行していない。
+
+#### 4. `git diff main -- IaC/terraform/aws-managed/workflow/ecs.tf | wc -l`
+
+```
+       0
+```
+
+#### 5. 手元の docker
+
+- 構成:
+  - コンテナは `postgres:18` と `nwc-temporal-server:t039r2`。
+  - ネットワークは `t039r2`。
+- 条件:
+  - `--init` を付けない。
+  - `SQL_TLS_ENABLED=false`。
+  - パスワードは使い捨ての値。
+  - arm64。
+
+1 回目の起動。
+
+```
+$ docker logs tmp039r2 2>&1 | grep -n entrypoint-rds
+1:entrypoint-rds: ロール temporal と DB temporal / temporal_visibility を確かめる
+2:entrypoint-rds: temporal: 初回なので setup-schema -v 0.0
+8:entrypoint-rds: temporal: update-schema
+166:entrypoint-rds: temporal_visibility: 初回なので setup-schema -v 0.0
+172:entrypoint-rds: temporal_visibility: update-schema
+358:entrypoint-rds: namespace: default を作った（retention 72h）
+$ docker exec tmp039r2 ps -o pid,ppid,stat,comm,args
+PID   PPID  STAT COMMAND          COMMAND
+    1     0 S    tini             tini -- /etc/temporal/entrypoint.sh
+   37     1 S    temporal-server  temporal-server start
+   80     0 R    ps               ps -o pid,ppid,stat,comm,args
+$ docker exec tmp039r2 sh -c 'for p in /proc/[0-9]*; do ... NAUTOBOT_DB_PASSWORD'
+tini 0
+temporal-server 0
+sh 1
+$ （同じコマンドで POSTGRES_PWD）
+tini 1
+sh 1
+temporal-server 1
+$ docker exec tmp039r2 temporal operator namespace describe -n default --address 127.0.0.1:7233 | head -3
+  NamespaceInfo.Name                    default
+  NamespaceInfo.Id                      f40deac7-bb17-407e-b629-1e959c7b307d
+  NamespaceInfo.Description
+describe rc=0
+$ docker exec tmp039r2 id
+uid=1000(temporal) gid=1000(temporal) groups=1000(temporal)
+```
+
+`sh 1` は、覗くために `docker exec` で起こした sh。exec されたプロセスはコンテナの Env を引き継ぐ。
+
+2 回目の起動（`docker restart`）。namespace-rds.sh が動いている途中を 0.3 秒おきに覗いた（`<scratchpad>/v5b.sh`）。
+
+```
+（起動の途中。1 回目の覗き）
+29 ppid=1 namespace-rds.s NAUTOBOT_DB_PASSWORD=0 POSTGRES_PWD=1
+PID   PPID  STAT COMMAND
+    1     0 S    tini
+   29     1 S    namespace-rds.s
+   30     1 S    temporal-server
+   32    29 S    sleep
+   58     0 R    ps
+$ docker logs tmp039r2 2>&1 | grep -n entrypoint-rds（2 回目）
+365:entrypoint-rds: ロール temporal と DB temporal / temporal_visibility を確かめる
+367:entrypoint-rds: temporal: update-schema
+372:entrypoint-rds: temporal_visibility: update-schema
+380:entrypoint-rds: namespace: default がある
+$ docker exec tmp039r2 ps -o pid,ppid,stat,comm
+PID   PPID  STAT COMMAND
+    1     0 S    tini
+   30     1 S    temporal-server
+   83     0 R    ps
+$ time docker stop -t 30 tmp039r2
+tmp039r2
+stop にかかった秒: 1
+ExitCode=0
+{"level":"error",…,"msg":"error fetching user data from parent","component":"matching-engine",…（3 行）
+{"level":"warn",…,"msg":"network dial error","service":"client","address":"172.20.0.3:7235",…
+All services are stopped.
+```
+
+- tini と temporal-server の間に sh は挟まっていない（design のリスク 1 が解けた）。
+- namespace-rds.sh は、抜けたあと `Z` で残っていない。tini が回収した。
+- 停止は 1 秒で、ExitCode は 0。Round 1 の代案の確かめでは、`-t` を付けずに止めて 137 だった。
+- 停止の直前に出ている error と warn は、temporal-server が止まる途中で出たもの。
+
+#### 6. tini とスクリプトの置き場
+
+```
+tini version 0.19.0
+-rwxr-xr-x    1 root     root          7787 Oct 10 10:53 /etc/temporal/entrypoint-rds.sh
+-rwxr-xr-x    1 root     root          1761 Oct 10 10:53 /etc/temporal/namespace-rds.sh
+tini-0.19.0-r3
+```
+
+#### 片付け
+
+- 消したもの:
+  - `docker rm -f -v tmp039r2 pg039r2`
+  - `docker network rm t039r2`
+  - `docker rmi nwc-temporal-server:t039r2 postgres:18 temporalio/server:1.32.1 temporalio/admin-tools:1.32.1`
+  - セルフレビューの `hc039`
+- 確かめた結果:
+  - `docker ps -a` は 0 件。
+  - イメージの一覧を作業前と比べると `images same set`（同じ集合）。
+
+### セルフレビュー
+
+- 実行したモデル:
+  - 自分: opus-5.5 / effort high（サブエージェントの中なので effort を切り替えられない）。
+  - 反対弁護人: `Agent` general-purpose / opus / effort xhigh / 読み取り専用。
+- 反対弁護人の結果: Must 0、Should 2、Nit 7。
+- 反対弁護人が返ったあとの `git status --porcelain -uall` は、前と同じ 6 件で増えていない。
+
+退行を注入した（`<scratchpad>/inject.py` と `inject2.py`）。1 つずつ入れて、nonfatal で数えた。毎回、元に戻している。
+
+| 注入 | 通過 / 失敗 |
+|---|---|
+| M1 unset を exec の直前へ戻す | 368 / 1 |
+| M2 namespace をサブシェル `( … ) &` で起こす | 368 / 1 |
+| M3 exec に tini が無い | 368 / 1 |
+| M4 unset の後に master のパスワードを使う | 363 / 6 |
+| M5 namespace.sh が 30 回目に exit 1 | 367 / 2（下の 1 を直したあと。直す前は 366 / 3） |
+| M6 create に retention を渡さない | 368 / 1 |
+| M7 namespace.sh に unset | 368 / 1 |
+| M8 Dockerfile に tini が無い | 368 / 1 |
+| M9 Dockerfile が namespace.sh を COPY しない | 368 / 1 |
+| M10 ecs.tf に initProcessEnabled を戻す | 368 / 1 |
+| M11 describe を見ずに create | 366 / 3 |
+| S2 namespace を unset より前に起こす | **369 / 0（見逃す）** |
+| N1a nc を `127.0.0.1 7233` に決め打ち | **369 / 0（見逃す）** |
+| N1b unset の直前に `export MASTER_PW="$NAUTOBOT_DB_PASSWORD"` | 368 / 1 |
+| N1c Dockerfile に `ENV PATH=/usr/local/bin:/usr/bin:/bin` | **369 / 0（見逃す）** |
+| N3 ecs.tf に `pid_mode = "task"` | **369 / 0（見逃す）** |
+
+指摘と片付け:
+
+1. **Should fix（直した）** [missing-tests] `tests/test_workflow.py:673-683`
+   - 破綻シナリオ:
+     - 足した振る舞いの検査が、642 行目の `_rc` を上書きしていた。
+     - そのため 684-685 行目の TLS（SQL_HOST_VERIFICATION=false）の check が、TLS の実行ではなく namespace.sh の rc を見ていた。
+     - M5 を注入したら、TLS の check まで落ちたことで見つけた。
+   - 片付け:
+     - 変数を `_ns_rc` / `_ns_calls` / `_ns_err` に分けた。
+     - 直したあと M5 は 367 / 2 で、TLS の check は落ちない。テストは 369 / 0。
+     - このラウンドで自分が入れた退行なので、Should でも直した。
+2. **Should fix（PM に報告。design 側）** [security / docs]
+   - 場所: `IaC/terraform/aws-managed/workflow/ecs.tf:70-71`（healthCheck）、`docs/architecture/resources/temporal.md:61-62`、design.md の背景 1 とリスク 5（反対弁護人 S1）。
+   - 破綻シナリオ:
+     - healthCheck は 10 秒ごとにコンテナの中で `temporal operator namespace describe …` を起こす。
+     - 起こされたプロセスは、タスク定義の env を引き継ぐ。その中には secrets の `NAUTOBOT_DB_PASSWORD` がある。
+     - そのプロセスが生きている間、uid temporal なら `/proc/<pid>/environ` から master のパスワードを読める。
+     - ところが docs と design は、見える例外として ECS Exec しか挙げていない。
+   - 確かめたこと（`<scratchpad>/hc.sh`）:
+     - 手元の既存イメージ `nwc-local-syslog-ng:latest` に `--health-cmd 'sleep 5' -e SECRET_X=dummy` を付けて動かした。
+     - healthCheck のプロセスも Env を持っていた。
+       ```
+       1 sleep [sleep 60 ] SECRET_X=1
+       32 sleep [sleep 5 ] SECRET_X=1
+       ```
+     - ECS / Fargate では確かめていない。
+   - Must にしない理由: main では `/proc/1/environ` からいつでも読めた。このラウンドで悪くはなっていない。
+   - 片付け:
+     - 最終報告に回す。
+     - design と docs の書き方は PM が決める。
+     - 案:
+       - 書き方を直す
+       - healthCheck を `env -i` で起こす
+       - 初期化を一回きりのコンテナに分ける
+3. **Should fix（PM に報告）** [missing-tests] `tests/test_workflow.py:612,648`、`entrypoint.sh:79,104`（反対弁護人 S2）
+   - 破綻シナリオ:
+     - namespace-rds.sh を unset より前で起こしても、テストは通る（注入の S2 が 369 / 0）。
+     - そうなると、namespace-rds.sh とその子が最長で数分、master のパスワードを持つ。
+   - 片付け: 最終報告に回す。直すなら、namespace の行が unset の行より後にあることを assert する。
+4. **Should fix（PM に報告。039 より前からある）** [runtime] `entrypoint.sh` の手順 1〜3（exec tini より前）（反対弁護人）
+   - 破綻シナリオ:
+     - 手順 1〜3 の間、PID 1 は sh で、シグナルのハンドラを持たない。PID 1 のプロセスはハンドラの無いシグナルを受けないので、SIGTERM を無視する。
+     - 起動中に止めると、stopTimeout が過ぎたあと SIGKILL で切れる。update-schema の途中で切れることもある。
+   - 確かめたこと: 読んだだけ。再現していない。
+   - 片付け: 範囲外。最終報告に回し、QUEUE の候補にする。
+5. **Nit** [security] `entrypoint.sh:12-79`
+   - 内容:
+     - 手順 1〜2 の間は、PID 1 の sh の `/proc/1/environ` に master のパスワードがある。
+     - `exec tini` で消える（検証 5 では tini 0）。
+     - design の背景 1 の「守れる範囲」は、entrypoint のあとに動くプロセスだけ。これはその外になる。反対弁護人も同じ見方。
+   - 片付け: 最終報告に回す。
+6. **Nit** [missing-tests] `tests/test_workflow.py:659-683`
+   - 内容:
+     - nc のスタブが引数を記録していない（注入の N1a が 369 / 0）。
+     - nc と cluster health が 30 回通らない経路を通していない。
+     - 上の「設計からの逸脱」の宛先を縛るものは無い。
+   - 片付け: 最終報告に回す。
+7. **Nit** [runtime] `entrypoint.sh:108`
+   - 内容:
+     - tini を PATH で引いている。
+     - `/sbin` を落とした `ENV PATH` を見逃す（注入の N1c が 369 / 0）。そのときは exec が 127 になり、起動と停止を繰り返す。
+     - いまのイメージでは動く（検証 5）。
+   - 片付け: 最終報告に回す。直すなら `/sbin/tini` と書く。
+8. **Nit** [missing-tests] `tests/test_workflow.py:557-558`
+   - 内容:
+     - `linuxParameters` を丸ごと禁じている。
+     - それなのに `pid_mode = "task"` は通る（注入の N3 が 369 / 0）。そうなると tini が PID 1 でなくなる。
+   - 片付け: 最終報告に回す。
+9. **Nit** [docs] `namespace.sh:5`、`tests/test_workflow.py:682` の check 名
+   - 内容:
+     - 背景のジョブの終了コードは、誰も待っていない。
+     - なので「道連れにしない」という理由の書き方は誤解を招く（exit 0 にすることは変えない）。
+   - 片付け: 最終報告に回す。
+10. **Nit（PM の担当）** [docs] `docs/cycles/QUEUE.md` の 039 の行
+    - 内容:
+      - initProcessEnabled の計画のまま。
+      - AWS で見るものの補足が要る:
+        - `comm` は `namespace-rds.s` と切れて出る。
+        - healthCheck のプロセスは 1 と出る（上の 2）。
+    - 片付け: 最終報告に回す。
+11. **Nit** [runtime] `namespace.sh` の引数
+    - 内容: 引数が足りないと、`set -u` で 0 以外で抜ける。entrypoint は必ず 3 つ渡すので害は無い。
+    - 片付け: 最終報告に回す。
+12. **Nit**: shellcheck はこの PC に無いので実行していない。
+
+「問題なし」とした観点と、その根拠:
+
+- exec tini より前に namespace-rds.sh が抜けた場合
+  - 根拠: ゾンビは PID 1 の子のまま残り、exec のあとに tini の `waitpid(-1)` が回収する。
+  - 実測: 検証 5 で、2 回目に ppid 1 の namespace-rds.s がいて、抜けたあとに `Z` は無かった。
+  - 反対弁護人も不成立と判定した。
+- namespace.sh に `set -e` が無いこと
+  - 根拠: どのループも rc を自分で見ている。
+  - 実測: 振る舞いの検査 3 つと、注入の M5 / M11。
+- SIGTERM
+  - 根拠: tini が temporal-server に送る。
+  - 実測: 検証 5 で停止が 1 秒、ExitCode 0。
+  - 前提: pidMode を指定しないこと（上の 8）。
+
+### 残っているもの
+
+- Must fix: 0。
+- 最終報告に回したもの:
+  - Should fix 3（上の 2〜4）
+  - Nit 8（上の 5〜12）
+- AWS（ECS Fargate）では何も確かめていない。

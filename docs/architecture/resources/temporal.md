@@ -58,9 +58,9 @@ worker が読み書きするもの:
 - **初期化は temporal のコンテナの entrypoint がやる。**
   - ロールと DB は Nautobot の master で「無いときだけ」作る。スキーマは `schema_version` が無い初回だけ `setup-schema`、毎回 `update-schema`（べき等。消すコマンドは打たない）。
   - namespace `default` は temporal-server を起こしたあとに背景で作る。healthCheck がその describe を見るので、worker と ui は namespace ができてから起きる。
-  - ロールと DB を作ったあと、master のパスワード（`NAUTOBOT_DB_PASSWORD`）は env から外してから temporal-server を起こす。
-  - namespace を作る背景のプロセスは、抜けたあと ECS の init（`initProcessEnabled`）が回収する。
-  - 出典: `docker/images/temporal-server/entrypoint.sh`。
+  - ロールと DB を作った直後に、master のパスワード（`NAUTOBOT_DB_PASSWORD`）を env から外す。守れるのは tini / temporal-server / namespace を作る背景のプロセスの `/proc/<pid>/environ`。ECS Exec のシェルはタスク定義の env を引き継ぐので、そこからは見える（[036 の設計](../../cycles/036-temporal-rds/design.md)のリスク 7 のまま）。
+  - PID 1 はイメージの tini。temporal-server と namespace を作る背景のプロセス（`/etc/temporal/namespace-rds.sh`）は tini の子で、抜けたら tini が回収する。ECS の `initProcessEnabled` では回収できない: init は孤児しか拾わず、親の temporal-server は生きている（cycle 039）。
+  - 出典: `docker/images/temporal-server/entrypoint.sh`、`namespace.sh`、`Dockerfile`。
 - **gRPC の 7233〜7239 と membership の 6933〜6939 はタスクの外に出さない。**
   temporal は `BIND_ON_IP=0.0.0.0` で待つが portMappings に出さず、SG は workflow → workflow の自分宛てだけ（デプロイの入れ替わりで 2 つのタスクが並ぶ間に使う）。worker は同じタスクの `localhost:7233`、ui は `127.0.0.1:7233`。
   出典: `ecs.tf` のコメント、[workflow.md](../../workflow.md) の「Temporal UI を開く」。
@@ -112,6 +112,7 @@ worker が読み書きするもの:
 | Temporal の履歴 | Nautobot の RDS に残る。`ops/down.sh` で RDS ごと消える |
 | RDS の PostgreSQL 18 | Temporal の動作確認済みの一覧は 12〜16。手元の `postgres:18` ではスキーマが入り動いた（2026-10-10）。RDS の 18、TLS（`SQL_HOST_VERIFICATION=false`）、master での `CREATE EXTENSION btree_gin` は AWS では未確認。ホスト名検証を有効にするには、RDS の CA をイメージに入れ（いまの Dockerfile には無い）、ecs.tf に `SQL_HOST_VERIFICATION=true` と `SQL_CA` を足し、`tests/test_workflow.py` の期待を変える。entrypoint の psql / temporal-sql-tool は同じ env を読むので変えなくてよい |
 | 2 タスク | デプロイの入れ替わりの間だけ並ぶ。AWS では未確認 |
+| ECS Exec | シェルがタスク定義の env を引き継ぐので master のパスワードが見える。`ecs:ExecuteCommand` の権限は Nautobot のコンテナと同じ扱い |
 | フラップ | 走っているあいだに届いた落ち直しの `firing` は捨てる（[workflow.md](../../workflow.md) の「通知の重なりと取りこぼし」） |
 | 処置の種類 | `heal-main`（`dc1-a-leaf-01` の `ethernet-1/1` を上げる）と見るだけの `check` だけ。事前チェック（`precheck`）の警告は落とす処置を足したときに効く |
 | worker が 1 日を超えて止まる | そのあいだに Web から送った決定は SQS の保持（1 日）で消える。修復案は `pending` のまま残る |
@@ -134,4 +135,4 @@ worker が読み書きするもの:
   - 出典: `IaC/terraform/aws-managed/workflow/proposals.tf` の先頭のコメント。
 - 2026-10-10（036）: CLI の開発用サーバー（`temporalio/temporal` 1.9.1、履歴はコンテナの中のファイル）をやめ、`temporalio/server` 1.32.1 の本番モードで Nautobot の RDS に履歴を書く形に変えた。UI は別コンテナ。
   - [Temporal の履歴を RDS に残す（036）の設計](../../cycles/036-temporal-rds/design.md)
-- 2026-10-10（039）: entrypoint で master のパスワードを exec の前に env から外し、psql / temporal-sql-tool の TLS をサーバー本体と同じ env から導き、temporal のコンテナに `initProcessEnabled` を足した。[temporal-server の entrypoint の守りを締める（039）の設計](../../cycles/039-temporal-entrypoint-hardening/design.md)
+- 2026-10-10（039）: tini を PID 1 にし、namespace の作成を別の実行ファイル（`namespace-rds.sh`）にし、master のパスワードを最後に使った直後に env から外した。psql / temporal-sql-tool の TLS はサーバー本体と同じ env から導く。[temporal-server の entrypoint の守りを締める（039）の設計](../../cycles/039-temporal-entrypoint-hardening/design.md)
