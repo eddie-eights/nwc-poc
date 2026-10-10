@@ -293,6 +293,20 @@ jar は `ops/up.sh` の `JARS` に書いた sha256 と照合し、合わなけ�
 - indexer が同じ AZ に 2 台いたら注意を出す（止まらない）。
 - search head のログの `nwc-peer-check state=ok reason=peers_up:<indexer の数>` を最大 6 分待ち、出なければ止まる。
 
+## Spark のジョブだけ止めて起こし直す
+
+Spark（EMR Serverless）のストリーミングジョブ（`sinks-s3iceberg` / `sinks-splunk` / `sinks-grafana`）だけを止めて、あとで起こし直す。
+環境ごと消す（`ops/down.sh`）のではなく、ジョブの分の費用だけ止めたいときや、格納先（S3 Tables / Splunk / OpenSearch・Prometheus）を触るあいだ書き込みを止めたいとき。
+
+| 操作 | 打つもの | すること |
+|---|---|---|
+| 止める | `ops/stop-spark.sh` | `IaC/terraform/aws-managed/pipeline/analytics` の state からアプリケーションの ID を引き、動いている・待っているジョブを名前で絞らずに全部 cancel して、止まる（`CANCELLING` も抜ける）まで最大 3 分待つ。EMR Serverless のアプリケーションと Terraform のリソースは触らない。`deploy.env` は `ops/up.sh` と同じもの（`OWNER` が同じ値であること） |
+| 起こし直す | `ops/up.sh` | 手順 7-5 が、動いているジョブの無い格納先のジョブを起こす（手順 1〜7-4 はできているものを飛ばす）。ジョブは checkpoint（assets のバケットの `spark/checkpoint/` の下）から続きを読むので、止めていた間に MSK に入った分も読む |
+
+- 止めているあいだは格納先に新しいデータが入らず、Grafana / Splunk のアラートも出ない。
+- 3 分たっても止まらないときは `ops/stop-spark.sh` が止まる。`terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw list_job_runs_command` が出すコマンドで見て、止まってから打ち直す。
+- 止める塊は `ops/common.sh` の `emr_cancel_jobs` で、`ops/up.sh` の手順 7-4（アプリの上限やサブネットを変える前）と `ops/down.sh`（analytics を消す前）も同じ関数で止める。
+
 ## `ops/down.sh` がすること
 
 state にリソースが載っているルートだけを、この順に消す。`deploy.env` の機能のキーは見ない（`0` に戻したあとでも前に作ったものを消す）。

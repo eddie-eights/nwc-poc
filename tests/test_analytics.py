@@ -2828,7 +2828,8 @@ def _run74(app, runs=(), cancel_delay=2, stop_delay=2, state_file=True, emr_az_n
         with open(state, "w") as f:
             json.dump({"app": copy.deepcopy(app), "runs": copy.deepcopy(list(runs)), "log": [],
                        "cancel_delay": cancel_delay, "stop_delay": stop_delay}, f)
-        pre = (f'set -euo pipefail\nTF_DIR=IaC/terraform/aws-managed; REGION=r; ANALYTICS_VARS=(-var x=1); EMR_AZ_NUM={emr_az_num}\n'
+        # 止める塊は ops/common.sh の emr_cancel_jobs なので、切り出した 7-4 の前に common.sh を読む（die / tf はその後で偽物に置き換える）
+        pre = (f'. "{ROOT}/ops/common.sh"\nset -euo pipefail\nTF_DIR=IaC/terraform/aws-managed; REGION=r; ANALYTICS_VARS=(-var x=1); EMR_AZ_NUM={emr_az_num}\n'
                'die() { echo "DIE: $*"; exit 1; }\nsleep() { :; }\ntf_init() { :; }\nhas_resources() { return 0; }\n'
                'tf() { case "$4" in application_id) echo app ;; list_job_runs_command) echo LIST ;; *) echo "tf? $*" >&2; exit 9 ;; esac; }\n')
         r = subprocess.run(["bash", "-c", pre + _b74 + '\nprintf "VARS:%s\\n" "${ANALYTICS_VARS[@]}"'], capture_output=True, text=True, cwd=d,
@@ -2842,6 +2843,48 @@ _acts74 = lambda st: [l for l in st["log"] if l.startswith(("cancel", "stop"))]
 _old_app = {"state": "STARTED", "cpu": "4 vCPU", "memory": "16 GB"}
 _runs74 = [{"id": "a", "name": "snmp-sinks", "state": "RUNNING"}, {"id": "b", "name": "sinks-grafana", "state": "QUEUED"},
            {"id": "c", "name": "sinks-s3iceberg", "state": "SUCCESS"}]
+# 止める塊（ops/common.sh の emr_cancel_jobs）を up.sh の 7-4・down.sh・ops/stop-spark.sh が共有する。7-5 は SpecHash で選んだジョブだけ止めるので別
+_common = open(os.path.join(ROOT, "ops", "common.sh"), encoding="utf-8").read()
+_stop = open(os.path.join(ROOT, "ops", "stop-spark.sh"), encoding="utf-8").read()
+check("Spark のジョブを名前で絞らずに全部 cancel して待つ塊は ops/common.sh の emr_cancel_jobs の 1 か所で、up.sh の 7-4（3 分）・down.sh（2 分）・ops/stop-spark.sh（3 分）がそれを呼ぶ",
+      _common.count("emr_cancel_jobs() {") == 1 and _common.count("cancel-job-run") == 1 and up.count("cancel-job-run") == 2  # common.sh の関数と 7-5
+      and down.count("cancel-job-run") == 1 and _stop.count("cancel-job-run") == 0
+      and 'emr_cancel_jobs "$APP_ID" 36 \\\n            || die "アプリの設定を変える前に止めた Spark のジョブ（${EMR_JOBS_LEFT}）が 3 分たっても止まらない' in up
+      and 'emr_cancel_jobs "$APP_ID" 24 \\\n      || echo "Spark のジョブ（${EMR_JOBS_LEFT}）が 2 分たっても止まらない。そのまま進む' in down
+      and 'emr_cancel_jobs "$APP_ID" 36 \\\n  || die "Spark のジョブ（${EMR_JOBS_LEFT}）が 3 分たっても止まらない' in _stop)
+check("ops/stop-spark.sh はジョブを止めるだけ（アプリケーションは止めず、起こさず、Terraform は読むだけ）。deploy.env と認証は down.sh と同じ形で、analytics の state が無ければ止まる",
+      "start-job-run" not in _stop and "stop-application" not in _stop and "destroy" not in _stop and "apply" not in _stop
+      and ". ops/common.sh" in _stop and ". ops/down-common.sh" in _stop and "load_deploy_env\nresolve_name_prefix" in _stop and "tf_use_cli_credentials" in _stop
+      and 'has_resources pipeline/analytics \\\n  || die "IaC/terraform/aws-managed/pipeline/analytics の state にリソースが無い' in _stop
+      and 'APP_ID=$(tf pipeline/analytics output -raw application_id 2>/dev/null) || die' in _stop
+      and os.access(os.path.join(ROOT, "ops", "stop-spark.sh"), os.X_OK))
+def _run_cancel(runs, loops, cancel_delay=2):  # emr_cancel_jobs を偽の aws（_FAKE_AWS74）で回す
+    d = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(d, "aws"), "w") as f:
+            f.write(_FAKE_AWS74)
+        os.chmod(os.path.join(d, "aws"), 0o755)
+        state = os.path.join(d, "state.json")
+        with open(state, "w") as f:
+            json.dump({"app": {"state": "STARTED", "cpu": "", "memory": ""}, "runs": copy.deepcopy(list(runs)), "log": [],
+                       "cancel_delay": cancel_delay, "stop_delay": 1}, f)
+        r = subprocess.run(["bash", "-c", f'. "{ROOT}/ops/common.sh"\nset -euo pipefail\nREGION=r\nsleep() {{ :; }}\n'
+                            f'if emr_cancel_jobs app {loops}; then echo "RC=0 LEFT=[$EMR_JOBS_LEFT]"; else echo "RC=1 LEFT=[$EMR_JOBS_LEFT]"; fi'],
+                           capture_output=True, text=True, cwd=d, env={"PATH": d + os.pathsep + os.environ["PATH"], "FAKE_STATE": state})
+        with open(state) as f:
+            st = json.load(f)
+        return r.returncode, r.stdout + r.stderr, st
+    finally:
+        shutil.rmtree(d)
+_rc, _out, _st = _run_cancel(_runs74, 36, cancel_delay=3)
+check("emr_cancel_jobs: 動いている・待っているジョブを全部 cancel し、CANCELLING が抜けるまで待って 0（終わっているジョブは触らない）",
+      _rc == 0 and _acts74(_st) == ["cancel a", "cancel b"] and "Spark のジョブ a を止める" in _out and "RC=0 LEFT=[]" in _out
+      and [r["state"] for r in _st["runs"]] == ["CANCELLED", "CANCELLED", "SUCCESS"])
+_rc, _out, _st = _run_cancel(_runs74, 3, cancel_delay=1000)
+check("emr_cancel_jobs: 待ち切れなければ残ったジョブの id を EMR_JOBS_LEFT に入れて 1（呼ぶ側が die か echo を選ぶ）",
+      _rc == 0 and "RC=1 LEFT=[a\tb]" in _out and _acts74(_st) == ["cancel a", "cancel b"] and _st["log"].count("list a:CANCELLING b:CANCELLING") == 3)
+_rc, _out, _st = _run_cancel([{"id": "c", "name": "sinks-s3iceberg", "state": "SUCCESS"}], 3)
+check("emr_cancel_jobs: 動いているジョブが無ければそう言って 0（cancel は打たない）", _rc == 0 and "動いている Spark のジョブは無い" in _out and _acts74(_st) == [] and "RC=0" in _out)
 _rc, _out, _st = _run74(_old_app, _runs74, cancel_delay=3)
 check("7-4 の前（上限が変わる）: 動いている・待っている（QUEUED）ジョブを全部 cancel し、止まってから stop-application、STOPPED を待つ",
       _rc == 0 and _acts74(_st) == ["cancel a", "cancel b", "stop"] and _st["app"]["state"] == "STOPPED"

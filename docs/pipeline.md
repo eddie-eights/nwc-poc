@@ -794,7 +794,7 @@ uv run python app/containerlab/lab_topology.py app/containerlab --layers > app/a
 | `app/gnmic/`（`gnmic.yaml.in` / `gnmic.sh`）と `docker/images/gnmic/` | `ops/up.sh` を打つ（同じく手順 2 がイメージを作り直し、手順 7 の stream の apply が gnmic のタスクを入れ替える）。デバッグ用の EC2 には gnmic が無い |
 | `app/grafana/`（provisioning。ダッシュボードとアラート） | `ops/up.sh` を打つ（同じく手順 2 がイメージを作り直し、手順 7-4 の analytics の apply がタスクを入れ替える） |
 | `app/splunk/`（保存済みサーチ、アラートアクション） | `ops/up.sh` を打つ（同じ。Splunk の index はタスクと一緒に消えるので、入れ替えの前のイベントは検索できなくなる。クラスター（`SPLUNK_AZ_NUM` が 2 か 3）は indexer を 1 台ずつ入れ替えるが、複製が終わる前に次の台が入れ替わると、その分は消える） |
-| `app/spark/snmp_sinks.py` | `ops/up.sh` を打つ（手順 7-5 がハッシュの違いを見て、動いているジョブ（3 つまで）を止めて起こし直す）。手で止めるコマンドは下 |
+| `app/spark/snmp_sinks.py` | `ops/up.sh` を打つ（手順 7-5 がハッシュの違いを見て、動いているジョブ（3 つまで）を止めて起こし直す）。止めるだけなら `ops/stop-spark.sh`（下） |
 | lab の機器や回線 | 上のあと `ops/sync-graph.sh --replace`。監視する機器を足したら Nautobot にも足す。device map は `ops/up.sh` で作り直す（どちらも表の下） |
 
 - lab の機器や回線:
@@ -803,10 +803,10 @@ uv run python app/containerlab/lab_topology.py app/containerlab --layers > app/a
   - stream の変数 `gnmi_targets` は最初の値だけで、変えても gnmic の一覧は変わらない。
   - device map は Splunk のタスクの環境変数なので、変われば手順 7-4 の apply が Splunk のタスクを入れ替える。
 
-ジョブを止めるコマンド（`$APP_ID` と `$JOB_RUN_ID` は上の「Spark を確かめる」で入れる）:
+ジョブを止めるだけなら（3 つとも止めて、止まるまで待つ。起こし直すのは `ops/up.sh`。[deploy.md](deploy.md) の「Spark のジョブだけ止めて起こし直す」）:
 
 ```bash
-aws emr-serverless cancel-job-run --region ap-northeast-1 --application-id "$APP_ID" --job-run-id "$JOB_RUN_ID"
+ops/stop-spark.sh
 ```
 
 ## 経緯

@@ -16,7 +16,7 @@
 | `test_dashboard_config` | `app/dashboard/config.py` が読む `.env` と `DATA_DIR` の段数 | `app/dashboard/` |
 | `test_stream` | 取り込みの経路（lab の機器 → Telegraf → MSK → Spark）。Spark が検知をしないこと | `app/telegraf/` `app/spark/` `IaC/terraform/aws-managed/pipeline/stream` `ops/up.sh` `ops/down.sh` `ops/deploy-env.sh` |
 | `test_collectors` | syslog-ng の JSON のキーと型が Telegraf 時代の `device_log` と同じ、`syslog-ng.sh render`、GoFlow2、`ops/netflow_send.py` | `app/syslog-ng/` `docker/images/syslog-ng/` `ops/netflow_send.py` |
-| `test_analytics` | analytics の Terraform（S3 Tables / EMR Serverless / 格納先）と `snmp_sinks.py` の列の一致、remote write の復号 | `app/spark/` `IaC/terraform/aws-managed/pipeline/analytics` `ops/up.sh` `docs/deploy.md` |
+| `test_analytics` | analytics の Terraform（S3 Tables / EMR Serverless / 格納先）と `snmp_sinks.py` の列の一致、remote write の復号、Spark のジョブの止め方（`emr_cancel_jobs`） | `app/spark/` `IaC/terraform/aws-managed/pipeline/analytics` `ops/up.sh` `ops/down.sh` `ops/common.sh` `ops/stop-spark.sh` `docs/deploy.md` |
 | `test_alerts` | Splunk の保存済みサーチと Grafana のアラートが同じ形の本文を出し、`rules.py` が読めること。SNS のトピックとイメージと ops の配線 | `app/splunk/` `app/grafana/` `app/temporal/rules.py` `IaC/terraform/aws-managed/base/core` `docker/images/splunk/` `ops/check-grafana.sh` `ops/grafana_rules_check.py` |
 | `test_nautobot` | lab → seed_plan → Nautobot → graph / targets の一周、SSM と gnmic の作り直し、Web からの REST、配線 | `app/nautobot/` `app/dashboard/` `IaC/terraform/aws-managed/pipeline/nautobot` `ops/up.sh` `ops/down.sh` `docs/*.md` |
 | `test_lab_debug` | デバッグ用の EC2（CloudFormation）が lab と stream の Telegraf からずれていないこと。版は `ops/lab-common.sh` が正 | `IaC/cloudformation/lab-debug.yaml` `IaC/terraform/aws-managed/pipeline/lab` `app/containerlab/` `app/telegraf/` `ops/lab-*.sh` |

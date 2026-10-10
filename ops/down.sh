@@ -56,20 +56,9 @@ log "1. workflow → analytics → nautobot → graph → stream（workflow は 
 if has_resources pipeline/analytics; then
   APP_ID=$(tf pipeline/analytics output -raw application_id 2>/dev/null || true)
   if [ -n "$APP_ID" ]; then
-    RUNNING=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$APP_ID" \
-      --states SUBMITTED PENDING SCHEDULED RUNNING QUEUED --query 'jobRuns[].id' --output text 2>/dev/null || true)
-    if [ -n "$RUNNING" ] && [ "$RUNNING" != None ]; then
-      for id in $RUNNING; do
-        echo "Spark のジョブ $id を止める"
-        aws emr-serverless cancel-job-run --region "$REGION" --application-id "$APP_ID" --job-run-id "$id" >/dev/null || true
-      done
-      for i in $(seq 1 24); do  # 止まるまで最大 2 分
-        LEFT=$(aws emr-serverless list-job-runs --region "$REGION" --application-id "$APP_ID" \
-          --states SUBMITTED PENDING SCHEDULED RUNNING QUEUED CANCELLING --query 'jobRuns[].id' --output text 2>/dev/null || true)
-        if [ -z "$LEFT" ] || [ "$LEFT" = None ]; then break; fi
-        sleep 5
-      done
-    fi
+    # ops/common.sh の emr_cancel_jobs（ops/up.sh の手順 7-4 と ops/stop-spark.sh も同じ関数）。止まるまで最大 2 分。止まらなくても進む
+    emr_cancel_jobs "$APP_ID" 24 \
+      || echo "Spark のジョブ（${EMR_JOBS_LEFT}）が 2 分たっても止まらない。そのまま進む（アプリケーションが止まらず analytics の destroy が落ちたら、止まってから ops/down.sh を打ち直す）"
     aws emr-serverless stop-application --region "$REGION" --application-id "$APP_ID" >/dev/null 2>&1 || true
     for i in $(seq 1 24); do  # STOPPED になるまで最大 2 分
       STATE=$(aws emr-serverless get-application --region "$REGION" --application-id "$APP_ID" --query application.state --output text 2>/dev/null || echo "")
