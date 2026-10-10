@@ -12,7 +12,8 @@
 
 # SG のルールは IaC/terraform/aws-managed/base/core の security_groups.tf の通信の表にある（ここでは作らない）:
 #   gNMI        gnmic のタスクの SG → 管理ネットワークの CIDR（tcp 57400）、lab の EC2 はタスクの SG から受ける
-#   trap / syslog  lab の EC2 → NLB の SG（udp 162 / 5140）、NLB は管理ネットワークの CIDR から受ける（送り元が機器の管理 IP のままなので）
+#   trap / syslog  lab の EC2 → NLB の SG（udp 162 / 5140）、NLB は管理ネットワークの CIDR から受ける（送り元が機器の管理 IP のままなので）。
+#               NLB は lab の SG からも udp 5140 / 2055 / 6343 を受ける（lab の EC2 自身が logger や ops/netflow_send.py で試しに送るぶん。162 は受けない）
 # gNMI の応答はタスクの送信の戻りなので SG の追跡で通る。2026-09-29 まではここで internal の SG に管理ネットワークからの受信を足していた
 
 # 管理ネットワーク宛てを lab の EC2 へ。lab の EC2 は source_dest_check を切る（instance.tf）。
