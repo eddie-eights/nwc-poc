@@ -1,6 +1,6 @@
 # description を変えた SG が残っていれば up.sh を止め、telegraf の SG の説明を揃える（043）
 
-設計: PM(fable-5-1) / effort: high。実装はエンジニア（opus-5.5 以下）。2026-10-11。Round 2（Round 1 のセルフレビューの Must fix 1 で差し戻し。前の設計は git の `a3e208c`）。Round 3 は `review.md` Round 1 の Should 1（runtime の SG だけが残った state で案内どおり `down.sh` を打っても抜けられない）と Nit 1・2・4 を取り込んだ文面の修正（Round 2 の設計は git の `7d2a8f4`）。
+設計: PM(fable-5-1) / effort: high。実装はエンジニア（opus-5.5 以下）。2026-10-11。Round 2（Round 1 のセルフレビューの Must fix 1 で差し戻し。前の設計は git の `a3e208c`）。Round 3 は `review.md` Round 1 の Should 1（runtime の SG だけが残った state で案内どおり `down.sh` を打っても抜けられない）と Nit 1・2・4 を取り込んだ文面の修正（Round 2 の設計は git の `7d2a8f4`）。Round 3 のセルフレビューで troubleshooting の「全キーが違う」（web / lab / lambda はパスを含まないので違わない）と参照先（「画面に入れない」に Runtime の ENI の項は無い）を PM が直した（`4887ff0` の後）。
 
 ## Round 2 の入力（Round 1 の `build.md` の Must fix 1。原因は設計方針 1・5）
 
@@ -62,7 +62,7 @@
 2. **呼ぶ場所は Round 1 のまま**: `ops/up.sh` と `ops/oss/up.sh` の `if [ -f "$TF_DIR/base/core/terraform.tfstate" ]` の塊の末尾（telegraf_dialin の `fi` の後、`tf_init base/core` 済み、`log "1. ECR リポジトリ"` より前）。呼び出しの上のコメントは「キーはそのままで description を変えた SG（workflow は 041、telegraf_dialout / telegraf_dialout_nlb は 043）も作り直しで、ほかの SG のルールが古い SG を参照したままなので、付けるルートを消しても消せない。state の description がコードと違えば、全部消してもらう（ops/up-common.sh の check_sg_descriptions。全キーを見るので表は無い）」に直す。
 3. **文言はコードから読む**（up.sh に写しを持たない）。awk 1 本で済ませ、BSD awk（macOS）で動く書き方にする（`match` + `substr`。`gensub` や `-v` 以外の GNU 拡張を使わない）。
 4. **description を直す**（Round 1 のまま）。`security_groups.tf:27` → `Telegraf dial-out ECS task - SNMP traps behind the NLB (IaC/terraform/aws-managed/pipeline/stream)`、`:29` → `Internal NLB in front of the Telegraf dial-out, syslog-ng and GoFlow2 tasks (IaC/terraform/aws-managed/pipeline/stream)`。`:24` のコメントは「dialout と NLB の description は 043 で syslog_ng / goflow2 に合わせた（description を変えると作り直しで、ほかの SG のルールが古い SG を参照したままなので、付けるルートを消しても消せない。古い description の state があると ops/up.sh は check_sg_descriptions で止める。全キーを見るので表は無い）」にする。`:22-23` の「ops/up.sh は古いキーの state のまま stream があると止める」はそのまま。
-5. **docs を揃える。** `docs/cml-sandbox.md:558` は Round 1 のまま（「NLB は trap（162/udp）を `lab` の SG からは受けない（`lab` の SG の 162 は送る側だけ。syslog の 5140 は 037 から受ける）」）。`core.md:102-103` と `vpc-perimeter.md:96-98` の Round 1 で足した 1 行を「state の description がコードと違う SG が 1 つでもあると、`ops/up.sh` は手順 0 の後で止まる（`ops/up-common.sh` の `check_sg_descriptions`。全キーを見る）。ほかの SG のルールが古い SG を参照したままなので、付けるルートだけ消しても消せない。`ops/down.sh` で全部消してから `ops/up.sh`」に替える。`troubleshooting.md:26`（Round 1 で足した行）は見出しを「手順 0 の後に「state の SG の description がコードと違う: …」で止まる」、対処を「description を変えた SG（workflow は 041、telegraf_dialout / telegraf_dialout_nlb は 043）が state にある（`ops/up-common.sh` の `check_sg_descriptions`）。作り直しで、ほかの SG のルールが古い SG を参照したままなので、ルートだけ消しても消せない（DependencyViolation）。まだ何も作っていない。`ops/down.sh`（OSS 版は `ops/oss/down.sh`）で全部消してから `ops/up.sh`。違うキーに runtime があるときは、Runtime の ENI（最長 8 時間ほど残る）があるあいだ `ops/down.sh` も runtime の SG を残すので、ENI が消えてから `ops/down.sh`（「画面に入れない」の下の Runtime の ENI の項と同じ待ち）。2026-10-08（`48683dd`）より前の state は、パスが `terraform/…` から `IaC/terraform/aws-managed/…` に変わったので全キーが違う」に替える（**ルートだけ destroy する案内と必須変数の列挙は消す**）。
+5. **docs を揃える。** `docs/cml-sandbox.md:558` は Round 1 のまま（「NLB は trap（162/udp）を `lab` の SG からは受けない（`lab` の SG の 162 は送る側だけ。syslog の 5140 は 037 から受ける）」）。`core.md:102-103` と `vpc-perimeter.md:96-98` の Round 1 で足した 1 行を「state の description がコードと違う SG が 1 つでもあると、`ops/up.sh` は手順 0 の後で止まる（`ops/up-common.sh` の `check_sg_descriptions`。全キーを見る）。ほかの SG のルールが古い SG を参照したままなので、付けるルートだけ消しても消せない。`ops/down.sh` で全部消してから `ops/up.sh`」に替える。`troubleshooting.md:26`（Round 1 で足した行）は見出しを「手順 0 の後に「state の SG の description がコードと違う: …」で止まる」、対処を「description を変えた SG（workflow は 041、telegraf_dialout / telegraf_dialout_nlb は 043）が state にある（`ops/up-common.sh` の `check_sg_descriptions`）。作り直しで、ほかの SG のルールが古い SG を参照したままなので、ルートだけ消しても消せない（DependencyViolation）。まだ何も作っていない。`ops/down.sh`（OSS 版は `ops/oss/down.sh`）で全部消してから `ops/up.sh`。違うキーに runtime があるときは、Runtime の ENI（最長 8 時間ほど残る）があるあいだ `ops/down.sh` も runtime の SG を残すので、ENI が消えてから `ops/down.sh`（下の「消すとき」の `DependencyViolation` の行と同じ待ち）。2026-10-08（`48683dd`）より前の state は、description 末尾のパスが変わった（`terraform/…` → `IaC/terraform/aws-managed/…`、OSS 版の上書きは `oss/terraform/…` → `IaC/terraform/oss/…`）ので、パスを含む description（web / lab / lambda 以外の全部）が違う」に替える（**ルートだけ destroy する案内と必須変数の列挙は消す**）。
 6. **QUEUE 147 に 043 の確認を足す**（PM が書く。エンジニアは QUEUE を触らない）: 「環境が立ったまま `ops/up.sh` を 2 回目に打ち、手順 0 の後の `check_sg_descriptions` が止まらずに手順 1 へ進むこと（実物の `terraform show` の形の確認。古い state は作れないので die する側は偽の `tf` のテストだけ）」。
 
 やらないこと: SG に `create_before_destroy` を付ける（name が固定で同名の SG は作れない。名前にランダムを足すと全ルートの参照が変わる）。キーを変えた既存の守り 3 つをこの関数に統合する（state にコードに無いキーがあるかを見るもので、別物。「stream だけ先に消してもよい」もそちらでは正しい）。`terraform show -json` + Python（`PY` は `ops/up.sh:438` / `ops/oss/up.sh:131` で守りの前に決まるので使えるが、既存の守りと同じ sed / awk で足りる）。
@@ -89,7 +89,7 @@
 2. `ops/up.sh` と `ops/oss/up.sh` の呼び出しのコメントを設計方針 2 に直す
 3. `security_groups.tf:24` のコメントを設計方針 4 に直す。`terraform fmt -check`（`IaC/terraform/aws-managed/base/core`）が通ること
 4. docs 3 本を設計方針 5 に直す（`cml-sandbox.md` は触らない）
-5. テストを書き直す（検証 1〜5）。`bash -n ops/up.sh ops/oss/up.sh ops/up-common.sh`
+5. テストを書き直す（検証 1〜5）。`bash -n` を `ops/up.sh` / `ops/oss/up.sh` / `ops/up-common.sh` に 1 本ずつ（並べると 1 本目しか見ない）
 6. `/cycle-build` 手順6 のセルフレビュー（`build.md` に `## Round 2`）
 
 ## 検証方法（期待出力つき）
@@ -111,7 +111,7 @@
 3. `tests/test_oss_ops.py`: `ops/oss/up.sh` の呼び出しの位置（Round 1 のまま）。偽の terraform に `show` の枝（`rest[:1] == ["show"]`）を足し、`# aws_vpc.this:` のブロック（`state show` と同じ文面）だけを返す → `up.sh（通し）` の check が全部通る（workload の SG が無いので守りは通す）。
 4. `tests/test_workflow.py:2100` の隣の telegraf の description の check は Round 1 のまま。
 5. 文言（`docs/cycles/` は 043 自身の design / build / review に当たるので除く）: `grep -rn --exclude-dir=cycles 'SG_DESCRIPTION_ROOTS' ops docs tests IaC` が 0 件。`grep -rn --exclude-dir=cycles 'だけ先に消してもよい' ops docs` がキーを変えた既存の守りの 3 行（`ops/up.sh` の telegraf / telegraf_dialin、`ops/oss/up.sh` の telegraf_dialin）だけ。`grep -n 'worker_image_tag=destroy' docs/troubleshooting.md` が 0 件。`grep -c 'check_sg_descriptions' docs/architecture/core.md docs/architecture/resources/vpc-perimeter.md docs/troubleshooting.md` が各 1 以上。`grep -rn 'and MDT' IaC docs --include='*.tf' --include='*.md'` が QUEUE と 041 / 043 のサイクルの docs 以外で 0 件。`grep -n 'NLB の SG が' docs/cml-sandbox.md` が 0 件。`grep -c 'ENI が消えてから' ops/up-common.sh docs/troubleshooting.md` が各 1 以上。`grep -c '2026-10-08' docs/troubleshooting.md` が 1 以上。
-6. 全テスト: `python3 tests/test_workflow.py` と `python3 tests/test_oss_ops.py` が失敗 0（Round 2 で 454 / 208）。`python3 tests/test_stream.py` も失敗 0。`terraform fmt -check -recursive IaC/terraform/aws-managed/base/core` が出力無し。`bash -n` 3 本が無言。
+6. 全テスト: `python3 tests/test_workflow.py` と `python3 tests/test_oss_ops.py` が失敗 0（Round 2 で 454 / 208）。`python3 tests/test_stream.py` も失敗 0。`terraform fmt -check -recursive IaC/terraform/aws-managed/base/core` が出力無し。`bash -n` を 1 本ずつ 3 回打って無言。
 7. AWS: このサイクルでは動かさない。QUEUE 147 でまとめて見る（設計方針 6）。
 
 ## 未確定事項とリスク

@@ -1625,10 +1625,10 @@ check(f"sg_descriptions_in_code は OSS 版（IaC/terraform/oss。oss.auto.tfvar
       dict(_sdc_o) == {**_SG_CODE_DESC, **_SG_OSS_DESC} and len(_sdc_o) == len({**_SG_CODE_DESC, **_SG_OSS_DESC})
       and dict(_sdc_o)["spark"] == _SG_OSS_DESC["spark"] and "kafka" in dict(_sdc_o))
 _ts_csd = [l for l in read("docs", "troubleshooting.md").splitlines() if "state の SG の description がコードと違う" in l]
-check(f"troubleshooting.md の check_sg_descriptions の行は down.sh の全消しを案内し、runtime のときは ENI が消えてから、2026-10-08（48683dd）より前の state は全キーが違うと書く。"
+check(f"troubleshooting.md の check_sg_descriptions の行は down.sh の全消しを案内し、runtime のときは ENI が消えてから、2026-10-08（48683dd）より前の state はパスを含む description（web / lab / lambda 以外）が違うと書く。"
       f"ルートだけ destroy する案内は無い（cycle 043 Round 3。いま: {len(_ts_csd)} 行）",
       len(_ts_csd) == 1 and "check_sg_descriptions" in _ts_csd[0] and "`ops/down.sh`（OSS 版は `ops/oss/down.sh`）で全部消してから `ops/up.sh`" in _ts_csd[0]
-      and "ENI が消えてから `ops/down.sh`" in _ts_csd[0] and "2026-10-08（`48683dd`）より前の state" in _ts_csd[0] and "全キーが違う" in _ts_csd[0]
+      and "ENI が消えてから `ops/down.sh`" in _ts_csd[0] and "2026-10-08（`48683dd`）より前の state" in _ts_csd[0] and "web / lab / lambda 以外の全部）が違う" in _ts_csd[0] and "全キーが違う" not in _ts_csd[0]
       and "worker_image_tag=destroy" not in read("docs", "troubleshooting.md") and "だけ先に消してもよい" not in _ts_csd[0])
 _sg_roots = ("agent", "pipeline/analytics", "pipeline/graph", "pipeline/lab", "pipeline/stream", "workflow")
 # stream の MSK の SG は msk.tf で読む（MSK だけのもの。OSS 版のルートに msk.tf は無い。cycle 005）
