@@ -104,7 +104,7 @@ flowchart LR
   lab の EC2 が Telegraf の NLB の IP（SSM `/<prefix>/telegraf-address`）へ DNAT する。
 - NLB は trap を Telegraf のタスクの `1162/udp` へ、syslog を syslog-ng の `5140/udp` へ、NetFlow / sFlow を GoFlow2 の `2055/udp` / `6343/udp` へ渡す（UDP なので送り元の IP はそのまま）。
 - SR Linux は NetFlow を送れない。NetFlow は lab の EC2 から `python3 ops/netflow_send.py <NLB の IP>:2055` で 1 パケット送って確かめる。
-  syslog も lab の EC2 から `logger -n <NLB の IP> -P 5140 -d --rfc3164 -t acl-probe "…"` で試せる（手順は [troubleshooting.md](troubleshooting.md) の「syslog の試験行が logs に入らない」の「正しい送り方」）。
+  syslog も lab の EC2 から `logger -n <NLB の IP> -P 5140 -d --rfc3164 -t acl-probe "…"` で試せる（AWS では未確認。手順は [troubleshooting.md](troubleshooting.md) の「syslog の試験行が logs に入らない」の「正しい送り方」）。
 - この 5 つは lab の EC2 で `sudo lab forward` が張る。
   `lab up` が毎回呼び、`ops/up.sh` も手順 7-2b で打つ（lab の変数 `forward_to_telegraf`）。
 
