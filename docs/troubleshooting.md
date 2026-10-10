@@ -434,7 +434,7 @@ UDP なので、落ちても `logger` は `rc=0` で終わる。
 
 - Kafbat UI か Athena で `logs` を `appname = '1'` で引く。あれば RFC 5424 の行が RFC3164 の受け口に入っている（送り手の形を受け口の `SYSLOG_STANDARD` に合わせる）。試験の文字列が 1 行も無ければ、届いていない（経路を見る）。
 - syslog-ng は 1 行ごとのログを出さず、`stats(freq(0))`（`app/syslog-ng/syslog-ng.conf.in`）で定期の統計も書かない。ECS Exec が使えるなら `syslog-ng-ctl stats -c` で `source;s_device;;a;processed` と `destination;d_kafka;;a;processed` / `dropped` を比べる。`processed` が増えなければ届いていない。
-- 届いているかは受け口の手前で見る。lab の EC2 で `sudo tcpdump -n -i any udp port 5140`（[FAQ](faq-fukuda-nwc-poc.md) の 1 節）。EC2 から出た行は見えるが、NLB で落ちた行はこれでは分からない（SG で落ちた分は VPC Flow Logs にしか出ない。作っていない）。
+- 届いているかは受け口の手前で見る。lab の EC2 で `sudo tcpdump -n -i any udp port 5140`（[FAQ](faq-fukuda-nwc-poc.md) の 1 節）。EC2 から出た行は見えるが、NLB で落ちた行はこれでは分からない。SG で落ちた分は VPC フローログに出る（上の「`sg_flows`」の REJECT のクエリで、宛先を NLB の IP、`dstPort` を 5140 に絞る）。
 
 #### 正しい送り方
 
@@ -455,12 +455,13 @@ sudo nsenter -t "$pid" -n logger -n 203.0.113.1 -P 5140 -d --rfc3164 -t acl-prob
 
 ```bash
 # lab の EC2 で（受け口が既定の RFC3164 のとき）。SSM の値は NLB のサブネット a のプライベート IP
-nlb=$(aws ssm get-parameter --name "/<prefix>/telegraf-address" --query Parameter.Value --output text)
+. /etc/*-lab.env   # AWS_REGION と PARAM_PREFIX（lab の user_data が書く。lab forward も同じ値で読む）
+nlb=$(aws ssm get-parameter --region "$AWS_REGION" --name "$PARAM_PREFIX/telegraf-address" --query Parameter.Value --output text)
 logger -n "$nlb" -P 5140 -d --rfc3164 -t acl-probe "syslog test from the lab EC2"
 ```
 
-- 期待: Athena で `logs` を `appname = 'acl-probe'` で引くと、`sysName` が lab の EC2 のホスト名の行が 1 件ある。
-- 入らなければ、次は VPC Flow Logs（作っていない）か `syslog-ng-ctl stats` で切り分ける（上の「見分け方」）。
+- 期待: Kafbat UI でトピック `logs` を見ると、`"appname":"acl-probe"`、`"sysName"` が lab の EC2 のホスト名の行が 1 件ある。analytics を立てていれば、Athena の `raw_telemetry` で `topic = 'logs'` の行の `tags_json` にも同じ値が入る。
+- 入らなければ、VPC フローログの REJECT（宛先が NLB の IP、`dstPort` が 5140）か `syslog-ng-ctl stats` で切り分ける（上の「見分け方」）。
 
 ## 2026-10-09 の改名より前に立てた環境
 

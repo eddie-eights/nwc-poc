@@ -275,12 +275,13 @@ SYSLOG_STANDARD=RFC5424 PIPELINE=1 ops/up.sh   # lab の SR Linux のログま�
   - lab の EC2 のホストから NLB の IP へ直接送る（037 から。DNAT は通らなくてよい）。
 
     ```bash
-    nlb=$(aws ssm get-parameter --name "/<prefix>/telegraf-address" --query Parameter.Value --output text)
+    . /etc/*-lab.env   # AWS_REGION と PARAM_PREFIX
+    nlb=$(aws ssm get-parameter --region "$AWS_REGION" --name "$PARAM_PREFIX/telegraf-address" --query Parameter.Value --output text)
     logger -n "$nlb" -P 5140 -d --rfc3164 -t acl-probe "syslog test from the lab EC2"
     ```
 
 - util-linux の `logger` は 2.26 から既定が RFC 5424。既定の RFC3164 の受け口に送るときは `--rfc3164` を書く。
-- 再現の表、`syslog-ng-ctl stats` の見方、IaC の直し方の候補は [troubleshooting.md](troubleshooting.md) の「syslog の試験行が logs に入らない」。
+- 再現の表、`syslog-ng-ctl stats` の見方、037 で直した SG の行は [troubleshooting.md](troubleshooting.md) の「syslog の試験行が logs に入らない」。
 
 ### Q. SNMP はポーリングと trap のどちらで集めている？ ポーリングは止められる？
 
