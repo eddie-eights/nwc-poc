@@ -416,3 +416,129 @@ M14 読めない行で exit しない       | rc=1: （M13 と同じ check）
 
 - 未解消の Must fix: 0。
 - `/cycle-design` への差し戻し: 必須ではない。指摘 1（runtime の ENI が残るときの案内）は設計の文面の話なので PM の判断に回す。
+
+## Round 3
+
+実装モデル: opus-5.5 / effort: high（セルフレビューも high。サブエージェントの中では effort を切り替えられない）
+
+入力: `design.md` Round 3（設計方針 1 の runtime の一言、設計方針 5 の troubleshooting、検証 2・5 の新項目）、`review.md` Round 1 の Should fix 1。
+
+### 実装内容
+
+- `ops/up-common.sh` の `check_sg_descriptions`: 違うキーに runtime があれば（`case "、$diffs" in *"、runtime（"*)`。キーで判定）、die の `まだ何も作っていない` の前に設計の一言 `runtime は Runtime の ENI（agentic_ai。最長 8 時間ほど残る）があるあいだ $OPS_DIR/down.sh も残すので、ENI が消えてから $OPS_DIR/down.sh を打つ。` を足した。
+- `docs/troubleshooting.md:26`: 設計方針 5 の文に替えた（runtime のときは ENI が消えてから、2026-10-08（`48683dd`）より前の state）。
+- テスト:
+  - `tests/test_workflow.py`: runtime が古い（`AgentCore Runtime ENIs (terraform/agent)`）/ workflow と一緒に古い / runtime 以外のキーの文言に runtime が入る、の 3 check と、troubleshooting の行の check を足した。2 キーの check に「ENI の一言が無い」を足した。
+  - `tests/test_oss_ops.py`: 本物の `ops/common.sh` の die と `ops/up-common.sh` を OSS 版の `TF_DIR` / `OPS_DIR` で動かし、OSS 版の state の実物（runtime が `(terraform/agent)`）で `ops/oss/down.sh` と ENI の一言が出る check を足した。
+
+### 変更ファイル
+
+- ops/up-common.sh
+- docs/troubleshooting.md
+- tests/test_workflow.py
+- tests/test_oss_ops.py
+- docs/cycles/043-sg-description-guard/build.md
+
+### 設計からの逸脱
+
+- troubleshooting の括弧の参照先: 設計は「（「画面に入れない」の下の Runtime の ENI の項と同じ待ち）」だが、`## 画面に入れない`（`docs/troubleshooting.md:85-98`）に Runtime の ENI の項は無い（`sed -n 85,98p docs/troubleshooting.md | grep -n ENI` が 0 件）。Runtime の ENI の待ちは `## 消すとき` の `DependencyViolation` の行（`:489`）なので、「（下の「消すとき」の `DependencyViolation` の行と同じ待ち）」にした。
+- 検証 6 の `bash -n` は 3 本を 1 本ずつ打った（`bash -n a b c` は 1 本目しか構文検査しない。残りは引数）。
+- `tests/test_oss_ops.py` の OSS 版の die の check は、検証 3 の外の追加（OSS 版の `OPS_DIR` で文面が `ops/oss/down.sh` になることを縛る）。
+
+### 検証（最後の編集の後に取り直した出力）
+
+1・2. `uv run --group dev --group web python tests/test_workflow.py`（Round 3 で足した・変えた check。行は途中で切った）
+
+```
+ok check_sg_descriptions: workflow と telegraf_dialout_nlb の 2 つが古ければ、die の文に両方を出す。runtime は違わな…
+ok check_sg_descriptions: runtime の description が古い（2026-10-08 より前の OSS 版の state の実物）なら、down.sh も Runt…
+ok check_sg_descriptions: runtime がほかのキーと一緒に違っても（先頭でなくても）ENI の一言を 1 回だけ足す（…
+ok check_sg_descriptions: runtime 以外のキーの文言に runtime が入っていても ENI の一言は足さない（キーで判定…
+ok troubleshooting.md の check_sg_descriptions の行は down.sh の全消しを案内し、runtime のときは ENI が消えてから、2…
+通過 458 / 失敗 0
+```
+
+3. `uv run --group dev --group web python tests/test_oss_ops.py`（呼び出し位置と通しの check は Round 2 のまま全部 ok）
+
+```
+ok ops/oss/up.sh の check_sg_descriptions: OSS 版の state の古い runtime の SG（terraform/agent）で止め、ops/oss/down.sh の全…
+通過 209 / 失敗 0
+```
+
+4. telegraf の description の check: Round 1 のまま（上の 458 に含まれ ok）。
+
+5. 文言
+
+```
+$ grep -rn --exclude-dir=cycles SG_DESCRIPTION_ROOTS ops docs tests IaC | wc -l
+       0
+$ grep -rn --exclude-dir=cycles だけ先に消してもよい ops docs
+ops/up.sh:598 / ops/up.sh:604 / ops/oss/up.sh:158（キーを変えた既存の守りの 3 行だけ）
+$ grep -n worker_image_tag=destroy docs/troubleshooting.md | wc -l
+       0
+$ grep -c check_sg_descriptions docs/architecture/core.md docs/architecture/resources/vpc-perimeter.md docs/troubleshooting.md
+docs/architecture/core.md:1
+docs/architecture/resources/vpc-perimeter.md:1
+docs/troubleshooting.md:1
+$ grep -rln 'and MDT' IaC docs --include='*.tf' --include='*.md'
+docs/cycles/QUEUE.md
+docs/cycles/043-sg-description-guard/design.md
+docs/cycles/043-sg-description-guard/build.md
+docs/cycles/041-nlb-docs-and-workflow-sg/build.md
+docs/cycles/041-nlb-docs-and-workflow-sg/review.md
+$ grep -n 'NLB の SG が' docs/cml-sandbox.md | wc -l
+       0
+$ grep -c 'ENI が消えてから' ops/up-common.sh docs/troubleshooting.md
+docs/troubleshooting.md:1
+ops/up-common.sh:1
+$ grep -c 2026-10-08 docs/troubleshooting.md
+7
+```
+
+6. 全テストと整形
+
+```
+$ uv run --group dev --group web python tests/test_workflow.py   → 通過 458 / 失敗 0
+$ uv run --group dev --group web python tests/test_oss_ops.py    → 通過 209 / 失敗 0
+$ uv run --group dev --group web python tests/test_stream.py     → 通過 114 / 失敗 0
+$ terraform fmt -check -recursive IaC/terraform/aws-managed/base/core; echo rc=$?
+rc=0
+$ bash -n ops/up-common.sh && echo ok-upc      → ok-upc
+$ bash -n ops/oss/up.sh && echo ok-oss-up      → ok-oss-up
+$ bash -n ops/up.sh && echo ok-up              → ok-up
+```
+
+7. AWS: 未実行（設計どおり QUEUE 147）。
+
+### セルフレビュー
+
+- 自分: opus-5.5 / effort: high。反対弁護人: opus / effort: xhigh（文脈を渡して読み取り専用。終了後 `git status --porcelain -uall` は自分の変更 4 ファイルだけ）。
+- 反対弁護人の結論: Must 0 / Should 0 / Nit 5 と書き残し 1（build.md の逸脱の記録。上に書いた）。
+
+#### mutation（自分で注入して落ちることを確かめた）
+
+- case を常に偽（`*"、NOPE（"*`）→ test_workflow `AssertionError: check_sg_descriptions: runtime の description が古い…`、test_oss_ops `AssertionError: ops/oss/up.sh の check_sg_descriptions: OSS 版の…` で落ちる。
+- case をキー以外でも当たる形（`case "$diffs" in *"runtime"*`）→ test_workflow `AssertionError: check_sg_descriptions: runtime 以外のキーの文言に runtime が入っていても…` で落ちる。
+- 反対弁護人がメモリ上の変異で追加確認: 先頭の「、」無し / 常に真 / 一言を `まだ何も作っていない` の後ろ / `ops/down.sh` の直書き（test_oss_ops が殺す）はどれも落ちる。
+
+#### 指摘
+
+1. **Should fix（docs の事実の誤り。設計の文面由来。直さず PM へ）** [correctness / docs] `docs/troubleshooting.md:26`（と `tests/test_workflow.py:1627-1632` の「全キーが違う」）
+   - 破綻シナリオ: 「2026-10-08（`48683dd`）より前の state は … 全キーが違う」は誤り。web / lab / lambda の description はパスを含まず 48683dd の前後で同じなので、die に出ない。OSS 版の `oss_security_groups` は `oss/terraform/…` からの変化で、文中の `terraform/…` → `IaC/terraform/aws-managed/…` とも形が違う。古い state で止まった人が die の一覧と docs を比べて戸惑う。
+   - 確かめたコマンド: `git show 48683dd -- IaC/terraform/aws-managed/base/core/security_groups.tf | grep -E '^[-+]    (web|lab|lambda|workflow|runtime) '` → workflow / runtime の行だけが `-`/`+` で出て、web / lab / lambda は出ない。
+   - 片付け: 文言は design.md 設計方針 5 そのままなので実装で吸収しない。PM の判断（設計の文面を「パスを含む description のキーが違う」等に直すか）に回す。
+2. **Nit（docs の整合）** `docs/troubleshooting.md:489`、`docs/deploy.md:415,423`、`ops/down.sh:124`、`ops/oss/down.sh:94` の「そのままでよい / 次の up.sh が使い回す」は、runtime の description が古い state では次の up.sh が守りで止まるので合わない。die の文面に ENI の待ちが出るので実害は小さい。設計の変更対象外なので直さない。
+3. **Nit（テスト不足）** `ops/up-common.sh:80` の判定から `（` を抜いた変異（`*"、runtime"*`）は生き残る（反対弁護人の `mut.py nokey_paren` → `SURVIVED`）。殺すには `runtime_x` のようなキーをコードの写しにも足す必要がある。今のコードに runtime で始まる別のキーは無いので直さない。
+4. **Nit（設計で承知済み）** runtime だけが古いとき、die の理由の文（ほかの SG のルールが参照）は実際の理由（ENI）と合わず、ENI が消えた後なら apply が通る場面でも down.sh を 1 回余分に打たせる。設計の未確定事項 3 の範囲。
+5. **Nit（検証計画）** design.md 検証 6 の `bash -n` 3 本並べは 1 本目しか見ない（反対弁護人: `bash -n <(echo true) <(echo "if then fi fi (")` が rc 0）。1 本ずつ打ったので実害なし。設計の文面を直すとよい。
+
+#### 問題なしとした観点と根拠
+
+- 判定の誤検知 / 見逃し: 反対弁護人が bash 3.2 を C / en_US.UTF-8 / ja_JP.UTF-8 で走らせ、`runtime`・`workflow、runtime` は当たり、`agent_runtime`・`runtime_x`・`web_runtime` は当たらないことを確かめた。state の文言は AWS の仕様で ASCII のみ。
+- 文言と設計の一致: 反対弁護人が difflib で比べ、一言は完全一致、troubleshooting は括弧の参照先 1 か所（上の逸脱）だけ違う。
+- down.sh が runtime の SG だけを残すか: `ops/down-common.sh:100-158` を読んだだけ（反対弁護人）。`ops/oss/down.sh` も同じ `destroy_base_core` を使う。
+
+#### 結論
+
+- 未解消の Must fix: 0。
+- `/cycle-design` への差し戻し: 指摘 1（troubleshooting の「全キーが違う」の誤り）と逸脱 1（「画面に入れない」の参照先）は設計の文面の話なので PM の判断に回す。

@@ -1222,6 +1222,28 @@ check("ops/oss/up.sh は base/core の state に古い取りにいく側の Tele
 check("ops/oss/up.sh は check_sg_descriptions（description を変えた SG の守り。ops/up-common.sh）を tf_init base/core の後、ECR より前に 1 回呼ぶ（マネージド版と同じ。cycle 043）",
       len(re.findall(r"^\s*check_sg_descriptions\s*$", up, re.M)) == 1
       and 0 <= pos("tf_init base/core") < pos("\n  check_sg_descriptions\n") < pos('log "1. ECR リポジトリ'))
+# OSS 版の state の実物（2026-10-08 より前の runtime の SG。Runtime の ENI があるあいだ ops/oss/down.sh も残す。cycle 043 の review.md Round 1 の Should 1）で、
+# 本物の ops/common.sh の die と ops/up-common.sh の check_sg_descriptions を、tf だけ差し替えて OSS 版の TF_DIR / OPS_DIR で打つ
+_CSD_OSS_SH = r"""
+set -euo pipefail
+. ops/common.sh; . ops/up-common.sh
+TF_DIR=IaC/terraform/oss; OPS_DIR=ops/oss
+tf() {
+  [ "$*" = "base/core show -no-color" ] || return 9
+  printf '%s\n' '# aws_security_group.workload["runtime"]:' 'resource "aws_security_group" "workload" {' \
+    '    description            = "AgentCore Runtime ENIs (terraform/agent)"' '    egress                 = []' '}' '' \
+    '# aws_vpc.this:' 'resource "aws_vpc" "this" {' '    id = "vpc-0show"' '}'
+}
+check_sg_descriptions
+echo NOT-REACHED
+"""
+p = subprocess.run(["bash", "-c", _CSD_OSS_SH], cwd=ROOT, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+check("ops/oss/up.sh の check_sg_descriptions: OSS 版の state の古い runtime の SG（terraform/agent）で止め、ops/oss/down.sh の全消しと、"
+      "Runtime の ENI が消えてから ops/oss/down.sh を打つことを案内する（cycle 043 Round 3）",
+      p.returncode == 1 and "NOT-REACHED" not in p.stdout
+      and "NG: IaC/terraform/oss/base/core の state の SG の description がコードと違う: runtime（state「AgentCore Runtime ENIs (terraform/agent)」" in p.stderr
+      and "先に ops/oss/down.sh で全部消してから ops/oss/up.sh。runtime は Runtime の ENI（agentic_ai。最長 8 時間ほど残る）があるあいだ ops/oss/down.sh も残すので、"
+          "ENI が消えてから ops/oss/down.sh を打つ。まだ何も作っていない" in p.stderr)
 _spark_tf = read("IaC/terraform/oss/pipeline/analytics/spark.tf")
 check("Spark のサービスは Terraform では 0 台で作り（desired_count = 0、あとの変更は見ない）、up.sh が OpenSearch・VictoriaMetrics・Splunk を待ったあとで 1 台にする",
       re.search(r"^\s*desired_count\s*=\s*0$", _spark_tf, re.M) and "ignore_changes = [desired_count]" in _spark_tf
