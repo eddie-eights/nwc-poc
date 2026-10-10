@@ -27,7 +27,8 @@ flowchart LR
   - 「いま」は `proposal_id` ごとに `seq` が最大の行で、Web の承認の画面と tools Lambda（`list_proposals`）が Athena で読む。
 - Web の承認・却下は決定のキュー `<prefix>-decisions` に送り、worker がワークフローにシグナル `decide` で渡す。このキューに送れるのは Web の EC2 のロールだけ。
 - Neptune に修復案は置かない。worker は Neptune のトポロジを読むだけ（事前チェックと、保守中の機器の判定）。
-- Temporal UI（8233）は Web の EC2 を踏み台にした SSM のポートフォワーディングで開く。gRPC の 7233 はタスクの外に出さない（ワーカーは同じタスクの `localhost`。SG は [core.md](core.md) の「SG」）。
+- Temporal UI（8233）は Web の EC2 を踏み台にした SSM のポートフォワーディングで開く。gRPC の 7233 はタスクの外に出さない（UI とワーカーは同じタスクの `127.0.0.1` / `localhost`。SG が開けるのは workflow の自分宛てと Nautobot の RDS の 5432 だけ。[core.md](core.md) の「SG」）。
+- Temporal の履歴は Nautobot の RDS for PostgreSQL（DB `temporal` / `temporal_visibility`）にあり、タスクが入れ替わっても残る（cycle 036。[resources/temporal.md](resources/temporal.md)）。
 
 ## 経緯
 

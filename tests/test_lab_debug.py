@@ -426,13 +426,17 @@ check("dir_tag は 3 つ目からのファイルもハッシュに入れる（Do
 _tag_calls = [m for n in ("lab-common.sh", "up-common.sh", "up.sh") for m in re.findall(r'^[^#\n]*?\bdir_tag "\$\w+" ([^)\n;]*)', read("ops", n), re.M)] \
     + [m for n in ("up.sh", "oss-images.sh") for m in re.findall(r'^[^#\n]*?\bdir_tag "\$\w+" ([^)\n;]*)', read("ops", "oss", n), re.M)]
 _tag_df = [re.fullmatch(r'(?:app/([\w-]+)|"\$NAUTOBOT_CTX") docker/images/([\w-]+)/Dockerfile\s*', c) for c in _tag_calls]
+# context が docker/images/<名前>/ そのもの（Dockerfile も中にある）なら、ディレクトリだけを渡す（temporal-server は cycle 036）
+_tag_self = [re.fullmatch(r'docker/images/([\w-]+)\s*', c) for c in _tag_calls]
 _builds = "".join(read(*p) for p in (("ops", "lab-common.sh"), ("ops", "up-common.sh"), ("ops", "oss", "oss-images.sh")))
-check("dir_tag の呼び元 12 か所は、どれも docker build の -f と同じ docker/images/<名前>/Dockerfile を渡す（context が app/<名前>/ ならその名前と同じ。"
-      "syslog-ng は cycle 012、gnmic は cycle 013 で ops/up.sh と ops/oss/up.sh に足した）",
-      len(_tag_calls) == 12 and all(_tag_df)
-      and all(m.group(1) in (None, m.group(2)) for m in _tag_df)
-      and {m.group(2) for m in _tag_df} == {"telegraf", "splunk", "grafana", "nautobot", "spark", "neo4j", "syslog-ng", "gnmic"}
-      and all(f"-f docker/images/{m.group(2)}/Dockerfile " in _builds for m in _tag_df))
+check("dir_tag の呼び元 14 か所は、どれも docker build の -f と同じ docker/images/<名前>/Dockerfile を渡す（context が app/<名前>/ ならその名前と同じ。"
+      "syslog-ng は cycle 012、gnmic は cycle 013 で ops/up.sh と ops/oss/up.sh に足した）。context が docker/images/<名前>/ の temporal-server（cycle 036）はそのディレクトリを渡す",
+      len(_tag_calls) == 14 and all(a or b for a, b in zip(_tag_df, _tag_self))
+      and all(m.group(1) in (None, m.group(2)) for m in _tag_df if m)
+      and {m.group(2) for m in _tag_df if m} == {"telegraf", "splunk", "grafana", "nautobot", "spark", "neo4j", "syslog-ng", "gnmic"}
+      and all(f"-f docker/images/{m.group(2)}/Dockerfile " in _builds for m in _tag_df if m)
+      and [m.group(1) for m in _tag_self if m] == ["temporal-server", "temporal-server"]
+      and all(re.search(rf'--push docker/images/{m.group(1)}/\n', _builds) for m in _tag_self if m))
 
 # ---- lab.sh graph / graph-stop（cycle 010。containerlab graph を 127.0.0.1:50080 で裏に起こし、手元のポートフォワードで開く）
 # lab.sh を一時ディレクトリに写し（src/ の代わり。splab.clab.yml があるので render しない）、偽の systemd-run / systemctl / containerlab / curl を PATH の先に置いて打つ

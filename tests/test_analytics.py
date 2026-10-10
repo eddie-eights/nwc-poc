@@ -112,6 +112,9 @@ EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_
     # Nautobot（IaC/terraform/aws-managed/pipeline/nautobot。2026-10-04）: 画面は Web の EC2 からのポートフォワード、DB は RDS。
     # Neptune は Neptune Analytics にしたので SG が無く、行も無い（neptune-graph-data のエンドポイントの 443 で届く。2026-10-04）
     ("web", "nautobot", "tcp", 8080, 8080, ""), ("nautobot", "nautobot_db", "tcp", 5432, 5432, ""),
+    # Temporal の履歴は Nautobot の RDS（cycle 036）。7233〜7239 / 6933〜6939 は同じ workflow の SG の自分宛てだけ
+    ("workflow", "nautobot_db", "tcp", 5432, 5432, ""),
+    ("workflow", "workflow", "tcp", 6933, 6939, ""), ("workflow", "workflow", "tcp", 7233, 7239, ""),
     ("web", "grafana", "tcp", 3000, 3000, ""), ("web", "splunk", "tcp", 8000, 8000, ""), ("web", "workflow", "tcp", 8233, 8233, ""),
     ("telegraf_dialout", "msk", "tcp", 9098, 9098, ""), ("spark", "msk", "tcp", 9098, 9098, ""), ("msk", "msk", "tcp", 9092, 9098, ""),
     # syslog-ng と GoFlow2 は MSK の IAM 認証を喋れないので SASL/SCRAM の 9096（cycle 012）
@@ -154,8 +157,8 @@ check("MDT の受け口（送り元の変数 mdt_source_cidrs と NLB の 57000/
       and [l for l in _no_comment(_up_src + _oss_up_src).splitlines() if "MDT_SOURCE_CIDRS" in l] == [l for l in (_up_src + _oss_up_src).splitlines() if l.startswith(_MDT_NOTE)])
 check("閉域の VPC エンドポイントに secretsmanager を書ける（syslog-ng と GoFlow2 の SCRAM の secret を ECS が取りにいく。cycle 012）",
       re.search(r'"kinesis-firehose", "athena", "secretsmanager",\n\s*\], s\)\]\)', _core_vars) is not None and "athena and secretsmanager." in _core_vars)
-check("Temporal の gRPC 7233（workflow）と Splunk の管理 API 8089（splunk。クラスターの splunk どうしは除く）は開けず、CIDR のルールは lab の管理ネットワーク・表の cidr（cycle 012 で MDT の送り元を外し、いまは行が無い）・endpoints の送信なしだけ（EMR Serverless は 0.0.0.0/0 の inbound を拒否する）",
-      not any(t == "workflow" and p <= 7233 <= q or t == "splunk" and f != "splunk" and p <= 8089 <= q for f, t, _, p, q, _ in _flows)
+check("Temporal の gRPC 7233（workflow。cycle 036 から workflow どうしは除く）と Splunk の管理 API 8089（splunk。クラスターの splunk どうしは除く）は開けず、CIDR のルールは lab の管理ネットワーク・表の cidr（cycle 012 で MDT の送り元を外し、いまは行が無い）・endpoints の送信なしだけ（EMR Serverless は 0.0.0.0/0 の inbound を拒否する）",
+      not any(t == "workflow" and f != "workflow" and p <= 7233 <= q or t == "splunk" and f != "splunk" and p <= 8089 <= q for f, t, _, p, q, _ in _flows)
       and sorted(re.findall(r'cidr_ipv4\s*=\s*(.+)', _sg_tf)) == sorted(['each.value.to == "lab_mgmt" ? local.lab_mgmt_cidr : null', 'each.value.from == "lab_mgmt" ? local.lab_mgmt_cidr : each.value.cidr', '"127.0.0.1/32"'])
       and "var.vpc_cidr" not in _sg_tf and "cidr_ipv6" not in _sg_tf)
 check("ルールは表から for_each で作る。送信は from の SG、受信は to の SG で、相手は SG の参照・S3 のプレフィックスリスト・lab の管理ネットワークのどれか 1 つ",
@@ -1785,7 +1788,7 @@ _SINGLE = {  # (ルート, リソースの見出し): 理由に書く言葉
     ("pipeline/lab", 'resource "aws_instance" "lab"'): "containerlab の 1 台の中に全部の機器",
     ("pipeline/analytics", 'resource "aws_ecs_service" "grafana"'): "https://grafana.com/docs/grafana/latest/alerting/set-up/configure-high-availability/",
     ("pipeline/nautobot", 'resource "aws_ecs_service" "nautobot"'): "Redis と Celery のワーカーが同じタスク",
-    ("workflow", 'resource "aws_ecs_service" "workflow"'): "Temporal の開発用サーバー",
+    ("workflow", 'resource "aws_ecs_service" "workflow"'): "Temporal のサーバーと worker が同じタスク",  # cycle 036 で理由を替えた
     ("pipeline/stream", 'resource "aws_ecs_service" "gnmic"'): "TELEGRAF_AZ_NUM に従わない理由",   # cycle 013 で telegraf_dialin から替えた
 }
 def _single_ok(root, head, word):

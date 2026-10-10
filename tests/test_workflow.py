@@ -516,15 +516,90 @@ check("土台の出力 alerts_topic_arn を try で読み、無ければ購読�
       'output "alerts_topic_arn"' in main_out and re.search(r'alerts_topic_arn = try\(data\.terraform_remote_state\.main\.outputs\.alerts_topic_arn, ""\)', tf) is not None
       and 'condition     = local.alerts_topic_arn != ""' in tf)
 check("lab の出力 lab_instance_id がある", 'output "lab_instance_id"' in lab_out and "outputs.lab_instance_id" in tf)
-check("ecr の出力 worker_repository_url / temporal_repository_url がある",
-      all(f'output "{o}"' in ecr_out and f"outputs.{o}" in tf for o in ("worker_repository_url", "temporal_repository_url")))
+check("ecr の出力 worker_repository_url / temporal_repository_url / temporal_ui_repository_url がある",
+      all(f'output "{o}"' in ecr_out and f"outputs.{o}" in tf for o in ("worker_repository_url", "temporal_repository_url", "temporal_ui_repository_url")))
 check("ECS のタスクは Fargate の ARM64", 'cpu_architecture        = "ARM64"' in tf and '"FARGATE"' in tf)
-check("temporal コンテナは start-dev を SQLite で動かし、gRPC 7233 は 127.0.0.1 だけで待ち、UI の 8233 だけを 0.0.0.0 に出す（2026-09-29）",
-      '"server", "start-dev", "--ip", "127.0.0.1", "--ui-ip", "0.0.0.0"' in tf and "--db-filename" in tf and '"0.0.0.0", "--db' not in tf.replace('"--ui-ip", "0.0.0.0"', ""))
-_temporal_ports = re.search(r'name\s*=\s*"temporal"[\s\S]*?portMappings\s*=\s*\[([\s\S]*?)\]', tf)
-check("temporal コンテナの portMappings は UI の 8233 だけ（7233 は出さない。ワーカーは同じタスクの localhost）",
-      _temporal_ports is not None and re.findall(r'containerPort\s*=\s*(\d+)', _temporal_ports.group(1)) == ["8233"] and "7233" not in _temporal_ports.group(1))
-check("worker は temporal の後に起き、localhost:7233 につなぐ", '"localhost:7233"' in tf and 'condition = "START"' in tf)
+# ---- Temporal の履歴は Nautobot の RDS（cycle 036。2026-10-10 までは start-dev で SQLite がコンテナの中にあり、タスクが入れ替わると消えた）
+_ecs_tf = read("IaC", "terraform", "aws-managed", "workflow", "ecs.tf")
+_containers = re.findall(r'^\s*name\s*=\s*"(temporal|ui|worker)"', _ecs_tf, re.M)
+check(f"タスクは temporal / ui / worker の 3 コンテナ（いま: {_containers}）", _containers == ["temporal", "ui", "worker"])
+_c_temporal = _ecs_tf.split('name      = "temporal"')[1].split('name      = "ui"')[0]
+_c_ui = _ecs_tf.split('name      = "ui"')[1].split('name      = "worker"')[0]
+_c_worker = _ecs_tf.split('name      = "worker"')[1]
+_ecs_code = "\n".join(l.split("#")[0] for l in _ecs_tf.splitlines())  # コメントを除いた本文
+_c_temporal_code = "\n".join(l.split("#")[0] for l in _c_temporal.splitlines())
+check("temporal は start-dev も SQLite も使わない（command 無し。docker/images/temporal-server/ の entrypoint が temporal-server を起こす）",
+      "start-dev" not in _ecs_code and "--db-filename" not in _ecs_code and re.search(r"^ {6}command\s*=", _c_temporal, re.M) is None
+      and "local.temporal_image" in _c_temporal)
+check("temporal は portMappings を持たない（7233〜7239 / 6933〜6939 はタスクの外に出さない）", "portMappings" not in _c_temporal_code and "containerPort" not in _c_temporal_code)
+_tenv = dict(re.findall(r'\{ name = "(\w+)", value = ([^}]+?) \}', _c_temporal))
+check(f"temporal の env は postgres12 で Nautobot の RDS に TLS でつなぎ、接続数を絞る（いま: {sorted(_tenv)}）",
+      _tenv.get("DB") == '"postgres12"' and _tenv.get("POSTGRES_SEEDS") == "local.nautobot_db_address" and _tenv.get("DB_PORT") == "tostring(local.nautobot_db_port)"
+      and _tenv.get("POSTGRES_USER") == '"temporal"' and _tenv.get("DBNAME") == '"temporal"' and _tenv.get("VISIBILITY_DBNAME") == '"temporal_visibility"'
+      and _tenv.get("SQL_TLS_ENABLED") == '"true"' and _tenv.get("SQL_HOST_VERIFICATION") == '"false"' and _tenv.get("NUM_HISTORY_SHARDS") == '"4"'
+      and _tenv.get("BIND_ON_IP") == '"0.0.0.0"' and _tenv.get("NAUTOBOT_DB_USER") == '"nautobot"'
+      and _tenv.get("SQL_MAX_CONNS") == "tostring(var.temporal_sql_max_conns)" and _tenv.get("SQL_VIS_MAX_CONNS") == "tostring(var.temporal_visibility_max_conns)"
+      and "POSTGRES_PWD" not in _tenv and "NAUTOBOT_DB_PASSWORD" not in _tenv)
+check("temporal のパスワード 2 つは secrets（SSM の ARN）で渡し、値をタスク定義に書かない",
+      '{ name = "POSTGRES_PWD", valueFrom = local.temporal_db_password_arn }' in _c_temporal
+      and '{ name = "NAUTOBOT_DB_PASSWORD", valueFrom = local.nautobot_db_password_arn }' in _c_temporal)
+check("temporal の healthCheck は namespace default の describe（HEALTHY = namespace まで出来た）。startPeriod 180",
+      '"temporal operator namespace describe -n default --address 127.0.0.1:7233 >/dev/null 2>&1 || exit 1"' in _c_temporal
+      and re.search(r"startPeriod\s*=\s*180", _c_temporal) is not None and re.search(r"retries\s*=\s*6", _c_temporal) is not None)
+check("ui は temporalio/ui のミラーで essential = false、8233 だけを出し、127.0.0.1:7233 を temporal の HEALTHY の後に読む",
+      "local.temporal_ui_image" in _c_ui and "essential = false" in _c_ui and re.findall(r'containerPort\s*=\s*(\d+)', _c_ui) == ["8233"]
+      and '{ name = "TEMPORAL_ADDRESS", value = "127.0.0.1:7233" }' in _c_ui and '{ name = "TEMPORAL_UI_PORT", value = "8233" }' in _c_ui
+      and '{ containerName = "temporal", condition = "HEALTHY" }' in _c_ui and '"ui"' in _c_ui)
+check("worker は temporal の HEALTHY の後に起き、localhost:7233 につなぐ",
+      '"localhost:7233"' in _c_worker and '{ containerName = "temporal", condition = "HEALTHY" }' in _c_worker and 'condition = "START"' not in _ecs_tf)
+check("サービスは新しいタスクを先に立てる（min 100 / max 200。履歴は RDS にある）",
+      "deployment_minimum_healthy_percent = 100" in _ecs_tf and "deployment_maximum_percent         = 200" in _ecs_tf)
+nautobot_out = read("IaC", "terraform", "aws-managed", "pipeline", "nautobot", "outputs.tf")
+check("nautobot の state（db_address / db_port / db_password_parameter）を try で読み、無ければ precondition で止まる",
+      '"${path.module}/../pipeline/nautobot/terraform.tfstate"' in tf
+      and all(f'output "{o}"' in nautobot_out and f"outputs.{o}" in tf for o in ("db_address", "db_port", "db_password_parameter"))
+      and re.search(r'nautobot_db_address\s*=\s*try\(data\.terraform_remote_state\.nautobot\.outputs\.db_address, ""\)', tf) is not None
+      and 'condition     = local.nautobot_db_address != "" && local.nautobot_db_password_arn != ""' in _ecs_tf)
+check("nautobot の出力にパスワードの値は無い（パラメータ名だけ）", "aws_ssm_parameter" not in nautobot_out.split('output "db_password_parameter"')[1].split("output")[0]
+      and 'local.secret_parameters["db-password"]' in nautobot_out)
+_iam_tf = read("IaC", "terraform", "aws-managed", "workflow", "iam.tf")
+_iam_db = _iam_tf.split('resource "aws_iam_role_policy" "execution_db_passwords"')[1].split("\nresource ")[0] if "execution_db_passwords" in _iam_tf else ""
+check("実行ロールは 2 つの DB のパスワード（SSM）だけを ssm:GetParameters で読める。サービスはそのポリシーの後に作る",
+      'Action   = ["ssm:GetParameters"]' in _iam_db and "compact([local.temporal_db_password_arn, local.nautobot_db_password_arn])" in _iam_db
+      and "aws_iam_role_policy.execution_db_passwords" in _ecs_tf.split('resource "aws_ecs_service"')[1]
+      and re.search(r'temporal_db_password_arn\s*=\s*"arn:\$\{local\.partition\}:ssm:\$\{var\.region\}:\$\{local\.account_id\}:parameter/\$\{local\.name_prefix\}/temporal/db-password"', tf) is not None)
+# 版の正は ops/up-common.sh。イメージの ARG と Terraform の既定がずれると、ビルドした版と RDS の版・UI のタグが食い違う
+_ts_df = read("docker", "images", "temporal-server", "Dockerfile")
+_upc = read("ops", "up-common.sh")
+_nb_vars = read("IaC", "terraform", "aws-managed", "pipeline", "nautobot", "variables.tf")
+_v = lambda pat, s: (re.search(pat, s, re.M) or [None, None])[1]
+check("TEMPORAL_SERVER_VERSION は docker/images/temporal-server/Dockerfile の ARG の既定と同じ",
+      _v(r'^TEMPORAL_SERVER_VERSION=(\S+)', _upc) is not None and _v(r'^TEMPORAL_SERVER_VERSION=(\S+)', _upc) == _v(r'^ARG TEMPORAL_SERVER_VERSION=(\S+)', _ts_df))
+check("POSTGRES_MAJOR は Dockerfile の ARG と pipeline/nautobot の db_engine_version の既定と同じ（RDS と psql の大版）",
+      _v(r'^POSTGRES_MAJOR=(\S+)', _upc) is not None
+      and _v(r'^POSTGRES_MAJOR=(\S+)', _upc) == _v(r'^ARG POSTGRES_MAJOR=(\S+)', _ts_df)
+      == _v(r'variable "db_engine_version"[\s\S]*?default\s*=\s*"([^"]+)"', _nb_vars))
+check("TEMPORAL_UI_TAG は workflow の temporal_ui_image_tag の既定と同じ。temporal_image_tag には既定が無い（up.sh がビルドしたタグを渡す）",
+      _v(r'^TEMPORAL_UI_TAG=(\S+)', _upc) is not None
+      and _v(r'^TEMPORAL_UI_TAG=(\S+)', _upc) == _v(r'variable "temporal_ui_image_tag"[\s\S]*?default\s*=\s*"([^"]+)"', tf)
+      and "default" not in tf.split('variable "temporal_image_tag"')[1].split("variable ")[0])
+check("docker/images/temporal-server/ は Dockerfile と entrypoint.sh と dynamic config の 3 つ",
+      sorted(os.listdir(os.path.join(ROOT, "docker", "images", "temporal-server"))) == ["Dockerfile", "dynamicconfig.yaml", "entrypoint.sh"])
+_ts_ep = read("docker", "images", "temporal-server", "entrypoint.sh")
+check("entrypoint はパスワードをコマンドラインに載せない（psql は \\getenv、temporal-sql-tool は SQL_PASSWORD）で、最後に公式の entrypoint へ exec する",
+      "\\getenv pw POSTGRES_PWD" in _ts_ep and "-v pw=" not in _ts_ep and "--pw" not in _ts_ep and 'SQL_PASSWORD="$POSTGRES_PWD"' in _ts_ep
+      and _ts_ep.rstrip().splitlines()[-1].strip() == "exec /etc/temporal/entrypoint.sh")
+check("entrypoint はロールの SET の権限を見てから GRANT する（PG 16 以降の CREATEROLE の作ったロールは ADMIN だけで、OWNER に指定できない）",
+      "pg_has_role(CURRENT_USER, :'role', 'SET')" in _ts_ep and "'MEMBER'" not in _ts_ep)
+check("entrypoint は schema_version が無いときだけ setup-schema、毎回 update-schema（スキーマを消さない）",
+      "to_regclass('schema_version')" in _ts_ep and "setup-schema -v 0.0" in _ts_ep and "SCHEMA_DIR=/etc/temporal/schema/postgresql/v12\n" in _ts_ep and 'update-schema -d "$SCHEMA_DIR/$dir/versioned"' in _ts_ep
+      and '"$DBNAME:temporal" "$VISIBILITY_DBNAME:visibility"' in _ts_ep
+      and "drop-schema" not in _ts_ep and "DROP " not in _ts_ep.upper().replace("DROP-", "")
+      # setup-schema -v 0.0 は has = f（schema_version が無い）の if の中に 1 回だけ（外に出すと 2 回目の起動で CREATE TABLE が既存表にぶつかって落ちる）
+      and "-tAc \"SELECT to_regclass('schema_version') IS NOT NULL\")" in _ts_ep
+      and [ln.strip() for ln in _ts_ep.splitlines() if "setup-schema -v 0.0" in ln and not ln.lstrip().startswith("#")]
+      == ['log "$db: 初回なので setup-schema -v 0.0"', 'sql_tool "$db" setup-schema -v 0.0']
+      and re.search(r'\n  if \[ "\$has" = "f" \]; then\n    log "\$db: 初回なので setup-schema -v 0\.0"\n    sql_tool "\$db" setup-schema -v 0\.0\n  fi\n', _ts_ep) is not None)
 for env in ("NEPTUNE_GRAPH_ID", "AUDIT_TABLE_BUCKET_ARN", "AUDIT_NAMESPACE", "PROPOSAL_EVENTS_TABLE", "ANOMALY_QUEUE_URL", "DECISION_QUEUE_URL", "AGENT_RUNTIME_ARN", "LAB_INSTANCE_ID", "APPROVAL_TIMEOUT_MINUTES", "VERIFY_TIMEOUT", "HOLD_MINUTES", "PARAM_PREFIX"):
     check(f"worker の環境変数 {env} を渡す", f'name = "{env}"' in tf or f'name  = "{env}"' in tf or re.search(rf'name\s*=\s*"{env}"', tf) is not None)
 # 渡した名前を worker が読んでいなければ、既定値のまま動いて気づけない
@@ -675,7 +750,7 @@ check("app/temporal/requirements.txt は temporalio / boto3 / pyiceberg[pyarrow]
 for _f in ("worker.py", "awsio.py", "rules.py"):
     ast.parse(read("app", "temporal", _f))
 ecr_tf = read("IaC", "terraform", "aws-managed", "base", "ecr", "main.tf")
-check("IaC/terraform/aws-managed/base/ecr は worker / temporal のリポジトリを作る", '"worker", "temporal"' in ecr_tf and 'resource "aws_ecr_repository" "workflow"' in ecr_tf)
+check("IaC/terraform/aws-managed/base/ecr は worker / temporal / temporal-ui のリポジトリを作る", '"worker", "temporal", "temporal-ui"' in ecr_tf and 'resource "aws_ecr_repository" "workflow"' in ecr_tf)
 
 # ---- web（app.py は画面の組み立てだけ。タブの中身は分けてある）
 web = read("app", "dashboard", "app.py")
@@ -789,14 +864,30 @@ check("starter はアラートと決定の 2 つのキューを 20 秒の long p
       and "starter(client, awsio.ANOMALY_QUEUE_URL, handle_message)" in read("app", "temporal", "worker.py")
       and "starter(client, awsio.DECISION_QUEUE_URL, handle_decision)" in read("app", "temporal", "worker.py"))
 check("up.sh は workflow ルートを足し、費用に 5 セント足す（Fargate だけ。sqs のエンドポイントは無くなった）", 'ROOTS="$ROOTS workflow"' in up and 'COST_CENTS=$((COST_CENTS + 5))' in up)
-check("up.sh は worker を buildx でビルドし、temporalio/temporal を ECR にミラーする",
-      '--push -f docker/images/temporal/Dockerfile app/temporal/' in up and 'docker pull --platform linux/arm64 "temporalio/temporal:$TEMPORAL_TAG"' in up and "$PREFIX-temporal:$TEMPORAL_TAG" in up)
-check("up.sh の TEMPORAL_TAG は IaC/terraform/aws-managed/workflow の temporal_image_tag の既定値と同じ",
-      re.search(r'^TEMPORAL_TAG=(\S+)', up, re.M).group(1) == re.search(r'variable "temporal_image_tag"[\s\S]*?default\s*=\s*"([^"]+)"', tf).group(1))
+check("up.sh は worker を buildx でビルドし、Temporal のサーバーを docker/images/temporal-server/ から arm64 でビルドし、temporalio/ui を ECR にミラーする",
+      '--push -f docker/images/temporal/Dockerfile app/temporal/' in up
+      and '--build-arg "TEMPORAL_SERVER_VERSION=$TEMPORAL_SERVER_VERSION" --build-arg "POSTGRES_MAJOR=$POSTGRES_MAJOR"' in up
+      and '-t "$REG/$PREFIX-temporal:$1" --push docker/images/temporal-server/' in up
+      and 'docker pull --platform linux/arm64 "temporalio/ui:$TEMPORAL_UI_TAG"' in up and '"$REG/$PREFIX-temporal-ui:$TEMPORAL_UI_TAG"' in up
+      and "temporalio/temporal" not in up and "TEMPORAL_TAG=" not in up and "mirror_temporal " not in up + " ")
+for _name, _src in (("ops/up.sh", read("ops", "up.sh")), ("ops/oss/up.sh", read("ops", "oss", "up.sh"))):
+    check(f"{_name} は temporal のタグを docker/images/temporal-server/ の中身から作り（dir_tag）、無ければビルド、UI は TEMPORAL_UI_TAG で無ければミラーする",
+          'TEMPORAL_SERVER_IMAGE_TAG=$(dir_tag "$TEMPORAL_SERVER_VERSION" docker/images/temporal-server)' in _src
+          and 'ecr_has "$PREFIX-temporal" "$TEMPORAL_SERVER_IMAGE_TAG"' in _src and 'ecr_has "$PREFIX-temporal-ui" "$TEMPORAL_UI_TAG"' in _src
+          and 'build_temporal_server "$TEMPORAL_SERVER_IMAGE_TAG"' in _src and "mirror_temporal_ui" in _src
+          and "$NEED_TEMPORAL$NEED_TEMPORAL_UI" in _src)
+    check(f"{_name} は arm64 の buildx を temporal のビルドでも確かめる（RUN apk がある）",
+          re.search(r'if \[ -n "[^"]*\$NEED_TEMPORAL[^_"][^"]*" \] && ! grep -q \'linux/arm64\'|if \[ -n "[^"]*\$NEED_TEMPORAL" \] && ! grep -q \'linux/arm64\'', _src) is not None)
+    check(f"{_name} は nautobot に db_engine_version=$POSTGRES_MAJOR を、workflow に temporal_image_tag を渡し、workflow の前にロール temporal のパスワードを作る",
+          '-var "db_engine_version=$POSTGRES_MAJOR"' in _src and '-var "temporal_image_tag=$TEMPORAL_SERVER_IMAGE_TAG"' in _src
+          and _src.index("ensure_temporal_secrets") < _src.index("tf_apply workflow") and _src.index("tf_apply pipeline/nautobot") < _src.index("tf_apply workflow"))
+check("ensure_temporal_secrets は /<prefix>/temporal/db-password を乱数の SecureString で作る（値は出さない）",
+      'ensure_secret "/$PREFIX/temporal/db-password" password' in read("ops", "up-common.sh"))
 check("up.sh は workflow を apply して services-stable を待ち、Temporal UI のポートフォワーディングを案内する",
       'tf_apply workflow -var "worker_image_tag=$IMAGE_TAG"' in up and 'aws ecs wait services-stable' in up and 'AWS-StartPortForwardingSessionToRemoteHost' in up)
-check("down.sh は workflow を最初に消す（必須変数はダミーで渡す）",
-      down.index('destroy_lambda_root workflow') < down.index('destroy_root pipeline/analytics') and 'worker_image_tag=${IMAGE_TAG:-destroy}' in down)
+check("down.sh は workflow を最初に消す（必須変数 worker_image_tag と temporal_image_tag はダミーで渡す）",
+      down.index('destroy_lambda_root workflow') < down.index('destroy_root pipeline/analytics') and 'worker_image_tag=${IMAGE_TAG:-destroy}' in down
+      and '-var "temporal_image_tag=destroy"' in down)
 # .py を名指しで並べると、ファイルを足したときに構文検査から漏れる（分割で 7 本増えた）。find に任せているかを見る
 check("check.sh は workflow ルートとこのテストを見て、.py は名指しせず find で全部見る",
       "workflow)" in chk and "for t in tests/test_*.py; do" in chk
@@ -1429,11 +1520,15 @@ check("表の select をプルダウンにつなぎ、詳細と「読んだ」�
       and "pr_id.change(iv.proposal_detail, [pr_id], [pr_detail])" in web and "pr_id.change(lambda _: False, [pr_id], [pr_ok])" in web)
 
 # ---- Temporal UI（8233）: 2026-09-24 のレビューではポートごとの SG ルールの抜けで UI が開かなかった。2026-09-29 からルールは土台の通信の表にあり、
-#      Web の EC2 から workflow の 8233 の 1 行で送信と受信の 2 本ができる（7233 は無い）
+#      Web の EC2 から workflow の 8233 の 1 行で送信と受信の 2 本ができる。7233〜7239 / 6933〜6939 は cycle 036 から workflow → workflow の自分宛てだけ
 _sg_tf = read("IaC", "terraform", "aws-managed", "base", "core", "security_groups.tf")
-check("Temporal UI（8233）は土台の通信の表の web → workflow の 1 行で、workflow にはルールも Web の SG の参照も無く、7233 の行は無い",
+_sg_rows = re.findall(r'\{ from = "(\w+)", to = "(\w+)", protocol = "tcp", port = (\d+)(?:, to_port = (\d+))?,', _sg_tf)
+check("Temporal UI（8233）は土台の通信の表の web → workflow の 1 行で、workflow にはルールも Web の SG の参照も無く、"
+      "Temporal の 7233〜7239 / 6933〜6939 の行は workflow → workflow の自分宛ての 2 行だけで、RDS へは workflow → nautobot_db の 5432（cycle 036）",
       re.search(r'\{ from = "web", to = "workflow", protocol = "tcp", port = 8233,', _sg_tf) is not None
-      and re.search(r'to = "workflow", protocol = "tcp", port = 7233', _sg_tf) is None and "7233" not in _sg_tf.replace("gRPC 7233", "")
+      and sorted((f, t, int(a), int(b or a)) for f, t, a, b in _sg_rows if t == "workflow" and a != "8233")
+      == [("workflow", "workflow", 6933, 6939), ("workflow", "workflow", 7233, 7239)]
+      and ("workflow", "nautobot_db", "5432", "") in _sg_rows
       and "task_ui_from_web" not in tf and "web_to_task_ui" not in tf and "web_sg_id" not in tf and "instance_security_group_id" not in tf
       and 'output "security_group_ids"' in main_out and 'outputs.security_group_ids["workflow"]' in tf)
 check("修復案の status に obsolete がある（tools.json の説明も）", "obsolete" in proposals.STATUSES and all("obsolete" in t["description"] for t in tools if t["name"] == "list_proposals"))

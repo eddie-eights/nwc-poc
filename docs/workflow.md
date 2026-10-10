@@ -28,7 +28,7 @@ flowchart LR
   WK -->|"SSM Run Command<br/>sudo lab heal-main"| LAB["lab の EC2"]
 ```
 
-- temporal（`start-dev`、データは SQLite）と worker は、ECS Fargate の 1 タスクに入っている。Temporal の履歴はタスクと一緒に消える。
+- temporal（`temporal-server` の本番モード）と Temporal UI と worker は、ECS Fargate の 1 タスクに入っている。Temporal の履歴は Nautobot の RDS for PostgreSQL（DB `temporal` / `temporal_visibility`）に残り、タスクが入れ替わっても消えない（cycle 036）。RDS ごと消す `ops/down.sh` のあとは残らない。
 - 修復案の置き場は S3 Tables の `proposal_events` だけ（Neptune に修復案の頂点は無い）。
   - 作成・承認・却下・時間切れ・適用・確認のたびに 1 行足し、上書きしない。
   - どの行にも全項目（28 列。原因、コマンド、理由、事前チェック、決めた人、処置の結果など）が入る。列の正は `app/temporal/rules.py` の `PROPOSAL_EVENT_COLUMNS`。
@@ -108,10 +108,11 @@ stateDiagram-v2
 | 直らないまま時間がたつ | Grafana は 4 時間ごと（`repeat_interval`）に同じ `starts_at` で送り直す。ワークフローが走っていれば捨て、閉じていても同じ発生の修復案があれば起こさない。Splunk は状態が変わったときだけ出し、送り直さない |
 | 調査や承認待ちのあいだに直って、また落ちた（フラップ） | `resolved` はその run 全体に 1 つのフラグなので、直った時点で `obsolete` になる。落ち直しの `firing` は、ワークフローが閉じた後に届けば新しい発生として調べ、走っているあいだ（調査の途中など）に届けば捨てる。捨てたときは、Grafana の次の送り直し（4 時間後）か Splunk の次の変化まで調査は起きない |
 | 解消の通知が、ワークフローの始まる前や閉じた後に届く | 伝える相手がいないので捨てる（Neptune の `status` は Lambda が別に `UP` へ戻す） |
-| Temporal のタスクが入れ替わる | 走っていたワークフローは消える（SQLite がタスクの中）。修復案は `pending` のまま残り、ワークフローの時間切れは働かない（そのあとは下） |
+| Temporal のタスクが入れ替わる | 走っていたワークフローは続く（履歴は Nautobot の RDS。cycle 036。手元の docker で確かめ、AWS では未確認）。デプロイは新しいタスクが上がってから古いのを止める |
+| Temporal の履歴が無くなる（RDS を作り直した） | 走っていたワークフローは消える。修復案は `pending` のまま残り、ワークフローの時間切れは働かない（そのあとは下） |
 | 同じ修復案に承認と却下が続けて届く（2 人が押した、SQS が配り直した） | 最初の 1 通だけが効く。内容の違う後の決定は `ignored` の行で残り、同じ内容の重複は捨てる |
 
-- Temporal のタスクが入れ替わったあと:
+- Temporal の履歴が無くなったあと:
   - Grafana の次の送り直しでは、同じ発生の修復案があるので起きない。
   - 「承認」タブで承認か却下を押すと、worker が `expired` の行を足して閉じる（処置は打たない）。
   - 同じ異常がもう一度起きて新しい修復案ができたときも、古い `pending` は `expired` で閉じる。
@@ -130,7 +131,7 @@ stateDiagram-v2
 
 UI（8233）はプライベートサブネットのタスクにあるので、Web の EC2 を踏み台にしてポートフォワーディングする。`ops/up.sh` の手順 8-5 が同じコマンドを表示する。
 8233 は土台の通信の表の `web` → `workflow` の 1 行で開いている（[architecture/core.md](architecture/core.md) の「SG」）。
-gRPC の 7233 はタスクの外に出さない（Temporal は `--ip 127.0.0.1` で待ち、UI だけを `--ui-ip 0.0.0.0` で出す。ワーカーは同じタスクの `localhost:7233`）。
+gRPC の 7233〜7239 と membership の 6933〜6939 はタスクの外に出さない（portMappings に出すのは ui のコンテナの 8233 だけ。SG は workflow → workflow の自分宛てだけ。UI とワーカーは同じタスクの `127.0.0.1:7233` / `localhost:7233`）。
 
 ```bash
 INSTANCE_ID=$(terraform -chdir=IaC/terraform/aws-managed/base/core output -raw web_instance_id); echo "$INSTANCE_ID"
@@ -153,9 +154,10 @@ terraform -chdir=IaC/terraform/aws-managed/workflow output -raw worker_logs_comm
 
 | 症状 | 原因と直し方 |
 |---|---|
-| apply の直後に worker が落ちる | Temporal が上がるまで 1〜3 分かかる。数回落ちてから上がる |
+| apply の直後に worker も UI も起きない | worker と ui は temporal が HEALTHY（namespace `default` ができた）になるまで待つ。temporal の初期化（ロールと DB、スキーマ）に 1〜3 分かかる |
+| temporal が HEALTHY にならない（タスクが入れ替わり続ける） | 上のログで `entrypoint-rds:` の行を見る。`に繋がらない` なら Nautobot の RDS が無いか SG（`workflow` → `nautobot_db` の 5432）、psql のエラーならパスワード（SSM の `/<prefix>/temporal/db-password` と `/<prefix>/nautobot/db-password`） |
 | 承認を押しても `pending` のまま | 反映まで数秒〜20 秒かかる。「更新」を押す。1 分たっても変わらなければ、worker のログに `decide <proposal_id>` が出ているか、DLQ `<prefix>-decisions-dlq` に溜まっていないかを見る |
-| 承認を押したら `expired` になった | ワークフローがもう無かった（worker のタスクが入れ替わった）。処置は打たれない。まだ落ちていれば、次の通知（Grafana の送り直しは 4 時間ごと）で別の修復案が出る |
+| 承認を押したら `expired` になった | ワークフローがもう無かった（Temporal の履歴が無くなった。cycle 036 より前はタスクが入れ替わると消えた）。処置は打たれない。まだ落ちていれば、次の通知（Grafana の送り直しは 4 時間ごと）で別の修復案が出る |
 | 承認しても approved のまま進まない（UI で `TimeoutError`） | ワーカーのイメージが古い。`deploy.env` の `IMAGE_TAG` を上げて `ops/up.sh` |
 | Runtime のログに `gateway tools/list failed, using local tools` | Gateway に届いていない。答えはコンテナの中のツールで返る |
 | 修復案が出ない | アラートが SQS まで届いていない。送り手 → SNS → SQS の順に見る（[troubleshooting.md](troubleshooting.md) の「パイプラインと WORKFLOW」） |

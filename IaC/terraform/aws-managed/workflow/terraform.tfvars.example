@@ -1,7 +1,7 @@
-# Copy to terraform.tfvars only when the defaults are not right. Every value except owner and worker_image_tag has a default in variables.tf.
-# IaC/terraform/aws-managed/base/core, IaC/terraform/aws-managed/pipeline/lab and IaC/terraform/aws-managed/pipeline/stream must be applied first (this root reads their state files), and
-# IaC/terraform/aws-managed/base/ecr must have the worker / temporal repositories (create_workflow_repositories = true, the default).
-# ops/up.sh passes worker_image_tag = IMAGE_TAG on the command line.
+# Copy to terraform.tfvars only when the defaults are not right. Every value except owner, worker_image_tag and temporal_image_tag has a default in variables.tf.
+# IaC/terraform/aws-managed/base/core, IaC/terraform/aws-managed/pipeline/lab, IaC/terraform/aws-managed/pipeline/stream and IaC/terraform/aws-managed/pipeline/nautobot (the Temporal history is in its RDS) must be applied first (this root reads their state files), and
+# IaC/terraform/aws-managed/base/ecr must have the worker / temporal / temporal-ui repositories (create_workflow_repositories = true, the default).
+# ops/up.sh passes worker_image_tag = IMAGE_TAG and temporal_image_tag (the dir_tag of docker/images/temporal-server) on the command line.
 # owner is the name of the person who deploys this copy and is REQUIRED: it has no default, so terraform asks for it
 # unless you uncomment the line below (with your own name), export TF_VAR_owner or pass -var owner=<name>.
 # Resource names and the Project tag become <owner>-nwc-poc (up to 14 lowercase letters, digits and single hyphens),
@@ -10,8 +10,14 @@
 # region      = "ap-northeast-1"
 # owner       = "yamada"
 #
-# worker_image_tag   = "v1"
-# temporal_image_tag = "1.9.1"
+# worker_image_tag      = "v1"
+# temporal_image_tag    = "1.32.1-0123456789ab"
+# temporal_ui_image_tag = "2.55.0"
+#
+# temporal_sql_max_conns             = 4
+# temporal_sql_max_idle_conns        = 2
+# temporal_visibility_max_conns      = 2
+# temporal_visibility_max_idle_conns = 1
 #
 # task_cpu           = 1024
 # task_memory        = 2048

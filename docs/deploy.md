@@ -232,7 +232,7 @@ AWS の料金表から root ごとに数えたパターン別の値は、下の�
 | `pipeline/analytics` | EMR Serverless のストリーミングジョブ 3 つ（0.5767）、logs の collection（OpenSearch Serverless の 1 OCU。0.334）、Grafana（Fargate ARM 0.5 vCPU / 1 GB。0.0246）、Splunk（Fargate x86 2 vCPU / 4 GB + 一時領域 40 GiB。0.1259）。Amazon Managed Service for Prometheus、S3 Tables、Firehose、Athena は使った分だけ | 1.0612 | − | − | ○ | ○ |
 | `pipeline/graph` | Neptune Analytics 16 m-NCU（レプリカ 0）。status の Lambda は使った分だけ | 0.5810 | − | − | ○ | ○ |
 | `pipeline/nautobot` | Fargate ARM 2 vCPU / 4 GB（Nautobot の web、Celery の worker、Redis を 1 タスク。0.0986）、RDS for PostgreSQL db.t4g.micro と gp3 20 GB（0.0288） | 0.1274 | − | − | ○ | ○ |
-| `workflow` | Fargate ARM 1 vCPU / 2 GB（Temporal の開発用サーバーとワーカーを 1 タスク）。SQS、AgentCore Gateway、ツールの Lambda は使った分だけ | 0.0493 | − | − | − | ○ |
+| `workflow` | Fargate ARM 1 vCPU / 2 GB（Temporal のサーバー、Web UI、ワーカーを 1 タスク。履歴は `pipeline/nautobot` の RDS に相乗りするので増えない）。SQS、AgentCore Gateway、ツールの Lambda は使った分だけ | 0.0493 | − | − | − | ○ |
 | インターフェース型エンドポイント（`base/core`） | 1 本 0.014。本数は下の表 | 0.014 × 本数 | 7 本 | 8 本 | 12 本 | 17 本 |
 | OpenSearch Serverless の VPC エンドポイント（`base/core`） | 1 本 0.014 | 0.014 | − | ○ | ○ | ○ |
 
@@ -332,7 +332,7 @@ AWS の料金表から root ごとに数えたパターン別の値は、下の�
 
 #### 手順 2: イメージ
 
-- agent、worker、Temporal のミラー、Telegraf、gnmic、syslog-ng、Grafana、Nautobot、Redis と Kafbat UI と GoFlow2 のミラーは arm64。lab の srlinux / trex のミラーは、lab の EC2 が x86_64 なので amd64。
+- agent、worker、Temporal のサーバー（`docker/images/temporal-server/` のビルド）と Web UI のミラー、Telegraf、gnmic、syslog-ng、Grafana、Nautobot、Redis と Kafbat UI と GoFlow2 のミラーは arm64。lab の srlinux / trex のミラーは、lab の EC2 が x86_64 なので amd64。
 - ECS の Splunk は amd64 の公式イメージ（約 2〜3 GB）に検知のアプリを足してビルドする。
 - Telegraf / gnmic / syslog-ng / Grafana / Splunk / Nautobot のタグは `<版>-<ディレクトリの中身のハッシュ 12 文字>`。
   `app/telegraf/`・`app/gnmic/`・`app/syslog-ng/`・`app/grafana/`・`app/splunk/`・`app/nautobot/`（Nautobot は中に入れる `app/agentcore/graph.py`・`app/agentcore/toolkit.py` と lab の定義も）を変えると、次の `ops/up.sh` が作り直す。
@@ -472,14 +472,14 @@ imp() { tf base/ecr import -input=false -var "owner=$OWNER" "$1" "$PREFIX-$2"; }
 imp aws_ecr_repository.agent agent
 imp aws_ecr_lifecycle_policy.agent agent
 for k in srlinux trex; do imp "aws_ecr_repository.lab[\"$k\"]" "lab-$k"; done
-for k in worker temporal; do imp "aws_ecr_repository.workflow[\"$k\"]" "$k"; done
+for k in worker temporal temporal-ui; do imp "aws_ecr_repository.workflow[\"$k\"]" "$k"; done
 for k in telegraf gnmic kafka-ui syslog-ng goflow2 grafana splunk nautobot redis; do imp "aws_ecr_repository.pipeline[\"$k\"]" "$k"; done
 if [ "$PROJECT" = nwc-oss ]; then for k in kafka opensearch vminsert vmselect vmstorage spark neo4j; do imp "aws_ecr_repository.oss[\"$k\"]" "$k"; done; fi
 tf base/ecr state list
 EOF
 ```
 
-- 2026-10-08 の OSS 版で、同じアドレスとリポジトリ名で 18 リポジトリ（当時の数。いまの OSS 版は 21 = マネージド版の 14 + OSS 版だけの 7）とライフサイクルのポリシーを import した。
+- 2026-10-08 の OSS 版で、同じアドレスとリポジトリ名で 18 リポジトリ（当時の数。いまの OSS 版は 22 = マネージド版の 15 + OSS 版だけの 7）とライフサイクルのポリシーを import した。
   `plan` は `0 to add, 18 to change, 0 to destroy` だった（変わるのは、import では入らない `force_delete` だけ）。
 - **`try()` にしてからの import と、マネージド版の import は AWS で未確認。**
   `base/ecr/outputs.tf` が `try()` で包むので、override は要らないはず。

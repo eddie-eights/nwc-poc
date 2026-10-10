@@ -67,8 +67,8 @@ if has_resources pipeline/analytics; then
     done
   fi
 fi
-# workflow の worker_image_tag は必須変数だが destroy では使われないので、何でもよい値を渡す
-destroy_lambda_root workflow "$PREFIX-tools" -var "worker_image_tag=${IMAGE_TAG:-destroy}"
+# workflow の worker_image_tag と temporal_image_tag（cycle 036 で既定を外した）は必須変数だが destroy では使われないので、何でもよい値を渡す
+destroy_lambda_root workflow "$PREFIX-tools" -var "worker_image_tag=${IMAGE_TAG:-destroy}" -var "temporal_image_tag=destroy"
 destroy_root pipeline/analytics
 # Nautobot（ECS と RDS）。RDS は最後のスナップショット無しで消すので、Nautobot で編集した内容は残らない（5〜10 分）
 destroy_root pipeline/nautobot

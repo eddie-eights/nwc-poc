@@ -246,11 +246,16 @@ splunk_cluster_check() {
 }
 # Agent（Runtime）・worker・Temporal・Nautobot と Redis のイメージ。マネージド版と OSS 版（005）が同じ作り方をする。どれも docker login 済みで呼び、REG / PREFIX を使う。
 # NAUTOBOT_VERSION は docker/images/nautobot/Dockerfile の ARG、REDIS_TAG は IaC/terraform/aws-managed/pipeline/nautobot の redis_image_tag、
-# TEMPORAL_TAG は IaC/terraform/aws-managed/workflow の temporal_image_tag の既定値に合わせてある（変えるときは両方を変える）
+# TEMPORAL_UI_TAG は IaC/terraform/aws-managed/workflow の temporal_ui_image_tag の既定値に合わせてある（変えるときは両方を変える）
 NAUTOBOT_VERSION=3.2.6
 GRAFANA_VERSION=13.2.3   # docker/images/grafana/Dockerfile の ARG の既定値に合わせてある（変えるときは両方を変える）
 REDIS_TAG=8.10.2-alpine   # 8 系は AGPLv3 も選べる（7.4 は RSALv2 / SSPL だけ）。公式のイメージは Search・JSON などのモジュールを読み込んで起きる
-TEMPORAL_TAG=1.9.1
+# Temporal（cycle 036）。履歴は Nautobot の RDS for PostgreSQL に置き、temporalio/server に temporal-sql-tool と psql を足したイメージ（docker/images/temporal-server/）を作る。
+# TEMPORAL_SERVER_VERSION は docker/images/temporal-server/Dockerfile の ARG の既定値（temporalio/server と temporalio/admin-tools のタグ）、
+# POSTGRES_MAJOR は RDS の大版（pipeline/nautobot の db_engine_version）とイメージに入れる psql の大版の正で、両方の既定値と同じ（tests/test_workflow.py が照合する）
+TEMPORAL_SERVER_VERSION=1.32.1
+TEMPORAL_UI_TAG=2.55.0
+POSTGRES_MAJOR=18
 # 機器の syslog と NetFlow / sFlow の受け口（cycle 012）。SYSLOG_NG_VERSION は docker/images/syslog-ng/Dockerfile の ARG の既定値、GOFLOW2_TAG は netsampler/goflow2 のタグ。
 # docker/compose/compose.yaml も同じ値（tests/test_local_compose.py が照合する。変えるときは全部を変える）。どちらも arm64 のイメージがあることを確かめてある
 SYSLOG_NG_VERSION=4.29.0
@@ -323,10 +328,16 @@ grafana_skip_warn() {  # grafana_skip_warn <確かめ直すコマンド>
 build_worker() {  # build_worker <タグ> [requirements のファイル名]  Temporal の worker（arm64）。OSS 版は requirements-oss.txt（neo4j のドライバー入り）
   docker buildx build --platform linux/arm64 --build-arg "REQUIREMENTS=${2:-requirements.txt}" -t "$REG/$PREFIX-worker:$1" --push -f docker/images/temporal/Dockerfile app/temporal/
 }
-mirror_temporal() {  # Temporal の CLI 入りイメージ（temporal server start-dev。arm64 あり）。Fargate は ECR からしか安定して引けないのでミラーする
-  docker pull --platform linux/arm64 "temporalio/temporal:$TEMPORAL_TAG"
-  docker tag "temporalio/temporal:$TEMPORAL_TAG" "$REG/$PREFIX-temporal:$TEMPORAL_TAG"
-  docker push "$REG/$PREFIX-temporal:$TEMPORAL_TAG"
+build_temporal_server() {  # build_temporal_server <タグ>  REG / PREFIX を使う。タグは dir_tag "$TEMPORAL_SERVER_VERSION" docker/images/temporal-server
+  # temporalio/server（arm64）に temporalio/admin-tools の temporal-sql-tool と temporal（CLI）、Alpine の psql（${POSTGRES_MAJOR}）を足す。
+  # 起動のたびに Nautobot の RDS にロール temporal と DB を作り、スキーマを最新まで上げてから temporal-server を起こす（docker/images/temporal-server/entrypoint.sh）
+  docker buildx build --platform linux/arm64 --build-arg "TEMPORAL_SERVER_VERSION=$TEMPORAL_SERVER_VERSION" --build-arg "POSTGRES_MAJOR=$POSTGRES_MAJOR" \
+    -t "$REG/$PREFIX-temporal:$1" --push docker/images/temporal-server/
+}
+mirror_temporal_ui() {  # Temporal の Web UI（temporalio/ui。arm64 あり）。Fargate は ECR からしか安定して引けないのでミラーする
+  docker pull --platform linux/arm64 "temporalio/ui:$TEMPORAL_UI_TAG"
+  docker tag "temporalio/ui:$TEMPORAL_UI_TAG" "$REG/$PREFIX-temporal-ui:$TEMPORAL_UI_TAG"
+  docker push "$REG/$PREFIX-temporal-ui:$TEMPORAL_UI_TAG"
 }
 build_nautobot() {  # build_nautobot <タグ> <context のディレクトリ> [requirements のファイル名]  Nautobot の公式イメージ（arm64。約 1 GB）に boto3 と Job と対応付けと最初の seed を足す。
   # OSS 版は requirements-oss.txt（neo4j のドライバー入り。Job が Neo4j に書く）。どちらの requirements も context（app/nautobot/ の写し）にあるので、タグ（dir_tag）は両方の中身で決まる
@@ -340,6 +351,10 @@ ensure_nautobot_secrets() {  # pipeline/nautobot の apply より前に呼ぶ。
   ensure_secret "/$PREFIX/nautobot/db-password" password "Nautobot database password (created by $OPS_DIR/up.sh)"
   # Web の「トポロジ」タブがリンクの追加・削除を Nautobot の REST API に書くためのトークン（bootstrap.py が同じ値でユーザー nwc-web のトークンを作る）
   ensure_secret "/$PREFIX/nautobot/api-token" token "Nautobot API token of the web UI (created by $OPS_DIR/up.sh)"
+}
+ensure_temporal_secrets() {  # workflow の apply より前に呼ぶ。値は出さない
+  # Temporal の履歴を Nautobot の RDS に書くロール temporal のパスワード（cycle 036。docker/images/temporal-server/entrypoint.sh が起動のたびにこの値に揃える）
+  ensure_secret "/$PREFIX/temporal/db-password" password "Temporal database password (created by $OPS_DIR/up.sh)"
 }
 
 # ---- MSK の SASL/SCRAM の資格情報（cycle 012。マネージド版の ops/up.sh だけが呼ぶ。OSS 版の Kafka は認証なしの 9092）

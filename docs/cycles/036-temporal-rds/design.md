@@ -22,7 +22,7 @@
 - デプロイは無停止（min 100 / max 200）。履歴が RDS にあるので 2 タスクが短時間並んでも壊れない
 - Temporal UI は 8233 のまま（SSM のポートフォワードの手順と SG の行を変えない）
 - 初期化（ロールと DB の作成、スキーマ、namespace）は **temporal のサーバーのコンテナ自身が entrypoint でやる**（案 c）。init コンテナや db-init を増やさない
-- RDS の PostgreSQL は 17 → **18** に上げる（ユーザーの提案。RDS の最新の大版で 18.6 まで出ている。Nautobot 3 は 12 以降なら動く。DB は `up.sh` のたびに作り直すので升級の手順は要らない）。psql クライアントも 18 に揃える
+- RDS の PostgreSQL は 17 → **18** に上げる（ユーザーの提案。RDS の最新の大版で 18.6 まで出ている。Nautobot 3 は 12 以降なら動く。`pipeline/nautobot/database.tf` に `allow_major_version_upgrade` は無いので、17 の RDS が残っている環境で `up.sh` を打つと nautobot の apply が止まる。先に `ops/down.sh` で消してから `up.sh`（AWS は確認後すぐ down.sh する運用なので、通常は 17 が残らない））。psql クライアントも 18 に揃える
 - このサイクルでは AWS で動かさない。手元の docker と文字列の検査で確かめ、残りの修正が全部終わったら AWS の動作確認と修正を 1 回でまとめてやる（QUEUE の最後の AWS 動作確認の行）
 
 ## 設計方針
@@ -57,6 +57,8 @@ RUN apk add --no-cache ${POSTGRESQL_CLIENT_PACKAGE}
 COPY --from=tools /usr/local/bin/temporal-sql-tool /usr/local/bin/temporal /usr/local/bin/
 COPY --from=tools /etc/temporal/schema /etc/temporal/schema
 COPY --chmod=755 entrypoint.sh /etc/temporal/entrypoint-rds.sh
+# 公式の entrypoint が読む dynamic config の既定のパス（無いと temporal-server が起動しない）
+COPY dynamicconfig.yaml /etc/temporal/config/dynamicconfig/docker.yaml
 USER temporal
 ENTRYPOINT ["/etc/temporal/entrypoint-rds.sh"]
 ```
@@ -75,13 +77,16 @@ ENTRYPOINT ["/etc/temporal/entrypoint-rds.sh"]
 
 1. 必須の env を `: "${POSTGRES_SEEDS:?}"` の形で確かめる（`POSTGRES_SEEDS` / `POSTGRES_USER` / `POSTGRES_PWD` / `NAUTOBOT_DB_USER` / `NAUTOBOT_DB_PASSWORD`）。`DB_PORT` の既定 5432、`DBNAME` の既定 `temporal`、`VISIBILITY_DBNAME` の既定 `temporal_visibility`、`SQL_TLS_ENABLED` の既定 `true`、`DEFAULT_NAMESPACE` の既定 `default`
 2. `nc -z -w 10 "$POSTGRES_SEEDS" "$DB_PORT"` を 30 回 × 5 秒まで待つ（公式は 1 回だけ。RDS が起きる前にタスクが上がることがあるので回す）
-3. **psql を Nautobot の master で打ち、ロールと DB を作る**（`PGSSLMODE` は TLS 有効なら `require`、無効なら `prefer`。パスワードは `PGPASSWORD` で渡し、ログに出さない）。`\gexec` で「無いときだけ作る」形にする。`CREATE DATABASE ... OWNER temporal` には master が `temporal` のメンバーである必要があるので先に `GRANT`
+3. **psql を Nautobot の master で打ち、ロールと DB を作る**（`PGSSLMODE` は TLS 有効なら `require`、無効なら `prefer`。master のパスワードは `PGPASSWORD`、ロールのパスワードは psql の中で `\getenv` で読む。どちらもコマンドラインに載せない）。`\gexec` で「無いときだけ作る」形にする。`CREATE DATABASE ... OWNER temporal` には master が `temporal` のメンバーである必要があるので先に `GRANT`
    ```sql
-   -- psql -v pw="$POSTGRES_PWD" -v role="$POSTGRES_USER" -v ON_ERROR_STOP=1 -d nautobot
+   -- PGPASSWORD="$NAUTOBOT_DB_PASSWORD" psql -X -q -v ON_ERROR_STOP=1 -U "$NAUTOBOT_DB_USER" -d nautobot -v role="$POSTGRES_USER" -v db=... -v vdb=...
+   \getenv pw POSTGRES_PWD
    SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'role', :'pw')
      WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'role') \gexec
    SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'role', :'pw') \gexec
-   SELECT format('GRANT %I TO CURRENT_USER', :'role') \gexec
+   -- PostgreSQL 16 以降、CREATEROLE で作った側（master）は ADMIN だけ持ち SET が無いので SET で見る
+   SELECT format('GRANT %I TO CURRENT_USER', :'role')
+     WHERE NOT pg_has_role(CURRENT_USER, :'role', 'SET') \gexec
    SELECT format('CREATE DATABASE %I OWNER %I', :'db', :'role')
      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'db') \gexec   -- temporal と temporal_visibility の 2 回
    ```
@@ -149,7 +154,7 @@ done
 | `LOG_LEVEL` | `warn` | いまの `--log-level warn` と同じ |
 | `NAUTOBOT_DB_USER` / `NAUTOBOT_DB_PASSWORD` | `nautobot` / ECS の `secrets`（SSM `/<prefix>/nautobot/db-password`） | entrypoint のロール/DB 作成だけに使う |
 
-ポート: frontend 7233 / 6933、internal-frontend 7236 / 6936、history 7234 / 6934、matching 7235 / 6935、worker 7239 / 6939。全部タスクの中で完結する（`BIND_ON_IP=0.0.0.0` だが portMappings に出さず、SG で自分宛てだけ開ける）。
+ポート: frontend 7233 / 6933、internal-frontend 7236 / 6936、history 7234 / 6934、matching 7235 / 6935、worker 7239 / 6939。同じタスクの中は自分の IP 宛てで SG を通らない。portMappings には出さず、SG は `workflow` → `workflow` の自分宛てだけ開ける（デプロイ中に新旧 2 タスクが同じ DB の `cluster_membership` で 1 つのクラスターになり、shard を渡し合うときに通る）。
 
 ### ECS のタスク定義（`workflow/ecs.tf`）
 
@@ -166,8 +171,8 @@ done
 ### SG（`base/core/security_groups.tf` の `sg_flows`）
 
 - `{ from = "workflow", to = "nautobot_db", protocol = "tcp", port = 5432, why = "PostgreSQL - Temporal の履歴（temporal / temporal_visibility）" }`
-- `{ from = "workflow", to = "workflow", protocol = "tcp", port = 6933, to_port = 6939, why = "Temporal の membership（タスクの中の 5 サービス）" }`
-- `{ from = "workflow", to = "workflow", protocol = "tcp", port = 7233, to_port = 7239, why = "Temporal の gRPC（タスクの中の 5 サービス）" }`
+- `{ from = "workflow", to = "workflow", protocol = "tcp", port = 6933, to_port = 6939, why = "Temporal membership between the tasks during a deployment" }`
+- `{ from = "workflow", to = "workflow", protocol = "tcp", port = 7233, to_port = 7239, why = "Temporal gRPC between the tasks during a deployment" }`
 - 10 行目のコメント「開けていないもの: Temporal の gRPC 7233」は「タスクの外には開けていない」に直す（self のみ）
 
 ### ECR（`base/ecr`）
@@ -184,7 +189,7 @@ done
 - `mirror_temporal()` → `mirror_temporal_ui()`（`temporalio/ui:$TEMPORAL_UI_TAG` を `<prefix>-temporal-ui:$TEMPORAL_UI_TAG` に）と `build_temporal_server <tag>`（`docker buildx build --platform linux/arm64 --build-arg TEMPORAL_SERVER_VERSION=$TEMPORAL_SERVER_VERSION --build-arg POSTGRES_MAJOR=$POSTGRES_MAJOR -t $REG/$PREFIX-temporal:<tag> --push docker/images/temporal-server/`）。タグは `dir_tag "$TEMPORAL_SERVER_VERSION" docker/images/temporal-server`（`ops/lab-common.sh`。中身が変われば別のタグになり、ECR のタグの上書き禁止と両立する）
 - `ensure_temporal_secrets()`: `ensure_secret "/$PREFIX/temporal/db-password" password "Temporal database password (created by $OPS_DIR/up.sh)"`。workflow の apply の前に呼ぶ（`ensure_nautobot_secrets` と同じ場所の並び）
 - 8-5 の `tf_apply workflow` に `-var "temporal_image_tag=$TEMPORAL_SERVER_IMAGE_TAG"` を足す。`ecr_has` の判定も新しいタグで
-- `ops/down.sh` は変えない（`delete_up_ssm_params` が `/<prefix>/` の ManagedBy のパラメータを消すので新しいパラメータも消える。workflow は nautobot より先に destroy する並びのまま）
+- `ops/down.sh` と `ops/oss/down.sh` は workflow の destroy に `-var "temporal_image_tag=destroy"` を足す（`temporal_image_tag` の既定を外したので、渡さないと `No value for required variable` で destroy が止まる。値は destroy では使われない）。SSM のパラメータは `delete_up_ssm_params` が `/<prefix>/` の ManagedBy のものを消すので新しいものも消える。workflow は nautobot より先に destroy する並びのまま
 
 ### 変数（`workflow/variables.tf`）
 
@@ -269,7 +274,7 @@ AWS で動かすまで決着しないものは、QUEUE の最後の AWS 動作�
 2. **RDS の TLS**: `SQL_TLS_ENABLED=true` + `SQL_HOST_VERIFICATION=false` で繋がる見込み（Go の `lib/pq` の `sslmode=require` 相当）。`temporal-sql-tool` の `--tls` も同じ。psql は `PGSSLMODE=require`。駄目なら RDS の CA（`global-bundle.pem`）をイメージに入れて `SQL_CA` を指す
 3. **`btree_gin` を master で作る**: RDS の master は `rds_superuser` で `CREATE EXTENSION` できる見込み。手元の `postgres:18` では master が superuser なので差が出ない。AWS の動作確認で見る
 4. **Fargate の `hostname` と `getent`**: awsvpc では `/etc/hosts` にタスクの IP とホスト名が入るので `TEMPORAL_BROADCAST_ADDRESS` が埋まる見込み。空になると membership が `0.0.0.0` を広告して自分に繋がらない。駄目なら ECS のメタデータ（`$ECS_CONTAINER_METADATA_URI_V4`）から IP を取る分岐を entrypoint に足す
-5. **無停止デプロイ中の 2 タスク**: 同じ DB・同じ `NUM_HISTORY_SHARDS` の 2 クラスターが短時間並ぶ。Temporal は shard の所有を DB の `shards` テーブルで取り合うので壊れないが、切り替わる数十秒はワークフローの進みが遅れる。PoC では許容
+5. **無停止デプロイ中の 2 タスク**: 同じ DB・同じ `NUM_HISTORY_SHARDS` の新旧 2 タスクが短時間並ぶ（`cluster_membership` で 1 つのクラスターになる。SG の self の行はこのため）。Temporal は shard の所有を DB の `shards` テーブルで取り合うので壊れないが、切り替わる数十秒はワークフローの進みが遅れる。PoC では許容
 6. **接続数**: `db.t4g.micro` の `max_connections` 約 110 に対し、Temporal は 5 サービス × (4 + 2) = 30、デプロイ中は 60、Nautobot が約 10〜20。収まる見込みだが、AWS の動作確認で `pg_stat_activity` を見る
 7. **master のパスワードがサーバーのコンテナに渡る**（案 c の代償）。読めるのは `ecs:ExecuteCommand` できる人と SSM の `GetParameter` できる人で、いまの Nautobot のコンテナと同じ範囲。ロールと DB が出来たあとは使わない
 8. **UI 2.55.0 と server 1.32.1 の組み合わせ**: UI は frontend の gRPC を叩くだけで、2.5x 系は 1.2x〜1.3x に対応。手元の docker で 200 を見る（検証 2）

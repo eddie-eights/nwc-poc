@@ -108,7 +108,7 @@
 #     lab の EC2（containerlab の 1 台の中に全部の機器がある）、
 #     Grafana（ECS。アラートルールの評価もタスクの中なので、2 つにするとアラートを 2 重に出す）、
 #     Nautobot（ECS。Redis と Celery を同じタスクに入れているので、2 つにするとキャッシュとキューが別々になる）、
-#     workflow（ECS。Temporal の開発用サーバーがタスクの中にあるので、2 つにすると別々の Temporal になり、承認待ちが片方にしか無い）
+#     workflow（ECS。Temporal の履歴は Nautobot の RDS にあるが、NUM_HISTORY_SHARDS=4 の PoC なので 1 つで足りる。デプロイの入れ替わりの間だけ 2 つ並ぶ）
 # ---- デバッグ用（ふだんは書かない） ----
 #   NETWORK_PERIMETER=0     AccessDenied の切り分け。VPC の外からの AWS の API を拒む Deny（IaC/terraform/aws-managed/base/core の perimeter.tf）を外す。既定 1
 #   TF_VERBOSE=1            terraform の失敗・遅さの切り分け。出力を全部画面に出す（既定は進みと結果だけ。全文は ops/logs/tf-<ルート>-apply.log）
@@ -122,7 +122,7 @@ REGION=ap-northeast-1
 # load_deploy_env のあと（手順 0 の resolve_name_prefix。必須なので、無ければそこで止まる。形の検査も ops/deploy-env.sh）
 # lab と Telegraf の版（SRLINUX_TAG / TREX_TAG と ECR のタグの *_ECR_TAG / CONTAINERLAB_VERSION / TELEGRAF_VERSION）と作り方は ops/lab-common.sh
 # （デバッグ用の EC2 の ops/lab-debug.sh と共通）。
-# SPLUNK_VERSION・GRAFANA_VERSION・NAUTOBOT_VERSION・REDIS_TAG・TEMPORAL_TAG と、Splunk・Grafana・Agent・worker・Temporal・Nautobot のイメージの作り方は OSS 版と共通なので ops/up-common.sh
+# SPLUNK_VERSION・GRAFANA_VERSION・NAUTOBOT_VERSION・REDIS_TAG・TEMPORAL_SERVER_VERSION・TEMPORAL_UI_TAG・POSTGRES_MAJOR と、Splunk・Grafana・Agent・worker・Temporal・Nautobot のイメージの作り方は OSS 版と共通なので ops/up-common.sh
 . "$(dirname "$0")/lab-common.sh"
 # Kafbat UI（Web の EC2 の Docker。ghcr.io/kafbat/kafka-ui を同じタグで ECR に写す）。IaC/terraform/aws-managed/pipeline/stream の kafka_ui_image_tag の既定値に合わせてある
 KAFKA_UI_TAG=v1.5.0
@@ -439,7 +439,7 @@ if command -v python3 >/dev/null; then PY=(python3)
 elif command -v uv >/dev/null; then PY=(uv run --python 3.13 python)
 else die "python3 も uv も無い（docs/setup.md「Terraform を打つ PC 側」）"; fi
 if [ -z "$SKIP_LAB" ] || [ -z "$SKIP_ANALYTICS" ]; then command -v curl >/dev/null || die "curl が無い（lab の containerlab の rpm と analytics の jar を取るのに使う。sudo apt install curl）"; fi
-# docker はイメージ（agent / lab の 2 つ / telegraf / gnmic / syslog-ng / goflow2 / kafka-ui / grafana / splunk / nautobot / redis / worker / temporal）を ECR に置くときだけ要る。土台だけなら要らない
+# docker はイメージ（agent / lab の 2 つ / telegraf / gnmic / syslog-ng / goflow2 / kafka-ui / grafana / splunk / nautobot / redis / worker / temporal / temporal-ui）を ECR に置くときだけ要る。土台だけなら要らない
 NEED_DOCKER="$AGENT$WORKFLOW$GRAFANA$SPLUNK_ON_ECS$NAUTOBOT"; if [ -z "$SKIP_LAB" ] || [ -z "$SKIP_STREAM" ]; then NEED_DOCKER=1; fi
 if [ -n "$NEED_DOCKER" ]; then
   command -v docker >/dev/null || die "docker が無い（イメージのビルドに使う。docs/setup.md「Terraform を打つ PC 側」）"
@@ -617,9 +617,10 @@ tf_apply base/logs
 # ---- 2. イメージ ----------------------------------------------------------------
 log "2. イメージ（ECR に無いタグだけ作る）"
 NEED_AGENT=""; NEED_LAB=""; NEED_WORKER=""; NEED_TEMPORAL=""; NEED_TELEGRAF=""; NEED_GRAFANA=""; NEED_SPLUNK=""; NEED_NAUTOBOT=""; NEED_REDIS=""; NEED_KAFKA_UI=""
-NEED_SYSLOG_NG=""; NEED_GOFLOW2=""; NEED_GNMIC=""
-# telegraf / gnmic / syslog-ng / grafana / splunk は app/<名前>/ の中身と docker/images/<名前>/Dockerfile からタグを作る（どちらかを変えれば次の ops/up.sh が作り直す）
-TELEGRAF_TAG=""; GNMIC_TAG=""; SYSLOG_NG_TAG=""; GRAFANA_TAG=""; SPLUNK_TAG=""; NAUTOBOT_TAG=""
+NEED_SYSLOG_NG=""; NEED_GOFLOW2=""; NEED_GNMIC=""; NEED_TEMPORAL_UI=""
+# telegraf / gnmic / syslog-ng / grafana / splunk は app/<名前>/ の中身と docker/images/<名前>/Dockerfile からタグを作る（どちらかを変えれば次の ops/up.sh が作り直す）。
+# temporal は docker/images/temporal-server/ の中身から（cycle 036）
+TELEGRAF_TAG=""; GNMIC_TAG=""; SYSLOG_NG_TAG=""; GRAFANA_TAG=""; SPLUNK_TAG=""; NAUTOBOT_TAG=""; TEMPORAL_SERVER_IMAGE_TAG=""
 if [ -n "$AGENT" ]; then
   if ecr_has "$PREFIX-agent" "$IMAGE_TAG"; then echo "agent:$IMAGE_TAG はある（作り直すなら IMAGE_TAG を変える）"; else NEED_AGENT=1; fi
 fi
@@ -630,7 +631,10 @@ if [ -z "$SKIP_LAB" ]; then
 fi
 if [ -n "$WORKFLOW" ]; then
   if ecr_has "$PREFIX-worker" "$IMAGE_TAG"; then echo "worker:$IMAGE_TAG はある"; else NEED_WORKER=1; fi
-  if ecr_has "$PREFIX-temporal" "$TEMPORAL_TAG"; then echo "temporal:$TEMPORAL_TAG はある"; else NEED_TEMPORAL=1; fi
+  # Temporal のサーバー（履歴は Nautobot の RDS。版は ops/up-common.sh の TEMPORAL_SERVER_VERSION）と UI（TEMPORAL_UI_TAG）
+  TEMPORAL_SERVER_IMAGE_TAG=$(dir_tag "$TEMPORAL_SERVER_VERSION" docker/images/temporal-server) || die "docker/images/temporal-server/ のタグを作れなかった"
+  if ecr_has "$PREFIX-temporal" "$TEMPORAL_SERVER_IMAGE_TAG"; then echo "temporal:$TEMPORAL_SERVER_IMAGE_TAG はある"; else NEED_TEMPORAL=1; fi
+  if ecr_has "$PREFIX-temporal-ui" "$TEMPORAL_UI_TAG"; then echo "temporal-ui:$TEMPORAL_UI_TAG はある"; else NEED_TEMPORAL_UI=1; fi
 fi
 if [ -z "$SKIP_STREAM" ]; then
   TELEGRAF_TAG=$(telegraf_tag) || die "app/telegraf/ のタグを作れなかった"
@@ -658,15 +662,15 @@ if [ -n "$NAUTOBOT" ]; then
   if ecr_has "$PREFIX-nautobot" "$NAUTOBOT_TAG"; then echo "nautobot:$NAUTOBOT_TAG はある"; else NEED_NAUTOBOT=1; fi
   if ecr_has "$PREFIX-redis" "$REDIS_TAG"; then echo "redis:$REDIS_TAG はある"; else NEED_REDIS=1; fi
 fi
-if [ -z "$NEED_AGENT$NEED_LAB$NEED_WORKER$NEED_TEMPORAL$NEED_TELEGRAF$NEED_GRAFANA$NEED_SPLUNK$NEED_NAUTOBOT$NEED_REDIS$NEED_KAFKA_UI$NEED_SYSLOG_NG$NEED_GOFLOW2$NEED_GNMIC" ]; then
+if [ -z "$NEED_AGENT$NEED_LAB$NEED_WORKER$NEED_TEMPORAL$NEED_TEMPORAL_UI$NEED_TELEGRAF$NEED_GRAFANA$NEED_SPLUNK$NEED_NAUTOBOT$NEED_REDIS$NEED_KAFKA_UI$NEED_SYSLOG_NG$NEED_GOFLOW2$NEED_GNMIC" ]; then
   echo "作るイメージは無い"
 else
   docker info >/dev/null 2>&1 || die "dockerd に接続できない（WSL なら sudo service docker start。docs/setup.md「Terraform を打つ PC 側」）"
-  # agent / worker / grafana / nautobot は RUN があるので、x86_64 の PC では QEMU（binfmt）が要る（lab のイメージは上流の amd64 を、goflow2 のイメージは上流の arm64 をミラーするだけで、
+  # agent / worker / grafana / nautobot / temporal は RUN があるので、x86_64 の PC では QEMU（binfmt）が要る（lab のイメージは上流の amd64 を、goflow2 と temporal-ui のイメージは上流の arm64 をミラーするだけで、
   # telegraf と syslog-ng と gnmic は COPY だけ。splunk も COPY だけで amd64 なので、arm64 の PC（Apple シリコン）でもエミュレーション無しで作れる）
   # 出力は変数で受けてから探す（grep -q が先に閉じると docker が SIGPIPE で落ち、pipefail で「無い」扱いになることがある）
   BUILDX_LS=$(docker buildx ls 2>/dev/null || true)
-  if [ -n "$NEED_AGENT$NEED_WORKER$NEED_GRAFANA$NEED_NAUTOBOT" ] && ! grep -q 'linux/arm64' <<<"$BUILDX_LS"; then
+  if [ -n "$NEED_AGENT$NEED_WORKER$NEED_GRAFANA$NEED_NAUTOBOT$NEED_TEMPORAL" ] && ! grep -q 'linux/arm64' <<<"$BUILDX_LS"; then
     die "docker buildx ls の Platforms に linux/arm64 が無い（docs/setup.md「WSL2（Ubuntu）」の binfmt の行）"
   fi
   aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$REG"
@@ -681,7 +685,10 @@ else
     build_worker "$IMAGE_TAG"   # ops/up-common.sh（OSS 版と共通）
   fi
   if [ -n "$NEED_TEMPORAL" ]; then
-    mirror_temporal   # temporalio/temporal を ECR に写す（ops/up-common.sh。OSS 版と共通）
+    build_temporal_server "$TEMPORAL_SERVER_IMAGE_TAG"   # temporalio/server + temporal-sql-tool + psql（ops/up-common.sh。OSS 版と共通）
+  fi
+  if [ -n "$NEED_TEMPORAL_UI" ]; then
+    mirror_temporal_ui   # temporalio/ui を ECR に写す（ops/up-common.sh。OSS 版と共通）
   fi
   if [ -n "$NEED_TELEGRAF" ]; then
     build_telegraf "$REG/$PREFIX-telegraf:$TELEGRAF_TAG"
@@ -1014,7 +1021,8 @@ if [ -n "$NAUTOBOT" ]; then
   log "7-3c. Nautobot（IaC/terraform/aws-managed/pipeline/nautobot。RDS の作成に 5〜10 分、初回の起動（DB の migrate）に 5〜10 分）"
   # Django の SECRET_KEY・画面の管理者・RDS のパスワードと Web の API トークンは SSM に乱数で作る（ops/up-common.sh。OSS 版と共通）
   ensure_nautobot_secrets
-  tf_apply pipeline/nautobot -var "nautobot_image_tag=$NAUTOBOT_TAG" -var "redis_image_tag=$REDIS_TAG" -var "nautobot_db_az_num=$NAUTOBOT_DB_AZ_NUM"
+  # db_engine_version は Temporal のイメージの psql と同じ大版（POSTGRES_MAJOR。ops/up-common.sh）
+  tf_apply pipeline/nautobot -var "nautobot_image_tag=$NAUTOBOT_TAG" -var "redis_image_tag=$REDIS_TAG" -var "db_engine_version=$POSTGRES_MAJOR" -var "nautobot_db_az_num=$NAUTOBOT_DB_AZ_NUM"
   echo "Nautobot の Job の書き先: $(tf pipeline/nautobot output -json sync_targets)"
   NB_CLUSTER=$(tf pipeline/nautobot output -raw cluster_name); NB_SERVICE=$(tf pipeline/nautobot output -raw service_name)
   # services-stable は 1 回で最大 10 分。初回は migrate のあいだタスクが RUNNING にならない（worker が web の HEALTHY を待つ）ので 2 回まで待つ
@@ -1240,10 +1248,12 @@ fi
 # ---- 8-5. workflow（機能 WORKFLOW）--------------------------------------------------------
 WF_WARN=""
 if [ -n "$WORKFLOW" ]; then
-  log "8-5. workflow（IaC/terraform/aws-managed/workflow。Temporal のワーカーと AgentCore Gateway。数分）"
-  tf_apply workflow -var "worker_image_tag=$IMAGE_TAG" -var "lambda_az_num=$LAMBDA_AZ_NUM"
+  log "8-5. workflow（IaC/terraform/aws-managed/workflow。Temporal のサーバーとワーカーと AgentCore Gateway。数分）"
+  # Temporal のロール temporal のパスワード（SSM。値は出さない。ops/up-common.sh。OSS 版と共通）
+  ensure_temporal_secrets
+  tf_apply workflow -var "worker_image_tag=$IMAGE_TAG" -var "temporal_image_tag=$TEMPORAL_SERVER_IMAGE_TAG" -var "lambda_az_num=$LAMBDA_AZ_NUM"
   WF_CLUSTER=$(tf workflow output -raw cluster_name); WF_SERVICE=$(tf workflow output -raw service_name)
-  echo "ECS のサービスが安定するのを待つ（イメージの取得と Temporal の起動。1〜3 分）"
+  echo "ECS のサービスが安定するのを待つ（イメージの取得と Temporal の起動。初回は RDS にスキーマを入れるので 2〜5 分）"
   # services-stable は 1 回で最大 10 分。2 回まで待ち、それでも安定しなければ警告を出して先へ進む
   # （set -e で up.sh ごと止まると、Web の再起動と最後の案内まで届かない。005 のレビュー Nit 6。OSS 版の 8 も同じ）
   if aws ecs wait services-stable --region "$REGION" --cluster "$WF_CLUSTER" --services "$WF_SERVICE" 2>/dev/null \

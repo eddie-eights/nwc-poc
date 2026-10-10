@@ -1234,7 +1234,7 @@ Lambda から書く経路は 2 案あった。
 
 1. **記録が修復の仕組みに縛られる。** SQS と worker は `WORKFLOW=1` のときしか作られない。検知は Temporal が無くても動くのに、履歴だけが残ったり残らなかったりする。
 2. **ワークフローが全部の障害を見ていない。** 前の Q のとおり。
-3. **この PoC の Temporal は消える前提。** データはタスクの中の SQLite で、タスクが入れ替わると走っていたワークフローが消える。「開いた」は書けても「閉じた」を書く担当がいなくなる。
+3. **この PoC の Temporal は消える前提。** 履歴は cycle 036 から Nautobot の RDS に残り、タスクが入れ替わっても続く。それでも RDS は `ops/down.sh` で消え、`ops/up.sh` で作り直すので、そのとき走っていたワークフローは消える。「開いた」は書けても「閉じた」を書く担当がいなくなる（036 の前は、履歴がタスクの中のファイルで、タスクが入れ替わるだけで消えた）。
 
 2 つの記録は、異常の id（`<device_id>#<kind>#<target>`）と発生時刻でつなぐ。
 
@@ -2370,25 +2370,25 @@ Multi-AZ DB クラスターが使えるエンジンは、RDS for MySQL と RDS f
 
 ### Q. Temporal の履歴を残すなら、データベースが要る？
 
-**A. 要る。いまの PoC は `server start-dev` で SQLite がコンテナの中にあり、Fargate のタスクが入れ替わると進行中のワークフローの状態ごと消える。** 残すなら Temporal のサーバーを本番モードで起動し、外のデータベースに持たせる。
+**A. 要る。cycle 036（2026-10-10）で、Nautobot の RDS for PostgreSQL に持たせた。** それまでは CLI の開発用サーバーで履歴がコンテナの中のファイルにあり、Fargate のタスクが入れ替わると進行中のワークフローの状態ごと消えた。いまは Temporal のサーバーを本番モード（`temporal-server`）で起動し、起動のたびにロール・DB・スキーマ・namespace を無ければ作る（[architecture/resources/temporal.md](architecture/resources/temporal.md)）。
 
 | いまの置き方 | 中身 |
 |---|---|
-| Temporal の履歴（ワークフローの実行の状態） | タスクの中の SQLite。タスクと一緒に消える（[workflow.md](workflow.md)） |
+| Temporal の履歴（ワークフローの実行の状態） | Nautobot の RDS の DB `temporal` / `temporal_visibility`。タスクが入れ替わっても残り、`ops/down.sh` で RDS ごと消える（[workflow.md](workflow.md)） |
 | 修復案の履歴（作成・承認・適用などの 1 行ずつ） | S3 Tables の `proposal_events`。これは残る |
 
-消えて困るのは前者だけ。「残す」は RDS で済む話で、ECS に載せること自体が理由ではない。
+036 の前に消えて困ったのは前者だけ。「残す」は RDS で済む話で、ECS に載せること自体が理由ではない。
 
 **取れる置き方**
 
 | 置き方 | 向き不向き |
 |---|---|
-| RDS for PostgreSQL（Nautobot の RDS に `temporal` と `temporal_visibility` の 2 つのデータベースを足す） | PoC の最小。`temporal-sql-tool` でスキーマを入れてから `temporal server` を本番モードで起動する |
+| RDS for PostgreSQL（Nautobot の RDS に `temporal` と `temporal_visibility` の 2 つのデータベースを足す） | PoC の最小。`temporal-sql-tool` でスキーマを入れてから `temporal-server` を本番モードで起動する。036 で採った |
 | Aurora PostgreSQL | 動くが、PoC では得が無い（下の Q） |
 | Temporal Cloud | サーバーを持たず worker だけ ECS に置く。閉域の構成とは合いにくい |
-| SQLite のまま EFS に置く | 動くが `start-dev` は開発用で、単一ノード・HA 無し。本番向けではない |
+| 開発用サーバーのファイルのまま EFS に置く | 動くが開発用サーバーは単一ノード・HA 無し。本番向けではない |
 
-Nautobot の RDS は `ops/down.sh` で消える設計なので、相乗りさせても「down.sh のあとも残る」にはならない。そこまで残したいなら、そのサイクルで RDS を down.sh の外に出すかを決める。候補は `docs/cycles/QUEUE.md` の「Temporal の履歴を RDS に残す」。
+Nautobot の RDS は `ops/down.sh` で消える設計なので、相乗りさせても「down.sh のあとも残る」にはならない。そこまで残したいなら、RDS を down.sh の外に出すかを別のサイクルで決める（036 では出していない）。
 
 ### Q. RDS for PostgreSQL と Aurora PostgreSQL のどちらにする？
 

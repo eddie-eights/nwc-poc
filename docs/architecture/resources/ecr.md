@@ -26,7 +26,8 @@ VPC から外へ出る経路が無いので、Fargate も EC2 も Runtime も、
 |---|---|---|---|
 | `agent` | `app/agentcore/`（自前ビルド） | AgentCore Runtime | `IMAGE_TAG`（既定 `v1`） |
 | `worker` | `app/temporal/`（自前ビルド） | ECS Fargate（workflow） | `IMAGE_TAG` |
-| `temporal` | `temporalio/temporal`（写し） | ECS Fargate（workflow） | 上流の版（`ops/up-common.sh` の `TEMPORAL_TAG`） |
+| `temporal` | 公式の `temporalio/server` に `temporal-sql-tool` と psql と入口のスクリプトを足す（`docker/images/temporal-server/`。cycle 036） | ECS Fargate（workflow） | `<版>-<ディレクトリの中身のハッシュ 12 桁>`（版は `ops/up-common.sh` の `TEMPORAL_SERVER_VERSION`） |
+| `temporal-ui` | `temporalio/ui`（写し） | ECS Fargate（workflow。`temporal` と同じタスク） | 上流の版（`ops/up-common.sh` の `TEMPORAL_UI_TAG`） |
 | `lab-srlinux` | `ghcr.io/nokia/srlinux`（写し。約 1 GB） | lab の EC2 | 上流の版 + `-amd64`（`ops/lab-common.sh` の `SRLINUX_ECR_TAG`） |
 | `lab-trex` | `trexcisco/trex`（写し。amd64 だけ） | lab の EC2（`dc1-trex-01`） | 上流の版 + `-amd64`（`TREX_ECR_TAG`） |
 | `telegraf` | 公式の `telegraf` に設定のテンプレートと `tg` を足す | ECS Fargate（stream） | `<版>-<ディレクトリの中身のハッシュ 12 桁>` |
