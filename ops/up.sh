@@ -815,7 +815,7 @@ aws s3 sync --only-show-errors --delete --exclude .requirements.sha256 wheels/ "
 
 if [ -n "$CREATE_KB" ]; then
 log "4-3. 手順書を置いて取り込む（CREATE_KB=1）"
-aws s3 cp --only-show-errors app/resources/ "s3://$ASSETS_BUCKET/kb/" --recursive --exclude "*" --include "*.md"
+aws s3 cp --only-show-errors app/resources/ "s3://$ASSETS_BUCKET/knowledge-base/" --recursive --exclude "*" --include "*.md"
 # 索引を作った直後は StartIngestionJob が「no such index」の ValidationException を返す（OpenSearch Serverless 側の反映待ち。
 # 2026-09-17 に索引の置き換えの 2 秒後で実測）。10 秒おきに最大 12 回（2 分）まで打ち直す
 JOB_ID=""
