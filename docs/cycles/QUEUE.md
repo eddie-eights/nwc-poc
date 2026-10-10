@@ -7,7 +7,7 @@
 - [x] Neo4j に残る全走査を減らす（`count()` と seed の `MATCH (n) WHERE n.registered = false`、remove_device の `MATCH (n:interface) WHERE n.device_id = $id` は device_id に索引が無い。大量投入の直後は索引の統計が古いので `CALL db.prepareForReplanning()` も検討。2026-10-08 の fix/neo4j-id-labels で見つけた） → 008-aws-verification-bugs（2026-10-08 完了）
 - [x] Kafka と OpenSearch のタスクを 1 台ずつ入れ替える手順を作る（いまは `terraform apply` で 3 つが同時に入れ替わる）（2026-10-08 完了。feat/oss-redis8-rolling の `oss/ops/roll-nodes.sh`。AWS では未確認）
 - [ ] OSS 版とマネージド版の時間あたりの費用を AWS の公式の料金表から算出して `docs/oss-variant.md` に書く（実測はしない。2026-10-10 のユーザー決定。構成ごとのリソースの一覧と単価の出所を併記する）
-- [ ] OSS 版をマネージド版と並べて立てる（Fargate の vCPU の上限 30 を上げてから。GDS と `neptune.algo.*` の並びの比較もここで）
+- [x] OSS 版をマネージド版と並べて立てる（Fargate の vCPU の上限 30 を上げてから。GDS と `neptune.algo.*` の並びの比較もここで）（2026-10-10 取り下げ。ユーザーが「それぞれ単独で問題なく稼働しているなら並べて立てなくていい」と判断。GDS と `neptune.algo.*` の並びの比較は、やるなら片方ずつ立てて同じ入力で取る）
 - [x] Neo4j の ECS のサービスに healthCheck を付ける（いまは healthStatus が UNKNOWN のままで、Bolt が開くまでの時間が ECS から見えない）（2026-10-08 完了。fix/oss-review-nits、AWS では未確認）
 - [x] status の Lambda のメモリを上げる（AWS で `Max Memory Used` 111 MB / 128 MB。`IaC/terraform/aws-managed/pipeline/graph/sync.tf` はマネージド版と共用）（2026-10-08 完了。256 MB。fix/oss-review-nits）
 - [x] `app/agentcore/topology.py` の「neptune read failed」のログを、Neo4j のときは graph の名前で出す（OSS 版でも neptune と出る）（2026-10-08 完了。fix/oss-review-nits）
