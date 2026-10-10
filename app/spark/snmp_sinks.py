@@ -91,10 +91,10 @@ FLOW_TIME_KEY = "time_received_ns"   # ナノ秒。1e9 で割って小数を切�
 SINKS = ("iceberg", "opensearch", "prometheus", "splunk")
 # 接続の認証（先頭が既定 = マネージド版。OSS 版は環境変数で後ろの方にする。モジュールの docstring）
 KAFKA_AUTHS = ("iam", "none")
-# SASL/SCRAM で書く収集器の Kafka のユーザーと、ユーザーごとに書けるトピック。AWS の文書は MSK の IAM のアクセス制御では
-# allow.everyone.if.no.acl.found が効かないとするので、SCRAM のユーザーは ACL が無いと書けない想定（MSK では未確認。cycle 012 Round 2。ensure_acls が付ける）。
-# コレクターごとに別のユーザー（cycle 031。1 つの資格情報が漏れても、ACL を入れたほかのコレクターのトピックには書けない。ただし ACL の無いトピックと、
-# このジョブが ACL を入れる前は、allow.everyone.if.no.acl.found が効いていればどのユーザーも書ける（推測。docs/pipeline.md の「収集器の ACL」））。キーは ops/up-common.sh の
+# SASL/SCRAM で書く収集器の Kafka のユーザーと、ユーザーごとに書けるトピック。MSK は allow.everyone.if.no.acl.found=false（IaC/terraform/aws-managed/pipeline/stream/msk.tf の
+# aws_msk_configuration。2026-10-10）なので、SCRAM のユーザーは ACL（ensure_acls が付ける）の無いトピックには書けない。2026-10-09 の AWS では既定の true で ACL の前に書けた。
+# コレクターごとに別のユーザー（cycle 031。1 つの資格情報が漏れても、ほかのコレクターのトピックと、ACL の無い traps（Telegraf が IAM で書く）には書けない。
+# このジョブが ACL を入れる前は自分のトピックにも書けない。docs/pipeline.md の「収集器の ACL」）。キーは ops/up-common.sh の
 # ensure_msk_scram_secret の username（= コレクター名。ops/up.sh と IaC/terraform/aws-managed/pipeline/stream/msk.tf の scram_collectors と同じ）。トピックは
 # app/syslog-ng/syslog-ng.conf.in の topic("logs")、IaC/terraform/aws-managed/pipeline/stream/collectors.tf の -transport.kafka.topic=flows、app/gnmic/gnmic.yaml.in の topic: gnmi / metrics
 SCRAM_USERS = {
@@ -943,10 +943,10 @@ def admin_client(spark, bootstrap):
 
 def ensure_topics(spark, bootstrap, topics):
     """無いトピックを作って、作れた名前を返す（あるものと、ほかが先に作ったものは触らない）。
-    MSK は auto.create.topics.enable=true だが、それは produce のとき。Telegraf が最初の trap を出すまで traps は無く、
-    Spark の offset 読み（AdminClient）は無いトピックで UnknownTopicOrPartitionException で落ちて、起こし直しの上限（1 時間 5 回）を
-    使い切っていた（2026-09-27 実測）。logs / flows / gnmi / metrics は、書く syslog-ng・GoFlow2・gnmic（SASL/SCRAM）に CREATE の ACL を付けないので、
-    AWS の文書どおりなら自動では作られず（MSK では未確認）、ここで作る（gnmic が止まっていても gnmi / metrics はある）。
+    MSK は auto.create.topics.enable=false（IaC/terraform/aws-managed/pipeline/stream/msk.tf の aws_msk_configuration。2026-10-10 に true から変えた）なので、
+    5 つのトピックは全部ここで作る（書く側は作れない。Telegraf のタスクロールの CreateTopic も外した）。true だった頃も、Telegraf が最初の trap を出すまで traps は無く、
+    Spark の offset 読み（AdminClient）は無いトピックで UnknownTopicOrPartitionException で落ちて、起こし直しの上限（1 時間 5 回）を使い切っていた（2026-09-27 実測）ので、
+    ここで作るのは同じ（gnmic が止まっていても gnmi / metrics はある）。
     パーティション数と複製数はブローカーの既定（IaC/terraform/aws-managed/pipeline/stream の MSK configuration）。
     ほかのジョブや Telegraf と同時に作って TopicExistsException になっても、あるのだから先へ進む（そのトピックは作った名前に入れない）。
     どれが作れたかは .all() では分からないので、values()（トピック名 → future の Map）でトピックごとに待つ"""
@@ -978,9 +978,10 @@ def ensure_topics(spark, bootstrap, topics):
 def ensure_acls(spark, bootstrap):
     """SASL/SCRAM の収集器のユーザー（SCRAM_USERS のキー）それぞれに、自分のトピックだけの SCRAM_OPS を ALLOW する ACL を入れ、
     入れたものを「User:<ユーザー> 操作 トピック」で返す（cycle 031。User:syslog-ng は logs だけ、User:goflow2 は flows だけ、User:gnmic は gnmi と metrics）。
-    MSK は IAM と SCRAM を併用していて、AWS の文書（iam-access-control.html）は IAM のアクセス制御では allow.everyone.if.no.acl.found が効かないとする。
-    そのとおりなら、ACL が無いと syslog-ng / GoFlow2 / gnmic は Topic authorization failed で書けない（syslog-ng はキューで持ち、GoFlow2 はその間のフローを捨てる。
-    gnmic はその間の値を捨てるので、on-change の購読の直後の今の状態は Kafka に残らない。MSK で本当にそうなるかは未確認。cycle 012 の design.md の未確定事項 8）。
+    MSK は IAM と SCRAM を併用していて、allow.everyone.if.no.acl.found=false（msk.tf の aws_msk_configuration。2026-10-10）なので、ACL が無いと
+    syslog-ng / GoFlow2 / gnmic は Topic authorization failed で書けない（syslog-ng はキューで持ち、GoFlow2 はその間のフローを捨てる。gnmic はその間の値を捨てるので、
+    on-change の購読の直後の今の状態は Kafka に残らない）。2026-10-09 の AWS（既定の true）では ACL の前にも書けた（docs/verification/20261009-aws-managed.md の A）。
+    ACL の無い traps（Telegraf が IAM で書く）に SCRAM のユーザーの ACL は入れない（IAM の主体は Kafka の ACL と関係なく IAM のポリシーで動く）。
     createAcls は同じものを何度入れても同じなので、3 本のジョブが起動のたびに入れてよい（ACL はトピックより先にあってもよい）。
     IAM の権限は EMR の実行ロールの kafka-cluster:AlterCluster（IaC/terraform/aws-managed/pipeline/analytics/access.tf）。
     KAFKA_AUTH=none（OSS 版の ECS の Kafka と手元の compose。authorizer が無い）は何もせず [] を返す。失敗は上げる（ジョブが起動で落ち、原因が stderr に出る）"""

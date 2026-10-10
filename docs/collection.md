@@ -46,7 +46,8 @@ trap と syslog では性能の時系列は取れない（届くのはイベン�
 
 syslog-ng と GoFlow2 と gnmic は MSK の IAM 認証を話せないので、SASL/SCRAM（9096/tcp）で書く（資格情報の置き場は [pipeline.md](pipeline.md) の冒頭の箇条書き）。
 
-- Kafka の ACL は Spark が起動時に入れる。ACL の無いうちも書けることを 2026-10-09 の AWS で確かめた（[pipeline.md](pipeline.md)）。
+- Kafka の ACL は Spark が起動時に入れる。ACL が入るまで書けない（`allow.everyone.if.no.acl.found=false`。2026-10-10）。
+  syslog-ng はキューで持ち、GoFlow2 と gnmic はその間の分を捨てる（[pipeline.md](pipeline.md) の「収集器の ACL」）。
 
 **syslog の形は Telegraf のときと同じ（2026-10-08 に手元の docker で比べた）:** 同じ RFC5424 の 1 行
 

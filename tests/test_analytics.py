@@ -733,7 +733,7 @@ _admin5 = _Admin(set(), err={"logs": "org.apache.kafka.common.errors.TopicExists
 check("ensure_topics: 一部だけ TopicExists（logs だけほかが先に作った）なら、作れた traps だけを返す。close はする",
       mod.ensure_topics(type("S", (), {"_jvm": _JVM(_admin5)})(), "b", ["traps", "logs"]) == ["traps"] and _Admin.made == ["traps", "logs"] and _admin5.closed)
 
-# ---- SASL/SCRAM の収集器の ACL（AWS の文書は MSK の IAM のアクセス制御では allow.everyone.if.no.acl.found が効かないとする。MSK では未確認。cycle 012 Round 2）
+# ---- SASL/SCRAM の収集器の ACL（MSK は allow.everyone.if.no.acl.found=false（msk.tf。2026-10-10）なので、ACL の無いトピックに SCRAM のユーザーは書けない。cycle 012 Round 2 / 031）
 def _kafka_auth(v, f):
     """KAFKA_AUTH を v にして f() を呼び、元に戻す（None は消す）"""
     saved = os.environ.get("KAFKA_AUTH")

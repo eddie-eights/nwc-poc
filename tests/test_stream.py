@@ -244,6 +244,18 @@ check("Telegraf は stream の ECS で、MSK への書き込みはタスクロ�
       and "Statement = concat(local.telegraf_kafka_statements, [" in stream_tg and "kafka-cluster" not in stream_tg
       and "stream_produce" not in _access and "telegraf_role_name" not in _access
       and 'resource "aws_iam_role"' not in _lab_tg and 'resource "aws_instance"' not in _lab_tg)
+# ACL の無いトピック（traps）と無いトピックに SCRAM のユーザーが触れない（031 の cold review の Should fix。2026-10-10）
+_msk_props = re.search(r'resource "aws_msk_configuration" "stream" \{[\s\S]*?server_properties = <<-EOT\n([\s\S]*?)\n\s*EOT', _msk_code)
+_msk_props = [l.strip() for l in _msk_props.group(1).splitlines() if l.strip()] if _msk_props else []
+check(f"MSK の configuration は allow.everyone.if.no.acl.found=false と auto.create.topics.enable=false（SCRAM のユーザーは ACL の無いトピックに書けず、書き込みでトピックを作れない。"
+      f"true の行は残さない。{_msk_props}）",
+      "allow.everyone.if.no.acl.found=false" in _msk_props and "auto.create.topics.enable=false" in _msk_props
+      and not any(l.startswith(("allow.everyone.if.no.acl.found=t", "auto.create.topics.enable=t")) for l in _msk_props)
+      and sum(l.startswith("allow.everyone.if.no.acl.found=") for l in _msk_props) == 1 and sum(l.startswith("auto.create.topics.enable=") for l in _msk_props) == 1
+      and "allow.everyone.if.no.acl.found" not in _read("IaC", "terraform", "oss", "pipeline", "stream", "kafka.tf"))   # OSS 版（authorizer 無し）には入れない
+check("Telegraf のタスクロールの Kafka の権限は Connect / DescribeCluster / WriteData / WriteDataIdempotently / DescribeTopic だけ"
+      "（auto.create.topics.enable=false なので CreateTopic は要らず、traps は Spark の ensure_topics が作る。2026-10-10）",
+      sorted(set(re.findall(r'"kafka-cluster:(\w+)"', _tg_kafka))) == ["Connect", "DescribeCluster", "DescribeTopic", "WriteData", "WriteDataIdempotently"])
 check("lab と stream は SG も SG のルールも作らない（trap・syslog・gNMI のルールは土台の通信の表。2026-09-29）",
       all('resource "aws_security_group"' not in t and "aws_vpc_security_group_" not in t
           for t in (_lab_tg, lab_locals, stream_tg, stream_col, stream_gn, _access, _read("IaC", "terraform", "aws-managed", "pipeline", "stream", "msk.tf"), _read("IaC", "terraform", "aws-managed", "pipeline", "lab", "instance.tf")))
