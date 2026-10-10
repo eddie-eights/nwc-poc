@@ -933,6 +933,7 @@ CloudWatch は画面に関係ない。それ以前に、**CloudWatch にはイ�
 - 前の `deploy.env` に `NAUTOBOT=...` が残っていても止まらない。`ops/up.sh` が「もう使わない」と注意を出す。
 - gnmic の購読先の一覧は、いつも Nautobot の Job が書く SSM のパラメータ（`/<prefix>/gnmic/nautobot/gnmi-targets`）から受ける。
 - 費用は Nautobot の分（+$0.13/h と `ecs` のエンドポイント $0.014/h）が PIPELINE に入る。`PIPELINE=1` だけ（`STORES` は既定）なら、土台と合わせて約 $2.92/h（[deploy.md の費用](deploy.md#費用)）。
+- 全部立てたときの待機の時間課金を、マネージド版（約 $2.99/h）と OSS 版（約 $1.66/h）で比べた表は [oss-variant.md](oss-variant.md) の「待機の時間課金を料金表から出す」（料金表から算出。2026-10-10）。
 - デバッグ用の EC2（`ops/lab-debug.sh`）は Nautobot を使わない（lab の定義の一覧のまま）。
 
 ### Q. Nautobot にトポロジの情報を入れているのはシェルスクリプトだと思うけど、どこからの情報を引っ張ってきて入れている？
