@@ -8,10 +8,16 @@
 
 ## セッションの役（2026-10-10）
 
-- **このリポジトリで人が起動するセッションは PM の 1 つだけ。** このフォルダ（cwd）で起動したセッションは、題名や会話の記憶にかかわらず PM として動く（AI 開発フローは `docs/ai-dev-flow.md`、正本は claude-settings の `cycle-design/flow.md`）。エンジニアは PM のサブエージェント（`Agent`）。
-- 秘書（PMO）など別の役のセッションは、このフォルダで起動しない。プロジェクト別メモリ（`~/.claude/projects/…nwc-poc/memory/`）は cwd 単位で全セッションが共有するため。
-- プロジェクト別メモリに「このセッション」「セッション ID」を主語にした役のメモを書かない。役はこのファイルで決まる。
-- 現在地（`docs/cycles/QUEUE.md` の着手行と直近の完了、最新サイクルの `review.md` の末尾、直近の commit）は `.claude/settings.json` の SessionStart フック `cycle-context.py` が起動のたび（clear 直後も）に注入する。引き継ぎメモは作らない。次に回すものは QUEUE に `- [ ]` で足す。
+役は**起動したフォルダ（cwd）**で決まる。題名や会話の記憶、プロジェクト別メモリで決めない（経緯は claude-settings の `cycle-design/flow.md` の「役と現在地」）。
+
+| cwd | 役 | やること |
+| :--- | :--- | :--- |
+| このリポジトリのルート | **PM**（実働部隊。1 つだけ） | サイクルを回す（`docs/ai-dev-flow.md`、正本は claude-settings の `cycle-design/flow.md`）。エンジニアは PM のサブエージェント（`Agent`）。QUEUE の更新・マージ・push は PM だけ |
+| `secretary/` | **秘書**（ユーザーの窓口） | プロジェクトに関するユーザーの質問に答える。人間の待ち（確認・承認・外部の返事）を追跡して伝える。**リポジトリを書き換えない**（PM と同じチェックアウトを見るため。詳細は `secretary/CLAUDE.md`） |
+
+- 役を増やすときはサブフォルダを足す（中身は役を書いた `CLAUDE.md` だけ）。プロジェクト別メモリ（`~/.claude/projects/<cwd>/memory/`）は cwd 単位で共有されるので、役ごとに分かれる。ルートのこのファイルはサブフォルダでも読まれる。
+- プロジェクト別メモリに「このセッション」「セッション ID」を主語にした役のメモを書かない。
+- 現在地（`docs/cycles/QUEUE.md` の着手行と直近の完了、最新サイクルの `review.md` の末尾、直近の commit）は `.claude/settings.json` の SessionStart フック `cycle-context.py` が起動のたび（clear 直後も）に注入する（サブフォルダで起動しても git のルートから組む）。引き継ぎメモは作らない。次に回すものは PM が QUEUE に `- [ ]` で足す。
 
 <!-- BEGIN AWS Agent Toolkit rules -->
 # AWS Guidance
