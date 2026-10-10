@@ -9,6 +9,4 @@
 - Nit 6〜9: 直さない。最終報告に載せる。
 - 設計に無いファイルの変更: `docs/architecture/resources/nautobot.md`（master のパスワードを読むタスクの記述）と `tests/test_oss_ops.py`（`ops/oss/up.sh` の 8 の順序）。読んで妥当。
 - 見た観点: design 整合性（build.md の記録とファイルの一覧）/ security（Must 1 と SSM の経路）。見ていない観点: correctness / runtime / data loss / API compatibility / type safety / missing tests は Round 2 の cold review で見る。
-- 事故: エンジニアが手元の docker のイメージ 126 本を消した（原因と再発防止は build.md の末尾）。復旧はユーザーの判断待ち。
-
-待ち(ユーザー): 手元の docker のイメージ 126 本の復旧の範囲（全部 / nwc-poc の分だけ / 要るときに）（2026-10-10〜）
+- 事故: エンジニアが手元の docker のイメージ 126 本を消した（原因と再発防止は build.md の末尾）。復旧は「必要になったときでいい」（2026-10-10 のユーザー決定。まとめて pull / build し直さない。手元の検証でイメージが要るときに、そのイメージだけ pull / build する）。
