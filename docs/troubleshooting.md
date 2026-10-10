@@ -449,7 +449,7 @@ sudo nsenter -t "$pid" -n logger -n 203.0.113.1 -P 5140 -d --rfc3164 -t acl-prob
 # 受け口が RFC5424（SYSLOG_STANDARD=RFC5424）なら --rfc3164 を --rfc5424 に替える
 ```
 
-- `logs` には `sysName` が EC2 のホスト名（`logger --rfc3164` が HOST に入れ、syslog-ng の `keep-hostname(yes)` でそのまま残る）、`source` が 203.0.113.101 の行として入る。`sysName` があるので Spark の `with_sysname` は `DEVICE_MAP` を引かず、機器の名前には置き換わらない（Splunk の `coalesce('tags.sysName', …)` も同じ）。
+- `logs` には `sysName` が EC2 のホスト名（`logger --rfc3164` が HOST に入れ、syslog-ng の `keep-hostname(yes)` でそのまま残る）、`source` が 203.0.113.101 の行として入る。`sysName` があるので Spark の `with_sysname` は `--device-map`（Splunk のアラートアクションの `DEVICE_MAP` と同じ表）を引かず、機器の名前には置き換わらない。
 
 2つ目は、lab の EC2 のホストから NLB の IP へ直接送る（「lab の EC2 から NLB の syslog 5140 への受信ルールを足す（037）」から。AWS では未確認）。DNAT を通らず、NLB の SG の `lab` からの受信に乗る。NetFlow の `ops/netflow_send.py` と同じ経路。
 

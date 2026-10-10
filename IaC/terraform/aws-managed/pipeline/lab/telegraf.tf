@@ -8,7 +8,8 @@
 #               Docker の MASQUERADE にかけず、NLB も残す（Spark とエージェントは送り元の IP で機器を引く）
 #   syslog      機器 → 203.0.113.1:5140/udp（lab の EC2。app/containerlab/lab.sh の LOG_PORT）。trap と同じ仕組みで NLB の 5140 → タスクの 5140
 #   NetFlow / sFlow  機器 → 203.0.113.1:2055 / 6343（udp）。trap と同じ仕組みで NLB の同じ番号 → GoFlow2 のタスクの同じ番号
-#               （lab の SR Linux は送れないので、届くのは ops/netflow_send.py で試しに送ったぶん）
+#               （lab の SR Linux は NetFlow を出さない。sFlow はコンテナ版で出るか未確認。ops/netflow_send.py はこの DNAT を通らず、
+#               lab の EC2 のホストから NLB へ直接 NetFlow v5 を送る）
 # NLB のアドレスとタスクのサブネットの CIDR は IaC/terraform/aws-managed/pipeline/stream が SSM の /<接頭辞>/telegraf-address と telegraf-source-cidr に書く（lab.sh forward が読む）。
 # stream を後から作っても lab の EC2 は作り直さない（ops/up.sh の 7-2b が lab forward を打ち直す）
 

@@ -92,8 +92,8 @@
 
 - ほかは lab が無くても作れるが、stream には何も届かない。
 - stream の gnmic は lab の定義の機器を探しに行き、届かないので gNMI のエラーをログに出して 10 秒ごとに繋ぎ直す（タスクは落ちない。手元の docker で確かめた。ECS では未確認）。
-- trap / syslog は lab からしか来ない。NetFlow / sFlow は lab の SR Linux が出さないので、`ops/netflow_send.py` で送ったときだけ来る。
-  lab を作らないので、lab の EC2 から `logger` で送る試し方（[troubleshooting.md](troubleshooting.md) の「正しい送り方」）も使えない。syslog を試すなら lab を作る。
+- trap / syslog は lab からしか来ない。NetFlow / sFlow は lab の SR Linux が出さず、`ops/netflow_send.py` も lab の EC2 のホストから打つもの（NLB は lab の SG からしか受けない）なので来ない。
+  lab の EC2 から `logger` で送る試し方（[troubleshooting.md](troubleshooting.md) の「正しい送り方」）も同じ理由で使えない。syslog や NetFlow を試すなら lab を作る。
 - graph には lab のトポロジを入れないので、Neptune には Nautobot の Job が書く物理層だけが入る（IP 層と EVPN・BGP 層は入らない）。
 
 #### `SKIP_STREAM`
