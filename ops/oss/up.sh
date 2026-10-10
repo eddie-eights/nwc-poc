@@ -583,6 +583,8 @@ log "8. workflow（IaC/terraform/oss/workflow。Temporal のサーバーとワ�
 # Temporal のロール temporal のパスワード（SSM。値は出さない。ops/up-common.sh）
 ensure_temporal_secrets
 tf_apply workflow -var "worker_image_tag=$IMAGE_TAG" -var "temporal_image_tag=$TEMPORAL_SERVER_IMAGE_TAG" -var "lambda_az_num=$LAMBDA_AZ_NUM"
+# Temporal のロール・DB・スキーマを一回きりのタスクで入れ、終了コード 0 まで待つ（ops/up-common.sh。マネージド版の 8-5 と同じ。cycle 042）
+run_temporal_init
 WF_CLUSTER=$(tf workflow output -raw cluster_name); WF_SERVICE=$(tf workflow output -raw service_name)
 # services-stable は 1 回で最大 10 分。イメージの取得や Temporal の起動が遅い回に備えて 2 回まで待ち、それでも安定しなければ警告を出して先へ進む
 # （set -e で up.sh ごと止まると、Web の起こし直しと最後の案内まで届かない。005 のレビュー Nit 6。マネージド版の 8-5 も同じ）

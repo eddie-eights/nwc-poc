@@ -20,6 +20,60 @@ resource "aws_cloudwatch_log_group" "workflow" {
   retention_in_days = var.log_retention_days
 }
 
+# ---------------------------------------------------------------- task definition (Temporal の初期化。一回きりのタスク。cycle 042)
+# ops/up.sh の 8-5（OSS 版は ops/oss/up.sh の 8）が terraform apply の直後に run-task で起こし、止まるまで待って終了コード 0 を確かめる（ops/up-common.sh の
+# run_temporal_init）。master（nautobot）でロール temporal と DB temporal / temporal_visibility を作り（あれば何もしない）、ロール temporal でスキーマを最新まで上げる
+# （docker/images/temporal-server/init.sh）。Nautobot の RDS の master のパスワードを渡すのはこのタスク定義だけ（サーバーのタスク定義には渡さない）。
+# サービスにはしない。ネットワーク（サブネットと SG）はサーバーのサービスと同じものを run-task で渡す（outputs.tf の task_subnet_id / task_security_group_id）
+resource "aws_ecs_task_definition" "init" {
+  family                   = "${local.name_prefix}-workflow-init"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 256
+  memory                   = 512
+  execution_role_arn       = aws_iam_role.execution.arn # secrets の 2 つを読む（iam.tf の execution_db_passwords）。タスクロールは無し（AWS の API は呼ばない）
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "ARM64"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name       = "init"
+      image      = local.temporal_image
+      essential  = true
+      entryPoint = ["/etc/temporal/init-rds.sh"]
+      environment = concat(local.temporal_db_env, [
+        { name = "NAUTOBOT_DB_USER", value = "nautobot" },
+      ])
+      # 値は state にもタスク定義にも書かない（読む権限は iam.tf の execution_db_passwords）
+      secrets = [
+        { name = "POSTGRES_PWD", valueFrom = local.temporal_db_password_arn },
+        { name = "NAUTOBOT_DB_PASSWORD", valueFrom = local.nautobot_db_password_arn },
+      ]
+      # 停止（SIGTERM）が来ると init.sh の trap は走っている手順（psql / temporal-sql-tool）が返るまで待ってから exit 143 で抜ける。
+      # 初回の setup-schema + update-schema の途中で SIGKILL しないよう Fargate の上限の 120 秒にする（cycle 040）
+      stopTimeout = 120
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.workflow.name
+          awslogs-region        = var.region
+          awslogs-stream-prefix = "init"
+        }
+      }
+    },
+  ])
+
+  lifecycle {
+    precondition {
+      condition     = local.temporal_repository_url != "" && local.nautobot_db_address != "" && local.nautobot_db_password_arn != ""
+      error_message = "Temporal の初期化（workflow-init）は IaC/terraform/aws-managed/base/ecr の temporal_repository_url と IaC/terraform/aws-managed/pipeline/nautobot の db_address / db_password_parameter を読む。base/ecr（create_workflow_repositories = true）と pipeline/nautobot を先に apply する。"
+    }
+  }
+}
+
 # ---------------------------------------------------------------- task definition (Temporal server + UI + worker in one task)
 resource "aws_ecs_task_definition" "workflow" {
   family                   = "${local.name_prefix}-workflow"
@@ -40,20 +94,12 @@ resource "aws_ecs_task_definition" "workflow" {
       name      = "temporal"
       image     = local.temporal_image
       essential = true
-      # docker/images/temporal-server/（temporalio/server + temporal-sql-tool + psql）。entrypoint が起動のたびに master（nautobot）でロール temporal と
-      # DB temporal / temporal_visibility を作り（あれば何もしない）、スキーマを最新まで上げ、namespace default を背景で作ってから temporal-server を起こす。
+      # docker/images/temporal-server/（temporalio/server + temporal-sql-tool + psql）。entrypoint はロール temporal で両方の DB のスキーマの版が
+      # イメージの版以上になるまで待ち（ロール・DB・スキーマを入れるのは上の init のタスク。待ちは 30 回 = startPeriod の 300 秒。cycle 042）、namespace default を背景で作ってから temporal-server を起こす。
       # 履歴は Nautobot の RDS for PostgreSQL に残る（cycle 036。2026-10-10 までは CLI の開発用サーバーで、履歴はコンテナの中のファイルにあった）。portMappings は無し
-      environment = [
+      environment = concat([
         { name = "DB", value = "postgres12" },
-        { name = "POSTGRES_SEEDS", value = local.nautobot_db_address },
-        { name = "DB_PORT", value = tostring(local.nautobot_db_port) },
-        { name = "POSTGRES_USER", value = "temporal" },
-        { name = "DBNAME", value = "temporal" },
-        { name = "VISIBILITY_DBNAME", value = "temporal_visibility" },
-        { name = "SQL_TLS_ENABLED", value = "true" }, # RDS PostgreSQL 15 以降は rds.force_ssl=1 が既定
-        # true にするには RDS の CA をイメージに入れて SQL_CA を渡す（SQL_HOST_NAME は任意。無ければ接続先のホスト名）。
-        # false のあいだは psql（require）も temporal-server（InsecureSkipVerify）も CA を確かめない
-        { name = "SQL_HOST_VERIFICATION", value = "false" },
+        ], local.temporal_db_env, [
         { name = "SQL_MAX_CONNS", value = tostring(var.temporal_sql_max_conns) },
         { name = "SQL_MAX_IDLE_CONNS", value = tostring(var.temporal_sql_max_idle_conns) },
         { name = "SQL_VIS_MAX_CONNS", value = tostring(var.temporal_visibility_max_conns) },
@@ -61,24 +107,24 @@ resource "aws_ecs_task_definition" "workflow" {
         { name = "NUM_HISTORY_SHARDS", value = "4" }, # 一度決めたら変えられない（変えるなら DB を作り直す）
         { name = "BIND_ON_IP", value = "0.0.0.0" },   # ui と worker が同じタスクの中から 127.0.0.1:7233 で届く
         { name = "LOG_LEVEL", value = "warn" },
-        { name = "NAUTOBOT_DB_USER", value = "nautobot" },
-      ]
-      # 値は state にもタスク定義にも書かない（読む権限は iam.tf の execution_db_passwords）
+      ])
+      # 値は state にもタスク定義にも書かない（読む権限は iam.tf の execution_db_passwords）。ロール temporal のパスワードだけで、Nautobot の RDS の
+      # master のパスワードは渡さない（init のタスクだけが持つ。ECS Exec のシェルと healthCheck のプロセスはこの env を引き継ぐので、ここに無いことが要る。cycle 042）
       secrets = [
         { name = "POSTGRES_PWD", valueFrom = local.temporal_db_password_arn },
-        { name = "NAUTOBOT_DB_PASSWORD", valueFrom = local.nautobot_db_password_arn },
       ]
-      # HEALTHY = namespace まで出来た。worker と ui はこれを待つ（namespace の無い frontend に繋いで落ちる競合を無くす）
+      # HEALTHY = namespace まで出来た。worker と ui はこれを待つ（namespace の無い frontend に繋いで落ちる競合を無くす）。
+      # startPeriod は上限の 300 秒: init のタスク（イメージの取得 + スキーマ）とサーバー（イメージの取得 + init を待つ）が同時に走るので、待ちの間の失敗で
+      # タスクが作り直されるのを減らす（作り直されても壊れない。cycle 042）
       healthCheck = {
         command     = ["CMD-SHELL", "temporal operator namespace describe -n default --address 127.0.0.1:7233 >/dev/null 2>&1 || exit 1"]
         interval    = 10
         timeout     = 5
         retries     = 6
-        startPeriod = 180
+        startPeriod = 300
       }
-      # 起動中（entrypoint の DB を待つ / ロールと DB / スキーマ）に停止が来ると、entrypoint の trap は走っている手順が返るまで待ってから exit 143 で抜ける。
-      # 初回の setup-schema + update-schema の途中で SIGKILL しないよう Fargate の上限の 120 秒にする。通常の停止は tini が SIGTERM を
-      # temporal-server に渡してすぐ抜けるので 120 秒は待たない（cycle 040）
+      # 起動中（entrypoint の DB を待つ / init を待つ）に停止が来ると、entrypoint の trap は走っている手順（psql / sleep 10）が返るまで待ってから exit 143 で抜ける。
+      # 通常の停止は tini が SIGTERM を temporal-server に渡してすぐ抜けるので 120 秒は待たない（cycle 040）
       stopTimeout = 120
       logConfiguration = {
         logDriver = "awslogs"

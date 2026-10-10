@@ -205,14 +205,27 @@ locals {
   temporal_image    = "${local.temporal_repository_url}:${var.temporal_image_tag}"
   temporal_ui_image = "${local.temporal_ui_repository_url}:${var.temporal_ui_image_tag}"
 
-  # Temporal の履歴を置く RDS（IaC/terraform/aws-managed/pipeline/nautobot の database.tf。cycle 036）。temporal のコンテナの entrypoint
-  # （docker/images/temporal-server/entrypoint.sh）が master（nautobot）でロール temporal と DB を作り、ロール temporal で読み書きする。
+  # Temporal の履歴を置く RDS（IaC/terraform/aws-managed/pipeline/nautobot の database.tf。cycle 036）。一回きりのタスク <接頭辞>-workflow-init
+  # （docker/images/temporal-server/init.sh。ecs.tf の aws_ecs_task_definition.init）が master（nautobot）でロール temporal と DB を作ってスキーマを入れ、
+  # サーバー（temporal のコンテナ）はロール temporal で読み書きする（cycle 042）。
   # パスワードは 2 つとも SSM の SecureString（ops/up.sh の ensure_nautobot_secrets と ensure_temporal_secrets が作る）を ECS の secrets で渡す（iam.tf の execution_db_passwords）。
-  # nautobot が無いか 2026-10-10 より前の state なら空で、ecs.tf の precondition が止める
+  # master のパスワードは init のタスクにだけ渡す。nautobot が無いか 2026-10-10 より前の state なら空で、ecs.tf の precondition が止める
   nautobot_db_address      = try(data.terraform_remote_state.nautobot.outputs.db_address, "")
   nautobot_db_port         = try(data.terraform_remote_state.nautobot.outputs.db_port, 5432)
   nautobot_db_password_arn = try("arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter${data.terraform_remote_state.nautobot.outputs.db_password_parameter}", "")
   temporal_db_password_arn = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/${local.name_prefix}/temporal/db-password"
+  # サーバー（temporal のコンテナ）と init のタスクの両方に渡す DB の env（ecs.tf。docker/images/temporal-server/common.sh が読む。cycle 042）
+  temporal_db_env = [
+    { name = "POSTGRES_SEEDS", value = local.nautobot_db_address },
+    { name = "DB_PORT", value = tostring(local.nautobot_db_port) },
+    { name = "POSTGRES_USER", value = "temporal" },
+    { name = "DBNAME", value = "temporal" },
+    { name = "VISIBILITY_DBNAME", value = "temporal_visibility" },
+    { name = "SQL_TLS_ENABLED", value = "true" }, # RDS PostgreSQL 15 以降は rds.force_ssl=1 が既定
+    # true にするには RDS の CA をイメージに入れて SQL_CA を渡す（SQL_HOST_NAME は任意。無ければ接続先のホスト名）。
+    # false のあいだは psql（require）も temporal-server（InsecureSkipVerify）も temporal-sql-tool も CA を確かめない
+    { name = "SQL_HOST_VERIFICATION", value = "false" },
+  ]
 
   param_prefix = "/${local.name_prefix}"
   log_group    = "/ecs/${local.name_prefix}-workflow"

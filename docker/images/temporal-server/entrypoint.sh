@@ -1,123 +1,72 @@
 #!/bin/sh
 # Temporal のサーバーの入口（cycle 036。docker/images/temporal-server/Dockerfile の ENTRYPOINT）。
-# 公式の setup-postgres.sh と create-namespace.sh（temporalio/docker-builds）を 1 本に畳み、ロールと DB の作成だけ psql で足した。
+# ロールと DB とスキーマは一回きりのタスク <接頭辞>-workflow-init（init-rds.sh。ops/up.sh の 8-5 が run-task する）が入れ、ここは master の
+# パスワード（NAUTOBOT_DB_PASSWORD）を持たない（タスク定義の env にも secrets にも無い。ECS Exec / healthCheck / /proc/1/environ から見えない。cycle 042）。
 # 全部べき等で、2 回目以降の起動（タスクの入れ替え、再起動）でも同じ道を通る:
-#   1. Nautobot の RDS の master（NAUTOBOT_DB_USER）で、ロール POSTGRES_USER と DB の DBNAME / VISIBILITY_DBNAME を無いときだけ作る（owner はロール）。
-#      master のパスワード（NAUTOBOT_DB_PASSWORD）は最後に使った直後に env から外し、この後に起こすプロセスに渡さない（cycle 039）
-#   2. スキーマをロール POSTGRES_USER で入れる（setup-schema は初回だけ。update-schema は毎回）
+#   1. DB の 5432 が開くまで待つ（common-rds.sh の wait_for_db）
+#   2. ロール POSTGRES_USER で、両方の DB の schema_version.curr_version がイメージの versioned/ の最新の版以上になるまで 10 秒おきに 30 回待つ（init のタスクが
+#      終わるのを待つ。ロールが無い・DB が無い・表が無い・版が古い、は全部「まだ」。DB の版がイメージより新しい（イメージを戻した）のは Temporal 本体と同じく許す。
+#      30 回（300 秒）は healthCheck の startPeriod と同じ。ECS は startPeriod + 6 回 × 10 秒で UNHEALTHY として止めるので、ふつうはその前に「終わらない」の行が出る（DB の 5432 が
+#      開くのが遅いと間に合わないこともある）。apply と run-task の順序に依存しない。cycle 042）
 #   3. 背景で namespace DEFAULT_NAMESPACE を無いときだけ作る（/etc/temporal/namespace-rds.sh。サーバーが上がるのを待ってから。cycle 039）
 #   4. tini（PID 1）の子として公式の /etc/temporal/entrypoint.sh へ exec（temporal-server start）。背景の namespace-rds.sh も tini の子になり、抜けたら tini が回収する（cycle 039）
-# exec tini までは PID 1 のこの sh が走る。ECS の停止（SIGTERM）は trap で受け、走っている手順（psql / temporal-sql-tool）が返った区切りで exit 143 で抜ける（cycle 040）
-# パスワードは env（ECS の secrets）から psql の \getenv と PGPASSWORD / SQL_PASSWORD で渡し、コマンドラインにもログにも出さない。
-# TLS（psql と temporal-sql-tool）はサーバー本体と同じ SQL_TLS_ENABLED / SQL_HOST_VERIFICATION / SQL_CA / SQL_HOST_NAME（ecs.tf）から導く（cycle 039）。
+# exec tini までは PID 1 のこの sh が走る。ECS の停止（SIGTERM）は common-rds.sh の trap で受け、走っている手順（psql / sleep）が返った区切りで exit 143 で抜ける（cycle 040）
+# TLS（psql）はサーバー本体と同じ SQL_TLS_ENABLED / SQL_HOST_VERIFICATION / SQL_CA（ecs.tf）から common-rds.sh が導く（cycle 039）。
 set -eu
 
-: "${POSTGRES_SEEDS:?POSTGRES_SEEDS（RDS のアドレス）が無い}"
-: "${POSTGRES_USER:?POSTGRES_USER（Temporal のロール名）が無い}"
-: "${POSTGRES_PWD:?POSTGRES_PWD（Temporal のロールのパスワード）が無い}"
-: "${NAUTOBOT_DB_USER:?NAUTOBOT_DB_USER（RDS の master）が無い}"
-: "${NAUTOBOT_DB_PASSWORD:?NAUTOBOT_DB_PASSWORD（RDS の master のパスワード）が無い}"
-: "${DB_PORT:=5432}"
-: "${DBNAME:=temporal}"
-: "${VISIBILITY_DBNAME:=temporal_visibility}"
-: "${NAUTOBOT_DB_NAME:=nautobot}"
-: "${SQL_TLS_ENABLED:=true}"
-: "${SQL_HOST_VERIFICATION:=false}"
+LOG_NAME=entrypoint-rds
+. /etc/temporal/common-rds.sh
 : "${DEFAULT_NAMESPACE:=default}"
 : "${DEFAULT_NAMESPACE_RETENTION:=72h}"
-export DB_PORT DBNAME VISIBILITY_DBNAME SQL_TLS_ENABLED POSTGRES_PWD
 
-SCHEMA_DIR=/etc/temporal/schema/postgresql/v12
 TEMPORAL_ADDRESS_LOCAL=127.0.0.1:7233
 
-log() { echo "entrypoint-rds: $*" >&2; }
-# PID 1 の sh はハンドラの無い SIGTERM を無視する（stopTimeout の後の SIGKILL まで止まらない）。ash は前景の子が返ってから trap を走らせるので、
-# update-schema の途中では切れない。exec tini で trap は既定に戻る（cycle 040）
-trap 'log "SIGTERM を受けたので初期化を止める（手順 ${step:-0} のあと。ここまでの手順はべき等なので次の起動でやり直す）"; exit 143' TERM INT
-
-# psql の接続先（パスワードは呼ぶたびに PGPASSWORD で渡す）。RDS PostgreSQL 15 以降は rds.force_ssl=1 が既定なので、TLS 有効なら require。
-# SQL_HOST_VERIFICATION=true ならサーバー本体と同じく証明書とホスト名を確かめる（verify-full。CA は SQL_CA）
-export PGHOST="$POSTGRES_SEEDS" PGPORT="$DB_PORT" PGCONNECT_TIMEOUT=10
-# サーバー本体の設定テンプレート（YAML）は True / TRUE も真に読むが、sh の = は大文字小文字を区別するので小文字に揃える（cycle 040）
-SQL_TLS_ENABLED=$(printf '%s' "$SQL_TLS_ENABLED" | tr '[:upper:]' '[:lower:]')
-SQL_HOST_VERIFICATION=$(printf '%s' "$SQL_HOST_VERIFICATION" | tr '[:upper:]' '[:lower:]')
-if [ "$SQL_HOST_VERIFICATION" = "true" ] && [ -z "${SQL_CA:-}" ]; then
-  log "SQL_HOST_VERIFICATION=true なのに SQL_CA（CA のパス）が無い。psql の verify-full も temporal-server も RDS の証明書を確かめられない"; exit 1
-fi
-if [ "$SQL_TLS_ENABLED" = "true" ]; then
-  if [ "$SQL_HOST_VERIFICATION" = "true" ]; then
-    export PGSSLMODE=verify-full
-    if [ -n "${SQL_CA:-}" ]; then export PGSSLROOTCERT="$SQL_CA"; fi
-  else
-    export PGSSLMODE=require
-  fi
-else
-  export PGSSLMODE=prefer
-fi
-# temporal-sql-tool はホスト名の検証を「外す」フラグ（--tls-disable-host-verification）なので、SQL_HOST_VERIFICATION の否定を渡す
-# SQL_TLS_SERVER_NAME は temporal-sql-tool の env（tools/sql/main.go）、SQL_HOST_NAME はサーバー本体の env（config_template.yaml の serverName）
-if [ "$SQL_HOST_VERIFICATION" = "true" ]; then sql_tool_skip_host_verify=false; else sql_tool_skip_host_verify=true; fi
-
-# 1. DB が受け付けるまで待つ（RDS が起きる前にタスクが上がることがあるので、公式の 1 回だけでなく回す）
+# 1. DB が受け付けるまで待つ
 step=1
-i=0
-until nc -z -w 10 "$POSTGRES_SEEDS" "$DB_PORT"; do
-  i=$((i + 1))
-  if [ "$i" -ge 30 ]; then log "$POSTGRES_SEEDS:$DB_PORT に繋がらない（30 回）"; exit 1; fi
-  log "$POSTGRES_SEEDS:$DB_PORT を待つ（$i/30）"
-  sleep 5
-done
+wait_for_db
 
-# 2. ロールと DB を master で作る（無いときだけ。パスワードは毎回揃える）。CREATE DATABASE ... OWNER には master がそのロールのメンバーである必要があるので先に GRANT
-step=2
-log "ロール $POSTGRES_USER と DB $DBNAME / $VISIBILITY_DBNAME を確かめる"
-PGPASSWORD="$NAUTOBOT_DB_PASSWORD" psql -X -q -v ON_ERROR_STOP=1 -U "$NAUTOBOT_DB_USER" -d "$NAUTOBOT_DB_NAME" \
-  -v role="$POSTGRES_USER" -v db="$DBNAME" -v vdb="$VISIBILITY_DBNAME" <<'SQL'
-\getenv pw POSTGRES_PWD
-SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'role', :'pw')
-  WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'role') \gexec
-SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'role', :'pw') \gexec
--- PostgreSQL 16 以降、CREATEROLE で作った側（RDS の master）は ADMIN だけ持ち SET が無い（MEMBER は真になる）ので SET で見る
-SELECT format('GRANT %I TO CURRENT_USER', :'role')
-  WHERE NOT pg_has_role(CURRENT_USER, :'role', 'SET') \gexec
-SELECT format('CREATE DATABASE %I OWNER %I', :'db', :'role')
-  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'db') \gexec
-SELECT format('CREATE DATABASE %I OWNER %I', :'vdb', :'role')
-  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'vdb') \gexec
-SQL
-# visibility のスキーマが使う拡張。RDS の master は rds_superuser なので作れる（ロールでは作れないことがあるので master で先に作る）
-PGPASSWORD="$NAUTOBOT_DB_PASSWORD" psql -X -q -v ON_ERROR_STOP=1 -U "$NAUTOBOT_DB_USER" -d "$VISIBILITY_DBNAME" \
-  -c 'CREATE EXTENSION IF NOT EXISTS btree_gin'
-# master のパスワードはここで使い終わる。この後に起こすプロセス（temporal-sql-tool、namespace-rds.sh、tini、temporal-server）の /proc/<pid>/environ に残さない
-unset NAUTOBOT_DB_PASSWORD
-
-# 3. スキーマをロールで入れる。setup-schema -v 0.0 は schema_version を 0.0 に戻すので、schema_version が無い初回だけ打つ。update-schema はべき等なので毎回
-sql_tool() {  # sql_tool <DB 名> <サブコマンドと引数...>。env はサブシェルの中だけで export する（CA とサーバー名は値があるときだけ渡す）
-  db=$1; shift
-  (
-    export SQL_TLS="$SQL_TLS_ENABLED" SQL_TLS_DISABLE_HOST_VERIFICATION="$sql_tool_skip_host_verify" SQL_PASSWORD="$POSTGRES_PWD"
-    if [ -n "${SQL_CA:-}" ]; then export SQL_TLS_CA_FILE="$SQL_CA"; fi
-    if [ -n "${SQL_HOST_NAME:-}" ]; then export SQL_TLS_SERVER_NAME="$SQL_HOST_NAME"; fi
-    exec temporal-sql-tool --plugin postgres12 --ep "$POSTGRES_SEEDS" -p "$DB_PORT" -u "$POSTGRES_USER" --db "$db" "$@"
-  )
+# 2. init のタスクがスキーマをイメージの版まで上げるのを待つ。版はディレクトリ名（v1.19）の v を除いた最大（1.19。schema_version の curr_version と同じ形）
+schema_want() {  # schema_want <temporal|visibility>
+  ls "$SCHEMA_DIR/$1/versioned" | sed -n 's/^v//p' | sort -t. -k1,1n -k2,2n | tail -n 1
 }
-step=3
-for pair in "$DBNAME:temporal" "$VISIBILITY_DBNAME:visibility"; do
-  db=${pair%%:*}; dir=${pair#*:}
-  has=$(PGPASSWORD="$POSTGRES_PWD" psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$db" -tAc "SELECT to_regclass('schema_version') IS NOT NULL")
-  if [ "$has" = "f" ]; then
-    log "$db: 初回なので setup-schema -v 0.0"
-    sql_tool "$db" setup-schema -v 0.0
+schema_read() {  # schema_read <DB 名>  ロール POSTGRES_USER で curr_version を読み、schema_have に版、schema_err に psql の失敗の 1 行目を置く
+  # 読めなければ schema_have は空（ロール・DB・表が無い、認証や TLS の失敗）。stderr を捨てずに 1 行目を log に出し、TLS などの失敗を「まだ無い」と誤解させない。
+  # ロールがまだ無い間も、PostgreSQL はクライアントに password authentication failed を返す（ロールの有無を明かさない）ので、init が終わるまではそれが出るのが正常。
+  # psql の stdout は版（-tA で 1.19 の 1 行）だけ。stderr は失敗のほか接続時の WARNING も出し得るので、2>&1 で受けて版の形の行とそれ以外に分ける（パスワードは stderr に出ない）
+  _out=$(PGPASSWORD="$POSTGRES_PWD" psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$1" -tAc "SELECT curr_version FROM schema_version WHERE version_partition = 0" 2>&1) || true
+  schema_have=$(printf '%s\n' "$_out" | sed -n '/^[0-9][0-9]*\.[0-9][0-9]*$/p' | head -n 1)
+  schema_err=$(printf '%s\n' "$_out" | sed -e '/^[0-9][0-9]*\.[0-9][0-9]*$/d' -e '/^$/d' | head -n 1)
+}
+version_ge() {  # version_ge <DB の版> <イメージの版>  major.minor を数で比べて DB がイメージ以上なら真。どちらかが空・形が違うなら偽（まだ。[ のエラーを出さない）
+  for _v in "$1" "$2"; do
+    case "$_v" in *.*.* | *[!0-9.]* | .* | *.) return 1 ;; [0-9]*.[0-9]*) ;; *) return 1 ;; esac
+  done
+  [ "${1%%.*}" -gt "${2%%.*}" ] || { [ "${1%%.*}" -eq "${2%%.*}" ] && [ "${1#*.}" -ge "${2#*.}" ]; }
+}
+step=2
+want_t=$(schema_want temporal); want_v=$(schema_want visibility)
+if [ -z "$want_t" ] || [ -z "$want_v" ]; then log "イメージの $SCHEMA_DIR/{temporal,visibility}/versioned に版が無い（Dockerfile の COPY）"; exit 1; fi
+init_hint="ops/up.sh の 8-5（OSS 版は ops/oss/up.sh の 8）が run-task する <接頭辞>-workflow-init。ログは terraform -chdir=IaC/terraform/aws-managed/workflow output -raw init_logs_command（aws logs tail <ロググループ> --log-stream-name-prefix init）"
+i=0
+while :; do
+  schema_read "$DBNAME"; have_t=$schema_have; err_t=$schema_err
+  schema_read "$VISIBILITY_DBNAME"; have_v=$schema_have; err_v=$schema_err
+  if version_ge "$have_t" "$want_t" && version_ge "$have_v" "$want_v"; then break; fi
+  err="${err_t:+。$DBNAME の psql: $err_t}${err_v:+。$VISIBILITY_DBNAME の psql: $err_v}"
+  i=$((i + 1))
+  if [ "$i" -gt 30 ]; then
+    log "初期化のタスク（${init_hint}）が 30 回（300 秒）待っても終わらない（スキーマの版 $DBNAME=${have_t:-無し}/$want_t $VISIBILITY_DBNAME=${have_v:-無し}/${want_v}${err}）。ops/up.sh（OSS 版は ops/oss/up.sh）を打ち直すか、init のログを見る"; exit 1
   fi
-  log "$db: update-schema"
-  sql_tool "$db" update-schema -d "$SCHEMA_DIR/$dir/versioned"
+  log "初期化のタスク（${init_hint}）を待つ（${i}/30。スキーマの版 $DBNAME=${have_t:-無し}/$want_t $VISIBILITY_DBNAME=${have_v:-無し}/${want_v}${err}）"
+  sleep 10
 done
+log "スキーマは $DBNAME=$have_t / $VISIBILITY_DBNAME=${have_v}（イメージの版 $want_t / $want_v 以上）"
 
-# 4. namespace を背景で作る（公式 create-namespace.sh と同じ流れ）。失敗しても log を出して exit 0 で抜けるだけで、終了コードは誰も待たない（healthCheck が namespace を見るので ECS 側で UNHEALTHY になる）。
-# fork だけのサブシェルは /proc/<pid>/environ に起動時の env（master のパスワード入り）を持ち続けるので、別の実行ファイルを exec させる（cycle 039）
-step=4
+# 3. namespace を背景で作る（公式 create-namespace.sh と同じ流れ）。失敗しても log を出して exit 0 で抜けるだけで、終了コードは誰も待たない（healthCheck が namespace を見るので ECS 側で UNHEALTHY になる）。
+# 別の実行ファイルを exec させる（fork だけのサブシェルは /proc/<pid>/environ に起動時の env を持ち続ける。cycle 039）
+step=3
 /etc/temporal/namespace-rds.sh "$TEMPORAL_ADDRESS_LOCAL" "$DEFAULT_NAMESPACE" "$DEFAULT_NAMESPACE_RETENTION" &
 
-# 5. 公式の入口（BIND_ON_IP=0.0.0.0 なら TEMPORAL_BROADCAST_ADDRESS を getent hosts $(hostname) で埋めて temporal-server start）。
+# 4. 公式の入口（BIND_ON_IP=0.0.0.0 なら TEMPORAL_BROADCAST_ADDRESS を getent hosts $(hostname) で埋めて temporal-server start）。
 # PID 1 を tini にする: 背景の namespace-rds.sh は tini の子になり、抜けたら tini が回収する。tini は SIGTERM を temporal-server へ渡す（cycle 039）
 exec /sbin/tini -- /etc/temporal/entrypoint.sh

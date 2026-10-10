@@ -330,7 +330,8 @@ build_worker() {  # build_worker <タグ> [requirements のファイル名]  Tem
 }
 build_temporal_server() {  # build_temporal_server <タグ>  REG / PREFIX を使う。タグは dir_tag "$TEMPORAL_SERVER_VERSION" docker/images/temporal-server
   # temporalio/server（arm64）に temporalio/admin-tools の temporal-sql-tool と temporal（CLI）、Alpine の psql（${POSTGRES_MAJOR}）を足す。
-  # 起動のたびに Nautobot の RDS にロール temporal と DB を作り、スキーマを最新まで上げてから temporal-server を起こす（docker/images/temporal-server/entrypoint.sh）
+  # 同じイメージで 2 つのタスクを動かす: init のタスク（init.sh。run_temporal_init が起こす）が Nautobot の RDS にロール temporal と DB を作ってスキーマを最新まで上げ、
+  # サーバー（entrypoint.sh）はスキーマの版が揃うのを待ってから temporal-server を起こす（cycle 042）
   docker buildx build --platform linux/arm64 --build-arg "TEMPORAL_SERVER_VERSION=$TEMPORAL_SERVER_VERSION" --build-arg "POSTGRES_MAJOR=$POSTGRES_MAJOR" \
     -t "$REG/$PREFIX-temporal:$1" --push docker/images/temporal-server/
 }
@@ -353,8 +354,53 @@ ensure_nautobot_secrets() {  # pipeline/nautobot の apply より前に呼ぶ。
   ensure_secret "/$PREFIX/nautobot/api-token" token "Nautobot API token of the web UI (created by $OPS_DIR/up.sh)"
 }
 ensure_temporal_secrets() {  # workflow の apply より前に呼ぶ。値は出さない
-  # Temporal の履歴を Nautobot の RDS に書くロール temporal のパスワード（cycle 036。docker/images/temporal-server/entrypoint.sh が起動のたびにこの値に揃える）
+  # Temporal の履歴を Nautobot の RDS に書くロール temporal のパスワード（cycle 036。init のタスク（docker/images/temporal-server/init.sh）が
+  # run_temporal_init のたびにこの値に揃える。cycle 042）
   ensure_secret "/$PREFIX/temporal/db-password" password "Temporal database password (created by $OPS_DIR/up.sh)"
+}
+run_temporal_init() {  # workflow の apply の直後、services-stable を待つ前に呼ぶ（ops/up.sh の 8-5、ops/oss/up.sh の 8。cycle 042）
+  # 一回きりのタスク <接頭辞>-workflow-init（IaC/terraform/aws-managed/workflow/ecs.tf の aws_ecs_task_definition.init。docker/images/temporal-server/init.sh）を
+  # run-task で起こし、止まるまで待って終了コード 0 を確かめる。Nautobot の RDS の master でロール temporal と DB を作り、ロールでスキーマを最新まで上げる（べき等なので毎回打つ）。
+  # サーバーのタスクはスキーマの版が揃うまで待っている（entrypoint.sh）。0 でなければ die（タスクの止まった理由と init のログの見方を出す）
+  local cluster taskdef family subnet sg logs prev out task nfail f_arn f_reason f_detail status code stop_code reason
+  cluster=$(tf_output workflow cluster_name) || exit 1
+  taskdef=$(tf_output workflow init_task_definition) || exit 1
+  subnet=$(tf_output workflow task_subnet_id) || exit 1
+  sg=$(tf_output workflow task_security_group_id) || exit 1
+  logs=$(tf_output workflow init_logs_command) || exit 1
+  family=${taskdef##*/}; family=${family%:*}
+  # 前の init（打ち直し、Ctrl-C や die の後）がまだ走っていれば、止まるのを待ってから起こす。2 つ同時に走ると、新しい DB では 2 つ目の
+  # setup-schema -v 0.0 が 1 つ目の update-schema の結果を 0.0 に戻し、以後の update-schema が落ちる（DB を手で直すまで戻らない）
+  prev=$(aws ecs list-tasks --region "$REGION" --cluster "$cluster" --family "$family" --desired-status RUNNING --query 'taskArns' --output text) \
+    || die "走っている Temporal の初期化のタスク（${family}）を確かめられない（上のエラー）"
+  if [ -n "$prev" ] && [ "$prev" != None ]; then
+    echo "前の初期化のタスク（${family}）がまだ走っているので、止まるのを待つ: ${prev//$'\t'/ }"
+    # タスクの ARN は空白を含まないので、複数なら分けて --tasks に並べる（引用しない）
+    aws ecs wait tasks-stopped --region "$REGION" --cluster "$cluster" --tasks $prev 2>/dev/null \
+      || aws ecs wait tasks-stopped --region "$REGION" --cluster "$cluster" --tasks $prev \
+      || die "前の Temporal の初期化のタスク（${family}）が 20 分たっても止まらない（ログ: ${logs}）"
+  fi
+  echo "Temporal の初期化のタスク（${taskdef##*/}。ロール・DB・スキーマ。初回はイメージの取得とスキーマで 2〜5 分）"
+  out=$(aws ecs run-task --region "$REGION" --cluster "$cluster" --task-definition "$taskdef" --launch-type FARGATE --count 1 \
+    --network-configuration "awsvpcConfiguration={subnets=[$subnet],securityGroups=[$sg],assignPublicIp=DISABLED}" \
+    --query '[tasks[0].taskArn, length(failures), failures[0].arn, failures[0].reason, failures[0].detail]' --output text) || die "Temporal の初期化のタスクを起こせない（上のエラー。ecs:RunTask と実行ロールへの iam:PassRole が要る）"
+  # run-task は failures があっても終了コード 0 で返り、タスクは作られない（describe-tasks でも理由を引けない）。Fargate のキャパシティ不足
+  # （Capacity is unavailable…）などは failures[].reason にしか出ないので、failures[0] の arn / reason / detail を die に載せる。text では 1 行に TAB 区切りで並ぶ
+  # （null は None）。failures[0].[arn, reason, detail] と入れ子にすると text では 2 行に割れて read が拾えないので、平らに並べる
+  IFS=$'\t' read -r task nfail f_arn f_reason f_detail <<<"$out" || true
+  if [ "${nfail:-}" != 0 ] || [ -z "${task:-}" ] || [ "$task" = None ]; then
+    die "Temporal の初期化のタスクを起こせない（run-task の返り: taskArn=${task:-?} failures=${nfail:-?} 件。failures[0]: reason=${f_reason:-?} arn=${f_arn:-?} detail=${f_detail:-?}）"
+  fi
+  echo "init のタスク ${task##*/} が止まるのを待つ（ログ: ${logs}）"
+  # tasks-stopped は 1 回で最大 10 分。2 回まで待つ
+  aws ecs wait tasks-stopped --region "$REGION" --cluster "$cluster" --tasks "$task" 2>/dev/null \
+    || aws ecs wait tasks-stopped --region "$REGION" --cluster "$cluster" --tasks "$task" \
+    || die "Temporal の初期化のタスク ${task##*/} が 20 分たっても止まらない（ログ: ${logs}）"
+  read -r status code stop_code reason < <(aws ecs describe-tasks --region "$REGION" --cluster "$cluster" --tasks "$task" \
+    --query 'tasks[0].[lastStatus, containers[0].exitCode, stopCode, stoppedReason]' --output text) || true
+  # exitCode はイメージの取得に失敗したときなど null（text では None）になる。0 以外は全部失敗
+  [ "${code:-}" = 0 ] || die "Temporal の初期化のタスク ${task##*/} が失敗した（lastStatus=${status:-?} exitCode=${code:-?} stopCode=${stop_code:-?} stoppedReason=${reason:-?}）。ログ: $logs 。直したら ops/up.sh（OSS 版は ops/oss/up.sh）を打ち直す"
+  echo "Temporal の初期化が終わった（exitCode=0）"
 }
 
 # ---- MSK の SASL/SCRAM の資格情報（cycle 012。マネージド版の ops/up.sh だけが呼ぶ。OSS 版の Kafka は認証なしの 9092）

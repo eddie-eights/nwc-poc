@@ -8,6 +8,26 @@ output "service_name" {
   value       = aws_ecs_service.workflow.name
 }
 
+output "init_task_definition" {
+  description = "Task definition (family:revision ARN) of the one-shot Temporal init task (role, databases, schema). ops/up.sh runs it with aws ecs run-task after the apply (run_temporal_init in ops/up-common.sh)."
+  value       = aws_ecs_task_definition.init.arn
+}
+
+output "task_subnet_id" {
+  description = "Subnet of the service tasks. run_temporal_init runs the init task in the same subnet."
+  value       = local.subnet_id
+}
+
+output "task_security_group_id" {
+  description = "Security group of the service tasks (reaches the Nautobot RDS on 5432). run_temporal_init runs the init task with the same group."
+  value       = local.workflow_sg_id
+}
+
+output "init_logs_command" {
+  description = "Logs of the Temporal init task"
+  value       = "aws logs tail ${aws_cloudwatch_log_group.workflow.name} --region ${var.region} --log-stream-name-prefix init"
+}
+
 output "anomaly_queue_url" {
   description = "SQS queue the alerts of Grafana / Splunk land in through the SNS topic of IaC/terraform/aws-managed/base/core (the worker long-polls it)"
   value       = aws_sqs_queue.anomalies.url

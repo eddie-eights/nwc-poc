@@ -13,9 +13,10 @@ Temporal の履歴は Nautobot の RDS for PostgreSQL（DB `temporal` / `tempora
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
 | サービス | 1 タスクに temporal・ui・worker の 3 コンテナ。Fargate ARM、1 vCPU / 2 GB。AZ を選ぶキーは無い（サブネット a に 1 つ）。デプロイは `deployment_minimum_healthy_percent = 100` / `deployment_maximum_percent = 200`（新しいタスクが上がってから古いのを止める） | `IaC/terraform/aws-managed/workflow/ecs.tf`、変数 `task_cpu`、`task_memory` |
-| temporal のコンテナ | `temporalio/server` 1.32.1 に `temporal-sql-tool`・`temporal`（CLI）・psql 18 を足して自前でビルドしたもの（ECR の `<prefix>-temporal`。タグは中身のハッシュ入り）。entrypoint が起動のたびに、Nautobot の master でロール `temporal` と DB を作り（あれば何もしない）、スキーマを最新まで上げ、namespace `default`（保持 72 時間）を作る。healthCheck は namespace `default` の describe | `docker/images/temporal-server/`、`ecs.tf`、`ops/up-common.sh` の `TEMPORAL_SERVER_VERSION` / `POSTGRES_MAJOR` / `build_temporal_server` |
+| temporal のコンテナ | `temporalio/server` 1.32.1 に `temporal-sql-tool`・`temporal`（CLI）・psql 18 を足して自前でビルドしたもの（ECR の `<prefix>-temporal`。タグは中身のハッシュ入り）。サーバーの entrypoint はロール `temporal` で両方の DB のスキーマの版がイメージの最新以上になるまで待ってから temporal-server を起こし、namespace `default`（保持 72 時間）を作る。healthCheck は namespace `default` の describe | `docker/images/temporal-server/`、`ecs.tf`、`ops/up-common.sh` の `TEMPORAL_SERVER_VERSION` / `POSTGRES_MAJOR` / `build_temporal_server` |
 | DB | Nautobot の RDS for PostgreSQL 18 に相乗り。ロール `temporal` が DB `temporal` と `temporal_visibility` の持ち主。TLS（`SQL_TLS_ENABLED=true`）、接続は 4 + 2（visibility）まで、history の shard は 4（あとから変えられない） | `ecs.tf` の環境変数、変数 `temporal_sql_max_conns` ほか、`IaC/terraform/aws-managed/pipeline/nautobot/` |
-| シークレット | ロール `temporal` のパスワードは SSM の SecureString `/<prefix>/temporal/db-password`（`ops/up.sh` が workflow の apply の前に乱数で作る）。master のパスワードは Nautobot の `/<prefix>/nautobot/db-password` を読む。どちらも ECS の `secrets` で渡し、state にもタスク定義にも値を書かない | `ops/up-common.sh` の `ensure_temporal_secrets`、`iam.tf` の `execution_db_passwords` |
+| シークレット | ロール `temporal` のパスワードは SSM の SecureString `/<prefix>/temporal/db-password`（`ops/up.sh` が workflow の apply の前に乱数で作る）。master のパスワードは Nautobot の `/<prefix>/nautobot/db-password` を読み、init のタスクにだけ渡す（サーバーのタスクにはロール `temporal` のパスワードだけ。cycle 042）。どちらも ECS の `secrets` で渡し、state にもタスク定義にも値を書かない | `ops/up-common.sh` の `ensure_temporal_secrets`、`iam.tf` の `execution_db_passwords` と `DenyNautobotParameters` ||
+| init のタスク | 一回きりのタスク `<prefix>-workflow-init`（サーバーと同じイメージを `entryPoint` `/etc/temporal/init-rds.sh` で起こす。Fargate ARM、0.25 vCPU / 0.5 GB、タスクロール無し）。Nautobot の master でロール `temporal` と DB を作り（あれば何もしない）、ロールでスキーマを最新まで上げて exit 0 で止まる。`ops/up.sh` の 8-5（OSS 版は `ops/oss/up.sh` の 8）が workflow の apply の直後に `run-task` で起こし、止まるまで待って exitCode 0 を確かめる。ログは同じロググループの stream prefix `init`（出力 `init_logs_command`） | `ecs.tf` の `aws_ecs_task_definition.init`、`docker/images/temporal-server/init.sh`、`ops/up-common.sh` の `run_temporal_init` |
 | ui のコンテナ | `temporalio/ui` 2.55.0 を ECR の `<prefix>-temporal-ui` に写したもの。temporal が HEALTHY になってから起きる。`essential = false`（落ちてもワークフローは止めない） | `ecs.tf`、変数 `temporal_ui_image_tag`、`ops/up-common.sh` の `TEMPORAL_UI_TAG` |
 | worker のコンテナ | `app/temporal/worker.py`。ECR の `<prefix>-worker`。temporal が HEALTHY になってから起きる | `ecs.tf`、`app/temporal/` |
 | ポート | UI の 8233 だけを外に出す（認証は無い）。gRPC 7233〜7239 と membership 6933〜6939 は portMappings に無く、SG は workflow → workflow の自分宛てだけ | `ecs.tf`、`IaC/terraform/aws-managed/base/core/security_groups.tf` |
@@ -55,14 +56,15 @@ worker が読み書きするもの:
 - **タスクが入れ替わっても、走っていたワークフローは続く（cycle 036）。**
   - 履歴は RDS の `temporal` にあり、新しいタスクの temporal が続きから動かす。手元の docker で、ワークフローを起こしてからコンテナを再起動しても `Running` のまま残ることを確かめた（2026-10-10。[cycle 036 の build.md](../../cycles/036-temporal-rds/build.md)）。AWS の RDS では未確認。
   - RDS ごと消す `ops/down.sh` のあとは残らない（Nautobot の RDS は down.sh で消える）。
-- **初期化は temporal のコンテナの entrypoint がやる。**
-  - ロールと DB は Nautobot の master で「無いときだけ」作る。スキーマは `schema_version` が無い初回だけ `setup-schema`、毎回 `update-schema`（べき等。消すコマンドは打たない）。
-  - namespace `default` は temporal-server を起こしたあとに背景で作る。healthCheck がその describe を見るので、worker と ui は namespace ができてから起きる。
-  - ロールと DB を作った直後に、master のパスワード（`NAUTOBOT_DB_PASSWORD`）を env から外す。守れるのは tini / temporal-server / namespace を作る背景のプロセスの `/proc/<pid>/environ`。起動が終わったあとも見える経路が 2 つ残る（起動中の 3 つ目は下の `/proc/1/environ`）: ECS Exec のシェルと、healthCheck が 10 秒ごとに起こす `temporal operator namespace describe` のプロセス。どちらもタスク定義の env を引き継ぐ。healthCheck のプロセスは uid temporal で立つので、`ecs:ExecuteCommand` の権限が無くてもタスクの中のコードから読める（手元の docker の HEALTHCHECK で確認。Fargate では未確認）。[036 の設計](../../cycles/036-temporal-rds/design.md)のリスク 7 のままで、根本対策（初期化を一回きりのタスクに分ける）は `docs/cycles/QUEUE.md`。
+- **ロール・DB・スキーマは init のタスク、namespace はサーバーが作る（cycle 042）。**
+  - init のタスク（`init.sh`）: ロールと DB は Nautobot の master で「無いときだけ」作る。スキーマは `schema_version` が無い初回だけ `setup-schema`、毎回 `update-schema`（べき等。消すコマンドは打たない）。`ops/up.sh` を打つたびに走る。前の init がまだ走っていれば、止まるのを待ってから起こす（`run_temporal_init` の `list-tasks`。2 つ同時に走ると、新しい DB では 2 つ目の `setup-schema -v 0.0` が版を 0.0 に戻す）。
+  - サーバー（`entrypoint.sh`）: ロール `temporal` で両方の DB の `schema_version.curr_version` を読み、イメージの `versioned/` の最新の版（`v` を除いて数で並べた最大）以上になるまで 10 秒ごとに 30 回（300 秒。healthCheck の `startPeriod` と同じ）待つ。ロール・DB・表が無い、版が古い、は全部「まだ」。DB の版がイメージより新しい（イメージを古い版に戻した）のは Temporal 本体と同じく許す。psql が失敗したら（認証・TLS・pg_hba）その stderr の 1 行目を待ちの行に出す（ロールがまだ無い間も PostgreSQL は `password authentication failed` を返すので、init が終わるまではそれが出るのが正常）。待ちの行には毎回 init のログの見方（`init_logs_command`）を出し、30 回で exit 1（ECS がタスクを作り直す）。
+  - namespace `default` は temporal-server を起こしたあとに背景で作る。動いている frontend（127.0.0.1:7233）にしか作れず秘密も要らないので、サーバー側に残した。healthCheck がその describe を見るので、worker と ui は namespace ができてから起きる。
+  - master のパスワード（`NAUTOBOT_DB_PASSWORD`）は init のタスクにしか渡らない。サーバーのタスクの ECS Exec のシェル、healthCheck のプロセス、`/proc/1/environ` から見えるのはロール `temporal` のパスワードだけ（手元の docker で確認。Fargate では未確認）。サーバーのタスクのロールは SSM の `/<prefix>/*` を読めるが、`/<prefix>/nautobot/*` は `iam.tf` の `DenyNautobotParameters` で拒むので、ECS Exec のシェルから `aws ssm get-parameter` で master のパスワードを引くこともできない（AWS では未確認）。039 までは env から外しても ECS Exec と healthCheck の経路が残っていた（[036 の設計](../../cycles/036-temporal-rds/design.md)のリスク 7）。
+  - init とサーバーは同時に起きる。サーバーの healthCheck の `startPeriod` は上限の 300 秒（init のイメージの取得とスキーマの間を待つ）。
   - PID 1 はイメージの tini。temporal-server と namespace を作る背景のプロセス（`/etc/temporal/namespace-rds.sh`）は tini の子で、抜けたら tini が回収する。ECS の `initProcessEnabled` では回収できない: init は孤児しか拾わず、親の temporal-server は生きている（cycle 039）。
-  - `exec tini` までの手順 1〜3 は PID 1 の sh で走る。その間は `/proc/1/environ` にタスク定義の env（master のパスワード入り）がある（tini に替わった時点で消える）。
-  - 起動中（手順 1〜3）に ECS の停止が来たら、走っている手順の区切りで exit 143 で抜ける（update-schema の途中で切らない）。stopTimeout は 120 秒（cycle 040）。
-  - 出典: `docker/images/temporal-server/entrypoint.sh`、`namespace.sh`、`Dockerfile`。
+  - 起動中（サーバーの手順 1〜3、init の手順 1〜3）に ECS の停止が来たら、走っている手順の区切りで exit 143 で抜ける（update-schema の途中で切らない。trap は `common.sh`）。stopTimeout はどちらも 120 秒（cycle 040）。
+  - 出典: `docker/images/temporal-server/entrypoint.sh`、`init.sh`、`common.sh`、`namespace.sh`、`Dockerfile`。
 - **gRPC の 7233〜7239 と membership の 6933〜6939 はタスクの外に出さない。**
   temporal は `BIND_ON_IP=0.0.0.0` で待つが portMappings に出さず、SG は workflow → workflow の自分宛てだけ（デプロイの入れ替わりで 2 つのタスクが並ぶ間に使う）。worker は同じタスクの `localhost:7233`、ui は `127.0.0.1:7233`。
   出典: `ecs.tf` のコメント、[workflow.md](../../workflow.md) の「Temporal UI を開く」。
@@ -112,9 +114,10 @@ worker が読み書きするもの:
 | 項目 | 状態 |
 |---|---|
 | Temporal の履歴 | Nautobot の RDS に残る。`ops/down.sh` で RDS ごと消える |
-| RDS の PostgreSQL 18 | Temporal の動作確認済みの一覧は 12〜16。手元の `postgres:18` ではスキーマが入り動いた（2026-10-10）。RDS の 18、TLS（`SQL_HOST_VERIFICATION=false`）、master での `CREATE EXTENSION btree_gin` は AWS では未確認。ホスト名検証を有効にするには、RDS の CA をイメージに入れ（いまの Dockerfile には無い）、ecs.tf に `SQL_HOST_VERIFICATION=true` と `SQL_CA` を足し、`tests/test_workflow.py` の期待を変える。entrypoint の psql / temporal-sql-tool は同じ env を読むので変えなくてよい。`SQL_HOST_VERIFICATION=false` のあいだは psql（require）も temporal-server（InsecureSkipVerify）も CA を確かめない。`true` で `SQL_CA` が無いと entrypoint が起動時に止める |
+| RDS の PostgreSQL 18 | Temporal の動作確認済みの一覧は 12〜16。手元の `postgres:18` ではスキーマが入り動いた（2026-10-10）。RDS の 18、TLS（`SQL_HOST_VERIFICATION=false`）、master での `CREATE EXTENSION btree_gin` は AWS では未確認。ホスト名検証を有効にするには、RDS の CA をイメージに入れ（いまの Dockerfile には無い）、ecs.tf に `SQL_HOST_VERIFICATION=true` と `SQL_CA` を足し、`tests/test_workflow.py` の期待を変える。init の psql / temporal-sql-tool とサーバーの psql は同じ env を読むので変えなくてよい（ecs.tf の `local.temporal_db_env` に足せば両方に入る）。`SQL_HOST_VERIFICATION=false` のあいだは psql（require）も temporal-server（InsecureSkipVerify）も CA を確かめない。`true` で `SQL_CA` が無いと init もサーバーも起動時に止める |
 | 2 タスク | デプロイの入れ替わりの間だけ並ぶ。AWS では未確認 |
-| ECS Exec と healthCheck | どちらのプロセスもタスク定義の env を引き継ぐので master のパスワードが見える。ECS Exec の `ecs:ExecuteCommand` の権限は Nautobot のコンテナと同じ扱い。healthCheck（10 秒ごと）は uid temporal で立つので、タスクの中のコードからも読める |
+| ECS Exec と healthCheck | master のパスワードは init のタスクにしか渡らない。サーバーのタスクの ECS Exec / healthCheck / `/proc/1/environ` から見えるのはロール `temporal` のパスワードだけ（どちらのプロセスもタスク定義の env を引き継ぐ。healthCheck は uid temporal で立つ）。タスクのロールでも SSM の `/<prefix>/nautobot/*` は読めない（`iam.tf` の `DenyNautobotParameters`）。手元の docker で確認、Fargate の ECS Exec では未確認（cycle 042） |
+| 手で `terraform apply` だけした環境 | init のタスクが走らないので、サーバーは 5 分（30 回）待って exit 1 を繰り返す（ECS の healthCheck が startPeriod 300 秒 + 6 回 × 10 秒で止めるのと同じころ）。ログに「初期化のタスク … を待つ」と出る。`ops/up.sh` を打ち直すか、出力 `init_task_definition` を `run-task` で起こす |
 | フラップ | 走っているあいだに届いた落ち直しの `firing` は捨てる（[workflow.md](../../workflow.md) の「通知の重なりと取りこぼし」） |
 | 処置の種類 | `heal-main`（`dc1-a-leaf-01` の `ethernet-1/1` を上げる）と見るだけの `check` だけ。事前チェック（`precheck`）の警告は落とす処置を足したときに効く |
 | worker が 1 日を超えて止まる | そのあいだに Web から送った決定は SQS の保持（1 日）で消える。修復案は `pending` のまま残る |
@@ -139,3 +142,4 @@ worker が読み書きするもの:
   - [Temporal の履歴を RDS に残す（036）の設計](../../cycles/036-temporal-rds/design.md)
 - 2026-10-10（039）: tini を PID 1 にし、namespace の作成を別の実行ファイル（`namespace-rds.sh`）にし、master のパスワードを最後に使った直後に env から外した。psql / temporal-sql-tool の TLS はサーバー本体と同じ env から導く。[temporal-server の entrypoint の守りを締める（039）の設計](../../cycles/039-temporal-entrypoint-hardening/design.md)
 - 2026-10-10（040）: 起動中の SIGTERM を entrypoint の trap で受けて手順の区切りで exit 143 で抜け、temporal の stopTimeout を 120 秒にした。TLS の env を小文字に揃え、`SQL_HOST_VERIFICATION=true` で `SQL_CA` が無ければ起動時に止める。[temporal-server の entrypoint を起動中の SIGTERM で止められるようにする（040）の設計](../../cycles/040-temporal-entrypoint-sigterm-nits/design.md)
+- 2026-10-10（042）: ロール・DB・スキーマを一回きりの init のタスクに分け、サーバーのタスク定義から master のパスワードを外した。サーバーはスキーマの版が揃うのを待つ。[temporal の初期化を一回きりのタスクに分け、サーバーのタスク定義から master のパスワードを外す（042）の設計](../../cycles/042-temporal-init-task/design.md)
