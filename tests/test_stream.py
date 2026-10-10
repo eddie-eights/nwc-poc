@@ -888,9 +888,12 @@ _core_locals = _read("IaC", "terraform", "aws-managed", "base", "core", "locals.
 _core_runtime = _read("IaC", "terraform", "aws-managed", "base", "core", "runtime.tf")
 _nb_arns_m = re.search(r"^  nautobot_secret_parameter_arns = \[\n((?:    .*\n)*?)  \]$", _core_locals, re.M)
 _nb_arns = re.findall(r'^    "(.*)",$', _nb_arns_m.group(1), re.M) if _nb_arns_m else []
-_nb_arn_head = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/${local.name_prefix}/nautobot/"
-check(f"base/core の locals.tf の nautobot_secret_parameter_arns は /<prefix>/nautobot/ の secret-key / admin-password / db-password の 3 つで、api-token と url を含まない（いま: {_nb_arns}）",
+# prefix を問わない（parameter/*/nautobot/<名前>）。Web のロールの AmazonSSMManagedInstanceCore（Resource *）で同じアカウントのほかの環境の 3 つも読めるため（Round 2）
+_nb_arn_head = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/*/nautobot/"
+check(f"base/core の locals.tf の nautobot_secret_parameter_arns は parameter/*/nautobot/ の secret-key / admin-password / db-password の 3 つで、"
+      f"自分の prefix（${{local.name_prefix}}）と api-token と url を含まない（いま: {_nb_arns}）",
       _nb_arns == [_nb_arn_head + n for n in ("secret-key", "admin-password", "db-password")]
+      and _nb_arns_m is not None and "${local.name_prefix}" not in _nb_arns_m.group(1)
       and "api-token" not in _nb_arns_m.group(1) and "/url" not in _nb_arns_m.group(1))
 _nb_deny_block = ('        Sid      = "DenyNautobotSecrets"\n        Effect   = "Deny"\n        Action   = "ssm:GetParameter*"\n'
                   '        Resource = local.nautobot_secret_parameter_arns\n')

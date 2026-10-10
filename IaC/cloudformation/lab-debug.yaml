@@ -360,6 +360,14 @@ Resources:
                 Resource: !GetAtt Bucket.Arn
                 Condition:
                   StringLike: { "s3:prefix": "lab/*" }
+              # IaC/terraform/aws-managed/pipeline/lab の iam.tf と同じ Deny（AmazonSSMManagedInstanceCore の Resource * に勝たせ、どの環境の Nautobot の内部のシークレットも読ませない。cycle 044）
+              - Sid: DenyNautobotSecrets
+                Effect: Deny
+                Action: ssm:GetParameter*
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*/nautobot/secret-key"
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*/nautobot/admin-password"
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*/nautobot/db-password"
         # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny と同じ Action と条件（aws:SourceVpc はこのスタックの VPC）
         - !If
           - HasPerimeter

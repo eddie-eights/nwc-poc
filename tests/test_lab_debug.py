@@ -117,12 +117,38 @@ stmts = {s["Sid"]: s for s in role["Policies"][0]["PolicyDocument"]["Statement"]
 tf_sids = re.findall(r'Sid\s*=\s*"(\w+)"', iam_tf)
 def tf_actions(sid):
     block = iam_tf.split(f'Sid      = "{sid}"' if f'Sid      = "{sid}"' in iam_tf else f'Sid    = "{sid}"')[1].split("},")[0]
-    return sorted(re.findall(r'"((?:ecr|s3|ssm):\w+)"', re.search(r"Action\s*=\s*(.*)", block).group(1)))
+    return sorted(re.findall(r'"((?:ecr|s3|ssm):[\w*]+)"', re.search(r"Action\s*=\s*(.*)", block).group(1)))
 def as_list(v):
     return sorted(v if isinstance(v, list) else [v])
-check("ロールの Sid は iam.tf と同じ（TelegrafAddress は stream の NLB を読む forward 用なので、デバッグ用の EC2 には要らない）",
-      set(stmts) == set(tf_sids) - {"TelegrafAddress"} and "ssm:GetParameter" not in str(stmts))
+check("ロールの Sid は iam.tf と同じ（TelegrafAddress は stream の NLB を読む forward 用なので、デバッグ用の EC2 には要らない）。"
+      "Allow の Statement に ssm: の Action は無い（SSM で持つのは DenyNautobotSecrets の Deny だけ）",
+      set(stmts) == set(tf_sids) - {"TelegrafAddress"}
+      and not any("ssm:" in a for s in stmts.values() if s["Effect"] == "Allow" for a in as_list(s["Action"])))
 check("Sid ごとの Action は iam.tf と同じ", all(as_list(stmts[s]["Action"]) == tf_actions(s) for s in stmts))
+# ---- Nautobot の内部のシークレット（secret-key / admin-password / db-password）を lab と lab-debug のロールで Deny する（cycle 044 Round 2）。
+# AmazonSSMManagedInstanceCore（ssm:GetParameter* が Resource *）に勝たせ、temporal のタスクが Run Command で lab のシェルから引く経路も塞ぐ
+lab_locals = read("IaC", "terraform", "aws-managed", "pipeline", "lab", "locals.tf")
+_lab_nb_m = re.search(r"^  nautobot_secret_parameter_arns = \[\n((?:    .*\n)*?)  \]$", lab_locals, re.M)
+_lab_nb_arns = re.findall(r'^    "(.*)",$', _lab_nb_m.group(1), re.M) if _lab_nb_m else []
+_nb_names = [a.rsplit("/nautobot/", 1)[1] for a in _lab_nb_arns]
+check(f"pipeline/lab の locals.tf の nautobot_secret_parameter_arns は parameter/*/nautobot/ の secret-key / admin-password / db-password（いま: {_lab_nb_arns}）",
+      _lab_nb_arns == ["arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/*/nautobot/" + n
+                       for n in ("secret-key", "admin-password", "db-password")])
+_lab_assets = iam_tf.split('resource "aws_iam_role_policy" "lab_assets"')[1].split("\nresource ")[0] if '"lab_assets"' in iam_tf else ""
+check("lab のロールの lab_assets の Statement の末尾に DenyNautobotSecrets（Deny、ssm:GetParameter*、local.nautobot_secret_parameter_arns）があり、"
+      "TelegrafAddress の Allow（ssm:GetParameter、telegraf-address と telegraf-source-cidr）はそのまま",
+      ('        Sid      = "DenyNautobotSecrets"\n        Effect   = "Deny"\n        Action   = "ssm:GetParameter*"\n'
+       '        Resource = local.nautobot_secret_parameter_arns\n      },\n    ]\n  })\n}') in _lab_assets
+      and len(re.findall(r'Effect\s*=\s*"Deny"', _lab_assets)) == 1
+      and re.search(r'Sid    = "TelegrafAddress"\n\s*Effect = "Allow"\n\s*Action = "ssm:GetParameter"\n\s*Resource = \[\n'
+                    r'\s*"arn:\$\{local\.partition\}:ssm:\$\{var\.region\}:\$\{local\.account_id\}:parameter/\$\{local\.name_prefix\}/telegraf-address",\n'
+                    r'\s*"arn:\$\{local\.partition\}:ssm:\$\{var\.region\}:\$\{local\.account_id\}:parameter/\$\{local\.name_prefix\}/telegraf-source-cidr",\n\s*\]', _lab_assets) is not None)
+_cfn_stmts = role["Policies"][0]["PolicyDocument"]["Statement"]
+_cfn_nb = stmts.get("DenyNautobotSecrets", {})
+check("lab-debug のロールの lab-assets の末尾に DenyNautobotSecrets（Deny、ssm:GetParameter*、!Sub の 3 つで名前は pipeline/lab の locals と同じ）があり、ほかの Statement は Allow",
+      _cfn_stmts[-1] is _cfn_nb and _cfn_nb.get("Effect") == "Deny" and _cfn_nb.get("Action") == "ssm:GetParameter*"
+      and _cfn_nb.get("Resource") == [{"Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*/nautobot/" + n} for n in _nb_names]
+      and len(_nb_names) == 3 and all(s["Effect"] == "Allow" for s in _cfn_stmts[:-1]))
 repos = {k: v["Properties"] for k, v in res.items() if v["Type"] == "AWS::ECR::Repository"}
 check("ECR はこのスタックのリポジトリ 3 つ（lab の 2 つと Telegraf）だけを読む",
       stmts["EcrPull"]["Resource"] == [{"Fn::GetAtt": f"{k}.Arn"} for k in ("SrlinuxRepository", "TrexRepository", "TelegrafRepository")])
