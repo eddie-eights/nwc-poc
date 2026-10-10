@@ -38,3 +38,5 @@ jars/
 .claude/worktrees/
 # サイクルの ops/check.sh の出力。結論は build.md に「通過 N / 失敗 0」で書くので全文は入れない
 docs/cycles/**/*.log
+# cold reviewer の書き出し先（review.md に連結したら消す一時ファイル）
+docs/cycles/**/review-r*.md
