@@ -33,6 +33,11 @@ data "terraform_remote_state" "main" {
       condition     = can(self.outputs.security_group_ids)
       error_message = "IaC/terraform/aws-managed/base/core の state に security_group_ids が無い（2026-09-29 より前の SG）。先に ops/down.sh で消してから ops/up.sh を打ち直す"
     }
+    # SSM Agent のポリシー（ssm_agent_policy_arn）は cycle 047 から。destroy では見ないので、locals の try と合わせて古い state のまま消せる
+    postcondition {
+      condition     = can(self.outputs.ssm_agent_policy_arn)
+      error_message = "IaC/terraform/aws-managed/base/core の state に ssm_agent_policy_arn が無い（cycle 047 より前）。先に base/core を apply する（ops/up.sh の順）"
+    }
   }
 }
 
@@ -47,6 +52,8 @@ locals {
   bucket    = data.terraform_remote_state.main.outputs.assets_bucket_name
   # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny（VPC エンドポイントを通らない AWS の API を拒む）。NETWORK_PERIMETER=0 か古い state なら空
   perimeter_policy_arn = try(data.terraform_remote_state.main.outputs.network_perimeter_policy_arn, "")
+  # IaC/terraform/aws-managed/base/core の ssm_agent.tf（SSM の管理ノードの許可。cycle 047）。try は古い state のまま ops/down.sh で消すため（空のまま apply に進まないよう remote_state の postcondition で止める）
+  ssm_agent_policy_arn = try(data.terraform_remote_state.main.outputs.ssm_agent_policy_arn, "")
   # 1 本（IaC/terraform/aws-managed/base/core の private）。gnmic のタスクから lab の管理ネットワークへの経路を足す
   route_table_ids = data.terraform_remote_state.main.outputs.route_table_ids
 
@@ -56,8 +63,8 @@ locals {
 }
 
 # Nautobot の中だけのシークレット（api-token を除く 3 つ。IaC/terraform/aws-managed/base/core の locals.tf の同名と同じ ARN）。
-# lab のロールは AmazonSSMManagedInstanceCore（ssm:GetParameter* が Resource *）で読めてしまうので、iam.tf の lab_assets で Deny する（cycle 044）。
-# prefix を問わない（parameter/*/nautobot/<名前>）のは、同じアカウントのほかの環境の 3 つも読ませないため
+# iam.tf の lab_assets で Deny する（cycle 044）。temporal のタスクが Run Command で lab のシェルを使えるので、lab のロールでも塞ぐ。
+# prefix を問わない（parameter/*/nautobot/<名前>）のは、将来 * の Allow が付いても同じアカウントのほかの環境の 3 つまで読ませないため
 locals {
   nautobot_secret_parameter_arns = [
     "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/*/nautobot/secret-key",

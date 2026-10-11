@@ -25,8 +25,8 @@ locals {
 # IaC/terraform/aws-managed/pipeline/nautobot の locals.tf の secret_parameters と同じ名前）。使うのは Nautobot のタスクの実行ロールと
 # Temporal の init のタスクの実行ロール（db-password だけ）。Web（web.tf）と Runtime（runtime.tf）のロールでは Deny する。
 # stream / graph / workflow がこの 2 つのロールに足す /<prefix>/* の Allow にも勝つよう、ロールを作るこのルートに置く（cycle 044）。
-# prefix を問わない（parameter/*/nautobot/<名前>）のは、Web のロールの AmazonSSMManagedInstanceCore（ssm:GetParameter* が Resource *）に勝たせ、
-# 同じアカウントのほかの環境の 3 つも読ませないため。nautobot/url と nautobot/api-token は Nautobot の API の入口で、Web が読むので Deny しない
+# prefix を問わない（parameter/*/nautobot/<名前>）のは、将来どこかのロールに Resource * の Allow が付いても、
+# 同じアカウントのほかの環境の 3 つまで読ませないため（cycle 047 より前は Web のロールの AmazonSSMManagedInstanceCore がそれだった）。nautobot/url と nautobot/api-token は Nautobot の API の入口で、Web が読むので Deny しない
 locals {
   nautobot_secret_parameter_arns = [
     "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/*/nautobot/secret-key",

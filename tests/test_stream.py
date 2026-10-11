@@ -563,6 +563,10 @@ check("Web のロールに足すのは Kafbat UI が使う Kafka の操作だけ
 check("閉域の Deny（perimeter）は base/core が Web のロールに付けたもので Kafbat UI にも効く（stream は付けない）",
       re.search(r'resource "aws_iam_role_policy_attachment" "web_perimeter" \{[^}]*role\s*=\s*aws_iam_role\.web\.name', _read("IaC", "terraform", "aws-managed", "base", "core", "perimeter.tf")) is not None
       and "perimeter" not in kui_code)
+check("T-5 Web のロールの SSM の管理ノードの許可は base/core の自前のポリシー（ssm_agent.tf の aws_iam_policy.ssm_agent。ssm:GetParameter / GetParameters を含まない。cycle 047）。"
+      "web_ssm は role = aws_iam_role.web.name と policy_arn = aws_iam_policy.ssm_agent.arn の 2 行だけ",
+      re.search(r'^resource "aws_iam_role_policy_attachment" "web_ssm" \{\n  role       = aws_iam_role\.web\.name\n  policy_arn = aws_iam_policy\.ssm_agent\.arn\n\}$',
+                _read("IaC", "terraform", "aws-managed", "base", "core", "web.tf"), re.M) is not None)
 _api_clients = re.findall(r'"(\w+)"', re.search(r'aws_api_clients = \[([^\]]*)\]', core_sg).group(1))
 check("SG は Web の EC2 のもの（kafka_ui の SG は無い）。通信の表に Web → MSK の 9098（IAM）があり、Web の EC2 の中の 127.0.0.1:8082 には SG の行が要らない。stream は SG を作らない",
       re.search(r"\bkafka_ui\b", core_sg) is None and "web" in _api_clients
@@ -888,7 +892,7 @@ _core_locals = _read("IaC", "terraform", "aws-managed", "base", "core", "locals.
 _core_runtime = _read("IaC", "terraform", "aws-managed", "base", "core", "runtime.tf")
 _nb_arns_m = re.search(r"^  nautobot_secret_parameter_arns = \[\n((?:    .*\n)*?)  \]$", _core_locals, re.M)
 _nb_arns = re.findall(r'^    "(.*)",$', _nb_arns_m.group(1), re.M) if _nb_arns_m else []
-# prefix を問わない（parameter/*/nautobot/<名前>）。Web のロールの AmazonSSMManagedInstanceCore（Resource *）で同じアカウントのほかの環境の 3 つも読めるため（Round 2）
+# prefix を問わない（parameter/*/nautobot/<名前>）。将来 Resource * の Allow が付いても同じアカウントのほかの環境の 3 つまで読ませないため（Round 2。cycle 047 で Web のロールの * の Allow は無くなった）
 _nb_arn_head = "arn:${local.partition}:ssm:${var.region}:${local.account_id}:parameter/*/nautobot/"
 check(f"base/core の locals.tf の nautobot_secret_parameter_arns は parameter/*/nautobot/ の secret-key / admin-password / db-password の 3 つで、"
       f"自分の prefix（${{local.name_prefix}}）と api-token と url を含まない（いま: {_nb_arns}）",

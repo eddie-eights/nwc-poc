@@ -14,9 +14,11 @@ resource "aws_iam_role" "lab" {
   tags = { Name = "${local.name_prefix}-lab" }
 }
 
+# SSM の管理ノードの許可（IaC/terraform/aws-managed/base/core の ssm_agent.tf。パラメータの読み取りは含まない。cycle 047）。
+# perimeter と違って count で飛ばさない（無いと管理ノードにならない）。古い state は locals.tf の remote state の postcondition が apply の前に止める
 resource "aws_iam_role_policy_attachment" "lab_ssm" {
   role       = aws_iam_role.lab.name
-  policy_arn = "arn:${local.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+  policy_arn = local.ssm_agent_policy_arn
 }
 
 resource "aws_iam_role_policy" "lab_assets" {
@@ -64,7 +66,7 @@ resource "aws_iam_role_policy" "lab_assets" {
         ]
       },
       {
-        # Nautobot の中だけのシークレット（locals.tf の nautobot_secret_parameter_arns）。上の AmazonSSMManagedInstanceCore（Resource *）に勝たせる。
+        # Nautobot の中だけのシークレット（locals.tf の nautobot_secret_parameter_arns）。prefix を問わないので、将来 * の Allow が付いても塞がる。
         # temporal のタスクが Run Command で lab のシェルを使えるので、lab のロールでも Deny しないと 042 の Deny が lab 経由で抜けられる（cycle 044）
         Sid      = "DenyNautobotSecrets"
         Effect   = "Deny"
