@@ -144,3 +144,143 @@ None
 - Should fix: 1（correctness → 直す。workload 側と OSS の塊の止めも同時に）
 - Nit: 6（2 つは design.md で直した / 1 つは Should fix 1 に含む / 1 つは 046 で直す / 2 つは残す）
 - エンジニアに Round 2 を振る（design.md の T-10〜T-12）。実装ファイルが変わるので、Round 2 のあと cold reviewer の 2 回目（完了判定の直前）を呼ぶ
+
+## Round 2
+
+レビューモデル: PM(fable-5-1) / effort: high。2026-10-11。対象は build.md Round 2（エンジニア opus-5.5、`a6720ae`）。
+**cold reviewer: 依頼した**（完了判定の直前。Round 2 で実装ファイル `ops/up-common.sh` / `tests/test_workflow.py` が変わった。Agent general-purpose、model opus、effort xhigh）
+
+### 前ラウンドの Should fix の確認（Round 2、PM、`a6720ae`）
+
+- Should fix 1（行末のコメントの中の `"`）: Round 1 と同じ手順を打ち直した。endpoints 側（写しの 193 行目の末尾に ` # was "VPC endpoints SG"`）:
+  ```
+  NG: aws_security_group.endpoints の description が読めない
+  rc=1
+  ```
+  同じ行を ` # memo` にしても同じ NG で rc=1。workload 側（`workflow` の行末に ` # 041 "old"`）:
+  ```
+  NG: local.security_groups / oss_security_groups の読めない行:     workflow        = "Temporal server, UI and worker ECS task (IaC/terraform/aws-managed/workflow)" # 041 "old"
+  rc=1
+  ```
+  → 解消
+- 全テスト（`uv run -q --group dev --group web python tests/test_*.py` を 16 本）: 失敗 0（agentcore 168 / alerts 168 / analytics 549 / collectors 79 / dashboard_config 3 / graph 78 / kb_index 7 / lab_debug 113 / local_compose 145 / nautobot 68 / oss 177 / oss_ops 209 / oss_roll 66 / stream 118 / sync 104 / workflow 479）。`bash -n ops/up-common.sh ops/up.sh ops/oss/up.sh` rc=0
+- build.md Round 2 の逸脱（`\` も読めない扱い。`\uNNNN` は state に展開後の値が入り、`\"` も同じ理由で比べられない）: 受け入れる。design.md の方針 1 の文言を「`"` または `\`」に直した
+- build.md Round 2 の範囲外の Nit #2（`security_groups.tf:158` の `description = each.value` を式に変えると workload の全 description が変わるのに守りが通す。043 からの穴）: 046 では直さない。QUEUE に `- [ ]` で足す
+
+### cold reviewer Round 2
+
+## サマリ
+
+レビューの対象は、ブランチ `feat/159-endpoints-sg-guard` の `43956e9..a6720ae` で変わった 8 ファイル。重点は Round 2 で変わった `8b724fe..a6720ae` の 2 ファイル（`ops/up-common.sh` +11/-3、`tests/test_workflow.py` +42/-1）。比べた相手は `design.md`。
+
+全体の評価:
+
+- Round 1 の Should fix 1（行末のコメントの中の `"` が値に混ざり、誤った die で全部の作り直しを勧める）は塞がっている。値に `"`、`\`、`${`、`%{` があれば、endpoints 側でも workload の表の側でも「読めない」で止まる。`plain()` の 1 か所で判定している。
+- OSS 版で `oss.tf` の `  oss_security_groups = {` が無いときの止め（Nit 5）も入った。
+- 設計の T-10〜T-12 は check として入っていて、全部通る。
+- 足したそれぞれの分岐を変異させた 5 通りは、どれも check で落ちる。
+- 比べる側（`check_sg_descriptions`）と die の文言は 043 のまま。
+- Must fix と Should fix は無い。Nit は 3 件で、どれも実害は出ていない。
+
+レビュー中に、作業ツリーの `design.md` / `review.md` / `docs/cycles/QUEUE.md` が未コミットで変わった（20:45 の更新。このレビューが書いたものではない）。design.md の照合は更新後の本文（方針 1 に `\` を足した版）で行った。
+
+### 見た観点 / 見ていない観点
+
+見た観点:
+
+- **design.md との整合**
+  - 方針 1 の読めない値の規則を、`ops/up-common.sh:38` の `plain()` と、それを呼ぶ 2 か所（`:43-46` と `:51`）で照合した。値の中の `"` と `\`、`${` / `%{` の 3 つ。
+  - OSS の塊の止め（`:61`）を照合した。
+  - T-10〜T-12 とエスケープの check を、`tests/test_workflow.py:1738-1770` で照合した。
+  - docs の 3 か所と、`ops/up.sh:606-608`・`ops/oss/up.sh:160-162` のコメントは、設計の文言どおり。
+  - `docs/troubleshooting.md` の表は `|` の数が崩れていない（20〜30 行目は全部 3 本。`sed -n 20,30p docs/troubleshooting.md | tr -cd '|\n'` で数えた）。
+- **correctness**
+  - 一時コピーを書き換えて、実物の `sg_descriptions_in_code` を打った。止めないはずの値は止めていない（rc=0）。
+    - workload の値に `#`、`$5 {x}`。
+    - endpoints の値に `#`。
+  - 止めるはずの値は止める（rc=1、NG に該当行が出る）。
+    - 行末の空白。
+    - `// was "x"`、`/* "x" */`。
+    - description が 2 行（2 行目が式）。
+    - `oss.tf` の値に `\"`。
+  - 実物の `IaC/terraform/aws-managed` と `IaC/terraform/oss` で `sg_descriptions_in_code` を打つと、どちらも最後の行が `endpoints	VPC endpoints - HTTPS from the workload SGs, no outbound`（rc=0）になる。OSS 版は kafka / efs / opensearch / victoriametrics / neo4j と、上書きした spark が出る。
+  - 「AWS の SG の description は `"` と `\` を受け付けない」というコメントの前提は、CreateSecurityGroup の API リファレンスで確かめた。許す文字は `a-z, A-Z, 0-9, spaces, and ._-:/()#,@[]+=&;{}!$*`。したがって `plain()` が正しい値を止めることは無い。`$` と `{` は許す文字なので、`${` を含む実在の値はあり得るが、止める側に倒れるだけで誤った die にはならない。
+- **missing tests**: 一時コピー（rsync 相当の `shutil.copytree`。リポジトリは書かない）の `ops/up-common.sh` を変異させ、`tests/test_workflow.py` を打った。5 通りとも落ちた。
+  - M-a: `plain` を常に真にする → `sg_descriptions_in_code: endpoints の description が補間・…` で落ちる。
+  - M-b: workload の行の `plain` を外す → `check_sg_descriptions: workload の表の行末のコメントに「"」がある…`（T-11）で落ちる。
+  - M-c: `ARGC > 2 && !ossblk` の止めを外す → `…oss_security_groups = {」の塊が読めないなら…`（T-12）で落ちる。
+  - M-d: `plain` から `\` を外す → `…エスケープ（\" \\ \uNNNN）を含めば読めない扱い…` で落ちる。
+  - M-e: `plain` から `"` を外す → `…endpoints の description の行末のコメントに「"」があっても…`（T-10）で落ちる。
+- **テストの実行**
+  - `bash -n ops/up-common.sh ops/up.sh ops/oss/up.sh` は exit 0（`SYNTAX_OK`）。
+  - `for t in tests/test_*.py; do .venv/bin/python3 "$t" | tail -1; done` は 16 本とも失敗 0。`test_workflow.py` は「通過 479 / 失敗 0」、`test_oss_ops.py` は「通過 209 / 失敗 0」。
+  - Homebrew の `python3` で打つと、`test_workflow.py` は `ModuleNotFoundError: No module named 'yaml'`（`app/agentcore/topology.py:42`）で始まらない。046 とは関係のない環境の差なので、指摘にはしない。
+- **security / data loss**: 変更は読み取りの awk と、テストと、コメント・docs だけ。state を書く操作、AWS の呼び出し、ファイルの削除は増えていない。die で止まる方向の変更だけ。
+
+見ていない観点:
+
+- 実物の AWS の state（endpoints が生きている `terraform show`）。046 の方針 3 で AWS では動かさないことになっている。見出しの形は design.md の未確定事項 1 にあるとおり、Round 1 で写しによって閉じたものとして扱った。
+- gawk / mawk での動作。手元にあるのは macOS の `/usr/bin/awk` だけ。Round 1 の Nit 6 と同じで、繰り返さない。
+- `tests/test_oss_ops.py` の実物の `check_sg_descriptions` の経路は、通ることだけを見た。中身は読み直していない。
+- type safety: 型のある言語の変更が無いので、対象外。
+
+## Must fix
+
+None
+
+## Should fix
+
+None
+
+## Nit
+
+- [design.md との整合 + 保守性] die の括弧書きが、Round 2 で増えた止める理由に合っていない（`ops/up-common.sh:94`）。
+  - 括弧書きは「local.security_groups の形が変わったなら ops/up-common.sh の sg_descriptions_in_code を直す」。
+  - Round 2 で増えた止める理由（行末のコメントの中の `"`、`\` のエスケープ、補間）で直すのは、`.tf` の書き方のほうになる。`up-common.sh` ではない。
+  - 直前の stderr の NG に該当行が出るので、利用者は辿れる。
+  - 読んだだけ。再現手順: `tests/test_workflow.py:1739` と同じ書き換え（endpoints の description の行末に ` # was "VPC endpoints SG"`）で `_csd_run` を打ち、stderr の最後の行を見る。
+  - Nit にした理由: 設計は「die の文言は 043 のまま」と決めていて、NG の行で原因は分かる。困るのは、文言どおり `up-common.sh` を直しにいく人だけ。直すなら括弧書きを「security_groups.tf / oss.tf の書き方か、ops/up-common.sh の sg_descriptions_in_code を直す」に広げる程度でよい。
+- [correctness（範囲外の前提）] endpoints に `count` か `for_each` を足すと、endpoints の守りが黙って外れる。
+  - コード側は `count = 1` を足しても endpoints の行を出し続ける（rc=0）。
+  - state 側の見出しは `# aws_security_group.endpoints[0]:` になり、`ops/up-common.sh:81` の前方一致（`# aws_security_group.endpoints:`）に当たらない。比べる行が出ないので通る。
+  - 再現（一時コピー。`scratchpad/adv.py` と `scratchpad/r046r2-count.py`）:
+    - コード側（`count = 1` を足す）: `(['endpoints\tVPC endpoints - HTTPS from the workload SGs, no outbound', 'rc=0'], '')`
+    - state 側（見出しが `endpoints[0]`、description が古い）: `'rc=0\n' ''`（出力の行が無い）
+  - Nit にした理由: いまのコードに `count` は無い。design.md の未確定事項 1 も「外れていたら読まずに通る（いまと同じで悪化はしない）」としている。PM が QUEUE に足した「`description = each.value` の行が無ければ止める」と同じ種類の穴（コードの形の前提を確かめていない）。その行で一緒に扱うなら、endpoints のブロックに `count` / `for_each` の行があれば止める 1 行で塞がる。
+- [design.md との整合] 「キーが 0 なら NG」は、OSS 版では OSS のキーを含めた数で判定している（`ops/up-common.sh:59`）。
+  - design.md 方針 1 は「`local.security_groups` の塊が無い・キーが 0 ならコードを読む側で NG」。
+  - 実装の `n` は file 1 と file 2 を合わせたキーの数。OSS 版で `local.security_groups = {}`（空）にしても、OSS のキーで n>0 になって通る。
+  - 再現（一時コピー。`scratchpad/adv.py`）:
+    - OSS 版: `ss: security_groups が空 (OSS) => (['endpoints\t…', 'rc=0'], '')`
+    - マネージド版: `ss: security_groups が空 (managed) => (['rc=1'], 'NG: …に「  security_groups = {」の塊が無いか、キーが 1 つも無い')`
+  - Nit にした理由: 壊れる経路が無い。`security_groups.tf` は両版で同じファイル（シンボリックリンク）なので、空にすればマネージド版で止まる。OSS 版はそのとき実際に作る SG（OSS のキー）だけを比べるので、比較そのものは正しい。design.md の文言を「（OSS 版は oss.tf のキーも数える）」に合わせる程度でよい。
+
+## 良かった点
+
+- 読めない値の判定を `plain()` の 1 つにまとめた。endpoints 側と workload の表の側で同じ規則が効き、片方だけ直し忘れる余地が無い。
+- `plain()` のコメントに、正しい値を止めない理由（AWS の SG の description が `"` と `\` を受け付けない）を書いている。API リファレンスの許す文字と一致する。
+- テストの `edits` 引数は「ちょうど 1 か所」を `assert` してから置き換える。実物の `security_groups.tf` / `oss.tf` の形が変われば、テストの土台が崩れたことに気づける。
+- T-10〜T-12 は止まることに加えて、次の 3 つまで縛っている。だから「誤った die を出さない」ことを直接確かめている。
+  - `state の SG の description がコードと違う` を含まない。
+  - `tf base/core show -no-color` を打たない。
+  - `DONE` に届かない。
+- `\uNNNN` で展開後の値が同じになる場合（`endpoint\u0073`）まで check にしている。展開前の綴りで比べて誤って die する経路を塞いだことが分かる。
+
+## ユーザーへの質問
+
+None
+
+### PM の確認と分類（Round 2）
+
+- 作業ツリー: cold reviewer が書いたのは `review-r02.md` だけ（`ls` で確認。design.md / review.md / QUEUE の未コミットの差分は PM が cold reviewer の起動後に書いたもの）
+- Must fix 0 / Should fix 0。Nit 3 はどれも直さない（読んだだけ。cold reviewer の再現は一時コピーで打ったもので、いまのコードに `count` も空の表も無い）
+  - Nit 1（die の括弧書きが `up-common.sh` を直せと読める）: 設計で「die の文言は 043 のまま」と決めた。NG の行で原因が分かる。最終報告に載せる
+  - Nit 2（endpoints に `count` / `for_each` を足すと見出しが `endpoints[0]` になり黙って外れる）: QUEUE の「`description = each.value` の行が無ければ止める」の行に一緒に足した
+  - Nit 3（キーが 0 の判定は OSS 版で OSS のキーも数える）: design.md の方針 1 の文言を実装に合わせた
+- 見た観点: design 整合 / correctness / missing tests（変異 5 通り）/ security / data loss。見ていない観点: 実物の AWS の state（方針 3 で AWS では動かさない）、gawk / mawk、type safety（対象外）
+
+### 判断（Round 2）
+
+- Must fix: 0 / Should fix: 0 / Nit: 3（直さない。1 は残す、2 は QUEUE、3 は design.md の文言）
+- 前ラウンドの Should fix 1 は `a6720ae` で解消（上の再現出力）。全テスト 16 本が失敗 0
+- サイクル完了。全体設計 HTML は触らない（`up.sh` の守りの範囲が広がっただけで、構成要素・データの流れ・配置・責務の分担は変わらない）
