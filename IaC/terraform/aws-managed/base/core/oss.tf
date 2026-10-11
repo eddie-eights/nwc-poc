@@ -8,9 +8,11 @@
 # OpenSearch はタスクのエフェメラルストレージに置く（OpenSearch の公式がネットワークファイルシステムを避けるよう書いている）。
 # Neo4j は NFS 上のデータを支えない（設計 005）ので EFS を使わない（IaC/terraform/oss/pipeline/graph が置き場を決める）
 locals {
+  # ops/up.sh の check_sg_descriptions は OSS 版かどうかを terraform console でこの値に聞く（049）
   oss = var.project == "nwc-oss"
 
   # OSS 版で外すマネージドの SG（その SG が from か to の行も外れる）
+  # ops/up.sh の check_sg_descriptions がこの行の形を見る（049）
   oss_replaced = local.oss ? ["msk"] : []
 
   # OSS 版で足す SG と、OSS 版で description を替える SG（spark: EMR Serverless でなく ECS のタスク 1 つ）
