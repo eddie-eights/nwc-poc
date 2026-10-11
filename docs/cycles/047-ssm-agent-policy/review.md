@@ -117,3 +117,23 @@ None
 ## ユーザーへの質問
 
 None
+
+## AWS での確認（PM、2026-10-11、d05242a をメインのチェックアウトから）
+
+- `AGENT=0 PIPELINE=0 WORKFLOW=0 ops/up.sh`（土台だけ）rc=0。`aws_iam_policy.ssm_agent: Creation complete [id=arn:aws:iam::493116771193:policy/efukuda-nwc-poc-ssm-agent]`、`aws_iam_role_policy_attachment.web_ssm: Creation complete [id=efukuda-nwc-poc-web/…policy/efukuda-nwc-poc-ssm-agent]`、`Apply complete! Resources: 152 added`。Web の EC2 `i-04a71d80bfacc909f` が Online になり、`ssm_run`（4-4「Web が動いている」）とポートフォワーディング（Session Manager。10 の `Port 8080 opened`）まで通った = 新しいポリシーで SSM Agent の登録・Run Command・Session Manager が動く
+- `ListAttachedRolePolicies efukuda-nwc-poc-web` → `["efukuda-nwc-poc-network-perimeter", "efukuda-nwc-poc-ssm-agent"]`（マネージドポリシー無し）。`DescribeInstanceInformation` → `PingStatus = Online`
+- probe を `PutParameter`（String）で 2 つ作り、Web への Run Command（`AWS-RunShellScript`）で打った結果:
+
+```
+A  aws ssm get-parameter --name /efukuda-nwc-poc/probe-047 --query Parameter.Name            → /efukuda-nwc-poc/probe-047
+B  aws ssm get-parameter --name /efukuda-nwc-poc-other/probe-047                              → AccessDeniedException
+C  aws ssm get-parameter --name /efukuda-nwc-poc/nautobot/db-password --with-decryption      → AccessDeniedException
+D  aws ssm get-parameters --names /efukuda-nwc-poc/probe-047                                  → AccessDeniedException
+E  aws ssm get-parameter --name /efukuda-nwc-poc/kafka-ui/image                               → ParameterNotFound（土台だけでは kafka-ui のパラメータが無い。IAM の拒否ではない）
+```
+
+- 2 つの probe を `DeleteParameter` で消した（`DescribeParameters` の `probe-047` → 0 件）
+- `ops/down.sh` rc=0。消えたことの確認は下の行
+- 消えたことを確認（AWS MCP、down.sh の `Destroy complete! Resources: 152 destroyed.` のあと）: `DescribeInstances`（tag:Name `efukuda-nwc-poc*`、terminated 以外）→ 0 台、`DescribeInstanceInformation` → 0 件、`GetRole efukuda-nwc-poc-web` → NoSuchEntity、`GetPolicy …policy/efukuda-nwc-poc-ssm-agent` → NoSuchEntity
+
+サイクル完了（2026-10-11）。残した Nit: cold review の Nit 3（T-9 が `NotAction` の Allow を見ない、T-8 の実行ロールの判定が `exec` の字面）、エンジニアの Nit 1〜4（build.md の Round 1 のセルフレビュー）。
