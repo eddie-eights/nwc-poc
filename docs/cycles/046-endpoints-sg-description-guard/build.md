@@ -208,3 +208,94 @@ runtime<TAB>AgentCore Runtime ENIs (IaC/terraform/aws-managed/agent)
 
 - workload（`local.security_groups` / `local.oss_security_groups`）の description が補間を含むと、043 の守りが毎回誤って die する（endpoints は 046 で塞いだ）。いまの実物に補間は無いので壊れてはいない。QUEUE の候補
 - 設計の未確定事項 1（endpoints の実物の terraform show の形）は `scratchpad/da/show-backup.txt`（10-11 03:32 の実物の写し）で確かめられた。QUEUE に足す予定の「次に AWS で立てたら grep で記録する」が要るかは PM の判断
+
+## Round 2
+
+実装モデル: claude-opus-5-5 / effort: high（PM のサブエージェント。設計モデル fable-5-1 は上位なのでそのまま実装）。ベースは `8b724fe`。対象は design.md 方針 1 の Round 2 の項と T-10〜T-12（review.md Round 1 の Should fix 1 と Nit 5）
+
+### 変更ファイル
+
+- `ops/up-common.sh`: `sg_descriptions_in_code` の awk に関数 `plain(v)`（値に `"` / `\` / `${` / `%{` があれば偽）。endpoints の 2 空白の description と workload の表（`security_groups` / `oss_security_groups`）の行の両方で使い、偽なら既存の読めない行（endpoints は `epbad`、workload は `bad`）に落とす。OSS 版で `oss.tf` に `  oss_security_groups = {` の行が無ければ `NG: <oss.tf> に「  oss_security_groups = {」の塊が無い` で exit 1（`ARGC > 2 && !ossblk`）。コメント
+- `tests/test_workflow.py`: `_csd_run(…, edits=())`（コピーのファイルの 1 か所を置き換える。ちょうど 1 か所でなければ assert）。check 4 本（下の T-10〜T-12 とエスケープ）
+
+### 設計からの逸脱
+
+- **値に `\` があれば（エスケープされた `\"` も）読めない扱いにした**（設計は「エスケープされていない `"`」）。特定した原因: 反対弁護人の Nit 1。HCL の `\uNNNN` は terraform が展開して state に入るので、`"VPC endpoints - …"`（文言は同じ）で `check_sg_descriptions` が `endpoints（state「VPC endpoints - …」/ コード「VPC endpoints - …」）` と誤って die し、全部の作り直しを勧める（Should fix 1 と同じ種類）。下のセルフレビュー #1 で再現。SG の description に AWS が許す文字（`a-zA-Z0-9`、空白、`._-:/()#,@[]+=&;{}!$*`。反対弁護人が EC2 CreateSecurityGroup の API リファレンスで確認、自分は読んだだけ）に `"` と `\` は無いので、正しい値を止めることは無い。`\"` / `\\` をはがしてから `"` を見る最初の実装より単純になった
+
+### 検証（最後の編集のあとに取り直した出力）
+
+1. `bash -n` と、実物のコード・実物の state から読む（`scratchpad/fv2.py`。関数だけ切り出して打つ。state は main のチェックアウトの `base/core` で `terraform show -no-color` だけを打ち、写しは確認後に消した）
+
+```
+$ bash -n ops/up-common.sh -> rc=0
+$ bash -n ops/up.sh -> rc=0
+$ bash -n ops/oss/up.sh -> rc=0
+$ sg_descriptions_in_code (TF_DIR=IaC/terraform/aws-managed) -> rc=0, 17 行, stderr=''
+  最後の 1 行: endpoints<TAB>VPC endpoints - HTTPS from the workload SGs, no outbound / endpoints の行の数: 1
+$ sg_descriptions_in_code (TF_DIR=IaC/terraform/oss) -> rc=0, 22 行, stderr=''
+  最後の 1 行: endpoints<TAB>VPC endpoints - HTTPS from the workload SGs, no outbound / endpoints の行の数: 1
+$ terraform show -no-color（main の base/core）| sg_descriptions_in_state -> rc=0
+  runtime<TAB>AgentCore Runtime ENIs (IaC/terraform/aws-managed/agent)
+```
+
+2. 全テスト（`uv run -q --group dev --group web python` で 1 本ずつ。`scratchpad/rt2.py`）
+
+```
+tests/test_agentcore.py rc=0 :: 通過 168 / 失敗 0
+tests/test_alerts.py rc=0 :: 通過 168 / 失敗 0
+tests/test_analytics.py rc=0 :: 通過 549 / 失敗 0
+tests/test_collectors.py rc=0 :: 通過 79 / 失敗 0
+tests/test_dashboard_config.py rc=0 :: 通過 3 / 失敗 0
+tests/test_graph.py rc=0 :: 通過 78 / 失敗 0
+tests/test_kb_index.py rc=0 :: 通過 7 / 失敗 0
+tests/test_lab_debug.py rc=0 :: 通過 113 / 失敗 0
+tests/test_local_compose.py rc=0 :: 通過 145 / 失敗 0
+tests/test_nautobot.py rc=0 :: 68 項目すべて通過
+tests/test_oss.py rc=0 :: 通過 177 / 失敗 0
+tests/test_oss_ops.py rc=0 :: 通過 209 / 失敗 0
+tests/test_oss_roll.py rc=0 :: 通過 66 / 失敗 0
+tests/test_stream.py rc=0 :: 通過 118 / 失敗 0
+tests/test_sync.py rc=0 :: 通過 104 / 失敗 0
+tests/test_workflow.py rc=0 :: 通過 479 / 失敗 0
+```
+
+test_workflow は Round 1 の 475 に 4 本足した。T-1〜T-9、既存の `check_sg_descriptions:` の 12 本、`tests/test_oss_ops.py` の 043 の 2 本もこの中で通っている（check は最初の失敗で止まる）。
+
+3. 足した check（設計の番号との対応）
+   - T-10: 「endpoints の description の行末のコメントに「"」があっても…読めない行として止める」── stderr に `aws_security_group.endpoints の description が読めない` と行（`# was "VPC endpoints SG"`）と 1 つ目の die、calls に show 無し
+   - T-11: 「workload の表の行末のコメントに「"」がある・値が補間・値が式なら…」── `workflow` の行の 3 通り（` # 041 "old"`、`"Temporal ${var.x}"`、`"a" == "b" ? "x" : "Temporal"`）で `local.security_groups / oss_security_groups の読めない行:`、show 無し
+   - T-12: 「OSS 版で oss.tf の「  oss_security_groups = {」の塊が読めないなら…」── `_csd_run(oss=True, edits=…merge({)` で `oss.tf に「  oss_security_groups = {」の塊が無い` と 1 つ目の die、show 無し。`_sdc_tmp` でも rc=1・出力が空
+   - エスケープ: 「endpoints の description も workload の表の値も、エスケープ（\" \\ \uNNNN）を含めば読めない扱い…」── endpoints の 3 通りが NG、`s` の endpoints と workload（`Temporal`）で比べる前に止まる
+
+4. 直す前に落ちることの確認: Round 2 の check を入れて `ops/up-common.sh` を `8b724fe` に戻すと、T-10 が `rc=1 'DIE: … の state の SG の description がコードと違う: endpoints（state「VPC endpoints - HTTPS from the wor…` で落ちた（誤った die。review の再現と同じ）。エスケープの check は、`\"` / `\\` をはがして `"` を見ていた最初の実装で `'\\u0073': (0, '')` と、`_csd_run` 側の `コード「VPC endpoint\\u0073 - …」）` の誤った die で落ちた
+
+### セルフレビュー
+
+- 自分: claude-opus-5-5 / effort high（サブエージェントの中では effort を切り替えられない）
+- 反対弁護人: opus / effort xhigh（`Agent` general-purpose、読み取り専用。設計の Round 2 の項、実装の方針、不安な箇所 1〜5（`$${`、state 側のエスケープの表記、oss.tf が無いとき、awk の実装の差、RLENGTH）を渡した）。結果: Must 0 / Should 0 / Nit 2。終わったあと `git status --porcelain -uall` は自分の 2 ファイルだけ
+
+#### 指摘と片付け
+
+| # | 分類 | [観点] 場所 | 破綻シナリオ | 確かめたこと | 片付け |
+| :-- | :-- | :-- | :-- | :-- | :-- |
+| 1 | Should（反対弁護人は Nit。格上げ） | [correctness] `ops/up-common.sh:38`（`plain`） | `\uNNNN` は state に展開後の値が入るので、文言が同じでも誤って die し全部の作り直しを勧める（Should fix 1 と同じ結果） | check を先に足し、直す前の実装で `_csd_run` が `endpoints（state「VPC endpoints - …」/ コード「VPC endpoints - …」）` の die で落ちた（検証 4） | 直した（値に `\` があれば読めない。上の逸脱） |
+| 2 | Nit（範囲外） | [correctness] `IaC/terraform/aws-managed/base/core/security_groups.tf:158`（`description = each.value`） | この行を `"pre ${each.value}"` のような式に変えると workload の SG 全部の description が変わるのに、守りは表の値と比べて通す（043 からの穴。endpoints は無関係） | 反対弁護人の再現（`scratchpad/da2/cases.py awk misc` の M13 で rc=0）。自分では打っていない | 最終報告に回す（QUEUE の候補: `description = each.value` の行が無ければ止める） |
+| 3 | Nit | [correctness] `ops/up-common.sh:36` | `$${`（リテラルの `${`）も止める | 反対弁護人: 止まる側に倒れるだけ | コメントに「`$${` も含めて止める側に倒す」と書いた |
+
+不安な箇所への反対弁護人の答え（自分では再現していない）: oss.tf が無いときは awk がファイルを開けずに rc≠0・出力が空 → 1 つ目の die。macOS の awk / mawk 1.3.4 / BusyBox の 14 の入力で出力と rc が一致（gawk は無し）。`plain(v = substr(…))` の RLENGTH は引数の評価の中だけで使い、影響なし（変異と全テストの通過で間接に確認）。
+
+#### 変異（`scratchpad/mut.py` で 1 つずつ入れて test_workflow を打ち、戻した。全部が 1 本以上落ちる）
+
+```
+M-R2a plain が「"」を見ない: rc=1 :: AssertionError: check_sg_descriptions: endpoints の description の行末のコメントに「"」があっても、…
+M-R2g plain が「\」を見ない: rc=1 :: AssertionError: sg_descriptions_in_code: endpoints の description も workload の表の値も、エスケープ（\" \\ \uNNNN）を含めば…
+M-R2h plain が「${」を見ない: rc=1 :: AssertionError: sg_descriptions_in_code: endpoints の description が補間・テンプレートの指示・行末のコメントなら、…
+M-R2i plain が「%{」を見ない: rc=1 :: AssertionError: sg_descriptions_in_code: endpoints の description が補間・テンプレートの指示・行末のコメントなら、…
+M-R2b workload 側で plain を呼ばない: rc=1 :: AssertionError: check_sg_descriptions: workload の表の行末のコメントに「"」がある・値が補間・値が式なら、…
+M-R2c oss の塊の止めを消す: rc=1 :: AssertionError: check_sg_descriptions: OSS 版で oss.tf の「  oss_security_groups = {」の塊が読めないなら、…
+M-R2f endpoints 側で plain を呼ばない: rc=1 :: AssertionError: sg_descriptions_in_code: endpoints の description が補間・テンプレートの指示・行末のコメントなら、…
+```
+
+「問題なし」とした観点: 実物のコード（両版）と実物の state の出力が Round 1 と同じ（検証 1）。比べる側と die の文言は不変（`git diff 8b724fe -- ops/up-common.sh` は `sg_descriptions_in_code` の中だけ）。AWS では何も作っていない。`.env` / secrets は読んでいない。
+
+未解消の Must fix: 0。残す Nit: 上の #2（範囲外。QUEUE の候補）と、review.md Round 1 の Nit 2 / 3 / 6（PM の判断どおり直していない）

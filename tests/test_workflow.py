@@ -1513,13 +1513,14 @@ def _csd_show(sgs, endpoints=_SG_EP_DESC):
     blocks.append('# aws_vpc_security_group_ingress_rule.flow["gnmic-endpoints-tcp-443"]:\nresource "aws_vpc_security_group_ingress_rule" "flow" {\n'
                   '    description                  = "AWS APIs through the interface endpoints"\n    id                           = "sgr-4"\n}\n')
     return "\n".join(blocks)
-def _csd_run(state=None, oss=False, show_fail=False, code_broken=False, code_tail_comment=False, endpoints=_SG_EP_DESC, code_ep_broken=False):
+def _csd_run(state=None, oss=False, show_fail=False, code_broken=False, code_tail_comment=False, endpoints=_SG_EP_DESC, code_ep_broken=False, edits=()):
     """check_sg_descriptions を bash で、tf / tf_init / die（関数）を差し替えて動かす。TF_DIR は一時ディレクトリ（base/core の security_groups.tf と oss.tf は実物のコピー。
     oss なら oss.auto.tfvars に project = "nwc-oss"）。state: terraform show に載せる workload の SG（キー → description。既定はコードと同じ全キー）。
     code_broken: コピーの security_groups.tf の「  security_groups = {」の行を崩す（コードの文言が 1 つも読めない）。
     code_tail_comment: コピーの security_groups.tf の workflow の行の末尾に「 # 041」を足す（その 1 行だけ読めない）。
     endpoints: terraform show に載せる aws_security_group.endpoints（_csd_show と同じ。既定はコードと同じ文言。cycle 046）。
     code_ep_broken: コピーの security_groups.tf の endpoints の description を式（local.endpoints_description）にする（その 1 行だけ読めない）。
+    edits: (ファイル名, 前, 後) の並び。コピーのそのファイルの「前」（ちょうど 1 か所）を「後」に置き換える（cycle 046 Round 2）。
     rc と stdout / stderr と tf / tf_init の呼び出しを返す。"""
     import shutil, subprocess, tempfile
     if state is None:
@@ -1548,6 +1549,12 @@ def _csd_run(state=None, oss=False, show_fail=False, code_broken=False, code_tai
             assert _t.count(_el) == 1, "security_groups.tf の endpoints の description の行の形が変わった（テストの土台を直す）"
             with open(os.path.join(core, "security_groups.tf"), "w") as f:
                 f.write(_t.replace(_el, "  description = local.endpoints_description\n"))
+        for _fn, _old, _new in edits:
+            with open(os.path.join(core, _fn)) as f:
+                _t = f.read()
+            assert _t.count(_old) == 1, f"{_fn} の「{_old.strip()}」の形が変わった（テストの土台を直す）"
+            with open(os.path.join(core, _fn), "w") as f:
+                f.write(_t.replace(_old, _new))
         if oss:
             with open(os.path.join(core, "oss.auto.tfvars"), "w") as f:
                 f.write('# OSS 版のしるし\nproject = "nwc-oss"\n')
@@ -1728,6 +1735,40 @@ _r = _sdc_tmp(_sg_tf_core.replace("\n  security_groups = {\n", "\n  security_gro
 check(f"sg_descriptions_in_code: OSS 版で security_groups.tf の local.security_groups の塊だけが読めない（oss.tf は読める）なら、oss.tf の分と endpoints だけで通さず止める"
       f"（cycle 046。いま: rc={_r[0]} {_r[1].splitlines()} {_r[2].strip()!r}）",
       _r[0] == 1 and _r[1] == "" and "の塊が無いか、キーが 1 つも無い" in _r[2])
+# cycle 046 Round 2（cold review Round 1 の Should fix 1 と Nit 5）。値の中のエスケープされていない「"」（行末のコメントの中の「"」、式）と補間は読めない扱い
+_r = _csd_run(edits=[("security_groups.tf", _ep_dl, _ep_dl[:-1] + ' # was "VPC endpoints SG"\n')])
+check(f"check_sg_descriptions: endpoints の description の行末のコメントに「\"」があっても、コメントを値に混ぜて誤って die（全部の作り直しを勧める）せず、"
+      f"読めない行として止める（terraform show も打たない。cycle 046 Round 2。いま: rc={_r[0]} {_r[2].strip()!r} {_r[3]}）",
+      _r[0] == 1 and "DONE" not in _r[1] and "aws_security_group.endpoints の description が読めない" in _r[2] and '# was "VPC endpoints SG"' in _r[2]
+      and "security_groups.tf から SG の description が読めない" in _r[2] and "まだ何も作っていない" in _r[2]
+      and "state の SG の description がコードと違う" not in _r[2] and "tf base/core show -no-color" not in _r[3])
+_wf_l = f'    workflow             = "{_SG_CODE_DESC["workflow"]}"\n'
+_r = _csd_run(edits=[("security_groups.tf", _wf_l, _wf_l[:-1] + ' # 041 "old"\n')])
+_r2 = _csd_run(edits=[("security_groups.tf", _wf_l, '    workflow             = "Temporal ${var.x}"\n')])
+_r3 = _csd_run(edits=[("security_groups.tf", _wf_l, '    workflow             = "a" == "b" ? "x" : "Temporal"\n')])
+check(f"check_sg_descriptions: workload の表の行末のコメントに「\"」がある・値が補間・値が式なら、値に混ぜて誤って die せず、読めない行として止める"
+      f"（terraform show も打たない。cycle 046 Round 2。いま: rc={_r[0]} / {_r2[0]} / {_r3[0]} {_r[2].strip()!r} {_r2[2].strip()!r} {_r3[2].strip()!r}）",
+      all(r[0] == 1 and "DONE" not in r[1] and "local.security_groups / oss_security_groups の読めない行:" in r[2] and "    workflow             = " in r[2]
+          and "state の SG の description がコードと違う" not in r[2] and "tf base/core show -no-color" not in r[3] for r in (_r, _r2, _r3)))
+_r = _csd_run(oss=True, edits=[("oss.tf", "\n  oss_security_groups = {\n", "\n  oss_security_groups = merge({\n")])
+_r2 = _sdc_tmp(_sg_tf_core, _oss_tf_core.replace("\n  oss_security_groups = {\n", "\n  oss_security_groups = merge({\n"))
+check(f"check_sg_descriptions: OSS 版で oss.tf の「  oss_security_groups = {{」の塊が読めないなら、OSS のキーを黙って飛ばさず止める"
+      f"（terraform show も打たない。cycle 046 Round 2。いま: rc={_r[0]} {_r[2].strip()!r} {_r[3]} / rc={_r2[0]} {_r2[1].splitlines()[-1:]}）",
+      _r[0] == 1 and "DONE" not in _r[1] and "oss.tf に「  oss_security_groups = {」の塊が無い" in _r[2]
+      and "security_groups.tf から SG の description が読めない" in _r[2] and "tf base/core show -no-color" not in _r[3]
+      and _r2[0] == 1 and _r2[1] == "")
+# エスケープ（\" \\ \uNNNN）は terraform が展開して state に入るので、書いたままの綴りでは比べられない（s は「s」になり、文言が同じでも誤って die する）。
+# SG の description に AWS が許す文字に「"」と「\」は無いので、値に「\」があれば読めない扱い
+_ep_esc = {"\\\"": '  description = "VPC \\"endpoints\\" SG"\n', "\\\\ の後のコメント": '  description = "VPC endpoints SG\\\\" # x"\n',
+           "\\u0073": _ep_dl.replace("VPC endpoints", "VPC endpoint\\u0073")}
+_ep_esc_r = {n: _sdc_tmp(_sg_tf_core.replace(_ep_dl, t)) for n, t in _ep_esc.items()}
+_r = _csd_run(edits=[("security_groups.tf", _ep_dl, _ep_esc["\\u0073"])])
+_r2 = _csd_run(edits=[("security_groups.tf", _wf_l, _wf_l.replace("Temporal", "Tempor\\u0061l"))])
+check(f"sg_descriptions_in_code: endpoints の description も workload の表の値も、エスケープ（\\\" \\\\ \\uNNNN）を含めば読めない扱いにして止め、"
+      f"展開前の綴りで比べて誤って die しない（cycle 046 Round 2。いま: { {n: (r[0], r[2].strip()[-50:]) for n, r in _ep_esc_r.items()} } / rc={_r[0]} {_r[2].strip()!r} / rc={_r2[0]} {_r2[2].strip()!r}）",
+      all(r[0] == 1 and r[1] == "" and "aws_security_group.endpoints の description が読めない" in r[2] for r in _ep_esc_r.values())
+      and _r[0] == 1 and "security_groups.tf から SG の description が読めない" in _r[2] and "state の SG の description がコードと違う" not in _r[2]
+      and _r2[0] == 1 and "local.security_groups / oss_security_groups の読めない行:" in _r2[2] and "state の SG の description がコードと違う" not in _r2[2])
 _sds_taint = _sp043.run(["bash", "-c", f"sg_descriptions_in_state() {{{_upc_fn['sg_descriptions_in_state']}\n}}\nsg_descriptions_in_state"],
                         input=_csd_show({"web": "W"}, _EP_OLD).replace("# aws_security_group.endpoints:\n", "# aws_security_group.endpoints: (tainted)\n"),
                         capture_output=True, text=True, timeout=30).stdout

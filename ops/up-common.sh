@@ -32,27 +32,33 @@ sg_descriptions_in_code() {  # sg_descriptions_in_code  コードの SG の desc
   local dir="$TF_DIR/base/core" oss=""
   if [ -f "$dir/oss.auto.tfvars" ] && grep -q '^project *= *"nwc-oss"' "$dir/oss.auto.tfvars"; then oss="$dir/oss.tf"; fi
   awk '
+    # 値（両端の " の内側）がプレーンな文字列か。" があれば、行末のコメントや式が値に混ざっている（例: "X" # was "Y"）。
+    # \ はエスケープ（\" \\ \uNNNN）で、${ / %{ は補間・テンプレート（$${ も含めて止める側に倒す）。どれも state には展開後の値が入るので書いたままでは比べられない。
+    # SG の description に AWS が許す文字に " と \ は無いので、正しい値を止めることは無い。どれも読めない扱い（cycle 046 Round 2）
+    function plain(v) { return !index(v, "\"") && !index(v, "\\") && !index(v, "${") && !index(v, "%{") }
     FILENAME != prev { prev = FILENAME; file++; inb = 0; inr = 0 }
     file == 1 && $0 == "  security_groups = {" { inb = 1; sgblk = 1; next }
     file == 1 && $0 == "resource \"aws_security_group\" \"endpoints\" {" { inr = 1; rblk = 1; next }
     inr && $0 == "}" { inr = 0; next }
     inr && !epok && match($0, /^  description += "/) && substr($0, length($0)) == "\"" {
       v = substr($0, RLENGTH + 1, length($0) - RLENGTH - 1)
-      if (!index(v, "${") && !index(v, "%{")) { ep = v; epok = 1; next }  # テンプレート（補間）は state に展開後の値が入るので比べられない
+      if (plain(v)) { ep = v; epok = 1; next }
     }
     inr && $0 ~ /^  description[ =]/ { epbad = epbad "\n  " FILENAME ": " $0; next }  # 式・補間・行末のコメント・複数行は読めない（ほかの属性の行は見ない）
-    file == 2 && $0 == "  oss_security_groups = {" { inb = 1; next }
+    file == 2 && $0 == "  oss_security_groups = {" { inb = 1; ossblk = 1; next }
     inb && $0 == "  }" { inb = 0; next }
-    inb && match($0, /^    [A-Za-z0-9_]+ += "/) && substr($0, length($0)) == "\"" {
+    inb && match($0, /^    [A-Za-z0-9_]+ += "/) && substr($0, length($0)) == "\"" && plain(v = substr($0, RLENGTH + 1, length($0) - RLENGTH - 1)) {
       key = substr($0, 5); sub(/ .*/, "", key)
       if (!(key in desc)) order[++n] = key
-      desc[key] = substr($0, RLENGTH + 1, length($0) - RLENGTH - 1); next
+      desc[key] = v; next
     }
     inb && $0 !~ /^ *(#|$)/ { bad = bad "\n  " FILENAME ": " $0 }  # 読めない行（行末のコメント、式など）は黙って飛ばさない（そのキーを見逃す）
     END {
       if (bad != "") { printf "NG: local.security_groups / oss_security_groups の読めない行:%s\n", bad > "/dev/stderr"; exit 1 }
       # endpoints の 1 行だけで出力が空でなくなるので、workload の表が読めないことはここで止める（cycle 046）
       if (!sgblk || n == 0) { printf "NG: %s に「  security_groups = {」の塊が無いか、キーが 1 つも無い\n", ARGV[1] > "/dev/stderr"; exit 1 }
+      # OSS 版で oss.tf の塊が読めなければ、OSS のキー（上書き・追加）を黙って飛ばさず止める（cycle 046 Round 2）
+      if (ARGC > 2 && !ossblk) { printf "NG: %s に「  oss_security_groups = {」の塊が無い\n", ARGV[2] > "/dev/stderr"; exit 1 }
       if (!rblk) epbad = "\n  resource \"aws_security_group\" \"endpoints\" { の行が無い"
       else if (!epok && epbad == "") epbad = "\n  ブロックに 2 空白の description の行が無い"
       if (epbad != "" || ("endpoints" in desc)) {
