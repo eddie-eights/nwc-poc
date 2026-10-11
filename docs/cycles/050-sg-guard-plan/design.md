@@ -27,7 +27,7 @@ QUEUE 163（workload の SG の `name` の式も作り直しの原因になる�
    - `-refresh=false` と `-input=false` が付けられ、`-detailed-exitcode` 無しなら変更があっても rc=0。
    - `terraform show -json <plan file>` の `resource_changes[].change.actions` は `["delete","create"]`（replace）/ `["delete"]` / `["update"]`、`action_reason` は `replace_because_cannot_update` / `replace_because_tainted` / `delete_because_each_key`。**plan ファイルは使わない**（`-out` の分を手順 3 の apply に回すには遠すぎる。下の方針 2）。
 3. **`ops/up.sh` の変数**: `base/core` で既定値の無い変数は `owner` だけ（`variables.tf`）。手順 3 の `MAIN_VARS`（`ops/up.sh:732-772`）は `vpc_cidr`（`$VPC_CIDR`。手順 0 の前から分かる）と、手順 1〜2 を経て決まる `create_opensearch_endpoint` / `interface_endpoints` / `network_perimeter` / `endpoints_az_num`。後の 4 つは `security_groups.tf` / `oss.tf` に出てこない（grep 0 件）ので、`aws_security_group` の plan には効かない。`vpc_cidr` は VPC の作り直し → `vpc_id` の変化 → SG の作り直しに効く。
-4. **`base/core` の data source**（plan が読む。AWS の認証情報が要る）: `aws_caller_identity` / `aws_partition` / `aws_iam_session_context.deployer` / `aws_ec2_managed_prefix_list.s3` / `aws_ssm_parameter.al2023` / `aws_iam_policy_document.alerts_topic`。手順 0 は `tf_init base/core`（S3 backend）の後なので認証情報はもう使えている。
+4. **`base/core` の data source**（plan が読む。AWS の認証情報が要る）: `aws_caller_identity` / `aws_partition` / `aws_iam_session_context.deployer` / `aws_ec2_managed_prefix_list.s3` / `aws_ssm_parameter.al2023` / `aws_iam_policy_document.alerts_topic`。`base/core` の state は手元のファイル（`$TF_DIR/base/core/terraform.tfstate`。S3 backend ではない）。認証情報は手順 0 より前の `aws sts get-caller-identity`（`ops/up.sh:452`、`ops/oss/up.sh:141`）で確かめ済み。
 5. **OSS 版**: `IaC/terraform/oss/base/core` は `aws-managed/base/core` の `*.tf` へのリンクと `oss.auto.tfvars`（`project = "nwc-oss"`）。`ops/oss/up.sh:40` の `TF_DIR=IaC/terraform/oss`。守りは両方の `up.sh` が同じ関数を呼ぶ（`ops/up.sh:609`、`ops/oss/up.sh:163`）。
 6. **既存の守りの並び（`ops/up.sh:588-610`）**: `if [ -f "$TF_DIR/base/core/terraform.tfstate" ]` の中で `tf_init base/core` → internal の守り → telegraf / telegraf_dialin のキー変更の守り（`die "… 先に ops/down.sh で消す（stream だけ先に消してもよい）"`。`ops/up.sh:598,604`、`ops/oss/up.sh:158`）→ `check_sg_descriptions`。`PY`（python3 か uv）は `ops/up.sh:438` / `ops/oss/up.sh:131` で、どちらも守りより前に決まる。
 7. **テストの土台**: `tests/test_workflow.py:1460-2064` が 043 / 046 / 048 / 049 の節（`_csd_run` の bash の土台、`_sdc_real` / `_sdc_tmp`、本物の console の T-3）。`tests/test_oss_ops.py` は偽の terraform（`FAKE_TF`。`console` と `show` の枝）、`check_sg_descriptions` の呼び方の check（1232-1234）、OSS 版の state の runtime の SG で止める check（1235-1257）、049 の T-9（1258-）。
@@ -50,7 +50,7 @@ QUEUE 163（workload の SG の `name` の式も作り直しの原因になる�
    - rc=0 なのに `change_summary` の行が無い: `NG: $TF_DIR/base/core の plan の出力に change_summary が無い（terraform plan -json の形が変わったか途中で切れた。上の出力）。まだ何も作っていない`（読んだ stdout を stderr に出してから）。
 6. **python は `"${PY[@]}" -c '…'` の 1 本**（`ops/up-common.sh` の既存の呼び方と同じ）。bash の `'…'` の中なので python に `'` を書かない。plan の rc は環境変数（例 `PLAN_RC`）で渡し、python は一覧を stdout に、Warning を stderr に出して、結果を終了コードで返す（0 通す / 2 plan 失敗 / 3 作り直し・削除あり / 4 change_summary 無し）。bash 側はその終了コードで die の文言を選ぶ。
 7. **呼ぶ場所と前後の守りは変えない**（手順 0、`tf_init base/core` の後、ECR の前、`if [ -f … tfstate ]` の中）。telegraf / telegraf_dialin の守りの die の「（stream だけ先に消してもよい）」は消す（stream を消しても古いキーの SG の `delete` を 050 の守りが止めるので、案内として誤りになる。`ops/up.sh:598,604`、`ops/oss/up.sh:158`。テストの期待も合わせる）。
-8. **AWS では動かさない**（049 と同じ）。plan が本物の S3 backend と state で通ること・所要時間は未確定事項 2 で、QUEUE に別の行で持つ。
+8. **AWS では動かさない**（049 と同じ）。plan が本物の state と AWS の data source で通ること・所要時間は未確定事項 2 で、QUEUE に別の行で持つ。
 
 ## 変更対象ファイル
 
@@ -110,6 +110,6 @@ QUEUE 163（workload の SG の `name` の式も作り直しの原因になる�
 ## 未確定事項とリスク
 
 1. **`aws_security_group` の `planned_change` の行は現物を取っていない**（AWS の認証情報と state が要る）。`-json` の UI（`"ui":"1.3"`）はリソースの種類によらず同じ形なので、`terraform_data` の行の `resource_type` / `addr` を置き換えたものを見本にする。読むキーは `type` / `change.resource.resource_type` / `change.resource.addr` / `change.action` / `change.reason` / `diagnostic.severity` / `@message` / `diagnostic.detail` / `changes` の 9 つだけで、Terraform の docs（Machine-Readable UI）にある公開の項目。
-2. **本物の S3 backend と state で手順 0 の plan が通ること・所要時間は未確認**（AWS では動かさない）。`-refresh=false` でも data source 6 つは読むので数秒〜十数秒の見込み。既定値の変数（`interface_endpoints` など）で plan が rc≠0 になる筋は見つけていない（validation は既定値を通す）が、もし落ちれば `up.sh` は手順 0 で止まり、Terraform のエラーが stderr に出る（何も作っていない）。QUEUE に「050 の plan の守りを AWS で 1 回通す」を足す（PM）。
+2. **本物の state と AWS の data source で手順 0 の plan が通ること・所要時間は未確認**（AWS では動かさない）。`-refresh=false` でも data source 6 つは読むので数秒〜十数秒の見込み。既定値の変数（`interface_endpoints` など）で plan が rc≠0 になる筋は見つけていない（validation は既定値を通す）が、もし落ちれば `up.sh` は手順 0 で止まり、Terraform のエラーが stderr に出る（何も作っていない）。QUEUE に「050 の plan の守りを AWS で 1 回通す」を足す（PM）。
 3. **止まる側に倒れる変更**: telegraf / telegraf_dialin の古いキーの state は「stream を消せば up.sh が通った」が、050 からは `down.sh` の全消しが要る（方針 7）。2026-10-04 / 10-09 より前の state の話で、PoC では down を打つ運用なので受け入れる。
 4. **state の lock**: plan は既定で lock を取る（手順 0 ではほかに何も動いていない）。stale な lock があれば plan が落ちて die する（apply も同じ理由で落ちるので、守りが早く止めるだけ）。`-lock=false` は付けない。
