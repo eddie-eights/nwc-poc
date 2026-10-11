@@ -87,7 +87,7 @@ IaC/terraform/aws-managed/
 ├── base/
 │   ├── ecr/         ECR リポジトリ
 │   ├── logs/        logs のバケット（Firehose が書けなかった行。ops/down.sh は消さない）
-│   └── core/        VPC / VPC エンドポイント / 閉域の Deny（perimeter.tf）/ SG（ワークロードごと。通信の表は security_groups.tf）/ フローログ / assets のバケット / アラートの SNS トピック（alerts.tf）/ ロール / Web の EC2
+│   └── core/        VPC / VPC エンドポイント / 閉域の Deny（perimeter.tf）/ SSM Agent の許可（ssm_agent.tf）/ SG（ワークロードごと。通信の表は security_groups.tf）/ フローログ / assets のバケット / アラートの SNS トピック（alerts.tf）/ ロール / Web の EC2
 ├── agent/         AGENT=1     Runtime / ガードレール / KB
 ├── pipeline/      PIPELINE=1
 │   ├── lab/         containerlab の EC2（stream を作るときは Telegraf・gnmic・syslog-ng・GoFlow2 とのあいだの転送も）

@@ -39,7 +39,7 @@ Web（`base/core/web.tf:22-25`）・lab（`pipeline/lab/iam.tf:17-20`）・lab-d
 ## 設計方針
 
 1. **自前のポリシー `<prefix>-ssm-agent` を base/core に 1 つ作り、Web と lab に付ける。** 中身は上の v2 の 3 つの Statement から `ssm:GetParameter` と `ssm:GetParameters` の 2 つを抜いたもの（ssm 13 + ssmmessages 4 + ec2messages 6。Resource は `*` のまま）。ほかの Action は観測した範囲より多いが、`ec2messages` は CloudTrail に出ず、`GetDocument` 等は Run Command / 関連付け / インベントリで要るので、**マネージドポリシーの字面どおり残す**（勝手に削って Run Command や Session Manager を壊さない。削るのは QUEUE の 2 つだけ）
-   - `IaC/terraform/aws-managed/base/core/ssm_agent.tf`（新規）: `aws_iam_policy.ssm_agent`。`name = "${local.name_prefix}-ssm-agent"`、`description` は「SSM Agent actions of AmazonSSMManagedInstanceCore v2 without ssm:GetParameter and ssm:GetParameters (attached to the web and lab EC2 roles)」の趣旨（em dash を使わない）。Statement の Sid は `SsmAgent` / `SessionChannels` / `Ec2Messages`、Action は上の表の順のまま
+   - `IaC/terraform/aws-managed/base/core/ssm_agent.tf`（新規）: `aws_iam_policy.ssm_agent`。`name = "${local.name_prefix}-ssm-agent"`、`description` は「SSM Agent actions of the AWS managed policy for SSM managed instances (v2) without ssm:GetParameter and ssm:GetParameters (attached to the web and lab EC2 roles)」の趣旨（マネージドポリシーの名前は書かない ── T-1 がコメント以外の行で 0 を見る。em dash を使わない）。Statement の Sid は `SsmAgent` / `SessionChannels` / `Ec2Messages`、Action は上の表の順のまま
    - `outputs.tf` に `output "ssm_agent_policy_arn"`（`value = aws_iam_policy.ssm_agent.arn`。空になることは無い）
    - `IaC/terraform/oss/base/core/ssm_agent.tf` を相対リンク `../../../../terraform/aws-managed/base/core/ssm_agent.tf` で足す
 2. **Web: `aws_iam_role_policy_attachment.web_ssm` の `policy_arn` を `aws_iam_policy.ssm_agent.arn` にする。** リソース名は変えない。`web_assets` の `/<prefix>/*` の `ssm:GetParameter` と `DenyNautobotSecrets` はそのまま。`ssm:GetParameters` は足さない（コードも UserData も `get-parameter` しか呼ばない。045 の G-2 の `GetParameters` は検証）
@@ -87,9 +87,10 @@ Web（`base/core/web.tf:22-25`）・lab（`pipeline/lab/iam.tf:17-20`）・lab-d
 | T-5 | `base/core/web.tf` | `aws_iam_role_policy_attachment.web_ssm` の role が `aws_iam_role.web.name`、policy_arn が `aws_iam_policy.ssm_agent.arn`。`web_assets` の `/<prefix>/*` の `ssm:GetParameter` と末尾の `DenyNautobotSecrets` は既存の check のまま通る |
 | T-6 | `pipeline/lab/locals.tf` / `iam.tf` | `ssm_agent_policy_arn = try(data.terraform_remote_state.main.outputs.ssm_agent_policy_arn, "")`、postcondition に `can(self.outputs.ssm_agent_policy_arn)`、`lab_ssm` の policy_arn が `local.ssm_agent_policy_arn` で `count` が無い。`TelegrafAddress` と `DenyNautobotSecrets` は既存の check のまま |
 | T-7 | `lab-debug.yaml` | `Role` に `ManagedPolicyArns` が無い。`Policies[1].PolicyName == "ssm-agent"` で、Statement の Sid・Action・順が `ssm_agent.tf` から読んだものと一致、Resource は全部 `"*"`。`Policies[2]` が `!If [HasPerimeter, …, AWS::NoValue]`（既存の check の添字を直す） |
-| T-8 | `IaC/` 全体 | `ssm:GetParameters"` が 0 行（複数形を誰も Allow しない） |
+| T-8 | Web（`base/core/web.tf`）・lab（`pipeline/lab/iam.tf`）・lab-debug（`lab-debug.yaml` の `Role`）のロールに付くポリシー | `ssm:GetParameters` の Allow が無い（複数形はこの 3 つのロールでは誰も使わない。ECS のタスクの実行ロールは `secrets` の注入で正当に使うので `IaC/` 全体では見ない） |
+| T-9 | `IaC/` の `.tf` と `.yaml` の Allow の Statement 全部 | パラメータを読める ssm の Action（`ssm:GetParameter*` と `*` を含むもの）が Resource `"*"` を持たない（別のポリシーに `*` の Allow が付いて 047 が戻るのをテストで止める） |
 
-変異（1 つずつ入れて、該当のテストが落ちることを `build.md` に書く）: M1 `SsmAgent` から `ssm:UpdateInstanceInformation` を抜く → T-2。M2 `ssm_agent.tf` に `ssm:GetParameter` を足す → T-3。M3 `web_ssm` をマネージドの ARN に戻す → T-1 と T-5。M4 `lab_ssm` に `count = local.ssm_agent_policy_arn != "" ? 1 : 0` を足す → T-6。M5 YAML の `ssm-agent` から `ec2messages:GetMessages` を抜く → T-7。M6 YAML に `ManagedPolicyArns` を戻す → T-7。M7 output を消す → T-4。
+変異（1 つずつ入れて、該当のテストが落ちることを `build.md` に書く）: M1 `SsmAgent` から `ssm:UpdateInstanceInformation` を抜く → T-2。M2 `ssm_agent.tf` に `ssm:GetParameter` を足す → T-3。M3 `web_ssm` をマネージドの ARN に戻す → T-1 と T-5。M4 `lab_ssm` に `count = local.ssm_agent_policy_arn != "" ? 1 : 0` を足す → T-6。M5 YAML の `ssm-agent` から `ec2messages:GetMessages` を抜く → T-7。M6 YAML に `ManagedPolicyArns` を戻す → T-7。M7 output を消す → T-4。M14 `web_assets` に `ssm:GetParameter` の Resource `"*"` の Statement を足す → T-9（番号は build.md の Round 1 の M14 に合わせた。M8〜M13 は実装が足した変異）。
 
 ほか:
 
@@ -105,3 +106,4 @@ Web（`base/core/web.tf:22-25`）・lab（`pipeline/lab/iam.tf:17-20`）・lab-d
 4. **立っている環境への apply は attachment の差し替えの瞬間に SSM Agent の呼び出しが落ちる。** Agent は再試行する。いまは環境が down なので今回は当たらない
 5. **AWS での確認は Web だけ**（土台だけの up.sh）。lab と lab-debug の実機は見ない（同じポリシーの写しで、字面はテストで一致を見る）。Session Manager（ポートフォワーディング）は Run Command と同じ `ssmmessages` の 4 つで、字面はマネージドポリシーと同じなので動くはずだが、実機では見ない
 6. 検証に作る probe のパラメータ（`/efukuda-nwc-poc/probe-047`、`/efukuda-nwc-poc-other/probe-047`）は確認後に消す。`ops/down.sh` は `ManagedBy=ops/up.sh` のタグが無いものは消さないので、PM が `DeleteParameter` で消してから down する
+7. **lab の EC2 で `app/containerlab/trex/kafka_load.sh` を `BOOTSTRAP` 無しで打つと `/<prefix>/msk-bootstrap` の読み取りが AccessDenied になる**（いままではマネージドポリシーで読めていた）。この道具は lab のロールに MSK の許可が無く、いまも動かない（`app/containerlab/trex/README.md` の「前提」1 がこの読み取りの不足も含めて書いている）。lab の Allow には足さない（`BOOTSTRAP` を手で渡す）

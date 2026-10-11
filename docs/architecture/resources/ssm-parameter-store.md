@@ -83,7 +83,7 @@ SecureString（`ops/up.sh` が作る）:
   出典: `ops/down.sh` の手順 5-2 のコメント。
 - **Nautobot の内部のシークレット（`secret-key` / `admin-password` / `db-password`）は、`/<prefix>/*` を読めるロールでも Deny で読めない。**
   Deny はロールを作るルートに置く（Web と Runtime は `base/core`、tools の Lambda は `workflow` の `gateway.tf`、lab の EC2 は `pipeline/lab` の `iam.tf`、lab-debug の EC2 は `IaC/cloudformation/lab-debug.yaml`）。ほかのルートが足す `/<prefix>/*` の Allow にも勝つ。
-  Deny の Resource は prefix を問わない（`parameter/*/nautobot/<名前>`）。cycle 047 までは Web・lab・lab-debug のロールが AWS の管理ポリシー（`ssm:GetParameter` / `GetParameters` が `*`）で同じアカウントのほかの環境のパラメータも読めた。いまは SSM の管理の許可（`<prefix>-ssm-agent`、lab-debug はインラインの `ssm-agent`）にパラメータの読み取りが無く、`*` の Allow はどのロールにも無いが、将来付いても塞がるように prefix を問わないまま残す。
+  Deny の Resource は prefix を問わない（`parameter/*/nautobot/<名前>`）。cycle 047 より前は Web・lab・lab-debug のロールが AWS の管理ポリシー（`ssm:GetParameter` / `GetParameters` が `*`）で同じアカウントのほかの環境のパラメータも読めた。いまは SSM の管理の許可（`<prefix>-ssm-agent`、lab-debug はインラインの `ssm-agent`）にパラメータの読み取りが無く、`*` の Allow はどのロールにも無いが、将来付いても塞がるように prefix を問わないまま残す。
   Deny は名前ごとで親のパスには掛けていない。いまはどのロールにも `ssm:GetParametersByPath` の Allow が無いので守れているが、足すときはこの Deny では守れない（パスの Deny も要る）。
   出典: `IaC/terraform/aws-managed/base/core/locals.tf` と `pipeline/lab/locals.tf` の `nautobot_secret_parameter_arns`、[044 の設計](../../cycles/044-deny-nautobot-secrets/design.md)の方針 2 とリスク 3。
 - **手で入れたパラメータは `ops/down.sh` で消えない。**
