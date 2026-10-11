@@ -93,7 +93,7 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
 - **SG はワークロードごとに分け、ルールは土台の 1 か所で作る。**
   ほかのルートは土台の output `security_group_ids` から自分の SG を読んで付けるだけ。SG とルールに時間課金は無いので、機能を作らないときもそろえて作る。
   出典: [core.md](../core.md) の「SG」、[troubleshooting.md](../../troubleshooting.md) の「2026-09-29 より前の SG（internal）が残っている」の行。
-- **SG の説明（description）を変えると作り直しになる。**
+- **SG の名前・説明（description）・VPC を変えると作り直し、表からキーを外すと削除になる。**
   ENI が付いていると消えないので、変える前に `ops/down.sh` を打つ。
   `terraform plan` で作り直し・削除になる SG が 1 つでもあると（name / description / vpc_id の変更とキーの削除）、`ops/up.sh` は手順 0 の後で止まる（`ops/up-common.sh` の `check_sg_plan`。base/core を `terraform plan -json -refresh=false` で打ち、`aws_security_group` の replace / delete を見る。workload の全キーと `endpoints`、OSS 版も同じ。050）。ほかの SG のルールが古い SG を参照したままなので、付けるルートだけ消しても消せない。`ops/down.sh` で全部消してから `ops/up.sh`。
   出典: [core.md](../core.md) の「SG」。

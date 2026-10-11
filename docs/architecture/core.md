@@ -99,7 +99,7 @@ Neptune Analytics に SG は無い。VPC の中の口を持たず、インター
 - `endpoints` は表の 443 だけを受け、外へは出さない。
 - VPC の全 ENI の通信は VPC フローログ（`IaC/terraform/aws-managed/base/core/flow_logs.tf`）でロググループ `/<prefix>/vpc-flow-logs` に残る（保存 7 日。集約 60 秒）。
   表の漏れで拒んだ通信は `action = REJECT` で出る（問い合わせは [troubleshooting.md](../troubleshooting.md)）。
-- SG の説明（description）を変えると作り直しになり、ENI が付いていると消えない。変えるときは先に `ops/down.sh` を打つ。
+- SG の名前・説明（description）・VPC を変えると作り直し、表からキーを外すと削除になり、ENI が付いていると消えない。変えるときは先に `ops/down.sh` を打つ。
   `terraform plan` で作り直し・削除になる SG が 1 つでもあると（name / description / vpc_id の変更とキーの削除）、`ops/up.sh` は手順 0 の後で止まる（`ops/up-common.sh` の `check_sg_plan`。base/core を `terraform plan -json -refresh=false` で打ち、`aws_security_group` の replace / delete を見る。workload の全キーと `endpoints`、OSS 版も同じ。050）。ほかの SG のルールが古い SG を参照したままなので、付けるルートだけ消しても消せない。`ops/down.sh` で全部消してから `ops/up.sh`。
 - 2026-09-29 より前の state（全部で共有する `internal` 1 つ）が残っていると、`ops/up.sh` は手順 0 の後で止まる。
   ほかのルートは土台の `security_group_ids` を読むが、無ければ apply の前に止まり（`terraform_remote_state` の postcondition）、destroy は古い state のままでも通る（SG の ID は `try` で読む）。
