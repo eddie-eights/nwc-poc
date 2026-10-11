@@ -73,6 +73,7 @@ locals {
   ])
 
   # security_groups.tf が作る SG と通信の表。マネージド版では security_groups / sg_flows と同じ
+  # ops/up.sh の check_sg_descriptions が merge の 2 行の形を見る（048）
   workload_security_groups = merge(
     { for k, v in local.security_groups : k => v if !contains(local.oss_replaced, k) },
     { for k, v in local.oss_security_groups : k => v if local.oss },

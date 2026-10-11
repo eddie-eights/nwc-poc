@@ -26,26 +26,48 @@ has_resources() {  # has_resources <ルート>  state があり、リソース�
 # 付けるルートだけ消しても古い SG の destroy は DependencyViolation で止まる（先に消したルールだけが無い状態になる）。通るのは down.sh の全消しだけ。
 # VPC エンドポイントの SG（aws_security_group.endpoints。for_each 無し）も workload の SG のルールが参照するので同じ（cycle 046）。
 # state にある workload の SG 全部と endpoints の description をコードと比べるので、キーの表は持たない（キーを変えた古い SG は up.sh の既存の守りの担当）
+# コードの書き方（workload の description = each.value と for_each、oss.tf の local.workload_security_groups の merge、endpoints に count / for_each が無いこと）も
+# 読めなければ止める（cycle 048）
 sg_descriptions_in_code() {  # sg_descriptions_in_code  コードの SG の description を <キー>\t<文言> で出す（security_groups.tf の local.security_groups）。
   # OSS 版（oss.auto.tfvars が project = "nwc-oss"。oss.tf の local.oss と同じ判定）は oss.tf の local.oss_security_groups が同じキーを上書きし、キーを足す。
   # 最後に endpoints を 1 行（security_groups.tf の resource "aws_security_group" "endpoints" のブロックの 2 空白の description。oss.tf は上書きしない。cycle 046）
-  local dir="$TF_DIR/base/core" oss=""
-  if [ -f "$dir/oss.auto.tfvars" ] && grep -q '^project *= *"nwc-oss"' "$dir/oss.auto.tfvars"; then oss="$dir/oss.tf"; fi
-  awk '
+  # oss.tf はマネージド版でも読む（表を workload の SG にする local.workload_security_groups の merge がある。cycle 048 Round 2）。OSS 版かは awk の oss で渡す
+  local dir="$TF_DIR/base/core" oss=0
+  [ -f "$dir/oss.tf" ] || { echo "NG: $dir/oss.tf が無い" >&2; return 1; }
+  if [ -f "$dir/oss.auto.tfvars" ] && grep -q '^project *= *"nwc-oss"' "$dir/oss.auto.tfvars"; then oss=1; fi
+  awk -v oss="$oss" '
     # 値（両端の " の内側）がプレーンな文字列か。" があれば、行末のコメントや式が値に混ざっている（例: "X" # was "Y"）。
     # \ はエスケープ（\" \\ \uNNNN）で、${ / %{ は補間・テンプレート（$${ も含めて止める側に倒す）。どれも state には展開後の値が入るので書いたままでは比べられない。
     # SG の description に AWS が許す文字に " と \ は無いので、正しい値を止めることは無い。どれも読めない扱い（cycle 046 Round 2）
     function plain(v) { return !index(v, "\"") && !index(v, "\\") && !index(v, "${") && !index(v, "%{") }
-    FILENAME != prev { prev = FILENAME; file++; inb = 0; inr = 0 }
+    FILENAME != prev { prev = FILENAME; file++; inb = 0; inr = 0; inw = 0; inm = 0 }
     file == 1 && $0 == "  security_groups = {" { inb = 1; sgblk = 1; next }
+    # workload の SG のブロック（cycle 048）。表の値が description になるのは「  description = each.value」、state のキーが表のキーになるのは
+    # 「  for_each = local.workload_security_groups」があるから。ほかの書き方（式・行末のコメント・count・別の表）は表と state を比べても守りにならない
+    file == 1 && $0 == "resource \"aws_security_group\" \"workload\" {" { inw = 1; wblk = 1; next }
+    inw && $0 == "}" { inw = 0; next }
+    inw && $0 ~ /^  description += each\.value$/ { wdesc = 1; next }
+    inw && $0 ~ /^  description[ =]/ { wbad = wbad "\n  " FILENAME ": " $0; wdbad = 1; next }
+    inw && $0 ~ /^  for_each += local\.workload_security_groups$/ { wfe = 1; next }
+    inw && $0 ~ /^  (count|for_each)[ =]/ { wbad = wbad "\n  " FILENAME ": " $0; wfbad = 1; next }
     file == 1 && $0 == "resource \"aws_security_group\" \"endpoints\" {" { inr = 1; rblk = 1; next }
     inr && $0 == "}" { inr = 0; next }
     inr && !epok && match($0, /^  description += "/) && substr($0, length($0)) == "\"" {
       v = substr($0, RLENGTH + 1, length($0) - RLENGTH - 1)
       if (plain(v)) { ep = v; epok = 1; next }
     }
-    inr && $0 ~ /^  description[ =]/ { epbad = epbad "\n  " FILENAME ": " $0; next }  # 式・補間・行末のコメント・複数行は読めない（ほかの属性の行は見ない）
-    file == 2 && $0 == "  oss_security_groups = {" { inb = 1; ossblk = 1; next }
+    inr && $0 ~ /^  description[ =]/ { epbad = epbad "\n  " FILENAME ": " $0; epdbad = 1; next }  # 式・補間・行末のコメント・複数行は読めない（description と count / for_each のほかの属性の行は見ない）
+    # count / for_each があると state の見出しが「# aws_security_group.endpoints[0]:」になり、sg_descriptions_in_state が拾わず黙って通る（cycle 048）
+    inr && $0 ~ /^  (count|for_each)[ =]/ { epbad = epbad "\n  " FILENAME ": " $0; epcnt = 1; next }
+    oss && file == 2 && $0 == "  oss_security_groups = {" { inb = 1; ossblk = 1; next }
+    # 表を workload の SG の for_each にする merge（oss.tf。cycle 048 Round 2）。キーや値を書き換えると表と state を比べても守りにならないので、
+    # コメント行と空行のほかは次の 2 行がこの順でちょうどあること（どちらの版でも見る）
+    file == 2 && $0 ~ /^  workload_security_groups += merge\($/ { inm = 1; mblk = 1; next }
+    inm && $0 == "  )" { inm = 0; next }
+    inm && $0 ~ /^(    #| *$)/ { next }
+    inm && !m1 && !m2 && $0 == "    { for k, v in local.security_groups : k => v if !contains(local.oss_replaced, k) }," { m1 = 1; next }
+    inm && m1 && !m2 && $0 == "    { for k, v in local.oss_security_groups : k => v if local.oss }," { m2 = 1; next }
+    inm { mbad = mbad "\n  " FILENAME ": " $0; next }
     inb && $0 == "  }" { inb = 0; next }
     inb && match($0, /^    [A-Za-z0-9_]+ += "/) && substr($0, length($0)) == "\"" && plain(v = substr($0, RLENGTH + 1, length($0) - RLENGTH - 1)) {
       key = substr($0, 5); sub(/ .*/, "", key)
@@ -58,16 +80,28 @@ sg_descriptions_in_code() {  # sg_descriptions_in_code  コードの SG の desc
       # endpoints の 1 行だけで出力が空でなくなるので、workload の表が読めないことはここで止める（cycle 046）
       if (!sgblk || n == 0) { printf "NG: %s に「  security_groups = {」の塊が無いか、キーが 1 つも無い\n", ARGV[1] > "/dev/stderr"; exit 1 }
       # OSS 版で oss.tf の塊が読めなければ、OSS のキー（上書き・追加）を黙って飛ばさず止める（cycle 046 Round 2）
-      if (ARGC > 2 && !ossblk) { printf "NG: %s に「  oss_security_groups = {」の塊が無い\n", ARGV[2] > "/dev/stderr"; exit 1 }
+      if (oss && !ossblk) { printf "NG: %s に「  oss_security_groups = {」の塊が無い\n", ARGV[2] > "/dev/stderr"; exit 1 }
       if (!rblk) epbad = "\n  resource \"aws_security_group\" \"endpoints\" { の行が無い"
-      else if (!epok && epbad == "") epbad = "\n  ブロックに 2 空白の description の行が無い"
-      if (epbad != "" || ("endpoints" in desc)) {
-        printf "NG: aws_security_group.endpoints の description が読めない:%s%s\n", epbad, (("endpoints" in desc) ? "\n  local.security_groups / oss_security_groups に endpoints というキーがある（キーが衝突する）" : "") > "/dev/stderr"; exit 1
+      else if (!epok && !epdbad) epbad = epbad "\n  ブロックに 2 空白の description の行が無い"
+      if (epcnt) epbad = epbad "\n  count / for_each があると state の見出しが「# aws_security_group.endpoints[0]:」になり守りが外れる"
+      if (!wblk) wbad = "\n  resource \"aws_security_group\" \"workload\" { の行が無い"
+      else {
+        if (!wdesc && !wdbad) wbad = wbad "\n  ブロックに「  description = each.value」の行が無い"
+        if (!wfe && !wfbad) wbad = wbad "\n  ブロックに「  for_each = local.workload_security_groups」の行が無い"
       }
+      if (!mblk) mbad = "\n  " ARGV[2] " に「  workload_security_groups = merge(」の行が無い"
+      else if (mbad == "" && !(m1 && m2)) mbad = "\n  " ARGV[2] " の「  workload_security_groups = merge(」のブロックに local.security_groups と local.oss_security_groups の 2 行が無い"
+      wbad = wbad mbad
+      ng = 0
+      if (epbad != "" || ("endpoints" in desc)) {
+        printf "NG: aws_security_group.endpoints の description が読めない:%s%s\n", epbad, (("endpoints" in desc) ? "\n  local.security_groups / oss_security_groups に endpoints というキーがある（キーが衝突する）" : "") > "/dev/stderr"; ng = 1
+      }
+      if (wbad != "") { printf "NG: aws_security_group.workload の書き方が読めない:%s\n", wbad > "/dev/stderr"; ng = 1 }
+      if (ng) exit 1
       for (i = 1; i <= n; i++) printf "%s\t%s\n", order[i], desc[order[i]]
       printf "endpoints\t%s\n", ep
     }
-  ' "$dir/security_groups.tf" ${oss:+"$oss"}
+  ' "$dir/security_groups.tf" "$dir/oss.tf"
 }
 sg_descriptions_in_state() {  # sg_descriptions_in_state < <terraform show -no-color の出力>  state の SG の description を <キー>\t<文言> で出す。
   # 見出し「# aws_security_group.workload["<キー>"]:」（キーは <キー>）と「# aws_security_group.endpoints:」（キーは endpoints。cycle 046）から行頭の } までの

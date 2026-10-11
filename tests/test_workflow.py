@@ -1513,7 +1513,7 @@ def _csd_show(sgs, endpoints=_SG_EP_DESC):
     blocks.append('# aws_vpc_security_group_ingress_rule.flow["gnmic-endpoints-tcp-443"]:\nresource "aws_vpc_security_group_ingress_rule" "flow" {\n'
                   '    description                  = "AWS APIs through the interface endpoints"\n    id                           = "sgr-4"\n}\n')
     return "\n".join(blocks)
-def _csd_run(state=None, oss=False, show_fail=False, code_broken=False, code_tail_comment=False, endpoints=_SG_EP_DESC, code_ep_broken=False, edits=()):
+def _csd_run(state=None, oss=False, show_fail=False, code_broken=False, code_tail_comment=False, endpoints=_SG_EP_DESC, code_ep_broken=False, edits=(), remove=()):
     """check_sg_descriptions を bash で、tf / tf_init / die（関数）を差し替えて動かす。TF_DIR は一時ディレクトリ（base/core の security_groups.tf と oss.tf は実物のコピー。
     oss なら oss.auto.tfvars に project = "nwc-oss"）。state: terraform show に載せる workload の SG（キー → description。既定はコードと同じ全キー）。
     code_broken: コピーの security_groups.tf の「  security_groups = {」の行を崩す（コードの文言が 1 つも読めない）。
@@ -1521,6 +1521,7 @@ def _csd_run(state=None, oss=False, show_fail=False, code_broken=False, code_tai
     endpoints: terraform show に載せる aws_security_group.endpoints（_csd_show と同じ。既定はコードと同じ文言。cycle 046）。
     code_ep_broken: コピーの security_groups.tf の endpoints の description を式（local.endpoints_description）にする（その 1 行だけ読めない）。
     edits: (ファイル名, 前, 後) の並び。コピーのそのファイルの「前」（ちょうど 1 か所）を「後」に置き換える（cycle 046 Round 2）。
+    remove: コピーから消すファイル名の並び（cycle 048 Round 2）。
     rc と stdout / stderr と tf / tf_init の呼び出しを返す。"""
     import shutil, subprocess, tempfile
     if state is None:
@@ -1555,6 +1556,8 @@ def _csd_run(state=None, oss=False, show_fail=False, code_broken=False, code_tai
             assert _t.count(_old) == 1, f"{_fn} の「{_old.strip()}」の形が変わった（テストの土台を直す）"
             with open(os.path.join(core, _fn), "w") as f:
                 f.write(_t.replace(_old, _new))
+        for _fn in remove:
+            os.remove(os.path.join(core, _fn))
         if oss:
             with open(os.path.join(core, "oss.auto.tfvars"), "w") as f:
                 f.write('# OSS 版のしるし\nproject = "nwc-oss"\n')
@@ -1696,15 +1699,18 @@ check(f"check_sg_descriptions: security_groups.tf の endpoints の description 
 _r, _r2 = _csd_run(oss=True, endpoints=_EP_OLD), _csd_run(oss=True)
 check(f"check_sg_descriptions: OSS 版も同じ 1 本で endpoints を見る（古ければ die、同じなら通る。cycle 046。いま: rc={_r[0]} / {_r2[0]} {_r[2].strip()!r} {_r2[2].strip()!r}）",
       _r[0] == 1 and f"endpoints（state「{_EP_OLD}」/ コード「{_SG_EP_DESC}」）" in _r[2] and _r2[0] == 0 and "DIE:" not in _r2[2])
-def _sdc_tmp(sg_tf, oss_tf=None):  # 書き換えた security_groups.tf（oss_tf があれば OSS 版）で sg_descriptions_in_code を打つ（rc, stdout, stderr）
+def _sdc_tmp(sg_tf, oss_tf=None, oss=None):  # 書き換えた security_groups.tf で sg_descriptions_in_code を打つ（rc, stdout, stderr）。
+    # oss.tf は常に書く（oss_tf が無ければ実物。cycle 048 Round 2）。oss（既定は oss_tf を渡したか）なら OSS 版（oss.auto.tfvars が nwc-oss）
     import tempfile
+    if oss is None:
+        oss = oss_tf is not None
     with tempfile.TemporaryDirectory() as d:
         os.makedirs(os.path.join(d, "base", "core"))
         with open(os.path.join(d, "base", "core", "security_groups.tf"), "w") as f:
             f.write(sg_tf)
-        if oss_tf is not None:
-            with open(os.path.join(d, "base", "core", "oss.tf"), "w") as f:
-                f.write(oss_tf)
+        with open(os.path.join(d, "base", "core", "oss.tf"), "w") as f:
+            f.write(_oss_tf_core if oss_tf is None else oss_tf)
+        if oss:
             with open(os.path.join(d, "base", "core", "oss.auto.tfvars"), "w") as f:
                 f.write('project = "nwc-oss"\n')
         o = _sp043.run(["bash", "-c", f"TF_DIR={d}\nsg_descriptions_in_code() {{{_upc_fn['sg_descriptions_in_code']}\n}}\nsg_descriptions_in_code"],
@@ -1776,6 +1782,130 @@ check(f"sg_descriptions_in_state は見出しに「 (tainted)」が付いた end
       _sds_taint == f"endpoints\t{_EP_OLD}\nweb\tW\n")
 check(f"troubleshooting.md の check_sg_descriptions の行は、description を変えた SG に endpoints（VPC エンドポイントの SG）も入ると書く（cycle 046。いま: {len(_ts_csd)} 行）",
       len(_ts_csd) == 1 and "endpoints" in _ts_csd[0])
+# ---- Terraform の書き方の守り（cycle 048）。表の値が workload の SG の description になる経路（「  description = each.value」）と、state のキーが表のキーになる経路
+# （「  for_each = local.workload_security_groups」）、endpoints に count / for_each が無いこと（あると state の見出しが endpoints[0] になり守りが外れる）
+_wl_head = 'resource "aws_security_group" "workload" {\n'
+def _tf_block(tf, head):  # head の行の次から行頭の } の前までの行
+    return tf.split(head, 1)[1].split("\n}\n", 1)[0].splitlines()
+_wl_dl, _wl_fe = "  description = each.value\n", "  for_each = local.workload_security_groups\n"
+_wl_blk, _ep_blk = _tf_block(_sg_tf_core, _wl_head), _tf_block(_sg_tf_core, _ep_head)
+_r = _csd_run()
+check(f"T-1 実物の security_groups.tf の workload のブロックに「  description = each.value」と「  for_each = local.workload_security_groups」がちょうど 1 行ずつ、"
+      f"endpoints のブロックに count / for_each の行が無く、check_sg_descriptions は通る（cycle 048。いま: rc={_r[0]} {_r[2].strip()!r}）",
+      _sg_tf_core.count(_wl_head) == 1 and _wl_blk.count(_wl_dl[:-1]) == 1 and _wl_blk.count(_wl_fe[:-1]) == 1
+      and not any(re.match(r"  (count|for_each)[ =]", l) for l in _ep_blk) and _r[0] == 0 and "DONE" in _r[1] and "NG:" not in _r[2]
+      and dict(_sdc_m) == {**_SG_CODE_DESC, "endpoints": _SG_EP_DESC} and dict(_sdc_o) == {**_SG_CODE_DESC, **_SG_OSS_DESC, "endpoints": _SG_EP_DESC})
+def _wl_ng(r, *lines):  # workload の書き方が読めないとして、terraform show の前に「まだ何も作っていない」で止まった（比べた結果の die ではない）
+    return (r[0] == 1 and "DONE" not in r[1] and "NG: aws_security_group.workload の書き方が読めない:" in r[2] and all(l in r[2] for l in lines)
+            and "security_groups.tf から SG の description が読めない" in r[2] and "まだ何も作っていない" in r[2]
+            and "state の SG の description がコードと違う" not in r[2] and "tf base/core show -no-color" not in r[3])
+_t = '  description = "pre ${each.value}"\n'
+_r, _r2 = _csd_run(edits=[("security_groups.tf", _wl_dl, _t)]), _sdc_tmp(_sg_tf_core.replace(_wl_dl, _t))
+check(f"T-2 check_sg_descriptions: workload の「  description = each.value」が式（\"pre ${{each.value}}\"）なら、表と state を比べて通さず、その行を出して terraform show の前に止める"
+      f"（cycle 048。いま: rc={_r[0]} {_r[2].strip()!r} {_r[3]} / rc={_r2[0]} {_r2[1]!r}）",
+      _wl_ng(_r, "aws_security_group.workload", _t.strip()) and _r2[0] == 1 and _r2[1] == "" and _t.strip() in _r2[2])
+_r = _csd_run(edits=[("security_groups.tf", _wl_dl, "")])
+_r2 = _sdc_tmp(_sg_tf_core.replace(_wl_head, 'resource "aws_security_group" "workloads" {\n'))
+check(f"T-3 check_sg_descriptions: workload のブロックに description の行が無い・resource の名前が変わったなら止める"
+      f"（cycle 048。いま: rc={_r[0]} {_r[2].strip()!r} / rc={_r2[0]} {_r2[2].strip()!r}）",
+      _wl_ng(_r, "ブロックに「  description = each.value」の行が無い")
+      and _r2[0] == 1 and _r2[1] == "" and 'resource "aws_security_group" "workload" { の行が無い' in _r2[2])
+_wl_dcases = ("  description = each.value # memo\n", "  description = lower(each.value)\n")
+_wl_dres = [_csd_run(edits=[("security_groups.tf", _wl_dl, t)]) for t in _wl_dcases]
+check(f"T-4 check_sg_descriptions: 「  description = each.value」に行末のコメントや関数が付くなら、前方一致で通さずその行を出して止める"
+      f"（cycle 048。いま: {[(r[0], r[2].strip()[-80:]) for r in _wl_dres]}）",
+      all(_wl_ng(r, t.strip()) and "の行が無い" not in r[2] for r, t in zip(_wl_dres, _wl_dcases)))
+_wl_fcases = ("  for_each = local.security_groups\n", "  count = 3\n", "  for_each = local.workload_security_groups_v2\n", "  for_each = local.workload_security_groups # memo\n")
+_wl_fres = [_csd_run(edits=[("security_groups.tf", _wl_fe, t)]) for t in _wl_fcases]
+_r = _csd_run(edits=[("security_groups.tf", _wl_fe, "")])
+check(f"T-5 check_sg_descriptions: workload の for_each が別の表・count・名前の続く表・行末のコメントなら（state のキーが表と合わず全部飛ばして通る）、その行を出して止め、"
+      f"for_each の行が無ければその旨を出して止める（cycle 048。いま: {[(r[0], r[2].strip()[-80:], r[3]) for r in _wl_fres]} / rc={_r[0]} {_r[2].strip()[:120]!r}）",
+      all(_wl_ng(r, t.strip()) and "の行が無い" not in r[2] for r, t in zip(_wl_fres, _wl_fcases))
+      and _wl_ng(_r, "ブロックに「  for_each = local.workload_security_groups」の行が無い"))
+_ep_ccases = ("  count = 1\n", '  for_each = toset(["a"])\n')
+_ep_cres = [(_csd_run(edits=[("security_groups.tf", _ep_head, _ep_head + t)]), _sdc_tmp(_sg_tf_core.replace(_ep_head, _ep_head + t))) for t in _ep_ccases]
+check(f"T-6 check_sg_descriptions: endpoints のブロックに count / for_each があれば（state の見出しが endpoints[0] になり守りが外れる）、その行と「endpoints[0]」を出して"
+      f"terraform show の前に止める（cycle 048。いま: {[(r[0], r[2].strip()[-120:], r[3], r2[0], r2[1]) for r, r2 in _ep_cres]}）",
+      all(r[0] == 1 and "DONE" not in r[1] and "NG: aws_security_group.endpoints の description が読めない:" in r[2] and t.strip() in r[2]
+          and "# aws_security_group.endpoints[0]:" in r[2] and "ブロックに 2 空白の description の行が無い" not in r[2]
+          and "aws_security_group.workload" not in r[2]
+          and "security_groups.tf から SG の description が読めない" in r[2] and "まだ何も作っていない" in r[2]
+          and "tf base/core show -no-color" not in r[3] and r2[0] == 1 and r2[1] == "" for (r, r2), t in zip(_ep_cres, _ep_ccases)))
+_sdc_base = _sdc_tmp(_sg_tf_core)
+_t = _sg_tf_core.replace(_ep_head, _ep_head + "  # count = 1\n").replace(_wl_dl, '  # description = "x"\n' + _wl_dl).replace(_wl_fe, "  # count = 3\n" + _wl_fe)
+_r = _csd_run(edits=[("security_groups.tf", _ep_head, _ep_head + "  # count = 1\n"), ("security_groups.tf", _wl_dl, '  # description = "x"\n' + _wl_dl),
+                     ("security_groups.tf", _wl_fe, "  # count = 3\n" + _wl_fe)])
+check(f"T-7 check_sg_descriptions: workload / endpoints のブロックのコメント行（「  # description = …」「  # count = …」）は見ず、通って出力は実物と同じ"
+      f"（cycle 048。いま: rc={_r[0]} {_r[2].strip()!r} / {_sdc_tmp(_t)[0]}）",
+      _r[0] == 0 and "DONE" in _r[1] and "NG:" not in _r[2] and _sdc_base[0] == 0 and _sdc_tmp(_t)[:2] == _sdc_base[:2])
+_none_head = 'resource "aws_vpc_security_group_egress_rule" "endpoints_none" {\n'
+_r = _csd_run(edits=[("security_groups.tf", _none_head, _none_head + "  count = 1\n")])
+check(f"T-8 check_sg_descriptions: ほかのリソースのブロック（endpoints_none）の count は見ない（cycle 048。いま: rc={_r[0]} {_r[2].strip()!r}）",
+      _r[0] == 0 and "DONE" in _r[1] and "NG:" not in _r[2])
+# terraform fmt は続く属性の = を揃えるので、= の前の空白が 1 つ以上なら通す（description の隣に長い名前の属性を足しても止めない）
+_r = _csd_run(edits=[("security_groups.tf", _wl_dl, "  description            = each.value\n"), ("security_groups.tf", _wl_fe, "  for_each   = local.workload_security_groups\n")])
+check(f"check_sg_descriptions: workload の description / for_each の = の前の空白が揃えで増えても通る（cycle 048。いま: rc={_r[0]} {_r[2].strip()!r}）",
+      _r[0] == 0 and "DONE" in _r[1] and "NG:" not in _r[2])
+_r = _sdc_tmp(_sg_tf_core.replace(_ep_head, _ep_head + "  count = 1\n").replace(_wl_dl, "  description = lower(each.value)\n"))
+check(f"sg_descriptions_in_code: endpoints と workload の両方が読めなければ、NG を両方出す（cycle 048。いま: rc={_r[0]} {_r[2].strip()!r}）",
+      _r[0] == 1 and _r[1] == "" and "NG: aws_security_group.endpoints の description が読めない:" in _r[2] and "NG: aws_security_group.workload の書き方が読めない:" in _r[2]
+      and "  count = 1" in _r[2] and "lower(each.value)" in _r[2])
+_r = _sdc_tmp(_sg_tf_core.replace(_ep_head, _ep_head + "  count = 1\n").replace(_ep_dl, ""))
+check(f"sg_descriptions_in_code: endpoints に count があり description の行も無ければ、count の行と「description の行が無い」を両方出す（cycle 048。いま: rc={_r[0]} {_r[2].strip()!r}）",
+      _r[0] == 1 and _r[1] == "" and "  count = 1" in _r[2] and "ブロックに 2 空白の description の行が無い" in _r[2] and "endpoints[0]" in _r[2])
+# cycle 048 Round 2。表が workload の SG になる経路の 1 段目（oss.tf の「  workload_security_groups = merge(」の 2 行）。キーや値を書き換えると、
+# workload の SG が全部作り直しになるのに表と state を比べて通す（Round 1 のセルフレビューの Should fix 1）。oss.tf はマネージド版でも読む
+_mg_head = "  workload_security_groups = merge(\n"
+_mg_l1 = "    { for k, v in local.security_groups : k => v if !contains(local.oss_replaced, k) },\n"
+_mg_l2 = "    { for k, v in local.oss_security_groups : k => v if local.oss },\n"
+_mg_blk = _oss_tf_core.split(_mg_head, 1)[1].split("\n  )\n", 1)[0].splitlines() if _oss_tf_core.count(_mg_head) == 1 else None
+check(f"oss.tf の「  workload_security_groups = merge(」のブロックは、コメント行と空行のほかは local.security_groups と local.oss_security_groups の 2 行だけ（cycle 048 Round 2。いま: {_mg_blk}）",
+      _mg_blk is not None and [l for l in _mg_blk if l.strip() and not l.startswith("    #")] == [_mg_l1[:-1], _mg_l2[:-1]] and "workload_security_groups" not in _sg_tf_core.replace("local.workload_security_groups", ""))
+_mg_cases = {"1 行目の値": (_mg_l1, _mg_l1.replace('k => v if', 'k => "pre ${v}" if')), "2 行目のキー": (_mg_l2, _mg_l2.replace('k => v if', '"x_${k}" => v if'))}
+_mg_res = {(n, o): (_csd_run(oss=o, edits=[("oss.tf", a, b)]), _sdc_tmp(_sg_tf_core, _oss_tf_core.replace(a, b), oss=o))
+           for n, (a, b) in _mg_cases.items() for o in (False, True)}
+check(f"T-9 check_sg_descriptions: oss.tf の merge の値やキーを書き換えたら（workload の SG が全部作り直し）、マネージド版も OSS 版も表と state を比べて通さず、"
+      f"その行を出して terraform show の前に止める（cycle 048 Round 2。いま: { {k: (r[0], r[2].strip()[-100:], r[3], r2[0], r2[1]) for k, (r, r2) in _mg_res.items()} }）",
+      all(_wl_ng(r, "oss.tf: " + _mg_cases[n][1][:-1]) and r2[0] == 1 and r2[1] == "" and _mg_cases[n][1].strip() in r2[2]
+          for (n, o), (r, r2) in _mg_res.items()))
+_mg_pre = '{ for k, v in local.security_groups : k => "pre ${v}" }'
+_mg_bcases = {
+    "merge 無し": ([("oss.tf", _mg_head + _mg_l1 + _mg_l2 + "  )\n", "  workload_security_groups = local.security_groups\n")], "oss.tf に「  workload_security_groups = merge(」の行が無い"),
+    "ブロックごと消す": ([("oss.tf", _mg_head + _mg_l1 + _mg_l2 + "  )\n", "")], "oss.tf に「  workload_security_groups = merge(」の行が無い"),
+    "2 行の順の入れ替え": ([("oss.tf", _mg_l1 + _mg_l2, _mg_l2 + _mg_l1)], "oss.tf: " + _mg_l2[:-1]),
+    "3 行目を足す": ([("oss.tf", _mg_l2, _mg_l2 + "    { extra = \"x\" },\n")], 'oss.tf:     { extra = "x" },'),
+    "2 行目を消す": ([("oss.tf", _mg_l2, "")], "のブロックに local.security_groups と local.oss_security_groups の 2 行が無い"),
+    # 完全一致を緩める変異（出口・見出しの $・1 行目・2 行目の前方一致、# を含む行を飛ばす）で黙って通る書き方（セルフレビュー Round 2 の反対弁護人）
+    "出口の後ろに式": ([("oss.tf", _mg_l2 + "  )\n", _mg_l2 + "  ) == null ? {} : " + _mg_pre + "\n")], "oss.tf:   ) == null ? {} : " + _mg_pre),
+    "見出しの後ろに式": ([("oss.tf", _mg_head, "  workload_security_groups = merge() == {} ? " + _mg_pre + " : merge(\n")], "oss.tf に「  workload_security_groups = merge(」の行が無い"),
+    "1 行目の行末に map": ([("oss.tf", _mg_l1, _mg_l1[:-1] + " " + _mg_pre + ",\n")], "oss.tf: " + _mg_l1[:-1] + " " + _mg_pre + ","),
+    "2 行目の行末に map": ([("oss.tf", _mg_l2, _mg_l2[:-1] + " " + _mg_pre + ",\n")], "oss.tf: " + _mg_l2[:-1] + " " + _mg_pre + ","),
+    "# を含む 3 行目": ([("oss.tf", _mg_l2, _mg_l2 + "    " + _mg_pre + ", # override\n")], "oss.tf:     " + _mg_pre + ", # override"),
+}
+_mg_bres = {n: _csd_run(edits=e) for n, (e, _) in _mg_bcases.items()}
+check(f"T-10 check_sg_descriptions: merge の見出しが無い（merge 無し・ブロックごと消す）なら「oss.tf に「  workload_security_groups = merge(」の行が無い」、"
+      f"2 行の順の入れ替え・3 行目・出口や 1 行目・2 行目の行末に式を続けたものはその行を出し、2 行目が無ければその旨を出して止める（cycle 048 Round 2。いま: { {n: (r[0], r[2].strip()[-120:]) for n, r in _mg_bres.items()} }）",
+      all(_wl_ng(r, _mg_bcases[n][1]) for n, r in _mg_bres.items())
+      and _mg_l1.strip() not in _mg_bres["2 行の順の入れ替え"][2])
+_r = _csd_run(remove=["oss.tf"])
+check(f"T-11 check_sg_descriptions: マネージド版でも oss.tf が無ければ「oss.tf が無い」で terraform show の前に止める（cycle 048 Round 2。いま: rc={_r[0]} {_r[2].strip()!r} {_r[3]}）",
+      _r[0] == 1 and "DONE" not in _r[1] and "oss.tf が無い" in _r[2] and "security_groups.tf から SG の description が読めない" in _r[2] and "まだ何も作っていない" in _r[2]
+      and "tf base/core show -no-color" not in _r[3])
+_t = _oss_tf_core.replace("\n  oss_security_groups = {\n", "\n  oss_security_groups = merge({\n")
+_r, _r2 = _sdc_tmp(_sg_tf_core, _t, oss=False), _csd_run(edits=[("oss.tf", "\n  oss_security_groups = {\n", "\n  oss_security_groups = merge({\n")])
+check(f"T-12 sg_descriptions_in_code: マネージド版は oss.tf の oss_security_groups の表を読まない（崩しても通り、出力は実物と同じ。OSS 版で止まるのは 046 の check）"
+      f"（cycle 048 Round 2。いま: rc={_r[0]} {_r[2].strip()!r} / rc={_r2[0]} {_r2[2].strip()!r}）",
+      _r[0] == 0 and _r[:2] == _sdc_base[:2] and _r[2] == "" and _r2[0] == 0 and "DONE" in _r2[1] and "NG:" not in _r2[2])
+_t = _mg_head + "    # memo\n\n" + _mg_l1 + "\n    # memo2\n" + _mg_l2 + "\n"
+_r = _csd_run(edits=[("oss.tf", _mg_head + _mg_l1 + _mg_l2, _t)])
+_r2, _r3 = _sdc_tmp(_sg_tf_core, _oss_tf_core.replace(_mg_head + _mg_l1 + _mg_l2, _t), oss=False), _sdc_tmp(_sg_tf_core, _oss_tf_core.replace(_mg_head + _mg_l1 + _mg_l2, _t))
+check(f"T-13 check_sg_descriptions: merge のブロックのコメント行と空行は見ず、通って出力は実物と同じ（cycle 048 Round 2。いま: rc={_r[0]} {_r[2].strip()!r} / rc={_r2[0]} / rc={_r3[0]}）",
+      _r[0] == 0 and "DONE" in _r[1] and "NG:" not in _r[2] and _r2[:2] == _sdc_base[:2] and _r3[0] == 0
+      and _r3[:2] == _sdc_tmp(_sg_tf_core, _oss_tf_core)[:2] and dict(l.split("\t", 1) for l in _r3[1].splitlines()) == {**_SG_CODE_DESC, **_SG_OSS_DESC, "endpoints": _SG_EP_DESC})
+_r = _sdc_tmp(_sg_tf_core.replace(_wl_dl, "  description = lower(each.value)\n"), _oss_tf_core.replace(_mg_l1, _mg_l1.replace('k => v if', 'k => "pre ${v}" if')), oss=False)
+check(f"sg_descriptions_in_code: workload のブロックと merge の両方が読めなければ、NG の 1 つにブロックの行、merge の行の順で出す（cycle 048 Round 2。いま: rc={_r[0]} {_r[2].strip()!r}）",
+      _r[0] == 1 and _r[1] == "" and _r[2].count("NG: aws_security_group.workload の書き方が読めない:") == 1
+      and -1 < _r[2].find("lower(each.value)") < _r[2].find('k => "pre ${v}"'))
 _sg_roots = ("agent", "pipeline/analytics", "pipeline/graph", "pipeline/lab", "pipeline/stream", "workflow")
 # stream の MSK の SG は msk.tf で読む（MSK だけのもの。OSS 版のルートに msk.tf は無い。cycle 005）
 _sg_files = {r: ("locals.tf", "msk.tf") if r == "pipeline/stream" else ("locals.tf",) for r in _sg_roots}

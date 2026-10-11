@@ -151,6 +151,7 @@ data "aws_ec2_managed_prefix_list" "s3" {
   name = "com.amazonaws.${var.region}.s3"
 }
 
+# ops/up.sh の check_sg_descriptions が for_each と description = each.value の 2 行の形を見る（048）
 resource "aws_security_group" "workload" {
   for_each = local.workload_security_groups
 
