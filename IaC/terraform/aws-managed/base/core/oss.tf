@@ -8,11 +8,9 @@
 # OpenSearch はタスクのエフェメラルストレージに置く（OpenSearch の公式がネットワークファイルシステムを避けるよう書いている）。
 # Neo4j は NFS 上のデータを支えない（設計 005）ので EFS を使わない（IaC/terraform/oss/pipeline/graph が置き場を決める）
 locals {
-  # ops/up-common.sh の check_sg_descriptions（ops/up.sh と ops/oss/up.sh が呼ぶ）は OSS 版かどうかを terraform console でこの値に聞く（049）
   oss = var.project == "nwc-oss"
 
-  # OSS 版で外すマネージドの SG（その SG が from か to の行も外れる）
-  # ops/up-common.sh の check_sg_descriptions（ops/up.sh と ops/oss/up.sh が呼ぶ）がこの行の形を見る（049）
+  # OSS 版で外すマネージドの SG（その SG が from か to の行も外れる）。state にある SG のキーを足すと削除になり、ops/up.sh の check_sg_plan が止める（050）
   oss_replaced = local.oss ? ["msk"] : []
 
   # OSS 版で足す SG と、OSS 版で description を替える SG（spark: EMR Serverless でなく ECS のタスク 1 つ）
@@ -75,7 +73,6 @@ locals {
   ])
 
   # security_groups.tf が作る SG と通信の表。マネージド版では security_groups / sg_flows と同じ
-  # ops/up.sh の check_sg_descriptions が merge の 2 行の形を見る（048）
   workload_security_groups = merge(
     { for k, v in local.security_groups : k => v if !contains(local.oss_replaced, k) },
     { for k, v in local.oss_security_groups : k => v if local.oss },

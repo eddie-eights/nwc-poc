@@ -149,18 +149,21 @@ esac
 tf_use_cli_credentials
 echo "ACCOUNT_ID=$ACCOUNT_ID"
 echo "CALLER_ARN=$CALLER_ARN"
+# base/core の -var のうち手順 0 の時点で分かるもの（vpc_cidr）。手順 0 の SG の守り（check_sg_plan の plan）と手順 3 の apply に同じものを渡し、
+# 手順 3 はこれに足す（cycle 050）
+MAIN_VARS=()
+if [ -n "${VPC_CIDR:-}" ];    then MAIN_VARS+=(-var "vpc_cidr=$VPC_CIDR"); fi
 # 取りにいく側の Telegraf の SG（telegraf_dialin）は 2026-10-09 に gnmic へ替えた（cycle 013。base/core はマネージド版と同じ security_groups.tf）。
 # 古い SG は stream の取りにいく側のタスクが付けたままだと消せない（DependencyViolation）ので、stream が残っているなら先に消してもらう
 if [ -f "$TF_DIR/base/core/terraform.tfstate" ]; then
   tf_init base/core
   if tf base/core state list 2>/dev/null | grep -qxF 'aws_security_group.workload["telegraf_dialin"]' \
     && [ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ] && { tf_init pipeline/stream; [ -n "$(tf pipeline/stream state list 2>/dev/null)" ]; }; then
-    die "IaC/terraform/oss/base/core の state に 2026-10-09 より前の取りにいく側の Telegraf の SG（telegraf_dialin）が残っていて、stream がそれを使っている。先に ops/oss/down.sh で消す（stream だけ先に消してもよい）。まだ何も作っていない"
+    die "IaC/terraform/oss/base/core の state に 2026-10-09 より前の取りにいく側の Telegraf の SG（telegraf_dialin）が残っていて、stream がそれを使っている。先に ops/oss/down.sh で消す。まだ何も作っていない"
   fi
-  # キーはそのままで description を変えた SG（workflow は 041、telegraf_dialout / telegraf_dialout_nlb は 043）も作り直しで、ほかの SG のルールが古い SG を
-  # 参照したままなので、付けるルートを消しても消せない。state の description がコードと違えば、全部消してもらう（ops/up-common.sh の check_sg_descriptions。
-  # workload の全キーと endpoints を見るので表は無い）
-  check_sg_descriptions
+  # SG の name / description / vpc_id を変えると作り直し、表からキーを外すと削除で、ほかの SG のルールが古い SG を参照したままなので、付けるルートを消しても
+  # 消せない。base/core の plan で aws_security_group が replace / delete になれば、全部消してもらう（ops/up-common.sh の check_sg_plan。cycle 050）
+  check_sg_plan ${MAIN_VARS[@]+"${MAIN_VARS[@]}"}
 fi
 ROOTS="base/ecr base/logs base/core agent pipeline/lab pipeline/stream pipeline/graph pipeline/nautobot pipeline/analytics workflow"
 # 土台の SSM Agent とポートフォワーディング（ssm ssmmessages）、ECS のタスクのイメージ（ecr.api ecr.dkr）とログ（logs）。
@@ -293,8 +296,6 @@ fi
 
 # ---- 3. 土台 --------------------------------------------------------------------
 log "3. 土台（IaC/terraform/oss/base/core。VPC / Web の EC2 / バケット / ロール / Kafka のデータの EFS。初回は 3〜5 分）"
-MAIN_VARS=()
-if [ -n "${VPC_CIDR:-}" ];    then MAIN_VARS+=(-var "vpc_cidr=$VPC_CIDR"); fi
 MAIN_VARS+=(-var "interface_endpoints=[\"$(printf '%s' "$ENDPOINTS" | sed 's/ /","/g')\"]")
 MAIN_VARS+=(-var "network_perimeter=$([ -n "$NETWORK_PERIMETER" ] && echo true || echo false)")
 MAIN_VARS+=(-var "endpoints_az_num=$ENDPOINTS_AZ_NUM")

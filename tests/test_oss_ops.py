@@ -342,14 +342,13 @@ chdir = args[0][len("-chdir="):] if args and args[0].startswith("-chdir=") else 
 rest = args[1:] if chdir else args
 verb = rest[0] if rest else ""
 entry = {"cmd": "terraform", "args": args, "profile": os.environ.get("AWS_PROFILE")}
-if verb == "console":  # 式は stdin で来る（check_sg_descriptions の目印付きの式 "local.oss=${local.oss}"。cycle 049 Round 2）。ログに stdin も残す
-    entry["stdin"] = sys.stdin.read()
 with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as f:
     f.write(json.dumps(entry) + "\n")
-if verb == "console":
-    if entry["stdin"].strip() != '"local.oss=${local.oss}"':
-        sys.exit("fake terraform: console unknown expr")
-    print('"local.oss=true"' if "/oss/" in chdir else '"local.oss=false"')
+if verb == "plan" and "-json" in rest:  # up.sh の check_sg_plan（cycle 050）。本物（Terraform v1.16.0）の version と change_summary（変更なし）の 2 行だけ
+    print(json.dumps({"@level": "info", "@message": "Terraform 1.16.0", "@module": "terraform.ui", "terraform": "1.16.0", "type": "version", "ui": "1.3"}))
+    print(json.dumps({"@level": "info", "@message": "No changes. Your infrastructure matches the configuration.", "@module": "terraform.ui",
+                      "changes": {"add": 0, "change": 0, "import": 0, "remove": 0, "action_invocation": 0, "action_fail": 0, "operation": "plan"},
+                      "type": "change_summary"}))
     sys.exit(0)
 if verb == "init":
     if os.environ.get("FAKE_TF_INIT_FAIL") == chdir:  # lock にこの PC のハッシュが無いときの readonly の init
@@ -376,18 +375,6 @@ if rest[:2] == ["state", "show"]:
         f'    id                                   = "{vpc}"',
         "    ipv6_association_id                  = null",
         '    owner_id                             = "123456789012"',
-        "    tags                                 = {",
-        '        "Name" = "x-vpc"',
-        "    }",
-        "}"]))
-    sys.exit(0)
-if rest[:1] == ["show"]:  # state 全体（up.sh の check_sg_descriptions。cycle 043）。workload の SG は載せない（守りは通す）。形は上の state show と同じ
-    print("\n".join([
-        "# aws_vpc.this:",
-        'resource "aws_vpc" "this" {',
-        '    arn                                  = "arn:aws:ec2:ap-northeast-1:123456789012:vpc/vpc-0show"',
-        '    cidr_block                           = "10.0.0.0/16"',
-        '    id                                   = "vpc-0show"',
         "    tags                                 = {",
         '        "Name" = "x-vpc"',
         "    }",
@@ -541,12 +528,6 @@ for base in ("IaC/terraform/aws-managed", "IaC/terraform/oss"):
         os.makedirs(os.path.join(REPO, base, r))
         with open(os.path.join(REPO, base, r, "terraform.tfstate"), "w") as f:
             f.write("{}")
-# up.sh の check_sg_descriptions（cycle 043）は base/core の security_groups.tf と oss.tf（cycle 048 Round 2）から SG の description と書き方を読む。
-# OSS 版のはマネージド版へのシンボリックリンク（本物と同じ形）
-for _fn in ("security_groups.tf", "oss.tf"):
-    shutil.copy(os.path.join(ROOT, "IaC/terraform/aws-managed/base/core", _fn), os.path.join(REPO, "IaC/terraform/aws-managed/base/core"))
-    os.symlink(os.readlink(os.path.join(ROOT, "IaC/terraform/oss/base/core", _fn)), os.path.join(REPO, "IaC/terraform/oss/base/core", _fn))
-
 def fake_env(extra=None):
     env = {"PATH": BIN + os.pathsep + os.environ["PATH"], "HOME": TMP, "TMPDIR": TMP, "FAKE_LOG": LOG, "FAKE_INV": INV}
     env.update(extra or {})
@@ -1229,43 +1210,49 @@ check("ops/oss/up.sh は base/core の state に古い取りにいく側の Tele
       "（マネージド版の ops/up.sh と同じ守り。SG のキーを変えると作り直しで、付けたままでは消せない）",
       0 <= pos("""grep -qxF 'aws_security_group.workload["telegraf_dialin"]'""") < pos('log "1. ECR リポジトリ')
       and '[ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ] && { tf_init pipeline/stream;' in up and "先に ops/oss/down.sh で消す" in up)
-check("ops/oss/up.sh は check_sg_descriptions（description を変えた SG の守り。ops/up-common.sh）を tf_init base/core の後、ECR より前に 1 回呼ぶ（マネージド版と同じ。cycle 043）",
-      len(re.findall(r"^\s*check_sg_descriptions\s*$", up, re.M)) == 1
-      and 0 <= pos("tf_init base/core") < pos("\n  check_sg_descriptions\n") < pos('log "1. ECR リポジトリ'))
-# OSS 版の state の実物（2026-10-08 より前の runtime の SG。Runtime の ENI があるあいだ ops/oss/down.sh も残す。cycle 043 の review.md Round 1 の Should 1）で、
-# 本物の ops/common.sh の die と ops/up-common.sh の check_sg_descriptions を、tf だけ差し替えて OSS 版の TF_DIR / OPS_DIR で打つ
-_CSD_OSS_SH = r"""
+# ---- SG の作り直し・削除の守り（cycle 050。tests/test_workflow.py の 050 の節の OSS 版の分）
+_CSP_CALL = 'check_sg_plan ${MAIN_VARS[@]+"${MAIN_VARS[@]}"}'
+_mv050, _vc050 = "\nMAIN_VARS=()\n", '\nif [ -n "${VPC_CIDR:-}" ];    then MAIN_VARS+=(-var "vpc_cidr=$VPC_CIDR"); fi\n'
+_s050 = (up.count(_mv050), up.count(_vc050), up.find(_mv050), up.find(_vc050), up.find("tf_init base/core"), up.find(_CSP_CALL),
+         up.find('log "1. ECR'), len(re.findall(r"^\s*check_sg_plan\b", up, re.M)), up.count(_CSP_CALL))
+check(f"050 T-15 ops/oss/up.sh は MAIN_VARS=() と vpc_cidr の行を手順 0 の前に置き、tf_init base/core の後・log \"1. ECR\" の前で {_CSP_CALL} をちょうど 1 回呼ぶ。"
+      f"telegraf_dialin の die に「stream だけ先に消してもよい」が無い（いま: {_s050}）",
+      _s050[0] == 1 and _s050[1] == 1 and 0 <= _s050[2] < _s050[3] < _s050[4] < _s050[5] < _s050[6] and _s050[7] == 1 and _s050[8] == 1
+      and "stream だけ先に消してもよい" not in up and "先に ops/oss/down.sh で消す。まだ何も作っていない" in up
+      and "check_sg_descriptions" not in up)
+# OSS 版の state の実物（2026-10-08 より前の runtime の SG。Runtime の ENI があるあいだ ops/oss/down.sh も残す）で、
+# 本物の ops/common.sh の die と ops/up-common.sh の check_sg_plan を、tf だけ差し替えて OSS 版の TF_DIR / OPS_DIR で打つ
+_PC050 = json.dumps({"@level": "info", "@message": 'aws_security_group.workload["runtime"]: Plan to replace', "@module": "terraform.ui",
+                     "change": {"resource": {"addr": 'aws_security_group.workload["runtime"]', "module": "", "resource": 'aws_security_group.workload["runtime"]',
+                                             "implied_provider": "aws", "resource_type": "aws_security_group", "resource_name": "workload", "resource_key": "runtime"},
+                                "action": "replace", "reason": "cannot_update"}, "type": "planned_change"})
+_SUM050 = json.dumps({"@level": "info", "@message": "Plan: 1 to add, 0 to change, 1 to destroy.", "@module": "terraform.ui",
+                      "changes": {"add": 1, "change": 0, "import": 0, "remove": 1, "action_invocation": 0, "action_fail": 0, "operation": "plan"},
+                      "type": "change_summary"})
+with tempfile.TemporaryDirectory() as _d050:
+    with open(os.path.join(_d050, "lines"), "w") as _f:
+        _f.write(_PC050 + "\n" + _SUM050 + "\n")
+    _CSP_OSS_SH = r"""
 set -euo pipefail
 . ops/common.sh; . ops/up-common.sh
-TF_DIR=IaC/terraform/oss; OPS_DIR=ops/oss; OWNER=x
+TF_DIR=IaC/terraform/oss; OPS_DIR=ops/oss; OWNER=x; PY=(python3)
 tf() {
-  if [ "$*" = "base/core console -no-color -var owner=x" ]; then cat >/dev/null; echo '"local.oss=true"'; return 0; fi
-  [ "$*" = "base/core show -no-color" ] || return 9
-  printf '%s\n' '# aws_security_group.workload["runtime"]:' 'resource "aws_security_group" "workload" {' \
-    '    description            = "AgentCore Runtime ENIs (terraform/agent)"' '    egress                 = []' '}' '' \
-    '# aws_vpc.this:' 'resource "aws_vpc" "this" {' '    id = "vpc-0show"' '}'
+  [ "$*" = "base/core plan -json -input=false -refresh=false -var owner=x" ] || return 9
+  cat "$D050/lines"
 }
-check_sg_descriptions
+check_sg_plan
 echo NOT-REACHED
 """
-p = subprocess.run(["bash", "-c", _CSD_OSS_SH], cwd=ROOT, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-check("ops/oss/up.sh の check_sg_descriptions: OSS 版の state の古い runtime の SG（terraform/agent）で止め、ops/oss/down.sh の全消しと、"
-      "Runtime の ENI が消えてから ops/oss/down.sh を打つことを案内する（cycle 043 Round 3）",
+    _env050 = {k: v for k, v in os.environ.items() if not k.startswith(("TF_CLI_ARGS", "TF_VAR_"))}
+    _env050["D050"] = _d050
+    p = subprocess.run(["bash", "-c", _CSP_OSS_SH], cwd=ROOT, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL, env=_env050,
+                       errors="replace")
+check("050 T-16 ops/oss/up.sh の check_sg_plan: OSS 版の plan で runtime の SG が作り直し（replace、cannot_update）なら止め、ops/oss/down.sh の全消しと、"
+      "Runtime の ENI が消えてから ops/oss/down.sh を打つことを案内する",
       p.returncode == 1 and "NOT-REACHED" not in p.stdout
-      and "NG: IaC/terraform/oss/base/core の state の SG の description がコードと違う: runtime（state「AgentCore Runtime ENIs (terraform/agent)」" in p.stderr
+      and 'NG: IaC/terraform/oss/base/core の plan で SG が作り直し・削除になる: aws_security_group.workload["runtime"]（replace、cannot_update）。' in p.stderr
       and "先に ops/oss/down.sh で全部消してから ops/oss/up.sh。runtime は Runtime の ENI（agentic_ai。最長 8 時間ほど残る）があるあいだ ops/oss/down.sh も残すので、"
           "ENI が消えてから ops/oss/down.sh を打つ。まだ何も作っていない" in p.stderr)
-# cycle 049 T-9: 偽の terraform の console（目印付きの式に、-chdir が IaC/terraform/oss/ なら "local.oss=true"、ほかは "local.oss=false"、知らない式は rc≠0）
-def _fake_console(chdir, expr):
-    return subprocess.run([os.path.join(BIN, "terraform"), f"-chdir={chdir}", "console", "-no-color", "-var", "owner=x"], input=expr,
-                          capture_output=True, text=True, timeout=30, env=fake_env({}))
-_E049 = '"local.oss=${local.oss}"\n'
-_fc = [_fake_console(d, e) for d, e in (("IaC/terraform/oss/base/core", _E049), ("IaC/terraform/aws-managed/base/core", _E049),
-                                        ("IaC/terraform/oss/base/core", "local.nope\n"), ("IaC/terraform/oss/base/core", "local.oss\n"))]
-check("049 T-9 偽の terraform の console: 目印付きの式「\"local.oss=${local.oss}\"」に、-chdir が IaC/terraform/oss/base/core なら \"local.oss=true\"、"
-      "IaC/terraform/aws-managed/base/core なら \"local.oss=false\" と答え、知らない式（local.nope、目印の無い local.oss）は rc≠0",
-      [(x.returncode, x.stdout) for x in _fc[:2]] == [(0, '"local.oss=true"\n'), (0, '"local.oss=false"\n')]
-      and all(x.returncode != 0 and "console unknown expr" in x.stderr for x in _fc[2:]))
 _spark_tf = read("IaC/terraform/oss/pipeline/analytics/spark.tf")
 check("Spark のサービスは Terraform では 0 台で作り（desired_count = 0、あとの変更は見ない）、up.sh が OpenSearch・VictoriaMetrics・Splunk を待ったあとで 1 台にする",
       re.search(r"^\s*desired_count\s*=\s*0$", _spark_tf, re.M) and "ignore_changes = [desired_count]" in _spark_tf
@@ -1367,11 +1354,13 @@ check("up.sh（通し）: 終了コード 0 で最後まで行き、偽物の知
 check("up.sh（通し）: IaC/terraform/oss/ の 10 個のルートを決めた順に 1 回ずつ apply し、どれにも owner=x を渡す（IaC/terraform/aws-managed/ のルートには触らない）",
       [r for r, _ in ap] == [f"IaC/terraform/oss/{r}" for r in ROOTS] and all(has_var(a, "owner=x") for _, a in ap)
       and all(chdir_of(c).startswith("IaC/terraform/oss/") for c in tf_calls(cs)))
-_cons = [c for c in tf_calls(cs) if len(c["args"]) > 1 and c["args"][1] == "console"]
-check("049 T-9 up.sh（通し）: check_sg_descriptions が terraform console を IaC/terraform/oss/base/core でちょうど 1 回打ち（-no-color -var owner=x、"
-      "stdin は目印付きの式「\"local.oss=${local.oss}\"」）、show -no-color より前に打つ",
-      [(chdir_of(c), c["args"][2:], c.get("stdin")) for c in _cons] == [("IaC/terraform/oss/base/core", ["-no-color", "-var", "owner=x"], _E049)]
-      and 0 <= cs.index(_cons[0]) < first(cs, lambda c: c["cmd"] == "terraform" and c["args"][1:] == ["show", "-no-color"]))
+_plans = [c for c in tf_calls(cs) if len(c["args"]) > 1 and c["args"][1] == "plan"]
+check("050 T-17 up.sh（通し）: check_sg_plan が IaC/terraform/oss/base/core で plan -json -input=false -refresh=false -var owner=x をちょうど 1 回打ち、"
+      "base/core の init の後・ECR（base/ecr）より前。console と show は打たない",
+      [(chdir_of(c), c["args"][2:]) for c in _plans] == [("IaC/terraform/oss/base/core", ["-json", "-input=false", "-refresh=false", "-var", "owner=x"])]
+      and 0 <= first(cs, lambda c: c["cmd"] == "terraform" and c["args"][:2] == ["-chdir=IaC/terraform/oss/base/core", "init"]) < cs.index(_plans[0])
+      < first(cs, lambda c: c["cmd"] == "terraform" and c["args"][0] == "-chdir=IaC/terraform/oss/base/ecr")
+      and not [c for c in tf_calls(cs) if len(c["args"]) > 1 and c["args"][1] in ("console", "show")])
 A = {r[len("IaC/terraform/oss/"):]: a for r, a in ap}
 check("up.sh（通し）: base/core にエンドポイント 14 個と、閉域（network_perimeter=true）と endpoints_az_num=1 を渡す",
       "base/core" in A and any(a.startswith("interface_endpoints=") and set(json.loads(a.partition("=")[2])) == UP_ENDPOINTS for a in A["base/core"])
