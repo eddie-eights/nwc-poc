@@ -533,9 +533,11 @@ for base in ("IaC/terraform/aws-managed", "IaC/terraform/oss"):
         os.makedirs(os.path.join(REPO, base, r))
         with open(os.path.join(REPO, base, r, "terraform.tfstate"), "w") as f:
             f.write("{}")
-# up.sh の check_sg_descriptions（cycle 043）は base/core の security_groups.tf から SG の description を読む。OSS 版のはマネージド版へのシンボリックリンク（本物と同じ形）
-shutil.copy(os.path.join(ROOT, "IaC/terraform/aws-managed/base/core/security_groups.tf"), os.path.join(REPO, "IaC/terraform/aws-managed/base/core"))
-os.symlink(os.readlink(os.path.join(ROOT, "IaC/terraform/oss/base/core/security_groups.tf")), os.path.join(REPO, "IaC/terraform/oss/base/core/security_groups.tf"))
+# up.sh の check_sg_descriptions（cycle 043）は base/core の security_groups.tf と oss.tf（cycle 048 Round 2）から SG の description と書き方を読む。
+# OSS 版のはマネージド版へのシンボリックリンク（本物と同じ形）
+for _fn in ("security_groups.tf", "oss.tf"):
+    shutil.copy(os.path.join(ROOT, "IaC/terraform/aws-managed/base/core", _fn), os.path.join(REPO, "IaC/terraform/aws-managed/base/core"))
+    os.symlink(os.readlink(os.path.join(ROOT, "IaC/terraform/oss/base/core", _fn)), os.path.join(REPO, "IaC/terraform/oss/base/core", _fn))
 
 def fake_env(extra=None):
     env = {"PATH": BIN + os.pathsep + os.environ["PATH"], "HOME": TMP, "TMPDIR": TMP, "FAKE_LOG": LOG, "FAKE_INV": INV}
