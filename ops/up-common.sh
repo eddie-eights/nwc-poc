@@ -28,13 +28,14 @@ has_resources() {  # has_resources <ルート>  state があり、リソース�
 # state にある workload の SG 全部と endpoints の description をコードと比べるので、キーの表は持たない（キーを変えた古い SG は up.sh の既存の守りの担当）
 # コードの書き方（workload の description = each.value と for_each、oss.tf の local.workload_security_groups の merge、endpoints に count / for_each が無いこと）も
 # 読めなければ止める（cycle 048）
-sg_descriptions_in_code() {  # sg_descriptions_in_code  コードの SG の description を <キー>\t<文言> で出す（security_groups.tf の local.security_groups）。
-  # OSS 版（oss.auto.tfvars が project = "nwc-oss"。oss.tf の local.oss と同じ判定）は oss.tf の local.oss_security_groups が同じキーを上書きし、キーを足す。
+# OSS 版かは terraform console で Terraform に聞く（oss.tf の local.oss）。oss.tf の oss_replaced の行も見る（cycle 049）
+sg_descriptions_in_code() {  # sg_descriptions_in_code <0|1>  コードの SG の description を <キー>\t<文言> で出す（security_groups.tf の local.security_groups）。
+  # OSS 版（引数 1。check_sg_descriptions が terraform console の local.oss で決める。cycle 049）は oss.tf の local.oss_security_groups が同じキーを上書きし、キーを足す。
   # 最後に endpoints を 1 行（security_groups.tf の resource "aws_security_group" "endpoints" のブロックの 2 空白の description。oss.tf は上書きしない。cycle 046）
   # oss.tf はマネージド版でも読む（表を workload の SG にする local.workload_security_groups の merge がある。cycle 048 Round 2）。OSS 版かは awk の oss で渡す
-  local dir="$TF_DIR/base/core" oss=0
+  local dir="$TF_DIR/base/core" oss="${1-}"
+  case "$#:$oss" in 1:0 | 1:1) ;; *) echo "NG: sg_descriptions_in_code の引数（OSS 版なら 1、マネージド版なら 0）が無いか 0 / 1 でない（いま $# 個「$*」）" >&2; return 1 ;; esac
   [ -f "$dir/oss.tf" ] || { echo "NG: $dir/oss.tf が無い" >&2; return 1; }
-  if [ -f "$dir/oss.auto.tfvars" ] && grep -q '^project *= *"nwc-oss"' "$dir/oss.auto.tfvars"; then oss=1; fi
   awk -v oss="$oss" '
     # 値（両端の " の内側）がプレーンな文字列か。" があれば、行末のコメントや式が値に混ざっている（例: "X" # was "Y"）。
     # \ はエスケープ（\" \\ \uNNNN）で、${ / %{ は補間・テンプレート（$${ も含めて止める側に倒す）。どれも state には展開後の値が入るので書いたままでは比べられない。
@@ -68,6 +69,13 @@ sg_descriptions_in_code() {  # sg_descriptions_in_code  コードの SG の desc
     inm && !m1 && !m2 && $0 == "    { for k, v in local.security_groups : k => v if !contains(local.oss_replaced, k) }," { m1 = 1; next }
     inm && m1 && !m2 && $0 == "    { for k, v in local.oss_security_groups : k => v if local.oss }," { m2 = 1; next }
     inm { mbad = mbad "\n  " FILENAME ": " $0; next }
+    # OSS 版で外すマネージドの SG の表（oss.tf。cycle 049）。キーを足すと OSS 版でその SG が state から消える（ほかの SG のルールが参照したままで DependencyViolation）のに、
+    # 表のキーは全部出すので守りが通す。どちらの版でも、この行が完全一致でちょうど 1 行あること（= の前の空白は 1 つ以上）
+    file == 2 && $0 ~ /^  oss_replaced[ =]/ {
+      if (match($0, /^  oss_replaced +=/) && substr($0, RLENGTH + 1) == " local.oss ? [\"msk\"] : []") ro++
+      else rbad = rbad "\n  " FILENAME ": " $0
+      next
+    }
     inb && $0 == "  }" { inb = 0; next }
     inb && match($0, /^    [A-Za-z0-9_]+ += "/) && substr($0, length($0)) == "\"" && plain(v = substr($0, RLENGTH + 1, length($0) - RLENGTH - 1)) {
       key = substr($0, 5); sub(/ .*/, "", key)
@@ -91,7 +99,9 @@ sg_descriptions_in_code() {  # sg_descriptions_in_code  コードの SG の desc
       }
       if (!mblk) mbad = "\n  " ARGV[2] " に「  workload_security_groups = merge(」の行が無い"
       else if (mbad == "" && !(m1 && m2)) mbad = "\n  " ARGV[2] " の「  workload_security_groups = merge(」のブロックに local.security_groups と local.oss_security_groups の 2 行が無い"
-      wbad = wbad mbad
+      if (ro == 0 && rbad == "") rbad = "\n  " ARGV[2] " に「  oss_replaced = local.oss ? [\"msk\"] : []」の行が無い"
+      else if (ro > 1) rbad = rbad "\n  " ARGV[2] " に「  oss_replaced = local.oss ? [\"msk\"] : []」の行が " ro " 行ある"
+      wbad = wbad mbad rbad
       ng = 0
       if (epbad != "" || ("endpoints" in desc)) {
         printf "NG: aws_security_group.endpoints の description が読めない:%s%s\n", epbad, (("endpoints" in desc) ? "\n  local.security_groups / oss_security_groups に endpoints というキーがある（キーが衝突する）" : "") > "/dev/stderr"; ng = 1
@@ -123,8 +133,26 @@ sg_descriptions_in_state() {  # sg_descriptions_in_state < <terraform show -no-c
   '
 }
 check_sg_descriptions() {  # base/core の state の SG の description がコードと違えば die（tf_init base/core 済みが前提）。ルートの state は見ない
-  local code shown diffs
-  code=$(sg_descriptions_in_code) && [ -n "$code" ] \
+  local code shown diffs out last marks rc=0 oss=0
+  # TF_CLI_ARGS / TF_CLI_ARGS_<サブコマンド> はサブコマンドごとに効くので、console と apply で local.oss がずれうる（cycle 049）
+  local cli_args="${!TF_CLI_ARGS*}"  # 名前を空白区切りで（@ は名前ごとに別の語になる）
+  if [ -n "$cli_args" ]; then
+    die "TF_CLI_ARGS / TF_CLI_ARGS_* が設定されている（${cli_args}）。terraform のサブコマンドごとに変数の与え方がずれる（console と apply で local.oss が違いうる）ので、外してから打ち直す。まだ何も作っていない"
+  fi
+  # OSS 版かは Terraform に聞く（oss.tf の local.oss。project の変数は既定値・tfvars・環境変数で決まり、守りが真似るとずれる。cycle 049）。-var owner は apply と同じ。stderr はそのまま流す
+  # console は Warning（宣言の無い変数の値など）を stdout に出し、値を最後に出す（Terraform v1.16.0 で確かめた）。なので -no-color と目印付きの式で聞き、
+  # stdout の最後の行がちょうど "local.oss=true" / "local.oss=false" で、その形の行が 1 行だけのときに受ける（cycle 049 Round 2）。
+  # 受けるときも、最後の行より前（Warning の枠）は stderr にそのまま出す（Warning を黙って捨てない。Warning では止めない ── apply も止まらない）
+  out=$(tf base/core console -no-color -var "owner=$OWNER" <<<'"local.oss=${local.oss}"') || rc=$?
+  last=${out##*$'\n'}
+  marks=$(printf '%s\n' "$out" | awk '$0 == "\"local.oss=true\"" || $0 == "\"local.oss=false\"" { n++ } END { print n + 0 }')
+  if [ "$rc" -ne 0 ] || [ "$marks" != 1 ] || { [ "$last" != '"local.oss=true"' ] && [ "$last" != '"local.oss=false"' ]; }; then
+    [ -z "$out" ] || printf '%s\n' "$out" >&2
+    die "$TF_DIR/base/core の local.oss が読めない（terraform console の失敗か、stdout の最後の行が \"local.oss=true\" / \"local.oss=false\" でない。上の出力）。まだ何も作っていない"
+  fi
+  [ "$out" = "$last" ] || printf '%s\n' "${out%$'\n'*}" >&2
+  [ "$last" = '"local.oss=false"' ] || oss=1
+  code=$(sg_descriptions_in_code "$oss") && [ -n "$code" ] \
     || die "$TF_DIR/base/core/security_groups.tf から SG の description が読めない（local.security_groups の形が変わったなら ops/up-common.sh の sg_descriptions_in_code を直す）。まだ何も作っていない"
   shown=$(tf base/core show -no-color) || die "$TF_DIR/base/core の state が読めない（terraform show の失敗。上のエラー）。まだ何も作っていない"
   # コードに無いキー（キーを変えた古い SG）は飛ばす。違うもの（空も含む）を「<キー>（state「…」/ コード「…」）」にして「、」でつなぐ

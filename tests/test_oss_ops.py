@@ -338,11 +338,19 @@ FAKE_TF = r'''#!/usr/bin/env python3
 import json, os, sys, time
 
 args = sys.argv[1:]
-with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as f:
-    f.write(json.dumps({"cmd": "terraform", "args": args, "profile": os.environ.get("AWS_PROFILE")}) + "\n")
 chdir = args[0][len("-chdir="):] if args and args[0].startswith("-chdir=") else ""
 rest = args[1:] if chdir else args
 verb = rest[0] if rest else ""
+entry = {"cmd": "terraform", "args": args, "profile": os.environ.get("AWS_PROFILE")}
+if verb == "console":  # 式は stdin で来る（check_sg_descriptions の目印付きの式 "local.oss=${local.oss}"。cycle 049 Round 2）。ログに stdin も残す
+    entry["stdin"] = sys.stdin.read()
+with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as f:
+    f.write(json.dumps(entry) + "\n")
+if verb == "console":
+    if entry["stdin"].strip() != '"local.oss=${local.oss}"':
+        sys.exit("fake terraform: console unknown expr")
+    print('"local.oss=true"' if "/oss/" in chdir else '"local.oss=false"')
+    sys.exit(0)
 if verb == "init":
     if os.environ.get("FAKE_TF_INIT_FAIL") == chdir:  # lock にこの PC のハッシュが無いときの readonly の init
         print("Error: Provider dependency changes detected (lock file is read-only)", file=sys.stderr)
@@ -1229,8 +1237,9 @@ check("ops/oss/up.sh は check_sg_descriptions（description を変えた SG の
 _CSD_OSS_SH = r"""
 set -euo pipefail
 . ops/common.sh; . ops/up-common.sh
-TF_DIR=IaC/terraform/oss; OPS_DIR=ops/oss
+TF_DIR=IaC/terraform/oss; OPS_DIR=ops/oss; OWNER=x
 tf() {
+  if [ "$*" = "base/core console -no-color -var owner=x" ]; then cat >/dev/null; echo '"local.oss=true"'; return 0; fi
   [ "$*" = "base/core show -no-color" ] || return 9
   printf '%s\n' '# aws_security_group.workload["runtime"]:' 'resource "aws_security_group" "workload" {' \
     '    description            = "AgentCore Runtime ENIs (terraform/agent)"' '    egress                 = []' '}' '' \
@@ -1246,6 +1255,17 @@ check("ops/oss/up.sh の check_sg_descriptions: OSS 版の state の古い runti
       and "NG: IaC/terraform/oss/base/core の state の SG の description がコードと違う: runtime（state「AgentCore Runtime ENIs (terraform/agent)」" in p.stderr
       and "先に ops/oss/down.sh で全部消してから ops/oss/up.sh。runtime は Runtime の ENI（agentic_ai。最長 8 時間ほど残る）があるあいだ ops/oss/down.sh も残すので、"
           "ENI が消えてから ops/oss/down.sh を打つ。まだ何も作っていない" in p.stderr)
+# cycle 049 T-9: 偽の terraform の console（目印付きの式に、-chdir が IaC/terraform/oss/ なら "local.oss=true"、ほかは "local.oss=false"、知らない式は rc≠0）
+def _fake_console(chdir, expr):
+    return subprocess.run([os.path.join(BIN, "terraform"), f"-chdir={chdir}", "console", "-no-color", "-var", "owner=x"], input=expr,
+                          capture_output=True, text=True, timeout=30, env=fake_env({}))
+_E049 = '"local.oss=${local.oss}"\n'
+_fc = [_fake_console(d, e) for d, e in (("IaC/terraform/oss/base/core", _E049), ("IaC/terraform/aws-managed/base/core", _E049),
+                                        ("IaC/terraform/oss/base/core", "local.nope\n"), ("IaC/terraform/oss/base/core", "local.oss\n"))]
+check("049 T-9 偽の terraform の console: 目印付きの式「\"local.oss=${local.oss}\"」に、-chdir が IaC/terraform/oss/base/core なら \"local.oss=true\"、"
+      "IaC/terraform/aws-managed/base/core なら \"local.oss=false\" と答え、知らない式（local.nope、目印の無い local.oss）は rc≠0",
+      [(x.returncode, x.stdout) for x in _fc[:2]] == [(0, '"local.oss=true"\n'), (0, '"local.oss=false"\n')]
+      and all(x.returncode != 0 and "console unknown expr" in x.stderr for x in _fc[2:]))
 _spark_tf = read("IaC/terraform/oss/pipeline/analytics/spark.tf")
 check("Spark のサービスは Terraform では 0 台で作り（desired_count = 0、あとの変更は見ない）、up.sh が OpenSearch・VictoriaMetrics・Splunk を待ったあとで 1 台にする",
       re.search(r"^\s*desired_count\s*=\s*0$", _spark_tf, re.M) and "ignore_changes = [desired_count]" in _spark_tf
@@ -1347,6 +1367,11 @@ check("up.sh（通し）: 終了コード 0 で最後まで行き、偽物の知
 check("up.sh（通し）: IaC/terraform/oss/ の 10 個のルートを決めた順に 1 回ずつ apply し、どれにも owner=x を渡す（IaC/terraform/aws-managed/ のルートには触らない）",
       [r for r, _ in ap] == [f"IaC/terraform/oss/{r}" for r in ROOTS] and all(has_var(a, "owner=x") for _, a in ap)
       and all(chdir_of(c).startswith("IaC/terraform/oss/") for c in tf_calls(cs)))
+_cons = [c for c in tf_calls(cs) if len(c["args"]) > 1 and c["args"][1] == "console"]
+check("049 T-9 up.sh（通し）: check_sg_descriptions が terraform console を IaC/terraform/oss/base/core でちょうど 1 回打ち（-no-color -var owner=x、"
+      "stdin は目印付きの式「\"local.oss=${local.oss}\"」）、show -no-color より前に打つ",
+      [(chdir_of(c), c["args"][2:], c.get("stdin")) for c in _cons] == [("IaC/terraform/oss/base/core", ["-no-color", "-var", "owner=x"], _E049)]
+      and 0 <= cs.index(_cons[0]) < first(cs, lambda c: c["cmd"] == "terraform" and c["args"][1:] == ["show", "-no-color"]))
 A = {r[len("IaC/terraform/oss/"):]: a for r, a in ap}
 check("up.sh（通し）: base/core にエンドポイント 14 個と、閉域（network_perimeter=true）と endpoints_az_num=1 を渡す",
       "base/core" in A and any(a.startswith("interface_endpoints=") and set(json.loads(a.partition("=")[2])) == UP_ENDPOINTS for a in A["base/core"])
