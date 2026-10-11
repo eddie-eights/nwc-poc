@@ -605,7 +605,7 @@ if [ -f "$TF_DIR/base/core/terraform.tfstate" ]; then
   fi
   # キーはそのままで description を変えた SG（workflow は 041、telegraf_dialout / telegraf_dialout_nlb は 043）も作り直しで、ほかの SG のルールが古い SG を
   # 参照したままなので、付けるルートを消しても消せない。state の description がコードと違えば、全部消してもらう（ops/up-common.sh の check_sg_descriptions。
-  # 全キーを見るので表は無い）
+  # workload の全キーと endpoints を見るので表は無い）
   check_sg_descriptions
 fi
 

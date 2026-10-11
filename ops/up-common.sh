@@ -24,14 +24,23 @@ has_resources() {  # has_resources <ルート>  state があり、リソース�
 # description を変えた SG（cycle 043）。aws_security_group.workload は description を変えると作り直し（name が固定で create_before_destroy を付けられない）で、
 # ほかの SG のルールが古い SG を referenced_security_group_id で参照したまま（参照側のルールは新しい SG を作った後に in-place で更新される）なので、
 # 付けるルートだけ消しても古い SG の destroy は DependencyViolation で止まる（先に消したルールだけが無い状態になる）。通るのは down.sh の全消しだけ。
-# state にある workload の SG 全部の description をコードと比べるので、キーの表は持たない（キーを変えた古い SG は up.sh の既存の守りの担当）
+# VPC エンドポイントの SG（aws_security_group.endpoints。for_each 無し）も workload の SG のルールが参照するので同じ（cycle 046）。
+# state にある workload の SG 全部と endpoints の description をコードと比べるので、キーの表は持たない（キーを変えた古い SG は up.sh の既存の守りの担当）
 sg_descriptions_in_code() {  # sg_descriptions_in_code  コードの SG の description を <キー>\t<文言> で出す（security_groups.tf の local.security_groups）。
-  # OSS 版（oss.auto.tfvars が project = "nwc-oss"。oss.tf の local.oss と同じ判定）は oss.tf の local.oss_security_groups が同じキーを上書きし、キーを足す
+  # OSS 版（oss.auto.tfvars が project = "nwc-oss"。oss.tf の local.oss と同じ判定）は oss.tf の local.oss_security_groups が同じキーを上書きし、キーを足す。
+  # 最後に endpoints を 1 行（security_groups.tf の resource "aws_security_group" "endpoints" のブロックの 2 空白の description。oss.tf は上書きしない。cycle 046）
   local dir="$TF_DIR/base/core" oss=""
   if [ -f "$dir/oss.auto.tfvars" ] && grep -q '^project *= *"nwc-oss"' "$dir/oss.auto.tfvars"; then oss="$dir/oss.tf"; fi
   awk '
-    FILENAME != prev { prev = FILENAME; file++; inb = 0 }
-    file == 1 && $0 == "  security_groups = {" { inb = 1; next }
+    FILENAME != prev { prev = FILENAME; file++; inb = 0; inr = 0 }
+    file == 1 && $0 == "  security_groups = {" { inb = 1; sgblk = 1; next }
+    file == 1 && $0 == "resource \"aws_security_group\" \"endpoints\" {" { inr = 1; rblk = 1; next }
+    inr && $0 == "}" { inr = 0; next }
+    inr && !epok && match($0, /^  description += "/) && substr($0, length($0)) == "\"" {
+      v = substr($0, RLENGTH + 1, length($0) - RLENGTH - 1)
+      if (!index(v, "${") && !index(v, "%{")) { ep = v; epok = 1; next }  # テンプレート（補間）は state に展開後の値が入るので比べられない
+    }
+    inr && $0 ~ /^  description[ =]/ { epbad = epbad "\n  " FILENAME ": " $0; next }  # 式・補間・行末のコメント・複数行は読めない（ほかの属性の行は見ない）
     file == 2 && $0 == "  oss_security_groups = {" { inb = 1; next }
     inb && $0 == "  }" { inb = 0; next }
     inb && match($0, /^    [A-Za-z0-9_]+ += "/) && substr($0, length($0)) == "\"" {
@@ -42,18 +51,28 @@ sg_descriptions_in_code() {  # sg_descriptions_in_code  コードの SG の desc
     inb && $0 !~ /^ *(#|$)/ { bad = bad "\n  " FILENAME ": " $0 }  # 読めない行（行末のコメント、式など）は黙って飛ばさない（そのキーを見逃す）
     END {
       if (bad != "") { printf "NG: local.security_groups / oss_security_groups の読めない行:%s\n", bad > "/dev/stderr"; exit 1 }
+      # endpoints の 1 行だけで出力が空でなくなるので、workload の表が読めないことはここで止める（cycle 046）
+      if (!sgblk || n == 0) { printf "NG: %s に「  security_groups = {」の塊が無いか、キーが 1 つも無い\n", ARGV[1] > "/dev/stderr"; exit 1 }
+      if (!rblk) epbad = "\n  resource \"aws_security_group\" \"endpoints\" { の行が無い"
+      else if (!epok && epbad == "") epbad = "\n  ブロックに 2 空白の description の行が無い"
+      if (epbad != "" || ("endpoints" in desc)) {
+        printf "NG: aws_security_group.endpoints の description が読めない:%s%s\n", epbad, (("endpoints" in desc) ? "\n  local.security_groups / oss_security_groups に endpoints というキーがある（キーが衝突する）" : "") > "/dev/stderr"; exit 1
+      }
       for (i = 1; i <= n; i++) printf "%s\t%s\n", order[i], desc[order[i]]
+      printf "endpoints\t%s\n", ep
     }
   ' "$dir/security_groups.tf" ${oss:+"$oss"}
 }
 sg_descriptions_in_state() {  # sg_descriptions_in_state < <terraform show -no-color の出力>  state の SG の description を <キー>\t<文言> で出す。
-  # 見出し「# aws_security_group.workload["<キー>"]:」から行頭の } までのブロックの、4 空白ちょうどの description（SG 本体の属性）の最初の 1 つ。
+  # 見出し「# aws_security_group.workload["<キー>"]:」（キーは <キー>）と「# aws_security_group.endpoints:」（キーは endpoints。cycle 046）から行頭の } までの
+  # ブロックの、4 空白ちょうどの description（SG 本体の属性）の最初の 1 つ。
   # 無ければ <キー>\t（空）。ほかのリソース（SG のルールの description も 4 空白）は別の見出しのブロックなので混ざらない
   awk '
     function flush() { if (key != "") printf "%s\t%s\n", key, (found ? d : ""); key = ""; found = 0 }
     /^# / {
       flush()
       if (index($0, "# aws_security_group.workload[\"") == 1 && (e = index($0, "\"]:")) > 0) key = substr($0, 32, e - 32)
+      else if (index($0, "# aws_security_group.endpoints:") == 1) key = "endpoints"  # 後ろに「 (tainted)」が付くこともある（workload と同じく前方一致）
       next
     }
     key != "" && $0 == "}" { flush(); next }
