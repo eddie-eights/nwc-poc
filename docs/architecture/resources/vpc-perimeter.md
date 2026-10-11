@@ -17,7 +17,7 @@ VPC の中の通信は、SG の通信の表に書いたものだけが通る。
 | インターフェース型エンドポイント | 作る機能から `ops/up.sh` が選んで渡す。private DNS あり。ポリシーは「このアカウントのプリンシパルだけ」 | `ops/up.sh` の `endpoints_for`、`IaC/terraform/aws-managed/base/core/endpoints.tf` の `aws_vpc_endpoint.interface` |
 | OpenSearch Serverless の VPC エンドポイント | KB か `STORES` の `grafana` があるとき、または前に作ったコレクションが agent か analytics の state に残っているときだけ作る（`create_opensearch_endpoint`。`ops/up.sh` の `NEED_AOSS`） | `IaC/terraform/aws-managed/base/core/endpoints.tf` の `aws_opensearchserverless_vpc_endpoint.aoss` |
 | エンドポイントを置く AZ の数 | `ENDPOINTS_AZ_NUM`（既定 1、1〜3） | `ops/up.sh`、`deploy.env.example` |
-| IAM の Deny | 管理ポリシー `<prefix>-network-perimeter`。ワークロードのロール全部に付ける | `IaC/terraform/aws-managed/base/core/perimeter.tf` と各ルートの attachment |
+| IAM の Deny | 管理ポリシー `<prefix>-network-perimeter`。ワークロードのロール全部に付ける（同じ `base/core` の `<prefix>-ssm-agent` は SSM の管理の許可で、Web と lab の EC2 のロールに付ける。cycle 047） | `IaC/terraform/aws-managed/base/core/perimeter.tf` と各ルートの attachment |
 | リソースポリシーの Deny | バケット、S3 Tables のテーブルバケット、SNS、SQS（本体と DLQ）、AgentCore の Runtime と Gateway | `bucket.tf`、`alerts.tf` ほか（一覧は表の下） |
 | Deny から外すプリンシパル | apply した人、KB のロール `<prefix>-kb`、Firehose のロール `<prefix>-alert-firehose` | `IaC/terraform/aws-managed/base/core/perimeter.tf` の `perimeter_exempt_principals` |
 | SG | ワークロードごとに 1 つと `endpoints`。ルールは通信の表から作る | `IaC/terraform/aws-managed/base/core/security_groups.tf` の `local.sg_flows` |

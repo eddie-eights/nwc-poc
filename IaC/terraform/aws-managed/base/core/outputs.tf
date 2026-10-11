@@ -59,6 +59,11 @@ output "network_perimeter_policy_arn" {
   value       = var.network_perimeter ? aws_iam_policy.network_perimeter.arn : ""
 }
 
+output "ssm_agent_policy_arn" {
+  description = "IAM policy with the SSM Agent actions of the AWS managed policy for SSM managed instances (v2) minus ssm:GetParameter and ssm:GetParameters (ssm_agent.tf). Attached here to the web role and by IaC/terraform/aws-managed/pipeline/lab to the lab role"
+  value       = aws_iam_policy.ssm_agent.arn
+}
+
 output "perimeter_exempt_principals" {
   description = "Principals the resource policy Deny statements leave out (the deployer and the knowledge base role). Used by the alerts topic here (alerts.tf) and read by IaC/terraform/aws-managed/pipeline/analytics (S3 Tables) and IaC/terraform/aws-managed/workflow (SQS)"
   value       = local.perimeter_exempt_principals

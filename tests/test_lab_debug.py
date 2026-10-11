@@ -126,7 +126,7 @@ check("ロールの Sid は iam.tf と同じ（TelegrafAddress は stream の NL
       and not any("ssm:" in a for s in stmts.values() if s["Effect"] == "Allow" for a in as_list(s["Action"])))
 check("Sid ごとの Action は iam.tf と同じ", all(as_list(stmts[s]["Action"]) == tf_actions(s) for s in stmts))
 # ---- Nautobot の内部のシークレット（secret-key / admin-password / db-password）を lab と lab-debug のロールで Deny する（cycle 044 Round 2）。
-# AmazonSSMManagedInstanceCore（ssm:GetParameter* が Resource *）に勝たせ、temporal のタスクが Run Command で lab のシェルから引く経路も塞ぐ
+# prefix を問わないので将来 * の Allow が付いても塞がり、temporal のタスクが Run Command で lab のシェルから引く経路も塞ぐ
 lab_locals = read("IaC", "terraform", "aws-managed", "pipeline", "lab", "locals.tf")
 _lab_nb_m = re.search(r"^  nautobot_secret_parameter_arns = \[\n((?:    .*\n)*?)  \]$", lab_locals, re.M)
 _lab_nb_arns = re.findall(r'^    "(.*)",$', _lab_nb_m.group(1), re.M) if _lab_nb_m else []
@@ -161,19 +161,173 @@ check("ECR はこのスタックのリポジトリ 3 つ（lab の 2 つと Tele
 check("S3 は このスタックのバケットの lab/ だけ（GetObject と prefix 付きの ListBucket）",
       stmts["S3Read"]["Resource"] == {"Fn::Sub": "${Bucket.Arn}/lab/*"} and stmts["S3List"]["Resource"] == {"Fn::GetAtt": "Bucket.Arn"}
       and stmts["S3List"]["Condition"] == {"StringLike": {"s3:prefix": "lab/*"}})
-_perim = role["Policies"][1]["Fn::If"]
+_perim = role["Policies"][2]["Fn::If"] if len(role["Policies"]) > 2 and "Fn::If" in role["Policies"][2] else [None, {"PolicyDocument": {"Statement": [{}]}}, None]
 _deny = _perim[1]["PolicyDocument"]["Statement"][0]
 _tf_perim = read("IaC", "terraform", "aws-managed", "base", "core", "perimeter.tf")
-check("SSM のマネージドポリシーと、NetworkPerimeter のときだけ境界の Deny（perimeter.tf と同じ Action と条件。SourceVpc はこのスタックの VPC）",
-      role["ManagedPolicyArns"] == [{"Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"}]
+check("Policies[2] は NetworkPerimeter のときだけ境界の Deny（perimeter.tf と同じ Action と条件。SourceVpc はこのスタックの VPC）",
+      len(role["Policies"]) == 3
       and _perim[0] == "HasPerimeter" and _perim[2] == {"Ref": "AWS::NoValue"}
       and _deny["Effect"] == "Deny" and _deny["Resource"] == "*"
       and _deny["Action"] == re.findall(r'"([\w-]+:[\w*]+)"', _tf_perim.split("perimeter_denied_actions = [")[1].split("]")[0])
       and _deny["Condition"] == {"StringNotEqualsIfExists": {"aws:SourceVpc": {"Ref": "Vpc"}, "aws:CalledViaLast": "s3tables.amazonaws.com"},
                                  "BoolIfExists": {"aws:ViaAWSService": "false"}}
       and '"aws:SourceVpc" = aws_vpc.this.id, "aws:CalledViaLast" = "s3tables.amazonaws.com"' in _tf_perim
-      and 'BoolIfExists            = { "aws:ViaAWSService" = "false" }' in _tf_perim
-      and "AmazonSSMManagedInstanceCore" in iam_tf)
+      and 'BoolIfExists            = { "aws:ViaAWSService" = "false" }' in _tf_perim)
+
+# ---- SSM Agent の許可（cycle 047）。AWS のマネージドポリシー AmazonSSMManagedInstanceCore の v2 から ssm:GetParameter / GetParameters を抜いた写しを
+# base/core の ssm_agent.tf に持ち、Web（web.tf）と lab（pipeline/lab/iam.tf）に付ける。lab-debug は同じ中身のインラインポリシー ssm-agent を持つ
+_core = lambda name: read("IaC", "terraform", "aws-managed", "base", "core", name)
+def _code_lines(src):  # コメント行（# で始まる行）を外した行
+    return [l for l in src.splitlines() if not l.lstrip().startswith("#")]
+_SSM_AGENT = [  # v2 の 3 つの Statement（2026-10-11 に iam GetPolicyVersion で取得）から ssm:GetParameter と ssm:GetParameters を抜いたもの。順もマネージドポリシーのまま
+    ("SsmAgent", ["ssm:DescribeAssociation", "ssm:GetDeployablePatchSnapshotForInstance", "ssm:GetDocument", "ssm:DescribeDocument", "ssm:GetManifest",
+                  "ssm:ListAssociations", "ssm:ListInstanceAssociations", "ssm:PutInventory", "ssm:PutComplianceItems", "ssm:PutConfigurePackageResult",
+                  "ssm:UpdateAssociationStatus", "ssm:UpdateInstanceAssociationStatus", "ssm:UpdateInstanceInformation"]),
+    ("SessionChannels", ["ssmmessages:CreateControlChannel", "ssmmessages:CreateDataChannel", "ssmmessages:OpenControlChannel", "ssmmessages:OpenDataChannel"]),
+    ("Ec2Messages", ["ec2messages:AcknowledgeMessage", "ec2messages:DeleteMessage", "ec2messages:FailMessage", "ec2messages:GetEndpoint",
+                     "ec2messages:GetMessages", "ec2messages:SendReply"]),
+]
+_sa_tf = _core("ssm_agent.tf")
+_sa_code = "\n".join(_code_lines(_sa_tf)) + "\n"
+_sa_res = re.search(r'^resource "aws_iam_policy" "ssm_agent" \{\n((?:.*\n)*?)\}$', _sa_code, re.M)
+_sa_body = _sa_res.group(1) if _sa_res else ""
+_sa_stmt_m = re.search(r"^    Statement = \[\n((?:      .*\n)*)    \]\n", _sa_body, re.M)
+_sa_stmt_src = _sa_stmt_m.group(1) if _sa_stmt_m else ""
+_sa_objs = re.findall(r"^      \{\n((?:        .*\n)*?)      \},$", _sa_stmt_src, re.M)
+def _sa_parse(obj):  # Sid / Effect / Action（複数行のリスト）/ Resource の 4 つだけの Statement を (Sid, Effect, [Action], Resource) にする。形が違えば None
+    m = re.fullmatch(r'        Sid    = "(\w+)"\n        Effect = "(\w+)"\n        Action = \[\n((?:          "[^"\n]+",\n)+)        \]\n        Resource = (.+)\n', obj)
+    return (m.group(1), m.group(2), re.findall(r'"([^"]+)"', m.group(3)), m.group(4)) if m else None
+tf_sa = [_sa_parse(o) for o in _sa_objs]
+check(f"T-2 ssm_agent.tf の aws_iam_policy.ssm_agent は名前 <prefix>-ssm-agent で、Statement は SsmAgent / SessionChannels / Ec2Messages の 3 つ。"
+      f"Action は v2 から GetParameter / GetParameters を抜いた 13 / 4 / 6 と順も一致、Effect は全部 Allow、Resource は全部 \"*\"（いま: {tf_sa}）",
+      _sa_res is not None and _sa_body.startswith('  name        = "${local.name_prefix}-ssm-agent"\n')
+      and len(_sa_objs) == 3 and _sa_stmt_src == "".join("      {\n" + o + "      },\n" for o in _sa_objs)
+      and re.fullmatch(r'  name        = "\$\{local\.name_prefix\}-ssm-agent"\n  description = "[^"\n]*"\n\n  policy = jsonencode\(\{\n    Version = "2012-10-17"\n'
+                       r'    Statement = \[\n(?:      .*\n)*    \]\n  \}\)\n', _sa_body) is not None
+      and tf_sa == [(sid, "Allow", acts, '"*"') for sid, acts in _SSM_AGENT]
+      and _sa_tf.count('resource "') == 1)
+_sa_policy_code = _sa_body.split("policy = jsonencode(", 1)[1] if "policy = jsonencode(" in _sa_body else ""
+_sa_acts = [a for st in tf_sa if st for a in st[2]]
+check("T-3 ssm_agent.tf の Action に ssm:GetParameter / GetParameters / GetParametersByPath / GetParameterHistory / ssm:* / ssm:Get* が無い（ワイルドカードも無い）",
+      _sa_policy_code != "" and len(_sa_acts) == 23
+      and not any(a.startswith("ssm:GetParameter") or "*" in a for a in _sa_acts)
+      and not re.search(r'"ssm:(GetParameter\w*|\*|Get\*)"', _sa_policy_code))
+check("T-4 base/core の outputs.tf の ssm_agent_policy_arn は aws_iam_policy.ssm_agent.arn",
+      re.search(r'^output "ssm_agent_policy_arn" \{\n  description = "[^"\n]*"\n  value       = aws_iam_policy\.ssm_agent\.arn\n\}$', _core("outputs.tf"), re.M) is not None)
+_lab_rs = re.search(r'^data "terraform_remote_state" "main" \{\n((?:.*\n)*?)\}$', lab_locals, re.M)
+_lab_rs_code = "\n".join(_code_lines(_lab_rs.group(1))) if _lab_rs else ""
+check("T-6 lab は ssm_agent_policy_arn を remote state から try で読み（古い state のまま消せる）、remote state の postcondition が can(self.outputs.ssm_agent_policy_arn) で apply を止める。"
+      "lab_ssm は role = aws_iam_role.lab.name と policy_arn = local.ssm_agent_policy_arn の 2 行だけ（count / for_each は無い）",
+      re.search(r'^  ssm_agent_policy_arn = try\(data\.terraform_remote_state\.main\.outputs\.ssm_agent_policy_arn, ""\)$', lab_locals, re.M) is not None
+      and re.search(r'    postcondition \{\n      condition     = can\(self\.outputs\.ssm_agent_policy_arn\)\n      error_message = "[^"\n]+"\n    \}', _lab_rs_code) is not None
+      and "  lifecycle {" in _lab_rs_code
+      and re.search(r'^resource "aws_iam_role_policy_attachment" "lab_ssm" \{\n  role       = aws_iam_role\.lab\.name\n  policy_arn = local\.ssm_agent_policy_arn\n\}$', iam_tf, re.M) is not None
+      and len(re.findall(r'"lab_ssm"', iam_tf)) == 1)
+_dbg_pols = role["Policies"]
+_dbg_sa = _dbg_pols[1] if len(_dbg_pols) > 1 and isinstance(_dbg_pols[1], dict) else {}
+_dbg_sa_stmts = _dbg_sa.get("PolicyDocument", {}).get("Statement", [])
+check(f"T-7 lab-debug のロールに ManagedPolicyArns が無く、Policies[1] は ssm-agent で Statement の Sid・Action・順が ssm_agent.tf と一致（Effect は Allow、Resource は \"*\"、"
+      f"キーは Sid / Effect / Action / Resource だけ）。Policies[0] は lab-assets、Policies[2] は HasPerimeter の !If（いま: {[p.get('PolicyName', list(p)) for p in _dbg_pols]}）",
+      "ManagedPolicyArns" not in role and _dbg_sa.get("PolicyName") == "ssm-agent" and _dbg_pols[0].get("PolicyName") == "lab-assets"
+      and _dbg_sa.get("PolicyDocument", {}).get("Version") == "2012-10-17"
+      and len(tf_sa) == 3 and all(tf_sa)
+      and [(s.get("Sid"), s.get("Effect"), s.get("Action"), s.get("Resource")) for s in _dbg_sa_stmts] == [(st[0], st[1], st[2], "*") for st in tf_sa if st]
+      and len(_dbg_sa_stmts) == 3 and all(set(s) == {"Sid", "Effect", "Action", "Resource"} for s in _dbg_sa_stmts)
+      and len(_dbg_pols) == 3 and list(_dbg_pols[2]) == ["Fn::If"] and _dbg_pols[2]["Fn::If"][0] == "HasPerimeter")
+_web_tf = _core("web.tf")
+_t1 = []
+for _dir in ("IaC", "ops"):
+    for _dp, _dns, _fns in os.walk(os.path.join(ROOT, _dir)):
+        _dns[:] = [d for d in _dns if d != ".terraform"]
+        for _fn in _fns:
+            if _fn.endswith((".tf", ".yaml", ".yml", ".sh")):
+                with open(os.path.join(_dp, _fn), encoding="utf-8") as fh:
+                    _t1 += [f"{os.path.relpath(os.path.join(_dp, _fn), ROOT)}: {l.strip()}" for l in _code_lines(fh.read()) if "AmazonSSMManagedInstanceCore" in l]
+check(f"T-1 IaC/ と ops/ の .tf / .yaml / .sh のコメント以外の行に AmazonSSMManagedInstanceCore が無い（いま: {_t1}）", _t1 == [])
+# T-8: ssm:GetParameters（複数形）を EC2 のロールは誰も Allow しない。IaC/ の中で使うのは ECS のタスクの実行ロール（タスク定義の secrets を引くのに要る）だけなので、
+# .tf の "ssm:GetParameters" は、それを含む aws_iam_role_policy の role が実行ロール（名前に exec を含む）のときだけ許す。.tf 以外（lab-debug.yaml など）には 1 つも無い
+_t8 = []
+for _dp, _dns, _fns in os.walk(os.path.join(ROOT, "IaC")):
+    _dns[:] = [d for d in _dns if d != ".terraform"]
+    for _fn in _fns:
+        _fp = os.path.join(_dp, _fn)
+        if not _fn.endswith((".tf", ".yaml", ".yml", ".json")):  # state や tfvars（メインのチェックアウトにある）は開かない
+            continue
+        with open(_fp, encoding="utf-8") as fh:
+            _src = fh.read()
+        if _fn.endswith(".tf"):
+            for _blk in re.split(r"(?m)^(?=resource |data |locals |output |module |variable )", _src):
+                if '"ssm:GetParameters"' in _blk:
+                    _r = re.search(r"^  role\s*=\s*(\S+)$", _blk, re.M)
+                    if not (_blk.startswith('resource "aws_iam_role_policy" ') and _r and "exec" in _r.group(1)):
+                        _t8.append(f"{os.path.relpath(_fp, ROOT)}: {_blk.splitlines()[0]}")
+        elif re.search(r"ssm:GetParameters\b(?!ByPath)", "\n".join(_code_lines(_src))):
+            _t8.append(os.path.relpath(_fp, ROOT))
+check(f"T-8 ssm:GetParameters（複数形）を Allow するのは ECS のタスクの実行ロールだけで、Web・lab・lab-debug の EC2 のロールには無い（いま外れ: {_t8}）",
+      _t8 == [] and '"ssm:GetParameters"' not in _web_tf + _sa_tf + iam_tf)
+# T-9: パラメータを読める Action（ssm:GetParameter* と、* を含む ssm の Action）を Resource "*" で Allow する Statement が IaC/ のどこにも無い（セルフレビューで足した。cycle 047）。
+# Web のロールにはほかのルート（stream / graph / agent / workflow）もポリシーを足すので、ssm_agent.tf と web_ssm だけ見ても、別の場所の * で 047 が元に戻るのを止められない。
+# .tf は Action の文字列を含む Statement（同じ行の { ... } か、インデントが浅い { / statement { から閉じまで）を取り、Deny でなければ Resource / resources があり、"*" が無いこと。
+# Statement の外（locals の表）で書いてよいのは perimeter_denied_actions（DenyOutsideVpc の Action）だけ。.yaml は CloudFormation として読み、全部の Statement を見る
+_T9_ACT = re.compile(r'"ssm:([^"\n]*\*[^"\n]*|GetParameter\w*)"')
+def _t9_stmt(lines, i):
+    if re.search(r"\{.*\b(Resource|resources)\s*=.*\}", lines[i]):
+        return lines[i]
+    ind = len(lines[i]) - len(lines[i].lstrip())
+    j = i
+    while j > 0 and not (len(lines[j]) - len(lines[j].lstrip()) < ind and lines[j].rstrip().endswith("{")):
+        j -= 1
+    oi = len(lines[j]) - len(lines[j].lstrip())
+    k = j + 1
+    while k < len(lines) and not (lines[k].strip() and len(lines[k]) - len(lines[k].lstrip()) <= oi):
+        k += 1
+    return "\n".join(lines[j:k + 1])
+def _t9_cfn(node, out):
+    if isinstance(node, dict):
+        for st in node.get("Statement", []) if isinstance(node.get("Statement"), list) else []:
+            if isinstance(st, dict) and st.get("Effect") != "Deny":
+                acts = st.get("Action", [])
+                acts = [acts] if isinstance(acts, str) else acts
+                if any(isinstance(a, str) and re.fullmatch(r"ssm:(.*\*.*|GetParameter\w*)", a) for a in acts) and (
+                        "Resource" not in st or "*" in (st["Resource"] if isinstance(st["Resource"], list) else [st["Resource"]])):
+                    out.append(st.get("Sid", st))
+        for v in node.values():
+            _t9_cfn(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            _t9_cfn(v, out)
+_t9, _t9_seen, _t9_n = [], set(), 0
+for _dp, _dns, _fns in os.walk(os.path.join(ROOT, "IaC")):
+    _dns[:] = [d for d in _dns if d != ".terraform"]
+    for _fn in sorted(_fns):
+        _fp = os.path.join(_dp, _fn)
+        if os.path.realpath(_fp) in _t9_seen:  # OSS 版のシンボリックリンクは実体を 1 回だけ見る
+            continue
+        _t9_seen.add(os.path.realpath(_fp))
+        if _fn.endswith(".tf"):
+            with open(_fp, encoding="utf-8") as fh:
+                _lines = fh.read().split("\n")
+            for _i, _l in enumerate(_lines):
+                if _l.lstrip().startswith("#") or not _T9_ACT.search(_l):
+                    continue
+                _t9_n += 1
+                _st = _t9_stmt(_lines, _i)
+                _where = f"{os.path.relpath(_fp, ROOT)}:{_i + 1}"
+                _ind = len(_l) - len(_l.lstrip())
+                _up = next((x for x in reversed(_lines[:_i]) if x.strip() and len(x) - len(x.lstrip()) < _ind), "")
+                if _up.strip() == "perimeter_denied_actions = [" and _fn == "perimeter.tf":
+                    continue
+                if re.search(r'\b(Effect|effect)\s*=\s*"Deny"', _st):
+                    continue
+                if not re.search(r"\b(Resource|resources)\s*=", _st) or re.search(r'(?<![\w$])"\*"', _st):
+                    _t9.append(_where)
+        elif _fn.endswith((".yaml", ".yml")) and "cloudformation" in _dp:
+            with open(_fp, encoding="utf-8") as fh:
+                _out = []
+                _t9_cfn(yaml.load(fh, Loader=CfnLoader), _out)
+            _t9 += [f"{os.path.relpath(_fp, ROOT)}: {s}" for s in _out]
+check(f"T-9 IaC/ の Allow の Statement で、パラメータを読める ssm の Action（GetParameter* と * を含むもの）は Resource \"*\" を持たない（見た箇所 {_t9_n}、いま外れ: {_t9}）",
+      _t9 == [] and _t9_n >= 20)
 
 # ---- このスタックだけで閉じる（土台 IaC/terraform/aws-managed/base/core を使わない）
 check("パラメータに土台から受け取るもの（サブネット・SG・バケット・境界ポリシー）が無い",

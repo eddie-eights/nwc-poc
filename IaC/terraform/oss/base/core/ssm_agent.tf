@@ -1,0 +1,1 @@
+../../../../terraform/aws-managed/base/core/ssm_agent.tf

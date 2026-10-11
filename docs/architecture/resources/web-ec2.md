@@ -18,7 +18,7 @@ stream を作る回は Kafbat UI も Docker で同居する（Kafbat UI を Web 
 | 画面 | Gradio が `127.0.0.1:8080` だけで待つ。systemd のユニット `<prefix>-web` | `app/dashboard/app.py`、`IaC/terraform/aws-managed/base/core/templates/web_user_data.sh.tftpl` |
 | Kafbat UI | Docker のコンテナが `127.0.0.1:8082` だけで待つ。systemd のユニット `<prefix>-kafka-ui`（動きは表の下） | `IaC/terraform/aws-managed/base/core/templates/web_user_data.sh.tftpl`、`IaC/terraform/aws-managed/pipeline/stream/kafka_ui.tf` |
 | 画面のコード | assets のバケット `<prefix>-assets-<アカウント>` の `web/` から起動時に取る | `ops/up.sh` の手順 4、`IaC/terraform/aws-managed/base/core/bucket.tf` |
-| ロール | `<prefix>-web`。SSM の管理、`web/*` の読み取り、`/<prefix>/*` の `ssm:GetParameter`（`nautobot/{secret-key,admin-password,db-password}` はどの prefix のものも Deny。`AmazonSSMManagedInstanceCore` の `*` にも勝つ。`nautobot/url` と `nautobot/api-token` は読める。cycle 044）。ECR の `<prefix>-kafka-ui` からのイメージの取得。ほかのルートが足す許可は表の下 | `IaC/terraform/aws-managed/base/core/web.tf`、`IaC/terraform/aws-managed/base/core/locals.tf`、`IaC/terraform/aws-managed/agent/runtime.tf`、`IaC/terraform/aws-managed/workflow/proposals.tf` |
+| ロール | `<prefix>-web`。SSM の管理（`base/core` の `ssm_agent.tf` の `<prefix>-ssm-agent`。パラメータの読み取りは含まない。cycle 047）、`web/*` の読み取り、`/<prefix>/*` の `ssm:GetParameter`（`nautobot/{secret-key,admin-password,db-password}` はどの prefix のものも Deny。ほかのルートが足す `/<prefix>/*` の Allow にも勝つ。`nautobot/url` と `nautobot/api-token` は読める。cycle 044）。ECR の `<prefix>-kafka-ui` からのイメージの取得。ほかのルートが足す許可は表の下 | `IaC/terraform/aws-managed/base/core/web.tf`、`IaC/terraform/aws-managed/base/core/ssm_agent.tf`、`IaC/terraform/aws-managed/base/core/locals.tf`、`IaC/terraform/aws-managed/agent/runtime.tf`、`IaC/terraform/aws-managed/workflow/proposals.tf` |
 | スイッチ | 無い（土台なので必ず作る）。PC 側のポートは `LOCAL_PORT`（既定 8080）、`NO_DASHBOARD_PORTFORWARD=1` で最後のポートフォワーディングを開かない | [deploy.md](../../deploy.md) の「`deploy.env` のキー」 |
 | 費用 | 4.3 セント/時（t4g.medium。土台は合わせて約 4 セント/時 + エンドポイント） | `ops/up.sh` の費用の目安（524〜584 行） |
 
@@ -29,6 +29,8 @@ stream を作る回は Kafbat UI も Docker で同居する（Kafbat UI を Web 
     手で止めても Web の start / restart のたびに起き直す。止めたままにするなら `systemctl mask --runtime <prefix>-kafka-ui`。
   - それ以外で読めなければ 69 で終わって 30 秒ごとに起こし直す。
   - Docker の節が落ちても user_data は止まらない（Gradio が先）。ログは `journalctl -u <prefix>-kafka-ui`。
+- SSM の管理の許可は AWS の管理ポリシー（SSM の管理ノード用、v2）の写しから `ssm:GetParameter` / `GetParameters` を抜いたもの（cycle 047）。
+  SSM Agent が登録されない（`describe-instance-information` の PingStatus が Online にならない）ときは、先に `ssm_agent.tf` の Action の抜けを疑う。
 - ロールにほかのルートが足す許可:
   - Runtime と Gateway を呼ぶ許可は agent と workflow のルートが足す。
   - MSK の権限（Kafbat UI）は stream のルートがポリシー `<prefix>-kafka-ui` で足す。

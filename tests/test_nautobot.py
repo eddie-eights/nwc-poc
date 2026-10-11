@@ -300,7 +300,7 @@ check("Nautobot は PIPELINE=1 ならいつも作る（切り替える変数は�
       'if [ -n "$PIPELINE" ] && { [ -z "$SKIP_STREAM" ] || [ -z "$SKIP_GRAPH" ]; }; then NAUTOBOT=1; fi' in up
       and "flag_value NAUTOBOT" not in up and "NAUTOBOT=1" not in read("deploy.env.example") and "GNMI_FROM_NAUTOBOT=false" not in up)
 check("前の deploy.env の NAUTOBOT で止まらない（読むだけ読んで注意を出す）", "NAUTOBOT" in read("ops", "deploy-env.sh").split() and "注意: NAUTOBOT=0 は効かない" in up)
-# lab-debug.yaml のロールは Nautobot の内部のシークレットを Deny する（cycle 044 Round 2。AmazonSSMManagedInstanceCore の Resource * に勝たせる）。
+# lab-debug.yaml のロールは Nautobot の内部のシークレットを Deny する（cycle 044 Round 2。prefix を問わないので、将来 * の Allow が付いても塞がる）。
 # その Deny の Statement（直前のコメント 1 行と Sid: DenyNautobotSecrets の塊）を除けば Nautobot の名前が出てこない
 _dbg_yaml = read("IaC", "cloudformation", "lab-debug.yaml")
 _dbg_wo_deny = re.sub(r"^ {14}# [^\n]*\n {14}- Sid: DenyNautobotSecrets\n(?: {16,}\S.*\n)+", "", _dbg_yaml, flags=re.M)

@@ -335,8 +335,6 @@ Resources:
           - Effect: Allow
             Principal: { Service: ec2.amazonaws.com }
             Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
       Policies:
         - PolicyName: lab-assets
           PolicyDocument:
@@ -360,7 +358,7 @@ Resources:
                 Resource: !GetAtt Bucket.Arn
                 Condition:
                   StringLike: { "s3:prefix": "lab/*" }
-              # IaC/terraform/aws-managed/pipeline/lab の iam.tf と同じ Deny（AmazonSSMManagedInstanceCore の Resource * に勝たせ、どの環境の Nautobot の内部のシークレットも読ませない。cycle 044）
+              # IaC/terraform/aws-managed/pipeline/lab の iam.tf と同じ Deny（prefix を問わないので、将来 * の Allow が付いても同じリージョンのどの環境の Nautobot の内部のシークレットも読ませない。cycle 044）
               - Sid: DenyNautobotSecrets
                 Effect: Deny
                 Action: ssm:GetParameter*
@@ -368,6 +366,47 @@ Resources:
                   - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*/nautobot/secret-key"
                   - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*/nautobot/admin-password"
                   - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*/nautobot/db-password"
+        # SSM の管理ノードの許可。IaC/terraform/aws-managed/base/core の ssm_agent.tf と同じ Sid・Action・順の写し（スタックは土台と独立なので参照しない。
+        # tests/test_lab_debug.py が一致を見る）。AWS のマネージドポリシー AmazonSSMManagedInstanceCore の v2 から ssm:GetParameter と ssm:GetParameters を抜いたもの（cycle 047）
+        - PolicyName: ssm-agent
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: SsmAgent
+                Effect: Allow
+                Action:
+                  - ssm:DescribeAssociation
+                  - ssm:GetDeployablePatchSnapshotForInstance
+                  - ssm:GetDocument
+                  - ssm:DescribeDocument
+                  - ssm:GetManifest
+                  - ssm:ListAssociations
+                  - ssm:ListInstanceAssociations
+                  - ssm:PutInventory
+                  - ssm:PutComplianceItems
+                  - ssm:PutConfigurePackageResult
+                  - ssm:UpdateAssociationStatus
+                  - ssm:UpdateInstanceAssociationStatus
+                  - ssm:UpdateInstanceInformation
+                Resource: "*"
+              - Sid: SessionChannels
+                Effect: Allow
+                Action:
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                Resource: "*"
+              - Sid: Ec2Messages
+                Effect: Allow
+                Action:
+                  - ec2messages:AcknowledgeMessage
+                  - ec2messages:DeleteMessage
+                  - ec2messages:FailMessage
+                  - ec2messages:GetEndpoint
+                  - ec2messages:GetMessages
+                  - ec2messages:SendReply
+                Resource: "*"
         # IaC/terraform/aws-managed/base/core の perimeter.tf の Deny と同じ Action と条件（aws:SourceVpc はこのスタックの VPC）
         - !If
           - HasPerimeter
