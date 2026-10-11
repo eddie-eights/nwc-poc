@@ -146,3 +146,118 @@ None
 - Nit 2（空の `TF_CLI_ARGS=` も止める）: 受け入れる（止まる側）。design の未確定事項 3 に書く
 - Nit 3（die / NG の文言が design と違う）: Round 2 で design の文言を実装に揃える（実装の文言のほうが具体的）
 - Nit 4（`docs/troubleshooting.md` に新しい die の行が無い）: Round 2 で足す
+
+## Round 2
+
+レビュー: cold reviewer（opus-5.5 / effort: xhigh）に依頼した（完了判定の直前。2 回目）。対象は `db704e1`（Round 2。751f07f..db704e1）。PM(fable-5-1) が確認した。
+
+### cold reviewer の結果（review-r02.md をそのまま連結）
+
+# 049 cold review Round 2（check_sg_descriptions の OSS 版の判定を Terraform に聞く）
+
+対象: `db704e1`。Round 2 の差分は `751f07f..db704e1`、全体は `b490486..db704e1`。build の文脈なしで読んだ。
+
+## サマリ
+
+- Must fix 0 / Should fix 0 / Nit 1。
+- Round 1 の指摘は、review.md の Round 2 の設計と design.md の決着どおりに直っている。
+  - console は `-no-color` と目印付きの式 `"local.oss=${local.oss}"` で聞く。受けるのは 3 つの条件がそろうときだけ（`ops/up-common.sh:146-154`）。
+    - rc=0。
+    - 目印の形の行が stdout 全体でちょうど 1 行。
+    - 最後の行が目印そのもの。
+  - 受けるときは、最後の行より前（Warning）を stderr に出す。止めるときは、stdout を全部 stderr に出してから die する（Should 1）。
+  - T-3 (f) の期待は、Terraform の本当の優先順位（`TF_VAR_` がいちばん弱い）に合わせてある（Should 2）。T-3 (h) では、`TF_VAR_project=bogus` で rc=1 になることを本物の console で見ている。
+  - `oss.tf` の 2 行のコメントは「`ops/up-common.sh` の `check_sg_descriptions`」になった（Nit 3）。`docs/troubleshooting.md:27` に行が足された（Nit 4）。
+- 自分で走らせたテストの結果（HEAD `db704e1`、作業ツリーは clean）。
+  - `uv run -q --group dev --group web python tests/test_workflow.py` の結果は「通過 508 / 失敗 0」。
+    - 049 T-1〜T-8、T-3 (g)、T-3 (h)、T-6 ×2 は ok。
+    - T-3 の skip 行は出ず、本物の terraform console（v1.16.0）を通った。
+  - `uv run -q --group dev --group web python tests/test_oss_ops.py` の結果は「通過 211 / 失敗 0」。049 T-9 の 2 件は ok。
+  - 上の 2 本は grep にパイプしたので、終了コードは取っていない。判定の根拠は最後の集計行。
+  - `bash -n ops/up-common.sh && bash -n ops/up.sh && bash -n ops/oss/up.sh` は rc=0。
+- design.md の「console は state の lock を取らない・待たない」を現物で確かめた。手順は良かった点に書いた。
+- エンジニアのセルフレビューの Nit（build.md Round 2 の N-1〜N-6）は読んで、どれにも同意する。ここには重ねて書かない。
+
+### 見た観点 / 見ていない観点
+
+- 見た観点
+  - design.md 整合
+    - 書き直した方針 1 と方針 2〜9、T-1〜T-9（T-3 (g)(h) と、書き直した T-4 を含む）を、実装とテストに突き合わせた。
+    - die の文言は方針 1 と一字一句同じ。
+  - correctness
+    - `out=$(...) || rc=$?` から、`${out##*$'\n'}`、awk で数える目印の数、3 条件の判定までの流れを見た。
+    - `${out%$'\n'*}` で Warning を stderr に出す流れも見た。値の行しかないとき（`$out = $last`）は、余計な行を出さない。
+    - `${!TF_CLI_ARGS*}` の確認が console より前にあることを見た。
+  - security
+    - here-string は単一引用符なので、`${local.oss}` を bash が展開しない。
+    - stderr に出すのは console の stdout だけ。TF_CLI_ARGS の die が出すのは変数の名前だけで、値は出さない。
+  - runtime bugs
+    - console が state の lock を取るかを現物で確かめた（良かった点）。
+    - 目印の行が 2 行あり、最後の行は正しいときの die の文言を確かめた。`check_sg_descriptions` を切り出し、bash で動かした（Nit 1）。
+  - data loss: 守りは apply より前に止まるだけで、何も消さない・書かない。
+  - API compatibility: `sg_descriptions_in_code` の引数（0 か 1 が必須）は Round 1 から変わっていない。呼び出し元は `check_sg_descriptions` とテストだけ。
+  - missing tests
+    - T-4 の止まる 7 形と通る 3 形を読んだ。
+    - T-3 (g) は、Warning が stderr に出て色のコード（`\x1b[`）が無いことを見ている。
+    - T-3 (h) の rc=1 と、T-9 の OSS 版の偽 terraform も読んだ。
+  - docs: `docs/troubleshooting.md:27` と、`oss.tf` の 2 行のコメントを見た。
+- 見ていない観点
+  - 変異 M1〜M10 は打ち直していない。build.md の結果を読んだだけ。
+  - `ops/check.sh` は走らせていない。init で `.terraform` を書くため。
+  - resources が入った本物の state に対しては console を試していない。lock の確かめも、resources が空の state で行った。
+  - Terraform v1.16.0 以外の版は見ていない。
+  - AWS では何も動かしていない。
+
+## Must fix
+
+None
+
+## Should fix
+
+None
+
+## Nit
+
+- [design.md 整合 / docs] 目印の行が 2 行以上あり、最後の行は正しく rc=0 のとき、die の文言が理由を取り違える（`ops/up-common.sh:149-152`。文言は design.md 方針 1 の指定どおり）。
+  - 文言は「terraform console の失敗か、stdout の最後の行が "local.oss=true" / "local.oss=false" でない」と言う。この場合はどちらにも当たらない。
+  - 本当の理由（目印の行が 1 行でない）は文言に出てこない。
+  - 分類の理由: 止まる側の挙動は正しく、上に stdout も出るので、運用者は読み解ける。起きるのは目印と同じ行が Warning に入るときだけで、原理的にありうるだけ（エンジニアの N-2）。だから Nit。
+  - 再現の手順（自分）: `check_sg_descriptions` を `ops/up-common.sh` から切り出した。`tf` は、`"local.oss=true"` を 2 行出して rc=0 で返す偽物にした。`die` は「DIE: …」を stderr に出して exit 1 にした。それを python の subprocess から bash で動かした。
+    ```
+    rc= 1
+    stderr: "local.oss=true"
+    "local.oss=true"
+    DIE: /x/base/core の local.oss が読めない（terraform console の失敗か、stdout の最後の行が "local.oss=true" / "local.oss=false" でない。上の出力）。まだ何も作っていない
+    ```
+  - T-4 は「local.oss が読めない（terraform console の失敗」の部分一致で見ている（`tests/test_workflow.py:1994`）。括弧の中に一言足しても落ちない見込みだが、確かめていない。
+
+## 良かった点
+
+- design.md の「console は state の lock を取らない・待たない」が正しいことを現物で確かめた。
+  - 一時ディレクトリを用意した。
+    - base/core の `.tf` と `.terraform.lock.hcl` をコピーし、`.terraform` はリンクにした。
+    - AWS の環境変数を外し、`AWS_CONFIG_FILE=/dev/null` にした。
+    - resources が空の `terraform.tfstate` を置いた。
+  - その state を、別プロセス（python）から `fcntl.lockf` で排他ロックした。
+  - 対照として `terraform state rm -no-color aws_vpc.nonexistent` を打った。rc=1 で、`Error: Error acquiring the state lock` と `Error message: resource temporarily unavailable` が出た。プローブのロックは Terraform のロックとぶつかる。
+  - 同じロックを持ったまま `terraform console -no-color -var owner=probe` を打った（stdin は `"local.oss=${local.oss}"`）。
+    - rc=0、stdout は `"local.oss=false"`、stderr は空。
+    - かかった時間は約 1.1 秒で、ロックが無いときと同じだった。
+  - したがって、別の terraform が base/core のロックを持っていても、この守りは「local.oss が読めない」では止まらない。
+- 3 条件（rc・目印の数・最後の行）がそろうときだけ受ける形にした。これで Round 1 の Should 1（無害な Warning で止まる）が直り、値を取り違えたときも止まる側に倒れる。T-3 (g) は本物の console で、「Warning を stderr に出して進み、色のコードが無い」ことを見ている。
+- T-3 (f) の期待を Terraform の本当の優先順位に合わせた。T-3 (h) で、`TF_VAR_project=bogus` が rc=1 になることを本物で固定した。troubleshooting の行が原因に挙げる「`TF_VAR_project` や tfvars」とも食い違わない。
+- 変更は design.md の範囲に収まっている（`up-common.sh`、`oss.tf` のコメント 2 行、troubleshooting の 1 行、テスト）。範囲外の古いコメントには触らず、N-4 として報告している。
+
+## ユーザーへの質問
+
+None
+
+
+### PM の確認（2026-10-12）
+
+- 全テスト 16 本を pm-042 の `db704e1` で取り直し: 失敗 0（`test_workflow.py` 508 / `test_oss_ops.py` 211 ほか）。`bash -n ops/up-common.sh ops/up.sh ops/oss/up.sh` rc=0。`ops/check.sh` はエンジニアが Round 2 で rc=0（`build.md`）
+- Round 1 の Should fix 1（Warning で止まる）の元の再現をいまのコードで: `test_workflow.py` の本物の `terraform console` の check が ok ── 「ok 049 T-3 (g) check_sg_descriptions: 本物の terraform console は Warning（宣言の無い変数の値）を stdout に出すが、値は最後の行に出…」（rc=0 で console と show、stderr に色なしの Warning）、「ok 049 T-3 (h) … TF_VAR_project=bogos（validation で rc=1）なら Terraform のエラーを流して「local.oss が読めない」」。解消
+- Round 1 の Should fix 2（優先順位）: `design.md` の背景と T-3(f) を直し、T-3(f) は「tfvars が勝つ → rc=1 で spark」で ok（上の T-3 の行）。解消
+- Nit 1（目印の行が 2 行以上で最後の行は正しいとき、die の文言が理由を言わない）: 直さない。止まる側で stdout も上に出る。Warning に目印と同じ行が入るときにしか起きない（エンジニアの N-2 と同じ）
+- エンジニアのセルフレビュー Round 2 の Nit 6 件（N-1 project 以外の validation の Error では console が rc=0 で進む（`local.oss` は `var.project` だけで決まるので正しい）、N-2 `_W049` の字下げが本物と違う、N-3 stdin のパイプと here-string、N-4 046 / 048 のコメントの「`ops/up.sh` の」が 3 行残る、N-5 troubleshooting の「run: terraform init」の字面と `TF_CLI_ARGS*` の行、N-6 T-3 が `TF_DATA_DIR` を外さない）: どれも直さない。最終報告に載せる
+- サイクル完了。QUEUE 162 を完了に。全体設計 HTML は触らない（`up.sh` の守りの中の判定の仕方が変わっただけで、構成要素・データの流れ・配置は変わらない）
