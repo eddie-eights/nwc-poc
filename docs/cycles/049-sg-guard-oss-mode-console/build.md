@@ -230,3 +230,165 @@ rc=0
 - **console と apply で var.project がずれる経路**: apply も同じ `tf()` を通る。`-var project` / `-var-file` は ops に無い（T-8 と反対弁護人の grep）。
 - **`sg_descriptions_in_code` の呼び出し元**: `check_sg_descriptions` だけ（反対弁護人の grep）。
 - **`TF_VAR_kafka_task_memory` のような宣言の無い環境変数**: Warning は出ず、`false` だけ（反対弁護人の実験 F）。過去の運用は止まらない。
+
+## Round 2
+
+実装モデル: opus-5.5 / effort: high（PM のサブエージェント。セルフレビューも high のまま）
+
+ベース: `feat/162-sg-guard-oss-mode-console` の 751f07f（Round 1 の 891974d の上に差分）。design.md の実装ステップ 1〜6（Round 2）。cold review の Should 1・2、Nit 3・4 を直した。Nit 1・2 は直していない。AWS では動かしていない。
+
+### 変更ファイル
+
+- `ops/up-common.sh`: `check_sg_descriptions` の console の部分。
+  - `tf base/core console -no-color -var "owner=$OWNER" <<<'"local.oss=${local.oss}"'` を打ち、rc を `|| rc=$?` で取る。
+  - `last=${out##*$'\n'}`。目印の形の行（`"local.oss=true"` / `"local.oss=false"`）の数を awk で数える（`marks`）。
+  - rc=0・marks=1・last が目印のときだけ受ける。それ以外は読んだ stdout を全部 stderr に出してから die（文言は design の T-4 のとおり「local.oss が読めない（terraform console の失敗か、stdout の最後の行が "local.oss=true" / "local.oss=false" でない。上の出力）。まだ何も作っていない」）。
+  - 受けるときは、最後の行より前（Warning の枠）を `${out%$'\n'*}` で stderr に出す。
+- `tests/test_workflow.py`
+  - `_con049(oss)` を足し、`_csd_run` の偽 console の既定を目印付きにした。偽 `tf` は `base/core console -no-color -var owner=tester` に答える。`_CSD_CON` も `-no-color` 付き。
+  - T-1（stderr が空、stdin が目印付きの式）、T-2、T-3 (a)〜(f) の stdin、T-3 (g)（rc=0 に反転。Warning が stderr に出て `\x1b[` と値の行は出ない）、T-3 (h)（新規。`TF_VAR_project=bogus` で rc=1）、T-4（design の止まる 7 つ・通る 3 つ）、T-8（`console -no-color` の位置）。
+- `tests/test_oss_ops.py`: `FAKE_TF` の console は stdin が目印付きの式のときだけ答える（目印の無い `local.oss` は rc≠0）。`_CSD_OSS_SH` も `-no-color` と目印付きの答え。T-9 の 2 本の期待を合わせた。
+- `IaC/terraform/aws-managed/base/core/oss.tf`: 11 行目と 15 行目のコメントを「`ops/up-common.sh` の `check_sg_descriptions`（`ops/up.sh` と `ops/oss/up.sh` が呼ぶ）」に（Nit 3）。
+- `docs/troubleshooting.md`: 「… の local.oss が読めない（terraform console の失敗か …）」で止まる行を足した（Nit 4）。
+
+### 設計からの逸脱
+
+- 変異 M7 は 2 つに分けて確かめた（M7a 受けるときに Warning を出さない、M7b die の前に stdout を出さない）。ほかは無し。
+
+### 変異（ops/up-common.sh を 1 つずつ書き換えて `tests/test_workflow.py` を走らせた）
+
+check が落ちても続けるコピー（`tests/_mut_test_workflow.py`。終わったら消した）で、落ちた 049 の check を数えた。各変異のあと `ops/up-common.sh` は元に戻した（`git status` で確認）。
+
+```
+== M1 console を打たず oss.auto.tfvars の grep に戻す: rc=0 FAIL 16
+   049 T-1 / T-2 / T-3 / T-3 (g) / T-3 (h) / T-4 / T-6 ×2 / T-8
+== M2 console の出力の検査を外す（rc だけ見る）: rc=0 FAIL 1
+   049 T-4
+== M3 TF_CLI_ARGS* の die を消す: rc=0 FAIL 1
+   049 T-5
+== M4 oss_replaced の規則を消す: rc=0 FAIL 2
+   049 T-6（完全一致）/ 049 T-6（= の前の空白）
+== M5 show を console より先に打つ: rc=0 FAIL 26
+   049 T-1 / T-2 / T-3 / T-3 (g) / T-3 (h) / T-4 / T-6 ×2 / T-8
+== M6 oss_replaced の完全一致を前方一致にする: rc=0 FAIL 1
+   049 T-6（完全一致）
+== M7a 受けるときに Warning の行を stderr に出さない: rc=0 FAIL 2
+   049 T-3 (g) / 049 T-4
+== M7b die の前に読んだ stdout を stderr に出さない: rc=0 FAIL 1
+   049 T-4
+== M8 最後の行でなく最初の行を見る: rc=0 FAIL 2
+   049 T-3 (g) / 049 T-4
+== M9 目印の行の数を見ない: rc=0 FAIL 1
+   049 T-4
+== M10 -no-color を外す: rc=0 FAIL 47
+   049 T-1 / T-2 / T-3 / T-3 (g) / T-3 (h) / T-4 / T-6 ×2 / T-8
+```
+
+（FAIL の数は既存の check を含む。rc=0 はコピーが止まらずに最後まで走ったという意味）
+
+### 検証（最後の編集の後に取り直した）
+
+| # | 結果 |
+| :--- | :--- |
+| T-1〜T-8、T-3 (g)(h) | `tests/test_workflow.py` の `ok 049 T-…`。T-3 は本物の terraform console（v1.16.0）で走った（skip の行なし） |
+| T-9 | `tests/test_oss_ops.py` の `ok 049 T-9` ×2 |
+| 変異 M1〜M10 | 上 |
+
+```
+tests/test_agentcore.py rc=0 | 通過 168 / 失敗 0
+tests/test_alerts.py rc=0 | 通過 168 / 失敗 0
+tests/test_analytics.py rc=0 | 通過 549 / 失敗 0
+tests/test_collectors.py rc=0 | 通過 79 / 失敗 0
+tests/test_dashboard_config.py rc=0 | 通過 3 / 失敗 0
+tests/test_graph.py rc=0 | 通過 78 / 失敗 0
+tests/test_kb_index.py rc=0 | 通過 7 / 失敗 0
+tests/test_lab_debug.py rc=0 | 通過 121 / 失敗 0
+tests/test_local_compose.py rc=0 | 通過 145 / 失敗 0
+tests/test_nautobot.py rc=0 | 68 項目すべて通過
+tests/test_oss.py rc=0 | 通過 177 / 失敗 0
+tests/test_oss_ops.py rc=0 | 通過 211 / 失敗 0
+tests/test_oss_roll.py rc=0 | 通過 66 / 失敗 0
+tests/test_stream.py rc=0 | 通過 119 / 失敗 0
+tests/test_sync.py rc=0 | 通過 104 / 失敗 0
+tests/test_workflow.py rc=0 | 通過 508 / 失敗 0
+
+bash -n ops/up-common.sh rc=0
+bash -n ops/up.sh rc=0
+bash -n ops/oss/up.sh rc=0
+
+ops/check.sh: rc=0
+== 1. terraform fmt -check -recursive IaC/terraform/aws-managed IaC/terraform/oss
+差分なし
+== 2. 10 のルートの validate（IaC/terraform/aws-managed/ と IaC/terraform/oss/）
+（20 行とも OK）
+== 3. スクリプトの構文
+bash -n: 33 本
+構文エラーなし
+== 4. 模擬テスト
+（16 本とも 失敗 0。ok 049 T-3 / T-3 (g) / T-3 (h) あり）
+== 5. 旧名 netops が戻っていない（docs/cycles と docs/verification は記録なので見ない。cycle 019）
+netops なし（許した 3 ファイル 5 行だけ）
+
+すべて通過
+```
+
+### セルフレビュー
+
+**体制**
+- 自分: opus-5.5 / effort high（サブエージェントの中なので切り替えられない）。`/robust` で回した。
+- 反対弁護人: opus / effort xhigh。文脈（方針、不安な箇所 8 つ、変異の結論）を渡し、読み取り専用で頼んだ。終わった後の `git status --porcelain -uall` は自分の 5 件のままだった。
+
+**結果**: Must fix 0 / Should fix 0 / Nit 6（反対弁護人。どれも直していない）。
+
+#### N-1（Nit）[docs / テスト]
+
+**場所**: `ops/up-common.sh:145`、`docs/troubleshooting.md` の 049 の行
+
+- project 以外の変数の validation の Error（`TF_VAR_endpoints_az_num=9`、tfvars の `vpc_cidr = "bogus"`、空の `OWNER`）では、console は stderr に Error を出しても値を出して rc=0。守りは進む。
+- `local.oss` は `var.project` だけで決まり、apply は `-var endpoints_az_num` を渡すので、進むこと自体は正しい。コメントと troubleshooting は「Warning では止まらない」としか言わず、この挙動を固定するテストも無い。
+- 再現（自分）:
+  ```
+  $ echo '"local.oss=${local.oss}"' | TF_VAR_endpoints_az_num=9 terraform -chdir=IaC/terraform/aws-managed/base/core console -no-color -var owner=x
+  Warning: Due to the problems above, some expressions may produce unexpected results.
+  "local.oss=false"
+  rc=0
+  （stderr）Error: Invalid value for variable
+  ```
+
+#### N-2（Nit）[design の根拠]
+
+**場所**: `design.md` の未確定事項 8、`tests/test_workflow.py` の `_W049`
+
+- 本物の `-no-color` の Warning は字下げ無しの左詰めで、変数の `deprecated` の文言はそのまま 1 行で出る（反対弁護人の p2.sh）。目印と同じ行が Warning に入ることは原理的にありうる。そのときは marks=2 で die する（止まる側）。安全にしているのは目印の数の検査のほう。
+- `_W049` は 2 空白の字下げで本物と形が違う。本物の形は T-3 (g) が見ている。
+
+#### N-3（Nit）[テストの忠実さ]
+
+- T-3 の本物の console は stdin をパイプで受ける。本番は here-string。反対弁護人が v1.16.0 で両方を打ち、rc と stdout がバイト単位で同じことを確かめた（p1.sh）。
+
+#### N-4（Nit）[docs]
+
+**場所**: `IaC/terraform/aws-managed/base/core/oss.tf:78`、`security_groups.tf:154,191`
+
+- 046 / 048 のコメントは「`ops/up.sh` の `check_sg_descriptions`」のまま。design の範囲は oss.tf の 11・15 行だけなので触っていない。
+- 再現（自分）: `grep -rn 'ops/up.sh の check_sg_descriptions' IaC/` が 3 行を返す。
+
+#### N-5（Nit）[docs]
+
+**場所**: `docs/troubleshooting.md` の 049 の行
+
+- 「run: terraform init」は字面どおりには出ない（本物は「Error: Required plugins are not installed」で、`run:` と `terraform init` は別の行）。本番は先に `tf_init` が die するので、ここまで来ることはほぼ無い。
+- `TF_CLI_ARGS*` の die には troubleshooting の行が無い（die の文言で外し方は分かる）。
+
+#### N-6（Nit）[テストの環境]
+
+- T-3 は `TF_CLI_ARGS*` / `TF_VAR_*` しか外さない。`TF_DATA_DIR` があるシェルでは T-3 が落ちる（落ちる側）。再現していない。
+
+#### 問題なしとした観点と根拠
+
+- **bash 3.2 の展開と `set -euo pipefail`**: `${out##*$'\n'}` / `${out%$'\n'*}`、末尾の空行、CR（last に残って die）、`|| rc=$?` と local。反対弁護人が /bin/bash 3.2 で確かめた。
+- **値はいつも最後の行**: pty の下、宣言の無い変数 4 つ、変数の deprecated のどれでも値が最後（反対弁護人の p2.sh / p3.sh）。T-3 (g) は本物の console で ok。
+- **3 つの条件（rc・目印の数・最後の行）はどれも欠かせない**: 自分の M2・M8・M9 と、反対弁護人の X1〜X6（rc を見ない、die で stdout を出さない、受けるときに値の行も出す、目印が 1 行以上で受ける、die で最後の行より前だけ出す、`-var owner` を外す）がどれもテストで落ちた。同じ意味の書き換え（X7）は 508 本とも通過。
+- **`-no-color` と TF_CLI_ARGS**: `-no-color` を外しても値の行は色無しで判定は崩れない。見た目は T-3 (g) と T-8 が捕まえる（M10）。TF_CLI_ARGS の die は console より前にある（T-5、M3）。
+- **troubleshooting の原因**: project が不正、`.terraform` が無い、state が壊れている、宣言の無い `-var` の 4 つは、どれも console が rc=1（反対弁護人の p6.sh）。
+- **既定値の無い変数が増えたとき**: console は入力を待たずに値を出す（反対弁護人の p7.sh）。

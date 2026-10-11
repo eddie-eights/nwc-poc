@@ -1513,11 +1513,14 @@ def _csd_show(sgs, endpoints=_SG_EP_DESC):
     blocks.append('# aws_vpc_security_group_ingress_rule.flow["gnmic-endpoints-tcp-443"]:\nresource "aws_vpc_security_group_ingress_rule" "flow" {\n'
                   '    description                  = "AWS APIs through the interface endpoints"\n    id                           = "sgr-4"\n}\n')
     return "\n".join(blocks)
+def _con049(oss):  # 本物の console が目印付きの式に返す最後の行（cycle 049 Round 2）
+    return f'"local.oss={"true" if oss else "false"}"\n'
 def _csd_run(state=None, oss=False, show_fail=False, code_broken=False, code_tail_comment=False, endpoints=_SG_EP_DESC, code_ep_broken=False, edits=(), remove=(),
              console=None, env=None, real=False, files=None):
     """check_sg_descriptions を bash で、tf / tf_init / die（関数）を差し替えて動かす。TF_DIR は一時ディレクトリ（base/core の security_groups.tf と oss.tf は実物のコピー）。
-    oss なら偽の terraform console が local.oss に true と答える（oss.auto.tfvars は書かない。守りが OSS 版かを決めるのは console の答え。cycle 049）。
-    console: 偽の console の (rc, stdout, stderr)（既定は (0, "true\n" / "false\n", "")）。stdin は $D/console-stdin に残し、返り値の 5 つ目に入れる。
+    oss なら偽の terraform console が目印付きの式「"local.oss=${local.oss}"」に "local.oss=true" と答える（oss.auto.tfvars は書かない。守りが OSS 版かを決めるのは
+    console の答え。cycle 049。Round 2 で目印付きの式と -no-color に）。
+    console: 偽の console の (rc, stdout, stderr)（既定は (0, '"local.oss=true"\n' / '"local.oss=false"\n', "")）。stdin は $D/console-stdin に残し、返り値の 5 つ目に入れる。
     env: 足す環境変数（TF_CLI_ARGS* と TF_VAR_* は先に外す）。files: base/core に書く (ファイル名 → 中身)（oss.auto.tfvars など）。
     real: console だけ本物の terraform に渡す（base/core の *.tf と .terraform.lock.hcl のコピー、.terraform は実物へのリンク、AWS の認証情報は渡さない。cycle 049 の T-3）。
     state: terraform show に載せる workload の SG（キー → description。既定はコードと同じ全キー）。
@@ -1532,7 +1535,7 @@ def _csd_run(state=None, oss=False, show_fail=False, code_broken=False, code_tai
     if state is None:
         state = dict(_SG_CODE_DESC_OSS if oss else _SG_CODE_DESC)
     if console is None:
-        console = (0, "true\n" if oss else "false\n", "")
+        console = (0, _con049(oss), "")
     _src = os.path.join(ROOT, "IaC", "terraform", "aws-managed", "base", "core")
     with tempfile.TemporaryDirectory() as d:
         core = os.path.join(d, "tf", "base", "core")
@@ -1584,7 +1587,7 @@ def _csd_run(state=None, oss=False, show_fail=False, code_broken=False, code_tai
                   'die() { echo "DIE: $*" >&2; exit 1; }\n'
                   'tf_init() { echo "init $1" >> "$D/calls"; }\n'
                   'tf() { echo "tf $*" >> "$D/calls"\n'
-                  '  if [ "$*" = "base/core console -var owner=tester" ]; then\n' + _console +
+                  '  if [ "$*" = "base/core console -no-color -var owner=tester" ]; then\n' + _console +
                   '  if [ "$*" = "base/core show -no-color" ]; then [ -z "$SHOW_FAIL" ] || { echo "Error: fake show failure" >&2; return 1; }; cat "$D/show"; return 0; fi\n'
                   '  return 9; }\n'
                   + "".join(f"{n}() {{{b}\n}}\n" for n, b in _upc_fn.items())
@@ -1595,7 +1598,7 @@ def _csd_run(state=None, oss=False, show_fail=False, code_broken=False, code_tai
         calls = open(os.path.join(d, "calls")).read().splitlines() if os.path.exists(os.path.join(d, "calls")) else []
         stdin = open(os.path.join(d, "console-stdin")).read() if os.path.exists(os.path.join(d, "console-stdin")) else None
     return out.returncode, out.stdout, out.stderr, calls, stdin
-_CSD_CON = ["tf base/core console -var owner=tester"]  # console だけ（show の前に止まった。cycle 049）
+_CSD_CON = ["tf base/core console -no-color -var owner=tester"]  # console だけ（show の前に止まった。cycle 049）
 _CSD_CALLS = _CSD_CON + ["tf base/core show -no-color"]  # console → show（cycle 049）
 def _csd_no_root(calls):  # ルートの state を見ていない（init も state list も打たない）
     return not any(c.startswith("init ") or " state list" in c for c in calls)
@@ -1931,13 +1934,15 @@ check(f"sg_descriptions_in_code: workload のブロックと merge の両方が�
 # ---- cycle 049: OSS 版かどうかは check_sg_descriptions が terraform console で Terraform に聞く（oss.tf の local.oss）。oss.auto.tfvars を grep して真似ると、
 # var.project の既定値・terraform.tfvars・TF_VAR_project・oss.tf の local.oss の定義の書き換えで Terraform の判定とずれる（048 の Nit 1）。oss_replaced の行も完全一致で守る
 _spark049 = f"spark（state「{_SG_CODE_DESC['spark']}」/ コード「{_SG_OSS_DESC['spark']}」）"
+_STDIN049 = '"local.oss=${local.oss}"\n'  # console の stdin（目印付きの式。cycle 049 Round 2）
 _r = _csd_run()
-check(f"049 T-1 check_sg_descriptions: マネージド版（console が false）は通り、terraform console → show の順にちょうど 1 回ずつ打ち、console の stdin は「local.oss」の 1 行"
-      f"（いま: rc={_r[0]} {_r[2].strip()!r} {_r[3]} {_r[4]!r}）",
-      _r[0] == 0 and "DONE" in _r[1] and "DIE:" not in _r[2] and _r[3] == _CSD_CALLS and _r[4] == "local.oss\n")
-_r, _r2 = _csd_run(state=dict(_SG_CODE_DESC_OSS), console=(0, "true\n", "")), _csd_run(console=(0, "true\n", ""))
+check(f"049 T-1 check_sg_descriptions: マネージド版（console が \"local.oss=false\"）は通り、terraform console -no-color → show の順にちょうど 1 回ずつ打ち、"
+      f"console の stdin は目印付きの式「\"local.oss=${{local.oss}}\"」の 1 行、Warning が無ければ stderr に何も出さない（いま: rc={_r[0]} {_r[2]!r} {_r[3]} {_r[4]!r}）",
+      _r[0] == 0 and "DONE" in _r[1] and _r[2] == "" and _r[3] == _CSD_CALLS == ["tf base/core console -no-color -var owner=tester", "tf base/core show -no-color"]
+      and _r[4] == _STDIN049)
+_r, _r2 = _csd_run(state=dict(_SG_CODE_DESC_OSS), console=(0, _con049(True), "")), _csd_run(console=(0, _con049(True), ""))
 _r3 = _csd_run(files={"oss.auto.tfvars": 'project = "nwc-oss"\n'})
-check(f"049 T-2 check_sg_descriptions: console が true なら（oss.auto.tfvars が無くても）OSS 版の state で通り、マネージド版の state なら spark の違いで die して down.sh の全消しを案内する。"
+check(f"049 T-2 check_sg_descriptions: console が \"local.oss=true\" なら（oss.auto.tfvars が無くても）OSS 版の state で通り、マネージド版の state なら spark の違いで die して down.sh の全消しを案内する。"
       f"oss.auto.tfvars に nwc-oss があっても console が false ならマネージド版の表で通る（守りは tfvars を見ない。いま: rc={_r[0]} / {_r2[0]} {_r2[2].strip()[:200]!r} / {_r3[0]} {_r3[2].strip()!r}）",
       _r[0] == 0 and "DONE" in _r[1] and "DIE:" not in _r[2] and _r[3] == _CSD_CALLS
       and _r2[0] == 1 and "DONE" not in _r2[1] and _spark049 in _r2[2] and "先に ops/down.sh で全部消してから" in _r2[2] and _r2[3] == _CSD_CALLS
@@ -1964,24 +1969,33 @@ else:
           f"（AWS の認証情報なし。いま: { {n: (r[0], r[3], r[2].strip()[-160:]) for n, r in _t3.items()} }）",
           all((r[0] == 0 and "DONE" in r[1] and "DIE:" not in r[2]) if n in _t3ok
               else (r[0] == 1 and _spark049 in r[2] and "先に ops/down.sh で全部消してから" in r[2]) for n, r in _t3.items())
-          and all(r[3] == _CSD_CALLS and r[4] == "local.oss\n" for r in _t3.values()))
+          and all(r[3] == _CSD_CALLS and r[4] == _STDIN049 for r in _t3.values()))
     _r = _csd_run(real=True, files={"terraform.tfvars": "undeclared_x = 1\n"})
-    check(f"049 T-3 (g) check_sg_descriptions: 本物の terraform console は Warning（宣言の無い変数の値）を stdout に出すので、stdout が false の 1 行でなくなり"
-          f"「local.oss が読めない」で止まり、読んだ Warning を stderr に出す（黙って止まらない）。show は打たない（いま: rc={_r[0]} {_r[2].strip()[-300:]!r} {_r[3]}）",
-          _r[0] == 1 and "DONE" not in _r[1] and "Value for undeclared variable" in _r[2] and "local.oss が読めない（terraform console の失敗" in _r[2]
-          and _r[2].find("Value for undeclared variable") < _r[2].find("local.oss が読めない") and _r[3] == _CSD_CON)
-_c4 = {"True": (0, "True\n", ""), "空": (0, "", ""), "2 行": (0, "false\nfalse\n", ""), "前に空白": (0, " false\n", ""),
-       "rc=1": (1, "false\n", "Error: fake console failure\n"),
-       "stdout に Warning": (0, "\nWarning: Value for undeclared variable\n\nfalse\n", "")}
+    check(f"049 T-3 (g) check_sg_descriptions: 本物の terraform console は Warning（宣言の無い変数の値）を stdout に出すが、値は最後の行に出るので止めずに通り（049 より前と同じ）、"
+          f"Warning は色のコード無しで stderr に出す（黙って捨てない）。console → show（いま: rc={_r[0]} {_r[2].strip()[-300:]!r} {_r[3]}）",
+          _r[0] == 0 and "DONE" in _r[1] and "DIE:" not in _r[2] and "Warning: Value for undeclared variable" in _r[2] and "\x1b[" not in _r[2]
+          and '"local.oss=' not in _r[2] and _r[3] == _CSD_CALLS)
+    _r = _csd_run(real=True, env={"TF_VAR_project": "bogus"})
+    check(f"049 T-3 (h) check_sg_descriptions: TF_VAR_project=bogus（var.project の validation で console が rc=1）なら、Terraform のエラーを流して「local.oss が読めない」で止め、"
+          f"show は打たない（いま: rc={_r[0]} {_r[2].strip()[-300:]!r} {_r[3]}）",
+          _r[0] == 1 and "DONE" not in _r[1] and "Invalid value for variable" in _r[2] and "local.oss が読めない（terraform console の失敗" in _r[2]
+          and "まだ何も作っていない" in _r[2] and _r[3] == _CSD_CON)
+_W049 = "Warning: Value for undeclared variable\n\n  The root module does not declare a variable named \"undeclared_x\".\n"  # 枠の 3 行（-no-color の形）
+_c4 = {"裸の false（Round 1 の形）": (0, "false\n", ""), "True": (0, '"local.oss=True"\n', ""), "空": (0, "", ""),
+       "目印が 2 行": (0, '"local.oss=false"\n"local.oss=false"\n', ""), "最後の行が目印でない": (0, '"local.oss=false"\nfoo\n', ""),
+       "末尾に空白": (0, '"local.oss=false" \n', ""), "rc=1": (1, '"local.oss=false"\n', "Error: fake console failure\n")}
 _r4 = {n: _csd_run(console=c) for n, c in _c4.items()}
-_r = _csd_run(console=(0, "false\n", "Warning: Due to the problems above, some expressions may produce unexpected results.\n"))
-check(f"049 T-4 check_sg_descriptions: console の stdout がちょうど true / false の 1 行でない・rc≠0 なら、読んだ stdout（本物は Warning も stdout）を stderr に出して「local.oss が読めない」で die し、show を打たない。"
-      f"false + stderr の Warning + rc=0 は通り、Warning は流れる（いま: { {n: (r[0], r[2].strip()[-80:], r[3]) for n, r in _r4.items()} } / rc={_r[0]} {_r[2].strip()!r} {_r[3]}）",
+_p4 = {"値だけ": _csd_run(console=(0, _con049(False), "")),
+       "Warning + 値": _csd_run(console=(0, _W049 + "\n" + _con049(False), "")),
+       "true + OSS 版の state": _csd_run(state=dict(_SG_CODE_DESC_OSS), console=(0, _con049(True), ""))}
+check(f"049 T-4 check_sg_descriptions: console の stdout の最後の行がちょうど \"local.oss=true\" / \"local.oss=false\" でない・その形の行が 1 行でない・rc≠0 なら、"
+      f"読んだ stdout を stderr に出して「local.oss が読めない」で die し、show を打たない。値だけ・Warning の枠のあとに値・true と OSS 版の state は通り、"
+      f"Warning の枠はそのまま stderr に出て値の行は出ない（いま: { {n: (r[0], r[2].strip()[-80:], r[3]) for n, r in {**_r4, **_p4}.items()} }）",
       all(r[0] == 1 and "DONE" not in r[1] and "local.oss が読めない（terraform console の失敗" in r[2] and "まだ何も作っていない" in r[2] and r[3] == _CSD_CON
-          for r in _r4.values()) and "Error: fake console failure" in _r4["rc=1"][2]
-      and -1 < _r4["stdout に Warning"][2].find("Warning: Value for undeclared variable") < _r4["stdout に Warning"][2].find("local.oss が読めない")
-      and "True" in _r4["True"][2] and "false\nfalse" in _r4["2 行"][2]
-      and _r[0] == 0 and "DONE" in _r[1] and "Warning: Due to the problems above" in _r[2] and "DIE:" not in _r[2] and _r[3] == _CSD_CALLS)
+          and (_c4[n][1] == "" or -1 < r[2].find(_c4[n][1].rstrip("\n")) < r[2].find("local.oss が読めない")) for n, r in _r4.items())
+      and "Error: fake console failure" in _r4["rc=1"][2]
+      and all(r[0] == 0 and "DONE" in r[1] and "DIE:" not in r[2] and r[3] == _CSD_CALLS for r in _p4.values())
+      and _p4["値だけ"][2] == "" and _p4["true + OSS 版の state"][2] == "" and _p4["Warning + 値"][2] == _W049 + "\n")
 _c5 = {"TF_CLI_ARGS": "-no-color", "TF_CLI_ARGS_apply": "-var=project=nwc-oss", "TF_CLI_ARGS_console": "-var=project=nwc-oss"}
 _r5 = {n: _csd_run(env={n: v}) for n, v in _c5.items()}
 _r = _csd_run(env=_c5)
@@ -2021,7 +2035,7 @@ check(f"049 T-7 sg_descriptions_in_code: 引数が無い・0 / 1 でない・2 �
       and _r5[0] == 0 and _r5[1] == _sdc_base[1] and _r5[1] == "".join(f"{k}\t{v}\n" for k, v in _sdc_m))
 _ops049 = {f: read(*f.split("/")) for f in ("ops/up.sh", "ops/oss/up.sh", "ops/up-common.sh")}
 _ops049_hit = {f: [w for w in ("var.project", "var=project", "var project", "TF_VAR_") if w in t] for f, t in _ops049.items()}
-_i_cli, _i_con = _csd_body.find("TF_CLI_ARGS"), _csd_body.find("tf base/core console -var \"owner=$OWNER\" <<<'local.oss'")
+_i_cli, _i_con = _csd_body.find("TF_CLI_ARGS"), _csd_body.find("tf base/core console -no-color -var \"owner=$OWNER\" <<<'\"local.oss=${local.oss}\"'")
 check(f"049 T-8 ops/up.sh / ops/oss/up.sh / ops/up-common.sh に var.project / var=project / var project / TF_VAR_ が無く（project の決まり方を真似ない）、"
       f"sg_descriptions_in_code の本文に oss.auto.tfvars が無く、check_sg_descriptions の本文は TF_CLI_ARGS の検査 → console → sg_descriptions_in_code → show -no-color の順"
       f"（いま: {_ops049_hit} {_i_cli} {_i_con} {_csd_body.find('sg_descriptions_in_code')} {_csd_body.find('show -no-color')}）",

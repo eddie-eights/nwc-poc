@@ -133,18 +133,25 @@ sg_descriptions_in_state() {  # sg_descriptions_in_state < <terraform show -no-c
   '
 }
 check_sg_descriptions() {  # base/core の state の SG の description がコードと違えば die（tf_init base/core 済みが前提）。ルートの state は見ない
-  local code shown diffs mode oss=0
+  local code shown diffs out last marks rc=0 oss=0
   # TF_CLI_ARGS / TF_CLI_ARGS_<サブコマンド> はサブコマンドごとに効くので、console と apply で local.oss がずれうる（cycle 049）
   local cli_args="${!TF_CLI_ARGS*}"  # 名前を空白区切りで（@ は名前ごとに別の語になる）
   if [ -n "$cli_args" ]; then
     die "TF_CLI_ARGS / TF_CLI_ARGS_* が設定されている（${cli_args}）。terraform のサブコマンドごとに変数の与え方がずれる（console と apply で local.oss が違いうる）ので、外してから打ち直す。まだ何も作っていない"
   fi
   # OSS 版かは Terraform に聞く（oss.tf の local.oss。project の変数は既定値・tfvars・環境変数で決まり、守りが真似るとずれる。cycle 049）。-var owner は apply と同じ。stderr はそのまま流す
-  # console は Warning（宣言の無い変数の値など）を stdout に出す（Terraform v1.16.0 で確かめた）。true / false の 1 行でなければ、読んだものを stderr に出してから止める
-  mode=$(tf base/core console -var "owner=$OWNER" <<<'local.oss') && { [ "$mode" = true ] || [ "$mode" = false ]; } \
-    || { [ -z "${mode:-}" ] || printf '%s\n' "$mode" >&2
-      die "$TF_DIR/base/core の local.oss が読めない（terraform console の失敗か、stdout が true / false の 1 行でない。上の出力。Warning も stdout に出る）。まだ何も作っていない"; }
-  [ "$mode" = false ] || oss=1
+  # console は Warning（宣言の無い変数の値など）を stdout に出し、値を最後に出す（Terraform v1.16.0 で確かめた）。なので -no-color と目印付きの式で聞き、
+  # stdout の最後の行がちょうど "local.oss=true" / "local.oss=false" で、その形の行が 1 行だけのときに受ける（cycle 049 Round 2）。
+  # 受けるときも、最後の行より前（Warning の枠）は stderr にそのまま出す（Warning を黙って捨てない。Warning では止めない ── apply も止まらない）
+  out=$(tf base/core console -no-color -var "owner=$OWNER" <<<'"local.oss=${local.oss}"') || rc=$?
+  last=${out##*$'\n'}
+  marks=$(printf '%s\n' "$out" | awk '$0 == "\"local.oss=true\"" || $0 == "\"local.oss=false\"" { n++ } END { print n + 0 }')
+  if [ "$rc" -ne 0 ] || [ "$marks" != 1 ] || { [ "$last" != '"local.oss=true"' ] && [ "$last" != '"local.oss=false"' ]; }; then
+    [ -z "$out" ] || printf '%s\n' "$out" >&2
+    die "$TF_DIR/base/core の local.oss が読めない（terraform console の失敗か、stdout の最後の行が \"local.oss=true\" / \"local.oss=false\" でない。上の出力）。まだ何も作っていない"
+  fi
+  [ "$out" = "$last" ] || printf '%s\n' "${out%$'\n'*}" >&2
+  [ "$last" = '"local.oss=false"' ] || oss=1
   code=$(sg_descriptions_in_code "$oss") && [ -n "$code" ] \
     || die "$TF_DIR/base/core/security_groups.tf から SG の description が読めない（local.security_groups の形が変わったなら ops/up-common.sh の sg_descriptions_in_code を直す）。まだ何も作っていない"
   shown=$(tf base/core show -no-color) || die "$TF_DIR/base/core の state が読めない（terraform show の失敗。上のエラー）。まだ何も作っていない"
