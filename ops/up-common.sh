@@ -21,152 +21,80 @@ tf_apply() {  # tf_apply <ルート> [-var 名前=値 …]
 has_resources() {  # has_resources <ルート>  state があり、リソースが 1 つ以上載っている（init 済みが前提）
   [ -f "$TF_DIR/$1/terraform.tfstate" ] && [ -n "$(tf "$1" state list 2>/dev/null)" ]
 }
-# description を変えた SG（cycle 043）。aws_security_group.workload は description を変えると作り直し（name が固定で create_before_destroy を付けられない）で、
-# ほかの SG のルールが古い SG を referenced_security_group_id で参照したまま（参照側のルールは新しい SG を作った後に in-place で更新される）なので、
-# 付けるルートだけ消しても古い SG の destroy は DependencyViolation で止まる（先に消したルールだけが無い状態になる）。通るのは down.sh の全消しだけ。
-# VPC エンドポイントの SG（aws_security_group.endpoints。for_each 無し）も workload の SG のルールが参照するので同じ（cycle 046）。
-# state にある workload の SG 全部と endpoints の description をコードと比べるので、キーの表は持たない（キーを変えた古い SG は up.sh の既存の守りの担当）
-# コードの書き方（workload の description = each.value と for_each、oss.tf の local.workload_security_groups の merge、endpoints に count / for_each が無いこと）も
-# 読めなければ止める（cycle 048）
-# OSS 版かは terraform console で Terraform に聞く（oss.tf の local.oss）。oss.tf の oss_replaced の行も見る（cycle 049）
-sg_descriptions_in_code() {  # sg_descriptions_in_code <0|1>  コードの SG の description を <キー>\t<文言> で出す（security_groups.tf の local.security_groups）。
-  # OSS 版（引数 1。check_sg_descriptions が terraform console の local.oss で決める。cycle 049）は oss.tf の local.oss_security_groups が同じキーを上書きし、キーを足す。
-  # 最後に endpoints を 1 行（security_groups.tf の resource "aws_security_group" "endpoints" のブロックの 2 空白の description。oss.tf は上書きしない。cycle 046）
-  # oss.tf はマネージド版でも読む（表を workload の SG にする local.workload_security_groups の merge がある。cycle 048 Round 2）。OSS 版かは awk の oss で渡す
-  local dir="$TF_DIR/base/core" oss="${1-}"
-  case "$#:$oss" in 1:0 | 1:1) ;; *) echo "NG: sg_descriptions_in_code の引数（OSS 版なら 1、マネージド版なら 0）が無いか 0 / 1 でない（いま $# 個「$*」）" >&2; return 1 ;; esac
-  [ -f "$dir/oss.tf" ] || { echo "NG: $dir/oss.tf が無い" >&2; return 1; }
-  awk -v oss="$oss" '
-    # 値（両端の " の内側）がプレーンな文字列か。" があれば、行末のコメントや式が値に混ざっている（例: "X" # was "Y"）。
-    # \ はエスケープ（\" \\ \uNNNN）で、${ / %{ は補間・テンプレート（$${ も含めて止める側に倒す）。どれも state には展開後の値が入るので書いたままでは比べられない。
-    # SG の description に AWS が許す文字に " と \ は無いので、正しい値を止めることは無い。どれも読めない扱い（cycle 046 Round 2）
-    function plain(v) { return !index(v, "\"") && !index(v, "\\") && !index(v, "${") && !index(v, "%{") }
-    FILENAME != prev { prev = FILENAME; file++; inb = 0; inr = 0; inw = 0; inm = 0 }
-    file == 1 && $0 == "  security_groups = {" { inb = 1; sgblk = 1; next }
-    # workload の SG のブロック（cycle 048）。表の値が description になるのは「  description = each.value」、state のキーが表のキーになるのは
-    # 「  for_each = local.workload_security_groups」があるから。ほかの書き方（式・行末のコメント・count・別の表）は表と state を比べても守りにならない
-    file == 1 && $0 == "resource \"aws_security_group\" \"workload\" {" { inw = 1; wblk = 1; next }
-    inw && $0 == "}" { inw = 0; next }
-    inw && $0 ~ /^  description += each\.value$/ { wdesc = 1; next }
-    inw && $0 ~ /^  description[ =]/ { wbad = wbad "\n  " FILENAME ": " $0; wdbad = 1; next }
-    inw && $0 ~ /^  for_each += local\.workload_security_groups$/ { wfe = 1; next }
-    inw && $0 ~ /^  (count|for_each)[ =]/ { wbad = wbad "\n  " FILENAME ": " $0; wfbad = 1; next }
-    file == 1 && $0 == "resource \"aws_security_group\" \"endpoints\" {" { inr = 1; rblk = 1; next }
-    inr && $0 == "}" { inr = 0; next }
-    inr && !epok && match($0, /^  description += "/) && substr($0, length($0)) == "\"" {
-      v = substr($0, RLENGTH + 1, length($0) - RLENGTH - 1)
-      if (plain(v)) { ep = v; epok = 1; next }
-    }
-    inr && $0 ~ /^  description[ =]/ { epbad = epbad "\n  " FILENAME ": " $0; epdbad = 1; next }  # 式・補間・行末のコメント・複数行は読めない（description と count / for_each のほかの属性の行は見ない）
-    # count / for_each があると state の見出しが「# aws_security_group.endpoints[0]:」になり、sg_descriptions_in_state が拾わず黙って通る（cycle 048）
-    inr && $0 ~ /^  (count|for_each)[ =]/ { epbad = epbad "\n  " FILENAME ": " $0; epcnt = 1; next }
-    oss && file == 2 && $0 == "  oss_security_groups = {" { inb = 1; ossblk = 1; next }
-    # 表を workload の SG の for_each にする merge（oss.tf。cycle 048 Round 2）。キーや値を書き換えると表と state を比べても守りにならないので、
-    # コメント行と空行のほかは次の 2 行がこの順でちょうどあること（どちらの版でも見る）
-    file == 2 && $0 ~ /^  workload_security_groups += merge\($/ { inm = 1; mblk = 1; next }
-    inm && $0 == "  )" { inm = 0; next }
-    inm && $0 ~ /^(    #| *$)/ { next }
-    inm && !m1 && !m2 && $0 == "    { for k, v in local.security_groups : k => v if !contains(local.oss_replaced, k) }," { m1 = 1; next }
-    inm && m1 && !m2 && $0 == "    { for k, v in local.oss_security_groups : k => v if local.oss }," { m2 = 1; next }
-    inm { mbad = mbad "\n  " FILENAME ": " $0; next }
-    # OSS 版で外すマネージドの SG の表（oss.tf。cycle 049）。キーを足すと OSS 版でその SG が state から消える（ほかの SG のルールが参照したままで DependencyViolation）のに、
-    # 表のキーは全部出すので守りが通す。どちらの版でも、この行が完全一致でちょうど 1 行あること（= の前の空白は 1 つ以上）
-    file == 2 && $0 ~ /^  oss_replaced[ =]/ {
-      if (match($0, /^  oss_replaced +=/) && substr($0, RLENGTH + 1) == " local.oss ? [\"msk\"] : []") ro++
-      else rbad = rbad "\n  " FILENAME ": " $0
-      next
-    }
-    inb && $0 == "  }" { inb = 0; next }
-    inb && match($0, /^    [A-Za-z0-9_]+ += "/) && substr($0, length($0)) == "\"" && plain(v = substr($0, RLENGTH + 1, length($0) - RLENGTH - 1)) {
-      key = substr($0, 5); sub(/ .*/, "", key)
-      if (!(key in desc)) order[++n] = key
-      desc[key] = v; next
-    }
-    inb && $0 !~ /^ *(#|$)/ { bad = bad "\n  " FILENAME ": " $0 }  # 読めない行（行末のコメント、式など）は黙って飛ばさない（そのキーを見逃す）
-    END {
-      if (bad != "") { printf "NG: local.security_groups / oss_security_groups の読めない行:%s\n", bad > "/dev/stderr"; exit 1 }
-      # endpoints の 1 行だけで出力が空でなくなるので、workload の表が読めないことはここで止める（cycle 046）
-      if (!sgblk || n == 0) { printf "NG: %s に「  security_groups = {」の塊が無いか、キーが 1 つも無い\n", ARGV[1] > "/dev/stderr"; exit 1 }
-      # OSS 版で oss.tf の塊が読めなければ、OSS のキー（上書き・追加）を黙って飛ばさず止める（cycle 046 Round 2）
-      if (oss && !ossblk) { printf "NG: %s に「  oss_security_groups = {」の塊が無い\n", ARGV[2] > "/dev/stderr"; exit 1 }
-      if (!rblk) epbad = "\n  resource \"aws_security_group\" \"endpoints\" { の行が無い"
-      else if (!epok && !epdbad) epbad = epbad "\n  ブロックに 2 空白の description の行が無い"
-      if (epcnt) epbad = epbad "\n  count / for_each があると state の見出しが「# aws_security_group.endpoints[0]:」になり守りが外れる"
-      if (!wblk) wbad = "\n  resource \"aws_security_group\" \"workload\" { の行が無い"
-      else {
-        if (!wdesc && !wdbad) wbad = wbad "\n  ブロックに「  description = each.value」の行が無い"
-        if (!wfe && !wfbad) wbad = wbad "\n  ブロックに「  for_each = local.workload_security_groups」の行が無い"
-      }
-      if (!mblk) mbad = "\n  " ARGV[2] " に「  workload_security_groups = merge(」の行が無い"
-      else if (mbad == "" && !(m1 && m2)) mbad = "\n  " ARGV[2] " の「  workload_security_groups = merge(」のブロックに local.security_groups と local.oss_security_groups の 2 行が無い"
-      if (ro == 0 && rbad == "") rbad = "\n  " ARGV[2] " に「  oss_replaced = local.oss ? [\"msk\"] : []」の行が無い"
-      else if (ro > 1) rbad = rbad "\n  " ARGV[2] " に「  oss_replaced = local.oss ? [\"msk\"] : []」の行が " ro " 行ある"
-      wbad = wbad mbad rbad
-      ng = 0
-      if (epbad != "" || ("endpoints" in desc)) {
-        printf "NG: aws_security_group.endpoints の description が読めない:%s%s\n", epbad, (("endpoints" in desc) ? "\n  local.security_groups / oss_security_groups に endpoints というキーがある（キーが衝突する）" : "") > "/dev/stderr"; ng = 1
-      }
-      if (wbad != "") { printf "NG: aws_security_group.workload の書き方が読めない:%s\n", wbad > "/dev/stderr"; ng = 1 }
-      if (ng) exit 1
-      for (i = 1; i <= n; i++) printf "%s\t%s\n", order[i], desc[order[i]]
-      printf "endpoints\t%s\n", ep
-    }
-  ' "$dir/security_groups.tf" "$dir/oss.tf"
-}
-sg_descriptions_in_state() {  # sg_descriptions_in_state < <terraform show -no-color の出力>  state の SG の description を <キー>\t<文言> で出す。
-  # 見出し「# aws_security_group.workload["<キー>"]:」（キーは <キー>）と「# aws_security_group.endpoints:」（キーは endpoints。cycle 046）から行頭の } までの
-  # ブロックの、4 空白ちょうどの description（SG 本体の属性）の最初の 1 つ。
-  # 無ければ <キー>\t（空）。ほかのリソース（SG のルールの description も 4 空白）は別の見出しのブロックなので混ざらない
-  awk '
-    function flush() { if (key != "") printf "%s\t%s\n", key, (found ? d : ""); key = ""; found = 0 }
-    /^# / {
-      flush()
-      if (index($0, "# aws_security_group.workload[\"") == 1 && (e = index($0, "\"]:")) > 0) key = substr($0, 32, e - 32)
-      else if (index($0, "# aws_security_group.endpoints:") == 1) key = "endpoints"  # 後ろに「 (tainted)」が付くこともある（workload と同じく前方一致）
-      next
-    }
-    key != "" && $0 == "}" { flush(); next }
-    key != "" && !found && match($0, /^    description += "/) && substr($0, length($0)) == "\"" {
-      d = substr($0, RLENGTH + 1, length($0) - RLENGTH - 1); found = 1
-    }
-    END { flush() }
-  '
-}
-check_sg_descriptions() {  # base/core の state の SG の description がコードと違えば die（tf_init base/core 済みが前提）。ルートの state は見ない
-  local code shown diffs out last marks rc=0 oss=0
-  # TF_CLI_ARGS / TF_CLI_ARGS_<サブコマンド> はサブコマンドごとに効くので、console と apply で local.oss がずれうる（cycle 049）
+# SG の作り直し・削除の守り（cycle 050。043〜049 の description の守りを置き換えた）。aws_security_group は name / description / vpc_id の
+# どれを変えても作り直しで（workload は name が固定で create_before_destroy を付けられない）、表からキーを外すと削除になる。ほかの SG のルールが古い SG を
+# referenced_security_group_id で参照したまま・ENI が付いたままなので、古い SG の destroy は DependencyViolation で止まり（先に消したルールだけが無い状態になる）、
+# 付けるルートだけ消しても通らない。通るのは down.sh の全消しだけ。VPC エンドポイントの SG（aws_security_group.endpoints）も workload の SG のルールが参照するので同じ。
+# どの SG が作り直し・削除になるかは Terraform に聞く（terraform plan -json の planned_change の行。1 行 1 JSON で、Warning も Error も stdout に出る）。
+# コードを読んで真似ないので、name / description / vpc_id の式、表の書き方、OSS 版の判定（oss.tf の local.oss）のどれにも依らない
+check_sg_plan() {  # check_sg_plan [-var 名前=値 …]  base/core の plan で aws_security_group が replace / delete なら die（tf_init base/core 済みが前提）。plan ファイルは残さない
+  local out hits list="" eni="" addr act why rc=0 prc=0
+  # TF_CLI_ARGS / TF_CLI_ARGS_<サブコマンド> はサブコマンドごとに効くので、plan と apply で変数の与え方がずれる（cycle 049。空の値でも止める）
   local cli_args="${!TF_CLI_ARGS*}"  # 名前を空白区切りで（@ は名前ごとに別の語になる）
   if [ -n "$cli_args" ]; then
-    die "TF_CLI_ARGS / TF_CLI_ARGS_* が設定されている（${cli_args}）。terraform のサブコマンドごとに変数の与え方がずれる（console と apply で local.oss が違いうる）ので、外してから打ち直す。まだ何も作っていない"
+    die "TF_CLI_ARGS / TF_CLI_ARGS_* が設定されている（${cli_args}）。terraform のサブコマンドごとに効くので、plan と apply で変数の与え方がずれる。外してから打ち直す。まだ何も作っていない"
   fi
-  # OSS 版かは Terraform に聞く（oss.tf の local.oss。project の変数は既定値・tfvars・環境変数で決まり、守りが真似るとずれる。cycle 049）。-var owner は apply と同じ。stderr はそのまま流す
-  # console は Warning（宣言の無い変数の値など）を stdout に出し、値を最後に出す（Terraform v1.16.0 で確かめた）。なので -no-color と目印付きの式で聞き、
-  # stdout の最後の行がちょうど "local.oss=true" / "local.oss=false" で、その形の行が 1 行だけのときに受ける（cycle 049 Round 2）。
-  # 受けるときも、最後の行より前（Warning の枠）は stderr にそのまま出す（Warning を黙って捨てない。Warning では止めない ── apply も止まらない）
-  out=$(tf base/core console -no-color -var "owner=$OWNER" <<<'"local.oss=${local.oss}"') || rc=$?
-  last=${out##*$'\n'}
-  marks=$(printf '%s\n' "$out" | awk '$0 == "\"local.oss=true\"" || $0 == "\"local.oss=false\"" { n++ } END { print n + 0 }')
-  if [ "$rc" -ne 0 ] || [ "$marks" != 1 ] || { [ "$last" != '"local.oss=true"' ] && [ "$last" != '"local.oss=false"' ]; }; then
-    [ -z "$out" ] || printf '%s\n' "$out" >&2
-    die "$TF_DIR/base/core の local.oss が読めない（terraform console の失敗か、stdout の最後の行が \"local.oss=true\" / \"local.oss=false\" でない。上の出力）。まだ何も作っていない"
-  fi
-  [ "$out" = "$last" ] || printf '%s\n' "${out%$'\n'*}" >&2
-  [ "$last" = '"local.oss=false"' ] || oss=1
-  code=$(sg_descriptions_in_code "$oss") && [ -n "$code" ] \
-    || die "$TF_DIR/base/core/security_groups.tf から SG の description が読めない（local.security_groups の形が変わったなら ops/up-common.sh の sg_descriptions_in_code を直す）。まだ何も作っていない"
-  shown=$(tf base/core show -no-color) || die "$TF_DIR/base/core の state が読めない（terraform show の失敗。上のエラー）。まだ何も作っていない"
-  # コードに無いキー（キーを変えた古い SG）は飛ばす。違うもの（空も含む）を「<キー>（state「…」/ コード「…」）」にして「、」でつなぐ
-  diffs=$(printf '%s\n' "$shown" | sg_descriptions_in_state | CODE="$code" awk -F'\t' '
-    BEGIN { n = split(ENVIRON["CODE"], lines, "\n"); for (i = 1; i <= n; i++) { t = index(lines[i], "\t"); if (t) c[substr(lines[i], 1, t - 1)] = substr(lines[i], t + 1) } }
-    ($1 in c) && $2 != c[$1] { out = out (out == "" ? "" : "、") $1 "（state「" $2 "」/ コード「" c[$1] "」）" }
-    END { printf "%s", out }
-  ')
-  [ -n "$diffs" ] || return 0
-  # runtime の SG は Runtime の ENI があるあいだ down.sh も残す（ops/down-common.sh の destroy_base_core）ので、ENI が消えるのを待つ一言を足す（internal の守りと同じ）
-  local eni=""
-  case "、$diffs" in *"、runtime（"*) eni="runtime は Runtime の ENI（agentic_ai。最長 8 時間ほど残る）があるあいだ $OPS_DIR/down.sh も残すので、ENI が消えてから $OPS_DIR/down.sh を打つ。" ;; esac
-  die "$TF_DIR/base/core の state の SG の description がコードと違う: ${diffs}。description を変えると SG は作り直しで、ほかの SG のルールが古い SG を参照したままなので、付けるルートだけ消しても消せない（DependencyViolation）。先に $OPS_DIR/down.sh で全部消してから $OPS_DIR/up.sh。${eni}まだ何も作っていない"
+  # -var owner は apply と同じ。残りの変数（呼ぶ側の MAIN_VARS）は手順 0 の時点で分かるものだけで、ほかは既定値（SG に効かない）。stderr はそのまま流す
+  out=$(tf base/core plan -json -input=false -refresh=false -var "owner=$OWNER" "$@") || rc=$?
+  # stdout の JSON を読む。aws_security_group の replace / delete を <アドレス>\t<action>\t<reason> で stdout に、diagnostic（Warning / Error）の
+  # @message と detail と JSON でない行を stderr に出す。終了コードは 0 通す / 2 plan が失敗 / 3 作り直し・削除あり / 4 change_summary が無い
+  hits=$(printf '%s\n' "$out" | PLAN_RC=$rc "${PY[@]}" -c '
+import json, os, sys
+for s in (sys.stdin, sys.stdout, sys.stderr):
+    s.reconfigure(encoding="utf-8", errors="replace")
+hits, raw, summary = [], [], False
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line.strip():
+        continue
+    try:
+        m = json.loads(line)
+    except ValueError:
+        m = None
+    if not isinstance(m, dict):
+        print(line, file=sys.stderr)
+        continue
+    raw.append(line)
+    kind = m.get("type")
+    if kind == "diagnostic":
+        print(m.get("@message", ""), file=sys.stderr)
+        detail = (m.get("diagnostic") or {}).get("detail")
+        if detail:
+            print(detail, file=sys.stderr)
+    elif kind == "change_summary":
+        summary = True
+    elif kind == "planned_change":
+        c = m.get("change") or {}
+        r = c.get("resource") or {}
+        if r.get("resource_type") == "aws_security_group" and c.get("action") in ("replace", "delete"):
+            hits.append("\t".join((str(r.get("addr", "")), c["action"], str(c.get("reason") or ""))))
+if os.environ["PLAN_RC"] != "0":
+    sys.exit(2)
+if hits:
+    print("\n".join(hits))
+    sys.exit(3)
+if not summary:
+    for line in raw:
+        print(line, file=sys.stderr)
+    sys.exit(4)
+') || prc=$?
+  case "$prc" in
+    0) return 0 ;;
+    2) die "$TF_DIR/base/core の plan が失敗した（rc=${rc}。上の Terraform のエラー）。まだ何も作っていない" ;;
+    3) ;;
+    4) die "$TF_DIR/base/core の plan の出力に change_summary が無い（terraform plan -json の形が変わったか途中で切れた。上の出力）。まだ何も作っていない" ;;
+    *) die "$TF_DIR/base/core の plan の出力が読めない（python の失敗。rc=${prc}。上のエラー）。まだ何も作っていない" ;;
+  esac
+  while IFS=$'\t' read -r addr act why; do
+    list+="${list:+、}${addr}（${act}${why:+、$why}）"
+    # runtime の SG は Runtime の ENI があるあいだ down.sh も残す（ops/down-common.sh の destroy_base_core）ので、ENI が消えるのを待つ一言を足す（internal の守りと同じ）
+    if [ "$addr" = 'aws_security_group.workload["runtime"]' ]; then
+      eni="runtime は Runtime の ENI（agentic_ai。最長 8 時間ほど残る）があるあいだ $OPS_DIR/down.sh も残すので、ENI が消えてから $OPS_DIR/down.sh を打つ。"
+    fi
+  done <<<"$hits"
+  die "$TF_DIR/base/core の plan で SG が作り直し・削除になる: ${list}。SG の name / description / vpc_id を変えると作り直し、表からキーを外すと削除で、ほかの SG のルールが古い SG を参照したままなので、付けるルートだけ消しても消せない（DependencyViolation）。先に $OPS_DIR/down.sh で全部消してから $OPS_DIR/up.sh。${eni}まだ何も作っていない"
 }
+
 tf_output() {  # tf_output <ルート> <出力名>  出力を 1 つ読んで出す。読めない・空なら die（赤い NG: の行）。$( ) の中の die はサブシェルだけを抜けるので、
   # 止めるかどうかは呼ぶ側が決める（止めるなら X=$(tf_output …) || exit 1、止めないなら if X=$(tf_output …); then …）
   local v

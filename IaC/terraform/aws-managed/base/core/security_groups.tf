@@ -11,8 +11,8 @@
 # 127.0.0.1。IaC/terraform/aws-managed/workflow の ecs.tf。cycle 036）、Splunk の管理 API 8089
 # （開けるのはクラスターの splunk どうしだけ。外から使わない）。
 # 2026-09-26〜09-29 は全部で internal 1 つ（VPC の中は何でも受け、送信は自由）だった。その前（7c42b0f）はルートごとに SG とルールを持っていた。
-# SG の description は変えると作り直しになる（付いている ENI があると消えない）ので、変えるときは down してから（workload も endpoints も。
-# 古い description の state があると ops/up.sh は check_sg_descriptions で止める）。
+# SG の name / description / vpc_id は変えると作り直しになる（付いている ENI があると消えない）ので、変えるときは down してから（workload も endpoints も。
+# 作り直し・削除になる SG があると ops/up.sh は check_sg_plan（terraform plan）で止める。cycle 050）。
 # OSS 版（IaC/terraform/oss。var.project = nwc-oss。cycle 005）は oss.tf が SG と表を差し替える（msk を外し、kafka / efs / opensearch /
 # victoriametrics / neo4j を足す）。作るのは local.workload_security_groups と local.active_sg_flows で、マネージド版では下の 2 つと同じ
 locals {
@@ -22,9 +22,8 @@ locals {
     lab = "Lab EC2 - containerlab, forwards the lab mgmt network"
     # Telegraf は受ける側（dialout。NLB の後ろ）のタスク（2026-10-04 にキーを dialout / dialin にそろえた。キーを変えると SG は作り直しになるので、
     # ops/up.sh は古いキーの state のまま stream があると止める）。
-    # dialout と NLB の description は 043 で syslog_ng / goflow2 に合わせた（description を変えると作り直しで、ほかの SG のルールが古い SG を
-    # 参照したままなので、付けるルートを消しても消せない。古い description の state があると ops/up.sh は check_sg_descriptions で止める。
-    # workload の全キーと endpoints を見るので表は無い）。
+    # dialout と NLB の description は 043 で syslog_ng / goflow2 に合わせた（name / description / vpc_id を変えると作り直しで、ほかの SG のルールが古い SG を
+    # 参照したままなので、付けるルートを消しても消せない。作り直し・削除になる SG があると ops/up.sh は check_sg_plan（terraform plan）で止める。cycle 050）。
     # syslog_ng と goflow2（機器の syslog と NetFlow / sFlow を受けるタスク。dialout と同じ NLB の後ろ）は cycle 012 で足した。
     # gnmic（機器の gNMI を取りにいくタスク）は cycle 013 で取りにいく側の telegraf_dialin を置き換えた（SNMP のポーリングもやめた）
     telegraf_dialout     = "Telegraf dial-out ECS task - SNMP traps behind the NLB (IaC/terraform/aws-managed/pipeline/stream)"
@@ -151,7 +150,7 @@ data "aws_ec2_managed_prefix_list" "s3" {
   name = "com.amazonaws.${var.region}.s3"
 }
 
-# ops/up.sh の check_sg_descriptions が for_each と description = each.value の 2 行の形を見る（048）
+# name / description / vpc_id を変えると作り直し、表からキーを外すと削除。ops/up.sh の check_sg_plan が terraform plan で止める（050）
 resource "aws_security_group" "workload" {
   for_each = local.workload_security_groups
 
@@ -188,7 +187,7 @@ resource "aws_vpc_security_group_ingress_rule" "flow" {
 }
 
 # インターフェース型と OpenSearch Serverless の VPC エンドポイント（endpoints.tf）に付ける。受信は表の 443 だけ。
-# description を変えると workload と同じ作り直し。ops/up.sh の check_sg_descriptions が見る（046）
+# name / description / vpc_id を変えると workload と同じ作り直し。ops/up.sh の check_sg_plan が terraform plan で見る（050）
 resource "aws_security_group" "endpoints" {
   name        = "${local.name_prefix}-endpoints"
   description = "VPC endpoints - HTTPS from the workload SGs, no outbound"

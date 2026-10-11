@@ -584,6 +584,10 @@ case ",$SINKS," in
   *,opensearch,*) if [ -z "$SKIP_ANALYTICS" ]; then printf '\033[1;33m%s\033[0m\n' "STORES の grafana（既定）: OpenSearch Serverless の logs コレクションを作る。OCU が KB のコレクションと共有されなければ最大 \$0.$((33 * OPENSEARCH_AZ_NUM))/h で、上の目安はそれを含んでいる"; fi ;;
 esac
 
+# base/core の -var のうち手順 0 の時点で分かるもの（vpc_cidr）。手順 0 の SG の守り（check_sg_plan の plan）と手順 3 の apply に同じものを渡し、
+# 手順 3 はこれに足す（cycle 050）
+MAIN_VARS=()
+if [ -n "${VPC_CIDR:-}" ];    then MAIN_VARS+=(-var "vpc_cidr=$VPC_CIDR"); fi
 # SG は 2026-09-29 にワークロードごとに分けた（IaC/terraform/aws-managed/base/core の security_groups.tf）。それより前の state（全部で共有する internal 1 つ）からは
 # apply できない（ほかのルートのリソースと Runtime の ENI が internal を付けたままなので、消すところで DependencyViolation になる）。何か作る前に止める
 if [ -f "$TF_DIR/base/core/terraform.tfstate" ]; then
@@ -595,18 +599,17 @@ if [ -f "$TF_DIR/base/core/terraform.tfstate" ]; then
   # 古い名前の SG は stream の NLB と ECS のタスクが付けたままだと消せない（DependencyViolation）ので、stream が残っているなら先に消してもらう
   if tf base/core state list 2>/dev/null | grep -qxF 'aws_security_group.workload["telegraf"]' \
     && [ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ] && { tf_init pipeline/stream; [ -n "$(tf pipeline/stream state list 2>/dev/null)" ]; }; then
-    die "IaC/terraform/aws-managed/base/core の state に 2026-10-04 より前の Telegraf の SG（telegraf / telegraf_poll / telegraf_nlb）が残っていて、stream がそれを使っている。先に ops/down.sh で消す（stream だけ先に消してもよい）。まだ何も作っていない"
+    die "IaC/terraform/aws-managed/base/core の state に 2026-10-04 より前の Telegraf の SG（telegraf / telegraf_poll / telegraf_nlb）が残っていて、stream がそれを使っている。先に ops/down.sh で消す。まだ何も作っていない"
   fi
   # 取りにいく側の Telegraf の SG（telegraf_dialin）は 2026-10-09 に gnmic へ替えた（cycle 013）。古い SG は stream の取りにいく側のタスクが付けたままだと
   # 消せないのは上と同じなので、stream が残っているなら先に消してもらう
   if tf base/core state list 2>/dev/null | grep -qxF 'aws_security_group.workload["telegraf_dialin"]' \
     && [ -s "$TF_DIR/pipeline/stream/terraform.tfstate" ] && { tf_init pipeline/stream; [ -n "$(tf pipeline/stream state list 2>/dev/null)" ]; }; then
-    die "IaC/terraform/aws-managed/base/core の state に 2026-10-09 より前の取りにいく側の Telegraf の SG（telegraf_dialin）が残っていて、stream がそれを使っている。先に ops/down.sh で消す（stream だけ先に消してもよい）。まだ何も作っていない"
+    die "IaC/terraform/aws-managed/base/core の state に 2026-10-09 より前の取りにいく側の Telegraf の SG（telegraf_dialin）が残っていて、stream がそれを使っている。先に ops/down.sh で消す。まだ何も作っていない"
   fi
-  # キーはそのままで description を変えた SG（workflow は 041、telegraf_dialout / telegraf_dialout_nlb は 043）も作り直しで、ほかの SG のルールが古い SG を
-  # 参照したままなので、付けるルートを消しても消せない。state の description がコードと違えば、全部消してもらう（ops/up-common.sh の check_sg_descriptions。
-  # workload の全キーと endpoints を見るので表は無い）
-  check_sg_descriptions
+  # SG の name / description / vpc_id を変えると作り直し、表からキーを外すと削除で、ほかの SG のルールが古い SG を参照したままなので、付けるルートを消しても
+  # 消せない。base/core の plan で aws_security_group が replace / delete になれば、全部消してもらう（ops/up-common.sh の check_sg_plan。cycle 050）
+  check_sg_plan ${MAIN_VARS[@]+"${MAIN_VARS[@]}"}
 fi
 
 # ---- 1. ECR --------------------------------------------------------------------
@@ -729,8 +732,6 @@ fi
 
 # ---- 3. 本体 --------------------------------------------------------------------
 log "3. 土台（IaC/terraform/aws-managed/base/core。VPC / Web の EC2 / バケット / ロール。初回は 3〜5 分）"
-MAIN_VARS=()
-if [ -n "${VPC_CIDR:-}" ];    then MAIN_VARS+=(-var "vpc_cidr=$VPC_CIDR"); fi
 # OpenSearch Serverless の VPC エンドポイントは KB と logs のコレクションで 1 本を共用する（どちらも公開しない）。
 # 今回どちらも作らなくても、前に作ったコレクションが state に残っていれば外さない（外すとそのコレクションに届かなくなる）
 NEED_AOSS=""
