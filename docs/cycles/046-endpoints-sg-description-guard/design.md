@@ -1,6 +1,6 @@
 # `aws_security_group.endpoints` の description も `check_sg_descriptions` の守りに入れる（046）
 
-設計: PM(fable-5-1) / effort: high。実装はエンジニア（opus-5.5 以下）。2026-10-11。ベースは main の `087fa23`。
+設計: PM(fable-5-1) / effort: high。実装はエンジニア（opus-5.5 以下）。2026-10-11。ベースは main の `087fa23`。Round 2（cold review Round 1 の Should fix 1 と Nit 5 を取り込み）で更新。
 
 ## 背景
 
@@ -41,8 +41,10 @@ for_each 無しのリソースの見出しは `# <アドレス>:`（インデッ
 ## 設計方針
 
 1. **守りの 3 関数のうち、読む側 2 つに endpoints を足す。比べる側 `check_sg_descriptions` は変えない。**
-   - `sg_descriptions_in_code`: `security_groups.tf`（file 1）の `resource "aws_security_group" "endpoints" {` から行頭 `}` までのブロックの、2 空白ちょうどの `  description = "…"`（`match($0, /^  description += "/)` と行末が `"`）を読み、`endpoints\t<文言>` を**workload の全キーの後に 1 行**出す。ブロックが無い・description が読めない（式になった、行末にコメント、複数行）なら、既存の読めない行と同じく stderr に `NG: aws_security_group.endpoints の description が読めない` を出して `exit 1`（`check_sg_descriptions` の 1 つ目の die「…から SG の description が読めない」で止まる）。`oss.tf`（file 2）では resource ブロックを読まない（endpoints の上書きは無い）。workload の表に `endpoints` というキーがあれば同じく NG（キーの衝突。いまは無い）
-   - `sg_descriptions_in_state`: 見出し `# aws_security_group.endpoints:`（完全一致）をキー `endpoints` として扱う。ブロックの読み方（行頭 `}` まで、4 空白ちょうどの description の最初の 1 つ、無ければ空）は workload と同じコードを通す
+   - `sg_descriptions_in_code`: `security_groups.tf`（file 1）の `resource "aws_security_group" "endpoints" {` から行頭 `}` までのブロックの、2 空白ちょうどの `  description = "…"`（`match($0, /^  description += "/)` と行末が `"`）を読み、`endpoints\t<文言>` を**workload の全キーの後に 1 行**出す。ブロックが無い・description が読めない（式になった、行末にコメント、複数行、値の中にエスケープされていない `"`（行末のコメントの中の `"` も）、`${` / `%{` の補間）なら、既存の読めない行と同じく stderr に `NG: aws_security_group.endpoints の description が読めない` を出して `exit 1`（`check_sg_descriptions` の 1 つ目の die「…から SG の description が読めない」で止まる）。`oss.tf`（file 2）では resource ブロックを読まない（endpoints の上書きは無い）。workload の表に `endpoints` というキーがあれば同じく NG（キーの衝突。いまは無い）
+   - `sg_descriptions_in_state`: 見出し `# aws_security_group.endpoints:` で始まる行（前方一致。後ろに ` (tainted)` が付いても読む。workload と同じ）をキー `endpoints` として扱う。ブロックの読み方（行頭 `}` まで、4 空白ちょうどの description の最初の 1 つ、無ければ空）は workload と同じコードを通す
+   - workload の表（`local.security_groups` / `oss_security_groups`）の行も同じ 2 つ（エスケープされていない `"`、`${` / `%{`）を読めない行扱いにする（cold review Round 1 の Should fix 1。043 からの同じ穴で、行末のコメントの中の `"` が値に混ざって誤った die（全部の作り直しを勧める）になる）。OSS 版で `oss.tf` に `  oss_security_groups = {` の塊が無ければ、file 1 の `security_groups = {` と同じく NG で止める（黙って OSS のキーを飛ばさない。cold review Round 1 の Nit 5）
+   - endpoints の 1 行を必ず出すので、`local.security_groups` の塊が無い・キーが 0 ならコードを読む側で NG にする（`check_sg_descriptions` の `[ -n "$code" ]` は効かなくなる。Round 1 の逸脱）
    - `check_sg_descriptions`: そのまま。state に endpoints のブロックが無ければ（初回、または消した後）比べる行が無いので通る。違えば die の文言に `endpoints（state「…」/ コード「…」）` が workload と同じ「、」区切りで並ぶ（並びは state の `terraform show` の順）。ENI の一言は `runtime` のときだけ（endpoints には付かない）
 2. **コードは直さない。** endpoints の description はいまの文言のままにする（変えると、立てたままの環境で作り直しになる。守りを足すサイクルで守りの対象を同時に変えない）
 3. **AWS では動かさない。** 変更は bash の awk と Python のテストと docs だけで、手元のテスト（`tests/test_workflow.py` の `_csd_run`、`tests/test_oss_ops.py` の実物の `check_sg_descriptions`）で閉じる。次に AWS で立てるときの 2 回目の `up.sh` が、endpoints を含めて通ることの確認になる（045 の A-1 と同じ経路）
@@ -83,19 +85,22 @@ for_each 無しのリソースの見出しは `# <アドレス>:`（インデッ
 - `tests/test_workflow.py` の check（名前は意味が分かる日本語で。番号は設計の参照用）:
   - T-1: `_csd_run()`（既定。state に endpoints がコードと同じ description で載る）が rc=0、`DIE:` 無し、`tf base/core show -no-color` が 1 回、init も state list も無し
   - T-2: `_csd_run(endpoints="VPC endpoints SG")`（古い文言）が rc≠0、stderr に `endpoints（state「VPC endpoints SG」/ コード「VPC endpoints - HTTPS from the workload SGs, no outbound」）` と `ops/down.sh で全部消してから ops/up.sh` と `まだ何も作っていない` を含み、`Runtime の ENI` を含まない
-  - T-3: `_csd_run(state={**_SG_CODE_DESC, "workflow": _WF_OLD}, endpoints="VPC endpoints SG")` が rc≠0、stderr に `workflow（state「…」/ コード「…」）、endpoints（state「VPC endpoints SG」/ コード「…」）` の順（「、」区切り。state の並び）で両方
+  - T-3: `_csd_run(state={**_SG_CODE_DESC, "workflow": _WF_OLD}, endpoints="VPC endpoints SG")` が rc≠0、stderr に `endpoints（state「VPC endpoints SG」/ コード「…」）、workflow（state「…」/ コード「…」）` の順（「、」区切り。state の並び。実物の `terraform show` はアドレス順で endpoints が workload より前）で両方
   - T-4: `_csd_run(endpoints=False)`（state にブロックが無い。初回）が rc=0、`DIE:` 無し
   - T-5: `_csd_run(endpoints=None)`（ブロックはあるが description の行が無く、12 空白の入れ子だけ）が rc≠0、stderr に `endpoints（state「」/ コード「VPC endpoints - …」）`
   - T-6: `_csd_run(code_ep_broken=True)` が rc≠0、stderr に `aws_security_group.endpoints の description が読めない` と `security_groups.tf から SG の description が読めない` と `まだ何も作っていない`、calls に `tf base/core show -no-color` が無い（コードを読んだ時点で止まる）
   - T-7: `_csd_run(oss=True, endpoints="VPC endpoints SG")` が rc≠0、stderr に `endpoints（state「VPC endpoints SG」/ コード「…」）`（OSS 版も同じ 1 本で守る）。`_csd_run(oss=True)` は rc=0
   - T-8: `_SG_EP_DESC == "VPC endpoints - HTTPS from the workload SGs, no outbound"`（実物の文言。変えたら守りの対象が変わったとレビューで気付く）
+  - T-10（Round 2）: コピーの `security_groups.tf` の endpoints の description の行末に ` # was "VPC endpoints SG"` を足すと rc≠0、stderr に `aws_security_group.endpoints の description が読めない`、calls に `tf base/core show -no-color` が無い（いまは rc=0 で値が `…no outbound" # was "VPC endpoints SG` になり、state と違うと誤って die する）
+  - T-11（Round 2）: workload の表の 1 行（例 `workflow`）の行末に ` # 041 "old"` を足すと rc≠0、stderr に `local.security_groups / oss_security_groups の読めない行`。同じ行の値を `"Temporal ${var.x}"` にしても同じ NG
+  - T-12（Round 2）: `_csd_run(oss=True)` でコピーの `oss.tf` の `  oss_security_groups = {` を `  oss_security_groups = merge({` にすると rc≠0、stderr に NG（いまは rc=0 で OSS のキーを黙って飛ばす）
   - T-9: `docs/troubleshooting.md` の 26 行目の行（`手順 0 の後に「state の SG の description がコードと違う`）に `endpoints` を含む
 - 既存の check（`check_sg_descriptions:` で始まる 12 本と `tests/test_oss_ops.py:1222` と `:1241`）が全部通ったまま
 - 変異テスト（セルフレビューで 1 回ずつ。直したら戻す）: `sg_descriptions_in_state` の endpoints の分岐を消すと T-2 / T-3 / T-5 / T-7 が落ちる。`sg_descriptions_in_code` の endpoints の出力を消すと T-2〜T-7 が落ちる（T-6 は NG の文言で）
 
 ## 未確定事項とリスク
 
-1. **endpoints の実物の `terraform show` の行は 046 の中では見られない**（045 の `down.sh` で消えている。立て直すのは費用に見合わない）。見出しの形 `# aws_security_group.endpoints:` は同じ for_each 無しの `# aws_vpc.this:` の実物から、本体の 4 空白の description は workload の実物から取った。外れていたら守りが endpoints を読まずに通る（いまと同じで、悪化はしない）。次に AWS で立てるサイクルの 2 回目の `up.sh` のログの後に、`terraform show -no-color | grep -n -A3 '^# aws_security_group.endpoints:'` を 1 回打って記録に残す ── QUEUE に `- [ ]` で足す
+1. ~~endpoints の実物の `terraform show` の行は 046 の中では見られない~~ → Round 1 でエンジニアが 10-11 03:32 の実物の写し（045 の環境。endpoints が生きていた state）で確かめた。見出しは `# aws_security_group.endpoints:`、4 空白の description はコードと同じ。QUEUE には足さない。元の記述:（045 の `down.sh` で消えている。立て直すのは費用に見合わない）。見出しの形 `# aws_security_group.endpoints:` は同じ for_each 無しの `# aws_vpc.this:` の実物から、本体の 4 空白の description は workload の実物から取った。外れていたら守りが endpoints を読まずに通る（いまと同じで、悪化はしない）。次に AWS で立てるサイクルの 2 回目の `up.sh` のログの後に、`terraform show -no-color | grep -n -A3 '^# aws_security_group.endpoints:'` を 1 回打って記録に残す ── QUEUE に `- [ ]` で足す
 2. `sg_descriptions_in_code` の resource ブロック読みは `security_groups.tf` の書き方（resource の名前と `{` が同じ行、description が 2 空白ちょうどでプレーンな 1 行）に依る。形が変わると「読めない」で `up.sh` が止まる（黙って素通りはしない）。それが 043 と同じ設計（読めない行は止める）
-3. 既定の偽 state に endpoints のブロックを足すので、既存の check 12 本の前提（`terraform show` の中身）が変わる。`_csd_show` の順（ルール → vpc → workload → endpoints → ルール）を保てば、die の文言の順も workload が先になり既存の期待と合う
+3. 既定の偽 state に endpoints のブロックを足すので、既存の check 12 本の前提（`terraform show` の中身）が変わる。`_csd_show` の順は実物のアドレス順（ルール → endpoints → vpc → workload → ルール）に合わせる。die の文言の順は endpoints が先になるので、既存の check の期待で順に依るものは直す（Round 1 で 3 本直した）
 4. `docs/troubleshooting.md:26` は 1 行が長い表の行。文言を足すだけで、表の列（`|` の数）を崩さない
