@@ -118,3 +118,198 @@ None
 ## ユーザーへの質問
 
 - `oss.tf:76-79` の `local.workload_security_groups` の内包表記（Should fix の 1 つ目）を、このサイクルの守りに足すか、QUEUE に回すか。足すなら、マネージド版でも awk に oss.tf を渡す形に変わる（`ops/up-common.sh:34` の `oss` の扱い）
+
+## Round 2
+
+レビュー: PM(fable-5-1) / effort: high。cold reviewer: opus / effort xhigh（完了判定の直前で、実装が `ops/up-common.sh` ほかで変わっているので依頼した。1 サイクル 2 回目）。対象 `06a4cc7..7cc7da1`（`ops/up-common.sh`、`tests/test_workflow.py`、`tests/test_oss_ops.py`、`.tf` 2 本のコメント、docs 2 本）。
+
+### PM の確認
+
+- Round 1 の Should fix 1（`oss.tf:76-79` の merge の 1 行目を `k => "pre ${v}"` にしても通る）を同じ手順（`repro-oss.sh`）で取り直した。いまは止まる:
+
+```
+managed rc=1 lines=3
+NG: aws_security_group.workload の書き方が読めない:
+  …/base/core/oss.tf:     { for k, v in local.security_groups : k => "pre ${v}" if !contains(local.oss_replaced, k) },
+  …/base/core/oss.tf:     { for k, v in local.oss_security_groups : k => v if local.oss },
+oss rc=1 lines=3
+```
+
+- 全テスト 16 本を取り直し: 全部失敗 0（`test_workflow.py` 通過 497 / 失敗 0、`test_oss_ops.py` 通過 209 / 失敗 0）。`bash -n`（up-common.sh / up.sh / oss/up.sh）rc=0。`./ops/check.sh` は「すべて通過」rc=0（fmt、20 ルートの validate、構文、模擬テスト、旧名）
+- エンジニアの逸脱 1（`tests/test_oss_ops.py` の偽の REPO に `oss.tf` を足した）: `oss.tf` を必須にした方針 6 の帰結で妥当。既存の検査の意味は変わらない（cold reviewer も同じ判断）
+- cold review の Nit 1 = エンジニアの Nit 1（`oss.tf:11` の `local.oss` の定義を `oss = true` にすると通る）: PM が再現（`repro-nit1.sh`。マネージド版 `rc=0` 17 行、出力は基準と同じ）。**このサイクルでは直さず QUEUE に回す。** 理由: 版の切り替えそのものを書き換える経路で、`local.oss` の行だけ守っても `var.project` の既定値（`variables.tf:23`）、ほかの tfvars、`TF_VAR_project` の環境変数で守りの判定（`oss.auto.tfvars`）と Terraform の判定がずれる（読んだだけ。Terraform の変数の優先順）。まとめて見る別サイクルにする。design.md:125 の「3 段とも閉じる」は言い過ぎなので文言を直した
+- cold review の Nit 3（workload の SG の `name` の式も作り直しの原因）: 設計の外（description の経路に絞っている）。QUEUE に回す
+- cold review の Nit 2（`/* */` の中の偽物の merge）: 残す。行で読む方式の前提で 043 の表の読み方と同じ限界。リポジトリの `.tf` に `/* */` のコメントは無い（cold reviewer の grep）
+- cold review の Nit 4 = エンジニアの Nit 3（原因が `oss.tf` でも die は `security_groups.tf` と案内）: 残す（方針 1・7 で die は変えない。直前の NG の行で場所は分かる）
+- cold review の Nit 5 = エンジニアの Nit 2（出口が `  )` ちょうどでないと関係ない行まで NG に並ぶ）: 残す（止まる側に倒れる）
+- 見た観点: design 整合性 / correctness / missing tests（自分で再現・テスト取り直し・check.sh）。security / data loss / API compatibility は cold reviewer の記録に依る。runtime は AWS では動かさない（方針 8）
+- 未解消の Must fix: 0。Should fix: 0。サイクル完了
+
+### cold review r02
+
+## サマリ
+
+対象は `06a4cc7..7cc7da1`（1 commit。ブランチ `feat/161-sg-guard-code-shape`）。design.md の Round 2 の実装ステップ 4〜8 を見た。差分は 8 ファイル +247 / -18（`git diff --stat`）で、うち 152 行は `build.md` の追記。レビュー対象のコードは次のとおり。
+
+- `ops/up-common.sh`: +22 / -8
+- `tests/test_workflow.py`: 69 行（ほぼ追加）
+- `tests/test_oss_ops.py`: +5 / -3
+- `.tf` 2 本と docs 2 本: 1 行ずつ
+
+全体として設計どおり。方針 6・7・9 はどれもコードに入っている。
+
+- 方針 6: `oss.tf` を常に渡し、OSS 版は `-v oss` で判定する。`oss.tf` が無ければ awk の前に NG を出して `return 1` する。
+- 方針 9: merge のブロックの 2 行を、順番どおり完全一致で見る。コメント行と空行は飛ばし、ほかの行と見出しの欠けは NG にする。
+- 方針 7: workload の NG にまとめ、ブロックの行のあとに merge の行を出す。
+
+T-9〜T-13 も検証表どおり。全テストを自分で取り直して失敗 0。設計の変異 M6〜M8 と、自分で足した変異 7 件は、全部テストで落ちた。
+
+守りが通ってしまう書き方は 2 つ再現した。
+
+- `local.oss` の定義を変える
+- `/* */` の中に偽物の merge を置く
+
+どちらも設計の範囲（3 段の経路）の外で、エンジニアのセルフレビューも同じものを挙げている。Must fix と Should fix は無し。
+
+### 見た観点 / 見ていない観点
+
+見た観点:
+
+- **design.md との整合性**
+  - 方針 6・7・9 と実装ステップ 4〜8 を `ops/up-common.sh:29-105` と突き合わせた。
+  - 変更対象のファイル（up-common.sh、test_workflow.py、docs 2 本、`.tf` のコメント 2 行）を確かめた。
+  - 設計に無い変更は `tests/test_oss_ops.py:536-540`（偽の REPO に `oss.tf` を足した）だけ。`oss.tf` を必須にしたので必要になった変更で、`build.md` の逸脱 1 に書いてある。
+  - `_sdc_tmp(sg_tf, oss_tf=None, oss=None)`（`tests/test_workflow.py:1702`）と `_csd_run(…, remove=())`（同 1516）は、引数を足しただけ。既存の呼び出しは同じ意味のまま（`oss` の既定は `oss_tf is not None`、同 1705-1706）。
+- **correctness**
+  - awk の merge の規則を読んだ。
+    - 入口は `^  workload_security_groups += merge\($`、出口は `$0 == "  )"`。
+    - `m1` / `m2` で順番を見る状態機械と、END の `mblk` / `m1 && m2` の処理も見た。
+  - そのうえで、手で壊した入力を一時ディレクトリで `sg_descriptions_in_code` に当てた（scratchpad の `r048_probe.py`。中身は下の Nit 1・2・5）。
+  - 実物はマネージド版が rc=0 で 17 行、OSS 版が rc=0 で 22 行を出す。
+- **missing tests（変異で確かめた）**
+  - scratchpad の `r048_mut.py` を使った。`ops/up-common.sh` 自体は書き換えず、`builtins.open` を差し替えて、`tests/test_workflow.py` に変異した文面を読ませた。
+  - 変異なしは `通過 497 / 失敗 0`。
+  - 設計の変異:
+    - M6（merge の規則を全部消す）は T-9 で落ちる。
+    - M7（`ARGC > 2` に戻す）は、046 の「全キー同じなら通る」の check で先に落ちる（spark の不一致）。
+    - M8（順を見ない）は T-10 で落ちる。
+  - 自分で足した変異（どれも落ちた）:
+    - shell の `[ -f oss.tf ]` を消す: T-11 で落ちる。
+    - `#` を含む行を全部飛ばす: T-10 で落ちる。
+    - 出口を前方一致にする: T-10 で落ちる。
+    - `wbad = wbad mbad` を消す: T-9 で落ちる。
+    - 「2 行が無い」の NG を消す: T-10 で落ちる。
+    - 見出しの `$` を外す: T-10 で落ちる。
+    - shell の `oss` を常に 1 にする: 046 の check で落ちる。
+- **テストの実行**
+  - `tests/test_*.py` の 16 本を、`.venv/bin/python` で 1 本ずつ打った。
+  - 結果は test_workflow が 497 / 0、test_oss_ops が 209 / 0、test_nautobot が「68 項目すべて通過」。ほかの 13 本も全部失敗 0。
+- **構文と整形**
+  - `bash -n` を `ops/up-common.sh`、`ops/up.sh`、`ops/oss/up.sh` に打った。どれも rc=0。
+  - `terraform fmt -check -diff` を `oss.tf` と `security_groups.tf` に打った。rc=0 で差分なし。
+- **API compatibility**
+  - `sg_descriptions_in_code` を呼ぶのは `check_sg_descriptions` だけ（grep で確かめた）。出力の形は変わっていない。
+  - 新しく `return 1` になる経路（`oss.tf` が無い）は、既存の die に乗る。
+  - テストのうち `check_sg_descriptions` を通しで打つのは、test_workflow と test_oss_ops だけ（grep で確かめた）。
+- **security**
+  - awk に入るのは、`-v oss=0/1` とリポジトリの中のファイルのパスだけ。外から入力は来ない。シークレットにも触れない。
+- **data loss**
+  - 変更は守りを止める側に倒すものだけ。消す処理も上書きする処理も足していない。
+
+見ていない観点:
+
+- `ops/check.sh` の 1〜2（20 ルートの `terraform validate`）と 5 は打っていない。`build.md` の生ログを読んだだけ。
+- gawk / mawk での `-v oss=0` の扱いは見ていない。手元は macOS の awk だけ（design.md の未確定事項 3）。
+- AWS の実物の state では見ていない（設計の方針 8 で対象外）。
+  - Nit 1 の「apply で spark の SG が作り直しになる」は、2 つの表の文言の差から読んだだけ。`terraform plan` は打っていない。
+- Terraform の override ファイル（`override.tf` / `*_override.tf`）で local や resource を上書きする経路は、再現していない。
+  - 守りは `security_groups.tf` と `oss.tf` の 2 本しか読まないので、その経路は原理的に見えない。
+  - 043 からの前提なので、指摘にはしない。
+- type safety は対象外（シェルと awk）。
+
+## Must fix
+
+None
+
+## Should fix
+
+None
+
+## Nit
+
+- **[correctness / design.md との整合性] `oss.tf:11` の `local.oss` の定義を変えると、守りが通る（design.md:125 の「経路の守りはこれで 3 段とも閉じる」は言い過ぎ）**
+  - 守りが文字列として見ているのは、merge の 2 行目の `if local.oss` と、`oss_replaced = local.oss ? ["msk"] : []` の 2 か所。`local.oss` の値を決める行（`  oss = var.project == "nwc-oss"`）は、守りの外にある。
+  - マネージド版でこの行を `  oss = true` にした場合:
+    - Terraform 側: workload の SG の spark の description が変わる。`"EMR Serverless workers (…)"`（`security_groups.tf:36`）から `"Spark ECS task, local mode (…)"`（`oss.tf` の `oss_security_groups`）になる。つまり作り直しになり、`DependencyViolation` に当たる。
+    - 守り側: shell の `oss=0` のまま `security_groups.tf` の表を出すので、state と一致して通る。
+  - OSS 版でこの行を `false` にした場合も、逆向きに同じことが起きる。
+  - Nit にした理由: 版の切り替えそのものを書き換える操作で、偶然に起きることはまず無い。`var.project` から変えると `name_prefix` も変わって全部が作り直しになり、description の守りの出番ではない。エンジニアの build.md の Nit 1 と同じ件。
+  - 直し方の候補は 2 つ。
+    - awk で `  oss = var.project == "nwc-oss"` と `  oss_replaced = local.oss ? ["msk"] : []` の完全一致を見る。規則 2 行で済む。
+    - 直さないなら、design.md の未確定事項 6 の文を「3 段（`local.oss` の定義を除く）」に直す。
+  - 再現: scratchpad の `r048_probe.py` で、`oss.tf` の `  oss = var.project == "nwc-oss"` を置き換えて `sg_descriptions_in_code` を打った。
+    ```
+    base managed rc 0 lines 17 | base oss rc 0 lines 22
+    P1 local.oss flip (managed): rc=0 stdout_same_as_real=True stderr_lines=0 first=[]
+    P1b local.oss flip (oss ed): rc=0 stdout_same_as_real=True stderr_lines=0 first=[]
+    ```
+
+- **[correctness] `/* */` の中に元の merge のブロックを残し、その下に本物の定義を別の形で書くと、守りが通る**
+  - 例えば次のように書く。
+    ```
+    /*
+    <元の merge のブロック>
+    */
+    workload_security_groups = { for k, v in local.security_groups : k => "pre ${v}" }
+    ```
+  - awk は、コメントの中の見出しと 2 行で `mblk` / `m1` / `m2` を立てる。本物の行は見出しの正規表現に当たらないので、見ない。
+  - 結果として、方針 9 の「merge( 以外にした → NG」がこの形では効かない。
+  - Nit にした理由: わざとの細工に近い。
+    - リポジトリの `.tf` には `/* */` のコメントが 1 つも無い。`grep -rn --include='*.tf' '/\*' IaC` で当たるのは、ARN や S3 の prefix の文字列（`…/*"`）とコメントの中の `parameter/*/` だけ。
+    - 043 からの表の読み方（`  security_groups = {` の塊）にも、同じ限界がある。
+    - 行で読む方式に共通の前提で、エンジニアの「範囲外として残したもの」と同じ件。
+  - 再現（`r048_probe.py`）:
+    ```
+    P2 block-comment decoy (managed): rc=0 stdout_same_as_real=True stderr_lines=0 first=[]
+    P2b block-comment decoy (oss ed): rc=0 stdout_same_as_real=True stderr_lines=0 first=[]
+    ```
+
+- **[correctness / 範囲外] workload の SG の `name` の式も作り直しの原因になるが、この系統の守りは見ていない**
+  - `aws_security_group` の `name` も、`description` と同じく、変えると作り直しになる（Forces new resource）。
+  - 例えば `security_groups.tf:158` の `name        = "${local.name_prefix}-${replace(each.key, "_", "-")}"` から `replace` を外すと、`_` を含むキーの SG が作り直しになる。それでも `check_sg_descriptions` は description しか比べないので、守りは通る。
+  - Nit にした理由: 048 の設計は description の経路に絞っているので、設計の外。同じ `DependencyViolation` の型なので、QUEUE の候補として書いておく。
+  - 読んだだけ。再現手順:
+    - `_csd_run(edits=[("security_groups.tf", 'replace(each.key, "_", "-")}"\n  description', 'each.key}"\n  description')])` を打ち、rc=0 になることを見る。
+    - `tags` の行（162）にも同じ式があるので、158 行だけに当たる前の文字列を選んでいる。
+
+- **[文言] `oss.tf` が無いときや merge の NG のときも、die は「security_groups.tf から SG の description が読めない（local.security_groups の形が変わったなら …）」と案内する**
+  - 原因の場所は、直前の NG の行で分かる。ただ、die の括弧の中の案内が原因と食い違う。
+  - Nit にした理由: die の文言は方針 1 と 7 で「変えない」と決めてあり、T-11 がこの文言を固定している。設計どおりの挙動で、読む人が少し迷うだけ。エンジニアの Nit 3 と同じ件。
+  - 再現（`tests/test_workflow.py` の T-11 の「いま:」の出力）:
+    ```
+    rc=1 'NG: …/tf/base/core/oss.tf が無い\nDIE: …/tf/base/core/security_groups.tf から SG の description が読めない（local.security_groups の形が変わったなら ops/up-common.sh の sg_descriptions_in_code を直す）。まだ何も作っていない'
+    ```
+
+- **[runtime / 体裁] merge の出口が `  )` ちょうどでないと、関係ない行まで NG に並ぶ**
+  - 出口の行に行末の空白や `# end` が付くと、`inm` が閉じない。その場合、次の `  )`（`active_sg_flows` の閉じ）までの行が NG に並ぶ。
+  - 止まる側に倒れるので、黙って通ることは無い。行末の空白は `terraform fmt` が消すが、`# end` は残る。
+  - Nit にした理由: 体裁だけの問題で、守りとしては正しく止まる。
+  - 再現（`r048_probe.py`。出口を `  ) ` にした）:
+    ```
+    P4 closing paren trailing space: rc=1 stdout_same_as_real=False stderr_lines=5 first=['NG: aws_security_group.workload の書き方が読めない:', '  …/base/core/oss.tf:   ) ']
+    ```
+
+## 良かった点
+
+- OSS 版の判定を `ARGC > 2` から `-v oss` に替えている。`oss.tf` を常に渡す変更に合わせたもの。
+  - 引数の数に頼る判定を残すと、M7 のようにマネージド版でも spark が OSS の文言になる。変異を当てて、実際にそうなることを確かめた。
+  - マネージド版で `oss_security_groups` の表を読まないことは、T-12 で押さえてある。
+- merge の 2 行は、完全一致に加えて順番も見ている（`m1` / `m2`）。T-10 には、出口、見出しの `$`、行末に続く式、`#` を含む行まで入っている。完全一致を緩める変異は、どれもテストで落ちる。
+- `oss.tf` が無いときは、awk のエラーに任せず、shell 側で名前の付いた NG を出している。T-11 がこの区別を見ている。
+- 土台の check で 2 つを固定している。テストの前提が崩れたときにすぐ分かる。
+  - 実物の merge のブロックが 2 行だけであること。
+  - `security_groups.tf` に `workload_security_groups` の定義が無いこと。
+
+## ユーザーへの質問
+
+None

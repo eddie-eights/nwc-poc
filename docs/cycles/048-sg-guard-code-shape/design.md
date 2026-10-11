@@ -122,4 +122,4 @@ state 側の見出しの読み方（`ops/up-common.sh:81-82`。前方一致な�
 3. awk は `==` / `~` / `index` だけで 046 と同じ範囲。gawk / mawk の差は見ない
 4. `endpoints[0]` の見出しの形は 046 の cold reviewer が一時コピーで再現したもので、AWS の実物の state では見ていない（`count` を足した apply はしない）。`for_each` なら `endpoints["a"]` になるが、どちらも前方一致に当たらないのは同じ
 5. merge のブロックの 2 行の完全一致は、`oss_replaced` の名前を変える・フィルタを足すリファクタで `up.sh` を止める。1 と同じ倒し方（NG の行が直す場所を言う）
-6. `local.security_groups` の表そのもの（`security_groups.tf` の `locals`）を別の local 経由にする書き方（`security_groups = local.base_sgs`）は、表の塊が無くなるので既存の「塊が無いか、キーが 1 つも無い」で止まる（046）。経路の守りはこれで 3 段とも閉じる
+6. `local.security_groups` の表そのもの（`security_groups.tf` の `locals`）を別の local 経由にする書き方（`security_groups = local.base_sgs`）は、表の塊が無くなるので既存の「塊が無いか、キーが 1 つも無い」で止まる（046）。経路の守りはこれで 3 段とも閉じる。`local.oss` の定義（`oss.tf:11`）と `var.project` の決まり方は版の切り替えそのもので、この守りの外（Round 2 のレビューで QUEUE に回した）
