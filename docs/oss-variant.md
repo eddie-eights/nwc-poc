@@ -7,6 +7,7 @@
 - **最終的には、いまの構成とは別に、マネージドの部分を OSS に置き換えた版も作る。**
   いまの構成を書き換えるのではなく、並べて持つ。
 - OSS 版は、手元のコンテナでの確認と、terraform と ops の実装（`IaC/terraform/oss/` と `ops/oss/`）が済み、2026-10-07 と 10-08 に AWS で 1 回ずつ立てて動作を確かめた（結果は下の「AWS で確かめたこと」）。
+  - そのあと OSS 版は AWS で立てていない。036（Temporal の履歴を Nautobot の RDS へ）・042（init のタスク `<prefix>-workflow-init`）・050（`ops/oss/up.sh` の手順 0 の `check_sg_plan`）は、OSS 版では AWS で未確認（マネージド版では `docs/verification/20261011-aws-managed-045.md` と `20261012-aws-managed-051.md` で確かめた）。
   - 手元で動かすのは [`docker/compose/`](../docker/compose/)。
   - 置き換え先は下の表。設計は [cycles/005-oss-on-ecs/design.md](cycles/005-oss-on-ecs/design.md)。
 - **OSS にするのは、下の表で置き換え先を書いた 5 つだけ。**
@@ -75,7 +76,7 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
 | 置き場 | 中身 |
 |---|---|
 | `IaC/terraform/oss/` | OSS 版の terraform。ルートごとのディレクトリに、変えないファイルは `IaC/terraform/aws-managed/` のファイルへのシンボリックリンク、OSS 版だけのファイル（`kafka.tf`、`opensearch.tf` など）と `oss.auto.tfvars`（`project = "nwc-oss"`）を置く。state は別 |
-| `ops/oss/up.sh`、`ops/oss/down.sh` | OSS 版の作る・消す。接頭辞は `<owner>-nwc-oss` で、マネージド版と並べて立てられる。SSM のパラメータのタグは `ManagedBy=ops/oss/up.sh`（2026-10-09 より前に `oss/ops/up.sh` で立てたものは、そのときの commit の `oss/ops/down.sh` で消す） |
+| `ops/oss/up.sh`、`ops/oss/down.sh` | OSS 版の作る・消す。接頭辞は `<owner>-nwc-oss` で、マネージド版と名前はぶつからない。ただし並べて立てるのは Fargate の vCPU の上限に余裕が無く未確認で、単独で立てる（下の「AWS で確かめたこと」の表の「全体」の行。2026-10-10 のユーザーの判断）。SSM のパラメータのタグは `ManagedBy=ops/oss/up.sh`（2026-10-09 より前に `oss/ops/up.sh` で立てたものは、そのときの commit の `oss/ops/down.sh` で消す） |
 | `ops/oss/oss-images.sh` | イメージの名前と版の正（1 か所） |
 | `ops/oss/roll-nodes.sh`、`ops/oss/roll_health.py` | Kafka と OpenSearch を 1 台ずつ入れ替える。`ops/oss/up.sh` が stream と analytics の apply の前に打つ |
 | `docker/images/spark/Dockerfile`、`docker/images/neo4j/Dockerfile` | ECS 向けの Spark と Neo4j（GDS 入り）のイメージ |
@@ -171,7 +172,7 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
 | Fargate ARM 0.25 vCPU / 0.5 GB（Telegraf、gnmic、syslog-ng、GoFlow2） | 4 | 0.0123 /タスク/h | 0.0493 |
 | Fargate ARM 0.5 vCPU / 1 GB（Grafana） | 1 | 0.0246 /タスク/h | 0.0246 |
 | Fargate ARM 2 vCPU / 4 GB（Nautobot + Redis） | 1 | 0.0986 /タスク/h | 0.0986 |
-| Fargate ARM 1 vCPU / 2 GB（Temporal worker） | 1 | 0.0493 /タスク/h | 0.0493 |
+| Fargate ARM 1 vCPU / 2 GB（Temporal のサーバー・UI・worker。1 タスク） | 1 | 0.0493 /タスク/h | 0.0493 |
 | Fargate x86 2 vCPU / 4 GB + 一時領域 40 GiB（Splunk） | 1 | 0.1232 + 0.0027 /タスク/h | 0.1259 |
 | 内部 NLB（Telegraf の dial-out） | 1 | 0.0243 /h | 0.0243 |
 | RDS for PostgreSQL db.t4g.micro（Nautobot。Single-AZ） | 1 | 0.025 /h | 0.0250 |
@@ -280,7 +281,7 @@ Amazon Managed Grafana は、このアカウントに IAM Identity Center が無
 - Grafana: `IaC/terraform/aws-managed/pipeline/analytics/variables.tf` の `grafana_task_cpu` 512 / `grafana_task_memory` 1024（`create_grafana` は up.sh が `GRAFANA=1` で true にする）。
 - Splunk: 同 `splunk_task_cpu` 2048 / `splunk_task_memory` 4096 / `splunk_ephemeral_storage_gib` 40 / `splunk_az_num` 1、`splunk.tf` の `X86_64`。
 - Nautobot: `IaC/terraform/aws-managed/pipeline/nautobot/variables.tf` の `task_cpu` 2048 / `task_memory` 4096 / `db_instance_class` `db.t4g.micro` / `nautobot_db_az_num` 1、`database.tf` の `allocated_storage = 20`（gp3）。
-- Temporal worker: `IaC/terraform/aws-managed/workflow/variables.tf` の `task_cpu` 1024 / `task_memory` 2048 / `desired_count` 1。
+- Temporal（サーバー・UI・worker。1 タスク）: `IaC/terraform/aws-managed/workflow/variables.tf` の `task_cpu` 1024 / `task_memory` 2048 / `desired_count` 1。
 - MSK: `IaC/terraform/aws-managed/pipeline/stream/variables.tf` の `broker_instance_type`（`kafka.m5.large`）と `msk_az_num`（2 = ブローカー数）、`msk.tf` の `volume_size = 10`。SCRAM の鍵とシークレット 3 つは `ops/up.sh` が作る。
 - OpenSearch Serverless: `IaC/terraform/aws-managed/pipeline/analytics/sinks.tf` の `standby_replicas`（`opensearch_az_num` 1 で `DISABLED`）、`base/core/endpoints.tf` の AOSS endpoint。
 - Neptune Analytics: `IaC/terraform/aws-managed/pipeline/graph/variables.tf` の `provisioned_memory`（16）と `neptune_az_num`（1 → `replica_count` 0）。

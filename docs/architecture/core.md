@@ -34,9 +34,11 @@ AWS の API へは全部 VPC エンドポイントから行き、この VPC を�
   - nautobot: ecr.api / ecr.dkr / logs / ecs（Job が gnmic のサービスを作り直す）
   - WORKFLOW: sqs / s3tables / ecr.api / ecr.dkr / logs / bedrock-agentcore / bedrock-agentcore.gateway（analytics があるとき athena）
 - IAM の Deny:
-  - 付けるロールは Web、Runtime、lab、EMR、ECS（Temporal / Telegraf / gnmic / syslog-ng / GoFlow2 / Grafana / Splunk / Nautobot）、tools Lambda、graph-status の Lambda。
-  - 拒むのは s3 / s3tables / sqs / sns / ssm / bedrock / aps / athena / firehose / AgentCore の呼び出し。
+  - 付けるロールは Web、Runtime、lab、EMR、ECS（Temporal / Telegraf / gnmic / syslog-ng / GoFlow2 / Grafana / Splunk / Nautobot）、tools Lambda、graph-status の Lambda、Bedrock の Knowledge Base の索引を作る Lambda（`<prefix>-kb-index`。`IaC/terraform/aws-managed/agent/kb.tf`）。
+  - 拒むのは s3 / s3tables / sqs / sns / ssm / ssmmessages / bedrock / aps / athena / firehose / AgentCore の呼び出し。
   - デバッグ用の EC2（CloudFormation の `<prefix>-lab-debug`）のロールは、同じ Action と条件の Deny を自分のスタックの VPC に向けてインラインで持つ。
+  - 閉域とは別の Deny: Nautobot の内部のシークレットを Web・Runtime・tools の Lambda・lab の EC2・lab-debug の EC2 のロールに読ませない `DenyNautobotSecrets`（cycle 044）と、workflow のタスクの `DenyNautobotParameters`（cycle 042）。[nautobot.md](../nautobot.md) の「シークレット」の行。
+  - 閉域とは別の許可: Web と lab の EC2 を SSM の管理ノードにする `<prefix>-ssm-agent`（`ssm_agent.tf`。パラメータの読み取りは含まない。cycle 047）。[resources/web-ec2.md](resources/web-ec2.md) の「ロール」の行。
 - リソースポリシーの Deny のファイル:
   - `bucket.tf`、`alerts.tf`
   - `IaC/terraform/aws-managed/pipeline/analytics/tables.tf`
@@ -47,6 +49,7 @@ AWS の API へは全部 VPC エンドポイントから行き、この VPC を�
   - apply した人（`terraform` を打つ PC は VPC の外なので。PoC の割り切り）
   - AWS のサービス自身（`aws:PrincipalIsAWSService`）とサービスが代わりに呼ぶもの（`aws:ViaAWSService`。SNS → SQS / Lambda、Bedrock → S3 など）
   - KB のロール `<prefix>-kb`（取り込みは Bedrock のサービス側で動く）
+  - Firehose のロール `<prefix>-alert-firehose`（Firehose がロールを引き受けて VPC の外から S3 Tables と logs のバケットに書く。`IaC/terraform/aws-managed/pipeline/analytics/history.tf`）
 - S3 Tables の Iceberg REST は、S3 Tables が裏で呼ぶ API に元の VPC が付かないので `aws:CalledViaLast = s3tables.amazonaws.com` を外してある。
 - MSK の IAM 認証にはこの条件キーが無いので Deny に入れない（VPC の中にしか口が無い）。
 - Neptune Analytics（`neptune-graph`）も Deny に入れていない（リクエストに `aws:SourceVpc` が付くか未確認。グラフは `public_connectivity = false` で、公開の口が無い）。

@@ -11,7 +11,7 @@ VPC から外へ出る経路が無いので、Fargate も EC2 も Runtime も、
 
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
-| リポジトリ | 14 個（下の表）。時間課金が無いので、スイッチに関わらずいつも作る。OSS 版（`IaC/terraform/oss/`、`project = nwc-oss`）はこれに 7 個を足す（下の「OSS 版だけのリポジトリ」） | `IaC/terraform/aws-managed/base/ecr/main.tf` |
+| リポジトリ | 15 個（下の表）。時間課金が無いので、スイッチに関わらずいつも作る。OSS 版（`IaC/terraform/oss/`、`project = nwc-oss`）はこれに 7 個を足す（下の「OSS 版だけのリポジトリ」） | `IaC/terraform/aws-managed/base/ecr/main.tf` |
 | タグ | `IMMUTABLE`（同じタグに上書きできない） | `main.tf` |
 | 消し方 | `force_delete = true`。destroy でイメージごと消える | `main.tf` |
 | スキャン | `scan_on_push = true` | `main.tf` |
@@ -59,7 +59,7 @@ OSS 版だけのリポジトリ（`oss_repositories`。マネージド版では�
 - **コードを変えたら、タグを進める。**
   リポジトリが `IMMUTABLE` なので、同じタグには push できない。自前ビルドの `agent` と `worker` は `IMAGE_TAG` を変える。
   出典: [data-stores.md](../../data-stores.md) の「9. タグ」、`IaC/terraform/aws-managed/base/ecr/main.tf` のコメント。
-- **`telegraf` / `gnmic` / `syslog-ng` / `grafana` / `splunk` / `nautobot` は、中身を変えれば自動でタグが変わる。**
+- **`telegraf` / `gnmic` / `syslog-ng` / `grafana` / `splunk` / `nautobot` / `temporal` は、中身を変えれば自動でタグが変わる。**
   タグにディレクトリの中身のハッシュが入る（`ops/lab-common.sh` の `dir_tag`）。`IMAGE_TAG` を上げなくてよい。
   - ハッシュはファイルの中身をそのまま取るので、コメントだけの変更でもタグが変わる。
   - たとえば `docker/images/telegraf/Dockerfile` のコメントを直すと `TELEGRAF_TAG` が変わり、次の `ops/up.sh` がイメージを作り直す。

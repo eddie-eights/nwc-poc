@@ -1,7 +1,7 @@
 ---
 title: nwc-poc の構成（OSS 版）
 subtitle: マネージドの 5 つを ECS の OSS に置き換え、ほかはマネージド版と同じにする
-date: 2026-10-09
+date: 2026-10-12
 source: docs/oss-variant.md、docs/cycles/005-oss-on-ecs/design.md、IaC/terraform/oss/、IaC/terraform/aws-managed/base/core/oss.tf
 ---
 
@@ -87,11 +87,11 @@ source: docs/oss-variant.md、docs/cycles/005-oss-on-ecs/design.md、IaC/terrafo
 | pipeline/stream | MSK → Kafka | 66 |
 | pipeline/graph | Neptune → Neo4j | 24 |
 | pipeline/analytics | EMR・OpenSearch・AMP → ECS | 80 |
-| base/core | oss.tf の SG・EFS | 39 |
+| base/core | oss.tf の SG・EFS | 41 |
 
 ::: notes
-- 数は tf の resource ブロックの数（ルートの *.tf をつないで grep -c '^resource "'。シンボリックリンクの先も数える。2026-10-10、feat/035-s3-layout b39c543）。count・for_each で増える実数ではない。
-- マネージド版の数は stream 57、graph 11、analytics 54、base/core 39。
+- 数は tf の resource ブロックの数（ルートの *.tf をつないで grep -c '^resource "'。シンボリックリンクの先も数える。2026-10-12、docs/166-docs-sync bddbcb7）。count・for_each で増える実数ではない。
+- マネージド版の数は stream 57、graph 11、analytics 54、base/core 41（base/core はマネージド版と同じファイル。2026-10-10 の数えの 39 から 2 つ増えた）。
 - 2026-10-09 の数え（graph 23・analytics 79、マネージド版 10・53）から 1 つずつ増えた。元のデッキの stream 46 は、013 で収集 4 種（gnmic・syslog-ng・GoFlow2）が入って 66 になった。
 - 自分のファイル: stream は kafka.tf、graph は access・neo4j・outputs・sync、analytics は grafana・locals・network・opensearch・outputs・spark・victoriametrics。残りはマネージド版のファイルへのシンボリックリンクと oss.auto.tfvars（project = "nwc-oss"）。
 - ほかの 7 つ（base/ecr・base/logs・base/core・agent・workflow・pipeline/lab・pipeline/nautobot）は IaC/terraform/aws-managed/ の同じルートへのシンボリックリンクに oss.auto.tfvars を足しただけ。
@@ -147,8 +147,8 @@ source: docs/oss-variant.md、docs/cycles/005-oss-on-ecs/design.md、IaC/terrafo
 - Fargate の vCPU を 21.5 使う（上限 30。10-08 に測った値）
 
 ::: notes
-- 作る順（ROOTS は ops/oss/up.sh:161）: base/ecr → base/logs → base/core → agent → lab → stream → graph → nautobot → analytics → workflow。
-- ops/oss/down.sh はこの逆の順に 9 ルートを消し、base/logs（logs のバケット）は残す（ops/oss/down.sh:88-91）。
+- 作る順（ROOTS は ops/oss/up.sh の手順 0「道具と認証」の中で決める）: base/ecr → base/logs → base/core → agent → lab → stream → graph → nautobot → analytics → workflow。
+- ops/oss/down.sh はこの逆の順に 9 ルートを消し、base/logs（logs のバケット）は残す（ops/oss/down.sh の頭のコメントと、終わりの「logs のバケット … は残す」の表示）。
 - 元のタイトルの oss/ops/up.sh は、017 で ops/oss/up.sh に移ったので直した（中身の主張は同じ）。
 - 1 台ずつの入れ替えは ops/oss/roll-nodes.sh。stream と analytics の apply の前に、変わる台をリーダーでない方から 1 台ずつ apply し、間で健全に戻るのを ECS Exec で待つ。OSS_ROLL=0 で一度に入れ替える（docs/oss-variant.md）。2026-10-08 の 2 回目で Kafka の 3 台を入れ替えて rc=0（13 分 57 秒）。標準入力が端末でないときに付ける疑似端末のうち、Linux の script -q -c の形は AWS では未確認。
 - 39 分 05 秒（rc=0）と約 $1.55/h は docs/verification/20261008-oss-aws.md（見積もりは公開の価格表から。請求書では確かめていない）。マネージド版（約 $2.92/h）の約半分。

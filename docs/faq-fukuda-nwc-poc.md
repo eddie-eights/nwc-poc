@@ -2370,7 +2370,7 @@ Multi-AZ DB クラスターが使えるエンジンは、RDS for MySQL と RDS f
 
 ### Q. Temporal の履歴を残すなら、データベースが要る？
 
-**A. 要る。cycle 036（2026-10-10）で、Nautobot の RDS for PostgreSQL に持たせた。** それまでは CLI の開発用サーバーで履歴がコンテナの中のファイルにあり、Fargate のタスクが入れ替わると進行中のワークフローの状態ごと消えた。いまは Temporal のサーバーを本番モード（`temporal-server`）で起動し、起動のたびにロール・DB・スキーマ・namespace を無ければ作る（[architecture/resources/temporal.md](architecture/resources/temporal.md)）。
+**A. 要る。cycle 036（2026-10-10）で、Nautobot の RDS for PostgreSQL に持たせた。** それまでは CLI の開発用サーバーで履歴がコンテナの中のファイルにあり、Fargate のタスクが入れ替わると進行中のワークフローの状態ごと消えた。いまは Temporal のサーバーを本番モード（`temporal-server`）で起動する。ロール・DB・スキーマは一回きりの init のタスク `<prefix>-workflow-init`（cycle 042。`ops/up.sh` の手順 8-5 が起こす）が作り、サーバーはスキーマができるのを待ってから namespace を無ければ作る（[architecture/resources/temporal.md](architecture/resources/temporal.md)）。
 
 | いまの置き方 | 中身 |
 |---|---|

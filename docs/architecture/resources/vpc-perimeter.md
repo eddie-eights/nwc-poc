@@ -23,7 +23,7 @@ VPC の中の通信は、SG の通信の表に書いたものだけが通る。
 | SG | ワークロードごとに 1 つと `endpoints`。ルールは通信の表から作る | `IaC/terraform/aws-managed/base/core/security_groups.tf` の `local.sg_flows` |
 | フローログ | VPC の全 ENI。ロググループ `/<prefix>/vpc-flow-logs`、保存 7 日、集約 60 秒 | `IaC/terraform/aws-managed/base/core/flow_logs.tf` |
 | スイッチ | `NETWORK_PERIMETER=0` で Deny を一時的に外す（切り分け用） | `ops/up.sh`、[setup.md](../../setup.md) の「閉域を一時的に外すとき」 |
-| 費用 | インターフェース型エンドポイント 1 つ 1.4 セント/時 × `ENDPOINTS_AZ_NUM`（データは別に $0.01/GB）。OpenSearch Serverless の VPC エンドポイントも 1.4 セント/時 × AZ（公表単価）。SG、ルール、gateway 型は時間課金なし | `ops/up.sh` の費用の目安（524〜584 行） |
+| 費用 | インターフェース型エンドポイント 1 つ 1.4 セント/時 × `ENDPOINTS_AZ_NUM`（データは別に $0.01/GB）。OpenSearch Serverless の VPC エンドポイントも 1.4 セント/時 × AZ（公表単価）。SG、ルール、gateway 型は時間課金なし | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`） |
 
 - リソースポリシーの Deny を定義している場所: `bucket.tf`、`alerts.tf`、`IaC/terraform/aws-managed/pipeline/analytics/tables.tf`、`IaC/terraform/aws-managed/workflow/events.tf`、
   `IaC/terraform/aws-managed/workflow/gateway.tf`、`IaC/terraform/aws-managed/agent/runtime.tf`。
@@ -51,11 +51,14 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
 | AWS の API を呼ぶワークロードの SG（`local.aws_api_clients`。web、lab、telegraf_dialout、gnmic、syslog_ng、goflow2、spark、grafana、splunk、nautobot、lambda、workflow、runtime） | endpoints、S3（プレフィックスリスト） | 443/tcp | AWS の API と S3 |
 | web | grafana / splunk / workflow / nautobot | 3000 / 8000 / 8233 / 8080（tcp） | SSM のポートフォワーディングで画面を開く（Kafbat UI は Web の EC2 の中なので SG を通らない） |
 | nautobot | nautobot_db | 5432/tcp | PostgreSQL |
+| workflow | nautobot_db | 5432/tcp | Temporal の履歴（同じ RDS の DB `temporal` / `temporal_visibility`。cycle 036） |
+| workflow | workflow | 6933〜6939 / 7233〜7239（tcp） | Temporal のサーバーの 5 つのサービスどうしの membership と gRPC（タスクの IP を広告し合う。同じタスクの中は SG を通らないので、効くのはデプロイ中に新旧 2 タスクが同じ DB で 1 つのクラスターになるときのタスクどうし。自分宛てだけ） |
 | telegraf_dialout / spark / web | msk | 9098/tcp | Kafka（IAM 認証。web は Kafbat UI） |
 | syslog_ng / goflow2 / gnmic | msk | 9096/tcp | Kafka（SASL/SCRAM） |
 | msk | msk | 9092〜9098/tcp | ブローカー同士 |
 | spark | spark | 全部の tcp | 1 つのジョブの driver と executor |
 | spark | splunk | 8088/tcp | HEC |
+| splunk | splunk | 8089 / 9887 / 9997（tcp） | Splunk のクラスター（`SPLUNK_AZ_NUM` が 2 か 3）の管理と検索・indexer 間の複製・内部ログの転送。1 台のときも作る（相手がいない） |
 | telegraf_dialout_nlb | telegraf_dialout | 1162/udp、8080/tcp | trap の転送と NLB のヘルスチェック |
 | telegraf_dialout_nlb | syslog_ng | 5140/udp、5140/tcp | syslog の転送と NLB のヘルスチェック |
 | telegraf_dialout_nlb | goflow2 | 2055/udp、6343/udp、8081/tcp | NetFlow・sFlow の転送と NLB のヘルスチェック |

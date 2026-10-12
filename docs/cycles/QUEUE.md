@@ -163,3 +163,5 @@
 - [x] workload の SG の `name` の式（`security_groups.tf:158` の `replace(each.key, "_", "-")`）も作り直しの原因になるので、`check_sg_descriptions` と同じ型の守りを足すか決める（048 の cold review の Nit 3。いまは description しか比べていない） → 050-sg-guard-plan（2026-10-12 完了）
 - [x] `check_sg_descriptions` のコードの表を awk で読む代わりに `terraform console` で `local.workload_security_groups` を評価して state と比べる形にするか決める（049 で console を導入した。043 / 046 / 048 の awk の表の読み方と書き方の守りをまるごと置き換えられるが、`tests/test_workflow.py` の土台 61 か所が変わる） → 050-sg-guard-plan（2026-10-12 完了）
 - [x] 050 の plan の守りを AWS で 1 回通す（手順 0 の `terraform plan -json` が本物の state と AWS の data source で通ることと所要時間を確かめる。確認が終わったらすぐ `ops/down.sh`） → 051-aws-sg-plan-verify（2026-10-12 完了）
+- [x] docs を 036〜051 のコードに揃える（2026-10-12 の点検で約 35 か所。Temporal の履歴を Nautobot の RDS に置いたこと（036）と init のタスク（042）が一部の docs とマネージド版のスライドに届いていない、045 で AWS で確かめたことが「未確認」のまま、ECR の数、SG の表、費用の根拠の行番号ほか。docs と `pipeline/nautobot/outputs.tf` のコメントだけ直し、AWS は使わない） → 052-docs-sync（2026-10-12 完了）
+- [ ] 1 本の回線断で修復案が 2 件できるのを 1 件にまとめる（leaf 側と spine 側が別の異常として数えられる。2026-10-05 の AWS で発見、`docs/troubleshooting.md` の「まだ直していないもの」。2026-10-12 の docs の点検で QUEUE に行が無いと分かった）

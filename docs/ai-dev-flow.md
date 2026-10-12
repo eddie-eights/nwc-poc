@@ -133,5 +133,5 @@ flowchart TB
 | 設計の経緯（質問と回答、却下した案、ラウンドごとの変更） | `docs/cycles/<NNN>-<slug>/design-log.md` | PM（エンジニアは自分が足した検証項目などの 1 行だけ） |
 | 実装の記録とセルフレビュー | `docs/cycles/<NNN>-<slug>/build.md` | エンジニア |
 | cold review の結果と PM の判断 | `docs/cycles/<NNN>-<slug>/review.md` | PM |
-| リポジトリ全体の設計の読み物（全体設計 HTML。プロジェクトに 1 本。サイクルごとの HTML は作らない、2026-10-10） | My Repo `artifacts/projects/nwc-poc-architecture.html`（日付なし。上書きし続ける。まだ無く、全体の設計が変わる最初のサイクルで作る） | PM（承認前と完了時。全体の設計が変わるサイクルだけ） |
+| リポジトリ全体の設計の読み物（全体設計 HTML。プロジェクトに 1 本。サイクルごとの HTML は作らない、2026-10-10） | My Repo `artifacts/projects/nwc-poc-architecture.html`（日付なし。上書きし続ける） | PM（承認前と完了時。全体の設計が変わるサイクルだけ） |
 | サイクルをまたぐ候補 | `docs/cycles/QUEUE.md` | PM |

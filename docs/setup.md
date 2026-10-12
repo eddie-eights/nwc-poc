@@ -11,6 +11,7 @@
     3 つともいつも作り、各リソースが何 AZ を使うかは `deploy.env` の `*_AZ_NUM` で選ぶ（既定は a だけ。MSK だけ a と b。[deploy.md](deploy.md)）。
   - インターネットへの経路は無い（NAT Gateway も IGW もパブリックサブネットも作らない。外から入る経路も無い）。
   - 社内のネットワークと重なるなら `deploy.env` の `VPC_CIDR` を変える（`/16`〜`/24`）。
+  - 立てた環境で `VPC_CIDR` を変えるなら、先に `ops/down.sh` で全部消す。VPC と全部の SG が作り直しになるので、`ops/up.sh` は手順 0 の守り（`check_sg_plan`）で止まる（何も作らない。AWS では `docs/verification/20261012-aws-managed-051.md` の V-1 / V-3 で確かめた）。[troubleshooting.md](troubleshooting.md) の「… の plan で SG が作り直し・削除になる」の行。
 - **SG はワークロードごとに 1 つ（16 個）と、VPC エンドポイント用の `endpoints`。**
   - 全部 `IaC/terraform/aws-managed/base/core` の `security_groups.tf` が作り、ルールはそこの通信の表から作る。表に無い通信は VPC の中でも通らない（送信も絞る）。
   - 表は [architecture/core.md](architecture/core.md) の「SG」。
@@ -54,7 +55,7 @@ PC は公開の SSM の API に出られればよい（ポートフォワーデ�
 - イメージをビルドするので、インターネットに出られること。
   - `STORES` に `splunk` を入れると、Docker Hub から `splunk/splunk` の amd64 のイメージ（約 2〜3 GB）を引き、検知のアプリを足して ECR に push する。
   - lab（`PIPELINE=1`）とデバッグ用の EC2 は、SR Linux・TRex（Docker Hub の `trexcisco/trex`）の amd64 を引いて ECR に写す。
-- x86_64 の PC では、agent / worker / Grafana / Nautobot のビルドに QEMU（binfmt）が要る（下の WSL2 の `binfmt` の行。Telegraf と Splunk は COPY だけ、lab のイメージは写すだけなので要らない）。
+- x86_64 の PC では、agent / worker / Grafana / Nautobot / temporal（Temporal のサーバー。cycle 036）のビルドに QEMU（binfmt）が要る（OSS 版は spark / neo4j も。下の WSL2 の `binfmt` の行。Telegraf・syslog-ng・gnmic・Splunk は COPY だけ、lab のイメージと goflow2・temporal-ui は写すだけなので要らない）。
 
 ### Mac
 

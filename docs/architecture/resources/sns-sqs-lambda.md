@@ -22,7 +22,7 @@ SQS はもう 1 本あり、Web の承認・却下を worker に届ける（決�
 | 決定の DLQ | `<prefix>-decisions-dlq`。保持 14 日 | `events.tf` |
 | 購読 | Lambda（graph のルート）と SQS（workflow のルート。`raw_message_delivery = true`）。どちらも自分のルートが作る | `sync.tf`、`events.tf` |
 | スイッチ | トピックは常に作る。Lambda は `PIPELINE=1`（`SKIP_GRAPH=1` で外す）、SQS は `WORKFLOW=1` | `ops/up.sh` |
-| 費用 | 時間課金は無い（publish は 100 万件/月まで、SQS は 100 万リクエスト/月まで無料）。エンドポイント `sns`、`sqs` が 1.4 セント/時 × `ENDPOINTS_AZ_NUM` | `alerts.tf` と `events.tf` のコメント、`ops/up.sh` の費用の目安（524〜584 行） |
+| 費用 | 時間課金は無い（publish は 100 万件/月まで、SQS は 100 万リクエスト/月まで無料）。エンドポイント `sns`、`sqs` が 1.4 セント/時 × `ENDPOINTS_AZ_NUM` | `alerts.tf` と `events.tf` のコメント、`ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`） |
 
 メッセージの中身:
 
@@ -136,7 +136,7 @@ SQS はもう 1 本あり、Web の承認・却下を worker に届ける（決�
 - AWS の上での通しを確かめた中身:
   - 2026-10-05: `sudo lab fail-main` で Grafana と Splunk の両方が `link_down` と `isis_down` を出し、SNS → Lambda（`status` の書き換えと Firehose）と SNS → SQS → worker の配信が通った。
   - 2026-10-08: Grafana と Splunk の `bgp_down` と Splunk の `trap` の firing が SNS → Lambda に届いた（011 の前の lab。[verification/20261008-managed-aws.md](../../verification/20261008-managed-aws.md)）。
-  - Grafana の `trap` は、ルールの評価がエラーで出なかった（008 で直した。AWS では未確認）。
+  - Grafana の `trap` は、ルールの評価がエラーで出なかった（008 で直した。評価がエラーにならないことは AWS で確かめた（[verification/20261011-aws-managed-045.md](../../verification/20261011-aws-managed-045.md) の H-2）。発火して SNS に届くかは未確認）。
 
 ## 関連
 

@@ -29,6 +29,7 @@ flowchart LR
 ```
 
 - temporal（`temporal-server` の本番モード）と Temporal UI と worker は、ECS Fargate の 1 タスクに入っている。Temporal の履歴は Nautobot の RDS for PostgreSQL（DB `temporal` / `temporal_visibility`）に残り、タスクが入れ替わっても消えない（cycle 036）。RDS ごと消す `ops/down.sh` のあとは残らない。
+  - ほかに一回きりの init のタスク `<prefix>-workflow-init`（同じ temporal のイメージ）がある。`ops/up.sh` の 8-5 が `terraform apply` の直後に起こし、Nautobot の RDS にロール `temporal`・DB・スキーマを無ければ作り、スキーマを最新まで上げる（cycle 042）。サーバーはスキーマが揃うのを待ってから起きる。
 - 修復案の置き場は S3 Tables の `proposal_events` だけ（Neptune に修復案の頂点は無い）。
   - 作成・承認・却下・時間切れ・適用・確認のたびに 1 行足し、上書きしない。
   - どの行にも全項目（28 列。原因、コマンド、理由、事前チェック、決めた人、処置の結果など）が入る。列の正は `app/temporal/rules.py` の `PROPOSAL_EVENT_COLUMNS`。
@@ -108,7 +109,7 @@ stateDiagram-v2
 | 直らないまま時間がたつ | Grafana は 4 時間ごと（`repeat_interval`）に同じ `starts_at` で送り直す。ワークフローが走っていれば捨て、閉じていても同じ発生の修復案があれば起こさない。Splunk は状態が変わったときだけ出し、送り直さない |
 | 調査や承認待ちのあいだに直って、また落ちた（フラップ） | `resolved` はその run 全体に 1 つのフラグなので、直った時点で `obsolete` になる。落ち直しの `firing` は、ワークフローが閉じた後に届けば新しい発生として調べ、走っているあいだ（調査の途中など）に届けば捨てる。捨てたときは、Grafana の次の送り直し（4 時間後）か Splunk の次の変化まで調査は起きない |
 | 解消の通知が、ワークフローの始まる前や閉じた後に届く | 伝える相手がいないので捨てる（Neptune の `status` は Lambda が別に `UP` へ戻す） |
-| Temporal のタスクが入れ替わる | 走っていたワークフローは続く（履歴は Nautobot の RDS。cycle 036。手元の docker で確かめ、AWS では未確認）。デプロイは新しいタスクが上がってから古いのを止める |
+| Temporal のタスクが入れ替わる | 走っていたワークフローは続く（履歴は Nautobot の RDS。cycle 036。手元の docker で確かめた。AWS で確かめたのは、承認待ちの 2 本が入れ替えのあとも同じ run_id で RUNNING のまま残ること（`docs/verification/20261011-aws-managed-045.md` の I-2「入れ替え後に承認待ちが残る」）。入れ替えのあとに承認して先へ進むかは AWS では未確認）。デプロイは新しいタスクが上がってから古いのを止める |
 | Temporal の履歴が無くなる（RDS を作り直した） | 走っていたワークフローは消える。修復案は `pending` のまま残り、ワークフローの時間切れは働かない（そのあとは下） |
 | 同じ修復案に承認と却下が続けて届く（2 人が押した、SQS が配り直した） | 最初の 1 通だけが効く。内容の違う後の決定は `ignored` の行で残り、同じ内容の重複は捨てる |
 
@@ -154,7 +155,7 @@ terraform -chdir=IaC/terraform/aws-managed/workflow output -raw worker_logs_comm
 
 | 症状 | 原因と直し方 |
 |---|---|
-| apply の直後に worker も UI も起きない | worker と ui は temporal が HEALTHY（namespace `default` ができた）になるまで待つ。temporal のサーバーは初期化のタスク（ロールと DB、スキーマ。2〜5 分）が終わるまで待ってから起きる |
+| apply の直後に worker も UI も起きない | worker と ui は temporal が HEALTHY（namespace `default` ができた）になるまで待つ。temporal のサーバーは初期化のタスク（ロールと DB、スキーマ。イメージの取得を含む所要は未実測で、AWS で測れた init の本体は 1.1 秒（`docs/verification/20261011-aws-managed-045.md` の A-1））が終わるまで待ってから起きる |
 | temporal が HEALTHY にならない（タスクが入れ替わり続ける） | 上のログで `entrypoint-rds:` の行を見る。`に繋がらない` なら Nautobot の RDS が無いか SG（`workflow` → `nautobot_db` の 5432）。`初期化のタスク（… <接頭辞>-workflow-init。…）を待つ（i/30。…）` が続いて `30 回（300 秒）待っても終わらない` で止まる（その前に ECS が UNHEALTHY で止めることもある）なら、初期化のタスクが走っていないか失敗している: `ops/up.sh` の 8-5 の出力を見るか、init のログを `terraform -chdir=IaC/terraform/aws-managed/workflow output -raw init_logs_command` のコマンドで見る（`init-rds:` の行。psql のエラーならパスワード: SSM の `/<prefix>/temporal/db-password` と `/<prefix>/nautobot/db-password`）。待ちの行の末尾に `temporal の psql: …` が出ているなら、サーバー側の psql が落ちている（`password authentication failed` は、init がロール `temporal` を作るまでは正常に出る ── PostgreSQL はロールが無いときも同じエラーを返す。init が exitCode 0 で止まった後も続くならロール `temporal` のパスワード。SSL や証明書のエラーなら TLS の設定 `SQL_TLS_ENABLED` / `SQL_HOST_VERIFICATION`）。手で `terraform apply` だけした環境では init が走らないので、`ops/up.sh` を打ち直す |
 | 承認を押しても `pending` のまま | 反映まで数秒〜20 秒かかる。「更新」を押す。1 分たっても変わらなければ、worker のログに `decide <proposal_id>` が出ているか、DLQ `<prefix>-decisions-dlq` に溜まっていないかを見る |
 | 承認を押したら `expired` になった | ワークフローがもう無かった（Temporal の履歴が無くなった。cycle 036 より前はタスクが入れ替わると消えた）。処置は打たれない。まだ落ちていれば、次の通知（Grafana の送り直しは 4 時間ごと）で別の修復案が出る |

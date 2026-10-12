@@ -16,7 +16,7 @@
 | SecureString | `ops/up.sh` が `ensure_secret`（乱数）と `ensure_fixed_secret`（決まった値）で作る。タグ `ManagedBy=ops/up.sh`（OSS 版は `ops/oss/up.sh` が作り、タグは `ManagedBy=ops/oss/up.sh`） | `ops/up-common.sh` の `ensure_secret`、`ensure_fixed_secret` |
 | 消す | `ops/down.sh` の手順 5-2 が、タグ `ManagedBy=ops/up.sh` の付いたものだけ消す（OSS 版は `ops/oss/down.sh` の手順 5-2 が `ManagedBy=ops/oss/up.sh` のものを消す） | `ops/down.sh`、`ops/down-common.sh` の `delete_up_ssm_params` |
 | エンドポイント | `ssm`（土台の分。`ssmmessages` と一緒にいつも作る） | `ops/up.sh` の手順 0 |
-| 費用 | エンドポイントが 1 本 1.4 セント/時 × `ENDPOINTS_AZ_NUM` | `ops/up.sh` の費用の目安（524〜584 行） |
+| 費用 | エンドポイントが 1 本 1.4 セント/時 × `ENDPOINTS_AZ_NUM` | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`） |
 
 String（ルートをまたいで渡す値）:
 
@@ -39,7 +39,8 @@ SecureString（`ops/up.sh` が作る）:
 
 | 名前 | 中身 | 作り方 | 受け取る側 |
 |---|---|---|---|
-| `/<prefix>/nautobot/secret-key`、`admin-password`、`db-password`、`api-token` | Django の SECRET_KEY、admin のパスワード、DB のパスワード、Web が使う API のトークン | 乱数 | Nautobot のタスク（ECS の secrets）、RDS（`db-password`）、Temporal の init のタスク（`db-password`）。Web / Runtime / tools の Lambda / temporal のタスク / lab の EC2 / lab-debug の EC2 のロールは `secret-key` / `admin-password` / `db-password` を Deny（`api-token` は Web が読む。cycle 044。temporal のタスクは `nautobot/*` を丸ごと） |
+| `/<prefix>/nautobot/secret-key`、`admin-password`、`db-password`、`api-token` | Django の SECRET_KEY、admin のパスワード、DB のパスワード、Web が使う API のトークン | 乱数 | Nautobot のタスク（ECS の secrets）、RDS（`db-password`）、Temporal の init のタスク（`db-password`）。Web / Runtime / tools の Lambda / lab の EC2 / lab-debug の EC2 のロールは `secret-key` / `admin-password` / `db-password` を Deny（`DenyNautobotSecrets`。`api-token` は Web が読む。cycle 044）。workflow のサーバーのタスク（temporal・ui・worker）のロールは `/<prefix>/nautobot/*` を丸ごと Deny（`DenyNautobotParameters`。cycle 042） |
+| `/<prefix>/temporal/db-password` | Temporal の履歴を Nautobot の RDS に書くロール `temporal` のパスワード（cycle 036） | 乱数（`WORKFLOW=1` のとき。`ops/up-common.sh` の `ensure_temporal_secrets`） | workflow のサーバーのタスクと init のタスク `<prefix>-workflow-init`（ECS の secrets。init のタスクが起動のたびにロールのパスワードをこの値に揃える。cycle 042） |
 | `/<prefix>/grafana/admin-password` | Grafana の admin のパスワード | 乱数（`STORES` に `grafana` があるとき） | Grafana のタスク |
 | `/<prefix>/splunk/admin-password`、`hec-token` | Splunk の admin のパスワード、HEC の token | 乱数、uuid（`STORES` に `splunk` があるとき） | Splunk のタスク |
 | `/<prefix>/splunk/idxc-secret` | Splunk のクラスターの合言葉（cluster manager・indexer・search head が互いを確かめる） | 乱数（`SPLUNK_AZ_NUM` が 2 か 3 のとき） | Splunk のタスク（どの役割も同じ値） |
@@ -51,7 +52,7 @@ SecureString（`ops/up.sh` が作る）:
 
 | 相手 | 向き | ポートと認証 |
 |---|---|---|
-| ECS のタスク（gnmic、Grafana、Splunk、Nautobot） | タスクの起動時に ECS が読む | タスク定義の `secrets`（`valueFrom` にパラメータの ARN） |
+| ECS のタスク（gnmic、Grafana、Splunk、Nautobot、workflow のサーバーと init） | タスクの起動時に ECS が読む | タスク定義の `secrets`（`valueFrom` にパラメータの ARN） |
 | Web の EC2、Runtime、Lambda、worker、lab の EC2 | 各自 → パラメータ | `ssm` のエンドポイント、それぞれのロール（`/<prefix>/*` か、名前を絞った許可。Web・Runtime・tools の Lambda・lab の EC2 は `nautobot/{secret-key,admin-password,db-password}` を Deny） |
 | RDS（Nautobot の DB） | Terraform → RDS | ephemeral で読み、write-only の引数（`password_wo`）に渡す |
 | Nautobot の Job | Job → `gnmic/nautobot/*` | `ssm` のエンドポイント、タスクロール |
