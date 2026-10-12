@@ -217,6 +217,8 @@ resource "aws_lambda_function" "tools" {
         OPENSEARCH_ENDPOINT  = local.opensearch_endpoint
         OPENSEARCH_INDEX     = local.opensearch_index
         PROMETHEUS_QUERY_URL = local.prometheus_query_url
+        # search_splunk（evidence.py。cycle 054）。パスワードは環境変数に書かず、evidence.py が PARAM_PREFIX で SSM の splunk/admin-password を引く
+        SPLUNK_URL = local.splunk_url
         # query_history（evidence.py）と list_proposals（proposals.py）。どれかが空ならツールは「未配備」を返す
         ATHENA_WORKGROUP      = local.athena_workgroup
         ATHENA_CATALOG        = local.athena_catalog

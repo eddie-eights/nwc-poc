@@ -36,6 +36,7 @@ def build_prompt(anomaly: dict) -> str:
         "まず root_cause（Neptune。UP でない要素を層をまたいで下へ辿り、根本原因ごとにまとめる）で、この異常が根本原因なのか、別の原因の結果なのかを確かめてください。"
         "トポロジと影響範囲は neighbors / blast_radius（Neptune。回線や機器の status が DOWN / ALARM なら他にも落ちている）、その機器のログは search_logs（OpenSearch）、"
         "メトリクスの推移は query_metrics（Prometheus）、アラートの履歴は query_history、直前の構成変更は recent_changes（Nautobot の変更履歴）で見て、見えた事実だけを根拠に原因を書いてください。"
+        "search_logs / query_metrics が配備されていないと返したら、search_splunk（Splunk。ログ・trap・メトリクスの全トピック）で引いてください。"
         "説明文や Markdown は付けないでください。\n"
         f"異常: device_id={anomaly.get('device_id', '')} kind={anomaly.get('kind', '')} target={anomaly.get('target', '')} "
         f"detail={anomaly.get('detail', '')} first_seen_jst={jst(anomaly.get('first_seen'))}\n"

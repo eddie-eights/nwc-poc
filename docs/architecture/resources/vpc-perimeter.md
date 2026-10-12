@@ -59,6 +59,7 @@ SG の通信の表（`local.sg_flows`）。表に無い通信は受信も送信�
 | spark | spark | 全部の tcp | 1 つのジョブの driver と executor |
 | spark | splunk | 8088/tcp | HEC |
 | splunk | splunk | 8089 / 9887 / 9997（tcp） | Splunk のクラスター（`SPLUNK_AZ_NUM` が 2 か 3）の管理と検索・indexer 間の複製・内部ログの転送。1 台のときも作る（相手がいない） |
+| lambda | splunk | 8089/tcp | tools の Lambda の `search_splunk` が Splunk の検索 API を引く（cycle 054。SG `lambda` は graph の status の Lambda と KB の索引を作る Lambda も付けるので、その 2 つからも届く。runtime や web からは開けない） |
 | telegraf_dialout_nlb | telegraf_dialout | 1162/udp、8080/tcp | trap の転送と NLB のヘルスチェック |
 | telegraf_dialout_nlb | syslog_ng | 5140/udp、5140/tcp | syslog の転送と NLB のヘルスチェック |
 | telegraf_dialout_nlb | goflow2 | 2055/udp、6343/udp、8081/tcp | NetFlow・sFlow の転送と NLB のヘルスチェック |

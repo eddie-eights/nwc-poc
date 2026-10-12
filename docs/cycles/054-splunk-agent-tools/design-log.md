@@ -13,3 +13,52 @@
 2. 資格情報
    - 選んだもの: **既存の admin のパスワード**（SSM の `/<prefix>/splunk/admin-password`。PM の推奨）。読み取り専用のユーザーは QUEUE に積んで後で
    - 却下（いまはやらない）: 読み取り専用のユーザーをこのサイクルで作る。Splunk のタスクの起動時にユーザーを作る仕組みと、そのパスワードの SSM が要り、サイクルが 2 倍になる
+
+## Round 2（2026-10-12）
+
+Round 1 のエンジニアのセルフレビューが、設計側の Should fix として 2 件を PM に回した（`build.md` の Round 1）。PM が直す形を決めた。
+
+- S-5（`| search device="<id>*"` の前方一致で `10.0.0.1` が `10.0.0.10` に、`spine-1` が `spine-10` に当たる）: 完全一致と `<id>.`（FQDN）だけにする。前方一致は FQDN の sysName を拾うためだったので、`.` が続く形に限れば目的は残る
+- S-2（機器の絞り込みが `eval` のあとなので、`earliest` の範囲を全部読む。`TIMEOUT = 20` はソケットの 1 回ごとで、全体は Gateway の 30 秒を超えうる）
+  - 本文の語 `"<id>"` を基本の検索に足す。エンジニアは「`_raw` に機器名が無いイベント（host だけ）を落とすおそれ」を挙げたが、`splunk_events` の HEC の `host` は `tags.host` か `agent_host`（どちらも本文の `tags` にある）なので、落ちるのは `host` が `unknown` のものだけ（`snmp_sinks.py:619` / `:321` / `:334` を PM が読んだ）
+  - 全体の締め切り 25 秒を Python 側に持つ。Splunk の `max_time` は export が受けるかを確かめていないので使わない
+- T-10 は「動いていれば」をやめて、使い捨ての Splunk を立てて必ず確かめる（SPL を本物に一度も通していないため）
+- SG `lambda` を 3 つの Lambda が共有する件（Should fix 4）: SG は分けない。2 つの Lambda のロールは SSM を読めず、admin のパスワードを持たない。専用の SG は読み取り専用のユーザーと一緒に QUEUE へ
+
+## Round 3（2026-10-12）
+
+Round 2 のエンジニアのセルフレビュー（A4 / A5 / A6。`build.md` の Round 2）と、cold reviewer の Round 1（Must 0 / Should 2 / Nit 6。`review.md`）を受けて PM が直す形を決めた。
+
+- A4 と cold の Should 2 件目（sysName のある機器を IP で引くと、エラーにならずに 0 件）、A5（flows は `device_id` で引くと必ず 0 件）
+  - 原因は 1 つ: 2 段目の絞り込みを、`coalesce` した 1 つの機器名だけで書いた。イベントは機器を sysName / agent_host / source / sampler / host の複数の欄で持ち、device map が sysName を足すと IP は `device` から消える。flows は `device` が必ず `unknown`
+  - PM の再現（pm-054 の aca0c69。Spark の `splunk_events` に devmap を通し、`coalesce` を Python で写した）
+
+    ```
+    traps host: unknown tags: {'source': '10.0.0.1', 'name': 'linkDown', 'sysName': 'spine-1'} | device: spine-1 | filter device==10.0.0.1: False
+    flows host: unknown tags: {'sampler': '10.0.0.1', 'src': '10.1.1.1', 'dst': '10.2.2.2'} | device: unknown | filter device==10.0.0.1: False
+    ```
+
+  - 選んだもの: 2 段目に IP の欄（`tags.agent_host` / `tags.source` / `tags.sampler` / `host`）の完全一致を OR で足す。`search_logs` も 3 欄のどれでも当たるので、格納先で答えが変わらない
+  - 却下: 説明を「IP で当たるのは sysName の付かない機器だけ」に直すだけ。エージェントはアラートや trap の送り元の IP で引くことがあり、0 件を「何も無い」と読む。flows を機器で引く手段も残らない
+- cold の Should 1 件目（`GATEWAY_ONLY` と `run_tool` の振る舞いの変更が design.md に無い）: 実装とテストは正しいので、方針・変更対象・検証方法（T-12）に足すだけ。コードは変えない
+- A6（締め切りが厳密でない）: 受け入れて「未確定事項とリスク」に書く。超えても Gateway の時間切れの `error` がエージェントに届き、tools Lambda は落ちない（`gateway.tf:202` の timeout 60、`mcp_client.py:26` の 30 秒、`tests/test_agentcore.py` の T-12）。別スレッドで閉じる形は複雑さに見合わない。cold reviewer も同じ件を Nit にした
+- cold の Nit 6 件は直さない（flows の Nit は A5 で一緒に片付く）。リダイレクトで Authorization を付けたまま追う件は、読み取り専用のユーザーの QUEUE の行と一緒に後で
+
+## Round 4（2026-10-12）
+
+Round 3 のエンジニアのセルフレビューが、設計側の Should fix B1 を PM に回した（`build.md` の Round 3）。PM が直す形を決めた。
+
+- B1（`device_id="unknown"` で、本文に unknown の語を含む他の機器の行が出る。design.md の「`host` が `unknown` のイベント」と食い違う）
+  - 原因: Round 3 で IP の欄を並べたとき、HEC の `host` も IP の欄として足した。`host` は `tags.host` か agent_host の写し（`snmp_sinks.py:619`）で、写しの元を出すコレクターが無い trap / log / flows では `unknown` になる。句が当てる値は実際には `unknown` だけで、機器を足す役に立っていない
+  - PM の再現（0da5558 の `evidence.py` と `snmp_sinks.py`。rec13 と同じ形の log を `splunk_events` に通し、2 段目の各句を Python で写した）
+
+    ```
+    HEC host: unknown | device: leaf-9 | raw has 'unknown': True
+    device clause: False | ip clauses: False | host clause: True
+    ```
+
+  - 選んだもの: `host` の句を外す。`tags.host` だけのイベントは `coalesce` の `device` で当たり（T-10 の `hostonly-1`）、gNMI の `host` は `tags.source` の写しなので `tags.source` の句で当たる
+  - 却下: `tags.host` に替える（どのコレクターも出さず、`device` の `coalesce` ですでに当たる）。`device_id` の `unknown` を拒む（句が冗長なのは変わらず、写しの元が別の値になったとき同じ形の誤りが残る）
+- B4（docs が `tags.host` / `host` を機器名・IP の欄に挙げる）: B1 と一緒に docs から外す
+- B2: エンジニアが T-10 に rec12 を足して片付けた
+- B3（`device="<id>.*"` が `10` / `10.0` のような IP の一部を通す）: Nit。直さない（サイクル完了時に QUEUE へ）

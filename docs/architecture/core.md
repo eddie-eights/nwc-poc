@@ -80,6 +80,7 @@ AWS の API へは全部 VPC エンドポイントから行き、この VPC を�
 | spark | spark | 全部の tcp | 1 つのジョブのドライバとエグゼキュータ |
 | spark | splunk | 8088/tcp | HEC（`STORES` の `splunk`） |
 | splunk | splunk | 8089 / 9887 / 9997（tcp） | Splunk のクラスター（`SPLUNK_AZ_NUM` が 2 か 3）の管理と検索・indexer 間の複製・内部ログの転送。1 台のときも作る（相手がいない） |
+| lambda | splunk | 8089/tcp | tools の Lambda の `search_splunk` が Splunk の検索 API を引く（cycle 054。SG `lambda` は graph の status の Lambda と KB の索引を作る Lambda も付けるので、その 2 つからも届く。runtime や web からは開けない） |
 | telegraf_dialout_nlb | telegraf_dialout | 1162/udp、8080/tcp | trap の転送と、NLB のヘルスチェック（Telegraf の `outputs.health`） |
 | telegraf_dialout_nlb | syslog_ng | 5140/udp、5140/tcp | syslog の転送と、NLB のヘルスチェック（TCP） |
 | telegraf_dialout_nlb | goflow2 | 2055/udp、6343/udp、8081/tcp | NetFlow・sFlow の転送と、NLB のヘルスチェック（`/__health`） |
@@ -96,7 +97,7 @@ Neptune Analytics に SG は無い。VPC の中の口を持たず、インター
   例外は EC2 自身が試しに送る NetFlow / sFlow / syslog（2055 / 6343 / 5140 の udp）。両側に書く（telegraf_dialout_nlb は lab の SG からも受ける。NLB は trap（162/udp）を lab の SG からは受けない。lab の SG の 162 は送る側だけ）。
 - 開けていないもの:
   - Temporal の gRPC 7233〜7239 と membership 6933〜6939 をタスクの外へ（開けるのは workflow の SG の自分宛てだけ。UI とワーカーは同じタスクの `127.0.0.1` / `localhost`）
-  - Splunk の管理 API 8089 の外から（splunk の SG どうしだけ開ける）
+  - Splunk の管理 API 8089 の外から（開けるのは splunk の SG どうしと、tools の Lambda の `search_splunk` のための lambda → splunk だけ。lambda の SG を付ける 3 つの Lambda から届く。cycle 054）
 - インターネットからの受信は、SG の前に経路が無い。
 - DNS（VPC の +2）・IMDS・ECS のタスクメタデータ・Time Sync は SG の対象外なので、表に無くても届く。
 - `endpoints` は表の 443 だけを受け、外へは出さない。

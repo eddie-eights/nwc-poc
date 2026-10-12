@@ -120,7 +120,7 @@
   traps と logs（機器の syslog）と flows（NetFlow / sFlow）→ OpenSearch Serverless のコレクション `<prefix>-logs`。metrics と gnmi → Amazon Managed Service for Prometheus のワークスペース `<prefix>-metrics`（ジョブ `sinks-grafana`）。
   - その 2 つを SigV4 で見る Grafana OSS（analytics の ECS。Fargate ARM 0.5 vCPU / 1 GB）も作る。
   - Grafana のアラートルールも入り、SNS へ出す（Prometheus の `link_down` / `bgp_down` / `isis_down` と、OpenSearch の `trap`。[pipeline.md](pipeline.md) の「アラート」）。`link_down` が見るのは gnmic が取る gNMI の IF の状態（`snmp_interface_oper_up`）。
-  - 外すと、エージェントの `search_logs` / `query_metrics` は「配備されていない」を返し、Grafana の画面とアラートルールも無くなる。
+  - 外すと、エージェントの `search_logs` / `query_metrics` は「配備されていない」を返し、Grafana の画面とアラートルールも無くなる。`splunk` を入れて `WORKFLOW=1` なら、エージェントは代わりに `search_splunk` で Splunk のログ・trap・メトリクスを引く（cycle 054）。
   - Amazon Managed Grafana はサインインに IAM Identity Center か SAML が要り、このアカウントには Organizations も Identity Center も無いので使えない。
 - **`splunk`**
   全トピック → Splunk の HTTP Event Collector（HEC。ジョブ `sinks-splunk`）。Spark は VPC の中の `https://splunk.<prefix>.internal:8088` に送る（自己署名なので検証しない）。

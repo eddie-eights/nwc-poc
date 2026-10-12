@@ -145,9 +145,9 @@ gnmic は取りに行き、ほかの 3 種は内部 NLB の裏で受ける。
 - 正: docs/architecture/core.md の SG の表（IaC/terraform/aws-managed/base/core/security_groups.tf の local.sg_flows）。
 - 9098 は telegraf_dialout・spark・web（Kafbat UI）、9096 は syslog_ng・goflow2・gnmic。
 - 受ける側の 3 種は telegraf_dialout・syslog_ng・goflow2。NLB → 各タスクは 1162/udp と 8080、5140/udp と tcp、2055/udp・6343/udp と 8081（ヘルスチェック）。lab の管理網は 203.0.113.0/24。
-- ほかの行: spark → splunk 8088（HEC）、nautobot → nautobot_db 5432、msk どうし 9092〜9098、spark どうし全 TCP、Splunk のクラスター内 8089・9887・9997。
+- ほかの行: spark → splunk 8088（HEC）、nautobot → nautobot_db 5432、msk どうし 9092〜9098、spark どうし全 TCP、Splunk のクラスター内 8089・9887・9997、lambda → splunk 8089（tools の Lambda の search_splunk。SG lambda を付ける 3 つの Lambda から届く。054）。
 - workflow の行: web → workflow 8233（Temporal UI）、workflow → nautobot_db 5432（Temporal の履歴。036）、workflow → workflow 6933〜6939 / 7233〜7239（Temporal のサーバーの membership と gRPC。デプロイ中の新旧 2 タスクどうし。自分宛てだけ）。
-- 開けていないもの: Temporal の gRPC 7233〜7239 と membership 6933〜6939 の workflow のタスクの外からの受信、Splunk の管理 API 8089 の外からの受信。Kafbat UI は Web の EC2 の中なので SG を通らない。
+- 開けていないもの: Temporal の gRPC 7233〜7239 と membership 6933〜6939 の workflow のタスクの外からの受信、Splunk の管理 API 8089 の splunk どうしと lambda 以外からの受信（runtime・web からは開けない）。Kafbat UI は Web の EC2 の中なので SG を通らない。
 - Neptune Analytics には SG が無く、neptune-graph-data のエンドポイント（443）で届く。
 :::
 

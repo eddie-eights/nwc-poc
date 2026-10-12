@@ -34,6 +34,7 @@
 | `list_proposals` | S3 Tables の `proposal_events`（Athena のワークグループ `<prefix>-history`。`proposal_id` ごとに `seq` が最大の行。既定は全部の状態を新しい順に 20 件、最大 100 件） |
 | `search_logs` | OpenSearch Serverless の `snmp-logs`（trap と syslog） |
 | `query_metrics` | Amazon Managed Prometheus（PromQL） |
+| `search_splunk` | Splunk の検索 API（`https://splunk.<prefix>.internal:8089` の `/services/search/jobs/export`。全トピック、sourcetype `nwc:<トピック>`）。SPL は決めた形だけで、引数（`device_id` / `topic` / `keyword` / `minutes` / `limit`）は検証して拒む。`device_id` は機器名か機器の IP で、機器名の完全一致か `<id>.` で始まる名前（FQDN の sysName）、または IP を持つ欄（`tags.agent_host` / `tags.source` / `tags.sampler`）の完全一致だけ。前方一致にしない。HEC の `host` の欄は完全一致の句に使わない（機器名の `coalesce` の最後の候補としては残る。cycle 054 Round 4）。device map で sysName が付いた機器も IP で引け、flows（機器名を持たない）は送り元の機器の IP（`tags.sampler`）で引く（cycle 054 Round 3）。全体を 25 秒で打ち切り（20 秒応答が止まったとき、読んでいる途中で切れたときも同じ）、読めた分を `truncated` 付きで返す（1 件も読めていなければ `error`）。認証は Splunk の admin（SSM の SecureString `/<prefix>/splunk/admin-password`）。Splunk を ECS で動かしていなければ「配備されていない」を返す（cycle 054） |
 | `query_history` | S3 Tables の `alert_events`（Athena のワークグループ `<prefix>-history`。`event_id` で重複を落とし、新しい順に最大 50 件） |
 
 OSS 版（`IaC/terraform/oss/`）でも AgentCore と Bedrock はそのまま使う。[oss-variant.md](../../oss-variant.md)。
@@ -53,6 +54,7 @@ OSS 版（`IaC/terraform/oss/`）でも AgentCore と Bedrock はそのまま使
 | Knowledge Base | Runtime → Bedrock（Retrieve） | `bedrock-agent-runtime` のエンドポイント。コレクションは Bedrock がサービス側から検索する |
 | Gateway | Runtime → Gateway → tools の Lambda | `bedrock-agentcore.gateway` のエンドポイント、SigV4。ツールは最大 5 往復 |
 | Neptune、OpenSearch、Prometheus、Athena | tools の Lambda（か Runtime のコンテナ）→ 各サービス | 各エンドポイント、SigV4。Neptune は読むだけ |
+| Splunk | tools の Lambda → Splunk（search head） | 8089/tcp（SG `lambda` → `splunk`）、Basic 認証（admin）。自己署名なので証明書は検証しない（cycle 054） |
 | SSM | Runtime、Web → パラメータ | `ssm` のエンドポイント |
 
 ## 知見
@@ -122,6 +124,7 @@ OSS 版（`IaC/terraform/oss/`）でも AgentCore と Bedrock はそのまま使
 | チャットの通し | 2026-10-05 に AWS で、チャットが「dc1-leaf-01 の接続先は」に正しく答えた（`AGENT=1 PIPELINE=1 WORKFLOW=1`、`RUNTIME_AZ_NUM` は既定の 1） |
 | ツールの回数の上限に当たったとき | `MAX_TOOL_ROUNDS`（既定 5）に当たると、何も返さずに終わる。既知（2026-10-05。[troubleshooting.md](../../troubleshooting.md) の「既知の不具合」） |
 | 異常の一覧を返すツール | 無い（いまのアラートは Grafana と Splunk の画面で見る） |
+| `search_splunk` | 手元の使い捨ての Splunk（`nwc-local-splunk` の 10.4.4）で、Spark の `splunk_events` の形のイベントを引けることを確かめた（機器の完全一致と FQDN、sysName の付いた trap を IP で引く、flows を sampler の IP で引く、topic・keyword の絞り込み、パスワード違いの `HTTP 401`。cycle 054 の T-10）。AWS の tools の Lambda から Splunk の 8089 に届くこと、クラスターのとき `splunk` の名前が search head を指して検索できることは未確認。admin の資格情報を使う（読み取り専用のユーザーは QUEUE に積んだ） |
 | タグ | Runtime のロググループには Terraform で付かない（`ops/up.sh` の手順 9 で付ける）。KB のデータソースとガードレールの版には付かない |
 
 - Runtime をサブネット 1 つで作る: `VpcConfig` の subnets は 1〜16 個（2026-10-05 確認）。
