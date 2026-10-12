@@ -58,7 +58,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | Spark（ジョブ `sinks-splunk`） | Spark → HEC | 8088/tcp、`/services/collector/event`、HEC の token。宛先は 1 台のとき `splunk`、クラスターのとき `splunk-idx`（どの indexer も同じ token で受ける） |
 | 利用者の PC | PC → Web の EC2 → Splunk | 8000/tcp。SSM のポートフォワーディング（output `splunk_port_forward_command`）。ユーザー admin。クラスターのときの入口は search head。manager の画面（クラスターの状態）は output `splunk_cm_port_forward_command`（`http://localhost:8001`） |
 | Splunk どうし（クラスターのときだけ） | search head → indexer（検索）、manager ↔ indexer・search head（管理）、indexer ↔ indexer（複製）、search head・manager → indexer（自分の `_internal` と `_audit` の転送） | 8089 / 9887 / 9997。合言葉は `/<prefix>/splunk/idxc-secret` |
-| エージェントの `search_splunk`（`WORKFLOW=1` の tools の Lambda） | Lambda → Splunk（1 台のとき `splunk`、クラスターのとき search head の `splunk`） | 8089/tcp、`/services/search/jobs/export`、Basic 認証（ユーザー admin、`/<prefix>/splunk/admin-password`）。証明書は検証しない。決めた SPL だけを送る（`app/agentcore/evidence.py`。cycle 054）。機器は機器名（sysName か `tags.host`）でも IP（`tags.agent_host` / `tags.source` / `tags.sampler` / `host`）でも完全一致で引け、flows は送り元の機器の IP（`tags.sampler`）で引く |
+| エージェントの `search_splunk`（`WORKFLOW=1` の tools の Lambda） | Lambda → Splunk（1 台のとき `splunk`、クラスターのとき search head の `splunk`） | 8089/tcp、`/services/search/jobs/export`、Basic 認証（ユーザー admin、`/<prefix>/splunk/admin-password`）。証明書は検証しない。決めた SPL だけを送る（`app/agentcore/evidence.py`。cycle 054）。機器は機器名（sysName）でも IP（`tags.agent_host` / `tags.source` / `tags.sampler`）でも完全一致で引け、flows は送り元の機器の IP（`tags.sampler`）で引く（HEC の `host` の欄は完全一致の句に使わない。機器名の `coalesce` の最後の候補としては残る。cycle 054 Round 4） |
 | SNS | Splunk → `<prefix>-alerts` | `sns` のエンドポイント。アラートアクション `nwc_sns` がタスクロール（`sns:Publish` だけ）で publish |
 | SSM | タスクの起動時に読む | 実行ロール |
 

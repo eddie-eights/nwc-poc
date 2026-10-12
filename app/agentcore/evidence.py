@@ -178,8 +178,8 @@ def splunk_args(device_id: str = "", topic: str = "", keyword: str = "", minutes
         return "", "keyword に使えない文字がある（\" \\ | [ ] ` と制御文字は使えない）"
     spl = f'search index=* sourcetype="nwc:{topic or "*"}" earliest=-{minutes}m'
     if device_id:
-        # 本文の語で先に絞る（索引で引ける。earliest の範囲を全部読んでから eval で絞らない）。機器名は Spark の splunk_events の
-        # 本文の tags に出る（HEC の host も tags.host か agent_host）ので、落ちるのは host が unknown のイベントだけ
+        # 本文の語で先に絞る（索引で引ける。earliest の範囲を全部読んでから eval で絞らない）。機器名と IP は Spark の splunk_events の
+        # 本文の tags に出るので、落ちるのは tags に機器名も IP も無い（device が unknown の）イベントだけ
         spl += f' "{device_id}"'
     if keyword:
         spl += f' "{keyword}"'
@@ -188,9 +188,11 @@ def splunk_args(device_id: str = "", topic: str = "", keyword: str = "", minutes
     if device_id:
         # 機器名の完全一致と FQDN の sysName（<id>. で始まる）に、機器の IP を持つ欄の完全一致を足す。前方一致にしない
         # （10.0.0.1 が 10.0.0.10 に、spine-1 が spine-10 に当たる）。device map で sysName が付いた機器（trap / gNMI）は device が
-        # sysName になるので IP は tags.source / tags.agent_host で、flows は機器名を持たないので送り元の tags.sampler で当てる（cycle 054 Round 3）
+        # sysName になるので IP は tags.source / tags.agent_host で、flows は機器名を持たないので送り元の tags.sampler で当てる（cycle 054 Round 3）。
+        # HEC の host の欄は句に使わない（上の coalesce の最後の候補には残る）: tags.host か agent_host の写しなので機器の値なら上の句で当たり、写しの元が無い trap / log / flows では
+        # unknown になる。host の句は unknown で引いたとき本文に unknown の語を含む他の機器の行を通していた（cycle 054 Round 4）
         spl += (f' | search device="{device_id}" OR device="{device_id}.*" OR tags.agent_host="{device_id}"'
-                f' OR tags.source="{device_id}" OR tags.sampler="{device_id}" OR host="{device_id}"')
+                f' OR tags.source="{device_id}" OR tags.sampler="{device_id}"')
     return spl + f" | head {limit} | fields _time device sourcetype source _raw", ""
 
 

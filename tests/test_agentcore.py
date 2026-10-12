@@ -590,11 +590,11 @@ def splunk_run(fake, *a, **kw):
 # T-1 SPL の組み立て
 _spl, _err = evidence.splunk_args("dc1-a-leaf-01", "traps", "linkDown", 30, 5)
 check("T-1 SPL: 引数ありは sourcetype=nwc:<topic>・earliest・機器名の語・語の順で始まり、機器名の完全一致か <id>.（FQDN）か IP の欄"
-      "（tags.agent_host / tags.source / tags.sampler / host）の完全一致と head を含む（前方一致にしない）",
+      "（tags.agent_host / tags.source / tags.sampler）の完全一致と head を含む（前方一致にしない。HEC の host の句は無い。cycle 054 Round 4）",
       _err == "" and _spl.startswith('search index=* sourcetype="nwc:traps" earliest=-30m "dc1-a-leaf-01" "linkDown" | eval device=')
       and ('| search device="dc1-a-leaf-01" OR device="dc1-a-leaf-01.*" OR tags.agent_host="dc1-a-leaf-01" OR tags.source="dc1-a-leaf-01"'
-           ' OR tags.sampler="dc1-a-leaf-01" OR host="dc1-a-leaf-01" | head 5 |') in _spl
-      and 'device="dc1-a-leaf-01*"' not in _spl and '"dc1-a-leaf-01*"' not in _spl and "| head 5" in _spl
+           ' OR tags.sampler="dc1-a-leaf-01" | head 5 |') in _spl
+      and not re.search(r'(?<![\w.])host\s*=', _spl) and 'device="dc1-a-leaf-01*"' not in _spl and '"dc1-a-leaf-01*"' not in _spl and "| head 5" in _spl
       and "| eval device=coalesce('tags.sysName', 'tags.agent_host', 'tags.source', host)" in _spl
       and _spl.endswith("| fields _time device sourcetype source _raw"))
 _spl, _err = evidence.splunk_args()
@@ -605,8 +605,8 @@ check("T-1 SPL: IP の device_id も通る（sysName の付いた機器は tags.
       "10.0.0.1 は 10.0.0.10 に当たらない形（どの欄も完全一致か、device だけ 10.0.0.1. で始まる）",
       evidence.splunk_args("10.0.0.1")[1] == "" and ' "10.0.0.1" | eval ' in evidence.splunk_args("10.0.0.1")[0]
       and ('| search device="10.0.0.1" OR device="10.0.0.1.*" OR tags.agent_host="10.0.0.1" OR tags.source="10.0.0.1"'
-           ' OR tags.sampler="10.0.0.1" OR host="10.0.0.1" |') in evidence.splunk_args("10.0.0.1")[0]
-      and '10.0.0.1*"' not in evidence.splunk_args("10.0.0.1")[0])
+           ' OR tags.sampler="10.0.0.1" |') in evidence.splunk_args("10.0.0.1")[0]
+      and '10.0.0.1*"' not in evidence.splunk_args("10.0.0.1")[0] and not re.search(r'(?<![\w.])host\s*=', evidence.splunk_args("10.0.0.1")[0]))
 
 # T-2 拒否（Splunk に送らない）
 evidence.SPLUNK_URL = "https://splunk.example:8089"
