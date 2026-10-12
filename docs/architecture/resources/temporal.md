@@ -93,7 +93,7 @@ worker が読み書きするもの:
   - 再試行で二重に入ることがあるので、集計では `event_id` で落とす。コミットがぶつかったら 5 回までやり直す。
   - 出典: `app/temporal/awsio.py` の `append_proposal_events`、`IaC/terraform/aws-managed/workflow/events.tf` のコメント。
 - **保守中の機器の異常では起こさない。**
-  アラートの機器か、落ちた回線の相手が Nautobot で `Maintenance` のとき。Neptune を読めないときは起こす。
+  アラートの機器か、落ちた回線の相手が Nautobot で `Maintenance` のとき。Neptune を読めないときは起こさず、メッセージを残して配り直させる（5 回で DLQ）。
   出典: [workflow.md](../../workflow.md) の「流れ」。
 - **`boto3` / `pyiceberg` / `pyarrow` は、呼ばれたときに関数の中で読み込む。**
   Temporal のワークフローサンドボックスに合わせるため。

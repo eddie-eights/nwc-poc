@@ -62,7 +62,7 @@ flowchart LR
 - 起こすのは `firing` の `link_down` だけ（`app/temporal/rules.py` の `START_KINDS`。trap と BGP / IS-IS は Neptune の `status` を変えるだけ）。
   - `resolved` は、走っているワークフローにシグナル `resolved` で伝える（走っていなければ何もしない）。
   - 異常の「いま」を置く場所は持たず、発生はワークフローそのもの、解消はシグナルで持つ。
-- アラートの機器か、落ちた回線の相手の機器が Nautobot で保守中なら起こさない。Neptune を読めないときは起こす。
+- アラートの機器か、落ちた回線の相手の機器が Nautobot で保守中なら起こさない。Neptune を読めないときは起こさず、メッセージを消さずに配り直させる（5 回受け取っても読めなければ DLQ）。
   - 保守中は、Status が `Maintenance`（Neptune の `device` の `maintenance`）。
   - 判定は `app/temporal/rules.py` の `maintenance_hold`。starter のログに `skip … 保守中の機器` と出る。
 - アラートのキューのメッセージは、次のどれかなら消す: 起こした・起こす理由が無い・保守中・同じ発生の修復案がもうある・同じ異常のワークフローが既に走っている・解消を伝える相手がいない。

@@ -227,7 +227,7 @@ Device の Status を `Maintenance` にすると、Job が Neptune の `device` 
   - Neptune の `status` は今までどおり変わるので、Web の図には出る。
 - エージェントの `list_devices` と `root_cause` は `maintenance` を返す。根本原因の機器が保守中なら「作業によるものの可能性」と添える。
 - Status を `Active` に戻すと `maintenance` は外れる。戻したあとに来たアラート（Grafana は 4 時間ごとに送り直す）から、また調査が起きる。
-- Neptune を読めないときは、保守中と見なさずに起こす（止める側に倒さない）。
+- Neptune を読めないときは起こさず、アラートのメッセージを消さずに配り直させる（保守中かどうか分からないまま起こさない。5 回受け取っても読めなければ DLQ）。
 
 ### (6) 障害の直前に台帳の何が変わったかを引く
 
