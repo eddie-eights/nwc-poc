@@ -387,3 +387,141 @@ restored True
 - Must fix は 0 のまま。A1〜A3 の 3 件（runtime / data loss / missing tests）を直した。
 - 締め切りは「読み出しのループでは守る、open と chunk の枠では 1 回の操作ごとの timeout なので厳密ではない」と範囲を絞って書き直した（A6）。
 - 設計側の Should fix 2 件（A4 IP で sysName のある機器を引けない、A5 flows を device_id で引けない）は PM に回す。
+
+## Round 3
+
+実装モデル: opus-5.5 / effort: high
+
+担当: `design-log.md` の Round 3 と c31ce4e の design.md の差分（review.md Round 1 の Should 1 / Should 2、Round 2 の A4 / A5）。2 段目の絞り込みに IP の欄と `tags.sampler` を足す、T-1 / T-10 / T-12。
+
+### 変更したファイル
+
+- `app/agentcore/evidence.py:188-193`（`splunk_args`）: 2 段目を `| search device="<id>" OR device="<id>.*" OR tags.agent_host="<id>" OR tags.source="<id>" OR tags.sampler="<id>" OR host="<id>"` にした。TOOL_SPECS の device_id の description（IP、FQDN、flows は sampler の IP）。
+- `app/gateway/tools.json`: device_id の description を同じ文に。
+- `tests/test_agentcore.py`: T-1 の期待を 2 段目の全文の完全一致に（名前と IP の 2 件。`*` の前方一致が無いことも見る）。GATEWAY_ONLY の確かめのラベルを「T-12 …」にした。
+- `docs/architecture/resources/agentcore-bedrock.md:37` / `:127`: device_id の当て方（IP の欄、flows は sampler）と T-10 で確かめた範囲。
+- `docs/architecture/resources/splunk.md:61` / `:170`: 同じ。
+
+### 設計から逸脱した点
+
+- 無し（T-12 は既存の GATEWAY_ONLY のテストのラベルを T-12 に替えただけで、中身は Round 2 のまま）。
+
+### 検証
+
+T-1 / T-12 と check.sh（`bash ops/check.sh`。最後の編集のあと）:
+
+```
+ok T-1 SPL: 引数ありは sourcetype=nwc:<topic>・earliest・機器名の語・語の順で始まり、機器名の完全一致か <id>.（FQDN）か IP の欄（tags.agent_host / tags.source / tags.sampler / host）の完全一致と head を含む（前方一致にしない）
+ok T-1 SPL: 引数が全部空なら sourcetype=nwc:*・60 分・20 件で、device の search も語も無い
+ok T-1 SPL: IP の device_id も通る（sysName の付いた機器は tags.source / tags.agent_host、flows は tags.sampler で当たる）。10.0.0.1 は 10.0.0.10 に当たらない形（どの欄も完全一致か、device だけ 10.0.0.1. で始まる）
+ok T-12 app.run_tool: Gateway の search_splunk（GATEWAY_ONLY）のエラーはそのまま返す（コンテナの「配備されていない」で上書きしない）。search_logs はいまどおりコンテナに戻す
+ok search_splunk の引数と必須が Python と同じ
+ok search_splunk の説明が Python と同じ
+----
+rc=0
+通過 145 / 失敗 0
+68 項目すべて通過
+通過 177 / 失敗 0
+通過 210 / 失敗 0
+通過 66 / 失敗 0
+通過 119 / 失敗 0
+通過 104 / 失敗 0
+通過 461 / 失敗 0
+すべて通過
+```
+
+T-10（手元の使い捨ての Splunk。`docker build --platform linux/amd64 --build-arg SPLUNK_VERSION=10.4.4 -t nwc-local-splunk:054 -f docker/images/splunk/Dockerfile app/splunk`、`splunk_events` で作った 13 件を HEC で入れて `evidence.search_splunk` で引く。パスワードと HEC のトークンは乱数を環境変数で渡し、表示していない）:
+
+```
+docker run rc 0
+health ['running', 'healthy'] 90 秒
+HEC (200, '{"text":"Success","code":0}')
+indexed 13 0 秒
+spine-1: count=3 devices=['spine-1'] sourcetypes=['nwc:logs', 'nwc:metrics']
+10.0.0.1: count=1 devices=['10.0.0.1'] sourcetypes=['nwc:traps']
+dc1-a-leaf-01（FQDN）: count=1 devices=['dc1-a-leaf-01.lab.local']
+大小文字: count=1 devices=['dc1-a-leaf-01.lab.local']
+tags.host だけ: count=1 devices=['hostonly-1']
+topic=traps: count=4 devices=['10.0.0.1', '10.0.0.10', 'dc1-a-leaf-01.lab.local', 'spine-2']
+spine（部分の名前）: count=0
+10.0.0.2（sysName の付いた trap を IP で）: count=1 devices=['spine-2'] sourcetypes=['nwc:traps']
+spine-2（同じ trap を機器名で）: count=1 devices=['spine-2'] sourcetypes=['nwc:traps']
+flows 10.0.0.3: count=1 devices=['unknown'] sourcetypes=['nwc:flows'] samplers=['10.0.0.3']
+flows 10.0.0.30: count=1 devices=['unknown'] sourcetypes=['nwc:flows'] samplers=['10.0.0.30']
+10.0.0.3（topic 無し）: count=1 sourcetypes=['nwc:flows'] samplers=['10.0.0.3']
+topic=flows: count=2 devices=['unknown'] samplers=['10.0.0.3', '10.0.0.30']
+192.0.2.3（tags.agent_host だけで当たる機器）: count=1 devices=['spine-3'] sourcetypes=['nwc:metrics']
+unknown（再現: host の句で本文に unknown を含むほかの機器の log が当たる）: count=1 devices=['leaf-9'] sourcetypes=['nwc:logs']
+192.0.2.1（sysName の付いた metrics を agent_host の IP で）: count=1 devices=['spine-1'] sourcetypes=['nwc:metrics']
+パスワード違い: error='HTTP 401: {"messages":[{"type":"ERROR","text":"Unauthorized"}]}'
+締め切り 0.05 秒: error='0.05 秒で打ち切った（topic / device_id で絞るか minutes を短く）'
+（各検索 0.06〜0.08 秒）
+ok spine-1 で spine-10 が出ない
+ok 10.0.0.1 で 10.0.0.10 が出ない
+ok dc1-a-leaf-01 で FQDN の行が出る
+ok 大小文字を区別しない
+ok tags.host だけの機器が出る
+ok topic で絞れる
+ok keyword で絞れる
+ok device + topic + keyword
+ok limit
+ok 部分の名前では当たらない
+ok 10.0.0.2 で device が spine-2 の trap が出る
+ok spine-2 でも同じ trap が出る
+ok flows の 10.0.0.3 で sampler 10.0.0.3 だけ（10.0.0.30 は出ない）
+ok flows の 10.0.0.30 で sampler 10.0.0.30 だけ
+ok topic 無しの 10.0.0.3 も flows の 1 件だけ
+ok flows は 2 件で device は unknown
+ok 192.0.2.3 で spine-3 の metrics だけ（tags.agent_host の句）
+ok 192.0.2.1 で spine-1 の metrics だけ（192.0.2.10 の spine-10 と、本文に 192.0.2.10 を含む log は出ない）
+ok パスワード違いで HTTP 401
+ok 本物の応答で fp.raw._sock が見える（読み出しの timeout を合わせられる）
+ok 締め切りを過ぎたら error か truncated
+docker rm -f -v nwc-054-splunk rc 0
+```
+
+片付け: `docker rmi nwc-local-splunk:054`（Untagged / Deleted）。前後のイメージ（8）・コンテナ（0）・volume（30）の一覧を sort して cmp し、3 つとも同じ。splunk のイメージと 054 のコンテナは 0。
+
+### セルフレビュー
+
+- 自分: opus-5.5 / effort high（サブエージェントの中なので effort を切り替えられない）
+- 反対弁護人: opus / effort xhigh（文脈を渡した。読み取り専用。返ってきたあと `git status --porcelain -uall` で、変更が自分の 5 ファイルだけなことを確かめた）
+
+#### 指摘と片付け
+
+- **Should fix B1** [correctness] `app/agentcore/evidence.py:193`（`OR host="<id>"`）。設計側なので直さず PM に報告。
+  - 破綻: trap / log / flows の HEC の host は `unknown` になる（`r.host` の元の `tags.host` を出すコレクターが無い）。`device_id="unknown"` で引くと、1 段目の本文の語 `"unknown"` が本文に unknown を含むほかの機器の行に当たり、2 段目の `host="unknown"` でそのまま通る。design.md:151 の「機器名 `unknown` で引いても本文の語の絞り込みで落ちる」と食い違う。`host` の句が当てる値は実際には `unknown` だけで、機器名を足す役に立っていない。
+  - 再現: T-10 の rec13（sysName leaf-9、source 10.0.0.9、本文 "Invalid user unknown from 198.51.100.9"）を `unknown` で引くと count=1 devices=['leaf-9']（上の生ログ）。
+  - 案: `host` の句を外すか `tags.host` に替える、または device_id の `unknown` を受けない。design.md:60 と :151 の書き直しが要る。
+- Nit（直さない）
+  - B2 予定の 192.0.2.1 の場合は HEC の host も同じ IP なので、`tags.agent_host` の句だけを切り分けられない。T-10 に rec12（agent_host 192.0.2.3、host spine-3）を足して切り分けた（192.0.2.3 で spine-3 の 1 件）。
+  - B3 `device="<id>.*"` は、`10` や `10.0` のような IP の一部を前方一致として通す（Round 2 からある）。
+  - B4 docs は `tags.host` / `host` を名前・IP の欄に挙げるが、いまのコレクターはどちらも出さない（gNMI を除き host は unknown）。
+
+#### 退行の注入（スクラッチパッドの `mutate054r3.py`。注入のたびに戻し、最後に元どおりを確かめた）
+
+```
+R3-M1 tags.sampler を外す: rc=1 AssertionError: T-1 SPL: 引数ありは … IP の欄（tags
+R3-M2 tags.source を外す: rc=1 AssertionError: T-1 SPL: 引数ありは … IP の欄（tags
+R3-M3 tags.agent_host を外す: rc=1 AssertionError: T-1 SPL: 引数ありは … IP の欄（tags
+R3-M4 host を外す: rc=1 AssertionError: T-1 SPL: 引数ありは … IP の欄（tags
+R3-M5 IP の欄を前方一致に: rc=1 AssertionError: T-1 SPL: 引数ありは … IP の欄（tags
+R3-M6 Round 2 の形に戻す（IP の欄を全部外す）: rc=1 AssertionError: T-1 SPL: 引数ありは … IP の欄（tags
+R3-M7 欄の名前を引用符で包む（eval の書き方）: rc=1 AssertionError: T-1 SPL: 引数ありは … IP の欄（tags
+restored True
+```
+
+#### 問題なしとした観点
+
+- A4（sysName のある機器を IP で）: T-10 で 10.0.0.2 → spine-2 の trap、192.0.2.1 → spine-1 の metrics、192.0.2.3 → spine-3 の metrics（`tags.agent_host` の句だけ）を本物の Splunk で確かめた。R3-M2 / M3 / M6 で T-1 が落ちる。
+- A5（flows）: T-10 で 10.0.0.3 と 10.0.0.30 が互いに当たらないこと、topic 無しでも flows の 1 件だけなことを確かめた。R3-M1 / M5 で T-1 が落ちる。flows の src / dst の IP には当たらない（反対弁護人が SPL から読んだ。T-10 の flows の src / dst は sampler と別の IP）。
+- 完全一致: R3-M5 で T-1 が落ちる。T-10 の 10.0.0.1 / 10.0.0.10、192.0.2.1 / 192.0.2.10 が当たり合わない。
+- 欄の名前の書き方（`search` では引用符なし、`eval` では `'…'`）: T-10 の本物の Splunk で当たること、R3-M7 で T-1 が落ちることで確かめた。
+- 3 か所の description（TOOL_SPECS、tools.json、check の「説明が Python と同じ」）: check.sh が通る。
+- T-12（GATEWAY_ONLY）: check.sh の T-12 の行が通る。反対弁護人も読んだ。
+- 1 段目の本文の語で落ちる行: IP で引くと本文の tags にその IP があるので落ちない（T-10 の 10.0.0.2 / 192.0.2.3 / flows で確かめた）。
+
+#### ジンテーゼ（反対弁護人の前との差）
+
+- Must fix は 0。設計どおりの実装で、A4 / A5 は本物の Splunk で解けた。
+- 設計が求めた `host="<id>"` の句が `unknown` で他の機器の行を拾う件（B1）を T-10 で再現した。設計側なので PM に回す。

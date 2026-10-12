@@ -186,8 +186,11 @@ def splunk_args(device_id: str = "", topic: str = "", keyword: str = "", minutes
     # 機器名は保存済みサーチと同じ coalesce（app/splunk/nwc_alerts/default/savedsearches.conf）
     spl += " | eval device=coalesce('tags.sysName', 'tags.agent_host', 'tags.source', host)"
     if device_id:
-        # 完全一致と、FQDN の sysName（<id>. で始まる）だけ。前方一致にしない（10.0.0.1 が 10.0.0.10 に、spine-1 が spine-10 に当たる）
-        spl += f' | search device="{device_id}" OR device="{device_id}.*"'
+        # 機器名の完全一致と FQDN の sysName（<id>. で始まる）に、機器の IP を持つ欄の完全一致を足す。前方一致にしない
+        # （10.0.0.1 が 10.0.0.10 に、spine-1 が spine-10 に当たる）。device map で sysName が付いた機器（trap / gNMI）は device が
+        # sysName になるので IP は tags.source / tags.agent_host で、flows は機器名を持たないので送り元の tags.sampler で当てる（cycle 054 Round 3）
+        spl += (f' | search device="{device_id}" OR device="{device_id}.*" OR tags.agent_host="{device_id}"'
+                f' OR tags.source="{device_id}" OR tags.sampler="{device_id}" OR host="{device_id}"')
     return spl + f" | head {limit} | fields _time device sourcetype source _raw", ""
 
 
@@ -382,7 +385,7 @@ TOOL_SPECS = [
         "description": "Splunk に入っている全トピック（metrics / gnmi / traps / logs / flows）を機器名・トピック・語で引く。search_logs / query_metrics が配備されていないときに使う。"
                        "まず topic と device_id で絞る（minutes が長く topic が空だと遅い。25 秒で打ち切り、途中までを truncated 付きで返す）。SPL は書けない（決めた形の検索だけ）。STORES に splunk が無い構成では案内だけ返す。",
         "inputSchema": {"json": {"type": "object", "properties": {
-            "device_id": {"type": "string", "description": "機器名か IP（例 dc1-a-leaf-01）。完全一致（sysName が FQDN の機器は <id>. で始まるものも当たる）。空なら全機器"},
+            "device_id": {"type": "string", "description": "機器名（例 dc1-a-leaf-01）か機器の IP。完全一致（sysName が FQDN の機器は <id>. で始まるものも当たる）。flows は機器名を持たないので、送り元の機器の IP（sampler）で引く。空なら全機器"},
             "topic": {"type": "string", "description": "metrics / gnmi / traps / logs / flows のどれか。空なら全部"},
             "keyword": {"type": "string", "description": "本文に含む語（例 linkDown）。100 文字まで、\" \\ | [ ] ` は使えない。空なら絞らない"},
             "minutes": {"type": "integer", "description": "何分前まで見るか（既定 60、最大 1440）"},

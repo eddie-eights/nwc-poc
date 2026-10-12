@@ -207,7 +207,7 @@
       "properties": {
         "device_id": {
           "type": "string",
-          "description": "機器名か IP（例 dc1-a-leaf-01）。完全一致（sysName が FQDN の機器は <id>. で始まるものも当たる）。空なら全機器"
+          "description": "機器名（例 dc1-a-leaf-01）か機器の IP。完全一致（sysName が FQDN の機器は <id>. で始まるものも当たる）。flows は機器名を持たないので、送り元の機器の IP（sampler）で引く。空なら全機器"
         },
         "topic": {
           "type": "string",

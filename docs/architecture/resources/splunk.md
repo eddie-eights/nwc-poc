@@ -58,7 +58,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | Spark（ジョブ `sinks-splunk`） | Spark → HEC | 8088/tcp、`/services/collector/event`、HEC の token。宛先は 1 台のとき `splunk`、クラスターのとき `splunk-idx`（どの indexer も同じ token で受ける） |
 | 利用者の PC | PC → Web の EC2 → Splunk | 8000/tcp。SSM のポートフォワーディング（output `splunk_port_forward_command`）。ユーザー admin。クラスターのときの入口は search head。manager の画面（クラスターの状態）は output `splunk_cm_port_forward_command`（`http://localhost:8001`） |
 | Splunk どうし（クラスターのときだけ） | search head → indexer（検索）、manager ↔ indexer・search head（管理）、indexer ↔ indexer（複製）、search head・manager → indexer（自分の `_internal` と `_audit` の転送） | 8089 / 9887 / 9997。合言葉は `/<prefix>/splunk/idxc-secret` |
-| エージェントの `search_splunk`（`WORKFLOW=1` の tools の Lambda） | Lambda → Splunk（1 台のとき `splunk`、クラスターのとき search head の `splunk`） | 8089/tcp、`/services/search/jobs/export`、Basic 認証（ユーザー admin、`/<prefix>/splunk/admin-password`）。証明書は検証しない。決めた SPL だけを送る（`app/agentcore/evidence.py`。cycle 054） |
+| エージェントの `search_splunk`（`WORKFLOW=1` の tools の Lambda） | Lambda → Splunk（1 台のとき `splunk`、クラスターのとき search head の `splunk`） | 8089/tcp、`/services/search/jobs/export`、Basic 認証（ユーザー admin、`/<prefix>/splunk/admin-password`）。証明書は検証しない。決めた SPL だけを送る（`app/agentcore/evidence.py`。cycle 054）。機器は機器名（sysName か `tags.host`）でも IP（`tags.agent_host` / `tags.source` / `tags.sampler` / `host`）でも完全一致で引け、flows は送り元の機器の IP（`tags.sampler`）で引く |
 | SNS | Splunk → `<prefix>-alerts` | `sns` のエンドポイント。アラートアクション `nwc_sns` がタスクロール（`sns:Publish` だけ）で publish |
 | SSM | タスクの起動時に読む | 実行ロール |
 
@@ -167,7 +167,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | 既知の不具合（2026-10-05） | trap のサブインターフェース（`ethernet-1/1.0`）の `link_down` と、起動の直後の `resolved` のまとめ送りは直した（手元で確認、AWS では未確認）。回線の両端が別の異常になる件は [troubleshooting.md](../../troubleshooting.md) の「既知の不具合」 |
 | 24 時間を超えて変わっていない down | `nwc_gnmi` の「前の値」が無いので、戻ったときの `resolved` を出さない。gnmic が繋ぎ直して送り直すと、新しい `starts_at` で `firing` をもう 1 回出す |
 | Splunk が止まっているあいだの変化 | 次に状態が変わるまで出ない |
-| エージェントの `search_splunk`（cycle 054） | 手元の使い捨ての Splunk で、Spark の `splunk_events` の形のイベントを引けることを確かめた（cycle 054 の T-10）。AWS で tools の Lambda から 8089 に届くこと、クラスターのとき search head で引けることは未確認。admin の資格情報を使う（読み取り専用のユーザーは QUEUE に積んだ） |
+| エージェントの `search_splunk`（cycle 054） | 手元の使い捨ての Splunk で、Spark の `splunk_events` の形のイベントを引けることを確かめた（sysName の付いた trap を IP で、flows を sampler の IP で引くことも。cycle 054 の T-10）。AWS で tools の Lambda から 8089 に届くこと、クラスターのとき search head で引けることは未確認。admin の資格情報を使う（読み取り専用のユーザーは QUEUE に積んだ） |
 
 - AWS の上での通しを確かめた中身:
   - 2026-10-05: `sudo lab fail-main` で Splunk が `link_down` と `isis_down` を出し、`sns` のエンドポイント越しに SNS へ届いた（`SPLUNK_AZ_NUM=2` の構成）。

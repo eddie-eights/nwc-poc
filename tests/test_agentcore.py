@@ -589,18 +589,24 @@ def splunk_run(fake, *a, **kw):
 
 # T-1 SPL の組み立て
 _spl, _err = evidence.splunk_args("dc1-a-leaf-01", "traps", "linkDown", 30, 5)
-check("T-1 SPL: 引数ありは sourcetype=nwc:<topic>・earliest・機器名の語・語の順で始まり、機器名の完全一致か <id>.（FQDN）と head を含む（前方一致にしない）",
+check("T-1 SPL: 引数ありは sourcetype=nwc:<topic>・earliest・機器名の語・語の順で始まり、機器名の完全一致か <id>.（FQDN）か IP の欄"
+      "（tags.agent_host / tags.source / tags.sampler / host）の完全一致と head を含む（前方一致にしない）",
       _err == "" and _spl.startswith('search index=* sourcetype="nwc:traps" earliest=-30m "dc1-a-leaf-01" "linkDown" | eval device=')
-      and '| search device="dc1-a-leaf-01" OR device="dc1-a-leaf-01.*"' in _spl and 'device="dc1-a-leaf-01*"' not in _spl and "| head 5" in _spl
+      and ('| search device="dc1-a-leaf-01" OR device="dc1-a-leaf-01.*" OR tags.agent_host="dc1-a-leaf-01" OR tags.source="dc1-a-leaf-01"'
+           ' OR tags.sampler="dc1-a-leaf-01" OR host="dc1-a-leaf-01" | head 5 |') in _spl
+      and 'device="dc1-a-leaf-01*"' not in _spl and '"dc1-a-leaf-01*"' not in _spl and "| head 5" in _spl
       and "| eval device=coalesce('tags.sysName', 'tags.agent_host', 'tags.source', host)" in _spl
       and _spl.endswith("| fields _time device sourcetype source _raw"))
 _spl, _err = evidence.splunk_args()
 check("T-1 SPL: 引数が全部空なら sourcetype=nwc:*・60 分・20 件で、device の search も語も無い",
       _err == "" and _spl == "search index=* sourcetype=\"nwc:*\" earliest=-60m | eval device=coalesce('tags.sysName', 'tags.agent_host', 'tags.source', host)"
                             " | head 20 | fields _time device sourcetype source _raw")
-check("T-1 SPL: IP の device_id も通る（tags.agent_host で引く機器）。10.0.0.1 は 10.0.0.10 に当たらない形（完全一致か 10.0.0.1. で始まる）",
+check("T-1 SPL: IP の device_id も通る（sysName の付いた機器は tags.source / tags.agent_host、flows は tags.sampler で当たる）。"
+      "10.0.0.1 は 10.0.0.10 に当たらない形（どの欄も完全一致か、device だけ 10.0.0.1. で始まる）",
       evidence.splunk_args("10.0.0.1")[1] == "" and ' "10.0.0.1" | eval ' in evidence.splunk_args("10.0.0.1")[0]
-      and '| search device="10.0.0.1" OR device="10.0.0.1.*" |' in evidence.splunk_args("10.0.0.1")[0] and 'device="10.0.0.1*"' not in evidence.splunk_args("10.0.0.1")[0])
+      and ('| search device="10.0.0.1" OR device="10.0.0.1.*" OR tags.agent_host="10.0.0.1" OR tags.source="10.0.0.1"'
+           ' OR tags.sampler="10.0.0.1" OR host="10.0.0.1" |') in evidence.splunk_args("10.0.0.1")[0]
+      and '10.0.0.1*"' not in evidence.splunk_args("10.0.0.1")[0])
 
 # T-2 拒否（Splunk に送らない）
 evidence.SPLUNK_URL = "https://splunk.example:8089"
@@ -708,7 +714,7 @@ finally:
     urllib.request.build_opener = _spl_saved[2]
     _mc.call, _mc._cache["names"] = _mc_saved
     evidence.SPLUNK_URL = "https://splunk.example:8089"
-check("app.run_tool: Gateway の search_splunk のエラーはそのまま返す（コンテナの「配備されていない」で上書きしない）。search_logs はいまどおりコンテナに戻す",
+check("T-12 app.run_tool: Gateway の search_splunk（GATEWAY_ONLY）のエラーはそのまま返す（コンテナの「配備されていない」で上書きしない）。search_logs はいまどおりコンテナに戻す",
       _r_gw == {"error": "Splunk: ERROR Unauthorized", "events": []} and _f.calls == [] and "ログの検索はまだ配備されていない" in _r_logs.get("error", ""))
 
 # T-11 時間の上限（search_splunk の全体に SPLUNK_DEADLINE 秒。過ぎたら読めた行だけを truncated 付きで返す）。
