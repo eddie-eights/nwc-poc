@@ -228,3 +228,26 @@ None
   ```
 
 - Nit 6 件は直さない（flows の Nit は A5 と一緒に Round 3 で片付く）
+
+## Round 2
+
+- 実行したモデル: PM の確認は opus-5.5
+- cold reviewer に依頼しなかった（中間ラウンド）。`build.md` の Round 3 のセルフレビュー（反対弁護人 opus / effort xhigh）に依った
+- 前ラウンドの Should fix（sysName のある機器を IP で引くと 0 件、flows を device_id で引けない）: `build.md` の Round 3 の T-10 で、10.0.0.2 → spine-2、192.0.2.3 → spine-3、flows の 10.0.0.3 と 10.0.0.30 が当たり合わないことを本物の Splunk で確かめている（エンジニアの実行。完了の前に PM が取り直す）
+
+### 未解消の指摘
+
+- **Should fix B1** [correctness] `app/agentcore/evidence.py:193`（`OR host="<id>"`）。`device_id="unknown"` で、本文に unknown の語を含む他の機器の行が出る。PM が 0da5558 で再現した:
+
+  ```
+  HEC host: unknown | device: leaf-9 | raw has 'unknown': True
+  device clause: False | ip clauses: False | host clause: True
+  ```
+
+  原因: Round 3 の設計で HEC の `host`（`tags.host` か agent_host の写し。元が無いと `unknown`）を IP の欄として足した → 設計 Round 4 で句を外す（`design-log.md` の Round 4）
+
+### 最終報告に回したもの
+
+- Nit B3（`device="<id>.*"` が IP の一部を通す）: 直さない。完了時に QUEUE へ
+- Nit B4（docs が `tags.host` / `host` を欄に挙げる）: Round 4 の docs で B1 と一緒に直す
+- Nit B2: エンジニアが T-10 に rec12 を足して片付けた

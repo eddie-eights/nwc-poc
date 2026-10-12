@@ -1,6 +1,6 @@
 # Splunk だけの構成でもエージェントが Splunk からログ・trap・メトリクスを引けるようにする（054）
 
-設計: PM(opus-5.5) / effort: high。QUEUE 168。2026-10-12。Round 2 で機器の絞り方・時間の上限・T-10 を直した（`design-log.md` の Round 2）。Round 3 で IP と flows の絞り方、Gateway だけのツール（`GATEWAY_ONLY`）、締め切りの範囲を足した（`design-log.md` の Round 3）。
+設計: PM(opus-5.5) / effort: high。QUEUE 168。2026-10-12。Round 2 で機器の絞り方・時間の上限・T-10 を直した（`design-log.md` の Round 2）。Round 3 で IP と flows の絞り方、Gateway だけのツール（`GATEWAY_ONLY`）、締め切りの範囲を足した（`design-log.md` の Round 3）。Round 4 で 2 段目の絞り込みから `host` の欄を外した（`design-log.md` の Round 4）。
 
 ## 背景
 
@@ -50,15 +50,16 @@
     ```
     search index=* sourcetype="nwc:<topic か *>" earliest=-<minutes>m ["<device_id>"] ["<keyword>"]
     | eval device=coalesce('tags.sysName', 'tags.agent_host', 'tags.source', host)
-    [| search device="<device_id>" OR device="<device_id>.*" OR tags.agent_host="<device_id>" OR tags.source="<device_id>" OR tags.sampler="<device_id>" OR host="<device_id>"]
+    [| search device="<device_id>" OR device="<device_id>.*" OR tags.agent_host="<device_id>" OR tags.source="<device_id>" OR tags.sampler="<device_id>"]
     | head <limit>
     | fields _time device sourcetype source _raw
     ```
 
     `[...]` は引数が空なら付けない。Splunk の `search` は値の大小文字を区別しない
     - 1 行目の `"<device_id>"` は本文の語で先に絞る（索引で引けるので、`earliest` の範囲を全部読んでから `eval` で絞らない。Round 1 のセルフレビューの S-2）。機器名は `_raw` の `tags` に出る（上の「現物」）ので、これで落ちるイベントは無い（`host` が `unknown` のものだけは落ちる）
-    - `| search` は、機器名 `device` の完全一致か、そのあとに `.` が続く名前（sysName が FQDN の機器）か、機器の IP を持つ欄（`tags.agent_host` / `tags.source` / `tags.sampler` / `host`）の完全一致。前方一致にしない（`10.0.0.1` が `10.0.0.10` に、`spine-1` が `spine-10` に当たる。S-5）。欄の名前は `search` の中なので引用符で包まない（`eval` の `'tags.sysName'` とは書き方が違う。T-10 で本物の Splunk に通す）
+    - `| search` は、機器名 `device` の完全一致か、そのあとに `.` が続く名前（sysName が FQDN の機器）か、機器の IP を持つ欄（`tags.agent_host` / `tags.source` / `tags.sampler`）の完全一致。前方一致にしない（`10.0.0.1` が `10.0.0.10` に、`spine-1` が `spine-10` に当たる。S-5）。欄の名前は `search` の中なので引用符で包まない（`eval` の `'tags.sysName'` とは書き方が違う。T-10 で本物の Splunk に通す）
     - IP の欄も見る理由（Round 3）: device map で sysName が付いた機器（trap と gNMI。`snmp_sinks.py` の `with_sysname`）は `device` が sysName になり、IP（`tags.source` / `tags.agent_host`）で引くと 0 件になっていた。flows は sysName / agent_host / source / host のどれも持たず（`FLOW_TAGS`、`snmp_sinks.py:87`）、送り元の機器は `tags.sampler`（sampler_address）にしか出ない。`search_logs` も `tags.sysName` / `tags.agent_host` / `tags.source` のどれでも当たる（`evidence.py` の `search_logs`）。戻りの `device` は `coalesce` のまま（IP で引いても sysName のある機器は sysName が返る）
+    - `host` の欄は見ない（Round 4）: HEC の `host` は `tags.host` か agent_host の写し（`snmp_sinks.py:619`）なので、機器の値なら `coalesce` の `device` か `tags.agent_host` / `tags.source` の句ですでに当たる。写しの元が無いイベント（trap / log / flows）は `unknown` になり、`host="<device_id>"` が当てる値は実際には `unknown` だけだった。`unknown` で引くと、本文に unknown の語を含む他の機器の行が 2 段目を通った（`build.md` の Round 3 の B1）
   - 戻り: `{"count": N, "minutes": m, "topic": t, "events": [{"time": _time, "device": …, "sourcetype": …, "source": …, "raw": _raw を 1000 文字に切ったもの}]}`。`messages` に ERROR / FATAL があれば `{"error": "Splunk: <type> <text>", "events": []}`
   - **引数の検証（通らなければ Splunk に送らずに `{"error": "…", "events": []}`）**
     - `device_id`: 空か `^[A-Za-z0-9._:-]{1,64}$`
@@ -86,7 +87,7 @@
 
 ## 変更対象ファイル
 
-- `app/agentcore/evidence.py` — `search_splunk`、検証、`SPLUNK_URL` / `SPLUNK_USER` / `SPLUNK_PASSWORD`、`GATEWAY_ONLY`、`TOOL_SPECS` / `TOOLS`、モジュールの docstring。Round 3 は `splunk_args` の 2 段目の絞り込みと `device_id` の description
+- `app/agentcore/evidence.py` — `search_splunk`、検証、`SPLUNK_URL` / `SPLUNK_USER` / `SPLUNK_PASSWORD`、`GATEWAY_ONLY`、`TOOL_SPECS` / `TOOLS`、モジュールの docstring。Round 3 は `splunk_args` の 2 段目の絞り込みと `device_id` の description。Round 4 は 2 段目から `host` の句を外す（句の上のコメントも）
 - `app/gateway/tools.json` — `search_splunk` を足す。Round 3 は `device_id` の description
 - `app/agentcore/app.py` — system prompt の 1 文と、`run_tool` が `GATEWAY_ONLY` のツールをコンテナに戻さないこと
 - `app/temporal/rules.py` — `build_prompt` の 1 文
@@ -98,6 +99,7 @@
 - `docs/architecture/architecture-managed.deck.md:148` / `:150` — 「Splunk の管理 API 8089 の外からの受信は開けていない」を、lambda → splunk の 8089（search_splunk）を足した形に直す
 - docs: `deploy.env.example:81` / `:86`（「search_logs / query_metrics は配備されていないを返す。search_splunk で Splunk を引く」）、`docs/deploy.md:123` 付近、`docs/architecture/resources/splunk.md` と `agentcore-bedrock.md`（ツールの一覧があれば）、`docs/architecture/resources/` の SG の表の文書（vpc-perimeter / core の SG の表に `lambda → splunk 8089` を足す）。`grep -rn "search_logs" docs README.md` で拾った「ツールの一覧」の箇所すべて
 - Round 3 の docs: `search_splunk` の機器の絞り方を書いている箇所（`docs/architecture/resources/agentcore-bedrock.md:37` / `:127`、`docs/architecture/resources/splunk.md:61` / `:170` ほか。`grep -rn search_splunk docs deploy.env.example` で探す）に、IP でも引けることと flows は sampler の IP で引くことを足す
+- Round 4 の docs: 機器の IP の欄に `host` を、機器名の欄に `tags.host` を挙げている箇所（`docs/architecture/resources/agentcore-bedrock.md:37`、`docs/architecture/resources/splunk.md:61`。`grep -rn search_splunk docs` で同じ並びを探す）から外す。いまのコレクターはどれも `tags.host` を出さず、HEC の `host` はその写しか agent_host（`build.md` の Round 3 の B4）
 - 全体設計 HTML（`~/Documents/repo/artifacts/projects/nwc-poc-architecture.html`）は PM がサイクル完了時に直す（エンジニアは触らない）
 
 ## 再利用するもの
@@ -122,7 +124,7 @@
 
 `bash ops/check.sh` の最後の行が「すべて通過」で終了コード 0。追加のテストは次のとおり。
 
-- T-1（SPL の組み立て）: `splunk_args("dc1-a-leaf-01", "traps", "linkDown", 30, 5)` の SPL が `search index=* sourcetype="nwc:traps" earliest=-30m "dc1-a-leaf-01" "linkDown" | eval device=` で始まり、`| search device="dc1-a-leaf-01" OR device="dc1-a-leaf-01.*" OR tags.agent_host="dc1-a-leaf-01" OR tags.source="dc1-a-leaf-01" OR tags.sampler="dc1-a-leaf-01" OR host="dc1-a-leaf-01"` と `| head 5` を含み、`device="dc1-a-leaf-01*"` を含まない。引数が全部空なら `sourcetype="nwc:*"`、`| search device=` も keyword の語も無い、`earliest=-60m`、`| head 20`
+- T-1（SPL の組み立て）: `splunk_args("dc1-a-leaf-01", "traps", "linkDown", 30, 5)` の SPL が `search index=* sourcetype="nwc:traps" earliest=-30m "dc1-a-leaf-01" "linkDown" | eval device=` で始まり、`| search device="dc1-a-leaf-01" OR device="dc1-a-leaf-01.*" OR tags.agent_host="dc1-a-leaf-01" OR tags.source="dc1-a-leaf-01" OR tags.sampler="dc1-a-leaf-01"` と `| head 5` を含み、`device="dc1-a-leaf-01*"` と `host="` を含まない（`host` は Round 4 で外した）。引数が全部空なら `sourcetype="nwc:*"`、`| search device=` も keyword の語も無い、`earliest=-60m`、`| head 20`
 - T-2（拒否）: `device_id="a b"`、`"x\"|delete"`、65 文字、`topic="foo"`、`keyword` に `"` / `|` / `[` / `` ` `` / `\` / 改行 / 101 文字、のそれぞれで `error` を返し、`urlopen` は呼ばれない
 - T-3（丸め）: `minutes=0` → 1、`minutes=99999` → 1440、`limit=1000` → 100、`minutes="abc"` → いまの `search_logs` と同じ扱い
 - T-4（配備されていない）: `SPLUNK_URL` が空なら `error` に「Splunk の検索はまだ配備されていない」を含み、`urlopen` は呼ばれない
@@ -134,7 +136,7 @@
 - T-10（手元の Splunk。必須）: 使い捨ての Splunk を立てて、本物の SPL と応答を確かめる
   - 立て方: `docker/images/splunk/Dockerfile` を別タグ（例 `nwc-local-splunk:054`）でビルドし、別名のコンテナ（例 `nwc-054-splunk`）を `127.0.0.1` の空いたポートで立てる。パスワードと HEC の token は使い捨ての値をスクラッチパッドのファイルに作り、表示しない。手元の `.env` と compose の Splunk は使わない
   - 入れるイベント: `app/spark/snmp_sinks.py` の `splunk_events` で組んだ行を HEC へ送る（本物と同じ形）。機器は `spine-1` と `spine-10`（sysName）、`dc1-a-leaf-01.lab.local`（FQDN の sysName）、`10.0.0.1` と `10.0.0.10`（agent_host だけ）、sysName / agent_host / source が無く `tags.host` だけのもの。Round 3 で足す: `10.0.0.2`（trap。`tags.source` だけで、device map で sysName `spine-2` を付ける）、flows（`tags.sampler` が `10.0.0.3` と `10.0.0.30`）
-  - 確かめること（`SPLUNK_URL=https://127.0.0.1:<port>` で `search_splunk` を呼び、結果の `device` の集合を build.md に貼る）: `spine-1` で `spine-10` が出ない、`10.0.0.1` で `10.0.0.10` が出ない、`dc1-a-leaf-01` で FQDN の行が出る、`tags.host` だけの機器が出る、`topic` と `keyword` で絞れる、パスワード違いで `HTTP 401` の `error`。Round 3 で足す: `10.0.0.2` で `device` が `spine-2` の行が出る（`spine-2` でも同じ行が出る）、`topic=flows` の `10.0.0.3` で sampler が `10.0.0.3` の行だけが出て `10.0.0.30` は出ない。所要時間も貼る
+  - 確かめること（`SPLUNK_URL=https://127.0.0.1:<port>` で `search_splunk` を呼び、結果の `device` の集合を build.md に貼る）: `spine-1` で `spine-10` が出ない、`10.0.0.1` で `10.0.0.10` が出ない、`dc1-a-leaf-01` で FQDN の行が出る、`tags.host` だけの機器が出る、`topic` と `keyword` で絞れる、パスワード違いで `HTTP 401` の `error`。Round 3 で足す: `10.0.0.2` で `device` が `spine-2` の行が出る（`spine-2` でも同じ行が出る）、`topic=flows` の `10.0.0.3` で sampler が `10.0.0.3` の行だけが出て `10.0.0.30` は出ない。所要時間も貼る。Round 4 で足す: 本文に `unknown` の語を含み sysName のある行（Round 3 の rec13。sysName `leaf-9`）が、`unknown` で引いても出ない（結果の `device` に `unknown` 以外が 1 件も無い）
   - 片付け: `docker rm -f -v` でコンテナと volume を消し、自分がビルドしたタグと、このために pull した上流のイメージ（始める前に無かったものだけ）を `docker rmi` する。`docker ps -a` / `docker volume ls` / `docker images` で残っていないことを確かめて貼る。ほかのイメージ・コンテナには触らない
 - T-12（Gateway だけのツール）: `tests/test_agentcore.py` で、Gateway が `error` を返したとき `app.run_tool("search_splunk")` はその `error` をそのまま返してコンテナの関数を呼ばず、`search_logs` はいまどおりコンテナに戻す（Round 2 で足したテスト。Round 3 で正本に足した）
 - T-11（時間の上限）: 応答を少しずつ返して止まる偽物の opener で、締め切りを過ぎると読めた行だけを `truncated` 付きで返すこと、1 件も無ければ `error` になること、改行で終わっていない行を捨てることを確かめる（締め切りは引数か定数の差し替えで短くして、テストを待たせない）
@@ -148,7 +150,7 @@
 - **応答の時間。** `jobs/export` は検索が終わるまで流し続ける。機器名は本文の語で先に絞り、全体は 25 秒の締め切りで打ち切る（途中までの結果を返す）。`keyword` も `device_id` も無く `minutes` が長いと `head` に届くまで読むので、description に「まず topic と device_id で絞る」と書く。tools Lambda の timeout は 60 秒（`gateway.tf:202`）で締め切りより長い
   - 締め切りは読み出しのループでは守るが、open（接続・TLS・送信・応答の頭）と chunk の枠はソケットの操作 1 回ごとの timeout（`min(TIMEOUT, 残り)`）なので厳密ではない（Round 2 の反対弁護人の実験で、締め切り 1.0 秒が 1.91 秒）。Splunk が応答の頭を遅らせると Gateway の 30 秒を超えうる。超えたときは Gateway の時間切れの `error` がそのままエージェントに届き（`GATEWAY_ONLY`）、tools Lambda（60 秒）は落ちない。別スレッドで締め切りにソケットを閉じる形は取らない（Round 3 で受け入れた）
 - **lambda の SG は 3 つの Lambda が付ける。** tools の Lambda（`workflow/gateway.tf`）のほか、graph の status の Lambda（`pipeline/graph/sync.tf`）と KB の索引の Lambda（`agent/kb.tf`）も同じ SG なので、8089 に届く。ただし SSM の `/<prefix>/*` を読めるのは tools の Lambda のロールだけで（status と KB の索引のロールに `ssm:GetParameter` は無い。2026-10-12 に PM が IAM を読んだ）、2 つは admin のパスワードを持たない。専用の SG に分けるのは読み取り専用のユーザーと一緒に後で（QUEUE）
-- **`host` が `unknown` のイベント。** `tags` に sysName / agent_host / source / host のどれも無いイベントは、機器名 `unknown` で引いても本文の語の絞り込みで落ちる。機器名が無いイベントなので、機器で引く用途では困らない。flows はトピックごとこれに当たる（`device` は `unknown`）ので、機器では `tags.sampler`（送り元の機器の IP）で引く（Round 3）
+- **`host` が `unknown` のイベント。** `tags` に sysName / agent_host / source / host のどれも無いイベントは `device` が `unknown` になる。機器名 `unknown` で引くと、そのうち本文に unknown の語を含むものだけが出る（他の機器の行は出ない。Round 4）。機器名が無いイベントなので、機器で引く用途では困らない。flows はトピックごとこれに当たる（`device` は `unknown`）ので、機器では `tags.sampler`（送り元の機器の IP）で引く（Round 3）
 - **tools Lambda のサブネットから Splunk のサブネットへ届くか。** 同じ VPC で、SG の行を足せば届くはず。AWS では未確認（次の AWS の動作確認で確かめる）
 - **イベントの機器名。** gNMI と trap は Spark の device map で `tags.sysName` が付く前提（`savedsearches.conf:21`）。付いた機器は `device` が sysName、付かない機器は IP になる。どちらも IP の欄（`tags.source` / `tags.agent_host`）で当たるので、`device_id` は機器名でも IP でもよい（Round 3）。device map に無い機器を sysName で引くと出ない（イベントに sysName が無いため。IP で引く）
 - **AWS では確かめない。** 手元のテストと、手元の使い捨ての Splunk（T-10）だけ

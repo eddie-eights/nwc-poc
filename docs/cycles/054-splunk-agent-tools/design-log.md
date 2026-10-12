@@ -43,3 +43,22 @@ Round 2 のエンジニアのセルフレビュー（A4 / A5 / A6。`build.md` �
 - cold の Should 1 件目（`GATEWAY_ONLY` と `run_tool` の振る舞いの変更が design.md に無い）: 実装とテストは正しいので、方針・変更対象・検証方法（T-12）に足すだけ。コードは変えない
 - A6（締め切りが厳密でない）: 受け入れて「未確定事項とリスク」に書く。超えても Gateway の時間切れの `error` がエージェントに届き、tools Lambda は落ちない（`gateway.tf:202` の timeout 60、`mcp_client.py:26` の 30 秒、`tests/test_agentcore.py` の T-12）。別スレッドで閉じる形は複雑さに見合わない。cold reviewer も同じ件を Nit にした
 - cold の Nit 6 件は直さない（flows の Nit は A5 で一緒に片付く）。リダイレクトで Authorization を付けたまま追う件は、読み取り専用のユーザーの QUEUE の行と一緒に後で
+
+## Round 4（2026-10-12）
+
+Round 3 のエンジニアのセルフレビューが、設計側の Should fix B1 を PM に回した（`build.md` の Round 3）。PM が直す形を決めた。
+
+- B1（`device_id="unknown"` で、本文に unknown の語を含む他の機器の行が出る。design.md の「`host` が `unknown` のイベント」と食い違う）
+  - 原因: Round 3 で IP の欄を並べたとき、HEC の `host` も IP の欄として足した。`host` は `tags.host` か agent_host の写し（`snmp_sinks.py:619`）で、写しの元を出すコレクターが無い trap / log / flows では `unknown` になる。句が当てる値は実際には `unknown` だけで、機器を足す役に立っていない
+  - PM の再現（0da5558 の `evidence.py` と `snmp_sinks.py`。rec13 と同じ形の log を `splunk_events` に通し、2 段目の各句を Python で写した）
+
+    ```
+    HEC host: unknown | device: leaf-9 | raw has 'unknown': True
+    device clause: False | ip clauses: False | host clause: True
+    ```
+
+  - 選んだもの: `host` の句を外す。`tags.host` だけのイベントは `coalesce` の `device` で当たり（T-10 の `hostonly-1`）、gNMI の `host` は `tags.source` の写しなので `tags.source` の句で当たる
+  - 却下: `tags.host` に替える（どのコレクターも出さず、`device` の `coalesce` ですでに当たる）。`device_id` の `unknown` を拒む（句が冗長なのは変わらず、写しの元が別の値になったとき同じ形の誤りが残る）
+- B4（docs が `tags.host` / `host` を機器名・IP の欄に挙げる）: B1 と一緒に docs から外す
+- B2: エンジニアが T-10 に rec12 を足して片付けた
+- B3（`device="<id>.*"` が `10` / `10.0` のような IP の一部を通す）: Nit。直さない（サイクル完了時に QUEUE へ）
