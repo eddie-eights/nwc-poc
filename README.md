@@ -12,7 +12,7 @@ flowchart LR
   PC["利用者の PC<br/>localhost:8080"] -->|"SSM ポートフォワーディング"| WEB["Web の EC2<br/>Gradio"]
   WEB -->|"invoke_agent_runtime"| RT["AgentCore Runtime<br/>Nova 2 Lite + ガードレール"]
   RT --> KB["ナレッジベース<br/>CREATE_KB=1"]
-  RT --> TOOLS["ツール<br/>Neptune / OpenSearch / Prometheus"]
+  RT --> TOOLS["ツール<br/>Neptune / OpenSearch / Prometheus / Splunk"]
   LAB["lab の EC2<br/>containerlab"] --> TG["gnmic / Telegraf / syslog-ng / GoFlow2<br/>ECS Fargate"] --> MSK["MSK"] --> SPARK["Spark<br/>EMR Serverless"]
   SPARK --> STORE["S3 Tables / OpenSearch / Prometheus<br/>（+ Splunk）"]
   PC -->|"SSM ポートフォワーディング<br/>（Web の EC2 を踏み台）"| GRAF["Grafana<br/>ECS Fargate"] -->|"Prometheus / OpenSearch を見る"| STORE

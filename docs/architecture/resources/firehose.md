@@ -73,7 +73,7 @@ Lambda が 1 件ずつ渡した行を、60 秒か 1 MiB ごとにまとめて書
 | 時刻の書式（ISO 8601 の UTC）を Firehose が受け付けるか | 2026-10-05 に AWS で確かめた（同じ行を Athena のワークグループ `<prefix>-history` で読めた） |
 | 閉域の Deny に当たらないか | 2026-10-05 に AWS で確かめた（行が Athena で読めた）。確かめ方は logs のバケットの `firehose-errors/alert_events/` にオブジェクトが無いことと、Athena で行が読めること（[deploy.md](../../deploy.md)） |
 | 書けなかった行を logs のバケットに落とせるか | 未確認。cycle 035 で assets（当時は kb）のバケットから logs のバケットへ移した。ロールの `ErrorBucket` / `ErrorBucketList` は logs を向いている（S3 の置き場を整える（035）の設計の「未確定事項とリスク」の 2） |
-| Splunk が起動の直後に `resolved` をまとめて送る | 既知（2026-10-05）。`alert_events` の行が増える（[troubleshooting.md](../../troubleshooting.md) の「既知の不具合」） |
+| Splunk が起動の直後に `resolved` をまとめて送る | 2026-10-05 の AWS で `alert_events` の行が増えた件は e645ecc で直した（`nwc_gnmi` は前の値が無いとき、異常なら `firing` だけ出す）。`tests/test_alerts.py` と手元の Splunk で確認、AWS では未確認（[troubleshooting.md](../../troubleshooting.md) の「経緯」） |
 | ロールの権限 | 広い（S3 Tables は `table/*`、Glue は `database/*` と `table/*/*`）。まず通すことを優先した（同じ設計のリスクの 13） |
 
 ## 関連

@@ -500,14 +500,18 @@ logger -n "$nlb" -P 5140 -d --rfc3164 -t acl-probe "syslog test from the lab EC2
 
 2026-10-05 の AWS の動作確認（`AGENT=1 PIPELINE=1 WORKFLOW=1 ENDPOINTS_AZ_NUM=2 SPLUNK_AZ_NUM=2`）で見つけて、まだ直していないもの。直したら、その行を消す。
 
-いまは無い（見つけたら `| 見つけた日 | 症状 | 分かっていること |` の表で足す）。直したもの:
-
-- 2026-10-05 の「1 本の回線断で修復案が 2 件できる（見つけたときは 4 件）」: 回線の leaf 側と spine 側が別の異常として数えられていた。053 でワーカーの starter が回線の `a` の端（機器名の順で前）の 1 つにまとめた（手元のテストで確認、AWS では未確認）。
-- `nwc_trap`: 4 件のうち 2 件の原因だった、Splunk の trap の検索がサブインターフェース（`ethernet-1/1.0`）を除いていない点は直した（手元のテストで確認、AWS では未確認）。
+いまは無い（見つけたら `| 見つけた日 | 症状 | 分かっていること |` の表で足す）。直した件は下の「経緯」に移した。
 
 ## 経緯
 
+- 2026-10-05（6ae4501）: 2026-10-05 の AWS で見つけた 2 つを直した。どちらも手元のテストで確認、AWS では未確認。
+  - Web のページのタイトルの文字化け。タイトルを user_data から外した（既定は `app/dashboard/config.py` の `TITLE`。`tests/test_workflow.py`）。
+  - チャットがツールの回数の上限（`MAX_TOOL_ROUNDS`。既定 5）に当たると何も返さずに終わる。上限でもう 1 回だけモデルを呼んで答えさせ、頭に断りを付けるようにした（いまは `app/agentcore/app.py` の `ToolLimit`。`tests/test_agentcore.py`）。
+- 2026-10-05（e645ecc）: 2026-10-05 の AWS で見つけた Splunk の 2 つを直した。どちらも手元で確認、AWS では未確認（[pipeline.md](pipeline.md) の「Splunk のアラート」）。
+  - `nwc_trap` がサブインターフェース（`ethernet-1/1.0`）の `link_down` も出す（1 本の回線断で修復案が 4 件できた原因の半分）。`tests/test_alerts.py`。
+  - `nwc_gnmi` が起動の直後に `resolved` をまとめて送る（S3 Tables の `alert_events` の行がその分だけ増えた）。前の値が無いときは、異常なら `firing` だけ出す。`tests/test_alerts.py` と手元の Splunk。
 - 2026-10-08（012）: syslog を Telegraf ではなく syslog-ng が受けるようにした。サービス `<prefix>-syslog-ng` / `<prefix>-goflow2` はこのとき足した。
 - 2026-10-09（013）: Grafana のルール `link_down` などが見る値を、SNMP のポーリングから gnmic の gNMI の値に替えた。`metrics` トピックの IF の統計・CPU・メモリも gnmic が書く（SNMP のポーリングはやめた）。
 - 2026-10-09（013）: デバッグ用の EC2 の Telegraf の `test` / `gnmi` をやめた（受けるのは trap だけ）。
 - 2026-10-10: 2026-10-09 の不具合 3（`logger --rfc5424` の試験行が `logs` に無い）を手元で再現し、syslog-ng は捨てないこと、届いていなかった見込み（NLB の SG と DNAT）を「syslog の試験行が logs に入らない」に書いた。
+- 2026-10-12（053）: 1 本の回線断で修復案が 2 件できる（2026-10-05 の AWS で見つけたときは 4 件。残りの半分の原因）のを直した。回線の leaf 側と spine 側が別の異常として数えられていた。ワーカーの starter が、Neptune で回線の両端を引いて `a` の端（機器名の順で前）の 1 つにまとめる。手元のテストで確認、AWS では未確認。

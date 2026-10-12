@@ -42,7 +42,7 @@ SecureString（`ops/up.sh` が作る）:
 | `/<prefix>/nautobot/secret-key`、`admin-password`、`db-password`、`api-token` | Django の SECRET_KEY、admin のパスワード、DB のパスワード、Web が使う API のトークン | 乱数 | Nautobot のタスク（ECS の secrets）、RDS（`db-password`）、Temporal の init のタスク（`db-password`）。Web / Runtime / tools の Lambda / lab の EC2 / lab-debug の EC2 のロールは `secret-key` / `admin-password` / `db-password` を Deny（`DenyNautobotSecrets`。`api-token` は Web が読む。cycle 044）。workflow のサーバーのタスク（temporal・ui・worker）のロールは `/<prefix>/nautobot/*` を丸ごと Deny（`DenyNautobotParameters`。cycle 042） |
 | `/<prefix>/temporal/db-password` | Temporal の履歴を Nautobot の RDS に書くロール `temporal` のパスワード（cycle 036） | 乱数（`WORKFLOW=1` のとき。`ops/up-common.sh` の `ensure_temporal_secrets`） | workflow のサーバーのタスクと init のタスク `<prefix>-workflow-init`（ECS の secrets。init のタスクが起動のたびにロールのパスワードをこの値に揃える。cycle 042） |
 | `/<prefix>/grafana/admin-password` | Grafana の admin のパスワード | 乱数（`STORES` に `grafana` があるとき） | Grafana のタスク |
-| `/<prefix>/splunk/admin-password`、`hec-token` | Splunk の admin のパスワード、HEC の token | 乱数、uuid（`STORES` に `splunk` があるとき） | Splunk のタスク |
+| `/<prefix>/splunk/admin-password`、`hec-token` | Splunk の admin のパスワード、HEC の token | 乱数、uuid（`STORES` に `splunk` があるとき） | Splunk のタスク。tools の Lambda（`admin-password` だけ。エージェントのツール `search_splunk` が Splunk の 8089 の検索の API に Basic 認証で使う。cycle 054） |
 | `/<prefix>/splunk/idxc-secret` | Splunk のクラスターの合言葉（cluster manager・indexer・search head が互いを確かめる） | 乱数（`SPLUNK_AZ_NUM` が 2 か 3 のとき） | Splunk のタスク（どの役割も同じ値） |
 | `/<prefix>/gnmic/gnmi-username`、`gnmi-password` | 機器の gNMI の認証情報 | 決まった値（containerlab の既定値を最初の値にする） | gnmic のタスク |
 | `/<prefix>/kafka-ui/admin-password` | Kafbat UI の admin のパスワード | 乱数（stream を作るとき） | Web の EC2 のユニット `<prefix>-kafka-ui`（復号して `/run` の env に書き、止まると消す） |

@@ -89,7 +89,7 @@ stream を作る回は Kafbat UI も Docker で同居する（Kafbat UI を Web 
 |---|---|
 | 1 台・1 AZ | 冗長にしていない。AZ が止まると画面も踏み台も使えない（コードから読める範囲。AWS で確かめた記録は無い） |
 | 承認タブ | 2026-10-05 に AWS で確かめた（承認 → `heal-main` が Success → verified。名前に `'` を入れても通った）。却下は未確認 |
-| ページのタイトル | 文字化けする。既知（2026-10-05。[troubleshooting.md](../../troubleshooting.md) の「既知の不具合」） |
+| ページのタイトル | 2026-10-05 の AWS で文字化けしていた件は 6ae4501 で直した（タイトルを user_data から外した。既定は `app/dashboard/config.py` の `TITLE`）。`tests/test_workflow.py` で確認、AWS では未確認（[troubleshooting.md](../../troubleshooting.md) の「経緯」） |
 | 認証 | 画面にログインは無い。入れる人は SSM の `start-session` を打てる IAM の利用者（[deploy.md](../../deploy.md) の「利用者に画面を渡す」） |
 
 ## 関連

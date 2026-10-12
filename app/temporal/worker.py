@@ -2,7 +2,7 @@
 Grafana と Splunk のアラート（SNS → SQS）を受けてエージェントに原因を調べさせ、修復案を出し、人が承認したら lab EC2 で直し、解消の通知が来るまで確かめる。
 
 流れ: Grafana のアラートルール / Splunk の保存済みサーチが異常を見つける → SNS のトピック（<接頭辞>-alerts）→ SQS → ここ（Temporal のワークフロー）が
-エージェントに Neptune / S3 / OpenSearch / Prometheus を見させて原因分析 → 修復の提案 → 人間の承認 → Temporal で実行。
+エージェントに Neptune / S3 / OpenSearch / Prometheus / Splunk を見させて原因分析 → 修復の提案 → 人間の承認 → Temporal で実行。
 同じタスクの中の temporal コンテナ（temporal-server。履歴は Nautobot の RDS for PostgreSQL。cycle 036）に localhost:7233 でつなぐ。
 1 プロセスで 3 つを動かす:
   - starter（アラート）: SQS（ANOMALY_QUEUE_URL）を long polling（20 秒）し、届いたアラート（rules.alerts_from_message）ごとに

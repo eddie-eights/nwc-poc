@@ -32,7 +32,7 @@ worker が読み書きするもの:
 | SQS `<prefix>-anomalies` | アラート（`firing` / `resolved`） | 読む（long polling 20 秒） |
 | SQS `<prefix>-decisions` | Web の承認・却下（決定 1 件が 1 通） | 読む（long polling 20 秒）。ワークフローにシグナル `decide` で渡す |
 | AgentCore Runtime | 原因と修復案 | 聞く |
-| Neptune Analytics | トポロジ（事前チェックと、保守中の機器の判定に使う）。修復案は置かない | 読むだけ |
+| Neptune Analytics | トポロジ（事前チェックと、保守中の機器の判定に使う。starter が回線の両端の異常を `a` の端の 1 つにまとめるときの回線の端も引く。cycle 053）。修復案は置かない | 読むだけ |
 | S3 Tables の `proposal_events` | 修復案。作成・承認・却下・時間切れ・適用・確認のたびに 1 行（28 列。どの行にも全項目。`event_id` = `<proposal_id>#<event>`、「いま」は `seq` が最大の行） | 読み書き（PyIceberg）。書くのは worker だけ |
 | lab の EC2 | 修復のコマンド（`sudo lab heal-main`） | SSM の Run Command で打つ |
 
