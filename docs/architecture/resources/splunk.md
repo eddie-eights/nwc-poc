@@ -167,7 +167,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | 既知の不具合（2026-10-05） | trap のサブインターフェース（`ethernet-1/1.0`）の `link_down` と、起動の直後の `resolved` のまとめ送りは直した（手元で確認、AWS では未確認）。回線の両端が別の異常になる件は [troubleshooting.md](../../troubleshooting.md) の「既知の不具合」 |
 | 24 時間を超えて変わっていない down | `nwc_gnmi` の「前の値」が無いので、戻ったときの `resolved` を出さない。gnmic が繋ぎ直して送り直すと、新しい `starts_at` で `firing` をもう 1 回出す |
 | Splunk が止まっているあいだの変化 | 次に状態が変わるまで出ない |
-| エージェントの `search_splunk`（cycle 054） | 模擬テストだけ（本物の Splunk には送っていない）。AWS で tools の Lambda から 8089 に届くこと、クラスターのとき search head で引けることは未確認。admin の資格情報を使う（読み取り専用のユーザーは QUEUE に積んだ） |
+| エージェントの `search_splunk`（cycle 054） | 手元の使い捨ての Splunk で、Spark の `splunk_events` の形のイベントを引けることを確かめた（cycle 054 の T-10）。AWS で tools の Lambda から 8089 に届くこと、クラスターのとき search head で引けることは未確認。admin の資格情報を使う（読み取り専用のユーザーは QUEUE に積んだ） |
 
 - AWS の上での通しを確かめた中身:
   - 2026-10-05: `sudo lab fail-main` で Splunk が `link_down` と `isis_down` を出し、`sns` のエンドポイント越しに SNS へ届いた（`SPLUNK_AZ_NUM=2` の構成）。

@@ -201,13 +201,13 @@
   },
   {
     "name": "search_splunk",
-    "description": "Splunk に入っている全トピック（metrics / gnmi / traps / logs / flows）を機器名・トピック・語で引く。search_logs / query_metrics が配備されていないときに使う。まず topic と device_id で絞る（minutes が長く topic が空だと遅い）。SPL は書けない（決めた形の検索だけ）。STORES に splunk が無い構成では案内だけ返す。",
+    "description": "Splunk に入っている全トピック（metrics / gnmi / traps / logs / flows）を機器名・トピック・語で引く。search_logs / query_metrics が配備されていないときに使う。まず topic と device_id で絞る（minutes が長く topic が空だと遅い。25 秒で打ち切り、途中までを truncated 付きで返す）。SPL は書けない（決めた形の検索だけ）。STORES に splunk が無い構成では案内だけ返す。",
     "inputSchema": {
       "type": "object",
       "properties": {
         "device_id": {
           "type": "string",
-          "description": "機器名か IP（例 dc1-a-leaf-01）。前方一致。空なら全機器"
+          "description": "機器名か IP（例 dc1-a-leaf-01）。完全一致（sysName が FQDN の機器は <id>. で始まるものも当たる）。空なら全機器"
         },
         "topic": {
           "type": "string",

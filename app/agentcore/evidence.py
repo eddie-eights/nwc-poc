@@ -27,6 +27,7 @@ OSS 版（cycle 005。IaC/terraform/oss）は送り先の認証だけを環境�
 """
 
 import base64
+import http.client
 import json
 import os
 import re
@@ -152,6 +153,10 @@ SPLUNK_KEYWORD_MAX = 100
 # SPL の引用を抜け出す・サブサーチ・マクロ・パイプを作れる文字。エスケープせずに拒む（SPL の規則の読み違いに頼らない）。制御文字は isprintable で拒む
 SPLUNK_KEYWORD_BAD = frozenset('"\\|[]`')
 SPLUNK_RAW_MAX = 1000
+# search_splunk の全体（パスワードの取得・接続・読み出し）の締め切り（秒）。Runtime → Gateway の mcp_client.GATEWAY_TIMEOUT 30 秒より短く。
+# jobs/export は検索が終わるまで流し続けるので、過ぎたら読むのをやめて、読めた行（改行で終わった行）だけを truncated 付きで返す
+SPLUNK_DEADLINE = 25
+SPLUNK_CHUNK = 64 * 1024
 # Runtime のコンテナには SPLUNK_URL が無く、8089 も lambda → splunk しか開けない。app.run_tool は Gateway のエラーを
 # コンテナの「配備されていない」で上書きしない（cycle 054 のセルフレビュー）
 GATEWAY_ONLY = frozenset({"search_splunk"})
@@ -172,17 +177,35 @@ def splunk_args(device_id: str = "", topic: str = "", keyword: str = "", minutes
     if any(c in SPLUNK_KEYWORD_BAD or not c.isprintable() for c in keyword):
         return "", "keyword に使えない文字がある（\" \\ | [ ] ` と制御文字は使えない）"
     spl = f'search index=* sourcetype="nwc:{topic or "*"}" earliest=-{minutes}m'
+    if device_id:
+        # 本文の語で先に絞る（索引で引ける。earliest の範囲を全部読んでから eval で絞らない）。機器名は Spark の splunk_events の
+        # 本文の tags に出る（HEC の host も tags.host か agent_host）ので、落ちるのは host が unknown のイベントだけ
+        spl += f' "{device_id}"'
     if keyword:
         spl += f' "{keyword}"'
-    # 機器名は保存済みサーチと同じ coalesce（app/splunk/nwc_alerts/default/savedsearches.conf）。前方一致で FQDN の sysName も拾う
+    # 機器名は保存済みサーチと同じ coalesce（app/splunk/nwc_alerts/default/savedsearches.conf）
     spl += " | eval device=coalesce('tags.sysName', 'tags.agent_host', 'tags.source', host)"
     if device_id:
-        spl += f' | search device="{device_id}*"'
+        # 完全一致と、FQDN の sysName（<id>. で始まる）だけ。前方一致にしない（10.0.0.1 が 10.0.0.10 に、spine-1 が spine-10 に当たる）
+        spl += f' | search device="{device_id}" OR device="{device_id}.*"'
     return spl + f" | head {limit} | fields _time device sourcetype source _raw", ""
 
 
-def _splunk_post(url: str, body: bytes, password: str) -> tuple[str, str]:
-    """Splunk の管理 API に POST して (応答の本文, "") か ("", エラーの文)。エラーの文は _send と同じ形。
+def _splunk_truncated() -> str:
+    return f"{SPLUNK_DEADLINE} 秒で打ち切った（topic / device_id で絞るか minutes を短く）"
+
+
+def _set_read_timeout(res, seconds: float) -> None:
+    """読み出しのソケットの timeout を締め切りの残りに合わせる（open の timeout は接続のときの値のまま残るため）。
+    http.client.HTTPResponse の fp.raw._sock（socket.SocketIO の私有の属性）。見つからなければ何もしない（open のときの値のまま）"""
+    sock = getattr(getattr(getattr(res, "fp", None), "raw", None), "_sock", None)
+    if sock is not None:
+        sock.settimeout(seconds)
+
+
+def _splunk_post(url: str, body: bytes, password: str, deadline: float) -> tuple[list[str], str, str]:
+    """Splunk の管理 API に POST して、(改行で終わった行, 打ち切ったときの文 か "", "") か ([], "", エラーの文)。
+    エラーの文は _send と同じ形。締め切り deadline（time.monotonic）を過ぎたら読むのをやめ、改行で終わっていない行は捨てる。
     Basic 認証・自己署名の証明書を検証しない・プロキシの環境変数を見ない、は app/splunk/peers_check.py と同じ"""
     headers = {"Authorization": "Basic " + base64.b64encode(f"{SPLUNK_USER}:{password}".encode("utf-8")).decode("ascii"),
                "Content-Type": "application/x-www-form-urlencoded"}
@@ -190,17 +213,54 @@ def _splunk_post(url: str, body: bytes, password: str) -> tuple[str, str]:
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE  # 8089 は Splunk の自己署名の証明書
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx))  # 宛先は VPC の中
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return [], _splunk_truncated(), ""
     try:
-        with opener.open(urllib.request.Request(url, data=body, headers=headers, method="POST"), timeout=TIMEOUT) as res:
-            return res.read().decode("utf-8", "replace"), ""
+        res = opener.open(urllib.request.Request(url, data=body, headers=headers, method="POST"), timeout=min(TIMEOUT, remaining))
     except urllib.error.HTTPError as e:
-        return "", f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:300]}"
-    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as e:
-        return "", f"届かない: {e}"
+        try:
+            detail = e.read().decode("utf-8", "replace")[:300]
+        except (OSError, ValueError, http.client.HTTPException):  # 本文を読む途中で切れても、状態コードは返す
+            detail = ""
+        finally:
+            e.close()
+        return [], "", f"HTTP {e.code}: {detail}"
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError, http.client.HTTPException) as e:  # HTTPException は応答の頭が壊れている（BadStatusLine ほか）
+        if time.monotonic() >= deadline:
+            return [], _splunk_truncated(), ""
+        return [], "", f"届かない: {e}"
+    lines, buf, cut = [], b"", ""
+    try:
+        with res:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    cut = _splunk_truncated()
+                    break
+                wait = min(TIMEOUT, remaining)
+                _set_read_timeout(res, wait)
+                try:
+                    chunk = res.read1(SPLUNK_CHUNK)  # 届いた分だけ返す（read(n) は n バイト揃うまで待つ）
+                except TimeoutError:
+                    cut = _splunk_truncated() if wait == remaining else f"{TIMEOUT} 秒応答が途切れたので打ち切った（topic / device_id で絞るか minutes を短く）"
+                    break
+                if not chunk:
+                    break
+                *done, buf = (buf + chunk).split(b"\n")
+                lines.extend(x.decode("utf-8", "replace") for x in done)
+    except (OSError, ValueError, http.client.HTTPException) as e:  # 読んでいる途中で切れた（IncompleteRead ほか）
+        if not lines:
+            return [], "", f"届かない: {e!r}"
+        return lines, f"応答が途中で切れた（{e!r}）。読めた分だけ返す", ""  # 読めた行は捨てない（改行で終わっていない行は捨てる）
+    if not cut and buf:
+        lines.append(buf.decode("utf-8", "replace"))  # 最後まで読めたときは、改行の無い最後の行も 1 行
+    return lines, cut, ""
 
 
 def search_splunk(device_id: str = "", topic: str = "", keyword: str = "", minutes: int = 60, limit: int = 20) -> dict:
     """Splunk の全トピックを決めた SPL で検索する（最大 limit 件）。エージェントは SPL を書けず、引数は検証してから埋める"""
+    deadline = time.monotonic() + SPLUNK_DEADLINE  # 全体の締め切り。パスワードの取得（SSM）に使った時間も数える（取得そのものは打ち切れない）
     if not SPLUNK_URL:
         return {"error": SPLUNK_NOT_DEPLOYED, "events": []}
     spl, error = splunk_args(device_id, topic, keyword, minutes, limit)
@@ -210,12 +270,12 @@ def search_splunk(device_id: str = "", topic: str = "", keyword: str = "", minut
     if not password:
         return {"error": "Splunk のパスワードが無い（環境変数 SPLUNK_PASSWORD か SSM の splunk/admin-password）", "events": []}
     body = urllib.parse.urlencode({"search": spl, "output_mode": "json"}).encode("utf-8")
-    text, error = _splunk_post(f"{SPLUNK_URL}/services/search/jobs/export", body, password)
+    rows, cut, error = _splunk_post(f"{SPLUNK_URL}/services/search/jobs/export", body, password, deadline)
     if error:
         return {"error": error, "events": []}
     # 応答は 1 行 1 件の JSON（{"preview": false, "offset": N, "result": {...}}）。エラーは {"messages": [{"type": "ERROR", "text": ...}]}
     events, problems, lines, skipped = [], [], 0, 0
-    for line in text.splitlines():
+    for line in rows:
         if not line.strip():
             continue
         lines += 1
@@ -235,11 +295,15 @@ def search_splunk(device_id: str = "", topic: str = "", keyword: str = "", minut
                            "source": result.get("source", ""), "raw": str(result.get("_raw", ""))[:SPLUNK_RAW_MAX]})
     if problems:
         return {"error": "Splunk: " + "; ".join(problems), "events": []}
+    if cut and not events:
+        return {"error": cut, "events": []}
     if lines and skipped == lines:
         return {"error": "Splunk の応答が読めない", "events": []}
     out = {"count": len(events), "minutes": max(1, min(int(minutes), 24 * 60)), "topic": str(topic or "").strip() or "*", "events": events}
     if skipped:
         out["skipped"] = skipped  # JSON として読めなかった行の数
+    if cut:
+        out["truncated"] = cut  # 締め切りで読むのをやめた（events は途中まで）
     return out
 
 
@@ -316,9 +380,9 @@ TOOL_SPECS = [
     {"toolSpec": {
         "name": "search_splunk",
         "description": "Splunk に入っている全トピック（metrics / gnmi / traps / logs / flows）を機器名・トピック・語で引く。search_logs / query_metrics が配備されていないときに使う。"
-                       "まず topic と device_id で絞る（minutes が長く topic が空だと遅い）。SPL は書けない（決めた形の検索だけ）。STORES に splunk が無い構成では案内だけ返す。",
+                       "まず topic と device_id で絞る（minutes が長く topic が空だと遅い。25 秒で打ち切り、途中までを truncated 付きで返す）。SPL は書けない（決めた形の検索だけ）。STORES に splunk が無い構成では案内だけ返す。",
         "inputSchema": {"json": {"type": "object", "properties": {
-            "device_id": {"type": "string", "description": "機器名か IP（例 dc1-a-leaf-01）。前方一致。空なら全機器"},
+            "device_id": {"type": "string", "description": "機器名か IP（例 dc1-a-leaf-01）。完全一致（sysName が FQDN の機器は <id>. で始まるものも当たる）。空なら全機器"},
             "topic": {"type": "string", "description": "metrics / gnmi / traps / logs / flows のどれか。空なら全部"},
             "keyword": {"type": "string", "description": "本文に含む語（例 linkDown）。100 文字まで、\" \\ | [ ] ` は使えない。空なら絞らない"},
             "minutes": {"type": "integer", "description": "何分前まで見るか（既定 60、最大 1440）"},

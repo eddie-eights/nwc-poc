@@ -557,6 +557,7 @@ toolkit._clients.pop("athena", None)
 # ---- search_splunk（Splunk の検索 API を決めた SPL で引く。cycle 054）。送り先は偽の opener（urllib.request.build_opener を差し替える）
 import base64, ssl, urllib.error, urllib.parse, urllib.request  # noqa: E402,E401
 import io  # noqa: E402
+import http.client  # noqa: E402
 
 class FakeSplunk:
     """build_opener の代わり。渡されたハンドラと、open に来た要求を覚える。body は応答の本文、error は open で投げる例外"""
@@ -588,16 +589,18 @@ def splunk_run(fake, *a, **kw):
 
 # T-1 SPL の組み立て
 _spl, _err = evidence.splunk_args("dc1-a-leaf-01", "traps", "linkDown", 30, 5)
-check("T-1 SPL: 引数ありは sourcetype=nwc:<topic>・earliest・語の順で始まり、機器名の前方一致と head を含む",
-      _err == "" and _spl.startswith('search index=* sourcetype="nwc:traps" earliest=-30m "linkDown"')
-      and '| search device="dc1-a-leaf-01*"' in _spl and "| head 5" in _spl
+check("T-1 SPL: 引数ありは sourcetype=nwc:<topic>・earliest・機器名の語・語の順で始まり、機器名の完全一致か <id>.（FQDN）と head を含む（前方一致にしない）",
+      _err == "" and _spl.startswith('search index=* sourcetype="nwc:traps" earliest=-30m "dc1-a-leaf-01" "linkDown" | eval device=')
+      and '| search device="dc1-a-leaf-01" OR device="dc1-a-leaf-01.*"' in _spl and 'device="dc1-a-leaf-01*"' not in _spl and "| head 5" in _spl
       and "| eval device=coalesce('tags.sysName', 'tags.agent_host', 'tags.source', host)" in _spl
       and _spl.endswith("| fields _time device sourcetype source _raw"))
 _spl, _err = evidence.splunk_args()
 check("T-1 SPL: 引数が全部空なら sourcetype=nwc:*・60 分・20 件で、device の search も語も無い",
       _err == "" and _spl == "search index=* sourcetype=\"nwc:*\" earliest=-60m | eval device=coalesce('tags.sysName', 'tags.agent_host', 'tags.source', host)"
                             " | head 20 | fields _time device sourcetype source _raw")
-check("T-1 SPL: IP の device_id も通る（tags.agent_host で引く機器）", evidence.splunk_args("10.0.0.1")[1] == "" and 'device="10.0.0.1*"' in evidence.splunk_args("10.0.0.1")[0])
+check("T-1 SPL: IP の device_id も通る（tags.agent_host で引く機器）。10.0.0.1 は 10.0.0.10 に当たらない形（完全一致か 10.0.0.1. で始まる）",
+      evidence.splunk_args("10.0.0.1")[1] == "" and ' "10.0.0.1" | eval ' in evidence.splunk_args("10.0.0.1")[0]
+      and '| search device="10.0.0.1" OR device="10.0.0.1.*" |' in evidence.splunk_args("10.0.0.1")[0] and 'device="10.0.0.1*"' not in evidence.splunk_args("10.0.0.1")[0])
 
 # T-2 拒否（Splunk に送らない）
 evidence.SPLUNK_URL = "https://splunk.example:8089"
@@ -707,6 +710,109 @@ finally:
     evidence.SPLUNK_URL = "https://splunk.example:8089"
 check("app.run_tool: Gateway の search_splunk のエラーはそのまま返す（コンテナの「配備されていない」で上書きしない）。search_logs はいまどおりコンテナに戻す",
       _r_gw == {"error": "Splunk: ERROR Unauthorized", "events": []} and _f.calls == [] and "ログの検索はまだ配備されていない" in _r_logs.get("error", ""))
+
+# T-11 時間の上限（search_splunk の全体に SPLUNK_DEADLINE 秒。過ぎたら読めた行だけを truncated 付きで返す）。
+# 応答を少しずつ返して止まる偽物。止まる読み出しは、search_splunk が設定したソケットの timeout だけ待って TimeoutError（本物のソケットと同じ）
+class _SlowSock:
+    def __init__(self):
+        self.timeouts = []
+    def settimeout(self, t):
+        self.timeouts.append(t)
+
+class _SlowRes:
+    """steps は (待つ秒, 返すバイト列) か (待つ秒, None = 止まる) の並び。尽きたら EOF"""
+    def __init__(self, steps):
+        self.steps, self.sock, self.reads = list(steps), _SlowSock(), 0
+        self.fp = types.SimpleNamespace(raw=types.SimpleNamespace(_sock=self.sock))
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return False
+    def read1(self, n=-1):
+        self.reads += 1
+        if not self.steps:
+            return b""
+        delay, data = self.steps.pop(0)
+        time.sleep(delay)
+        if data is None:
+            time.sleep(self.sock.timeouts[-1])
+            raise TimeoutError("timed out")
+        if isinstance(data, BaseException):  # 読んでいる途中で切れる
+            raise data
+        return data
+
+class _SlowOpener(FakeSplunk):
+    def __init__(self, steps):
+        super().__init__()
+        self.res = _SlowRes(steps)
+    def open(self, req, timeout=None):
+        self.calls.append({"url": req.full_url, "timeout": timeout})
+        return self.res
+
+_l = [json.dumps({"preview": False, "offset": i, "result": {"_time": f"t{i}", "device": "spine-1", "sourcetype": "nwc:traps", "source": "s", "_raw": f"r{i}"}})
+      for i in range(4)]
+_dl_saved, _to_saved = evidence.SPLUNK_DEADLINE, evidence.TIMEOUT
+try:
+    evidence.SPLUNK_DEADLINE = 0.4
+    _f = _SlowOpener([(0, (_l[0] + "\n").encode()), (0, (_l[1] + "\n" + _l[2][:20]).encode()), (0, None)])
+    _t0 = time.monotonic()
+    _r = splunk_run(_f, topic="traps")
+    _el = time.monotonic() - _t0
+    check("T-11 締め切りを過ぎたら読むのをやめ、改行で終わった 2 行だけを truncated 付きで返す（改行で終わっていない 3 行目は捨てる）",
+          _r.get("count") == 2 and [e["time"] for e in _r["events"]] == ["t0", "t1"] and _r.get("truncated", "").startswith("0.4 秒で打ち切った")
+          and "error" not in _r and "skipped" not in _r and 0.35 <= _el < 0.7)
+    check("T-11 接続と読み出しのソケットの timeout は min(TIMEOUT, 締め切りの残り)（最後の読み出しは残りの秒数だけ待つ）",
+          0 < _f.calls[0]["timeout"] <= 0.4 and all(0 < t <= 0.4 for t in _f.res.sock.timeouts) and len(_f.res.sock.timeouts) == 3)
+    _f = _SlowOpener([(0, _l[0][:30].encode()), (0, None)])
+    _r = splunk_run(_f, topic="traps")
+    check("T-11 1 件も読めないうちに締め切りを過ぎたら、同じ文の error", _r == {"error": "0.4 秒で打ち切った（topic / device_id で絞るか minutes を短く）", "events": []})
+    _f = _SlowOpener([(0.15, (_l[i % 4] + "\n").encode()) for i in range(20)])
+    _t0 = time.monotonic()
+    _r = splunk_run(_f)
+    _el = time.monotonic() - _t0
+    check("T-11 少しずつ流れ続ける応答も、読み出しの合間に締め切りを見て打ち切る（Splunk が止まらなくても全体は締め切りまで）",
+          1 <= _r.get("count", 0) <= 3 and "truncated" in _r and _el < 0.7 and _f.res.steps)
+    evidence.SPLUNK_DEADLINE = 0
+    _f = _SlowOpener([(0, (_l[0] + "\n").encode())])
+    _r = splunk_run(_f)
+    check("T-11 送る前に締め切りを過ぎていれば（パスワードの取得に使い切った）、送らずに error", _r.get("error", "").startswith("0 秒で打ち切った") and _f.calls == [])
+    evidence.SPLUNK_DEADLINE, evidence.TIMEOUT = 5, 0.1
+    _f = _SlowOpener([(0, (_l[0] + "\n").encode()), (0, None)])
+    _t0 = time.monotonic()
+    _r = splunk_run(_f)
+    _el = time.monotonic() - _t0
+    check("T-11 締め切りの前でも TIMEOUT 秒応答が途切れたら打ち切る（文は「応答が途切れた」で、締め切りとは言わない）",
+          _r.get("count") == 1 and _r.get("truncated", "").startswith("0.1 秒応答が途切れたので打ち切った") and _el < 1)
+    _f = _SlowOpener([(0, (_l[0] + "\n" + _l[1] + "\n" + _l[2][:20]).encode()), (0, http.client.IncompleteRead(b""))])
+    _r = splunk_run(_f)
+    check("T-11 読んでいる途中で切れたら、読めた行（改行で終わった行）を truncated 付きで返す（捨てない）",
+          _r.get("count") == 2 and _r.get("truncated", "").startswith("応答が途中で切れた（IncompleteRead") and "error" not in _r)
+    _f = _SlowOpener([(0, _l[0][:20].encode()), (0, ConnectionResetError("reset"))])
+    _r = splunk_run(_f)
+    check("T-11 1 行も読めないうちに切れたら「届かない」の error", _r.get("error", "").startswith("届かない: ConnectionResetError") and _r["events"] == [])
+finally:
+    evidence.SPLUNK_DEADLINE, evidence.TIMEOUT = _dl_saved, _to_saved
+_r = splunk_run(FakeSplunk(error=http.client.BadStatusLine("garbage")))
+check("T-11 応答の頭が壊れている（HTTPException）も Lambda の例外にせず「届かない」の error", _r.get("error", "").startswith("届かない: ") and _r["events"] == [])
+class _BrokenBody(io.BytesIO):
+    def read(self, *a):
+        raise http.client.IncompleteRead(b"")
+_r = splunk_run(FakeSplunk(error=urllib.error.HTTPError("https://x", 503, "Service Unavailable", {}, _BrokenBody())))
+check("T-11 HTTP のエラーの本文を読む途中で切れても、状態コードの error を返す", _r == {"error": "HTTP 503: ", "events": []})
+# 本物の http.client.HTTPResponse（socketpair。ネットワークに出ない）で、読み出しのソケットの timeout を設定できる（私有の fp.raw._sock が名前を変えたら落ちる）
+import socket  # noqa: E402
+_a, _b = socket.socketpair()
+try:
+    _b.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+    _hr = http.client.HTTPResponse(_a)
+    _hr.begin()
+    evidence._set_read_timeout(_hr, 0.25)
+    check("T-11 本物の HTTPResponse で fp.raw._sock に読み出しの timeout を設定できる", _a.gettimeout() == 0.25)
+    _hr.close()
+finally:
+    _a.close()
+    _b.close()
+check("T-11 締め切りは 25 秒で、Runtime → Gateway の mcp_client.TIMEOUT（環境変数 GATEWAY_TIMEOUT、既定 30 秒）より短い", evidence.SPLUNK_DEADLINE == 25 < app.mcp_client.TIMEOUT)
 
 evidence.SPLUNK_URL, evidence.SPLUNK_USER = _spl_saved[0], _spl_saved[1]
 if _spl_saved[3] is None:
