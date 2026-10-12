@@ -1,6 +1,6 @@
 # Splunk だけの構成でもエージェントが Splunk からログ・trap・メトリクスを引けるようにする（054）
 
-設計: PM(opus-5.5) / effort: high。QUEUE 168。2026-10-12。
+設計: PM(opus-5.5) / effort: high。QUEUE 168。2026-10-12。Round 2 で機器の絞り方・時間の上限・T-10 を直した（`design-log.md` の Round 2）。
 
 ## 背景
 
@@ -8,7 +8,7 @@
 - 2026-10-12 にユーザーが QUEUE に積んで進めることを了承し、形を決めた（`design-log.md` の Round 0）
   - **決めた検索の新しいツール `search_splunk` を足す。** SPL は固定で、引数は検証してから埋める。`search_logs` / `query_metrics` はいまのまま（格納先が無ければ「配備されていない」）
   - **資格情報は既存の Splunk の admin のパスワード**（SSM の `/<prefix>/splunk/admin-password`。`ops/up.sh` が作る）。読み取り専用のユーザーは QUEUE に積んで後で
-- AWS は使わない。手元のテストと、手元の compose の Splunk（`127.0.0.1:8089`）があればそれで確かめる
+- AWS は使わない。手元のテストと、使い捨てで立てる手元の Splunk（T-10）で確かめる
 
 ## 現物（PM が 2026-10-12 に読んで確かめたもの）
 
@@ -25,7 +25,8 @@
 - Splunk の REST の検索（手元で動いている形。`docker/compose/check.sh:90-97`）: `POST https://<host>:8089/services/search/jobs/export`、`search=search …` と `output_mode=json`、Basic 認証。応答は JSON の行（1 行 1 件 `{"preview":false,"offset":N,"result":{…}}`）。パスワード違いは 401 で `{"messages":[{"type":"ERROR","text":"Unauthorized"}]}`、知らないコマンドは 400 で `messages` の FATAL
 - Splunk の管理 API への出し方（`app/splunk/peers_check.py:54-60`）: Basic 認証、`ssl.CERT_NONE`（自己署名の証明書）、`urllib.request.ProxyHandler({})`（プロキシの環境変数を見ない）
 - Splunk のイベント（`app/splunk/nwc_alerts/default/savedsearches.conf:7-8` / `:21` / `:67`）
-  - Spark（`app/spark/snmp_sinks.py` の `splunk_events`）が HEC へ書く。`source = telegraf:<measurement>`、本文は `{"topic", "measurement", "agent_host", "tags": {…}, "fields": {…}}`
+  - Spark（`app/spark/snmp_sinks.py` の `splunk_events`。`:609-633`）が HEC へ書く。`source = telegraf:<measurement>`、本文は `{"topic", "measurement", "agent_host", "tags": {…}, "fields": {…}}`
+  - HEC の `host` は `r.host or r.agent_host or "unknown"`（`:619`）。`r.host` は `tags.host`、`r.agent_host` は `tags.source`（gNMI）か `tags.agent_host`（`:321`、`:334`）で、どれも本文の `tags` に入る。そのため `coalesce('tags.sysName', 'tags.agent_host', 'tags.source', host)` の値は、`host` が `unknown` のときを除いて `_raw` の文字にも出る
   - 機器名は `coalesce('tags.sysName', 'tags.agent_host', 'tags.source')`（保存済みサーチがこの形で引いている）
   - `sourcetype` は `nwc:<topic>`（`check.sh:96` の `sourcetype=nwc:*`）。トピックは metrics / gnmi / traps / logs / flows
 - Splunk の居場所（`IaC/terraform/aws-managed/pipeline/analytics/`）
@@ -47,21 +48,24 @@
   - 組み立てる SPL（値はすべて検証してから `"…"` の中に入れる）
 
     ```
-    search index=* sourcetype="nwc:<topic か *>" earliest=-<minutes>m ["<keyword>"]
+    search index=* sourcetype="nwc:<topic か *>" earliest=-<minutes>m ["<device_id>"] ["<keyword>"]
     | eval device=coalesce('tags.sysName', 'tags.agent_host', 'tags.source', host)
-    [| search device="<device_id>*"]
+    [| search device="<device_id>" OR device="<device_id>.*"]
     | head <limit>
     | fields _time device sourcetype source _raw
     ```
 
-    `[...]` は引数が空なら付けない。`device="<device_id>*"` は前方一致（sysName が FQDN の機器も拾う）で、Splunk の `search` は値の大小文字を区別しない
+    `[...]` は引数が空なら付けない。Splunk の `search` は値の大小文字を区別しない
+    - 1 行目の `"<device_id>"` は本文の語で先に絞る（索引で引けるので、`earliest` の範囲を全部読んでから `eval` で絞らない。Round 1 のセルフレビューの S-2）。機器名は `_raw` の `tags` に出る（上の「現物」）ので、これで落ちるイベントは無い（`host` が `unknown` のものだけは落ちる）
+    - `| search` は完全一致か、そのあとに `.` が続く名前（sysName が FQDN の機器）だけ。前方一致にしない（`10.0.0.1` が `10.0.0.10` に、`spine-1` が `spine-10` に当たる。S-5）
   - 戻り: `{"count": N, "minutes": m, "topic": t, "events": [{"time": _time, "device": …, "sourcetype": …, "source": …, "raw": _raw を 1000 文字に切ったもの}]}`。`messages` に ERROR / FATAL があれば `{"error": "Splunk: <type> <text>", "events": []}`
   - **引数の検証（通らなければ Splunk に送らずに `{"error": "…", "events": []}`）**
     - `device_id`: 空か `^[A-Za-z0-9._:-]{1,64}$`
     - `topic`: 空か `metrics` / `gnmi` / `traps` / `logs` / `flows` のどれか
     - `keyword`: 空か 100 文字まで。`"` と `\` と制御文字と `|` `[` `]` `` ` `` を含んだら拒む（SPL の引用を抜け出す・サブサーチ・マクロを作れないようにする。エスケープではなく拒否にして、SPL の規則の読み違いに頼らない）
     - `minutes`: 整数に直して 1〜1440 に丸める、`limit`: 1〜100 に丸める（`search_logs` と同じ扱い。いまの丸め方を `evidence.py` で読んで合わせる）
-  - 送り方: `POST {SPLUNK_URL}/services/search/jobs/export`、本文は `urlencode({"search": spl, "output_mode": "json"})`、Basic 認証、`ssl.CERT_NONE` の context と `ProxyHandler({})`（`peers_check.py` と同じ。自己署名で、宛先は VPC の中）、`timeout=TIMEOUT`
+  - 送り方: `POST {SPLUNK_URL}/services/search/jobs/export`、本文は `urlencode({"search": spl, "output_mode": "json"})`、Basic 認証、`ssl.CERT_NONE` の context と `ProxyHandler({})`（`peers_check.py` と同じ。自己署名で、宛先は VPC の中）
+  - **時間の上限（S-2）。** `search_splunk` の全体（パスワードの取得・接続・読み出し）に締め切り `SPLUNK_DEADLINE = 25` 秒を持つ（Runtime → Gateway の `mcp_client.GATEWAY_TIMEOUT` 30 秒より短く）。ソケットの timeout は `min(TIMEOUT, 残り)`、応答は塊で読んで締め切りを見る。過ぎたら読むのをやめ、読めた行（改行で終わった行だけ）の結果を `"truncated": "25 秒で打ち切った（topic / device_id で絞るか minutes を短く）"` を付けて返す。1 件も無ければ同じ文の `error`
   - 失敗は `_send` と同じ形（`{"error": "HTTP 401 …"}` / `{"error": "届かない: …"}`）にそろえる。応答の行のうち JSON でないものは数えて捨て、全部読めなければ `{"error": "Splunk の応答が読めない", …}`
 - **宛先と資格情報**
   - 宛先は環境変数 `SPLUNK_URL`（例 `https://splunk.<prefix>.internal:8089`）。空なら `{"error": "Splunk の検索はまだ配備されていない（IaC/terraform/aws-managed/pipeline/analytics を STORES に splunk を入れて apply すると使える）", "events": []}`
@@ -88,6 +92,7 @@
 - `IaC/terraform/aws-managed/workflow/gateway.tf`（OSS 版はリンク）— `SPLUNK_URL`
 - `IaC/terraform/aws-managed/base/core/security_groups.tf`（OSS 版はリンク）— `lambda → splunk` 8089 の行と頭のコメント
 - `tests/test_agentcore.py`（`evidence` のテストがあるならそこ。無ければ `tests/test_workflow.py`）、`tests/test_workflow.py`、`tests/test_analytics.py`
+- `docs/architecture/architecture-managed.deck.md:148` / `:150` — 「Splunk の管理 API 8089 の外からの受信は開けていない」を、lambda → splunk の 8089（search_splunk）を足した形に直す
 - docs: `deploy.env.example:81` / `:86`（「search_logs / query_metrics は配備されていないを返す。search_splunk で Splunk を引く」）、`docs/deploy.md:123` 付近、`docs/architecture/resources/splunk.md` と `agentcore-bedrock.md`（ツールの一覧があれば）、`docs/architecture/resources/` の SG の表の文書（vpc-perimeter / core の SG の表に `lambda → splunk 8089` を足す）。`grep -rn "search_logs" docs README.md` で拾った「ツールの一覧」の箇所すべて
 - 全体設計 HTML（`~/Documents/repo/artifacts/projects/nwc-poc-architecture.html`）は PM がサイクル完了時に直す（エンジニアは触らない）
 
@@ -107,13 +112,13 @@
 4. Terraform（output 2 か所、workflow の locals と gateway.tf、SG の表）
 5. テスト（下の T-1〜T-9）
 6. docs
-7. `bash ops/check.sh` を通す。手元の compose の Splunk が動いていれば T-10 も
+7. `bash ops/check.sh` を通す。T-10 を手元の使い捨ての Splunk で確かめ、片付ける
 
 ## 検証方法
 
 `bash ops/check.sh` の最後の行が「すべて通過」で終了コード 0。追加のテストは次のとおり。
 
-- T-1（SPL の組み立て）: `splunk_args("dc1-a-leaf-01", "traps", "linkDown", 30, 5)` の SPL が `search index=* sourcetype="nwc:traps" earliest=-30m "linkDown"` で始まり、`| search device="dc1-a-leaf-01*"` と `| head 5` を含む。引数が全部空なら `sourcetype="nwc:*"`、`| search device=` も keyword の語も無い、`earliest=-60m`、`| head 20`
+- T-1（SPL の組み立て）: `splunk_args("dc1-a-leaf-01", "traps", "linkDown", 30, 5)` の SPL が `search index=* sourcetype="nwc:traps" earliest=-30m "dc1-a-leaf-01" "linkDown" | eval device=` で始まり、`| search device="dc1-a-leaf-01" OR device="dc1-a-leaf-01.*"` と `| head 5` を含み、`device="dc1-a-leaf-01*"` を含まない。引数が全部空なら `sourcetype="nwc:*"`、`| search device=` も keyword の語も無い、`earliest=-60m`、`| head 20`
 - T-2（拒否）: `device_id="a b"`、`"x\"|delete"`、65 文字、`topic="foo"`、`keyword` に `"` / `|` / `[` / `` ` `` / `\` / 改行 / 101 文字、のそれぞれで `error` を返し、`urlopen` は呼ばれない
 - T-3（丸め）: `minutes=0` → 1、`minutes=99999` → 1440、`limit=1000` → 100、`minutes="abc"` → いまの `search_logs` と同じ扱い
 - T-4（配備されていない）: `SPLUNK_URL` が空なら `error` に「Splunk の検索はまだ配備されていない」を含み、`urlopen` は呼ばれない
@@ -122,7 +127,12 @@
 - T-7（登録）: `tools.json` が 14 個で `TOOL_SPECS` の名前と同じ（`tests/test_workflow.py:465` を直す）。`search_splunk` の `inputSchema` の型は string / integer だけ（`:479` の検査が通る）。system prompt と `build_prompt` に `search_splunk` が出る（`tests/test_agentcore.py:350-352` が通る）
 - T-8（Terraform の表）: `tests/test_analytics.py` が `lambda → splunk 8089` を期待の行に持ち、`lambda` / `splunk` 以外からの 8089 を引き続き拒む。`runtime → splunk` が無いこと
 - T-9（Terraform の静的な確かめ）: `terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics validate` と `workflow`、`base/core`（`init -backend=false` 済みのものだけ。`ops/check.sh` がやっているならそれに任せる）。`SPLUNK_URL` が gateway.tf の tools Lambda の環境変数にあり、値が `local.splunk_url`
-- T-10（手元の Splunk。任意）: 手元の compose の Splunk（`127.0.0.1:8089`）が動いていれば、`SPLUNK_URL=https://127.0.0.1:8089` で `search_splunk(topic="metrics", minutes=10, limit=3)` を 1 回呼んで `count` と 1 件目の `device` / `sourcetype` を build.md に貼る。パスワードは環境変数で渡し、値は表示しない。動いていなければ「未実行」と書く（立てない）
+- T-10（手元の Splunk。必須）: 使い捨ての Splunk を立てて、本物の SPL と応答を確かめる
+  - 立て方: `docker/images/splunk/Dockerfile` を別タグ（例 `nwc-local-splunk:054`）でビルドし、別名のコンテナ（例 `nwc-054-splunk`）を `127.0.0.1` の空いたポートで立てる。パスワードと HEC の token は使い捨ての値をスクラッチパッドのファイルに作り、表示しない。手元の `.env` と compose の Splunk は使わない
+  - 入れるイベント: `app/spark/snmp_sinks.py` の `splunk_events` で組んだ行を HEC へ送る（本物と同じ形）。機器は `spine-1` と `spine-10`（sysName）、`dc1-a-leaf-01.lab.local`（FQDN の sysName）、`10.0.0.1` と `10.0.0.10`（agent_host だけ）、sysName / agent_host / source が無く `tags.host` だけのもの
+  - 確かめること（`SPLUNK_URL=https://127.0.0.1:<port>` で `search_splunk` を呼び、結果の `device` の集合を build.md に貼る）: `spine-1` で `spine-10` が出ない、`10.0.0.1` で `10.0.0.10` が出ない、`dc1-a-leaf-01` で FQDN の行が出る、`tags.host` だけの機器が出る、`topic` と `keyword` で絞れる、パスワード違いで `HTTP 401` の `error`。所要時間も貼る
+  - 片付け: `docker rm -f -v` でコンテナと volume を消し、自分がビルドしたタグと、このために pull した上流のイメージ（始める前に無かったものだけ）を `docker rmi` する。`docker ps -a` / `docker volume ls` / `docker images` で残っていないことを確かめて貼る。ほかのイメージ・コンテナには触らない
+- T-11（時間の上限）: 応答を少しずつ返して止まる偽物の opener で、締め切りを過ぎると読めた行だけを `truncated` 付きで返すこと、1 件も無ければ `error` になること、改行で終わっていない行を捨てることを確かめる（締め切りは引数か定数の差し替えで短くして、テストを待たせない）
 
 ## 未確定事項とリスク
 
@@ -130,7 +140,9 @@
 - **SPL の注入。** `keyword` の拒否の文字の選び方に穴があると、`| delete` などを出せる。T-2 で代表の文字を確かめる。拒否なので、穴は「通るべき語が通らない」側に倒れる
 - **TLS を検証しない。** Splunk の 8089 は自己署名の証明書（`peers_check.py` と同じ）。宛先は VPC の中の Cloud Map の名前で、SG で `lambda` からだけ開ける
 - **クラスターのとき `splunk` の名前が search head を指すか。** `splunk.tf:76-79` と `:133` を読んだ限り search head。AWS では未確認
-- **応答の時間。** `jobs/export` は検索が終わるまで流し続ける。`TIMEOUT = 20` 秒で切る。`minutes` が長く `topic` が空だと遅いので、description に「まず topic と device_id で絞る」と書く。Lambda の timeout（gateway.tf の tools Lambda）はそれより長いことを実装で確かめる
+- **応答の時間。** `jobs/export` は検索が終わるまで流し続ける。機器名は本文の語で先に絞り、全体は 25 秒の締め切りで打ち切る（途中までの結果を返す）。`keyword` も `device_id` も無く `minutes` が長いと `head` に届くまで読むので、description に「まず topic と device_id で絞る」と書く。tools Lambda の timeout は 60 秒（`gateway.tf:202`）で締め切りより長い
+- **lambda の SG は 3 つの Lambda が付ける。** tools の Lambda（`workflow/gateway.tf`）のほか、graph の status の Lambda（`pipeline/graph/sync.tf`）と KB の索引の Lambda（`agent/kb.tf`）も同じ SG なので、8089 に届く。ただし SSM の `/<prefix>/*` を読めるのは tools の Lambda のロールだけで（status と KB の索引のロールに `ssm:GetParameter` は無い。2026-10-12 に PM が IAM を読んだ）、2 つは admin のパスワードを持たない。専用の SG に分けるのは読み取り専用のユーザーと一緒に後で（QUEUE）
+- **`host` が `unknown` のイベント。** `tags` に sysName / agent_host / source / host のどれも無いイベントは、機器名 `unknown` で引いても本文の語の絞り込みで落ちる。機器名が無いイベントなので、機器で引く用途では困らない
 - **tools Lambda のサブネットから Splunk のサブネットへ届くか。** 同じ VPC で、SG の行を足せば届くはず。AWS では未確認（次の AWS の動作確認で確かめる）
 - **イベントの機器名。** gNMI と trap は Spark の device map で `tags.sysName` が付く前提（`savedsearches.conf:21`）。付かない機器は `tags.agent_host`（IP）になるので、機器名で引くと出ない。`device_id` に IP を渡せば引ける（検証の正規表現は IP も通す）
-- **AWS では確かめない。** 手元のテスト（と手元の Splunk があれば T-10）だけ
+- **AWS では確かめない。** 手元のテストと、手元の使い捨ての Splunk（T-10）だけ
