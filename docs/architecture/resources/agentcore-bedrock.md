@@ -122,7 +122,7 @@ OSS 版（`IaC/terraform/oss/`）でも AgentCore と Bedrock はそのまま使
 | Runtime をサブネット 1 つで作る | API は受け付ける（表の下）。手引きは 2 つ以上を勧める。1 つ（既定の `RUNTIME_AZ_NUM=1`）で作って動くことは 2026-10-05 に AWS で確かめた。2 つ以上は未確認 |
 | `query_history` が閉域の Deny に当たらないか | Athena のワークグループ `<prefix>-history` で `alert_events` を読めることは 2026-10-05 に AWS で確かめた。チャットから `query_history` を呼んだ結果は未確認 |
 | チャットの通し | 2026-10-05 に AWS で、チャットが「dc1-leaf-01 の接続先は」に正しく答えた（`AGENT=1 PIPELINE=1 WORKFLOW=1`、`RUNTIME_AZ_NUM` は既定の 1） |
-| ツールの回数の上限に当たったとき | `MAX_TOOL_ROUNDS`（既定 5）に当たると、何も返さずに終わる。既知（2026-10-05。[troubleshooting.md](../../troubleshooting.md) の「既知の不具合」） |
+| ツールの回数の上限に当たったとき | `MAX_TOOL_ROUNDS`（既定 5）に当たると、最後のツールの結果に「これ以上ツールを呼ばずに答える」指示を添えてモデルをもう 1 回だけ呼び、答えの頭に上限に当たったことを書く（`app/agentcore/app.py` の `ToolLimit`）。2026-10-05 の AWS で何も返さずに終わった件を 6ae4501 で直した。`tests/test_agentcore.py` で確認、AWS では未確認（[troubleshooting.md](../../troubleshooting.md) の「経緯」） |
 | 異常の一覧を返すツール | 無い（いまのアラートは Grafana と Splunk の画面で見る） |
 | `search_splunk` | 手元の使い捨ての Splunk（`nwc-local-splunk` の 10.4.4）で、Spark の `splunk_events` の形のイベントを引けることを確かめた（機器の完全一致と FQDN、sysName の付いた trap を IP で引く、flows を sampler の IP で引く、topic・keyword の絞り込み、パスワード違いの `HTTP 401`。cycle 054 の T-10）。AWS の tools の Lambda から Splunk の 8089 に届くこと、クラスターのとき `splunk` の名前が search head を指して検索できることは未確認。admin の資格情報を使う（読み取り専用のユーザーは QUEUE に積んだ） |
 | タグ | Runtime のロググループには Terraform で付かない（`ops/up.sh` の手順 9 で付ける）。KB のデータソースとガードレールの版には付かない |

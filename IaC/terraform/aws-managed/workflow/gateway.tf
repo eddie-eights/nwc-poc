@@ -80,6 +80,7 @@ data "aws_iam_policy_document" "tools" {
   }
 
   # Neptune Analytics のグラフの ID（IaC/terraform/aws-managed/pipeline/graph）を SSM から引く。
+  # search_splunk（cycle 054）はここで splunk/admin-password（SecureString。aws/ssm キー）も読む。
   # OSS 版はここで neo4j-password と opensearch-password（SecureString。AWS 管理の aws/ssm キーなので kms:Decrypt は要らない）も読む
   statement {
     sid       = "Parameters"

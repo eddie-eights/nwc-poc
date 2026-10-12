@@ -91,7 +91,7 @@ Athena は、ここのテーブルをエージェントと Web の承認タブ�
 | Firehose と Athena が IAM だけで S3 Tables に届くか、閉域の Deny に当たらないか | 2026-10-05 に AWS で確かめた。Firehose が `alert_events` に firing / resolved の行を書き、Athena（ワークグループ `<prefix>-history`）で読めた。Web の承認タブも `proposal_events` を Athena で読めた |
 | `proposal_events` の行 | 2026-10-05 に AWS で created → approved → applied → verified と obsolete を確かめた。rejected / expired / failed / ignored の行は未確認 |
 | `raw_telemetry` | 書くだけで、読む側がまだ無い。Spark のジョブ `sinks-s3iceberg` が RUNNING になるところまでは 2026-10-05 に確かめた（行の中身は見ていない。2026-10-08 も同じ）。OSS 版は表の下 |
-| Splunk が起動の直後に resolved をまとめて送る | 既知（2026-10-05）。`alert_events` の行が増える（[troubleshooting.md](../../troubleshooting.md) の「既知の不具合」） |
+| Splunk が起動の直後に resolved をまとめて送る | 2026-10-05 の AWS で `alert_events` の行が増えた件は e645ecc で直した（`nwc_gnmi` は前の値が無いとき、異常なら `firing` だけ出す）。`tests/test_alerts.py` と手元の Splunk で確認、AWS では未確認（[troubleshooting.md](../../troubleshooting.md) の「経緯」） |
 
 - `raw_telemetry` の OSS 版（Spark を ECS で動かす）: 2026-10-08 に Athena で 59,991 行を数えた（[verification/20261008-oss-aws.md](../../verification/20261008-oss-aws.md) の (e)）。
 

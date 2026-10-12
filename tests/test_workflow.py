@@ -2,7 +2,8 @@
 AWS にも Temporal にも触れない。temporalio と boto3 を差し替えて 3 つのモジュールを読み、純粋な関数（プロンプト・JSON の読み取り・
 許可リスト・アラート（SNS → SQS）の読み取りと起こす判定 = rules）と AWS 呼び出しの形（awsio）、ワークフローと starter の振る舞い（worker）、
 proposals.decide の条件、mcp_client の応答の読み取り、
-tools.json と Python の TOOL_SPECS の一致、Terraform と ops スクリプトのつながりを見る。実行は python3 tests/test_workflow.py（依存は無い）。"""
+tools.json と Python の TOOL_SPECS の一致、Terraform と ops スクリプトのつながりを見る。
+PyYAML が要る（app/agentcore/topology.py の load_static）。実行は bash ops/check.sh か uv run --group dev python tests/test_workflow.py。"""
 import ast, contextlib, io, json, os, re, sys, types
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
