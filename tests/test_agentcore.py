@@ -3,7 +3,7 @@
 Strands Agents（strands.Agent / BedrockModel）は本物のまま動かす。BedrockModel が作る bedrock-runtime のクライアントを
 FakeClient にすり替えるので、Strands が Converse に渡す中身（messages / toolConfig / guardrailConfig）をそのまま見られる。
 """
-import copy, importlib.util, os, re, sys, time, types
+import copy, importlib.util, json, os, re, sys, time, types
 
 import boto3
 from botocore.exceptions import BotoCoreError as _BotoCoreError, ClientError as _ClientError
@@ -101,7 +101,7 @@ rk = state["calls"][0][1]; ck = state["calls"][1][1]
 check("RERANK_MODEL_ARN が無ければリランクなしで HYBRID と件数だけ渡す", rk["retrievalConfiguration"]["vectorSearchConfiguration"] == {"numberOfResults": 3, "overrideSearchType": "HYBRID"} and rk["knowledgeBaseId"] == "KB12345678")
 check("Converse に guardrailConfig（Strands は trace も足す）", {k: ck["guardrailConfig"][k] for k in ("guardrailIdentifier", "guardrailVersion")} == {"guardrailIdentifier": "gr123", "guardrailVersion": "1"})
 check("Converse にモデルと system prompt と maxTokens", ck["modelId"] == "m" and ck["system"] == [{"text": app.SYSTEM_PROMPT}] and ck["inferenceConfig"] == {"maxTokens": 1024})
-check("Converse にトポロジの 9 ツール + 証拠の 3 ツール + 修復案の履歴（異常一覧 list_anomalies は 2026-10-02 にやめた）", [t["toolSpec"]["name"] for t in ck["toolConfig"]["tools"]] == ["list_devices", "neighbors", "blast_radius", "root_cause", "what_if", "topology_graph", "layers", "recent_changes", "centrality", "search_logs", "query_metrics", "query_history", "list_proposals"])
+check("Converse にトポロジの 9 ツール + 証拠の 4 ツール（search_splunk は cycle 054）+ 修復案の履歴（異常一覧 list_anomalies は 2026-10-02 にやめた）", [t["toolSpec"]["name"] for t in ck["toolConfig"]["tools"]] == ["list_devices", "neighbors", "blast_radius", "root_cause", "what_if", "topology_graph", "layers", "recent_changes", "centrality", "search_logs", "query_metrics", "query_history", "search_splunk", "list_proposals"])
 last = ck["messages"][-1]
 check("質問は guardContent、資料は text", last["content"][1] == {"guardContent": {"text": {"text": "%BGP-5-ADJCHANGE が出た"}}} and "<documents>" in last["content"][0]["text"] and 'source="interface-errors.md"' in last["content"][0]["text"])
 check("初回は messages 1 件", len(ck["messages"]) == 1)
@@ -350,6 +350,8 @@ check("system prompt はいまの異常 → status、履歴 → list_proposals�
 _tool_names = {s["toolSpec"]["name"] for s in app.TOOL_SPECS}
 _mentioned = set(re.findall(r"\b(?:list|query|search)_[a-z_]+\b|\b(?:recent_changes|centrality)\b|\b(?:neighbors|blast_radius|root_cause|what_if|topology_graph|layers)\b", app.SYSTEM_PROMPT))
 check(f"system prompt に出てくるツール名は全部 TOOL_SPECS にある（無い: {sorted(_mentioned - _tool_names)}）", _mentioned and not (_mentioned - _tool_names))
+check("system prompt は search_logs / query_metrics が未配備なら search_splunk を使えと言う（cycle 054）",
+      "search_logs / query_metrics が配備されていないと返したら、search_splunk で" in app.SYSTEM_PROMPT and "search_splunk" in _mentioned)
 
 # ---- ツールの往復
 app.history.clear()
@@ -551,6 +553,170 @@ check("app.run_tool は query_history を evidence に振る（仕様に無い�
 for k, v in _hist_saved.items():
     setattr(evidence, k, v)
 toolkit._clients.pop("athena", None)
+
+# ---- search_splunk（Splunk の検索 API を決めた SPL で引く。cycle 054）。送り先は偽の opener（urllib.request.build_opener を差し替える）
+import base64, ssl, urllib.error, urllib.parse, urllib.request  # noqa: E402,E401
+import io  # noqa: E402
+
+class FakeSplunk:
+    """build_opener の代わり。渡されたハンドラと、open に来た要求を覚える。body は応答の本文、error は open で投げる例外"""
+    def __init__(self, body="", error=None):
+        self.body, self.error, self.handlers, self.calls = body, error, [], []
+    def build_opener(self, *handlers):
+        self.handlers.append(handlers)
+        return self
+    def open(self, req, timeout=None):
+        self.calls.append({"url": req.full_url, "method": req.get_method(), "data": req.data, "auth": req.get_header("Authorization"), "timeout": timeout})
+        if self.error is not None:
+            raise self.error
+        return io.BytesIO(self.body.encode("utf-8"))
+
+class _NoSSM:
+    calls = []
+    def get_parameter(self, **kw):
+        self.calls.append(kw)
+        raise AssertionError("SSM は呼ばない")
+
+_spl_saved = (evidence.SPLUNK_URL, evidence.SPLUNK_USER, urllib.request.build_opener, os.environ.get("SPLUNK_PASSWORD"), toolkit._clients.get("ssm"))
+toolkit._clients["ssm"] = _no_ssm = _NoSSM()
+def splunk_run(fake, *a, **kw):
+    urllib.request.build_opener = fake.build_opener
+    try:
+        return evidence.search_splunk(*a, **kw)
+    finally:
+        urllib.request.build_opener = _spl_saved[2]
+
+# T-1 SPL の組み立て
+_spl, _err = evidence.splunk_args("dc1-a-leaf-01", "traps", "linkDown", 30, 5)
+check("T-1 SPL: 引数ありは sourcetype=nwc:<topic>・earliest・語の順で始まり、機器名の前方一致と head を含む",
+      _err == "" and _spl.startswith('search index=* sourcetype="nwc:traps" earliest=-30m "linkDown"')
+      and '| search device="dc1-a-leaf-01*"' in _spl and "| head 5" in _spl
+      and "| eval device=coalesce('tags.sysName', 'tags.agent_host', 'tags.source', host)" in _spl
+      and _spl.endswith("| fields _time device sourcetype source _raw"))
+_spl, _err = evidence.splunk_args()
+check("T-1 SPL: 引数が全部空なら sourcetype=nwc:*・60 分・20 件で、device の search も語も無い",
+      _err == "" and _spl == "search index=* sourcetype=\"nwc:*\" earliest=-60m | eval device=coalesce('tags.sysName', 'tags.agent_host', 'tags.source', host)"
+                            " | head 20 | fields _time device sourcetype source _raw")
+check("T-1 SPL: IP の device_id も通る（tags.agent_host で引く機器）", evidence.splunk_args("10.0.0.1")[1] == "" and 'device="10.0.0.1*"' in evidence.splunk_args("10.0.0.1")[0])
+
+# T-2 拒否（Splunk に送らない）
+evidence.SPLUNK_URL = "https://splunk.example:8089"
+os.environ["SPLUNK_PASSWORD"] = "pw"
+_bad = [{"device_id": "a b"}, {"device_id": "x\"|delete"}, {"device_id": "a" * 65}, {"device_id": "a*"}, {"topic": "foo"}, {"topic": "nwc:traps"},
+        {"keyword": 'a"b'}, {"keyword": "a | delete"}, {"keyword": "[search x]"}, {"keyword": "a]"}, {"keyword": "`m`"}, {"keyword": "a\\b"},
+        {"keyword": "a\nb"}, {"keyword": "a\tb"}, {"keyword": "a\x00b"}, {"keyword": "a b"}, {"keyword": "x" * 101}]
+for _a in _bad:
+    _f = FakeSplunk()
+    _r = splunk_run(_f, **_a)
+    check(f"T-2 拒否: {_a!r:.60} は error で、Splunk に送らない", _r.get("error") and _r["events"] == [] and _f.calls == [] and _f.handlers == [])
+check("T-2 通るもの: 64 文字の機器名・100 文字の語・日本語の語・空白を含む語",
+      all(evidence.splunk_args(**a)[1] == "" for a in ({"device_id": "a" * 64}, {"keyword": "x" * 100}, {"keyword": "リンク断"}, {"keyword": "link down"})))
+
+# T-3 丸め
+check("T-3 丸め: minutes=0 → 1、99999 → 1440、limit=1000 → 100、limit=0 → 1",
+      "earliest=-1m " in evidence.splunk_args(minutes=0)[0] and "earliest=-1440m " in evidence.splunk_args(minutes=99999)[0]
+      and "| head 100 " in evidence.splunk_args(limit=1000)[0] and "| head 1 " in evidence.splunk_args(limit=0)[0])
+_f = FakeSplunk()
+_os_saved = evidence.OPENSEARCH_ENDPOINT
+evidence.OPENSEARCH_ENDPOINT = "https://logs.example"  # search_logs も配備済みにして、丸めの前の int() まで進める
+urllib.request.build_opener = _f.build_opener
+_r_spl, _r_log = evidence.run_tool("search_splunk", {"minutes": "abc"}), evidence.run_tool("search_logs", {"minutes": "abc"})
+urllib.request.build_opener = _spl_saved[2]
+evidence.OPENSEARCH_ENDPOINT = _os_saved
+check("T-3 minutes=\"abc\" は search_logs と同じく run_tool が error にする（Splunk に送らない）",
+      "invalid literal" in _r_spl.get("error", "") and _r_spl == _r_log and _f.calls == [])
+
+# T-4 配備されていない
+evidence.SPLUNK_URL = ""
+_f = FakeSplunk()
+_r = splunk_run(_f, topic="traps")
+check("T-4 SPLUNK_URL が空なら「Splunk の検索はまだ配備されていない」で、送らない",
+      "Splunk の検索はまだ配備されていない" in _r["error"] and "STORES に splunk" in _r["error"] and _r["events"] == [] and _f.calls == [])
+evidence.SPLUNK_URL = "https://splunk.example:8089"
+os.environ.pop("SPLUNK_PASSWORD")
+evidence.SPLUNK_PASSWORD.cached, evidence.SPLUNK_PASSWORD.checked = "", 0.0
+_f = FakeSplunk()
+_r = splunk_run(_f)
+check("パスワードが無ければ（PARAM_PREFIX も無い）送らずに error", "Splunk のパスワードが無い" in _r["error"] and _f.calls == [] and _no_ssm.calls == [])
+os.environ["SPLUNK_PASSWORD"] = "pw"
+
+# T-5 送り方
+_lines = [{"preview": False, "offset": i, "result": {"_time": f"2026-10-12T10:0{i}:00.000+09:00", "device": "dc1-a-leaf-01", "sourcetype": "nwc:traps",
+                                                       "source": "telegraf:snmp_trap", "_raw": ("x" * 1500 if i == 2 else f"{{\"n\": {i}}}")}} for i in range(3)]
+_f = FakeSplunk("\n".join(json.dumps(l) for l in _lines) + "\n")
+_r = splunk_run(_f, "dc1-a-leaf-01", "traps", "linkDown", 30, 5)
+_c = _f.calls[0]
+_form = urllib.parse.parse_qs(_c["data"].decode("utf-8"))
+check("T-5 送り方: <SPLUNK_URL>/services/search/jobs/export に POST、本文は output_mode=json と search（URL エンコード）、timeout=20",
+      len(_f.calls) == 1 and _c["url"] == "https://splunk.example:8089/services/search/jobs/export" and _c["method"] == "POST"
+      and _form["output_mode"] == ["json"] and _form["search"] == [evidence.splunk_args("dc1-a-leaf-01", "traps", "linkDown", 30, 5)[0]]
+      and "search=search+index%3D%2A" in _c["data"].decode("utf-8") and _c["timeout"] == 20 == evidence.TIMEOUT)
+check("T-5 送り方: Authorization は Basic admin:<SPLUNK_PASSWORD> で、SSM は呼ばない",
+      _c["auth"] == "Basic " + base64.b64encode(b"admin:pw").decode() and _no_ssm.calls == [])
+_h = _f.handlers[0]
+_https = [x for x in _h if isinstance(x, urllib.request.HTTPSHandler)]
+_proxy = [x for x in _h if isinstance(x, urllib.request.ProxyHandler)]
+check("T-5 送り方: ProxyHandler({})（プロキシの環境変数を見ない）と、証明書を検証しない HTTPSHandler（peers_check.py と同じ）",
+      len(_proxy) == 1 and _proxy[0].proxies == {} and len(_https) == 1
+      and _https[0]._context.verify_mode == ssl.CERT_NONE and _https[0]._context.check_hostname is False)
+
+# T-6 応答の読み方
+check("T-6 3 行の JSON → count 3、各フィールドを写し、raw は 1000 文字に切る",
+      _r["count"] == 3 and _r["minutes"] == 30 and _r["topic"] == "traps" and "skipped" not in _r
+      and _r["events"][0] == {"time": "2026-10-12T10:00:00.000+09:00", "device": "dc1-a-leaf-01", "sourcetype": "nwc:traps", "source": "telegraf:snmp_trap", "raw": '{"n": 0}'}
+      and len(_r["events"][2]["raw"]) == 1000)
+_r = splunk_run(FakeSplunk(json.dumps({"messages": [{"type": "ERROR", "text": "Unauthorized"}]})))
+check("T-6 messages の ERROR → error が「Splunk: ERROR Unauthorized」", _r == {"error": "Splunk: ERROR Unauthorized", "events": []})
+_r = splunk_run(FakeSplunk(json.dumps(_lines[0]) + "\n" + json.dumps({"messages": [{"type": "INFO", "text": "x"}, {"type": "FATAL", "text": "Unknown search command 'x'."}]})))
+check("T-6 FATAL も error（INFO は拾わない。結果の行があっても error を優先）", _r == {"error": "Splunk: FATAL Unknown search command 'x'.", "events": []})
+_r = splunk_run(FakeSplunk(json.dumps(_lines[0]) + "\nnot json\n\n"))
+check("T-6 JSON でない行は数えて捨てる", _r["count"] == 1 and _r["skipped"] == 1)
+_r = splunk_run(FakeSplunk("<html>bad</html>\n[1]\n"))
+check("T-6 全部読めなければ「Splunk の応答が読めない」", _r == {"error": "Splunk の応答が読めない", "events": []})
+_r = splunk_run(FakeSplunk(""))
+check("T-6 結果 0 件（空の応答）は count 0 で error にしない", _r["count"] == 0 and "error" not in _r and _r["topic"] == "*")
+_e401 = urllib.error.HTTPError("https://splunk.example:8089/services/search/jobs/export", 401, "Unauthorized", {},
+                               io.BytesIO(b'{"messages":[{"type":"ERROR","text":"Unauthorized"}]}'))
+_r = splunk_run(FakeSplunk(error=_e401))
+check("T-6 HTTP 401 は _send と同じ形（HTTP 401: <本文>）", _r == {"error": 'HTTP 401: {"messages":[{"type":"ERROR","text":"Unauthorized"}]}', "events": []})
+_r = splunk_run(FakeSplunk(error=urllib.error.URLError("timed out")))
+check("T-6 届かないは _send と同じ形（届かない: …）", _r["error"].startswith("届かない: ") and _r["events"] == [])
+_r = splunk_run(FakeSplunk(error=TimeoutError("read timed out")))
+check("T-6 読み取りの時間切れも「届かない」", _r["error"].startswith("届かない: ") and _r["events"] == [])
+
+_f = FakeSplunk(json.dumps(_lines[0]))
+urllib.request.build_opener = _f.build_opener
+_r = app.run_tool("search_splunk", {"device_id": "dc1-a-leaf-01", "topic": "metrics", "extra": 1})
+urllib.request.build_opener = _spl_saved[2]
+check("app.run_tool は search_splunk を evidence に振る（仕様に無い引数は落とす）", _r["count"] == 1 and "nwc:metrics" in urllib.parse.parse_qs(_f.calls[0]["data"].decode())["search"][0])
+
+# AWS では Gateway が search_splunk を持ち、Runtime のコンテナには SPLUNK_URL が無い（8089 は lambda → splunk だけ）。
+# Gateway のエラー（401・ERROR・届かない・時間切れ）をコンテナの「配備されていない」で上書きしない。ほかのツールはいまどおりコンテナに戻す
+_mc = app.mcp_client
+_mc_saved = (_mc.call, _mc._cache["names"])
+_mc._cache["names"] = {**_mc_saved[1], "search_splunk": "tools___search_splunk", "search_logs": "tools___search_logs"}
+_mc.call = lambda name, args: {"error": "Splunk: ERROR Unauthorized", "events": []} if name == "search_splunk" else {"error": "gateway call failed: timed out"}
+evidence.SPLUNK_URL = ""
+_f = FakeSplunk()
+urllib.request.build_opener = _f.build_opener
+try:
+    _r_gw, _r_logs = app.run_tool("search_splunk", {"topic": "traps"}), app.run_tool("search_logs", {})
+finally:
+    urllib.request.build_opener = _spl_saved[2]
+    _mc.call, _mc._cache["names"] = _mc_saved
+    evidence.SPLUNK_URL = "https://splunk.example:8089"
+check("app.run_tool: Gateway の search_splunk のエラーはそのまま返す（コンテナの「配備されていない」で上書きしない）。search_logs はいまどおりコンテナに戻す",
+      _r_gw == {"error": "Splunk: ERROR Unauthorized", "events": []} and _f.calls == [] and "ログの検索はまだ配備されていない" in _r_logs.get("error", ""))
+
+evidence.SPLUNK_URL, evidence.SPLUNK_USER = _spl_saved[0], _spl_saved[1]
+if _spl_saved[3] is None:
+    os.environ.pop("SPLUNK_PASSWORD", None)
+else:
+    os.environ["SPLUNK_PASSWORD"] = _spl_saved[3]
+if _spl_saved[4] is None:
+    toolkit._clients.pop("ssm", None)
+else:
+    toolkit._clients["ssm"] = _spl_saved[4]
 
 # ---- 修復案（S3 Tables の proposal_events を Athena で読み、承認・却下は決定のキューに送る。2026-10-05）
 import json, proposals  # noqa: E402,E401 - app.py が import した同じモジュール

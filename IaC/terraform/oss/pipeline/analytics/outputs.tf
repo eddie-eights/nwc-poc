@@ -32,6 +32,11 @@ output "splunk_hec_url" {
   value       = local.sink_splunk ? local.splunk_hec_url : ""
 }
 
+output "splunk_search_url" {
+  description = "Splunk search REST API the tools Lambda search_splunk posts to (empty unless the Splunk runs on ECS). https://splunk.<namespace>:8089 - the single Splunk, or the search head of the cluster (splunk.tf)"
+  value       = local.splunk_on_ecs ? "https://splunk.${local.service_namespace}:8089" : ""
+}
+
 output "splunk_token_parameter" {
   description = "SSM SecureString parameter holding the HEC token (empty unless sinks has splunk). The Spark task and the Splunk task both get it as SPLUNK_HEC_TOKEN through the ECS secrets. ops/up.sh creates it. Terraform never reads the value"
   value       = local.sink_splunk ? local.splunk_token_parameter : ""

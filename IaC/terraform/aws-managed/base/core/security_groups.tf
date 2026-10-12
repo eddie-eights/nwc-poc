@@ -9,7 +9,8 @@
 # （cycle 012 で MDT の送り元の var.mdt_source_cidrs を外した）。
 # 開けていないもの: Temporal の gRPC 7233〜7239 と membership 6933〜6939 をタスクの外へ（開けるのは workflow の SG の自分宛てだけ。ui とワーカーは同じタスクの
 # 127.0.0.1。IaC/terraform/aws-managed/workflow の ecs.tf。cycle 036）、Splunk の管理 API 8089
-# （開けるのはクラスターの splunk どうしだけ。外から使わない）。
+# （開けるのはクラスターの splunk どうしと、tools Lambda の search_splunk（cycle 054）のための lambda → splunk だけ。lambda の SG は
+# pipeline/graph の status の Lambda と agent の KB の索引の Lambda も付けるので、その 2 つからも届く。runtime や web からは開けない）。
 # 2026-09-26〜09-29 は全部で internal 1 つ（VPC の中は何でも受け、送信は自由）だった。その前（7c42b0f）はルートごとに SG とルールを持っていた。
 # SG の name / description / vpc_id は変えると作り直しになる（付いている ENI があると消えない）ので、変えるときは down してから（workload も endpoints も。
 # 作り直し・削除になる SG があると ops/up.sh は check_sg_plan（terraform plan）で止める。cycle 050）。
@@ -103,6 +104,9 @@ locals {
       { from = "splunk", to = "splunk", protocol = "tcp", port = 8089, why = "Splunk management and search - cluster manager, indexers and search head" },
       { from = "splunk", to = "splunk", protocol = "tcp", port = 9887, why = "Splunk replication between the indexers" },
       { from = "splunk", to = "splunk", protocol = "tcp", port = 9997, why = "Splunk forwarding - search head and manager send their internal logs to the indexers" },
+      # エージェントのツール search_splunk（app/agentcore/evidence.py。cycle 054）が検索 API（search/jobs/export）を引く。ツールは Gateway → tools Lambda で
+      # 動くので lambda からだけ（AgentCore Runtime の runtime からは開けない）。宛先の splunk は 1 台ならその 1 台、クラスターなら search head
+      { from = "lambda", to = "splunk", protocol = "tcp", port = 8089, why = "Splunk search API - tools Lambda search_splunk" },
 
       # NLB → タスク（IaC/terraform/aws-managed/pipeline/stream の telegraf.tf の collector_listeners）。NLB が送り元の IP を残しても、タスクの受信は NLB の SG の参照で通る。
       # NLB の送信ルールは転送とヘルスチェックの両方に効く。cycle 012 で syslog を syslog-ng へ移し、NetFlow / sFlow を足し、MDT の 57000/tcp を外した

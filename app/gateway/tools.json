@@ -200,6 +200,35 @@
     }
   },
   {
+    "name": "search_splunk",
+    "description": "Splunk に入っている全トピック（metrics / gnmi / traps / logs / flows）を機器名・トピック・語で引く。search_logs / query_metrics が配備されていないときに使う。まず topic と device_id で絞る（minutes が長く topic が空だと遅い）。SPL は書けない（決めた形の検索だけ）。STORES に splunk が無い構成では案内だけ返す。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "device_id": {
+          "type": "string",
+          "description": "機器名か IP（例 dc1-a-leaf-01）。前方一致。空なら全機器"
+        },
+        "topic": {
+          "type": "string",
+          "description": "metrics / gnmi / traps / logs / flows のどれか。空なら全部"
+        },
+        "keyword": {
+          "type": "string",
+          "description": "本文に含む語（例 linkDown）。100 文字まで、\" \\ | [ ] ` は使えない。空なら絞らない"
+        },
+        "minutes": {
+          "type": "integer",
+          "description": "何分前まで見るか（既定 60、最大 1440）"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "件数の上限（既定 20、最大 100）"
+        }
+      }
+    }
+  },
+  {
     "name": "list_proposals",
     "description": "AI が出した修復案と、その後の履歴（状態、原因、打ったコマンド、決めた人、実行結果、確認結果）。「修復履歴は」「何を直した」「承認待ちは」と聞かれたらこれを呼ぶ。状態は pending（承認待ち）→ approved / rejected（人が決めた）→ applied（実行した）→ verified（直ったのを確かめた）/ failed、expired（時間切れ）、obsolete（承認のあいだに異常が閉じたので打たなかった）。承認や却下はこのツールではできない（人が画面の承認タブで決める）。",
     "inputSchema": {

@@ -120,6 +120,8 @@ prompt = rules.build_prompt(anomaly)
 check("プロンプトに機器・種別・対象と、発生の時刻（JST）が入る",
       all(s in prompt for s in ("hq-ce-01", "link_down", "eth1", "first_seen_jst=2023-11-15 07:13:20")) and rules.jst(0) == "" and rules.jst(None) == "")
 check("プロンプトはまず root_cause で根本原因かどうかを確かめさせる", "まず root_cause" in prompt)
+check("プロンプトは search_logs / query_metrics が未配備なら search_splunk で引かせる（cycle 054）",
+      "search_logs / query_metrics が配備されていないと返したら、search_splunk" in prompt)
 # ---- 事前チェック（2026-10-04）
 import asyncio, inspect  # noqa: E402
 check("impact は app/agentcore/topology.py と app/temporal/rules.py で同じ（ワーカーのイメージには app/agentcore/ が入らないので 2 か所に置く）",
@@ -462,10 +464,11 @@ check("Gateway に無いツールの call はエラーの辞書", "error" in mcp
 # ---- tools.json と Python の TOOL_SPECS
 tools = json.loads(read("app", "gateway", "tools.json"))
 py_specs = {s["toolSpec"]["name"]: s["toolSpec"] for s in topology.TOOL_SPECS + evidence.TOOL_SPECS + proposals.TOOL_SPECS}
-check("tools.json の 13 個は topology / evidence / proposals の TOOL_SPECS と同じ名前（list_anomalies は 2026-10-02 にやめた）",
-      {t["name"] for t in tools} == set(py_specs) and len(tools) == 13 and "list_anomalies" not in py_specs
+check("tools.json の 14 個は topology / evidence / proposals の TOOL_SPECS と同じ名前（list_anomalies は 2026-10-02 にやめた。search_splunk は cycle 054）",
+      {t["name"] for t in tools} == set(py_specs) and len(tools) == 14 and "list_anomalies" not in py_specs
       and not os.path.exists(os.path.join(ROOT, "app", "agentcore", "anomalies.py")))
-check("evidence のツールは search_logs / query_metrics / query_history", {s["toolSpec"]["name"] for s in evidence.TOOL_SPECS} == {"search_logs", "query_metrics", "query_history"})
+check("evidence のツールは search_logs / query_metrics / query_history / search_splunk",
+      {s["toolSpec"]["name"] for s in evidence.TOOL_SPECS} == {"search_logs", "query_metrics", "query_history", "search_splunk"} and set(evidence.TOOLS) == {s["toolSpec"]["name"] for s in evidence.TOOL_SPECS})
 # query_history が読む列と Firehose が書く列（status Lambda の rules.alert_event）がずれると、SELECT が COLUMN_NOT_FOUND で落ちる
 check("evidence.HISTORY_COLUMNS は rules.ALERT_EVENT_COLUMNS の列名と同じ順",
       evidence.HISTORY_COLUMNS == tuple(n for n, _ in rules.ALERT_EVENT_COLUMNS))
@@ -1040,6 +1043,18 @@ check("tools Lambda は VPC の中（Neptune / OpenSearch / Prometheus に届く
 # 環境変数は merge の 1 つ目の map（2 つ目からは OSS 版だけ足す切り替え。tests/test_oss.py の 9）
 _tools_env = re.search(r'resource "aws_lambda_function" "tools"[\s\S]*?variables = merge\(\n      \{([\s\S]*?)\n      \},', tf)
 _tools_env_keys = set(re.findall(r"^\s*([A-Z_]+)\s*=", _tools_env.group(1), re.M)) if _tools_env else set()
+# search_splunk（cycle 054）: analytics の splunk_search_url（マネージド版と OSS 版の両方）を workflow の locals が try で読み、tools Lambda の SPLUNK_URL に渡す
+_splunk_out_value = 'value       = local.splunk_on_ecs ? "https://splunk.${local.service_namespace}:8089" : ""'
+_oss_analytics_out = read("IaC", "terraform", "oss", "pipeline", "analytics", "outputs.tf")
+_tools_timeout = re.search(r'resource "aws_lambda_function" "tools"[\s\S]*?\n  timeout\s*=\s*(\d+)', tf)
+check("tools Lambda に SPLUNK_URL = local.splunk_url を渡し、splunk_url は analytics の splunk_search_url を try で読む。"
+      "splunk_search_url はマネージド版と OSS 版の analytics に同じ値（Splunk を ECS で動かすときだけ https://splunk.<namespace>:8089）で出る。"
+      "Lambda の timeout は evidence.TIMEOUT より長い（cycle 054）",
+      "SPLUNK_URL" in _tools_env_keys and re.search(r"^\s*SPLUNK_URL\s*=\s*local\.splunk_url\s*$", _tools_env.group(1), re.M) is not None
+      and re.search(r'^\s*splunk_url\s*=\s*try\(data\.terraform_remote_state\.analytics\.outputs\.splunk_search_url, ""\)\s*$', tf, re.M) is not None
+      and all(_splunk_out_value in t.split('output "splunk_search_url"', 1)[-1].split("\n}", 1)[0] and t.count('output "splunk_search_url"') == 1
+              for t in (analytics_out, _oss_analytics_out))
+      and _tools_timeout is not None and int(_tools_timeout.group(1)) > evidence.TIMEOUT)
 check("tools Lambda に ATHENA_WORKGROUP / ATHENA_CATALOG / HISTORY_NAMESPACE / ALERT_EVENTS_TABLE / PROPOSAL_EVENTS_TABLE を渡す（値は analytics の出力）",
       {"ATHENA_WORKGROUP", "ATHENA_CATALOG", "HISTORY_NAMESPACE", "ALERT_EVENTS_TABLE", "PROPOSAL_EVENTS_TABLE"} <= _tools_env_keys
       and all(f'output "{o}"' in analytics_out and re.search(rf'try\(data\.terraform_remote_state\.analytics\.outputs\.{o}, ""\)', tf)

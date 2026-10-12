@@ -126,6 +126,8 @@ EXPECTED_FLOWS = {(c, t, "tcp", 443, 443, "") for c in ("web", "lab", "telegraf_
     ("spark", "spark", "tcp", 0, 65535, ""), ("spark", "splunk", "tcp", 8088, 8088, ""),
     # Splunk のクラスター（「Splunk をクラスターにする（004）」）: manager・indexer・search head の間だけ
     ("splunk", "splunk", "tcp", 8089, 8089, ""), ("splunk", "splunk", "tcp", 9887, 9887, ""), ("splunk", "splunk", "tcp", 9997, 9997, ""),
+    # tools Lambda の search_splunk が Splunk の検索 API（8089）を引く（cycle 054）。runtime や web からは開けない
+    ("lambda", "splunk", "tcp", 8089, 8089, ""),
     # NLB → タスク（cycle 012 で syslog を syslog-ng へ移し、NetFlow / sFlow の GoFlow2 を足し、MDT の 57000/tcp を外した）。tcp はヘルスチェック
     ("telegraf_dialout_nlb", "telegraf_dialout", "udp", 1162, 1162, ""), ("telegraf_dialout_nlb", "telegraf_dialout", "tcp", 8080, 8080, ""),
     ("telegraf_dialout_nlb", "syslog_ng", "udp", 5140, 5140, ""), ("telegraf_dialout_nlb", "syslog_ng", "tcp", 5140, 5140, ""),
@@ -157,8 +159,9 @@ check("MDT の受け口（送り元の変数 mdt_source_cidrs と NLB の 57000/
       and [l for l in _no_comment(_up_src + _oss_up_src).splitlines() if "MDT_SOURCE_CIDRS" in l] == [l for l in (_up_src + _oss_up_src).splitlines() if l.startswith(_MDT_NOTE)])
 check("閉域の VPC エンドポイントに secretsmanager を書ける（syslog-ng と GoFlow2 の SCRAM の secret を ECS が取りにいく。cycle 012）",
       re.search(r'"kinesis-firehose", "athena", "secretsmanager",\n\s*\], s\)\]\)', _core_vars) is not None and "athena and secretsmanager." in _core_vars)
-check("Temporal の gRPC 7233（workflow。cycle 036 から workflow どうしは除く）と Splunk の管理 API 8089（splunk。クラスターの splunk どうしは除く）は開けず、CIDR のルールは lab の管理ネットワーク・表の cidr（cycle 012 で MDT の送り元を外し、いまは行が無い）・endpoints の送信なしだけ（EMR Serverless は 0.0.0.0/0 の inbound を拒否する）",
-      not any(t == "workflow" and f != "workflow" and p <= 7233 <= q or t == "splunk" and f != "splunk" and p <= 8089 <= q for f, t, _, p, q, _ in _flows)
+check("Temporal の gRPC 7233（workflow。cycle 036 から workflow どうしは除く）と Splunk の管理 API 8089（splunk。クラスターの splunk どうしと、cycle 054 の tools Lambda の search_splunk は除く。runtime・web からは開けない）は開けず、CIDR のルールは lab の管理ネットワーク・表の cidr（cycle 012 で MDT の送り元を外し、いまは行が無い）・endpoints の送信なしだけ（EMR Serverless は 0.0.0.0/0 の inbound を拒否する）",
+      not any(t == "workflow" and f != "workflow" and p <= 7233 <= q or t == "splunk" and f not in ("splunk", "lambda") and p <= 8089 <= q for f, t, _, p, q, _ in _flows)
+      and [(f, p, q) for f, t, _, p, q, _ in _flows if t == "splunk" and f == "lambda"] == [("lambda", 8089, 8089)]
       and sorted(re.findall(r'cidr_ipv4\s*=\s*(.+)', _sg_tf)) == sorted(['each.value.to == "lab_mgmt" ? local.lab_mgmt_cidr : null', 'each.value.from == "lab_mgmt" ? local.lab_mgmt_cidr : each.value.cidr', '"127.0.0.1/32"'])
       and "var.vpc_cidr" not in _sg_tf and "cidr_ipv6" not in _sg_tf)
 check("ルールは表から for_each で作る。送信は from の SG、受信は to の SG で、相手は SG の参照・S3 のプレフィックスリスト・lab の管理ネットワークのどれか 1 つ",

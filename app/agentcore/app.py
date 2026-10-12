@@ -77,11 +77,12 @@ def tool_specs() -> list:
 
 
 def run_tool(name: str, args: dict) -> dict:
-    """Gateway のツールならそちらへ。失敗したら同名のコンテナ内の関数（MODULES のどれか）に戻す"""
+    """Gateway のツールならそちらへ。失敗したら同名のコンテナ内の関数（MODULES のどれか）に戻す。
+    ただしモジュールの GATEWAY_ONLY にあるツール（コンテナからは宛先に届かない）は戻さず、Gateway のエラーをそのまま返す"""
     local = next((m for m in MODULES if name in m.TOOLS), None)
     if mcp_client.has(name):
         out = mcp_client.call(name, args)
-        if "error" not in out or local is None:
+        if "error" not in out or local is None or name in getattr(local, "GATEWAY_ONLY", ()):
             return out
     if local is not None:
         return local.run_tool(name, args)
@@ -107,7 +108,9 @@ SYSTEM_PROMPT = os.environ.get(
     "異常の直前に構成を変えていないか（Nautobot の変更履歴）は recent_changes で確かめられます。list_devices の maintenance が true の機器は保守中なので、落ちていても作業によるものかもしれないと伝えてください。"
     # 中心性と連結成分は Neptune Analytics のアルゴリズム（2026-10-04）
     "どの機器が要か（単一障害点になりそうか）、ネットワークが分断していないかを聞かれたら、centrality で中心性とつながりの島を確かめてください。"
-    "原因を聞かれたら、まず root_cause で根本原因（下の層に DOWN が無い要素）を絞り、その機器のログとメトリクスをツールで見て、見えた事実だけを根拠に答えてください。",
+    "原因を聞かれたら、まず root_cause で根本原因（下の層に DOWN が無い要素）を絞り、その機器のログとメトリクスをツールで見て、見えた事実だけを根拠に答えてください。"
+    # STORES に grafana が無い構成（Splunk だけ）では OpenSearch / Prometheus が無い。Splunk には全トピックがある（cycle 054）
+    "search_logs / query_metrics が配備されていないと返したら、search_splunk で Splunk のログ・trap・メトリクスを引いてください。",
 )
 
 logging.basicConfig(level=logging.INFO)

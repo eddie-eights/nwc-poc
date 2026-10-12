@@ -5,10 +5,15 @@ Neptune は graph.py / topology.py（neighbors / blast_radius）、ここは残�
   search_logs    OpenSearch Serverless の logs コレクション（IaC/terraform/aws-managed/pipeline/analytics の sinks=opensearch。Spark が traps と logs（機器の syslog）を書く）を機器名で検索
   query_metrics  Amazon Managed Service for Prometheus（sinks=prometheus。Spark が metrics を remote write）に PromQL を投げる
   query_history  S3 Tables（Iceberg）の alert_events（Grafana / Splunk のアラートの通知。graph の status Lambda → Firehose が追記）を Athena で読む（2026-10-04）
+  search_splunk  Splunk（sinks=splunk。Spark が全トピックを HEC へ書く）を決めた SPL で検索する（cycle 054）。STORES に grafana が無く
+                 search_logs / query_metrics が「配備されていない」構成でも、ログ・trap・メトリクスを引ける。エージェントは SPL を書けない
 
 エンドポイントは環境変数 OPENSEARCH_ENDPOINT（https://...aoss.amazonaws.com）/ OPENSEARCH_INDEX（既定 snmp-logs）/
 PROMETHEUS_QUERY_URL（https://aps-workspaces.<region>.amazonaws.com/workspaces/<id>/api/v1/query）/
 ATHENA_WORKGROUP・ATHENA_CATALOG・HISTORY_NAMESPACE・ALERT_EVENTS_TABLE（IaC/terraform/aws-managed/pipeline/analytics の history.tf の出力）。
+SPLUNK_URL（https://splunk.<prefix>.internal:8089。analytics の splunk_search_url。1 台ならその 1 台、クラスターなら search head）/ SPLUNK_USER（既定 admin）。
+Splunk のパスワードは環境変数 SPLUNK_PASSWORD か SSM の <PARAM_PREFIX>/splunk/admin-password（SecureString。ops/up.sh が作る）。
+Splunk の 8089 は自己署名の証明書なので検証しない（app/splunk/peers_check.py と同じ。宛先は VPC の中で、SG は lambda からだけ開ける）。
 どれも無ければ「まだ配備されていない」を返して、PIPELINE の analytics を作っていない構成でも落ちない。
 署名は botocore の SigV4（サービス名 aoss / aps）。requests は使わず urllib で送る（tools Lambda は素の python3.13、依存を増やさない）。
 Athena は boto3 の athena クライアント（python3.13 の Lambda に入っている）。実行の手順（開始 → 待つ → 止める → 結果）は toolkit.athena_rows
@@ -24,6 +29,8 @@ OSS 版（cycle 005。IaC/terraform/oss）は送り先の認証だけを環境�
 import base64
 import json
 import os
+import re
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -47,6 +54,9 @@ REGION = os.environ.get("AWS_REGION") or os.environ.get("BEDROCK_REGION") or "ap
 AUTHS = {"aoss": ("OPENSEARCH_AUTH", ("sigv4", "basic")), "aps": ("PROMETHEUS_AUTH", ("sigv4", "none"))}
 OPENSEARCH_USER = os.environ.get("OPENSEARCH_USER") or "admin"
 OPENSEARCH_PASSWORD = toolkit.Param("OPENSEARCH_PASSWORD", "opensearch-password", decrypt=True)
+SPLUNK_URL = os.environ.get("SPLUNK_URL", "").rstrip("/")
+SPLUNK_USER = os.environ.get("SPLUNK_USER") or "admin"
+SPLUNK_PASSWORD = toolkit.Param("SPLUNK_PASSWORD", "splunk/admin-password", decrypt=True)
 TIMEOUT = 20
 POLL = 0.5  # Athena のクエリの状態を見に行く間隔（秒）
 
@@ -134,6 +144,105 @@ def query_metrics(query: str, minutes: int = 15) -> dict:
     return {"count": len(series), "minutes": minutes, "series": series}
 
 
+# ---------------------------------------------------------------- Splunk の検索（cycle 054）
+SPLUNK_NOT_DEPLOYED = "Splunk の検索はまだ配備されていない（IaC/terraform/aws-managed/pipeline/analytics を STORES に splunk を入れて apply すると使える）"
+SPLUNK_TOPICS = ("metrics", "gnmi", "traps", "logs", "flows")  # sourcetype は nwc:<topic>（Spark の splunk_events）
+SPLUNK_DEVICE_RE = re.compile(r"[A-Za-z0-9._:-]{1,64}")
+SPLUNK_KEYWORD_MAX = 100
+# SPL の引用を抜け出す・サブサーチ・マクロ・パイプを作れる文字。エスケープせずに拒む（SPL の規則の読み違いに頼らない）。制御文字は isprintable で拒む
+SPLUNK_KEYWORD_BAD = frozenset('"\\|[]`')
+SPLUNK_RAW_MAX = 1000
+# Runtime のコンテナには SPLUNK_URL が無く、8089 も lambda → splunk しか開けない。app.run_tool は Gateway のエラーを
+# コンテナの「配備されていない」で上書きしない（cycle 054 のセルフレビュー）
+GATEWAY_ONLY = frozenset({"search_splunk"})
+
+
+def splunk_args(device_id: str = "", topic: str = "", keyword: str = "", minutes: int = 60, limit: int = 20) -> tuple[str, str]:
+    """引数を検証して、決めた形の SPL を組み立てる。(spl, "") か、通らなければ ("", エラーの文)。
+    minutes / limit は search_logs と同じく int() に直して丸める（整数にできなければ ValueError。run_tool が error にする）"""
+    device_id, topic, keyword = str(device_id or "").strip(), str(topic or "").strip(), str(keyword or "").strip()
+    minutes = max(1, min(int(minutes), 24 * 60))
+    limit = max(1, min(int(limit), 100))
+    if device_id and not SPLUNK_DEVICE_RE.fullmatch(device_id):
+        return "", "device_id に使えない文字がある（英数字と . _ : - だけ、64 文字まで）"
+    if topic and topic not in SPLUNK_TOPICS:
+        return "", f"topic は {' / '.join(SPLUNK_TOPICS)} のどれか（空なら全部）: {topic!r}"
+    if len(keyword) > SPLUNK_KEYWORD_MAX:
+        return "", f"keyword は {SPLUNK_KEYWORD_MAX} 文字まで"
+    if any(c in SPLUNK_KEYWORD_BAD or not c.isprintable() for c in keyword):
+        return "", "keyword に使えない文字がある（\" \\ | [ ] ` と制御文字は使えない）"
+    spl = f'search index=* sourcetype="nwc:{topic or "*"}" earliest=-{minutes}m'
+    if keyword:
+        spl += f' "{keyword}"'
+    # 機器名は保存済みサーチと同じ coalesce（app/splunk/nwc_alerts/default/savedsearches.conf）。前方一致で FQDN の sysName も拾う
+    spl += " | eval device=coalesce('tags.sysName', 'tags.agent_host', 'tags.source', host)"
+    if device_id:
+        spl += f' | search device="{device_id}*"'
+    return spl + f" | head {limit} | fields _time device sourcetype source _raw", ""
+
+
+def _splunk_post(url: str, body: bytes, password: str) -> tuple[str, str]:
+    """Splunk の管理 API に POST して (応答の本文, "") か ("", エラーの文)。エラーの文は _send と同じ形。
+    Basic 認証・自己署名の証明書を検証しない・プロキシの環境変数を見ない、は app/splunk/peers_check.py と同じ"""
+    headers = {"Authorization": "Basic " + base64.b64encode(f"{SPLUNK_USER}:{password}".encode("utf-8")).decode("ascii"),
+               "Content-Type": "application/x-www-form-urlencoded"}
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE  # 8089 は Splunk の自己署名の証明書
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx))  # 宛先は VPC の中
+    try:
+        with opener.open(urllib.request.Request(url, data=body, headers=headers, method="POST"), timeout=TIMEOUT) as res:
+            return res.read().decode("utf-8", "replace"), ""
+    except urllib.error.HTTPError as e:
+        return "", f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:300]}"
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as e:
+        return "", f"届かない: {e}"
+
+
+def search_splunk(device_id: str = "", topic: str = "", keyword: str = "", minutes: int = 60, limit: int = 20) -> dict:
+    """Splunk の全トピックを決めた SPL で検索する（最大 limit 件）。エージェントは SPL を書けず、引数は検証してから埋める"""
+    if not SPLUNK_URL:
+        return {"error": SPLUNK_NOT_DEPLOYED, "events": []}
+    spl, error = splunk_args(device_id, topic, keyword, minutes, limit)
+    if error:
+        return {"error": error, "events": []}
+    password = SPLUNK_PASSWORD.value()
+    if not password:
+        return {"error": "Splunk のパスワードが無い（環境変数 SPLUNK_PASSWORD か SSM の splunk/admin-password）", "events": []}
+    body = urllib.parse.urlencode({"search": spl, "output_mode": "json"}).encode("utf-8")
+    text, error = _splunk_post(f"{SPLUNK_URL}/services/search/jobs/export", body, password)
+    if error:
+        return {"error": error, "events": []}
+    # 応答は 1 行 1 件の JSON（{"preview": false, "offset": N, "result": {...}}）。エラーは {"messages": [{"type": "ERROR", "text": ...}]}
+    events, problems, lines, skipped = [], [], 0, 0
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        lines += 1
+        try:
+            row = json.loads(line)
+        except ValueError:
+            row = None
+        if not isinstance(row, dict):
+            skipped += 1
+            continue
+        for m in row.get("messages") or []:
+            if isinstance(m, dict) and str(m.get("type", "")).upper() in ("ERROR", "FATAL"):
+                problems.append(f"{str(m.get('type')).upper()} {m.get('text', '')}".strip())
+        result = row.get("result")
+        if isinstance(result, dict):
+            events.append({"time": result.get("_time", ""), "device": result.get("device", ""), "sourcetype": result.get("sourcetype", ""),
+                           "source": result.get("source", ""), "raw": str(result.get("_raw", ""))[:SPLUNK_RAW_MAX]})
+    if problems:
+        return {"error": "Splunk: " + "; ".join(problems), "events": []}
+    if lines and skipped == lines:
+        return {"error": "Splunk の応答が読めない", "events": []}
+    out = {"count": len(events), "minutes": max(1, min(int(minutes), 24 * 60)), "topic": str(topic or "").strip() or "*", "events": events}
+    if skipped:
+        out["skipped"] = skipped  # JSON として読めなかった行の数
+    return out
+
+
 # ---------------------------------------------------------------- アラートの通知の履歴（Athena → S3 Tables の alert_events。2026-10-04）
 HISTORY_NOT_DEPLOYED = ("アラートの履歴（S3 Tables の alert_events を Athena で読む）はまだ配備していない（IaC/terraform/aws-managed/pipeline/analytics を apply して、"
                         "IaC/terraform/aws-managed/workflow を apply し直すと使える）。直近はメトリクスを query_metrics、ログを search_logs で見る")
@@ -204,6 +313,18 @@ TOOL_SPECS = [
             "hours": {"type": "integer", "description": "何時間前まで見るか（既定 24、最大 720）"},
         }}},
     }},
+    {"toolSpec": {
+        "name": "search_splunk",
+        "description": "Splunk に入っている全トピック（metrics / gnmi / traps / logs / flows）を機器名・トピック・語で引く。search_logs / query_metrics が配備されていないときに使う。"
+                       "まず topic と device_id で絞る（minutes が長く topic が空だと遅い）。SPL は書けない（決めた形の検索だけ）。STORES に splunk が無い構成では案内だけ返す。",
+        "inputSchema": {"json": {"type": "object", "properties": {
+            "device_id": {"type": "string", "description": "機器名か IP（例 dc1-a-leaf-01）。前方一致。空なら全機器"},
+            "topic": {"type": "string", "description": "metrics / gnmi / traps / logs / flows のどれか。空なら全部"},
+            "keyword": {"type": "string", "description": "本文に含む語（例 linkDown）。100 文字まで、\" \\ | [ ] ` は使えない。空なら絞らない"},
+            "minutes": {"type": "integer", "description": "何分前まで見るか（既定 60、最大 1440）"},
+            "limit": {"type": "integer", "description": "件数の上限（既定 20、最大 100）"},
+        }}},
+    }},
 ]
-TOOLS = {"search_logs": search_logs, "query_metrics": query_metrics, "query_history": query_history}
+TOOLS = {"search_logs": search_logs, "query_metrics": query_metrics, "query_history": query_history, "search_splunk": search_splunk}
 run_tool = toolkit.runner(TOOLS)

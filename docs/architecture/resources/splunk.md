@@ -17,7 +17,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | タスクの大きさ | Fargate x86、2 vCPU / 4 GB、エフェメラルストレージ 40 GiB | 変数 `splunk_task_cpu`、`splunk_task_memory`、`splunk_ephemeral_storage_gib` |
 | イメージ | Splunk Enterprise 10.4.4 の公式イメージ + app `nwc_alerts`。ECR の `<prefix>-splunk` | `docker/images/splunk/Dockerfile`、変数 `splunk_image_tag` |
 | 名前とポート | Cloud Map `splunk.<prefix>.internal`。Web 8000（http）、HEC 8088（https、自己署名）。クラスターのときは表の下 | `splunk.tf`、`locals.tf` の `splunk_hec_url` |
-| Splunk どうしのポート | 管理と検索 8089、複製 9887、転送の受け口 9997。SG `splunk` から `splunk` へだけ開けてある（1 台のときも規則はある。相手がいないだけ）。ほかの SG からは 8089 に届かない | `IaC/terraform/aws-managed/base/core/security_groups.tf` |
+| Splunk どうしのポート | 管理と検索 8089、複製 9887、転送の受け口 9997。SG `splunk` から `splunk` へ開けてある（1 台のときも規則はある。相手がいないだけ）。8089 はほかに SG `lambda` から（tools の Lambda の `search_splunk` のため。SG `lambda` は graph の status の Lambda と KB の索引を作る Lambda も付けるので、その 2 つからも届く。cycle 054）。runtime や web からは 8089 に届かない | `IaC/terraform/aws-managed/base/core/security_groups.tf` |
 | 入るもの | 5 つのトピックの全部。sourcetype は `nwc:<トピック>`。index は `main`（HEC の token の既定） | `app/spark/snmp_sinks.py`、変数 `SPLUNK_INDEX`（既定は空） |
 | ライセンス | 試用（60 日、1 日 500 MB まで）。起動時に環境変数で同意する | `splunk.tf` の `SPLUNK_START_ARGS`、`SPLUNK_GENERAL_TERMS` |
 | シークレット | SSM の SecureString `/<prefix>/splunk/admin-password`、`/<prefix>/splunk/hec-token`（クラスターのときの 3 つ目は表の下）。どれも `ops/up.sh` が作る。値は Terraform も state も持たない | `ops/up-common.sh` の `ensure_splunk_secrets`（`ops/up.sh` の手順 7-4 が呼ぶ）、`splunk.tf` の `secrets` |
@@ -58,6 +58,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | Spark（ジョブ `sinks-splunk`） | Spark → HEC | 8088/tcp、`/services/collector/event`、HEC の token。宛先は 1 台のとき `splunk`、クラスターのとき `splunk-idx`（どの indexer も同じ token で受ける） |
 | 利用者の PC | PC → Web の EC2 → Splunk | 8000/tcp。SSM のポートフォワーディング（output `splunk_port_forward_command`）。ユーザー admin。クラスターのときの入口は search head。manager の画面（クラスターの状態）は output `splunk_cm_port_forward_command`（`http://localhost:8001`） |
 | Splunk どうし（クラスターのときだけ） | search head → indexer（検索）、manager ↔ indexer・search head（管理）、indexer ↔ indexer（複製）、search head・manager → indexer（自分の `_internal` と `_audit` の転送） | 8089 / 9887 / 9997。合言葉は `/<prefix>/splunk/idxc-secret` |
+| エージェントの `search_splunk`（`WORKFLOW=1` の tools の Lambda） | Lambda → Splunk（1 台のとき `splunk`、クラスターのとき search head の `splunk`） | 8089/tcp、`/services/search/jobs/export`、Basic 認証（ユーザー admin、`/<prefix>/splunk/admin-password`）。証明書は検証しない。決めた SPL だけを送る（`app/agentcore/evidence.py`。cycle 054） |
 | SNS | Splunk → `<prefix>-alerts` | `sns` のエンドポイント。アラートアクション `nwc_sns` がタスクロール（`sns:Publish` だけ）で publish |
 | SSM | タスクの起動時に読む | 実行ロール |
 
@@ -166,6 +167,7 @@ index はタスクの中にあり、タスクと一緒に消える。クラス�
 | 既知の不具合（2026-10-05） | trap のサブインターフェース（`ethernet-1/1.0`）の `link_down` と、起動の直後の `resolved` のまとめ送りは直した（手元で確認、AWS では未確認）。回線の両端が別の異常になる件は [troubleshooting.md](../../troubleshooting.md) の「既知の不具合」 |
 | 24 時間を超えて変わっていない down | `nwc_gnmi` の「前の値」が無いので、戻ったときの `resolved` を出さない。gnmic が繋ぎ直して送り直すと、新しい `starts_at` で `firing` をもう 1 回出す |
 | Splunk が止まっているあいだの変化 | 次に状態が変わるまで出ない |
+| エージェントの `search_splunk`（cycle 054） | 模擬テストだけ（本物の Splunk には送っていない）。AWS で tools の Lambda から 8089 に届くこと、クラスターのとき search head で引けることは未確認。admin の資格情報を使う（読み取り専用のユーザーは QUEUE に積んだ） |
 
 - AWS の上での通しを確かめた中身:
   - 2026-10-05: `sudo lab fail-main` で Splunk が `link_down` と `isis_down` を出し、`sns` のエンドポイント越しに SNS へ届いた（`SPLUNK_AZ_NUM=2` の構成）。

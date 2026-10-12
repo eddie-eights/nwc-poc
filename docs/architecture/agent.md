@@ -12,7 +12,7 @@ flowchart LR
   WEB -->|"invoke_agent_runtime"| RT["AgentCore Runtime<br/>app/agentcore/app.py"]
   RT -->|"Retrieve（HYBRID + Rerank、20 件 → 5 件）"| KB["ナレッジベース<br/>CREATE_KB=1 のときだけ"]
   RT -->|"Strands Agents（Converse + Guardrail）"| LLM["Nova 2 Lite（jp.）"]
-  RT -->|"ツール（最大 5 往復）"| TOOLS["list_devices / neighbors / blast_radius / root_cause / what_if / topology_graph / layers<br/>search_logs / query_metrics / query_history / list_proposals / recent_changes / centrality"]
+  RT -->|"ツール（最大 5 往復）"| TOOLS["list_devices / neighbors / blast_radius / root_cause / what_if / topology_graph / layers<br/>search_logs / query_metrics / search_splunk / query_history / list_proposals / recent_changes / centrality"]
   RT -.->|"WORKFLOW=1"| GW["Gateway（MCP）→ tools Lambda"]
 ```
 
@@ -23,6 +23,7 @@ flowchart LR
   - Neptune（Neptune Analytics）。トポロジ 3 層と、中心性の `centrality`、Nautobot の変更履歴の写し（頂点 `change`）を読む `recent_changes`。
   - Neptune が無ければ、トポロジは `app/agentcore/data/` の静的な 7 台と層。
   - OpenSearch Serverless、Prometheus。
+  - Splunk（`search_splunk`。`STORES` に `splunk` を入れたとき。tools の Lambda から検索 API 8089 を決めた SPL で引く。search_logs / query_metrics が配備されていないときの代わり。cycle 054）。
   - S3 Tables の 2 つの表を Athena で読む。アラートの通知の履歴 `alert_events` は `query_history`、修復案 `proposal_events` は `list_proposals`。
 - 異常の一覧を返すツールは無い。いまのアラートは Grafana と Splunk の画面で見る。
 - Gateway（MCP）と tools Lambda は WORKFLOW で作る（[workflow.md](workflow.md)）。

@@ -191,6 +191,8 @@ locals {
   opensearch_index           = try(data.terraform_remote_state.analytics.outputs.opensearch_index, "snmp-logs")
   prometheus_workspace_arn   = try(data.terraform_remote_state.analytics.outputs.prometheus_workspace_arn, "")
   prometheus_query_url       = try(data.terraform_remote_state.analytics.outputs.prometheus_query_url, "")
+  # Splunk の検索 API（evidence.py の search_splunk。cycle 054）。Splunk を ECS で動かしていなければ空で、ツールは「未配備」を返す
+  splunk_url = try(data.terraform_remote_state.analytics.outputs.splunk_search_url, "")
   # OSS 版（IaC/terraform/oss/pipeline/analytics。cycle 005）は OpenSearch Serverless と AMP の代わりに ECS の OpenSearch と VictoriaMetrics で、
   # state にコレクションとワークスペースの ARN が無く、OpenSearch の admin のパスワードの SSM の名前（opensearch_password_parameter）がある。
   # そのときだけ tools Lambda の evidence.py を Basic 認証（OPENSEARCH_AUTH=basic）と署名なし（PROMETHEUS_AUTH=none）に切り替える（gateway.tf）。
