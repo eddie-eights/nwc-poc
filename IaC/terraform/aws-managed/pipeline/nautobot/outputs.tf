@@ -24,7 +24,7 @@ output "sync_targets" {
 }
 
 # IaC/terraform/aws-managed/workflow が読む（cycle 036）。Temporal の履歴（DB temporal / temporal_visibility）もこの RDS に置く。
-# temporal のサーバーのコンテナが起動時に master（nautobot）でロール temporal と DB を作るので、master のパスワードのパラメータ名も渡す（値は出さない）
+# Temporal の初期化の一回きりのタスク（<prefix>-workflow-init。cycle 042）が master（nautobot）でロール temporal と DB を作るので、master のパスワードのパラメータ名も渡す（値は出さない）
 output "db_address" {
   description = "Hostname of the RDS for PostgreSQL instance (Nautobot, and the Temporal history of the workflow root)"
   value       = aws_db_instance.nautobot.address

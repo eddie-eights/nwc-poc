@@ -59,7 +59,7 @@
 | `app/neo4j/` | OSS 版の Neo4j（+ GDS）の `entrypoint.sh`（OSS 版の graph の ECS のタスクで動く） |
 | `app/resources/` | ナレッジベースに入れる手順書 |
 | `app/gateway/` | Gateway（MCP）の tools Lambda（`handler.py` と、ツールの定義 `tools.json`） |
-| `docker/images/<名前>/Dockerfile` | イメージの `Dockerfile`（agentcore / temporal / grafana / splunk / nautobot / telegraf / gnmic / syslog-ng / spark / neo4j）。使い方は表の下 |
+| `docker/images/<名前>/Dockerfile` | イメージの `Dockerfile`（agentcore / temporal / temporal-server / grafana / splunk / nautobot / telegraf / gnmic / syslog-ng / spark / neo4j）。使い方は表の下 |
 | `docker/compose/` | 手元の docker compose（WSL2 の中だけで lab から Grafana / Splunk まで一周させる。AWS は使わない。[README](../../docker/compose/README.md)） |
 | `IaC/terraform/aws-managed/` | AWS にリソースを作るのはここだけ（下のツリー） |
 | `IaC/terraform/oss/` | OSS 版の同じ 10 のルート（下の段落） |
@@ -78,9 +78,12 @@
   - `entrypoint.sh` は役割に合わせてアプリを外す。indexer は止まる前に `splunk offline`。
   - `peers_check.py` はクラスターの search head が indexer を全部検索できるかの突き合わせ。
 - `docker/images/<名前>/Dockerfile`:
-  - ビルドのコンテキストは `app/<名前>/` で、次の形で使う。
+  - ビルドのコンテキストは `app/<名前>/` で、次の形で使う（`agentcore` / `temporal` / `grafana` / `splunk` / `telegraf` / `gnmic` / `syslog-ng` / `spark` / `neo4j`）。
     `docker buildx build -f docker/images/<名前>/Dockerfile app/<名前>/`
-  - Splunk は公式イメージ + 検知のアプリ、Nautobot は公式イメージ + boto3。
+  - 例外は 2 つ（`ops/up-common.sh` の `build_temporal_server` と `nautobot_context`）。
+    - `temporal-server` はディレクトリそのものがコンテキスト（`docker buildx build docker/images/temporal-server/`。cycle 036）。
+    - `nautobot` は `app/nautobot/` の写しに `app/agentcore/graph.py`・`app/agentcore/toolkit.py` と lab の定義から作る `lab_seed.json` を足した一時ディレクトリがコンテキスト。
+  - Splunk は公式イメージ + 検知のアプリ、Nautobot は公式イメージ + boto3 + Job（`jobs/`）と対応付け（`nwc/`）・`graph.py`・`toolkit.py`・`lab_seed.json`。
 
 ```
 IaC/terraform/aws-managed/

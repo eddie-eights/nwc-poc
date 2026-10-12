@@ -15,7 +15,7 @@ Temporal の履歴は Nautobot の RDS for PostgreSQL（DB `temporal` / `tempora
 | サービス | 1 タスクに temporal・ui・worker の 3 コンテナ。Fargate ARM、1 vCPU / 2 GB。AZ を選ぶキーは無い（サブネット a に 1 つ）。デプロイは `deployment_minimum_healthy_percent = 100` / `deployment_maximum_percent = 200`（新しいタスクが上がってから古いのを止める） | `IaC/terraform/aws-managed/workflow/ecs.tf`、変数 `task_cpu`、`task_memory` |
 | temporal のコンテナ | `temporalio/server` 1.32.1 に `temporal-sql-tool`・`temporal`（CLI）・psql 18 を足して自前でビルドしたもの（ECR の `<prefix>-temporal`。タグは中身のハッシュ入り）。サーバーの entrypoint はロール `temporal` で両方の DB のスキーマの版がイメージの最新以上になるまで待ってから temporal-server を起こし、namespace `default`（保持 72 時間）を作る。healthCheck は namespace `default` の describe | `docker/images/temporal-server/`、`ecs.tf`、`ops/up-common.sh` の `TEMPORAL_SERVER_VERSION` / `POSTGRES_MAJOR` / `build_temporal_server` |
 | DB | Nautobot の RDS for PostgreSQL 18 に相乗り。ロール `temporal` が DB `temporal` と `temporal_visibility` の持ち主。TLS（`SQL_TLS_ENABLED=true`）、接続は 4 + 2（visibility）まで、history の shard は 4（あとから変えられない） | `ecs.tf` の環境変数、変数 `temporal_sql_max_conns` ほか、`IaC/terraform/aws-managed/pipeline/nautobot/` |
-| シークレット | ロール `temporal` のパスワードは SSM の SecureString `/<prefix>/temporal/db-password`（`ops/up.sh` が workflow の apply の前に乱数で作る）。master のパスワードは Nautobot の `/<prefix>/nautobot/db-password` を読み、init のタスクにだけ渡す（サーバーのタスクにはロール `temporal` のパスワードだけ。cycle 042）。どちらも ECS の `secrets` で渡し、state にもタスク定義にも値を書かない | `ops/up-common.sh` の `ensure_temporal_secrets`、`iam.tf` の `execution_db_passwords` と `DenyNautobotParameters` ||
+| シークレット | ロール `temporal` のパスワードは SSM の SecureString `/<prefix>/temporal/db-password`（`ops/up.sh` が workflow の apply の前に乱数で作る）。master のパスワードは Nautobot の `/<prefix>/nautobot/db-password` を読み、init のタスクにだけ渡す（サーバーのタスクにはロール `temporal` のパスワードだけ。cycle 042）。どちらも ECS の `secrets` で渡し、state にもタスク定義にも値を書かない | `ops/up-common.sh` の `ensure_temporal_secrets`、`iam.tf` の `execution_db_passwords` と `DenyNautobotParameters` |
 | init のタスク | 一回きりのタスク `<prefix>-workflow-init`（サーバーと同じイメージを `entryPoint` `/etc/temporal/init-rds.sh` で起こす。Fargate ARM、0.25 vCPU / 0.5 GB、タスクロール無し）。Nautobot の master でロール `temporal` と DB を作り（あれば何もしない）、ロールでスキーマを最新まで上げて exit 0 で止まる。`ops/up.sh` の 8-5（OSS 版は `ops/oss/up.sh` の 8）が workflow の apply の直後に `run-task` で起こし、止まるまで待って exitCode 0 を確かめる。ログは同じロググループの stream prefix `init`（出力 `init_logs_command`） | `ecs.tf` の `aws_ecs_task_definition.init`、`docker/images/temporal-server/init.sh`、`ops/up-common.sh` の `run_temporal_init` |
 | ui のコンテナ | `temporalio/ui` 2.55.0 を ECR の `<prefix>-temporal-ui` に写したもの。temporal が HEALTHY になってから起きる。`essential = false`（落ちてもワークフローは止めない） | `ecs.tf`、変数 `temporal_ui_image_tag`、`ops/up-common.sh` の `TEMPORAL_UI_TAG` |
 | worker のコンテナ | `app/temporal/worker.py`。ECR の `<prefix>-worker`。temporal が HEALTHY になってから起きる | `ecs.tf`、`app/temporal/` |
@@ -23,7 +23,7 @@ Temporal の履歴は Nautobot の RDS for PostgreSQL（DB `temporal` / `tempora
 | 待ち時間 | 承認待ち 120 分（`APPROVAL_TIMEOUT_MINUTES`）、解消の確認 300 秒（`VERIFY_TIMEOUT`）、閉じずに待つ 1440 分（`HOLD_MINUTES`） | 変数 `approval_timeout_minutes`、`verify_timeout_seconds`、`hold_minutes` |
 | ワークフローの id | `investigate-<anomaly_id>`（発生の時刻を入れない） | `app/temporal/worker.py`、`app/temporal/rules.py` |
 | スイッチ | `WORKFLOW=1`。`AGENT=1` と `PIPELINE=1` が要り、`SKIP_LAB` / `SKIP_STREAM` / `SKIP_ANALYTICS` / `SKIP_GRAPH` は書けない | `ops/up.sh` |
-| 費用 | 5 セント/時 | `ops/up.sh` の費用の目安（524〜584 行） |
+| 費用 | 5 セント/時 | `ops/up.sh` の費用の目安（手順 0 の終わりのコメントと `COST_CENTS`） |
 
 worker が読み書きするもの:
 

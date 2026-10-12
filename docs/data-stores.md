@@ -263,7 +263,7 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 | `agent` | [app/agentcore/](../app/agentcore/)（自前ビルド） | AgentCore Runtime | チャットの本体。Bedrock のモデルを呼び、Neptune のトポロジ、OpenSearch / Prometheus の証拠を集めて答え、承認待ちの修復案を作る |
 | `lab-srlinux` | `ghcr.io/nokia/srlinux`（ミラー。約 1 GB） | lab の EC2（containerlab） | スイッチ（Nokia SR Linux、`ixr-d2l`）。監視される「機器」そのもの（表の下） |
 | `lab-trex` | `trexcisco/trex`（Docker Hub のミラー。amd64 だけ） | lab の EC2（containerlab） | トラフィックジェネレータ（Cisco TRex 2.41）の `dc1-trex-01`。後段（Telegraf → MSK → Spark → 格納先、アラート）の負荷試験に使う（表の下） |
-| `temporal` | [docker/images/temporal-server/](../docker/images/temporal-server/)（自前ビルド。公式の `temporalio/server` 1.32.1 に `temporal-sql-tool` と psql 18 と入口のスクリプトを足す） | ECS Fargate（WORKFLOW=1） | Temporal のサーバー。履歴を Nautobot の RDS for PostgreSQL（DB `temporal` / `temporal_visibility`）に書く。起動のたびにロール・DB・スキーマ・namespace を無ければ作る（cycle 036） |
+| `temporal` | [docker/images/temporal-server/](../docker/images/temporal-server/)（自前ビルド。公式の `temporalio/server` 1.32.1 に `temporal-sql-tool` と psql 18 と入口のスクリプトを足す） | ECS Fargate（WORKFLOW=1） | Temporal のサーバー。履歴を Nautobot の RDS for PostgreSQL（DB `temporal` / `temporal_visibility`）に書く。ロール・DB・スキーマは一回きりの init のタスク `<prefix>-workflow-init`（同じイメージ。`ops/up.sh` が `terraform apply` の直後に起こす）が作り、サーバーはスキーマが出来るのを待ってから namespace を無ければ作って起きる（cycle 036、042） |
 | `temporal-ui` | `temporalio/ui`（ミラー） | ECS Fargate（WORKFLOW=1。`temporal` と同じタスク） | Temporal の Web UI（8233）。Fargate はプライベート網から Docker Hub を引けないので ECR にミラーする |
 | `worker` | [app/temporal/](../app/temporal/)（自前ビルド） | ECS Fargate（WORKFLOW=1） | Temporal のワーカー。SQS のアラートと Web の決定を拾い、Runtime に修復案を作らせ、S3 Tables の `proposal_events` に記録し、承認後に SSM で lab の機器へ流して検証する（Neptune はトポロジを読むだけ）。同じタスクの `temporal` に `localhost:7233` でつなぐ |
 | `telegraf` | [app/telegraf/](../app/telegraf/)（公式の `telegraf:1.40.1` に設定のテンプレートと `tg` を足す） | ECS Fargate（stream。サービス `<prefix>-telegraf-dialout`。内部 NLB の後ろ）。デバッグ用の EC2（`ops/lab-debug.sh`）でも同じ作り方のイメージ（スタックの ECR の `<prefix>-debug-telegraf`）を docker で動かす | 機器の SNMP trap を受けて MSK の `traps` に書く（syslog は `syslog-ng` が受ける。gNMI の購読は `gnmic` が取る）（デバッグ用の EC2 では `SINK=stdout` で標準出力に書く） |
@@ -339,7 +339,7 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 | リポジトリの定義 | [IaC/terraform/aws-managed/base/ecr/main.tf](../IaC/terraform/aws-managed/base/ecr/main.tf) |
 | lab のどの機器がどのイメージか | [app/containerlab/splab.clab.yml.in](../app/containerlab/splab.clab.yml.in)（[app/containerlab/gen_lab.py](../app/containerlab/gen_lab.py) が作る） |
 | Runtime がどのイメージを指すか | [IaC/terraform/aws-managed/agent/variables.tf](../IaC/terraform/aws-managed/agent/variables.tf) の `agent_image_tag` |
-| Fargate のタスク定義（temporal と worker の 2 コンテナ） | [IaC/terraform/aws-managed/workflow/ecs.tf](../IaC/terraform/aws-managed/workflow/ecs.tf) |
+| Fargate のタスク定義（サーバーのタスクは temporal・ui・worker の 3 コンテナ。ほかに init のタスク定義 `<prefix>-workflow-init`） | [IaC/terraform/aws-managed/workflow/ecs.tf](../IaC/terraform/aws-managed/workflow/ecs.tf) |
 | Telegraf のタスク定義 | [IaC/terraform/aws-managed/pipeline/stream/telegraf.tf](../IaC/terraform/aws-managed/pipeline/stream/telegraf.tf) |
 | gnmic のタスク定義 | [IaC/terraform/aws-managed/pipeline/stream/gnmic.tf](../IaC/terraform/aws-managed/pipeline/stream/gnmic.tf) |
 | syslog-ng / GoFlow2 のタスク定義 | [IaC/terraform/aws-managed/pipeline/stream/collectors.tf](../IaC/terraform/aws-managed/pipeline/stream/collectors.tf) |
@@ -542,7 +542,7 @@ SSM は読まない。
 3. Kafka の認証は SASL/SCRAM-SHA-512 だけで、タスクロール `<prefix>-gnmic-task` に Kafka の権限は無い。
    - マネージドの MSK は IAM と SCRAM の併用。
    - `gnmi` / `metrics` の ACL は Spark が起動時に入れる。入るまで gnmic は書けず、その間の値は捨てる（`allow.everyone.if.no.acl.found=false`。2026-10-10）。
-   - 2026-10-09 の AWS（当時は既定の true）では ACL の前に `metrics` に書けた（`docs/verification/20261009-aws-managed.md` の「A.」「B.」）。false にしてからは AWS で未確認。
+   - 2026-10-09 の AWS（当時は既定の true）では ACL の前に `metrics` に書けた（`docs/verification/20261009-aws-managed.md` の「A.」「B.」）。false にした後の AWS（2026-10-11）では、Spark が ACL を入れたあとに gnmic が `metrics` に書けた（`docs/verification/20261011-aws-managed-045.md` の B-1 / B-2。syslog-ng も `logs` に書けた（同じファイルの E-1 で 4 → 5）。`flows`（GoFlow2）は 0 件で、書けるかは未確認。`gnmi` の 0 件は gnmic の on-change による既知の挙動）。
 
 **IAM は 1 段。** タスクロールのポリシー `<prefix>-telegraf-task`（[telegraf.tf](../IaC/terraform/aws-managed/pipeline/stream/telegraf.tf)）は次の 2 文。
 

@@ -26,6 +26,7 @@
 | 手順 0 の後に「… の plan で SG が作り直し・削除になる: …」で止まる | `ops/up-common.sh` の `check_sg_plan` が base/core を `terraform plan -json -refresh=false` で打ち、`aws_security_group` が replace（name / description / vpc_id の変更。workflow は 041、telegraf_dialout / telegraf_dialout_nlb は 043 で description を変えた）か delete（表からキーを外した）になった（050）。ほかの SG のルールが古い SG を参照したままなので、ルートだけ消しても消せない（DependencyViolation）。まだ何も作っていない。`ops/down.sh`（OSS 版は `ops/oss/down.sh`）で全部消してから `ops/up.sh`。一覧に `aws_security_group.workload["runtime"]` があるときは、Runtime の ENI（最長 8 時間ほど残る）があるあいだ `ops/down.sh` も runtime の SG を残すので、ENI が消えてから `ops/down.sh`（下の「消すとき」の `DependencyViolation` の行と同じ待ち）。2026-10-08（`48683dd`）より前の state は、description 末尾のパスが変わった（`terraform/…` → `IaC/terraform/aws-managed/…`、OSS 版の上書きは `oss/terraform/…` → `IaC/terraform/oss/…`）ので、パスを含む workload の SG（web / lab / lambda 以外の全部）が replace になる（`endpoints` はパスを含まないのでならない） |
 | 手順 0 の後に「… の plan が失敗した（rc=…。上の Terraform のエラー）」で止まる | `check_sg_plan` の `terraform plan` が rc≠0 で終わった（050）。まだ何も作っていない。上に出た Terraform のエラー（`Error: …`）を読む: `var.project` の値が `nwc-poc` / `nwc-oss` 以外（`TF_VAR_project` や tfvars。「Invalid value for variable」）、別の terraform が同じルートで走っている（「Error acquiring the state lock」。base/core の state は手元のファイル）、AWS の認証情報が切れた（data source が読めない）など。Warning（`terraform.tfvars` の宣言の無い変数など）だけでは止まらない（stderr に出して進む） |
 | 手順 0 の後に「… の plan の出力に change_summary が無い」で止まる | `check_sg_plan` の `terraform plan -json` が rc=0 なのに最後の集計の行（`change_summary`）を出さなかった（050）。Terraform の版が変わって `-json` の形が変わったか、出力が途中で切れた。まだ何も作っていない。上に出た出力を読み、`ops/up.sh` と同じ AWS の認証で `terraform -chdir=<TF_DIR>/base/core plan -json -input=false -refresh=false -var owner=<OWNER>` を手で打って確かめる（`VPC_CIDR` を設定しているなら `-var vpc_cidr=<VPC_CIDR>` も足す。足さないと既定の CIDR で VPC と SG の replace が出る） |
+| 手順 0 の後に「TF_CLI_ARGS / TF_CLI_ARGS_* が設定されている（…）」で止まる | `check_sg_plan` が plan を打つ前に、環境に `TF_CLI_ARGS` か `TF_CLI_ARGS_<サブコマンド>` があれば止める（049。空の値でも止める）。terraform のサブコマンドごとに効くので、plan と apply で変数の与え方がずれる。まだ何も作っていない。`unset` で外してから打ち直す |
 | `terraform apply` が「state に security_group_ids が無い」（Resource postcondition failed）で止まる | 土台（`IaC/terraform/aws-managed/base/core`）が SG をワークロードごとに分ける前の state。`ops/up.sh` を通さずにルートを直接 apply したときに出る。先に `ops/down.sh` を打ってから `ops/up.sh` |
 | `ops/lab-debug.sh up` が「前の形（土台の VPC を使う）のまま」で止まる | 2026-10-04 より前に作ったスタック。`ops/lab-debug.sh down` のあと `up`（今はスタックが自分の VPC を持つ） |
 | 2026-10-04 より前のデバッグ用の EC2 が残ったまま `ops/down.sh` で土台（base/core）が消えない（`DeleteConflict` / `DependencyViolation`） | 前の形のスタックは土台のサブネット・SG・境界ポリシーを使っていて、今の `ops/down.sh` はそれを消さない。`ops/lab-debug.sh down` のあと `ops/down.sh` を打ち直す（`ops/up.sh` もそのスタック向けの ECR のエンドポイントを外すので、先に消しておく） |
@@ -193,7 +194,7 @@ Web のログは Web の EC2 で `sudo journalctl -u <prefix>-web -n 100`、起�
   - stream の output `gnmic_list_tasks_command` で gnmic のタスクが動いているか、
     ロググループ `/ecs/<prefix>-gnmic` に Kafka のエラー（SCRAM の認証や ACL）が出ていないかを見る。
   - Spark のジョブが Kafka の ACL を入れるまで gnmic は書けず、その間の値は捨てる（`allow.everyone.if.no.acl.found=false`。2026-10-10）。
-    2026-10-09 の AWS（当時は既定の true）では ACL の前から書けた（`docs/verification/20261009-aws-managed.md` の「B.」）。false にしてからは AWS で未確認。
+    2026-10-09 の AWS（当時は既定の true）では ACL の前から書けた（`docs/verification/20261009-aws-managed.md` の「B.」）。false にした後の AWS（2026-10-11）では、Spark が ACL を入れたあとに gnmic が `metrics` に書けた（`docs/verification/20261011-aws-managed-045.md` の B-1 / B-2。syslog-ng も `logs` に書けた（同じファイルの E-1 で 4 → 5）。`flows`（GoFlow2）は 0 件で、書けるかは未確認。`gnmi` の 0 件は gnmic の on-change による既知の挙動）。
   - gnmic が書けているのに空なら Spark（[pipeline.md](pipeline.md) の「Spark を確かめる」）。
 - `修復案`:
   - `terraform -chdir=IaC/terraform/aws-managed/workflow output -raw anomaly_dlq_url` のキューに溜まっていれば、
@@ -420,7 +421,7 @@ destination;d_RFC5424;;a;processed;10
 
 1. NLB の SG。`IaC/terraform/aws-managed/base/core/security_groups.tf` の `sg_flows` で、NLB の 5140/udp の受信は管理ネットワークの CIDR `lab_mgmt`（203.0.113.0/24）からだけだった。
    lab の EC2 の SG `lab` → NLB の 5140 の行は `only = "egress"`（送信だけ）で、NLB 側に受ける規則が無かった。NetFlow の 2055 の行は `only` 無しで両側にあるので、同じ EC2 からの `ops/netflow_send.py` は届いた（2026-10-09 の `flows` に 2 件）。
-   「lab の EC2 から NLB の syslog 5140 への受信ルールを足す（037）」で `only` を外して両側にした。直した後の形は次のとおり。AWS で確かめるのは QUEUE の「残った修正をまとめて AWS で動作確認して直す」のとき。
+   「lab の EC2 から NLB の syslog 5140 への受信ルールを足す（037）」で `only` を外して両側にした。直した後の形は次のとおり。2026-10-11 の AWS（QUEUE の「残った修正をまとめて AWS で動作確認して直す」。`docs/verification/20261011-aws-managed-045.md` の E-1）では、下の「正しい送り方」の 1 つ目（TRex の netns から `203.0.113.1:5140`。DNAT と `lab_mgmt` の行）は通った（Kafbat UI で `logs` の件数が 4 → 5。本文は読めず件数の増分で見た）。2 つ目（lab の EC2 のホストから NLB の IP へ直接。下の `lab` の行）は AWS で未確認。
 
    ```hcl
    { from = "lab_mgmt", to = "telegraf_dialout_nlb", protocol = "udp", port = 5140, why = "syslog from the switches - DNAT on the lab EC2" },
@@ -501,7 +502,7 @@ logger -n "$nlb" -P 5140 -d --rfc3164 -t acl-probe "syslog test from the lab EC2
 
 | 見つけた日 | 症状 | 分かっていること |
 |---|---|---|
-| 2026-10-05 | 1 本の回線断で修復案が 2 件できる（見つけたときは 4 件） | 回線の leaf 側と spine 側が、別の異常として数えられる。1 件を承認して verified になると、残りは obsolete になった。両端を 1 つにまとめるのは別のサイクル（直した点は表の下の `nwc_trap`） |
+| 2026-10-05 | 1 本の回線断で修復案が 2 件できる（見つけたときは 4 件） | 回線の leaf 側と spine 側が、別の異常として数えられる。1 件を承認して verified になると、残りは obsolete になった。両端を 1 つにまとめるのは QUEUE に積んだ（「1 本の回線断で修復案が 2 件できるのを 1 件にまとめる」。未着手）（直した点は表の下の `nwc_trap`） |
 
 - `nwc_trap`: 4 件のうち 2 件の原因だった、Splunk の trap の検索がサブインターフェース（`ethernet-1/1.0`）を除いていない点は直した（手元のテストで確認、AWS では未確認）。
 

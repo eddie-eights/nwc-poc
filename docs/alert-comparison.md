@@ -14,7 +14,7 @@
 - **検知の遅れと取りこぼしの比較は、2 回分だけ結果がある**（2026-10-05 の `fail-main`、2026-10-08 の `fail-main` / `fail-bgp` / `trap-test`）。
   - 2026-10-05 は両方が `link_down` と `isis_down` を出し、取りこぼしは無かった。`link_down` は Splunk のほうが 1〜3 分早かった。
   - 2026-10-08 は `link_down` が両方とも約 2 分、`bgp_down` が両方とも約 70 秒。
-  - 2026-10-08 の `trap` は Splunk だけが出し、Grafana はルールの評価がエラーになった（008 で直したが AWS では未確認）。
+  - 2026-10-08 の `trap` は Splunk だけが出し、Grafana はルールの評価がエラーになった（008 で直した。評価がエラーにならないことは AWS で確認済み（`docs/verification/20261010-aws-managed.md` の 2 本目と `20261011-aws-managed-045.md` の H-2。`ops/up.sh` の 9-2 の `ops/grafana_rules_check.py` が `trap` を含む 4 本とも評価のエラーなし）。Grafana の `trap` の発火は AWS で未確認）。
   - 手順どおりの 3 回はまだ。それまでこのサイクルは完了にしない。
 
 理由と背景:
@@ -215,7 +215,7 @@ ORDER BY anomaly_id, status
 - `link_down` は両方とも約 2 分で、2026-10-05 ほどの差は出なかった。Splunk の最初の `link_down` は trap のサーチから出た
 - Grafana の `trap` のルールは、評価のたびに `bucket budget out of bounds` のエラーになった（OpenSearch Serverless）
 
-  「AWS 検証で見つけた不具合 3 件を直す（008）」でルールの区切りを絞り（50 × 20 / auto → 10 × 10 / 30s）、手元の Grafana で通した。AWS では未確認。
+  「AWS 検証で見つけた不具合 3 件を直す（008）」でルールの区切りを絞り（50 × 20 / auto → 10 × 10 / 30s）、手元の Grafana で通した。評価がエラーにならないことは AWS で確認済み（`docs/verification/20261010-aws-managed.md` の 2 本目と `20261011-aws-managed-045.md` の H-2。`ops/up.sh` の 9-2 の `ops/grafana_rules_check.py` が `trap` を含む 4 本とも評価のエラーなし）。Grafana の `trap` の発火は AWS で未確認。
 
 この回で取れていないもの:
 
@@ -318,7 +318,7 @@ ORDER BY anomaly_id, status
 
 | 項目 | 状態 |
 |---|---|
-| Grafana が OpenSearch Serverless を SigV4 でルールの評価に使えるか | 2026-10-08 に AWS で試したが、`trap` のルールの評価が毎回エラーになった（`bucket budget out of bounds`）。008 でルールを絞り手元の Grafana で通したが、AWS では未確認。ダッシュボードで読めることは 2026-09-28 に確認済み |
+| Grafana が OpenSearch Serverless を SigV4 でルールの評価に使えるか | 2026-10-08 に AWS で試したが、`trap` のルールの評価が毎回エラーになった（`bucket budget out of bounds`）。008 でルールを絞り手元の Grafana で通した。評価がエラーにならないことは AWS で確認済み（`docs/verification/20261010-aws-managed.md` の 2 本目と `20261011-aws-managed-045.md` の H-2。`ops/up.sh` の 9-2 の `ops/grafana_rules_check.py` が `trap` を含む 4 本とも評価のエラーなし）。Grafana の `trap` の発火は AWS で未確認。ダッシュボードで読めることは 2026-09-28 に確認済み |
 | SR Linux が出す trap の OID の形（`.1.3.6.1.…` で入るか） | 未確認。手元では net-snmp の `snmptrap` で確かめた |
 | `lab fail-bgp` / `lab heal-bgp` / `lab trap-test` の実際の動き | 2026-10-08 に lab の EC2 で打った（011 の前の lab）。`bgp_down` は両方から出て、`trap` は Splunk だけから出た。heal-bgp で BGP は戻り、Splunk は `resolved` を出した。Grafana の `bgp_down` の `resolved` は見ていない（上の「2026-10-08 の 1 回」） |
 | `lab trap-test` で `dc1-trex-01` が `ALARM` になるか | 未確認。送り元の IP が device map で `dc1-trex-01` に直る前提 |

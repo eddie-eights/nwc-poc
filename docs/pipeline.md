@@ -65,7 +65,7 @@ flowchart LR
 - マネージドの MSK は IAM と SCRAM の併用。
 - `gnmi` と `metrics` の ACL は、syslog-ng・GoFlow2 の分と一緒に Spark が起動時に入れる（下の `ensure_acls`）。
   ACL が入るまで gnmic は書けず、その間の値は捨てる（`allow.everyone.if.no.acl.found=false`。下の「収集器の ACL」）。
-- 2026-10-09 の AWS（当時は既定の true）では、Spark を起こさずに `metrics` に書けた。2026-10-10 に false にしてからの AWS は未確認。
+- 2026-10-09 の AWS（当時は既定の true）では、Spark を起こさずに `metrics` に書けた。2026-10-10 に false にした後の AWS（2026-10-11）では、Spark が ACL を入れたあとに gnmic が `metrics` に書けた（`docs/verification/20261011-aws-managed-045.md` の B-1 / B-2。syslog-ng も `logs` に書けた（同じファイルの E-1 で 4 → 5）。`flows`（GoFlow2）は 0 件で、書けるかは未確認。`gnmi` の 0 件は gnmic の on-change による既知の挙動）。
 - 同じ日、`gnmi` はトピックができず、on-change の 3 つの購読（`interface_state` / `bgp_neighbor` / `isis_interface`）からは 1 件も書かれていなかった（gnmic のログに ERROR は 0）。
   原因は確かめていない（ACL のせいではない）。
   030 で出力に buffer を足した（下の「gnmic の購読」）が、これで直るかは AWS で未確認。
@@ -591,7 +591,7 @@ SELECT status, source, device_id, kind, target, starts_at, received_at FROM "s3t
 - `app/grafana/start.sh` は、`ALERTS_TOPIC_ARN` があるときだけアラートの定義を並べる。`nwc-prometheus.yaml` は `PROMETHEUS_URL` も、`nwc-opensearch.yaml` は `OPENSEARCH_URL` もあるとき。`nwc.yaml` はどちらかを並べたとき。
 - 4 本になったあとの形（Splunk と Grafana のアラートを比べる（002））は、2026-10-05 に AWS で `link_down` と `isis_down` の発火を確かめた（`sudo lab fail-main`）。
 - 2026-10-08 に AWS で `bgp_down`（Grafana と Splunk）と Splunk の `trap` の発火を確かめた（`sudo lab fail-bgp` / `trap-test`。011 の前の lab、013 の前の形。`docs/verification/20261008-managed-aws.md`）。
-- Grafana の `trap` はルールの評価がエラーで出なかった。「AWS 検証で見つけた不具合 3 件を直す（008）」でルールを絞り、手元の Grafana で通したが、AWS では未確認。
+- Grafana の `trap` はルールの評価がエラーで出なかった。「AWS 検証で見つけた不具合 3 件を直す（008）」でルールを絞り、手元の Grafana で通した。評価がエラーにならないことは AWS で確認済み（`docs/verification/20261010-aws-managed.md` の 2 本目と `20261011-aws-managed-045.md` の H-2。`ops/up.sh` の 9-2 の `ops/grafana_rules_check.py` が `trap` を含む 4 本とも評価のエラーなし）。Grafana の `trap` の発火は AWS で未確認。
 - `link_down` が gNMI から出る形（cycle 013）は AWS では未確認。
 
 ### Splunk のアラート

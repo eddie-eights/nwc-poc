@@ -37,7 +37,7 @@
 | `IMAGE_TAG` | エージェントとワーカーのイメージのタグ。既定 `v1` |
 | `KEEP_ECR` | `1` で `ops/down.sh` が ECR を残す（保管料は下の「消したあとに残るもの」） |
 | `AWS_PROFILE` / `LOCAL_PORT` / `NO_DASHBOARD_PORTFORWARD` | プロファイル / PC 側のポート（既定 8080）/ `1` で最後の Web へのポートフォワーディングを開かずに終わる |
-| `VPC_CIDR` | VPC の CIDR。既定 `10.0.0.0/16`（[setup.md](setup.md)） |
+| `VPC_CIDR` | VPC の CIDR。既定 `10.0.0.0/16`（[setup.md](setup.md)）。立てた環境で変えるなら先に `ops/down.sh`（変えたまま `ops/up.sh` を打つと手順 0 の守りで止まる。[troubleshooting.md](troubleshooting.md) の「… の plan で SG が作り直し・削除になる」の行） |
 | `MDT_SOURCE_CIDRS` | 使わない（Cisco の MDT の受け口は外した。戻し方は [collection.md](collection.md)）。書いてあれば `ops/up.sh` が注意を出すだけ |
 | `NETWORK_PERIMETER` | VPC のエンドポイントを通らない AWS の API の呼び出しを拒む Deny（[architecture/core.md](architecture/core.md) の「閉域」）。既定 `1`。`0` は `AccessDenied` の切り分けのときだけ（エンドポイントは作ったまま、Deny だけを外す） |
 | `ENDPOINTS_AZ_NUM` | 冗長化用。インターフェース型エンドポイントと OpenSearch Serverless の VPC エンドポイントを何 AZ に置くか。既定 `1`（サブネット a だけ。b / c のワークロードも private DNS で a の ENI に届く）、`1`〜`3`。エンドポイントの費用が AZ の数の倍 |
@@ -291,7 +291,7 @@ AWS の料金表から root ごとに数えたパターン別の値は、下の�
 | 7-4b | ECS の Splunk がヘルスチェックで HEALTHY になるのを待つ（最大 20 分。Spark のジョブは起動してすぐ HEC に送るので）。クラスターの待ち方は下の「手順ごとの補足」 |
 | 7-5 | Spark のジョブが動いていなければ起こす |
 | 8-3 | Web を再起動（stream・graph・Nautobot のどれかを作るとき）。Kafbat UI もここで起きる（Web のユニットの `Wants=`。止まっていれば起こし、動いていればそのまま） |
-| 8-5 | `IaC/terraform/aws-managed/workflow`（`WORKFLOW=1` のとき）。apply の直後に Temporal の初期化のタスク `<prefix>-workflow-init`（ロール・DB・スキーマ。初回はイメージの取得とスキーマで 2〜5 分）を `run-task` で起こし、exitCode 0 で止まるのを待つ（前の init がまだ走っていれば、先にそれが止まるのを待つ。0 以外なら止まった理由と init のログの見方を出して止まる。cycle 042）。Temporal UI（`http://localhost:8233/`）を開くコマンドを表示 |
+| 8-5 | `IaC/terraform/aws-managed/workflow`（`WORKFLOW=1` のとき）。apply の直後に Temporal の初期化のタスク `<prefix>-workflow-init`（ロール・DB・スキーマ。イメージの取得を含む所要は未実測。AWS で測れたのは init の本体だけで、初回のスキーマの投入が 1.1 秒、2 回目が 0.5 秒（`docs/verification/20261011-aws-managed-045.md` の A-1 / I-3））を `run-task` で起こし、exitCode 0 で止まるのを待つ（前の init がまだ走っていれば、先にそれが止まるのを待つ。0 以外なら止まった理由と init のログの見方を出して止まる。cycle 042）。Temporal UI（`http://localhost:8233/`）を開くコマンドを表示 |
 | 8-6 | Web を再起動（`WORKFLOW=1` のとき） |
 | 9 | Runtime のロググループの保持を 7 日にする（`AGENT=1` のとき） |
 | 9-2 | Grafana のアラートルールが評価でエラーになっていないかを、Web の EC2 から Grafana のルールの API を読んで確かめる（最大 5 分。Grafana を今回作ったときと、今回は作らないが前の回の Grafana が残っているとき）。OK でなくても止めず、最後に警告をもう一度出す。あとから確かめ直すのは `ops/check-grafana.sh` |
@@ -397,7 +397,7 @@ flowchart LR
 
 - 手順 5-2 で、`ops/up.sh` が作った SSM のパラメータ（`/<prefix>/` の下でタグ `ManagedBy=ops/up.sh` のもの）を消す。手で入れたパラメータは消さない。
   - 消すもの（admin のパスワードと token）: Grafana / Splunk / Nautobot の admin のパスワード、Splunk の HEC の token とクラスターの合言葉（`/<prefix>/splunk/idxc-secret`）、Kafbat UI の admin のパスワード。
-  - 消すもの（Nautobot と gnmic）: Nautobot の SECRET_KEY と DB のパスワードと API トークン、gnmic の機器の認証情報（`/<prefix>/gnmic/` の下の 2 つ。cycle 013 より前に作った `/<prefix>/telegraf-dialin/` の下の 3 つも）。
+  - 消すもの（Nautobot・Temporal・gnmic）: Nautobot の SECRET_KEY と DB のパスワードと API トークン、Temporal のロール `temporal` の DB のパスワード（`/<prefix>/temporal/db-password`。cycle 036）、gnmic の機器の認証情報（`/<prefix>/gnmic/` の下の 2 つ。cycle 013 より前に作った `/<prefix>/telegraf-dialin/` の下の 3 つも）。
   - nautobot のルートが消えなかったときは Nautobot の分だけ残す（Terraform が destroy でも DB のパスワードを読むので。打ち直せば消える）。
 - 手順 5-3 で、`ops/up.sh` が作った MSK の SCRAM の secret（Secrets Manager の `AmazonMSK_<prefix>-syslog-ng` / `-goflow2` / `-gnmic` の 3 本）を復旧の待ちを置かずに消す。
   KMS の鍵（`alias/<prefix>-msk-scram`）は 3 本のあとに 1 回だけ削除を予約（7 日後に消える。待つあいだは課金されない）してから alias を外す。
@@ -426,7 +426,7 @@ flowchart LR
 |---|---|---|---|
 | VPC・サブネット・Runtime の SG（`<prefix>-runtime`） | AgentCore Runtime の ENI（InterfaceType `agentic_ai`）が外れるまで消せない（最大 8 時間） | 無料 | base/core の state に残っているので、同じ VPC に残りを作り足す |
 | SSM のパラメータ（`/<prefix>/` の下） | nautobot のルートが消えなかったときの Nautobot の分（上の手順 5-2） | 無料（標準のパラメータ） | あるものは作り直さない |
-| ECR のリポジトリ（`KEEP_ECR=1` のとき） | 意図して残す | 7.39 GB で月 約 110 円（$0.10/GB・月。2026-10-08 の 11 リポジトリ。いまのマネージド版は 14 リポジトリ（`IaC/terraform/aws-managed/base/ecr/main.tf`）） | ECR にあるタグはビルドを飛ばす |
+| ECR のリポジトリ（`KEEP_ECR=1` のとき） | 意図して残す | 7.39 GB で月 約 110 円（$0.10/GB・月。2026-10-08 の 11 リポジトリ。いまのマネージド版は 15 リポジトリ（`IaC/terraform/aws-managed/base/ecr/main.tf`）） | ECR にあるタグはビルドを飛ばす |
 | logs のバケット `<prefix>-logs-<アカウント>` | 意図して残す（`ops/down.sh` は base/logs を消さない） | 7 日ぶんの Firehose の書けなかった行だけで、ふだんは空。月 1 円未満 | 同じチェックアウトからならそのまま使う。state を失ったら下の import |
 | MSK の SCRAM の KMS の鍵（alias は外してある） | KMS の鍵はすぐには消せず、削除の予約の待ち（7 日）が要る（上の手順 5-3） | 無料（予約中の鍵は課金されない。KMS の価格表） | 新しい鍵を作る（予約中の鍵はそのまま 7 日後に消える）。alias を外せずに残っていれば、予約を取り消して同じ鍵を使い直す（取り消すと、待った日数も課金される） |
 

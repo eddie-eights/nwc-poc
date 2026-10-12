@@ -12,7 +12,7 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 | 項目 | 値 | 定義している場所 |
 |---|---|---|
 | サービス | `<prefix>-nautobot`。1 タスクに 3 コンテナ。Fargate ARM、2 vCPU / 4 GB。AZ を選ぶキーは無い | `IaC/terraform/aws-managed/pipeline/nautobot/nautobot.tf` |
-| イメージ | 公式の `networktocode/nautobot:3.2.6-py3.12` に boto3、`app/nautobot/` の Job、`app/agentcore/graph.py`、`lab_seed.json` を足したもの。ECR の `<prefix>-nautobot`。redis は表の下 | `docker/images/nautobot/Dockerfile`、`ops/up-common.sh` の `NAUTOBOT_VERSION`、`REDIS_TAG` |
+| イメージ | 公式の `networktocode/nautobot:3.2.6-py3.12` に boto3、`app/nautobot/` の Job、`app/agentcore/graph.py` と `app/agentcore/toolkit.py`、`lab_seed.json` を足したもの。ECR の `<prefix>-nautobot`。redis は表の下 | `docker/images/nautobot/Dockerfile`、`ops/up-common.sh` の `NAUTOBOT_VERSION`、`REDIS_TAG` |
 | DB | RDS の PostgreSQL 18（`ops/up-common.sh` の `POSTGRES_MAJOR`。cycle 036 で 17 から上げた。`allow_major_version_upgrade` は付けていないので、17 のまま立っている環境に `ops/up.sh` を打ち直すと nautobot の apply が止まる。先に `ops/down.sh` で消してから立てる）、`db.t4g.micro`、gp3 20 GB。バックアップ無し、最後のスナップショット無し。`NAUTOBOT_DB_AZ_NUM`（既定 1、1〜2。2 は Multi-AZ） | `IaC/terraform/aws-managed/pipeline/nautobot/database.tf` |
 | 相乗り | Temporal の履歴（DB `temporal` / `temporal_visibility`、ロール `temporal`）も同じ RDS に置く（cycle 036）。workflow の初期化のタスク `<prefix>-workflow-init` が `ops/up.sh` のたびに master で無ければ作る（cycle 042。それより前は temporal のコンテナの entrypoint）。アドレスとポートは出力 `db_address` / `db_port` で渡す | `outputs.tf`、`docker/images/temporal-server/init.sh` |
 | 名前 | Cloud Map `nautobot.<prefix>-nautobot.internal:8080`。SSM の String `/<prefix>/nautobot/url` にも書く | `nautobot.tf` |
@@ -40,7 +40,7 @@ Fargate の 1 タスク（web・worker・redis の 3 コンテナ）と、RDS �
 |---|---|---|
 | 利用者の PC | PC → Web の EC2 → Nautobot | 8080/tcp（手元は `localhost:8081`）。SSM のポートフォワーディング。ユーザー admin |
 | Web の「トポロジ」タブ | Web の EC2 → Nautobot の REST API | 8080/tcp、API のトークン |
-| RDS | タスク → DB | 5432/tcp。SG `<prefix>-nautobot-db` はタスクからだけ受ける |
+| RDS | タスク → DB | 5432/tcp。SG `<prefix>-nautobot-db` は Nautobot のタスクと workflow のタスク（Temporal のサーバーと init。SG `<prefix>-workflow`。Temporal の履歴。cycle 036）からだけ受ける |
 | SSM と ECS | Job → パラメータ、`ecs:UpdateService` | `ssm`、`ecs` のエンドポイント、タスクロール |
 | Neptune Analytics | Job → グラフ | `neptune-graph-data` のエンドポイント、SigV4、openCypher（差分） |
 

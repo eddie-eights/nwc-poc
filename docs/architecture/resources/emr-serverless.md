@@ -16,6 +16,7 @@ MSK のトピックを読み、格納先（S3 Tables、OpenSearch、Prometheus�
 | AZ の数 | `EMR_AZ_NUM`（既定 1）。サブネットを a から渡す | `ops/up.sh`、変数 `emr_az_num` |
 | ジョブ | `sinks-s3iceberg`（`STORES` の `s3`）、`sinks-splunk`（`splunk`）、`sinks-grafana`（`grafana`。OpenSearch と Prometheus）。1 つ driver 1 + executor 2 = 3 vCPU | `ops/up.sh` の手順 7-5、`app/spark/snmp_sinks.py` |
 | ジョブの起こし方 | Terraform のリソースではない。`ops/up.sh` が `start-job-run` で起こす（STREAMING モード） | `ops/up.sh` の手順 7-5 |
+| ジョブの止め方 | `ops/stop-spark.sh` が動いている・待っているジョブを全部 cancel して、止まるまで待つ（アプリケーションと Terraform のリソースは触らない）。起こし直すのは `ops/up.sh`。[deploy.md](../../deploy.md) の「Spark のジョブだけ止めて起こし直す」 | `ops/stop-spark.sh`、`ops/common.sh` の `emr_cancel_jobs` |
 | 周期と上限 | トリガー 60 秒。1 回に読む件数の上限 `MAX_OFFSETS_PER_TRIGGER`（既定 10000、0 で上限なし。格納先ごとの値も書ける） | `app/spark/snmp_sinks.py` の `TRIGGER`、`deploy.env.example` |
 | HTTP の送り方 | `HTTP_SEND`（既定 `driver`。`executor` でパーティションごとに送る）。タイムアウト 30 秒、5xx と接続の失敗は 3 回まで、まとまりは 500 件 | `app/spark/snmp_sinks.py` の `HTTP_TIMEOUT`、`HTTP_RETRIES`、`BULK_SIZE` |
 | チェックポイント | `s3://<assets のバケット>/spark/checkpoint/<MSK クラスタの uuid>/`。クエリごとに別。スクリプトと jar も同じ `spark/` の下（[s3-buckets.md](s3-buckets.md)） | [pipeline.md](../../pipeline.md) の「Spark を確かめる」 |

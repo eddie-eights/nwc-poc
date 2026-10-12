@@ -3,7 +3,7 @@
 ← [構成](README.md)
 
 `IaC/terraform/aws-managed/workflow`（`WORKFLOW=1`）。
-Temporal on ECS、SQS が 2 本（SNS を購読するアラートのキューと、Web の承認・却下を受ける決定のキュー）、Gateway（MCP）と tools Lambda。
+Temporal on ECS（サーバー・UI・worker の 1 タスクと、Nautobot の RDS にスキーマを作る一回きりの init のタスク `<prefix>-workflow-init`。cycle 042）、SQS が 2 本（SNS を購読するアラートのキューと、Web の承認・却下を受ける決定のキュー）、Gateway（MCP）と tools Lambda。
 AGENT と PIPELINE と、アラートの送り手（Grafana か Splunk）が要る。
 承認の流れと Temporal UI は [workflow.md](../workflow.md)、データの置き場は [data-stores.md](../data-stores.md)。
 
@@ -15,6 +15,8 @@ flowchart LR
   WF -->|"トポロジを読む<br/>（事前チェック、保守中）"| NEP["Neptune"]
   WF -->|"作成・承認・却下・適用・確認<br/>1 段ごとに 1 行"| PEV["S3 Tables<br/>proposal_events（修復案）"]
   WF -->|"SSM Run Command"| LAB["lab の EC2"]
+  INIT["init のタスク<br/>prefix-workflow-init<br/>（ops/up.sh の 8-5）"] -->|"ロール・DB・スキーマ"| RDS[("Nautobot の RDS<br/>temporal / temporal_visibility")]
+  WF -->|"履歴（5432）"| RDS
   PEV -->|"Athena"| WEB["Web の EC2<br/>承認の画面"]
   PEV -->|"Athena"| TL
   WEB -->|"承認 / 却下"| DQ["SQS<br/>prefix-decisions"] --> WF

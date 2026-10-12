@@ -41,8 +41,9 @@ flowchart LR
   end
   EC2 --> WEB
   EC2 -->|"「トポロジ」タブのリンクの編集<br/>REST API（トークン）"| WEB
-  WEB --- DB[("RDS PostgreSQL<br/>db.t4g.micro<br/>台帳")]
+  WEB --- DB[("RDS PostgreSQL<br/>db.t4g.micro<br/>台帳と Temporal の履歴")]
   WORKER --- DB
+  TMP["Temporal のサーバーと init のタスク<br/>（workflow。WORKFLOW=1）"] -->|"5432"| DB
   WORKER -->|"① 一覧を書き換え"| SSM["SSM のパラメータ<br/>gnmi-targets"]
   WORKER -->|"① サービスを作り直す"| GNMIC["gnmic（ECS）"]
   SSM -.->|"起動時に読む"| GNMIC
@@ -52,11 +53,11 @@ flowchart LR
 | リソース | 名前 | 中身 |
 |---|---|---|
 | ECS のクラスタ / サービス / タスク | `<prefix>-nautobot` | 1 タスクに 3 コンテナ（web・worker・redis）。同じタスクなので互いに `localhost` で届く |
-| RDS | PostgreSQL `db.t4g.micro` | 台帳。`ops/down.sh` で消える。`NAUTOBOT_DB_AZ_NUM=2` なら Multi-AZ（別の AZ に待機系。既定 1） |
-| SG | `<prefix>-nautobot` / `<prefix>-nautobot-db` | 画面へは Web の EC2 からだけ。DB へはタスクからだけ |
+| RDS | PostgreSQL `db.t4g.micro` | 台帳。`WORKFLOW=1` なら Temporal の履歴（DB `temporal` / `temporal_visibility`）も同じ RDS に置く（cycle 036。ロール・DB・スキーマは init のタスク `<prefix>-workflow-init` が作る。cycle 042）。`ops/down.sh` で消える。`NAUTOBOT_DB_AZ_NUM=2` なら Multi-AZ（別の AZ に待機系。既定 1） |
+| SG | `<prefix>-nautobot` / `<prefix>-nautobot-db` | 画面へは Web の EC2 からだけ。DB（5432）へは Nautobot のタスクと workflow のタスク（Temporal のサーバーと init。SG `<prefix>-workflow`）からだけ |
 | 名前解決 | `nautobot.<prefix>-nautobot.internal:8080` | VPC の中の URL（SSM `/<prefix>/nautobot/url` にも書く） |
 | ログ | `/ecs/<prefix>-nautobot` | ストリームは `web/`（migrate・bootstrap・画面）、`worker/`（Job）、`redis/` |
-| シークレット | SSM の SecureString `/<prefix>/nautobot/{secret-key,admin-password,db-password,api-token}` | `ops/up.sh` が乱数で作る。タスクは ECS の secrets で受ける。`secret-key` / `admin-password` / `db-password` は Web / Runtime / tools の Lambda / temporal のタスク / lab の EC2 / lab-debug の EC2 のロールでは Deny（cycle 044。prefix を問わない。`api-token` は Web が読む） |
+| シークレット | SSM の SecureString `/<prefix>/nautobot/{secret-key,admin-password,db-password,api-token}` | `ops/up.sh` が乱数で作る。タスクは ECS の secrets で受ける。`secret-key` / `admin-password` / `db-password` は Web / Runtime / tools の Lambda / lab の EC2 / lab-debug の EC2 のロールでは Deny（`DenyNautobotSecrets`。cycle 044。prefix を問わない。`api-token` は Web が読む）。workflow のサーバーのタスク（temporal・ui・worker）のロールは自分の prefix の `/<prefix>/nautobot/*` をまとめて Deny（`DenyNautobotParameters`。cycle 042。master のパスワードは init のタスクが実行ロールの secrets で受けるだけ） |
 | イメージ | ECR `<prefix>-nautobot` | 公式イメージ `networktocode/nautobot:3.2.6-py3.12` に boto3 と下の「足したもの」を入れたもの |
 
 LB は無い。閉域なので、画面は Web の EC2 を踏み台にしたポートフォワードで開く。費用は約 $0.13/h（`NAUTOBOT_DB_AZ_NUM=2` で RDS が Multi-AZ になると +$0.03/h）。
@@ -70,7 +71,7 @@ LB は無い。閉域なので、画面は Web の EC2 を踏み台にしたポ�
 | web | 画面と REST API・GraphQL。Job を積む |
 | Job の仕組み | Nautobot の中で動く Python。台帳を直接読み書きできる。きっかけは画面のボタン・スケジュール・API・台帳の変更（JobHook） |
 | Celery worker | Job を実際に動かすプロセス（web と同じイメージを別のコマンドで起こす） |
-| PostgreSQL | 台帳。Nautobot の必須の部品で、使う側が用意する（ここでは RDS） |
+| PostgreSQL | 台帳。Nautobot の必須の部品で、使う側が用意する（ここでは RDS。同じ RDS に Temporal の履歴も置く。cycle 036） |
 | Redis | web から worker へ Job を渡すキュー、キャッシュ、同期のロック。同じく使う側が用意する（ここではタスクの中のコンテナ。中身は消えてよい） |
 
 **このリポジトリで足したもの**（`app/nautobot/`）
