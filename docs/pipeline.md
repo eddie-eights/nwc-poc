@@ -494,7 +494,7 @@ terraform -chdir=IaC/terraform/aws-managed/pipeline/analytics output -raw splunk
   - `WORKFLOW=1` の検査が見るのは `link_down` の送り手（ワークフローを起こすのは `link_down` だけ）で、Grafana も Splunk もあればいつも数える。
   - どちらも無いと `ops/up.sh` は何も作らずに止まる。
 - 本文は `{"source": "grafana" | "splunk", "alerts": [{"status", "device_id", "kind", "target", "detail", "starts_at"}]}`。
-- 異常の id は `<device_id>#<kind>#<target>` で、送り手が違っても同じ機器・種類・対象なら同じ id になる（Grafana と Splunk が同じ `link_down` を知らせても 1 つ）。
+- 異常の id は `<device_id>#<kind>#<target>` で、送り手が違っても同じ機器・種類・対象なら同じ id になる（Grafana と Splunk が同じ `link_down` を知らせても 1 つ）。回線の両端の `link_down` は、ワーカーの starter が回線の `a` の端（機器名の順で前）の id にまとめる（053。`app/temporal/rules.py` の `link_anomaly`）。
 - 形を変えるときは、Grafana のテンプレート、Splunk のアラートアクション、`app/temporal/rules.py` の `alerts_from_message`（ワーカーと Lambda が同じものを使う）を一緒に変える。
 - 送り手は「いまの状態」を出すだけなので、同じ知らせが重なって届くことがある。受け手は何度受けてもよい作り（ワークフローの id は異常ごとに 1 つ、`status` は上書き）。
 - publish はタスクロール（`sns:Publish` だけ）で、VPC の `sns` のエンドポイントを通る。アクセスキーは置かない。

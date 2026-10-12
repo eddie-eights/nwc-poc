@@ -323,7 +323,7 @@ ORDER BY anomaly_id, status
 | `lab fail-bgp` / `lab heal-bgp` / `lab trap-test` の実際の動き | 2026-10-08 に lab の EC2 で打った（011 の前の lab）。`bgp_down` は両方から出て、`trap` は Splunk だけから出た。heal-bgp で BGP は戻り、Splunk は `resolved` を出した。Grafana の `bgp_down` の `resolved` は見ていない（上の「2026-10-08 の 1 回」） |
 | `lab trap-test` で `dc1-trex-01` が `ALARM` になるか | 未確認。送り元の IP が device map で `dc1-trex-01` に直る前提 |
 | SR Linux の linkDown の trap に IF 名が載るか | 未確認。載らないと Splunk の trap の `target` が IF 名にならず、gNMI の `link_down` と別の異常の id になる |
-| `link_down` で 2 つ目のワークフローが起きるか | 2026-10-05 に確かめた。1 本の回線断でワークフローが 4 本起きた（「4. 結果」）。trap ではなく、Splunk がサブインターフェースの `link_down` も出すことと、回線の両端が別の異常になることによる |
+| `link_down` で 2 つ目のワークフローが起きるか | 2026-10-05 に確かめた。1 本の回線断でワークフローが 4 本起きた（「4. 結果」）。trap ではなく、Splunk がサブインターフェースの `link_down` も出すことと、回線の両端が別の異常になることによる。両端は 053 でまとめた |
 | 上の Athena のクエリ | 未実行。`alert_events` を Athena で読めることは 2026-10-05 に確かめた |
 
 ## 経緯

@@ -96,6 +96,7 @@ uv run python app/dashboard/app.py
   - 通知の履歴は S3 Tables の `alert_events` に残り、エージェントの `query_history` で引ける。
 - 複数の機器にまたがるアラートの相関。
   - まとめるのは同じ機器・種類・対象のアラートだけ（送り手が違っても異常の id が同じになる）。
+  - 例外は回線の両端の `link_down` で、回線の `a` の端（機器名の順で前）の id にまとめる（053）。
   - 「Spine が落ちたので配下の Leaf のアラートを 1 つの障害にする」ようなルールは入れていない。
 - 修復案の経過（S3 Tables の `proposal_events` の全部の行）を追う画面。「承認」タブとエージェントの `list_proposals` が出すのは修復案ごとの最新の 1 行だけ。経過は Athena（ワークグループ `<prefix>-history`）で読む。
 - state の共有。1 人が 1 台の PC で打つ前提。

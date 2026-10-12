@@ -55,6 +55,7 @@ flowchart LR
 - アラートは Grafana と Splunk が同じ形の JSON で SNS のトピック `<prefix>-alerts` に出す。
   - 形は `{"source", "alerts": [{"status", "device_id", "kind", "target", "detail", "starts_at"}]}`。読むのは `app/temporal/rules.py` の `alerts_from_message`。
   - 異常の id は `<device_id>#<kind>#<target>`。
+  - 回線の両端の `link_down` は、回線の `a` の端（機器名の順で前）の id にまとめる（053）。starter が Neptune の回線と照らして読み替え（`app/temporal/rules.py` の `link_anomaly`）、どちらの端の通知かを `detail` の頭に書く。
 - ワークフローは異常ごとに 1 つ（id は `investigate-<anomaly_id>`。発生の時刻を入れない）。
   - Grafana と Splunk が同じ障害を知らせても、同じ id なので Temporal が二重起動を弾く。
   - 修復案は発生ごと（`<anomaly_id>#<first_seen>`。`first_seen` はアラートの `starts_at`）。直ってからもう一度起きた次の発生は、前の修復案とは別の `proposal_id` になる。
