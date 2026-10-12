@@ -39,7 +39,7 @@
 | Runtime（エージェント）、Web の EC2 | 読み書き | `neptune-graph-data` のエンドポイント（443、private DNS）、SigV4。ポリシー `<prefix>-graph-access` |
 | Lambda `<prefix>-graph-status` | 書く（`status`） | 同じエンドポイント、SigV4 |
 | tools の Lambda（Gateway のトポロジのツール） | 読むだけ | 同じエンドポイント、SigV4（`ReadDataViaQuery` と `GetQueryStatus` だけ） |
-| ワーカー（Temporal） | 読むだけ（トポロジ。事前チェックと保守中の機器の判定） | 同じエンドポイント、SigV4（タスクロールには Write と Delete も残っているが、コードは使わない） |
+| ワーカー（Temporal） | 読むだけ（トポロジ。事前チェックと保守中の機器の判定、starter の回線の両端のまとめ（053）） | 同じエンドポイント、SigV4（タスクロールには Write と Delete も残っているが、コードは使わない） |
 | Nautobot の Job | 書く（物理層） | 同じエンドポイント、SigV4（タスクロール） |
 | `ops/sync-graph.sh` | 書く（lab の定義の投入） | 利用者の PC → SSM → Web の EC2 → 上と同じ経路 |
 
@@ -76,8 +76,8 @@
 - **登録の無い機器のアラートは、`registered=false` の頂点になる。**
   Lambda のログには `UNREGISTERED` の警告が出る。
   出典: [pipeline.md](../../pipeline.md) の「Neptune のトポロジ」。
-- **Neptune が止まっても検知は続く。止まるのは `status` の更新、トポロジのツール、新しいワークフローの起動。**
-  - worker は起こす前に保守中の機器かどうかを Neptune で見るため。修復案の一覧と承認・却下は Neptune を使わないので動く。
+- **Neptune が止まっても検知は続く。止まるのは `status` の更新、トポロジのツール、新しいワークフローの起動と `link_down` の解消のシグナル。**
+  - worker の starter は `link_down` の通知（firing も resolved も）を、回線の両端をまとめるために Neptune のトポロジを読んでから扱う（053）。起こす前の保守中の機器の判定にも使う。修復案の一覧と承認・却下は Neptune を使わないので動く。
   - アラートは SQS で待ち、5 回受け取っても処理できなければ DLQ に行く。
   - 出典: [data-stores.md](../../data-stores.md) の「4. 気を付けること」、[workflow.md](../../workflow.md) の「流れ」。
 - **IAM では頂点ごとに権限を分けられない。**

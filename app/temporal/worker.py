@@ -8,6 +8,7 @@ Grafana と Splunk のアラート（SNS → SQS）を受けてエージェン�
   - starter（アラート）: SQS（ANOMALY_QUEUE_URL）を long polling（20 秒）し、届いたアラート（rules.alerts_from_message）ごとに
       firing   → investigate-<anomaly_id> のワークフローを起こす（起こすのは rules.START_KINDS（link_down）だけ）。
                  同じ id が走っていれば Temporal が二重起動を弾く（Splunk と Grafana が同じ障害を知らせても 1 つ。繰り返しの通知も同じ）
+                 回線の両端の link_down は、Neptune の回線の a の端（機器名の順で前）の id に読み替えてから扱う（rules.link_anomaly。053）
       resolved → そのワークフローにシグナル resolved を送る（走っていなければ何もしない）
     決定（type が decision）はここでは読まない（読めないメッセージとして消す）。このキューには SNS に publish できる Grafana と Splunk も送れる
   - starter（決定）: SQS（DECISION_QUEUE_URL。Web の承認タブだけが送れる）を同じ作りで待ち、承認・却下（rules.decision_from_message）を
@@ -341,8 +342,9 @@ class InvestigateAnomaly:
 
 
 # ---------------------------------------------------------------- starter（アラートを拾ってワークフローを起こす・解消と決定を伝える）
-async def start_for(client: Client, alert: dict) -> bool:
+async def start_for(client: Client, alert: dict, topology: tuple | None = None) -> bool:
     """firing のアラート 1 件についてワークフローを起こす（起こさない理由があれば False）。
+    topology は awsio.read_topology の (devices, links)。handle_message が 1 通につき 1 回読んで渡す。渡されなければ自分で読む。
     WorkflowAlreadyStartedError（同じ異常のワークフローが走っている）は False。それ以外の失敗は呼び手に投げる"""
     aid = alert.get("anomaly_id", "")
     if not rules.should_start(alert, None):
@@ -352,7 +354,9 @@ async def start_for(client: Client, alert: dict) -> bool:
     if not rules.should_start(alert, existing):
         return False
     # 保守中の機器（Nautobot の Status が Maintenance）に関わる異常では起こさない。修復案も作らないので、保守が明けても落ちたままなら次の通知で起こす
-    held = rules.maintenance_hold(alert, *await asyncio.to_thread(awsio.read_topology))
+    if topology is None:
+        topology = await asyncio.to_thread(awsio.read_topology)
+    held = rules.maintenance_hold(alert, *topology)
     if held:
         log.info("skip %s: 保守中の機器（%s）", aid, ", ".join(held))
         return False
@@ -386,13 +390,18 @@ async def handle_message(client: Client, body: str) -> None:
     if not alerts:
         log.warning("starter: 読めないメッセージ（消す）: %s", str(body)[:200])
         return
+    alerts = [a for a in alerts if a["kind"] in rules.START_KINDS]
+    if not alerts:
+        return
+    # トポロジは 1 通につき 1 回だけ読み、回線の両端のまとめ（053）と保守中の判定の両方に使う。読めなければ投げる（消さずに配り直させる）。
+    # resolved だけのメッセージでも読む（読まないと b の端の resolved が a の端の id のワークフローに届かない）
+    topology = await asyncio.to_thread(awsio.read_topology)
     for a in alerts:
-        if a["kind"] not in rules.START_KINDS:
-            continue
+        a = rules.link_anomaly(a, topology[1])
         if a["status"] == "resolved":
             await resolve_for(client, a)
         else:
-            await start_for(client, a)
+            await start_for(client, a, topology)
 
 
 async def handle_decision(client: Client, body: str) -> None:
