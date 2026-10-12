@@ -24,7 +24,7 @@ Telegraf・gnmic・syslog-ng・GoFlow2 が集めた機器のデータを、い�
 
 - SCRAM の資格情報: `ops/up.sh` が stream の apply の前に作り、`ops/down.sh` が消す（鍵は 7 日の削除の予約）。
 - SCRAM のユーザーの ACL: `allow.everyone.if.no.acl.found=false` なので、ACL が入るまで syslog-ng・GoFlow2・gnmic は書けない。ACL の無い `traps` にも書けない。
-  2026-10-09 の AWS（当時は既定の true）では ACL を入れる前も書けた（`docs/verification/20261009-aws-managed.md` の「A.」「B.」）。false にしてからは AWS で未確認。
+  2026-10-09 の AWS（当時は既定の true）では ACL を入れる前も書けた（`docs/verification/20261009-aws-managed.md` の「A.」「B.」）。false にしてからの 2026-10-11 の AWS では、ACL のあとに gnmic が `metrics` に、syslog-ng が `logs` に書けた（`docs/verification/20261011-aws-managed-045.md` の B-1 / B-2 / E-1）。GoFlow2 の `flows` は 0 件で、書けるかは未確認（lab の事象待ち）。
 - ブローカーの設定: 内部トピック（`__consumer_offsets` 等）のパーティション数は configuration に項目が無く変えられないので、既定の 50 のまま（OSS 版は 1）。
 
 トピックと中身:
@@ -82,7 +82,7 @@ Telegraf・gnmic・syslog-ng・GoFlow2 が集めた機器のデータを、い�
   - 手元の Kafka（`apache/kafka:4.3.1`、KRaft 1 台、StandardAuthorizer、SCRAM-SHA-512、同じ 2 つの設定）で 2026-10-10 に確かめた。
     ACL の前は自分のトピックも拒否、ACL のあとは自分のトピックだけ書け、`traps`・ほかのコレクターのトピック・無いトピックは `TopicAuthorizationException`。
     super user（MSK のブローカー相当）でも無いトピックは書き込みではできない。MSK では未確認。
-  - false にしてからの AWS の振る舞い（SCRAM の収集器が ACL のあとに書けること、Telegraf・Spark・Kafbat UI が変わらないこと、`UnderReplicatedPartitions` が 0 のまま）は未確認。
+  - false にしてからの AWS（2026-10-11）では、ACL のあとに gnmic が `metrics` に、syslog-ng が `logs` に書け、IAM の主体（Spark の 3 本は RUNNING、Kafbat UI はトピックを読める）は変わらなかった（`docs/verification/20261011-aws-managed-045.md` の B-2 / E-1）。GoFlow2 の `flows` への書き込み、Telegraf、`UnderReplicatedPartitions` が 0 のままかは未確認。
   - ACL を入れるのに要る IAM の権限は `kafka-cluster:AlterCluster`（EMR の実行ロールに付けた）。
     これは Kafka の ALTER CLUSTER と同じ幅を許す。
     （どの主体・資源への ACL の作成と削除、パーティションの再配置、リーダー選出、SCRAM の資格情報の変更 等。MSK でどれが効くかは未確認）

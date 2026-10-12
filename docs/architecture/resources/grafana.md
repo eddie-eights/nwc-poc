@@ -125,20 +125,20 @@ Grafana OSS を Fargate のタスク 1 つで動かしている。
 | 項目 | 状態 |
 |---|---|
 | 4 本になったあとの形（Splunk と Grafana のアラートを比べる（002）） | `link_down`・`isis_down`・`bgp_down` の発火は AWS で確かめた。`trap` は AWS では未確認。Grafana の画面は未確認（表の下） |
-| OpenSearch Serverless を SigV4 でルールの評価に使えるか | 未確認（表の下）。ダッシュボードで読めることは 2026-09-28 に確認済み |
+| OpenSearch Serverless を SigV4 でルールの評価に使えるか | 評価がエラーにならないことは AWS で確認済み（表の下）。ダッシュボードで読めることは 2026-09-28 に確認済み。`trap` の発火は未確認 |
 | 機器ごと止まったとき | 検知しない（系列が途切れると解消を送る） |
 | gnmic が止まったとき | 系列は `last_over_time(...[24h])` で最後の値のまま残るので、止まっているあいだの変化は出ない（`link_down` / `bgp_down` / `isis_down`） |
 | 1 タスク・1 AZ | 止まっているあいだはルールが評価されない |
-| ルールの評価のエラーの確かめ（手順 9-2、`ops/check-grafana.sh`） | 打ったあとの評価だけを見る（あとで壊れたら打ち直す）。AWS では未実行（API の形とログは手元の 13.2.2 で確かめた）。詳細は表の下 |
+| ルールの評価のエラーの確かめ（手順 9-2、`ops/check-grafana.sh`） | 打ったあとの評価だけを見る（あとで壊れたら打ち直す）。AWS では 2026-10-10 と 2026-10-11 の 2 回とも「4 本とも評価のエラーなし」（API の形とログは手元の 13.2.2 で確かめた）。詳細は表の下 |
 | Grafana がやり直さないエラーでも `Failed to evaluate rule` がログに出るか | 未確認。出なければ `--filter-pattern '"level=error"'` で探す |
 
 - 4 本になったあとの形:
   - 2026-10-05 に AWS で `link_down` と `isis_down` の発火を確かめた（`sudo lab fail-main`）。
   - 2026-10-08 に AWS で `bgp_down` の発火を確かめた（`sudo lab fail-bgp`。011 の前の lab。[verification/20261008-managed-aws.md](../../verification/20261008-managed-aws.md)）。
-  - `trap` はルールの評価が毎回エラーで出なかった。「AWS 検証で見つけた不具合 3 件を直す（008）」でルールを絞り、手元の Grafana で通したが、AWS では未確認。
+  - `trap` はルールの評価が毎回エラーで出なかった。「AWS 検証で見つけた不具合 3 件を直す（008）」でルールを絞った。評価がエラーにならないことは AWS で確かめた（手順 9-2 で `trap` を含む 4 本とも評価のエラーなし。[verification/20261010-aws-managed.md](../../verification/20261010-aws-managed.md) の 2 本目と [verification/20261011-aws-managed-045.md](../../verification/20261011-aws-managed-045.md) の H-2）。`trap` の発火は AWS では未確認。
 - OpenSearch Serverless を SigV4 でルールの評価に使えるか:
   - 2026-10-08 に AWS で試したが、`trap` のルールの評価が毎回エラーになった（`bucket budget out of bounds`。[verification/20261008-managed-aws.md](../../verification/20261008-managed-aws.md) の「不具合」1）。
-  - 008 でルールを絞り手元の Grafana で通したが、AWS では未確認。
+  - 008 でルールを絞ったあとは、AWS でも `trap` を含む 4 本とも評価のエラーなし（2026-10-10 は `health=ok` / `Normal (NoData)`。[verification/20261010-aws-managed.md](../../verification/20261010-aws-managed.md) の 2 本目と [verification/20261011-aws-managed-045.md](../../verification/20261011-aws-managed-045.md) の H-2）。`trap` が発火するかは未確認。
 - ルールの評価のエラーの確かめ（手順 9-2、`ops/check-grafana.sh`）:
   - 打ってから全部のルールが評価されるまで最大 1 分、エラーがあればもう 1 回の評価まで 1 分ほど延びる。
   - 打ったあとの評価で 1 回でもエラーになったルールは、すぐ直っても NG になる（次の評価にエラーが残るため）。NoData はエラーではないので OK になる。
