@@ -24,3 +24,22 @@ Round 1 のエンジニアのセルフレビューが、設計側の Should fix 
   - 全体の締め切り 25 秒を Python 側に持つ。Splunk の `max_time` は export が受けるかを確かめていないので使わない
 - T-10 は「動いていれば」をやめて、使い捨ての Splunk を立てて必ず確かめる（SPL を本物に一度も通していないため）
 - SG `lambda` を 3 つの Lambda が共有する件（Should fix 4）: SG は分けない。2 つの Lambda のロールは SSM を読めず、admin のパスワードを持たない。専用の SG は読み取り専用のユーザーと一緒に QUEUE へ
+
+## Round 3（2026-10-12）
+
+Round 2 のエンジニアのセルフレビュー（A4 / A5 / A6。`build.md` の Round 2）と、cold reviewer の Round 1（Must 0 / Should 2 / Nit 6。`review.md`）を受けて PM が直す形を決めた。
+
+- A4 と cold の Should 2 件目（sysName のある機器を IP で引くと、エラーにならずに 0 件）、A5（flows は `device_id` で引くと必ず 0 件）
+  - 原因は 1 つ: 2 段目の絞り込みを、`coalesce` した 1 つの機器名だけで書いた。イベントは機器を sysName / agent_host / source / sampler / host の複数の欄で持ち、device map が sysName を足すと IP は `device` から消える。flows は `device` が必ず `unknown`
+  - PM の再現（pm-054 の aca0c69。Spark の `splunk_events` に devmap を通し、`coalesce` を Python で写した）
+
+    ```
+    traps host: unknown tags: {'source': '10.0.0.1', 'name': 'linkDown', 'sysName': 'spine-1'} | device: spine-1 | filter device==10.0.0.1: False
+    flows host: unknown tags: {'sampler': '10.0.0.1', 'src': '10.1.1.1', 'dst': '10.2.2.2'} | device: unknown | filter device==10.0.0.1: False
+    ```
+
+  - 選んだもの: 2 段目に IP の欄（`tags.agent_host` / `tags.source` / `tags.sampler` / `host`）の完全一致を OR で足す。`search_logs` も 3 欄のどれでも当たるので、格納先で答えが変わらない
+  - 却下: 説明を「IP で当たるのは sysName の付かない機器だけ」に直すだけ。エージェントはアラートや trap の送り元の IP で引くことがあり、0 件を「何も無い」と読む。flows を機器で引く手段も残らない
+- cold の Should 1 件目（`GATEWAY_ONLY` と `run_tool` の振る舞いの変更が design.md に無い）: 実装とテストは正しいので、方針・変更対象・検証方法（T-12）に足すだけ。コードは変えない
+- A6（締め切りが厳密でない）: 受け入れて「未確定事項とリスク」に書く。超えても Gateway の時間切れの `error` がエージェントに届き、tools Lambda は落ちない（`gateway.tf:202` の timeout 60、`mcp_client.py:26` の 30 秒、`tests/test_agentcore.py` の T-12）。別スレッドで閉じる形は複雑さに見合わない。cold reviewer も同じ件を Nit にした
+- cold の Nit 6 件は直さない（flows の Nit は A5 で一緒に片付く）。リダイレクトで Authorization を付けたまま追う件は、読み取り専用のユーザーの QUEUE の行と一緒に後で
