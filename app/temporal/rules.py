@@ -4,7 +4,7 @@
   - build_prompt        エージェント（AgentCore Runtime）に投げる質問文
   - parse_agent_json    返ってきた文から JSON を取り出す
   - normalize_action    lab EC2 で打ってよいコマンドの許可リスト
-  - alerts_from_message / should_start / maintenance_hold / workflow_id / proposal_id  アラート（SNS → SQS）の読み取りと、どれでワークフローを起こすかの判定と id
+  - alerts_from_message / link_anomaly / should_start / maintenance_hold / workflow_id / proposal_id  アラート（SNS → SQS）の読み取りと、回線の両端のまとめ（053）と、どれでワークフローを起こすかの判定と id
   - proposal_event      修復案（S3 Tables の proposal_events）の 1 行。どの行も全項目を持つ
   - decision_from_message / anomaly_of  Web の承認・却下（決定のキュー）の読み取りと、送る先のワークフローの id
   - alert_event         アラートの通知の履歴（S3 Tables の alert_events）の 1 行
@@ -217,7 +217,8 @@ def device_name(name) -> str:
 
 
 def anomaly_id(device_id: str, kind: str, target: str) -> str:
-    """異常の id。送り手が違っても同じ機器・種類・対象なら同じ id（Splunk と Grafana の両方が同じ障害を知らせても 1 つにまとまる）"""
+    """異常の id。送り手が違っても同じ機器・種類・対象なら同じ id（Splunk と Grafana の両方が同じ障害を知らせても 1 つにまとまる）。
+    回線の両端の link_down は、starter が link_anomaly で回線の a の端（機器名の順で前）の id にまとめる（053）"""
     return f"{device_id}#{kind}#{target}"
 
 
@@ -272,6 +273,25 @@ def alerts_from_message(body: str, now: int = 0) -> list:
             "first_seen": _epoch(a.get("starts_at")) or int(now or 0), "source": str(data.get("source") or "")[:40],
         })
     return out
+
+
+def link_anomaly(alert: dict, links: list) -> dict:
+    """回線の両端の link_down を 1 つの異常にまとめる（053）。(device_id, target) が回線の (a, a_if) か (b, b_if) に一致すれば、
+    device_id = a、target = a_if、anomaly_id を作り直し、detail の頭にどちらの端の通知かを付けた写しを返す（a の端でも detail は付ける）。
+    link_down 以外・一致する回線が無い（トポロジに無い IF、trap の ifIndex のまま等）ならそのまま返す。引数は変えない。
+    回線の辺は a < b（機器名の順）で 1 本だけ置く（app/agentcore/graph.py の _link_row）ので、両端の通知は同じ id → 同じワークフローになる"""
+    if alert.get("kind") != "link_down":
+        return alert
+    dev, target = alert.get("device_id"), alert.get("target")
+    for l in links:
+        a, a_if, b, b_if = l.get("a"), l.get("a_if"), l.get("b"), l.get("b_if")
+        if not a or not a_if:
+            continue
+        if (a, a_if) == (dev, target) or (b and b_if and (b, b_if) == (dev, target)):
+            head = f"回線 {a} {a_if} ↔ {b} {b_if}（{dev} {target} 側の通知）。"
+            return {**alert, "device_id": a, "target": a_if, "anomaly_id": anomaly_id(a, alert["kind"], a_if),
+                    "detail": (head + str(alert.get("detail") or ""))[:1000]}
+    return alert
 
 
 def should_start(alert: dict, existing: dict | None) -> bool:

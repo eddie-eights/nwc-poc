@@ -93,7 +93,7 @@ worker が読み書きするもの:
   - 再試行で二重に入ることがあるので、集計では `event_id` で落とす。コミットがぶつかったら 5 回までやり直す。
   - 出典: `app/temporal/awsio.py` の `append_proposal_events`、`IaC/terraform/aws-managed/workflow/events.tf` のコメント。
 - **保守中の機器の異常では起こさない。**
-  アラートの機器か、落ちた回線の相手が Nautobot で `Maintenance` のとき。Neptune を読めないときは起こす。
+  アラートの機器か、落ちた回線の相手が Nautobot で `Maintenance` のとき。Neptune を読めないときは起こさず、メッセージを残して配り直させる（5 回で DLQ）。
   出典: [workflow.md](../../workflow.md) の「流れ」。
 - **`boto3` / `pyiceberg` / `pyarrow` は、呼ばれたときに関数の中で読み込む。**
   Temporal のワークフローサンドボックスに合わせるため。
@@ -122,7 +122,7 @@ worker が読み書きするもの:
 | 処置の種類 | `heal-main`（`dc1-a-leaf-01` の `ethernet-1/1` を上げる）と見るだけの `check` だけ。事前チェック（`precheck`）の警告は落とす処置を足したときに効く |
 | worker が 1 日を超えて止まる | そのあいだに Web から送った決定は SQS の保持（1 日）で消える。修復案は `pending` のまま残る |
 | 却下・時間切れ（`expired`）・`failed`・`ignored` の経路 | AWS では未確認（模擬テストだけ） |
-| 1 本の回線断で修復案が 4 件できる | 既知（2026-10-05。[troubleshooting.md](../../troubleshooting.md) の「既知の不具合」）。承認した 1 件が verified、残りの 3 件は obsolete になった |
+| 1 本の回線断の修復案 | 2026-10-05 の AWS では 4 件できた（承認した 1 件が verified、残りの 3 件は obsolete）。2 件の原因（Splunk の trap のサブインターフェース）は直し、残る 2 件（回線の両端が別の異常）は 053 で回線の `a` の端の 1 件にまとめた（手元のテストで確認、AWS では未確認） |
 | Temporal UI の画面 | 開いて確かめていない（2026-10-05 の動作確認では見ていない） |
 
 ## 関連

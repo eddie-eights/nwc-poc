@@ -215,6 +215,39 @@ check("保守中でなければ止めない", rules.maintenance_hold(_al, _m(), 
 check("アラートの機器が保守中なら止める", rules.maintenance_hold(_al, _m("dc1-a-leaf-01"), _pl) == ["dc1-a-leaf-01"])
 check("回線の相手が保守中でも止める（相手を止めればこちらの回線が落ちる）", rules.maintenance_hold(_al, _m("dc1-spine-01"), _pl) == ["dc1-spine-01"])
 check("別の回線の相手が保守中なら止めない", rules.maintenance_hold(_al, _m("dc1-spine-02"), _pl) == [])
+# ---- 回線の両端の link_down を回線の a の端にまとめる（053。rules.link_anomaly）
+_LA_LINKS = [{"a": "dc1-a-leaf-01", "a_if": "ethernet-1/1", "b": "dc1-spine-01", "b_if": "ethernet-1/3", "status": "DOWN"}]
+_la_spine = {"anomaly_id": "dc1-spine-01#link_down#ethernet-1/3", "device_id": "dc1-spine-01", "kind": "link_down", "target": "ethernet-1/3",
+             "detail": "ethernet-1/3 is down", "status": "firing", "first_seen": 100, "source": "grafana"}
+_la_spine_before = dict(_la_spine)
+_la = rules.link_anomaly(_la_spine, _LA_LINKS)
+check(f"053 T-1 link_anomaly: b の端（spine）の link_down は回線の a の端の id・機器・IF に読み替え、detail の頭に両端とどちらの端の通知かを付ける。"
+      f"status / first_seen / source は元のまま、元の dict は変えない（いま: {_la}）",
+      _la["anomaly_id"] == "dc1-a-leaf-01#link_down#ethernet-1/1" and _la["device_id"] == "dc1-a-leaf-01" and _la["target"] == "ethernet-1/1"
+      and _la["detail"].startswith("回線 dc1-a-leaf-01 ethernet-1/1 ↔ dc1-spine-01 ethernet-1/3（dc1-spine-01 ethernet-1/3 側の通知）。ethernet-1/3 is down")
+      and (_la["status"], _la["first_seen"], _la["source"], _la["kind"]) == ("firing", 100, "grafana", "link_down")
+      and _la_spine == _la_spine_before and _la is not _la_spine)
+_la_leaf = {**_la_spine, "anomaly_id": "dc1-a-leaf-01#link_down#ethernet-1/1", "device_id": "dc1-a-leaf-01", "target": "ethernet-1/1",
+            "detail": "ethernet-1/1 is down"}
+_la_leaf_before = dict(_la_leaf)
+_la = rules.link_anomaly(_la_leaf, _LA_LINKS)
+check(f"053 T-2 link_anomaly: a の端（leaf）の link_down は id・機器・IF はそのまま、detail の頭にだけ両端と（leaf 側の通知）を付ける（いま: {_la}）",
+      _la["anomaly_id"] == "dc1-a-leaf-01#link_down#ethernet-1/1" and (_la["device_id"], _la["target"]) == ("dc1-a-leaf-01", "ethernet-1/1")
+      and _la["detail"] == "回線 dc1-a-leaf-01 ethernet-1/1 ↔ dc1-spine-01 ethernet-1/3（dc1-a-leaf-01 ethernet-1/1 側の通知）。ethernet-1/1 is down"
+      and _la_leaf == _la_leaf_before)
+_la_cases = [({**_la_spine, "kind": "bgp_down", "anomaly_id": "dc1-spine-01#bgp_down#ethernet-1/3"}, _LA_LINKS),
+             ({**_la_spine, "target": "5", "anomaly_id": "dc1-spine-01#link_down#5"}, _LA_LINKS),
+             (_la_spine, [])]
+check("053 T-3 link_anomaly: link_down 以外・トポロジに無い target（trap の ifIndex のまま）・回線が無いときは元と同じ値を返す",
+      all(rules.link_anomaly(dict(al), ls) == al for al, ls in _la_cases))
+check("053 T-3 link_anomaly: a か a_if が空・None の回線の行は無視し、b か b_if が空の行では b の端を照合しない（target が空のアラートを空の b_if に合わせない）",
+      rules.link_anomaly(_la_spine, [{**_LA_LINKS[0], "a": None}]) == _la_spine
+      and rules.link_anomaly(_la_spine, [{**_LA_LINKS[0], "a_if": ""}]) == _la_spine
+      and rules.link_anomaly({**_la_spine, "target": ""}, [{**_LA_LINKS[0], "b_if": ""}]) == {**_la_spine, "target": ""}
+      and rules.link_anomaly(_la_spine, [{**_LA_LINKS[0], "a_if": None}, _LA_LINKS[0]])["device_id"] == "dc1-a-leaf-01")
+_la = rules.link_anomaly({**_la_spine, "detail": "x" * 1000}, _LA_LINKS)
+check(f"053 T-4 link_anomaly: 元の detail が 1000 文字でも戻りは 1000 文字で、頭の「回線 …」が残る（いま: {len(_la['detail'])} 文字）",
+      len(_la["detail"]) == 1000 and _la["detail"].startswith("回線 dc1-a-leaf-01 ethernet-1/1 ↔ dc1-spine-01 ethernet-1/3（dc1-spine-01 ethernet-1/3 側の通知）。x"))
 check("プロンプトは直前の構成変更を recent_changes で見させる", "recent_changes（Nautobot の変更履歴）" in prompt)
 check("承認タブの詳細は事前チェックを出す", '("事前チェック", "precheck")' in read("app", "dashboard", "incident_view.py"))
 check("プロンプトは JSON 1 個を求め、action の 3 択を示す", '"action"' in prompt and "heal-main | check | none" in prompt)
@@ -2089,6 +2122,80 @@ awsio.latest_proposal = lambda p: {}
 _inbox[:] = [{"Body": "garbage", "ReceiptHandle": "r2"}, {"Body": msg(kind="trap"), "ReceiptHandle": "r3"}]
 asyncio.run(worker.starter_queue(FakeTemporal(), "q-alerts", worker.handle_message))
 check("読めない本文と、起こさない種類のアラートは消す", deleted == [("q-alerts", "r2"), ("q-alerts", "r3")])
+
+# ---- 回線の両端の link_down を 1 本のワークフローにまとめる（053。worker.handle_message → rules.link_anomaly）
+class FakeTemporalOnce(FakeTemporal):
+    """同じ id の 2 回目の start_workflow で WorkflowAlreadyStartedError を投げる（Temporal の二重起動の弾き方）"""
+    async def start_workflow(self, fn, arg=None, id=None, task_queue=None):
+        if any(i == id for _, i in self.started):
+            raise WorkflowAlreadyStarted()
+        self.started.append((arg, id))
+_topo_reads = []
+_la_topo = lambda maint=(): ([{"device_id": d, "status": "DOWN", "maintenance": d in maint, "role": r}
+                              for d, r in (("dc1-a-leaf-01", "leaf"), ("dc1-spine-01", "spine"))], [dict(l) for l in _LA_LINKS])
+awsio.read_topology = lambda: _topo_reads.append(1) or _la_topo()
+def _la_msg(*alerts, source="grafana"):
+    return json.dumps({"source": source, "alerts": [
+        {"status": st, "device_id": dev, "kind": "link_down", "target": ifn, "detail": f"{ifn} is down", "starts_at": t} for st, dev, ifn, t in alerts]})
+_LA_WID = "investigate-dc1-a-leaf-01#link_down#ethernet-1/1"
+tc = FakeTemporalOnce()
+asyncio.run(worker.handle_message(tc, _la_msg(("firing", "dc1-a-leaf-01", "ethernet-1/1", 100), ("firing", "dc1-spine-01", "ethernet-1/3", 160))))
+check(f"053 T-5 handle_message: 回線の leaf 側と spine 側の firing（1 通に 2 件）は同じ id のワークフロー 1 本だけ（2 回目は AlreadyStarted）。"
+      f"トポロジを読むのは 1 通につき 1 回（いま: 起こした id {[i for _, i in tc.started]}、read_topology {len(_topo_reads)} 回）",
+      [i for _, i in tc.started] == [_LA_WID] and len(_topo_reads) == 1)
+check("053 T-5 handle_message: ワークフローに渡すアラートは a の端に読み替えたもの（detail の頭に両端とどちらの端の通知か）",
+      tc.started[0][0]["device_id"] == "dc1-a-leaf-01" and tc.started[0][0]["anomaly_id"] == "dc1-a-leaf-01#link_down#ethernet-1/1"
+      and tc.started[0][0]["detail"].startswith("回線 dc1-a-leaf-01 ethernet-1/1 ↔ dc1-spine-01 ethernet-1/3（dc1-a-leaf-01 ethernet-1/1 側の通知）。"))
+tc = FakeTemporalOnce(); _topo_reads.clear()
+asyncio.run(worker.handle_message(tc, _la_msg(("firing", "dc1-spine-01", "ethernet-1/3", 160))))
+check(f"053 T-5 handle_message: spine 側の firing だけでも a の端の id で起こす（いま: {[i for _, i in tc.started]}）",
+      [i for _, i in tc.started] == [_LA_WID] and tc.started[0][0]["first_seen"] == 160 and len(_topo_reads) == 1)
+tc = FakeTemporalOnce(); _topo_reads.clear()
+asyncio.run(worker.handle_message(tc, _la_msg(("firing", "dc1-a-leaf-01", "ethernet-1/1", 100))))
+asyncio.run(worker.handle_message(tc, _la_msg(("firing", "dc1-spine-01", "ethernet-1/3", 160))))
+check(f"053 T-5 handle_message: Grafana の group_by どおり端ごとに別の 1 通で順に届いても、ワークフローは a の端の id の 1 本だけ（いま: {[i for _, i in tc.started]}）",
+      [i for _, i in tc.started] == [_LA_WID] and len(_topo_reads) == 2)
+tc = FakeTemporalOnce(); _topo_reads.clear()
+asyncio.run(worker.handle_message(tc, _la_msg(("resolved", "dc1-spine-01", "ethernet-1/3", 160), source="splunk")))
+check(f"053 T-6 handle_message: spine 側の resolved だけの 1 通でも、a の端の id のワークフローへシグナル resolved を送る（いま: {tc.signals}）",
+      tc.signals == [(_LA_WID, "resolved", "splunk")] and tc.started == [] and len(_topo_reads) == 1)
+awsio.read_topology = lambda: _topo_reads.append(1) or _la_topo(maint=("dc1-spine-01",))
+tc = FakeTemporalOnce(); _topo_reads.clear()
+asyncio.run(worker.handle_message(tc, _la_msg(("firing", "dc1-spine-01", "ethernet-1/3", 160))))
+tc2 = FakeTemporalOnce()
+asyncio.run(worker.handle_message(tc2, _la_msg(("firing", "dc1-a-leaf-01", "ethernet-1/1", 100))))
+check(f"053 T-7 handle_message: spine が保守中なら、spine 側・leaf 側どちらの firing でもワークフローを起こさない（読み替えたあとの a の端からも相手の spine を数える）（いま: {tc.started} / {tc2.started}）",
+      tc.started == [] and tc2.started == [] and len(_topo_reads) == 2)
+def _topo_boom():
+    _topo_reads.append(1)
+    raise RuntimeError("Neptune に届かない")
+awsio.read_topology = _topo_boom
+_raised = []
+for _b in (_la_msg(("firing", "dc1-spine-01", "ethernet-1/3", 160)), _la_msg(("resolved", "dc1-spine-01", "ethernet-1/3", 160))):
+    tc = FakeTemporalOnce()
+    try:
+        asyncio.run(worker.handle_message(tc, _b))
+    except RuntimeError as e:
+        _raised.append((str(e), tc.started, tc.signals))
+deleted.clear()
+_inbox[:] = [{"Body": _la_msg(("firing", "dc1-spine-01", "ethernet-1/3", 160)), "ReceiptHandle": "t8"}]
+asyncio.run(worker.starter_queue(FakeTemporalOnce(), "q-alerts", worker.handle_message))
+check(f"053 T-8 handle_message: トポロジを読めなければ firing でも resolved でも例外を呼び手に投げ、起こさずシグナルも送らない。starter_queue はメッセージを消さない（いま: {_raised} / {deleted}）",
+      _raised == [("Neptune に届かない", [], [])] * 2 and deleted == [])
+_topo_reads.clear(); tc = FakeTemporalOnce()
+asyncio.run(worker.handle_message(tc, json.dumps({"source": "splunk", "alerts": [
+    {"status": "firing", "device_id": "dc1-spine-01", "kind": "bgp_down", "target": "10.0.0.1", "starts_at": 160},
+    {"status": "resolved", "device_id": "dc1-spine-01", "kind": "trap", "target": "ethernet-1/3", "starts_at": 160}]})))
+check(f"053 T-8 handle_message: link_down の無いメッセージ（bgp_down と trap だけ）ではトポロジを読まない（いま: read_topology {len(_topo_reads)} 回）",
+      _topo_reads == [] and tc.started == [] and tc.signals == [])
+awsio.read_topology = lambda: _topo_reads.append(1) or _la_topo()
+_topo_reads.clear(); tc = FakeTemporalOnce()
+_la_leaf_alert = rules.alerts_from_message(_la_msg(("firing", "dc1-a-leaf-01", "ethernet-1/1", 100)))[0]
+check("053 start_for: topology を渡さずに単体で呼べば、いまどおり自分でトポロジを読んで起こす",
+      asyncio.run(worker.start_for(tc, _la_leaf_alert)) is True and len(_topo_reads) == 1 and [i for _, i in tc.started] == [_LA_WID])
+_topo_reads.clear(); tc = FakeTemporalOnce()
+check("053 start_for: topology を渡せばトポロジを読まない",
+      asyncio.run(worker.start_for(tc, _la_leaf_alert, _la_topo())) is True and _topo_reads == [] and [i for _, i in tc.started] == [_LA_WID])
 
 # 決定のキュー（handle_decision）
 deleted.clear(); appended.clear()

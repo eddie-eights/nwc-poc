@@ -232,7 +232,7 @@ flowchart LR
 | 修復案の証跡 | 無い（1 行を上書き） | `proposal_events` | 同じ | 同じ | `proposal_events`（12 列から 28 列にし、どの行にも全項目） |
 | 承認・却下の届け方 | Web が DynamoDB の行を書き換える | Web が頂点の `status` を書き換え、worker が 30 秒ごとに見る | 同じ | 同じ | Web が SQS `<prefix>-decisions` に送り、worker がシグナル `decide` で渡す |
 | 費用 | DynamoDB は放置中ほぼ $0 | ほとんど変わらない（S3 Tables の小さな追記だけ） | 同じ | VPC エンドポイントが 2 本増える。Firehose と Athena は量に比例で、PoC では小さい | SQS のキューが 2 本増える（量に比例）。承認タブを開いているあいだ、30 秒ごとに Athena の問い合わせが 1 本走る |
-| Neptune が止まったとき | トポロジだけ見えない | 検知の書き込みも異常一覧も止まる | `status` の更新と修復案が止まる（検知は止まらない） | 同じ（行は Neptune より先に送るので `alert_events` は残る。Neptune がエラーを返すか応答しないまま timeout すると Lambda のやり直しになり、行は二重に入る） | `status` の更新と新しいワークフローの起動が止まる。修復案の一覧と承認・却下は動く |
+| Neptune が止まったとき | トポロジだけ見えない | 検知の書き込みも異常一覧も止まる | `status` の更新と修復案が止まる（検知は止まらない） | 同じ（行は Neptune より先に送るので `alert_events` は残る。Neptune がエラーを返すか応答しないまま timeout すると Lambda のやり直しになり、行は二重に入る） | `status` の更新と新しいワークフローの起動が止まる（053 からは `link_down` の解消のシグナルも。SQS で待ち、5 回で DLQ）。修復案の一覧と承認・却下は動く |
 
 ### 6. コードの入口
 

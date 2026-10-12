@@ -31,7 +31,7 @@ SQS はもう 1 本あり、Web の承認・却下を worker に届ける（決�
 | 本文 | `{"source": "grafana" \| "splunk", "alerts": [{"status", "device_id", "kind", "target", "detail", "starts_at"}]}` |
 | `status` | `firing`（発火）か `resolved`（解消） |
 | `kind` | `link_down`、`bgp_down`、`isis_down`、`trap` |
-| 異常の id | `<device_id>#<kind>#<target>`。送り手が違っても同じ機器・種類・対象なら同じ |
+| 異常の id | `<device_id>#<kind>#<target>`。送り手が違っても同じ機器・種類・対象なら同じ。回線の両端の `link_down` は、ワーカーの starter が回線の `a` の端（機器名の順で前）の id にまとめる（053） |
 | 履歴の行の `event_id` | `<anomaly_id>#<source>#<status>#<starts_at の epoch 秒>`（`starts_at` が無いと末尾は `#0`） |
 | 決定のキューの本文 | `{"type": "decision", "proposal_id", "decision": "approved" \| "rejected", "decided_by", "sent_at"}`（読むのは `app/temporal/rules.py` の `decision_from_message`） |
 

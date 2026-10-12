@@ -21,7 +21,7 @@
 - ワークフロー（`worker.py:258-340`）が閉じるのは、解消の通知（シグナル `resolved`）が来たとき（verified / obsolete）か、rejected / expired / failed のあと解消を `HOLD_MINUTES`（既定 1440）分まで待ちきったとき。解消が来るまで id を握る
 - `rules.maintenance_hold`（`rules.py:284-294`）は、`links` の `(a, a_if)` か `(b, b_if)` がアラートの `(device_id, target)` と一致する回線の相手を「関わる機器」に足す。回線の両端の照合はここにもう 1 つある
 - `awsio.read_topology`（`app/temporal/awsio.py:104-112`）は機器 `{device_id, status, maintenance, role}` と回線 `{a, b, a_if, b_if, status}` を返す（Neptune の `MATCH (a)-[l:link]->(b)`）
-- 回線の辺は `a < b`（機器名の順）で 1 本だけ置く（`app/graph/graph.py:16` と `_link_row`（`:367-370`））。lab の回線 `dc1-a-leaf-01 ethernet-1/1 ↔ dc1-spine-01 ethernet-1/3` は `a = dc1-a-leaf-01`
+- 回線の辺は `a < b`（機器名の順）で 1 本だけ置く（`app/agentcore/graph.py:16` と `_link_row`（`:366-370`））。lab の回線 `dc1-a-leaf-01 ethernet-1/1 ↔ dc1-spine-01 ethernet-1/3` は `a = dc1-a-leaf-01`
 - `rules.build_prompt`（`rules.py:32-45`）の action の決め方は「Leaf dc1-a-leaf-01 の ethernet-1/1（dc1-spine-01 との fabric）が落ちている（link_down か、その上の isis_down）なら heal-main」。`a` の側にまとめると、この回線の異常はいつも `dc1-a-leaf-01#link_down#ethernet-1/1` になる
 - 送り手の `target`: Grafana と Splunk の gNMI は IF 名（`ethernet-1/1`）。Splunk の trap は varbind の `ifName > ifDescr > ifIndex`（`app/splunk/nwc_alerts/default/savedsearches.conf:88` / `:120`）なので、ifName が無い機器では IF 名にならないことがある
 - `rules.py:205` のコメント「同じ形を app/graph/status_handler.py も読む。形を変えるときは 4 か所を一緒に変える」は通知の本文（SNS のメッセージ）の形の話。このサイクルは本文の形を変えない（starter の中でだけ読み替える）
@@ -97,6 +97,8 @@
 ## 未確定事項とリスク
 
 - **閉じたあとに遅れて届いたもう片方の firing。** ワークフローが閉じる（解消の通知が来た）より後に、もう片方の端の firing が遅れて届くと、その端の `first_seen` の修復案は無いので新しいワークフローを起こす。いまの Grafana と Splunk の重なりにも同じ窓がある。物理の回線は両端が同時に戻り、解消の通知のあとに firing は来ないはずなので、このサイクルでは直さない（AWS で見えたら QUEUE に積む）
+- **HOLD が明けたあとの、もう片方の端の繰り返しの通知。** 修復案を却下か expired にして `HOLD_MINUTES`（1440 分）まで待ちきり、ワークフローが閉じても回線が落ちたままなら、もう片方の端（starts_at が違う）の Grafana の繰り返しの通知は、まとめた id とその端の `first_seen` で修復案を引き、無いので 2 本目を起こす（1 回だけ。2 本目の修復案ができると以後は飛ばす）。HOLD 明けに次の通知で調べ直すのは `worker.py` の `run` のコメントどおりの振る舞いで、Splunk の通知（starts_at が検索ごとに変わる）は 053 の前から同じ端でも 2 本目を起こす（`review.md` の Round 1 に再現）。このサイクルでは直さない
+- **Neptune を読めないとき、link_down の通知は firing も resolved も配り直しになる。** 053 の前は resolved は Neptune を読まなかった。b の端の resolved を a の端の id に読み替えるにはトポロジが要り、読まずに送ると b の端の解消が届かないまま消える。SQS の配り直し（5 回で DLQ）で Neptune の一時的な停止をしのぐ。DLQ に落ちると、ワークフローは解消を知らないまま、修復案の期限（expired）と `HOLD_MINUTES` まで残る
 - **resolved は片方の端だけでも回線の解消として扱う。** 物理の回線は両端が同時に上がり下がりするので受け入れる。片方だけ admin down のような非対称の状態は、送り手が `admin_state` が disable の IF を数えない（Grafana と Splunk の gNMI。`savedsearches.conf:27`）ので、ここには来ない
 - **Splunk の trap の target が IF 名でないとき（ifName が無い機器）はまとまらない。** lab の SR Linux は ifName を送る想定だが、AWS の trap の varbind は未確認。まとまらないときはいまの振る舞い（端ごと）に戻るだけで、壊れはしない
 - **デプロイの入れ替えの間に走っている端ごとのワークフロー。** 古い id（spine 側）のワークフローに、新しい starter は resolved を送らない（`a` の id に送る）。PoC は毎回 `ops/down.sh` で消すので受け入れる。残っても `HOLD_MINUTES` で閉じる

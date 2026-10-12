@@ -3,7 +3,7 @@
 worker.py のアクティビティは全部このファイルの関数を asyncio.to_thread で呼ぶ。
 Temporal のワークフロー（決定的でないといけない）から直接呼ぶものは 1 つも無い。
 
-  Neptune    Neptune Analytics。トポロジと status を openCypher で読むだけ（事前チェックと保守中の判定）。書かない
+  Neptune    Neptune Analytics。トポロジと status を openCypher で読むだけ（事前チェックと保守中の判定と、starter の回線の両端のまとめ（053））。書かない
   S3 Tables  修復案（proposal_events）に追記し、読む（PyIceberg。作成・承認・却下・適用・確認を 1 行ずつ。どの行も全項目）
   AgentCore  Runtime を invoke して原因分析を答えさせる
   SSM        lab EC2 に Run Command で 1 行打つ
@@ -102,7 +102,7 @@ def _neo4j_cypher(q: str, params: dict) -> list:
 
 
 def read_topology() -> tuple[list, list]:
-    """(devices, links)。事前チェック（rules.precheck）と保守中の判定（rules.maintenance_hold）に渡す形だけ読む:
+    """(devices, links)。事前チェック（rules.precheck）と保守中の判定（rules.maintenance_hold）と回線の両端のまとめ（rules.link_anomaly。053）に渡す形だけ読む:
     機器は id・status・maintenance・role、回線は両端の機器・IF と status。
     role は rules.impact が END_ROLES の機器（TRex）を端として扱うのに使う。読まないと TRex が 4 台の leaf をつなぐ中継に見え、leaf の孤立を隠す"""
     devices = [{"device_id": r.get("id"), "status": r.get("status"), "maintenance": bool(r.get("maintenance")), "role": r.get("role")}
