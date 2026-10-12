@@ -251,3 +251,109 @@ None
 - Nit B3（`device="<id>.*"` が IP の一部を通す）: 直さない。完了時に QUEUE へ
 - Nit B4（docs が `tags.host` / `host` を欄に挙げる）: Round 4 の docs で B1 と一緒に直す
 - Nit B2: エンジニアが T-10 に rec12 を足して片付けた
+
+## Round 3
+
+- 実行したモデル: cold reviewer は opus（effort xhigh）。PM の確認は opus-5.5
+- cold reviewer に依頼した（2 回目。完了判定の直前）。対象は 4f29031 → 166d750（`build.md` の Round 1〜4）
+- 結果は下の「054 cold review Round 2」をそのまま連結した
+
+# 054 cold review Round 2（Splunk だけの構成でもエージェントが Splunk からログ・trap・メトリクスを引けるようにする（054））
+
+対象: `/Users/eight/Documents/Dev/sandbox/nwc-poc/.claude/worktrees/pm-054`、`4f29031..166d750`（25 ファイル、+1557 / -36）。正本は `docs/cycles/054-splunk-agent-tools/design.md`。`build.md` / `design-log.md` / `review.md` は、作り手の説明に引きずられないよう読んでいない（design.md から参照されている箇所は design.md の記述だけで判断した）。
+
+## サマリ
+
+- Must fix 0 / Should fix 0 / Nit 4。
+- design.md の「やること」（固定の SPL を組む `search_splunk`、引数の検証、25 秒の締め切りと `truncated`、`GATEWAY_ONLY`、2 つのプロンプトの文言、`splunk_search_url` の output（マネージド版と OSS 版）、tools の Lambda の `SPLUNK_URL`、SG の `lambda → splunk 8089`、docs の更新先）は、コードと docs のどちらにも入っていた。Round 4 で外した `host=` の句は SPL に無く、T-1 がその形を固定している。
+- SPL の注入は、エスケープせずに拒む方式（`device_id` は `[A-Za-z0-9._:-]{1,64}` の fullmatch、`keyword` は `" \ | [ ] `` ` `` と表示できない文字を拒む、`topic` は 5 つの値だけ）で塞がれていて、引用を抜けてパイプ・サブサーチ・マクロを作る入力は見つからなかった。
+- 指摘は、テストの比べる相手（Nit 1）、docs と説明文の小さな漏れ（Nit 2 / 3）、「配備されていない」の案内文が当たらない構成（Nit 4）だけ。
+
+### 見た観点 / 見ていない観点
+
+見た観点:
+
+- design.md との整合: `app/agentcore/evidence.py`（`splunk_args`、`_splunk_post`、`_set_read_timeout`、`search_splunk`、`TOOL_SPECS`、`GATEWAY_ONLY`）、`app/agentcore/app.py`（`run_tool` と system prompt）、`app/temporal/rules.py`（`build_prompt`）、`app/gateway/tools.json`、Terraform の 5 ファイル、`deploy.env.example`、docs の 7 ファイル、`docs/architecture-managed.pptx` のノートの文字列（`unzip -p` で `lambda → splunk 8089` と「splunk どうしと lambda 以外からの受信」が `architecture-managed.deck.md:148` / `:150` と同じ文であることを確かめた）。
+- correctness: Splunk のフィールドの出どころ（`props.conf` の `[source::telegraf:*] KV_MODE = json` で `tags.sysName` / `tags.agent_host` / `tags.source` / `tags.sampler` が検索時に取れる、flows の source が `telegraf:flow` になる）、`coalesce` が保存済みサーチと同じ並びであること、2 段目の完全一致と `<id>.*` で前方一致にならないこと、`minutes` / `limit` の丸め、`messages` の ERROR / FATAL、全行が読めないとき、締め切り・応答の途切れ・`IncompleteRead`・`BadStatusLine`・HTTPError の本文が読めないときの分岐。
+- security: SPL の注入（上のサマリ）、Basic 認証の資格情報がログやエラーの文に出ないこと（HTTPError は Splunk の本文の先頭 300 文字だけ、`URLError` は例外の文だけ）、SSM の `splunk/admin-password` を `WithDecryption` で読むこと、tools の Lambda のロールが `/<prefix>/*` の `ssm:GetParameter` で届くこと、SG の行が `lambda → splunk` の 8089 だけで runtime・web からは開かないこと（`tests/test_analytics.py` が行を固定）、OSS 版の `active_sg_flows` にもこの行が残ること。
+- runtime bugs: Runtime のコンテナ（`SPLUNK_URL` が無い）に戻さない `GATEWAY_ONLY` の分岐（`app.py:85`）、締め切り 25 秒 < `mcp_client.TIMEOUT` 30 秒 < tools の Lambda の timeout 60 秒（`gateway.tf:202`）の並び。
+- missing tests: T-1〜T-12 に当たるテストの中身を読んだ。
+- テストを自分で実行した（pm-054 で `uv run --group dev --group web python tests/<ファイル>`）:
+  - `tests/test_agentcore.py` → `通過 220 / 失敗 0`
+  - `tests/test_workflow.py` → `通過 461 / 失敗 0`
+  - `tests/test_analytics.py` → `通過 549 / 失敗 0`
+
+見ていない観点:
+
+- `ops/check.sh` の全体（`terraform fmt -check` / 10 のルートの `validate`、`bash -n`、ほかの `tests/test_*.py`、旧名の検査）は打っていない。Terraform の構文が通るかは確かめていない。
+- T-10（手元の使い捨ての Splunk で本物の検索 API を引く）は打ち直していない。SPL が本物の Splunk で通るか・`fields` の後の JSON の形は、コードとテストの模擬の応答から読んだだけ。
+- AWS の上（tools の Lambda から 8089 に届くか、クラスターのとき `splunk` の名前が search head を指すか）は見ていない。design.md も docs も未確認と書いている。
+- `docs/architecture-managed.pptx` はノートの文字列だけを見た。スライドの絵（図）は開いていない。
+
+## Must fix
+
+None
+
+## Should fix
+
+None
+
+## Nit
+
+- [missing tests] `tests/test_workflow.py:1049-1057` は tools の Lambda の timeout を `evidence.TIMEOUT`（20 秒）より長いかで見ているが、`search_splunk` が実際に使い切るのは `evidence.SPLUNK_DEADLINE`（25 秒）なので、比べる相手が 1 つずれている。いまの値は 60 秒（`gateway.tf:202`）なので何も壊れていないことから Nit。壊れる入力: `gateway.tf` の timeout を 21〜25 秒に下げてもこの check は通り、Splunk の応答が遅いとき Lambda が 25 秒の締め切りより先に止められて、`truncated` 付きの途中の結果ではなく Gateway のエラーになる。読んだだけ。再現手順: `gateway.tf:202` を `timeout = 22` にして `uv run --group dev --group web python tests/test_workflow.py` を打つと、`Lambda の timeout は evidence.TIMEOUT より長い（cycle 054）` が ok のまま。比べる相手を `evidence.SPLUNK_DEADLINE`（と SSM の取得の分の余裕）にすると、この下げ方を拾える。
+- [design.md との整合] `docs/architecture/resources/ssm-parameter-store.md:45` の `/<prefix>/splunk/admin-password` の「受け取る側」が「Splunk のタスク」だけのまま。054 から tools の Lambda もこの値を読む（`evidence.py:60` の `toolkit.Param("SPLUNK_PASSWORD", "splunk/admin-password", decrypt=True)`）。動きには関わらないので Nit。困る場面: admin のパスワードを誰が使っているかをこの表で数えると tools の Lambda が漏れる（読み取り専用のユーザーに替える QUEUE の件で、差し替え先を探すときにも漏れる）。design.md の docs の一覧（:99-102）にこのファイルは無いので、一覧の漏れ。読んだだけ。
+- [design.md との整合] tools の Lambda の届く先を並べた説明 2 か所に Splunk が無い。`app/gateway/handler.py:7-9` の docstring（「Neptune…、OpenSearch Serverless…、Prometheus…、Athena…に届く」）と、`deploy.env.example:32` の WORKFLOW の説明（「エージェントが Neptune / OpenSearch / Prometheus を見て原因を調べて」）。どちらも説明文だけで動きには関わらないので Nit。読んだだけ。
+- [correctness] `SPLUNK_NOT_DEPLOYED`（`evidence.py:147`。design.md:73 の文のまま）は「analytics を STORES に splunk を入れて apply すると使える」と案内するが、Splunk を立てていても次の 2 つの構成ではこの案内どおりにしても使えない。(1) `AGENT=1 WORKFLOW=0` で `STORES=s3,splunk`: Gateway が無いので Runtime のコンテナの `search_splunk` が呼ばれ、コンテナには `SPLUNK_URL` が入らない（`SPLUNK_URL` を渡すのは `workflow/gateway.tf:221` だけ）ので、system prompt に従って `search_splunk` を呼んだエージェントは「Splunk はまだ配備されていない」と答える。(2) workflow を apply した後に analytics へ splunk を足した: `workflow/locals.tf:195` が analytics の state を読むのは workflow の apply のときなので、workflow を apply し直すまで空のまま。同じ形の `HISTORY_NOT_DEPLOYED`（`evidence.py:316-317`）は「workflow を apply し直すと使える」まで書いている。design.md の文どおりで、エラーを返すだけで誤った検索結果は出さないので Nit。再現（pm-054 の `app/agentcore` で `SPLUNK_URL` を入れずに実行）:
+  ```
+  $ uv run --project ../.. python -c "import evidence; print(evidence.search_splunk(device_id='spine-1'))"
+  {'error': 'Splunk の検索はまだ配備されていない（IaC/terraform/aws-managed/pipeline/analytics を STORES に splunk を入れて apply すると使える）', 'events': []}
+  ```
+
+## 良かった点
+
+- SPL に入れる値をエスケープせず、引用を抜けられる文字（`" \ | [ ] `` ` ``）と表示できない文字（U+2028 を含む）を拒む方式にしている。SPL のエスケープ規則の読み違いに頼らないので、注入の面が小さい。T-2 が拒む入力を並べて固定している。
+- 機器の絞り込みを 2 段にしている。1 段目の本文の語で索引を使って減らし、2 段目を完全一致と `<id>.*` だけにして、`spine-1` が `spine-10` に、`10.0.0.1` が `10.0.0.10` に当たらない。Round 4 で `host=` の句を外した理由（`unknown` で引くと他の機器の行が通る）がコードのコメントに残っている。
+- `GATEWAY_ONLY` で、Gateway の 401 や時間切れがコンテナの「配備されていない」に化けないようにしている。次に同じ性質のツールを足すときの入れ先（モジュールの `GATEWAY_ONLY`）も決まっている。
+- 締め切りの扱いが細かい。`read1` で届いた分だけ読み、読み出しのソケットの timeout を残り時間に合わせ、改行で終わっていない行は捨て、1 件も読めていなければ `error` にする。本物の `HTTPResponse` と socketpair で `_set_read_timeout` が効くことまでテストしている。
+- SG の行の追加を docs の 4 か所（`core.md`、`vpc-perimeter.md`、`splunk.md`、deck.md と pptx のノート）で揃え、SG `lambda` を付けるほかの 2 つの Lambda からも届くことを隠さずに書いている。
+
+## ユーザーへの質問
+
+None
+
+### PM の確認（Round 3）
+
+- cold reviewer が書いたのは scratchpad の `054-review-r02.md` だけ。pm-054 の `git status --porcelain` は空のまま、HEAD は 166d750 のまま
+- Nit 4 件は直さない。再現はしていない（Nit なので。cold reviewer の「読んだだけ」と Nit 4 件目の実行結果のとおり）。QUEUE に積んだ
+- 前のラウンドの Should fix を 166d750 で取り直した（スクラッチパッドの `verify054.py`。`snmp_sinks.splunk_events` で HEC のイベントを作り、`evidence.splunk_args` の 2 段目の句を当てる）:
+
+  ```
+  10.0.0.1 -> search device="10.0.0.1" OR device="10.0.0.1.*" OR tags.agent_host="10.0.0.1" OR tags.source="10.0.0.1" OR tags.sampler="10.0.0.1"
+     trap sysName spine-1 / 10.0.0.1 | HEC host: unknown | 2nd stage: True
+     flows sampler 10.0.0.1 | HEC host: unknown | 2nd stage: True
+     log leaf-9 with word unknown | HEC host: unknown | 2nd stage: False
+  unknown -> search device="unknown" OR device="unknown.*" OR tags.agent_host="unknown" OR tags.source="unknown" OR tags.sampler="unknown"
+     trap sysName spine-1 / 10.0.0.1 | HEC host: unknown | 2nd stage: False
+     flows sampler 10.0.0.1 | HEC host: unknown | 2nd stage: True
+     log leaf-9 with word unknown | HEC host: unknown | 2nd stage: False
+  GATEWAY_ONLY: ['search_splunk']
+  ```
+
+  - Round 1 の Should fix（sysName のある機器を IP で引くと 0 件、flows を device_id で引けない）: 1 行目と 2 行目が True
+  - Round 2 の Should fix B1（`unknown` で本文に unknown を含む他の機器の行が出る）: leaf-9 の log は False。`unknown` の flows が 2 段目で True なのは機器名が無い flows の device が `unknown` になるためで、1 段目の語 `"unknown"` が本文に無いので出ない（`build.md` Round 4 の反対弁護人の Nit 5、本物の Splunk の T-10 で `unknown -> count=1 sourcetypes=['nwc:logs']`）
+  - Round 1 の Should fix（`GATEWAY_ONLY`）: 最後の行
+- 本物の Splunk（10.4.4）での T-10 は `build.md` の Round 4 でエンジニアが 166d750 の evidence.py で打った（`unknown` は count=1 で device が unknown の log だけ、IP 10.0.0.2 → spine-2、flows は sampler で引ける）。PM は打ち直していない
+- `bash ops/check.sh`（166d750）→ rc=0、最後の行「すべて通過」（`test_agentcore` / `test_workflow` / `test_analytics` は cold reviewer も別に打って 220 / 461 / 549 通過）
+- main（7ad224e。053 の `rules.py` / `splunk.md` / `test_workflow.py` の変更）を取り込んだ 0939155 でも `bash ops/check.sh` → rc=0、最後の行「すべて通過」（取り込みは自動で、衝突は無かった）
+
+### 完了の判定（PM）
+
+- Must fix 0 / Should fix 0。Round 1 の Should fix 2 件と Round 2 の Should fix B1 は 166d750 で再現しないことを上の出力で確かめた
+- 直さずに QUEUE へ積んだ Nit:
+  - cold reviewer Round 2 の 4 件（tools の Lambda の timeout のテストが `SPLUNK_DEADLINE` と比べていない、`ssm-parameter-store.md:45` の受け取る側、`handler.py` の docstring と `deploy.env.example:32` の届く先に Splunk が無い、`SPLUNK_NOT_DEPLOYED` の案内が `WORKFLOW=0` と apply の順で当たらない）
+  - Round 2 の B3（`device="<id>.*"` が IP の一部を通す）
+  - `build.md` Round 4 の反対弁護人の Nit 2〜7 のうち、design.md の言い回し（:59 / :153 / :62）と T-10 に gNMIc の形のレコードが無い件。flows が `unknown` で黙って抜ける件、tags.host を出すコレクターが無い前提、T-1 の正規表現の穴は直さず、ここに残すだけ
+- 見た観点: design 整合性 / correctness / security（SPL の注入、資格情報が出ないこと、SG の行、IAM）/ runtime bugs（`GATEWAY_ONLY`、締め切りの並び）/ API compatibility（既存のツールの名前と引数は変えていない）/ missing tests（cold reviewer の「見た観点」と PM の再現）
+- 見ていない観点: AWS での動作（tools の Lambda から 8089 に届くか、クラスターのときの search head）、data loss（読むだけのツールで書き込みは無い）、type safety（型の検査は無い）
+
+<!-- artifact: /Users/eight/Documents/repo/artifacts/projects/nwc-poc-architecture.html -->
