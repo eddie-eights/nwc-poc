@@ -260,7 +260,7 @@ ECR に置くイメージが「どこで・何をして」いるかのまとめ�
 
 | イメージ（`<prefix>-…`） | 元 | 動く場所 | 役目 |
 |---|---|---|---|
-| `agent` | [app/agentcore/](../app/agentcore/)（自前ビルド） | AgentCore Runtime | チャットの本体。Bedrock のモデルを呼び、Neptune のトポロジ、OpenSearch / Prometheus の証拠を集めて答え、承認待ちの修復案を作る |
+| `agent` | [app/agentcore/](../app/agentcore/)（自前ビルド） | AgentCore Runtime | チャットの本体。Bedrock のモデルを呼び、Neptune のトポロジ、OpenSearch / Prometheus / Splunk の証拠を集めて答え、承認待ちの修復案を作る |
 | `lab-srlinux` | `ghcr.io/nokia/srlinux`（ミラー。約 1 GB） | lab の EC2（containerlab） | スイッチ（Nokia SR Linux、`ixr-d2l`）。監視される「機器」そのもの（表の下） |
 | `lab-trex` | `trexcisco/trex`（Docker Hub のミラー。amd64 だけ） | lab の EC2（containerlab） | トラフィックジェネレータ（Cisco TRex 2.41）の `dc1-trex-01`。後段（Telegraf → MSK → Spark → 格納先、アラート）の負荷試験に使う（表の下） |
 | `temporal` | [docker/images/temporal-server/](../docker/images/temporal-server/)（自前ビルド。公式の `temporalio/server` 1.32.1 に `temporal-sql-tool` と psql 18 と入口のスクリプトを足す） | ECS Fargate（WORKFLOW=1） | Temporal のサーバー。履歴を Nautobot の RDS for PostgreSQL（DB `temporal` / `temporal_visibility`）に書く。ロール・DB・スキーマは一回きりの init のタスク `<prefix>-workflow-init`（同じイメージ。`ops/up.sh` が `terraform apply` の直後に起こす）が作り、サーバーはスキーマが出来るのを待ってから namespace を無ければ作って起きる（cycle 036、042） |

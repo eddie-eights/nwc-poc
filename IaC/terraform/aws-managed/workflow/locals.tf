@@ -6,7 +6,7 @@
 # writes the proposal as one row per step to S3 Tables (proposal_events), waits for a human decision (web tab "承認", sent through the
 # decision queue of events.tf), applies the fix on the lab EC2 (IaC/terraform/aws-managed/pipeline/lab) through SSM Run Command and waits for the resolved alert. Temporal runs on ECS now (EKS later - 2026-09-17 user decision).
 # The AgentCore Gateway (MCP) exposes the agent tools through a Lambda in the VPC so the runtime can read Neptune, the logs
-# collection and the metrics workspace over MCP. Costs about 0.05 USD per hour while it exists (Fargate) - destroy it the same day.
+# collection, the metrics workspace and Splunk (search_splunk, cycle 054) over MCP. Costs about 0.05 USD per hour while it exists (Fargate) - destroy it the same day.
 
 # リソース名の接頭辞であり Project タグの値。デプロイする人の名前（var.owner）から作るので、
 # 1 つの AWS アカウントを何人かで使っても、自分の名前で自分のリソースを探せる
